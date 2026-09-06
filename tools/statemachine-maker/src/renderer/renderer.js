@@ -23,7 +23,7 @@ const state = {
   agents: [],
   catalog: { kinds: [], platform: '' },
   view: 'home',
-  homeTab: 'run',
+  homeTab: 'teach',
   execution: { loading: false, snapshot: null, selected: '', detailTab: 'overview', scheduleOpen: false, scheduleDraft: null, log: null },
   current: null,     // { machine, isNew, spec, dirty, warnings, dir }
   open: null,        // 選択中の工程番号、'workflow'、または未選択
@@ -298,7 +298,7 @@ async function refreshTaskSkillPreview() {
   try {
     const result = await api.selectSkills(state.root, JSON.stringify({ task: machine, parameters: state.run.parameters }), 'auto', []);
     state.run.skillPreview = result.selected || [];
-    const list = main.querySelector('#run-skill-list');
+    const list = document.querySelector('#run-skill-list');
     if (list) list.innerHTML = taskSkillChoicesHtml();
   } catch { state.run.skillPreview = []; }
 }
@@ -316,6 +316,8 @@ async function selectRoot(root) {
   await Promise.all([loadMachines(), loadAgents()]);
   await loadExecutionSnapshot();
   flowFeature.rootChanged();
+  teachingFeature.rootChanged();
+  if (state.homeTab === 'teach') await teachingFeature.activate();
   render();
 }
 
@@ -329,6 +331,8 @@ async function addFolder() {
   await Promise.all([loadMachines(), loadAgents()]);
   await loadExecutionSnapshot();
   flowFeature.rootChanged();
+  teachingFeature.rootChanged();
+  if (state.homeTab === 'teach') await teachingFeature.activate();
   render();
 }
 
@@ -343,6 +347,8 @@ async function removeFolder(root) {
   await Promise.all([loadMachines(), loadAgents()]);
   await loadExecutionSnapshot();
   flowFeature.rootChanged();
+  teachingFeature.rootChanged();
+  if (state.homeTab === 'teach') await teachingFeature.activate();
   render();
 }
 
@@ -467,8 +473,9 @@ function homeHtml() {
   const workflowActions = state.homeTab === 'workflows'
     ? '<div class="row"><button type="button" class="primary" id="h-ai-draft">AIで下書き</button><button type="button" id="h-new">手動で作成</button></div>'
     : '';
-  const homeContent = state.homeTab === 'run'
-    ? executionHtml()
+  const homeContent = state.homeTab === 'teach'
+    ? teachingFeature.html()
+    : state.homeTab === 'run' ? executionHtml()
     : state.homeTab === 'flows'
       ? flowFeature.html()
       : `<div class="matrix">${cards}</div>`;
@@ -476,7 +483,7 @@ function homeHtml() {
     ? `<div class="machine-head">
         <div><h1>${esc(folderName(state.root))}</h1><div class="where">${esc(state.root)}</div></div>${workflowActions}
       </div>
-      <div class="home-tabs" role="tablist"><button type="button" data-home-tab="run" class="${state.homeTab === 'run' ? 'is-on' : ''}">実行</button><button type="button" data-home-tab="workflows" class="${state.homeTab === 'workflows' ? 'is-on' : ''}">ワークフロー</button><button type="button" data-home-tab="flows" class="${state.homeTab === 'flows' ? 'is-on' : ''}">AIワークフロー</button></div>
+      <div class="home-tabs" role="tablist"><button type="button" data-home-tab="teach" class="${state.homeTab === 'teach' ? 'is-on' : ''}">タスク</button><button type="button" data-home-tab="run" class="${state.homeTab === 'run' ? 'is-on' : ''}">実行</button><button type="button" data-home-tab="workflows" class="${state.homeTab === 'workflows' ? 'is-on' : ''}">高度な編集</button><button type="button" data-home-tab="flows" class="${state.homeTab === 'flows' ? 'is-on' : ''}">AIワークフロー</button></div>
       ${homeContent}`
     : '<div class="blank"><h2>左のフォルダを選んでください</h2></div>';
   // 登録したフォルダを左、ワークフローを右に置く。読む順（切り替え → 内容）に合わせて
@@ -501,6 +508,7 @@ function bindHome(main) {
   for (const b of main.querySelectorAll('[data-home-tab]')) b.addEventListener('click', async () => {
     state.homeTab = b.dataset.homeTab;
     render();
+    if (state.homeTab === 'teach') await teachingFeature.activate();
     if (state.homeTab === 'flows') await flowFeature.activate();
   });
   for (const b of main.querySelectorAll('[data-run-machine]')) b.addEventListener('click', () => {
@@ -577,6 +585,7 @@ function bindHome(main) {
   bindSkillChoices();
   refreshTaskSkillPreview();
   bindScheduleEditor(main);
+  if (state.homeTab === 'teach') teachingFeature.bind(main);
   if (state.homeTab === 'flows') flowFeature.bind(main);
 }
 
@@ -609,6 +618,40 @@ function dateLabel(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' });
 }
+
+const teachingFeature = window.createTeachingFeature({
+  root: () => state.root,
+  machines: () => state.machines,
+  agent: () => selectedAgent(state.config.agent),
+  model: () => state.config.model || '',
+  isActive: () => state.view === 'home' && state.homeTab === 'teach',
+  refresh: render,
+  guard,
+  toast,
+  escape: esc,
+  edit: (machine) => openMachine(machine),
+  run: (machine) => goRun(machine),
+  changed: (machine) => notifyHost('tasks', `machine:${machine}`),
+  started: (intentId, machine) => {
+    if (embedded) window.parent.postMessage({ type: 'agent-app:teaching-started', root: state.root, intentId, machine }, '*');
+  },
+  bridge: {
+    list: (root) => api.teachingList(root),
+    create: (root, purpose, options) => api.teachingCreate(root, purpose, options),
+    read: (root, machine) => api.teachingRead(root, machine),
+    save: (root, machine, session) => api.teachingSave(root, machine, session),
+    addEvidence: (root, machine, recording, summary) => api.teachingAddEvidence(root, machine, recording, summary),
+    stage: (root, machine, generationId, trialId, approved) => api.teachingStage(root, machine, generationId, trialId, approved),
+    cleanup: (root, trialMachine) => api.teachingCleanup(root, trialMachine),
+    recordTrial: (root, machine, trial) => api.teachingRecordTrial(root, machine, trial),
+    confirm: (root, machine, generationId) => api.teachingConfirm(root, machine, generationId),
+    restore: (root, machine) => api.teachingRestore(root, machine),
+    aiStart: (payload) => api.aiStart(payload),
+    recordStart: (payload) => api.recordingStart(payload),
+    recordStop: (payload) => api.recordingStop(payload),
+    runStart: (payload) => api.runStart(payload),
+  },
+});
 
 const flowFeature = window.createFlowFeature({
   name: embedded ? 'ワークフロー' : 'AIワークフロー',
@@ -1619,6 +1662,7 @@ async function startAi(flow) {
 }
 
 function receiveAiProgress(payload) {
+  if (teachingFeature.onAiProgress(payload)) return;
   const flow = payload.mode === 'draft' ? state.aiDraft : payload.mode === 'review' ? state.aiReview
     : (state.aiDraft.requestId === payload.requestId ? state.aiDraft : state.aiReview);
   if (!flow.busy || (flow.requestId !== 'pending' && flow.requestId !== payload.requestId)) return;
@@ -1629,6 +1673,7 @@ function receiveAiProgress(payload) {
 }
 
 function receiveAiResult(payload) {
+  if (teachingFeature.onAiResult(payload)) return;
   const flow = payload.mode === 'draft' ? state.aiDraft : state.aiReview;
   if (!flow.busy || (flow.requestId !== 'pending' && flow.requestId !== payload.requestId)) return;
   flow.requestId = payload.requestId;
@@ -1773,10 +1818,8 @@ async function navigateEmbedded(payload) {
   if (!embedded) return;
   if (initPromise) await initPromise;
   const area = payload.area === 'workflows' ? 'workflows' : 'tasks';
-  const homeTab = area === 'workflows' ? 'flows' : 'run';
   const root = String(payload.root || '');
 
-  state.homeTab = homeTab;
   state.view = 'home';
   state.current = null;
   if (root && root !== state.root) await selectRoot(root);
@@ -1785,12 +1828,26 @@ async function navigateEmbedded(payload) {
     state.machines = [];
     state.execution.snapshot = null;
     flowFeature.rootChanged();
+    teachingFeature.rootChanged();
   }
 
-  if (homeTab === 'flows') {
+  if (area === 'workflows') {
+    state.homeTab = 'flows';
     await flowFeature.activate();
     if (payload.selected) await flowFeature.select(payload.selected);
     if (payload.action === 'new') flowFeature.create();
+    else render();
+    return;
+  }
+
+  const selectedTask = executionMachines().find((machine) => taskIdentity(machine) === payload.selected);
+  const teachesTask = payload.action === 'new' || payload.intent || !selectedTask || !!selectedTask.machine;
+  state.homeTab = teachesTask ? 'teach' : 'run';
+  if (teachesTask) {
+    await teachingFeature.activate();
+    if (payload.intent) await teachingFeature.startFromIntent(payload.intent);
+    else if (payload.action === 'new') teachingFeature.create();
+    else if (payload.selected) await teachingFeature.select(String(payload.selected).replace(/^machine:/, ''));
     else render();
     return;
   }
@@ -1813,10 +1870,11 @@ async function init() {
   state.catalog = (await guard('準備', () => api.catalog())) || state.catalog;
   state.config = (await guard('設定', () => api.getConfig())) || state.config;
   $('btn-home').addEventListener('click', goHome);
-  api.onRunLine((p) => appendLog(p));
+  api.onRunLine((p) => { if (!teachingFeature.onRunLine(p)) appendLog(p); });
   api.onAiProgress((p) => receiveAiProgress(p));
   api.onAiResult((p) => receiveAiResult(p));
-  api.onRunExit((p) => {
+  api.onRunExit(async (p) => {
+    if (await teachingFeature.onRunExit(p)) return;
     if (state.run.requestId && p.requestId && state.run.requestId !== p.requestId) return;
     state.run.running = false;
     state.run.result = p.result || { ok: p.code === 0 };
@@ -1830,6 +1888,7 @@ async function init() {
   state.root = state.config.lastRoot || (state.config.roots || [])[0] || '';
   await Promise.all([state.root ? loadMachines() : Promise.resolve(), loadAgents()]);
   if (state.root) await loadExecutionSnapshot();
+  if (state.root && state.homeTab === 'teach') await teachingFeature.activate();
   render();
 }
 

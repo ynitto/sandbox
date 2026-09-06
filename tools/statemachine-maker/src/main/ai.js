@@ -5,6 +5,7 @@
 
 const crypto = require('crypto');
 const model = require('./model');
+const teaching = require('./teaching-model');
 
 const SCHEMA_VERSION = 1;
 const FINDING_CATEGORIES = new Set(['consistency', 'efficiency', 'error-handling', 'edge-case', 'generalization']);
@@ -112,6 +113,44 @@ ${JSON.stringify(safeSpec(spec), null, 2)}
 findings は説明用です。修正は candidate に反映してください。ファイル操作や実行はしないでください。
 
 ${responseContract()}`;
+}
+
+function teachingPrompt({ session = {}, catalog = model.catalog() } = {}) {
+  const safe = teaching.redact(session);
+  return `あなたは利用者からタスクを教わり、実行可能なステートマシンへ変換する担当です。
+
+現在の教示セッション（秘密値は除外済み）:
+${JSON.stringify(safe, null, 2)}
+
+利用できる工程種別:
+${JSON.stringify(catalog)}
+
+進め方:
+- 利用者には工程、分岐、セレクター、確認スクリプトを書かせない
+- 基本は1回の見本から候補を作る
+- 固定値か変数か、成功条件、重要操作など、誤った汎化につながる点だけ質問する
+- 操作の見本が本当に必要な場合だけ status を demonstration にする
+- 送信、保存、更新、削除、購入、公開、外部連絡、権限変更は importantActions に含める
+- ファイルを変更せず、完全な候補だけを返す
+
+次のJSONオブジェクトだけを返してください。Markdownや前後の説明は禁止です。
+{
+  "schemaVersion": 1,
+  "status": "questions | demonstration | candidate",
+  "summary": "利用者向けの短い説明",
+  "questions": [{"id":"q1","text":"質問","reason":"必要な理由","example":"回答例"}],
+  "demonstration": null または {"reason":"必要な理由","instruction":"見せてほしい操作"},
+  "jobSpec": null または {
+    "purpose":"目的",
+    "variables":[{"key":"英小文字の名前","label":"画面表示名","required":true}],
+    "expectedResults":["期待結果"],
+    "importantActions":[{"id":"識別名","action":"submit|save|update|delete|purchase|publish|message|permission","target":"対象","effect":"影響"}],
+    "unknowns":["未確認事項"],
+    "testCases":[{"name":"代表例","input":{},"expected":["期待結果"]}]
+  },
+  "candidate": null または完全な maker 仕様
+}
+questions と demonstration では jobSpec と candidate を null にしてください。candidate では jobSpec と candidate の両方を返してください。`;
 }
 
 function repairPrompt({ originalPrompt = '', output = '', error = '' } = {}) {
@@ -244,6 +283,45 @@ function parseEnvelope(output, { mode = 'draft', baseSpec = null, scope = { type
   return { ...common, candidate, questions: [], warnings: model.portabilityWarnings(candidate) };
 }
 
+function parseTeachingEnvelope(output, { machine = '' } = {}) {
+  const raw = parseJsonOnly(output);
+  if (!raw || raw.schemaVersion !== SCHEMA_VERSION) throw new Error('AI応答のschemaVersionが一致しません');
+  if (!['questions', 'demonstration', 'candidate'].includes(raw.status)) throw new Error('教示応答のstatusが不正です');
+  const common = { schemaVersion: SCHEMA_VERSION, status: raw.status, summary: shortText(raw.summary, 2000) };
+  if (raw.status === 'questions') {
+    const questions = normalizeQuestions(raw.questions);
+    if (!questions.length) throw new Error('AIが質問待ちを返しましたが、質問がありません');
+    return { ...common, questions, demonstration: null, jobSpec: null, candidate: null };
+  }
+  if (raw.status === 'demonstration') {
+    const demonstration = raw.demonstration && typeof raw.demonstration === 'object' ? {
+      reason: shortText(raw.demonstration.reason, 1000),
+      instruction: shortText(raw.demonstration.instruction, 1000),
+    } : null;
+    if (!demonstration || !demonstration.instruction) throw new Error('見本として必要な操作がありません');
+    return { ...common, questions: [], demonstration, jobSpec: null, candidate: null };
+  }
+  if (!raw.jobSpec || typeof raw.jobSpec !== 'object' || Array.isArray(raw.jobSpec)) {
+    throw new Error('AI応答にタスクの仕様がありません');
+  }
+  const normalized = teaching.normalizeSession({ understanding: raw.jobSpec }).understanding;
+  const jobSpec = {
+    ...normalized,
+    testCases: Array.isArray(raw.jobSpec.testCases) ? teaching.redact(raw.jobSpec.testCases) : [],
+  };
+  const parsed = parseEnvelope(JSON.stringify({
+    schemaVersion: SCHEMA_VERSION,
+    status: 'candidate',
+    summary: raw.summary,
+    questions: [],
+    candidate: raw.candidate,
+    assumptions: [],
+    findings: [],
+  }));
+  if (machine && parsed.candidate.machine !== machine) throw new Error('AI候補が保存名を変更しました');
+  return { ...common, questions: [], demonstration: null, jobSpec, candidate: parsed.candidate };
+}
+
 function fingerprint(spec) {
   const normalized = model.normalizeProcedure(spec);
   return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
@@ -254,8 +332,10 @@ module.exports = {
   safeSpec,
   draftPrompt,
   reviewPrompt,
+  teachingPrompt,
   repairPrompt,
   normalizeScope,
   parseEnvelope,
+  parseTeachingEnvelope,
   fingerprint,
 };

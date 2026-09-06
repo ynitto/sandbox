@@ -139,6 +139,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#tasks li').first().waitFor({ timeout: 20000 });
     assert.strictEqual(await win.locator('#tasks .list-pick').count(), 1, `タスク一覧を取得できない: ${await win.locator('#tasks').textContent()} / ${errors.join(' | ')}`);
     assert.match(await win.locator('#tasks').textContent(), /リリース確認/);
+    await workspace.locator('.teaching-page').waitFor({ timeout: 20000 });
+    assert.match(await workspace.locator('.teaching-head').textContent(), /タスクを教える.*リリース確認/s);
+    assert.doesNotMatch(await workspace.locator('.teaching-page').textContent(), /仕事/);
+    if (process.env.AGENT_APP_TEACHING_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
+    }
+    await workspace.locator('[data-teach-run]').click();
     await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.execution-title').textContent(), /タスク.*リリース確認/s);
     await workspace.locator('#task-run-settings').waitFor();
@@ -170,6 +177,10 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await workspace.locator('[data-step="0"]').waitFor();
     assert.match(await workspace.locator('[data-step="0"]').textContent(), /変更を確認/);
     await workspace.locator('#btn-home').click();
+    await win.click('#session-new');
+    await workspace.locator('.teaching-create').waitFor();
+    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいタスクを教える/);
+    await workspace.locator('[data-teach-create-cancel]').click();
 
     await win.click('#area-workflows');
     await win.locator('#workflows .list-pick').first().waitFor({ timeout: 20000 });

@@ -23,7 +23,7 @@ const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
   for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
-    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/vendor/statemachine/flow.js', 'renderer/vendor/statemachine/renderer.js']) {
+    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/taskIntent.js', 'renderer/vendor/statemachine/flow.js', 'renderer/vendor/statemachine/teaching.js', 'renderer/vendor/statemachine/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
   const main = fs.readFileSync(path.join(SRC, 'main/main.js'), 'utf8');
@@ -235,7 +235,8 @@ test('埋め込み画面は親の領域選択に従い、独自のフォルダ�
   const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/automation-frame.css'), 'utf8');
   assert.match(renderer, /agent-app:navigate/);
-  assert.match(renderer, /area === 'workflows' \? 'flows' : 'run'/);
+  assert.match(renderer, /state\.homeTab = 'flows'/);
+  assert.match(renderer, /state\.homeTab = teachesTask \? 'teach' : 'run'/);
   assert.match(css, /body\.embedded \.folder-pane[\s\S]*display:\s*none/);
   assert.match(css, /body\.embedded \.home-tabs[\s\S]*display:\s*none/);
 });
@@ -353,6 +354,21 @@ test('自動化フレームへ AI ワークフローの画面と IPC を同じ�
   assert.ok(preload.includes("invoke('automation:flow:run:start'"));
   assert.ok(preload.includes("invoke('automation:flow:run:respond'"));
   assert.ok(preload.includes("invoke('automation:flow:run:openDelivery'"));
+});
+
+test('会話の依頼と新しいタスクを同じAI教示画面へつなぐ', () => {
+  const shell = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const maker = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const teaching = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'teaching.js'), 'utf8');
+  assert.ok(html.includes('src="taskIntent.js"'));
+  assert.match(shell, /この依頼をタスクにする/);
+  assert.match(shell, /TaskIntent\.create/);
+  assert.match(shell, /pendingTaskIntent/);
+  assert.match(shell, /api\.automation\.teachingList/);
+  assert.match(maker, /payload\.intent[\s\S]*teachingFeature\.startFromIntent/);
+  assert.match(maker, /payload\.action === 'new'[\s\S]*teachingFeature\.create\(\)/);
+  assert.match(teaching, /async function startFromIntent/);
 });
 
 // 同梱定義から出る argv。権限フラグと prompt の渡し方は agent-dashboard のゴールデンと同じ。

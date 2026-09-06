@@ -19,14 +19,23 @@
     return AREAS[normalizeArea(value)];
   }
 
-  function taskItems(snapshot, definitions) {
+  function taskItems(snapshot, definitions, teaching) {
     const tasks = snapshot && Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
-    if (tasks.length) return tasks;
     const runtime = snapshot && Array.isArray(snapshot.machines) ? snapshot.machines : [];
-    if (runtime.length) return runtime;
-    return (Array.isArray(definitions) ? definitions : []).map((task) => ({
+    const base = tasks.length ? tasks : runtime.length ? runtime : (Array.isArray(definitions) ? definitions : []).map((task) => ({
       ...task, parameters: [], schedule: null, history: [],
     }));
+    const machines = new Set(base.map((task) => String(task.machine || String(task.id || '').replace(/^machine:/, ''))));
+    const drafts = (Array.isArray(teaching) ? teaching : [])
+      .filter((item) => item && item.machine && !machines.has(String(item.machine)))
+      .map((item) => ({
+        id: `machine:${item.machine}`,
+        machine: item.machine,
+        name: item.title || item.machine,
+        teachingStatus: item.status || 'draft',
+        teaching: true,
+      }));
+    return drafts.length ? [...base, ...drafts] : base;
   }
 
   const navigation = { AREAS, normalizeArea, areaInfo, taskItems };

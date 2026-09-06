@@ -440,3 +440,53 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
 .ext-grid .row { gap: 6px; align-items: center; }
 .ext-add { align-items: end; }
 #r-pick { height: auto; }
+
+/* AIティーチング: 会話を主にし、理解内容と試運転だけを並べる。 */
+.teaching-page { min-width: 0; display: grid; gap: 16px; }
+.teaching-page-head, .teaching-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.teaching-page-head h1, .teaching-head h2 { margin: 0; }
+.teaching-page-head p { margin: 4px 0 0; color: var(--muted); }
+.teaching-layout { align-items: start; }
+.teaching-workspace { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 320px); gap: 16px; }
+.teaching-conversation, .teaching-understanding { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.teaching-messages { min-height: 300px; max-height: calc(100vh - 390px); overflow-y: auto; padding: 16px; display: grid; gap: 10px; align-content: start; }
+.teaching-message { max-width: 86%; display: grid; gap: 3px; padding: 10px 12px; border-radius: 12px; background: var(--bg); }
+.teaching-message.user { justify-self: end; background: var(--accent-soft); }
+.teaching-message > span { color: var(--muted); font-size: 11px; font-weight: 650; }
+.teaching-message p { margin: 0; white-space: pre-wrap; }
+.teaching-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 11px; display: grid; gap: 8px; background: var(--surface); }
+.teaching-card h3, .teaching-card p { margin: 0; }
+.teaching-card.question { border-left: 4px solid var(--accent); }
+.teaching-card.demonstration { border-left: 4px solid var(--warn); }
+.teaching-card.approval { border-color: var(--warn); background: var(--warn-soft); }
+.teaching-card.approval ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.teaching-card.approval li { display: grid; gap: 2px; }
+.teaching-card.approval li span { color: var(--muted); }
+.teaching-trial pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }
+.teaching-composer { padding: 12px; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.teaching-understanding { padding: 16px; display: grid; gap: 12px; align-content: start; }
+.teaching-understanding h3 { margin: 0; }
+.teaching-understanding > div { border-top: 1px solid var(--line); padding-top: 9px; }
+.teaching-understanding span { color: var(--muted); font-size: 12px; font-weight: 650; }
+.teaching-understanding p { margin: 3px 0 0; }
+.teaching-progress { list-style: none; margin: 12px 0 16px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.teaching-progress li { padding: 7px 9px; border-radius: 8px; background: var(--bg); color: var(--muted); font-size: 12px; text-align: center; }
+.teaching-progress li.done { color: var(--ok); background: var(--ok-soft); }
+.teaching-progress li.current { color: var(--accent); outline: 2px solid var(--accent); outline-offset: -2px; }
+.teaching-create textarea { width: min(680px, 100%); }
+.teaching-parameters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+
+@media (max-width: 999px) {
+  .teaching-workspace { grid-template-columns: 1fr; }
+  .teaching-understanding { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .teaching-understanding h3 { grid-column: 1 / -1; }
+  .teaching-messages { max-height: none; }
+}
+
+@media (max-width: 559px) {
+  .teaching-page-head, .teaching-head { flex-direction: column; }
+  .teaching-progress { grid-template-columns: 1fr 1fr; }
+  .teaching-understanding { grid-template-columns: 1fr; }
+  .teaching-composer { grid-template-columns: 1fr; }
+  .teaching-message { max-width: 96%; }
+}

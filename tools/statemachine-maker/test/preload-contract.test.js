@@ -56,3 +56,13 @@ test('renderer が使う api.* は preload にあり、その IPC チャネル�
     assert.ok(ipc.includes(`register('${m[1]}'`), `ipc.js が受けないチャネル: ${m[1]}`);
   }
 });
+
+test('教示セッションの一覧・作成・保存・利用可能化を安全なIPCだけで公開する', () => {
+  const preload = read('preload.js');
+  const ipc = read('main/ipc.js');
+  for (const channel of ['teaching:list', 'teaching:create', 'teaching:read', 'teaching:save', 'teaching:evidence', 'teaching:stage', 'teaching:cleanup', 'teaching:trial', 'teaching:confirm', 'teaching:restore']) {
+    assert.ok(preload.includes(`invoke('${channel}'`), `preload に無いチャネル: ${channel}`);
+    assert.ok(ipc.includes(`register('${channel}'`), `ipc に無いチャネル: ${channel}`);
+  }
+  assert.ok(ipc.includes('selectedRoot(p)'), '登録済みフォルダの境界を通す');
+});

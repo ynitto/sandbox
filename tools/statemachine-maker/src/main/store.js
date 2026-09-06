@@ -36,6 +36,7 @@ function list(root) {
   if (!st || !st.isDirectory()) return [];
   const out = [];
   for (const name of fs.readdirSync(base).sort()) {
+    if (stat(path.join(base, name, '.teaching-trial'))) continue;
     const wf = path.join(base, name, 'workflow.yaml');
     const s = stat(wf);
     if (!s || !s.isFile()) continue;

@@ -15,6 +15,10 @@ const agentLoop = require('./agent-loop');
 const flowModel = require('./flow-model');
 const flowStore = require('./flow-store');
 const agentFlow = require('./agent-flow');
+const teaching = require('./teaching-model');
+const teachingStore = require('./teaching-store');
+const teachingTrial = require('./teaching-trial');
+const approvalPolicy = require('./approval-policy');
 
 const APP_ROOT = path.join(__dirname, '..', '..');
 
@@ -91,17 +95,37 @@ function registerIpcHandlers(getWindow, options = {}) {
         try {
           if (code !== 0) throw new Error((stderr || `agent-tools が終了コード ${code} で終了しました`).trim());
           if (truncated) throw new Error('AIの応答が大きすぎます');
-          const result = ai.parseEnvelope(stdout, {
-            mode: job.mode, baseSpec: job.baseSpec, scope: job.scope,
-          });
+          const result = job.mode === 'teach'
+            ? ai.parseTeachingEnvelope(stdout, { machine: job.machine })
+            : ai.parseEnvelope(stdout, { mode: job.mode, baseSpec: job.baseSpec, scope: job.scope });
           const changes = result.candidate && job.mode === 'review'
             ? aiDiff.diff(job.baseSpec, result.candidate)
             : [];
+          let session = null;
+          if (job.mode === 'teach') {
+            const messages = [...job.teachingSession.messages];
+            if (result.summary) messages.push({ role: 'assistant', text: result.summary, kind: result.status });
+            session = teaching.normalizeSession({ ...job.teachingSession, messages });
+            if (result.status === 'questions') {
+              session.understanding.unknowns = result.questions.map((item) => item.text);
+              session.pendingRequest = { kind: 'questions', questions: result.questions };
+            } else if (result.status === 'demonstration') {
+              session.understanding.unknowns = [result.demonstration.instruction];
+              session.pendingRequest = { kind: 'demonstration', demonstration: result.demonstration };
+            } else {
+              session.understanding = result.jobSpec;
+              session = teaching.addGeneration(session, {
+                id: randomUUID(), summary: result.summary, jobSpec: result.jobSpec, makerSpec: result.candidate,
+              });
+            }
+            session = teachingStore.save(job.root, job.machine, session);
+          }
           finishAi(job, {
             ok: true,
             result: {
               ...result,
               changes,
+              ...(session ? { session } : {}),
               baseFingerprint: job.baseSpec ? ai.fingerprint(job.baseSpec) : '',
             },
           });
@@ -159,6 +183,87 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('machine:openFolder', (p) => {
     const root = selectedRoot(p);
     return shell.openPath(store.machineDir(root, String(p.machine || '')));
+  });
+
+  register('teaching:list', (p) => teachingStore.list(selectedRoot(p)));
+  register('teaching:create', (p) => {
+    const root = selectedRoot(p);
+    const purpose = String(p.purpose || '').trim();
+    if (!purpose) throw new Error('教えたいタスクを入力してください');
+    const machine = String(p.machine || `job-${randomUUID().slice(0, 8)}`).trim();
+    const title = String(p.title || purpose.split(/\r?\n/)[0]).trim().slice(0, 80);
+    let session = teachingStore.create(root, { machine, title, purpose });
+    const attachments = Array.isArray(p.attachments) ? p.attachments : [];
+    if (attachments.length) {
+      session = teaching.addEvidence(session, {
+        id: randomUUID(),
+        type: 'attachments',
+        summary: `参考ファイル: ${attachments.map((item) => String(item && item.name || '')).filter(Boolean).join('、')}`,
+        actions: attachments.map((item) => ({ op: 'attachment-reference', name: item && item.name, size: item && item.size })),
+      });
+      session = teachingStore.save(root, machine, session);
+    }
+    return session;
+  });
+  register('teaching:read', (p) => teachingStore.load(selectedRoot(p), String(p.machine || '')));
+  register('teaching:save', (p) => teachingStore.save(selectedRoot(p), String(p.machine || ''), p.session));
+  register('teaching:evidence', (p) => {
+    const root = selectedRoot(p);
+    const machine = String(p.machine || '');
+    const recorded = p.recording && typeof p.recording === 'object' ? p.recording : {};
+    const actions = Array.isArray(recorded.steps)
+      ? recorded.steps.flatMap((step) => Array.isArray(step.recorded) ? step.recorded : [])
+      : Array.isArray(p.actions) ? p.actions : [];
+    const session = teaching.addEvidence(teachingStore.load(root, machine), {
+      id: randomUUID(),
+      type: recorded.source || p.type || 'demonstration',
+      summary: p.summary || `${recorded.source === 'windows' ? 'Windowsアプリ' : 'ブラウザ'}の操作`,
+      actions,
+      capturedAt: new Date().toISOString(),
+    });
+    return teachingStore.save(root, machine, session);
+  });
+  register('teaching:stage', (p) => {
+    const root = selectedRoot(p);
+    const machine = String(p.machine || '');
+    const session = teachingStore.load(root, machine);
+    const generation = session.generations.find((item) => item.id === (p.generationId || session.activeGenerationId));
+    if (!generation) throw new Error('試運転する候補が見つかりません');
+    const actions = Array.isArray(generation.jobSpec && generation.jobSpec.importantActions)
+      ? generation.jobSpec.importantActions : [];
+    const trialId = String(p.trialId || randomUUID()).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40);
+    if (actions.length && !p.approved) return { approvalRequired: true, trialId, actions };
+    if (actions.length) {
+      for (const action of actions) {
+        const request = approvalPolicy.createApproval({ ...action, id: randomUUID(), trialId });
+        approvalPolicy.consume(approvalPolicy.decide(request, 'approved'), { trialId, action: action.action, target: action.target });
+      }
+    }
+    return { approvalRequired: false, trialId, ...teachingTrial.stage(root, machine, generation.id, { id: trialId }) };
+  });
+  register('teaching:cleanup', (p) => teachingTrial.cleanup(selectedRoot(p), String(p.trialMachine || '')));
+  register('teaching:trial', (p) => {
+    const root = selectedRoot(p);
+    const machine = String(p.machine || '');
+    const session = teaching.recordTrial(teachingStore.load(root, machine), p.trial);
+    return teachingStore.save(root, machine, session);
+  });
+  register('teaching:confirm', (p) => {
+    const root = selectedRoot(p);
+    const machine = String(p.machine || '');
+    const session = teaching.confirmReady(teachingStore.load(root, machine), p.generationId);
+    const generation = session.generations.find((item) => item.id === session.activeGenerationId);
+    if (!generation || !generation.makerSpec) throw new Error('利用可能にする生成内容がありません');
+    store.save(root, generation.makerSpec);
+    return teachingStore.save(root, machine, session);
+  });
+  register('teaching:restore', (p) => {
+    const root = selectedRoot(p);
+    const machine = String(p.machine || '');
+    const session = teaching.restoreLastSuccessful(teachingStore.load(root, machine));
+    const generation = session.generations.find((item) => item.id === session.activeGenerationId);
+    if (generation && generation.makerSpec) store.save(root, generation.makerSpec);
+    return teachingStore.save(root, machine, session);
   });
 
   register('tools:status', (p) => {
@@ -250,7 +355,7 @@ function registerIpcHandlers(getWindow, options = {}) {
 
   register('ai:start', async (p, event) => {
     const root = selectedRoot(p);
-    const mode = p.mode === 'review' ? 'review' : 'draft';
+    const mode = p.mode === 'review' ? 'review' : p.mode === 'teach' ? 'teach' : 'draft';
     const cfg = settings.load(getUserData());
     const agent = String(p.agent || cfg.agent || 'aider');
     const definitions = await tools.agentDefinitions({ cwd: root, capture: runner.capture });
@@ -260,7 +365,30 @@ function registerIpcHandlers(getWindow, options = {}) {
     let baseSpec = null;
     let scope = { type: 'workflow' };
     let prompt;
-    if (mode === 'review') {
+    let teachingSession = null;
+    let machine = '';
+    if (mode === 'teach') {
+      machine = String(p.machine || '').trim();
+      teachingSession = teachingStore.load(root, machine);
+      if (!teachingSession.messages.length && !teachingSession.evidence.length && store.exists(root, machine)) {
+        const existing = store.read(root, machine);
+        teachingSession = teaching.addEvidence(teachingSession, {
+          id: randomUUID(),
+          type: 'existing-workflow',
+          summary: '既存のタスクの内容',
+          actions: [{ op: 'existing-workflow', spec: existing.raw }],
+        });
+      }
+      const message = String(p.message || '').trim();
+      if (message) {
+        teachingSession = teaching.normalizeSession({
+          ...teachingSession,
+          messages: [...teachingSession.messages, { role: 'user', text: message }],
+        });
+        teachingSession = teachingStore.save(root, machine, teachingSession);
+      }
+      prompt = ai.teachingPrompt({ session: teachingSession });
+    } else if (mode === 'review') {
       baseSpec = model.normalizeProcedure(p.spec);
       scope = ai.normalizeScope(p.scope, baseSpec);
       prompt = ai.reviewPrompt({ spec: baseSpec, scope, focus: p.focus, history: p.history });
@@ -272,6 +400,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const job = {
       requestId: randomUUID(), sender: event.sender, root, mode, baseSpec, scope, prompt,
       agent, model: String(p.model || cfg.model || ''), attempt: 0, cancelled: false,
+      teachingSession, machine,
     };
     activeAi = job;
     sendTo(job.sender, 'ai:progress', { requestId: job.requestId, mode: job.mode, phase: 'thinking', message: 'AIが検討しています…' });

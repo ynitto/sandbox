@@ -24,6 +24,7 @@ const FILES = [
   ['diff2html/bundles/css/diff2html.min.css', 'diff2html.min.css'],
   ['statemachine-maker/src/renderer/styles.css', 'statemachine/styles.css'],
   ['statemachine-maker/src/renderer/flow.js', 'statemachine/flow.js'],
+  ['statemachine-maker/src/renderer/teaching.js', 'statemachine/teaching.js'],
 ];
 
 // highlight.js の追加言語（highlight.min.js の同梱セットに無いもの）

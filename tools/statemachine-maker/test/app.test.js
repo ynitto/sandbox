@@ -15,7 +15,7 @@ const SRC = path.join(__dirname, '..', 'src');
 const read = (p) => fs.readFileSync(path.join(SRC, p), 'utf8');
 
 test('main / preload / renderer は構文検査を通る', () => {
-  for (const f of ['main/main.js', 'main/ipc.js', 'main/flow-model.js', 'main/flow-store.js', 'main/agent-flow.js', 'preload.js', 'renderer/flow.js', 'renderer/renderer.js']) {
+  for (const f of ['main/main.js', 'main/ipc.js', 'main/flow-model.js', 'main/flow-store.js', 'main/agent-flow.js', 'main/teaching-model.js', 'main/teaching-store.js', 'main/teaching-trial.js', 'main/approval-policy.js', 'preload.js', 'renderer/flow.js', 'renderer/teaching.js', 'renderer/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
 });
@@ -125,6 +125,33 @@ test('AI支援は下書きと見直しを分け、候補を保存せず選択反
   assert.ok(ipc.includes("register('ai:start'") && ipc.includes("register('ai:apply'"));
   assert.ok(ipc.includes('tools.agentAssistRunSpec(') && ipc.includes('aiDiff.apply('));
   assert.ok(!renderer.includes('指示文をコピー') && !preload.includes("invoke('instruction:get'"));
+});
+
+test('AI教示は会話を保存し、質問・見本依頼・完全候補を同じ入口で扱う', () => {
+  const ai = read('main/ai.js');
+  const ipc = read('main/ipc.js');
+  assert.ok(ai.includes('function teachingPrompt('));
+  assert.ok(ai.includes('function parseTeachingEnvelope('));
+  assert.ok(ipc.includes("p.mode === 'teach'"));
+  assert.ok(ipc.includes('teachingStore.save('));
+  assert.ok(ipc.includes('teaching.addGeneration('));
+});
+
+test('主画面はタスクを教える会話・理解内容・試運転結果を中心にする', () => {
+  const index = read('renderer/index.html');
+  const renderer = read('renderer/renderer.js');
+  const teachingUi = read('renderer/teaching.js');
+  assert.ok(index.includes('teaching.js'));
+  assert.ok(renderer.includes("homeTab: 'teach'"));
+  assert.ok(renderer.includes('data-home-tab="teach"'));
+  assert.ok(renderer.includes('window.createTeachingFeature('));
+  for (const label of ['新しいタスクを教える', '変更を相談する', '試運転する', '実行する', '高度な編集']) {
+    assert.ok(teachingUi.includes(label), `教示UIに無い操作: ${label}`);
+  }
+  for (const area of ['teaching-conversation', 'teaching-understanding', 'teaching-trial']) {
+    assert.ok(teachingUi.includes(area), `教示UIに無い領域: ${area}`);
+  }
+  assert.doesNotMatch(`${renderer}\n${teachingUi}`, /仕事/);
 });
 
 test('設定は登録したフォルダを持ち、旧版の「最近開いたフォルダ」から引き継ぐ', () => {

@@ -109,3 +109,54 @@ test('見直しは一般化の観点を持ち、generalization の finding を�
   }));
   assert.strictEqual(result.findings[0].category, 'generalization');
 });
+
+test('教示会話から仕事の仕様と実行候補を一緒に受け取る', () => {
+  const session = {
+    machine: 'review',
+    messages: [{ role: 'user', text: 'token=do-not-send を使って申請を確認したい' }],
+    evidence: [],
+    understanding: { purpose: '申請を確認する', variables: [], expectedResults: [], importantActions: [], unknowns: [] },
+  };
+  const prompt = ai.teachingPrompt({ session });
+  assert.match(prompt, /基本は1回の見本/);
+  assert.doesNotMatch(prompt, /do-not-send/);
+
+  const result = ai.parseTeachingEnvelope(JSON.stringify({
+    schemaVersion: 1,
+    status: 'candidate',
+    summary: '試運転できます',
+    questions: [],
+    demonstration: null,
+    jobSpec: {
+      purpose: '申請を確認する',
+      variables: [{ key: 'request_id', label: '申請番号', required: true }],
+      expectedResults: ['申請内容が表示される'],
+      importantActions: [],
+      unknowns: [],
+      testCases: [{ name: '通常', input: { request_id: 'R-1' }, expected: ['申請内容が表示される'] }],
+    },
+    candidate: sample(),
+  }), { machine: 'review' });
+
+  assert.strictEqual(result.status, 'candidate');
+  assert.strictEqual(result.jobSpec.variables[0].key, 'request_id');
+  assert.strictEqual(result.candidate.machine, 'review');
+});
+
+test('教示AIは曖昧な点だけ質問し、必要な場合だけ操作の見本を依頼する', () => {
+  const questions = ai.parseTeachingEnvelope(JSON.stringify({
+    schemaVersion: 1, status: 'questions', summary: '対象を確認します',
+    questions: [{ id: 'q1', text: '対象月は毎回変わりますか？' }], demonstration: null, jobSpec: null, candidate: null,
+  }));
+  assert.strictEqual(questions.questions.length, 1);
+
+  const demonstration = ai.parseTeachingEnvelope(JSON.stringify({
+    schemaVersion: 1, status: 'demonstration', summary: '画面を確認します', questions: [],
+    demonstration: { reason: '対象の見分け方が不明です', instruction: '対象を1件開くところを見せてください' },
+    jobSpec: null, candidate: null,
+  }));
+  assert.match(demonstration.demonstration.instruction, /1件開く/);
+
+  assert.throws(() => ai.parseTeachingEnvelope(JSON.stringify({ schemaVersion: 1, status: 'questions', questions: [] })), /質問/);
+  assert.throws(() => ai.parseTeachingEnvelope(JSON.stringify({ schemaVersion: 1, status: 'demonstration', demonstration: {} })), /操作/);
+});

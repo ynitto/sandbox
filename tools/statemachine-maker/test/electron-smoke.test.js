@@ -133,6 +133,12 @@ else {
       await resize(width);
       await assertNoHorizontalOverflow(`ホーム ${width}px`);
     }
+    assert.match(await win.textContent('.teaching-page-head'), /タスク.*AIに目的を伝え/s);
+    await win.click('[data-teach-select="smoke"]');
+    await win.waitForSelector('.teaching-workspace');
+    assert.strictEqual(await win.locator('.teaching-conversation').count(), 1);
+    assert.strictEqual(await win.locator('.teaching-understanding').count(), 1);
+    assert.match(await win.textContent('.teaching-head'), /高度な編集/);
     await resize(760);
     if (process.env.SMK_SCREENSHOT_HOME) await win.screenshot({ path: process.env.SMK_SCREENSHOT_HOME });
     await win.click('[data-home-tab="workflows"]');

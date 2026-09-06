@@ -225,6 +225,9 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .msg .who { margin-bottom: 4px; color: var(--muted); font-size: 11px; white-space: normal; }
 .msg .who .tag { margin-right: 4px; background: var(--panel); }
 .msg .files { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; white-space: normal; }
+.message-actions { display: flex; justify-content: flex-end; margin-top: 7px; white-space: normal; }
+.message-action { padding: 4px 7px; border: 0; background: transparent; color: var(--accent); font-size: 11px; }
+.message-action:hover { background: var(--panel); }
 .msg .err { margin-top: 6px; padding: 6px 10px; border-radius: 6px; color: var(--danger); background: var(--del); font-size: 12px; white-space: pre-wrap; }
 .msg details { margin-top: 6px; }
 .msg summary { color: var(--muted); font-size: 12px; cursor: pointer; }

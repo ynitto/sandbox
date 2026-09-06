@@ -39,6 +39,7 @@ const state = {
   turnSkills: [],
   turnSkillPreview: [],
   skillPreviewTimer: null,
+  pendingTaskIntent: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -211,7 +212,9 @@ function renderTaskItems() {
   ul.replaceChildren();
   for (const task of state.tasks) {
     const latest = (task.history || [])[0];
-    const status = latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
+    const teachingLabels = { draft: '下書き', 'needs-trial': '試運転が必要', 'awaiting-confirmation': '確認待ち', ready: '利用可能' };
+    const status = task.teachingStatus ? (teachingLabels[task.teachingStatus] || '下書き')
+      : latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
     const id = taskId(task);
     const schedules = Array.isArray(task.schedules) ? task.schedules : (task.schedule ? [task.schedule] : []);
     const scheduleState = schedules.length ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length}件の予定` : '予定なし';
@@ -269,11 +272,12 @@ async function loadAreaItems() {
   if (!state.repo || state.area === 'conversation') { renderAreaContext(); return; }
   try {
     if (state.area === 'tasks') {
-      const [snapshot, definitions] = await Promise.all([
+      const [snapshot, definitions, teaching] = await Promise.all([
         api.automation.runSnapshot(state.repo),
         api.automation.listMachines(state.repo),
+        api.automation.teachingList(state.repo),
       ]);
-      state.tasks = AgentNavigation.taskItems(snapshot, definitions);
+      state.tasks = AgentNavigation.taskItems(snapshot, definitions, teaching);
       const remembered = (state.config.lastTask || {})[state.repo] || state.selectedTask;
       const rememberedTask = state.tasks.find((item) => taskId(item) === remembered || item.machine === remembered);
       state.selectedTask = rememberedTask ? taskId(rememberedTask) : taskId(state.tasks[0]);
@@ -296,11 +300,13 @@ async function loadAreaItems() {
 }
 
 function frameMessage(action = '') {
-  return {
+  const message = {
     type: 'agent-app:navigate', area: state.area, root: state.repo,
     selected: state.area === 'tasks' ? state.selectedTask : state.selectedWorkflow,
     action,
   };
+  if (state.area === 'tasks' && state.pendingTaskIntent) message.intent = state.pendingTaskIntent;
+  return message;
 }
 
 function syncWorkspaceFrame(action = '') {
@@ -314,6 +320,14 @@ window.addEventListener('message', async (event) => {
   const frame = $('automation-frame');
   if (event.source !== frame.contentWindow) return;
   const payload = event.data;
+  if (payload && payload.type === 'agent-app:teaching-started' && payload.root === state.repo) {
+    if (!state.pendingTaskIntent || payload.intentId !== state.pendingTaskIntent.id) return;
+    state.pendingTaskIntent = null;
+    state.selectedTask = `machine:${payload.machine}`;
+    state.config = await api.saveConfig({ lastTask: { ...(state.config.lastTask || {}), [state.repo]: state.selectedTask } });
+    await loadAreaItems();
+    return;
+  }
   if (!payload || payload.type !== 'agent-app:changed' || payload.root !== state.repo || payload.area !== state.area) return;
   if (payload.selected) {
     const key = payload.area === 'tasks' ? 'lastTask' : 'lastWorkflow';
@@ -339,6 +353,7 @@ async function selectAreaItem(area, id) {
 
 async function selectRepo(repo) {
   state.repo = repo || '';
+  if (state.pendingTaskIntent && state.pendingTaskIntent.root !== state.repo) state.pendingTaskIntent = null;
   if (repo) state.config = await api.saveConfig({ lastRepo: repo });
   state.agents = repo ? await api.listAgents(repo).catch((e) => { notice(e.message, 'error'); return []; }) : [];
   state.sessions = repo ? await api.listSessions(repo) : [];
@@ -729,6 +744,12 @@ function messageNode(m) {
       for (const a of m.attachments) files.append(chipNode(a));
       n.append(files);
     }
+    const actions = el('div', 'message-actions');
+    const teach = el('button', 'message-action', 'この依頼をタスクにする');
+    teach.type = 'button';
+    teach.onclick = () => beginTaskTeaching(m);
+    actions.append(teach);
+    n.append(actions);
   } else {
     const who = el('div', 'response-who');
     if (m.cli) who.append(el('span', 'tag', m.cli));
@@ -755,6 +776,21 @@ function messageNode(m) {
     if (info) n.append(info);
   }
   return n;
+}
+
+function beginTaskTeaching(message) {
+  try {
+    const selected = selectedExecution(message.policy || 'direct');
+    state.pendingTaskIntent = TaskIntent.create({
+      id: globalThis.crypto && globalThis.crypto.randomUUID ? globalThis.crypto.randomUUID() : `intent-${Date.now().toString(36)}`,
+      root: state.repo,
+      message,
+      execution: { agent: message.cli || selected.cli, model: message.model || selected.model },
+    });
+    showArea('tasks').catch((err) => notice(err.message, 'error'));
+  } catch (err) {
+    notice(err.message, 'error');
+  }
 }
 
 function workingNode(id, tmuxMode) {
