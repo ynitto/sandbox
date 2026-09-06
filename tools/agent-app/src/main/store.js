@@ -183,13 +183,13 @@ function writeSession(userData, sess) {
 
 // worktree … 作業フォルダの名前（'' はリポジトリ本体）。作ったあとは変えない——
 // tmux セッションの cwd も CLI 側の文脈もそこで始まっているため。
-function createSession(userData, { repo, cli, model = '', readonly = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '' }) {
+function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '' }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   const now = new Date().toISOString();
   return writeSession(userData, {
     id: crypto.randomUUID(), repo: String(repo), cli: String(cli), model: String(model || ''),
-    readonly: Boolean(readonly), policy: String(policy || 'direct'), tier: String(tier || ''),
+    readonly: Boolean(readonly), autoApprove: Boolean(autoApprove), policy: String(policy || 'direct'), tier: String(tier || ''),
     transport: transport === 'headless' ? 'headless' : 'tmux',
     worktree: String(worktree || ''), branch: String(branch || ''),
     title: '', cliSessions: {}, live: null, terminalSession: null, terminalSnapshots: [], messages: [], createdAt: now, updatedAt: now,
@@ -230,11 +230,12 @@ function listSessions(userData, repo) {
 
 function updateSession(userData, id, patch) {
   const sess = readSession(userData, id);
-  const allowed = ['title', 'cli', 'model', 'readonly', 'policy', 'tier', 'transport', 'live'];
+  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live'];
   for (const k of allowed) if (patch && k in patch) sess[k] = patch[k];
   if (patch && 'cli' in patch) sess.cli = String(sess.cli || '');
   if (patch && 'model' in patch) sess.model = String(sess.model || '');
   if (patch && 'readonly' in patch) sess.readonly = Boolean(sess.readonly);
+  if (patch && 'autoApprove' in patch) sess.autoApprove = Boolean(sess.autoApprove);
   if (patch && 'policy' in patch) sess.policy = ['recommended', 'saving', 'quality', 'direct'].includes(sess.policy) ? sess.policy : 'direct';
   if (patch && 'tier' in patch) sess.tier = ['small', 'medium', 'large'].includes(sess.tier) ? sess.tier : '';
   if (patch && 'transport' in patch) sess.transport = sess.transport === 'headless' ? 'headless' : 'tmux';

@@ -153,9 +153,10 @@ function turnSpec(sess, p) {
   const cli = String(p.cli || sess.cli || '').trim().toLowerCase();
   const model = String(p.model != null ? p.model : sess.model || '').trim();
   const readonly = p.readonly != null ? Boolean(p.readonly) : Boolean(sess.readonly);
+  const autoApprove = p.autoApprove != null ? Boolean(p.autoApprove) : Boolean(sess.autoApprove);
   const text = String(p.prompt || '').trim();
   if (!text && !(p.attachments || []).length) throw new Error('依頼が空です');
-  return { cli, model, readonly, text };
+  return { cli, model, readonly, autoApprove, text };
 }
 
 // 保存済みの起動方針を、そのターンで実際に使う CLI / model へ解決する。
@@ -202,7 +203,7 @@ function runHeadless(id, turn, send) {
   const repo = requireRepo(sess.repo);
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   if (running.has(id)) throw new Error('このセッションは応答中です');
-  const { cli, model, readonly, text, prompt, atts, files: attFiles, spec, policy, tier, selectedSkills } = turn;
+  const { cli, model, readonly, autoApprove, text, prompt, atts, files: attFiles, spec, policy, tier, selectedSkills } = turn;
   const collector = response.createCollector(cli);
   for (const item of turn.setupInformation || []) collector.addInformation(item);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
@@ -212,7 +213,7 @@ function runHeadless(id, turn, send) {
   const cmd = agentCli.turnCmd(spec, {
     prompt, model, readonly, cliSession: entry ? entry.id : '', history: unseen, files: attFiles,
   });
-  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, policy, tier, attachments: atts, skillSelection: selectedSkills });
+  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
   if (cmd.mintedSession) store.setCliEntry(ud, id, cli, { id: cmd.mintedSession });
 
   const startedAt = Date.now();
@@ -299,7 +300,8 @@ function runHeadless(id, turn, send) {
 const conversations = new Map();
 
 function sameLaunch(a, b) {
-  return !!a && !!b && a.cli === b.cli && String(a.model || '') === String(b.model || '') && Boolean(a.readonly) === Boolean(b.readonly);
+  return !!a && !!b && a.cli === b.cli && String(a.model || '') === String(b.model || '')
+    && Boolean(a.readonly) === Boolean(b.readonly) && Boolean(a.autoApprove) === Boolean(b.autoApprove);
 }
 
 // tmux セッションを（無ければ起動して）持つ。
@@ -312,7 +314,7 @@ async function openConversation(id, send, { cols, rows, fresh = false, launch = 
   const sess = store.readSession(ud, id);
   const repo = requireRepo(sess.repo);
   const cfg = store.loadConfig(ud);
-  const defaults = { cli: sess.cli, model: sess.model || '', readonly: !!sess.readonly };
+  const defaults = { cli: sess.cli, model: sess.model || '', readonly: !!sess.readonly, autoApprove: !!sess.autoApprove };
   const existing = conversations.get(id);
   const live = existing ? existing.launch : sess.live;
   const want = launch || (fresh ? defaults : (live || defaults));
@@ -330,7 +332,10 @@ async function openConversation(id, send, { cols, rows, fresh = false, launch = 
   if (!info.tmux) throw new Error(process.platform === 'win32' ? 'WSL に tmux が見つかりません（sudo apt install tmux）' : 'tmux が見つかりません');
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
   const entry = store.cliEntry(sess, want.cli);
-  const cmd = agentCli.interactiveCmd(spec, { model: want.model, readonly: want.readonly, cliSession: entry ? entry.id : '', history });
+  const cmd = agentCli.interactiveCmd(spec, {
+    model: want.model, readonly: want.readonly, autoApprove: want.autoApprove,
+    cliSession: entry ? entry.id : '', history,
+  });
   const conv = new tmux.Conversation({
     id, shell, cwd, argv: cmd.argv, patterns: tmux.compilePatterns(spec.interactive), cols, rows, launch: want,
     emit: (channel, payload) => {
@@ -411,8 +416,8 @@ async function sweepTerminalSessions() {
 
 async function runTmux(id, turn, send) {
   const ud = userData();
-  const { cli, model, readonly, text, prompt, atts, policy, tier, selectedSkills } = turn;
-  const want = { cli, model, readonly };
+  const { cli, model, readonly, autoApprove, text, prompt, atts, policy, tier, selectedSkills } = turn;
+  const want = { cli, model, readonly, autoApprove };
   let conv = conversations.get(id);
   let opened = null;
   if (conv && conv.turn) throw new Error('このセッションは応答中です');
@@ -453,7 +458,7 @@ async function runTmux(id, turn, send) {
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
   const unseen = history.slice(conv.seen);
   const full = unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed }) : prompt;
-  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, policy, tier, attachments: atts, skillSelection: selectedSkills });
+  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
   await conv.send(full, (message) => {
     const structured = response.parseTranscript(cli, message.text);
     message.text = structured.text;
@@ -546,7 +551,7 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
   const turn = { ...base, prompt, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
   // 次のターンの既定として覚える（画面はこれを出す）
   store.updateSession(ud, id, {
-    cli: base.cli, model: base.model, readonly: base.readonly,
+    cli: base.cli, model: base.model, readonly: base.readonly, autoApprove: base.autoApprove,
     policy: base.policy, tier: base.tier, transport,
   });
   if (transport === 'headless') {
@@ -659,6 +664,7 @@ function registerIpcHandlers(getWindow) {
       ...p, repo, branch, cli: selected.cli, model: selected.model,
       policy: selected.policy, tier: selected.tier,
       readonly: p.readonly != null ? p.readonly : cfg.execution.defaultReadonly,
+      autoApprove: p.autoApprove != null ? p.autoApprove : cfg.execution.defaultAutoApprove,
     });
   });
   handle('session:read', (p) => presentSession(store.readSession(userData(), p.id)));
@@ -720,6 +726,7 @@ function registerIpcHandlers(getWindow) {
       store.appendMessage(userData(), p.id, {
         role: 'user', text, cli: live.cli || sess.cli, model: live.model || sess.model,
         readonly: live.readonly == null ? !!sess.readonly : !!live.readonly,
+        autoApprove: live.autoApprove == null ? !!sess.autoApprove : !!live.autoApprove,
         policy: sess.policy || 'direct', tier: sess.tier || '', attachments: [],
       });
       store.touchTerminalSession(userData(), p.id, { state: 'active', ownerInstanceId: instanceId });

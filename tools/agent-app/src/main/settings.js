@@ -62,6 +62,7 @@ function normalize(raw) {
     },
     execution: {
       defaultPolicy: POLICIES.includes(execution.defaultPolicy) ? execution.defaultPolicy : 'recommended',
+      defaultAutoApprove: Boolean(execution.defaultAutoApprove),
       defaultReadonly: Object.hasOwn(execution, 'defaultReadonly')
         ? Boolean(execution.defaultReadonly) : Boolean(source.lastReadonly),
       maxConcurrent: concurrent(execution.maxConcurrent),

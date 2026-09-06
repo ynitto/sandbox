@@ -590,10 +590,12 @@ function renderRunSettingsSummary() {
   const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
   const agent = selected.cli || 'エージェント未設定';
   const model = selected.model;
-  const mode = $('readonly').checked ? 'Ask' : '実行';
+  const mode = $('permission-mode').value === 'ask' ? 'Ask'
+    : ($('permission-mode').value === 'auto' ? '自動承認' : '確認あり');
   const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
   const skillLabel = `スキル ${SKILL_MODE_LABEL[state.turnSkillMode] || SKILL_MODE_LABEL.auto}`;
   summary.textContent = [policy.label, `${agent}${model ? ` / ${model}` : ''}`, skillLabel, mode, location].filter(Boolean).join(' · ');
+  summary.title = summary.textContent;
   $('direct-agent-settings').hidden = selected.policy !== 'direct';
   renderTurnSkills();
 }
@@ -608,11 +610,12 @@ function renderHeader() {
     $('policy').value = cur.policy || 'direct';
     if ([...$('cli').options].some((o) => o.value === cur.cli)) $('cli').value = cur.cli;
     $('model').value = cur.model || '';
-    $('readonly').checked = !!cur.readonly;
+    $('permission-mode').value = cur.readonly ? 'ask' : (cur.autoApprove ? 'auto' : 'confirm');
   } else {
     $('policy').value = state.config.execution.defaultPolicy;
     $('model').value = state.config.lastModel || '';
-    $('readonly').checked = !!state.config.execution.defaultReadonly;
+    $('permission-mode').value = state.config.execution.defaultReadonly ? 'ask'
+      : (state.config.execution.defaultAutoApprove ? 'auto' : 'confirm');
   }
   $('session-new').disabled = !state.repo;
   $('changes-toggle').disabled = !state.repo;
@@ -906,7 +909,8 @@ function turnOptions() {
   return {
     policy: selected.policy,
     ...(selected.policy === 'direct' ? { cli: selected.cli, model: selected.model } : {}),
-    readonly: $('readonly').checked,
+    readonly: $('permission-mode').value === 'ask',
+    autoApprove: $('permission-mode').value === 'auto',
     skillMode: state.turnSkillMode,
     skills: state.turnSkillMode === 'manual' ? [...state.turnSkills] : [],
   };
@@ -1269,7 +1273,8 @@ function settingsPatch() {
     },
     execution: {
       defaultPolicy: checkedPolicy ? checkedPolicy.value : 'recommended',
-      defaultReadonly: $('default-readonly').checked,
+      defaultReadonly: $('default-permission-mode').value === 'ask',
+      defaultAutoApprove: $('default-permission-mode').value === 'auto',
       maxConcurrent: Number($('max-concurrent').value),
       tiers,
     },
@@ -1299,7 +1304,8 @@ async function openSettings() {
   }
   const policy = document.querySelector(`input[name="default-policy"][value="${execution.defaultPolicy}"]`);
   if (policy) policy.checked = true;
-  $('default-readonly').checked = execution.defaultReadonly;
+  $('default-permission-mode').value = execution.defaultReadonly ? 'ask'
+    : (execution.defaultAutoApprove ? 'auto' : 'confirm');
   $('max-concurrent').value = execution.maxConcurrent;
   $('settings-error').hidden = true;
   $('settings-status').textContent = '';
@@ -1428,7 +1434,7 @@ async function init() {
     const selected = selectedExecution(opts.policy);
     if (state.current) {
       const patch = key === 'policy' ? { policy: opts.policy, tier: selected.tier }
-        : key === 'readonly' ? { readonly: opts.readonly }
+        : key === 'permission' ? { readonly: opts.readonly, autoApprove: opts.autoApprove }
           : { [key]: selected[key] };
       state.current = await api.updateSession(state.current.id, patch);
     }
@@ -1437,7 +1443,8 @@ async function init() {
     state.config = await api.saveConfig(configPatch);
     if (state.current && isTmux(state.current) && state.current.live) {
       const live = state.current.live;
-      const same = live.cli === selected.cli && String(live.model || '') === selected.model && !!live.readonly === opts.readonly;
+      const same = live.cli === selected.cli && String(live.model || '') === selected.model
+        && !!live.readonly === opts.readonly && !!live.autoApprove === opts.autoApprove;
       notice(same ? '' : `次の依頼から ${selected.cli}${selected.model ? `（${selected.model}）` : ''}${opts.readonly ? '・Ask' : ''} で続ける（CLI を起動し直す）`);
     }
     renderRunSettingsSummary();
@@ -1446,7 +1453,7 @@ async function init() {
   $('policy').onchange = () => onTurnOptionChange('policy');
   $('cli').onchange = () => onTurnOptionChange('cli');
   $('model').onchange = () => onTurnOptionChange('model');
-  $('readonly').onchange = () => onTurnOptionChange('readonly');
+  $('permission-mode').onchange = () => onTurnOptionChange('permission');
   $('turn-skill-mode').onchange = () => {
     state.turnSkillMode = $('turn-skill-mode').value;
     state.turnSkills = [];

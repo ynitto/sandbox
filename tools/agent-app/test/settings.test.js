@@ -47,7 +47,7 @@ test('UIで扱う共通指示と実行制御を安全な設定値へ揃える', 
         { type: 'unknown', value: 'ignored' },
       ],
     },
-    execution: { defaultPolicy: 'quality', defaultReadonly: false, maxConcurrent: 20 },
+    execution: { defaultPolicy: 'quality', defaultReadonly: false, defaultAutoApprove: true, maxConcurrent: 20 },
   });
   assert.deepStrictEqual(normalized.instructions, {
     enabled: false,
@@ -65,6 +65,7 @@ test('UIで扱う共通指示と実行制御を安全な設定値へ揃える', 
   });
   assert.strictEqual(normalized.execution.defaultPolicy, 'quality');
   assert.strictEqual(normalized.execution.defaultReadonly, false);
+  assert.strictEqual(normalized.execution.defaultAutoApprove, true);
   assert.strictEqual(normalized.execution.maxConcurrent, 8);
 });
 

@@ -166,6 +166,7 @@ async function start(payload, deps) {
       parameters: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, String(value)])),
       agent,
       model,
+      autoApprove: payload.autoApprove !== false,
       source: source.type,
     },
   };

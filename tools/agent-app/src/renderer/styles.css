@@ -318,9 +318,10 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .composer-toolbar { min-width: 0; display: flex; align-items: center; gap: 4px; padding-top: 4px; }
 .composer-toolbar > button { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
 .run-settings { position: relative; min-width: 0; }
-.run-settings > summary { min-height: 36px; max-width: 310px; display: flex; align-items: center; padding: 7px 10px; overflow: hidden; border-radius: 8px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; cursor: pointer; list-style: none; }
+.run-settings > summary { min-height: 36px; max-width: 310px; display: flex; align-items: center; padding: 7px 10px; overflow: hidden; border-radius: 8px; color: var(--muted); white-space: nowrap; cursor: pointer; list-style: none; }
 .run-settings > summary::before { content: ''; width: 7px; height: 7px; margin-right: 8px; flex: none; border-radius: 50%; background: var(--ok); }
-.run-settings > summary::after { content: '⌄'; margin-left: 6px; color: var(--muted); }
+.run-settings > summary::after { content: '⌄'; flex: none; margin-left: 6px; color: var(--muted); }
+.run-settings > summary > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-settings > summary:hover { color: var(--text); background: #f1f3f5; }
 .settings-popover { position: absolute; z-index: 35; bottom: calc(100% + 8px); left: 0; width: min(380px, calc(100vw - 36px)); padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 14px 36px rgba(31, 35, 40, .16); }
 .popover-head { margin-bottom: 12px; font-weight: 650; }
