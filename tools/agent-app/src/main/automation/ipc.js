@@ -3,7 +3,9 @@
 // statemachine-maker の検証済みドメインと IPC 実装をそのまま使い、
 // agent-app の「登録リポジトリ」と設定ファイルだけをアダプトする。
 const makerIpc = require('statemachine-maker/src/main/ipc');
+const makerTools = require('statemachine-maker/src/main/tools');
 const store = require('../store');
+const herd = require('../herd');
 const worktree = require('../worktree');
 const host = require('../host');
 const agentCli = require('../agentCli');
@@ -70,6 +72,23 @@ function selectForRequest(userData, { root, text, mode, selected }) {
   return { ...result, selected: result.selected.map(({ content, path, ...item }) => item) };
 }
 
+// タスク・ワークフローで選べる AI の名前。agent-herd が解決できる定義（実際に起こせるもの）に、
+// 一族が居れば仮想の `herd` を足す。定義の有無は agent-app の探索で見る（一覧の形が要るため）。
+async function agentDefinitions({ cwd = '', capture } = {}) {
+  const names = await makerTools.agentDefinitions({ cwd, capture });
+  return herd.withVirtualName(names, agentCli.list(cwd));
+}
+
+// 選ばれた名前を実際に起こす定義へ写す。`herd` 以外はそのまま。用途は statemachine-maker が
+// 言う（task: タスク・ワークフローの実行 / plan: AI 支援）。一族の一員が起こせるかは
+// ここでは見ない——`herd` が一覧に載るのは agent-herd がその一員を解決できたときだけで
+// （agentDefinitions）、ollama サーバの有無などは agent-herd 自身が起動時に言う。
+function resolveAgent({ root = '', agent = '', purpose = 'task' } = {}) {
+  if (!herd.isHerd(agent)) return { agent: String(agent || '') };
+  const picked = herd.resolve(purpose, agentCli.list(root).map((d) => ({ ...d, available: true })));
+  return { agent: picked.cli, purpose: picked.purpose, reason: picked.reason };
+}
+
 function automationPatch(config) {
   const src = config && typeof config === 'object' ? config : {};
   const patch = {};
@@ -96,7 +115,9 @@ function registerAutomationIpc({ getWindow, userData, appRoot }) {
     config: configAdapter(),
     userData,
     appRoot,
+    agentDefinitions,
     hooks: {
+      resolveAgent,
       prepareRun: (payload) => prepareRun(userData, payload),
       selectSkills: (payload) => selectForRequest(userData, payload),
       openDelivery: async (root, delivery) => {
@@ -110,4 +131,4 @@ function registerAutomationIpc({ getWindow, userData, appRoot }) {
   });
 }
 
-module.exports = { registerAutomationIpc, automationConfig, automationPatch, configAdapter, prepareRun, selectForRequest };
+module.exports = { registerAutomationIpc, automationConfig, automationPatch, configAdapter, prepareRun, selectForRequest, agentDefinitions, resolveAgent };

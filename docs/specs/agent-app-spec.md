@@ -94,7 +94,7 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 
 | 項目 | 選択肢 | 意味 |
 |---|---|---|
-| 起動方針 | おすすめ / 節約 / 品質重視 / 直接指定 | tier（medium / small / large）に割り当てた CLI を使う。直接指定では CLI とモデルをその場で選ぶ |
+| 起動方針 | おすすめ / 節約 / 品質重視 / 直接指定 | tier（medium / small / large）に割り当てた CLI を使う。直接指定では CLI とモデルをその場で選ぶ。`herd` を選ぶとローカル実行系（aider / ollama）から依頼の形で選ぶ（§6.3） |
 | スキル | 自動 / 手動選択 / 使用しない | 設定 > 共通指示の候補から、依頼に合うスキルを選んで渡す |
 | Ask モード | on / off | 読み取り専用の起動引数で CLI を起動する。保証できない CLI では警告が出る |
 | 作業フォルダ | リポジトリ本体 / `.worktrees/<名前>` | 会話を作る前だけ選べる。作ったあとは変えられない |
@@ -171,7 +171,7 @@ statemachine-maker の画面で扱います。
 |---|---|
 | アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、WSL ディストリビューション、実行環境の状態 |
 | 共通指示 | 共通指示の有効・本文（8000 字まで）、スキル選択の有効・既定の選択・自動選択の候補、起動時アクション |
-| 実行制御 | 既定の起動方針、tier ごとのエージェントとモデル、既定を Ask にする、同時実行数（1〜8） |
+| 実行制御 | 既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
 
 起動時アクションは「スキル」か「コマンド」で、CLI ごとの新しいセッションで上から一度だけ適用します。
 コマンドは作業フォルダで実行し、失敗時は「続行」か「停止」を選べます。
@@ -292,7 +292,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。共�
 | `config:save` | `saveConfig(patch)` | `patch` | 正規化済み設定。`wslDistro` が変わると常駐シェルとキャッシュを捨てる |
 | `repo:add` | `addRepo()` | —（ダイアログ） | 設定、または `null`（キャンセル） |
 | `repo:remove` | `removeRepo(repo)` | `repo` | 設定 |
-| `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ） |
+| `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ）。agent-herd 一族（aider / ollama）が 1 つでもあれば末尾に仮想の `herd`（`virtual: true, members: [...]`）を足す（§6.3） |
 | `skills:list` | `listSkills(repo)` | `repo?` | スキル名の配列 |
 | `skills:select` | `selectSkills(repo, text, mode, selected)` | — | 選定結果（`content` / `path` を除く） |
 | `session:list` | `listSessions(repo)` | `repo?` | 会話の要約配列（更新日時の降順） |
@@ -315,10 +315,10 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。共�
 | `term:keys` | `termKeys(id, data)` | xterm の `onData` 文字列 | — |
 | `term:resize` | `termResize(id, cols, rows)` | — | — |
 | `term:kill` | `termKill(id)` | — | 追跡していたか |
-| `wt:list` | `listWorktrees(repo)` | — | `{ items, root, error }` |
+| `wt:list` | `listWorktrees(repo, { withStatus })` | `withStatus?`（既定 true） | `{ items, root, error }`。`withStatus: false` は `git worktree list` だけで返す（変更数・先行コミット数は 0）。画面は先にこれで一覧を出し、あとから true で数え直す |
 | `wt:create` | `createWorktree(repo, branch, base, name)` | — | `{ name, branch, path, reusedBranch, trackedRemote }` |
 | `wt:remove` | `removeWorktree(repo, name, { force, deleteBranch, forceBranch })` | — | `{ removed, branch, branchRemoved, branchError }` |
-| `fs:list` / `fs:read` / `fs:find` | `listDir` / `readFile` / `findFiles` | `repo, worktree, rel|query` | §11 |
+| `fs:list` / `fs:read` / `fs:find` | `listDir` / `readFile` / `findFiles` | `repo, worktree, rel|query, refresh?` | §11。`fs:find` は `{ hits: [{ rel, type, language }], truncated, indexed }` |
 | `git:changes` / `git:file` | `changes(repo, worktree, scope)` / `fileDiff(repo, worktree, file, scope)` | `scope: worktree|branch` | §11 |
 | `shell:openFolder` / `shell:openFile` / `shell:showFile` | `openFolder` / `openFile` / `showFile` | — | OS で開く |
 | `automation:*` | `api.automation.*` | §12 | statemachine-maker の契約 |
@@ -462,6 +462,37 @@ tmux 経路では開始スキル・選定スキルの呼び出しを本文へ混
 `default_model` / `output` / `env` / `write_args` / `readonly_args` / `readonly` / `continue_args` /
 `resume_args` / `errors` / `headless_autonomy` と、`interactive` 節である。
 
+#### 6.3 `herd`（ローカル実行系の 1 語。`src/main/herd.js`）
+
+agent-dashboard の実行レベルと同じく、ローカルを使いたい所には `herd` と書けばよく、aider / ollama を
+人が選び分けない。`agents/herd.json` は**作らない**——一族は `command[0]`（対話起動なら
+`interactive.command[0]`）が `agent-herd` の定義から機械的に導く（dashboard の `herd-family.js`、
+agentcore の `is_herd_family` と同じ規則）。
+
+agent-app には dashboard の「用途 × 実測（qualifications）」の軸が無いので、選び分けは**依頼の形**で
+決める。一族の中で違うのは「編集・実装を誰がやるか」の 1 点だけで（aider = 渡したファイルを直す編集役、
+ollama = 自分で調べて実行するツールループ）、計画・評価・抽出などの用途は定義の `variants` が
+どちらを入口にしても同じ profile へ振り替える。
+
+| 場面 | 用途 | 選ぶ順 |
+|---|---|---|
+| 会話・Ask | `ask` | ollama → aider |
+| 会話・実行、作業フォルダの中のファイルを添付 | `edit` | aider → ollama |
+| 会話・実行、添付なし（userData へ写した添付は数えない） | `work` | ollama → aider |
+| タスク実行・ワークフロー実行（`automation:run:start` / `flow:run:start`） | `task` | aider → ollama |
+| AI 支援（`automation:ai:start`。読み取り専用） | `plan` | ollama → aider |
+
+使えない（ホストの PATH に無い）一員は飛ばし、一族の外へは倒さない（ADR-3）。モデルは tier / 直接指定の
+値をそのまま渡し、空なら各定義の `default_model`。会話の「次のターンの既定」（`session.cli`）は `herd`
+のまま残し、ターンごとに選び直す。メッセージには実際に起こした `cli` と `family: 'herd'` を残し、
+実行情報に `herd → aider` のように理由を 1 行出す。会話を開いただけ・再起動（`term:open` / `term:restart`）
+でも同じ規則で写す（添付なし）。
+
+タスク・ワークフローでは、statemachine-maker の `registerIpcHandlers` に `agentDefinitions`
+（`agent-herd defs --json` の並びに、一族が居れば `herd` を足す）と `hooks.resolveAgent`
+（起動直前に `herd` を写す。agent-flow の `--agent-cli` と agent-loop の `--agent-cli` には実在の定義名
+だけを渡す）を渡す。
+
 #### 6.1 セッション ID の作法（`agentCli.SESSION`）
 
 定義ファイルに昇格するまでコード側に置く表。
@@ -603,10 +634,11 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 | 項目 | 値 |
 |---|---|
 | 境界 | `files.resolveInside` が realpath で登録フォルダの内側を検査。symlink 越えも拒否 |
-| 除外 | 根の `.git` と `.worktrees`。検索では `node_modules` も潜らない |
+| 読み方 | すべて `fs.promises`（非同期）。main の同期 I/O は IPC 全体と端末ミラーを止めるので使わない。stat / readdir は 16 並列 |
+| 除外 | 根の `.git` と `.worktrees`。検索では `.git` `.worktrees` `node_modules` `__pycache__` `.venv` `venv` `.tox` `.mypy_cache` `.pytest_cache` `.cache` `.gradle` `.idea` `.vs` `.next` `.nuxt` `dist` `build` `target` `coverage` に（どの深さでも）潜らない |
 | テキスト | 2 MB まで（超えたら先頭だけ `truncated`）。NUL を含めば `binary` |
 | 画像 | 8 MB まで data URL |
-| 検索 | 名前の部分一致、最大 200 件、深さ 12 |
+| 検索 | フォルダ全体を幅優先で歩いた**索引**を root ごとに 60 秒覚え、名前の部分一致で引く（前方一致 → 部分一致、それぞれ浅い順。`/` を含む問い合わせはパス全体）。最大 200 件。索引は 100,000 件か 10 秒で打ち切り `truncated`（浅い階層は必ず載る）。ツリーの「更新」で作り直す（`refresh`） |
 | 変更（worktree） | `status --porcelain --untracked-files=all` + `diff HEAD`（HEAD が無ければ `diff`） |
 | 変更（branch） | `merge-base <本体のブランチ> HEAD` から `HEAD` までの `diff --name-status` と `diff` |
 | 未追跡の差分 | `diff --no-index /dev/null <file>` |
@@ -744,7 +776,7 @@ sidecar（`<repo>/.agents/workflows/.teaching/<workflowId>.json`）:
 | tmux 保持 | 24 時間 | 変更不可 |
 | ワークフロー教示 | 会話 1 件 4000 字、表示名 300 字、差し戻し 1〜20 回 | 変更不可 |
 | ファイル本文 | テキスト 2 MB、画像 8 MB | 変更不可 |
-| 名前検索 | 200 件、深さ 12 | 変更不可 |
+| 名前検索 | 200 件、深さ 12、索引 100,000 件 / 10 秒、索引の保持 60 秒 | 変更不可 |
 | ホストコマンド | 既定 15 秒（git 20〜120 秒、tmux 起動 30 秒） | 呼び出し側 |
 
 ### 14. リポジトリ側に置くもの
@@ -770,6 +802,7 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 | `app.test.js` | 構文、画面構造、preload と IPC の対応、vendor の対応、共有編集面の Host Adapter 接続、ワークフロー教示と差し戻しの表示、argv、店、tmux 保持、git、ファイル、添付 | なし |
 | `tmux.test.js` | パス変換、画面判定、送信、抽出、キー変換、常駐シェル、疑似 CLI との統合 | 統合のみ tmux が無い |
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
+| `herd.test.js` | `herd` の一族判定と選び分け、会話・タスク・ワークフローの配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
 | `electron-smoke.test.js` | Electron 実機で三領域を移動し、ワークフローの＋で教示画面を開く | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 

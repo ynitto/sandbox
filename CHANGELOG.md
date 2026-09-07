@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 起動時にホストと git を待たない・ファイル探索を非同期と索引にする・`herd` を選べる
+
+Windows でリポジトリを登録すると起動が重かった。原因はフォルダ探索そのものより **待ち順と同期 I/O**
+（WSL の起動を await してから画面を組む、worktree ごとの `git status` を待ってから一覧を描く、
+ツリーとファイル名検索が main を同期 I/O で止める）。検討記録:
+[docs/plans/2026-09-07-agent-app-startup-and-herd-design.md](docs/plans/2026-09-07-agent-app-startup-and-herd-design.md)。
+
+- **待たずに描く。** `host:info`（WSL 起動 + ログインシェル）と `agents:list` / `wt:list` は Promise で
+  持ち、設定と会話一覧で先に画面を出す。届き次第そこだけ描き直し、別のリポジトリへ移っていたら捨てる。
+  送信だけは CLI と tmux の有無が届いてから（経路の決定に要る）。
+- **worktree は 2 段。** `wt:list { withStatus: false }` で一覧を先に出し、変更数・先行コミット数はあとから。
+- **ファイルは非同期。** `listDir` / `readFile` / `find` を `fs.promises` にし、stat / readdir は 16 並列。
+- **名前検索は索引。** root ごとに幅優先で歩いた索引を 60 秒覚え、生成物のフォルダ（`node_modules` `dist`
+  `build` `.venv` …）に潜らず、100,000 件 / 10 秒で打ち切る（浅い階層は必ず載る）。前方一致 → 部分一致、
+  `/` を含めばパス検索。画面は最後に打った検索の返事だけを出し、ツリーの「更新」で索引を捨てる。
+- **会話一覧は mtime キャッシュ**（会話ファイルはスナップショットで大きい）。
+- **`herd` を仮想エージェントとして選べる。** agent-dashboard と同じ 1 語で、`agents/herd.json` は作らず
+  一族（`command[0] === 'agent-herd'`）から導く。会話は Ask → ollama、作業フォルダのファイル添付 → aider、
+  それ以外 → ollama。タスク・ワークフローの実行 → aider、AI 支援 → ollama。一族の外へは倒さない。
+  メッセージに実際の `cli` と `family: 'herd'` を残す。statemachine-maker の `registerIpcHandlers` に
+  `agentDefinitions` と `hooks.resolveAgent` を足した（maker 単体は従来どおり）。
+
 ### agent-app / statemachine-maker: 既存のステートマシンを「利用可能」として実行詳細から開く
 
 statemachine-use スキルでチャットから作った `.statemachine/<名前>/` を agent-app の「タスク」で開くと、

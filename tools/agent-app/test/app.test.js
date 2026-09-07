@@ -710,7 +710,7 @@ test('git: 作業ツリーの変更をホストのシェル経由で読む', asy
   require('../src/main/host').closeAll();
 });
 
-test('ファイル: ツリー・本文・言語判定・外へ出ない', () => {
+test('ファイル: ツリー・本文・言語判定・外へ出ない', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-files-'));
   fs.mkdirSync(path.join(repo, 'src', 'deep'), { recursive: true });
   fs.mkdirSync(path.join(repo, '.git'));
@@ -722,27 +722,29 @@ test('ファイル: ツリー・本文・言語判定・外へ出ない', () => 
   // 作業フォルダの置き場（.worktrees）はリポジトリの写しなので、本体のツリーには出さない
   fs.mkdirSync(path.join(repo, '.worktrees', 'feature-x', 'src'), { recursive: true });
   fs.writeFileSync(path.join(repo, '.worktrees', 'feature-x', 'src', 'index.ts'), 'export const x = 1;\n');
-  const root = files.listDir(repo, '');
+  const root = await files.listDir(repo, '');
   assert.deepStrictEqual(root.entries.map((e) => e.name), ['src', 'bin.dat', 'pic.png', 'README.md'], 'ディレクトリ先・名前順・.git と .worktrees は出さない');
   assert.strictEqual(root.entries.find((e) => e.name === 'README.md').language, 'markdown');
-  const src = files.listDir(repo, 'src');
+  const src = await files.listDir(repo, 'src');
   assert.deepStrictEqual(src.entries.map((e) => e.rel), ['src/deep', 'src/index.ts']);
-  const ts = files.readFile(repo, 'src/index.ts');
+  const ts = await files.readFile(repo, 'src/index.ts');
   assert.strictEqual(ts.kind, 'text');
   assert.strictEqual(ts.language, 'typescript');
   assert.strictEqual(ts.lines, 2);
-  assert.strictEqual(files.readFile(repo, 'bin.dat').kind, 'binary');
-  assert.ok(files.readFile(repo, 'pic.png').dataUrl.startsWith('data:image/png;base64,'));
+  assert.strictEqual((await files.readFile(repo, 'bin.dat')).kind, 'binary');
+  assert.ok((await files.readFile(repo, 'pic.png')).dataUrl.startsWith('data:image/png;base64,'));
   assert.strictEqual(files.languageOf('src/deep/Dockerfile'), 'dockerfile');
   assert.strictEqual(files.languageOf('Makefile'), 'makefile');
   assert.strictEqual(files.languageOf('x.unknownext'), '');
   assert.strictEqual(files.languageOf('.gitignore'), 'plaintext');
-  assert.throws(() => files.readFile(repo, '../../etc/passwd'), /外/);
-  assert.throws(() => files.listDir(repo, '..'), /外/);
-  const hits = files.find(repo, 'index');
+  await assert.rejects(files.readFile(repo, '../../etc/passwd'), /外/);
+  await assert.rejects(files.listDir(repo, '..'), /外/);
+  assert.throws(() => files.resolveInside(repo, '..'), /外/);
+  const { hits, truncated } = await files.find(repo, 'index');
   assert.deepStrictEqual(hits.map((h) => h.rel), ['src/index.ts'], '名前検索が worktree の分だけ重複しない');
+  assert.strictEqual(truncated, false);
   // 作業フォルダ自身を根にすれば、その中は普通に見える
-  const inWt = files.listDir(path.join(repo, '.worktrees', 'feature-x'), '');
+  const inWt = await files.listDir(path.join(repo, '.worktrees', 'feature-x'), '');
   assert.deepStrictEqual(inWt.entries.map((e) => e.name), ['src']);
 });
 
@@ -777,4 +779,67 @@ test('添付: 写す・引く・消す。名前は 1 要素に丸め、外へ出
   assert.strictEqual(attachments.sweep(ud, [{ messages: [{ role: 'user', attachments: [{ id: kept.id, name: 'kept.txt' }] }] }]), 1);
   assert.ok(fs.existsSync(path.join(ud, 'attachments', kept.id)) && !fs.existsSync(path.join(ud, 'attachments', orphan.id)) && fs.existsSync(path.join(ud, 'attachments', 'not-an-id')));
   assert.strictEqual(attachments.sweep(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-none-')), []), 0);
+});
+
+test('ファイル: 名前検索は索引を使い回し、生成物のフォルダに潜らず、浅い前方一致を先に出す', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-find-'));
+  const mk = (rel, body = '') => { fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true }); fs.writeFileSync(path.join(repo, rel), body); };
+  mk('index.html');
+  mk('src/index.ts');
+  mk('src/deep/reindex.ts');
+  mk('node_modules/pkg/index.js');
+  mk('dist/index.js');
+  mk('build');                                 // フォルダではないので「潜らない」対象にならない
+  mk('.worktrees/wt/src/index.ts');
+  const first = await files.find(repo, 'index');
+  assert.deepStrictEqual(first.hits.map((h) => h.rel), ['index.html', 'src/index.ts', 'src/deep/reindex.ts'], '前方一致 → 部分一致、それぞれ浅い順。node_modules / dist / .worktrees は出ない');
+  assert.strictEqual(first.truncated, false);
+  assert.ok(first.indexed >= 5);
+  // 索引は少しの間そのまま（新しいファイルはまだ見えない）。「更新」で作り直す
+  mk('src/index2.ts');
+  assert.deepStrictEqual((await files.find(repo, 'index2')).hits, []);
+  assert.deepStrictEqual((await files.find(repo, 'index2', 200, { refresh: true })).hits.map((h) => h.rel), ['src/index2.ts']);
+  // `/` を含めばパスで探せる
+  assert.deepStrictEqual((await files.find(repo, 'deep/re')).hits.map((h) => h.rel), ['src/deep/reindex.ts']);
+  assert.deepStrictEqual((await files.find(repo, 'build')).hits.map((h) => h.rel), ['build']);
+  // 件数の上限で打ち切られても、浅い階層は必ず載る（幅優先）
+  const small = await files.buildIndex(repo, { maxEntries: 3 });
+  assert.strictEqual(small.truncated, true);
+  assert.ok(small.entries.every((e) => !e.rel.includes('/')), `浅い階層だけ: ${small.entries.map((e) => e.rel)}`);
+  assert.deepStrictEqual(files.searchIndex([{ rel: 'a/b.txt', name: 'b.txt', type: 'file', language: '' }], '', 10), []);
+  files.forgetIndex(repo);
+});
+
+test('ファイル: main を止めない（同期 I/O をツリー・本文・検索に使わない）', () => {
+  const src = fs.readFileSync(path.join(SRC, 'main/files.js'), 'utf8');
+  const body = src.slice(src.indexOf('async function listDir'));
+  assert.doesNotMatch(body.replace(/function forgetIndex[\s\S]*$/, ''), /readdirSync|statSync|readFileSync|openSync|readSync/, 'ツリー・本文・検索は fs.promises で読む');
+  assert.match(src, /INDEX_TTL_MS/);
+  assert.match(fs.readFileSync(path.join(SRC, 'renderer/files.js'), 'utf8'), /filterSeq/, '遅れて届いた検索結果は捨てる');
+});
+
+test('起動: ホストの確認と git を待たずに画面を出し、送信前にだけ待つ', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const initBody = renderer.slice(renderer.indexOf('async function init()'));
+  assert.doesNotMatch(initBody.slice(0, initBody.indexOf('await selectRepo')), /await api\.hostInfo\(\)/, 'host:info を待ってから画面を組まない');
+  assert.match(renderer, /state\.hostReady = api\.hostInfo\(\)/);
+  assert.match(renderer, /await Promise\.all\(\[state\.agentsReady, state\.hostReady\]\)/, '送信は CLI の有無と tmux の有無が届いてから');
+  assert.match(renderer, /listWorktrees\(state\.repo, \{ withStatus: false \}\)[\s\S]*listWorktrees\(state\.repo, \{ withStatus: true \}\)/, 'worktree の一覧を先に、変更数はあとから');
+  assert.match(renderer, /repoToken/, '遅れて届いた返事は捨てる');
+  const selectBody = renderer.slice(renderer.indexOf('async function selectRepo'), renderer.indexOf('async function refreshWorktrees'));
+  assert.doesNotMatch(selectBody, /await api\.listAgents/, 'agents:list（ホストの PATH）を待って一覧を描かない');
+  assert.doesNotMatch(selectBody, /await refreshWorktrees/, 'git worktree list / status を待って一覧を描かない');
+  const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
+  assert.match(preload, /listWorktrees: \(repo, opts\)/);
+});
+
+test('店: 会話一覧は変わっていないファイルを読み直さず、変わったものは反映する', () => {
+  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-list-'));
+  const a = store.createSession(ud, { repo: '/r', cli: 'claude' });
+  assert.strictEqual(store.listSessions(ud, '/r')[0].count, 0);
+  store.appendMessage(ud, a.id, { role: 'user', text: 'hello' });
+  assert.strictEqual(store.listSessions(ud, '/r')[0].count, 1, '追記は一覧の件数へ反映される');
+  assert.strictEqual(store.listSessions(ud, '/r')[0].title, 'hello');
+  store.removeSession(ud, a.id);
+  assert.deepStrictEqual(store.listSessions(ud, '/r'), []);
 });

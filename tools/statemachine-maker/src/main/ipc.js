@@ -72,6 +72,17 @@ function registerIpcHandlers(getWindow, options = {}) {
   const register = (name, fn) => handle(channel(name), fn);
   const selectedRoot = (payload) => requireRoot(payload, settings, getUserData);
   const selectedSkillDir = (root) => skillDirFor(root, settings, getUserData, appRoot);
+  // 使える AI の名前の並び。既定は agent-herd に聞く。埋め込む側（agent-app）は仮想の
+  // 名前（`herd`）を足した並びへ差し替えられる。
+  const agentDefinitions = typeof options.agentDefinitions === 'function' ? options.agentDefinitions : tools.agentDefinitions;
+  // 選ばれた名前を、実際に起こす定義の名前へ写す（`herd` → aider / ollama）。無ければそのまま。
+  //   purpose … 'task'（タスク・ワークフローの実行）| 'plan'（AI 支援。読み取り専用）
+  const resolveAgent = async (agent, purpose, root) => {
+    const hook = options.hooks && options.hooks.resolveAgent;
+    if (typeof hook !== 'function') return agent;
+    const resolved = await hook({ root, agent, purpose });
+    return String((resolved && typeof resolved === 'object' ? resolved.agent : resolved) || agent);
+  };
 
   function sendTo(sender, channel, payload) {
     if (sender && !sender.isDestroyed()) sender.send(`${channelPrefix}${channel}`, payload);
@@ -290,7 +301,7 @@ function registerIpcHandlers(getWindow, options = {}) {
   });
   register('agents:list', (p) => {
     const root = p.root ? selectedRoot(p) : '';
-    return tools.agentDefinitions({ cwd: root, capture: runner.capture });
+    return agentDefinitions({ cwd: root, capture: runner.capture });
   });
 
   // 複数 AI のワークフロー。定義は root 内、実行状態は agent-flow の共有 bus が正典。
@@ -337,7 +348,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const root = selectedRoot(p);
     const cfg = settings.load(getUserData());
     const result = await agentFlow.context({
-      root, capture: runner.capture, agentDefinitions: tools.agentDefinitions,
+      root, capture: runner.capture, agentDefinitions,
       defaults: { agent: cfg.agent, model: cfg.model },
     });
     result.capabilities.openDelivery = !!(options.hooks && options.hooks.openDelivery);
@@ -347,10 +358,13 @@ function registerIpcHandlers(getWindow, options = {}) {
     const root = selectedRoot(p);
     const cfg = settings.load(getUserData());
     const getContext = () => agentFlow.context({
-      root, capture: runner.capture, agentDefinitions: tools.agentDefinitions,
+      root, capture: runner.capture, agentDefinitions,
       defaults: { agent: cfg.agent, model: cfg.model },
     });
-    return agentFlow.start(p, { root, getContext, startDetached: runner.startDetached });
+    // agent-flow に渡す `--agent-cli` は実在の定義名でなければならない（`herd` は写してから）
+    const requestedAgent = String(p.agent || cfg.agent || '');
+    const agent = requestedAgent ? await resolveAgent(requestedAgent, 'task', root) : '';
+    return agentFlow.start({ ...p, agent }, { root, getContext, startDetached: runner.startDetached });
   });
   register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit));
   register('flow:run:read', (p) => agentFlow.readRun(selectedRoot(p), p.runId));
@@ -405,9 +419,10 @@ function registerIpcHandlers(getWindow, options = {}) {
     const root = selectedRoot(p);
     const mode = p.mode === 'review' ? 'review' : p.mode === 'teach' ? 'teach' : p.mode === 'flow-teach' ? 'flow-teach' : 'draft';
     const cfg = settings.load(getUserData());
-    const agent = String(p.agent || cfg.agent || 'aider');
-    const definitions = await tools.agentDefinitions({ cwd: root, capture: runner.capture });
-    if (!definitions.includes(agent)) throw new Error(`使う AI「${agent}」は agent-tools に定義されていません`);
+    const requestedAgent = String(p.agent || cfg.agent || 'aider');
+    const definitions = await agentDefinitions({ cwd: root, capture: runner.capture });
+    if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」は agent-tools に定義されていません`);
+    const agent = await resolveAgent(requestedAgent, 'plan', root);
     if (runner.isRunning()) throw new Error('別の実行が進行中です。終わるか停止してから始めてください');
 
     let baseSpec = null;
@@ -517,9 +532,10 @@ function registerIpcHandlers(getWindow, options = {}) {
       args = [path.join(skillDir, 'scripts', 'run_machine.py'), workflow, '--dry-run'];
     } else {
       const cfg = settings.load(getUserData());
-      const agent = String(p.agent || cfg.agent || 'aider');
-      const definitions = await tools.agentDefinitions({ cwd: root, capture: runner.capture });
-      if (!definitions.includes(agent)) throw new Error(`使う AI「${agent}」は agent-tools に定義されていません`);
+      const requestedAgent = String(p.agent || cfg.agent || 'aider');
+      const definitions = await agentDefinitions({ cwd: root, capture: runner.capture });
+      if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」は agent-tools に定義されていません`);
+      const agent = await resolveAgent(requestedAgent, 'task', root);
       const parameters = p.parameters && typeof p.parameters === 'object'
         ? p.parameters
         : { ...(p.context && typeof p.context === 'object' ? p.context : {}), ...(p.input ? { input: p.input } : {}) };
