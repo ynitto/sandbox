@@ -48,6 +48,32 @@ npm start
 npm test
 ```
 
+### Windows 向け exe を作る
+
+agent-dashboard と同じく electron-builder で **portable exe** と **NSIS インストーラ** を作る
+（設定は `package.json` の `build`）。
+
+```bash
+cd tools/statemachine-maker && npm install   # file: リンク先の依存（yaml）は自分では入らない
+cd ../agent-app && npm install
+npm run dist             # portable + NSIS → release/（release/agent-app.exe が portable 版）
+npm run dist:portable    # portable だけ
+```
+
+- **同梱するもの**: `src/`（`npm install` が写す `src/renderer/vendor/` を含む）と、main 側が require する
+  `statemachine-maker/src/main` + `yaml`。画面用ライブラリ（mermaid / marked / xterm …）は vendor/ に
+  写した分だけ使うので `devDependencies` に置き、electron-builder が本番依存として推移的に同梱しない
+  ようにする（`dependencies` に戻すと d3 / katex … まで入って asar が数十 MB 増える）。
+- `npm run dist` は先に `scripts/check-dist.js` で、file: リンク先の依存・vendor/・アイコンが揃っているかを見る。
+- **リポジトリ直下の資源**は `extraResources` で `resources/` に入れる。CLI 定義 `agents/*.json` は
+  `resources/agents/`（探索順の最後。`~/.agents/agents/` などに置いた定義が勝つ）、タスク実行に要る
+  `.github/skills/statemachine-use` は `resources/app-root/.github/skills/…`（登録リポジトリや
+  ⚙ 設定で見つからないときの最後の候補）。参照と同梱指定の対応は `test/packaging.test.js` が突き合わせる。
+- **アイコン**は `assets/icon.ico`（`npm run icon` → `scripts/icon.js` が外部ライブラリなしで生成。
+  吹き出しに `›_` の図柄で、agent-dashboard とは別物）。差し替えるなら 256px を含む ico を同じ場所に置く。
+- Linux 上でも `npm run dist` は通る（electron-builder 26 は wine なしで exe のアイコン・バージョン情報を
+  書き換え、NSIS も同梱の物を使う）。署名は行わない。
+
 ### 前提
 
 | | Linux / macOS | Windows |
@@ -147,7 +173,8 @@ git へ書き込むのはここだけ（worktree の追加・削除とブラン�
 | 差分 | diff2html |
 
 配布物は `npm install` 時に `scripts/vendor.js` が `src/renderer/vendor/` へ写す（CSP は
-`script-src 'self'` のまま。CDN は使わない）。
+`script-src 'self'` のまま。CDN は使わない）。写した後は node_modules を参照しないので、これらは
+`devDependencies` に置く（exe に同梱しない。→「Windows 向け exe を作る」）。
 
 ## CLI の呼び方（tmux）
 
