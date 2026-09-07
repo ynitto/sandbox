@@ -2,7 +2,7 @@
 name: statemachine-use
 description: 「ステートマシンを実行して」「ステートマシンを作成/作って」「YAMLワークフローを動かして」「ワークフローを回して」「エージェントループを起動して」「このYAMLを実行して」などで発動。作成モード（手順を.statemachine/{名前}/に生成）と実行モード（YAMLをLLM駆動で実行）を持つ。
 metadata:
-  version: 2.1.0
+  version: 2.1.1
   tier: experimental
   category: workflow
   tags:
