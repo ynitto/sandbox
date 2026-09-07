@@ -604,6 +604,18 @@ async function listAgents(repo) {
   return defs.map((d) => ({ ...d, available: !!map.get(d.command) }));
 }
 
+// statemachine-maker はここから `../../.github/skills/statemachine-use` を辿ってスキルの
+// スクリプトを探す（登録リポジトリや設定で見つからないときの最後の候補）。開発起動なら
+// このリポジトリのソースツリー、パッケージ版なら extraResources で resources/app-root/ に
+// 同梱した写し（リポジトリ直下と同じ相対配置）を指す。
+function automationAppRoot() {
+  const packaged = process.resourcesPath ? path.join(process.resourcesPath, 'app-root') : '';
+  if (packaged && fs.existsSync(path.join(packaged, '.github', 'skills', 'statemachine-use'))) {
+    return path.join(packaged, 'tools', 'agent-app');
+  }
+  return path.join(__dirname, '..', '..');
+}
+
 function registerIpcHandlers(getWindow) {
   const send = (channel, payload) => {
     const win = getWindow();
@@ -612,7 +624,7 @@ function registerIpcHandlers(getWindow) {
   registerAutomationIpc({
     getWindow,
     userData,
-    appRoot: path.join(__dirname, '..', '..'),
+    appRoot: automationAppRoot(),
   });
   // 写したが送らずに閉じた添付を掃除する
   try { attachments.sweep(userData(), store.readAllSessions(userData())); } catch { /* 消せなくても動く */ }

@@ -31,7 +31,11 @@ const SESSION = {
   },
 };
 
+// 同梱定義の置き場。開発起動ではリポジトリ直下の agents/、パッケージ版（electron-builder）では
+// extraResources で同梱した resources/agents/。どちらも探索順の最後で、上位に置いた定義が勝つ。
 function repoAgentsDir() {
+  const packaged = process.resourcesPath ? path.join(process.resourcesPath, 'agents') : '';
+  if (packaged && fs.existsSync(path.join(packaged, 'kiro.json'))) return packaged;
   let dir = __dirname;
   for (let i = 0; i < 6; i += 1) {
     const cand = path.join(dir, 'agents');

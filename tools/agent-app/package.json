@@ -9,19 +9,72 @@
     "start": "electron .",
     "postinstall": "node scripts/vendor.js",
     "vendor": "node scripts/vendor.js",
-    "test": "node --test test/*.test.js"
+    "icon": "node scripts/icon.js",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable",
+    "predist": "node scripts/check-dist.js",
+    "predist:portable": "node scripts/check-dist.js"
   },
   "dependencies": {
+    "statemachine-maker": "file:../statemachine-maker"
+  },
+  "devDependencies": {
     "@highlightjs/cdn-assets": "11.12.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "diff2html": "3.4.56",
     "dompurify": "3.4.14",
+    "electron": "43.6.0",
+    "electron-builder": "^26.15.3",
     "marked": "18.0.11",
-    "mermaid": "11.17.2",
-    "statemachine-maker": "file:../statemachine-maker"
+    "mermaid": "11.17.2"
   },
-  "devDependencies": {
-    "electron": "43.6.0"
+  "build": {
+    "appId": "jp.sandbox.agent-app",
+    "productName": "Agent App",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "node_modules/statemachine-maker/package.json",
+      "node_modules/statemachine-maker/src/main/**/*",
+      "node_modules/yaml/**",
+      "!node_modules/statemachine-maker/{assets,test,docs,src/renderer,node_modules}/**"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "portable": {
+      "artifactName": "${name}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "extraResources": [
+      {
+        "from": "../../agents",
+        "to": "agents",
+        "filter": [
+          "**/*.json"
+        ]
+      },
+      {
+        "from": "../../.github/skills/statemachine-use",
+        "to": "app-root/.github/skills/statemachine-use",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/node_modules/**"
+        ]
+      }
+    ]
   }
 }
