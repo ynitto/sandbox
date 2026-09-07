@@ -692,7 +692,7 @@ function renderHeader() {
   $('terminal-stage').hidden = !tm;
   $('conversation-history').hidden = !cur;
   $('conversation-history').classList.toggle('history-only', !tm);
-  if (tm && $('conversation-history').open && cur.messages && cur.messages.length) $('conversation-history').open = false;
+  if (cur && !tm) $('conversation-history').open = true;
   $('history-count').textContent = cur && cur.messages ? `${cur.messages.length}件` : '';
   $('term-agent').textContent = tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '';
   $('term-name').textContent = ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '';

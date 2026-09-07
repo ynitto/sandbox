@@ -305,24 +305,25 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 /* ---- 入力 ---- */
 #composer { grid-row: 3; padding: 10px 20px 18px; background: var(--panel); }
 #composer.drop .composer-shell { outline: 2px dashed var(--accent); outline-offset: 2px; }
-.composer-shell { width: min(100%, 900px); margin: 0 auto; padding: 8px; border: 1px solid #d7dbe1; border-radius: 16px; background: var(--panel); box-shadow: 0 5px 18px rgba(31, 35, 40, .07); transition: border-color .18s ease, box-shadow .18s ease; }
+.composer-shell { width: min(100%, 900px); min-height: 172px; display: grid; grid-template-rows: 34px minmax(82px, auto) 40px; margin: 0 auto; padding: 8px; border: 1px solid #d7dbe1; border-radius: 16px; background: var(--panel); box-shadow: 0 5px 18px rgba(31, 35, 40, .07); transition: border-color .18s ease, box-shadow .18s ease; }
 .composer-shell.sent { animation: composerAccepted .28s ease-out; }
 .composer-shell.error { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(198, 40, 53, .1); }
-.input-mode-switch { min-height: 34px; display: flex; align-items: center; gap: 3px; padding: 0 3px 5px; }
+.input-mode-switch { min-height: 34px; grid-row: 1; display: flex; align-items: center; gap: 3px; padding: 0 3px 5px; }
 .input-mode-switch button { min-height: 30px; padding: 3px 10px; border-color: transparent; color: var(--muted); background: transparent; font-size: 11px; font-weight: 650; }
 .input-mode-switch button[aria-pressed="true"] { color: var(--text); background: var(--code-bg); box-shadow: inset 0 0 0 1px var(--line); }
 .input-status { min-width: 0; margin-left: auto; overflow: hidden; color: var(--muted); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
 .input-status.success { color: var(--ok); }
 .input-status.error { color: var(--danger); }
 .input-status.pending { color: var(--accent); }
+#message-input { min-height: 0; grid-row: 2; }
 #composer textarea { min-height: 70px; max-height: 240px; width: 100%; display: block; padding: 8px 10px; resize: vertical; border: 0; border-radius: 10px; line-height: 1.55; }
 #composer textarea:focus-visible { outline: none; }
-.terminal-keys { min-height: 78px; align-items: center; gap: 6px; padding: 12px 8px; }
+.terminal-keys { min-height: 122px; grid-row: 2 / 4; align-items: center; gap: 6px; padding: 12px 8px; }
 .terminal-keys:not([hidden]) { display: flex; }
 .terminal-keys button { min-width: 44px; min-height: 44px; padding: 7px 10px; border-color: #334155; color: var(--term-text); background: var(--term-panel); font: 12px var(--mono); }
 .terminal-keys button:hover, .terminal-keys button:focus-visible { border-color: var(--term-cursor); background: #182231; }
 .terminal-key-focus { margin-left: auto; color: var(--muted); font: 11px var(--mono); }
-.composer-toolbar { min-width: 0; display: flex; align-items: center; gap: 4px; padding-top: 4px; }
+.composer-toolbar { min-width: 0; grid-row: 3; display: flex; align-items: center; gap: 4px; padding-top: 4px; }
 .composer-toolbar > button { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
 .run-settings { position: relative; min-width: 0; }
 .run-settings > summary { min-height: 36px; max-width: 310px; display: flex; align-items: center; padding: 7px 10px; overflow: hidden; border-radius: 8px; color: var(--muted); white-space: nowrap; cursor: pointer; list-style: none; }

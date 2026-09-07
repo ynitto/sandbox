@@ -72,6 +72,28 @@ test('AIワークフローは既存のカードと2カラムを使い、編集�
   assert.ok(flow.includes('AIワークフロー') && flow.includes('読み取り専用で実行する'));
 });
 
+test('標準パターンは動的工程を一枚で示し、反復設定を適用後も保持する', () => {
+  const flow = read('renderer/flow.js');
+  const css = read('renderer/styles.css');
+  assert.match(flow, /function workflowStages\(/);
+  assert.match(flow, /kind === 'classify'[\s\S]*分類結果に応じて実行/);
+  assert.match(flow, /kind === 'split'[\s\S]*要素ごとに実行[\s\S]*結果を集約/);
+  assert.match(flow, /is-dynamic/);
+  assert.match(flow, /rework:\s*Array\.isArray\(pattern\.template\.rework\)/);
+  assert.match(css, /\.flow-node-card\.is-dynamic/);
+  assert.match(css, /\.flow-rework-line[^{]*\{[^}]*grid-template-columns:/);
+});
+
+test('ワークフロー詳細は定義と混ぜずにリポジトリ内の実行履歴を表示する', () => {
+  const flow = read('renderer/flow.js');
+  assert.ok(flow.includes('data-flow-tab="overview"') && flow.includes('data-flow-tab="history"'));
+  assert.ok(flow.includes('function workflowRuns('));
+  assert.match(flow, /run\.workflowId === workflowId \|\| run\.input\?\.workflowId === workflowId/);
+  assert.match(flow, /class="execution-card flow-history"/);
+  assert.ok(flow.includes('実行履歴はまだありません。'));
+  assert.ok(flow.includes('data-flow-run'));
+});
+
 test('編集画面は左のフローと右の編集パネルを分離し、狭い画面では一方だけを表示する', () => {
   const renderer = read('renderer/renderer.js');
   const css = read('renderer/styles.css');
@@ -167,6 +189,17 @@ test('定義があるタスクは実行詳細から開き、教示は「AIに変
   assert.ok(!teachingUi.includes('試運転が必要'));
   for (const label of ['利用可能', '下書き', '試運転待ち', '確認待ち', '変更中']) assert.ok(teachingUi.includes(label), label);
   assert.match(teachingUi, /function presentTeachingStatus\(/);
+});
+
+test('agent-app 埋め込み時はタスクの編集とAI相談を戻る遷移ではなく詳細タブで開く', () => {
+  const renderer = read('renderer/renderer.js');
+  const teachingUi = read('renderer/teaching.js');
+  assert.match(renderer, /function taskDetailShellHtml\(/);
+  assert.match(renderer, /data-task-tab="overview"[\s\S]*data-task-tab="steps"[\s\S]*data-task-tab="teach"[\s\S]*data-task-tab="history"/);
+  assert.match(renderer, /function bindTaskDetailTabs\(/);
+  assert.match(renderer, /embeddedTaskEditorHtml\(/);
+  assert.match(renderer, /teachingFeature\.detailHtml\(\)/);
+  assert.match(teachingUi, /function detailHtml\(/);
 });
 
 test('設定は登録したフォルダを持ち、旧版の「最近開いたフォルダ」から引き継ぐ', () => {

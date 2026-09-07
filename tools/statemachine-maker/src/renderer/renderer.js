@@ -379,6 +379,7 @@ async function openMachine(machine) {
   raw.steps = raw.steps.map((s) => ({ ...emptyStep(s.kind), ...s, outcomes: s.outcomes || [], recorded: s.recorded || [], extend: s.extend || {} }));
   state.current = { machine, isNew: false, spec: raw, dirty: false, warnings: res.warnings || [], dir: res.dir };
   state.view = 'editor';
+  if (embedded && selectedExecutionMachine()?.machine === machine) state.execution.detailTab = 'steps';
   state.open = null;
   state.preview = null;
   resetAi(state.aiReview);
@@ -411,18 +412,64 @@ function markDirty() {
 
 // --- 描画 ---------------------------------------------------------------------------
 
+function isEmbeddedTaskEditor() {
+  return !!(embedded && state.view === 'editor' && state.current && !state.current.isNew
+    && selectedExecutionMachine()?.machine === state.current.machine);
+}
+
+function editorControlsHtml() {
+  const spec = state.current.spec;
+  return {
+    center: `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`,
+    right: `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
+      <button type="button" id="b-ai" class="ghost">AIで見直す</button>
+      <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト・実行</button>
+      <details class="more-menu"><summary>その他</summary><div class="menu-panel">
+        <button type="button" id="b-record" class="ghost">操作を記録</button>
+        <button type="button" id="b-files" class="ghost">生成ファイル</button>
+        <button type="button" id="b-settings" class="ghost">実行環境</button>
+      </div></details>
+      <button type="button" id="b-save" class="primary">保存</button>`,
+  };
+}
+
+function bindEditorControls(scope) {
+  const get = (id) => scope.querySelector(`#${id}`);
+  const spec = state.current.spec;
+  let touched = !state.current.isNew || !!spec.machine;
+  get('m-name').addEventListener('input', (event) => {
+    spec.name = event.target.value;
+    if (!touched) { spec.machine = saveNameFrom(event.target.value); const saveName = get('m-save-name'); if (saveName) saveName.value = spec.machine; }
+    markDirty();
+  });
+  const saveName = get('m-save-name');
+  if (saveName) saveName.addEventListener('input', () => { touched = true; });
+  get('b-record').addEventListener('click', openRecord);
+  get('b-files').addEventListener('click', openFiles);
+  get('b-ai').addEventListener('click', openAiReview);
+  get('b-run').addEventListener('click', () => goRun(state.current.machine));
+  get('b-settings').addEventListener('click', openSettings);
+  get('b-save').addEventListener('click', saveMachine);
+}
+
 function render() {
   renderBar();
   const main = $('main');
   const editing = state.view === 'editor' && state.current;
+  const taskEditing = isEmbeddedTaskEditor();
   workbenchBody.classList.toggle('is-editing', !!editing);
-  main.innerHTML = editing ? editorHtml() : homeHtml();
-  if (editing) bindEditor(main); else bindHome(main);
+  workbenchBody.classList.toggle('is-task-editor', taskEditing);
+  main.innerHTML = editing ? (taskEditing ? embeddedTaskEditorHtml() : editorHtml()) : homeHtml();
+  if (editing) {
+    bindEditorControls(workbenchRoot);
+    bindEditor(main);
+    if (taskEditing) bindTaskDetailTabs(main);
+  } else bindHome(main);
 }
 
 function renderBar() {
   const editing = state.view === 'editor' && state.current;
-  $('btn-home').hidden = !editing;
+  $('btn-home').hidden = !editing || embedded;
   const center = $('bar-center');
   const right = $('bar-right');
   if (!editing) {
@@ -431,31 +478,14 @@ function renderBar() {
     $('b-settings').addEventListener('click', openSettings);
     return;
   }
-  const spec = state.current.spec;
-  center.innerHTML = `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`;
-  right.innerHTML = `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
-    <button type="button" id="b-ai" class="ghost">AIで見直す</button>
-    <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト・実行</button>
-    <details class="more-menu"><summary>その他</summary><div class="menu-panel">
-      <button type="button" id="b-record" class="ghost">操作を記録</button>
-      <button type="button" id="b-files" class="ghost">生成ファイル</button>
-      <button type="button" id="b-settings" class="ghost">実行環境</button>
-    </div></details>
-    <button type="button" id="b-save" class="primary">保存</button>`;
-  let touched = !state.current.isNew || !!spec.machine;
-  $('m-name').addEventListener('input', (e) => {
-    spec.name = e.target.value;
-    if (!touched) { spec.machine = saveNameFrom(e.target.value); const m = $('m-save-name'); if (m) m.value = spec.machine; }
-    markDirty();
-  });
-  const saveName = $('m-save-name');
-  if (saveName) saveName.addEventListener('input', () => { touched = true; });
-  $('b-record').addEventListener('click', openRecord);
-  $('b-files').addEventListener('click', openFiles);
-  $('b-ai').addEventListener('click', openAiReview);
-  $('b-run').addEventListener('click', () => goRun(state.current.machine));
-  $('b-settings').addEventListener('click', openSettings);
-  $('b-save').addEventListener('click', saveMachine);
+  if (isEmbeddedTaskEditor()) {
+    center.innerHTML = '';
+    right.innerHTML = '';
+    return;
+  }
+  const controls = editorControlsHtml();
+  center.innerHTML = controls.center;
+  right.innerHTML = controls.right;
 }
 
 // --- 一覧（左: フォルダ／右: ワークフロー） -----------------------------------------------
@@ -483,8 +513,11 @@ function homeHtml() {
   const workflowActions = state.homeTab === 'workflows'
     ? '<div class="row"><button type="button" class="primary" id="h-ai-draft">AIで下書き</button><button type="button" id="h-new">手動で作成</button></div>'
     : '';
+  const selectedTask = selectedExecutionMachine();
   const homeContent = state.homeTab === 'teach'
-    ? teachingFeature.html()
+    ? (embedded && selectedTask
+      ? taskDetailShellHtml(selectedTask, 'teach', teachingFeature.detailHtml())
+      : teachingFeature.html())
     : state.homeTab === 'run' ? executionHtml()
     : state.homeTab === 'flows'
       ? flowFeature.html()
@@ -531,16 +564,7 @@ function bindHome(main) {
     state.run.error = '';
     render();
   });
-  for (const button of main.querySelectorAll('[data-task-tab]')) button.addEventListener('click', () => {
-    const tab = button.dataset.taskTab;
-    if (tab === 'steps') {
-      const machine = selectedExecutionMachine();
-      if (machine && machine.kind === 'statemachine') openMachine(machine.machine);
-      return;
-    }
-    state.execution.detailTab = tab;
-    render();
-  });
+  bindTaskDetailTabs(main);
   on('run-edit', () => { const machine = selectedExecutionMachine(); if (machine) openMachine(machine.machine); });
   for (const button of main.querySelectorAll('[data-run-teach]')) button.addEventListener('click', () => {
     const machine = selectedExecutionMachine();
@@ -603,6 +627,31 @@ function bindHome(main) {
   if (state.homeTab === 'flows') flowFeature.bind(main);
 }
 
+function bindTaskDetailTabs(main) {
+  for (const button of main.querySelectorAll('[data-task-tab]')) button.addEventListener('click', async () => {
+    const tab = button.dataset.taskTab;
+    if (tab === state.execution.detailTab && !(tab === 'steps' && state.view !== 'editor')) return;
+    const machine = selectedExecutionMachine();
+    if (!machine) return;
+    if (state.view === 'editor' && state.current?.dirty
+      && !confirm('保存していない変更があります。別のタブへ移動しますか？')) return;
+    if (tab === 'steps') {
+      if (machine.kind === 'statemachine') await openMachine(machine.machine);
+      return;
+    }
+    if (tab === 'teach') {
+      if (machine.kind === 'statemachine') await openTeaching(machine.machine);
+      return;
+    }
+    cancelAi(state.aiReview);
+    state.view = 'home';
+    state.current = null;
+    state.homeTab = 'run';
+    state.execution.detailTab = tab;
+    render();
+  });
+}
+
 function goRun(machine) {
   if (!machine) return;
   state.view = 'home';
@@ -623,6 +672,7 @@ async function openTeaching(machine) {
   state.view = 'home';
   state.current = null;
   state.homeTab = 'teach';
+  if (embedded) state.execution.detailTab = 'teach';
   render();
   await teachingFeature.activate();
   await teachingFeature.select(String(machine).replace(/^machine:/, ''));
@@ -722,6 +772,44 @@ const flowFeature = window.createFlowFeature({
   },
 });
 
+function taskPresentation(machine) {
+  const present = machine.kind === 'statemachine' && machine.machine ? teachingFeature.statusOf(machine.machine) : null;
+  const badges = present
+    ? `<span class="status ${present.status === 'ready' ? 'ok' : ''}">${esc(window.teachingStatusLabel(present.status))}</span>${present.change ? `<span class="status warn">${esc(window.teachingChangeLabel(present.change))}</span>` : ''}`
+    : '';
+  const eyebrow = embedded ? '' : '<span class="eyebrow">タスク</span>';
+  return {
+    present,
+    header: `<div>${eyebrow}<h2>${esc(machine.name)}${badges ? ` <span class="task-badges">${badges}</span>` : ''}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div>`,
+  };
+}
+
+function taskDetailTabsHtml(machine, activeTab) {
+  return `<nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
+    <button type="button" role="tab" id="task-tab-overview" aria-controls="task-tab-panel" data-task-tab="overview" aria-selected="${activeTab === 'overview'}" class="${activeTab === 'overview' ? 'is-on' : ''}">概要</button>
+    ${machine.kind === 'statemachine' ? `<button type="button" role="tab" id="task-tab-steps" aria-controls="task-tab-panel" data-task-tab="steps" aria-selected="${activeTab === 'steps'}" class="${activeTab === 'steps' ? 'is-on' : ''}">手順</button>` : ''}
+    ${embedded && machine.kind === 'statemachine' ? `<button type="button" role="tab" id="task-tab-teach" aria-controls="task-tab-panel" data-task-tab="teach" aria-selected="${activeTab === 'teach'}" class="${activeTab === 'teach' ? 'is-on' : ''}">AI相談</button>` : ''}
+    <button type="button" role="tab" id="task-tab-history" aria-controls="task-tab-panel" data-task-tab="history" aria-selected="${activeTab === 'history'}" class="${activeTab === 'history' ? 'is-on' : ''}">履歴</button>
+  </nav>`;
+}
+
+function taskDetailShellHtml(machine, activeTab, content, { editor = false } = {}) {
+  const presentation = taskPresentation(machine);
+  const teachAction = !embedded && presentation.present
+    ? `<button type="button" data-run-teach>${presentation.present.change ? '変更を続ける' : 'AIに変更を相談'}</button>`
+    : '';
+  const header = `<header class="execution-title">${presentation.header}${teachAction ? `<div class="row">${teachAction}</div>` : ''}</header>`;
+  return `<div class="task-detail-shell${editor ? ' is-editor' : ''}">${header}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
+}
+
+function embeddedTaskEditorHtml() {
+  const machine = selectedExecutionMachine();
+  const controls = editorControlsHtml();
+  return machine
+    ? taskDetailShellHtml(machine, 'steps', `<div class="embedded-editor-toolbar"><div class="bar-center">${controls.center}</div><div class="bar-right">${controls.right}</div></div><div class="embedded-task-editor">${editorHtml()}</div>`, { editor: true })
+    : editorHtml();
+}
+
 function executionHtml() {
   const machines = executionMachines();
   if (state.execution.loading) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
@@ -783,20 +871,7 @@ function executionDetailHtml(machine) {
       <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
         ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
       <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
-  // 定義があるタスクは常に「利用可能」。AIとの変更が進んでいれば、その進み具合を印で添え、ボタンを
-  // 「変更を続ける」に変える（今の版はそのまま実行できる。実行ボタンが押せることがその証拠なので、
-  // 説明の帯は出さない）。ステートマシン以外（プロンプト・フック）は状態を出さない。
-  const present = machine.kind === 'statemachine' && machine.machine ? teachingFeature.statusOf(machine.machine) : null;
-  const badges = present
-    ? `<span class="status ${present.status === 'ready' ? 'ok' : ''}">${esc(window.teachingStatusLabel(present.status))}</span>${present.change ? `<span class="status warn">${esc(window.teachingChangeLabel(present.change))}</span>` : ''}`
-    : '';
-  const teachAction = present ? `<button type="button" data-run-teach>${present.change ? '変更を続ける' : 'AIに変更を相談'}</button>` : '';
-  return `<header class="execution-title"><div><span class="eyebrow">タスク</span><h2>${esc(machine.name)}${badges ? ` <span class="task-badges">${badges}</span>` : ''}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div>${teachAction ? `<div class="row">${teachAction}</div>` : ''}</header>
-    <nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
-      <button type="button" role="tab" data-task-tab="overview" aria-selected="${state.execution.detailTab === 'overview'}" class="${state.execution.detailTab === 'overview' ? 'is-on' : ''}">概要</button>
-      ${machine.kind === 'statemachine' ? '<button type="button" role="tab" data-task-tab="steps" aria-selected="false">手順</button>' : ''}
-      <button type="button" role="tab" data-task-tab="history" aria-selected="${state.execution.detailTab === 'history'}" class="${state.execution.detailTab === 'history' ? 'is-on' : ''}">履歴</button>
-    </nav>${detail}`;
+  return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
 
 function ensureScheduleDraft(machine) {

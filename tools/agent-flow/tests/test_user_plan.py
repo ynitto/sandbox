@@ -26,6 +26,29 @@ class PlanStrategyUserTests(unittest.TestCase):
         self.assertTrue(all(row["template"]["nodes"] for row in rows))
         self.assertTrue(all(row["template"]["name"] == row["label"] for row in rows))
 
+    def test_pattern_catalog_uses_compact_dynamic_blueprints_and_keeps_rework(self):
+        rows = {row["id"]: row["template"] for row in kf.pattern_catalog()}
+
+        self.assertEqual([node["kind"] for node in rows["classify-and-act"]["nodes"]],
+                         ["classify"])
+        self.assertEqual([node["kind"] for node in rows["fan-out-and-synthesize"]["nodes"]],
+                         ["split"])
+        self.assertEqual([node["kind"] for node in rows["generate-and-filter"]["nodes"]],
+                         ["generate", "filter"])
+        self.assertEqual(rows["generate-and-filter"]["nodes"][1]["deps"], ["generate"])
+        self.assertEqual([node["kind"] for node in rows["tournament"]["nodes"]],
+                         ["generate", "judge"])
+        self.assertEqual(rows["tournament"]["nodes"][1]["deps"], ["generate"])
+        self.assertEqual([node["kind"] for node in rows["map-reduce"]["nodes"]], ["split"])
+
+        loop = rows["loop-until-done"]
+        self.assertEqual([node["kind"] for node in loop["nodes"]], ["work", "verify"])
+        self.assertEqual(len(loop["rework"]), 1)
+        self.assertEqual(loop["rework"][0]["from"], "verify")
+        self.assertEqual(loop["rework"][0]["to"], "work")
+        self.assertEqual(loop["rework"][0]["trigger"], "verification-failed")
+        self.assertGreater(loop["rework"][0]["maxIterations"], 1)
+
     def test_valid_plan_fixed_verbatim(self):
         plan = _plan([
             {"id": "a", "goal": "調査: {{request}}", "kind": "work"},

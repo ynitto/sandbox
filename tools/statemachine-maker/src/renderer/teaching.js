@@ -317,7 +317,7 @@
       return `<aside class="teaching-understanding"><h3>AIの理解</h3>${rows.map(([label, value]) => `<div><span>${label}</span><p>${e(value || 'なし')}</p></div>`).join('')}</aside>`;
     }
 
-    function workspaceHtml() {
+    function workspaceHtml(detailOnly = false) {
       const session = view.session;
       // 定義があるタスクは「利用可能」のまま。教示ステータスは変更の進み具合としてだけ出す。
       // 開いただけの既存定義（会話も候補も無い）は、変更が始まっていないので進行バーを出さない。
@@ -330,7 +330,10 @@
       const actions = present.published
         ? '<button type="button" data-teach-run>実行画面へ戻る</button><button type="button" data-teach-edit>高度な編集</button>'
         : '<button type="button" data-teach-edit>高度な編集</button>';
-      return `<div class="teaching-head"><div><span class="eyebrow">${present.published ? 'タスクの変更を相談' : 'タスクを教える'}</span><h2>${e(session.title || session.machine)}</h2><span class="teaching-badges">${badges}</span></div><div class="row">${actions}</div></div>${showProgress ? `<ol class="teaching-progress">${progress.map((label, index) => `<li class="${index < stage ? 'done' : index === stage - 1 ? 'current' : ''}">${e(label)}</li>`).join('')}</ol>` : ''}<div class="teaching-workspace"><section class="teaching-conversation" aria-label="AIとの会話"><div class="teaching-messages">${messagesHtml(present.runnable)}${responseCardHtml()}${recordHtml()}${approvalHtml()}${trialHtml()}</div><div class="teaching-composer"><textarea rows="3" data-teach-message placeholder="${view.result?.status === 'questions' ? '質問への回答を入力' : '変更したいことや補足を入力'}">${e(view.input)}</textarea><button type="button" class="primary" data-teach-send ${view.busy ? 'disabled' : ''}>変更を相談する</button></div></section>${understandingHtml()}</div>`;
+      const heading = detailOnly
+        ? '<div class="teaching-tab-head"><h3>AIに変更を相談</h3><p>変更したいことを伝え、試運転で確認してから現在の手順へ反映します。</p></div>'
+        : `<div class="teaching-head"><div><span class="eyebrow">${present.published ? 'タスクの変更を相談' : 'タスクを教える'}</span><h2>${e(session.title || session.machine)}</h2><span class="teaching-badges">${badges}</span></div><div class="row">${actions}</div></div>`;
+      return `${heading}${showProgress ? `<ol class="teaching-progress">${progress.map((label, index) => `<li class="${index < stage ? 'done' : index === stage - 1 ? 'current' : ''}">${e(label)}</li>`).join('')}</ol>` : ''}<div class="teaching-workspace"><section class="teaching-conversation" aria-label="AIとの会話"><div class="teaching-messages">${messagesHtml(present.runnable)}${responseCardHtml()}${recordHtml()}${approvalHtml()}${trialHtml()}</div><div class="teaching-composer"><textarea rows="3" data-teach-message placeholder="${view.result?.status === 'questions' ? '質問への回答を入力' : '変更したいことや補足を入力'}">${e(view.input)}</textarea><button type="button" class="primary" data-teach-send ${view.busy ? 'disabled' : ''}>変更を相談する</button></div></section>${understandingHtml()}</div>`;
     }
 
     function createHtml() {
@@ -346,6 +349,13 @@
       }).join('');
       const detail = view.creating ? createHtml() : view.session ? workspaceHtml() : '<div class="blank compact"><h2>タスクを選んでください</h2><p>新しいタスクは、目的を伝えるところから始められます。</p></div>';
       return `<div class="teaching-page"><header class="teaching-page-head"><div><h1>タスク</h1><p>AIに目的を伝え、必要なときだけ操作を見せて、結果で確認します。</p></div><button type="button" class="primary" data-teach-new>新しいタスクを教える</button></header><div class="execution-layout teaching-layout"><aside class="execution-list">${list || '<p class="muted small">まだタスクがありません。</p>'}</aside><section class="execution-detail">${detail}</section></div></div>`;
+    }
+
+    function detailHtml() {
+      if (view.loading) return '<div class="blank compact"><p>タスクを読み込んでいます…</p></div>';
+      if (view.creating) return createHtml();
+      if (view.session) return workspaceHtml(true);
+      return '<div class="blank compact"><h2>タスクを読み込めませんでした</h2><p>一覧から選び直してください。</p></div>';
     }
 
     function bind(main) {
@@ -427,7 +437,7 @@
     // 実行詳細など他の画面が、そのタスクの状態（利用可能か・変更が進んでいるか）を聞くための口。
     function statusOf(machine) { return presentOf(machine); }
 
-    return { html, bind, activate, select, create, startFromIntent, reset, rootChanged: reset, onAiProgress, onAiResult, onRunLine, onRunExit, loadItems, statusOf };
+    return { html, detailHtml, bind, activate, select, create, startFromIntent, reset, rootChanged: reset, onAiProgress, onAiResult, onRunLine, onRunExit, loadItems, statusOf };
   }
 
   global.createTeachingFeature = createTeachingFeature;

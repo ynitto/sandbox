@@ -66,6 +66,14 @@ test('実機: 起動して一覧が描画され、開くと工程が並ぶ', asy
   const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'smk-agent-tools-'));
   const fakeAvailable = process.platform !== 'win32';
   if (fakeAvailable) {
+    const flowPatterns = [
+      { id: 'classify-and-act', label: '分類して実行', description: '', template: { name: '分類して実行', nodes: [{ id: 'classify', label: '依頼を分類', goal: '分類: {{request}}', deps: [], kind: 'classify' }] } },
+      { id: 'fan-out-and-synthesize', label: '並列実行して統合', description: '', template: { name: '並列実行して統合', nodes: [{ id: 'split', label: '並列実行する作業へ分割', goal: '分割: {{request}}', deps: [], kind: 'split' }] } },
+      { id: 'generate-and-filter', label: '候補を生成して選別', description: '', template: { name: '候補を生成して選別', nodes: [{ id: 'generate', label: '候補を生成', goal: '候補を生成: {{request}}', deps: [], kind: 'generate' }, { id: 'filter', label: '候補を選別', goal: '候補を選別', deps: ['generate'], kind: 'filter' }] } },
+      { id: 'tournament', label: '複数案から選択', description: '', template: { name: '複数案から選択', nodes: [{ id: 'generate', label: '複数案を生成', goal: '複数案を生成: {{request}}', deps: [], kind: 'generate' }, { id: 'judge', label: '最良案を選択', goal: '最良案を選ぶ', deps: ['generate'], kind: 'judge' }] } },
+      { id: 'loop-until-done', label: '完了まで反復', description: '', template: { name: '完了まで反復', nodes: [{ id: 'work', label: '依頼を実行', goal: '{{request}}', deps: [], kind: 'work' }, { id: 'verify', label: '完了条件を確認', goal: '完了条件を確認', deps: ['work'], kind: 'verify' }], rework: [{ id: 'repeat-until-done', from: 'verify', to: 'work', trigger: 'verification-failed', instruction: '検証結果を反映して再実行する', maxIterations: 3, onExhausted: 'human' }] } },
+      { id: 'map-reduce', label: '分割して集約', description: '', template: { name: '分割して集約', nodes: [{ id: 'split', label: '処理対象を分割', goal: '分割: {{request}}', deps: [], kind: 'split' }] } },
+    ];
     const candidate = {
       schemaVersion: 1, status: 'candidate', summary: '確認工程の下書きを作りました', questions: [], assumptions: [], findings: [],
       candidate: { name: 'AI下書き', machine: 'ai-draft', purpose: '依頼内容を確認する', steps: [{ kind: 'agent', title: '内容を確認', detail: '依頼内容を確認する' }] },
@@ -92,6 +100,12 @@ else {
 }
 `, 'utf8');
     fs.chmodSync(executable, 0o755);
+    const flowExecutable = path.join(fakeBin, 'agent-flow');
+    fs.writeFileSync(flowExecutable, `#!/usr/bin/env node
+if (process.argv.includes('patterns')) process.stdout.write(${JSON.stringify(JSON.stringify(flowPatterns))});
+else process.stdout.write('{}');
+`, 'utf8');
+    fs.chmodSync(flowExecutable, 0o755);
   }
   fs.writeFileSync(path.join(userData, 'config.json'),
     JSON.stringify({ roots: [root], lastRoot: root, skillDir: '', agent: fakeAvailable ? 'fake' : 'claude', model: '' }), 'utf8');
@@ -234,6 +248,28 @@ else {
       win.once('dialog', (confirmation) => confirmation.accept());
       await win.click('#btn-home');
       await win.waitForSelector('.machine-card[data-open="smoke"]');
+
+      await win.click('[data-home-tab="flows"]');
+      await win.waitForSelector('[data-flow-pattern]');
+      const checkPattern = async (id, fixed, dynamic, text) => {
+        await win.selectOption('[data-flow-pattern]', id);
+        await win.waitForSelector('.flow-editor');
+        assert.strictEqual(await win.locator('.flow-node-card:not(.is-dynamic)').count(), fixed, `${id}: 固定工程数`);
+        assert.strictEqual(await win.locator('.flow-node-card.is-dynamic').count(), dynamic, `${id}: 動的工程数`);
+        assert.match(await win.textContent('.flow-editor'), text);
+        if (id === 'loop-until-done' && process.env.SMK_SCREENSHOT_FLOW_LOOP) {
+          await win.locator('.flow-rework-lane').scrollIntoViewIfNeeded();
+          await win.screenshot({ path: process.env.SMK_SCREENSHOT_FLOW_LOOP });
+        }
+        await win.click('[data-flow-close-editor]');
+        await win.waitForSelector('[data-flow-pattern]');
+      };
+      await checkPattern('classify-and-act', 1, 1, /分類結果に応じて実行.*実行時に生成/s);
+      await checkPattern('fan-out-and-synthesize', 1, 2, /要素ごとに実行.*結果を集約/s);
+      await checkPattern('generate-and-filter', 2, 0, /候補を生成.*候補を選別/s);
+      await checkPattern('tournament', 2, 0, /複数案を生成.*最良案を選択/s);
+      await checkPattern('loop-until-done', 2, 0, /反復.*検証に失敗したら.*1\. 依頼を実行.*最大 3 回/s);
+      await checkPattern('map-reduce', 1, 2, /要素ごとに実行.*結果を集約/s);
     }
 
     // 実際に描かれた文字にも内部の用語を出さない

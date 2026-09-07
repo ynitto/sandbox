@@ -35,14 +35,74 @@ PATTERN_LIST = list(PATTERNS)
 
 
 def pattern_catalog() -> list:
-    """Dashboard 等の選択 UI が読む標準パターンの正典。"""
+    """Dashboard 等の選択 UI が読む、役割単位の標準パターン。
+
+    実行時の並列数をここで固定すると、ひな形を開いた時点で同じ役割のカードが並び、
+    動的ワークフローなのに固定グラフに見える。動的に展開する classify / split は起点だけ、
+    候補生成は候補の集合を作る一工程として表し、実行結果のノード列とは分離する。
+    """
+    templates = {
+        "classify-and-act": {
+            "nodes": [{"id": "classify", "label": "依頼を分類", "goal": "分類: {{request}}",
+                       "deps": [], "kind": "classify"}],
+        },
+        "fan-out-and-synthesize": {
+            "nodes": [{"id": "split", "label": "並列実行する作業へ分割",
+                       "goal": "独立して実行できる作業へ分割: {{request}}",
+                       "deps": [], "kind": "split"}],
+        },
+        "adversarial-verification": {
+            "nodes": [
+                {"id": "generate", "label": "成果を生成", "goal": "{{request}}",
+                 "deps": [], "kind": "generate"},
+                {"id": "verify", "label": "成果を検証", "goal": "成果を批判的に検証",
+                 "deps": ["generate"], "kind": "verify"},
+            ],
+        },
+        "generate-and-filter": {
+            "nodes": [
+                {"id": "generate", "label": "候補を生成",
+                 "goal": "依頼に合う候補を必要な数だけ生成: {{request}}",
+                 "deps": [], "kind": "generate"},
+                {"id": "filter", "label": "候補を選別", "goal": "候補を基準で選別",
+                 "deps": ["generate"], "kind": "filter"},
+            ],
+        },
+        "tournament": {
+            "nodes": [
+                {"id": "generate", "label": "複数案を生成",
+                 "goal": "比較できる異なる案を必要な数だけ生成: {{request}}",
+                 "deps": [], "kind": "generate"},
+                {"id": "judge", "label": "最良案を選択", "goal": "複数案を比較して最良案を選ぶ",
+                 "deps": ["generate"], "kind": "judge"},
+            ],
+        },
+        "loop-until-done": {
+            "nodes": [
+                {"id": "work", "label": "依頼を実行", "goal": "{{request}}",
+                 "deps": [], "kind": "work"},
+                {"id": "verify", "label": "完了条件を確認", "goal": "完了条件を確認",
+                 "deps": ["work"], "kind": "verify"},
+            ],
+            "rework": [{
+                "id": "repeat-until-done", "from": "verify", "to": "work",
+                "trigger": "verification-failed", "instruction": "検証結果を反映して再実行する",
+                "maxIterations": 3, "onExhausted": "human",
+            }],
+        },
+        "map-reduce": {
+            "nodes": [{"id": "split", "label": "処理対象を分割",
+                       "goal": "処理対象の一覧へ分割: {{request}}",
+                       "deps": [], "kind": "split"}],
+        },
+    }
     return [{
         "id": pid,
         "label": PATTERN_LABELS[pid],
         "description": description,
         "template": {
             "name": PATTERN_LABELS[pid],
-            "nodes": _strategy_to_graph(pid, "{{request}}", 3, False),
+            **templates[pid],
         },
     } for pid, description in PATTERNS.items()]
 

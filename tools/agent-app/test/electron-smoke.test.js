@@ -49,6 +49,26 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     purpose: 'implementation', entry: ['review'], exit: ['review'],
     nodes: [{ id: 'review', label: '変更を確認', kind: 'work', goal: '{{request}} を確認する', deps: [], tier: 'auto' }],
   }, 'create');
+  const flowBus = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-flow-bus-'));
+  const flowRunId = 'app-history-test';
+  const flowRun = path.join(flowBus, 'runs', flowRunId);
+  fs.mkdirSync(path.join(flowBus, 'inbox'), { recursive: true });
+  fs.mkdirSync(path.join(flowRun, 'results'), { recursive: true });
+  fs.writeFileSync(path.join(flowBus, 'inbox', `${flowRunId}.json`), JSON.stringify({
+    id: flowRunId, title: '以前の並列レビュー', request: '過去の変更を確認する', submitter: 'agent-app',
+    readonly: true, submitted_at: '2026-09-06T01:00:00Z',
+    submitter_context: { root: repo, workflow: 'parallel-review', parameters: {}, agent: 'codex', model: 'gpt-test' },
+  }));
+  fs.writeFileSync(path.join(flowRun, 'meta.json'), JSON.stringify({
+    status: 'done', created_at: '2026-09-06T01:00:00Z', updated_at: '2026-09-06T01:01:00Z', request: '過去の変更を確認する',
+  }));
+  fs.writeFileSync(path.join(flowRun, 'graph.json'), JSON.stringify({
+    nodes: { review: { id: 'review', kind: 'work', goal: '過去の変更を確認する', deps: [] } },
+  }));
+  fs.writeFileSync(path.join(flowRun, 'results', 'review.json'), JSON.stringify({
+    status: 'done', output: '確認済み', finished_at: '2026-09-06T01:01:00Z',
+  }));
+  process.env.AGENT_APP_FLOW_BUS = flowBus;
   appStore.saveConfig(userData, { repos: [repo], lastRepo: repo, area: 'work' });
   const session = appStore.createSession(userData, {
     repo, cli: 'codex', model: 'gpt-test', policy: 'quality', tier: 'large', transport: 'headless',
@@ -85,6 +105,23 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     const composerBefore = await win.locator('#composer').boundingBox();
     await win.click('#sessions .list-pick');
     await win.locator('.answer-bubble').waitFor();
+    assert.strictEqual(await win.locator('#conversation-history').getAttribute('open'), '', '端末がない会話では履歴を主表示する');
+    const composerModeHeights = await win.locator('.composer-shell').evaluate((shell) => {
+      const message = document.getElementById('message-input');
+      const terminal = document.getElementById('terminal-keys');
+      const toolbar = shell.querySelector('.composer-toolbar');
+      const messageHeight = shell.getBoundingClientRect().height;
+      message.hidden = true;
+      toolbar.hidden = true;
+      terminal.hidden = false;
+      const terminalHeight = shell.getBoundingClientRect().height;
+      terminal.hidden = true;
+      toolbar.hidden = false;
+      message.hidden = false;
+      return { messageHeight, terminalHeight };
+    });
+    assert.ok(Math.abs(composerModeHeights.messageHeight - composerModeHeights.terminalHeight) <= 1,
+      `入力モードで高さが変わる: ${JSON.stringify(composerModeHeights)}`);
     assert.match(await win.locator('.msg.user').first().textContent(), /画面を確認して/);
     assert.match(await win.locator('.answer-bubble').textContent(), /確認できました/);
     assert.strictEqual(await win.locator('.response-disclosure.thinking').getAttribute('open'), null, '完了後の思考は閉じる');
@@ -139,21 +176,38 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.locator('#tasks').textContent(), /リリース確認/);
     // 定義がある既存タスクは、教示ではなく実行詳細から開く。名前の横に「利用可能」が付く
     await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
-    assert.match(await workspace.locator('.execution-title').textContent(), /タスク.*リリース確認.*利用可能/s);
+    assert.match(await workspace.locator('.execution-title').textContent(), /リリース確認.*利用可能/s);
+    assert.strictEqual(await workspace.locator('.execution-title .eyebrow').count(), 0, '上位ヘッダーと重なる「タスク」ラベルを表示しない');
     assert.strictEqual(await workspace.locator('.teaching-page').count(), 0, '既存定義を教示画面で開かない');
     assert.strictEqual(await workspace.locator('.teaching-page-head').isHidden(), true, 'タスクの見出しがサイドバーと二重に出ている');
-    // 「AIに変更を相談」で教示画面へ。状態は利用可能のまま、進行バーは出ない
-    await workspace.locator('[data-run-teach]').click();
-    await workspace.locator('.teaching-page').waitFor({ timeout: 20000 });
-    assert.match(await workspace.locator('.teaching-head').textContent(), /タスクの変更を相談.*リリース確認.*利用可能/s);
+    assert.deepStrictEqual(await workspace.locator('.task-detail-tabs [role="tab"]').allTextContents(), ['概要', '手順', 'AI相談', '履歴']);
+    const portalTabsBox = await workspace.locator('.task-detail-tabs').boundingBox();
+    const portalPanelBox = await workspace.locator('.task-tab-panel').boundingBox();
+    const assertTaskLayout = async (name) => {
+      const tabsBox = await workspace.locator('.task-detail-tabs').boundingBox();
+      const panelBox = await workspace.locator('.task-tab-panel').boundingBox();
+      const close = (left, right) => Math.abs(left - right) <= 1;
+      assert.ok(portalTabsBox && tabsBox
+        && close(tabsBox.x, portalTabsBox.x) && close(tabsBox.y, portalTabsBox.y) && close(tabsBox.width, portalTabsBox.width),
+      `${name}でタブ位置が変わる: ${JSON.stringify({ portalTabsBox, tabsBox })}`);
+      assert.ok(portalPanelBox && panelBox
+        && close(panelBox.x, portalPanelBox.x) && close(panelBox.width, portalPanelBox.width),
+      `${name}で左右のパディングが変わる: ${JSON.stringify({ portalPanelBox, panelBox })}`);
+    };
+    // AI相談もタスク詳細のタブ内で開く。状態は利用可能のまま、進行バーは出ない
+    await workspace.locator('[data-task-tab="teach"]').click();
+    await workspace.locator('.teaching-workspace').waitFor({ timeout: 20000 });
+    await assertTaskLayout('AI相談');
+    assert.match(await workspace.locator('.task-detail-shell').textContent(), /リリース確認.*利用可能/s);
+    assert.strictEqual(await workspace.locator('.task-detail-tabs').count(), 1, 'AI相談でもタスクタブを維持する');
     assert.strictEqual(await workspace.locator('.teaching-progress').count(), 0);
-    assert.doesNotMatch(await workspace.locator('.teaching-page').textContent(), /仕事|試運転が必要/);
+    assert.doesNotMatch(await workspace.locator('.task-detail-shell').textContent(), /仕事|試運転が必要/);
     if (process.env.AGENT_APP_TEACHING_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
     }
-    await workspace.locator('[data-teach-run]').click();
+    await workspace.locator('[data-task-tab="overview"]').click();
     await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
-    assert.match(await workspace.locator('.execution-title').textContent(), /タスク.*リリース確認/s);
+    assert.match(await workspace.locator('.execution-title').textContent(), /リリース確認/s);
     await workspace.locator('#task-run-settings').waitFor();
     const runToolbar = workspace.locator('.run-toolbar');
     await runToolbar.waitFor();
@@ -181,8 +235,19 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     }
     await workspace.locator('[data-task-tab="steps"]').click();
     await workspace.locator('[data-step="0"]').waitFor();
+    await assertTaskLayout('手順');
     assert.match(await workspace.locator('[data-step="0"]').textContent(), /変更を確認/);
-    await workspace.locator('#btn-home').click();
+    assert.strictEqual(await workspace.locator('.task-detail-tabs').count(), 1, '手順でもタスクタブを維持する');
+    assert.strictEqual(await workspace.locator('#btn-home').isHidden(), true, '埋め込み編集では戻るボタンを表示しない');
+    if (process.env.AGENT_APP_TASK_STEPS_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_TASK_STEPS_SCREENSHOT });
+    }
+    await workspace.locator('[data-task-tab="history"]').click();
+    await workspace.locator('.execution-card').waitFor();
+    await assertTaskLayout('履歴');
+    if (process.env.AGENT_APP_TASK_HISTORY_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_TASK_HISTORY_SCREENSHOT });
+    }
     await win.click('#session-new');
     await workspace.locator('.teaching-create').waitFor();
     assert.match(await workspace.locator('.teaching-create').textContent(), /新しいタスクを教える/);
@@ -193,6 +258,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.locator('#workflows').textContent(), /並列レビュー/);
     await workspace.locator('.flow-overview').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.flow-overview').textContent(), /変更を確認/);
+    await workspace.locator('[data-flow-tab="history"]').click();
+    await workspace.locator('.flow-history').waitFor();
+    assert.match(await workspace.locator('.flow-history').textContent(), /完了.*以前の並列レビュー/s);
+    await workspace.locator('.flow-history [data-flow-run]').click();
+    await workspace.locator('.flow-run-nodes').waitFor();
+    assert.match(await workspace.locator('.execution-title').textContent(), /以前の並列レビュー/);
+    await workspace.locator('[data-flow-back-run]').click();
     await workspace.locator('[data-flow-edit]').click();
     await workspace.locator('.flow-node-card').waitFor();
     assert.strictEqual(await workspace.locator('.flow-node-card').count(), 1, 'ワークフローの工程を編集できない');

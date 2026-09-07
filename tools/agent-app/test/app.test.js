@@ -85,6 +85,17 @@ test('会話開始前後で本文と入力欄のグリッド位置を変えな�
   assert.match(renderer, /\$\('conversation-start'\)\.hidden\s*=\s*!!cur/);
 });
 
+test('入力モード切替で入力ドックの基準高を変えず、会話履歴は閉じて始める', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const history = html.match(/<details id="conversation-history"[^>]*>/)?.[0] || '';
+  assert.ok(history && !/\sopen(?:\s|>)/.test(history), '会話履歴を初期状態で開かない');
+  assert.match(css, /\.composer-shell\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:\s*34px minmax\(82px,\s*auto\) 40px/s);
+  assert.match(css, /\.terminal-keys\s*\{[^}]*grid-row:\s*2\s*\/\s*4/s);
+  assert.doesNotMatch(renderer, /conversation-history'\)\.open\s*=\s*false/, '再描画で利用者の開閉状態を上書きしない');
+});
+
 test('会話一覧の各行から対象セッションを削除できる', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
@@ -258,13 +269,17 @@ test('領域切替中は前の領域の操作を隠し、共通見出しを先�
   assert.match(css, /\.area-head\s*\{[^}]*min-height:\s*60px/);
 });
 
-test('タスク詳細は概要・手順・履歴に分かれ、定期実行は概要で管理する', () => {
+test('タスク詳細は概要・手順・AI相談・履歴のタブに統一し、定期実行は概要で管理する', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
   assert.match(renderer, /detailTab:\s*'overview'/);
   assert.match(renderer, /class="task-detail-tabs"[^>]*role="tablist"/);
   assert.match(renderer, /data-task-tab="overview"[\s\S]*>概要</);
   assert.match(renderer, /data-task-tab="steps"[\s\S]*>手順</);
+  assert.match(renderer, /data-task-tab="teach"[\s\S]*>AI相談</);
   assert.match(renderer, /data-task-tab="history"[\s\S]*>履歴</);
+  assert.match(renderer, /function taskDetailShellHtml\(/);
+  assert.match(renderer, /function bindTaskDetailTabs\(/);
+  assert.match(renderer, /teachingFeature\.detailHtml\(\)/);
   assert.match(renderer, /state\.execution\.detailTab === 'history'/);
   assert.match(renderer, /state\.execution\.detailTab === 'overview'[\s\S]*<h3>定期実行<\/h3>/);
   assert.match(renderer, /querySelectorAll\('\[data-task-tab\]'\)/);
@@ -383,6 +398,16 @@ test('共有編集面へ AI ワークフローの画面と IPC を同じ境界�
   assert.ok(preload.includes("invoke('automation:flow:run:start'"));
   assert.ok(preload.includes("invoke('automation:flow:run:respond'"));
   assert.ok(preload.includes("invoke('automation:flow:run:openDelivery'"));
+});
+
+test('ワークフロー詳細は選択中リポジトリの実行履歴へ移動できる', () => {
+  const flow = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/flow.js'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/automation-workbench.css'), 'utf8');
+  assert.ok(flow.includes('data-flow-tab="overview"') && flow.includes('data-flow-tab="history"'));
+  assert.ok(flow.includes('function workflowRuns('), '選択中ワークフローへ履歴を絞る');
+  assert.ok(flow.includes('data-flow-run'), '履歴から既存の実行詳細を開く');
+  assert.match(flow, /class="execution-card flow-history"/);
+  assert.match(css, /:host \.execution-list,[\s\S]*:host \.flow-home-head\s*\{\s*display:\s*none/);
 });
 
 test('会話の依頼と新しいタスクを同じAI教示画面へつなぐ', () => {
