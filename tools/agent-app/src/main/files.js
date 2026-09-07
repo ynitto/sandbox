@@ -206,13 +206,49 @@ async function buildIndex(root, { now = Date.now, maxEntries = INDEX_MAX_ENTRIES
   return { at: now(), entries, truncated };
 }
 
-async function indexFor(root, { refresh = false } = {}) {
+// 相対パスの並び（`git ls-files` の出力など）から索引を作る（純関数）。途中のフォルダも
+// 載せ、浅い順 → 名前順に並べる。maxEntries を超えたら打ち切って truncated を立てる。
+function indexFromPaths(paths, { maxEntries = INDEX_MAX_ENTRIES } = {}) {
+  const seen = new Set();
+  const rows = [];
+  for (const raw of Array.isArray(paths) ? paths : []) {
+    const rel = String(raw || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+    if (!rel) continue;
+    const parts = rel.split('/');
+    for (let i = 1; i < parts.length; i += 1) {
+      const dir = parts.slice(0, i).join('/');
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      rows.push({ rel: dir, name: parts[i - 1], type: 'dir', language: '', depth: i });
+    }
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    rows.push({ rel, name: parts[parts.length - 1], type: 'file', language: languageOf(rel), depth: parts.length });
+  }
+  rows.sort((a, b) => a.depth - b.depth || a.rel.localeCompare(b.rel, 'en'));
+  const truncated = rows.length > maxEntries;
+  return { at: Date.now(), entries: rows.slice(0, maxEntries).map(({ depth, ...e }) => e), truncated };
+}
+
+// 索引を作る。lister（相対パスの並びを返す非同期関数）があればそれを使い、null を返したり
+// 失敗したら自分で歩く。Windows で \\wsl$\ のリポジトリを読むとき、ホスト（WSL）の中で
+// `git ls-files` を 1 回撃つほうが、9P 越しに何千回も readdir するより桁で速い。
+async function makeIndex(root, { lister = null } = {}) {
+  if (typeof lister === 'function') {
+    let paths = null;
+    try { paths = await lister(); } catch { paths = null; }
+    if (Array.isArray(paths)) return indexFromPaths(paths);
+  }
+  return buildIndex(root);
+}
+
+async function indexFor(root, { refresh = false, lister = null } = {}) {
   const hit = indexes.get(root);
   if (hit && !refresh) {
     if (hit.promise) return hit.promise;
     if (Date.now() - hit.at < INDEX_TTL_MS) return hit;
   }
-  const promise = buildIndex(root).then((built) => { indexes.set(root, built); return built; }, (err) => { indexes.delete(root); throw err; });
+  const promise = makeIndex(root, { lister }).then((built) => { indexes.set(root, built); return built; }, (err) => { indexes.delete(root); throw err; });
   indexes.set(root, { promise });
   return promise;
 }
@@ -236,12 +272,13 @@ function searchIndex(entries, query, limit) {
 
 // 名前で探す（ツリーの絞り込み用）。最大 limit 件。索引を使い回すので 2 回目からは歩かない。
 //   refresh … 索引を捨てて作り直す（ツリーの「更新」）
+//   lister  … 索引の材料（相対パスの並び）を返す非同期関数。無ければ自分で歩く
 // 返り値: { hits, truncated（索引が途中で打ち切られた）, indexed（索引の件数） }
-async function find(repo, query, limit = 200, { refresh = false } = {}) {
+async function find(repo, query, limit = 200, { refresh = false, lister = null } = {}) {
   const q = String(query || '').trim().toLowerCase();
   const { root } = await resolveInsideAsync(repo, '');
   if (!q && !refresh) return { hits: [], truncated: false, indexed: 0 };
-  const index = await indexFor(root, { refresh });
+  const index = await indexFor(root, { refresh, lister });
   return { hits: searchIndex(index.entries, q, limit), truncated: index.truncated, indexed: index.entries.length };
 }
 
@@ -253,6 +290,6 @@ function forgetIndex(repo) {
 }
 
 module.exports = {
-  languageOf, listDir, readFile, find, resolveInside, resolveInsideAsync, buildIndex, searchIndex, forgetIndex, mapLimit,
+  languageOf, listDir, readFile, find, resolveInside, resolveInsideAsync, buildIndex, indexFromPaths, searchIndex, forgetIndex, mapLimit,
   MAX_TEXT, EXT_LANG, NAME_LANG, SKIP_DIRS, SEARCH_SKIP_DIRS, SEARCH_MAX_DEPTH, INDEX_MAX_ENTRIES, INDEX_TTL_MS,
 };

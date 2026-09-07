@@ -843,3 +843,24 @@ test('店: 会話一覧は変わっていないファイルを読み直さず、
   store.removeSession(ud, a.id);
   assert.deepStrictEqual(store.listSessions(ud, '/r'), []);
 });
+
+test('ファイル: 索引は相対パスの並び（WSL 内の git ls-files）からも作れ、失敗すれば fs で歩く', async () => {
+  const idx = files.indexFromPaths(['src/deep/b.ts', 'src/a.ts', 'README.md', './src/a.ts', 'dir\\win.txt', '']);
+  assert.deepStrictEqual(idx.entries.map((e) => `${e.type}:${e.rel}`),
+    ['dir:dir', 'file:README.md', 'dir:src', 'file:dir/win.txt', 'file:src/a.ts', 'dir:src/deep', 'file:src/deep/b.ts'], '途中のフォルダも載せ、浅い順 → 名前順（大文字小文字を無視）');
+  assert.strictEqual(idx.entries.find((e) => e.rel === 'src/a.ts').language, 'typescript');
+  assert.strictEqual(idx.truncated, false);
+  assert.strictEqual(files.indexFromPaths(['a', 'b', 'c'], { maxEntries: 2 }).truncated, true);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-lister-'));
+  fs.writeFileSync(path.join(repo, 'real.txt'), '');
+  const listed = await files.find(repo, 'ghost/', 200, { refresh: true, lister: async () => ['ghost/from-git.txt'] });
+  assert.deepStrictEqual(listed.hits.map((h) => h.rel), ['ghost/from-git.txt'], 'lister の並びをそのまま索引にする（fs には無いパス）');
+  const fallback = await files.find(repo, 'real', 200, { refresh: true, lister: async () => null });
+  assert.deepStrictEqual(fallback.hits.map((h) => h.rel), ['real.txt'], 'lister が null なら fs で歩く');
+  const failed = await files.find(repo, 'real', 200, { refresh: true, lister: async () => { throw new Error('git がない'); } });
+  assert.deepStrictEqual(failed.hits.map((h) => h.rel), ['real.txt'], 'lister が失敗しても fs で歩く');
+  files.forgetIndex(repo);
+  const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
+  assert.match(ipc, /host\.isWslUnc\(dirs\.fsDir\)/, '\\\\wsl$\\ のリポジトリだけ WSL の中で git ls-files を撃つ');
+  assert.match(ipc, /'ls-files', '--cached', '--others', '--exclude-standard', '-z'/);
+});

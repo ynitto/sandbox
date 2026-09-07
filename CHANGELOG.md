@@ -23,10 +23,15 @@ Windows でリポジトリを登録すると起動が重かった。原因はフ
   `build` `.venv` …）に潜らず、100,000 件 / 10 秒で打ち切る（浅い階層は必ず載る）。前方一致 → 部分一致、
   `/` を含めばパス検索。画面は最後に打った検索の返事だけを出し、ツリーの「更新」で索引を捨てる。
 - **会話一覧は mtime キャッシュ**（会話ファイルはスナップショットで大きい）。
+- **`\\wsl$\` のリポジトリの索引は WSL の中で作る。** Windows 側の fs から 9P 越しに歩かず、常駐シェルで
+  `git ls-files --cached --others --exclude-standard` を 1 回撃つ（相対パスなので表記の変換は要らない。
+  git リポジトリでなければ fs で歩く）。`C:\` と Linux / macOS は fs のまま。
 - **`herd` を仮想エージェントとして選べる。** agent-dashboard と同じ 1 語で、`agents/herd.json` は作らず
-  一族（`command[0] === 'agent-herd'`）から導く。会話は Ask → ollama、作業フォルダのファイル添付 → aider、
-  それ以外 → ollama。タスク・ワークフローの実行 → aider、AI 支援 → ollama。一族の外へは倒さない。
-  メッセージに実際の `cli` と `family: 'herd'` を残す。statemachine-maker の `registerIpcHandlers` に
+  一族（`command[0] === 'agent-herd'`）から導く。**agent-app は aider と ollama を選ばず、入口を agent-herd
+  の 1 つに揃える。** 会話は一族の共通 TUI を 1 本開き、Ask は `/find`、作業フォルダのファイルを添えた依頼は
+  `/edit` を本文の先頭に付けて送る（CLI を入れ替えないので文脈が続く）。タスクと AI 支援は `--agent-cli` /
+  `--agent` を渡さず agent-herd の既定に任せ、agent-flow だけ harness の既定と同じ aider を渡す。一族の外へは
+  倒さない。メッセージに実際の `cli` と `family: 'herd'` を残す。statemachine-maker の `registerIpcHandlers` に
   `agentDefinitions` と `hooks.resolveAgent` を足した（maker 単体は従来どおり）。
 
 ### agent-app / statemachine-maker: 既存のステートマシンを「利用可能」として実行詳細から開く

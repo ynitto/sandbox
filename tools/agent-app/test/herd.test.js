@@ -36,32 +36,37 @@ test('herd: 一族は command[0] が agent-herd の定義から機械的に導�
   assert.strictEqual(herd.isMember(entry), false, '仮想の行は一族の一員として数えない');
 });
 
-test('herd: 依頼の形で aider / ollama を選び分ける', () => {
+test('herd: 会話は共通 TUI を 1 本開き、用途はスラッシュ行で表す（CLI を入れ替えない）', () => {
   assert.strictEqual(herd.purposeOf({ readonly: true, workFiles: true }), 'ask');
   assert.strictEqual(herd.purposeOf({ readonly: false, workFiles: true }), 'edit');
   assert.strictEqual(herd.purposeOf({ readonly: false, workFiles: false }), 'work');
   assert.strictEqual(herd.hasWorkFiles([{ id: 'x', name: 'shot.png' }]), false, '写した添付は参考資料');
   assert.strictEqual(herd.hasWorkFiles([{ rel: 'src/a.js', name: 'a.js' }]), true);
   const defs = family();
-  assert.strictEqual(herd.resolve('ask', defs).cli, 'ollama');
-  assert.strictEqual(herd.resolve('edit', defs).cli, 'aider');
-  assert.strictEqual(herd.resolve('work', defs).cli, 'ollama');
-  assert.strictEqual(herd.resolve('task', defs).cli, 'aider');
-  assert.strictEqual(herd.resolve('plan', defs).cli, 'ollama');
-  assert.strictEqual(herd.resolve('unknown', defs).purpose, 'work');
-  assert.ok(herd.resolve('edit', defs).reason);
-  assert.strictEqual(herd.resolve('edit', defs).fallback, false);
+  for (const purpose of ['ask', 'edit', 'work', 'unknown']) {
+    assert.strictEqual(herd.resolveChat(purpose, defs).cli, 'ollama', `${purpose}: 起動するのは agent-herd の既定バックエンド`);
+  }
+  assert.strictEqual(herd.resolveChat('ask', defs).slash, '/find');
+  assert.strictEqual(herd.resolveChat('edit', defs).slash, '/edit');
+  assert.strictEqual(herd.resolveChat('work', defs).slash, '');
+  assert.strictEqual(herd.resolveChat('unknown', defs).purpose, 'work');
+  assert.ok(herd.resolveChat('edit', defs).reason);
+  assert.strictEqual(herd.withSlash('/edit', 'この関数を直して'), '/edit\nこの関数を直して', 'スラッシュ行は本文の先頭');
+  assert.strictEqual(herd.withSlash('', 'そのまま'), 'そのまま');
 });
 
-test('herd: 使えない一員は飛ばし、一族の外へは倒さない', () => {
-  const onlyOllama = family({ aider: false });
-  const picked = herd.resolve('edit', onlyOllama);
-  assert.strictEqual(picked.cli, 'ollama');
-  assert.strictEqual(picked.fallback, true);
-  assert.throws(() => herd.resolve('work', family({ aider: false, ollama: false })), /利用できません/);
-  assert.throws(() => herd.resolve('work', [{ name: 'claude', command: 'claude', available: true }]), /定義/);
-  assert.strictEqual(herd.resolveName('claude', 'work', family()), 'claude');
-  assert.strictEqual(herd.resolveName('HERD', 'work', family()), 'ollama');
+test('herd: 一族の外へは倒さない。既定バックエンドが無ければ一族の他の定義（同じ共通 TUI）', () => {
+  assert.strictEqual(herd.resolveChat('work', family({ ollama: false })).cli, 'aider');
+  assert.throws(() => herd.resolveChat('work', family({ aider: false, ollama: false })), /利用できません/);
+  assert.throws(() => herd.resolveChat('work', [{ name: 'claude', command: 'claude', available: true }]), /定義/);
+});
+
+test('herd: タスクと AI 支援は名前を渡さず agent-herd の既定に任せ、agent-flow だけ harness の既定を渡す', () => {
+  assert.deepStrictEqual(herd.resolveAutomation('task').agent, '');
+  assert.deepStrictEqual(herd.resolveAutomation('plan').agent, '');
+  assert.deepStrictEqual(herd.resolveAutomation('flow').agent, herd.HARNESS_DEFAULT);
+  assert.strictEqual(herd.HARNESS_DEFAULT, 'aider');
+  assert.strictEqual(herd.CHAT_BACKEND, 'ollama');
 });
 
 test('herd: 名前の並びには一族が居るときだけ herd を足す', () => {
@@ -71,30 +76,37 @@ test('herd: 名前の並びには一族が居るときだけ herd を足す', ()
   assert.deepStrictEqual(herd.withVirtualName(['aider', 'herd'], defs), ['aider', 'herd']);
 });
 
-test('herd: 会話は listAgents に仮想の行を足し、ターンごとに写して要求名を会話に残す', () => {
+test('herd: 会話は listAgents に仮想の行を足し、ターンごとにスラッシュ行を付けて要求名を会話に残す', () => {
   const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
   assert.match(ipc, /const virtual = herd\.listEntry\(marked\)/);
   assert.match(ipc, /const base = concreteCli\(requested, agents, \{ attachments: p\.attachments \}\)/);
-  assert.match(ipc, /cli: base\.requested \|\| base\.cli/, '次のターンの既定は herd のまま（添付の有無で選び直す）');
+  assert.match(ipc, /cli: base\.requested \|\| base\.cli/, '次のターンの既定は herd のまま');
   assert.match(ipc, /role: 'user', text, cli, family,/);
   assert.match(ipc, /role: 'assistant', cli, family,/);
-  assert.match(ipc, /if \(herd\.isHerd\(want\.cli\)\) want = /, '会話を開いただけ・再起動でも herd を写す');
+  assert.match(ipc, /herd\.withSlash\(slash, turn\.prompt\)/, 'ヘッドレスでも本文の先頭にスラッシュ行');
+  assert.match(ipc, /herd\.withSlash\(slash, unseen\.length \? agentCli\.replayPrompt/, 'tmux では履歴の再送より前にスラッシュ行');
+  assert.match(ipc, /if \(herd\.isHerd\(want\.cli\)\) want = /, '会話を開いただけ・再起動でも共通 TUI を開く');
 });
 
 test('herd: タスクとワークフローは共有編集面のフックで一覧へ足し、起動前に写す', async () => {
   const makerIpc = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'main', 'ipc.js'), 'utf8');
+  const makerTools = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'main', 'tools.js'), 'utf8');
   assert.match(makerIpc, /options\.agentDefinitions/);
   assert.match(makerIpc, /options\.hooks && options\.hooks\.resolveAgent/);
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'task', root\)/);
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'plan', root\)/);
+  assert.match(makerIpc, /resolveAgent\(requestedAgent, 'flow', root\)/);
   assert.match(makerIpc, /agentFlow\.start\(\{ \.\.\.p, agent \}/, 'agent-flow の --agent-cli には実在の定義名を渡す');
+  assert.match(makerTools, /\.\.\.\(agent \? \['--agent', String\(agent\)\] : \[\]\)/, 'AI 支援は agent が空なら --agent を渡さない');
   const adapter = fs.readFileSync(path.join(SRC, 'main/automation/ipc.js'), 'utf8');
   assert.match(adapter, /agentDefinitions,\s*hooks: \{\s*resolveAgent,/);
+  assert.match(adapter, /agentCli\.load\(agent \|\| herd\.HARNESS_DEFAULT, root\)/);
   const capture = async () => ({ ok: true, stdout: JSON.stringify({ definitions: ['aider', 'claude', 'ollama'] }) });
   assert.deepStrictEqual(await automationIpc.agentDefinitions({ cwd: '', capture }), ['aider', 'claude', 'ollama', 'herd']);
   const none = async () => ({ ok: true, stdout: JSON.stringify({ definitions: ['claude'] }) });
   assert.deepStrictEqual(await automationIpc.agentDefinitions({ cwd: '', capture: none }), ['claude']);
   assert.deepStrictEqual(automationIpc.resolveAgent({ agent: 'claude', purpose: 'task' }), { agent: 'claude' });
-  assert.strictEqual(automationIpc.resolveAgent({ agent: 'herd', purpose: 'task' }).agent, 'aider', 'タスク・ワークフローの実行は編集役から');
-  assert.strictEqual(automationIpc.resolveAgent({ agent: 'herd', purpose: 'plan' }).agent, 'ollama', 'AI 支援（計画）はツールループから');
+  assert.strictEqual(automationIpc.resolveAgent({ agent: 'herd', purpose: 'task' }).agent, '', 'タスクは --agent-cli を渡さない');
+  assert.strictEqual(automationIpc.resolveAgent({ agent: 'herd', purpose: 'plan' }).agent, '', 'AI 支援は --agent を渡さない');
+  assert.strictEqual(automationIpc.resolveAgent({ agent: 'herd', purpose: 'flow' }).agent, 'aider', 'agent-flow には harness の既定');
 });

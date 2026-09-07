@@ -3,50 +3,44 @@
 // `herd` — ローカル実行系（agent-herd の一族）を 1 語で指す**仮想エージェント**。
 //
 // agent-dashboard の実行レベルでは、ローカルを使う段に `herd` と書けば、用途ごとの実測
-// （qualifications）が aider / ollama とモデルを決める（herd-family.js）。agent-app の
-// 会話・タスク・ワークフローには「用途」の軸が無い——依頼はぜんぶ「作業（act）」か
-// 「質問（Ask）」で、実測の台帳も読まない。それでも `herd` を選べるようにするのは、
-// 設定する人が aider と ollama を選び分けなくてよいようにするためで、選び分けの規則を
-// ここに 1 つだけ置く。
+// （qualifications）が aider / ollama とモデルを決める（herd-family.js）。agent-app には
+// その用途の軸も実測の台帳も無い。それでも `herd` を選べるようにするのは、設定する人が
+// aider と ollama を選び分けなくてよいようにするためである。
 //
 // **一族は定義から機械的に導く。** `agents/<name>.json` の `command[0]`（対話起動なら
 // `interactive.command[0]`）が `agent-herd` の定義が一族である。`agents/herd.json` は
 // 作らない（dashboard・agentcore と同じ規則。作ると一族の判定と衝突する）。
 //
-// **一族の中で違うのは「編集・実装を誰がやるか」の 1 点だけ**（agent-herd `defs` の
-// 役割行と同じ読み方）。それ以外の用途（計画・評価・抽出・検証…）は定義の `variants` が
-// どちらを入口にしても同じ profile（ollama-json 等）へ振り替える。
+// **agent-app は aider と ollama を選ばない。入口は agent-herd の 1 つで、用途は
+// agent-herd 自身の作法で伝える。**
 //
-//   aider  … 渡したファイルを直す編集役（自分では探索しない。single-shot）
-//   ollama … 自分で調べて実行するツールループ（bash。Ask では読み取り専用）
+//   会話 … 一族の共通 TUI（agent-herd の既定バックエンド = ollama の定義）を **1 本**開き、
+//          用途はスラッシュの実行形（agentcore/slashroute の種別 B）で本文の先頭に書く:
+//            Ask（読み取り専用）                       → `/find`（読み取り専用の道具で調べる）
+//            実行・作業フォルダの中のファイルを添付   → `/edit`（編集ハーネスへ回す。どの
+//                                                       エージェントで直すかは宣言側が決める）
+//            実行・添付なし                            → そのまま（ツールループ）
+//          ターンごとに CLI を入れ替えないので、tmux セッションと文脈はそのまま続く。
+//   タスク … `agent-herd harness statemachine` の `--agent-cli` を**渡さない**（agent-herd の
+//          既定と宣言に任せる）。AI 支援（`agent-herd --purpose plan`）も `--agent` を渡さない。
+//   ワークフロー … agent-flow は `--agent-cli` を要求し、省くとホスト設定（kiro 等）へ落ちる
+//          ので、harness の既定と同じ aider を渡す（用途別の振り替えは定義の variants）。
 //
-// なので選び分けは**依頼の形**で決める:
-//   ask   … 読み取り専用（Ask）                       → ollama（readonly が enforced。--think on）
-//   edit  … 作業フォルダの中のファイルを添えた作業依頼   → aider（添えたファイルを直す）
-//   work  … ファイルを添えない作業依頼                  → ollama（自分で探して直す）
-//   task  … タスク（ステートマシン）・ワークフローの実行  → aider（dashboard の work 用途と同じ既定）
-//   plan  … AI 支援（計画。読み取り専用）               → ollama（variants が ollama-json へ回す）
-// 候補が使えなければ一族の中で次の候補へ倒す（一族の外へは倒さない。ADR-3）。
 // 解決結果（どれになったか）はメッセージに `family: 'herd'` と実際の `cli` で残す。
 
 const HERD = 'herd';
 const ENTRYPOINT = 'agent-herd';
+// agent-herd のトップレベル入口（引数なし＝共通 TUI）の既定バックエンド（herdcli.DEFAULT_CHAT_CLI）。
+const CHAT_BACKEND = 'ollama';
+// `agent-herd harness` の `--agent-cli` 既定。agent-flow へ渡す名前もこれに揃える。
+const HARNESS_DEFAULT = 'aider';
 
-const PREFERENCE = {
-  ask: ['ollama', 'aider'],
-  edit: ['aider', 'ollama'],
-  work: ['ollama', 'aider'],
-  task: ['aider', 'ollama'],
-  plan: ['ollama', 'aider'],
-};
-const PURPOSES = Object.keys(PREFERENCE);
-
+// 会話の用途 → 本文の先頭に置くスラッシュ行（'' はそのまま）。
+const SLASH = { ask: '/find', edit: '/edit', work: '' };
 const REASON = {
-  ask: '読み取り専用の依頼は、自分で調べて答えるツールループ',
-  edit: '作業フォルダのファイルを添えた依頼は、そのファイルを直す編集役',
-  work: 'ファイルを添えない作業依頼は、自分で探して直すツールループ',
-  task: 'タスク・ワークフローの実行は編集役を入口にする（他の用途は定義の variants が振り替える）',
-  plan: '計画・相談は読み取り専用のツールループ',
+  ask: '読み取り専用の依頼は、共通 TUI に /find（読み取り専用の道具）で送る',
+  edit: '作業フォルダのファイルを添えた依頼は、共通 TUI に /edit（編集ハーネス）で送る',
+  work: 'ファイルを添えない作業依頼は、共通 TUI のツールループにそのまま送る',
 };
 
 function isHerd(name) {
@@ -71,32 +65,39 @@ function purposeOf({ readonly = false, workFiles = false } = {}) {
 }
 
 // 添付の並びに作業フォルダの中のファイルがあるか（userData へ写した添付 { id } は数えない——
-// それは参考資料で、aider が直す対象ではない）。
+// それは参考資料で、編集ハーネスが直す対象ではない）。
 function hasWorkFiles(attachments) {
   return (Array.isArray(attachments) ? attachments : []).some((a) => a && typeof a === 'object' && a.rel);
 }
 
-// 一族の中から用途に合う定義を選ぶ。使える（available）ものが無ければ理由を言って断る。
-function resolve(purpose, entries) {
-  const kind = PURPOSES.includes(purpose) ? purpose : 'work';
+// 会話: 共通 TUI を開く定義（agent-herd の既定バックエンド。無ければ一族の他の定義——
+// どれも同じ共通 TUI を持つ）と、用途を表すスラッシュ行。
+function resolveChat(purpose, entries) {
+  const kind = Object.hasOwn(SLASH, purpose) ? purpose : 'work';
   const family = members(entries);
   if (!family.length) throw new Error(`${HERD} を使うには agent-herd 一族の定義（aider / ollama）が必要です`);
-  const order = PREFERENCE[kind];
-  const ranked = [
-    ...order.map((name) => family.find((m) => m.name === name)).filter(Boolean),
-    ...family.filter((m) => !order.includes(m.name)),
-  ];
-  const usable = ranked.find((m) => m.available) || null;
-  if (!usable) {
+  const usable = family.filter((m) => m.available);
+  if (!usable.length) {
     throw new Error(`${HERD} の一族（${family.map((m) => m.name).join(' / ')}）がこの実行環境で利用できません`
       + '（tools/agent-tools/install.sh で agent-herd を PATH に通してください）');
   }
-  return { cli: usable.name, purpose: kind, reason: REASON[kind], fallback: usable.name !== ranked[0].name };
+  const picked = usable.find((m) => m.name === CHAT_BACKEND) || usable[0];
+  return { cli: picked.name, purpose: kind, slash: SLASH[kind], reason: REASON[kind] };
 }
 
-// 名前が `herd` ならその用途で解決し、そうでなければそのまま返す。
-function resolveName(name, purpose, entries) {
-  return isHerd(name) ? resolve(purpose, entries).cli : String(name || '');
+// スラッシュ行を本文の先頭に置く（slashroute は「本文の先頭から連続する /name 行」を読む）。
+function withSlash(slash, prompt) {
+  const line = String(slash || '').trim();
+  return line ? `${line}\n${String(prompt || '')}` : String(prompt || '');
+}
+
+// タスク・ワークフロー・AI 支援: agent-herd へ渡す名前。'' は「渡さない（既定に任せる）」。
+//   task … `agent-herd harness statemachine`（--agent-cli を省く）
+//   plan … `agent-herd --purpose plan`（--agent を省く）
+//   flow … agent-flow の `--agent-cli`（省けないので harness の既定と同じ aider）
+function resolveAutomation(purpose) {
+  if (purpose === 'flow') return { agent: HARNESS_DEFAULT, reason: 'agent-flow は --agent-cli を要求するので harness の既定（aider）を渡す' };
+  return { agent: '', reason: 'agent-herd の既定と宣言に任せる（--agent-cli を渡さない）' };
 }
 
 // 一覧へ足す仮想の 1 行。一族の定義が 1 つも無ければ null（出さない）。
@@ -123,4 +124,7 @@ function withVirtualName(names, entries) {
   return [...list, HERD];
 }
 
-module.exports = { HERD, ENTRYPOINT, PREFERENCE, PURPOSES, isHerd, isMember, members, purposeOf, hasWorkFiles, resolve, resolveName, listEntry, withVirtualName };
+module.exports = {
+  HERD, ENTRYPOINT, CHAT_BACKEND, HARNESS_DEFAULT, SLASH,
+  isHerd, isMember, members, purposeOf, hasWorkFiles, resolveChat, withSlash, resolveAutomation, listEntry, withVirtualName,
+};

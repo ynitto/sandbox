@@ -76,12 +76,14 @@ function registerIpcHandlers(getWindow, options = {}) {
   // 名前（`herd`）を足した並びへ差し替えられる。
   const agentDefinitions = typeof options.agentDefinitions === 'function' ? options.agentDefinitions : tools.agentDefinitions;
   // 選ばれた名前を、実際に起こす定義の名前へ写す（`herd` → aider / ollama）。無ければそのまま。
-  //   purpose … 'task'（タスク・ワークフローの実行）| 'plan'（AI 支援。読み取り専用）
+  //   purpose … 'task'（タスクの実行）| 'flow'（ワークフローの実行）| 'plan'（AI 支援。読み取り専用）
+  // 返る名前が '' なら「渡さない」（agent-loop / agent-herd の既定に任せる）。
   const resolveAgent = async (agent, purpose, root) => {
     const hook = options.hooks && options.hooks.resolveAgent;
     if (typeof hook !== 'function') return agent;
     const resolved = await hook({ root, agent, purpose });
-    return String((resolved && typeof resolved === 'object' ? resolved.agent : resolved) || agent);
+    const name = resolved && typeof resolved === 'object' ? resolved.agent : resolved;
+    return name == null ? agent : String(name);
   };
 
   function sendTo(sender, channel, payload) {
@@ -363,7 +365,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     });
     // agent-flow に渡す `--agent-cli` は実在の定義名でなければならない（`herd` は写してから）
     const requestedAgent = String(p.agent || cfg.agent || '');
-    const agent = requestedAgent ? await resolveAgent(requestedAgent, 'task', root) : '';
+    const agent = requestedAgent ? await resolveAgent(requestedAgent, 'flow', root) : '';
     return agentFlow.start({ ...p, agent }, { root, getContext, startDetached: runner.startDetached });
   });
   register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit));

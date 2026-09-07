@@ -37,6 +37,12 @@ UI ブロックの問題（main の同期 I/O が IPC を止める）を同時�
   それぞれ浅い順。`/` を含めばパスで探せる。画面は打った順の最後の返事だけを出し（`filterSeq`）、
   ツリーの「更新」で索引を捨てる（`refresh`）。
 - **会話一覧は mtime キャッシュ。** ファイルの mtime と大きさが同じなら前回の要約を使う。
+- **`\\wsl$\` のリポジトリの索引は WSL の中で作る。** 検索が読むパスは登録したままの Windows 表記で、
+  WSL 表記への変換は git と tmux に渡すときだけ（ここは以前から）。遅いのはリポジトリの実体が WSL に
+  あるとき Windows 側の fs から 9P 越しに歩くことなので、その場合だけ常駐シェルで
+  `git ls-files --cached --others --exclude-standard -z` を 1 回撃ち、返った相対パスから索引を作る
+  （`.gitignore` も効く。git リポジトリでなければ fs で歩く）。`C:\` と Linux / macOS は fs のまま
+  （ローカルディスクなら fs が最速）。
 
 ### 1.3 変えなかったもの
 
@@ -73,34 +79,59 @@ agent-app の一覧は `agents/*.json` の実ファイルから作るので `her
 で、計画・評価・抽出・検証などの 15 用途は両定義の `variants` が同じ profile（`ollama-json` 等）へ
 振り替える。つまり入口の違いが効くのは「編集・実装を誰がやるか」だけである。
 
-### 2.3 決定
+### 2.3 会話画面ではどうなるか（初案の弱点）
 
-`herd` を **仮想エージェント**として扱い、起動直前に依頼の形で写す（`src/main/herd.js`）。
+初案は「ターンごとに aider か ollama を選ぶ」だった。会話画面で見ると弱い。
 
-| 場面 | 用途 | 選ぶ順 | 理由 |
-|---|---|---|---|
-| 会話・Ask | ask | ollama → aider | 読み取り専用が enforced。自分で調べて答える |
-| 会話・実行、作業フォルダのファイルを添付 | edit | aider → ollama | 添えたファイル＝直す対象（aider はチャットに入れたファイルしか編集しない） |
-| 会話・実行、添付なし | work | ollama → aider | 自分で探して直す |
-| タスク・ワークフローの実行 | task | aider → ollama | dashboard の `work` 用途の既定と同じ。他の用途は `variants` が振り替える |
-| AI 支援（計画。読み取り専用） | plan | ollama → aider | `--purpose plan` は variants で ollama-json へ行く |
+- tmux 経路では、添付の有無で aider と ollama が入れ替わると **tmux セッションを起動し直し**、文脈は
+  履歴の再送で追いつかせることになる（会話が続いている感覚が切れる）。
+- aider の共通 TUI は添付ファイルを `/add` しないので、「添えたファイルを直す」根拠が対話では効きにくい。
+- 会話は ollama、タスクは aider と写す先が違い、利用者から見て「herd を選んだのに何が動くのか」が
+  分かりにくい。
+
+一方、agent-herd 自身が既に共通の入口を持っている。
+
+- トップレベルの `agent-herd` はクラウド CLI と同型（引数なし＝共通 TUI、`-p`＝単発、`--agent`
+  `--purpose` `--readonly`。既定バックエンドは `ollama`）。
+- 共通 TUI にはスラッシュの実行形（agentcore の `slashroute` 種別 B）があり、`/ask`（道具なし）、
+  `/find`（読み取り専用の道具）、`/edit`（編集ハーネス。どのエージェントで直すかは宣言側が決める）、
+  `/sm`（ステートマシン）。ヘッドレスの本文先頭でも同じ表で読む。
+- dashboard の cowork も一族には `/sm` の 1 行を送るだけで、CLI を選び替えていない。
+
+### 2.4 決定: 入口は agent-herd の 1 つ、用途はスラッシュ行
+
+`herd` を **仮想エージェント**として扱うが、**agent-app は aider と ollama を選ばない**（`src/main/herd.js`）。
+
+| 場面 | 起動 | 伝え方 |
+|---|---|---|
+| 会話・Ask | 共通 TUI（agent-herd の既定バックエンド `ollama` の定義）を 1 本 | 本文の先頭に `/find` |
+| 会話・実行、作業フォルダのファイルを添付 | 同じセッション | 本文の先頭に `/edit` |
+| 会話・実行、添付なし | 同じセッション | そのまま（ツールループ） |
+| タスクの実行 | `agent-herd harness statemachine` | `--agent-cli` を渡さない（agent-herd の既定と宣言に任せる） |
+| AI 支援（計画。読み取り専用） | `agent-herd --purpose plan` | `--agent` を渡さない |
+| ワークフローの実行 | agent-flow | `--agent-cli` は省くとホスト設定（kiro 等）へ落ちるので、harness の既定と同じ `aider` |
 
 - `agents/herd.json` は作らない。一覧の末尾に `virtual: true` の 1 行を足す（一族が 1 つでもあるとき）。
   画面の直接指定と設定の tier はどちらもこの一覧から選ぶので、両方に出る。
-- 使えない一員は飛ばし、**一族の外へは倒さない**（ADR-3 と同じ姿勢）。
-- モデルは tier / 直接指定の値をそのまま渡し、空なら各定義の `default_model`（dashboard の「モデル欄は
+- 会話は CLI を入れ替えないので tmux セッションと文脈が続く。スラッシュ行は共通指示・履歴の再送より前、
+  本文の一番上に置く（`slashroute` は先頭から連続する `/name` 行だけを読む）。
+- 一族の定義がホストの PATH に無ければ断り、**一族の外へは倒さない**（ADR-3 と同じ姿勢）。既定バックエンド
+  の定義が無ければ一族の他の定義（同じ共通 TUI）を開く。
+- モデルは tier / 直接指定の値をそのまま渡し、空なら定義の `default_model`（dashboard の「モデル欄は
   空でよい」と同じ）。
-- 会話の「次のターンの既定」は `herd` のまま残し、ターンごとに選び直す（添付の有無で変わる）。
-  メッセージには実際の `cli` と `family: 'herd'` を残し、実行情報に `herd → aider` と理由を出す。
+- 会話の「次のターンの既定」は `herd` のまま残す。メッセージには実際の `cli` と `family: 'herd'` を残し、
+  実行情報に `herd → ollama /edit` と理由を出す。
 - タスク・ワークフローは statemachine-maker の `registerIpcHandlers` に `agentDefinitions`（一覧に `herd` を
-  足す）と `hooks.resolveAgent`（起動直前に写す）を足して対応した。maker 単体では従来どおり。
+  足す）と `hooks.resolveAgent`（`purpose: task | plan | flow` → 渡す名前。`''` は渡さない）を足して対応した。
+  AI 支援の argv は agent が空なら `--agent` を省く。maker 単体では従来どおり。
 
-### 2.4 やらなかったこと・次の一歩
+### 2.5 やらなかったこと・次の一歩
 
 - 用途別の実測（qualifications）に基づくモデル選択。要るなら dashboard の Compiler が焼いた展開結果
   （`(agent_cli, model)` の順位）を読む口を agent-app に足す。規則をここに増やすのではなく、正典を
   1 つ（Compiler）に寄せる。
-- tmux 経路の aider は添付ファイルを `/add` しない（本文で所在を伝えるだけ）。共通 TUI 側に `/add` 相当が
-  入ったら `herd → aider` のときだけ送る。
+- ヘッドレス経路（tmux なし）で本文先頭の `/edit` が編集ハーネスへ回るかは agent-herd 側の実装に依る
+  （共通 TUI では回る）。回らなければ ollama のツールループがそのまま直す。
 - ワークフローの工程ごとの `agent_cli`（agent-flow の control）は agent-app では触らない。`herd` を
-  写すのは実行開始時の `--agent-cli` だけ。
+  写すのは実行開始時の `--agent-cli` だけ。agent-flow に「省略時はローカル既定」ができれば、ここも
+  渡さない形へ揃える。

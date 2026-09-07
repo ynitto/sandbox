@@ -88,9 +88,10 @@ async function agentDefinitions({ cwd = '', capture } = {}) {
 }
 
 // AI 支援はファイルを書かせず、単発の構造化応答だけを受け取る。
+// agent が空なら --agent を渡さない（agent-herd の既定バックエンドと用途別の宣言に任せる）。
 function agentAssistRunSpec({ root, agent, model = '', prompt = '' } = {}) {
   const args = [
-    '--agent', String(agent || ''),
+    ...(agent ? ['--agent', String(agent)] : []),
     '--purpose', 'plan',
     '--readonly',
     '--dir', String(root || ''),

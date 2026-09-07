@@ -94,7 +94,7 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 
 | 項目 | 選択肢 | 意味 |
 |---|---|---|
-| 起動方針 | おすすめ / 節約 / 品質重視 / 直接指定 | tier（medium / small / large）に割り当てた CLI を使う。直接指定では CLI とモデルをその場で選ぶ。`herd` を選ぶとローカル実行系（aider / ollama）から依頼の形で選ぶ（§6.3） |
+| 起動方針 | おすすめ / 節約 / 品質重視 / 直接指定 | tier（medium / small / large）に割り当てた CLI を使う。直接指定では CLI とモデルをその場で選ぶ。`herd` を選ぶとローカル実行系の共通 TUI（agent-herd）を開き、用途は依頼の形で決まるスラッシュ行で伝える（§6.3） |
 | スキル | 自動 / 手動選択 / 使用しない | 設定 > 共通指示の候補から、依頼に合うスキルを選んで渡す |
 | Ask モード | on / off | 読み取り専用の起動引数で CLI を起動する。保証できない CLI では警告が出る |
 | 作業フォルダ | リポジトリ本体 / `.worktrees/<名前>` | 会話を作る前だけ選べる。作ったあとは変えられない |
@@ -469,29 +469,33 @@ agent-dashboard の実行レベルと同じく、ローカルを使いたい所�
 `interactive.command[0]`）が `agent-herd` の定義から機械的に導く（dashboard の `herd-family.js`、
 agentcore の `is_herd_family` と同じ規則）。
 
-agent-app には dashboard の「用途 × 実測（qualifications）」の軸が無いので、選び分けは**依頼の形**で
-決める。一族の中で違うのは「編集・実装を誰がやるか」の 1 点だけで（aider = 渡したファイルを直す編集役、
-ollama = 自分で調べて実行するツールループ）、計画・評価・抽出などの用途は定義の `variants` が
-どちらを入口にしても同じ profile へ振り替える。
+**agent-app は aider と ollama を選ばない。** 入口は agent-herd の 1 つで、用途は agent-herd 自身の
+作法で伝える。agent-herd はクラウド CLI と同型のトップレベル入口（引数なし＝共通 TUI、`-p`＝単発）を持ち、
+共通 TUI にはスラッシュの実行形（`/ask` `/find` `/edit` `/sm`。agentcore の `slashroute` 種別 B）がある。
+`/edit` は編集ハーネスへ回し、どのエージェントで直すかは宣言側（agent-herd）が決める。計画・評価・抽出
+などの用途は定義の `variants` が振り替える。
 
-| 場面 | 用途 | 選ぶ順 |
+| 場面 | 起動 | 伝え方 |
 |---|---|---|
-| 会話・Ask | `ask` | ollama → aider |
-| 会話・実行、作業フォルダの中のファイルを添付 | `edit` | aider → ollama |
-| 会話・実行、添付なし（userData へ写した添付は数えない） | `work` | ollama → aider |
-| タスク実行・ワークフロー実行（`automation:run:start` / `flow:run:start`） | `task` | aider → ollama |
-| AI 支援（`automation:ai:start`。読み取り専用） | `plan` | ollama → aider |
+| 会話・Ask | 共通 TUI（agent-herd の既定バックエンド `ollama` の定義。無ければ一族の他の定義） | 本文の先頭に `/find` |
+| 会話・実行、作業フォルダの中のファイルを添付 | 同じセッション | 本文の先頭に `/edit` |
+| 会話・実行、添付なし（userData へ写した添付は数えない） | 同じセッション | そのまま |
+| タスク実行（`automation:run:start`） | `agent-herd harness statemachine` | `--agent-cli` を渡さない（agent-herd の既定と宣言） |
+| AI 支援（`automation:ai:start`。読み取り専用） | `agent-herd --purpose plan` | `--agent` を渡さない |
+| ワークフロー実行（`flow:run:start`） | agent-flow | `--agent-cli` は省けないので harness の既定と同じ `aider` |
 
-使えない（ホストの PATH に無い）一員は飛ばし、一族の外へは倒さない（ADR-3）。モデルは tier / 直接指定の
-値をそのまま渡し、空なら各定義の `default_model`。会話の「次のターンの既定」（`session.cli`）は `herd`
-のまま残し、ターンごとに選び直す。メッセージには実際に起こした `cli` と `family: 'herd'` を残し、
-実行情報に `herd → aider` のように理由を 1 行出す。会話を開いただけ・再起動（`term:open` / `term:restart`）
-でも同じ規則で写す（添付なし）。
+会話ではターンごとに CLI を入れ替えないので、tmux セッションと文脈はそのまま続く（用途が変わっても
+起動し直さない。Ask ⇄ 実行の切り替えは従来どおり readonly の違いで起動し直す）。スラッシュ行は共通指示や
+履歴の再送より前、本文の一番上に置く（slashroute は先頭から連続する `/name` 行だけを読む）。一族の定義が
+ホストの PATH に無ければ断り、一族の外へは倒さない（ADR-3）。モデルは tier / 直接指定の値をそのまま渡し、
+空なら定義の `default_model`。会話の「次のターンの既定」（`session.cli`）は `herd` のまま残し、メッセージには
+実際に起こした `cli` と `family: 'herd'` を残す。実行情報に `herd → ollama /edit` のように理由を 1 行出す。
+会話を開いただけ・再起動（`term:open` / `term:restart`）でも共通 TUI を開く。
 
 タスク・ワークフローでは、statemachine-maker の `registerIpcHandlers` に `agentDefinitions`
 （`agent-herd defs --json` の並びに、一族が居れば `herd` を足す）と `hooks.resolveAgent`
-（起動直前に `herd` を写す。agent-flow の `--agent-cli` と agent-loop の `--agent-cli` には実在の定義名
-だけを渡す）を渡す。
+（`{ root, agent, purpose: 'task' | 'plan' | 'flow' }` → `{ agent }`。`''` は「渡さない」）を渡す。
+`prepareRun` のスキルの渡し方は、渡さないときは harness の既定の定義（aider）で決める。
 
 #### 6.1 セッション ID の作法（`agentCli.SESSION`）
 
@@ -802,7 +806,7 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 | `app.test.js` | 構文、画面構造、preload と IPC の対応、vendor の対応、共有編集面の Host Adapter 接続、ワークフロー教示と差し戻しの表示、argv、店、tmux 保持、git、ファイル、添付 | なし |
 | `tmux.test.js` | パス変換、画面判定、送信、抽出、キー変換、常駐シェル、疑似 CLI との統合 | 統合のみ tmux が無い |
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
-| `herd.test.js` | `herd` の一族判定と選び分け、会話・タスク・ワークフローの配線 | なし |
+| `herd.test.js` | `herd` の一族判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
 | `electron-smoke.test.js` | Electron 実機で三領域を移動し、ワークフローの＋で教示画面を開く | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 

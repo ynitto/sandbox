@@ -29,7 +29,8 @@ function automationConfig(config) {
 
 async function prepareRun(userData, { root, task, agent, parameters, skillMode, selectedSkills }) {
   const cfg = store.loadConfig(userData());
-  const spec = agentCli.load(agent, root);
+  // agent が ''（herd。--agent-cli を渡さない）なら、スキルの渡し方は harness の既定の定義で決める
+  const spec = agentCli.load(agent || herd.HARNESS_DEFAULT, root);
   const plan = sessionSetup.planActions(cfg.instructions.startupActions, {
     ...spec, availableSkills: skills.list(root),
   });
@@ -79,14 +80,13 @@ async function agentDefinitions({ cwd = '', capture } = {}) {
   return herd.withVirtualName(names, agentCli.list(cwd));
 }
 
-// 選ばれた名前を実際に起こす定義へ写す。`herd` 以外はそのまま。用途は statemachine-maker が
-// 言う（task: タスク・ワークフローの実行 / plan: AI 支援）。一族の一員が起こせるかは
-// ここでは見ない——`herd` が一覧に載るのは agent-herd がその一員を解決できたときだけで
-// （agentDefinitions）、ollama サーバの有無などは agent-herd 自身が起動時に言う。
-function resolveAgent({ root = '', agent = '', purpose = 'task' } = {}) {
+// 選ばれた名前を agent-herd / agent-flow へ渡す名前へ写す。`herd` 以外はそのまま。用途は
+// statemachine-maker が言う（task: タスクの実行 / plan: AI 支援 / flow: ワークフローの実行）。
+// task と plan は '' を返し「--agent-cli / --agent を渡さない」＝agent-herd の既定と宣言に任せる。
+function resolveAgent({ agent = '', purpose = 'task' } = {}) {
   if (!herd.isHerd(agent)) return { agent: String(agent || '') };
-  const picked = herd.resolve(purpose, agentCli.list(root).map((d) => ({ ...d, available: true })));
-  return { agent: picked.cli, purpose: picked.purpose, reason: picked.reason };
+  const picked = herd.resolveAutomation(purpose);
+  return { agent: picked.agent, reason: picked.reason };
 }
 
 function automationPatch(config) {
