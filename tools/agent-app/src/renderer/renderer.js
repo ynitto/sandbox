@@ -322,6 +322,19 @@ function syncAutomationWorkbench(action = '') {
   return $('automation-workbench').navigate(frameMessage(action));
 }
 
+function renderAutomationHeader() {
+  const workflows = state.area === 'workflows';
+  $('automation-title').textContent = workflows ? 'ワークフロー' : 'タスク';
+  $('automation-description').textContent = workflows
+    ? '複数の工程をまとめて実行・管理します'
+    : '繰り返す作業を実行・管理します';
+}
+
+function setAutomationLoading(loading) {
+  $('automation-content').setAttribute('aria-busy', String(!!loading));
+  $('automation-loading').hidden = !loading;
+}
+
 async function handleAutomationEvent(payload) {
   if (payload && payload.type === 'agent-app:teaching-started' && payload.root === state.repo) {
     if (!state.pendingTaskIntent || payload.intentId !== state.pendingTaskIntent.id) return;
@@ -1128,6 +1141,7 @@ function showView(view) {
 async function showArea(area, { persist = true } = {}) {
   state.area = AgentNavigation.normalizeArea(area);
   const workspace = state.area !== 'conversation';
+  renderAutomationHeader();
   $('app').classList.toggle('workspace-mode', workspace);
   $('main').hidden = workspace;
   $('automation').hidden = !workspace;
@@ -1142,8 +1156,14 @@ async function showArea(area, { persist = true } = {}) {
   setSidebar(false);
   $('changes').hidden = workspace || !state.changesOpen;
   if (workspace) {
-    await loadAreaItems();
-    syncAutomationWorkbench();
+    // 読み込み中に直前の領域の操作を残さない。見出しを先に切り替え、内容は準備後に一度で見せる。
+    setAutomationLoading(true);
+    try {
+      await loadAreaItems();
+      await syncAutomationWorkbench();
+    } finally {
+      setAutomationLoading(false);
+    }
   } else {
     const latest = await api.getConfig();
     state.config = latest;

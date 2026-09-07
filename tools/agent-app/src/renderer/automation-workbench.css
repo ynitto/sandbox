@@ -13,6 +13,10 @@
 :host .execution-layout,
 :host .flow-layout { grid-template-columns: minmax(0, 1fr); }
 :host .machine-pane { padding-top: 20px; }
+:host .execution-detail,
+:host .teaching-page,
+:host .flow-layout { width: min(100%, 960px); margin-inline: auto; }
+:host .task-detail-tabs { margin-top: 0; }
 :host(:not(.is-editing)) #bar { display: none; }
 :host(:not(.is-editing)) #main { height: 100%; }
 @media (max-width: 760px) {
