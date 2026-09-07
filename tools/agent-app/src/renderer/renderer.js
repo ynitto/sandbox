@@ -4,9 +4,13 @@
 const state = {
   config: null,
   area: 'conversation',
-  host: null,           // host:info（platform / tmux の有無）
+  host: null,           // host:info（platform / tmux の有無）。届くまで null
+  hostReady: null,      // host:info の返事を待つ Promise（送信前に待つ）
   repo: '',
+  repoToken: 0,         // selectRepo のたびに進める。遅れて届いたホストの返事を捨てる印
   agents: [],
+  agentsLoading: false, // agents:list（ホストの PATH を引く）の返事待ち
+  agentsReady: null,
   sessions: [],
   tasks: [],
   workflows: [],
@@ -367,41 +371,72 @@ async function selectAreaItem(area, id) {
   setSidebar(false);
 }
 
+// リポジトリを選ぶ。**ホストに聞くもの（CLI の有無・git worktree）を待たずに画面を出す。**
+// どちらも 1 本の常駐シェルに並ぶので、Windows では WSL の起動と git status の分だけ
+// 何秒も待つ——その間も会話一覧・ツリー・タスク一覧は手元のファイルだけで描ける。
+// 届き次第そこだけ描き直し、待っている間に別のリポジトリへ移っていたら捨てる（repoToken）。
 async function selectRepo(repo) {
   state.repo = repo || '';
+  const token = (state.repoToken += 1);
   if (state.pendingTaskIntent && state.pendingTaskIntent.root !== state.repo) state.pendingTaskIntent = null;
   if (repo) state.config = await api.saveConfig({ lastRepo: repo });
-  state.agents = repo ? await api.listAgents(repo).catch((e) => { notice(e.message, 'error'); return []; }) : [];
   state.sessions = repo ? await api.listSessions(repo) : [];
-  await refreshWorktrees();
   state.worktree = (state.config.lastWorktree || {})[state.repo] || '';
-  if (state.worktree && !state.worktrees.some((w) => w.name === state.worktree && w.selectable)) state.worktree = '';
+  state.worktrees = [];
+  state.agents = [];
+  state.agentsLoading = !!repo;
+  state.agentsReady = repo
+    ? api.listAgents(repo).catch((e) => { notice(e.message, 'error'); return []; }).then((agents) => {
+      if (token !== state.repoToken) return;
+      state.agents = agents;
+      state.agentsLoading = false;
+      renderAgents();
+      renderRunSettingsSummary();
+    })
+    : Promise.resolve();
+  const worktreesReady = refreshWorktrees({ token });
   renderRepos();
   renderAgents();
   newDraft();
+  Files.setRoot(state.repo, activeWorktree(), { lastFile: (state.config.lastFiles || {})[state.repo] || '' }).catch(() => {});
   await loadAreaItems();
   syncAutomationWorkbench();
   if (state.changesOpen) refreshChanges();
-  Files.setRoot(state.repo, activeWorktree(), { lastFile: (state.config.lastFiles || {})[state.repo] || '' }).catch(() => {});
+  await worktreesReady;
 }
 
 // ---- 作業フォルダ（git worktree） -------------------------------------------
 
-async function refreshWorktrees() {
+// 2 段で読む: まず `git worktree list` だけで一覧を出し、変更数・先行コミット数
+// （worktree ごとの git status。Windows の /mnt/c では何秒もかかる）はあとから足す。
+async function refreshWorktrees({ token = state.repoToken } = {}) {
   if (!state.repo || !worktreeUI()) {
     state.worktrees = [];                 // 機能を切っているときは git にも聞かない
     renderWorktreeSelect();
     Files.renderRoots([], false);
     return;
   }
+  const apply = (res) => {
+    if (token !== state.repoToken) return false;
+    state.worktrees = (res && res.items) || [];
+    // 下書きが覚えていた作業フォルダが消えていたら本体へ戻す（一覧を引けたときだけ言える）
+    if (state.draft && state.worktree && !state.worktrees.some((w) => w.name === state.worktree && w.selectable)) {
+      state.worktree = '';
+      Files.setRoot(state.repo, activeWorktree(), {}).catch(() => {});
+    }
+    renderWorktreeSelect();
+    Files.renderRoots(state.worktrees, true);
+    return true;
+  };
   try {
-    const res = await api.listWorktrees(state.repo);
-    state.worktrees = res.items || [];
+    if (!apply(await api.listWorktrees(state.repo, { withStatus: false }))) return;
+    apply(await api.listWorktrees(state.repo, { withStatus: true }));
   } catch {
+    if (token !== state.repoToken) return;
     state.worktrees = [];                 // git リポジトリでない等。本体だけで動く
+    renderWorktreeSelect();
+    Files.renderRoots(state.worktrees, true);
   }
-  renderWorktreeSelect();
-  Files.renderRoots(state.worktrees, true);
 }
 
 function renderWorktreeSelect() {
@@ -592,7 +627,10 @@ function renderAgents() {
     o.value = a.name;
     sel.append(o);
   }
-  if (!usable.length) sel.append(el('option', '', state.host && state.host.platform === 'win32' ? 'WSL に CLI が無い' : 'この PC に CLI が無い'));
+  if (!usable.length) {
+    sel.append(el('option', '', state.agentsLoading || !state.host ? 'CLI を確認中…'
+      : (state.host.platform === 'win32' ? 'WSL に CLI が無い' : 'この PC に CLI が無い')));
+  }
   const want = state.current ? state.current.cli : state.config.lastCli;
   if ([...sel.options].some((o) => o.value === want)) sel.value = want;
 }
@@ -935,9 +973,12 @@ async function sendPrompt() {
   if ((!text && !state.attachments.length) || !state.repo) return;
   const opts = turnOptions();
   const selected = selectedExecution(opts.policy);
-  const agent = state.agents.find((a) => a.name === selected.cli && a.available);
-  if (!agent) { notice('使えるエージェントがない', 'error'); return; }
   inputStatus('pending', `受付済み・${selected.cli}を準備中`);
+  // 起動直後は CLI の有無と tmux の有無がまだ届いていないことがある（ホストの返事待ち）。
+  // 経路（tmux / ヘッドレス）はその答えで決まるので、ここで待つ。
+  await Promise.all([state.agentsReady, state.hostReady]);
+  const agent = state.agents.find((a) => a.name === selected.cli && a.available);
+  if (!agent) { inputStatus(); notice('使えるエージェントがない', 'error'); return; }
   try {
     if (!state.current) {
       const transport = (state.config.transport === 'tmux' && state.host && state.host.tmux && agent.interactive) ? 'tmux' : 'headless';
@@ -1372,10 +1413,14 @@ async function saveSettings() {
 
 // ---- 配線 --------------------------------------------------------------------
 
+// 起動。ホストの確認（Windows では WSL の起動 + ログインシェル）は待たずに始め、届いたら
+// その表示だけ直す。それまでに要るのは設定と会話一覧だけで、どちらも手元のファイル。
 async function init() {
   state.config = await api.getConfig();
   state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
-  try { state.host = await api.hostInfo(); } catch (err) { state.host = { platform: api.platform, tmux: '', error: err.message }; }
+  state.hostReady = api.hostInfo()
+    .then((info) => { state.host = info; }, (err) => { state.host = { platform: api.platform, tmux: '', error: err.message }; })
+    .then(() => { renderHostStatus(); renderAgents(); renderRunSettingsSummary(); });
   Term.configure({
     onFocus: () => setInputMode('terminal', { focus: false }),
     onAccepted: () => {
@@ -1393,7 +1438,7 @@ async function init() {
   });
   Files.init();
   renderHostStatus();
-  for (const id of await api.running()) state.running.add(id);
+  api.running().then((ids) => { for (const id of ids) state.running.add(id); renderSessions(); renderHeader(); }).catch(() => {});
   await selectRepo(state.config.lastRepo);
   showView(state.config.view);
   await showArea(state.config.area, { persist: false });
@@ -1605,8 +1650,9 @@ async function init() {
 }
 
 function renderHostStatus() {
-  const h = state.host || {};
-  $('wsl-row').hidden = h.platform !== 'win32';
+  $('wsl-row').hidden = api.platform !== 'win32';
+  if (!state.host) { $('host-status').textContent = '実行環境を確認中…'; return; }
+  const h = state.host;
   const parts = [];
   if (h.platform === 'win32') parts.push(h.distro ? `WSL: ${h.distro}` : 'WSL: 既定');
   parts.push(h.tmux ? (h.tmuxVersion || 'tmux あり') : 'tmux なし（ヘッドレスで動く）');

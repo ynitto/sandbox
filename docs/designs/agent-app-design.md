@@ -241,6 +241,8 @@ renderer: turnOptions()（方針 / 直接指定 / Ask / スキル）+ 本文 + �
 main: guardedRunTurn … 同時実行枠を取る
   → runTurn
       1. executionSpec … 方針を tier へ解決し、CLI / model / readonly を確定
+         concreteCli   … CLI が `herd` なら一族の共通 TUI（agent-herd の既定バックエンド）に写し、依頼の形
+                         （Ask / 作業フォルダのファイル添付 / それ以外）を `/find` `/edit` の行で表す（`herd.js`）
       2. agentCli.load … 定義を読む。listAgents でホスト側の PATH に実体があるか確認
       3. transport を決める（tmux か headless か）
       4. withAttachments … 添付を確かめ、依頼文の末尾に所在を添える
@@ -266,7 +268,8 @@ tier → config.execution.tiers[tier] の CLI / model（source: policy）
 ```
 
 tier の CLI が空なら送信前に止める。CLI がホストで利用不能なら `AGENT_UNAVAILABLE` で断り、別 tier へ
-倒さない。解決結果（`policy` / `tier` / `cli` / `model`）は利用者メッセージと応答メッセージの両方に残す。
+倒さない。解決結果（`policy` / `tier` / `cli` / `model`、`herd` なら `family`）は利用者メッセージと応答
+メッセージの両方に残す。`herd` は一族の外へ倒さない（ADR-8）。
 
 ### 4.3 transport の選択
 
@@ -500,6 +503,7 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 | `test/tmux.test.js` | パス変換、画面判定（Kiro / Codex / Copilot / Cursor / Claude の実画面）、`waitReady` の attention、send-keys の畳み方、応答抽出、キー変換、常駐シェル、疑似 CLI との統合 |
 | `test/worktree.test.js` | 名前検査、パスの組み方、`--porcelain` の読み方、作成・削除・納品ブランチの統合 |
 | `test/settings.test.js` | 旧設定の tier 移行、方針解決、未知キー保持、推奨スキルの候補移行 |
+| `test/herd.test.js` | 一族の判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、一族の外へ倒さないこと、配線 |
 | `test/session-setup.test.js` | 共通指示の no-op、開始アクションの分解と順次実行 |
 | `test/skill-selection.test.js`、`test/skills.test.js` | 自動 / 手動 / 明示の選定、ネイティブとインラインの渡し方、予算超過、候補の読み方 |
 | `test/response.test.js` | codex JSONL、Aider、copilot の思考・回答分離 |
@@ -520,7 +524,12 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
   アプリ自身の進捗しか出ない。
 - `config.json` の破損を通知せず、既定値で静かに起動する。
 - 同時実行枠は agent-app が起動したターンだけを数える。ワークフローエンジンの内部並列は対象外。
-- Windows / WSL の CJK・絵文字の表示幅と、`/mnt/c` の I/O 低下は実機でしか確かめられない。
+- Windows / WSL の CJK・絵文字の表示幅と、`/mnt/c` の I/O 低下は実機でしか確かめられない。起動時はホストの
+  確認（WSL 起動 + ログインシェル）と git を待たずに画面を出し、CLI の有無・worktree の変更数は届き次第
+  描き足す（送信だけはその返事を待つ）。ツリー・本文・名前検索は非同期 I/O と索引で main を止めない。
+- `herd` の用途は依頼の形（Ask / 作業フォルダのファイル添付 / それ以外）だけで決め、dashboard のような
+  用途別の実測（qualifications）は読まない。ヘッドレス経路（tmux なし）で本文先頭の `/edit` が編集
+  ハーネスへ回るかは agent-herd 側の実装に依る（TUI では回る）。
 - タスク・ワークフローの画面は statemachine-maker の共有 renderer を同じウィンドウの Shadow DOM で
   動かしているため、maker 側の画面変更が直接波及する。見た目の調整は maker の `styles.css` を土台に
   `:host` セレクタで上書きする形に縛られる。
@@ -574,6 +583,23 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 - 代償: tier の割り当ては利用者が設定する。CLI が落ちていても別の CLI へは移らない。
 - 見直し条件: agent-app 自身が信頼できる品質データを持つ場合、または全実行の統一スケジューラが要る場合。
 - 確信度: 高。
+
+### ADR-8 `herd` は仮想エージェントとして扱い、`herd.json` を作らない
+
+- 状況: agent-dashboard では実行レベルに `herd` と書けるが、agent-app の一覧は `agents/*.json` から作るので
+  `herd` が出ない。dashboard の `herd` は用途別の実測（qualifications）で展開される管理面のラベルで、
+  agent-app には用途の軸も実測の台帳も無い。
+- 決定: `listAgents` の末尾に仮想の 1 行を足す（一族が 1 つでもあるとき）。**agent-app は aider と ollama を
+  選ばず、入口を agent-herd の 1 つに揃える。** 会話は一族の共通 TUI（agent-herd の既定バックエンド）を
+  1 本開き、用途は本文先頭のスラッシュ行（Ask → `/find`、作業フォルダのファイル添付 → `/edit`、それ以外は
+  そのまま）で伝える。タスクと AI 支援は `--agent-cli` / `--agent` を渡さず agent-herd の既定と宣言に任せ、
+  agent-flow だけ（省けないので）harness の既定と同じ `aider` を渡す。一族の判定は `command[0] === 'agent-herd'`
+  で、`agents/herd.json` は作らない（dashboard・agentcore と同じ規則。作ると一族判定と衝突する）。
+- 却下した案: ターンごとに aider / ollama を選ぶ。会話では添付の有無で tmux セッションが起動し直り文脈が
+  切れる、aider の TUI は添付を `/add` しない、会話とタスクで写す先が違い分かりにくい。
+- 代償: 用途別の最適なモデルは選ばない（モデル欄が空なら定義の `default_model`）。実測に基づく選択が
+  要るなら dashboard の Execution Policy Compiler の展開結果（`(agent_cli, model)` の順位）を読む形へ
+  進める。
 
 ### ADR-4 タスク・ワークフローは statemachine-maker を借り、agent-app は登録と設定だけをアダプトする
 
@@ -642,6 +668,7 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 - [`2026-09-06-agent-app-ai-teaching-integration-design.md`](../plans/2026-09-06-agent-app-ai-teaching-integration-design.md): 会話からタスク教示への引き継ぎ。
 - [`2026-09-06-agent-app-agent-flow-teaching-workspace-design.md`](../plans/2026-09-06-agent-app-agent-flow-teaching-workspace-design.md)、[同 implementation-plan](../plans/2026-09-06-agent-app-agent-flow-teaching-workspace-implementation-plan.md): ワークフロー教示、世代と試運転、差し戻しの検討記録。
 - [`2026-09-06-agent-app-shared-editor-workbench-design.md`](../plans/2026-09-06-agent-app-shared-editor-workbench-design.md): iframe から共有編集面（カスタム要素 + Host Adapter）への移行の決定記録。
+- [`2026-09-07-agent-app-startup-and-herd-design.md`](../plans/2026-09-07-agent-app-startup-and-herd-design.md): 起動時の重さ（Windows）の原因と対処、`herd` を会話・タスク・ワークフローで使う規則の検討記録。
 
 個別画面の検討経緯は `docs/plans/` に残す。本書は、現在の実装を変更するときに必要な境界、データの流れ、
 実行経路、失敗時の扱いを持つ。
