@@ -2,7 +2,7 @@
 name: skill-creator
 description: "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。"
 metadata:
-  version: 4.0.2
+  version: 4.0.3
   tier: core
   category: meta
   tags:
@@ -183,7 +183,7 @@ SKILL.md本文は500行以内に収める。超える場合はファイルを分
 
 例: `frontend-webapp-builder`で「TODOアプリを作って」→ 毎回同じボイラープレート → `assets/hello-world/`テンプレートを含める
 
-例: `big-query`で「今日のログイン数は？」→ 毎回スキーマを再調査 → `references/schema.md`を含める
+例: `big-query`で「今日のログイン数は？」→ 毎回スキーマを再調査 → `references/`にスキーマ解説を追加する
 
 ### ステップ3: スキルを初期化する
 
@@ -264,7 +264,7 @@ metadata:
 python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py --skill <skill-name>
 ```
 
-ERRORが出た場合はステップ4に戻って修正し、再度チェックを実行する。PASSするまでこのサイクルを繰り返す。WARNは文脈上問題なければ無視してよい。チェックコードの詳細は `<SKILLS_BASE>/skill-evaluator/references/quality-check-codes.md` 参照。
+ERRORが出た場合はステップ4に戻って修正し、再度チェックを実行する。PASSするまでこのサイクルを繰り返す。WARNは文脈上問題なければ無視してよい。チェックコードの詳細は `skill-evaluator` スキルの `quality-check-codes.md` を参照。
 
 **開発中の素早い構造チェック**には `quick_validate.py` も使える（任意）:
 
