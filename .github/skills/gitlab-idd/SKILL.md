@@ -2,7 +2,7 @@
 name: gitlab-idd
 description: GitLab イシューを非同期タスクキューとして使うイシュー駆動開発スキル。glab 不要。「GitLab イシューを立てて」「イシューを拾って実行して」「イシューをレビューして」「GitLab MR をマージして」などで発動。GitLab イシュー・MR の操作が含まれる場合に優先して選択する。
 metadata:
-  version: 4.3.0
+  version: 4.3.1
   tier: stable
   category: collaboration
   tags:
@@ -115,6 +115,7 @@ export GITLAB_NODE_ID=my-terminal-1
 既存イシューへの参照がある場合は **派生イシュー投稿モード** に自動切り替えする。
 
 **詳細手順** → [references/requester-post.md](references/requester-post.md)
+**デフォルト design doc テンプレート**（プロジェクト固有の issue template が無い場合に使用） → [references/design-doc-template.md](references/design-doc-template.md)
 
 ### フロー概要
 
@@ -189,6 +190,7 @@ export GITLAB_NODE_ID=my-terminal-1
 オープンイシューを取得して実装し、結果をブランチとコメントで返す。
 
 **詳細手順** → [references/worker-role.md](references/worker-role.md)
+**プロジェクト横断 Done の定義**（リポジトリ側に用意されていれば MR 提出前に照合する） → [references/project-dod.md](references/project-dod.md)
 
 ### フロー概要
 
