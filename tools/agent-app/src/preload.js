@@ -48,12 +48,14 @@ contextBridge.exposeInMainWorld('api', {
   termKeys: (id, data) => invoke('term:keys', { id, data }),
   termResize: (id, cols, rows) => invoke('term:resize', { id, cols, rows }),
   termKill: (id) => invoke('term:kill', { id }),
-  listWorktrees: (repo) => invoke('wt:list', { repo }),
+  // opts: { withStatus }。false なら変更数・先行コミット数を数えない（速い）
+  listWorktrees: (repo, opts) => invoke('wt:list', { repo, ...(opts || {}) }),
   createWorktree: (repo, branch, base, name) => invoke('wt:create', { repo, branch, base, name }),
   removeWorktree: (repo, name, opts) => invoke('wt:remove', { repo, name, ...(opts || {}) }),
   listDir: (repo, worktree, rel) => invoke('fs:list', { repo, worktree, rel }),
   readFile: (repo, worktree, rel) => invoke('fs:read', { repo, worktree, rel }),
-  findFiles: (repo, worktree, query) => invoke('fs:find', { repo, worktree, query }),
+  // opts: { refresh }。true なら名前検索の索引を作り直す。返り値は { hits, truncated, indexed }
+  findFiles: (repo, worktree, query, opts) => invoke('fs:find', { repo, worktree, query, ...(opts || {}) }),
   changes: (repo, worktree, scope) => invoke('git:changes', { repo, worktree, scope }),
   fileDiff: (repo, worktree, file, scope) => invoke('git:file', { repo, worktree, file, scope }),
   openFolder: (repo, worktree) => invoke('shell:openFolder', { repo, worktree }),

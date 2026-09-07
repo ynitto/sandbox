@@ -208,23 +208,41 @@ function readAllSessions(userData) {
   return out;
 }
 
+// 一覧に要る分だけ。会話ファイルは端末スナップショット（最大 12 × 120,000 字）を抱えて
+// 大きくなるので、mtime と大きさが変わっていないファイルは前回の要約を使い回す
+// （一覧は送信のたび・応答のたびに読み直される）。
+const summaryCache = new Map();
+function sessionSummary(file) {
+  const st = fs.statSync(file);
+  const hit = summaryCache.get(file);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.summary;
+  const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const summary = {
+    id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly,
+    policy: s.policy || 'direct', tier: s.tier || '',
+    transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
+    title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
+  };
+  summaryCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, summary });
+  return summary;
+}
+
 function listSessions(userData, repo) {
   let names;
   try { names = fs.readdirSync(sessionsDir(userData)); } catch { return []; }
   const out = [];
+  const seen = new Set();
   for (const f of names) {
     if (!f.endsWith('.json')) continue;
+    const file = path.join(sessionsDir(userData), f);
+    seen.add(file);
     try {
-      const s = JSON.parse(fs.readFileSync(path.join(sessionsDir(userData), f), 'utf8'));
+      const s = sessionSummary(file);
       if (repo && s.repo !== repo) continue;
-      out.push({
-        id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly,
-        policy: s.policy || 'direct', tier: s.tier || '',
-        transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
-        title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
-      });
+      out.push({ ...s });
     } catch { /* 壊れたファイルは一覧に出さない */ }
   }
+  for (const file of summaryCache.keys()) if (path.dirname(file) === sessionsDir(userData) && !seen.has(file)) summaryCache.delete(file);
   return out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 

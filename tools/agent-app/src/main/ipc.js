@@ -19,6 +19,7 @@ const response = require('./response');
 const { createGate } = require('./executionGate');
 const skills = require('./skills');
 const skillSelection = require('./skillSelection');
+const herd = require('./herd');
 const { registerAutomationIpc } = require('./automation/ipc');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
@@ -170,6 +171,18 @@ function executionSpec(sess, p, config) {
   return { ...base, policy: selected.policy, tier: selected.tier, source: selected.source };
 }
 
+// `herd`（一族の 1 語）を、このターンで実際に起こす定義へ写す。requested に元の名前を残す。
+// 起こすのは常に一族の共通 TUI（agent-herd の既定バックエンド）で、用途は本文の先頭に置く
+// スラッシュ行（slash）で表す——ターンごとに CLI を入れ替えない。
+//   agents      … listAgents の結果（ホストで使えるかの印つき）
+//   attachments … 添付（作業フォルダの中のファイルがあれば /edit）
+function concreteCli(spec, agents, { attachments = [] } = {}) {
+  if (!herd.isHerd(spec.cli)) return { ...spec, requested: spec.cli, family: '', slash: '' };
+  const purpose = herd.purposeOf({ readonly: spec.readonly, workFiles: herd.hasWorkFiles(attachments) });
+  const picked = herd.resolveChat(purpose, agents);
+  return { ...spec, cli: picked.cli, requested: herd.HERD, family: herd.HERD, slash: picked.slash, familyReason: picked.reason };
+}
+
 // 添付ファイルを確かめ、依頼文の末尾に「どこにあるか」を添える。
 //   { id, name } … userData の attachments/<id>/<name>（ホスト側のパスで伝える）
 //   { rel }      … 作業フォルダの中のファイル（相対パスのまま伝える。写さない）
@@ -203,7 +216,8 @@ function runHeadless(id, turn, send) {
   const repo = requireRepo(sess.repo);
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   if (running.has(id)) throw new Error('このセッションは応答中です');
-  const { cli, model, readonly, autoApprove, text, prompt, atts, files: attFiles, spec, policy, tier, selectedSkills } = turn;
+  const { cli, model, readonly, autoApprove, text, atts, files: attFiles, spec, policy, tier, selectedSkills, family = '', slash = '' } = turn;
+  const prompt = herd.withSlash(slash, turn.prompt);          // 用途のスラッシュ行は本文の一番上
   const collector = response.createCollector(cli);
   for (const item of turn.setupInformation || []) collector.addInformation(item);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
@@ -213,7 +227,7 @@ function runHeadless(id, turn, send) {
   const cmd = agentCli.turnCmd(spec, {
     prompt, model, readonly, cliSession: entry ? entry.id : '', history: unseen, files: attFiles,
   });
-  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
+  store.appendMessage(ud, id, { role: 'user', text, cli, family, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
   if (cmd.mintedSession) store.setCliEntry(ud, id, cli, { id: cmd.mintedSession });
 
   const startedAt = Date.now();
@@ -277,7 +291,7 @@ function runHeadless(id, turn, send) {
     const parts = collector.parts();
     parts.thinking.push(...structured.thinking);
     const message = {
-      role: 'assistant', cli, model, policy, tier,
+      role: 'assistant', cli, family, model, policy, tier,
       text: answer || (stopped ? '（停止した）' : `（応答なし。終了コード ${code}）`),
       code, elapsedMs: Date.now() - startedAt, stopped,
       parts,
@@ -317,7 +331,9 @@ async function openConversation(id, send, { cols, rows, fresh = false, launch = 
   const defaults = { cli: sess.cli, model: sess.model || '', readonly: !!sess.readonly, autoApprove: !!sess.autoApprove };
   const existing = conversations.get(id);
   const live = existing ? existing.launch : sess.live;
-  const want = launch || (fresh ? defaults : (live || defaults));
+  let want = launch || (fresh ? defaults : (live || defaults));
+  // 会話の既定が `herd` なら（会話を開いただけ・再起動）、一族の共通 TUI を開く
+  if (herd.isHerd(want.cli)) want = { ...want, cli: concreteCli({ ...want }, await listAgents(repo)).cli };
   const restart = fresh || (!!launch && !!live && !sameLaunch(live, launch));
   if (existing && !restart) {
     if (cols && rows) await existing.resize(cols, rows);
@@ -416,7 +432,7 @@ async function sweepTerminalSessions() {
 
 async function runTmux(id, turn, send) {
   const ud = userData();
-  const { cli, model, readonly, autoApprove, text, prompt, atts, policy, tier, selectedSkills } = turn;
+  const { cli, model, readonly, autoApprove, text, prompt, atts, policy, tier, selectedSkills, family = '', slash = '' } = turn;
   const want = { cli, model, readonly, autoApprove };
   let conv = conversations.get(id);
   let opened = null;
@@ -457,12 +473,14 @@ async function runTmux(id, turn, send) {
   const sess = store.readSession(ud, id);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
   const unseen = history.slice(conv.seen);
-  const full = unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed }) : prompt;
-  store.appendMessage(ud, id, { role: 'user', text, cli, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
+  // 用途のスラッシュ行は（履歴の再送があっても）本文の一番上。共通 TUI は先頭の /name 行だけを読む
+  const full = herd.withSlash(slash, unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed }) : prompt);
+  store.appendMessage(ud, id, { role: 'user', text, cli, family, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
   await conv.send(full, (message) => {
     const structured = response.parseTranscript(cli, message.text);
     message.text = structured.text;
     message.cli = cli;
+    message.family = family;
     message.model = model;
     message.policy = policy;
     message.tier = tier;
@@ -496,21 +514,25 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
   const repo = requireRepo(sess.repo);
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   const cfg = config || store.loadConfig(ud);
-  const base = executionSpec(sess, p, cfg);
+  const agents = await listAgents(repo);
+  const requested = executionSpec(sess, p, cfg);
+  const base = concreteCli(requested, agents, { attachments: p.attachments });
   const spec = agentCli.load(base.cli, repo);
-  const available = (await listAgents(repo)).find((item) => item.name === base.cli);
+  const available = agents.find((item) => item.name === base.cli);
   if (!available || !available.available) {
     const error = new Error(`${base.cli} はこの実行環境で利用できません。設定の tier または直接指定を確認してください`);
     error.code = 'AGENT_UNAVAILABLE';
     throw error;
   }
+  const familyInfo = base.family
+    ? [{ type: 'status', title: `${base.family} → ${base.cli}${base.slash ? ` ${base.slash}` : ''}`, status: 'success', detail: base.familyReason }] : [];
   let transport = 'headless';
   if (cfg.transport === 'tmux' && spec.interactive) {
     const info = await host.probe(distroFor(repo));
     if (info.ok && info.tmux) transport = 'tmux';
   }
   const attached = withAttachments(ud, base.text, p.attachments, dirs);
-  let setupInformation = [];
+  let setupInformation = [...familyInfo];
   let setupWarning = '';
   let setupSkills = [];
   // CLI ごとの最初の起動だけに開始アクションを適用する。既存 entry は設定変更後も再実行しない。
@@ -549,9 +571,10 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
     ? `${setupSkills.map((item) => item.command).join('\n')}\n\n${contextualPrompt}`
     : contextualPrompt;
   const turn = { ...base, prompt, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
-  // 次のターンの既定として覚える（画面はこれを出す）
+  // 次のターンの既定として覚える（画面はこれを出す）。`herd` は写した先ではなく要求した
+  // 名前のまま残す——次のターンは添付の有無でまた選び直す
   store.updateSession(ud, id, {
-    cli: base.cli, model: base.model, readonly: base.readonly, autoApprove: base.autoApprove,
+    cli: base.requested || base.cli, model: base.model, readonly: base.readonly, autoApprove: base.autoApprove,
     policy: base.policy, tier: base.tier, transport,
   });
   if (transport === 'headless') {
@@ -596,12 +619,30 @@ async function hostAvailability(distro, commands) {
   return r.ok ? map : null;
 }
 
+// 一覧の最後に仮想の `herd`（一族が 1 つでもあれば）を足す。画面の直接指定・設定の tier の
+// どちらもこの一覧から選ぶので、herd はここで足せば両方に出る。
 async function listAgents(repo) {
   const defs = agentCli.list(repo);
   const distro = repo ? distroFor(repo) : store.loadConfig(userData()).wslDistro;
   const map = await hostAvailability(distro, [...new Set(defs.map((d) => d.command))]);
-  if (!map) return defs;                                     // ホストに聞けない → ローカル PATH の判定のまま
-  return defs.map((d) => ({ ...d, available: !!map.get(d.command) }));
+  const marked = map ? defs.map((d) => ({ ...d, available: !!map.get(d.command) })) : defs;   // ホストに聞けない → ローカル PATH の判定のまま
+  const virtual = herd.listEntry(marked);
+  return virtual ? [...marked, virtual] : marked;
+}
+
+// 名前検索の索引の材料。Windows で \\wsl$\ のリポジトリ（実体は WSL の中）を読むときだけ、
+// ホスト（WSL）の中で `git ls-files` を 1 回撃つ。Windows 側の fs から 9P 越しに歩くと
+// readdir 1 回ごとに往復が要り、索引作りが何秒もかかる。返るのは相対パスなので表記の変換は
+// 要らず、.gitignore も効く。git リポジトリでなければ null（→ fs で歩く）。
+// C:\ のリポジトリと Linux / macOS は fs で歩くほうが速いので lister を返さない。
+function hostLister(repo, dirs) {
+  if (process.platform !== 'win32' || !host.isWslUnc(dirs.fsDir)) return null;
+  return async () => {
+    const r = await host.shellFor(distroFor(repo)).exec(
+      ['git', '-C', dirs.hostDir, 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], { timeoutMs: 60000 },
+    );
+    return r.ok ? r.output.split('\0').filter(Boolean) : null;
+  };
 }
 
 // statemachine-maker はここから `../../.github/skills/statemachine-use` を辿ってスキルの
@@ -758,7 +799,9 @@ function registerIpcHandlers(getWindow) {
   handle('term:kill', async (p) => { const had = conversations.has(p.id); await closeConversation(p.id); return had; });
 
   // 作業フォルダ（git worktree）
-  handle('wt:list', (p) => { const repo = requireRepo(p.repo); return worktree.list(repo, distroFor(repo)); });
+  // withStatus: false なら `git worktree list` だけ（画面はまず一覧を出し、変更数はあとから足す。
+  // Windows の /mnt/c では status が数秒〜数十秒かかり、待つと起動時に何も選べない）
+  handle('wt:list', (p) => { const repo = requireRepo(p.repo); return worktree.list(repo, distroFor(repo), { withStatus: p.withStatus !== false }); });
   handle('wt:create', async (p) => {
     const repo = requireRepo(p.repo);
     return worktree.create(repo, { branch: p.branch, base: p.base, name: p.name }, distroFor(repo));
@@ -780,7 +823,10 @@ function registerIpcHandlers(getWindow) {
   // リポジトリのファイル（作業フォルダの中を見る）
   handle('fs:list', (p) => files.listDir(dirsOf(p.repo, p.worktree).fsDir, p.rel || ''));
   handle('fs:read', (p) => files.readFile(dirsOf(p.repo, p.worktree).fsDir, p.rel || ''));
-  handle('fs:find', (p) => files.find(dirsOf(p.repo, p.worktree).fsDir, p.query || '', 200));
+  handle('fs:find', (p) => {
+    const dirs = dirsOf(p.repo, p.worktree);
+    return files.find(dirs.fsDir, p.query || '', 200, { refresh: !!p.refresh, lister: hostLister(p.repo, dirs) });
+  });
 
   handle('git:changes', async (p) => {
     const repo = requireRepo(p.repo);
@@ -824,4 +870,4 @@ function registerIpcHandlers(getWindow) {
   });
 }
 
-module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer, withAttachments, turnSpec, executionSpec, sameLaunch, presentSession, sweepTerminalSessions };
+module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer, withAttachments, turnSpec, executionSpec, concreteCli, sameLaunch, presentSession, sweepTerminalSessions };

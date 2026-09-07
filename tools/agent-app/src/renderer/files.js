@@ -117,6 +117,8 @@
 
   // ---- 絞り込み（名前検索） ----------------------------------------------------
 
+  // 打つたびに main へ聞くが、返事は打った順に来るとは限らない（索引を作っている最中の
+  // 1 回目が一番遅い）。最後に打った検索の返事だけを画面に出す。
   async function applyFilter() {
     const q = $('tree-filter').value.trim();
     const box = $('tree-results');
@@ -124,9 +126,15 @@
     $('tree').hidden = true;
     box.hidden = false;
     box.replaceChildren(el('li', 'empty', '検索中…'));
+    const seq = (state.filterSeq = (state.filterSeq || 0) + 1);
     try {
-      const hits = await api.findFiles(state.repo, state.worktree, q);
+      const refresh = state.indexStale;
+      state.indexStale = false;
+      const res = await api.findFiles(state.repo, state.worktree, q, { refresh });
+      if (seq !== state.filterSeq) return;
+      const hits = Array.isArray(res) ? res : (res && res.hits) || [];
       box.replaceChildren();
+      if (res && res.truncated) box.append(el('li', 'empty', '大きなフォルダのため、索引は浅い階層まで（深い所は開いて探す）'));
       for (const h of hits) {
         const li = el('li', `node ${h.type}`);
         const row = el('button', 'row');
@@ -139,7 +147,7 @@
       }
       if (!hits.length) box.append(el('li', 'empty', '見つからない'));
     } catch (err) {
-      box.replaceChildren(el('li', 'empty', err.message));
+      if (seq === state.filterSeq) box.replaceChildren(el('li', 'empty', err.message));
     }
   }
 
@@ -225,6 +233,7 @@
     state.worktree = next;
     state.open = null;
     state.expanded.clear();
+    state.filterSeq = (state.filterSeq || 0) + 1;                // 前のフォルダの検索結果は捨てる
     $('tree-filter').value = '';
     $('tree-results').hidden = true;
     $('tree').hidden = false;
@@ -259,7 +268,13 @@
   function init() {
     $('tree-root').onchange = () => setRoot(state.repo, $('tree-root').value, {});
     $('tree-filter').addEventListener('input', () => { clearTimeout(state.filterTimer); state.filterTimer = setTimeout(applyFilter, 250); });
-    $('tree-refresh').onclick = async () => { state.expanded.clear(); await renderRoot(); if (state.open) reveal(state.open.rel); };
+    $('tree-refresh').onclick = async () => {
+      state.expanded.clear();
+      state.indexStale = true;                                   // 名前検索の索引も次の検索で作り直す
+      await renderRoot();
+      if (state.open) reveal(state.open.rel);
+      if ($('tree-filter').value.trim()) applyFilter();
+    };
     $('viewer-mode-code').onclick = () => { state.mode = 'code'; state.mdPreferred = false; renderViewer(); };
     $('viewer-mode-preview').onclick = () => { state.mode = 'preview'; state.mdPreferred = true; renderViewer(); };
     $('viewer-wrap').onclick = () => { state.wrap = !state.wrap; renderViewer(); };
