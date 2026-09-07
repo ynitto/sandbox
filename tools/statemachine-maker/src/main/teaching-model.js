@@ -150,6 +150,18 @@ function restoreLastSuccessful(value) {
   return session;
 }
 
+// 画面に出す状態。定義（workflow.yaml）があるタスクは、教示の進み具合に関係なく「利用可能」で、
+// 教示ステータスは「AIとの変更がどこまで進んだか」を別の印（change）として添えるだけにする。
+// 定義が無い下書きは教示ステータスそのものが状態になる。
+// status が空（教示セッションが無い）なら変更は進んでいない。
+function presentStatus({ published = false, status = '' } = {}) {
+  const teaching = STATUSES.has(status) ? status : (status ? 'draft' : '');
+  if (published) {
+    return { status: 'ready', change: teaching === 'ready' ? '' : teaching, runnable: true, published: true };
+  }
+  return { status: teaching || 'draft', change: '', runnable: false, published: false };
+}
+
 function createSession({ machine = '', title = '', purpose = '' } = {}) {
   const normalizedPurpose = text(purpose);
   return {
@@ -184,5 +196,6 @@ module.exports = {
   recordTrial,
   confirmReady,
   restoreLastSuccessful,
+  presentStatus,
   redact,
 };

@@ -131,3 +131,16 @@ test('任意項目の空値と全種類の理解内容を安全な既定へ揃�
   assert.strictEqual(waiting.status, 'needs-trial');
   assert.throws(() => teaching.restoreLastSuccessful({ ...generated, lastSuccessfulGenerationId: 'missing' }), /成功版/);
 });
+
+test('定義があるタスクは教示の進み具合に関係なく利用可能で、変更の進み具合を別に持つ', () => {
+  assert.deepStrictEqual(teaching.presentStatus({ published: true }), { status: 'ready', change: '', runnable: true, published: true });
+  assert.deepStrictEqual(teaching.presentStatus({ published: true, status: 'ready' }), { status: 'ready', change: '', runnable: true, published: true });
+  assert.strictEqual(teaching.presentStatus({ published: true, status: 'draft' }).change, 'draft', '相談を始めた定義は変更中');
+  assert.deepStrictEqual(teaching.presentStatus({ published: true, status: 'needs-trial' }), { status: 'ready', change: 'needs-trial', runnable: true, published: true });
+  assert.deepStrictEqual(teaching.presentStatus({ published: true, status: 'awaiting-confirmation' }).change, 'awaiting-confirmation');
+  assert.deepStrictEqual(teaching.presentStatus({ published: false, status: 'draft' }), { status: 'draft', change: '', runnable: false, published: false });
+  assert.strictEqual(teaching.presentStatus({ published: false, status: 'needs-trial' }).status, 'needs-trial');
+  assert.strictEqual(teaching.presentStatus({ status: 'unexpected' }).status, 'draft', '不正な値は下書き扱い');
+  assert.strictEqual(teaching.presentStatus({ published: true, status: 'unexpected' }).change, 'draft');
+  assert.strictEqual(teaching.presentStatus().runnable, false);
+});

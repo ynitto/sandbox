@@ -35,8 +35,20 @@ test('まだ生成物がない下書きも仕事一覧へ返す', () => {
     title: '請求確認',
     purpose: '請求内容を確認する',
     status: 'draft',
+    published: false,
     lastTrial: null,
   }]);
+});
+
+test('定義がある下書きは published として返す', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smk-teaching-published-'));
+  const dir = path.join(root, '.statemachine', 'report');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'workflow.yaml'), 'version: 1\nname: Report\n', 'utf8');
+  teachingStore.create(root, { machine: 'report', title: 'レポート', purpose: '集計する' });
+  const [item] = teachingStore.list(root);
+  assert.strictEqual(item.published, true);
+  assert.strictEqual(item.status, 'draft', '教示ステータスはそのまま返し、表示の判定は presentStatus に任せる');
 });
 
 test('重複下書きと壊れた保存内容を安全に扱う', () => {

@@ -134,11 +134,19 @@ else {
       await assertNoHorizontalOverflow(`ホーム ${width}px`);
     }
     assert.match(await win.textContent('.teaching-page-head'), /タスク.*AIに目的を伝え/s);
+    assert.match(await win.textContent('[data-teach-select="smoke"]'), /利用可能/, '定義がある既存タスクは利用可能');
     await win.click('[data-teach-select="smoke"]');
     await win.waitForSelector('.teaching-workspace');
     assert.strictEqual(await win.locator('.teaching-conversation').count(), 1);
     assert.strictEqual(await win.locator('.teaching-understanding').count(), 1);
-    assert.match(await win.textContent('.teaching-head'), /高度な編集/);
+    assert.match(await win.textContent('.teaching-head'), /タスクの変更を相談.*利用可能.*高度な編集/s);
+    assert.strictEqual(await win.locator('.teaching-progress').count(), 0, '変更を始める前は進行バーを出さない');
+    // 「実行画面へ戻る」で実行詳細へ。名前の横に「利用可能」が付き、そのまま実行できる
+    await win.click('[data-teach-run]');
+    await win.waitForSelector('.task-detail-tabs');
+    assert.match(await win.textContent('.execution-title'), /煙試験.*利用可能/s);
+    await win.click('[data-run-teach]');
+    await win.waitForSelector('.teaching-workspace');
     await resize(760);
     if (process.env.SMK_SCREENSHOT_HOME) await win.screenshot({ path: process.env.SMK_SCREENSHOT_HOME });
     await win.click('[data-home-tab="workflows"]');

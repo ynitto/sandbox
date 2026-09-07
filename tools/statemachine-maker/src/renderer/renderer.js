@@ -218,6 +218,8 @@ function summary(step) {
 
 async function loadMachines() {
   state.machines = state.root ? ((await guard('一覧の取得', () => automationHost.listMachines(state.root))) || []) : [];
+  // 実行詳細の状態バッジ（利用可能・変更中）は教示一覧から決めるので、定義一覧と一緒に読み直す。
+  if (state.root) await teachingFeature.loadItems();
 }
 
 async function loadExecutionSnapshot() {
@@ -320,10 +322,11 @@ async function selectRoot(root) {
   cancelAi(state.aiReview);
   state.root = root;
   await guard('フォルダ', () => automationHost.selectRoot(root));
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
+  // 教示一覧は定義一覧と一緒に読み直す（loadMachines）ので、片付けはその前に済ませる。
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
+  await Promise.all([loadMachines(), loadAgents()]);
+  await loadExecutionSnapshot();
   if (state.homeTab === 'teach') await teachingFeature.activate();
   render();
 }
@@ -335,10 +338,10 @@ async function addFolder() {
   if (!cfg) return;
   state.config = cfg;
   state.root = cfg.lastRoot;
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
+  await Promise.all([loadMachines(), loadAgents()]);
+  await loadExecutionSnapshot();
   if (state.homeTab === 'teach') await teachingFeature.activate();
   render();
 }
@@ -351,10 +354,10 @@ async function removeFolder(root) {
   if (!cfg) return;
   state.config = cfg;
   if (state.root === root) state.root = cfg.lastRoot;
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
+  await Promise.all([loadMachines(), loadAgents()]);
+  await loadExecutionSnapshot();
   if (state.homeTab === 'teach') await teachingFeature.activate();
   render();
 }
@@ -539,6 +542,10 @@ function bindHome(main) {
     render();
   });
   on('run-edit', () => { const machine = selectedExecutionMachine(); if (machine) openMachine(machine.machine); });
+  for (const button of main.querySelectorAll('[data-run-teach]')) button.addEventListener('click', () => {
+    const machine = selectedExecutionMachine();
+    if (machine && machine.machine) openTeaching(machine.machine);
+  });
   on('run-start', () => startRun('run'));
   on('run-check', () => startRun('check'));
   on('run-stop', () => automationHost.runStop());
@@ -606,7 +613,19 @@ function goRun(machine) {
   state.execution.scheduleDraft = null;
   state.run.result = null;
   state.run.error = '';
-  loadExecutionSnapshot().then(render);
+  // 教示から来るときは定義が増えている（利用可能になった直後）ので、定義一覧も読み直す。
+  Promise.all([loadMachines(), loadExecutionSnapshot()]).then(render);
+}
+
+// 実行詳細から「AIに変更を相談」。教示画面をそのタスクで開く（今の版はそのまま実行できる）。
+async function openTeaching(machine) {
+  if (!machine) return;
+  state.view = 'home';
+  state.current = null;
+  state.homeTab = 'teach';
+  render();
+  await teachingFeature.activate();
+  await teachingFeature.select(String(machine).replace(/^machine:/, ''));
 }
 
 function scheduleLabel(schedule) {
@@ -764,7 +783,15 @@ function executionDetailHtml(machine) {
       <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
         ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
       <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
-  return `<header class="execution-title"><div><span class="eyebrow">タスク</span><h2>${esc(machine.name)}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div></header>
+  // 定義があるタスクは常に「利用可能」。AIとの変更が進んでいれば、その進み具合を印で添え、ボタンを
+  // 「変更を続ける」に変える（今の版はそのまま実行できる。実行ボタンが押せることがその証拠なので、
+  // 説明の帯は出さない）。ステートマシン以外（プロンプト・フック）は状態を出さない。
+  const present = machine.kind === 'statemachine' && machine.machine ? teachingFeature.statusOf(machine.machine) : null;
+  const badges = present
+    ? `<span class="status ${present.status === 'ready' ? 'ok' : ''}">${esc(window.teachingStatusLabel(present.status))}</span>${present.change ? `<span class="status warn">${esc(window.teachingChangeLabel(present.change))}</span>` : ''}`
+    : '';
+  const teachAction = present ? `<button type="button" data-run-teach>${present.change ? '変更を続ける' : 'AIに変更を相談'}</button>` : '';
+  return `<header class="execution-title"><div><span class="eyebrow">タスク</span><h2>${esc(machine.name)}${badges ? ` <span class="task-badges">${badges}</span>` : ''}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div>${teachAction ? `<div class="row">${teachAction}</div>` : ''}</header>
     <nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
       <button type="button" role="tab" data-task-tab="overview" aria-selected="${state.execution.detailTab === 'overview'}" class="${state.execution.detailTab === 'overview' ? 'is-on' : ''}">概要</button>
       ${machine.kind === 'statemachine' ? '<button type="button" role="tab" data-task-tab="steps" aria-selected="false">手順</button>' : ''}
@@ -1865,8 +1892,15 @@ async function navigateEmbedded(payload) {
     return;
   }
 
-  const selectedTask = executionMachines().find((machine) => taskIdentity(machine) === payload.selected);
-  const teachesTask = payload.action === 'new' || payload.intent || !selectedTask || !!selectedTask.machine;
+  // 定義があるタスク（実行できるもの）は実行詳細から開く。教示画面を開くのは、新しいタスク・会話からの
+  // intent・「AIに変更を相談」（action: teach）・まだ定義の無い下書きを選んだときだけ。
+  const machines = executionMachines();
+  // 親の一覧は実行基盤が無いとき id を持たず machine 名だけで選ぶので、id と machine 名のどちらでも見つける。
+  const wanted = String(payload.selected || '');
+  const selectedTask = wanted ? machines.find((machine) => taskIdentity(machine) === wanted
+    || taskIdentity(machine) === `machine:${wanted}` || (machine.machine && machine.machine === wanted.replace(/^machine:/, ''))) : null;
+  const teachesTask = payload.action === 'new' || payload.action === 'teach' || !!payload.intent
+    || (!selectedTask && (!!payload.selected || !machines.length));
   state.homeTab = teachesTask ? 'teach' : 'run';
   if (teachesTask) {
     await teachingFeature.activate();
@@ -1877,9 +1911,10 @@ async function navigateEmbedded(payload) {
     return;
   }
 
-  if (payload.selected && executionMachines().some((machine) => taskIdentity(machine) === payload.selected)) {
-    if (state.execution.selected !== payload.selected) state.execution.detailTab = 'overview';
-    state.execution.selected = payload.selected;
+  if (selectedTask) {
+    const identity = taskIdentity(selectedTask);
+    if (state.execution.selected !== identity) state.execution.detailTab = 'overview';
+    state.execution.selected = identity;
   }
   if (payload.action === 'new') newMachine();
   else render();

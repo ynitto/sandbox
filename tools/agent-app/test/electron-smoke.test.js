@@ -137,9 +137,17 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#tasks .list-pick').first().waitFor({ timeout: 20000 });
     assert.strictEqual(await win.locator('#tasks .list-pick').count(), 1, `タスク一覧を取得できない: ${await win.locator('#tasks').textContent()} / ${errors.join(' | ')}`);
     assert.match(await win.locator('#tasks').textContent(), /リリース確認/);
+    // 定義がある既存タスクは、教示ではなく実行詳細から開く。名前の横に「利用可能」が付く
+    await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
+    assert.match(await workspace.locator('.execution-title').textContent(), /タスク.*リリース確認.*利用可能/s);
+    assert.strictEqual(await workspace.locator('.teaching-page').count(), 0, '既存定義を教示画面で開かない');
+    assert.strictEqual(await workspace.locator('.teaching-page-head').isHidden(), true, 'タスクの見出しがサイドバーと二重に出ている');
+    // 「AIに変更を相談」で教示画面へ。状態は利用可能のまま、進行バーは出ない
+    await workspace.locator('[data-run-teach]').click();
     await workspace.locator('.teaching-page').waitFor({ timeout: 20000 });
-    assert.match(await workspace.locator('.teaching-head').textContent(), /タスクを教える.*リリース確認/s);
-    assert.doesNotMatch(await workspace.locator('.teaching-page').textContent(), /仕事/);
+    assert.match(await workspace.locator('.teaching-head').textContent(), /タスクの変更を相談.*リリース確認.*利用可能/s);
+    assert.strictEqual(await workspace.locator('.teaching-progress').count(), 0);
+    assert.doesNotMatch(await workspace.locator('.teaching-page').textContent(), /仕事|試運転が必要/);
     if (process.env.AGENT_APP_TEACHING_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
     }

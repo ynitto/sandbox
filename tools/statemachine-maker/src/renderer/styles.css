@@ -501,3 +501,8 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
   .teaching-composer { grid-template-columns: 1fr; }
   .teaching-message { max-width: 96%; }
 }
+
+/* タスク詳細の状態: 名前の横に「利用可能」を1つ、AIとの変更が進んでいればその印を添える。 */
+.task-badges, .teaching-badges { display: inline-flex; flex-wrap: wrap; gap: 6px; vertical-align: middle; margin-left: 4px; }
+.teaching-badges { margin: 4px 0 0; }
+.execution-title .row { flex: none; }

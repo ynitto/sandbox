@@ -1,0 +1,320 @@
+<title>タスク詳細ファースト UI案</title>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #f3f4f7; --panel: #ffffff; --panel-2: #f8f9fb; --line: #dfe3e8; --line-strong: #c9ced6;
+    --text: #20242b; --muted: #626b77; --accent: #2563eb; --accent-soft: #e8effd;
+    --ok: #18794e; --ok-soft: #e3f3ea; --warn: #946200; --warn-soft: #fff6d5; --ng: #c62835;
+    --note: #7c3aed; --note-soft: #f1ebfe;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK JP", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15181d; --panel: #1d2128; --panel-2: #232830; --line: #2f353e; --line-strong: #3d454f;
+      --text: #e6e9ee; --muted: #9aa3b0; --accent: #7aa2ff; --accent-soft: #24304a;
+      --ok: #6fcf97; --ok-soft: #1d3328; --warn: #f0c453; --warn-soft: #3a3116; --ng: #f08080;
+      --note: #c4a7ff; --note-soft: #2d2540;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15181d; --panel: #1d2128; --panel-2: #232830; --line: #2f353e; --line-strong: #3d454f;
+    --text: #e6e9ee; --muted: #9aa3b0; --accent: #7aa2ff; --accent-soft: #24304a;
+    --ok: #6fcf97; --ok-soft: #1d3328; --warn: #f0c453; --warn-soft: #3a3116; --ng: #f08080;
+    --note: #c4a7ff; --note-soft: #2d2540;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 40px 24px 80px; display: grid; gap: 48px; }
+  h1 { font-size: 26px; margin: 0 0 6px; text-wrap: balance; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  h3 { font-size: 14px; margin: 0; }
+  p { margin: 0; }
+  .lede { max-width: 65ch; color: var(--muted); }
+  .eyebrow { display: block; color: var(--muted); font-size: 11.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 4px; }
+  section > header { margin-bottom: 16px; max-width: 65ch; }
+  section > header p { color: var(--muted); margin-top: 4px; }
+  .compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+  .trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .compare, .trio { grid-template-columns: 1fr; } }
+  figure { margin: 0; display: grid; gap: 10px; }
+  figcaption { color: var(--muted); font-size: 12.5px; }
+  figcaption strong { color: var(--text); }
+  /* ---- wireframe frame ---- */
+  .screen { border: 1px solid var(--line-strong); border-radius: 10px; background: var(--bg); overflow: hidden; font-size: 11.5px; line-height: 1.45; position: relative; }
+  .screen.bad { border-color: var(--warn); }
+  .screen.good { border-color: var(--ok); }
+  .screen .chrome { display: flex; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+  .screen .chrome i { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); display: inline-block; }
+  .app { display: grid; grid-template-columns: 150px minmax(0, 1fr); min-height: 300px; }
+  .app.narrow { grid-template-columns: minmax(0, 1fr); }
+  .side { border-right: 1px solid var(--line); background: var(--panel-2); padding: 10px; display: grid; gap: 4px; align-content: start; }
+  .side .label { color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .05em; display: flex; justify-content: space-between; }
+  .item { padding: 6px 8px; border-radius: 6px; display: grid; gap: 1px; }
+  .item.on { background: var(--accent-soft); color: var(--accent); }
+  .item small { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item.on small { color: var(--accent); opacity: .8; }
+  .stage { padding: 14px 16px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .titlebar { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
+  .titlebar h4 { margin: 0; font-size: 15px; }
+  .titlebar .desc { color: var(--muted); }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .btn { border: 1px solid var(--line-strong); border-radius: 6px; padding: 3px 9px; background: var(--panel); white-space: nowrap; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.ghost { border-color: transparent; color: var(--muted); }
+  .btn.disabled { opacity: .45; }
+  .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 8px; font-size: 10px; font-weight: 650; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+  .pill.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+  .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+  .pill.accent { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+  .tabs { display: flex; gap: 12px; border-bottom: 1px solid var(--line); color: var(--muted); }
+  .tabs span { padding: 3px 0 5px; }
+  .tabs span.on { color: var(--text); border-bottom: 2px solid var(--accent); margin-bottom: -1px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; }
+  .card .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .card .head h5 { margin: 0; font-size: 12px; }
+  .log { height: 46px; border-radius: 6px; background: var(--panel-2); border: 1px dashed var(--line-strong); color: var(--muted); padding: 6px 8px; font-size: 10px; }
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
+  .steps span { text-align: center; padding: 3px; border-radius: 5px; background: var(--panel-2); color: var(--muted); font-size: 10px; }
+  .steps span.cur { color: var(--accent); outline: 2px solid var(--accent); outline-offset: -2px; }
+  .chat { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 8px; }
+  .chat .msgs { min-height: 120px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: grid; gap: 6px; align-content: start; color: var(--muted); }
+  .chat .aside { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: grid; gap: 4px; align-content: start; color: var(--muted); font-size: 10px; }
+  .chat .aside b { color: var(--text); font-size: 10.5px; }
+  .bubble { background: var(--panel-2); border-radius: 8px; padding: 6px 8px; }
+  .bubble.user { background: var(--accent-soft); color: var(--accent); justify-self: end; }
+  .composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+  .composer .input { border: 1px solid var(--line-strong); border-radius: 6px; padding: 4px 8px; color: var(--muted); background: var(--panel); }
+  .banner { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); border-left: 3px solid var(--warn); }
+  .banner .btn { border-color: var(--warn); color: var(--warn); background: transparent; }
+  .mark { position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--note); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; box-shadow: 0 0 0 3px var(--panel); z-index: 2; }
+  .notes { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; font-size: 12.5px; }
+  .notes li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; }
+  .notes .mark { position: static; box-shadow: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 10px; border-top: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 650; font-size: 12px; border-top: 0; }
+  td code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .decision { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  @media (max-width: 900px) { .decision { grid-template-columns: 1fr; } }
+  .decision article { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 6px; align-content: start; }
+  .decision article p { color: var(--muted); font-size: 13px; }
+  .decision article.pick { border-color: var(--ok); }
+  .decision .pill { justify-self: start; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<main>
+  <header>
+    <span class="eyebrow">agent-app / statemachine-maker · UI案 2026-09-06</span>
+    <h1>既存タスクは「実行できる画面」を先に出す</h1>
+    <p class="lede">statemachine-use スキルでチャットから作った <code>.statemachine/&lt;名前&gt;/</code> は、それ自体が完成した実行物です。今の画面はそれを「教示の途中」として開くため、編集中のように見え、実行までの道が遠くなっています。案は「利用可能なものは実行画面から始め、AIとの変更は明示操作で開く」の一点です。</p>
+  </header>
+
+  <section>
+    <header>
+      <span class="eyebrow">A. 現状と提案</span>
+      <h2>同じタスク「リリース確認」を開いたとき</h2>
+      <p>左が現状、右が提案。サイドバーは agent-app のもので、中央が共有ワークベンチ。</p>
+    </header>
+    <div class="compare">
+      <figure>
+        <div class="screen bad">
+          <div class="chrome"><i></i><i></i><i></i></div>
+          <div class="app">
+            <div class="side">
+              <div class="label"><span>タスク</span><span>＋</span></div>
+              <div class="item on">リリース確認<small>ステートマシン · 未実行 · 予定なし</small></div>
+              <div class="item">月次レポート<small>ステートマシン · 完了 · 1/1件の予定</small></div>
+            </div>
+            <div class="stage">
+              <span class="mark" style="top:10px;left:172px">1</span>
+              <div class="titlebar">
+                <div><span class="eyebrow" style="letter-spacing:0;text-transform:none">タスクを教える</span><h4>リリース確認</h4><span class="pill">下書き</span></div>
+                <div class="row"><span class="btn">実行する</span><span class="btn">高度な編集</span></div>
+              </div>
+              <span class="mark" style="top:96px;left:156px">2</span>
+              <div class="steps"><span class="cur">目的を理解中</span><span>方法を確認中</span><span>試運転中</span><span>利用可能</span></div>
+              <span class="mark" style="top:132px;left:156px">3</span>
+              <div class="chat">
+                <div class="msgs"><span class="bubble">変更したいことをAIへ伝えてください。</span></div>
+                <div class="aside"><b>AIの理解</b><span>目的: 自動化統合の確認</span><span>毎回変わる値: なし</span><span>期待結果: なし</span><span>まだ曖昧な点: なし</span></div>
+              </div>
+              <div class="composer"><span class="input">変更したいことや補足を入力</span><span class="btn primary">変更を相談する</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><strong>現状</strong> — 完成しているのに「下書き」「目的を理解中」と表示され、会話欄が主役。実行は右上の小さなボタンだけ。</figcaption>
+      </figure>
+      <figure>
+        <div class="screen good">
+          <div class="chrome"><i></i><i></i><i></i></div>
+          <div class="app">
+            <div class="side">
+              <div class="label"><span>タスク</span><span>＋</span></div>
+              <div class="item on">リリース確認<small>利用可能 · 未実行 · 予定なし</small></div>
+              <div class="item">月次レポート<small>利用可能 · 変更中 · 1/1件の予定</small></div>
+            </div>
+            <div class="stage">
+              <span class="mark" style="top:10px;left:172px">4</span>
+              <div class="titlebar">
+                <div><span class="eyebrow" style="letter-spacing:0;text-transform:none">タスク</span><h4>リリース確認 <span class="pill ok">利用可能</span></h4><span class="desc">自動化統合の確認</span></div>
+                <div class="row"><span class="btn">AIに変更を相談</span><span class="btn ghost">高度な編集</span></div>
+              </div>
+              <div class="tabs"><span class="on">概要</span><span>手順</span><span>履歴</span></div>
+              <span class="mark" style="top:118px;left:156px">5</span>
+              <div class="card">
+                <div class="head"><h5>手動実行</h5><span class="pill">待機中</span></div>
+                <div class="row"><span class="btn ghost">● おすすめ · copilot · スキル 自動 ⌄</span><span style="flex:1"></span><span class="btn primary">実行</span><span class="btn">構成を確認</span><span class="btn disabled">停止</span></div>
+                <div class="log">実行すると、ここに進行状況が表示されます。</div>
+              </div>
+              <div class="card">
+                <div class="head"><h5>定期実行</h5><span class="row"><span class="btn">自動実行を開始</span><span class="btn">予定を追加</span></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><strong>提案</strong> — 既存の実行詳細（概要／手順／履歴）をそのまま最初に出す。教示は「AIに変更を相談」を押したときだけ。</figcaption>
+      </figure>
+    </div>
+    <ul class="notes" style="margin-top:14px">
+      <li><span class="mark">1</span>見出しが「タスクを教える」で、状態が「下書き」。定義は揃っているのに未完成に見える。</li>
+      <li><span class="mark">2</span>進行バーの先頭が点灯し、「まだ4段階中1段目」と読める。既存定義には無関係な情報。</li>
+      <li><span class="mark">3</span>会話欄と「AIの理解（すべて なし）」が画面の大半を占め、何をすればいいか迷う。</li>
+      <li><span class="mark">4</span>提案では名前の横に「利用可能」を1つだけ置く。変更を頼む操作は副操作として右に寄せる。</li>
+      <li><span class="mark">5</span>「実行」がカードの主ボタン。定義があるものは、開いた直後に実行できる。</li>
+    </ul>
+  </section>
+
+  <section>
+    <header>
+      <span class="eyebrow">B. 提案の3つの状態</span>
+      <h2>状態は「定義があるか」と「AIとの変更が進んでいるか」の2軸で決まる</h2>
+      <p>画面に出す状態語は4つだけ（利用可能／下書き／試運転待ち／確認待ち）。定義があるものは常に「利用可能」で、変更の進み具合は別の印として添える。</p>
+    </header>
+    <div class="trio">
+      <figure>
+        <div class="screen good">
+          <div class="chrome"><i></i><i></i><i></i></div>
+          <div class="app narrow">
+            <div class="stage">
+              <div class="titlebar"><div><h4>リリース確認 <span class="pill ok">利用可能</span></h4></div><span class="btn">AIに変更を相談</span></div>
+              <div class="tabs"><span class="on">概要</span><span>手順</span><span>履歴</span></div>
+              <div class="card"><div class="head"><h5>手動実行</h5><span class="pill">待機中</span></div><div class="row"><span class="btn primary">実行</span><span class="btn">構成を確認</span></div></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><strong>① 利用可能</strong> — workflow.yaml があり、変更の相談は無い。スキルで作った既存定義はここに入る。</figcaption>
+      </figure>
+      <figure>
+        <div class="screen good">
+          <div class="chrome"><i></i><i></i><i></i></div>
+          <div class="app narrow">
+            <div class="stage">
+              <div class="titlebar"><div><h4>月次レポート <span class="pill ok">利用可能</span> <span class="pill warn">変更中 · 試運転待ち</span></h4></div><span class="btn">変更を続ける</span></div>
+              <div class="tabs"><span class="on">概要</span><span>手順</span><span>履歴</span></div>
+              <div class="card"><div class="head"><h5>手動実行</h5><span class="pill">待機中</span></div><div class="row"><span class="btn primary">実行</span><span class="btn">構成を確認</span></div></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><strong>② 利用可能 + 変更中</strong> — 定義はあるが、AIが作った候補が試運転待ち。印とボタンだけで示し、説明の帯は出さない（実行ボタンが押せることが「今の版は動く」の証拠）。</figcaption>
+      </figure>
+      <figure>
+        <div class="screen">
+          <div class="chrome"><i></i><i></i><i></i></div>
+          <div class="app narrow">
+            <div class="stage">
+              <div class="titlebar"><div><span class="eyebrow" style="letter-spacing:0;text-transform:none">タスクを教える</span><h4>請求確認 <span class="pill">下書き</span></h4></div></div>
+              <div class="steps"><span class="cur">目的を理解中</span><span>方法を確認中</span><span>試運転中</span><span>利用可能</span></div>
+              <div class="chat">
+                <div class="msgs"><span class="bubble user">請求内容を毎月確認したい</span><span class="bubble">確認したいこと: 対象の期間は毎回変わりますか？</span></div>
+                <div class="aside"><b>AIの理解</b><span>目的: 請求内容の確認</span><span>毎回変わる値: 期間？</span></div>
+              </div>
+              <div class="composer"><span class="input">質問への回答を入力</span><span class="btn primary">送る</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><strong>③ 下書き（まだ実行できない）</strong> — 定義が無いものだけ教示画面から始まる。今の教示UIをそのまま使う。</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <header>
+      <span class="eyebrow">C. 「AIに変更を相談」を押したあと</span>
+      <h2>既存タスクの教示画面は「変更を相談する場」として開く</h2>
+      <p>状態は引き続き「利用可能」。進行バーはAIが候補を作ってから出す。いつでも「実行画面へ戻る」で戻れる。</p>
+    </header>
+    <div class="compare">
+      <figure>
+        <div class="screen good">
+          <div class="chrome"><i></i><i></i><i></i></div>
+          <div class="app narrow">
+            <div class="stage">
+              <div class="titlebar">
+                <div><span class="eyebrow" style="letter-spacing:0;text-transform:none">タスクの変更を相談</span><h4>リリース確認 <span class="pill ok">利用可能</span></h4></div>
+                <div class="row"><span class="btn">実行画面へ戻る</span><span class="btn ghost">高度な編集</span></div>
+              </div>
+              <div class="chat">
+                <div class="msgs"><span class="bubble">変更したいことを伝えてください。今の版は、試運転で確認するまで置き換わりません。</span></div>
+                <div class="aside"><b>AIの理解</b><span>目的: 自動化統合の確認</span><span>まだ相談はありません</span></div>
+              </div>
+              <div class="composer"><span class="input">変更したいことを入力</span><span class="btn primary">変更を相談する</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption><strong>相談開始前</strong> — 進行バーを出さず、一文で「今の版は残る」と伝える。</figcaption>
+      </figure>
+      <figure>
+        <div class="screen good">
+          <div class="chrome"><i></i><i></i><i></i></div>
+          <div class="app narrow">
+            <div class="stage">
+              <div class="titlebar">
+                <div><span class="eyebrow" style="letter-spacing:0;text-transform:none">タスクの変更を相談</span><h4>リリース確認 <span class="pill ok">利用可能</span> <span class="pill warn">変更中 · 試運転待ち</span></h4></div>
+                <div class="row"><span class="btn">実行画面へ戻る</span></div>
+              </div>
+              <div class="steps"><span>目的を理解中</span><span>方法を確認中</span><span class="cur">試運転中</span><span>利用可能</span></div>
+              <div class="chat">
+                <div class="msgs"><span class="bubble user">確認の前にテストも走らせて</span><span class="bubble">進め方を準備しました。<span class="btn primary" style="margin-left:6px">試運転する</span></span></div>
+                <div class="aside"><b>AIの理解</b><span>目的: 自動化統合の確認</span><span>期待結果: テスト成功</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption><strong>候補ができたあと</strong> — 変更の進み具合を「変更中 · 試運転待ち」と進行バーで示す。「期待どおり」で置き換わり、実行画面へ戻る。</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <header>
+      <span class="eyebrow">D. ステート条件</span>
+      <h2>表示と実行可否を決める条件</h2>
+      <p>判定は main 側の1関数に置き、standalone の statemachine-maker と agent-app の埋め込みで同じ結果になる。</p>
+    </header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>表示</th><th>条件</th><th>実行</th><th>最初に開く画面</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill ok">利用可能</span></td><td><code>workflow.yaml</code> がある。<code>teaching.json</code> が無い、または status が ready</td><td>できる</td><td>実行詳細</td></tr>
+          <tr><td><span class="pill ok">利用可能</span> <span class="pill warn">変更中 · 下書き / 試運転待ち / 確認待ち</span></td><td><code>workflow.yaml</code> があり、<code>teaching.json</code> の status が ready 以外</td><td>できる（今の版）</td><td>実行詳細（ボタンは「変更を続ける」）</td></tr>
+          <tr><td><span class="pill">下書き</span></td><td><code>workflow.yaml</code> が無く、候補（generation）も無い</td><td>できない</td><td>教示</td></tr>
+          <tr><td><span class="pill warn">試運転待ち</span></td><td><code>workflow.yaml</code> が無く、候補はあるが成功した試運転が無い</td><td>試運転のみ</td><td>教示</td></tr>
+          <tr><td><span class="pill warn">確認待ち</span></td><td><code>workflow.yaml</code> が無く、成功した試運転がある</td><td>「期待どおり」で公開</td><td>教示</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <header>
+      <span class="eyebrow">E. 検討した案</span>
+      <h2>3案の比較</h2>
+    </header>
+    <div class="decision">
+      <article class="pick"><span class="pill ok">採用</span><h3>1. 実行詳細を先に出し、教示は明示操作</h3><p>既存の実行画面（概要／手順／履歴）を入口にし、「AIに変更を相談」で教示を開く。追加する画面は無く、状態語も既存の4つで済む。</p></article>
+      <article><span class="pill">見送り</span><h3>2. 教示画面に実行カードを埋め込む</h3><p>画面は1つになるが、会話・理解・実行・定期実行・履歴が縦に積まれて長くなる。狭い幅で横スクロールか折りたたみが増える。</p></article>
+      <article><span class="pill">見送り</span><h3>3. 教示画面のラベルだけ直す</h3><p>「下書き」を「利用可能」にするだけでは、会話欄が主役のままで「編集中に見える」根本は残る。</p></article>
+    </div>
+  </section>
+</main>

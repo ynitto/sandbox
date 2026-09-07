@@ -145,13 +145,28 @@ test('主画面はタスクを教える会話・理解内容・試運転結果�
   assert.ok(renderer.includes("homeTab: 'teach'"));
   assert.ok(renderer.includes('data-home-tab="teach"'));
   assert.ok(renderer.includes('window.createTeachingFeature('));
-  for (const label of ['新しいタスクを教える', '変更を相談する', '試運転する', '実行する', '高度な編集']) {
+  for (const label of ['新しいタスクを教える', '変更を相談する', '試運転する', '実行画面へ戻る', '高度な編集']) {
     assert.ok(teachingUi.includes(label), `教示UIに無い操作: ${label}`);
   }
   for (const area of ['teaching-conversation', 'teaching-understanding', 'teaching-trial']) {
     assert.ok(teachingUi.includes(area), `教示UIに無い領域: ${area}`);
   }
   assert.doesNotMatch(`${renderer}\n${teachingUi}`, /仕事/);
+});
+
+test('定義があるタスクは実行詳細から開き、教示は「AIに変更を相談」で開く', () => {
+  const renderer = read('renderer/renderer.js');
+  const teachingUi = read('renderer/teaching.js');
+  // 既存定義を選んだだけでは教示画面にしない（machine を持つだけで教示にしていた振り分けを残さない）
+  assert.ok(!renderer.includes('!!selectedTask.machine'), '既存定義を一律に教示画面へ送らない');
+  assert.match(renderer, /payload\.action === 'teach'/);
+  assert.ok(renderer.includes('data-run-teach') && renderer.includes('AIに変更を相談'));
+  assert.ok(renderer.includes('変更を続ける') && !renderer.includes('task-change-banner'), '変更中は印とボタンだけで示し、説明の帯は出さない');
+  assert.ok(renderer.includes('teachingFeature.statusOf('), '実行詳細の状態は教示側の判定を使う');
+  // 状態語は4つに揃え、既存定義を「試運転が必要」にしない
+  assert.ok(!teachingUi.includes('試運転が必要'));
+  for (const label of ['利用可能', '下書き', '試運転待ち', '確認待ち', '変更中']) assert.ok(teachingUi.includes(label), label);
+  assert.match(teachingUi, /function presentTeachingStatus\(/);
 });
 
 test('設定は登録したフォルダを持ち、旧版の「最近開いたフォルダ」から引き継ぐ', () => {
