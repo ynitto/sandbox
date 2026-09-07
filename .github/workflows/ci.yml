@@ -11,7 +11,8 @@ name: CI
 #   2. dashboard … agent-dashboard の `npm test`（node のみで走る・依存の導入は不要）。
 #      statemachine-maker … 同じく `npm test`。生成した定義を statemachine-use スキルの
 #      run_machine.py --dry-run に通す結合テストを含むので python も要る。
-#   3. docs    … 利用者向け文書の内部名検査（R10）とその検査自身の単体テスト。
+#   3. docs    … 利用者向け文書の内部名検査（R10）、スキルの references/ 健全性検査
+#                （切れリンク・孤児・未許可の2ホップ参照）、それぞれの検査自身の単体テスト。
 #   4. vscode-copilot … このスイートだけ pytest 形式（tmp_path などを使う）なので
 #                独立したジョブにする。**上の python matrix へ足してはいけない**——
 #                あちらは `unittest discover` で、pytest 形式のテストは 1 件も収集
@@ -159,7 +160,7 @@ jobs:
         run: node --test tools/vscode-copilot/extension/test/extension.test.js
 
   docs:
-    name: docs (R10 検査)
+    name: docs (R10 / スキル参照検査)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -169,5 +170,7 @@ jobs:
           python-version: "3.11"
       - name: 利用者向け文書に内部名が出ていないこと
         run: python tools/ci/check_user_docs.py
+      - name: スキルの references/ に切れリンク・孤児・未許可の2ホップ参照が無いこと
+        run: python tools/ci/check_skill_references.py
       - name: 検査自身の単体テスト
         run: python -m unittest discover -s tools/ci/tests
