@@ -99,8 +99,15 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #side { grid-area: side; }
 #main { grid-area: main; }
 #changes { grid-area: changes; }
-#automation { grid-area: main; min-width: 0; min-height: 0; height: 100vh; background: var(--bg); }
+#automation { grid-area: main; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
+#automation-content { position: relative; min-width: 0; min-height: 0; flex: 1; background: var(--bg); }
 #automation-workbench { display: block; width: 100%; height: 100%; background: var(--bg); }
+.area-head { min-height: 60px; display: flex; align-items: center; padding: 8px 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); }
+.area-heading { min-width: 0; }
+.area-heading .title { font-weight: 650; }
+.area-heading p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
+.workspace-loading { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; color: var(--muted); background: var(--bg); font-size: 12px; }
+#automation-content[aria-busy="true"] #automation-workbench { visibility: hidden; }
 #nav-toggle { display: none; position: fixed; z-index: 50; top: 9px; left: 10px; }
 #side-backdrop { position: fixed; z-index: 39; inset: 0; border: 0; border-radius: 0; background: rgba(18, 23, 31, .38); }
 

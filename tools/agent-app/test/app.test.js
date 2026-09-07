@@ -238,13 +238,24 @@ test('領域切替はタスクとワークフローを独立して共有編集�
 });
 
 test('共有編集面は親の領域選択に従い、独自のフォルダと主要タブを表示しない', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/automation-workbench.css'), 'utf8');
+  assert.match(html, /id="automation-head"[\s\S]*id="automation-title"[\s\S]*id="automation-description"/);
   assert.match(renderer, /workbenchHost\.setController\(\{ navigate: navigateEmbedded \}\)/);
   assert.match(renderer, /state\.homeTab = 'flows'/);
   assert.match(renderer, /state\.homeTab = teachesTask \? 'teach' : 'run'/);
   assert.match(css, /:host \.folder-pane[\s\S]*display:\s*none/);
   assert.match(css, /:host \.home-tabs[\s\S]*display:\s*none/);
+});
+
+test('領域切替中は前の領域の操作を隠し、共通見出しを先に更新する', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
+  assert.match(renderer, /function renderAutomationHeader\(\)/);
+  assert.match(renderer, /setAutomationLoading\(true\)[\s\S]*await loadAreaItems\(\)[\s\S]*await syncAutomationWorkbench\(\)[\s\S]*setAutomationLoading\(false\)/);
+  assert.match(css, /#automation-content\[aria-busy="true"\] #automation-workbench\s*\{[^}]*visibility:\s*hidden/);
+  assert.match(css, /\.area-head\s*\{[^}]*min-height:\s*60px/);
 });
 
 test('タスク詳細は概要・手順・履歴に分かれ、定期実行は概要で管理する', () => {

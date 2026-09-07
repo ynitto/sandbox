@@ -219,8 +219,17 @@
     </main>
 
     <section id="automation" aria-label="タスクとワークフロー" hidden>
-      <statemachine-workbench id="automation-workbench" data-statemachine-workbench embedded
-        stylesheet="vendor/statemachine/styles.css" host-stylesheet="automation-workbench.css"></statemachine-workbench>
+      <header id="automation-head" class="area-head">
+        <div class="area-heading">
+          <div id="automation-title" class="title">タスク</div>
+          <p id="automation-description">繰り返す作業を実行・管理します</p>
+        </div>
+      </header>
+      <div id="automation-content">
+        <div id="automation-loading" class="workspace-loading" role="status" aria-live="polite" hidden>画面を切り替えています…</div>
+        <statemachine-workbench id="automation-workbench" data-statemachine-workbench embedded
+          stylesheet="vendor/statemachine/styles.css" host-stylesheet="automation-workbench.css"></statemachine-workbench>
+      </div>
     </section>
 
     <aside id="changes" hidden>
