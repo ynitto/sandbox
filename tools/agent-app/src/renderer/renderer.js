@@ -1519,9 +1519,9 @@ async function init() {
   TaskTeaching.init({
     notice,
     isRunning: (id) => state.running.has(id),
-    executionOptions: () => {
+    executionOptions: (agent = '') => {
       const selected = selectedExecution(state.config.execution.defaultPolicy);
-      return { policy: selected.policy, cli: selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
+      return { policy: selected.policy, cli: agent || selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
     },
     executionLabel: () => {
       const selected = selectedExecution(state.config.execution.defaultPolicy);

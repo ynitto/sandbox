@@ -346,7 +346,7 @@ test('タスク選択は設定保存より先に詳細へ伝え、ドラフト�
   assert.match(selectItem, /token === state\.selectionToken/, '前の項目の保存結果で現在の選択状態を戻さない');
 });
 
-test('タスク詳細は概要・手順・履歴のタブに統一し、AI との編集は手順タブの「編集」で開く', () => {
+test('タスク詳細は概要・手順・履歴に統一し、対象に応じて編集またはAI見直しを行える', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   assert.match(renderer, /detailTab:\s*'overview'/);
   assert.match(renderer, /class="task-detail-tabs"[^>]*role="tablist"/);
@@ -357,7 +357,11 @@ test('タスク詳細は概要・手順・履歴のタブに統一し、AI と�
   assert.match(renderer, /function taskDetailShellHtml\(/);
   assert.match(renderer, /function bindTaskDetailTabs\(/);
   assert.ok(!renderer.includes('data-task-tab="teach"'), 'AI相談のタブは持たない');
-  assert.match(renderer, /id="b-edit"[^>]*>編集</);
+  assert.match(renderer, /id="edit-target"/);
+  assert.match(renderer, /id="edit-agent"/);
+  assert.match(renderer, /id="b-assist"[^>]*>編集・見直し</);
+  assert.match(renderer, /target === 'workflow'[^\n]*startEditing/);
+  assert.match(renderer, /type: 'step', stepId: target\.slice\(5\)/);
   assert.match(renderer, /function editingCardHtml\(/);
   assert.match(renderer, /teachingFeature\.editorSlotHtml\(machine\)/);
   assert.match(renderer, /data-edit-back/);
@@ -365,6 +369,8 @@ test('タスク詳細は概要・手順・履歴のタブに統一し、AI と�
   assert.match(renderer, /state\.execution\.detailTab === 'overview'[\s\S]*<h3>定期実行<\/h3>/);
   assert.match(renderer, /querySelectorAll\('\[data-task-tab\]'\)/);
   assert.match(renderer, /snapshot\.tasks/);
+  assert.match(renderer, /data-task-delete/);
+  assert.match(renderer, /automationHost\.deleteMachine/);
   assert.match(renderer, /id="task-run-settings" class="run-settings task-run-settings"/);
   assert.match(renderer, /id="run-policy"/);
   assert.match(renderer, /recommended:\s*\{ label: 'おすすめ'/);

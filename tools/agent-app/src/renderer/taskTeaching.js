@@ -18,7 +18,7 @@
   const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
 
   const state = {
-    deps: null, visible: false, repo: '', machine: '', title: '', creating: false, editing: false, card: false, published: false,
+    deps: null, visible: false, repo: '', machine: '', title: '', agent: '', creating: false, editing: false, card: false, published: false,
     session: null, phase: null, tools: null, running: false, pending: false, token: 0,
     input: null, record: { open: false, source: 'browser', target: '', active: false, busy: false, message: '', ok: true, request: null },
   };
@@ -142,7 +142,7 @@
     state.pending = true;
     renderShell();
     try {
-      const options = state.deps.executionOptions();
+      const options = state.deps.executionOptions(state.agent);
       const view = await api.automation.teachStart({ repo: state.repo, machine: state.machine, ...options });
       if (token !== state.token) return;
       state.pending = false;
@@ -322,12 +322,13 @@
   // ワークベンチが「このタスクの会話を出す / 出さない」と言ってきた。
   function show(detail) {
     if (!detail || detail.hidden) { hide(); return; }
-    const next = { root: detail.root || '', machine: detail.machine || '', creating: !!detail.creating, editing: !!detail.editing, card: !!detail.card, published: !!detail.published };
+    const next = { root: detail.root || '', machine: detail.machine || '', agent: detail.agent || '', creating: !!detail.creating, editing: !!detail.editing, card: !!detail.card, published: !!detail.published };
     const same = state.visible && sameView(next, { root: state.repo, machine: state.machine, creating: state.creating, editing: state.editing, card: state.card, published: state.published });
     state.title = detail.title || '';
     if (same) { renderShell(); requestAnimationFrame(() => term().refit()); return; }
     state.repo = next.root;
     state.machine = next.machine;
+    state.agent = next.agent;
     state.creating = next.creating;
     state.editing = next.editing;
     state.card = next.card;

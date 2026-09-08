@@ -203,6 +203,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const res = store.save(root, p.spec);
     return { dir: res.dir, written: res.written, warnings: res.warnings, machine: res.spec.machine };
   });
+  register('machine:delete', (p) => store.remove(selectedRoot(p), String(p.machine || '')));
   register('machine:openFolder', (p) => {
     const root = selectedRoot(p);
     return shell.openPath(store.machineDir(root, String(p.machine || '')));

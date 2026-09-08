@@ -151,4 +151,17 @@ function exists(root, machine) {
   return !!stat(path.join(machineDir(root, machine), 'workflow.yaml'));
 }
 
-module.exports = { DIR, machineDir, list, read, write, save, exists, collectFiles };
+// A task owns its complete directory (definition, teaching sidecar, recordings and maker
+// metadata), so deletion is deliberately all-or-nothing at that boundary.
+function remove(root, machine) {
+  const dir = machineDir(root, machine);
+  if (!stat(dir)) return { removed: false, machine };
+  try {
+    fs.rmSync(dir, { recursive: true, force: false });
+  } catch (err) {
+    throw new Error(`タスクを削除できません: ${err.message}`, { cause: err });
+  }
+  return { removed: true, machine };
+}
+
+module.exports = { DIR, machineDir, list, read, write, save, remove, exists, collectFiles };

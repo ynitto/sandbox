@@ -234,11 +234,10 @@
                端末と入力欄は会話画面と同じ .terminal-stage / .composer-shell を使う。 -->
           <div slot="teaching" id="task-teaching" hidden>
             <section id="task-create" hidden>
-              <label class="sr-only" for="task-purpose">自動化したいこと</label>
+              <label class="task-create-label" for="task-purpose"><strong>自動化したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>
               <textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea>
               <div class="task-actions">
-                <label class="sub" for="task-machine">保存名（任意）</label>
-                <input id="task-machine" placeholder="目的から決めます" size="18">
+                <details class="task-create-more"><summary>保存名を指定</summary><label class="sub" for="task-machine">英数字の保存名（任意）</label><input id="task-machine" placeholder="未指定なら自動で決定" size="18"></details>
                 <span class="spacer"></span>
                 <span id="task-create-settings" class="sub"></span>
                 <button type="button" id="task-create-cancel">戻る</button>

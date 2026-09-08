@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld('api', {
     machineExists: (root, machine) => invoke('automation:machine:exists', { root, machine }),
     previewMachine: (spec) => invoke('automation:machine:preview', { spec }),
     saveMachine: (root, spec) => invoke('automation:machine:save', { root, spec }),
+    deleteMachine: (root, machine) => invoke('automation:machine:delete', { root, machine }),
     openMachineFolder: (root, machine) => invoke('automation:machine:openFolder', { root, machine }),
     listAgents: (root) => invoke('automation:agents:list', { root }),
     selectSkills: (root, text, mode, selected) => invoke('automation:skills:select', { root, text, mode, selected }),

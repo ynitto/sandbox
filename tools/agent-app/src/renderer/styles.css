@@ -526,6 +526,10 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #task-teaching .composer-shell { width: 100%; }
 #task-create { display: grid; gap: 10px; }
 #task-create textarea { width: 100%; min-height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
+.task-create-label { display: flex; align-items: baseline; gap: 8px; }
+.task-create-more { position: relative; }
+.task-create-more summary { cursor: pointer; color: var(--muted); }
+.task-create-more[open] { display: flex; align-items: center; gap: 8px; }
 .task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 #task-terminal { height: min(46vh, 480px); min-height: 260px; }
 /* 「AIと編集」のカードの中に入るときは、端末は白い面の中身なので枠と影を持たず、

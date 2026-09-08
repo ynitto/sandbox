@@ -97,7 +97,7 @@
     // 「手順」タブで編集に入ったときの置き場。枠（カード）は呼ぶ側が描く。
     function editorSlotHtml(machine) {
       const name = machine && (machine.name || machine.machine);
-      announce({ root: root(), machine: String((machine && machine.machine) || ''), creating: false, editing: true, card: true, published: true, title: name || '' });
+      announce({ root: root(), machine: String((machine && machine.machine) || ''), creating: false, editing: true, card: true, published: true, title: name || '', agent: ctx.editAgent ? ctx.editAgent() : '' });
       return '<slot name="teaching"></slot>';
     }
 
@@ -116,12 +116,24 @@
       const present = item.view || presentOf(item.machine);
       announce({ root: root(), machine: item.machine, creating: false, editing: true, published: present.published, title: item.title });
       const done = present.published ? '<button type="button" data-teach-open-steps>手順を見る</button>' : '';
-      return `<div class="teaching-page"><div class="teaching-head"><div><span class="eyebrow">作成中のタスク</span><h2>${e(item.title || item.machine)}</h2><span class="teaching-badges"><span class="status">${e(teachingStatusLabel(present.status))}</span></span></div>${done ? `<div class="row">${done}</div>` : ''}</div><slot name="teaching"></slot></div>`;
+      return `<div class="teaching-page"><div class="teaching-head"><div><span class="eyebrow">作成中のタスク</span><h2>${e(item.title || item.machine)}</h2><span class="teaching-badges"><span class="status">${e(teachingStatusLabel(present.status))}</span></span></div><div class="row">${done}<button type="button" class="danger ghost" data-teach-delete>削除</button></div></div><slot name="teaching"></slot></div>`;
     }
 
     function bind(main) {
       const open = main.querySelector('[data-teach-open-steps]');
       if (open && ctx.edit) open.addEventListener('click', () => ctx.edit(view.selected));
+      const remove = main.querySelector('[data-teach-delete]');
+      if (remove) remove.addEventListener('click', async () => {
+        const item = selectedItem();
+        if (!item || !window.confirm(`「${item.title || item.machine}」を削除しますか？\n作成中の会話情報と操作の見本も削除されます。`)) return;
+        const deleted = await ctx.guard('タスクの削除', () => ctx.bridge.remove(root(), item.machine));
+        if (!deleted) return;
+        view.selected = '';
+        await loadItems();
+        ctx.changed('tasks', '');
+        ctx.toast('タスクを削除しました');
+        ctx.refresh();
+      });
     }
 
     // 実行詳細など他の画面が、そのタスクの状態（利用可能か）を聞くための口。

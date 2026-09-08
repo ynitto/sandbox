@@ -27,6 +27,7 @@ const state = {
   root: '',
   machines: [],
   agents: [],
+  editAgent: '',
   agentsLoading: false,   // AI 一覧（agent-herd defs）の返事待ち。空と「まだ聞いていない」を区別する
   catalog: { kinds: [], platform: '' },
   view: 'home',
@@ -476,11 +477,11 @@ function isEmbeddedTaskEditor() {
 
 function editorControlsHtml() {
   const spec = state.current.spec;
+  const targets = spec.steps.map((step, index) => `<option value="step:${esc(step.id)}" ${Number.isInteger(state.open) && state.open === index ? 'selected' : ''}>工程 ${index + 1}: ${esc(step.title || kindOf(step.kind).label)}</option>`).join('');
   return {
     center: `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`,
     right: `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
-      ${embedded && !state.current.isNew ? '<button type="button" id="b-edit" class="ghost">編集</button>' : ''}
-      <button type="button" id="b-ai" class="ghost">AIで見直す</button>
+      ${embedded && !state.current.isNew ? `<label class="toolbar-field">編集対象<select id="edit-target"><option value="workflow" ${Number.isInteger(state.open) ? '' : 'selected'}>全体</option>${targets}</select></label><label class="toolbar-field">エージェント<select id="edit-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.editAgent || state.config.agent)}</select></label><button type="button" id="b-assist" class="ghost">編集・見直し</button>` : '<button type="button" id="b-ai" class="ghost">AIで見直す</button>'}
       <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト・実行</button>
       <details class="more-menu"><summary>その他</summary><div class="menu-panel">
         <button type="button" id="b-record" class="ghost">操作を記録</button>
@@ -502,11 +503,22 @@ function bindEditorControls(scope) {
   });
   const saveName = get('m-save-name');
   if (saveName) saveName.addEventListener('input', () => { touched = true; });
-  const edit = get('b-edit');
-  if (edit) edit.addEventListener('click', startEditing);
+  const assist = get('b-assist');
+  const editAgent = get('edit-agent');
+  if (editAgent) editAgent.addEventListener('change', () => { state.editAgent = editAgent.value; });
+  if (assist) assist.addEventListener('click', () => {
+    const target = get('edit-target').value;
+    state.editAgent = editAgent?.value || selectedAgent(state.config.agent);
+    if (target === 'workflow') startEditing();
+    else {
+      state.aiReview.scope = { type: 'step', stepId: target.slice(5) };
+      openAiReview();
+    }
+  });
   get('b-record').addEventListener('click', openRecord);
   get('b-files').addEventListener('click', openFiles);
-  get('b-ai').addEventListener('click', openAiReview);
+  const ai = get('b-ai');
+  if (ai) ai.addEventListener('click', openAiReview);
   get('b-run').addEventListener('click', () => goRun(state.current.machine));
   get('b-settings').addEventListener('click', openSettings);
   get('b-save').addEventListener('click', saveMachine);
@@ -530,6 +542,7 @@ function render() {
     }
     if (taskEditing) {
       bindTaskDetailTabs(main);
+      for (const button of main.querySelectorAll('[data-task-delete]')) button.addEventListener('click', () => deleteTask(selectedExecutionMachine()));
       const back = main.querySelector('[data-edit-back]');
       if (back) back.addEventListener('click', () => stopEditing());
     }
@@ -635,6 +648,7 @@ function bindHome(main) {
     render();
   });
   bindTaskDetailTabs(main);
+  for (const button of main.querySelectorAll('[data-task-delete]')) button.addEventListener('click', () => deleteTask(selectedExecutionMachine()));
   on('run-edit', () => { const machine = selectedExecutionMachine(); if (machine) openMachine(machine.machine); });
   for (const button of main.querySelectorAll('[data-run-teach]')) button.addEventListener('click', () => {
     const machine = selectedExecutionMachine();
@@ -776,10 +790,13 @@ function dateLabel(value) {
 const teachingFeature = window.createTeachingFeature({
   root: () => state.root,
   machines: () => state.machines,
+  editAgent: () => state.editAgent || selectedAgent(state.config.agent),
   isActive: () => state.view === 'home' && state.homeTab === 'teach',
   refresh: render,
   guard,
   escape: esc,
+  toast,
+  changed: (area, selected) => notifyHost(area, selected),
   // 定義ができた下書きから「手順を見る」
   edit: (machine) => openMachine(machine),
   // 親へ「いまこのタスクの会話を出している」を伝える。親は自分の端末ミラーを slot に載せる。
@@ -792,6 +809,7 @@ const teachingFeature = window.createTeachingFeature({
   },
   bridge: {
     list: (root) => automationHost.teachingList(root),
+    remove: (root, machine) => automationHost.deleteMachine(root, machine),
   },
 });
 
@@ -861,7 +879,8 @@ function taskDetailShellHtml(machine, activeTab, content, { editor = false, teac
   const teachAction = !embedded && presentation.present
     ? '<button type="button" data-run-teach>AIに変更を相談</button>'
     : '';
-  const header = `<header class="execution-title">${presentation.header}${teachAction ? `<div class="row">${teachAction}</div>` : ''}</header>`;
+  const deleteAction = machine.kind === 'statemachine' && machine.machine ? '<button type="button" class="danger ghost" data-task-delete>削除</button>' : '';
+  const header = `<header class="execution-title">${presentation.header}${teachAction || deleteAction ? `<div class="row">${teachAction}${deleteAction}</div>` : ''}</header>`;
   return `<div class="task-detail-shell${editor ? ' is-editor' : ''}${teaching ? ' is-teaching' : ''}">${header}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
 }
 
@@ -872,6 +891,21 @@ function editingCardHtml(machine) {
     <div class="execution-card-head"><h3>AIと編集</h3><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
     ${teachingFeature.editorSlotHtml(machine)}
   </section>`;
+}
+
+async function deleteTask(machine) {
+  if (!machine || !machine.machine || !confirm(`「${machine.name}」を削除しますか？\n定義、作成中の会話情報、操作の見本も削除されます。`)) return;
+  const deleted = await guard('タスクの削除', () => automationHost.deleteMachine(state.root, machine.machine));
+  if (!deleted) return;
+  state.current = null;
+  state.view = 'home';
+  state.execution.editing = false;
+  state.execution.selected = '';
+  await loadMachines();
+  await teachingFeature.activate();
+  notifyHost('tasks', '');
+  toast('タスクを削除しました');
+  render();
 }
 
 function embeddedTaskEditorHtml() {
@@ -1856,7 +1890,7 @@ async function startAi(flow) {
   const repaint = flow.mode === 'draft' ? openAiDraft : openAiReview;
   repaint();
   const payload = {
-    root: state.root, mode: flow.mode, agent: selectedAgent(state.config.agent), history: flow.history,
+    root: state.root, mode: flow.mode, agent: selectedAgent(flow.mode === 'review' ? state.editAgent || state.config.agent : state.config.agent), history: flow.history,
     ...(flow.mode === 'draft'
       ? { request: flow.request }
       : { spec: specPayload(), scope: flow.scope, focus: flow.focus }),

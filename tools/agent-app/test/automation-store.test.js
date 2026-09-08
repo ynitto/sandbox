@@ -45,6 +45,21 @@ test('工程を消して保存すると、このツールが書いた古い acti
   assert.ok(fs.existsSync(path.join(dir, 'actions', 'notes.md')) && fs.existsSync(path.join(dir, 'README.md')));
 });
 
+test('タスクを削除すると定義・下書き・記録を含む専用フォルダだけを消す', () => {
+  const root = tmpRoot();
+  store.save(root, SPEC);
+  const dir = store.machineDir(root, 'demo');
+  fs.writeFileSync(path.join(dir, 'teaching.json'), '{}');
+  fs.mkdirSync(path.join(dir, 'recordings'));
+  fs.writeFileSync(path.join(dir, 'recordings', 'sample.md'), 'recording');
+  fs.writeFileSync(path.join(root, 'keep.txt'), 'keep');
+  assert.deepStrictEqual(store.remove(root, 'demo'), { removed: true, machine: 'demo' });
+  assert.ok(!fs.existsSync(dir));
+  assert.strictEqual(fs.readFileSync(path.join(root, 'keep.txt'), 'utf8'), 'keep');
+  assert.deepStrictEqual(store.remove(root, 'demo'), { removed: false, machine: 'demo' });
+  assert.throws(() => store.remove(root, '../escape'), /識別名が不正/);
+});
+
 test('不正な識別名や検証エラーでは書かない', () => {
   const root = tmpRoot();
   assert.throws(() => store.save(root, { ...SPEC, machine: '../escape' }), /識別名が不正/);
