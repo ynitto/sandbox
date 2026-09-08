@@ -634,10 +634,20 @@ test('応答から端末の装飾と kiro の入力欄を剥がす', () => {
   }
 });
 
-test('host.wslArgv: WSL ログインシェル経由の 1 回起動 argv を組む', () => {
+test('host.toWslPath: WSL へ渡すと決めた場面の変換は、この端末の OS を見ない', () => {
   const host = require('../src/main/host');
-  // ディストロ指定あり・env の上書きあり（cwd の WSL 表記への変換は Windows でだけ効くので、
-  // その一点だけ process.platform で分ける。他は OS に依らず検査できる）。
+  assert.strictEqual(host.toWslPath('C:\\work\\repo'), '/mnt/c/work/repo');
+  assert.strictEqual(host.toWslPath('\\\\wsl$\\Ubuntu\\home\\me\\repo'), '/home/me/repo');
+  assert.strictEqual(host.toWslPath('\\\\wsl.localhost\\Ubuntu\\home\\me'), '/home/me');
+  // すでに WSL 表記のもの・相対パス・空はそのまま
+  assert.strictEqual(host.toWslPath('/home/me/repo'), '/home/me/repo');
+  assert.strictEqual(host.toWslPath('.statemachine/x/workflow.yaml'), '.statemachine/x/workflow.yaml');
+  assert.strictEqual(host.toWslPath(''), '');
+});
+
+test('host.wslArgv: WSL ログインシェル経由の 1 回起動 argv を組む（cwd は WSL 表記へ直す）', () => {
+  const host = require('../src/main/host');
+  // ディストロ指定あり・env の上書きあり
   const withDistro = host.wslArgv('agent-loop', ['inspect', '--json'], {
     cwd: 'C:\\work\\repo', env: { FOO: 'a b' }, distro: 'Ubuntu',
   });
@@ -647,12 +657,42 @@ test('host.wslArgv: WSL ログインシェル経由の 1 回起動 argv を組�
   const script = withDistro.args[5];
   assert.ok(script.includes("export FOO='a b';"), script);
   assert.ok(script.includes("exec 'agent-loop' 'inspect' '--json'"), script);
-  assert.ok(script.includes(process.platform === 'win32' ? "cd '/mnt/c/work/repo'" : "cd 'C:\\work\\repo'"), script);
+  assert.ok(script.includes("cd '/mnt/c/work/repo'"), script);
+  // 引数はここでは直さない（どれがパスかは呼ぶ側しか知らない）
+  assert.ok(host.wslArgv('agent-loop', ['--dir', 'C:\\work\\repo'], { cwd: 'C:\\work\\repo' })
+    .args[3].includes("exec 'agent-loop' '--dir' 'C:\\work\\repo'"));
   // ディストロ未指定（既定）・env の上書きなし → -d を付けず、export も無い
   const withoutDistro = host.wslArgv('agent-flow', ['patterns', '--json'], { cwd: '/home/me/repo' });
   assert.deepStrictEqual(withoutDistro.args.slice(0, 3), ['-e', 'bash', '-lc']);
   assert.ok(!withoutDistro.args.join(' ').includes('export'));
   assert.ok(withoutDistro.args[3].includes("cd '/home/me/repo'"), withoutDistro.args[3]);
+});
+
+test('automation: WSL へ載せ替えるときは --dir / --bus の値も WSL 表記へ直す', () => {
+  const { hostPathArgs } = automationIpc;
+  // agent-loop / agent-herd の作業対象
+  assert.deepStrictEqual(
+    hostPathArgs(['inspect', '--json', '--dir', 'C:\\work\\repo']),
+    ['inspect', '--json', '--dir', '/mnt/c/work/repo'],
+  );
+  assert.deepStrictEqual(
+    hostPathArgs(['statemachine', '--workflow', '.statemachine/x/workflow.yaml', '--dir', '\\\\wsl$\\Ubuntu\\home\\me\\repo']),
+    ['statemachine', '--workflow', '.statemachine/x/workflow.yaml', '--dir', '/home/me/repo'],
+  );
+  // agent-flow の共有 bus
+  assert.deepStrictEqual(
+    hostPathArgs(['--bus', 'C:\\Users\\me\\.agents\\flow\\bus', 'cancel', 'app-1', '--reason', '中止']),
+    ['--bus', '/mnt/c/Users/me/.agents/flow/bus', 'cancel', 'app-1', '--reason', '中止'],
+  );
+  // 自由文は触らない——依頼文が偶然パスの形をしていても、パスのオプションの値でなければそのまま
+  assert.deepStrictEqual(
+    hostPathArgs(['run', 'C:\\work\\repo の状況をまとめて', '--agent-cli', 'aider']),
+    ['run', 'C:\\work\\repo の状況をまとめて', '--agent-cli', 'aider'],
+  );
+  assert.deepStrictEqual(hostPathArgs(['-p', 'C:\\work\\repo']), ['-p', 'C:\\work\\repo']);
+  // 値の無い末尾のオプション・空の引数でも壊れない
+  assert.deepStrictEqual(hostPathArgs(['inspect', '--dir']), ['inspect', '--dir']);
+  assert.deepStrictEqual(hostPathArgs([]), []);
 });
 
 test('automation: agent-herd / agent-loop / agent-flow だけを Windows で WSL ログインシェル経由に載せ替える', () => {
@@ -662,7 +702,8 @@ test('automation: agent-herd / agent-loop / agent-flow だけを Windows で WSL
   assert.match(adapter, /HERD_FAMILY_COMMANDS\s*=\s*new Set\(\['agent-herd',\s*'agent-loop',\s*'agent-flow'\]\)/);
   assert.match(adapter, /function herdCommandSpawnSpec\(/);
   assert.match(adapter, /host\.hostOf\(cwd,\s*store\.loadConfig\(userData\(\)\)\.wslDistro\)\.distro/);
-  assert.match(adapter, /host\.wslArgv\(command,\s*args,\s*\{\s*cwd,\s*distro\s*\}\)/);
+  assert.match(adapter, /host\.wslArgv\(command,\s*hostPathArgs\(args\),\s*\{\s*cwd,\s*distro\s*\}\)/);
+  assert.match(adapter, /HOST_PATH_OPTIONS\s*=\s*new Set\(\['--dir',\s*'--bus'\]\)/);
   assert.match(adapter, /process\.platform === 'win32' && HERD_FAMILY_COMMANDS\.has\(name\)/);
 
   const userData = () => require('os').tmpdir();

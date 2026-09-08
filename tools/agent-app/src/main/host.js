@@ -44,11 +44,18 @@ function winDriveToWsl(p) {
   return `/mnt/${m[1].toLowerCase()}${rest}`;
 }
 
+// Windows 表記（C:\… / \\wsl$\…）を WSL 表記へ直す。この端末の OS は見ない——
+// **WSL へ渡すと決まった場面**でだけ呼ぶので、その判断は呼ぶ側が済ませている。
+// ドライブでも UNC でもないもの（相対パス・すでに WSL 表記のもの）は入力のまま。
+function toWslPath(p) {
+  if (isWslUnc(p)) return wslPath(p);
+  return winDriveToWsl(p) || String(p || '');
+}
+
 // ホスト（tmux / git が走る側）から見たパス。Windows 以外は入力のまま。
 function toHostPath(p) {
   if (process.platform !== 'win32') return String(p || '');
-  if (isWslUnc(p)) return wslPath(p);
-  return winDriveToWsl(p) || String(p || '');
+  return toWslPath(p);
 }
 
 // ホスト側の相対パス連結（区切りは常に /）
@@ -68,13 +75,15 @@ function quoteArgv(argv) {
 
 // Windows で 1 回だけ起動するコマンドを、WSL のログインシェル経由の argv へ組む。
 // cwd は登録した生のパス（C:\… / \\wsl$\…）のまま渡し、ここで WSL 表記へ直す。
+// **args は直さない**——どの引数がパスかは呼ぶ側しか知らないので、パスを渡すなら
+// 呼ぶ側が toWslPath で直してから渡す（automation の --dir / --bus がそれ）。
 // env に渡した項目だけを export する。ログインシェル（-l）自身が nvm / pipx などの
 // 利用者の PATH を持つので、Windows 側の process.env をまるごとは持ち込まない。
 // ヘッドレスの CLI 起動（ipc.js）と、埋め込んだ automation の一族（agent-herd /
 // agent-loop / agent-flow）の一回実行の両方がこれを使う。
 function wslArgv(command, args, { cwd = '', env = {}, distro = '' } = {}) {
   const exportsStr = Object.entries(env).map(([k, v]) => `export ${k}=${sq(v)};`).join(' ');
-  const script = `${exportsStr} cd ${sq(toHostPath(cwd))} && exec ${quoteArgv([command, ...args])}`;
+  const script = `${exportsStr} cd ${sq(toWslPath(cwd))} && exec ${quoteArgv([command, ...args])}`;
   return {
     command: 'wsl.exe',
     args: [...(distro ? ['-d', distro] : []), '-e', 'bash', '-lc', script],
@@ -227,6 +236,6 @@ async function probe(distro = '', { force = false } = {}) {
 }
 
 module.exports = {
-  isWslUnc, wslPath, wslDistro, winDriveToWsl, toHostPath, joinHost, sq, quoteArgv, wslArgv,
+  isWslUnc, wslPath, wslDistro, winDriveToWsl, toWslPath, toHostPath, joinHost, sq, quoteArgv, wslArgv,
   HostShell, shellFor, closeAll, hostOf, probe,
 };
