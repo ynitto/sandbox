@@ -105,10 +105,25 @@ function automationPatch(config) {
 // この端末でそのまま探す（winauto は Windows の GUI 操作そのもので WSL 側には無い）。
 const HERD_FAMILY_COMMANDS = new Set(['agent-herd', 'agent-loop', 'agent-flow']);
 
+// 値がホスト側のパスになるオプション。WSL のログインシェルへ載せ替えるときは、cwd と
+// 同じようにここも WSL 表記へ直してから渡す——直さないと、WSL の中の agent-loop が
+// `C:\…` という名前の相対パスを掴む。
+//   --dir … agent-loop / agent-herd の作業対象（登録したリポジトリ）
+//   --bus … agent-flow の共有 bus（Windows 側の Node も同じ実体を fs で読むので、
+//           /mnt/c/… へ直せば両側が同じ場所を指す）
+// ほかの引数は相対パス（--workflow）か自由文（-p / run の依頼文 / --reason）なので触らない。
+// パスを渡すオプションを増やしたら、ここへ足す。
+const HOST_PATH_OPTIONS = new Set(['--dir', '--bus']);
+
+function hostPathArgs(args) {
+  const list = (Array.isArray(args) ? args : []).map((item) => String(item));
+  return list.map((item, index) => (index > 0 && HOST_PATH_OPTIONS.has(list[index - 1]) ? host.toWslPath(item) : item));
+}
+
 function makeTaskCommandSpawnSpec(userData) {
   function herdCommandSpawnSpec(command, args, { cwd = '' } = {}) {
     const distro = host.hostOf(cwd, store.loadConfig(userData()).wslDistro).distro;
-    const wsl = host.wslArgv(command, args, { cwd, distro });
+    const wsl = host.wslArgv(command, hostPathArgs(args), { cwd, distro });
     return { command: wsl.command, args: wsl.args, options: { windowsHide: true } };
   }
   return (name) => (process.platform === 'win32' && HERD_FAMILY_COMMANDS.has(name) ? herdCommandSpawnSpec : undefined);
@@ -149,5 +164,5 @@ function registerAutomationIpc({ getWindow, userData, appRoot }) {
 
 module.exports = {
   registerAutomationIpc, automationConfig, automationPatch, configAdapter, prepareRun, selectForRequest,
-  agentDefinitions, resolveAgent, makeTaskCommandSpawnSpec,
+  agentDefinitions, resolveAgent, makeTaskCommandSpawnSpec, hostPathArgs,
 };
