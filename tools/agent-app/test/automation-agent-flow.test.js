@@ -101,3 +101,69 @@ test('agent-flow の成果 JSON を renderer 向けの名前へ揃える', async
   assert.strictEqual(found.runId, runId);
   assert.deepStrictEqual(found.finalNodes[0], { id: 'final', kind: 'synthesize', output: '完了', data: { ok: true }, artifacts: ['a.md'] });
 });
+
+test('workspace.local は実行基盤のホスト表記で書き、覚え書きの root は登録した表記のまま残す', async (t) => {
+  const env = withBus(t);
+  // Windows から WSL の agent-flow を起こす構成の写し: 登録は C:\… で、ホスト（WSL）は /mnt/c/…
+  const root = 'C:\\work\\repo';
+  const result = await agentFlow.start({
+    source: { type: 'draft', workflow: draft() }, request: '{{target}} を修正', parameters: { target: 'README' },
+    agent: 'codex', model: 'm', readonly: false,
+  }, {
+    root,
+    hostPath: (value) => (value === root ? '/mnt/c/work/repo' : value),
+    getContext: async () => ({
+      agents: ['codex'], defaults: {},
+      workspace: { ok: true, origin: 'git@example.test:me/repo.git', branch: 'main' },
+      tools: { agentFlow: { ok: true } },
+    }),
+    startDetached: async () => ({ pid: 1 }),
+  });
+  const inbox = JSON.parse(fs.readFileSync(path.join(env.bus, 'inbox', `${result.runId}.json`), 'utf8'));
+  // agent-flow が `git -C` で開く側はホストの表記
+  assert.strictEqual(inbox.workspace.local, '/mnt/c/work/repo');
+  assert.strictEqual(inbox.workspace.url, 'git@example.test:me/repo.git');
+  // この画面が実行を見分ける鍵は登録した表記のまま
+  assert.strictEqual(inbox.submitter_context.root, root);
+});
+
+test('hostPath を渡さない単体版は、登録した表記のまま workspace.local に書く', async (t) => {
+  const env = withBus(t);
+  const result = await agentFlow.start({
+    source: { type: 'draft', workflow: draft() }, request: '直す', parameters: { target: 'README' }, agent: 'codex', readonly: false,
+  }, {
+    root: '/repo',
+    getContext: async () => ({
+      agents: ['codex'], defaults: {},
+      workspace: { ok: true, origin: 'git@example.test:me/repo.git', branch: 'main' },
+      tools: { agentFlow: { ok: true } },
+    }),
+    startDetached: async () => ({ pid: 1 }),
+  });
+  const inbox = JSON.parse(fs.readFileSync(path.join(env.bus, 'inbox', `${result.runId}.json`), 'utf8'));
+  assert.strictEqual(inbox.workspace.local, '/repo');
+});
+
+test('inbox を持たない実行は、ホスト表記の workspace.local でも選択中のリポジトリのものと見分ける', (t) => {
+  const { bus } = withBus(t);
+  const root = 'C:\\work\\repo';
+  const hostRoot = '/mnt/c/work/repo';
+  const runId = 'app-hostlocal';
+  // 投函記録が無い実行（外部ツールの投函・掃除された inbox）は meta.workspace.local だけが手掛かり
+  write(path.join(bus, 'runs', runId, 'meta.json'), {
+    status: 'running', request: '依頼', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    workspace: { local: hostRoot },
+  });
+  assert.strictEqual(agentFlow.readRun(root, runId, hostRoot).runId, runId);
+  assert.deepStrictEqual(agentFlow.listRuns(root, 30, hostRoot).map((row) => row.runId), [runId]);
+  // ホスト表記を渡さなければ従来どおり登録した表記だけで見る（別リポジトリの実行を混ぜない）
+  assert.throws(() => agentFlow.readRun(root, runId), (err) => err.code === 'run-not-found');
+  assert.deepStrictEqual(agentFlow.listRuns(root, 30), []);
+  // 登録した表記で書かれた実行（従来の記録）も引き続き見分ける
+  const legacy = 'app-legacylocal';
+  write(path.join(bus, 'runs', legacy, 'meta.json'), {
+    status: 'running', request: '依頼', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    workspace: { local: root },
+  });
+  assert.strictEqual(agentFlow.readRun(root, legacy, hostRoot).runId, legacy);
+});

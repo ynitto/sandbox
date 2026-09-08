@@ -706,6 +706,8 @@ test('automation: agent-herd / agent-loop / agent-flow だけを Windows で WSL
   assert.match(adapter, /host\.hostOf\(cwd,\s*store\.loadConfig\(userData\(\)\)\.wslDistro\)\.distro/);
   assert.match(adapter, /host\.wslArgv\(command,\s*hostPathArgs\(args\),\s*\{\s*cwd,\s*distro\s*\}\)/);
   assert.match(adapter, /HOST_PATH_OPTIONS\s*=\s*new Set\(\['--dir',\s*'--bus'\]\)/);
+  // bus へ書く workspace.local（WSL の中で `git -C` に渡る）もホストの表記で渡す
+  assert.match(adapter, /hostPath:\s*host\.toHostPath,/);
   assert.match(adapter, /process\.platform === 'win32' && HERD_FAMILY_COMMANDS\.has\(name\)/);
 
   const userData = () => require('os').tmpdir();
