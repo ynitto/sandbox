@@ -26,7 +26,7 @@
     "diff2html": "3.4.56",
     "dompurify": "3.4.14",
     "electron": "43.6.0",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "26.15.3",
     "marked": "18.0.11",
     "mermaid": "11.17.2"
   },
