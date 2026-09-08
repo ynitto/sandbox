@@ -66,6 +66,21 @@ function quoteArgv(argv) {
   return argv.map(sq).join(' ');
 }
 
+// Windows で 1 回だけ起動するコマンドを、WSL のログインシェル経由の argv へ組む。
+// cwd は登録した生のパス（C:\… / \\wsl$\…）のまま渡し、ここで WSL 表記へ直す。
+// env に渡した項目だけを export する。ログインシェル（-l）自身が nvm / pipx などの
+// 利用者の PATH を持つので、Windows 側の process.env をまるごとは持ち込まない。
+// ヘッドレスの CLI 起動（ipc.js）と、埋め込んだ automation の一族（agent-herd /
+// agent-loop / agent-flow）の一回実行の両方がこれを使う。
+function wslArgv(command, args, { cwd = '', env = {}, distro = '' } = {}) {
+  const exportsStr = Object.entries(env).map(([k, v]) => `export ${k}=${sq(v)};`).join(' ');
+  const script = `${exportsStr} cd ${sq(toHostPath(cwd))} && exec ${quoteArgv([command, ...args])}`;
+  return {
+    command: 'wsl.exe',
+    args: [...(distro ? ['-d', distro] : []), '-e', 'bash', '-lc', script],
+  };
+}
+
 // ---- 常駐シェル ---------------------------------------------------------------
 
 // 1 コマンド = 開始マーカー + 本体 + 終了マーカー（終了コード付き）。stdout と stderr は
@@ -212,6 +227,6 @@ async function probe(distro = '', { force = false } = {}) {
 }
 
 module.exports = {
-  isWslUnc, wslPath, wslDistro, winDriveToWsl, toHostPath, joinHost, sq, quoteArgv,
+  isWslUnc, wslPath, wslDistro, winDriveToWsl, toHostPath, joinHost, sq, quoteArgv, wslArgv,
   HostShell, shellFor, closeAll, hostOf, probe,
 };

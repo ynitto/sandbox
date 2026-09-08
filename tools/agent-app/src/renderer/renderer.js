@@ -13,6 +13,8 @@ const state = {
   agentsReady: null,
   sessions: [],
   tasks: [],
+  taskToken: 0,          // タスク一覧の読み込みのたびに進める。遅れて届いた実行状態を捨てる印
+  taskStatusPending: false, // 定義は出したが、実行状態（ファイル実体の確認を伴う）はまだ重ねていない
   workflows: [],
   workflowRuns: [],
   selectedTask: '',
@@ -218,11 +220,16 @@ function renderTaskItems() {
     const latest = (task.history || [])[0];
     // 状態語は共有ワークベンチと同じ4つ。定義があるタスクは実行結果を出し、AIとの変更が進んでいれば「変更中」を添える。
     const teachingLabels = { draft: '下書き', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち', ready: '利用可能' };
+    // 実行状態（履歴・定期実行）はagent-loopがファイル実体を確かめるぶん遅い。定義は先に
+    // 出し、まだ重ねていない間は「確認中」と分かるように出す（「未実行」と混同しない）。
+    const pending = state.taskStatusPending && !task.teachingStatus;
     const status = task.teachingStatus ? (teachingLabels[task.teachingStatus] || '下書き')
-      : `${latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行'}${task.change ? ' · 変更中' : ''}`;
+      : pending ? '確認中…'
+        : `${latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行'}${task.change ? ' · 変更中' : ''}`;
     const id = taskId(task);
     const schedules = Array.isArray(task.schedules) ? task.schedules : (task.schedule ? [task.schedule] : []);
-    const scheduleState = schedules.length ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length}件の予定` : '予定なし';
+    const scheduleState = pending ? '確認中…'
+      : schedules.length ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length}件の予定` : '予定なし';
     const kind = task.kind === 'prompt' ? 'プロンプト' : task.kind === 'hook' ? 'フック' : task.kind === 'broken' ? '要修正' : 'ステートマシン';
     const li = el('li', `row-item${id === state.selectedTask ? ' active' : ''}`);
     const pick = el('button', 'list-pick');
@@ -272,43 +279,89 @@ function renderAreaContext() {
   else renderWorkflowItems();
 }
 
+// 選んでいたタスクを新しい一覧の中から選び直す（無ければ設定の記憶、それも無ければ先頭）。
+function pickSelectedTask(repo, tasks) {
+  const remembered = (state.config.lastTask || {})[repo] || state.selectedTask;
+  const rememberedTask = tasks.find((item) => taskId(item) === remembered || item.machine === remembered);
+  return rememberedTask ? taskId(rememberedTask) : taskId(tasks[0]);
+}
+
+// 実行状態（agent-loop が設定とファイル実体を確かめるぶん遅い）を後から重ねる。
+// loadTaskItems は待たずに戻るので、届いたときに画面が別のリポジトリ・領域・タスク一覧へ
+// 移っていたら（token / repo がずれていたら）捨てる。
+function refreshTaskSnapshot(repo, token, definitions, teaching) {
+  api.automation.runSnapshot(repo).then((snapshot) => {
+    if (token !== state.taskToken || repo !== state.repo) return;
+    state.tasks = AgentNavigation.taskItems(snapshot, definitions, teaching);
+    state.selectedTask = pickSelectedTask(repo, state.tasks);
+    state.taskStatusPending = false;
+    renderAreaContext();
+  }, (err) => {
+    if (token !== state.taskToken || repo !== state.repo) return;
+    state.areaError = (err && err.message) || String(err);
+    state.taskStatusPending = false;
+    renderAreaContext();
+  });
+}
+
+// タスク一覧は「定義の確認」（速い・ファイルを読むだけ）と「実行状態の確認」（遅い）の 2 段に
+// 分ける。定義が出た時点で一覧を見せて戻る——UI はここで止めない。実行状態は
+// refreshTaskSnapshot が裏で取りに行き、届いたら重ねて出す。
+async function loadTaskItems(repo) {
+  const token = (state.taskToken += 1);
+  let definitions;
+  let teaching;
+  try {
+    [definitions, teaching] = await Promise.all([
+      api.automation.listMachines(repo),
+      api.automation.teachingList(repo),
+    ]);
+  } catch (err) {
+    if (token !== state.taskToken || repo !== state.repo) return;
+    state.areaError = (err && err.message) || String(err);
+    state.tasks = [];
+    state.taskStatusPending = false;
+    renderAreaContext();
+    return;
+  }
+  if (token !== state.taskToken || repo !== state.repo) return;
+  state.tasks = AgentNavigation.taskItems(null, definitions, teaching);
+  state.selectedTask = pickSelectedTask(repo, state.tasks);
+  state.taskStatusPending = true;
+  renderAreaContext();
+  refreshTaskSnapshot(repo, token, definitions, teaching);
+}
+
+async function loadWorkflowItems(repo) {
+  try {
+    const [workflows, runs, teaching] = await Promise.all([
+      api.automation.flowList(repo),
+      api.automation.flowRunList(repo, 30),
+      api.automation.flowTeachingList(repo),
+    ]);
+    const ready = workflows || [];
+    const labels = { draft: '理解中', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち' };
+    const drafts = (teaching || []).filter((item) => item.status !== 'ready' && !ready.some((flow) => flow.id === item.workflowId)).map((item) => ({
+      id: item.workflowId, name: item.title, nodes: 0, valid: true, teaching: true,
+      teachingStatus: labels[item.status] || item.status,
+    }));
+    state.workflows = [...drafts, ...ready];
+    state.workflowRuns = runs || [];
+    const remembered = (state.config.lastWorkflow || {})[repo] || state.selectedWorkflow;
+    state.selectedWorkflow = state.workflows.some((item) => item.id === remembered) ? remembered : (state.workflows[0]?.id || '');
+  } catch (err) {
+    state.areaError = (err && err.message) || String(err);
+    state.workflows = [];
+    state.workflowRuns = [];
+  }
+  renderAreaContext();
+}
+
 async function loadAreaItems() {
   state.areaError = '';
   if (!state.repo || state.area === 'conversation') { renderAreaContext(); return; }
-  try {
-    if (state.area === 'tasks') {
-      const [snapshot, definitions, teaching] = await Promise.all([
-        api.automation.runSnapshot(state.repo),
-        api.automation.listMachines(state.repo),
-        api.automation.teachingList(state.repo),
-      ]);
-      state.tasks = AgentNavigation.taskItems(snapshot, definitions, teaching);
-      const remembered = (state.config.lastTask || {})[state.repo] || state.selectedTask;
-      const rememberedTask = state.tasks.find((item) => taskId(item) === remembered || item.machine === remembered);
-      state.selectedTask = rememberedTask ? taskId(rememberedTask) : taskId(state.tasks[0]);
-    } else {
-      const [workflows, runs, teaching] = await Promise.all([
-        api.automation.flowList(state.repo),
-        api.automation.flowRunList(state.repo, 30),
-        api.automation.flowTeachingList(state.repo),
-      ]);
-      const ready = workflows || [];
-      const labels = { draft: '理解中', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち' };
-      const drafts = (teaching || []).filter((item) => item.status !== 'ready' && !ready.some((flow) => flow.id === item.workflowId)).map((item) => ({
-        id: item.workflowId, name: item.title, nodes: 0, valid: true, teaching: true,
-        teachingStatus: labels[item.status] || item.status,
-      }));
-      state.workflows = [...drafts, ...ready];
-      state.workflowRuns = runs || [];
-      const remembered = (state.config.lastWorkflow || {})[state.repo] || state.selectedWorkflow;
-      state.selectedWorkflow = state.workflows.some((item) => item.id === remembered) ? remembered : (state.workflows[0]?.id || '');
-    }
-  } catch (err) {
-    state.areaError = (err && err.message) || String(err);
-    if (state.area === 'tasks') state.tasks = [];
-    else { state.workflows = []; state.workflowRuns = []; }
-  }
-  renderAreaContext();
+  if (state.area === 'tasks') await loadTaskItems(state.repo);
+  else await loadWorkflowItems(state.repo);
 }
 
 function frameMessage(action = '') {
@@ -1198,6 +1251,8 @@ async function showArea(area, { persist = true } = {}) {
   $('changes').hidden = workspace || !state.changesOpen;
   if (workspace) {
     // 読み込み中に直前の領域の操作を残さない。見出しを先に切り替え、内容は準備後に一度で見せる。
+    // タスクの実行状態（ファイル実体の確認を伴い遅い）はここでは待たない——一覧は定義が
+    // 出た時点で見せ終え、実行状態は裏で重ねる（loadTaskItems / refreshTaskSnapshot）。
     setAutomationLoading(true);
     try {
       await loadAreaItems();

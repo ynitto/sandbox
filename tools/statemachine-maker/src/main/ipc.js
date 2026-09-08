@@ -75,6 +75,14 @@ function registerIpcHandlers(getWindow, options = {}) {
   // 使える AI の名前の並び。既定は agent-herd に聞く。埋め込む側（agent-app）は仮想の
   // 名前（`herd`）を足した並びへ差し替えられる。
   const agentDefinitions = typeof options.agentDefinitions === 'function' ? options.agentDefinitions : tools.agentDefinitions;
+  // コマンド名ごとの起動仕様の差し替え（既定は runner.js の command.spawnSpec のまま）。
+  // 埋め込む側（agent-app）は、Windows で agent-herd / agent-loop / agent-flow だけを
+  // WSL のログインシェル経由に載せ替えるのに使う。python や playwright-cli、winauto の
+  // ような診断コマンドは対象にしない（この端末でそのまま探す）。
+  const commandSpawnSpec = typeof options.commandSpawnSpec === 'function' ? options.commandSpawnSpec : () => undefined;
+  const runCapture = (name, args, opts = {}) => runner.capture(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
+  const runStream = (name, args, opts = {}) => runner.stream(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
+  const runStartDetached = (name, args, opts = {}) => runner.startDetached(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
   // 選ばれた名前を、実際に起こす定義の名前へ写す（`herd` → aider / ollama）。無ければそのまま。
   //   purpose … 'task'（タスクの実行）| 'flow'（ワークフローの実行）| 'plan'（AI 支援。読み取り専用）
   // 返る名前が '' なら「渡さない」（agent-loop / agent-herd の既定に任せる）。
@@ -100,7 +108,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const spec = tools.agentAssistRunSpec({
       root: job.root, agent: job.agent, model: job.model, prompt,
     });
-    const started = runner.stream(spec.command, spec.args, {
+    const started = runStream(spec.command, spec.args, {
       cwd: job.root,
       kind: 'ai',
       maxBytes: runner.MAX_STREAM_OUTPUT,
@@ -299,15 +307,15 @@ function registerIpcHandlers(getWindow, options = {}) {
 
   register('tools:status', (p) => {
     const root = p.root ? selectedRoot(p) : '';
-    return tools.toolStatus({ cwd: root, capture: runner.capture, skillDir: selectedSkillDir(root) });
+    return tools.toolStatus({ cwd: root, capture: runCapture, skillDir: selectedSkillDir(root) });
   });
   register('agents:list', (p) => {
     const root = p.root ? selectedRoot(p) : '';
-    return agentDefinitions({ cwd: root, capture: runner.capture });
+    return agentDefinitions({ cwd: root, capture: runCapture });
   });
 
   // 複数 AI のワークフロー。定義は root 内、実行状態は agent-flow の共有 bus が正典。
-  register('flow:catalog', () => agentFlow.catalog(runner.capture));
+  register('flow:catalog', () => agentFlow.catalog(runCapture));
   register('flow:list', (p) => flowStore.list(selectedRoot(p)));
   register('flow:read', (p) => flowStore.read(selectedRoot(p), p.id));
   register('flow:save', (p) => flowStore.save(selectedRoot(p), p.workflow, p.mode));
@@ -350,7 +358,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const root = selectedRoot(p);
     const cfg = settings.load(getUserData());
     const result = await agentFlow.context({
-      root, capture: runner.capture, agentDefinitions,
+      root, capture: runCapture, agentDefinitions,
       defaults: { agent: cfg.agent, model: cfg.model },
     });
     result.capabilities.openDelivery = !!(options.hooks && options.hooks.openDelivery);
@@ -360,37 +368,37 @@ function registerIpcHandlers(getWindow, options = {}) {
     const root = selectedRoot(p);
     const cfg = settings.load(getUserData());
     const getContext = () => agentFlow.context({
-      root, capture: runner.capture, agentDefinitions,
+      root, capture: runCapture, agentDefinitions,
       defaults: { agent: cfg.agent, model: cfg.model },
     });
     // agent-flow に渡す `--agent-cli` は実在の定義名でなければならない（`herd` は写してから）
     const requestedAgent = String(p.agent || cfg.agent || '');
     const agent = requestedAgent ? await resolveAgent(requestedAgent, 'flow', root) : '';
-    return agentFlow.start({ ...p, agent }, { root, getContext, startDetached: runner.startDetached });
+    return agentFlow.start({ ...p, agent }, { root, getContext, startDetached: runStartDetached });
   });
   register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit));
   register('flow:run:read', (p) => agentFlow.readRun(selectedRoot(p), p.runId));
-  register('flow:run:cancel', (p) => agentFlow.cancel(selectedRoot(p), p.runId, p.reason, runner.capture));
+  register('flow:run:cancel', (p) => agentFlow.cancel(selectedRoot(p), p.runId, p.reason, runCapture));
   register('flow:run:respond', (p) => agentFlow.respond(selectedRoot(p), p.runId, p.interactionId, p.answer));
-  register('flow:run:result', (p) => agentFlow.result(selectedRoot(p), p.runId, runner.capture));
+  register('flow:run:result', (p) => agentFlow.result(selectedRoot(p), p.runId, runCapture));
   register('flow:run:log', (p) => agentFlow.readLog(selectedRoot(p), p.runId, p.bytes));
   register('flow:run:delete', (p) => agentFlow.deleteRun(selectedRoot(p), p.runId));
   register('flow:run:openDelivery', (p) => agentFlow.openDelivery(
     selectedRoot(p), p.runId, options.hooks && options.hooks.openDelivery,
   ));
-  register('run:snapshot', (p) => agentLoop.inspect({ root: selectedRoot(p), capture: runner.capture }));
+  register('run:snapshot', (p) => agentLoop.inspect({ root: selectedRoot(p), capture: runCapture }));
   register('run:schedule', (p) => agentLoop.saveSchedule({
-    root: selectedRoot(p), payload: p.schedule, capture: runner.capture,
+    root: selectedRoot(p), payload: p.schedule, capture: runCapture,
   }));
   register('run:daemon', (p) => {
     const root = selectedRoot(p);
     if (!['start', 'stop'].includes(p.action)) throw new Error('自動実行の操作が不正です');
     return p.action === 'stop'
-      ? agentLoop.stopDaemon({ root, capture: runner.capture })
-      : agentLoop.startDaemon({ root, startDetached: runner.startDetached });
+      ? agentLoop.stopDaemon({ root, capture: runCapture })
+      : agentLoop.startDaemon({ root, startDetached: runStartDetached });
   });
   register('run:log', (p) => agentLoop.readLog({
-    root: selectedRoot(p), identity: p.identity, capture: runner.capture,
+    root: selectedRoot(p), identity: p.identity, capture: runCapture,
   }));
   register('skills:select', async (p) => {
     if (options.hooks && options.hooks.selectSkills) return options.hooks.selectSkills(p);
@@ -422,7 +430,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const mode = p.mode === 'review' ? 'review' : p.mode === 'teach' ? 'teach' : p.mode === 'flow-teach' ? 'flow-teach' : 'draft';
     const cfg = settings.load(getUserData());
     const requestedAgent = String(p.agent || cfg.agent || 'aider');
-    const definitions = await agentDefinitions({ cwd: root, capture: runner.capture });
+    const definitions = await agentDefinitions({ cwd: root, capture: runCapture });
     if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」は agent-tools に定義されていません`);
     const agent = await resolveAgent(requestedAgent, 'plan', root);
     if (runner.isRunning()) throw new Error('別の実行が進行中です。終わるか停止してから始めてください');
@@ -445,7 +453,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         });
         flowTeachingSession = flowTeachingStore.save(root, workflowId, flowTeachingSession);
       }
-      prompt = ai.flowTeachingPrompt({ session: flowTeachingSession, catalog: agentFlow.catalog(runner.capture) });
+      prompt = ai.flowTeachingPrompt({ session: flowTeachingSession, catalog: agentFlow.catalog(runCapture) });
     } else if (mode === 'teach') {
       machine = String(p.machine || '').trim();
       teachingSession = teachingStore.load(root, machine);
@@ -513,7 +521,7 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('run:start', async (p, event) => {
     const root = selectedRoot(p);
     const taskId = String(p.taskId || p.machine || '');
-    const snapshot = await agentLoop.inspect({ root, capture: runner.capture });
+    const snapshot = await agentLoop.inspect({ root, capture: runCapture });
     const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
     const task = tasks.find((item) => String(item.id || item.machine) === taskId)
       || (p.machine ? { id: `machine:${p.machine}`, kind: 'statemachine', machine: String(p.machine) } : null);
@@ -535,7 +543,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     } else {
       const cfg = settings.load(getUserData());
       const requestedAgent = String(p.agent || cfg.agent || 'aider');
-      const definitions = await agentDefinitions({ cwd: root, capture: runner.capture });
+      const definitions = await agentDefinitions({ cwd: root, capture: runCapture });
       if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」は agent-tools に定義されていません`);
       const agent = await resolveAgent(requestedAgent, 'task', root);
       const parameters = p.parameters && typeof p.parameters === 'object'
@@ -558,7 +566,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const requestId = randomUUID();
     const sender = event.sender;
     const send = (channel, payload) => { if (!sender.isDestroyed()) sender.send(channel, payload); };
-    const started = runner.stream(command, args, {
+    const started = runStream(command, args, {
       cwd: root,
       kind: 'run',
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },

@@ -99,6 +99,21 @@ function automationPatch(config) {
   return patch;
 }
 
+// タスク・ワークフローの実行基盤（agent-herd / agent-loop / agent-flow）は会話（tmux 対話・
+// ヘッドレスの CLI 起動）と同じ経路——Windows では WSL のログインシェル経由で起こす。
+// 診断・記録に使う他のコマンド（python, playwright-cli, winauto）はこの一族ではないので、
+// この端末でそのまま探す（winauto は Windows の GUI 操作そのもので WSL 側には無い）。
+const HERD_FAMILY_COMMANDS = new Set(['agent-herd', 'agent-loop', 'agent-flow']);
+
+function makeTaskCommandSpawnSpec(userData) {
+  function herdCommandSpawnSpec(command, args, { cwd = '' } = {}) {
+    const distro = host.hostOf(cwd, store.loadConfig(userData()).wslDistro).distro;
+    const wsl = host.wslArgv(command, args, { cwd, distro });
+    return { command: wsl.command, args: wsl.args, options: { windowsHide: true } };
+  }
+  return (name) => (process.platform === 'win32' && HERD_FAMILY_COMMANDS.has(name) ? herdCommandSpawnSpec : undefined);
+}
+
 function configAdapter() {
   return {
     load: (userData) => automationConfig(store.loadConfig(userData)),
@@ -116,6 +131,7 @@ function registerAutomationIpc({ getWindow, userData, appRoot }) {
     userData,
     appRoot,
     agentDefinitions,
+    commandSpawnSpec: makeTaskCommandSpawnSpec(userData),
     hooks: {
       resolveAgent,
       prepareRun: (payload) => prepareRun(userData, payload),
@@ -131,4 +147,7 @@ function registerAutomationIpc({ getWindow, userData, appRoot }) {
   });
 }
 
-module.exports = { registerAutomationIpc, automationConfig, automationPatch, configAdapter, prepareRun, selectForRequest, agentDefinitions, resolveAgent };
+module.exports = {
+  registerAutomationIpc, automationConfig, automationPatch, configAdapter, prepareRun, selectForRequest,
+  agentDefinitions, resolveAgent, makeTaskCommandSpawnSpec,
+};

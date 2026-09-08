@@ -4,7 +4,11 @@
 //   capture … 短いコマンドを走らせて出力を集める（診断・記録の開始と終了）
 //   stream  … 長いコマンドを走らせて出力を逐次流す（スキルの構成確認 / agent-tools の実行）
 //   spawnRecorder … winauto record を子プロセスで走らせ、終了を待てる形で返す
-// どれもシェルを介さない（argv を直接渡す）。この端末の PATH にある実体をそのまま呼ぶ。
+// どれもシェルを介さない（argv を直接渡す）。既定はこの端末の PATH にある実体をそのまま
+// 呼ぶ（command.spawnSpec）。capture / stream / startDetached は `spawnSpec` オプションで
+// この既定を差し替えられる——埋め込む側（agent-app）が Windows で agent-herd / agent-loop /
+// agent-flow だけを WSL のログインシェル経由に載せ替えるときに使う（他の診断コマンドは
+// この端末でそのまま探す）。差し替えなければ従来どおり。
 
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -12,8 +16,8 @@ const path = require('path');
 const command = require('./command');
 const MAX_STREAM_OUTPUT = 1024 * 1024;
 
-function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, input = '' } = {}) {
-  const spec = command.spawnSpec(name, args, { cwd, env });
+function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, input = '', spawnSpec = command.spawnSpec } = {}) {
+  const spec = spawnSpec(name, args, { cwd, env });
   return new Promise((resolve) => {
     let child;
     try {
@@ -81,9 +85,11 @@ function createOutputCollector({ onLine, maxBytes = MAX_STREAM_OUTPUT } = {}) {
 }
 
 // onLine(kind, text) に stdout / stderr を行単位で流し、終了時に収集済み出力も返す。
-function stream(name, args, { cwd = '', env = process.env, kind = 'run', onLine, onExit, maxBytes = MAX_STREAM_OUTPUT } = {}) {
+function stream(name, args, {
+  cwd = '', env = process.env, kind = 'run', onLine, onExit, maxBytes = MAX_STREAM_OUTPUT, spawnSpec = command.spawnSpec,
+} = {}) {
   if (running) throw new Error('別の実行が進行中です。終わるか停止してから始めてください');
-  const spec = command.spawnSpec(name, args, { cwd, env });
+  const spec = spawnSpec(name, args, { cwd, env });
   let child;
   try {
     child = spawn(spec.command, spec.args, spec.options);
@@ -109,8 +115,10 @@ function stop(kind = '') {
   return true;
 }
 
-function startDetached(name, args, { cwd = '', env = process.env, logFile = '', spawnProcess = spawn } = {}) {
-  const spec = command.spawnSpec(name, args, { cwd, env });
+function startDetached(name, args, {
+  cwd = '', env = process.env, logFile = '', spawnProcess = spawn, spawnSpec = command.spawnSpec,
+} = {}) {
+  const spec = spawnSpec(name, args, { cwd, env });
   return new Promise((resolve, reject) => {
     let child;
     let output = null;
