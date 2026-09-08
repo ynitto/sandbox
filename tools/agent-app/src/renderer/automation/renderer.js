@@ -102,9 +102,31 @@ function agentOptions(preferred = '') {
   return state.agents.map((name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
 }
 
-async function loadAgents() {
-  state.agents = (await guard('AI 一覧', () => automationHost.listAgents(state.root))) || [];
-  state.run.agent = selectedAgent(state.run.agent || state.config.agent);
+// 描き直してよいか。入力欄に文字を打っている最中に、遅れて届いた返事で画面を組み直すと入力が消える。
+function editingInMain() {
+  const active = workbenchRoot.activeElement;
+  return !!active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) && !!active.closest('#main');
+}
+
+function renderIfIdle() {
+  if (state.view === 'home' && !editingInMain()) render();
+}
+
+// AI の一覧（agent-herd defs。Windows では WSL 越しで数秒かかる）。**画面を待たせない**——
+// 呼んだ側は await せず、届いたら描き直す。リポジトリを移っていたら捨てる（token）。
+let agentsToken = 0;
+function loadAgents() {
+  const token = (agentsToken += 1);
+  return automationHost.listAgents(state.root).then((names) => {
+    if (token !== agentsToken) return;
+    state.agents = Array.isArray(names) ? names : [];
+    state.run.agent = selectedAgent(state.run.agent || state.config.agent);
+    renderIfIdle();
+  }, (err) => {
+    if (token !== agentsToken) return;
+    state.agents = [];
+    toast(`AI 一覧: ${(err && err.message) || err}`, true);
+  });
 }
 
 // 一覧の 2 行目は「どこに置いてあるか」だけ分かればよいので、親フォルダまで。
@@ -222,10 +244,17 @@ async function loadMachines() {
   if (state.root) await teachingFeature.loadItems();
 }
 
+// 実行状態（agent-loop inspect。設定とファイル実体を確かめるぶん遅く、Windows では WSL 越し）。
+// 定義（.statemachine/ の一覧）だけで先に画面を描き、届いたら重ねる。await するのは、
+// 保存や実行のあとに結果を待って描き直したい場面だけ。初回表示・リポジトリの切替では待たない。
+let snapshotToken = 0;
 async function loadExecutionSnapshot() {
-  if (!state.root) { state.execution.snapshot = null; return; }
+  if (!state.root) { state.execution.snapshot = null; state.execution.loading = false; return; }
+  const token = (snapshotToken += 1);
+  const root = state.root;
   state.execution.loading = true;
-  const snapshot = await guard('実行情報', () => automationHost.runSnapshot(state.root));
+  const snapshot = await guard('実行情報', () => automationHost.runSnapshot(root));
+  if (token !== snapshotToken || root !== state.root) return;
   state.execution.loading = false;
   state.execution.snapshot = snapshot || {
     available: false, machines: [], history: [], daemon: { running: false }, error: '実行情報を取得できませんでした',
@@ -237,6 +266,11 @@ async function loadExecutionSnapshot() {
     state.execution.log = null;
     state.run.parameters = {};
   }
+}
+
+// 待たずに取りに行き、届いたら描き直す。
+function refreshExecutionSnapshot() {
+  return loadExecutionSnapshot().then(renderIfIdle);
 }
 
 function executionMachines() {
@@ -325,10 +359,21 @@ async function selectRoot(root) {
   // 教示一覧は定義一覧と一緒に読み直す（loadMachines）ので、片付けはその前に済ませる。
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
+  await afterRootChange();
+}
+
+// フォルダを選び直したあと。手元のファイルで分かる定義の一覧だけを待って描き、
+// ホスト（WSL）に聞くもの（AI の一覧・実行状態）は待たずに裏で取りに行く。
+async function afterRootChange() {
+  state.execution.snapshot = null;
+  state.execution.selected = '';
+  await loadMachines();
+  const first = executionMachines()[0];
+  state.execution.selected = first ? taskIdentity(first) : '';
   if (state.homeTab === 'teach') await teachingFeature.activate();
   render();
+  loadAgents();
+  refreshExecutionSnapshot();
 }
 
 async function addFolder() {
@@ -340,10 +385,7 @@ async function addFolder() {
   state.root = cfg.lastRoot;
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
-  if (state.homeTab === 'teach') await teachingFeature.activate();
-  render();
+  await afterRootChange();
 }
 
 async function removeFolder(root) {
@@ -356,10 +398,7 @@ async function removeFolder(root) {
   if (state.root === root) state.root = cfg.lastRoot;
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
-  if (state.homeTab === 'teach') await teachingFeature.activate();
-  render();
+  await afterRootChange();
 }
 
 function goHome() {
@@ -664,7 +703,7 @@ function goRun(machine) {
   state.run.result = null;
   state.run.error = '';
   // 教示から来るときは定義が増えている（利用可能になった直後）ので、定義一覧も読み直す。
-  Promise.all([loadMachines(), loadExecutionSnapshot()]).then(render);
+  loadMachines().then(() => { render(); refreshExecutionSnapshot(); });
 }
 
 // 実行詳細から「AIに変更を相談」。教示画面をそのタスクで開く（今の版はそのまま実行できる）。
@@ -797,7 +836,7 @@ function embeddedTaskEditorHtml() {
 
 function executionHtml() {
   const machines = executionMachines();
-  if (state.execution.loading) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
+  if (state.execution.loading && !machines.length) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
   if (!machines.length) return '<div class="blank compact"><h2>実行できるワークフローがありません</h2><p>ワークフローを作成すると、ここから実行できます。</p></div>';
   const selected = selectedExecutionMachine() || machines[0];
   const list = machines.map((machine) => {
@@ -823,7 +862,8 @@ function executionDetailHtml(machine) {
     const edit = ['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" class="tiny" data-schedule-edit="${index}">編集</button>` : '';
     return `<li><div><strong>${esc(item.entryName || `予定 ${index + 1}`)}</strong><small>${esc(scheduleLabel(item))}${next} · ${esc(where)}</small></div>${active}${edit}</li>`;
   }).join('');
-  const daemonStatus = daemon.activeCount
+  const checking = state.execution.loading && !state.execution.snapshot;
+  const daemonStatus = checking ? '実行状態を確認しています…' : daemon.activeCount
     ? `${daemon.activeCount} 件を実行中${daemon.queueDepth ? `、${daemon.queueDepth} 件待機` : ''}`
     : daemon.running ? (daemon.queueDepth ? `${daemon.queueDepth} 件待機` : '自動実行は稼働中') : '自動実行は停止中';
   const parameters = machine.parameters || [];
@@ -852,7 +892,7 @@ function executionDetailHtml(machine) {
     : machine.kind === 'hook' ? '<p class="run-result warn">フックだけのタスクは定期実行で起動します。</p>' : '';
   const detail = state.execution.detailTab === 'history'
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
-    : state.execution.detailTab === 'overview' ? `${snapshot.available === false ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
+    : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
       <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
         ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
       <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
@@ -1925,7 +1965,7 @@ async function navigateEmbedded(payload) {
   const latestConfig = await guard('設定', () => automationHost.getConfig());
   if (latestConfig) {
     state.config = latestConfig;
-    await loadAgents();
+    loadAgents();                      // 待たない（WSL 越しで遅い）。届いたら描き直す
   }
   const area = payload.area === 'workflows' ? 'workflows' : 'tasks';
   const root = String(payload.root || '');
@@ -1985,8 +2025,9 @@ async function navigateEmbedded(payload) {
 // 親の会話（AI がファイルを書いた）が終わるたびに、定義と実行状態を読み直す。
 async function refreshEmbedded() {
   if (!state.root) return;
-  await Promise.all([loadMachines(), loadExecutionSnapshot()]);
-  if (state.view === 'home') render();
+  await loadMachines();
+  renderIfIdle();
+  refreshExecutionSnapshot();
 }
 
 if (workbenchHost) workbenchHost.setController({ navigate: navigateEmbedded, refresh: refreshEmbedded });
@@ -2006,14 +2047,19 @@ async function init() {
     appendLog({ kind: state.run.result.ok ? 'stdout' : 'stderr', line: state.run.result.ok ? (p.mode === 'check' ? '— 構成を確認しました' : '— 実行が完了しました') : '— 実行を完了できませんでした' });
     notifyHost('tasks', state.execution.selected);
     if (state.view === 'home' && state.homeTab === 'run') render();
-    loadExecutionSnapshot().then(() => { if (state.view === 'home' && state.homeTab === 'run') render(); });
+    refreshExecutionSnapshot();
   });
   window.addEventListener('beforeunload', (e) => { if (state.current && state.current.dirty) { e.preventDefault(); e.returnValue = ''; } });
   state.root = state.config.lastRoot || (state.config.roots || [])[0] || '';
-  await Promise.all([state.root ? loadMachines() : Promise.resolve(), loadAgents()]);
-  if (state.root) await loadExecutionSnapshot();
+  // 手元のファイル（定義の一覧）だけを待って描く。AI の一覧と実行状態はホスト（Windows では WSL）に
+  // 聞くので待たない——待つと、親が最初に「タスク」を開いたときにここの initPromise で止まる。
+  if (state.root) await loadMachines();
+  const first = executionMachines()[0];
+  if (first && !state.execution.selected) state.execution.selected = taskIdentity(first);
   if (state.root && state.homeTab === 'teach') await teachingFeature.activate();
   render();
+  loadAgents();
+  if (state.root) refreshExecutionSnapshot();
 }
 
 initPromise = init();

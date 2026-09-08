@@ -159,3 +159,24 @@ test('スキルの所在は選んだフォルダから上へ辿って見つけ�
   assert.strictEqual(tools.findSkillDir({ root: require('os').tmpdir() }), '');
   assert.strictEqual(tools.findSkillDir({ root: '', appRoot: path.join(__dirname, '..') }), found);
 });
+
+// タスク画面の初回表示で固まらない: ホスト（Windows では WSL）に聞くもの（AI の一覧・実行状態）を
+// 待ってから描かない。待つのは手元のファイル（定義の一覧・設定）だけ。
+test('共有ワークベンチは AI の一覧と実行状態を待たずに描き、届いたら描き直す', () => {
+  const renderer = read('renderer/automation/renderer.js');
+  const between = (from, to) => renderer.slice(renderer.indexOf(from), renderer.indexOf(to));
+  const init = between('async function init()', 'initPromise = init();');
+  assert.doesNotMatch(init, /await loadAgents\(\)|await loadExecutionSnapshot\(\)|await Promise\.all\(\[[^\]]*loadAgents/, '初期化は AI の一覧・実行状態を待たない');
+  assert.match(init, /\n  loadAgents\(\);\n/, '初期化のあと裏で AI の一覧を取りに行く');
+  assert.match(init, /refreshExecutionSnapshot\(\)/);
+  const navigate = between('async function navigateEmbedded(', 'async function refreshEmbedded(');
+  assert.doesNotMatch(navigate, /await loadAgents\(\)/, 'タスクを開くたびに AI の一覧を待たない');
+  const rootChange = between('async function afterRootChange()', 'async function addFolder()');
+  assert.doesNotMatch(rootChange, /await loadAgents\(\)|await loadExecutionSnapshot\(\)/, 'リポジトリの切替でも待たない');
+  assert.match(rootChange, /await loadMachines\(\);[\s\S]*render\(\);[\s\S]*loadAgents\(\);[\s\S]*refreshExecutionSnapshot\(\);/);
+  assert.match(renderer, /let agentsToken = 0;/, '遅れて届いた別リポジトリの返事は捨てる');
+  assert.match(renderer, /let snapshotToken = 0;/);
+  assert.match(renderer, /function renderIfIdle\(\)/, '入力中に描き直さない');
+  assert.match(renderer, /if \(state\.execution\.loading && !machines\.length\) return/, '定義があれば実行状態の到着を待たずに詳細を描く');
+  assert.match(renderer, /'実行状態を確認しています…'/);
+});

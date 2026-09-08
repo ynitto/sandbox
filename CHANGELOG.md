@@ -34,6 +34,13 @@ main は `src/main/automation/`（旧 `ipc.js` は `handlers.js`）、renderer �
   引き継ぐ。
 - 新しい IPC: `automation:teach:start` / `teach:session` / `teach:demonstration`。無くなった IPC:
   `automation:teaching:create` … `restore`。`automation:teaching:list` は定義がまだ無い下書きだけを返す。
+- **「タスク」を最初に開いたときに固まらない。** 共有ワークベンチの初期化とナビゲーションが AI の一覧
+  （`agent-herd defs`）と実行状態（`agent-loop inspect`）の返事を待ってから描いていて、Windows では
+  どちらも WSL 越しで数秒〜タイムアウトまで「画面を切り替えています…」のままだった。待つのは手元の
+  ファイル（定義の一覧・設定）だけにし、AI の一覧と実行状態は裏で取りに行って届いたら描き直す
+  （リポジトリを移っていたら捨てる。入力中は描き直さない）。定義があるタスクは実行状態の到着前から
+  詳細を出し、定期実行の欄に「実行状態を確認しています…」と出す。擬似の遅いホスト（各 8 秒）で、
+  タスク画面は約 0.1 秒で出る。
 
 ### agent-app: 起動時にホストと git を待たない・ファイル探索を非同期と索引にする・`herd` を選べる
 
