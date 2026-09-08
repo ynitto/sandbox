@@ -146,15 +146,16 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 サイドバーの「タスク」「ワークフロー」は、選択中リポジトリの `.statemachine/` と agent-loop の設定、
 `.agents/workflows/` を、同じウィンドウの共有ワークベンチ（旧 statemachine-maker）で扱います。
 
-- タスクの「＋」は作成フォームを開きます。目的を書いて「AIと作り始める」と、会話と同じ CLI が
+- タスクの「＋」は作成フォームを開きます。目的を書いて「AIと作成を始める」と、会話と同じ CLI が
   リポジトリで起動し、**端末がタスク画面の中に出ます**（手動実行の画面と同じ埋め込み）。AI は
   `statemachine-use` スキルの作成モードで定義を書き、検証してから要約します。会話の利用者メッセージの
   「この依頼をタスクにする」からも、依頼本文を引き継いで同じフォームに入れます。
 - AI が画面操作の見本を求めると（返答の `@record …` 行）、「操作の見本」のカードが開きます。画面と
   開始 URL（アプリ名）を確かめて「記録を始める」→ 操作 →「終了してAIへ渡す」。記録はこの PC で取り
   （Windows では Windows 側。AI は WSL の tmux にいます）、記録の場所が AI に届きます。
-- 定義ができたタスクは実行詳細（概要 / 手順 / AI相談 / 履歴）から開き、実行・定期実行・履歴を扱えます。
-  変更は「AI相談」の「AIとの相談を始める」から、同じ端末で続けます。
+- 定義ができたタスクは実行詳細（概要 / 手順 / 履歴）から開き、実行・定期実行・履歴を扱えます。
+  変更は「手順」の「編集」から。その場に AI との端末が出て（「‹ 工程に戻る」で戻ります）、
+  戻ったときには AI が書き換えた工程を読み直しています。
 - ワークフローの「＋」は「新しいワークフローを教える」画面を開きます。実現したいことを普段の言葉で
   書いて「AIに相談する」と、AI が質問するか候補の構成を返します。「手動で作成」なら従来の工程エディタ
   で直接組み立てます。
@@ -266,7 +267,7 @@ src/
     ├── automation/      共有ワークベンチの renderer（Shadow DOM の中で動く）
     │   ├── workbench-element.js  カスタム要素 <statemachine-workbench>
     │   ├── renderer.js / flow.js 概要・手順・履歴・ワークフロー
-    │   ├── teaching.js           AI相談・作成の置き場（<slot name="teaching">）
+    │   ├── teaching.js           作成・編集の置き場（<slot name="teaching">）
     │   └── styles.css            共有ワークベンチの見た目
     └── vendor/          npm install 時に scripts/vendor.js が写す外部ライブラリ（git 管理外）
 ```
@@ -866,7 +867,7 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
 | `herd.test.js` | `herd` の一族判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
-| `electron-smoke.test.js` | Electron 実機で三領域を移動し、タスクの AI相談と＋の作成フォーム（親の slot）を開き、ワークフローの＋で教示画面を開く | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
+| `electron-smoke.test.js` | Electron 実機で三領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの＋で教示画面を開く | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 
 `test/smoke.js` は `npm test` に含めない手動スモークで、画面のある環境で疑似 CLI と会話しスクリーンショットを
 撮る（Linux では `SMOKE_OUT=/tmp/shots xvfb-run -a npx electron --no-sandbox test/smoke.js`）。

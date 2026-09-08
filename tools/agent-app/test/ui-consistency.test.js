@@ -55,10 +55,10 @@ test('見出しと説明は 1 か所だけが描く（埋め込み側と両方�
   const workbench = read('renderer/automation/teaching.js');
   // 親が置くのは操作面だけ。見出しはワークベンチが持つ。
   assert.ok(!/<h[1-3][\s>]/.test(slot), '会話の置き場に見出しを置かない（ワークベンチが持つ）');
-  // タスク詳細の「AI相談」タブは、タブ名とタスク名で足りる。説明の段落を足さない。
-  const detail = workbench.slice(workbench.indexOf('function detailHtml()'), workbench.indexOf('function html()'));
-  assert.ok(!/<h[1-3][\s>]|<p[\s>]/.test(detail), 'AI相談タブに見出しや説明文を足さない');
-  assert.match(detail, /<slot name="teaching"><\/slot>/);
+  // 「手順」タブの編集面は、カードの見出し（AIと編集）とタスク名で足りる。説明を足さない。
+  const editor = workbench.slice(workbench.indexOf('function editorSlotHtml('), workbench.indexOf('function html()'));
+  assert.ok(!/<h[1-3][\s>]|<p[\s>]/.test(editor), '編集の置き場に見出しや説明文を足さない');
+  assert.match(editor, /<slot name="teaching"><\/slot>/);
 });
 
 test('画面に解説を常駐させない（仕組みの説明は README に置く）', () => {

@@ -28,7 +28,12 @@ main は `src/main/automation/`（旧 `ipc.js` は `handlers.js`）、renderer �
   agent-app 自身が起こし（Windows では Windows 側。AI は WSL の tmux にいる）、できた Markdown
   （`.statemachine/<名前>/recordings/`）の所在を WSL 表記へ直して会話へ送る（`automation:teach:demonstration`）。
   依頼文では「自分では記録を起こさない」と伝え、見本を取れる道具の有無も伝える。
-- 共有ワークベンチの AI相談タブと新規作成は、見出しと `<slot name="teaching">` だけを描き、会話の実体
+- **タスクは 概要 / 手順 / 履歴 の 3 タブに戻し、AI との編集は「手順」の「編集」から開く。** 「AI相談」の
+  タブは無くなった。「編集」を押すとその場に「AIと編集」のカード（概要の手動実行・定期実行と同じ
+  `.execution-card`）が出て、押した時点で AI が起動する（相談を始めるボタンは無い）。「‹ 工程に戻る」で
+  工程へ戻り、そのとき AI が書き換えた定義を読み直す。カードの中の端末は白い面の中身なので枠と影を
+  持たない。新しいタスクの作成は「新しいワークフローを教える」と同じ `.blank.teaching-create`。
+- 共有ワークベンチの作成・編集の置き場は、見出しと `<slot name="teaching">` だけを描き、会話の実体
   （端末ミラー `TaskTerm`・入力 2 モード・見本のカード・作成フォーム）は親の `taskTeaching.js` が光の DOM で
   持つ。`term.js` は `createTerm()` の工場になった。会話からの「この依頼をタスクにする」は作成フォームへ本文を
   引き継ぐ。

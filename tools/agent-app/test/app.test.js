@@ -293,18 +293,21 @@ test('タスク一覧は定義を先に見せ、実行状態（ファイル実�
   assert.match(renderer, /pending \? '確認中…'/);
 });
 
-test('タスク詳細は概要・手順・AI相談・履歴のタブに統一し、定期実行は概要で管理する', () => {
+test('タスク詳細は概要・手順・履歴のタブに統一し、AI との編集は手順タブの「編集」で開く', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   assert.match(renderer, /detailTab:\s*'overview'/);
   assert.match(renderer, /class="task-detail-tabs"[^>]*role="tablist"/);
-  assert.match(fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'teaching.js'), 'utf8'), /<slot name="teaching">/, 'AI相談のタブは親の会話（端末ミラー）を slot に載せる');
+  assert.match(fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'teaching.js'), 'utf8'), /<slot name="teaching">/, '編集は親の会話（端末ミラー）を slot に載せる');
   assert.match(renderer, /data-task-tab="overview"[\s\S]*>概要</);
   assert.match(renderer, /data-task-tab="steps"[\s\S]*>手順</);
-  assert.match(renderer, /data-task-tab="teach"[\s\S]*>AI相談</);
   assert.match(renderer, /data-task-tab="history"[\s\S]*>履歴</);
   assert.match(renderer, /function taskDetailShellHtml\(/);
   assert.match(renderer, /function bindTaskDetailTabs\(/);
-  assert.match(renderer, /teachingFeature\.detailHtml\(\)/);
+  assert.ok(!renderer.includes('data-task-tab="teach"'), 'AI相談のタブは持たない');
+  assert.match(renderer, /id="b-edit"[^>]*>編集</);
+  assert.match(renderer, /function editingCardHtml\(/);
+  assert.match(renderer, /teachingFeature\.editorSlotHtml\(machine\)/);
+  assert.match(renderer, /data-edit-back/);
   assert.match(renderer, /state\.execution\.detailTab === 'history'/);
   assert.match(renderer, /state\.execution\.detailTab === 'overview'[\s\S]*<h3>定期実行<\/h3>/);
   assert.match(renderer, /querySelectorAll\('\[data-task-tab\]'\)/);

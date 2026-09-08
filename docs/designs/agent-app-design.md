@@ -147,7 +147,7 @@ controller を登録するまでの `navigate` は要素が保留し、登録時
 | 領域 | 対象 | 中央 | 一覧の出どころ |
 |---|---|---|---|
 | 会話 | 対話セッション | 会話ヘッダー、端末ミラー、会話履歴、入力欄 / ファイルビュー | `session:list` |
-| タスク | `.statemachine/` の定義と agent-loop の設定エントリ | 共有ワークベンチの概要・手順・AI相談（tmux 会話）・履歴 | `automation:run:snapshot` + `machine:list` + `teaching:list` |
+| タスク | `.statemachine/` の定義と agent-loop の設定エントリ | 共有ワークベンチの概要・手順（AI との編集を含む）・履歴 | `automation:run:snapshot` + `machine:list` + `teaching:list` |
 | ワークフロー | 複数 AI の工程定義と、教示中の下書き | 共有ワークベンチの教示・概要・編集・実行履歴 | `automation:flow:list` + `flow:run:list` + `flow:teaching:list` |
 
 ワークフロー一覧は、教示中の下書き（`ready` 以外で、まだ定義として保存されていないもの）を先頭に、
@@ -192,7 +192,7 @@ controller を登録するまでの `navigate` は要素が保留し、登録時
 |---|---|---|
 | `workbench-element.js` | renderer/automation | カスタム要素。Shadow DOM に `#bar` / `#main` / ダイアログを作り、`stylesheet` と `host-stylesheet` を読む。`navigate(payload)` を controller 登録まで保留し、`refresh()` で定義と実行状態を読み直す |
 | `renderer.js` / `flow.js` | renderer/automation | 概要・手順（工程エディタ）・履歴・ワークフロー。DOM 参照は Shadow Root に対して行い、preload の窓口は `window.api.automation` だけ |
-| `teaching.js` | renderer/automation | タスクの「AI相談」と新規作成の**置き場**。見出しと `<slot name="teaching">` を描き、どのタスクの会話を出しているかを `statemachine:teaching-view` で親へ伝える |
+| `teaching.js` | renderer/automation | タスクの作成（`html()`）と「手順」の編集（`editorSlotHtml()`）の**置き場**。見出しと `<slot name="teaching">` を描き、どのタスクの会話を出しているかを `statemachine:teaching-view` で親へ伝える |
 | `taskTeaching.js` | renderer（親） | slot に載る光の DOM。tmux の端末ミラー（`TaskTerm`）、入力 2 モードの入力欄、操作の見本のカード、作成フォーム。**見た目は会話画面と同じ実体**（`.terminal-stage` / `.composer-shell`）を使い、見出しと説明は持たない |
 | `automation-workbench.css` | renderer（親） | host stylesheet。`:host` に対する上書きだけで、フォルダ欄・ホームタブ・見出しを隠し、三領域の語彙に揃える |
 
@@ -535,7 +535,7 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 | `test/skill-selection.test.js`、`test/skills.test.js` | 自動 / 手動 / 明示の選定、ネイティブとインラインの渡し方、予算超過、候補の読み方 |
 | `test/response.test.js` | codex JSONL、Aider、copilot の思考・回答分離 |
 | `test/input-mode.test.js`、`test/task-intent.test.js`、`test/execution-gate.test.js` | 入力 2 モードの遷移、教示 intent の一回限り消費、同時実行枠 |
-| `test/electron-smoke.test.js` | Electron 実機で三領域を移動し、登録済み項目を開け、タスクの「AI相談」に親の会話の置き場が出て、＋が作成フォーム（親の slot）を開き、ワークフローの＋が「新しいワークフローを教える」画面を開く |
+| `test/electron-smoke.test.js` | Electron 実機で三領域を移動し、登録済み項目を開け、タスクの「手順」→「編集」に親の会話の置き場が出て、＋が作成フォーム（親の slot）を開き、ワークフローの＋が「新しいワークフローを教える」画面を開く |
 
 `test/smoke.js` は画面のある環境で疑似 CLI と会話しスクリーンショットを撮る手動スモークで、`npm test` には
 含めない。Windows / WSL の実機確認は推奨だがリリース必須条件にはしない。

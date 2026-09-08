@@ -241,15 +241,13 @@
                 <input id="task-machine" placeholder="目的から決めます" size="18">
                 <span class="spacer"></span>
                 <span id="task-create-settings" class="sub"></span>
-                <button type="button" id="task-create-start" class="primary">AIと作り始める</button>
+                <button type="button" id="task-create-cancel">戻る</button>
+                <button type="button" id="task-create-start" class="primary">AIと作成を始める</button>
               </div>
               <p id="task-create-error" class="dlg-error" hidden></p>
             </section>
             <section id="task-workspace" hidden>
-              <div id="task-open-note" class="task-actions" hidden>
-                <button type="button" id="task-open">AIとの相談を始める</button>
-                <span id="task-open-settings" class="sub"></span>
-              </div>
+              <p id="task-open-note" class="sub" hidden></p>
               <section id="task-terminal" class="terminal-stage" hidden>
                 <div class="terminal-head">
                   <span id="task-term-agent" class="terminal-agent"></span>

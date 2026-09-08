@@ -1524,6 +1524,7 @@ async function init() {
       return intent;
     },
     openTask: (machine) => openTaughtTask(machine),
+    cancelCreate: () => syncAutomationWorkbench(),
     reloadTasks: () => { if (state.area === 'tasks') loadAreaItems().catch(() => {}); },
     refreshWorkbench: () => $('automation-workbench').refresh(),
   });

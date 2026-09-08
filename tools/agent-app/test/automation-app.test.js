@@ -113,8 +113,8 @@ test('定義があるタスクは実行詳細から開き、AI との会話は�
   assert.ok(renderer.includes('data-run-teach') && renderer.includes('AIに変更を相談'));
   assert.ok(renderer.includes('teachingFeature.statusOf('), '実行詳細の状態は教示側の判定を使う');
   assert.match(renderer, /function taskDetailShellHtml\(/);
-  assert.match(renderer, /data-task-tab="overview"[\s\S]*data-task-tab="steps"[\s\S]*data-task-tab="teach"[\s\S]*data-task-tab="history"/);
-  assert.match(renderer, /teachingFeature\.detailHtml\(\)/);
+  assert.match(renderer, /data-task-tab="overview"[\s\S]*data-task-tab="steps"[\s\S]*data-task-tab="history"/);
+  assert.match(renderer, /teachingFeature\.editorSlotHtml\(machine\)/);
   assert.match(renderer, /setController\(\{ navigate: navigateEmbedded, refresh: refreshEmbedded \}\)/, '親の会話が終わったら定義を読み直せる');
 });
 

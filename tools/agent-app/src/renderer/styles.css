@@ -528,6 +528,13 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #task-create textarea { width: 100%; min-height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
 .task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 #task-terminal { height: min(46vh, 480px); min-height: 260px; }
+/* 「AIと編集」のカードの中に入るときは、端末は白い面の中身なので枠と影を持たず、
+   カードに残った高さをそのまま使う。 */
+#task-teaching.in-card { gap: 10px; height: 100%; min-height: 0; }
+#task-teaching.in-card #task-workspace { height: 100%; min-height: 0; display: grid; gap: 10px; grid-template-rows: minmax(0, 1fr); }
+#task-teaching.in-card #task-terminal { height: auto; min-height: 160px; }
+#task-teaching.in-card .terminal-stage { border-color: transparent; box-shadow: none; }
+#task-teaching.in-card .terminal-stage.input-terminal { border-color: var(--term-cursor); }
 #task-record { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 #task-record input { min-width: 220px; }
 #task-record .sub.error { color: var(--danger); }

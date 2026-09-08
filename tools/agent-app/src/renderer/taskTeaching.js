@@ -18,7 +18,7 @@
   const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
 
   const state = {
-    deps: null, visible: false, repo: '', machine: '', title: '', creating: false, published: false,
+    deps: null, visible: false, repo: '', machine: '', title: '', creating: false, editing: false, card: false, published: false,
     session: null, phase: null, tools: null, running: false, pending: false, token: 0,
     input: null, record: { open: false, source: 'browser', target: '', active: false, busy: false, message: '', ok: true, request: null },
   };
@@ -36,7 +36,8 @@
   function error(message) { state.deps.notice(message, 'error'); }
 
   function sameView(a, b) {
-    return !!a && !!b && a.root === b.root && a.machine === b.machine && !!a.creating === !!b.creating && !!a.published === !!b.published;
+    return !!a && !!b && a.root === b.root && a.machine === b.machine && !!a.creating === !!b.creating
+      && !!a.editing === !!b.editing && !!a.card === !!b.card && !!a.published === !!b.published;
   }
 
   // ---- 表示の切り替え ---------------------------------------------------------
@@ -44,6 +45,8 @@
   function renderShell() {
     const root = $('task-teaching');
     root.hidden = !state.visible;
+    // カード（「AIと編集」）の中に入るときは、端末は白い面の中身なので枠と影を持たない。
+    root.classList.toggle('in-card', state.visible && state.card);
     $('task-create').hidden = !(state.visible && state.creating);
     $('task-workspace').hidden = !(state.visible && !state.creating);
     if (!state.visible) return;
@@ -66,8 +69,9 @@
     const sess = state.session;
     const ph = state.phase;
     const hasTerminal = !!sess;
-    $('task-open-note').hidden = hasTerminal;
-    if (!hasTerminal) $('task-open-settings').textContent = state.deps.executionLabel();
+    const note = $('task-open-note');
+    note.hidden = hasTerminal;
+    note.textContent = hasTerminal ? '' : `${state.deps.executionLabel()} を起動しています…`;
     $('task-terminal').hidden = !hasTerminal;
     $('task-composer').hidden = !hasTerminal;
     $('task-term-agent').textContent = sess ? [sess.cli, sess.model].filter(Boolean).join(' · ') : '';
@@ -78,7 +82,6 @@
     $('task-term-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
     $('task-stop').hidden = !(state.running || state.pending);
     $('task-send').disabled = state.pending || !hasTerminal;
-    $('task-open').disabled = state.pending;
     renderRecord();
     setInputMode(state.input && state.input.mode === 'terminal' ? 'terminal' : 'message', { focus: false });
   }
@@ -113,6 +116,7 @@
     if (token !== state.token) return;
     state.tools = view.tools || null;
     if (view.session) await attach(view.session, token);
+    else if (state.editing) { await startTeaching(token); return; }
     renderShell();
   }
 
@@ -133,24 +137,24 @@
     }
   }
 
-  // 既存のタスク（まだ会話が無い）で「AIに相談を始める」。
-  async function open() {
-    const button = $('task-open');
-    button.disabled = true;
+  // 編集に入った時点で会話がまだ無ければ、そのまま AI を起こす（押させない）。
+  async function startTeaching(token = state.token) {
     state.pending = true;
     renderShell();
     try {
       const options = state.deps.executionOptions();
       const view = await api.automation.teachStart({ repo: state.repo, machine: state.machine, ...options });
+      if (token !== state.token) return;
       state.pending = false;
       state.tools = view.tools || state.tools;
-      if (view.session) { state.running = state.running || !!view.started; await attach(view.session); }
+      if (view.session) { state.running = state.running || !!view.started; await attach(view.session, token); }
       state.deps.reloadTasks();
     } catch (err) {
+      if (token !== state.token) return;
       state.pending = false;
       error(err.message);
     }
-    renderShell();
+    if (token === state.token) renderShell();
   }
 
   // 新しいタスク: 目的を書いて AI と作り始める。
@@ -318,13 +322,15 @@
   // ワークベンチが「このタスクの会話を出す / 出さない」と言ってきた。
   function show(detail) {
     if (!detail || detail.hidden) { hide(); return; }
-    const next = { root: detail.root || '', machine: detail.machine || '', creating: !!detail.creating, published: !!detail.published };
-    const same = state.visible && sameView(next, { root: state.repo, machine: state.machine, creating: state.creating, published: state.published });
+    const next = { root: detail.root || '', machine: detail.machine || '', creating: !!detail.creating, editing: !!detail.editing, card: !!detail.card, published: !!detail.published };
+    const same = state.visible && sameView(next, { root: state.repo, machine: state.machine, creating: state.creating, editing: state.editing, card: state.card, published: state.published });
     state.title = detail.title || '';
     if (same) { renderShell(); requestAnimationFrame(() => term().refit()); return; }
     state.repo = next.root;
     state.machine = next.machine;
     state.creating = next.creating;
+    state.editing = next.editing;
+    state.card = next.card;
     state.published = next.published;
     state.visible = true;
     state.record = { ...state.record, open: false, request: null, message: '' };
@@ -382,7 +388,7 @@
     $('task-purpose').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); create().catch((err) => error(err.message)); }
     });
-    $('task-open').onclick = () => open();
+    $('task-create-cancel').onclick = () => state.deps.cancelCreate();
     $('task-send').onclick = () => send();
     $('task-stop').onclick = () => { if (state.session) api.stop(state.session.id).catch((err) => error(err.message)); };
     $('task-term-restart').onclick = () => restart();

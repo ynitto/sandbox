@@ -30,7 +30,7 @@ const state = {
   catalog: { kinds: [], platform: '' },
   view: 'home',
   homeTab: 'teach',
-  execution: { loading: false, snapshot: null, selected: '', detailTab: 'overview', scheduleOpen: false, scheduleDraft: null, log: null },
+  execution: { loading: false, snapshot: null, selected: '', detailTab: 'overview', editing: false, scheduleOpen: false, scheduleDraft: null, log: null },
   current: null,     // { machine, isNew, spec, dirty, warnings, dir }
   open: null,        // 選択中の工程番号、'workflow'、または未選択
   pickerAt: -1,      // 追加の種類を選んでいる位置
@@ -419,6 +419,7 @@ async function openMachine(machine) {
   state.current = { machine, isNew: false, spec: raw, dirty: false, warnings: res.warnings || [], dir: res.dir };
   state.view = 'editor';
   if (embedded && selectedExecutionMachine()?.machine === machine) state.execution.detailTab = 'steps';
+  else state.execution.editing = false;
   state.open = null;
   state.preview = null;
   resetAi(state.aiReview);
@@ -461,6 +462,7 @@ function editorControlsHtml() {
   return {
     center: `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`,
     right: `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
+      ${embedded && !state.current.isNew ? '<button type="button" id="b-edit" class="ghost">編集</button>' : ''}
       <button type="button" id="b-ai" class="ghost">AIで見直す</button>
       <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト・実行</button>
       <details class="more-menu"><summary>その他</summary><div class="menu-panel">
@@ -483,6 +485,8 @@ function bindEditorControls(scope) {
   });
   const saveName = get('m-save-name');
   if (saveName) saveName.addEventListener('input', () => { touched = true; });
+  const edit = get('b-edit');
+  if (edit) edit.addEventListener('click', startEditing);
   get('b-record').addEventListener('click', openRecord);
   get('b-files').addEventListener('click', openFiles);
   get('b-ai').addEventListener('click', openAiReview);
@@ -493,6 +497,7 @@ function bindEditorControls(scope) {
 
 function render() {
   renderBar();
+  teachingFeature.beginRender();
   const main = $('main');
   const editing = state.view === 'editor' && state.current;
   const taskEditing = isEmbeddedTaskEditor();
@@ -500,10 +505,19 @@ function render() {
   workbenchBody.classList.toggle('is-task-editor', taskEditing);
   main.innerHTML = editing ? (taskEditing ? embeddedTaskEditorHtml() : editorHtml()) : homeHtml();
   if (editing) {
-    bindEditorControls(workbenchRoot);
-    bindEditor(main);
-    if (taskEditing) bindTaskDetailTabs(main);
+    // 「AIと編集」のときは工程の編集器そのものを描いていないので、その操作は結び付けない。
+    const teachingCard = taskEditing && state.execution.editing;
+    if (!teachingCard) {
+      bindEditorControls(workbenchRoot);
+      bindEditor(main);
+    }
+    if (taskEditing) {
+      bindTaskDetailTabs(main);
+      const back = main.querySelector('[data-edit-back]');
+      if (back) back.addEventListener('click', () => stopEditing());
+    }
   } else bindHome(main);
+  teachingFeature.endRender();
 }
 
 function renderBar() {
@@ -553,11 +567,10 @@ function homeHtml() {
     ? '<div class="row"><button type="button" class="primary" id="h-ai-draft">AIで下書き</button><button type="button" id="h-new">手動で作成</button></div>'
     : '';
   const selectedTask = selectedExecutionMachine();
-  // 新しいタスク（作成中）は、選択中の定義があってもその詳細ではなく作成の画面を出す。
+  // 「タスク」のホームタブは、定義がまだ無いもの（新しいタスク・作成中の下書き）の画面。
+  // 定義があるタスクは実行詳細（概要 / 手順 / 履歴）で開く。
   const homeContent = state.homeTab === 'teach'
-    ? (embedded && selectedTask && !teachingFeature.isCreating()
-      ? taskDetailShellHtml(selectedTask, 'teach', teachingFeature.detailHtml())
-      : teachingFeature.html())
+    ? teachingFeature.html()
     : state.homeTab === 'run' ? executionHtml()
     : state.homeTab === 'flows'
       ? flowFeature.html()
@@ -670,20 +683,18 @@ function bindHome(main) {
 function bindTaskDetailTabs(main) {
   for (const button of main.querySelectorAll('[data-task-tab]')) button.addEventListener('click', async () => {
     const tab = button.dataset.taskTab;
-    if (tab === state.execution.detailTab && !(tab === 'steps' && state.view !== 'editor')) return;
+    if (tab === state.execution.detailTab && !state.execution.editing && !(tab === 'steps' && state.view !== 'editor')) return;
     const machine = selectedExecutionMachine();
     if (!machine) return;
     if (state.view === 'editor' && state.current?.dirty
       && !confirm('保存していない変更があります。別のタブへ移動しますか？')) return;
     if (tab === 'steps') {
+      state.execution.editing = false;
       if (machine.kind === 'statemachine') await openMachine(machine.machine);
       return;
     }
-    if (tab === 'teach') {
-      if (machine.kind === 'statemachine') await openTeaching(machine.machine);
-      return;
-    }
     cancelAi(state.aiReview);
+    state.execution.editing = false;
     state.view = 'home';
     state.current = null;
     state.homeTab = 'run';
@@ -707,15 +718,25 @@ function goRun(machine) {
 }
 
 // 実行詳細から「AIに変更を相談」。教示画面をそのタスクで開く（今の版はそのまま実行できる）。
+// 定義があるタスクを AI と編集する（「手順」タブの編集面を開く）。定義がまだ無いものは
+// 作成の続き（teachingFeature の画面）で開く。
 async function openTeaching(machine) {
-  if (!machine) return;
+  const name = String(machine || '').replace(/^machine:/, '');
+  if (!name) return;
+  if (embedded && state.machines.some((item) => item.machine === name)) {
+    state.homeTab = 'run';
+    state.execution.selected = `machine:${name}`;
+    state.execution.detailTab = 'steps';
+    state.execution.editing = true;
+    await openMachine(name);
+    return;
+  }
   state.view = 'home';
   state.current = null;
   state.homeTab = 'teach';
-  if (embedded) state.execution.detailTab = 'teach';
   render();
   await teachingFeature.activate();
-  await teachingFeature.select(String(machine).replace(/^machine:/, ''));
+  await teachingFeature.select(name);
 }
 
 function scheduleLabel(schedule) {
@@ -742,6 +763,8 @@ const teachingFeature = window.createTeachingFeature({
   refresh: render,
   guard,
   escape: esc,
+  // 定義ができた下書きから「手順を見る」
+  edit: (machine) => openMachine(machine),
   // 親へ「いまこのタスクの会話を出している」を伝える。親は自分の端末ミラーを slot に載せる。
   view: (detail) => {
     if (!embedded) return;
@@ -812,26 +835,50 @@ function taskDetailTabsHtml(machine, activeTab) {
   return `<nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
     <button type="button" role="tab" id="task-tab-overview" aria-controls="task-tab-panel" data-task-tab="overview" aria-selected="${activeTab === 'overview'}" class="${activeTab === 'overview' ? 'is-on' : ''}">概要</button>
     ${machine.kind === 'statemachine' ? `<button type="button" role="tab" id="task-tab-steps" aria-controls="task-tab-panel" data-task-tab="steps" aria-selected="${activeTab === 'steps'}" class="${activeTab === 'steps' ? 'is-on' : ''}">手順</button>` : ''}
-    ${embedded && machine.kind === 'statemachine' ? `<button type="button" role="tab" id="task-tab-teach" aria-controls="task-tab-panel" data-task-tab="teach" aria-selected="${activeTab === 'teach'}" class="${activeTab === 'teach' ? 'is-on' : ''}">AI相談</button>` : ''}
     <button type="button" role="tab" id="task-tab-history" aria-controls="task-tab-panel" data-task-tab="history" aria-selected="${activeTab === 'history'}" class="${activeTab === 'history' ? 'is-on' : ''}">履歴</button>
   </nav>`;
 }
 
-function taskDetailShellHtml(machine, activeTab, content, { editor = false } = {}) {
+function taskDetailShellHtml(machine, activeTab, content, { editor = false, teaching = false } = {}) {
   const presentation = taskPresentation(machine);
   const teachAction = !embedded && presentation.present
     ? '<button type="button" data-run-teach>AIに変更を相談</button>'
     : '';
   const header = `<header class="execution-title">${presentation.header}${teachAction ? `<div class="row">${teachAction}</div>` : ''}</header>`;
-  return `<div class="task-detail-shell${editor ? ' is-editor' : ''}">${header}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
+  return `<div class="task-detail-shell${editor ? ' is-editor' : ''}${teaching ? ' is-teaching' : ''}">${header}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
+}
+
+// 「手順」タブで「編集」を押した状態。AI との会話（端末）は親が slot へ入れる。
+// 枠は概要の手動実行・定期実行と同じ .execution-card。
+function editingCardHtml(machine) {
+  return `<section class="execution-card">
+    <div class="execution-card-head"><h3>AIと編集</h3><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
+    ${teachingFeature.editorSlotHtml(machine)}
+  </section>`;
 }
 
 function embeddedTaskEditorHtml() {
   const machine = selectedExecutionMachine();
+  if (!machine) return editorHtml();
+  if (state.execution.editing) return taskDetailShellHtml(machine, 'steps', editingCardHtml(machine), { editor: true, teaching: true });
   const controls = editorControlsHtml();
-  return machine
-    ? taskDetailShellHtml(machine, 'steps', `<div class="embedded-editor-toolbar"><div class="bar-center">${controls.center}</div><div class="bar-right">${controls.right}</div></div><div class="embedded-task-editor">${editorHtml()}</div>`, { editor: true })
-    : editorHtml();
+  return taskDetailShellHtml(machine, 'steps', `<div class="embedded-editor-toolbar"><div class="bar-center">${controls.center}</div><div class="bar-right">${controls.right}</div></div><div class="embedded-task-editor">${editorHtml()}</div>`, { editor: true });
+}
+
+// 「編集」: AI と手順を直す。手で直した未保存の変更は AI の書き換えで消えるので先に確かめる。
+function startEditing() {
+  if (state.current && state.current.dirty
+    && !confirm('保存していない変更があります。AI との編集に移ると失われます。続けますか？')) return;
+  state.execution.editing = true;
+  render();
+}
+
+// 「工程に戻る」: AI が書き換えた定義を読み直してから工程へ戻る。
+async function stopEditing() {
+  const machine = selectedExecutionMachine();
+  state.execution.editing = false;
+  if (machine && machine.machine) await openMachine(machine.machine);
+  else render();
 }
 
 function executionHtml() {
@@ -1998,20 +2045,25 @@ async function navigateEmbedded(payload) {
   const wanted = String(payload.selected || '');
   const selectedTask = wanted ? machines.find((machine) => taskIdentity(machine) === wanted
     || taskIdentity(machine) === `machine:${wanted}` || (machine.machine && machine.machine === wanted.replace(/^machine:/, ''))) : null;
-  const teachesTask = payload.action === 'new' || payload.action === 'teach'
+  // 「編集」（action: teach）は、定義があれば手順タブの編集面、無ければ作成の続きを開く。
+  if (payload.action === 'teach' && payload.selected) {
+    teachingFeature.cancelCreate();
+    await teachingFeature.activate();
+    await openTeaching(payload.selected);
+    return;
+  }
+  // 定義がまだ無いもの（新しいタスク・作成中の下書き）は、ホームタブの作成画面で開く。
+  const teachesTask = payload.action === 'new'
     || (!selectedTask && (!!payload.selected || !machines.length));
   state.homeTab = teachesTask ? 'teach' : 'run';
   if (teachesTask) {
-    if (selectedTask && payload.action !== 'new') {
-      state.execution.selected = taskIdentity(selectedTask);
-      state.execution.detailTab = 'teach';
-    }
     await teachingFeature.activate();
     if (payload.action === 'new') teachingFeature.create();
     else if (payload.selected) await teachingFeature.select(String(payload.selected).replace(/^machine:/, ''));
     else render();
     return;
   }
+  teachingFeature.cancelCreate();
 
   if (selectedTask) {
     const identity = taskIdentity(selectedTask);

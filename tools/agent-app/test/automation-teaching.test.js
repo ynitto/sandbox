@@ -128,6 +128,8 @@ test('タスクの会話は agent-app の会話基盤で開き、見本の記録
   assert.match(ipc, /const hostPath = host\.toHostPath\(saved\.file\)/, '記録の所在は WSL 表記へ直してから AI へ');
   assert.match(ipc, /agentCli\.resolvePath\('playwright-cli'\)/, '見本を取る道具はこの端末の PATH で見る');
   assert.match(renderer, /api\.termOpen\(session\.id/);
+  assert.match(renderer, /else if \(state\.editing\) \{ await startTeaching\(token\); return; \}/, '編集に入ったら押させずに AI を起こす');
+  assert.ok(!renderer.includes("$('task-open')"), '「相談を始める」ボタンは持たない');
   assert.match(renderer, /api\.automation\.recordingStart\(/);
   assert.match(renderer, /api\.automation\.teachDemonstration\(/);
   assert.match(renderer, /TeachingProtocol\.parseRecordRequest\(message && message\.text\)/, 'AI の @record 行で見本のカードを開く');
