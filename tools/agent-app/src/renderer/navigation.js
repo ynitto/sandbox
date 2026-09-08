@@ -28,22 +28,18 @@
     const machineOf = (task) => String(task.machine || String(task.id || '').replace(/^machine:/, ''));
     const machines = new Set(base.map(machineOf));
     const sessions = (Array.isArray(teaching) ? teaching : []).filter((item) => item && item.machine);
-    // 定義があるタスクは実行できるまま。AIとの変更が進んでいれば、その進み具合（change）だけを添える。
-    const changes = new Map(sessions
-      .filter((item) => machines.has(String(item.machine)) && item.status && item.status !== 'ready')
-      .map((item) => [String(item.machine), item.status]));
-    const published = changes.size ? base.map((task) => (changes.has(machineOf(task)) ? { ...task, change: changes.get(machineOf(task)) } : task)) : base;
-    // 定義がまだ無い下書きだけを、教示中の項目として一覧に足す。
+    // 定義がまだ無い下書き（AI との会話の途中）だけを、教示中の項目として一覧に足す。
+    // 定義があるタスクは会話の途中でも実行できるので、そのまま。
     const drafts = sessions
       .filter((item) => !machines.has(String(item.machine)))
       .map((item) => ({
         id: `machine:${item.machine}`,
         machine: item.machine,
         name: item.title || item.machine,
-        teachingStatus: item.status || 'draft',
+        teachingStatus: 'draft',
         teaching: true,
       }));
-    return drafts.length ? [...published, ...drafts] : published;
+    return drafts.length ? [...base, ...drafts] : base;
   }
 
   const navigation = { AREAS, normalizeArea, areaInfo, taskItems };

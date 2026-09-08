@@ -22,12 +22,6 @@ const FILES = [
   ['mermaid/dist/mermaid.min.js', 'mermaid.min.js'],
   ['diff2html/bundles/js/diff2html-ui.min.js', 'diff2html-ui.min.js'],
   ['diff2html/bundles/css/diff2html.min.css', 'diff2html.min.css'],
-  ['statemachine-maker/src/renderer/styles.css', 'statemachine/styles.css'],
-  ['statemachine-maker/src/renderer/editor-host.js', 'statemachine/editor-host.js'],
-  ['statemachine-maker/src/renderer/workbench-element.js', 'statemachine/workbench-element.js'],
-  ['statemachine-maker/src/renderer/flow.js', 'statemachine/flow.js'],
-  ['statemachine-maker/src/renderer/teaching.js', 'statemachine/teaching.js'],
-  ['statemachine-maker/src/renderer/renderer.js', 'statemachine/renderer.js'],
 ];
 
 // highlight.js の追加言語（highlight.min.js の同梱セットに無いもの）

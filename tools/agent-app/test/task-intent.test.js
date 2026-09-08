@@ -52,7 +52,7 @@ test('教示中の下書きを実行可能なタスクと重複せず一覧へ�
   ]);
 });
 
-test('定義があるタスクはAIとの変更が進んでいても実行できる項目のまま、変更中の印だけを添える', () => {
+test('定義があるタスクはAIとの会話が進んでいても実行できる項目のまま（下書きの印を重ねない）', () => {
   const { taskItems } = require('../src/renderer/navigation');
   const tasks = [
     { id: 'machine:report', machine: 'report', name: '月次レポート' },
@@ -60,11 +60,11 @@ test('定義があるタスクはAIとの変更が進んでいても実行でき
     { id: 'entry:abc', kind: 'prompt', name: '定期レビュー' },
   ];
   const items = taskItems({ tasks }, [], [
-    { machine: 'report', title: '月次レポート', status: 'needs-trial', published: true },
+    { machine: 'report', title: '月次レポート', status: 'draft', published: true },
     { machine: 'check', title: 'リリース確認', status: 'ready', published: true },
   ]);
   assert.deepStrictEqual(items, [
-    { id: 'machine:report', machine: 'report', name: '月次レポート', change: 'needs-trial' },
+    { id: 'machine:report', machine: 'report', name: '月次レポート' },
     { id: 'machine:check', machine: 'check', name: 'リリース確認' },
     { id: 'entry:abc', kind: 'prompt', name: '定期レビュー' },
   ]);

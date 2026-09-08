@@ -735,7 +735,7 @@ hook は `agent-loop hook-event` を呼び、`~/.agents/loop-hooks/<instance-id>
 #### 3.9 リポジトリ実行 UI 境界
 
 `inspect` / `schedule` / `log` の 3 コマンドが、リポジトリ単位で「何が実行できて、いまどう
-なっているか」を出す機械可読の境界です。GUI（agent-app / statemachine-maker）は
+なっているか」を出す機械可読の境界です。GUI（agent-app）は
 この 3 コマンドだけを使い、設定ファイルの探索も
 `.statemachine/` の走査も自前では行いません。設定の探索順、エントリの正規化、実行、履歴の
 所在をここに集めるためで、画面に見えるタスクと agent-loop が実際に動かすタスクがずれません。

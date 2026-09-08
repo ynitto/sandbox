@@ -25,14 +25,14 @@
 :host .task-detail-shell.is-editor { height: 100%; padding-top: 20px; box-sizing: border-box; grid-template-rows: auto auto minmax(0, 1fr); }
 :host .task-detail-shell.is-editor .task-detail-tabs { background: var(--card); }
 :host .task-detail-shell.is-editor .task-tab-panel { min-height: 0; display: grid; grid-template-rows: 52px minmax(0, 1fr); }
+/* AI と編集: 工程の代わりに会話（端末ミラー）を 1 枚のカードで出す。カードが残りの高さを使う。 */
+:host .task-detail-shell.is-teaching .task-tab-panel { grid-template-rows: minmax(0, 1fr); padding-bottom: 12px; }
+:host .task-detail-shell.is-teaching .execution-card { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 :host .embedded-editor-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding-inline: 16px; background: var(--card); border: 1px solid var(--line); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; }
 :host .embedded-editor-toolbar .bar-center { justify-content: start; }
 :host .embedded-editor-toolbar .bar-center .title-input { text-align: left; }
 :host .embedded-task-editor,
 :host .embedded-task-editor > .editor-shell { min-height: 0; height: 100%; }
-:host .teaching-tab-head { display: grid; gap: 3px; }
-:host .teaching-tab-head h3 { font-size: 15px; }
-:host .teaching-tab-head p { margin: 0; color: var(--muted); font-size: 12.5px; }
 @media (max-width: 760px) {
   :host *, :host *::before, :host *::after { min-width: 0; }
 }

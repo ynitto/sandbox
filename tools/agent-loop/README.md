@@ -152,7 +152,7 @@ agent-loop --version
   `next_state.py` が確定します。終了時に `RESULT {json}` を 1 行出力します
   （dashboard はこの行を実行結果の契約として読みます）。`--workflow` は作業ディレクトリ
   内のパスに限ります（dashboard からは cwd 相対で渡されます）。
-- `inspect` / `schedule` / `log` は statemachine-maker などの薄い管理画面向け境界です。
+- `inspect` / `schedule` / `log` は agent-app のタスク画面などの薄い管理画面向け境界です。
   `inspect` はリポジトリ内のワークフロー・単純な予定・次回時刻・実行履歴・daemon状態をまとめて返します。
   `schedule` は毎日・毎週・一定間隔だけを検査してから設定ファイルへ原子的に保存し、稼働中daemonへ
   reloadを要求します。`log` は履歴の `workflow` と `runId` で照合し、リポジトリ内の対応ログだけを返します。

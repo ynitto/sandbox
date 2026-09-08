@@ -3,7 +3,11 @@
 // 端末ミラー。main が tmux capture-pane で取った画面（色付き）を xterm に描き、
 // キー入力を tmux send-keys へ返す。xterm は「表示とキーボード」だけで、
 // 端末の状態（スクロールバック・カーソル）は tmux 側が正。
+//
+// 画面には端末ミラーが 2 つある（会話と、タスクを AI と作る会話）。それぞれが自分の
+// 会話 ID と xterm を持つので、createTerm() で作った実体を別々に持つ。
 (function initTerm() {
+function createTerm() {
   const state = {
     id: '', term: null, fit: null, host: null, ro: null, cols: 120, rows: 36, lastSize: '', screenSeq: 0,
     inputEnabled: false, onFocus: null, onAccepted: null, onError: null, onEscape: null,
@@ -118,8 +122,13 @@
     state.onEscape = handlers.onEscape || null;
   }
 
-  window.Term = {
+  return {
     attach, detach, applyScreen, refit, size, focus, sendKey: sendData, setInputEnabled, configure,
     current: () => state.id,
   };
+}
+
+  window.createTerm = createTerm;
+  window.Term = createTerm();          // 会話の端末ミラー
+  window.TaskTerm = createTerm();      // タスクを AI と作る会話の端末ミラー
 })();

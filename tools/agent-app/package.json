@@ -1,7 +1,7 @@
 {
   "name": "agent-app",
   "version": "0.2.0",
-  "description": "GitHub Copilot App 風のデスクトップ。agents/*.json の CLI 定義（copilot / claude / codex / kiro …）を tmux 上で対話起動し、ローカルリポジトリに対して会話形式で動かす Electron アプリ。リポジトリのツリー・コード・Markdown（Mermaid）ビュアー付き",
+  "description": "GitHub Copilot App 風のデスクトップ。agents/*.json の CLI 定義（copilot / claude / codex / kiro …）を tmux 上で対話起動し、ローカルリポジトリに対して会話形式で動かす Electron アプリ。同じリポジトリのタスク（statemachine-use で動くステートマシン）とワークフロー（agent-flow）も、AI との tmux 会話で作って実行できる",
   "author": "sandbox",
   "license": "MIT",
   "main": "src/main/main.js",
@@ -17,7 +17,7 @@
     "predist:portable": "node scripts/check-dist.js"
   },
   "dependencies": {
-    "statemachine-maker": "file:../statemachine-maker"
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@highlightjs/cdn-assets": "11.12.0",
@@ -26,7 +26,7 @@
     "diff2html": "3.4.56",
     "dompurify": "3.4.14",
     "electron": "43.6.0",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "26.15.3",
     "marked": "18.0.11",
     "mermaid": "11.17.2"
   },
@@ -39,10 +39,7 @@
     "files": [
       "src/**/*",
       "package.json",
-      "node_modules/statemachine-maker/package.json",
-      "node_modules/statemachine-maker/src/main/**/*",
-      "node_modules/yaml/**",
-      "!node_modules/statemachine-maker/{assets,test,docs,src/renderer,node_modules}/**"
+      "node_modules/yaml/**"
     ],
     "win": {
       "icon": "assets/icon.ico",

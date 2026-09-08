@@ -7,6 +7,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: statemachine-maker を統合し、タスクの作成・変更を AI との tmux 会話にする
+
+独立版の statemachine-maker を agent-app へ完全に統合した（`tools/statemachine-maker` は廃止）。
+main は `src/main/automation/`（旧 `ipc.js` は `handlers.js`）、renderer は `src/renderer/automation/`、
+テストは `test/automation-*.test.js`。`file:` リンク・vendor への写し・Host Adapter（`editor-host.js`）は
+無くなり、本番依存は `yaml` だけ。CI は `agent-app` ジョブ（`npm install --ignore-scripts` → `npm run vendor`
+→ `npm test`）に置き換えた。決定記録:
+[docs/plans/2026-09-08-agent-app-statemachine-maker-consolidation-tmux-teaching-design.md](docs/plans/2026-09-08-agent-app-statemachine-maker-consolidation-tmux-teaching-design.md)、
+設計書の ADR-9。
+
+- **タスクの作成・変更は tmux の端末ミラーの中で進める。** 手動実行の画面と同じ埋め込みで、会話と同じ CLI が
+  リポジトリで起動する（`kind: 'task'` の会話。保存名に紐づき、会話一覧には出ない）。最初の依頼が保存先
+  `.statemachine/<名前>/`、`statemachine-use` の作成モード、`--dry-run` の検証、見本の頼み方を伝え、AI が
+  定義を直接書く。定義があれば「利用可能」。確認は「概要」の実行と構成確認で行い、分離した試運転と承認の
+  往復（`teaching-model` / `teaching-store` / `teaching-trial` / `approval-policy`、`ai:start` の `teach`）は撤去した。
+  状態語は 利用可能 / 下書き の 2 つ。
+- **見本の記録はこの端末で取り、AI には `@record` の 1 行で頼ませる。** AI が `@record browser <URL>` /
+  `@record windows <アプリ名>` と返すと「操作の見本」のカードが開く。記録（`playwright-cli` / `winauto`）は
+  agent-app 自身が起こし（Windows では Windows 側。AI は WSL の tmux にいる）、できた Markdown
+  （`.statemachine/<名前>/recordings/`）の所在を WSL 表記へ直して会話へ送る（`automation:teach:demonstration`）。
+  依頼文では「自分では記録を起こさない」と伝え、見本を取れる道具の有無も伝える。
+- **タスクは 概要 / 手順 / 履歴 の 3 タブに戻し、AI との編集は「手順」の「編集」から開く。** 「AI相談」の
+  タブは無くなった。「編集」を押すとその場に「AIと編集」のカード（概要の手動実行・定期実行と同じ
+  `.execution-card`）が出て、押した時点で AI が起動する（相談を始めるボタンは無い）。「‹ 工程に戻る」で
+  工程へ戻り、そのとき AI が書き換えた定義を読み直す。カードの中の端末は白い面の中身なので枠と影を
+  持たない。新しいタスクの作成は「新しいワークフローを教える」と同じ `.blank.teaching-create`。
+- 共有ワークベンチの作成・編集の置き場は、見出しと `<slot name="teaching">` だけを描き、会話の実体
+  （端末ミラー `TaskTerm`・入力 2 モード・見本のカード・作成フォーム）は親の `taskTeaching.js` が光の DOM で
+  持つ。`term.js` は `createTerm()` の工場になった。会話からの「この依頼をタスクにする」は作成フォームへ本文を
+  引き継ぐ。
+- 新しい IPC: `automation:teach:start` / `teach:session` / `teach:demonstration`。無くなった IPC:
+  `automation:teaching:create` … `restore`。`automation:teaching:list` は定義がまだ無い下書きだけを返す。
+- **タスクの相談画面を会話画面と同じ形に揃えた。** 端末ミラーと入力欄を独自のクラスで作り直して
+  いたのをやめ、会話画面と同じ `.terminal-stage` / `.composer-shell` をそのまま使う（色・角丸・影の
+  直値の複製を消し、`--term-line` をトークンにした）。ワークベンチと親の両方が出していた見出しと
+  説明を 1 か所に寄せ、「AI相談」タブはタブ名とタスク名だけで始める。見本のカードは警告色をやめて
+  ふつうの面にし、仕組みの説明は画面から外して README に置く（足りない道具の 1 行だけ出す）。
+  保存名は「（任意）」の 1 行に畳んだ。規則はリポジトリ直下の `CLAUDE.md`、機械検査は
+  `tools/agent-app/test/ui-consistency.test.js`。
+- **「タスク」を最初に開いたときに固まらない。** 共有ワークベンチの初期化とナビゲーションが AI の一覧
+  （`agent-herd defs`）と実行状態（`agent-loop inspect`）の返事を待ってから描いていて、Windows では
+  どちらも WSL 越しで数秒〜タイムアウトまで「画面を切り替えています…」のままだった。待つのは手元の
+  ファイル（定義の一覧・設定）だけにし、AI の一覧と実行状態は裏で取りに行って届いたら描き直す
+  （リポジトリを移っていたら捨てる。入力中は描き直さない）。定義があるタスクは実行状態の到着前から
+  詳細を出し、定期実行の欄に「実行状態を確認しています…」と出す。擬似の遅いホスト（各 8 秒）で、
+  タスク画面は約 0.1 秒で出る。
+
 ### agent-app: 起動時にホストと git を待たない・ファイル探索を非同期と索引にする・`herd` を選べる
 
 Windows でリポジトリを登録すると起動が重かった。原因はフォルダ探索そのものより **待ち順と同期 I/O**

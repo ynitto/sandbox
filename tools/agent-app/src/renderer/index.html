@@ -97,7 +97,7 @@
         <section id="conversation-start" class="conversation-start">
           <div id="conversation-start-content" class="empty-state"></div>
         </section>
-        <section id="terminal-stage" hidden>
+        <section id="terminal-stage" class="terminal-stage" hidden>
           <div class="terminal-head">
             <span id="term-agent" class="terminal-agent"></span>
             <span id="term-name" class="sub"></span>
@@ -228,7 +228,83 @@
       <div id="automation-content">
         <div id="automation-loading" class="workspace-loading" role="status" aria-live="polite" hidden>画面を切り替えています…</div>
         <statemachine-workbench id="automation-workbench" data-statemachine-workbench embedded
-          stylesheet="vendor/statemachine/styles.css" host-stylesheet="automation-workbench.css"></statemachine-workbench>
+          stylesheet="automation/styles.css" host-stylesheet="automation-workbench.css">
+          <!-- タスクを AI と作る会話（tmux の端末ミラー）。共有ワークベンチの <slot name="teaching"> に載る -->
+          <!-- タスクを AI と相談する面。見出しと説明はワークベンチ側が持つので、ここには置かない。
+               端末と入力欄は会話画面と同じ .terminal-stage / .composer-shell を使う。 -->
+          <div slot="teaching" id="task-teaching" hidden>
+            <section id="task-create" hidden>
+              <label class="sr-only" for="task-purpose">自動化したいこと</label>
+              <textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea>
+              <div class="task-actions">
+                <label class="sub" for="task-machine">保存名（任意）</label>
+                <input id="task-machine" placeholder="目的から決めます" size="18">
+                <span class="spacer"></span>
+                <span id="task-create-settings" class="sub"></span>
+                <button type="button" id="task-create-cancel">戻る</button>
+                <button type="button" id="task-create-start" class="primary">AIと作成を始める</button>
+              </div>
+              <p id="task-create-error" class="dlg-error" hidden></p>
+            </section>
+            <section id="task-workspace" hidden>
+              <p id="task-open-note" class="sub" hidden></p>
+              <section id="task-terminal" class="terminal-stage" hidden>
+                <div class="terminal-head">
+                  <span id="task-term-agent" class="terminal-agent"></span>
+                  <span id="task-phase" class="phase" hidden></span>
+                  <span id="task-term-name" class="sub"></span>
+                  <span class="spacer"></span>
+                  <button type="button" id="task-term-restart" class="small" hidden>再接続</button>
+                </div>
+                <div id="task-term-host"></div>
+              </section>
+              <div id="task-composer" class="composer-shell" hidden>
+                <div class="input-mode-switch" role="group" aria-label="入力先">
+                  <button type="button" id="task-mode-message" aria-pressed="true">メッセージ</button>
+                  <button type="button" id="task-mode-terminal" aria-pressed="false">端末操作</button>
+                  <span id="task-input-status" class="input-status" role="status" aria-live="polite"></span>
+                </div>
+                <div id="task-message-input">
+                  <label class="sr-only" for="task-prompt">AIへの返答</label>
+                  <textarea id="task-prompt" rows="3" placeholder="AI への返答や、変更したいこと"></textarea>
+                </div>
+                <div id="task-terminal-keys" class="terminal-keys" hidden>
+                  <button type="button" data-task-key="Escape">Esc</button>
+                  <button type="button" data-task-key="Tab">Tab</button>
+                  <button type="button" data-task-key="Enter" aria-label="端末へEnterキーを送る">Enter</button>
+                  <button type="button" data-task-key="Up">↑</button>
+                  <button type="button" data-task-key="Down">↓</button>
+                  <button type="button" data-task-key="Left">←</button>
+                  <button type="button" data-task-key="Right">→</button>
+                  <button type="button" data-task-key="C-c">Ctrl+C</button>
+                  <span class="terminal-key-focus">キーボード → CLI</span>
+                </div>
+                <div class="composer-toolbar" id="task-composer-toolbar">
+                  <button type="button" id="task-record-open" class="quiet" title="ブラウザや Windows アプリの操作を見本として記録し、AI へ渡す">操作の見本</button>
+                  <span class="spacer"></span>
+                  <span class="send-hint">Enterで送信</span>
+                  <button type="button" id="task-stop" class="danger action-button" hidden>停止</button>
+                  <button type="button" id="task-send" class="primary action-button">送信</button>
+                </div>
+              </div>
+              <section id="task-record" hidden aria-label="操作の見本">
+                <p id="task-record-request" class="task-record-request" hidden></p>
+                <div class="task-actions">
+                  <label for="task-record-source">見せる画面</label>
+                  <select id="task-record-source"><option value="browser">ブラウザ</option><option value="windows">Windowsアプリ</option></select>
+                  <label id="task-record-target-label" for="task-record-target">開始 URL</label>
+                  <input id="task-record-target" placeholder="https://…">
+                  <span class="spacer"></span>
+                  <button type="button" id="task-record-start" class="small primary">記録を始める</button>
+                  <button type="button" id="task-record-stop" class="small danger" hidden>終了してAIへ渡す</button>
+                  <button type="button" id="task-record-close" class="small quiet">閉じる</button>
+                </div>
+                <p id="task-record-message" class="sub" hidden></p>
+                <p id="task-record-note" class="sub" hidden></p>
+              </section>
+            </section>
+          </div>
+        </statemachine-workbench>
       </div>
     </section>
 
@@ -343,11 +419,12 @@
   <script src="files.js"></script>
   <script src="navigation.js"></script>
   <script src="taskIntent.js"></script>
-  <script src="vendor/statemachine/workbench-element.js"></script>
-  <script src="vendor/statemachine/editor-host.js"></script>
-  <script src="vendor/statemachine/teaching.js"></script>
-  <script src="vendor/statemachine/flow.js"></script>
-  <script src="vendor/statemachine/renderer.js"></script>
+  <script src="teachingProtocol.js"></script>
+  <script src="taskTeaching.js"></script>
+  <script src="automation/workbench-element.js"></script>
+  <script src="automation/teaching.js"></script>
+  <script src="automation/flow.js"></script>
+  <script src="automation/renderer.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
