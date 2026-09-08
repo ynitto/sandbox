@@ -27,6 +27,7 @@ const state = {
   root: '',
   machines: [],
   agents: [],
+  agentsLoading: false,   // AI 一覧（agent-herd defs）の返事待ち。空と「まだ聞いていない」を区別する
   catalog: { kinds: [], platform: '' },
   view: 'home',
   homeTab: 'teach',
@@ -98,12 +99,64 @@ function cancelAi(flow) {
 
 function agentOptions(preferred = '') {
   const selected = selectedAgent(preferred);
-  if (!state.agents.length) return '<option value="">利用できる AI がありません</option>';
+  // まだ聞いている途中（agent-herd defs は WSL の起動を伴う）と、聞いた結果 0 件とを区別する
+  if (!state.agents.length) return `<option value="">${state.agentsLoading ? '確認中…' : '利用できる AI がありません'}</option>`;
   return state.agents.map((name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
 }
 
+// ---- ホストへ聞く読み込み（遅い）-------------------------------------------------------
+//
+// AI 一覧（agent-herd defs）と実行情報（agent-loop inspect）は外部コマンドを起こす。
+// Windows では WSL の起動を伴い、1 回で何秒もかかる。**画面はこれを待たない**——手元の
+// ファイルで描けるところまで先に出し、届いたら描き直す（会話側の selectRepo と同じ作法）。
+//
+//   rootToken … フォルダを切り替えるたびに進める。遅れて届いた返事はここで捨てる
+//   inFlight  … 同じ読み込みが走っていれば相乗りする。1 回の遷移で agent-herd を
+//               何度も起こさない（navigate → selectRoot → init と重なるため）
+let rootToken = 0;
+const inFlight = new Map();
+
+function once(key, load) {
+  const running = inFlight.get(key);
+  if (running) return running;
+  const promise = Promise.resolve().then(load).finally(() => { inFlight.delete(key); });
+  inFlight.set(key, promise);
+  return promise;
+}
+
+// 裏の読み込みが届いたときの描き直し。文字を打っている最中に描き直すと、打っている欄から
+// focus が外れて入力が飛ぶ。そのときは離れるまで待つ（その間の表示は「確認中…」のまま）。
+function renderWhenIdle() {
+  const active = workbenchRoot.activeElement;
+  const typing = !!active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+  if (!typing) { render(); return; }
+  workbenchRoot.addEventListener('focusout', () => renderWhenIdle(), { once: true });
+}
+
+// 足りないものだけ裏で読み、届いたら描き直す。待たない。
+//   force … フォルダを切り替えた直後など、持っている内容を捨てて読み直すとき
+function refreshHostData({ force = false } = {}) {
+  const token = rootToken;
+  const after = () => { if (token === rootToken && state.view === 'home' && state.homeTab === 'run') renderWhenIdle(); };
+  // 相乗りは**同じフォルダの間だけ**。切り替えた後に前のフォルダの問い合わせへ相乗りすると、
+  // その返事は捨てられる（token 違い）のに新しい読み込みが始まらない。
+  if (force || (!state.agents.length && !state.agentsLoading)) {
+    state.agentsLoading = true;                    // AI の定義はフォルダが無くても聞ける
+    once(`agents:${token}`, loadAgents).then(after);
+  }
+  if (state.root && (force || !state.execution.snapshot)) {
+    state.execution.loading = true;
+    once(`execution:${token}`, loadExecutionSnapshot).then(after);
+  }
+}
+
 async function loadAgents() {
-  state.agents = (await guard('AI 一覧', () => automationHost.listAgents(state.root))) || [];
+  const token = rootToken;
+  state.agentsLoading = true;
+  const agents = (await guard('AI 一覧', () => automationHost.listAgents(state.root))) || [];
+  if (token !== rootToken) return;                 // 別のフォルダへ移った後の返事は捨てる
+  state.agents = agents;
+  state.agentsLoading = false;
   state.run.agent = selectedAgent(state.run.agent || state.config.agent);
 }
 
@@ -223,9 +276,11 @@ async function loadMachines() {
 }
 
 async function loadExecutionSnapshot() {
-  if (!state.root) { state.execution.snapshot = null; return; }
+  if (!state.root) { state.execution.snapshot = null; state.execution.loading = false; return; }
+  const token = rootToken;
   state.execution.loading = true;
   const snapshot = await guard('実行情報', () => automationHost.runSnapshot(state.root));
+  if (token !== rootToken) return;                 // 別のフォルダへ移った後の返事は捨てる
   state.execution.loading = false;
   state.execution.snapshot = snapshot || {
     available: false, machines: [], history: [], daemon: { running: false }, error: '実行情報を取得できませんでした',
@@ -321,14 +376,18 @@ async function selectRoot(root) {
   cancelAi(state.aiDraft);
   cancelAi(state.aiReview);
   state.root = root;
+  rootToken += 1;                       // 前のフォルダへ出した問い合わせの返事は捨てる
+  state.agents = [];
+  state.execution.snapshot = null;
   await guard('フォルダ', () => automationHost.selectRoot(root));
   // 教示一覧は定義一覧と一緒に読み直す（loadMachines）ので、片付けはその前に済ませる。
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
+  await loadMachines();
   if (state.homeTab === 'teach') await teachingFeature.activate();
-  render();
+  // 先に「読みに行った」印を立ててから描く（描いてからだと一瞬「未実行」が出る）
+  refreshHostData({ force: true });      // AI 一覧と実行情報は裏で読む（待たない）
+  render();                             // ここまでは手元のファイルだけで描ける
 }
 
 async function addFolder() {
@@ -340,9 +399,12 @@ async function addFolder() {
   state.root = cfg.lastRoot;
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
+  rootToken += 1;
+  state.agents = [];
+  state.execution.snapshot = null;
+  await loadMachines();
   if (state.homeTab === 'teach') await teachingFeature.activate();
+  refreshHostData({ force: true });
   render();
 }
 
@@ -356,9 +418,12 @@ async function removeFolder(root) {
   if (state.root === root) state.root = cfg.lastRoot;
   flowFeature.rootChanged();
   teachingFeature.rootChanged();
-  await Promise.all([loadMachines(), loadAgents()]);
-  await loadExecutionSnapshot();
+  rootToken += 1;
+  state.agents = [];
+  state.execution.snapshot = null;
+  await loadMachines();
   if (state.homeTab === 'teach') await teachingFeature.activate();
+  refreshHostData({ force: true });
   render();
 }
 
@@ -812,14 +877,17 @@ function embeddedTaskEditorHtml() {
 
 function executionHtml() {
   const machines = executionMachines();
-  if (state.execution.loading) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
+  // 実行情報（agent-loop inspect）を待つのは、定義からも何も出せないときだけ。定義があるなら
+  // 先に出して、履歴と定期実行は届いてから重ねる（「未実行」「予定なし」と混同しない）。
+  const pending = state.execution.loading && !state.execution.snapshot;
+  if (pending && !machines.length) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
   if (!machines.length) return '<div class="blank compact"><h2>実行できるワークフローがありません</h2><p>ワークフローを作成すると、ここから実行できます。</p></div>';
   const selected = selectedExecutionMachine() || machines[0];
   const list = machines.map((machine) => {
     const latest = (machine.history || [])[0];
-    const status = latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
+    const status = pending ? '確認中…' : latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
     const schedules = taskSchedules(machine);
-    const scheduleStatus = schedules.length
+    const scheduleStatus = pending ? '確認中…' : schedules.length
       ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length} 件の予定`
       : '予定なし';
     return `<button type="button" class="execution-item ${taskIdentity(machine) === taskIdentity(selected) ? 'is-on' : ''}" data-run-machine="${esc(taskIdentity(machine))}"><strong>${esc(machine.name)}</strong><span>${esc(taskKindLabel(machine))} · ${esc(status)} · ${esc(scheduleStatus)}</span></button>`;
@@ -1940,10 +2008,7 @@ async function navigateEmbedded(payload) {
   if (!embedded) return;
   if (initPromise) await initPromise;
   const latestConfig = await guard('設定', () => automationHost.getConfig());
-  if (latestConfig) {
-    state.config = latestConfig;
-    await loadAgents();
-  }
+  if (latestConfig) state.config = latestConfig;
   const area = payload.area === 'workflows' ? 'workflows' : 'tasks';
   const root = String(payload.root || '');
 
@@ -1954,9 +2019,14 @@ async function navigateEmbedded(payload) {
     state.root = '';
     state.machines = [];
     state.execution.snapshot = null;
+    state.execution.loading = false;    // 走っていた読み込みの返事は捨てるので、印も下ろす
+    rootToken += 1;
     flowFeature.rootChanged();
     teachingFeature.rootChanged();
   }
+  // タスク領域が要る「AI 一覧」と「実行情報」は、この先の描画を待たせずに裏で読む。
+  // 同じフォルダなら足りないものだけ、既に走っていれば相乗りする（refreshHostData）。
+  if (area === 'tasks') refreshHostData();
 
   if (area === 'workflows') {
     state.homeTab = 'flows';
@@ -2017,9 +2087,11 @@ async function init() {
   });
   window.addEventListener('beforeunload', (e) => { if (state.current && state.current.dirty) { e.preventDefault(); e.returnValue = ''; } });
   state.root = state.config.lastRoot || (state.config.roots || [])[0] || '';
-  await Promise.all([state.root ? loadMachines() : Promise.resolve(), loadAgents()]);
-  if (state.root) await loadExecutionSnapshot();
+  // 起動で待つのは手元のファイルで済むものだけ。AI 一覧と実行情報は裏で読む——
+  // ここで待つと、埋め込み先（agent-app）がタスク画面を出すのも同じだけ遅れる。
+  if (state.root) await loadMachines();
   if (state.root && state.homeTab === 'teach') await teachingFeature.activate();
+  refreshHostData();
   render();
 }
 

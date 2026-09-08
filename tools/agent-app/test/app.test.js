@@ -293,6 +293,36 @@ test('タスク一覧は定義を先に見せ、実行状態（ファイル実�
   assert.match(renderer, /pending \? '確認中…'/);
 });
 
+test('埋め込みワークベンチの初回表示も、AI 一覧と実行情報を待たない', () => {
+  // タスク画面は親（agent-app）の一覧と、埋め込んだワークベンチの両方が揃って初めて出る。
+  // 遅いのは外部コマンドを起こす 2 つ——AI 一覧（agent-herd defs）と実行情報（agent-loop
+  // inspect）で、Windows では WSL の起動を伴う。初回表示の経路はどちらも待たない。
+  const maker = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const bodyOf = (from, to) => {
+    const start = maker.indexOf(from);
+    const end = maker.indexOf(to, start);
+    assert.ok(start >= 0 && end > start, `${from} … ${to} が見つからない`);
+    return maker.slice(start, end);
+  };
+  for (const [label, body] of [
+    ['起動', bodyOf('async function init() {', 'initPromise = init();')],
+    ['親からの遷移', bodyOf('async function navigateEmbedded(payload) {', 'if (workbenchHost) workbenchHost.setController')],
+    ['フォルダの切り替え', bodyOf('async function selectRoot(root) {', 'async function addFolder()')],
+  ]) {
+    assert.doesNotMatch(body, /await\s+loadAgents\(/, `${label}が AI 一覧を待っている`);
+    assert.doesNotMatch(body, /await\s+loadExecutionSnapshot\(/, `${label}が実行情報を待っている`);
+    assert.match(body, /refreshHostData\(/, `${label}が裏読みを促していない`);
+  }
+  // 遅れて届いた返事は捨て（token）、同じ問い合わせには相乗りする（1 回の遷移で何度も起こさない）
+  assert.match(maker, /once\(`agents:\$\{token\}`, loadAgents\)/);
+  assert.match(maker, /once\(`execution:\$\{token\}`, loadExecutionSnapshot\)/);
+  assert.match(maker, /if \(token !== rootToken\) return;/);
+  // 届くまでは「未実行」「予定なし」「利用できる AI がありません」と混同しない
+  assert.match(maker, /const pending = state\.execution\.loading && !state\.execution\.snapshot;/);
+  assert.match(maker, /const status = pending \? '確認中…'/);
+  assert.match(maker, /state\.agentsLoading \? '確認中…' : '利用できる AI がありません'/);
+});
+
 test('タスク詳細は概要・手順・AI相談・履歴のタブに統一し、定期実行は概要で管理する', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
   assert.match(renderer, /detailTab:\s*'overview'/);
