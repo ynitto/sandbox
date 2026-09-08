@@ -314,10 +314,36 @@ test('埋め込みワークベンチの初回表示も、AI 一覧と実行状�
   }
   // 1 回の表示で重ねて呼ばれるので、同じリポジトリの問い合わせには相乗りする
   assert.match(maker, /if \(agentsInFlight && agentsInFlight\.root === state\.root\) return agentsInFlight\.promise;/);
+  // 待たずに読むものは、届いたときに描き直すところまでが 1 組。設定は実行方針とモデルの出どころ
+  assert.match(maker, /state\.config = latestConfig;\s*\n\s*renderIfIdle\(\);/, '遅れて届いた設定が画面に出ない');
   // 届くまでは「未実行」「予定なし」「利用できる AI がありません」と混同しない
   assert.match(maker, /const pending = state\.execution\.loading && !state\.execution\.snapshot;/);
   assert.match(maker, /const status = pending \? '確認中…'/);
   assert.match(maker, /state\.agentsLoading \? '確認中…' : '利用できる AI がありません'/);
+});
+
+test('初回のタスク画面は worktree の状態確認を待たない', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const selectRepo = renderer.slice(
+    renderer.indexOf('async function selectRepo(repo)'),
+    renderer.indexOf('// ---- 作業フォルダ'),
+  );
+  assert.match(selectRepo, /refreshWorktrees\(\{ token \}\);/, 'worktree の取得は裏で開始する');
+  assert.doesNotMatch(selectRepo, /await worktreesReady|await refreshWorktrees/, '初回表示を git worktree の確認で止めない');
+});
+
+test('タスク選択は設定保存より先に詳細へ伝え、ドラフトの見出しを即時に切り替える', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const selectItem = renderer.slice(
+    renderer.indexOf('async function selectAreaItem(area, id)'),
+    renderer.indexOf('// リポジトリを選ぶ。'),
+  );
+  assert.match(selectItem, /configReady = api\.saveConfig/);
+  assert.match(selectItem, /state\.config = \{ \.\.\.state\.config, lastTask \};/, '遅れて届く実行状態も現在の選択を維持する');
+  assert.match(selectItem, /renderAreaContext\(\);[\s\S]*syncAutomationWorkbench\(\);[\s\S]*await configReady;/,
+    '選択表示と詳細の切替は設定保存を待たない');
+  assert.doesNotMatch(selectItem, /state\.config = await api\.saveConfig[\s\S]*syncAutomationWorkbench/);
+  assert.match(selectItem, /token === state\.selectionToken/, '前の項目の保存結果で現在の選択状態を戻さない');
 });
 
 test('タスク詳細は概要・手順・履歴のタブに統一し、AI との編集は手順タブの「編集」で開く', () => {

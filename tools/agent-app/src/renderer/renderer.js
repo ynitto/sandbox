@@ -14,6 +14,7 @@ const state = {
   sessions: [],
   tasks: [],
   taskToken: 0,          // タスク一覧の読み込みのたびに進める。遅れて届いた実行状態を捨てる印
+  selectionToken: 0,     // 項目を続けて選んだとき、古い設定保存の返事で表示状態を戻さない印
   taskStatusPending: false, // 定義は出したが、実行状態（ファイル実体の確認を伴う）はまだ重ねていない
   workflows: [],
   workflowRuns: [],
@@ -413,16 +414,24 @@ async function handleAutomationEvent(payload) {
 }
 
 async function selectAreaItem(area, id) {
+  const token = (state.selectionToken += 1);
+  let configReady;
   if (area === 'tasks') {
     state.selectedTask = id;
-    state.config = await api.saveConfig({ lastTask: { ...(state.config.lastTask || {}), [state.repo]: id } });
+    const lastTask = { ...(state.config.lastTask || {}), [state.repo]: id };
+    state.config = { ...state.config, lastTask };
+    configReady = api.saveConfig({ lastTask });
   } else {
     state.selectedWorkflow = id;
-    state.config = await api.saveConfig({ lastWorkflow: { ...(state.config.lastWorkflow || {}), [state.repo]: id } });
+    const lastWorkflow = { ...(state.config.lastWorkflow || {}), [state.repo]: id };
+    state.config = { ...state.config, lastWorkflow };
+    configReady = api.saveConfig({ lastWorkflow });
   }
   renderAreaContext();
   syncAutomationWorkbench();
   setSidebar(false);
+  const saved = await configReady;
+  if (token === state.selectionToken) state.config = saved;
 }
 
 // リポジトリを選ぶ。**ホストに聞くもの（CLI の有無・git worktree）を待たずに画面を出す。**
@@ -448,7 +457,9 @@ async function selectRepo(repo) {
       renderRunSettingsSummary();
     })
     : Promise.resolve();
-  const worktreesReady = refreshWorktrees({ token });
+  // git worktree の確認は Windows / WSL では数秒かかることがある。初回の領域表示を
+  // ここで止めず、一覧が届いた時点で作業フォルダ欄だけを更新する。
+  refreshWorktrees({ token });
   renderRepos();
   renderAgents();
   newDraft();
@@ -456,7 +467,6 @@ async function selectRepo(repo) {
   await loadAreaItems();
   syncAutomationWorkbench();
   if (state.changesOpen) refreshChanges();
-  await worktreesReady;
 }
 
 // ---- 作業フォルダ（git worktree） -------------------------------------------
