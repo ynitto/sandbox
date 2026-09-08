@@ -141,6 +141,9 @@ function sessionPath(userData, id) {
 //   live                   … tmux で今動いている CLI の起動条件 { cli, model, readonly }（無ければ null）
 // 以前の形（cliSession 1 つ）はここで cliSessions へ写す。
 function normalizeSession(sess) {
+  // kind … 'conversation'（既定）| 'task'（タスクを AI と作る会話。task.machine に紐づく）
+  sess.kind = sess.kind === 'task' ? 'task' : 'conversation';
+  sess.task = sess.kind === 'task' && sess.task && typeof sess.task === 'object' ? { machine: String(sess.task.machine || '') } : null;
   if (!sess.cliSessions || typeof sess.cliSessions !== 'object') sess.cliSessions = {};
   if (sess.cliSession && !sess.cliSessions[sess.cli]) {
     sess.cliSessions[sess.cli] = { id: String(sess.cliSession), seen: (sess.messages || []).length };
@@ -183,17 +186,20 @@ function writeSession(userData, sess) {
 
 // worktree … 作業フォルダの名前（'' はリポジトリ本体）。作ったあとは変えない——
 // tmux セッションの cwd も CLI 側の文脈もそこで始まっているため。
-function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '' }) {
+// kind / task … タスクを AI と作る会話（kind: 'task'）は task.machine に紐づき、会話一覧には出ない。
+function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
+  if (kind === 'task' && !(task && task.machine)) throw new Error('タスクの会話には保存名が要ります');
   const now = new Date().toISOString();
-  return writeSession(userData, {
+  return writeSession(userData, normalizeSession({
     id: crypto.randomUUID(), repo: String(repo), cli: String(cli), model: String(model || ''),
+    kind: kind === 'task' ? 'task' : 'conversation', task: kind === 'task' ? { machine: String(task.machine) } : null,
     readonly: Boolean(readonly), autoApprove: Boolean(autoApprove), policy: String(policy || 'direct'), tier: String(tier || ''),
     transport: transport === 'headless' ? 'headless' : 'tmux',
     worktree: String(worktree || ''), branch: String(branch || ''),
     title: '', cliSessions: {}, live: null, terminalSession: null, terminalSnapshots: [], messages: [], createdAt: now, updatedAt: now,
-  });
+  }));
 }
 
 // 会話をぜんぶ読む（添付の掃除など、中身が要るとき）
@@ -219,6 +225,7 @@ function sessionSummary(file) {
   const s = JSON.parse(fs.readFileSync(file, 'utf8'));
   const summary = {
     id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly,
+    kind: s.kind === 'task' ? 'task' : 'conversation', machine: s.kind === 'task' && s.task ? String(s.task.machine || '') : '',
     policy: s.policy || 'direct', tier: s.tier || '',
     transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
     title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
@@ -227,7 +234,8 @@ function sessionSummary(file) {
   return summary;
 }
 
-function listSessions(userData, repo) {
+// kind … 'conversation'（既定。会話一覧）| 'task'（タスクの会話）| '' （両方）
+function listSessions(userData, repo, { kind = 'conversation' } = {}) {
   let names;
   try { names = fs.readdirSync(sessionsDir(userData)); } catch { return []; }
   const out = [];
@@ -239,11 +247,18 @@ function listSessions(userData, repo) {
     try {
       const s = sessionSummary(file);
       if (repo && s.repo !== repo) continue;
+      if (kind && s.kind !== kind) continue;
       out.push({ ...s });
     } catch { /* 壊れたファイルは一覧に出さない */ }
   }
   for (const file of summaryCache.keys()) if (path.dirname(file) === sessionsDir(userData) && !seen.has(file)) summaryCache.delete(file);
   return out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+// そのタスクの会話（無ければ null）。同じ機械名に複数あれば最新のもの。
+function findTaskSession(userData, repo, machine) {
+  const name = String(machine || '');
+  return listSessions(userData, repo, { kind: 'task' }).find((s) => s.machine === name) || null;
 }
 
 function updateSession(userData, id, patch) {
@@ -321,7 +336,7 @@ function removeSession(userData, id) {
 
 module.exports = {
   DEFAULTS, loadConfig, saveConfig, addRepo, removeRepo, isRegistered,
-  createSession, readSession, listSessions, updateSession, appendMessage, removeSession,
+  createSession, readSession, listSessions, findTaskSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
   TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot,
 };

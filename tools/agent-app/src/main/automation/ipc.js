@@ -2,8 +2,8 @@
 
 // statemachine-maker の検証済みドメインと IPC 実装をそのまま使い、
 // agent-app の「登録リポジトリ」と設定ファイルだけをアダプトする。
-const makerIpc = require('statemachine-maker/src/main/ipc');
-const makerTools = require('statemachine-maker/src/main/tools');
+const makerIpc = require('./handlers');
+const makerTools = require('./tools');
 const store = require('../store');
 const herd = require('../herd');
 const worktree = require('../worktree');

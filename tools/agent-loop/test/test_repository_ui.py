@@ -1,4 +1,4 @@
-"""statemachine-maker などの薄い UI が使う agent-loop の機械可読境界。"""
+"""agent-app のタスク画面などの薄い UI が使う agent-loop の機械可読境界。"""
 import json
 import os
 import subprocess

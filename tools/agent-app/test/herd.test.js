@@ -89,8 +89,8 @@ test('herd: 会話は listAgents に仮想の行を足し、ターンごとに�
 });
 
 test('herd: タスクとワークフローは共有編集面のフックで一覧へ足し、起動前に写す', async () => {
-  const makerIpc = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'main', 'ipc.js'), 'utf8');
-  const makerTools = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'main', 'tools.js'), 'utf8');
+  const makerIpc = fs.readFileSync(path.join(SRC, 'main', 'automation', 'handlers.js'), 'utf8');
+  const makerTools = fs.readFileSync(path.join(SRC, 'main', 'automation', 'tools.js'), 'utf8');
   assert.match(makerIpc, /options\.agentDefinitions/);
   assert.match(makerIpc, /options\.hooks && options\.hooks\.resolveAgent/);
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'task', root\)/);

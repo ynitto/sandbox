@@ -23,7 +23,7 @@ const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
   for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
-    'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/taskIntent.js', 'renderer/vendor/statemachine/flow.js', 'renderer/vendor/statemachine/teaching.js', 'renderer/vendor/statemachine/renderer.js']) {
+    'main/automation/teaching.js', 'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/taskIntent.js', 'renderer/teachingProtocol.js', 'renderer/taskTeaching.js', 'renderer/automation/flow.js', 'renderer/automation/teaching.js', 'renderer/automation/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
   const main = fs.readFileSync(path.join(SRC, 'main/main.js'), 'utf8');
@@ -250,10 +250,10 @@ test('領域切替はタスクとワークフローを独立して共有編集�
 
 test('共有編集面は親の領域選択に従い、独自のフォルダと主要タブを表示しない', () => {
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
-  const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/automation-workbench.css'), 'utf8');
   assert.match(html, /id="automation-head"[\s\S]*id="automation-title"[\s\S]*id="automation-description"/);
-  assert.match(renderer, /workbenchHost\.setController\(\{ navigate: navigateEmbedded \}\)/);
+  assert.match(renderer, /workbenchHost\.setController\(\{ navigate: navigateEmbedded, refresh: refreshEmbedded \}\)/);
   assert.match(renderer, /state\.homeTab = 'flows'/);
   assert.match(renderer, /state\.homeTab = teachesTask \? 'teach' : 'run'/);
   assert.match(css, /:host \.folder-pane[\s\S]*display:\s*none/);
@@ -294,9 +294,10 @@ test('タスク一覧は定義を先に見せ、実行状態（ファイル実�
 });
 
 test('タスク詳細は概要・手順・AI相談・履歴のタブに統一し、定期実行は概要で管理する', () => {
-  const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   assert.match(renderer, /detailTab:\s*'overview'/);
   assert.match(renderer, /class="task-detail-tabs"[^>]*role="tablist"/);
+  assert.match(fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'teaching.js'), 'utf8'), /<slot name="teaching">/, 'AI相談のタブは親の会話（端末ミラー）を slot に載せる');
   assert.match(renderer, /data-task-tab="overview"[\s\S]*>概要</);
   assert.match(renderer, /data-task-tab="steps"[\s\S]*>手順</);
   assert.match(renderer, /data-task-tab="teach"[\s\S]*>AI相談</);
@@ -326,8 +327,8 @@ test('タスク詳細は概要・手順・AI相談・履歴のタブに統一し
 
 test('埋め込み時の名称は自動化や AI ワークフローではなく三領域の語彙に揃える', () => {
   const shell = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
-  const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
-  const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const flow = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'flow.js'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   assert.doesNotMatch(shell, />自動化</);
   assert.match(shell, /<statemachine-workbench/);
   assert.match(flow, /const featureName = ctx\.name \|\| 'AIワークフロー'/);
@@ -336,8 +337,8 @@ test('埋め込み時の名称は自動化や AI ワークフローではなく�
 
 test('タスクとワークフローの変更は親の一覧へ通知して再読込する', () => {
   const shell = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
-  const maker = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
-  const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
+  const maker = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
+  const flow = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'flow.js'), 'utf8');
   assert.match(maker, /type:\s*'agent-app:changed'/);
   assert.match(flow, /ctx\.changed\('workflows'/);
   assert.match(shell, /statemachine:changed/);
@@ -346,13 +347,13 @@ test('タスクとワークフローの変更は親の一覧へ通知して再�
 });
 
 test('領域一覧の新規ワークフロー操作は選択中の項目を編集しない', () => {
-  const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
+  const flow = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'flow.js'), 'utf8');
   assert.match(flow, /function create\(\)\s*{\s*view\.workflow = null;\s*view\.creatingTeaching = true;/);
   assert.match(flow, /data-flow-manual-new/);
 });
 
 test('ワークフロー教示と差し戻しは通常のDAG依存から分離して表示する', () => {
-  const flow = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'flow.js'), 'utf8');
+  const flow = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'flow.js'), 'utf8');
   assert.match(flow, /mode:\s*'flow-teach'/);
   assert.match(flow, /data-flow-teaching-trial/);
   assert.match(flow, /data-flow-teaching-confirm/);
@@ -363,7 +364,7 @@ test('ワークフロー教示と差し戻しは通常のDAG依存から分離�
 test('preload の窓口と ipc のチャネルが 1 対 1', () => {
   const pre = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
   const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
-  const makerIpc = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'main', 'ipc.js'), 'utf8');
+  const makerIpc = fs.readFileSync(path.join(SRC, 'main', 'automation', 'handlers.js'), 'utf8');
   const invoked = [...pre.matchAll(/invoke\('([\w:]+)'/g)].map((m) => m[1]);
   const handled = [
     ...[...ipc.matchAll(/handle\('([\w:]+)'/g)].map((m) => m[1]),
@@ -381,10 +382,10 @@ test('index.html が読むスクリプトは vendor.js が写すものと画面�
   for (const m of html.matchAll(/(?:src|href)="vendor\/([^"]+)"/g)) {
     const f = m[1];
     if (f.startsWith('hljs/')) assert.ok(vendor.HLJS_EXTRA.includes(f.slice(5).replace('.min.js', '')), f);
-    else if (f === 'statemachine/renderer.js') assert.ok(fs.existsSync(path.join(SRC, 'renderer', 'vendor', f)), f);
     else assert.ok(names.has(f), `vendor.js が写さない: ${f}`);
   }
-  for (const m of html.matchAll(/src="([^"/]+\.js)"/g)) assert.ok(fs.existsSync(path.join(SRC, 'renderer', m[1])), m[1]);
+  for (const m of html.matchAll(/src="((?:automation\/)?[^"/]+\.js)"/g)) assert.ok(fs.existsSync(path.join(SRC, 'renderer', m[1])), m[1]);
+  assert.ok(!html.includes('vendor/statemachine/'), '共有ワークベンチは自分のソース（renderer/automation/）から読む');
 });
 
 test('自動化は agent-app の登録リポジトリと設定を共有する', () => {
@@ -404,20 +405,21 @@ test('自動化は agent-app の登録リポジトリと設定を共有する', 
   });
 });
 
-test('共有編集面は明示的な Host Adapter で agent-app の preload API へ接続する', () => {
+test('共有編集面は agent-app の preload API（window.api.automation）へ直接つなぐ', () => {
   const shell = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
-  const host = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'editor-host.js'), 'utf8');
+  const maker = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   const vendor = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'vendor.js'), 'utf8');
-  assert.match(shell, /vendor\/statemachine\/editor-host\.js/);
-  assert.match(host, /target\.parent\.api\.automation/);
+  assert.match(shell, /automation\/workbench-element\.js/);
+  assert.match(maker, /const automationHost = window\.api\.automation;/);
+  assert.doesNotMatch(vendor, /statemachine/);
   assert.doesNotMatch(vendor, /replace\(\/\\bapi/);
 });
 
 test('共有編集面へ AI ワークフローの画面と IPC を同じ境界で載せる', () => {
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
-  const flow = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/flow.js'), 'utf8');
-  assert.ok(html.includes('vendor/statemachine/flow.js'));
+  const flow = fs.readFileSync(path.join(SRC, 'renderer/automation/flow.js'), 'utf8');
+  assert.ok(html.includes('automation/flow.js'));
   assert.ok(flow.includes('AIワークフロー'));
   assert.ok(preload.includes("invoke('automation:flow:run:start'"));
   assert.ok(preload.includes("invoke('automation:flow:run:respond'"));
@@ -425,7 +427,7 @@ test('共有編集面へ AI ワークフローの画面と IPC を同じ境界�
 });
 
 test('ワークフロー詳細は選択中リポジトリの実行履歴へ移動できる', () => {
-  const flow = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/flow.js'), 'utf8');
+  const flow = fs.readFileSync(path.join(SRC, 'renderer/automation/flow.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/automation-workbench.css'), 'utf8');
   assert.ok(flow.includes('data-flow-tab="overview"') && flow.includes('data-flow-tab="history"'));
   assert.ok(flow.includes('function workflowRuns('), '選択中ワークフローへ履歴を絞る');
@@ -434,31 +436,31 @@ test('ワークフロー詳細は選択中リポジトリの実行履歴へ移�
   assert.match(css, /:host \.execution-list,[\s\S]*:host \.flow-home-head\s*\{\s*display:\s*none/);
 });
 
-test('会話の依頼と新しいタスクを同じAI教示画面へつなぐ', () => {
+test('会話の依頼と新しいタスクを同じ作成フォーム（AI との tmux 会話）へつなぐ', () => {
   const shell = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
-  const maker = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
-  const teaching = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'teaching.js'), 'utf8');
-  assert.ok(html.includes('src="taskIntent.js"'));
+  const maker = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
+  const teaching = fs.readFileSync(path.join(SRC, 'renderer', 'taskTeaching.js'), 'utf8');
+  assert.ok(html.includes('src="taskIntent.js"') && html.includes('src="taskTeaching.js"') && html.includes('src="teachingProtocol.js"'));
   assert.match(shell, /この依頼をタスクにする/);
   assert.match(shell, /TaskIntent\.create/);
-  assert.match(shell, /pendingTaskIntent/);
+  assert.match(shell, /pendingTaskIntent \? 'new' : ''/, 'intent は新しいタスクの画面として開く');
   assert.match(shell, /api\.automation\.teachingList/);
-  assert.match(maker, /payload\.intent[\s\S]*teachingFeature\.startFromIntent/);
   assert.match(maker, /payload\.action === 'new'[\s\S]*teachingFeature\.create\(\)/);
-  assert.match(teaching, /async function startFromIntent/);
+  assert.match(teaching, /takeIntent/, '作成フォームが依頼の本文を受け取る');
+  assert.match(teaching, /api\.automation\.teachStart\(/);
 });
 
 test('定義があるタスクは実行詳細から開き、一覧の状態語を共有ワークベンチと揃える', () => {
   const shell = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
-  const maker = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/renderer.js'), 'utf8');
-  const teaching = fs.readFileSync(path.join(SRC, 'renderer/vendor/statemachine/teaching.js'), 'utf8');
+  const maker = fs.readFileSync(path.join(SRC, 'renderer/automation/renderer.js'), 'utf8');
+  const teaching = fs.readFileSync(path.join(SRC, 'renderer/automation/teaching.js'), 'utf8');
   assert.ok(!maker.includes('!!selectedTask.machine'), '既存定義を一律に教示画面へ送らない');
   assert.ok(maker.includes('data-run-teach') && maker.includes('AIに変更を相談'));
   assert.ok(teaching.includes('function presentTeachingStatus('));
   assert.ok(!shell.includes('試運転が必要') && !teaching.includes('試運転が必要'));
-  assert.match(shell, /'needs-trial': '試運転待ち'/);
-  assert.match(shell, /task\.change \? ' · 変更中'/);
+  assert.match(shell, /draft: '下書き', ready: '利用可能'/);
+  assert.ok(!/teachingLabels = \{[^}]*needs-trial/.test(shell), 'タスクに試運転の状態は持たない（作成は AI との会話、確認は実行）');
 });
 
 // 同梱定義から出る argv。権限フラグと prompt の渡し方は agent-dashboard のゴールデンと同じ。

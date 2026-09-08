@@ -219,13 +219,13 @@ function renderTaskItems() {
   for (const task of state.tasks) {
     const latest = (task.history || [])[0];
     // 状態語は共有ワークベンチと同じ4つ。定義があるタスクは実行結果を出し、AIとの変更が進んでいれば「変更中」を添える。
-    const teachingLabels = { draft: '下書き', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち', ready: '利用可能' };
+    const teachingLabels = { draft: '下書き', ready: '利用可能' };
     // 実行状態（履歴・定期実行）はagent-loopがファイル実体を確かめるぶん遅い。定義は先に
     // 出し、まだ重ねていない間は「確認中」と分かるように出す（「未実行」と混同しない）。
     const pending = state.taskStatusPending && !task.teachingStatus;
     const status = task.teachingStatus ? (teachingLabels[task.teachingStatus] || '下書き')
       : pending ? '確認中…'
-        : `${latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行'}${task.change ? ' · 変更中' : ''}`;
+        : `${latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行'}`;
     const id = taskId(task);
     const schedules = Array.isArray(task.schedules) ? task.schedules : (task.schedule ? [task.schedule] : []);
     const scheduleState = pending ? '確認中…'
@@ -364,14 +364,14 @@ async function loadAreaItems() {
   else await loadWorkflowItems(state.repo);
 }
 
+// 会話からの「この依頼をタスクにする」（intent）は、新しいタスクの画面（action: new）として開き、
+// 本文は親の作成フォーム（taskTeaching.js）が受け取る。
 function frameMessage(action = '') {
-  const message = {
+  return {
     type: 'agent-app:navigate', area: state.area, root: state.repo,
     selected: state.area === 'tasks' ? state.selectedTask : state.selectedWorkflow,
-    action,
+    action: action || (state.area === 'tasks' && state.pendingTaskIntent ? 'new' : ''),
   };
-  if (state.area === 'tasks' && state.pendingTaskIntent) message.intent = state.pendingTaskIntent;
-  return message;
 }
 
 function syncAutomationWorkbench(action = '') {
@@ -392,15 +392,16 @@ function setAutomationLoading(loading) {
   $('automation-loading').hidden = !loading;
 }
 
+// AI と作り始めたタスクを選び直し、その会話（AI相談）を開く。
+async function openTaughtTask(machine) {
+  state.pendingTaskIntent = null;
+  state.selectedTask = `machine:${machine}`;
+  state.config = await api.saveConfig({ lastTask: { ...(state.config.lastTask || {}), [state.repo]: state.selectedTask } });
+  await loadAreaItems();
+  await syncAutomationWorkbench('teach');
+}
+
 async function handleAutomationEvent(payload) {
-  if (payload && payload.type === 'agent-app:teaching-started' && payload.root === state.repo) {
-    if (!state.pendingTaskIntent || payload.intentId !== state.pendingTaskIntent.id) return;
-    state.pendingTaskIntent = null;
-    state.selectedTask = `machine:${payload.machine}`;
-    state.config = await api.saveConfig({ lastTask: { ...(state.config.lastTask || {}), [state.repo]: state.selectedTask } });
-    await loadAreaItems();
-    return;
-  }
   if (!payload || payload.type !== 'agent-app:changed' || payload.root !== state.repo || payload.area !== state.area) return;
   if (payload.selected) {
     const key = payload.area === 'tasks' ? 'lastTask' : 'lastWorkflow';
@@ -1504,8 +1505,27 @@ async function init() {
   $('automation-workbench').addEventListener('statemachine:changed', (event) => {
     handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
   });
-  $('automation-workbench').addEventListener('statemachine:teaching-started', (event) => {
-    handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
+  $('automation-workbench').addEventListener('statemachine:teaching-view', (event) => TaskTeaching.show(event.detail));
+  TaskTeaching.init({
+    notice,
+    isRunning: (id) => state.running.has(id),
+    executionOptions: () => {
+      const selected = selectedExecution(state.config.execution.defaultPolicy);
+      return { policy: selected.policy, cli: selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
+    },
+    executionLabel: () => {
+      const selected = selectedExecution(state.config.execution.defaultPolicy);
+      const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
+      return `${policy.label} · ${selected.cli || 'エージェント未設定'}${selected.model ? ` / ${selected.model}` : ''}${state.config.execution.defaultAutoApprove ? ' · 自動承認' : ' · 確認あり'}`;
+    },
+    takeIntent: () => {
+      const intent = state.pendingTaskIntent && state.pendingTaskIntent.root === state.repo ? state.pendingTaskIntent : null;
+      state.pendingTaskIntent = null;
+      return intent;
+    },
+    openTask: (machine) => openTaughtTask(machine),
+    reloadTasks: () => { if (state.area === 'tasks') loadAreaItems().catch(() => {}); },
+    refreshWorkbench: () => $('automation-workbench').refresh(),
   });
 
   $('repo-select').onchange = () => selectRepo($('repo-select').value).catch((err) => notice(err.message, 'error'));
@@ -1664,8 +1684,10 @@ async function init() {
     setSidebar(false);
   });
 
-  api.onTurnStarted(({ id, warning }) => {
+  api.onTurnStarted((p) => {
+    const { id, warning } = p;
     state.running.add(id);
+    TaskTeaching.onTurnStarted(p);
     if (!state.liveParts.has(id)) state.liveParts.set(id, { thinking: [], information: [] });
     if (state.current && state.current.id === id) {
       if (warning) notice(warning);
@@ -1683,15 +1705,17 @@ async function init() {
     const node = document.querySelector(`#working-${id} .log`);
     if (node) { node.append(logLine({ kind, text })); node.scrollTop = node.scrollHeight; }
   });
-  api.onTurnDone(onTurnDone);
+  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); return onTurnDone(p); });
   api.onTermScreen((p) => {
     state.tails.set(p.id, p.tail || '');
     Term.applyScreen(p);
+    TaskTerm.applyScreen(p);
     const node = document.querySelector(`#working-${p.id} .tail`);
     if (node) node.textContent = p.tail || '';
   });
   api.onTermPhase((p) => {
     state.phases.set(p.id, { phase: p.phase, detail: p.detail, name: p.name });
+    TaskTeaching.onTermPhase(p);
     if (state.current && state.current.id === p.id) {
       renderHeader();
       renderMessages();

@@ -118,7 +118,7 @@ CLIとmodelは実行時に解決する。管理面が明示した選択、entry�
 
 設定ファイルの探索順と上書き規則は[仕様書の設定節](../specs/agent-loop-spec.md#2-設定)に定める。
 
-GUI（agent-app / statemachine-maker）はこの探索と正規化を自前で持たない。`repository_ui`が
+GUI（agent-app）はこの探索と正規化を自前で持たない。`repository_ui`が
 `inspect` / `schedule` / `log`の3コマンドで機械可読の境界を出し、GUIはそれだけを読む。画面側に
 探索順の写しを置くと、画面に見えるタスクとschedulerが実際に動かすタスクがずれるためである。
 同じ理由で、GUIが実行時に足したい共通指示は設定へ書かず、`statemachine --instruction`の

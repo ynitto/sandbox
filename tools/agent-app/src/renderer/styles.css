@@ -514,3 +514,26 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ---- タスクを AI と作る会話（共有ワークベンチの slot に載る。手動実行と同じく端末を埋め込む） ---- */
+#task-teaching { min-width: 0; display: grid; gap: 12px; }
+.task-create { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.task-create textarea { width: 100%; min-height: 120px; padding: 8px 10px; resize: vertical; line-height: 1.55; }
+.task-create-actions { align-items: center; }
+.task-open-note { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+#task-workspace { display: grid; gap: 12px; }
+#task-workspace[hidden] { display: none; }
+.task-terminal { min-height: 320px; height: min(52vh, 560px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #202a38; border-radius: 12px; background: var(--term-bg); box-shadow: 0 8px 24px rgba(15, 23, 42, .14); transition: border-color .18s ease, box-shadow .18s ease; }
+.task-terminal.input-terminal { border-color: var(--term-cursor); box-shadow: 0 0 0 3px rgba(34, 211, 238, .16), 0 8px 24px rgba(15, 23, 42, .18); }
+#task-term-host { min-height: 0; flex: 1; padding: 8px 4px 5px 10px; cursor: text; }
+#task-term-host .xterm { height: 100%; }
+.task-composer { display: grid; grid-template-rows: 34px minmax(82px, auto) 40px; padding: 8px; border: 1px solid #d7dbe1; border-radius: 16px; background: var(--panel); box-shadow: 0 5px 18px rgba(31, 35, 40, .07); }
+.task-composer textarea { min-height: 70px; max-height: 240px; width: 100%; display: block; padding: 8px 10px; resize: vertical; border: 0; border-radius: 10px; line-height: 1.55; }
+.task-composer textarea:focus-visible { outline: none; }
+.task-record { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--warn); border-radius: 12px; background: var(--warn-bg); }
+.task-record-head { display: flex; align-items: center; gap: 8px; }
+.task-record-request { margin: 0; font-weight: 650; }
+.task-record-form { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.task-record-form label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.task-record-form input { min-width: 260px; }
+.task-record .sub.error { color: var(--danger); }

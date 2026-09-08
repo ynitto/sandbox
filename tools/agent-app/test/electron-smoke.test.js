@@ -38,8 +38,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-automation-repo-'));
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-automation-userdata-'));
   const appStore = require('../src/main/store');
-  const machineStore = require('statemachine-maker/src/main/store');
-  const flowStore = require('statemachine-maker/src/main/flow-store');
+  const machineStore = require('../src/main/automation/store');
+  const flowStore = require('../src/main/automation/flow-store');
   machineStore.save(repo, {
     name: 'リリース確認', machine: 'release-check', purpose: '自動化統合の確認',
     steps: [{ kind: 'agent', title: '変更を確認', detail: '公開前の変更を確認する' }],
@@ -194,14 +194,17 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
         && close(panelBox.x, portalPanelBox.x) && close(panelBox.width, portalPanelBox.width),
       `${name}で左右のパディングが変わる: ${JSON.stringify({ portalPanelBox, panelBox })}`);
     };
-    // AI相談もタスク詳細のタブ内で開く。状態は利用可能のまま、進行バーは出ない
+    // AI相談もタスク詳細のタブ内で開く。会話（tmux の端末ミラー）は親の slot に載り、
+    // まだ会話が無い既存タスクは「AIとの相談を始める」から始める（押すまで CLI は起こさない）
     await workspace.locator('[data-task-tab="teach"]').click();
-    await workspace.locator('.teaching-workspace').waitFor({ timeout: 20000 });
+    await win.locator('#task-teaching:not([hidden])').waitFor({ timeout: 20000 });
+    await win.locator('#task-open').waitFor({ timeout: 20000 });
+    assert.strictEqual(await win.locator('#task-open').isVisible(), true, 'AIとの相談を始めるボタンが出る');
+    assert.strictEqual(await win.locator('#task-terminal').isVisible(), false, '相談を始める前に端末は出ない');
     await assertTaskLayout('AI相談');
     assert.match(await workspace.locator('.task-detail-shell').textContent(), /リリース確認.*利用可能/s);
     assert.strictEqual(await workspace.locator('.task-detail-tabs').count(), 1, 'AI相談でもタスクタブを維持する');
-    assert.strictEqual(await workspace.locator('.teaching-progress').count(), 0);
-    assert.doesNotMatch(await workspace.locator('.task-detail-shell').textContent(), /仕事|試運転が必要/);
+    assert.doesNotMatch(await workspace.locator('.task-detail-shell').textContent(), /仕事|試運転/);
     if (process.env.AGENT_APP_TEACHING_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
     }
@@ -249,9 +252,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await win.screenshot({ path: process.env.AGENT_APP_TASK_HISTORY_SCREENSHOT });
     }
     await win.click('#session-new');
-    await workspace.locator('.teaching-create').waitFor();
-    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいタスクを教える/);
-    await workspace.locator('[data-teach-create-cancel]').click();
+    await win.locator('#task-create:not([hidden])').waitFor();
+    assert.match(await workspace.locator('.teaching-page').textContent(), /新しいタスクを教える/);
+    assert.strictEqual(await win.locator('#task-purpose').isVisible(), true, '目的の入力欄が親の作成フォームに出る');
 
     await win.click('#area-workflows');
     await win.locator('#workflows .list-pick').first().waitFor({ timeout: 20000 });
