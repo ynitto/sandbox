@@ -131,11 +131,14 @@ test('タスクの会話は agent-app の会話基盤で開き、見本の記録
   assert.match(renderer, /api\.automation\.recordingStart\(/);
   assert.match(renderer, /api\.automation\.teachDemonstration\(/);
   assert.match(renderer, /TeachingProtocol\.parseRecordRequest\(message && message\.text\)/, 'AI の @record 行で見本のカードを開く');
-  assert.match(renderer, /Windows 側）で記録します。AI は WSL の tmux/);
+  assert.match(renderer, /記録はこの端末で取る・Windows では WSL へ渡す/, '仕組みの説明は画面に常駐させない（README にある）');
   assert.match(html, /<div slot="teaching" id="task-teaching" hidden>/);
   assert.match(html, /id="task-term-host"/);
   assert.match(html, /id="task-mode-terminal"/);
   assert.match(html, /id="task-record-stop"[^>]*>終了してAIへ渡す</);
+  // 端末と入力欄は会話画面と同じ実体を使う（見た目を作り直さない）
+  assert.match(html, /id="task-terminal" class="terminal-stage"/);
+  assert.match(html, /id="task-composer" class="composer-shell"/);
   const term = fs.readFileSync(path.join(SRC, 'renderer', 'term.js'), 'utf8');
   assert.match(term, /window\.TaskTerm = createTerm\(\)/, '会話とタスクで別の端末ミラーを持つ');
 });

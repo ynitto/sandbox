@@ -30,9 +30,6 @@
 :host .embedded-editor-toolbar .bar-center .title-input { text-align: left; }
 :host .embedded-task-editor,
 :host .embedded-task-editor > .editor-shell { min-height: 0; height: 100%; }
-:host .teaching-tab-head { display: grid; gap: 3px; }
-:host .teaching-tab-head h3 { font-size: 15px; }
-:host .teaching-tab-head p { margin: 0; color: var(--muted); font-size: 12.5px; }
 @media (max-width: 760px) {
   :host *, :host *::before, :host *::after { min-width: 0; }
 }

@@ -83,7 +83,8 @@
     function detailHtml() {
       const machine = view.selected;
       announce({ root: root(), machine, creating: false, published: published(machine), title: (selectedItem() || {}).title || machine });
-      return '<div class="teaching-tab-head"><h3>AIに変更を相談</h3><p>端末の中で AI と話しながら手順を直します。定義はこの会話の中で書き換わり、確認は「概要」の実行と構成確認で行います。</p></div><slot name="teaching"></slot>';
+      // タブ名（AI相談）と、その上のタスク名で足りる。ここに見出しや説明を足さない。
+      return '<slot name="teaching"></slot>';
     }
 
     // 定義がまだ無い下書き・新しいタスク（タスク詳細のタブが無いとき）の画面。
@@ -91,7 +92,7 @@
       if (view.loading) return '<div class="blank compact"><p>タスクを読み込んでいます…</p></div>';
       if (view.creating) {
         announce({ root: root(), machine: '', creating: true, published: false, title: '' });
-        return '<div class="teaching-page"><div class="teaching-head"><div><span class="eyebrow">新しいタスクを教える</span><h2>何を自動化したいですか？</h2></div></div><slot name="teaching"></slot></div>';
+        return '<div class="teaching-page"><div class="teaching-head"><div><span class="eyebrow">新しいタスク</span><h2>何を自動化したいですか？</h2></div></div><slot name="teaching"></slot></div>';
       }
       const item = selectedItem();
       if (!item) {
@@ -100,7 +101,7 @@
       }
       const present = item.view || presentOf(item.machine);
       announce({ root: root(), machine: item.machine, creating: false, published: present.published, title: item.title });
-      return `<div class="teaching-page"><div class="teaching-head"><div><span class="eyebrow">タスクを教える</span><h2>${e(item.title || item.machine)}</h2><span class="teaching-badges"><span class="status">${e(teachingStatusLabel(present.status))}</span></span>${item.purpose ? `<p class="muted">${e(item.purpose)}</p>` : ''}</div></div><slot name="teaching"></slot></div>`;
+      return `<div class="teaching-page"><div class="teaching-head"><div><h2>${e(item.title || item.machine)}</h2><span class="teaching-badges"><span class="status">${e(teachingStatusLabel(present.status))}</span></span></div></div><slot name="teaching"></slot></div>`;
     }
 
     function bind() { /* 操作は親（agent-app）の会話面が持つ */ }

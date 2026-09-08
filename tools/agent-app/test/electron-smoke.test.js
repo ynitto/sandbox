@@ -106,7 +106,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('#sessions .list-pick');
     await win.locator('.answer-bubble').waitFor();
     assert.strictEqual(await win.locator('#conversation-history').getAttribute('open'), '', '端末がない会話では履歴を主表示する');
-    const composerModeHeights = await win.locator('.composer-shell').evaluate((shell) => {
+    const composerModeHeights = await win.locator('#composer .composer-shell').evaluate((shell) => {
       const message = document.getElementById('message-input');
       const terminal = document.getElementById('terminal-keys');
       const toolbar = shell.querySelector('.composer-toolbar');
@@ -181,11 +181,20 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await workspace.locator('.teaching-page').count(), 0, '既存定義を教示画面で開かない');
     assert.strictEqual(await workspace.locator('.teaching-page-head').isHidden(), true, 'タスクの見出しがサイドバーと二重に出ている');
     assert.deepStrictEqual(await workspace.locator('.task-detail-tabs [role="tab"]').allTextContents(), ['概要', '手順', 'AI相談', '履歴']);
-    const portalTabsBox = await workspace.locator('.task-detail-tabs').boundingBox();
-    const portalPanelBox = await workspace.locator('.task-tab-panel').boundingBox();
+    // 実行状態（agent-loop）は待たずに描き、届いた時点で描き直す。測るのは落ち着いてから。
+    const boxOf = async (locator) => {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const box = await locator.boundingBox();
+        if (box) return box;
+        await win.waitForTimeout(100);
+      }
+      return null;
+    };
+    const portalTabsBox = await boxOf(workspace.locator('.task-detail-tabs'));
+    const portalPanelBox = await boxOf(workspace.locator('.task-tab-panel'));
     const assertTaskLayout = async (name) => {
-      const tabsBox = await workspace.locator('.task-detail-tabs').boundingBox();
-      const panelBox = await workspace.locator('.task-tab-panel').boundingBox();
+      const tabsBox = await boxOf(workspace.locator('.task-detail-tabs'));
+      const panelBox = await boxOf(workspace.locator('.task-tab-panel'));
       const close = (left, right) => Math.abs(left - right) <= 1;
       assert.ok(portalTabsBox && tabsBox
         && close(tabsBox.x, portalTabsBox.x) && close(tabsBox.y, portalTabsBox.y) && close(tabsBox.width, portalTabsBox.width),
@@ -253,7 +262,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     }
     await win.click('#session-new');
     await win.locator('#task-create:not([hidden])').waitFor();
-    assert.match(await workspace.locator('.teaching-page').textContent(), /新しいタスクを教える/);
+    assert.match(await workspace.locator('.teaching-page').textContent(), /新しいタスク[\s\S]*何を自動化したいですか/);
     assert.strictEqual(await win.locator('#task-purpose').isVisible(), true, '目的の入力欄が親の作成フォームに出る');
 
     await win.click('#area-workflows');

@@ -97,7 +97,7 @@
         <section id="conversation-start" class="conversation-start">
           <div id="conversation-start-content" class="empty-state"></div>
         </section>
-        <section id="terminal-stage" hidden>
+        <section id="terminal-stage" class="terminal-stage" hidden>
           <div class="terminal-head">
             <span id="term-agent" class="terminal-agent"></span>
             <span id="term-name" class="sub"></span>
@@ -230,16 +230,27 @@
         <statemachine-workbench id="automation-workbench" data-statemachine-workbench embedded
           stylesheet="automation/styles.css" host-stylesheet="automation-workbench.css">
           <!-- タスクを AI と作る会話（tmux の端末ミラー）。共有ワークベンチの <slot name="teaching"> に載る -->
+          <!-- タスクを AI と相談する面。見出しと説明はワークベンチ側が持つので、ここには置かない。
+               端末と入力欄は会話画面と同じ .terminal-stage / .composer-shell を使う。 -->
           <div slot="teaching" id="task-teaching" hidden>
-            <section id="task-create" class="task-create" hidden>
-              <label class="stacked-field" for="task-purpose"><span><strong>何を自動化したいですか？</strong><small>工程や分岐は AI が考えます。普段の言葉で、ほしい結果を書いてください</small></span><textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea></label>
-              <label class="setting-field"><span><strong>保存名</strong><small>空なら目的から決めます（英数字とハイフン）</small></span><input id="task-machine" placeholder="例: monthly-sales" size="24"></label>
-              <div class="row task-create-actions"><span id="task-create-settings" class="sub"></span><span class="spacer"></span><button type="button" id="task-create-start" class="primary">AIと作り始める</button></div>
+            <section id="task-create" hidden>
+              <label class="sr-only" for="task-purpose">自動化したいこと</label>
+              <textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea>
+              <div class="task-actions">
+                <label class="sub" for="task-machine">保存名（任意）</label>
+                <input id="task-machine" placeholder="目的から決めます" size="18">
+                <span class="spacer"></span>
+                <span id="task-create-settings" class="sub"></span>
+                <button type="button" id="task-create-start" class="primary">AIと作り始める</button>
+              </div>
               <p id="task-create-error" class="dlg-error" hidden></p>
             </section>
             <section id="task-workspace" hidden>
-              <div id="task-open-note" class="task-open-note" hidden><button type="button" id="task-open" class="primary">AIとの相談を始める</button><span class="sub">押すと、このリポジトリで AI を起動して端末をここに出します</span></div>
-              <section id="task-terminal" class="task-terminal" hidden>
+              <div id="task-open-note" class="task-actions" hidden>
+                <button type="button" id="task-open">AIとの相談を始める</button>
+                <span id="task-open-settings" class="sub"></span>
+              </div>
+              <section id="task-terminal" class="terminal-stage" hidden>
                 <div class="terminal-head">
                   <span id="task-term-agent" class="terminal-agent"></span>
                   <span id="task-phase" class="phase" hidden></span>
@@ -249,14 +260,14 @@
                 </div>
                 <div id="task-term-host"></div>
               </section>
-              <div id="task-composer" class="task-composer" hidden>
+              <div id="task-composer" class="composer-shell" hidden>
                 <div class="input-mode-switch" role="group" aria-label="入力先">
                   <button type="button" id="task-mode-message" aria-pressed="true">メッセージ</button>
                   <button type="button" id="task-mode-terminal" aria-pressed="false">端末操作</button>
                   <span id="task-input-status" class="input-status" role="status" aria-live="polite"></span>
                 </div>
                 <div id="task-message-input">
-                  <label class="sr-only" for="task-prompt">AIへの返答・要望</label>
+                  <label class="sr-only" for="task-prompt">AIへの返答</label>
                   <textarea id="task-prompt" rows="3" placeholder="AI への返答や、変更したいこと"></textarea>
                 </div>
                 <div id="task-terminal-keys" class="terminal-keys" hidden>
@@ -278,17 +289,20 @@
                   <button type="button" id="task-send" class="primary action-button">送信</button>
                 </div>
               </div>
-              <section id="task-record" class="task-record" hidden aria-label="操作の見本">
-                <div class="task-record-head"><strong>操作の見本</strong><span class="spacer"></span><button type="button" id="task-record-close" class="small quiet">閉じる</button></div>
+              <section id="task-record" hidden aria-label="操作の見本">
                 <p id="task-record-request" class="task-record-request" hidden></p>
-                <div class="task-record-form">
-                  <label>見せる画面<select id="task-record-source"><option value="browser">ブラウザ</option><option value="windows">Windowsアプリ</option></select></label>
-                  <label><span id="task-record-target-label">開始 URL</span><input id="task-record-target" placeholder="https://…"></label>
-                  <button type="button" id="task-record-start" class="primary small">記録を始める</button>
-                  <button type="button" id="task-record-stop" class="danger small" hidden>終了してAIへ渡す</button>
+                <div class="task-actions">
+                  <label for="task-record-source">見せる画面</label>
+                  <select id="task-record-source"><option value="browser">ブラウザ</option><option value="windows">Windowsアプリ</option></select>
+                  <label id="task-record-target-label" for="task-record-target">開始 URL</label>
+                  <input id="task-record-target" placeholder="https://…">
+                  <span class="spacer"></span>
+                  <button type="button" id="task-record-start" class="small primary">記録を始める</button>
+                  <button type="button" id="task-record-stop" class="small danger" hidden>終了してAIへ渡す</button>
+                  <button type="button" id="task-record-close" class="small quiet">閉じる</button>
                 </div>
-                <p id="task-record-message" class="sub"></p>
-                <p id="task-record-note" class="sub"></p>
+                <p id="task-record-message" class="sub" hidden></p>
+                <p id="task-record-note" class="sub" hidden></p>
               </section>
             </section>
           </div>

@@ -193,8 +193,11 @@ controller を登録するまでの `navigate` は要素が保留し、登録時
 | `workbench-element.js` | renderer/automation | カスタム要素。Shadow DOM に `#bar` / `#main` / ダイアログを作り、`stylesheet` と `host-stylesheet` を読む。`navigate(payload)` を controller 登録まで保留し、`refresh()` で定義と実行状態を読み直す |
 | `renderer.js` / `flow.js` | renderer/automation | 概要・手順（工程エディタ）・履歴・ワークフロー。DOM 参照は Shadow Root に対して行い、preload の窓口は `window.api.automation` だけ |
 | `teaching.js` | renderer/automation | タスクの「AI相談」と新規作成の**置き場**。見出しと `<slot name="teaching">` を描き、どのタスクの会話を出しているかを `statemachine:teaching-view` で親へ伝える |
-| `taskTeaching.js` | renderer（親） | slot に載る光の DOM。tmux の端末ミラー（`TaskTerm`）、入力 2 モードの入力欄、操作の見本のカード、作成フォーム |
+| `taskTeaching.js` | renderer（親） | slot に載る光の DOM。tmux の端末ミラー（`TaskTerm`）、入力 2 モードの入力欄、操作の見本のカード、作成フォーム。**見た目は会話画面と同じ実体**（`.terminal-stage` / `.composer-shell`）を使い、見出しと説明は持たない |
 | `automation-workbench.css` | renderer（親） | host stylesheet。`:host` に対する上書きだけで、フォルダ欄・ホームタブ・見出しを隠し、三領域の語彙に揃える |
+
+見出しと説明はワークベンチ側だけが描く（親は操作面だけを置く）。同じ事実を 2 つの層が言わない
+ための境界で、`test/ui-consistency.test.js` が機械的に押さえる（規則はリポジトリ直下の `CLAUDE.md`）。
 
 親と共有編集面は、メソッド呼び出しと DOM イベントで同期する。
 
@@ -522,6 +525,7 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 |---|---|
 | `test/app.test.js` | 画面の情報構造、三領域、preload と IPC の 1 対 1、vendor と index.html の対応、共有編集面が `window.api.automation` へ直接つなぐこと、ワークフロー教示と差し戻しが通常の依存と分離していること、argv の組み立て、店（store）、git、ファイル、添付、tmux セッションの保持とスナップショット |
 | `test/automation-teaching.test.js` | `@record` 行の解析、下書きの sidecar、最初の依頼文（保存先・作成モード・Windows/WSL の注意）、見本の Markdown、kind: task の会話、記録の所在を WSL 表記で送ること |
+| `test/ui-consistency.test.js` | 端末と入力欄が会話画面と同じ実体であること、その見た目の定義が 1 か所であること、直値の色を足していないこと、見出しと説明を 2 つの層が描かないこと |
 | `test/automation-*.test.js` | 共有ワークベンチ（旧 statemachine-maker）の domain: 工程列の正規化とコンパイル、読み戻し、記録の変換、AI 下書き・見直し、agent-loop / agent-flow との境界、statemachine-use の `run_machine.py --dry-run` を通ること、画面の言葉に内部の綴りが混ざらないこと |
 | `test/tmux.test.js` | パス変換、画面判定（Kiro / Codex / Copilot / Cursor / Claude の実画面）、`waitReady` の attention、send-keys の畳み方、応答抽出、キー変換、常駐シェル、疑似 CLI との統合 |
 | `test/worktree.test.js` | 名前検査、パスの組み方、`--porcelain` の読み方、作成・削除・納品ブランチの統合 |

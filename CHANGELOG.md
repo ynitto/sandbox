@@ -34,6 +34,13 @@ main は `src/main/automation/`（旧 `ipc.js` は `handlers.js`）、renderer �
   引き継ぐ。
 - 新しい IPC: `automation:teach:start` / `teach:session` / `teach:demonstration`。無くなった IPC:
   `automation:teaching:create` … `restore`。`automation:teaching:list` は定義がまだ無い下書きだけを返す。
+- **タスクの相談画面を会話画面と同じ形に揃えた。** 端末ミラーと入力欄を独自のクラスで作り直して
+  いたのをやめ、会話画面と同じ `.terminal-stage` / `.composer-shell` をそのまま使う（色・角丸・影の
+  直値の複製を消し、`--term-line` をトークンにした）。ワークベンチと親の両方が出していた見出しと
+  説明を 1 か所に寄せ、「AI相談」タブはタブ名とタスク名だけで始める。見本のカードは警告色をやめて
+  ふつうの面にし、仕組みの説明は画面から外して README に置く（足りない道具の 1 行だけ出す）。
+  保存名は「（任意）」の 1 行に畳んだ。規則はリポジトリ直下の `CLAUDE.md`、機械検査は
+  `tools/agent-app/test/ui-consistency.test.js`。
 - **「タスク」を最初に開いたときに固まらない。** 共有ワークベンチの初期化とナビゲーションが AI の一覧
   （`agent-herd defs`）と実行状態（`agent-loop inspect`）の返事を待ってから描いていて、Windows では
   どちらも WSL 越しで数秒〜タイムアウトまで「画面を切り替えています…」のままだった。待つのは手元の

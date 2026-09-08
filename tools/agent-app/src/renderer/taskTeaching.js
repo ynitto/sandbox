@@ -67,6 +67,7 @@
     const ph = state.phase;
     const hasTerminal = !!sess;
     $('task-open-note').hidden = hasTerminal;
+    if (!hasTerminal) $('task-open-settings').textContent = state.deps.executionLabel();
     $('task-terminal').hidden = !hasTerminal;
     $('task-composer').hidden = !hasTerminal;
     $('task-term-agent').textContent = sess ? [sess.cli, sess.model].filter(Boolean).join(' · ') : '';
@@ -222,17 +223,16 @@
 
   // ---- 操作の見本（この端末で記録し、所在を会話へ送る） -------------------------------
 
+  // 足りないものだけを 1 行で言う。仕組みの説明（記録はこの端末で取る・Windows では WSL へ渡す）は
+  // 画面に常駐させない——README に書いてある。
   function recordNote() {
-    const win = api.platform === 'win32';
-    const where = win
-      ? '見本はこの PC（Windows 側）で記録します。AI は WSL の tmux で動いているので、記録の開始と終了はここから行い、記録の場所は WSL 表記で AI に届きます。'
-      : '見本はこの端末で記録し、記録の場所を AI に届けます。';
     const tools = state.tools || {};
-    const missing = [];
-    if (tools.browser === false) missing.push('ブラウザの記録に使う playwright-cli がこの端末で見つかりません（npm install -g @playwright/cli@latest）');
-    if (win && tools.windows === false) missing.push('Windows アプリの記録に使う winauto が見つかりません（python tools/winauto/install.py）');
-    if (!win) missing.push('Windows アプリの見本は Windows 上でだけ記録できます');
-    return [where, ...missing].join(' ');
+    if (state.record.source === 'windows') {
+      if (api.platform !== 'win32') return 'Windows アプリの見本は Windows 上でだけ記録できます。';
+      if (tools.windows === false) return 'winauto が見つかりません（python tools/winauto/install.py）。';
+      return '';
+    }
+    return tools.browser === false ? 'playwright-cli が見つかりません（npm install -g @playwright/cli@latest）。' : '';
   }
 
   function renderRecord() {
@@ -255,7 +255,10 @@
     $('task-record-stop').disabled = rec.busy;
     $('task-record-message').textContent = rec.message;
     $('task-record-message').className = `sub ${rec.ok ? '' : 'error'}`.trim();
-    $('task-record-note').textContent = recordNote();
+    $('task-record-message').hidden = !rec.message;
+    const note = recordNote();
+    $('task-record-note').textContent = note;
+    $('task-record-note').hidden = !note;
   }
 
   function openRecord(request = null) {
