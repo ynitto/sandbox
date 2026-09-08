@@ -477,11 +477,10 @@ function isEmbeddedTaskEditor() {
 
 function editorControlsHtml() {
   const spec = state.current.spec;
-  const targets = spec.steps.map((step, index) => `<option value="step:${esc(step.id)}" ${Number.isInteger(state.open) && state.open === index ? 'selected' : ''}>工程 ${index + 1}: ${esc(step.title || kindOf(step.kind).label)}</option>`).join('');
   return {
     center: `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`,
     right: `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
-      ${embedded && !state.current.isNew ? `<div class="edit-controls"><label class="toolbar-field">編集対象<select id="edit-target"><option value="workflow" ${Number.isInteger(state.open) ? '' : 'selected'}>全体</option>${targets}</select></label><label class="toolbar-field">エージェント<select id="edit-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.editAgent || state.config.agent)}</select></label><button type="button" id="b-assist" class="ghost">編集</button></div>` : '<button type="button" id="b-ai" class="ghost">AIで見直す</button>'}
+      ${embedded && !state.current.isNew ? `<div class="edit-controls"><label class="toolbar-field">エージェント<select id="edit-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.editAgent || state.config.agent)}</select></label><button type="button" id="b-assist" class="ghost">編集</button></div>` : '<button type="button" id="b-ai" class="ghost">AIで見直す</button>'}
       <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト</button>
       <details class="more-menu"><summary>その他</summary><div class="menu-panel">
         <button type="button" id="b-record" class="ghost">操作を記録</button>
@@ -507,13 +506,10 @@ function bindEditorControls(scope) {
   const editAgent = get('edit-agent');
   if (editAgent) editAgent.addEventListener('change', () => { state.editAgent = editAgent.value; });
   if (assist) assist.addEventListener('click', () => {
-    const target = get('edit-target').value;
     state.editAgent = editAgent?.value || selectedAgent(state.config.agent);
-    if (target === 'workflow') startEditing();
-    else {
-      state.aiReview.scope = { type: 'step', stepId: target.slice(5) };
-      openAiReview();
-    }
+    const selected = Number.isInteger(state.open) && spec.steps[state.open];
+    state.aiReview.scope = selected ? { type: 'step', stepId: selected.id } : { type: 'workflow' };
+    startEditing();
   });
   get('b-record').addEventListener('click', openRecord);
   get('b-files').addEventListener('click', openFiles);
@@ -545,6 +541,12 @@ function render() {
       for (const button of main.querySelectorAll('[data-task-delete]')) button.addEventListener('click', () => deleteTask(selectedExecutionMachine()));
       const back = main.querySelector('[data-edit-back]');
       if (back) back.addEventListener('click', () => stopEditing());
+      const target = main.querySelector('#editing-target');
+      if (target) target.addEventListener('change', () => {
+        state.aiReview.scope = target.value === 'workflow'
+          ? { type: 'workflow' }
+          : { type: 'step', stepId: target.value.slice(5) };
+      });
     }
   } else bindHome(main);
   teachingFeature.endRender();
@@ -887,8 +889,11 @@ function taskDetailShellHtml(machine, activeTab, content, { editor = false, teac
 // 「手順」タブで「編集」を押した状態。AI との会話（端末）は親が slot へ入れる。
 // 枠は概要の手動実行・定期実行と同じ .execution-card。
 function editingCardHtml(machine) {
+  const spec = state.current.spec;
+  const selected = reviewScopeValue(state.aiReview.scope);
+  const targets = spec.steps.map((step, index) => `<option value="step:${esc(step.id)}" ${selected === `step:${step.id}` ? 'selected' : ''}>工程 ${index + 1}: ${esc(step.title || kindOf(step.kind).label)}</option>`).join('');
   return `<section class="execution-card">
-    <div class="execution-card-head"><h3>AIと編集</h3><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
+    <div class="execution-card-head"><div><h3>AIと編集</h3><label class="editing-target" for="editing-target">編集対象<select id="editing-target"><option value="workflow" ${selected === 'workflow' ? 'selected' : ''}>全体</option>${targets}</select></label></div><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
     ${teachingFeature.editorSlotHtml(machine)}
   </section>`;
 }
