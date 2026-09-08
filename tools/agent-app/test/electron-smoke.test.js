@@ -240,9 +240,18 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_TASK_STEPS_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TASK_STEPS_SCREENSHOT });
     }
+    assert.strictEqual(await workspace.locator('#b-assist').textContent(), '編集');
+    assert.strictEqual(await workspace.locator('#b-run').textContent(), 'テスト');
+    const toolbar = await workspace.locator('.embedded-editor-toolbar').boundingBox();
+    const toolbarTitle = await workspace.locator('.embedded-editor-toolbar .bar-center').boundingBox();
+    const toolbarActions = await workspace.locator('.embedded-editor-toolbar .bar-right').boundingBox();
+    assert.ok(toolbar && toolbarActions && toolbarActions.x + toolbarActions.width <= toolbar.x + toolbar.width + 1,
+      `editor actions should stay within the toolbar: ${JSON.stringify({ toolbar, toolbarActions })}`);
+    assert.ok(toolbarTitle && toolbarActions && toolbarTitle.y + toolbarTitle.height <= toolbarActions.y + 1,
+      `editor title and actions should use separate rows: ${JSON.stringify({ toolbarTitle, toolbarActions })}`);
     // 「手順」の「編集」で、その場に AI との会話（tmux の端末ミラー）が出る。枠は概要と同じ
     // .execution-card で、中身は親の slot に載る。タブは概要 / 手順 / 履歴のまま。
-    await workspace.locator('#b-edit').click();
+    await workspace.locator('#b-assist').click();
     await win.locator('#task-teaching:not([hidden])').waitFor({ timeout: 20000 });
     await assertTaskLayout('編集');
     assert.match(await workspace.locator('.execution-card-head').first().textContent(), /AIと編集/);

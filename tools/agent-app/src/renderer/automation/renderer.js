@@ -481,8 +481,8 @@ function editorControlsHtml() {
   return {
     center: `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`,
     right: `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
-      ${embedded && !state.current.isNew ? `<label class="toolbar-field">編集対象<select id="edit-target"><option value="workflow" ${Number.isInteger(state.open) ? '' : 'selected'}>全体</option>${targets}</select></label><label class="toolbar-field">エージェント<select id="edit-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.editAgent || state.config.agent)}</select></label><button type="button" id="b-assist" class="ghost">編集・見直し</button>` : '<button type="button" id="b-ai" class="ghost">AIで見直す</button>'}
-      <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト・実行</button>
+      ${embedded && !state.current.isNew ? `<div class="edit-controls"><label class="toolbar-field">編集対象<select id="edit-target"><option value="workflow" ${Number.isInteger(state.open) ? '' : 'selected'}>全体</option>${targets}</select></label><label class="toolbar-field">エージェント<select id="edit-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.editAgent || state.config.agent)}</select></label><button type="button" id="b-assist" class="ghost">編集</button></div>` : '<button type="button" id="b-ai" class="ghost">AIで見直す</button>'}
+      <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト</button>
       <details class="more-menu"><summary>その他</summary><div class="menu-panel">
         <button type="button" id="b-record" class="ghost">操作を記録</button>
         <button type="button" id="b-files" class="ghost">生成ファイル</button>

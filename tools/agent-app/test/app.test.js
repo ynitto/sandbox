@@ -348,6 +348,7 @@ test('タスク選択は設定保存より先に詳細へ伝え、ドラフト�
 
 test('タスク詳細は概要・手順・履歴に統一し、対象に応じて編集またはAI見直しを行える', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
+  const workbenchCss = fs.readFileSync(path.join(SRC, 'renderer', 'automation-workbench.css'), 'utf8');
   assert.match(renderer, /detailTab:\s*'overview'/);
   assert.match(renderer, /class="task-detail-tabs"[^>]*role="tablist"/);
   assert.match(fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'teaching.js'), 'utf8'), /<slot name="teaching">/, '編集は親の会話（端末ミラー）を slot に載せる');
@@ -359,7 +360,13 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
   assert.ok(!renderer.includes('data-task-tab="teach"'), 'AI相談のタブは持たない');
   assert.match(renderer, /id="edit-target"/);
   assert.match(renderer, /id="edit-agent"/);
-  assert.match(renderer, /id="b-assist"[^>]*>編集・見直し</);
+  assert.match(renderer, /id="b-assist"[^>]*>編集</);
+  assert.match(renderer, /id="b-run"[^>]*>テスト</);
+  assert.match(renderer, /class="edit-controls"/, '編集対象・エージェント・編集ボタンを一つの操作グループにする');
+  assert.match(workbenchCss, /\.task-detail-shell\.is-editor \.task-tab-panel \{[^}]*grid-template-rows: auto minmax\(0, 1fr\)/,
+    'ツールバーが折り返しても本文へ重ならない');
+  assert.match(workbenchCss, /\.embedded-editor-toolbar \.bar-right \{[^}]*flex-wrap: wrap/,
+    '狭いペインでは操作を折り返す');
   assert.match(renderer, /target === 'workflow'[^\n]*startEditing/);
   assert.match(renderer, /type: 'step', stepId: target\.slice\(5\)/);
   assert.match(renderer, /function editingCardHtml\(/);

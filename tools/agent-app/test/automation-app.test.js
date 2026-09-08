@@ -63,9 +63,9 @@ test('編集画面は左のフローと右の編集パネルを分離し、狭�
   assert.match(css, /@media \(max-width: 899px\)[\s\S]*\.editor-shell\.is-inspecting \.flow-pane\s*\{\s*display:\s*none/);
 });
 
-test('主要操作と工程設定は省略語や直訳調の文言を使わない', () => {
+test('主要操作と工程設定は簡潔で分かりやすい文言を使う', () => {
   const renderer = read('renderer/automation/renderer.js');
-  for (const label of ['操作を記録', 'テスト・実行', '生成ファイル', 'AIで見直す', 'AIで下書き', '実行環境', '実行方法', '工程名', '次の工程', '回答が指定の言葉で始まる', '条件に当てはまる', '詳細条件', '構成を確認']) {
+  for (const label of ['操作を記録', '>テスト</button>', '生成ファイル', 'AIで見直す', 'AIで下書き', '実行環境', '実行方法', '工程名', '次の工程', '回答が指定の言葉で始まる', '条件に当てはまる', '詳細条件', '構成を確認']) {
     assert.ok(renderer.includes(label), `表示文言がありません: ${label}`);
   }
   assert.ok(renderer.includes('class="more-menu"'), '補助操作は「その他」にまとめる');

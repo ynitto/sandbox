@@ -24,15 +24,28 @@
 :host .task-detail-shell { display: grid; gap: 12px; width: 100%; max-width: 900px; margin-inline: auto; }
 :host .task-detail-shell.is-editor { height: 100%; padding-top: 20px; box-sizing: border-box; grid-template-rows: auto auto minmax(0, 1fr); }
 :host .task-detail-shell.is-editor .task-detail-tabs { background: var(--card); }
-:host .task-detail-shell.is-editor .task-tab-panel { min-height: 0; display: grid; grid-template-rows: 52px minmax(0, 1fr); }
+:host .task-detail-shell.is-editor .task-tab-panel { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 /* AI と編集: 工程の代わりに会話（端末ミラー）を 1 枚のカードで出す。カードが残りの高さを使う。 */
 :host .task-detail-shell.is-teaching .task-tab-panel { grid-template-rows: minmax(0, 1fr); padding-bottom: 12px; }
 :host .task-detail-shell.is-teaching .execution-card { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
-:host .embedded-editor-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding-inline: 16px; background: var(--card); border: 1px solid var(--line); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; }
+:host .embedded-editor-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 4px; min-height: 52px; padding: 8px 16px; background: var(--card); border: 1px solid var(--line); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; }
 :host .embedded-editor-toolbar .bar-center { justify-content: start; }
 :host .embedded-editor-toolbar .bar-center .title-input { text-align: left; }
+:host .embedded-editor-toolbar .bar-right { min-width: 0; justify-content: flex-start; flex-wrap: wrap; row-gap: 4px; }
+:host .embedded-editor-toolbar .edit-controls { min-width: 0; display: flex; align-items: center; gap: 4px; }
+:host .embedded-editor-toolbar .toolbar-field { min-width: 0; display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+:host .embedded-editor-toolbar .toolbar-field select { width: auto; min-width: 0; max-width: 180px; padding-block: 5px; }
+:host .embedded-editor-toolbar #edit-target { max-width: 210px; }
+:host .embedded-editor-toolbar #b-save { margin-left: auto; }
+:host .embedded-editor-toolbar button,
+:host .embedded-editor-toolbar .more-menu > summary { white-space: nowrap; }
 :host .embedded-task-editor,
 :host .embedded-task-editor > .editor-shell { min-height: 0; height: 100%; }
 @media (max-width: 760px) {
   :host *, :host *::before, :host *::after { min-width: 0; }
+  :host .embedded-editor-toolbar { grid-template-columns: 1fr; gap: 4px; padding-block: 8px; }
+  :host .embedded-editor-toolbar .bar-right { justify-content: flex-start; }
+  :host .embedded-editor-toolbar .edit-controls { flex: 1 1 100%; }
+  :host .embedded-editor-toolbar .toolbar-field { flex: 1 1 160px; }
+  :host .embedded-editor-toolbar .toolbar-field select { width: 100%; max-width: none; }
 }
