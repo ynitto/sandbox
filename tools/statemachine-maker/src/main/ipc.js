@@ -80,6 +80,11 @@ function registerIpcHandlers(getWindow, options = {}) {
   // WSL のログインシェル経由に載せ替えるのに使う。python や playwright-cli、winauto の
   // ような診断コマンドは対象にしない（この端末でそのまま探す）。
   const commandSpawnSpec = typeof options.commandSpawnSpec === 'function' ? options.commandSpawnSpec : () => undefined;
+  // 登録したフォルダのパスを、実行基盤が動くホストから見た表記へ直す（既定は素通し）。
+  // Windows から WSL の agent-flow を起こす構成で、bus へ書く workspace.local と、
+  // そこから実行を見分ける突き合わせに使う。
+  const hostPath = typeof options.hostPath === 'function' ? options.hostPath : (value) => String(value || '');
+  const hostRootOf = (payload) => hostPath(selectedRoot(payload));
   const runCapture = (name, args, opts = {}) => runner.capture(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
   const runStream = (name, args, opts = {}) => runner.stream(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
   const runStartDetached = (name, args, opts = {}) => runner.startDetached(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
@@ -374,17 +379,17 @@ function registerIpcHandlers(getWindow, options = {}) {
     // agent-flow に渡す `--agent-cli` は実在の定義名でなければならない（`herd` は写してから）
     const requestedAgent = String(p.agent || cfg.agent || '');
     const agent = requestedAgent ? await resolveAgent(requestedAgent, 'flow', root) : '';
-    return agentFlow.start({ ...p, agent }, { root, getContext, startDetached: runStartDetached });
+    return agentFlow.start({ ...p, agent }, { root, getContext, startDetached: runStartDetached, hostPath });
   });
-  register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit));
-  register('flow:run:read', (p) => agentFlow.readRun(selectedRoot(p), p.runId));
-  register('flow:run:cancel', (p) => agentFlow.cancel(selectedRoot(p), p.runId, p.reason, runCapture));
-  register('flow:run:respond', (p) => agentFlow.respond(selectedRoot(p), p.runId, p.interactionId, p.answer));
-  register('flow:run:result', (p) => agentFlow.result(selectedRoot(p), p.runId, runCapture));
-  register('flow:run:log', (p) => agentFlow.readLog(selectedRoot(p), p.runId, p.bytes));
-  register('flow:run:delete', (p) => agentFlow.deleteRun(selectedRoot(p), p.runId));
+  register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit, hostRootOf(p)));
+  register('flow:run:read', (p) => agentFlow.readRun(selectedRoot(p), p.runId, hostRootOf(p)));
+  register('flow:run:cancel', (p) => agentFlow.cancel(selectedRoot(p), p.runId, p.reason, runCapture, hostRootOf(p)));
+  register('flow:run:respond', (p) => agentFlow.respond(selectedRoot(p), p.runId, p.interactionId, p.answer, hostRootOf(p)));
+  register('flow:run:result', (p) => agentFlow.result(selectedRoot(p), p.runId, runCapture, hostRootOf(p)));
+  register('flow:run:log', (p) => agentFlow.readLog(selectedRoot(p), p.runId, p.bytes, hostRootOf(p)));
+  register('flow:run:delete', (p) => agentFlow.deleteRun(selectedRoot(p), p.runId, hostRootOf(p)));
   register('flow:run:openDelivery', (p) => agentFlow.openDelivery(
-    selectedRoot(p), p.runId, options.hooks && options.hooks.openDelivery,
+    selectedRoot(p), p.runId, options.hooks && options.hooks.openDelivery, hostRootOf(p),
   ));
   register('run:snapshot', (p) => agentLoop.inspect({ root: selectedRoot(p), capture: runCapture }));
   register('run:schedule', (p) => agentLoop.saveSchedule({

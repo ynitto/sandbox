@@ -147,6 +147,9 @@ function registerAutomationIpc({ getWindow, userData, appRoot }) {
     appRoot,
     agentDefinitions,
     commandSpawnSpec: makeTaskCommandSpawnSpec(userData),
+    // agent-flow が bus へ書く workspace.local（WSL の中で `git -C` に渡る clone 元）は、
+    // 登録した表記のままでは向こうで開けない。ホスト（Windows なら WSL）から見た表記を渡す。
+    hostPath: host.toHostPath,
     hooks: {
       resolveAgent,
       prepareRun: (payload) => prepareRun(userData, payload),

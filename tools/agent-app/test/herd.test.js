@@ -99,7 +99,11 @@ test('herd: タスクとワークフローは共有編集面のフックで一�
   assert.match(makerIpc, /agentFlow\.start\(\{ \.\.\.p, agent \}/, 'agent-flow の --agent-cli には実在の定義名を渡す');
   assert.match(makerTools, /\.\.\.\(agent \? \['--agent', String\(agent\)\] : \[\]\)/, 'AI 支援は agent が空なら --agent を渡さない');
   const adapter = fs.readFileSync(path.join(SRC, 'main/automation/ipc.js'), 'utf8');
-  assert.match(adapter, /agentDefinitions,\s*commandSpawnSpec:\s*makeTaskCommandSpawnSpec\(userData\),\s*hooks: \{\s*resolveAgent,/);
+  // 共有編集面へ渡す配線。順番や隣接ではなく、項目ごとに見る（項目が増えても壊れない）
+  assert.match(adapter, /makerIpc\.registerIpcHandlers\(getWindow, \{[\s\S]*\n  \}\);/);
+  assert.match(adapter, /^\s*agentDefinitions,$/m);
+  assert.match(adapter, /^\s*commandSpawnSpec: makeTaskCommandSpawnSpec\(userData\),$/m);
+  assert.match(adapter, /^\s*hooks: \{\s*$[\s\S]*^\s*resolveAgent,$/m);
   assert.match(adapter, /agentCli\.load\(agent \|\| herd\.HARNESS_DEFAULT, root\)/);
   const capture = async () => ({ ok: true, stdout: JSON.stringify({ definitions: ['aider', 'claude', 'ollama'] }) });
   assert.deepStrictEqual(await automationIpc.agentDefinitions({ cwd: '', capture }), ['aider', 'claude', 'ollama', 'herd']);

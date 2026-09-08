@@ -147,6 +147,11 @@ async function start(payload, deps) {
   const resolvedRequest = templateParameters.applyParameters(request, values);
   const id = runIdNow();
   const logFile = path.join(logDir(), `${id}.log`);
+  // workspace.local は **agent-flow が動くホストのファイルシステム**で開くパス（clone 元・
+  // recovery ref の保存先として `git -C` に渡る）。Windows から WSL の agent-flow を起こす
+  // 構成では、登録した表記（C:\… / \\wsl$\…）のままでは WSL の中で開けないので、埋め込む側
+  // （agent-app）が渡す hostPath でホストの表記へ直す。埋め込まない単体版は素通し。
+  const hostPath = typeof deps.hostPath === 'function' ? deps.hostPath : (value) => String(value || '');
   const inbox = {
     id,
     title: String(payload.title || '').trim() || resolvedRequest.slice(0, 60),
@@ -154,11 +159,14 @@ async function start(payload, deps) {
     submitter: 'agent-app',
     purpose: 'implementation',
     readonly,
-    workspace: readonly ? null : { url: ctx.workspace.origin, local: deps.root, base: ctx.workspace.branch, path: '', desc: 'workflow' },
+    workspace: readonly ? null : { url: ctx.workspace.origin, local: hostPath(deps.root), base: ctx.workspace.branch, path: '', desc: 'workflow' },
     references: [],
     ...(checked ? { plan: checked.plan } : {}),
     ...(source.type === 'pattern' ? { pattern: String(source.pattern || '') } : {}),
     submitted_at: isoSeconds(),
+    // submitter_context は agent-app 自身の覚え書きで、agent-flow は読まない。root は
+    // **登録した表記のまま**置く——この画面が「どのリポジトリの実行か」を見分ける鍵で、
+    // 登録リポジトリと突き合わせるのはこちら側だから（belongsToRoot）。
     submitter_context: {
       root: deps.root,
       workflow: source.type === 'workflow' ? String(source.id || '') : null,
@@ -193,17 +201,25 @@ function runFiles(id) {
   };
 }
 
-function belongsToRoot(root, files, inbox = readJson(files.inbox), meta = readJson(path.join(files.run, 'meta.json'))) {
+// この実行が選択中のリポジトリのものか。見分ける鍵は 2 つある。
+//   submitter_context.root … この画面が投函した実行。登録した表記のまま入っている
+//   meta.workspace.local   … それ以外（inbox を消された実行・別の投函元）の手掛かり。
+//                            **agent-flow が動くホストの表記**なので、hostRoot（登録した
+//                            パスをホストの表記へ直したもの）とも突き合わせる。渡されなければ
+//                            登録した表記だけで見る（埋め込まない単体版・同じ表記の環境）。
+function belongsToRoot(root, files, inbox = readJson(files.inbox), meta = readJson(path.join(files.run, 'meta.json')), hostRoot = '') {
   if (inbox && inbox.submitter === 'agent-app' && inbox.submitter_context
       && String(inbox.submitter_context.root || '') === root) return true;
-  return !!(meta && meta.workspace && String(meta.workspace.local || '') === root);
+  if (!meta || !meta.workspace) return false;
+  const local = String(meta.workspace.local || '');
+  return !!local && (local === root || local === String(hostRoot || ''));
 }
 
-function requireRun(root, id) {
+function requireRun(root, id, hostRoot = '') {
   const files = runFiles(id);
   const inbox = readJson(files.inbox);
   const meta = readJson(path.join(files.run, 'meta.json'));
-  if ((!inbox && !meta) || !belongsToRoot(root, files, inbox, meta)) throw flowError('run-not-found', '実行が見つかりません');
+  if ((!inbox && !meta) || !belongsToRoot(root, files, inbox, meta, hostRoot)) throw flowError('run-not-found', '実行が見つかりません');
   return { files, inbox, meta };
 }
 
@@ -339,8 +355,8 @@ function inputOf(inbox) {
   };
 }
 
-function readRun(root, id) {
-  const { files, inbox, meta } = requireRun(root, id);
+function readRun(root, id, hostRoot = '') {
+  const { files, inbox, meta } = requireRun(root, id, hostRoot);
   const nowSeconds = Date.now() / 1000;
   if (!meta) {
     const age = Date.now() - parseDate(inbox && inbox.submitted_at);
@@ -422,14 +438,14 @@ function readRun(root, id) {
   };
 }
 
-function listRuns(root, limit = 30) {
+function listRuns(root, limit = 30, hostRoot = '') {
   const ids = new Set();
   for (const name of safeList(path.join(busDir(), 'inbox'))) if (name.endsWith('.json')) ids.add(name.slice(0, -5));
   for (const name of safeList(path.join(busDir(), 'runs'))) ids.add(name);
   const rows = [];
   for (const id of ids) {
     try {
-      const detail = readRun(root, id);
+      const detail = readRun(root, id, hostRoot);
       rows.push({
         runId: detail.runId, title: detail.title, workflowId: detail.workflowId, state: detail.state,
         terminal: detail.terminal, createdAt: detail.createdAt, updatedAt: detail.updatedAt,
@@ -440,16 +456,16 @@ function listRuns(root, limit = 30) {
   return rows.sort((a, b) => parseDate(b.createdAt) - parseDate(a.createdAt)).slice(0, Math.max(1, Math.min(100, Number(limit) || 30)));
 }
 
-async function cancel(root, id, reason, capture) {
-  const detail = readRun(root, id);
+async function cancel(root, id, reason, capture, hostRoot = '') {
+  const detail = readRun(root, id, hostRoot);
   if (detail.terminal) throw flowError('run-terminal', 'この実行はすでに終了しています');
   const result = await capture('agent-flow', ['--bus', busDir(), 'cancel', detail.runId, '--reason', String(reason || '')], { cwd: root, timeoutMs: 30000 });
   if (!result || !result.ok) throw flowError('cancel-failed', '実行を停止できません', { detail: firstLine(result) });
   return { state: 'cancelled' };
 }
 
-function respond(root, id, interactionId, raw) {
-  const { files } = requireRun(root, id);
+function respond(root, id, interactionId, raw, hostRoot = '') {
+  const { files } = requireRun(root, id, hostRoot);
   const iid = String(interactionId || '');
   if (!/^ix-[a-f0-9]{16}$/.test(iid)) throw flowError('interaction-not-found', '確認項目が見つかりません');
   const dir = path.join(files.run, 'interactions', iid);
@@ -487,8 +503,8 @@ function respond(root, id, interactionId, raw) {
   return { responseId, submittedAt: response.submitted_at, interaction };
 }
 
-async function result(root, id, capture) {
-  const { files } = requireRun(root, id);
+async function result(root, id, capture, hostRoot = '') {
+  const { files } = requireRun(root, id, hostRoot);
   const found = await capture('agent-flow', ['--bus', busDir(), '--run-id', files.id, 'result', '--json'], { cwd: root, timeoutMs: 30000 });
   if (!found || !found.ok) throw flowError('result-failed', '成果を読み取れません', { detail: firstLine(found) });
   try {
@@ -507,8 +523,8 @@ async function result(root, id, capture) {
   } catch (err) { throw flowError('result-failed', '成果を読み取れません', { detail: err.message }); }
 }
 
-function readLog(root, id, bytes = 16 * 1024) {
-  const { files } = requireRun(root, id);
+function readLog(root, id, bytes = 16 * 1024, hostRoot = '') {
+  const { files } = requireRun(root, id, hostRoot);
   const size = Math.max(1024, Math.min(1024 * 1024, Number(bytes) || 16 * 1024));
   try {
     const stat = fs.statSync(files.log);
@@ -520,10 +536,10 @@ function readLog(root, id, bytes = 16 * 1024) {
   } catch { return { path: files.log, tail: '', truncated: false, exists: false }; }
 }
 
-function deleteRun(root, id) {
-  const detail = readRun(root, id);
+function deleteRun(root, id, hostRoot = '') {
+  const detail = readRun(root, id, hostRoot);
   if (!detail.terminal) throw flowError('run-active', '実行中です。停止してから削除してください');
-  const { files } = requireRun(root, id);
+  const { files } = requireRun(root, id, hostRoot);
   fs.rmSync(files.run, { recursive: true, force: true });
   for (const file of [files.inbox, path.join(busDir(), 'inbox', 'cancels', `${files.id}.json`), files.log]) {
     try { fs.unlinkSync(file); } catch { /* 無ければよい */ }
@@ -532,8 +548,8 @@ function deleteRun(root, id) {
   return { deleted: true };
 }
 
-async function openDelivery(root, id, hook) {
-  const detail = readRun(root, id);
+async function openDelivery(root, id, hook, hostRoot = '') {
+  const detail = readRun(root, id, hostRoot);
   if (!detail.delivery || !['published', 'published-manually'].includes(detail.delivery.state)) throw flowError('delivery-unavailable', '開ける成果ブランチがありません');
   if (typeof hook !== 'function') throw flowError('not-supported', 'このアプリでは成果ブランチを開けません');
   return hook(root, detail.delivery);
