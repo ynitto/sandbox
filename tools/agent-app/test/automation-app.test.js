@@ -180,3 +180,16 @@ test('共有ワークベンチは AI の一覧と実行状態を待たずに描�
   assert.match(renderer, /if \(state\.execution\.loading && !machines\.length\) return/, '定義があれば実行状態の到着を待たずに詳細を描く');
   assert.match(renderer, /'実行状態を確認しています…'/);
 });
+
+test('埋め込みタスクの切替は設定取得を待たず、古い切替結果でドラフトの見出しを戻さない', () => {
+  const renderer = read('renderer/automation/renderer.js');
+  const navigate = renderer.slice(
+    renderer.indexOf('async function navigateEmbedded(payload)'),
+    renderer.indexOf('async function refreshEmbedded()'),
+  );
+  assert.match(renderer, /let navigationToken = 0;/);
+  assert.match(navigate, /const token = \(navigationToken \+= 1\);/);
+  assert.doesNotMatch(navigate, /const latestConfig = await guard\('設定'/, '選択直後の見出しを設定 IPC で止めない');
+  assert.match(navigate, /guard\('設定',[\s\S]*\.then\(\(latestConfig\) =>/);
+  assert.match(navigate, /if \(token !== navigationToken\) return;/, '前のタスクの遅い応答は現在の選択へ反映しない');
+});

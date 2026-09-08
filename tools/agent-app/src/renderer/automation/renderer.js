@@ -2005,21 +2005,20 @@ function toolsHtml(tools) {
 // --- 起動 -----------------------------------------------------------------------------
 
 let initPromise;
+let navigationToken = 0;
 
 async function navigateEmbedded(payload) {
   if (!embedded) return;
+  const token = (navigationToken += 1);
   if (initPromise) await initPromise;
-  const latestConfig = await guard('設定', () => automationHost.getConfig());
-  if (latestConfig) {
-    state.config = latestConfig;
-    loadAgents();                      // 待たない（WSL 越しで遅い）。届いたら描き直す
-  }
+  if (token !== navigationToken) return;
   const area = payload.area === 'workflows' ? 'workflows' : 'tasks';
   const root = String(payload.root || '');
 
   state.view = 'home';
   state.current = null;
   if (root && root !== state.root) await selectRoot(root);
+  if (token !== navigationToken) return;
   if (!root && state.root) {
     state.root = '';
     state.machines = [];
@@ -2028,10 +2027,20 @@ async function navigateEmbedded(payload) {
     teachingFeature.rootChanged();
   }
 
+  // 設定の再読込は選択したタスクを描くためには不要。IPC の返答を待つあいだ前のタスク名を
+  // 残さず、現在の選択を先に描く。連続して選んだ場合は古い返答を token で捨てる。
+  guard('設定', () => automationHost.getConfig()).then((latestConfig) => {
+    if (token !== navigationToken || !latestConfig) return;
+    state.config = latestConfig;
+    loadAgents();                      // 待たない（WSL 越しで遅い）。届いたら描き直す
+  });
+
   if (area === 'workflows') {
     state.homeTab = 'flows';
     await flowFeature.activate();
+    if (token !== navigationToken) return;
     if (payload.selected) await flowFeature.select(payload.selected);
+    if (token !== navigationToken) return;
     if (payload.action === 'new') flowFeature.create();
     else render();
     return;
@@ -2049,6 +2058,7 @@ async function navigateEmbedded(payload) {
   if (payload.action === 'teach' && payload.selected) {
     teachingFeature.cancelCreate();
     await teachingFeature.activate();
+    if (token !== navigationToken) return;
     await openTeaching(payload.selected);
     return;
   }
@@ -2058,8 +2068,12 @@ async function navigateEmbedded(payload) {
   state.homeTab = teachesTask ? 'teach' : 'run';
   if (teachesTask) {
     await teachingFeature.activate();
+    if (token !== navigationToken) return;
     if (payload.action === 'new') teachingFeature.create();
-    else if (payload.selected) await teachingFeature.select(String(payload.selected).replace(/^machine:/, ''));
+    else if (payload.selected) {
+      await teachingFeature.select(String(payload.selected).replace(/^machine:/, ''));
+      if (token !== navigationToken) return;
+    }
     else render();
     return;
   }
