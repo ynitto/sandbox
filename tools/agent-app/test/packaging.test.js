@@ -2,9 +2,9 @@
 
 // 配布物（electron-builder）の取りこぼし防止。agent-dashboard/test/packaging-assets.test.js と同じ狙い。
 //
-// index.html はバンドラを使わず CSS / JS を相対パスで直接読み、main 側は node_modules の
-// statemachine-maker（file: リンク）を require する。これらが package.json の build.files に
-// 載っていないと**パッケージ版だけ**壊れる（開発起動では node_modules がそこに在るので気づけない）。
+// index.html はバンドラを使わず CSS / JS を相対パスで直接読み、main 側は本番依存（yaml）を
+// require する。これらが package.json の build.files に載っていないと**パッケージ版だけ**壊れる
+// （開発起動では node_modules がそこに在るので気づけない）。
 // 壊れ方が配布後にしか出ないので、参照と同梱指定の対応をここで機械的に突き合わせる。
 
 const { test } = require('node:test');
@@ -114,46 +114,29 @@ test('src/ 配下の相対 require 先は実在し、build.files に載ってい
   assert.ok(checked >= 20, `相対 require を抽出できていない: ${checked}`);
 });
 
-// statemachine-maker は file: リンク（node_modules/statemachine-maker → ../statemachine-maker）。
-// electron-builder は実体を写すが、renderer 側は vendor/ に写した分だけ使うので main だけ同梱する。
-// その main が使う yaml も要る（開発起動では ../statemachine-maker/node_modules から解決される）。
-test('main が require する statemachine-maker（file: リンク）と yaml が build.files に載っている', () => {
+// main が require する本番依存（yaml。ステートマシン定義の読み書き）は build.files に明示する。
+test('main が require する本番依存（yaml）が build.files に載っている', () => {
   const specs = new Set();
   for (const file of jsFilesUnder(path.join(ROOT, 'src', 'main'))) {
-    for (const m of fs.readFileSync(file, 'utf8').matchAll(/require\(\s*'(statemachine-maker\/[^']+)'\s*\)/g)) specs.add(m[1]);
+    for (const m of fs.readFileSync(file, 'utf8').matchAll(/require\(\s*'([a-z][\w.-]*)'\s*\)/g)) specs.add(m[1]);
   }
-  assert.ok(specs.size >= 1, 'statemachine-maker の require を抽出できていない');
-  const makerRoot = path.join(ROOT, '..', 'statemachine-maker');
-  for (const spec of specs) {
-    const rel = `node_modules/${spec}.js`;
-    assert.ok(fs.existsSync(path.join(makerRoot, spec.replace(/^statemachine-maker\//, '') + '.js')), `${spec} が無い`);
-    assert.ok(included(rel), `${rel} が build.files に載っていない`);
-  }
-  assert.ok(included('node_modules/statemachine-maker/package.json'));
-  // maker の main 同士の相対 require も同梱範囲に収まる
-  for (const file of jsFilesUnder(path.join(makerRoot, 'src', 'main'))) {
-    for (const spec of relativeRequires(file)) {
-      const target = resolveRelative(file, spec);
-      assert.ok(target, `${posix(path.relative(makerRoot, file))} の require('${spec}') が解決できない`);
-      const rel = path.join('node_modules', 'statemachine-maker', path.relative(makerRoot, target));
-      assert.ok(included(rel), `${posix(rel)} が build.files に載っていない`);
-    }
-  }
-  const makerPkg = JSON.parse(fs.readFileSync(path.join(makerRoot, 'package.json'), 'utf8'));
-  for (const dep of Object.keys(makerPkg.dependencies || {})) {
-    assert.ok(included(`node_modules/${dep}/package.json`), `statemachine-maker の依存 ${dep} が build.files に載っていない`);
+  const builtin = new Set(require('module').builtinModules);
+  const external = [...specs].filter((name) => !builtin.has(name) && name !== 'electron');
+  assert.deepStrictEqual(external.sort(), ['yaml']);
+  for (const dep of external) {
+    assert.ok(pkg.dependencies[dep], `${dep} は dependencies に置く`);
+    assert.ok(included(`node_modules/${dep}/package.json`), `node_modules/${dep} が build.files に載っていない`);
   }
 });
 
 // electron-builder は dependencies（本番依存）の node_modules を推移的に自動同梱する。画面用ライブラリは
 // npm install 時に vendor/ へ写した分だけ使うので devDependencies に置き、mermaid が引く d3 / katex …
 // まで exe に入らないようにする（dependencies に戻すと asar が数十 MB 増える）。
-test('画面用ライブラリは devDependencies（vendor/ に写す分だけ同梱）で、dependencies は statemachine-maker だけ', () => {
+test('画面用ライブラリは devDependencies（vendor/ に写す分だけ同梱）で、dependencies は yaml だけ', () => {
   const { FILES } = require('../scripts/vendor');
   const vendored = new Set(FILES.map(([from]) => (from.startsWith('@') ? from.split('/').slice(0, 2).join('/') : from.split('/')[0])));
-  assert.deepStrictEqual(Object.keys(pkg.dependencies), ['statemachine-maker']);
+  assert.deepStrictEqual(Object.keys(pkg.dependencies), ['yaml']);
   for (const dep of vendored) {
-    if (dep === 'statemachine-maker') continue;
     assert.ok(pkg.devDependencies[dep], `${dep} は vendor/ に写すので devDependencies に置く`);
     assert.ok(!included(`node_modules/${dep}/package.json`), `${dep} は build.files に載せない`);
   }
@@ -170,7 +153,7 @@ test('同梱の CLI 定義が extraResources でパッケージへ入る', () =>
   assert.ok(src.includes("path.join(process.resourcesPath, 'agents')"));
 });
 
-// タスク（statemachine-maker の機能）は `.github/skills/statemachine-use/scripts/run_machine.py` を
+// タスク（共有ワークベンチの機能）は `.github/skills/statemachine-use/scripts/run_machine.py` を
 // `appRoot/../../` から辿る。パッケージ版では resources/app-root/ にリポジトリ直下と同じ配置で同梱し、
 // src/main/ipc.js がそこを appRoot として渡す。
 test('statemachine-use スキルが extraResources でパッケージへ入り、ipc.js の appRoot から辿れる', () => {

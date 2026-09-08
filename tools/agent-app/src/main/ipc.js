@@ -21,6 +21,9 @@ const skills = require('./skills');
 const skillSelection = require('./skillSelection');
 const herd = require('./herd');
 const { registerAutomationIpc } = require('./automation/ipc');
+const automationTools = require('./automation/tools');
+const machineStore = require('./automation/store');
+const teaching = require('./automation/teaching');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
 function userData() { return app.getPath('userData'); }
@@ -652,6 +655,100 @@ function automationAppRoot() {
   return path.join(__dirname, '..', '..');
 }
 
+// ---- タスクを AI と作る会話（tmux）。会話基盤をそのまま使い、kind: 'task' の会話をタスクに紐づける ----
+//
+// 手動実行の画面と同じく、作成・変更も tmux の端末ミラーの中で進める。CLI は会話と同じ
+// 定義・同じ起動方針で起こし、cwd はリポジトリ本体。最初の依頼（teaching.prompt）が
+// statemachine-use の作成モードと、見本の依頼の作法（@record 行）を伝える。
+// 見本の記録（playwright-cli / winauto）は**この端末**（Windows ならその Windows 側）で取り、
+// できた Markdown の所在を WSL 表記に直して会話へ送る。
+
+function teachingTools() {
+  return {
+    browser: !!agentCli.resolvePath('playwright-cli'),
+    windows: process.platform === 'win32' && !!agentCli.resolvePath('winauto'),
+  };
+}
+
+function teachingSkillDir(repo, cfg) {
+  const dir = automationTools.findSkillDir({ root: repo, configured: cfg.automationSkillDir, appRoot: automationAppRoot() });
+  return dir ? host.toHostPath(dir) : '';
+}
+
+function taskConversationView(ud, repo, machine) {
+  const summary = store.findTaskSession(ud, repo, machine);
+  const session = summary ? presentSession(store.readSession(ud, summary.id)) : null;
+  return {
+    machine, session, sidecar: teaching.load(repo, machine), published: machineStore.exists(repo, machine),
+    tools: teachingTools(),
+  };
+}
+
+async function startTeaching(p, send) {
+  const ud = userData();
+  const repo = requireRepo(p.repo);
+  const cfg = store.loadConfig(ud);
+  const purpose = String(p.purpose || '').trim();
+  const machine = String(p.machine || '').trim() || teaching.machineNameFor(purpose);
+  machineStore.machineDir(repo, machine);            // 保存名の字種を検査する（不正なら投げる）
+  const existing = machineStore.exists(repo, machine);
+  let sidecar = teaching.load(repo, machine);
+  if (!existing && !sidecar) {
+    if (!purpose) throw new Error('教えたいタスクを入力してください');
+    sidecar = teaching.save(repo, machine, { title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose });
+  }
+  let summary = store.findTaskSession(ud, repo, machine);
+  if (!summary) {
+    const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
+    const created = store.createSession(ud, {
+      repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier,
+      readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
+      transport: 'tmux', worktree: '', kind: 'task', task: { machine },
+    });
+    summary = { id: created.id };
+    sidecar = teaching.save(repo, machine, { ...(sidecar || { title: machine, purpose }), sessionId: created.id });
+  } else if (sidecar && sidecar.sessionId !== summary.id) {
+    sidecar = teaching.save(repo, machine, { ...sidecar, sessionId: summary.id });
+  }
+  const session = store.readSession(ud, summary.id);
+  const busy = running.has(session.id) || !!(conversations.get(session.id) && conversations.get(session.id).turn);
+  let started = false;
+  // まだ何も送っていない会話にだけ最初の依頼を送る（開き直したときは端末につなぐだけ）。
+  if (!session.messages.length && !busy) {
+    const prompt = teaching.prompt({
+      machine, purpose: sidecar ? sidecar.purpose : purpose, existing, skillDir: teachingSkillDir(repo, cfg), tools: teachingTools(),
+    });
+    await guardedRunTurn(session.id, {
+      prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
+      skillMode: 'off', skills: [], attachments: [],
+    }, send);
+    started = true;
+  }
+  return { ...taskConversationView(ud, repo, machine), existing, started };
+}
+
+async function demonstrate(p, send) {
+  const ud = userData();
+  const repo = requireRepo(p.repo);
+  const machine = String(p.machine || '').trim();
+  const saved = teaching.saveRecording(repo, machine, p.recording);
+  const hostPath = host.toHostPath(saved.file);
+  const summary = store.findTaskSession(ud, repo, machine);
+  let sent = false;
+  if (summary) {
+    const session = store.readSession(ud, summary.id);
+    const conv = conversations.get(session.id);
+    if (running.has(session.id) || (conv && conv.turn)) throw new Error('AI が応答中です。終わってからもう一度送ってください（記録は保存済みです）');
+    await guardedRunTurn(session.id, {
+      prompt: teaching.demonstrationPrompt({ machine, hostPath, source: saved.source, target: saved.target, steps: saved.steps, parameters: saved.parameters }),
+      policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
+      skillMode: 'off', skills: [], attachments: [],
+    }, send);
+    sent = true;
+  }
+  return { file: saved.file, relative: saved.relative, hostPath, source: saved.source, steps: saved.steps, sent };
+}
+
 function registerIpcHandlers(getWindow) {
   const send = (channel, payload) => {
     const win = getWindow();
@@ -662,6 +759,9 @@ function registerIpcHandlers(getWindow) {
     userData,
     appRoot: automationAppRoot(),
   });
+  handle('automation:teach:start', (p) => startTeaching(p, send));
+  handle('automation:teach:session', (p) => taskConversationView(userData(), requireRepo(p.repo), String(p.machine || '').trim()));
+  handle('automation:teach:demonstration', (p) => demonstrate(p, send));
   // 写したが送らずに閉じた添付を掃除する
   try { attachments.sweep(userData(), store.readAllSessions(userData())); } catch { /* 消せなくても動く */ }
 

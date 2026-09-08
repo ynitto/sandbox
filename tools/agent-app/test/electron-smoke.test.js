@@ -38,8 +38,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-automation-repo-'));
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-automation-userdata-'));
   const appStore = require('../src/main/store');
-  const machineStore = require('statemachine-maker/src/main/store');
-  const flowStore = require('statemachine-maker/src/main/flow-store');
+  const machineStore = require('../src/main/automation/store');
+  const flowStore = require('../src/main/automation/flow-store');
   machineStore.save(repo, {
     name: 'リリース確認', machine: 'release-check', purpose: '自動化統合の確認',
     steps: [{ kind: 'agent', title: '変更を確認', detail: '公開前の変更を確認する' }],
@@ -106,7 +106,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('#sessions .list-pick');
     await win.locator('.answer-bubble').waitFor();
     assert.strictEqual(await win.locator('#conversation-history').getAttribute('open'), '', '端末がない会話では履歴を主表示する');
-    const composerModeHeights = await win.locator('.composer-shell').evaluate((shell) => {
+    const composerModeHeights = await win.locator('#composer .composer-shell').evaluate((shell) => {
       const message = document.getElementById('message-input');
       const terminal = document.getElementById('terminal-keys');
       const toolbar = shell.querySelector('.composer-toolbar');
@@ -180,12 +180,21 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await workspace.locator('.execution-title .eyebrow').count(), 0, '上位ヘッダーと重なる「タスク」ラベルを表示しない');
     assert.strictEqual(await workspace.locator('.teaching-page').count(), 0, '既存定義を教示画面で開かない');
     assert.strictEqual(await workspace.locator('.teaching-page-head').isHidden(), true, 'タスクの見出しがサイドバーと二重に出ている');
-    assert.deepStrictEqual(await workspace.locator('.task-detail-tabs [role="tab"]').allTextContents(), ['概要', '手順', 'AI相談', '履歴']);
-    const portalTabsBox = await workspace.locator('.task-detail-tabs').boundingBox();
-    const portalPanelBox = await workspace.locator('.task-tab-panel').boundingBox();
+    assert.deepStrictEqual(await workspace.locator('.task-detail-tabs [role="tab"]').allTextContents(), ['概要', '手順', '履歴']);
+    // 実行状態（agent-loop）は待たずに描き、届いた時点で描き直す。測るのは落ち着いてから。
+    const boxOf = async (locator) => {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const box = await locator.boundingBox();
+        if (box) return box;
+        await win.waitForTimeout(100);
+      }
+      return null;
+    };
+    const portalTabsBox = await boxOf(workspace.locator('.task-detail-tabs'));
+    const portalPanelBox = await boxOf(workspace.locator('.task-tab-panel'));
     const assertTaskLayout = async (name) => {
-      const tabsBox = await workspace.locator('.task-detail-tabs').boundingBox();
-      const panelBox = await workspace.locator('.task-tab-panel').boundingBox();
+      const tabsBox = await boxOf(workspace.locator('.task-detail-tabs'));
+      const panelBox = await boxOf(workspace.locator('.task-tab-panel'));
       const close = (left, right) => Math.abs(left - right) <= 1;
       assert.ok(portalTabsBox && tabsBox
         && close(tabsBox.x, portalTabsBox.x) && close(tabsBox.y, portalTabsBox.y) && close(tabsBox.width, portalTabsBox.width),
@@ -194,17 +203,6 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
         && close(panelBox.x, portalPanelBox.x) && close(panelBox.width, portalPanelBox.width),
       `${name}で左右のパディングが変わる: ${JSON.stringify({ portalPanelBox, panelBox })}`);
     };
-    // AI相談もタスク詳細のタブ内で開く。状態は利用可能のまま、進行バーは出ない
-    await workspace.locator('[data-task-tab="teach"]').click();
-    await workspace.locator('.teaching-workspace').waitFor({ timeout: 20000 });
-    await assertTaskLayout('AI相談');
-    assert.match(await workspace.locator('.task-detail-shell').textContent(), /リリース確認.*利用可能/s);
-    assert.strictEqual(await workspace.locator('.task-detail-tabs').count(), 1, 'AI相談でもタスクタブを維持する');
-    assert.strictEqual(await workspace.locator('.teaching-progress').count(), 0);
-    assert.doesNotMatch(await workspace.locator('.task-detail-shell').textContent(), /仕事|試運転が必要/);
-    if (process.env.AGENT_APP_TEACHING_SCREENSHOT) {
-      await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
-    }
     await workspace.locator('[data-task-tab="overview"]').click();
     await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.execution-title').textContent(), /リリース確認/s);
@@ -242,6 +240,22 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_TASK_STEPS_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TASK_STEPS_SCREENSHOT });
     }
+    // 「手順」の「編集」で、その場に AI との会話（tmux の端末ミラー）が出る。枠は概要と同じ
+    // .execution-card で、中身は親の slot に載る。タブは概要 / 手順 / 履歴のまま。
+    await workspace.locator('#b-edit').click();
+    await win.locator('#task-teaching:not([hidden])').waitFor({ timeout: 20000 });
+    await assertTaskLayout('編集');
+    assert.match(await workspace.locator('.execution-card-head').first().textContent(), /AIと編集/);
+    assert.strictEqual(await workspace.locator('[data-edit-back]').isVisible(), true, '工程へ戻れる');
+    assert.strictEqual(await workspace.locator('.task-detail-tabs').count(), 1, '編集でもタスクタブを維持する');
+    assert.deepStrictEqual(await workspace.locator('.task-detail-tabs [role="tab"]').allTextContents(), ['概要', '手順', '履歴']);
+    assert.match(await workspace.locator('.task-detail-shell').textContent(), /リリース確認.*利用可能/s);
+    assert.strictEqual(await win.locator('#task-teaching.in-card').count(), 1, 'カードの中の端末は枠と影を持たない');
+    if (process.env.AGENT_APP_TEACHING_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
+    }
+    await workspace.locator('[data-edit-back]').click();
+    await workspace.locator('[data-step="0"]').waitFor({ timeout: 20000 });
     await workspace.locator('[data-task-tab="history"]').click();
     await workspace.locator('.execution-card').waitFor();
     await assertTaskLayout('履歴');
@@ -249,9 +263,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await win.screenshot({ path: process.env.AGENT_APP_TASK_HISTORY_SCREENSHOT });
     }
     await win.click('#session-new');
-    await workspace.locator('.teaching-create').waitFor();
-    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいタスクを教える/);
-    await workspace.locator('[data-teach-create-cancel]').click();
+    await win.locator('#task-create:not([hidden])').waitFor();
+    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいタスク[\s\S]*何を自動化したいですか/);
+    assert.strictEqual(await win.locator('#task-purpose').isVisible(), true, '目的の入力欄が親の作成フォームに出る');
+    assert.strictEqual(await win.locator('#task-create-start').isVisible(), true, 'AIと作成を始められる');
+    if (process.env.AGENT_APP_TASK_NEW_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_TASK_NEW_SCREENSHOT });
+    }
 
     await win.click('#area-workflows');
     await win.locator('#workflows .list-pick').first().waitFor({ timeout: 20000 });

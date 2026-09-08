@@ -3,7 +3,9 @@
 GitHub Copilot App 風のデスクトップ。ローカルリポジトリを登録し、`agents/*.json` に定義した
 エージェント CLI（copilot / claude / codex / kiro / cursor …）と会話形式で作業する Electron アプリ。
 GitHub との連携は持たない。見に行くのは登録したフォルダだけで、CLI はこの PC（Windows なら WSL）に
-入っているものをそのまま呼ぶ。
+入っているものをそのまま呼ぶ。同じリポジトリの**タスク**（statemachine-use スキルで動くステートマシン、
+`.statemachine/<名前>/`）と**ワークフロー**（agent-flow の工程）もこの画面で作り、実行する
+（旧 statemachine-maker はこのアプリに統合した。単体アプリは無い）。
 
 設計判断は [`docs/designs/agent-app-design.md`](../../docs/designs/agent-app-design.md)、IPC・設定・
 保存形式・tmux 契約・上限は [`docs/specs/agent-app-spec.md`](../../docs/specs/agent-app-spec.md) にある。
@@ -26,12 +28,13 @@ GitHub との連携は持たない。見に行くのは登録したフォルダ�
   描画する。「端末」で CLI の画面をそのまま見て操作できる（ツール実行の許可などは端末で答える）
 - **中央「タスク」**: 定義があるタスク（statemachine-use スキルや手で作った `.statemachine/<名前>/` を含む）は
   **実行詳細**（概要 / 手順 / 履歴）から開き、名前の横に「利用可能」が付く。そのまま実行・定期実行できる。
-  新しいタスクは AI に目的を伝え、必要な場合だけブラウザや Windows アプリの操作を見せて作る。
-  AIが毎回変わる値、分岐、成功条件を整理し、分離した試運転の結果を確認してから利用可能にする。
-  既存タスクの変更は「AIに変更を相談」から。今の版はそのまま動き、試運転を「期待どおり」と確認した
-  ときだけ置き換わる（進行中は「変更中 · 試運転待ち」などの印が付き、ボタンが「変更を続ける」になる）。
-  会話の利用者メッセージにある「この依頼をタスクにする」から、依頼・添付名・AI設定を引き継げる。
-  設計: [`docs/plans/2026-09-06-agent-app-task-detail-first-design.md`](../../docs/plans/2026-09-06-agent-app-task-detail-first-design.md)
+  **新しいタスクは AI との tmux 会話で作る**——目的を書いて「AIと作成を始める」と、会話と同じ CLI が
+  リポジトリで起動し、手動実行の画面と同じく端末がタスク画面の中に埋め込まれる。AI は
+  `statemachine-use` スキルの作成モードで `.statemachine/<名前>/` を直接書き、画面操作の見本が
+  要るときは `@record` の 1 行で頼んでくる（→「タスクを AI と作る」）。既存タスクの変更は「手順」タブの
+  「編集」から同じ会話で続ける。定義があるタスクは会話の途中でも実行できる。
+  会話の利用者メッセージにある「この依頼をタスクにする」から、依頼の本文を作成フォームへ引き継げる。
+  設計: [`docs/plans/2026-09-08-agent-app-statemachine-maker-consolidation-tmux-teaching-design.md`](../../docs/plans/2026-09-08-agent-app-statemachine-maker-consolidation-tmux-teaching-design.md)
 - **中央「ファイル」**: リポジトリのフォルダツリーと、コード（言語ごとの配色・行番号）／
   Markdown（プレビュー ⇄ ソース切り替え、Mermaid 図）／画像のビュアー。名前検索はフォルダ全体の
   索引（60 秒保持。`node_modules` や `dist` には潜らない）を引くので、2 文字目からは歩き直さない。
@@ -62,17 +65,17 @@ agent-dashboard と同じく electron-builder で **portable exe** と **NSIS �
 （設定は `package.json` の `build`）。
 
 ```bash
-cd tools/statemachine-maker && npm install   # file: リンク先の依存（yaml）は自分では入らない
-cd ../agent-app && npm install
+cd tools/agent-app && npm install
 npm run dist             # portable + NSIS → release/（release/agent-app.exe が portable 版）
 npm run dist:portable    # portable だけ
 ```
 
-- **同梱するもの**: `src/`（`npm install` が写す `src/renderer/vendor/` を含む）と、main 側が require する
-  `statemachine-maker/src/main` + `yaml`。画面用ライブラリ（mermaid / marked / xterm …）は vendor/ に
-  写した分だけ使うので `devDependencies` に置き、electron-builder が本番依存として推移的に同梱しない
-  ようにする（`dependencies` に戻すと d3 / katex … まで入って asar が数十 MB 増える）。
-- `npm run dist` は先に `scripts/check-dist.js` で、file: リンク先の依存・vendor/・アイコンが揃っているかを見る。
+- **同梱するもの**: `src/`（`npm install` が写す `src/renderer/vendor/` と、タスク・ワークフローの共有
+  ワークベンチ `src/main/automation/` `src/renderer/automation/` を含む）と、本番依存の `yaml`（定義の
+  読み書き）。画面用ライブラリ（mermaid / marked / xterm …）は vendor/ に写した分だけ使うので
+  `devDependencies` に置き、electron-builder が本番依存として推移的に同梱しないようにする
+  （`dependencies` に戻すと d3 / katex … まで入って asar が数十 MB 増える）。
+- `npm run dist` は先に `scripts/check-dist.js` で、本番依存・vendor/・アイコンが揃っているかを見る。
 - **リポジトリ直下の資源**は `extraResources` で `resources/` に入れる。CLI 定義 `agents/*.json` は
   `resources/agents/`（探索順の最後。`~/.agents/agents/` などに置いた定義が勝つ）、タスク実行に要る
   `.github/skills/statemachine-use` は `resources/app-root/.github/skills/…`（登録リポジトリや
@@ -217,6 +220,96 @@ interactive.command + [continue | resume] + (interactive.write_args | readonly_a
 ヘッドレス（tmux なし）の作法は以前のまま（`src/main/agentCli.js` の `SESSION` 表）。Windows では
 `wsl.exe -e bash -lc` に載せて WSL の中で走らせる。
 
+## タスクを AI と作る
+
+タスクの作成と変更は、会話と同じ **tmux の端末ミラー**の中で進める。CLI（会話の既定の起動方針で決まる
+エージェント）がリポジトリ本体を cwd に起動し、最初の依頼で `statemachine-use` スキルの作成モードと、
+保存先 `.statemachine/<名前>/`、見本の頼み方を伝える。AI はこの会話の中で定義（workflow.yaml と
+actions/*.md）を直接書き、`run_machine.py --dry-run` で検証してから要約を報告する。定義ができた時点で
+「利用可能」になり、確認は「概要」の実行と構成確認で行う（分離した試運転や承認の往復は持たない）。
+
+| したいこと | 操作 |
+|---|---|
+| 新しいタスクを作る | 「タスク」の ＋ → 目的を書く →「AIと作成を始める」。保存名は空なら目的から決まる |
+| AI の質問に答える | 端末の下の入力欄から送る（メッセージ）。y/n や矢印キーは「端末操作」に切り替える |
+| 操作を見せる | 「操作の見本」→ 画面（ブラウザ / Windows アプリ）と開始 URL（アプリ名）→「記録を始める」→ 操作 →「終了してAIへ渡す」。AI が `@record browser <URL>` / `@record windows <アプリ名>` と返したときは、そのカードが自動で開く |
+| 既存のタスクを変える | 実行詳細の「手順」→「編集」。押した時点で AI が起動し、今の定義を読んで要約してから、変えたい点を聞く。「‹ 工程に戻る」で工程へ戻る |
+| 会話をやり直す | 端末が終了・消失したら「再接続」。会話は `sessions/` に残り、次に開いたときに tmux へつなぎ直す |
+| 内部の工程を確認する | 「手順」タブ。従来の工程エディタで、そのまま直して保存もできる |
+
+**見本の記録はこの端末で取る。** Windows では AI は WSL の tmux で動いていて、ブラウザや Windows アプリは
+Windows 側にある。記録（`playwright-cli` / `winauto`）は agent-app 自身が Windows 側で起こし、できた
+Markdown（`.statemachine/<名前>/recordings/<時刻>-<種類>.md`。操作の行と毎回変わる値の候補）の所在を
+WSL 表記（`/mnt/c/…`）へ直して会話へ送る。AI 自身には記録を起こさせない（依頼文でそう伝える）。
+Linux / macOS でも同じ流れで、記録はこの端末で取る。
+
+### 生成する定義の形
+
+statemachine-use の作成モードの原則に沿う（`SKILL.md` ステップ 2）:
+
+- 1 ステート 1 工程。`action_file: actions/<id>.md`。本文の末尾は単一指示。
+- 出力契約は `output_validator: startswith:<ラベル…>`（既定は `OK,FAILED`）。
+- 分岐は `condition_rule`（`startswith:last_output:<ラベル>`）。`check` を宣言した工程は `equals:check_ok:true` で進む。
+- 画面操作は `playwright-cli` / `windows-app-automation` スキルを本文で名指しする。記録した操作は role と名前で載せる。
+- 終端は `complete`（完了）と `failed`（失敗）。どこからも行かない終端は書かない。
+- `maker.json` は「手順」タブの編集画面が読み戻すための写しで、実行には使わない（AI が書かなくてもよい）。
+
+### 次の工程（「手順」タブ）
+
+工程ごとに、行き先を上から順に並べる。決め方は 4 つ。
+
+| 決め方 | 何を見るか | 書かれるもの |
+|---|---|---|
+| 回答が指定の言葉で始まる | 出力の 1 行目がその語で始まるか | `condition_rule: startswith:last_output:<語>` |
+| 条件に当てはまる | その文にあてはまるか（AI が見る） | `condition: <文章>` |
+| 常に | 条件なし | 条件を付けない |
+| 詳細条件 | 読み込んだ式をそのまま | `condition_rule: <式>` |
+
+何も足さなければ「できた → 次へ」「できなかった → 中止」になる。行き先は次の工程・完了・中止のほか、
+**定義が持つ終わり方**（承認 / 差し戻し / 判別できない…）や、前の工程へ戻ることも選べる。
+第 1 行の出力契約を書くのは、行き先が**すべて**回答の先頭で決まるときだけ。
+
+### 記録がうまくいかないとき
+
+記録は `playwright-cli`（ブラウザ）と `winauto`（Windows アプリ）を、**この端末から直接**呼ぶ
+（WSL には橋渡ししない）。「手順」→「その他 → 実行環境 → 接続を確認」でどちらが呼べるかを先に確かめる。
+
+| 症状 | 見るところ |
+|---|---|
+| ブラウザが開かない | 記録に使うブラウザは**既定で Chrome**。入っていなければ `playwright-cli install-browser chrome` を実行するか Chrome を入れる |
+| 「操作の記録に未対応」と出る | 古い版には `recording-start` / `recording-stop` が無い。`npm install -g @playwright/cli@latest` で更新し、もう一度「接続を確認」を実行する |
+| 「呼べません」と出る | `npm install -g @playwright/cli@latest`。Windows では npm が `playwright-cli.cmd` を置くので、アプリは PATHEXT を補って探す |
+| 操作したのに 0 件になる | 記録するのは**アプリが開いたブラウザ**の中の操作だけ。別に開いていたブラウザで操作しても入らない |
+| Windows アプリの見本が取れない | `winauto` は Windows 上でだけ動く（`python tools/winauto/install.py`）。Linux / macOS では見本の画面にそう表示する |
+| AI が記録を起こそうとする | 依頼文で「自分では起こさない」と伝えている。それでも起こしたら、端末操作で止めて（Ctrl+C）「操作の見本」から取り直す |
+
+記録の途中で `.playwright-cli/`（画面の写しとログ）がフォルダに作られる。消してかまわない。
+
+### 画面の言葉
+
+内部の綴りをそのまま出さない。画面には次の言葉を使う（`test/automation-app.test.js` が検査する）。
+
+| 内部 | 画面 |
+|---|---|
+| ステートの ID | 工程ID（「詳細設定」の中） |
+| 識別名・フォルダ名 | 保存名 |
+| `output_validator` の第 1 行 / 出力契約 | 回答が指定の言葉で始まる |
+| `check` / 終了コード 0 | 完了確認／確認できたら |
+| `check_retries` | 再試行回数 |
+| transitions / 遷移 | 次の工程 |
+| 既定の OK / FAILED | できた／できなかった |
+| `{{key}}` / 入力パラメータ | 毎回変わる値 |
+| `--dry-run` | 構成を確認 |
+| `--agent-cli`（agent-tools の定義名） | 使う AI |
+| 終端ステート | 終わり方（いくつあっても行き先に選べる） |
+
+### 画面を直すときの落とし穴
+
+renderer で **`const api = …` のように preload が公開した名前を宣言してはいけない**。
+`contextBridge` が置く `window.api` は再定義できないので、宣言するとスクリプトの実行前に
+`Identifier 'api' has already been declared` で落ち、**画面が真っ白**になる。共有ワークベンチ
+（`src/renderer/automation/`）は Shadow DOM の中で動くが、`window.api.automation` を読むだけにする。
+
 ## 保存先
 
 Electron の userData（macOS は `~/Library/Application Support/agent-app`）にだけ書く。
@@ -225,17 +318,22 @@ Electron の userData（macOS は `~/Library/Application Support/agent-app`）�
 config.json          登録リポジトリ、アプリ設定、共通指示・推奨スキル・起動時アクション、実行方針・tier・同時実行数
 sessions/<id>.json   会話 1 つ。リポジトリ・次のターンの方針 / CLI / モデル / モード・transport（tmux | headless）・作業フォルダ・
                      メッセージ列（各依頼の起動条件・添付、応答の思考 / 回答 / 実行情報）・CLI ごとのセッション ID と見たメッセージ数・
-                     tmux で動いている CLI の起動条件
+                     tmux で動いている CLI の起動条件。タスクを AI と作る会話は kind: task で保存名（task.machine）に紐づき、
+                     会話一覧には出ない
 attachments/<id>/    依頼に添えた外のファイルの写し
 ```
 
 リポジトリ側に置くのは、作業フォルダを使うときの `.worktrees/<名前>`（git の管轄）と
-`.git/info/exclude` の 1 行だけ。CLI 自身のセッションログ（`~/.claude/projects` など）は CLI の管轄。
+`.git/info/exclude` の 1 行、タスクの定義 `.statemachine/<名前>/`（AI との会話で書く。下書きの印
+`teaching.json` と見本の記録 `recordings/` を含む）、ワークフローの定義 `.agents/workflows/`。
+CLI 自身のセッションログ（`~/.claude/projects` など）は CLI の管轄。
 
 ## 持たないもの
 
 - GitHub 連携（PR・Issue・クラウドセッション）
-- ツール呼び出しの逐次承認 UI。CLI が端末で聞いてきたら端末ドロワーで答える
+- ツール呼び出しの逐次承認 UI。CLI が端末で聞いてきたら端末ドロワーで答える（タスクを作る会話も同じ）
+- タスクの試運転・承認の往復（AI の候補を JSON で受けて試運転してから昇格する仕組み）。定義は会話の中で
+  書き、確認は実行と構成確認で行う
 - 差分の適用・取り消し、コミット・マージ・push。変更ビューは読むだけ（git へ書くのは
   worktree の追加・削除とブランチ作成だけ）
 - ファイルの編集。ビュアーは読むだけ（「開く」で既定のアプリへ）

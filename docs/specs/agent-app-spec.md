@@ -27,7 +27,8 @@ tmux が無くても動きます。その場合は 1 ターン 1 プロセスの
 設定画面の「実行環境」に「tmux なし（ヘッドレスで動く）」と出ます。
 
 タスクとワークフローを使う場合は、さらに agent-loop と statemachine-use スキル、必要に応じて
-Python が要ります。不足は「タスク」画面の接続診断で確認できます。
+Python が要ります。不足は「タスク」画面（手順 → その他 → 実行環境）の接続診断で確認できます。
+タスクの作成・変更は会話と同じ CLI を tmux で起こすので、tmux が要ります。
 
 ### 開発起動
 
@@ -142,12 +143,19 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 
 ### タスクとワークフロー
 
-サイドバーの「タスク」「ワークフロー」は、選択中リポジトリの `.statemachine/` と agent-loop の設定を
-statemachine-maker の画面で扱います。
+サイドバーの「タスク」「ワークフロー」は、選択中リポジトリの `.statemachine/` と agent-loop の設定、
+`.agents/workflows/` を、同じウィンドウの共有ワークベンチ（旧 statemachine-maker）で扱います。
 
-- タスクの「＋」は AI 教示画面を開きます。会話の利用者メッセージの「この依頼をタスクにする」からも、
-  依頼本文・添付名・実行設定を引き継いで同じ画面に入れます。
-- 教示が終わると、同じタスクの概要・手順・履歴に移り、実行・定期実行・履歴を扱えます。
+- タスクの「＋」は作成フォームを開きます。目的を書いて「AIと作成を始める」と、会話と同じ CLI が
+  リポジトリで起動し、**端末がタスク画面の中に出ます**（手動実行の画面と同じ埋め込み）。AI は
+  `statemachine-use` スキルの作成モードで定義を書き、検証してから要約します。会話の利用者メッセージの
+  「この依頼をタスクにする」からも、依頼本文を引き継いで同じフォームに入れます。
+- AI が画面操作の見本を求めると（返答の `@record …` 行）、「操作の見本」のカードが開きます。画面と
+  開始 URL（アプリ名）を確かめて「記録を始める」→ 操作 →「終了してAIへ渡す」。記録はこの PC で取り
+  （Windows では Windows 側。AI は WSL の tmux にいます）、記録の場所が AI に届きます。
+- 定義ができたタスクは実行詳細（概要 / 手順 / 履歴）から開き、実行・定期実行・履歴を扱えます。
+  変更は「手順」の「編集」から。その場に AI との端末が出て（「‹ 工程に戻る」で戻ります）、
+  戻ったときには AI が書き換えた工程を読み直しています。
 - ワークフローの「＋」は「新しいワークフローを教える」画面を開きます。実現したいことを普段の言葉で
   書いて「AIに相談する」と、AI が質問するか候補の構成を返します。「手動で作成」なら従来の工程エディタ
   で直接組み立てます。
@@ -160,8 +168,8 @@ statemachine-maker の画面で扱います。
 - ワークフローの実行で納品ブランチが公開された場合、「納品を開く」でそのブランチを作業フォルダとして
   開けます。
 
-画面の詳しい使い方は [`tools/statemachine-maker/README.md`](../../tools/statemachine-maker/README.md)
-を参照してください。
+画面の詳しい使い方（生成する定義の形、次の工程の決め方、記録がうまくいかないとき、画面の言葉）は
+[`tools/agent-app/README.md`](../../tools/agent-app/README.md) を参照してください。
 
 ### 設定
 
@@ -204,8 +212,8 @@ statemachine-maker の画面で扱います。
 | 項目 | 値 |
 |---|---|
 | エントリ | `src/main/main.js`（`package.json` の `main`） |
-| 本番依存 | `@xterm/xterm` 6.0.0、`@xterm/addon-fit` 0.11.0、`@highlightjs/cdn-assets` 11.12.0、`marked` 18.0.11、`dompurify` 3.4.14、`mermaid` 11.17.2、`diff2html` 3.4.56、`statemachine-maker`（`file:../statemachine-maker`） |
-| 開発依存 | `electron` 43.6.0 |
+| 本番依存 | `yaml` 2.9.0（タスク定義の読み書き） |
+| 開発依存 | `electron` 43.6.0、`electron-builder`、画面用ライブラリ（`@xterm/xterm` 6.0.0、`@xterm/addon-fit` 0.11.0、`@highlightjs/cdn-assets` 11.12.0、`marked` 18.0.11、`dompurify` 3.4.14、`mermaid` 11.17.2、`diff2html` 3.4.56。`npm install` 時に `vendor/` へ写す） |
 | 設定ファイル | userData の `config.json` |
 | ウィンドウ | `contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`。`will-navigate` と `window.open` は拒否し、`http(s)` だけ `shell.openExternal` |
 | CSP | `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:` |
@@ -233,27 +241,41 @@ src/
 │   ├── files.js         ツリー・本文・検索（読むだけ）
 │   ├── git.js           変更ビュー（読むだけ）
 │   ├── text.js          ANSI 剥がし、ERE → RegExp
-│   └── automation/ipc.js statemachine-maker の IPC を automation: 接頭辞で載せる
+│   └── automation/      タスク・ワークフローの共有ワークベンチ（旧 statemachine-maker の main）
+│       ├── ipc.js       handlers.js を automation: 接頭辞で載せ、登録リポジトリと設定をアダプトする
+│       ├── handlers.js  全チャネル（定義・実行・記録・AI 下書き/見直し・ワークフロー・下書き一覧）
+│       ├── teaching.js  タスクを AI と作る会話の材料（下書きの sidecar、最初の依頼文、見本の Markdown）
+│       ├── model.js / store.js  工程列の正規化・コンパイル・読み戻し、.statemachine/ の読み書き
+│       ├── recording.js 操作の記録（playwright-cli / winauto）→ 工程列
+│       ├── runner.js / command.js / tools.js  外部コマンドの起動と実行環境の診断
+│       ├── agent-loop.js / agent-flow.js      実行基盤との境界
+│       ├── ai.js / ai-diff.js                 AI 下書き・見直し（agent-herd -p）
+│       └── flow-*.js                          ワークフローの定義・教示
 ├── preload.js           window.api（api.automation.* を含む）
 └── renderer/
-    ├── index.html       会話・ファイル・変更・設定・worktree ダイアログ
+    ├── index.html       会話・ファイル・変更・設定・worktree ダイアログ・タスクの会話（slot）
     ├── renderer.js      画面状態と描画、送信、設定
     ├── files.js         ファイルビュー
-    ├── term.js          端末ミラー（xterm.js）
+    ├── term.js          端末ミラー（xterm.js）。createTerm() で会話用 Term とタスク用 TaskTerm を持つ
+    ├── taskTeaching.js  タスクを AI と作る会話（端末ミラー・入力欄・操作の見本・作成フォーム）
+    ├── teachingProtocol.js  見本の依頼の約束事（@record 行。main も読む純粋モジュール）
     ├── md.js            Markdown（marked + DOMPurify + mermaid）
     ├── inputMode.js     入力 2 モードの遷移（純粋モジュール）
     ├── navigation.js    領域名と旧設定の読み替え（純粋モジュール）
-    ├── taskIntent.js    タスク教示 intent（純粋モジュール）
+    ├── taskIntent.js    タスク作成 intent（純粋モジュール）
     ├── automation-workbench.css  共有編集面の host stylesheet（:host への上書きだけ）
-    └── vendor/          npm install 時に scripts/vendor.js が写す（git 管理外）
+    ├── automation/      共有ワークベンチの renderer（Shadow DOM の中で動く）
+    │   ├── workbench-element.js  カスタム要素 <statemachine-workbench>
+    │   ├── renderer.js / flow.js 概要・手順・履歴・ワークフロー
+    │   ├── teaching.js           作成・編集の置き場（<slot name="teaching">）
+    │   └── styles.css            共有ワークベンチの見た目
+    └── vendor/          npm install 時に scripts/vendor.js が写す外部ライブラリ（git 管理外）
 ```
 
-`vendor.js` は外部ライブラリの配布物に加え、statemachine-maker の `styles.css` / `editor-host.js` /
-`workbench-element.js` / `flow.js` / `teaching.js` / `renderer.js` を `vendor/statemachine/` へ**改変せずに**
-写す。`index.html` はこれらを `workbench-element` → `editor-host` → `teaching` → `flow` → `renderer` の順に
-読み、`<statemachine-workbench data-statemachine-workbench embedded stylesheet="vendor/statemachine/styles.css"
-host-stylesheet="automation-workbench.css">` を `#automation` に置く。共有ファイルを足すときは `vendor.js` の
-`FILES` と `index.html` の `<script>` を同時に更新する（`app.test.js` が対応を検査する）。
+`index.html` は共有ワークベンチを `automation/workbench-element` → `teaching` → `flow` → `renderer` の順に
+読み、`<statemachine-workbench data-statemachine-workbench embedded stylesheet="automation/styles.css"
+host-stylesheet="automation-workbench.css">` を `#automation` に置く。その光の DOM の子 `#task-teaching`
+（`slot="teaching"`）がタスクの会話の置き場である。
 
 ### 2. IPC 契約
 
@@ -321,7 +343,10 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。共�
 | `fs:list` / `fs:read` / `fs:find` | `listDir` / `readFile` / `findFiles` | `repo, worktree, rel|query, refresh?` | §11。`fs:find` は `{ hits: [{ rel, type, language }], truncated, indexed }` |
 | `git:changes` / `git:file` | `changes(repo, worktree, scope)` / `fileDiff(repo, worktree, file, scope)` | `scope: worktree|branch` | §11 |
 | `shell:openFolder` / `shell:openFile` / `shell:showFile` | `openFolder` / `openFile` / `showFile` | — | OS で開く |
-| `automation:*` | `api.automation.*` | §12 | statemachine-maker の契約 |
+| `automation:teach:start` | `automation.teachStart(payload)` | `{ repo, machine?, purpose?, policy?, cli?, model?, autoApprove? }` | §12.3。下書きと kind: task の会話を作り、最初の依頼を送る |
+| `automation:teach:session` | `automation.teachSession(repo, machine)` | — | `{ machine, session, sidecar, published, tools }` |
+| `automation:teach:demonstration` | `automation.teachDemonstration(repo, machine, recording)` | 記録（`recording:stop` の結果） | `{ file, relative, hostPath, source, steps, sent }` |
+| `automation:*` | `api.automation.*` | §12 | 共有ワークベンチの契約 |
 
 #### 2.3 main → renderer のイベント
 
@@ -334,7 +359,9 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。共�
 | `turn:done` | `onTurnDone` | `{ id, message }`（保存済みの応答メッセージ） |
 | `term:screen` | `onTermScreen` | `{ id, text, cursor: { x, y }, cols, rows, tail }`（色付き画面と末尾 14 行） |
 | `term:phase` | `onTermPhase` | `{ id, phase, detail, name }` |
-| `automation:ai:progress` / `automation:ai:result` / `automation:run:line` / `automation:run:exit` | `api.automation.on*` | statemachine-maker の契約 |
+| `automation:ai:progress` / `automation:ai:result` / `automation:run:line` / `automation:run:exit` | `api.automation.on*` | 共有ワークベンチの契約 |
+
+タスクの会話（kind: task）は `turn:*` / `term:*` を会話と同じ形で受ける。
 
 ### 3. 設定（`config.json`）
 
@@ -353,7 +380,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。共�
 | `area` | `conversation` | `conversation` / `tasks` / `workflows`。旧値 `work` → `conversation`、`automation` → `tasks` |
 | `view` | `chat` | 会話領域の表示（`chat` / `files`） |
 | `lastFiles` / `lastWorktree` / `lastTask` / `lastWorkflow` | `{}` | リポジトリ → 最後の対象 |
-| `automationSkillDir` / `automationAgent` / `automationModel` | `''` / `aider` / `''` | statemachine-maker へ渡す設定（`skillDir` / `agent` / `model`） |
+| `automationSkillDir` / `automationAgent` / `automationModel` | `''` / `aider` / `''` | 共有ワークベンチへ渡す設定（`skillDir` / `agent` / `model`） |
 | `instructions.enabled` | `true` | 共通指示を使うか |
 | `instructions.text` | `''` | 共通指示本文。8000 字で切る |
 | `instructions.skills` | `[]` | 自動選択の候補（`skillSelection.candidates` と同じ値。旧「推奨スキル」の移行元） |
@@ -374,6 +401,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。共�
 | フィールド | 意味 |
 |---|---|
 | `id` | UUID。ファイル名と tmux セッション名の元 |
+| `kind` / `task` | `conversation`（既定）か `task`。`task` は `{ machine }`（保存名）を持ち、会話一覧（`session:list`）には出ない |
 | `repo` / `worktree` / `branch` | リポジトリ、作業フォルダ名（`''` は本体）、そのブランチ。作ったあと変えない |
 | `cli` / `model` / `readonly` / `policy` / `tier` | **次のターン**の既定。`policy` は `recommended` / `saving` / `quality` / `direct` |
 | `transport` | 最後のターンの経路（`tmux` / `headless`） |
@@ -649,8 +677,8 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 
 ### 12. タスク・ワークフロー（`automation:*`）
 
-`registerAutomationIpc` が statemachine-maker の `registerIpcHandlers` を `channelPrefix: 'automation:'`
-で呼ぶ。チャネルの一覧と意味は statemachine-maker の契約で、preload の `api.automation.*` と 1 対 1。
+`registerAutomationIpc` が `src/main/automation/handlers.js` の `registerIpcHandlers` を
+`channelPrefix: 'automation:'` で呼ぶ。チャネルは preload の `api.automation.*` と 1 対 1。
 
 | 群 | メソッド |
 |---|---|
@@ -659,7 +687,7 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 | 実行環境 | `listAgents` `selectSkills` `toolStatus` |
 | 操作記録 | `recordingStart` `recordingStop` `recordingImport` `recordingSnapshot` `recordingExtract` `recordingState` |
 | AI | `aiStart`（`mode`: `draft` / `review` / `teach` / `flow-teach`）`aiStop` `aiApply` `onAiProgress` `onAiResult` |
-| タスク教示 | `teachingList` `teachingCreate` `teachingRead` `teachingSave` `teachingAddEvidence` `teachingStage` `teachingCleanup` `teachingRecordTrial` `teachingConfirm` `teachingRestore` |
+| タスクの下書き・会話 | `teachingList`（定義がまだ無い下書き）、`teachStart` `teachSession` `teachDemonstration`（§12.3） |
 | ワークフロー | `flowCatalog` `flowList` `flowRead` `flowSave` `flowDelete` `flowPreview` `flowContext` `flowRunStart` `flowRunList` `flowRunRead` `flowRunCancel` `flowRunRespond` `flowRunResult` `flowRunLog` `flowRunDelete` `flowRunOpenDelivery` |
 | ワークフロー教示 | `flowTeachingList` `flowTeachingCreate` `flowTeachingRead` `flowTeachingSave` `flowTeachingRecordTrial` `flowTeachingConfirm`（§12.2） |
 | 実行 | `runSnapshot` `saveRunSchedule` `setRunDaemon` `runLog` `runStart` `runStop` `onRunLine` `onRunExit` |
@@ -676,7 +704,7 @@ agent-app 側のアダプト:
 | `hooks.selectSkills` | `skills:select` と同じ選定 |
 | `hooks.openDelivery` | 納品ブランチを `fetchRemote` 付きで worktree に作り `{ kind: 'worktree', name, branch }` |
 
-タスクの列挙・定期設定・実行・履歴は maker 経由で agent-loop の機械可読な境界へ届きます。
+タスクの列挙・定期設定・実行・履歴は共有ワークベンチ経由で agent-loop の機械可読な境界へ届きます。
 agent-app は設定ファイルの探索も `.statemachine/` の走査も自前では行いません。
 
 | preload | 実体 |
@@ -690,32 +718,61 @@ agent-app は設定ファイルの探索も `.statemachine/` の走査も自前�
 
 #### 12.1 親と共有編集面の同期
 
-画面は maker の共有 renderer をカスタム要素 `<statemachine-workbench>`（Shadow DOM）で同じウィンドウに
-載せる。maker の renderer は `[data-statemachine-workbench]` の有無で埋め込みを判定し、preload の窓口は
-`StatemachineEditorHost.resolve(window, { embedded })` が返す `window.api.automation`（無ければ親ウィンドウの
-同名）だけを使う。
+画面は共有 renderer をカスタム要素 `<statemachine-workbench>`（Shadow DOM）で同じウィンドウに
+載せる。共有 renderer は `[data-statemachine-workbench]` の有無で埋め込みを判定し、preload の窓口は
+`window.api.automation` だけを使う。
 
 | 手段 | 向き | フィールド |
 |---|---|---|
-| `element.navigate(payload)`。`payload.type` は `agent-app:navigate` | 親 → 子 | `area`、`root`、`selected`、`action`（`''` / `new`）、`intent?`。controller 登録前は最後の 1 件を保留 |
+| `element.navigate(payload)`。`payload.type` は `agent-app:navigate` | 親 → 子 | `area`、`root`、`selected`、`action`（`''` / `new` / `teach`）。controller 登録前は最後の 1 件を保留 |
+| `element.refresh()` | 親 → 子 | 定義と実行状態を読み直す |
 | CustomEvent `statemachine:changed`（`bubbles: true`）。`detail.type` は `agent-app:changed` | 子 → 親 | `root`、`area`、`selected?` |
-| CustomEvent `statemachine:teaching-started`（`bubbles: true`）。`detail.type` は `agent-app:teaching-started` | 子 → 親 | `root`、`intentId`、`machine` |
+| CustomEvent `statemachine:teaching-view`（`bubbles: true`）。`detail.type` は `agent-app:teaching-view` | 子 → 親 | `root`、`machine`、`creating`、`published`、`title`。`hidden: true` で「出していない」 |
 
-親は `detail` を受け取ると一覧を再読込し、`lastTask` / `lastWorkflow` を保存する。`agent-app:changed` で
-`selected` が来なければ選択は変えない。
+親は `agent-app:changed` を受け取ると一覧を再読込し、`lastTask` / `lastWorkflow` を保存する。
+`selected` が来なければ選択は変えない。`teaching-view` を受け取ると、親は `#task-teaching`
+（`slot="teaching"`）にそのタスクの会話を描く（同じ内容なら何もしない）。
 
-`automation-workbench.css` は `:host` に対する上書きだけを持ち、maker のフォルダ欄（`.folder-pane`）、
+`automation-workbench.css` は `:host` に対する上書きだけを持ち、フォルダ欄（`.folder-pane`）、
 ホームタブ、見出し（`.machine-head` / `.flow-home-head`）、実行一覧（`.execution-list`）を隠し、
 編集中以外は `#bar` を出さない。共有 renderer の本文に Host ごとの分岐は足さない。
 
-タスク教示 intent（`taskIntent.create`）:
+タスク作成 intent（`taskIntent.create`）:
 
 ```json
 { "version": 1, "id": "<uuid>", "root": "<repo>", "purpose": "<利用者メッセージ本文>",
   "attachments": [{ "name": "a.png", "size": 1234 }], "agent": "codex", "model": "" }
 ```
 
-利用者メッセージ以外、空の本文、リポジトリ未選択は作らない。子は同じ `id` を二度消費しない。
+利用者メッセージ以外、空の本文、リポジトリ未選択は作らない。親は intent があるとタスク領域を
+`action: 'new'` で開き、作成フォームの目的欄に本文を入れて intent を捨てる。
+
+#### 12.3 タスクを AI と作る会話（`automation:teach:*`）
+
+会話基盤（`runTurn` / tmux）をそのまま使い、`kind: 'task'` の会話を保存名に紐づける。
+
+| チャネル | 動作 |
+|---|---|
+| `teach:start` | `machine`（省略時は `teaching.machineNameFor(purpose)`）を検査し、定義が無ければ下書き `.statemachine/<machine>/teaching.json` を作る。会話が無ければ `settings.resolve` で CLI を決めて `kind: 'task'` の会話を作り、まだ何も送っていなければ最初の依頼（`teaching.prompt`）を `runTurn` で送る。返り値は `teach:session` と同じ + `existing` / `started` |
+| `teach:session` | `{ machine, session（無ければ null）, sidecar, published, tools: { browser, windows } }`。`tools` はこの端末の PATH に `playwright-cli` / `winauto` があるか |
+| `teach:demonstration` | 記録を `.statemachine/<machine>/recordings/<時刻>-<種類>.md` に書き（`teaching.recordingMarkdown`）、sidecar に控え、会話があれば所在を `host.toHostPath` で直して次の依頼（`teaching.demonstrationPrompt`）として送る。AI が応答中なら記録は保存したまま送信だけ断る |
+
+最初の依頼文が伝えること: 保存先（`.statemachine/<machine>/`）の外を変えないこと、`statemachine-use`
+スキルの作成モード（scaffold → 本文 → `run_machine.py --dry-run`）、曖昧な点だけ質問すること、見本の頼み方
+（`@record browser <URL>` / `@record windows <アプリ名>` の 1 行）、記録はこのアプリが取るので自分では
+`playwright-cli` / `winauto` の記録を起こさないこと（Windows では「あなたは WSL の tmux、画面は Windows 側」）、
+この端末で見本を取れる道具、書き終えたら検証して要約すること。
+
+下書き（`teaching.json`）:
+
+| フィールド | 意味 |
+|---|---|
+| `version` | `2` |
+| `machine` / `title` / `purpose` | 保存名、表示名（300 字）、目的 |
+| `sessionId` | この下書きの会話（agent-app の会話 ID） |
+| `recordings` | `[{ file, source, target, steps, capturedAt }]`。見本の控え |
+
+定義（workflow.yaml）があれば状態は「利用可能」、無ければ「下書き」。
 
 #### 12.2 ワークフロー教示（`automation:flow:teaching:*`）
 
@@ -789,10 +846,10 @@ sidecar（`<repo>/.agents/workflows/.teaching/<workflowId>.json`）:
 |---|---|---|
 | `<リポジトリ>/.worktrees/<名前>` | 作業フォルダ | git（agent-app の `worktree add`） |
 | `<リポジトリ>/.git/info/exclude` | `/.worktrees/` の 1 行 | agent-app |
-| `<リポジトリ>/.statemachine/` | タスク定義、教示セッション | statemachine-maker |
-| `<リポジトリ>/.agents/workflows/<id>.json` | ワークフロー定義（`rework` を含む） | statemachine-maker |
-| `<リポジトリ>/.agents/workflows/.teaching/<id>.json` | ワークフロー教示の sidecar | statemachine-maker |
-| `<リポジトリ>/.agents/agent-loop.yaml` など | 定期実行の設定 | statemachine-maker / agent-loop |
+| `<リポジトリ>/.statemachine/<名前>/` | タスク定義（AI との会話で CLI が書く。「手順」タブの保存も）、下書きの印 `teaching.json`、見本の記録 `recordings/*.md` | CLI / 共有ワークベンチ |
+| `<リポジトリ>/.agents/workflows/<id>.json` | ワークフロー定義（`rework` を含む） | 共有ワークベンチ |
+| `<リポジトリ>/.agents/workflows/.teaching/<id>.json` | ワークフロー教示の sidecar | 共有ワークベンチ |
+| `<リポジトリ>/.agents/agent-loop.yaml` など | 定期実行の設定 | 共有ワークベンチ / agent-loop |
 
 会話、設定、添付は userData にだけ書く。CLI 自身のセッションログ（`~/.claude/projects` など）は
 CLI の管轄で、agent-app は ID を覚えるだけである。
@@ -803,12 +860,14 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 
 | ファイル | 内容 | skip 条件 |
 |---|---|---|
-| `app.test.js` | 構文、画面構造、preload と IPC の対応、vendor の対応、共有編集面の Host Adapter 接続、ワークフロー教示と差し戻しの表示、argv、店、tmux 保持、git、ファイル、添付 | なし |
+| `app.test.js` | 構文、画面構造、preload と IPC の対応、vendor の対応、共有編集面の接続、ワークフロー教示と差し戻しの表示、argv、店、tmux 保持、git、ファイル、添付 | なし |
+| `automation-teaching.test.js` | `@record` 行の解析、下書き、最初の依頼文、見本の Markdown、kind: task の会話 | なし |
+| `automation-*.test.js` | 共有ワークベンチ（旧 statemachine-maker）の domain と境界。`automation-skill-engine.test.js` は statemachine-use の `run_machine.py --dry-run` を通す | skill-engine のみ python + PyYAML が無い |
 | `tmux.test.js` | パス変換、画面判定、送信、抽出、キー変換、常駐シェル、疑似 CLI との統合 | 統合のみ tmux が無い |
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
 | `herd.test.js` | `herd` の一族判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
-| `electron-smoke.test.js` | Electron 実機で三領域を移動し、ワークフローの＋で教示画面を開く | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
+| `electron-smoke.test.js` | Electron 実機で三領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの＋で教示画面を開く | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 
 `test/smoke.js` は `npm test` に含めない手動スモークで、画面のある環境で疑似 CLI と会話しスクリーンショットを
 撮る（Linux では `SMOKE_OUT=/tmp/shots xvfb-run -a npx electron --no-sandbox test/smoke.js`）。

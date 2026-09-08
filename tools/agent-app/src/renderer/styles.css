@@ -15,6 +15,7 @@
   --add: #dafbe1;
   --del: #ffebe9;
   --code-bg: #f6f8fa;
+  --term-line: #202a38;
   --term-bg: #0b0f14;
   --term-panel: #111720;
   --term-text: #d8dee9;
@@ -273,16 +274,19 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 pre.mermaid-error { border-color: var(--danger) !important; }
 
 /* 端末を会話の主表示にする。会話履歴は参照用の折りたたみ領域。 */
-#terminal-stage { min-height: 220px; grid-row: 1; display: flex; flex-direction: column; overflow: hidden; margin: 12px 18px 0; border: 1px solid #202a38; border-radius: 12px; background: var(--term-bg); box-shadow: 0 8px 24px rgba(15, 23, 42, .14); transition: border-color .18s ease, box-shadow .18s ease; }
+/* 端末ミラーの見た目。会話（#terminal-stage）とタスクの相談（#task-terminal）で同じ実体を使う。 */
+.terminal-stage { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--term-line); border-radius: 12px; background: var(--term-bg); box-shadow: 0 8px 24px rgba(15, 23, 42, .14); transition: border-color .18s ease, box-shadow .18s ease; }
+#terminal-stage { min-height: 220px; grid-row: 1; margin: 12px 18px 0; }
 .terminal-head { min-height: 38px; display: flex; align-items: center; gap: 9px; padding: 5px 9px 5px 12px; border-bottom: 1px solid #273244; color: var(--term-muted); background: var(--term-panel); }
 .terminal-agent { color: var(--term-text); font-size: 12px; font-weight: 650; }
 .terminal-head .sub { color: var(--term-muted); font-family: var(--mono); }
 .terminal-head button { border-color: #334155; color: var(--term-text); background: #182231; }
 .terminal-activity { width: 8px; height: 8px; border-radius: 50%; background: #475569; box-shadow: 0 0 0 0 rgba(34, 211, 238, 0); }
 .terminal-activity.accepted { animation: terminalAccepted .28s ease-out; }
-#term-host { min-height: 0; flex: 1; padding: 8px 4px 5px 10px; cursor: text; }
-#term-host .xterm { height: 100%; }
-#chat.input-terminal #terminal-stage { border-color: var(--term-cursor); box-shadow: 0 0 0 3px rgba(34, 211, 238, .16), 0 8px 24px rgba(15, 23, 42, .18); }
+#term-host, #task-term-host { min-height: 0; flex: 1; padding: 8px 4px 5px 10px; cursor: text; }
+#term-host .xterm, #task-term-host .xterm { height: 100%; }
+#chat.input-terminal #terminal-stage,
+.terminal-stage.input-terminal { border-color: var(--term-cursor); box-shadow: 0 0 0 3px rgba(34, 211, 238, .16), 0 8px 24px rgba(15, 23, 42, .18); }
 .conversation-history { position: relative; min-height: 42px; grid-row: 2; margin: 8px 18px 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .conversation-history[open] { height: clamp(160px, 30vh, 360px); display: block; }
 .conversation-history.history-only[open] { max-height: none; grid-row: 1 / 3; margin: 0; border: 0; border-radius: 0; }
@@ -316,8 +320,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .input-status.error { color: var(--danger); }
 .input-status.pending { color: var(--accent); }
 #message-input { min-height: 0; grid-row: 2; }
-#composer textarea { min-height: 70px; max-height: 240px; width: 100%; display: block; padding: 8px 10px; resize: vertical; border: 0; border-radius: 10px; line-height: 1.55; }
-#composer textarea:focus-visible { outline: none; }
+.composer-shell textarea { min-height: 70px; max-height: 240px; width: 100%; display: block; padding: 8px 10px; resize: vertical; border: 0; border-radius: 10px; line-height: 1.55; }
+.composer-shell textarea:focus-visible { outline: none; }
 .terminal-keys { min-height: 122px; grid-row: 2 / 4; align-items: center; gap: 6px; padding: 12px 8px; }
 .terminal-keys:not([hidden]) { display: flex; }
 .terminal-keys button { min-width: 44px; min-height: 44px; padding: 7px 10px; border-color: #334155; color: var(--term-text); background: var(--term-panel); font: 12px var(--mono); }
@@ -514,3 +518,23 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ---- タスクを AI と作る相談（共有ワークベンチの slot に載る） ----
+   見出しと説明はワークベンチ側が持つ。ここは操作面だけを置き、端末と入力欄は
+   会話画面と同じ .terminal-stage / .composer-shell をそのまま使う（作り直さない）。 */
+#task-teaching { min-width: 0; display: grid; gap: 12px; }
+#task-teaching .composer-shell { width: 100%; }
+#task-create { display: grid; gap: 10px; }
+#task-create textarea { width: 100%; min-height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
+.task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+#task-terminal { height: min(46vh, 480px); min-height: 260px; }
+/* 「AIと編集」のカードの中に入るときは、端末は白い面の中身なので枠と影を持たず、
+   カードに残った高さをそのまま使う。 */
+#task-teaching.in-card { gap: 10px; height: 100%; min-height: 0; }
+#task-teaching.in-card #task-workspace { height: 100%; min-height: 0; display: grid; gap: 10px; grid-template-rows: minmax(0, 1fr); }
+#task-teaching.in-card #task-terminal { height: auto; min-height: 160px; }
+#task-teaching.in-card .terminal-stage { border-color: transparent; box-shadow: none; }
+#task-teaching.in-card .terminal-stage.input-terminal { border-color: var(--term-cursor); }
+#task-record { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+#task-record input { min-width: 220px; }
+#task-record .sub.error { color: var(--danger); }
