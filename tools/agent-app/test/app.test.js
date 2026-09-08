@@ -293,6 +293,35 @@ test('タスク一覧は定義を先に見せ、実行状態（ファイル実�
   assert.match(renderer, /pending \? '確認中…'/);
 });
 
+test('埋め込みワークベンチの初回表示も、AI 一覧と実行状態を待たない', () => {
+  // タスク画面は親の一覧と埋め込みワークベンチの両方が揃って初めて出るので、待ちが片方に
+  // 残っていると「押した初回に固まる」。遅いのは外部コマンドを起こす 2 つ——AI 一覧
+  // （agent-herd defs）と実行状態（agent-loop inspect）で、Windows では WSL の起動を伴う。
+  const maker = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
+  const bodyOf = (from, to) => {
+    const start = maker.indexOf(from);
+    const end = maker.indexOf(to, start);
+    assert.ok(start >= 0 && end > start, `${from} … ${to} が見つからない`);
+    return maker.slice(start, end);
+  };
+  for (const [label, body] of [
+    ['起動', bodyOf('async function init() {', 'initPromise = init();')],
+    ['親からの遷移', bodyOf('async function navigateEmbedded(payload) {', 'if (workbenchHost) workbenchHost.setController')],
+    ['リポジトリの切り替え', bodyOf('async function afterRootChange() {', 'async function addFolder()')],
+  ]) {
+    assert.doesNotMatch(body, /await\s+loadAgents\(/, `${label}が AI 一覧を待っている`);
+    assert.doesNotMatch(body, /await\s+loadExecutionSnapshot\(/, `${label}が実行状態を待っている`);
+  }
+  // 1 回の表示で重ねて呼ばれるので、同じリポジトリの問い合わせには相乗りする
+  assert.match(maker, /if \(agentsInFlight && agentsInFlight\.root === state\.root\) return agentsInFlight\.promise;/);
+  // 待たずに読むものは、届いたときに描き直すところまでが 1 組。設定は実行方針とモデルの出どころ
+  assert.match(maker, /state\.config = latestConfig;\s*\n\s*renderIfIdle\(\);/, '遅れて届いた設定が画面に出ない');
+  // 届くまでは「未実行」「予定なし」「利用できる AI がありません」と混同しない
+  assert.match(maker, /const pending = state\.execution\.loading && !state\.execution\.snapshot;/);
+  assert.match(maker, /const status = pending \? '確認中…'/);
+  assert.match(maker, /state\.agentsLoading \? '確認中…' : '利用できる AI がありません'/);
+});
+
 test('初回のタスク画面は worktree の状態確認を待たない', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const selectRepo = renderer.slice(

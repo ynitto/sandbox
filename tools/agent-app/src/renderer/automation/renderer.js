@@ -27,6 +27,7 @@ const state = {
   root: '',
   machines: [],
   agents: [],
+  agentsLoading: false,   // AI 一覧（agent-herd defs）の返事待ち。空と「まだ聞いていない」を区別する
   catalog: { kinds: [], platform: '' },
   view: 'home',
   homeTab: 'teach',
@@ -75,6 +76,9 @@ function folderName(p) {
 
 function selectedAgent(preferred = '') {
   if (state.agents.includes(preferred)) return preferred;
+  // 一覧がまだ届いていない・そもそも引けないときに、設定された名前を捨てない。捨てると
+  // 実行方針で選んである AI が「エージェント未設定」に見え、実際に使う名前とも食い違う。
+  if (preferred && !state.agents.length) return preferred;
   if (state.agents.includes('aider')) return 'aider';
   return state.agents[0] || '';
 }
@@ -98,7 +102,8 @@ function cancelAi(flow) {
 
 function agentOptions(preferred = '') {
   const selected = selectedAgent(preferred);
-  if (!state.agents.length) return '<option value="">利用できる AI がありません</option>';
+  // 「まだ聞いている途中」と「聞いた結果 0 件」を混同しない（待たせない代わりに、途中だと分かる）
+  if (!state.agents.length) return `<option value="">${state.agentsLoading ? '確認中…' : '利用できる AI がありません'}</option>`;
   return state.agents.map((name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
 }
 
@@ -114,19 +119,31 @@ function renderIfIdle() {
 
 // AI の一覧（agent-herd defs。Windows では WSL 越しで数秒かかる）。**画面を待たせない**——
 // 呼んだ側は await せず、届いたら描き直す。リポジトリを移っていたら捨てる（token）。
+// 1 回のタスク表示で init・navigate・リポジトリ切替から重ねて呼ばれるので、同じリポジトリの
+// 問い合わせが走っている間は相乗りする（WSL 越しの起動を 1 回で済ませる）。
 let agentsToken = 0;
+let agentsInFlight = null;
 function loadAgents() {
+  if (agentsInFlight && agentsInFlight.root === state.root) return agentsInFlight.promise;
   const token = (agentsToken += 1);
-  return automationHost.listAgents(state.root).then((names) => {
+  const root = state.root;
+  state.agentsLoading = true;
+  const promise = automationHost.listAgents(root).then((names) => {
     if (token !== agentsToken) return;
     state.agents = Array.isArray(names) ? names : [];
+    state.agentsLoading = false;
     state.run.agent = selectedAgent(state.run.agent || state.config.agent);
     renderIfIdle();
   }, (err) => {
     if (token !== agentsToken) return;
     state.agents = [];
+    state.agentsLoading = false;
     toast(`AI 一覧: ${(err && err.message) || err}`, true);
+  }).finally(() => {
+    if (agentsInFlight && agentsInFlight.token === token) agentsInFlight = null;
   });
+  agentsInFlight = { token, root, promise };
+  return promise;
 }
 
 // 一覧の 2 行目は「どこに置いてあるか」だけ分かればよいので、親フォルダまで。
@@ -886,11 +903,14 @@ function executionHtml() {
   if (state.execution.loading && !machines.length) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
   if (!machines.length) return '<div class="blank compact"><h2>実行できるワークフローがありません</h2><p>ワークフローを作成すると、ここから実行できます。</p></div>';
   const selected = selectedExecutionMachine() || machines[0];
+  // 実行状態が届く前は定義だけで描いている。履歴も定期実行もまだ分からないので、確定した
+  // 「未実行」「予定なし」とは書かない。
+  const pending = state.execution.loading && !state.execution.snapshot;
   const list = machines.map((machine) => {
     const latest = (machine.history || [])[0];
-    const status = latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
+    const status = pending ? '確認中…' : latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行';
     const schedules = taskSchedules(machine);
-    const scheduleStatus = schedules.length
+    const scheduleStatus = pending ? '確認中…' : schedules.length
       ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length} 件の予定`
       : '予定なし';
     return `<button type="button" class="execution-item ${taskIdentity(machine) === taskIdentity(selected) ? 'is-on' : ''}" data-run-machine="${esc(taskIdentity(machine))}"><strong>${esc(machine.name)}</strong><span>${esc(taskKindLabel(machine))} · ${esc(status)} · ${esc(scheduleStatus)}</span></button>`;
@@ -2032,6 +2052,7 @@ async function navigateEmbedded(payload) {
   guard('設定', () => automationHost.getConfig()).then((latestConfig) => {
     if (token !== navigationToken || !latestConfig) return;
     state.config = latestConfig;
+    renderIfIdle();                    // 実行方針・モデルは設定から出すので、届いたら描き直す
     loadAgents();                      // 待たない（WSL 越しで遅い）。届いたら描き直す
   });
 
