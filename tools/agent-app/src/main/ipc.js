@@ -109,13 +109,8 @@ async function mainBranch(repo, distro) {
 // Linux / macOS はそのまま起動する。
 function spawnSpec(command, args, { cwd = '', env = {}, distro = '' } = {}) {
   if (process.platform !== 'win32') return { command, args, extra: { cwd, env: { ...process.env, ...env }, detached: true } };
-  const exportsStr = Object.entries(env).map(([k, v]) => `export ${k}=${host.sq(v)};`).join(' ');
-  const script = `${exportsStr} cd ${host.sq(host.toHostPath(cwd))} && exec ${host.quoteArgv([command, ...args])}`;
-  return {
-    command: 'wsl.exe',
-    args: [...(distro ? ['-d', distro] : []), '-e', 'bash', '-lc', script],
-    extra: { windowsHide: true },
-  };
+  const wsl = host.wslArgv(command, args, { cwd, env, distro });
+  return { command: wsl.command, args: wsl.args, extra: { windowsHide: true } };
 }
 
 function capture(argv, cwd) {

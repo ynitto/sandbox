@@ -9,6 +9,7 @@ const { EventEmitter } = require('node:events');
 const runner = require('../src/main/runner');
 const tools = require('../src/main/tools');
 const ai = require('../src/main/ai');
+const command = require('../src/main/command');
 
 test('ストリーム出力は行ごとに通知し、改行のない末尾も終了時に保持する', () => {
   const lines = [];
@@ -37,6 +38,31 @@ test('短いコマンドへ設定JSONを標準入力で渡せる', async () => {
 
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.stdout, input);
+});
+
+test('capture / stream / startDetached は spawnSpec オプションで起動仕様を差し替えられる', async () => {
+  const calls = [];
+  const fakeSpec = (name, args) => { calls.push([name, args]); return { command: 'echo-fake', args: ['ok'], options: {} }; };
+  const captured = await runner.capture('unused-name', ['x'], {
+    spawnSpec: (name, args, opts) => { fakeSpec(name, args); return command.spawnSpec(process.execPath, ['-e', 'process.stdout.write("ok")'], opts); },
+  });
+  assert.strictEqual(captured.ok, true);
+  assert.strictEqual(captured.stdout, 'ok');
+  assert.deepStrictEqual(calls, [['unused-name', ['x']]]);
+
+  const started = runner.startDetached('unused-name', ['--x'], {
+    cwd: '/project',
+    spawnSpec: (name, args, opts) => { fakeSpec(name, args); return command.spawnSpec(name, args, opts); },
+    spawnProcess: () => {
+      const child = new EventEmitter();
+      child.pid = 999;
+      child.unref = () => {};
+      process.nextTick(() => child.emit('spawn'));
+      return child;
+    },
+  });
+  assert.deepStrictEqual(await started, { pid: 999 });
+  assert.deepStrictEqual(calls[1], ['unused-name', ['--x']]);
 });
 
 test('自動実行プロセスはアプリから独立して起動する', async () => {

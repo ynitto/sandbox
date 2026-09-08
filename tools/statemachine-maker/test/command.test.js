@@ -49,11 +49,18 @@ test('Windows 以外は名前をそのまま渡す（解決は OS に任せる�
   assert.strictEqual(spec.options.cwd, '/tmp');
 });
 
-test('起動の口は 3 つとも同じ仕様を通る', () => {
+test('起動の口は既定で同じ仕様を通り、差し替えても spec.command 以外を素で spawn しない', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'main', 'runner.js'), 'utf8');
-  for (const fn of ['function capture', 'function stream', 'function spawnRecorder']) {
+  // capture / stream / startDetached は `spawnSpec` オプションで起動仕様を差し替えられる
+  // （既定値は command.spawnSpec）。埋め込む側が特定のコマンドだけ別経路（WSL のログイン
+  // シェル等）へ載せ替えるための口で、既定のままなら Windows の .cmd / .bat 解決を必ず通る。
+  for (const fn of ['function capture', 'function stream', 'function startDetached']) {
     const body = src.slice(src.indexOf(fn), src.indexOf(fn) + 600);
-    assert.match(body, /command\.spawnSpec\(/, `${fn} が起動仕様を通っていない`);
+    assert.match(body, /spawnSpec\s*=\s*command\.spawnSpec/, `${fn} の既定が command.spawnSpec を通っていない`);
+    assert.match(body, /=\s*spawnSpec\(name,\s*args/, `${fn} が差し替え可能な spawnSpec を呼んでいない`);
   }
+  // spawnRecorder（winauto 専用）は差し替えの対象にしていない。常に command.spawnSpec のまま。
+  const recorderBody = src.slice(src.indexOf('function spawnRecorder'), src.indexOf('function spawnRecorder') + 600);
+  assert.match(recorderBody, /command\.spawnSpec\(/, 'spawnRecorder が起動仕様を通っていない');
   assert.ok(!/spawn\((?!spec\.command)/.test(src.replace(/require\('child_process'\)/, '')), '素の spawn が残っている');
 });

@@ -99,7 +99,7 @@ test('herd: タスクとワークフローは共有編集面のフックで一�
   assert.match(makerIpc, /agentFlow\.start\(\{ \.\.\.p, agent \}/, 'agent-flow の --agent-cli には実在の定義名を渡す');
   assert.match(makerTools, /\.\.\.\(agent \? \['--agent', String\(agent\)\] : \[\]\)/, 'AI 支援は agent が空なら --agent を渡さない');
   const adapter = fs.readFileSync(path.join(SRC, 'main/automation/ipc.js'), 'utf8');
-  assert.match(adapter, /agentDefinitions,\s*hooks: \{\s*resolveAgent,/);
+  assert.match(adapter, /agentDefinitions,\s*commandSpawnSpec:\s*makeTaskCommandSpawnSpec\(userData\),\s*hooks: \{\s*resolveAgent,/);
   assert.match(adapter, /agentCli\.load\(agent \|\| herd\.HARNESS_DEFAULT, root\)/);
   const capture = async () => ({ ok: true, stdout: JSON.stringify({ definitions: ['aider', 'claude', 'ollama'] }) });
   assert.deepStrictEqual(await automationIpc.agentDefinitions({ cwd: '', capture }), ['aider', 'claude', 'ollama', 'herd']);

@@ -269,6 +269,30 @@ test('領域切替中は前の領域の操作を隠し、共通見出しを先�
   assert.match(css, /\.area-head\s*\{[^}]*min-height:\s*60px/);
 });
 
+test('タスク一覧は定義を先に見せ、実行状態（ファイル実体の確認を伴い遅い）は待たずに裏で重ねる', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  // loadAreaItems（showArea が待つ側）は定義の確認までしか待たない。実行状態は
+  // refreshTaskSnapshot が非同期に重ねる——loadTaskItems はそれを呼び出すが待たない。
+  assert.match(renderer, /async function loadTaskItems\(repo\)/);
+  assert.match(renderer, /async function loadAreaItems\(\)[\s\S]{0,200}loadTaskItems\(state\.repo\)/);
+  const loadTaskItemsBody = renderer.slice(
+    renderer.indexOf('async function loadTaskItems(repo)'),
+    renderer.indexOf('async function loadWorkflowItems'),
+  );
+  assert.match(loadTaskItemsBody, /Promise\.all\(\[\s*api\.automation\.listMachines\(repo\),\s*api\.automation\.teachingList\(repo\),\s*\]\)/, '定義とteachingは速い呼び出しだけをまとめて待つ');
+  assert.doesNotMatch(loadTaskItemsBody, /await api\.automation\.runSnapshot/, 'loadTaskItems は実行状態の取得を待たない');
+  assert.match(loadTaskItemsBody, /AgentNavigation\.taskItems\(null, definitions, teaching\)/, '実行状態が無くても定義から一覧を組める');
+  assert.match(loadTaskItemsBody, /refreshTaskSnapshot\(repo, token, definitions, teaching\);\s*\n\}/, '実行状態の取得は待たずに委ねて戻る');
+  // refreshTaskSnapshot は届いた時点で、別のリポジトリ・領域・一覧へ移っていたら捨てる。
+  const refreshBody = renderer.slice(renderer.indexOf('function refreshTaskSnapshot'), renderer.indexOf('async function loadTaskItems'));
+  assert.match(refreshBody, /api\.automation\.runSnapshot\(repo\)\.then\(/);
+  assert.match(refreshBody, /token !== state\.taskToken \|\| repo !== state\.repo/);
+  // 実行状態が届くまでは「未実行」と混同しない専用の表示にする。
+  assert.match(renderer, /taskStatusPending:\s*false,/);
+  assert.match(renderer, /const pending = state\.taskStatusPending && !task\.teachingStatus;/);
+  assert.match(renderer, /pending \? '確認中…'/);
+});
+
 test('タスク詳細は概要・手順・AI相談・履歴のタブに統一し、定期実行は概要で管理する', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', '..', 'statemachine-maker', 'src', 'renderer', 'renderer.js'), 'utf8');
   assert.match(renderer, /detailTab:\s*'overview'/);
@@ -607,6 +631,53 @@ test('応答から端末の装飾と kiro の入力欄を剥がす', () => {
     assert.ok(spec.args.join(' ').includes("cd '/mnt/c/work/repo'"));
   } else {
     assert.strictEqual(spec.command, 'claude');
+  }
+});
+
+test('host.wslArgv: WSL ログインシェル経由の 1 回起動 argv を組む', () => {
+  const host = require('../src/main/host');
+  // ディストロ指定あり・env の上書きあり（cwd の WSL 表記への変換は Windows でだけ効くので、
+  // その一点だけ process.platform で分ける。他は OS に依らず検査できる）。
+  const withDistro = host.wslArgv('agent-loop', ['inspect', '--json'], {
+    cwd: 'C:\\work\\repo', env: { FOO: 'a b' }, distro: 'Ubuntu',
+  });
+  assert.strictEqual(withDistro.command, 'wsl.exe');
+  assert.deepStrictEqual(withDistro.args.slice(0, 2), ['-d', 'Ubuntu']);
+  assert.deepStrictEqual(withDistro.args.slice(2, 5), ['-e', 'bash', '-lc']);
+  const script = withDistro.args[5];
+  assert.ok(script.includes("export FOO='a b';"), script);
+  assert.ok(script.includes("exec 'agent-loop' 'inspect' '--json'"), script);
+  assert.ok(script.includes(process.platform === 'win32' ? "cd '/mnt/c/work/repo'" : "cd 'C:\\work\\repo'"), script);
+  // ディストロ未指定（既定）・env の上書きなし → -d を付けず、export も無い
+  const withoutDistro = host.wslArgv('agent-flow', ['patterns', '--json'], { cwd: '/home/me/repo' });
+  assert.deepStrictEqual(withoutDistro.args.slice(0, 3), ['-e', 'bash', '-lc']);
+  assert.ok(!withoutDistro.args.join(' ').includes('export'));
+  assert.ok(withoutDistro.args[3].includes("cd '/home/me/repo'"), withoutDistro.args[3]);
+});
+
+test('automation: agent-herd / agent-loop / agent-flow だけを Windows で WSL ログインシェル経由に載せ替える', () => {
+  const adapter = fs.readFileSync(path.join(SRC, 'main/automation/ipc.js'), 'utf8');
+  // 名前の一族と、platform ゲート・host.wslArgv への配線を、ソースの形として確かめる
+  // （Windows 実機でしか実行時の分岐を通せないため）。
+  assert.match(adapter, /HERD_FAMILY_COMMANDS\s*=\s*new Set\(\['agent-herd',\s*'agent-loop',\s*'agent-flow'\]\)/);
+  assert.match(adapter, /function herdCommandSpawnSpec\(/);
+  assert.match(adapter, /host\.hostOf\(cwd,\s*store\.loadConfig\(userData\(\)\)\.wslDistro\)\.distro/);
+  assert.match(adapter, /host\.wslArgv\(command,\s*args,\s*\{\s*cwd,\s*distro\s*\}\)/);
+  assert.match(adapter, /process\.platform === 'win32' && HERD_FAMILY_COMMANDS\.has\(name\)/);
+
+  const userData = () => require('os').tmpdir();
+  const route = automationIpc.makeTaskCommandSpawnSpec(userData);
+  // 一族以外（python / playwright-cli / winauto など）は載せ替えない
+  assert.strictEqual(route('python'), undefined);
+  assert.strictEqual(route('playwright-cli'), undefined);
+  assert.strictEqual(route('winauto'), undefined);
+  if (process.platform === 'win32') {
+    for (const name of ['agent-herd', 'agent-loop', 'agent-flow']) {
+      assert.strictEqual(typeof route(name), 'function', `${name} は WSL 経由に載せ替える`);
+    }
+  } else {
+    // WSL 経由に載せ替えるのは Windows だけ（他の OS はもともとネイティブに実体がある）
+    for (const name of ['agent-herd', 'agent-loop', 'agent-flow']) assert.strictEqual(route(name), undefined);
   }
 });
 
