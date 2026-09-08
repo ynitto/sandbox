@@ -358,17 +358,19 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
   assert.match(renderer, /function taskDetailShellHtml\(/);
   assert.match(renderer, /function bindTaskDetailTabs\(/);
   assert.ok(!renderer.includes('data-task-tab="teach"'), 'AI相談のタブは持たない');
-  assert.match(renderer, /id="edit-target"/);
+  assert.match(renderer, /id="editing-target"/);
   assert.match(renderer, /id="edit-agent"/);
   assert.match(renderer, /id="b-assist"[^>]*>編集</);
   assert.match(renderer, /id="b-run"[^>]*>テスト</);
-  assert.match(renderer, /class="edit-controls"/, '編集対象・エージェント・編集ボタンを一つの操作グループにする');
+  assert.match(renderer, /class="edit-controls"/, 'エージェントと編集ボタンを一つの操作グループにする');
   assert.match(workbenchCss, /\.task-detail-shell\.is-editor \.task-tab-panel \{[^}]*grid-template-rows: auto minmax\(0, 1fr\)/,
     'ツールバーが折り返しても本文へ重ならない');
   assert.match(workbenchCss, /\.embedded-editor-toolbar \.bar-right \{[^}]*flex-wrap: wrap/,
     '狭いペインでは操作を折り返す');
-  assert.match(renderer, /target === 'workflow'[^\n]*startEditing/);
-  assert.match(renderer, /type: 'step', stepId: target\.slice\(5\)/);
+  assert.match(renderer, /state\.aiReview\.scope = selected \? \{ type: 'step', stepId: selected\.id \} : \{ type: 'workflow' \}/,
+    '選択中の工程を編集画面の初期対象へ引き継ぐ');
+  assert.match(renderer, /target\.value === 'workflow'[\s\S]*stepId: target\.value\.slice\(5\)/,
+    '編集画面内で全体と工程を切り替えられる');
   assert.match(renderer, /function editingCardHtml\(/);
   assert.match(renderer, /teachingFeature\.editorSlotHtml\(machine\)/);
   assert.match(renderer, /data-edit-back/);

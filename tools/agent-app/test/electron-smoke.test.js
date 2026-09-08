@@ -249,12 +249,16 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       `editor actions should stay within the toolbar: ${JSON.stringify({ toolbar, toolbarActions })}`);
     assert.ok(toolbarTitle && toolbarActions && toolbarTitle.y + toolbarTitle.height <= toolbarActions.y + 1,
       `editor title and actions should use separate rows: ${JSON.stringify({ toolbarTitle, toolbarActions })}`);
-    // 「手順」の「編集」で、その場に AI との会話（tmux の端末ミラー）が出る。枠は概要と同じ
+    // 選択した工程から「編集」へ移り、対象を引き継いだ AI との会話（tmux の端末ミラー）が出る。
     // .execution-card で、中身は親の slot に載る。タブは概要 / 手順 / 履歴のまま。
+    await workspace.locator('[data-step="0"]').click();
     await workspace.locator('#b-assist').click();
     await win.locator('#task-teaching:not([hidden])').waitFor({ timeout: 20000 });
     await assertTaskLayout('編集');
     assert.match(await workspace.locator('.execution-card-head').first().textContent(), /AIと編集/);
+    assert.strictEqual(await workspace.locator('#editing-target').inputValue(), 'step:step_1', '選択した工程を編集対象へ引き継ぐ');
+    await workspace.locator('#editing-target').selectOption('workflow');
+    assert.strictEqual(await workspace.locator('#editing-target').inputValue(), 'workflow', '編集画面で全体へ切り替えられる');
     assert.strictEqual(await workspace.locator('[data-edit-back]').isVisible(), true, '工程へ戻れる');
     assert.strictEqual(await workspace.locator('.task-detail-tabs').count(), 1, '編集でもタスクタブを維持する');
     assert.deepStrictEqual(await workspace.locator('.task-detail-tabs [role="tab"]').allTextContents(), ['概要', '手順', '履歴']);
