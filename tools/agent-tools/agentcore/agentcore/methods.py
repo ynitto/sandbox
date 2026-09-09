@@ -39,9 +39,19 @@ def current_tier(control_dir: str, workload: str) -> str:
     return str(rec.get("tier") or "") if isinstance(rec, dict) else ""
 
 
-def relative_cost(agent_cli: str, project_dir: "str | None" = None) -> "float | None":
+def relative_cost(agent_cli: str, project_dir: "str | None" = None,
+                  model: "str | None" = None) -> "float | None":
+    """手法の条件（`when` の min/max_relative_cost）が見る相対コスト。
+
+    `when` は既に `models` でモデルを名指しできるので、コストの側だけ定義単位のままだと
+    「このモデルのときだけ効かせる」条件が書けない——定義が `models` でモデル別の値を
+    宣言していればそれを、していなければ定義単位の値を返す（agentcli.resolve_relative_cost
+    と同じ規則）。`model` を渡さなければ定義の既定モデルで引くので、既存の呼び出しは
+    そのまま動く。
+    """
     try:
-        return float(agentcli.load_cli(agent_cli, project_dir=project_dir)["relative_cost"])
+        spec = agentcli.load_cli(agent_cli, project_dir=project_dir)
+        return float(agentcli.resolve_relative_cost(spec, model))
     except Exception:  # noqa: BLE001 — optional tuning must not stop execution
         return None
 
