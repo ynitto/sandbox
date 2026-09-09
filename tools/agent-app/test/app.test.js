@@ -788,7 +788,7 @@ test('automation: agent-herd / agent-loop / agent-flow だけを Windows で WSL
   assert.match(adapter, /HOST_PATH_OPTIONS\s*=\s*new Set\(\['--dir',\s*'--bus'\]\)/);
   // bus へ書く workspace.local（WSL の中で `git -C` に渡る）もホストの表記で渡す
   assert.match(adapter, /hostPath:\s*host\.toHostPath,/);
-  assert.match(adapter, /process\.platform === 'win32' && HERD_FAMILY_COMMANDS\.has\(name\)/);
+  assert.match(adapter, /process\.platform === 'win32' && \(onHost \|\| HERD_FAMILY_COMMANDS\.has\(name\)\)/);
 
   const userData = () => require('os').tmpdir();
   const route = automationIpc.makeTaskCommandSpawnSpec(userData);
@@ -800,7 +800,11 @@ test('automation: agent-herd / agent-loop / agent-flow だけを Windows で WSL
     for (const name of ['agent-herd', 'agent-loop', 'agent-flow']) {
       assert.strictEqual(typeof route(name), 'function', `${name} は WSL 経由に載せ替える`);
     }
+    // 呼ぶ側が host: true と言えば、一族の名前でなくても WSL 経由（CLI を直接起こす AI 支援・手動実行）
+    assert.strictEqual(typeof route('claude', { host: true }), 'function');
+    assert.strictEqual(typeof route('python3', { host: true }), 'function');
   } else {
+    assert.strictEqual(route('claude', { host: true }), undefined);
     // WSL 経由に載せ替えるのは Windows だけ（他の OS はもともとネイティブに実体がある）
     for (const name of ['agent-herd', 'agent-loop', 'agent-flow']) assert.strictEqual(route(name), undefined);
   }

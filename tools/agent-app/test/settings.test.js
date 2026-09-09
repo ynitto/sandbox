@@ -112,3 +112,25 @@ test('旧推奨スキルを自動選択の候補へ移行する', () => {
     candidates: ['ui-designer', 'self-checking'],
   });
 });
+
+test('エージェントを最適化する: OFF か herd が無ければ、節約 / 品質重視は「おすすめ」として解決する', () => {
+  const config = settings.normalize({ execution: { defaultPolicy: 'quality', tiers: {
+    small: { cli: 'aider', model: 'local' }, medium: { cli: 'codex', model: 'standard' }, large: { cli: 'claude', model: 'quality' },
+  } } });
+  assert.strictEqual(config.execution.optimizeAgents, true, '既定は ON');
+  assert.strictEqual(settings.normalize({ execution: { optimizeAgents: false } }).execution.optimizeAgents, false);
+  assert.strictEqual(settings.optimized(config, { herdAvailable: true }), true);
+  assert.strictEqual(settings.optimized(config, { herdAvailable: false }), false, 'herd が無ければ効かない');
+  assert.strictEqual(settings.optimized(settings.normalize({ execution: { optimizeAgents: false } }), { herdAvailable: true }), false, 'OFF なら herd があっても効かない');
+  assert.strictEqual(settings.effectivePolicy('saving', { optimized: false }), 'recommended');
+  assert.strictEqual(settings.effectivePolicy('quality', { optimized: false }), 'recommended');
+  assert.strictEqual(settings.effectivePolicy('recommended', { optimized: false }), 'recommended');
+  assert.strictEqual(settings.effectivePolicy('direct', { optimized: false }), 'direct', '直接指定（カスタム）は残る');
+  assert.strictEqual(settings.effectivePolicy('saving', { optimized: true }), 'saving');
+  assert.deepStrictEqual(settings.resolve(config, { policy: 'saving' }, { optimized: false }), {
+    policy: 'recommended', tier: 'medium', cli: 'codex', model: 'standard', source: 'policy',
+  });
+  assert.strictEqual(settings.resolve(config, {}, { optimized: false }).policy, 'recommended', '既定が品質重視でも おすすめ');
+  assert.strictEqual(settings.resolve(config, { policy: 'quality' }).policy, 'quality', '省略時は従来どおり');
+  assert.strictEqual(settings.resolve(config, { policy: 'direct', cli: 'kiro' }, { optimized: false }).cli, 'kiro');
+});

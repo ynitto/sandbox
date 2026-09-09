@@ -9,6 +9,7 @@ const state = {
   repo: '',
   repoToken: 0,         // selectRepo のたびに進める。遅れて届いたホストの返事を捨てる印
   agents: [],
+  capabilities: null,   // automation:capabilities（{ herd, agentLoop, agentFlow }）。届くまで null
   agentsLoading: false, // agents:list（ホストの PATH を引く）の返事待ち
   agentsReady: null,
   sessions: [],
@@ -455,10 +456,19 @@ async function selectRepo(repo) {
       state.agentsLoading = false;
       renderAgents();
       renderRunSettingsSummary();
+      renderRestrictions();
     })
     : Promise.resolve();
   // git worktree の確認は Windows / WSL では数秒かかることがある。初回の領域表示を
   // ここで止めず、一覧が届いた時点で作業フォルダ欄だけを更新する。
+  state.capabilities = null;
+  if (repo) {
+    api.automation.capabilities(repo).then((caps) => {
+      if (token !== state.repoToken) return;
+      state.capabilities = caps;
+      renderRestrictions();
+    }, () => {});
+  }
   refreshWorktrees({ token });
   renderRepos();
   renderAgents();
@@ -631,6 +641,58 @@ const POLICY_VIEW = {
   direct: { label: '直接指定', tier: '' },
 };
 const SKILL_MODE_LABEL = { auto: '自動', manual: '手動選択', off: '使用しない' };
+// 最適化が効いていないときに選べる起動方針（settings.BASIC_POLICIES と同じ）。
+const BASIC_POLICIES = ['recommended'];
+
+// ローカル実行系（agent-herd の一族）が使えるか。一覧の仮想の `herd` の印で見る。届く前は「使える」と
+// みなす（先に薄くして後で戻すより、戻すほうが目立たない）。
+function herdAvailable() {
+  if (state.agentsLoading || !state.agents.length) return state.capabilities ? !!state.capabilities.herd : true;
+  return state.agents.some((a) => a.virtual && a.name === 'herd' && a.available);
+}
+
+// 「エージェントを最適化する」が効いているか（設定 × herd の有無）。効いていなければ、起動方針は
+// おすすめ / 直接指定だけ、tier は medium だけ。
+function optimized(config = state.config) {
+  const execution = config && config.execution ? config.execution : {};
+  return execution.optimizeAgents !== false && herdAvailable();
+}
+
+function effectivePolicy(policy, on = optimized()) {
+  const name = String(policy || '');
+  if (name === 'direct') return name;
+  if (!POLICY_VIEW[name]) return 'recommended';
+  return on || BASIC_POLICIES.includes(name) ? name : 'recommended';
+}
+
+// 選べない方針・tier・領域を薄くする（理由は出さない）。
+function renderRestrictions() {
+  const on = optimized();
+  const select = $('policy');
+  for (const option of select.options) option.disabled = !on && !BASIC_POLICIES.includes(option.value) && option.value !== 'direct';
+  if (select.selectedOptions[0] && select.selectedOptions[0].disabled) { select.value = 'recommended'; renderRunSettingsSummary(); }
+  const caps = state.capabilities;
+  $('area-workflows').disabled = !!(caps && caps.agentFlow === false);
+  renderSettingsRestrictions();
+}
+
+// 設定 > 実行制御: チェックの状態（保存前）と herd の有無で、方針と tier の行を薄くする。
+function renderSettingsRestrictions() {
+  const toggle = $('optimize-agents');
+  const on = toggle.checked && herdAvailable();
+  for (const input of document.querySelectorAll('input[name="default-policy"]')) {
+    const allowed = on || BASIC_POLICIES.includes(input.value);
+    input.disabled = !allowed;
+    input.closest('label').classList.toggle('is-off', !allowed);
+    if (!allowed && input.checked) { input.checked = false; document.querySelector('input[name="default-policy"][value="recommended"]').checked = true; }
+  }
+  for (const tier of ['small', 'medium', 'large']) {
+    const allowed = on || tier === 'medium';
+    $(`tier-${tier}-cli`).disabled = !allowed;
+    $(`tier-${tier}-model`).disabled = !allowed;
+    $(`tier-${tier}-cli`).closest('.tier-row').classList.toggle('is-off', !allowed);
+  }
+}
 
 function skillCandidates() {
   const selection = state.config && state.config.instructions && state.config.instructions.skillSelection;
@@ -675,6 +737,7 @@ async function refreshTurnSkillPreview() {
 
 function selectedExecution(policy = $('policy').value) {
   if (policy === 'direct') return { policy, tier: '', cli: $('cli').value, model: $('model').value.trim() };
+  policy = effectivePolicy(policy);
   const view = POLICY_VIEW[policy] || POLICY_VIEW.recommended;
   const tier = state.config.execution.tiers[view.tier];
   return { policy, tier: view.tier, cli: tier.cli, model: tier.model || '' };
@@ -723,12 +786,12 @@ function renderHeader() {
   $('cli').disabled = !state.repo;
   $('policy').disabled = !state.repo;
   if (cur) {
-    $('policy').value = cur.policy || 'direct';
+    $('policy').value = effectivePolicy(cur.policy || 'direct');
     if ([...$('cli').options].some((o) => o.value === cur.cli)) $('cli').value = cur.cli;
     $('model').value = cur.model || '';
     $('permission-mode').value = cur.readonly ? 'ask' : (cur.autoApprove ? 'auto' : 'confirm');
   } else {
-    $('policy').value = state.config.execution.defaultPolicy;
+    $('policy').value = effectivePolicy(state.config.execution.defaultPolicy);
     $('model').value = state.config.lastModel || '';
     $('permission-mode').value = state.config.execution.defaultReadonly ? 'ask'
       : (state.config.execution.defaultAutoApprove ? 'auto' : 'confirm');
@@ -1401,6 +1464,7 @@ function settingsPatch() {
     },
     execution: {
       defaultPolicy: checkedPolicy ? checkedPolicy.value : 'recommended',
+      optimizeAgents: $('optimize-agents').checked,
       defaultReadonly: $('default-permission-mode').value === 'ask',
       defaultAutoApprove: $('default-permission-mode').value === 'auto',
       maxConcurrent: Number($('max-concurrent').value),
@@ -1430,8 +1494,10 @@ async function openSettings() {
     fillAgentSelect($(`tier-${tier}-cli`), execution.tiers[tier].cli);
     $(`tier-${tier}-model`).value = execution.tiers[tier].model || '';
   }
+  $('optimize-agents').checked = execution.optimizeAgents !== false;
   const policy = document.querySelector(`input[name="default-policy"][value="${execution.defaultPolicy}"]`);
   if (policy) policy.checked = true;
+  renderSettingsRestrictions();
   $('default-permission-mode').value = execution.defaultReadonly ? 'ask'
     : (execution.defaultAutoApprove ? 'auto' : 'confirm');
   $('max-concurrent').value = execution.maxConcurrent;
@@ -1468,6 +1534,7 @@ async function saveSettings() {
       await refreshWorktrees();
       renderAgents();
       renderHeader();
+      renderRestrictions();
     }
   } catch (error) {
     $('settings-error').textContent = error.message;
@@ -1520,16 +1587,16 @@ async function init() {
     notice,
     isRunning: (id) => state.running.has(id),
     executionOptions: (overrides = {}) => {
-      const selected = selectedExecution(state.config.execution.defaultPolicy);
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
       return { policy: selected.policy, cli: overrides.agent || selected.cli, model: overrides.model != null ? overrides.model : selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
     },
     executionDefaults: () => {
-      const selected = selectedExecution(state.config.execution.defaultPolicy);
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
       return { agent: selected.cli, model: selected.model };
     },
     agentNames: () => state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name),
     executionLabel: (overrides = {}) => {
-      const selected = selectedExecution(state.config.execution.defaultPolicy);
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
       const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
       const cli = overrides.agent || selected.cli;
       const model = overrides.model != null ? overrides.model : selected.model;
@@ -1687,6 +1754,7 @@ async function init() {
   $('settings-open').onclick = () => openSettings().catch((error) => notice(error.message, 'error'));
   $('settings-close').onclick = () => $('app-settings').close();
   $('settings-save').onclick = saveSettings;
+  $('optimize-agents').onchange = renderSettingsRestrictions;
   $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));
   $('side-backdrop').onclick = () => setSidebar(false);
   document.addEventListener('click', (event) => {

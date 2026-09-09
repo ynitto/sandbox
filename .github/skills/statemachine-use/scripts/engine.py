@@ -538,9 +538,12 @@ class StateMachineEngine:
             ステートアクションとトランジション条件の評価の両方で呼び出される。
     """
 
-    def __init__(self, llm_fn: LLMFn, verbose: bool = False):
+    def __init__(self, llm_fn: LLMFn, verbose: bool = False, instruction: str = ""):
         self.llm_fn = llm_fn
         self.verbose = verbose
+        # 実行時の共通指示（呼び出し側の設定）。工程のアクションにだけ前置し、遷移条件の
+        # 評価には付けない。形は agentcore.harness.statemachine と同じ（"## 今回の工程"）。
+        self.instruction = str(instruction or "").strip()
 
     # ── 公開エントリーポイント ──────────────────────────────────────────
 
@@ -734,6 +737,8 @@ class StateMachineEngine:
             return ""
 
         base_prompt = "\n\n".join(parts)
+        if self.instruction:
+            base_prompt = f"{self.instruction}\n\n## 今回の工程\n{base_prompt}"
         if check_note:
             base_prompt += f"\n\n{check_note}"
         max_attempts = state.max_retries + 1

@@ -120,4 +120,4 @@ async function readLog({ root, identity, capture }) {
   return response;
 }
 
-module.exports = { runSpec, taskRunSpec, inspect, saveSchedule, parseResult, startDaemon, stopDaemon, readLog };
+module.exports = { machineName, runSpec, taskRunSpec, inspect, saveSchedule, parseResult, startDaemon, stopDaemon, readLog };

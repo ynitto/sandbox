@@ -85,8 +85,9 @@ function createOutputCollector({ onLine, maxBytes = MAX_STREAM_OUTPUT } = {}) {
 }
 
 // onLine(kind, text) に stdout / stderr を行単位で流し、終了時に収集済み出力も返す。
+//   input … stdin に流す本文（省略時は空のまま閉じる。開けたままにすると stdin を読む CLI が待ち続ける）
 function stream(name, args, {
-  cwd = '', env = process.env, kind = 'run', onLine, onExit, maxBytes = MAX_STREAM_OUTPUT, spawnSpec = command.spawnSpec,
+  cwd = '', env = process.env, kind = 'run', onLine, onExit, maxBytes = MAX_STREAM_OUTPUT, spawnSpec = command.spawnSpec, input = '',
 } = {}) {
   if (running) throw new Error('別の実行が進行中です。終わるか停止してから始めてください');
   const spec = spawnSpec(name, args, { cwd, env });
@@ -106,6 +107,8 @@ function stream(name, args, {
     if (running && running.child === child) running = null;
     if (onExit) onExit({ code, ...collector.result() });
   });
+  child.stdin.on('error', () => { /* 先に終わった CLI へ書いた EPIPE */ });
+  child.stdin.end(String(input == null ? '' : input));
   return { pid: child.pid };
 }
 

@@ -78,7 +78,9 @@ test('herd: 名前の並びには一族が居るときだけ herd を足す', ()
 
 test('herd: 会話は listAgents に仮想の行を足し、ターンごとにスラッシュ行を付けて要求名を会話に残す', () => {
   const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
-  assert.match(ipc, /const virtual = herd\.listEntry\(marked\)/);
+  const agentsList = fs.readFileSync(path.join(SRC, 'main/agents.js'), 'utf8');
+  assert.match(agentsList, /const virtual = herd\.listEntry\(marked\)/);
+  assert.match(ipc, /return agentsMod\.listAgents\(repo, \{ distro \}\)/, '会話の一覧は agents.js（タスクと同じ 1 つ）');
   assert.match(ipc, /const base = concreteCli\(requested, agents, \{ attachments: p\.attachments \}\)/);
   assert.match(ipc, /cli: base\.requested \|\| base\.cli/, '次のターンの既定は herd のまま');
   assert.match(ipc, /role: 'user', text, cli, family,/);
@@ -94,6 +96,7 @@ test('herd: タスクとワークフローは共有編集面のフックで一�
   assert.match(makerIpc, /options\.agentDefinitions/);
   assert.match(makerIpc, /options\.hooks && options\.hooks\.resolveAgent/);
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'task', root\)/);
+  assert.match(makerIpc, /resolveAgent\(requestedAgent, 'direct', root\)/, 'agent-loop が無いときは定義を名指しする');
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'plan', root\)/);
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'flow', root\)/);
   assert.match(makerIpc, /agentFlow\.start\(\{ \.\.\.p, agent \}/, 'agent-flow の --agent-cli には実在の定義名を渡す');
@@ -101,16 +104,21 @@ test('herd: タスクとワークフローは共有編集面のフックで一�
   const adapter = fs.readFileSync(path.join(SRC, 'main/automation/ipc.js'), 'utf8');
   // 共有編集面へ渡す配線。順番や隣接ではなく、項目ごとに見る（項目が増えても壊れない）
   assert.match(adapter, /makerIpc\.registerIpcHandlers\(getWindow, \{[\s\S]*\n  \}\);/);
-  assert.match(adapter, /^\s*agentDefinitions,$/m);
+  assert.match(adapter, /^\s*agentDefinitions: \(payload\) => agentDefinitions\(payload, \{ userData \}\),$/m);
   assert.match(adapter, /^\s*commandSpawnSpec: makeTaskCommandSpawnSpec\(userData\),$/m);
-  assert.match(adapter, /^\s*hooks: \{\s*$[\s\S]*^\s*resolveAgent,$/m);
+  assert.match(adapter, /^\s*hooks: \{\s*$[\s\S]*^\s*resolveAgent: \(payload\) => resolveAgent\(payload, \{ userData \}\),$/m);
+  assert.match(adapter, /^\s*assistRunSpec,$/m, 'AI 支援は定義から組んだ単発 argv で起こす');
   assert.match(adapter, /agentCli\.load\(agent \|\| herd\.HARNESS_DEFAULT, root\)/);
-  const capture = async () => ({ ok: true, stdout: JSON.stringify({ definitions: ['aider', 'claude', 'ollama'] }) });
-  assert.deepStrictEqual(await automationIpc.agentDefinitions({ cwd: '', capture }), ['aider', 'claude', 'ollama', 'herd']);
-  const none = async () => ({ ok: true, stdout: JSON.stringify({ definitions: ['claude'] }) });
-  assert.deepStrictEqual(await automationIpc.agentDefinitions({ cwd: '', capture: none }), ['claude']);
-  assert.deepStrictEqual(automationIpc.resolveAgent({ agent: 'claude', purpose: 'task' }), { agent: 'claude' });
-  assert.strictEqual(automationIpc.resolveAgent({ agent: 'herd', purpose: 'task' }).agent, '', 'タスクは --agent-cli を渡さない');
-  assert.strictEqual(automationIpc.resolveAgent({ agent: 'herd', purpose: 'plan' }).agent, '', 'AI 支援は --agent を渡さない');
-  assert.strictEqual(automationIpc.resolveAgent({ agent: 'herd', purpose: 'flow' }).agent, 'aider', 'agent-flow には harness の既定');
+  // 一覧は agent-herd に聞かず、会話と同じ一覧（agents.js）から実際に起こせるものだけ
+  assert.doesNotMatch(adapter, /makerTools\.agentDefinitions/);
+  assert.match(adapter, /agents\.usableNames\(await agents\.listAgents\(cwd, \{ distro: resolved \}\)\)/);
+  assert.deepStrictEqual(await automationIpc.resolveAgent({ agent: 'claude', purpose: 'task' }), { agent: 'claude' });
+  assert.strictEqual((await automationIpc.resolveAgent({ agent: 'herd', purpose: 'task' })).agent, '', 'タスクは --agent-cli を渡さない');
+  assert.strictEqual((await automationIpc.resolveAgent({ agent: 'herd', purpose: 'plan' })).agent, '', 'AI 支援は --agent を渡さない');
+  assert.strictEqual((await automationIpc.resolveAgent({ agent: 'herd', purpose: 'flow' })).agent, 'aider', 'agent-flow には harness の既定');
+  // AI 支援で herd を選んだときだけ agent-herd の --purpose plan（--agent は渡さない）
+  const viaHerd = automationIpc.assistRunSpec({ root: '/r', agent: 'herd', prompt: 'JSON だけ' });
+  assert.strictEqual(viaHerd.command, 'agent-herd');
+  assert.ok(!viaHerd.args.includes('--agent'));
+  assert.strictEqual(viaHerd.host, true);
 });
