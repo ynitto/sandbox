@@ -523,7 +523,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
    見出しと説明はワークベンチ側が持つ。ここは操作面だけを置き、端末と入力欄は
    会話画面と同じ .terminal-stage / .composer-shell をそのまま使う（作り直さない）。 */
 #task-teaching { min-width: 0; display: grid; gap: 12px; }
-#task-teaching .composer-shell { width: 100%; }
+#task-teaching .composer-shell { width: min(100%, 900px); }
 #task-create { display: grid; gap: 10px; }
 #task-create textarea { width: 100%; min-height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
 .task-create-label { display: flex; align-items: baseline; gap: 8px; }
@@ -538,14 +538,11 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .task-launch-card p { margin: 5px 0 0; }
 #task-workspace { min-width: 0; width: 100%; display: grid; gap: 10px; }
 #task-terminal { height: min(46vh, 480px); min-height: 260px; }
-/* 「AIと編集」のカードの中に入るときは、端末は白い面の中身なので枠と影を持たず、
-   カードに残った高さをそのまま使う。 */
+/* 「AIと編集」も通常の会話と同じ余白・端末カード・中央寄せ入力欄で構成する。 */
 #task-teaching.in-card { gap: 10px; height: 100%; min-height: 0; }
 #task-teaching.in-card #task-workspace { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
 #task-teaching.in-card #task-workspace:has(.task-launch-card:not([hidden])) { height: auto; grid-template-rows: auto; }
-#task-teaching.in-card #task-terminal { height: auto; min-height: 160px; }
-#task-teaching.in-card .terminal-stage { border-color: transparent; box-shadow: none; }
-#task-teaching.in-card .terminal-stage.input-terminal { border-color: var(--term-cursor); }
+#task-teaching.in-card #task-terminal { height: min(46vh, 480px); min-height: 220px; margin: 0 2px; }
 #task-record { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 #task-record input { min-width: 220px; }
 #task-record .sub.error { color: var(--danger); }

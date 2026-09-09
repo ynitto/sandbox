@@ -128,6 +128,11 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .execution-card-head > div { min-width: 0; }
 .execution-card-head h3 { font-size: 15px; }
 .execution-card-head p { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.task-conversation-editor { min-width: 0; display: grid; gap: 12px; }
+.task-conversation-toolbar { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.task-conversation-toolbar .editing-target { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.task-conversation-toolbar .editing-target span { color: var(--muted); font-size: 12px; }
+.task-conversation-toolbar .editing-target select { min-width: 180px; max-width: min(420px, 50vw); }
 .status { display: inline-flex; flex: none; border-radius: 999px; padding: 2px 8px; background: var(--bg); color: var(--muted); font-size: 11px; font-weight: 650; }
 .status.active { color: var(--accent); background: var(--accent-soft); }
 .status.ok { color: var(--ok); background: var(--ok-soft); }

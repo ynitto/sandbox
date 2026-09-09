@@ -58,7 +58,7 @@ function createTerm() {
     hostEl.addEventListener('pointerup', () => {
       if (!term.hasSelection() && state.onFocus) state.onFocus();
     });
-    // xterm 自身には履歴を二重保持せず、ホイールを tmux copy-mode の履歴へ流す。
+    // xterm 自身には履歴を二重保持せず、ホイール量を tmux 履歴の表示オフセットへ渡す。
     // message 入力モードでも端末の閲覧はできるよう inputEnabled では制限しない。
     hostEl.addEventListener('wheel', (event) => {
       if (!state.id || !event.deltaY) return;
@@ -94,7 +94,8 @@ function createTerm() {
       out.push('\x1b[0m');
     }
     for (let i = lines.length; i < term.rows; i += 1) out.push(`\x1b[${i + 1};1H\x1b[2K`);
-    out.push(`\x1b[${(p.cursor ? p.cursor.y : 0) + 1};${(p.cursor ? p.cursor.x : 0) + 1}H\x1b[?25h`);
+    if (p.scrollOffset > 0) out.push('\x1b[?25l');
+    else out.push(`\x1b[${(p.cursor ? p.cursor.y : 0) + 1};${(p.cursor ? p.cursor.x : 0) + 1}H\x1b[?25h`);
     term.write(out.join(''));
   }
 

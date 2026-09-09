@@ -204,9 +204,18 @@ function cmdNew({ name, cwd, argv, cols, rows }) {
 
 // 画面の状態 1 行（| 区切り。tmux は書式出力の制御文字を \037 のような 8 進表記へ直すので
 // 区切りは印字可能な文字にする）+ 画面本体（色付き）。頭と本体の間の \036 は自前の printf で出す。
-function cmdScreen(name, { history = false } = {}) {
+function cmdScreen(name, { history = false, offset = 0, rows = DEFAULT_ROWS } = {}) {
   const fmt = '#{cursor_x}|#{cursor_y}|#{pane_width}|#{pane_height}|#{pane_dead}|#{pane_dead_status}|#{history_size}|#{pane_in_mode}';
-  const cap = history ? `capture-pane -p -J -S - -t ${sq(name)}` : `capture-pane -p -e -t ${sq(name)}`;
+  const amount = Math.max(0, Math.floor(Number(offset) || 0));
+  const height = Math.max(1, Math.floor(Number(rows) || DEFAULT_ROWS));
+  // tmux の表示位置（copy-mode）自体は動かさない。0 は現在のペイン、1 以上は
+  // 画面上端を履歴へ amount 行戻した範囲を -S/-E で直接取得する。
+  const range = amount
+    ? ` -S ${-amount} -E ${height - 1 - amount}`
+    : '';
+  const cap = history
+    ? `capture-pane -p -J -S - -t ${sq(name)}`
+    : `capture-pane -p -e${range} -t ${sq(name)}`;
   return `${TMUX} display-message -p -t ${sq(name)} ${sq(fmt)} && printf '\\036' && ${TMUX} ${cap}`;
 }
 
@@ -229,20 +238,6 @@ function parseScreen(output) {
 
 function cmdKeys(name, args) {
   return `${TMUX} send-keys -t ${sq(name)} ${host.quoteArgv(args)}`;
-}
-
-// 埋め込み端末のホイール操作は tmux の履歴を正として扱う。上方向では copy-mode に入り、
-// 下端を越えたら -e により自動で通常画面へ戻る。
-function cmdScroll(name, lines) {
-  const count = Math.max(1, Math.min(200, Math.abs(Number(lines)) || 1));
-  if (Number(lines) < 0) {
-    return `${TMUX} copy-mode -e -t ${sq(name)} && ${TMUX} send-keys -t ${sq(name)} -X -N ${count} scroll-up`;
-  }
-  return `${TMUX} send-keys -t ${sq(name)} -X -N ${count} scroll-down`;
-}
-
-function cmdCancelCopy(name) {
-  return `${TMUX} send-keys -t ${sq(name)} -X cancel 2>/dev/null || true`;
 }
 
 function cmdKill(name) { return `${TMUX} kill-session -t ${sq(`=${name}`)}`; }
@@ -280,12 +275,14 @@ class Conversation {
     this.watchers = 0;               // 端末ミラーを見ている画面の数（0 なら間隔を落とす）
     this.lastScreen = null;
     this.lastText = '';
+    this.lastDisplayText = '';
     this.lastChangeAt = Date.now();
     this.startedAt = Date.now();
     this.timer = null;
     this.polling = false;
     this.closed = false;
     this.deadSnapshotSent = false;
+    this.scrollOffset = 0;            // xterm に描く範囲の、現在画面からの履歴オフセット
   }
 
   async exists() {
@@ -327,8 +324,8 @@ class Conversation {
     return this.phase === 'dead' || this.phase === 'gone' ? 5000 : 1200;
   }
 
-  async capture({ history = false } = {}) {
-    const r = await this.shell.run(cmdScreen(this.name, { history }), { timeoutMs: 10000 });
+  async capture({ history = false, offset = 0 } = {}) {
+    const r = await this.shell.run(cmdScreen(this.name, { history, offset, rows: this.rows }), { timeoutMs: 10000 });
     if (!r.ok) return { ok: false, error: r.error || r.output };
     const screen = parseScreen(r.output);
     if (!screen) return { ok: false, error: 'capture-pane の出力を読めません' };
@@ -339,7 +336,7 @@ class Conversation {
     if (this.closed || this.polling) return;
     this.polling = true;
     try {
-      const cap = await this.capture();
+      const cap = await this.capture({ offset: this.scrollOffset });
       if (!cap.ok) {
         if (/can't find|no server|no such/i.test(cap.error)) {
           this.setPhase('gone', 'tmux セッションが無い');
@@ -347,14 +344,22 @@ class Conversation {
         }
         return;
       }
-      const screen = cap.screen;
+      const displayScreen = cap.screen;
+      const displayText = stripAnsi(displayScreen.text);
+      // 履歴を表示している間もターン判定は現在画面で続ける。表示用の過去画面を
+      // ready/busy 判定へ混ぜず、必要な間だけ現在画面をもう一度取得する。
+      const liveCap = this.scrollOffset > 0 ? await this.capture() : cap;
+      if (!liveCap.ok) return;
+      const screen = liveCap.screen;
       const text = stripAnsi(screen.text);
       const changed = text !== this.lastText;
       if (changed) { this.lastText = text; this.lastChangeAt = Date.now(); }
+      const displayChanged = displayText !== this.lastDisplayText;
+      if (displayChanged) this.lastDisplayText = displayText;
       this.lastScreen = screen;
-      if (this.watchers > 0 && (changed || !this.sentOnce)) {
+      if (this.watchers > 0 && (displayChanged || !this.sentOnce)) {
         this.sentOnce = true;
-        this.emit('term:screen', { id: this.id, text: screen.text, cursor: screen.cursor, cols: screen.cols, rows: screen.rows, tail: tailLines(text, 14) });
+        this.emit('term:screen', { id: this.id, text: displayScreen.text, cursor: screen.cursor, cols: screen.cols, rows: screen.rows, scrollOffset: this.scrollOffset, tail: tailLines(text, 14) });
       }
       if (screen.dead) {
         if (!this.deadSnapshotSent) {
@@ -365,9 +370,6 @@ class Conversation {
         if (this.turn) this.finishTurn({ error: this.detail, text: extractReply(this.turn.before, (await this.historyText()) || text, this.turn.prompt) });
         return;
       }
-      // copy-mode 中に表示しているのは過去の履歴であり、CLI の現在状態ではない。
-      // ready/busy 判定へ使うとスクロールだけでターンを完了させるため、画面更新だけ行う。
-      if (screen.inMode) return;
       let state = classify(text, this.patterns);
       if (state === 'unknown' && this.patterns.idleQuietSec > 0 && Date.now() - this.lastChangeAt >= this.patterns.idleQuietSec * 1000) state = 'ready';
       const attention = state === 'attention';
@@ -487,8 +489,8 @@ class Conversation {
   }
 
   async keys(data) {
-    // 履歴を見たまま入力した場合は copy-mode を閉じ、キーを CLI へ確実に届ける。
-    await this.shell.run(cmdCancelCopy(this.name));
+    // 入力時は最新画面へ戻す。tmux は copy-mode に入れていないのでキーは常に CLI へ届く。
+    this.scrollOffset = 0;
     for (const args of keysToArgs(data)) {
       const r = await this.shell.run(cmdKeys(this.name, args));
       if (!r.ok) throw new Error(r.error);
@@ -499,11 +501,19 @@ class Conversation {
   async scroll(lines) {
     const amount = Number(lines) || 0;
     if (!amount) return false;
-    const r = await this.shell.run(cmdScroll(this.name, amount));
-    if (!r.ok && amount < 0) throw new Error(r.error);
+    if (!this.lastScreen) {
+      const cap = await this.capture();
+      if (!cap.ok) throw new Error(cap.error);
+      this.lastScreen = cap.screen;
+    }
+    // xterm は上方向を負、下方向を正で渡す。履歴サイズを越えないようにする。
+    this.scrollOffset = Math.max(0, Math.min(
+      this.lastScreen.historySize,
+      this.scrollOffset - Math.trunc(amount),
+    ));
     this.sentOnce = false;
     this.schedule(0);
-    return r.ok;
+    return this.scrollOffset;
   }
 
   async resize(cols, rows) {
@@ -541,6 +551,6 @@ async function listSessions(shell) {
 module.exports = {
   SOCKET, TMUX, DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_READY, DEFAULT_BUSY, ATTENTION,
   sessionName, isChrome, attentionDetail, classify, compilePatterns, extractReply, keysToArgs,
-  cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdScroll, cmdCancelCopy, cmdKill, cmdResize, cmdList,
+  cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdKill, cmdResize, cmdList,
   Conversation, listSessions,
 };

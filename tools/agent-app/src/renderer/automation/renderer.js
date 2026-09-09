@@ -884,14 +884,14 @@ function taskDetailShellHtml(machine, activeTab, content, { editor = false, teac
   return `<div class="task-detail-shell${editor ? ' is-editor' : ''}${teaching ? ' is-teaching' : ''}">${header}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
 }
 
-// 「手順」タブで「編集」を押した状態。AI との会話（端末）は親が slot へ入れる。
-// 枠は概要の手動実行・定期実行と同じ .execution-card。
+// 「手順」タブで「編集」を押した状態。会話画面と同じく、上部ツールバーの下へ
+// 端末とコンポーザーを縦に並べる（カードの中へ二重に囲わない）。
 function editingCardHtml(machine) {
   const spec = state.current.spec;
   const selected = reviewScopeValue(state.aiReview.scope);
   const targets = spec.steps.map((step, index) => `<option value="step:${esc(step.id)}" ${selected === `step:${step.id}` ? 'selected' : ''}>工程 ${index + 1}: ${esc(step.title || kindOf(step.kind).label)}</option>`).join('');
-  return `<section class="execution-card">
-    <div class="execution-card-head"><div><h3>AIと編集</h3><label class="editing-target" for="editing-target">編集対象<select id="editing-target"><option value="workflow" ${selected === 'workflow' ? 'selected' : ''}>全体</option>${targets}</select></label></div><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
+  return `<section class="task-conversation-editor">
+    <div class="task-conversation-toolbar"><label class="editing-target" for="editing-target"><strong>AIと編集</strong><span>編集対象</span><select id="editing-target"><option value="workflow" ${selected === 'workflow' ? 'selected' : ''}>全体</option>${targets}</select></label><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
     ${teachingFeature.editorSlotHtml(machine, selected === 'workflow' ? 'タスク全体' : `工程 ${selected.slice(5)}`)}
   </section>`;
 }
