@@ -207,6 +207,8 @@ interactive.command + [continue | resume] + (interactive.write_args | readonly_a
 - 画面は `capture-pane -e` を 0.25〜1.2 秒ごとに写して xterm に描く（node-pty も attach も使わない）。
   Windows では `wsl.exe -e bash -l` を 1 本常駐させてそこへ流すので、1 回ごとに wsl.exe を起こさない
 - 停止は `busy_pattern` に esc が出てくる CLI（claude / codex）には Escape、それ以外は C-c
+- CLI の終了コードは、ペインの最後の行として自分で印字したものを読む。tmux は pty が閉じた時点で
+  ペインを終了扱いにするが、終了コードはそのまま出てこないことがある（3.4 で実測）
 - アプリを閉じても tmux セッションは残り、次に会話を開いたときに再接続する。CLI が終了していたら
   「再起動」か次の依頼で作り直す（エージェント・モデル・モードを変えたターンも作り直す）。
   再開の作法は CLI ごとに違う:
@@ -232,16 +234,22 @@ actions/*.md）を直接書き、`run_machine.py --dry-run` で検証してか�
 |---|---|
 | 新しいタスクを作る | 「タスク」の ＋ → 目的を書く →「AIと作成を始める」。保存名は空なら目的から決まる |
 | AI の質問に答える | 端末の下の入力欄から送る（メッセージ）。y/n や矢印キーは「端末操作」に切り替える |
-| 操作を見せる | 「操作の見本」→ 画面（ブラウザ / Windows アプリ）と開始 URL（アプリ名）→「記録を始める」→ 操作 →「終了してAIへ渡す」。AI が `@record browser <URL>` / `@record windows <アプリ名>` と返したときは、そのカードが自動で開く |
+| 操作を見せる | 「操作の見本」→ 画面（ブラウザ / Windows アプリ）と URL（アプリ名）→「記録を始める」→ 操作 →「終了してAIへ渡す」。AI が `@record browser <URL>` / `@record windows <アプリ名>` と返したときは、そのカードが自動で開く。ブラウザは Edge が開くので、その中で操作する |
 | 既存のタスクを変える | 実行詳細の「手順」→「編集」。押した時点で AI が起動し、今の定義を読んで要約してから、変えたい点を聞く。「‹ 工程に戻る」で工程へ戻る |
 | 会話をやり直す | 端末が終了・消失したら「再接続」。会話は `sessions/` に残り、次に開いたときに tmux へつなぎ直す |
 | 内部の工程を確認する | 「手順」タブ。従来の工程エディタで、そのまま直して保存もできる |
 
-**見本の記録はこの端末で取る。** Windows では AI は WSL の tmux で動いていて、ブラウザや Windows アプリは
-Windows 側にある。記録（`playwright-cli` / `winauto`）は agent-app 自身が Windows 側で起こし、できた
-Markdown（`.statemachine/<名前>/recordings/<時刻>-<種類>.md`。操作の行と毎回変わる値の候補）の所在を
-WSL 表記（`/mnt/c/…`）へ直して会話へ送る。AI 自身には記録を起こさせない（依頼文でそう伝える）。
-Linux / macOS でも同じ流れで、記録はこの端末で取る。
+**見本の取り方は画面の種類で違う。** Windows では AI は WSL の tmux で動いていて、ブラウザや Windows アプリは
+Windows 側にある。WSL から Windows 側の `playwright-cli` を起こすことはできないので、次の 2 通りに分ける。
+
+| 画面 | 記録するのは | 流れ |
+|---|---|---|
+| ブラウザ | **AI 自身**（WSL 側の `playwright-cli`） | 「記録を始める」で agent-app が Windows 側の Edge をリモートデバッグ付き（`http://localhost:9222`、記録専用のプロファイル）で起こし、起動できたことを**固定文**（`@recording start` で始まり、接続先を含む）として tmux 経由で AI へ渡す。AI は `playwright-cli attach --cdp=…` で接続して `recording-start` で記録を始め、利用者の操作を待つ。「終了してAIへ渡す」を押すと固定文（`@recording stop`）が渡り、AI が `recording-stop` で止めて記録の行を `.statemachine/<名前>/recordings/<時刻>-browser.md` に保存し、それを根拠に工程を組む |
+| Windows アプリ | **agent-app**（Windows 側の `winauto`） | 「記録を始める」で agent-app 自身が Windows 側で記録を起こし、「終了してAIへ渡す」でできた Markdown（`.statemachine/<名前>/recordings/<時刻>-windows.md`。操作の行と毎回変わる値の候補）の所在を WSL 表記（`/mnt/c/…`）へ直して会話へ送る。AI 自身には記録を起こさせない（依頼文でそう伝える） |
+
+ブラウザの見本の流れはすべて依頼文に仕込んであり、AI は固定文が届く前にブラウザを起こしたり記録を始めたり
+しない。ボタンを押す番になると AI がそう言う（そのとき見本のカードは自動で開く）。Linux / macOS でも同じ
+流れで、Edge（無ければ Chrome）はこの端末で開く。
 
 ### 生成する定義の形
 
@@ -271,19 +279,22 @@ statemachine-use の作成モードの原則に沿う（`SKILL.md` ステップ 
 
 ### 記録がうまくいかないとき
 
-記録は `playwright-cli`（ブラウザ）と `winauto`（Windows アプリ）を、**この端末から直接**呼ぶ
-（WSL には橋渡ししない）。「手順」→「その他 → 実行環境 → 接続を確認」でどちらが呼べるかを先に確かめる。
+ブラウザの見本は、この端末が Edge を起こし、**AI（Windows では WSL）側の `playwright-cli`** が接続して記録する。
+Windows アプリの見本は `winauto` を**この端末から直接**呼ぶ（WSL には橋渡ししない）。「手順」→「その他 →
+実行環境 → 接続を確認」でこの端末側の道具が呼べるかを先に確かめる。
 
 | 症状 | 見るところ |
 |---|---|
-| ブラウザが開かない | 記録に使うブラウザは**既定で Chrome**。入っていなければ `playwright-cli install-browser chrome` を実行するか Chrome を入れる |
-| 「操作の記録に未対応」と出る | 古い版には `recording-start` / `recording-stop` が無い。`npm install -g @playwright/cli@latest` で更新し、もう一度「接続を確認」を実行する |
-| 「呼べません」と出る | `npm install -g @playwright/cli@latest`。Windows では npm が `playwright-cli.cmd` を置くので、アプリは PATHEXT を補って探す |
-| 操作したのに 0 件になる | 記録するのは**アプリが開いたブラウザ**の中の操作だけ。別に開いていたブラウザで操作しても入らない |
+| 「Edge か Chrome が見つかりません」と出る | Microsoft Edge を入れる。Windows は既定の置き場（Program Files / ユーザーの AppData）、Linux / macOS は PATH か Applications で探す |
+| Edge は開くが「応答しません」と出る | ポート 9222 を別のブラウザやツールが使っている。そのブラウザを閉じてからもう一度「記録を始める」 |
+| Edge がいつもと違うプロファイル（ログインしていない）で開く | 記録専用のプロファイルで開く仕様（近年の Edge / Chrome は既定のプロファイルでリモートデバッグを受け付けない）。1 回ログインすれば次回からは残る |
+| AI が「接続先に届かない」と言う | WSL のネットワークが既定（NAT）だと、WSL の `localhost` は Windows 側に届かない。`%UserProfile%\.wslconfig` に `[wsl2]` `networkingMode=mirrored` を書いて `wsl --shutdown` する。AI 側に `playwright-cli` が無いときは WSL の中で `npm install -g @playwright/cli@latest` |
+| 操作したのに記録が空になる | 記録するのは**アプリが開いた Edge の窓**の中の操作だけ。別に開いていたブラウザで操作しても入らない |
 | Windows アプリの見本が取れない | `winauto` は Windows 上でだけ動く（`python tools/winauto/install.py`）。Linux / macOS では見本の画面にそう表示する |
-| AI が記録を起こそうとする | 依頼文で「自分では起こさない」と伝えている。それでも起こしたら、端末操作で止めて（Ctrl+C）「操作の見本」から取り直す |
+| AI が固定文の前にブラウザを起こそうとする | 依頼文で「固定文が届く前に起こさない」と伝えている。それでも起こしたら、端末操作で止めて（Ctrl+C）「記録を始める」を押す |
 
-記録の途中で `.playwright-cli/`（画面の写しとログ）がフォルダに作られる。消してかまわない。
+「手順」タブの工程エディタからブラウザの記録を取る古い経路（この端末の `playwright-cli` を直接呼ぶ）は残っている。
+そこでは記録の途中で `.playwright-cli/`（画面の写しとログ）がフォルダに作られる。消してかまわない。
 
 ### 画面の言葉
 

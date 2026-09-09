@@ -17,7 +17,13 @@ const host = require('./host');
 const SOCKET = 'agent-app';
 const TMUX = `tmux -L ${SOCKET}`;
 const HISTORY_LIMIT = 50000;
-const DEAD_STATUS_GRACE_MS = 1500;  // pane_dead 後に終了コード（pane_dead_status）が揃うのを待つ上限
+const DEAD_STATUS_GRACE_MS = 1500;  // 印字が読めないときに pane_dead_status が揃うのを待つ上限
+// CLI が終わったとき、ペインの最後の行として自分で印字する終了コード。tmux の
+// `pane_dead_status` は子プロセスの回収が済むまで空で、**そのまま戻らないことがある**
+// （tmux 3.4 で実測。pty が閉じた時点で pane_dead=1 になるのに終了コードは出ない）。
+// 画面へ出した値なら、tmux の回収を待たずに確実に読める。
+const EXIT_MARKER = 'agent-app exit';
+const EXIT_MARKER_RE = /\[agent-app exit (\d{1,3})\]/g;
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 36;
 
@@ -52,6 +58,7 @@ const CHROME = [
   /^\s*(?:auto|ask|agent|manual)\s*[·•]\s*\d+(?:\.\d+)?%\s*$/i,
   /^\s*(?:\/|~\/|\.\.\/)[^·•\n]+\s*[·•]\s*[\w./-]+\s*$/i,
   /^\s*(?:\/|~|\.\.\/)?[\w.\-/~]*\s*(?:\(|\[)?(?:main|master)?(?:\)|\])?\s*$/,   // ステータス行に出る cwd / ブランチ
+  /^\s*\[agent-app exit \d+\]\s*$/,        // CLI の終わりに自分で印字した終了コード（応答本文ではない）
 ];
 function isChrome(line) {
   const s = String(line);
@@ -190,9 +197,15 @@ const sq = host.sq;
 function cmdHas(name) { return `${TMUX} has-session -t ${sq(`=${name}`)} 2>/dev/null`; }
 
 function cmdNew({ name, cwd, argv, cols, rows }) {
-  // ペインの中身は `bash -lc 'exec <argv>'`。ログインシェルで PATH を揃え、CLI が終わっても
+  // ペインの中身は `bash -lc '<argv>; …'`。ログインシェルで PATH を揃え、CLI が終わっても
   // remain-on-exit で画面（エラーの理由）を残す。
-  const inner = `exec ${host.quoteArgv(argv)}`;
+  //
+  // exec で置き換えず、終わりに終了コードを 1 行印字してから同じコードで抜ける。印字は
+  // tmux の回収を待たずに読める終了コードで（EXIT_MARKER）、`exit "$rc"` は
+  // pane_dead_status を読めたときにも同じ値が出るようにする（bash の 0 にしない）。
+  // Ctrl+C は変わらず CLI へ届く（bash と CLI は同じプロセスグループで、CLI が
+  // SIGINT を捌く間 bash は待つ）。
+  const inner = `${host.quoteArgv(argv)}; rc=$?; printf '\\n[${EXIT_MARKER} %s]\\n' "$rc"; exit "$rc"`;
   return [
     `${TMUX} new-session -d -s ${sq(name)} -c ${sq(cwd)} -x ${Number(cols) || DEFAULT_COLS} -y ${Number(rows) || DEFAULT_ROWS} bash -lc ${sq(inner)}`,
     `${TMUX} set-option -g history-limit ${HISTORY_LIMIT} >/dev/null`,
@@ -235,6 +248,13 @@ function parseScreen(output) {
     inMode: head[7] === '1',
     text: body,
   };
+}
+
+// ペインへ印字させた終了コードを画面から読む（最後の 1 件）。無ければ null。
+function exitStatusFrom(text) {
+  let found = null;
+  for (const m of String(text || '').matchAll(EXIT_MARKER_RE)) found = Number(m[1]);
+  return found;
 }
 
 function cmdKeys(name, args) {
@@ -364,10 +384,11 @@ class Conversation {
         this.emit('term:screen', { id: this.id, text: displayScreen.text, cursor: screen.cursor, cols: screen.cols, rows: screen.rows, scrollOffset: this.scrollOffset, tail: tailLines(text, 14) });
       }
       if (screen.dead) {
-        // tmux はペインの pty が閉じた時点で pane_dead になるが、終了コード
-        // （pane_dead_status）は子プロセスの回収後にしか出ない。少しの間だけ
-        // 終了コードが揃うのを待ってから dead にする（揃わなければ ? のまま確定）。
-        if (screen.deadStatus == null) {
+        // 終了コードは、まずペインへ印字させた最後の行から読む（EXIT_MARKER）。読めないのは
+        // CLI が signal で落ちて印字まで来なかったときと、この版より前に起こしたセッション。
+        // そのときだけ tmux の pane_dead_status を少し待ち、揃わなければ ? のまま確定する。
+        const status = exitStatusFrom(text) ?? screen.deadStatus;
+        if (status == null) {
           if (!this.deadSeenAt) this.deadSeenAt = Date.now();
           if (Date.now() - this.deadSeenAt < DEAD_STATUS_GRACE_MS) return;
         }
@@ -375,7 +396,7 @@ class Conversation {
           this.deadSnapshotSent = true;
           this.emit('term:snapshot', { id: this.id, reason: 'pane_dead', screenText: text });
         }
-        this.setPhase('dead', `CLI が終了しました（終了コード ${screen.deadStatus == null ? '?' : screen.deadStatus}）`);
+        this.setPhase('dead', `CLI が終了しました（終了コード ${status == null ? '?' : status}）`);
         if (this.turn) this.finishTurn({ error: this.detail, text: extractReply(this.turn.before, (await this.historyText()) || text, this.turn.prompt) });
         return;
       }
@@ -560,6 +581,6 @@ async function listSessions(shell) {
 module.exports = {
   SOCKET, TMUX, DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_READY, DEFAULT_BUSY, ATTENTION,
   sessionName, isChrome, attentionDetail, classify, compilePatterns, extractReply, keysToArgs,
-  cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdKill, cmdResize, cmdList,
+  cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdKill, cmdResize, cmdList, exitStatusFrom,
   Conversation, listSessions,
 };
