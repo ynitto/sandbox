@@ -531,14 +531,22 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .task-create-more summary { cursor: pointer; color: var(--muted); }
 .task-create-more[open] { display: flex; align-items: center; gap: 8px; }
 .task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.task-launch-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.task-launch-settings label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.task-launch-settings select, .task-launch-settings input { width: 100%; min-width: 0; color: var(--text); font-size: 14px; font-weight: 400; }
+.task-launch-card { display: grid; gap: 14px; width: 100%; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.task-launch-card p { margin: 5px 0 0; }
+#task-workspace { min-width: 0; width: 100%; display: grid; gap: 10px; }
 #task-terminal { height: min(46vh, 480px); min-height: 260px; }
 /* 「AIと編集」のカードの中に入るときは、端末は白い面の中身なので枠と影を持たず、
    カードに残った高さをそのまま使う。 */
 #task-teaching.in-card { gap: 10px; height: 100%; min-height: 0; }
-#task-teaching.in-card #task-workspace { height: 100%; min-height: 0; display: grid; gap: 10px; grid-template-rows: minmax(0, 1fr); }
+#task-teaching.in-card #task-workspace { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+#task-teaching.in-card #task-workspace:has(.task-launch-card:not([hidden])) { height: auto; grid-template-rows: auto; }
 #task-teaching.in-card #task-terminal { height: auto; min-height: 160px; }
 #task-teaching.in-card .terminal-stage { border-color: transparent; box-shadow: none; }
 #task-teaching.in-card .terminal-stage.input-terminal { border-color: var(--term-cursor); }
 #task-record { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 #task-record input { min-width: 220px; }
 #task-record .sub.error { color: var(--danger); }
+@media (max-width: 680px) { .task-launch-settings { grid-template-columns: 1fr; } }
