@@ -163,6 +163,35 @@ test('候補確定型のスキル入力はEnterを2回送る', async () => {
   assert.strictEqual(calls.filter((command) => /'Enter'/.test(command)).length, 2);
 });
 
+test('pane_dead 直後に終了コードが未確定なら、揃うのを少し待ってから dead にする', async () => {
+  // tmux は pty が閉じた時点で pane_dead=1 になるが、pane_dead_status は子プロセスの
+  // 回収後にしか出ない。最初の観測で確定させると「終了コード ?」になる。
+  const screens = [];
+  const shell = { run: async () => ({ ok: true, output: screens.shift() }) };
+  const screen = (status) => `0|0|100|24|1|${status}|0|0\n\x1e$ stub\n`;
+  const conv = new tmux.Conversation({ id: 'dead-status', shell, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
+  conv.schedule = () => {};
+  conv.historyText = async () => '';
+  screens.push(screen(''));
+  await conv.poll();
+  assert.notStrictEqual(conv.phase, 'dead', '終了コードが揃う前に dead にしない');
+  screens.push(screen('7'));
+  await conv.poll();
+  assert.strictEqual(conv.phase, 'dead');
+  assert.match(conv.detail, /終了コード 7/);
+
+  const stuck = new tmux.Conversation({ id: 'dead-unknown', shell, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
+  stuck.schedule = () => {};
+  stuck.historyText = async () => '';
+  screens.push(screen(''));
+  await stuck.poll();
+  stuck.deadSeenAt -= 10000;
+  screens.push(screen(''));
+  await stuck.poll();
+  assert.strictEqual(stuck.phase, 'dead', '猶予を過ぎたら終了コード不明のまま確定する');
+  assert.match(stuck.detail, /終了コード \?/);
+});
+
 test('応答中でもElectron入力欄から文章回答をtmuxへ送れる', async () => {
   const calls = [];
   const shell = { run: async (command) => { calls.push(command); return { ok: true, output: '' }; } };
