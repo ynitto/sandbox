@@ -372,7 +372,8 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
   assert.match(renderer, /target\.value === 'workflow'[\s\S]*stepId: target\.value\.slice\(5\)/,
     '編集画面内で全体と工程を切り替えられる');
   assert.match(renderer, /function editingCardHtml\(/);
-  assert.match(renderer, /teachingFeature\.editorSlotHtml\(machine\)/);
+  assert.match(renderer, /teachingFeature\.editorSlotHtml\(machine,[^)]*selected/,
+    '選択した編集対象をタスク会話へ引き継ぐ');
   assert.match(renderer, /data-edit-back/);
   assert.match(renderer, /state\.execution\.detailTab === 'history'/);
   assert.match(renderer, /state\.execution\.detailTab === 'overview'[\s\S]*<h3>定期実行<\/h3>/);

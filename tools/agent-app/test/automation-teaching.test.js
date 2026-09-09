@@ -71,6 +71,21 @@ test('最初の依頼文は保存先・statemachine-use の作成モード・見
   assert.match(follow, /2 工程の候補[\s\S]*month/);
 });
 
+test('下書きの再開と既存タスクの編集は保存済みファイルから文脈を復元する依頼を作る', () => {
+  const draft = teaching.resumePrompt({ machine: 'monthly', purpose: '毎月の売上を集計する' });
+  assert.match(draft, /下書き作成を再開/);
+  assert.match(draft, /\.statemachine\/monthly\//);
+  assert.match(draft, /workflow\.yaml、actions\/\*\.md/);
+  assert.match(draft, /タスクの目的: 毎月の売上を集計する/);
+  assert.match(draft, /保存済みの下書きを踏まえ/);
+
+  const edit = teaching.resumePrompt({ machine: 'monthly', existing: true, context: '工程 aggregate' });
+  assert.match(edit, /タスクの編集を開始/);
+  assert.match(edit, /今回の編集対象: 工程 aggregate/);
+  assert.match(edit, /現在の定義を短く要約/);
+  assert.match(edit, /まだファイルは変更しない/);
+});
+
 test('見本の記録は Markdown にして recordings/ へ置き、操作の行は本文と同じ形で書く（パスワードは残さない）', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-recording-'));
   const recording = {
