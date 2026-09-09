@@ -12,6 +12,7 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 process.env.KIRO_AGENTS_DIR = path.resolve(__dirname, '..', '..', '..', 'agents');
 const agentCli = require('../src/features/agent-project/main/agentCli');
@@ -164,6 +165,51 @@ test('相対コストは全同梱定義で宣言され、ローカル < クラ�
   const minCloud = Math.min(...cloud.map(([, c]) => c));
   assert.ok(maxLocal < minCloud,
     `ローカルがクラウド以上に高い: local=${JSON.stringify(local)} cloud=${JSON.stringify(cloud)}`);
+});
+
+// モデル別の相対コスト（`models`）。**期待値は Python 側のテストと同じ表**
+// （tools/agent-tools/agentcore/agentcore/tests/test_agentcli.py の TestModelLevelCost）。
+// ローダが 2 実装ある以上、片方だけが `models` を読むと同じ定義から違うコストが出る。
+test('モデル別の相対コストは Python 側と同じ規則で解決され、profile へ継承される', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-cli-models-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'agents'));
+    fs.writeFileSync(path.join(dir, 'agents', 'costy.json'), JSON.stringify({
+      command: ['costy'],
+      relative_cost: 1,
+      default_model: 'small',
+      models: { small: { relative_cost: 1 }, big: { relative_cost: 3 } },
+      profiles: { json: { command: ['costy', '--json'] } },
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'agents', 'flat.json'), JSON.stringify({
+      command: ['flat'], relative_cost: 1, default_model: 'small',
+    }), 'utf8');
+
+    const spec = agentCli.loadCli('costy', dir, { useCache: false });
+    assert.deepStrictEqual(spec.models,
+      { small: { relativeCost: 1 }, big: { relativeCost: 3 } });
+    assert.strictEqual(agentCli.resolveRelativeCost(spec, 'big'), 3);
+    assert.strictEqual(agentCli.resolveRelativeCost(spec, 'small'), 1);
+    assert.strictEqual(agentCli.resolveRelativeCost(spec), 1);            // 既定モデルで引く
+    assert.strictEqual(agentCli.resolveRelativeCost(spec, 'unknown'), 1);  // 未宣言は定義単位
+
+    // models を宣言しない定義は従来どおり定義単位の値（後方互換）
+    const flat = agentCli.loadCli('flat', dir, { useCache: false });
+    assert.deepStrictEqual(flat.models, {});
+    assert.strictEqual(agentCli.resolveRelativeCost(flat, 'big'), 1);
+
+    // relative_cost と同じくエージェント単位の性質なので profile も継ぐ
+    const prof = agentCli.loadCli('costy-json', dir, { useCache: false });
+    assert.strictEqual(agentCli.resolveRelativeCost(prof, 'big'), 3);
+
+    fs.writeFileSync(path.join(dir, 'agents', 'bad.json'), JSON.stringify({
+      command: ['bad'], models: { big: { relative_cost: -1 } },
+    }), 'utf8');
+    assert.throws(() => agentCli.loadCli('bad', dir, { useCache: false }),
+      /models.big.relative_cost/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} tests passed (agent-cli-golden)`);
