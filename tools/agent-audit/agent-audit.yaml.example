@@ -39,12 +39,15 @@ memory_share_threshold: 70    # share_score がこれ以上で未公開なら pu
 memory_retention_risk: 0.3    # retention_score がこれ未満なら忘却リスク帯
 
 # ---- LLM（agents/<name>.json 契約。段別にエージェント・モデルを選択） ----------
-agent_cli: claude             # 既定の CLI
+# extract / distill は agents.<purpose> を書かなければ rules（決定的・LLM 不使用）で動く。
+# LLM を使う段だけ書く。extract の LLM は transcript を保存した record にだけ効くので、
+# 使うなら with_transcripts: true と対にする。
+agent_cli: claude             # review と、agents.<purpose> に model だけ書いた段の CLI
 # model: sonnet               # 既定のモデル（省略時は CLI 定義の default_model）
-agents:
-  extract: {agent_cli: ollama}                 # map: 局所要約。モデルは定義の既定（gemma4:e4b）
-  distill: {}                                  # reduce: 一般化。既定 CLI を使う
-  review: {}                                   # 任意の検証段（distill --review 時のみ）
+agents: {}
+#  extract: {agent_cli: ollama}                # map: 局所要約。モデルは定義の既定（gemma4:e4b）
+#  distill: {agent_cli: claude, model: sonnet} # reduce: 一般化は中〜強モデルで
+#  review: {}                                  # 任意の検証段（distill --review 時のみ。LLM 蒸留限定）
 agent_timeout: 300
 argv_limit: 100000
 

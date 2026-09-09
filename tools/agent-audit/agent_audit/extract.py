@@ -1,12 +1,16 @@
-"""extract — レコード → 観測（map・弱モデル可。仕様書 §6）。
+"""extract — レコード → 観測（map。仕様書 §6）。
 
-対象の選抜・入力の切り詰め・ゲート判定はすべて決定的。LLM は 1 レコードにつき
-最大 2 回（本試行 + JSON 修復 1 回）。ゲートを通らない実行は LLM を呼ばずに終わる。
+対象の選抜・入力の切り詰め・ゲート判定はすべて決定的。観測の本体も既定は決定的
+（rules.observe）。LLM は `agents.extract.agent_cli` を LLM にし、かつ record が transcript
+（excerpt_ref）を持つときだけ上乗せで呼ぶ——transcript の無い record に訊いても、項目から
+機械的に言えること以上は出ない（2026-09-09 実測: 381 呼び出しで同文 5 件）。
+LLM は 1 レコードにつき最大 2 回（本試行 + JSON 修復 1 回）。
 """
 from __future__ import annotations
 
 import time
 
+from . import rules
 from .configfile import resolve_audit_dir
 from .llm import LlmBlocked, LlmError, parse_json_reply, run_llm
 from .store import Store, observation_id
@@ -52,12 +56,8 @@ def is_candidate(rec: dict, filters: "list[str]") -> bool:
                 return True
         except (TypeError, ValueError):
             pass
-    if "long-session" in f and rec.get("kind") == "session":
-        try:
-            if int(rec.get("turns") or 0) >= 30 or float(rec.get("seconds") or 0) >= 1800:
-                return True
-        except (TypeError, ValueError):
-            pass
+    if "long-session" in f and rules.is_long_session(rec):
+        return True
     return False
 
 
@@ -104,52 +104,83 @@ def gate_reason(args, store: Store, candidates: "list[dict]") -> "str | None":
 def cmd_extract(args) -> int:
     store = Store(resolve_audit_dir(args))
     filters = list(getattr(args, "extract_filters", None) or [])
-    candidates = [rec for rec in store.iter_records()
-                  if rec.get("id") and rec["id"] not in store.state["extracted"]
-                  and is_candidate(rec, filters)]
+    # session は補正行で同じ id が複数回並ぶ（ADR-4）。最後の行＝最新の値だけを候補にする
+    # （同じ record を 2 回処理して LLM を 2 回呼ばない・処理数を水増ししない）。
+    latest: "dict[str, dict]" = {}
+    for rec in store.iter_records():
+        if rec.get("id") and rec["id"] not in store.state["extracted"]:
+            latest[rec["id"]] = rec
+    candidates = [rec for rec in latest.values() if is_candidate(rec, filters)]
     candidates.sort(key=lambda r: r.get("ts") or "")
     reason = gate_reason(args, store, candidates)
     if reason:
         log("extract", f"実行を見送りました — {reason}")
         return 0
+    cli, model = _effective_agent(args)
+    use_llm = cli != rules.AGENT
     limit = int(getattr(args, "limit", 0) or 0)
     max_calls = int(getattr(args, "extract_max_calls", 40) or 40)
     budget = min(limit, max_calls) if limit > 0 else max_calls
     chars = int(getattr(args, "extract_input_chars", 8000) or 8000)
-    done = obs_count = 0
+    done = calls = obs_count = deferred = 0
     for rec in candidates:
-        if done >= budget:
-            log("extract", f"段別上限に達したため打ち切ります（{budget} 件）")
+        if limit > 0 and done >= limit:
             break
-        digest = record_digest(store, rec, chars)
-        try:
-            observations = _extract_one(args, digest)
-        except LlmBlocked as e:
-            elog(f"extract: {e}")
-            store.save_state()
-            return 1
-        except LlmError as e:
-            elog(f"extract: {rec['id']} の抽出に失敗（先へ進みます）: {e}")
-            done += 1     # 失敗も LLM 消費なので回数に数える。レコードは未抽出のまま次回へ
+        llm_pending = bool(use_llm and rec.get("excerpt_ref"))
+        if llm_pending and calls >= budget:
+            deferred += 1            # 段別上限。rules も書かず丸ごと次回へ（重複追記を避ける）
             continue
-        done += 1
-        cli, model = _effective_agent(args)
-        for i, o in enumerate(observations):
+        for o in rules.observe(rec):
             store.append_observation({
-                "id": observation_id(rec["id"], i),
+                "id": observation_id(rec["id"], o["key"]),
                 "record_id": rec["id"],
                 "ts": now_iso(),
+                "record_ts": rec.get("ts") or "",
                 "kind": o["kind"],
                 "text": o["text"],
+                "group": o["group"],
+                "scope": {"purpose": str(rec.get("purpose") or ""),
+                          "model": str(rec.get("model") or "")},
                 "evidence": [rec["id"]],
-                "extract_agent": cli,
-                "extract_model": model or "",
+                "extract_agent": rules.AGENT,
+                "extract_model": "",
             })
             obs_count += 1
+        if llm_pending:
+            digest = record_digest(store, rec, chars)
+            try:
+                observations = _extract_one(args, digest)
+            except LlmBlocked as e:
+                elog(f"extract: {e}")
+                store.save_state()
+                return 1
+            except LlmError as e:
+                # 失敗も LLM 消費なので回数に数える。レコードは未抽出のまま次回へ
+                # （rules 分は同じ id で再追記される。読出しで id 重複を落とす）
+                elog(f"extract: {rec['id']} の抽出に失敗（先へ進みます）: {e}")
+                calls += 1
+                continue
+            calls += 1
+            for i, o in enumerate(observations):
+                store.append_observation({
+                    "id": observation_id(rec["id"], i),
+                    "record_id": rec["id"],
+                    "ts": now_iso(),
+                    "kind": o["kind"],
+                    "text": o["text"],
+                    "evidence": [rec["id"]],
+                    "extract_agent": cli,
+                    "extract_model": model or "",
+                })
+                obs_count += 1
         store.state["extracted"][rec["id"]] = 1
+        done += 1
+    if deferred:
+        log("extract", f"段別上限に達したため {deferred} 件を次回へ持ち越します（{budget} 回）")
     store.note_run("extract")
     store.save_state()
-    log("extract", f"{done} レコードを処理し、観測 {obs_count} 件を書きました")
+    log("extract", f"{done} レコードを処理し、観測 {obs_count} 件を書きました"
+                   f"（LLM 呼び出し {calls} 回）")
     return 0
 
 

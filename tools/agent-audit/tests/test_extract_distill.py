@@ -8,20 +8,26 @@ from _shared import AuditTestCase, distill, extract, tasksout, util
 
 
 class ExtractPipelineTests(AuditTestCase):
-    def _seed_failed_records(self, n):
+    LLM = {"extract": {"agent_cli": "ollama", "model": "qwen3"}}   # 既定は rules なので明示
+
+    def _seed_failed_records(self, n, *, excerpt=True):
+        """LLM は transcript（excerpt_ref）を持つ record にだけ呼ばれる。実体は無くてよい
+        （record_digest は OSError を握って項目だけを渡す）。"""
         st = self.make_store()
         for i in range(n):
-            st.append_record({"id": f"aud-f{i}", "_epoch": 1754200000.0 + i,
-                              "ts": util.epoch_to_iso(1754200000.0 + i),
-                              "kind": "run", "tool": "agent-flow", "status": "failed",
-                              "error_class": "transient"})
+            rec = {"id": f"aud-f{i}", "_epoch": 1754200000.0 + i,
+                   "ts": util.epoch_to_iso(1754200000.0 + i),
+                   "kind": "run", "tool": "agent-flow", "status": "failed",
+                   "error_class": "transient"}
+            if excerpt:
+                rec["excerpt_ref"] = f"transcripts/claude/sess-{i}.jsonl"
+            st.append_record(rec)
         st.save_state()
         return st
 
     def test_extract_with_stub_llm(self):
         self._seed_failed_records(12)
-        args = self.make_args(force=True, limit=0,
-                              agents={"extract": {"agent_cli": "ollama", "model": "qwen3"}})
+        args = self.make_args(force=True, limit=0, agents=self.LLM)
         reply = json.dumps({"observations": [
             {"kind": "avoid", "text": "タイムアウトが短すぎて transient 失敗が続く"}]})
         with mock.patch.object(extract, "run_llm", return_value=reply) as m:
@@ -29,32 +35,52 @@ class ExtractPipelineTests(AuditTestCase):
         self.assertEqual(m.call_count, 12)
         st = self.make_store()
         obs = list(st.iter_observations())
-        self.assertEqual(len(obs), 12)
-        self.assertEqual(obs[0]["kind"], "avoid")
-        self.assertEqual(obs[0]["extract_agent"], "ollama")   # 既定の agents.extract
+        llm_obs = [o for o in obs if o["extract_agent"] == "ollama"]
+        self.assertEqual(len(llm_obs), 12)
+        self.assertEqual(llm_obs[0]["kind"], "avoid")
+        # rules の観測も同じ record から出る（LLM は上乗せ）
+        self.assertEqual(len([o for o in obs if o["extract_agent"] == "rules"]), 12)
         # 冪等: もう一度走らせても処理済みは再抽出しない
         with mock.patch.object(extract, "run_llm", return_value=reply) as m2:
-            args2 = self.make_args(force=True)
+            args2 = self.make_args(force=True, agents=self.LLM)
             extract.cmd_extract(args2)
         self.assertEqual(m2.call_count, 0)
+        self.assertEqual(len(list(st.iter_observations())), 24)
+
+    def test_llm_skips_records_without_transcript(self):
+        self._seed_failed_records(3, excerpt=False)
+        args = self.make_args(force=True, extract_min_records=0, agents=self.LLM)
+        with mock.patch.object(extract, "run_llm") as m:
+            self.assertEqual(extract.cmd_extract(args), 0)
+        self.assertEqual(m.call_count, 0)
+        st = self.make_store()
+        self.assertEqual(len(list(st.iter_observations())), 3)      # rules 分だけ
+        self.assertEqual(len(st.state["extracted"]), 3)
 
     def test_extract_repair_retry_then_drop(self):
         self._seed_failed_records(1)
-        args = self.make_args(force=True, extract_min_records=0)
+        args = self.make_args(force=True, extract_min_records=0, agents=self.LLM)
         with mock.patch.object(extract, "run_llm", return_value="not json") as m:
             self.assertEqual(extract.cmd_extract(args), 0)
         self.assertEqual(m.call_count, 2)                     # 本試行 + 修復 1 回で打ち止め
         st = self.make_store()
-        self.assertEqual(list(st.iter_observations()), [])
+        self.assertEqual([o for o in st.iter_observations() if o["extract_agent"] != "rules"], [])
         self.assertNotIn("aud-f0", st.state["extracted"])     # 未抽出のまま次回へ
+        # 次回: rules は同じ id で再追記されるが読出しでは 1 件のまま
+        with mock.patch.object(extract, "run_llm", return_value="not json"):
+            extract.cmd_extract(self.make_args(force=True, extract_min_records=0, agents=self.LLM))
+        self.assertEqual(len(list(st.iter_observations())), 1)
 
     def test_extract_max_calls_cap(self):
         self._seed_failed_records(5)
-        args = self.make_args(force=True, extract_max_calls=2)
+        args = self.make_args(force=True, extract_max_calls=2, agents=self.LLM)
         reply = json.dumps({"observations": []})
         with mock.patch.object(extract, "run_llm", return_value=reply) as m:
             extract.cmd_extract(args)
         self.assertEqual(m.call_count, 2)
+        st = self.make_store()
+        self.assertEqual(len(st.state["extracted"]), 2)       # 残り 3 件は丸ごと次回へ
+        self.assertEqual(len(list(st.iter_observations())), 2)
 
     def test_record_digest_renders_unified_transcript(self):
         from _shared import collect
@@ -107,9 +133,11 @@ class DistillPipelineTests(AuditTestCase):
         st.save_state()
         return st
 
+    LLM = {"distill": {"agent_cli": "claude", "model": "sonnet"}}   # 既定は rules なので明示
+
     def test_distill_with_stub_llm_and_tasks_export(self):
         self._seed_observations(6)
-        args = self.make_args(force=True, review=False, limit=0)
+        args = self.make_args(force=True, review=False, limit=0, agents=self.LLM)
         reply = json.dumps({"statement": "verify 系の timeout 既定を見直すべき",
                             "kind": "config-fix",
                             "suggested_action": "agent_timeout を 600 へ引き上げる",
@@ -121,10 +149,11 @@ class DistillPipelineTests(AuditTestCase):
         self.assertEqual(len(insights), 1)
         ins = insights[0]
         self.assertEqual(ins["occurrences"], 6)
+        self.assertEqual(ins["distill_agent"], "claude")
         self.assertFalse(ins["exported"])
         # 同じ観測集合では再蒸留しない（クラスタが育っていない）
         with mock.patch.object(distill, "run_llm", return_value=reply) as m:
-            distill.cmd_distill(self.make_args(force=True))
+            distill.cmd_distill(self.make_args(force=True, agents=self.LLM))
         self.assertEqual(m.call_count, 0)
         # tasks 出力（task.schema.json 形・冪等 id・洞察参照つき）
         tasks, insight_ids = tasksout.insight_tasks(st)
@@ -136,7 +165,7 @@ class DistillPipelineTests(AuditTestCase):
 
     def test_min_occurrences_blocks_singletons(self):
         self._seed_observations(1)
-        args = self.make_args(force=True)
+        args = self.make_args(force=True, agents=self.LLM)
         with mock.patch.object(distill, "run_llm") as m:
             distill.cmd_distill(args)
         self.assertEqual(m.call_count, 0)

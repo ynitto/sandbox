@@ -187,6 +187,8 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(html, /id="task-create-model"/);
   assert.match(html, /id="task-launch-agent"/);
   assert.match(html, /id="task-launch-model"/);
+  assert.doesNotMatch(html, /id="task-launch-title"[^>]*>AIと編集</, '編集画面の中で「AIと編集」を繰り返さない');
+  assert.match(renderer, /\$\('task-launch-heading'\)\.hidden = state\.published/, '公開済みタスクでは下書き用見出しも隠す');
   assert.match(renderer, /api\.automation\.recordingStart\(\{ root: state\.repo, source: 'windows'/);
   assert.match(renderer, /api\.automation\.teachDemonstration\(/);
   assert.match(renderer, /TeachingProtocol\.parseRecordRequest\(message && message\.text\)/, 'AI の @record 行で見本のカードを開く');
@@ -194,6 +196,7 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(html, /<div slot="teaching" id="task-teaching" hidden>/);
   assert.match(html, /id="task-term-host"/);
   assert.match(html, /id="task-mode-terminal"/);
+  assert.match(html, /id="task-record-open"[^>]*>操作の見本<\/button>/, 'AI編集の中から手動でも記録を開始できる');
   assert.match(html, /id="task-record-stop"[^>]*>終了してAIへ渡す</);
   // 端末と入力欄は会話画面と同じ実体を使う（見た目を作り直さない）
   assert.match(html, /id="task-terminal" class="terminal-stage"/);

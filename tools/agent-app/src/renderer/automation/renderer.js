@@ -483,7 +483,7 @@ function editorControlsHtml() {
       ${embedded && !state.current.isNew ? '<div class="edit-controls"><button type="button" id="b-assist" class="ghost">AIと編集</button></div>' : '<button type="button" id="b-ai" class="ghost">AIで見直す</button>'}
       <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト</button>
       <details class="more-menu"><summary>その他</summary><div class="menu-panel">
-        <button type="button" id="b-record" class="ghost">操作を記録</button>
+        ${embedded ? '' : '<button type="button" id="b-record" class="ghost">操作を記録</button>'}
         <button type="button" id="b-files" class="ghost">生成ファイル</button>
         <button type="button" id="b-settings" class="ghost">実行環境</button>
       </div></details>
@@ -508,7 +508,8 @@ function bindEditorControls(scope) {
     state.aiReview.scope = selected ? { type: 'step', stepId: selected.id } : { type: 'workflow' };
     startEditing();
   });
-  get('b-record').addEventListener('click', openRecord);
+  const record = get('b-record');
+  if (record) record.addEventListener('click', openRecord);
   get('b-files').addEventListener('click', openFiles);
   const ai = get('b-ai');
   if (ai) ai.addEventListener('click', openAiReview);

@@ -65,9 +65,11 @@ test('編集画面は左のフローと右の編集パネルを分離し、狭�
 
 test('主要操作と工程設定は簡潔で分かりやすい文言を使う', () => {
   const renderer = read('renderer/automation/renderer.js');
-  for (const label of ['操作を記録', '>テスト</button>', '生成ファイル', 'AIで見直す', 'AIで下書き', '実行環境', '実行方法', '工程名', '次の工程', '回答が指定の言葉で始まる', '条件に当てはまる', '詳細条件', '構成を確認']) {
+  for (const label of ['>テスト</button>', '生成ファイル', 'AIで見直す', 'AIで下書き', '実行環境', '実行方法', '工程名', '次の工程', '回答が指定の言葉で始まる', '条件に当てはまる', '詳細条件', '構成を確認']) {
     assert.ok(renderer.includes(label), `表示文言がありません: ${label}`);
   }
+  assert.match(renderer, /\$\{embedded \? '' : '<button[^']*id="b-record"[^']*>操作を記録<\/button>'\}/,
+    'agent-app では旧記録を隠し、単体ワークベンチだけに残す');
   assert.ok(renderer.includes('class="more-menu"'), '補助操作は「その他」にまとめる');
   assert.ok(renderer.includes('class="branch-if">もし') && renderer.includes('class="branch-then">なら'), '条件を文章として読める');
 });

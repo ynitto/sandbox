@@ -1,6 +1,6 @@
 # agent-audit 利用ガイド兼 CLI 仕様
 
-agent-audit は、agent-project、agent-flow、agent-amigos、agent-loop とエージェント CLI の実行記録を集め、利用量と失敗傾向を調べるための CLI です。収集と集計には LLM を使いません。実行記録から改善案を作る `extract` と `distill` だけが LLM を使います。
+agent-audit は、agent-project、agent-flow、agent-amigos、agent-loop とエージェント CLI の実行記録を集め、利用量と失敗傾向を調べるための CLI です。収集と集計には LLM を使いません。実行記録から改善案を作る `extract` と `distill` も既定は決定的なルール（`rules`）で、設定で選んだときだけ LLM を使います。
 
 本書の前半は導入と調査手順、後半は収集元、保存形式、設定、CLI のリファレンスです。設計判断の背景は[設計書](../designs/agent-audit-design.md)、定期実行を含む導入手順は[セットアップガイド](../guides/agent-audit-setup.md)を参照してください。
 
@@ -120,7 +120,7 @@ collect ─┬─ 決定的（LLM 不使用）─ qualify / usage / stats / rati
                                                                     └─ report / tasks / tune
 ```
 
-LLM を使うのは extract と distill（と任意の review）だけで、それ以外の全段は決定的です。
+extract と distill は既定で決定的（`rules`）に動き、`agents.extract` / `agents.distill` で LLM を選んだときだけ LLM を使います（review は LLM 蒸留のときだけ）。それ以外の全段は決定的です。
 各サブコマンドは単発・有界で、watch / daemon を持ちません。定期実行は agent-loop / cron / CI の
 側に置きます。
 
@@ -244,8 +244,8 @@ JSON への追記だけで収集できます。
 | `tune [--apply] [--period P] [--json]` | 不使用 | 洞察 → 型付き調整候補。`--apply` で許可パスだけ宣言へ昇格し、悪化すれば退役 |
 | `qualify [--apply] [--window-days N]` | 不使用 | 本番 receipt から候補適格性を昇格・降格・期限切れ。`--apply` で qualifications.json へ原子書換（無変化なら書かない） |
 | `seed --from-recommendation F [--apply] [--force]` | 不使用 | おすすめ構成の適格性ブロックを qualifications.json へ置く。生成はしない |
-| `extract [--limit N] [--force]` | map | レコード → 観測。ゲート（§6）を通ったときだけ LLM を呼ぶ |
-| `distill [--limit N] [--review] [--force]` | reduce | 観測クラスタ → 洞察 |
+| `extract [--limit N] [--force]` | map | レコード → 観測。既定は `rules`（項目からテンプレで組む）。LLM を選んだときは transcript を持つレコードにだけ、ゲート（§6）を通ったときだけ呼ぶ |
+| `distill [--limit N] [--review] [--force]` | reduce | 観測クラスタ → 洞察。既定は `rules`（同じ鍵の観測を件数つきの定型文へ畳む。declaration は付けない）。`--review` は LLM 蒸留のときだけ効く |
 | `report [--kind K] [--out F] [--json]` | 不使用 | Markdown レポート（`--kind knowledge` は記憶層の健全性。`--json` は knowledge 専用） |
 | `tasks [--mark-exported]` | 不使用 | 洞察 → 改善タスク（`task.schema.json`）。明示時だけ出力済み印を付ける |
 | `gc [--dry-run]` | 不使用 | 種別別保持日数での掃除（`gc_auto` で collect へ相乗り） |
@@ -262,7 +262,7 @@ JSON への追記だけで収集できます。
 
 ### 6. LLM 段のゲートと上限
 
-extract / distill は、次を全部通ったときだけ LLM を呼びます。
+extract / distill は、次を全部通ったときだけ走ります。呼び出し上限は LLM 呼び出しの数で、`rules` は数えません。
 
 | 段 | 間隔ゲート | 蓄積ゲート | 呼び出し上限 |
 |---|---|---|---|
@@ -273,7 +273,9 @@ extract / distill は、次を全部通ったときだけ LLM を呼びます。
 node-budget を読み、超過中は LLM 段を実行しません。
 
 段ごとにエージェントとモデルを選べます（設定 `agents.<purpose>`。purpose は
-`extract` / `distill` / `review`）。管理面（`agent-control`）の purpose 別上書きも効きます。
+`extract` / `distill` / `review`）。`agents.extract` / `agents.distill` を書かなければ `rules`（LLM を呼ばない決定的処理）です。
+`agent_cli: rules` を明示しても同じです。`model` だけ書けばグローバル `agent_cli` の LLM になります。
+管理面（`agent-control`）の purpose 別上書きは LLM を選んだときだけ効き、`rules` を LLM へ変えることはできません。
 
 ---
 
@@ -295,7 +297,7 @@ node-budget を読み、超過中は LLM 段を実行しません。
 | `memory_retention_risk` | `0.3` | 忘却リスク帯（`retention_score` がこれ未満） |
 | `agent_cli` | `claude` | LLM 段の既定 CLI |
 | `model` | `null` | 既定モデル |
-| `agents` | `{}` | purpose 別の上書き（`extract` / `distill` / `review`） |
+| `agents` | `{}` | purpose 別の上書き（`extract` / `distill` / `review`）。extract / distill は未指定なら `rules` |
 | `agent_timeout` | `300` 秒 | LLM 1 回の実行 |
 | `argv_limit` | `100000` | argv 渡しの最大バイト数 |
 | `extract_input_chars` | `8000` | 1 レコードから渡す最大文字数 |
@@ -333,8 +335,8 @@ node-budget を読み、超過中は LLM 段を実行しません。
 1. 読み手に徹する。他ツールのバス・状態リポジトリ・台帳・CLI ストアへ書かない。書くのは
    audit ディレクトリと、明示フラグを付けたときの型付き許可パスだけ（§4.1）。
 2. 決定的にできる処理に LLM を使わない。収集・正規化・クリーニング・相関・集計・
-   クラスタリング・レポート描画は stdlib のみで再現可能。LLM は extract / distill / review の
-   3 purpose に閉じる。
+   クラスタリング・レポート描画は stdlib のみで再現可能。extract / distill も既定は決定的で、
+   LLM は設定で選んだときの extract / distill / review の 3 purpose に閉じる。
 3. 偽の実測を作らない。measured と estimated を混ぜない。相関が一意でなければ結合しない。
    読めない源泉は「未収集」と明示して exit 2。
 4. 必ず止まる。全サブコマンド単発・有界。LLM 段は段別上限 × ゲート × node-budget ×

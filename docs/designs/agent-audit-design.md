@@ -13,7 +13,7 @@ agent-audit は、エージェント実行系が残したファイルと各 agen
 収集後の処理は三つに分かれる。
 
 - 利用量、品質、trial、記憶層の状態はPythonコードで集計する。数字を出す経路にLLMは入れない。
-- 失敗や長時間セッションから改善点を拾うときだけ、`extract` と `distill` でLLMを使う。入力件数、実行間隔、予算に上限がある。
+- 失敗や長時間セッションから改善点を拾う `extract` と `distill` は、既定ではレコードの項目から決定的に観測と洞察を組む（`rules`）。LLMは設定で選んだときだけ、transcriptを保存したレコードに限って上乗せで使う。入力件数、実行間隔、予算に上限がある。
 - `calibrate`、`tune`、`qualify` は測定結果を設定へ戻す。ただし書き先と値の型を限定し、根拠と以前の値を監査ストアへ残す。
 
 設計上の決め事は、収集元ごとの差をadapterに閉じること、事実とLLMの解釈を別ファイルに置くこと、各段を単発コマンドにして定期実行を外へ出すことの三つである。各実行系へ監査用のsession IDとusage出力を追加する案は採らなかった。agent-auditを使わない環境まで改造するわりに、既存ログを読む方式で必要な情報の大半を取れるからだ。
@@ -104,6 +104,7 @@ flowchart LR
 | `usage.py` / `stats.py` / `memory.py` | 利用量、品質、trial、記憶層の決定的集計 | 改善案の作文 |
 | `extract.py` | 一つのレコードから観測を抽出 | 複数実行にまたがる一般化 |
 | `distill.py` | 観測の決定的クラスタリングと洞察生成 | 設定ファイルへの直接反映 |
+| `rules.py` | レコードの項目から観測をテンプレで組む、同じ鍵の観測クラスタを洞察へ畳む | どのレコードを対象にするか、ゲート |
 | `llm.py` | agent CLI選択、controlと予算の確認、実行、利用量記帳 | 観測や洞察の保存方針 |
 | `tuning.py` | 洞察を型付きdecisionへ変換し、昇格と退役を行う | 任意パスの変更 |
 | `qualifications.py` | 実行receiptから候補の適格性を更新する | 実行中の候補選択 |
@@ -278,17 +279,21 @@ sequenceDiagram
 
 extractの候補は、失敗、複数回のretry、verify fail、escalation、長時間sessionのいずれかに当たる未処理レコードである。選別はPythonコードで行う。
 
-LLMへ渡すのは共通フィールドのダイジェストで、transcriptが保存されていれば末尾の抜粋を追加する。入力文字数には上限がある。LLMは `learn`、`avoid`、`skill-gap`、`prompt-issue`、`config-issue` の配列だけを返す。
+観測の本体も既定は決定的である。`rules.observe` がレコードの項目（status、error_class、retries、verify、escalations、decision_comparisons、sessionのmodel欠落と長さ）から、レコード固有の数字を含まない一般形の観測文を組む。各観測は `group` 鍵（kind、規則名、tool/workload、CLI:model、error_classなど）を持ち、distillはこの鍵で束ねる。観測idはレコードidと規則名から作るので、同じレコードを何度抽出しても同じidになる。
 
-JSON契約に合わない場合は一度だけ修復を依頼する。二度とも不正なら、そのレコードを処理済みにせず次へ進む。CLI失敗も同じで、呼出し回数には数えるが次回のextractで再試行できる。正常な空配列は「観測なし」として処理済みにする。
+LLMは `agents.extract.agent_cli` をLLMにしたときだけ、かつレコードがtranscript（`excerpt_ref`）を持つときだけ、rulesの観測に上乗せで呼ぶ。transcriptの無いレコードに訊いても項目から機械的に言えること以上は出ない（2026-09-09の実測: 381呼出しで同文5件）。渡すのは共通フィールドのダイジェストとtranscript末尾の抜粋で、入力文字数には上限がある。LLMは `learn`、`avoid`、`skill-gap`、`prompt-issue`、`config-issue` の配列だけを返す。
+
+JSON契約に合わない場合は一度だけ修復を依頼する。二度とも不正なら、そのレコードを処理済みにせず次へ進む。CLI失敗も同じで、呼出し回数には数えるが次回のextractで再試行できる。その再試行でrulesの観測は同じidで再追記されるため、observationsの読出しはid重複を先勝ちで落とす。正常な空配列は「観測なし」として処理済みにする。
 
 ### clusterとdistill
 
-clusterはdistillの内部処理で、独立したサブコマンドを持たない。観測をID順に並べ、同じkindの中で英数字tokenと日本語bigramのoverlap係数が0.5以上になる最初のclusterへ入れる。走査順と閾値が固定されているため、同じ観測集合なら同じclusterになる。
+clusterはdistillの内部処理で、独立したサブコマンドを持たない。`group` 鍵を持つ観測（rules由来）は鍵が同じものを1つのclusterにし、cluster idは鍵のハッシュから作る。鍵を持たない観測（LLM由来）はID順に並べ、同じkindの中で英数字tokenと日本語bigramのoverlap係数が0.5以上になる最初のclusterへ入れる。走査順と閾値が固定されているため、同じ観測集合なら同じclusterになる。
 
-観測が既定2件以上あり、前回より増えたclusterだけをdistillへ渡す。LLMは一般化した文、kind、提案、confidence、scope、失効条件、任意の型付きdeclarationを返す。JSON修復は一度までで、失敗したclusterは処理数に数えるが既知件数を進めない。次回また対象になる。
+観測が既定2件以上あり、前回より増えたclusterだけをdistillへ渡す。既定の `rules.insight` は代表の観測文に件数と期間を付けた文をstatementにし、kindは観測kindから写像し、confidenceは件数（2〜4でlow、5〜9でmedium、10以上でhigh）で決め、提案はkindごとの定型文にする。declarationは付けない。型付きの設定還流はratesを `calibrate` が、tier candidatesを `qualify` が決定的に書いており、LLMだけが作れる宣言はprofileへ足すinjection文に限られるからだ。
 
-`--review` は別purposeのLLMに洞察と観測を突き合わせさせる。reviewが失敗しても洞察は `review: null` で保存する。`refuted` になった洞察はtasksへ出さない。
+`agents.distill.agent_cli` をLLMにしたときは、clusterの観測をLLMへ渡す。LLMは一般化した文、kind、提案、confidence、scope、失効条件、任意の型付きdeclarationを返す。JSON修復は一度までで、失敗したclusterは処理数に数えるが既知件数を進めない。次回また対象になる。
+
+`--review` は別purposeのLLMに洞察と観測を突き合わせさせる。rulesの蒸留では定型文に検証する内容が無いので飛ばす。reviewが失敗しても洞察は `review: null` で保存する。`refuted` になった洞察はtasksへ出さない。
 
 ### 実行ゲートと予算
 
@@ -449,6 +454,8 @@ agent-loop本体は成功実行の細かいreceiptを持たず、loop-logから�
 この形にした理由: 改善前後の比較に使う数字がモデル応答で変わると、変更の効果を測れない。一方、未知の失敗から一般化した改善点を見つける処理は固定ルールだけでは足りない。
 
 すべてをLLMへ読ませる案と、観測抽出まで正規表現で済ませる案は採らなかった。代償は二種類の実装と中間データを保守すること。決定的な抽出器で同等のrecallが得られる分野が増えたら、そのkindからLLMを外す。確信度は高い。
+
+2026-09-09 追記: 撤退条件を実測が満たしたので、extractとdistillの既定を決定的な `rules` にした。この機の監査ストア（sessionとledgerだけ、run recordは0件）でLLM extractは381回の呼出しで同文の観測5件、洞察0件だった。LLMが言えたのは収集器の欠落（codex-nativeのmodelが空）だけで、それは項目から決定的に出せる。LLMは `agents.<purpose>.agent_cli` で選び、extractではtranscriptを保存したレコードに限って上乗せする。未知の失敗をtranscriptから一般化する仕事はLLMに残す。その入口は `with_transcripts: true` で開く。検討の経緯は `docs/plans/2026-09-09-agent-audit-llm-free-extract-distill-assessment.md`。
 
 ### ADR-3: LLM処理をrecord単位のmapとcluster単位のreduceに分ける
 

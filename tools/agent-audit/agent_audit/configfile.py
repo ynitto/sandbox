@@ -167,13 +167,21 @@ def resolve_budget_dir(args) -> str:
     return os.path.join(agent_home_dir(), "budget")
 
 
+RULES_AGENT = "rules"                       # LLM を使わない決定的な extract / distill
+RULES_DEFAULT_PURPOSES = ("extract", "distill")
+
+
 def agent_for(args, purpose: str) -> "tuple[str, str | None]":
     """purpose（extract / distill / review）の (agent_cli, model)。
-    agents[purpose] > グローバル agent_cli / model。不正値は黙って落とさず無視して既定へ。"""
+    agents[purpose] > グローバル agent_cli / model。不正値は黙って落とさず無視して既定へ。
+    extract / distill は agents[purpose] を書かない限り `rules`（LLM を呼ばない）。
+    agents[purpose] に model だけ書けばグローバル CLI の LLM になる。"""
     overrides = getattr(args, "agents", None) or {}
     o = overrides.get(purpose) if isinstance(overrides, dict) else None
     cli = getattr(args, "agent_cli", "claude")
     model = getattr(args, "model", None)
+    if purpose in RULES_DEFAULT_PURPOSES and not (isinstance(o, dict) and o):
+        return RULES_AGENT, None
     if isinstance(o, dict):
         if isinstance(o.get("agent_cli"), str) and o["agent_cli"]:
             cli = o["agent_cli"]

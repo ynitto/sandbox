@@ -148,6 +148,14 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
 
     await win.click('#settings-open');
     await win.locator('#app-settings[open]').waitFor();
+    const settingsDialogHeights = [];
+    for (const tab of ['app', 'instructions', 'execution']) {
+      await win.click(`[data-settings-tab="${tab}"]`);
+      const box = await win.locator('#app-settings').boundingBox();
+      settingsDialogHeights.push(box?.height || 0);
+    }
+    assert.ok(settingsDialogHeights.every((height) => Math.abs(height - settingsDialogHeights[0]) <= 1),
+      `設定メニューの切替でダイアログの高さが変わる: ${settingsDialogHeights.join(', ')}`);
     await win.click('[data-settings-tab="instructions"]');
     await win.fill('#instruction-text', '回答は簡潔な日本語にする');
     await win.fill('#skill-entry', 'self-checking');
@@ -242,6 +250,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     }
     assert.strictEqual(await workspace.locator('#b-assist').textContent(), 'AIと編集');
     assert.strictEqual(await workspace.locator('#b-run').textContent(), 'テスト');
+    assert.strictEqual(await workspace.locator('#b-record').count(), 0, 'agent-app の「その他」に旧記録を表示しない');
     const toolbar = await workspace.locator('.embedded-editor-toolbar').boundingBox();
     const toolbarTitle = await workspace.locator('.embedded-editor-toolbar .bar-center').boundingBox();
     const toolbarActions = await workspace.locator('.embedded-editor-toolbar .bar-right').boundingBox();
@@ -259,6 +268,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     }
     await assertTaskLayout('編集');
     assert.match(await workspace.locator('.task-conversation-toolbar').textContent(), /AIと編集/);
+    assert.strictEqual(await win.locator('#task-launch-title').count(), 0, '編集画面で「AIと編集」を重ねて表示しない');
     // 会話画面と同じ組み方: ツールバーの直下に会話面が付き、tmux を開く前の起動カードは
     // 残りの高さへ引き伸ばされず上に寄る。
     const teachingLayout = await win.evaluate(() => {

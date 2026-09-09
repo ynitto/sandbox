@@ -1,8 +1,10 @@
-"""distill — 観測クラスタ → 洞察（reduce・中〜強モデル。設計 §6.3）。
+"""distill — 観測クラスタ → 洞察（reduce。設計 §6.3）。
 
 クラスタリングは stdlib だけの決定的処理（同じ観測集合からは必ず同じクラスタ）。
-distill はクラスタ単位でだけ走り、単発の観測を洞察にしない。クラスタが育ったら
-同じ洞察 id を改訂する（1 洞察 1 ファイルにした理由）。
+rules 由来の観測は `group` 鍵で束ね、LLM 由来の観測は token overlap で束ねる。
+洞察の本体も既定は決定的（rules.insight）。`agents.distill.agent_cli` を LLM にしたときだけ
+クラスタを LLM へ渡す。distill はクラスタ単位でだけ走り、単発の観測を洞察にしない。
+クラスタが育ったら同じ洞察 id を改訂する（1 洞察 1 ファイルにした理由）。
 """
 from __future__ import annotations
 
@@ -10,7 +12,8 @@ import hashlib
 import re
 import time
 
-from .configfile import resolve_audit_dir
+from . import rules
+from .configfile import agent_for, resolve_audit_dir
 from .llm import LlmBlocked, LlmError, parse_json_reply, run_llm
 from .store import Store
 from .util import elog, log, now_iso
@@ -64,7 +67,17 @@ def cluster_observations(observations: "list[dict]") -> "list[dict]":
     cluster_id は kind + 最小観測 id のハッシュ——クラスタが育っても概ね安定し、
     同じ洞察の改訂として扱える。"""
     clusters: "list[dict]" = []
+    grouped: "dict[str, dict]" = {}      # rules 由来: group 鍵が同じなら同じ洞察
     for obs in sorted(observations, key=lambda o: o.get("id") or ""):
+        group = obs.get("group")
+        if isinstance(group, str) and group:
+            c = grouped.get(group)
+            if c is None:
+                c = grouped[group] = {"kind": obs.get("kind"), "tokens": frozenset(),
+                                      "observations": [], "group": group}
+                clusters.append(c)
+            c["observations"].append(obs)
+            continue
         toks = _tokens(obs.get("text") or "")
         placed = False
         for c in clusters:
@@ -79,8 +92,8 @@ def cluster_observations(observations: "list[dict]") -> "list[dict]":
         if not placed:
             clusters.append({"kind": obs.get("kind"), "tokens": toks, "observations": [obs]})
     for c in clusters:
-        first = min(o["id"] for o in c["observations"])
-        h = hashlib.sha256(f"{c['kind']}::{first}".encode("utf-8")).hexdigest()
+        seed = c.get("group") or min(o["id"] for o in c["observations"])
+        h = hashlib.sha256(f"{c['kind']}::{seed}".encode("utf-8")).hexdigest()
         c["cluster_id"] = f"ins-{h[:16]}"
     return clusters
 
@@ -122,26 +135,38 @@ def cmd_distill(args) -> int:
     if reason:
         log("distill", f"実行を見送りました — {reason}")
         return 0
+    cli, _model = agent_for(args, "distill")
+    use_llm = cli != rules.AGENT
+    review = bool(getattr(args, "review", False))
+    if review and not use_llm:
+        log("distill", "rules 蒸留では review を飛ばします（定型文に検証する内容が無い）")
+        review = False
     limit = int(getattr(args, "limit", 0) or 0)
     max_calls = int(getattr(args, "distill_max_calls", 10) or 10)
     budget = min(limit, max_calls) if limit > 0 else max_calls
+    if not use_llm:
+        budget = limit if limit > 0 else len(targets)     # 呼び出し上限は LLM のもの
     made = 0
     for c in sorted(targets, key=lambda c: (-len(c["observations"]), c["cluster_id"])):
         if made >= budget:
             log("distill", f"段別上限に達したため打ち切ります（{budget} 件）")
             break
-        try:
-            ins = _distill_one(args, c)
-        except LlmBlocked as e:
-            elog(f"distill: {e}")
-            store.save_state()
-            return 1
-        except LlmError as e:
-            elog(f"distill: {c['cluster_id']} の蒸留に失敗（先へ進みます）: {e}")
-            made += 1
-            continue
+        if use_llm:
+            try:
+                ins = _distill_one(args, c)
+            except LlmBlocked as e:
+                elog(f"distill: {e}")
+                store.save_state()
+                return 1
+            except LlmError as e:
+                elog(f"distill: {c['cluster_id']} の蒸留に失敗（先へ進みます）: {e}")
+                made += 1
+                continue
+            ins["distill_agent"] = cli
+        else:
+            ins = rules.insight(c)
         made += 1
-        if getattr(args, "review", False):
+        if review:
             ins["review"] = _review_one(args, ins, c)
         store.write_insight(ins)
         known[c["cluster_id"]] = len(c["observations"])

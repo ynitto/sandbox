@@ -413,7 +413,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 /* ---- ダイアログ ---- */
 #wt-dialog, #app-settings { max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--panel); box-shadow: 0 24px 60px rgba(31, 35, 40, .2); }
 #wt-dialog { width: 720px; }
-#app-settings { width: 780px; }
+#app-settings { width: 780px; height: min(720px, calc(100vh - 40px)); }
+#app-settings[open] { display: flex; flex-direction: column; }
 #wt-dialog::backdrop, #app-settings::backdrop { background: rgba(18, 23, 31, .42); }
 .dlg-head { min-height: 54px; display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
 .dlg-body { padding: 14px 16px 18px; overflow: auto; }
@@ -426,7 +427,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .wt-table td.wt-name { font-weight: 600; }
 .wt-table td.wt-act { width: 1%; text-align: right; white-space: nowrap; }
 .settings-list { display: flex; flex-direction: column; gap: 4px; }
-.settings-layout { min-height: 480px; display: grid; grid-template-columns: 150px minmax(0, 1fr); }
+.settings-layout { min-height: 0; flex: 1; display: grid; grid-template-columns: 150px minmax(0, 1fr); overflow: hidden; }
 .settings-tabs { display: flex; flex-direction: column; gap: 3px; padding: 12px 8px; border-right: 1px solid var(--line); background: var(--side-bg); }
 .settings-tabs button { min-height: 38px; border-color: transparent; color: var(--muted); background: transparent; text-align: left; }
 .settings-tabs button.on { color: var(--text); background: var(--accent-bg); }
@@ -504,7 +505,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
   #changes { width: 100vw; }
   .wt-form label { width: 100%; justify-content: space-between; }
   .wt-form input { min-width: 0; width: 62%; }
-  #app-settings { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  #app-settings { width: calc(100vw - 16px); height: calc(100vh - 16px); max-height: calc(100vh - 16px); }
   .settings-layout { min-height: 0; display: flex; flex-direction: column; }
   .settings-tabs { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--line); }
   .settings-tabs button { flex: 1; text-align: center; }

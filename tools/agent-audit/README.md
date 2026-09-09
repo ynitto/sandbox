@@ -5,7 +5,7 @@ agent-project / agent-flow / agent-amigos / agent-loop の実行証跡、エー�
 
 - **トークン使用量の集計**（実測と推定を別掲）
 - **実行品質の集計**（失敗クラス・リトライ・verify）
-- **知見・スキル改善点の蒸留**（LLM は extract / distill の 2 段だけ）
+- **知見・スキル改善点の蒸留**（既定は決定的ルール。LLM は設定で選んだ extract / distill だけ）
 
 を行う独立 CLI。どのツールにも依存せず、エージェント CLI 単独利用の環境でも
 セッションログの集計だけで完結する。設計の「なぜ」は
@@ -36,8 +36,8 @@ agent-audit report --kind knowledge [--json]
                                      # 記憶 3 層 + 共有路の健全性（publish 待ち・忘却リスク・
                                      # outbox 滞留・queries ヒット率。LLM 不使用）
 
-agent-audit extract                  # レコード → 観測（LLM map・弱モデル可）
-agent-audit distill                  # 観測クラスタ → 洞察（LLM reduce）
+agent-audit extract                  # レコード → 観測（既定は決定的ルール。設定で LLM map）
+agent-audit distill                  # 観測クラスタ → 洞察（既定は決定的テンプレ。設定で LLM reduce）
 agent-audit tasks                    # 洞察 → 改善タスク（JSON を stdout へ）
 agent-audit tune [--apply]           # 型付き調整候補 → 宣言へ昇格、悪化・期限で自動退役
 
@@ -70,8 +70,9 @@ app-server、Copilot は `/usage`、Kiro は ACP の組み込み usage から取
 
 定期実行は同梱 `audit-calibrate-hook.py` が collect → qualify --apply → calibrate → extract → distill --review →
 tune --apply を順に実行する。
-extract / distill には間隔・蓄積ゲートがあるので、**高頻度で駆動しても LLM 消費は
-設定したリズムを超えない**（`--force` はゲートだけを飛ばす。上限と予算は飛ばせない）。
+extract / distill は既定で LLM を呼ばない（`rules`）ので、この列は設定なしで回る。LLM を選んだ
+ときも間隔・蓄積ゲートがあるので、**高頻度で駆動しても LLM 消費は設定したリズムを超えない**
+（`--force` はゲートだけを飛ばす。上限と予算は飛ばせない）。
 
 ## 設定
 
@@ -79,9 +80,11 @@ extract / distill には間隔・蓄積ゲートがあるので、**高頻度で
 **CLI 引数 > 設定ファイル > 組み込み既定**で、agent-audit 固有の環境変数は無い。
 探索順は `--config` → `<cwd>/agent-audit.*` → `<cwd>/.agents/` → `~/.agents/`。
 
-LLM の段別モデル選択（トークン削減の要）:
+extract / distill は `agents` を書かなければ決定的ルール（`rules`）で動き、LLM を呼ばない。
+LLM を使うときだけ段別に選ぶ（extract の LLM は transcript を保存したレコードにだけ効く）:
 
 ```yaml
+with_transcripts: true                          # extract の LLM が読む本文
 agents:
   extract: {agent_cli: ollama, model: qwen3}   # 局所要約は弱モデルで
   distill: {agent_cli: claude, model: sonnet}  # 一般化は中〜強モデルで

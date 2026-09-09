@@ -81,7 +81,7 @@
     $('task-launch').hidden = !waitingToLaunch;
     if (waitingToLaunch) {
       populateExecutionInputs('task-launch');
-      $('task-launch-title').textContent = state.published ? 'AIと編集' : '下書きの編集を続ける';
+      $('task-launch-heading').hidden = state.published;
       $('task-launch-start').textContent = state.availableSession ? 'tmuxで編集を続ける' : 'tmuxで編集を始める';
       $('task-launch-start').disabled = state.pending;
     }

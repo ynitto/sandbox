@@ -56,14 +56,14 @@ def _build_parser() -> argparse.ArgumentParser:
     cal = sub.add_parser("calibrate", help="rates 較正の提案（--write で budget config へ反映）")
     cal.add_argument("--write", action="store_true")
 
-    e = sub.add_parser("extract", help="レコード → 観測（LLM map。ゲートを通ったときだけ実行）")
+    e = sub.add_parser("extract", help="レコード → 観測（既定は決定的ルール。agents.extract で LLM map に切替）")
     e.add_argument("--limit", type=int, default=0)
     e.add_argument("--force", action="store_true",
                    help="間隔・蓄積ゲートを飛ばす（段別上限と予算は飛ばせない）")
 
-    d = sub.add_parser("distill", help="観測クラスタ → 洞察（LLM reduce）")
+    d = sub.add_parser("distill", help="観測クラスタ → 洞察（既定は決定的テンプレ。agents.distill で LLM reduce に切替）")
     d.add_argument("--limit", type=int, default=0)
-    d.add_argument("--review", action="store_true", help="洞察を review purpose で検証する")
+    d.add_argument("--review", action="store_true", help="洞察を review purpose の LLM で検証する（LLM 蒸留のときだけ効く）")
     d.add_argument("--force", action="store_true",
                    help="間隔・蓄積ゲートを飛ばす（段別上限と予算は飛ばせない）")
 

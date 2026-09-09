@@ -19,7 +19,9 @@ def record_id(source: str, store: str, native_id: str) -> str:
     return f"aud-{h[:16]}"
 
 
-def observation_id(rec_id: str, index: int) -> str:
+def observation_id(rec_id: str, index) -> str:
+    """LLM 由来は連番、rules 由来は `rule:<name>` を index にする（同じ record・同じ規則なら
+    何度抽出しても同じ id。読出しで重複を落とす前提）。"""
     h = hashlib.sha256(f"{rec_id}::{index}".encode("utf-8")).hexdigest()
     return f"obs-{h[:16]}"
 
@@ -113,12 +115,21 @@ class Store:
         append_jsonl(os.path.join(self.observations_dir, f"{utc_day(time.time())}.jsonl"), obs)
 
     def iter_observations(self):
+        """追記専用なので同じ id が複数行あり得る（LLM 失敗で未抽出のまま残った record を
+        次回 rules が再抽出したとき）。先勝ちで 1 件にする。"""
         try:
             names = sorted(n for n in os.listdir(self.observations_dir) if n.endswith(".jsonl"))
         except OSError:
             return
+        seen: "set[str]" = set()
         for name in names:
-            yield from iter_jsonl(os.path.join(self.observations_dir, name))
+            for obs in iter_jsonl(os.path.join(self.observations_dir, name)):
+                oid = obs.get("id")
+                if oid in seen:
+                    continue
+                if oid:
+                    seen.add(oid)
+                yield obs
 
     # -- insights -------------------------------------------------------------
     def write_insight(self, ins: dict) -> None:

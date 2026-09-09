@@ -17,7 +17,7 @@
 |---|---|---|
 | どの CLI・モデルにどれだけトークンを使ったか | `agent-audit usage` | 使わない |
 | 実行はどれくらい失敗し、何が原因だったか | `agent-audit stats` | 使わない |
-| 次から何を直すべきか（知見・改善タスク） | `agent-audit extract` → `distill` → `tasks` | 使う（2 段だけ） |
+| 次から何を直すべきか（知見・改善タスク） | `agent-audit extract` → `distill` → `tasks` | 既定は使わない（設定で選んだときだけ） |
 
 押さえておくと迷わない性質が 4 つあります。
 
@@ -330,10 +330,12 @@ ltm-use / wiki-use / persona-use のスクリプト側の仕事です。
 
 ---
 
-## 5. 知見の蒸留（LLM を使う 2 段）
+## 5. 知見の蒸留（extract → distill）
 
-ここからが LLM を使う部分です。**収集・集計・クラスタリング・レポートは一切 LLM を使いません**。
-LLM は「1 レコードを観測に落とす（extract）」と「観測の塊を洞察に畳む（distill）」の 2 段だけです。
+「1 レコードを観測に落とす（extract）」と「観測の塊を洞察に畳む（distill）」の 2 段です。
+**どちらも既定では LLM を使いません。** レコードの項目（失敗クラス・再試行・verify・
+エスカレーション・セッションの長さと記録漏れ）からテンプレで観測を組み、同じ種類の観測を
+件数つきの洞察へ畳みます。設定なしで cron から回せます。LLM は設定で選んだときだけ使います。
 
 ```
 records ──extract(map)──▶ observations ──cluster(決定的)──▶ distill(reduce) ──▶ insights
@@ -341,19 +343,24 @@ records ──extract(map)──▶ observations ──cluster(決定的)──�
                                                                     report / tasks ┘
 ```
 
-### 5.1 段ごとにモデルを選ぶ
+### 5.1 LLM を使いたいときだけ段ごとにモデルを選ぶ
 
-トークン削減の要はここです。extract は 1 レコードずつの局所要約なので**弱いモデル・ローカルモデルで十分**、
+決定的な抽出が言えるのは既知のカテゴリだけです。会話本文から未知の失敗を拾いたいときは
+`with_transcripts: true` で本文を保存し、段ごとに LLM を選びます。extract の LLM は本文を
+保存したレコードにだけ呼ばれ、本文の無いレコードは引き続き決定的に処理されます。
+extract は 1 レコードずつの局所要約なので**弱いモデル・ローカルモデルで十分**、
 distill は一般化なので中〜強モデルを使います。
 
 ```yaml
-agent_cli: claude             # 既定の CLI
+with_transcripts: true
+agent_cli: claude             # review と、model だけ書いた段の CLI
 agents:
   extract: {agent_cli: ollama, model: qwen3}   # map: 弱モデル・ローカルで十分
   distill: {agent_cli: claude, model: sonnet}  # reduce: 一般化は中〜強モデルで
 ```
 
-指定できる CLI 名は `agents/<name>.json` にある定義名（claude / codex / kiro / ollama …）です。
+指定できる CLI 名は `agents/<name>.json` にある定義名（claude / codex / kiro / ollama …）と、
+決定的処理を明示する `rules` です。
 
 ### 5.2 実行
 
@@ -369,7 +376,7 @@ agent-audit report      # 洞察を含めて 1 枚に
 [agent-audit] extract: 実行を見送りました — 蓄積ゲート: 未抽出の候補 3 件 < 10 件（--force で強制）
 ```
 
-これは**故障ではなく設計どおり**です。LLM を呼ぶ前に決定的なゲートで足切りしています。
+これは**故障ではなく設計どおり**です。処理の前に決定的なゲートで足切りしています。
 試したいときだけ `--force` を付けます。
 
 ```bash
@@ -379,8 +386,9 @@ agent-audit distill --force
 
 ### 5.3 LLM をどれだけ使うかの制御
 
-`collect && extract && distill` を高頻度で回しても、**LLM 消費は設定したリズムを超えません**。
-駆動の頻度と LLM の頻度が分離されているためです。
+既定の決定的処理は何度回しても LLM を消費しません。LLM を選んだ段も、`collect && extract && distill`
+を高頻度で回して**LLM 消費は設定したリズムを超えません**。駆動の頻度と LLM の頻度が
+分離されているためです。呼び出し上限が数えるのは LLM 呼び出しだけです。
 
 | 種類 | extract の既定 | distill の既定 | `--force` で飛ばせるか |
 |---|---|---|---|
@@ -392,7 +400,7 @@ agent-audit distill --force
 **`--force` はゲートだけを外します。** 上限と予算は人の手でも外れません。
 
 extract に渡す対象も決定的に選抜されます（既定 `extract_filters`）。
-成功して何も起きなかったレコードに LLM は使いません。
+成功して何も起きなかったレコードは extract の対象になりません。
 
 | フィルタ | 拾う条件 |
 |---|---|
@@ -461,8 +469,9 @@ agent-audit usage --by agent_cli           # 4. トークンを見る
 agent-audit report                         # 5. 1 枚にまとめる
 ```
 
-LLM 蒸留まで使うなら、`~/.agents/agent-audit.yaml` に `agents:` を書いて
-cron に `collect && extract && distill` を仕込む——これで運用に乗ります。
+cron に `collect && extract && distill` を仕込めば、設定なしでも決定的な蒸留まで回ります。
+会話本文から拾う LLM 蒸留まで使うなら `~/.agents/agent-audit.yaml` に `with_transcripts` と
+`agents:` を書きます——これで運用に乗ります。
 以降は必要になったときだけ読めば十分な補足です。
 
 ---
