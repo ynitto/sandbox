@@ -383,6 +383,7 @@ orchestration 15 秒、routines の生画面 2 秒、agent-audit の収集 5 分
 参照キーは `id + scope + repository` です。`id` だけで別の定義を選びません。設計カタログの候補は
 対象 cwd の登録済みリポジトリ共有 → ユーザー共通 → 同梱の順に読み、同じ id の別 scope を省略しません。
 同梱の `design-interactive` / `design-auto` は `design` / `internal` です。
+同梱にはこのほか `two-wave-fan-out`（`implementation` / `library`）があり、設計カタログではなく実装フロー一覧に `builtin` として出ます。
 
 選択時に main が scope 付き参照を再解決し、正規化した定義（entry / exit / nodes）と
 `origin.scope` / `origin.repository` / `digest` を snapshot 化します。renderer が送る定義本文や

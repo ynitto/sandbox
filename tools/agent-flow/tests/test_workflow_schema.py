@@ -131,6 +131,109 @@ class BundledWorkflowTests(unittest.TestCase):
                 self.assertEqual(len(wf["exit"]), 1)
                 self.assertFalse({n["kind"] for n in wf["nodes"]} & {"human", "split"})
 
+    def test_bundled_workflows_satisfy_the_graph_invariants(self):
+        """スキーマで表現できないグラフ不変条件を同梱フローについて機械で確かめる。
+
+        entry / exit の一致は保存側（各 UI の正規化）が強制するので、同梱ファイルが
+        破っていても保存し直すまで気付けない。工程が増えるほど手では追えなくなるため、
+        ここで固定する（不変条件の並びはスキーマ本文の記述と同じ）。
+        """
+        for wf in self._bundled():
+            with self.subTest(wf.get("id")):
+                nodes = {n["id"]: n for n in wf["nodes"]}
+                self.assertEqual(len(nodes), len(wf["nodes"]), "id が重複している")
+                for node in wf["nodes"]:
+                    for dep in node["deps"]:
+                        self.assertIn(dep, nodes, f"{node['id']} の依存が未知")
+                        self.assertNotEqual(dep, node["id"], f"{node['id']} が自己依存")
+                depended = {d for n in wf["nodes"] for d in n["deps"]}
+                self.assertEqual(set(wf["entry"]),
+                                 {i for i, n in nodes.items() if not n["deps"]},
+                                 "entry はすべてのルート工程と一致していなければならない")
+                self.assertEqual(set(wf["exit"]), set(nodes) - depended,
+                                 "exit はすべての末端工程と一致していなければならない")
+                self.assertEqual(_ancestors_or_cycle(nodes, wf["exit"][0]) is None, False,
+                                 "到達判定が働いていない")
+                for node_id in nodes:
+                    self.assertIsNotNone(_ancestors_or_cycle(nodes, node_id),
+                                         f"{node_id} から循環している")
+                for policy in wf.get("rework", []):
+                    self.assertIn(policy["from"], nodes)
+                    self.assertIn(policy["to"], nodes)
+                    self.assertIn(policy["to"], _ancestors_or_cycle(nodes, policy["from"]),
+                                  "差し戻しの戻り先は差し戻し元の祖先でなければならない")
+
+    def test_bundled_workflows_are_accepted_by_the_engine(self):
+        """同梱フローが投入 plan へ落ちたとき実行側に受理されること。
+
+        ライブラリ定義（保存形）と投入 plan は形が違い、実行側は不正な plan を
+        planner へ縮退させず failed 終端する。同梱物が実行を拒まれる状態で配られると
+        利用者は選んだ瞬間に失敗するので、変換して実装へ通すところまで見る。
+        """
+        for wf in self._bundled():
+            with self.subTest(wf.get("id")):
+                _strategy, tasks = kf.plan_strategy_user(_as_plan(wf), "サンプルの依頼")
+                self.assertEqual(len(tasks), len(wf["nodes"]))
+                for task in tasks:
+                    self.assertNotIn("{{request}}", task["goal"])
+
+    def test_two_wave_flow_carries_the_pooled_briefing_through_declared_summary(self):
+        """二巡目へ知見を配る工程が、要約に潰されない形で配れること。
+
+        持ち寄り役は依存を全文で受ける kind でなければ一巡目の成果を読めず、
+        二巡目の受け手は digest なので `data.summary` に書いたものだけが届く
+        （宣言済み summary は切り詰められない＝engine の digest 規則）。
+        kind を自由記述側（synthesize など）へ変えると、この経路が黙って
+        600 字に切り詰められて cross-pollination が形だけになる。
+        """
+        wf = next(w for w in self._bundled() if w["id"] == "two-wave-fan-out")
+        nodes = {n["id"]: n for n in wf["nodes"]}
+        pool = nodes["harvest"]
+        self.assertIn(pool["kind"], kf._FULL_DEPENDENCY_KINDS,
+                      "持ち寄り役は一巡目の成果を全文で受ける kind であること")
+        self.assertIn(pool["kind"], kf.STRUCTURED_KINDS,
+                      "持ち寄り役は data を成果として意図する kind であること"
+                      "（自由記述の kind では本文の JSON を data に昇格させないので"
+                      "宣言 summary が立たず、二巡目には本文の先頭だけが渡る）")
+        self.assertIn("data", pool["goal"])
+        self.assertIn("summary", pool["goal"])
+        consumers = [n for n in wf["nodes"] if "harvest" in n["deps"]]
+        self.assertTrue(consumers)
+        for node in consumers:
+            self.assertEqual(kf._dependency_input_mode(node, node["kind"]), "digest",
+                             f"{node['id']} が digest である前提で持ち寄り資料を作っている")
+
+
+def _ancestors_or_cycle(nodes, start):
+    """`start` の祖先集合（自身を含む）。循環していたら None。"""
+    seen, stack = set(), [(start, set())]
+    while stack:
+        node_id, path = stack.pop()
+        if node_id in path:
+            return None
+        seen.add(node_id)
+        for dep in nodes[node_id]["deps"]:
+            stack.append((dep, path | {node_id}))
+    return seen
+
+
+def _as_plan(wf: dict) -> dict:
+    """ライブラリ定義 → 投入 plan（label / x / y / continuation を落とし、rework を改名）。"""
+    keep = ("id", "goal", "kind", "deps", "tier", "interaction")
+    nodes = []
+    for node in wf["nodes"]:
+        plan_node = {k: v for k, v in node.items() if k in keep}
+        rules = "".join(f"\n\n作業ルール: {m.get('id')}" for m in node.get("methods") or [])
+        plan_node["goal"] = plan_node["goal"] + rules
+        nodes.append(plan_node)
+    plan = {"name": wf["name"], "nodes": nodes}
+    rework = [{"id": r["id"], "from": r["from"], "to": r["to"], "trigger": r["trigger"],
+               "instruction": r["instruction"], "max_iterations": r["maxIterations"],
+               "on_exhausted": r["onExhausted"]} for r in wf.get("rework") or []]
+    if rework:
+        plan["rework"] = rework
+    return plan
+
 
 if __name__ == "__main__":
     unittest.main()
