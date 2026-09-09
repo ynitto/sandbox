@@ -8,8 +8,10 @@
 //   依頼文           … 会話の最初に CLI へ送る本文。statemachine-use スキルの作成モードで
 //                      `.statemachine/<機械名>/` を書くこと、見本の依頼の作法（@record 行）、
 //                      検証の仕方を伝える。AI はこの会話の中でファイルを直接書く。
-//   見本の記録       … 利用者の端末（このアプリ）で取った操作の記録を、AI が読める Markdown に
-//                      して `.statemachine/<機械名>/recordings/` へ置く。
+//   見本の記録       … ブラウザは、このアプリが Edge をリモートデバッグ付きで起こし、固定文
+//                      （teachingProtocol.js）で AI に知らせて、AI 自身が CDP 越しに記録を取る。
+//                      Windows アプリは、利用者の端末（このアプリ）の winauto で取った記録を AI が
+//                      読める Markdown にして `.statemachine/<機械名>/recordings/` へ置く。
 //
 // 会話そのもの（tmux セッション・依頼の送信・応答の取り出し）は agent-app の会話基盤が担う。
 
@@ -117,15 +119,16 @@ function list(root) {
 //   existing  … 既存の定義を変える会話か
 //   skillDir  … statemachine-use スキルの所在（ホスト側のパス。無ければ ''）
 //   platform  … このアプリの OS（win32 なら「tmux は WSL、画面は Windows」を伝える）
-//   tools     … { browser: bool, windows: bool } 見本を取れる道具がこの端末にあるか
-function prompt({ machine, purpose = '', existing = false, skillDir = '', platform = process.platform, tools = {} } = {}) {
+//   tools     … { browser: bool, windows: bool } 見本を取れる道具（Edge / winauto）がこの端末にあるか
+//   endpoint  … ブラウザの見本で AI が接続する CDP の接続先（既定 http://localhost:9222）
+function prompt({ machine, purpose = '', existing = false, skillDir = '', platform = process.platform, tools = {}, endpoint = protocol.DEFAULT_ENDPOINT } = {}) {
   const name = String(machine || '').trim();
   const dir = `.statemachine/${name}/`;
   const runner = skillDir ? `python ${skillDir.replace(/[\\/]+$/, '')}/scripts/run_machine.py` : 'python .github/skills/statemachine-use/scripts/run_machine.py';
   const where = platform === 'win32'
-    ? 'あなたは WSL の tmux で動いていて、利用者の画面（ブラウザ・Windows アプリ）は Windows 側にあります。'
-    : '見本の記録は利用者の端末（このアプリ）が取ります。';
-  const available = [tools.browser ? 'ブラウザ（playwright-cli）' : '', tools.windows ? 'Windows アプリ（winauto）' : ''].filter(Boolean);
+    ? 'あなたは WSL の tmux で動いていて、利用者の画面（ブラウザ・Windows アプリ）は Windows 側にあります。Windows 側の playwright-cli を WSL から起こすことはできません。'
+    : '利用者の画面はこのアプリと同じ端末にあります。';
+  const available = [tools.browser ? 'ブラウザ（Edge）' : '', tools.windows ? 'Windows アプリ（winauto）' : ''].filter(Boolean);
   const lines = [
     `あなたはこのリポジトリで「タスク」（\`statemachine-use\` スキルで動くステートマシン）を${existing ? '変更する' : '作る'}担当です。`,
     `保存先は \`${dir}\`（workflow.yaml と actions/*.md）で、この中だけを書き換えてください。maker.json は書かなくてかまいません。`,
@@ -135,11 +138,13 @@ function prompt({ machine, purpose = '', existing = false, skillDir = '', platfo
       ? `1. まず \`${dir}\` の workflow.yaml と actions/*.md を読み、今の工程を短く要約してから、利用者に変更したい点を聞いてください。`
       : '1. 利用者の目的を読み、曖昧な点（固定値か毎回変わる値か・期待する結果・送信や保存などの重要操作）だけを質問してください。分かることは聞かずに進めます。',
     `2. 工程・分岐・完了確認は \`statemachine-use\` スキルの作成モードに従って組みます（scaffold.py で骨組み → 本文を埋める → \`${runner} ${dir}workflow.yaml --dry-run\` で検証）。毎回変わる値は \`{{key}}\` で受けます。`,
-    '3. 画面操作（ブラウザ・Windows アプリ）の工程で、実際の画面を見ないと操作を決められないときは、利用者に操作の見本を頼んでください。見本の依頼は、次の 1 行を単独の行として返答に書き、利用者の返事を待ちます:',
+    '3. 画面操作（ブラウザ・Windows アプリ）の工程で、実際の画面を見ないと操作を決められないときは、利用者に操作の見本を頼んでください。見本の依頼は、次の 1 行を単独の行として返答に書き、利用者に「操作の見本」の「記録を始める」を押すよう伝えて待ちます（そのカードは自動で開きます）:',
     `   ${protocol.recordLine('browser', '<開始 URL>')}`,
     `   ${protocol.recordLine('windows', '<アプリ名>')}`,
-    `   ${where}記録はこのアプリが取り、結果は \`${dir}${RECORDINGS}/\` の Markdown に置かれて、その場所が次のメッセージで届きます。あなた自身は playwright-cli / winauto の記録を起こさないでください。`,
-    available.length ? `   いま見本を取れるのは ${available.join('・')} です。` : '   いまこの端末では見本を取る道具が見つかっていません。見本が要るときはその旨も書いてください。',
+    `   ${where}`,
+    `   ブラウザの見本: 利用者がボタンを押すと、このアプリが ${platform === 'win32' ? 'Windows 側で ' : ''}Edge をリモートデバッグ付き（${endpoint}）で起こし、\`${protocol.RECORDING_MARKER} start\` で始まる固定文（接続先入り）があなたに届きます。届いたら \`playwright-cli attach --cdp=${endpoint}\` で接続して \`playwright-cli recording-start\` で記録を始め、1 行で知らせて待ちます。利用者が操作している間はブラウザを操作しません。操作が終わると \`${protocol.RECORDING_MARKER} stop\` で始まる固定文が届くので、\`playwright-cli recording-stop\` で止め、記録の行をそのまま \`${dir}${RECORDINGS}/<時刻>-browser.md\` に保存し、\`playwright-cli detach\` で切り離してから、その見本を根拠に工程を組みます。固定文が届く前に自分でブラウザを起こしたり記録を始めたりしないでください。接続先に届かないときは、その旨を利用者に伝えてください${platform === 'win32' ? '（WSL のネットワークが mirrored でないと localhost が Windows 側に届きません）' : ''}。`,
+    `   Windows アプリの見本: 記録はこのアプリが winauto で取り、結果は \`${dir}${RECORDINGS}/\` の Markdown に置かれて、その場所が次のメッセージで届きます。あなた自身は winauto の記録を起こさないでください。`,
+    available.length ? `   いま見本を取れるのは ${available.join('・')} です。` : '   いまこの端末では見本を取る道具（Edge / winauto）が見つかっていません。見本が要るときはその旨も書いてください。',
     '4. 画面操作の本文では `playwright-cli` スキル（ブラウザ）/ `windows-app-automation` スキル（Windows アプリ）を名指しし、見本の記録にある操作の行（role と名前のロケータ）を本文に載せます。',
     '5. 定義を書き終えたら --dry-run で検証し、工程の並び・毎回変わる値・重要操作を短く報告してください。実行はしません（実行は利用者が画面から行います）。',
     '',

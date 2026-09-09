@@ -226,11 +226,29 @@ AI が定義を書く（workflow.yaml / actions/*.md）→ 定義があれば「
 ```
 
 見本の依頼は AI の返答の `@record browser <URL>` / `@record windows <アプリ名>` の 1 行で受ける
-（`renderer/teachingProtocol.js`。main の依頼文と renderer の解析が同じ約束事を読む）。記録
-（`playwright-cli` / `winauto`）は**この端末**で取る——Windows では AI は WSL の tmux にいて画面は Windows 側に
-あるため、agent-app 自身が Windows 側で記録を起こし、できた Markdown
-（`.statemachine/<名前>/recordings/<時刻>-<種類>.md`）の所在を `host.toHostPath` で WSL 表記へ直して
-次のターンとして送る（`automation:teach:demonstration`）。AI 自身に記録を起こさせない旨も依頼文に書く。
+（`renderer/teachingProtocol.js`。main の依頼文と renderer の解析・固定文が同じ約束事を読む）。
+Windows では AI は WSL の tmux にいて画面は Windows 側にあり、WSL から Windows 側の `playwright-cli` を
+起こすことはできない。そこで見本の取り方は画面の種類で分ける（ADR-10）:
+
+```text
+ブラウザ（AI が CDP 越しに記録する。ボタンは固定文を tmux へ流すだけ）
+  AI: @record browser <URL> → 見本のカードが開く → 利用者「記録を始める」
+    → automation:teach:browser  main が Edge（無ければ Chrome）を記録専用プロファイルで
+                                --remote-debugging-port=9222 付きで起こし、/json/version の応答を待つ
+    → renderer が固定文 recordingStartMessage（@recording start + 接続先）を会話の送信経路
+      （turn:send / term:submit = tmux）で AI へ渡す
+  AI: playwright-cli attach --cdp=http://localhost:9222 → recording-start → 待つ
+  利用者が操作 → 「終了してAIへ渡す」→ 固定文 recordingStopMessage（@recording stop）
+  AI: recording-stop → 記録の行を .statemachine/<名前>/recordings/<時刻>-browser.md に保存 → detach → 工程を組む
+Windows アプリ（agent-app が winauto で記録する）
+  「記録を始める」→ automation:recording:start（winauto record）→ 操作 →「終了してAIへ渡す」
+    → automation:recording:stop → Markdown（recordings/<時刻>-windows.md）→ 所在を host.toHostPath で
+      WSL 表記へ直して次のターンとして送る（automation:teach:demonstration）
+```
+
+依頼文（`teaching.prompt`）にこの流れをすべて仕込む: 固定文が届く前にブラウザを起こしたり記録を始めたり
+しないこと、利用者が操作している間はブラウザを操作しないこと、winauto の記録は自分で起こさないこと。
+Edge の起動（`main/automation/browser.js`）は Electron に触れず、起動・応答確認の関数を引数で受ける。
 
 ### 3.4 ワークフローの教示と差し戻し
 
@@ -513,7 +531,9 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 | `config.json` が壊れている | 既定値で起動する | 現在は警告も退避もない |
 | 共有編集面が未初期化 | 要素が最後の `navigate` を保留し、共有 renderer が controller を登録した時点で一度だけ渡す | — |
 | タスクの会話で AI が応答中に見本を渡す | 記録は保存し、`AI が応答中です` で送信だけ断る | 応答が終わってから「操作の見本」を送り直す |
-| 見本の道具がこの端末に無い | 依頼文にその旨を書き、見本のカードにも出す | `playwright-cli` / `winauto` を入れる。Windows アプリは Windows 上でだけ |
+| 見本の道具がこの端末に無い | 依頼文にその旨を書き、見本のカードにも出す | Edge（ブラウザ）/ `winauto` を入れる。Windows アプリは Windows 上でだけ |
+| ブラウザの記録用 Edge がリモートデバッグに応答しない | 20 秒待って `ポート 9222）に応答しません` で断る（固定文は送らない） | ポートを使っている別のブラウザを閉じる |
+| AI が CDP の接続先に届かない（WSL が NAT） | 依頼文で「その旨を利用者に伝える」と決めている | `.wslconfig` で `networkingMode=mirrored` |
 | ワークフロー教示の候補が不正 | AI 応答を `flow-model.normalize` で検査し、循環・不正な差し戻し・保存名の変更は候補として受け取らない | AI に修正を相談 |
 | 試運転前に利用可能化 | `flow:teaching:confirm` が `成功した試運転を確認してから…` で断る。試運転後に候補が変わっていれば digest 不一致で断る | 試運転をやり直す |
 
@@ -524,7 +544,8 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 | テスト | 固定するもの |
 |---|---|
 | `test/app.test.js` | 画面の情報構造、三領域、preload と IPC の 1 対 1、vendor と index.html の対応、共有編集面が `window.api.automation` へ直接つなぐこと、ワークフロー教示と差し戻しが通常の依存と分離していること、argv の組み立て、店（store）、git、ファイル、添付、tmux セッションの保持とスナップショット |
-| `test/automation-teaching.test.js` | `@record` 行の解析、下書きの sidecar、最初の依頼文（保存先・作成モード・Windows/WSL の注意）、見本の Markdown、kind: task の会話、記録の所在を WSL 表記で送ること |
+| `test/automation-teaching.test.js` | `@record` 行の解析、ブラウザの見本の固定文（`@recording start` / `stop`）、下書きの sidecar、最初の依頼文（保存先・作成モード・Windows/WSL の注意・固定文を待って CDP で記録すること）、見本の Markdown、kind: task の会話、記録の所在を WSL 表記で送ること |
+| `test/automation-browser.test.js` | Edge / Chrome の探し方、リモートデバッグと記録専用プロファイルの引数、応答を待って接続先を返すこと、無い・応答しない・起動失敗の断り方 |
 | `test/ui-consistency.test.js` | 端末と入力欄が会話画面と同じ実体であること、その見た目の定義が 1 か所であること、直値の色を足していないこと、見出しと説明を 2 つの層が描かないこと |
 | `test/automation-*.test.js` | 共有ワークベンチ（旧 statemachine-maker）の domain: 工程列の正規化とコンパイル、読み戻し、記録の変換、AI 下書き・見直し、agent-loop / agent-flow との境界、statemachine-use の `run_machine.py --dry-run` を通ること、画面の言葉に内部の綴りが混ざらないこと |
 | `test/tmux.test.js` | パス変換、画面判定（Kiro / Codex / Copilot / Cursor / Claude の実画面）、`waitReady` の attention、send-keys の畳み方、応答抽出、キー変換、常駐シェル、疑似 CLI との統合 |
@@ -580,7 +601,7 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 | 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession` |
 | 外部ライブラリ・共有ファイルの追加 | `scripts/vendor.js`、`index.html` | vendor と index.html の対応テスト、CSP |
 | タスク・ワークフローの機能 | `src/main/automation/`、`src/renderer/automation/` | `api.automation.*` と `handlers.js` の `register` の対応、`<statemachine-workbench>` の Shadow DOM、`navigate` payload と DOM イベント、`automation-workbench.css` の `:host` 上書き、`test/automation-*.test.js` |
-| タスクを AI と作る会話 | `src/main/ipc.js` の `startTeaching` / `demonstrate`、`src/main/automation/teaching.js`、`src/renderer/taskTeaching.js`、`src/renderer/teachingProtocol.js` | 依頼文の約束事（`@record`）は main と renderer が同じモジュールを読むこと、記録の所在を WSL 表記へ直すこと、kind: task の会話が会話一覧に出ないこと |
+| タスクを AI と作る会話 | `src/main/ipc.js` の `startTeaching` / `demonstrate` / `launchTeachingBrowser`、`src/main/automation/teaching.js`、`src/main/automation/browser.js`、`src/renderer/taskTeaching.js`、`src/renderer/teachingProtocol.js` | 依頼文の約束事（`@record`、固定文 `@recording start` / `stop`）は main と renderer が同じモジュールを読むこと、固定文は会話の送信経路（tmux）で送ること、記録の所在を WSL 表記へ直すこと、kind: task の会話が会話一覧に出ないこと |
 
 ## 付録 A. ADR
 
@@ -707,6 +728,31 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
   maker の原則は、タスクについては取り下げる。承認は CLI 自身の許可確認（端末で答える）に任せる。
   試運転の代わりに「構成を確認」と「実行」を使う。
 - 見直し条件: 無人実行に組織的な承認・監査が要る場合（重要操作の承認台帳を会話の外に置き直す）。
+- 追記: ブラウザの見本については ADR-10 で「AI に記録を起こさせない」を取り下げた。Windows アプリ（winauto）
+  は引き続きこの端末で取る。
+
+### ADR-10 ブラウザの見本は、この端末が Edge をリモートデバッグ付きで起こし、AI が CDP 越しに記録する
+
+- 決定: ブラウザの見本は agent-app が `playwright-cli` を呼んで記録する形をやめる。「記録を始める」で
+  agent-app が Edge（無ければ Chrome）を記録専用プロファイルと `--remote-debugging-port=9222` 付きで起こし、
+  起動できたことを固定文（`@recording start`、接続先入り）として tmux 経由で AI へ渡す。AI が WSL 側の
+  `playwright-cli attach --cdp=…` で接続して `recording-start` し、「終了してAIへ渡す」の固定文
+  （`@recording stop`）で `recording-stop` して記録を保存する。流れはすべて最初の依頼文に仕込み、ボタンを
+  押す番になったら AI が利用者にそう言う。
+- 背景: Windows では AI（WSL）から Windows 側の `playwright-cli` を起こしてブラウザを記録することはできない。
+  一方、Windows 側で Edge をリモートデバッグ付きで起こしておけば、WSL の AI がそこへ接続して記録できることが
+  実地で確かめられた。記録の主体を AI にすると、記録の行の解釈・保存・工程化を AI の会話 1 本に寄せられ、
+  agent-app 側の変換（recording.js）を経由しないぶん往復が減る。
+- 却下: agent-app が Windows 側の `playwright-cli` で記録して Markdown を渡す（ADR-9 の形。Windows 側の
+  `playwright-cli` の導入と版の管理を利用者に求め、うまく動かないことが分かった）、AI に Edge の起動まで
+  任せる（WSL から Windows の GUI を起こす経路が要る）、固定文を main が直接 tmux へ書く（会話の送信経路
+  —— 応答中は端末へ流す・待機中は新しいターン —— を renderer が既に 1 本持っているので、そこを通す）。
+- 代償: ブラウザの記録は Edge の記録専用プロファイル（初回はログインし直す）でしか取れない。WSL の
+  ネットワークが NAT のままだと `localhost` が Windows 側に届かず、mirrored への切り替えを利用者に求める。
+  「手順」タブの工程エディタからの記録（この端末の `playwright-cli` を直接呼ぶ古い経路）は残してあり、
+  ブラウザの記録経路が 2 つある。
+- 見直し条件: 工程エディタからの記録を使う人がいなくなったら古い経路を消す。Edge 以外の既定ブラウザで
+  記録したい要望が出たら、起動するブラウザを設定にする。
   複数の CLI が同じ `.statemachine/` を同時に書く運用が主になった場合。
 - 確信度: 中。
 

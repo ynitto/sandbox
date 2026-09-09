@@ -24,6 +24,7 @@ const { registerAutomationIpc } = require('./automation/ipc');
 const automationTools = require('./automation/tools');
 const machineStore = require('./automation/store');
 const teaching = require('./automation/teaching');
+const recordingBrowser = require('./automation/browser');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
 function userData() { return app.getPath('userData'); }
@@ -660,14 +661,24 @@ function automationAppRoot() {
 // 手動実行の画面と同じく、作成・変更も tmux の端末ミラーの中で進める。CLI は会話と同じ
 // 定義・同じ起動方針で起こし、cwd はリポジトリ本体。最初の依頼（teaching.prompt）が
 // statemachine-use の作成モードと、見本の依頼の作法（@record 行）を伝える。
-// 見本の記録（playwright-cli / winauto）は**この端末**（Windows ならその Windows 側）で取り、
-// できた Markdown の所在を WSL 表記に直して会話へ送る。
+// ブラウザの見本は、**この端末**（Windows ならその Windows 側）で Edge をリモートデバッグ付きで起こし、
+// 固定文で AI に知らせて AI 自身が CDP 越しに記録を取る（automation:teach:browser。固定文は renderer が
+// 会話の送信経路で送る）。Windows アプリの見本（winauto）はこの端末で取り、できた Markdown の所在を
+// WSL 表記に直して会話へ送る。
 
 function teachingTools() {
   return {
-    browser: !!agentCli.resolvePath('playwright-cli'),
+    browser: !!recordingBrowser.findBrowser({ resolvePath: (name) => agentCli.resolvePath(name) }),
     windows: process.platform === 'win32' && !!agentCli.resolvePath('winauto'),
   };
+}
+
+// 「記録を始める」: Edge（無ければ Chrome）を記録専用プロファイルで、リモートデバッグ付きで起こす。
+function launchTeachingBrowser(p) {
+  return recordingBrowser.launchRecordingBrowser({
+    url: p.url, profileDir: path.join(userData(), recordingBrowser.PROFILE_DIR),
+    resolvePath: (name) => agentCli.resolvePath(name),
+  });
 }
 
 function teachingSkillDir(repo, cfg) {
@@ -764,6 +775,7 @@ function registerIpcHandlers(getWindow) {
   handle('automation:teach:start', (p) => startTeaching(p, send));
   handle('automation:teach:session', (p) => taskConversationView(userData(), requireRepo(p.repo), String(p.machine || '').trim()));
   handle('automation:teach:demonstration', (p) => demonstrate(p, send));
+  handle('automation:teach:browser', (p) => launchTeachingBrowser(p));
   // 写したが送らずに閉じた添付を掃除する
   try { attachments.sweep(userData(), store.readAllSessions(userData())); } catch { /* 消せなくても動く */ }
 
