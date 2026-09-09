@@ -59,14 +59,18 @@ function createTerm() {
       if (!term.hasSelection() && state.onFocus) state.onFocus();
     });
     // xterm 自身には履歴を二重保持せず、ホイール量を tmux 履歴の表示オフセットへ渡す。
+    // hostEl の wheel リスナーでは xterm 自身の既定ホイール処理（scrollback:0 なので何も
+    // 動かない）を止められず、tmux へ届く前に握り潰されていた。xterm の
+    // attachCustomWheelEventHandler で先に受け取り、false を返して既定処理を止める。
     // message 入力モードでも端末の閲覧はできるよう inputEnabled では制限しない。
-    hostEl.addEventListener('wheel', (event) => {
-      if (!state.id || !event.deltaY) return;
+    term.attachCustomWheelEventHandler((event) => {
+      if (!state.id || !event.deltaY) return true;
       event.preventDefault();
       const direction = event.deltaY < 0 ? -1 : 1;
       const lines = direction * Math.max(1, Math.min(state.rows, Math.ceil(Math.abs(event.deltaY) / 30)));
       api.termScroll(state.id, lines).catch((error) => { if (state.onError) state.onError(error); });
-    }, { passive: false });
+      return false;
+    });
     state.term = term; state.fit = fit; state.host = hostEl;
     state.ro = new ResizeObserver(() => refit());
     state.ro.observe(hostEl);

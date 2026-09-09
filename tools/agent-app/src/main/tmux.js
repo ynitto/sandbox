@@ -17,6 +17,7 @@ const host = require('./host');
 const SOCKET = 'agent-app';
 const TMUX = `tmux -L ${SOCKET}`;
 const HISTORY_LIMIT = 50000;
+const DEAD_STATUS_GRACE_MS = 1500;  // pane_dead 後に終了コード（pane_dead_status）が揃うのを待つ上限
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 36;
 
@@ -282,6 +283,7 @@ class Conversation {
     this.polling = false;
     this.closed = false;
     this.deadSnapshotSent = false;
+    this.deadSeenAt = 0;             // pane_dead を最初に見た時刻（終了コードが揃うのを待つ）
     this.scrollOffset = 0;            // xterm に描く範囲の、現在画面からの履歴オフセット
   }
 
@@ -362,6 +364,13 @@ class Conversation {
         this.emit('term:screen', { id: this.id, text: displayScreen.text, cursor: screen.cursor, cols: screen.cols, rows: screen.rows, scrollOffset: this.scrollOffset, tail: tailLines(text, 14) });
       }
       if (screen.dead) {
+        // tmux はペインの pty が閉じた時点で pane_dead になるが、終了コード
+        // （pane_dead_status）は子プロセスの回収後にしか出ない。少しの間だけ
+        // 終了コードが揃うのを待ってから dead にする（揃わなければ ? のまま確定）。
+        if (screen.deadStatus == null) {
+          if (!this.deadSeenAt) this.deadSeenAt = Date.now();
+          if (Date.now() - this.deadSeenAt < DEAD_STATUS_GRACE_MS) return;
+        }
         if (!this.deadSnapshotSent) {
           this.deadSnapshotSent = true;
           this.emit('term:snapshot', { id: this.id, reason: 'pane_dead', screenText: text });
