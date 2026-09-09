@@ -2,6 +2,7 @@
 
 const { ipcMain, dialog, shell, app } = require('electron');
 const { randomUUID } = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const model = require('./model');
 const store = require('./store');
@@ -11,6 +12,7 @@ const runner = require('./runner');
 const ai = require('./ai');
 const aiDiff = require('./ai-diff');
 const agentLoop = require('./agent-loop');
+const directRun = require('./direct-run');
 const flowModel = require('./flow-model');
 const flowStore = require('./flow-store');
 const agentFlow = require('./agent-flow');
@@ -84,10 +86,12 @@ function registerIpcHandlers(getWindow, options = {}) {
   const hostPath = typeof options.hostPath === 'function' ? options.hostPath : (value) => String(value || '');
   const hostRootOf = (payload) => hostPath(selectedRoot(payload));
   const runCapture = (name, args, opts = {}) => runner.capture(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
-  const runStream = (name, args, opts = {}) => runner.stream(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
+  // host … 一族の名前でなくても、Windows では WSL 経由で起こす（エージェント CLI を直接起こすとき）
+  const runStream = (name, args, { host: onHost = false, ...opts } = {}) => runner.stream(name, args, { ...opts, spawnSpec: commandSpawnSpec(name, { host: onHost }) });
   const runStartDetached = (name, args, opts = {}) => runner.startDetached(name, args, { ...opts, spawnSpec: commandSpawnSpec(name) });
   // 選ばれた名前を、実際に起こす定義の名前へ写す（`herd` → aider / ollama）。無ければそのまま。
   //   purpose … 'task'（タスクの実行）| 'flow'（ワークフローの実行）| 'plan'（AI 支援。読み取り専用）
+  //             | 'direct'（agent-loop の無いときの手動実行。定義を名指しして直接起こす）
   // 返る名前が '' なら「渡さない」（agent-loop / agent-herd の既定に任せる）。
   const resolveAgent = async (agent, purpose, root) => {
     const hook = options.hooks && options.hooks.resolveAgent;
@@ -107,19 +111,40 @@ function registerIpcHandlers(getWindow, options = {}) {
     sendTo(job.sender, 'ai:result', { requestId: job.requestId, mode: job.mode, ...payload });
   }
 
+  // AI 支援の起動仕様。埋め込む側（agent-app）は hooks.assistRunSpec で差し替える——定義から
+  // 組んだ単発 argv でその CLI を直接起こし、agent-herd（agent-tools）が無くても動かす。
+  // 既定は agent-herd の `--purpose plan`。
+  const assistRunSpec = (payload) => (
+    options.hooks && typeof options.hooks.assistRunSpec === 'function'
+      ? options.hooks.assistRunSpec(payload)
+      : tools.agentAssistRunSpec(payload)
+  );
+
+  function readOutputFile(file) {
+    if (!file) return '';
+    let text = '';
+    try { text = fs.readFileSync(file, 'utf8'); } catch { /* 書かれなかった */ }
+    try { fs.unlinkSync(file); } catch { /* 無ければよい */ }
+    return text;
+  }
+
   function launchAi(job, prompt) {
-    const spec = tools.agentAssistRunSpec({
+    const spec = assistRunSpec({
       root: job.root, agent: job.agent, model: job.model, prompt,
     });
     const started = runStream(spec.command, spec.args, {
       cwd: job.root,
       kind: 'ai',
+      host: !!spec.host,
+      input: spec.input || '',
       maxBytes: runner.MAX_STREAM_OUTPUT,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      onExit: ({ code, stdout, stderr, truncated }) => {
+      env: { ...process.env, ...(spec.env || {}), PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      onExit: ({ code, stdout: rawStdout, stderr, truncated }) => {
         if (!activeAi || activeAi.requestId !== job.requestId || job.cancelled) return;
+        const raw = spec.outputFile ? readOutputFile(spec.outputFile) : rawStdout;
+        const stdout = typeof spec.extract === 'function' ? spec.extract(raw) : raw;
         try {
-          if (code !== 0) throw new Error((stderr || `agent-tools が終了コード ${code} で終了しました`).trim());
+          if (code !== 0) throw new Error((stderr || `${spec.command} が終了コード ${code} で終了しました`).trim());
           if (truncated) throw new Error('AIの応答が大きすぎます');
           const result = job.mode === 'flow-teach'
             ? ai.parseFlowTeachingEnvelope(stdout, { workflowId: job.workflowId })
@@ -215,7 +240,10 @@ function registerIpcHandlers(getWindow, options = {}) {
 
   register('tools:status', (p) => {
     const root = p.root ? selectedRoot(p) : '';
-    return tools.toolStatus({ cwd: root, capture: runCapture, skillDir: selectedSkillDir(root) });
+    return tools.toolStatus({
+      cwd: root, capture: runCapture, skillDir: selectedSkillDir(root),
+      agentDefinitions: () => agentDefinitions({ cwd: root, capture: runCapture }),
+    });
   });
   register('agents:list', (p) => {
     const root = p.root ? selectedRoot(p) : '';
@@ -337,9 +365,10 @@ function registerIpcHandlers(getWindow, options = {}) {
     const root = selectedRoot(p);
     const mode = p.mode === 'review' ? 'review' : p.mode === 'flow-teach' ? 'flow-teach' : 'draft';
     const cfg = settings.load(getUserData());
-    const requestedAgent = String(p.agent || cfg.agent || 'aider');
+    const requestedAgent = String(p.agent || cfg.agent || '');
+    if (!requestedAgent) throw new Error('使う AI を選んでください（「実行環境」で確認できます）');
     const definitions = await agentDefinitions({ cwd: root, capture: runCapture });
-    if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」は agent-tools に定義されていません`);
+    if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」はこの環境で使えません`);
     const agent = await resolveAgent(requestedAgent, 'plan', root);
     if (runner.isRunning()) throw new Error('別の実行が進行中です。終わるか停止してから始めてください');
 
@@ -401,7 +430,9 @@ function registerIpcHandlers(getWindow, options = {}) {
     return aiDiff.apply({ base, candidate: p.candidate, ids: p.ids });
   });
 
-  // 構成確認はスキル、本実行は agent-loop を入口に agent-tools の harness を使う。
+  // 構成確認はスキル、本実行は agent-loop を入口に agent-tools の harness を使う。agent-loop が
+  // 無ければ（inspect が答えない）、同じスキルの run_machine.py に定義から組んだ argv を渡して
+  // この場で回す（direct-run.js。履歴と定期実行は持たないが、タスクの本体は動く）。
   // 出力はどちらも行単位で renderer へ流す。
   register('run:start', async (p, event) => {
     const root = selectedRoot(p);
@@ -417,6 +448,8 @@ function registerIpcHandlers(getWindow, options = {}) {
     let command;
     let args;
     let preparation = {};
+    let onHost = false;
+    let launchWarning = '';
     if (mode === 'check') {
       if (task.kind !== 'statemachine') throw new Error('構成確認はステートマシンのタスクだけで使えます');
       const skillDir = selectedSkillDir(root);
@@ -427,10 +460,16 @@ function registerIpcHandlers(getWindow, options = {}) {
       args = [path.join(skillDir, 'scripts', 'run_machine.py'), workflow, '--dry-run'];
     } else {
       const cfg = settings.load(getUserData());
-      const requestedAgent = String(p.agent || cfg.agent || 'aider');
+      const requestedAgent = String(p.agent || cfg.agent || '');
+      if (!requestedAgent) throw new Error('使う AI を選んでください（「実行環境」で確認できます）');
       const definitions = await agentDefinitions({ cwd: root, capture: runCapture });
-      if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」は agent-tools に定義されていません`);
-      const agent = await resolveAgent(requestedAgent, 'task', root);
+      if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」はこの環境で使えません`);
+      const loopAvailable = snapshot.available !== false;
+      // agent-loop が無いときは `herd` を写せない（agent-herd の既定に任せる口が無い）ので、
+      // 一族の共通 TUI と同じ定義（agent-herd の既定バックエンド）を名指しする
+      const agent = loopAvailable
+        ? await resolveAgent(requestedAgent, 'task', root)
+        : await resolveAgent(requestedAgent, 'direct', root);
       const parameters = p.parameters && typeof p.parameters === 'object'
         ? p.parameters
         : { ...(p.context && typeof p.context === 'object' ? p.context : {}), ...(p.input ? { input: p.input } : {}) };
@@ -440,13 +479,28 @@ function registerIpcHandlers(getWindow, options = {}) {
           skillMode: p.skillMode, selectedSkills: p.skills,
         })
         : {};
-      const spec = agentLoop.taskRunSpec({
-        root, task, agent,
-        model: p.model || cfg.model, parameters,
-        instruction: preparation.instruction || '',
-      });
-      command = spec.command;
-      args = spec.args;
+      if (loopAvailable) {
+        const spec = agentLoop.taskRunSpec({
+          root, task, agent,
+          model: p.model || cfg.model, parameters,
+          instruction: preparation.instruction || '',
+        });
+        command = spec.command;
+        args = spec.args;
+      } else {
+        if (task.kind !== 'statemachine') throw new Error('このタスクの実行には agent-loop が要ります（「実行環境」を確認してください）');
+        const skillDir = selectedSkillDir(root);
+        const py = process.platform === 'win32' ? { command: directRun.WSL_PYTHON } : await pythonFor();
+        if (!py) throw new Error('Python を起動できません（「実行環境」を確認してください）');
+        const spec = directRun.runSpec({
+          root, machine, agent, model: p.model || cfg.model, parameters,
+          instruction: preparation.instruction || '', skillDir, python: py.command, hostPath,
+        });
+        command = spec.command;
+        args = spec.args;
+        onHost = spec.host;
+        launchWarning = spec.warning || '';
+      }
     }
     const requestId = randomUUID();
     const sender = event.sender;
@@ -454,6 +508,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const started = runStream(command, args, {
       cwd: root,
       kind: 'run',
+      host: onHost,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
       onLine: (kind, line) => send(channel('run:line'), { requestId, machine, kind, line }),
       onExit: ({ code, stdout, stderr, truncated }) => send(channel('run:exit'), {
@@ -467,7 +522,7 @@ function registerIpcHandlers(getWindow, options = {}) {
       ...started, requestId, mode,
       executionInformation: Array.isArray(preparation.information) ? preparation.information : [],
       skillSelection: preparation.skillSelection || null,
-      warning: String(preparation.warning || ''),
+      warning: [preparation.warning, launchWarning].filter(Boolean).join('\n'),
     };
   });
   register('run:stop', () => runner.stop('run'));

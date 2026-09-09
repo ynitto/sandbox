@@ -359,6 +359,7 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
 .tool-list .st { font-size: 11px; padding: 1px 7px; border-radius: 999px; margin-right: 6px; }
 .tool-list .st.ok { background: var(--ok-soft); color: var(--ok); }
 .tool-list .st.ng { background: var(--ng-soft); color: var(--ng); }
+.tool-list .st.opt { background: var(--bg); color: var(--muted); }
 .tool-list small { color: var(--muted); }
 
 /* AI 支援: 入力 → 確認質問 → 候補の順に、今必要な情報だけ見せる。 */

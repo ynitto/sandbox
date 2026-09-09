@@ -20,6 +20,7 @@ const { createGate } = require('./executionGate');
 const skills = require('./skills');
 const skillSelection = require('./skillSelection');
 const herd = require('./herd');
+const agents = require('./agents');
 const { registerAutomationIpc } = require('./automation/ipc');
 const automationTools = require('./automation/tools');
 const machineStore = require('./automation/store');
@@ -603,30 +604,10 @@ async function guardedRunTurn(id, p, send) {
 
 // ---- 登録 ------------------------------------------------------------------------
 
-// 定義ごとの「使える」印はホスト側の PATH で引く（Windows では WSL の中）。
-const availCache = new Map();
-async function hostAvailability(distro, commands) {
-  const key = `${distro}|${commands.join(',')}`;
-  const hit = availCache.get(key);
-  if (hit && Date.now() - hit.at < 60000) return hit.map;
-  const sh = host.shellFor(distro);
-  const script = `for c in ${commands.map(host.sq).join(' ')}; do printf '%s=%s\\n' "$c" "$(command -v "$c" 2>/dev/null || true)"; done`;
-  const r = await sh.run(script, { timeoutMs: 20000 });
-  const map = new Map();
-  if (r.ok) for (const line of r.output.split('\n')) { const m = line.match(/^([^=]+)=(.*)$/); if (m) map.set(m[1], m[2].trim()); }
-  availCache.set(key, { at: Date.now(), map });
-  return r.ok ? map : null;
-}
-
-// 一覧の最後に仮想の `herd`（一族が 1 つでもあれば）を足す。画面の直接指定・設定の tier の
-// どちらもこの一覧から選ぶので、herd はここで足せば両方に出る。
-async function listAgents(repo) {
-  const defs = agentCli.list(repo);
-  const distro = repo ? distroFor(repo) : store.loadConfig(userData()).wslDistro;
-  const map = await hostAvailability(distro, [...new Set(defs.map((d) => d.command))]);
-  const marked = map ? defs.map((d) => ({ ...d, available: !!map.get(d.command) })) : defs;   // ホストに聞けない → ローカル PATH の判定のまま
-  const virtual = herd.listEntry(marked);
-  return virtual ? [...marked, virtual] : marked;
+// 定義の一覧と「使える」印（agents.js。タスク・ワークフローも同じ一覧を見る）。
+function listAgents(repo) {
+  const distro = repo ? distroFor(repo) : host.hostOf('', store.loadConfig(userData()).wslDistro).distro;
+  return agents.listAgents(repo, { distro });
 }
 
 // 名前検索の索引の材料。Windows で \\wsl$\ のリポジトリ（実体は WSL の中）を読むときだけ、

@@ -11,12 +11,24 @@ run_machine.py  —  yaml-statemachine スキル用 CLI ランナー
   python scripts/run_machine.py workflow.yaml --agent copilot
   python scripts/run_machine.py workflow.yaml --agent kiro
   python scripts/run_machine.py workflow.yaml --agent anthropic --model <model-id>
+  python scripts/run_machine.py workflow.yaml --agent exec \
+      --agent-command '["claude","-p","--dangerously-skip-permissions"]' --prompt-via stdin \
+      --instruction "共通指示" --result-line
 
 LLM バックエンド:
   claude     Claude Code CLI (`claude -p`)
   copilot    GitHub Copilot CLI (`gh copilot explain`)
   kiro       Kiro CLI (`kiro -p`)
   anthropic  Anthropic Python SDK（ANTHROPIC_API_KEY 必須）
+  exec       呼び出し側が組んだ argv（--agent-command の JSON 配列）を工程ごとに 1 回起こす。
+             依頼文は --prompt-via stdin（標準入力）か argv（最後の引数）で渡す。argv に
+             `{output_file}` があれば一時ファイルへ置き換え、終了後にその中身を応答として読む。
+             agents/*.json の定義から argv を組める呼び出し側（agent-app など）が、agent-loop や
+             agent-herd の無い環境でも同じ定義を回すための口。
+
+呼び出し側が結果を機械的に読むときは --result-line を付ける。最後の行に
+`RESULT {"ok":…,"finalState":…,"stdout":…,"error":…,"escalate":…}` を 1 行で出す
+（agent-loop / agent-herd harness の RESULT 行と同じ読み方ができる）。
 """
 
 from __future__ import annotations
@@ -95,6 +107,79 @@ async def call_cli_llm(prompt: str, cli: str, model: str | None = None) -> str:
     return stdout.decode().strip()
 
 
+async def call_exec_llm(prompt: str, argv: list[str], prompt_via: str) -> str:
+    """呼び出し側が組んだ argv を 1 回起こし、応答を返す（exec バックエンド）。"""
+    import tempfile
+
+    cmd = list(argv)
+    output_file = ""
+    if any("{output_file}" in a for a in cmd):
+        fd, output_file = tempfile.mkstemp(prefix="statemachine-", suffix=".txt")
+        os.close(fd)
+        cmd = [a.replace("{output_file}", output_file) for a in cmd]
+    try:
+        if prompt_via == "argv":
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, prompt,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate(input=prompt.encode())
+        if proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip() or stdout.decode(errors="replace").strip()
+            raise RuntimeError(
+                f"コマンド '{cmd[0]}' がエラーを返しました (code={proc.returncode}): {err[-2000:]}"
+            )
+        if output_file:
+            try:
+                return Path(output_file).read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                return ""
+        return stdout.decode(errors="replace").strip()
+    finally:
+        if output_file:
+            try:
+                os.unlink(output_file)
+            except OSError:
+                pass
+
+
+def parse_agent_command(raw: str) -> list[str]:
+    """--agent-command の JSON 配列を読む（空・不正なら ValueError）。"""
+    try:
+        value = json.loads(raw or "")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--agent-command は JSON の文字列配列で指定してください: {exc}") from exc
+    if not isinstance(value, list) or not value or not all(isinstance(v, str) and v for v in value):
+        raise ValueError("--agent-command は 1 要素以上の文字列配列が必要です")
+    return value
+
+
+def result_line(result) -> str:
+    """呼び出し側が読む 1 行（agent-loop / harness の RESULT 行と同じ形）。"""
+    # 終端ステートは通常アクションを持たないので、engine の output は空になる。
+    # 呼び出し側が読む成果は「最後に本文を出した工程の出力」（harness の last_output と同じ）。
+    output = result.output or next(
+        (str(step.get("output") or "") for step in reversed(result.steps) if step.get("output")), "")
+    return "RESULT " + json.dumps({
+        "ok": bool(result.success),
+        "finalState": result.final_state,
+        "stdout": output,
+        "error": result.error,
+        "escalate": bool(result.escalate),
+        "steps": len(result.steps),
+    }, ensure_ascii=False)
+
+
 async def anthropic_llm(prompt: str, model: str) -> str:
     """Anthropic Python SDK を呼び出してテキストレスポンスを返す。"""
     try:
@@ -147,15 +232,32 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--agent",
-        choices=["claude", "copilot", "kiro", "anthropic"],
+        choices=["claude", "copilot", "kiro", "anthropic", "exec"],
         default="claude",
         help=(
             "使用する LLM バックエンド (デフォルト: claude)\n"
             "  claude    : Claude Code CLI `claude -p`\n"
             "  copilot   : GitHub Copilot CLI `gh copilot explain`\n"
             "  kiro      : Kiro CLI `kiro -p`\n"
-            "  anthropic : Anthropic Python SDK (ANTHROPIC_API_KEY 必須)"
+            "  anthropic : Anthropic Python SDK (ANTHROPIC_API_KEY 必須)\n"
+            "  exec      : --agent-command の argv を工程ごとに起こす"
         ),
+    )
+    parser.add_argument(
+        "--agent-command", default="",
+        help="--agent exec で起こす argv（JSON の文字列配列）。`{output_file}` は一時ファイルに置き換える",
+    )
+    parser.add_argument(
+        "--prompt-via", choices=["stdin", "argv"], default="stdin",
+        help="--agent exec の依頼文の渡し方（stdin: 標準入力 / argv: 最後の引数）",
+    )
+    parser.add_argument(
+        "--instruction", default="",
+        help="各工程のアクションの前に置く共通指示（遷移条件の評価には付けない）",
+    )
+    parser.add_argument(
+        "--result-line", action="store_true",
+        help="最後に RESULT {json} の 1 行を出す（呼び出し側が機械的に読む）",
     )
     parser.add_argument(
         "--model",
@@ -231,8 +333,18 @@ async def main() -> None:
             print("\nERROR: ANTHROPIC_API_KEY 環境変数が設定されていません。")
             sys.exit(1)
 
+    exec_argv: list[str] = []
+    if args.agent == "exec":
+        try:
+            exec_argv = parse_agent_command(args.agent_command)
+        except ValueError as exc:
+            print(f"\nERROR: {exc}")
+            sys.exit(2)
+
     print(f"\nワークフロー '{workflow.name}' を実行します...")
-    print(f"  LLM バックエンド: {args.agent}" + (f" ({args.model})" if args.model else ""))
+    print(f"  LLM バックエンド: {args.agent}"
+          + (f" ({args.model})" if args.model else "")
+          + (f" [{exec_argv[0]}]" if exec_argv else ""))
     if args.input:
         print(f"入力: {args.input[:100]}{'...' if len(args.input) > 100 else ''}")
     print()
@@ -245,6 +357,10 @@ async def main() -> None:
         model = args.model
         async def llm_fn(prompt: str) -> str:
             return await anthropic_llm(prompt, model=model)
+    elif args.agent == "exec":
+        prompt_via = args.prompt_via
+        async def llm_fn(prompt: str) -> str:
+            return await call_exec_llm(prompt, argv=exec_argv, prompt_via=prompt_via)
     else:
         cli = args.agent
         model = args.model  # None の場合は call_cli_llm 内で無視される
@@ -252,8 +368,17 @@ async def main() -> None:
             return await call_cli_llm(prompt, cli=cli, model=model)
 
     # Run
-    engine = StateMachineEngine(llm_fn=llm_fn, verbose=args.verbose)
-    result = await engine.run(workflow, input_text=args.input, context=context)
+    engine = StateMachineEngine(llm_fn=llm_fn, verbose=args.verbose, instruction=args.instruction)
+    try:
+        result = await engine.run(workflow, input_text=args.input, context=context)
+    except Exception as exc:  # LLM 呼び出しの失敗（CLI の非 0 終了など）も RESULT で申告する
+        print(f"\n✗ 実行中にエラーが発生しました: {exc}")
+        if args.result_line:
+            print("RESULT " + json.dumps({"ok": False, "finalState": "", "stdout": "",
+                                          "error": str(exc), "escalate": False, "steps": 0},
+                                         ensure_ascii=False), flush=True)
+            sys.exit(1)
+        raise
 
     # 出力
     print("\n" + "═" * 60)
@@ -269,12 +394,16 @@ async def main() -> None:
         print(f"✗ ワークフローが失敗しました")
         print(f"  最終ステート: {result.final_state}")
         print(f"  エラー: {result.error}")
+        if args.result_line:
+            print(result_line(result), flush=True)
         sys.exit(1)
 
     if args.output_json:
         print("\n" + "─" * 60)
         print("JSON 結果:")
         print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    if args.result_line:
+        print(result_line(result), flush=True)
 
 
 def _print_workflow_summary(workflow) -> None:

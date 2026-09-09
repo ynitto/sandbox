@@ -510,6 +510,20 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 `--instruction` の実行時オーバーレイとして渡す。契約は
 [`agent-loop 仕様書 §3.9`](../specs/agent-loop-spec.md#39-リポジトリ実行-ui-境界)にある。
 
+**agent-tools が無くてもメイン機能は動く（ADR-11）。** 使える AI の一覧は agent-app 自身の
+`agents.js`（会話と同じ 1 つ）で、AI 支援は定義から組んだ単発 argv でその CLI を直接起こし、
+agent-loop が答えないときの手動実行は同梱の statemachine-use スキル（`run_machine.py --agent exec`）に
+同じ argv を渡して回す（`automation/direct-run.js`）。定期実行・履歴（agent-loop）とワークフロー
+（agent-flow）は任意で、無ければ画面はそれを 1 行で言う。
+
+| 場面 | agent-tools あり | なし |
+|---|---|---|
+| 使える AI | `agents.js`（同じ） | `agents.js` |
+| AI 支援 | `herd` なら `agent-herd --purpose plan`。それ以外は直接 | 定義の単発 argv（`agentCli.oneShotCmd`）で直接 |
+| 手動実行 | `agent-loop statemachine`（harness。ログ・台帳・受入） | `run_machine.py --agent exec`（同じ定義・同じ遷移。ログと履歴は無い） |
+| 定期実行・履歴 | agent-loop | 使えない（1 行で言う） |
+| ワークフロー | agent-flow | 使えない |
+
 ## 10. 失敗時の扱い
 
 | 失敗 | 現在の動作 | 回復方法・残る課題 |
@@ -553,6 +567,7 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 | `test/worktree.test.js` | 名前検査、パスの組み方、`--porcelain` の読み方、作成・削除・納品ブランチの統合 |
 | `test/settings.test.js` | 旧設定の tier 移行、方針解決、未知キー保持、推奨スキルの候補移行 |
 | `test/herd.test.js` | 一族の判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、一族の外へ倒さないこと、配線 |
+| `test/standalone.test.js` | agent-tools 無し: 会話とタスクが同じ一覧を見ること、単発 argv、AI 支援の直接起動、agent-loop 無しの手動実行（`direct-run`）、実行環境の任意の道具、既定の AI が会話の「おすすめ」であること |
 | `test/session-setup.test.js` | 共通指示の no-op、開始アクションの分解と順次実行 |
 | `test/skill-selection.test.js`、`test/skills.test.js` | 自動 / 手動 / 明示の選定、ネイティブとインラインの渡し方、予算超過、候補の読み方 |
 | `test/response.test.js` | codex JSONL、Aider、copilot の思考・回答分離 |
@@ -576,6 +591,9 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 - Windows / WSL の CJK・絵文字の表示幅と、`/mnt/c` の I/O 低下は実機でしか確かめられない。起動時はホストの
   確認（WSL 起動 + ログインシェル）と git を待たずに画面を出し、CLI の有無・worktree の変更数は届き次第
   描き足す（送信だけはその返事を待つ）。ツリー・本文・名前検索は非同期 I/O と索引で main を止めない。
+- agent-loop の無い手動実行は履歴・台帳・受入条件（`check` の昇格先）を持たない。工程ごとに CLI を
+  1 回起こす形は harness の `tool-loop` 経路と同じだが、single-shot の CLI（aider）に反復を付ける外付け
+  ハーネスは無い——それは agent-herd の一族なので、無い環境では選べない。
 - `herd` の用途は依頼の形（Ask / 作業フォルダのファイル添付 / それ以外）だけで決め、dashboard のような
   用途別の実測（qualifications）は読まない。ヘッドレス経路（tmux なし）で本文先頭の `/edit` が編集
   ハーネスへ回るかは agent-herd 側の実装に依る（TUI では回る）。
@@ -653,6 +671,27 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 - 代償: 用途別の最適なモデルは選ばない（モデル欄が空なら定義の `default_model`）。実測に基づく選択が
   要るなら dashboard の Execution Policy Compiler の展開結果（`(agent_cli, model)` の順位）を読む形へ
   進める。
+
+### ADR-11 agent-tools が無くてもメイン機能（会話・タスクの作成と実行）は動く
+
+- 状況: 2026-09-09 まで、タスクの「使う AI」は `agent-herd defs --json`、AI 支援は `agent-herd --purpose plan`、
+  手動実行は agent-loop に頼っていた。agent-tools を入れていない PC では、会話は動くのにタスクの AI を
+  1 つも選べず、既定の `aider` も常に使えなかった。導入の入口が agent-tools 一式になり、agent-app 単体の
+  価値（CLI を並べて会話し、タスクを教えて回す）が伝わらない。
+- 決定: **一覧・AI 支援・手動実行の 3 つを agent-app 自身で閉じる。** 一覧は `agents.js`（`agents/*.json` +
+  ホストの PATH。会話と同じ 1 つ）。AI 支援は `agentCli.oneShotCmd` の単発 argv でその CLI を直接起こす
+  （`herd` を選んだときだけ agent-herd）。手動実行は `agent-loop inspect` が答えないとき、同梱の
+  statemachine-use スキルへ `run_machine.py --agent exec --agent-command <同じ argv> --instruction … --result-line`
+  を渡して回す（スキル側に exec バックエンドと `--instruction`、`RESULT` 行を足した）。agent-loop / agent-flow /
+  agent-herd は実行環境で「任意」と出し、無くても本体を止めない。既定の AI は会話の「おすすめ」tier と同じ CLI。
+- 却下した案: (a) agent-loop の zipapp を exe に同梱する——Python のスタックを Electron の配布物に抱え込み、
+  更新の単位が 2 つになる。agent-loop を入れれば同じ定義がそのまま正典の経路で回るので、同梱しなくても
+  「無い」時の代替は薄い層で足りる。(b) agent-app が工程の実行ループを JS で持つ——遷移の正典（スキルの
+  スクリプト）の写しを増やす。(c) スキルの `run_machine.py` に `agents/*.json` の読み方を足す——agentcli の
+  写しをスキルに持ち込む。argv は agent-app が組めるので、スキルには「argv を受けて起こす」口だけを足した。
+- 代償: agent-loop 無しの実行には履歴・台帳・受入・single-shot CLI の反復が無い。2 経路の意味が揃っている
+  ことは、どちらもスキルの `run_machine.py --dry-run` と `next_state.py` の契約を読むことで担保し、
+  差は §12 に列挙する。
 
 ### ADR-4 タスク・ワークフローは statemachine-maker を借り、agent-app は登録と設定だけをアダプトする
 
@@ -773,6 +812,7 @@ agent-loop の設定探索順（リポジトリ直下 → `.agents/` → `~/.age
 - [`2026-09-06-agent-app-agent-flow-teaching-workspace-design.md`](../plans/2026-09-06-agent-app-agent-flow-teaching-workspace-design.md)、[同 implementation-plan](../plans/2026-09-06-agent-app-agent-flow-teaching-workspace-implementation-plan.md): ワークフロー教示、世代と試運転、差し戻しの検討記録。
 - [`2026-09-06-agent-app-shared-editor-workbench-design.md`](../plans/2026-09-06-agent-app-shared-editor-workbench-design.md): iframe から共有編集面（カスタム要素 + Host Adapter）への移行の決定記録。
 - [`2026-09-07-agent-app-startup-and-herd-design.md`](../plans/2026-09-07-agent-app-startup-and-herd-design.md): 起動時の重さ（Windows）の原因と対処、`herd` を会話・タスク・ワークフローで使う規則の検討記録。
+- [`2026-09-09-agent-app-standalone-and-herd-benefits-design.md`](../plans/2026-09-09-agent-app-standalone-and-herd-benefits-design.md): agent-tools 無しでメイン機能を閉じる決定（ADR-11）と、agent-herd ありで増えるもの（任意機能・トークン効率）の設計。
 
 個別画面の検討経緯は `docs/plans/` に残す。本書は、現在の実装を変更するときに必要な境界、データの流れ、
 実行経路、失敗時の扱いを持つ。

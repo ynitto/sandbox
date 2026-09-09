@@ -286,6 +286,28 @@ function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', 
   };
 }
 
+// 単発起動 1 回分の argv（セッション継続も履歴の再送も持たない）。プロンプトは含めず、
+// 渡し方（stdin / argv の最後）だけを返す——工程ごとに同じ argv で CLI を起こす
+// statemachine-use の exec バックエンドと、AI 支援の単発呼び出しがこれを使う。
+//   組み立て: command + (write_args | readonly_args) + model_flag model + command_suffix (+ prompt_flag)
+//   `{output_file}` はそのまま残す（起こす側が実行ごとに一時ファイルへ置き換える）。
+function oneShotCmd(spec, { model = '', readonly = false } = {}) {
+  const vars = { model: String(model || spec.defaultModel || ''), session: '' };
+  const keep = { path: '{output_file}' };
+  let argv = expand(spec.command, vars, keep);
+  argv = argv.concat(expand(readonly ? spec.readonlyArgs : spec.writeArgs, vars, keep));
+  if (vars.model && spec.modelFlag && !spec.command.some((t) => t.includes('{model}'))) argv.push(spec.modelFlag, vars.model);
+  argv = argv.concat(expand(spec.commandSuffix, vars, keep));
+  const promptVia = spec.promptVia === 'argv' ? 'argv' : 'stdin';
+  if (promptVia === 'argv' && spec.promptFlag) argv.push(spec.promptFlag);
+  return {
+    argv, promptVia, env: spec.env,
+    outputFile: spec.output === 'file' || argv.some((t) => t.includes('{output_file}')),
+    readonlyWarning: (readonly && spec.readonly !== 'enforced')
+      ? `${spec.name} は読み取り専用を保証しません（ファイル変更やコマンド実行が起こりえます）` : '',
+  };
+}
+
 // 対話起動（tmux）1 回分の argv。ヘッドレスと違い、プロンプトは含まない（あとから send-keys で送る）。
 //   組み立て: interactive.command + [continue|resume] + (write_args | readonly_args) + model_flag model
 //   再開の作法はヘッドレスと同じ SESSION 表（claude / copilot は UUID を発行して --session-id）。
@@ -351,6 +373,6 @@ function classifyError(spec, blob) {
 }
 
 module.exports = {
-  SESSION, searchDirs, load, list, resolvePath, turnCmd, interactiveCmd, insertAfterSubcommand,
+  SESSION, searchDirs, load, list, resolvePath, turnCmd, oneShotCmd, interactiveCmd, insertAfterSubcommand,
   replayPrompt, pickListedSession, classifyError, normalizeInteractive,
 };

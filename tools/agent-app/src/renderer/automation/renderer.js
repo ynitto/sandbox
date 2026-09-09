@@ -77,10 +77,10 @@ function folderName(p) {
 
 function selectedAgent(preferred = '') {
   if (state.agents.includes(preferred)) return preferred;
-  // 一覧がまだ届いていない・そもそも引けないときに、設定された名前を捨てない。捨てると
-  // 実行方針で選んである AI が「エージェント未設定」に見え、実際に使う名前とも食い違う。
-  if (preferred && !state.agents.length) return preferred;
-  if (state.agents.includes('aider')) return 'aider';
+  // 設定・実行方針で選んである名前は、一覧に無くても捨てない（別の AI へ黙って倒さない——
+  // 会話と同じ規則）。実行しようとすれば「この環境で使えません」と断られ、原因が名前で分かる。
+  // 捨てると「エージェント未設定」に見え、実際に使う名前とも食い違う。
+  if (preferred) return preferred;
   return state.agents[0] || '';
 }
 
@@ -118,7 +118,7 @@ function renderIfIdle() {
   if (state.view === 'home' && !editingInMain()) render();
 }
 
-// AI の一覧（agent-herd defs。Windows では WSL 越しで数秒かかる）。**画面を待たせない**——
+// AI の一覧（会話と同じ定義の一覧。Windows では WSL の PATH を引くのに数秒かかる）。**画面を待たせない**——
 // 呼んだ側は await せず、届いたら描き直す。リポジトリを移っていたら捨てる（token）。
 // 1 回のタスク表示で init・navigate・リポジトリ切替から重ねて呼ばれるので、同じリポジトリの
 // 問い合わせが走っている間は相乗りする（WSL 越しの起動を 1 回で済ませる）。
@@ -967,7 +967,7 @@ function executionDetailHtml(machine) {
     return `<li><div><strong>${esc(item.entryName || `予定 ${index + 1}`)}</strong><small>${esc(scheduleLabel(item))}${next} · ${esc(where)}</small></div>${active}${edit}</li>`;
   }).join('');
   const checking = state.execution.loading && !state.execution.snapshot;
-  const daemonStatus = checking ? '実行状態を確認しています…' : daemon.activeCount
+  const daemonStatus = checking ? '実行状態を確認しています…' : snapshot.available === false ? '定期実行と履歴には agent-loop が要ります' : daemon.activeCount
     ? `${daemon.activeCount} 件を実行中${daemon.queueDepth ? `、${daemon.queueDepth} 件待機` : ''}`
     : daemon.running ? (daemon.queueDepth ? `${daemon.queueDepth} 件待機` : '自動実行は稼働中') : '自動実行は停止中';
   const parameters = machine.parameters || [];
@@ -996,9 +996,9 @@ function executionDetailHtml(machine) {
     : machine.kind === 'hook' ? '<p class="run-result warn">フックだけのタスクは定期実行で起動します。</p>' : '';
   const detail = state.execution.detailTab === 'history'
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
-    : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
+    : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false && machine.kind !== 'statemachine' ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
       <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
-        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
+        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
       <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
@@ -2024,7 +2024,7 @@ function openSettings() {
   const agent = selectedAgent(cfg.agent);
   const dlg = dialog('dlg-settings', '実行環境', 'settings', `
     <div class="grid2">
-      <div class="field"><label>使う AI（agent-tools）</label><select id="c-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(agent)}</select></div>
+      <div class="field"><label>使う AI</label><select id="c-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(agent)}</select></div>
       <div class="field"><label>モデル（任意）</label><input id="c-model" class="mono" value="${esc(cfg.model || '')}"></div>
     </div>
     <div class="field"><label>構成確認用スキルの場所（任意）</label><input id="c-skill" class="mono" value="${esc(cfg.skillDir || '')}" placeholder="通常は自動で検出します"></div>
@@ -2056,7 +2056,9 @@ function openSettings() {
 }
 
 function toolsHtml(tools) {
-  return `<ul class="tool-list">${tools.map((t) => `<li><span><span class="st ${t.ok ? 'ok' : 'ng'}">${t.ok ? '使えます' : '未準備'}</span><strong>${esc(t.label)}</strong></span><small>${esc(t.summary || '')}</small>${t.hint ? `<small>${esc(t.hint)}</small>` : ''}</li>`).join('')}</ul>`;
+  // 任意の道具（無くても本体は動くもの）は未準備でも警告色にしない
+  const badge = (t) => (t.ok ? ['ok', '使えます'] : t.optional ? ['opt', '任意'] : ['ng', '未準備']);
+  return `<ul class="tool-list">${tools.map((t) => { const [cls, text] = badge(t); return `<li><span><span class="st ${cls}">${text}</span><strong>${esc(t.label)}</strong></span><small>${esc(t.summary || '')}</small>${t.hint ? `<small>${esc(t.hint)}</small>` : ''}</li>`; }).join('')}</ul>`;
 }
 
 // --- 起動 -----------------------------------------------------------------------------

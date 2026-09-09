@@ -92,6 +92,8 @@ npm run dist:portable    # portable だけ
 | CLI（claude / kiro …） | この OS の PATH（ログインシェル） | **WSL の中**の PATH |
 | tmux | `apt install tmux` など | WSL の中に `sudo apt install tmux` |
 | git（変更ビュー） | ローカル | WSL の中 |
+| Python 3 + PyYAML（タスクの構成確認・agent-loop 無しの実行） | ローカル | 構成確認はこの端末、実行は WSL の中の `python3` |
+| agent-tools（任意） | agent-herd / agent-loop / agent-flow を PATH に | WSL の中の PATH に |
 | 登録するフォルダ | そのまま | `\\wsl$\<ディストロ>\…` か `C:\…`。tmux の cwd と git には WSL 表記（`/home/…` / `/mnt/c/…`）へ直して渡す |
 
 Windows では `\\wsl$\Ubuntu\…` のリポジトリはパスからディストロが決まる。`C:\…` のリポジトリは
@@ -99,6 +101,26 @@ Windows では `\\wsl$\Ubuntu\…` のリポジトリはパスからディスト
 
 tmux が無い（または「設定 > アプリ」で対話セッション維持を外した）ときは、従来どおり 1 ターン 1 プロセスの
 ヘッドレス実行（`-p` 相当）に倒れる。
+
+### agent-tools が無くても動く / あると増えるもの
+
+agent-app は **agent-tools（agent-herd / agent-loop / agent-flow）を入れていない PC でも、会話とタスクの
+作成・実行が動く。** 要るのは CLI（claude / codex / copilot / kiro …）と tmux、タスクの実行に Python 3 と
+PyYAML（`pip install pyyaml`。Windows では WSL の中）だけ。定義 `agents/*.json` は agent-app 自身が読み、
+「使える」印もホストの PATH で付けるので、会話で使える CLI がそのままタスクでも使える。
+
+| | agent-tools なし | agent-herd（ローカル実行系） | agent-loop | agent-flow |
+|---|---|---|---|---|
+| 会話 | ○ | ＋ `herd`（費用 0 のローカル LLM。Ask は読み取り専用が保証される） | — | — |
+| タスクを AI と作る | ○ | ＋ `herd` を会話の既定にできる | — | — |
+| タスクの手動実行 | ○（同梱の statemachine-use スキルが、定義から組んだ CLI を工程ごとに起こす） | ＋ タスクの AI に `herd` を選べる | 実行の正典がこちらに移る（実行ログ・台帳・受入条件・`check` の昇格） | — |
+| 定期実行・実行履歴 | ×（1 行でそう出る） | — | ○ | — |
+| AI 支援（ワークフロー教示・工程の見直し） | ○（その CLI を読み取り専用の単発で起こす） | ＋ `herd` なら agent-herd の計画用途（JSON を文法で強制。修正の往復が減る） | — | — |
+| ワークフロー（複数 AI の工程） | × | — | — | ○ |
+
+足りないものは「タスク」画面の実行環境（手順 → その他 → 実行環境）に出る。任意の道具は「任意」と出て、
+未準備でも本体は止めない。何が増えるかの設計は
+[`docs/plans/2026-09-09-agent-app-standalone-and-herd-benefits-design.md`](../../docs/plans/2026-09-09-agent-app-standalone-and-herd-benefits-design.md)。
 
 ## 作業フォルダを分ける（git worktree）
 

@@ -22,7 +22,7 @@ const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
   wslDistro: '', transport: 'tmux', useWorktree: true, area: 'conversation', view: 'chat', lastFiles: {}, lastWorktree: {},
   lastTask: {}, lastWorkflow: {},
-  automationSkillDir: '', automationAgent: 'aider', automationModel: '',
+  automationSkillDir: '', automationAgent: '', automationModel: '',
 };
 const MAX_REPOS = 30;
 const TERMINAL_TTL_MS = 24 * 60 * 60 * 1000;
@@ -50,7 +50,7 @@ function normalize(raw) {
   next.lastTask = next.lastTask && typeof next.lastTask === 'object' ? next.lastTask : {};
   next.lastWorkflow = next.lastWorkflow && typeof next.lastWorkflow === 'object' ? next.lastWorkflow : {};
   next.automationSkillDir = String(next.automationSkillDir || '').trim();
-  next.automationAgent = String(next.automationAgent || 'aider').trim() || 'aider';
+  next.automationAgent = String(next.automationAgent || '').trim();   // 空 = 会話の「おすすめ」と同じ CLI（automation/ipc.js）
   next.automationModel = String(next.automationModel || '').trim();
   const userSettings = settings.normalize(next);
   const rawInstructions = next.instructions && typeof next.instructions === 'object' ? next.instructions : {};

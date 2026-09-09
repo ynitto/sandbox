@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: agent-tools が無くても会話とタスクが動く（agent-herd からの独立）
+
+agent-herd / agent-loop / agent-flow を入れていない PC でも、会話・タスクの作成・タスクの手動実行・AI 支援が
+動くようにした。設計書の ADR-11、検討記録:
+[docs/plans/2026-09-09-agent-app-standalone-and-herd-benefits-design.md](docs/plans/2026-09-09-agent-app-standalone-and-herd-benefits-design.md)。
+
+- **使える AI の一覧は agent-app 自身が作る**（`src/main/agents.js`。`agents/*.json` + ホストの PATH）。会話と
+  タスク・ワークフローが同じ 1 つの一覧を見る。`agent-herd defs --json` には聞かない。既定の AI は会話の
+  「おすすめ」tier と同じ CLI（`aider` の決め打ちをやめた）。
+- **AI 支援は定義から組んだ単発 argv でその CLI を直接起こす**（`agentCli.oneShotCmd`。`herd` を選んだときだけ
+  agent-herd の `--purpose plan`）。
+- **agent-loop が無いときの手動実行**は、同梱の statemachine-use スキルに同じ argv を渡して回す
+  （`run_machine.py --agent exec --agent-command … --instruction … --result-line`。`automation/direct-run.js`。
+  Windows は WSL の `python3`）。履歴と定期実行は agent-loop に要り、画面はそれを 1 行で言う。
+- 実行環境の診断は「使える AI（CLI の定義）」を自前で見て、agent-herd / agent-loop / agent-flow を「任意」の
+  道具として出す（未準備でも警告色にしない）。
+- statemachine-use スキル: `run_machine.py` に `--agent exec`（`--agent-command` の JSON argv を工程ごとに
+  起こす。`--prompt-via stdin|argv`、`{output_file}`）、`--instruction`（アクションにだけ前置。harness と同じ形）、
+  `--result-line`（`RESULT {json}` を最後の行に）を足した。engine の `StateMachineEngine(instruction=…)`。
+
 ### agent-app: statemachine-maker を統合し、タスクの作成・変更を AI との tmux 会話にする
 
 独立版の statemachine-maker を agent-app へ完全に統合した（`tools/statemachine-maker` は廃止）。
