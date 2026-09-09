@@ -148,6 +148,24 @@ function prompt({ machine, purpose = '', existing = false, skillDir = '', platfo
   return lines.join('\n');
 }
 
+// 下書きを開き直したときや、公開済みのタスクを編集するときにも、単に以前の tmux へ
+// 接続するだけにはしない。CLI の resume が利用できない場合でも、この依頼と保存済みの
+// ファイルを起点に作業対象を復元できるようにする。
+function resumePrompt({ machine, purpose = '', existing = false, context = '' } = {}) {
+  const name = String(machine || '').trim();
+  const dir = `.statemachine/${name}/`;
+  const target = text(context, 1000);
+  return [
+    existing ? 'このタスクの編集を開始します。' : 'このタスクの下書き作成を再開します。',
+    `対象は \`${dir}\` です。まず workflow.yaml、actions/*.md、および存在する記録を読み直し、現在の内容を会話の前提として引き継いでください。`,
+    purpose ? `タスクの目的: ${text(purpose, 6000)}` : '',
+    target ? `今回の編集対象: ${target}` : '',
+    existing
+      ? '現在の定義を短く要約し、今回変更したい内容を利用者に確認してください。まだファイルは変更しないでください。'
+      : 'これまでの会話と保存済みの下書きを踏まえ、未確定の点だけを質問して作成を続けてください。',
+  ].filter(Boolean).join('\n');
+}
+
 // 見本を記録した後に送る本文。
 function demonstrationPrompt({ machine, hostPath, source, target = '', steps = 0, parameters = [] } = {}) {
   const kind = source === 'windows' ? 'Windows アプリ' : 'ブラウザ';
@@ -214,5 +232,5 @@ function saveRecording(root, machine, recording) {
 
 module.exports = {
   FILE, RECORDINGS, VERSION, fileFor, machineNameFor, normalize, load, save, list, presentStatus,
-  prompt, demonstrationPrompt, recordingMarkdown, saveRecording,
+  prompt, resumePrompt, demonstrationPrompt, recordingMarkdown, saveRecording,
 };

@@ -95,9 +95,9 @@
     function endRender() { if (!announced) announce(null); }
 
     // 「手順」タブで編集に入ったときの置き場。枠（カード）は呼ぶ側が描く。
-    function editorSlotHtml(machine) {
+    function editorSlotHtml(machine, context = '') {
       const name = machine && (machine.name || machine.machine);
-      announce({ root: root(), machine: String((machine && machine.machine) || ''), creating: false, editing: true, card: true, published: true, title: name || '', agent: ctx.editAgent ? ctx.editAgent() : '' });
+      announce({ root: root(), machine: String((machine && machine.machine) || ''), creating: false, editing: true, card: true, published: true, title: name || '', context, agent: ctx.editAgent ? ctx.editAgent() : '' });
       return '<slot name="teaching"></slot>';
     }
 

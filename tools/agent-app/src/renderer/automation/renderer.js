@@ -543,6 +543,7 @@ function render() {
         state.aiReview.scope = target.value === 'workflow'
           ? { type: 'workflow' }
           : { type: 'step', stepId: target.value.slice(5) };
+        render();
       });
     }
   } else bindHome(main);
@@ -891,7 +892,7 @@ function editingCardHtml(machine) {
   const targets = spec.steps.map((step, index) => `<option value="step:${esc(step.id)}" ${selected === `step:${step.id}` ? 'selected' : ''}>工程 ${index + 1}: ${esc(step.title || kindOf(step.kind).label)}</option>`).join('');
   return `<section class="execution-card">
     <div class="execution-card-head"><div><h3>AIと編集</h3><label class="editing-target" for="editing-target">編集対象<select id="editing-target"><option value="workflow" ${selected === 'workflow' ? 'selected' : ''}>全体</option>${targets}</select></label></div><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
-    ${teachingFeature.editorSlotHtml(machine)}
+    ${teachingFeature.editorSlotHtml(machine, selected === 'workflow' ? 'タスク全体' : `工程 ${selected.slice(5)}`)}
   </section>`;
 }
 

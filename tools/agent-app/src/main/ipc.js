@@ -713,11 +713,13 @@ async function startTeaching(p, send) {
   const session = store.readSession(ud, summary.id);
   const busy = running.has(session.id) || !!(conversations.get(session.id) && conversations.get(session.id).turn);
   let started = false;
-  // まだ何も送っていない会話にだけ最初の依頼を送る（開き直したときは端末につなぐだけ）。
-  if (!session.messages.length && !busy) {
-    const prompt = teaching.prompt({
-      machine, purpose: sidecar ? sidecar.purpose : purpose, existing, skillDir: teachingSkillDir(repo, cfg), tools: teachingTools(),
-    });
+  // 初回だけでなく、下書きの再開・公開済みタスクの編集開始時にも対象を明示する。
+  // CLI 固有の resume に頼れない場合も、保存済みファイルから文脈を復元できる。
+  if (!busy) {
+    const common = { machine, purpose: sidecar ? sidecar.purpose : purpose, existing };
+    const prompt = session.messages.length
+      ? teaching.resumePrompt({ ...common, context: p.context })
+      : teaching.prompt({ ...common, skillDir: teachingSkillDir(repo, cfg), tools: teachingTools() });
     await guardedRunTurn(session.id, {
       prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
       skillMode: 'off', skills: [], attachments: [],

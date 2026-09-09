@@ -18,7 +18,7 @@
   const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
 
   const state = {
-    deps: null, visible: false, repo: '', machine: '', title: '', agent: '', creating: false, editing: false, card: false, published: false,
+    deps: null, visible: false, repo: '', machine: '', title: '', context: '', agent: '', creating: false, editing: false, card: false, published: false,
     session: null, availableSession: null, phase: null, tools: null, running: false, pending: false, token: 0,
     input: null, record: { open: false, source: 'browser', target: '', active: false, busy: false, message: '', ok: true, request: null },
   };
@@ -177,9 +177,9 @@
     renderShell();
     try {
       const options = state.deps.executionOptions(readExecutionInputs('task-launch'));
-      const view = state.availableSession
-        ? { session: state.availableSession, tools: state.tools, started: false }
-        : await api.automation.teachStart({ repo: state.repo, machine: state.machine, ...options });
+      // 既存セッションも main を通す。下書き再開・編集開始の文脈を最初のターンとして渡した
+      // うえで、同じ tmux セッションへ接続する。
+      const view = await api.automation.teachStart({ repo: state.repo, machine: state.machine, context: state.context, ...options });
       if (token !== state.token) return;
       state.pending = false;
       state.tools = view.tools || state.tools;
@@ -362,6 +362,7 @@
     const next = { root: detail.root || '', machine: detail.machine || '', agent: detail.agent || '', creating: !!detail.creating, editing: !!detail.editing, card: !!detail.card, published: !!detail.published };
     const same = state.visible && sameView(next, { root: state.repo, machine: state.machine, creating: state.creating, editing: state.editing, card: state.card, published: state.published });
     state.title = detail.title || '';
+    state.context = detail.context || '';
     if (same) { renderShell(); requestAnimationFrame(() => term().refit()); return; }
     state.repo = next.root;
     state.machine = next.machine;
