@@ -26,12 +26,13 @@ test('WSL のパス変換', () => {
   if (process.platform !== 'win32') assert.strictEqual(host.toHostPath('/x/y'), '/x/y');
 });
 
-test('端末スクロールは tmux copy-mode の履歴を操作する', () => {
-  const up = tmux.cmdScroll('agent-app-test', -7);
-  assert.match(up, /copy-mode -e/);
-  assert.match(up, /-X -N 7 scroll-up/);
-  assert.match(tmux.cmdScroll('agent-app-test', 3), /-X -N 3 scroll-down/);
-  assert.match(tmux.cmdCancelCopy('agent-app-test'), /-X cancel/);
+test('端末スクロールは copy-mode を使わず履歴オフセットを capture-pane の範囲へ変換する', () => {
+  const current = tmux.cmdScreen('agent-app-test', { rows: 36 });
+  assert.match(current, /capture-pane -p -e -t/);
+  assert.doesNotMatch(current, / -S | -E |copy-mode/);
+  const past = tmux.cmdScreen('agent-app-test', { offset: 7, rows: 36 });
+  assert.match(past, /capture-pane -p -e -S -7 -E 28 -t/);
+  assert.doesNotMatch(past, /copy-mode/);
 });
 
 test('画面の判定: ready / busy / unknown', () => {
