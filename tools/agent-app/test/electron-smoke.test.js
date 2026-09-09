@@ -250,8 +250,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await workspace.locator('[data-run-skill="self-checking"]').check();
     assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /直接指定.*task-model/);
     assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /スキル 手動選択/);
-    await workspace.locator('#schedule-toggle').click();
-    assert.deepStrictEqual(await workspace.locator('#schedule-destination option').allTextContents(), ['このリポジトリ', '共通設定']);
+    if (await workspace.locator('#schedule-toggle').isDisabled()) {
+      // agent-loop が無ければ予定は足せない（カードごと薄い）
+      assert.strictEqual(await workspace.locator('#daemon-toggle').isDisabled(), true);
+    } else {
+      await workspace.locator('#schedule-toggle').click();
+      assert.deepStrictEqual(await workspace.locator('#schedule-destination option').allTextContents(), ['このリポジトリ', '共通設定']);
+    }
     assert.strictEqual(await workspace.locator('.folder-pane').isHidden(), true, 'リポジトリ一覧が二重に表示されている');
     assert.strictEqual(await workspace.locator('.home-tabs').isHidden(), true, '主要タブが二重に表示されている');
     if (process.env.AGENT_APP_TASK_SCREENSHOT) {

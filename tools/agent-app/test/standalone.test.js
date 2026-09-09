@@ -183,6 +183,7 @@ test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄
   assert.match(maker, /policyOn \|\| BASIC_POLICIES\.includes\(value\) \|\| value === 'direct' \? '' : 'disabled'/);
   assert.match(maker, /data-task-tab="history"[^\n]*snapshot\.available === false \? 'disabled' : ''/, 'agent-loop が無ければ履歴タブは押せない');
   assert.match(maker, /execution-card \$\{snapshot\.available === false \? 'is-off' : ''\}/, '定期実行のカードは薄くする');
+  assert.match(maker, /id="schedule-toggle" \$\{snapshot\.available === false \? 'disabled' : ''\}/, '予定の追加も押せない');
   const ipc = read('main/ipc.js');
   assert.match(ipc, /settings\.optimized\(cfg, \{ herdAvailable: agentsMod\.herdAvailable\(agents\) \}\)/, 'ターンの解決も同じ規則');
   assert.match(read('preload.js'), /invoke\('automation:capabilities'/);
