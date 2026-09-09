@@ -327,11 +327,25 @@ def retry_agent_for(purpose: str) -> "dict | None":
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
         ov = _AGENT_OVERRIDES.get("worker")
-    current = _agent_for(purpose)[0]
-    target = _agentcli.costlier_fallback(current, (ov or {}).get("fallbacks"))
+    current, current_model = _agent_for(purpose)
+    fallbacks = (ov or {}).get("fallbacks")
+    target = _agentcli.costlier_fallback(current, fallbacks, current_model=current_model)
     if target:
         target["from_agent_cli"] = current
+    elif _declares_fallbacks(fallbacks):
+        # 宣言はあるのに一段も上がれない状態を黙らせない。同梱定義の relative_cost は
+        # ローカル=0 / クラウド=1 の 2 値なので、cloud 起点では候補の値が「厳密に大きい」
+        # ことがなく、fallbacks に何を並べても再試行の昇格が起きない。設定を書いた人には
+        # 「昇格したはず」に見えるので、理由を 1 行で残す。
+        log("agent", f"警告: {purpose} の fallbacks は宣言されていますが、{current} より "
+            "relative_cost が大きい候補が無いため昇格しません")
     return target
+
+
+def _declares_fallbacks(fallbacks) -> bool:
+    """fallbacks に agent_cli を持つ候補が 1 件でもあるか（空の宣言は従来どおり黙る）。"""
+    return any(isinstance(c, dict) and str(c.get("agent_cli") or "").strip()
+               for c in (fallbacks if isinstance(fallbacks, list) else []))
 
 
 def _configure_thresholds(args) -> None:

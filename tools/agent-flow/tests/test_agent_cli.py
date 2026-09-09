@@ -1015,6 +1015,43 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertIs(first.kwargs["readonly"], True)
 
 
+class RetryAgentWarningTests(unittest.TestCase):
+    """fallbacks を宣言したのに一段も上がれないとき、黙らずに理由を残す。"""
+
+    def setUp(self):
+        self._cli, self._ov = kf._AGENT_CLI, dict(kf._AGENT_OVERRIDES)
+        kf._AGENT_CLI = "claude"
+
+    def tearDown(self):
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+
+    def _retry(self, purpose="planner"):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            target = kf.retry_agent_for(purpose)
+        return target, buf.getvalue()
+
+    def test_declared_but_no_costlier_candidate_warns(self):
+        # 同梱定義は cloud=1 の 1 値なので、claude 起点では同一 CLI も他の cloud CLI も
+        # 「厳密に大きい」候補にならない。宣言した人に見えるよう warning を出す。
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({
+            "planner": {"agent_cli": "claude",
+                        "fallbacks": [{"agent_cli": "claude", "model": "opus"},
+                                      {"agent_cli": "codex"}]}})
+        target, out = self._retry()
+        self.assertIsNone(target)
+        self.assertIn("警告", out)
+        self.assertIn("fallbacks は宣言されていますが", out)
+        self.assertIn("claude", out)
+
+    def test_no_declaration_stays_silent(self):
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({
+            "planner": {"agent_cli": "claude"}})
+        target, out = self._retry()
+        self.assertIsNone(target)
+        self.assertEqual(out, "")
+
+
 class TestAgentPluginAndTriage(unittest.TestCase):
     """エージェント CLI プラグイン（agents/<name>.json）と失敗トリアージ。
     環境要因（quota/auth/env）の失敗はどのノードをリトライしても同じ理由で落ちるため、

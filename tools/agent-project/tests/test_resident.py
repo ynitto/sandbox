@@ -149,6 +149,33 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1]["agent_cli"], "claude")
 
+    def test_content_failure_without_costlier_candidate_warns(self):
+        # 同梱定義は cloud=1 の 1 値。claude 起点では同一 CLI の別モデルも codex も
+        # 「厳密に大きい」候補にならず昇格しない——それを黙らせず stderr に 1 行残す。
+        km._RUNTIME_CONFIG.agents = km._normalize_agent_overrides({
+            "plan": {"agent_cli": "claude",
+                     "fallbacks": [{"agent_cli": "claude", "model": "opus"},
+                                   {"agent_cli": "codex"}]}})
+        err = io.StringIO()
+        with mock.patch.object(km, "_run_agent_cli_once",
+                               side_effect=RuntimeError("content failed")), \
+                contextlib.redirect_stderr(err), \
+                self.assertRaisesRegex(RuntimeError, "content failed"):
+            km._run_agent_cli("x", None, purpose="plan")
+        self.assertIn("警告", err.getvalue())
+        self.assertIn("fallbacks は宣言されていますが", err.getvalue())
+
+    def test_content_failure_without_fallbacks_stays_silent(self):
+        km._RUNTIME_CONFIG.agents = km._normalize_agent_overrides({
+            "plan": {"agent_cli": "claude"}})
+        err = io.StringIO()
+        with mock.patch.object(km, "_run_agent_cli_once",
+                               side_effect=RuntimeError("content failed")), \
+                contextlib.redirect_stderr(err), \
+                self.assertRaises(RuntimeError):
+            km._run_agent_cli("x", None, purpose="plan")
+        self.assertEqual(err.getvalue(), "")
+
     def test_resolve_config_reads_agents_map(self):
         # yaml（json 互換）から agents: が読まれ、build_config がモジュールへ確定する
         with tempfile.TemporaryDirectory() as d:

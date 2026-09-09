@@ -76,7 +76,7 @@ def _bundled_dir() -> "Path | None":
 #
 # 継承の規則（今日の挙動をそのまま再現するために、こう分けてある）:
 #
-# - **引き継ぐ**（エージェント単位の性質）… relative_cost / prompt_via / prompt_flag /
+# - **引き継ぐ**（エージェント単位の性質）… relative_cost / models / prompt_via / prompt_flag /
 #   file_flag / read_flag / model_flag / output / command_suffix / skill_command_prefix /
 #   empty_output_is_error / readonly / spill / errors / session_log / default_model /
 #   timeout / headless_autonomy / write_args / readonly_args / no_session_args / env
@@ -94,7 +94,7 @@ _PROFILE_FIELDS = (
     "headless_autonomy", "default_model", "timeout", "env", "readonly", "prompt_via",
     "prompt_flag", "file_flag", "read_flag", "model_flag", "empty_output_is_error",
     "json_object_only",
-    "output", "skill_command_prefix", "relative_cost", "interactive", "variants",
+    "output", "skill_command_prefix", "relative_cost", "models", "interactive", "variants",
     "slash_native",
     # errors は本来エージェント単位の性質だが、実際には役割ごとに調整されている
     # （read は同じ match に別の hint、verify は自前の timeout 規則）。分類の挙動を
@@ -395,9 +395,27 @@ def normalize(name: str, raw: dict, path) -> dict:
     if (not isinstance(relative_cost, (int, float)) or isinstance(relative_cost, bool)
             or not math.isfinite(relative_cost) or relative_cost < 0):
         raise AgentCliError(f"エージェント定義 {path}: relative_cost は 0 以上の数値です")
+    # モデル別の相対コスト（任意）。同じ定義の中でモデルによって単価が違う CLI のために、
+    # 昇格の判定を agent_cli + model の組で行えるようにする。宣言の無いモデルは定義単位の
+    # relative_cost へ落ちる（resolve_relative_cost）ので、書かなければ挙動は変わらない。
+    models_raw = raw.get("models") or {}
+    if not isinstance(models_raw, dict):
+        raise AgentCliError(f"エージェント定義 {path}: models はモデル名→オブジェクトです")
+    models: "dict[str, dict]" = {}
+    for mname, mbody in models_raw.items():
+        mkey = str(mname).strip()
+        if not mkey or not isinstance(mbody, dict):
+            raise AgentCliError(f"エージェント定義 {path}: models.{mname!r} はオブジェクトです")
+        mcost = mbody.get("relative_cost")
+        if (not isinstance(mcost, (int, float)) or isinstance(mcost, bool)
+                or not math.isfinite(mcost) or mcost < 0):
+            raise AgentCliError(
+                f"エージェント定義 {path}: models.{mkey}.relative_cost は 0 以上の数値です")
+        models[mkey] = {"relative_cost": float(mcost)}
     spec = {
         "name": str(raw.get("name") or name),
         "relative_cost": float(relative_cost),
+        "models": models,
         "path": str(path),
         "command": command,
         "command_suffix": _strs(raw.get("command_suffix"), "command_suffix", path),
@@ -610,25 +628,50 @@ def resolve_variant(name: str, purpose: str, project_dir=None) -> "dict | None":
     return {"agent_cli": variant, "default_model": variant_spec.get("default_model") or None}
 
 
-def costlier_fallback(current: str, candidates, project_dir=None) -> "dict | None":
-    """宣言順の候補から、現在より相対コストが高い最初の 1 件だけを返す。"""
+def resolve_relative_cost(spec: dict, model: "str | None" = None) -> float:
+    """(定義, モデル) の実効 relative_cost。
+
+    定義が `models` でそのモデルの値を宣言していればそれ、無ければ定義単位の値へ落ちる。
+    モデル未指定のときは定義の `default_model` で引く——「claude をそのまま使う」現在地と
+    「claude の opus」候補を同じ尺度で比べるためで、既定モデルの宣言が無ければ従来どおり
+    定義単位の値になる。
+    """
+    key = str(model or spec.get("default_model") or "").strip()
+    entry = (spec.get("models") or {}).get(key) if key else None
+    if isinstance(entry, dict) and entry.get("relative_cost") is not None:
+        return float(entry["relative_cost"])
+    return float(spec["relative_cost"])
+
+
+def costlier_fallback(current: str, candidates, project_dir=None,
+                      current_model: "str | None" = None) -> "dict | None":
+    """宣言順の候補から、現在より相対コストが高い最初の 1 件だけを返す。
+
+    比較は現在側・候補側とも resolve_relative_cost を通す（agent_cli + model の組）。
+    同じ CLI でモデルだけ上位の候補（claude → claude/opus）は、定義が `models` で
+    その差を宣言しているときに限って選ばれる。宣言が無ければ定義単位の値どうしの比較に
+    なり、同梱定義（ローカル=0 / クラウド=1）では cloud 起点の昇格先は存在しない。
+    `current_model` は現在使っているモデル（無ければ定義の既定モデル）。
+    """
     try:
         base = load_cli(current, project_dir)
     except AgentCliError:
         return None
+    base_cost = resolve_relative_cost(base, current_model)
     for raw in candidates if isinstance(candidates, list) else []:
         if not isinstance(raw, dict) or not str(raw.get("agent_cli") or "").strip():
             continue
         cli = str(raw["agent_cli"]).strip().lower()
+        model = str(raw.get("model") or "").strip()
         try:
             spec = load_cli(cli, project_dir)
         except AgentCliError:
             continue
-        if spec["relative_cost"] <= base["relative_cost"]:
+        cost = resolve_relative_cost(spec, model)
+        if cost <= base_cost:
             continue
-        return {"agent_cli": cli, "model": str(raw.get("model") or "").strip(),
-                "from_relative_cost": base["relative_cost"],
-                "to_relative_cost": spec["relative_cost"]}
+        return {"agent_cli": cli, "model": model,
+                "from_relative_cost": base_cost, "to_relative_cost": cost}
     return None
 
 

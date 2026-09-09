@@ -719,9 +719,18 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
                 f"{first}（モデル昇格の上限 {budget} 回に達しているため昇格しません）") from first
         cfg = _RUNTIME_CONFIG
         ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
-        current = _agent_for(purpose)[0]
-        target = _agentcli.costlier_fallback(current, ov.get("fallbacks"))
+        current, current_model = _agent_for(purpose)
+        fallbacks = ov.get("fallbacks")
+        target = _agentcli.costlier_fallback(current, fallbacks, current_model=current_model)
         if not target:
+            if _declares_fallbacks(fallbacks):
+                # 宣言はあるのに一段も上がれない状態を黙らせない。同梱定義の relative_cost
+                # はローカル=0 / クラウド=1 の 2 値なので、cloud 起点では候補の値が「厳密に
+                # 大きい」ことがなく、fallbacks に何を並べても昇格が起きない。設定を書いた
+                # 人には「昇格したはず」に見えるので、理由を 1 行で残す（ログ経路は stderr）。
+                print(f">>> 警告: {purpose or 'agent'} の fallbacks は宣言されていますが、"
+                      f"{current} より relative_cost が大きい候補が無いため昇格しません",
+                      file=sys.stderr)
             raise
         target["from_agent_cli"] = current
         _ESCALATIONS_USED += 1
@@ -729,6 +738,12 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
                             model=target.get("model") or "",
                             extra={"event": "model_escalation", "escalation": target})
         return _run_agent_cli_once(prompt, None, purpose, agent=target)
+
+
+def _declares_fallbacks(fallbacks) -> bool:
+    """fallbacks に agent_cli を持つ候補が 1 件でもあるか（空の宣言は従来どおり黙る）。"""
+    return any(isinstance(c, dict) and str(c.get("agent_cli") or "").strip()
+               for c in (fallbacks if isinstance(fallbacks, list) else []))
 
 
 def rank_agent(ready: "list[Task]", model: "str | None", agent_run=None) -> "list[Task] | None":
