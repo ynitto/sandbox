@@ -143,6 +143,7 @@ agent-audit 側のゲート設定に任せる。画面は**「利用量」（見
 `.agents/workflows/` の `scope: repository`、ユーザー共通の `~/.agents/workflows/` の `user`、同梱の
 `workflows/` の `builtin` を候補にする。同じ id の別 scope は別候補として表示し、選択キーは
 `id + scope + repository` とする。`design-interactive` / `design-auto` は `design/internal` の同梱候補である。
+同梱の `two-wave-fan-out` は `implementation/library` なので、設計カタログではなく実装フロー一覧に出る。
 
 選択時に main が参照を再解決し、正規化した定義、出所 (`origin.scope` / `origin.repository`)、`digest`、
 ノード構成を snapshot にする。以後の作業準備項目・設計 run・実装 handoff はこの snapshot を使うため、

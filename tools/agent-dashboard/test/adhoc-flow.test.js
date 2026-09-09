@@ -2544,6 +2544,16 @@ test('同梱設計フローは内部設計用として分類する', () => {
   assert.ok(builtin.every((item) => item.purpose === 'design' && item.libraryVisibility === 'internal'));
 });
 
+test('同梱の実装フローは実装ライブラリとして読め、dashboard からは変更できない', () => {
+  const builtin = adhoc.listWorkflows({ adhocFlow: {} })
+    .filter((item) => item._scope === 'builtin' && item.purpose === 'implementation');
+  const twoWave = builtin.find((item) => item.id === 'two-wave-fan-out');
+  assert.ok(twoWave, '同梱の実装フローが一覧に出ない');
+  assert.strictEqual(twoWave.libraryVisibility, 'library');
+  assert.strictEqual(twoWave.nodes.length, 11);
+  assert.throws(() => adhoc.saveWorkflow({ adhocFlow: {} }, { ...twoWave, name: '変更' }), /読み取り専用/);
+});
+
 test('ワークフローcatalogはpurposeを混ぜず、設計ではhumanとsplitを追加候補から除く', () => {
   const overview = { workflows: [
     { id: 'impl', name: '実装', purpose: 'implementation', libraryVisibility: 'library' },
@@ -2573,9 +2583,10 @@ test('設計セッションはラウンドごとに設計 run を投げ、成果
   exec.shInWsl = () => ({ status: 0, stdout: 'launched:1', stderr: '' });
   profiles.resolveTier = () => ({ agent_cli: 'claude', model: '' });
   try {
-    // 同梱フローが読めていること（対話・全自動の 2 本）
+    // 同梱の設計フローが読めていること（対話・全自動の 2 本）。同梱には実装用のフローも
+    // 並ぶので、ここは purpose で絞る——本数の固定は設計カタログの話に限る。
     const builtin = adhoc.listWorkflows(cfg, { includeInternal: true })
-      .filter((item) => item._scope === 'builtin');
+      .filter((item) => item._scope === 'builtin' && item.purpose === 'design');
     assert.deepStrictEqual(builtin.map((item) => item.id).sort(), ['design-auto', 'design-interactive']);
     assert.throws(() => adhoc.saveWorkflow(cfg, { ...builtin[0], name: '変更' }), /読み取り専用/);
 
