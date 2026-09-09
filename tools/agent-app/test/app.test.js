@@ -367,7 +367,7 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
   assert.ok(!renderer.includes('data-task-tab="teach"'), 'AI相談のタブは持たない');
   assert.match(renderer, /id="editing-target"/);
   assert.match(fs.readFileSync(path.join(SRC, 'renderer', 'index.html'), 'utf8'), /id="task-launch-agent"/, '起動設定は親の起動カードにある');
-  assert.match(renderer, /id="b-assist"[^>]*>AIと編集</);
+  assert.match(renderer, /id="b-assist"[^>]*>編集</);
   assert.match(renderer, /id="b-run"[^>]*>テスト</);
   assert.match(renderer, /class="edit-controls"/, 'エージェントと編集ボタンを一つの操作グループにする');
   assert.match(workbenchCss, /\.task-detail-shell\.is-editor \.task-tab-panel \{[^}]*grid-template-rows: auto minmax\(0, 1fr\)/,

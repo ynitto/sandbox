@@ -170,6 +170,10 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   }
   assert.match(ipc, /kind: 'task', task: \{ machine \}/, 'タスクの会話は kind: task');
   assert.match(ipc, /await guardedRunTurn\(session\.id, \{\s*prompt,/, '最初の依頼は会話と同じターンの経路で送る');
+  assert.match(ipc, /const liveTmux = !!conversation && !conversation\.closed && !\['dead', 'gone'\]\.includes\(conversation\.phase\)/,
+    '既存の tmux が生きているかを終了状態まで含めて判定する');
+  assert.match(ipc, /if \(!busy && !liveTmux\) \{[\s\S]*teaching\.resumePrompt/,
+    '起動済み tmux へは固定の再開プロンプトを送らず、そのまま接続する');
   assert.match(ipc, /const hostPath = host\.toHostPath\(saved\.file\)/, '記録の所在は WSL 表記へ直してから AI へ');
   assert.match(ipc, /recordingBrowser\.findBrowser\(/, '見本を取るブラウザはこの端末で探す');
   assert.match(ipc, /recordingBrowser\.launchRecordingBrowser\(\{[\s\S]*profileDir: path\.join\(userData\(\), recordingBrowser\.PROFILE_DIR\)/, '記録用のプロファイルは userData の下');
@@ -182,11 +186,25 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.doesNotMatch(renderer, /source: rec\.source/, 'この端末の playwright-cli でブラウザを記録する経路は残さない');
   assert.match(renderer, /api\.termOpen\(session\.id/);
   assert.doesNotMatch(renderer, /else if \(state\.editing\) \{ await startTeaching\(token\); return; \}/, '編集画面を開いただけでは AI を起こさない');
-  assert.match(renderer, /\$\('task-launch-start'\)\.onclick = \(\) => startTeaching\(\)/, '設定後のボタンで tmux を開く');
+  assert.match(renderer, /\$\('task-launch-start'\)\.onclick = \(\) => startTeaching\(\)/, '編集開始ボタンで tmux を開く');
+  assert.match(renderer, /api\.automation\.teachPrepare\(/, '作成時は下書きとセッションを先に準備する');
+  assert.match(renderer, /state\.autoStart = \{ repo: state\.repo, machine: view\.machine, options \}/, '作成した下書きの画面でセッションを自動起動する');
   assert.match(html, /id="task-create-agent"/);
   assert.match(html, /id="task-create-model"/);
   assert.match(html, /id="task-launch-agent"/);
   assert.match(html, /id="task-launch-model"/);
+  assert.match(html, /id="task-create-start"[^>]*>作成開始</);
+  assert.doesNotMatch(html, /id="task-create-cancel"/, '新規作成画面に戻るボタンを表示しない');
+  assert.match(html, /class="task-save-name"[^>]*>[\s\S]*<strong>保存名<\/strong>/);
+  assert.doesNotMatch(html, /<summary>保存名を指定<\/summary>/);
+  assert.match(html, /class="run-settings task-execution-settings"[\s\S]*id="task-create-agent"[\s\S]*id="task-create-model"/,
+    '新規作成は手動実行と同じ設定コントロールを使う');
+  assert.match(html, /id="task-terminal-placeholder" class="terminal-stage"/, '編集開始前から黒い tmux プレースホルダーを表示する');
+  assert.match(html, /id="task-composer-placeholder"/, '編集開始前から入力欄ぶんを予約し、tmux 領域の位置と寸法を固定する');
+  assert.match(html, /id="task-launch-settings-summary"[\s\S]*id="task-launch-agent"[\s\S]*id="task-launch-model"/,
+    '編集開始も新規作成と同じ設定コントロールを使う');
+  assert.match(html, /id="task-launch-start"[^>]*>編集開始</);
+  assert.match(renderer, /'起動中です\.\.\.'/, 'tmux の準備中は待機領域へ状態を表示する');
   assert.doesNotMatch(html, /id="task-launch-title"[^>]*>AIと編集</, '編集画面の中で「AIと編集」を繰り返さない');
   assert.match(renderer, /\$\('task-launch-heading'\)\.hidden = state\.published/, '公開済みタスクでは下書き用見出しも隠す');
   assert.match(renderer, /api\.automation\.recordingStart\(\{ root: state\.repo, source: 'windows'/);

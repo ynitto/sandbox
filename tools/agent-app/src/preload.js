@@ -92,6 +92,7 @@ contextBridge.exposeInMainWorld('api', {
     aiApply: (payload) => invoke('automation:ai:apply', payload),
     teachingList: (root) => invoke('automation:teaching:list', { root }),
     // タスクを AI と作る会話（tmux）。会話の送受信は上の send / term* をそのまま使う
+    teachPrepare: (payload) => invoke('automation:teach:prepare', payload),
     teachStart: (payload) => invoke('automation:teach:start', payload),
     teachSession: (repo, machine) => invoke('automation:teach:session', { repo, machine }),
     teachDemonstration: (repo, machine, recording) => invoke('automation:teach:demonstration', { repo, machine, recording }),

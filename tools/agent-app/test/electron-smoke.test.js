@@ -203,6 +203,18 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('#policy option[value="saving"]').isDisabled(), false);
     await win.click('#settings-close');
 
+    // 親画面のポップアップは、メニュー外の背景をクリックすると閉じる。
+    for (const [menu, background] of [
+      ['#repo-more', '#main'],
+      ['#chat-more', '#side'],
+      ['#run-settings', '#chat-title'],
+    ]) {
+      await win.click(`${menu} > summary`);
+      assert.strictEqual(await win.locator(menu).getAttribute('open'), '', `${menu} を開けない`);
+      await win.click(background, { position: { x: 4, y: 4 } });
+      assert.strictEqual(await win.locator(menu).getAttribute('open'), null, `${menu} が背景クリックで閉じない`);
+    }
+
     await win.click('#area-tasks');
     const workspace = win.locator('#automation-workbench');
     await win.locator('#tasks .list-pick').first().waitFor({ timeout: 20000 });
@@ -241,6 +253,11 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.execution-title').textContent(), /リリース確認/s);
     await workspace.locator('#task-run-settings').waitFor();
+    await workspace.locator('#task-run-settings > summary').click();
+    assert.strictEqual(await workspace.locator('#task-run-settings').getAttribute('open'), '');
+    await workspace.locator('.execution-title').click({ position: { x: 4, y: 4 } });
+    assert.strictEqual(await workspace.locator('#task-run-settings').getAttribute('open'), null,
+      'Shadow DOM 内の実行設定が背景クリックで閉じない');
     const runToolbar = workspace.locator('.run-toolbar');
     await runToolbar.waitFor();
     assert.doesNotMatch(await workspace.locator('.run-card').textContent(), /実行ごとにエージェントとモデルを選べます/);
@@ -279,9 +296,14 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_TASK_STEPS_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TASK_STEPS_SCREENSHOT });
     }
-    assert.strictEqual(await workspace.locator('#b-assist').textContent(), 'AIと編集');
+    assert.strictEqual(await workspace.locator('#b-assist').textContent(), '編集');
     assert.strictEqual(await workspace.locator('#b-run').textContent(), 'テスト');
     assert.strictEqual(await workspace.locator('#b-record').count(), 0, 'agent-app の「その他」に旧記録を表示しない');
+    await workspace.locator('.embedded-editor-toolbar details.more-menu > summary').click();
+    assert.strictEqual(await workspace.locator('.embedded-editor-toolbar details.more-menu').getAttribute('open'), '');
+    await workspace.locator('.execution-title').click({ position: { x: 4, y: 4 } });
+    assert.strictEqual(await workspace.locator('.embedded-editor-toolbar details.more-menu').getAttribute('open'), null,
+      'Shadow DOM 内のその他メニューが背景クリックで閉じない');
     const toolbar = await workspace.locator('.embedded-editor-toolbar').boundingBox();
     const toolbarTitle = await workspace.locator('.embedded-editor-toolbar .bar-center').boundingBox();
     const toolbarActions = await workspace.locator('.embedded-editor-toolbar .bar-right').boundingBox();
@@ -298,29 +320,37 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
     }
     await assertTaskLayout('編集');
-    assert.match(await workspace.locator('.task-conversation-toolbar').textContent(), /AIと編集/);
+    assert.match(await workspace.locator('.task-conversation-toolbar').textContent(), /編集/);
     assert.strictEqual(await win.locator('#task-launch-title').count(), 0, '編集画面で「AIと編集」を重ねて表示しない');
-    // 会話画面と同じ組み方: ツールバーの直下に会話面が付き、tmux を開く前の起動カードは
-    // 残りの高さへ引き伸ばされず上に寄る。
+    // 会話画面と同じ組み方: ツールバーの直下に会話面が付き、tmux を開く前から
+    // 埋め込み端末と同じ高さの起動領域を確保する。
     const teachingLayout = await win.evaluate(() => {
-      const box = (node) => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
+      const box = (node) => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height, width: r.width }; };
       const workbench = document.getElementById('automation-workbench').shadowRoot;
       return {
         toolbar: box(workbench.querySelector('.task-conversation-toolbar')),
         panel: box(workbench.querySelector('.task-tab-panel')),
-        launch: box(document.getElementById('task-launch')),
+        controls: box(document.querySelector('.task-start-toolbar')),
+        launch: box(document.getElementById('task-terminal-placeholder')),
+        composer: box(document.getElementById('task-composer-placeholder')),
       };
     });
-    assert.ok(teachingLayout.launch.top - teachingLayout.toolbar.bottom <= 24,
-      `起動カードがツールバーから離れている: ${JSON.stringify(teachingLayout)}`);
-    assert.ok(teachingLayout.launch.height < teachingLayout.panel.height / 2,
-      `起動カードが残りの高さへ引き伸ばされている: ${JSON.stringify(teachingLayout)}`);
+    assert.ok(teachingLayout.controls.top - teachingLayout.toolbar.bottom <= 24,
+      `編集コントロールがツールバーから離れている: ${JSON.stringify(teachingLayout)}`);
+    assert.ok(teachingLayout.launch.top >= teachingLayout.controls.bottom
+      && teachingLayout.launch.top - teachingLayout.controls.bottom <= 12,
+      `tmux プレースホルダーが編集コントロールから離れている: ${JSON.stringify(teachingLayout)}`);
+    assert.ok(teachingLayout.launch.height >= 220
+      && teachingLayout.composer.top >= teachingLayout.launch.bottom
+      && teachingLayout.panel.bottom - teachingLayout.composer.bottom <= 24,
+      `起動領域が埋め込み端末と同じ残りの高さを使っていない: ${JSON.stringify(teachingLayout)}`);
     // tmux を開いた後の面を再現する（この環境では CLI を起動できない）。会話画面と同じく、
     // 端末が残りの高さを使い、入力欄が下に付く。
     const terminalLayout = await win.evaluate(() => {
       const box = (node) => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height, width: r.width }; };
       const workbench = document.getElementById('automation-workbench').shadowRoot;
-      document.getElementById('task-launch').hidden = true;
+      document.getElementById('task-terminal-placeholder').hidden = true;
+      document.getElementById('task-composer-placeholder').hidden = true;
       document.getElementById('task-terminal').hidden = false;
       document.getElementById('task-composer').hidden = false;
       window.TaskTerm.attach('layout-check', document.getElementById('task-term-host'));
@@ -333,8 +363,10 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
         composer: box(document.querySelector('#task-composer')),
       };
     });
-    assert.ok(terminalLayout.terminal.top - terminalLayout.toolbar.bottom <= 24,
-      `端末がツールバーから離れている: ${JSON.stringify(terminalLayout)}`);
+    assert.ok(Math.abs(terminalLayout.terminal.top - teachingLayout.launch.top) <= 1
+      && Math.abs(terminalLayout.terminal.width - teachingLayout.launch.width) <= 1
+      && Math.abs(terminalLayout.terminal.height - teachingLayout.launch.height) <= 1,
+      `tmux 起動前後で埋め込み領域が移動している: ${JSON.stringify({ teachingLayout, terminalLayout })}`);
     assert.ok(terminalLayout.terminal.height >= 220 && terminalLayout.terminal.height > terminalLayout.composer.height,
       `端末が残りの高さを使っていない: ${JSON.stringify(terminalLayout)}`);
     assert.ok(terminalLayout.composer.top >= terminalLayout.terminal.bottom
@@ -349,7 +381,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       window.TaskTerm.detach();
       document.getElementById('task-terminal').hidden = true;
       document.getElementById('task-composer').hidden = true;
-      document.getElementById('task-launch').hidden = false;
+      document.getElementById('task-terminal-placeholder').hidden = false;
+      document.getElementById('task-composer-placeholder').hidden = false;
     });
     assert.strictEqual(await workspace.locator('#editing-target').inputValue(), 'step:step_1', '選択した工程を編集対象へ引き継ぐ');
     await workspace.locator('#editing-target').selectOption('workflow');
@@ -379,7 +412,15 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#task-create:not([hidden])').waitFor();
     assert.match(await workspace.locator('.teaching-create').textContent(), /新しいタスク[\s\S]*何を自動化したいですか/);
     assert.strictEqual(await win.locator('#task-purpose').isVisible(), true, '目的の入力欄が親の作成フォームに出る');
-    assert.strictEqual(await win.locator('#task-create-start').isVisible(), true, 'AIと作成を始められる');
+    assert.strictEqual(await win.locator('#task-create-start').isVisible(), true, '作成を開始できる');
+    assert.strictEqual(await win.locator('#task-create-start').textContent(), '作成開始');
+    assert.strictEqual(await win.locator('#task-create-cancel').count(), 0, '新規作成画面に戻るボタンは置かない');
+    assert.strictEqual(await win.locator('.task-save-name').isVisible(), true, '保存名は折りたたまず目的より前に表示する');
+    await win.locator('#task-create .task-execution-settings > summary').click();
+    assert.strictEqual(await win.locator('#task-create .task-execution-settings').getAttribute('open'), '');
+    await workspace.locator('.teaching-create h2').click();
+    assert.strictEqual(await win.locator('#task-create .task-execution-settings').getAttribute('open'), null,
+      'スロット内の作成設定が背景クリックで閉じない');
     if (process.env.AGENT_APP_TASK_NEW_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TASK_NEW_SCREENSHOT });
     }

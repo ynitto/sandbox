@@ -234,29 +234,41 @@
                端末と入力欄は会話画面と同じ .terminal-stage / .composer-shell を使う。 -->
           <div slot="teaching" id="task-teaching" hidden>
             <section id="task-create" hidden>
+              <label class="task-save-name" for="task-machine"><strong>保存名</strong><input id="task-machine" placeholder="未指定なら自動で決定" size="28"></label>
               <label class="task-create-label" for="task-purpose"><strong>自動化したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>
               <textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea>
-              <div class="task-launch-settings" aria-label="AIの起動設定">
-                <label>エージェント<select id="task-create-agent"></select></label>
-                <label>モデル（任意）<input id="task-create-model" placeholder="自動"></label>
-              </div>
               <div class="task-actions">
-                <details class="task-create-more"><summary>保存名を指定</summary><label class="sub" for="task-machine">英数字の保存名（任意）</label><input id="task-machine" placeholder="未指定なら自動で決定" size="18"></details>
+                <details class="run-settings task-execution-settings">
+                  <summary><span id="task-create-settings"></span></summary>
+                  <div class="settings-popover"><div class="popover-head">今回の作成設定</div><div class="direct-agent-settings">
+                    <label>エージェント<select id="task-create-agent"></select></label>
+                    <label>モデル<input id="task-create-model" class="mono" placeholder="自動"></label>
+                  </div></div>
+                </details>
                 <span class="spacer"></span>
-                <span id="task-create-settings" class="sub"></span>
-                <button type="button" id="task-create-cancel">戻る</button>
-                <button type="button" id="task-create-start" class="primary">AIと作成を始める</button>
+                <button type="button" id="task-create-start" class="primary">作成開始</button>
               </div>
               <p id="task-create-error" class="dlg-error" hidden></p>
             </section>
             <section id="task-workspace" hidden>
-              <section id="task-launch" class="task-launch-card" hidden>
-                <div id="task-launch-heading"><strong>下書きの編集を続ける</strong></div>
-                <div class="task-launch-settings">
-                  <label>エージェント<select id="task-launch-agent"></select></label>
-                  <label>モデル（任意）<input id="task-launch-model" placeholder="自動"></label>
+              <section id="task-launch" hidden>
+                <div class="task-start-toolbar">
+                  <div id="task-launch-heading"><strong>下書きの編集を続ける</strong></div>
+                  <details class="run-settings task-execution-settings">
+                    <summary><span id="task-launch-settings-summary"></span></summary>
+                    <div class="settings-popover"><div class="popover-head">今回の編集設定</div><div class="direct-agent-settings">
+                      <label>エージェント<select id="task-launch-agent"></select></label>
+                      <label>モデル<input id="task-launch-model" class="mono" placeholder="自動"></label>
+                    </div></div>
+                  </details>
+                  <span class="spacer"></span>
+                  <button type="button" id="task-launch-start" class="primary">編集開始</button>
                 </div>
-                <div class="task-actions"><span class="spacer"></span><button type="button" id="task-launch-start" class="primary">tmuxで編集を始める</button></div>
+                <div id="task-terminal-placeholder" class="terminal-stage">
+                  <div class="terminal-head"><span class="terminal-agent">編集セッション</span><span id="task-launch-phase" class="phase starting">起動前</span></div>
+                  <div class="task-terminal-placeholder-body"><p id="task-launch-status" role="status" aria-live="polite"></p></div>
+                </div>
+                <div id="task-composer-placeholder" aria-hidden="true"></div>
               </section>
               <p id="task-open-note" class="sub" hidden></p>
               <section id="task-terminal" class="terminal-stage" hidden>

@@ -21,6 +21,19 @@ const workbenchBody = workbenchHost || document.body;
 const $ = (id) => workbenchRoot.getElementById(id);
 const embedded = !!workbenchHost;
 const automationHost = window.api.automation;
+const POPUP_MENU_SELECTOR = 'details.more-menu[open], details.run-settings[open]';
+
+function closePopupMenus(event = null) {
+  const path = event && typeof event.composedPath === 'function' ? event.composedPath() : [];
+  for (const menu of workbenchRoot.querySelectorAll(POPUP_MENU_SELECTOR)) {
+    if (!event || !path.includes(menu)) menu.open = false;
+  }
+}
+
+workbenchRoot.addEventListener('click', (event) => closePopupMenus(event));
+workbenchRoot.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closePopupMenus();
+});
 
 const state = {
   config: { roots: [], lastRoot: '' },
@@ -501,7 +514,7 @@ function editorControlsHtml() {
   return {
     center: `<input class="title-input" id="m-name" value="${esc(spec.name)}" placeholder="名前を付ける（例: 月次の勤怠集計）" aria-label="名前">`,
     right: `<span id="dirty-mark" class="dirty" ${state.current.dirty ? '' : 'hidden'}>● 未保存</span>
-      ${embedded && !state.current.isNew ? '<div class="edit-controls"><button type="button" id="b-assist" class="ghost">AIと編集</button></div>' : '<button type="button" id="b-ai" class="ghost">AIで見直す</button>'}
+      ${embedded && !state.current.isNew ? '<div class="edit-controls"><button type="button" id="b-assist" class="ghost">編集</button></div>' : '<button type="button" id="b-ai" class="ghost">AIで見直す</button>'}
       <button type="button" id="b-run" class="ghost" ${state.current.isNew ? 'disabled title="保存すると実行できます"' : ''}>テスト</button>
       <details class="more-menu"><summary>その他</summary><div class="menu-panel">
         ${embedded ? '' : '<button type="button" id="b-record" class="ghost">操作を記録</button>'}
@@ -944,7 +957,7 @@ function editingCardHtml(machine) {
   const selected = reviewScopeValue(state.aiReview.scope);
   const targets = spec.steps.map((step, index) => `<option value="step:${esc(step.id)}" ${selected === `step:${step.id}` ? 'selected' : ''}>工程 ${index + 1}: ${esc(step.title || kindOf(step.kind).label)}</option>`).join('');
   return `<section class="task-conversation-editor">
-    <div class="task-conversation-toolbar"><label class="editing-target" for="editing-target"><strong>AIと編集</strong><span>編集対象</span><select id="editing-target"><option value="workflow" ${selected === 'workflow' ? 'selected' : ''}>全体</option>${targets}</select></label><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
+    <div class="task-conversation-toolbar"><label class="editing-target" for="editing-target"><strong>編集</strong><span>編集対象</span><select id="editing-target"><option value="workflow" ${selected === 'workflow' ? 'selected' : ''}>全体</option>${targets}</select></label><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
     ${teachingFeature.editorSlotHtml(machine, selected === 'workflow' ? 'タスク全体' : `工程 ${selected.slice(5)}`)}
   </section>`;
 }

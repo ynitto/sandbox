@@ -23,7 +23,7 @@
   const state = {
     deps: null, visible: false, repo: '', machine: '', title: '', context: '', agent: '', creating: false, editing: false, card: false, published: false,
     session: null, availableSession: null, phase: null, tools: null, running: false, pending: false, token: 0,
-    input: null, record: { open: false, source: 'browser', target: '', active: false, busy: false, message: '', ok: true, request: null },
+    input: null, autoStart: null, record: { open: false, source: 'browser', target: '', active: false, busy: false, message: '', ok: true, request: null },
   };
 
   function term() { return window.TaskTerm; }
@@ -78,13 +78,19 @@
     const ph = state.phase;
     const hasTerminal = !!sess;
     const waitingToLaunch = !hasTerminal;
-    $('task-launch').hidden = !waitingToLaunch;
-    if (waitingToLaunch) {
-      populateExecutionInputs('task-launch');
-      $('task-launch-heading').hidden = state.published;
-      $('task-launch-start').textContent = state.availableSession ? 'tmuxで編集を続ける' : 'tmuxで編集を始める';
-      $('task-launch-start').disabled = state.pending;
-    }
+    $('task-launch').hidden = false;
+    $('task-terminal-placeholder').hidden = hasTerminal;
+    $('task-composer-placeholder').hidden = hasTerminal;
+    populateExecutionInputs('task-launch');
+    $('task-launch-heading').hidden = state.published;
+    $('task-launch-settings-summary').textContent = state.deps.executionLabel(readExecutionInputs('task-launch'));
+    $('task-launch-start').textContent = hasTerminal ? '編集中' : '編集開始';
+    $('task-launch-start').disabled = state.pending || hasTerminal;
+    $('task-launch-agent').disabled = state.pending || hasTerminal || $('task-launch-agent').disabled;
+    $('task-launch-model').disabled = state.pending || hasTerminal;
+    $('task-launch-status').textContent = state.pending ? '起動中です...' : '';
+    $('task-launch-phase').textContent = state.pending ? '起動中' : '起動前';
+    $('task-launch-phase').className = `phase ${state.pending ? 'starting' : ''}`.trim();
     const note = $('task-open-note');
     note.hidden = true;
     note.textContent = '';
@@ -145,6 +151,7 @@
     state.availableSession = null;
     state.phase = null;
     state.running = false;
+    state.pending = false;
     term().detach();
     renderShell();
     if (!state.repo || !state.machine) return;
@@ -155,6 +162,11 @@
     state.availableSession = view.session || null;
     if (view.session) populateExecutionInputs('task-launch', { agent: view.session.cli, model: view.session.model });
     renderShell();
+    const autoStart = state.autoStart;
+    if (autoStart && autoStart.repo === state.repo && autoStart.machine === state.machine) {
+      state.autoStart = null;
+      await startTeaching(token, autoStart.options);
+    }
   }
 
   async function attach(session, token = state.token) {
@@ -175,11 +187,11 @@
   }
 
   // 設定を確認してボタンを押した後にだけ tmux を開く。既存の下書きは同じセッションへ戻る。
-  async function startTeaching(token = state.token) {
+  async function startTeaching(token = state.token, preferredOptions = null) {
     state.pending = true;
     renderShell();
     try {
-      const options = state.deps.executionOptions(readExecutionInputs('task-launch'));
+      const options = preferredOptions || state.deps.executionOptions(readExecutionInputs('task-launch'));
       // 既存セッションも main を通す。下書き再開・編集開始の文脈を最初のターンとして渡した
       // うえで、同じ tmux セッションへ接続する。
       const view = await api.automation.teachStart({ repo: state.repo, machine: state.machine, context: state.context, ...options });
@@ -207,11 +219,13 @@
     $('task-create-start').disabled = true;
     try {
       const options = state.deps.executionOptions(readExecutionInputs('task-create'));
-      const view = await api.automation.teachStart({ repo: state.repo, purpose, machine, ...options });
+      const view = await api.automation.teachPrepare({ repo: state.repo, purpose, machine, ...options });
+      state.autoStart = { repo: state.repo, machine: view.machine, options };
       $('task-purpose').value = '';
       $('task-machine').value = '';
       await state.deps.openTask(view.machine);
     } catch (err) {
+      state.autoStart = null;
       errorNode.textContent = err.message;
       errorNode.hidden = false;
     } finally {
@@ -412,6 +426,7 @@
     if (!state.visible) return;
     state.visible = false;
     state.token += 1;
+    state.pending = false;
     term().detach();
     renderShell();
   }
@@ -456,13 +471,16 @@
     });
     $('task-create-start').onclick = () => create().catch((err) => error(err.message));
     $('task-launch-start').onclick = () => startTeaching().catch((err) => error(err.message));
-    for (const id of ['task-create-agent', 'task-create-model']) $(id).addEventListener('change', () => {
-      $('task-create-settings').textContent = state.deps.executionLabel(readExecutionInputs('task-create'));
-    });
+    for (const prefix of ['task-create', 'task-launch']) {
+      const refreshExecutionSummary = () => {
+        $(`${prefix}-settings${prefix === 'task-launch' ? '-summary' : ''}`).textContent = state.deps.executionLabel(readExecutionInputs(prefix));
+      };
+      $(`${prefix}-agent`).addEventListener('change', refreshExecutionSummary);
+      $(`${prefix}-model`).addEventListener('input', refreshExecutionSummary);
+    }
     $('task-purpose').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); create().catch((err) => error(err.message)); }
     });
-    $('task-create-cancel').onclick = () => state.deps.cancelCreate();
     $('task-send').onclick = () => send();
     $('task-stop').onclick = () => { if (state.session) api.stop(state.session.id).catch((err) => error(err.message)); };
     $('task-term-restart').onclick = () => restart();

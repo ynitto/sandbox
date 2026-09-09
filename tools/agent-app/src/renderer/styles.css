@@ -531,27 +531,30 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #task-create { display: grid; gap: 10px; }
 #task-create textarea { width: 100%; min-height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
 .task-create-label { display: flex; align-items: baseline; gap: 8px; }
-.task-create-more { position: relative; }
-.task-create-more summary { cursor: pointer; color: var(--muted); }
-.task-create-more[open] { display: flex; align-items: center; gap: 8px; }
+.task-save-name { width: min(100%, 440px); display: grid; grid-template-columns: auto minmax(240px, 1fr); align-items: center; gap: 10px; }
+.task-save-name input { width: 100%; min-width: 0; }
 .task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.task-launch-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.task-launch-settings label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
-.task-launch-settings select, .task-launch-settings input { width: 100%; min-width: 0; color: var(--text); font-size: 14px; font-weight: 400; }
-.task-launch-card { display: grid; gap: 14px; width: 100%; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-.task-launch-card p { margin: 5px 0 0; }
+.task-execution-settings .settings-popover { top: calc(100% + 8px); bottom: auto; }
+.task-start-toolbar { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-bottom: 10px; }
+.task-terminal-placeholder-body { min-height: 0; flex: 1; display: grid; place-items: center; padding: 24px; }
+.task-terminal-placeholder-body p { margin: 0; color: var(--term-muted); }
 #task-workspace { min-width: 0; width: 100%; display: grid; gap: 10px; }
-#task-terminal { height: min(46vh, 480px); min-height: 260px; }
+#task-launch { display: contents; }
+#task-terminal-placeholder, #task-terminal { height: min(46vh, 480px); min-height: 260px; }
+#task-composer-placeholder { width: min(100%, 900px); min-height: 174px; margin: 0 auto; visibility: hidden; }
 /* 「AIと編集」は会話画面（#chat）と同じ組み方にする: 端末が残りの高さを使い（1fr）、
    見本の記録が会話履歴の位置（2 行目）、入力欄が下に付く（3 行目）。 */
 #task-teaching.in-card { height: 100%; min-height: 0; gap: 0; grid-template-rows: minmax(0, 1fr); }
-#task-teaching.in-card #task-workspace { height: 100%; min-height: 0; gap: 0; grid-template-rows: minmax(0, 1fr) auto auto; }
-#task-teaching.in-card #task-terminal { grid-row: 1; height: auto; min-height: 220px; margin: 0; }
-#task-teaching.in-card #task-record { grid-row: 2; margin: 8px 0 0; }
-#task-teaching.in-card #task-composer { grid-row: 3; margin: 10px auto 6px; }
-/* tmux を開く前（起動設定のカードだけ）は残りの高さへ引き伸ばさず、上に寄せる。 */
-#task-teaching.in-card #task-workspace:has(.task-launch-card:not([hidden])) { height: auto; grid-template-rows: none; align-content: start; }
+#task-teaching.in-card #task-workspace { height: 100%; min-height: 0; gap: 0; grid-template-rows: auto minmax(0, 1fr) auto auto; }
+#task-teaching.in-card .task-start-toolbar { grid-row: 1; }
+#task-teaching.in-card #task-terminal-placeholder,
+#task-teaching.in-card #task-terminal { grid-row: 2; height: auto; min-height: 220px; margin: 0; }
+#task-teaching.in-card #task-record { grid-row: 3; margin: 8px 0 0; }
+#task-teaching.in-card #task-composer-placeholder,
+#task-teaching.in-card #task-composer { grid-row: 4; margin: 10px auto 6px; }
 #task-record { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 #task-record input { min-width: 220px; }
 #task-record .sub.error { color: var(--danger); }
-@media (max-width: 680px) { .task-launch-settings { grid-template-columns: 1fr; } }
+@media (max-width: 680px) {
+  .task-save-name { grid-template-columns: 1fr; gap: 5px; }
+}

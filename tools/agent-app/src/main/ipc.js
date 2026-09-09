@@ -678,7 +678,7 @@ function taskConversationView(ud, repo, machine) {
   };
 }
 
-async function startTeaching(p, send) {
+function prepareTeaching(p) {
   const ud = userData();
   const repo = requireRepo(p.repo);
   const cfg = store.loadConfig(ud);
@@ -705,11 +705,24 @@ async function startTeaching(p, send) {
     sidecar = teaching.save(repo, machine, { ...sidecar, sessionId: summary.id });
   }
   const session = store.readSession(ud, summary.id);
-  const busy = running.has(session.id) || !!(conversations.get(session.id) && conversations.get(session.id).turn);
+  return { ud, repo, cfg, purpose, machine, existing, sidecar, session };
+}
+
+function prepareTeachingView(p) {
+  const prepared = prepareTeaching(p);
+  return { ...taskConversationView(prepared.ud, prepared.repo, prepared.machine), existing: prepared.existing };
+}
+
+async function startTeaching(p, send) {
+  const { ud, repo, cfg, purpose, machine, existing, sidecar, session } = prepareTeaching(p);
+  const conversation = conversations.get(session.id);
+  const liveTmux = !!conversation && !conversation.closed && !['dead', 'gone'].includes(conversation.phase);
+  const busy = running.has(session.id) || !!(conversation && conversation.turn);
   let started = false;
   // 初回だけでなく、下書きの再開・公開済みタスクの編集開始時にも対象を明示する。
-  // CLI 固有の resume に頼れない場合も、保存済みファイルから文脈を復元できる。
-  if (!busy) {
+  // ただし tmux がすでに生きている場合は、固定文を新しい依頼として重ねず、そのまま接続する。
+  // tmux が無い・終了済みの場合だけ、保存済みファイルから文脈を復元して起動する。
+  if (!busy && !liveTmux) {
     const common = { machine, purpose: sidecar ? sidecar.purpose : purpose, existing };
     const prompt = session.messages.length
       ? teaching.resumePrompt({ ...common, context: p.context })
@@ -755,6 +768,7 @@ function registerIpcHandlers(getWindow) {
     userData,
     appRoot: automationAppRoot(),
   });
+  handle('automation:teach:prepare', (p) => prepareTeachingView(p));
   handle('automation:teach:start', (p) => startTeaching(p, send));
   handle('automation:teach:session', (p) => taskConversationView(userData(), requireRepo(p.repo), String(p.machine || '').trim()));
   handle('automation:teach:demonstration', (p) => demonstrate(p, send));

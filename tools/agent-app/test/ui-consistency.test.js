@@ -77,3 +77,14 @@ test('画面に解説を常駐させない（仕組みの説明は README に置
     assert.ok(text.length <= 40, `画面に居座る解説は README へ移す: ${text}`);
   }
 });
+
+test('ポップアップメニューは親画面と埋め込み画面のどちらでも外側クリックで閉じる', () => {
+  const parent = read('renderer/renderer.js');
+  const workbench = read('renderer/automation/renderer.js');
+  const selector = "details.more-menu[open], details.run-settings[open]";
+  for (const source of [parent, workbench]) {
+    assert.ok(source.includes(selector), 'ID の列挙ではなくポップアップ種別をまとめて扱う');
+    assert.match(source, /event\.composedPath\(\)/, 'Shadow DOM と slot をまたぐクリック位置を判定する');
+    assert.match(source, /path\.includes\(menu\)[\s\S]*menu\.open = false/, 'メニュー内の操作を保ち、外側クリックだけで閉じる');
+  }
+});

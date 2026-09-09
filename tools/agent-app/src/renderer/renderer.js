@@ -67,7 +67,15 @@ function notice(text, kind = '') {
 }
 
 const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
+const POPUP_MENU_SELECTOR = 'details.more-menu[open], details.run-settings[open]';
 const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+function closePopupMenus(root, event = null) {
+  const path = event && typeof event.composedPath === 'function' ? event.composedPath() : [];
+  for (const menu of root.querySelectorAll(POPUP_MENU_SELECTOR)) {
+    if (!event || !path.includes(menu)) menu.open = false;
+  }
+}
 
 function isTmux(sess) { return !!sess && sess.transport === 'tmux'; }
 
@@ -398,8 +406,15 @@ function setAutomationLoading(loading) {
 async function openTaughtTask(machine) {
   state.pendingTaskIntent = null;
   state.selectedTask = `machine:${machine}`;
-  state.config = await api.saveConfig({ lastTask: { ...(state.config.lastTask || {}), [state.repo]: state.selectedTask } });
-  await loadAreaItems();
+  const selected = state.selectedTask;
+  const lastTask = { ...(state.config.lastTask || {}), [state.repo]: selected };
+  state.config = { ...state.config, lastTask };
+  api.saveConfig({ lastTask }).then((saved) => {
+    if (state.selectedTask === selected) state.config = saved;
+  }).catch((err) => notice(err.message, 'error'));
+  // 親側の一覧更新は待たず、準備済みの下書きへ先に遷移する。共有ワークベンチも
+  // 自分で下書き一覧を読むため、ここで同じ I/O を直列に待つ必要はない。
+  loadAreaItems().catch((err) => notice(err.message, 'error'));
   await syncAutomationWorkbench('teach');
 }
 
@@ -1757,16 +1772,10 @@ async function init() {
   $('optimize-agents').onchange = renderSettingsRestrictions;
   $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));
   $('side-backdrop').onclick = () => setSidebar(false);
-  document.addEventListener('click', (event) => {
-    for (const id of ['chat-more', 'run-settings']) {
-      const details = $(id);
-      if (details.open && !details.contains(event.target)) details.open = false;
-    }
-  });
+  document.addEventListener('click', (event) => closePopupMenus(document, event));
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
-    $('chat-more').open = false;
-    $('run-settings').open = false;
+    closePopupMenus(document);
     setSidebar(false);
   });
 
