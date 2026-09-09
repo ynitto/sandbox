@@ -105,7 +105,9 @@ function agentOptions(preferred = '') {
   const selected = selectedAgent(preferred);
   // 「まだ聞いている途中」と「聞いた結果 0 件」を混同しない（待たせない代わりに、途中だと分かる）
   if (!state.agents.length) return `<option value="">${state.agentsLoading ? '確認中…' : '利用できる AI がありません'}</option>`;
-  return state.agents.map((name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
+  // 設定・実行方針の名前が一覧に無くても捨てない（selectedAgent と同じ規則）。選択肢には「現在は利用不可」と出す
+  const extra = selected && !state.agents.includes(selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}（現在は利用不可）</option>` : '';
+  return extra + state.agents.map((name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
 }
 
 // 描き直してよいか。入力欄に文字を打っている最中に、遅れて届いた返事で画面を組み直すと入力が消える。
