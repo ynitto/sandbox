@@ -77,6 +77,20 @@ Windows で `C:\…` のリポジトリを使う場合は、設定 > アプリ�
 CLI が処理中や質問待ちに見えても、入力欄からの送信は止まりません。文章での回答（質問への返事や
 追加指示）はそのまま入力欄から送れます。
 
+#### 別のリポジトリへ分岐する
+
+エージェントが別の登録リポジトリへ書き込む必要があると判断すると、返答に `@fork <フォルダ>` の 1 行と
+依頼の本文を書き、回答の下に「<フォルダ名> で続ける（新しい会話を分岐）」が出ます。
+
+1. 押すと確認が出ます。フォルダが未登録なら、先に「リポジトリを追加」のダイアログで登録します。
+2. 分岐先のリポジトリに新しい会話ができ、リポジトリ選択がそちらへ切り替わります。元の会話の所在を
+   添えた依頼が最初のターンとして自動で送られます。
+3. 分岐先の会話ヘッダーには「分岐元: <リポジトリ> › <会話名>」が出ます。押すと元の会話へ戻ります。
+   元の会話では、その回答の下が「→ <リポジトリ>: <会話名>」に変わり、押すと分岐先を開きます。
+
+分岐先はふつうの会話と同じに扱えます（削除・エージェントの切替・作業フォルダの変更ビュー）。
+この作法を添えないようにするには「設定 > 共通指示」のチェックを外します。
+
 ### 端末を操作する
 
 矢印キー、Tab、Escape、Ctrl+C のような端末操作は「端末操作」モードで行います。
@@ -180,7 +194,7 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 | 画面 | 項目 |
 |---|---|
 | アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、WSL ディストリビューション、実行環境の状態 |
-| 共通指示 | 共通指示の有効・本文（8000 字まで）、スキル選択の有効・既定の選択・自動選択の候補、起動時アクション |
+| 共通指示 | 共通指示の有効・本文（8000 字まで）、別のフォルダへの書き込みを会話の分岐で受ける（既定 ON）、スキル選択の有効・既定の選択・自動選択の候補、起動時アクション |
 | 実行制御 | エージェントを最適化する（既定 ON。agent-herd が使えるときだけ効き、効いていなければ起動方針は おすすめ / 直接指定 だけ、tier は medium だけ）、既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
 
 起動時アクションは「スキル」か「コマンド」で、CLI ごとの新しいセッションで上から一度だけ適用します。
@@ -323,9 +337,10 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `skills:select` | `selectSkills(repo, text, mode, selected)` | — | 選定結果（`content` / `path` を除く） |
 | `session:list` | `listSessions(repo)` | `repo?` | 会話の要約配列（更新日時の降順） |
 | `session:create` | `createSession(payload)` | `{ repo, policy?, cli?, model?, readonly?, transport, worktree? }` | 会話 |
-| `session:read` | `readSession(id)` | `id` | 会話（`presentSession` 適用後） |
+| `session:read` | `readSession(id)` | `id` | 会話（`presentSession` 適用後。`originSession: { id, repo, title } | null` と `forks: [{ id, repo, title, index }]` を添える） |
 | `session:update` | `updateSession(id, patch)` | 許可キー: `title` `cli` `model` `readonly` `policy` `tier` `transport` `live` | 会話 |
 | `session:remove` | `removeSession(id)` | `id` | `true`。応答中なら止め、tmux を kill し、添付を消す |
+| `session:fork` | `forkSession(payload)` | `{ originId, repo, prompt, index?, skillMode? }` | `{ session, turn }`。元の会話の起動条件を写した会話を分岐先（登録済み・元と別のリポジトリ）の本体に作り、`forkPrompt`（元の会話の所在 + 本文）を最初のターンとして `turn:send` と同じ経路で送る。`index` は元の会話の応答メッセージの位置（`messages` の添字） |
 | `turn:send` | `send(id, prompt, opts)` | §5 | tmux: `{ name, restarted, warning }`、headless: `{ pid, argv }` |
 | `turn:stop` | `stop(id)` | `id` | 止めたか |
 | `turn:running` | `running()` | — | 応答中の会話 ID 配列 |
@@ -408,6 +423,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `id` | UUID。ファイル名と tmux セッション名の元 |
 | `kind` / `task` | `conversation`（既定）か `task`。`task` は `{ machine }`（保存名）を持ち、会話一覧（`session:list`）には出ない |
 | `repo` / `worktree` / `branch` | リポジトリ、作業フォルダ名（`''` は本体）、そのブランチ。作ったあと変えない |
+| `origin` | 別のリポジトリの会話から分岐したときの分岐元 `{ sessionId, repo, index }`（`index` は分岐の依頼を書いた応答の `messages` での位置。不明なら -1）。分岐していなければ `null`。分岐先の一覧は保存せず、`origin` から引く（`listForks`） |
 | `cli` / `model` / `readonly` / `policy` / `tier` | **次のターン**の既定。`policy` は `recommended` / `saving` / `quality` / `direct` |
 | `transport` | 最後のターンの経路（`tmux` / `headless`） |
 | `title` | 最初の利用者メッセージの 1 行目（60 字） |
@@ -640,6 +656,7 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 |---|---|
 | 共通指示のマーカー | `<!-- agent-app-instructions -->`。本文に既にあれば再注入しない |
 | 共通指示の上限 | 8000 字 |
+| 分岐の作法 | `instructions.forkEnabled`（既定 true）で、`kind: conversation` の会話の依頼にだけ「別のフォルダへの書き込み」の節（`@fork <フォルダ>` の 1 行 + 本文、選べるフォルダ = 登録済みリポジトリから現在のものを除いた一覧）を共通指示の中に添える。共通指示の本文が空でも添える。本文は 20,000 字で打ち切る |
 | 開始コマンド | 1 件 60 秒、全体 120 秒。作業フォルダで `cd <cwd> && <command>` |
 | 開始スキル | `skill_command_prefix` + 名前。`slash_native: false` の CLI では候補に実在する名前だけ |
 | 適用回数 | CLI ごとに初回のターンだけ（`cliSessions[cli].setupApplied`）。既存セッションの再開では再実行しない |

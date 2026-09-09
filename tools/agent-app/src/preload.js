@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('api', {
   readSession: (id) => invoke('session:read', { id }),
   updateSession: (id, patch) => invoke('session:update', { id, patch }),
   removeSession: (id) => invoke('session:remove', { id }),
+  // 別のリポジトリへ分岐する。payload: { originId, repo, prompt, index? }
+  forkSession: (payload) => invoke('session:fork', payload),
   // opts: { policy, cli?, model?, readonly, attachments }。cli/model は direct のときだけ使う。
   send: (id, prompt, opts) => invoke('turn:send', { id, prompt, ...(opts || {}) }),
   pickAttachments: () => invoke('attach:pick'),

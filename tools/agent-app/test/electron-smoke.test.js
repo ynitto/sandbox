@@ -69,7 +69,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     status: 'done', output: '確認済み', finished_at: '2026-09-06T01:01:00Z',
   }));
   process.env.AGENT_APP_FLOW_BUS = flowBus;
-  appStore.saveConfig(userData, { repos: [repo], lastRepo: repo, area: 'work' });
+  // 別のリポジトリへの分岐を実機で通すための 2 つ目のリポジトリ
+  const otherRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-shared-lib-'));
+  appStore.saveConfig(userData, { repos: [repo, otherRepo], lastRepo: repo, area: 'work' });
   const session = appStore.createSession(userData, {
     repo, cli: 'codex', model: 'gpt-test', policy: 'quality', tier: 'large', transport: 'headless',
   });
@@ -80,6 +82,20 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       thinking: [{ text: '関連する画面を確認した', status: 'done' }],
       information: [{ type: 'file', title: 'src/renderer.js', action: 'modified', status: 'success' }],
     },
+  });
+  // 応答に別のフォルダへの依頼（@fork 行）が 2 つ: 1 つは分岐済み（リンクになる）、1 つは未分岐（ボタンになる）
+  const forkedIndex = appStore.appendMessage(userData, session.id, {
+    role: 'assistant', cli: 'codex', model: 'gpt-test', elapsedMs: 900,
+    text: `共通ライブラリ側の型定義も直す必要があります。\n\n@fork ${otherRepo}\n型定義 User に role を追加してください。`,
+  }).messages.length - 1;
+  const forked = appStore.createSession(userData, {
+    repo: otherRepo, cli: 'codex', model: 'gpt-test', policy: 'quality', tier: 'large', transport: 'headless',
+    origin: { sessionId: session.id, repo, index: forkedIndex },
+  });
+  appStore.appendMessage(userData, forked.id, { role: 'user', text: '型定義 User に role を追加してください。' });
+  appStore.appendMessage(userData, session.id, {
+    role: 'assistant', cli: 'codex', model: 'gpt-test', elapsedMs: 800,
+    text: `もう 1 つ、ドキュメント側にも反映が要ります。\n\n@fork ${path.join(os.tmpdir(), 'agent-app-not-registered')}\nREADME に role の説明を足してください。`,
   });
   for (let index = 0; index < 60; index += 1) {
     appStore.appendMessage(userData, session.id, {
@@ -114,7 +130,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#conversation-start').waitFor();
     const composerBefore = await win.locator('#composer').boundingBox();
     await win.click('#sessions .list-pick');
-    await win.locator('.answer-bubble').waitFor();
+    await win.locator('.answer-bubble').first().waitFor();
     assert.strictEqual(await win.locator('#conversation-history').getAttribute('open'), '', '端末がない会話では履歴を主表示する');
     const composerModeHeights = await win.locator('#composer .composer-shell').evaluate((shell) => {
       const message = document.getElementById('message-input');
@@ -133,9 +149,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.ok(Math.abs(composerModeHeights.messageHeight - composerModeHeights.terminalHeight) <= 1,
       `入力モードで高さが変わる: ${JSON.stringify(composerModeHeights)}`);
     assert.match(await win.locator('.msg.user').first().textContent(), /画面を確認して/);
-    assert.match(await win.locator('.answer-bubble').textContent(), /確認できました/);
-    assert.strictEqual(await win.locator('.response-disclosure.thinking').getAttribute('open'), null, '完了後の思考は閉じる');
-    assert.strictEqual(await win.locator('.response-disclosure.information').getAttribute('open'), null, '成功時の実行情報は閉じる');
+    assert.match(await win.locator('.answer-bubble').first().textContent(), /確認できました/);
+    assert.strictEqual(await win.locator('.response-disclosure.thinking').first().getAttribute('open'), null, '完了後の思考は閉じる');
+    assert.strictEqual(await win.locator('.response-disclosure.information').first().getAttribute('open'), null, '成功時の実行情報は閉じる');
     const historyScroll = await win.locator('#messages').evaluate((node) => {
       const before = node.scrollTop;
       node.scrollTop = 0;
@@ -154,7 +170,29 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     const composerAfter = await win.locator('#composer').boundingBox();
     assert.ok(composerBefore && composerAfter && Math.abs(composerBefore.y - composerAfter.y) <= 1,
       '会話開始前後で入力欄が動かない');
-    if (process.env.AGENT_APP_CHAT_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_CHAT_SCREENSHOT });
+    // 別のリポジトリへの分岐: 分岐済みの応答は分岐先へのリンク、未分岐の応答は分岐のボタン（どちらも回答の下の .message-action）
+    const forkLink = win.locator('.message-action', { hasText: `→ ${path.basename(otherRepo)}:` });
+    await forkLink.waitFor();
+    assert.match(await forkLink.textContent(), /型定義 User に role を追加してください/);
+    const forkButton = win.locator('.message-action', { hasText: 'で続ける（新しい会話を分岐）' });
+    assert.strictEqual(await forkButton.count(), 1, '未分岐の応答にだけ分岐のボタンが出る');
+    assert.strictEqual(await win.locator('#chat-origin').isHidden(), true, '分岐元の会話には分岐元の行を出さない');
+    if (process.env.AGENT_APP_CHAT_SCREENSHOT) {
+      await forkButton.scrollIntoViewIfNeeded();
+      await win.screenshot({ path: process.env.AGENT_APP_CHAT_SCREENSHOT });
+    }
+    // 分岐先を開く: リポジトリ選択が切り替わり、会話一覧はふつうの会話と同じ形、ヘッダーに分岐元の 1 行
+    await forkLink.click();
+    await win.locator('#chat-origin:visible').waitFor();
+    assert.strictEqual(await win.inputValue('#repo-select'), otherRepo);
+    assert.match(await win.textContent('#chat-origin'), new RegExp(`^分岐元: ${path.basename(repo)} › 画面を確認して$`));
+    assert.match(await win.textContent('#sessions'), /型定義 User に role を追加してください/);
+    if (process.env.AGENT_APP_FORK_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_FORK_SCREENSHOT });
+    // 分岐元へ戻る
+    await win.click('#chat-origin');
+    await win.locator('#chat-origin').waitFor({ state: 'hidden' });
+    assert.strictEqual(await win.inputValue('#repo-select'), repo);
+    assert.match(await win.textContent('#chat-title'), /画面を確認して/);
 
     await win.click('#settings-open');
     await win.locator('#app-settings[open]').waitFor();

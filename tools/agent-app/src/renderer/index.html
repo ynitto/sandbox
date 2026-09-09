@@ -74,7 +74,10 @@
     <main id="main">
       <header id="chat-head">
         <div class="title-row">
-          <div id="chat-title" class="title">リポジトリを登録して会話を始める</div>
+          <div class="title-stack">
+            <div id="chat-title" class="title">リポジトリを登録して会話を始める</div>
+            <button type="button" id="chat-origin" class="sub title-origin" hidden></button>
+          </div>
           <span id="phase" class="phase" hidden></span>
         </div>
         <nav class="views" aria-label="会話の表示">
@@ -365,6 +368,7 @@
 
         <section data-settings-panel="instructions" class="settings-list" role="tabpanel" hidden>
           <label class="setting-check"><input type="checkbox" id="instruction-enabled"><span><strong>共通指示を使う</strong><small>すべての依頼に短い運用方針を追加します</small></span></label>
+          <label class="setting-check"><input type="checkbox" id="fork-enabled"><span><strong>別のフォルダへの書き込みは会話を分岐して受ける</strong><small>エージェントが別の登録リポジトリへの依頼を返したとき、回答の下から分岐できます</small></span></label>
           <label class="stacked-field" for="instruction-text"><span><strong>指示</strong><small id="instruction-count">0 / 8000</small></span><textarea id="instruction-text" rows="7" maxlength="8000" placeholder="例: 変更前に既存テストを確認し、完了時に検証結果を要約する"></textarea></label>
           <div class="settings-group">
             <div class="settings-group-head"><span><strong>自動選択の候補</strong></span></div>
@@ -444,6 +448,7 @@
   <script src="navigation.js"></script>
   <script src="taskIntent.js"></script>
   <script src="teachingProtocol.js"></script>
+  <script src="forkProtocol.js"></script>
   <script src="taskTeaching.js"></script>
   <script src="automation/workbench-element.js"></script>
   <script src="automation/teaching.js"></script>

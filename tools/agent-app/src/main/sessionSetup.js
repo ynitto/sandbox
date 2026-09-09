@@ -1,24 +1,30 @@
 'use strict';
 
+const forkProtocol = require('../renderer/forkProtocol');
+
 const MARKER = '<!-- agent-app-instructions -->';
 
-function instructionBlock(instructions) {
+// fork … { repos, current }。別のリポジトリへの分岐（@fork 行）の作法を添えるときだけ渡す
+//        （instructions.forkEnabled が効いていて、会話の種類が「会話」のとき）。
+function instructionBlock(instructions, { fork = null } = {}) {
   const source = instructions && typeof instructions === 'object' ? instructions : {};
   if (source.enabled === false) return '';
   const text = String(source.text || '').trim();
-  if (!text) return '';
+  const forkText = fork && source.forkEnabled !== false ? forkProtocol.instruction(fork) : '';
+  if (!text && !forkText) return '';
   const lines = [
     MARKER,
     '## 共通指示',
     '今回の依頼やリポジトリ固有の指示と競合する場合は、それらを優先してください。',
   ];
   if (text) lines.push('', text);
+  if (forkText) lines.push('', forkText);
   return lines.join('\n');
 }
 
-function withInstructions(prompt, instructions) {
+function withInstructions(prompt, instructions, options = {}) {
   const text = String(prompt || '');
-  const block = instructionBlock(instructions);
+  const block = instructionBlock(instructions, options);
   if (!block || text.includes(MARKER)) return text;
   return `${block}\n\n## 今回の依頼\n${text}`;
 }

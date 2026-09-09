@@ -797,6 +797,14 @@ function renderRunSettingsSummary() {
 function renderHeader() {
   const cur = state.current;
   $('chat-title').textContent = cur ? (cur.title || '（無題）') : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
+  // 別のリポジトリから分岐した会話は、題名の下に分岐元を 1 行出す（押すと元の会話へ戻る）
+  const origin = cur && cur.originSession;
+  $('chat-origin').hidden = !origin;
+  if (origin) {
+    $('chat-origin').textContent = `分岐元: ${basename(origin.repo)} › ${origin.title || '（無題）'}`;
+    $('chat-origin').title = origin.repo;
+    $('chat-origin').onclick = () => openSessionInRepo(origin.repo, origin.id).catch((err) => notice(err.message, 'error'));
+  }
   // エージェント・モデル・モードは「次のターン」のもの。会話を開いていても変えられる
   $('cli').disabled = !state.repo;
   $('policy').disabled = !state.repo;
@@ -926,7 +934,8 @@ function rawExecutionNode(id, tmuxMode) {
   return details;
 }
 
-function messageNode(m) {
+// index … 会話の messages の中の位置（分岐の関連づけに使う）
+function messageNode(m, index = -1) {
   const n = el('div', m.role === 'user' ? 'msg user' : 'response-turn');
   if (m.role === 'user') {
     // どのエージェント・モデル・モードへ出した依頼か（ターンごとに変わりうる）
@@ -973,8 +982,83 @@ function messageNode(m) {
     const infoHasError = information.some((item) => item && item.status === 'error');
     const info = responseDisclosure('information', '実行情報', information, { open: !!(m.error || m.stopped || (m.code != null && m.code !== 0) || infoHasError) });
     if (info) n.append(info);
+    const forkActions = forkActionsNode(m, index);
+    if (forkActions) n.append(forkActions);
   }
   return n;
+}
+
+// 応答に別のフォルダへの依頼（@fork 行）があれば、回答の下に分岐のボタンを出す。
+// すでにその応答から分岐していれば、ボタンの代わりに分岐先へのリンクにする。
+function forkActionsNode(m, index) {
+  const requests = ForkProtocol.parseForkRequests(m.text);
+  const forks = (state.current && Array.isArray(state.current.forks) ? state.current.forks : []).filter((f) => index >= 0 && f.index === index);
+  if (!requests.length && !forks.length) return null;
+  const actions = el('div', 'message-actions');
+  for (const fork of forks) {
+    const link = el('button', 'message-action', `→ ${basename(fork.repo)}: ${fork.title || '（無題）'}`);
+    link.type = 'button';
+    link.title = `分岐した会話を開く（${fork.repo}）`;
+    link.onclick = () => openSessionInRepo(fork.repo, fork.id).catch((err) => notice(err.message, 'error'));
+    actions.append(link);
+  }
+  if (!forks.length) {
+    for (const request of requests) {
+      const button = el('button', 'message-action', `${basename(request.folder) || '別のフォルダ'} で続ける（新しい会話を分岐）`);
+      button.type = 'button';
+      button.title = request.folder;
+      button.onclick = () => forkConversation(index, request).catch((err) => notice(err.message, 'error'));
+      actions.append(button);
+    }
+  }
+  return actions;
+}
+
+// 登録済みリポジトリの中から、AI が書いたフォルダに当たるものを探す（末尾の区切りと大文字小文字の違いは吸収）。
+function registeredRepoFor(folder) {
+  const norm = (p) => String(p || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+  const want = norm(folder);
+  return state.config.repos.find((r) => norm(r) === want) || '';
+}
+
+// 別のリポジトリへ分岐する。分岐先が未登録なら「リポジトリを追加」の既存ダイアログで登録してから進む。
+async function forkConversation(index, request) {
+  const origin = state.current;
+  if (!origin) return;
+  let repo = registeredRepoFor(request.folder);
+  if (!repo) {
+    if (!confirm(`${request.folder} は登録していないフォルダです。登録してから分岐しますか？`)) return;
+    const cfg = await api.addRepo();
+    if (!cfg) return;
+    state.config = cfg;
+    renderRepos();
+    repo = cfg.lastRepo;
+    if (!repo) return;
+  }
+  if (repo === origin.repo) { notice('分岐先には別のリポジトリを選んでください', 'error'); return; }
+  const firstLine = String(request.prompt || '').split('\n').find((line) => line.trim()) || '';
+  if (!confirm(`${basename(repo)} で新しい会話を分岐して、次の依頼を送ります。\n\n${firstLine.slice(0, 120)}`)) return;
+  inputStatus('pending', `${basename(repo)} で会話を分岐中`);
+  let result;
+  try {
+    result = await api.forkSession({ originId: origin.id, repo, prompt: request.prompt, index, skillMode: state.turnSkillMode });
+  } finally { inputStatus(); }
+  if (result.turn && result.turn.warning) notice(result.turn.warning);
+  await openSessionInRepo(repo, result.session.id);
+  state.running.add(result.session.id);
+  renderHeader();
+  renderSessions();
+}
+
+// 別のリポジトリの会話を開く（リポジトリ選択も切り替える。分岐元 ⇄ 分岐先の行き来）。
+async function openSessionInRepo(repo, id) {
+  if (repo && repo !== state.repo) {
+    if (!state.config.repos.includes(repo)) throw new Error('登録していないフォルダです');
+    await selectRepo(repo);
+    renderRepos();
+  }
+  await showArea('conversation');
+  await openSession(id);
 }
 
 function beginTaskTeaching(message) {
@@ -1042,7 +1126,7 @@ function renderMessages() {
     return;
   }
   for (const snapshot of cur.terminalSnapshots || []) box.append(terminalSnapshotNode(snapshot));
-  for (const m of cur.messages) box.append(messageNode(m));
+  cur.messages.forEach((m, index) => box.append(messageNode(m, index)));
   if (state.running.has(cur.id) && !isTmux(cur)) box.append(workingNode(cur.id, false));
   box.scrollTop = box.scrollHeight;
 }
@@ -1469,6 +1553,7 @@ function settingsPatch() {
     instructions: {
       enabled: $('instruction-enabled').checked,
       text: $('instruction-text').value,
+      forkEnabled: $('fork-enabled').checked,
       skills: state.settingsSkills,
       skillSelection: {
         enabled: $('skill-selection-enabled').checked,
@@ -1499,6 +1584,7 @@ async function openSettings() {
   $('use-worktree').checked = state.config.useWorktree;
   $('wsl-distro').value = state.config.wslDistro || '';
   $('instruction-enabled').checked = instructions.enabled;
+  $('fork-enabled').checked = instructions.forkEnabled !== false;
   $('instruction-text').value = instructions.text || '';
   $('skill-selection-enabled').checked = instructions.skillSelection.enabled;
   $('default-skill-mode').value = instructions.skillSelection.defaultMode;
