@@ -72,6 +72,16 @@ test('主要操作と工程設定は簡潔で分かりやすい文言を使う',
   assert.ok(renderer.includes('class="branch-if">もし') && renderer.includes('class="branch-then">なら'), '条件を文章として読める');
 });
 
+test('タスク概要の編集と、必要な事前入力は簡潔なダイアログで扱う', () => {
+  const renderer = read('renderer/automation/renderer.js');
+  const preload = read('preload.js');
+  const handlers = read('main/automation/handlers.js');
+  assert.ok(renderer.includes('名前と説明を編集') && renderer.includes("dialog('dlg-run', 'タスクの名前と説明'"));
+  assert.ok(renderer.includes("dialog('dlg-run', '実行前の入力'") && renderer.includes('入力して実行'));
+  assert.ok(preload.includes('updateMachineMetadata'));
+  assert.ok(handlers.includes("register('machine:updateMetadata'"));
+});
+
 test('手動実行は選択したスキルを実行情報へ残す', () => {
   const renderer = read('renderer/automation/renderer.js');
   const handlers = read('main/automation/handlers.js');

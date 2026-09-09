@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const model = require('./model');
+const YAML = require('yaml');
 
 const DIR = '.statemachine';
 
@@ -164,4 +165,27 @@ function remove(root, machine) {
   return { removed: true, machine };
 }
 
-module.exports = { DIR, machineDir, list, read, write, save, remove, exists, collectFiles };
+// タスクの概要だけを直す軽量な入口。識別名を変える場合はフォルダ全体を移すため、
+// 定義だけでなく教示情報や操作記録も置き去りにしない。
+function updateMetadata(root, machine, values) {
+  const current = String(machine || '').trim();
+  const next = String(values && values.machine || current).trim();
+  const name = String(values && values.name || '').trim();
+  const description = String(values && values.description || '').trim();
+  const from = machineDir(root, current);
+  const to = machineDir(root, next);
+  const workflowFile = path.join(from, 'workflow.yaml');
+  const source = readText(workflowFile);
+  if (source == null) throw new Error('タスクの定義が見つかりません');
+  if (next !== current && stat(to)) throw new Error(`識別名「${next}」は既に使われています`);
+
+  const doc = YAML.parseDocument(source);
+  if (doc.errors.length) throw new Error(`タスクの定義を読み取れません: ${doc.errors[0].message}`);
+  doc.set('name', name || next);
+  doc.set('description', description);
+  fs.writeFileSync(workflowFile, String(doc), 'utf8');
+  if (next !== current) fs.renameSync(from, to);
+  return { machine: next, name: name || next, description, renamed: next !== current };
+}
+
+module.exports = { DIR, machineDir, list, read, write, save, remove, updateMetadata, exists, collectFiles };
