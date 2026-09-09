@@ -231,6 +231,20 @@ function cmdKeys(name, args) {
   return `${TMUX} send-keys -t ${sq(name)} ${host.quoteArgv(args)}`;
 }
 
+// 埋め込み端末のホイール操作は tmux の履歴を正として扱う。上方向では copy-mode に入り、
+// 下端を越えたら -e により自動で通常画面へ戻る。
+function cmdScroll(name, lines) {
+  const count = Math.max(1, Math.min(200, Math.abs(Number(lines)) || 1));
+  if (Number(lines) < 0) {
+    return `${TMUX} copy-mode -e -t ${sq(name)} && ${TMUX} send-keys -t ${sq(name)} -X -N ${count} scroll-up`;
+  }
+  return `${TMUX} send-keys -t ${sq(name)} -X -N ${count} scroll-down`;
+}
+
+function cmdCancelCopy(name) {
+  return `${TMUX} send-keys -t ${sq(name)} -X cancel 2>/dev/null || true`;
+}
+
 function cmdKill(name) { return `${TMUX} kill-session -t ${sq(`=${name}`)}`; }
 
 function cmdResize(name, cols, rows) {
@@ -351,6 +365,9 @@ class Conversation {
         if (this.turn) this.finishTurn({ error: this.detail, text: extractReply(this.turn.before, (await this.historyText()) || text, this.turn.prompt) });
         return;
       }
+      // copy-mode 中に表示しているのは過去の履歴であり、CLI の現在状態ではない。
+      // ready/busy 判定へ使うとスクロールだけでターンを完了させるため、画面更新だけ行う。
+      if (screen.inMode) return;
       let state = classify(text, this.patterns);
       if (state === 'unknown' && this.patterns.idleQuietSec > 0 && Date.now() - this.lastChangeAt >= this.patterns.idleQuietSec * 1000) state = 'ready';
       const attention = state === 'attention';
@@ -470,11 +487,23 @@ class Conversation {
   }
 
   async keys(data) {
+    // 履歴を見たまま入力した場合は copy-mode を閉じ、キーを CLI へ確実に届ける。
+    await this.shell.run(cmdCancelCopy(this.name));
     for (const args of keysToArgs(data)) {
       const r = await this.shell.run(cmdKeys(this.name, args));
       if (!r.ok) throw new Error(r.error);
     }
     this.schedule(0);
+  }
+
+  async scroll(lines) {
+    const amount = Number(lines) || 0;
+    if (!amount) return false;
+    const r = await this.shell.run(cmdScroll(this.name, amount));
+    if (!r.ok && amount < 0) throw new Error(r.error);
+    this.sentOnce = false;
+    this.schedule(0);
+    return r.ok;
   }
 
   async resize(cols, rows) {
@@ -512,6 +541,6 @@ async function listSessions(shell) {
 module.exports = {
   SOCKET, TMUX, DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_READY, DEFAULT_BUSY, ATTENTION,
   sessionName, isChrome, attentionDetail, classify, compilePatterns, extractReply, keysToArgs,
-  cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdKill, cmdResize, cmdList,
+  cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdScroll, cmdCancelCopy, cmdKill, cmdResize, cmdList,
   Conversation, listSessions,
 };

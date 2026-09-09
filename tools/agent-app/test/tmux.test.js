@@ -26,6 +26,14 @@ test('WSL のパス変換', () => {
   if (process.platform !== 'win32') assert.strictEqual(host.toHostPath('/x/y'), '/x/y');
 });
 
+test('端末スクロールは tmux copy-mode の履歴を操作する', () => {
+  const up = tmux.cmdScroll('agent-app-test', -7);
+  assert.match(up, /copy-mode -e/);
+  assert.match(up, /-X -N 7 scroll-up/);
+  assert.match(tmux.cmdScroll('agent-app-test', 3), /-X -N 3 scroll-down/);
+  assert.match(tmux.cmdCancelCopy('agent-app-test'), /-X cancel/);
+});
+
 test('画面の判定: ready / busy / unknown', () => {
   const claude = tmux.compilePatterns({ readyPattern: '^[[:space:]]*[>?❯›][[:space:]]*$|│[[:space:]]*[>❯›]|\\? for shortcuts', busyPattern: 'esc to interrupt', readyTailLines: 3 });
   assert.strictEqual(tmux.classify('⏺ 考え中… (esc to interrupt)\n\n╭──╮\n│ > │\n╰──╯', claude), 'busy');

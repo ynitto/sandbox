@@ -892,6 +892,11 @@ function registerIpcHandlers(getWindow) {
     // 1 キーごとのセッション保存は入力遅延を生む。期限は open/submit/終了時に更新する。
     return c.keys(String(p.data || ''));
   });
+  handle('term:scroll', (p) => {
+    const c = conversations.get(p.id);
+    if (!c) throw new Error('端末が開いていない');
+    return c.scroll(p.lines);
+  });
   handle('term:resize', (p) => { const c = conversations.get(p.id); return c ? c.resize(p.cols, p.rows) : false; });
   handle('term:kill', async (p) => { const had = conversations.has(p.id); await closeConversation(p.id); return had; });
 
