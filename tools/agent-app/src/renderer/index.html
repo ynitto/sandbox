@@ -236,6 +236,10 @@
             <section id="task-create" hidden>
               <label class="task-create-label" for="task-purpose"><strong>自動化したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>
               <textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea>
+              <div class="task-launch-settings" aria-label="AIの起動設定">
+                <label>エージェント<select id="task-create-agent"></select></label>
+                <label>モデル（任意）<input id="task-create-model" placeholder="自動"></label>
+              </div>
               <div class="task-actions">
                 <details class="task-create-more"><summary>保存名を指定</summary><label class="sub" for="task-machine">英数字の保存名（任意）</label><input id="task-machine" placeholder="未指定なら自動で決定" size="18"></details>
                 <span class="spacer"></span>
@@ -246,6 +250,14 @@
               <p id="task-create-error" class="dlg-error" hidden></p>
             </section>
             <section id="task-workspace" hidden>
+              <section id="task-launch" class="task-launch-card" hidden>
+                <div><strong id="task-launch-title">AIと編集</strong></div>
+                <div class="task-launch-settings">
+                  <label>エージェント<select id="task-launch-agent"></select></label>
+                  <label>モデル（任意）<input id="task-launch-model" placeholder="自動"></label>
+                </div>
+                <div class="task-actions"><span class="spacer"></span><button type="button" id="task-launch-start" class="primary">tmuxで編集を始める</button></div>
+              </section>
               <p id="task-open-note" class="sub" hidden></p>
               <section id="task-terminal" class="terminal-stage" hidden>
                 <div class="terminal-head">

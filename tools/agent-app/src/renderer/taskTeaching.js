@@ -19,7 +19,7 @@
 
   const state = {
     deps: null, visible: false, repo: '', machine: '', title: '', agent: '', creating: false, editing: false, card: false, published: false,
-    session: null, phase: null, tools: null, running: false, pending: false, token: 0,
+    session: null, availableSession: null, phase: null, tools: null, running: false, pending: false, token: 0,
     input: null, record: { open: false, source: 'browser', target: '', active: false, busy: false, message: '', ok: true, request: null },
   };
 
@@ -55,12 +55,17 @@
   }
 
   function renderCreate() {
-    $('task-create-settings').textContent = state.deps.executionLabel();
+    populateExecutionInputs('task-create');
+    $('task-create-settings').textContent = state.deps.executionLabel(readExecutionInputs('task-create'));
     $('task-create-error').hidden = true;
     const purpose = $('task-purpose');
     if (!purpose.value && state.deps.takeIntent) {
       const intent = state.deps.takeIntent();
-      if (intent) purpose.value = intent.purpose || '';
+      if (intent) {
+        purpose.value = intent.purpose || '';
+        populateExecutionInputs('task-create', { agent: intent.agent, model: intent.model });
+        $('task-create-settings').textContent = state.deps.executionLabel(readExecutionInputs('task-create'));
+      }
     }
     purpose.focus();
   }
@@ -69,9 +74,17 @@
     const sess = state.session;
     const ph = state.phase;
     const hasTerminal = !!sess;
+    const waitingToLaunch = !hasTerminal;
+    $('task-launch').hidden = !waitingToLaunch;
+    if (waitingToLaunch) {
+      populateExecutionInputs('task-launch');
+      $('task-launch-title').textContent = state.published ? 'AIと編集' : '下書きの編集を続ける';
+      $('task-launch-start').textContent = state.availableSession ? 'tmuxで編集を続ける' : 'tmuxで編集を始める';
+      $('task-launch-start').disabled = state.pending;
+    }
     const note = $('task-open-note');
-    note.hidden = hasTerminal;
-    note.textContent = hasTerminal ? '' : `${state.deps.executionLabel()} を起動しています…`;
+    note.hidden = true;
+    note.textContent = '';
     $('task-terminal').hidden = !hasTerminal;
     $('task-composer').hidden = !hasTerminal;
     $('task-term-agent').textContent = sess ? [sess.cli, sess.model].filter(Boolean).join(' · ') : '';
@@ -84,6 +97,26 @@
     $('task-send').disabled = state.pending || !hasTerminal;
     renderRecord();
     setInputMode(state.input && state.input.mode === 'terminal' ? 'terminal' : 'message', { focus: false });
+  }
+
+  function populateExecutionInputs(prefix, preferred = null) {
+    const select = $(`${prefix}-agent`);
+    const model = $(`${prefix}-model`);
+    if (!select || !model) return;
+    const defaults = state.deps.executionDefaults();
+    const wanted = String((preferred && preferred.agent) || select.value || state.agent || defaults.agent || '');
+    const agents = state.deps.agentNames();
+    select.innerHTML = agents.length
+      ? agents.map((name) => `<option value="${name.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"${name === wanted ? ' selected' : ''}>${name}</option>`).join('')
+      : '<option value="">利用できるエージェントがありません</option>';
+    select.disabled = !agents.length;
+    if (agents.includes(wanted)) select.value = wanted;
+    if (preferred && preferred.model != null) model.value = preferred.model;
+    else if (!model.value) model.value = defaults.model || '';
+  }
+
+  function readExecutionInputs(prefix) {
+    return { agent: $(`${prefix}-agent`).value, model: $(`${prefix}-model`).value.trim() };
   }
 
   function setInputMode(mode, { focus = true } = {}) {
@@ -106,6 +139,7 @@
   async function loadView() {
     const token = (state.token += 1);
     state.session = null;
+    state.availableSession = null;
     state.phase = null;
     state.running = false;
     term().detach();
@@ -115,8 +149,8 @@
     try { view = await api.automation.teachSession(state.repo, state.machine); } catch (err) { error(err.message); return; }
     if (token !== state.token) return;
     state.tools = view.tools || null;
-    if (view.session) await attach(view.session, token);
-    else if (state.editing) { await startTeaching(token); return; }
+    state.availableSession = view.session || null;
+    if (view.session) populateExecutionInputs('task-launch', { agent: view.session.cli, model: view.session.model });
     renderShell();
   }
 
@@ -137,16 +171,19 @@
     }
   }
 
-  // 編集に入った時点で会話がまだ無ければ、そのまま AI を起こす（押させない）。
+  // 設定を確認してボタンを押した後にだけ tmux を開く。既存の下書きは同じセッションへ戻る。
   async function startTeaching(token = state.token) {
     state.pending = true;
     renderShell();
     try {
-      const options = state.deps.executionOptions(state.agent);
-      const view = await api.automation.teachStart({ repo: state.repo, machine: state.machine, ...options });
+      const options = state.deps.executionOptions(readExecutionInputs('task-launch'));
+      const view = state.availableSession
+        ? { session: state.availableSession, tools: state.tools, started: false }
+        : await api.automation.teachStart({ repo: state.repo, machine: state.machine, ...options });
       if (token !== state.token) return;
       state.pending = false;
       state.tools = view.tools || state.tools;
+      state.availableSession = null;
       if (view.session) { state.running = state.running || !!view.started; await attach(view.session, token); }
       state.deps.reloadTasks();
     } catch (err) {
@@ -166,7 +203,7 @@
     errorNode.hidden = true;
     $('task-create-start').disabled = true;
     try {
-      const options = state.deps.executionOptions();
+      const options = state.deps.executionOptions(readExecutionInputs('task-create'));
       const view = await api.automation.teachStart({ repo: state.repo, purpose, machine, ...options });
       $('task-purpose').value = '';
       $('task-machine').value = '';
@@ -335,7 +372,7 @@
     state.published = next.published;
     state.visible = true;
     state.record = { ...state.record, open: false, request: null, message: '' };
-    if (state.creating) { state.token += 1; state.session = null; term().detach(); renderShell(); return; }
+    if (state.creating) { state.token += 1; state.session = null; state.availableSession = null; term().detach(); renderShell(); return; }
     loadView();
   }
 
@@ -386,6 +423,10 @@
       },
     });
     $('task-create-start').onclick = () => create().catch((err) => error(err.message));
+    $('task-launch-start').onclick = () => startTeaching().catch((err) => error(err.message));
+    for (const id of ['task-create-agent', 'task-create-model']) $(id).addEventListener('change', () => {
+      $('task-create-settings').textContent = state.deps.executionLabel(readExecutionInputs('task-create'));
+    });
     $('task-purpose').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); create().catch((err) => error(err.message)); }
     });

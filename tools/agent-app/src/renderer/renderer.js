@@ -1519,14 +1519,21 @@ async function init() {
   TaskTeaching.init({
     notice,
     isRunning: (id) => state.running.has(id),
-    executionOptions: (agent = '') => {
+    executionOptions: (overrides = {}) => {
       const selected = selectedExecution(state.config.execution.defaultPolicy);
-      return { policy: selected.policy, cli: agent || selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
+      return { policy: selected.policy, cli: overrides.agent || selected.cli, model: overrides.model != null ? overrides.model : selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
     },
-    executionLabel: () => {
+    executionDefaults: () => {
+      const selected = selectedExecution(state.config.execution.defaultPolicy);
+      return { agent: selected.cli, model: selected.model };
+    },
+    agentNames: () => state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name),
+    executionLabel: (overrides = {}) => {
       const selected = selectedExecution(state.config.execution.defaultPolicy);
       const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
-      return `${policy.label} · ${selected.cli || 'エージェント未設定'}${selected.model ? ` / ${selected.model}` : ''}${state.config.execution.defaultAutoApprove ? ' · 自動承認' : ' · 確認あり'}`;
+      const cli = overrides.agent || selected.cli;
+      const model = overrides.model != null ? overrides.model : selected.model;
+      return `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}${state.config.execution.defaultAutoApprove ? ' · 自動承認' : ' · 確認あり'}`;
     },
     takeIntent: () => {
       const intent = state.pendingTaskIntent && state.pendingTaskIntent.root === state.repo ? state.pendingTaskIntent : null;
