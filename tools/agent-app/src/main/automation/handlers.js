@@ -11,6 +11,7 @@ const runner = require('./runner');
 const ai = require('./ai');
 const aiDiff = require('./ai-diff');
 const agentLoop = require('./agent-loop');
+const taskInputs = require('./task-inputs');
 const flowModel = require('./flow-model');
 const flowStore = require('./flow-store');
 const agentFlow = require('./agent-flow');
@@ -204,6 +205,13 @@ function registerIpcHandlers(getWindow, options = {}) {
     return { dir: res.dir, written: res.written, warnings: res.warnings, machine: res.spec.machine };
   });
   register('machine:delete', (p) => store.remove(selectedRoot(p), String(p.machine || '')));
+  register('machine:updateMetadata', (p) => {
+    const root = selectedRoot(p);
+    const before = String(p.machine || '');
+    const result = store.updateMetadata(root, before, p.values || {});
+    taskInputs.renameReferences(root, before, result.machine);
+    return result;
+  });
   register('machine:openFolder', (p) => {
     const root = selectedRoot(p);
     return shell.openPath(store.machineDir(root, String(p.machine || '')));
@@ -294,7 +302,10 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('flow:run:openDelivery', (p) => agentFlow.openDelivery(
     selectedRoot(p), p.runId, options.hooks && options.hooks.openDelivery, hostRootOf(p),
   ));
-  register('run:snapshot', (p) => agentLoop.inspect({ root: selectedRoot(p), capture: runCapture }));
+  register('run:snapshot', async (p) => {
+    const root = selectedRoot(p);
+    return taskInputs.enrichSnapshot(root, await agentLoop.inspect({ root, capture: runCapture }));
+  });
   register('run:schedule', (p) => agentLoop.saveSchedule({
     root: selectedRoot(p), payload: p.schedule, capture: runCapture,
   }));
@@ -406,7 +417,7 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('run:start', async (p, event) => {
     const root = selectedRoot(p);
     const taskId = String(p.taskId || p.machine || '');
-    const snapshot = await agentLoop.inspect({ root, capture: runCapture });
+    const snapshot = taskInputs.enrichSnapshot(root, await agentLoop.inspect({ root, capture: runCapture }));
     const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
     const task = tasks.find((item) => String(item.id || item.machine) === taskId)
       || (p.machine ? { id: `machine:${p.machine}`, kind: 'statemachine', machine: String(p.machine) } : null);
@@ -434,6 +445,14 @@ function registerIpcHandlers(getWindow, options = {}) {
       const parameters = p.parameters && typeof p.parameters === 'object'
         ? p.parameters
         : { ...(p.context && typeof p.context === 'object' ? p.context : {}), ...(p.input ? { input: p.input } : {}) };
+      const input = taskInputs.requiredInput(task, parameters);
+      if (input.missing.length) {
+        const error = new Error('実行前に必要な入力があります');
+        error.code = 'INPUT_REQUIRED';
+        error.detail = { fields: input.missing, defaults: input.values };
+        throw error;
+      }
+      Object.assign(parameters, input.values);
       preparation = options.hooks && options.hooks.prepareRun
         ? await options.hooks.prepareRun({
           root, task, agent, model: p.model || cfg.model, parameters,

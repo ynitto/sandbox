@@ -536,6 +536,7 @@ function render() {
     if (taskEditing) {
       bindTaskDetailTabs(main);
       for (const button of main.querySelectorAll('[data-task-delete]')) button.addEventListener('click', () => deleteTask(selectedExecutionMachine()));
+      for (const button of main.querySelectorAll('[data-task-metadata]')) button.addEventListener('click', () => openTaskMetadata(selectedExecutionMachine()));
       const back = main.querySelector('[data-edit-back]');
       if (back) back.addEventListener('click', () => stopEditing());
       const target = main.querySelector('#editing-target');
@@ -649,6 +650,7 @@ function bindHome(main) {
   });
   bindTaskDetailTabs(main);
   for (const button of main.querySelectorAll('[data-task-delete]')) button.addEventListener('click', () => deleteTask(selectedExecutionMachine()));
+  for (const button of main.querySelectorAll('[data-task-metadata]')) button.addEventListener('click', () => openTaskMetadata(selectedExecutionMachine()));
   on('run-edit', () => { const machine = selectedExecutionMachine(); if (machine) openMachine(machine.machine); });
   for (const button of main.querySelectorAll('[data-run-teach]')) button.addEventListener('click', () => {
     const machine = selectedExecutionMachine();
@@ -880,8 +882,37 @@ function taskDetailShellHtml(machine, activeTab, content, { editor = false, teac
     ? '<button type="button" data-run-teach>AIに変更を相談</button>'
     : '';
   const deleteAction = machine.kind === 'statemachine' && machine.machine ? '<button type="button" class="danger ghost" data-task-delete>削除</button>' : '';
-  const header = `<header class="execution-title">${presentation.header}${teachAction || deleteAction ? `<div class="row">${teachAction}${deleteAction}</div>` : ''}</header>`;
+  const metadataAction = machine.kind === 'statemachine' && machine.machine ? '<button type="button" class="ghost" data-task-metadata>名前と説明を編集</button>' : '';
+  const header = `<header class="execution-title">${presentation.header}${teachAction || metadataAction || deleteAction ? `<div class="row">${teachAction}${metadataAction}${deleteAction}</div>` : ''}</header>`;
   return `<div class="task-detail-shell${editor ? ' is-editor' : ''}${teaching ? ' is-teaching' : ''}">${header}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
+}
+
+function openTaskMetadata(machine) {
+  const dlg = dialog('dlg-run', 'タスクの名前と説明', 'record', `
+    <div class="field"><label>名前</label><input id="task-meta-name" value="${esc(machine.name || '')}" autofocus></div>
+    <div class="field"><label>説明</label><textarea id="task-meta-description" rows="3" placeholder="このタスクで行うこと">${esc(machine.description || '')}</textarea></div>
+    <div class="field"><label>識別名 <span class="muted small">フォルダ名</span></label><input id="task-meta-machine" value="${esc(machine.machine)}" spellcheck="false"></div>
+    <p class="msg err" id="task-meta-error" hidden></p>
+    <div class="row"><button type="button" class="primary" id="task-meta-save">保存</button></div>`);
+  dlg.querySelector('#task-meta-save').addEventListener('click', async () => {
+    const values = { name: dlg.querySelector('#task-meta-name').value, description: dlg.querySelector('#task-meta-description').value, machine: dlg.querySelector('#task-meta-machine').value };
+    try {
+      const saved = await automationHost.updateMachineMetadata(state.root, machine.machine, values);
+      dlg.close();
+      await loadMachines();
+      await loadExecutionSnapshot();
+      state.execution.selected = `machine:${saved.machine}`;
+      state.current = null;
+      state.view = 'home';
+      notifyHost('tasks', saved.machine);
+      render();
+      toast('名前と説明を保存しました');
+    } catch (err) {
+      const message = dlg.querySelector('#task-meta-error');
+      message.textContent = err.message;
+      message.hidden = false;
+    }
+  });
 }
 
 // 「手順」タブで「編集」を押した状態。会話画面と同じく、上部ツールバーの下へ
@@ -1984,6 +2015,12 @@ async function startRun(mode) {
   const selected = taskRunExecution();
   const runAgent = selectedAgent(selected.agent);
   if (mode === 'run' && !runAgent) { toast('実行環境で使う AI を確認してください', true); return; }
+  if (mode === 'run') {
+    const defaults = machine.parameterDefaults || {};
+    const missing = (machine.parameters || []).filter((name) => !String(state.run.parameters[name] || defaults[name] || '').trim());
+    if (missing.length) { openRunInputDialog(machine, missing); return; }
+    state.run.parameters = { ...defaults, ...state.run.parameters };
+  }
   run.lines = [];
   run.result = null;
   run.error = '';
@@ -2004,6 +2041,20 @@ async function startRun(mode) {
     if (item.type === 'skill') appendLog({ kind: item.status === 'error' ? 'stderr' : 'stdout', line: `適用スキル: ${item.title}（${item.detail}）` });
   }
   if (res.warning) appendLog({ kind: 'stderr', line: res.warning });
+}
+
+function openRunInputDialog(machine, fields) {
+  const dlg = dialog('dlg-run', '実行前の入力', 'record', `
+    <p class="muted small">このタスクを始めるために必要な内容を入力してください。</p>
+    <div class="run-input-grid">${fields.map((name) => `<div class="field"><label>${esc(name)}</label><input data-required-input="${esc(name)}"></div>`).join('')}</div>
+    <p class="msg err" data-input-error hidden>すべて入力してください。</p>
+    <div class="row"><button type="button" class="primary" data-input-run>入力して実行</button></div>`);
+  dlg.querySelector('[data-input-run]').addEventListener('click', () => {
+    for (const input of dlg.querySelectorAll('[data-required-input]')) state.run.parameters[input.dataset.requiredInput] = input.value.trim();
+    if (fields.some((name) => !state.run.parameters[name])) { dlg.querySelector('[data-input-error]').hidden = false; return; }
+    dlg.close();
+    startRun('run');
+  });
 }
 
 function appendLog(entry) {
