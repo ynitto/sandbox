@@ -163,9 +163,30 @@ test('候補確定型のスキル入力はEnterを2回送る', async () => {
   assert.strictEqual(calls.filter((command) => /'Enter'/.test(command)).length, 2);
 });
 
-test('pane_dead 直後に終了コードが未確定なら、揃うのを少し待ってから dead にする', async () => {
-  // tmux は pty が閉じた時点で pane_dead=1 になるが、pane_dead_status は子プロセスの
-  // 回収後にしか出ない。最初の観測で確定させると「終了コード ?」になる。
+test('終了コードはペインへ印字した行から読む（tmux の回収を待たない）', async () => {
+  // tmux 3.4 は pty が閉じた時点で pane_dead=1 にするが、pane_dead_status は子プロセスの
+  // 回収後にしか出ず、そのまま戻らないことがある。印字が読めれば待たずに確定できる。
+  assert.strictEqual(tmux.exitStatusFrom('$ stub\n\n[agent-app exit 7]\n'), 7);
+  assert.strictEqual(tmux.exitStatusFrom('[agent-app exit 1]\n…\n[agent-app exit 0]'), 0, '最後の 1 件');
+  assert.strictEqual(tmux.exitStatusFrom('$ stub'), null);
+
+  const screens = [];
+  const shell = { run: async () => ({ ok: true, output: screens.shift() }) };
+  const conv = new tmux.Conversation({ id: 'dead-printed', shell, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
+  conv.schedule = () => {};
+  conv.historyText = async () => '';
+  // pane_dead_status は空のまま（回収されない）でも、印字した終了コードで確定する
+  screens.push(`0|0|100|24|1||0|0\n\x1e$ stub\n\n[agent-app exit 7]\n`);
+  await conv.poll();
+  assert.strictEqual(conv.phase, 'dead');
+  assert.match(conv.detail, /終了コード 7/);
+
+  // 印字した行は応答本文に混ぜない
+  assert.strictEqual(tmux.extractReply('> \n', '> bye\nbye!\n\n[agent-app exit 7]\n> ', 'bye'), 'bye!');
+});
+
+test('印字が読めないときだけ、pane_dead_status が揃うのを少し待ってから dead にする', async () => {
+  // CLI が signal で落ちて印字まで来なかったときと、この版より前に起こしたセッション。
   const screens = [];
   const shell = { run: async () => ({ ok: true, output: screens.shift() }) };
   const screen = (status) => `0|0|100|24|1|${status}|0|0\n\x1e$ stub\n`;
@@ -239,7 +260,9 @@ test('tmux コマンド文字列は自前のソケットを使い、引用が壊
   const s = tmux.cmdNew({ name: 'agent-app-x', cwd: "/tmp/it's", argv: ['claude', '--session-id', 'S'], cols: 100, rows: 30 });
   assert.ok(s.startsWith(`tmux -L agent-app new-session -d -s 'agent-app-x' -c '/tmp/it'"'"'s' -x 100 -y 30 bash -lc`));
   // bash -lc の引数は一重引用で包み、その中の argv も一重引用なので '"'"' で閉じ直す
-  assert.ok(s.includes(`exec '"'"'claude'"'"' '"'"'--session-id'"'"' '"'"'S'"'"''`), s);
+  assert.ok(s.includes(`'"'"'claude'"'"' '"'"'--session-id'"'"' '"'"'S'"'"';`), s);
+  // 終わりに終了コードを印字してから同じコードで抜ける（tmux の回収を待たずに読めるように）
+  assert.ok(s.includes('rc=$?') && s.includes('[agent-app exit %s]') && s.includes('exit "$rc"'), s);
   assert.ok(s.includes('remain-on-exit on') && s.includes('window-size manual'));
   assert.ok(tmux.cmdScreen('n').includes('capture-pane -p -e -t'));
   assert.ok(tmux.cmdScreen('n', { history: true }).includes('-J -S -'));

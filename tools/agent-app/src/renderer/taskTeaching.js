@@ -297,7 +297,7 @@
     const windows = rec.source === 'windows';
     $('task-record-source').value = rec.source;
     $('task-record-source').disabled = rec.active;
-    $('task-record-target-label').textContent = windows ? 'アプリ名' : '開始 URL';
+    $('task-record-target-label').textContent = windows ? 'アプリ名' : 'URL';
     const target = $('task-record-target');
     target.placeholder = windows ? '例: 勤怠管理' : 'https://…';
     if (target.value !== rec.target) target.value = rec.target;
