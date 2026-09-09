@@ -62,11 +62,14 @@ test('tmux会話はメッセージ入力と端末操作を明示的に切り替�
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const term = fs.readFileSync(path.join(SRC, 'renderer/term.js'), 'utf8');
+  const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
   assert.match(html, /id="input-mode-message"[^>]*aria-pressed="true"[^>]*>メッセージ</);
   assert.match(html, /id="input-mode-terminal"[^>]*aria-pressed="false"[^>]*>端末操作</);
   assert.match(html, /id="terminal-stage"[^>]*>[\s\S]*id="term-host"/);
   assert.match(html, /id="terminal-keys"[^>]*hidden[\s\S]*data-terminal-key="C-c"/);
   assert.match(html, /data-terminal-key="Enter"[^>]*aria-label="端末へEnterキーを送る"/);
+  assert.match(preload, /termScroll:\s*\(id, lines\)\s*=>\s*invoke\('term:scroll'/);
+  assert.match(term, /addEventListener\('wheel',[\s\S]*api\.termScroll/);
   assert.match(renderer, /Enter:\s*'\\r'/);
   assert.doesNotMatch(html, /キー入力はそのまま CLI へ届く/);
   assert.match(renderer, /function setInputMode/);

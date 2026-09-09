@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('api', {
   termUnwatch: (id) => invoke('term:unwatch', { id }),
   termSubmit: (id, text) => invoke('term:submit', { id, text }),
   termKeys: (id, data) => invoke('term:keys', { id, data }),
+  termScroll: (id, lines) => invoke('term:scroll', { id, lines }),
   termResize: (id, cols, rows) => invoke('term:resize', { id, cols, rows }),
   termKill: (id) => invoke('term:kill', { id }),
   // opts: { withStatus }。false なら変更数・先行コミット数を数えない（速い）
