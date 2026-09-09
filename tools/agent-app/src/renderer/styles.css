@@ -538,11 +538,15 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .task-launch-card p { margin: 5px 0 0; }
 #task-workspace { min-width: 0; width: 100%; display: grid; gap: 10px; }
 #task-terminal { height: min(46vh, 480px); min-height: 260px; }
-/* 「AIと編集」も通常の会話と同じ余白・端末カード・中央寄せ入力欄で構成する。 */
-#task-teaching.in-card { gap: 10px; height: 100%; min-height: 0; }
-#task-teaching.in-card #task-workspace { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
-#task-teaching.in-card #task-workspace:has(.task-launch-card:not([hidden])) { height: auto; grid-template-rows: auto; }
-#task-teaching.in-card #task-terminal { height: min(46vh, 480px); min-height: 220px; margin: 0 2px; }
+/* 「AIと編集」は会話画面（#chat）と同じ組み方にする: 端末が残りの高さを使い（1fr）、
+   見本の記録が会話履歴の位置（2 行目）、入力欄が下に付く（3 行目）。 */
+#task-teaching.in-card { height: 100%; min-height: 0; gap: 0; grid-template-rows: minmax(0, 1fr); }
+#task-teaching.in-card #task-workspace { height: 100%; min-height: 0; gap: 0; grid-template-rows: minmax(0, 1fr) auto auto; }
+#task-teaching.in-card #task-terminal { grid-row: 1; height: auto; min-height: 220px; margin: 0; }
+#task-teaching.in-card #task-record { grid-row: 2; margin: 8px 0 0; }
+#task-teaching.in-card #task-composer { grid-row: 3; margin: 10px auto 6px; }
+/* tmux を開く前（起動設定のカードだけ）は残りの高さへ引き伸ばさず、上に寄せる。 */
+#task-teaching.in-card #task-workspace:has(.task-launch-card:not([hidden])) { height: auto; grid-template-rows: none; align-content: start; }
 #task-record { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 #task-record input { min-width: 220px; }
 #task-record .sub.error { color: var(--danger); }

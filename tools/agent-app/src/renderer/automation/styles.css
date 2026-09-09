@@ -128,7 +128,8 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .execution-card-head > div { min-width: 0; }
 .execution-card-head h3 { font-size: 15px; }
 .execution-card-head p { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.task-conversation-editor { min-width: 0; display: grid; gap: 12px; }
+/* 会話画面と同じく、ツールバー（auto）の下に端末と入力欄（残りの高さ）を縦に並べる。 */
+.task-conversation-editor { min-width: 0; min-height: 0; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; }
 .task-conversation-toolbar { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .task-conversation-toolbar .editing-target { min-width: 0; display: flex; align-items: center; gap: 8px; }
 .task-conversation-toolbar .editing-target span { color: var(--muted); font-size: 12px; }

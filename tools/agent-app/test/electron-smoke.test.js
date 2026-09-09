@@ -240,7 +240,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_TASK_STEPS_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TASK_STEPS_SCREENSHOT });
     }
-    assert.strictEqual(await workspace.locator('#b-assist').textContent(), '編集');
+    assert.strictEqual(await workspace.locator('#b-assist').textContent(), 'AIと編集');
     assert.strictEqual(await workspace.locator('#b-run').textContent(), 'テスト');
     const toolbar = await workspace.locator('.embedded-editor-toolbar').boundingBox();
     const toolbarTitle = await workspace.locator('.embedded-editor-toolbar .bar-center').boundingBox();
@@ -254,8 +254,62 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await workspace.locator('[data-step="0"]').click();
     await workspace.locator('#b-assist').click();
     await win.locator('#task-teaching:not([hidden])').waitFor({ timeout: 20000 });
+    if (process.env.AGENT_APP_TEACHING_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
+    }
     await assertTaskLayout('編集');
-    assert.match(await workspace.locator('.execution-card-head').first().textContent(), /AIと編集/);
+    assert.match(await workspace.locator('.task-conversation-toolbar').textContent(), /AIと編集/);
+    // 会話画面と同じ組み方: ツールバーの直下に会話面が付き、tmux を開く前の起動カードは
+    // 残りの高さへ引き伸ばされず上に寄る。
+    const teachingLayout = await win.evaluate(() => {
+      const box = (node) => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
+      const workbench = document.getElementById('automation-workbench').shadowRoot;
+      return {
+        toolbar: box(workbench.querySelector('.task-conversation-toolbar')),
+        panel: box(workbench.querySelector('.task-tab-panel')),
+        launch: box(document.getElementById('task-launch')),
+      };
+    });
+    assert.ok(teachingLayout.launch.top - teachingLayout.toolbar.bottom <= 24,
+      `起動カードがツールバーから離れている: ${JSON.stringify(teachingLayout)}`);
+    assert.ok(teachingLayout.launch.height < teachingLayout.panel.height / 2,
+      `起動カードが残りの高さへ引き伸ばされている: ${JSON.stringify(teachingLayout)}`);
+    // tmux を開いた後の面を再現する（この環境では CLI を起動できない）。会話画面と同じく、
+    // 端末が残りの高さを使い、入力欄が下に付く。
+    const terminalLayout = await win.evaluate(() => {
+      const box = (node) => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height, width: r.width }; };
+      const workbench = document.getElementById('automation-workbench').shadowRoot;
+      document.getElementById('task-launch').hidden = true;
+      document.getElementById('task-terminal').hidden = false;
+      document.getElementById('task-composer').hidden = false;
+      window.TaskTerm.attach('layout-check', document.getElementById('task-term-host'));
+      window.TaskTerm.refit();
+      window.TaskTerm.applyScreen({ id: 'layout-check', text: '$ codex\n> 工程 1 を見直しています…', cursor: { x: 0, y: 2 } });
+      return {
+        toolbar: box(workbench.querySelector('.task-conversation-toolbar')),
+        panel: box(workbench.querySelector('.task-tab-panel')),
+        terminal: box(document.getElementById('task-terminal')),
+        composer: box(document.querySelector('#task-composer')),
+      };
+    });
+    assert.ok(terminalLayout.terminal.top - terminalLayout.toolbar.bottom <= 24,
+      `端末がツールバーから離れている: ${JSON.stringify(terminalLayout)}`);
+    assert.ok(terminalLayout.terminal.height >= 220 && terminalLayout.terminal.height > terminalLayout.composer.height,
+      `端末が残りの高さを使っていない: ${JSON.stringify(terminalLayout)}`);
+    assert.ok(terminalLayout.composer.top >= terminalLayout.terminal.bottom
+      && terminalLayout.panel.bottom - terminalLayout.composer.bottom <= 24,
+      `入力欄が端末の下に付いていない: ${JSON.stringify(terminalLayout)}`);
+    assert.ok(Math.abs(terminalLayout.composer.width - terminalLayout.terminal.width) <= 2,
+      `端末と入力欄の幅が揃っていない: ${JSON.stringify(terminalLayout)}`);
+    if (process.env.AGENT_APP_TEACHING_TERMINAL_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_TEACHING_TERMINAL_SCREENSHOT });
+    }
+    await win.evaluate(() => {
+      window.TaskTerm.detach();
+      document.getElementById('task-terminal').hidden = true;
+      document.getElementById('task-composer').hidden = true;
+      document.getElementById('task-launch').hidden = false;
+    });
     assert.strictEqual(await workspace.locator('#editing-target').inputValue(), 'step:step_1', '選択した工程を編集対象へ引き継ぐ');
     await workspace.locator('#editing-target').selectOption('workflow');
     assert.strictEqual(await workspace.locator('#editing-target').inputValue(), 'workflow', '編集画面で全体へ切り替えられる');
@@ -264,9 +318,6 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.deepStrictEqual(await workspace.locator('.task-detail-tabs [role="tab"]').allTextContents(), ['概要', '手順', '履歴']);
     assert.match(await workspace.locator('.task-detail-shell').textContent(), /リリース確認.*利用可能/s);
     assert.strictEqual(await win.locator('#task-teaching.in-card').count(), 1, 'カードの中の端末は枠と影を持たない');
-    if (process.env.AGENT_APP_TEACHING_SCREENSHOT) {
-      await win.screenshot({ path: process.env.AGENT_APP_TEACHING_SCREENSHOT });
-    }
     await workspace.locator('[data-edit-back]').click();
     await workspace.locator('[data-step="0"]').waitFor({ timeout: 20000 });
     await workspace.locator('[data-task-tab="history"]').click();

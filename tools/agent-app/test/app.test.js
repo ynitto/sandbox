@@ -69,7 +69,10 @@ test('tmux会話はメッセージ入力と端末操作を明示的に切り替�
   assert.match(html, /id="terminal-keys"[^>]*hidden[\s\S]*data-terminal-key="C-c"/);
   assert.match(html, /data-terminal-key="Enter"[^>]*aria-label="端末へEnterキーを送る"/);
   assert.match(preload, /termScroll:\s*\(id, lines\)\s*=>\s*invoke\('term:scroll'/);
-  assert.match(term, /addEventListener\('wheel',[\s\S]*api\.termScroll/);
+  // xterm の既定ホイール処理を止めるには hostEl の wheel リスナーでは足りない。
+  // attachCustomWheelEventHandler で受け取り、tmux へ転送したら false を返す。
+  assert.doesNotMatch(term, /addEventListener\('wheel'/);
+  assert.match(term, /attachCustomWheelEventHandler\(\(event\) => \{[\s\S]*api\.termScroll[\s\S]*return false;\s*\}\);/);
   assert.match(term, /p\.scrollOffset > 0[\s\S]*\?25l/, '履歴表示中は現在位置のカーソルを重ねない');
   assert.match(renderer, /Enter:\s*'\\r'/);
   assert.doesNotMatch(html, /キー入力はそのまま CLI へ届く/);
@@ -363,8 +366,8 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
   assert.match(renderer, /function bindTaskDetailTabs\(/);
   assert.ok(!renderer.includes('data-task-tab="teach"'), 'AI相談のタブは持たない');
   assert.match(renderer, /id="editing-target"/);
-  assert.match(renderer, /id="edit-agent"/);
-  assert.match(renderer, /id="b-assist"[^>]*>編集</);
+  assert.match(fs.readFileSync(path.join(SRC, 'renderer', 'index.html'), 'utf8'), /id="task-launch-agent"/, '起動設定は親の起動カードにある');
+  assert.match(renderer, /id="b-assist"[^>]*>AIと編集</);
   assert.match(renderer, /id="b-run"[^>]*>テスト</);
   assert.match(renderer, /class="edit-controls"/, 'エージェントと編集ボタンを一つの操作グループにする');
   assert.match(workbenchCss, /\.task-detail-shell\.is-editor \.task-tab-panel \{[^}]*grid-template-rows: auto minmax\(0, 1fr\)/,
@@ -375,7 +378,7 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
     '選択中の工程を編集画面の初期対象へ引き継ぐ');
   assert.match(renderer, /target\.value === 'workflow'[\s\S]*stepId: target\.value\.slice\(5\)/,
     '編集画面内で全体と工程を切り替えられる');
-  assert.match(renderer, /function editingCardHtml\(/[\s\S]*class="task-conversation-editor"/,
+  assert.match(renderer, /function editingCardHtml\([\s\S]*class="task-conversation-editor"/,
     'AI編集は実行カードに二重に囲わず会話レイアウトを使う');
   assert.match(renderer, /teachingFeature\.editorSlotHtml\(machine,[^)]*selected/,
     '選択した編集対象をタスク会話へ引き継ぐ');
