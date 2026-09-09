@@ -155,6 +155,34 @@ class DefsTests(unittest.TestCase):
         expected = agentcli.headless_cmd(spec, "qwen3", "<PROMPT>", readonly=False)["argv"]
         self.assertEqual(payload["argv_write"], expected)
 
+    def test_the_listed_cost_matches_the_listed_model(self):
+        """`cost=` は `model=` と同じ組で解いた値（定義がモデル別を宣言していれば）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = pathlib.Path(tmp) / "agents"
+            agents.mkdir()
+            (agents / "costy.json").write_text(json.dumps({
+                "command": ["costy"], "relative_cost": 1, "default_model": "small",
+                "model_flag": "--model",
+                "models": {"small": {"relative_cost": 1}, "big": {"relative_cost": 3}}}),
+                encoding="utf-8")
+            old = os.environ.get("KIRO_AGENTS_DIR")
+            os.environ["KIRO_AGENTS_DIR"] = str(agents)
+            agentcli.clear_cache()
+            try:
+                for model, cost in (("big", 3.0), ("small", 1.0), (None, 1.0)):
+                    out = io.StringIO()
+                    argv = ["costy", "--json"] + (["--model", model] if model else [])
+                    self.assertEqual(herdcli.cmd_defs(argv, out=out), 0)
+                    payload = json.loads(out.getvalue())
+                    self.assertEqual(payload["model"], model or "small")
+                    self.assertEqual(payload["relative_cost"], cost, model)
+            finally:
+                if old is None:
+                    os.environ.pop("KIRO_AGENTS_DIR", None)
+                else:
+                    os.environ["KIRO_AGENTS_DIR"] = old
+                agentcli.clear_cache()
+
     def test_a_purpose_resolves_through_the_variant(self):
         """variant は入口も agent_cli も増やさず、profile を付け替えるだけ。"""
         out = io.StringIO()
