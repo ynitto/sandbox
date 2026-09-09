@@ -460,6 +460,9 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .policy-fieldset { display: grid; gap: 4px; margin: 0 0 12px; padding: 8px 4px 14px; border: 0; border-bottom: 1px solid var(--line); }
 .policy-fieldset legend { padding: 0 0 7px; font-size: 13px; font-weight: 600; }
 .policy-fieldset label { min-height: 34px; display: flex; color: var(--text); cursor: pointer; }
+/* 選べない方針・tier（最適化が効いていないとき）。理由は出さず薄くするだけ */
+.policy-fieldset label.is-off, .tier-row.is-off { opacity: .5; cursor: default; }
+.tier-row.is-off { pointer-events: none; }
 .policy-fieldset label small { margin-left: auto; color: var(--muted); }
 .tier-grid { display: flex; flex-direction: column; gap: 7px; padding-bottom: 14px; }
 .tier-row { display: grid; grid-template-columns: 90px minmax(130px, 1fr) minmax(130px, 1fr); align-items: end; gap: 8px; padding: 8px 4px; border: 1px solid var(--line); border-radius: 9px; }

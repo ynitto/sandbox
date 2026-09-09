@@ -79,6 +79,10 @@ preflight を失う。設計: docs/plans/2026-08-27 設計 §6。使う人は `a
 サブコマンドの綴り・profile の割当・フラグ・環境変数・上限・終了状態は
 [`docs/specs/agent-herd-spec.md`](../../docs/specs/agent-herd-spec.md)。
 
+agent-app（デスクトップ）は agent-herd が無くても会話とタスクが動き、入れると `herd`（費用 0 のローカル
+LLM）を会話・タスク・AI 支援で選べるようになる。何が増えるかは
+[`docs/plans/2026-09-09-agent-app-standalone-and-herd-benefits-design.md`](../../docs/plans/2026-09-09-agent-app-standalone-and-herd-benefits-design.md)。
+
 分岐は `basename(argv[0])` の 1 回だけで、あとはサブコマンドが決める:
 
 ```bash

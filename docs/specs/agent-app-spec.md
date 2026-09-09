@@ -26,9 +26,11 @@ Electron アプリです。CLI は tmux 上で対話起動し、画面はその�
 tmux が無くても動きます。その場合は 1 ターン 1 プロセスのヘッドレス実行（`-p` 相当）になり、
 設定画面の「実行環境」に「tmux なし（ヘッドレスで動く）」と出ます。
 
-タスクとワークフローを使う場合は、さらに agent-loop と statemachine-use スキル、必要に応じて
-Python が要ります。不足は「タスク」画面（手順 → その他 → 実行環境）の接続診断で確認できます。
-タスクの作成・変更は会話と同じ CLI を tmux で起こすので、tmux が要ります。
+タスクは statemachine-use スキル（同梱）と Python 3 + PyYAML があれば作成も実行もできます。
+agent-tools（agent-herd / agent-loop / agent-flow）は任意で、あると `herd`（ローカル LLM）、定期実行と
+実行履歴、ワークフローが増えます。不足は「タスク」画面（手順 → その他 → 実行環境）の接続診断で確認
+できます（任意の道具は「任意」と出ます）。タスクの作成・変更は会話と同じ CLI を tmux で起こすので、
+tmux が要ります。
 
 ### 開発起動
 
@@ -179,7 +181,7 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 |---|---|
 | アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、WSL ディストリビューション、実行環境の状態 |
 | 共通指示 | 共通指示の有効・本文（8000 字まで）、スキル選択の有効・既定の選択・自動選択の候補、起動時アクション |
-| 実行制御 | 既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
+| 実行制御 | エージェントを最適化する（既定 ON。agent-herd が使えるときだけ効き、効いていなければ起動方針は おすすめ / 直接指定 だけ、tier は medium だけ）、既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
 
 起動時アクションは「スキル」か「コマンド」で、CLI ごとの新しいセッションで上から一度だけ適用します。
 コマンドは作業フォルダで実行し、失敗時は「続行」か「停止」を選べます。
@@ -190,6 +192,8 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 |---|---|
 | `<tier> Tier のエージェントを設定してください` | 設定 > 実行制御でその tier に CLI を割り当てる |
 | `<cli> はこの実行環境で利用できません` | ログインシェル（Windows は WSL）の PATH にその CLI があるか |
+| `使う AI「<名前>」はこの環境で使えません` | タスク・AI 支援に選んだ CLI がホストの PATH に無い。実行環境の「使える AI」で確認する |
+| `このタスクの実行には agent-loop が要ります` | プロンプトのタスクは agent-loop の設定にしか無い。agent-loop を入れる |
 | `tmux セッションを作れません` | WSL、tmux、定義の `interactive.command` |
 | 「起動中」のまま進まない | CLI が端末で信頼確認や権限確認を出していないか。端末ミラーで答える |
 | `（応答を画面から読み取れなかった。端末を確認）` | 端末ミラーに本文はある。定義の `ready_pattern` が入力欄に合っていない |
@@ -314,7 +318,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `config:save` | `saveConfig(patch)` | `patch` | 正規化済み設定。`wslDistro` が変わると常駐シェルとキャッシュを捨てる |
 | `repo:add` | `addRepo()` | —（ダイアログ） | 設定、または `null`（キャンセル） |
 | `repo:remove` | `removeRepo(repo)` | `repo` | 設定 |
-| `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ）。agent-herd 一族（aider / ollama）が 1 つでもあれば末尾に仮想の `herd`（`virtual: true, members: [...]`）を足す（§6.3） |
+| `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ）。agent-herd 一族（aider / ollama）が 1 つでもあれば末尾に仮想の `herd`（`virtual: true, members: [...]`）を足す（§6.3）。実体は `src/main/agents.js` で、タスク・ワークフローの `automation:agents:list` も同じ一覧（使えるものの名前だけ）を返す |
 | `skills:list` | `listSkills(repo)` | `repo?` | スキル名の配列 |
 | `skills:select` | `selectSkills(repo, text, mode, selected)` | — | 選定結果（`content` / `path` を除く） |
 | `session:list` | `listSessions(repo)` | `repo?` | 会話の要約配列（更新日時の降順） |
@@ -387,6 +391,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `instructions.skillSelection` | `{ enabled: true, defaultMode: auto, candidates: [] }` | `defaultMode` は `auto` / `manual` / `off` |
 | `instructions.startupActions` | `[]` | `[{ type: skill|command, value, onError: warn|fail }]`。空の `value` は落とす |
 | `execution.defaultPolicy` | `recommended` | `recommended` / `saving` / `quality` |
+| `execution.optimizeAgents` | `true` | `false` なら（または agent-herd が無ければ）`saving` / `quality` を `recommended` として解決する（`settings.effectivePolicy`）。画面は同じ規則で選べなくする |
 | `execution.defaultReadonly` | `lastReadonly` | 新規会話の既定 Ask |
 | `execution.maxConcurrent` | `2` | 1〜8 に丸める |
 | `execution.tiers.{small,medium,large}` | 各 `{ cli: lastCli, model: lastModel }` | tier ごとの CLI とモデル |
@@ -508,8 +513,8 @@ agentcore の `is_herd_family` と同じ規則）。
 | 会話・Ask | 共通 TUI（agent-herd の既定バックエンド `ollama` の定義。無ければ一族の他の定義） | 本文の先頭に `/find` |
 | 会話・実行、作業フォルダの中のファイルを添付 | 同じセッション | 本文の先頭に `/edit` |
 | 会話・実行、添付なし（userData へ写した添付は数えない） | 同じセッション | そのまま |
-| タスク実行（`automation:run:start`） | `agent-herd harness statemachine` | `--agent-cli` を渡さない（agent-herd の既定と宣言） |
-| AI 支援（`automation:ai:start`。読み取り専用） | `agent-herd --purpose plan` | `--agent` を渡さない |
+| タスク実行（`automation:run:start`） | agent-loop（`agent-herd harness statemachine`） | `--agent-cli` を渡さない（agent-herd の既定と宣言）。agent-loop が無いときは一族の共通 TUI と同じ定義（既定バックエンド）を名指しして同梱スキルで回す |
+| AI 支援（`automation:ai:start`。読み取り専用） | `agent-herd --purpose plan` | `--agent` を渡さない（`herd` 以外の CLI は agent-herd を経由せず、定義の単発 argv で直接起こす） |
 | ワークフロー実行（`flow:run:start`） | agent-flow | `--agent-cli` は省けないので harness の既定と同じ `aider` |
 
 会話ではターンごとに CLI を入れ替えないので、tmux セッションと文脈はそのまま続く（用途が変わっても
@@ -521,8 +526,10 @@ agentcore の `is_herd_family` と同じ規則）。
 会話を開いただけ・再起動（`term:open` / `term:restart`）でも共通 TUI を開く。
 
 タスク・ワークフローでは、statemachine-maker の `registerIpcHandlers` に `agentDefinitions`
-（`agent-herd defs --json` の並びに、一族が居れば `herd` を足す）と `hooks.resolveAgent`
-（`{ root, agent, purpose: 'task' | 'plan' | 'flow' }` → `{ agent }`。`''` は「渡さない」）を渡す。
+（`agents.js` の一覧から使えるものの名前。一族が使えれば `herd` も並ぶ。agent-herd には聞かない）、
+`hooks.resolveAgent`（`{ root, agent, purpose: 'task' | 'plan' | 'flow' | 'direct' }` → `{ agent }`。`''` は
+「渡さない」、`direct` は agent-loop の無いときで定義を名指しする）、`hooks.assistRunSpec`（AI 支援の起動
+仕様。`herd` は agent-herd、それ以外は `agentCli.oneShotCmd` の argv）を渡す。
 `prepareRun` のスキルの渡し方は、渡さないときは harness の既定の定義（aider）で決める。
 
 #### 6.1 セッション ID の作法（`agentCli.SESSION`）
@@ -684,7 +691,7 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 |---|---|
 | 設定・ルート | `getConfig` `saveConfig` `catalog` `addRoot` `removeRoot` `selectRoot` |
 | 定義 | `listMachines` `readMachine` `machineExists` `previewMachine` `saveMachine` `openMachineFolder` |
-| 実行環境 | `listAgents` `selectSkills` `toolStatus` |
+| 実行環境 | `listAgents` `selectSkills` `toolStatus` `capabilities`（`{ herd, agentLoop, agentFlow }`。60 秒キャッシュ。使えない機能を薄くするための 1 つの答え） |
 | 操作記録 | `recordingStart` `recordingStop` `recordingImport` `recordingSnapshot` `recordingExtract` `recordingState` |
 | AI | `aiStart`（`mode`: `draft` / `review` / `teach` / `flow-teach`）`aiStop` `aiApply` `onAiProgress` `onAiResult` |
 | タスクの下書き・会話 | `teachingList`（定義がまだ無い下書き）、`teachStart` `teachSession` `teachDemonstration`（§12.3） |
@@ -712,9 +719,10 @@ agent-app は設定ファイルの探索も `.statemachine/` の走査も自前�
 | `runSnapshot(root)` | `agent-loop inspect --json --dir <root>` |
 | `saveRunSchedule(root, schedule)` | `agent-loop schedule --json --dir <root>`（stdin に JSON） |
 | `runLog(root, identity)` | `agent-loop log --json --dir <root>`（stdin に `{ workflow, runId }`） |
-| `runStart(payload)` | `agent-loop statemachine --workflow … --instruction <合成した指示>`、プロンプトのタスクは `agent-loop run` |
+| `runStart(payload)` | `agent-loop statemachine --workflow … --instruction <合成した指示>`、プロンプトのタスクは `agent-loop run`。`runSnapshot` が `available: false`（agent-loop が無い）なら、ステートマシンのタスクだけ同梱スキルの `run_machine.py <workflow> --agent exec --agent-command <定義から組んだ argv の JSON> --prompt-via stdin\|argv --instruction … --context k=v --input … --result-line` をこの場で回す（`automation/direct-run.js`。Windows は WSL の `python3`）。結果は同じ `RESULT {json}` 行 |
 
 契約の全項目は [agent-loop 仕様書 §3.9](./agent-loop-spec.md#39-リポジトリ実行-ui-境界) にあります。
+agent-loop の無いときの実行は履歴・定期実行・台帳を持たない（画面はそれを 1 行で言う）。
 
 #### 12.1 親と共有編集面の同期
 

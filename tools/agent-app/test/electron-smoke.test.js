@@ -88,9 +88,19 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     });
   }
 
+  // 偽の agent-herd と agent-flow を PATH に置く。一族（aider / ollama）が「使える」印になり `herd` が並び
+  // 「エージェントを最適化する」が効く側（節約・品質重視・small / large tier）を実機で通せる。効かない側は
+  // 設定のチェックを外して確かめる（agent-herd が無いのと同じ動き）。agent-flow は標準パターンの一覧だけ
+  // 答え、サイドバーの「ワークフロー」を押せるようにする（実行は bus のファイルで見る）。agent-loop は置かない
+  // ——履歴タブと定期実行のカードが薄くなる側を通すため。
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-fakebin-'));
+  fs.writeFileSync(path.join(fakeBin, 'agent-herd'), '#!/bin/sh\nexit 0\n');
+  fs.writeFileSync(path.join(fakeBin, 'agent-flow'), '#!/bin/sh\ncase "$1" in patterns) echo "[]";; esac\nexit 0\n');
+  for (const name of ['agent-herd', 'agent-flow']) fs.chmodSync(path.join(fakeBin, name), 0o755);
   const electron = await pw._electron.launch({
     executablePath: binary,
     args: [APP, '--no-sandbox', `--user-data-dir=${userData}`],
+    env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}` },
   });
   const errors = [];
   try {
@@ -155,6 +165,19 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('#startup-add');
     await win.fill('.startup-row input', 'brainstorming');
     await win.click('[data-settings-tab="execution"]');
+    // 「エージェントを最適化する」を外すと、節約・品質重視と small / large の行が薄くなり選べない
+    // （agent-herd が無いのと同じ動き）。理由の文言は出さない。
+    await win.uncheck('#optimize-agents');
+    assert.strictEqual(await win.locator('input[name="default-policy"][value="quality"]').isDisabled(), true);
+    assert.strictEqual(await win.locator('input[name="default-policy"][value="saving"]').isDisabled(), true);
+    assert.strictEqual(await win.locator('input[name="default-policy"][value="recommended"]').isDisabled(), false);
+    assert.strictEqual(await win.locator('#tier-large-cli').isDisabled(), true);
+    assert.strictEqual(await win.locator('#tier-medium-cli').isDisabled(), false);
+    assert.ok(await win.locator('.tier-row.is-off').count() === 2, 'small / large の行だけ薄い');
+    assert.doesNotMatch(await win.locator('[data-settings-panel="execution"]').textContent(), /agent-herd が要ります/);
+    if (process.env.AGENT_APP_RESTRICTED_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_RESTRICTED_SCREENSHOT });
+    await win.check('#optimize-agents');
+    assert.strictEqual(await win.locator('input[name="default-policy"][value="quality"]').isDisabled(), false, 'herd があれば元に戻る');
     await win.check('input[name="default-policy"][value="quality"]');
     await win.fill('#tier-large-model', 'gpt-quality');
     if (process.env.AGENT_APP_SETTINGS_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SETTINGS_SCREENSHOT });
@@ -166,7 +189,10 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.deepStrictEqual(saved.instructions.skillSelection, { enabled: true, defaultMode: 'auto', candidates: ['self-checking'] });
     assert.deepStrictEqual(saved.instructions.startupActions, [{ type: 'skill', value: 'brainstorming', onError: 'warn' }]);
     assert.strictEqual(saved.execution.defaultPolicy, 'quality');
+    assert.strictEqual(saved.execution.optimizeAgents, true);
     assert.strictEqual(saved.execution.tiers.large.model, 'gpt-quality');
+    // 会話のターンごとの起動方針は、最適化が効いていれば 4 つとも選べる
+    assert.strictEqual(await win.locator('#policy option[value="saving"]').isDisabled(), false);
     await win.click('#settings-close');
 
     await win.click('#area-tasks');
@@ -224,8 +250,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await workspace.locator('[data-run-skill="self-checking"]').check();
     assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /直接指定.*task-model/);
     assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /スキル 手動選択/);
-    await workspace.locator('#schedule-toggle').click();
-    assert.deepStrictEqual(await workspace.locator('#schedule-destination option').allTextContents(), ['このリポジトリ', '共通設定']);
+    if (await workspace.locator('#schedule-toggle').isDisabled()) {
+      // agent-loop が無ければ予定は足せない（カードごと薄い）
+      assert.strictEqual(await workspace.locator('#daemon-toggle').isDisabled(), true);
+    } else {
+      await workspace.locator('#schedule-toggle').click();
+      assert.deepStrictEqual(await workspace.locator('#schedule-destination option').allTextContents(), ['このリポジトリ', '共通設定']);
+    }
     assert.strictEqual(await workspace.locator('.folder-pane').isHidden(), true, 'リポジトリ一覧が二重に表示されている');
     assert.strictEqual(await workspace.locator('.home-tabs').isHidden(), true, '主要タブが二重に表示されている');
     if (process.env.AGENT_APP_TASK_SCREENSHOT) {
@@ -320,11 +351,19 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('#task-teaching.in-card').count(), 1, 'カードの中の端末は枠と影を持たない');
     await workspace.locator('[data-edit-back]').click();
     await workspace.locator('[data-step="0"]').waitFor({ timeout: 20000 });
-    await workspace.locator('[data-task-tab="history"]').click();
-    await workspace.locator('.execution-card').waitFor();
-    await assertTaskLayout('履歴');
-    if (process.env.AGENT_APP_TASK_HISTORY_SCREENSHOT) {
-      await win.screenshot({ path: process.env.AGENT_APP_TASK_HISTORY_SCREENSHOT });
+    // 履歴と定期実行は agent-loop のもの。無ければ履歴タブは押せず、定期実行のカードは薄い（理由は 1 行だけ）。
+    if (await workspace.locator('[data-task-tab="history"]').isDisabled()) {
+      await workspace.locator('[data-task-tab="overview"]').click();
+      await workspace.locator('.execution-card.is-off').waitFor({ timeout: 20000 });
+      assert.match(await workspace.locator('.execution-card.is-off').textContent(), /定期実行と履歴には agent-loop が要ります/);
+      assert.strictEqual(await workspace.locator('#run-start').isDisabled(), false, 'agent-loop が無くても実行は押せる');
+    } else {
+      await workspace.locator('[data-task-tab="history"]').click();
+      await workspace.locator('.execution-card').waitFor();
+      await assertTaskLayout('履歴');
+      if (process.env.AGENT_APP_TASK_HISTORY_SCREENSHOT) {
+        await win.screenshot({ path: process.env.AGENT_APP_TASK_HISTORY_SCREENSHOT });
+      }
     }
     await win.click('#session-new');
     await win.locator('#task-create:not([hidden])').waitFor();

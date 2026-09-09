@@ -4,9 +4,12 @@
 //   playwright-cli --version      … ブラウザ操作（記録・実行）
 //   winauto doctor --output json  … Windows アプリ操作（Windows 上でのみ意味がある）
 //   python --version              … スキルの構成確認スクリプトを動かす
-//   agent-herd defs --json        … agent-tools の AI 定義を列挙する
-//   agent-loop --version          … 手動・定期実行の入口
-//   agent-flow patterns --json    … 複数 AI ワークフローの実行基盤
+//   agent-loop --version          … 定期実行と履歴（任意。無くても手動実行はスキルで回る）
+//   agent-flow patterns --json    … 複数 AI ワークフローの実行基盤（任意）
+// 使える AI は agent-app 自身の一覧（agents.js）で見る。以前は `agent-herd defs --json` に
+// 聞いていたが、agent-tools の無い PC で AI を 1 つも選べなかった。
+// 任意の道具（optional: true）は「無いと何が使えないか」を summary に書き、未準備でも
+// 全体を止めない。
 // スキルのスクリプトは「選んだフォルダから上へ辿って .github/skills/statemachine-use を探す →
 // このアプリが置かれたリポジトリ → 設定で指定したパス」の順で見つける。
 
@@ -102,7 +105,8 @@ function agentAssistRunSpec({ root, agent, model = '', prompt = '' } = {}) {
 }
 
 // `capture(command, args, { cwd, timeoutMs })` → { ok, status, stdout, stderr, error }
-async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
+//   agentDefinitions … 使える AI の名前の並びを返す関数（省略時は agent-herd に聞く）
+async function toolStatus({ cwd = '', capture, skillDir = '', agentDefinitions: listDefinitions } = {}) {
   if (typeof capture !== 'function') throw new Error('道具の確認に使う実行関数がありません');
   const out = [];
   const py = await findPython(capture);
@@ -116,25 +120,31 @@ async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
     summary: skillDir ? `見つかりました（${skillDir}）` : '見つかりません',
     hint: skillDir ? '' : '選んだフォルダの上位に .github/skills/statemachine-use が無いときは、設定でスキルのフォルダを指定してください。',
   });
+  let definitions = [];
   try {
-    const definitions = await agentDefinitions({ cwd, capture });
+    definitions = typeof listDefinitions === 'function'
+      ? await listDefinitions({ cwd, capture })
+      : await agentDefinitions({ cwd, capture });
+    const names = definitions.filter((name) => name !== 'herd');
     out.push({
-      id: 'agent-tools', label: 'AI 実行（agent-tools）', ok: definitions.length > 0,
-      summary: definitions.length ? `${definitions.length} 件の AI 定義を利用できます` : 'AI 定義がありません',
-      hint: definitions.length ? '' : 'agents/*.json に AI 定義を追加してください。',
+      id: 'agents', label: '使える AI（CLI の定義）', ok: names.length > 0,
+      summary: names.length ? `${names.length} 件（${names.join(' / ')}）` : '使える AI がありません',
+      hint: names.length ? '' : '会話で使う CLI（claude / codex / copilot / kiro …）を PATH に通すか、agents/*.json に定義を足してください。',
     });
   } catch (err) {
-    out.push({
-      id: 'agent-tools', label: 'AI 実行（agent-tools）', ok: false,
-      summary: err.message,
-      hint: 'tools/agent-tools/install.sh を実行し、agent-herd を PATH に通してください。',
-    });
+    out.push({ id: 'agents', label: '使える AI（CLI の定義）', ok: false, summary: err.message, hint: '' });
   }
+  const herdOk = definitions.includes('herd');
+  out.push({
+    id: 'agent-herd', label: 'ローカル実行系（agent-herd）', ok: herdOk, optional: true,
+    summary: herdOk ? '利用可能（会話・タスクで herd を選べます）' : '無くても動きます。あると費用 0 のローカル LLM（herd）を選べます',
+    hint: herdOk ? '' : 'tools/agent-tools/install.sh --only agent-herd で入ります。',
+  });
   const loop = await capture('agent-loop', ['--version'], { cwd, timeoutMs: 10000 });
   out.push({
-    id: 'agent-loop', label: '実行と定期実行（agent-loop）', ok: !!(loop && loop.ok),
+    id: 'agent-loop', label: '定期実行と履歴（agent-loop）', ok: !!(loop && loop.ok), optional: true,
     summary: loop && loop.ok ? `利用可能（${firstLine(loop) || 'version 不明'}）`
-      : `起動できません: ${(loop && (loop.error || firstLine(loop))) || 'agent-loop'}`,
+      : '無くても手動実行はできます。定期実行と実行履歴に要ります',
     hint: loop && loop.ok ? '' : 'tools/agent-loop/install.sh を実行し、agent-loop を PATH に通してください。',
   });
   const flow = await capture('agent-flow', ['patterns', '--json'], { cwd, timeoutMs: 10000 });
@@ -143,10 +153,10 @@ async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
     try { flowPatterns = JSON.parse(String(flow.stdout || '[]')); } catch { flowPatterns = []; }
   }
   out.push({
-    id: 'agent-flow', label: '複数AIワークフロー（agent-flow）', ok: !!(flow && flow.ok && Array.isArray(flowPatterns)),
+    id: 'agent-flow', label: '複数AIワークフロー（agent-flow）', ok: !!(flow && flow.ok && Array.isArray(flowPatterns)), optional: true,
     summary: flow && flow.ok && Array.isArray(flowPatterns)
       ? `利用可能（標準パターン ${flowPatterns.length} 件）`
-      : `起動できません: ${(flow && (flow.error || firstLine(flow))) || 'agent-flow'}`,
+      : '無くてもタスクと会話は動きます。「ワークフロー」に要ります',
     hint: flow && flow.ok && Array.isArray(flowPatterns) ? '' : 'tools/agent-flow/install.sh を実行し、agent-flow を PATH に通してください。',
   });
   const pw = await capture('playwright-cli', ['--version'], { cwd, timeoutMs: 20000 });
@@ -194,7 +204,23 @@ async function toolStatus({ cwd = '', capture, skillDir = '' } = {}) {
   return out;
 }
 
+// 任意の道具の有無だけを { herd, agentLoop, agentFlow } で返す（60 秒キャッシュ。cwd ごと）。
+const capabilityCache = new Map();
+async function capabilities({ cwd = '', capture, agentDefinitions: listDefinitions, flowAvailable, ttlMs = 60000, now = Date.now } = {}) {
+  const key = String(cwd || '');
+  const hit = capabilityCache.get(key);
+  if (hit && now() - hit.at < ttlMs) return hit.value;
+  const [names, loop, flow] = await Promise.all([
+    Promise.resolve().then(() => (typeof listDefinitions === 'function' ? listDefinitions() : [])).catch(() => []),
+    capture('agent-loop', ['--version'], { cwd, timeoutMs: 10000 }).then((r) => !!(r && r.ok)).catch(() => false),
+    Promise.resolve().then(() => (typeof flowAvailable === 'function' ? flowAvailable() : false)).catch(() => false),
+  ]);
+  const value = { herd: (Array.isArray(names) ? names : []).includes('herd'), agentLoop: loop, agentFlow: flow };
+  capabilityCache.set(key, { at: now(), value });
+  return value;
+}
+
 module.exports = {
   SKILL_REL, findSkillDir, findPython, agentDefinitions, agentAssistRunSpec,
-  toolStatus, summarizeDoctor, isDir,
+  toolStatus, capabilities, summarizeDoctor, isDir,
 };

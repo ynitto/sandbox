@@ -77,10 +77,10 @@ function folderName(p) {
 
 function selectedAgent(preferred = '') {
   if (state.agents.includes(preferred)) return preferred;
-  // 一覧がまだ届いていない・そもそも引けないときに、設定された名前を捨てない。捨てると
-  // 実行方針で選んである AI が「エージェント未設定」に見え、実際に使う名前とも食い違う。
-  if (preferred && !state.agents.length) return preferred;
-  if (state.agents.includes('aider')) return 'aider';
+  // 設定・実行方針で選んである名前は、一覧に無くても捨てない（別の AI へ黙って倒さない——
+  // 会話と同じ規則）。実行しようとすれば「この環境で使えません」と断られ、原因が名前で分かる。
+  // 捨てると「エージェント未設定」に見え、実際に使う名前とも食い違う。
+  if (preferred) return preferred;
   return state.agents[0] || '';
 }
 
@@ -105,7 +105,9 @@ function agentOptions(preferred = '') {
   const selected = selectedAgent(preferred);
   // 「まだ聞いている途中」と「聞いた結果 0 件」を混同しない（待たせない代わりに、途中だと分かる）
   if (!state.agents.length) return `<option value="">${state.agentsLoading ? '確認中…' : '利用できる AI がありません'}</option>`;
-  return state.agents.map((name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
+  // 設定・実行方針の名前が一覧に無くても捨てない（selectedAgent と同じ規則）。選択肢には「現在は利用不可」と出す
+  const extra = selected && !state.agents.includes(selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}（現在は利用不可）</option>` : '';
+  return extra + state.agents.map((name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
 }
 
 // 描き直してよいか。入力欄に文字を打っている最中に、遅れて届いた返事で画面を組み直すと入力が消える。
@@ -118,7 +120,7 @@ function renderIfIdle() {
   if (state.view === 'home' && !editingInMain()) render();
 }
 
-// AI の一覧（agent-herd defs。Windows では WSL 越しで数秒かかる）。**画面を待たせない**——
+// AI の一覧（会話と同じ定義の一覧。Windows では WSL の PATH を引くのに数秒かかる）。**画面を待たせない**——
 // 呼んだ側は await せず、届いたら描き直す。リポジトリを移っていたら捨てる（token）。
 // 1 回のタスク表示で init・navigate・リポジトリ切替から重ねて呼ばれるので、同じリポジトリの
 // 問い合わせが走っている間は相乗りする（WSL 越しの起動を 1 回で済ませる）。
@@ -317,9 +319,28 @@ const RUN_POLICIES = {
   direct: { label: '直接指定', tier: '' },
 };
 
+// 最適化が効いていないときに選べる起動方針（会話画面・settings.BASIC_POLICIES と同じ規則）。
+const BASIC_POLICIES = ['recommended'];
+
+// 「エージェントを最適化する」が効いているか（設定 × ローカル実行系 herd の有無）。一覧が届く前は
+// 「効いている」とみなす（先に薄くして後で戻すより目立たない）。
+function optimized() {
+  const execution = state.config.execution && typeof state.config.execution === 'object' ? state.config.execution : {};
+  if (execution.optimizeAgents === false) return false;
+  if (state.agentsLoading || !state.agents.length) return true;
+  return state.agents.includes('herd');
+}
+
+function effectivePolicy(policy) {
+  const name = String(policy || '');
+  if (name === 'direct') return name;
+  if (!RUN_POLICIES[name]) return 'recommended';
+  return optimized() || BASIC_POLICIES.includes(name) ? name : 'recommended';
+}
+
 function taskRunExecution() {
   const execution = state.config.execution && typeof state.config.execution === 'object' ? state.config.execution : {};
-  const policy = state.run.policy || execution.defaultPolicy || 'recommended';
+  const policy = effectivePolicy(state.run.policy || execution.defaultPolicy || 'recommended');
   if (policy === 'direct') {
     return { policy, agent: selectedAgent(state.run.agent || state.config.agent), model: state.run.model || state.config.model || '' };
   }
@@ -872,7 +893,7 @@ function taskDetailTabsHtml(machine, activeTab) {
   return `<nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
     <button type="button" role="tab" id="task-tab-overview" aria-controls="task-tab-panel" data-task-tab="overview" aria-selected="${activeTab === 'overview'}" class="${activeTab === 'overview' ? 'is-on' : ''}">概要</button>
     ${machine.kind === 'statemachine' ? `<button type="button" role="tab" id="task-tab-steps" aria-controls="task-tab-panel" data-task-tab="steps" aria-selected="${activeTab === 'steps'}" class="${activeTab === 'steps' ? 'is-on' : ''}">手順</button>` : ''}
-    <button type="button" role="tab" id="task-tab-history" aria-controls="task-tab-panel" data-task-tab="history" aria-selected="${activeTab === 'history'}" class="${activeTab === 'history' ? 'is-on' : ''}">履歴</button>
+    <button type="button" role="tab" id="task-tab-history" aria-controls="task-tab-panel" data-task-tab="history" aria-selected="${activeTab === 'history'}" class="${activeTab === 'history' ? 'is-on' : ''}" ${state.execution.snapshot && state.execution.snapshot.available === false ? 'disabled' : ''}>履歴</button>
   </nav>`;
 }
 
@@ -998,7 +1019,7 @@ function executionDetailHtml(machine) {
     return `<li><div><strong>${esc(item.entryName || `予定 ${index + 1}`)}</strong><small>${esc(scheduleLabel(item))}${next} · ${esc(where)}</small></div>${active}${edit}</li>`;
   }).join('');
   const checking = state.execution.loading && !state.execution.snapshot;
-  const daemonStatus = checking ? '実行状態を確認しています…' : daemon.activeCount
+  const daemonStatus = checking ? '実行状態を確認しています…' : snapshot.available === false ? '定期実行と履歴には agent-loop が要ります' : daemon.activeCount
     ? `${daemon.activeCount} 件を実行中${daemon.queueDepth ? `、${daemon.queueDepth} 件待機` : ''}`
     : daemon.running ? (daemon.queueDepth ? `${daemon.queueDepth} 件待機` : '自動実行は稼働中') : '自動実行は停止中';
   const parameters = machine.parameters || [];
@@ -1018,7 +1039,8 @@ function executionDetailHtml(machine) {
   const canRun = ['statemachine', 'prompt'].includes(machine.kind || 'statemachine') && !machine.error;
   const selectedRun = taskRunExecution();
   const direct = (state.run.policy || (state.config.execution && state.config.execution.defaultPolicy) || 'recommended') === 'direct';
-  const policyOptions = Object.entries(RUN_POLICIES).map(([value, item]) => `<option value="${value}" ${selectedRun.policy === value ? 'selected' : ''}>${item.label}</option>`).join('');
+  const policyOn = optimized();
+  const policyOptions = Object.entries(RUN_POLICIES).map(([value, item]) => `<option value="${value}" ${selectedRun.policy === value ? 'selected' : ''} ${policyOn || BASIC_POLICIES.includes(value) || value === 'direct' ? '' : 'disabled'}>${item.label}</option>`).join('');
   const selection = state.config.instructions && state.config.instructions.skillSelection || {};
   const skillMode = state.run.skillMode || selection.defaultMode || 'auto';
   const runFields = `<details id="task-run-settings" class="run-settings task-run-settings"><summary><span id="task-run-settings-summary">${esc(taskRunSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">今回の実行設定</div><label>起動方針<select id="run-policy">${policyOptions}</select></label><div id="run-direct-settings" class="direct-agent-settings" ${direct ? '' : 'hidden'}><label>エージェント<select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.run.agent || state.config.agent)}</select></label><label>モデル<input id="run-model" class="mono" value="${esc(state.run.model || state.config.model || '')}" placeholder="自動"></label></div><p class="muted small">手動実行ではツールを自動承認します。</p><label>スキル<select id="run-skill-mode"><option value="auto" ${skillMode === 'auto' ? 'selected' : ''}>自動</option><option value="manual" ${skillMode === 'manual' ? 'selected' : ''}>手動選択</option><option value="off" ${skillMode === 'off' ? 'selected' : ''}>使用しない</option></select></label><div id="run-skill-list" class="skill-choice-list" ${skillMode === 'off' ? 'hidden' : ''}>${taskSkillChoicesHtml()}</div></div></details>`;
@@ -1027,10 +1049,10 @@ function executionDetailHtml(machine) {
     : machine.kind === 'hook' ? '<p class="run-result warn">フックだけのタスクは定期実行で起動します。</p>' : '';
   const detail = state.execution.detailTab === 'history'
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
-    : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
+    : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false && machine.kind !== 'statemachine' ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
       <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
-        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
-      <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
+        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
+      <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
 
@@ -2075,7 +2097,7 @@ function openSettings() {
   const agent = selectedAgent(cfg.agent);
   const dlg = dialog('dlg-settings', '実行環境', 'settings', `
     <div class="grid2">
-      <div class="field"><label>使う AI（agent-tools）</label><select id="c-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(agent)}</select></div>
+      <div class="field"><label>使う AI</label><select id="c-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(agent)}</select></div>
       <div class="field"><label>モデル（任意）</label><input id="c-model" class="mono" value="${esc(cfg.model || '')}"></div>
     </div>
     <div class="field"><label>構成確認用スキルの場所（任意）</label><input id="c-skill" class="mono" value="${esc(cfg.skillDir || '')}" placeholder="通常は自動で検出します"></div>
@@ -2107,7 +2129,9 @@ function openSettings() {
 }
 
 function toolsHtml(tools) {
-  return `<ul class="tool-list">${tools.map((t) => `<li><span><span class="st ${t.ok ? 'ok' : 'ng'}">${t.ok ? '使えます' : '未準備'}</span><strong>${esc(t.label)}</strong></span><small>${esc(t.summary || '')}</small>${t.hint ? `<small>${esc(t.hint)}</small>` : ''}</li>`).join('')}</ul>`;
+  // 任意の道具（無くても本体は動くもの）は未準備でも警告色にしない
+  const badge = (t) => (t.ok ? ['ok', '使えます'] : t.optional ? ['opt', '任意'] : ['ng', '未準備']);
+  return `<ul class="tool-list">${tools.map((t) => { const [cls, text] = badge(t); return `<li><span><span class="st ${cls}">${text}</span><strong>${esc(t.label)}</strong></span><small>${esc(t.summary || '')}</small>${t.hint ? `<small>${esc(t.hint)}</small>` : ''}</li>`; }).join('')}</ul>`;
 }
 
 // --- 起動 -----------------------------------------------------------------------------
