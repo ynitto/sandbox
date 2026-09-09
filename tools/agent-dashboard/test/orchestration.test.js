@@ -624,6 +624,13 @@ test('エージェント: validateSpec は variants・headless_autonomy 等の�
   assert.ok(agents.validateSpec({ ...base, session_log: { format: 'jsonl-dir' } })
     .some((e) => e.includes('session_log.paths')));
   assert.deepStrictEqual(agents.validateSpec({ ...base, spill: { args: ['--trust-tools=fs_read'] } }), []);
+  assert.deepStrictEqual(agents.validateSpec({
+    ...base, models: { sonnet: { relative_cost: 1 }, opus: { relative_cost: 3 } },
+  }), []);
+  assert.ok(agents.validateSpec({ ...base, models: { opus: { relative_cost: -1 } } })
+    .some((e) => e.includes('models.opus.relative_cost')));
+  assert.ok(agents.validateSpec({ ...base, models: ['opus'] })
+    .some((e) => e.includes('models は')));
   // 未知のフィールドは引き続き弾く（ALLOWED_KEYS の網を広げすぎていないことの固定）
   assert.ok(agents.validateSpec({ ...base, totally_unknown_field: 1 })
     .some((e) => e.includes('未知のフィールド: totally_unknown_field')));

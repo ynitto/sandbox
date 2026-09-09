@@ -293,6 +293,107 @@ class TestInteractive(_Isolated):
         self.assertEqual(agentcli.prompt_inject(s), "send-keys")
 
 
+class TestModelLevelCost(_Isolated):
+    """モデル別の相対コスト（`models`）。昇格の判定を agent_cli + model の組で行う。"""
+
+    def _proj(self):
+        return str(self.tmp / "proj")
+
+    def test_models_resolve_per_model_and_default_model(self):
+        # (a) models 宣言がある定義では、モデル名で解決される。モデル未指定は default_model で引く
+        self.write_def("proj/agents", "cloud", {
+            "command": ["c"], "relative_cost": 1, "default_model": "sonnet",
+            "models": {"sonnet": {"relative_cost": 1}, "opus": {"relative_cost": 3}}})
+        spec = agentcli.load_cli("cloud", project_dir=self._proj(), use_cache=False)
+        self.assertEqual(spec["models"], {"sonnet": {"relative_cost": 1.0},
+                                          "opus": {"relative_cost": 3.0}})
+        self.assertEqual(agentcli.resolve_relative_cost(spec, "opus"), 3.0)
+        self.assertEqual(agentcli.resolve_relative_cost(spec, "sonnet"), 1.0)
+        self.assertEqual(agentcli.resolve_relative_cost(spec), 1.0)          # default_model
+        self.assertEqual(agentcli.resolve_relative_cost(spec, "haiku"), 1.0)  # 未宣言は定義単位
+
+    def test_same_cli_higher_model_is_chosen(self):
+        # (b) 同一 agent_cli でモデルだけ上位の候補が選ばれる（従来は <= で弾かれ None だった）
+        self.write_def("proj/agents", "cloud", {
+            "command": ["c"], "relative_cost": 1, "default_model": "sonnet",
+            "models": {"sonnet": {"relative_cost": 1}, "opus": {"relative_cost": 3}}})
+        got = agentcli.costlier_fallback("cloud", [{"agent_cli": "cloud", "model": "opus"}],
+                                         self._proj())
+        self.assertEqual((got["agent_cli"], got["model"],
+                          got["from_relative_cost"], got["to_relative_cost"]),
+                         ("cloud", "opus", 1.0, 3.0))
+        # 現在地のモデルを渡せば、その値と比べる（opus 起点では opus へは上がらない）
+        self.assertIsNone(agentcli.costlier_fallback(
+            "cloud", [{"agent_cli": "cloud", "model": "opus"}], self._proj(),
+            current_model="opus"))
+        # 同じ CLI で同じ値のモデルは従来どおり弾く
+        self.assertIsNone(agentcli.costlier_fallback(
+            "cloud", [{"agent_cli": "cloud", "model": "sonnet"}], self._proj()))
+
+    def test_without_models_falls_back_to_definition_cost(self):
+        # (c) models 未宣言なら従来どおり定義単位の値へ落ちる——同一 CLI の別モデルは
+        #     昇格先にならず、定義単位で高い別 CLI だけが選ばれる
+        self.write_def("proj/agents", "cloud", {"command": ["c"], "relative_cost": 1,
+                                                "default_model": "sonnet"})
+        self.write_def("proj/agents", "pricey", {"command": ["c"], "relative_cost": 2})
+        spec = agentcli.load_cli("cloud", project_dir=self._proj(), use_cache=False)
+        self.assertEqual(spec["models"], {})
+        self.assertEqual(agentcli.resolve_relative_cost(spec, "opus"), 1.0)
+        self.assertEqual(agentcli.resolve_relative_cost(spec), 1.0)
+        got = agentcli.costlier_fallback("cloud", [
+            {"agent_cli": "cloud", "model": "opus"}, {"agent_cli": "pricey", "model": "x"}],
+            self._proj())
+        self.assertEqual((got["agent_cli"], got["model"], got["to_relative_cost"]),
+                         ("pricey", "x", 2.0))
+
+    def test_models_are_validated_and_inherited_by_profiles(self):
+        with self.assertRaisesRegex(agentcli.AgentCliError, "models"):
+            agentcli.normalize("bad", {"command": ["c"], "models": ["opus"]}, "bad.json")
+        with self.assertRaisesRegex(agentcli.AgentCliError, "models.opus.relative_cost"):
+            agentcli.normalize("bad", {"command": ["c"], "models": {"opus": {"relative_cost": -1}}},
+                               "bad.json")
+        # relative_cost と同じくエージェント単位の性質なので profile へ引き継ぐ
+        self.write_def("proj/agents", "cloud", {
+            "command": ["c"], "relative_cost": 1,
+            "models": {"opus": {"relative_cost": 3}},
+            "profiles": {"json": {"command": ["c", "--json"]}}})
+        prof = agentcli.load_cli("cloud-json", project_dir=self._proj(), use_cache=False)
+        self.assertEqual(agentcli.resolve_relative_cost(prof, "opus"), 3.0)
+
+    def test_bundled_cloud_definitions_escalate_only_with_model_declaration(self):
+        """同梱の agents/ を実際に読む回帰。
+
+        同梱定義の relative_cost はローカル=0 / クラウド=1 の 2 値なので、cloud 起点では
+        同一 CLI の別モデルも他の cloud CLI も昇格先にならない（それが今日の状態）。
+        同じ定義に `models` を足した写しを上位の探索先に置けば、cloud 起点でも
+        agent_cli + model の組で昇格する。
+        """
+        self.assertTrue((BUNDLED / "kiro.json").is_file(), "同梱の agents/ が見つからない")
+        cloud = sorted(p.stem for p in BUNDLED.glob("*.json")
+                       if json.loads(p.read_text(encoding="utf-8")).get("relative_cost", 1) > 0)
+        self.assertIn("claude", cloud)
+        others = [c for c in cloud if c != "claude"]
+        candidates = [{"agent_cli": "claude", "model": "opus"}] + \
+                     [{"agent_cli": c} for c in others]
+        # 今日の状態: 同梱定義のままでは cloud 起点の昇格先は 1 つも無い
+        for name in cloud:
+            self.assertIsNone(agentcli.costlier_fallback(name, candidates, self._proj()),
+                              f"{name}: 同梱定義のままで昇格先が返った")
+        # 同梱の claude.json に models を足した写し（first-wins で同梱を上書き）
+        raw = json.loads((BUNDLED / "claude.json").read_text(encoding="utf-8"))
+        raw["models"] = {"opus": {"relative_cost": 3}}
+        self.write_def("proj/agents", "claude", raw)
+        agentcli.clear_cache()
+        for name in cloud:
+            got = agentcli.costlier_fallback(name, candidates, self._proj())
+            self.assertIsNotNone(got, f"{name}: モデル宣言があっても昇格しない")
+            self.assertEqual((got["agent_cli"], got["model"], got["to_relative_cost"]),
+                             ("claude", "opus", 3.0), name)
+        # 既に opus を使っている現在地からは、同じ opus へは上がらない
+        self.assertIsNone(agentcli.costlier_fallback("claude", candidates, self._proj(),
+                                                     current_model="opus"))
+
+
 class TestReadonlyWarningAndErrors(_Isolated):
     def test_relative_cost_is_normalized_and_validated(self):
         self.write_def("proj/agents", "free", {"command": ["c"], "relative_cost": 0})

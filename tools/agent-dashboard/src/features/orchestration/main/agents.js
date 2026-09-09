@@ -25,6 +25,8 @@ const ALLOWED_KEYS = [
   'interactive', 'errors', 'session_log',
   // 用途別の起動差（1 エージェント = 1 定義にするための入れ物）。
   'profiles',
+  // モデル別の相対コスト（昇格判定を agent_cli + model の組で行うための任意宣言）。
+  'models',
 ];
 const OUTPUT_ENUM = ['stdout', 'file'];
 const PROMPT_VIA_ENUM = ['stdin', 'argv'];
@@ -89,6 +91,18 @@ function validateSpec(spec) {
   if (spec.relative_cost !== undefined
       && (!Number.isFinite(Number(spec.relative_cost)) || Number(spec.relative_cost) < 0)) {
     errors.push('relative_cost は 0 以上の数値で指定してください');
+  }
+  if (spec.models !== undefined) {
+    if (!spec.models || typeof spec.models !== 'object' || Array.isArray(spec.models)) {
+      errors.push('models はモデル名→{ relative_cost } のオブジェクトで指定してください');
+    } else {
+      for (const [name, body] of Object.entries(spec.models)) {
+        const cost = body && typeof body === 'object' ? Number(body.relative_cost) : NaN;
+        if (!Number.isFinite(cost) || cost < 0) {
+          errors.push(`models.${name}.relative_cost は 0 以上の数値で指定してください`);
+        }
+      }
+    }
   }
   if (spec.output !== undefined && !OUTPUT_ENUM.includes(spec.output)) {
     errors.push(`output が不正です: ${spec.output}（stdout / file）`);

@@ -327,9 +327,9 @@ def retry_agent_for(purpose: str) -> "dict | None":
     ov = _AGENT_OVERRIDES.get(purpose)
     if ov is None and purpose in VALID_KINDS:
         ov = _AGENT_OVERRIDES.get("worker")
-    current = _agent_for(purpose)[0]
+    current, current_model = _agent_for(purpose)
     fallbacks = (ov or {}).get("fallbacks")
-    target = _agentcli.costlier_fallback(current, fallbacks)
+    target = _agentcli.costlier_fallback(current, fallbacks, current_model=current_model)
     if target:
         target["from_agent_cli"] = current
     elif _declares_fallbacks(fallbacks):

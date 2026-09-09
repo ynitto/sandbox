@@ -719,9 +719,9 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
                 f"{first}（モデル昇格の上限 {budget} 回に達しているため昇格しません）") from first
         cfg = _RUNTIME_CONFIG
         ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
-        current = _agent_for(purpose)[0]
+        current, current_model = _agent_for(purpose)
         fallbacks = ov.get("fallbacks")
-        target = _agentcli.costlier_fallback(current, fallbacks)
+        target = _agentcli.costlier_fallback(current, fallbacks, current_model=current_model)
         if not target:
             if _declares_fallbacks(fallbacks):
                 # 宣言はあるのに一段も上がれない状態を黙らせない。同梱定義の relative_cost
