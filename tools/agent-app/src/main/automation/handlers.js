@@ -257,6 +257,19 @@ function registerIpcHandlers(getWindow, options = {}) {
     const root = p.root ? selectedRoot(p) : '';
     return agentDefinitions({ cwd: root, capture: runCapture });
   });
+  // 任意の道具の有無（画面が使えない機能を薄くするための 1 つの答え。会話画面とタスク画面が同じものを見る）。
+  //   herd      … ローカル実行系（agent-herd の一族）が使える
+  //   agentLoop … 定期実行と履歴（agent-loop）
+  //   agentFlow … ワークフロー（agent-flow）
+  // 起動を伴うので 60 秒覚える（tools:status と違い、診断の文言は持たない）。
+  register('capabilities', (p) => {
+    const root = p.root ? selectedRoot(p) : '';
+    return tools.capabilities({
+      cwd: root, capture: runCapture,
+      agentDefinitions: () => agentDefinitions({ cwd: root, capture: runCapture }),
+      flowAvailable: () => agentFlow.patterns(runCapture, root).then((found) => !!found.ok),
+    });
+  });
 
   // 複数 AI のワークフロー。定義は root 内、実行状態は agent-flow の共有 bus が正典。
   register('flow:catalog', () => agentFlow.catalog(runCapture));

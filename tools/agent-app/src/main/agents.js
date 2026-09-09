@@ -44,4 +44,9 @@ function usableNames(entries) {
   return (Array.isArray(entries) ? entries : []).filter((e) => e && e.available).map((e) => String(e.name));
 }
 
-module.exports = { hostAvailability, listAgents, usableNames };
+// ローカル実行系（agent-herd の一族）が使えるか。仮想の `herd` の行の印で見る。
+function herdAvailable(entries) {
+  return (Array.isArray(entries) ? entries : []).some((e) => e && e.virtual && e.name === herd.HERD && e.available);
+}
+
+module.exports = { hostAvailability, listAgents, usableNames, herdAvailable };

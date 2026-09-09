@@ -317,9 +317,28 @@ const RUN_POLICIES = {
   direct: { label: '直接指定', tier: '' },
 };
 
+// 最適化が効いていないときに選べる起動方針（会話画面・settings.BASIC_POLICIES と同じ規則）。
+const BASIC_POLICIES = ['recommended'];
+
+// 「エージェントを最適化する」が効いているか（設定 × ローカル実行系 herd の有無）。一覧が届く前は
+// 「効いている」とみなす（先に薄くして後で戻すより目立たない）。
+function optimized() {
+  const execution = state.config.execution && typeof state.config.execution === 'object' ? state.config.execution : {};
+  if (execution.optimizeAgents === false) return false;
+  if (state.agentsLoading || !state.agents.length) return true;
+  return state.agents.includes('herd');
+}
+
+function effectivePolicy(policy) {
+  const name = String(policy || '');
+  if (name === 'direct') return name;
+  if (!RUN_POLICIES[name]) return 'recommended';
+  return optimized() || BASIC_POLICIES.includes(name) ? name : 'recommended';
+}
+
 function taskRunExecution() {
   const execution = state.config.execution && typeof state.config.execution === 'object' ? state.config.execution : {};
-  const policy = state.run.policy || execution.defaultPolicy || 'recommended';
+  const policy = effectivePolicy(state.run.policy || execution.defaultPolicy || 'recommended');
   if (policy === 'direct') {
     return { policy, agent: selectedAgent(state.run.agent || state.config.agent), model: state.run.model || state.config.model || '' };
   }
@@ -872,7 +891,7 @@ function taskDetailTabsHtml(machine, activeTab) {
   return `<nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
     <button type="button" role="tab" id="task-tab-overview" aria-controls="task-tab-panel" data-task-tab="overview" aria-selected="${activeTab === 'overview'}" class="${activeTab === 'overview' ? 'is-on' : ''}">概要</button>
     ${machine.kind === 'statemachine' ? `<button type="button" role="tab" id="task-tab-steps" aria-controls="task-tab-panel" data-task-tab="steps" aria-selected="${activeTab === 'steps'}" class="${activeTab === 'steps' ? 'is-on' : ''}">手順</button>` : ''}
-    <button type="button" role="tab" id="task-tab-history" aria-controls="task-tab-panel" data-task-tab="history" aria-selected="${activeTab === 'history'}" class="${activeTab === 'history' ? 'is-on' : ''}">履歴</button>
+    <button type="button" role="tab" id="task-tab-history" aria-controls="task-tab-panel" data-task-tab="history" aria-selected="${activeTab === 'history'}" class="${activeTab === 'history' ? 'is-on' : ''}" ${state.execution.snapshot && state.execution.snapshot.available === false ? 'disabled' : ''}>履歴</button>
   </nav>`;
 }
 
@@ -1018,7 +1037,8 @@ function executionDetailHtml(machine) {
   const canRun = ['statemachine', 'prompt'].includes(machine.kind || 'statemachine') && !machine.error;
   const selectedRun = taskRunExecution();
   const direct = (state.run.policy || (state.config.execution && state.config.execution.defaultPolicy) || 'recommended') === 'direct';
-  const policyOptions = Object.entries(RUN_POLICIES).map(([value, item]) => `<option value="${value}" ${selectedRun.policy === value ? 'selected' : ''}>${item.label}</option>`).join('');
+  const policyOn = optimized();
+  const policyOptions = Object.entries(RUN_POLICIES).map(([value, item]) => `<option value="${value}" ${selectedRun.policy === value ? 'selected' : ''} ${policyOn || BASIC_POLICIES.includes(value) || value === 'direct' ? '' : 'disabled'}>${item.label}</option>`).join('');
   const selection = state.config.instructions && state.config.instructions.skillSelection || {};
   const skillMode = state.run.skillMode || selection.defaultMode || 'auto';
   const runFields = `<details id="task-run-settings" class="run-settings task-run-settings"><summary><span id="task-run-settings-summary">${esc(taskRunSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">今回の実行設定</div><label>起動方針<select id="run-policy">${policyOptions}</select></label><div id="run-direct-settings" class="direct-agent-settings" ${direct ? '' : 'hidden'}><label>エージェント<select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.run.agent || state.config.agent)}</select></label><label>モデル<input id="run-model" class="mono" value="${esc(state.run.model || state.config.model || '')}" placeholder="自動"></label></div><p class="muted small">手動実行ではツールを自動承認します。</p><label>スキル<select id="run-skill-mode"><option value="auto" ${skillMode === 'auto' ? 'selected' : ''}>自動</option><option value="manual" ${skillMode === 'manual' ? 'selected' : ''}>手動選択</option><option value="off" ${skillMode === 'off' ? 'selected' : ''}>使用しない</option></select></label><div id="run-skill-list" class="skill-choice-list" ${skillMode === 'off' ? 'hidden' : ''}>${taskSkillChoicesHtml()}</div></div></details>`;
@@ -1030,7 +1050,7 @@ function executionDetailHtml(machine) {
     : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false && machine.kind !== 'statemachine' ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
       <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
         ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
-      <section class="execution-card"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
+      <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle">${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
 

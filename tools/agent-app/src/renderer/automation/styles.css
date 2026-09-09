@@ -119,6 +119,9 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .task-detail-tabs button { margin-bottom: -1px; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); background: transparent; }
 .task-detail-tabs button:hover { color: var(--text); background: var(--soft); }
 .task-detail-tabs button.is-on { border-bottom-color: var(--accent); color: var(--text); }
+.task-detail-tabs button:disabled { opacity: .5; cursor: default; background: transparent; }
+/* 使えない機能のカード（agent-loop の無い定期実行など）。理由は 1 行だけ、操作は薄くする */
+.execution-card.is-off { opacity: .55; }
 .execution-title { min-width: 0; display: flex; justify-content: space-between; align-items: start; gap: 12px; padding-bottom: 4px; }
 .execution-title > div { min-width: 0; }
 .execution-title h2 { font-size: 20px; overflow-wrap: anywhere; }

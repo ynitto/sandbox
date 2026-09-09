@@ -23,6 +23,11 @@ agent-herd / agent-loop / agent-flow を入れていない PC でも、会話・
   Windows は WSL の `python3`）。履歴と定期実行は agent-loop に要り、画面はそれを 1 行で言う。
 - 実行環境の診断は「使える AI（CLI の定義）」を自前で見て、agent-herd / agent-loop / agent-flow を「任意」の
   道具として出す（未準備でも警告色にしない）。
+- **エージェントを最適化する**（設定 > 実行制御、既定 ON）。agent-herd が使えるときだけ効き、効いていなければ
+  既定の起動方針は「おすすめ」だけ、ターンごとの起動方針は「おすすめ」か「直接指定」だけで、small / large の
+  tier と選べない方針は薄くなる（`settings.effectivePolicy`。保存済みの節約・品質重視は おすすめ として解決）。
+  agent-flow が無ければ「ワークフロー」、agent-loop が無ければ「履歴」タブと「定期実行」のカードも薄くなる
+  （`automation:capabilities`）。
 - statemachine-use スキル: `run_machine.py` に `--agent exec`（`--agent-command` の JSON argv を工程ごとに
   起こす。`--prompt-via stdin|argv`、`{output_file}`）、`--instruction`（アクションにだけ前置。harness と同じ形）、
   `--result-line`（`RESULT {json}` を最後の行に）を足した。engine の `StateMachineEngine(instruction=…)`。

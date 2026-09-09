@@ -80,7 +80,7 @@ test('herd: 会話は listAgents に仮想の行を足し、ターンごとに�
   const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
   const agentsList = fs.readFileSync(path.join(SRC, 'main/agents.js'), 'utf8');
   assert.match(agentsList, /const virtual = herd\.listEntry\(marked\)/);
-  assert.match(ipc, /return agents\.listAgents\(repo, \{ distro \}\)/, '会話の一覧は agents.js（タスクと同じ 1 つ）');
+  assert.match(ipc, /return agentsMod\.listAgents\(repo, \{ distro \}\)/, '会話の一覧は agents.js（タスクと同じ 1 つ）');
   assert.match(ipc, /const base = concreteCli\(requested, agents, \{ attachments: p\.attachments \}\)/);
   assert.match(ipc, /cli: base\.requested \|\| base\.cli/, '次のターンの既定は herd のまま');
   assert.match(ipc, /role: 'user', text, cli, family,/);

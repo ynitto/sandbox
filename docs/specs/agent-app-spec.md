@@ -181,7 +181,7 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 |---|---|
 | アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、WSL ディストリビューション、実行環境の状態 |
 | 共通指示 | 共通指示の有効・本文（8000 字まで）、スキル選択の有効・既定の選択・自動選択の候補、起動時アクション |
-| 実行制御 | 既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
+| 実行制御 | エージェントを最適化する（既定 ON。agent-herd が使えるときだけ効き、効いていなければ起動方針は おすすめ / 直接指定 だけ、tier は medium だけ）、既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
 
 起動時アクションは「スキル」か「コマンド」で、CLI ごとの新しいセッションで上から一度だけ適用します。
 コマンドは作業フォルダで実行し、失敗時は「続行」か「停止」を選べます。
@@ -391,6 +391,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `instructions.skillSelection` | `{ enabled: true, defaultMode: auto, candidates: [] }` | `defaultMode` は `auto` / `manual` / `off` |
 | `instructions.startupActions` | `[]` | `[{ type: skill|command, value, onError: warn|fail }]`。空の `value` は落とす |
 | `execution.defaultPolicy` | `recommended` | `recommended` / `saving` / `quality` |
+| `execution.optimizeAgents` | `true` | `false` なら（または agent-herd が無ければ）`saving` / `quality` を `recommended` として解決する（`settings.effectivePolicy`）。画面は同じ規則で選べなくする |
 | `execution.defaultReadonly` | `lastReadonly` | 新規会話の既定 Ask |
 | `execution.maxConcurrent` | `2` | 1〜8 に丸める |
 | `execution.tiers.{small,medium,large}` | 各 `{ cli: lastCli, model: lastModel }` | tier ごとの CLI とモデル |
@@ -690,7 +691,7 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 |---|---|
 | 設定・ルート | `getConfig` `saveConfig` `catalog` `addRoot` `removeRoot` `selectRoot` |
 | 定義 | `listMachines` `readMachine` `machineExists` `previewMachine` `saveMachine` `openMachineFolder` |
-| 実行環境 | `listAgents` `selectSkills` `toolStatus` |
+| 実行環境 | `listAgents` `selectSkills` `toolStatus` `capabilities`（`{ herd, agentLoop, agentFlow }`。60 秒キャッシュ。使えない機能を薄くするための 1 つの答え） |
 | 操作記録 | `recordingStart` `recordingStop` `recordingImport` `recordingSnapshot` `recordingExtract` `recordingState` |
 | AI | `aiStart`（`mode`: `draft` / `review` / `teach` / `flow-teach`）`aiStop` `aiApply` `onAiProgress` `onAiResult` |
 | タスクの下書き・会話 | `teachingList`（定義がまだ無い下書き）、`teachStart` `teachSession` `teachDemonstration`（§12.3） |

@@ -20,7 +20,7 @@ const { createGate } = require('./executionGate');
 const skills = require('./skills');
 const skillSelection = require('./skillSelection');
 const herd = require('./herd');
-const agents = require('./agents');
+const agentsMod = require('./agents');
 const { registerAutomationIpc } = require('./automation/ipc');
 const automationTools = require('./automation/tools');
 const machineStore = require('./automation/store');
@@ -162,11 +162,13 @@ function turnSpec(sess, p) {
 
 // 保存済みの起動方針を、そのターンで実際に使う CLI / model へ解決する。
 // policy を持たない旧画面・旧セッションは、それまでの直接指定の意味を保つ。
-function executionSpec(sess, p, config) {
+//   optimized … 「エージェントを最適化する」が効いているか（設定 × herd の有無）。false なら節約 /
+//               品質重視は「おすすめ」として解決する（settings.effectivePolicy）
+function executionSpec(sess, p, config, { optimized = true } = {}) {
   const legacyDirect = !p.policy;
   const selected = settings.resolve(config, legacyDirect ? {
     policy: 'direct', cli: p.cli || sess.cli, model: p.model != null ? p.model : sess.model,
-  } : p);
+  } : p, { optimized });
   const base = turnSpec(sess, { ...p, cli: selected.cli, model: selected.model });
   return { ...base, policy: selected.policy, tier: selected.tier, source: selected.source };
 }
@@ -515,7 +517,7 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   const cfg = config || store.loadConfig(ud);
   const agents = await listAgents(repo);
-  const requested = executionSpec(sess, p, cfg);
+  const requested = executionSpec(sess, p, cfg, { optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
   const base = concreteCli(requested, agents, { attachments: p.attachments });
   const spec = agentCli.load(base.cli, repo);
   const available = agents.find((item) => item.name === base.cli);
@@ -607,7 +609,7 @@ async function guardedRunTurn(id, p, send) {
 // 定義の一覧と「使える」印（agents.js。タスク・ワークフローも同じ一覧を見る）。
 function listAgents(repo) {
   const distro = repo ? distroFor(repo) : host.hostOf('', store.loadConfig(userData()).wslDistro).distro;
-  return agents.listAgents(repo, { distro });
+  return agentsMod.listAgents(repo, { distro });
 }
 
 // 名前検索の索引の材料。Windows で \\wsl$\ のリポジトリ（実体は WSL の中）を読むときだけ、

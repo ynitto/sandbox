@@ -204,7 +204,23 @@ async function toolStatus({ cwd = '', capture, skillDir = '', agentDefinitions: 
   return out;
 }
 
+// 任意の道具の有無だけを { herd, agentLoop, agentFlow } で返す（60 秒キャッシュ。cwd ごと）。
+const capabilityCache = new Map();
+async function capabilities({ cwd = '', capture, agentDefinitions: listDefinitions, flowAvailable, ttlMs = 60000, now = Date.now } = {}) {
+  const key = String(cwd || '');
+  const hit = capabilityCache.get(key);
+  if (hit && now() - hit.at < ttlMs) return hit.value;
+  const [names, loop, flow] = await Promise.all([
+    Promise.resolve().then(() => (typeof listDefinitions === 'function' ? listDefinitions() : [])).catch(() => []),
+    capture('agent-loop', ['--version'], { cwd, timeoutMs: 10000 }).then((r) => !!(r && r.ok)).catch(() => false),
+    Promise.resolve().then(() => (typeof flowAvailable === 'function' ? flowAvailable() : false)).catch(() => false),
+  ]);
+  const value = { herd: (Array.isArray(names) ? names : []).includes('herd'), agentLoop: loop, agentFlow: flow };
+  capabilityCache.set(key, { at: now(), value });
+  return value;
+}
+
 module.exports = {
   SKILL_REL, findSkillDir, findPython, agentDefinitions, agentAssistRunSpec,
-  toolStatus, summarizeDoctor, isDir,
+  toolStatus, capabilities, summarizeDoctor, isDir,
 };

@@ -165,3 +165,36 @@ test('既定の AI: 設定が無ければ会話の「おすすめ」と同じ CL
   assert.strictEqual(automationIpc.automationConfig({ lastCli: 'kiro' }).agent, 'kiro', '旧設定の直接指定も tier へ写った値');
   assert.strictEqual(automationIpc.automationPatch({ agent: '' }).automationAgent, '');
 });
+
+test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄くし、ワークフローと履歴・定期実行も使えなければ薄くする', async () => {
+  const renderer = read('renderer/renderer.js');
+  assert.match(renderer, /function optimized\(config = state\.config\)/);
+  assert.match(renderer, /execution\.optimizeAgents !== false && herdAvailable\(\)/);
+  assert.match(renderer, /option\.disabled = !on && !BASIC_POLICIES\.includes\(option\.value\) && option\.value !== 'direct'/, 'ターンごとの起動方針は おすすめ / 直接指定 だけ');
+  assert.match(renderer, /\$\('area-workflows'\)\.disabled = !!\(caps && caps\.agentFlow === false\)/, 'agent-flow が無ければワークフローを押せない');
+  assert.match(renderer, /const allowed = on \|\| tier === 'medium';/, 'tier は medium だけ');
+  assert.match(renderer, /optimizeAgents: \$\('optimize-agents'\)\.checked,/);
+  assert.doesNotMatch(renderer, /agent-herd が要ります/, '理由は出さない');
+  const html = read('renderer/index.html');
+  assert.match(html, /id="optimize-agents"/);
+  assert.match(html, /エージェントを最適化する/);
+  const maker = read('renderer/automation/renderer.js');
+  assert.match(maker, /return state\.agents\.includes\('herd'\);/);
+  assert.match(maker, /policyOn \|\| BASIC_POLICIES\.includes\(value\) \|\| value === 'direct' \? '' : 'disabled'/);
+  assert.match(maker, /data-task-tab="history"[^\n]*snapshot\.available === false \? 'disabled' : ''/, 'agent-loop が無ければ履歴タブは押せない');
+  assert.match(maker, /execution-card \$\{snapshot\.available === false \? 'is-off' : ''\}/, '定期実行のカードは薄くする');
+  const ipc = read('main/ipc.js');
+  assert.match(ipc, /settings\.optimized\(cfg, \{ herdAvailable: agentsMod\.herdAvailable\(agents\) \}\)/, 'ターンの解決も同じ規則');
+  assert.match(read('preload.js'), /invoke\('automation:capabilities'/);
+  // 道具の有無は 1 つの問い合わせ（60 秒キャッシュ）
+  const calls = [];
+  const capture = async (command) => { calls.push(command); return { ok: command === 'agent-loop', stdout: '', stderr: '' }; };
+  let clock = 0;
+  const caps = await tools.capabilities({ cwd: '/r', capture, agentDefinitions: async () => ['claude', 'herd'], flowAvailable: async () => false, now: () => clock });
+  assert.deepStrictEqual(caps, { herd: true, agentLoop: true, agentFlow: false });
+  clock = 1000;
+  await tools.capabilities({ cwd: '/r', capture, agentDefinitions: async () => [], flowAvailable: async () => true, now: () => clock });
+  assert.strictEqual(calls.length, 1, '60 秒以内は起動し直さない');
+  assert.strictEqual(agents.herdAvailable([{ name: 'herd', virtual: true, available: true }]), true);
+  assert.strictEqual(agents.herdAvailable([{ name: 'herd', virtual: true, available: false }, { name: 'claude', available: true }]), false);
+});

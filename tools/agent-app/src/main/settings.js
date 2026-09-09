@@ -3,6 +3,9 @@
 const TIERS = ['small', 'medium', 'large'];
 const POLICY_TIER = { recommended: 'medium', saving: 'small', quality: 'large' };
 const POLICIES = Object.keys(POLICY_TIER);
+// 「エージェントを最適化する」が効いていないとき（設定で OFF、またはローカル実行系 agent-herd が
+// 無い）に選べる起動方針。節約 / 品質重視（small / large tier）は最適化があって初めて意味を持つ。
+const BASIC_POLICIES = ['recommended'];
 const SKILL_MODES = ['auto', 'manual', 'off'];
 const MAX_INSTRUCTION_CHARS = 8000;
 
@@ -62,6 +65,7 @@ function normalize(raw) {
     },
     execution: {
       defaultPolicy: POLICIES.includes(execution.defaultPolicy) ? execution.defaultPolicy : 'recommended',
+      optimizeAgents: execution.optimizeAgents !== false,
       defaultAutoApprove: Boolean(execution.defaultAutoApprove),
       defaultReadonly: Object.hasOwn(execution, 'defaultReadonly')
         ? Boolean(execution.defaultReadonly) : Boolean(source.lastReadonly),
@@ -71,7 +75,23 @@ function normalize(raw) {
   };
 }
 
-function resolve(config, request = {}) {
+// 最適化が効いているか（設定の optimizeAgents と、ローカル実行系の有無の両方）。
+function optimized(config, { herdAvailable = true } = {}) {
+  const configured = config && config.execution ? config.execution : normalize(config).execution;
+  return configured.optimizeAgents !== false && !!herdAvailable;
+}
+
+// 最適化が効いていなければ、節約 / 品質重視は「おすすめ」として扱う（別 tier へ黙って倒すのではなく、
+// 選べない方針を選べる唯一の方針へ写す。画面も同じ規則で選べなくしている）。
+function effectivePolicy(policy, { optimized: on = true } = {}) {
+  const name = String(policy || '');
+  if (name === 'direct') return name;
+  if (!POLICIES.includes(name)) return 'recommended';
+  return on || BASIC_POLICIES.includes(name) ? name : 'recommended';
+}
+
+//   optimized … false なら節約 / 品質重視を「おすすめ」へ写す（呼ぶ側が herd の有無を見て決める）
+function resolve(config, request = {}, { optimized: on = true } = {}) {
   const requestedPolicy = String(request.policy || '');
   if (requestedPolicy === 'direct' || (!POLICIES.includes(requestedPolicy) && request.cli)) {
     const cli = String(request.cli || '').trim().toLowerCase();
@@ -79,9 +99,9 @@ function resolve(config, request = {}) {
     return { policy: 'direct', tier: '', cli, model: String(request.model || '').trim(), source: 'direct' };
   }
   const configured = config && config.execution ? config.execution : normalize(config).execution;
-  const policy = POLICIES.includes(requestedPolicy)
+  const policy = effectivePolicy(POLICIES.includes(requestedPolicy)
     ? requestedPolicy
-    : (POLICIES.includes(configured.defaultPolicy) ? configured.defaultPolicy : 'recommended');
+    : (POLICIES.includes(configured.defaultPolicy) ? configured.defaultPolicy : 'recommended'), { optimized: on });
   const tier = POLICY_TIER[policy];
   const selected = configured.tiers[tier];
   if (!selected || !String(selected.cli || '').trim()) throw new Error(`${tier} Tier のエージェントを設定してください`);
@@ -89,6 +109,6 @@ function resolve(config, request = {}) {
 }
 
 module.exports = {
-  TIERS, POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS,
-  normalize, resolve,
+  TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS,
+  normalize, resolve, optimized, effectivePolicy,
 };
