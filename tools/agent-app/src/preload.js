@@ -98,6 +98,7 @@ contextBridge.exposeInMainWorld('api', {
     teachDemonstration: (repo, machine, recording) => invoke('automation:teach:demonstration', { repo, machine, recording }),
     // ブラウザの見本: Edge をリモートデバッグ付きで起こす。固定文の送信は send / termSubmit で行う
     teachBrowser: (url) => invoke('automation:teach:browser', { url }),
+    teachBrowserPage: () => invoke('automation:teach:browser:page'),
     onAiProgress: on('automation:ai:progress'),
     onAiResult: on('automation:ai:result'),
     flowCatalog: () => invoke('automation:flow:catalog'),

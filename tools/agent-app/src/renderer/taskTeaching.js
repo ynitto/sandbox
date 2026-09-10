@@ -8,22 +8,29 @@
 // （index.html の #task-teaching）を描き、どのタスクの会話を出すかはワークベンチが
 // `statemachine:teaching-view` で教えてくれる。
 //
-// 見本の記録は 2 通り。Windows では AI が WSL の tmux にいて画面は Windows 側にある。
-//   ブラウザ … 「記録を始める」で main が Edge をリモートデバッグ付きで起こし（automation:teach:browser）、
-//              ここから固定文を会話の送信経路（send / termSubmit = tmux）で AI へ渡す。AI がその接続先に
-//              playwright-cli で接続して記録を取る。「終了してAIへ渡す」も固定文を渡すだけ。
+// 見本の記録は 2 通り。Windows では AI が WSL の tmux にいて画面は Windows 側にある。**どちらも
+// ボタンは 1 つで、押すたびに段が進む**（段と固定文は renderer/teachingProtocol.js が決める）。
+//   ブラウザ … 「ブラウザを開く」で main が Edge をリモートデバッグ付きで起こし（automation:teach:browser）、
+//              固定文を会話の送信経路（send / termSubmit = tmux）で AI へ渡す。ここで利用者がログインや
+//              画面の移動をし、準備が済んだら「記録を始める」。AI はその接続先に playwright-cli で接続して
+//              記録を取り、「終了してAIへ渡す」でその記録を工程に起こす。どの段もこちらは固定文を渡すだけ。
 //   Windows アプリ … winauto の記録を**この端末**で取り、できた記録の所在を main が WSL 表記へ直して
-//              会話へ送る（automation:teach:demonstration）。
+//              会話へ送る（automation:teach:demonstration）。準備の段は無く「記録を始める」から。
+// 「やり直す」は取りかけの記録を捨ててはじめへ戻す。
 // AI が見本を要るときは返答に `@record …` の 1 行を書く（renderer/teachingProtocol.js）。
 (function initTaskTeaching() {
   const $ = (id) => document.getElementById(id);
   const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
   const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
+  // 見本の段ごとの、いま押せる操作。ボタンは 1 つで、ラベルだけが変わる。
+  const RECORD_LABEL = { open: 'ブラウザを開く', start: '記録を始める', stop: '終了してAIへ渡す' };
+  const RECORD_PROGRESS = { open: 'ブラウザを開いています…', start: '記録を始めています…' };
 
   const state = {
     deps: null, visible: false, repo: '', machine: '', title: '', context: '', agent: '', creating: false, editing: false, card: false, published: false,
     session: null, availableSession: null, phase: null, tools: null, running: false, pending: false, token: 0,
-    input: null, autoStart: null, record: { open: false, source: 'browser', target: '', active: false, busy: false, message: '', ok: true, request: null },
+    // record.step は TeachingProtocol.recordingSteps(source) の何段目か（0 = まだ始めていない）。
+    input: null, autoStart: null, record: { open: false, source: 'browser', target: '', step: 0, busy: false, message: '', ok: true, request: null, endpoint: '', browser: '' },
   };
 
   function term() { return window.TaskTerm; }
@@ -304,7 +311,7 @@
     } catch (err) { error(err.message); }
   }
 
-  // ---- 操作の見本（この端末で記録し、所在を会話へ送る） -------------------------------
+  // ---- 操作の見本（ボタン 1 つで 段を進める） -------------------------------------
 
   // 足りないものだけを 1 行で言う。仕組みの説明（ブラウザは Edge を起こして AI が記録する・Windows アプリは
   // 記録はこの端末で取る・Windows では WSL へ渡す）は画面に常駐させない——README に書いてある。
@@ -319,24 +326,40 @@
     return tools.browser === false ? 'Edge（または Chrome）が見つかりません。' : '';
   }
 
+  function recordStep(rec = state.record) {
+    const steps = TeachingProtocol.recordingSteps(rec.source);
+    return steps[Math.min(rec.step, steps.length - 1)];
+  }
+
+  function resetRecord(rec) {
+    rec.step = 0;
+    rec.request = null;
+    rec.endpoint = '';
+    rec.browser = '';
+  }
+
   function renderRecord() {
     const rec = state.record;
     $('task-record').hidden = !rec.open;
     if (!rec.open) return;
     const windows = rec.source === 'windows';
+    const step = recordStep(rec);
+    const started = rec.step > 0;
     $('task-record-source').value = rec.source;
-    $('task-record-source').disabled = rec.active;
+    $('task-record-source').disabled = started;
     $('task-record-target-label').textContent = windows ? 'アプリ名' : 'URL';
     const target = $('task-record-target');
     target.placeholder = windows ? '例: 勤怠管理' : 'https://…';
     if (target.value !== rec.target) target.value = rec.target;
-    target.disabled = rec.active;
+    target.disabled = started;
     $('task-record-request').hidden = !rec.request;
     $('task-record-request').textContent = rec.request ? `AI が見本を求めています: ${rec.request.source === 'windows' ? 'Windows アプリ' : 'ブラウザ'}${rec.request.target ? ` ${rec.request.target}` : ''}` : '';
-    $('task-record-start').hidden = rec.active;
-    $('task-record-start').disabled = rec.busy || (windows ? api.platform !== 'win32' : !state.session);
-    $('task-record-stop').hidden = !rec.active;
-    $('task-record-stop').disabled = rec.busy;
+    const action = $('task-record-action');
+    action.textContent = RECORD_LABEL[step];
+    action.className = `small ${step === 'stop' ? 'danger' : 'primary'}`;
+    action.disabled = rec.busy || (windows ? api.platform !== 'win32' : !state.session);
+    $('task-record-restart').hidden = !started;
+    $('task-record-restart').disabled = rec.busy;
     $('task-record-message').textContent = rec.message;
     $('task-record-message').className = `sub ${rec.ok ? '' : 'error'}`.trim();
     $('task-record-message').hidden = !rec.message;
@@ -350,65 +373,96 @@
     rec.open = true;
     if (request) {
       rec.request = request;
-      if (!rec.active) { rec.source = request.source; rec.target = request.target || rec.target; }
+      if (!rec.step) { rec.source = request.source; rec.target = request.target || rec.target; }
     }
     renderShell();
   }
 
-  // ブラウザ: Edge をリモートデバッグ付きで起こし、固定文（接続先入り）を AI へ渡して記録を始めてもらう。
-  async function startBrowserRecording(rec) {
+  // 1 段目（ブラウザ）: Edge をリモートデバッグ付きで起こし、接続だけしておくよう AI へ伝える。
+  // 記録はまだ始めない——ここから利用者がログインや画面の移動をする。
+  async function openBrowser(rec) {
     if (!state.session) throw new Error('AI との会話を開いてから記録を始めてください');
     const opened = await api.automation.teachBrowser(rec.target);
-    await sendText(TeachingProtocol.recordingStartMessage({ endpoint: opened.endpoint, url: opened.url, browser: opened.browser }));
-    rec.active = true;
-    rec.message = `${opened.browser} を開きました。操作が終わったら「終了してAIへ渡す」を押してください。`;
+    rec.endpoint = opened.endpoint;
+    rec.browser = opened.browser;
+    await sendText(TeachingProtocol.recordingOpenMessage({ endpoint: opened.endpoint, url: opened.url, browser: opened.browser, request: rec.request }));
+    rec.step += 1;
+    rec.message = `${opened.browser} を開きました。ログインや画面の移動を済ませてから次へ進めてください。`;
   }
 
-  async function startRecording() {
+  // 2 段目: ここからが見本。ブラウザは、準備で移動した先を記録の起点として添える。
+  async function startRecording(rec) {
+    if (rec.source === 'windows') {
+      await api.automation.recordingStart({ root: state.repo, source: 'windows', app: rec.target });
+      rec.step += 1;
+      rec.message = 'アプリを操作したあと、次へ進めてください。';
+      return;
+    }
+    if (!state.session) throw new Error('AI との会話を開いてから記録を始めてください');
+    let page = '';
+    try { page = String((await api.automation.teachBrowserPage()).url || ''); } catch { /* 読めなくても記録は始められる */ }
+    await sendText(TeachingProtocol.recordingStartMessage({ endpoint: rec.endpoint, page, request: rec.request }));
+    rec.step += 1;
+    rec.message = '記録中です。操作が終わったら次へ進めてください。';
+  }
+
+  // 3 段目: ブラウザは AI に終わりを伝えるだけ。Windows アプリは記録をここで工程に整理して渡す。
+  async function stopRecording(rec) {
+    if (rec.source === 'windows') {
+      const result = await api.automation.recordingStop({ root: state.repo, source: 'windows', app: rec.target });
+      const targetName = rec.target;
+      resetRecord(rec);
+      const saved = await api.automation.teachDemonstration(state.repo, state.machine, { ...result, target: targetName });
+      rec.message = `${saved.steps} 工程の見本を保存しました（${saved.relative}）。${saved.sent ? 'AI へ渡しました。' : 'AI との会話を開いてから、見本の場所を伝えてください。'}`;
+      if (saved.sent) state.running = true;
+      return;
+    }
+    await sendText(TeachingProtocol.recordingStopMessage({ machine: state.machine }));
+    resetRecord(rec);
+    rec.message = 'AI に操作の終了を伝えました。記録が工程に起こされるのを待ってください。';
+  }
+
+  // ボタン 1 つ。押すたびに次の段へ進む。
+  async function advanceRecording() {
     const rec = state.record;
-    if (rec.busy || rec.active) return;
-    rec.busy = true; rec.ok = true; rec.message = '始めています…';
+    if (rec.busy) return;
+    const step = recordStep(rec);
+    rec.busy = true;
+    rec.ok = true;
+    rec.message = RECORD_PROGRESS[step] || (rec.source === 'windows' ? '記録を工程に整理しています…' : 'AI に操作の終了を伝えています…');
     renderRecord();
     try {
-      if (rec.source === 'windows') {
-        await api.automation.recordingStart({ root: state.repo, source: 'windows', app: rec.target });
-        rec.active = true;
-        rec.message = '操作したあとに「終了してAIへ渡す」を押してください。';
-      } else {
-        await startBrowserRecording(rec);
-      }
+      if (step === 'open') await openBrowser(rec);
+      else if (step === 'start') await startRecording(rec);
+      else await stopRecording(rec);
     } catch (err) {
-      rec.ok = false; rec.message = err.message;
+      // 終わりに失敗したら記録は残さない（Windows アプリの winauto は既に止まっている）。
+      if (step === 'stop') resetRecord(rec);
+      rec.ok = false;
+      rec.message = err.message;
     } finally {
       rec.busy = false;
-      renderRecord();
+      renderShell();
     }
   }
 
-  async function stopRecording() {
+  // 取りかけの見本を捨ててはじめへ戻す。ブラウザは AI に破棄を伝え、Windows アプリはこの端末で止める。
+  async function restartRecording() {
     const rec = state.record;
-    if (rec.busy || !rec.active) return;
-    rec.busy = true; rec.ok = true;
-    rec.message = rec.source === 'windows' ? '記録を工程に整理しています…' : 'AI に操作の終了を伝えています…';
+    if (rec.busy || !rec.step) return;
+    rec.busy = true;
+    rec.ok = true;
+    rec.message = '取りかけの記録を捨てています…';
     renderRecord();
     try {
-      if (rec.source === 'windows') {
-        const result = await api.automation.recordingStop({ root: state.repo, source: 'windows', app: rec.target });
-        rec.active = false;
-        const saved = await api.automation.teachDemonstration(state.repo, state.machine, { ...result, target: rec.target });
-        rec.request = null;
-        rec.message = `${saved.steps} 工程の見本を保存しました（${saved.relative}）。${saved.sent ? 'AI へ渡しました。' : 'AI との会話を開いてから、見本の場所を伝えてください。'}`;
-        if (saved.sent) state.running = true;
-      } else {
-        await sendText(TeachingProtocol.recordingStopMessage({ machine: state.machine }));
-        rec.active = false;
-        rec.request = null;
-        rec.message = 'AI に操作の終了を伝えました。記録が工程に起こされるのを待ってください。';
-      }
+      if (rec.source === 'windows') await api.automation.recordingStop({ root: state.repo, source: 'windows', app: rec.target });
+      else await sendText(TeachingProtocol.recordingCancelMessage({ machine: state.machine }));
+      rec.message = 'はじめからやり直せます。';
     } catch (err) {
-      rec.active = false;
-      rec.ok = false; rec.message = err.message;
+      rec.ok = false;
+      rec.message = err.message;
     } finally {
+      resetRecord(rec);
       rec.busy = false;
       renderShell();
     }
@@ -432,7 +486,7 @@
     state.card = next.card;
     state.published = next.published;
     state.visible = true;
-    state.record = { ...state.record, open: false, request: null, message: '' };
+    state.record = { ...state.record, open: false, step: 0, request: null, message: '', endpoint: '', browser: '' };
     resetExecutionInputs();
     if (state.creating) { state.token += 1; state.session = null; state.availableSession = null; term().detach(); renderShell(); return; }
     loadView();
@@ -514,8 +568,8 @@
     $('task-record-close').onclick = () => { state.record.open = false; renderShell(); };
     $('task-record-source').onchange = () => { state.record.source = $('task-record-source').value; renderRecord(); };
     $('task-record-target').addEventListener('input', () => { state.record.target = $('task-record-target').value; });
-    $('task-record-start').onclick = () => startRecording();
-    $('task-record-stop').onclick = () => stopRecording();
+    $('task-record-action').onclick = () => advanceRecording();
+    $('task-record-restart').onclick = () => restartRecording();
     renderShell();
   }
 

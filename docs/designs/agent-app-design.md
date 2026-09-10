@@ -230,24 +230,36 @@ AI が定義を書く（workflow.yaml / actions/*.md）→ 定義があれば「
 Windows では AI は WSL の tmux にいて画面は Windows 側にあり、WSL から Windows 側の `playwright-cli` を
 起こすことはできない。そこで見本の取り方は画面の種類で分ける（ADR-10）:
 
+**押すボタンは 1 つで、押すたびに段が進む**（`protocol.recordingSteps(source)`）。段の分だけ固定文があり、
+どの固定文も「いま会話がどこにいて、AI は次に何をすべきか・何をしてはいけないか」を言う。UI に増えるのは
+ラベルだけで、部品は増えない（ADR-12）。
+
 ```text
 ブラウザ（AI が CDP 越しに記録する。ボタンは固定文を tmux へ流すだけ）
-  AI: @record browser <URL> → 見本のカードが開く → 利用者「記録を始める」
+  AI: @record browser <URL> → 見本のカードが開く
+  ①「ブラウザを開く」
     → automation:teach:browser  main が Edge（無ければ Chrome）を記録専用プロファイルで
                                 --remote-debugging-port=9222 付きで起こし、/json/version の応答を待つ
-    → renderer が固定文 recordingStartMessage（@recording start + 接続先）を会話の送信経路
+    → renderer が固定文 recordingOpenMessage（@recording open + 接続先）を会話の送信経路
       （turn:send / term:submit = tmux）で AI へ渡す
-  AI: playwright-cli attach --cdp=http://localhost:9222 → recording-start → 待つ
-  利用者が操作 → 「終了してAIへ渡す」→ 固定文 recordingStopMessage（@recording stop）
+  AI: playwright-cli attach --cdp=http://localhost:9222 → つながったかを 1 行で知らせて**待つ**（記録はまだ）
+  利用者がログイン・目的の画面まで移動（この操作は見本に入らない）
+  ②「記録を始める」→ automation:teach:browser:page（/json/list でいま開いているページを読む）
+    → 固定文 recordingStartMessage（@recording start + 記録の起点のページ）
+  AI: recording-start → 待つ
+  利用者が見せたい操作 → ③「終了してAIへ渡す」→ 固定文 recordingStopMessage（@recording stop）
   AI: recording-stop → 記録の行を .statemachine/<名前>/recordings/<時刻>-browser.md に保存 → detach → 工程を組む
-Windows アプリ（agent-app が winauto で記録する）
+  （途中で「やり直す」→ 固定文 recordingCancelMessage（@recording cancel）→ AI は記録を保存せずに捨てて ① を待つ）
+Windows アプリ（agent-app が winauto で記録する。準備の段は無い）
   「記録を始める」→ automation:recording:start（winauto record）→ 操作 →「終了してAIへ渡す」
     → automation:recording:stop → Markdown（recordings/<時刻>-windows.md）→ 所在を host.toHostPath で
       WSL 表記へ直して次のターンとして送る（automation:teach:demonstration）
+  （「やり直す」→ automation:recording:stop して、その記録は AI へ渡さずに捨てる）
 ```
 
 依頼文（`teaching.prompt`）にこの流れをすべて仕込む: 固定文が届く前にブラウザを起こしたり記録を始めたり
-しないこと、利用者が操作している間はブラウザを操作しないこと、winauto の記録は自分で起こさないこと。
+しないこと、`@recording open` の段では接続だけして記録は始めないこと（利用者の準備を見本に混ぜない）、
+利用者が操作している間はブラウザを操作しないこと、winauto の記録は自分で起こさないこと。
 Edge の起動（`main/automation/browser.js`）は Electron に触れず、起動・応答確認の関数を引数で受ける。
 
 ### 3.4 ワークフローの教示と差し戻し
@@ -559,7 +571,7 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | テスト | 固定するもの |
 |---|---|
 | `test/app.test.js` | 画面の情報構造、三領域、preload と IPC の 1 対 1、vendor と index.html の対応、共有編集面が `window.api.automation` へ直接つなぐこと、ワークフロー教示と差し戻しが通常の依存と分離していること、argv の組み立て、店（store）、git、ファイル、添付、tmux セッションの保持とスナップショット |
-| `test/automation-teaching.test.js` | `@record` 行の解析、ブラウザの見本の固定文（`@recording start` / `stop`）、下書きの sidecar、最初の依頼文（保存先・作成モード・Windows/WSL の注意・固定文を待って CDP で記録すること）、見本の Markdown、kind: task の会話、記録の所在を WSL 表記で送ること |
+| `test/automation-teaching.test.js` | `@record` 行の解析、見本の段（ブラウザ 3 段 / Windows アプリ 2 段）と段ごとの固定文（`@recording open` / `start` / `stop` / `cancel`）、下書きの sidecar、最初の依頼文（保存先・作成モード・Windows/WSL の注意・固定文を待って CDP で記録すること）、見本の Markdown、kind: task の会話、記録の所在を WSL 表記で送ること |
 | `test/automation-browser.test.js` | Edge / Chrome の探し方、リモートデバッグと記録専用プロファイルの引数、応答を待って接続先を返すこと、無い・応答しない・起動失敗の断り方 |
 | `test/ui-consistency.test.js` | 端末と入力欄が会話画面と同じ実体であること、その見た目の定義が 1 か所であること、直値の色を足していないこと、見出しと説明を 2 つの層が描かないこと |
 | `test/automation-*.test.js` | 共有ワークベンチ（旧 statemachine-maker）の domain: 工程列の正規化とコンパイル、読み戻し、記録の変換、AI 下書き・見直し、agent-loop / agent-flow との境界、statemachine-use の `run_machine.py --dry-run` を通ること、画面の言葉に内部の綴りが混ざらないこと |
@@ -620,7 +632,7 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession` |
 | 外部ライブラリ・共有ファイルの追加 | `scripts/vendor.js`、`index.html` | vendor と index.html の対応テスト、CSP |
 | タスク・ワークフローの機能 | `src/main/automation/`、`src/renderer/automation/` | `api.automation.*` と `handlers.js` の `register` の対応、`<statemachine-workbench>` の Shadow DOM、`navigate` payload と DOM イベント、`automation-workbench.css` の `:host` 上書き、`test/automation-*.test.js` |
-| タスクを AI と作る会話 | `src/main/ipc.js` の `startTeaching` / `demonstrate` / `launchTeachingBrowser`、`src/main/automation/teaching.js`、`src/main/automation/browser.js`、`src/renderer/taskTeaching.js`、`src/renderer/teachingProtocol.js` | 依頼文の約束事（`@record`、固定文 `@recording start` / `stop`）は main と renderer が同じモジュールを読むこと、固定文は会話の送信経路（tmux）で送ること、記録の所在を WSL 表記へ直すこと、kind: task の会話が会話一覧に出ないこと |
+| タスクを AI と作る会話 | `src/main/ipc.js` の `startTeaching` / `demonstrate` / `launchTeachingBrowser` / `teachingBrowserPage`、`src/main/automation/teaching.js`、`src/main/automation/browser.js`、`src/renderer/taskTeaching.js`、`src/renderer/teachingProtocol.js` | 依頼文の約束事（`@record`、段と固定文 `@recording open` / `start` / `stop` / `cancel`）は main と renderer が同じモジュールを読むこと、見本のボタンは 1 つで段だけが進むこと、固定文は会話の送信経路（tmux）で送ること、記録の所在を WSL 表記へ直すこと、kind: task の会話が会話一覧に出ないこと |
 
 ## 付録 A. ADR
 
@@ -773,12 +785,12 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 
 ### ADR-10 ブラウザの見本は、この端末が Edge をリモートデバッグ付きで起こし、AI が CDP 越しに記録する
 
-- 決定: ブラウザの見本は agent-app が `playwright-cli` を呼んで記録する形をやめる。「記録を始める」で
+- 決定: ブラウザの見本は agent-app が `playwright-cli` を呼んで記録する形をやめる。「ブラウザを開く」で
   agent-app が Edge（無ければ Chrome）を記録専用プロファイルと `--remote-debugging-port=9222` 付きで起こし、
-  起動できたことを固定文（`@recording start`、接続先入り）として tmux 経由で AI へ渡す。AI が WSL 側の
-  `playwright-cli attach --cdp=…` で接続して `recording-start` し、「終了してAIへ渡す」の固定文
-  （`@recording stop`）で `recording-stop` して記録を保存する。流れはすべて最初の依頼文に仕込み、ボタンを
-  押す番になったら AI が利用者にそう言う。
+  起動できたことを固定文（`@recording open`、接続先入り）として tmux 経由で AI へ渡す。AI が WSL 側の
+  `playwright-cli attach --cdp=…` で接続し、「記録を始める」の固定文（`@recording start`）で `recording-start`、
+  「終了してAIへ渡す」の固定文（`@recording stop`）で `recording-stop` して記録を保存する。流れはすべて
+  最初の依頼文に仕込み、ボタンを押す番になったら AI が利用者にそう言う。段の分け方は ADR-12。
 - 背景: Windows では AI（WSL）から Windows 側の `playwright-cli` を起こしてブラウザを記録することはできない。
   一方、Windows 側で Edge をリモートデバッグ付きで起こしておけば、WSL の AI がそこへ接続して記録できることが
   実地で確かめられた。記録の主体を AI にすると、記録の行の解釈・保存・工程化を AI の会話 1 本に寄せられ、
@@ -794,6 +806,27 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 - 見直し条件: 工程エディタからの記録を使う人がいなくなったら古い経路を消す。Edge 以外の既定ブラウザで
   記録したい要望が出たら、起動するブラウザを設定にする。
   複数の CLI が同じ `.statemachine/` を同時に書く運用が主になった場合。
+- 確信度: 中。
+
+### ADR-12 見本の段（準備 → 記録 → 解析）は 1 つのボタンで進め、段ごとに別の固定文を渡す
+
+- 決定: ブラウザの見本を「開く（準備）→ 記録開始 → 終了」の 3 段に分け、`@recording open` /
+  `start` / `stop`（取り消しは `cancel`）の固定文をそれぞれ渡す。段の並びは
+  `teachingProtocol.recordingSteps(source)` が持ち（Windows アプリは準備の段が無く 2 段）、画面は
+  **ボタン 1 つのラベルだけ**が段で変わる。どの固定文も、いま会話がどこにいて AI が次に何をすべきか・
+  何をしてはいけないかを書く（`open` では接続だけで記録はしない、など）。2 段目には、準備の間に利用者が
+  移動した先（`automation:teach:browser:page` が `/json/list` から読む）を記録の起点として載せる。
+- 背景: 1 段（起動と記録開始が同じボタン）だと、ログインや目的の画面までの移動——毎回同じで工程に要らない
+  操作——が記録に混ざり、AI がそれを工程に起こしてしまっていた。利用者の頭の中では「準備する・見せる・
+  解析させる」の 3 つに分かれており、その区切りを AI に伝える口が無かった。
+- 却下: 段ごとにボタンを並べる（画面の部品が増え、押す順番を画面で説明することになる）、利用者に自由文で
+  「いまから記録して」と書かせる（会話の文脈に乗るが、毎回言い回しが変わり AI の受け取りが安定しない。
+  ボタンの固定文なら段が確実に伝わる）、準備の操作を記録してから AI に捨てさせる（何が準備で何が本番かを
+  AI が推測することになり、パスワード入力まで記録に残る）。
+- 代償: 固定文が 2 つから 4 つに増え、依頼文（`teaching.prompt`）が長くなる。利用者が②を押し忘れて操作を
+  始めると、その操作は記録されない（「やり直す」で①からやり直す）。
+- 見直し条件: Windows アプリの見本にも準備の段が要るという声が出たら、段の並びに `open` を足す
+  （画面はラベルが増えるだけで済む）。
 - 確信度: 中。
 
 ## 付録 B. 関連文書

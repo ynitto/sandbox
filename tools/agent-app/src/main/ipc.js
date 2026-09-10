@@ -646,7 +646,8 @@ function automationAppRoot() {
 // statemachine-use の作成モードと、見本の依頼の作法（@record 行）を伝える。
 // ブラウザの見本は、**この端末**（Windows ならその Windows 側）で Edge をリモートデバッグ付きで起こし、
 // 固定文で AI に知らせて AI 自身が CDP 越しに記録を取る（automation:teach:browser。固定文は renderer が
-// 会話の送信経路で送る）。Windows アプリの見本（winauto）はこの端末で取り、できた Markdown の所在を
+// 会話の送信経路で送る）。ボタンは 1 つで、押すたびに「開く（準備）→ 記録開始 → 終了」と進み、段ごとに
+// 別の固定文（@recording open / start / stop）が渡る。Windows アプリの見本（winauto）はこの端末で取り、できた Markdown の所在を
 // WSL 表記に直して会話へ送る。
 
 function teachingTools() {
@@ -656,12 +657,19 @@ function teachingTools() {
   };
 }
 
-// 「記録を始める」: Edge（無ければ Chrome）を記録専用プロファイルで、リモートデバッグ付きで起こす。
+// 「ブラウザを開く」: Edge（無ければ Chrome）を記録専用プロファイルで、リモートデバッグ付きで起こす。
+// この時点ではまだ記録は始まらない（利用者がログインや画面の移動をする）。
 function launchTeachingBrowser(p) {
   return recordingBrowser.launchRecordingBrowser({
     url: p.url, profileDir: path.join(userData(), recordingBrowser.PROFILE_DIR),
     resolvePath: (name) => agentCli.resolvePath(name),
   });
+}
+
+// 「記録を始める」: 準備の間に利用者が移動した先を記録の起点として AI へ渡すため、いま開いている
+// ページを DevTools から読む。読めなくても記録は始められるので、失敗は url: '' で返す。
+function teachingBrowserPage() {
+  return recordingBrowser.activePage();
 }
 
 function teachingSkillDir(repo, cfg) {
@@ -775,6 +783,7 @@ function registerIpcHandlers(getWindow) {
   handle('automation:teach:session', (p) => taskConversationView(userData(), requireRepo(p.repo), String(p.machine || '').trim()));
   handle('automation:teach:demonstration', (p) => demonstrate(p, send));
   handle('automation:teach:browser', (p) => launchTeachingBrowser(p));
+  handle('automation:teach:browser:page', () => teachingBrowserPage());
   // 写したが送らずに閉じた添付を掃除する
   try { attachments.sweep(userData(), store.readAllSessions(userData())); } catch { /* 消せなくても動く */ }
 
