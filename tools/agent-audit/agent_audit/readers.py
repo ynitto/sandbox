@@ -46,6 +46,18 @@ def read_sessions(session_log: dict, *, want_messages: bool = False,
     return []          # 未知 format は「未収集」— 呼び出し側（doctor / collect）が明示する
 
 
+def session_identities(session_log: dict, *, since: float = 0.0) -> "list[dict]":
+    """Enumerate source identities through the same parsers used by collect.
+
+    Keeping this deliberately thin prevents reconcile from acquiring a second implementation
+    of CLI formats or timestamp semantics.
+    """
+    return [{"native_id": session["native_id"], "store": session["store"],
+             "updated_at": session.get("updated_at") or 0.0}
+            for session in read_sessions(session_log, want_messages=False)
+            if not since or (session.get("updated_at") or 0.0) >= since]
+
+
 def _dbs(pattern: str) -> "list[str]":
     """パスをグロブとして解く（当たらなければ実在するときだけそのパス自身）。"""
     return sorted(glob.glob(pattern)) or ([pattern] if os.path.exists(pattern) else [])

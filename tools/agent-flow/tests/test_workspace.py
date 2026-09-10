@@ -76,6 +76,29 @@ class WorkspacePublicationTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.addCleanup(kf.cleanup_workspace)
+        self.addCleanup(setattr, kf, "_EGRESS_GUARD_ENABLED", False)
+
+    def test_opt_in_guard_denies_push_without_approved_envelope(self):
+        local = _init_repo(os.path.join(self.tmp, "local-guard"), {"seed.txt": "seed\n"})
+        remote = os.path.join(self.tmp, "remote-guard.git")
+        subprocess.run(["git", "init", "-q", "--bare", remote], check=True)
+        subprocess.run(["git", "-C", local, "remote", "add", "origin", remote], check=True)
+        subprocess.run(["git", "-C", local, "push", "-q", "-u", "origin", "main"], check=True)
+        ws = kf.ensure_workspace_clone(
+            {"url": remote, "local": local, "base": "main", "path": "", "desc": "test"},
+            "guard-deny")
+        pathlib.Path(ws["clone"], "result.txt").write_text("result\n")
+        kf._EGRESS_GUARD_ENABLED = True
+        kf._EXECUTION_ENVELOPE = {}
+
+        with self.assertRaises(kf.WorkspacePublishError) as raised:
+            kf.finalize_workspace(ws, "guard-deny", "work")
+
+        receipt = raised.exception.data["publication"]["egress"]
+        self.assertEqual(receipt["decision"], "deny")
+        self.assertFalse(subprocess.run(
+            ["git", "--git-dir", remote, "show-ref", "--verify", "refs/heads/af/guard-deny"],
+            capture_output=True).returncode == 0)
 
     def test_failed_remote_push_keeps_a_local_recovery_ref(self):
         local = _init_repo(os.path.join(self.tmp, "local"), {"seed.txt": "seed\n"})

@@ -44,6 +44,16 @@ class ExecutionEnvelopeTests(unittest.TestCase):
         self.assertEqual(saved["candidate_permissions"]["pins"][0]["agent_cli"], "aider")
         self.assertEqual(task.get("execution_envelope_digest"), saved["digest"])
 
+    def test_egress_guard_snapshot_is_opt_in_and_freezes_push_target(self):
+        task = km.Task(id="EG1", title="publish", extra=[
+            ("egress_guard", "true"), ("egress_git_push", "approval_required"),
+            ("external_repositories", "ssh://example/repo.git"),
+        ])
+        saved = km.approve_execution_envelope(self.cfg, task, "publish approval")
+        self.assertEqual(saved["egress"]["git.push"]["decision"], "approval_required")
+        self.assertEqual(saved["egress"]["git.push"]["targets"],
+                         [{"url": "ssh://example/repo.git"}])
+
     def test_plan_approve_freezes_envelope_before_task_becomes_ready(self):
         task = km.Task(id="T2", title="承認対象", status="proposed", verify="pytest -q", extra=[
             ("paths", "src/only.py"),

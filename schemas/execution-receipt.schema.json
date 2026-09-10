@@ -57,7 +57,25 @@
     "execution_decision": {"$ref": "#/$defs/execution_decision"},
     "resource_snapshot": {"$ref": "#/$defs/resource_snapshot"},
     "verification": {"$ref": "#/$defs/verification"},
-    "external_data_classes": {"type": "array", "items": {"type": "string"}, "description": "端末外候補へ送信したデータ分類。送信した path の記録は持つが、secret や本文そのものは複製しない"}
+    "external_data_classes": {"type": "array", "items": {"type": "string"}, "description": "端末外候補へ送信したデータ分類。送信した path の記録は持つが、secret や本文そのものは複製しない"},
+    "egress": {
+      "type": "object",
+      "description": "外部副作用の実行直前判断。action/target と承認済み Envelope digest を束ね、target 変更時に古い承認を再利用できなくする。vertical slice は git.push",
+      "required": ["action", "target", "envelope_digest", "action_digest", "decision", "outcome", "approval_resolution"],
+      "properties": {
+        "action": {"enum": ["git.push", "filesystem.delete", "external.write"]},
+        "target": {"type": "object"},
+        "envelope_digest": {"type": "string"},
+        "action_digest": {"type": "string"},
+        "decision": {"enum": ["allow", "deny", "approval_required"]},
+        "outcome": {"enum": ["allow", "deny"]},
+        "approval_resolution": {"enum": ["approved", "rejected", "pending", "not-applicable"]},
+        "executed": {"type": "boolean"},
+        "result": {"type": "string"},
+        "reason": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": true,
   "examples": [
