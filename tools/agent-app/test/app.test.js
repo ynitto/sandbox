@@ -68,6 +68,12 @@ test('tmux会話はメッセージ入力と端末操作を明示的に切り替�
   assert.match(html, /id="terminal-stage"[^>]*>[\s\S]*id="term-host"/);
   assert.match(html, /id="terminal-keys"[^>]*hidden[\s\S]*data-terminal-key="C-c"/);
   assert.match(html, /data-terminal-key="Enter"[^>]*aria-label="端末へEnterキーを送る"/);
+  // 改行は送信と別のキー。仮想キーの「改行」と Shift+Enter は LF（Ctrl+J）として CLI へ届く
+  assert.match(html, /data-terminal-key="Newline"[^>]*>改行</);
+  assert.match(html, /data-task-key="Newline"[^>]*>改行</);
+  assert.match(renderer, /Newline:\s*'\\n'/);
+  assert.match(fs.readFileSync(path.join(SRC, 'renderer/taskTeaching.js'), 'utf8'), /Newline:\s*'\\n'/);
+  assert.match(term, /attachCustomKeyEventHandler\(\(event\) => \{[\s\S]*event\.shiftKey[\s\S]*sendData\('\\n'\)/);
   assert.match(preload, /termScroll:\s*\(id, lines\)\s*=>\s*invoke\('term:scroll'/);
   // xterm の既定ホイール処理を止めるには hostEl の wheel リスナーでは足りない。
   // attachCustomWheelEventHandler で受け取り、tmux へ転送したら false を返す。
@@ -366,7 +372,16 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
   assert.match(renderer, /function bindTaskDetailTabs\(/);
   assert.ok(!renderer.includes('data-task-tab="teach"'), 'AI相談のタブは持たない');
   assert.match(renderer, /id="editing-target"/);
-  assert.match(fs.readFileSync(path.join(SRC, 'renderer', 'index.html'), 'utf8'), /id="task-launch-agent"/, '起動設定は親の起動カードにある');
+  const indexHtml = fs.readFileSync(path.join(SRC, 'renderer', 'index.html'), 'utf8');
+  assert.match(indexHtml, /id="task-launch-agent"/, '起動設定は親の起動カードにある');
+  // 権限は会話の「実行設定」と同じ言葉・同じ並びで、作成と編集の両方から選べる（読み取り専用は無い）
+  for (const prefix of ['task-create', 'task-launch']) {
+    assert.match(indexHtml, new RegExp(`id="${prefix}-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option></select>`));
+  }
+  const teaching = fs.readFileSync(path.join(SRC, 'renderer', 'taskTeaching.js'), 'utf8');
+  assert.match(teaching, /autoApprove: \$\(`\$\{prefix\}-permission`\)\.value === 'auto'/, '起動条件に権限を含める');
+  assert.match(fs.readFileSync(path.join(SRC, 'main', 'ipc.js'), 'utf8'), /if \(p\.autoApprove != null\) store\.updateSession\(ud, summary\.id, \{ autoApprove: !!p\.autoApprove \}\)/,
+    '既にある会話でも権限の切り替えが効く');
   assert.match(renderer, /id="b-assist"[^>]*>編集</);
   assert.match(renderer, /id="b-run"[^>]*>テスト</);
   assert.match(renderer, /class="edit-controls"/, 'エージェントと編集ボタンを一つの操作グループにする');

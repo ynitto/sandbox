@@ -18,7 +18,7 @@
 (function initTaskTeaching() {
   const $ = (id) => document.getElementById(id);
   const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
-  const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
+  const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
 
   const state = {
     deps: null, visible: false, repo: '', machine: '', title: '', context: '', agent: '', creating: false, editing: false, card: false, published: false,
@@ -88,6 +88,8 @@
     $('task-launch-start').disabled = state.pending || hasTerminal;
     $('task-launch-agent').disabled = state.pending || hasTerminal || $('task-launch-agent').disabled;
     $('task-launch-model').disabled = state.pending || hasTerminal;
+    // 権限は会話が開いていても変えられる（次の依頼から効く。tmux の CLI は起動し直す）
+    $('task-launch-permission').disabled = state.pending;
     $('task-launch-status').textContent = state.pending ? '起動中です...' : '';
     $('task-launch-phase').textContent = state.pending ? '起動中' : '起動前';
     $('task-launch-phase').className = `phase ${state.pending ? 'starting' : ''}`.trim();
@@ -111,8 +113,13 @@
   function populateExecutionInputs(prefix, preferred = null) {
     const select = $(`${prefix}-agent`);
     const model = $(`${prefix}-model`);
-    if (!select || !model) return;
+    const permission = $(`${prefix}-permission`);
+    if (!select || !model || !permission) return;
     const defaults = state.deps.executionDefaults();
+    // 権限は会話の「実行設定」と同じ 2 択（タスクは読み取り専用にしない）。初期値は設定の既定、
+    // 開いている会話があればその会話の値。
+    if (preferred && preferred.autoApprove != null) { permission.value = preferred.autoApprove ? 'auto' : 'confirm'; permission.dataset.pinned = '1'; }
+    else if (!permission.dataset.pinned) permission.value = defaults.autoApprove ? 'auto' : 'confirm';
     const wanted = String((preferred && preferred.agent) || select.value || state.agent || defaults.agent || '');
     const agents = state.deps.agentNames();
     select.innerHTML = agents.length
@@ -124,8 +131,13 @@
     else if (!model.value) model.value = defaults.model || '';
   }
 
+  // 別のタスクへ移ったら、権限の選択は設定の既定（か、その会話の値）へ戻す。
+  function resetExecutionInputs() {
+    for (const prefix of ['task-create', 'task-launch']) delete $(`${prefix}-permission`).dataset.pinned;
+  }
+
   function readExecutionInputs(prefix) {
-    return { agent: $(`${prefix}-agent`).value, model: $(`${prefix}-model`).value.trim() };
+    return { agent: $(`${prefix}-agent`).value, model: $(`${prefix}-model`).value.trim(), autoApprove: $(`${prefix}-permission`).value === 'auto' };
   }
 
   function setInputMode(mode, { focus = true } = {}) {
@@ -160,7 +172,7 @@
     if (token !== state.token) return;
     state.tools = view.tools || null;
     state.availableSession = view.session || null;
-    if (view.session) populateExecutionInputs('task-launch', { agent: view.session.cli, model: view.session.model });
+    if (view.session) populateExecutionInputs('task-launch', { agent: view.session.cli, model: view.session.model, autoApprove: !!view.session.autoApprove });
     renderShell();
     const autoStart = state.autoStart;
     if (autoStart && autoStart.repo === state.repo && autoStart.machine === state.machine) {
@@ -247,10 +259,13 @@
       let res;
       if (state.running) res = await api.termSubmit(sess.id, text);
       else {
+        // 権限は起動カードの選択が正。会話を開いたあとに変えた分も、次の依頼から効く。
+        const autoApprove = $('task-launch-permission').value === 'auto';
         res = await api.send(sess.id, text, {
-          policy: sess.policy, cli: sess.cli, model: sess.model, readonly: false, autoApprove: !!sess.autoApprove,
+          policy: sess.policy, cli: sess.cli, model: sess.model, readonly: false, autoApprove,
           skillMode: 'off', skills: [], attachments: [],
         });
+        sess.autoApprove = autoApprove;
         state.running = true;
       }
       if (res.restarted || term().current() !== sess.id) await attach(await api.readSession(sess.id));
@@ -418,6 +433,7 @@
     state.published = next.published;
     state.visible = true;
     state.record = { ...state.record, open: false, request: null, message: '' };
+    resetExecutionInputs();
     if (state.creating) { state.token += 1; state.session = null; state.availableSession = null; term().detach(); renderShell(); return; }
     loadView();
   }
@@ -477,6 +493,7 @@
       };
       $(`${prefix}-agent`).addEventListener('change', refreshExecutionSummary);
       $(`${prefix}-model`).addEventListener('input', refreshExecutionSummary);
+      $(`${prefix}-permission`).addEventListener('change', () => { $(`${prefix}-permission`).dataset.pinned = '1'; refreshExecutionSummary(); });
     }
     $('task-purpose').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); create().catch((err) => error(err.message)); }

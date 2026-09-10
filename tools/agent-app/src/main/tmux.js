@@ -59,6 +59,7 @@ const CHROME = [
   /^\s*(?:\/|~\/|\.\.\/)[^·•\n]+\s*[·•]\s*[\w./-]+\s*$/i,
   /^\s*(?:\/|~|\.\.\/)?[\w.\-/~]*\s*(?:\(|\[)?(?:main|master)?(?:\)|\])?\s*$/,   // ステータス行に出る cwd / ブランチ
   /^\s*\[agent-app exit \d+\]\s*$/,        // CLI の終わりに自分で印字した終了コード（応答本文ではない）
+  /^\s*(?:[>❯›]\s*)?\[pasted text #?\d+(?:\s*\+\d+ lines)?\]\s*$/i,   // 複数行の依頼を貼り付けたときの echo（claude は畳んで表示する）
 ];
 function isChrome(line) {
   const s = String(line);
@@ -158,8 +159,12 @@ function extractReply(before, after, prompt) {
 
 // ---- xterm のキー入力 → tmux send-keys -------------------------------------
 
+// 改行（LF / Ctrl+J）と Alt+Enter は Enter に畳まない。claude / codex / kiro の入力欄では
+// 「送信せずに行を足す」キーで、Enter へ写すと送信になり、Escape+Enter へ割れると
+// 入力の取り消しになる。
 const KEY_NAMES = {
-  '\r': 'Enter', '\n': 'Enter', '\t': 'Tab', '\x7f': 'BSpace', '\b': 'BSpace', '\x1b': 'Escape', '\x03': 'C-c', '\x04': 'C-d', '\x1a': 'C-z',
+  '\r': 'Enter', '\n': 'C-j', '\t': 'Tab', '\x7f': 'BSpace', '\b': 'BSpace', '\x1b': 'Escape', '\x03': 'C-c', '\x04': 'C-d', '\x1a': 'C-z',
+  '\x1b\r': 'M-Enter', '\x1b\n': 'M-Enter',
   '\x1b[A': 'Up', '\x1b[B': 'Down', '\x1b[C': 'Right', '\x1b[D': 'Left', '\x1bOA': 'Up', '\x1bOB': 'Down', '\x1bOC': 'Right', '\x1bOD': 'Left',
   '\x1b[H': 'Home', '\x1b[F': 'End', '\x1bOH': 'Home', '\x1bOF': 'End', '\x1b[1~': 'Home', '\x1b[4~': 'End',
   '\x1b[2~': 'IC', '\x1b[3~': 'DC', '\x1b[5~': 'PPage', '\x1b[6~': 'NPage',
@@ -259,6 +264,14 @@ function exitStatusFrom(text) {
 
 function cmdKeys(name, args) {
   return `${TMUX} send-keys -t ${sq(name)} ${host.quoteArgv(args)}`;
+}
+
+// 複数行の本文を 1 回の貼り付けとして流す。`paste-buffer -p` は CLI が括弧付きペースト
+// （bracketed paste）を有効にしていればその印を付けるので、行入力型の TUI でも各行が
+// 別ターンとして確定されず、改行のまま入力欄に入る。バッファは貼ったら消す（-d）。
+function cmdPaste(name, text) {
+  const buffer = `${name}-prompt`;
+  return `${TMUX} set-buffer -b ${sq(buffer)} -- ${sq(String(text))} && ${TMUX} paste-buffer -p -d -b ${sq(buffer)} -t ${sq(name)}`;
 }
 
 function cmdKill(name) { return `${TMUX} kill-session -t ${sq(`=${name}`)}`; }
@@ -485,11 +498,13 @@ class Conversation {
   }
 
   async writeLine(prompt, { enterCount = 1 } = {}) {
-    // interactive.prompt_inject=send-keys の契約どおり、改行を 1 行へ畳む。
-    // 行入力型 TUI へ改行を貼ると、各行が別ターンとして確定されてしまう。
-    const text = String(prompt || '').replace(/\s+/g, ' ').trim();
-    const r = await this.shell.run(cmdKeys(this.name, ['-l', '--', text]));
-    if (!r.ok) throw new Error(`send-keys に失敗: ${r.error}`);
+    // 1 行なら send-keys -l、複数行なら set-buffer + paste-buffer -p（括弧付きペースト）。
+    // 改行を空白へ畳むと、箇条書きやコードを含む依頼が 1 行に潰れて CLI に届く。
+    const text = String(prompt || '').replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
+    const r = await this.shell.run(text.includes('\n')
+      ? cmdPaste(this.name, text)
+      : cmdKeys(this.name, ['-l', '--', text]));
+    if (!r.ok) throw new Error(`${text.includes('\n') ? 'paste-buffer' : 'send-keys'} に失敗: ${r.error}`);
     // Codex の `$skill` は最初の Enter が補完候補の確定、次が送信になる。
     // 通常入力は 1 回、呼び出し側が指定した開始スキルだけ 2 回送る。
     const submits = Math.max(1, Math.min(2, Number(enterCount) || 1));
@@ -581,6 +596,6 @@ async function listSessions(shell) {
 module.exports = {
   SOCKET, TMUX, DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_READY, DEFAULT_BUSY, ATTENTION,
   sessionName, isChrome, attentionDetail, classify, compilePatterns, extractReply, keysToArgs,
-  cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdKill, cmdResize, cmdList, exitStatusFrom,
+  cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdPaste, cmdKill, cmdResize, cmdList, exitStatusFrom,
   Conversation, listSessions,
 };

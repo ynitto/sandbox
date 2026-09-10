@@ -704,6 +704,8 @@ function prepareTeaching(p) {
   } else if (sidecar && sidecar.sessionId !== summary.id) {
     sidecar = teaching.save(repo, machine, { ...sidecar, sessionId: summary.id });
   }
+  // 既にある会話でも権限は画面の選択に合わせる（自動承認へ切り替えたら、次の依頼で CLI を起動し直す）
+  if (p.autoApprove != null) store.updateSession(ud, summary.id, { autoApprove: !!p.autoApprove });
   const session = store.readSession(ud, summary.id);
   return { ud, repo, cfg, purpose, machine, existing, sidecar, session };
 }
