@@ -603,6 +603,16 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str,
         raise RuntimeError(f"workspace commit が失敗しました: {(c.stderr or c.stdout).strip()[:300]}")
     _save_recovery_ref(ws, run_id)
     target_rev = str(ws.get("target_rev") or "")
+    egress_receipt = None
+    if _EGRESS_GUARD_ENABLED:
+        egress_receipt = _egress.decide(
+            "git.push", {"url": ws.get("url"), "branch": branch}, _EXECUTION_ENVELOPE)
+        if egress_receipt["outcome"] != "allow":
+            raise WorkspacePublishError(
+                f"egress guard が git.push を拒否しました: {egress_receipt['reason']}",
+                {"state": "failed", "url": ws.get("url"), "branch": branch,
+                 "commit": _ws_git(clone, "rev-parse", "HEAD").stdout.strip(),
+                 "attempted_at": now_iso(), "egress": egress_receipt})
     last_push = None
     for i in range(5):
         if target_rev and _ws_git(
@@ -618,7 +628,10 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str,
                     "target": ws.get("target") or ws.get("base") or "", "path": ws.get("path") or "",
                     "publication": {**named, "state": "published", "url": ws.get("url"),
                                     "branch": branch, "commit": head,
-                                    "attempted_at": now_iso()}}
+                                    "attempted_at": now_iso(),
+                                    **({"egress": {**egress_receipt, "executed": True,
+                                                    "result": "published"}}
+                                       if egress_receipt else {})}}
         # 失敗の理由を見分ける。rebase で解けるのは「リモートが進んでいた」だけで、認証切れ・
         # 権限不足・保護ブランチ・ネットワーク断は何度 rebase しても解けない。見分けずに
         # rebase へ倒すと、押せなかった本当の理由（例: could not read Username）が捨てられ、

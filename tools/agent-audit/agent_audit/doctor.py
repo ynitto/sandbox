@@ -126,6 +126,13 @@ def cmd_doctor(args) -> int:
     n_obs = sum(1 for _ in store.iter_observations())
     n_ins = sum(1 for _ in store.iter_insights())
     print(f"\nストア: records={n_rec} / observations={n_obs} / insights={n_ins}")
+    from .reconcile import reconcile
+    coverage = reconcile(store)
+    abnormal = [r for r in coverage if r["missing"] or r["orphaned"]]
+    if abnormal:
+        print("警告: reconcile coverage 異常: " + ", ".join(
+            f"{r['source']} missing={r['missing']} orphaned={r['orphaned']}"
+            for r in abnormal))
     if getattr(args, "_config_path", None):
         print(f"設定: {home_relative(args._config_path)}")
     else:

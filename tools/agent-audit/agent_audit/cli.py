@@ -125,6 +125,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("doctor", help="源泉の到達性・session_log 宣言の棚卸し")
 
+    reconcile = sub.add_parser("reconcile", help="源泉セッションと収集済み record の網羅性照合")
+    reconcile.add_argument("--since", help="この時刻（ISO8601）以降のセッションを照合")
+    reconcile.add_argument("--source", action="append",
+                           help="cli-native または CLI 名へ対象を絞る（複数可）")
+    reconcile.add_argument("--json", action="store_true", help="machine-readable JSON 出力")
+
     up = sub.add_parser("update", help="自己更新（スキルリポジトリから取り込み）")
     up.add_argument("--check", action="store_true", help="確認だけ（取り込まない）")
     up.add_argument("--now", action="store_true", help="今すぐ取り込む")
@@ -206,6 +212,9 @@ def main(argv=None) -> int:
     if args.command == "doctor":
         from .doctor import cmd_doctor
         return cmd_doctor(args)
+    if args.command == "reconcile":
+        from .reconcile import cmd_reconcile
+        return cmd_reconcile(args)
     if args.command == "update":
         from .update import cmd_update
         return cmd_update(args)

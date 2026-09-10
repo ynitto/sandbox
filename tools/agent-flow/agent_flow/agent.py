@@ -578,6 +578,7 @@ def _control_degraded() -> "tuple[str | None, str | None]":
 # ワーカーが claim 時に据え、candidate_permissions（pins / trials / tier_ceiling_override /
 # retry_limit）だけを Resolver の明示固定として解釈する。scope / 受入条件は監査用のまま。
 _EXECUTION_ENVELOPE: dict = {}
+_EGRESS_GUARD_ENABLED = False
 
 
 def _set_execution_envelope(meta) -> None:

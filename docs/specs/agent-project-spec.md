@@ -420,6 +420,8 @@ receipt を採用できないタスク（receipt 欠落・検算不一致・dry-
                             "tier_ceiling_override": "", "retry_limit": 1},
   "external_execution": {"allowed": false, "repositories": [], "paths": [],
                          "data_classes": [], "denied_paths": [], "redaction": "required"},
+  "egress": {"git.push": {"decision": "allow | deny | approval_required",
+                            "targets": [{"url": "...", "branch": "（任意）"}]}},
   "replan_when": ["scope expansion is required", "..."],
   "approved_at": "...",
   "digest": "<sha256>"
@@ -427,6 +429,13 @@ receipt を採用できないタスク（receipt 欠落・検算不一致・dry-
 ```
 
 承認済み Envelope は run meta へ最初の一度だけ転記され、完了時には納品記録と同じ stem へ移して backlog 側の sidecar を退役させます。タスク側には `- execution_envelope:` と `- execution_envelope_digest:` が残ります。
+
+`egress_guard: true` を持つタスクでは、`egress_git_push` の三値判断と
+`external_repositories`（未指定時は `repos`）を承認時の digest に含めます。ただしこの版では
+運用設定から agent-flow の enforcement を発動する導線は公開しません（実装だけを先行配置）。
+`approval_required` は action digest を記録した既存 human interaction resolution が必要で、URL、
+branch、Envelope のいずれかが変わると古い resolution は一致しません。将来の実験導入時には push
+直前で snapshot の digest、承認状態、target を検査し、欠落・改変・不一致を deny にします。
 
 #### 3.5 決定記録と learn
 

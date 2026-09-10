@@ -101,6 +101,17 @@ def build_execution_envelope(cfg: "Config", task: Task, reason: str = "", *, app
             "denied_paths": _envelope_values(task, "external_denied_paths"),
             "redaction": str(task.get("external_redaction") or "required"),
         },
+        # git.push vertical slice。Envelope 全体の digest が target と判断を凍結する。
+        "egress": {
+            "git.push": {
+                "decision": str(task.get("egress_git_push") or "approval_required"),
+                "targets": [
+                    {"url": value}
+                    for value in (_envelope_values(task, "external_repositories")
+                                  or _envelope_values(task, "repos"))
+                ],
+            }
+        } if _envelope_bool(task, "egress_guard") else {},
         "replan_when": _envelope_values(task, "replan_when") or [
             "scope expansion is required",
             "no qualified candidate is available",

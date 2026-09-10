@@ -29,6 +29,8 @@ agent-audit doctor
 
 ```bash
 agent-audit collect
+agent-audit reconcile --since 2026-09-01T00:00:00Z
+agent-audit reconcile --since 2026-09-01T00:00:00Z --json
 agent-audit usage --period month --by agent_cli
 agent-audit stats --period month
 ```
@@ -195,6 +197,11 @@ JSON への追記だけで収集できます。
 `agent-audit sessions --cli <名前>` は 0 件のとき `cli.declared` / `cli.supported` を返すので、
 読み手は「条件に当たらなかった」のか「その CLI は会話を残さない」のかを言い分けられます。
 
+`reconcile` は collect と同じ `read_sessions` parser の薄い identity 列挙 interface を使い、
+source の native identity と保存済み record id を集合差で比較します。`missing` は source のみに、
+`orphaned` は store のみにある identity です。coverage は discovered が 0 の場合 1.0、それ以外は
+`collected / discovered` です。doctor も同じ照合関数を読み、差異を警告します。
+
 ---
 
 ### 4. ストア
@@ -252,6 +259,7 @@ JSON への追記だけで収集できます。
 | `reclean [--agent-cli N] [--dry-run]` | 不使用 | クリーニングルール改訂後の transcript 再生成 |
 | `sessions [--cli N] [--since T] [--until T] [--cwd-contains S] [--limit N] [--messages ID]` | 不使用 | CLI ネイティブセッションの検索・本文取得 |
 | `doctor` | 不使用 | 源泉の到達性・`session_log` 宣言の有無・未収集 CLI・clean ルールのスキップ・記憶ストアの到達性・効かない設定キー（§7.1） |
+| `reconcile [--since D] [--source S]... [--json]` | 不使用 | native session identity と保存済み session record を照合し、missing / orphaned / coverage を表示（差異ありは exit 1） |
 | `update [--check] [--now]` | 不使用 | 自己更新 |
 
 `run`（collect → extract → distill → report の一括）は設けません。定期駆動は agent-loop 同梱の
