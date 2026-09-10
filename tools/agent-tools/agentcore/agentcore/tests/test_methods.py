@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from agentcore import methods
+from agentcore import agentcli, methods
 
 
 def _pack(**overrides) -> dict:
@@ -162,3 +163,60 @@ class TrialEvidenceTests(unittest.TestCase):
 # （`python test_methods.py`）でそれ以降のクラスが未定義のまま起動して黙ってスキップされる。
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelativeCostResolutionTests(unittest.TestCase):
+    """手法の条件が見るコストは agent_cli + model の組で解く。
+
+    `when` は前から `models` でモデルを名指しできるのに、コストの側が定義単位のままだと
+    「高いモデルのときだけ効かせる」条件（`min_relative_cost`）が一度も当たらない——
+    昇格側で直したのと同じ穴なので、同じ規則（agentcli.resolve_relative_cost）で解く。
+    """
+
+    def setUp(self):
+        agentcli.clear_cache()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.proj = Path(self._tmp.name)
+        self._env = {k: os.environ.get(k) for k in
+                     ("KIRO_AGENTS_DIR", "AGENT_PROJECT_AGENTS_HOME", "HOME")}
+        os.environ["AGENT_PROJECT_AGENTS_HOME"] = str(self.proj / "no-agents-home")
+        os.environ["HOME"] = str(self.proj / "no-home")
+        os.environ.pop("KIRO_AGENTS_DIR", None)
+        self.addCleanup(self._restore)
+        agents = self.proj / "agents"
+        agents.mkdir(parents=True)
+        (agents / "costy.json").write_text(json.dumps({
+            "command": ["costy"], "relative_cost": 1, "default_model": "small",
+            "models": {"small": {"relative_cost": 1}, "big": {"relative_cost": 3}}}),
+            encoding="utf-8")
+        (agents / "flat.json").write_text(json.dumps({
+            "command": ["flat"], "relative_cost": 1, "default_model": "small"}),
+            encoding="utf-8")
+
+    def _restore(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        agentcli.clear_cache()
+        self._tmp.cleanup()
+
+    def test_cost_is_resolved_per_model(self):
+        cost = methods.relative_cost
+        self.assertEqual(cost("costy", str(self.proj), "big"), 3.0)
+        self.assertEqual(cost("costy", str(self.proj), "small"), 1.0)
+        self.assertEqual(cost("costy", str(self.proj)), 1.0)          # 既定モデルで引く
+        self.assertEqual(cost("costy", str(self.proj), "unknown"), 1.0)  # 未宣言は定義単位
+        # models を宣言しない定義は従来どおり定義単位の値（後方互換）
+        self.assertEqual(cost("flat", str(self.proj), "big"), 1.0)
+        self.assertIsNone(cost("no-such-cli", str(self.proj), "big"))
+
+    def test_cost_condition_selects_by_model(self):
+        """同じ agent_cli でもモデルが上位のときだけ当たる条件が書けること。"""
+        pack = _pack(id="deep-review", when={"min_relative_cost": 2},
+                     fragments=[{"role": "worker", "text": "念入りに見直す。"}])
+        for model, expected in (("big", ["deep-review"]), ("small", [])):
+            ctx = {**_ctx("work", "costy", model),
+                   "relative_cost": methods.relative_cost("costy", str(self.proj), model)}
+            self.assertEqual(methods.select(pack, ctx, "req-x-r0")["methods"], expected, model)

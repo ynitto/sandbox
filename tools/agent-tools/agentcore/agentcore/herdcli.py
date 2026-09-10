@@ -180,7 +180,9 @@ def _defs_payload(name: str, *, model: "str | None", purpose: "str | None") -> d
         "resolved_via_variant": via_variant,
         "headless_autonomy": spec.get("headless_autonomy"),
         "readonly": spec.get("readonly"),
-        "relative_cost": spec.get("relative_cost"),
+        # コストは下の "model" と同じ組で解く（定義単位の値を、モデル別を宣言した定義の
+        # 隣へ並べると `cost=` と `model=` が食い違って読める）。
+        "relative_cost": agentcli.resolve_relative_cost(spec, resolved_model),
         "default_model": spec.get("default_model"),
         "model": resolved_model or spec.get("default_model"),
         "prompt_via": spec.get("prompt_via"),

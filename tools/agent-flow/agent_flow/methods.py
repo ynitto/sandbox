@@ -24,7 +24,8 @@ def _method_context(purpose: str, agent_cli: str, model: "str | None", tier: str
         "engine": "agent-flow", "workload": "flow", "purpose": str(purpose or ""),
         "role": _methodlib.role_for(purpose), "agent_cli": agent_cli, "model": str(model or ""),
         "tier": str(tier or "") or _methodlib.current_tier(_control_dir(), "flow"),
-        "relative_cost": _methodlib.relative_cost(agent_cli, os.getcwd()),
+        # コストもモデルまで解決する（`when` が models を名指しできるのと同じ粒度）。
+        "relative_cost": _methodlib.relative_cost(agent_cli, os.getcwd(), model),
     }
 
 

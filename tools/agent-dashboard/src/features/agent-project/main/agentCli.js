@@ -81,6 +81,21 @@ function normalize(spec, name, file) {
   if (!Number.isFinite(relativeCost) || relativeCost < 0) {
     throw new AgentCliError(`エージェント定義 ${file}: relative_cost は 0 以上の数値です`);
   }
+  // モデル別の相対コスト（任意）。Python 側（agentcore.agentcli）と同じ規則で保持する
+  // ——落とすと、同じ定義から出るコストが読む実装によって食い違う。
+  if (spec.models != null && (typeof spec.models !== 'object' || Array.isArray(spec.models))) {
+    throw new AgentCliError(`エージェント定義 ${file}: models はモデル名→オブジェクトです`);
+  }
+  const models = {};
+  for (const [modelName, body] of Object.entries(spec.models || {})) {
+    const cost = (body && typeof body === 'object' && !Array.isArray(body))
+      ? Number(body.relative_cost) : NaN;
+    if (!Number.isFinite(cost) || cost < 0) {
+      throw new AgentCliError(
+        `エージェント定義 ${file}: models.${modelName}.relative_cost は 0 以上の数値です`);
+    }
+    models[String(modelName)] = { relativeCost: cost };
+  }
   // headless で 1 回起動したとき自分でツールを回して完遂できるか。interactive の有無や
   // file_flag からは推測しない（定義の申告が正典）。未宣言は安全側の single-shot。
   const headlessAutonomy = spec.headless_autonomy == null
@@ -116,6 +131,7 @@ function normalize(spec, name, file) {
     _raw: spec,
     name: String(spec.name || name),
     relativeCost,
+    models,
     file,
     command,
     commandSuffix: strs(spec.command_suffix, 'command_suffix', file),
@@ -173,6 +189,15 @@ const cache = new Map();
 // （黙って別 CLI へ倒さない。組み込み名も定義ファイル化した今、失敗はほぼインストール破損）。
 // 継承しない項目。引き継ぐと、対話面を持たない役割に base の TUI が生えて実行経路が
 // 変わる（cowork の needsHeadlessHarness は interactive の有無を見る）。variants も同様。
+// (定義, モデル) の実効 relative_cost。Python 側の agentcli.resolve_relative_cost と同じ規則
+// ——定義が models でそのモデルの値を宣言していればそれ、無ければ定義単位の値へ落ちる。
+// モデル未指定は定義の既定モデルで引く。
+function resolveRelativeCost(spec, model) {
+  const key = String(model || spec.defaultModel || '').trim();
+  const entry = key ? (spec.models || {})[key] : null;
+  return entry ? entry.relativeCost : spec.relativeCost;
+}
+
 const PROFILE_NOT_INHERITED = ['interactive', 'variants', 'slash_native'];
 
 function applyProfile(base, profileName, file) {
@@ -427,6 +452,7 @@ function classifyError(spec, blob) {
 module.exports = {
   AgentCliError,
   canonicalName,
+  resolveRelativeCost,
   pluginDirs,
   bundledDir,
   normalize,
