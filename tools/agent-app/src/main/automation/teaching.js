@@ -149,7 +149,8 @@ function prompt({ machine, purpose = '', existing = false, skillDir = '', platfo
     `     ②「記録を始める」→ \`${protocol.RECORDING_MARKER} start\` で始まる固定文（準備が終わった合図。記録の起点になるページ入り）。\`playwright-cli recording-start\` で記録を始め、1 行で知らせて待ちます。利用者が操作している間はブラウザを操作しません。`,
     `     ③「終了してAIへ渡す」→ \`${protocol.RECORDING_MARKER} stop\` で始まる固定文。\`playwright-cli recording-stop\` で止め、記録の行をそのまま \`${dir}${RECORDINGS}/<時刻>-browser.md\` に保存し、\`playwright-cli detach\` で切り離してから、その見本を根拠に工程を組みます。`,
     `     途中で \`${protocol.RECORDING_MARKER} cancel\` が届いたら、利用者が取り直します。記録していれば止めて、その記録は保存せずに破棄し、\`playwright-cli detach\` で切り離して ① を待ち直します。接続先に届かないときは、その旨を利用者に伝えてください${platform === 'win32' ? '（WSL のネットワークが mirrored でないと localhost が Windows 側に届きません）' : ''}。`,
-    `   Windows アプリの見本: 記録はこのアプリが winauto で取り、結果は \`${dir}${RECORDINGS}/\` の Markdown に置かれて、その場所が次のメッセージで届きます。あなた自身は winauto の記録を起こさないでください。`,
+    `   Windows アプリの見本は 2 段です（準備は利用者がアプリを開くところで済むので、開く段はありません）。「記録を始める」で \`${protocol.RECORDING_MARKER} start\` の固定文が届き、記録はこのアプリが winauto で取ります。あなた自身は winauto の記録を起こさないでください。「終了してAIへ渡す」で、結果の Markdown（\`${dir}${RECORDINGS}/\`）の所在が届きます。`,
+    '   見本はあなたが頼んだときだけ来るとは限りません。利用者は、あなたが頼んでいなくても見せ始めることがあります。固定文が届いたら、いま進めている作業に区切りをつけて受け取り、その見本がどの工程のためのものか分からなければ、工程を書き換える前にそれを確かめてください。',
     available.length ? `   いま見本を取れるのは ${available.join('・')} です。` : '   いまこの端末では見本を取る道具（Edge / winauto）が見つかっていません。見本が要るときはその旨も書いてください。',
     '4. 画面操作の本文では `playwright-cli` スキル（ブラウザ）/ `windows-app-automation` スキル（Windows アプリ）を名指しし、見本の記録にある操作の行（role と名前のロケータ）を本文に載せます。',
     '5. 定義を書き終えたら --dry-run で検証し、工程の並び・毎回変わる値・重要操作を短く報告してください。実行はしません（実行は利用者が画面から行います）。',
@@ -177,14 +178,17 @@ function resumePrompt({ machine, purpose = '', existing = false, context = '' } 
   ].filter(Boolean).join('\n');
 }
 
-// 見本を記録した後に送る本文。
-function demonstrationPrompt({ machine, hostPath, source, target = '', steps = 0, parameters = [] } = {}) {
+// 見本を記録した後に渡す本文（「終了してAIへ渡す」の段。利用者が入力欄で確かめてから送る）。
+// 1 行目の印は他の段と同じ形にして、画面が「どの段が会話へ届いたか」を本文から見分けられるようにする。
+function demonstrationPrompt({ machine, hostPath, source, target = '', steps = 0, parameters = [], requested = true } = {}) {
   const kind = source === 'windows' ? 'Windows アプリ' : 'ブラウザ';
   return [
+    `${protocol.RECORDING_MARKER} stop`,
     `操作の見本（${kind}${target ? `: ${target}` : ''}）を記録しました。${hostPath} を読んでください。`,
     `記録は ${steps} 工程の候補と操作の行に整理してあります${parameters.length ? `（毎回変わる値の候補: ${parameters.join(', ')}）` : ''}。`,
     `この見本を根拠に \`.statemachine/${machine}/\` の工程を組み（または直し）、固定値か毎回変わる値かが曖昧な点だけ質問してください。`,
-  ].join('\n');
+    requested ? '' : 'この見本がどの工程のためのものか分からなければ、工程を書き換える前に、まずそれを確かめてください。',
+  ].filter(Boolean).join('\n');
 }
 
 // --- 見本の記録（Markdown） ---------------------------------------------------------

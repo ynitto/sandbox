@@ -746,26 +746,19 @@ async function startTeaching(p, send) {
   return { ...taskConversationView(ud, repo, machine), existing, started };
 }
 
-async function demonstrate(p, send) {
-  const ud = userData();
+// Windows アプリの見本を保存し、AI へ渡す本文を**返す**。送りはしない——本文は入力欄に入り、
+// 利用者が見たものの補足を足してから送る（ブラウザの「終了してAIへ渡す」と同じ扱い）。
+// 送る経路が会話の 1 本だけになるので、AI が応答中でもここで断る必要がない。
+function demonstrate(p) {
   const repo = requireRepo(p.repo);
   const machine = String(p.machine || '').trim();
   const saved = teaching.saveRecording(repo, machine, p.recording);
   const hostPath = host.toHostPath(saved.file);
-  const summary = store.findTaskSession(ud, repo, machine);
-  let sent = false;
-  if (summary) {
-    const session = store.readSession(ud, summary.id);
-    const conv = conversations.get(session.id);
-    if (running.has(session.id) || (conv && conv.turn)) throw new Error('AI が応答中です。終わってからもう一度送ってください（記録は保存済みです）');
-    await guardedRunTurn(session.id, {
-      prompt: teaching.demonstrationPrompt({ machine, hostPath, source: saved.source, target: saved.target, steps: saved.steps, parameters: saved.parameters }),
-      policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
-      skillMode: 'off', skills: [], attachments: [],
-    }, send);
-    sent = true;
-  }
-  return { file: saved.file, relative: saved.relative, hostPath, source: saved.source, steps: saved.steps, sent };
+  const prompt = teaching.demonstrationPrompt({
+    machine, hostPath, source: saved.source, target: saved.target, steps: saved.steps,
+    parameters: saved.parameters, requested: p.requested !== false,
+  });
+  return { file: saved.file, relative: saved.relative, hostPath, source: saved.source, steps: saved.steps, prompt };
 }
 
 function registerIpcHandlers(getWindow) {
@@ -781,7 +774,7 @@ function registerIpcHandlers(getWindow) {
   handle('automation:teach:prepare', (p) => prepareTeachingView(p));
   handle('automation:teach:start', (p) => startTeaching(p, send));
   handle('automation:teach:session', (p) => taskConversationView(userData(), requireRepo(p.repo), String(p.machine || '').trim()));
-  handle('automation:teach:demonstration', (p) => demonstrate(p, send));
+  handle('automation:teach:demonstration', (p) => demonstrate(p));
   handle('automation:teach:browser', (p) => launchTeachingBrowser(p));
   handle('automation:teach:browser:page', () => teachingBrowserPage());
   // 写したが送らずに閉じた添付を掃除する

@@ -17,7 +17,11 @@
 //   Windows アプリ … winauto の記録を**この端末**で取り、できた記録の所在を main が WSL 表記へ直して
 //              会話へ送る（automation:teach:demonstration）。準備の段は無く「記録を始める」から。
 // 「やり直す」は取りかけの記録を捨ててはじめへ戻す。
-// AI が見本を要るときは返答に `@record …` の 1 行を書く（renderer/teachingProtocol.js）。
+// AI が見本を要るときは返答に `@record …` の 1 行を書く（renderer/teachingProtocol.js）。**ただし
+// 見本は AI が頼んだときだけ取るとは限らない**——利用者は入力欄の「操作の見本」からいつでも始められる。
+// そのため「開く」と「終了してAIへ渡す」の段は、固定文を**入力欄に入れて利用者に渡す**。何を見せる
+// つもりか・いま見せたものの補足は利用者しか書けないので、送る前に足せるようにしてある（送信は
+// 会話の「送信」ボタン。送られた本文に印が残っていれば段が進む）。残りの段は押した時点で送る。
 (function initTaskTeaching() {
   const $ = (id) => document.getElementById(id);
   const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
@@ -25,12 +29,16 @@
   // 見本の段ごとの、いま押せる操作。ボタンは 1 つで、ラベルだけが変わる。
   const RECORD_LABEL = { open: 'ブラウザを開く', start: '記録を始める', stop: '終了してAIへ渡す' };
   const RECORD_PROGRESS = { open: 'ブラウザを開いています…', start: '記録を始めています…' };
+  // 入力欄に入れた段が、送られるのを待っているときの案内（入力欄の状態行に出す）。
+  const AWAITING_SEND = '文面を確かめて「送信」を押してください';
 
   const state = {
     deps: null, visible: false, repo: '', machine: '', title: '', context: '', agent: '', creating: false, editing: false, card: false, published: false,
     session: null, availableSession: null, phase: null, tools: null, running: false, pending: false, token: 0,
     // record.step は TeachingProtocol.recordingSteps(source) の何段目か（0 = まだ始めていない）。
-    input: null, autoStart: null, record: { open: false, source: 'browser', target: '', step: 0, busy: false, message: '', ok: true, request: null, endpoint: '', browser: '' },
+    // awaiting は「入力欄に入れて、利用者が送るのを待っている段」の名前。filled はそのとき入れた本文。
+    input: null, autoStart: null,
+    record: { open: false, source: 'browser', target: '', step: 0, busy: false, message: '', ok: true, request: null, endpoint: '', browser: '', opened: false, awaiting: '', filled: '' },
   };
 
   function term() { return window.TaskTerm; }
@@ -292,6 +300,7 @@
     try {
       await sendText(text);
       $('task-prompt').value = '';
+      onRecordingSent(text);
     } catch (err) {
       error(err.message);
       status('error', '送信失敗・入力内容を保持しました');
@@ -317,12 +326,12 @@
   // 記録はこの端末で取る・Windows では WSL へ渡す）は画面に常駐させない——README に書いてある。
   function recordNote() {
     const tools = state.tools || {};
+    // 押した段はどちらの画面でも会話へ伝わるので、会話が開いていないと始められない。
+    if (!state.session) return 'AI との会話を開いてから記録を始めてください。';
     if (state.record.source === 'windows') {
       if (api.platform !== 'win32') return 'Windows アプリの見本は Windows 上でだけ記録できます。';
-      if (tools.windows === false) return 'winauto が見つかりません（python tools/winauto/install.py）。';
-      return '';
+      return tools.windows === false ? 'winauto が見つかりません（python tools/winauto/install.py）。' : '';
     }
-    if (!state.session) return 'AI との会話を開いてから記録を始めてください。';
     return tools.browser === false ? 'Edge（または Chrome）が見つかりません。' : '';
   }
 
@@ -336,6 +345,46 @@
     rec.request = null;
     rec.endpoint = '';
     rec.browser = '';
+    rec.opened = false;
+    clearFilled(rec);
+  }
+
+  // 入力欄へ入れた本文を引き取る。利用者が書き足していたら残す（消さない）。
+  function clearFilled(rec) {
+    const prompt = $('task-prompt');
+    if (rec.filled && prompt.value === rec.filled) prompt.value = '';
+    if (rec.awaiting && $('task-input-status').textContent === AWAITING_SEND) status();
+    rec.awaiting = '';
+    rec.filled = '';
+  }
+
+  // 固定文を入力欄に入れて、利用者に渡す。送るのは利用者（「送信」）。
+  function fillComposer(rec, step, text) {
+    const prompt = $('task-prompt');
+    // 書きかけを消さない。空のとき（＝入れ直し）だけ入れて、あとは入力欄へ案内する。
+    if (!prompt.value.trim() || prompt.value === rec.filled) {
+      prompt.value = text;
+      rec.filled = text;
+    }
+    rec.awaiting = step;
+    status('pending', AWAITING_SEND);
+    setInputMode('message', { focus: false });
+    prompt.focus();
+    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  }
+
+  // 入力欄から本文が送られた。印が残っていれば、その段が会話へ届いたものとして進める。
+  function onRecordingSent(text) {
+    const rec = state.record;
+    if (!rec.awaiting) return;
+    if (TeachingProtocol.parseRecordingMessage(text) !== rec.awaiting) return;   // 印を消したなら段は進めない
+    const step = rec.awaiting;
+    rec.awaiting = '';
+    rec.filled = '';
+    if (step === 'stop') { resetRecord(rec); rec.message = rec.source === 'windows' ? '見本を AI へ渡しました。' : 'AI に操作の終了を伝えました。記録が工程に起こされるのを待ってください。'; }
+    else { rec.step += 1; rec.message = `${rec.browser || 'ブラウザ'} を開きました。ログインや画面の移動を済ませてから次へ進めてください。`; }
+    rec.ok = true;
+    renderShell();
   }
 
   function renderRecord() {
@@ -356,8 +405,9 @@
     $('task-record-request').textContent = rec.request ? `AI が見本を求めています: ${rec.request.source === 'windows' ? 'Windows アプリ' : 'ブラウザ'}${rec.request.target ? ` ${rec.request.target}` : ''}` : '';
     const action = $('task-record-action');
     action.textContent = RECORD_LABEL[step];
-    action.className = `small ${step === 'stop' ? 'danger' : 'primary'}`;
-    action.disabled = rec.busy || (windows ? api.platform !== 'win32' : !state.session);
+    // 送信待ちの間は、画面の主ボタンは入力欄の「送信」1 つだけ。ここは押し直すと文面を入れ直す。
+    action.className = rec.awaiting ? 'small quiet' : `small ${step === 'stop' ? 'danger' : 'primary'}`;
+    action.disabled = rec.busy || !state.session || (windows && api.platform !== 'win32');
     $('task-record-restart').hidden = !started;
     $('task-record-restart').disabled = rec.busy;
     $('task-record-message').textContent = rec.message;
@@ -366,6 +416,7 @@
     const note = recordNote();
     $('task-record-note').textContent = note;
     $('task-record-note').hidden = !note;
+    $('task-composer').classList.toggle('awaiting-send', !!rec.awaiting);
   }
 
   function openRecord(request = null) {
@@ -378,22 +429,28 @@
     renderShell();
   }
 
-  // 1 段目（ブラウザ）: Edge をリモートデバッグ付きで起こし、接続だけしておくよう AI へ伝える。
-  // 記録はまだ始めない——ここから利用者がログインや画面の移動をする。
+  // 1 段目（ブラウザ）: Edge をリモートデバッグ付きで起こし、接続だけしておくよう AI へ伝える文を
+  // 入力欄に入れる。記録はまだ始めない——ここから利用者がログインや画面の移動をする。
   async function openBrowser(rec) {
     if (!state.session) throw new Error('AI との会話を開いてから記録を始めてください');
-    const opened = await api.automation.teachBrowser(rec.target);
-    rec.endpoint = opened.endpoint;
-    rec.browser = opened.browser;
-    await sendText(TeachingProtocol.recordingOpenMessage({ endpoint: opened.endpoint, url: opened.url, browser: opened.browser, request: rec.request }));
-    rec.step += 1;
-    rec.message = `${opened.browser} を開きました。ログインや画面の移動を済ませてから次へ進めてください。`;
+    if (!rec.opened) {
+      const opened = await api.automation.teachBrowser(rec.target);
+      rec.endpoint = opened.endpoint;
+      rec.browser = opened.browser;
+      rec.opened = true;
+      rec.message = `${opened.browser} を開きました。`;
+    }
+    fillComposer(rec, 'open', TeachingProtocol.recordingOpenMessage({
+      endpoint: rec.endpoint, url: rec.target, browser: rec.browser, request: rec.request,
+    }));
   }
 
-  // 2 段目: ここからが見本。ブラウザは、準備で移動した先を記録の起点として添える。
+  // 2 段目: ここからが見本。押した時点で送る（利用者はこれから操作に移る）。
   async function startRecording(rec) {
     if (rec.source === 'windows') {
       await api.automation.recordingStart({ root: state.repo, source: 'windows', app: rec.target });
+      // Windows アプリの記録はこの端末で取るが、始まったことは会話へ伝える（AI が待てるように）。
+      await sendText(TeachingProtocol.recordingStartMessage({ source: 'windows', target: rec.target, request: rec.request }));
       rec.step += 1;
       rec.message = 'アプリを操作したあと、次へ進めてください。';
       return;
@@ -406,38 +463,35 @@
     rec.message = '記録中です。操作が終わったら次へ進めてください。';
   }
 
-  // 3 段目: ブラウザは AI に終わりを伝えるだけ。Windows アプリは記録をここで工程に整理して渡す。
+  // 3 段目: 見せ終わった。ここは補足を足せるよう、送らずに入力欄へ入れる。
+  // Windows アプリは、記録をこの端末で止めて工程に整理し、その所在を入れる。
   async function stopRecording(rec) {
+    if (!state.session) throw new Error('AI との会話を開いてから記録を始めてください');
     if (rec.source === 'windows') {
       const result = await api.automation.recordingStop({ root: state.repo, source: 'windows', app: rec.target });
-      const targetName = rec.target;
-      resetRecord(rec);
-      const saved = await api.automation.teachDemonstration(state.repo, state.machine, { ...result, target: targetName });
-      rec.message = `${saved.steps} 工程の見本を保存しました（${saved.relative}）。${saved.sent ? 'AI へ渡しました。' : 'AI との会話を開いてから、見本の場所を伝えてください。'}`;
-      if (saved.sent) state.running = true;
+      const saved = await api.automation.teachDemonstration(state.repo, state.machine, { ...result, target: rec.target }, !!rec.request);
+      rec.message = `${saved.steps} 工程の見本を保存しました（${saved.relative}）。`;
+      fillComposer(rec, 'stop', saved.prompt);
       return;
     }
-    await sendText(TeachingProtocol.recordingStopMessage({ machine: state.machine }));
-    resetRecord(rec);
-    rec.message = 'AI に操作の終了を伝えました。記録が工程に起こされるのを待ってください。';
+    fillComposer(rec, 'stop', TeachingProtocol.recordingStopMessage({ machine: state.machine, request: rec.request }));
   }
 
-  // ボタン 1 つ。押すたびに次の段へ進む。
+  // ボタン 1 つ。押すたびに次の段へ進む（入力欄へ入れる段は、送られた時点で進む）。
   async function advanceRecording() {
     const rec = state.record;
     if (rec.busy) return;
     const step = recordStep(rec);
+    if (rec.awaiting === step && $('task-prompt').value.trim()) { $('task-prompt').focus(); return; }
     rec.busy = true;
     rec.ok = true;
-    rec.message = RECORD_PROGRESS[step] || (rec.source === 'windows' ? '記録を工程に整理しています…' : 'AI に操作の終了を伝えています…');
+    rec.message = RECORD_PROGRESS[step] || (rec.source === 'windows' ? '記録を工程に整理しています…' : '');
     renderRecord();
     try {
       if (step === 'open') await openBrowser(rec);
       else if (step === 'start') await startRecording(rec);
       else await stopRecording(rec);
     } catch (err) {
-      // 終わりに失敗したら記録は残さない（Windows アプリの winauto は既に止まっている）。
-      if (step === 'stop') resetRecord(rec);
       rec.ok = false;
       rec.message = err.message;
     } finally {
@@ -455,8 +509,10 @@
     rec.message = '取りかけの記録を捨てています…';
     renderRecord();
     try {
-      if (rec.source === 'windows') await api.automation.recordingStop({ root: state.repo, source: 'windows', app: rec.target });
-      else await sendText(TeachingProtocol.recordingCancelMessage({ machine: state.machine }));
+      // 「終了してAIへ渡す」まで進んでいれば記録はもう止まっていて、見本のファイルも書けている。
+      const saved = rec.awaiting === 'stop';
+      if (rec.source === 'windows' && !saved) await api.automation.recordingStop({ root: state.repo, source: 'windows', app: rec.target });
+      await sendText(TeachingProtocol.recordingCancelMessage({ machine: state.machine, source: rec.source, saved }));
       rec.message = 'はじめからやり直せます。';
     } catch (err) {
       rec.ok = false;
@@ -486,7 +542,9 @@
     state.card = next.card;
     state.published = next.published;
     state.visible = true;
-    state.record = { ...state.record, open: false, step: 0, request: null, message: '', endpoint: '', browser: '' };
+    clearFilled(state.record);
+    state.record = { ...state.record, open: false, step: 0, request: null, message: '', endpoint: '', browser: '', opened: false, awaiting: '', filled: '' };
+    $('task-composer').classList.remove('awaiting-send');
     resetExecutionInputs();
     if (state.creating) { state.token += 1; state.session = null; state.availableSession = null; term().detach(); renderShell(); return; }
     loadView();
