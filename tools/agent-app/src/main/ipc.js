@@ -646,7 +646,8 @@ function automationAppRoot() {
 // statemachine-use の作成モードと、見本の依頼の作法（@record 行）を伝える。
 // ブラウザの見本は、**この端末**（Windows ならその Windows 側）で Edge をリモートデバッグ付きで起こし、
 // 固定文で AI に知らせて AI 自身が CDP 越しに記録を取る（automation:teach:browser。固定文は renderer が
-// 会話の送信経路で送る）。Windows アプリの見本（winauto）はこの端末で取り、できた Markdown の所在を
+// 会話の送信経路で送る）。ボタンは 1 つで、押すたびに「開く（準備）→ 記録開始 → 終了」と進み、段ごとに
+// 別の固定文（@recording open / start / stop）が渡る。Windows アプリの見本（winauto）はこの端末で取り、できた Markdown の所在を
 // WSL 表記に直して会話へ送る。
 
 function teachingTools() {
@@ -656,12 +657,19 @@ function teachingTools() {
   };
 }
 
-// 「記録を始める」: Edge（無ければ Chrome）を記録専用プロファイルで、リモートデバッグ付きで起こす。
+// 「ブラウザを開く」: Edge（無ければ Chrome）を記録専用プロファイルで、リモートデバッグ付きで起こす。
+// この時点ではまだ記録は始まらない（利用者がログインや画面の移動をする）。
 function launchTeachingBrowser(p) {
   return recordingBrowser.launchRecordingBrowser({
     url: p.url, profileDir: path.join(userData(), recordingBrowser.PROFILE_DIR),
     resolvePath: (name) => agentCli.resolvePath(name),
   });
+}
+
+// 「記録を始める」: 準備の間に利用者が移動した先を記録の起点として AI へ渡すため、いま開いている
+// ページを DevTools から読む。読めなくても記録は始められるので、失敗は url: '' で返す。
+function teachingBrowserPage() {
+  return recordingBrowser.activePage();
 }
 
 function teachingSkillDir(repo, cfg) {
@@ -738,26 +746,19 @@ async function startTeaching(p, send) {
   return { ...taskConversationView(ud, repo, machine), existing, started };
 }
 
-async function demonstrate(p, send) {
-  const ud = userData();
+// Windows アプリの見本を保存し、AI へ渡す本文を**返す**。送りはしない——本文は入力欄に入り、
+// 利用者が見たものの補足を足してから送る（ブラウザの「終了してAIへ渡す」と同じ扱い）。
+// 送る経路が会話の 1 本だけになるので、AI が応答中でもここで断る必要がない。
+function demonstrate(p) {
   const repo = requireRepo(p.repo);
   const machine = String(p.machine || '').trim();
   const saved = teaching.saveRecording(repo, machine, p.recording);
   const hostPath = host.toHostPath(saved.file);
-  const summary = store.findTaskSession(ud, repo, machine);
-  let sent = false;
-  if (summary) {
-    const session = store.readSession(ud, summary.id);
-    const conv = conversations.get(session.id);
-    if (running.has(session.id) || (conv && conv.turn)) throw new Error('AI が応答中です。終わってからもう一度送ってください（記録は保存済みです）');
-    await guardedRunTurn(session.id, {
-      prompt: teaching.demonstrationPrompt({ machine, hostPath, source: saved.source, target: saved.target, steps: saved.steps, parameters: saved.parameters }),
-      policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
-      skillMode: 'off', skills: [], attachments: [],
-    }, send);
-    sent = true;
-  }
-  return { file: saved.file, relative: saved.relative, hostPath, source: saved.source, steps: saved.steps, sent };
+  const prompt = teaching.demonstrationPrompt({
+    machine, hostPath, source: saved.source, target: saved.target, steps: saved.steps,
+    parameters: saved.parameters, requested: p.requested !== false,
+  });
+  return { file: saved.file, relative: saved.relative, hostPath, source: saved.source, steps: saved.steps, prompt };
 }
 
 function registerIpcHandlers(getWindow) {
@@ -773,8 +774,9 @@ function registerIpcHandlers(getWindow) {
   handle('automation:teach:prepare', (p) => prepareTeachingView(p));
   handle('automation:teach:start', (p) => startTeaching(p, send));
   handle('automation:teach:session', (p) => taskConversationView(userData(), requireRepo(p.repo), String(p.machine || '').trim()));
-  handle('automation:teach:demonstration', (p) => demonstrate(p, send));
+  handle('automation:teach:demonstration', (p) => demonstrate(p));
   handle('automation:teach:browser', (p) => launchTeachingBrowser(p));
+  handle('automation:teach:browser:page', () => teachingBrowserPage());
   // 写したが送らずに閉じた添付を掃除する
   try { attachments.sweep(userData(), store.readAllSessions(userData())); } catch { /* 消せなくても動く */ }
 

@@ -67,6 +67,9 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
+/* 見本の固定文を入力欄へ入れて、利用者が送るのを待っている間。押す先が「送信」だと分かるように、
+   焦点と同じ枠を状態として付ける（新しい色は作らない）。 */
+.awaiting-send #task-send,
 [role="button"]:focus-visible { outline: 3px solid #bfd4ff; outline-offset: 2px; }
 
 input, select, textarea {

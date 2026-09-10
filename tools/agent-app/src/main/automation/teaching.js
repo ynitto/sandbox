@@ -10,6 +10,8 @@
 //                      検証の仕方を伝える。AI はこの会話の中でファイルを直接書く。
 //   見本の記録       … ブラウザは、このアプリが Edge をリモートデバッグ付きで起こし、固定文
 //                      （teachingProtocol.js）で AI に知らせて、AI 自身が CDP 越しに記録を取る。
+//                      押すボタンは 1 つで、開く（準備）→ 記録開始 → 終了の 3 段を進み、段ごとに
+//                      別の固定文が届く。準備の操作は見本に入らない。
 //                      Windows アプリは、利用者の端末（このアプリ）の winauto で取った記録を AI が
 //                      読める Markdown にして `.statemachine/<機械名>/recordings/` へ置く。
 //
@@ -138,12 +140,17 @@ function prompt({ machine, purpose = '', existing = false, skillDir = '', platfo
       ? `1. まず \`${dir}\` の workflow.yaml と actions/*.md を読み、今の工程を短く要約してから、利用者に変更したい点を聞いてください。`
       : '1. 利用者の目的を読み、曖昧な点（固定値か毎回変わる値か・期待する結果・送信や保存などの重要操作）だけを質問してください。分かることは聞かずに進めます。',
     `2. 工程・分岐・完了確認は \`statemachine-use\` スキルの作成モードに従って組みます（scaffold.py で骨組み → 本文を埋める → \`${runner} ${dir}workflow.yaml --dry-run\` で検証）。毎回変わる値は \`{{key}}\` で受けます。`,
-    '3. 画面操作（ブラウザ・Windows アプリ）の工程で、実際の画面を見ないと操作を決められないときは、利用者に操作の見本を頼んでください。見本の依頼は、次の 1 行を単独の行として返答に書き、利用者に「操作の見本」の「記録を始める」を押すよう伝えて待ちます（そのカードは自動で開きます）:',
+    '3. 画面操作（ブラウザ・Windows アプリ）の工程で、実際の画面を見ないと操作を決められないときは、利用者に操作の見本を頼んでください。見本の依頼は、次の 1 行を単独の行として返答に書き、利用者に「操作の見本」のカードでボタンを押すよう伝えて待ちます（そのカードは自動で開き、ボタンは 1 つで押すたびに次の段へ進みます）:',
     `   ${protocol.recordLine('browser', '<開始 URL>')}`,
     `   ${protocol.recordLine('windows', '<アプリ名>')}`,
     `   ${where}`,
-    `   ブラウザの見本: 利用者がボタンを押すと、このアプリが ${platform === 'win32' ? 'Windows 側で ' : ''}Edge をリモートデバッグ付き（${endpoint}）で起こし、\`${protocol.RECORDING_MARKER} start\` で始まる固定文（接続先入り）があなたに届きます。届いたら \`playwright-cli attach --cdp=${endpoint}\` で接続して \`playwright-cli recording-start\` で記録を始め、1 行で知らせて待ちます。利用者が操作している間はブラウザを操作しません。操作が終わると \`${protocol.RECORDING_MARKER} stop\` で始まる固定文が届くので、\`playwright-cli recording-stop\` で止め、記録の行をそのまま \`${dir}${RECORDINGS}/<時刻>-browser.md\` に保存し、\`playwright-cli detach\` で切り離してから、その見本を根拠に工程を組みます。固定文が届く前に自分でブラウザを起こしたり記録を始めたりしないでください。接続先に届かないときは、その旨を利用者に伝えてください${platform === 'win32' ? '（WSL のネットワークが mirrored でないと localhost が Windows 側に届きません）' : ''}。`,
-    `   Windows アプリの見本: 記録はこのアプリが winauto で取り、結果は \`${dir}${RECORDINGS}/\` の Markdown に置かれて、その場所が次のメッセージで届きます。あなた自身は winauto の記録を起こさないでください。`,
+    `   ブラウザの見本は 3 段です。利用者がボタンを押すたびに、いまどの段かを言う固定文があなたに届きます。固定文が届く前に自分でブラウザを起こしたり記録を始めたりしないでください。`,
+    `     ①「ブラウザを開く」→ \`${protocol.RECORDING_MARKER} open\` で始まる固定文（接続先入り）。このアプリが ${platform === 'win32' ? 'Windows 側で ' : ''}Edge をリモートデバッグ付き（${endpoint}）で起こしたところです。\`playwright-cli attach --cdp=${endpoint}\` で接続だけして、つながったかを 1 行で知らせ、待ちます。**この段では記録を始めません**——利用者はここでログインや目的の画面までの移動をしています。その準備を見本に混ぜないため、ブラウザも操作しません。`,
+    `     ②「記録を始める」→ \`${protocol.RECORDING_MARKER} start\` で始まる固定文（準備が終わった合図。記録の起点になるページ入り）。\`playwright-cli recording-start\` で記録を始め、1 行で知らせて待ちます。利用者が操作している間はブラウザを操作しません。`,
+    `     ③「終了してAIへ渡す」→ \`${protocol.RECORDING_MARKER} stop\` で始まる固定文。\`playwright-cli recording-stop\` で止め、記録の行をそのまま \`${dir}${RECORDINGS}/<時刻>-browser.md\` に保存し、\`playwright-cli detach\` で切り離してから、その見本を根拠に工程を組みます。`,
+    `     途中で \`${protocol.RECORDING_MARKER} cancel\` が届いたら、利用者が取り直します。記録していれば止めて、その記録は保存せずに破棄し、\`playwright-cli detach\` で切り離して ① を待ち直します。接続先に届かないときは、その旨を利用者に伝えてください${platform === 'win32' ? '（WSL のネットワークが mirrored でないと localhost が Windows 側に届きません）' : ''}。`,
+    `   Windows アプリの見本は 2 段です（準備は利用者がアプリを開くところで済むので、開く段はありません）。「記録を始める」で \`${protocol.RECORDING_MARKER} start\` の固定文が届き、記録はこのアプリが winauto で取ります。あなた自身は winauto の記録を起こさないでください。「終了してAIへ渡す」で、結果の Markdown（\`${dir}${RECORDINGS}/\`）の所在が届きます。`,
+    '   見本はあなたが頼んだときだけ来るとは限りません。利用者は、あなたが頼んでいなくても見せ始めることがあります。固定文が届いたら、いま進めている作業に区切りをつけて受け取り、その見本がどの工程のためのものか分からなければ、工程を書き換える前にそれを確かめてください。',
     available.length ? `   いま見本を取れるのは ${available.join('・')} です。` : '   いまこの端末では見本を取る道具（Edge / winauto）が見つかっていません。見本が要るときはその旨も書いてください。',
     '4. 画面操作の本文では `playwright-cli` スキル（ブラウザ）/ `windows-app-automation` スキル（Windows アプリ）を名指しし、見本の記録にある操作の行（role と名前のロケータ）を本文に載せます。',
     '5. 定義を書き終えたら --dry-run で検証し、工程の並び・毎回変わる値・重要操作を短く報告してください。実行はしません（実行は利用者が画面から行います）。',
@@ -171,14 +178,17 @@ function resumePrompt({ machine, purpose = '', existing = false, context = '' } 
   ].filter(Boolean).join('\n');
 }
 
-// 見本を記録した後に送る本文。
-function demonstrationPrompt({ machine, hostPath, source, target = '', steps = 0, parameters = [] } = {}) {
+// 見本を記録した後に渡す本文（「終了してAIへ渡す」の段。利用者が入力欄で確かめてから送る）。
+// 1 行目の印は他の段と同じ形にして、画面が「どの段が会話へ届いたか」を本文から見分けられるようにする。
+function demonstrationPrompt({ machine, hostPath, source, target = '', steps = 0, parameters = [], requested = true } = {}) {
   const kind = source === 'windows' ? 'Windows アプリ' : 'ブラウザ';
   return [
+    `${protocol.RECORDING_MARKER} stop`,
     `操作の見本（${kind}${target ? `: ${target}` : ''}）を記録しました。${hostPath} を読んでください。`,
     `記録は ${steps} 工程の候補と操作の行に整理してあります${parameters.length ? `（毎回変わる値の候補: ${parameters.join(', ')}）` : ''}。`,
     `この見本を根拠に \`.statemachine/${machine}/\` の工程を組み（または直し）、固定値か毎回変わる値かが曖昧な点だけ質問してください。`,
-  ].join('\n');
+    requested ? '' : 'この見本がどの工程のためのものか分からなければ、工程を書き換える前に、まずそれを確かめてください。',
+  ].filter(Boolean).join('\n');
 }
 
 // --- 見本の記録（Markdown） ---------------------------------------------------------

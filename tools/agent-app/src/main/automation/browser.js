@@ -47,22 +47,37 @@ function endpointFor(port = PORT) {
   return `http://localhost:${port}`;
 }
 
-// DevTools の /json/version に答えがあれば、そのポートでブラウザがリモートデバッグを受け付けている。
-function probeDevTools(port = PORT, { timeoutMs = 1500 } = {}) {
+// DevTools の HTTP 口を読む。応答が無い・壊れているときは { ok: false } を返すだけで投げない。
+function readDevTools(port = PORT, route = '/json/version', { timeoutMs = 1500 } = {}) {
   return new Promise((resolve) => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/json/version', timeout: timeoutMs }, (res) => {
+    const req = http.get({ host: '127.0.0.1', port, path: route, timeout: timeoutMs }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => { body += chunk; });
       res.on('end', () => {
-        let browser = '';
-        try { browser = String(JSON.parse(body).Browser || ''); } catch { /* 本文が読めなくても応答があれば十分 */ }
-        resolve({ ok: res.statusCode === 200, browser });
+        let value = null;
+        try { value = JSON.parse(body); } catch { /* 本文が読めなくても応答があれば十分 */ }
+        resolve({ ok: res.statusCode === 200, value });
       });
     });
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, browser: '' }); });
-    req.on('error', () => resolve({ ok: false, browser: '' }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, value: null }); });
+    req.on('error', () => resolve({ ok: false, value: null }));
   });
+}
+
+// DevTools の /json/version に答えがあれば、そのポートでブラウザがリモートデバッグを受け付けている。
+async function probeDevTools(port = PORT, { timeoutMs = 1500, read = readDevTools } = {}) {
+  const res = await read(port, '/json/version', { timeoutMs });
+  return { ok: !!res.ok, browser: String((res.value && res.value.Browser) || '') };
+}
+
+// 「記録を始める」の時点で利用者が開いているページ。準備（ログイン・画面の移動）でどこへ
+// 行ったかは利用者しか知らないので、記録の起点として AI へ渡す。読めなくても記録は始められる。
+async function activePage(port = PORT, { timeoutMs = 1500, read = readDevTools } = {}) {
+  const res = await read(port, '/json/list', { timeoutMs });
+  const targets = Array.isArray(res.value) ? res.value : [];
+  const page = targets.find((t) => t && t.type === 'page' && /^https?:/i.test(String(t.url || '')));
+  return { ok: !!res.ok, url: page ? String(page.url) : '', title: page ? String(page.title || '') : '' };
 }
 
 function launchArgs({ port = PORT, profileDir, url = '' } = {}) {
@@ -114,4 +129,4 @@ async function launchRecordingBrowser({
   return { ok: true, browser: browserLabel(file), file, version: alive.browser, port, endpoint: endpointFor(port), url: target, reused: before.ok };
 }
 
-module.exports = { PORT, PROFILE_DIR, candidates, findBrowser, browserLabel, endpointFor, probeDevTools, launchArgs, launchRecordingBrowser };
+module.exports = { PORT, PROFILE_DIR, candidates, findBrowser, browserLabel, endpointFor, readDevTools, probeDevTools, activePage, launchArgs, launchRecordingBrowser };

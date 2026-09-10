@@ -34,6 +34,24 @@ test('起動の引数はリモートデバッグのポートと記録専用の�
   assert.strictEqual(browser.PORT, 9222);
 });
 
+test('「記録を始める」の起点は、準備で利用者が移動した先を DevTools の /json/list から読む', async () => {
+  const read = async (port, route) => {
+    assert.strictEqual(port, 9222);
+    if (route === '/json/version') return { ok: true, value: { Browser: 'Edg/130' } };
+    assert.strictEqual(route, '/json/list');
+    return { ok: true, value: [
+      { type: 'background_page', url: 'chrome-extension://x/bg.html', title: '拡張' },
+      { type: 'page', url: 'https://a.test/list?month=9', title: '一覧' },
+      { type: 'page', url: 'https://b.test/', title: '別のタブ' },
+    ] };
+  };
+  assert.deepStrictEqual(await browser.activePage(9222, { read }), { ok: true, url: 'https://a.test/list?month=9', title: '一覧' });
+  assert.deepStrictEqual(await browser.probeDevTools(9222, { read }), { ok: true, browser: 'Edg/130' });
+  // 読めなくても記録は始められる（起点が空のまま返るだけで、投げない）
+  assert.deepStrictEqual(await browser.activePage(9222, { read: async () => ({ ok: false, value: null }) }), { ok: false, url: '', title: '' });
+  assert.deepStrictEqual(await browser.activePage(9222, { read: async () => ({ ok: true, value: [{ type: 'page', url: 'about:blank' }] }) }), { ok: true, url: '', title: '' });
+});
+
 function harness({ alive = [false, false, true], spawnError = null } = {}) {
   const calls = { spawn: [], probes: 0 };
   const probe = async () => { const ok = alive[Math.min(calls.probes, alive.length - 1)]; calls.probes += 1; return { ok, browser: ok ? 'Edg/130' : '' }; };

@@ -26,21 +26,88 @@ test('見本の依頼は @record の 1 行で拾う（最後の 1 件。引用�
   assert.strictEqual(protocol.recordLine('windows', '勤怠'), '@record windows 勤怠');
 });
 
-test('ブラウザの見本の固定文: 開始は接続先と attach/recording-start を、終了は recording-stop と保存先と detach を伝える', () => {
-  const start = protocol.recordingStartMessage({ endpoint: 'http://localhost:9222', url: 'https://a.test/list', browser: 'Edge' });
+test('ブラウザの見本は 3 段（開く → 記録開始 → 終了）で、Windows アプリは 2 段', () => {
+  assert.deepStrictEqual(protocol.recordingSteps('browser'), ['open', 'start', 'stop']);
+  assert.deepStrictEqual(protocol.recordingSteps('windows'), ['start', 'stop']);
+  assert.deepStrictEqual(protocol.recordingSteps(''), ['open', 'start', 'stop'], '既定はブラウザ');
+});
+
+test('「開く」と「終了」は入力欄へ入れて利用者が送る。段が進んだかは送られた本文の印で決める', () => {
+  // 何を見せるつもりか（開く）・いま見せたものの補足（終了）は利用者しか書けない。残りは押した時点で送る。
+  assert.deepStrictEqual(protocol.RECORDING_FILL, ['open', 'stop']);
+  assert.strictEqual(protocol.fillsComposer('open'), true);
+  assert.strictEqual(protocol.fillsComposer('stop'), true);
+  assert.strictEqual(protocol.fillsComposer('start'), false);
+  assert.strictEqual(protocol.fillsComposer('cancel'), false);
+  // 送られた本文から段を見分ける（利用者が書き足しても、印の行が残っていれば届いたと分かる）
+  assert.strictEqual(protocol.parseRecordingMessage(protocol.recordingOpenMessage({})), 'open');
+  assert.strictEqual(protocol.parseRecordingMessage(protocol.recordingStartMessage({})), 'start');
+  assert.strictEqual(protocol.parseRecordingMessage(protocol.recordingStopMessage({ machine: 'm' })), 'stop');
+  assert.strictEqual(protocol.parseRecordingMessage(protocol.recordingCancelMessage({ machine: 'm' })), 'cancel');
+  assert.strictEqual(protocol.parseRecordingMessage('一覧から今月分を開くところを見せます\n@recording open\n続き'), 'open');
+  assert.strictEqual(protocol.parseRecordingMessage('印を消して送った本文'), '', '印を消したなら段は進めない');
+  assert.strictEqual(protocol.parseRecordingMessage('`@recording open` の話をしているだけ'), '', '単独の行だけを印と見る');
+});
+
+test('AI が頼んでいない見本でも、押した段は会話へ伝わる（Windows アプリの記録開始・取り直しも）', () => {
+  // 利用者はいつでも見せ始められる。頼んでいない見本は、いまの作業に区切りをつけて受け取らせる。
+  const mine = protocol.recordingOpenMessage({ browser: 'Edge' });
+  assert.match(mine, /これはあなたが頼んだ見本ではありません。いま進めている作業に区切りをつけて/);
+  assert.doesNotMatch(protocol.recordingOpenMessage({ request: { source: 'browser', target: 'https://a.test' } }), /頼んだ見本ではありません/);
+  assert.match(protocol.recordingStopMessage({ machine: 'm' }), /どの工程のためのものか分からなければ、工程を書き換える前に/);
+  assert.doesNotMatch(protocol.recordingStopMessage({ machine: 'm', request: { source: 'browser', target: '' } }), /どの工程のためのものか/);
+  // Windows アプリは記録をこのアプリが取るが、始まったことは伝える（AI が黙って待てるように）
+  const win = protocol.recordingStartMessage({ source: 'windows', target: '勤怠管理' });
+  assert.match(win, /^@recording start\n/);
+  assert.match(win, /利用者が Windows アプリ（勤怠管理）の操作を記録し始めました/);
+  assert.match(win, /あなた自身は winauto の記録を起こさないでください/);
+  assert.match(win, /記録の所在が次のメッセージで届きます。それまでは待って/);
+  assert.doesNotMatch(win, /playwright-cli/, 'Windows アプリの見本に CDP の話は混ぜない');
+  const cancel = protocol.recordingCancelMessage({ machine: 'm', source: 'windows' });
+  assert.match(cancel, /取りかけの記録はこのアプリで止めました/);
+  assert.match(protocol.recordingCancelMessage({ machine: 'm', source: 'windows', saved: true }), /`\.statemachine\/m\/recordings\/` に書かれた直近の見本は使わないで/);
+});
+
+test('1 段目の固定文: ブラウザを起こしたことと接続先を伝え、準備中なので記録はまだ始めさせない', () => {
+  const open = protocol.recordingOpenMessage({ endpoint: 'http://localhost:9222', url: 'https://a.test/list', browser: 'Edge' });
+  assert.match(open, /^@recording open\n/);
+  assert.match(open, /ブラウザ（Edge）をリモートデバッグ付きで起動しました。接続先: http:\/\/localhost:9222/);
+  assert.match(open, /開いたページ: https:\/\/a\.test\/list/);
+  assert.match(open, /`playwright-cli attach --cdp=http:\/\/localhost:9222` で接続だけして/);
+  assert.match(open, /まだ記録を始めないでください/);
+  assert.match(open, /`playwright-cli recording-start` は次の `@recording start` が届いてから/);
+  assert.match(open, /準備の操作を見本に混ぜないため、ここではブラウザを操作しないで/);
+  assert.doesNotMatch(open, /^`playwright-cli recording-start` で/m, '1 段目で記録は始めさせない');
+  assert.match(protocol.recordingOpenMessage({}), /接続先: http:\/\/localhost:9222[\s\S]*開いたページ: （未指定/);
+  // AI が @record で頼んだ見本なら、その依頼を指して会話の続きだと分かるようにする。
+  assert.match(protocol.recordingOpenMessage({ request: { source: 'browser', target: 'https://a.test/list' } }), /先ほど依頼のあった見本（https:\/\/a\.test\/list）を取ります。/);
+  assert.match(protocol.recordingOpenMessage({ request: { source: 'browser', target: '' } }), /依頼のあった操作の見本を取ります。/);
+  assert.match(protocol.recordingOpenMessage({}), /操作の見本を取ります。/, '依頼が無くても何をするかは言う');
+});
+
+test('2 段目の固定文: 準備が終わった合図として、記録の起点のページと recording-start を伝える', () => {
+  const start = protocol.recordingStartMessage({ endpoint: 'http://localhost:9222', page: 'https://a.test/list?month=9' });
   assert.match(start, /^@recording start\n/);
-  assert.match(start, /ブラウザ（Edge）をリモートデバッグ付きで起動しました。接続先: http:\/\/localhost:9222/);
-  assert.match(start, /開始 URL: https:\/\/a\.test\/list/);
+  assert.match(start, /利用者の準備が終わりました。ここからの操作が見本です。/);
+  assert.match(start, /記録の起点になるページ: https:\/\/a\.test\/list\?month=9/);
   assert.match(start, /`playwright-cli attach --cdp=http:\/\/localhost:9222`/);
   assert.match(start, /`playwright-cli recording-start`/);
   assert.match(start, /利用者が操作している間は、あなたはブラウザを操作しない/);
-  assert.match(protocol.recordingStartMessage({}), /接続先: http:\/\/localhost:9222[\s\S]*開始 URL: （未指定/);
+  assert.match(protocol.recordingStartMessage({}), /記録の起点になるページ: （読み取れませんでした/, 'ページが読めなくても記録は始められる');
+});
+
+test('3 段目の固定文: recording-stop と保存先と detach を伝える。やり直しは記録を破棄させる', () => {
   const stop = protocol.recordingStopMessage({ machine: 'monthly' });
   assert.match(stop, /^@recording stop\n/);
   assert.match(stop, /`playwright-cli recording-stop`/);
   assert.match(stop, /`\.statemachine\/monthly\/recordings\/<時刻>-browser\.md`/);
   assert.match(stop, /`playwright-cli detach`/);
   assert.match(stop, /パスワードらしい値は定義に残さない/);
+  const cancel = protocol.recordingCancelMessage({ machine: 'monthly' });
+  assert.match(cancel, /^@recording cancel\n/);
+  assert.match(cancel, /利用者が見本を取り直します。/);
+  assert.match(cancel, /その記録は使わずに破棄してください（`\.statemachine\/monthly\/recordings\/` には保存しないでください）/);
+  assert.match(cancel, /次の `@recording open` が届くまで待って/);
   assert.strictEqual(protocol.DEFAULT_ENDPOINT, 'http://localhost:9222');
 });
 
@@ -73,18 +140,24 @@ test('最初の依頼文は保存先・statemachine-use の作成モード・見
   assert.match(win, /run_machine\.py \.statemachine\/monthly\/workflow\.yaml --dry-run/);
   assert.match(win, /@record browser <開始 URL>/);
   assert.match(win, /@record windows <アプリ名>/);
-  assert.match(win, /「操作の見本」の「記録を始める」を押すよう伝えて待ちます/);
+  assert.match(win, /「操作の見本」のカードでボタンを押すよう伝えて待ちます/);
+  assert.match(win, /ボタンは 1 つで押すたびに次の段へ進みます/);
   assert.match(win, /WSL の tmux で動いていて、利用者の画面（ブラウザ・Windows アプリ）は Windows 側/);
   assert.match(win, /Windows 側の playwright-cli を WSL から起こすことはできません/);
-  // ブラウザ: アプリが Windows 側で Edge を起こし、固定文が届いてから AI が CDP で接続して記録する
-  assert.match(win, /Windows 側で Edge をリモートデバッグ付き（http:\/\/localhost:9222）で起こし/);
-  assert.match(win, /`@recording start` で始まる固定文/);
-  assert.match(win, /`playwright-cli attach --cdp=http:\/\/localhost:9222`[\s\S]*`playwright-cli recording-start`/);
+  // ブラウザ: 3 段（開く → 記録開始 → 終了）。準備の操作は見本に入れない
+  assert.match(win, /ブラウザの見本は 3 段です/);
+  assert.match(win, /`@recording open` で始まる固定文[\s\S]*Windows 側で Edge をリモートデバッグ付き（http:\/\/localhost:9222）で起こし/);
+  assert.match(win, /`playwright-cli attach --cdp=http:\/\/localhost:9222` で接続だけして[\s\S]*この段では記録を始めません/);
+  assert.match(win, /利用者はここでログインや目的の画面までの移動をしています/);
+  assert.match(win, /`@recording start` で始まる固定文（準備が終わった合図[\s\S]*`playwright-cli recording-start` で記録を始め/);
   assert.match(win, /`@recording stop` で始まる固定文[\s\S]*`playwright-cli recording-stop`[\s\S]*`\.statemachine\/monthly\/recordings\/<時刻>-browser\.md`[\s\S]*`playwright-cli detach`/);
+  assert.match(win, /`@recording cancel` が届いたら[\s\S]*保存せずに破棄/);
+  assert.match(win, /Windows アプリの見本は 2 段です[\s\S]*`@recording start` の固定文が届き/);
+  assert.match(win, /見本はあなたが頼んだときだけ来るとは限りません[\s\S]*区切りをつけて受け取り/);
   assert.match(win, /固定文が届く前に自分でブラウザを起こしたり記録を始めたりしない/);
   assert.match(win, /WSL のネットワークが mirrored でないと localhost が Windows 側に届きません/);
   // Windows アプリ: 記録はアプリが取る
-  assert.match(win, /Windows アプリの見本: 記録はこのアプリが winauto で取り/);
+  assert.match(win, /Windows アプリの見本は 2 段です[\s\S]*記録はこのアプリが winauto で取ります/);
   assert.match(win, /あなた自身は winauto の記録を起こさない/);
   assert.match(win, /ブラウザ（Edge）・Windows アプリ（winauto）/);
   assert.match(win, /利用者の目的:\n毎月の売上を集計する/);
@@ -97,6 +170,8 @@ test('最初の依頼文は保存先・statemachine-use の作成モード・見
   assert.match(linux, /見本を取る道具（Edge \/ winauto）が見つかっていません/);
   assert.match(linux, /python \.github\/skills\/statemachine-use\/scripts\/run_machine\.py/);
   const follow = teaching.demonstrationPrompt({ machine: 'monthly', hostPath: '/home/me/repo/.statemachine/monthly/recordings/r.md', source: 'browser', target: 'https://a.test', steps: 2, parameters: ['month'] });
+  assert.match(follow, /^@recording stop\n/, '入力欄へ入れる本文にも段の印を残す');
+  assert.match(teaching.demonstrationPrompt({ machine: 'monthly', hostPath: '/r.md', source: 'windows', requested: false }), /どの工程のためのものか分からなければ/);
   assert.match(follow, /\/home\/me\/repo\/\.statemachine\/monthly\/recordings\/r\.md を読んで/);
   assert.match(follow, /2 工程の候補[\s\S]*month/);
 });
@@ -164,7 +239,7 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'taskTeaching.js'), 'utf8');
   const html = fs.readFileSync(path.join(SRC, 'renderer', 'index.html'), 'utf8');
-  for (const channel of ['automation:teach:start', 'automation:teach:session', 'automation:teach:demonstration', 'automation:teach:browser']) {
+  for (const channel of ['automation:teach:start', 'automation:teach:session', 'automation:teach:demonstration', 'automation:teach:browser', 'automation:teach:browser:page']) {
     assert.ok(ipc.includes(`handle('${channel}'`), channel);
     assert.ok(preload.includes(`invoke('${channel}'`), channel);
   }
@@ -175,15 +250,38 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(ipc, /if \(!busy && !liveTmux\) \{[\s\S]*teaching\.resumePrompt/,
     '起動済み tmux へは固定の再開プロンプトを送らず、そのまま接続する');
   assert.match(ipc, /const hostPath = host\.toHostPath\(saved\.file\)/, '記録の所在は WSL 表記へ直してから AI へ');
+  assert.match(ipc, /function demonstrate\(p\) \{[\s\S]*return \{ file: saved\.file[\s\S]*prompt \};/, '見本の本文は返すだけ（送るのは入力欄から利用者が）');
+  assert.doesNotMatch(ipc, /AI が応答中です。終わってからもう一度送ってください/, '送る経路が会話の 1 本になったので断らない');
   assert.match(ipc, /recordingBrowser\.findBrowser\(/, '見本を取るブラウザはこの端末で探す');
   assert.match(ipc, /recordingBrowser\.launchRecordingBrowser\(\{[\s\S]*profileDir: path\.join\(userData\(\), recordingBrowser\.PROFILE_DIR\)/, '記録用のプロファイルは userData の下');
   assert.doesNotMatch(ipc, /resolvePath\('playwright-cli'\)/, 'ブラウザの見本にこの端末の playwright-cli は要らない（AI 側が使う）');
   // 固定文は renderer が会話の送信経路（send / termSubmit = tmux）で送る。main は Edge を起こすだけ
   assert.match(renderer, /api\.automation\.teachBrowser\(rec\.target\)/);
-  assert.match(renderer, /await sendText\(TeachingProtocol\.recordingStartMessage\(\{ endpoint: opened\.endpoint/);
-  assert.match(renderer, /await sendText\(TeachingProtocol\.recordingStopMessage\(\{ machine: state\.machine \}\)\)/);
+  // 「開く」「終了」は入力欄へ入れて利用者が送る。「記録を始める」「やり直す」は押した時点で送る
+  assert.match(renderer, /fillComposer\(rec, 'open', TeachingProtocol\.recordingOpenMessage\(\{/);
+  assert.match(renderer, /fillComposer\(rec, 'stop', TeachingProtocol\.recordingStopMessage\(\{ machine: state\.machine, request: rec\.request \}\)\)/);
+  assert.match(renderer, /fillComposer\(rec, 'stop', saved\.prompt\)/, 'Windows アプリの見本も入力欄へ入れてから送る');
+  assert.match(renderer, /await sendText\(TeachingProtocol\.recordingStartMessage\(\{ endpoint: rec\.endpoint, page, request: rec\.request \}\)\)/);
+  assert.match(renderer, /await sendText\(TeachingProtocol\.recordingStartMessage\(\{ source: 'windows', target: rec\.target, request: rec\.request \}\)\)/);
+  assert.match(renderer, /await sendText\(TeachingProtocol\.recordingCancelMessage\(\{ machine: state\.machine, source: rec\.source, saved \}\)\)/);
+  // 入力欄の書きかけは消さない。送られた本文の印で段を進める
+  assert.match(renderer, /if \(!prompt\.value\.trim\(\) \|\| prompt\.value === rec\.filled\)/);
+  assert.match(renderer, /if \(TeachingProtocol\.parseRecordingMessage\(text\) !== rec\.awaiting\) return;/);
+  assert.match(renderer, /await sendText\(text\);\s*\n\s*\$\('task-prompt'\)\.value = '';\s*\n\s*onRecordingSent\(text\);/);
+  // 送信待ちの間、画面の主ボタンは入力欄の「送信」だけ
+  assert.match(renderer, /action\.className = rec\.awaiting \? 'small quiet' :/);
+  assert.match(renderer, /\$\('task-composer'\)\.classList\.toggle\('awaiting-send', !!rec\.awaiting\)/);
+  // 押すボタンは 1 つ。段は TeachingProtocol が決め、renderer は現在地だけ持つ
+  assert.match(renderer, /const steps = TeachingProtocol\.recordingSteps\(rec\.source\)/);
+  assert.match(renderer, /action\.textContent = RECORD_LABEL\[step\]/);
+  assert.match(renderer, /if \(step === 'open'\) await openBrowser\(rec\);\s*\n\s*else if \(step === 'start'\) await startRecording\(rec\);\s*\n\s*else await stopRecording\(rec\);/);
+  // 2 段目は、準備で移動した先を記録の起点として添える
+  assert.match(renderer, /api\.automation\.teachBrowserPage\(\)/);
   assert.match(renderer, /if \(state\.running\) res = await api\.termSubmit\(sess\.id, text\);/, '応答中は端末へそのまま流す');
-  assert.doesNotMatch(renderer, /source: rec\.source/, 'この端末の playwright-cli でブラウザを記録する経路は残さない');
+  // この端末の記録（playwright-cli / winauto）を呼ぶのは Windows アプリの見本だけ。ブラウザは AI が記録する
+  const localRecording = renderer.match(/api\.automation\.recording(?:Start|Stop)\(\{[^}]*\}/g) || [];
+  assert.ok(localRecording.length >= 2, 'Windows アプリの記録の呼び出しが無い');
+  for (const call of localRecording) assert.match(call, /source: 'windows'/, `この端末で記録するのは Windows アプリだけ: ${call}`);
   assert.match(renderer, /api\.termOpen\(session\.id/);
   assert.doesNotMatch(renderer, /else if \(state\.editing\) \{ await startTeaching\(token\); return; \}/, '編集画面を開いただけでは AI を起こさない');
   assert.match(renderer, /\$\('task-launch-start'\)\.onclick = \(\) => startTeaching\(\)/, '編集開始ボタンで tmux を開く');
@@ -215,7 +313,13 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(html, /id="task-term-host"/);
   assert.match(html, /id="task-mode-terminal"/);
   assert.match(html, /id="task-record-open"[^>]*>操作の見本<\/button>/, 'AI編集の中から手動でも記録を開始できる');
-  assert.match(html, /id="task-record-stop"[^>]*>終了してAIへ渡す</);
+  // 見本の操作はボタン 1 つ（ラベルは段で変わる）。やり直しはその隣の控えめなボタン
+  assert.match(html, /id="task-record-action" class="small primary">記録を始める</);
+  assert.match(html, /id="task-record-restart" class="small quiet" hidden>やり直す</);
+  assert.doesNotMatch(html, /id="task-record-stop"/, '段ごとに別のボタンを並べない');
+  const card = html.slice(html.indexOf('<section id="task-record"'), html.indexOf('</section>', html.indexOf('<section id="task-record"')));
+  assert.strictEqual((card.match(/<button/g) || []).length, 3, '見本のカードのボタンは 進める・やり直す・閉じる の 3 つだけ');
+  assert.strictEqual((card.match(/class="small (primary|danger)"/g) || []).length, 1, '主ボタンは 1 つだけ');
   // 端末と入力欄は会話画面と同じ実体を使う（見た目を作り直さない）
   assert.match(html, /id="task-terminal" class="terminal-stage"/);
   assert.match(html, /id="task-composer" class="composer-shell"/);
