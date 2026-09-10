@@ -399,8 +399,8 @@ attention（y/n、許可、信頼確認）は末尾行から拾い、その後�
 
 | モード | 入口 | 動作 |
 |---|---|---|
-| メッセージ | 初期状態、入力欄クリック、Escape 2 回 | Enter で本文を tmux へ貼り付けて送信。Shift+Enter は改行。成功まで本文を保持 |
-| 端末操作 | xterm クリック、切替ボタン、仮想キー | 文字・矢印・Tab・Escape・Ctrl+C を `send-keys` へ直接渡す。Escape 1 回目は CLI へ、600 ms 以内の 2 回目でメッセージへ戻る |
+| メッセージ | 初期状態、入力欄クリック、Escape 2 回 | Enter で本文を tmux へ送信（1 行は `send-keys -l`、複数行は `set-buffer` + `paste-buffer -p` の括弧付きペーストで改行を保つ）。Shift+Enter は改行。成功まで本文を保持 |
+| 端末操作 | xterm クリック、切替ボタン、仮想キー | 文字・矢印・Tab・Escape・Ctrl+C を `send-keys` へ直接渡す。Shift+Enter / Ctrl+J / 仮想キー「改行」は LF（`C-j`）、Alt+Enter は `M-Enter` として渡し、送信の Enter に畳まない。Escape 1 回目は CLI へ、600 ms 以内の 2 回目でメッセージへ戻る |
 
 同じキーイベントを両方へ送らない。tmux が終了・消失したときは端末操作を無効化し、メッセージモードへ
 戻す。送信状態は `受付済み・<agent>を準備中` / `✓ <agent>へ送信済み HH:mm:ss` / `送信失敗・入力内容を

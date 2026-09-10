@@ -127,6 +127,7 @@
               <button type="button" data-terminal-key="Escape">Esc</button>
               <button type="button" data-terminal-key="Tab">Tab</button>
               <button type="button" data-terminal-key="Enter" aria-label="端末へEnterキーを送る">Enter</button>
+              <button type="button" data-terminal-key="Newline" aria-label="端末へ改行を送る（送信しない）" title="Shift+Enter">改行</button>
               <button type="button" data-terminal-key="Up">↑</button>
               <button type="button" data-terminal-key="Down">↓</button>
               <button type="button" data-terminal-key="Left">←</button>
@@ -243,6 +244,7 @@
                   <div class="settings-popover"><div class="popover-head">今回の作成設定</div><div class="direct-agent-settings">
                     <label>エージェント<select id="task-create-agent"></select></label>
                     <label>モデル<input id="task-create-model" class="mono" placeholder="自動"></label>
+                    <label>権限<select id="task-create-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option></select></label>
                   </div></div>
                 </details>
                 <span class="spacer"></span>
@@ -259,6 +261,7 @@
                     <div class="settings-popover"><div class="popover-head">今回の編集設定</div><div class="direct-agent-settings">
                       <label>エージェント<select id="task-launch-agent"></select></label>
                       <label>モデル<input id="task-launch-model" class="mono" placeholder="自動"></label>
+                      <label>権限<select id="task-launch-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option></select></label>
                     </div></div>
                   </details>
                   <span class="spacer"></span>
@@ -295,6 +298,7 @@
                   <button type="button" data-task-key="Escape">Esc</button>
                   <button type="button" data-task-key="Tab">Tab</button>
                   <button type="button" data-task-key="Enter" aria-label="端末へEnterキーを送る">Enter</button>
+                  <button type="button" data-task-key="Newline" aria-label="端末へ改行を送る（送信しない）" title="Shift+Enter">改行</button>
                   <button type="button" data-task-key="Up">↑</button>
                   <button type="button" data-task-key="Down">↓</button>
                   <button type="button" data-task-key="Left">←</button>
@@ -392,7 +396,7 @@
             <div class="tier-row"><span><strong>medium</strong><small>標準</small></span><label>エージェント<select id="tier-medium-cli"></select></label><label>モデル<input id="tier-medium-model" placeholder="自動"></label></div>
             <div class="tier-row"><span><strong>large</strong><small>品質重視</small></span><label>エージェント<select id="tier-large-cli"></select></label><label>モデル<input id="tier-large-model" placeholder="自動"></label></div>
           </div>
-          <label class="setting-field"><span><strong>会話の既定権限</strong><small>確認方法を新しい会話へ適用します</small></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
+          <label class="setting-field"><span><strong>会話の既定権限</strong><small>新しい会話と、タスクを AI と作る会話に適用します</small></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
           <label class="setting-field"><span><strong>同時実行数</strong><small>上限に達した場合は待ち行列へ入れず、再実行を案内します</small></span><input id="max-concurrent" type="number" min="1" max="8" step="1"></label>
         </section>
         <div id="settings-error" class="dlg-error" hidden></div>

@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 端末へ改行を送れる / タスクの会話でも権限を選べる
+
+- **複数行の依頼が改行のまま CLI に届く。** これまで tmux へは改行を空白へ畳んで 1 行で送っていたため、
+  箇条書きやコードを含む依頼が潰れていた。複数行は `set-buffer` + `paste-buffer -p`（括弧付きペースト）で
+  1 回の入力として流し、claude / codex などの入力欄に改行のまま入る。1 行は従来どおり `send-keys -l`。
+  claude が貼り付けを `[Pasted text #1 +N lines]` と畳んで表示する行は応答本文から除く。
+- **端末操作で改行を送れる。** 仮想キーに「改行」を足し、Shift+Enter と Ctrl+J は LF（`C-j`）、Alt+Enter は
+  `M-Enter` として tmux へ渡す（これまで LF は Enter に、Alt+Enter は Escape + Enter に化けて、送信や
+  入力の取り消しになっていた）。
+- **タスクを AI と作る・編集する会話にも「権限」（確認して実行 / 自動承認）を出す。** 作成設定・編集設定の
+  ポップオーバーに会話の実行設定と同じ 1 行を置き、会話を開いた後に切り替えても次の依頼から効く
+  （tmux の CLI を `--dangerously-skip-permissions` 等の自動承認フラグで起動し直す）。設定の
+  「会話の既定権限」がその初期値。
+
 ### agent-app: agent-tools が無くても会話とタスクが動く（agent-herd からの独立）
 
 agent-herd / agent-loop / agent-flow を入れていない PC でも、会話・タスクの作成・タスクの手動実行・AI 支援が

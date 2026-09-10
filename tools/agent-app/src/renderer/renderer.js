@@ -1603,11 +1603,12 @@ async function init() {
     isRunning: (id) => state.running.has(id),
     executionOptions: (overrides = {}) => {
       const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
-      return { policy: selected.policy, cli: overrides.agent || selected.cli, model: overrides.model != null ? overrides.model : selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
+      const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
+      return { policy: selected.policy, cli: overrides.agent || selected.cli, model: overrides.model != null ? overrides.model : selected.model, autoApprove };
     },
     executionDefaults: () => {
       const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
-      return { agent: selected.cli, model: selected.model };
+      return { agent: selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
     },
     agentNames: () => state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name),
     executionLabel: (overrides = {}) => {
@@ -1615,7 +1616,8 @@ async function init() {
       const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
       const cli = overrides.agent || selected.cli;
       const model = overrides.model != null ? overrides.model : selected.model;
-      return `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}${state.config.execution.defaultAutoApprove ? ' · 自動承認' : ' · 確認あり'}`;
+      const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
+      return `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
     },
     takeIntent: () => {
       const intent = state.pendingTaskIntent && state.pendingTaskIntent.root === state.repo ? state.pendingTaskIntent : null;
@@ -1652,7 +1654,7 @@ async function init() {
     if (state.input.mode !== 'message') setInputMode('message', { focus: false });
   });
   const terminalKeys = {
-    Escape: '\x1b', Tab: '\t', Enter: '\r', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03',
+    Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03',
   };
   for (const button of document.querySelectorAll('[data-terminal-key]')) {
     button.onclick = () => {

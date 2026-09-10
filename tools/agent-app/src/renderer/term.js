@@ -55,6 +55,13 @@ function createTerm() {
     term.loadAddon(fit);
     term.open(hostEl);
     term.onData((data) => { sendData(data); });
+    // xterm は Shift+Enter を Enter と同じ '\r' にする（送信になってしまう）。CLI の入力欄で
+    // 「送信せずに行を足す」のは LF（Ctrl+J）なので、Shift+Enter はそれとして送る。
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown' || event.key !== 'Enter' || !event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return true;
+      sendData('\n');
+      return false;
+    });
     hostEl.addEventListener('pointerup', () => {
       if (!term.hasSelection() && state.onFocus) state.onFocus();
     });

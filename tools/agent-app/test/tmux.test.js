@@ -137,18 +137,40 @@ test('waitReady は起動中の attention に依頼を送らず、確認後の r
   assert.strictEqual(settled, true);
 });
 
-test('send-keys は複数行を1回の入力へ畳む', async () => {
+test('複数行の依頼は改行を保ったまま括弧付きペーストで 1 回の入力として流す', async () => {
+  const calls = [];
+  const shell = { run: async (command) => { calls.push(command); return { ok: true, output: '' }; } };
+  const conv = new tmux.Conversation({ id: 'multi-line', shell, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
+  conv.phase = 'ready';
+  conv.historyText = async () => '';
+  conv.schedule = () => {};
+  await conv.send('開始指示\r\n\n- 1 つ目  \n- 2 つ目', () => {});
+  assert.strictEqual(calls.length, 2);
+  assert.match(calls[0], /set-buffer -b 'agent-app-multiline-prompt' -- '開始指示\n\n- 1 つ目\n- 2 つ目'/, '改行はそのまま（CRLF は LF、行末の空白は落とす）');
+  assert.match(calls[0], /paste-buffer -p -d -b 'agent-app-multiline-prompt' -t 'agent-app-multiline'/);
+  assert.doesNotMatch(calls[0], /send-keys/);
+  assert.match(calls[1], /send-keys .* 'Enter'/);
+  assert.strictEqual(conv.turn.prompt, '開始指示\n\n- 1 つ目\n- 2 つ目');
+});
+
+test('1 行の依頼は従来どおり send-keys -l で送る', async () => {
   const calls = [];
   const shell = { run: async (command) => { calls.push(command); return { ok: true, output: '' }; } };
   const conv = new tmux.Conversation({ id: 'one-line', shell, cwd: '/tmp', argv: [], patterns: tmux.compilePatterns({}) });
   conv.phase = 'ready';
   conv.historyText = async () => '';
   conv.schedule = () => {};
-  await conv.send('開始指示\n\nhello', () => {});
+  await conv.send('  hello world  ', () => {});
   assert.strictEqual(calls.length, 2);
-  assert.match(calls[0], /send-keys/);
-  assert.match(calls[0], /開始指示 hello/);
+  assert.match(calls[0], /send-keys -t 'agent-app-oneline' '-l' '--' 'hello world'/);
   assert.doesNotMatch(calls[0], /set-buffer|paste-buffer/);
+});
+
+test('貼り付けの echo（claude の [Pasted text …]）は応答本文に混ぜない', () => {
+  assert.ok(tmux.isChrome('> [Pasted text #1 +5 lines]'));
+  assert.ok(tmux.isChrome('[Pasted text #2 +12 lines]'));
+  assert.ok(!tmux.isChrome('Pasted text を読みました'));
+  assert.strictEqual(tmux.extractReply('> ', '> [Pasted text #1 +3 lines]\n\n答え\n> ', '行 1\n行 2\n行 3\n行 4'), '答え');
 });
 
 test('候補確定型のスキル入力はEnterを2回送る', async () => {
@@ -254,6 +276,10 @@ test('xterm のキー入力を send-keys の引数へ', () => {
   assert.deepStrictEqual(tmux.keysToArgs('\x03'), [['--', 'C-c']]);
   assert.deepStrictEqual(tmux.keysToArgs('\x7fあ'), [['--', 'BSpace'], ['-l', '--', 'あ']]);
   assert.deepStrictEqual(tmux.keysToArgs('\x01'), [['--', 'C-a']]);
+  // 改行（Ctrl+J / Shift+Enter）と Alt+Enter は送信の Enter に畳まない
+  assert.deepStrictEqual(tmux.keysToArgs('\n'), [['--', 'C-j']]);
+  assert.deepStrictEqual(tmux.keysToArgs('\x1b\r'), [['--', 'M-Enter']], 'Escape + Enter に割らない');
+  assert.deepStrictEqual(tmux.keysToArgs('a\nb\r'), [['-l', '--', 'a'], ['--', 'C-j'], ['-l', '--', 'b'], ['--', 'Enter']]);
 });
 
 test('tmux コマンド文字列は自前のソケットを使い、引用が壊れない', () => {
@@ -308,11 +334,24 @@ const STUB = `#!/usr/bin/env bash
 # 本物の TUI と同じく echo は自前で出す（tty の echo に任せると貼り付けの echo と Enter の改行が
 # 処理より先に画面へ出て、行の消去位置がずれる）
 stty -echo 2>/dev/null
+# 本物の TUI と同じく括弧付きペーストを有効にする。貼り付けの中の改行は行の区切りではなく
+# 本文の一部（ここでは " / " でつないで 1 つの依頼として扱う）。
+printf '\\033[?2004h'
 printf 'stub cli ready\\n'
 while true; do
   printf '> '
   IFS= read -r line || exit 0
-  printf '%s\\n' "$line"
+  pieces=()
+  if [[ "$line" == $'\\e[200~'* ]]; then
+    line="\${line#$'\\e[200~'}"
+    while [[ "$line" != *$'\\e[201~' ]]; do pieces+=("$line"); IFS= read -r line || break; done
+    line="\${line%$'\\e[201~'}"
+  fi
+  pieces+=("$line")
+  printf '%s\\n' "\${pieces[@]}"
+  joined=""
+  for piece in "\${pieces[@]}"; do joined="\${joined:+$joined / }$piece"; done
+  line=$joined
   case "$line" in
     bye) printf 'bye!\\n'; exit 7 ;;
     fail) printf 'FATAL: boom\\n'; exit 1 ;;
@@ -356,8 +395,8 @@ test('統合: tmux 上の疑似 CLI と会話する', { skip: !hasTmux && 'tmux 
     conv.unwatch();
 
     const second = await new Promise((resolve, reject) => { conv.send('two\nlines', resolve).catch(reject); });
-    // 行入力型 CLI にも複数行の依頼を 1 ターンとして渡す。
-    assert.strictEqual(second.text, '⏺ echo: two lines\n  detail line');
+    // 複数行の依頼は改行を保ったまま 1 ターンとして届き（括弧付きペースト）、echo は本文に混ざらない。
+    assert.strictEqual(second.text, '⏺ echo: two / lines\n  detail line');
 
     // 同じ名前のセッションへ再接続できる
     const again = new tmux.Conversation({ id: conv.id, shell: sh, cwd: dir, argv: [stub], patterns: conv.patterns, emit() {} });
