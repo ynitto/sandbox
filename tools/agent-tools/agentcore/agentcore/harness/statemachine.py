@@ -37,6 +37,7 @@ from agentcore.harness.toolloop import (  # noqa: F401  (本文が toolloop か�
     _tl_action_project_files,
     _tl_action_skill_names,
     _tl_append_log,
+    _tl_allowed_shells,
     _tl_control_agent,
     _tl_exec_argv,
     _tl_executable_on_path,
@@ -82,6 +83,7 @@ _sm_skill_scripts = _tl_skill_scripts
 _sm_skill_declared_scripts = _tl_skill_declared_scripts
 _sm_run_control = _tl_run_control
 _sm_validate_tool_request = _tl_validate_tool_request
+_sm_allowed_shells = _tl_allowed_shells
 _sm_parse_json_object = _tl_parse_json_object
 _sm_parse_tool_request = _tl_parse_tool_request
 _sm_append_log = _tl_append_log
@@ -300,7 +302,8 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                        cwd: str, agent: dict, log_file: str, touched: set,
                        check_note: str = "", retry_paths: "list[str] | None" = None,
                        max_tool_rounds: "int | None" = None,
-                       instruction: str = "") -> str:
+                       instruction: str = "",
+                       allow_shells: "set[str] | None" = None) -> str:
     action = _sm_workflow_action(workflow_path, state_id, state)
     rendered = _sm_render_template(action["text"], context)
     if str(instruction or "").strip():
@@ -375,7 +378,7 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                         {"rejected": True, "error": str(exc)}, ensure_ascii=False))
                     continue
                 try:
-                    request = _sm_validate_tool_request(parsed, cwd, skills)
+                    request = _sm_validate_tool_request(parsed, cwd, skills, allow_shells)
                 except StateMachineHarnessError as exc:
                     # 拒否されたツール要求は「やらなかった」であって成功ではない。JSON の中身が
                     # たまたま Output Contract の形をしていても、契約文として拾わない。
@@ -786,7 +789,8 @@ def _sm_crowded_write_states(workflow: dict) -> "list[tuple[str, list[str]]]":
 
 def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" = None,
                      agent: dict, decision: "dict | None" = None,
-                     instruction: str = "") -> dict:
+                     instruction: str = "",
+                     allow_shells: "list[str] | None" = None) -> dict:
     """ステートマシンを headless エージェントで完走させる。
 
     戻り値: {ok, stdout, stderr, finalState, logFile, files}（dashboard の旧 in-process
@@ -796,8 +800,12 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
     receipt としてログへ残し、**編集 state（`write:` 宣言あり）の `check` を必須にする**
     ——小型候補は検査なしでは完了扱いにしない（設計 2026-08-15 §2.1。宣言の無い定義は
     実行前に落とし、静かに未検証で走らせない）。
+
+    `allow_shells` は、この 1 実行に限ってシェル拒否から外す名前（`--allow-shell`）。
+    既定は空＝全部拒否のまま。
     """
     root = os.path.realpath(str(cwd))
+    allowed_shells = _sm_allowed_shells(allow_shells)
     workflow_file = _sm_project_path(root, workflow_path)
     workflow = _sm_load_workflow_dict(workflow_file)
     crowded = _sm_crowded_write_states(workflow)
@@ -877,7 +885,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                     workflow_path=workflow_file, state_id=current, state=state, context=context,
                     cwd=root, agent=agent, log_file=log_file, touched=touched,
                     check_note=note, retry_paths=retry_paths,
-                    instruction=instruction,
+                    instruction=instruction, allow_shells=allowed_shells,
                     max_tool_rounds=gate["max_tool_rounds"]).strip()
             except StateMachineHarnessError:
                 if not attempt or not gate["check"]:
@@ -1056,7 +1064,8 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path, *, result_recorder=Non
             _sm_progress(f"entry: {getattr(args, 'entry', '')}（{plan['config']}）")
         result = run_statemachine(workflow_path=workflow_path, cwd=str(work_dir),
                                   parameters=params, agent=agent, decision=decision,
-                                  instruction=str(getattr(args, "instruction", None) or ""))
+                                  instruction=str(getattr(args, "instruction", None) or ""),
+                                  allow_shells=getattr(args, "allow_shell", None) or [])
         notify(result)
         print("RESULT " + json.dumps(result, ensure_ascii=False))
         # 3 = 検査の再投入上限に達した（この段では解けない）。呼び出し側が RESULT を

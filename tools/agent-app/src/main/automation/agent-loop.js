@@ -10,12 +10,14 @@ function machineName(value) {
   return name;
 }
 
-function runSpec({ root, machine, agent = '', model = '', parameters = {}, instruction = '' }) {
+function runSpec({ root, machine, agent = '', model = '', parameters = {}, instruction = '', allowShells = [] }) {
   const workflow = `.statemachine/${machineName(machine)}/workflow.yaml`;
   const args = ['statemachine', '--workflow', workflow, '--dir', String(root || '')];
   if (agent) args.push('--agent-cli', String(agent));
   if (model) args.push('--model', String(model));
   if (instruction) args.push('--instruction', String(instruction));
+  // シェルの許可はこの 1 実行の引数として渡す（渡さなければ harness は全部拒否）。
+  for (const shell of allowShells || []) args.push('--allow-shell', String(shell));
   for (const key of Object.keys(parameters || {}).sort()) {
     const value = parameters[key];
     if (value == null) continue;
@@ -24,10 +26,10 @@ function runSpec({ root, machine, agent = '', model = '', parameters = {}, instr
   return { command: 'agent-loop', args };
 }
 
-function taskRunSpec({ root, task, agent = '', model = '', parameters = {}, instruction = '' }) {
+function taskRunSpec({ root, task, agent = '', model = '', parameters = {}, instruction = '', allowShells = [] }) {
   const item = task && typeof task === 'object' ? task : {};
   if (item.kind === 'statemachine' || item.machine) {
-    return runSpec({ root, machine: item.machine, agent, model, parameters, instruction });
+    return runSpec({ root, machine: item.machine, agent, model, parameters, instruction, allowShells });
   }
   if (item.kind !== 'prompt') throw new Error('このタスクは手動実行できません');
   const entry = item.entry && typeof item.entry === 'object' ? item.entry : {};

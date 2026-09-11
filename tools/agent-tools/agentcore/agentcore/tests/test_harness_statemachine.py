@@ -57,6 +57,29 @@ class ToolRequestTest(unittest.TestCase):
             sm._sm_validate_tool_request(
                 {"type": "run", "command": "bash", "args": []}, self.repo, [])
 
+    def test_a_named_shell_passes_for_that_run_only(self):
+        """`--allow-shell` で名指ししたものだけが通る。ほかのシェルは拒否のまま。"""
+        allowed = sm._sm_allowed_shells(["bash"])
+        request = sm._sm_validate_tool_request(
+            {"type": "run", "command": "bash", "args": ["-c", "true"]},
+            self.repo, [], allowed)
+        self.assertEqual(os.path.basename(request["command"]), "bash")
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "シェル"):
+            sm._sm_validate_tool_request(
+                {"type": "run", "command": "sh", "args": []}, self.repo, [], allowed)
+
+    def test_the_allowance_is_matched_by_executable_name(self):
+        """突き合わせは拒否リストと同じ実行ファイル名（大小は無視、空欄は捨てる）。"""
+        self.assertEqual(sm._sm_allowed_shells([" PowerShell.EXE ", "", " "]),
+                         {"powershell.exe"})
+
+    def test_the_allowance_is_not_read_from_the_environment(self):
+        """許可はその実行の引数だけが持つ。環境変数では緩められない。"""
+        with mock.patch.dict(os.environ, {"AGENTCORE_ALLOWED_SHELLS": "bash"}):
+            with self.assertRaisesRegex(sm.StateMachineHarnessError, "シェル"):
+                sm._sm_validate_tool_request(
+                    {"type": "run", "command": "bash", "args": []}, self.repo, [])
+
     def test_python_script_runs_via_python(self):
         script = os.path.join(self.repo, "tool.py")
         pathlib.Path(script).write_text('print("ok")\n', encoding="utf-8")
@@ -106,6 +129,35 @@ class ToolRequestTest(unittest.TestCase):
             with self.assertRaisesRegex(sm.StateMachineHarnessError, "インタプリタ"):
                 sm._sm_validate_tool_request(
                     {"type": "run", "command": script, "args": []}, self.repo, [])
+
+
+class AllowShellForwardingTest(unittest.TestCase):
+    """`--allow-shell` はサブコマンドの引数として実行まで届く（環境は経由しない）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="agent-loop-sm-allow-")
+        self.repo = os.path.realpath(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _run(self, allow_shell):
+        seen = {}
+        args = argparse.Namespace(
+            dir=self.repo, workflow="workflow.yaml", entry=None, config=None,
+            param=[], input=None, agent_cli="fake", model="", instruction="",
+            allow_shell=allow_shell)
+        with mock.patch.object(sm, "_sm_resolve_agent",
+                               lambda cli, model, cwd: {"cli": cli, "model": model}), \
+                mock.patch.object(sm, "run_statemachine",
+                                  lambda **kwargs: seen.update(kwargs) or {"ok": True}):
+            with self.assertRaises(SystemExit):
+                sm.cmd_statemachine(args, pathlib.Path(self.repo))
+        return seen
+
+    def test_the_named_shell_reaches_the_run(self):
+        self.assertEqual(self._run(["powershell.exe"])["allow_shells"], ["powershell.exe"])
+
+    def test_nothing_is_allowed_by_default(self):
+        self.assertEqual(self._run([])["allow_shells"], [])
 
 
 class ParseAndStatusTest(unittest.TestCase):

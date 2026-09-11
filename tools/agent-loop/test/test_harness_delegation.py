@@ -59,6 +59,14 @@ class SubcommandDispatchTest(unittest.TestCase):
     def test_statemachine_goes_to_the_harness(self):
         self._main(["statemachine", "--workflow", "x.yaml"], "cmd_statemachine", sm)
 
+    def test_allow_shell_reaches_the_harness_as_an_argument(self):
+        """シェルの許可はその 1 実行の引数で渡る（既定は空＝全部拒否）。"""
+        call = self._main(["statemachine", "--workflow", "x.yaml",
+                           "--allow-shell", "powershell.exe"], "cmd_statemachine", sm)
+        self.assertEqual(call.args[0].allow_shell, ["powershell.exe"])
+        plain = self._main(["statemachine", "--workflow", "x.yaml"], "cmd_statemachine", sm)
+        self.assertEqual(plain.args[0].allow_shell, [])
+
 
 class HookWiringTest(unittest.TestCase):
     """継ぎ目のフックは agent-loop の実装へ繋がり、**呼ぶたびに**引かれる。"""

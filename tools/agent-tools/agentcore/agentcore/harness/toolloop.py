@@ -237,11 +237,24 @@ def _tl_executable_on_path(command: str) -> str:
     return shutil.which(str(command)) or ""
 
 
-def _tl_validate_command(command, cwd: str, skill_dirs: "list[str]") -> str:
+def _tl_allowed_shells(names) -> "set[str]":
+    """その 1 実行に限って通してよいシェルの名前。
+
+    既定は空＝従来どおり全部拒否で、**呼び出し側が引数で名指しした**ものだけが通る
+    （WSL から Windows 側の CLI を起動するのに `powershell.exe` だけ要る、といった経路の
+    ため）。設定や環境から拾わないのは、例外の届く範囲をその 1 実行に閉じたいから
+    ——環境に置くと、誰がいつ渡したのかが実行の外へ散る。
+    """
+    return {os.path.basename(str(n).strip()).lower() for n in (names or []) if str(n).strip()}
+
+
+def _tl_validate_command(command, cwd: str, skill_dirs: "list[str]",
+                         allow_shells: "set[str] | None" = None) -> str:
     raw = str(command or "").strip()
     if not raw or re.search(r"[\s\0]", raw):
         raise ToolLoopError("run.command は単一の実行ファイル名が必要です")
-    if os.path.basename(raw).lower() in _TL_SHELLS:
+    name = os.path.basename(raw).lower()
+    if name in _TL_SHELLS and name not in (allow_shells or ()):
         raise ToolLoopError(f"シェルの実行は許可されていません: {raw}")
     if not os.path.isabs(raw) and "/" not in raw and "\\" not in raw:
         if not _tl_executable_on_path(raw):
@@ -307,7 +320,8 @@ def _tl_script_interpreter(command: str) -> str:
         f"{ext} を実行するインタプリタが PATH にありません: {' / '.join(names)}")
 
 
-def _tl_validate_tool_request(raw, cwd: str, skills: "list[dict]") -> dict:
+def _tl_validate_tool_request(raw, cwd: str, skills: "list[dict]",
+                              allow_shells: "set[str] | None" = None) -> dict:
     if not isinstance(raw, dict):
         raise ToolLoopError("ツール要求が JSON オブジェクトではありません")
     kind = str(raw.get("type") or "")
@@ -324,7 +338,7 @@ def _tl_validate_tool_request(raw, cwd: str, skills: "list[dict]") -> dict:
             raise ToolLoopError("run.args は文字列配列が必要です")
         args = [str(a) for a in args]
         _tl_validate_arg_paths(args, cwd, skill_dirs)
-        command = _tl_validate_command(raw.get("command"), cwd, skill_dirs)
+        command = _tl_validate_command(raw.get("command"), cwd, skill_dirs, allow_shells)
         interpreter = _tl_script_interpreter(command)
         if interpreter:
             args = [command, *args]
