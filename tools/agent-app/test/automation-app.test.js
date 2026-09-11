@@ -92,6 +92,17 @@ test('手動実行は選択したスキルを実行情報へ残す', () => {
   assert.ok(renderer.includes('適用スキル:'));
 });
 
+test('自動承認の手動実行だけが PowerShell の許可をコマンド引数で渡す', () => {
+  const handlers = read('main/automation/handlers.js');
+  const renderer = read('renderer/automation/renderer.js');
+  assert.match(handlers, /const RUN_ALLOWED_SHELL = 'powershell\.exe'/);
+  assert.match(handlers, /mode === 'run' && payload\.autoApprove \? \[RUN_ALLOWED_SHELL\] : \[\]/,
+    '構成確認や承認を挟む実行には渡さない');
+  assert.match(handlers, /allowShells: allowedShellsFor\(mode, p\)/, '実行の引数として渡す');
+  assert.ok(!handlers.includes('AGENTCORE_ALLOWED_SHELLS'), '許可を環境変数で配らない');
+  assert.ok(renderer.includes('autoApprove: true'), '手動実行は自動承認で開始する');
+});
+
 test('AI支援は下書きと見直しを分け、候補を保存せず選択反映する', () => {
   const renderer = read('renderer/automation/renderer.js');
   const preload = read('preload.js');

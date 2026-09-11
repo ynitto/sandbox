@@ -20,6 +20,17 @@ test('手動実行はagent-loopからagent-toolsのステートマシン実行�
   });
 });
 
+test('シェルの許可は名指ししたときだけ実行の引数へ載る', () => {
+  const base = { root: '/project', machine: 'review', agent: 'codex' };
+  assert.ok(!loop.runSpec(base).args.includes('--allow-shell'), '既定は許可を渡さない');
+  const allowed = loop.runSpec({ ...base, allowShells: ['powershell.exe'] }).args;
+  assert.deepStrictEqual(allowed.slice(-2), ['--allow-shell', 'powershell.exe']);
+  assert.deepStrictEqual(loop.taskRunSpec({
+    root: '/project', task: { kind: 'statemachine', machine: 'review' },
+    agent: 'codex', allowShells: ['powershell.exe'],
+  }).args.slice(-2), ['--allow-shell', 'powershell.exe'], 'タスク経由でも同じ引数で渡る');
+});
+
 test('タスク種別に応じてステートマシンまたは自由プロンプトを一回実行する', () => {
   assert.deepStrictEqual(loop.taskRunSpec({
     root: '/project', task: { kind: 'prompt', entry: { prompt: '差分を確認する' } },

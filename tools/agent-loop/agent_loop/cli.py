@@ -341,6 +341,11 @@ def main() -> None:
         help="各ステートの依頼へ追加する共通指示",
     )
     sm_parser.add_argument(
+        "--allow-shell", action="append", default=[], metavar="NAME",
+        help="この実行に限って許可するシェル（例: powershell.exe）。既定はすべて拒否。"
+             "繰り返し指定可",
+    )
+    sm_parser.add_argument(
         "--dir", "-d", default=None, metavar="DIR",
         help="作業ディレクトリ（省略時: カレントディレクトリ）",
     )

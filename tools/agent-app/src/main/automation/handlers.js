@@ -45,6 +45,17 @@ function handle(channel, fn) {
   });
 }
 
+// 手動実行を自動承認で回すときだけ、harness のシェル拒否から powershell.exe を外す。
+// WSL から Windows 側の CLI（playwright-cli など）を起動する経路がここしか無く、その間は
+// 利用者が画面の前にいて結果を見ている。許可はその 1 実行のコマンド引数として渡す
+// ——環境に置くと、誰がいつ渡したのかが実行の外へ散る。構成確認や、承認を挟む実行には
+// 渡さないので、harness の既定（シェルは全部拒否）がそのまま効く。
+const RUN_ALLOWED_SHELL = 'powershell.exe';
+
+function allowedShellsFor(mode, payload) {
+  return mode === 'run' && payload.autoApprove ? [RUN_ALLOWED_SHELL] : [];
+}
+
 function skillDirFor(root, settings, getUserData = userData, appRoot = APP_ROOT) {
   return tools.findSkillDir({ root, configured: settings.load(getUserData()).skillDir, appRoot });
 }
@@ -516,6 +527,7 @@ function registerIpcHandlers(getWindow, options = {}) {
           root, task, agent,
           model: p.model || cfg.model, parameters,
           instruction: preparation.instruction || '',
+          allowShells: allowedShellsFor(mode, p),
         });
         command = spec.command;
         args = spec.args;
