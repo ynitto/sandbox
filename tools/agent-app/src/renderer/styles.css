@@ -171,7 +171,11 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); }
 #chat-head { min-height: 60px; display: flex; align-items: center; gap: 8px; padding: 8px 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); white-space: nowrap; }
 #chat-head .title-row { min-width: 120px; max-width: 42%; display: flex; align-items: center; gap: 9px; }
+#chat-head .title-stack { min-width: 0; display: flex; flex-direction: column; }
 #chat-head .title { min-width: 0; overflow: hidden; font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
+/* 分岐元へのリンク。題名の下の 1 行（.sub と同じ文字）で、押すと元の会話を開く */
+#chat-head .title-origin { max-width: 100%; padding: 0; border: 0; overflow: hidden; background: none; color: var(--accent); text-align: left; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+#chat-head .title-origin:hover { text-decoration: underline; }
 .phase { padding: 2px 8px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .phase.ready { border-color: var(--ok); color: var(--ok); }
 .phase.busy, .phase.starting { border-color: var(--accent); color: var(--accent); }

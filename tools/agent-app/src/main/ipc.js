@@ -15,6 +15,7 @@ const worktree = require('./worktree');
 const attachments = require('./attachments');
 const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
+const forkProtocol = require('../renderer/forkProtocol');
 const response = require('./response');
 const { createGate } = require('./executionGate');
 const skills = require('./skills');
@@ -32,10 +33,24 @@ function userData() { return app.getPath('userData'); }
 
 // 修正前に保存された Aider 応答も、読み出し時に同じ表示契約へ移す。
 // ディスク上の生データは変更せず、新しい応答は保存前に既に構造化される。
-function presentSession(sess) {
+// 分岐の関連づけ（origin の会話の題名と、この会話から分岐した会話）は表示のたびに一覧から引く。
+function presentSession(sess, ud = null) {
   if (!sess || !Array.isArray(sess.messages)) return sess;
+  let originSession = null;
+  let forks = [];
+  if (sess.id) {
+    try {
+      const dir = ud || userData();
+      if (sess.origin) {
+        const o = store.readSession(dir, sess.origin.sessionId);
+        originSession = { id: o.id, repo: o.repo, title: o.title || '' };
+      }
+      forks = store.listForks(dir, sess.id).map((f) => ({ id: f.id, repo: f.repo, title: f.title || '', index: f.origin ? f.origin.index : -1 }));
+    } catch { /* 分岐元が消えていても会話は開ける */ }
+  }
   return {
     ...sess,
+    originSession, forks,
     messages: sess.messages.map((message) => {
       if (!message || message.role !== 'assistant') return message;
       const structured = response.parseTranscript(message.cli, message.text);
@@ -567,7 +582,10 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
   })));
   // ヘッドレスには対話セッションが無いため、先頭のコマンドブロックとして同じ実行へ載せる。
   // tmux は runTmux が 1 件ずつ先に送るので、本依頼へ混ぜない。
-  const instructedPrompt = sessionSetup.withInstructions(attached.prompt, cfg.instructions);
+  // 「会話」だけ、別のリポジトリへ分岐する作法（@fork 行）を添える。タスクを AI と作る会話には添えない
+  const instructedPrompt = sessionSetup.withInstructions(attached.prompt, cfg.instructions, {
+    fork: sess.kind === 'conversation' ? { repos: cfg.repos, current: sess.repo } : null,
+  });
   const contextualPrompt = skillDelivery.instruction ? `${skillDelivery.instruction}\n\n${instructedPrompt}` : instructedPrompt;
   const prompt = transport === 'headless' && setupSkills.length
     ? `${setupSkills.map((item) => item.command).join('\n')}\n\n${contextualPrompt}`
@@ -831,6 +849,27 @@ function registerIpcHandlers(getWindow) {
     });
   });
   handle('session:read', (p) => presentSession(store.readSession(userData(), p.id)));
+  // 別のリポジトリへ分岐する: 元の会話の起動条件を写した新しい会話を分岐先のリポジトリ本体に作り、
+  // 元の会話の所在を添えた依頼文を最初のターンとして送る。分岐先も登録済みリポジトリに限る。
+  handle('session:fork', async (p) => {
+    const ud = userData();
+    const origin = store.readSession(ud, p.originId);
+    const repo = requireRepo(p.repo);
+    if (repo === origin.repo) throw new Error('分岐先には別のリポジトリを選んでください');
+    const prompt = String(p.prompt || '').trim();
+    if (!prompt) throw new Error('分岐先へ送る依頼が空です');
+    const created = store.createSession(ud, {
+      repo, cli: origin.cli, model: origin.model, policy: origin.policy, tier: origin.tier,
+      readonly: origin.readonly, autoApprove: origin.autoApprove, transport: origin.transport, worktree: '',
+      origin: { sessionId: origin.id, repo: origin.repo, index: Number(p.index) },
+    });
+    const turn = await guardedRunTurn(created.id, {
+      prompt: forkProtocol.forkPrompt({ originRepo: origin.repo, originTitle: origin.title, prompt }),
+      policy: created.policy, cli: created.cli, model: created.model, readonly: created.readonly, autoApprove: created.autoApprove,
+      skillMode: p.skillMode || 'auto', skills: [], attachments: [],
+    }, send);
+    return { session: presentSession(store.readSession(ud, created.id), ud), turn };
+  });
   handle('session:update', (p) => store.updateSession(userData(), p.id, p.patch));
   handle('session:remove', async (p) => {
     if (running.has(p.id)) running.get(p.id).stop();

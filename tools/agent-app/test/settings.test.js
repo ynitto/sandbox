@@ -52,6 +52,7 @@ test('UIで扱う共通指示と実行制御を安全な設定値へ揃える', 
   assert.deepStrictEqual(normalized.instructions, {
     enabled: false,
     text: '日本語で回答する',
+    forkEnabled: true,
     skills: ['ui-designer', 'self-checking'],
     skillSelection: {
       enabled: true,

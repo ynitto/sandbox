@@ -154,7 +154,19 @@ function normalizeSession(sess) {
   sess.terminalSnapshots = Array.isArray(sess.terminalSnapshots) ? sess.terminalSnapshots : [];
   sess.policy = ['recommended', 'saving', 'quality', 'direct'].includes(sess.policy) ? sess.policy : 'direct';
   sess.tier = ['small', 'medium', 'large'].includes(sess.tier) ? sess.tier : '';
+  sess.origin = normalizeOrigin(sess.origin);
   return sess;
+}
+
+// origin … 別のリポジトリの会話から分岐した会話の、分岐元 { sessionId, repo, index }。
+//   sessionId は元の会話、repo はそのリポジトリ、index は分岐の依頼を書いた応答メッセージの位置
+//   （元の会話の messages の添字。履歴は追記だけなので動かない。不明なら -1）。分岐していなければ null。
+function normalizeOrigin(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const sessionId = String(raw.sessionId || '');
+  if (!/^[0-9a-f-]{36}$/.test(sessionId)) return null;
+  const index = Number(raw.index);
+  return { sessionId, repo: String(raw.repo || ''), index: Number.isInteger(index) && index >= 0 ? index : -1 };
 }
 
 function readSession(userData, id) {
@@ -187,7 +199,8 @@ function writeSession(userData, sess) {
 // worktree … 作業フォルダの名前（'' はリポジトリ本体）。作ったあとは変えない——
 // tmux セッションの cwd も CLI 側の文脈もそこで始まっているため。
 // kind / task … タスクを AI と作る会話（kind: 'task'）は task.machine に紐づき、会話一覧には出ない。
-function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null }) {
+// origin … 別のリポジトリの会話から分岐したとき、その分岐元（normalizeOrigin）。
+function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, origin = null }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   if (kind === 'task' && !(task && task.machine)) throw new Error('タスクの会話には保存名が要ります');
@@ -197,7 +210,7 @@ function createSession(userData, { repo, cli, model = '', readonly = false, auto
     kind: kind === 'task' ? 'task' : 'conversation', task: kind === 'task' ? { machine: String(task.machine) } : null,
     readonly: Boolean(readonly), autoApprove: Boolean(autoApprove), policy: String(policy || 'direct'), tier: String(tier || ''),
     transport: transport === 'headless' ? 'headless' : 'tmux',
-    worktree: String(worktree || ''), branch: String(branch || ''),
+    worktree: String(worktree || ''), branch: String(branch || ''), origin,
     title: '', cliSessions: {}, live: null, terminalSession: null, terminalSnapshots: [], messages: [], createdAt: now, updatedAt: now,
   }));
 }
@@ -229,6 +242,7 @@ function sessionSummary(file) {
     policy: s.policy || 'direct', tier: s.tier || '',
     transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
     title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
+    origin: normalizeOrigin(s.origin),
   };
   summaryCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, summary });
   return summary;
@@ -259,6 +273,13 @@ function listSessions(userData, repo, { kind = 'conversation' } = {}) {
 function findTaskSession(userData, repo, machine) {
   const name = String(machine || '');
   return listSessions(userData, repo, { kind: 'task' }).find((s) => s.machine === name) || null;
+}
+
+// その会話から分岐した会話（別のリポジトリも含む。更新日時の降順）。
+function listForks(userData, originId) {
+  const id = String(originId || '');
+  if (!id) return [];
+  return listSessions(userData, '', { kind: 'conversation' }).filter((s) => s.origin && s.origin.sessionId === id);
 }
 
 function updateSession(userData, id, patch) {
@@ -336,7 +357,7 @@ function removeSession(userData, id) {
 
 module.exports = {
   DEFAULTS, loadConfig, saveConfig, addRepo, removeRepo, isRegistered,
-  createSession, readSession, listSessions, findTaskSession, updateSession, appendMessage, removeSession,
+  createSession, readSession, listSessions, listForks, findTaskSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
   TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot,
 };

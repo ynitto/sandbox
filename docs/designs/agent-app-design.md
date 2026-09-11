@@ -175,6 +175,17 @@ controller を登録するまでの `navigate` は要素が保留し、登録時
 応答は「思考・進捗」「回答」「実行情報」の三層で表示する。回答は常に展開した吹き出し、思考・進捗と
 実行情報は折りたたみで、エラー・停止・非 0 終了のときだけ実行情報を自動展開する。空の区分は出さない。
 
+**別のリポジトリへの分岐。** 会話は 1 つのリポジトリ（と作業フォルダ）に固定で、CLI の cwd も文脈も
+そこで始まっている。別のローカルフォルダへ書き込む必要が出たときは、その会話の cwd を変えるのではなく、
+そのフォルダを作業フォルダとする**別の会話を分岐**する（GitHub Copilot App が別リポジトリへセッションを
+作るのと同じ考え方）。分岐の起点は AI の返答で、`@fork <フォルダ>` の 1 行と依頼の本文を書かせる
+（タスク教示の `@record` と同じく、main と renderer が `forkProtocol.js` を共に読む）。画面は回答の下の
+`.message-action`（「この依頼をタスクにする」と同じ部品）だけで、分岐先は登録済みリポジトリに限る（ADR-2）。
+分岐した会話はふつうの会話と同じ保存形式で分岐先リポジトリの一覧に並び、`origin`（分岐元の会話・
+リポジトリ・応答の位置）だけを持つ。関連づけの表示は、分岐先のヘッダーの「分岐元」1 行と、元の会話の
+その応答の下の「→ 分岐先」リンクの 2 か所で、サイドバーには足さない。分岐先は CLI の文脈を引き継がない
+ので、最初の依頼に元の会話の所在を 1 行添え、本文は AI に自己完結で書かせる。
+
 ### 3.3 タスク・ワークフローの共有編集面
 
 `#automation` セクションに置いた `<statemachine-workbench>` が、共有 renderer
@@ -643,6 +654,7 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | 実行設定の項目 | `src/main/settings.js`、`renderer.js` の `turnOptions` / `settingsPatch`、`index.html` | 正規化、移行、`executionSpec`、メッセージに残す項目 |
 | 開始アクション・スキル | `src/main/sessionSetup.js`、`skillSelection.js`、`automation/ipc.js` の `prepareRun` | tmux とヘッドレスの両経路、タスク手動実行 |
 | 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession` |
+| 別のリポジトリへの分岐 | `src/renderer/forkProtocol.js`、`src/main/ipc.js` の `session:fork`、`src/main/sessionSetup.js`、`renderer.js` の `forkActionsNode` / `forkConversation` | 約束事（`@fork` 行）は main と renderer が同じモジュールを読むこと、分岐先が `requireRepo` を通ること、`origin` の後方互換、`test/fork.test.js` |
 | 外部ライブラリ・共有ファイルの追加 | `scripts/vendor.js`、`index.html` | vendor と index.html の対応テスト、CSP |
 | タスク・ワークフローの機能 | `src/main/automation/`、`src/renderer/automation/` | `api.automation.*` と `handlers.js` の `register` の対応、`<statemachine-workbench>` の Shadow DOM、`navigate` payload と DOM イベント、`automation-workbench.css` の `:host` 上書き、`test/automation-*.test.js` |
 | タスクを AI と作る会話 | `src/main/ipc.js` の `startTeaching` / `demonstrate` / `launchTeachingBrowser` / `teachingBrowserPage`、`src/main/automation/teaching.js`、`src/main/automation/browser.js`、`src/renderer/taskTeaching.js`、`src/renderer/teachingProtocol.js` | 依頼文の約束事（`@record`、段と固定文 `@recording open` / `start` / `stop` / `cancel`）は main と renderer が同じモジュールを読むこと、見本のボタンは 1 つで段だけが進むこと、固定文は会話の送信経路（tmux）で送ること、記録の所在を WSL 表記へ直すこと、kind: task の会話が会話一覧に出ないこと |
