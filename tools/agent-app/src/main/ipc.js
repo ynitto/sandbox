@@ -22,6 +22,7 @@ const skills = require('./skills');
 const skillSelection = require('./skillSelection');
 const herd = require('./herd');
 const agentsMod = require('./agents');
+const share = require('./share');
 const { registerAutomationIpc } = require('./automation/ipc');
 const automationTools = require('./automation/tools');
 const machineStore = require('./automation/store');
@@ -326,6 +327,156 @@ function runHeadless(id, turn, send) {
   return { pid: child.pid, argv: cmd.argv };
 }
 
+// ---- 共有（LAN の参加者として CLI を 1 回起こす） --------------------------------------------
+//
+// 会話を持たない単発。セッション ID も履歴も無く、定義に no_session_args があれば付けて
+// 参加者の CLI にセッションを残さない。読み取り専用で起こす。
+//   { cli, prompt, model, readonly, cwd, files, timeoutMs, onLine }
+//   → { done: Promise<{ text, code, stopped, error, errorClass, quotaKind, elapsedMs, usage }>, stop(reason) }
+function runPrompt({ cli, prompt, model = '', readonly = true, cwd, files = [], timeoutMs = 0, onLine = () => {} }) {
+  const cfg = store.loadConfig(userData());
+  const distro = process.platform === 'win32' ? cfg.wslDistro : '';
+  const spec = agentCli.load(cli, '');
+  const cmd = agentCli.turnCmd(spec, { prompt, model, readonly, cliSession: '', history: [], files });
+  let argv = cmd.argv;
+  if (spec.noSessionArgs && spec.noSessionArgs.length) argv = agentCli.insertAfterSubcommand(argv, spec.noSessionArgs);
+  const startedAt = Date.now();
+  const spec2 = spawnSpec(argv[0], argv.slice(1), { cwd: host.toHostPath(cwd), env: cmd.env, distro });
+  let child;
+  let stopped = false;
+  let stopReason = '';
+  const done = new Promise((resolve) => {
+    try {
+      child = spawn(spec2.command, spec2.args, { windowsHide: true, ...spec2.extra });
+    } catch (err) {
+      resolve({ text: '', code: 1, stopped: false, error: `起動できません: ${(err && err.message) || err}`, errorClass: 'env', quotaKind: '', elapsedMs: 0, usage: null });
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
+    child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+    child.stdout.on('data', lineEmitter((line) => onLine('stdout', line)));
+    child.stderr.on('data', lineEmitter((line) => onLine('stderr', line)));
+    child.on('error', (err) => { stderr += `\n起動エラー: ${(err && err.message) || err}`; });
+    child.stdin.on('error', () => { /* 先に終わった CLI へ書いた EPIPE */ });
+    child.stdin.end(cmd.stdin == null ? '' : cmd.stdin);
+    const timer = timeoutMs > 0 ? setTimeout(() => { stopped = true; stopReason = '時間切れ'; killTree(child); }, timeoutMs) : null;
+    child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
+      let answer = '';
+      if (cmd.outputFile) {
+        try { answer = fs.readFileSync(cmd.outputFile, 'utf8'); } catch { /* 書かれなかった */ }
+        try { fs.unlinkSync(cmd.outputFile); } catch { /* 無ければよい */ }
+      } else {
+        answer = stdout;
+      }
+      answer = response.parseTranscript(cli, cleanAnswer(answer)).text;
+      const failed = stopped || code !== 0 || !answer;
+      const rule = failed ? agentCli.classifyError(spec, `${stripAnsi(stderr)}\n${stdout}`) : null;
+      resolve({
+        text: answer, code, stopped, elapsedMs: Date.now() - startedAt, usage: null,
+        error: !failed ? '' : (stopped ? stopReason : (rule ? rule.hint : (stripAnsi(stderr).trim() || stdout.trim()).split('\n').slice(-6).join('\n'))),
+        errorClass: !failed ? '' : (stopped ? 'transient' : (rule && rule.cls ? rule.cls : 'cli')),
+        quotaKind: rule && rule.quotaKind ? rule.quotaKind : '',
+      });
+    });
+  });
+  return { done, stop(reason) { stopped = true; stopReason = reason || '止めた'; if (child) killTree(child); } };
+}
+
+// 登録リポジトリの origin URL（共有の依頼の workspace と突き合わせる）。60 秒ごとに引き直す。
+const repoUrls = new Map();
+function normalizeRepoUrl(url) {
+  return String(url || '').trim().toLowerCase()
+    .replace(/\/+$/, '')            // 末尾の /
+    .replace(/\.git$/, '')          // .git
+    .replace(/^[a-z+]+:\/\//, '')   // scheme://
+    .replace(/^[^@/:]+@/, '')       // user@
+    .replace(/^([^/:]+):/, '$1/');  // host:path → host/path
+}
+async function refreshRepoUrls() {
+  const cfg = store.loadConfig(userData());
+  const next = new Map();
+  for (const repo of cfg.repos) {
+    try {
+      const dirs = dirsOf(repo, '');
+      const r = await host.shellFor(distroFor(repo)).exec(['git', '-C', dirs.hostDir, 'remote', 'get-url', 'origin'], { timeoutMs: 5000 });
+      if (r.ok && r.output.trim()) next.set(normalizeRepoUrl(r.output), repo);
+    } catch { /* origin が無いリポジトリは突き合わせの対象外 */ }
+  }
+  repoUrls.clear();
+  for (const [k, v] of next) repoUrls.set(k, v);
+  return repoUrls;
+}
+function repoFor(url) { return repoUrls.get(normalizeRepoUrl(url)) || ''; }
+
+let shareInstance = null;
+
+// 起動方針「共有」。本文はヘッドレスと同じ順で合成し（共通指示 → スキル本文 → 履歴の再送 → 依頼）、
+// LAN の参加者へ渡す。答えは requester が同じ会話へ assistant のメッセージとして戻す（turn:done）。
+// スキルは相手の PC に無い前提で、常に SKILL.md の本文を埋め込む。
+async function runShared(id, sess, dirs, p, requested, cfg, send, release) {
+  if (!shareInstance || shareInstance.state !== 'on') {
+    throw new Error(shareInstance && shareInstance.error ? shareInstance.error : '共有が動いていません（設定 > 共有）');
+  }
+  const ud = userData();
+  const repo = sess.repo;
+  const atts = [];
+  const served = [];
+  const lines = [];
+  for (const a of (Array.isArray(p.attachments) ? p.attachments : []).slice(0, attachments.MAX_PER_TURN)) {
+    if (!a || typeof a !== 'object') continue;
+    if (a.id) {
+      const { path: file, size } = attachments.resolve(ud, a.id, a.name);
+      const name = attachments.safeName(a.name);
+      atts.push({ id: attachments.checkId(a.id), name, size });
+      served.push({ name, path: file });
+    } else if (a.rel) {
+      const { rel } = files.resolveInside(dirs.fsDir, String(a.rel));
+      atts.push({ rel, name: rel.split('/').pop() });
+      lines.push(`- ${rel}（作業フォルダの中）`);
+    }
+  }
+  let text = requested.text;
+  if (lines.length) text = `${text}\n\n添付ファイル（必要に応じて読んで参照すること）:\n${lines.join('\n')}`;
+  const selectionConfig = cfg.instructions.skillSelection || {};
+  const selectedSkills = skillSelection.select({
+    mode: p.skillMode || selectionConfig.defaultMode || 'auto',
+    text: [requested.text, ...atts.map((item) => item.name || item.rel || '')].join('\n'),
+    requested: p.skills,
+    candidates: selectionConfig.enabled === false ? [] : selectionConfig.candidates,
+    catalog: skills.catalog(repo),
+  });
+  const skillDelivery = skillSelection.deliver(selectedSkills, { slashNative: false });
+  const instructed = sessionSetup.withInstructions(text, cfg.instructions);
+  const contextual = skillDelivery.instruction ? `${skillDelivery.instruction}\n\n${instructed}` : instructed;
+  const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
+  const goal = history.length ? agentCli.replayPrompt(history, contextual) : contextual;
+  let workspace = null;
+  try {
+    const r = await host.shellFor(distroFor(repo)).exec(['git', '-C', dirs.hostDir, 'remote', 'get-url', 'origin'], { timeoutMs: 5000 });
+    if (r.ok && r.output.trim()) workspace = { url: r.output.trim(), base: sess.branch || '' };
+  } catch { /* origin が無ければリポジトリ無しの依頼 */ }
+  store.appendMessage(ud, id, {
+    role: 'user', text: requested.text, cli: requested.cli || '', model: requested.model, readonly: true, autoApprove: false,
+    policy: settings.SHARED_POLICY, tier: '', attachments: atts, skillSelection: selectedSkills,
+  });
+  if (conversations.has(id) || sess.live) await closeConversation(id);
+  const request = shareInstance.post({
+    sessionId: id, title: requested.text.split('\n')[0], goal, requires: { agent_cli: requested.cli ? [requested.cli] : [] },
+    mode: 'read', model: requested.model, priority: p.priority || 'normal', attachments: served, workspace,
+  }, { onDone: release });
+  store.updateSession(ud, id, {
+    cli: requested.cli || sess.cli, model: requested.model, readonly: true, policy: settings.SHARED_POLICY, tier: '', transport: 'headless',
+    share: { id: request.id },
+  });
+  send('turn:started', { id, argv: [], warning: '' });
+  send('turn:progress', { id, item: { text: `共有の列に並べた（${request.id}）`, status: 'running' } });
+  for (const item of skillDelivery.information) send('turn:info', { id, item });
+  return { pid: 0, argv: [], shared: request.id };
+}
+
 // ---- tmux（対話起動）。会話 ID → Conversation ----------------------------------------
 
 const conversations = new Map();
@@ -533,6 +684,7 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
   const cfg = config || store.loadConfig(ud);
   const agents = await listAgents(repo);
   const requested = executionSpec(sess, p, cfg, { optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
+  if (requested.policy === settings.SHARED_POLICY) return runShared(id, sess, dirs, p, requested, cfg, send, release);
   const base = concreteCli(requested, agents, { attachments: p.attachments });
   const spec = agentCli.load(base.cli, repo);
   const available = agents.find((item) => item.name === base.cli);
@@ -744,13 +896,12 @@ function prepareTeachingView(p) {
 async function startTeaching(p, send) {
   const { ud, repo, cfg, purpose, machine, existing, sidecar, session } = prepareTeaching(p);
   const conversation = conversations.get(session.id);
-  const liveTmux = !!conversation && !conversation.closed && !['dead', 'gone'].includes(conversation.phase);
   const busy = running.has(session.id) || !!(conversation && conversation.turn);
   let started = false;
   // 初回だけでなく、下書きの再開・公開済みタスクの編集開始時にも対象を明示する。
-  // ただし tmux がすでに生きている場合は、固定文を新しい依頼として重ねず、そのまま接続する。
-  // tmux が無い・終了済みの場合だけ、保存済みファイルから文脈を復元して起動する。
-  if (!busy && !liveTmux) {
+  // renderer は起動待ちを見せるため先に tmux へ接続するので、生きていること自体を
+  // 「依頼済み」の印にはしない。編集開始という明示操作ごとに対象を伝える。
+  if (!busy) {
     const common = { machine, purpose: sidecar ? sidecar.purpose : purpose, existing };
     const prompt = session.messages.length
       ? teaching.resumePrompt({ ...common, context: p.context })
@@ -808,7 +959,29 @@ function registerIpcHandlers(getWindow) {
     const before = store.loadConfig(userData());
     const next = store.saveConfig(userData(), p.patch);
     if (before.wslDistro !== next.wslDistro) { host.closeAll(); availCache.clear(); }
+    if (shareInstance) shareInstance.reconfigure(next).catch(() => {});
+    if (JSON.stringify(before.repos) !== JSON.stringify(next.repos)) refreshRepoUrls().catch(() => {});
     return next;
+  });
+
+  // 共有（LAN の参加者に依頼を回す）。投函は turn:send の policy: 'shared'。ここは観測と調整だけ
+  let shareAgentNames = [];
+  const refreshShareCaches = async () => {
+    try { shareAgentNames = (await listAgents('')).filter((a) => a.available && !a.virtual).map((a) => a.name); } catch { /* 次の周で */ }
+    await refreshRepoUrls().catch(() => {});
+  };
+  shareInstance = new share.Share({ userData: userData(), config: store.loadConfig(userData()), send, runPrompt, agents: () => shareAgentNames, repoFor });
+  refreshShareCaches().then(() => shareInstance.start()).catch((err) => { shareInstance.error = err.message; });
+  const shareTimer = setInterval(() => { refreshShareCaches().catch(() => {}); }, 5 * 60 * 1000);
+  if (shareTimer.unref) shareTimer.unref();
+  handle('share:status', () => shareInstance.status());
+  handle('share:cancel', (p) => shareInstance.cancel(String(p.id || '')));
+  handle('share:priority', (p) => shareInstance.setPriority(String(p.id || ''), p.priority));
+  handle('share:participate', async (p) => {
+    const current = store.loadConfig(userData());
+    const next = store.saveConfig(userData(), { share: { ...current.share, participate: !!p.on } });
+    await shareInstance.reconfigure(next);
+    return shareInstance.status();
   });
 
   handle('repo:add', async () => {
@@ -895,6 +1068,7 @@ function registerIpcHandlers(getWindow) {
   handle('attach:discard', (p) => attachments.discard(userData(), p.id));
   handle('attach:open', (p) => shell.openPath(attachments.resolve(userData(), p.id, p.name).path));
   handle('turn:stop', async (p) => {
+    if (shareInstance && shareInstance.pendingSessionIds().includes(p.id)) { await shareInstance.cancelSession(p.id); return true; }
     const c = running.get(p.id);
     if (c) { c.stop(); return true; }
     const conv = conversations.get(p.id);
@@ -904,6 +1078,7 @@ function registerIpcHandlers(getWindow) {
     ...turnGate.snapshot(store.loadConfig(userData()).execution.maxConcurrent).ids,
     ...running.keys(),
     ...[...conversations.values()].filter((c) => c.turn).map((c) => c.id),
+    ...(shareInstance ? shareInstance.pendingSessionIds() : []),
   ])]);
 
   // 端末（tmux）
@@ -1015,6 +1190,8 @@ function registerIpcHandlers(getWindow) {
 
   app.on('before-quit', () => {
     clearInterval(sweepTimer);
+    clearInterval(shareTimer);
+    if (shareInstance) shareInstance.stop().catch(() => {});
     for (const c of running.values()) c.stop();
     for (const c of conversations.values()) {
       try { store.touchTerminalSession(userData(), c.id, { state: 'idle', ownerInstanceId: instanceId }); } catch { /* 終了を続ける */ }
@@ -1024,4 +1201,4 @@ function registerIpcHandlers(getWindow) {
   });
 }
 
-module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer, withAttachments, turnSpec, executionSpec, concreteCli, sameLaunch, presentSession, sweepTerminalSessions };
+module.exports = { registerIpcHandlers, spawnSpec, lineEmitter, stripAnsi, cleanAnswer, withAttachments, turnSpec, executionSpec, concreteCli, sameLaunch, presentSession, sweepTerminalSessions, runPrompt, normalizeRepoUrl };

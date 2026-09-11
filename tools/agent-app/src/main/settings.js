@@ -8,6 +8,12 @@ const POLICIES = Object.keys(POLICY_TIER);
 const BASIC_POLICIES = ['recommended'];
 const SKILL_MODES = ['auto', 'manual', 'off'];
 const MAX_INSTRUCTION_CHARS = 8000;
+// 起動方針「共有」。tier を持たず、依頼を LAN の参加者へ渡す（src/main/share/）。
+const SHARED_POLICY = 'shared';
+const SHARE_DEFAULTS = {
+  enabled: false, node: '', passphrase: '', port: 47801, udp: true, peers: [],
+  participate: false, clis: [], acceptWrite: false, maxConcurrent: 1, dailyCap: 20, perRequesterDailyCap: 5,
+};
 
 function pair(value, fallback) {
   const source = value && typeof value === 'object' ? value : {};
@@ -39,6 +45,31 @@ function concurrent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 2;
   return Math.max(1, Math.min(8, Math.floor(number)));
+}
+
+function bounded(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+// 設定 > 共有。port 0 は空いているポート、上限の 0 は無制限。
+function share(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    enabled: Boolean(source.enabled),
+    node: String(source.node || '').trim().slice(0, 60),
+    passphrase: String(source.passphrase || ''),
+    port: bounded(source.port, SHARE_DEFAULTS.port, 0, 65535),
+    udp: source.udp !== false,
+    peers: uniqueStrings(source.peers).slice(0, 50),
+    participate: Boolean(source.participate),
+    clis: uniqueStrings(source.clis).map((name) => name.toLowerCase()),
+    acceptWrite: Boolean(source.acceptWrite),
+    maxConcurrent: bounded(source.maxConcurrent, SHARE_DEFAULTS.maxConcurrent, 1, 4),
+    dailyCap: bounded(source.dailyCap, SHARE_DEFAULTS.dailyCap, 0, 1000),
+    perRequesterDailyCap: bounded(source.perRequesterDailyCap, SHARE_DEFAULTS.perRequesterDailyCap, 0, 1000),
+  };
 }
 
 function normalize(raw) {
@@ -74,6 +105,7 @@ function normalize(raw) {
       maxConcurrent: concurrent(execution.maxConcurrent),
       tiers: Object.fromEntries(TIERS.map((tier) => [tier, pair(tiers[tier], legacy)])),
     },
+    share: share(source.share),
   };
 }
 
@@ -87,7 +119,7 @@ function optimized(config, { herdAvailable = true } = {}) {
 // 選べない方針を選べる唯一の方針へ写す。画面も同じ規則で選べなくしている）。
 function effectivePolicy(policy, { optimized: on = true } = {}) {
   const name = String(policy || '');
-  if (name === 'direct') return name;
+  if (name === 'direct' || name === SHARED_POLICY) return name;
   if (!POLICIES.includes(name)) return 'recommended';
   return on || BASIC_POLICIES.includes(name) ? name : 'recommended';
 }
@@ -95,6 +127,13 @@ function effectivePolicy(policy, { optimized: on = true } = {}) {
 //   optimized … false なら節約 / 品質重視を「おすすめ」へ写す（呼ぶ側が herd の有無を見て決める）
 function resolve(config, request = {}, { optimized: on = true } = {}) {
   const requestedPolicy = String(request.policy || '');
+  if (requestedPolicy === SHARED_POLICY) {
+    // 共有: CLI は「どれでも」（空）か、参加者が提供している名前。tier は持たない。
+    const shareConfig = config && config.share ? config.share : normalize(config).share;
+    if (!shareConfig.enabled) throw new Error('共有が設定されていません（設定 > 共有）');
+    const cli = String(request.cli || '').trim().toLowerCase();
+    return { policy: SHARED_POLICY, tier: '', cli: cli === '*' ? '' : cli, model: String(request.model || '').trim(), source: 'shared' };
+  }
   if (requestedPolicy === 'direct' || (!POLICIES.includes(requestedPolicy) && request.cli)) {
     const cli = String(request.cli || '').trim().toLowerCase();
     if (!cli) throw new Error('直接指定するエージェントを選んでください');
@@ -111,6 +150,6 @@ function resolve(config, request = {}, { optimized: on = true } = {}) {
 }
 
 module.exports = {
-  TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS,
-  normalize, resolve, optimized, effectivePolicy,
+  TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS, SHARED_POLICY, SHARE_DEFAULTS,
+  normalize, resolve, optimized, effectivePolicy, share,
 };

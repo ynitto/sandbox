@@ -654,6 +654,7 @@ const POLICY_VIEW = {
   saving: { label: '節約', tier: 'small' },
   quality: { label: '品質重視', tier: 'large' },
   direct: { label: '直接指定', tier: '' },
+  shared: { label: '共有', tier: '' },
 };
 const SKILL_MODE_LABEL = { auto: '自動', manual: '手動選択', off: '使用しない' };
 // 最適化が効いていないときに選べる起動方針（settings.BASIC_POLICIES と同じ）。
@@ -673,9 +674,15 @@ function optimized(config = state.config) {
   return execution.optimizeAgents !== false && herdAvailable();
 }
 
+// 起動方針「共有」は設定 > 共有を使うと決めているときだけ選べる（LAN の参加者に依頼を回す）。
+function shareEnabled(config = state.config) {
+  return !!(config && config.share && config.share.enabled);
+}
+
 function effectivePolicy(policy, on = optimized()) {
   const name = String(policy || '');
   if (name === 'direct') return name;
+  if (name === 'shared') return shareEnabled() ? name : 'recommended';
   if (!POLICY_VIEW[name]) return 'recommended';
   return on || BASIC_POLICIES.includes(name) ? name : 'recommended';
 }
@@ -685,6 +692,8 @@ function renderRestrictions() {
   const on = optimized();
   const select = $('policy');
   for (const option of select.options) option.disabled = !on && !BASIC_POLICIES.includes(option.value) && option.value !== 'direct';
+  const sharedOption = [...select.options].find((option) => option.value === 'shared');
+  if (sharedOption) sharedOption.disabled = !shareEnabled();   // 共有は設定で使うと決めたときだけ
   if (select.selectedOptions[0] && select.selectedOptions[0].disabled) { select.value = 'recommended'; renderRunSettingsSummary(); }
   const caps = state.capabilities;
   $('area-workflows').disabled = !!(caps && caps.agentFlow === false);
@@ -753,6 +762,8 @@ async function refreshTurnSkillPreview() {
 function selectedExecution(policy = $('policy').value) {
   if (policy === 'direct') return { policy, tier: '', cli: $('cli').value, model: $('model').value.trim() };
   policy = effectivePolicy(policy);
+  // 共有: エージェントは「どれでも」（'*' → 空）か、参加者が提供している名前
+  if (policy === 'shared') return { policy, tier: '', cli: $('cli').value === '*' ? '' : $('cli').value, model: $('model').value.trim() };
   const view = POLICY_VIEW[policy] || POLICY_VIEW.recommended;
   const tier = state.config.execution.tiers[view.tier];
   return { policy, tier: view.tier, cli: tier.cli, model: tier.model || '' };
@@ -782,16 +793,34 @@ function renderRunSettingsSummary() {
   if (!summary) return;
   const selected = selectedExecution();
   const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
-  const agent = selected.cli || 'エージェント未設定';
+  const shared = selected.policy === 'shared';
+  renderAnyAgentOption(shared);
+  const agent = selected.cli || (shared ? 'どれでも' : 'エージェント未設定');
   const model = selected.model;
-  const mode = $('permission-mode').value === 'ask' ? 'Ask'
+  const mode = (shared || $('permission-mode').value === 'ask') ? 'Ask'
     : ($('permission-mode').value === 'auto' ? '自動承認' : '確認あり');
   const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
   const skillLabel = `スキル ${SKILL_MODE_LABEL[state.turnSkillMode] || SKILL_MODE_LABEL.auto}`;
   summary.textContent = [policy.label, `${agent}${model ? ` / ${model}` : ''}`, skillLabel, mode, location].filter(Boolean).join(' · ');
   summary.title = summary.textContent;
-  $('direct-agent-settings').hidden = selected.policy !== 'direct';
+  $('direct-agent-settings').hidden = !(selected.policy === 'direct' || shared);
   renderTurnSkills();
+}
+
+// 共有のときだけ、エージェントの選択肢の先頭に「どれでも」を置く（外したら元の選択へ戻す）。
+function renderAnyAgentOption(shared) {
+  const sel = $('cli');
+  const any = [...sel.options].find((o) => o.value === '*');
+  if (shared) {
+    if (any) return;
+    const o = el('option', '', 'どれでも');
+    o.value = '*';
+    sel.prepend(o);
+    if (!(state.current && state.current.cli && [...sel.options].some((x) => x.value === state.current.cli))) sel.value = '*';
+  } else if (any) {
+    if (sel.value === '*') sel.value = state.config.lastCli || '';
+    any.remove();
+  }
 }
 
 function renderHeader() {
@@ -1186,8 +1215,9 @@ function turnOptions() {
   const selected = selectedExecution();
   return {
     policy: selected.policy,
-    ...(selected.policy === 'direct' ? { cli: selected.cli, model: selected.model } : {}),
-    readonly: $('permission-mode').value === 'ask',
+    ...(selected.policy === 'direct' || selected.policy === 'shared' ? { cli: selected.cli, model: selected.model } : {}),
+    // 共有は読み取り専用（相手の PC で動く）
+    readonly: selected.policy === 'shared' || $('permission-mode').value === 'ask',
     autoApprove: $('permission-mode').value === 'auto',
     skillMode: state.turnSkillMode,
     skills: state.turnSkillMode === 'manual' ? [...state.turnSkills] : [],
@@ -1199,15 +1229,17 @@ async function sendPrompt() {
   if ((!text && !state.attachments.length) || !state.repo) return;
   const opts = turnOptions();
   const selected = selectedExecution(opts.policy);
-  inputStatus('pending', `受付済み・${selected.cli}を準備中`);
+  const shared = opts.policy === 'shared';
+  inputStatus('pending', shared ? '受付済み・共有の列へ' : `受付済み・${selected.cli}を準備中`);
   // 起動直後は CLI の有無と tmux の有無がまだ届いていないことがある（ホストの返事待ち）。
   // 経路（tmux / ヘッドレス）はその答えで決まるので、ここで待つ。
   await Promise.all([state.agentsReady, state.hostReady]);
   const agent = state.agents.find((a) => a.name === selected.cli && a.available);
-  if (!agent) { inputStatus(); notice('使えるエージェントがない', 'error'); return; }
+  // 共有は相手の PC の CLI で動くので、この PC に使えるエージェントが無くてもよい
+  if (!agent && !shared) { inputStatus(); notice('使えるエージェントがない', 'error'); return; }
   try {
     if (!state.current) {
-      const transport = (state.config.transport === 'tmux' && state.host && state.host.tmux && agent.interactive) ? 'tmux' : 'headless';
+      const transport = (state.config.transport === 'tmux' && state.host && state.host.tmux && agent && agent.interactive && !shared) ? 'tmux' : 'headless';
       state.current = await api.createSession({ repo: state.repo, ...opts, transport, worktree: state.worktree });
       state.draft = false;
       // CLI の起動確認に時間がかかっても、保存済みの会話はすぐ一覧に出す。
@@ -1570,7 +1602,50 @@ function settingsPatch() {
       maxConcurrent: Number($('max-concurrent').value),
       tiers,
     },
+    share: {
+      ...(state.config.share || {}),
+      enabled: $('share-enabled').checked,
+      passphrase: $('share-passphrase').value,
+      node: $('share-node').value.trim(),
+      peers: $('share-peers').value.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean),
+      port: Number($('share-port').value),
+      participate: $('share-participate').checked,
+      clis: [...document.querySelectorAll('#share-clis input:checked')].map((input) => input.value),
+      maxConcurrent: Number($('share-max-concurrent').value),
+      dailyCap: Number($('share-daily-cap').value),
+      perRequesterDailyCap: Number($('share-per-requester-cap').value),
+    },
   };
+}
+
+// 設定 > 共有: 提供する AI の候補は、この PC で使える CLI（仮想の herd は除く）
+function renderShareClis(selected) {
+  const box = $('share-clis');
+  box.replaceChildren();
+  const usable = (state.settingsAgents || []).filter((a) => a.available && !a.virtual);
+  for (const a of usable) {
+    const label = el('label', 'skill-choice');
+    const input = el('input');
+    input.type = 'checkbox';
+    input.value = a.name;
+    input.checked = selected.includes(a.name);
+    label.append(input, el('span', '', a.name));
+    box.append(label);
+  }
+  if (!usable.length) box.append(el('span', 'sub', 'この PC に使える CLI が無い'));
+}
+
+async function renderShareStatus() {
+  const box = $('share-status');
+  try {
+    const s = await api.share.status();
+    if (!s.enabled) { box.textContent = '使っていない'; return; }
+    if (s.state !== 'on') { box.textContent = s.error || '起動していない'; return; }
+    const peers = s.peers.length ? s.peers.map((p) => `${p.node}${p.info && p.info.can_accept ? '' : '（受けない）'}`).join(', ') : 'まだ誰も見つかっていない';
+    box.textContent = `${s.node} · ポート ${s.port}${s.udp ? '' : ' · UDP なし'} · 今日 ${s.today ? s.today.count : 0} 件 · 仲間: ${peers}`;
+  } catch (error) {
+    box.textContent = error.message;
+  }
 }
 
 async function openSettings() {
@@ -1602,6 +1677,18 @@ async function openSettings() {
   $('default-permission-mode').value = execution.defaultReadonly ? 'ask'
     : (execution.defaultAutoApprove ? 'auto' : 'confirm');
   $('max-concurrent').value = execution.maxConcurrent;
+  const share = state.config.share || {};
+  $('share-enabled').checked = !!share.enabled;
+  $('share-passphrase').value = share.passphrase || '';
+  $('share-node').value = share.node || '';
+  $('share-peers').value = (share.peers || []).join(', ');
+  $('share-port').value = share.port != null ? share.port : 47801;
+  $('share-participate').checked = !!share.participate;
+  $('share-max-concurrent').value = share.maxConcurrent || 1;
+  $('share-daily-cap').value = share.dailyCap != null ? share.dailyCap : 20;
+  $('share-per-requester-cap').value = share.perRequesterDailyCap != null ? share.perRequesterDailyCap : 5;
+  renderShareClis(share.clis || []);
+  renderShareStatus();
   $('settings-error').hidden = true;
   $('settings-status').textContent = '';
   const candidates = await api.listSkills(state.repo).catch(() => []);

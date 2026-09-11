@@ -245,10 +245,8 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   }
   assert.match(ipc, /kind: 'task', task: \{ machine \}/, 'タスクの会話は kind: task');
   assert.match(ipc, /await guardedRunTurn\(session\.id, \{\s*prompt,/, '最初の依頼は会話と同じターンの経路で送る');
-  assert.match(ipc, /const liveTmux = !!conversation && !conversation\.closed && !\['dead', 'gone'\]\.includes\(conversation\.phase\)/,
-    '既存の tmux が生きているかを終了状態まで含めて判定する');
-  assert.match(ipc, /if \(!busy && !liveTmux\) \{[\s\S]*teaching\.resumePrompt/,
-    '起動済み tmux へは固定の再開プロンプトを送らず、そのまま接続する');
+  assert.match(ipc, /if \(!busy\) \{[\s\S]*teaching\.resumePrompt/,
+    '明示的に編集を始めたら、起動済み tmux にも編集対象を伝える');
   assert.match(ipc, /const hostPath = host\.toHostPath\(saved\.file\)/, '記録の所在は WSL 表記へ直してから AI へ');
   assert.match(ipc, /function demonstrate\(p\) \{[\s\S]*return \{ file: saved\.file[\s\S]*prompt \};/, '見本の本文は返すだけ（送るのは入力欄から利用者が）');
   assert.doesNotMatch(ipc, /AI が応答中です。終わってからもう一度送ってください/, '送る経路が会話の 1 本になったので断らない');
@@ -285,6 +283,10 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(renderer, /api\.termOpen\(session\.id/);
   assert.doesNotMatch(renderer, /else if \(state\.editing\) \{ await startTeaching\(token\); return; \}/, '編集画面を開いただけでは AI を起こさない');
   assert.match(renderer, /\$\('task-launch-start'\)\.onclick = \(\) => startTeaching\(\)/, '編集開始ボタンで tmux を開く');
+  const attachBeforeStart = renderer.indexOf('await attach(state.availableSession, token)');
+  const requestStart = renderer.indexOf('await api.automation.teachStart(');
+  assert.ok(attachBeforeStart >= 0 && attachBeforeStart < requestStart,
+    '初期依頼の準備を待つ前に tmux を表示し、Windows/WSL の起動待ちを画面で確認できる');
   assert.match(renderer, /api\.automation\.teachPrepare\(/, '作成時は下書きとセッションを先に準備する');
   assert.match(renderer, /state\.autoStart = \{ repo: state\.repo, machine: view\.machine, options \}/, '作成した下書きの画面でセッションを自動起動する');
   assert.match(html, /id="task-create-agent"/);

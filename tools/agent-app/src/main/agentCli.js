@@ -90,8 +90,10 @@ function normalize(raw, name, file) {
     readonly: raw.readonly === 'enforced' ? 'enforced' : 'best-effort',
     continueArgs: strs(raw.continue_args),
     resumeArgs: strs(raw.resume_args),
+    noSessionArgs: strs(raw.no_session_args),   // セッションを残さない起動（共有で他人の依頼を受けるとき）
     errors: (Array.isArray(raw.errors) ? raw.errors : []).map((e) => ({
       cls: String((e && e.class) || 'env'),
+      quotaKind: String((e && e.quota_kind) || ''),
       re: new RegExp(String((e && e.match) || ''), 'i'),
       hint: String((e && e.hint) || ''),
     })),

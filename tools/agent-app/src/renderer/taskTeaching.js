@@ -219,6 +219,14 @@
     renderShell();
     try {
       const options = preferredOptions || state.deps.executionOptions(readExecutionInputs('task-launch'));
+      // セッションは loadView / teachPrepare の時点で保存済み。先に tmux を開いて端末を
+      // 表示し、その画面を見せたまま Kiro 等の入力受付と最初の依頼送信を待つ。
+      // Windows → WSL は起動に時間がかかるため、teachStart の完了後まで attach を遅らせると
+      // 「押しても何も出ない」状態になり、途中で画面を開き直すと素の CLI だけが残る。
+      if (state.availableSession && !state.session) {
+        await attach(state.availableSession, token);
+        if (token !== state.token) return;
+      }
       // 既存セッションも main を通す。下書き再開・編集開始の文脈を最初のターンとして渡した
       // うえで、同じ tmux セッションへ接続する。
       const view = await api.automation.teachStart({ repo: state.repo, machine: state.machine, context: state.context, ...options });
@@ -226,7 +234,11 @@
       state.pending = false;
       state.tools = view.tools || state.tools;
       state.availableSession = null;
-      if (view.session) { state.running = state.running || !!view.started; await attach(view.session, token); }
+      if (view.session) {
+        state.running = state.running || !!view.started;
+        if (!state.session || state.session.id !== view.session.id || term().current() !== view.session.id) await attach(view.session, token);
+        else state.session = view.session;
+      }
       state.deps.reloadTasks();
     } catch (err) {
       if (token !== state.token) return;

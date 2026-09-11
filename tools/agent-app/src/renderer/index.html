@@ -153,6 +153,7 @@
                       <option value="saving">節約</option>
                       <option value="quality">品質重視</option>
                       <option value="direct">直接指定</option>
+                      <option value="shared">共有</option>
                     </select>
                   </label>
                   <div id="direct-agent-settings" class="direct-agent-settings" hidden>
@@ -361,6 +362,7 @@
         <button type="button" class="on" data-settings-tab="app" role="tab" aria-selected="true">アプリ</button>
         <button type="button" data-settings-tab="instructions" role="tab" aria-selected="false">共通指示</button>
         <button type="button" data-settings-tab="execution" role="tab" aria-selected="false">実行制御</button>
+        <button type="button" data-settings-tab="share" role="tab" aria-selected="false">共有</button>
       </nav>
       <div class="dlg-body settings-content">
         <section data-settings-panel="app" class="settings-list" role="tabpanel">
@@ -402,6 +404,22 @@
           </div>
           <label class="setting-field"><span><strong>会話の既定権限</strong><small>新しい会話と、タスクを AI と作る会話に適用します</small></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
           <label class="setting-field"><span><strong>同時実行数</strong><small>上限に達した場合は待ち行列へ入れず、再実行を案内します</small></span><input id="max-concurrent" type="number" min="1" max="8" step="1"></label>
+        </section>
+        <section data-settings-panel="share" class="settings-list" role="tabpanel" hidden>
+          <label class="setting-check"><input type="checkbox" id="share-enabled"><span><strong>共有を使う</strong><small>同じ LAN の agent-app と依頼を回し合います。依頼の本文は参加者に見えます</small></span></label>
+          <label class="setting-field"><span><strong>合言葉</strong><small>参加者全員で同じもの</small></span><input id="share-passphrase" type="password" size="16" autocomplete="off"></label>
+          <label class="setting-field"><span><strong>参加者名</strong><small>空なら ユーザー名.PC名</small></span><input id="share-node" size="16" placeholder="自動"></label>
+          <label class="setting-field"><span><strong>仲間の PC</strong><small>ホスト名か IP。1 台知れば全員に広がります</small></span><input id="share-peers" size="24" placeholder="pc-b, 192.168.1.20:47801"></label>
+          <label class="setting-field"><span><strong>受け口のポート</strong><small>TCP。初回に OS の許可が出ます</small></span><input id="share-port" type="number" min="0" max="65535" step="1"></label>
+          <label class="setting-check"><input type="checkbox" id="share-participate"><span><strong>この PC の AI で依頼を受ける</strong><small>agent-app を開いている間だけ</small></span></label>
+          <div class="settings-group">
+            <div class="settings-group-head"><span><strong>提供する AI</strong><small>何も選ばなければ使えるもの全部</small></span></div>
+            <div id="share-clis" class="skill-choice-list"></div>
+          </div>
+          <label class="setting-field"><span><strong>同時に受ける数</strong></span><input id="share-max-concurrent" type="number" min="1" max="4" step="1"></label>
+          <label class="setting-field"><span><strong>1 日に受ける上限</strong><small>0 = 無制限</small></span><input id="share-daily-cap" type="number" min="0" max="1000" step="1"></label>
+          <label class="setting-field"><span><strong>依頼者 1 人あたりの上限</strong><small>0 = 無制限</small></span><input id="share-per-requester-cap" type="number" min="0" max="1000" step="1"></label>
+          <div class="environment-status"><strong>いまの状態</strong><div id="share-status" class="sub"></div></div>
         </section>
         <div id="settings-error" class="dlg-error" hidden></div>
       </div>

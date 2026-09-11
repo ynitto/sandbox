@@ -41,6 +41,14 @@ contextBridge.exposeInMainWorld('api', {
   openAttachment: (id, name) => invoke('attach:open', { id, name }),
   stop: (id) => invoke('turn:stop', { id }),
   running: () => invoke('turn:running'),
+  // 共有（LAN の参加者に依頼を回す）。投函は send の policy: 'shared' で行い、ここは列と参加者の観測・調整だけ
+  share: {
+    status: () => invoke('share:status'),
+    cancel: (id) => invoke('share:cancel', { id }),
+    setPriority: (id, priority) => invoke('share:priority', { id, priority }),
+    participate: (on) => invoke('share:participate', { on }),
+    onChanged: on('share:changed'),
+  },
   termOpen: (id, cols, rows) => invoke('term:open', { id, cols, rows }),
   termRestart: (id, cols, rows) => invoke('term:restart', { id, cols, rows }),
   termState: (id) => invoke('term:state', { id }),

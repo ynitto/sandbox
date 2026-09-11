@@ -57,6 +57,7 @@ function normalize(raw) {
   const rawExecution = next.execution && typeof next.execution === 'object' ? next.execution : {};
   const rawTiers = rawExecution.tiers && typeof rawExecution.tiers === 'object' ? rawExecution.tiers : {};
   next.instructions = { ...rawInstructions, ...userSettings.instructions };
+  next.share = userSettings.share;
   next.execution = {
     ...rawExecution,
     ...userSettings.execution,
@@ -152,8 +153,10 @@ function normalizeSession(sess) {
   if (!sess.live || typeof sess.live !== 'object') sess.live = null;
   if (!sess.terminalSession || typeof sess.terminalSession !== 'object') sess.terminalSession = null;
   sess.terminalSnapshots = Array.isArray(sess.terminalSnapshots) ? sess.terminalSnapshots : [];
-  sess.policy = ['recommended', 'saving', 'quality', 'direct'].includes(sess.policy) ? sess.policy : 'direct';
+  sess.policy = ['recommended', 'saving', 'quality', 'direct', 'shared'].includes(sess.policy) ? sess.policy : 'direct';
   sess.tier = ['small', 'medium', 'large'].includes(sess.tier) ? sess.tier : '';
+  // share … 共有の依頼を待っている印（{ id }）。答えが届いたら消す
+  sess.share = sess.share && typeof sess.share === 'object' && sess.share.id ? { id: String(sess.share.id) } : null;
   sess.origin = normalizeOrigin(sess.origin);
   return sess;
 }
@@ -284,16 +287,17 @@ function listForks(userData, originId) {
 
 function updateSession(userData, id, patch) {
   const sess = readSession(userData, id);
-  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live'];
+  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live', 'share'];
   for (const k of allowed) if (patch && k in patch) sess[k] = patch[k];
   if (patch && 'cli' in patch) sess.cli = String(sess.cli || '');
   if (patch && 'model' in patch) sess.model = String(sess.model || '');
   if (patch && 'readonly' in patch) sess.readonly = Boolean(sess.readonly);
   if (patch && 'autoApprove' in patch) sess.autoApprove = Boolean(sess.autoApprove);
-  if (patch && 'policy' in patch) sess.policy = ['recommended', 'saving', 'quality', 'direct'].includes(sess.policy) ? sess.policy : 'direct';
+  if (patch && 'policy' in patch) sess.policy = ['recommended', 'saving', 'quality', 'direct', 'shared'].includes(sess.policy) ? sess.policy : 'direct';
   if (patch && 'tier' in patch) sess.tier = ['small', 'medium', 'large'].includes(sess.tier) ? sess.tier : '';
   if (patch && 'transport' in patch) sess.transport = sess.transport === 'headless' ? 'headless' : 'tmux';
   if (patch && 'live' in patch) sess.live = sess.live && typeof sess.live === 'object' ? sess.live : null;
+  if (patch && 'share' in patch) sess.share = sess.share && typeof sess.share === 'object' && sess.share.id ? { id: String(sess.share.id) } : null;
   return writeSession(userData, sess);
 }
 

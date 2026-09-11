@@ -353,6 +353,10 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `turn:send` | `send(id, prompt, opts)` | §5 | tmux: `{ name, restarted, warning }`、headless: `{ pid, argv }` |
 | `turn:stop` | `stop(id)` | `id` | 止めたか |
 | `turn:running` | `running()` | — | 応答中の会話 ID 配列 |
+| `share:status` | `share.status()` | なし | 共有の状態（自分の宣言・仲間・自分の依頼の列・受けている依頼・今日の実績）。§15 |
+| `share:cancel` | `share.cancel(id)` | `id` | 自分の依頼を取り下げる。執行者には `/cancel` で伝える |
+| `share:priority` | `share.setPriority(id, priority)` | `id`, `priority`（high / normal / low） | open の依頼の優先度を変える |
+| `share:participate` | `share.participate(on)` | `on` | 設定 `share.participate` を書き換えて立て直す |
 | `attach:pick` | `pickAttachments()` | —（ダイアログ） | `[{ id, name, size }]` |
 | `attach:stage` | `stageAttachment(name, bytes)` | `Uint8Array` / `ArrayBuffer` | `{ id, name, size }` |
 | `attach:discard` | `discardAttachment(id)` | `id` | `true` |
@@ -385,6 +389,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `turn:info` | `onTurnInfo` | `{ id, item }`（実行情報。§4.3 の型） |
 | `turn:line` | `onTurnLine` | `{ id, kind: stdout|stderr, text }`（ヘッドレスの生ログ） |
 | `turn:done` | `onTurnDone` | `{ id, message }`（保存済みの応答メッセージ） |
+| `share:changed` | `share.onChanged` | 共有の状態（`share:status` と同じ形）。仲間・列・実行中が変わったとき |
 | `term:screen` | `onTermScreen` | `{ id, text, cursor: { x, y }, cols, rows, tail }`（色付き画面と末尾 14 行） |
 | `term:phase` | `onTermPhase` | `{ id, phase, detail, name }` |
 | `automation:ai:progress` / `automation:ai:result` / `automation:run:line` / `automation:run:exit` | `api.automation.on*` | 共有ワークベンチの契約 |
@@ -419,6 +424,18 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `execution.defaultReadonly` | `lastReadonly` | 新規会話の既定 Ask |
 | `execution.maxConcurrent` | `2` | 1〜8 に丸める |
 | `execution.tiers.{small,medium,large}` | 各 `{ cli: lastCli, model: lastModel }` | tier ごとの CLI とモデル |
+| `share.enabled` | `false` | 共有（LAN の仲間に依頼を回す）を使うか。§15 |
+| `share.node` | `''` | 参加者名。空なら `<ユーザー名>.<PC 名>`（小文字・`[a-z0-9._-]`） |
+| `share.passphrase` | `''` | 合言葉。sha256 を HTTP と UDP の便りに載せて照合する |
+| `share.port` | `47801` | 受け口（TCP）。0 なら空いているポート |
+| `share.udp` | `true` | UDP ブロードキャスト（47800）でも仲間を探すか。通らなくても TCP だけで動く |
+| `share.peers` | `[]` | 静的な仲間（`host` か `host:port`。最大 50） |
+| `share.participate` | `false` | 仲間の依頼を受けるか |
+| `share.clis` | `[]` | 提供する CLI。空なら使えるもの全部 |
+| `share.acceptWrite` | `false` | 書き込みの依頼を受けるか（受けても成果の納品は未実装） |
+| `share.maxConcurrent` | `1` | 同時に受ける数（1〜4） |
+| `share.dailyCap` | `20` | 1 日に受ける上限（0 = 無制限。UTC で切り替え） |
+| `share.perRequesterDailyCap` | `5` | 依頼者 1 人から 1 日に受ける上限（0 = 無制限） |
 
 `config:save` の `patch` は浅く重ねるが、`execution.tiers` は tier ごと、`instructions` はキーごとに
 既存へ重ねる。
@@ -435,6 +452,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `origin` | 別のリポジトリの会話から分岐したときの分岐元 `{ sessionId, repo, index }`（`index` は分岐の依頼を書いた応答の `messages` での位置。不明なら -1）。分岐していなければ `null`。分岐先の一覧は保存せず、`origin` から引く（`listForks`） |
 | `cli` / `model` / `readonly` / `policy` / `tier` | **次のターン**の既定。`policy` は `recommended` / `saving` / `quality` / `direct` |
 | `transport` | 最後のターンの経路（`tmux` / `headless`） |
+| `share` | 共有の依頼を待っている印 `{ id }`。答えが届くか取り下げたら `null` |
 | `title` | 最初の利用者メッセージの 1 行目（60 字） |
 | `cliSessions` | CLI 名 → `{ id, seen, setupApplied? }`。`id` は CLI 側のセッション ID（`''` は再開手段なし）、`seen` はその CLI の文脈に入っているメッセージ数 |
 | `live` | tmux で動いている CLI の起動条件 `{ cli, model, readonly }`、無ければ `null` |
@@ -486,8 +504,9 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | 項目 | 意味 |
 |---|---|
 | `prompt` | 利用者が書いた本文。添付だけの依頼も可。両方空なら拒否 |
-| `policy` | `recommended` / `saving` / `quality` / `direct`。無い場合は `cli` を直接指定とみなす（旧画面互換） |
-| `cli` / `model` | `direct` のときだけ使う |
+| `policy` | `recommended` / `saving` / `quality` / `direct` / `shared`。無い場合は `cli` を直接指定とみなす（旧画面互換） |
+| `cli` / `model` | `direct` と `shared` のときだけ使う。`shared` の `cli` は空か `*` で「どれでも」 |
+| `priority` | `shared` のときだけ。`high` / `normal` / `low`（既定 `normal`） |
 | `readonly` | Ask モード |
 | `skillMode` / `skills` | `auto` / `manual` / `off` と、手動選択のスキル名 |
 | `attachments` | `[{ id, name } | { rel }]`。最大 20 件 |
@@ -496,6 +515,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 
 ```text
 policy=direct、または policy 無しで cli あり → その CLI / model（source: direct）
+policy=shared      → tier 無し。share.enabled でなければエラー。cli は要求する CLI か空（source: shared）
 policy=recommended → medium、saving → small、quality → large
 policy なし        → execution.defaultPolicy の tier
 tier → execution.tiers[tier]。cli が空ならエラー
@@ -887,6 +907,32 @@ sidecar（`<repo>/.agents/workflows/.teaching/<workflowId>.json`）:
 
 会話、設定、添付は userData にだけ書く。CLI 自身のセッションログ（`~/.claude/projects` など）は
 CLI の管轄で、agent-app は ID を覚えるだけである。
+
+### 15. 共有（`src/main/share/`）
+
+同じ LAN の agent-app どうしで依頼を回す。中央は無く、**依頼の持ち主（依頼者の agent-app）が
+その依頼の調停役**になる。各 agent-app は TCP の受け口を 1 つ開き（`share.port`）、仲間の発見は
+静的な仲間への `/hello` とその返事に載る仲間（ゴシップ）、通れば UDP ブロードキャスト（47800）。
+合言葉の sha256 を `x-share-key` と UDP の便りに載せ、違えば読まない。
+
+| 部品 | 責務 |
+|---|---|
+| `peers.js` | 仲間の表。`/hello`（30 秒ごと）と UDP の HELLO で覚え、90 秒便りが無ければ不在。投函の通知（NEW）を TCP と UDP で流す |
+| `server.js` | HTTP。`POST /hello` `POST /notify` `GET /node` `GET /requests` `POST /requests/<id>/{claim,heartbeat,result,cancel}` `GET /requests/<id>/attachments/<name>` |
+| `requester.js` | 自分の依頼の列（`userData/share/requests.json`）。claim は先着 1 件だけ 200、以後 409。心拍が 90 秒途絶えたら open に戻して NEW を流す。答えは会話へ assistant のメッセージとして保存し `turn:done` を送る。参加者側の枠切れ（`quota`）と一過性（`transient`）の失敗は 1 回だけ黙って再投函する |
+| `participant.js` | 仲間の `/requests` を集めて `queue.js` で並べ、上から claim。拾ったら読み取り専用で CLI を 1 回起こす（`ipc.runPrompt`。cwd は `workspace.url` と一致する登録リポジトリか `userData/share/scratch/<id>`）。30 秒ごとに heartbeat、2 回届かなければ CLI を止める。答えは依頼者へ直送し、届かなければ `outbox.json` に持って 60 秒ごとに再送（24 時間） |
+| `queue.js` | 並び鍵 `(実効優先度 降順, 依頼者の今日の落札数 昇順, posted_at 昇順, id)`。実効優先度 = high 2 / normal 1 / low 0 + 待ち 30 分ごとに 1（上限 2）。資格 = 自分の依頼でない ∧ CLI が交わる ∧ その CLI の枠が残る ∧ write は受ける設定 ∧ 依頼者あたりの上限内 ∧ workspace があれば同じリポジトリを登録している |
+| `ledger.js` | `userData/share/ledger/<YYYYMMDD>.jsonl`（件数・秒・CLI・依頼者・結果）。CLI の `errors` が `class: quota` を返したら、`exhausted` はその日の残り、`rate_limit` は 10 分その CLI を受けない |
+| `index.js` | 配線。設定 `share` が変わったら受け口ごと立て直す。再起動のとき、会話に `share.id` の印だけ残った依頼は失敗として閉じる |
+
+依頼の本文は `runShared`（`ipc.js`）がヘッドレスと同じ順で合成する（共通指示 → スキル本文 → 履歴の
+再送 → 依頼 → 添付の案内）。スキルは相手の PC に無い前提で常に SKILL.md の本文を埋め込む。明示添付は
+依頼者の受け口から `attachments/<name>` で渡し、参加者が scratch へ写して本文に絶対パスを添える。
+添付の数の上限は会話と同じ（1 ターン 20 件）。答えは 200 KB で切り詰める。
+
+起動方針「共有」の会話は `transport: headless` で、動いていた tmux の CLI は止める。待っている間は
+`turn:running` に載り、「停止」は `turn:stop` から取り下げになる。成果の納品（書き込みの依頼）は
+未実装で、`share.acceptWrite` は将来のための設定。
 
 ### 付録. テスト
 
