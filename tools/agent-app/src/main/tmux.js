@@ -41,6 +41,13 @@ function sessionName(id) {
   return `agent-app-${String(id || '').replace(/[^0-9a-zA-Z]/g, '').slice(0, 12)}`;
 }
 
+// 共有で引き受けた依頼を走らせるセッションの名前のもと。sessionName は英数字 12 文字へ丸めるので、
+// 依頼 id（dg-<時刻>-<乱数>）をそのまま渡すと、同じ時刻に投函された 2 件が同じ名前になり、
+// 片方がもう片方のセッションを消してしまう。走っている間だけ一意であればよいので連番を前に置く。
+function sharePaneId(shareId, seq = 0) {
+  return `share${Math.abs(Number(seq) || 0) % 1000}x${String(shareId || '').replace(/[^0-9a-zA-Z]/g, '').slice(-6)}`;
+}
+
 // ---- 画面の判定 ---------------------------------------------------------------
 
 // 入力欄・枠線・フッターなど、応答本文ではない行
@@ -595,7 +602,7 @@ async function listSessions(shell) {
 
 module.exports = {
   SOCKET, TMUX, DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_READY, DEFAULT_BUSY, ATTENTION,
-  sessionName, isChrome, attentionDetail, classify, compilePatterns, extractReply, keysToArgs,
+  sessionName, sharePaneId, isChrome, attentionDetail, classify, compilePatterns, extractReply, keysToArgs,
   cmdHas, cmdNew, cmdScreen, parseScreen, cmdKeys, cmdPaste, cmdKill, cmdResize, cmdList, exitStatusFrom,
   Conversation, listSessions,
 };

@@ -372,7 +372,6 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `share:status` | `share.status()` | なし | 共有の状態（自分の宣言・仲間・自分の依頼の列・受けている依頼・今日の実績）。§15 |
 | `share:cancel` | `share.cancel(id)` | `id` | 自分の依頼を取り下げる。執行者には `/cancel` で伝える |
 | `share:priority` | `share.setPriority(id, priority)` | `id`, `priority`（high / normal / low） | open の依頼の優先度を変える |
-| `share:participate` | `share.participate(on)` | `on` | 引き受け方を `auto` / `off` に書き換えて立て直す（古い呼び出し面） |
 | `share:mode` | `share.setMode(mode)` | `mode`（auto / manual / off） | 設定 `share.accept` を書き換えて立て直す。設定 > 共有の選択と同じ値 |
 | `share:accept` | `share.accept(id)` | `id` | 「選んで受ける」で 1 件を拾う。拾えなければ理由を投げる（`participant.reasonText`） |
 | `share:stop` | `share.stopAccepted(id)` | `id` | 引き受けて実行している依頼を自分から止める |

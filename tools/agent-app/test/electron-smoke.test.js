@@ -518,7 +518,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('#area-share');
     await win.locator('#share-requests .list-pick').first().waitFor({ timeout: 20000 });
     assert.match(await win.locator('#share-requests').textContent(), /ログ設計をレビュー/);
-    await win.locator('#share-requests .list-pick').first().click();
+    // 並びは優先度と投函時刻で決まるので、位置ではなく題名で選ぶ
+    await win.locator('#share-requests .list-pick').filter({ hasText: 'ログ設計をレビュー' }).click();
     await win.locator('#share-cards .execution-card').first().waitFor();
     assert.match(await win.locator('#share-head').textContent(), /優先度 高/);
     assert.match(await win.locator('#share-cards').textContent(), /依頼の本文/);

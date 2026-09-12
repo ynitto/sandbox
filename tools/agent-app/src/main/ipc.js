@@ -394,7 +394,7 @@ function runPrompt({ cli, prompt, model = '', readonly = true, cwd, files = [], 
 // 依頼者は自分の端末ミラーで「他人の PC で何が起きているか」を見ながら待つ。そのため引き受けた
 // 側は会話と同じ tmux セッション（agent-app-share-<依頼 id>）で CLI を起こし、画面が変わるたびに
 // onScreen で渡す（participant が心拍に載せて依頼者へ送る）。tmux が無い PC ではヘッドレスに倒す。
-const sharedConversations = new Map();
+let shareRunSeq = 0;              // 引き受けた依頼の tmux 名を分ける連番（`tmux.sharePaneId`）
 let shareTmuxOk = false;
 
 function shareOutcome(message, { cli, spec, conv, startedAt, stopped = false }) {
@@ -416,7 +416,8 @@ function runPromptTmux(opts) {
   const spec = agentCli.load(cli, '');
   const { shell } = host.hostOf('', cfg.wslDistro);
   const cmd = agentCli.interactiveCmd(spec, { model, readonly: true, autoApprove: false, cliSession: '', history: [] });
-  const id = `share-${shareId}`;
+  shareRunSeq = (shareRunSeq + 1) % 1000;
+  const id = tmux.sharePaneId(shareId, shareRunSeq);
   const startedAt = Date.now();
   let stopped = false;
   const conv = new tmux.Conversation({
@@ -425,11 +426,9 @@ function runPromptTmux(opts) {
     emit: (channel, payload) => { if (channel === 'term:screen') onScreen(payload.text); },
   });
   conv.watchers = 1;                       // 依頼者が見ているので、画面は常に取る
-  sharedConversations.set(id, conv);
   let timer = null;
   const cleanup = async () => {
     if (timer) clearTimeout(timer);
-    sharedConversations.delete(id);
     await conv.kill().catch(() => {});
   };
   const done = new Promise((resolve) => {
@@ -1145,12 +1144,6 @@ function registerIpcHandlers(getWindow) {
   handle('share:mode', async (p) => {
     const current = store.loadConfig(userData());
     const next = store.saveConfig(userData(), { share: { ...current.share, accept: String(p.mode || 'off') } });
-    await shareInstance.reconfigure(next);
-    return shareInstance.status();
-  });
-  handle('share:participate', async (p) => {
-    const current = store.loadConfig(userData());
-    const next = store.saveConfig(userData(), { share: { ...current.share, accept: p.on ? 'auto' : 'off' } });
     await shareInstance.reconfigure(next);
     return shareInstance.status();
   });

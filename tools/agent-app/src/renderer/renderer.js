@@ -918,8 +918,15 @@ function renderHeader() {
     : (tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '');
   $('term-name').textContent = waiting ? '共有 · 閲覧のみ' : (ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '');
   // 待っている間は、引き受けた人の tmux の画面をそのまま描く（キーは送れない）
-  if (waiting && waiting.state === 'working') Term.attachRemote(waiting.id, $('term-host'));
-  else if (Term.isRemote()) Term.detach();
+  if (waiting && waiting.state === 'working') {
+    const fresh = Term.current() !== waiting.id;
+    Term.attachRemote(waiting.id, $('term-host'));
+    if (fresh) {
+      api.share.screen(waiting.id)
+        .then((text) => { if (text && Term.current() === waiting.id) Term.applyScreen({ id: waiting.id, text }); })
+        .catch(() => { /* まだ画面が無い */ });
+    }
+  } else if (Term.isRemote()) Term.detach();
   if (state.input.mode === 'terminal' && !tm) setInputMode('message', { focus: false });
   else {
     $('input-mode-terminal').disabled = !tm || !!(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
@@ -1239,7 +1246,7 @@ async function openSession(id) {
   Files.setRoot(state.repo, activeWorktree(), {}).catch(() => {});
   if (state.changesOpen) refreshChanges();
   if (isTmux(state.current)) attachTerm(state.current.id);
-  else Term.detach();
+  else if (!shareWaiting()) Term.detach();
   setInputMode('message', { focus: false });
 }
 
@@ -1330,7 +1337,7 @@ async function sendPrompt() {
     state.sessions = await api.listSessions(state.repo);
     // tmux で起動（し直）したなら端末ミラーをつなぎ直す。ヘッドレスの CLI へ移ったなら外す
     if (isTmux(state.current)) { if (!wasTmux || res.restarted || Term.current() !== id) await attachTerm(id); }
-    else Term.detach();
+    else if (!shareWaiting()) Term.detach();
     if (res.warning) notice(res.warning);
     const sentAt = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     inputStatus('success', shared ? `✓ 共有の列に並べた ${sentAt}` : `✓ ${selected.cli}へ送信済み ${sentAt}`, 4000);
