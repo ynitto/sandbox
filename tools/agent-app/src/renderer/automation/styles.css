@@ -177,6 +177,8 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .run-history { list-style: none; padding: 0; margin: 0; display: grid; }
 .run-history li { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 9px 0; border-top: 1px solid var(--line); }
 .run-history li:first-child { border-top: 0; }
+/* 行の操作（ログ・AIに直してもらう）は、折り返さずに右へ並べる（下の li > div の格子に落ちない） */
+.run-history li > .row { display: flex; justify-content: flex-end; flex-wrap: nowrap; }
 .run-history li > div { min-width: 0; display: grid; }
 .run-history small { color: var(--muted); overflow-wrap: anywhere; }
 .run-history p { margin: 2px 0 0; color: var(--ng); font-size: 12px; overflow-wrap: anywhere; }

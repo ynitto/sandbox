@@ -226,7 +226,7 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .phase-menu > summary::-webkit-details-marker { display: none; }
 .phase-menu.answerable > summary { cursor: pointer; }
 .phase-menu.answerable > summary::after { content: '⌄'; margin-left: 5px; }
-.phase-menu > .settings-popover { top: calc(100% + 8px); right: 0; bottom: auto; left: auto; white-space: normal; }
+.phase-menu > .settings-popover { top: calc(100% + 8px); bottom: auto; left: 0; white-space: normal; }
 .phase-detail { max-height: 230px; margin: 0 0 12px; overflow: auto; font: 11px/1.5 var(--mono); white-space: pre-wrap; }
 .views { display: inline-flex; }
 .views .tab { min-height: 32px; padding: 4px 10px; border-color: transparent; color: var(--muted); background: transparent; }
@@ -515,7 +515,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .startup-actions { display: flex; flex-direction: column; gap: 7px; }
 .startup-row { display: grid; grid-template-columns: 92px minmax(120px, 1fr) 116px auto; align-items: center; gap: 6px; }
 .startup-row > input, .startup-row > select { min-width: 0; width: 100%; }
-.quick-row { grid-template-columns: 120px minmax(140px, 1fr) auto; }
+.quick-row { grid-template-columns: 150px minmax(140px, 1fr) auto; }
 .startup-controls { display: inline-flex; }
 .startup-controls button { width: 27px; padding-inline: 4px; }
 .settings-empty { padding: 8px 2px; }

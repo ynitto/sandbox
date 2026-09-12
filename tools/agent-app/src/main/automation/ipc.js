@@ -39,6 +39,8 @@ function automationConfig(config) {
     model: String(cfg.automationModel || ''),
     instructions: cfg.instructions && typeof cfg.instructions === 'object' ? { ...cfg.instructions } : {},
     execution: cfg.execution && typeof cfg.execution === 'object' ? { ...cfg.execution } : {},
+    // 前回の手動実行で入れた実行条件（リポジトリ → タスクの保存名 → 値）。次回の既定に使う
+    taskInputs: cfg.lastTaskInputs && typeof cfg.lastTaskInputs === 'object' ? { ...cfg.lastTaskInputs } : {},
   };
 }
 
@@ -153,6 +155,9 @@ function automationPatch(config) {
   if (Object.prototype.hasOwnProperty.call(src, 'skillDir')) patch.automationSkillDir = String(src.skillDir || '');
   if (Object.prototype.hasOwnProperty.call(src, 'agent')) patch.automationAgent = String(src.agent || '');
   if (Object.prototype.hasOwnProperty.call(src, 'model')) patch.automationModel = String(src.model || '');
+  if (Object.prototype.hasOwnProperty.call(src, 'taskInputs')) {
+    patch.lastTaskInputs = src.taskInputs && typeof src.taskInputs === 'object' ? src.taskInputs : {};
+  }
   return patch;
 }
 

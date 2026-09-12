@@ -224,3 +224,41 @@ test('埋め込みタスクの切替は設定取得を待たず、古い切替�
   assert.match(navigate, /guard\('設定',[\s\S]*\.then\(\(latestConfig\) =>/);
   assert.match(navigate, /if \(token !== navigationToken\) return;/, '前のタスクの遅い応答は現在の選択へ反映しない');
 });
+
+test('手動実行の実行条件は、前回の値を既定にする（今回打った値 → 前回 → 定期実行の既定）', () => {
+  const renderer = read('renderer/automation/renderer.js');
+  // 覚えるのは値だけ（パスは持たない）。置き場は agent-app の設定（lastTaskInputs）
+  assert.match(renderer, /function rememberedInputs\(machine\) \{[\s\S]*state\.config && state\.config\.taskInputs/);
+  assert.match(renderer, /function initialRunParameters\(machine\) \{[\s\S]*previous\[name\] != null \? previous\[name\] : defaults\[name\]/);
+  // 選び直したときも初期値は空にしない。実行条件の顔ぶれは実行情報が届いて初めて分かるので、
+  // 名前まで込みで「別のタスクへ移った」を見分ける
+  assert.ok(!/state\.run\.parameters = \{\};/.test(renderer), '実行条件を空で始めない（前回の値を既定にする）');
+  assert.match(renderer, /function ensureRunParameters\(machine\) \{[\s\S]*\$\{taskIdentity\(machine\)\}#\$\{\(\(machine && machine\.parameters\) \|\| \[\]\)\.join\(','\)\}/);
+  assert.match(renderer, /function executionDetailHtml\(machine\) \{\s*\n\s*ensureRunParameters\(machine\);/);
+  // 前回の値は、入っているものと違うときだけ出す（同じことを 2 回言わない）
+  assert.match(renderer, /previous\[name\] && previous\[name\] !== value \? `<small class="muted">前回: /);
+  // 実行したら覚える
+  assert.match(renderer, /await rememberRunParameters\(machine, state\.run\.parameters\)/);
+  assert.match(renderer, /automationHost\.saveConfig\(\{ \.\.\.state\.config, taskInputs: all \}\)/);
+  // 横に出すのは補助の 1 行（新しい部品を足さない）
+  assert.match(renderer, /前回: \$\{esc\(previous\[name\]\)\}<\/small>/);
+});
+
+test('失敗した実行は、ログごと AI の会話へ渡す（送るのは利用者）', () => {
+  const renderer = read('renderer/automation/renderer.js');
+  const taskTeaching = read('renderer/taskTeaching.js');
+  const parent = read('renderer/renderer.js');
+  // 履歴の失敗した行にだけ出す。部品は既存の .tiny
+  assert.match(renderer, /!item\.ok && canTeach \? `<button type="button" class="tiny" data-history-fix=/);
+  assert.match(renderer, /const canTeach = !!\(machine\.machine && machine\.kind === 'statemachine'\)/);
+  // 会話は「手順」→「編集」と同じもの
+  assert.match(renderer, /await openTeaching\(machine\.machine\);\s*\n\s*notifyTeachingPrefill\(prefill\)/);
+  // ログはリポジトリの中にあるときだけ相対パスを添え、末尾はいつでも本文に載せる
+  assert.match(renderer, /function repoRelative\(file\)/);
+  assert.match(renderer, /relative \? `- ログ: \$\{relative\}` : ''/);
+  assert.match(renderer, /slice\(-FIX_LOG_LINES\)/);
+  // 置くのは入力欄。送らない
+  assert.match(taskTeaching, /function applyPrefill\(\) \{[\s\S]*prompt\.value = state\.prefill;/);
+  assert.ok(!/applyPrefill[\s\S]{0,300}sendText\(/.test(taskTeaching), '置くだけで送らない');
+  assert.match(parent, /'statemachine:teaching-prefill', \(event\) => TaskTeaching\.prefill\(event\.detail\)/);
+});

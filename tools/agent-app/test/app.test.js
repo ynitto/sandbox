@@ -22,7 +22,7 @@ const automationIpc = require('../src/main/automation/ipc');
 const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
-  for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
+  for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/notify.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
     'main/automation/teaching.js', 'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/taskIntent.js', 'renderer/teachingProtocol.js', 'renderer/taskTeaching.js', 'renderer/automation/flow.js', 'renderer/automation/teaching.js', 'renderer/automation/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
@@ -498,12 +498,20 @@ test('自動化は agent-app の登録リポジトリと設定を共有する', 
   assert.deepStrictEqual(cfg, {
     roots: ['/repo/a', '/repo/b'], lastRoot: '/repo/b', skillDir: '/skill', agent: 'codex', model: 'm', instructions: {},
     execution: { defaultPolicy: 'quality', tiers: { large: { cli: 'copilot', model: 'large' } } },
+    taskInputs: {},
   });
   assert.deepStrictEqual(automationIpc.automationPatch({
     roots: ['/ignored'], lastRoot: '/repo/a', skillDir: '/next', agent: 'aider', model: '',
   }), {
     lastRepo: '/repo/a', automationSkillDir: '/next', automationAgent: 'aider', automationModel: '',
   });
+  // 手動実行の「前回の値」も、同じ設定の窓口で往復する（値だけ。パスは持たない）
+  assert.deepStrictEqual(automationIpc.automationConfig({
+    repos: ['/repo/a'], lastRepo: '/repo/a', lastTaskInputs: { '/repo/a': { monthly: { month: '2026-08' } } },
+  }).taskInputs, { '/repo/a': { monthly: { month: '2026-08' } } });
+  assert.deepStrictEqual(automationIpc.automationPatch({
+    taskInputs: { '/repo/a': { monthly: { month: '2026-09' } } },
+  }), { lastTaskInputs: { '/repo/a': { monthly: { month: '2026-09' } } } });
 });
 
 test('共有編集面は agent-app の preload API（window.api.automation）へ直接つなぐ', () => {
@@ -1120,4 +1128,79 @@ test('ファイル: 索引は相対パスの並び（WSL 内の git ls-files）�
   const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
   assert.match(ipc, /host\.isWslUnc\(dirs\.fsDir\)/, '\\\\wsl$\\ のリポジトリだけ WSL の中で git ls-files を撃つ');
   assert.match(ipc, /'ls-files', '--cached', '--others', '--exclude-standard', '-z'/);
+});
+
+test('確認待ちには端末へ行かずに答えられる（キーは端末操作と同じ term:keys を通る）', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
+  // 器は入力欄の「実行設定」と同じ details + .settings-popover。つまみは状態の印そのもの
+  assert.match(html, /<details id="phase-menu" class="phase-menu"[^>]*>\s*<summary id="phase" class="phase">/);
+  assert.match(html, /id="phase-menu"[\s\S]*class="settings-popover"[\s\S]*class="popover-head"/);
+  for (const id of ['phase-yes', 'phase-enter', 'phase-no', 'phase-terminal']) {
+    assert.match(html, new RegExp(`id="${id}" class="small`), `確認待ちの操作が足りない: ${id}`);
+  }
+  // 送るのは端末操作の仮想キーと同じ窓口。新しい IPC を作らない
+  assert.match(renderer, /await api\.termKeys\(cur\.id, data\)/);
+  assert.match(renderer, /\$\('phase-yes'\)\.onclick = \(\) => answerAttention\(`y\$\{TERMINAL_KEYS\.Enter\}`\)/);
+  assert.match(renderer, /\$\('phase-enter'\)\.onclick = \(\) => answerAttention\(TERMINAL_KEYS\.Enter\)/);
+  assert.match(renderer, /\$\('phase-no'\)\.onclick = \(\) => answerAttention\(TERMINAL_KEYS\.Escape\)/);
+  // 押せるのは「確認待ち」のときだけ。ほかの状態では開かない
+  assert.match(renderer, /menu\.classList\.toggle\('answerable', answerable\)/);
+  assert.match(css, /\.phase-menu\.answerable > summary \{[^}]*cursor: pointer/);
+  // 外側クリックで閉じる仕掛けは、既存のポップアップと同じ 1 本
+  assert.match(renderer, /POPUP_MENU_SELECTOR = 'details\.more-menu\[open\], details\.run-settings\[open\], details\.phase-menu\[open\]'/);
+});
+
+test('回答の下の「定型の依頼」と「入力欄に戻す」は入力欄に入れるだけで送らない', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  // 部品は既存の .message-actions / .message-action（「この依頼をタスクにする」と同じ）
+  const quick = renderer.slice(renderer.indexOf('function quickRequestActions('), renderer.indexOf('// index … 会話の messages'));
+  assert.match(quick, /el\('div', 'message-actions'\)/);
+  assert.match(quick, /el\('button', 'message-action', request\.label\)/);
+  // 出すのは最後の応答の下だけ。応答中は出さない
+  assert.match(quick, /index !== cur\.messages\.length - 1/);
+  assert.match(quick, /state\.running\.has\(cur\.id\) \|\| state\.pending\.has\(cur\.id\)/);
+  // 押しても送らない（送信は利用者）
+  assert.match(quick, /button\.onclick = \(\) => fillPrompt\(request\.text\)/);
+  assert.ok(!/fillPrompt[\s\S]{0,400}sendPrompt\(\)/.test(renderer.slice(renderer.indexOf('function fillPrompt('))), 'fillPrompt は送信しない');
+  // 依頼を入力欄へ戻すのは、本文と添付の両方
+  assert.match(renderer, /again\.onclick = \(\) => fillPrompt\(m\.text, \{ attachments: m\.attachments \|\| \[\] \}\)/);
+  // 設定の行は起動時アクションと同じ形
+  assert.match(html, /id="quick-add" class="small">追加<\/button>[\s\S]*id="quick-requests" class="startup-actions"/);
+  assert.match(renderer, /el\('div', 'startup-row quick-row'\)/);
+});
+
+test('前面に無いときの通知は、既に流している合図から出す（通知専用の経路を作らない）', () => {
+  const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
+  const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  assert.match(ipc, /channel === 'turn:done'[\s\S]*notifier\.show/);
+  assert.match(ipc, /channel === 'term:phase' && payload && payload\.phase === 'attention'/);
+  assert.match(ipc, /onRunExit: \(\{ name, mode, result \}\)/);
+  assert.match(ipc, /enabled: \(\) => store\.loadConfig\(userData\(\)\)\.notify\.background !== false/);
+  assert.match(preload, /onNotifyOpen: on\('notify:open'\)/);
+  assert.match(html, /id="notify-background"[\s\S]*前面に無いときに通知する/);
+});
+
+test('変更ビューの行からも、ファイルビュアーと同じ「会話に添付」ができる', () => {
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  // 添付の中身は 1 本（相対パスを次の依頼に添えるだけで、写さない）
+  assert.match(renderer, /function attachRepoFile\(rel\) \{[\s\S]*addAttachments\(\[\{ rel, name: rel\.split\('\/'\)\.pop\(\) \}\]\)/);
+  assert.match(renderer, /attach\.onclick = \(event\) => \{ event\.stopPropagation\(\); attachRepoFile\(f\.file\); \}/);
+  // 消えたファイルは添えられない
+  assert.match(renderer, /if \(f\.label !== '削除'\) \{/);
+});
+
+test('会話は名前で絞り込め、名前を変えられる', () => {
+  const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  // 絞り込みの 1 行はファイルツリーと同じ形（.tree-tools + input）
+  assert.match(html, /<div id="session-filter-row" class="tree-tools">[\s\S]*id="session-filter" placeholder="名前で絞り込み"/);
+  assert.match(renderer, /state\.sessions\.filter\(\(s\) => String\(s\.title \|\| ''\)\.toLowerCase\(\)\.includes\(needle\)\)/);
+  assert.match(renderer, /\$\('session-filter-row'\)\.hidden = state\.area !== 'conversation'/);
+  // 名前の変更は「その他」の 1 行（新しいダイアログは作らない）
+  assert.match(html, /id="session-rename" hidden>会話名を変更</);
+  assert.match(renderer, /api\.updateSession\(cur\.id, \{ title \}\)/);
 });

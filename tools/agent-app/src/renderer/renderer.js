@@ -2047,6 +2047,8 @@ async function init() {
     handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
   });
   $('automation-workbench').addEventListener('statemachine:teaching-view', (event) => TaskTeaching.show(event.detail));
+  // 失敗した実行をAIへ渡すとき、最初の依頼を入力欄へ置く（送るのは利用者）
+  $('automation-workbench').addEventListener('statemachine:teaching-prefill', (event) => TaskTeaching.prefill(event.detail));
   $('automation-workbench').addEventListener('statemachine:flow-teaching-view', (event) => FlowTeaching.show(event.detail));
   TaskTeaching.init({
     notice,
