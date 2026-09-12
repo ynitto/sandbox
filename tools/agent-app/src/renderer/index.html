@@ -64,6 +64,10 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
           </button>
         </div>
+        <div id="session-filter-row" class="tree-tools">
+          <label class="sr-only" for="session-filter">会話を名前で絞り込む</label>
+          <input id="session-filter" placeholder="名前で絞り込み">
+        </div>
         <ul id="sessions" class="list grow"></ul>
         <ul id="tasks" class="list grow" hidden></ul>
         <ul id="workflows" class="list grow" hidden></ul>
@@ -95,6 +99,7 @@
           <summary aria-label="その他の操作">その他</summary>
           <div class="menu-panel">
             <button type="button" id="open-folder">フォルダを開く</button>
+            <button type="button" id="session-rename" hidden>会話名を変更</button>
             <button type="button" id="session-delete" class="danger" hidden>会話を削除</button>
           </div>
         </details>
@@ -519,6 +524,7 @@
         <section data-settings-panel="app" class="settings-list" role="tabpanel">
           <label class="setting-check"><input type="checkbox" id="use-tmux"><span><strong>対話セッションを維持</strong><small>tmuxを使って、エージェントとの会話を継続します</small></span></label>
           <label class="setting-check"><input type="checkbox" id="use-worktree"><span><strong>会話ごとに作業を分離</strong><small>Git worktreeで同時作業の変更が混ざらないようにします</small></span></label>
+          <label class="setting-check"><input type="checkbox" id="notify-background"><span><strong>前面に無いときに通知する</strong><small>応答の完了と確認待ちをOSの通知で知らせます</small></span></label>
           <label id="wsl-row" class="setting-field" hidden><span><strong>WSLディストリビューション</strong><small>Windows上で利用する環境</small></span><input id="wsl-distro" placeholder="既定" size="12"></label>
           <div class="environment-status"><strong>実行環境</strong><div id="host-status" class="sub"></div></div>
         </section>
@@ -533,6 +539,10 @@
             <label class="setting-field"><span><strong>既定の選択</strong></span><select id="default-skill-mode"><option value="auto">自動</option><option value="manual">手動選択</option><option value="off">使用しない</option></select></label>
             <div class="inline-editor"><input id="skill-entry" list="skill-options" placeholder="スキル名"><datalist id="skill-options"></datalist><button type="button" id="skill-add" class="small">追加</button></div>
             <div id="recommended-skills" class="setting-chips"></div>
+          </div>
+          <div class="settings-group">
+            <div class="settings-group-head"><span><strong>定型の依頼</strong><small>回答の下に並べます。押すと入力欄に入ります</small></span><button type="button" id="quick-add" class="small">追加</button></div>
+            <div id="quick-requests" class="startup-actions"></div>
           </div>
           <div class="settings-group">
             <div class="settings-group-head"><span><strong>起動時アクション</strong><small>新しいCLIセッションで上から順に一度だけ実行します</small></span><button type="button" id="startup-add" class="small">追加</button></div>

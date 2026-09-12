@@ -53,7 +53,7 @@ const state = {
   aiDraft: { mode: 'draft', phase: 'input', requestId: '', busy: false, request: '', history: [], questions: [], answers: {}, result: null, error: '', message: '' },
   aiReview: { mode: 'review', phase: 'input', requestId: '', busy: false, focus: '', scope: null, history: [], questions: [], answers: {}, result: null, error: '', message: '' },
   recording: { source: 'browser', url: '', app: '', text: '', active: false, busy: false, message: '', ok: true, pick: null, extracts: 0 },
-  run: { lines: [], running: false, policy: '', agent: '', model: '', skillMode: '', skills: [], skillPreview: [], parameters: {}, requestId: '', result: null, error: '' },
+  run: { lines: [], running: false, policy: '', agent: '', model: '', skillMode: '', skills: [], skillPreview: [], parameters: {}, parametersFor: null, requestId: '', result: null, error: '' },
   fileTab: '',
 };
 
@@ -297,13 +297,62 @@ async function loadExecutionSnapshot() {
     state.execution.selected = machines[0] ? taskIdentity(machines[0]) : '';
     state.execution.scheduleDraft = null;
     state.execution.log = null;
-    state.run.parameters = {};
   }
 }
 
 // 待たずに取りに行き、届いたら描き直す。
 function refreshExecutionSnapshot() {
   return loadExecutionSnapshot().then(renderIfIdle);
+}
+
+// 前回の手動実行で入れた実行条件（config.json の lastTaskInputs）。値だけを持ち、パスは持たない。
+function rememberedInputs(machine) {
+  const all = (state.config && state.config.taskInputs) || {};
+  const perRepo = all[state.root] && typeof all[state.root] === 'object' ? all[state.root] : {};
+  const key = String((machine && machine.machine) || taskIdentity(machine) || '');
+  const values = perRepo[key];
+  return values && typeof values === 'object' ? values : {};
+}
+
+// 選んでいるタスクが変わったら、実行条件を初期値へ戻す。タスクは一覧からも、親（会話画面の
+// サイドバー）からも選ばれるので、判定は描くたびに行う（どの経路でも取りこぼさない）。
+function ensureRunParameters(machine) {
+  // 実行条件の顔ぶれは、実行情報（agent-loop）が届いて初めて分かる。名前まで込みで見分け、
+  // 届いた時点で前回の値を入れ直す（空のまま固定しない）。
+  const id = `${taskIdentity(machine)}#${((machine && machine.parameters) || []).join(',')}`;
+  if (state.run.parametersFor === id) return;
+  state.run.parametersFor = id;
+  state.run.parameters = initialRunParameters(machine);
+}
+
+// 実行条件の初期値。**今回打った値 → 前回の値 → 定期実行の既定値** の順。
+function initialRunParameters(machine) {
+  if (!machine) return {};
+  const defaults = (machine.parameterDefaults && typeof machine.parameterDefaults === 'object') ? machine.parameterDefaults : {};
+  const previous = rememberedInputs(machine);
+  const values = {};
+  for (const name of machine.parameters || []) {
+    const value = previous[name] != null ? previous[name] : defaults[name];
+    if (value != null && String(value) !== '') values[name] = String(value);
+  }
+  return values;
+}
+
+// 実行したときの値を覚える（次回の既定になる）。空の値は覚えない。
+async function rememberRunParameters(machine, parameters) {
+  const key = String((machine && machine.machine) || taskIdentity(machine) || '');
+  if (!key || !state.root) return;
+  const kept = {};
+  for (const [name, value] of Object.entries(parameters || {})) {
+    if (String(value || '').trim()) kept[name] = String(value);
+  }
+  const all = { ...((state.config && state.config.taskInputs) || {}) };
+  const perRepo = { ...(all[state.root] || {}) };
+  if (Object.keys(kept).length) perRepo[key] = kept;
+  else delete perRepo[key];
+  all[state.root] = perRepo;
+  const saved = await guard('実行条件の記憶', () => automationHost.saveConfig({ ...state.config, taskInputs: all }));
+  if (saved) state.config = saved;
 }
 
 function executionMachines() {
@@ -678,7 +727,6 @@ function bindHome(main) {
     state.execution.detailTab = 'overview';
     state.execution.scheduleOpen = false;
     state.execution.scheduleDraft = null;
-    state.run.parameters = {};
     state.run.result = null;
     state.run.error = '';
     render();
@@ -706,6 +754,7 @@ function bindHome(main) {
   });
   on('daemon-toggle', toggleDaemon);
   for (const button of main.querySelectorAll('[data-history-log]')) button.addEventListener('click', () => openHistoryLog(button.dataset.historyLog));
+  for (const button of main.querySelectorAll('[data-history-fix]')) button.addEventListener('click', () => handFailureToAi(button.dataset.historyFix));
   for (const input of main.querySelectorAll('[data-run-param]')) input.addEventListener('input', () => {
     state.run.parameters[input.dataset.runParam] = input.value;
     refreshTaskSkillPreview();
@@ -849,6 +898,16 @@ const teachingFeature = window.createTeachingFeature({
     remove: (root, machine) => automationHost.deleteMachine(root, machine),
   },
 });
+
+// 会話の入力欄へ本文を置いてもらう（1 回きり）。置き場を出すのは teachingFeature.view なので、
+// それとは別の合図にする——描き直しのたびに入れ直さないため。
+function notifyTeachingPrefill(text) {
+  if (!embedded || !text) return;
+  workbenchHost.dispatchEvent(new CustomEvent('statemachine:teaching-prefill', {
+    detail: { type: 'agent-app:teaching-prefill', text },
+    bubbles: true,
+  }));
+}
 
 const flowFeature = window.createFlowFeature({
   name: embedded ? 'ワークフロー' : 'AIワークフロー',
@@ -1032,6 +1091,7 @@ function executionHtml() {
 }
 
 function executionDetailHtml(machine) {
+  ensureRunParameters(machine);
   const snapshot = state.execution.snapshot || {};
   const daemon = snapshot.daemon || { running: false };
   const schedules = taskSchedules(machine);
@@ -1047,11 +1107,25 @@ function executionDetailHtml(machine) {
     ? `${daemon.activeCount} 件を実行中${daemon.queueDepth ? `、${daemon.queueDepth} 件待機` : ''}`
     : daemon.running ? (daemon.queueDepth ? `${daemon.queueDepth} 件待機` : '自動実行は稼働中') : '自動実行は停止中';
   const parameters = machine.parameters || [];
-  const inputs = parameters.length ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${parameters.map((name) => `<div class="field"><label>${esc(name)}</label><input data-run-param="${esc(name)}" value="${esc(state.run.parameters[name] || '')}"></div>`).join('')}</div></div>` : '';
+  // 実行条件は前回の値を既定にする（優先順位は initialRunParameters）。前回の値は、いま入って
+  // いるものと違うときだけ 1 行添える——同じものを 2 回言わない。
+  const previous = rememberedInputs(machine);
+  const inputs = parameters.length ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${parameters.map((name) => {
+    const value = state.run.parameters[name] || '';
+    const hint = previous[name] && previous[name] !== value ? `<small class="muted">前回: ${esc(previous[name])}</small>` : '';
+    return `<div class="field"><label>${esc(name)}</label><input data-run-param="${esc(name)}" value="${esc(value)}">${hint}</div>`;
+  }).join('')}</div></div>` : '';
+  // 失敗した行からは「手順」→「編集」と同じ会話を起こし、失敗の中身を入力欄へ置く
+  const canTeach = !!(machine.machine && machine.kind === 'statemachine');
   const history = (machine.history || []).map((item) => {
     const status = item.ok ? '完了' : item.escalate ? '要確認' : '失敗';
     const cls = item.ok ? 'ok' : item.escalate ? 'warn' : 'ng';
-    return `<li><span class="status ${cls}">${status}</span><div><strong>${item.source === 'scheduled' ? '定期実行' : '手動実行'}</strong><small>${esc(dateLabel(item.finishedAt || item.startedAt))}${item.agentCli ? ` · ${esc(item.agentCli)}` : ''}${item.model ? ` / ${esc(item.model)}` : ''}</small>${item.error ? `<p>${esc(item.error)}</p>` : ''}</div>${item.logFile ? `<button type="button" class="tiny" data-history-log="${esc(item.runId)}">ログ</button>` : ''}</li>`;
+    // 行の操作は 1 つの列にまとめる（行の骨格は 3 列のまま）
+    const actions = [
+      item.logFile ? `<button type="button" class="tiny" data-history-log="${esc(item.runId)}">ログ</button>` : '',
+      !item.ok && canTeach ? `<button type="button" class="tiny" data-history-fix="${esc(item.runId)}">AIに直してもらう</button>` : '',
+    ].filter(Boolean).join('');
+    return `<li><span class="status ${cls}">${status}</span><div><strong>${item.source === 'scheduled' ? '定期実行' : '手動実行'}</strong><small>${esc(dateLabel(item.finishedAt || item.startedAt))}${item.agentCli ? ` · ${esc(item.agentCli)}` : ''}${item.model ? ` / ${esc(item.model)}` : ''}</small>${item.error ? `<p>${esc(item.error)}</p>` : ''}</div>${actions ? `<div class="row">${actions}</div>` : ''}</li>`;
   }).join('');
   const historyLog = state.execution.log
     ? `<div class="history-log"><div class="execution-card-head"><strong>実行ログ</strong><button type="button" class="tiny" data-history-log="">閉じる</button></div>${state.execution.log.error ? `<p class="run-result ng">${esc(state.execution.log.error)}</p>` : `<pre>${esc(state.execution.log.text || '')}</pre>${state.execution.log.truncated ? '<small class="muted">末尾のみ表示しています。</small>' : ''}`}</div>`
@@ -1168,6 +1242,51 @@ async function toggleDaemon() {
   if (!result) return;
   toast(action === 'start' ? '自動実行の起動を受け付けました' : '自動実行の停止を受け付けました');
   setTimeout(async () => { await loadExecutionSnapshot(); if (state.view === 'home') render(); }, 500);
+}
+
+// 失敗した実行を、そのままAIへ渡す。会話は「手順」→「編集」と同じもので、最初の依頼は
+// **入力欄に置くだけ**（送るのは利用者。何を直したいかを足せるように）。
+// ログは、リポジトリの中にあるときだけ所在（相対パス）を添え、いつでも末尾を本文に載せる
+// ——所在だけでは、agent-loop の置き場が会話の作業フォルダの外にあるときに読めない。
+const FIX_LOG_LINES = 60;
+const FIX_LOG_CHARS = 2000;
+
+function repoRelative(file) {
+  const norm = (value) => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const root = norm(state.root);
+  const target = norm(file);
+  if (!root || !target) return '';
+  return target.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? target.slice(root.length + 1) : '';
+}
+
+function failurePrompt(machine, item, logText) {
+  const tail = String(logText || '').split(/\r?\n/).filter((line) => line.trim()).slice(-FIX_LOG_LINES).join('\n').slice(-FIX_LOG_CHARS);
+  const relative = repoRelative(item.logFile);
+  const facts = [
+    `- タスク: ${machine.name || machine.machine}`,
+    `- 実行: ${item.source === 'scheduled' ? '定期実行' : '手動実行'} ${dateLabel(item.finishedAt || item.startedAt)}${item.agentCli ? ` · ${item.agentCli}` : ''}`,
+    item.error ? `- エラー: ${item.error}` : '',
+    relative ? `- ログ: ${relative}` : '',
+  ].filter(Boolean).join('\n');
+  return [
+    'このタスクの実行が失敗しました。原因を調べて、手順を直してください。',
+    facts,
+    tail ? `実行ログ（末尾）:\n\`\`\`\n${tail}\n\`\`\`` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+async function handFailureToAi(runId) {
+  const machine = selectedExecutionMachine();
+  const item = (machine && (machine.history || []).find((entry) => entry.runId === runId)) || null;
+  if (!machine || !item) return;
+  let log = null;
+  if (item.logFile) {
+    log = await guard('ログ', () => automationHost.runLog(state.root, { workflow: machine.workflow, runId }));
+  }
+  const prefill = failurePrompt(machine, item, log && log.text);
+  await openTeaching(machine.machine);
+  notifyTeachingPrefill(prefill);
+  toast('編集を開始すると、失敗の内容が入力欄に入ります');
 }
 
 async function openHistoryLog(runId) {
@@ -2066,6 +2185,7 @@ async function startRun(mode) {
     const missing = (machine.parameters || []).filter((name) => !String(state.run.parameters[name] || defaults[name] || '').trim());
     if (missing.length) { openRunInputDialog(machine, missing); return; }
     state.run.parameters = { ...defaults, ...state.run.parameters };
+    await rememberRunParameters(machine, state.run.parameters);
   }
   run.lines = [];
   run.result = null;

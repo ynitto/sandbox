@@ -63,6 +63,8 @@ test('UIで扱う共通指示と実行制御を安全な設定値へ揃える', 
       { type: 'skill', value: 'brainstorming', onError: 'fail' },
       { type: 'command', value: 'npm test', onError: 'warn' },
     ],
+    // 定型の依頼を保存していない設定は、既定の 2 つを持つ
+    quickRequests: settings.DEFAULT_QUICK_REQUESTS,
   });
   assert.strictEqual(normalized.execution.defaultPolicy, 'quality');
   assert.strictEqual(normalized.execution.defaultReadonly, false);
@@ -134,4 +136,33 @@ test('エージェントを最適化する: OFF か herd が無ければ、節�
   assert.strictEqual(settings.resolve(config, {}, { optimized: false }).policy, 'recommended', '既定が品質重視でも おすすめ');
   assert.strictEqual(settings.resolve(config, { policy: 'quality' }).policy, 'quality', '省略時は従来どおり');
   assert.strictEqual(settings.resolve(config, { policy: 'direct', cli: 'kiro' }, { optimized: false }).cli, 'kiro');
+});
+
+test('定型の依頼は上限3つで、文面の無い行を捨てる', () => {
+  const normalized = settings.normalize({
+    instructions: {
+      quickRequests: [
+        { label: ' コミットする ', text: ' 変更をコミットして ' },
+        { label: '', text: 'テストを実行して\n結果を要約して' },
+        { label: '本文なし', text: '   ' },
+        'おかしな値',
+        { label: '4つ目', text: '溢れる' },
+        { label: '5つ目', text: '溢れる' },
+      ],
+    },
+  });
+  assert.deepStrictEqual(normalized.instructions.quickRequests, [
+    { label: 'コミットする', text: '変更をコミットして' },
+    // ボタンの文字が無ければ本文の 1 行目を使う
+    { label: 'テストを実行して', text: 'テストを実行して\n結果を要約して' },
+    { label: '4つ目', text: '溢れる' },
+  ]);
+  // 「出さない」は空の配列で表す（既定へは戻らない）
+  assert.deepStrictEqual(settings.normalize({ instructions: { quickRequests: [] } }).instructions.quickRequests, []);
+});
+
+test('前面に無いときの通知は既定でON', () => {
+  assert.strictEqual(settings.normalize(null).notify.background, true);
+  assert.strictEqual(settings.normalize({ notify: {} }).notify.background, true);
+  assert.strictEqual(settings.normalize({ notify: { background: false } }).notify.background, false);
 });

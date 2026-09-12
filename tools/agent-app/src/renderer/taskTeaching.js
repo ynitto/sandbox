@@ -37,7 +37,7 @@
     session: null, availableSession: null, phase: null, tools: null, running: false, pending: false, token: 0,
     // record.step は TeachingProtocol.recordingSteps(source) の何段目か（0 = まだ始めていない）。
     // awaiting は「入力欄に入れて、利用者が送るのを待っている段」の名前。filled はそのとき入れた本文。
-    input: null, autoStart: null,
+    input: null, autoStart: null, prefill: '',
     record: { open: false, source: 'browser', target: '', step: 0, busy: false, message: '', ok: true, request: null, endpoint: '', browser: '', opened: false, awaiting: '', filled: '' },
   };
 
@@ -123,6 +123,7 @@
     $('task-send').disabled = state.pending || !hasTerminal;
     renderRecord();
     setInputMode(state.input && state.input.mode === 'terminal' ? 'terminal' : 'message', { focus: false });
+    applyPrefill();
   }
 
   function populateExecutionInputs(prefix, preferred = null) {
@@ -550,6 +551,29 @@
     }
   }
 
+  // 失敗した実行をAIへ渡すときの最初の依頼。会話（入力欄）が出るまで持っておき、出たら
+  // 1 回だけ入力欄へ置く。送るのは利用者（「操作の見本」と同じ作法）。
+  function prefill(detail) {
+    const text = detail && typeof detail === 'object' ? String(detail.text || '') : String(detail || '');
+    if (!text) return;
+    state.prefill = text;
+    applyPrefill();
+  }
+
+  function applyPrefill() {
+    if (!state.prefill || !state.visible || !state.session) return;
+    const prompt = $('task-prompt');
+    // 書きかけは消さない（見本の固定文と同じ作法）
+    if (prompt.value.trim() && prompt.value !== state.record.filled) { state.prefill = ''; return; }
+    prompt.value = state.prefill;
+    state.record.filled = state.prefill;
+    state.prefill = '';
+    setInputMode('message', { focus: false });
+    prompt.focus();
+    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+    status('pending', AWAITING_SEND);
+  }
+
   // ---- 親からの通知 ---------------------------------------------------------------
 
   // ワークベンチが「このタスクの会話を出す / 出さない」と言ってきた。
@@ -671,5 +695,5 @@
     renderShell();
   }
 
-  window.TaskTeaching = { init, show, hide, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
+  window.TaskTeaching = { init, show, hide, prefill, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
 })();

@@ -236,7 +236,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.fill('#skill-entry', 'self-checking');
     await win.click('#skill-add');
     await win.click('#startup-add');
-    await win.fill('.startup-row input', 'brainstorming');
+    await win.fill('#startup-actions .startup-row input', 'brainstorming');
+    // 定型の依頼は既定の 2 つが入っている。3 つ目を足して、回答の下へ並ぶことを後で見る
+    assert.strictEqual(await win.locator('#quick-requests .startup-row').count(), 2);
+    await win.click('#quick-add');
+    await win.fill('#quick-requests .startup-row:nth-child(3) input:nth-of-type(1)', '変更を要約する');
+    await win.fill('#quick-requests .startup-row:nth-child(3) input:nth-of-type(2)', 'この会話でやった変更を 3 行で要約してください。');
+    assert.strictEqual(await win.locator('#quick-add').isDisabled(), true, '定型の依頼は 3 つまで');
     await win.click('[data-settings-tab="execution"]');
     // 「エージェントを最適化する」を外すと、節約・品質重視と small / large の行が薄くなり選べない
     // （agent-herd が無いのと同じ動き）。理由の文言は出さない。
@@ -261,6 +267,10 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.deepStrictEqual(saved.instructions.skills, ['self-checking']);
     assert.deepStrictEqual(saved.instructions.skillSelection, { enabled: true, defaultMode: 'auto', candidates: ['self-checking'] });
     assert.deepStrictEqual(saved.instructions.startupActions, [{ type: 'skill', value: 'brainstorming', onError: 'warn' }]);
+    assert.strictEqual(saved.instructions.quickRequests.length, 3);
+    assert.deepStrictEqual(saved.instructions.quickRequests[2], { label: '変更を要約する', text: 'この会話でやった変更を 3 行で要約してください。' });
+    // 前面に無いときの通知は既定でON（設定 > アプリの 1 行）
+    assert.strictEqual(saved.notify.background, true);
     assert.strictEqual(saved.execution.defaultPolicy, 'quality');
     assert.strictEqual(saved.execution.optimizeAgents, true);
     assert.strictEqual(saved.execution.tiers.large.model, 'gpt-quality');
@@ -442,7 +452,16 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_TEACHING_TERMINAL_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TEACHING_TERMINAL_SCREENSHOT });
     }
+    // 失敗した実行を AI へ渡すときの最初の依頼は、入力欄へ置くだけ（送るのは利用者）。
     await win.evaluate(() => {
+      window.TaskTeaching.state.session = { id: 'prefill-check', cli: 'codex', model: '' };
+      window.TaskTeaching.prefill({ text: 'このタスクの実行が失敗しました。原因を調べて、手順を直してください。' });
+    });
+    assert.strictEqual(await win.locator('#task-prompt').inputValue(), 'このタスクの実行が失敗しました。原因を調べて、手順を直してください。');
+    assert.strictEqual(await win.locator('#task-input-status').textContent(), '文面を確かめて「送信」を押してください');
+    await win.evaluate(() => {
+      window.TaskTeaching.state.session = null;
+      document.getElementById('task-prompt').value = '';
       window.TaskTerm.detach();
       document.getElementById('task-terminal').hidden = true;
       document.getElementById('task-composer').hidden = true;
