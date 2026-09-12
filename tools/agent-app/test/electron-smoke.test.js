@@ -116,6 +116,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     summary: 'ログ設計をレビューして。\n回転の条件と、失敗したときにどこへ残すかを見てほしい。',
   });
   shareRequests.post({ title: '移行手順の要約', goal: '移行手順をまとめて', summary: '移行手順をまとめて' });
+  // 仲間が実行中の依頼（引き受けた人の端末が自分の画面に映る側）
+  const working = shareRequests.post({ title: 'テスト方針の相談', goal: 'テスト方針を相談したい', summary: 'テスト方針を相談したい' });
+  shareRequests.claim(working.id, { who: 'pc-b', port: 47801, cli: 'claude' }, '127.0.0.1');
 
   // 偽の agent-herd と agent-flow を PATH に置く。一族（aider / ollama）が「使える」印になり `herd` が並び
   // 「エージェントを最適化する」が効く側（節約・品質重視・small / large tier）を実機で通せる。効かない側は
@@ -528,6 +531,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('.share-nodes').waitFor();
     assert.match(await win.locator('#share-cards').textContent(), /参加者/);
     await win.locator('#share-view-request').click();
+    // 実行中の依頼は、引き受けた人の端末がそのまま出る（会話と同じ .terminal-stage）
+    await win.locator('#share-requests .list-pick').filter({ hasText: 'テスト方針の相談' }).click();
+    await win.locator('#share-terminal').waitFor();
+    assert.match(await win.locator('#share-term-agent').textContent(), /pc-b の claude/);
+    assert.strictEqual(await win.locator('#share-term-note').textContent(), '閲覧のみ');
+    const shareTerminal = await win.locator('#share-terminal').boundingBox();
+    assert.ok(shareTerminal && shareTerminal.height >= 220, `端末が潰れている: ${JSON.stringify(shareTerminal)}`);
     if (process.env.AGENT_APP_SHARE_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_SCREENSHOT });
 
     await win.click('#area-work');

@@ -14,7 +14,9 @@
   const PRIORITY_LABEL = { high: '高', normal: '通常', low: '低' };
   const STATE_LABEL = { open: '順番待ち', working: '実行中', done: '完了', failed: '失敗', cancelled: '取り下げ' };
   const GROUPS = [
-    { key: 'working', label: '引き受け中', mark: '●' },
+    // 実行中には「自分が引き受けている依頼」と「仲間が自分の依頼を実行している分」が並ぶ。
+    // どちらかは行の副題（誰の依頼か・どの PC か）と、選んだときの見出しで分かる。
+    { key: 'working', label: '実行中', mark: '●' },
     { key: 'waiting', label: '順番待ち', mark: '○' },
     { key: 'done', label: '今日 完了', mark: '✓' },
   ];

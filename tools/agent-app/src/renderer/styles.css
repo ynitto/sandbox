@@ -314,8 +314,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .terminal-head button { border-color: #334155; color: var(--term-text); background: #182231; }
 .terminal-activity { width: 8px; height: 8px; border-radius: 50%; background: #475569; box-shadow: 0 0 0 0 rgba(34, 211, 238, 0); }
 .terminal-activity.accepted { animation: terminalAccepted .28s ease-out; }
-#term-host, #task-term-host { min-height: 0; flex: 1; padding: 8px 4px 5px 10px; cursor: text; }
-#term-host .xterm, #task-term-host .xterm { height: 100%; }
+#term-host, #task-term-host, #share-term-host, #flow-teach-term-host { min-height: 0; flex: 1; padding: 8px 4px 5px 10px; cursor: text; }
+#term-host .xterm, #task-term-host .xterm, #share-term-host .xterm, #flow-teach-term-host .xterm { height: 100%; }
 #chat.input-terminal #terminal-stage,
 .terminal-stage.input-terminal { border-color: var(--term-cursor); box-shadow: 0 0 0 3px rgba(34, 211, 238, .16), 0 8px 24px rgba(15, 23, 42, .18); }
 .conversation-history { position: relative; min-height: 42px; grid-row: 2; margin: 8px 18px 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }

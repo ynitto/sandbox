@@ -1320,7 +1320,8 @@ async function sendPrompt() {
     renderHeader();
     let res;
     try {
-      if (wasTmux && state.running.has(id) && !state.attachments.length) {
+      // 応答中の tmux へ流すのは、この PC の CLI と話しているときだけ。共有は列へ投函する
+      if (!shared && wasTmux && state.running.has(id) && !state.attachments.length) {
         res = await api.termSubmit(id, text);
       } else {
         res = await api.send(id, text, { ...opts, attachments: state.attachments });
