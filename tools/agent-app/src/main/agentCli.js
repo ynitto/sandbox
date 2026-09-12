@@ -83,6 +83,14 @@ function normalize(raw, name, file) {
     skillCommandPrefix: raw.skill_command_prefix != null ? String(raw.skill_command_prefix) : '/',
     slashNative: raw.slash_native == null ? headlessAutonomy === 'tool-loop' : raw.slash_native,
     defaultModel: raw.default_model != null ? String(raw.default_model) : '',
+    // 同じ仕事を 1 回実行する相対コスト（正典: schemas/agent-cli.schema.json）。
+    // ローカル=0 / 通常のクラウド=1。実行の経路（工程ごとのハーネス / 1 セッション）は
+    // この宣言だけで決める——名前の許可リストは持たない。
+    relativeCost: Number.isFinite(Number(raw.relative_cost)) ? Number(raw.relative_cost) : 1,
+    // 自分でツールを回せる CLI か（tool-loop）。回せない定義（single-shot）は、工程の
+    // 進行をハーネスが供給しないと動かない。
+    headlessAutonomy,
+    models: raw.models && typeof raw.models === 'object' ? raw.models : {},
     output: raw.output === 'file' ? 'file' : 'stdout',
     env: raw.env && typeof raw.env === 'object' ? raw.env : {},
     writeArgs: strs(raw.write_args),
@@ -140,6 +148,23 @@ function load(name, repo) {
     return normalize(raw, key, file);
   }
   throw new Error(`未知の agent_cli です: ${key}（探索順: ${dirs.join(' → ')}）`);
+}
+
+// (定義, モデル) の実効 relative_cost。解決の規則は agentcore.agentcli.resolve_relative_cost と
+// 同じ——定義が models でそのモデルの値を宣言していればそれ、無ければ定義単位の値。
+// モデル未指定なら定義の既定モデルで引く。
+function relativeCost(spec, model = '') {
+  const key = String(model || (spec && spec.defaultModel) || '').trim();
+  const entry = key && spec && spec.models ? spec.models[key] : null;
+  const declared = entry && typeof entry === 'object' && entry.relative_cost != null
+    ? entry.relative_cost : (spec && spec.relativeCost);
+  const value = Number(declared);
+  return Number.isFinite(value) ? value : 1;
+}
+
+// この端末で動く（費用のかからない）定義か。実行の経路を分けるのはこの 1 つの問いだけ。
+function isLocal(spec, model = '') {
+  return relativeCost(spec, model) <= 0;
 }
 
 // PATH からその名前の実体を引く（無ければ空文字）。画面の「使える」印と、Windows の .cmd 判定に使う。
@@ -376,5 +401,6 @@ function classifyError(spec, blob) {
 
 module.exports = {
   SESSION, searchDirs, load, list, resolvePath, turnCmd, oneShotCmd, interactiveCmd, insertAfterSubcommand,
+  relativeCost, isLocal,
   replayPrompt, pickListedSession, classifyError, normalizeInteractive,
 };
