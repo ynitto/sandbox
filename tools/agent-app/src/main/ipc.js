@@ -15,6 +15,7 @@ const worktree = require('./worktree');
 const attachments = require('./attachments');
 const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
+const notify = require('./notify');
 const forkProtocol = require('../renderer/forkProtocol');
 const response = require('./response');
 const { createGate } = require('./executionGate');
@@ -1087,14 +1088,37 @@ function demonstrate(p) {
 }
 
 function registerIpcHandlers(getWindow) {
-  const send = (channel, payload) => {
+  const post = (channel, payload) => {
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+  };
+  const sessionTitle = (id) => {
+    try { return store.readSession(userData(), id).title || ''; } catch { return ''; }
+  };
+  // 画面が前面に無いときだけ、終わったこと・聞かれていることを OS の通知で知らせる（notify.js）。
+  const notifier = notify.createNotifier({
+    getWindow,
+    enabled: () => store.loadConfig(userData()).notify.background !== false,
+    open: (event) => { if (event.id) post('notify:open', { id: event.id }); },
+  });
+  // 知らせる合図は、既に renderer へ流している 2 つ（ターンの終わり・phase の変化）から拾う。
+  // 通知のためだけの経路は作らない。
+  const send = (channel, payload) => {
+    post(channel, payload);
+    if (channel === 'turn:done') {
+      notifier.show({ kind: notify.turnKind(payload.message || {}), name: sessionTitle(payload.id), id: payload.id });
+    } else if (channel === 'term:phase' && payload && payload.phase === 'attention') {
+      notifier.show({ kind: 'attention', name: sessionTitle(payload.id), id: payload.id });
+    }
   };
   registerAutomationIpc({
     getWindow,
     userData,
     appRoot: automationAppRoot(),
+    onRunExit: ({ name, mode, result }) => {
+      if (mode !== 'run') return;
+      notifier.show({ kind: notify.taskRunKind(result || {}), name });
+    },
   });
   handle('automation:teach:prepare', (p) => prepareTeachingView(p));
   handle('automation:teach:start', (p) => startTeaching(p, send));

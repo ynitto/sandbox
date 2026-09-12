@@ -63,6 +63,8 @@ test('UIで扱う共通指示と実行制御を安全な設定値へ揃える', 
       { type: 'skill', value: 'brainstorming', onError: 'fail' },
       { type: 'command', value: 'npm test', onError: 'warn' },
     ],
+    // 定型の依頼を保存していない設定は、既定の 2 つを持つ
+    quickRequests: settings.DEFAULT_QUICK_REQUESTS,
   });
   assert.strictEqual(normalized.execution.defaultPolicy, 'quality');
   assert.strictEqual(normalized.execution.defaultReadonly, false);

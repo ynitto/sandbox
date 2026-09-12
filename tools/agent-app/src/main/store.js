@@ -18,19 +18,42 @@ const settings = require('./settings');
 // area         … 最後に開いていた主要領域（conversation | tasks | workflows）
 // view         … 会話領域で最後に開いていた画面（chat | files）
 // lastWorktree … リポジトリ → 最後に選んだ作業フォルダ名（'' はリポジトリ本体）
+// lastTaskInputs … リポジトリ → タスクの保存名 → 前回の手動実行で入れた実行条件（値だけ。パスは持たない）
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
   wslDistro: '', transport: 'tmux', useWorktree: true, area: 'conversation', view: 'chat', lastFiles: {}, lastWorktree: {},
-  lastTask: {}, lastWorkflow: {},
+  lastTask: {}, lastWorkflow: {}, lastTaskInputs: {},
   automationSkillDir: '', automationAgent: '', automationModel: '',
 };
 const MAX_REPOS = 30;
+const MAX_TASK_INPUT_CHARS = 400;
 const TERMINAL_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_TERMINAL_SNAPSHOTS = 12;
 const MAX_SNAPSHOT_CHARS = 120000;
 
 function configPath(userData) { return path.join(userData, 'config.json'); }
 function sessionsDir(userData) { return path.join(userData, 'sessions'); }
+
+// 前回の実行条件。リポジトリ → 保存名 → { 項目名: 値 } の 2 段だけを、文字の値として残す。
+function taskInputs(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const out = {};
+  for (const [repo, tasks] of Object.entries(source)) {
+    if (!tasks || typeof tasks !== 'object') continue;
+    const perRepo = {};
+    for (const [task, values] of Object.entries(tasks)) {
+      if (!values || typeof values !== 'object') continue;
+      const kept = {};
+      for (const [key, value] of Object.entries(values)) {
+        if (value == null || typeof value === 'object') continue;
+        kept[String(key)] = String(value).slice(0, MAX_TASK_INPUT_CHARS);
+      }
+      if (Object.keys(kept).length) perRepo[String(task)] = kept;
+    }
+    if (Object.keys(perRepo).length) out[String(repo)] = perRepo;
+  }
+  return out;
+}
 
 function normalize(raw) {
   const next = { ...DEFAULTS, ...(raw && typeof raw === 'object' ? raw : {}) };
@@ -49,6 +72,7 @@ function normalize(raw) {
   next.lastWorktree = next.lastWorktree && typeof next.lastWorktree === 'object' ? next.lastWorktree : {};
   next.lastTask = next.lastTask && typeof next.lastTask === 'object' ? next.lastTask : {};
   next.lastWorkflow = next.lastWorkflow && typeof next.lastWorkflow === 'object' ? next.lastWorkflow : {};
+  next.lastTaskInputs = taskInputs(next.lastTaskInputs);
   next.automationSkillDir = String(next.automationSkillDir || '').trim();
   next.automationAgent = String(next.automationAgent || '').trim();   // 空 = 会話の「おすすめ」と同じ CLI（automation/ipc.js）
   next.automationModel = String(next.automationModel || '').trim();
@@ -58,6 +82,7 @@ function normalize(raw) {
   const rawTiers = rawExecution.tiers && typeof rawExecution.tiers === 'object' ? rawExecution.tiers : {};
   next.instructions = { ...rawInstructions, ...userSettings.instructions };
   next.share = userSettings.share;
+  next.notify = userSettings.notify;
   next.execution = {
     ...rawExecution,
     ...userSettings.execution,

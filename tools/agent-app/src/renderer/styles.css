@@ -219,6 +219,15 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .phase.busy, .phase.starting { border-color: var(--accent); color: var(--accent); }
 .phase.attention { border-color: var(--warn); color: var(--warn); background: var(--warn-bg); }
 .phase.dead, .phase.gone { border-color: var(--danger); color: var(--danger); }
+/* 確認待ちに答えるポップオーバー。器は入力欄の「実行設定」と同じ details + .settings-popover で、
+   つまみは状態の印そのもの（.phase）。答えられる phase のときだけ開く。 */
+.phase-menu { position: relative; }
+.phase-menu > summary { display: inline-flex; list-style: none; cursor: default; }
+.phase-menu > summary::-webkit-details-marker { display: none; }
+.phase-menu.answerable > summary { cursor: pointer; }
+.phase-menu.answerable > summary::after { content: '⌄'; margin-left: 5px; }
+.phase-menu > .settings-popover { top: calc(100% + 8px); right: 0; bottom: auto; left: auto; white-space: normal; }
+.phase-detail { max-height: 230px; margin: 0 0 12px; overflow: auto; font: 11px/1.5 var(--mono); white-space: pre-wrap; }
 .views { display: inline-flex; }
 .views .tab { min-height: 32px; padding: 4px 10px; border-color: transparent; color: var(--muted); background: transparent; }
 .views .tab:hover { color: var(--text); background: #f1f3f5; }
@@ -506,6 +515,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .startup-actions { display: flex; flex-direction: column; gap: 7px; }
 .startup-row { display: grid; grid-template-columns: 92px minmax(120px, 1fr) 116px auto; align-items: center; gap: 6px; }
 .startup-row > input, .startup-row > select { min-width: 0; width: 100%; }
+.quick-row { grid-template-columns: 120px minmax(140px, 1fr) auto; }
 .startup-controls { display: inline-flex; }
 .startup-controls button { width: 27px; padding-inline: 4px; }
 .settings-empty { padding: 8px 2px; }
@@ -538,7 +548,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 @media (max-width: 620px) {
   #chat-head { min-height: 58px; gap: 3px; padding-right: 8px; }
   #chat-head .title-row { max-width: none; flex: 1; }
-  #chat-head .phase, .views { display: none; }
+  #chat-head .phase-menu, .views { display: none; }
   #changes-toggle { width: 38px; padding: 0; font-size: 0; }
   #changes-toggle::before { content: '変更'; font-size: 11px; }
   #chat-more > summary { width: 38px; justify-content: center; padding: 7px; font-size: 0; }

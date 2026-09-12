@@ -201,9 +201,10 @@ function configAdapter() {
   };
 }
 
-function registerAutomationIpc({ getWindow, userData, appRoot }) {
+function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit }) {
   makerIpc.registerIpcHandlers(getWindow, {
     channelPrefix: 'automation:',
+    onRunExit,
     config: configAdapter(),
     userData,
     appRoot,

@@ -8,6 +8,16 @@ const POLICIES = Object.keys(POLICY_TIER);
 const BASIC_POLICIES = ['recommended'];
 const SKILL_MODES = ['auto', 'manual', 'off'];
 const MAX_INSTRUCTION_CHARS = 8000;
+// 回答の下に並べる「定型の依頼」。押すと本文が入力欄に入るだけで、送るのは利用者。
+// 既定の 2 つは、ターンのあとに毎回打っていた依頼（コミットとテスト）。コミットも
+// アプリ自身が git を叩くのではなく、CLI に頼む文である。
+const MAX_QUICK_REQUESTS = 3;
+const MAX_QUICK_LABEL_CHARS = 24;
+const MAX_QUICK_TEXT_CHARS = 400;
+const DEFAULT_QUICK_REQUESTS = [
+  { label: '変更をコミットする', text: 'まだコミットしていない変更を確認し、意味のまとまりごとにコミットしてください。メッセージは変更の理由が分かる 1 行にしてください。' },
+  { label: 'テストを実行する', text: '変更した対象のテストを実行し、失敗があれば原因と直し方を要約してください。' },
+];
 // 起動方針「共有」。tier を持たず、依頼を LAN の参加者へ渡す（src/main/share/）。
 const SHARED_POLICY = 'shared';
 // 引き受け方（accept）… 'auto' 自動で拾う / 'manual' 選んだものだけ / 'off' 受けない
@@ -41,6 +51,24 @@ function startupActions(value) {
       onError: item.onError === 'fail' ? 'fail' : 'warn',
     };
   }).filter(Boolean);
+}
+
+// 定型の依頼。保存値が無ければ既定の 2 つ（空配列を保存すれば「出さない」になる）。
+function quickRequests(value) {
+  if (!Array.isArray(value)) return DEFAULT_QUICK_REQUESTS.map((item) => ({ ...item }));
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') return null;
+    const text = String(item.text || '').trim().slice(0, MAX_QUICK_TEXT_CHARS);
+    if (!text) return null;
+    const label = String(item.label || '').trim().slice(0, MAX_QUICK_LABEL_CHARS);
+    return { label: label || text.split(/\r?\n/)[0].slice(0, MAX_QUICK_LABEL_CHARS), text };
+  }).filter(Boolean).slice(0, MAX_QUICK_REQUESTS);
+}
+
+// 設定 > アプリ「前面に無いときに通知する」。既定は ON。
+function notify(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return { background: source.background !== false };
 }
 
 function concurrent(value) {
@@ -105,6 +133,7 @@ function normalize(raw) {
         candidates: skillCandidates,
       },
       startupActions: startupActions(instructions.startupActions),
+      quickRequests: quickRequests(instructions.quickRequests),
     },
     execution: {
       defaultPolicy: POLICIES.includes(execution.defaultPolicy) ? execution.defaultPolicy : 'recommended',
@@ -116,6 +145,7 @@ function normalize(raw) {
       tiers: Object.fromEntries(TIERS.map((tier) => [tier, pair(tiers[tier], legacy)])),
     },
     share: share(source.share),
+    notify: notify(source.notify),
   };
 }
 
@@ -161,5 +191,6 @@ function resolve(config, request = {}, { optimized: on = true } = {}) {
 
 module.exports = {
   TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS, SHARED_POLICY, SHARE_DEFAULTS, ACCEPT_MODES,
-  normalize, resolve, optimized, effectivePolicy, share, acceptMode,
+  MAX_QUICK_REQUESTS, DEFAULT_QUICK_REQUESTS,
+  normalize, resolve, optimized, effectivePolicy, share, acceptMode, quickRequests, notify,
 };
