@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
@@ -487,6 +488,77 @@ class TestRunCommand(unittest.TestCase):
         self.assertEqual(result["exit_code"], 124)
 
 
+class TestOffloadOutput(unittest.TestCase):
+    """巨大な結果の外出し（設計 ADR-6）: 全文はファイルへ、会話には頭・尻と所在だけ。"""
+
+    def test_large_output_is_spilled_and_the_model_is_told_where(self):
+        full = "\n".join(f"line {i}" for i in range(1, 2001))
+        with tempfile.TemporaryDirectory() as tmp:
+            spill_dir = os.path.join(tmp, "x.results")   # 無ければ作る
+            output, path = ollama_loop.offload_output(full, 300, spill_dir=spill_dir, round_no=3)
+            self.assertEqual(path, os.path.join(spill_dir, "round-003.txt"))
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), full, "全文を 1 バイトも落とさない")
+        self.assertIn(path, output, "所在を会話へ返す")
+        self.assertIn("2000 行", output)
+        self.assertIn("grep -n", output, "read セットの語彙で読み直せる手段を添える")
+        self.assertTrue(output.startswith("line 1\n"), "頭は残す")
+        self.assertTrue(output.endswith("line 2000"), "尻は残す")
+        # 案内の分だけ頭・尻を削る——文脈の残りに合わせて絞った上限を案内で食い潰さない。
+        self.assertLessEqual(len(output), 300 + 40)
+
+    def test_small_output_is_returned_verbatim_without_a_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output, path = ollama_loop.offload_output("short", 300, spill_dir=tmp, round_no=1)
+            self.assertEqual((output, path), ("short", ""))
+            self.assertEqual(os.listdir(tmp), [], "上限内なら何も書かない")
+
+    def test_without_a_spill_dir_it_only_clips(self):
+        output, path = ollama_loop.offload_output("x" * 500, 100)
+        self.assertEqual(path, "")
+        self.assertIn("中略", output)
+        self.assertNotIn("保存", output)
+
+    def test_unwritable_spill_dir_falls_back_to_clipping(self):
+        """外出しは節約であって契約ではない——書けなくても実行は止めない。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = os.path.join(tmp, "file")
+            with open(blocker, "w") as fh:
+                fh.write("")
+            output, path = ollama_loop.offload_output(
+                "x" * 500, 100, spill_dir=os.path.join(blocker, "sub"), round_no=1)
+        self.assertEqual(path, "")
+        self.assertIn("中略", output)
+
+    def test_tiny_limit_still_carries_the_location(self):
+        """文脈が尽きかけているときは中身より所在の方が価値がある。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            output, path = ollama_loop.offload_output("y" * 5000, 60, spill_dir=tmp, round_no=1)
+        self.assertIn(path, output)
+
+    def test_run_command_reports_full_length_digest_and_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ollama_loop.run_command("printf 'x%.0s' $(seq 1 500)", cwd=os.getcwd(),
+                                            timeout=30, max_chars=100,
+                                            spill_dir=tmp, round_no=2)
+            self.assertEqual(result["output_chars_full"], 500)
+            self.assertEqual(result["spill"], os.path.join(tmp, "round-002.txt"))
+            self.assertIn(result["spill"], result["output"])
+            self.assertEqual(result["output_digest"], ollama_loop._digest("x" * 500))
+        small = ollama_loop.run_command("echo hi", cwd=os.getcwd(), timeout=30, max_chars=100)
+        self.assertEqual(small["spill"], "")
+
+    def test_repeat_detection_compares_the_full_output_not_the_note(self):
+        """所在の案内はラウンドごとに違う。空回りの判定は全文のダイジェストで行う。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            a = ollama_loop.run_command("printf 'x%.0s' $(seq 1 500)", cwd=os.getcwd(),
+                                        timeout=30, max_chars=100, spill_dir=tmp, round_no=1)
+            b = ollama_loop.run_command("printf 'x%.0s' $(seq 1 500)", cwd=os.getcwd(),
+                                        timeout=30, max_chars=100, spill_dir=tmp, round_no=2)
+        self.assertNotEqual(a["output"], b["output"], "会話へ返す本文は所在の分だけ違う")
+        self.assertEqual(ollama_loop._round_signature("c", a), ollama_loop._round_signature("c", b))
+
+
 class TestRunLoop(unittest.TestCase):
     def _loop(self, replies, **kwargs):
         calls = {"n": 0, "messages": []}
@@ -617,6 +689,35 @@ class TestRunLoop(unittest.TestCase):
         self.assertIn("context_exhausted", kinds)
         self.assertNotIn("tool_exec", kinds,
                          "実行していないコマンドを実行したようにログへ残さない")
+
+    def test_spilled_result_reaches_the_event_and_the_next_round(self):
+        events = []
+
+        def fake_chat(model, messages, **_kw):
+            if len(messages) <= 2:
+                return {"text": "```bash\nseq 1 3000\n```", "tokens_in": 1, "tokens_out": 1}
+            return {"text": "見ました\nTASK_COMPLETE", "tokens_in": 1, "tokens_out": 1}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(ollama_loop, "chat_once", fake_chat):
+            result = ollama_loop.run_loop(
+                "m", "タスク", max_output_chars=300, spill_dir=tmp,
+                emit=lambda kind, **f: events.append((kind, f)))
+            path = os.path.join(tmp, "round-001.txt")
+            self.assertTrue(os.path.isfile(path))
+        self.assertEqual(result["status"], "done")
+        tool_results = [f for k, f in events if k == "tool_result"]
+        self.assertEqual(tool_results[0]["spill"], path, "台帳に所在が残る")
+        self.assertGreater(tool_results[0]["output_chars_full"], tool_results[0]["output_chars"])
+        observation = [f for k, f in events if k == "message" and f["role"] == "user"][1]
+        self.assertIn(path, observation["content"], "次のラウンドの入力に所在が載る")
+
+    def test_small_results_leave_no_spill_fields(self):
+        events = []
+        self._loop(["```bash\nls\n```", "できました\nTASK_COMPLETE"],
+                   emit=lambda kind, **f: events.append((kind, f)))
+        tool_results = [f for k, f in events if k == "tool_result"]
+        self.assertNotIn("spill", tool_results[0], "外出ししなければ従来どおりの項目だけ")
 
     def test_no_tracker_means_no_context_fields(self):
         """トラッカーを渡さなければ従来どおり（上限も警告も関与しない）。"""

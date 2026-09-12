@@ -236,6 +236,34 @@ class TestMainModes(_NoServerMixin, unittest.TestCase):
         self.assertEqual(plain.call_count, 0)
         self.assertEqual(agentcli.parse_usage(err.getvalue()), (5, 6))
 
+    def test_tools_mode_places_spilled_results_next_to_the_log(self):
+        out, err = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"AGENT_OLLAMA_LOG_DIR": tmp}), \
+                mock.patch.object(ollama_adapter.ollama_loop, "run_loop", return_value={
+                    "text": "ok", "tokens_in": 1, "tokens_out": 1,
+                    "rounds": 1, "status": "done"}) as loop, \
+                mock.patch.object(ollama_adapter.sys, "stdin", io.StringIO("やって")), \
+                redirect_stdout(out), redirect_stderr(err):
+            self.assertEqual(ollama_adapter.main(["qwen3", "--tools"]), 0)
+            spill_dir = loop.call_args.kwargs["spill_dir"]
+            logs = [name for name in os.listdir(tmp) if name.endswith(".jsonl")]
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(spill_dir, os.path.join(tmp, logs[0][:-len(".jsonl")] + ".results"))
+            self.assertFalse(os.path.exists(spill_dir), "外出しが起きるまで作らない")
+
+    def test_tools_mode_without_a_log_spills_to_a_temp_dir(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(ollama_adapter.ollama_loop, "run_loop", return_value={
+                "text": "ok", "tokens_in": 1, "tokens_out": 1,
+                "rounds": 1, "status": "done"}) as loop, \
+                mock.patch.object(ollama_adapter.sys, "stdin", io.StringIO("やって")), \
+                redirect_stdout(out), redirect_stderr(err):
+            self.assertEqual(ollama_adapter.main(["qwen3", "--tools", "--no-log"]), 0)
+        spill_dir = loop.call_args.kwargs["spill_dir"]
+        self.assertTrue(spill_dir.startswith(tempfile.gettempdir()), "ログ置き場には残さない")
+        self.assertTrue(spill_dir.endswith(".results"))
+
     def test_stall_is_reported_and_returns_1(self):
         """無進捗の打ち切りは、定義の errors で transient 分類に載る文言で出す。"""
         err = io.StringIO()
