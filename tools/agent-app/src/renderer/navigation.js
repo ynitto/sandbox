@@ -7,11 +7,13 @@
     conversation: { label: '会話', createLabel: '新しい会話', listId: 'sessions' },
     tasks: { label: 'タスク', createLabel: '新しいタスク', listId: 'tasks' },
     workflows: { label: 'ワークフロー', createLabel: '新しいワークフロー', listId: 'workflows' },
+    share: { label: '共有', createLabel: '新しい会話', listId: 'share-requests' },
   };
 
   function normalizeArea(value) {
     if (value === 'tasks' || value === 'automation') return 'tasks';
     if (value === 'workflows') return 'workflows';
+    if (value === 'share') return 'share';
     return 'conversation';
   }
 

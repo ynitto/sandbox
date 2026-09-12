@@ -864,6 +864,16 @@ const flowFeature = window.createFlowFeature({
   dateLabel,
   query: (selector) => workbenchRoot.querySelector(selector),
   activeElement: () => workbenchRoot.activeElement || document.activeElement,
+  // 親へ「いまこのワークフローの会話を出している」を伝える。親は自分の端末ミラーを slot に載せる。
+  teachView: (detail) => {
+    if (!embedded) return;
+    workbenchHost.dispatchEvent(new CustomEvent('statemachine:flow-teaching-view', {
+      detail: detail ? { type: 'agent-app:flow-teaching-view', ...detail } : { type: 'agent-app:flow-teaching-view', workflowId: '', hidden: true },
+      bubbles: true,
+    }));
+  },
+  // 新しく教える: 親が会話（tmux）を用意し、保存名を返す
+  teachCreate: (payload) => window.FlowTeaching.create(payload),
   bridge: {
     catalog: () => automationHost.flowCatalog(),
     list: (root) => automationHost.flowList(root),
@@ -872,7 +882,7 @@ const flowFeature = window.createFlowFeature({
     remove: (root, id) => automationHost.flowDelete(root, id),
     preview: (root, workflow, request, parameters) => automationHost.flowPreview(root, workflow, request, parameters),
     teachingList: (root) => automationHost.flowTeachingList(root),
-    teachingCreate: (root, purpose, options) => automationHost.flowTeachingCreate(root, purpose, options),
+    teachAdopt: (root, workflowId) => automationHost.flowTeachAdopt(root, workflowId),
     teachingRead: (root, workflowId) => automationHost.flowTeachingRead(root, workflowId),
     teachingSave: (root, workflowId, session) => automationHost.flowTeachingSave(root, workflowId, session),
     teachingRecordTrial: (root, workflowId, trial) => automationHost.flowTeachingRecordTrial(root, workflowId, trial),
@@ -2243,7 +2253,12 @@ async function refreshEmbedded() {
   refreshExecutionSnapshot();
 }
 
-if (workbenchHost) workbenchHost.setController({ navigate: navigateEmbedded, refresh: refreshEmbedded });
+if (workbenchHost) workbenchHost.setController({
+  navigate: navigateEmbedded,
+  refresh: refreshEmbedded,
+  // 親のワークフロー会話が 1 ターン終わったあと、AI が書いた定義と下書きを読み直す
+  reloadFlowTeaching: () => flowFeature.reloadTeaching(),
+});
 
 async function init() {
   state.catalog = (await guard('準備', () => automationHost.catalog())) || state.catalog;

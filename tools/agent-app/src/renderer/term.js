@@ -9,7 +9,7 @@
 (function initTerm() {
 function createTerm() {
   const state = {
-    id: '', term: null, fit: null, host: null, ro: null, cols: 120, rows: 36, lastSize: '', screenSeq: 0,
+    id: '', remote: false, keySink: null, term: null, fit: null, host: null, ro: null, cols: 120, rows: 36, lastSize: '', screenSeq: 0,
     inputEnabled: false, onFocus: null, onAccepted: null, onError: null, onEscape: null,
   };
 
@@ -35,7 +35,9 @@ function createTerm() {
     if (!state.id || !state.inputEnabled) return false;
     if (data === '\x1b' && state.onEscape && !state.onEscape()) return false;
     try {
-      await api.termKeys(state.id, data);
+      // 共有で引き受けた依頼の端末は、この PC の会話ではないので別の窓口から送る
+      if (state.keySink) await state.keySink(data);
+      else await api.termKeys(state.id, data);
       if (state.onAccepted) state.onAccepted(data);
       return true;
     } catch (error) {
@@ -71,7 +73,7 @@ function createTerm() {
     // attachCustomWheelEventHandler で先に受け取り、false を返して既定処理を止める。
     // message 入力モードでも端末の閲覧はできるよう inputEnabled では制限しない。
     term.attachCustomWheelEventHandler((event) => {
-      if (!state.id || !event.deltaY) return true;
+      if (!state.id || state.remote || !event.deltaY) return true;
       event.preventDefault();
       const direction = event.deltaY < 0 ? -1 : 1;
       const lines = direction * Math.max(1, Math.min(state.rows, Math.ceil(Math.abs(event.deltaY) / 30)));
@@ -90,7 +92,7 @@ function createTerm() {
     if (size === state.lastSize) return;
     state.lastSize = size;
     state.cols = state.term.cols; state.rows = state.term.rows;
-    if (state.id) api.termResize(state.id, state.cols, state.rows).catch(() => {});
+    if (state.id && !state.remote) api.termResize(state.id, state.cols, state.rows).catch(() => {});
   }
 
   // 画面を丸ごと描き直す。カーソルは tmux の位置へ。
@@ -113,7 +115,8 @@ function createTerm() {
   // 会話 ID を切り替える。前の会話の監視は外し、新しい会話を監視する。
   async function attach(id, hostEl) {
     ensure(hostEl);
-    if (state.id && state.id !== id) api.termUnwatch(state.id).catch(() => {});
+    if (state.id && !state.remote && state.id !== id) api.termUnwatch(state.id).catch(() => {});
+    state.remote = false;
     state.id = id || '';
     state.term.reset();
     if (!id) return;
@@ -121,8 +124,24 @@ function createTerm() {
     await api.termWatch(id).catch(() => {});
   }
 
+  // 共有の端末を映す。画面は share の便りで届くので、この PC の tmux は見ない（監視も大きさの
+  // 通知もしない）。keys を渡したときだけ打てる——自分が引き受けている依頼だけで、依頼者は閲覧のみ。
+  function attachRemote(id, hostEl, { keys = null } = {}) {
+    ensure(hostEl);
+    if (state.id && !state.remote) api.termUnwatch(state.id).catch(() => {});
+    const same = state.remote && state.id === id;
+    state.remote = true;
+    state.id = id || '';
+    state.keySink = keys;
+    setInputEnabled(false);
+    if (!same) state.term.reset();
+    refit();
+  }
+
   function detach() {
-    if (state.id) api.termUnwatch(state.id).catch(() => {});
+    if (state.id && !state.remote) api.termUnwatch(state.id).catch(() => {});
+    state.remote = false;
+    state.keySink = null;
     state.id = '';
     if (state.term) state.term.reset();
   }
@@ -143,12 +162,16 @@ function createTerm() {
   }
 
   return {
-    attach, detach, applyScreen, refit, size, focus, sendKey: sendData, setInputEnabled, configure,
+    attach, attachRemote, detach, applyScreen, refit, size, focus, sendKey: sendData, setInputEnabled, configure,
     current: () => state.id,
+    isRemote: () => state.remote,
+    canType: () => !!state.keySink,
   };
 }
 
   window.createTerm = createTerm;
   window.Term = createTerm();          // 会話の端末ミラー
   window.TaskTerm = createTerm();      // タスクを AI と作る会話の端末ミラー
+  window.ShareTerm = createTerm();     // 共有の画面（引き受けた依頼・仲間の依頼）の端末ミラー
+  window.FlowTerm = createTerm();      // ワークフローを AI と作る会話の端末ミラー
 })();

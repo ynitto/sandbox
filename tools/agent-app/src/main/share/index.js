@@ -96,14 +96,20 @@ class Share {
         heartbeat: (id, body, remote) => this.requester.heartbeat(id, body, remote),
         result: (id, body, remote) => this.requester.result(id, body, remote),
         cancel: (id, body) => this.participant.cancel(id, body),
+        // ひとことは両向き。自分が出した依頼なら依頼者として、引き受けた依頼なら執行者として受ける
+        message: (id, body) => (this.requester.get(id) ? this.requester.message(id, body) : this.participant.message(id, body)),
         attachment: (id, name) => this.requester.attachmentPath(id, name),
       },
     });
+    // 設定のポート。0 は「空いているポート」（1 台の PC で 2 つ動かすときや、試験のとき）。
+    // 数として読めないものだけ既定へ倒す——0 を既定に読み替えると、意図した「空き」が塞がった 47801 になる。
+    const wanted = Number(cfg.port);
+    const port = this.options.port != null ? this.options.port : (Number.isFinite(wanted) && wanted >= 0 ? wanted : HTTP_PORT);
     try {
-      this.port = await this.server.listen(this.options.port != null ? this.options.port : (Number(cfg.port) || HTTP_PORT), this.options.host || '0.0.0.0');
+      this.port = await this.server.listen(port, this.options.host || '0.0.0.0');
     } catch (err) {
       this.state = 'error';
-      this.error = `受け口を開けません（ポート ${Number(cfg.port) || HTTP_PORT}）: ${err.message}`;
+      this.error = `受け口を開けません（ポート ${port}）: ${err.message}`;
       this.server = null;
       return this;
     }
@@ -168,10 +174,11 @@ class Share {
     return {
       enabled: !!cfg.enabled, state: this.state, error: this.error, node: this.node || normalizeNode(cfg.node || defaultNode()), port: this.port,
       udp: !!(on && this.peers && this.peers.udpOk), participate: !!cfg.participate,
+      accept: on ? this.participant.mode() : (cfg.accept || 'off'), capacity: on ? this.participant.capacity() : 0,
       me: on ? this.participant.nodeInfo() : null,
       peers: on ? this.peers.peers().map((p) => ({ node: p.node, address: p.address, port: p.port, seenAt: p.seenAt, via: p.via, info: p.info })) : [],
       mine: on ? this.requester.view() : [],
-      others: on ? this.participant.lastGathered.map(({ peer, ...r }) => ({ ...r, host: peer.node })) : [],
+      others: on ? this.participant.gatheredView() : [],
       inflight: on ? this.participant.inflightView() : [],
       today: on ? this.ledger.today() : null,
     };
@@ -180,6 +187,29 @@ class Share {
   post(input, opts) {
     if (this.state !== 'on') throw new Error(this.error || '共有が動いていません（設定 > 共有）');
     return this.requester.post(input, opts);
+  }
+
+  // 画面から 1 件を選んで引き受ける／引き受けた実行を止める
+  accept(id) {
+    if (this.state !== 'on') throw new Error(this.error || '共有が動いていません（設定 > 共有）');
+    return this.participant.accept(id);
+  }
+
+  stopAccepted(id) { return this.participant ? this.participant.stopInflight(id) : false; }
+
+  // ひとことを送る。自分が出した依頼なら執行者へ、引き受けた依頼なら依頼者へ
+  say(id, text) {
+    if (this.state !== 'on') throw new Error(this.error || '共有が動いていません（設定 > 共有）');
+    return this.requester.get(id) ? this.requester.say(id, text) : this.participant.say(id, text);
+  }
+
+  // 引き受けた依頼の端末へキーを送る（自分の PC の CLI だけ）
+  keys(id, data) { return this.participant ? this.participant.keys(id, data) : false; }
+
+  // 端末の画面（依頼者として待っている分と、自分が引き受けている分の両方）
+  screenOf(id) {
+    if (this.state !== 'on') return '';
+    return this.requester.screenOf(id) || this.participant.screenOf(id) || '';
   }
 
   cancelSession(sessionId) { return this.requester ? this.requester.cancelSession(sessionId) : null; }

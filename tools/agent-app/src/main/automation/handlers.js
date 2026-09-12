@@ -172,36 +172,13 @@ function registerIpcHandlers(getWindow, options = {}) {
         try {
           if (code !== 0) throw new Error((stderr || `${spec.command} が終了コード ${code} で終了しました`).trim());
           if (truncated) throw new Error('AIの応答が大きすぎます');
-          const result = job.mode === 'flow-teach'
-            ? ai.parseFlowTeachingEnvelope(stdout, { workflowId: job.workflowId })
-            : ai.parseEnvelope(stdout, { mode: job.mode, baseSpec: job.baseSpec, scope: job.scope });
+          const result = ai.parseEnvelope(stdout, { mode: job.mode, baseSpec: job.baseSpec, scope: job.scope });
           const changes = result.candidate && job.mode === 'review'
             ? aiDiff.diff(job.baseSpec, result.candidate)
             : [];
-          let session = null;
-          if (job.mode === 'flow-teach') {
-            const messages = [...job.flowTeachingSession.messages];
-            if (result.summary) messages.push({ role: 'assistant', text: result.summary, kind: result.status });
-            session = flowTeaching.normalizeSession({ ...job.flowTeachingSession, messages });
-            if (result.status === 'questions') {
-              session.understanding.unknowns = result.questions.map((item) => item.text);
-            } else {
-              session.understanding = result.workflowSpec;
-              session = flowTeaching.addGeneration(session, {
-                id: randomUUID(), summary: result.summary, workflowSpec: result.workflowSpec,
-                workflow: result.candidate, digest: result.preview && result.preview.digest,
-              });
-            }
-            session = flowTeachingStore.save(job.root, job.workflowId, session);
-          }
           finishAi(job, {
             ok: true,
-            result: {
-              ...result,
-              changes,
-              ...(session ? { session } : {}),
-              baseFingerprint: job.baseSpec ? ai.fingerprint(job.baseSpec) : '',
-            },
+            result: { ...result, changes, baseFingerprint: job.baseSpec ? ai.fingerprint(job.baseSpec) : '' },
           });
         } catch (err) {
           if (job.attempt === 0) {
@@ -307,14 +284,6 @@ function registerIpcHandlers(getWindow, options = {}) {
     return flowModel.preview(p.workflow, p.request, p.parameters);
   });
   register('flow:teaching:list', (p) => flowTeachingStore.list(selectedRoot(p)));
-  register('flow:teaching:create', (p) => {
-    const root = selectedRoot(p);
-    const purpose = String(p.purpose || '').trim();
-    if (!purpose) throw new Error('教えたいワークフローを入力してください');
-    const workflowId = String(p.workflowId || `flow-${randomUUID().slice(0, 8)}`).trim();
-    const title = String(p.title || purpose.split(/\r?\n/)[0]).trim().slice(0, 80);
-    return flowTeachingStore.create(root, { workflowId, title, purpose });
-  });
   register('flow:teaching:read', (p) => flowTeachingStore.load(selectedRoot(p), String(p.workflowId || '')));
   register('flow:teaching:save', (p) => flowTeachingStore.save(selectedRoot(p), String(p.workflowId || ''), p.session));
   register('flow:teaching:trial', (p) => {
@@ -412,7 +381,7 @@ function registerIpcHandlers(getWindow, options = {}) {
 
   register('ai:start', async (p, event) => {
     const root = selectedRoot(p);
-    const mode = p.mode === 'review' ? 'review' : p.mode === 'flow-teach' ? 'flow-teach' : 'draft';
+    const mode = p.mode === 'review' ? 'review' : 'draft';
     const cfg = settings.load(getUserData());
     const requestedAgent = String(p.agent || cfg.agent || '');
     if (!requestedAgent) throw new Error('使う AI を選んでください（「実行環境」で確認できます）');
@@ -424,21 +393,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     let baseSpec = null;
     let scope = { type: 'workflow' };
     let prompt;
-    let flowTeachingSession = null;
-    let workflowId = '';
-    if (mode === 'flow-teach') {
-      workflowId = String(p.workflowId || '').trim();
-      flowTeachingSession = flowTeachingStore.load(root, workflowId);
-      const message = String(p.message || '').trim();
-      if (message) {
-        flowTeachingSession = flowTeaching.normalizeSession({
-          ...flowTeachingSession,
-          messages: [...flowTeachingSession.messages, { role: 'user', text: message }],
-        });
-        flowTeachingSession = flowTeachingStore.save(root, workflowId, flowTeachingSession);
-      }
-      prompt = ai.flowTeachingPrompt({ session: flowTeachingSession, catalog: agentFlow.catalog(runCapture) });
-    } else if (mode === 'review') {
+    if (mode === 'review') {
       baseSpec = model.normalizeProcedure(p.spec);
       scope = ai.normalizeScope(p.scope, baseSpec);
       prompt = ai.reviewPrompt({ spec: baseSpec, scope, focus: p.focus, history: p.history });
@@ -450,7 +405,6 @@ function registerIpcHandlers(getWindow, options = {}) {
     const job = {
       requestId: randomUUID(), sender: event.sender, root, mode, baseSpec, scope, prompt,
       agent, model: String(p.model || cfg.model || ''), attempt: 0, cancelled: false,
-      flowTeachingSession, workflowId,
     };
     activeAi = job;
     sendTo(job.sender, 'ai:progress', { requestId: job.requestId, mode: job.mode, phase: 'thinking', message: 'AIが検討しています…' });

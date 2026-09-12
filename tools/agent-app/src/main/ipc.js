@@ -27,6 +27,10 @@ const { registerAutomationIpc } = require('./automation/ipc');
 const automationTools = require('./automation/tools');
 const machineStore = require('./automation/store');
 const teaching = require('./automation/teaching');
+const flowStore = require('./automation/flow-store');
+const flowTeachingStore = require('./automation/flow-teaching-store');
+const flowTeachingModel = require('./automation/flow-teaching-model');
+const flowTeachingPrompt = require('./automation/flow-teaching-prompt');
 const recordingBrowser = require('./automation/browser');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
@@ -385,6 +389,82 @@ function runPrompt({ cli, prompt, model = '', readonly = true, cwd, files = [], 
   return { done, stop(reason) { stopped = true; stopReason = reason || '止めた'; if (child) killTree(child); } };
 }
 
+// ---- 共有（引き受けた依頼を tmux の画面で走らせる） ------------------------------------------
+//
+// 依頼者は自分の端末ミラーで「他人の PC で何が起きているか」を見ながら待つ。そのため引き受けた
+// 側は会話と同じ tmux セッション（agent-app-share-<依頼 id>）で CLI を起こし、画面が変わるたびに
+// onScreen で渡す（participant が心拍に載せて依頼者へ送る）。tmux が無い PC ではヘッドレスに倒す。
+let shareRunSeq = 0;              // 引き受けた依頼の tmux 名を分ける連番（`tmux.sharePaneId`）
+let shareTmuxOk = false;
+
+function shareOutcome(message, { cli, spec, conv, startedAt, stopped = false }) {
+  const structured = response.parseTranscript(cli, message.text || '');
+  const halted = stopped || !!message.stopped;
+  const failed = halted || !!message.error || !structured.text;
+  const rule = failed ? agentCli.classifyError(spec, conv.lastText || '') : null;
+  return {
+    text: structured.text, code: failed ? 1 : 0, stopped: halted, elapsedMs: Date.now() - startedAt, usage: null,
+    error: failed ? (message.error || '画面から答えを読み取れませんでした') : '',
+    errorClass: !failed ? '' : (halted ? 'transient' : (rule && rule.cls ? rule.cls : 'cli')),
+    quotaKind: rule && rule.quotaKind ? rule.quotaKind : '',
+  };
+}
+
+function runPromptTmux(opts) {
+  const { cli, prompt, model = '', cwd, timeoutMs = 0, onScreen = () => {}, shareId } = opts;
+  const cfg = store.loadConfig(userData());
+  const spec = agentCli.load(cli, '');
+  const { shell } = host.hostOf('', cfg.wslDistro);
+  const cmd = agentCli.interactiveCmd(spec, { model, readonly: true, autoApprove: false, cliSession: '', history: [] });
+  shareRunSeq = (shareRunSeq + 1) % 1000;
+  const id = tmux.sharePaneId(shareId, shareRunSeq);
+  const startedAt = Date.now();
+  let stopped = false;
+  const conv = new tmux.Conversation({
+    id, shell, cwd: host.toHostPath(cwd), argv: cmd.argv, patterns: tmux.compilePatterns(spec.interactive),
+    launch: { cli, model, readonly: true, autoApprove: false },
+    emit: (channel, payload) => { if (channel === 'term:screen') onScreen(payload.text); },
+  });
+  conv.watchers = 1;                       // 依頼者が見ているので、画面は常に取る
+  let timer = null;
+  const cleanup = async () => {
+    if (timer) clearTimeout(timer);
+    await conv.kill().catch(() => {});
+  };
+  const done = new Promise((resolve) => {
+    (async () => {
+      try {
+        await conv.open({ reuse: false });
+        await conv.waitReady();
+        if (timeoutMs > 0) timer = setTimeout(() => { stopped = true; conv.stop().catch(() => {}); }, timeoutMs);
+        await conv.send(prompt, (message) => resolve(shareOutcome(message, { cli, spec, conv, startedAt, stopped })));
+      } catch (err) {
+        resolve({ text: '', code: 1, stopped: false, error: `起動できません: ${(err && err.message) || err}`, errorClass: 'env', quotaKind: '', elapsedMs: Date.now() - startedAt, usage: null });
+      }
+    })();
+  }).then(async (outcome) => { await cleanup(); return outcome; });
+  return {
+    done,
+    // 引き受けた人だけが打てる（自分の PC の自分の CLI）。依頼者には送れない
+    keys(data) { conv.keys(data).catch(() => {}); },
+    // 止めるときは生成を止めてから tmux ごと終わらせる（kill が待っているターンも閉じる）
+    stop() {
+      stopped = true;
+      conv.stop().catch(() => {}).then(() => cleanup()).catch(() => {});
+    },
+  };
+}
+
+// 共有で 1 件を走らせる。tmux が使えて対話定義のある CLI なら画面つき、無ければヘッドレス。
+function runSharedPrompt(opts) {
+  const spec = opts.cli ? agentCli.load(opts.cli, '') : null;
+  const cfg = store.loadConfig(userData());
+  if (shareTmuxOk && opts.shareId && spec && spec.interactive && cfg.transport !== 'headless') {
+    try { return runPromptTmux(opts); } catch { /* 定義や tmux の都合で作れなければヘッドレス */ }
+  }
+  return runPrompt(opts);
+}
+
 // 登録リポジトリの origin URL（共有の依頼の workspace と突き合わせる）。60 秒ごとに引き直す。
 const repoUrls = new Map();
 function normalizeRepoUrl(url) {
@@ -464,7 +544,7 @@ async function runShared(id, sess, dirs, p, requested, cfg, send, release) {
   });
   if (conversations.has(id) || sess.live) await closeConversation(id);
   const request = shareInstance.post({
-    sessionId: id, title: requested.text.split('\n')[0], goal, requires: { agent_cli: requested.cli ? [requested.cli] : [] },
+    sessionId: id, title: requested.text.split('\n')[0], summary: requested.text, goal, requires: { agent_cli: requested.cli ? [requested.cli] : [] },
     mode: 'read', model: requested.model, priority: p.priority || 'normal', attachments: served, workspace,
   }, { onDone: release });
   store.updateSession(ud, id, {
@@ -915,6 +995,82 @@ async function startTeaching(p, send) {
   return { ...taskConversationView(ud, repo, machine), existing, started };
 }
 
+// ---- ワークフローを AI と作る会話（タスクと同じ作り。kind: 'workflow'） ---------------------
+//
+// 下書き（.agents/workflows/.teaching/<id>.json）が会話 ID を覚え、AI は会話の中で
+// .agents/workflows/<id>.json を直接書く。画面はその 1 ファイルを読んで「候補の工程」を出す。
+
+function flowConversationView(ud, repo, id) {
+  const summary = store.findWorkflowSession(ud, repo, id);
+  const session = summary ? presentSession(store.readSession(ud, summary.id)) : null;
+  let workflow = null;
+  try { workflow = flowStore.read(repo, id); } catch { workflow = null; }   // まだ書かれていない
+  return { workflowId: id, session, sidecar: flowTeachingStore.load(repo, id), workflow, published: !!(workflow && !workflow.issues.some((item) => item.level === 'error')) };
+}
+
+function prepareFlowTeaching(p) {
+  const ud = userData();
+  const repo = requireRepo(p.repo);
+  const cfg = store.loadConfig(ud);
+  const purpose = String(p.purpose || '').trim();
+  const id = String(p.workflowId || '').trim() || flowTeachingPrompt.workflowIdFor(purpose);
+  let sidecar = flowTeachingStore.load(repo, id);
+  let existing = true;
+  try { flowStore.read(repo, id); } catch { existing = false; }
+  if (!existing && !sidecar.title) {
+    if (!purpose) throw new Error('教えたいワークフローを入力してください');
+    sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose }));
+  }
+  let summary = store.findWorkflowSession(ud, repo, id);
+  if (!summary) {
+    const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
+    const created = store.createSession(ud, {
+      repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier,
+      readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
+      transport: 'tmux', worktree: '', kind: 'workflow', workflow: { id },
+    });
+    summary = { id: created.id };
+  }
+  if (sidecar.sessionId !== summary.id) sidecar = flowTeachingStore.save(repo, id, { ...sidecar, sessionId: summary.id });
+  if (p.autoApprove != null) store.updateSession(ud, summary.id, { autoApprove: !!p.autoApprove });
+  return { ud, repo, purpose, id, existing, sidecar, session: store.readSession(ud, summary.id) };
+}
+
+async function startFlowTeaching(p, send) {
+  const { ud, repo, purpose, id, existing, sidecar, session } = prepareFlowTeaching(p);
+  const conversation = conversations.get(session.id);
+  const busy = running.has(session.id) || !!(conversation && conversation.turn);
+  let started = false;
+  if (!busy) {
+    const common = { id, purpose: sidecar.understanding.purpose || purpose, existing };
+    const prompt = session.messages.length
+      ? flowTeachingPrompt.resumePrompt({ ...common, context: p.context })
+      : flowTeachingPrompt.prompt(common);
+    await guardedRunTurn(session.id, {
+      prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
+      skillMode: 'off', skills: [], attachments: [],
+    }, send);
+    started = true;
+  }
+  return { ...flowConversationView(ud, repo, id), existing, started };
+}
+
+// AI が書いた定義を、この下書きの「候補」として取り込む（試運転と利用可能にする手順は今までどおり）。
+function adoptFlowDraft(p) {
+  const repo = requireRepo(p.repo);
+  const id = String(p.workflowId || '').trim();
+  const read = flowStore.read(repo, id);
+  if (read.issues.some((item) => item.level === 'error')) throw new Error('定義にまだ直すところがあります');
+  const session = flowTeachingStore.load(repo, id);
+  const active = session.generations.find((item) => item.id === session.activeGenerationId);
+  if (active && active.digest === read.digest) return session;               // 変わっていない
+  const next = flowTeachingModel.addGeneration(session, {
+    id: `file-${read.digest.slice(0, 12)}`, summary: read.workflow.description || read.workflow.name,
+    workflow: read.workflow, digest: read.digest,
+  });
+  return flowTeachingStore.save(repo, id, next);
+}
+
 // Windows アプリの見本を保存し、AI へ渡す本文を**返す**。送りはしない——本文は入力欄に入り、
 // 利用者が見たものの補足を足してから送る（ブラウザの「終了してAIへ渡す」と同じ扱い）。
 // 送る経路が会話の 1 本だけになるので、AI が応答中でもここで断る必要がない。
@@ -944,6 +1100,11 @@ function registerIpcHandlers(getWindow) {
   handle('automation:teach:start', (p) => startTeaching(p, send));
   handle('automation:teach:session', (p) => taskConversationView(userData(), requireRepo(p.repo), String(p.machine || '').trim()));
   handle('automation:teach:demonstration', (p) => demonstrate(p));
+  // ワークフローを AI と作る会話（タスクの 3 つと同じ形）
+  handle('automation:flow:teach:prepare', (p) => { const r = prepareFlowTeaching(p); return { ...flowConversationView(r.ud, r.repo, r.id), existing: r.existing }; });
+  handle('automation:flow:teach:start', (p) => startFlowTeaching(p, send));
+  handle('automation:flow:teach:session', (p) => flowConversationView(userData(), requireRepo(p.repo), String(p.workflowId || '').trim()));
+  handle('automation:flow:teach:adopt', (p) => adoptFlowDraft(p));
   handle('automation:teach:browser', (p) => launchTeachingBrowser(p));
   handle('automation:teach:browser:page', () => teachingBrowserPage());
   // 写したが送らずに閉じた添付を掃除する
@@ -968,18 +1129,27 @@ function registerIpcHandlers(getWindow) {
   let shareAgentNames = [];
   const refreshShareCaches = async () => {
     try { shareAgentNames = (await listAgents('')).filter((a) => a.available && !a.virtual).map((a) => a.name); } catch { /* 次の周で */ }
+    try { const info = await host.probe(process.platform === 'win32' ? store.loadConfig(userData()).wslDistro : ''); shareTmuxOk = !!(info.ok && info.tmux); } catch { shareTmuxOk = false; }
     await refreshRepoUrls().catch(() => {});
   };
-  shareInstance = new share.Share({ userData: userData(), config: store.loadConfig(userData()), send, runPrompt, agents: () => shareAgentNames, repoFor });
+  shareInstance = new share.Share({ userData: userData(), config: store.loadConfig(userData()), send, runPrompt: runSharedPrompt, agents: () => shareAgentNames, repoFor });
   refreshShareCaches().then(() => shareInstance.start()).catch((err) => { shareInstance.error = err.message; });
   const shareTimer = setInterval(() => { refreshShareCaches().catch(() => {}); }, 5 * 60 * 1000);
   if (shareTimer.unref) shareTimer.unref();
   handle('share:status', () => shareInstance.status());
   handle('share:cancel', (p) => shareInstance.cancel(String(p.id || '')));
   handle('share:priority', (p) => shareInstance.setPriority(String(p.id || ''), p.priority));
-  handle('share:participate', async (p) => {
+  handle('share:accept', (p) => shareInstance.accept(String(p.id || '')));
+  handle('share:stop', (p) => shareInstance.stopAccepted(String(p.id || '')));
+  handle('share:screen', (p) => shareInstance.screenOf(String(p.id || '')));
+  // ひとこと（人と人）。CLI には入らない
+  handle('share:say', (p) => shareInstance.say(String(p.id || ''), String(p.text || '')));
+  // 引き受けた依頼の端末へキーを送る
+  handle('share:keys', (p) => shareInstance.keys(String(p.id || ''), String(p.data || '')));
+  // 引き受け方（自動で受ける / 選んで受ける / 受けない）。設定 > 共有と同じ値を書き換える
+  handle('share:mode', async (p) => {
     const current = store.loadConfig(userData());
-    const next = store.saveConfig(userData(), { share: { ...current.share, participate: !!p.on } });
+    const next = store.saveConfig(userData(), { share: { ...current.share, accept: String(p.mode || 'off') } });
     await shareInstance.reconfigure(next);
     return shareInstance.status();
   });

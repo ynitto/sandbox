@@ -2,10 +2,20 @@
 
 // 参加者の側。余っている枠を差し出し、仲間の依頼を拾って自分の CLI で答える。
 //
-//   10 秒ごと（と NEW を聞いたとき）:
+//   引き受け方（設定 share.accept）は 3 つ。
+//     auto   … 10 秒ごと（と NEW を聞いたとき）自分で拾う
+//     manual … 画面で選ばれた 1 件だけ拾う（accept(id)）
+//     off    … 拾わない（依頼は出せる）
+//   auto のとき 10 秒ごと:
 //     全員の /requests を集める → queue で並べて資格を見る → 上から claim → 200 が返った 1 件を実行
 //   実行中: 30 秒ごとに heartbeat。依頼者に届かなくなったら（2 回続けて失敗）CLI を止める（枠を捨てない）
 //   終了: 台帳に 1 行、result を依頼者へ直送。届かなければ outbox に持って 60 秒ごとに再送（24 時間）
+//
+// 実行は tmux の画面で行い（ipc の runPrompt が決める）、その画面を心拍に載せて依頼者へ送る。
+// 依頼者はそれを自分の端末ミラーに描くので、他人の PC で何が起きているかを見ながら待てる。
+//
+// 依頼者との**人と人のやり取り**（ひとこと）も、同じ受け口で受け渡す。CLI には入らない——
+// 読んで、何を打つかを決めるのは引き受けた人。端末に打てるのもその人だけ。
 //
 // 読み取り専用で起こす。cwd は依頼の workspace と一致する登録リポジトリか、空の scratch フォルダ。
 // 書き込みの依頼は設定で受けると決めたときだけ拾う（成果の納品はまだ無い。設計 §5.2）。
@@ -20,10 +30,28 @@ const TICK_MS = 10 * 1000;
 const HEARTBEAT_MS = 30 * 1000;
 const LEASE_MS = 15 * 60 * 1000;
 const OUTBOX_RETRY_MS = 60 * 1000;
+const SCREEN_MS = 2 * 1000;
+const MAX_SCREEN = 48 * 1024;
+const MAX_TALK = 500;              // ひとこと 1 件の長さ
+const KEEP_TALK = 50;
 const OUTBOX_TTL_MS = 24 * 60 * 60 * 1000;
 const GATHER_TIMEOUT_MS = 3000;
 
 function nowIso() { return new Date().toISOString(); }
+
+// 拾えない理由を、画面にそのまま出せる 1 行にする
+const REASONS = {
+  state: 'その依頼はもう受け付けていません',
+  own: '自分が出した依頼です',
+  write: '書き込みの依頼は受けない設定です',
+  cli: '依頼が指定するエージェントをこの PC は提供していません',
+  quota: 'この PC のエージェントは今日の枠を使い切っています',
+  requester_cap: 'この依頼者から今日受けられる件数に達しています',
+  repo: '依頼のリポジトリをこの PC に登録していません',
+};
+function reasonText(reason) {
+  return REASONS[reason] || '受けられません';
+}
 
 function safeName(name) {
   return String(name || '').replace(/[\\/]/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file';
@@ -35,7 +63,7 @@ class Participant extends EventEmitter {
   // agents   … () => この PC で使える CLI 名の配列。repoFor … (url) => 登録リポジトリのフォルダ or ''
   // runPrompt… ({ cli, prompt, model, readonly, cwd, files, timeoutMs, onLine }) => { done: Promise, stop(reason) }
   constructor({ userData, node, key, peers, ledger, settings, agents, repoFor = () => '', runPrompt, send = () => {}, file,
-    tickMs = TICK_MS, heartbeatMs = HEARTBEAT_MS, leaseMs = LEASE_MS, outboxRetryMs = OUTBOX_RETRY_MS, now = () => Date.now() }) {
+    tickMs = TICK_MS, heartbeatMs = HEARTBEAT_MS, leaseMs = LEASE_MS, outboxRetryMs = OUTBOX_RETRY_MS, screenMs = SCREEN_MS, now = () => Date.now() }) {
     super();
     this.userData = userData;
     this.node = String(node);
@@ -52,6 +80,7 @@ class Participant extends EventEmitter {
     this.heartbeatMs = heartbeatMs;
     this.leaseMs = leaseMs;
     this.outboxRetryMs = outboxRetryMs;
+    this.screenMs = screenMs;
     this.now = now;
     this.inflight = new Map();
     this.outbox = [];
@@ -78,10 +107,20 @@ class Participant extends EventEmitter {
     this.timer = null;
     this.outboxTimer = null;
     this.peers.off('new', this.onNew);
-    for (const item of this.inflight.values()) { try { item.controller.stop('参加を止めた'); } catch { /* 既に終わった */ } }
+    for (const item of this.inflight.values()) {
+      clearInterval(item.screenTimer);
+      try { item.controller.stop('参加を止めた'); } catch { /* 既に終わった */ }
+    }
   }
 
   // ---- 宣言（HELLO と /node に載せる） -----------------------------------------------------
+
+  // 引き受け方。'auto' | 'manual' | 'off'
+  mode() {
+    const cfg = this.settings() || {};
+    if (['auto', 'manual', 'off'].includes(cfg.accept)) return cfg.accept;
+    return cfg.participate ? 'auto' : 'off';
+  }
 
   offeredClis() {
     const cfg = this.settings() || {};
@@ -93,10 +132,10 @@ class Participant extends EventEmitter {
   nodeInfo() {
     const cfg = this.settings() || {};
     const clis = this.offeredClis();
-    const budget = this.ledger.canAccept({ participate: !!cfg.participate, clis, maxConcurrent: cfg.maxConcurrent, dailyCap: cfg.dailyCap, inflight: this.inflight.size });
+    const budget = this.ledger.canAccept({ participate: this.mode() !== 'off', clis, maxConcurrent: cfg.maxConcurrent, dailyCap: cfg.dailyCap, inflight: this.inflight.size });
     return {
       node: this.node, contract_version: 1, workloads: ['turn'], modes: cfg.acceptWrite ? ['read', 'write'] : ['read'],
-      agent_cli: clis, participate: !!cfg.participate, max_concurrent: Math.max(1, Number(cfg.maxConcurrent) || 1),
+      agent_cli: clis, participate: this.mode() !== 'off', accept: this.mode(), max_concurrent: Math.max(1, Number(cfg.maxConcurrent) || 1),
       can_accept: budget.can_accept, reason_codes: budget.reason_codes, clis: budget.clis, turns: { ...budget.today, per_requester_cap: Number(cfg.perRequesterDailyCap) || 0 },
       inflight: [...this.inflight.values()].map((i) => ({ id: i.request.id, posted_by: i.request.posted_by, cli: i.cli, started_at: i.startedAt })),
     };
@@ -117,13 +156,18 @@ class Participant extends EventEmitter {
     return this.lastGathered;
   }
 
-  slots() {
+  // 同時数と 1 日の上限から見た空き（引き受け方は見ない）
+  capacity() {
     const cfg = this.settings() || {};
-    if (!cfg.participate) return 0;
     const max = Math.max(1, Number(cfg.maxConcurrent) || 1);
     const cap = Number(cfg.dailyCap) || 0;
     if (cap > 0 && this.ledger.today().count >= cap) return 0;
     return Math.max(0, max - this.inflight.size);
+  }
+
+  // 自分で拾う分の空き。選んで受ける・受けないときは 0（画面から accept で拾う）
+  slots() {
+    return this.mode() === 'auto' ? this.capacity() : 0;
   }
 
   context() {
@@ -165,6 +209,32 @@ class Participant extends EventEmitter {
     } catch { return null; }
   }
 
+  // 画面から 1 件を選んで引き受ける。理由が立たなければ文言を返す（押せない理由を画面に出す）
+  async accept(id) {
+    const wanted = String(id || '');
+    if (this.mode() === 'off') throw new Error('「受けない」にしています（設定 > 共有）');
+    if (this.inflight.has(wanted)) throw new Error('この依頼は既に引き受けています');
+    if (!this.capacity()) throw new Error('同時に受けられる数か、1 日の上限に達しています');
+    const all = this.lastGathered.length ? this.lastGathered : await this.gather();
+    const request = all.find((r) => r.id === wanted);
+    if (!request) throw new Error('その依頼は見つかりません（取り下げられたか、誰かが拾いました）');
+    const verdict = queue.eligible(request, this.context());
+    if (!verdict.ok) throw new Error(reasonText(verdict.reason));
+    const claimed = await this.claim(request, verdict.cli);
+    if (!claimed) throw new Error('先に誰かが拾いました');
+    this.run({ request, cli: verdict.cli, mode: verdict.mode, peer: request.peer, post: claimed }).catch(() => {});
+    this.emit('changed');
+    return { id: wanted, cli: verdict.cli };
+  }
+
+  // 引き受けた実行を自分から止める
+  stopInflight(id) {
+    const item = this.inflight.get(String(id));
+    if (!item) return false;
+    item.controller.stop('引き受けた人が止めた');
+    return true;
+  }
+
   // ---- 実行 ------------------------------------------------------------------------------
 
   async run({ request, cli, mode, peer, post }) {
@@ -182,11 +252,26 @@ class Participant extends EventEmitter {
       try { await download(peer, `/requests/${encodeURIComponent(id)}/attachments/${encodeURIComponent(name)}`, target, { key: this.key }); files.push(target); } catch { /* 取れない添付は本文の案内から外す */ }
     }
     if (files.length) prompt = `${prompt}\n\n添付ファイル（必要に応じて読んで参照すること）:\n${files.map((f) => `- ${f}`).join('\n')}`;
-    const controller = this.runPrompt({ cli, prompt, model: post.model || '', readonly: true, cwd, files, timeoutMs: this.leaseMs, onLine: () => {} });
-    const item = { request, peer, cli, mode, controller, startedAt, misses: 0, hb: null };
+    const item = { request, peer, cli, mode, controller: null, startedAt, misses: 0, hb: null, screenTimer: null, screen: '', sentScreen: '', talk: [] };
+    const controller = this.runPrompt({
+      cli, prompt, model: post.model || '', readonly: true, cwd, files, timeoutMs: this.leaseMs, onLine: () => {},
+      shareId: id,
+      onScreen: (text) => {
+        item.screen = String(text || '').slice(-MAX_SCREEN);
+        this.send('share:screen', { id, text: item.screen, node: this.node, cli, mine: true });
+      },
+    });
+    item.controller = controller;
     this.inflight.set(id, item);
     item.hb = setInterval(() => { this.heartbeat(item).catch(() => {}); }, this.heartbeatMs);
     if (item.hb.unref) item.hb.unref();
+    // 画面は変わったときだけ心拍に載せて送る（依頼者の端末ミラーがこれを描く）
+    item.screenTimer = setInterval(() => {
+      if (!item.screen || item.screen === item.sentScreen) return;
+      item.sentScreen = item.screen;
+      this.heartbeat(item, { screen: item.screen }).catch(() => {});
+    }, this.screenMs);
+    if (item.screenTimer.unref) item.screenTimer.unref();
     this.emit('changed');
     let outcome;
     try {
@@ -195,6 +280,7 @@ class Participant extends EventEmitter {
       outcome = { text: '', code: 1, stopped: false, error: (err && err.message) || String(err), errorClass: 'cli', elapsedMs: this.now() - startedAt };
     }
     clearInterval(item.hb);
+    clearInterval(item.screenTimer);
     this.inflight.delete(id);
     const status = outcome.stopped ? 'cancelled' : (outcome.code === 0 && outcome.text ? 'done' : 'failed');
     const errorClass = status === 'failed' ? String(outcome.errorClass || 'cli') : '';
@@ -211,15 +297,68 @@ class Participant extends EventEmitter {
     return result;
   }
 
-  async heartbeat(item) {
+  async heartbeat(item, { screen = '' } = {}) {
     try {
-      const r = await call(item.peer, 'POST', `/requests/${encodeURIComponent(item.request.id)}/heartbeat`, { key: this.key, body: { who: this.node, port: this.peers.httpPort, cli: item.cli, progress: '' }, timeoutMs: GATHER_TIMEOUT_MS });
+      const r = await call(item.peer, 'POST', `/requests/${encodeURIComponent(item.request.id)}/heartbeat`, { key: this.key, body: { who: this.node, port: this.peers.httpPort, cli: item.cli, progress: '', ...(screen ? { screen } : {}) }, timeoutMs: GATHER_TIMEOUT_MS });
       if (r.status === 409 || r.status === 404) { item.controller.stop('依頼者が取り下げたか、別の人に渡った'); return; }
       item.misses = 0;
+      for (const entry of item.talk) {
+        if (entry.pending && entry.who === this.node) await this.deliverTalk(item, entry);
+      }
     } catch {
       item.misses += 1;
       if (item.misses >= 2) item.controller.stop('依頼者に届かない');
     }
+  }
+
+  // ---- ひとこと（人と人） ---------------------------------------------------------
+
+  appendTalk(item, entry) {
+    item.talk.push(entry);
+    if (item.talk.length > KEEP_TALK) item.talk.splice(0, item.talk.length - KEEP_TALK);
+    this.emit('changed');
+    return entry;
+  }
+
+  // 依頼者から届いたひとこと（server が呼ぶ）
+  message(id, body = {}) {
+    const item = this.inflight.get(String(id));
+    if (!item) return { status: 404, body: { error: '実行していません' } };
+    const who = String(body.who || '').trim() || item.request.posted_by;
+    const text = String(body.text || '').trim().slice(0, MAX_TALK);
+    if (!text) return { status: 400, body: { error: '本文がありません' } };
+    this.appendTalk(item, { who, text, at: nowIso() });
+    return { status: 200, body: { ok: true } };
+  }
+
+  // 引き受けた人から依頼者へ。届かなければ印を付け、次の心拍で送り直す
+  async say(id, text) {
+    const item = this.inflight.get(String(id));
+    if (!item) throw new Error('その依頼は実行していません');
+    const body = String(text || '').trim().slice(0, MAX_TALK);
+    if (!body) throw new Error('送る内容がありません');
+    const entry = this.appendTalk(item, { who: this.node, text: body, at: nowIso() });
+    await this.deliverTalk(item, entry);
+    return entry;
+  }
+
+  async deliverTalk(item, entry) {
+    try {
+      const r = await call(item.peer, 'POST', `/requests/${encodeURIComponent(item.request.id)}/message`,
+        { key: this.key, body: { who: this.node, text: entry.text, at: entry.at }, timeoutMs: 5000 });
+      if (r.status === 200) delete entry.pending;
+      else entry.pending = true;
+    } catch { entry.pending = true; }
+    this.emit('changed');
+    return !entry.pending;
+  }
+
+  // 自分の端末へキーを送る（自分の PC の CLI なので、打てるのは引き受けた人だけ）
+  keys(id, data) {
+    const item = this.inflight.get(String(id));
+    if (!item || !item.controller || typeof item.controller.keys !== 'function') return false;
+    item.controller.keys(String(data || ''));
+    return true;
   }
 
   // 依頼者からの取り下げ（server が呼ぶ）
@@ -269,8 +408,32 @@ class Participant extends EventEmitter {
   }
 
   inflightView() {
-    return [...this.inflight.values()].map((i) => ({ id: i.request.id, posted_by: i.request.posted_by, title: i.request.title, cli: i.cli, started_at: new Date(i.startedAt).toISOString() }));
+    return [...this.inflight.values()].map((i) => ({
+      id: i.request.id, posted_by: i.request.posted_by, title: i.request.title, summary: i.request.summary,
+      cli: i.cli, started_at: new Date(i.startedAt).toISOString(), host: i.peer ? i.peer.node : '', talk: i.talk,
+    }));
+  }
+
+  // 画面向け。仲間から集めた依頼に「いま拾えるか」と、拾えない理由の 1 行を添える
+  gatheredView() {
+    const ctx = this.context();
+    const capacity = this.capacity();
+    return this.lastGathered.map(({ peer, ...request }) => {
+      const verdict = queue.eligible(request, ctx);
+      const full = verdict.ok && !capacity;
+      return {
+        ...request, host: peer ? peer.node : '',
+        canAccept: verdict.ok && !!capacity,
+        cli: verdict.ok ? verdict.cli : '',
+        reason: full ? '同時に受けられる数か、1 日の上限に達しています' : (verdict.ok ? '' : reasonText(verdict.reason)),
+      };
+    });
+  }
+
+  screenOf(id) {
+    const item = this.inflight.get(String(id));
+    return item ? item.screen : '';
   }
 }
 
-module.exports = { Participant, TICK_MS, HEARTBEAT_MS, LEASE_MS, OUTBOX_RETRY_MS, OUTBOX_TTL_MS, safeName, nowIso };
+module.exports = { Participant, TICK_MS, HEARTBEAT_MS, LEASE_MS, OUTBOX_RETRY_MS, OUTBOX_TTL_MS, SCREEN_MS, MAX_SCREEN, MAX_TALK, KEEP_TALK, safeName, nowIso, reasonText, REASONS };

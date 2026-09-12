@@ -138,9 +138,9 @@ controller を登録するまでの `navigate` は要素が保留し、登録時
 
 ## 3. 画面の情報構造
 
-### 3.1 三領域と共通リポジトリ
+### 3.1 四領域と共通リポジトリ
 
-左サイドバーは上から、アプリ名、主要メニュー `会話 / タスク / ワークフロー`、共通のリポジトリ選択、
+左サイドバーは上から、アプリ名、主要メニュー `会話 / タスク / ワークフロー / 共有`、共通のリポジトリ選択、
 選択中領域の一覧見出しと作成操作（＋）、対象一覧、設定の順に並ぶ。主要メニューはタブではなく
 ページナビゲーションで、`aria-current="page"` で現在地を示す。
 
@@ -149,12 +149,16 @@ controller を登録するまでの `navigate` は要素が保留し、登録時
 | 会話 | 対話セッション | 会話ヘッダー、端末ミラー、会話履歴、入力欄 / ファイルビュー | `session:list` |
 | タスク | `.statemachine/` の定義と agent-loop の設定エントリ | 共有ワークベンチの概要・手順（AI との編集を含む）・履歴 | `automation:run:snapshot` + `machine:list` + `teaching:list` |
 | ワークフロー | 複数 AI の工程定義と、教示中の下書き | 共有ワークベンチの教示・概要・編集・実行履歴 | `automation:flow:list` + `flow:run:list` + `flow:teaching:list` |
+| 共有 | 同じ LAN の仲間の依頼と、自分が出した依頼 | 会話画面と同じ骨格（選んだ 1 件のカードと端末ミラー） | `share:status`（`share:changed` で追う） |
 
 ワークフロー一覧は、教示中の下書き（`ready` 以外で、まだ定義として保存されていないもの）を先頭に、
 利用可能な定義をその後ろに並べる。下書きの副題は工程数の代わりに状態ラベル
 （理解中 / 試運転待ち / 確認待ち）を出す。
 
-リポジトリは三領域の共通文脈で、領域を切り替えても変えない。領域ごと・リポジトリごとの最後の対象は
+共有の領域だけはリポジトリに紐づかない（依頼は LAN の全員のもの）。＋（新規作成）も出さない——
+依頼は会話の入力欄から出すため。
+
+リポジトリは他の三領域の共通文脈で、領域を切り替えても変えない。領域ごと・リポジトリごとの最後の対象は
 `config.json` の `lastTask` / `lastWorkflow` / `lastWorktree` に覚える。旧設定の `work` / `automation`
 は `conversation` / `tasks` へ読み替える（`navigation.js`）。
 
@@ -204,7 +208,8 @@ controller を登録するまでの `navigate` は要素が保留し、登録時
 | `workbench-element.js` | renderer/automation | カスタム要素。Shadow DOM に `#bar` / `#main` / ダイアログを作り、`stylesheet` と `host-stylesheet` を読む。`navigate(payload)` を controller 登録まで保留し、`refresh()` で定義と実行状態を読み直す |
 | `renderer.js` / `flow.js` | renderer/automation | 概要・手順（工程エディタ）・履歴・ワークフロー。DOM 参照は Shadow Root に対して行い、preload の窓口は `window.api.automation` だけ |
 | `teaching.js` | renderer/automation | タスクの作成（`html()`）と「手順」の編集（`editorSlotHtml()`）の**置き場**。見出しと `<slot name="teaching">` を描き、どのタスクの会話を出しているかを `statemachine:teaching-view` で親へ伝える |
-| `taskTeaching.js` | renderer（親） | slot に載る光の DOM。tmux の端末ミラー（`TaskTerm`）、入力 2 モードの入力欄、操作の見本のカード、作成フォーム。**見た目は会話画面と同じ実体**（`.terminal-stage` / `.composer-shell`）を使い、見出しと説明は持たない |
+| `taskTeaching.js` | renderer（親） | slot に載る光の DOM。tmux の端末ミラー（`TaskTerm`）、入力 3 先の入力欄、操作の見本のカード、作成フォーム。**見た目は会話画面と同じ実体**（`.terminal-stage` / `.composer-shell`）を使い、見出しと説明は持たない |
+| `flowTeaching.js` | renderer（親） | ワークフロー版の同じもの（`FlowTerm`）。見本の記録は無く、端末ミラーと入力欄だけ |
 | `automation-workbench.css` | renderer（親） | host stylesheet。`:host` に対する上書きだけで、フォルダ欄・ホームタブ・見出しを隠し、三領域の語彙に揃える |
 
 見出しと説明はワークベンチ側だけが描く（親は操作面だけを置く）。同じ事実を 2 つの層が言わない
@@ -218,6 +223,8 @@ controller を登録するまでの `navigate` は要素が保留し、登録時
 | 親 → 子 | `element.refresh()` | 定義と実行状態を読み直す（AI との会話の 1 ターンが終わるたび） |
 | 子 → 親 | CustomEvent `statemachine:changed`（`detail.type = 'agent-app:changed'`） | `root`、`area`、`selected`。親は一覧を再読込し、最後の対象を保存する |
 | 子 → 親 | CustomEvent `statemachine:teaching-view`（`detail.type = 'agent-app:teaching-view'`） | `root`、`machine`、`creating`、`published`、`title`、または `hidden`。親は同じ内容なら何もしない |
+| 子 → 親 | CustomEvent `statemachine:flow-teaching-view`（`detail.type = 'agent-app:flow-teaching-view'`） | `root`、`workflowId`、`existing`、`title`、または `hidden`。ワークフローの会話の置き場 |
+| 親 → 子 | `element.reloadFlowTeaching()` | AI が書いた定義と下書きだけを読み直す（ワークフローの会話の 1 ターンが終わるたび） |
 
 `session-new`（＋）はタスク領域では `action: 'new'` を渡し、子は作成の置き場を出す。親は作成フォームに
 会話からの intent（`taskIntent.js`。依頼本文だけ）を入れる。ワークフロー領域では「新しいワークフローを教える」画面を開く。
@@ -288,13 +295,21 @@ Edge の起動（`main/automation/browser.js`）は Electron に触れず、起�
 
 ### 3.4 ワークフローの教示と差し戻し
 
-ワークフローもタスクと同じ骨格で作る。実装は maker 側（`flow.js`、`flow-teaching-model.js`、
-`flow-teaching-store.js`、`flow-teaching-compiler.js`、`ai.js` の `flow-teach` モード）にあり、agent-app は
-`automation:` 経由で呼び、下書きを一覧へ合流させるだけである。
+ワークフローも**タスクとまったく同じ骨格**で作る（2026-09-12）。教える会話は agent-app の会話基盤
+（`kind: 'workflow'` のセッション）で、AI は tmux の会話の中で定義の 1 ファイルを直接書く。
+ワークベンチ（`flow.js`）は見出しと「候補の工程」を描き、会話そのものは `<slot name="flow-teaching">`
+に載る光の DOM（`flowTeaching.js`）が持つ。構造化した一問一答（`ai.js` の `flow-teach` モード）は
+使わない——タスクが 2026-09-08 に同じ理由でやめたのと同じ判断で、往復の形を決め打ちすると
+「相談」が痩せるため。
 
 ```text
-目的を書く → AI に相談（質問 or 候補） → 代表的な依頼で試運転 → 期待どおり → 利用可能にする
-   draft   →        needs-trial          →   awaiting-confirmation   →        ready
+目的を書く → automation:flow:teach:start
+  → 下書き .agents/workflows/.teaching/<id>.json（定義が無い間だけ一覧に出す。会話 ID を覚える）
+  → kind: workflow の会話を作る（CLI は既定の起動方針で解決。cwd はリポジトリ本体）
+  → 最初の依頼（flow-teaching-prompt.prompt）を runTurn で送る
+       書く先の 1 ファイル・JSON の形・工程の種類・{{request}}・人の確認と差し戻しの決まり
+AI が定義を書く → flow:teach:adopt が候補（世代）として取り込む → 試運転 → 利用可能にする
+                        needs-trial              awaiting-confirmation        ready
 ```
 
 - 教えた内容は定義とは別の sidecar `<repo>/.agents/workflows/.teaching/<id>.json` に持ち、定義の一覧探索
@@ -311,7 +326,28 @@ Edge の起動（`main/automation/browser.js`）は Electron に触れず、起�
   agent-flow が置換ノードを生成する（実行グラフは常に DAG）。
 
 検討記録は [`2026-09-06-agent-app-agent-flow-teaching-workspace-design.md`](../plans/2026-09-06-agent-app-agent-flow-teaching-workspace-design.md)
-にある。
+にある（構造化の往復を前提にした初案。2026-09-12 に会話へ移し、`flow-teaching-compiler.js` と
+`ai.js` の `flow-teach` モードは撤去した）。
+
+### 3.6 共有（LAN の仲間に依頼を回す）
+
+依頼を出す入口は**入力欄の入力先**（メッセージ / 端末操作 / 共有に依頼）で、起動方針ではない。
+`.composer-shell` を持つ 3 つの画面（会話・タスクの会話・ワークフローの会話）に同じ 3 つが並ぶので、
+「どの画面からでも依頼できる」が部品の再利用だけで成り立つ。共有のときは実行設定を
+エージェントと優先度だけに畳む（起動方針・権限・作業フォルダはこの PC の話なので出さない）。
+
+引き受け側は領域「共有」。会話画面と同じ骨格（一覧はサイドバー、右が選んだ 1 件）で、
+引き受け方（自動で受ける / 選んで受ける / 受けない）は画面の右上と設定の両方から変えられる同じ値。
+
+待っている間に相手の画面が見えるのは、引き受けた側が会話と同じ tmux で CLI を起こし、画面を心拍に
+載せて送るため（契約は `docs/specs/agent-app-spec.md` §15.1）。依頼者はそれを自分の端末ミラーへ
+描くだけで、キーは送れない——依頼の実行は相手の PC のものなので、操作の主導権は渡さない。
+
+**鍵盤は PC の持ち主が持ち、依頼者は人に話す。** CLI がセッションの途中で確認を求めたとき、答えるのは
+引き受けた人（自分の PC の自分の CLI なので、共有の画面から打てる）。依頼者は代わりに、依頼に
+ぶら下がる**ひとこと**（§15.0）で人に伝える。ここを分けるのが安全の線で、遠隔でキーを送れるように
+すると、読み取り専用でも他人の端末を別の人が操作することになる（設計 §1 の「参加者の安全」）。
+ひとことは会話画面と共有画面の両方に、同じ部品（`renderer/talk.js`。会話の吹き出しと同じ形）で出す。
 
 ## 4. 会話の実行経路
 

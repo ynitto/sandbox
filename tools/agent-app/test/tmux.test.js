@@ -450,3 +450,15 @@ test('統合: 停止（Esc）と resize', { skip: !hasTmux && 'tmux が無い' }
     sh.close();
   }
 });
+
+test('共有で引き受けた依頼の tmux 名は、同じ時刻に投函された依頼どうしでもぶつからない', () => {
+  const a = 'dg-20260912093000-a1b2';
+  const b = 'dg-20260912093000-c3d4';
+  // 依頼 id をそのまま渡すと、12 文字へ丸めた時点で同じ名前になる（時刻の先頭しか残らない）
+  assert.strictEqual(tmux.sessionName(`share-${a}`), tmux.sessionName(`share-${b}`));
+  // 走っている間だけ一意な連番を前に置くので、丸めた後も別の名前になる
+  assert.notStrictEqual(tmux.sessionName(tmux.sharePaneId(a, 1)), tmux.sessionName(tmux.sharePaneId(b, 2)));
+  assert.notStrictEqual(tmux.sessionName(tmux.sharePaneId(a, 1)), tmux.sessionName(tmux.sharePaneId(a, 2)));
+  // 会話の ID（UUID）とは字種が重ならない（s / h / r は 16 進に無い）
+  assert.match(tmux.sharePaneId(a, 1), /^share\d+x/);
+});

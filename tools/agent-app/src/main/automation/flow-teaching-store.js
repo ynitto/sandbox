@@ -49,7 +49,7 @@ function list(root) {
     try {
       const session = load(root, id);
       const lastTrial = session.trials[session.trials.length - 1] || null;
-      return [{ workflowId: id, title: session.title || id, purpose: session.understanding.purpose, status: session.status, lastTrial }];
+      return [{ workflowId: id, title: session.title || id, purpose: session.understanding.purpose, status: session.status, sessionId: session.sessionId, lastTrial }];
     } catch { return []; }
   });
 }

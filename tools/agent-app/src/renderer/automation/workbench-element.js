@@ -45,6 +45,12 @@
       if (!this.controller || typeof this.controller.refresh !== 'function') return Promise.resolve();
       return this.controller.refresh();
     }
+
+    // ワークフローの下書き（教える会話が書いた定義）だけを読み直す。
+    reloadFlowTeaching() {
+      if (!this.controller || typeof this.controller.reloadFlowTeaching !== 'function') return Promise.resolve();
+      return this.controller.reloadFlowTeaching();
+    }
   }
 
   global.customElements.define(tag, StatemachineWorkbenchElement);

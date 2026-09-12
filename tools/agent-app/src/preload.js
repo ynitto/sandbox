@@ -46,8 +46,17 @@ contextBridge.exposeInMainWorld('api', {
     status: () => invoke('share:status'),
     cancel: (id) => invoke('share:cancel', { id }),
     setPriority: (id, priority) => invoke('share:priority', { id, priority }),
-    participate: (on) => invoke('share:participate', { on }),
+    // 引き受け方（'auto' 自動で受ける / 'manual' 選んで受ける / 'off' 受けない）
+    setMode: (mode) => invoke('share:mode', { mode }),
+    accept: (id) => invoke('share:accept', { id }),
+    stopAccepted: (id) => invoke('share:stop', { id }),
+    screen: (id) => invoke('share:screen', { id }),
+    // 人と人のひとこと（CLI には入らない）と、引き受けた依頼の端末へのキー
+    say: (id, text) => invoke('share:say', { id, text }),
+    keys: (id, data) => invoke('share:keys', { id, data }),
     onChanged: on('share:changed'),
+    // 実行中の端末の画面（引き受けた側から届く分と、自分が引き受けている分）
+    onScreen: on('share:screen'),
   },
   termOpen: (id, cols, rows) => invoke('term:open', { id, cols, rows }),
   termRestart: (id, cols, rows) => invoke('term:restart', { id, cols, rows }),
@@ -117,8 +126,12 @@ contextBridge.exposeInMainWorld('api', {
     flowSave: (root, workflow, mode) => invoke('automation:flow:save', { root, workflow, mode }),
     flowDelete: (root, id) => invoke('automation:flow:delete', { root, id }),
     flowPreview: (root, workflow, request, parameters) => invoke('automation:flow:preview', { root, workflow, request, parameters }),
+    // ワークフローを AI と作る会話（tmux）。送受信はタスクと同じく send / term* を使う
+    flowTeachPrepare: (payload) => invoke('automation:flow:teach:prepare', payload),
+    flowTeachStart: (payload) => invoke('automation:flow:teach:start', payload),
+    flowTeachSession: (repo, workflowId) => invoke('automation:flow:teach:session', { repo, workflowId }),
+    flowTeachAdopt: (repo, workflowId) => invoke('automation:flow:teach:adopt', { repo, workflowId }),
     flowTeachingList: (root) => invoke('automation:flow:teaching:list', { root }),
-    flowTeachingCreate: (root, purpose, options) => invoke('automation:flow:teaching:create', { root, purpose, ...(options || {}) }),
     flowTeachingRead: (root, workflowId) => invoke('automation:flow:teaching:read', { root, workflowId }),
     flowTeachingSave: (root, workflowId, session) => invoke('automation:flow:teaching:save', { root, workflowId, session }),
     flowTeachingRecordTrial: (root, workflowId, trial) => invoke('automation:flow:teaching:trial', { root, workflowId, trial }),

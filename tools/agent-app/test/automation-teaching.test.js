@@ -297,7 +297,7 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.doesNotMatch(html, /id="task-create-cancel"/, '新規作成画面に戻るボタンを表示しない');
   assert.match(html, /class="task-save-name"[^>]*>[\s\S]*<strong>保存名<\/strong>/);
   assert.doesNotMatch(html, /<summary>保存名を指定<\/summary>/);
-  assert.match(html, /class="run-settings task-execution-settings"[\s\S]*id="task-create-agent"[\s\S]*id="task-create-model"/,
+  assert.match(html, /class="run-settings teach-execution-settings"[\s\S]*id="task-create-agent"[\s\S]*id="task-create-model"/,
     '新規作成は手動実行と同じ設定コントロールを使う');
   assert.match(html, /id="task-terminal-placeholder" class="terminal-stage"/, '編集開始前から黒い tmux プレースホルダーを表示する');
   assert.match(html, /id="task-composer-placeholder"/, '編集開始前から入力欄ぶんを予約し、tmux 領域の位置と寸法を固定する');
@@ -327,4 +327,43 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(html, /id="task-composer" class="composer-shell"/);
   const term = fs.readFileSync(path.join(SRC, 'renderer', 'term.js'), 'utf8');
   assert.match(term, /window\.TaskTerm = createTerm\(\)/, '会話とタスクで別の端末ミラーを持つ');
+});
+
+// ---- ワークフローを AI と作る会話（タスクと同じ作り） ------------------------------------
+
+test('ワークフローの下書きは会話（kind: workflow）を覚え、一覧はその印で引ける', () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-flow-teach-'));
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-flow-repo-'));
+  const flowTeachingStore = require('../src/main/automation/flow-teaching-store');
+  const flowTeachingModel = require('../src/main/automation/flow-teaching-model');
+  const session = store.createSession(userData, { repo, cli: 'codex', kind: 'workflow', workflow: { id: 'parallel-review' } });
+  assert.strictEqual(session.kind, 'workflow');
+  assert.strictEqual(session.workflow.id, 'parallel-review');
+  assert.throws(() => store.createSession(userData, { repo, cli: 'codex', kind: 'workflow' }), /保存名/);
+  // 会話一覧（kind: 'conversation'）には出ない
+  assert.deepStrictEqual(store.listSessions(userData, repo).map((item) => item.id), []);
+  assert.strictEqual(store.findWorkflowSession(userData, repo, 'parallel-review').id, session.id);
+  assert.strictEqual(store.findWorkflowSession(userData, repo, 'other'), null);
+  const saved = flowTeachingStore.save(repo, 'parallel-review', flowTeachingModel.createSession({
+    workflowId: 'parallel-review', title: '並列レビュー', purpose: '変更を複数の観点で見たい', sessionId: session.id,
+  }));
+  assert.strictEqual(saved.sessionId, session.id);
+  assert.strictEqual(flowTeachingStore.list(repo)[0].sessionId, session.id);
+});
+
+test('ワークフローの最初の依頼文は、書く先と工程の種類と JSON の形を伝える', () => {
+  const prompt = require('../src/main/automation/flow-teaching-prompt');
+  const first = prompt.prompt({ id: 'parallel-review', purpose: '変更を複数の観点で見たい' });
+  assert.match(first, /\.agents\/workflows\/parallel-review\.json/);
+  assert.match(first, /"nodes"/);
+  assert.match(first, /`human`/);          // 工程の種類を列挙する
+  assert.match(first, /\{\{request\}\}/);
+  assert.match(first, /変更を複数の観点で見たい/);
+  assert.ok(!/実行して/.test(first), '試運転は利用者が押す（AI は実行しない）');
+  const again = prompt.resumePrompt({ id: 'parallel-review', existing: true, context: '工程 2' });
+  assert.match(again, /編集を開始します/);
+  assert.match(again, /工程 2/);
+  // 保存名は目的の 1 行目から作り、英数字だけにする
+  assert.strictEqual(prompt.workflowIdFor('parallel review 2026'), 'parallel-review-2026');
+  assert.match(prompt.workflowIdFor('変更案を並列レビュー'), /^flow-[a-z0-9]+$/);
 });

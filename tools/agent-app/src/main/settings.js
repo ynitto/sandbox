@@ -10,9 +10,11 @@ const SKILL_MODES = ['auto', 'manual', 'off'];
 const MAX_INSTRUCTION_CHARS = 8000;
 // 起動方針「共有」。tier を持たず、依頼を LAN の参加者へ渡す（src/main/share/）。
 const SHARED_POLICY = 'shared';
+// 引き受け方（accept）… 'auto' 自動で拾う / 'manual' 選んだものだけ / 'off' 受けない
+const ACCEPT_MODES = ['auto', 'manual', 'off'];
 const SHARE_DEFAULTS = {
   enabled: false, node: '', passphrase: '', port: 47801, udp: true, peers: [],
-  participate: false, clis: [], acceptWrite: false, maxConcurrent: 1, dailyCap: 20, perRequesterDailyCap: 5,
+  accept: 'off', clis: [], acceptWrite: false, maxConcurrent: 1, dailyCap: 20, perRequesterDailyCap: 5,
 };
 
 function pair(value, fallback) {
@@ -53,6 +55,12 @@ function bounded(value, fallback, min, max) {
   return Math.max(min, Math.min(max, Math.floor(number)));
 }
 
+// 引き受け方。accept が無い保存値は、以前の participate（受ける／受けない）から読み替える。
+function acceptMode(source) {
+  if (ACCEPT_MODES.includes(source.accept)) return source.accept;
+  return source.participate ? 'auto' : 'off';
+}
+
 // 設定 > 共有。port 0 は空いているポート、上限の 0 は無制限。
 function share(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -63,7 +71,9 @@ function share(raw) {
     port: bounded(source.port, SHARE_DEFAULTS.port, 0, 65535),
     udp: source.udp !== false,
     peers: uniqueStrings(source.peers).slice(0, 50),
-    participate: Boolean(source.participate),
+    accept: acceptMode(source),
+    // 以前の版の「受ける／受けない」。引き受け方から導き、古い画面や保存値とも噛み合わせる
+    participate: acceptMode(source) !== 'off',
     clis: uniqueStrings(source.clis).map((name) => name.toLowerCase()),
     acceptWrite: Boolean(source.acceptWrite),
     maxConcurrent: bounded(source.maxConcurrent, SHARE_DEFAULTS.maxConcurrent, 1, 4),
@@ -150,6 +160,6 @@ function resolve(config, request = {}, { optimized: on = true } = {}) {
 }
 
 module.exports = {
-  TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS, SHARED_POLICY, SHARE_DEFAULTS,
-  normalize, resolve, optimized, effectivePolicy, share,
+  TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS, SHARED_POLICY, SHARE_DEFAULTS, ACCEPT_MODES,
+  normalize, resolve, optimized, effectivePolicy, share, acceptMode,
 };

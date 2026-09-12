@@ -7,7 +7,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     root: '', loading: false, catalog: { kinds: [], patterns: [] }, context: null,
     flows: [], selected: '', workflow: null, issues: [], editor: null,
     teachings: [], selectedTeaching: '', teaching: null, creatingTeaching: false,
-    teachingInput: '', teachingResult: null, teachingBusy: false, teachingRequestId: '', trialTeaching: null,
+    teachingInput: '', teachingWorkflow: null, trialTeaching: null,
     runs: [], selectedRun: '', run: null, result: null, log: null, detailTab: 'overview',
     request: '', parameters: {}, readonly: false, agent: '', model: '', starting: false,
   };
@@ -33,7 +33,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
 
   function safeToRepaint() {
     const focused = ctx.activeElement ? ctx.activeElement() : document.activeElement;
-    return !focused || !focused.matches('[data-flow-request], [data-flow-param], [data-flow-model], [data-flow-answer-value], [data-flow-answer-comment], [data-flow-teaching-purpose], [data-flow-teaching-message], [data-flow-teaching-trial-request]');
+    return !focused || !focused.matches('[data-flow-request], [data-flow-param], [data-flow-model], [data-flow-answer-value], [data-flow-answer-comment], [data-flow-teaching-purpose], [data-flow-teaching-trial-request]');
   }
 
   async function loadRun(runId, repaint = true) {
@@ -204,16 +204,6 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     }).join('');
   }
 
-  function understandingHtml(session) {
-    const u = session.understanding || {};
-    const rows = [
-      ['目的', u.purpose ? [u.purpose] : []], ['対象範囲', u.scope], ['入力', (u.inputs || []).map((item) => item.label || item.key || JSON.stringify(item))],
-      ['成果', u.outputContract], ['制約', u.constraints], ['対象外', u.nonGoals], ['分解方針', u.decompositionPolicy],
-      ['再計画方針', u.replanningPolicy], ['人の確認', u.humanCheckpoints], ['品質基準', u.qualityCriteria], ['未確認', u.unknowns],
-    ];
-    return `<aside class="teaching-understanding"><h3>AIの理解</h3>${rows.map(([label, values]) => `<section><strong>${e(label)}</strong>${values && values.length ? `<ul>${values.map((item) => `<li>${e(item)}</li>`).join('')}</ul>` : '<p class="muted small">まだ整理されていません</p>'}</section>`).join('')}</aside>`;
-  }
-
   function reworkLaneHtml(workflow) {
     const policies = Array.isArray(workflow && workflow.rework) ? workflow.rework : [];
     if (!policies.length) return '';
@@ -226,16 +216,20 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     return `<aside class="flow-rework-lane" aria-label="反復と差し戻し"><strong>反復</strong>${policies.map((policy) => `<div class="flow-rework-line"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="flow-rework-path" d="M7 7h9a5 5 0 0 1 0 10H8"></path><path class="flow-rework-path" d="m7 4-3 3 3 3"></path></svg><div><strong>${policy.trigger === 'human-rejected' ? '却下されたら' : '検証に失敗したら'}「${e(nodeLabel(policy.to))}」へ戻る</strong><span>「${e(nodeLabel(policy.from))}」から戻り、最大 ${e(policy.maxIterations)} 回繰り返します。</span><small>${e(policy.instruction)} · ${e(exhausted[policy.onExhausted] || '')}</small></div></div>`).join('')}</aside>`;
   }
 
+  // 教える画面。会話そのもの（端末ミラーと入力欄）は光の DOM 側（#flow-teaching）が描くので、
+  // ここは見出しと「いまの候補」だけを持ち、置き場（slot）を開ける。タスクの教示と同じ形。
   function teachingHtml() {
-    if (view.creatingTeaching) return `<div class="blank teaching-create"><span class="eyebrow">新しいワークフローを教える</span><h2>何を複数のAIで実現したいですか？</h2><p>工程を決め打ちせず、目的・成果・制約を伝えてください。</p><textarea rows="7" data-flow-teaching-purpose placeholder="例: 変更依頼を調査し、必要なら並列に実装して、品質確認後にレビュー可能な成果をまとめたい">${e(view.teachingInput)}</textarea><div class="row"><button type="button" class="primary" data-flow-teaching-create>AIに相談する</button><button type="button" data-flow-teaching-cancel>戻る</button></div></div>`;
+    if (view.creatingTeaching) {
+      announceTeaching(null);
+      return `<div class="blank teaching-create"><span class="eyebrow">新しいワークフローを教える</span><h2>何を複数のAIで実現したいですか？</h2><p>工程を決め打ちせず、目的・成果・制約を伝えてください。</p><textarea rows="7" data-flow-teaching-purpose placeholder="例: 変更依頼を調査し、必要なら並列に実装して、品質確認後にレビュー可能な成果をまとめたい">${e(view.teachingInput)}</textarea><div class="row"><button type="button" class="primary" data-flow-teaching-create>AIに相談する</button><button type="button" data-flow-teaching-cancel>戻る</button></div></div>`;
+    }
     const session = view.teaching;
-    if (!session) return emptyHtml();
-    const generation = session.generations.find((item) => item.id === session.activeGenerationId);
-    const messages = session.messages.map((item) => `<article class="teaching-message ${e(item.role)}"><strong>${item.role === 'user' ? 'あなた' : 'AI'}</strong><p>${e(item.text)}</p></article>`).join('');
-    const questions = view.teachingResult && view.teachingResult.status === 'questions'
-      ? `<section class="execution-card"><h3>確認したいこと</h3><ul>${view.teachingResult.questions.map((item) => `<li><strong>${e(item.text)}</strong>${item.reason ? `<p>${e(item.reason)}</p>` : ''}</li>`).join('')}</ul></section>` : '';
-    const candidate = generation ? `<section class="execution-card"><div class="execution-card-head"><div><h3>候補の構成</h3><p>${e(generation.summary || '')}</p></div><span class="status warn">${e(teachingStatusLabel(session.status))}</span></div><div class="flow-graph-with-rework"><ol class="flow-node-summary">${stageSummaryHtml(generation.workflow)}</ol>${reworkLaneHtml(generation.workflow)}</div><div class="field"><label>代表的な依頼で試運転</label><textarea rows="3" data-flow-teaching-trial-request>${e(view.request || session.understanding.purpose)}</textarea></div><div class="row"><button type="button" class="primary" data-flow-teaching-trial>試運転する</button>${session.status === 'awaiting-confirmation' ? '<button type="button" data-flow-teaching-confirm>この内容で利用可能にする</button>' : ''}</div></section>` : '';
-    return `<header class="execution-title"><div><span class="eyebrow">ワークフローを教える</span><h2>${e(session.title || session.workflowId)}</h2><span class="status">${e(teachingStatusLabel(session.status))}</span></div></header><div class="teaching-workspace"><section class="teaching-conversation"><div class="teaching-messages">${messages}${questions}${candidate}${view.teachingBusy ? '<p class="muted">AIが検討しています…</p>' : ''}</div><div class="teaching-composer"><textarea rows="3" data-flow-teaching-message placeholder="質問への回答、変更したいこと、具体例を入力">${e(view.teachingInput)}</textarea><button type="button" class="primary" data-flow-teaching-send ${view.teachingBusy ? 'disabled' : ''}>変更を相談する</button></div></section>${understandingHtml(session)}</div>`;
+    if (!session) { announceTeaching(null); return emptyHtml(); }
+    announceTeaching({ root: root(), workflowId: session.workflowId, existing: !!(view.teachingWorkflow && view.teachingWorkflow.workflow), title: session.title || session.workflowId });
+    const draft = view.teachingWorkflow && view.teachingWorkflow.workflow;
+    const broken = draft && (view.teachingWorkflow.issues || []).filter((item) => item.level === 'error');
+    const candidate = draft ? `<section class="execution-card"><div class="execution-card-head"><div><h3>候補の工程</h3><p>${e(draft.description || draft.name || '')}</p></div>${broken.length ? '<span class="status ng">要修正</span>' : ''}</div>${broken.length ? issueHtml(view.teachingWorkflow.issues) : `<div class="flow-graph-with-rework"><ol class="flow-node-summary">${stageSummaryHtml(draft)}</ol>${reworkLaneHtml(draft)}</div><div class="field"><label>代表的な依頼で試運転</label><textarea rows="3" data-flow-teaching-trial-request>${e(view.request || session.understanding.purpose)}</textarea></div><div class="row"><button type="button" class="primary" data-flow-teaching-trial>試運転する</button>${session.status === 'awaiting-confirmation' ? '<button type="button" data-flow-teaching-confirm>この内容で利用可能にする</button>' : ''}</div>`}</section>` : '';
+    return `<header class="execution-title"><div><span class="eyebrow">ワークフローを教える</span><h2>${e(session.title || session.workflowId)}</h2><span class="status">${e(teachingStatusLabel(session.status))}</span></div></header>${candidate}<slot name="flow-teaching"></slot>`;
   }
 
   function issueHtml(issues = view.issues) {
@@ -305,7 +299,20 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     return `<header class="execution-title"><div><span class="eyebrow">実行状況</span><h2>${e(run.title)}</h2><p>${e(ctx.dateLabel(run.createdAt))} · ${run.readonly ? '読み取り専用' : '成果を書き込み'}</p></div><button type="button" class="ghost" data-flow-back-run>ワークフローへ戻る</button></header>${run.failure ? `<p class="run-result ng">${e(run.failure.message)}</p>` : ''}<section class="execution-card"><div class="execution-card-head"><div><h3>${e(stateLabel(run.state))}</h3><p>${run.progress.total ? `${run.progress.done} 完了${run.progress.failed ? ` · ${run.progress.failed} 失敗` : ''} / ${run.progress.total} 工程` : '工程を準備しています'}</p></div><span class="status ${statusClass(run.state)}">${e(stateLabel(run.state))}</span></div><div class="flow-progress"><span style="width:${pct}%"></span></div><p class="flow-request">${e(run.request)}</p><div class="row">${!run.terminal ? '<button type="button" class="danger" data-flow-cancel>停止</button>' : ''}<button type="button" data-flow-result>成果を取得</button>${['failed', 'launch-failed', 'stalled'].includes(run.state) ? '<button type="button" data-flow-log>ログを見る</button>' : ''}<button type="button" data-flow-rerun>同じ内容で再実行</button>${run.terminal ? '<button type="button" class="danger ghost" data-flow-delete-run>履歴を削除</button>' : ''}</div></section>${trialCheck}${interactions}<section class="execution-card"><div class="execution-card-head"><div><h3>工程の進み具合</h3><p>工程ごとの担当と成果</p></div></div><ol class="flow-run-nodes">${nodes || '<li class="muted">計画を作成しています。</li>'}</ol></section>${delivery}${result}${log}`;
   }
 
+  let announced = false;
+  function announceTeaching(detail) {
+    announced = true;
+    if (ctx.teachView) ctx.teachView(detail);
+  }
+
   function html() {
+    announced = false;
+    const body = homeHtml();
+    if (!announced) announceTeaching(null);
+    return body;
+  }
+
+  function homeHtml() {
     if (view.loading) return `<div class="blank compact"><p>${e(featureName)}を読み込んでいます…</p></div>`;
     return `<div class="flow-home-head"><div><h2>${e(featureName)}</h2><p>目的を教え、実際の結果で確かめてから利用可能にします。</p></div><button type="button" class="primary" data-flow-new>新しいワークフローを教える</button></div><div class="execution-layout flow-layout">${sidebarHtml()}<section class="execution-detail">${view.editor ? editorHtml() : view.selectedRun ? runHtml() : view.creatingTeaching || view.teaching ? teachingHtml() : workflowHtml()}</section></div>`;
   }
@@ -429,9 +436,16 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     if (sent) { await loadRun(view.run.runId, false); ctx.toast('回答を送信しました'); ctx.refresh(); }
   }
 
+  // 下書きの定義（AI が書いた .agents/workflows/<id>.json）。まだ無ければ null
+  async function readTeachingWorkflow(workflowId) {
+    try { view.teachingWorkflow = await ctx.bridge.read(root(), workflowId); } catch { view.teachingWorkflow = null; }
+    return view.teachingWorkflow;
+  }
+
   async function selectTeaching(workflowId) {
     const session = await ctx.guard('教示中のワークフロー', () => ctx.bridge.teachingRead(root(), workflowId));
     if (!session) return;
+    await readTeachingWorkflow(workflowId);
     view.selectedTeaching = workflowId;
     view.teaching = session;
     view.selected = '';
@@ -441,51 +455,36 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     view.editor = null;
     view.creatingTeaching = false;
     view.teachingInput = '';
-    view.teachingResult = null;
     ctx.refresh();
   }
 
+  // 新しく教える: 会話（tmux）を用意し、その最初のターンで AI に目的を渡す。
   async function createTeaching() {
     const purpose = view.teachingInput.trim();
     if (!purpose) { ctx.toast('実現したいことを入力してください', true); return; }
-    const session = await ctx.guard('ワークフローの作成', () => ctx.bridge.teachingCreate(root(), purpose));
-    if (!session) return;
+    const workflowId = await ctx.guard('ワークフローの作成', () => ctx.teachCreate({ root: root(), purpose }));
+    if (!workflowId) return;
     view.teachings = (await ctx.guard('教示中のワークフロー', () => ctx.bridge.teachingList(root()))) || view.teachings;
-    view.teaching = session;
-    view.selectedTeaching = session.workflowId;
-    view.creatingTeaching = false;
     view.teachingInput = '';
-    ctx.refresh();
-    await askTeachingAi('');
+    view.creatingTeaching = false;
+    await selectTeaching(workflowId);
   }
 
-  async function askTeachingAi(message) {
-    if (!view.teaching || view.teachingBusy) return;
-    view.teachingBusy = true;
-    view.teachingResult = null;
-    view.teachingRequestId = 'pending';
-    ctx.refresh();
-    try {
-      const started = await ctx.bridge.aiStart({
-        root: root(), mode: 'flow-teach', workflowId: view.teaching.workflowId,
-        message: String(message || ''), agent: view.agent, model: view.model,
-      });
-      if (view.teachingBusy && view.teachingRequestId === 'pending') view.teachingRequestId = started.requestId;
-      view.teachingInput = '';
-    } catch (err) {
-      view.teachingBusy = false;
-      view.teachingRequestId = '';
-      ctx.toast(String(err && err.message || err), true);
-      ctx.refresh();
-    }
+  // 試運転の前に、AI が書いた定義をこの下書きの候補として取り込む（記録はそこに残る）。
+  async function adoptDraft() {
+    const session = await ctx.guard('候補の取り込み', () => ctx.bridge.teachAdopt(root(), view.teaching.workflowId));
+    if (session) view.teaching = session;
+    return session;
   }
 
   async function startTeachingTrial() {
-    const session = view.teaching;
-    const generation = session && session.generations.find((item) => item.id === session.activeGenerationId);
+    const draft = view.teachingWorkflow && view.teachingWorkflow.workflow;
+    if (!view.teaching || !draft) return;
+    const session = (await adoptDraft()) || view.teaching;
+    const generation = session.generations.find((item) => item.id === session.activeGenerationId);
     if (!generation) return;
     const started = await ctx.guard('試運転', () => ctx.bridge.runStart({
-      root: root(), source: { type: 'draft', workflow: generation.workflow },
+      root: root(), source: { type: 'draft', workflow: draft },
       request: view.request || session.understanding.purpose, parameters: {}, readonly: view.readonly,
       agent: view.agent, model: view.model,
     }));
@@ -542,8 +541,6 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     main.querySelector('[data-flow-teaching-cancel]')?.addEventListener('click', () => { view.creatingTeaching = false; view.teachingInput = ''; ctx.refresh(); });
     main.querySelector('[data-flow-teaching-purpose]')?.addEventListener('input', (event) => { view.teachingInput = event.target.value; });
     main.querySelector('[data-flow-teaching-create]')?.addEventListener('click', createTeaching);
-    main.querySelector('[data-flow-teaching-message]')?.addEventListener('input', (event) => { view.teachingInput = event.target.value; });
-    main.querySelector('[data-flow-teaching-send]')?.addEventListener('click', () => askTeachingAi(view.teachingInput));
     main.querySelector('[data-flow-teaching-trial-request]')?.addEventListener('input', (event) => { view.request = event.target.value; });
     main.querySelector('[data-flow-teaching-trial]')?.addEventListener('click', startTeachingTrial);
     main.querySelector('[data-flow-teaching-confirm]')?.addEventListener('click', confirmTeaching);
@@ -562,12 +559,8 @@ window.createFlowFeature = function createFlowFeature(ctx) {
         understanding: { ...session.understanding, purpose: view.workflow.description || view.workflow.name },
       });
       view.teachings = (await ctx.bridge.teachingList(root())) || view.teachings;
-      view.teaching = session;
-      view.selectedTeaching = session.workflowId;
-      view.selected = '';
-      view.workflow = null;
-      ctx.refresh();
-      await askTeachingAi('既存の目的を保ちながら、変更内容を相談したいです。');
+      // 会話はここでは始めない。置き場の「編集開始」を押したときに、この対象で tmux を開く
+      await selectTeaching(session.workflowId);
     });
     main.querySelector('[data-flow-duplicate]')?.addEventListener('click', () => startEditor(null, true));
     main.querySelector('[data-flow-close-editor]')?.addEventListener('click', async () => {
@@ -714,25 +707,21 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     ctx.refresh();
   }
 
-  function onAiProgress(payload) {
-    if (payload.mode !== 'flow-teach' || (view.teachingRequestId && view.teachingRequestId !== 'pending' && payload.requestId !== view.teachingRequestId)) return false;
-    view.teachingRequestId = payload.requestId;
+  // 教える会話は tmux（会話基盤）で進むので、AI の一問一答（automation:ai:*）は使わない。
+  function onAiProgress() { return false; }
+  function onAiResult() { return false; }
+
+  // 会話が終わるたびに、AI が書いた定義と下書きの状態を読み直す（光の DOM 側が呼ぶ）。
+  async function reloadTeaching() {
+    if (!view.teaching) return;
+    const [session] = await Promise.all([
+      ctx.bridge.teachingRead(root(), view.teaching.workflowId).catch(() => null),
+      readTeachingWorkflow(view.teaching.workflowId),
+    ]);
+    if (session) view.teaching = session;
+    view.teachings = (await ctx.bridge.teachingList(root()).catch(() => null)) || view.teachings;
     if (active()) ctx.refresh();
-    return true;
   }
 
-  function onAiResult(payload) {
-    if (payload.mode !== 'flow-teach' || (view.teachingRequestId && view.teachingRequestId !== 'pending' && payload.requestId !== view.teachingRequestId)) return false;
-    view.teachingBusy = false;
-    view.teachingRequestId = '';
-    if (payload.ok && payload.result) {
-      view.teachingResult = payload.result;
-      if (payload.result.session) view.teaching = payload.result.session;
-      ctx.bridge.teachingList(root()).then((items) => { view.teachings = items || []; if (active()) ctx.refresh(); });
-    } else if (!payload.cancelled) ctx.toast(payload.error || 'AIの提案を受け取れませんでした', true);
-    if (active()) ctx.refresh();
-    return true;
-  }
-
-  return { activate, rootChanged, html, bind, select, create, onAiProgress, onAiResult };
+  return { activate, rootChanged, html, bind, select, create, onAiProgress, onAiResult, reloadTeaching };
 };

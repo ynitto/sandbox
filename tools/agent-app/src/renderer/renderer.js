@@ -93,18 +93,34 @@ function inputStatus(kind = '', text = '', ttl = 0) {
   if (ttl) state.inputStatusTimer = setTimeout(() => inputStatus(), ttl);
 }
 
+// 入力先（メッセージ / 端末操作 / 共有に依頼）。「共有に依頼」は、この依頼を LAN の仲間の AI へ
+// 回す先で、押せるのは設定 > 共有を使うと決めているときだけ。実行設定は共有の分だけに絞る。
 function setInputMode(mode, { focus = true } = {}) {
   const tmuxReady = isTmux(state.current) && !['dead', 'gone'].includes((state.phases.get(state.current.id) || {}).phase);
-  const next = mode === 'terminal' && tmuxReady ? 'terminal' : 'message';
-  state.input = InputMode.reduce(state.input, { type: next === 'terminal' ? 'terminal-focus' : 'message-focus' });
-  $('input-mode-message').setAttribute('aria-pressed', String(next === 'message'));
-  $('input-mode-terminal').setAttribute('aria-pressed', String(next === 'terminal'));
-  $('input-mode-terminal').disabled = !tmuxReady;
-  $('message-input').hidden = next !== 'message';
+  const shareReady = shareEnabled();
+  // 共有の答えを待っている間は、入力欄は引き受けた人への「ひとこと」になる（手元の CLI は止まっていて、
+  // 相手の端末にキーは送れないので、他の入力先は押せない）
+  const waiting = shareWaiting();
+  let next = mode === 'terminal' || mode === 'share' ? mode : 'message';
+  if (waiting) next = 'share';
+  if (next === 'terminal' && !tmuxReady) next = 'message';
+  if (next === 'share' && !shareReady) next = 'message';
+  state.input = InputMode.reduce(state.input, { type: `${next}-focus` });
+  for (const [id, name] of [['input-mode-message', 'message'], ['input-mode-terminal', 'terminal'], ['input-mode-share', 'share']]) {
+    $(id).setAttribute('aria-pressed', String(next === name));
+    $(id).classList.toggle('on', next === name);
+  }
+  $('input-mode-terminal').disabled = !tmuxReady || !!waiting;
+  $('input-mode-message').disabled = !!waiting;
+  $('input-mode-share').hidden = !shareReady;
+  $('message-input').hidden = next === 'terminal';
   $('terminal-keys').hidden = next !== 'terminal';
-  document.querySelector('.composer-toolbar').hidden = next !== 'message';
+  document.querySelector('.composer-toolbar').hidden = next === 'terminal';
   $('chat').classList.toggle('input-terminal', next === 'terminal');
+  $('prompt').placeholder = waiting ? `${waiting.node || '引き受けた人'} へ伝える`
+    : (next === 'share' ? '参加者の AI に依頼する' : 'エージェントに依頼する');
   Term.setInputEnabled(next === 'terminal');
+  renderRunSettingsSummary();
   if (focus) {
     if (next === 'terminal') Term.focus();
     else $('prompt').focus();
@@ -278,15 +294,27 @@ function renderWorkflowItems() {
   if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'まだワークフローがない' : '')));
 }
 
+// サイドバーの「共有」に未読のひとことの数を出す
+function renderShareUnread() {
+  const button = $('area-share');
+  const count = shareEnabled() ? Share.unread() : 0;
+  let badge = button.querySelector('.unread');
+  if (!count) { if (badge) badge.remove(); return; }
+  if (!badge) { badge = el('span', 'unread'); button.append(badge); }
+  badge.textContent = String(count);
+}
+
 function renderAreaContext() {
   const info = AgentNavigation.areaInfo(state.area);
   $('area-list-title').textContent = info.label;
   $('session-new').setAttribute('aria-label', info.createLabel);
   $('session-new').title = info.createLabel;
-  for (const id of ['sessions', 'tasks', 'workflows']) $(id).hidden = id !== info.listId;
+  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests']) $(id).hidden = id !== info.listId;
+  $('session-new').hidden = state.area === 'share';      // 共有の依頼は会話から出す
   if (state.area === 'conversation') renderSessions();
   else if (state.area === 'tasks') renderTaskItems();
-  else renderWorkflowItems();
+  else if (state.area === 'workflows') renderWorkflowItems();
+  else Share.render();
 }
 
 // 選んでいたタスクを新しい一覧の中から選び直す（無ければ設定の記憶、それも無ければ先頭）。
@@ -657,6 +685,7 @@ const POLICY_VIEW = {
   shared: { label: '共有', tier: '' },
 };
 const SKILL_MODE_LABEL = { auto: '自動', manual: '手動選択', off: '使用しない' };
+const PRIORITY_LABEL = { high: '高', normal: '通常', low: '低' };
 // 最適化が効いていないときに選べる起動方針（settings.BASIC_POLICIES と同じ）。
 const BASIC_POLICIES = ['recommended'];
 
@@ -679,6 +708,15 @@ function shareEnabled(config = state.config) {
   return !!(config && config.share && config.share.enabled);
 }
 
+// いま入力欄が「共有に依頼」を向いているか（起動方針は選ばず、この入力先が決める）。
+function sharing() {
+  return state.input.mode === 'share' && shareEnabled();
+}
+
+function currentPolicy() {
+  return sharing() ? 'shared' : $('policy').value;
+}
+
 function effectivePolicy(policy, on = optimized()) {
   const name = String(policy || '');
   if (name === 'direct') return name;
@@ -692,8 +730,6 @@ function renderRestrictions() {
   const on = optimized();
   const select = $('policy');
   for (const option of select.options) option.disabled = !on && !BASIC_POLICIES.includes(option.value) && option.value !== 'direct';
-  const sharedOption = [...select.options].find((option) => option.value === 'shared');
-  if (sharedOption) sharedOption.disabled = !shareEnabled();   // 共有は設定で使うと決めたときだけ
   if (select.selectedOptions[0] && select.selectedOptions[0].disabled) { select.value = 'recommended'; renderRunSettingsSummary(); }
   const caps = state.capabilities;
   $('area-workflows').disabled = !!(caps && caps.agentFlow === false);
@@ -759,7 +795,7 @@ async function refreshTurnSkillPreview() {
   renderRunSettingsSummary();
 }
 
-function selectedExecution(policy = $('policy').value) {
+function selectedExecution(policy = currentPolicy()) {
   if (policy === 'direct') return { policy, tier: '', cli: $('cli').value, model: $('model').value.trim() };
   policy = effectivePolicy(policy);
   // 共有: エージェントは「どれでも」（'*' → 空）か、参加者が提供している名前
@@ -791,19 +827,30 @@ function renderAgents() {
 function renderRunSettingsSummary() {
   const summary = $('run-settings-summary');
   if (!summary) return;
+  // 「どれでも」の選択肢は、要約を組み立てる前に入れ替える（選ばれている CLI がそこで変わる）
+  const shared = sharing();
+  renderAnyAgentOption(shared);
   const selected = selectedExecution();
   const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
-  const shared = selected.policy === 'shared';
-  renderAnyAgentOption(shared);
   const agent = selected.cli || (shared ? 'どれでも' : 'エージェント未設定');
   const model = selected.model;
   const mode = (shared || $('permission-mode').value === 'ask') ? 'Ask'
     : ($('permission-mode').value === 'auto' ? '自動承認' : '確認あり');
   const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
   const skillLabel = `スキル ${SKILL_MODE_LABEL[state.turnSkillMode] || SKILL_MODE_LABEL.auto}`;
-  summary.textContent = [policy.label, `${agent}${model ? ` / ${model}` : ''}`, skillLabel, mode, location].filter(Boolean).join(' · ');
+  // 共有は「誰が・どの優先度で」だけ。起動方針・権限・作業フォルダはこの PC の話なので出さない
+  summary.textContent = shared
+    ? [`${agent}${model ? ` / ${model}` : ''}`, `優先度 ${PRIORITY_LABEL[$('priority').value] || '通常'}`, skillLabel].join(' · ')
+    : [policy.label, `${agent}${model ? ` / ${model}` : ''}`, skillLabel, mode, location].filter(Boolean).join(' · ');
   summary.title = summary.textContent;
   $('direct-agent-settings').hidden = !(selected.policy === 'direct' || shared);
+  $('policy-field').hidden = shared;
+  $('permission-field').hidden = shared;
+  $('share-priority-field').hidden = !shared;
+  $('worktree-field').hidden = shared || !worktreeUI();
+  const waiting = shareWaiting();
+  $('send').setAttribute('aria-label', waiting ? 'ひとことを送る' : (shared ? '依頼を共有へ送信' : '依頼を送信'));
+  $('send').querySelector('.send-label').textContent = waiting ? '送る' : (shared ? '依頼する' : '送信');
   renderTurnSkills();
 }
 
@@ -823,6 +870,32 @@ function renderAnyAgentOption(shared) {
   }
 }
 
+// この会話が共有の答えを待っているか。待っている間は端末ミラーに**引き受けた人の画面**が出る。
+function shareWaiting(sess = state.current) {
+  const id = sess && sess.share ? sess.share.id : '';
+  if (!id) return null;
+  const status = Share.status();
+  const found = (status && status.mine ? status.mine : []).find((r) => r.id === id);
+  if (found && !(found.state === 'open' || found.state === 'working')) return null;
+  return { id, node: found ? found.executor : '', cli: found ? found.executorCli : '', state: found ? found.state : 'open' };
+}
+
+// 待っている間だけ出る、引き受けた人とのやり取り（吹き出しは共有画面と同じ talk.js）
+function renderShareTalk(waiting) {
+  const box = $('share-talk');
+  box.hidden = !waiting;
+  // 段が 1 つ増えるので、端末と履歴の取り分を詰める（利用者の開閉は触らない）
+  $('chat').classList.toggle('has-talk', !!waiting);
+  if (!waiting) return;
+  const status = Share.status();
+  const request = (status && status.mine ? status.mine : []).find((r) => r.id === waiting.id);
+  const talk = (request && request.talk) || [];
+  const unread = Talk.unread(waiting.id, talk);
+  if (unread) box.open = true;
+  $('share-talk-count').textContent = `${talk.length}件${unread ? ` · 未読 ${unread}` : ''}`;
+  Talk.render($('share-talk-body'), { id: waiting.id, talk, me: (status && status.node) || '', read: box.open });
+}
+
 function renderHeader() {
   const cur = state.current;
   $('chat-title').textContent = cur ? (cur.title || '（無題）') : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
@@ -838,7 +911,7 @@ function renderHeader() {
   $('cli').disabled = !state.repo;
   $('policy').disabled = !state.repo;
   if (cur) {
-    $('policy').value = effectivePolicy(cur.policy || 'direct');
+    $('policy').value = effectivePolicy(cur.policy === 'shared' ? state.config.execution.defaultPolicy : (cur.policy || 'direct'));
     if ([...$('cli').options].some((o) => o.value === cur.cli)) $('cli').value = cur.cli;
     $('model').value = cur.model || '';
     $('permission-mode').value = cur.readonly ? 'ask' : (cur.autoApprove ? 'auto' : 'confirm');
@@ -866,21 +939,41 @@ function renderHeader() {
     $('phase').className = `phase ${ph.phase}`;
     $('phase').title = ph.detail || '';
   }
+  const waiting = shareWaiting(cur);
   $('term-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
   $('conversation-start').hidden = !!cur;
-  $('terminal-stage').hidden = !tm;
+  $('terminal-stage').hidden = !(tm || (waiting && waiting.state === 'working'));
+  // 端末（手元の tmux か、共有で映している相手の画面）があるときは、履歴は畳んだ脇役のまま
+  const mirror = tm || !!(waiting && waiting.state === 'working');
   $('conversation-history').hidden = !cur;
-  $('conversation-history').classList.toggle('history-only', !tm);
-  if (cur && !tm) $('conversation-history').open = true;
+  $('conversation-history').classList.toggle('history-only', !mirror);
+  if (cur && !mirror) $('conversation-history').open = true;
   $('history-count').textContent = cur && cur.messages ? `${cur.messages.length}件` : '';
-  $('term-agent').textContent = tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '';
-  $('term-name').textContent = ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
+  $('term-agent').textContent = waiting ? `${waiting.node || '仲間'} の ${waiting.cli || 'AI'}`
+    : (tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '');
+  $('term-name').textContent = waiting ? '共有 · 閲覧のみ' : (ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '');
+  // 待っている間は、引き受けた人の tmux の画面をそのまま描く（キーは送れない）
+  if (waiting && waiting.state === 'working') {
+    const fresh = Term.current() !== waiting.id;
+    Term.attachRemote(waiting.id, $('term-host'));
+    if (fresh) {
+      api.share.screen(waiting.id)
+        .then((text) => { if (text && Term.current() === waiting.id) Term.applyScreen({ id: waiting.id, text }); })
+        .catch(() => { /* まだ画面が無い */ });
+    }
+  } else if (Term.isRemote()) Term.detach();
   if (state.input.mode === 'terminal' && !tm) setInputMode('message', { focus: false });
   else {
     $('input-mode-terminal').disabled = !tm || !!(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
     Term.setInputEnabled(state.input.mode === 'terminal' && !$('input-mode-terminal').disabled);
   }
-  $('run-settings').hidden = !state.repo;
+  $('run-settings').hidden = !state.repo || !!waiting;
+  $('attach').hidden = !!waiting;
+  renderShareTalk(waiting);
+  if ((state.input.mode === 'share' && !shareEnabled()) || waiting) setInputMode(state.input.mode, { focus: false });
+  else $('input-mode-share').hidden = !shareEnabled();
+  // 共有の答えを待っている間、「停止」は列からの取り下げになる
+  $('stop').textContent = waiting ? '取り下げ' : '停止';
   renderRunSettingsSummary();
 }
 
@@ -1190,7 +1283,7 @@ async function openSession(id) {
   Files.setRoot(state.repo, activeWorktree(), {}).catch(() => {});
   if (state.changesOpen) refreshChanges();
   if (isTmux(state.current)) attachTerm(state.current.id);
-  else Term.detach();
+  else if (!shareWaiting()) Term.detach();
   setInputMode('message', { focus: false });
 }
 
@@ -1221,11 +1314,29 @@ function turnOptions() {
     autoApprove: $('permission-mode').value === 'auto',
     skillMode: state.turnSkillMode,
     skills: state.turnSkillMode === 'manual' ? [...state.turnSkills] : [],
+    ...(selected.policy === 'shared' ? { priority: $('priority').value } : {}),
   };
+}
+
+// 待っている間の送信は、引き受けた人へのひとこと（CLI には入らない）
+async function sayToExecutor(waiting, text) {
+  inputStatus('pending', '送っています…');
+  try {
+    await api.share.say(waiting.id, text);
+    $('prompt').value = '';
+    await Share.refresh();
+    inputStatus('success', `✓ ${waiting.node || '引き受けた人'} へ送信済み`, 3000);
+    renderHeader();
+  } catch (err) {
+    notice(err.message, 'error');
+    inputStatus('error', '送信失敗・入力内容を保持しました');
+  }
 }
 
 async function sendPrompt() {
   const text = $('prompt').value.trim();
+  const waiting = shareWaiting();
+  if (waiting) { if (text) await sayToExecutor(waiting, text); return; }
   if ((!text && !state.attachments.length) || !state.repo) return;
   const opts = turnOptions();
   const selected = selectedExecution(opts.policy);
@@ -1263,7 +1374,8 @@ async function sendPrompt() {
     renderHeader();
     let res;
     try {
-      if (wasTmux && state.running.has(id) && !state.attachments.length) {
+      // 応答中の tmux へ流すのは、この PC の CLI と話しているときだけ。共有は列へ投函する
+      if (!shared && wasTmux && state.running.has(id) && !state.attachments.length) {
         res = await api.termSubmit(id, text);
       } else {
         res = await api.send(id, text, { ...opts, attachments: state.attachments });
@@ -1280,10 +1392,10 @@ async function sendPrompt() {
     state.sessions = await api.listSessions(state.repo);
     // tmux で起動（し直）したなら端末ミラーをつなぎ直す。ヘッドレスの CLI へ移ったなら外す
     if (isTmux(state.current)) { if (!wasTmux || res.restarted || Term.current() !== id) await attachTerm(id); }
-    else Term.detach();
+    else if (!shareWaiting()) Term.detach();
     if (res.warning) notice(res.warning);
     const sentAt = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    inputStatus('success', `✓ ${selected.cli}へ送信済み ${sentAt}`, 4000);
+    inputStatus('success', shared ? `✓ 共有の列に並べた ${sentAt}` : `✓ ${selected.cli}へ送信済み ${sentAt}`, 4000);
     $('send').classList.add('sent');
     setTimeout(() => $('send').classList.remove('sent'), 700);
     renderHeader();
@@ -1439,12 +1551,16 @@ function showView(view) {
 
 async function showArea(area, { persist = true } = {}) {
   state.area = AgentNavigation.normalizeArea(area);
+  const share = state.area === 'share';
+  const automation = state.area === 'tasks' || state.area === 'workflows';
   const workspace = state.area !== 'conversation';
   renderAutomationHeader();
   $('app').classList.toggle('workspace-mode', workspace);
   $('main').hidden = workspace;
-  $('automation').hidden = !workspace;
-  const buttons = { conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows') };
+  $('automation').hidden = !automation;
+  $('share-area').hidden = !share;
+  if (!share) Share.hide();
+  const buttons = { conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), share: $('area-share') };
   for (const [name, button] of Object.entries(buttons)) {
     const selected = name === state.area;
     button.classList.toggle('on', selected);
@@ -1454,7 +1570,9 @@ async function showArea(area, { persist = true } = {}) {
   renderAreaContext();
   setSidebar(false);
   $('changes').hidden = workspace || !state.changesOpen;
-  if (workspace) {
+  if (share) {
+    await Share.show();
+  } else if (automation) {
     // 読み込み中に直前の領域の操作を残さない。見出しを先に切り替え、内容は準備後に一度で見せる。
     // タスクの実行状態（ファイル実体の確認を伴い遅い）はここでは待たない——一覧は定義が
     // 出た時点で見せ終え、実行状態は裏で重ねる（loadTaskItems / refreshTaskSnapshot）。
@@ -1609,7 +1727,7 @@ function settingsPatch() {
       node: $('share-node').value.trim(),
       peers: $('share-peers').value.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean),
       port: Number($('share-port').value),
-      participate: $('share-participate').checked,
+      accept: $('share-accept').value,
       clis: [...document.querySelectorAll('#share-clis input:checked')].map((input) => input.value),
       maxConcurrent: Number($('share-max-concurrent').value),
       dailyCap: Number($('share-daily-cap').value),
@@ -1683,7 +1801,7 @@ async function openSettings() {
   $('share-node').value = share.node || '';
   $('share-peers').value = (share.peers || []).join(', ');
   $('share-port').value = share.port != null ? share.port : 47801;
-  $('share-participate').checked = !!share.participate;
+  $('share-accept').value = share.accept || (share.participate ? 'auto' : 'off');
   $('share-max-concurrent').value = share.maxConcurrent || 1;
   $('share-daily-cap').value = share.dailyCap != null ? share.dailyCap : 20;
   $('share-per-requester-cap').value = share.perRequesterDailyCap != null ? share.perRequesterDailyCap : 5;
@@ -1758,6 +1876,13 @@ async function init() {
     },
   });
   Files.init();
+  Share.init({
+    el,
+    notice,
+    // 共有の画面から、答えが届いた会話へ移る
+    openSession: (id) => showArea('conversation').then(() => openSession(id)).catch((err) => notice(err.message, 'error')),
+  });
+  Share.refresh().then(() => { renderHeader(); renderShareUnread(); }).catch(() => {});
   renderHostStatus();
   api.running().then((ids) => { for (const id of ids) state.running.add(id); renderSessions(); renderHeader(); }).catch(() => {});
   await selectRepo(state.config.lastRepo);
@@ -1767,12 +1892,15 @@ async function init() {
   $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
   $('area-tasks').onclick = () => showArea('tasks').catch((err) => notice(err.message, 'error'));
   $('area-workflows').onclick = () => showArea('workflows').catch((err) => notice(err.message, 'error'));
+  $('area-share').onclick = () => showArea('share').catch((err) => notice(err.message, 'error'));
   $('automation-workbench').addEventListener('statemachine:changed', (event) => {
     handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
   });
   $('automation-workbench').addEventListener('statemachine:teaching-view', (event) => TaskTeaching.show(event.detail));
+  $('automation-workbench').addEventListener('statemachine:flow-teaching-view', (event) => FlowTeaching.show(event.detail));
   TaskTeaching.init({
     notice,
+    shareEnabled: () => shareEnabled(),
     isRunning: (id) => state.running.has(id),
     executionOptions: (overrides = {}) => {
       const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
@@ -1803,6 +1931,35 @@ async function init() {
     refreshWorkbench: () => $('automation-workbench').refresh(),
   });
 
+  // ワークフローを AI と作る会話（タスクと同じ deps。見本の記録だけが無い）
+  FlowTeaching.init({
+    notice,
+    shareEnabled: () => shareEnabled(),
+    isRunning: (id) => state.running.has(id),
+    agentNames: () => state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name),
+    executionOptions: (overrides = {}) => {
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
+      return { policy: selected.policy, cli: overrides.agent || selected.cli, model: overrides.model != null ? overrides.model : selected.model, autoApprove };
+    },
+    executionDefaults: () => {
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      return { agent: selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
+    },
+    executionLabel: (overrides = {}) => {
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
+      const cli = overrides.agent || selected.cli;
+      const model = overrides.model != null ? overrides.model : selected.model;
+      const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
+      return `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
+    },
+    reloadWorkflows: async () => {
+      await $('automation-workbench').reloadFlowTeaching();
+      if (state.area === 'workflows') await loadAreaItems().catch(() => {});
+    },
+  });
+
   $('repo-select').onchange = () => selectRepo($('repo-select').value).catch((err) => notice(err.message, 'error'));
   $('repo-add').onclick = () => { $('repo-more').open = false; addRepo().catch((err) => notice(err.message, 'error')); };
   $('repo-remove').onclick = async () => {
@@ -1823,8 +1980,11 @@ async function init() {
   $('stop').onclick = () => state.current && api.stop(state.current.id);
   $('input-mode-message').onclick = () => setInputMode('message');
   $('input-mode-terminal').onclick = () => setInputMode('terminal');
+  $('input-mode-share').onclick = () => setInputMode('share');
+  // 開いた時点で「読んだ」と数える（未読の印が消える）
+  $('share-talk').addEventListener('toggle', () => { renderShareTalk(shareWaiting()); renderShareUnread(); });
   $('prompt').addEventListener('focus', () => {
-    if (state.input.mode !== 'message') setInputMode('message', { focus: false });
+    if (state.input.mode === 'terminal') setInputMode('message', { focus: false });
   });
   const terminalKeys = {
     Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03',
@@ -1958,6 +2118,7 @@ async function init() {
     const { id, warning } = p;
     state.running.add(id);
     TaskTeaching.onTurnStarted(p);
+    FlowTeaching.onTurnStarted(p);
     if (!state.liveParts.has(id)) state.liveParts.set(id, { thinking: [], information: [] });
     if (state.current && state.current.id === id) {
       if (warning) notice(warning);
@@ -1975,7 +2136,17 @@ async function init() {
     const node = document.querySelector(`#working-${id} .log`);
     if (node) { node.append(logLine({ kind, text })); node.scrollTop = node.scrollHeight; }
   });
-  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); return onTurnDone(p); });
+  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); FlowTeaching.onTurnDone(p); return onTurnDone(p); });
+  api.share.onScreen((p) => {
+    if (!p || !p.sessionId) return;
+    TaskTeaching.onShareScreen(p);
+    FlowTeaching.onShareScreen(p);
+    if (state.current && state.current.id === p.sessionId && Term.current() === p.id) Term.applyScreen({ id: p.id, text: p.text || '' });
+  });
+  api.share.onChanged(() => {
+    renderShareUnread();
+    if (state.current && state.current.share) renderHeader();
+  });
   api.onTermScreen((p) => {
     state.tails.set(p.id, p.tail || '');
     Term.applyScreen(p);
@@ -1986,6 +2157,7 @@ async function init() {
   api.onTermPhase((p) => {
     state.phases.set(p.id, { phase: p.phase, detail: p.detail, name: p.name });
     TaskTeaching.onTermPhase(p);
+    FlowTeaching.onTermPhase(p);
     if (state.current && state.current.id === p.id) {
       renderHeader();
       renderMessages();
