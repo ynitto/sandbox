@@ -562,16 +562,20 @@ function registerIpcHandlers(getWindow, options = {}) {
         for (const line of String(launchOutputFile ? readOutputFile(launchOutputFile) : '').split(/\r?\n/)) {
           if (line) send(channel('run:line'), { requestId, machine, kind: 'stdout', line: terminalText.stripAnsi(line) });
         }
+        // 1 セッションの経路は RESULT 行を出さないので、成否は終了コードで見る
+        // ——モデルの自己申告は受け取らない。
+        const result = mode === 'run' && resultSource === 'result-line'
+          ? agentLoop.parseResult(stdout, code)
+          : { ok: code === 0 };
         send(channel('run:exit'), {
-          requestId, machine, code, mode,
-          // 1 セッションの経路は RESULT 行を出さないので、成否は終了コードで見る
-          // ——モデルの自己申告は受け取らない。
-          result: mode === 'run' && resultSource === 'result-line'
-            ? agentLoop.parseResult(stdout, code)
-            : { ok: code === 0 },
+          requestId, machine, code, mode, result,
           error: truncated ? '実行ログが大きいため一部を省略しました' : '',
           stderr,
         });
+        // 埋め込む側（agent-app）が、画面の外に居る利用者へ知らせるための合図。
+        if (typeof options.onRunExit === 'function') {
+          options.onRunExit({ name: String(task.name || machine || ''), mode, result });
+        }
       },
     });
     return {

@@ -219,6 +219,10 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .phase.busy, .phase.starting { border-color: var(--accent); color: var(--accent); }
 .phase.attention { border-color: var(--warn); color: var(--warn); background: var(--warn-bg); }
 .phase.dead, .phase.gone { border-color: var(--danger); color: var(--danger); }
+/* 「確認待ち」は答える場所（端末操作）への行き先。答えられる phase のときだけ押せる。 */
+.phase.answerable { cursor: pointer; }
+.phase.answerable::after { content: ' →'; }
+.phase.answerable:hover { color: var(--text); }
 .views { display: inline-flex; }
 .views .tab { min-height: 32px; padding: 4px 10px; border-color: transparent; color: var(--muted); background: transparent; }
 .views .tab:hover { color: var(--text); background: #f1f3f5; }
@@ -506,6 +510,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .startup-actions { display: flex; flex-direction: column; gap: 7px; }
 .startup-row { display: grid; grid-template-columns: 92px minmax(120px, 1fr) 116px auto; align-items: center; gap: 6px; }
 .startup-row > input, .startup-row > select { min-width: 0; width: 100%; }
+.quick-row { grid-template-columns: 150px minmax(140px, 1fr) auto; }
 .startup-controls { display: inline-flex; }
 .startup-controls button { width: 27px; padding-inline: 4px; }
 .settings-empty { padding: 8px 2px; }

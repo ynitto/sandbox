@@ -162,4 +162,6 @@ contextBridge.exposeInMainWorld('api', {
   onTurnDone: on('turn:done'),
   onTermScreen: on('term:screen'),
   onTermPhase: on('term:phase'),
+  // OS の通知を押した（main がウィンドウを前面へ戻したあと、開く会話を知らせる）
+  onNotifyOpen: on('notify:open'),
 });

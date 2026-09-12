@@ -42,12 +42,15 @@ const state = {
   attachments: [],         // 次の依頼に付ける添付 [{ id, name, size } | { rel, name }]
   settingsSkills: [],
   settingsActions: [],
+  settingsQuick: [],
   settingsAgents: [],
   turnSkillMode: 'auto',
   turnSkills: [],
   turnSkillPreview: [],
   skillPreviewTimer: null,
   pendingTaskIntent: null,
+  filledPrompt: '',     // 入力欄へこちらが置いた本文（書きかけと見分けるため）
+  sessionFilter: '',    // 会話一覧の絞り込み（名前の一部）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -67,6 +70,10 @@ function notice(text, kind = '') {
 }
 
 const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
+// 端末へそのまま送るキー。端末操作の仮想キー（index.html の data-terminal-key）と同じ表を使う。
+const TERMINAL_KEYS = {
+  Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03',
+};
 const POPUP_MENU_SELECTOR = 'details.more-menu[open], details.run-settings[open]';
 const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
@@ -200,7 +207,11 @@ async function removeConversation(session) {
 function renderSessions() {
   const ul = $('sessions');
   ul.replaceChildren();
-  for (const s of state.sessions) {
+  const needle = state.sessionFilter.trim().toLowerCase();
+  const shown = needle
+    ? state.sessions.filter((s) => String(s.title || '').toLowerCase().includes(needle))
+    : state.sessions;
+  for (const s of shown) {
     const ph = state.phases.get(s.id);
     const cls = [state.current && s.id === state.current.id ? 'active' : '', state.running.has(s.id) ? 'running' : (ph && ph.phase === 'attention' ? 'attention' : '')];
     const li = el('li', `row-item ${cls.join(' ')}`);
@@ -211,7 +222,10 @@ function renderSessions() {
     const status = state.running.has(s.id) ? '応答中' : (ph && ph.phase === 'attention' ? '確認待ち' : `${s.count}件`);
     body.append(el('div', 'sub', `${s.cli}${s.readonly ? ' · Ask' : ''}${where} · ${status}`));
     pick.append(body);
-    pick.onclick = () => openSession(s.id);
+    // 「確認待ち」の会話は、答える場所（端末操作）まで 1 押しで行く
+    const answering = !!(ph && ph.phase === 'attention');
+    pick.title = answering ? `「${s.title || '無題の会話'}」を開いて端末操作で答える` : '';
+    pick.onclick = () => openSession(s.id, { answer: answering });
     const remove = el('button', 'session-remove', '削除');
     remove.type = 'button';
     remove.title = `${s.title || '無題の会話'}を削除`;
@@ -223,7 +237,21 @@ function renderSessions() {
     li.append(pick, remove);
     ul.append(li);
   }
-  if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? 'まだ会話がない' : ''));
+  if (!shown.length) ul.append(el('li', 'empty', needle ? '名前が合う会話はない' : (state.repo ? 'まだ会話がない' : '')));
+}
+
+// 会話の名前を変える（既定は最初の依頼の先頭。長い会話ほど見分けが付かなくなる）
+async function renameConversation() {
+  const cur = state.current;
+  if (!cur) return;
+  const next = prompt('この会話の名前', cur.title || '');
+  if (next == null) return;
+  const title = next.trim().slice(0, 80);
+  if (!title || title === cur.title) return;
+  state.current = await api.updateSession(cur.id, { title });
+  state.sessions = await api.listSessions(state.repo);
+  renderHeader();
+  renderSessions();
 }
 
 function scheduleLabel(schedule) {
@@ -310,6 +338,7 @@ function renderAreaContext() {
   $('session-new').setAttribute('aria-label', info.createLabel);
   $('session-new').title = info.createLabel;
   for (const id of ['sessions', 'tasks', 'workflows', 'share-requests']) $(id).hidden = id !== info.listId;
+  $('session-filter-row').hidden = state.area !== 'conversation';
   $('session-new').hidden = state.area === 'share';      // 共有の依頼は会話から出す
   if (state.area === 'conversation') renderSessions();
   else if (state.area === 'tasks') renderTaskItems();
@@ -896,6 +925,33 @@ function renderShareTalk(waiting) {
   Talk.render($('share-talk-body'), { id: waiting.id, talk, me: (status && status.node) || '', read: box.open });
 }
 
+// 会話ヘッダーの状態の印。「確認待ち」のときだけ押せて、**答える場所へ連れて行く**（端末操作へ
+// 切り替えて端末に焦点を移す）。何を聞かれているかは端末ミラーにそのまま出ているので、ここでは
+// 繰り返さない。答え方も決めない——CLI によって `y` が効くもの（テキスト入力）と効かないもの
+// （反転選択メニュー）があり、見分けるには画面の文言を読むことになる（ADR-1）。
+function renderPhase(ph) {
+  const node = $('phase');
+  node.hidden = !ph;
+  if (!ph) return;
+  const answerable = ph.phase === 'attention';
+  node.textContent = PHASE_LABEL[ph.phase] || ph.phase;
+  node.className = `phase ${ph.phase}${answerable ? ' answerable' : ''}`;
+  node.title = answerable ? '押すと端末操作へ移り、そのまま答えられる' : (ph.detail || '');
+  if (answerable) {
+    node.tabIndex = 0;
+    node.setAttribute('role', 'button');
+    node.onclick = () => setInputMode('terminal');
+    node.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); node.click(); }
+    };
+  } else {
+    node.removeAttribute('tabindex');
+    node.removeAttribute('role');
+    node.onclick = null;
+    node.onkeydown = null;
+  }
+}
+
 function renderHeader() {
   const cur = state.current;
   $('chat-title').textContent = cur ? (cur.title || '（無題）') : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
@@ -926,6 +982,7 @@ function renderHeader() {
   $('chat-more').hidden = !state.repo;
   $('composer').hidden = !state.repo;
   $('session-delete').hidden = !cur;
+  $('session-rename').hidden = !cur;
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   $('stop').hidden = !busy;
   $('send').disabled = !state.repo || (!!cur && state.pending.has(cur.id));
@@ -933,12 +990,7 @@ function renderHeader() {
   if (!state.pending.size) $('send').classList.remove('sending');
   const tm = isTmux(cur);
   const ph = tm ? state.phases.get(cur.id) : null;
-  $('phase').hidden = !ph;
-  if (ph) {
-    $('phase').textContent = PHASE_LABEL[ph.phase] || ph.phase;
-    $('phase').className = `phase ${ph.phase}`;
-    $('phase').title = ph.detail || '';
-  }
+  renderPhase(ph);
   const waiting = shareWaiting(cur);
   $('term-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
   $('conversation-start').hidden = !!cur;
@@ -1056,6 +1108,45 @@ function rawExecutionNode(id, tmuxMode) {
   return details;
 }
 
+// 固定文や前の依頼を入力欄へ置く。**送らない**——送るのは利用者（「操作の見本」と同じ作法）。
+// 書きかけは消さない。入っているのがこちらで入れた本文のときだけ入れ直す。
+function fillPrompt(text, { attachments: files = [] } = {}) {
+  const body = String(text || '');
+  if (!body) return;
+  const prompt = $('prompt');
+  if (!prompt.value.trim() || prompt.value === state.filledPrompt) {
+    prompt.value = body;
+    state.filledPrompt = body;
+  } else {
+    inputStatus('error', '入力欄に書きかけがあります', 2600);
+    return;
+  }
+  if (files.length) addAttachments(files);
+  setInputMode('message', { focus: false });
+  prompt.focus();
+  prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  refreshTurnSkillPreview();
+}
+
+// ターンが終わったあとの「次の一手」。設定 > 共通指示 の定型の依頼を、最後の応答の下にだけ
+// 並べる（履歴の全応答に並べると画面が埋まる）。押すと入力欄に入るだけで、送らない。
+function quickRequestActions(index) {
+  const cur = state.current;
+  if (!cur || index !== cur.messages.length - 1) return null;
+  if (state.running.has(cur.id) || state.pending.has(cur.id)) return null;
+  const requests = (state.config.instructions.quickRequests || []).filter((item) => item && item.text);
+  if (!requests.length) return null;
+  const actions = el('div', 'message-actions');
+  for (const request of requests) {
+    const button = el('button', 'message-action', request.label);
+    button.type = 'button';
+    button.title = request.text;
+    button.onclick = () => fillPrompt(request.text);
+    actions.append(button);
+  }
+  return actions;
+}
+
 // index … 会話の messages の中の位置（分岐の関連づけに使う）
 function messageNode(m, index = -1) {
   const n = el('div', m.role === 'user' ? 'msg user' : 'response-turn');
@@ -1078,7 +1169,11 @@ function messageNode(m, index = -1) {
     const teach = el('button', 'message-action', 'この依頼をタスクにする');
     teach.type = 'button';
     teach.onclick = () => beginTaskTeaching(m);
-    actions.append(teach);
+    const again = el('button', 'message-action', '入力欄に戻す');
+    again.type = 'button';
+    again.title = '本文と添付を入力欄へ戻す（送らない）';
+    again.onclick = () => fillPrompt(m.text, { attachments: m.attachments || [] });
+    actions.append(teach, again);
     n.append(actions);
   } else {
     const who = el('div', 'response-who');
@@ -1106,6 +1201,8 @@ function messageNode(m, index = -1) {
     if (info) n.append(info);
     const forkActions = forkActionsNode(m, index);
     if (forkActions) n.append(forkActions);
+    const quick = quickRequestActions(index);
+    if (quick) n.append(quick);
   }
   return n;
 }
@@ -1266,7 +1363,8 @@ function newDraft() {
   renderSessions();
 }
 
-async function openSession(id) {
+// answer … 「確認待ち」から開いたとき。端末がつながってから端末操作へ移し、そのまま打てるようにする
+async function openSession(id, { answer = false } = {}) {
   try {
     state.current = await api.readSession(id);
   } catch (err) {
@@ -1282,9 +1380,13 @@ async function openSession(id) {
   renderSessions();
   Files.setRoot(state.repo, activeWorktree(), {}).catch(() => {});
   if (state.changesOpen) refreshChanges();
-  if (isTmux(state.current)) attachTerm(state.current.id);
+  let attaching = null;
+  if (isTmux(state.current)) attaching = attachTerm(state.current.id);
   else if (!shareWaiting()) Term.detach();
   setInputMode('message', { focus: false });
+  if (!answer || !attaching) return;
+  await attaching;
+  if (state.current && state.current.id === id) setInputMode('terminal');
 }
 
 // tmux の会話を開く: main に tmux セッションを（無ければ起動して）持たせ、端末ミラーをつなぐ。
@@ -1386,6 +1488,7 @@ async function sendPrompt() {
     state.turnSkills = [];
     state.turnSkillPreview = [];
     state.attachments = [];
+    state.filledPrompt = '';
     renderAttachments();
     if (!res.followup) state.running.add(id);
     state.current = await api.readSession(id);
@@ -1449,14 +1552,20 @@ async function pickAttachments() {
   try { addAttachments(await api.pickAttachments()); } catch (err) { notice(err.message, 'error'); }
 }
 
-// 「ファイル」画面で開いているファイルを、写さずにパスで添える
+// 作業フォルダの中のファイルを、写さずにパスで添える（ファイルビュアーと変更ビューの共通の口）
+function attachRepoFile(rel) {
+  if (!rel) return;
+  addAttachments([{ rel, name: rel.split('/').pop() }]);
+  notice(`添付に加えた: ${rel}（次の依頼に付く）`);
+}
+
+// 「ファイル」画面で開いているファイルを添える
 function attachOpenFile() {
   const f = Files.state.open;
   if (!f) { notice('ファイルを開いてから押す'); return; }
   const wt = Files.state.worktree || '';
   if (wt !== activeWorktree()) { notice('見ているフォルダが会話の作業フォルダと違う。会話の作業フォルダの中のファイルだけ添付できる', 'error'); return; }
-  addAttachments([{ rel: f.rel, name: f.rel.split('/').pop() }]);
-  notice(`添付に加えた: ${f.rel}（次の依頼に付く）`);
+  attachRepoFile(f.rel);
 }
 
 async function onTurnDone({ id, message }) {
@@ -1521,6 +1630,15 @@ async function refreshChanges() {
     const li = el('li');
     li.append(el('span', 'tag', f.label), el('span', 'grow', f.file));
     li.title = `${f.file}（ダブルクリックでファイルを開く）`;
+    // 差分を見ながら「このファイルを直して」と言えるように。中身はビュアーの「会話に添付」と同じ
+    // （相対パスを次の依頼に添えるだけで、写さない）。消えたファイルは添えられない。
+    if (f.label !== '削除') {
+      const attach = el('button', 'small', '会話に添付');
+      attach.type = 'button';
+      attach.title = 'このファイルを次の依頼に添付する（写さずにパスを伝える）';
+      attach.onclick = (event) => { event.stopPropagation(); attachRepoFile(f.file); };
+      li.append(attach);
+    }
     li.onclick = async () => { [...ul.children].forEach((c) => c.classList.remove('active')); li.classList.add('active'); renderDiff(await api.fileDiff(state.repo, wt, f.file, scope)); };
     li.ondblclick = () => { if (f.label !== '削除') { showView('files'); Files.setRoot(state.repo, wt, {}).then(() => Files.openFile(f.file)).then(() => Files.reveal(f.file)); } };
     li.tabIndex = 0;
@@ -1643,6 +1761,35 @@ function renderRecommendedSkills() {
   if (!state.settingsSkills.length) box.append(el('span', 'sub', '設定なし'));
 }
 
+// 設定 > 共通指示「定型の依頼」。行の形は起動時アクション（.startup-row）と同じ。
+function renderQuickRequests() {
+  const box = $('quick-requests');
+  box.replaceChildren();
+  for (const [index, request] of state.settingsQuick.entries()) {
+    const row = el('div', 'startup-row quick-row');
+    const label = el('input');
+    label.value = request.label || '';
+    label.placeholder = 'ボタンの文字';
+    label.setAttribute('aria-label', 'ボタンの文字');
+    const text = el('input');
+    text.value = request.text || '';
+    text.placeholder = '押したときに入力欄へ入る依頼';
+    text.setAttribute('aria-label', '依頼の本文');
+    const controls = el('span', 'startup-controls');
+    const remove = el('button', 'small quiet danger', '×');
+    remove.type = 'button';
+    remove.title = '削除';
+    remove.onclick = () => { state.settingsQuick.splice(index, 1); renderQuickRequests(); };
+    label.oninput = () => { request.label = label.value; };
+    text.oninput = () => { request.text = text.value; };
+    controls.append(remove);
+    row.append(label, text, controls);
+    box.append(row);
+  }
+  $('quick-add').disabled = state.settingsQuick.length >= 3;
+  if (!state.settingsQuick.length) box.append(el('div', 'sub settings-empty', '定型の依頼はありません'));
+}
+
 function renderStartupActions() {
   const box = $('startup-actions');
   box.replaceChildren();
@@ -1698,6 +1845,7 @@ function settingsPatch() {
   }
   return {
     transport: $('use-tmux').checked ? 'tmux' : 'headless',
+    notify: { background: $('notify-background').checked },
     useWorktree: $('use-worktree').checked,
     wslDistro: $('wsl-distro').value.trim(),
     instructions: {
@@ -1711,6 +1859,7 @@ function settingsPatch() {
         candidates: state.settingsSkills,
       },
       startupActions: state.settingsActions,
+      quickRequests: state.settingsQuick,
     },
     execution: {
       defaultPolicy: checkedPolicy ? checkedPolicy.value : 'recommended',
@@ -1772,9 +1921,11 @@ async function openSettings() {
   const execution = state.config.execution;
   state.settingsSkills = [...instructions.skills];
   state.settingsActions = instructions.startupActions.map((action) => ({ ...action }));
+  state.settingsQuick = (instructions.quickRequests || []).map((item) => ({ ...item }));
   state.settingsAgents = state.agents.length ? state.agents : await api.listAgents('').catch(() => []);
   $('use-tmux').checked = state.config.transport === 'tmux';
   $('use-worktree').checked = state.config.useWorktree;
+  $('notify-background').checked = (state.config.notify || {}).background !== false;
   $('wsl-distro').value = state.config.wslDistro || '';
   $('instruction-enabled').checked = instructions.enabled;
   $('fork-enabled').checked = instructions.forkEnabled !== false;
@@ -1783,6 +1934,7 @@ async function openSettings() {
   $('default-skill-mode').value = instructions.skillSelection.defaultMode;
   $('instruction-count').textContent = `${$('instruction-text').value.length} / 8000`;
   renderRecommendedSkills();
+  renderQuickRequests();
   renderStartupActions();
   for (const tier of ['small', 'medium', 'large']) {
     fillAgentSelect($(`tier-${tier}-cli`), execution.tiers[tier].cli);
@@ -1827,6 +1979,7 @@ async function saveSettings() {
     state.config = await api.saveConfig(settingsPatch());
     state.settingsSkills = [...state.config.instructions.skills];
     state.settingsActions = state.config.instructions.startupActions.map((action) => ({ ...action }));
+    state.settingsQuick = (state.config.instructions.quickRequests || []).map((item) => ({ ...item }));
     $('settings-status').textContent = '保存しました';
     if (before.wslDistro !== state.config.wslDistro) {
       try { state.host = await api.hostInfo(); } catch (error) { state.host = { platform: api.platform, tmux: '', error: error.message }; }
@@ -1840,6 +1993,7 @@ async function saveSettings() {
       await refreshWorktrees();
       renderAgents();
       renderHeader();
+      renderMessages();
       renderRestrictions();
     }
   } catch (error) {
@@ -1897,6 +2051,8 @@ async function init() {
     handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
   });
   $('automation-workbench').addEventListener('statemachine:teaching-view', (event) => TaskTeaching.show(event.detail));
+  // 失敗した実行をAIへ渡すとき、最初の依頼を入力欄へ置く（送るのは利用者）
+  $('automation-workbench').addEventListener('statemachine:teaching-prefill', (event) => TaskTeaching.prefill(event.detail));
   $('automation-workbench').addEventListener('statemachine:flow-teaching-view', (event) => FlowTeaching.show(event.detail));
   TaskTeaching.init({
     notice,
@@ -1976,6 +2132,11 @@ async function init() {
     $('chat-more').open = false;
     await removeConversation(state.current);
   };
+  $('session-rename').onclick = () => {
+    $('chat-more').open = false;
+    renameConversation().catch((err) => notice(err.message, 'error'));
+  };
+  $('session-filter').oninput = () => { state.sessionFilter = $('session-filter').value; renderSessions(); };
   $('send').onclick = sendPrompt;
   $('stop').onclick = () => state.current && api.stop(state.current.id);
   $('input-mode-message').onclick = () => setInputMode('message');
@@ -1986,13 +2147,10 @@ async function init() {
   $('prompt').addEventListener('focus', () => {
     if (state.input.mode === 'terminal') setInputMode('message', { focus: false });
   });
-  const terminalKeys = {
-    Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03',
-  };
   for (const button of document.querySelectorAll('[data-terminal-key]')) {
     button.onclick = () => {
       setInputMode('terminal', { focus: false });
-      Term.sendKey(terminalKeys[button.dataset.terminalKey] || '');
+      Term.sendKey(TERMINAL_KEYS[button.dataset.terminalKey] || '');
       Term.focus();
     };
   }
@@ -2100,6 +2258,7 @@ async function init() {
     renderRecommendedSkills();
   };
   $('skill-entry').onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); $('skill-add').click(); } };
+  $('quick-add').onclick = () => { if (state.settingsQuick.length < 3) state.settingsQuick.push({ label: '', text: '' }); renderQuickRequests(); };
   $('startup-add').onclick = () => { state.settingsActions.push({ type: 'skill', value: '', onError: 'warn' }); renderStartupActions(); };
   $('settings-open').onclick = () => openSettings().catch((error) => notice(error.message, 'error'));
   $('settings-close').onclick = () => $('app-settings').close();
@@ -2153,6 +2312,14 @@ async function init() {
     TaskTerm.applyScreen(p);
     const node = document.querySelector(`#working-${p.id} .tail`);
     if (node) node.textContent = p.tail || '';
+  });
+  // OS の通知を押したとき（main が前面に戻してから知らせる）
+  api.onNotifyOpen((p) => {
+    if (!p || !p.id) return;
+    // 別のリポジトリの会話でも開けるように、まず会話を読んで置き場を確かめる
+    api.readSession(p.id)
+      .then((sess) => openSessionInRepo(sess.repo, p.id))
+      .catch((err) => notice(err.message, 'error'));
   });
   api.onTermPhase((p) => {
     state.phases.set(p.id, { phase: p.phase, detail: p.detail, name: p.name });
