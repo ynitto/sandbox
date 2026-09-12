@@ -5,8 +5,6 @@
 
 const crypto = require('crypto');
 const model = require('./model');
-const flowTeaching = require('./flow-teaching-model');
-const flowTeachingCompiler = require('./flow-teaching-compiler');
 
 const SCHEMA_VERSION = 1;
 const FINDING_CATEGORIES = new Set(['consistency', 'efficiency', 'error-handling', 'edge-case', 'generalization']);
@@ -114,39 +112,6 @@ ${JSON.stringify(safeSpec(spec), null, 2)}
 findings は説明用です。修正は candidate に反映してください。ファイル操作や実行はしないでください。
 
 ${responseContract()}`;
-}
-
-function flowTeachingPrompt({ session = {}, catalog = [] } = {}) {
-  const safe = flowTeaching.normalizeSession(redact(session));
-  return `あなたは利用者から汎用的な複数AIワークフローを教わる担当です。
-
-現在の教示セッション（秘密値は除外済み）:
-${JSON.stringify(safe, null, 2)}
-
-利用できる工程種別:
-${JSON.stringify(catalog)}
-
-進め方:
-- 固定手順ではなく、目的、適用範囲、入力、成果、制約、品質基準を理解する
-- 分解・並列化・再計画は入力ごとに変えられる方針として整理する
-- 単純な依頼を無理に分割しない。必要性を説明できる工程だけを作る
-- 人に確認する条件と、検証に通らない場合の有限回の差し戻しを明示する
-- 不明点が結果を大きく変える場合だけ質問する
-- ファイルを変更せず、完全な候補だけを返す
-
-次のJSONオブジェクトだけを返してください。Markdownや前後の説明は禁止です。
-{
-  "schemaVersion": 1,
-  "status": "questions | candidate",
-  "summary": "利用者向けの短い説明",
-  "questions": [{"id":"q1","text":"質問","reason":"必要な理由","example":"回答例"}],
-  "workflowSpec": null または {
-    "purpose":"目的", "scope":[], "inputs":[], "outputContract":[], "constraints":[], "nonGoals":[],
-    "decompositionPolicy":[], "replanningPolicy":[], "humanCheckpoints":[], "qualityCriteria":[], "unknowns":[]
-  },
-  "candidate": null または完全な agent-flow workflow 仕様
-}
-questions では workflowSpec と candidate を null にしてください。candidate では両方を返してください。`;
 }
 
 function repairPrompt({ originalPrompt = '', output = '', error = '' } = {}) {
@@ -279,32 +244,6 @@ function parseEnvelope(output, { mode = 'draft', baseSpec = null, scope = { type
   return { ...common, candidate, questions: [], warnings: model.portabilityWarnings(candidate) };
 }
 
-function parseFlowTeachingEnvelope(output, { workflowId = '' } = {}) {
-  const raw = parseJsonOnly(output);
-  if (!raw || raw.schemaVersion !== SCHEMA_VERSION) throw new Error('AI応答のschemaVersionが一致しません');
-  if (!['questions', 'candidate'].includes(raw.status)) throw new Error('ワークフロー教示応答のstatusが不正です');
-  const common = { schemaVersion: SCHEMA_VERSION, status: raw.status, summary: shortText(raw.summary, 2000) };
-  if (raw.status === 'questions') {
-    const questions = normalizeQuestions(raw.questions);
-    if (!questions.length) throw new Error('AIが質問待ちを返しましたが、質問がありません');
-    return { ...common, questions, workflowSpec: null, candidate: null };
-  }
-  if (!raw.workflowSpec || typeof raw.workflowSpec !== 'object' || Array.isArray(raw.workflowSpec)) {
-    throw new Error('AI応答に適応型ワークフロー仕様がありません');
-  }
-  const workflowSpec = flowTeaching.normalizeUnderstanding(raw.workflowSpec);
-  const compiled = flowTeachingCompiler.compile({
-    workflowId, title: raw.candidate && raw.candidate.name,
-    understanding: workflowSpec, candidate: raw.candidate,
-  });
-  if (!compiled.ok || !compiled.workflow) {
-    const message = compiled.issues.map((item) => item.message).slice(0, 3).join('、');
-    throw new Error(`AI候補の構成が不正です: ${message}`);
-  }
-  if (workflowId && compiled.workflow.id !== workflowId) throw new Error('AI候補が保存名を変更しました');
-  return { ...common, questions: [], workflowSpec, candidate: compiled.workflow, preview: compiled.preview };
-}
-
 function fingerprint(spec) {
   const normalized = model.normalizeProcedure(spec);
   return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
@@ -315,10 +254,8 @@ module.exports = {
   safeSpec,
   draftPrompt,
   reviewPrompt,
-  flowTeachingPrompt,
   repairPrompt,
   normalizeScope,
   parseEnvelope,
-  parseFlowTeachingEnvelope,
   fingerprint,
 };

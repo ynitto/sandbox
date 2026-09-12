@@ -42,10 +42,12 @@ function normalizeUnderstanding(value = {}) {
   });
 }
 
-function createSession({ workflowId = '', title = '', purpose = '' } = {}) {
+function createSession({ workflowId = '', title = '', purpose = '', sessionId = '' } = {}) {
   const normalizedPurpose = text(purpose);
   return {
     version: VERSION, workflowId: text(workflowId, 120), title: text(title, 300), status: 'draft',
+    // AI と作る会話（agent-app の会話 ID）。タスクの下書き（automation/teaching.js）と同じ持ち方
+    sessionId: /^[0-9a-f-]{36}$/.test(String(sessionId || '')) ? String(sessionId) : '',
     messages: normalizedPurpose ? [{ role: 'user', text: normalizedPurpose }] : [],
     evidence: { requestExamples: [], resultExamples: [], references: [] },
     understanding: normalizeUnderstanding({ purpose: normalizedPurpose }),
@@ -60,6 +62,7 @@ function normalizeSession(value = {}) {
   return {
     ...base,
     status: STATUSES.has(source.status) ? source.status : 'draft',
+    sessionId: /^[0-9a-f-]{36}$/.test(String(source.sessionId || '')) ? String(source.sessionId) : '',
     messages: list(source.messages, (item) => item && ['user', 'assistant'].includes(item.role) && text(item.text)
       ? { role: item.role, text: text(redact(item.text)), ...(item.kind ? { kind: text(item.kind, 80) } : {}) } : null),
     evidence: redact({

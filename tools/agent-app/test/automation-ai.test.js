@@ -110,19 +110,3 @@ test('見直しは一般化の観点を持ち、generalization の finding を�
   assert.strictEqual(result.findings[0].category, 'generalization');
 });
 
-test('agent-flow教示は固定手順でなく適応方針と検査済み候補を受け取る', () => {
-  const session = { workflowId: 'review-flow', messages: [{ role: 'user', text: '変更をレビューしたい' }] };
-  const prompt = ai.flowTeachingPrompt({ session });
-  assert.match(prompt, /分解・並列化・再計画/);
-  assert.match(prompt, /単純な依頼を無理に分割しない/);
-  const result = ai.parseFlowTeachingEnvelope(JSON.stringify({
-    schemaVersion: 1, status: 'candidate', summary: '試運転できます', questions: [],
-    workflowSpec: { purpose: '変更をレビューする', qualityCriteria: ['根拠を示す'] },
-    candidate: { id: 'review-flow', name: '変更レビュー', nodes: [
-      { id: 'review', label: 'レビュー', kind: 'work', goal: '{{request}} を根拠付きでレビューする', deps: [] },
-    ] },
-  }), { workflowId: 'review-flow' });
-  assert.strictEqual(result.status, 'candidate');
-  assert.strictEqual(result.preview.ok, true);
-  assert.strictEqual(result.candidate.id, 'review-flow');
-});

@@ -124,8 +124,12 @@ contextBridge.exposeInMainWorld('api', {
     flowSave: (root, workflow, mode) => invoke('automation:flow:save', { root, workflow, mode }),
     flowDelete: (root, id) => invoke('automation:flow:delete', { root, id }),
     flowPreview: (root, workflow, request, parameters) => invoke('automation:flow:preview', { root, workflow, request, parameters }),
+    // ワークフローを AI と作る会話（tmux）。送受信はタスクと同じく send / term* を使う
+    flowTeachPrepare: (payload) => invoke('automation:flow:teach:prepare', payload),
+    flowTeachStart: (payload) => invoke('automation:flow:teach:start', payload),
+    flowTeachSession: (repo, workflowId) => invoke('automation:flow:teach:session', { repo, workflowId }),
+    flowTeachAdopt: (repo, workflowId) => invoke('automation:flow:teach:adopt', { repo, workflowId }),
     flowTeachingList: (root) => invoke('automation:flow:teaching:list', { root }),
-    flowTeachingCreate: (root, purpose, options) => invoke('automation:flow:teaching:create', { root, purpose, ...(options || {}) }),
     flowTeachingRead: (root, workflowId) => invoke('automation:flow:teaching:read', { root, workflowId }),
     flowTeachingSave: (root, workflowId, session) => invoke('automation:flow:teaching:save', { root, workflowId, session }),
     flowTeachingRecordTrial: (root, workflowId, trial) => invoke('automation:flow:teaching:trial', { root, workflowId, trial }),

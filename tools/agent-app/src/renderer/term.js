@@ -168,4 +168,5 @@ function createTerm() {
   window.Term = createTerm();          // 会話の端末ミラー
   window.TaskTerm = createTerm();      // タスクを AI と作る会話の端末ミラー
   window.ShareTerm = createTerm();     // 共有の画面（引き受けた依頼・仲間の依頼）の端末ミラー
+  window.FlowTerm = createTerm();      // ワークフローを AI と作る会話の端末ミラー
 })();

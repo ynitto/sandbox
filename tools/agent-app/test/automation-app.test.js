@@ -124,6 +124,13 @@ test('タスクの作成・変更は AI との tmux 会話で行い、構造化�
     assert.ok(!handlers.includes(`register('${channel}'`), `試運転・承認の往復は残さない: ${channel}`);
   }
   assert.match(teachingUi, /<slot name="teaching"><\/slot>/, '会話の実体は親（agent-app）が slot に載せる');
+  // ワークフローも同じ（2026-09-12）。構造化の往復（ai.js の flow-teach モード）は残さない
+  const handlersSource = read('main/automation/handlers.js');
+  const aiSource = read('main/automation/ai.js');
+  assert.ok(!handlersSource.includes("'flow-teach'") && !aiSource.includes('parseFlowTeachingEnvelope'),
+    'ワークフローの教示を JSON の往復で受けない');
+  assert.ok(!fs.existsSync(path.join(SRC, 'main', 'automation', 'flow-teaching-compiler.js')), '候補を組み立てる compiler は残さない');
+  assert.ok(!handlersSource.includes("register('flow:teaching:create'"), '下書きは会話を作る側（flow:teach:prepare）が作る');
   assert.match(teachingUi, /statemachine:teaching-view|ctx\.view\(/);
   assert.ok(!teachingUi.includes('試運転待ち') && !teachingUi.includes('確認待ち'), '状態語は 利用可能 / 下書き の 2 つ');
   for (const label of ['利用可能', '下書き']) assert.ok(teachingUi.includes(label), label);
@@ -139,7 +146,7 @@ test('定義があるタスクは実行詳細から開き、AI との会話は�
   assert.match(renderer, /data-task-tab="overview"[\s\S]*data-task-tab="steps"[\s\S]*data-task-tab="history"/);
   assert.match(renderer, /teachingFeature\.editorSlotHtml\(machine,[^)]*selected/,
     '選択した編集対象をタスク会話へ引き継ぐ');
-  assert.match(renderer, /setController\(\{ navigate: navigateEmbedded, refresh: refreshEmbedded \}\)/, '親の会話が終わったら定義を読み直せる');
+  assert.match(renderer, /setController\(\{[\s\S]*navigate: navigateEmbedded,[\s\S]*refresh: refreshEmbedded,/, '親の会話が終わったら定義を読み直せる');
 });
 
 test('使うAIの候補と実行は agent-tools の公開インターフェースに従う', () => {

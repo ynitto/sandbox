@@ -255,7 +255,7 @@
               <label class="task-create-label" for="task-purpose"><strong>自動化したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>
               <textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea>
               <div class="task-actions">
-                <details class="run-settings task-execution-settings">
+                <details class="run-settings teach-execution-settings">
                   <summary><span id="task-create-settings"></span></summary>
                   <div class="settings-popover"><div class="popover-head">今回の作成設定</div><div class="direct-agent-settings">
                     <label>エージェント<select id="task-create-agent"></select></label>
@@ -270,9 +270,9 @@
             </section>
             <section id="task-workspace" hidden>
               <section id="task-launch" hidden>
-                <div class="task-start-toolbar">
+                <div class="teach-start-toolbar">
                   <div id="task-launch-heading"><strong>下書きの編集を続ける</strong></div>
-                  <details class="run-settings task-execution-settings">
+                  <details class="run-settings teach-execution-settings">
                     <summary><span id="task-launch-settings-summary"></span></summary>
                     <div class="settings-popover"><div class="popover-head">今回の編集設定</div><div class="direct-agent-settings">
                       <label>エージェント<select id="task-launch-agent"></select></label>
@@ -285,7 +285,7 @@
                 </div>
                 <div id="task-terminal-placeholder" class="terminal-stage">
                   <div class="terminal-head"><span class="terminal-agent">編集セッション</span><span id="task-launch-phase" class="phase starting">起動前</span></div>
-                  <div class="task-terminal-placeholder-body"><p id="task-launch-status" role="status" aria-live="polite"></p></div>
+                  <div class="teach-terminal-placeholder-body"><p id="task-launch-status" role="status" aria-live="polite"></p></div>
                 </div>
                 <div id="task-composer-placeholder" aria-hidden="true"></div>
               </section>
@@ -347,6 +347,69 @@
                 <p id="task-record-note" class="sub" hidden></p>
               </section>
             </section>
+          </div>
+          <!-- ワークフローを AI と作る会話。タスクと同じ形（端末ミラー + 入力欄）で、
+               どの工程を出すかはワークベンチ側が決める。見出しはワークベンチが持つ。 -->
+          <div slot="flow-teaching" id="flow-teaching" hidden>
+            <section id="flow-teach-launch" hidden>
+              <div class="teach-start-toolbar">
+                <div id="flow-teach-heading"><strong>下書きの編集を続ける</strong></div>
+                <details class="run-settings teach-execution-settings">
+                  <summary><span id="flow-teach-settings-summary"></span></summary>
+                  <div class="settings-popover"><div class="popover-head">今回の編集設定</div><div class="direct-agent-settings">
+                    <label>エージェント<select id="flow-teach-agent"></select></label>
+                    <label>モデル<input id="flow-teach-model" class="mono" placeholder="自動"></label>
+                    <label>権限<select id="flow-teach-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option></select></label>
+                  </div></div>
+                </details>
+                <span class="spacer"></span>
+                <button type="button" id="flow-teach-start" class="primary">編集開始</button>
+              </div>
+              <div id="flow-teach-placeholder" class="terminal-stage">
+                <div class="terminal-head"><span class="terminal-agent">編集セッション</span><span id="flow-teach-prephase" class="phase starting">起動前</span></div>
+                <div class="teach-terminal-placeholder-body"><p id="flow-teach-status" role="status" aria-live="polite"></p></div>
+              </div>
+            </section>
+            <section id="flow-teach-terminal" class="terminal-stage" hidden>
+              <div class="terminal-head">
+                <span id="flow-teach-term-agent" class="terminal-agent"></span>
+                <span id="flow-teach-phase" class="phase" hidden></span>
+                <span id="flow-teach-term-name" class="sub"></span>
+                <span class="spacer"></span>
+                <button type="button" id="flow-teach-restart" class="small" hidden>再接続</button>
+              </div>
+              <div id="flow-teach-term-host"></div>
+            </section>
+            <div id="flow-teach-composer" class="composer-shell" hidden>
+              <div class="input-mode-switch" role="group" aria-label="入力先">
+                <button type="button" id="flow-teach-mode-message" aria-pressed="true">メッセージ</button>
+                <button type="button" id="flow-teach-mode-terminal" aria-pressed="false">端末操作</button>
+                <button type="button" id="flow-teach-mode-share" aria-pressed="false" hidden>共有に依頼</button>
+                <span id="flow-teach-input-status" class="input-status" role="status" aria-live="polite"></span>
+              </div>
+              <div id="flow-teach-message-input">
+                <label class="sr-only" for="flow-teach-prompt">AIへの返答</label>
+                <textarea id="flow-teach-prompt" rows="3" placeholder="質問への回答、変更したいこと、具体例"></textarea>
+              </div>
+              <div id="flow-teach-terminal-keys" class="terminal-keys" hidden>
+                <button type="button" data-flow-teach-key="Escape">Esc</button>
+                <button type="button" data-flow-teach-key="Tab">Tab</button>
+                <button type="button" data-flow-teach-key="Enter" aria-label="端末へEnterキーを送る">Enter</button>
+                <button type="button" data-flow-teach-key="Newline" aria-label="端末へ改行を送る（送信しない）" title="Shift+Enter">改行</button>
+                <button type="button" data-flow-teach-key="Up">↑</button>
+                <button type="button" data-flow-teach-key="Down">↓</button>
+                <button type="button" data-flow-teach-key="Left">←</button>
+                <button type="button" data-flow-teach-key="Right">→</button>
+                <button type="button" data-flow-teach-key="C-c">Ctrl+C</button>
+                <span class="terminal-key-focus">キーボード → CLI</span>
+              </div>
+              <div class="composer-toolbar" id="flow-teach-composer-toolbar">
+                <span class="spacer"></span>
+                <span class="send-hint">Enterで送信</span>
+                <button type="button" id="flow-teach-stop" class="danger action-button" hidden>停止</button>
+                <button type="button" id="flow-teach-send" class="primary action-button">送信</button>
+              </div>
+            </div>
           </div>
         </statemachine-workbench>
       </div>
@@ -523,6 +586,7 @@
   <script src="forkProtocol.js"></script>
   <script src="taskTeaching.js"></script>
   <script src="share.js"></script>
+  <script src="flowTeaching.js"></script>
   <script src="automation/workbench-element.js"></script>
   <script src="automation/teaching.js"></script>
   <script src="automation/flow.js"></script>

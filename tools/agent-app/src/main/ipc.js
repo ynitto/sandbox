@@ -27,6 +27,10 @@ const { registerAutomationIpc } = require('./automation/ipc');
 const automationTools = require('./automation/tools');
 const machineStore = require('./automation/store');
 const teaching = require('./automation/teaching');
+const flowStore = require('./automation/flow-store');
+const flowTeachingStore = require('./automation/flow-teaching-store');
+const flowTeachingModel = require('./automation/flow-teaching-model');
+const flowTeachingPrompt = require('./automation/flow-teaching-prompt');
 const recordingBrowser = require('./automation/browser');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 
@@ -990,6 +994,82 @@ async function startTeaching(p, send) {
   return { ...taskConversationView(ud, repo, machine), existing, started };
 }
 
+// ---- ワークフローを AI と作る会話（タスクと同じ作り。kind: 'workflow'） ---------------------
+//
+// 下書き（.agents/workflows/.teaching/<id>.json）が会話 ID を覚え、AI は会話の中で
+// .agents/workflows/<id>.json を直接書く。画面はその 1 ファイルを読んで「候補の工程」を出す。
+
+function flowConversationView(ud, repo, id) {
+  const summary = store.findWorkflowSession(ud, repo, id);
+  const session = summary ? presentSession(store.readSession(ud, summary.id)) : null;
+  let workflow = null;
+  try { workflow = flowStore.read(repo, id); } catch { workflow = null; }   // まだ書かれていない
+  return { workflowId: id, session, sidecar: flowTeachingStore.load(repo, id), workflow, published: !!(workflow && !workflow.issues.some((item) => item.level === 'error')) };
+}
+
+function prepareFlowTeaching(p) {
+  const ud = userData();
+  const repo = requireRepo(p.repo);
+  const cfg = store.loadConfig(ud);
+  const purpose = String(p.purpose || '').trim();
+  const id = String(p.workflowId || '').trim() || flowTeachingPrompt.workflowIdFor(purpose);
+  let sidecar = flowTeachingStore.load(repo, id);
+  let existing = true;
+  try { flowStore.read(repo, id); } catch { existing = false; }
+  if (!existing && !sidecar.title) {
+    if (!purpose) throw new Error('教えたいワークフローを入力してください');
+    sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose }));
+  }
+  let summary = store.findWorkflowSession(ud, repo, id);
+  if (!summary) {
+    const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
+    const created = store.createSession(ud, {
+      repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier,
+      readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
+      transport: 'tmux', worktree: '', kind: 'workflow', workflow: { id },
+    });
+    summary = { id: created.id };
+  }
+  if (sidecar.sessionId !== summary.id) sidecar = flowTeachingStore.save(repo, id, { ...sidecar, sessionId: summary.id });
+  if (p.autoApprove != null) store.updateSession(ud, summary.id, { autoApprove: !!p.autoApprove });
+  return { ud, repo, purpose, id, existing, sidecar, session: store.readSession(ud, summary.id) };
+}
+
+async function startFlowTeaching(p, send) {
+  const { ud, repo, purpose, id, existing, sidecar, session } = prepareFlowTeaching(p);
+  const conversation = conversations.get(session.id);
+  const busy = running.has(session.id) || !!(conversation && conversation.turn);
+  let started = false;
+  if (!busy) {
+    const common = { id, purpose: sidecar.understanding.purpose || purpose, existing };
+    const prompt = session.messages.length
+      ? flowTeachingPrompt.resumePrompt({ ...common, context: p.context })
+      : flowTeachingPrompt.prompt(common);
+    await guardedRunTurn(session.id, {
+      prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
+      skillMode: 'off', skills: [], attachments: [],
+    }, send);
+    started = true;
+  }
+  return { ...flowConversationView(ud, repo, id), existing, started };
+}
+
+// AI が書いた定義を、この下書きの「候補」として取り込む（試運転と利用可能にする手順は今までどおり）。
+function adoptFlowDraft(p) {
+  const repo = requireRepo(p.repo);
+  const id = String(p.workflowId || '').trim();
+  const read = flowStore.read(repo, id);
+  if (read.issues.some((item) => item.level === 'error')) throw new Error('定義にまだ直すところがあります');
+  const session = flowTeachingStore.load(repo, id);
+  const active = session.generations.find((item) => item.id === session.activeGenerationId);
+  if (active && active.digest === read.digest) return session;               // 変わっていない
+  const next = flowTeachingModel.addGeneration(session, {
+    id: `file-${read.digest.slice(0, 12)}`, summary: read.workflow.description || read.workflow.name,
+    workflow: read.workflow, digest: read.digest,
+  });
+  return flowTeachingStore.save(repo, id, next);
+}
+
 // Windows アプリの見本を保存し、AI へ渡す本文を**返す**。送りはしない——本文は入力欄に入り、
 // 利用者が見たものの補足を足してから送る（ブラウザの「終了してAIへ渡す」と同じ扱い）。
 // 送る経路が会話の 1 本だけになるので、AI が応答中でもここで断る必要がない。
@@ -1019,6 +1099,11 @@ function registerIpcHandlers(getWindow) {
   handle('automation:teach:start', (p) => startTeaching(p, send));
   handle('automation:teach:session', (p) => taskConversationView(userData(), requireRepo(p.repo), String(p.machine || '').trim()));
   handle('automation:teach:demonstration', (p) => demonstrate(p));
+  // ワークフローを AI と作る会話（タスクの 3 つと同じ形）
+  handle('automation:flow:teach:prepare', (p) => { const r = prepareFlowTeaching(p); return { ...flowConversationView(r.ud, r.repo, r.id), existing: r.existing }; });
+  handle('automation:flow:teach:start', (p) => startFlowTeaching(p, send));
+  handle('automation:flow:teach:session', (p) => flowConversationView(userData(), requireRepo(p.repo), String(p.workflowId || '').trim()));
+  handle('automation:flow:teach:adopt', (p) => adoptFlowDraft(p));
   handle('automation:teach:browser', (p) => launchTeachingBrowser(p));
   handle('automation:teach:browser:page', () => teachingBrowserPage());
   // 写したが送らずに閉じた添付を掃除する

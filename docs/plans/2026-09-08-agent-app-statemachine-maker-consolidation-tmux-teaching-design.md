@@ -44,7 +44,8 @@ agent-app は statemachine-maker の domain と IPC を `file:` リンクで借�
 4. **構造化の教示（`teaching-model` / `teaching-store` / `teaching-trial` / `approval-policy`、`ai.js` の
    `teach` モード）は撤去する。** 下書きの印 `teaching.json` は残すが、持つのは保存名・表示名・目的・会話 ID・
    見本の控えだけ（version 2）。状態語は「利用可能 / 下書き」の 2 つ。ワークフローの教示（`flow-teach`）は
-   agent-flow の投入契約が要るので従来どおり。
+   agent-flow の投入契約が要るので従来どおり。**（2026-09-12 追記: ワークフローも同じ理由で会話へ移し、
+   `flow-teach` モードと `flow-teaching-compiler` は撤去した。`docs/designs/agent-app-design.md` §3.4）**
 
 ## 画面
 

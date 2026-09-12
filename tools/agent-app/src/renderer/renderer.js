@@ -1835,6 +1835,7 @@ async function init() {
     handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
   });
   $('automation-workbench').addEventListener('statemachine:teaching-view', (event) => TaskTeaching.show(event.detail));
+  $('automation-workbench').addEventListener('statemachine:flow-teaching-view', (event) => FlowTeaching.show(event.detail));
   TaskTeaching.init({
     notice,
     shareEnabled: () => shareEnabled(),
@@ -1866,6 +1867,35 @@ async function init() {
     cancelCreate: () => syncAutomationWorkbench(),
     reloadTasks: () => { if (state.area === 'tasks') loadAreaItems().catch(() => {}); },
     refreshWorkbench: () => $('automation-workbench').refresh(),
+  });
+
+  // ワークフローを AI と作る会話（タスクと同じ deps。見本の記録だけが無い）
+  FlowTeaching.init({
+    notice,
+    shareEnabled: () => shareEnabled(),
+    isRunning: (id) => state.running.has(id),
+    agentNames: () => state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name),
+    executionOptions: (overrides = {}) => {
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
+      return { policy: selected.policy, cli: overrides.agent || selected.cli, model: overrides.model != null ? overrides.model : selected.model, autoApprove };
+    },
+    executionDefaults: () => {
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      return { agent: selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
+    },
+    executionLabel: (overrides = {}) => {
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
+      const cli = overrides.agent || selected.cli;
+      const model = overrides.model != null ? overrides.model : selected.model;
+      const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
+      return `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
+    },
+    reloadWorkflows: async () => {
+      await $('automation-workbench').reloadFlowTeaching();
+      if (state.area === 'workflows') await loadAreaItems().catch(() => {});
+    },
   });
 
   $('repo-select').onchange = () => selectRepo($('repo-select').value).catch((err) => notice(err.message, 'error'));
@@ -2024,6 +2054,7 @@ async function init() {
     const { id, warning } = p;
     state.running.add(id);
     TaskTeaching.onTurnStarted(p);
+    FlowTeaching.onTurnStarted(p);
     if (!state.liveParts.has(id)) state.liveParts.set(id, { thinking: [], information: [] });
     if (state.current && state.current.id === id) {
       if (warning) notice(warning);
@@ -2041,10 +2072,11 @@ async function init() {
     const node = document.querySelector(`#working-${id} .log`);
     if (node) { node.append(logLine({ kind, text })); node.scrollTop = node.scrollHeight; }
   });
-  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); return onTurnDone(p); });
+  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); FlowTeaching.onTurnDone(p); return onTurnDone(p); });
   api.share.onScreen((p) => {
     if (!p || !p.sessionId) return;
     TaskTeaching.onShareScreen(p);
+    FlowTeaching.onShareScreen(p);
     if (state.current && state.current.id === p.sessionId && Term.current() === p.id) Term.applyScreen({ id: p.id, text: p.text || '' });
   });
   api.share.onChanged(() => { if (state.current && state.current.share) renderHeader(); });
@@ -2058,6 +2090,7 @@ async function init() {
   api.onTermPhase((p) => {
     state.phases.set(p.id, { phase: p.phase, detail: p.detail, name: p.name });
     TaskTeaching.onTermPhase(p);
+    FlowTeaching.onTermPhase(p);
     if (state.current && state.current.id === p.id) {
       renderHeader();
       renderMessages();

@@ -91,6 +91,16 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 分岐先はふつうの会話と同じに扱えます（削除・エージェントの切替・作業フォルダの変更ビュー）。
 この作法を添えないようにするには「設定 > 共通指示」のチェックを外します。
 
+### 入力先を切り替える
+
+入力欄の上には入力先が 3 つ並びます。「メッセージ」はこの PC の AI へ、「端末操作」は端末へキーを、
+「共有に依頼」は同じ LAN の仲間の AI へ依頼を回します（設定 > 共有を使うと決めているときだけ出ます）。
+会話・タスクを AI と作る会話・ワークフローを AI と作る会話のどれでも同じ 3 つです。
+
+「共有に依頼」を選ぶと、実行設定はエージェントと優先度だけになり、送信ボタンが「依頼する」に
+変わります。待っている間は引き受けた人の端末が自分の端末ミラーに映り（見るだけ）、送信ボタンは
+「取り下げ」になります。答えは同じ会話に、どの PC のどの AI が答えたかを添えて戻ります。
+
 ### 端末を操作する
 
 矢印キー、Tab、Escape、Ctrl+C のような端末操作は「端末操作」モードで行います。
@@ -116,6 +126,10 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 | スキル | 自動 / 手動選択 / 使用しない | 設定 > 共通指示の候補から、依頼に合うスキルを選んで渡す |
 | Ask モード | on / off | 読み取り専用の起動引数で CLI を起動する。保証できない CLI では警告が出る |
 | 作業フォルダ | リポジトリ本体 / `.worktrees/<名前>` | 会話を作る前だけ選べる。作ったあとは変えられない |
+| 優先度 | 高 / 通常 / 低 | 入力先が「共有に依頼」のときだけ。仲間が拾う順に効く（§15） |
+
+入力先が「共有に依頼」のときは、起動方針・Ask モード・作業フォルダは出ません（どれもこの PC の
+話で、実行するのは仲間の PC だからです）。
 
 会話の途中で起動方針・CLI・モデル・Ask を変えると、次の依頼のときに CLI を起動し直します。
 claude / copilot は `--resume`、codex は `resume <id>` で文脈を引き継ぎ、再開手段の無い CLI は
@@ -182,11 +196,13 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
   変更は「手順」の「編集」から。その場に AI との端末が出て（「‹ 工程に戻る」で戻ります）、
   戻ったときには AI が書き換えた工程を読み直しています。
 - ワークフローの「＋」は「新しいワークフローを教える」画面を開きます。実現したいことを普段の言葉で
-  書いて「AIに相談する」と、AI が質問するか候補の構成を返します。「手動で作成」なら従来の工程エディタ
-  で直接組み立てます。
-- 教示中のワークフローは一覧の先頭に「理解中 / 試運転待ち / 確認待ち」の状態で並びます。候補ができたら
-  「代表的な依頼で試運転」し、結果画面で「期待どおり」か「修正が必要」を選びます。「期待どおり」の後に
-  「この内容で利用可能にする」を押すと定義として保存され、一覧の「利用可能」へ移ります。
+  書いて「AIに相談する」と、**タスクと同じように**会話と同じ CLI がリポジトリで起動し、端末が
+  ワークフロー画面の中に出ます。AI はその会話の中で定義を書き、書き終えると画面の上に「候補の工程」が
+  出ます。既にあるワークフローは「変更を相談」から同じ会話を開きます。「手動で作成」なら従来の
+  工程エディタで直接組み立てます。
+- 教示中のワークフローは一覧の先頭に状態つきで並びます。候補ができたら「代表的な依頼で試運転」し、
+  結果画面で「期待どおり」か「修正が必要」を選びます。「期待どおり」の後に「この内容で利用可能にする」を
+  押すと一覧の「利用可能」へ移ります。
 - ワークフローの工程には、後の工程（人の確認・検証）から前の工程へ戻す「差し戻し」を付けられます。
   通常の依存関係とは別に、きっかけ（人が却下 / 検証失敗）・戻り先・最大回数・やり直す指示を持ち、
   画面ではグラフの外側の専用レーンに描かれます。
@@ -356,7 +372,11 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `share:status` | `share.status()` | なし | 共有の状態（自分の宣言・仲間・自分の依頼の列・受けている依頼・今日の実績）。§15 |
 | `share:cancel` | `share.cancel(id)` | `id` | 自分の依頼を取り下げる。執行者には `/cancel` で伝える |
 | `share:priority` | `share.setPriority(id, priority)` | `id`, `priority`（high / normal / low） | open の依頼の優先度を変える |
-| `share:participate` | `share.participate(on)` | `on` | 設定 `share.participate` を書き換えて立て直す |
+| `share:participate` | `share.participate(on)` | `on` | 引き受け方を `auto` / `off` に書き換えて立て直す（古い呼び出し面） |
+| `share:mode` | `share.setMode(mode)` | `mode`（auto / manual / off） | 設定 `share.accept` を書き換えて立て直す。設定 > 共有の選択と同じ値 |
+| `share:accept` | `share.accept(id)` | `id` | 「選んで受ける」で 1 件を拾う。拾えなければ理由を投げる（`participant.reasonText`） |
+| `share:stop` | `share.stopAccepted(id)` | `id` | 引き受けて実行している依頼を自分から止める |
+| `share:screen` | `share.screen(id)` | `id` | その依頼の端末の最新画面（無ければ空文字） |
 | `attach:pick` | `pickAttachments()` | —（ダイアログ） | `[{ id, name, size }]` |
 | `attach:stage` | `stageAttachment(name, bytes)` | `Uint8Array` / `ArrayBuffer` | `{ id, name, size }` |
 | `attach:discard` | `discardAttachment(id)` | `id` | `true` |
@@ -378,6 +398,10 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `automation:teach:start` | `automation.teachStart(payload)` | `{ repo, machine?, purpose?, policy?, cli?, model?, autoApprove? }` | §12.3。下書きと kind: task の会話を作り、最初の依頼を送る |
 | `automation:teach:session` | `automation.teachSession(repo, machine)` | — | `{ machine, session, sidecar, published, tools }` |
 | `automation:teach:demonstration` | `automation.teachDemonstration(repo, machine, recording)` | 記録（`recording:stop` の結果） | `{ file, relative, hostPath, source, steps, sent }` |
+| `automation:flow:teach:prepare` | `automation.flowTeachPrepare(payload)` | `{ repo, purpose?, workflowId?, policy?, cli?, model?, autoApprove? }` | §12.2。下書きと kind: workflow の会話を作る（依頼は送らない） |
+| `automation:flow:teach:start` | `automation.flowTeachStart(payload)` | 同上 + `context?` | 会話がまだ空なら最初の依頼を、続きなら再開の依頼を送る |
+| `automation:flow:teach:session` | `automation.flowTeachSession(repo, workflowId)` | — | `{ workflowId, session, sidecar, workflow, published }` |
+| `automation:flow:teach:adopt` | `automation.flowTeachAdopt(repo, workflowId)` | — | AI が書いた定義を下書きの候補（世代）として取り込む。定義に誤りがあれば断る |
 | `automation:*` | `api.automation.*` | §12 | 共有ワークベンチの契約 |
 
 #### 2.3 main → renderer のイベント
@@ -390,11 +414,13 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `turn:line` | `onTurnLine` | `{ id, kind: stdout|stderr, text }`（ヘッドレスの生ログ） |
 | `turn:done` | `onTurnDone` | `{ id, message }`（保存済みの応答メッセージ） |
 | `share:changed` | `share.onChanged` | 共有の状態（`share:status` と同じ形）。仲間・列・実行中が変わったとき |
+| `share:screen` | `share.onScreen` | `{ id, sessionId, text, node, cli, mine? }`。引き受けた人の端末の画面（心拍で届く。`mine` は自分が引き受けている分） |
 | `term:screen` | `onTermScreen` | `{ id, text, cursor: { x, y }, cols, rows, tail }`（色付き画面と末尾 14 行） |
 | `term:phase` | `onTermPhase` | `{ id, phase, detail, name }` |
 | `automation:ai:progress` / `automation:ai:result` / `automation:run:line` / `automation:run:exit` | `api.automation.on*` | 共有ワークベンチの契約 |
 
-タスクの会話（kind: task）は `turn:*` / `term:*` を会話と同じ形で受ける。
+タスクの会話（kind: task）とワークフローの会話（kind: workflow）は `turn:*` / `term:*` を
+会話と同じ形で受ける。
 
 ### 3. 設定（`config.json`）
 
@@ -430,7 +456,8 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `share.port` | `47801` | 受け口（TCP）。0 なら空いているポート |
 | `share.udp` | `true` | UDP ブロードキャスト（47800）でも仲間を探すか。通らなくても TCP だけで動く |
 | `share.peers` | `[]` | 静的な仲間（`host` か `host:port`。最大 50） |
-| `share.participate` | `false` | 仲間の依頼を受けるか |
+| `share.accept` | `'off'` | 引き受け方。`auto`（自動で受ける）/ `manual`（選んで受ける）/ `off`（受けない）。以前の `participate` からも読む |
+| `share.participate` | `false` | 引き受け方から導く読み取り専用の写し（`accept !== 'off'`） |
 | `share.clis` | `[]` | 提供する CLI。空なら使えるもの全部 |
 | `share.acceptWrite` | `false` | 書き込みの依頼を受けるか（受けても成果の納品は未実装） |
 | `share.maxConcurrent` | `1` | 同時に受ける数（1〜4） |
@@ -739,10 +766,10 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 | 定義 | `listMachines` `readMachine` `machineExists` `previewMachine` `saveMachine` `openMachineFolder` |
 | 実行環境 | `listAgents` `selectSkills` `toolStatus` `capabilities`（`{ herd, agentLoop, agentFlow }`。60 秒キャッシュ。使えない機能を薄くするための 1 つの答え） |
 | 操作記録 | `recordingStart` `recordingStop` `recordingImport` `recordingSnapshot` `recordingExtract` `recordingState` |
-| AI | `aiStart`（`mode`: `draft` / `review` / `teach` / `flow-teach`）`aiStop` `aiApply` `onAiProgress` `onAiResult` |
+| AI | `aiStart`（`mode`: `draft` / `review`）`aiStop` `aiApply` `onAiProgress` `onAiResult` |
 | タスクの下書き・会話 | `teachingList`（定義がまだ無い下書き）、`teachStart` `teachSession` `teachDemonstration`（§12.3） |
 | ワークフロー | `flowCatalog` `flowList` `flowRead` `flowSave` `flowDelete` `flowPreview` `flowContext` `flowRunStart` `flowRunList` `flowRunRead` `flowRunCancel` `flowRunRespond` `flowRunResult` `flowRunLog` `flowRunDelete` `flowRunOpenDelivery` |
-| ワークフロー教示 | `flowTeachingList` `flowTeachingCreate` `flowTeachingRead` `flowTeachingSave` `flowTeachingRecordTrial` `flowTeachingConfirm`（§12.2） |
+| ワークフロー教示 | `flowTeachPrepare` `flowTeachStart` `flowTeachSession` `flowTeachAdopt`（会話）、`flowTeachingList` `flowTeachingCreate` `flowTeachingRead` `flowTeachingSave` `flowTeachingRecordTrial` `flowTeachingConfirm`（下書き。§12.2） |
 | 実行 | `runSnapshot` `saveRunSchedule` `setRunDaemon` `runLog` `runStart` `runStop` `onRunLine` `onRunExit` |
 
 agent-app 側のアダプト:
@@ -828,20 +855,28 @@ agent-loop の無いときの実行は履歴・定期実行・台帳を持たな
 
 定義（workflow.yaml）があれば状態は「利用可能」、無ければ「下書き」。
 
-#### 12.2 ワークフロー教示（`automation:flow:teaching:*`）
+#### 12.2 ワークフロー教示（`automation:flow:teach:*` / `automation:flow:teaching:*`）
 
-実装は maker 側（`flow-teaching-model.js` / `flow-teaching-store.js` / `flow-teaching-compiler.js`）で、
-agent-app は `automation:` 接頭辞で呼ぶだけである。
+**教える会話はタスク（§12.3）と同じ作り**で、agent-app の会話基盤（`kind: 'workflow'` の会話。
+`session.workflow.id` が保存名）に載る。AI は tmux の会話の中で `.agents/workflows/<id>.json` を
+直接書き、画面はその 1 ファイルを読んで「候補の工程」を出す。構造化した一問一答（`ai:start` の
+`mode: 'flow-teach'`）は使わない。sidecar は下書きの印と試運転の記録だけを持つ。
 
 | チャネル | preload | 引数 | 動作 |
 |---|---|---|---|
-| `flow:teaching:list` | `flowTeachingList(root)` | — | `[{ workflowId, title, purpose, status, lastTrial }]`。読めない sidecar は飛ばす |
-| `flow:teaching:create` | `flowTeachingCreate(root, purpose, { workflowId?, title? })` | 本文必須 | `workflowId` 既定は `flow-<uuid 先頭 8 桁>`、`title` 既定は本文 1 行目（80 字）。同名の下書きがあれば断る |
+| `flow:teach:prepare` | `flowTeachPrepare({ repo, purpose?, workflowId?, … })` | 目的（新規のとき必須） | 保存名を決め（`flow-teaching-prompt.workflowIdFor`）、sidecar と会話を作る。依頼は送らない |
+| `flow:teach:start` | `flowTeachStart({ repo, workflowId, context?, … })` | — | 会話が空なら `flow-teaching-prompt.prompt`、続きなら `resumePrompt` を最初のターンとして送る |
+| `flow:teach:session` | `flowTeachSession(repo, workflowId)` | — | `{ workflowId, session, sidecar, workflow, published }` |
+| `flow:teach:adopt` | `flowTeachAdopt(repo, workflowId)` | — | 保存済みの定義を読み、`digest` が変わっていれば世代として追加（`needs-trial`） |
+| `flow:teaching:list` | `flowTeachingList(root)` | — | `[{ workflowId, title, purpose, status, sessionId, lastTrial }]`。読めない sidecar は飛ばす |
 | `flow:teaching:read` | `flowTeachingRead(root, workflowId)` | — | sidecar。無ければ空のセッション |
 | `flow:teaching:save` | `flowTeachingSave(root, workflowId, session)` | — | 正規化して temp + rename で保存 |
 | `flow:teaching:trial` | `flowTeachingRecordTrial(root, workflowId, trial)` | `{ id?, generationId?, runId, outcome, assessment }` | `outcome` が `passed` なら `awaiting-confirmation`、それ以外は `needs-trial` |
-| `flow:teaching:confirm` | `flowTeachingConfirm(root, workflowId, generationId, digest)` | — | その世代に `passed` の試運転があり、`digest` が一致するときだけ `ready` にし、定義を `flow:save`（create / update）で書く |
-| `ai:start` | `aiStart({ root, mode: 'flow-teach', workflowId, message?, agent?, model? })` | — | `message` があれば会話へ足してから AI を呼ぶ。応答は `questions`（`understanding.unknowns` を更新）か `candidate`（`understanding` を置き換え、世代を追加して `needs-trial`） |
+| `flow:teaching:confirm` | `flowTeachingConfirm(root, workflowId, generationId, digest)` | — | その世代に `passed` の試運転があり、`digest` が一致するときだけ `ready` にする |
+
+最初の依頼文（`src/main/automation/flow-teaching-prompt.js`）は、書く先の 1 ファイル・JSON の形・
+工程の種類（`flow-model.KIND_INFOS`）・`{{request}}`・人に確認する工程と差し戻しの決まりを伝え、
+最後に「実行はしない（試運転は利用者が押す）」と言う。
 
 試運転は `flow:run:start` に `source: { type: 'draft', workflow: <世代の workflow> }` を渡す通常の実行で、
 結果画面の「期待どおり / 修正が必要」が `flow:teaching:trial` を呼ぶ。
@@ -853,10 +888,11 @@ sidecar（`<repo>/.agents/workflows/.teaching/<workflowId>.json`）:
 | `version` | `1` |
 | `workflowId` / `title` | 保存名（`flow-model.ID_RE`）と表示名（300 字） |
 | `status` | `draft`（理解中）/ `needs-trial`（試運転待ち）/ `awaiting-confirmation`（確認待ち）/ `ready`（利用可能） |
-| `messages` | `[{ role: user|assistant, text, kind? }]`。1 件 4000 字。秘密値は `teaching-model.redact` で除く |
+| `messages` | `[{ role: user|assistant, text, kind? }]`。会話の実体は agent-app の会話なので、いまは目的の 1 行だけが入る |
 | `evidence` | `{ requestExamples, resultExamples, references }` |
 | `understanding` | `purpose`、`scope`、`inputs`、`outputContract`、`constraints`、`nonGoals`、`decompositionPolicy`、`replanningPolicy`、`humanCheckpoints`、`qualityCriteria`、`unknowns` |
-| `generations` | `[{ id, createdAt, summary, workflowSpec, workflow, digest }]`。AI が候補を返すたびに追加 |
+| `sessionId` | AI と作る会話（`kind: 'workflow'`）の ID |
+| `generations` | `[{ id, createdAt, summary, workflowSpec, workflow, digest }]`。`flow:teach:adopt` が保存済みの定義から追加する |
 | `activeGenerationId` / `lastSuccessfulGenerationId` | 編集中の世代と、最後に承認した世代 |
 | `trials` | `[{ id, generationId, runId, outcome: passed|failed|approval-required, assessment }]` |
 
@@ -919,16 +955,34 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 |---|---|
 | `peers.js` | 仲間の表。`/hello`（30 秒ごと）と UDP の HELLO で覚え、90 秒便りが無ければ不在。投函の通知（NEW）を TCP と UDP で流す |
 | `server.js` | HTTP。`POST /hello` `POST /notify` `GET /node` `GET /requests` `POST /requests/<id>/{claim,heartbeat,result,cancel}` `GET /requests/<id>/attachments/<name>` |
-| `requester.js` | 自分の依頼の列（`userData/share/requests.json`）。claim は先着 1 件だけ 200、以後 409。心拍が 90 秒途絶えたら open に戻して NEW を流す。答えは会話へ assistant のメッセージとして保存し `turn:done` を送る。参加者側の枠切れ（`quota`）と一過性（`transient`）の失敗は 1 回だけ黙って再投函する |
-| `participant.js` | 仲間の `/requests` を集めて `queue.js` で並べ、上から claim。拾ったら読み取り専用で CLI を 1 回起こす（`ipc.runPrompt`。cwd は `workspace.url` と一致する登録リポジトリか `userData/share/scratch/<id>`）。30 秒ごとに heartbeat、2 回届かなければ CLI を止める。答えは依頼者へ直送し、届かなければ `outbox.json` に持って 60 秒ごとに再送（24 時間） |
+| `requester.js` | 自分の依頼の列（`userData/share/requests.json`）。claim は先着 1 件だけ 200、以後 409。心拍が 90 秒途絶えたら open に戻して NEW を流す。心拍に `screen` が載っていれば覚えて `share:screen` を送る。答えは会話へ assistant のメッセージとして保存し `turn:done` を送る。参加者側の枠切れ（`quota`）と一過性（`transient`）の失敗は 1 回だけ黙って再投函する |
+| `participant.js` | 引き受け方（`mode()`）が `auto` のときだけ仲間の `/requests` を集めて `queue.js` で並べ、上から claim。`manual` では画面から `accept(id)` で 1 件だけ拾う。拾ったら読み取り専用で CLI を 1 回起こす（`ipc.runSharedPrompt`。cwd は `workspace.url` と一致する登録リポジトリか `userData/share/scratch/<id>`）。30 秒ごとに heartbeat、2 回届かなければ CLI を止める。端末の画面が変わったら 2 秒ごとに心拍へ載せて依頼者へ送る（48 KB まで）。答えは依頼者へ直送し、届かなければ `outbox.json` に持って 60 秒ごとに再送（24 時間） |
 | `queue.js` | 並び鍵 `(実効優先度 降順, 依頼者の今日の落札数 昇順, posted_at 昇順, id)`。実効優先度 = high 2 / normal 1 / low 0 + 待ち 30 分ごとに 1（上限 2）。資格 = 自分の依頼でない ∧ CLI が交わる ∧ その CLI の枠が残る ∧ write は受ける設定 ∧ 依頼者あたりの上限内 ∧ workspace があれば同じリポジトリを登録している |
 | `ledger.js` | `userData/share/ledger/<YYYYMMDD>.jsonl`（件数・秒・CLI・依頼者・結果）。CLI の `errors` が `class: quota` を返したら、`exhausted` はその日の残り、`rate_limit` は 10 分その CLI を受けない |
 | `index.js` | 配線。設定 `share` が変わったら受け口ごと立て直す。再起動のとき、会話に `share.id` の印だけ残った依頼は失敗として閉じる |
+
+`/requests` に載るのは依頼の見出しと、**利用者が書いた依頼文だけ**（`summary`。600 字）。履歴と
+共通指示を含む本文（`goal`）は claim した 1 人にだけ渡す。
 
 依頼の本文は `runShared`（`ipc.js`）がヘッドレスと同じ順で合成する（共通指示 → スキル本文 → 履歴の
 再送 → 依頼 → 添付の案内）。スキルは相手の PC に無い前提で常に SKILL.md の本文を埋め込む。明示添付は
 依頼者の受け口から `attachments/<name>` で渡し、参加者が scratch へ写して本文に絶対パスを添える。
 添付の数の上限は会話と同じ（1 ターン 20 件）。答えは 200 KB で切り詰める。
+
+#### 15.1 画面を配る（引き受けた人の端末を依頼者が見る）
+
+引き受けた側は、会話と同じ tmux セッション（`agent-app-share-<依頼 id>`）で CLI を起こす
+（`ipc.runSharedPrompt` → `runPromptTmux`）。画面が変わるたびに `participant` が心拍へ載せ、
+依頼者は `share:screen` で受けて自分の端末ミラーに描く（`Term.attachRemote`。キーは送れない）。
+tmux が無い PC・対話定義を持たない CLI ではこれまでどおりヘッドレスで走り、画面は出ない。
+
+#### 15.2 画面（領域「共有」と入力先「共有に依頼」）
+
+- 依頼は入力先「共有に依頼」から出す（会話・タスクの会話・ワークフローの会話で同じ）。
+  起動方針の選択肢に共有は無い。`turn:send` には `policy: 'shared'` と `priority` が載る。
+- 領域「共有」は会話画面と同じ骨格（一覧はサイドバー、右が選んだ 1 件）。一枚のまとまりは
+  `.execution-card`、端末は会話と同じ `.terminal-stage`。
+- 引き受け方（`share.accept`）は共有の画面の右上と設定 > 共有の両方から変えられる（同じ値）。
 
 起動方針「共有」の会話は `transport: headless` で、動いていた tmux の CLI は止める。待っている間は
 `turn:running` に載り、「停止」は `turn:stop` から取り下げになる。成果の納品（書き込みの依頼）は
@@ -941,13 +995,14 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 | ファイル | 内容 | skip 条件 |
 |---|---|---|
 | `app.test.js` | 構文、画面構造、preload と IPC の対応、vendor の対応、共有編集面の接続、ワークフロー教示と差し戻しの表示、argv、店、tmux 保持、git、ファイル、添付 | なし |
-| `automation-teaching.test.js` | `@record` 行の解析、下書き、最初の依頼文、見本の Markdown、kind: task の会話 | なし |
+| `automation-teaching.test.js` | `@record` 行の解析、下書き、最初の依頼文、見本の Markdown、kind: task / kind: workflow の会話 | なし |
 | `automation-*.test.js` | 共有ワークベンチ（旧 statemachine-maker）の domain と境界。`automation-skill-engine.test.js` は statemachine-use の `run_machine.py --dry-run` を通す | skill-engine のみ python + PyYAML が無い |
 | `tmux.test.js` | パス変換、画面判定、送信、抽出、キー変換、常駐シェル、疑似 CLI との統合 | 統合のみ tmux が無い |
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
 | `herd.test.js` | `herd` の一族判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
-| `electron-smoke.test.js` | Electron 実機で三領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの＋で教示画面を開く | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
+| `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形） | なし |
+| `electron-smoke.test.js` | Electron 実機で四領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの「変更を相談」で会話の置き場を開き、共有の一覧・カード・参加者と、会話の入力先「共有に依頼」を通す | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 
 `test/smoke.js` は `npm test` に含めない手動スモークで、画面のある環境で疑似 CLI と会話しスクリーンショットを
 撮る（Linux では `SMOKE_OUT=/tmp/shots xvfb-run -a npx electron --no-sandbox test/smoke.js`）。

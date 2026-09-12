@@ -381,7 +381,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       return {
         toolbar: box(workbench.querySelector('.task-conversation-toolbar')),
         panel: box(workbench.querySelector('.task-tab-panel')),
-        controls: box(document.querySelector('.task-start-toolbar')),
+        controls: box(document.querySelector('.teach-start-toolbar')),
         launch: box(document.getElementById('task-terminal-placeholder')),
         composer: box(document.getElementById('task-composer-placeholder')),
       };
@@ -467,10 +467,10 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('#task-create-start').textContent(), '作成開始');
     assert.strictEqual(await win.locator('#task-create-cancel').count(), 0, '新規作成画面に戻るボタンは置かない');
     assert.strictEqual(await win.locator('.task-save-name').isVisible(), true, '保存名は折りたたまず目的より前に表示する');
-    await win.locator('#task-create .task-execution-settings > summary').click();
-    assert.strictEqual(await win.locator('#task-create .task-execution-settings').getAttribute('open'), '');
+    await win.locator('#task-create .teach-execution-settings > summary').click();
+    assert.strictEqual(await win.locator('#task-create .teach-execution-settings').getAttribute('open'), '');
     await workspace.locator('.teaching-create h2').click();
-    assert.strictEqual(await win.locator('#task-create .task-execution-settings').getAttribute('open'), null,
+    assert.strictEqual(await win.locator('#task-create .teach-execution-settings').getAttribute('open'), null,
       'スロット内の作成設定が背景クリックで閉じない');
     if (process.env.AGENT_APP_TASK_NEW_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_TASK_NEW_SCREENSHOT });
@@ -493,9 +493,20 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await workspace.locator('.flow-node-card').count(), 1, 'ワークフローの工程を編集できない');
     assert.strictEqual(await workspace.locator('[data-flow-start]').count(), 0, '編集時に実行フォームを重ねて出さない');
     await workspace.locator('[data-flow-close-editor]').click();
+    // 「変更を相談」→ タスクと同じ形の会話（起動前は黒い端末の置き場と編集開始だけ）
+    await workspace.locator('[data-flow-change-consult]').click();
+    await win.locator('#flow-teaching:not([hidden])').waitFor({ timeout: 20000 });
+    assert.strictEqual(await win.locator('#flow-teach-launch').isVisible(), true, '編集開始の前に起動領域を出す');
+    assert.strictEqual(await win.locator('#flow-teach-start').textContent(), '編集開始');
+    assert.strictEqual(await win.locator('#flow-teach-terminal').isVisible(), false, 'tmux を開く前に端末は出さない');
+    assert.match(await workspace.locator('.execution-title').textContent(), /ワークフローを教える/);
+    if (process.env.AGENT_APP_FLOW_TEACHING_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_FLOW_TEACHING_SCREENSHOT });
+    }
     await win.click('#session-new');
     await workspace.locator('.teaching-create').waitFor();
     assert.match(await workspace.locator('.teaching-create').textContent(), /新しいワークフローを教える/);
+    assert.strictEqual(await win.locator('#flow-teaching').isVisible(), false, '作成の入口では会話の置き場を出さない');
     await workspace.locator('[data-flow-teaching-cancel]').click();
     if (process.env.AGENT_APP_FLOW_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_FLOW_SCREENSHOT });

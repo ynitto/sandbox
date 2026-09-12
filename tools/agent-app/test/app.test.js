@@ -266,7 +266,7 @@ test('共有編集面は親の領域選択に従い、独自のフォルダと�
   const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/automation-workbench.css'), 'utf8');
   assert.match(html, /id="automation-head"[\s\S]*id="automation-title"[\s\S]*id="automation-description"/);
-  assert.match(renderer, /workbenchHost\.setController\(\{ navigate: navigateEmbedded, refresh: refreshEmbedded \}\)/);
+  assert.match(renderer, /workbenchHost\.setController\(\{[\s\S]*navigate: navigateEmbedded,[\s\S]*refresh: refreshEmbedded,/);
   assert.match(renderer, /state\.homeTab = 'flows'/);
   assert.match(renderer, /state\.homeTab = teachesTask \? 'teach' : 'run'/);
   assert.match(css, /:host \.folder-pane[\s\S]*display:\s*none/);
@@ -449,7 +449,9 @@ test('領域一覧の新規ワークフロー操作は選択中の項目を編�
 
 test('ワークフロー教示と差し戻しは通常のDAG依存から分離して表示する', () => {
   const flow = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'flow.js'), 'utf8');
-  assert.match(flow, /mode:\s*'flow-teach'/);
+  // 教える会話は agent-app の会話基盤（tmux）で進む。置き場は slot で、AI の一問一答は使わない
+  assert.match(flow, /<slot name="flow-teaching"><\/slot>/);
+  assert.ok(!flow.includes("mode: 'flow-teach'"), '教示を AI の一問一答（automation:ai）で回さない');
   assert.match(flow, /data-flow-teaching-trial/);
   assert.match(flow, /data-flow-teaching-confirm/);
   assert.match(flow, /flow-rework-lane/);

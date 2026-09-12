@@ -143,8 +143,10 @@ function sessionPath(userData, id) {
 // 以前の形（cliSession 1 つ）はここで cliSessions へ写す。
 function normalizeSession(sess) {
   // kind … 'conversation'（既定）| 'task'（タスクを AI と作る会話。task.machine に紐づく）
-  sess.kind = sess.kind === 'task' ? 'task' : 'conversation';
+  //       | 'workflow'（ワークフローを AI と作る会話。workflow.id に紐づく）
+  sess.kind = ['task', 'workflow'].includes(sess.kind) ? sess.kind : 'conversation';
   sess.task = sess.kind === 'task' && sess.task && typeof sess.task === 'object' ? { machine: String(sess.task.machine || '') } : null;
+  sess.workflow = sess.kind === 'workflow' && sess.workflow && typeof sess.workflow === 'object' ? { id: String(sess.workflow.id || '') } : null;
   if (!sess.cliSessions || typeof sess.cliSessions !== 'object') sess.cliSessions = {};
   if (sess.cliSession && !sess.cliSessions[sess.cli]) {
     sess.cliSessions[sess.cli] = { id: String(sess.cliSession), seen: (sess.messages || []).length };
@@ -201,16 +203,20 @@ function writeSession(userData, sess) {
 
 // worktree … 作業フォルダの名前（'' はリポジトリ本体）。作ったあとは変えない——
 // tmux セッションの cwd も CLI 側の文脈もそこで始まっているため。
-// kind / task … タスクを AI と作る会話（kind: 'task'）は task.machine に紐づき、会話一覧には出ない。
+// kind / task / workflow … タスク（kind: 'task'）とワークフロー（kind: 'workflow'）を AI と作る会話は、
+// それぞれ task.machine / workflow.id に紐づき、会話一覧には出ない。
 // origin … 別のリポジトリの会話から分岐したとき、その分岐元（normalizeOrigin）。
-function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, origin = null }) {
+function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   if (kind === 'task' && !(task && task.machine)) throw new Error('タスクの会話には保存名が要ります');
+  if (kind === 'workflow' && !(workflow && workflow.id)) throw new Error('ワークフローの会話には保存名が要ります');
   const now = new Date().toISOString();
   return writeSession(userData, normalizeSession({
     id: crypto.randomUUID(), repo: String(repo), cli: String(cli), model: String(model || ''),
-    kind: kind === 'task' ? 'task' : 'conversation', task: kind === 'task' ? { machine: String(task.machine) } : null,
+    kind: ['task', 'workflow'].includes(kind) ? kind : 'conversation',
+    task: kind === 'task' ? { machine: String(task.machine) } : null,
+    workflow: kind === 'workflow' ? { id: String(workflow.id) } : null,
     readonly: Boolean(readonly), autoApprove: Boolean(autoApprove), policy: String(policy || 'direct'), tier: String(tier || ''),
     transport: transport === 'headless' ? 'headless' : 'tmux',
     worktree: String(worktree || ''), branch: String(branch || ''), origin,
@@ -241,7 +247,9 @@ function sessionSummary(file) {
   const s = JSON.parse(fs.readFileSync(file, 'utf8'));
   const summary = {
     id: s.id, repo: s.repo, cli: s.cli, model: s.model, readonly: s.readonly,
-    kind: s.kind === 'task' ? 'task' : 'conversation', machine: s.kind === 'task' && s.task ? String(s.task.machine || '') : '',
+    kind: ['task', 'workflow'].includes(s.kind) ? s.kind : 'conversation',
+    machine: s.kind === 'task' && s.task ? String(s.task.machine || '') : '',
+    workflow: s.kind === 'workflow' && s.workflow ? String(s.workflow.id || '') : '',
     policy: s.policy || 'direct', tier: s.tier || '',
     transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
     title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
@@ -251,7 +259,7 @@ function sessionSummary(file) {
   return summary;
 }
 
-// kind … 'conversation'（既定。会話一覧）| 'task'（タスクの会話）| '' （両方）
+// kind … 'conversation'（既定。会話一覧）| 'task' | 'workflow' | '' （すべて）
 function listSessions(userData, repo, { kind = 'conversation' } = {}) {
   let names;
   try { names = fs.readdirSync(sessionsDir(userData)); } catch { return []; }
@@ -276,6 +284,12 @@ function listSessions(userData, repo, { kind = 'conversation' } = {}) {
 function findTaskSession(userData, repo, machine) {
   const name = String(machine || '');
   return listSessions(userData, repo, { kind: 'task' }).find((s) => s.machine === name) || null;
+}
+
+// そのワークフローの会話（無ければ null）。同じ保存名に複数あれば最新のもの。
+function findWorkflowSession(userData, repo, id) {
+  const name = String(id || '');
+  return listSessions(userData, repo, { kind: 'workflow' }).find((s) => s.workflow === name) || null;
 }
 
 // その会話から分岐した会話（別のリポジトリも含む。更新日時の降順）。
@@ -361,7 +375,7 @@ function removeSession(userData, id) {
 
 module.exports = {
   DEFAULTS, loadConfig, saveConfig, addRepo, removeRepo, isRegistered,
-  createSession, readSession, listSessions, listForks, findTaskSession, updateSession, appendMessage, removeSession,
+  createSession, readSession, listSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
   TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot,
 };
