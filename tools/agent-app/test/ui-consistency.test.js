@@ -155,17 +155,16 @@ test('ひとことは 1 つの部品を 2 つの置き場に載せる（会話�
   assert.ok(!/innerHTML/.test(talk), '本文は文字として入れる（差し込みを作らない）');
 });
 
-test('新しい操作は既存の部品で組む（確認待ちの答え・定型の依頼・前回の値）', () => {
+test('新しい操作は既存の部品で組む（確認待ちの行き先・定型の依頼・前回の値）', () => {
   const html = read('renderer/index.html');
   const css = read('renderer/styles.css');
   const renderer = read('renderer/renderer.js');
   const workbench = read('renderer/automation/renderer.js');
-  // 1. 確認待ちのポップオーバーは、入力欄の「実行設定」と同じ器（.settings-popover）を借りる。
-  //    自分用のパネルを定義し直さない。
-  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 5, 'ポップオーバーの器は 1 つのクラスだけ（確認待ちもこれを借りる）');
-  assert.match(html, /id="phase-menu"[\s\S]*?class="settings-popover"/);
+  // 1. 確認待ちは答えを並べる面を持たない。状態の印のまま、端末操作（既存の入力先）へ連れて行く。
+  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 4, 'ポップオーバーの器は実行設定まわりの 4 つだけ');
   assert.ok(!css.includes('.phase-popover {'), '共有部品の私物な複製がある: .phase-popover');
   assert.ok(!css.includes('.attention-panel {'), '共有部品の私物な複製がある: .attention-panel');
+  assert.ok(!css.includes('.phase-menu {'), '確認待ちに自分用のパネルを作らない');
   // 2. 回答の下・依頼の下の操作は .message-actions / .message-action だけを使う
   for (const source of [renderer]) {
     const buttons = source.match(/el\('button', '([a-z- ]*)', '(?:変更をコミット|入力欄に戻す)/g) || [];
@@ -174,9 +173,10 @@ test('新しい操作は既存の部品で組む（確認待ちの答え・定�
   // 3. 設定に足した 2 群は、起動時アクションと同じ行（.startup-row）と同じ見出し（.settings-group-head）
   assert.match(html, /<div class="settings-group">\s*<div class="settings-group-head"><span><strong>定型の依頼<\/strong>/);
   assert.match(renderer, /el\('div', 'startup-row quick-row'\)/);
-  // 4. 新しい面に直値の色を足さない（確認待ちと定型の依頼のぶん）
-  const added = css.slice(css.indexOf('.phase-menu {'), css.indexOf('.settings-popover {'));
-  assert.deepStrictEqual(added.match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークン（var(--…)）を使う');
+  // 4. 今回足した規則に直値の色を入れない（確認待ちの行き先と定型の依頼の行）
+  const added = [...(css.match(/^\.phase\.answerable[^{]*\{[^}]*\}$/gm) || []), ...(css.match(/^\.quick-row[^{]*\{[^}]*\}$/gm) || [])];
+  assert.strictEqual(added.length, 4, '確認待ちの行き先と定型の依頼の行の規則が揃っていない');
+  assert.deepStrictEqual(added.join('\n').match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークン（var(--…)）を使う');
   // 5. 実行条件の「前回」は補助の 1 行（.muted）で、新しいカードや見出しを作らない
   assert.match(workbench, /<small class="muted">前回: /);
   assert.ok(!/<h3>前回/.test(workbench), '前回の値に見出しを足さない');

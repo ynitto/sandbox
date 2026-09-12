@@ -87,21 +87,7 @@
             <div id="chat-title" class="title">リポジトリを登録して会話を始める</div>
             <button type="button" id="chat-origin" class="sub title-origin" hidden></button>
           </div>
-          <!-- 確認待ちの答え方。器は入力欄の「実行設定」と同じ details + .settings-popover -->
-          <details id="phase-menu" class="phase-menu" hidden>
-            <summary id="phase" class="phase"></summary>
-            <div class="settings-popover">
-              <div class="popover-head">端末で確認を求めています</div>
-              <pre id="phase-detail" class="sub phase-detail"></pre>
-              <div class="row">
-                <button type="button" id="phase-yes" class="small">はい(y)</button>
-                <button type="button" id="phase-enter" class="small">Enter</button>
-                <button type="button" id="phase-no" class="small">いいえ(Esc)</button>
-                <span class="spacer"></span>
-                <button type="button" id="phase-terminal" class="small quiet">端末で答える</button>
-              </div>
-            </div>
-          </details>
+          <span id="phase" class="phase" hidden></span>
         </div>
         <nav class="views" aria-label="会話の表示">
           <button type="button" id="view-chat" class="tab on">会話</button>

@@ -74,7 +74,7 @@ const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中',
 const TERMINAL_KEYS = {
   Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03',
 };
-const POPUP_MENU_SELECTOR = 'details.more-menu[open], details.run-settings[open], details.phase-menu[open]';
+const POPUP_MENU_SELECTOR = 'details.more-menu[open], details.run-settings[open]';
 const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 function closePopupMenus(root, event = null) {
@@ -222,7 +222,10 @@ function renderSessions() {
     const status = state.running.has(s.id) ? '応答中' : (ph && ph.phase === 'attention' ? '確認待ち' : `${s.count}件`);
     body.append(el('div', 'sub', `${s.cli}${s.readonly ? ' · Ask' : ''}${where} · ${status}`));
     pick.append(body);
-    pick.onclick = () => openSession(s.id);
+    // 「確認待ち」の会話は、答える場所（端末操作）まで 1 押しで行く
+    const answering = !!(ph && ph.phase === 'attention');
+    pick.title = answering ? `「${s.title || '無題の会話'}」を開いて端末操作で答える` : '';
+    pick.onclick = () => openSession(s.id, { answer: answering });
     const remove = el('button', 'session-remove', '削除');
     remove.type = 'button';
     remove.title = `${s.title || '無題の会話'}を削除`;
@@ -922,34 +925,30 @@ function renderShareTalk(waiting) {
   Talk.render($('share-talk-body'), { id: waiting.id, talk, me: (status && status.node) || '', read: box.open });
 }
 
-// 会話ヘッダーの状態の印。「確認待ち」のときだけ押せて、聞かれている文と、端末へそのまま送る
-// キー（端末操作と同じ `term:keys`）を出す。**文面の意味は読まない**——送るキーは 3 つに固定し、
-// 合わなければ「端末で答える」で端末操作へ移る。
+// 会話ヘッダーの状態の印。「確認待ち」のときだけ押せて、**答える場所へ連れて行く**（端末操作へ
+// 切り替えて端末に焦点を移す）。何を聞かれているかは端末ミラーにそのまま出ているので、ここでは
+// 繰り返さない。答え方も決めない——CLI によって `y` が効くもの（テキスト入力）と効かないもの
+// （反転選択メニュー）があり、見分けるには画面の文言を読むことになる（ADR-1）。
 function renderPhase(ph) {
-  const menu = $('phase-menu');
-  menu.hidden = !ph;
-  if (!ph) { menu.open = false; return; }
-  $('phase').textContent = PHASE_LABEL[ph.phase] || ph.phase;
-  $('phase').className = `phase ${ph.phase}`;
+  const node = $('phase');
+  node.hidden = !ph;
+  if (!ph) return;
   const answerable = ph.phase === 'attention';
-  menu.classList.toggle('answerable', answerable);
-  if (!answerable) { menu.open = false; $('phase').title = ph.detail || ''; return; }
-  $('phase').title = '押すと、端末へ行かずに答えられる';
-  $('phase-detail').textContent = ph.detail || '';
-}
-
-// 確認待ちの答えを端末へ送る。窓口は端末操作の仮想キーと同じ `term:keys` で、入力先は
-// 「メッセージ」のまま——ここで送るのは押したキーだけ。続けて打つなら「端末で答える」へ移る。
-async function answerAttention(data) {
-  const cur = state.current;
-  $('phase-menu').open = false;
-  if (!cur) return;
-  try {
-    await api.termKeys(cur.id, data);
-    inputStatus('success', '端末へ送りました', 1600);
-  } catch (err) {
-    inputStatus('error', '端末への入力に失敗しました');
-    notice(err.message, 'error');
+  node.textContent = PHASE_LABEL[ph.phase] || ph.phase;
+  node.className = `phase ${ph.phase}${answerable ? ' answerable' : ''}`;
+  node.title = answerable ? '押すと端末操作へ移り、そのまま答えられる' : (ph.detail || '');
+  if (answerable) {
+    node.tabIndex = 0;
+    node.setAttribute('role', 'button');
+    node.onclick = () => setInputMode('terminal');
+    node.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); node.click(); }
+    };
+  } else {
+    node.removeAttribute('tabindex');
+    node.removeAttribute('role');
+    node.onclick = null;
+    node.onkeydown = null;
   }
 }
 
@@ -1364,7 +1363,8 @@ function newDraft() {
   renderSessions();
 }
 
-async function openSession(id) {
+// answer … 「確認待ち」から開いたとき。端末がつながってから端末操作へ移し、そのまま打てるようにする
+async function openSession(id, { answer = false } = {}) {
   try {
     state.current = await api.readSession(id);
   } catch (err) {
@@ -1380,9 +1380,13 @@ async function openSession(id) {
   renderSessions();
   Files.setRoot(state.repo, activeWorktree(), {}).catch(() => {});
   if (state.changesOpen) refreshChanges();
-  if (isTmux(state.current)) attachTerm(state.current.id);
+  let attaching = null;
+  if (isTmux(state.current)) attaching = attachTerm(state.current.id);
   else if (!shareWaiting()) Term.detach();
   setInputMode('message', { focus: false });
+  if (!answer || !attaching) return;
+  await attaching;
+  if (state.current && state.current.id === id) setInputMode('terminal');
 }
 
 // tmux の会話を開く: main に tmux セッションを（無ければ起動して）持たせ、端末ミラーをつなぐ。
@@ -2150,14 +2154,6 @@ async function init() {
       Term.focus();
     };
   }
-  // 確認待ち: 端末へ行かずに答える 3 つのキーと、端末操作へ移る口
-  $('phase').onclick = (event) => {
-    if (!$('phase-menu').classList.contains('answerable')) event.preventDefault();
-  };
-  $('phase-yes').onclick = () => answerAttention(`y${TERMINAL_KEYS.Enter}`);
-  $('phase-enter').onclick = () => answerAttention(TERMINAL_KEYS.Enter);
-  $('phase-no').onclick = () => answerAttention(TERMINAL_KEYS.Escape);
-  $('phase-terminal').onclick = () => { $('phase-menu').open = false; setInputMode('terminal'); };
   $('prompt').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!$('send').hidden && !$('send').disabled) sendPrompt(); }
   });

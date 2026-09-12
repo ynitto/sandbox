@@ -1130,26 +1130,27 @@ test('ファイル: 索引は相対パスの並び（WSL 内の git ls-files）�
   assert.match(ipc, /'ls-files', '--cached', '--others', '--exclude-standard', '-z'/);
 });
 
-test('確認待ちには端末へ行かずに答えられる（キーは端末操作と同じ term:keys を通る）', () => {
+test('「確認待ち」は答える場所（端末操作）への行き先で、答え方は決めない', () => {
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
-  // 器は入力欄の「実行設定」と同じ details + .settings-popover。つまみは状態の印そのもの
-  assert.match(html, /<details id="phase-menu" class="phase-menu"[^>]*>\s*<summary id="phase" class="phase">/);
-  assert.match(html, /id="phase-menu"[\s\S]*class="settings-popover"[\s\S]*class="popover-head"/);
-  for (const id of ['phase-yes', 'phase-enter', 'phase-no', 'phase-terminal']) {
-    assert.match(html, new RegExp(`id="${id}" class="small`), `確認待ちの操作が足りない: ${id}`);
-  }
-  // 送るのは端末操作の仮想キーと同じ窓口。新しい IPC を作らない
-  assert.match(renderer, /await api\.termKeys\(cur\.id, data\)/);
-  assert.match(renderer, /\$\('phase-yes'\)\.onclick = \(\) => answerAttention\(`y\$\{TERMINAL_KEYS\.Enter\}`\)/);
-  assert.match(renderer, /\$\('phase-enter'\)\.onclick = \(\) => answerAttention\(TERMINAL_KEYS\.Enter\)/);
-  assert.match(renderer, /\$\('phase-no'\)\.onclick = \(\) => answerAttention\(TERMINAL_KEYS\.Escape\)/);
-  // 押せるのは「確認待ち」のときだけ。ほかの状態では開かない
-  assert.match(renderer, /menu\.classList\.toggle\('answerable', answerable\)/);
-  assert.match(css, /\.phase-menu\.answerable > summary \{[^}]*cursor: pointer/);
-  // 外側クリックで閉じる仕掛けは、既存のポップアップと同じ 1 本
-  assert.match(renderer, /POPUP_MENU_SELECTOR = 'details\.more-menu\[open\], details\.run-settings\[open\], details\.phase-menu\[open\]'/);
+  // 状態の印は 1 つの span のまま。答えを並べるパネルは持たない
+  assert.match(html, /<span id="phase" class="phase" hidden><\/span>/);
+  assert.ok(!html.includes('phase-menu'), '確認待ちに答えのパネルを作らない');
+  assert.ok(!/id="phase-(yes|no|enter)"/.test(html), 'はい・いいえのような答えのボタンを置かない');
+  // `y` は効く CLI と効かない CLI があり、見分けるには文言を読むことになる（ADR-1）。
+  // 仮想キー行にも足さない——足したキーは「送るキー」だけで、答えではない
+  assert.ok(!/data-terminal-key="[yn]"/.test(html), '答えを当てにいくキーを仮想キー行へ足さない');
+  // 押すと端末操作へ移る（焦点も端末へ）。答えられる phase のときだけ押せる
+  assert.match(renderer, /node\.onclick = \(\) => setInputMode\('terminal'\)/);
+  assert.match(renderer, /const answerable = ph\.phase === 'attention'/);
+  assert.match(renderer, /node\.className = `phase \$\{ph\.phase\}\$\{answerable \? ' answerable' : ''\}`/);
+  assert.match(css, /\.phase\.answerable \{[^}]*cursor: pointer/);
+  // 一覧からも、開いてそのまま端末操作まで行く
+  assert.match(renderer, /pick\.onclick = \(\) => openSession\(s\.id, \{ answer: answering \}\)/);
+  assert.match(renderer, /await attaching;\s*\n\s*if \(state\.current && state\.current\.id === id\) setInputMode\('terminal'\)/);
+  // ポップアップの種別は元の 2 つに戻る
+  assert.match(renderer, /POPUP_MENU_SELECTOR = 'details\.more-menu\[open\], details\.run-settings\[open\]'/);
 });
 
 test('回答の下の「定型の依頼」と「入力欄に戻す」は入力欄に入れるだけで送らない', () => {
