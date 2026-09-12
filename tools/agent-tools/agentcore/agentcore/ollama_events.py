@@ -67,6 +67,19 @@ def new_log_path(model: str = "", now: "float | None" = None) -> Path:
     return log_dir() / f"{stamp}-{os.getpid()}-{safe}.jsonl"
 
 
+def results_dir(log_path: "str | Path | None") -> "Path | None":
+    """上限を超えたツール出力の全文を置く場所（ログの隣・同名の `.results/`）。
+
+    ログと同じ名前で並べるのは、台帳を読む側（agent-audit / `follow`）が「このラウンドで
+    モデルが見た抜粋」と「実際の全文」を同じ鍵で突き合わせられるようにするため。
+    ログを書かない実行（`--no-log`）は None——ログ置き場に結果だけ残さない。
+    """
+    if not log_path:
+        return None
+    path = Path(log_path)
+    return path.parent / (path.stem + ".results")
+
+
 def latest_log_path() -> "Path | None":
     """最も新しいログ（`--status` / `--follow` の引数省略時に使う）。"""
     try:

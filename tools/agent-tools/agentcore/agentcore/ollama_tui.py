@@ -135,8 +135,10 @@ def event_line(event: dict) -> str:
         command = str(event.get("command") or "").replace("\n", " ⏎ ")
         return f"{ts} {tag} $ {command}"
     if kind == "tool_result":
+        spill = (f"、全文 {event.get('output_chars_full', 0)} 文字は {event['spill']}"
+                 if event.get("spill") else "")
         return (f"{ts} {tag} → exit {event.get('exit_code', '?')} "
-                f"({_dur(event.get('duration_sec', 0))}, {event.get('output_chars', 0)} 文字)")
+                f"({_dur(event.get('duration_sec', 0))}, {event.get('output_chars', 0)} 文字{spill})")
     if kind == "round_end":
         return f"{ts} {tag} 終了（{event.get('reason', '')}）"
     if kind == "stall":

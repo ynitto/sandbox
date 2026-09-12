@@ -732,23 +732,73 @@ def strip_done_marker(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _clip(text: str, limit: int) -> str:
-    """長い出力を頭と尻だけ残して詰める（次ラウンドの prefill を膨らませない）。"""
+def _clip(text: str, limit: int, note: str = "") -> str:
+    """長い出力を頭と尻だけ残して詰める（次ラウンドの prefill を膨らませない）。
+
+    `note` は中略の印に添える案内（全文の置き場など）。案内の分だけ頭・尻を削り、
+    合計が `limit` を大きく超えないようにする——文脈の残りに合わせて絞った上限を
+    案内で食い潰しては本末転倒になる。
+    """
     if len(text) <= limit:
         return text
-    head = text[: limit // 2]
-    tail = text[-(limit // 2):]
-    return f"{head}\n…（中略 {len(text) - limit} 文字）…\n{tail}"
+    budget = max(limit - len(note), _MIN_SPILL_BODY_CHARS)
+    head = text[: budget // 2]
+    tail = text[-(budget // 2):]
+    return f"{head}\n…（中略 {len(text) - budget} 文字{note}）…\n{tail}"
+
+
+# --- 巨大な結果の外出し（large-result offloading）---------------------------
+# 設計: docs/designs/agent-herd-design.md ADR-6。上限を超えたツール出力は、末尾を捨てて
+# 終わりにせず**全文をファイルへ置き**、会話には頭・尻と「どこに何文字あるか」の案内だけを
+# 返す。モデルは必要な部分だけを grep / head / tail で読み直せる（read セットの語彙で
+# 足りる）。案内は末尾追記の観測（observation）に載るので、固定プレフィックスは変わらない。
+_SPILL_FILE_FMT = "round-{round_no:03d}.txt"
+# 案内を差し引いた後に残す頭・尻の下限。文脈が尽きかけているときは中身より所在の方が
+# 価値がある（所在さえあれば次のラウンドで必要な行だけ引ける）。
+_MIN_SPILL_BODY_CHARS = 40
+
+
+def _spill_note(path: str, text: str) -> str:
+    lines = text.count("\n") + 1
+    return (f"。全文 {len(text)} 文字・{lines} 行は {path} に保存した。必要な部分だけ "
+            "grep -n / head -n / tail -n +K でそのファイルから読める")
+
+
+def offload_output(text: str, limit: int, *, spill_dir: "str | None" = None,
+                   round_no: int = 0) -> "tuple[str, str]":
+    """上限を超えた出力を (会話へ返す本文, 全文の置き場) にする。
+
+    置き場が無ければ従来どおり `_clip` だけ（中略の事実は書く）。書けなかったときも
+    `_clip` に倒す——外出しは節約であって契約ではないので、ここで実行を止めない。
+    """
+    if len(text) <= limit:
+        return text, ""
+    if not spill_dir:
+        return _clip(text, limit), ""
+    path = os.path.join(spill_dir, _SPILL_FILE_FMT.format(round_no=round_no))
+    try:
+        os.makedirs(spill_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError:
+        return _clip(text, limit), ""
+    return _clip(text, limit, _spill_note(path, text)), path
 
 
 def run_command(command: str, *, cwd: str, timeout: float, max_chars: int,
-                toolset: str = DEFAULT_TOOLSET) -> dict:
+                toolset: str = DEFAULT_TOOLSET, spill_dir: "str | None" = None,
+                round_no: int = 0) -> dict:
     """コマンドを 1 つ実行する（`--tools` = 書き込みモードでのみ呼ばれる）。
 
     `bash` セットは従来どおりログインシェル素通し。制限セットは **シェルを介さず
     argv を直接実行する**——ゲート（`check_command`）を通った文字列であっても、
     シェルに渡す限り境界はシェルの解釈次第になる。プロセス起動の形そのもので
     「メタ文字は効かない」を担保する。
+
+    出力が `max_chars` を超えたら `offload_output` で全文を `spill_dir` へ置く。
+    戻り値の `spill` はその所在（外出ししなければ空）、`output_chars_full` は全文の長さ、
+    `output_digest` は全文のダイジェスト（空回り判定は会話へ返した本文ではなくこれを見る
+    ——所在の案内はラウンドごとに違うので、本文を比べると同じ結果が別物に見える）。
     """
     started = time.monotonic()
     if (toolset or DEFAULT_TOOLSET) == "bash":
@@ -769,11 +819,20 @@ def run_command(command: str, *, cwd: str, timeout: float, max_chars: int,
         out, code = f"（{timeout:.0f} 秒でタイムアウトしました）", 124
     except OSError as exc:
         out, code = f"（実行できませんでした: {exc}）", 127
+    full = out.strip()
+    output, spill = offload_output(full, max_chars, spill_dir=spill_dir, round_no=round_no)
     return {
         "exit_code": code,
-        "output": _clip(out.strip(), max_chars),
+        "output": output,
+        "output_chars_full": len(full),
+        "output_digest": _digest(full),
+        "spill": spill,
         "duration_sec": round(time.monotonic() - started, 2),
     }
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha1(str(text or "").encode("utf-8", "replace")).hexdigest()
 
 
 def _round_signature(command: str, outcome: dict) -> str:
@@ -781,9 +840,11 @@ def _round_signature(command: str, outcome: dict) -> str:
 
     出力そのものではなくダイジェストを持つのは、長いツール出力をラウンドごとに
     抱え続けないため（比較に必要なのは一致・不一致だけで、中身は要らない）。
+    外出しした結果は全文のダイジェスト（`output_digest`）で比べる——会話へ返した
+    本文には所在の案内が混ざり、同じ結果でもラウンドごとに違って見えるため。
     """
-    digest = hashlib.sha1(str(outcome.get("output") or "").encode("utf-8", "replace"))
-    return f"{command}\x00{outcome.get('exit_code')}\x00{digest.hexdigest()}"
+    digest = outcome.get("output_digest") or _digest(str(outcome.get("output") or ""))
+    return f"{command}\x00{outcome.get('exit_code')}\x00{digest}"
 
 
 def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
@@ -793,7 +854,7 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
              options: "dict | None" = None, tracker=None,
              toolset: str = DEFAULT_TOOLSET, fmt: "str | None" = None,
              think_prompt: bool = False, templates: "dict | None" = None,
-             **limits) -> dict:
+             spill_dir: "str | None" = None, **limits) -> dict:
     """bash 1 ツールの最小エージェントループ。
 
     1 ラウンド = 「モデルに聞く → コードブロックがあれば実行して結果を返す」。
@@ -812,6 +873,9 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
 
     同じコマンドが同じ結果で `_MAX_REPEATS` 回続いたら `no_progress` で止める。
     ラウンド予算とコマンド上限の積（既定でも数時間）を空回りで焼き切らせない。
+
+    `spill_dir` を渡すと、上限を超えたツール出力の全文をそこへ置き、会話には頭・尻と
+    所在だけを返す（`offload_output`）。渡さなければ従来どおり詰めるだけ。
     """
     workdir = str(cwd or os.getcwd())
     templates = dict(templates or {})
@@ -919,10 +983,17 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         if emit is not None:
             emit("tool_exec", round=round_no, command=_clip(command, 400))
         outcome = run_command(command, cwd=workdir, timeout=command_timeout,
-                              max_chars=allowed, toolset=toolset)
+                              max_chars=allowed, toolset=toolset,
+                              spill_dir=spill_dir, round_no=round_no)
         if emit is not None:
+            # 外出しした結果は所在と全文の長さも残す——会話に載った文字数だけでは
+            # 「モデルが何を見て、何を見ていないか」を台帳から復元できない。
+            extra = ({"spill": outcome["spill"],
+                      "output_chars_full": outcome.get("output_chars_full", 0)}
+                     if outcome.get("spill") else {})
             emit("tool_result", round=round_no, exit_code=outcome["exit_code"],
-                 duration_sec=outcome["duration_sec"], output_chars=len(outcome["output"]))
+                 duration_sec=outcome["duration_sec"], output_chars=len(outcome["output"]),
+                 **extra)
 
         # ラウンド粒度の無進捗。**結果まで**同じでなければ空回りとは呼ばない
         # （同じコマンドでも出力が変われば状況は動いている）。判定は tool_result の

@@ -125,7 +125,9 @@ agent-herd replay --arm model=gemma4:e4b,think=off,format=json \
 | `--replay` | 観測（測定） | 記録済みプロンプトを再生する。**道具は持たない**（下記） |
 
 ツールとループが `--tools`（書き込みモード）でだけ生えるのが要点。読み取り専用モードには
-道具が 1 つも無いので、`readonly: enforced` の宣言が嘘にならない。
+道具が 1 つも無いので、`readonly: enforced` の宣言が嘘にならない。長いツール出力（4,000 字超）は
+全文をログの隣 `<ログ名>.results/` に置き、モデルには頭・尻と所在だけを渡す——必要な行は
+モデル自身が `grep -n` / `head` / `tail` で読み直す（仕様 §11.4）。
 
 `agent-aider` は `--agent-policy gemma4-e4b-reliability-v1` を wrapper option として受け取り、
 `ollama_chat/gemma4:e4b` の Aider system prompt 先頭へ固定 reliability policy を注入する。

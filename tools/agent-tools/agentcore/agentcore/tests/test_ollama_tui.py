@@ -36,6 +36,14 @@ class TestEventLine(unittest.TestCase):
             {"kind": "llm_end", "ts": 1.0, "round": 1, "duration_sec": 61,
              "tokens_in": 1832, "tokens_out": 210, "tokens_per_sec": 7.2}))
 
+    def test_spilled_tool_result_names_the_file(self):
+        line = ollama_tui.event_line(
+            {"kind": "tool_result", "ts": 1.0, "round": 2, "exit_code": 0,
+             "duration_sec": 0.3, "output_chars": 300, "output_chars_full": 91000,
+             "spill": "/logs/x.results/round-002.txt"})
+        self.assertIn("91000 文字", line)
+        self.assertIn("round-002.txt", line)
+
     def test_multiline_command_is_folded_into_one_line(self):
         line = ollama_tui.event_line(
             {"kind": "tool_exec", "ts": 1.0, "round": 1, "command": "a\nb"})

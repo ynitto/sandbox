@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -408,6 +409,10 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                 "--tools bash で起動するか、そのスキルの指定を外してください。")
 
     log_path = None if opts.get("no_log") else (opts.get("log") or ollama_events.new_log_path(model))
+    # 上限を超えたツール出力の全文の置き場。ログの隣（`<ログ>.results/`）。ログを書かない
+    # 実行は一時ディレクトリ（作るのは最初に外出しが起きたとき）。
+    spill_dir = ollama_events.results_dir(log_path) or Path(tempfile.gettempdir()) / (
+        f"agent-ollama-{os.getpid()}.results")
     sink = renderer.event if renderer is not None else None
     tracker = make_tracker(model, opts)
     started = time.monotonic()
@@ -431,7 +436,7 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                     max_rounds=opts["max_rounds"], command_timeout=opts["command_timeout"],
                     tracker=tracker, toolset=toolset, fmt=fmt,
                     think_prompt=think_prompt, templates=dict(launch.templates),
-                    **_limits(opts))
+                    spill_dir=str(spill_dir), **_limits(opts))
             else:
                 # 会話の本文を残す（tools 経路は run_loop が同じ `message` を出す）。
                 events.emit("message", role="user", content=prompt)

@@ -34,6 +34,19 @@ class TestEventLog(unittest.TestCase):
             self.assertEqual(log.emit("x")["kind"], "x")
 
 
+class TestResultsDir(unittest.TestCase):
+    def test_sits_next_to_the_log_under_the_same_name(self):
+        log = Path("/tmp/logs/20260912T101010-42-gemma4_e4b.jsonl")
+        self.assertEqual(ollama_events.results_dir(log),
+                         Path("/tmp/logs/20260912T101010-42-gemma4_e4b.results"))
+        self.assertEqual(ollama_events.results_dir(str(log)).name,
+                         "20260912T101010-42-gemma4_e4b.results")
+
+    def test_no_log_means_no_results_dir(self):
+        self.assertIsNone(ollama_events.results_dir(None))
+        self.assertIsNone(ollama_events.results_dir(""))
+
+
 class TestProgressBeacon(unittest.TestCase):
     """外側（ハーネス）の見張り向けの灯台。記録の置き場は動かさない。"""
 
