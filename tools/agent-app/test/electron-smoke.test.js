@@ -71,7 +71,12 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   process.env.AGENT_APP_FLOW_BUS = flowBus;
   // 別のリポジトリへの分岐を実機で通すための 2 つ目のリポジトリ
   const otherRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-shared-lib-'));
-  appStore.saveConfig(userData, { repos: [repo, otherRepo], lastRepo: repo, area: 'work' });
+  appStore.saveConfig(userData, {
+    repos: [repo, otherRepo], lastRepo: repo, area: 'work',
+    // 共有: 合言葉だけ入れて受け口を開く（仲間はいない）。自分が出した依頼を画面に出すため、
+    // 依頼の控え（requests.json）を先に置く。
+    share: { enabled: true, passphrase: 'smoke', node: 'smoke-pc', port: 0, udp: false, accept: 'manual' },
+  });
   const session = appStore.createSession(userData, {
     repo, cli: 'codex', model: 'gpt-test', policy: 'quality', tier: 'large', transport: 'headless',
   });
@@ -103,6 +108,14 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       text: `スクロール確認 ${index + 1}: ${'履歴を十分に長くする。'.repeat(8)}`,
     });
   }
+
+  const { Requester } = require('../src/main/share/requester');
+  const shareRequests = new Requester({ userData, node: 'smoke-pc', file: path.join(userData, 'share', 'requests.json') });
+  shareRequests.post({
+    title: 'ログ設計をレビュー', goal: 'ログ設計をレビューして', priority: 'high',
+    summary: 'ログ設計をレビューして。\n回転の条件と、失敗したときにどこへ残すかを見てほしい。',
+  });
+  shareRequests.post({ title: '移行手順の要約', goal: '移行手順をまとめて', summary: '移行手順をまとめて' });
 
   // 偽の agent-herd と agent-flow を PATH に置く。一族（aider / ollama）が「使える」印になり `herd` が並び
   // 「エージェントを最適化する」が効く側（節約・品質重視・small / large tier）を実機で通せる。効かない側は
@@ -490,8 +503,36 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_AUTOMATION_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_AUTOMATION_SCREENSHOT });
     }
+    // 共有: 一覧（サイドバー）と、選んだ 1 件のカード。会話画面と同じ骨格で出る。
+    await win.click('#area-share');
+    await win.locator('#share-requests .list-pick').first().waitFor({ timeout: 20000 });
+    assert.match(await win.locator('#share-requests').textContent(), /ログ設計をレビュー/);
+    await win.locator('#share-requests .list-pick').first().click();
+    await win.locator('#share-cards .execution-card').first().waitFor();
+    assert.match(await win.locator('#share-head').textContent(), /優先度 高/);
+    assert.match(await win.locator('#share-cards').textContent(), /依頼の本文/);
+    assert.strictEqual(await win.locator('#share-accept-mode').inputValue(), 'manual');
+    await win.locator('#share-view-nodes').click();
+    await win.locator('.share-nodes').waitFor();
+    assert.match(await win.locator('#share-cards').textContent(), /参加者/);
+    await win.locator('#share-view-request').click();
+    if (process.env.AGENT_APP_SHARE_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_SCREENSHOT });
+
     await win.click('#area-work');
     assert.strictEqual(await win.locator('body > #app > #main').isVisible(), true, '会話画面へ戻れない');
+    // 会話の入力先に「共有に依頼」が並ぶ（設定 > 共有を使うと決めているとき）
+    await win.click('#sessions .list-pick');
+    await win.locator('#input-mode-share').waitFor();
+    await win.locator('#input-mode-share').click();
+    assert.strictEqual(await win.locator('#input-mode-share').getAttribute('aria-pressed'), 'true');
+    await win.locator('#run-settings summary').click();
+    await win.locator('#share-priority-field').waitFor();
+    assert.strictEqual(await win.locator('#policy-field').isVisible(), false, '共有では起動方針を出さない');
+    assert.match(await win.locator('#run-settings-summary').textContent(), /どれでも.*優先度 通常/);
+    assert.match(await win.locator('#send').textContent(), /依頼する/);
+    if (process.env.AGENT_APP_SHARE_COMPOSER_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_COMPOSER_SCREENSHOT });
+    await win.keyboard.press('Escape');
+    if (process.env.AGENT_APP_SHARE_SWITCH_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_SWITCH_SCREENSHOT });
     assert.deepStrictEqual(errors, [], '画面でエラーが発生した');
   } finally {
     await electron.close();

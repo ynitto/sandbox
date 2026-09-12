@@ -37,6 +37,10 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 4v5M6 15v5M18 4v5M18 15v5M6 9c0 3 12 0 12 3M18 15c0-3-12 0-12-3"/></svg>
           <span>ワークフロー</span>
         </button>
+        <button type="button" id="area-share">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM6 15a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm12 0a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM11 9 7 15m6-6 4 6M8 17h8"/></svg>
+          <span>共有</span>
+        </button>
       </nav>
 
       <div id="repository-context">
@@ -63,6 +67,7 @@
         <ul id="sessions" class="list grow"></ul>
         <ul id="tasks" class="list grow" hidden></ul>
         <ul id="workflows" class="list grow" hidden></ul>
+        <ul id="share-requests" class="list grow" hidden></ul>
       </div>
 
       <button type="button" id="settings-open" class="side-settings">
@@ -119,6 +124,7 @@
             <div id="input-mode-switch" class="input-mode-switch" role="group" aria-label="入力先">
               <button type="button" id="input-mode-message" aria-pressed="true">メッセージ</button>
               <button type="button" id="input-mode-terminal" aria-pressed="false">端末操作</button>
+              <button type="button" id="input-mode-share" aria-pressed="false" hidden>共有に依頼</button>
               <span id="input-status" class="input-status" role="status" aria-live="polite"></span>
             </div>
             <div id="message-input">
@@ -147,13 +153,19 @@
                 <summary><span id="run-settings-summary">実行設定</span></summary>
                 <div class="settings-popover">
                   <div class="popover-head">次の依頼の実行設定</div>
-                  <label>起動方針
+                  <label id="policy-field">起動方針
                     <select id="policy">
                       <option value="recommended">おすすめ</option>
                       <option value="saving">節約</option>
                       <option value="quality">品質重視</option>
                       <option value="direct">直接指定</option>
-                      <option value="shared">共有</option>
+                    </select>
+                  </label>
+                  <label id="share-priority-field" hidden>優先度
+                    <select id="priority">
+                      <option value="high">高</option>
+                      <option value="normal" selected>通常</option>
+                      <option value="low">低</option>
                     </select>
                   </label>
                   <div id="direct-agent-settings" class="direct-agent-settings" hidden>
@@ -168,14 +180,14 @@
                     </select>
                   </label>
                   <div id="turn-skill-list" class="skill-choice-list" hidden></div>
-                  <label>権限
+                  <label id="permission-field">権限
                     <select id="permission-mode">
                       <option value="confirm">確認して実行</option>
                       <option value="auto">自動承認</option>
                       <option value="ask">Ask（読み取り専用）</option>
                     </select>
                   </label>
-                  <div class="worktree-setting">
+                  <div class="worktree-setting" id="worktree-field">
                     <label>作業フォルダ<select id="worktree" title="会話ごとに分ける作業フォルダ"></select></label>
                     <button type="button" id="wt-manage" class="small quiet">管理</button>
                   </div>
@@ -292,6 +304,7 @@
                 <div class="input-mode-switch" role="group" aria-label="入力先">
                   <button type="button" id="task-mode-message" aria-pressed="true">メッセージ</button>
                   <button type="button" id="task-mode-terminal" aria-pressed="false">端末操作</button>
+                  <button type="button" id="task-mode-share" aria-pressed="false" hidden>共有に依頼</button>
                   <span id="task-input-status" class="input-status" role="status" aria-live="polite"></span>
                 </div>
                 <div id="task-message-input">
@@ -336,6 +349,43 @@
             </section>
           </div>
         </statemachine-workbench>
+      </div>
+    </section>
+
+    <!-- 共有: LAN の仲間の依頼を見て、引き受ける。会話画面と同じ形（左は一覧＝サイドバー、
+         右は選んだ 1 件と端末ミラー）。見出しは選んだ依頼のものだけを描く。 -->
+    <section id="share-area" aria-label="共有" hidden>
+      <header id="share-head" class="area-head">
+        <div class="area-heading">
+          <div id="share-request-title" class="title"></div>
+          <p id="share-request-meta"></p>
+        </div>
+        <span id="share-request-status" class="status" hidden></span>
+        <nav class="views" aria-label="共有の表示">
+          <button type="button" id="share-view-request" class="tab on">依頼</button>
+          <button type="button" id="share-view-nodes" class="tab">参加者</button>
+        </nav>
+        <span class="spacer"></span>
+        <label class="share-accept-control">引き受け
+          <select id="share-accept-mode">
+            <option value="auto">自動で受ける</option>
+            <option value="manual">選んで受ける</option>
+            <option value="off">受けない</option>
+          </select>
+        </label>
+      </header>
+      <div id="share-body">
+        <div id="share-cards"></div>
+        <section id="share-terminal" class="terminal-stage" hidden>
+          <div class="terminal-head">
+            <span id="share-term-agent" class="terminal-agent"></span>
+            <span id="share-term-note" class="sub"></span>
+            <span class="spacer"></span>
+            <span id="share-term-activity" class="terminal-activity" aria-hidden="true"></span>
+            <button type="button" id="share-term-stop" class="small" hidden>止める</button>
+          </div>
+          <div id="share-term-host"></div>
+        </section>
       </div>
     </section>
 
@@ -411,7 +461,7 @@
           <label class="setting-field"><span><strong>参加者名</strong><small>空なら ユーザー名.PC名</small></span><input id="share-node" size="16" placeholder="自動"></label>
           <label class="setting-field"><span><strong>仲間の PC</strong><small>ホスト名か IP。1 台知れば全員に広がります</small></span><input id="share-peers" size="24" placeholder="pc-b, 192.168.1.20:47801"></label>
           <label class="setting-field"><span><strong>受け口のポート</strong><small>TCP。初回に OS の許可が出ます</small></span><input id="share-port" type="number" min="0" max="65535" step="1"></label>
-          <label class="setting-check"><input type="checkbox" id="share-participate"><span><strong>この PC の AI で依頼を受ける</strong><small>agent-app を開いている間だけ</small></span></label>
+          <label class="setting-field"><span><strong>依頼の引き受け方</strong><small>agent-app を開いている間だけ。共有の画面からも変えられます</small></span><select id="share-accept"><option value="auto">自動で受ける</option><option value="manual">選んで受ける</option><option value="off">受けない</option></select></label>
           <div class="settings-group">
             <div class="settings-group-head"><span><strong>提供する AI</strong><small>何も選ばなければ使えるもの全部</small></span></div>
             <div id="share-clis" class="skill-choice-list"></div>
@@ -472,6 +522,7 @@
   <script src="teachingProtocol.js"></script>
   <script src="forkProtocol.js"></script>
   <script src="taskTeaching.js"></script>
+  <script src="share.js"></script>
   <script src="automation/workbench-element.js"></script>
   <script src="automation/teaching.js"></script>
   <script src="automation/flow.js"></script>

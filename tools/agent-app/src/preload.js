@@ -47,7 +47,14 @@ contextBridge.exposeInMainWorld('api', {
     cancel: (id) => invoke('share:cancel', { id }),
     setPriority: (id, priority) => invoke('share:priority', { id, priority }),
     participate: (on) => invoke('share:participate', { on }),
+    // 引き受け方（'auto' 自動で受ける / 'manual' 選んで受ける / 'off' 受けない）
+    setMode: (mode) => invoke('share:mode', { mode }),
+    accept: (id) => invoke('share:accept', { id }),
+    stopAccepted: (id) => invoke('share:stop', { id }),
+    screen: (id) => invoke('share:screen', { id }),
     onChanged: on('share:changed'),
+    // 実行中の端末の画面（引き受けた側から届く分と、自分が引き受けている分）
+    onScreen: on('share:screen'),
   },
   termOpen: (id, cols, rows) => invoke('term:open', { id, cols, rows }),
   termRestart: (id, cols, rows) => invoke('term:restart', { id, cols, rows }),

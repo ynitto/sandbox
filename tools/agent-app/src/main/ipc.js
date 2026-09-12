@@ -385,6 +385,81 @@ function runPrompt({ cli, prompt, model = '', readonly = true, cwd, files = [], 
   return { done, stop(reason) { stopped = true; stopReason = reason || '止めた'; if (child) killTree(child); } };
 }
 
+// ---- 共有（引き受けた依頼を tmux の画面で走らせる） ------------------------------------------
+//
+// 依頼者は自分の端末ミラーで「他人の PC で何が起きているか」を見ながら待つ。そのため引き受けた
+// 側は会話と同じ tmux セッション（agent-app-share-<依頼 id>）で CLI を起こし、画面が変わるたびに
+// onScreen で渡す（participant が心拍に載せて依頼者へ送る）。tmux が無い PC ではヘッドレスに倒す。
+const sharedConversations = new Map();
+let shareTmuxOk = false;
+
+function shareOutcome(message, { cli, spec, conv, startedAt, stopped = false }) {
+  const structured = response.parseTranscript(cli, message.text || '');
+  const halted = stopped || !!message.stopped;
+  const failed = halted || !!message.error || !structured.text;
+  const rule = failed ? agentCli.classifyError(spec, conv.lastText || '') : null;
+  return {
+    text: structured.text, code: failed ? 1 : 0, stopped: halted, elapsedMs: Date.now() - startedAt, usage: null,
+    error: failed ? (message.error || '画面から答えを読み取れませんでした') : '',
+    errorClass: !failed ? '' : (halted ? 'transient' : (rule && rule.cls ? rule.cls : 'cli')),
+    quotaKind: rule && rule.quotaKind ? rule.quotaKind : '',
+  };
+}
+
+function runPromptTmux(opts) {
+  const { cli, prompt, model = '', cwd, timeoutMs = 0, onScreen = () => {}, shareId } = opts;
+  const cfg = store.loadConfig(userData());
+  const spec = agentCli.load(cli, '');
+  const { shell } = host.hostOf('', cfg.wslDistro);
+  const cmd = agentCli.interactiveCmd(spec, { model, readonly: true, autoApprove: false, cliSession: '', history: [] });
+  const id = `share-${shareId}`;
+  const startedAt = Date.now();
+  let stopped = false;
+  const conv = new tmux.Conversation({
+    id, shell, cwd: host.toHostPath(cwd), argv: cmd.argv, patterns: tmux.compilePatterns(spec.interactive),
+    launch: { cli, model, readonly: true, autoApprove: false },
+    emit: (channel, payload) => { if (channel === 'term:screen') onScreen(payload.text); },
+  });
+  conv.watchers = 1;                       // 依頼者が見ているので、画面は常に取る
+  sharedConversations.set(id, conv);
+  let timer = null;
+  const cleanup = async () => {
+    if (timer) clearTimeout(timer);
+    sharedConversations.delete(id);
+    await conv.kill().catch(() => {});
+  };
+  const done = new Promise((resolve) => {
+    (async () => {
+      try {
+        await conv.open({ reuse: false });
+        await conv.waitReady();
+        if (timeoutMs > 0) timer = setTimeout(() => { stopped = true; conv.stop().catch(() => {}); }, timeoutMs);
+        await conv.send(prompt, (message) => resolve(shareOutcome(message, { cli, spec, conv, startedAt, stopped })));
+      } catch (err) {
+        resolve({ text: '', code: 1, stopped: false, error: `起動できません: ${(err && err.message) || err}`, errorClass: 'env', quotaKind: '', elapsedMs: Date.now() - startedAt, usage: null });
+      }
+    })();
+  }).then(async (outcome) => { await cleanup(); return outcome; });
+  return {
+    done,
+    // 止めるときは生成を止めてから tmux ごと終わらせる（kill が待っているターンも閉じる）
+    stop() {
+      stopped = true;
+      conv.stop().catch(() => {}).then(() => cleanup()).catch(() => {});
+    },
+  };
+}
+
+// 共有で 1 件を走らせる。tmux が使えて対話定義のある CLI なら画面つき、無ければヘッドレス。
+function runSharedPrompt(opts) {
+  const spec = opts.cli ? agentCli.load(opts.cli, '') : null;
+  const cfg = store.loadConfig(userData());
+  if (shareTmuxOk && opts.shareId && spec && spec.interactive && cfg.transport !== 'headless') {
+    try { return runPromptTmux(opts); } catch { /* 定義や tmux の都合で作れなければヘッドレス */ }
+  }
+  return runPrompt(opts);
+}
+
 // 登録リポジトリの origin URL（共有の依頼の workspace と突き合わせる）。60 秒ごとに引き直す。
 const repoUrls = new Map();
 function normalizeRepoUrl(url) {
@@ -464,7 +539,7 @@ async function runShared(id, sess, dirs, p, requested, cfg, send, release) {
   });
   if (conversations.has(id) || sess.live) await closeConversation(id);
   const request = shareInstance.post({
-    sessionId: id, title: requested.text.split('\n')[0], goal, requires: { agent_cli: requested.cli ? [requested.cli] : [] },
+    sessionId: id, title: requested.text.split('\n')[0], summary: requested.text, goal, requires: { agent_cli: requested.cli ? [requested.cli] : [] },
     mode: 'read', model: requested.model, priority: p.priority || 'normal', attachments: served, workspace,
   }, { onDone: release });
   store.updateSession(ud, id, {
@@ -968,18 +1043,29 @@ function registerIpcHandlers(getWindow) {
   let shareAgentNames = [];
   const refreshShareCaches = async () => {
     try { shareAgentNames = (await listAgents('')).filter((a) => a.available && !a.virtual).map((a) => a.name); } catch { /* 次の周で */ }
+    try { const info = await host.probe(process.platform === 'win32' ? store.loadConfig(userData()).wslDistro : ''); shareTmuxOk = !!(info.ok && info.tmux); } catch { shareTmuxOk = false; }
     await refreshRepoUrls().catch(() => {});
   };
-  shareInstance = new share.Share({ userData: userData(), config: store.loadConfig(userData()), send, runPrompt, agents: () => shareAgentNames, repoFor });
+  shareInstance = new share.Share({ userData: userData(), config: store.loadConfig(userData()), send, runPrompt: runSharedPrompt, agents: () => shareAgentNames, repoFor });
   refreshShareCaches().then(() => shareInstance.start()).catch((err) => { shareInstance.error = err.message; });
   const shareTimer = setInterval(() => { refreshShareCaches().catch(() => {}); }, 5 * 60 * 1000);
   if (shareTimer.unref) shareTimer.unref();
   handle('share:status', () => shareInstance.status());
   handle('share:cancel', (p) => shareInstance.cancel(String(p.id || '')));
   handle('share:priority', (p) => shareInstance.setPriority(String(p.id || ''), p.priority));
+  handle('share:accept', (p) => shareInstance.accept(String(p.id || '')));
+  handle('share:stop', (p) => shareInstance.stopAccepted(String(p.id || '')));
+  handle('share:screen', (p) => shareInstance.screenOf(String(p.id || '')));
+  // 引き受け方（自動で受ける / 選んで受ける / 受けない）。設定 > 共有と同じ値を書き換える
+  handle('share:mode', async (p) => {
+    const current = store.loadConfig(userData());
+    const next = store.saveConfig(userData(), { share: { ...current.share, accept: String(p.mode || 'off') } });
+    await shareInstance.reconfigure(next);
+    return shareInstance.status();
+  });
   handle('share:participate', async (p) => {
     const current = store.loadConfig(userData());
-    const next = store.saveConfig(userData(), { share: { ...current.share, participate: !!p.on } });
+    const next = store.saveConfig(userData(), { share: { ...current.share, accept: p.on ? 'auto' : 'off' } });
     await shareInstance.reconfigure(next);
     return shareInstance.status();
   });

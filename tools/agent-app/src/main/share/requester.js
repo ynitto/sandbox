@@ -27,6 +27,8 @@ const MAX_ATTEMPTS = 2;                 // 参加者側の枠切れ・一過性�
 const RETRY_CLASSES = ['quota', 'transient'];
 const KEEP_TERMINAL = 50;
 const MAX_ANSWER = 200 * 1024;
+const MAX_SCREEN = 48 * 1024;
+const MAX_SUMMARY = 600;
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -50,6 +52,7 @@ class Requester extends EventEmitter {
     this.tickMs = tickMs;
     this.now = now;
     this.requests = new Map();
+    this.screens = new Map();       // 依頼 id → 執行者の端末の画面（心拍で届く。保存しない）
     this.done = new Map();          // 依頼 id → turnGate の release など、終わったら呼ぶもの（メモリだけ）
     this.timer = null;
     this.servedToday = { day: '', count: 0 };
@@ -101,6 +104,9 @@ class Requester extends EventEmitter {
       posted_by: this.node,
       posted_at: nowIso(),
       title: String(input.title || String(input.goal || '').split('\n')[0]).slice(0, 60),
+      // 引き受ける人が中身を見て決められるよう、利用者が書いた依頼文だけを短く添える
+      // （合成した本文（goal）は履歴も含むので配らない。全文は claim した人にだけ渡す）
+      summary: String(input.summary || input.title || '').slice(0, MAX_SUMMARY),
       priority: priorityOf(input.priority),
       mode: input.mode === 'write' ? 'write' : 'read',
       requires: { agent_cli: [...new Set((Array.isArray(input.requires && input.requires.agent_cli) ? input.requires.agent_cli : []).map((c) => String(c || '').trim().toLowerCase()).filter(Boolean))] },
@@ -129,6 +135,9 @@ class Requester extends EventEmitter {
 
   get(id) { return this.requests.get(String(id)) || null; }
 
+  // 執行者から届いている最新の画面（会話を開き直したときに、まずこれを描く）
+  screenOf(id) { return this.screens.get(String(id)) || ''; }
+
   // /requests に出す分（本文は claim のときに渡す）
   list() {
     return [...this.requests.values()]
@@ -138,7 +147,7 @@ class Requester extends EventEmitter {
 
   publicView(r) {
     return {
-      id: r.id, state: r.state, posted_by: r.posted_by, posted_at: r.posted_at, title: r.title,
+      id: r.id, state: r.state, posted_by: r.posted_by, posted_at: r.posted_at, title: r.title, summary: r.summary,
       priority: r.priority, mode: r.mode, requires: r.requires, model: r.model, workspace: r.workspace,
       attachments: r.attachments.map((a) => a.name),
       executor: r.executor ? r.executor.node : '', claimed_at: r.claimed_at,
@@ -148,9 +157,15 @@ class Requester extends EventEmitter {
     };
   }
 
-  // 画面向け（終端も含む。新しい順）
+  // 画面向け（終端も含む。新しい順）。会話 ID と答えは自分の画面にだけ出す
   view() {
-    return [...this.requests.values()].sort((a, b) => String(b.posted_at).localeCompare(String(a.posted_at))).map((r) => this.publicView(r));
+    return [...this.requests.values()].sort((a, b) => String(b.posted_at).localeCompare(String(a.posted_at))).map((r) => ({
+      ...this.publicView(r),
+      sessionId: r.sessionId,
+      executorCli: r.executor ? r.executor.cli : '',
+      answer: r.result && r.result.answer ? r.result.answer.slice(0, 2000) : '',
+      error: r.result ? r.result.error : '',
+    }));
   }
 
   pendingSessionIds() {
@@ -197,6 +212,12 @@ class Requester extends EventEmitter {
       return { status: 409, body: { error: 'この依頼の執行者ではありません', state: r.state } };
     }
     r.last_heartbeat = this.now();
+    if (body.screen != null) {
+      const text = String(body.screen).slice(-MAX_SCREEN);
+      this.screens.set(r.id, text);
+      // 待っている会話の端末ミラーへ、執行者の画面をそのまま流す
+      this.send('share:screen', { id: r.id, sessionId: r.sessionId, text, node: who, cli: r.executor ? r.executor.cli : '' });
+    }
     if (body.progress) {
       const text = String(body.progress).slice(0, 200);
       r.progress.push({ at: nowIso(), text });
@@ -226,6 +247,7 @@ class Requester extends EventEmitter {
     };
     r.state = status;
     r.finished_at = r.result.resolved_at;
+    this.screens.delete(r.id);
     if (status === 'done') { this.served(); this.servedToday.count += 1; }
     this.save();
     this.finish(r);
@@ -349,8 +371,8 @@ class Requester extends EventEmitter {
   prune() {
     const terminal = [...this.requests.values()].filter((r) => !(r.state === 'open' || r.state === 'working'))
       .sort((a, b) => String(b.finished_at).localeCompare(String(a.finished_at)));
-    for (const r of terminal.slice(KEEP_TERMINAL)) this.requests.delete(r.id);
+    for (const r of terminal.slice(KEEP_TERMINAL)) { this.requests.delete(r.id); this.screens.delete(r.id); }
   }
 }
 
-module.exports = { Requester, newId, WATCHDOG_MS, TICK_MS, MAX_ATTEMPTS, MAX_ANSWER };
+module.exports = { Requester, newId, WATCHDOG_MS, TICK_MS, MAX_ATTEMPTS, MAX_ANSWER, MAX_SCREEN, MAX_SUMMARY };

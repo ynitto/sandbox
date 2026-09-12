@@ -112,6 +112,30 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .area-heading p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
 .workspace-loading { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; color: var(--muted); background: var(--bg); font-size: 12px; }
 #automation-content[aria-busy="true"] #automation-workbench { visibility: hidden; }
+/* 共有の画面。会話画面と同じ骨格（一覧はサイドバー、右が 1 件）で、一枚のまとまりは
+   タスクの概要と同じ .execution-card。共有ワークベンチの同じ部品は影の DOM の中にあって
+   ここからは使えないので、同じ名前・同じ形をアプリのトークンで置く（別名の複製は作らない）。 */
+#share-area { grid-area: main; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
+#share-body { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 18px; overflow: auto; background: var(--bg); }
+#share-cards { width: min(100%, 900px); margin-inline: auto; display: flex; flex-direction: column; gap: 14px; }
+#share-terminal { width: min(100%, 900px); min-height: 260px; margin-inline: auto; }
+.share-accept-control { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.share-nodes { width: 100%; border-collapse: collapse; font-size: 13px; }
+.share-nodes td { padding: 5px 8px 5px 0; border-top: 1px solid var(--line); }
+.execution-card { min-width: 0; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px rgba(31, 35, 40, .04); }
+.execution-card-head { min-width: 0; display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.execution-card-head > div { min-width: 0; }
+.execution-card-head h3 { margin: 0; font-size: 15px; }
+.execution-card-head p { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.status { display: inline-flex; flex: none; padding: 2px 8px; border-radius: 999px; color: var(--muted); background: var(--bg); font-size: 11px; font-weight: 650; }
+.status.active { color: var(--accent); background: var(--accent-bg); }
+.status.ok { color: var(--ok); background: var(--add); }
+.status.ng { color: var(--danger); background: var(--del); }
+.blank { padding: 72px 20px; color: var(--muted); text-align: center; }
+.blank.compact { padding-block: 48px; }
+.blank h2 { margin-bottom: 6px; color: var(--text); font-size: 19px; }
+.row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
 #nav-toggle { display: none; position: fixed; z-index: 50; top: 9px; left: 10px; }
 #side-backdrop { position: fixed; z-index: 39; inset: 0; border: 0; border-radius: 0; background: rgba(18, 23, 31, .38); }
 

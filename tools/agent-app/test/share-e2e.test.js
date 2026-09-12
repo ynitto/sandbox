@@ -53,9 +53,9 @@ function fakeRunner(answers, { delayMs = 30 } = {}) {
   return runner;
 }
 
-async function node(name, { participate = false, clis = [], runPrompt = null, seeds = [], events = null, perRequesterDailyCap = 0 } = {}) {
+async function node(name, { participate = false, accept = null, clis = [], runPrompt = null, seeds = [], events = null, perRequesterDailyCap = 0 } = {}) {
   const userData = tmp(name);
-  const config = settings.normalize({ share: { enabled: true, node: name, passphrase: PASS, participate, clis, peers: seeds, perRequesterDailyCap } });
+  const config = settings.normalize({ share: { enabled: true, node: name, passphrase: PASS, participate, ...(accept ? { accept } : {}), clis, peers: seeds, perRequesterDailyCap } });
   const share = new Share({
     userData, config,
     send: (channel, payload) => { if (events) events.push({ channel, payload }); },
@@ -64,7 +64,7 @@ async function node(name, { participate = false, clis = [], runPrompt = null, se
     options: {
       udp: false, port: 0, host: '127.0.0.1',
       peers: { helloMs: 150, staleMs: 3000 },
-      participant: { tickMs: 80, heartbeatMs: 120, outboxRetryMs: 200 },
+      participant: { tickMs: 80, heartbeatMs: 120, screenMs: 60, outboxRetryMs: 200 },
       requester: { tickMs: 80, watchdogMs: 500 },
     },
   });
@@ -235,11 +235,75 @@ test('再起動: 列は requests.json に残り、会話に印だけ残った依
 
 test('設定: share の正規化と、起動方針「共有」の解決', () => {
   const normalized = settings.normalize({ share: { enabled: true, node: ' Nitto ', port: 99999, peers: ['pc-b', 'pc-b', ' '], clis: ['Claude'], maxConcurrent: 9, dailyCap: -1, perRequesterDailyCap: 'x' } });
-  assert.deepEqual(normalized.share, { enabled: true, node: 'Nitto', passphrase: '', port: 65535, udp: true, peers: ['pc-b'], participate: false, clis: ['claude'], acceptWrite: false, maxConcurrent: 4, dailyCap: 0, perRequesterDailyCap: 5 });
+  assert.deepEqual(normalized.share, { enabled: true, node: 'Nitto', passphrase: '', port: 65535, udp: true, peers: ['pc-b'], accept: 'off', participate: false, clis: ['claude'], acceptWrite: false, maxConcurrent: 4, dailyCap: 0, perRequesterDailyCap: 5 });
   assert.deepEqual(settings.resolve(normalized, { policy: 'shared', cli: '*', model: 'm' }), { policy: 'shared', tier: '', cli: '', model: 'm', source: 'shared' });
   assert.equal(settings.resolve(normalized, { policy: 'shared', cli: 'Claude' }).cli, 'claude');
   assert.throws(() => settings.resolve(settings.normalize({}), { policy: 'shared' }), /共有が設定されていません/);
   assert.equal(settings.effectivePolicy('shared', { optimized: false }), 'shared');
   const r = new Requester({ userData: tmp('req'), node: 'a', now: () => 0 });
   assert.equal(r.served(), 0);
+});
+
+
+test('引き受け方: 「選んで受ける」は自動で拾わず、画面から選んだ 1 件だけ拾う', async (t) => {
+  await withNodes(t, async (open) => {
+    const a = await open('a');
+    const runner = fakeRunner([{ text: '選んで受けた答え' }]);
+    const b = await open('b', { accept: 'manual', clis: ['fake'], runPrompt: runner, seeds: [`127.0.0.1:${a.share.port}`] });
+    await waitFor(() => b.share.peers.peers().some((p) => p.node === 'a'));
+    const sess = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
+    const request = a.share.post({ sessionId: sess.id, title: '質問', goal: 'これは何？', summary: 'これは何？' });
+    // 仲間の依頼は見えるが、自分では拾わない
+    const seen = await waitFor(() => (b.share.status().others.find((r) => r.id === request.id) ? b.share.status().others : null));
+    assert.equal(b.share.participant.slots(), 0, '選んで受ける間は自動で拾わない');
+    assert.equal(seen.find((r) => r.id === request.id).canAccept, true, '押せる理由がある');
+    assert.equal(seen.find((r) => r.id === request.id).summary, 'これは何？', '本文は引き受ける前に読める');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(a.share.requester.get(request.id).state, 'open', '選ぶまでは列に残る');
+    await b.share.accept(request.id);
+    const saved = await waitFor(() => { const s = store.readSession(a.userData, sess.id); return s.messages.some((m) => m.role === 'assistant') ? s : null; });
+    assert.equal(saved.messages.find((m) => m.role === 'assistant').text, '選んで受けた答え');
+    assert.equal(runner.calls.length, 1);
+  });
+});
+
+test('引き受け方: 「受けない」は画面から選んでも拾わない。拾えない理由は 1 行で返る', async (t) => {
+  await withNodes(t, async (open) => {
+    const a = await open('a');
+    const b = await open('b', { accept: 'off', clis: ['fake'], seeds: [`127.0.0.1:${a.share.port}`] });
+    await waitFor(() => b.share.peers.peers().some((p) => p.node === 'a'));
+    const sess = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
+    const request = a.share.post({ sessionId: sess.id, goal: 'q' });
+    await waitFor(() => b.share.status().others.some((r) => r.id === request.id));
+    await assert.rejects(() => b.share.accept(request.id), /受けない/);
+    // 提供していないエージェントを名指しした依頼は、理由つきで押せない
+    const other = a.share.post({ sessionId: sess.id, goal: 'q2', requires: { agent_cli: ['nosuch'] } });
+    const view = await waitFor(() => b.share.status().others.find((r) => r.id === other.id));
+    assert.equal(view.canAccept, false);
+    assert.match(view.reason, /提供していません/);
+    assert.equal(a.share.requester.get(request.id).state, 'open');
+  });
+});
+
+test('画面: 引き受けた人の端末が心拍で依頼者へ届き、両方の画面に出る', async (t) => {
+  await withNodes(t, async (open) => {
+    const screensA = [];
+    const screensB = [];
+    const a = await open('a', { events: screensA });
+    // 画面を出しながら答える偽の CLI（tmux の代わり）
+    const runner = ({ onScreen }) => {
+      const timer = setTimeout(() => onScreen('> 読んでいます…'), 10);
+      return { done: new Promise((resolve) => setTimeout(() => resolve({ text: 'ANSWER', code: 0, stopped: false, error: '', errorClass: '', elapsedMs: 5, usage: null }), 3000)), stop() { clearTimeout(timer); } };
+    };
+    const b = await open('b', { participate: true, clis: ['fake'], runPrompt: runner, seeds: [`127.0.0.1:${a.share.port}`], events: screensB });
+    await waitFor(() => b.share.peers.peers().some((p) => p.node === 'a'));
+    const sess = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
+    const request = a.share.post({ sessionId: sess.id, goal: 'q' });
+    const mine = await waitFor(() => screensA.find((e) => e.channel === 'share:screen' && e.payload.id === request.id));
+    assert.equal(mine.payload.sessionId, sess.id, 'どの会話の画面かが分かる');
+    assert.match(mine.payload.text, /読んでいます/);
+    assert.equal(mine.payload.node, 'b');
+    assert.ok(screensB.some((e) => e.channel === 'share:screen' && e.payload.mine), '引き受けた側の画面にも出る');
+    assert.match(a.share.screenOf(request.id), /読んでいます/, '後から開いた画面にも最新が出る');
+  });
 });

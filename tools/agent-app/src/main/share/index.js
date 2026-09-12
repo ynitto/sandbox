@@ -168,10 +168,11 @@ class Share {
     return {
       enabled: !!cfg.enabled, state: this.state, error: this.error, node: this.node || normalizeNode(cfg.node || defaultNode()), port: this.port,
       udp: !!(on && this.peers && this.peers.udpOk), participate: !!cfg.participate,
+      accept: on ? this.participant.mode() : (cfg.accept || 'off'), capacity: on ? this.participant.capacity() : 0,
       me: on ? this.participant.nodeInfo() : null,
       peers: on ? this.peers.peers().map((p) => ({ node: p.node, address: p.address, port: p.port, seenAt: p.seenAt, via: p.via, info: p.info })) : [],
       mine: on ? this.requester.view() : [],
-      others: on ? this.participant.lastGathered.map(({ peer, ...r }) => ({ ...r, host: peer.node })) : [],
+      others: on ? this.participant.gatheredView() : [],
       inflight: on ? this.participant.inflightView() : [],
       today: on ? this.ledger.today() : null,
     };
@@ -180,6 +181,20 @@ class Share {
   post(input, opts) {
     if (this.state !== 'on') throw new Error(this.error || '共有が動いていません（設定 > 共有）');
     return this.requester.post(input, opts);
+  }
+
+  // 画面から 1 件を選んで引き受ける／引き受けた実行を止める
+  accept(id) {
+    if (this.state !== 'on') throw new Error(this.error || '共有が動いていません（設定 > 共有）');
+    return this.participant.accept(id);
+  }
+
+  stopAccepted(id) { return this.participant ? this.participant.stopInflight(id) : false; }
+
+  // 端末の画面（依頼者として待っている分と、自分が引き受けている分の両方）
+  screenOf(id) {
+    if (this.state !== 'on') return '';
+    return this.requester.screenOf(id) || this.participant.screenOf(id) || '';
   }
 
   cancelSession(sessionId) { return this.requester ? this.requester.cancelSession(sessionId) : null; }

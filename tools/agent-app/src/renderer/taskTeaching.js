@@ -155,16 +155,24 @@
     return { agent: $(`${prefix}-agent`).value, model: $(`${prefix}-model`).value.trim(), autoApprove: $(`${prefix}-permission`).value === 'auto' };
   }
 
+  // 入力先は会話画面と同じ 3 つ（メッセージ / 端末操作 / 共有に依頼）。
   function setInputMode(mode, { focus = true } = {}) {
     const alive = !!state.session && !['dead', 'gone'].includes((state.phase || {}).phase);
-    const next = mode === 'terminal' && alive ? 'terminal' : 'message';
-    state.input = InputMode.reduce(state.input || InputMode.create(), { type: next === 'terminal' ? 'terminal-focus' : 'message-focus' });
-    $('task-mode-message').setAttribute('aria-pressed', String(next === 'message'));
-    $('task-mode-terminal').setAttribute('aria-pressed', String(next === 'terminal'));
+    const shareReady = state.deps.shareEnabled();
+    let next = mode === 'terminal' || mode === 'share' ? mode : 'message';
+    if (next === 'terminal' && !alive) next = 'message';
+    if (next === 'share' && !(shareReady && state.session)) next = 'message';
+    state.input = InputMode.reduce(state.input || InputMode.create(), { type: `${next}-focus` });
+    for (const [id, name] of [['task-mode-message', 'message'], ['task-mode-terminal', 'terminal'], ['task-mode-share', 'share']]) {
+      $(id).setAttribute('aria-pressed', String(next === name));
+      $(id).classList.toggle('on', next === name);
+    }
     $('task-mode-terminal').disabled = !alive;
-    $('task-message-input').hidden = next !== 'message';
+    $('task-mode-share').hidden = !(shareReady && state.session);
+    $('task-message-input').hidden = next === 'terminal';
     $('task-terminal-keys').hidden = next !== 'terminal';
-    $('task-composer-toolbar').hidden = next !== 'message';
+    $('task-composer-toolbar').hidden = next === 'terminal';
+    $('task-prompt').placeholder = next === 'share' ? '参加者の AI に依頼する' : 'AI への返答や、変更したいこと';
     $('task-terminal').classList.toggle('input-terminal', next === 'terminal');
     term().setInputEnabled(next === 'terminal');
     if (focus) { if (next === 'terminal') term().focus(); else $('task-prompt').focus(); }
@@ -279,12 +287,18 @@
   async function sendText(text) {
     const sess = state.session;
     if (!text || !sess) throw new Error('AI との会話を開いてから送ってください');
+    const shared = state.input && state.input.mode === 'share';
     state.pending = true;
-    status('pending', `受付済み・${sess.cli}を準備中`);
+    status('pending', shared ? '受付済み・共有の列へ' : `受付済み・${sess.cli}を準備中`);
     renderShell();
     try {
       let res;
-      if (state.running) res = await api.termSubmit(sess.id, text);
+      if (shared) {
+        // このターンだけ LAN の仲間の AI へ回す。答えはこの会話に戻る（会話画面と同じ）
+        res = await api.send(sess.id, text, { policy: 'shared', cli: '', model: '', readonly: true, skillMode: 'off', skills: [], attachments: [] });
+        state.running = true;
+        state.shareWait = true;
+      } else if (state.running) res = await api.termSubmit(sess.id, text);
       else {
         // 権限は起動カードの選択が正。会話を開いたあとに変えた分も、次の依頼から効く。
         const autoApprove = $('task-launch-permission').value === 'auto';
@@ -295,10 +309,10 @@
         sess.autoApprove = autoApprove;
         state.running = true;
       }
-      if (res.restarted || term().current() !== sess.id) await attach(await api.readSession(sess.id));
+      if (!shared && (res.restarted || term().current() !== sess.id)) await attach(await api.readSession(sess.id));
       if (res.warning) state.deps.notice(res.warning);
       const at = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      status('success', `✓ ${sess.cli}へ送信済み ${at}`, 4000);
+      status('success', shared ? `✓ 共有の列に並べた ${at}` : `✓ ${sess.cli}へ送信済み ${at}`, 4000);
       return res;
     } finally {
       state.pending = false;
@@ -586,9 +600,22 @@
   }
 
   // ターンが終わった: AI がファイルを書いたかもしれないので定義を読み直し、見本の依頼があれば案内する。
+  // 引き受けた人の端末を、この会話の端末ミラーへそのまま描く（キーは送れない）
+  function onShareScreen(p) {
+    if (!p || !state.visible || !state.session || p.sessionId !== state.session.id) return;
+    if (term().current() !== p.id) term().attachRemote(p.id, $('task-term-host'));
+    term().applyScreen({ id: p.id, text: p.text || '' });
+  }
+
   async function onTurnDone({ id, message }) {
     if (!state.session || id !== state.session.id) return;
     state.running = false;
+    if (state.shareWait) {
+      // 共有のターンは相手の PC で動いたので、この PC の会話へつなぎ直す
+      state.shareWait = false;
+      setInputMode('message', { focus: false });
+      attach(await api.readSession(id)).catch(() => {});
+    }
     const request = TeachingProtocol.parseRecordRequest(message && message.text);
     if (request) openRecord(request);
     else renderShell();
@@ -627,6 +654,7 @@
     $('task-term-restart').onclick = () => restart();
     $('task-mode-message').onclick = () => setInputMode('message');
     $('task-mode-terminal').onclick = () => setInputMode('terminal');
+    $('task-mode-share').onclick = () => setInputMode('share');
     $('task-prompt').addEventListener('focus', () => { if (state.input.mode !== 'message') setInputMode('message', { focus: false }); });
     $('task-prompt').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!$('task-send').disabled) send(); }
@@ -643,5 +671,5 @@
     renderShell();
   }
 
-  window.TaskTeaching = { init, show, hide, onTermPhase, onTurnStarted, onTurnDone, state };
+  window.TaskTeaching = { init, show, hide, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
 })();
