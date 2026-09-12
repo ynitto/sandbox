@@ -115,6 +115,11 @@
           </div>
           <div id="term-host"></div>
         </section>
+        <!-- 共有の依頼にぶら下がる、人と人のやり取り。待っている間だけ出る（描くのは talk.js） -->
+        <details id="share-talk" class="conversation-history" hidden>
+          <summary><span>やり取り</span><span id="share-talk-count" class="sub"></span></summary>
+          <div id="share-talk-body" class="talk"></div>
+        </details>
         <details id="conversation-history" class="conversation-history">
           <summary><span>会話履歴</span><span id="history-count" class="sub"></span></summary>
           <section id="messages"></section>
@@ -449,6 +454,39 @@
           </div>
           <div id="share-term-host"></div>
         </section>
+        <details id="share-thread" class="conversation-history" hidden>
+          <summary><span>やり取り</span><span id="share-thread-count" class="sub"></span></summary>
+          <div id="share-thread-body" class="talk"></div>
+        </details>
+        <div id="share-composer" class="composer-shell" hidden>
+          <div class="input-mode-switch" role="group" aria-label="入力先">
+            <button type="button" id="share-mode-talk" aria-pressed="true">ひとこと</button>
+            <button type="button" id="share-mode-terminal" aria-pressed="false">端末操作</button>
+            <span id="share-input-status" class="input-status" role="status" aria-live="polite"></span>
+          </div>
+          <div id="share-message-input">
+            <label class="sr-only" for="share-prompt">相手へのひとこと</label>
+            <textarea id="share-prompt" rows="3" placeholder="相手に伝える"></textarea>
+          </div>
+          <div id="share-terminal-keys" class="terminal-keys" hidden>
+            <button type="button" data-share-key="Escape">Esc</button>
+            <button type="button" data-share-key="Tab">Tab</button>
+            <button type="button" data-share-key="Enter" aria-label="端末へEnterキーを送る">Enter</button>
+            <button type="button" data-share-key="Newline" aria-label="端末へ改行を送る（送信しない）" title="Shift+Enter">改行</button>
+            <button type="button" data-share-key="Up">↑</button>
+            <button type="button" data-share-key="Down">↓</button>
+            <button type="button" data-share-key="Left">←</button>
+            <button type="button" data-share-key="Right">→</button>
+            <button type="button" data-share-key="C-c">Ctrl+C</button>
+            <span class="terminal-key-focus">キーボード → CLI</span>
+          </div>
+          <div class="composer-toolbar" id="share-composer-toolbar">
+            <span class="spacer"></span>
+            <span class="send-hint">Enterで送信</span>
+            <button type="button" id="share-stop" class="danger action-button" hidden>止める</button>
+            <button type="button" id="share-send" class="primary action-button">送る</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -579,6 +617,7 @@
   <script src="md.js"></script>
   <script src="inputMode.js"></script>
   <script src="term.js"></script>
+  <script src="talk.js"></script>
   <script src="files.js"></script>
   <script src="navigation.js"></script>
   <script src="taskIntent.js"></script>

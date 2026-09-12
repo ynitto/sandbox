@@ -445,6 +445,8 @@ function runPromptTmux(opts) {
   }).then(async (outcome) => { await cleanup(); return outcome; });
   return {
     done,
+    // 引き受けた人だけが打てる（自分の PC の自分の CLI）。依頼者には送れない
+    keys(data) { conv.keys(data).catch(() => {}); },
     // 止めるときは生成を止めてから tmux ごと終わらせる（kill が待っているターンも閉じる）
     stop() {
       stopped = true;
@@ -1140,6 +1142,10 @@ function registerIpcHandlers(getWindow) {
   handle('share:accept', (p) => shareInstance.accept(String(p.id || '')));
   handle('share:stop', (p) => shareInstance.stopAccepted(String(p.id || '')));
   handle('share:screen', (p) => shareInstance.screenOf(String(p.id || '')));
+  // ひとこと（人と人）。CLI には入らない
+  handle('share:say', (p) => shareInstance.say(String(p.id || ''), String(p.text || '')));
+  // 引き受けた依頼の端末へキーを送る
+  handle('share:keys', (p) => shareInstance.keys(String(p.id || ''), String(p.data || '')));
   // 引き受け方（自動で受ける / 選んで受ける / 受けない）。設定 > 共有と同じ値を書き換える
   handle('share:mode', async (p) => {
     const current = store.loadConfig(userData());

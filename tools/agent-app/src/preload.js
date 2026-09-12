@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('api', {
     accept: (id) => invoke('share:accept', { id }),
     stopAccepted: (id) => invoke('share:stop', { id }),
     screen: (id) => invoke('share:screen', { id }),
+    // 人と人のひとこと（CLI には入らない）と、引き受けた依頼の端末へのキー
+    say: (id, text) => invoke('share:say', { id, text }),
+    keys: (id, data) => invoke('share:keys', { id, data }),
     onChanged: on('share:changed'),
     // 実行中の端末の画面（引き受けた側から届く分と、自分が引き受けている分）
     onScreen: on('share:screen'),

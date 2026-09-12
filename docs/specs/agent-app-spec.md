@@ -98,8 +98,11 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 会話・タスクを AI と作る会話・ワークフローを AI と作る会話のどれでも同じ 3 つです。
 
 「共有に依頼」を選ぶと、実行設定はエージェントと優先度だけになり、送信ボタンが「依頼する」に
-変わります。待っている間は引き受けた人の端末が自分の端末ミラーに映り（見るだけ）、送信ボタンは
-「取り下げ」になります。答えは同じ会話に、どの PC のどの AI が答えたかを添えて戻ります。
+変わります。答えは同じ会話に、どの PC のどの AI が答えたかを添えて戻ります。
+
+待っている間は、端末ミラーに引き受けた人の端末が映り（見るだけ）、その下に「やり取り」が出ます。
+入力欄はそのまま**引き受けた人へのひとこと**になり（他の入力先は押せません）、送信ボタンは「送る」、
+「停止」は「取り下げ」になります。ひとことは AI には渡りません——何を打つかは引き受けた人が決めます。
 
 ### 端末を操作する
 
@@ -376,6 +379,8 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `share:accept` | `share.accept(id)` | `id` | 「選んで受ける」で 1 件を拾う。拾えなければ理由を投げる（`participant.reasonText`） |
 | `share:stop` | `share.stopAccepted(id)` | `id` | 引き受けて実行している依頼を自分から止める |
 | `share:screen` | `share.screen(id)` | `id` | その依頼の端末の最新画面（無ければ空文字） |
+| `share:say` | `share.say(id, text)` | `id`, `text`（500 字まで） | 人と人のひとこと。自分の依頼なら執行者へ、引き受けた依頼なら依頼者へ。CLI には入らない |
+| `share:keys` | `share.keys(id, data)` | `id`, `data` | 引き受けた依頼の端末へキーを送る（自分の PC の CLI だけ。依頼者からは送れない） |
 | `attach:pick` | `pickAttachments()` | —（ダイアログ） | `[{ id, name, size }]` |
 | `attach:stage` | `stageAttachment(name, bytes)` | `Uint8Array` / `ArrayBuffer` | `{ id, name, size }` |
 | `attach:discard` | `discardAttachment(id)` | `id` | `true` |
@@ -452,7 +457,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `share.enabled` | `false` | 共有（LAN の仲間に依頼を回す）を使うか。§15 |
 | `share.node` | `''` | 参加者名。空なら `<ユーザー名>.<PC 名>`（小文字・`[a-z0-9._-]`） |
 | `share.passphrase` | `''` | 合言葉。sha256 を HTTP と UDP の便りに載せて照合する |
-| `share.port` | `47801` | 受け口（TCP）。0 なら空いているポート |
+| `share.port` | `47801` | 受け口（TCP）。0 なら空いているポート（1 台の PC で 2 つ動かすとき） |
 | `share.udp` | `true` | UDP ブロードキャスト（47800）でも仲間を探すか。通らなくても TCP だけで動く |
 | `share.peers` | `[]` | 静的な仲間（`host` か `host:port`。最大 50） |
 | `share.accept` | `'off'` | 引き受け方。`auto`（自動で受ける）/ `manual`（選んで受ける）/ `off`（受けない）。以前の `participate` からも読む |
@@ -953,15 +958,23 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 | 部品 | 責務 |
 |---|---|
 | `peers.js` | 仲間の表。`/hello`（30 秒ごと）と UDP の HELLO で覚え、90 秒便りが無ければ不在。投函の通知（NEW）を TCP と UDP で流す |
-| `server.js` | HTTP。`POST /hello` `POST /notify` `GET /node` `GET /requests` `POST /requests/<id>/{claim,heartbeat,result,cancel}` `GET /requests/<id>/attachments/<name>` |
-| `requester.js` | 自分の依頼の列（`userData/share/requests.json`）。claim は先着 1 件だけ 200、以後 409。心拍が 90 秒途絶えたら open に戻して NEW を流す。心拍に `screen` が載っていれば覚えて `share:screen` を送る。答えは会話へ assistant のメッセージとして保存し `turn:done` を送る。参加者側の枠切れ（`quota`）と一過性（`transient`）の失敗は 1 回だけ黙って再投函する |
-| `participant.js` | 引き受け方（`mode()`）が `auto` のときだけ仲間の `/requests` を集めて `queue.js` で並べ、上から claim。`manual` では画面から `accept(id)` で 1 件だけ拾う。拾ったら読み取り専用で CLI を 1 回起こす（`ipc.runSharedPrompt`。cwd は `workspace.url` と一致する登録リポジトリか `userData/share/scratch/<id>`）。30 秒ごとに heartbeat、2 回届かなければ CLI を止める。端末の画面が変わったら 2 秒ごとに心拍へ載せて依頼者へ送る（48 KB まで）。答えは依頼者へ直送し、届かなければ `outbox.json` に持って 60 秒ごとに再送（24 時間） |
+| `server.js` | HTTP。`POST /hello` `POST /notify` `GET /node` `GET /requests` `POST /requests/<id>/{claim,heartbeat,result,cancel,message}` `GET /requests/<id>/attachments/<name>` |
+| `requester.js` | 自分の依頼の列（`userData/share/requests.json`）。claim は先着 1 件だけ 200、以後 409。心拍が 90 秒途絶えたら open に戻して NEW を流す。心拍に `screen` が載っていれば覚えて `share:screen` を送る。ひとこと（§15.0）の受け渡しと送り直し。答えは会話へ assistant のメッセージとして保存し `turn:done` を送る。参加者側の枠切れ（`quota`）と一過性（`transient`）の失敗は 1 回だけ黙って再投函する |
+| `participant.js` | ひとことの受け渡しと、引き受けた端末へのキー送り（`keys`）。引き受け方（`mode()`）が `auto` のときだけ仲間の `/requests` を集めて `queue.js` で並べ、上から claim。`manual` では画面から `accept(id)` で 1 件だけ拾う。拾ったら読み取り専用で CLI を 1 回起こす（`ipc.runSharedPrompt`。cwd は `workspace.url` と一致する登録リポジトリか `userData/share/scratch/<id>`）。30 秒ごとに heartbeat、2 回届かなければ CLI を止める。端末の画面が変わったら 2 秒ごとに心拍へ載せて依頼者へ送る（48 KB まで）。答えは依頼者へ直送し、届かなければ `outbox.json` に持って 60 秒ごとに再送（24 時間） |
 | `queue.js` | 並び鍵 `(実効優先度 降順, 依頼者の今日の落札数 昇順, posted_at 昇順, id)`。実効優先度 = high 2 / normal 1 / low 0 + 待ち 30 分ごとに 1（上限 2）。資格 = 自分の依頼でない ∧ CLI が交わる ∧ その CLI の枠が残る ∧ write は受ける設定 ∧ 依頼者あたりの上限内 ∧ workspace があれば同じリポジトリを登録している |
 | `ledger.js` | `userData/share/ledger/<YYYYMMDD>.jsonl`（件数・秒・CLI・依頼者・結果）。CLI の `errors` が `class: quota` を返したら、`exhausted` はその日の残り、`rate_limit` は 10 分その CLI を受けない |
 | `index.js` | 配線。設定 `share` が変わったら受け口ごと立て直す。再起動のとき、会話に `share.id` の印だけ残った依頼は失敗として閉じる |
 
 `/requests` に載るのは依頼の見出しと、**利用者が書いた依頼文だけ**（`summary`。600 字）。履歴と
 共通指示を含む本文（`goal`）は claim した 1 人にだけ渡す。
+
+#### 15.0 ひとこと（人と人のやり取り）
+
+依頼にはもう 1 本、**CLI に入らない**やり取りがぶら下がる。`POST /requests/<id>/message`
+（`{ who, text, at }`。500 字、直近 50 件）を両側が受ける。依頼者は依頼と一緒に保存し
+（`requests.json` の `talk`）、引き受けた側は実行中だけメモリに持つ。相手に届かなければ
+`pending` の印を残し、依頼者は巡回（`watchdog`）で、引き受けた側は心拍で送り直す。
+依頼が終端すれば、やり取りもその依頼と一緒に終わる（会話には残さない）。
 
 依頼の本文は `runShared`（`ipc.js`）がヘッドレスと同じ順で合成する（共通指示 → スキル本文 → 履歴の
 再送 → 依頼 → 添付の案内）。スキルは相手の PC に無い前提で常に SKILL.md の本文を埋め込む。明示添付は
@@ -970,9 +983,11 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 
 #### 15.1 画面を配る（引き受けた人の端末を依頼者が見る）
 
-引き受けた側は、会話と同じ tmux セッション（`agent-app-share-<依頼 id>`）で CLI を起こす
-（`ipc.runSharedPrompt` → `runPromptTmux`）。画面が変わるたびに `participant` が心拍へ載せ、
-依頼者は `share:screen` で受けて自分の端末ミラーに描く（`Term.attachRemote`。キーは送れない）。
+引き受けた側は、会話と同じ tmux セッションで CLI を起こす（`ipc.runSharedPrompt` →
+`runPromptTmux`。名前は `tmux.sharePaneId` が走っている間だけ一意にする）。画面が変わるたびに
+`participant` が心拍へ載せ、依頼者は `share:screen` で受けて自分の端末ミラーに描く
+（`Term.attachRemote`）。**キーを送れるのは引き受けた人だけ**で（`share:keys` →
+`participant.keys` → その tmux）、依頼者の側は `keys` を渡さないので閲覧のみになる。
 tmux が無い PC・対話定義を持たない CLI ではこれまでどおりヘッドレスで走り、画面は出ない。
 
 #### 15.2 画面（領域「共有」と入力先「共有に依頼」）
@@ -980,7 +995,11 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
 - 依頼は入力先「共有に依頼」から出す（会話・タスクの会話・ワークフローの会話で同じ）。
   起動方針の選択肢に共有は無い。`turn:send` には `policy: 'shared'` と `priority` が載る。
 - 領域「共有」は会話画面と同じ骨格（一覧はサイドバー、右が選んだ 1 件）。一枚のまとまりは
-  `.execution-card`、端末は会話と同じ `.terminal-stage`。
+  `.execution-card`、端末は会話と同じ `.terminal-stage`、入力欄は `.composer-shell`
+  （入力先は「ひとこと / 端末操作」。端末操作は自分が引き受けている依頼のときだけ）。
+- やり取りは端末の下・入力欄の上の折りたたみ（`.conversation-history` と同じ器）に、会話の吹き出しと
+  同じ形で出す。会話画面と共有画面の 2 か所に同じ部品（`renderer/talk.js`）を載せる。
+  会話画面では、待っている間だけ入力欄がひとこと欄になり、他の入力先は押せない。
 - 引き受け方（`share.accept`）は共有の画面の右上と設定 > 共有の両方から変えられる（同じ値）。
 
 起動方針「共有」の会話は `transport: headless` で、動いていた tmux の CLI は止める。待っている間は

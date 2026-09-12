@@ -93,7 +93,11 @@ test('会話開始前後で本文と入力欄のグリッド位置を変えな�
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   assert.match(html, /id="conversation-start"[^>]*class="conversation-start"/);
   assert.match(css, /#chat\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto\s+auto/s);
-  assert.match(css, /#composer\s*\{[^}]*grid-row:\s*3/s);
+  // 段は 4 つ（端末 / ひとこと / 会話履歴 / 入力欄）。ひとことは共有を待っている間だけ出て、
+  // 隠れている間の段の高さは 0 なので、会話の見え方は変わらない。
+  assert.match(css, /#share-talk\s*\{[^}]*grid-row:\s*2/s);
+  assert.match(css, /#conversation-history\s*\{[^}]*grid-row:\s*3/s);
+  assert.match(css, /#composer\s*\{[^}]*grid-row:\s*4/s);
   assert.match(css, /scrollbar-gutter:\s*stable/);
   assert.match(renderer, /\$\('conversation-start'\)\.hidden\s*=\s*!!cur/);
 });

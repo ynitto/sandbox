@@ -5,6 +5,8 @@
 //
 //   依頼    … 仲間が出した依頼（引き受けられる）と、自分が出した依頼（取り下げ・優先度）。
 //             引き受けている依頼を選ぶと、自分の tmux の画面がそのまま出る（依頼者にも同じ画面が届く）。
+//             端末に打てるのは引き受けた人だけ。依頼者は閲覧のみ。
+//   ひとこと… 依頼にぶら下がる人と人のやり取り（`talk.js`。会話画面と同じ吹き出し）。CLI には入らない。
 //   参加者  … 同じ合言葉で見つかった PC の一覧（1 枚のカード）。
 //   引き受け … 自動で受ける / 選んで受ける / 受けない。設定 > 共有と同じ値で、ここからも変えられる。
 //
@@ -13,6 +15,7 @@
   const $ = (id) => document.getElementById(id);
   const PRIORITY_LABEL = { high: '高', normal: '通常', low: '低' };
   const STATE_LABEL = { open: '順番待ち', working: '実行中', done: '完了', failed: '失敗', cancelled: '取り下げ' };
+  const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
   const GROUPS = [
     // 実行中には「自分が引き受けている依頼」と「仲間が自分の依頼を実行している分」が並ぶ。
     // どちらかは行の副題（誰の依頼か・どの PC か）と、選んだときの見出しで分かる。
@@ -21,7 +24,7 @@
     { key: 'done', label: '今日 完了', mark: '✓' },
   ];
 
-  const state = { deps: null, visible: false, status: null, selected: '', view: 'request', screens: new Map(), busy: false };
+  const state = { deps: null, visible: false, status: null, selected: '', view: 'request', screens: new Map(), busy: false, input: 'talk' };
 
   function term() { return window.ShareTerm; }
   function el(...args) { return state.deps.el(...args); }
@@ -51,6 +54,7 @@
       out.push({
         id: item.id, kind: 'accepted', group: 'working', title: item.title || item.id,
         who: item.posted_by, cli: item.cli, startedAt: item.started_at, state: 'working',
+        summary: item.summary, talk: item.talk || [],
       });
     }
     const accepted = new Set((s.inflight || []).map((i) => i.id));
@@ -60,7 +64,7 @@
         id: item.id, kind: 'theirs', group: item.state === 'working' ? 'working' : 'waiting',
         title: item.title || item.id, who: item.posted_by, state: item.state, priority: item.priority,
         summary: item.summary, requires: (item.requires && item.requires.agent_cli) || [], postedAt: item.posted_at,
-        executor: item.executor, canAccept: !!item.canAccept, reason: item.reason || '', cli: item.cli || '',
+        executor: item.executor, canAccept: !!item.canAccept, reason: item.reason || '', cli: item.cli || '', talk: [],
         mode: item.mode, workspace: item.workspace,
       });
     }
@@ -70,7 +74,7 @@
         id: item.id, kind: 'mine', group: terminal ? 'done' : (item.state === 'working' ? 'working' : 'waiting'),
         title: item.title || item.id, who: item.posted_by, state: item.state, priority: item.priority,
         summary: item.summary, requires: (item.requires && item.requires.agent_cli) || [], postedAt: item.posted_at,
-        executor: item.executor, executorCli: item.executorCli, sessionId: item.sessionId,
+        executor: item.executor, executorCli: item.executorCli, sessionId: item.sessionId, talk: item.talk || [],
         answer: item.answer, error: item.error, finishedAt: item.finished_at, claimedAt: item.claimed_at,
         mode: item.mode, workspace: item.workspace,
       });
@@ -114,6 +118,8 @@
           item.kind === 'accepted' ? item.cli : (item.executor || (item.priority ? PRIORITY_LABEL[item.priority] : '')),
         ].filter(Boolean).join(' · ')));
         pick.append(body);
+        const unread = Talk.unread(item.id, item.talk);
+        if (unread) pick.append(el('span', 'unread', String(unread)));
         pick.onclick = () => { state.selected = item.id; render(); };
         li.append(pick);
         box.append(li);
@@ -270,7 +276,10 @@
     const stop = $('share-term-stop');
     stop.hidden = item.kind !== 'accepted';
     stop.onclick = () => run(() => window.api.share.stopAccepted(item.id));
-    term().attachRemote(item.id, $('share-term-host'));
+    // 打てるのは自分が引き受けている依頼だけ（自分の PC の自分の CLI）
+    term().attachRemote(item.id, $('share-term-host'), {
+      keys: item.kind === 'accepted' ? (data) => window.api.share.keys(item.id, data) : null,
+    });
     const text = state.screens.get(item.id);
     if (text) term().applyScreen({ id: item.id, text });
     else window.api.share.screen(item.id).then((body) => {
@@ -280,6 +289,72 @@
     }).catch(() => { /* まだ画面が無い */ });
   }
 
+  // ひとこと（人と人）。相手がいる間だけ出す——引き受けた依頼か、仲間が実行中の自分の依頼。
+  function talkPartner(item) {
+    if (!item) return '';
+    if (item.kind === 'accepted') return item.who;
+    if (item.kind === 'mine' && item.state === 'working') return item.executor || '仲間';
+    return '';
+  }
+
+  function renderThread() {
+    const item = selected();
+    const partner = talkPartner(item);
+    const talk = (item && item.talk) || [];
+    const show = state.view === 'request' && !!item && (!!partner || talk.length > 0);
+    $('share-thread').hidden = !show;
+    $('share-composer').hidden = !(show && partner);
+    if (!show) return;
+    const unread = Talk.unread(item.id, talk);
+    if (unread) $('share-thread').open = true;
+    $('share-thread-count').textContent = `${talk.length}件${unread ? ` · 未読 ${unread}` : ''}`;
+    Talk.render($('share-thread-body'), {
+      id: item.id, talk, me: state.status ? state.status.node : '',
+      read: $('share-thread').open,
+    });
+    if (!partner) return;
+    const canType = item.kind === 'accepted';
+    setInputMode(canType ? state.input : 'talk', { focus: false });
+    $('share-mode-terminal').hidden = !canType;
+    $('share-input-status').textContent = `${partner} へ送ります`;
+    $('share-prompt').placeholder = `${partner} へ伝える`;
+    $('share-stop').hidden = !canType;
+  }
+
+  // 入力先（ひとこと / 端末操作）。端末は自分が引き受けている依頼のときだけ打てる。
+  function setInputMode(mode, { focus = true } = {}) {
+    const item = selected();
+    const canType = !!item && item.kind === 'accepted';
+    const next = mode === 'terminal' && canType ? 'terminal' : 'talk';
+    state.input = next;
+    for (const [id, name] of [['share-mode-talk', 'talk'], ['share-mode-terminal', 'terminal']]) {
+      $(id).setAttribute('aria-pressed', String(next === name));
+      $(id).classList.toggle('on', next === name);
+    }
+    $('share-message-input').hidden = next === 'terminal';
+    $('share-terminal-keys').hidden = next !== 'terminal';
+    $('share-composer-toolbar').hidden = next === 'terminal';
+    term().setInputEnabled(next === 'terminal' && term().canType());
+    if (focus) { if (next === 'terminal') term().focus(); else $('share-prompt').focus(); }
+  }
+
+  async function say() {
+    const item = selected();
+    const text = $('share-prompt').value.trim();
+    if (!item || !text) return;
+    $('share-send').disabled = true;
+    try {
+      await window.api.share.say(item.id, text);
+      $('share-prompt').value = '';
+      await refresh();
+      render();
+    } catch (error) {
+      notice(error.message, 'error');
+    } finally {
+      $('share-send').disabled = false;
+    }
+  }
+
   function render() {
     if (!state.visible) return;
     renderHead();
@@ -287,6 +362,7 @@
     if (state.view === 'request') requestView();
     else nodesView();
     renderTerminal();
+    renderThread();
   }
 
   // ---- 操作 --------------------------------------------------------------------------
@@ -323,6 +399,22 @@
   function init(deps) {
     state.deps = deps;
     $('share-view-request').onclick = () => { state.view = 'request'; render(); };
+    $('share-send').onclick = () => say();
+    $('share-stop').onclick = () => { const item = selected(); if (item) run(() => window.api.share.stopAccepted(item.id)); };
+    $('share-mode-talk').onclick = () => setInputMode('talk');
+    $('share-mode-terminal').onclick = () => setInputMode('terminal');
+    $('share-thread').addEventListener('toggle', () => render());
+    $('share-prompt').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); say(); }
+    });
+    for (const button of document.querySelectorAll('[data-share-key]')) {
+      button.onclick = () => {
+        setInputMode('terminal', { focus: false });
+        term().sendKey(TERMINAL_KEYS[button.dataset.shareKey] || '');
+        term().focus();
+      };
+    }
+    term().configure({ onFocus: () => setInputMode('terminal', { focus: false }), onError: (error) => notice(error.message, 'error') });
     $('share-view-nodes').onclick = () => { state.view = 'nodes'; render(); };
     $('share-accept-mode').onchange = (event) => run(() => window.api.share.setMode(event.target.value));
     window.api.share.onChanged((status) => { state.status = status; render(); });
@@ -345,7 +437,12 @@
     if (term().isRemote()) term().detach();
   }
 
+  // 一覧に出ている未読の合計（サイドバーの印に使う）
+  function unread() {
+    return items().reduce((sum, item) => sum + Talk.unread(item.id, item.talk), 0);
+  }
+
   function status() { return state.status; }
 
-  window.Share = { init, show, hide, render, refresh, status, items, select: (id) => { state.selected = id; render(); } };
+  window.Share = { init, show, hide, render, refresh, status, items, unread, select: (id) => { state.selected = id; render(); } };
 }());

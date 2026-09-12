@@ -119,6 +119,15 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   // 仲間が実行中の依頼（引き受けた人の端末が自分の画面に映る側）
   const working = shareRequests.post({ title: 'テスト方針の相談', goal: 'テスト方針を相談したい', summary: 'テスト方針を相談したい' });
   shareRequests.claim(working.id, { who: 'pc-b', port: 47801, cli: 'claude' }, '127.0.0.1');
+  // 人と人のやり取り（ひとこと）。自分の分と相手の分を 1 件ずつ
+  shareRequests.get(working.id).talk.push({ who: 'smoke-pc', text: 'テストは走らせなくていいです', at: '2026-09-12T00:33:00Z' });
+  shareRequests.message(working.id, { who: 'pc-b', text: '了解。読みだけで進めます' });
+  // その依頼を待っている会話（端末ミラーとやり取りが会話画面にも出る）
+  const shareSession = appStore.createSession(userData, {
+    repo, cli: 'codex', model: 'gpt-test', policy: 'shared', tier: '', transport: 'headless',
+  });
+  appStore.appendMessage(userData, shareSession.id, { role: 'user', text: 'テスト方針の相談', policy: 'shared' });
+  appStore.updateSession(userData, shareSession.id, { share: { id: working.id } });
 
   // 偽の agent-herd と agent-flow を PATH に置く。一族（aider / ollama）が「使える」印になり `herd` が並び
   // 「エージェントを最適化する」が効く側（節約・品質重視・small / large tier）を実機で通せる。効かない側は
@@ -137,15 +146,17 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   const errors = [];
   try {
     const win = await electron.firstWindow();
-    win.on('pageerror', (error) => errors.push(`${error.name}: ${error.message}`));
-    win.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+    // AGENT_APP_DEBUG_ERRORS=1 を付けると、画面のエラーをその場で出す（落ちた場所を突き止めるため）
+    const note = (text) => { errors.push(text); if (process.env.AGENT_APP_DEBUG_ERRORS) console.error(`[画面] ${text}`); };
+    win.on('pageerror', (error) => note(`${error.name}: ${error.message}`));
+    win.on('console', (message) => { if (message.type() === 'error') note(message.text()); });
 
     await win.waitForSelector('#area-tasks');
     await win.waitForFunction(() => typeof document.getElementById('area-tasks').onclick === 'function', null, { timeout: 20000 });
     assert.match(await win.textContent('#side'), /会話.*タスク.*ワークフロー/s);
     await win.locator('#conversation-start').waitFor();
     const composerBefore = await win.locator('#composer').boundingBox();
-    await win.click('#sessions .list-pick');
+    await win.locator('#sessions .list-pick').filter({ hasText: '画面を確認して' }).click();
     await win.locator('.answer-bubble').first().waitFor();
     assert.strictEqual(await win.locator('#conversation-history').getAttribute('open'), '', '端末がない会話では履歴を主表示する');
     const composerModeHeights = await win.locator('#composer .composer-shell').evaluate((shell) => {
@@ -538,12 +549,46 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('#share-term-note').textContent(), '閲覧のみ');
     const shareTerminal = await win.locator('#share-terminal').boundingBox();
     assert.ok(shareTerminal && shareTerminal.height >= 220, `端末が潰れている: ${JSON.stringify(shareTerminal)}`);
+    // ひとこと（人と人）は吹き出しで、自分は右・相手は左。入力欄は「ひとこと」だけ（相手の PC の端末は打てない）
+    await win.locator('#share-thread .talk-line').first().waitFor();
+    assert.strictEqual(await win.locator('#share-thread .talk-line.mine').count(), 1);
+    assert.strictEqual(await win.locator('#share-thread .talk-line.them').count(), 1);
+    assert.match(await win.locator('#share-thread .talk-line.them').textContent(), /pc-b.*読みだけで進めます/s);
+    assert.strictEqual(await win.locator('#share-composer').isVisible(), true, '相手がいる間は入力欄を出す');
+    assert.strictEqual(await win.locator('#share-mode-terminal').isVisible(), false, '自分の依頼では端末操作を出さない');
+    const mineBox = await win.locator('#share-thread .talk-line.mine').boundingBox();
+    const themBox = await win.locator('#share-thread .talk-line.them').boundingBox();
+    assert.ok(mineBox.x > themBox.x, `自分の吹き出しは右に寄せる: ${JSON.stringify({ mineBox, themBox })}`);
     if (process.env.AGENT_APP_SHARE_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_SCREENSHOT });
 
     await win.click('#area-work');
     assert.strictEqual(await win.locator('body > #app > #main').isVisible(), true, '会話画面へ戻れない');
+    // 待っている会話: 端末ミラーの下にやり取りが出て、入力欄はひとことになる
+    await win.locator('#sessions .list-pick').filter({ hasText: 'テスト方針の相談' }).click();
+    await win.locator('#share-talk:not([hidden])').waitFor({ timeout: 20000 });
+    assert.strictEqual(await win.locator('#terminal-stage').isVisible(), true, '待っている間は相手の端末を映す');
+    await win.locator('#share-talk summary').click();          // 共有の画面で既読にしたので、開いて確かめる
+    assert.strictEqual(await win.locator('#share-talk .talk-line').count(), 2);
+    assert.strictEqual(await win.locator('#share-talk .talk-line.mine').count(), 1);
+    assert.strictEqual(await win.locator('#attach').isVisible(), false, 'ひとことに添付は要らない');
+    assert.match(await win.locator('#share-talk-count').textContent(), /2件/);
+    assert.strictEqual(await win.locator('#input-mode-share').getAttribute('aria-pressed'), 'true');
+    assert.strictEqual(await win.locator('#input-mode-message').isDisabled(), true, '待っている間は手元の CLI へ送れない');
+    assert.match(await win.locator('#send').textContent(), /送る/);
+    assert.match(await win.locator('#prompt').getAttribute('placeholder'), /pc-b/);
+    // 会話履歴も開いた「全部出ている」状態で、端末・やり取り・履歴・入力欄が重ならない
+    await win.evaluate(() => { document.getElementById('conversation-history').open = true; });
+    const stack = await win.evaluate(() => {
+      const box = (id) => { const r = document.getElementById(id).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
+      return { terminal: box('terminal-stage'), talk: box('share-talk'), history: box('conversation-history'), composer: box('composer') };
+    });
+    assert.ok(stack.terminal.height >= 150, `端末が潰れている: ${JSON.stringify(stack)}`);
+    assert.ok(stack.terminal.bottom <= stack.talk.top + 1
+      && stack.talk.bottom <= stack.history.top + 1
+      && stack.history.bottom <= stack.composer.top + 1, `段が重なっている: ${JSON.stringify(stack)}`);
+    if (process.env.AGENT_APP_TALK_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_TALK_SCREENSHOT });
     // 会話の入力先に「共有に依頼」が並ぶ（設定 > 共有を使うと決めているとき）
-    await win.click('#sessions .list-pick');
+    await win.locator('#sessions .list-pick').filter({ hasText: '画面を確認して' }).click();
     await win.locator('#input-mode-share').waitFor();
     await win.locator('#input-mode-share').click();
     assert.strictEqual(await win.locator('#input-mode-share').getAttribute('aria-pressed'), 'true');

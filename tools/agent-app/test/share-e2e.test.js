@@ -307,3 +307,79 @@ test('画面: 引き受けた人の端末が心拍で依頼者へ届き、両方
     assert.match(a.share.screenOf(request.id), /読んでいます/, '後から開いた画面にも最新が出る');
   });
 });
+
+test('ひとこと: 依頼者と引き受けた人が、依頼にぶら下がる短いやり取りをする（CLI には入らない）', async (t) => {
+  await withNodes(t, async (open) => {
+    const a = await open('a');
+    // 実行を続けたまま話せることを見たいので、答えを返さない偽の CLI で止めておく
+    const runner = fakeRunner([{ hang: true }]);
+    const b = await open('b', { participate: true, clis: ['fake'], runPrompt: runner, seeds: [`127.0.0.1:${a.share.port}`] });
+    await waitFor(() => b.share.peers.peers().some((p) => p.node === 'a'));
+    const sess = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
+    const request = a.share.post({ sessionId: sess.id, title: '質問', goal: 'q', summary: 'q' });
+    await waitFor(() => b.share.status().inflight.some((i) => i.id === request.id));
+
+    // 依頼者 → 引き受けた人
+    await a.share.say(request.id, 'テストは走らせなくていいです');
+    const heard = await waitFor(() => b.share.status().inflight.find((i) => i.id === request.id).talk.find((m) => m.who === 'a'));
+    assert.equal(heard.text, 'テストは走らせなくていいです');
+    // 引き受けた人 → 依頼者
+    await b.share.say(request.id, '了解。読みだけで進めます');
+    const mine = await waitFor(() => a.share.status().mine.find((r) => r.id === request.id).talk.find((m) => m.who === 'b'));
+    assert.equal(mine.text, '了解。読みだけで進めます');
+    // どちらの画面にも同じ 2 件が、送った順に並ぶ
+    for (const talk of [a.share.status().mine.find((r) => r.id === request.id).talk, b.share.status().inflight.find((i) => i.id === request.id).talk]) {
+      assert.deepEqual(talk.map((m) => `${m.who}: ${m.text}`), ['a: テストは走らせなくていいです', 'b: 了解。読みだけで進めます']);
+      assert.ok(talk.every((m) => !m.pending), '両方とも届いている');
+    }
+    // ひとことは CLI へ渡した本文を変えない（依頼の本文は投函したときのまま）
+    assert.equal(runner.calls.length, 1);
+    assert.equal(runner.calls[0].prompt, 'q');
+  });
+});
+
+test('ひとこと: 相手に届かなければ印を残し、次の巡回で送り直す', async (t) => {
+  await withNodes(t, async (open) => {
+    const a = await open('a');
+    const b = await open('b', { participate: true, clis: ['fake'], runPrompt: fakeRunner([{ hang: true }]), seeds: [`127.0.0.1:${a.share.port}`] });
+    await waitFor(() => b.share.peers.peers().some((p) => p.node === 'a'));
+    const sess = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
+    const request = a.share.post({ sessionId: sess.id, goal: 'q' });
+    await waitFor(() => b.share.status().inflight.some((i) => i.id === request.id));
+    // 引き受けた人の受け口を落とす → 届かない
+    const server = b.share.server;
+    await server.close();
+    await a.share.say(request.id, '届かないひとこと');
+    const pending = a.share.requester.get(request.id).talk.find((m) => m.text === '届かないひとこと');
+    assert.equal(pending.pending, true, '届いていない印が残る');
+    // 受け口を開け直すと、巡回（watchdog）で送り直して印が消える
+    await server.listen(b.share.port, '127.0.0.1');
+    await waitFor(() => !a.share.requester.get(request.id).talk.find((m) => m.text === '届かないひとこと').pending);
+    assert.ok(b.share.status().inflight.find((i) => i.id === request.id).talk.some((m) => m.text === '届かないひとこと'));
+  });
+});
+
+test('受け口のポート: 0 は「空いているポート」（既定の 47801 へ読み替えない）', async (t) => {
+  const userData = tmp('port');
+  const share = new Share({
+    userData,
+    config: settings.normalize({ share: { enabled: true, node: 'p', passphrase: PASS, port: 0 } }),
+    runPrompt: fakeRunner([{ text: 'x' }]),
+    options: { udp: false, host: '127.0.0.1' },      // options.port は渡さない（設定の値をそのまま使う）
+  });
+  t.after(() => share.stop());
+  await share.start();
+  assert.equal(share.state, 'on', share.error);
+  assert.ok(share.port > 0 && share.port !== 47801, `空いているポートを取る: ${share.port}`);
+  // 同じ PC でもう 1 つ動かせる（1 台で 2 人ぶんを試すときの前提）
+  const second = new Share({
+    userData: tmp('port2'),
+    config: settings.normalize({ share: { enabled: true, node: 'q', passphrase: PASS, port: 0 } }),
+    runPrompt: fakeRunner([{ text: 'x' }]),
+    options: { udp: false, host: '127.0.0.1' },
+  });
+  t.after(() => second.stop());
+  await second.start();
+  assert.equal(second.state, 'on', second.error);
+  assert.notEqual(second.port, share.port);
+});

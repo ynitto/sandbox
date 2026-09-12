@@ -10,6 +10,7 @@
 //   3. 新しい面に直値の色を足さない（トークンを使う）
 //   4. 同じ見出し・説明を 2 つの層が描かない
 //   5. 「共有に依頼」はどの入力欄にも同じ形である（会話・タスク・ワークフロー）
+//   6. 人と人のやり取り（ひとこと）は 1 つの部品を 2 つの置き場に載せる（会話画面・共有画面）
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -36,12 +37,12 @@ test('端末ミラーと入力欄は会話画面と同じ実体を使う（見�
   assert.match(html, /id="terminal-stage" class="terminal-stage"/);
   assert.match(html, /id="task-terminal" class="terminal-stage"/);
   assert.match(html, /id="flow-teach-terminal" class="terminal-stage"/);
-  assert.strictEqual((html.match(/class="composer-shell"/g) || []).length, 3, '入力欄は会話・タスク・ワークフローで同じクラス');
+  assert.strictEqual((html.match(/class="composer-shell"/g) || []).length, 4, '入力欄は会話・タスク・ワークフロー・共有で同じクラス');
   // 見た目の宣言（背景・角丸・影）は共有クラスの側にだけある。
   assert.match(css, /^\.terminal-stage \{[^}]*background: var\(--term-bg\)/m);
   assert.match(css, /^\.composer-shell \{[^}]*border-radius: 16px/m);
   for (const clone of ['.task-terminal {', '.task-composer {', '.task-create {', '.task-record {',
-    '.flow-teach-terminal {', '.flow-teach-composer {', '.share-card {', '.share-terminal {']) {
+    '.flow-teach-terminal {', '.flow-teach-composer {', '.share-card {', '.share-terminal {', '.share-talk {']) {
     assert.ok(!css.includes(clone), `共有部品の私物な複製がある: ${clone}`);
   }
 });
@@ -131,4 +132,24 @@ test('ワークフローを教える会話も、タスクと同じ置き場（sl
     assert.ok(text.length <= 40, `画面に居座る解説は README へ移す: ${text}`);
   }
   assert.match(flow, /<slot name="flow-teaching"><\/slot>/);
+});
+
+test('ひとことは 1 つの部品を 2 つの置き場に載せる（会話画面と共有画面）', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  const talk = read('renderer/talk.js');
+  const renderer = read('renderer/renderer.js');
+  const share = read('renderer/share.js');
+  // 器は会話履歴と同じ折りたたみ、中身は同じ .talk。描くのは talk.js の 1 つだけ。
+  assert.match(html, /id="share-talk" class="conversation-history"/);
+  assert.match(html, /id="share-thread" class="conversation-history"/);
+  assert.strictEqual((html.match(/class="talk"/g) || []).length, 2, 'やり取りの器は会話画面と共有画面の 2 つ');
+  assert.match(renderer, /Talk\.render\(/);
+  assert.match(share, /Talk\.render\(/);
+  // 吹き出しの見た目は talk の側にだけあり、会話の吹き出しと同じトークンで書く
+  assert.match(css, /^\.talk-bubble \{[^}]*background: var\(--code-bg\)/m);
+  assert.match(css, /^\.talk-line\.mine \.talk-bubble \{[^}]*background: var\(--accent-bg\)/m);
+  const hex = (css.slice(css.indexOf('.talk {'), css.indexOf('.unread {')).match(/#[0-9a-fA-F]{3,8}\b/g) || []);
+  assert.deepStrictEqual(hex, [], `直値の色ではなくトークンを使う: ${hex.join(' ')}`);
+  assert.ok(!/innerHTML/.test(talk), '本文は文字として入れる（差し込みを作らない）');
 });

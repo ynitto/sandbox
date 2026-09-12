@@ -10,6 +10,7 @@
 //   POST /requests/<id>/heartbeat       執行者が 30 秒ごと。途絶えたら依頼者が列へ戻す
 //   POST /requests/<id>/result          答え。依頼者が会話に保存する
 //   POST /requests/<id>/cancel          依頼者 → 執行者。CLI を止める
+//   POST /requests/<id>/message         人と人のひとこと（両向き。CLI には入らない）
 //   GET  /requests/<id>/attachments/<n> 添付（依頼者が持つ）
 //
 // 合言葉の sha256 を x-share-key で照合する。違えば 401（LAN の他の機器を弾くだけの門）。
@@ -53,7 +54,7 @@ function json(res, status, body) {
 
 // handlers: { hello(body, remote), notify(body, remote), node(), requests(),
 //             claim(id, body, remote), heartbeat(id, body, remote), result(id, body, remote), cancel(id, body, remote),
-//             attachment(id, name) → path }
+//             message(id, body, remote), attachment(id, name) → path }
 // 各 handler は { status, body } を返す（throw は 500）。remote は相手のアドレス（::ffff: を剥いだもの）。
 function remoteOf(req) {
   return String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
@@ -84,7 +85,7 @@ function createServer({ key, handlers }) {
       if (parts[0] === 'requests' && parts.length === 3 && req.method === 'POST') {
         const id = decodeURIComponent(parts[1]);
         const action = parts[2];
-        if (!['claim', 'heartbeat', 'result', 'cancel'].includes(action)) { json(res, 404, { error: '不明な操作' }); return; }
+        if (!['claim', 'heartbeat', 'result', 'cancel', 'message'].includes(action)) { json(res, 404, { error: '不明な操作' }); return; }
         const body = await readBody(req);
         const r = await handlers[action](id, body, remoteOf(req));
         json(res, r.status || 200, r.body);

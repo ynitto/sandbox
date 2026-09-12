@@ -7,6 +7,9 @@
 //    └───────────────────────────────────────┘ 列へ戻し、仲間へもう一度 NEW
 //   open / working ── cancel（利用者の取り下げ）──▶ cancelled
 //
+// 依頼にはもう 1 本、**人と人のやり取り**（ひとこと）がぶら下がる。CLI には入らず、引き受けた人が
+// 読んで、何を打つかを自分で決める。依頼が終われば一緒に終わる（会話としては残さない）。
+//
 // 依頼ごとに調停役が 1 つ（この agent-app）なので、勝者は必ず 1 人。分散 claim も lease の同期も無い。
 // 答えは執行者から直接届き、その会話に assistant のメッセージとして保存する。
 // 依頼は requests.json に残し、再起動しても列が消えない（執行者が消えていれば心拍の途絶で戻る）。
@@ -29,6 +32,8 @@ const KEEP_TERMINAL = 50;
 const MAX_ANSWER = 200 * 1024;
 const MAX_SCREEN = 48 * 1024;
 const MAX_SUMMARY = 600;
+const MAX_TALK = 500;              // ひとこと 1 件の長さ
+const KEEP_TALK = 50;              // 1 つの依頼に残すひとことの数
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -65,6 +70,7 @@ class Requester extends EventEmitter {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       for (const r of Array.isArray(raw.requests) ? raw.requests : []) {
         if (!r || !r.id) continue;
+        if (!Array.isArray(r.talk)) r.talk = [];
         // 再起動後: 執行者は心拍で戻ってくるか、途絶で列へ戻る
         this.requests.set(r.id, r);
       }
@@ -114,6 +120,7 @@ class Requester extends EventEmitter {
       workspace: input.workspace && input.workspace.url ? { url: String(input.workspace.url), base: String(input.workspace.base || '') } : null,
       goal: String(input.goal || ''),
       attachments: (Array.isArray(input.attachments) ? input.attachments : []).map((a) => ({ name: String(a.name || ''), path: String(a.path || '') })).filter((a) => a.name && a.path),
+      talk: [],
       sessionId: String(input.sessionId || ''),
       retry_of: String(input.retryOf || ''),
       attempts: Number(input.attempts) || 1,
@@ -137,6 +144,69 @@ class Requester extends EventEmitter {
 
   // 執行者から届いている最新の画面（会話を開き直したときに、まずこれを描く）
   screenOf(id) { return this.screens.get(String(id)) || ''; }
+
+  // ---- ひとこと（人と人） ---------------------------------------------------------
+
+  appendTalk(r, entry) {
+    r.talk.push(entry);
+    if (r.talk.length > KEEP_TALK) r.talk.splice(0, r.talk.length - KEEP_TALK);
+    this.save();
+    this.emit('changed');
+    return entry;
+  }
+
+  // 執行者から届いたひとこと（server が呼ぶ）
+  message(id, body = {}) {
+    const r = this.get(id);
+    if (!r) return { status: 404, body: { error: 'その依頼はありません' } };
+    const who = String(body.who || '').trim();
+    if (!r.executor || r.executor.node !== who) return { status: 409, body: { error: 'この依頼の執行者ではありません' } };
+    const text = String(body.text || '').trim().slice(0, MAX_TALK);
+    if (!text) return { status: 400, body: { error: '本文がありません' } };
+    this.appendTalk(r, { who, text, at: nowIso() });
+    return { status: 200, body: { ok: true } };
+  }
+
+  // 依頼者から執行者へひとことを送る（画面が呼ぶ）。届かなければ印を付けて次の巡回で送り直す
+  async say(id, text) {
+    const r = this.get(id);
+    if (!r) throw new Error('その依頼はありません');
+    const body = String(text || '').trim().slice(0, MAX_TALK);
+    if (!body) throw new Error('送る内容がありません');
+    const entry = this.appendTalk(r, { who: this.node, text: body, at: nowIso(), ...(r.executor ? {} : { pending: true }) });
+    if (r.executor) await this.deliverTalk(r, entry);
+    return entry;
+  }
+
+  async deliverTalk(r, entry) {
+    const executor = r.executor;
+    if (!executor || !executor.address || !executor.port) { entry.pending = true; this.save(); this.emit('changed'); return false; }
+    try {
+      const res = await call({ address: executor.address, port: executor.port }, 'POST', `/requests/${encodeURIComponent(r.id)}/message`,
+        { key: this.key, body: { who: this.node, text: entry.text, at: entry.at }, timeoutMs: 5000 });
+      const ok = res.status === 200;
+      if (ok) delete entry.pending;
+      else entry.pending = true;
+      this.save();
+      this.emit('changed');
+      return ok;
+    } catch {
+      entry.pending = true;
+      this.save();
+      this.emit('changed');
+      return false;
+    }
+  }
+
+  // まだ届いていないひとことを送り直す（watchdog の巡回から）
+  async flushTalk() {
+    for (const r of this.requests.values()) {
+      if (!r.executor || !(r.state === 'open' || r.state === 'working')) continue;
+      for (const entry of r.talk) {
+        if (entry.pending && entry.who === this.node) await this.deliverTalk(r, entry);
+      }
+    }
+  }
 
   // /requests に出す分（本文は claim のときに渡す）
   list() {
@@ -162,6 +232,7 @@ class Requester extends EventEmitter {
     return [...this.requests.values()].sort((a, b) => String(b.posted_at).localeCompare(String(a.posted_at))).map((r) => ({
       ...this.publicView(r),
       sessionId: r.sessionId,
+      talk: r.talk,
       executorCli: r.executor ? r.executor.cli : '',
       answer: r.result && r.result.answer ? r.result.answer.slice(0, 2000) : '',
       error: r.result ? r.result.error : '',
@@ -350,6 +421,7 @@ class Requester extends EventEmitter {
 
   // 心拍が途絶えた依頼を列へ戻す
   watchdog() {
+    this.flushTalk().catch(() => {});
     let changed = false;
     for (const r of this.requests.values()) {
       if (r.state !== 'working') continue;
@@ -375,4 +447,4 @@ class Requester extends EventEmitter {
   }
 }
 
-module.exports = { Requester, newId, WATCHDOG_MS, TICK_MS, MAX_ATTEMPTS, MAX_ANSWER, MAX_SCREEN, MAX_SUMMARY };
+module.exports = { Requester, newId, WATCHDOG_MS, TICK_MS, MAX_ATTEMPTS, MAX_ANSWER, MAX_SCREEN, MAX_SUMMARY, MAX_TALK, KEEP_TALK };

@@ -98,7 +98,11 @@ function inputStatus(kind = '', text = '', ttl = 0) {
 function setInputMode(mode, { focus = true } = {}) {
   const tmuxReady = isTmux(state.current) && !['dead', 'gone'].includes((state.phases.get(state.current.id) || {}).phase);
   const shareReady = shareEnabled();
+  // 共有の答えを待っている間は、入力欄は引き受けた人への「ひとこと」になる（手元の CLI は止まっていて、
+  // 相手の端末にキーは送れないので、他の入力先は押せない）
+  const waiting = shareWaiting();
   let next = mode === 'terminal' || mode === 'share' ? mode : 'message';
+  if (waiting) next = 'share';
   if (next === 'terminal' && !tmuxReady) next = 'message';
   if (next === 'share' && !shareReady) next = 'message';
   state.input = InputMode.reduce(state.input, { type: `${next}-focus` });
@@ -106,13 +110,15 @@ function setInputMode(mode, { focus = true } = {}) {
     $(id).setAttribute('aria-pressed', String(next === name));
     $(id).classList.toggle('on', next === name);
   }
-  $('input-mode-terminal').disabled = !tmuxReady;
+  $('input-mode-terminal').disabled = !tmuxReady || !!waiting;
+  $('input-mode-message').disabled = !!waiting;
   $('input-mode-share').hidden = !shareReady;
   $('message-input').hidden = next === 'terminal';
   $('terminal-keys').hidden = next !== 'terminal';
   document.querySelector('.composer-toolbar').hidden = next === 'terminal';
   $('chat').classList.toggle('input-terminal', next === 'terminal');
-  $('prompt').placeholder = next === 'share' ? '参加者の AI に依頼する' : 'エージェントに依頼する';
+  $('prompt').placeholder = waiting ? `${waiting.node || '引き受けた人'} へ伝える`
+    : (next === 'share' ? '参加者の AI に依頼する' : 'エージェントに依頼する');
   Term.setInputEnabled(next === 'terminal');
   renderRunSettingsSummary();
   if (focus) {
@@ -286,6 +292,16 @@ function renderWorkflowItems() {
     ul.append(li);
   }
   if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'まだワークフローがない' : '')));
+}
+
+// サイドバーの「共有」に未読のひとことの数を出す
+function renderShareUnread() {
+  const button = $('area-share');
+  const count = shareEnabled() ? Share.unread() : 0;
+  let badge = button.querySelector('.unread');
+  if (!count) { if (badge) badge.remove(); return; }
+  if (!badge) { badge = el('span', 'unread'); button.append(badge); }
+  badge.textContent = String(count);
 }
 
 function renderAreaContext() {
@@ -832,8 +848,9 @@ function renderRunSettingsSummary() {
   $('permission-field').hidden = shared;
   $('share-priority-field').hidden = !shared;
   $('worktree-field').hidden = shared || !worktreeUI();
-  $('send').setAttribute('aria-label', shared ? '依頼を共有へ送信' : '依頼を送信');
-  $('send').querySelector('.send-label').textContent = shared ? '依頼する' : '送信';
+  const waiting = shareWaiting();
+  $('send').setAttribute('aria-label', waiting ? 'ひとことを送る' : (shared ? '依頼を共有へ送信' : '依頼を送信'));
+  $('send').querySelector('.send-label').textContent = waiting ? '送る' : (shared ? '依頼する' : '送信');
   renderTurnSkills();
 }
 
@@ -861,6 +878,22 @@ function shareWaiting(sess = state.current) {
   const found = (status && status.mine ? status.mine : []).find((r) => r.id === id);
   if (found && !(found.state === 'open' || found.state === 'working')) return null;
   return { id, node: found ? found.executor : '', cli: found ? found.executorCli : '', state: found ? found.state : 'open' };
+}
+
+// 待っている間だけ出る、引き受けた人とのやり取り（吹き出しは共有画面と同じ talk.js）
+function renderShareTalk(waiting) {
+  const box = $('share-talk');
+  box.hidden = !waiting;
+  // 段が 1 つ増えるので、端末と履歴の取り分を詰める（利用者の開閉は触らない）
+  $('chat').classList.toggle('has-talk', !!waiting);
+  if (!waiting) return;
+  const status = Share.status();
+  const request = (status && status.mine ? status.mine : []).find((r) => r.id === waiting.id);
+  const talk = (request && request.talk) || [];
+  const unread = Talk.unread(waiting.id, talk);
+  if (unread) box.open = true;
+  $('share-talk-count').textContent = `${talk.length}件${unread ? ` · 未読 ${unread}` : ''}`;
+  Talk.render($('share-talk-body'), { id: waiting.id, talk, me: (status && status.node) || '', read: box.open });
 }
 
 function renderHeader() {
@@ -910,9 +943,11 @@ function renderHeader() {
   $('term-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
   $('conversation-start').hidden = !!cur;
   $('terminal-stage').hidden = !(tm || (waiting && waiting.state === 'working'));
+  // 端末（手元の tmux か、共有で映している相手の画面）があるときは、履歴は畳んだ脇役のまま
+  const mirror = tm || !!(waiting && waiting.state === 'working');
   $('conversation-history').hidden = !cur;
-  $('conversation-history').classList.toggle('history-only', !tm);
-  if (cur && !tm) $('conversation-history').open = true;
+  $('conversation-history').classList.toggle('history-only', !mirror);
+  if (cur && !mirror) $('conversation-history').open = true;
   $('history-count').textContent = cur && cur.messages ? `${cur.messages.length}件` : '';
   $('term-agent').textContent = waiting ? `${waiting.node || '仲間'} の ${waiting.cli || 'AI'}`
     : (tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '');
@@ -932,8 +967,10 @@ function renderHeader() {
     $('input-mode-terminal').disabled = !tm || !!(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
     Term.setInputEnabled(state.input.mode === 'terminal' && !$('input-mode-terminal').disabled);
   }
-  $('run-settings').hidden = !state.repo;
-  if (state.input.mode === 'share' && !shareEnabled()) setInputMode('message', { focus: false });
+  $('run-settings').hidden = !state.repo || !!waiting;
+  $('attach').hidden = !!waiting;
+  renderShareTalk(waiting);
+  if ((state.input.mode === 'share' && !shareEnabled()) || waiting) setInputMode(state.input.mode, { focus: false });
   else $('input-mode-share').hidden = !shareEnabled();
   // 共有の答えを待っている間、「停止」は列からの取り下げになる
   $('stop').textContent = waiting ? '取り下げ' : '停止';
@@ -1281,8 +1318,25 @@ function turnOptions() {
   };
 }
 
+// 待っている間の送信は、引き受けた人へのひとこと（CLI には入らない）
+async function sayToExecutor(waiting, text) {
+  inputStatus('pending', '送っています…');
+  try {
+    await api.share.say(waiting.id, text);
+    $('prompt').value = '';
+    await Share.refresh();
+    inputStatus('success', `✓ ${waiting.node || '引き受けた人'} へ送信済み`, 3000);
+    renderHeader();
+  } catch (err) {
+    notice(err.message, 'error');
+    inputStatus('error', '送信失敗・入力内容を保持しました');
+  }
+}
+
 async function sendPrompt() {
   const text = $('prompt').value.trim();
+  const waiting = shareWaiting();
+  if (waiting) { if (text) await sayToExecutor(waiting, text); return; }
   if ((!text && !state.attachments.length) || !state.repo) return;
   const opts = turnOptions();
   const selected = selectedExecution(opts.policy);
@@ -1828,7 +1882,7 @@ async function init() {
     // 共有の画面から、答えが届いた会話へ移る
     openSession: (id) => showArea('conversation').then(() => openSession(id)).catch((err) => notice(err.message, 'error')),
   });
-  Share.refresh().then(() => renderHeader()).catch(() => {});
+  Share.refresh().then(() => { renderHeader(); renderShareUnread(); }).catch(() => {});
   renderHostStatus();
   api.running().then((ids) => { for (const id of ids) state.running.add(id); renderSessions(); renderHeader(); }).catch(() => {});
   await selectRepo(state.config.lastRepo);
@@ -1927,6 +1981,8 @@ async function init() {
   $('input-mode-message').onclick = () => setInputMode('message');
   $('input-mode-terminal').onclick = () => setInputMode('terminal');
   $('input-mode-share').onclick = () => setInputMode('share');
+  // 開いた時点で「読んだ」と数える（未読の印が消える）
+  $('share-talk').addEventListener('toggle', () => { renderShareTalk(shareWaiting()); renderShareUnread(); });
   $('prompt').addEventListener('focus', () => {
     if (state.input.mode === 'terminal') setInputMode('message', { focus: false });
   });
@@ -2087,7 +2143,10 @@ async function init() {
     FlowTeaching.onShareScreen(p);
     if (state.current && state.current.id === p.sessionId && Term.current() === p.id) Term.applyScreen({ id: p.id, text: p.text || '' });
   });
-  api.share.onChanged(() => { if (state.current && state.current.share) renderHeader(); });
+  api.share.onChanged(() => {
+    renderShareUnread();
+    if (state.current && state.current.share) renderHeader();
+  });
   api.onTermScreen((p) => {
     state.tails.set(p.id, p.tail || '');
     Term.applyScreen(p);

@@ -9,7 +9,7 @@
 (function initTerm() {
 function createTerm() {
   const state = {
-    id: '', remote: false, term: null, fit: null, host: null, ro: null, cols: 120, rows: 36, lastSize: '', screenSeq: 0,
+    id: '', remote: false, keySink: null, term: null, fit: null, host: null, ro: null, cols: 120, rows: 36, lastSize: '', screenSeq: 0,
     inputEnabled: false, onFocus: null, onAccepted: null, onError: null, onEscape: null,
   };
 
@@ -35,7 +35,9 @@ function createTerm() {
     if (!state.id || !state.inputEnabled) return false;
     if (data === '\x1b' && state.onEscape && !state.onEscape()) return false;
     try {
-      await api.termKeys(state.id, data);
+      // 共有で引き受けた依頼の端末は、この PC の会話ではないので別の窓口から送る
+      if (state.keySink) await state.keySink(data);
+      else await api.termKeys(state.id, data);
       if (state.onAccepted) state.onAccepted(data);
       return true;
     } catch (error) {
@@ -122,14 +124,15 @@ function createTerm() {
     await api.termWatch(id).catch(() => {});
   }
 
-  // 他の PC で動いている端末を映す。画面は share の便りで届くので、この PC の tmux は見ない
-  // （監視も大きさの通知もしない。キーは送れない）。
-  function attachRemote(id, hostEl) {
+  // 共有の端末を映す。画面は share の便りで届くので、この PC の tmux は見ない（監視も大きさの
+  // 通知もしない）。keys を渡したときだけ打てる——自分が引き受けている依頼だけで、依頼者は閲覧のみ。
+  function attachRemote(id, hostEl, { keys = null } = {}) {
     ensure(hostEl);
     if (state.id && !state.remote) api.termUnwatch(state.id).catch(() => {});
     const same = state.remote && state.id === id;
     state.remote = true;
     state.id = id || '';
+    state.keySink = keys;
     setInputEnabled(false);
     if (!same) state.term.reset();
     refit();
@@ -138,6 +141,7 @@ function createTerm() {
   function detach() {
     if (state.id && !state.remote) api.termUnwatch(state.id).catch(() => {});
     state.remote = false;
+    state.keySink = null;
     state.id = '';
     if (state.term) state.term.reset();
   }
@@ -161,6 +165,7 @@ function createTerm() {
     attach, attachRemote, detach, applyScreen, refit, size, focus, sendKey: sendData, setInputEnabled, configure,
     current: () => state.id,
     isRemote: () => state.remote,
+    canType: () => !!state.keySink,
   };
 }
 
