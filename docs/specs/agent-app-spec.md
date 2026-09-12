@@ -765,10 +765,13 @@ agent-app は設定ファイルの探索も `.statemachine/` の走査も自前�
 | `runSnapshot(root)` | `agent-loop inspect --json --dir <root>` |
 | `saveRunSchedule(root, schedule)` | `agent-loop schedule --json --dir <root>`（stdin に JSON） |
 | `runLog(root, identity)` | `agent-loop log --json --dir <root>`（stdin に `{ workflow, runId }`） |
-| `runStart(payload)` | `agent-loop statemachine --workflow … --instruction <合成した指示>`、プロンプトのタスクは `agent-loop run`。`runSnapshot` が `available: false`（agent-loop が無い）なら、ステートマシンのタスクだけ同梱スキルの `run_machine.py <workflow> --agent exec --agent-command <定義から組んだ argv の JSON> --prompt-via stdin\|argv --instruction … --context k=v --input … --result-line` をこの場で回す（`automation/direct-run.js`。Windows は WSL の `python3`）。結果は同じ `RESULT {json}` 行 |
+| `runStart(payload)` | 使う AI の定義が「クラウド（`relative_cost` > 0）かつ自分でツールを回せる（`headless_autonomy: tool-loop`）」なら、その CLI を 1 回だけ起こして `statemachine-use スキルで◯◯ステートマシンを実行して` ＋ 入力を渡す（`automation/session-run.js`。工程ごとに起こさないので起動と文脈の再構築が 1 回で済む）。この経路は `RESULT` 行を出さないので成否は終了コードで見る（履歴・工程ごとの検査は持たない）。それ以外は `agent-loop statemachine --workflow … --instruction <合成した指示>`、プロンプトのタスクは `agent-loop run`。`runSnapshot` が `available: false`（agent-loop が無い）なら、ステートマシンのタスクだけ同梱スキルの `run_machine.py <workflow> --agent exec --agent-command <定義から組んだ argv の JSON> --prompt-via stdin\|argv --instruction … --context k=v --input … --result-line` をこの場で回す（`automation/direct-run.js`。Windows は WSL の `python3`）。結果は同じ `RESULT {json}` 行 |
 
 契約の全項目は [agent-loop 仕様書 §3.9](./agent-loop-spec.md#39-リポジトリ実行-ui-境界) にあります。
 agent-loop の無いときの実行は履歴・定期実行・台帳を持たない（画面はそれを 1 行で言う）。
+クラウドの AI へ回したタスクも履歴を持たない（履歴を書くのは agent-loop で、この経路は
+そこを通りません）。確認コマンドを宣言したタスクをこの経路で回すときは、実行の開始時に
+「確認コマンドは実行されない」を 1 行で出します。
 
 #### 12.1 親と共有編集面の同期
 

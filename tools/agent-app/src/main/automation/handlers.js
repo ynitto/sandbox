@@ -13,6 +13,7 @@ const ai = require('./ai');
 const aiDiff = require('./ai-diff');
 const agentLoop = require('./agent-loop');
 const directRun = require('./direct-run');
+const sessionRun = require('./session-run');
 const taskInputs = require('./task-inputs');
 const flowModel = require('./flow-model');
 const flowStore = require('./flow-store');
@@ -20,6 +21,19 @@ const agentFlow = require('./agent-flow');
 const flowTeaching = require('./flow-teaching-model');
 const flowTeachingStore = require('./flow-teaching-store');
 const teaching = require('./teaching');
+const terminalText = require('../text');
+
+// 定義が宣言している確認コマンドの数。1 セッションで通す経路はこれを実行しないので、
+// 宣言があるときだけ「足りないもの」を 1 行で言う（黙ると検査したつもりで受け取られる）。
+function declaredChecks(root, machine) {
+  try {
+    const spec = store.read(root, String(machine || ''));
+    const steps = spec && Array.isArray(spec.steps) ? spec.steps : [];
+    return steps.filter((step) => step && String(step.check || '').trim()).length;
+  } catch {
+    return 0;   // 読めない定義は黙る（実行そのものは別の口が断る）
+  }
+}
 
 // このアプリの置き場（appRoot/../../.github/skills/statemachine-use を最後の候補にする）。
 const APP_ROOT = path.join(__dirname, '..', '..', '..');
@@ -485,6 +499,11 @@ function registerIpcHandlers(getWindow, options = {}) {
     let preparation = {};
     let onHost = false;
     let launchWarning = '';
+    let launchInput = '';                // stdin で本文を渡す定義（codex 等）
+    let launchOutputFile = '';           // 応答をファイルへ書く定義（codex）
+    let launchEnv = {};
+    let stripDecoration = false;
+    let resultSource = 'result-line';    // 'result-line'（ハーネス） | 'exit-code'（1 セッション）
     if (mode === 'check') {
       if (task.kind !== 'statemachine') throw new Error('構成確認はステートマシンのタスクだけで使えます');
       const skillDir = selectedSkillDir(root);
@@ -500,11 +519,18 @@ function registerIpcHandlers(getWindow, options = {}) {
       const definitions = await agentDefinitions({ cwd: root, capture: runCapture });
       if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」はこの環境で使えません`);
       const loopAvailable = snapshot.available !== false;
-      // agent-loop が無いときは `herd` を写せない（agent-herd の既定に任せる口が無い）ので、
-      // 一族の共通 TUI と同じ定義（agent-herd の既定バックエンド）を名指しする
-      const agent = loopAvailable
-        ? await resolveAgent(requestedAgent, 'task', root)
-        : await resolveAgent(requestedAgent, 'direct', root);
+      // **経路は CLI の宣言だけで決める**（判定は session-run.js の 1 か所）。クラウドで自分の
+      // ツールループを持つ CLI は 1 セッションで通し、それ以外は従来どおり工程ごとのハーネスで
+      // 回す。工程ごとに起こすと起動・文脈の再構築・システムプロンプトの再送が工程の数だけ
+      // 掛かり、クラウドではトークン消費が跳ねる——同じ分け方を agent-loop のデーモンと
+      // agent-dashboard も持つ。仮想の名前（`herd`）は実体へ写してから判定する。
+      const named = await resolveAgent(requestedAgent, 'direct', root);
+      const oneSession = task.kind === 'statemachine'
+        && sessionRun.runsInOneSession(named, root, String(p.model || cfg.model || ''));
+      // ハーネスへ渡す名前は従来どおり（`herd` は '' ＝ agent-herd の既定と宣言に任せる）。
+      const agent = oneSession || !loopAvailable
+        ? named
+        : await resolveAgent(requestedAgent, 'task', root);
       const parameters = p.parameters && typeof p.parameters === 'object'
         ? p.parameters
         : { ...(p.context && typeof p.context === 'object' ? p.context : {}), ...(p.input ? { input: p.input } : {}) };
@@ -522,7 +548,26 @@ function registerIpcHandlers(getWindow, options = {}) {
           skillMode: p.skillMode, selectedSkills: p.skills,
         })
         : {};
-      if (loopAvailable) {
+      if (oneSession) {
+        // 送るのは発動文 1 つ。工程の進行・検査・遷移は CLI 側のスキルが持つ。
+        const spec = sessionRun.runSpec({
+          root, machine, agent, model: p.model || cfg.model, parameters,
+          instruction: preparation.instruction || '',
+        });
+        command = spec.command;
+        args = spec.args;
+        onHost = spec.host;
+        launchInput = spec.input;
+        launchOutputFile = spec.outputFile;
+        launchEnv = spec.env || {};
+        stripDecoration = true;          // CLI を直に起こすので端末の装飾が混ざる
+        resultSource = 'exit-code';      // この経路は RESULT 行を出さない
+        const checks = declaredChecks(root, machine);
+        launchWarning = [
+          spec.warning,
+          checks ? `この AI は最初から最後まで通して実行します。確認コマンド（${checks} 件）は実行されません。` : '',
+        ].filter(Boolean).join('\n');
+      } else if (loopAvailable) {
         const spec = agentLoop.taskRunSpec({
           root, task, agent,
           model: p.model || cfg.model, parameters,
@@ -553,14 +598,27 @@ function registerIpcHandlers(getWindow, options = {}) {
       cwd: root,
       kind: 'run',
       host: onHost,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      onLine: (kind, line) => send(channel('run:line'), { requestId, machine, kind, line }),
-      onExit: ({ code, stdout, stderr, truncated }) => send(channel('run:exit'), {
-        requestId, machine, code, mode,
-        result: mode === 'run' ? agentLoop.parseResult(stdout, code) : { ok: code === 0 },
-        error: truncated ? '実行ログが大きいため一部を省略しました' : '',
-        stderr,
+      input: launchInput,
+      env: { ...process.env, ...launchEnv, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      onLine: (kind, line) => send(channel('run:line'), {
+        requestId, machine, kind, line: stripDecoration ? terminalText.stripAnsi(line) : line,
       }),
+      onExit: ({ code, stdout, stderr, truncated }) => {
+        // 応答をファイルへ書く定義は、そこに本文がある（stdout は進行だけ）。
+        for (const line of String(launchOutputFile ? readOutputFile(launchOutputFile) : '').split(/\r?\n/)) {
+          if (line) send(channel('run:line'), { requestId, machine, kind: 'stdout', line: terminalText.stripAnsi(line) });
+        }
+        send(channel('run:exit'), {
+          requestId, machine, code, mode,
+          // 1 セッションの経路は RESULT 行を出さないので、成否は終了コードで見る
+          // ——モデルの自己申告は受け取らない。
+          result: mode === 'run' && resultSource === 'result-line'
+            ? agentLoop.parseResult(stdout, code)
+            : { ok: code === 0 },
+          error: truncated ? '実行ログが大きいため一部を省略しました' : '',
+          stderr,
+        });
+      },
     });
     return {
       ...started, requestId, mode,

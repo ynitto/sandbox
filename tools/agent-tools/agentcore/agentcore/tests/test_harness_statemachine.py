@@ -282,6 +282,66 @@ class RunStatemachineTest(unittest.TestCase):
                 and "--read" in e["argv"] and input_file in e["argv"] for e in events),
             "アクションが参照する既存ファイルを Aider に割り当てる")
 
+    def test_progress_lines_read_as_a_human_narrative_without_asking_the_model(self):
+        """進行表示は工程の説明・呼び出し先の名前・所要だけで組む（材料は全部ハーネスの事実）。
+
+        agent-app のタスク画面・dashboard の実行ペインはこの stdout 行をそのまま流す。
+        モデルに「いま何をしているか」を書かせて出す形にすると、その分のトークンが毎周
+        乗る——ここが増えても課金が増えないことが、この表示の存在理由である。
+        """
+        workflow = pathlib.Path(self.repo, ".statemachine", "one-step", "workflow.yaml")
+        workflow.write_text(workflow.read_text(encoding="utf-8").replace(
+            "  make:\n", "  make:\n    description: 成果物を作る\n", 1).replace(
+            "  complete:\n", "  complete:\n    description: 完了\n", 1), encoding="utf-8")
+        planner_prompts: list = []
+        real_control = sm._sm_run_control
+
+        def spy_control(agent, prompt, **kwargs):
+            planner_prompts.append(prompt)
+            return real_control(agent, prompt, **kwargs)
+
+        out = io.StringIO()
+        with patch_harness("_sm_run_control", side_effect=spy_control), \
+                __import__("contextlib").redirect_stdout(out):
+            result = sm.run_statemachine(
+                workflow_path=str(workflow), cwd=self.repo, parameters={},
+                agent={"cli": "fake-aider", "spec": self.spec, "model": "fake",
+                       "agentcli": agentcli})
+        self.assertTrue(result["ok"], result.get("error"))
+        lines = [line for line in out.getvalue().splitlines() if line.startswith("[statemachine] ")]
+        text = "\n".join(lines)
+        self.assertIn("ワークフロー「one step」を始めます", text)
+        self.assertIn("工程 1: 成果物を作る [make]", text, "工程は説明で呼び、ID は補助")
+        self.assertIn("fake-aider に次の一手を尋ねています（1/", text)
+        self.assertRegex(text, r"fake-aider の応答を受け取りました（\d+ 秒）")
+        self.assertIn("fake-aider がファイルを編集しています: out.txt", text)
+        self.assertIn("工程の出力を受け取りました: OK", text)
+        self.assertIn("→ 次の工程へ: 完了 [complete]", text)
+        self.assertRegex(text, r"完了: 完了 \[complete\]（1 工程、\d+ 秒）")
+        for old in ("state: make", "transition:", "terminal:", "write_files:"):
+            self.assertNotIn(old, text, "内部の綴りだけの行は残さない")
+        # 進行表示の 1 行もモデルの文脈には入らない（planner の課題文に混ざらない）。
+        for prompt in planner_prompts:
+            self.assertNotIn("[statemachine]", prompt)
+            self.assertNotIn("次の一手を尋ねています", prompt)
+
+    def test_state_label_prefers_description_and_keeps_the_id_as_aid(self):
+        workflow = {"states": {"a": {"description": "集める"}, "b": {"description": "b"},
+                               "c": {}}}
+        self.assertEqual(sm._sm_state_label(workflow, "a"), "集める [a]")
+        self.assertEqual(sm._sm_state_label(workflow, "b"), "b", "説明が ID と同じなら重ねない")
+        self.assertEqual(sm._sm_state_label(workflow, "c"), "c")
+        self.assertEqual(sm._sm_state_label(None, "zzz"), "zzz")
+
+    def test_rejected_requests_are_narrated_and_kept_in_history(self):
+        history: list = []
+        with patch_harness("_sm_progress") as progress:
+            sm._sm_rejected(history, "読み取り対象がありません: x", type="read_files", files=[])
+        self.assertEqual(json.loads(history[0][len("TOOL_RESULT "):]),
+                         {"type": "read_files", "files": [], "rejected": True,
+                          "error": "読み取り対象がありません: x"})
+        progress.assert_called_once_with("要求を却下: 読み取り対象がありません: x")
+
     def test_read_request_handles_existing_and_mixed_missing_paths(self):
         input_file = os.path.realpath(os.path.join(self.repo, "input.txt"))
         cases = {

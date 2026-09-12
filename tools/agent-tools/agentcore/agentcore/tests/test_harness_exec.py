@@ -97,6 +97,35 @@ class TestIdleTimeout(unittest.TestCase):
         self.assertIn("途中まで", result["stderr"])
         self.assertIn("進まない", result["error"])
 
+    def test_a_long_silent_wait_is_narrated_without_touching_the_child(self):
+        """待ち時間が伸びたら「まだ待っている・何秒経った」を進行表示に刻む。
+
+        ヘッドレスの CLI は終わるまで何も印字しないので、人の画面はその間静止する。
+        刻むのはハーネス（壁時計）で、子にもモデルにも何も頼まない——子の stdout は
+        そのまま、打ち切りの判定（無進捗）にも影響しない。
+        """
+        from unittest import mock
+        script = "import time; time.sleep(1.2); print('done', end='')"
+        with tempfile.TemporaryDirectory() as tmp:
+            log = str(Path(tmp) / "harness.jsonl")
+            with mock.patch.object(toolloop, "_TL_WAIT_NOTICE_SEC", 0.4), \
+                    mock.patch.object(toolloop, "_tl_progress") as progress:
+                result = self._exec(_python(script), timeout_sec=10.0, idle=True,
+                                    log_file=log)
+        self.assertEqual(result["status"], 0)
+        self.assertEqual(result["stdout"], "done")
+        notices = [c.args[0] for c in progress.call_args_list if "応答を待っています" in c.args[0]]
+        self.assertGreaterEqual(len(notices), 1, progress.call_args_list)
+        self.assertRegex(notices[0], r"（\d+ 秒経過）")
+
+    def test_a_quick_child_gets_no_wait_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = str(Path(tmp) / "harness.jsonl")
+            with __import__("unittest").mock.patch.object(toolloop, "_tl_progress") as progress:
+                self._exec(_python("print('x', end='')"), timeout_sec=10.0, idle=True,
+                           log_file=log)
+        self.assertEqual(progress.call_args_list, [])
+
     def test_stdin_reaches_the_child(self):
         script = "import sys; sys.stdout.write(sys.stdin.read().upper())"
         with tempfile.TemporaryDirectory() as tmp:
