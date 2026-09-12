@@ -90,6 +90,10 @@ _TL_DEFAULT_AGENT_TIMEOUT_SEC = 600
 _TL_PROGRESS_BEACON_ENV = "AGENT_PROGRESS_BEACON"
 # 無進捗の見張りが様子を見る間隔。
 _TL_WATCH_TICK_SEC = 2.0
+# 応答待ちの進行表示を出す間隔。ヘッドレスの CLI は終わるまで何も印字しないものが多く、
+# 人の画面はその間ずっと静止する。「まだ待っている・何秒経った」だけを機械が刻む——
+# モデルに途中経過を書かせない（書かせるとその分のトークンが毎回乗る）。
+_TL_WAIT_NOTICE_SEC = 60.0
 # 病理を止めるためだけの天井（4 時間）。無進捗の上限だけだと、内部で回り続けて出力を
 # 出し続ける子（リトライループに落ちた CLI）を誰も止められない。正常な 1 呼び出しが
 # ここへ届くことは無い——届くならそれは待ち方の問題ではなく設計の問題として見る。
@@ -533,6 +537,7 @@ def _tl_run_watched(argv: "list[str]", *, cwd: str, env: dict, stdin: "str | Non
     started = time.monotonic()
     stamp = _tl_beacon_stamp(beacon_path)
     tick = max(0.1, min(_TL_WATCH_TICK_SEC, idle_sec / 10.0))
+    next_notice = started + _TL_WAIT_NOTICE_SEC
     while True:
         try:
             result["status"] = proc.wait(timeout=tick)
@@ -540,6 +545,10 @@ def _tl_run_watched(argv: "list[str]", *, cwd: str, env: dict, stdin: "str | Non
         except subprocess.TimeoutExpired:
             pass
         now = time.monotonic()
+        if now >= next_notice:
+            _tl_progress(f"{os.path.basename(argv[0])} の応答を待っています"
+                         f"（{now - started:.0f} 秒経過）")
+            next_notice = now + _TL_WAIT_NOTICE_SEC
         current = _tl_beacon_stamp(beacon_path)
         if current != stamp:
             stamp = current
@@ -700,19 +709,24 @@ def _tl_run_agent(agent: dict, prompt: str, *, cwd: str, readonly: bool,
                              read_files=read_files, files=files)
     argv = built["argv"]
     timeout_sec = float(built.get("timeout") or 0) or _TL_DEFAULT_AGENT_TIMEOUT_SEC
+    started = time.monotonic()
     result = _tl_exec_argv(argv[0], argv[1:], cwd=cwd, timeout_sec=timeout_sec,
                            env=built.get("env") or {}, stdin=built.get("stdin"),
                            output_file=built.get("output_file"), log_file=log_file,
                            idle=True)
     _tl_record_usage(agent, result, log_file)
+    who = str(agent.get("cli") or os.path.basename(argv[0]))
     if result["status"] != 0 or result["error"]:
         detail = "\n".join(x for x in (result["error"], result["stderr"], result["stdout"]) if x)
         hint, transient = _tl_failure_hint(agent, detail)
+        _tl_progress(f"{who} の呼び出しが失敗しました（{time.monotonic() - started:.0f} 秒）")
         raise ToolLoopError(hint or detail or f"{argv[0]} が失敗しました",
                             transient=transient)
     output = str(result["stdout"] or "").strip()
     if not output and not allow_empty:
         raise ToolLoopError("エージェントが空の応答を返しました")
+    # 所要だけを刻む。応答の中身は制御席の JSON か成果物の本文で、人が読む行ではない。
+    _tl_progress(f"{who} の応答を受け取りました（{time.monotonic() - started:.0f} 秒）")
     return output
 
 

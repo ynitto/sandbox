@@ -102,6 +102,44 @@ def _sm_scalar(value) -> str:
     return str(value)
 
 
+# ---------------------------------------------------------------------------
+# 進行表示（人が読む 1 行）。**材料はすべてハーネスが自分で知っている事実**——工程の説明は
+# workflow.yaml の `description`、呼び出し先は agents/<name>.json の名前、所要は壁時計。
+# モデルに「いま何をしているか」を書かせない（書かせるとその分のトークンが毎周乗る）ので、
+# ここを増やしても課金は 1 バイトも増えない。書式は agent-app のタスク画面・dashboard の
+# 実行ペイン・tmux ウィンドウが同じ行をそのまま流す前提で、内部の綴り（ステート ID・argv）
+# は説明の後ろに補助として添える。
+# ---------------------------------------------------------------------------
+def _sm_state_label(workflow: "dict | None", state_id: str) -> str:
+    """工程の呼び名。`description` があればそれ、無ければ ID。両方あれば `説明 [id]`。"""
+    states = (workflow or {}).get("states") if isinstance(workflow, dict) else None
+    state = states.get(state_id) if isinstance(states, dict) else None
+    description = _sm_scalar(state.get("description")).strip() if isinstance(state, dict) else ""
+    if description and description != state_id:
+        return f"{description} [{state_id}]"
+    return str(state_id)
+
+
+def _sm_agent_name(agent: "dict | None") -> str:
+    """進行表示に出す AI の名前（定義名。無ければ「AI」）。"""
+    return str((agent or {}).get("cli") or "").strip() or "AI"
+
+
+def _sm_elapsed(started: float) -> str:
+    return f"{time.monotonic() - started:.0f} 秒"
+
+
+def _sm_rejected(history: "list[str]", error: str, **extra) -> None:
+    """ツール要求の却下を履歴へ積み、同じ理由を進行表示にも出す。
+
+    却下は制御席のモデルだけが読んでいた。人の画面には何も出ないので、同じ工程で周が
+    進まないとき「何が却下され続けているか」が分からなかった。
+    """
+    history.append("TOOL_RESULT " + json.dumps(
+        {**extra, "rejected": True, "error": error}, ensure_ascii=False))
+    _sm_progress(f"要求を却下: {error}")
+
+
 def _sm_workflow_action(workflow_path: str, state_id: str, state: dict) -> dict:
     base = os.path.dirname(workflow_path)
     action_file = _sm_scalar(state.get("action_file"))
@@ -343,9 +381,13 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
     # `write:` を持つステートだけ別の環境変数を見る（レビュー P1-2 の arm）。
     rounds = _tl_max_rounds(max_tool_rounds, write=bool(declared),
                             default=_SM_MAX_TOOL_ROUNDS)
+    who = _sm_agent_name(agent)
     for attempt in range(max_attempts):
         history: list[str] = []
         evidence: set = set()
+        if attempt:
+            _sm_progress(f"出力が契約の書式と違うため、この工程をやり直します"
+                         f"（{attempt}/{max_attempts - 1} 回目）")
         for _round in range(rounds):
             request = None
             if seed_paths and not seeded and not attempt:
@@ -363,7 +405,10 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                          "the Output Contract." if attempt else "")
                 # 制御応答（次の一手の JSON）は編集能力の要らない周。定義が申告していれば
                 # JSON 用の変種へ振り替える（run_goal と同じ口を使う——C7）。
-                raw = _sm_run_control(_tl_control_agent(agent, cwd), _sm_planner_prompt(
+                controller = _tl_control_agent(agent, cwd)
+                _sm_progress(f"{_sm_agent_name(controller)} に次の一手を尋ねています"
+                             f"（{_round + 1}/{rounds} 回目）")
+                raw = _sm_run_control(controller, _sm_planner_prompt(
                     action=rendered, cwd=cwd, skills=skills, reads=sorted(reads),
                     history=history, retry=retry,
                 ), cwd=cwd, read_files=sorted(reads), log_file=log_file)
@@ -373,28 +418,24 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     # ツール要求ですらない = 素の本文。Output Contract を満たすならそれが答え。
                     contract = _sm_validated_output(raw, validator)
                     if contract and not _sm_final_evidence_error(raw, cwd, evidence, touched):
+                        _sm_progress(f"工程の出力を受け取りました: {_sm_first_line(contract)}")
                         return contract
-                    history.append("TOOL_RESULT " + json.dumps(
-                        {"rejected": True, "error": str(exc)}, ensure_ascii=False))
+                    _sm_rejected(history, str(exc))
                     continue
                 try:
                     request = _sm_validate_tool_request(parsed, cwd, skills, allow_shells)
                 except StateMachineHarnessError as exc:
                     # 拒否されたツール要求は「やらなかった」であって成功ではない。JSON の中身が
                     # たまたま Output Contract の形をしていても、契約文として拾わない。
-                    history.append("TOOL_RESULT " + json.dumps(
-                        {"rejected": True, "error": str(exc)}, ensure_ascii=False))
+                    _sm_rejected(history, str(exc))
                     continue
             if request["type"] == "run":
                 script = os.path.realpath(request["command"])
                 if request["args"] and os.path.realpath(request["args"][0]) in skill_scripts:
                     script = os.path.realpath(request["args"][0])
                 if script in skill_scripts and script not in named_skill_scripts:
-                    history.append("TOOL_RESULT " + json.dumps({
-                        "rejected": True,
-                        "error": "Current action にないスキルスクリプトは実行できません: "
-                                 + os.path.basename(script),
-                    }, ensure_ascii=False))
+                    _sm_rejected(history, "Current action にないスキルスクリプトは実行できません: "
+                                 + os.path.basename(script))
                     continue
                 executable = _tl_executable_on_path(request["command"]) or request["command"]
                 run_key = (os.path.realpath(executable), tuple(
@@ -403,10 +444,8 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     for arg in request["args"]
                 ))
                 if run_key in successful_runs:
-                    history.append("TOOL_RESULT " + json.dumps({
-                        "rejected": True,
-                        "error": "同じ run は既に成功しています。再実行せず final を返してください",
-                    }, ensure_ascii=False))
+                    _sm_rejected(history,
+                                 "同じ run は既に成功しています。再実行せず final を返してください")
                     continue
             if request["type"] == "final":
                 evidence_error = _sm_final_evidence_error(request["output"], cwd, evidence, touched)
@@ -415,14 +454,20 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     declared_file = _sm_project_path(cwd, declared.group(1)) if declared else ""
                     if (declared_file and any(f != declared_file for f in action_reads)
                             and not _SM_FAILURE_RE.match(request["output"])):
+                        _sm_progress("完了の申告に証跡が無いため、宣言された成果物への書込に"
+                                     f"切り替えます: {os.path.relpath(declared_file, cwd)}")
                         request = {"type": "write_files", "paths": [declared_file]}
                     else:
-                        history.append("TOOL_RESULT " + json.dumps(
-                            {"rejected": True, "error": evidence_error}, ensure_ascii=False))
+                        _sm_rejected(history, evidence_error)
                         continue
                 else:
                     if _sm_validates(request["output"], validator):
+                        _sm_progress("工程の出力を受け取りました: "
+                                     f"{_sm_first_line(request['output'])}")
                         return request["output"]
+                    _sm_progress("完了の申告が契約の書式（"
+                                 f"{_sm_scalar(validator) or '任意'}）と違います: "
+                                 f"{_sm_first_line(request['output'])}")
                     break
             if request["type"] == "read_files":
                 existing = [file for file in request["paths"] if os.path.exists(file)]
@@ -444,18 +489,19 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     files.append(item)
                 result = {"type": request["type"], "files": files}
                 if missing:
-                    result.update({"rejected": True, "error": "読み取り対象がありません: "
-                                   + ", ".join(os.path.relpath(file, cwd)
-                                               for file in missing)})
-                    history.append("TOOL_RESULT " + json.dumps(result, ensure_ascii=False))
+                    _sm_rejected(history, "読み取り対象がありません: "
+                                 + ", ".join(os.path.relpath(file, cwd) for file in missing),
+                                 **result)
                     continue
-                _sm_progress(f"read_files: {', '.join(os.path.relpath(f, cwd) for f in request['paths'])}")
+                _sm_progress("ファイルを読みました: "
+                             + ", ".join(os.path.relpath(f, cwd) for f in request["paths"]))
                 history.append("TOOL_RESULT " + json.dumps(result, ensure_ascii=False))
                 continue
             if request["type"] == "write_files":
                 for file in request["paths"]:
                     os.makedirs(os.path.dirname(file), exist_ok=True)
-                _sm_progress(f"write_files: {', '.join(os.path.relpath(f, cwd) for f in request['paths'])}")
+                _sm_progress(f"{who} がファイルを編集しています: "
+                             + ", ".join(os.path.relpath(f, cwd) for f in request["paths"]))
                 backups: dict[str, str] = {}
                 try:
                     # Existing generated content can make a small model claim it is already done.
@@ -490,8 +536,7 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                         "書き込み対象がありません: "
                         + ", ".join(os.path.relpath(f, cwd) for f in missing)
                         if missing else "write_files が対象ファイルを変更しませんでした")
-                    history.append("TOOL_RESULT " + json.dumps(
-                        {"rejected": True, "error": error}, ensure_ascii=False))
+                    _sm_rejected(history, error)
                     continue
                 candidates = set(request["paths"])
                 evidence_error = _sm_final_evidence_error(
@@ -499,8 +544,7 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                 if evidence_error:
                     for file, backup in backups.items():
                         os.replace(backup, file)
-                    history.append("TOOL_RESULT " + json.dumps(
-                        {"rejected": True, "error": evidence_error}, ensure_ascii=False))
+                    _sm_rejected(history, evidence_error)
                     continue
                 contract = _sm_validated_output(output, validator)
                 if contract:
@@ -515,6 +559,7 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                         "event": "write_completed", "state": state_id,
                         "paths": sorted(candidates), "contractSource": "editor",
                     })
+                    _sm_progress(f"工程の出力を受け取りました: {_sm_first_line(contract)}")
                     return contract
                 machine_contract = _sm_write_success_output(
                     workflow_path=workflow_path, state_id=state_id, state=state,
@@ -531,11 +576,16 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                         "event": "write_completed", "state": state_id,
                         "paths": sorted(candidates), "contractSource": "machine",
                     })
+                    _sm_progress("編集は済んでいるので、成果物の所在から工程の出力を組みました: "
+                                 f"{_sm_first_line(machine_contract)}")
                     return machine_contract
                 for file, backup in backups.items():
                     os.replace(backup, file)
+                _sm_progress("編集後の応答が契約の書式（"
+                             f"{_sm_scalar(validator) or '任意'}）と違うため、編集を戻しました")
                 break
-            _sm_progress(f"run: {request['command']} {' '.join(request['args'])}")
+            _sm_progress(f"コマンドを実行: {request['command']} {' '.join(request['args'])}")
+            run_started = time.monotonic()
             tool = _sm_exec_argv(request["command"], request["args"], cwd=cwd,
                                  timeout_sec=request["timeout_sec"], log_file=log_file)
             for arg in request["args"]:
@@ -551,6 +601,13 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     if os.stat(file).st_size <= _SM_MAX_AUTO_READ_BYTES:
                         reads.add(file)
             succeeded = tool["status"] == 0 and not tool["error"]
+            if succeeded:
+                _sm_progress(f"コマンドが成功しました（{_sm_elapsed(run_started)}）")
+            else:
+                detail = tool["error"] or _sm_first_line(
+                    str(tool["stderr"] or "").strip() or str(tool["stdout"] or "").strip())
+                _sm_progress(f"コマンドが失敗しました（終了コード {tool['status']}、"
+                             f"{_sm_elapsed(run_started)}）" + (f": {detail}" if detail else ""))
             history.append("TOOL_RESULT " + json.dumps({
                 # ok は status 由来。stdout が空でも成功は成功——出力の有無で成否を
                 # 推測させると、何も印字しないコマンドの後にモデルが延々やり直す。
@@ -625,12 +682,19 @@ def _sm_check_context(status, stdout: str, stderr: str, error: str) -> dict:
 def _sm_run_check(check: dict, *, state_id: str, cwd: str, log_file: str) -> dict:
     """宣言された検査コマンドを実行する。シェルは介さない（argv を直接渡す）。"""
     argv = [check["command"], *check["args"]]
-    _sm_progress(f"check: {' '.join(argv)}")
+    _sm_progress(f"検査を実行: {' '.join(argv)}")
+    started = time.monotonic()
     result = _sm_exec_argv(check["command"], check["args"], cwd=cwd,
                            timeout_sec=check["timeout_sec"], log_file=log_file)
     context = _sm_check_context(result["status"], result["stdout"], result["stderr"],
                                 result["error"])
     _sm_append_log(log_file, {"event": "check", "state": state_id, "argv": argv, **context})
+    if context["check_ok"] == "true":
+        _sm_progress(f"検査を通過しました（{_sm_elapsed(started)}）")
+    else:
+        _sm_progress(f"検査が通りませんでした（終了コード {context['check_status']}、"
+                     f"{_sm_elapsed(started)}）"
+                     + (f": {context['check_output']}" if context["check_output"] else ""))
     return {**result, "ok": context["check_ok"] == "true", "argv": argv, "context": context}
 
 
@@ -747,8 +811,10 @@ def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: 
     pending = [c for c in listed["conditions"] if c.get("needs_llm_eval") is True]
     evals: dict = {}
     if pending:
+        judge = _tl_control_agent(agent, cwd)
+        _sm_progress(f"遷移条件 {len(pending)} 件を {_sm_agent_name(judge)} に判定させています")
         raw = _sm_run_control(
-            _tl_control_agent(agent, cwd),
+            judge,
             "Evaluate only these state-machine conditions against the completed action "
             "output. Return one JSON object mapping each index to true or false.\n"
             f"Output:\n{output}\nConditions:\n{json.dumps(pending, ensure_ascii=False)}",
@@ -843,7 +909,8 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
         from agentcore import executionresolver
         _sm_append_log(log_file, {"event": "execution_decision",
                                   **executionresolver.receipt_execution_decision(decision)})
-    _sm_progress(f"workflow: {os.path.relpath(workflow_file, root)} (log: {log_file})")
+    _sm_progress(f"ワークフロー「{_sm_scalar(workflow.get('name')) or os.path.basename(os.path.dirname(workflow_file)) or workflow_file}」"
+                 f"を始めます（定義: {os.path.relpath(workflow_file, root)}、ログ: {log_file}）")
     _sm_require_next_state_contract(scripts["next"], cwd=root, log_file=log_file)
     _sm_harness_script(scripts["dry"], [workflow_file, "--dry-run"], cwd=root, log_file=log_file)
     current = _sm_harness_script(scripts["next"], [workflow_file, "--initial-state"],
@@ -856,6 +923,8 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
     except (TypeError, ValueError):
         max_steps = 50
     last_output = ""
+    run_started = time.monotonic()
+    visits: dict = {}   # 同じ工程に戻ってきた回数（進行表示の「n 回目」）
 
     for step in range(max_steps):
         state = workflow["states"].get(current)
@@ -864,13 +933,19 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
         if state.get("terminal") is True:
             _sm_append_log(log_file, {"event": "terminal", "state": current,
                                       "files": sorted(touched)})
-            _sm_progress(f"terminal: {current}")
-            return {**_sm_terminal_status(current, last_output),
+            status = _sm_terminal_status(current, last_output)
+            _sm_progress((f"完了: {_sm_state_label(workflow, current)}" if status["ok"]
+                          else f"失敗で終わりました: {_sm_state_label(workflow, current)}")
+                         + (f"（{step} 工程、{_sm_elapsed(run_started)}）"))
+            return {**status,
                     "stdout": last_output, "stderr": "", "finalState": current,
                     "stopReason": stopreason.TERMINAL_STATE,
                     "logFile": log_file, "files": sorted(touched)}
         _sm_append_log(log_file, {"event": "state", "state": current, "step": step + 1})
-        _sm_progress(f"state: {current} (step {step + 1}/{max_steps})")
+        _sm_progress(f"工程 {step + 1}: {_sm_state_label(workflow, current)}"
+                     + (f"（{visits[current] + 1} 回目）" if visits.get(current) else ""))
+        visits[current] = visits.get(current, 0) + 1
+        state_started = time.monotonic()
         # 宣言された検査を通してからでないと次へ進めない。落ちたら同じステートをやり直す
         # ——遷移の材料をモデルの自己申告からハーネスの実測へ移すのがこの段の目的。
         gate = _sm_state_check_spec(scripts=scripts, workflow_path=workflow_file,
@@ -901,6 +976,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                                     log_file=log_file)
             if checked["ok"] or attempt == attempts - 1:
                 break
+            _sm_progress(f"検査が通るまで同じ工程をやり直します（{attempt + 1}/{attempts - 1} 回目）")
             note = _sm_check_note(checked, attempt + 1, attempts, feedback=gate["feedback"])
             # 再投入は前の試行が書いたファイルへの編集から入る（成果の所在は契約の path 行）。
             retry_paths = re.findall(r"^path:\s*(.+?)\s*$", last_output, re.I | re.M)
@@ -921,8 +997,9 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                       + (checks["check_output"] or f"status={checks['check_status']}"))
             _sm_append_log(log_file, {"event": "check_exhausted", "state": current,
                                       "attempts": attempts, "escalate": escalate, **checks})
-            _sm_progress(f"check exhausted: {current}"
-                         + (" -> escalate（上位の段へ）" if escalate else ""))
+            _sm_progress(f"検査が {attempts} 回とも通りませんでした: "
+                         f"{_sm_state_label(workflow, current)}"
+                         + ("。この段では解けないので上位の段へ回します" if escalate else ""))
             if not escalate:
                 raise StateMachineHarnessError(reason)
             return {"ok": False, "escalate": True, "error": reason, "stdout": last_output,
@@ -945,7 +1022,8 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                 nxt = on_none
             else:
                 raise StateMachineHarnessError(f"ステート {current} から一致する遷移がありません")
-        _sm_progress(f"transition: {current} -> {nxt}")
+        _sm_progress(f"→ 次の工程へ: {_sm_state_label(workflow, nxt)}"
+                     f"（この工程は {_sm_elapsed(state_started)}）")
         current = nxt
     if _sm_scalar(config.get("on_max_steps")) == "stop":
         return {"ok": True, "stdout": last_output, "stderr": "", "finalState": current,
@@ -1058,10 +1136,10 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path, *, result_recorder=Non
             (getattr(args, "model", None) or (plan["model"] if plan else "")
              or selected.get("model") or ""),
             str(work_dir))
-        _sm_progress(f"agent: {agent['cli']}"
-                     + (f" / model: {agent['model']}" if agent["model"] else " (default model)"))
+        _sm_progress(f"使う AI: {agent['cli']}"
+                     + (f"（モデル: {agent['model']}）" if agent["model"] else "（モデルは既定）"))
         if plan:
-            _sm_progress(f"entry: {getattr(args, 'entry', '')}（{plan['config']}）")
+            _sm_progress(f"定期実行の設定「{getattr(args, 'entry', '')}」から起動（{plan['config']}）")
         result = run_statemachine(workflow_path=workflow_path, cwd=str(work_dir),
                                   parameters=params, agent=agent, decision=decision,
                                   instruction=str(getattr(args, "instruction", None) or ""),
