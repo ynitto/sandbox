@@ -247,6 +247,11 @@ def command_spec(entry) -> "dict | None":
         return None
     if isinstance(declared, bool):
         raise LoopEntryError("command は文字列・配列・マップのいずれかです")
+    raw_argv = declared.get("argv") if isinstance(declared, dict) else declared
+    lines = [line.strip() for line in raw_argv.splitlines() if line.strip()] if isinstance(raw_argv, str) else []
+    commands = [_command_argv(line) for line in lines] if len(lines) > 1 else None
+    if commands:
+        declared = {**declared, "argv": commands[0]} if isinstance(declared, dict) else commands[0]
     if isinstance(declared, dict):
         if "argv" not in declared:
             raise LoopEntryError("command.argv は必須です")
@@ -267,7 +272,14 @@ def command_spec(entry) -> "dict | None":
         argv = _command_argv(declared)
         timeout = COMMAND_TIMEOUT_SEC
         env = {}
-    return {"argv": argv, "timeout_sec": timeout, "env": env}
+    return {"argv": argv, "timeout_sec": timeout, "env": env, **({"commands": commands} if commands else {})}
+
+
+def render_command(spec, values, *, resolve=None) -> dict:
+    rendered = {**spec, "argv": render_argv(spec["argv"], values, resolve=resolve)}
+    if spec.get("commands"):
+        rendered["commands"] = [render_argv(argv, values, resolve=resolve) for argv in spec["commands"]]
+    return rendered
 
 
 class _SafeValues(dict):

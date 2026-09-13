@@ -447,8 +447,8 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
         entry["command"] = payload["command"]
     preserve_schedule = (payload.get("schedule") or {}).get("kind") == "preserve"
     if preserve_schedule:
-        if not matches or "command" not in entry:
-            raise ValueError("既存のコマンドタスクだけ予定を維持できます")
+        if not matches:
+            raise ValueError("既存のタスクだけ予定を維持できます")
         schedule_fields = {}
     else:
         schedule_fields = _repository_schedule_fields(payload.get("schedule"))
@@ -467,8 +467,12 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
         })
     if destination == "global":
         entry["cwd"] = str(root)
-    if str(payload.get("agentCli") or "").strip():
-        entry["agent_cli"] = str(payload["agentCli"]).strip()
+    if "agentCli" in payload:
+        agent_value = str(payload.get("agentCli") or "").strip()
+        if agent_value:
+            entry["agent_cli"] = agent_value
+        else:
+            entry.pop("agent_cli", None)
     if "model" in payload:
         model_value = str(payload.get("model") or "").strip()
         if model_value:
@@ -620,7 +624,7 @@ def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str,
                 root, str(entry.get("name") or ""), history_limit)
                 if kind == "command" else []),
         })
-    return {"available": True, "capabilities": {"commandSchedule": True}, "machines": machines, "tasks": tasks,
+    return {"available": True, "capabilities": {"commandSchedule": True, "commandSequence": True, "partialSchedule": True}, "machines": machines, "tasks": tasks,
             "configSource": source,
             "daemon": _repository_daemon(root)}
 
@@ -729,7 +733,7 @@ def cmd_repository_command(args: argparse.Namespace, cwd: Path) -> None:
         values[key.strip()] = value
     spec = dict(plan["command"])
     try:
-        spec["argv"] = _loopentry.render_argv(spec["argv"], values)
+        spec = _loopentry.render_command(spec, values)
     except _loopentry.LoopEntryError as exc:
         print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
         sys.exit(1)

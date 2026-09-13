@@ -85,6 +85,26 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     （非 0 終了・タイムアウト）は `ok: False` で返す——呼ぶ側はどちらも同じ
     「失敗として記録する」に落とすが、記録に残す理由が違う。
     """
+    if spec.get("commands"):
+        started = time.monotonic()
+        stdout, stderr = "", ""
+        for index, argv in enumerate(spec["commands"], 1):
+            _tl_progress(f"コマンド {index}/{len(spec['commands'])}", tag)
+            single = {key: value for key, value in spec.items() if key != "commands"}
+            single["argv"] = argv
+            try:
+                result = run_command(single, cwd=cwd, log_file=log_file, env=env, tag=tag)
+            except CommandRunError as exc:
+                result = {"ok": False, "status": None, "stopReason": stopreason.COMMAND_ERROR,
+                          "stdout": "", "stderr": str(exc), "error": str(exc), "argv": argv, "logFile": log_file}
+            stdout = (stdout + result.get("stdout", ""))[-OUTPUT_LIMIT:]
+            stderr = (stderr + result.get("stderr", ""))[-OUTPUT_LIMIT:]
+            if not result["ok"]:
+                result["error"] = f"{index} 行目のコマンドが失敗しました: {result.get('error') or result.get('stopReason')}"
+                break
+        return {**result, "stdout": stdout, "stderr": stderr,
+                "durationSec": round(time.monotonic() - started, 3),
+                "completedCommands": index if result["ok"] else index - 1}
     argv = [str(token) for token in (spec or {}).get("argv") or []]
     if not argv:
         raise CommandRunError("command が空です")

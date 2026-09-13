@@ -266,3 +266,25 @@ test('インストール済みでもinspectが失敗した原因を画面へ返�
   }) });
   assert.match(timedOut.error, /15 秒/);
 });
+
+test('複数行を単一コマンドとして扱う旧実行基盤には保存しない', async () => {
+  const calls = [];
+  await assert.rejects(loop.saveSchedule({ root: '/project', payload: { command: { argv: 'echo first\necho second' } },
+    capture: async (_cmd, args) => { calls.push(args[0]); return { ok: true, stdout: '{"capabilities":{"commandSchedule":true}}' }; },
+  }), /複数行.*更新/);
+  assert.deepStrictEqual(calls, ['inspect']);
+});
+
+
+test('詳細設定の部分編集は未対応の実行基盤へ保存しない', async () => {
+  const bridge = require('../src/main/automation/agent-loop');
+  let saves = 0;
+  await assert.rejects(() => bridge.saveSchedule({ root: '/repo',
+    payload: { entry: { prompt: 'review' }, schedule: { kind: 'preserve' }, agentCli: 'codex' },
+    capture: async (_cmd, args) => {
+      if (args[0] === 'schedule') saves++;
+      return { ok: true, stdout: JSON.stringify({ available: true, capabilities: {} }) };
+    },
+  }), /agent-loop の更新/);
+  assert.equal(saves, 0);
+});

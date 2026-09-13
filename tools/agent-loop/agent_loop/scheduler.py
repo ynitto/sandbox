@@ -1527,12 +1527,12 @@ class PeriodicScheduler:
                 # `{…}` の補完は本文テンプレートと同じ規則（materials はフック / webhook
                 # が返した辞書。定期発火だけの回は材料が無いので素通しする）。
                 values = dict((req.get("meta") or {}).get("_values") or {})
-                argv = _loopentry.render_argv(
-                    command["argv"], values,
+                rendered_command = _loopentry.render_command(
+                    command, values,
                     resolve=self._deferred_lookup_resolver(values))
-                log.info("[%s] コマンド実行: %s（log=%s）", name, " ".join(argv), log_file)
+                log.info("[%s] コマンド実行: %s（log=%s）", name, " ".join(rendered_command["argv"]), log_file)
                 result = _commandrun.run_command(
-                    {**command, "argv": argv}, cwd=work_dir, log_file=log_file,
+                    rendered_command, cwd=work_dir, log_file=log_file,
                     tag="agent-loop")
             elif workflow:
                 # ステートマシン実行。ハーネスは自分のログ（.statemachine-use/logs）へ

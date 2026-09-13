@@ -83,6 +83,19 @@ async function saveSchedule({ root, payload, capture }) {
     if (snapshot.capabilities?.commandSchedule !== true) {
       throw new Error('実行環境の agent-loop が古いため、コマンドを保存できません。agent-loop を更新してから再度保存してください（入力内容は保持しています）');
     }
+    const command = payload.command ?? payload.entry?.command;
+    const argv = command && typeof command === 'object' && !Array.isArray(command) ? command.argv : command;
+    if (typeof argv === 'string' && argv.split(/\r?\n/).filter((line) => line.trim()).length > 1
+      && snapshot.capabilities?.commandSequence !== true) {
+      throw new Error('複数行のコマンド実行には実行環境の agent-loop の更新が必要です（入力内容は保持しています）');
+    }
+  }
+  if (payload?.schedule?.kind === 'preserve' && !('command' in (payload.entry || {}))
+    || payload?.agentCli === '' && payload?.entry?.agent_cli) {
+    const snapshot = await inspect({ root: repository, capture });
+    if (snapshot.capabilities?.partialSchedule !== true) {
+      throw new Error('詳細設定の部分編集とエージェントの既定値への変更には、実行環境の agent-loop の更新が必要です（入力内容は保持しています）');
+    }
   }
   const result = await capture(
     'agent-loop',

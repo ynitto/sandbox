@@ -74,13 +74,13 @@ if (runTermHost) {
 
 function renderRunTerminal() {
   if (!runTerm) return;
-  runTermHost.hidden = !state.run.terminal;
-  if (state.run.terminal && runTerm.current() !== state.run.requestId) {
+  runTermHost.hidden = !state.run.terminal || state.run.taskKey !== runTaskKey();
+  if (state.run.taskKey === runTaskKey() && state.run.terminal && runTerm.current() !== state.run.requestId) {
     runTerm.attach(state.run.requestId, runTermHost).then(() => {
       if (state.run.screen) runTerm.applyScreen(state.run.screen);
     });
   }
-  runTerm.setInputEnabled(state.run.running && !!state.run.terminal);
+  runTerm.setInputEnabled(state.run.taskKey === runTaskKey() && state.run.running && !!state.run.terminal);
   runTerm.refit();
 }
 
@@ -770,8 +770,6 @@ function bindHome(main) {
     state.execution.detailTab = 'overview';
     state.execution.scheduleOpen = false;
     state.execution.scheduleDraft = null;
-    state.run.result = null;
-    state.run.error = '';
     render();
   });
   bindTaskDetailTabs(main);
@@ -872,8 +870,6 @@ function goRun(machine) {
   state.execution.selected = String(machine).startsWith('machine:') ? machine : `machine:${machine}`;
   state.execution.detailTab = 'overview';
   state.execution.scheduleDraft = null;
-  state.run.result = null;
-  state.run.error = '';
   // 教示から来るときは定義が増えている（利用可能になった直後）ので、定義一覧も読み直す。
   loadMachines().then(() => { render(); refreshExecutionSnapshot(); });
 }
@@ -1134,8 +1130,18 @@ function executionHtml() {
   return `<div class="execution-layout"><aside class="execution-list" aria-label="実行するワークフロー">${list}</aside><section class="execution-detail">${executionDetailHtml(selected)}</section></div>`;
 }
 
+const taskRunResults = new Map();
+function runTaskKey(machine = selectedExecutionMachine()) {
+  return JSON.stringify([state.root, machine ? taskIdentity(machine) : '']);
+}
+function selectedTaskRun(machine = selectedExecutionMachine()) {
+  const key = runTaskKey(machine);
+  return state.run.taskKey === key ? state.run : taskRunResults.get(key) || { lines: [], running: false };
+}
+
 function executionDetailHtml(machine) {
   ensureRunParameters(machine);
+  const displayedRun = selectedTaskRun(machine);
   const snapshot = state.execution.snapshot || {};
   const daemon = snapshot.daemon || { running: false };
   const schedules = taskSchedules(machine);
@@ -1174,13 +1180,13 @@ function executionDetailHtml(machine) {
   const historyLog = state.execution.log
     ? `<div class="history-log"><div class="execution-card-head"><strong>実行ログ</strong><button type="button" class="tiny" data-history-log="">閉じる</button></div>${state.execution.log.error ? `<p class="run-result ng">${esc(state.execution.log.error)}</p>` : `<pre>${esc(state.execution.log.text || '')}</pre>${state.execution.log.truncated ? '<small class="muted">末尾のみ表示しています。</small>' : ''}`}</div>`
     : '';
-  const result = state.run.result
-    ? `<p class="run-result ${state.run.result.ok ? 'ok' : state.run.result.escalate ? 'warn' : 'ng'}">${state.run.result.ok ? '実行が完了しました' : state.run.result.escalate ? `確認が必要です${state.run.result.error ? `: ${esc(state.run.result.error)}` : ''}` : esc(state.run.result.error || '実行に失敗しました')}</p>`
-    : state.run.error ? `<p class="run-result ng">${esc(state.run.error)}</p>` : '';
-  const log = state.run.lines.map((line) => `<div class="${line.kind === 'stderr' ? 'e' : ''}">${esc(line.line)}</div>`).join('') || (state.run.terminal ? '' : '<span class="muted">実行すると、ここに進行状況が表示されます。</span>');
+  const result = displayedRun.result
+    ? `<p class="run-result ${displayedRun.result.ok ? 'ok' : displayedRun.result.escalate ? 'warn' : 'ng'}">${displayedRun.result.ok ? '実行が完了しました' : displayedRun.result.escalate ? `確認が必要です${displayedRun.result.error ? `: ${esc(displayedRun.result.error)}` : ''}` : esc(displayedRun.result.error || '実行に失敗しました')}</p>`
+    : displayedRun.error ? `<p class="run-result ng">${esc(displayedRun.error)}</p>` : '';
+  const log = displayedRun.lines.map((line) => `<div class="${line.kind === 'stderr' ? 'e' : ''}">${esc(line.line)}</div>`).join('') || (displayedRun.terminal ? '' : '<span class="muted">実行すると、ここに進行状況が表示されます。</span>');
   const logBody = `<div class="log" id="run-log">${log}</div>`;
-  const logView = state.run.terminal
-    ? `<details id="run-log-details" ${state.run.logOpen ? 'open' : ''} ${state.run.lines.length ? '' : 'hidden'}><summary>${state.run.lines.some((line) => line.kind === 'stderr') ? '実行ログ（警告・エラーあり）' : '実行ログ'}</summary>${logBody}</details>`
+  const logView = displayedRun.terminal
+    ? `<details id="run-log-details" ${displayedRun.logOpen ? 'open' : ''} ${displayedRun.lines.length ? '' : 'hidden'}><summary>${displayedRun.lines.some((line) => line.kind === 'stderr') ? '実行ログ（警告・エラーあり）' : '実行ログ'}</summary>${logBody}</details>`
     : logBody;
   const canRun = ['statemachine', 'prompt'].includes(machine.kind || 'statemachine') && !machine.error;
   const selectedRun = taskRunExecution();
@@ -1197,8 +1203,8 @@ function executionDetailHtml(machine) {
   const detail = state.execution.detailTab === 'history'
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
     : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false && machine.kind !== 'statemachine' ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
-      ${machine.kind === 'command' ? (taskIdentity(machine) === 'new-command' ? '' : `<section class="execution-card"><div class="execution-card-head"><h3>コマンド</h3><button type="button" id="command-edit">名前・コマンドを編集</button></div><pre>${esc(commandText(machine.entry?.command))}</pre>${machine.error ? `<p class="run-result ng">${esc(machine.error)}</p>` : ''}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || machine.error ? 'disabled' : ''}>今すぐ実行</button><button type="button" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${result}${logView}</section>`) : `<section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
-        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${state.run.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>`}
+      ${machine.kind === 'command' ? (taskIdentity(machine) === 'new-command' ? '' : `<section class="execution-card"><div class="execution-card-head"><h3>コマンド</h3><button type="button" id="command-edit">名前・コマンドを編集</button></div><pre>${esc(commandText(machine.entry?.command))}</pre>${machine.error ? `<p class="run-result ng">${esc(machine.error)}</p>` : ''}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || machine.error ? 'disabled' : ''}>今すぐ実行</button><button type="button" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${result}${logView}</section>`) : `<section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${displayedRun.running ? 'active' : ''}">${displayedRun.running ? '実行中' : '待機中'}</span></div>
+        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${displayedRun.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>`}
       <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>リポジトリ全体のスケジューラー · ${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '定期実行を停止' : '定期実行を開始'}</button>${['statemachine', 'prompt', 'command'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
@@ -1238,9 +1244,10 @@ function scheduleDraftFor(machine, existing) {
     entryName: schedule.entryName || `${machine.name} の定期実行`,
     destination: schedule.source && schedule.source.scope === 'global' ? 'global' : 'repository',
     originalDestination: schedule.source && schedule.source.scope === 'global' ? 'global' : 'repository',
-    operation: existing ? 'save' : 'create', enabled: schedule.enabled !== false, kind: schedule.advanced && machine.kind === 'command' ? 'preserve' : schedule.kind || 'daily',
+    operation: existing ? 'save' : 'create', enabled: schedule.enabled !== false, kind: schedule.advanced ? 'preserve' : schedule.kind || 'daily',
     time: schedule.time || '09:00', minutes: schedule.minutes || 60,
     days: [...(schedule.days || [1])], input: { ...(schedule.input || {}) },
+    agentCli: schedule.agentCli || '', model: schedule.model || '',
     command: commandText(machine.entry?.command),
     timeout: machine.entry?.command?.timeout_sec ?? 300,
   };
@@ -1248,20 +1255,25 @@ function scheduleDraftFor(machine, existing) {
 
 function scheduleEditorHtml(machine) {
   const draft = ensureScheduleDraft(machine);
-  if (machine.kind !== 'command' && taskSchedules(machine).some((item) => item.entryRef === draft.entryRef && item.advanced)) return '<p class="run-result warn">この予定は詳細設定で管理されています。画面からは変更できません。</p>';
-  const timing = draft.kind === 'preserve' ? '<p class="muted small">現在の実行条件を維持します。</p>' : draft.kind === 'interval'
+  const timing = draft.kind === 'preserve' ? '<p class="muted small">詳細設定の実行条件を維持します。名前・有効状態・エージェント・モデルは個別に変更できます。</p>' : draft.kind === 'interval'
     ? `<div class="field"><label>間隔（分）</label><input id="schedule-minutes" type="number" min="1" value="${esc(draft.minutes)}"></div>`
     : `<div class="field"><label>時刻</label><input id="schedule-time" type="time" value="${esc(draft.time)}"></div>${draft.kind === 'weekly' ? `<div class="weekday-row">${['日', '月', '火', '水', '木', '金', '土'].map((label, day) => `<label><input type="checkbox" data-schedule-day="${day}" ${draft.days.includes(day) ? 'checked' : ''}>${label}</label>`).join('')}</div>` : ''}`;
   const inputs = (machine.parameters || []).map((name) => `<div class="field"><label>${esc(name)}</label><input data-schedule-param="${esc(name)}" value="${esc(draft.input[name] || '')}"></div>`).join('');
   const commandFields = machine.kind === 'command'
-    ? `<div class="field"><label for="schedule-command">コマンド</label><textarea id="schedule-command" rows="3" placeholder="python3 scripts/maintenance.py">${esc(draft.command)}</textarea><small class="muted">空白を含む引数は引用符で囲みます。パイプやリダイレクトは使えません。</small></div><div class="field"><label for="schedule-timeout">タイムアウト（秒）</label><input id="schedule-timeout" type="number" min="1" step="1" value="${esc(draft.timeout)}"></div>` : '';
-  return `<div class="schedule-editor">${commandFields}<div class="grid2"><div class="field"><label>${machine.kind === 'command' ? 'タスク名' : '予定名'}</label><input id="schedule-name" value="${esc(draft.entryName)}"></div><div class="field"><label>保存先</label><select id="schedule-destination"><option value="repository" ${draft.destination === 'repository' ? 'selected' : ''}>このリポジトリ</option><option value="global" ${draft.destination === 'global' ? 'selected' : ''}>共通設定</option></select></div></div><label class="check-label"><input id="schedule-enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>有効にする</label><div class="grid2"><div class="field"><label>繰り返し</label><select id="schedule-kind">${draft.kind === 'preserve' ? '<option value="preserve" selected>現在の設定を維持</option>' : ''}<option value="daily" ${draft.kind === 'daily' ? 'selected' : ''}>毎日</option><option value="weekly" ${draft.kind === 'weekly' ? 'selected' : ''}>毎週</option><option value="interval" ${draft.kind === 'interval' ? 'selected' : ''}>一定間隔</option></select></div>${timing}</div>${inputs ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${inputs}</div></div>` : ''}<div class="row"><button type="button" class="primary" id="schedule-save">保存</button><button type="button" id="schedule-new">別の予定を追加</button></div></div>`;
+    ? `<div class="field"><label for="schedule-command">コマンド</label><textarea id="schedule-command" rows="3" placeholder="python3 scripts/maintenance.py">${esc(draft.command)}</textarea><small class="muted">1行に1コマンドを入力します。上から順に実行し、失敗時は停止します。空行は無視します。各コマンドは選択したリポジトリで実行します。パイプやリダイレクトは使えません。</small></div><div class="field"><label for="schedule-timeout">各コマンドのタイムアウト（秒）</label><input id="schedule-timeout" type="number" min="1" step="1" value="${esc(draft.timeout)}"></div>` : '';
+  const agents = [...new Set([draft.agentCli, ...(state.agents || []).map((agent) => typeof agent === 'string' ? agent : agent.id || agent.cli)].filter(Boolean))];
+  const aiFields = machine.kind === 'command' ? '' : `<div class="grid2"><div class="field"><label for="schedule-agent">自動実行のエージェント</label><select id="schedule-agent"><option value="">agent-loop の既定値</option>${agents.map((agent) => `<option value="${esc(agent)}" ${draft.agentCli === agent ? 'selected' : ''}>${esc(agent)}</option>`).join('')}</select></div><div class="field"><label for="schedule-model">自動実行のモデル</label><input id="schedule-model" value="${esc(draft.model)}" placeholder="エージェントの既定値"></div></div>`;
+  return `<div class="schedule-editor">${commandFields}${aiFields}<div class="grid2"><div class="field"><label>${machine.kind === 'command' ? 'タスク名' : '予定名'}</label><input id="schedule-name" value="${esc(draft.entryName)}"></div><div class="field"><label>保存先</label><select id="schedule-destination" ${draft.kind === 'preserve' ? 'disabled' : ''}><option value="repository" ${draft.destination === 'repository' ? 'selected' : ''}>このリポジトリ</option><option value="global" ${draft.destination === 'global' ? 'selected' : ''}>共通設定</option></select></div></div><label class="check-label"><input id="schedule-enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>有効にする</label><div class="grid2"><div class="field"><label>繰り返し</label><select id="schedule-kind">${draft.kind === 'preserve' ? '<option value="preserve" selected>現在の設定を維持</option>' : ''}<option value="daily" ${draft.kind === 'daily' ? 'selected' : ''}>毎日</option><option value="weekly" ${draft.kind === 'weekly' ? 'selected' : ''}>毎週</option><option value="interval" ${draft.kind === 'interval' ? 'selected' : ''}>一定間隔</option></select></div>${timing}</div>${inputs ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${inputs}</div></div>` : ''}<div class="row"><button type="button" class="primary" id="schedule-save">保存</button><button type="button" id="schedule-new">別の予定を追加</button></div></div>`;
 }
 
 function bindScheduleEditor(main) {
   const machine = selectedExecutionMachine();
   if (!machine || !state.execution.scheduleOpen) return;
   const draft = ensureScheduleDraft(machine);
+  for (const [id, key] of [['schedule-agent', 'agentCli'], ['schedule-model', 'model']]) {
+    const field = main.querySelector(`#${id}`);
+    if (field) field.addEventListener('input', () => { draft[key] = field.value; });
+  }
   const enabled = main.querySelector('#schedule-enabled');
   const kind = main.querySelector('#schedule-kind');
   const time = main.querySelector('#schedule-time');
@@ -1304,7 +1316,7 @@ async function saveSchedule() {
     ...(draft.destination === draft.originalDestination ? { entryRef: draft.entryRef, fingerprint: draft.fingerprint } : {}),
     ...(machine.kind === 'command'
       ? { command: { ...(machine.entry?.command && typeof machine.entry.command === 'object' && !Array.isArray(machine.entry.command) ? machine.entry.command : {}), argv: draft.command, timeout_sec: draft.timeout } }
-      : { agentCli: selectedAgent(state.config.agent), model: state.config.model || '' }),
+      : { agentCli: draft.agentCli, model: draft.model }),
   }));
   if (!result) return;
   state.execution.newCommand = null;
@@ -2271,6 +2283,8 @@ async function startRun(mode) {
     await rememberRunParameters(machine, state.run.parameters);
   }
   if (run.running) return;
+  if (run.taskKey) taskRunResults.set(run.taskKey, { lines: [...run.lines], result: run.result, error: run.error, running: false });
+  run.taskKey = runTaskKey(machine);
   run.lines = [];
   run.requestId = '';
   run.terminal = false;
@@ -2315,8 +2329,10 @@ function openRunInputDialog(machine, fields) {
 }
 
 function appendLog(entry) {
+  if (entry.requestId && state.run.requestId && entry.requestId !== state.run.requestId) return;
   state.run.lines.push(entry);
   if (state.run.lines.length > 2000) state.run.lines.shift();
+  if (state.run.taskKey !== runTaskKey()) return;
   const log = $('run-log');
   if (!log) return;
   const details = $('run-log-details');
@@ -2484,7 +2500,7 @@ async function init() {
   automationHost.onRunScreen((p) => {
     if (state.run.requestId && state.run.requestId !== p.requestId) return;
     state.run.screen = p;
-    if (runTerm) runTerm.applyScreen(p);
+    if (runTerm && state.run.taskKey === runTaskKey()) runTerm.applyScreen(p);
   });
   automationHost.onAiProgress((p) => receiveAiProgress(p));
   automationHost.onAiResult((p) => receiveAiResult(p));

@@ -112,3 +112,37 @@ test('WSLの状態取得待ち・失敗でもコマンド作成フォームを�
   ctx.newCommandSchedule();
   assert.equal(state.execution.newCommand, undefined);
 });
+
+
+test('advanced AI schedules edit agent/model independently from manual settings', async () => {
+  const { ctx, state, calls } = fixture();
+  state.agents = ['codex', 'claude'];
+  state.task = { id: 'entry:ai', kind: 'prompt', name: 'review', entry: { prompt: 'review' },
+    schedules: [{ entryRef: 'entry:ai', fingerprint: 'v1', advanced: true, agentCli: 'claude', model: 'saved-model' }] };
+  const draft = ctx.ensureScheduleDraft(state.task);
+  assert.equal(draft.kind, 'preserve');
+  assert.match(ctx.scheduleEditorHtml(state.task), /schedule-agent/);
+  assert.equal(draft.model, 'saved-model');
+  draft.agentCli = 'codex';
+  draft.model = 'scheduled-model';
+  await ctx.saveSchedule();
+  assert.equal(calls[0].payload.agentCli, 'codex');
+  assert.equal(calls[0].payload.model, 'scheduled-model');
+  assert.equal(calls[0].payload.schedule.kind, 'preserve');
+});
+
+test('manual output is selected by repository and task, including during execution', () => {
+  const state = { root: '/a', run: { lines: [{ line: 'A output' }], running: true } };
+  let task = { id: 'a' };
+  const ctx = vm.createContext({ state, selectedExecutionMachine: () => task, taskIdentity: (t) => t.id });
+  vm.runInContext(source.slice(source.indexOf('const taskRunResults ='), source.indexOf('function executionDetailHtml(')), ctx);
+  state.run.taskKey = ctx.runTaskKey();
+  assert.equal(ctx.selectedTaskRun().lines[0].line, 'A output');
+  task = { id: 'b' };
+  assert.equal(ctx.selectedTaskRun().lines.length, 0);
+  assert.equal(ctx.selectedTaskRun().running, false);
+  task = { id: 'a' };
+  assert.equal(ctx.selectedTaskRun().running, true);
+  state.root = '/b';
+  assert.equal(ctx.selectedTaskRun().lines.length, 0);
+});

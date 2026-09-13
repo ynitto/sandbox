@@ -279,6 +279,32 @@ class RepositoryScheduleTest(unittest.TestCase):
                         })
                 self.assertFalse((root / ".agents" / "agent-loop.yml").exists())
 
+    def test_advanced_prompt_partial_edit_and_reset_agent(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            config = root / ".agents" / "agent-loop.yml"
+            config.parent.mkdir()
+            original = {"name": "review", "prompt": "review changes", "cron": "0 8,17 * * 1-5",
+                        "agent_cli": "claude", "model": "old-model", "hooks": ["check.py"]}
+            al._repository_write_config(config, {"prompts": [original]})
+            with mock.patch.object(al, "agent_home_dir", return_value=Path(hd)), \
+                    mock.patch.object(al, "_find_running_daemon", return_value=None):
+                for agent, model in [("codex", "new-model"), ("", "")]:
+                    task = al.repository_snapshot(root)["tasks"][0]
+                    schedule = task["schedules"][0]
+                    al.update_repository_schedule(root, {
+                        "entry": task["entry"], "entryRef": schedule["entryRef"],
+                        "fingerprint": schedule["fingerprint"], "schedule": {"kind": "preserve"},
+                        "agentCli": agent, "model": model, "enabled": False,
+                    })
+                    stored = al._read_config_file(config)["prompts"][0]
+                    self.assertEqual(stored["cron"], original["cron"])
+                    self.assertEqual(stored["hooks"], original["hooks"])
+                    self.assertEqual(stored["prompt"], original["prompt"])
+                    self.assertEqual(stored.get("agent_cli", ""), agent)
+                    self.assertEqual(stored.get("model", ""), model)
+                    self.assertFalse(stored["enabled"])
+
     def test_prompt_entry_schedule_can_be_edited_in_its_global_config(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
             root = Path(td).resolve()
