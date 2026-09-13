@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const settings = require('./settings');
+const reuse = require('../shared/reuse');
 
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
@@ -73,6 +74,7 @@ function normalize(raw) {
   next.lastTask = next.lastTask && typeof next.lastTask === 'object' ? next.lastTask : {};
   next.lastWorkflow = next.lastWorkflow && typeof next.lastWorkflow === 'object' ? next.lastWorkflow : {};
   next.lastTaskInputs = taskInputs(next.lastTaskInputs);
+  next.runPresets = reuse.presets(next.runPresets);
   next.automationSkillDir = String(next.automationSkillDir || '').trim();
   next.automationAgent = String(next.automationAgent || '').trim();   // 空 = 会話の「おすすめ」と同じ CLI（automation/ipc.js）
   next.automationModel = String(next.automationModel || '').trim();
@@ -185,6 +187,10 @@ function normalizeSession(sess) {
   // share … 共有の依頼を待っている印（{ id }）。答えが届いたら消す
   sess.share = sess.share && typeof sess.share === 'object' && sess.share.id ? { id: String(sess.share.id) } : null;
   sess.origin = normalizeOrigin(sess.origin);
+  const external = sess.externalOrigin;
+  sess.externalOrigin = external && typeof external === 'object' ? Object.fromEntries(
+    ['key', 'provider', 'nativeId', 'repo', 'title', 'boundary', 'revision', 'capturedAt', 'mode'].map(k => [k, String(external[k] || '').slice(0, 2000)])
+  ) : null;
   return sess;
 }
 
@@ -231,7 +237,7 @@ function writeSession(userData, sess) {
 // kind / task / workflow … タスク（kind: 'task'）とワークフロー（kind: 'workflow'）を AI と作る会話は、
 // それぞれ task.machine / workflow.id に紐づき、会話一覧には出ない。
 // origin … 別のリポジトリの会話から分岐したとき、その分岐元（normalizeOrigin）。
-function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null }) {
+function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null, externalOrigin = null }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   if (kind === 'task' && !(task && task.machine)) throw new Error('タスクの会話には保存名が要ります');
@@ -244,7 +250,7 @@ function createSession(userData, { repo, cli, model = '', readonly = false, auto
     workflow: kind === 'workflow' ? { id: String(workflow.id) } : null,
     readonly: Boolean(readonly), autoApprove: Boolean(autoApprove), policy: String(policy || 'direct'), tier: String(tier || ''),
     transport: transport === 'headless' ? 'headless' : 'tmux',
-    worktree: String(worktree || ''), branch: String(branch || ''), origin,
+    worktree: String(worktree || ''), branch: String(branch || ''), origin, externalOrigin,
     title: '', cliSessions: {}, live: null, terminalSession: null, terminalSnapshots: [], messages: [], createdAt: now, updatedAt: now,
   }));
 }

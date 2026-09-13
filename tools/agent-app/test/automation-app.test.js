@@ -241,7 +241,7 @@ test('手動実行の実行条件は、前回の値を既定にする（今回�
   assert.match(renderer, /await rememberRunParameters\(machine, state\.run\.parameters\)/);
   assert.match(renderer, /automationHost\.saveConfig\(\{ \.\.\.state\.config, taskInputs: all \}\)/);
   // 横に出すのは補助の 1 行（新しい部品を足さない）
-  assert.match(renderer, /前回: \$\{esc\(previous\[name\]\)\}<\/small>/);
+  assert.match(renderer, /前回: \$\{esc\(Reuse\.DATE_MODES\[previous\[name\]\] \|\| previous\[name\]\)\}<\/small>/);
 });
 
 test('失敗した実行は、ログごと AI の会話へ渡す（送るのは利用者）', () => {

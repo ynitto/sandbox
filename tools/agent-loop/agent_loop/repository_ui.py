@@ -302,7 +302,7 @@ def record_repository_run(cwd: "str | Path", record: Any) -> dict[str, Any]:
         record.get("workflow"))
     allowed = (
         "runId", "entryName", "source", "startedAt", "finishedAt", "ok", "escalate",
-        "finalState", "stopReason", "error", "logFile", "agentCli", "model", "command",
+        "finalState", "stopReason", "error", "logFile", "agentCli", "model", "command", "parameters",
     )
     normalized = {key: record[key] for key in allowed if key in record}
     normalized["runId"] = str(normalized.get("runId") or uuid.uuid4().hex)
@@ -698,6 +698,7 @@ def cmd_repository_statemachine(args: argparse.Namespace, cwd: Path) -> None:
             "stopReason": result.get("stopReason") or "",
             "error": result.get("error") or "",
             "logFile": result.get("logFile") or "",
+            "parameters": dict((plan or {}).get("parameters") or {}),
             "agentCli": (agent or {}).get("cli") or "",
             "model": (agent or {}).get("model") or "",
         })

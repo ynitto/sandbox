@@ -72,7 +72,7 @@ async function prepareRun(userData, { root, task, agent, parameters, skillMode, 
     ? `今回の実行で次のスキルを適用してください:\n${delivery.commands.join('\n')}`
     : delivery.instruction;
   return {
-    instruction: [sessionSetup.instructionBlock(cfg.instructions), skillInstruction, selectedInstruction].filter(Boolean).join('\n\n'),
+    instruction: [sessionSetup.instructionBlock(cfg.instructions, { artifacts: true }), skillInstruction, selectedInstruction].filter(Boolean).join('\n\n'),
     warning: [plan.warning, startup.warning].filter(Boolean).join('\n'),
     information: [...startup.information, ...delivery.information],
     skillSelection: resolved,

@@ -17,6 +17,7 @@ const attachments = require('./attachments');
 const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
 const sessionHandoff = require('./sessionHandoff');
+const { SessionBrowser } = require('./sessionBrowser');
 const handingOff = new Set();
 const notify = require('./notify');
 const forkProtocol = require('../renderer/forkProtocol');
@@ -865,6 +866,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   // tmux は runTmux が 1 件ずつ先に送るので、本依頼へ混ぜない。
   // 「会話」だけ、別のリポジトリへ分岐する作法（@fork 行）を添える。タスクを AI と作る会話には添えない
   const instructedPrompt = sessionSetup.withInstructions(attached.prompt, cfg.instructions, {
+    artifacts: true,
     fork: sess.kind === 'conversation' ? { repos: cfg.repos, current: sess.repo } : null,
   });
   const contextualPrompt = skillDelivery.instruction ? `${skillDelivery.instruction}\n\n${instructedPrompt}` : instructedPrompt;
@@ -1273,6 +1275,58 @@ function registerIpcHandlers(getWindow) {
     return { ...result, selected: result.selected.map(({ content, path: skillPath, ...item }) => item) };
   });
 
+  const sessionBrowser = new SessionBrowser({ userData });
+  const summaryJobs = new Map();
+  handle('sessions:search', p => sessionBrowser.search(p.query, p.requestId, p.cursor));
+  handle('sessions:cancel', p => {
+    sessionBrowser.cancel(p.requestId);
+    const job = summaryJobs.get(p.requestId);
+    if (job) { job.cancelled = true; job.active?.stop('引き継ぎを中止しました'); }
+  });
+  handle('sessions:read', p => sessionBrowser.read(String(p.key || '')));
+  handle('sessions:import', async p => {
+    const folder = p.folder === true;
+    const picked = await dialog.showOpenDialog(getWindow(), folder
+      ? { title: '会話の保存フォルダを追加', properties: ['openDirectory'] }
+      : { title: '会話を取り込む', properties: ['openFile', 'multiSelections'], filters: [{ name: '会話のJSON', extensions: ['json', 'jsonl'] }] });
+    if (picked.canceled) return null;
+    (folder ? sessionBrowser.codeRoots : sessionBrowser.imports).push(...picked.filePaths);
+    sessionBrowser.saveSources();
+    return true;
+  });
+  handle('sessions:prepare', async p => {
+    const repo = requireRepo(p.repo);
+    if (!['handoff', 'fork'].includes(p.mode)) throw new Error('引き継ぐ方法を選んでください');
+    const id = String(p.requestId || crypto.randomUUID());
+    if (summaryJobs.has(id)) throw new Error('引き継ぎ内容を作成中です');
+    const job = { active: null, cancelled: false };
+    const cfg = store.loadConfig(userData());
+    turnGate.acquire(id, cfg.execution.maxConcurrent);
+    summaryJobs.set(id, job);
+    try {
+      const selected = concreteCli({ cli: p.cli, model: p.model, readonly: true }, await listAgents(repo));
+      return await sessionBrowser.prepare({ ...p, repo, cli: selected.cli, model: selected.model }, async prompt => {
+        if (job.cancelled) throw new Error('引き継ぎを中止しました');
+        job.active = runPrompt({ cli: selected.cli, model: selected.model, prompt, readonly: true,
+          repo, cwd: dirsOf(repo, '').fsDir, timeoutMs: 180000 });
+        const result = await job.active.done;
+        if (job.cancelled || result.error || result.code !== 0 || result.stopped) throw new Error(result.error || '引き継ぎ内容を作成できませんでした');
+        return result.text;
+      });
+    } finally { summaryJobs.delete(id); turnGate.release(id, cfg.execution.maxConcurrent); }
+  });
+  handle('sessions:create', async p => {
+    const plan = sessionBrowser.prepared.get(p.token);
+    if (!plan) throw new Error('引き継ぎ内容を作り直してください');
+    requireRepo(plan.repo);
+    const agents = await listAgents(plan.repo);
+    const agent = agents.find(a => a.name === plan.cli && a.available);
+    if (!agent) throw new Error('このフォルダでは選択したエージェントを起動できません');
+    const cfg = store.loadConfig(userData());
+    const info = await host.probe(distroFor(plan.repo));
+    const transport = cfg.transport === 'tmux' && info.tmux && agent.interactive ? 'tmux' : 'headless';
+    return sessionBrowser.create({ ...p, transport });
+  });
   handle('session:list', (p) => store.listSessions(userData(), p.repo || ''));
   handle('session:create', async (p) => {
     const repo = requireRepo(p.repo);
@@ -1478,9 +1532,11 @@ function registerIpcHandlers(getWindow) {
     return git.fileDiff(dirs.hostDir, String(p.file || ''), distro, { scope, base });
   });
   handle('shell:openFolder', (p) => shell.openPath(dirsOf(p.repo, p.worktree, { mustExist: true }).fsDir));
-  handle('shell:openFile', (p) => {
+  handle('shell:openFile', async (p) => {
     const { target } = files.resolveInside(dirsOf(p.repo, p.worktree).fsDir, p.rel || '');
-    return shell.openPath(target);
+    const error = await shell.openPath(target);
+    if (error) throw new Error(error);
+    return true;
   });
   handle('shell:showFile', (p) => {
     const { target } = files.resolveInside(dirsOf(p.repo, p.worktree).fsDir, p.rel || '');

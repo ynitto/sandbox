@@ -1,4 +1,7 @@
 'use strict';
+const runHistory = require('./run-history');
+const routine = require('./routine');
+const reuse = require('../../shared/reuse');
 
 const { ipcMain, dialog, shell, app } = require('electron');
 const { randomUUID } = require('crypto');
@@ -175,7 +178,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         try {
           if (code !== 0) throw new Error((stderr || `${spec.command} が終了コード ${code} で終了しました`).trim());
           if (truncated) throw new Error('AIの応答が大きすぎます');
-          const result = ai.parseEnvelope(stdout, { mode: job.mode, baseSpec: job.baseSpec, scope: job.scope });
+          const result = job.mode === 'routine' ? routine.parse(stdout) : ai.parseEnvelope(stdout, { mode: job.mode, baseSpec: job.baseSpec, scope: job.scope });
           const changes = result.candidate && job.mode === 'review'
             ? aiDiff.diff(job.baseSpec, result.candidate)
             : [];
@@ -343,7 +346,12 @@ function registerIpcHandlers(getWindow, options = {}) {
   const readSnapshot = require('./snapshot-reader')((root) => agentLoop.inspect({ root, capture: runCapture }));
   register('run:snapshot', async (p) => {
     const root = selectedRoot(p);
-    return taskInputs.enrichSnapshot(root, await readSnapshot(root));
+    const snapshot = await readSnapshot(root);
+    const missing = store.list(root).filter(item => !(snapshot.tasks || []).some(task => task.machine === item.machine));
+    const machines = missing.map(item => {
+      try { return { ...item, parameters: model.normalizeProcedure(store.read(root, item.machine).raw).parameters }; } catch { return item; }
+    });
+    return taskInputs.enrichSnapshot(root, runHistory.merge(getUserData(), root, snapshot, machines));
   });
   register('run:schedule', (p) => agentLoop.saveSchedule({
     root: selectedRoot(p), payload: p.schedule, capture: runCapture,
@@ -385,7 +393,7 @@ function registerIpcHandlers(getWindow, options = {}) {
 
   register('ai:start', async (p, event) => {
     const root = selectedRoot(p);
-    const mode = p.mode === 'review' ? 'review' : 'draft';
+    const mode = ['review', 'routine'].includes(p.mode) ? p.mode : 'draft';
     const cfg = settings.load(getUserData());
     const requestedAgent = String(p.agent || cfg.agent || '');
     if (!requestedAgent) throw new Error('使う AI を選んでください（「実行環境」で確認できます）');
@@ -397,7 +405,9 @@ function registerIpcHandlers(getWindow, options = {}) {
     let baseSpec = null;
     let scope = { type: 'workflow' };
     let prompt;
-    if (mode === 'review') {
+    if (mode === 'routine') {
+      prompt = routine.prompt(String(p.request || ''));
+    } else if (mode === 'review') {
       baseSpec = model.normalizeProcedure(p.spec);
       scope = ai.normalizeScope(p.scope, baseSpec);
       prompt = ai.reviewPrompt({ spec: baseSpec, scope, focus: p.focus, history: p.history });
@@ -455,6 +465,8 @@ function registerIpcHandlers(getWindow, options = {}) {
     let command;
     let args;
     let preparation = {};
+    let actualInputs = {}, actualAgent = '', actualModel = '';
+    const startedAt = new Date().toISOString();
     let onHost = false;
     let launchWarning = '';
     let launchInput = '';                // stdin で本文を渡す定義（codex 等）
@@ -495,7 +507,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         ? named
         : await resolveAgent(requestedAgent, 'task', root);
       const parameters = p.parameters && typeof p.parameters === 'object'
-        ? p.parameters
+        ? reuse.resolveInputs(p.parameters)
         : { ...(p.context && typeof p.context === 'object' ? p.context : {}), ...(p.input ? { input: p.input } : {}) };
       const input = taskInputs.requiredInput(task, parameters);
       if (input.missing.length) {
@@ -504,7 +516,8 @@ function registerIpcHandlers(getWindow, options = {}) {
         error.detail = { fields: input.missing, defaults: input.values };
         throw error;
       }
-      Object.assign(parameters, input.values);
+      Object.assign(parameters, reuse.resolveInputs(input.values));
+      actualInputs = { ...parameters }; actualAgent = requestedAgent; actualModel = p.model || cfg.model || '';
       preparation = options.hooks && options.hooks.prepareRun
         ? await options.hooks.prepareRun({
           root, task, agent, model: p.model || cfg.model, parameters,
@@ -569,7 +582,8 @@ function registerIpcHandlers(getWindow, options = {}) {
       }),
       onExit: ({ code, stdout, stderr, truncated }) => {
         // 応答をファイルへ書く定義は、そこに本文がある（stdout は進行だけ）。
-        for (const line of String(launchOutputFile ? readOutputFile(launchOutputFile) : '').split(/\r?\n/)) {
+        const answerText = launchOutputFile ? readOutputFile(launchOutputFile) : '';
+        for (const line of String(answerText).split(/\r?\n/)) {
           if (line) send(channel('run:line'), { requestId, machine, kind: 'stdout', line: terminalText.stripAnsi(line) });
         }
         // 1 セッションの経路は RESULT 行を出さないので、成否は終了コードで見る
@@ -577,6 +591,15 @@ function registerIpcHandlers(getWindow, options = {}) {
         const result = mode === 'run' && resultSource === 'result-line'
           ? agentLoop.parseResult(stdout, code)
           : { ok: code === 0 };
+        if (mode === 'run' && (terminalPayload || resultSource === 'exit-code' || snapshot.available === false)) {
+          try { runHistory.append(getUserData(), root, {
+            runId: requestId, taskId: task.id || taskId, machine, source: 'manual', startedAt,
+            finishedAt: new Date().toISOString(), ...result, parameters: actualInputs,
+            agentCli: actualAgent, model: actualModel, skillMode: p.skillMode || 'auto', skills: p.skills || [],
+            artifacts: reuse.artifacts(answerText || stdout),
+            logText: String(answerText || stdout || stderr || '').split(/\r?\n/).slice(-60).join('\n').slice(-2000),
+          }); } catch (err) { send(channel('run:line'), { requestId, machine, kind: 'stderr', line: `実行条件を保存できません: ${err.message}` }); }
+        }
         send(channel('run:exit'), {
           requestId, machine, code, mode, result,
           error: truncated ? '実行ログが大きいため一部を省略しました' : '',

@@ -1498,7 +1498,7 @@ class PeriodicScheduler:
                 self._fail_execution(req, slot_key, reason="statemachine_invalid")
                 return
             workflow = str(spec["workflow"])
-            parameters = dict(spec["parameters"])
+            parameters = _loopentry.resolve_date_inputs(spec["parameters"])
         log_file = self._headless_log_file(root_id)
         # ログペインが tail するのは人が読むテキスト版（`[tag] message` 行）。
         # jsonl は機械記録のまま残し、見せ方は dashboard 定常業務の実行ペインに揃える。
@@ -1601,6 +1601,7 @@ class PeriodicScheduler:
                         "stopReason": result.get("stopReason") or "",
                         "error": result.get("error") or "",
                         "logFile": result.get("logFile") or "",
+                        "parameters": parameters,
                         "agentCli": "" if command is not None else profile.name,
                         "model": "" if command is not None else (profile.model or ""),
                     })

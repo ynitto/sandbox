@@ -73,6 +73,18 @@
           "!**/__pycache__/**",
           "!**/node_modules/**"
         ]
+      },
+      {
+        "from": "../agent-audit/agent_audit",
+        "to": "audit-runtime/agent_audit",
+        "filter": [
+          "__init__.py",
+          "session_browser.py",
+          "readers.py",
+          "cleaning.py",
+          "util.py",
+          "scrub.py"
+        ]
       }
     ]
   }

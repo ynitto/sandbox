@@ -466,11 +466,11 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .tag.ok { border-color: var(--ok); color: var(--ok); }
 
 /* ---- ダイアログ ---- */
-#wt-dialog, #app-settings { max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--panel); box-shadow: 0 24px 60px rgba(31, 35, 40, .2); }
-#wt-dialog { width: 720px; }
+#wt-dialog, #app-settings, #routine-dialog, #search-transfer-dialog { max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--panel); box-shadow: 0 24px 60px rgba(31, 35, 40, .2); }
+#wt-dialog, #routine-dialog, #search-transfer-dialog { width: 720px; }
 #app-settings { width: 780px; height: min(720px, calc(100vh - 40px)); }
 #app-settings[open] { display: flex; flex-direction: column; }
-#wt-dialog::backdrop, #app-settings::backdrop { background: rgba(18, 23, 31, .42); }
+#wt-dialog::backdrop, #app-settings::backdrop, #routine-dialog::backdrop, #search-transfer-dialog::backdrop { background: rgba(18, 23, 31, .42); }
 .dlg-head { min-height: 54px; display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
 .dlg-body { padding: 14px 16px 18px; overflow: auto; }
 .dlg-body p { margin: 0 0 10px; }
@@ -615,4 +615,35 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #task-record .sub.error { color: var(--danger); }
 @media (max-width: 680px) {
   .task-save-name { grid-template-columns: 1fr; gap: 5px; }
+}
+
+/* Global conversation search uses the existing sidebar, rows, message and dialog controls. */
+#session-search { grid-area: main; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); }
+#session-search-open { justify-content: flex-start; margin-bottom: 10px; }
+.search-filters { padding: 16px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+.search-filters > input { width: 100%; }
+.search-filters .row { flex-wrap: wrap; }
+#search-more .menu-panel { min-width: 240px; }
+#search-more label { display: grid; gap: 6px; padding: 8px; }
+#search-split { display: grid; grid-template-columns: minmax(220px, 36%) minmax(0, 1fr); min-height: 0; flex: 1; }
+#search-results-pane, #search-preview { min-width: 0; overflow: auto; padding: 16px; }
+#search-results-pane { border-right: 1px solid var(--line); }
+#search-results .list-pick { width: 100%; text-align: left; display: grid; gap: 5px; margin-bottom: 6px; white-space: normal; }
+#search-results .sub { overflow-wrap: anywhere; }
+#search-preview .search-message { margin: 18px 0; }
+#search-preview .search-message-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+#search-preview .search-preview-actions { position: sticky; bottom: 0; padding: 12px 0; background: var(--panel); }
+#search-transfer-dialog[open] { display: flex; flex-direction: column; }
+#search-transfer-dialog textarea { width: 100%; }
+#search-back { display: none; }
+@media (max-width: 900px) {
+  #search-split { grid-template-columns: minmax(0, 1fr); }
+  #search-split:not(.has-preview) #search-preview, #search-split.has-preview #search-results-pane { display: none; }
+  #search-back { display: inline-flex; }
+}
+
+#search-error-detail { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (max-width: 820px) {
+  #session-search > .area-head { padding-left: 62px; }
 }

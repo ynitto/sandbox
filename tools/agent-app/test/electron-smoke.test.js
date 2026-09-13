@@ -648,6 +648,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#run-settings summary').click();
     await win.locator('#share-priority-field').waitFor();
     assert.strictEqual(await win.locator('#policy-field').isVisible(), false, '共有では起動方針を出さない');
+    // 現在の会話のCLIは引き継がれる。任意の参加者へ送る選択もできる。
+    await win.locator('#cli').selectOption('*');
     assert.match(await win.locator('#run-settings-summary').textContent(), /どれでも.*優先度 通常/);
     assert.match(await win.locator('#send').textContent(), /依頼する/);
     if (process.env.AGENT_APP_SHARE_COMPOSER_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_COMPOSER_SCREENSHOT });

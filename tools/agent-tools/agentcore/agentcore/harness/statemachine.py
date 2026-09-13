@@ -1089,12 +1089,13 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path, *, result_recorder=Non
     plan = None
     workflow_path = getattr(args, "workflow", None)
     agent = {}
+    params = {}
 
     def notify(result):
         if not callable(result_recorder) or not workflow_path:
             return
         try:
-            result_recorder(work_dir, workflow_path, result, agent, plan)
+            result_recorder(work_dir, workflow_path, result, agent, {**(plan or {}), "parameters": params})
         except Exception as exc:
             print(f"[agent-loop] WARNING: 実行履歴を記録できません: {exc}", file=sys.stderr)
 
@@ -1107,6 +1108,8 @@ def cmd_statemachine(args: argparse.Namespace, cwd: Path, *, result_recorder=Non
         params = dict(plan["parameters"]) if plan else {}
         params.update(_sm_parse_params(getattr(args, "param", None) or [],
                                        getattr(args, "input", None)))
+        from agentcore.loopentry import resolve_date_inputs
+        params = resolve_date_inputs(params)
         workflow_path = getattr(args, "workflow", None) or plan["workflow"]
         # 候補ベース（agent-control v2 selection_policy）: 人が --agent-cli を明示したら
         # それが pin（従来どおり最優先）。次に entry の宣言。どちらも無いときだけ

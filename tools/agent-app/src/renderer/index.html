@@ -23,6 +23,7 @@
         <span>Agent App</span>
       </div>
 
+      <button type="button" id="session-search-open" class="quiet row"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><span>会話を検索</span></button>
       <div class="side-label">メニュー</div>
       <nav id="areas" class="app-menu" aria-label="主要メニュー">
         <button type="button" id="area-work" class="on" aria-current="page">
@@ -64,10 +65,6 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
           </button>
         </div>
-        <div id="session-filter-row" class="tree-tools">
-          <label class="sr-only" for="session-filter">会話を名前で絞り込む</label>
-          <input id="session-filter" placeholder="名前で絞り込み">
-        </div>
         <ul id="sessions" class="list grow"></ul>
         <ul id="tasks" class="list grow" hidden></ul>
         <ul id="workflows" class="list grow" hidden></ul>
@@ -100,6 +97,7 @@
           <summary aria-label="その他の操作">その他</summary>
           <div class="menu-panel">
             <button type="button" id="open-folder">フォルダを開く</button>
+            <button type="button" id="session-routine" hidden>この作業を定型化</button>
             <button type="button" id="session-rename" hidden>会話名を変更</button>
             <button type="button" id="session-delete" class="danger" hidden>会話を削除</button>
           </div>
@@ -164,6 +162,9 @@
                 <summary><span id="run-settings-summary">実行設定</span></summary>
                 <div class="settings-popover">
                   <div class="popover-head">実行設定</div>
+                  <label>保存済み設定<select id="run-preset"><option value="">選択</option></select></label>
+                  <input id="preset-name" placeholder="設定の名前" aria-label="設定の名前" maxlength="60" hidden>
+                  <div class="row"><button type="button" id="preset-save" class="small">現在の設定を保存</button><button type="button" id="preset-delete" class="small">削除</button></div>
                   <label id="policy-field">起動方針
                     <select id="policy">
                       <option value="recommended">おすすめ</option>
@@ -245,6 +246,34 @@
         </section>
       </section>
     </main>
+
+    <section id="session-search" aria-label="会話を検索" hidden>
+      <header class="area-head"><div class="title">会話を検索</div><span class="spacer"></span><button type="button" id="session-search-close" class="small">閉じる</button></header>
+      <div class="search-filters">
+        <input id="search-text" type="search" placeholder="会話のタイトル・内容を検索" aria-label="会話のタイトル・内容を検索">
+        <div class="row">
+          <select id="search-agent" aria-label="エージェント"><option value="">すべてのエージェント</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="copilot">Copilot</option><option value="kiro">Kiro</option></select>
+          <select id="search-date" aria-label="日付"><option value="">日付指定なし</option><option value="today">今日</option><option value="yesterday">昨日</option><option value="7">過去7日</option><option value="30">過去30日</option><option value="range">範囲指定</option></select>
+          <input id="search-repo" placeholder="すべてのリポジトリ" aria-label="検索するリポジトリ">
+          <details id="search-more" class="more-menu"><summary>絞り込み</summary><div class="menu-panel">
+            <label>取得元<select id="search-source"><option value="">すべて</option><option value="app">agent-app</option><option value="cli">CLI</option><option value="vscode">VS Code</option></select></label>
+            <label>モデル<input id="search-model" placeholder="指定なし"></label>
+            <label>日付の基準<select id="search-date-field"><option value="updated">更新日時</option><option value="created">作成日時</option></select></label>
+            <label><input type="checkbox" id="search-archived">アーカイブを含める</label>
+            <button type="button" id="search-import">会話のJSONを取り込む</button>
+            <button type="button" id="search-folder">会話の保存フォルダを追加</button>
+          </div></details>
+          <button type="button" id="search-reset" class="small quiet">条件を解除</button>
+        </div>
+        <div id="search-date-range" class="row" hidden><label>開始日<input type="date" id="search-since"></label><label>終了日<input type="date" id="search-until"></label></div>
+        <details id="search-errors" hidden><summary>取得できなかった会話</summary><p id="search-error-detail" class="sub"></p></details>
+        <div class="row"><span id="search-status" class="sub" role="status"></span><button type="button" id="search-cancel" class="small quiet" hidden>中止</button></div>
+      </div>
+      <div id="search-split">
+        <section id="search-results-pane" aria-label="検索結果"><ul id="search-results" class="list"></ul><div class="row"><button type="button" id="search-prev" class="small" hidden>前へ</button><button type="button" id="search-next" class="small" hidden>次へ</button></div></section>
+        <section id="search-preview" aria-label="会話のプレビュー"><p class="sub">会話を選ぶと内容を確認できます</p></section>
+      </div>
+    </section>
 
     <section id="automation" aria-label="タスクとワークフロー" hidden>
       <header id="automation-head" class="area-head">
@@ -596,6 +625,32 @@
     <div class="dlg-actions"><span id="settings-status" class="sub"></span><span class="spacer"></span><button type="button" id="settings-save" class="primary">保存</button></div>
   </dialog>
 
+  <dialog id="search-transfer-dialog">
+    <div class="dlg-head"><strong id="search-transfer-title">新しいセッションに引き継ぐ</strong><span class="spacer"></span><button type="button" id="search-transfer-close" class="small">閉じる</button></div>
+    <div class="dlg-body">
+      <p id="search-transfer-source" class="sub"></p>
+      <p class="sub">会話の文脈から新しく開始します。</p>
+      <label class="setting-field"><span>保存先</span><select id="search-target-repo"></select></label>
+      <button type="button" id="search-target-add" class="small">フォルダを追加</button>
+      <div id="search-execution-inputs"></div>
+      <label class="setting-field"><span>権限</span><select id="search-target-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
+      <div class="teaching-create-form"><label class="task-create-label" for="search-summary">引き継ぐ内容</label><textarea id="search-summary" rows="9" placeholder="保存先とエージェントを選んで、引き継ぎ内容を作成してください" disabled></textarea></div>
+      <label class="task-create-label" for="search-request">追加の依頼（任意）</label><textarea id="search-request" rows="2"></textarea>
+      <p id="search-transfer-status" class="sub" role="status"></p>
+    </div>
+    <div class="dlg-actions"><button type="button" id="search-transfer-start" class="primary">引き継ぎ内容を作る</button></div>
+  </dialog>
+  <dialog id="routine-dialog">
+    <div class="dlg-head"><strong>この作業を定型化</strong><span class="spacer"></span><button type="button" id="routine-close" class="small">閉じる</button></div>
+    <div class="dlg-body">
+    <p id="routine-status" class="sub"></p>
+    <label class="setting-field"><span>種類</span><select id="routine-kind"><option value="skill">スキル</option><option value="task">タスク</option><option value="workflow">ワークフロー</option></select></label>
+    <p class="sub">スキル: 知識・判断を再利用 ／ タスク: 1つの仕事を完了 ／ ワークフロー: 複数担当を連携</p>
+    <label class="setting-field"><span>保存先</span><select id="routine-repo"></select></label>
+    <button type="button" id="routine-add-repo" class="small">フォルダを追加</button>
+    <div class="teaching-create-form"><label class="task-create-label" for="routine-purpose">作成する内容</label><textarea id="routine-purpose" rows="12"></textarea></div>
+    </div><div class="dlg-actions"><button type="button" id="routine-create" class="primary" disabled>新しいセッションで作成</button><button type="button" id="routine-retry" class="small">再検討</button></div>
+  </dialog>
   <dialog id="wt-dialog">
     <div class="dlg-head"><strong>作業フォルダ（git worktree）</strong><span class="spacer"></span><button id="wt-close" class="small">閉じる</button></div>
     <div class="dlg-body">
@@ -633,6 +688,7 @@
   <script src="vendor/mermaid.min.js"></script>
   <script src="vendor/diff2html-ui.min.js"></script>
   <script src="md.js"></script>
+  <script src="../shared/reuse.js"></script>
   <script src="inputMode.js"></script>
   <script src="term.js"></script>
   <script src="talk.js"></script>
@@ -648,6 +704,7 @@
   <script src="automation/teaching.js"></script>
   <script src="automation/flow.js"></script>
   <script src="automation/renderer.js"></script>
+  <script src="sessionSearch.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

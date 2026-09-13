@@ -804,6 +804,13 @@ function bindHome(main) {
     render();
   });
   on('daemon-toggle', toggleDaemon);
+  for (const button of main.querySelectorAll('[data-history-reuse]')) button.addEventListener('click', () => reuseHistory(button.dataset.historyReuse));
+  for (const button of main.querySelectorAll('[data-artifact]')) button.addEventListener('click', () => window.api.openFile(state.root, '', button.dataset.artifact).catch(err => toast(err.message, true)));
+  for (const input of main.querySelectorAll('[data-date-mode]')) input.addEventListener('change', () => {
+    const values = input.dataset.dateMode === 'run' ? state.run.parameters : ensureScheduleDraft(selectedExecutionMachine()).input;
+    values[input.dataset.name] = input.value || Reuse.resolveDate(values[input.dataset.name] || '');
+    render();
+  });
   for (const button of main.querySelectorAll('[data-history-log]')) button.addEventListener('click', () => openHistoryLog(button.dataset.historyLog));
   for (const button of main.querySelectorAll('[data-history-fix]')) button.addEventListener('click', () => handFailureToAi(button.dataset.historyFix));
   for (const input of main.querySelectorAll('[data-run-param]')) input.addEventListener('input', () => {
@@ -1155,6 +1162,24 @@ function selectedTaskRun(machine = selectedExecutionMachine()) {
   return state.run.taskKey === key ? state.run : taskRunResults.get(key) || { lines: [], running: false };
 }
 
+function dateInputHtml(name, value, scope) {
+  const mode = Reuse.DATE_MODES[value] ? value : '';
+  return `<input data-${scope}-param="${esc(name)}" value="${esc(Reuse.resolveDate(value || ''))}" ${mode ? 'readonly' : ''}><select aria-label="${esc(name)}の自動入力" data-date-mode="${scope}" data-name="${esc(name)}"><option value="">固定値</option>${Object.entries(Reuse.DATE_MODES).map(([key, label]) => `<option value="${key}" ${mode === key ? 'selected' : ''}>${label}</option>`).join('')}</select>`;
+}
+
+function reuseHistory(runId) {
+  const machine = selectedExecutionMachine();
+  const item = (machine.history || []).find(item => item.runId === runId);
+  if (!item || !item.parameters || state.run.running) return;
+  ensureRunParameters(machine);
+  state.run.parameters = Object.fromEntries((machine.parameters || []).filter(key => item.parameters[key] != null).map(key => [key, String(item.parameters[key])]));
+  state.run.policy = 'direct'; state.run.agent = item.agentCli || ''; state.run.model = item.model || '';
+  state.run.skillMode = item.skillMode || 'auto'; state.run.skills = item.skills || [];
+  state.execution.detailTab = 'overview';
+  render();
+  toast('保存された条件を読み込みました。現在の手順で実行します');
+}
+
 function executionDetailHtml(machine) {
   ensureRunParameters(machine);
   const displayedRun = selectedTaskRun(machine);
@@ -1178,8 +1203,8 @@ function executionDetailHtml(machine) {
   const previous = rememberedInputs(machine);
   const inputs = parameters.length ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${parameters.map((name) => {
     const value = state.run.parameters[name] || '';
-    const hint = previous[name] && previous[name] !== value ? `<small class="muted">前回: ${esc(previous[name])}</small>` : '';
-    return `<div class="field"><label>${esc(name)}</label><input data-run-param="${esc(name)}" value="${esc(value)}">${hint}</div>`;
+    const hint = previous[name] && previous[name] !== value ? `<small class="muted">前回: ${esc(Reuse.DATE_MODES[previous[name]] || previous[name])}</small>` : '';
+    return `<div class="field"><label>${esc(name)}</label>${dateInputHtml(name, value, 'run')}${hint}</div>`;
   }).join('')}</div></div>` : '';
   // 失敗した行からは「手順」→「編集」と同じ会話を起こし、失敗の中身を入力欄へ置く
   const canTeach = !!(machine.machine && machine.kind === 'statemachine');
@@ -1188,7 +1213,9 @@ function executionDetailHtml(machine) {
     const cls = item.ok ? 'ok' : item.escalate ? 'warn' : 'ng';
     // 行の操作は 1 つの列にまとめる（行の骨格は 3 列のまま）
     const actions = [
-      item.logFile ? `<button type="button" class="tiny" data-history-log="${esc(item.runId)}">ログ</button>` : '',
+      item.parameters && machine.kind !== 'command' ? `<button type="button" class="tiny" data-history-reuse="${esc(item.runId)}" ${state.run.running ? 'disabled' : ''}>この条件を使う</button>` : '',
+      ...(item.artifacts || []).map(rel => `<button type="button" class="tiny" data-artifact="${esc(rel)}">${esc(rel)}</button>`),
+      item.logFile || item.logText ? `<button type="button" class="tiny" data-history-log="${esc(item.runId)}">ログ</button>` : '',
       !item.ok && canTeach ? `<button type="button" class="tiny" data-history-fix="${esc(item.runId)}">AIに直してもらう</button>` : '',
     ].filter(Boolean).join('');
     return `<li><span class="status ${cls}">${status}</span><div><strong>${item.source === 'scheduled' ? '定期実行' : '手動実行'}</strong><small>${esc(dateLabel(item.finishedAt || item.startedAt))}${item.agentCli ? ` · ${esc(item.agentCli)}` : ''}${item.model ? ` / ${esc(item.model)}` : ''}</small>${item.error ? `<p>${esc(item.error)}</p>` : ''}</div>${actions ? `<div class="row">${actions}</div>` : ''}</li>`;
@@ -1220,7 +1247,7 @@ function executionDetailHtml(machine) {
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
     : state.execution.detailTab === 'overview' ? `
       ${machine.kind === 'command' ? (taskIdentity(machine) === 'new-command' ? '' : `<section class="execution-card"><div class="execution-card-head"><h3>コマンド</h3><button type="button" id="command-edit">名前・コマンドを編集</button></div><pre>${esc(commandText(machine.entry?.command))}</pre>${machine.error ? `<p class="run-result ng">${esc(machine.error)}</p>` : ''}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || machine.error ? 'disabled' : ''}>今すぐ実行</button><button type="button" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${result}${logView}</section>`) : `<section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${displayedRun.running ? 'active' : ''}">${displayedRun.running ? '実行中' : '待機中'}</span></div>
-        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${displayedRun.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>`}
+        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${Reuse.artifacts(displayedRun.lines.map(item => item.line).join('\n')).map(rel => `<button type="button" class="tiny" data-artifact="${esc(rel)}">${esc(rel)}</button>`).join('')}${displayedRun.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>`}
       <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>リポジトリ全体のスケジューラー · ${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '定期実行を停止' : '定期実行を開始'}</button>${['statemachine', 'prompt', 'command'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
@@ -1274,7 +1301,7 @@ function scheduleEditorHtml(machine) {
   const timing = draft.kind === 'preserve' ? '<p class="muted small">詳細設定の実行条件を維持します。名前・有効状態・エージェント・モデルは個別に変更できます。</p>' : draft.kind === 'interval'
     ? `<div class="field"><label>間隔（分）</label><input id="schedule-minutes" type="number" min="1" value="${esc(draft.minutes)}"></div>`
     : `<div class="field"><label>時刻</label><input id="schedule-time" type="time" value="${esc(draft.time)}"></div>${draft.kind === 'weekly' ? `<div class="weekday-row">${['日', '月', '火', '水', '木', '金', '土'].map((label, day) => `<label><input type="checkbox" data-schedule-day="${day}" ${draft.days.includes(day) ? 'checked' : ''}>${label}</label>`).join('')}</div>` : ''}`;
-  const inputs = (machine.parameters || []).map((name) => `<div class="field"><label>${esc(name)}</label><input data-schedule-param="${esc(name)}" value="${esc(draft.input[name] || '')}"></div>`).join('');
+  const inputs = (machine.parameters || []).map((name) => `<div class="field"><label>${esc(name)}</label>${dateInputHtml(name, draft.input[name], 'schedule')}</div>`).join('');
   const commandFields = machine.kind === 'command'
     ? `<div class="field"><label for="schedule-command">コマンド</label><textarea id="schedule-command" rows="3" placeholder="python3 scripts/maintenance.py">${esc(draft.command)}</textarea><small class="muted">1行に1コマンドを入力します。上から順に実行し、失敗時は停止します。空行は無視します。各コマンドは選択したリポジトリで実行します。パイプやリダイレクトは使えません。</small></div><div class="field"><label for="schedule-timeout">各コマンドのタイムアウト（秒）</label><input id="schedule-timeout" type="number" min="1" step="1" value="${esc(draft.timeout)}"></div>` : '';
   const agents = [...new Set([draft.agentCli, ...(state.agents || []).map((agent) => typeof agent === 'string' ? agent : agent.id || agent.cli)].filter(Boolean))];
@@ -1394,7 +1421,7 @@ async function handFailureToAi(runId) {
   if (item.logFile) {
     log = await guard('ログ', () => automationHost.runLog(state.root, { workflow: machine.workflow, runId }));
   }
-  const prefill = failurePrompt(machine, item, log && log.text);
+  const prefill = failurePrompt(machine, item, (log && log.text) || item.logText);
   await openTeaching(machine.machine);
   notifyTeachingPrefill(prefill);
   toast('編集を開始すると、失敗の内容が入力欄に入ります');
@@ -1404,6 +1431,8 @@ async function openHistoryLog(runId) {
   if (!runId) { state.execution.log = null; render(); return; }
   const machine = selectedExecutionMachine();
   if (!machine) return;
+  const local = (machine.history || []).find(item => item.runId === runId && item.logText);
+  if (local) { state.execution.log = { runId, text: local.logText, truncated: true }; render(); return; }
   state.execution.log = { runId, text: '読み込んでいます…', truncated: false };
   render();
   try {

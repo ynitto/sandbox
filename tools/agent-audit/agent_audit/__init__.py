@@ -21,6 +21,9 @@ if _agentcore_dir not in _sys.path:
     _sys.path.insert(0, _agentcore_dir)
 del _os, _sys, _agentcore_dir
 
-from .cli import main  # noqa: F401,E402
+def main(argv=None):
+    # Readers are also bundled by desktop clients without the audit CLI dependencies.
+    from .cli import main as cli_main
+    return cli_main(argv)
 
 __version__ = "0.1.0"

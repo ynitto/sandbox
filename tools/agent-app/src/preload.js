@@ -18,6 +18,14 @@ const on = (channel) => (cb) => ipcRenderer.on(channel, (_ev, p) => cb(p));
 
 contextBridge.exposeInMainWorld('api', {
   platform: process.platform,
+  sessionBrowser: {
+    search: payload => invoke('sessions:search', payload),
+    cancel: requestId => invoke('sessions:cancel', { requestId }),
+    read: key => invoke('sessions:read', { key }),
+    import: folder => invoke('sessions:import', { folder }),
+    prepare: payload => invoke('sessions:prepare', payload),
+    create: payload => invoke('sessions:create', payload),
+  },
   hostInfo: () => invoke('host:info'),
   getConfig: () => invoke('config:get'),
   saveConfig: (patch) => invoke('config:save', { patch }),

@@ -706,7 +706,7 @@ class RepositoryCliTest(unittest.TestCase):
                 "files": [],
             }
             argv = ["agent-loop", "statemachine", "--workflow", ".statemachine/only/workflow.yaml",
-                    "--dir", str(root), "--agent-cli", "fake"]
+                    "--dir", str(root), "--agent-cli", "fake", "--param", "month=@date:previous-month"]
             fake_agent = {"cli": "fake", "model": "m", "spec": {}}
             with mock.patch.dict(os.environ, {"AGENT_LOOP_RUN_HISTORY_DIR": history_dir}), \
                  mock.patch.object(sys, "argv", argv), \
@@ -722,6 +722,7 @@ class RepositoryCliTest(unittest.TestCase):
             self.assertEqual(len(history), 1)
             self.assertEqual(history[0]["source"], "manual")
             self.assertEqual(history[0]["finalState"], "done")
+            self.assertEqual(history[0]["parameters"], al._loopentry.resolve_date_inputs({"month": "@date:previous-month"}))
 
 
 if __name__ == "__main__":

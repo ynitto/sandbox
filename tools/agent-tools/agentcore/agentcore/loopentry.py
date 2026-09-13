@@ -470,3 +470,18 @@ def resolve_entry(name, *, cwd, config=None) -> dict:
         "model": _scalar(entry.get("model")) or "",
         "cwd": os.path.expanduser(entry_cwd) if entry_cwd else "",
     }
+
+
+def resolve_date_inputs(values, *, today=None):
+    """Resolve explicit calendar defaults at dispatch time, in the execution host's timezone."""
+    from datetime import date, timedelta
+    today = today or date.today()
+    previous_month = today.replace(day=1) - timedelta(days=1)
+    replacements = {
+        "@date:today": today.isoformat(),
+        "@date:yesterday": (today - timedelta(days=1)).isoformat(),
+        "@date:month": today.strftime("%Y-%m"),
+        "@date:previous-month": previous_month.strftime("%Y-%m"),
+    }
+    return {key: replacements.get(value, value) if isinstance(value, str) else value
+            for key, value in (values or {}).items()}

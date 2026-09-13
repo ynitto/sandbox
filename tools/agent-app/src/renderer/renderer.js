@@ -49,8 +49,8 @@ const state = {
   turnSkillPreview: [],
   skillPreviewTimer: null,
   pendingTaskIntent: null,
+  routine: null,
   filledPrompt: '',     // 入力欄へこちらが置いた本文（書きかけと見分けるため）
-  sessionFilter: '',    // 会話一覧の絞り込み（名前の一部）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -207,11 +207,7 @@ async function removeConversation(session) {
 function renderSessions() {
   const ul = $('sessions');
   ul.replaceChildren();
-  const needle = state.sessionFilter.trim().toLowerCase();
-  const shown = needle
-    ? state.sessions.filter((s) => String(s.title || '').toLowerCase().includes(needle))
-    : state.sessions;
-  for (const s of shown) {
+  for (const s of state.sessions) {
     const ph = state.phases.get(s.id);
     const cls = [state.current && s.id === state.current.id ? 'active' : '', state.running.has(s.id) ? 'running' : (ph && ph.phase === 'attention' ? 'attention' : '')];
     const li = el('li', `row-item ${cls.join(' ')}`);
@@ -237,7 +233,7 @@ function renderSessions() {
     li.append(pick, remove);
     ul.append(li);
   }
-  if (!shown.length) ul.append(el('li', 'empty', needle ? '名前が合う会話はない' : (state.repo ? 'まだ会話がない' : '')));
+  if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? 'まだ会話がない' : ''));
 }
 
 // 会話の名前を変える（既定は最初の依頼の先頭。長い会話ほど見分けが付かなくなる）
@@ -338,7 +334,6 @@ function renderAreaContext() {
   $('session-new').setAttribute('aria-label', info.createLabel);
   $('session-new').title = info.createLabel;
   for (const id of ['sessions', 'tasks', 'workflows', 'share-requests']) $(id).hidden = id !== info.listId;
-  $('session-filter-row').hidden = state.area !== 'conversation';
   $('session-new').hidden = state.area === 'share';      // 共有の依頼は会話から出す
   if (state.area === 'conversation') renderSessions();
   else if (state.area === 'tasks') renderTaskItems();
@@ -969,11 +964,16 @@ function renderHeader() {
   $('chat-title').textContent = cur ? (cur.title || '（無題）') : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
   // 別のリポジトリから分岐した会話は、題名の下に分岐元を 1 行出す（押すと元の会話へ戻る）
   const origin = cur && cur.originSession;
-  $('chat-origin').hidden = !origin;
+  const externalOrigin = cur && cur.externalOrigin;
+  $('chat-origin').hidden = !origin && !externalOrigin;
   if (origin) {
     $('chat-origin').textContent = `分岐元: ${basename(origin.repo)} › ${origin.title || '（無題）'}`;
     $('chat-origin').title = origin.repo;
     $('chat-origin').onclick = () => openSessionInRepo(origin.repo, origin.id).catch((err) => notice(err.message, 'error'));
+  } else if (externalOrigin) {
+    $('chat-origin').textContent = `引き継ぎ元: ${externalOrigin.title || '外部の会話'}`;
+    $('chat-origin').title = externalOrigin.repo;
+    $('chat-origin').onclick = () => SessionSearch.openOrigin(externalOrigin);
   }
   // エージェント・モデル・モードは「次のターン」のもの。会話を開いていても変えられる
   $('cli').disabled = !state.repo;
@@ -995,6 +995,8 @@ function renderHeader() {
   $('composer').hidden = !state.repo;
   $('session-delete').hidden = !cur;
   $('session-rename').hidden = !cur;
+  $('session-routine').hidden = !cur;
+  $('session-routine').disabled = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   $('session-handoff').hidden = !cur || cur.kind !== 'conversation';
   $('session-handoff').disabled = busy || !!state.handoffId || !cur?.messages.length;
@@ -1205,6 +1207,17 @@ function messageNode(m, index = -1) {
     answer.append(body);
     if (m.text) MD.mount(body, m.text).catch(() => { body.textContent = m.text; });
     if (m.error) answer.append(el('div', 'err', m.error));
+    const artifactLinks = Reuse.artifacts(m.text);
+    if (artifactLinks.length) {
+      const files = el('div', 'message-actions');
+      const repo = state.repo, worktree = activeWorktree();
+      for (const rel of artifactLinks) {
+        const button = el('button', 'message-action', rel);
+        button.onclick = () => api.openFile(repo, worktree, rel).catch(err => notice(err.message, 'error'));
+        files.append(button);
+      }
+      answer.append(files);
+    }
     n.append(answer);
     const meta = [];
     if (m.elapsedMs != null) meta.push(`${Math.round(m.elapsedMs / 1000)} 秒`);
@@ -1326,6 +1339,89 @@ async function openSessionInRepo(repo, id) {
   await openSession(id);
 }
 
+function renderPresets() {
+  const select = $('run-preset');
+  const selected = select.value;
+  select.replaceChildren(new Option('選択', ''));
+  for (const p of Reuse.presets(state.config.runPresets)) select.append(new Option(p.name, p.name));
+  select.value = selected;
+}
+
+async function inspectRoutine() {
+  const source = state.routine;
+  if (!source || source.busy) return;
+  source.busy = true;
+  source.requestId = 'pending';
+  $('routine-create').disabled = true;
+  $('routine-retry').disabled = true;
+  $('routine-status').textContent = '会話から手順と適した種類を検討しています…';
+  try {
+    const started = await api.automation.aiStart({ root: source.repo, mode: 'routine', request: source.text, agent: source.agent, model: source.model });
+    if (state.routine === source && source.busy) source.requestId = started.requestId;
+    else if (state.routine !== source) await api.automation.aiStop(started.requestId);
+  } catch (err) {
+    if (state.routine !== source) return;
+    source.busy = false;
+    $('routine-status').textContent = err.message;
+    $('routine-retry').disabled = false;
+  }
+}
+
+function beginRoutine() {
+  if (!state.current || state.running.has(state.current.id)) return;
+  try {
+    const selected = selectedExecution();
+    state.routine = { originId: state.current.id, index: Math.max(0, state.current.messages.length - 1), transport: state.current.transport, repo: state.repo, text: Reuse.conversation(state.current.messages), agent: selected.cli, model: selected.model, busy: false };
+    $('routine-repo').replaceChildren(new Option('保存先を選択', ''), ...state.config.repos.map(repo => new Option(repo, repo)));
+    $('routine-purpose').value = '';
+    $('routine-dialog').showModal();
+    $('chat-more').open = false;
+    inspectRoutine();
+  } catch (err) { notice(err.message, 'error'); }
+}
+
+async function createRoutine() {
+  const source = state.routine;
+  if (!source || source.busy || source.creating) return;
+  const repo = $('routine-repo').value;
+  if (!state.config.repos.includes(repo)) throw new Error('保存先のリポジトリ（フォルダ）を選んでください');
+  const prompt = Reuse.creationPrompt({ kind: $('routine-kind').value, purpose: $('routine-purpose').value, repo, originRepo: source.repo });
+  source.creating = true;
+  $('routine-create').disabled = true;
+  $('routine-retry').disabled = true;
+  try {
+    const opts = { policy: 'direct', cli: source.agent, model: source.model, readonly: false, autoApprove: false, skillMode: 'auto', skills: [] };
+    // Always use the existing fresh-session primitive; no CLI resume or teaching-session lookup.
+    const session = await api.createSession({ repo, ...opts, transport: source.transport, worktree: '', origin: { sessionId: source.originId, repo: source.repo, index: source.index } });
+    $('routine-dialog').close();
+    await openSessionInRepo(repo, session.id);
+    try {
+      state.pending.add(session.id);
+      renderHeader();
+      const turn = await api.send(session.id, prompt, { ...opts, attachments: [] });
+      if (!turn.followup) state.running.add(session.id);
+      if (state.current && state.current.id === session.id) {
+        state.current = await api.readSession(session.id);
+        state.sessions = await api.listSessions(repo);
+        renderMessages();
+        renderSessions();
+      }
+      if (turn.warning) notice(turn.warning);
+    } catch (err) {
+      await openSessionInRepo(repo, session.id);
+      fillPrompt(prompt);
+      notice(`新しいセッションへの送信に失敗しました。依頼を再送できます: ${err.message}`, 'error');
+    } finally {
+      state.pending.delete(session.id);
+      renderHeader();
+    }
+  } finally {
+    source.creating = false;
+    $('routine-create').disabled = false;
+    $('routine-retry').disabled = false;
+  }
+}
+
 function beginTaskTeaching(message) {
   try {
     const selected = selectedExecution(message.policy || 'direct');
@@ -1381,6 +1477,9 @@ function renderMessages() {
   if (!cur) {
     start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリがありません'));
     if (!state.repo) start.append(el('p', '', '作業するローカルリポジトリを登録してください。'));
+    const search = el('button', 'small quiet', '過去の会話から始める');
+    search.onclick = () => SessionSearch.open();
+    start.append(search);
     if (!state.repo) {
       const button = el('button', 'primary', 'リポジトリを追加');
       button.onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
@@ -1712,6 +1811,7 @@ function showView(view) {
 }
 
 async function showArea(area, { persist = true } = {}) {
+  SessionSearch.close();
   state.area = AgentNavigation.normalizeArea(area);
   const share = state.area === 'share';
   const automation = state.area === 'tasks' || state.area === 'workflows';
@@ -2053,6 +2153,25 @@ async function saveSettings() {
 // 起動。ホストの確認（Windows では WSL の起動 + ログインシェル）は待たずに始め、届いたら
 // その表示だけ直す。それまでに要るのは設定と会話一覧だけで、どちらも手元のファイル。
 async function init() {
+  SessionSearch.init({
+    getConfig: () => state.config,
+    setConfig: cfg => { state.config = cfg; renderRepos(); },
+    hideSidebar: () => setSidebar(false),
+    openSession: openSessionInRepo,
+    sendCreated: async ({ session, prompt }) => {
+      await openSessionInRepo(session.repo, session.id);
+      state.pending.add(session.id); renderHeader();
+      try {
+        const turn = await api.send(session.id, prompt, { policy: 'direct', cli: session.cli, model: session.model,
+          readonly: session.readonly, autoApprove: session.autoApprove, skillMode: 'auto', skills: [], attachments: [] });
+        if (!turn.followup) state.running.add(session.id);
+        state.current = await api.readSession(session.id);
+        state.sessions = await api.listSessions(session.repo);
+        renderSessions(); renderMessages();
+      } catch (err) { fillPrompt(prompt); notice(`送信できませんでした。この会話から再送できます: ${err.message}`, 'error'); }
+      finally { state.pending.delete(session.id); renderHeader(); }
+    },
+  });
   state.config = await api.getConfig();
   state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
   state.hostReady = api.hostInfo()
@@ -2097,7 +2216,7 @@ async function init() {
   $('automation-workbench').addEventListener('statemachine:teaching-view', (event) => TaskTeaching.show(event.detail));
   // 失敗した実行をAIへ渡すとき、最初の依頼を入力欄へ置く（送るのは利用者）
   $('automation-workbench').addEventListener('statemachine:teaching-prefill', (event) => TaskTeaching.prefill(event.detail));
-  $('automation-workbench').addEventListener('statemachine:flow-teaching-view', (event) => FlowTeaching.show(event.detail));
+  $('automation-workbench').addEventListener('statemachine:flow-teaching-view', (event) => { FlowTeaching.show(event.detail); });
   TaskTeaching.init({
     notice,
     shareEnabled: () => shareEnabled(),
@@ -2177,11 +2296,74 @@ async function init() {
     await removeConversation(state.current);
   };
   $('session-handoff').onclick = () => handoffConversation().catch((err) => notice(err.message, 'error'));
+  renderPresets();
+  $('run-settings').addEventListener('toggle', () => { if ($('run-settings').open) renderPresets(); });
+  $('preset-save').onclick = async () => {
+    const field = $('preset-name');
+    if (field.hidden) { field.hidden = false; field.focus(); return; }
+    const name = field.value.trim();
+    if (!name) { field.focus(); return; }
+    const values = { ...turnOptions(), ...selectedExecution(), name: name.trim() };
+    const previous = Reuse.presets(state.config.runPresets);
+    if (!previous.some(p => p.name === values.name) && previous.length >= 20) { notice('保存できる設定は20件までです', 'error'); return; }
+    if (previous.some(p => p.name === values.name) && !confirm('同じ名前の設定を上書きしますか？')) return;
+    try { state.config = await api.saveConfig({ runPresets: [...previous.filter(p => p.name !== values.name), values] }); field.hidden = true; field.value = ''; renderPresets(); }
+    catch (err) { notice(err.message, 'error'); }
+  };
+  $('preset-delete').onclick = async () => {
+    const name = $('run-preset').value;
+    if (!name) return;
+    try { state.config = await api.saveConfig({ runPresets: Reuse.presets(state.config.runPresets).filter(p => p.name !== name) }); renderPresets(); }
+    catch (err) { notice(err.message, 'error'); }
+  };
+  $('run-preset').onchange = async () => {
+    const p = Reuse.presets(state.config.runPresets).find(p => p.name === $('run-preset').value);
+    if (!p) return;
+    if (p.policy !== effectivePolicy(p.policy) || (p.policy === 'direct' && ![...$('cli').options].some(o => o.value === p.cli))) { notice('この設定のエージェントまたは起動方針は現在利用できません', 'error'); return; }
+    $('policy').value = p.policy; $('cli').value = p.cli; $('model').value = p.model;
+    $('permission-mode').value = p.readonly ? 'ask' : p.autoApprove ? 'auto' : 'confirm';
+    state.turnSkillMode = p.skillMode; state.turnSkills = [...p.skills];
+    $('turn-skill-mode').value = p.skillMode;
+    const current = state.current;
+    if (current) {
+      try { const saved = await api.updateSession(current.id, { policy: p.policy, cli: p.cli, model: p.model, readonly: p.readonly, autoApprove: p.autoApprove, skillMode: p.skillMode, skills: p.skills, tier: selectedExecution().tier }); if (state.current?.id === current.id) state.current = saved; }
+      catch (err) { notice(err.message, 'error'); }
+    }
+    renderRunSettingsSummary(); refreshTurnSkillPreview();
+  };
+  $('session-routine').onclick = beginRoutine;
+  $('routine-retry').onclick = inspectRoutine;
+  $('routine-add-repo').onclick = async () => {
+    try {
+      const cfg = await api.addRepo();
+      if (!cfg) return;
+      state.config = cfg;
+      renderRepos();
+      $('routine-repo').replaceChildren(new Option('保存先を選択', ''), ...cfg.repos.map(repo => new Option(repo, repo)));
+      $('routine-repo').value = cfg.lastRepo;
+    } catch (err) { $('routine-status').textContent = err.message; }
+  };
+  $('routine-create').onclick = () => createRoutine().catch(err => { $('routine-status').textContent = err.message; });
+  $('routine-close').onclick = () => $('routine-dialog').close();
+  $('routine-dialog').addEventListener('close', () => {
+    const source = state.routine; state.routine = null;
+    if (source && source.busy && source.requestId !== 'pending') api.automation.aiStop(source.requestId).catch(() => {});
+  });
+  api.automation.onAiResult(payload => {
+    const source = state.routine;
+    if (payload.mode !== 'routine' || !source || !source.busy || (source.requestId !== 'pending' && source.requestId !== payload.requestId)) return;
+    source.busy = false;
+    $('routine-retry').disabled = false;
+    if (!payload.ok) { $('routine-status').textContent = payload.error || '定型化できませんでした'; return; }
+    $('routine-kind').value = payload.result.kind;
+    $('routine-purpose').value = payload.result.purpose;
+    $('routine-status').textContent = payload.result.reason;
+    $('routine-create').disabled = false;
+  });
   $('session-rename').onclick = () => {
     $('chat-more').open = false;
     renameConversation().catch((err) => notice(err.message, 'error'));
   };
-  $('session-filter').oninput = () => { state.sessionFilter = $('session-filter').value; renderSessions(); };
   $('send').onclick = sendPrompt;
   $('stop').onclick = () => state.current && api.stop(state.current.id);
   $('input-mode-message').onclick = () => setInputMode('message');

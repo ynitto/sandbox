@@ -22,7 +22,7 @@
   "no_session_args": [],
   "session_log": {
     "format": "kiro-sqlite",
-    "paths": ["~/.kiro/store.db"],
+    "paths": ["~/.local/share/kiro-cli/data.sqlite3", "~/Library/Application Support/kiro-cli/data.sqlite3", "~/.kiro/store.db"],
     "usage": false
   },
   "spill": {

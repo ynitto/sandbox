@@ -16,6 +16,7 @@ import glob
 import json
 import os
 import sqlite3
+from pathlib import Path
 
 from . import cleaning
 from .util import elog
@@ -314,30 +315,38 @@ def _epoch_sec(value) -> float:
     return parse_iso(value) or 0.0
 
 
-# -- kiro-sqlite（~/.kiro/store.db。tools/kiro-log-exporter の手順を移植） ------
+# -- kiro-sqlite (legacy store.db and current kiro-cli/data.sqlite3) ------
 
 def _read_kiro_sqlite(db_path: str, *, want_messages: bool,
-                       clean: "dict | None" = None) -> "list[dict]":
+                       clean: "dict | None" = None, native_id: "str | None" = None) -> "list[dict]":
     if not os.path.exists(db_path):
         return []
     sessions = []
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
         try:
             cur = conn.cursor()
             cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = {r[0].lower() for r in cur.fetchall()}
-            table = next((t for t in ("sessions", "chat_sessions", "conversations")
-                          if t in tables), None)
-            if table is None:
-                return []
-            cur.execute(f"SELECT * FROM [{table}]")  # noqa: S608 テーブル名は上の閉じた候補のみ
-            cols = [d[0].lower() for d in cur.description]
-            for row in cur.fetchall():
-                data = dict(zip(cols, row))
-                s = _parse_kiro_row(data, db_path, want_messages=want_messages, clean=clean)
-                if s:
-                    sessions.append(s)
+            seen = set()
+            for table in ("conversations_v2", "sessions", "chat_sessions", "conversations"):
+                if table not in tables:
+                    continue
+                columns = {r[1].lower() for r in cur.execute(f"PRAGMA table_info([{table}])")}
+                id_column = "conversation_id" if "conversation_id" in columns else "id" if "id" in columns else None
+                query = f"SELECT * FROM [{table}]"  # Closed table/column allowlists above.
+                params = ()
+                if native_id is not None and id_column:
+                    query += f" WHERE [{id_column}] = ?"
+                    params = (native_id,)
+                cur.execute(query, params)
+                cols = [d[0].lower() for d in cur.description]
+                for row in cur:
+                    data = dict(zip(cols, row))
+                    s = _parse_kiro_row(data, db_path, want_messages=want_messages, clean=clean)
+                    if s and s["native_id"] not in seen and (native_id is None or s["native_id"] == native_id):
+                        seen.add(s["native_id"])
+                        sessions.append(s)
         finally:
             conn.close()
     except (sqlite3.Error, OSError):
@@ -347,6 +356,38 @@ def _read_kiro_sqlite(db_path: str, *, want_messages: bool,
 
 def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
                      clean: "dict | None" = None) -> "dict | None":
+    # Current CLI databases store the conversation as JSON in a key/value row.
+    payload = data.get("value")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = None
+    current = isinstance(payload, dict) and isinstance(payload.get("history"), list)
+    if current:
+        history = payload["history"]
+        converted = []
+        completion = []
+        cwd = data.get("key", "")
+        for turn in history:
+            if not isinstance(turn, dict):
+                continue
+            user = turn.get("user") or {}
+            content = user.get("content") or {}
+            env = (user.get("env_context") or {}).get("env_state") or {}
+            cwd = env.get("current_working_directory") or cwd
+            if isinstance(content, dict):
+                prompt = content.get("Prompt") or content.get("CancelledToolUses") or {}
+                if isinstance(prompt, dict) and isinstance(prompt.get("prompt"), str):
+                    converted.append({"role": "user", "content": prompt["prompt"]})
+                    completion.append(True)
+            assistant = turn.get("assistant") or {}
+            response = assistant.get("Response") or assistant.get("ToolUse") or {}
+            if isinstance(response, dict) and isinstance(response.get("content"), str) and response["content"]:
+                converted.append({"role": "assistant", "content": response["content"]})
+                completion.append("Response" in assistant)
+        data = {**data, "id": data.get("conversation_id") or payload.get("conversation_id"),
+                "messages": converted, "directory": cwd}
     sid = str(data.get("id") or "").strip()
     if not sid:
         return None
@@ -368,8 +409,9 @@ def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
 
     messages: "list[tuple[str, str]]" = []
     turns = 0
+    message_completion = []
     if isinstance(raw, list):
-        for item in raw:
+        for index, item in enumerate(raw):
             if not isinstance(item, dict):
                 continue
             if rules and cleaning.should_drop_line(item, rules, warn=warn):
@@ -384,6 +426,7 @@ def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
                 turns += 1
                 if want_messages:
                     messages.append((role, text))
+                    message_completion.append(completion[index] if current else True)
 
     def _sec(v):
         return _epoch_sec(v)
@@ -395,7 +438,8 @@ def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
                    or data.get("workspace") or ""),
         "created_at": _sec(data.get("created_at", 0)),
         "updated_at": _sec(data.get("updated_at") or data.get("created_at", 0)),
-        "model": "",
+        "model": str((payload.get("model_info") or {}).get("model_id") or "") if current else "",
+        "message_completion": message_completion,
         "log_version": version,
         "turns": turns,
         "tokens_in": None,

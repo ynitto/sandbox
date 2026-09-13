@@ -553,7 +553,7 @@ test('会話の依頼と新しいタスクを同じ作成フォーム（AI と�
   assert.ok(html.includes('src="taskIntent.js"') && html.includes('src="taskTeaching.js"') && html.includes('src="teachingProtocol.js"'));
   assert.match(shell, /この依頼をタスクにする/);
   assert.match(shell, /TaskIntent\.create/);
-  assert.match(shell, /pendingTaskIntent \? 'new' : ''/, 'intent は新しいタスクの画面として開く');
+  assert.match(shell, /state\.area === 'tasks' && state\.pendingTaskIntent/, 'intent は新しいタスクの画面として開く');
   assert.match(shell, /api\.automation\.teachingList/);
   assert.match(maker, /payload\.action === 'new'[\s\S]*teachingFeature\.create\(\)/);
   assert.match(teaching, /takeIntent/, '作成フォームが依頼の本文を受け取る');
@@ -1194,13 +1194,12 @@ test('変更ビューの行からも、ファイルビュアーと同じ「会�
   assert.match(renderer, /if \(f\.label !== '削除'\) \{/);
 });
 
-test('会話は名前で絞り込め、名前を変えられる', () => {
+test('会話は統合検索から探せ、名前を変えられる', () => {
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
-  // 絞り込みの 1 行はファイルツリーと同じ形（.tree-tools + input）
-  assert.match(html, /<div id="session-filter-row" class="tree-tools">[\s\S]*id="session-filter" placeholder="名前で絞り込み"/);
-  assert.match(renderer, /state\.sessions\.filter\(\(s\) => String\(s\.title \|\| ''\)\.toLowerCase\(\)\.includes\(needle\)\)/);
-  assert.match(renderer, /\$\('session-filter-row'\)\.hidden = state\.area !== 'conversation'/);
+  assert.match(html, /id="session-search-open"/);
+  assert.match(html, /id="search-text" type="search"/);
+  assert.doesNotMatch(html, /id="session-filter"/);
   // 名前の変更は「その他」の 1 行（新しいダイアログは作らない）
   assert.match(html, /id="session-rename" hidden>会話名を変更</);
   assert.match(renderer, /api\.updateSession\(cur\.id, \{ title \}\)/);

@@ -166,7 +166,7 @@ test('既定の AI: 設定が無ければ会話の「おすすめ」と同じ CL
   assert.strictEqual(automationIpc.automationPatch({ agent: '' }).automationAgent, '');
 });
 
-test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄くし、ワークフローと履歴・定期実行も使えなければ薄くする', async () => {
+test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄くし、ワークフローと定期実行は使えなければ薄くし、履歴は再取得できる', async () => {
   const renderer = read('renderer/renderer.js');
   assert.match(renderer, /function optimized\(config = state\.config\)/);
   assert.match(renderer, /execution\.optimizeAgents !== false && herdAvailable\(\)/);
@@ -181,7 +181,10 @@ test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄
   const maker = read('renderer/automation/renderer.js');
   assert.match(maker, /return state\.agents\.includes\('herd'\);/);
   assert.match(maker, /policyOn \|\| BASIC_POLICIES\.includes\(value\) \|\| value === 'direct' \? '' : 'disabled'/);
-  assert.match(maker, /data-task-tab="history"[^\n]*snapshot\.available === false \? 'disabled' : ''/, 'agent-loop が無ければ履歴タブは押せない');
+  const historyTab = maker.split('\n').find((line) => line.includes('data-task-tab="history"'));
+  assert.ok(historyTab);
+  assert.doesNotMatch(historyTab, /disabled/, '接続失敗でも履歴と再取得に到達できる');
+  assert.match(maker, /id="snapshot-retry"/, '接続失敗から再取得できる');
   assert.match(maker, /execution-card \$\{snapshot\.available === false \? 'is-off' : ''\}/, '定期実行のカードは薄くする');
   assert.match(maker, /id="schedule-toggle" \$\{snapshot\.available === false \? 'disabled' : ''\}/, '予定の追加も押せない');
   const ipc = read('main/ipc.js');
