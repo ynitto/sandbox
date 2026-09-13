@@ -18,7 +18,7 @@ test('command task: create, retain selection, edit and run without AI', async (t
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(repo, '.agents/agent-loop.yml'), 'prompts: []\n');
   const quote = (v) => "'" + v.replaceAll("'", "'\\''") + "'";
-  fs.writeFileSync(path.join(bin, 'agent-loop'), '#!/bin/sh\nexec /usr/bin/python3 ' + quote(path.resolve(APP, '../agent-loop/agent-loop.py')) + ' "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'agent-loop'), '#!/bin/sh\nexec /usr/bin/python3 ' + quote(process.env.AGENT_APP_TEST_LOOP || path.resolve(APP, '../agent-loop/agent-loop.py')) + ' "$@"\n', { mode: 0o755 });
   require('../src/main/store').saveConfig(userData, { repos: [repo], lastRepo: repo, area: 'work' });
   require('../src/main/automation/store').save(repo, { name: 'Existing task', machine: 'existing', purpose: 'test', steps: [{ kind: 'agent', title: 'test', detail: 'test' }] });
   const electron = await pw._electron.launch({ executablePath: require('electron'), args: [APP, '--no-sandbox', `--user-data-dir=${userData}`],

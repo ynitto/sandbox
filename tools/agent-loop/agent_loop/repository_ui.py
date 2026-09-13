@@ -592,9 +592,11 @@ def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str,
             continue
         schedule = _repository_schedule_item(root, entry_path, index, entry, effective)
         try:
-            has_command = _loopentry.command_spec(entry) is not None
+            has_command = "command" in entry
+            if has_command and _loopentry.command_spec(entry) is None:
+                entry_error = entry_error or "コマンドが空です。名前・コマンドを編集してください"
         except _loopentry.LoopEntryError as exc:
-            has_command = False
+            has_command = "command" in entry
             entry_error = entry_error or str(exc)
         kind = "broken" if spec else (
             "command" if has_command
@@ -618,7 +620,7 @@ def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str,
                 root, str(entry.get("name") or ""), history_limit)
                 if kind == "command" else []),
         })
-    return {"available": True, "machines": machines, "tasks": tasks,
+    return {"available": True, "capabilities": {"commandSchedule": True}, "machines": machines, "tasks": tasks,
             "configSource": source,
             "daemon": _repository_daemon(root)}
 

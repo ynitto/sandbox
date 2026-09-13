@@ -75,6 +75,12 @@ async function inspect({ root, capture }) {
 
 async function saveSchedule({ root, payload, capture }) {
   const repository = String(root || '');
+  if (payload && ('command' in payload || payload.entry && 'command' in payload.entry)) {
+    const snapshot = await inspect({ root: repository, capture });
+    if (snapshot.capabilities?.commandSchedule !== true) {
+      throw new Error('実行環境の agent-loop が古いため、コマンドを保存できません。agent-loop を更新してから再度保存してください（入力内容は保持しています）');
+    }
+  }
   const result = await capture(
     'agent-loop',
     ['schedule', '--json', '--dir', repository],

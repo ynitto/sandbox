@@ -221,3 +221,25 @@ test('コマンドは保存元の設定から選び、AIやtmuxなしで手動�
     agent: 'codex', model: 'ignored', instruction: 'ignored',
   }), { command: 'agent-loop', args: ['command', '--entry', 'maintenance', '--dir', '/project', '--config', '/shared/agent-loop.yaml'] });
 });
+
+test('古いagent-loopではコマンドの保存を呼ばず、入力を失わない', async () => {
+  const calls = [];
+  await assert.rejects(loop.saveSchedule({ root: '/project', payload: { entry: { command: '' }, command: ['echo', 'ok'] },
+    capture: async (_cmd, args) => { calls.push(args[0]); return { ok: true, stdout: '{"available":true}' }; },
+  }), /agent-loop が古い/);
+  assert.deepStrictEqual(calls, ['inspect']);
+});
+
+test('対応したagent-loopにはコマンドの保存内容を渡す', async () => {
+  const payload = { entry: { command: '' }, command: ['echo', 'ok'] };
+  const calls = [];
+  await loop.saveSchedule({ root: '/project', payload,
+    capture: async (_cmd, args, opts) => {
+      calls.push(args[0]);
+      if (args[0] === 'inspect') return { ok: true, stdout: '{"capabilities":{"commandSchedule":true}}' };
+      assert.deepStrictEqual(JSON.parse(opts.input), payload);
+      return { ok: true, stdout: '{"saved":true}' };
+    },
+  });
+  assert.deepStrictEqual(calls, ['inspect', 'schedule']);
+});

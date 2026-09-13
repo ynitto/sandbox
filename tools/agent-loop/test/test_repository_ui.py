@@ -13,6 +13,16 @@ import agent_loop as al  # noqa: E402
 
 
 class RepositorySnapshotTest(unittest.TestCase):
+    def test_empty_command_remains_a_command_task_for_repair(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            config = root / ".agents" / "agent-loop.yml"
+            config.parent.mkdir()
+            config.write_text("prompts:\n  - name: lost-command\n    command: ''\n    enabled: false\n    interval_minutes: 30\n")
+            task = al.repository_snapshot(root)["tasks"][0]
+            self.assertEqual(task["kind"], "command")
+            self.assertIn("コマンドが空", task["error"])
+
     def test_multiple_schedule_entries_are_grouped_into_one_task(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
