@@ -77,6 +77,9 @@ async function saveSchedule({ root, payload, capture }) {
   const repository = String(root || '');
   if (payload && ('command' in payload || payload.entry && 'command' in payload.entry)) {
     const snapshot = await inspect({ root: repository, capture });
+    if (snapshot.available === false) {
+      throw new Error('agent-loop に接続できないため保存できません。Windowsでは選択したWSL環境の agent-loop を確認してください。接続を直して再度保存できます（入力内容は保持しています）');
+    }
     if (snapshot.capabilities?.commandSchedule !== true) {
       throw new Error('実行環境の agent-loop が古いため、コマンドを保存できません。agent-loop を更新してから再度保存してください（入力内容は保持しています）');
     }

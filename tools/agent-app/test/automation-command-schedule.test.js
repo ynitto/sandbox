@@ -19,7 +19,7 @@ function fixture() {
     loadExecutionSnapshot: async () => {}, notifyHost() {}, toast() {},
     selectedAgent: () => { throw new Error('command must not use AI settings'); },
   });
-  vm.runInContext(source.slice(source.indexOf('function commandText('), source.indexOf('async function toggleDaemon(')), ctx);
+  vm.runInContext(source.slice(source.indexOf('function commandAddButtonHtml('), source.indexOf('async function toggleDaemon(')), ctx);
   return { ctx, state, calls };
 }
 
@@ -93,4 +93,22 @@ test('複雑なcronでも名前とコマンドを編集するフォームが開�
   assert.match(html, /id="schedule-command"/);
   assert.match(html, /id="schedule-name"/);
   assert.equal(ctx.ensureScheduleDraft(task).kind, 'preserve');
+});
+
+
+test('WSLの状態取得待ち・失敗でもコマンド作成フォームを開ける', () => {
+  for (const snapshot of [null, { available: false }, { available: true }]) {
+    const { ctx, state } = fixture();
+    state.execution.snapshot = snapshot;
+    assert.doesNotMatch(ctx.commandAddButtonHtml(), /disabled/);
+    ctx.newCommandSchedule();
+    assert.equal(state.execution.newCommand.kind, 'command');
+    assert.equal(state.execution.scheduleOpen, true);
+    assert.match(ctx.scheduleEditorHtml(state.execution.newCommand), /id="schedule-command"/);
+  }
+  const { ctx, state } = fixture();
+  state.root = '';
+  assert.match(ctx.commandAddButtonHtml(), /disabled/);
+  ctx.newCommandSchedule();
+  assert.equal(state.execution.newCommand, undefined);
 });

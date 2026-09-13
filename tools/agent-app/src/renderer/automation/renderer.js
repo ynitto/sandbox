@@ -1204,7 +1204,7 @@ function executionDetailHtml(machine) {
 }
 
 function commandAddButtonHtml() {
-  return `<button type="button" id="command-add" ${state.execution.snapshot?.available === true ? '' : 'disabled'}>新しいコマンドタスク</button>`;
+  return `<button type="button" id="command-add" ${state.root ? '' : 'disabled'}>新しいコマンドタスク</button>`;
 }
 
 function commandText(command) {
@@ -1214,6 +1214,7 @@ function commandText(command) {
 }
 
 function newCommandSchedule() {
+  if (!state.root) return;
   state.execution.newCommand = { id: 'new-command', kind: 'command', name: '新しいコマンド', entry: { command: '' }, schedules: [], history: [] };
   state.execution.selected = 'new-command';
   state.execution.detailTab = 'overview';

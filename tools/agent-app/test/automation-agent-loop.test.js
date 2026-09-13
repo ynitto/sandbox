@@ -243,3 +243,12 @@ test('対応したagent-loopにはコマンドの保存内容を渡す', async (
   });
   assert.deepStrictEqual(calls, ['inspect', 'schedule']);
 });
+
+
+test('WSLへの接続失敗を旧バージョンと誤判定せず、保存を行わない', async () => {
+  const calls = [];
+  await assert.rejects(loop.saveSchedule({ root: 'C:/repo', payload: { command: ['echo', 'ok'] },
+    capture: async (_cmd, args) => { calls.push(args[0]); return { ok: false, error: 'WSL unavailable' }; },
+  }), /接続できない.*WSL/);
+  assert.deepStrictEqual(calls, ['inspect']);
+});
