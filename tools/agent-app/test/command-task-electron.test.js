@@ -22,7 +22,7 @@ test('command task: create, retain selection, edit and run without AI', async (t
   require('../src/main/store').saveConfig(userData, { repos: [repo], lastRepo: repo, area: 'work' });
   require('../src/main/automation/store').save(repo, { name: 'Existing task', machine: 'existing', purpose: 'test', steps: [{ kind: 'agent', title: 'test', detail: 'test' }] });
   const electron = await pw._electron.launch({ executablePath: require('electron'), args: [APP, '--no-sandbox', `--user-data-dir=${userData}`],
-    env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, AGENT_LOOP_RUN_DIR: path.join(temp, 'runs') } });
+    env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, AGENT_LOOP_RUN_DIR: path.join(temp, 'runs'), AGENT_LOOP_RUN_HISTORY_DIR: path.join(temp, 'history') } });
   try {
     const win = await electron.firstWindow();
     await win.waitForFunction(() => typeof document.getElementById('area-tasks')?.onclick === 'function');
@@ -57,5 +57,25 @@ test('command task: create, retain selection, edit and run without AI', async (t
     assert.match(await panel.locator('#run-log').textContent(), /command-updated/);
     const badge = await panel.locator('.schedule-list .status').boundingBox();
     assert.ok(badge.width < 100, `status should be compact: ${badge.width}`);
+    // アプリ経由の run:exit が来ない定期実行結果を、実際の履歴ストアへ追記する。
+    const scheduledLog = path.join(temp, 'runs', 'scheduled.jsonl');
+    fs.mkdirSync(path.dirname(scheduledLog), { recursive: true });
+    fs.writeFileSync(scheduledLog, 'scheduled command output\n');
+    const recordScheduled = (runId) => {
+      const result = require('node:child_process').spawnSync('/usr/bin/python3', ['-c',
+        'import sys; sys.path.insert(0, sys.argv[1]); import agent_loop as al; al.record_repository_run(sys.argv[2], {"runId": sys.argv[3], "kind": "command", "entryName": "Renamed command", "source": "scheduled", "ok": True, "finishedAt": "2026-09-13T10:00:00Z", "logFile": sys.argv[4]})',
+        path.resolve(APP, '../agent-loop'), repo, runId, scheduledLog],
+        { env: { ...process.env, AGENT_LOOP_RUN_HISTORY_DIR: path.join(temp, 'history') }, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    recordScheduled('scheduled-before-tab');
+    await panel.locator('[data-task-tab="history"]').click();
+    const scheduledRows = panel.locator('.run-history li').filter({ hasText: '定期実行' });
+    await scheduledRows.first().waitFor();
+    assert.equal(await scheduledRows.count(), 1);
+    await scheduledRows.first().locator('[data-history-log]').click();
+    await panel.locator('.history-log pre').filter({ hasText: 'scheduled command output' }).waitFor();
+    recordScheduled('scheduled-while-open');
+    await scheduledRows.nth(1).waitFor({ timeout: 20000 });
   } finally { await electron.close(); }
 });

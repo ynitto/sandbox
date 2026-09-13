@@ -594,6 +594,29 @@ class RepositoryRunHistoryTest(unittest.TestCase):
                         "workflow": ".statemachine/review/workflow.yaml", "runId": "unknown",
                     })
 
+    def test_command_log_from_agent_loop_storage(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as logs:
+            root = Path(td)
+            run_dir = Path(logs) / "runs"
+            run_dir.mkdir()
+            log_file = run_dir / "command.jsonl"
+            log_file.write_text("first\ncommand output\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"AGENT_LOOP_RUN_HISTORY_DIR": logs + "/history",
+                                               "AGENT_LOOP_RUN_DIR": str(run_dir)}):
+                al.record_repository_run(root, {"runId": "command-1", "kind": "command",
+                    "entryName": "command", "source": "scheduled", "ok": True, "logFile": str(log_file)})
+                result = al.repository_run_log(root, {"runId": "command-1"}, max_bytes=8)
+                self.assertEqual(result["text"], " output\n")
+                self.assertTrue(result["truncated"])
+                with self.assertRaisesRegex(ValueError, "ログ"):
+                    al.repository_run_log(root, {"runId": "unknown"})
+                outside = Path(logs) / "outside.txt"
+                outside.write_text("private")
+                log_file.unlink()
+                log_file.symlink_to(outside)
+                with self.assertRaisesRegex(ValueError, "ログ"):
+                    al.repository_run_log(root, {"runId": "command-1"})
+
 
 class RepositoryCliTest(unittest.TestCase):
     def test_inspect_prints_one_json_snapshot(self):

@@ -328,11 +328,12 @@ def record_repository_run(cwd: "str | Path", record: Any) -> dict[str, Any]:
 
 
 def repository_run_log(cwd: "str | Path", payload: Any, max_bytes: int = 262_144) -> dict[str, Any]:
-    """履歴が指す repository 内の実行ログだけを末尾から読む。"""
+    """選択リポジトリの履歴が指す、管理された実行ログを末尾から読む。"""
     root = _repository_root(cwd)
     if not isinstance(payload, dict):
         raise ValueError("ログの指定が不正です")
-    workflow = _loopentry.workflow_reference(payload.get("workflow"))
+    workflow = (_loopentry.workflow_reference(payload["workflow"])
+                if payload.get("workflow") else "")
     run_id = str(payload.get("runId") or "")
     record = next((item for item in _repository_history(root, workflow, _REPOSITORY_HISTORY_KEEP)
                    if str(item.get("runId") or "") == run_id), None)
@@ -341,12 +342,11 @@ def repository_run_log(cwd: "str | Path", payload: Any, max_bytes: int = 262_144
     raw_path = str(record.get("logFile") or "").strip()
     if not raw_path:
         raise ValueError("この実行にはログがありません")
-    log_root = (root / ".statemachine-use" / "logs").resolve()
+    log_roots = [(root / ".statemachine-use" / "logs").resolve(),
+                 agent_home_subdir("AGENT_LOOP_RUN_DIR", "runs").resolve()]
     log_file = Path(raw_path).expanduser().resolve()
-    try:
-        log_file.relative_to(log_root)
-    except ValueError as exc:
-        raise ValueError("リポジトリ外のログは開けません") from exc
+    if not any(log_root == log_file or log_root in log_file.parents for log_root in log_roots):
+        raise ValueError("管理された保存先以外のログは開けません")
     if not log_file.is_file():
         raise ValueError("実行ログが見つかりません")
     limit = max(1, min(int(max_bytes), 1_048_576))

@@ -586,3 +586,5 @@ pip install pyyaml
 python3 scripts/prepare.py
 python3 scripts/check.py
 ```
+
+agent-app のタスクの「履歴」→「ログ」では、ステートマシンのログと agent-loop の定期コマンド実行ログを取得できます。選択リポジトリの実行履歴に記録されたファイルだけを読み、長いログは末尾を表示します。

@@ -332,6 +332,14 @@ function refreshExecutionSnapshot() {
   return loadExecutionSnapshot().then(renderIfIdle);
 }
 
+// 定期実行はこのウィンドウの run:exit を通らないため、表示中の履歴を更新する。
+async function refreshVisibleHistory() {
+  if (!state.root || document.hidden || state.view !== 'home' || state.homeTab !== 'run'
+    || state.execution.detailTab !== 'history' || state.execution.loading
+    || (workbenchHost && !workbenchHost.getClientRects().length)) return;
+  await refreshExecutionSnapshot();
+}
+
 // 前回の手動実行で入れた実行条件（config.json の lastTaskInputs）。値だけを持ち、パスは持たない。
 function rememberedInputs(machine) {
   const all = (state.config && state.config.taskInputs) || {};
@@ -859,6 +867,7 @@ function bindTaskDetailTabs(main) {
     state.homeTab = 'run';
     state.execution.detailTab = tab;
     render();
+    if (tab === 'history') await refreshExecutionSnapshot();
   });
 }
 
@@ -2514,6 +2523,10 @@ async function init() {
     if (state.view === 'home' && state.homeTab === 'run') render();
     refreshExecutionSnapshot();
   });
+  const historyTimer = window.setInterval(refreshVisibleHistory, 10000);
+  window.addEventListener('unload', () => window.clearInterval(historyTimer), { once: true });
+  document.addEventListener('visibilitychange', refreshVisibleHistory);
+  window.addEventListener('focus', refreshVisibleHistory);
   window.addEventListener('beforeunload', (e) => { if (state.current && state.current.dirty) { e.preventDefault(); e.returnValue = ''; } });
   state.root = state.config.lastRoot || (state.config.roots || [])[0] || '';
   // 手元のファイル（定義の一覧）だけを待って描く。AI の一覧と実行状態はホスト（Windows では WSL）に
