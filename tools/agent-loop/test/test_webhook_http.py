@@ -21,6 +21,7 @@ class _FakeScheduler:
         self.route = route
         self.mappings = mappings or {}
         self.enqueued: list[tuple[str, str]] = []
+        self.enqueued_values: list[dict] = []
         self._hook_cache = {}
         self._hook_cache_lock = threading.Lock()
 
@@ -32,8 +33,11 @@ class _FakeScheduler:
             return None
         return dict(self.route)
 
-    def enqueue_external(self, name: str, prompt_text: str) -> bool:
+    def enqueue_external(self, name: str, prompt_text: str, values=None) -> bool:
+        # `values` は `command:` を宣言した entry の argv へ差し込む材料。本文には
+        # 注入済みだが、argv は実行時に字句へ差し込むので素の値が要る。
         self.enqueued.append((name, prompt_text))
+        self.enqueued_values.append(dict(values or {}))
         return True
 
     def _load_hook_module(self, hook_path):
@@ -123,6 +127,8 @@ class WebhookHttpE2ETests(unittest.TestCase):
         self.assertEqual(code, 202)
         self.assertEqual(body, "accepted")
         self.assertEqual(self.scheduler.enqueued, [("demo", "got hi")])
+        # 本文へ注入した素の材料も持ち越す（`command:` の argv はこれで補完する）。
+        self.assertEqual(self.scheduler.enqueued_values, [{"name": "demo", "x": "hi"}])
 
     def test_deferred_lookup_resolves_from_payload(self):
         # {{lookup <ラベル> {<変数>}}} は payload の値で dispatch 時に解決される

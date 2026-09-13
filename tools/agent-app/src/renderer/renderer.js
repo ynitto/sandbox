@@ -284,7 +284,7 @@ function renderTaskItems() {
     const schedules = Array.isArray(task.schedules) ? task.schedules : (task.schedule ? [task.schedule] : []);
     const scheduleState = pending ? '確認中…'
       : schedules.length ? `${schedules.filter((item) => item.effective !== false).length}/${schedules.length}件の予定` : '予定なし';
-    const kind = task.kind === 'prompt' ? 'プロンプト' : task.kind === 'hook' ? 'フック' : task.kind === 'broken' ? '要修正' : 'ステートマシン';
+    const kind = task.kind === 'prompt' ? 'プロンプト' : task.kind === 'hook' ? 'フック' : task.kind === 'command' ? 'コマンド' : task.kind === 'broken' ? '要修正' : 'ステートマシン';
     const li = el('li', `row-item${id === state.selectedTask ? ' active' : ''}`);
     const pick = el('button', 'list-pick');
     const body = el('span', 'grow');

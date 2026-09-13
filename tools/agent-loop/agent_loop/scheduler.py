@@ -17,6 +17,19 @@ _PREFLIGHT_TIMEOUT_SEC = 15.0
 _INPUT_RECOVERY_WAIT_SEC = 0.4
 
 
+def _external_item(queued: Any) -> "tuple[str, dict[str, Any]]":
+    """webhook キューの 1 件を `(本文, 補完の材料)` にする。
+
+    積む側は `(prompt, values)` の組で積むが、素の文字列も受ける——キューへ直に
+    文字列を積む既存の呼び出し（テストや古い経路）を黙って壊さないため。
+    """
+    if isinstance(queued, tuple):
+        prompt_text = str(queued[0]) if queued else ""
+        values = queued[1] if len(queued) > 1 and isinstance(queued[1], dict) else {}
+        return prompt_text, dict(values)
+    return str(queued), {}
+
+
 def _resolve_hook_path(value: str) -> Path:
     path = Path(os.path.expanduser(value))
     if path.is_file() or path.is_absolute() or path.parent != Path("."):
@@ -113,12 +126,22 @@ def validate_entries(
             raise ValueError(
                 f"entry {str(entry.get('name', '')) or '(名前なし)'!r}: {exc}") from exc
 
-        if not prompt and not hooks and not slash and statemachine is None:
+        # 固定コマンド実行の宣言（`command:`）。読み方は agent-herd・dashboard と共有する
+        # 1 実装（agentcore.loopentry）。宣言があれば prompt / hooks / slash が無くても採用する。
+        try:
+            command = _loopentry.command_spec(entry)
+        except _loopentry.LoopEntryError as exc:
+            raise ValueError(
+                f"entry {str(entry.get('name', '')) or '(名前なし)'!r}: {exc}") from exc
+
+        if (not prompt and not hooks and not slash
+                and statemachine is None and command is None):
             continue
 
         name = str(entry.get("name", prompt[:40] or (hooks[0] if hooks else "")[:40]
                               or (slash[0] if slash else "")
-                              or (statemachine["name"] if statemachine else "")))
+                              or (statemachine["name"] if statemachine else "")
+                              or (command["argv"][0] if command else "")))
 
         cron_str = str(entry.get("cron", "")).strip()
         cron_expr: CronExpression | None = None
@@ -272,6 +295,34 @@ def validate_entries(
             if errors:
                 raise ValueError(f"entry {name!r}: operation が不正です: {'; '.join(errors[:2])}")
 
+        # 固定コマンドは LLM も対話面も持たない実行形。噛み合わない宣言は、黙って無視すると
+        # 「設定したのに効かない」になるので読み込みで断る（`statemachine:` と同じ方針）。
+        if command is not None:
+            if statemachine is not None or prompt or slash:
+                raise ValueError(
+                    f"entry {name!r}: command と statemachine / prompt / slash は"
+                    "併用できません（1 つの entry が回すものは 1 つです）")
+            if mode == "ralph" or oneshot or clean_session is not None or target:
+                raise ValueError(
+                    f"entry {name!r}: command と mode=ralph / oneshot / clean_session / "
+                    "target は併用できません（対話セッションを持ちません）")
+            if acceptance or judge_raw is not None:
+                raise ValueError(
+                    f"entry {name!r}: command と acceptance は併用できません"
+                    "（成否はコマンドの終了コードで決まります）")
+            if (entry.get("agent_cli") or entry.get("model")
+                    or entry.get("session") is not None
+                    or entry.get("fresh_context")):
+                raise ValueError(
+                    f"entry {name!r}: command と agent_cli / model / session / "
+                    "fresh_context は併用できません（LLM を起こしません）")
+            if adaptive is not None and not hooks:
+                # 無風（idle）の概念が無い——回せば必ず「実行した」になる。フックがあれば
+                # `check()` の None が無風なので、そのときだけ従来どおり効く。
+                raise ValueError(
+                    f"entry {name!r}: command だけの entry に adaptive は使えません"
+                    "（間隔は cron / interval_minutes で決めてください）")
+
         # ステートマシンは**実行形**（コマンド面の 1 行で起こす）。噛み合わない宣言は、
         # 黙って無視すると「設定したのに効かない」になるので読み込みで断る。
         # oneshot / clean_session / target は経路をペインへ移した段階では未検証なので、
@@ -338,6 +389,7 @@ def validate_entries(
             "session": session,
             "acceptance": acceptance,
             "acceptance_judge": judge_raw,
+            "command": dict(command) if command else None,
             "statemachine": statemachine["workflow"] if statemachine else None,
             "input": dict(statemachine["input"]) if statemachine else None,
             "operation": dict(operation) if isinstance(operation, dict) else None,
@@ -378,7 +430,11 @@ class PeriodicScheduler:
         self._node_budget_warned_at = 0.0
         self._hook_cache: dict[tuple[str, str], tuple[float, Any]] = {}
         self._hook_cache_lock = threading.Lock()
-        self._external_queues: dict[str, collections.deque[str]] = {}
+        # 1 件は `(本文, 補完の材料)`。素の文字列も読める（`_external_item`）。
+        self._external_queues: dict[str, collections.deque] = {}
+        # `command:` を宣言した entry の実行中フラグ（entry id → root_id）。
+        # entry 単位で 1 実行ずつにするための最小の記録。
+        self._command_running: dict[str, str] = {}
         # dispatch gate
         self._pending: list[dict[str, Any]] = []
         self._debouncer = RequestDebouncer()
@@ -1319,6 +1375,17 @@ class PeriodicScheduler:
     def _dispatch_headless(self, req: dict[str, Any], *, entry: dict[str, Any],
                            dispatch_entry: dict[str, Any], exec_meta: dict[str, Any],
                            profile: Any, cwd: str, root_id: str) -> str:
+        # 固定コマンドは entry 単位で 1 実行ずつ。フックが複数返した回や、前回が長引いた
+        # 回でも同じスクリプトを重ねない（同期・整理バッチの多重起動は事故になる）。
+        if entry.get("command"):
+            entry_id = str(entry.get("id") or "")
+            with self._lock:
+                running = self._command_running.get(entry_id)
+            if running:
+                log.info("[%s] 前回のコマンドが実行中のため次の tick へ回します",
+                         entry.get("name", ""))
+                return "defer"
+
         slot_key = f"headless:{root_id}"
         exclude = bool(entry.get("exclude_from_concurrency"))
         if self._semaphore is not None and not exclude:
@@ -1331,17 +1398,77 @@ class PeriodicScheduler:
             self._upsert_execution(root_id, slot_lease=None,
                                    entry_id=str(entry.get("id")), session_policy="per-run",
                                    max_steps=1)
+        if entry.get("command"):
+            with self._lock:
+                self._command_running[str(entry.get("id") or "")] = root_id
         req.setdefault("meta", {})["_hold_slot"] = False
         req["meta"]["_dispatch_profile"] = profile
         req["meta"]["execution"] = exec_meta
         self._begin_active(req)
         thread = threading.Thread(
-            target=self._run_headless,
+            target=self._run_headless_guarded,
             args=(req, dict(entry), dict(dispatch_entry), profile, str(cwd or ""), root_id,
                   slot_key if (self._semaphore is not None and not exclude) else None),
             name=f"headless-{root_id[:8]}", daemon=True)
         thread.start()
         return "done"
+
+    def _run_headless_guarded(self, req: dict[str, Any], entry: dict[str, Any],
+                              dispatch_entry: dict[str, Any], profile: Any, cwd: str,
+                              root_id: str, slot_key: "str | None") -> None:
+        """headless 実行スレッドの入口。どう終わっても `command:` の実行中フラグを下ろす。
+
+        解除を各分岐へ散らすと、1 つ書き忘れただけでその entry が**二度と回らなくなる**
+        （フラグが残り、以後の dispatch がすべて defer になる）。出口は 1 つにする。
+        """
+        try:
+            self._run_headless(req, entry, dispatch_entry, profile, cwd, root_id, slot_key)
+        finally:
+            self._clear_command_running(entry)
+
+    def _clear_command_running(self, entry: dict[str, Any]) -> None:
+        """`command:` の実行中フラグを下ろす。どの終わり方でも必ず通す。"""
+        if not entry.get("command"):
+            return
+        with self._lock:
+            self._command_running.pop(str(entry.get("id") or ""), None)
+
+    def _headless_agent(self, profile: Any, work_dir: str, name: str, log_file: str) -> Any:
+        """headless 実行で使う agent 定義を解決する（LLM を起こす経路だけが呼ぶ）。"""
+        agent = _harness_toolloop._tl_resolve_agent(
+            profile.name, profile.model or "", work_dir)
+        log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
+                 name, profile.name, profile.model or "(定義の既定)",
+                 profile.autonomy, log_file)
+        return agent
+
+    def _deferred_lookup_resolver(self, values: dict[str, Any]):
+        """字句 1 つの遅延 lookup（`{{lookup <ラベル> {<変数>}}}`）を解く関数を返す。
+
+        `format_map` は `{{` を `{` に潰すので、補完より**先に**解く必要がある
+        （本文テンプレートと同じ順序・同じ実装）。lookup を含まない字句は素通しする。
+        """
+        def resolve(token: str) -> str:
+            if not _DEFERRED_LOOKUP_RE.search(token):
+                return token
+            try:
+                return resolve_deferred_lookups(token, self.runtime_mappings(), values)
+            except Exception as exc:
+                log.warning("command の lookup を解決できませんでした: %s (%s)", token, exc)
+                return token
+        return resolve
+
+    def _ack_headless_hook(self, req: dict[str, Any], entry: dict[str, Any]) -> None:
+        """headless 実行が成功した回のフックへ `ack()` を返す。
+
+        対話ペイン経路は send-keys が通った時点で ack していたが、headless 経路は
+        どの分岐でも呼んでいなかった——`hooks` + `session: per-run` / `statemachine` /
+        `command` の実行は、仕事を終えてもイベントを既読にできず、次回同じイベントを
+        もう一度拾っていた。成功した実行だけが既読にする（失敗は次回もう一度拾う）。
+        """
+        hook = str((req.get("meta") or {}).get("_hook") or "")
+        if hook and str(req.get("source") or "") == "hook":
+            self._call_hook_ack(entry, hook)
 
     def _run_headless(self, req: dict[str, Any], entry: dict[str, Any],
                       dispatch_entry: dict[str, Any], profile: Any, cwd: str,
@@ -1355,6 +1482,14 @@ class PeriodicScheduler:
         # agent-herd・dashboard と共有する 1 実装（agentcore.loopentry）。
         workflow = ""
         parameters: dict[str, str] = {}
+        command: "dict[str, Any] | None" = None
+        if entry.get("command"):
+            try:
+                command = _loopentry.command_spec(entry)
+            except _loopentry.LoopEntryError as exc:
+                log.error("[%s] command の宣言が不正です: %s", name, exc)
+                self._fail_execution(req, slot_key, reason="command_invalid")
+                return
         if entry.get("statemachine"):
             try:
                 spec = _loopentry.statemachine_spec(entry, prompt=prompt)
@@ -1370,9 +1505,15 @@ class PeriodicScheduler:
         view_file = _harness_toolloop._tl_progress_view_file(log_file)
         try:
             with open(view_file, "a", encoding="utf-8") as f:
-                f.write(f"[agent-loop] entry: {name} / cli: {profile.name}"
-                        f"{' / model: ' + profile.model if profile.model else ''}"
-                        f" / log: {log_file}\n")
+                if command is not None:
+                    # コマンドは CLI もモデルも使わない。使っていないものを見出しに書くと、
+                    # ログを読む人がそれで動いたと読む。
+                    f.write(f"[agent-loop] entry: {name} / command: "
+                            f"{' '.join(command['argv'])} / log: {log_file}\n")
+                else:
+                    f.write(f"[agent-loop] entry: {name} / cli: {profile.name}"
+                            f"{' / model: ' + profile.model if profile.model else ''}"
+                            f" / log: {log_file}\n")
         except OSError:
             pass
         self._open_headless_log_view(entry, view_file)
@@ -1381,25 +1522,42 @@ class PeriodicScheduler:
         _harness_toolloop._TL_PROGRESS_LOCAL.view_file = view_file
         repository_started_at = _utc_iso()
         try:
-            agent = _harness_toolloop._tl_resolve_agent(
-                profile.name, profile.model or "", work_dir)
-            log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
-                     name, profile.name, profile.model or "(定義の既定)",
-                     profile.autonomy, log_file)
-            if workflow:
+            if command is not None:
+                # 固定コマンド。LLM を起こさないので agent の解決もしない。
+                # `{…}` の補完は本文テンプレートと同じ規則（materials はフック / webhook
+                # が返した辞書。定期発火だけの回は材料が無いので素通しする）。
+                values = dict((req.get("meta") or {}).get("_values") or {})
+                argv = _loopentry.render_argv(
+                    command["argv"], values,
+                    resolve=self._deferred_lookup_resolver(values))
+                log.info("[%s] コマンド実行: %s（log=%s）", name, " ".join(argv), log_file)
+                result = _commandrun.run_command(
+                    {**command, "argv": argv}, cwd=work_dir, log_file=log_file,
+                    tag="agent-loop")
+            elif workflow:
                 # ステートマシン実行。ハーネスは自分のログ（.statemachine-use/logs）へ
                 # 記録するので、こちらの jsonl は使わない——進行表示だけ同じペインへ流す。
                 log.info("[%s] ステートマシン: %s（条件: %s）", name, workflow,
                          ", ".join(sorted(parameters)) or "なし")
+
                 result = _harness_statemachine.run_statemachine(
                     workflow_path=workflow, cwd=work_dir, parameters=parameters,
-                    agent=agent)
+                    agent=self._headless_agent(profile, work_dir, name, log_file))
             else:
                 result = _harness_toolloop.run_prompt(
-                    goal=prompt, cwd=work_dir, agent=agent, log_file=log_file,
+                    goal=prompt, cwd=work_dir,
+                    agent=self._headless_agent(profile, work_dir, name, log_file),
+                    log_file=log_file,
                     acceptance=acceptance, tag="agent-loop",
                     judge=self._acceptance_judge_enabled(entry),
                     slash=list(entry.get("slash") or []))
+        except _commandrun.CommandRunError as exc:
+            # 実行を**始められなかった**（作業ディレクトリが無い等）。始まった実行の失敗は
+            # 例外にならず ok:false で返る——記録に残す理由が違うので分けて数える。
+            _harness_toolloop._tl_progress(f"ERROR: {exc}", "agent-loop")
+            log.error("[%s] コマンドを実行できませんでした: %s", name, exc)
+            self._fail_execution(req, slot_key, reason="command_invalid")
+            return
         except _harness_toolloop.ToolLoopError as exc:
             _harness_toolloop._tl_progress(f"ERROR: {exc}", "agent-loop")
             log.error("[%s] headless 実行に失敗しました: %s", name, exc)
@@ -1417,17 +1575,21 @@ class PeriodicScheduler:
             # 実行ペインの結果契約は statemachine / run の `RESULT {json}` と同じ形にする
             # （dashboard 定常業務の「今すぐ実行」ペインと読み方を揃える。output は長い
             # ので落とし、判定に要る要素だけ）。
-            keys = (("ok", "escalate", "finalState", "stopReason", "logFile", "files")
+            keys = (("ok", "status", "stopReason", "durationSec", "logFile")
+                    if command is not None
+                    else ("ok", "escalate", "finalState", "stopReason", "logFile", "files")
                     if workflow
                     else ("ok", "verified", "verifiedBy", "stopReason", "files",
                           "evidenceErrors"))
             _harness_toolloop._tl_progress("RESULT " + json.dumps(
                 {k: result.get(k) for k in keys if k in result},
                 ensure_ascii=False), "agent-loop")
-            if workflow:
+            if workflow or command is not None:
                 try:
                     record_repository_run(work_dir, {
                         "runId": str(req.get("id") or uuid.uuid4().hex),
+                        "kind": "command" if command is not None else "statemachine",
+                        "command": " ".join(result.get("argv") or []) if command else "",
                         "workflow": workflow,
                         "entryName": name,
                         "source": "scheduled",
@@ -1439,13 +1601,31 @@ class PeriodicScheduler:
                         "stopReason": result.get("stopReason") or "",
                         "error": result.get("error") or "",
                         "logFile": result.get("logFile") or "",
-                        "agentCli": profile.name,
-                        "model": profile.model or "",
+                        "agentCli": "" if command is not None else profile.name,
+                        "model": "" if command is not None else (profile.model or ""),
                     })
                 except Exception as exc:
                     log.warning("[%s] 実行履歴を記録できませんでした: %s", name, exc)
         finally:
             _harness_toolloop._TL_PROGRESS_LOCAL.view_file = None
+
+        if command is not None:
+            if not result.get("ok"):
+                log.warning("[%s] コマンドが失敗しました（%s）: %s", name,
+                            result.get("stopReason"), result.get("error") or "")
+                self._fail_execution(req, slot_key, reason="command_failed")
+                return
+            log.info("[%s] コマンド完了: status=0（%.1f 秒）log=%s",
+                     name, float(result.get("durationSec") or 0.0), log_file)
+            # 成功した実行だけがイベントを既読にする。失敗した回は ack しない——
+            # 送信失敗と同じ扱いで、次回もう一度拾われるのが正しい。
+            self._ack_headless_hook(req, entry)
+            self._release_slot(slot_key)
+            self._upsert_execution(root_id, state="DONE", pane_id=None, step=1)
+            self._end_active(req, "completed", None)
+            self._pop_execution(root_id)
+            _log_dispatch("execution_terminal", req, state="DONE")
+            return
 
         if workflow:
             # ステートマシンの検証はワークフローの `check:`（ハーネスが実測する）。
@@ -1459,6 +1639,7 @@ class PeriodicScheduler:
                 return
             log.info("[%s] ステートマシン完走: 終端=%s log=%s",
                      name, result.get("finalState"), result.get("logFile"))
+            self._ack_headless_hook(req, entry)
             self._release_slot(slot_key)
             self._upsert_execution(root_id, state="DONE", pane_id=None, step=1)
             self._end_active(req, "completed", None)
@@ -1477,6 +1658,7 @@ class PeriodicScheduler:
                 log.warning("[%s] 受入条件を満たしていません: %s", name, reason)
             self._fail_execution(req, slot_key, reason="acceptance_failed")
             return
+        self._ack_headless_hook(req, entry)
         self._release_slot(slot_key)
         self._upsert_execution(root_id, state="DONE", pane_id=None, step=1)
         self._end_active(req, "completed", None)
@@ -1628,8 +1810,13 @@ class PeriodicScheduler:
                 "secret_header": wh.get("secret_header"),
             }
 
-    def enqueue_external(self, name: str, prompt_text: str) -> bool:
-        """外部（webhook 等）から name 宛の完成プロンプトをキューに積む。"""
+    def enqueue_external(self, name: str, prompt_text: str,
+                         values: "dict[str, Any] | None" = None) -> bool:
+        """外部（webhook 等）から name 宛の完成プロンプトをキューに積む。
+
+        `values` は `command:` の argv へ差し込む材料（webhook フックが返した辞書）。
+        本文には既に注入済みだが、argv は実行時に字句へ差し込むので素の値を持ち越す。
+        """
         key = _webhook_key(name)
         with self._lock:
             if self._draining:
@@ -1642,29 +1829,33 @@ class PeriodicScheduler:
             if len(q) >= _WEBHOOK_QUEUE_MAX:
                 log.warning("[%s] 外部イベントキューが上限 (%d) に達したため最古を破棄します。",
                             entry.get("name", key), _WEBHOOK_QUEUE_MAX)
-            q.append(prompt_text)
+            q.append((prompt_text, dict(values) if values else {}))
             return True
 
     def _drain_external_to_pending(self) -> None:
         """webhook deque → pending（受付時に deque から外す。busy 時は pending に留める）。"""
         with self._lock:
-            items: list[tuple[dict[str, Any], str]] = []
+            items: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
             for entry in self._entries:
                 key = _webhook_key(str(entry.get("name", "")))
                 q = self._external_queues.get(key)
                 if not q:
                     continue
                 # 1 tick あたり entry ごと 1 件（従来どおり）
-                prompt_text = q.popleft()
-                items.append((entry.copy(), prompt_text))
-        for entry, prompt_text in items:
+                queued = q.popleft()
+                prompt_text, values = _external_item(queued)
+                items.append((entry.copy(), prompt_text, values))
+        for entry, prompt_text, values in items:
+            meta: dict[str, Any] = {"entry_name": entry.get("name"), "_should_clear": False}
+            if values:
+                meta["_values"] = dict(values)
             req = make_dispatch_request(
                 source="webhook",
                 entry_id=str(entry.get("id", "")),
                 prompt=prompt_text,
                 cwd=entry.get("cwd"),
                 priority="normal",
-                meta={"entry_name": entry.get("name"), "_should_clear": False},
+                meta=meta,
             )
             if not self._accept_request(req):
                 # draining 等で受けられない場合は deque へ戻す
@@ -1672,7 +1863,7 @@ class PeriodicScheduler:
                 with self._lock:
                     self._external_queues.setdefault(
                         key, collections.deque(maxlen=_WEBHOOK_QUEUE_MAX)
-                    ).appendleft(prompt_text)
+                    ).appendleft((prompt_text, dict(values) if values else {}))
 
     # ---- hooks / preflight -------------------------------------------------
 
@@ -1837,7 +2028,9 @@ class PeriodicScheduler:
                 log.warning("[%s] check() dict に有効な prompt がありません: %r", name, result)
                 _broken()
                 return None
-            out: dict[str, Any] = {"prompt": prompt}
+            # `command:` の argv へ差し込む材料。本文には既に format_map 済みだが、
+            # argv は実行時に字句へ差し込むので、素の値をここで持ち越す。
+            out: dict[str, Any] = {"prompt": prompt, "values": {"prompt": prompt}}
             cwd = result.get("cwd")
             if cwd is not None:
                 cwd_path = Path(os.path.expanduser(str(cwd)))
@@ -1856,6 +2049,7 @@ class PeriodicScheduler:
                         text = resolve_deferred_lookups(
                             prompt, self.runtime_mappings(), vars_map)
                     out["prompt"] = text.format_map(_SafeDict(vars_map))
+                    out["values"] = {**vars_map, "prompt": out["prompt"]}
                 except Exception as exc:
                     log.warning("[%s] check() vars の format に失敗しました: %s", name, exc)
                     _broken()
@@ -2258,6 +2452,13 @@ class PeriodicScheduler:
         # ---- 経路の解決（entry ごとの agent_cli / model）----
         # external は tmux ペインへ送るのが役目なので対象外。ralph 多段も headless では
         # 扱えない（起動時に明示エラーで断っている）。
+        # 固定コマンド（`command:`）は LLM も対話面も持たない。CLI プロファイルの解決を
+        # 通さずに headless へ回す——解決を通すと、使いもしない既定 CLI の不在で警告が出る。
+        if entry.get("command"):
+            return self._dispatch_headless(
+                req, entry=entry, dispatch_entry=dispatch_entry, exec_meta=exec_meta,
+                profile=None, cwd=cwd, root_id=root_id)
+
         entry_profile: Any = None
         if target_kind != "external":
             entry_profile, route = self._entry_route(entry)
@@ -2846,6 +3047,9 @@ class PeriodicScheduler:
                     request_meta["execution"] = dict(request_meta["execution"])
                 if hook is not None:
                     request_meta["_hook"] = hook
+                values = result.get("values")
+                if isinstance(values, dict) and values:
+                    request_meta["_values"] = dict(values)
                 req = make_dispatch_request(
                     source="hook" if hook is not None else "schedule",
                     entry_id=prompt_id,

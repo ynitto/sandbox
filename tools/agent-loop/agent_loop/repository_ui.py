@@ -263,18 +263,50 @@ def _repository_history(root: Path, workflow: str, limit: int) -> list[dict[str,
     return records[-max(1, int(limit)):][::-1]
 
 
+def _repository_command_history(root: Path, entry_name: str, limit: int) -> list[dict[str, Any]]:
+    """固定コマンド実行の履歴（entry 名で引く）。
+
+    ステートマシンの履歴はワークフローで引くが、コマンドはワークフローを持たない。
+    同じ名前の entry は 1 リポジトリに 1 つなので、名前が索引になる。
+    """
+    name = str(entry_name or "").strip()
+    if not name:
+        return []
+    try:
+        lines = _repository_history_file(root).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    records = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if (isinstance(record, dict) and record.get("kind") == "command"
+                and str(record.get("entryName") or "") == name):
+            records.append(record)
+    return records[-max(1, int(limit)):][::-1]
+
+
 def record_repository_run(cwd: "str | Path", record: Any) -> dict[str, Any]:
-    """statemachine 実行の短い索引を best-effort で repository 履歴へ追記する。"""
+    """実行（ステートマシン / 固定コマンド）の短い索引を best-effort で履歴へ追記する。
+
+    `kind` が `command` の記録はワークフローを持たない。照合は `runId` で行うので、
+    `workflow` は空のままでよい——持っていないものを埋めると履歴の絞り込みが嘘になる。
+    """
     root = _repository_root(cwd)
     if not isinstance(record, dict):
         raise ValueError("実行記録が不正です")
-    workflow = _loopentry.workflow_reference(record.get("workflow"))
+    kind = "command" if str(record.get("kind") or "") == "command" else "statemachine"
+    workflow = "" if kind == "command" else _loopentry.workflow_reference(
+        record.get("workflow"))
     allowed = (
         "runId", "entryName", "source", "startedAt", "finishedAt", "ok", "escalate",
-        "finalState", "stopReason", "error", "logFile", "agentCli", "model",
+        "finalState", "stopReason", "error", "logFile", "agentCli", "model", "command",
     )
     normalized = {key: record[key] for key in allowed if key in record}
     normalized["runId"] = str(normalized.get("runId") or uuid.uuid4().hex)
+    normalized["kind"] = kind
     normalized["workflow"] = workflow
     normalized["source"] = "scheduled" if normalized.get("source") == "scheduled" else "manual"
     normalized["ok"] = normalized.get("ok") is True
@@ -544,8 +576,15 @@ def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str,
         if spec and str(spec["workflow"]) in known_workflows:
             continue
         schedule = _repository_schedule_item(root, entry_path, index, entry, effective)
+        try:
+            has_command = _loopentry.command_spec(entry) is not None
+        except _loopentry.LoopEntryError as exc:
+            has_command = False
+            entry_error = entry_error or str(exc)
         kind = "broken" if spec else (
-            "hook" if entry.get("hooks") or entry.get("event_hook") else "prompt")
+            "command" if has_command
+            else "hook" if entry.get("hooks") or entry.get("event_hook")
+            else "prompt")
         tasks.append({
             "id": task_id,
             "entryRef": task_id,
@@ -560,7 +599,9 @@ def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str,
             "source": _repository_source(root, entry_path),
             "effective": effective,
             "error": entry_error or ("ステートマシン定義が見つかりません" if spec else None),
-            "history": [],
+            "history": (_repository_command_history(
+                root, str(entry.get("name") or ""), history_limit)
+                if kind == "command" else []),
         })
     return {"available": True, "machines": machines, "tasks": tasks,
             "configSource": source,
@@ -641,3 +682,67 @@ def cmd_repository_statemachine(args: argparse.Namespace, cwd: Path) -> None:
         })
 
     _harness_statemachine.cmd_statemachine(args, cwd, result_recorder=record)
+
+
+def cmd_repository_command(args: argparse.Namespace, cwd: Path) -> None:
+    """`agent-loop command --entry NAME` — entry の固定コマンドを 1 回実行する。
+
+    デーモンと同じ宣言・同じ実行器を使う（読み方は agentcore.loopentry、実行は
+    agentcore.commandrun）。違うのは補完の材料だけで、デーモンではフック / webhook が
+    返した辞書、ここでは `--param` で人が打った値になる。
+    """
+    work_dir = Path(getattr(args, "dir", None) or cwd).expanduser()
+    started_at = _utc_iso()
+    try:
+        plan = _loopentry.resolve_command_entry(
+            getattr(args, "entry", ""), cwd=str(work_dir),
+            config=getattr(args, "config", None))
+    except _loopentry.LoopEntryError as exc:
+        print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if plan["cwd"]:
+        work_dir = Path(plan["cwd"]).expanduser()
+
+    values: dict = {}
+    for pair in list(getattr(args, "param", None) or []):
+        key, sep, value = str(pair).partition("=")
+        if not sep or not key.strip():
+            print(f"[agent-loop] ERROR: --param は KEY=VALUE です: {pair}", file=sys.stderr)
+            sys.exit(1)
+        values[key.strip()] = value
+    spec = dict(plan["command"])
+    try:
+        spec["argv"] = _loopentry.render_argv(spec["argv"], values)
+    except _loopentry.LoopEntryError as exc:
+        print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        result = _commandrun.run_command(spec, cwd=str(work_dir))
+    except _commandrun.CommandRunError as exc:
+        print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if result.get("stdout"):
+        print(result["stdout"], end="" if result["stdout"].endswith("\n") else "\n")
+    if result.get("stderr"):
+        print(result["stderr"], end="" if result["stderr"].endswith("\n") else "\n",
+              file=sys.stderr)
+    try:
+        record_repository_run(work_dir, {
+            "kind": "command",
+            "command": " ".join(result.get("argv") or []),
+            "entryName": str(getattr(args, "entry", "") or ""),
+            "source": "manual",
+            "startedAt": started_at,
+            "finishedAt": _utc_iso(),
+            "ok": result.get("ok") is True,
+            "stopReason": result.get("stopReason") or "",
+            "error": result.get("error") or "",
+            "logFile": result.get("logFile") or "",
+        })
+    except Exception:
+        pass   # 履歴は best-effort（実行の成否を履歴の書けなさで塗り替えない）
+    print("RESULT " + json.dumps(
+        {k: result.get(k) for k in ("ok", "status", "stopReason", "durationSec")
+         if k in result}, ensure_ascii=False))
+    sys.exit(0 if result.get("ok") else 1)

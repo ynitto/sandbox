@@ -23,9 +23,6 @@ def _load(name, path):
 
 
 hook = _load("gitlab_issue_hook_test", HERE.parent / "hooks" / "gitlab-issue-hook.py")
-resource_hook = _load(
-    "resource_control_hook_test", HERE.parent / "hooks" / "resource-control-hook.py"
-)
 calibrate_hook = _load(
     "audit_calibrate_hook_test", HERE.parent / "hooks" / "audit-calibrate-hook.py"
 )
@@ -300,32 +297,13 @@ class EventHookDispatchTests(unittest.TestCase):
         self.assertEqual(scheduler._pending, [])
 
 
-class ResourceControlHookTests(unittest.TestCase):
-    def test_runs_headless_writer_without_dispatching_prompt(self):
-        completed = types.SimpleNamespace(returncode=0, stdout="{}\n", stderr="")
-        cfg = {"hook_config": {
-            "agent_audit": "/tmp/agent-audit",
-            "script": "/tmp/resource-control.js",
-            "control_dir": "/tmp/control",
-            "budget_dir": "/tmp/budget",
-        }}
-        with mock.patch.object(resource_hook.subprocess, "run", return_value=completed) as run:
-            self.assertIsNone(resource_hook.check(cfg))
-        self.assertEqual([call.args[0] for call in run.call_args_list], [
-            ["/tmp/agent-audit", "--budget-dir", "/tmp/budget",
-             "collect", "--source", "cli-quota"],
-            ["node", str(pathlib.Path("/tmp/resource-control.js").resolve()),
-             "--control-dir", "/tmp/control", "--budget-dir", "/tmp/budget"],
-        ])
+class NoPromptHookTests(unittest.TestCase):
+    """LLM へ送らずにコマンドだけを回すフックの回帰。
 
-    def test_quota_collect_failure_does_not_stop_existing_resource_control(self):
-        failed = types.SimpleNamespace(returncode=127, stdout="", stderr="agent-audit not found")
-        completed = types.SimpleNamespace(returncode=0, stdout="{}\n", stderr="")
-        cfg = {"hook_config": {"script": "/tmp/resource-control.js"}}
-        with mock.patch.object(resource_hook.subprocess, "run",
-                               side_effect=[failed, completed]) as run:
-            self.assertIsNone(resource_hook.check(cfg))
-        self.assertEqual(run.call_count, 2)
+    資源制御は `command:` エントリへ移したのでフックごと消えた（設計
+    2026-09-13 §移行）。残りは段ごとの許容・スキップ判断を持つので、その判断を
+    スクリプトへ移すまでフックのまま置く。
+    """
 
     def test_collects_then_writes_calibration_without_prompt(self):
         completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
