@@ -16,6 +16,8 @@ const worktree = require('./worktree');
 const attachments = require('./attachments');
 const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
+const sessionHandoff = require('./sessionHandoff');
+const handingOff = new Set();
 const notify = require('./notify');
 const forkProtocol = require('../renderer/forkProtocol');
 const response = require('./response');
@@ -250,6 +252,7 @@ function runHeadless(id, turn, send) {
   const unseen = entry && entry.id ? history.slice(entry.seen) : history;
   const cmd = agentCli.turnCmd(spec, {
     prompt, model, readonly, cliSession: entry ? entry.id : '', history: unseen, files: attFiles,
+    allowContinue: !(sess.origin && sess.origin.repo === sess.repo),
   });
   store.appendMessage(ud, id, { role: 'user', text, cli, family, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
   if (cmd.mintedSession) store.setCliEntry(ud, id, cli, { id: cmd.mintedSession });
@@ -339,10 +342,10 @@ function runHeadless(id, turn, send) {
 // 参加者の CLI にセッションを残さない。読み取り専用で起こす。
 //   { cli, prompt, model, readonly, cwd, files, timeoutMs, onLine }
 //   → { done: Promise<{ text, code, stopped, error, errorClass, quotaKind, elapsedMs, usage }>, stop(reason) }
-function runPrompt({ cli, prompt, model = '', readonly = true, cwd, files = [], timeoutMs = 0, onLine = () => {} }) {
+function runPrompt({ cli, prompt, model = '', readonly = true, cwd, files = [], timeoutMs = 0, onLine = () => {}, repo = '' }) {
   const cfg = store.loadConfig(userData());
-  const distro = process.platform === 'win32' ? cfg.wslDistro : '';
-  const spec = agentCli.load(cli, '');
+  const distro = host.hostOf(repo || cwd, cfg.wslDistro).distro;
+  const spec = agentCli.load(cli, repo);
   const cmd = agentCli.turnCmd(spec, { prompt, model, readonly, cliSession: '', history: [], files });
   let argv = cmd.argv;
   if (spec.noSessionArgs && spec.noSessionArgs.length) argv = agentCli.insertAfterSubcommand(argv, spec.noSessionArgs);
@@ -622,6 +625,7 @@ async function openConversationNow(id, send, { cols, rows, fresh = false, launch
   const cmd = agentCli.interactiveCmd(spec, {
     model: want.model, readonly: want.readonly, autoApprove: want.autoApprove,
     cliSession: entry ? entry.id : '', history,
+    allowContinue: !(sess.origin && sess.origin.repo === sess.repo),
   });
   let captureWarning = '';
   let lastSync = 0;
@@ -714,7 +718,8 @@ async function sweepTerminalSessions() {
 
 async function runTmux(id, turn, send) {
   const ud = userData();
-  const { cli, model, readonly, autoApprove, text, prompt, atts, policy, tier, selectedSkills, family = '', slash = '' } = turn;
+  const { cli, model, readonly, autoApprove, atts, policy, tier, selectedSkills, family = '', slash = '' } = turn;
+  let { text, prompt } = turn;
   const want = { cli, model, readonly, autoApprove };
   let conv = conversations.get(id);
   let opened = null;
@@ -734,6 +739,19 @@ async function runTmux(id, turn, send) {
     conv = conversations.get(id);
     await conv.waitReady();
   }
+  const sess = store.readSession(ud, id);
+  const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
+  const unseen = history.slice(conv.seen);
+  // CLI が入力可能になるまで待ってから判断する。tmux の存在だけでは復元の根拠にしない。
+  // 初回の作成依頼は残し、既存編集の再開説明だけを省く。未共有の履歴や今回の指示は届ける。
+  if (turn.resumeContext !== undefined && conv.resumed) {
+    if (!turn.resumeContext && !unseen.length) {
+      turn.release();
+      return { name: conv.name, started: false, restarted: !!(opened && opened.restarted), warning: opened?.warning || '' };
+    }
+    text = turn.resumeContext || '未共有のやり取りを踏まえて編集を続けてください。';
+    prompt = turn.resumeContext ? turn.resumedPrompt : text;
+  }
   // セッション開始スキルは本依頼へ連結しない。1 件ずつ独立した入力として適用し、
   // 完了を待ってからユーザーの依頼を送る（agent-loop の chat strategy=paste と同じ境界）。
   for (const item of turn.setupSkills || []) {
@@ -752,9 +770,6 @@ async function runTmux(id, turn, send) {
       turn.setupWarning = [turn.setupWarning, message].filter(Boolean).join('\n');
     }
   }
-  const sess = store.readSession(ud, id);
-  const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
-  const unseen = history.slice(conv.seen);
   // 用途のスラッシュ行は（履歴の再送があっても）本文の一番上。共通 TUI は先頭の /name 行だけを読む
   const full = herd.withSlash(slash, unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed }) : prompt);
   store.appendMessage(ud, id, { role: 'user', text, cli, family, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
@@ -785,12 +800,12 @@ async function runTmux(id, turn, send) {
   send('turn:started', { id, argv: [], warning });
   send('turn:progress', { id, item: { text: `${cli} が依頼を処理しています`, status: 'running' } });
   for (const item of turn.setupInformation || []) send('turn:info', { id, item });
-  return { name: conv.name, restarted: !!(opened && opened.restarted), warning };
+  return { name: conv.name, started: true, restarted: !!(opened && opened.restarted), warning };
 }
 
 // 1 ターン。CLI・モデル・モードはターンごとに決め、tmux か ヘッドレスかもここで決める
 // （対話定義を持つ CLI で tmux が使えるなら tmux）。
-async function runTurn(id, p, send, { config = null, release = () => {} } = {}) {
+async function runTurn(id, p, send, { config = null, release = () => {}, resumeContext } = {}) {
   const ud = userData();
   const sess = store.readSession(ud, id);
   const repo = requireRepo(sess.repo);
@@ -856,7 +871,8 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
   const prompt = transport === 'headless' && setupSkills.length
     ? `${setupSkills.map((item) => item.command).join('\n')}\n\n${contextualPrompt}`
     : contextualPrompt;
-  const turn = { ...base, prompt, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
+  const resumedPrompt = resumeContext ? sessionSetup.withInstructions(resumeContext, cfg.instructions) : '';
+  const turn = { ...base, resumeContext, resumedPrompt, prompt, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
   // 次のターンの既定として覚える（画面はこれを出す）。`herd` は写した先ではなく要求した
   // 名前のまま残す——次のターンは添付の有無でまた選び直す
   store.updateSession(ud, id, {
@@ -871,7 +887,7 @@ async function runTurn(id, p, send, { config = null, release = () => {} } = {}) 
   return runTmux(id, turn, send);
 }
 
-async function guardedRunTurn(id, p, send) {
+async function guardedRunTurn(id, p, send, { resumeContext } = {}) {
   const cfg = store.loadConfig(userData());
   turnGate.acquire(id, cfg.execution.maxConcurrent);
   let released = false;
@@ -881,7 +897,7 @@ async function guardedRunTurn(id, p, send) {
     turnGate.release(id, cfg.execution.maxConcurrent);
   };
   try {
-    return await runTurn(id, p, send, { config: cfg, release });
+    return await runTurn(id, p, send, { config: cfg, release, resumeContext });
   } catch (error) {
     release();
     throw error;
@@ -984,6 +1000,7 @@ function prepareTeaching(p) {
     sidecar = teaching.save(repo, machine, { title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose });
   }
   let summary = store.findTaskSession(ud, repo, machine);
+  const replacing = !!summary && p.newSession;
   if (!summary) {
     const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
     const created = store.createSession(ud, {
@@ -995,6 +1012,16 @@ function prepareTeaching(p) {
     sidecar = teaching.save(repo, machine, { ...(sidecar || { title: machine, purpose }), sessionId: created.id });
   } else if (sidecar && sidecar.sessionId !== summary.id) {
     sidecar = teaching.save(repo, machine, { ...sidecar, sessionId: summary.id });
+  }
+  if (replacing) {
+    if (turnGate.snapshot(cfg.execution.maxConcurrent).ids.includes(summary.id)
+      || running.has(summary.id) || conversations.get(summary.id)?.turn) throw new Error('応答の完了後に新しいセッションを作成してください');
+    const created = store.replaceEditingSession(ud, summary.id, {
+      readonly: false, ...(p.cli ? { cli: p.cli, model: p.model || '' } : {}),
+      autoApprove: p.autoApprove != null ? !!p.autoApprove : store.readSession(ud, summary.id).autoApprove,
+    });
+    summary = { id: created.id };
+    sidecar = teaching.save(repo, machine, { ...sidecar, sessionId: created.id });
   }
   // 既にある会話でも権限は画面の選択に合わせる（自動承認へ切り替えたら、次の依頼で CLI を起動し直す）
   if (p.autoApprove != null) store.updateSession(ud, summary.id, { autoApprove: !!p.autoApprove });
@@ -1012,19 +1039,20 @@ async function startTeaching(p, send) {
   const conversation = conversations.get(session.id);
   const busy = running.has(session.id) || !!(conversation && conversation.turn);
   let started = false;
-  // 初回だけでなく、下書きの再開・公開済みタスクの編集開始時にも対象を明示する。
-  // renderer は起動待ちを見せるため先に tmux へ接続するので、生きていること自体を
-  // 「依頼済み」の印にはしない。編集開始という明示操作ごとに対象を伝える。
+  // 再開時の説明は CLI の復元結果に応じて runTmux で省略する。初回依頼は必ず送る。
   if (!busy) {
     const common = { machine, purpose: sidecar ? sidecar.purpose : purpose, existing };
     const prompt = session.messages.length
       ? teaching.resumePrompt({ ...common, context: p.context })
       : teaching.prompt({ ...common, skillDir: teachingSkillDir(repo, cfg), tools: teachingTools() });
-    await guardedRunTurn(session.id, {
+    const context = String(p.context || '').trim().slice(0, 1000);
+    const result = await guardedRunTurn(session.id, {
       prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
       skillMode: 'off', skills: [], attachments: [],
-    }, send);
-    started = true;
+    }, send, {
+      resumeContext: session.messages.length ? (context ? `今回の編集対象: ${context}` : '') : undefined,
+    });
+    started = result.started !== false;
   }
   return { ...taskConversationView(ud, repo, machine), existing, started };
 }
@@ -1056,12 +1084,22 @@ function prepareFlowTeaching(p) {
     sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose }));
   }
   let summary = store.findWorkflowSession(ud, repo, id);
+  const replacing = !!summary && p.newSession;
   if (!summary) {
     const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
     const created = store.createSession(ud, {
       repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier,
       readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
       transport: 'tmux', worktree: '', kind: 'workflow', workflow: { id },
+    });
+    summary = { id: created.id };
+  }
+  if (replacing) {
+    if (turnGate.snapshot(cfg.execution.maxConcurrent).ids.includes(summary.id)
+      || running.has(summary.id) || conversations.get(summary.id)?.turn) throw new Error('応答の完了後に新しいセッションを作成してください');
+    const created = store.replaceEditingSession(ud, summary.id, {
+      readonly: false, ...(p.cli ? { cli: p.cli, model: p.model || '' } : {}),
+      autoApprove: p.autoApprove != null ? !!p.autoApprove : store.readSession(ud, summary.id).autoApprove,
     });
     summary = { id: created.id };
   }
@@ -1080,11 +1118,14 @@ async function startFlowTeaching(p, send) {
     const prompt = session.messages.length
       ? flowTeachingPrompt.resumePrompt({ ...common, context: p.context })
       : flowTeachingPrompt.prompt(common);
-    await guardedRunTurn(session.id, {
+    const context = String(p.context || '').trim().slice(0, 1000);
+    const result = await guardedRunTurn(session.id, {
       prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
       skillMode: 'off', skills: [], attachments: [],
-    }, send);
-    started = true;
+    }, send, {
+      resumeContext: session.messages.length ? (context ? `今回の編集対象: ${context}` : '') : undefined,
+    });
+    started = result.started !== false;
   }
   return { ...flowConversationView(ud, repo, id), existing, started };
 }
@@ -1270,8 +1311,44 @@ function registerIpcHandlers(getWindow) {
     }, send);
     return { session: presentSession(store.readSession(ud, created.id), ud), turn };
   });
+  handle('session:handoff', async (p) => {
+    const ud = userData();
+    const origin = store.readSession(ud, p.id);
+    if (origin.kind !== 'conversation') throw new Error('会話画面から引き継いでください');
+    if (handingOff.has(origin.id)) throw new Error('この会話は引き継ぎ中です');
+    if (conversations.get(origin.id)?.turn || running.has(origin.id)) throw new Error('応答の完了後に引き継いでください');
+    const cfg = store.loadConfig(ud);
+    const dirs = dirsOf(origin.repo, origin.worktree, { mustExist: true });
+    handingOff.add(origin.id);
+    let held = false;
+    try {
+      turnGate.acquire(origin.id, cfg.execution.maxConcurrent);
+      held = true;
+      const selected = concreteCli({ cli: origin.cli, model: origin.model, readonly: true }, await listAgents(origin.repo));
+      const summary = await sessionHandoff.summarize(origin, async (prompt) => {
+        const result = await runPrompt({ cli: selected.cli, model: selected.model, prompt,
+          readonly: true, repo: origin.repo, cwd: dirs.fsDir, timeoutMs: 180000 }).done;
+        if (result.error || result.code !== 0 || result.stopped) throw new Error(result.error || '会話の要約に失敗しました');
+        return result.text;
+      });
+      const created = store.createSession(ud, { ...origin,
+        origin: { sessionId: origin.id, repo: origin.repo, index: -1 },
+      });
+      store.updateSession(ud, created.id, { title: `${origin.title || '会話'}（引き継ぎ）` });
+      turnGate.release(origin.id, cfg.execution.maxConcurrent);
+      held = false;
+      // CLI の起動確認・開始スキルの完了を待つ前に要約を保存して画面へ返す。
+      // 新しい端末が見える状態で renderer が最初の依頼を送る。
+      store.appendMessage(ud, created.id, { role: 'user', text: sessionHandoff.handoffPrompt(summary) });
+      return { session: presentSession(store.readSession(ud, created.id), ud) };
+    } finally {
+      if (held) turnGate.release(origin.id, cfg.execution.maxConcurrent);
+      handingOff.delete(origin.id);
+    }
+  });
   handle('session:update', (p) => store.updateSession(userData(), p.id, p.patch));
   handle('session:remove', async (p) => {
+    if (handingOff.has(p.id)) throw new Error('引き継ぎの完了後に削除してください');
     if (running.has(p.id)) running.get(p.id).stop();
     const conv = conversations.get(p.id);
     if (conv) { conversations.delete(p.id); await conv.kill(); }

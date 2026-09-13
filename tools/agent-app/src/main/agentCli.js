@@ -256,7 +256,7 @@ function replayPrompt(history, prompt, { resumed = false } = {}) {
 //                CLI で進めた分だけ（無ければ空）。再開手段の無い CLI なら会話の全部
 //   files      … 添付ファイルのパス（file_flag を宣言する CLI にだけ argv で渡す。本文には
 //                呼び出し側が書いてある）
-function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', history = [], files = [] } = {}) {
+function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', history = [], files = [], allowContinue = true } = {}) {
   const vars = { model: String(model || spec.defaultModel || ''), session: cliSession };
   const holder = {};
   const strategy = spec.session;
@@ -275,7 +275,7 @@ function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', 
   } else if (strategy) {
     frag = [];                                   // capture / list は初回に何も足さない
     if (history.length) text = replayPrompt(history, text);
-  } else if (history.length && spec.continueArgs.length) {
+  } else if (allowContinue && history.length && spec.continueArgs.length) {
     // ponytail: --continue は「直前のセッション」で、同じ CLI を並行して使うと混線する。
     // 直すなら SESSION に ID の拾い方を足す。
     frag = spec.continueArgs;
@@ -339,7 +339,7 @@ function oneShotCmd(spec, { model = '', readonly = false } = {}) {
 //   組み立て: interactive.command + [continue|resume] + (write_args | readonly_args) + model_flag model
 //   再開の作法はヘッドレスと同じ SESSION 表（claude / copilot は UUID を発行して --session-id）。
 //   tmux セッションが生きている限り CLI 自身が会話を保つので、resume が要るのは起動し直すときだけ。
-function interactiveCmd(spec, { model = '', readonly = false, autoApprove = false, cliSession = '', history = [] } = {}) {
+function interactiveCmd(spec, { model = '', readonly = false, autoApprove = false, cliSession = '', history = [], allowContinue = true } = {}) {
   const inter = spec.interactive;
   if (!inter) throw new Error(`${spec.name} は対話起動（interactive）の定義を持ちません`);
   const vars = { model: String(model || spec.defaultModel || ''), session: cliSession };
@@ -361,7 +361,7 @@ function interactiveCmd(spec, { model = '', readonly = false, autoApprove = fals
     // capture/list 型は ID を特定できたときだけ再開する。--last は同じ CLI の
     // 別会話を拾うため、ID が無い場合は新規起動して未読履歴を再送する。
     warning = `${spec.name} のセッション ID が無いため、新しい会話として起動します`;
-  } else if (history.length && inter.continueArgs.length) {
+  } else if (allowContinue && history.length && inter.continueArgs.length) {
     frag = inter.continueArgs;
     resumed = true;
     warning = `${spec.name} は「直前のセッション」を続ける形で再開します（同じ CLI を並行して使っていると混線しえます）`;

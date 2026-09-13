@@ -277,7 +277,7 @@ function sessionSummary(file) {
     workflow: s.kind === 'workflow' && s.workflow ? String(s.workflow.id || '') : '',
     policy: s.policy || 'direct', tier: s.tier || '',
     transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
-    title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
+    supersededBy: String(s.supersededBy || ''), title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
     origin: normalizeOrigin(s.origin),
   };
   summaryCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, summary });
@@ -308,13 +308,23 @@ function listSessions(userData, repo, { kind = 'conversation' } = {}) {
 // そのタスクの会話（無ければ null）。同じ機械名に複数あれば最新のもの。
 function findTaskSession(userData, repo, machine) {
   const name = String(machine || '');
-  return listSessions(userData, repo, { kind: 'task' }).find((s) => s.machine === name) || null;
+  return listSessions(userData, repo, { kind: 'task' }).find((s) => s.machine === name && !s.supersededBy) || null;
 }
 
 // そのワークフローの会話（無ければ null）。同じ保存名に複数あれば最新のもの。
 function findWorkflowSession(userData, repo, id) {
   const name = String(id || '');
-  return listSessions(userData, repo, { kind: 'workflow' }).find((s) => s.workflow === name) || null;
+  return listSessions(userData, repo, { kind: 'workflow' }).find((s) => s.workflow === name && !s.supersededBy) || null;
+}
+
+// 編集対象は同じまま、空の会話へ切り替える。旧会話が後から保存されても選択は戻さない。
+function replaceEditingSession(userData, previousId, options) {
+  const previous = readSession(userData, previousId);
+  if (!['task', 'workflow'].includes(previous.kind)) throw new Error('編集用のセッションではありません');
+  const created = createSession(userData, { ...previous, ...options, kind: previous.kind, task: previous.task, workflow: previous.workflow });
+  previous.supersededBy = created.id;
+  writeSession(userData, previous);
+  return created;
 }
 
 // その会話から分岐した会話（別のリポジトリも含む。更新日時の降順）。
@@ -400,7 +410,7 @@ function removeSession(userData, id) {
 
 module.exports = {
   DEFAULTS, loadConfig, saveConfig, addRepo, removeRepo, isRegistered,
-  createSession, readSession, listSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
+  createSession, replaceEditingSession, readSession, listSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
   TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot,
 };

@@ -984,8 +984,12 @@ function renderHeader() {
   $('session-delete').hidden = !cur;
   $('session-rename').hidden = !cur;
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
+  $('session-handoff').hidden = !cur || cur.kind !== 'conversation';
+  $('session-handoff').disabled = busy || !!state.handoffId || !cur?.messages.length;
+  $('session-handoff').textContent = state.handoffId === cur?.id ? '引き継ぎ中…' : '新しいセッションに引き継ぐ';
   $('stop').hidden = !busy;
-  $('send').disabled = !state.repo || (!!cur && state.pending.has(cur.id));
+  $('send').disabled = !state.repo || (!!cur && (state.pending.has(cur.id) || state.handoffId === cur.id));
+  $('session-delete').disabled = !!cur && state.handoffId === cur.id;
   $('send').classList.toggle('sending', !!cur && state.pending.has(cur.id));
   if (!state.pending.size) $('send').classList.remove('sending');
   const tm = isTmux(cur);
@@ -1241,6 +1245,36 @@ function registeredRepoFor(folder) {
 }
 
 // 別のリポジトリへ分岐する。分岐先が未登録なら「リポジトリを追加」の既存ダイアログで登録してから進む。
+async function handoffConversation() {
+  const origin = state.current;
+  if (!origin || state.handoffId) return;
+  state.handoffId = origin.id;
+  renderHeader();
+  inputStatus('pending', '会話を要約しています…');
+  try {
+    const result = await api.handoffSession(origin.id);
+    await openSessionInRepo(origin.repo, result.session.id);
+    state.sessions = await api.listSessions(state.repo);
+    renderSessions();
+    const next = result.session;
+    state.handoffId = next.id;
+    state.pending.add(next.id);
+    renderHeader();
+    inputStatus('pending', '新しいセッションを準備中です。端末に確認が表示されたら操作してください');
+    try {
+      const turn = await api.send(next.id, '保存済みの会話要約を引き継ぎ、利用者からの次の指示を待ってください。', {
+        cli: next.cli, model: next.model, policy: next.policy, readonly: next.readonly,
+        autoApprove: next.autoApprove, skillMode: 'off', skills: [], attachments: [],
+      });
+      if (turn?.warning) notice(turn.warning);
+    } finally { state.pending.delete(next.id); }
+  } finally {
+    state.handoffId = '';
+    inputStatus();
+    renderHeader();
+  }
+}
+
 async function forkConversation(index, request) {
   const origin = state.current;
   if (!origin) return;
@@ -2132,6 +2166,7 @@ async function init() {
     $('chat-more').open = false;
     await removeConversation(state.current);
   };
+  $('session-handoff').onclick = () => handoffConversation().catch((err) => notice(err.message, 'error'));
   $('session-rename').onclick = () => {
     $('chat-more').open = false;
     renameConversation().catch((err) => notice(err.message, 'error'));

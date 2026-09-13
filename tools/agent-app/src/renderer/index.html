@@ -94,6 +94,7 @@
           <button type="button" id="view-files" class="tab">ファイル</button>
         </nav>
         <span class="spacer"></span>
+        <button type="button" id="session-handoff" class="small" hidden>新しいセッションに引き継ぐ</button>
         <button type="button" id="changes-toggle" class="small">変更を確認</button>
         <details id="chat-more" class="more-menu">
           <summary aria-label="その他の操作">その他</summary>
@@ -291,6 +292,7 @@
                     </div></div>
                   </details>
                   <span class="spacer"></span>
+                  <button type="button" id="task-new-session" class="small" hidden>新しいセッションで編集</button>
                   <button type="button" id="task-launch-start" class="primary">編集開始</button>
                 </div>
                 <div id="task-terminal-placeholder" class="terminal-stage">
@@ -361,6 +363,7 @@
           <!-- ワークフローを AI と作る会話。タスクと同じ形（端末ミラー + 入力欄）で、
                どの工程を出すかはワークベンチ側が決める。見出しはワークベンチが持つ。 -->
           <div slot="flow-teaching" id="flow-teaching" hidden>
+            <div id="flow-teach-session-actions" class="teach-start-toolbar" hidden><span class="spacer"></span><button type="button" id="flow-teach-new-session" class="small">新しいセッションで編集</button></div>
             <section id="flow-teach-launch" class="teaching-create-form" hidden>
               <div id="flow-teach-create" class="teaching-create-form" hidden>
                 <label class="task-create-label" for="flow-teach-purpose"><strong>実現したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>

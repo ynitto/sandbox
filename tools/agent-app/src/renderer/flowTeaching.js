@@ -64,6 +64,8 @@
     populateExecutionInputs();
     $('flow-teach-settings-summary').textContent = state.deps.executionLabel(readExecutionInputs());
     $('flow-teach-launch').hidden = !!sess;
+    $('flow-teach-session-actions').hidden = state.creating;
+    $('flow-teach-new-session').disabled = state.pending || state.running || !!((state.session || state.availableSession) && state.deps.isRunning((state.session || state.availableSession).id));
     $('flow-teach-heading').hidden = !state.existing;
     $('flow-teach-create').hidden = !state.creating;
     $('flow-teach-placeholder').hidden = state.creating;
@@ -153,11 +155,21 @@
   }
 
   // 設定を確かめてボタンを押した後にだけ tmux を開く（タスクと同じ順で、先に端末を見せる）。
-  async function start(token = state.token, preferredOptions = null) {
+  async function start(token = state.token, preferredOptions = null, newSession = false) {
     state.pending = true;
     renderShell();
     try {
       const options = preferredOptions || state.deps.executionOptions(readExecutionInputs());
+      if (newSession) {
+        const prepared = await api.automation.flowTeachPrepare({ repo: state.repo, workflowId: state.workflowId, ...options, newSession: true });
+        if (token !== state.token) return;
+        term().detach();
+        state.session = null;
+        state.availableSession = prepared.session;
+        state.context = '';
+        state.running = false;
+        state.phase = null;
+      }
       if (state.availableSession && !state.session) {
         await attach(state.availableSession, token);
         if (token !== state.token) return;
@@ -322,6 +334,7 @@
 
   function init(deps) {
     state.deps = deps;
+    $('flow-teach-new-session').onclick = () => start(state.token, null, true).catch((err) => error(err.message));
     $('flow-teach-start').onclick = () => state.creating ? submitCreate() : start();
     $('flow-teach-purpose').oninput = () => { $('flow-teach-create-error').hidden = true; };
     $('flow-teach-send').onclick = () => send();

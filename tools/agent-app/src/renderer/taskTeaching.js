@@ -101,6 +101,8 @@
     $('task-launch-settings-summary').textContent = state.deps.executionLabel(readExecutionInputs('task-launch'));
     $('task-launch-start').textContent = hasTerminal ? '編集中' : '編集開始';
     $('task-launch-start').disabled = state.pending || hasTerminal;
+    $('task-new-session').hidden = !state.editing || state.creating;
+    $('task-new-session').disabled = state.pending || state.running || !!((state.session || state.availableSession) && state.deps.isRunning((state.session || state.availableSession).id));
     $('task-launch-agent').disabled = state.pending || hasTerminal || $('task-launch-agent').disabled;
     $('task-launch-model').disabled = state.pending || hasTerminal;
     // 権限は会話が開いていても変えられる（次の依頼から効く。tmux の CLI は起動し直す）
@@ -223,11 +225,21 @@
   }
 
   // 設定を確認してボタンを押した後にだけ tmux を開く。既存の下書きは同じセッションへ戻る。
-  async function startTeaching(token = state.token, preferredOptions = null) {
+  async function startTeaching(token = state.token, preferredOptions = null, newSession = false) {
     state.pending = true;
     renderShell();
     try {
       const options = preferredOptions || state.deps.executionOptions(readExecutionInputs('task-launch'));
+      if (newSession) {
+        const prepared = await api.automation.teachPrepare({ repo: state.repo, machine: state.machine, ...options, newSession: true });
+        if (token !== state.token) return;
+        term().detach();
+        state.session = null;
+        state.availableSession = prepared.session;
+        state.context = '';
+        state.running = false;
+        state.phase = null;
+      }
       // セッションは loadView / teachPrepare の時点で保存済み。先に tmux を開いて端末を
       // 表示し、その画面を見せたまま Kiro 等の入力受付と最初の依頼送信を待つ。
       // Windows → WSL は起動に時間がかかるため、teachStart の完了後まで attach を遅らせると
@@ -236,8 +248,7 @@
         await attach(state.availableSession, token);
         if (token !== state.token) return;
       }
-      // 既存セッションも main を通す。下書き再開・編集開始の文脈を最初のターンとして渡した
-      // うえで、同じ tmux セッションへ接続する。
+      // 既存セッションも main を通し、CLI の復元状況に応じて再開の文脈を送る。
       const view = await api.automation.teachStart({ repo: state.repo, machine: state.machine, context: state.context, ...options });
       if (token !== state.token) return;
       state.pending = false;
@@ -661,6 +672,7 @@
       },
     });
     $('task-create-start').onclick = () => create().catch((err) => error(err.message));
+    $('task-new-session').onclick = () => startTeaching(state.token, null, true).catch((err) => error(err.message));
     $('task-launch-start').onclick = () => startTeaching().catch((err) => error(err.message));
     for (const prefix of ['task-create', 'task-launch']) {
       const refreshExecutionSummary = () => {

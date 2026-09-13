@@ -541,7 +541,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 }
 
 @media (max-width: 620px) {
-  #chat-head { min-height: 58px; gap: 3px; padding-right: 8px; }
+  #chat-head { min-height: 58px; gap: 3px; padding-right: 8px; flex-wrap: wrap; }
+  #session-handoff { order: 1; width: 100%; }
   #chat-head .title-row { max-width: none; flex: 1; }
   #chat-head .phase, .views { display: none; }
   #changes-toggle { width: 38px; padding: 0; font-size: 0; }
