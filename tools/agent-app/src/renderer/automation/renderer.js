@@ -57,6 +57,33 @@ const state = {
   fileTab: '',
 };
 
+// light DOM に端末を置き、一覧の描き直しでも xterm の実体を保持する。
+const runTerm = embedded && window.createTerm ? window.createTerm({
+  termKeys: (id, data) => automationHost.runKeys(id, data),
+  termResize: (id, cols, rows) => automationHost.runResize(id, cols, rows),
+  termScroll: (id, lines) => automationHost.runScroll(id, lines),
+  termWatch: async () => {}, termUnwatch: async () => {},
+}) : null;
+const runTermHost = runTerm ? document.createElement('div') : null;
+if (runTermHost) {
+  runTermHost.slot = 'task-run-terminal';
+  runTermHost.style.cssText = 'height:420px;min-height:200px;overflow:hidden';
+  workbenchHost.appendChild(runTermHost);
+  runTerm.configure({ onError: (error) => toast(error.message, true) });
+}
+
+function renderRunTerminal() {
+  if (!runTerm) return;
+  runTermHost.hidden = !state.run.terminal;
+  if (state.run.terminal && runTerm.current() !== state.run.requestId) {
+    runTerm.attach(state.run.requestId, runTermHost).then(() => {
+      if (state.run.screen) runTerm.applyScreen(state.run.screen);
+    });
+  }
+  runTerm.setInputEnabled(state.run.running && !!state.run.terminal);
+  runTerm.refit();
+}
+
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[c]));
 
 let toastTimer = null;
@@ -633,6 +660,11 @@ function render() {
     }
   } else bindHome(main);
   teachingFeature.endRender();
+  renderRunTerminal();
+  const runLogDetails = $('run-log-details');
+  if (runLogDetails) runLogDetails.addEventListener('toggle', () => {
+    if (runLogDetails.isConnected) state.run.logOpen = runLogDetails.open;
+  });
 }
 
 function renderBar() {
@@ -1133,7 +1165,11 @@ function executionDetailHtml(machine) {
   const result = state.run.result
     ? `<p class="run-result ${state.run.result.ok ? 'ok' : state.run.result.escalate ? 'warn' : 'ng'}">${state.run.result.ok ? '実行が完了しました' : state.run.result.escalate ? `確認が必要です${state.run.result.error ? `: ${esc(state.run.result.error)}` : ''}` : esc(state.run.result.error || '実行に失敗しました')}</p>`
     : state.run.error ? `<p class="run-result ng">${esc(state.run.error)}</p>` : '';
-  const log = state.run.lines.map((line) => `<div class="${line.kind === 'stderr' ? 'e' : ''}">${esc(line.line)}</div>`).join('') || '<span class="muted">実行すると、ここに進行状況が表示されます。</span>';
+  const log = state.run.lines.map((line) => `<div class="${line.kind === 'stderr' ? 'e' : ''}">${esc(line.line)}</div>`).join('') || (state.run.terminal ? '' : '<span class="muted">実行すると、ここに進行状況が表示されます。</span>');
+  const logBody = `<div class="log" id="run-log">${log}</div>`;
+  const logView = state.run.terminal
+    ? `<details id="run-log-details" ${state.run.logOpen ? 'open' : ''} ${state.run.lines.length ? '' : 'hidden'}><summary>${state.run.lines.some((line) => line.kind === 'stderr') ? '実行ログ（警告・エラーあり）' : '実行ログ'}</summary>${logBody}</details>`
+    : logBody;
   const canRun = ['statemachine', 'prompt'].includes(machine.kind || 'statemachine') && !machine.error;
   const selectedRun = taskRunExecution();
   const direct = (state.run.policy || (state.config.execution && state.config.execution.defaultPolicy) || 'recommended') === 'direct';
@@ -1149,7 +1185,7 @@ function executionDetailHtml(machine) {
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
     : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false && machine.kind !== 'statemachine' ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
       <section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${state.run.running ? 'active' : ''}">${state.run.running ? '実行中' : '待機中'}</span></div>
-        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}<div class="log" id="run-log">${log}</div></section>
+        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${state.run.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${state.run.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>
       <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '自動実行を停止' : '自動実行を開始'}</button>${['statemachine', 'prompt'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
@@ -2187,7 +2223,13 @@ async function startRun(mode) {
     state.run.parameters = { ...defaults, ...state.run.parameters };
     await rememberRunParameters(machine, state.run.parameters);
   }
+  if (run.running) return;
   run.lines = [];
+  run.requestId = '';
+  run.terminal = false;
+  run.logOpen = false;
+  run.screen = null;
+  if (runTerm) runTerm.detach();
   run.result = null;
   run.error = '';
   run.running = true;
@@ -2200,6 +2242,8 @@ async function startRun(mode) {
   }));
   if (!res) { run.running = false; render(); return; }
   run.requestId = res.requestId || '';
+  run.terminal = res.transport === 'tmux';
+  render();
   if (res.skillSelection && Array.isArray(res.skillSelection.selected)) {
     run.skillPreview = res.skillSelection.selected;
   }
@@ -2228,6 +2272,11 @@ function appendLog(entry) {
   if (state.run.lines.length > 2000) state.run.lines.shift();
   const log = $('run-log');
   if (!log) return;
+  const details = $('run-log-details');
+  if (details) {
+    details.hidden = false;
+    if (entry.kind === 'stderr') details.querySelector('summary').textContent = '実行ログ（警告・エラーあり）';
+  }
   if (log.firstChild && log.firstChild.tagName === 'SPAN') log.innerHTML = '';
   const div = document.createElement('div');
   if (entry.kind === 'stderr') div.className = 'e';
@@ -2385,6 +2434,11 @@ async function init() {
   state.config = (await guard('設定', () => automationHost.getConfig())) || state.config;
   $('btn-home').addEventListener('click', goHome);
   automationHost.onRunLine((p) => appendLog(p));
+  automationHost.onRunScreen((p) => {
+    if (state.run.requestId && state.run.requestId !== p.requestId) return;
+    state.run.screen = p;
+    if (runTerm) runTerm.applyScreen(p);
+  });
   automationHost.onAiProgress((p) => receiveAiProgress(p));
   automationHost.onAiResult((p) => receiveAiResult(p));
   automationHost.onRunExit(async (p) => {

@@ -148,7 +148,7 @@ function withStubbedHandlers(run) {
   }
 }
 
-async function startRun(agent) {
+async function startRun(agent, terminalHook = null) {
   return withStubbedHandlers(async ({ handlers, registered, launches }) => {
     const spawnSpecCalls = [];
     handlers.registerIpcHandlers(() => null, {
@@ -168,6 +168,7 @@ async function startRun(agent) {
       hooks: {
         resolveAgent: async ({ agent: name }) => ({ agent: name }),
         prepareRun: async () => ({ instruction: '', information: [], warning: '' }),
+        ...(terminalHook ? { prepareTerminalRun: terminalHook } : {}),
       },
     });
     const start = registered.get('automation:run:start');
@@ -177,6 +178,7 @@ async function startRun(agent) {
     const result = await start({ sender },
       { root: REPO, machine: 'digest', taskId: 'machine:digest', mode: 'run', agent });
     assert.strictEqual(result.ok, true, result.error);
+    if (terminalHook) return { result: result.data, launches, registered, sender };
     assert.strictEqual(launches.length, 1, '1 回だけ起こす');
     return { ...launches[0], spawnSpecCalls };
   });
@@ -197,4 +199,50 @@ test('実行時: ローカルの CLI は従来どおり工程ごとのハーネ�
   assert.deepStrictEqual(launch.args.slice(0, 2), ['statemachine', '--workflow']);
   assert.ok(launch.args.includes('--agent-cli'));
   assert.strictEqual(launch.args[launch.args.indexOf('--agent-cli') + 1], 'aider');
+});
+
+test('実行時: 端末の経路はヘッドレスを起こさず、キー入力と停止を同じ実行へ送る', async () => {
+  const calls = [];
+  let payload;
+  const run = await startRun('kiro', async (p) => {
+    payload = p;
+    return { start: () => calls.push('start'), stop: async () => calls.push('stop'), keys: async (data) => calls.push(data) };
+  });
+  await new Promise(setImmediate);
+  assert.equal(run.result.transport, 'tmux');
+  assert.equal(run.launches.length, 0);
+  assert.match(payload.prompt, /digestステートマシンを実行して/);
+  const keys = run.registered.get('automation:run:keys');
+  assert.equal((await keys({ sender: run.sender }, { requestId: 'old', data: 'bad' })).ok, false);
+  await keys({ sender: run.sender }, { requestId: run.result.requestId, data: 'yes\r' });
+  await run.registered.get('automation:run:stop')({ sender: run.sender }, {});
+  assert.deepEqual(calls, ['start', 'yes\r', 'stop']);
+});
+
+test('実行時: tmuxが使えない場合は理由を返し、ヘッドレスを1回起こす', async () => {
+  const run = await startRun('kiro', async () => ({ warning: 'tmux unavailable' }));
+  assert.equal(run.launches.length, 1);
+  assert.match(run.result.warning, /tmux unavailable/);
+});
+
+test('実行時: 完了した端末にもスクロールとサイズ変更を送れる', async () => {
+  let payload;
+  const calls = [];
+  const run = await startRun('kiro', async (p) => {
+    payload = p;
+    return { start() {}, scroll: async (lines) => calls.push(lines), resize: async () => calls.push('resize') };
+  });
+  await new Promise(setImmediate);
+  payload.onExit({ code: 0, stdout: '', stderr: '', truncated: false });
+  const event = { sender: run.sender };
+  const p = { requestId: run.result.requestId, lines: -10, cols: 80, rows: 24 };
+  assert.equal((await run.registered.get('automation:run:scroll')(event, p)).ok, true);
+  assert.equal((await run.registered.get('automation:run:resize')(event, p)).ok, true);
+  assert.equal((await run.registered.get('automation:run:keys')(event, { ...p, data: 'x' })).ok, false);
+  assert.deepEqual(calls, [-10, 'resize']);
+  const next = await run.registered.get('automation:run:start')(event,
+    { root: REPO, machine: 'digest', taskId: 'machine:digest', mode: 'run', agent: 'kiro' });
+  assert.equal(next.ok, true, '前回が完了していれば次の実行を開始できる');
+  assert.notEqual(next.data.requestId, p.requestId);
+  assert.equal((await run.registered.get('automation:run:scroll')(event, p)).ok, false, '前回の履歴は次の実行で置き換える');
 });

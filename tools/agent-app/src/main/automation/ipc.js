@@ -18,6 +18,7 @@ const { cleanAnswer } = require('../text');
 const skills = require('../skills');
 const skillSelection = require('../skillSelection');
 const sessionSetup = require('../sessionSetup');
+const tmuxRun = require('./tmux-run');
 
 // タスク・ワークフローの「使う AI」の既定。設定していなければ会話の「おすすめ」（medium tier）
 // と同じ CLI——会話で使えている CLI がそのままタスクでも動く（agent-herd の aider を
@@ -222,6 +223,10 @@ function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit }) {
       resolveAgent: (payload) => resolveAgent(payload, { userData }),
       assistRunSpec,
       prepareRun: (payload) => prepareRun(userData, payload),
+      prepareTerminalRun: (payload) => {
+        const cfg = store.loadConfig(userData());
+        return tmuxRun.prepare({ ...payload, distro: cfg.wslDistro, transport: cfg.transport });
+      },
       selectSkills: (payload) => selectForRequest(userData, payload),
       openDelivery: async (root, delivery) => {
         const branch = String(delivery.branch || '').trim();

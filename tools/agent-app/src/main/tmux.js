@@ -230,7 +230,7 @@ function cmdNew({ name, cwd, argv, cols, rows }) {
 
 // 画面の状態 1 行（| 区切り。tmux は書式出力の制御文字を \037 のような 8 進表記へ直すので
 // 区切りは印字可能な文字にする）+ 画面本体（色付き）。頭と本体の間の \036 は自前の printf で出す。
-function cmdScreen(name, { history = false, offset = 0, rows = DEFAULT_ROWS } = {}) {
+function cmdScreen(name, { history = false, joinHistory = true, offset = 0, rows = DEFAULT_ROWS } = {}) {
   const fmt = '#{cursor_x}|#{cursor_y}|#{pane_width}|#{pane_height}|#{pane_dead}|#{pane_dead_status}|#{history_size}|#{pane_in_mode}';
   const amount = Math.max(0, Math.floor(Number(offset) || 0));
   const height = Math.max(1, Math.floor(Number(rows) || DEFAULT_ROWS));
@@ -240,7 +240,7 @@ function cmdScreen(name, { history = false, offset = 0, rows = DEFAULT_ROWS } = 
     ? ` -S ${-amount} -E ${height - 1 - amount}`
     : '';
   const cap = history
-    ? `capture-pane -p -J -S - -t ${sq(name)}`
+    ? `capture-pane -p ${joinHistory ? '-J' : '-e'} -S - -t ${sq(name)}`
     : `capture-pane -p -e${range} -t ${sq(name)}`;
   return `${TMUX} display-message -p -t ${sq(name)} ${sq(fmt)} && printf '\\036' && ${TMUX} ${cap}`;
 }
@@ -366,8 +366,8 @@ class Conversation {
     return this.phase === 'dead' || this.phase === 'gone' ? 5000 : 1200;
   }
 
-  async capture({ history = false, offset = 0 } = {}) {
-    const r = await this.shell.run(cmdScreen(this.name, { history, offset, rows: this.rows }), { timeoutMs: 10000 });
+  async capture({ history = false, joinHistory = true, offset = 0 } = {}) {
+    const r = await this.shell.run(cmdScreen(this.name, { history, joinHistory, offset, rows: this.rows }), { timeoutMs: 10000 });
     if (!r.ok) return { ok: false, error: r.error || r.output };
     const screen = parseScreen(r.output);
     if (!screen) return { ok: false, error: 'capture-pane の出力を読めません' };

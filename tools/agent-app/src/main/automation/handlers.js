@@ -89,6 +89,9 @@ function pythonFor() {
 
 function registerIpcHandlers(getWindow, options = {}) {
   let activeAi = null;
+  let activeTerminalRun = null;
+  let completedTerminalRun = null;
+  let runStarting = false;
   const channelPrefix = String(options.channelPrefix || '');
   const settings = options.config;
   if (!settings || typeof settings.load !== 'function') throw new Error('設定の窓口（config adapter）が要ります');
@@ -437,7 +440,7 @@ function registerIpcHandlers(getWindow, options = {}) {
   // 無ければ（inspect が答えない）、同じスキルの run_machine.py に定義から組んだ argv を渡して
   // この場で回す（direct-run.js。履歴と定期実行は持たないが、タスクの本体は動く）。
   // 出力はどちらも行単位で renderer へ流す。
-  register('run:start', async (p, event) => {
+  async function startManualRun(p, event) {
     const root = selectedRoot(p);
     const taskId = String(p.taskId || p.machine || '');
     const snapshot = taskInputs.enrichSnapshot(root, await agentLoop.inspect({ root, capture: runCapture }));
@@ -458,6 +461,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     let launchEnv = {};
     let stripDecoration = false;
     let resultSource = 'result-line';    // 'result-line'（ハーネス） | 'exit-code'（1 セッション）
+    let terminalPayload = null;
     if (mode === 'check') {
       if (task.kind !== 'statemachine') throw new Error('構成確認はステートマシンのタスクだけで使えます');
       const skillDir = selectedSkillDir(root);
@@ -516,6 +520,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         launchEnv = spec.env || {};
         stripDecoration = true;          // CLI を直に起こすので端末の装飾が混ざる
         resultSource = 'exit-code';      // この経路は RESULT 行を出さない
+        terminalPayload = { root, agent, model: p.model || cfg.model, prompt: spec.prompt };
         const checks = declaredChecks(root, machine);
         launchWarning = [
           spec.warning,
@@ -548,7 +553,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const requestId = randomUUID();
     const sender = event.sender;
     const send = (channel, payload) => { if (!sender.isDestroyed()) sender.send(channel, payload); };
-    const started = runStream(command, args, {
+    const streamOptions = {
       cwd: root,
       kind: 'run',
       host: onHost,
@@ -577,15 +582,53 @@ function registerIpcHandlers(getWindow, options = {}) {
           options.onRunExit({ name: String(task.name || machine || ''), mode, result });
         }
       },
-    });
+    };
+    let started;
+    const prepareTerminal = options.hooks && options.hooks.prepareTerminalRun;
+    if (terminalPayload && prepareTerminal) {
+      const terminal = await prepareTerminal({
+        ...terminalPayload, requestId,
+        onScreen: (screen) => send(channel('run:screen'), { ...screen, id: requestId, requestId, machine }),
+        onExit: (outcome) => {
+          completedTerminalRun = activeTerminalRun;
+          activeTerminalRun = null;
+          launchOutputFile = '';
+          if (outcome.stdout) streamOptions.onLine('stdout', outcome.stdout);
+          if (outcome.stderr) streamOptions.onLine('stderr', outcome.stderr);
+          streamOptions.onExit(outcome);
+        },
+      });
+      launchWarning = [launchWarning, terminal.warning].filter(Boolean).join('\n');
+      if (terminal.start) {
+        activeTerminalRun = { ...terminal, requestId };
+        started = { transport: 'tmux' };
+        setImmediate(() => terminal.start());
+      }
+    }
+    if (!started) started = runStream(command, args, streamOptions);
     return {
       ...started, requestId, mode,
       executionInformation: Array.isArray(preparation.information) ? preparation.information : [],
       skillSelection: preparation.skillSelection || null,
       warning: [preparation.warning, launchWarning].filter(Boolean).join('\n'),
     };
+  }
+  register('run:start', async (p, event) => {
+    if (runStarting || activeTerminalRun || runner.isRunning('run')) throw new Error('タスクを実行中です');
+    runStarting = true;
+    completedTerminalRun = null;
+    try { return await startManualRun(p, event); } finally { runStarting = false; }
   });
-  register('run:stop', () => runner.stop('run'));
+  register('run:stop', () => activeTerminalRun ? activeTerminalRun.stop() : runner.stop('run'));
+  const terminalFor = (p, { history = false } = {}) => {
+    const run = activeTerminalRun || (history ? completedTerminalRun : null);
+    if (!run || run.requestId !== p.requestId) throw new Error('操作できる端末がありません');
+    return run;
+  };
+  register('run:keys', (p) => terminalFor(p).keys(String(p.data || '')));
+  register('run:resize', (p) => terminalFor(p, { history: true }).resize(p.cols, p.rows));
+  register('run:scroll', (p) => terminalFor(p, { history: true }).scroll(p.lines));
+  if (typeof app.on === 'function') app.on('before-quit', () => { if (activeTerminalRun) activeTerminalRun.stop().catch(() => {}); });
 }
 
 module.exports = { registerIpcHandlers };

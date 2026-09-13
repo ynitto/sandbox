@@ -7,7 +7,7 @@
 // 画面には端末ミラーが 2 つある（会話と、タスクを AI と作る会話）。それぞれが自分の
 // 会話 ID と xterm を持つので、createTerm() で作った実体を別々に持つ。
 (function initTerm() {
-function createTerm() {
+function createTerm(api = window.api) {
   const state = {
     id: '', remote: false, keySink: null, term: null, fit: null, host: null, ro: null, cols: 120, rows: 36, lastSize: '', screenSeq: 0,
     inputEnabled: false, onFocus: null, onAccepted: null, onError: null, onEscape: null,
@@ -118,6 +118,7 @@ function createTerm() {
     if (state.id && !state.remote && state.id !== id) api.termUnwatch(state.id).catch(() => {});
     state.remote = false;
     state.id = id || '';
+    state.lastSize = '';
     state.term.reset();
     if (!id) return;
     refit();
