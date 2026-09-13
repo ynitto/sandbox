@@ -104,6 +104,9 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     「この段は 1 で正常」を持つコマンドはそこへ書く。タイムアウトは終了コードを持たない
     ので、`allow_status` に何を書いても失敗のまま。
 
+    `commands` を持つ宣言は**コマンドの列**で、段を上から順に実行し、最初の失敗で止める
+    （段はそれぞれ 1 つの宣言と同じ形を持つので、この関数を段ごとに呼び直すだけでよい）。
+
     例外を投げるのは実行を**始められなかった**ときだけ。始まった実行の失敗
     （許していない終了コード・タイムアウト）は `ok: False` で返す——呼ぶ側はどちらも同じ
     「失敗として記録する」に落とすが、記録に残す理由が違う。
@@ -111,15 +114,14 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     if spec.get("commands"):
         started = time.monotonic()
         stdout, stderr = "", ""
-        for index, argv in enumerate(spec["commands"], 1):
+        for index, step in enumerate(spec["commands"], 1):
             _tl_progress(f"コマンド {index}/{len(spec['commands'])}", tag)
-            single = {key: value for key, value in spec.items() if key != "commands"}
-            single["argv"] = argv
             try:
-                result = run_command(single, cwd=cwd, log_file=log_file, env=env, tag=tag)
+                result = run_command(step, cwd=cwd, log_file=log_file, env=env, tag=tag)
             except CommandRunError as exc:
                 result = {"ok": False, "status": None, "stopReason": stopreason.COMMAND_ERROR,
-                          "stdout": "", "stderr": str(exc), "error": str(exc), "argv": argv, "logFile": log_file}
+                          "stdout": "", "stderr": str(exc), "error": str(exc),
+                          "argv": step.get("argv") or [], "logFile": log_file}
             stdout = (stdout + result.get("stdout", ""))[-OUTPUT_LIMIT:]
             stderr = (stderr + result.get("stderr", ""))[-OUTPUT_LIMIT:]
             if not result["ok"]:

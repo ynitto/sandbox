@@ -191,7 +191,9 @@ def _command_argv(value) -> "list[str]":
         parts = []
         for item in value:
             if isinstance(item, (dict, list, tuple, bool)) or item is None:
-                raise LoopEntryError("command の配列は文字列だけです")
+                raise LoopEntryError(
+                    "command の配列は 1 つのコマンドの引数なので、要素は文字列だけです"
+                    "（順番に回したいなら `commands:` にコマンドを並べてください）")
             parts.append(str(item))
     else:
         raise LoopEntryError("command は文字列・配列・マップのいずれかです")
@@ -274,17 +276,81 @@ def _command_allow_status(value) -> "list[int]":
     return codes
 
 
+_COMMAND_UNIT_KEYS = ("argv", "timeout_sec", "env", "allow_status", "skip_if_missing")
+_COMMAND_DEFAULTS = {"timeout_sec": COMMAND_TIMEOUT_SEC, "env": {}, "allow_status": [0],
+                     "skip_if_missing": []}
+
+
+def _command_inherit(defaults: dict) -> dict:
+    """上位の既定を段へ配る（可変の値は複製する——段ごとに書き換わるため）。"""
+    return {"timeout_sec": defaults["timeout_sec"], "env": dict(defaults["env"]),
+            "allow_status": list(defaults["allow_status"]),
+            "skip_if_missing": list(defaults["skip_if_missing"])}
+
+
+def _command_timeout(value) -> int:
+    try:
+        timeout = int(float(value))
+    except (TypeError, ValueError) as exc:
+        raise LoopEntryError(f"command.timeout_sec は数値です: {value!r}") from exc
+    if timeout < 1:
+        raise LoopEntryError(f"command.timeout_sec は 1 以上です: {timeout}")
+    return timeout
+
+
+def _command_options(declared: dict, defaults: dict, *, extra_keys=()) -> dict:
+    """1 つの段が持てる宣言（上限・環境変数・許容・飛ばす条件）を読む。
+
+    書かなければ `defaults` を継ぐ——列の各段は、上位に書いた値を既定として受け取り、
+    自分で書いたものだけを上書きする（「6 段のうち 2 段だけ 1 を許す」が素直に書ける）。
+    """
+    unknown = sorted(set(declared) - set(_COMMAND_UNIT_KEYS) - set(extra_keys))
+    if unknown:
+        raise LoopEntryError(f"command に知らないキーがあります: {', '.join(unknown)}")
+    return {
+        "timeout_sec": (_command_timeout(declared["timeout_sec"])
+                        if "timeout_sec" in declared else defaults["timeout_sec"]),
+        "env": (_command_env(declared["env"]) if "env" in declared else dict(defaults["env"])),
+        "allow_status": (_command_allow_status(declared["allow_status"])
+                         if "allow_status" in declared else list(defaults["allow_status"])),
+        "skip_if_missing": (_command_skip_if_missing(declared["skip_if_missing"])
+                            if "skip_if_missing" in declared else list(defaults["skip_if_missing"])),
+    }
+
+
+def _command_unit(declared, defaults: dict) -> dict:
+    """コマンド 1 つ分（単体でも、列の 1 段でも同じ）の宣言を正規化する。"""
+    if declared is None or isinstance(declared, bool):
+        raise LoopEntryError("command は文字列・配列・マップのいずれかです")
+    if isinstance(declared, dict):
+        if "argv" not in declared:
+            raise LoopEntryError("command.argv は必須です")
+        return {"argv": _command_argv(declared["argv"]),
+                **_command_options(declared, defaults)}
+    return {"argv": _command_argv(declared), **_command_inherit(defaults)}
+
+
 def command_spec(entry) -> "dict | None":
     """entry の `command:` 宣言を正規化する。宣言が無ければ None。
 
     返り値: `{"argv": [...], "timeout_sec": int, "env": {...}, "allow_status": [int],
-    "skip_if_missing": [...]}`
+    "skip_if_missing": [...]}`。列のときは同じ形の段を `commands` に持ち、上位の値は
+    先頭の段と同じになる。
 
     3 形を受ける（`statemachine-use` の `check:` と同じ綴り——利用者は既にこれを知っている）。
 
         command: "node scripts/resource-control.js --control-dir ~/.agents/control"
         command: ["agent-audit", "calibrate"]
         command: {argv: [...], timeout_sec: 600, env: {...}, allow_status: [0, 1]}
+
+    順番に回すコマンドの列は `commands:` に並べる。段は上位の宣言を既定として継ぎ、
+    自分で書いたものだけを上書きする（「6 段のうち 2 段だけ 1 を許す」が書ける）。
+
+        command:
+          commands:
+            - "agent-audit collect"
+            - {argv: "agent-audit extract", allow_status: [0, 1]}
+          timeout_sec: 600
 
     `{…}` はそのまま残す。補完はフック / webhook が材料を返した実行時の仕事で、
     宣言を読む時点では誰も値を持っていない。
@@ -296,48 +362,54 @@ def command_spec(entry) -> "dict | None":
         return None
     if isinstance(declared, bool):
         raise LoopEntryError("command は文字列・配列・マップのいずれかです")
-    raw_argv = declared.get("argv") if isinstance(declared, dict) else declared
-    lines = [line.strip() for line in raw_argv.splitlines() if line.strip()] if isinstance(raw_argv, str) else []
-    commands = [_command_argv(line) for line in lines] if len(lines) > 1 else None
-    if commands:
-        declared = {**declared, "argv": commands[0]} if isinstance(declared, dict) else commands[0]
+
     if isinstance(declared, dict):
-        if "argv" not in declared:
+        options_source = declared
+        if "commands" in declared:
+            if "argv" in declared:
+                raise LoopEntryError("command に argv と commands の両方は書けません")
+            run_source, explicit_sequence = declared["commands"], True
+        elif "argv" in declared:
+            run_source, explicit_sequence = declared["argv"], False
+        else:
             raise LoopEntryError("command.argv は必須です")
-        argv = _command_argv(declared.get("argv"))
-        raw_timeout = declared.get("timeout_sec", COMMAND_TIMEOUT_SEC)
-        try:
-            timeout = int(float(raw_timeout))
-        except (TypeError, ValueError) as exc:
-            raise LoopEntryError(
-                f"command.timeout_sec は数値です: {raw_timeout!r}") from exc
-        if timeout < 1:
-            raise LoopEntryError(f"command.timeout_sec は 1 以上です: {timeout}")
-        env = _command_env(declared.get("env"))
-        allow_status = _command_allow_status(declared.get("allow_status"))
-        skip_if_missing = _command_skip_if_missing(declared.get("skip_if_missing"))
-        unknown = sorted(set(declared) - {"argv", "timeout_sec", "env", "allow_status",
-                                          "skip_if_missing"})
-        if unknown:
-            raise LoopEntryError(f"command に知らないキーがあります: {', '.join(unknown)}")
     else:
-        argv = _command_argv(declared)
-        timeout = COMMAND_TIMEOUT_SEC
-        env = {}
-        allow_status = [0]
-        skip_if_missing = []
-    return {"argv": argv, "timeout_sec": timeout, "env": env, "allow_status": allow_status,
-            "skip_if_missing": skip_if_missing,
-            **({"commands": commands} if commands else {})}
+        options_source, run_source, explicit_sequence = {}, declared, False
+
+    defaults = (_command_options(options_source, _COMMAND_DEFAULTS, extra_keys=("commands",))
+                if options_source else _command_inherit(_COMMAND_DEFAULTS))
+
+    # 列として読むのは 3 つ——`commands:` に並べた・要素が配列 / マップの配列・複数行の文字列。
+    # 要素が全部文字列の配列は 1 つのコマンドの引数（従来どおり）で、ここには来ない。
+    steps_source = None
+    if explicit_sequence:
+        if not isinstance(run_source, (list, tuple)) or not run_source:
+            raise LoopEntryError("command.commands はコマンドの配列です（空にはできません）")
+        steps_source = list(run_source)
+    elif (isinstance(run_source, (list, tuple)) and run_source
+            and all(isinstance(item, (list, tuple, dict)) for item in run_source)):
+        steps_source = list(run_source)
+    elif isinstance(run_source, str):
+        lines = [line.strip() for line in run_source.splitlines() if line.strip()]
+        steps_source = lines if len(lines) > 1 else None
+
+    if steps_source is not None:
+        steps = [_command_unit(item, defaults) for item in steps_source]
+        # 先頭の段は entry 全体の代表でもある（記録・画面はここを 1 行で見せる）。
+        return {**steps[0], "commands": steps}
+    return _command_unit(run_source, defaults)
 
 
 def render_command(spec, values, *, resolve=None) -> dict:
     rendered = {**spec, "argv": render_argv(spec["argv"], values, resolve=resolve)}
-    if spec.get("commands"):
-        rendered["commands"] = [render_argv(argv, values, resolve=resolve) for argv in spec["commands"]]
     if spec.get("skip_if_missing"):
         # 存在を確かめるパスも `{…}` を持てる（材料で置き場が決まるため）。規則は argv と同じ。
         rendered["skip_if_missing"] = render_argv(spec["skip_if_missing"], values, resolve=resolve)
+    if spec.get("commands"):
+        # 段は 1 つの宣言と同じ形なので、同じ関数で差し込む。
+        rendered["commands"] = [render_command(step, values, resolve=resolve)
+                                for step in spec["commands"]]
+        rendered["argv"] = rendered["commands"][0]["argv"]
     return rendered
 
 
