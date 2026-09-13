@@ -493,13 +493,14 @@ def check() -> str | None:
 |---|---|
 | `gitlab-issue-hook.py` | 新規/更新 Issue を検知して送信。更新が無くフォールバック有効ならランダムな Issue を送る。 |
 | `gitlab-mr-hook.py` | 新規/更新 MR を検知して送信。更新が無くフォールバック有効ならランダムな MR を送る。 |
-| `audit-calibrate-hook.py` | LLM へは送信せず、audit 収集後に候補適格性を更新し、`rates.per_cli` を実測中央値へ較正する。 |
+| `audit-calibrate-hook.py` | LLM へは送信せず、audit 収集後に候補適格性を更新し、`rates.per_cli` を実測中央値へ較正する。**設定例では `command:` へ移した**（`commands:` に 6 段を並べ、抽出と蒸留の段にだけ `allow_status: [0, 1]` を書く）。 |
 | `memory-maintenance-hook.py` | LLM へは送信せず、記憶の索引再構築・忘却曲線の更新・wiki lint・`agent-audit collect --source memory-store` を回す。**削除は実行しない**（判断の要る整理・削除・整理後の回帰確認（`regression_check.py`）は「記憶メンテナンス当番」の定期プロンプトが AI だけで行う。人の承認経路は持たない）。 |
 | `moltbook-duty-hook.py` | LLM へは送信せず、moltbook-use の outbox publish backlog を privacy gate に通して sweep する。**新しい reply の判断はしない**（timeline 確認・根拠つき reply・good は「Moltbook 当番」の定期プロンプトへ）。moltbook は各ノードの AI だけが操作する前提で、人の承認経路は持たない。**設定例では `command:` へ移した**（同じ引数列を宣言し、未導入のノードは `skip_if_missing` で飛ばす）。 |
 
-LLM へ送らずコマンドだけを回すものは、上の 3 つのように**段ごとの許容やスキップの判断**を
-持つものだけが残っています。判断の要らない定期処理は `command:` で書いてください
-（資源制御はそちらへ移しました）。
+LLM へ送らずコマンドだけを回すものは、上の 3 つが残っています。**段ごとの許容やスキップの
+判断**は `command:` の `commands:` で書けるようになったので、設定例では Moltbook 巡回と
+使用量較正をそちらへ移しました（フックは見比べられるよう残してあります）。判断の要らない
+定期処理も `command:` で書いてください（資源制御はそちらへ移しました）。
 
 GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用します。`GITLAB_TOKEN` を
 設定し、必要に応じて環境変数（`AGENT_LOOP_GL_PY`, `AGENT_LOOP_GL_CWD`,

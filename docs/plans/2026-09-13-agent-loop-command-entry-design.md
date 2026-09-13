@@ -213,7 +213,7 @@ agent-loop command --entry "記憶メンテナンス" [-d DIR] [--config PATH]
 | いま | 状態 | 移行後 |
 |---|---|---|
 | `resource-control-hook`（audit collect → node 制御スクリプト） | **移行済み**（フックは削除） | 2 エントリに割った。collect は best-effort なので、別エントリなら失敗が制御を止めない |
-| `audit-calibrate-hook` | 保留 | 段ごとに「この終了コードは許す」（`allow_blocked`）がある。順序と許容を 1 本のスクリプトへまとめてから 1 エントリにする |
+| `audit-calibrate-hook` | **移行済み**（設定例。フックは残す） | 段ごとに「この終了コードは許す」（`allow_blocked`）がある。`commands:` の列と段ごとの `allow_status` で表せるようになったので、スクリプトへまとめずに 1 エントリへ移した |
 | `memory-maintenance-hook`（複数スクリプトの順次実行） | 保留 | 未導入のスキルを飛ばす判断を持つ。「何をどの順で呼ぶか」を `scripts/memory-maintenance.py` へ移し、1 エントリで呼ぶ。「削除は走らせない」の禁止事項はスクリプト側の責務のまま |
 | `moltbook-duty-hook` | 保留 | 同上（未導入なら何もしない）。`hook_config` の `skill_home` / `label_conn` は argv の引数へ |
 

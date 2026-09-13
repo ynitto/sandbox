@@ -238,10 +238,22 @@ prompts:
     enabled: false
 
   # 収集済みの実測を rates.per_cli へ定期較正し、旧推定との乖離も audit 台帳へ残す。
-  # 段ごとに「この終了コードは許す」があるので、フックのままにしてある。順序と許容を
-  # 1 本のスクリプトへまとめれば `command:` へ移せる。
+  #
+  # LLM へ 1 文字も送らない純バッチなので `command:` で書く。段ごとに「この終了コードは
+  # 許す」があるが、それは commands: の段に allow_status を書いて表す——抽出と蒸留は
+  # 「対象なし」を 1 で返すので、その 2 段だけ 1 を成功として扱う（他の段は非 0 で失敗）。
+  # 置き場は agent-audit 側の設定に任せる（--audit-dir を書くとその設定より優先される）。
   - name: "使用量較正"
-    hooks: audit-calibrate-hook
+    command:
+      commands:
+        - "agent-audit collect"
+        - "agent-audit qualify --apply"
+        - "agent-audit calibrate --write"
+        - argv: "agent-audit extract"
+          allow_status: [0, 1]
+        - argv: "agent-audit distill --review"
+          allow_status: [0, 1]
+        - "agent-audit tune --apply"
     interval_minutes: 60
     enabled: false
 
