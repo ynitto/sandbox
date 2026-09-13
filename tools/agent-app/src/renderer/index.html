@@ -626,19 +626,26 @@
   </dialog>
 
   <dialog id="search-transfer-dialog">
-    <div class="dlg-head"><strong id="search-transfer-title">新しいセッションに引き継ぐ</strong><span class="spacer"></span><button type="button" id="search-transfer-close" class="small">閉じる</button></div>
+    <div class="dlg-head"><strong id="search-transfer-title">取り込む</strong><span class="spacer"></span><button type="button" id="search-transfer-close" class="small">閉じる</button></div>
     <div class="dlg-body">
       <p id="search-transfer-source" class="sub"></p>
-      <p class="sub">会話の文脈から新しく開始します。</p>
-      <label class="setting-field"><span>保存先</span><select id="search-target-repo"></select></label>
-      <button type="button" id="search-target-add" class="small">フォルダを追加</button>
-      <div id="search-execution-inputs"></div>
-      <label class="setting-field"><span>権限</span><select id="search-target-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
-      <div class="teaching-create-form"><label class="task-create-label" for="search-summary">引き継ぐ内容</label><textarea id="search-summary" rows="9" placeholder="保存先とエージェントを選んで、引き継ぎ内容を作成してください" disabled></textarea></div>
+      <label class="setting-field"><span>取り込み位置</span><select id="search-boundary"></select></label>
+      <label for="search-target-repo">リポジトリ</label>
+      <div class="repository-control"><select id="search-target-repo" aria-label="リポジトリ"></select>
+        <details class="more-menu side-more"><summary aria-label="リポジトリを管理">•••</summary><div class="menu-panel"><button type="button" id="search-target-add">リポジトリを追加</button></div></details>
+      </div>
+      <details id="search-execution-settings" class="run-settings teach-execution-settings">
+        <summary><span id="search-execution-summary">実行設定</span></summary>
+        <div class="settings-popover"><div class="popover-head">実行設定</div><div id="search-execution-inputs"></div>
+          <label>権限<select id="search-target-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
+        </div>
+      </details>
+      <label class="setting-field"><span>取り込む目的</span><select id="search-intent"><option value="session">セッションを開始する</option><option value="routine">やり方を取り込む</option></select></label>
+      <p class="sub">やり方を取り込む場合は、内容に応じてタスク・ワークフロー・スキルを選び、作成画面で開始します。</p>
       <label class="task-create-label" for="search-request">追加の依頼（任意）</label><textarea id="search-request" rows="2"></textarea>
       <p id="search-transfer-status" class="sub" role="status"></p>
     </div>
-    <div class="dlg-actions"><button type="button" id="search-transfer-start" class="primary">引き継ぎ内容を作る</button></div>
+    <div class="dlg-actions"><button type="button" id="search-transfer-start" class="primary">取り込む</button></div>
   </dialog>
   <dialog id="routine-dialog">
     <div class="dlg-head"><strong>この作業を定型化</strong><span class="spacer"></span><button type="button" id="routine-close" class="small">閉じる</button></div>

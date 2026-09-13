@@ -13,7 +13,8 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
   const data = path.join(root, 'data'), defs = path.join(root, 'agents'), repo = path.join(root, 'repo');
   fs.mkdirSync(defs); fs.mkdirSync(repo);
   const summary = path.join(root, 'summary.py');
-  fs.writeFileSync(summary, 'import sys\nsys.stdin.read()\nprint("目的: 月次集計。次の作業: 結果を確認する。")\n');
+  const methodFile = path.join(root, 'method.txt'); fs.writeFileSync(methodFile, 'skill');
+  fs.writeFileSync(summary, `import sys,json\nfrom pathlib import Path\nprompt=sys.stdin.read()\nkind=Path(${JSON.stringify(methodFile)}).read_text()\nprint(json.dumps({"kind":kind,"reason":"再利用対象に適するため","purpose":"毎月の集計方法を作成する"},ensure_ascii=False) if 'JSONだけを返す:' in prompt else "目的: 月次集計。次の作業: 結果を確認する。")\n`);
   const spec = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../agents/claude.json')));
   spec.command = ['python3', summary];
   fs.writeFileSync(path.join(defs, 'claude.json'), JSON.stringify(spec));
@@ -69,8 +70,8 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await win.evaluate(() => api.sessionBrowser.import(false));
     await win.evaluate(() => { document.getElementById('search-source').value = 'vscode'; document.getElementById('search-text').value = 'fixture-import-unique'; });
     await win.click('#session-search-open');
-    await win.getByRole('button', { name: /外部の月次集計/ }).click();
-    await win.getByRole('button', { name: 'ここからfork', exact: true }).first().waitFor();
+    await win.locator('#search-results').getByRole('button', { name: /外部の月次集計/ }).click();
+    await win.getByRole('button', { name: '取り込む', exact: true }).first().waitFor();
     await win.screenshot({ path: '/tmp/agent-app-session-search.png' });
     await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setMinimumSize(400, 400); w.setSize(520, 800); });
     await win.locator('#search-back').waitFor({ state: 'visible' });
@@ -79,19 +80,22 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     assert.equal(await win.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await win.click('#search-back');
     assert.equal(await win.locator('#search-results-pane').isVisible(), true);
-    await win.getByRole('button', { name: /外部の月次集計/ }).click();
+    await win.locator('#search-results').getByRole('button', { name: /外部の月次集計/ }).click();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 900));
     assert.doesNotMatch(await win.locator('#session-search').innerText(), /WSL|Windows/);
-    await win.getByRole('button', { name: 'ここからfork', exact: true }).first().click();
+    await win.getByRole('button', { name: '取り込む', exact: true }).first().click();
     await win.selectOption('#search-target-repo', repo);
     await win.locator('#search-target-agent option[value="claude"]').waitFor({ state: 'attached' });
+    await win.click('#search-execution-settings > summary');
     await win.selectOption('#search-target-agent', 'claude');
     await win.fill('#search-target-model', 'target-model');
-    await win.click('#search-transfer-start');
-    await win.waitForFunction(() => !document.getElementById('search-summary').disabled);
-    await win.fill('#search-summary', '編集した引き継ぎ内容');
+    await win.click('#search-execution-settings > summary');
+    assert.equal(await win.inputValue('#search-boundary'), 'r1:assistant');
     await win.fill('#search-request', '別の観点で確認する');
     await win.screenshot({ path: '/tmp/agent-app-session-transfer.png' });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(520, 800));
+    assert.equal(await win.evaluate(() => { const body = document.querySelector('#search-transfer-dialog .dlg-body'); return body.scrollWidth <= body.clientWidth; }), true);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 900));
     await app.evaluate(({ ipcMain }) => {
       ipcMain.removeHandler('turn:send');
       ipcMain.handle('turn:send', (_event, args) => { global.sentTransfer = args; return { ok: true, data: {} }; });
@@ -100,14 +104,50 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await win.waitForFunction(id => state.current?.id !== id && !document.getElementById('search-transfer-dialog').open && state.pending.size === 0, original.id);
     const sent = await app.evaluate(() => global.sentTransfer);
     assert.equal(sent.cli, 'claude'); assert.equal(sent.model, 'target-model');
-    assert.match(sent.prompt, /編集した引き継ぎ内容/); assert.match(sent.prompt, /別の観点/);
+    assert.match(sent.prompt, /月次集計/); assert.match(sent.prompt, /別の観点/);
     const created = store.readSession(data, sent.id);
     assert.match(await win.locator('#chat-origin').textContent(), /外部の月次集計/);
     assert.equal(created.externalOrigin.boundary, 'r1:assistant');
     assert.equal(created.externalOrigin.nativeId, 'fixture-import-unique');
     assert.deepEqual(created.cliSessions, {});
     assert.equal(store.readSession(data, original.id).messages.length, 2);
+    await app.evaluate(({ ipcMain }) => {
+      global.methodStarts = [];
+      for (const prefix of ['automation:teach', 'automation:flow:teach']) {
+        const read = ipcMain._invokeHandlers.get(prefix + ':session');
+        ipcMain.removeHandler(prefix + ':start');
+        ipcMain.handle(prefix + ':start', async (event, args) => {
+          global.methodStarts.push({ prefix, ...args });
+          return read(event, args);
+        });
+      }
+    });
+    for (const kind of ['task', 'workflow', 'skill']) {
+      fs.writeFileSync(methodFile, kind);
+      await win.click('#session-search-open');
+      await win.locator('#search-results').getByRole('button', { name: /外部の月次集計/ }).click();
+      await win.getByRole('button', { name: '取り込む', exact: true }).first().click();
+      await win.selectOption('#search-target-repo', repo);
+      await win.locator('#search-target-agent option[value="claude"]').waitFor({ state: 'attached' });
+      await win.click('#search-execution-settings > summary');
+      await win.selectOption('#search-target-agent', 'claude');
+      await win.fill('#search-target-model', kind + '-model');
+      await win.click('#search-execution-settings > summary');
+      await win.selectOption('#search-intent', 'routine');
+      await win.click('#search-transfer-start');
+      await win.waitForFunction(() => !document.getElementById('search-transfer-dialog').open);
+      if (kind === 'skill') {
+        const skillSent = await app.evaluate(() => global.sentTransfer);
+        assert.match(skillSent.prompt, /SKILL.md/); assert.equal(skillSent.model, 'skill-model');
+        assert.equal(await win.evaluate(() => state.area), 'conversation');
+      } else {
+        await win.waitForFunction(kind => kind === 'task' ? TaskTeaching.state.visible && !TaskTeaching.state.pending : FlowTeaching.state.visible && !FlowTeaching.state.pending, kind);
+        const calls = await app.evaluate(() => global.methodStarts);
+        assert.ok(calls.some(c => c.model === kind + '-model' && c.cli === 'claude' && c.repo === repo && c.policy === 'direct'));
+        assert.equal(await win.evaluate(() => state.area), kind === 'task' ? 'tasks' : 'workflows');
+      }
+    }
     assert.deepEqual(errors, []);
-  } catch (err) { await (await app.firstWindow()).screenshot({ path: '/tmp/agent-app-session-search-failure.png' }); throw err; }
+  } catch (err) { console.error(await (await app.firstWindow()).evaluate(() => ({ status: document.getElementById('search-transfer-status').textContent, area: state.area, task: { visible: TaskTeaching.state.visible, pending: TaskTeaching.state.pending }, flow: { visible: FlowTeaching.state.visible, pending: FlowTeaching.state.pending } }))); await (await app.firstWindow()).screenshot({ path: '/tmp/agent-app-session-search-failure.png' }); throw err; }
   finally { await app.close(); }
 });

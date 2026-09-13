@@ -688,6 +688,10 @@ window.createFlowFeature = function createFlowFeature(ctx) {
   async function select(id) {
     await activate();
     if (!id) return;
+    // A draft may have just been created from another screen after activation.
+    if (!view.flows.some(item => item.id === id) && !view.teachings.some(item => item.workflowId === id)) {
+      view.teachings = (await ctx.bridge.teachingList(root()).catch(() => null)) || view.teachings;
+    }
     if (view.flows.some((item) => item.id === id)) await selectFlow(id);
     else if (view.teachings.some((item) => item.workflowId === id)) await selectTeaching(id);
   }

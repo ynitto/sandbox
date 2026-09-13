@@ -292,6 +292,12 @@
     }
   }
 
+  async function importMethod({ repo, method, options }) {
+    const view = await api.automation.teachPrepare({ repo, purpose: method.purpose, ...options });
+    state.autoStart = { repo, machine: view.machine, options };
+    await state.deps.openTask(view.machine);
+  }
+
   // ---- 依頼の送信 ---------------------------------------------------------------
 
   // 本文を会話（tmux）へ渡す。応答中なら端末へそのまま流し、待機中なら新しいターンとして送る。
@@ -707,5 +713,5 @@
     renderShell();
   }
 
-  window.TaskTeaching = { init, show, hide, prefill, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
+  window.TaskTeaching = { init, show, hide, prefill, importMethod, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
 })();

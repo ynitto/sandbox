@@ -647,3 +647,6 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 @media (max-width: 820px) {
   #session-search > .area-head { padding-left: 62px; }
 }
+
+#search-transfer-dialog .setting-field > select { min-width: 0; max-width: 65%; }
+#search-execution-settings > summary { max-width: 100%; overflow-wrap: anywhere; }

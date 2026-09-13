@@ -2158,6 +2158,17 @@ async function init() {
     setConfig: cfg => { state.config = cfg; renderRepos(); },
     hideSidebar: () => setSidebar(false),
     openSession: openSessionInRepo,
+    importMethod: async result => {
+      await selectRepo(result.repo);
+      await showArea(result.method.kind === 'task' ? 'tasks' : 'workflows');
+      if (result.method.kind === 'task') await TaskTeaching.importMethod(result);
+      else {
+        const id = await FlowTeaching.create({ root: result.repo, purpose: result.method.purpose, options: result.options });
+        state.selectedWorkflow = id;
+        await syncAutomationWorkbench('teach');
+        loadAreaItems().catch(err => notice(err.message, 'error'));
+      }
+    },
     sendCreated: async ({ session, prompt }) => {
       await openSessionInRepo(session.repo, session.id);
       state.pending.add(session.id); renderHeader();

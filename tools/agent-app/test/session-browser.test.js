@@ -138,3 +138,28 @@ test('cancelling a later page does not consume its unread candidates', async t =
   const second = await browser.search({ source: 'vscode' }, '', first.cursor);
   assert.equal(second.sessions.length, 10); assert.equal(second.total, 60);
 });
+
+for (const kind of ['task', 'workflow', 'skill']) test(`import method classifies and routes ${kind} with the chosen boundary and execution`, async t => {
+  const { dir, repo } = fixture(t);
+  const original = store.createSession(dir, { repo, cli: 'codex' });
+  for (const [role, text] of [['user', 'before'], ['assistant', 'completed'], ['user', 'excluded later']]) store.appendMessage(dir, original.id, { role, text });
+  const browser = new SessionBrowser({ userData: () => dir });
+  const record = await browser.read('app:' + original.id);
+  const inputs = [];
+  const prepared = await browser.prepare({ key: record.key, revision: record.revision, boundary: '1', mode: 'handoff', intent: 'routine', repo, cli: 'claude', model: 'chosen-model' }, async prompt => {
+    inputs.push(prompt);
+    return inputs.length === 1 ? 'reusable steps' : JSON.stringify({ kind, reason: 'appropriate', purpose: 'create reusable method' });
+  });
+  assert.doesNotMatch(inputs.join(''), /excluded later/);
+  assert.equal(prepared.boundary, '1'); assert.equal(prepared.method.kind, kind);
+  const result = browser.create({ token: prepared.token, summary: prepared.summary, permission: 'auto' });
+  if (kind === 'skill') {
+    assert.notEqual(result.session.id, original.id); assert.equal(result.session.cli, 'claude');
+    assert.equal(result.session.model, 'chosen-model'); assert.equal(result.session.autoApprove, true);
+    assert.match(result.prompt, /SKILL.md/);
+  } else {
+    assert.equal(result.session, undefined); assert.equal(result.method.kind, kind);
+    assert.equal(result.repo, repo); assert.equal(result.options.cli, 'claude'); assert.equal(result.options.model, 'chosen-model');
+    assert.equal(result.options.policy, 'direct'); assert.equal(result.options.autoApprove, true);
+  }
+});

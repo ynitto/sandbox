@@ -90,26 +90,25 @@ const SessionSearch = (() => {
       for (const message of record.messages) {
         const row = node('article', 'search-message', '');
         row.append(node('strong', '', message.role === 'user' ? '利用者' : 'AI'), node('div', 'search-message-body', message.text));
-        if (!record.partial && message.role === 'assistant' && message.complete !== false) row.append(button('ここからfork', 'small quiet', () => beginTransfer(record, message.id)));
+        if (!record.partial && message.role === 'assistant' && message.complete !== false) row.append(button('取り込む', 'small quiet', () => beginTransfer(record, message.id)));
         box.append(row);
       }
       const actions = node('div', 'row search-preview-actions', '');
       if (record.appId) actions.append(button('元の会話を開く', 'small', () => { close(); deps.openSession(record.repo, record.appId); }));
-      const start = button('新しいセッションに引き継ぐ', 'primary', () => beginTransfer(record));
+      const start = button('取り込む', 'primary', () => beginTransfer(record));
       start.disabled = record.partial || !record.messages.some(m => m.role === 'assistant' && m.complete !== false);
       actions.append(start); box.append(actions);
     } catch (err) { if (version === previewVersion) $('search-preview').replaceChildren(node('p', 'sub', err.message)); }
   }
   function repos(selectedRepo = '') {
-    $('search-target-repo').replaceChildren(new Option('保存先を選択', ''), ...(deps.getConfig().repos || []).map(p => new Option(p, p)));
+    $('search-target-repo').replaceChildren(new Option('保存先を選択', ''), ...(deps.getConfig().repos || []).map(p => { const option = new Option(name(p), p); option.title = p; return option; }));
     $('search-target-repo').value = selectedRepo;
   }
   async function targetChanged() {
     const current = transfer;
     if (!current) return;
-    current.token = ''; current.loading = true;
-    $('search-summary').disabled = true; $('search-summary').value = '';
-    $('search-transfer-start').textContent = '引き継ぎ内容を作る'; $('search-transfer-start').disabled = true;
+    current.loading = true;
+    $('search-transfer-start').textContent = '取り込む'; $('search-transfer-start').disabled = true;
     const repo = $('search-target-repo').value;
     $('search-target-agent').replaceChildren(new Option('エージェントを確認中…', ''));
     if (!repo) { current.loading = false; return; }
@@ -126,55 +125,54 @@ const SessionSearch = (() => {
       $('search-transfer-start').disabled = !available.length;
       $('search-transfer-status').textContent = '';
     } catch (err) { if (transfer === current) $('search-transfer-status').textContent = err.message; }
-    finally { if (transfer === current) current.loading = false; }
+    finally { if (transfer === current) { current.loading = false; executionLabel(); } }
   }
   function beginTransfer(record, boundary = null) {
-    transfer = { record, boundary, mode: boundary == null ? 'handoff' : 'fork', token: '', busy: false };
-    $('search-transfer-title').textContent = boundary == null ? '新しいセッションに引き継ぐ' : 'ここからfork';
+    transfer = { record, boundary, mode: boundary == null ? 'handoff' : 'fork', busy: false };
+    $('search-transfer-title').textContent = '取り込む';
+    const turns = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
+    $('search-boundary').replaceChildren(...turns.map((m, i) => new Option(`${i + 1}: ${m.text.slice(0, 80)}`, m.id)));
+    $('search-boundary').value = boundary == null ? turns.at(-1)?.id || '' : boundary;
+    $('search-intent').value = 'session';
+    $('search-execution-settings').open = false;
     const excerpt = boundary == null ? '' : ' · ' + record.messages.find(m => m.id === boundary)?.text.slice(0, 100);
     $('search-transfer-source').textContent = record.title + excerpt;
     $('search-request').value = ''; $('search-transfer-status').textContent = '';
-    repos(); $('search-target-permission').value = 'confirm';
+    repos(deps.getConfig().lastRepo || ''); $('search-target-permission').value = 'confirm';
     $('search-transfer-dialog').showModal(); targetChanged();
+  }
+  function executionLabel() {
+    $('search-execution-summary').textContent = [$('search-target-agent').value || 'エージェントを選択', $('search-target-model').value || 'モデル自動', $('search-target-permission').selectedOptions[0]?.textContent].filter(Boolean).join(' · ');
   }
   async function startTransfer() {
     const current = transfer;
     if (!current || current.busy || current.loading) return;
+    const controls = ['search-target-repo', 'search-target-agent', 'search-target-model', 'search-target-add', 'search-target-permission', 'search-boundary', 'search-intent', 'search-request'];
     current.busy = true; $('search-transfer-start').disabled = true;
     try {
-      if (!current.token) {
-        const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
-        if (!repo || !cli) throw new Error('保存先とエージェントを選んでください');
-        $('search-transfer-status').textContent = '引き継ぎ内容を整理しています…';
-        for (const id of ['search-target-repo', 'search-target-agent', 'search-target-model', 'search-target-add']) $(id).disabled = true;
-        current.requestId = crypto.randomUUID();
-        const result = await api.prepare({ requestId: current.requestId, key: current.record.key, revision: current.record.revision, boundary: current.boundary, mode: current.mode, repo, cli, model });
-        if (transfer !== current) return;
-        current.token = result.token;
-        $('search-summary').value = result.summary; $('search-summary').disabled = false;
-        $('search-transfer-status').textContent = '内容を確認・編集して開始できます。';
-        $('search-transfer-start').textContent = '新しいセッションで開始';
-      } else {
-        current.creating = true; $('search-transfer-close').disabled = true;
-        const result = await api.create({ token: current.token, summary: $('search-summary').value, request: $('search-request').value, permission: $('search-target-permission').value });
-        if (transfer !== current) return;
-        $('search-transfer-dialog').close(); close();
-        await deps.sendCreated(result);
-      }
+      const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
+      if (!repo || !cli) throw new Error('保存先とエージェントを選んでください');
+      for (const id of controls) $(id).disabled = true;
+      $('search-transfer-status').textContent = $('search-intent').value === 'routine' ? '内容を整理し、タスク・ワークフロー・スキルを検討しています…' : '取り込む内容を整理しています…';
+      current.requestId = crypto.randomUUID();
+      const prepared = await api.prepare({ requestId: current.requestId, key: current.record.key, revision: current.record.revision,
+        boundary: $('search-boundary').value, mode: current.mode, intent: $('search-intent').value, request: $('search-request').value, repo, cli, model });
+      if (transfer !== current) return;
+      current.creating = true; $('search-transfer-close').disabled = true;
+      const result = await api.create({ token: prepared.token, summary: prepared.summary, request: $('search-request').value, permission: $('search-target-permission').value });
+      if (transfer !== current) return;
+      if (result.method) await deps.importMethod(result);
+      else await deps.sendCreated(result);
+      $('search-transfer-dialog').close(); close();
     } catch (err) { if (transfer === current) $('search-transfer-status').textContent = err.message; }
     finally {
       current.busy = false; current.creating = false;
       if (!transfer || transfer === current) {
-      $('search-transfer-close').disabled = false;
-      for (const id of ['search-target-repo', 'search-target-agent', 'search-target-model', 'search-target-add']) $(id).disabled = false;
-      $('search-transfer-start').disabled = false;
+        $('search-transfer-close').disabled = false;
+        for (const id of controls) $(id).disabled = false;
+        $('search-transfer-start').disabled = false;
       }
     }
-  }
-  function invalidate() {
-    if (!transfer) return;
-    transfer.token = ''; $('search-summary').value = ''; $('search-summary').disabled = true;
-    $('search-transfer-start').textContent = '引き継ぎ内容を作る';
   }
   function open() {
     if (visible) { $('search-text').focus(); return; }
@@ -213,8 +211,9 @@ const SessionSearch = (() => {
       try { if (await api.import(folder)) { $('search-more').open = false; search(); } } catch (err) { $('search-status').textContent = err.message; }
     };
     $('search-target-repo').onchange = targetChanged;
-    $('search-target-agent').onchange = () => { $('search-target-model').value = ''; invalidate(); };
-    $('search-target-model').oninput = invalidate;
+    $('search-target-agent').onchange = () => { $('search-target-model').value = ''; executionLabel(); };
+    $('search-target-model').oninput = () => { executionLabel(); };
+    $('search-target-permission').onchange = executionLabel;
     $('search-target-add').onclick = async () => {
       try { const cfg = await window.api.addRepo(); if (cfg) { deps.setConfig(cfg); repos(cfg.lastRepo); await targetChanged(); } }
       catch (err) { $('search-transfer-status').textContent = err.message; }

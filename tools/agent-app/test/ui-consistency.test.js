@@ -161,7 +161,7 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   const renderer = read('renderer/renderer.js');
   const workbench = read('renderer/automation/renderer.js');
   // 1. 確認待ちは答えを並べる面を持たない。状態の印のまま、端末操作（既存の入力先）へ連れて行く。
-  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 4, 'ポップオーバーの器は実行設定まわりの 4 つだけ');
+  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 5, '会話・作成・編集・取り込みの実行設定は共通ポップオーバーを使う');
   assert.ok(!css.includes('.phase-popover {'), '共有部品の私物な複製がある: .phase-popover');
   assert.ok(!css.includes('.attention-panel {'), '共有部品の私物な複製がある: .attention-panel');
   assert.ok(!css.includes('.phase-menu {'), '確認待ちに自分用のパネルを作らない');

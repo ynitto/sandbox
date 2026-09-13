@@ -7,6 +7,8 @@ const { promisify } = require('util');
 const host = require('./host');
 const store = require('./store');
 const handoff = require('./sessionHandoff');
+const routine = require('./automation/routine');
+const reuse = require('../shared/reuse');
 const exec = promisify(execFile);
 
 function key(value) { return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
@@ -197,15 +199,17 @@ class SessionBrowser {
     const { descriptor, ...view } = record;
     return { ...view, key: id };
   }
-  async prepare({ key: id, revision, boundary, repo, cli, model, mode }, generate) {
+  async prepare({ key: id, revision, boundary, repo, cli, model, mode, intent = 'session', request = '' }, generate) {
     const record = await this.read(id);
     if (record.revision !== revision) throw new Error('会話が更新されました。プレビューを開き直してください');
-    const selected = takeBoundary(record, mode === 'fork' ? boundary : null);
+    if (!['session', 'routine'].includes(intent)) throw new Error('取り込む目的を選んでください');
+    const selected = takeBoundary(record, boundary);
     const summary = await handoff.summarize(selected, generate);
+    const method = intent === 'routine' ? routine.parse(await generate(routine.prompt(summary + (request ? '\n今回の追加要望:\n' + String(request).slice(0, 30000) : '')))) : null;
     const token = crypto.randomUUID();
-    this.prepared.set(token, { record: selected, repo, cli, model, mode, createdId: null });
+    this.prepared.set(token, { record: selected, repo, cli, model, mode, intent, method, createdId: null });
     while (this.prepared.size > 10) this.prepared.delete(this.prepared.keys().next().value);
-    return { token, summary, boundary: selected.boundary };
+    return { token, summary, method, boundary: selected.boundary };
   }
   create({ token, summary, request = '', permission = 'confirm', transport = 'headless' }) {
     const plan = this.prepared.get(token);
@@ -213,7 +217,12 @@ class SessionBrowser {
     if (plan.createdId) return { session: store.readSession(this.userData(), plan.createdId), prompt: plan.prompt };
     if (typeof summary !== 'string' || !summary.trim() || summary.length > 30000 || typeof request !== 'string' || request.length > 30000) throw new Error('引き継ぎ内容を確認してください');
     const r = plan.record;
-    const prompt = `元の会話: ${r.title}\n元の作業フォルダ: ${r.repo || '不明'}\n保存先: ${plan.repo}\n会話の文脈を新規セッションへ引き継ぎます。ファイルの変更やツールの実行状態は複製されていません。参照パスは保存先で確認してください。\n\n${handoff.handoffPrompt(summary.trim())}\n\n${request.trim() ? '今回の依頼（こちらを実行してください）:\n' + request.trim() : ''}`;
+    let prompt = `元の会話: ${r.title}\n元の作業フォルダ: ${r.repo || '不明'}\n保存先: ${plan.repo}\n会話の文脈を新規セッションへ引き継ぎます。ファイルの変更やツールの実行状態は複製されていません。参照パスは保存先で確認してください。\n\n${handoff.handoffPrompt(summary.trim())}\n\n${request.trim() ? '今回の依頼（こちらを実行してください）:\n' + request.trim() : ''}`;
+    if (plan.method) {
+      prompt = reuse.creationPrompt({ kind: plan.method.kind, purpose: plan.method.purpose, repo: plan.repo, originRepo: r.repo });
+      if (plan.method.kind !== 'skill') return { method: { ...plan.method, purpose: prompt }, repo: plan.repo,
+        options: { policy: 'direct', cli: plan.cli, model: plan.model, readonly: permission === 'ask', autoApprove: permission === 'auto' } };
+    }
     const session = store.createSession(this.userData(), { repo: plan.repo, cli: plan.cli, model: plan.model,
       readonly: permission === 'ask', autoApprove: permission === 'auto', transport,
       origin: r.appId ? { sessionId: r.appId, repo: r.repo, index: Number(r.boundary) } : null,
