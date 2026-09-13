@@ -116,6 +116,7 @@
 
   async function loadView() {
     state.readyError = null;
+    state.accepted = new Promise(resolve => { state.acceptStart = resolve; });
     const token = (state.token += 1);
     state.session = null;
     state.availableSession = null;
@@ -139,7 +140,7 @@
   }
 
   async function whenReady() {
-    await state.ready;
+    await Promise.race([state.ready, state.accepted]);
     if (state.readyError) throw state.readyError;
     if (!state.session || term().current() !== state.session.id) throw new Error('端末表示の準備ができませんでした。作成画面から再試行してください');
     await new Promise(resolve => requestAnimationFrame(resolve));
@@ -320,6 +321,7 @@
 
   function onTurnStarted(p) {
     if (!state.session || p.id !== state.session.id) return;
+    if (term().current() === p.id) state.acceptStart?.();
     state.running = true;
     renderShell();
   }

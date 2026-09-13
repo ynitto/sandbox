@@ -99,10 +99,19 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 900));
     await app.evaluate(({ ipcMain }) => {
       ipcMain.removeHandler('turn:send');
-      ipcMain.handle('turn:send', (_event, args) => { global.sentTransfer = args; return { ok: true, data: {} }; });
+      ipcMain.handle('turn:send', async (event, args) => {
+        global.sentTransfer = args;
+        const held = new Promise(resolve => { global.releaseImportStart = resolve; });
+        event.sender.send('turn:started', { id: args.id });
+        await held;
+        return { ok: true, data: {} };
+      });
     });
     await win.click('#search-transfer-start');
-    await win.waitForFunction(id => state.current?.id !== id && !document.getElementById('search-transfer-dialog').open && state.pending.size === 0, original.id);
+    await win.waitForFunction(id => state.current?.id !== id && !document.getElementById('search-transfer-dialog').open, original.id);
+    assert.equal(await app.evaluate(() => !!global.releaseImportStart), true);
+    await app.evaluate(() => { global.releaseImportStart(); global.releaseImportStart = null; });
+    await win.waitForFunction(() => state.pending.size === 0);
     const sent = await app.evaluate(() => global.sentTransfer);
     assert.equal(sent.cli, 'claude'); assert.equal(sent.model, 'target-model');
     assert.match(sent.prompt, /月次集計/); assert.match(sent.prompt, /別の観点/);
@@ -127,7 +136,11 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
         ipcMain.removeHandler(prefix + ':start');
         ipcMain.handle(prefix + ':start', async (event, args) => {
           global.methodStarts.push({ prefix, ...args });
-          return read(event, args);
+          const view = await read(event, args);
+          const held = new Promise(resolve => { global.releaseImportStart = resolve; });
+          event.sender.send('turn:started', { id: view.data.session.id });
+          await held;
+          return view;
         });
       }
     });
@@ -155,6 +168,8 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
         await app.evaluate(() => { global.releaseImportTerminal(); global.releaseImportTerminal = null; });
       }
       await win.waitForFunction(() => !document.getElementById('search-transfer-dialog').open);
+      assert.equal(await app.evaluate(() => !!global.releaseImportStart), true);
+      await app.evaluate(() => { global.releaseImportStart(); global.releaseImportStart = null; });
       if (kind === 'skill') {
         const skillSent = await app.evaluate(() => global.sentTransfer);
         assert.match(skillSent.prompt, /SKILL.md/); assert.equal(skillSent.model, 'skill-model');

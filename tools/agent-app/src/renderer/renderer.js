@@ -1,5 +1,8 @@
 'use strict';
 
+// Only imports wait for acceptance; completion/data refresh continues independently.
+const importStarts = new Map();
+
 // 画面の状態は 1 か所。保存は main（store）がやり、ここは表示と操作だけ。
 const state = {
   config: null,
@@ -2174,16 +2177,27 @@ async function init() {
     },
     sendCreated: async ({ session, prompt }) => {
       await openSessionInRepo(session.repo, session.id, { waitForTerminal: true });
-      state.pending.add(session.id); renderHeader();
-      try {
-        const turn = await api.send(session.id, prompt, { policy: 'direct', cli: session.cli, model: session.model,
-          readonly: session.readonly, autoApprove: session.autoApprove, skillMode: 'auto', skills: [], attachments: [] });
-        if (!turn.followup) state.running.add(session.id);
-        state.current = await api.readSession(session.id);
-        state.sessions = await api.listSessions(session.repo);
-        renderSessions(); renderMessages();
-      } catch (err) { fillPrompt(prompt); notice(`送信できませんでした。この会話から再送できます: ${err.message}`, 'error'); throw err; }
-      finally { state.pending.delete(session.id); renderHeader(); }
+      const accepted = new Promise(resolve => importStarts.set(session.id, resolve));
+      const completed = (async () => {
+        state.pending.add(session.id); renderHeader();
+        try {
+          const turn = await api.send(session.id, prompt, { policy: 'direct', cli: session.cli, model: session.model,
+            readonly: session.readonly, autoApprove: session.autoApprove, skillMode: 'auto', skills: [], attachments: [] });
+          // Also support transports that acknowledge through the IPC return value.
+          importStarts.get(session.id)?.();
+          if (!turn.followup) state.running.add(session.id);
+          const updated = await api.readSession(session.id);
+          const sessions = await api.listSessions(session.repo);
+          if (state.repo === session.repo) state.sessions = sessions;
+          if (state.current?.id === session.id) { state.current = updated; renderMessages(); }
+          renderSessions();
+        } catch (err) {
+          if (state.current?.id === session.id && !$('prompt').value.trim()) fillPrompt(prompt);
+          notice(`送信できませんでした。この会話から再送できます: ${err.message}`, 'error');
+          throw err;
+        } finally { importStarts.delete(session.id); state.pending.delete(session.id); renderHeader(); }
+      })();
+      await Promise.race([accepted, completed]);
     },
   });
   state.config = await api.getConfig();
@@ -2515,6 +2529,8 @@ async function init() {
   });
 
   api.onTurnStarted((p) => {
+    importStarts.get(p.id)?.();
+    importStarts.delete(p.id);
     const { id, warning } = p;
     state.running.add(id);
     TaskTeaching.onTurnStarted(p);
