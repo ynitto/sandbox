@@ -94,40 +94,51 @@ argv の各字句は先頭の `~` だけ展開する（`hook_config` で `expand
 | 併用 | 扱い |
 |---|---|
 | `cron` / `interval_minutes` / `run_immediately_on_startup` / `cwd` / `exclude_from_concurrency` / `id` / `enabled` | そのまま効く |
-| `hooks` / `event_hook_fallback` / `hook_config` | 効く。フックが「回すかどうか」と材料を決め、コマンドが仕事をする（§hooks との併用） |
-| `prompt` / `slash` / `statemachine` / `webhook` | 起動エラー（種別が 2 つになる。`webhook` は将来課題として §未実装 に残す） |
+| `hooks` / `event_hook_fallback` / `hook_config` / `webhook` | 効く。フックが「回すかどうか」と材料を決め、コマンドが仕事をする（§hooks / webhook との併用） |
+| `prompt` / `slash` / `statemachine` | 起動エラー（種別が 2 つになる） |
 | `agent_cli` / `model` / `session` / `acceptance` / `acceptance_judge` / `tuning_profile` / `fresh_context` | 起動エラー（LLM も対話面も無いので意味を持たない） |
 | `mode: ralph` / `oneshot` / `clean_session` / `target` | 起動エラー |
 | `adaptive` | `hooks` が無ければ起動エラー。無風の概念が無い（回せば必ず「実行した」）。`hooks` があれば `check()` の `None` が無風なので従来どおり効く |
 | `preflight` | そのまま効く（送る前の判定はコマンドにも意味がある） |
 
-### hooks との併用
+### hooks / webhook との併用——プレースホルダ補完
 
-フック契約（§3.1）はそのまま使う。`check()` が `None` を返せば回さない。返した値の
-使い道だけをコマンド向けに定める。
+フックも webhook も**辞書を返す**。いまの本文経路はその辞書を `_SafeDict` で `prompt`
+テンプレートへ `format_map` している（フックは `check()` の `vars`、webhook は `handle()`
+の返り値か、フック未指定ならペイロードそのもの。遅延 lookup `{{lookup …}}` も先に解決
+する）。コマンドは同じ辞書を **argv の各字句**へ `format_map` する。補完の仕組みは 1 つで、
+本文用とコマンド用を分けない。
 
-| `check()` の返り値 | コマンドでの扱い |
+| 発火元 | 補完に使う辞書 |
 |---|---|
-| `None` | 回さない（無風。`adaptive` の後退対象） |
-| `str` | 本文として**標準入力**へ渡す |
-| `dict.prompt` | 同上 |
-| `dict.cwd` | 実在するディレクトリなら作業ディレクトリ（従来どおり） |
-| `dict.vars` | argv の各**字句**へ `{key}` で差し込む（`prompt.format_map` と同じ規則。`_SafeDict` で未定義キーは残す） |
-
-`vars` の置換は字句単位なので、値に空白や記号があっても引数の数は変わらない。
-シェル記号の検査は**宣言時の字句**にだけ掛け、置換後の値には掛けない（値は材料であって
-コマンドラインではない）。
+| `hooks`（`check()`） | `vars` ∪ `{"prompt": 本文}`。`str` を返したフックは `{"prompt": その文字列}` |
+| `webhook`（`handle()`） | 返した辞書 ∪ `{"name": ルート名}`（本文経路と同じ）。フック未指定ならペイロード |
+| 定期（`cron` / `interval_minutes`）のみ | 補完しない（`{…}` はそのまま渡る） |
 
 ```yaml
   - name: "Issue 同期"
     hooks: gitlab-issue-hook
-    command: ["python3", "scripts/sync-issue.py", "--iid", "{issue_iid}"]
+    command: ["python3", "scripts/sync-issue.py", "--iid", "{issue_iid}", "--title", "{title}"]
     interval_minutes: 5
+
+  - name: "MR 受信"
+    webhook: { hook: gitlab-mr-webhook }
+    command: ["python3", "scripts/on-mr.py", "--iid", "{iid}", "--action", "{action}"]
 ```
 
-`check()` の 30 秒制限は据え置く。フックは「回すかどうか」を決めるだけで、仕事は
-コマンド側へ移るので、制限は狙いどおりに効く。`check()` の中で `subprocess.run` を
-回す書き方（いまの流用）は移行で無くす。
+規則は本文経路と同じ 3 点。
+
+- 置換は**字句単位**。値に空白や記号があっても引数の数は変わらない。
+- 未定義キーは `{key}` のまま残す（`_SafeDict`）。壊れたテンプレートは本文経路と同じく
+  却下してその回は回さない。
+- シェル記号の検査は**宣言時の字句**にだけ掛け、置換後の値には掛けない（値は材料であって
+  コマンドラインではない）。
+
+`check()` が `None` を返せば回さない（無風。`adaptive` の後退対象）。`dict.cwd` は
+従来どおり実在するディレクトリなら作業ディレクトリになる。`check()` の 30 秒制限は
+据え置く——フックは「回すかどうか」と材料を決めるだけで、仕事はコマンド側へ移るので、
+制限は狙いどおりに効く。`check()` の中で `subprocess.run` を回す書き方（いまの流用）は
+移行で無くす。
 
 **`ack()` は終了コード 0 のときに呼ぶ。** いま `ack()` を呼ぶのはペインへの送信が
 成功した場所だけで（`_dispatch_prompt` の末尾）、`_run_headless` は呼んでいない。
@@ -230,7 +241,5 @@ agent-herd  harness command --entry "記憶メンテナンス"
 
 ## 未実装・将来課題
 
-- `webhook` + `command`（push で回す）。パススルーの受信 JSON を標準入力へ渡せば
-  `hooks` と同じ形になるはずだが、要るものが出てから決める。
 - stdout を次のプロンプトの材料にする（command の出力を `input` に渡す）。それは
   ステートマシンの `check:` か `run` の仕事で、本設計は「送らずに実行する」に限る。
