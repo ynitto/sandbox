@@ -211,6 +211,32 @@ def _command_argv(value) -> "list[str]":
     return [os.path.expanduser(t) if t.startswith("~") else t for t in parts]
 
 
+def _is_script(value) -> bool:
+    """複数行の文字列か（＝1 つのシェルへ一度に渡すものか）。"""
+    return isinstance(value, str) and len([line for line in value.splitlines() if line.strip()]) > 1
+
+
+def _command_script(value) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise LoopEntryError("command.shell は文字列です")
+    # 改行は LF へ寄せる。Windows で編集した設定の `\r` は、シェルから見ると行末ではなく
+    # コマンド名の一部になる（空行が `$'\r': command not found` で落ちる）。
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _shell_argv(script: str) -> "list[str]":
+    """スクリプトを**1 つの**シェルへ渡す argv。
+
+    行をまたぐ `cd` や変数の設定がそのまま効くのは、同じプロセスが最後まで読むからで、
+    ここが argv 直接実行との違いになる。失敗した行で止めるのは複数行の従来の振る舞いと
+    同じなので `-e`（bash なら `pipefail` も）を付ける——その行だけ見逃したいときは
+    `|| true` のように、シェルの書き方で宣言する。
+    """
+    if os.path.exists("/bin/bash"):
+        return ["/bin/bash", "-e", "-o", "pipefail", "-c", script]
+    return ["/bin/sh", "-e", "-c", script]
+
+
 def _command_env(value) -> "dict[str, str]":
     if value is None:
         return {}
@@ -276,7 +302,8 @@ def _command_allow_status(value) -> "list[int]":
     return codes
 
 
-_COMMAND_UNIT_KEYS = ("argv", "timeout_sec", "env", "allow_status", "skip_if_missing")
+_COMMAND_UNIT_KEYS = ("argv", "shell", "timeout_sec", "env", "allow_status",
+                      "skip_if_missing")
 _COMMAND_DEFAULTS = {"timeout_sec": COMMAND_TIMEOUT_SEC, "env": {}, "allow_status": [0],
                      "skip_if_missing": []}
 
@@ -323,11 +350,19 @@ def _command_unit(declared, defaults: dict) -> dict:
     if declared is None or isinstance(declared, bool):
         raise LoopEntryError("command は文字列・配列・マップのいずれかです")
     if isinstance(declared, dict):
-        if "argv" not in declared:
+        if "shell" in declared and "argv" in declared:
+            raise LoopEntryError("command に argv と shell の両方は書けません")
+        if "shell" not in declared and "argv" not in declared:
             raise LoopEntryError("command.argv は必須です")
-        return {"argv": _command_argv(declared["argv"]),
-                **_command_options(declared, defaults)}
-    return {"argv": _command_argv(declared), **_command_inherit(defaults)}
+        source = declared["shell"] if "shell" in declared else declared["argv"]
+        shell = "shell" in declared or _is_script(source)
+        options = _command_options(declared, defaults)
+    else:
+        source, shell, options = declared, _is_script(declared), _command_inherit(defaults)
+    if shell:
+        script = _command_script(source)
+        return {"argv": _shell_argv(script), "shell": script, **options}
+    return {"argv": _command_argv(source), **options}
 
 
 def command_spec(entry) -> "dict | None":
@@ -342,6 +377,13 @@ def command_spec(entry) -> "dict | None":
         command: "node scripts/resource-control.js --control-dir ~/.agents/control"
         command: ["agent-audit", "calibrate"]
         command: {argv: [...], timeout_sec: 600, env: {...}, allow_status: [0, 1]}
+
+    複数行の文字列（`shell:` に書いたものも同じ）は 1 つのシェルへ一度に渡す。行をまたぐ
+    `cd` や変数の設定が効く代わりに、上限は**全体**に掛かり、シェル記号の検査もしない。
+
+        command: |
+          cd build
+          ./run.sh | tee last.log
 
     順番に回すコマンドの列は `commands:` に並べる。段は上位の宣言を既定として継ぎ、
     自分で書いたものだけを上書きする（「6 段のうち 2 段だけ 1 を許す」が書ける）。
@@ -363,45 +405,32 @@ def command_spec(entry) -> "dict | None":
     if isinstance(declared, bool):
         raise LoopEntryError("command は文字列・配列・マップのいずれかです")
 
-    if isinstance(declared, dict):
-        options_source = declared
-        if "commands" in declared:
-            if "argv" in declared:
-                raise LoopEntryError("command に argv と commands の両方は書けません")
-            run_source, explicit_sequence = declared["commands"], True
-        elif "argv" in declared:
-            run_source, explicit_sequence = declared["argv"], False
-        else:
-            raise LoopEntryError("command.argv は必須です")
-    else:
-        options_source, run_source, explicit_sequence = {}, declared, False
-
-    defaults = (_command_options(options_source, _COMMAND_DEFAULTS, extra_keys=("commands",))
-                if options_source else _command_inherit(_COMMAND_DEFAULTS))
-
-    # 列として読むのは 3 つ——`commands:` に並べた・要素が配列 / マップの配列・複数行の文字列。
+    # 列として読むのは 2 つ——`commands:` に並べたものと、要素が配列 / マップの配列。
     # 要素が全部文字列の配列は 1 つのコマンドの引数（従来どおり）で、ここには来ない。
-    steps_source = None
-    if explicit_sequence:
-        if not isinstance(run_source, (list, tuple)) or not run_source:
+    # 複数行の文字列は列ではなく**1 つのシェル実行**（`_command_unit` が見る）。
+    if isinstance(declared, dict) and "commands" in declared:
+        if "argv" in declared or "shell" in declared:
+            raise LoopEntryError("command に commands と argv / shell の両方は書けません")
+        steps_source = declared["commands"]
+        if not isinstance(steps_source, (list, tuple)) or not steps_source:
             raise LoopEntryError("command.commands はコマンドの配列です（空にはできません）")
-        steps_source = list(run_source)
-    elif (isinstance(run_source, (list, tuple)) and run_source
-            and all(isinstance(item, (list, tuple, dict)) for item in run_source)):
-        steps_source = list(run_source)
-    elif isinstance(run_source, str):
-        lines = [line.strip() for line in run_source.splitlines() if line.strip()]
-        steps_source = lines if len(lines) > 1 else None
+        defaults = _command_options(declared, _COMMAND_DEFAULTS, extra_keys=("commands",))
+    elif (isinstance(declared, (list, tuple)) and declared
+            and all(isinstance(item, (list, tuple, dict)) for item in declared)):
+        steps_source, defaults = list(declared), _command_inherit(_COMMAND_DEFAULTS)
+    else:
+        return _command_unit(declared, _COMMAND_DEFAULTS)
 
-    if steps_source is not None:
-        steps = [_command_unit(item, defaults) for item in steps_source]
-        # 先頭の段は entry 全体の代表でもある（記録・画面はここを 1 行で見せる）。
-        return {**steps[0], "commands": steps}
-    return _command_unit(run_source, defaults)
+    steps = [_command_unit(item, defaults) for item in steps_source]
+    # 先頭の段は entry 全体の代表でもある（記録・画面はここを 1 行で見せる）。
+    return {**steps[0], "commands": steps}
 
 
 def render_command(spec, values, *, resolve=None) -> dict:
-    rendered = {**spec, "argv": render_argv(spec["argv"], values, resolve=resolve)}
+    # シェル実行のスクリプトへは差し込まない。argv なら値は 1 字句のままだが、シェルへ
+    # 渡す文字列では値の中の記号がコマンドとして読まれる（材料が実行になってしまう）。
+    rendered = dict(spec) if spec.get("shell") else {
+        **spec, "argv": render_argv(spec["argv"], values, resolve=resolve)}
     if spec.get("skip_if_missing"):
         # 存在を確かめるパスも `{…}` を持てる（材料で置き場が決まるため）。規則は argv と同じ。
         rendered["skip_if_missing"] = render_argv(spec["skip_if_missing"], values, resolve=resolve)

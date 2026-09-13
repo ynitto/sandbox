@@ -104,6 +104,9 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     「この段は 1 で正常」を持つコマンドはそこへ書く。タイムアウトは終了コードを持たない
     ので、`allow_status` に何を書いても失敗のまま。
 
+    `shell` を持つ宣言は 1 つのシェルへ渡すスクリプトで、argv はその起動形。行をまたぐ
+    状態が効く代わりに、上限も終了コードもスクリプト全体のものになる。
+
     `commands` を持つ宣言は**コマンドの列**で、段を上から順に実行し、最初の失敗で止める
     （段はそれぞれ 1 つの宣言と同じ形を持つので、この関数を段ごとに呼び直すだけでよい）。
 
@@ -161,7 +164,13 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     if log_file:
         _tl_append_log(log_file, {"event": "command_start", "argv": argv,
                                   "cwd": work_dir, "timeout_sec": timeout})
-    _tl_progress(f"コマンドを実行します: {' '.join(argv)}", tag)
+    script = str(spec.get("shell") or "")
+    if script:
+        lines = [line for line in script.splitlines() if line.strip()]
+        _tl_progress(f"シェルで実行します: {lines[0]}"
+                     + (f" …（全 {len(lines)} 行）" if len(lines) > 1 else ""), tag)
+    else:
+        _tl_progress(f"コマンドを実行します: {' '.join(argv)}", tag)
 
     started = time.monotonic()
     try:
@@ -207,7 +216,10 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
         error = ""
     else:
         stop = stopreason.COMMAND_EXIT
-        error = _first_line(stderr) or _first_line(stdout) or f"status={status}"
+        # スクリプトの stdout は成果の出力なので、失敗の理由には使わない（`-e` で落ちた
+        # ときの最後の 1 行は、たいてい直前の成功した行が出したものになる）。
+        error = (_first_line(stderr) or (_first_line(stdout) if not script else "")
+                 or f"status={status}")
 
     if log_file:
         _tl_append_log(log_file, {

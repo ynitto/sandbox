@@ -60,17 +60,25 @@ class AllowStatusTest(unittest.TestCase):
                 with self.assertRaises(al._loopentry.LoopEntryError):
                     al._loopentry.command_spec({"command": {"argv": ["a"], "allow_status": bad}})
 
-    def test_every_line_of_a_sequence_gets_the_same_allowance(self):
+    def test_every_step_of_a_sequence_inherits_the_allowance(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             first = _exit_script(root, "first.py", 1)
             second = _exit_script(root, "second.py", 1)
             spec = al._loopentry.command_spec({"command": {
-                "argv": f'"{sys.executable}" {first}\n"{sys.executable}" {second}',
+                "commands": [f'"{sys.executable}" {first}', f'"{sys.executable}" {second}'],
                 "allow_status": [0, 1], "timeout_sec": 30}})
             result = al._commandrun.run_command(spec, cwd=td)
             self.assertTrue(result["ok"])
             self.assertEqual(result["completedCommands"], 2)
+
+    def test_a_shell_script_is_judged_by_the_status_of_the_whole_script(self):
+        with tempfile.TemporaryDirectory() as td:
+            spec = al._loopentry.command_spec({"command": {
+                "shell": "echo one\nexit 1", "allow_status": [0, 1], "timeout_sec": 30}})
+            result = al._commandrun.run_command(spec, cwd=td)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], 1)
 
     def test_a_timeout_stays_a_failure_whatever_is_allowed(self):
         with tempfile.TemporaryDirectory() as td:
