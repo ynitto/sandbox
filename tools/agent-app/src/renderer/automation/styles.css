@@ -523,3 +523,5 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
 .task-badges, .teaching-badges { display: inline-flex; flex-wrap: wrap; gap: 6px; vertical-align: middle; margin-left: 4px; }
 .teaching-badges { margin: 4px 0 0; }
 .execution-title .row { flex: none; }
+
+.command-actions { justify-content: flex-end; margin-bottom: 12px; }

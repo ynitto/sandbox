@@ -441,6 +441,10 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
         raise ValueError("同じステートマシンの定期設定が複数あります。設定ファイルで整理してください")
 
     entry = dict(entries[matches[0]]) if matches else dict(template or {})
+    if "command" in payload:
+        if workflow or "command" not in entry:
+            raise ValueError("コマンドのタスクだけコマンドを編集できます")
+        entry["command"] = payload["command"]
     entry.pop("cron", None)
     entry.pop("interval_minutes", None)
     entry.update({
@@ -465,9 +469,11 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
         else:
             entry.pop("model", None)
     try:
+        if "command" in payload and _loopentry.command_spec(entry) is None:
+            raise ValueError("実行するコマンドを入力してください")
         if workflow:
             _loopentry.statemachine_spec(entry)
-        validate_entries([entry])
+        validate_entries([{**entry, "enabled": True}])
     except (_loopentry.LoopEntryError, ValueError) as exc:
         raise ValueError(str(exc)) from exc
     if matches:

@@ -197,6 +197,58 @@ class RepositorySnapshotTest(unittest.TestCase):
 
 
 class RepositoryScheduleTest(unittest.TestCase):
+    def test_command_schedule_create_edit_and_reload_preserves_other_settings(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            with mock.patch.object(al, "agent_home_dir", return_value=Path(hd)), \
+                    mock.patch.object(al, "_find_running_daemon", return_value=None):
+                al.update_repository_schedule(root, {
+                    "entry": {"command": "", "hooks": ["check.py"]},
+                    "command": {"argv": ["python3", "scripts/first.py"],
+                                "env": {"SCOPE": "home"}, "timeout_sec": 600},
+                    "entryName": "maintenance", "operation": "create",
+                    "schedule": {"kind": "interval", "minutes": 30},
+                })
+                task = al.repository_snapshot(root)["tasks"][0]
+                self.assertEqual(task["kind"], "command")
+                schedule = task["schedules"][0]
+                al.update_repository_schedule(root, {
+                    "entry": task["entry"], "entryName": "updated",
+                    "entryRef": schedule["entryRef"], "fingerprint": schedule["fingerprint"],
+                    "command": {"argv": "python3 'scripts/two words.py'", "env": {"SCOPE": "home"},
+                                "timeout_sec": 900},
+                    "enabled": False, "schedule": {"kind": "weekly", "days": [1, 5], "time": "08:15"},
+                })
+                updated = al.repository_snapshot(root)["tasks"][0]
+                self.assertEqual(updated["name"], "updated")
+                self.assertFalse(updated["schedules"][0]["enabled"])
+                self.assertEqual(updated["entry"]["hooks"], ["check.py"])
+                self.assertEqual(updated["entry"]["cron"], "15 8 * * 1,5")
+                self.assertNotIn("interval_minutes", updated["entry"])
+                self.assertNotIn("agent_cli", updated["entry"])
+                self.assertEqual(al._loopentry.command_spec(updated["entry"]), {
+                    "argv": ["python3", "scripts/two words.py"], "env": {"SCOPE": "home"}, "timeout_sec": 900,
+                })
+                with self.assertRaisesRegex(ValueError, "見つかりません|変更"):
+                    al.update_repository_schedule(root, {
+                        "entry": task["entry"], "entryRef": schedule["entryRef"],
+                        "fingerprint": schedule["fingerprint"],
+                        "schedule": {"kind": "interval", "minutes": 60},
+                    })
+
+    def test_invalid_command_is_rejected_even_when_schedule_is_disabled(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            with mock.patch.object(al, "agent_home_dir", return_value=Path(hd)):
+                for command in ("", {"argv": ""}, {"argv": "echo hi | cat"},
+                                {"argv": ["echo"], "timeout_sec": 0}):
+                    with self.subTest(command=command), self.assertRaises(ValueError):
+                        al.update_repository_schedule(root, {
+                            "entry": {"command": ""}, "command": command,
+                            "enabled": False, "schedule": {"kind": "interval", "minutes": 10},
+                        })
+                self.assertFalse((root / ".agents" / "agent-loop.yml").exists())
+
     def test_prompt_entry_schedule_can_be_edited_in_its_global_config(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
             root = Path(td).resolve()
