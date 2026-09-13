@@ -77,7 +77,7 @@ test('agent-loopを利用できない場合は編集を妨げない縮退情報�
     machines: [],
     history: [],
     daemon: { running: false },
-    error: '実行基盤に接続できませんでした',
+    error: 'agent-loop inspect に失敗しました（終了コード -1）: command not found',
   });
 });
 
@@ -192,7 +192,7 @@ test('実行基盤の省略値とエラー応答にも安全な既定を使う',
     },
   }), {
     available: false, machines: [], history: [], daemon: { running: false },
-    error: '実行基盤に接続できませんでした',
+    error: 'agent-loop inspect に失敗しました',
   });
   assert.deepStrictEqual(await loop.saveSchedule({
     payload: {}, capture: async () => ({ ok: true, stdout: '' }),
@@ -251,4 +251,18 @@ test('WSLへの接続失敗を旧バージョンと誤判定せず、保存を�
     capture: async (_cmd, args) => { calls.push(args[0]); return { ok: false, error: 'WSL unavailable' }; },
   }), /接続できない.*WSL/);
   assert.deepStrictEqual(calls, ['inspect']);
+});
+
+
+test('インストール済みでもinspectが失敗した原因を画面へ返す', async () => {
+  const snapshot = await loop.inspect({ root: 'C:/repo', capture: async () => ({
+    ok: false, status: 1, stderr: "ModuleNotFoundError: No module named 'yaml'", error: '',
+  }) });
+  assert.strictEqual(snapshot.available, false);
+  assert.match(snapshot.error, /終了コード 1/);
+  assert.match(snapshot.error, /ModuleNotFoundError/);
+  const timedOut = await loop.inspect({ root: 'C:/repo', capture: async () => ({
+    ok: false, status: -1, stderr: '', error: 'agent-loop が 15 秒以内に終わりませんでした',
+  }) });
+  assert.match(timedOut.error, /15 秒/);
 });

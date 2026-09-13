@@ -63,13 +63,13 @@ async function inspect({ root, capture }) {
       machines: [],
       history: [],
       daemon: { running: false },
-      error: '実行基盤に接続できませんでした',
+      error: ['agent-loop inspect に失敗しました' + (result.status != null ? `（終了コード ${result.status}）` : ''), String(result.error || result.stderr || '').trim().slice(-4000)].filter(Boolean).join(': '),
     };
   }
   try {
     return JSON.parse(result.stdout);
   } catch (err) {
-    throw new Error('実行情報の応答を読み取れませんでした', { cause: err });
+    throw new Error('実行情報の応答を読み取れませんでした: ' + String(result.stderr || result.stdout || 'agent-loop inspect の出力が空です').trim().slice(-1000), { cause: err });
   }
 }
 
@@ -78,7 +78,7 @@ async function saveSchedule({ root, payload, capture }) {
   if (payload && ('command' in payload || payload.entry && 'command' in payload.entry)) {
     const snapshot = await inspect({ root: repository, capture });
     if (snapshot.available === false) {
-      throw new Error('agent-loop に接続できないため保存できません。Windowsでは選択したWSL環境の agent-loop を確認してください。接続を直して再度保存できます（入力内容は保持しています）');
+      throw new Error(`agent-loop に接続できないため保存できません。Windowsでは選択したWSL環境を確認してください（入力内容は保持しています）。${snapshot.error || ''}`);
     }
     if (snapshot.capabilities?.commandSchedule !== true) {
       throw new Error('実行環境の agent-loop が古いため、コマンドを保存できません。agent-loop を更新してから再度保存してください（入力内容は保持しています）');
