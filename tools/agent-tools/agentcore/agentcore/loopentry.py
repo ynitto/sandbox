@@ -226,16 +226,40 @@ def _command_env(value) -> "dict[str, str]":
     return env
 
 
+def _command_allow_status(value) -> "list[int]":
+    """成功として扱う終了コードの一覧。宣言が無ければ `[0]`。
+
+    段ごとに「この番号なら正常」を持つコマンドがあるので（較正の抽出・蒸留は 1 を
+    正常として返す）、`0` を含まない一覧も受ける。空の一覧は「何を返しても失敗」に
+    なるだけなので断る。
+    """
+    if value is None:
+        return [0]
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        raise LoopEntryError("command.allow_status は整数の配列です")
+    codes: "list[int]" = []
+    for raw in value:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise LoopEntryError(f"command.allow_status は整数の配列です: {raw!r}")
+        if raw < 0:
+            raise LoopEntryError(f"command.allow_status は 0 以上です: {raw}")
+        if raw not in codes:
+            codes.append(raw)
+    if not codes:
+        raise LoopEntryError("command.allow_status が空です（成功になる終了コードが無くなります）")
+    return codes
+
+
 def command_spec(entry) -> "dict | None":
     """entry の `command:` 宣言を正規化する。宣言が無ければ None。
 
-    返り値: `{"argv": [...], "timeout_sec": int, "env": {...}}`
+    返り値: `{"argv": [...], "timeout_sec": int, "env": {...}, "allow_status": [int]}`
 
     3 形を受ける（`statemachine-use` の `check:` と同じ綴り——利用者は既にこれを知っている）。
 
         command: "node scripts/resource-control.js --control-dir ~/.agents/control"
         command: ["agent-audit", "calibrate"]
-        command: {argv: [...], timeout_sec: 600, env: {...}}
+        command: {argv: [...], timeout_sec: 600, env: {...}, allow_status: [0, 1]}
 
     `{…}` はそのまま残す。補完はフック / webhook が材料を返した実行時の仕事で、
     宣言を読む時点では誰も値を持っていない。
@@ -265,14 +289,17 @@ def command_spec(entry) -> "dict | None":
         if timeout < 1:
             raise LoopEntryError(f"command.timeout_sec は 1 以上です: {timeout}")
         env = _command_env(declared.get("env"))
-        unknown = sorted(set(declared) - {"argv", "timeout_sec", "env"})
+        allow_status = _command_allow_status(declared.get("allow_status"))
+        unknown = sorted(set(declared) - {"argv", "timeout_sec", "env", "allow_status"})
         if unknown:
             raise LoopEntryError(f"command に知らないキーがあります: {', '.join(unknown)}")
     else:
         argv = _command_argv(declared)
         timeout = COMMAND_TIMEOUT_SEC
         env = {}
-    return {"argv": argv, "timeout_sec": timeout, "env": env, **({"commands": commands} if commands else {})}
+        allow_status = [0]
+    return {"argv": argv, "timeout_sec": timeout, "env": env, "allow_status": allow_status,
+            **({"commands": commands} if commands else {})}
 
 
 def render_command(spec, values, *, resolve=None) -> dict:

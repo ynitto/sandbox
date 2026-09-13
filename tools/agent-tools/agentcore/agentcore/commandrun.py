@@ -81,8 +81,12 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     戻り値: `{ok, status, stopReason, stdout, stderr, argv, durationSec, logFile}`
     （`statemachine` / `run` と同じ「結果は 1 つの dict」の作法。`stdout` は上限まで）。
 
+    成否は終了コードで決まる。`allow_status`（既定 `[0]`）に挙がっている番号なら成功で、
+    「この段は 1 で正常」を持つコマンドはそこへ書く。タイムアウトは終了コードを持たない
+    ので、`allow_status` に何を書いても失敗のまま。
+
     例外を投げるのは実行を**始められなかった**ときだけ。始まった実行の失敗
-    （非 0 終了・タイムアウト）は `ok: False` で返す——呼ぶ側はどちらも同じ
+    （許していない終了コード・タイムアウト）は `ok: False` で返す——呼ぶ側はどちらも同じ
     「失敗として記録する」に落とすが、記録に残す理由が違う。
     """
     if spec.get("commands"):
@@ -115,6 +119,8 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
         timeout = max(1, int(spec.get("timeout_sec") or 0))
     except (TypeError, ValueError):
         raise CommandRunError("command.timeout_sec が不正です") from None
+
+    allow_status = spec.get("allow_status") or [0]
 
     child_env = dict(os.environ)
     child_env.update({str(k): str(v) for k, v in (spec.get("env") or {}).items()})
@@ -159,7 +165,7 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     stdout = _tl_decode(out or b"")
     stderr = _tl_decode(err or b"")
     status = None if timed_out else proc.returncode
-    ok = status == 0
+    ok = status in allow_status
 
     if timed_out:
         stop = stopreason.COMMAND_TIMEOUT
