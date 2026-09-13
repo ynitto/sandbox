@@ -482,6 +482,19 @@ async function handleAutomationEvent(payload) {
     else state.selectedWorkflow = payload.selected;
     state.config = await api.saveConfig({ [key]: { ...(state.config[key] || {}), [state.repo]: payload.selected } });
   }
+  if (payload.area === 'tasks' && payload.selected?.startsWith('entry:')) {
+    const repo = state.repo;
+    const token = ++state.taskToken;
+    const [snapshot, definitions, teaching] = await Promise.all([
+      api.automation.runSnapshot(repo), api.automation.listMachines(repo), api.automation.teachingList(repo),
+    ]);
+    if (repo !== state.repo || token !== state.taskToken) return;
+    state.tasks = AgentNavigation.taskItems(snapshot, definitions, teaching);
+    state.selectedTask = pickSelectedTask(repo, state.tasks);
+    state.taskStatusPending = false;
+    renderAreaContext();
+    return;
+  }
   await loadAreaItems();
 }
 

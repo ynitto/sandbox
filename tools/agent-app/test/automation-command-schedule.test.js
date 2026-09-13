@@ -65,3 +65,32 @@ test('editing a command keeps environment and concurrency identity in the save r
   assert.equal(payload.destination, 'global');
   assert.equal(payload.operation, 'save');
 });
+
+test('保存後の親一覧は作成したコマンドを選択し、定義だけの一覧へ戻さない', async () => {
+  const parent = fs.readFileSync(path.join(__dirname, '../src/renderer/renderer.js'), 'utf8');
+  const state = { repo: '/project', area: 'tasks', config: { lastTask: { '/project': 'machine:old' } }, taskToken: 0 };
+  const tasks = [{ id: 'machine:old' }, { id: 'entry:new' }];
+  const ctx = vm.createContext({ state,
+    taskId: (t) => t?.id || '', renderAreaContext() {},
+    AgentNavigation: { taskItems: (snapshot) => snapshot.tasks },
+    api: { saveConfig: async (patch) => ({ ...state.config, ...patch }), automation: {
+      runSnapshot: async () => ({ tasks }), listMachines: async () => [tasks[0]], teachingList: async () => [],
+    } },
+    loadAreaItems: () => { throw new Error('定義だけで再選択してはいけない'); },
+  });
+  vm.runInContext(parent.slice(parent.indexOf('function pickSelectedTask('), parent.indexOf('// 実行状態（agent-loop')), ctx);
+  vm.runInContext(parent.slice(parent.indexOf('async function handleAutomationEvent('), parent.indexOf('async function selectAreaItem(')), ctx);
+  await ctx.handleAutomationEvent({ type: 'agent-app:changed', root: '/project', area: 'tasks', selected: 'entry:new' });
+  assert.equal(state.selectedTask, 'entry:new');
+  assert.equal(state.tasks.length, 2);
+});
+
+test('複雑なcronでも名前とコマンドを編集するフォームが開く', () => {
+  const { ctx } = fixture();
+  const task = { id: 'entry:cron', kind: 'command', name: 'hourly', entry: { command: ['echo', 'ok'] },
+    schedules: [{ entryRef: 'entry:cron', fingerprint: 'f', advanced: true, kind: 'advanced' }] };
+  const html = ctx.scheduleEditorHtml(task);
+  assert.match(html, /id="schedule-command"/);
+  assert.match(html, /id="schedule-name"/);
+  assert.equal(ctx.ensureScheduleDraft(task).kind, 'preserve');
+});

@@ -197,6 +197,26 @@ class RepositorySnapshotTest(unittest.TestCase):
 
 
 class RepositoryScheduleTest(unittest.TestCase):
+    def test_command_name_and_argv_can_change_without_replacing_advanced_cron(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
+            root = Path(td).resolve()
+            config = root / ".agents" / "agent-loop.yml"
+            config.parent.mkdir()
+            config.write_text("prompts:\n  - name: hourly\n    command: [echo, before]\n    cron: '0 * * * *'\n")
+            with mock.patch.object(al, "agent_home_dir", return_value=Path(hd)), \
+                    mock.patch.object(al, "_find_running_daemon", return_value=None):
+                task = al.repository_snapshot(root)["tasks"][0]
+                result = al.update_repository_schedule(root, {
+                    "entry": task["entry"], "entryRef": task["entryRef"],
+                    "fingerprint": task["fingerprint"], "entryName": "renamed",
+                    "command": ["echo", "after"], "schedule": {"kind": "preserve"},
+                })
+                saved = al.repository_snapshot(root)["tasks"][0]
+                self.assertEqual(result["entryRef"], saved["id"])
+                self.assertEqual(saved["name"], "renamed")
+                self.assertEqual(saved["entry"]["command"], ["echo", "after"])
+                self.assertEqual(saved["entry"]["cron"], "0 * * * *")
+
     def test_command_schedule_create_edit_and_reload_preserves_other_settings(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as hd:
             root = Path(td).resolve()

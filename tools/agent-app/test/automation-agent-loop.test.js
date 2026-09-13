@@ -213,3 +213,11 @@ test('実行基盤の省略値とエラー応答にも安全な既定を使う',
     identity: {}, capture: async () => ({ ok: false, stdout: '{}', stderr: '読取失敗' }),
   }), /読取失敗/);
 });
+
+
+test('コマンドは保存元の設定から選び、AIやtmuxなしで手動実行する', () => {
+  assert.deepStrictEqual(loop.taskRunSpec({ root: '/project',
+    task: { kind: 'command', name: 'maintenance', source: { path: '/shared/agent-loop.yaml' } },
+    agent: 'codex', model: 'ignored', instruction: 'ignored',
+  }), { command: 'agent-loop', args: ['command', '--entry', 'maintenance', '--dir', '/project', '--config', '/shared/agent-loop.yaml'] });
+});

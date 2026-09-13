@@ -470,6 +470,10 @@ function registerIpcHandlers(getWindow, options = {}) {
       if (!py) throw new Error('Python を起動できません（「実行環境」を確認してください）');
       command = py.command;
       args = [path.join(skillDir, 'scripts', 'run_machine.py'), workflow, '--dry-run'];
+    } else if (task.kind === 'command') {
+      const spec = agentLoop.taskRunSpec({ root, task });
+      command = spec.command;
+      args = spec.args;
     } else {
       const cfg = settings.load(getUserData());
       const requestedAgent = String(p.agent || cfg.agent || '');

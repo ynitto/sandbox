@@ -445,12 +445,19 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
         if workflow or "command" not in entry:
             raise ValueError("コマンドのタスクだけコマンドを編集できます")
         entry["command"] = payload["command"]
-    entry.pop("cron", None)
-    entry.pop("interval_minutes", None)
+    preserve_schedule = (payload.get("schedule") or {}).get("kind") == "preserve"
+    if preserve_schedule:
+        if not matches or "command" not in entry:
+            raise ValueError("既存のコマンドタスクだけ予定を維持できます")
+        schedule_fields = {}
+    else:
+        schedule_fields = _repository_schedule_fields(payload.get("schedule"))
+        entry.pop("cron", None)
+        entry.pop("interval_minutes", None)
     entry.update({
         "name": str(payload.get("entryName") or entry.get("name")
                     or f"{summary['name']} の定期実行"),
-        **_repository_schedule_fields(payload.get("schedule")),
+        **schedule_fields,
         "enabled": payload.get("enabled") is not False,
     })
     if workflow:
@@ -496,6 +503,8 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
         "daemonRunning": daemon_pid is not None,
         "workflow": workflow or None,
     }
+    if "command" in entry:
+        result["entryRef"] = _repository_entry_identity(path, matches[0] if matches else len(entries) - 1, entry)[0]
     if "destination" in payload:
         result.update({"destination": destination, "path": str(path)})
     return result

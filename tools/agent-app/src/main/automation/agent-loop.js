@@ -31,6 +31,13 @@ function taskRunSpec({ root, task, agent = '', model = '', parameters = {}, inst
   if (item.kind === 'statemachine' || item.machine) {
     return runSpec({ root, machine: item.machine, agent, model, parameters, instruction, allowShells });
   }
+  if (item.kind === 'command') {
+    const name = String(item.entry?.name || item.name || '').trim();
+    if (!name) throw new Error('実行するコマンドタスクの名前がありません');
+    const args = ['command', '--entry', name, '--dir', String(root || '')];
+    if (item.source?.path) args.push('--config', String(item.source.path));
+    return { command: 'agent-loop', args };
+  }
   if (item.kind !== 'prompt') throw new Error('このタスクは手動実行できません');
   const entry = item.entry && typeof item.entry === 'object' ? item.entry : {};
   const prompt = String(entry.prompt || item.description || '').trim();
