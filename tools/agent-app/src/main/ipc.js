@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const agentCli = require('./agentCli');
+const cliSession = require('./cliSession');
 const store = require('./store');
 const git = require('./git');
 const files = require('./files');
@@ -561,6 +562,17 @@ async function runShared(id, sess, dirs, p, requested, cfg, send, release) {
 // ---- tmux（対話起動）。会話 ID → Conversation ----------------------------------------
 
 const conversations = new Map();
+const openingConversations = new Map();
+
+// UI の表示と送信が重なっても、同じ会話の起動・ID発行は直列に行う。
+function openConversation(id, send, options = {}) {
+  const previous = openingConversations.get(id) || Promise.resolve();
+  const opening = previous.catch(() => {}).then(() => openConversationNow(id, send, options));
+  openingConversations.set(id, opening);
+  const cleanup = () => { if (openingConversations.get(id) === opening) openingConversations.delete(id); };
+  opening.then(cleanup, cleanup);
+  return opening;
+}
 
 function sameLaunch(a, b) {
   return !!a && !!b && a.cli === b.cli && String(a.model || '') === String(b.model || '')
@@ -572,7 +584,7 @@ function sameLaunch(a, b) {
 //            違えば起動し直す（モデルやエージェントを変えたターン）
 //   fresh  … 残っているセッションを消して、会話の「次のターン」の既定で起動し直す（「再起動」）
 //   どちらも無し（会話を開いただけ）… 動いているものにつなぐだけで、起動し直さない
-async function openConversation(id, send, { cols, rows, fresh = false, launch = null } = {}) {
+async function openConversationNow(id, send, { cols, rows, fresh = false, launch = null } = {}) {
   const ud = userData();
   const sess = store.readSession(ud, id);
   const repo = requireRepo(sess.repo);
@@ -596,13 +608,34 @@ async function openConversation(id, send, { cols, rows, fresh = false, launch = 
   if (!info.ok) throw new Error(info.error || 'ホストのシェルを起動できません');
   if (!info.tmux) throw new Error(process.platform === 'win32' ? 'WSL に tmux が見つかりません（sudo apt install tmux）' : 'tmux が見つかりません');
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
-  const entry = store.cliEntry(sess, want.cli);
+  // The receipt may have arrived while Electron was closed or immediately before restart.
+  const captureOptions = { shell, home: info.home, id, cli: want.cli, cwd };
+  async function syncSession() {
+    const sid = await cliSession.read(captureOptions);
+    if (!sid) return;
+    const saved = store.readSession(ud, id);
+    if (store.cliEntry(saved, want.cli)?.id !== sid) store.setCliEntry(ud, id, want.cli, { id: sid });
+  }
+  if (existing?.syncSession) await existing.syncSession();
+  await syncSession();
+  const entry = store.cliEntry(store.readSession(ud, id), want.cli);
   const cmd = agentCli.interactiveCmd(spec, {
     model: want.model, readonly: want.readonly, autoApprove: want.autoApprove,
     cliSession: entry ? entry.id : '', history,
   });
+  let captureWarning = '';
+  let lastSync = 0;
   const conv = new tmux.Conversation({
-    id, shell, cwd, argv: cmd.argv, patterns: tmux.compilePatterns(spec.interactive), cols, rows, launch: want,
+    prepareLaunch: async () => {
+      try { return await cliSession.prepare({ ...captureOptions, argv: cmd.argv, env: cmd.env }); }
+      catch (err) { captureWarning = err.message; return { argv: cmd.argv, env: cmd.env }; }
+    },
+    syncSession: async () => {
+      if (Date.now() - lastSync < 1000) return;
+      lastSync = Date.now();
+      await syncSession();
+    },
+    id, shell, cwd, argv: cmd.argv, env: cmd.env, patterns: tmux.compilePatterns(spec.interactive), cols, rows, launch: want,
     emit: (channel, payload) => {
       if (channel === 'term:snapshot') {
         store.addTerminalSnapshot(ud, id, {
@@ -644,13 +677,13 @@ async function openConversation(id, send, { cols, rows, fresh = false, launch = 
   store.touchTerminalSession(ud, id, {
     name: conv.name, state: 'active', ownerInstanceId: instanceId, cli: want.cli, model: want.model,
   });
-  const warning = [cmd.readonlyWarning, opened.reused ? '' : cmd.warning].filter(Boolean).join('\n');
+  const warning = [cmd.readonlyWarning, captureWarning, opened.reused ? '' : cmd.warning].filter(Boolean).join('\n');
   return { name: conv.name, phase: conv.phase, detail: conv.detail, reused: opened.reused, restarted: !opened.reused, warning, argv: cmd.argv, launch: want };
 }
 
 async function closeConversation(id) {
   const conv = conversations.get(id);
-  if (conv) { conversations.delete(id); await conv.kill(); }
+  if (conv) { await conv.syncSession?.(); conversations.delete(id); await conv.kill(); }
   else {
     // 追跡していない（起動し直したアプリ）tmux セッションも消す
     const sess = store.readSession(userData(), id);

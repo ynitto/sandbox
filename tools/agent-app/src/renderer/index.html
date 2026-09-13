@@ -260,7 +260,7 @@
           <!-- タスクを AI と相談する面。見出しと説明はワークベンチ側が持つので、ここには置かない。
                端末と入力欄は会話画面と同じ .terminal-stage / .composer-shell を使う。 -->
           <div slot="teaching" id="task-teaching" hidden>
-            <section id="task-create" hidden>
+            <section id="task-create" class="teaching-create-form" hidden>
               <label class="task-save-name" for="task-machine"><strong>保存名</strong><input id="task-machine" placeholder="未指定なら自動で決定" size="28"></label>
               <label class="task-create-label" for="task-purpose"><strong>自動化したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>
               <textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea>
@@ -361,12 +361,16 @@
           <!-- ワークフローを AI と作る会話。タスクと同じ形（端末ミラー + 入力欄）で、
                どの工程を出すかはワークベンチ側が決める。見出しはワークベンチが持つ。 -->
           <div slot="flow-teaching" id="flow-teaching" hidden>
-            <section id="flow-teach-launch" hidden>
+            <section id="flow-teach-launch" class="teaching-create-form" hidden>
+              <div id="flow-teach-create" class="teaching-create-form" hidden>
+                <label class="task-create-label" for="flow-teach-purpose"><strong>実現したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>
+                <textarea id="flow-teach-purpose" rows="6" placeholder="例: 変更依頼を調査し、並列に実装して、品質を確認したい"></textarea>
+              </div>
               <div class="teach-start-toolbar">
                 <div id="flow-teach-heading"><strong>下書きの編集を続ける</strong></div>
                 <details class="run-settings teach-execution-settings">
                   <summary><span id="flow-teach-settings-summary"></span></summary>
-                  <div class="settings-popover"><div class="popover-head">今回の編集設定</div><div class="direct-agent-settings">
+                  <div class="settings-popover"><div class="popover-head" id="flow-teach-settings-title">今回の編集設定</div><div class="direct-agent-settings">
                     <label>エージェント<select id="flow-teach-agent"></select></label>
                     <label>モデル<input id="flow-teach-model" class="mono" placeholder="自動"></label>
                     <label>権限<select id="flow-teach-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option></select></label>
@@ -375,6 +379,7 @@
                 <span class="spacer"></span>
                 <button type="button" id="flow-teach-start" class="primary">編集開始</button>
               </div>
+              <p id="flow-teach-create-error" class="dlg-error" role="alert" hidden></p>
               <div id="flow-teach-placeholder" class="terminal-stage">
                 <div class="terminal-head"><span class="terminal-agent">編集セッション</span><span id="flow-teach-prephase" class="phase starting">起動前</span></div>
                 <div class="teach-terminal-placeholder-body"><p id="flow-teach-status" role="status" aria-live="polite"></p></div>

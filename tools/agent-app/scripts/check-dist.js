@@ -10,7 +10,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const missing = Object.keys(pkg.dependencies || {}).filter((dep) => {
-  try { require.resolve(`${dep}/package.json`, { paths: [ROOT] }); return false; } catch { return true; }
+  try { require.resolve(dep, { paths: [ROOT] }); return false; } catch { return true; }
 });
 if (missing.length) {
   console.error(`check-dist: 本番依存が入っていない: ${missing.join(', ')}\n  npm install を先に実行してください`);

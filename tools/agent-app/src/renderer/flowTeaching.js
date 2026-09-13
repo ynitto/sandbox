@@ -14,7 +14,7 @@
   const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
 
   const state = {
-    deps: null, visible: false, repo: '', workflowId: '', existing: false, context: '',
+    deps: null, visible: false, creating: false, onCreate: null, repo: '', workflowId: '', existing: false, context: '',
     session: null, availableSession: null, phase: null, running: false, pending: false, shareWait: false,
     token: 0, input: null, autoStart: null,
   };
@@ -65,7 +65,10 @@
     $('flow-teach-settings-summary').textContent = state.deps.executionLabel(readExecutionInputs());
     $('flow-teach-launch').hidden = !!sess;
     $('flow-teach-heading').hidden = !state.existing;
-    $('flow-teach-start').textContent = sess ? '編集中' : '編集開始';
+    $('flow-teach-create').hidden = !state.creating;
+    $('flow-teach-placeholder').hidden = state.creating;
+    $('flow-teach-settings-title').textContent = state.creating ? '今回の作成設定' : '今回の編集設定';
+    $('flow-teach-start').textContent = state.creating ? '作成開始' : sess ? '編集中' : '編集開始';
     $('flow-teach-start').disabled = state.pending || !!sess;
     $('flow-teach-status').textContent = state.pending ? 'AI との会話を開いています…' : '';
     $('flow-teach-terminal').hidden = !sess;
@@ -217,6 +220,29 @@
     }
   }
 
+  async function submitCreate() {
+    if (state.pending) return;
+    const purpose = $('flow-teach-purpose').value.trim();
+    const errorNode = $('flow-teach-create-error');
+    errorNode.hidden = !!purpose;
+    if (!purpose) {
+      errorNode.textContent = '実現したいことを入力してください';
+      $('flow-teach-purpose').focus();
+      return;
+    }
+    state.pending = true;
+    renderShell();
+    try {
+      await state.onCreate({ purpose, options: state.deps.executionOptions(readExecutionInputs()) });
+    } catch (err) {
+      errorNode.textContent = err.message;
+      errorNode.hidden = false;
+    } finally {
+      state.pending = false;
+      renderShell();
+    }
+  }
+
   // ---- 外から ------------------------------------------------------------------------
 
   function sameView(a, b) {
@@ -225,12 +251,22 @@
 
   // ワークベンチからの「いまこのワークフローの会話を出している」。null なら隠す。
   function show(detail) {
-    if (!detail || detail.hidden || !detail.workflowId) {
+    if (!detail || detail.hidden || (!detail.workflowId && !detail.creating)) {
       state.visible = false;
+      state.creating = false;
       state.token += 1;
       term().detach();
       renderShell();
       return;
+    }
+    const enteringCreate = !!detail.creating && (!state.creating || state.repo !== detail.root);
+    state.creating = !!detail.creating;
+    state.onCreate = detail.onCreate || null;
+    if (enteringCreate) {
+      delete $('flow-teach-permission').dataset.pinned;
+      populateExecutionInputs(state.deps.executionDefaults());
+      $('flow-teach-purpose').value = '';
+      $('flow-teach-create-error').hidden = true;
     }
     const next = { root: detail.root, workflowId: detail.workflowId, existing: !!detail.existing };
     const changed = !sameView(next, { root: state.repo, workflowId: state.workflowId, existing: state.existing });
@@ -239,7 +275,7 @@
     state.existing = next.existing;
     state.context = detail.context || '';
     state.visible = true;
-    if (changed || !state.session) loadView().catch((err) => error(err.message));
+    if (changed || (!state.session && !state.creating) || enteringCreate) loadView().catch((err) => error(err.message));
     else renderShell();
   }
 
@@ -286,7 +322,8 @@
 
   function init(deps) {
     state.deps = deps;
-    $('flow-teach-start').onclick = () => start();
+    $('flow-teach-start').onclick = () => state.creating ? submitCreate() : start();
+    $('flow-teach-purpose').oninput = () => { $('flow-teach-create-error').hidden = true; };
     $('flow-teach-send').onclick = () => send();
     $('flow-teach-stop').onclick = () => state.session && api.stop(state.session.id).catch((err) => error(err.message));
     $('flow-teach-restart').onclick = () => state.session && attach(state.session).catch((err) => error(err.message));

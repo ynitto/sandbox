@@ -462,3 +462,25 @@ test('共有で引き受けた依頼の tmux 名は、同じ時刻に投函さ�
   // 会話の ID（UUID）とは字種が重ならない（s / h / r は 16 進に無い）
   assert.match(tmux.sharePaneId(a, 1), /^share\d+x/);
 });
+
+test('新しく起動する時だけセッション記録を準備し、環境変数をCLIへ渡す', async () => {
+  let alive = false;
+  let prepares = 0;
+  const commands = [];
+  const shell = { run: async (command) => {
+    commands.push(command);
+    if (command.includes('has-session')) return { ok: alive };
+    return { ok: true, output: '' };
+  } };
+  const opts = { id: 'resume-test', shell, cwd: '/tmp', argv: ['stub'], patterns: tmux.compilePatterns({}),
+    prepareLaunch: async () => { prepares += 1; return { argv: ['stub', '--resume', 'exact-id'], env: { SESSION_FILE: '/tmp/a b' } }; },
+  };
+  const conv = new tmux.Conversation(opts);
+  conv.schedule = () => {};
+  await conv.open();
+  assert.strictEqual(prepares, 1);
+  assert.ok(commands.some((command) => command.includes('SESSION_FILE=/tmp/a b')));
+  alive = true;
+  await conv.open();
+  assert.strictEqual(prepares, 1, '生きたtmuxへ再接続するときは記録を初期化しない');
+});

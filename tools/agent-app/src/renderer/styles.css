@@ -584,8 +584,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
    会話画面と同じ .terminal-stage / .composer-shell をそのまま使う（作り直さない）。 */
 #task-teaching, #flow-teaching { min-width: 0; display: grid; gap: 12px; }
 #task-teaching .composer-shell, #flow-teaching .composer-shell { width: min(100%, 900px); }
-#task-create { display: grid; gap: 10px; }
-#task-create textarea { width: 100%; min-height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
+.teaching-create-form { display: grid; gap: 10px; }
+.teaching-create-form textarea { width: 100%; min-height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.6; }
 .task-create-label { display: flex; align-items: baseline; gap: 8px; }
 .task-save-name { width: min(100%, 440px); display: grid; grid-template-columns: auto minmax(240px, 1fr); align-items: center; gap: 10px; }
 .task-save-name input { width: 100%; min-width: 0; }

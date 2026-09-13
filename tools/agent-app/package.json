@@ -17,6 +17,7 @@
     "predist:portable": "node scripts/check-dist.js"
   },
   "dependencies": {
+    "smol-toml": "1.8.0",
     "yaml": "2.9.0"
   },
   "devDependencies": {
@@ -39,7 +40,8 @@
     "files": [
       "src/**/*",
       "package.json",
-      "node_modules/yaml/**"
+      "node_modules/yaml/**",
+      "node_modules/smol-toml/**"
     ],
     "win": {
       "icon": "assets/icon.ico",

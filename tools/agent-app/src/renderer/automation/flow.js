@@ -7,7 +7,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     root: '', loading: false, catalog: { kinds: [], patterns: [] }, context: null,
     flows: [], selected: '', workflow: null, issues: [], editor: null,
     teachings: [], selectedTeaching: '', teaching: null, creatingTeaching: false,
-    teachingInput: '', teachingWorkflow: null, trialTeaching: null,
+    teachingWorkflow: null, trialTeaching: null,
     runs: [], selectedRun: '', run: null, result: null, log: null, detailTab: 'overview',
     request: '', parameters: {}, readonly: false, agent: '', model: '', starting: false,
   };
@@ -33,7 +33,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
 
   function safeToRepaint() {
     const focused = ctx.activeElement ? ctx.activeElement() : document.activeElement;
-    return !focused || !focused.matches('[data-flow-request], [data-flow-param], [data-flow-model], [data-flow-answer-value], [data-flow-answer-comment], [data-flow-teaching-purpose], [data-flow-teaching-trial-request]');
+    return !focused || !focused.matches('[data-flow-request], [data-flow-param], [data-flow-model], [data-flow-answer-value], [data-flow-answer-comment], [data-flow-teaching-trial-request]');
   }
 
   async function loadRun(runId, repaint = true) {
@@ -220,8 +220,8 @@ window.createFlowFeature = function createFlowFeature(ctx) {
   // ここは見出しと「いまの候補」だけを持ち、置き場（slot）を開ける。タスクの教示と同じ形。
   function teachingHtml() {
     if (view.creatingTeaching) {
-      announceTeaching(null);
-      return `<div class="blank teaching-create"><span class="eyebrow">新しいワークフローを教える</span><h2>何を複数のAIで実現したいですか？</h2><p>工程を決め打ちせず、目的・成果・制約を伝えてください。</p><textarea rows="7" data-flow-teaching-purpose placeholder="例: 変更依頼を調査し、必要なら並列に実装して、品質確認後にレビュー可能な成果をまとめたい">${e(view.teachingInput)}</textarea><div class="row"><button type="button" class="primary" data-flow-teaching-create>AIに相談する</button><button type="button" data-flow-teaching-cancel>戻る</button></div></div>`;
+      announceTeaching({ root: root(), workflowId: '', creating: true, onCreate: createTeaching });
+      return '<div class="blank teaching-create"><span class="eyebrow">新しいワークフローを作成</span><h2>何を複数のAIで実現したいですか？</h2><p>工程は AI が考えます。目的とほしい結果を書いてください。</p><slot name="flow-teaching"></slot></div>';
     }
     const session = view.teaching;
     if (!session) { announceTeaching(null); return emptyHtml(); }
@@ -314,6 +314,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
 
   function homeHtml() {
     if (view.loading) return `<div class="blank compact"><p>${e(featureName)}を読み込んでいます…</p></div>`;
+    if (view.creatingTeaching) return teachingHtml();
     return `<div class="flow-home-head"><div><h2>${e(featureName)}</h2><p>目的を教え、実際の結果で確かめてから利用可能にします。</p></div><button type="button" class="primary" data-flow-new>新しいワークフローを教える</button></div><div class="execution-layout flow-layout">${sidebarHtml()}<section class="execution-detail">${view.editor ? editorHtml() : view.selectedRun ? runHtml() : view.creatingTeaching || view.teaching ? teachingHtml() : workflowHtml()}</section></div>`;
   }
 
@@ -454,18 +455,16 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     view.run = null;
     view.editor = null;
     view.creatingTeaching = false;
-    view.teachingInput = '';
     ctx.refresh();
   }
 
   // 新しく教える: 会話（tmux）を用意し、その最初のターンで AI に目的を渡す。
-  async function createTeaching() {
-    const purpose = view.teachingInput.trim();
+  async function createTeaching({ purpose: input, options }) {
+    const purpose = input.trim();
     if (!purpose) { ctx.toast('実現したいことを入力してください', true); return; }
-    const workflowId = await ctx.guard('ワークフローの作成', () => ctx.teachCreate({ root: root(), purpose }));
+    const workflowId = await ctx.guard('ワークフローの作成', () => ctx.teachCreate({ root: root(), purpose, options }));
     if (!workflowId) return;
     view.teachings = (await ctx.guard('教示中のワークフロー', () => ctx.bridge.teachingList(root()))) || view.teachings;
-    view.teachingInput = '';
     view.creatingTeaching = false;
     await selectTeaching(workflowId);
   }
@@ -538,9 +537,6 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     for (const button of main.querySelectorAll('[data-flow-tab]')) button.addEventListener('click', () => { view.detailTab = button.dataset.flowTab; ctx.refresh(); });
     for (const button of main.querySelectorAll('[data-flow-new]')) button.addEventListener('click', create);
     for (const button of main.querySelectorAll('[data-flow-manual-new]')) button.addEventListener('click', () => { view.workflow = null; view.creatingTeaching = false; startEditor(null); });
-    main.querySelector('[data-flow-teaching-cancel]')?.addEventListener('click', () => { view.creatingTeaching = false; view.teachingInput = ''; ctx.refresh(); });
-    main.querySelector('[data-flow-teaching-purpose]')?.addEventListener('input', (event) => { view.teachingInput = event.target.value; });
-    main.querySelector('[data-flow-teaching-create]')?.addEventListener('click', createTeaching);
     main.querySelector('[data-flow-teaching-trial-request]')?.addEventListener('input', (event) => { view.request = event.target.value; });
     main.querySelector('[data-flow-teaching-trial]')?.addEventListener('click', startTeachingTrial);
     main.querySelector('[data-flow-teaching-confirm]')?.addEventListener('click', confirmTeaching);
@@ -703,7 +699,6 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     view.selectedTeaching = '';
     view.selectedRun = '';
     view.editor = null;
-    view.teachingInput = '';
     ctx.refresh();
   }
 

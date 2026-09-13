@@ -2,7 +2,7 @@
 
 // 配布物（electron-builder）の取りこぼし防止。agent-dashboard/test/packaging-assets.test.js と同じ狙い。
 //
-// index.html はバンドラを使わず CSS / JS を相対パスで直接読み、main 側は本番依存（yaml）を
+// index.html はバンドラを使わず CSS / JS を相対パスで直接読み、main 側は本番依存（yaml / smol-toml）を
 // require する。これらが package.json の build.files に載っていないと**パッケージ版だけ**壊れる
 // （開発起動では node_modules がそこに在るので気づけない）。
 // 壊れ方が配布後にしか出ないので、参照と同梱指定の対応をここで機械的に突き合わせる。
@@ -115,14 +115,14 @@ test('src/ 配下の相対 require 先は実在し、build.files に載ってい
 });
 
 // main が require する本番依存（yaml。ステートマシン定義の読み書き）は build.files に明示する。
-test('main が require する本番依存（yaml）が build.files に載っている', () => {
+test('main が require する本番依存（yaml / smol-toml）が build.files に載っている', () => {
   const specs = new Set();
   for (const file of jsFilesUnder(path.join(ROOT, 'src', 'main'))) {
     for (const m of fs.readFileSync(file, 'utf8').matchAll(/require\(\s*'([a-z][\w.-]*)'\s*\)/g)) specs.add(m[1]);
   }
   const builtin = new Set(require('module').builtinModules);
   const external = [...specs].filter((name) => !builtin.has(name) && name !== 'electron');
-  assert.deepStrictEqual(external.sort(), ['yaml']);
+  assert.deepStrictEqual(external.sort(), ['smol-toml', 'yaml']);
   for (const dep of external) {
     assert.ok(pkg.dependencies[dep], `${dep} は dependencies に置く`);
     assert.ok(included(`node_modules/${dep}/package.json`), `node_modules/${dep} が build.files に載っていない`);
@@ -132,10 +132,10 @@ test('main が require する本番依存（yaml）が build.files に載って�
 // electron-builder は dependencies（本番依存）の node_modules を推移的に自動同梱する。画面用ライブラリは
 // npm install 時に vendor/ へ写した分だけ使うので devDependencies に置き、mermaid が引く d3 / katex …
 // まで exe に入らないようにする（dependencies に戻すと asar が数十 MB 増える）。
-test('画面用ライブラリは devDependencies（vendor/ に写す分だけ同梱）で、dependencies は yaml だけ', () => {
+test('画面用ライブラリは devDependencies（vendor/ に写す分だけ同梱）で、dependencies は設定ファイルの読み書きに必要なものだけ', () => {
   const { FILES } = require('../scripts/vendor');
   const vendored = new Set(FILES.map(([from]) => (from.startsWith('@') ? from.split('/').slice(0, 2).join('/') : from.split('/')[0])));
-  assert.deepStrictEqual(Object.keys(pkg.dependencies), ['yaml']);
+  assert.deepStrictEqual(Object.keys(pkg.dependencies).sort(), ['smol-toml', 'yaml']);
   for (const dep of vendored) {
     assert.ok(pkg.devDependencies[dep], `${dep} は vendor/ に写すので devDependencies に置く`);
     assert.ok(!included(`node_modules/${dep}/package.json`), `${dep} は build.files に載せない`);
@@ -168,4 +168,9 @@ test('statemachine-use スキルが extraResources でパッケージへ入り�
   // appRoot/../../.github/skills/statemachine-use == resources/<to>
   const appRoot = path.join('/resources', 'app-root', 'tools', 'agent-app');
   assert.strictEqual(posix(path.resolve(appRoot, '..', '..', '.github', 'skills', 'statemachine-use')), `/resources/${to}`);
+});
+
+test('配布前チェックはpackage.jsonを公開しない本番依存も検出する', () => {
+  const result = require('child_process').spawnSync(process.execPath, [path.join(ROOT, 'scripts/check-dist.js')], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr);
 });

@@ -208,7 +208,7 @@ const sq = host.sq;
 
 function cmdHas(name) { return `${TMUX} has-session -t ${sq(`=${name}`)} 2>/dev/null`; }
 
-function cmdNew({ name, cwd, argv, cols, rows }) {
+function cmdNew({ name, cwd, argv, cols, rows, env = {} }) {
   // ペインの中身は `bash -lc '<argv>; …'`。ログインシェルで PATH を揃え、CLI が終わっても
   // remain-on-exit で画面（エラーの理由）を残す。
   //
@@ -217,7 +217,9 @@ function cmdNew({ name, cwd, argv, cols, rows }) {
   // pane_dead_status を読めたときにも同じ値が出るようにする（bash の 0 にしない）。
   // Ctrl+C は変わらず CLI へ届く（bash と CLI は同じプロセスグループで、CLI が
   // SIGINT を捌く間 bash は待つ）。
-  const inner = `${host.quoteArgv(argv)}; rc=$?; printf '\\n[${EXIT_MARKER} %s]\\n' "$rc"; exit "$rc"`;
+  const variables = Object.entries(env).filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)).map(([key, value]) => `${key}=${value}`);
+  const command = variables.length ? ['env', ...variables, ...argv] : argv;
+  const inner = `${host.quoteArgv(command)}; rc=$?; printf '\\n[${EXIT_MARKER} %s]\\n' "$rc"; exit "$rc"`;
   return [
     `${TMUX} new-session -d -s ${sq(name)} -c ${sq(cwd)} -x ${Number(cols) || DEFAULT_COLS} -y ${Number(rows) || DEFAULT_ROWS} bash -lc ${sq(inner)}`,
     `${TMUX} set-option -g history-limit ${HISTORY_LIMIT} >/dev/null`,
@@ -303,6 +305,9 @@ class Conversation {
     this.shell = opts.shell;
     this.cwd = opts.cwd;
     this.argv = opts.argv;
+    this.env = opts.env || {};
+    this.prepareLaunch = opts.prepareLaunch;
+    this.syncSession = opts.syncSession;
     this.patterns = opts.patterns;
     this.emit = opts.emit || (() => {});
     this.cols = opts.cols || DEFAULT_COLS;
@@ -335,9 +340,14 @@ class Conversation {
   // 残っているセッションを消してから起動し直す（別の CLI・別のモデルで続けるとき）。
   async open({ reuse = true } = {}) {
     const alive = await this.exists();
-    if (!reuse && alive) await this.shell.run(cmdKill(this.name));
     if (!(reuse && alive)) {
-      const r = await this.shell.run(cmdNew({ name: this.name, cwd: this.cwd, argv: this.argv, cols: this.cols, rows: this.rows }), { timeoutMs: 30000 });
+      if (this.prepareLaunch) {
+        const prepared = await this.prepareLaunch();
+        this.argv = prepared.argv;
+        this.env = prepared.env || {};
+      }
+      if (alive) await this.shell.run(cmdKill(this.name));
+      const r = await this.shell.run(cmdNew({ name: this.name, cwd: this.cwd, argv: this.argv, cols: this.cols, rows: this.rows, env: this.env }), { timeoutMs: 30000 });
       if (!r.ok) throw new Error(`tmux セッションを作れません: ${r.error || r.output}`);
       this.setPhase('starting', '起動中');
     } else {
@@ -378,6 +388,7 @@ class Conversation {
     if (this.closed || this.polling) return;
     this.polling = true;
     try {
+      if (this.syncSession) await this.syncSession();
       const cap = await this.capture({ offset: this.scrollOffset });
       if (!cap.ok) {
         if (/can't find|no server|no such/i.test(cap.error)) {

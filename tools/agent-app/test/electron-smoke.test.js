@@ -538,9 +538,43 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     }
     await win.click('#session-new');
     await workspace.locator('.teaching-create').waitFor();
-    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいワークフローを教える/);
-    assert.strictEqual(await win.locator('#flow-teaching').isVisible(), false, '作成の入口では会話の置き場を出さない');
-    await workspace.locator('[data-flow-teaching-cancel]').click();
+    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいワークフローを作成/);
+    assert.strictEqual(await win.locator('#flow-teach-purpose').isVisible(), true);
+    assert.strictEqual(await win.locator('#flow-teach-start').textContent(), '作成開始');
+    assert.strictEqual(await win.locator('#flow-teach-placeholder').isVisible(), false);
+    await win.locator('#flow-teach-start').click();
+    assert.match(await win.locator('#flow-teach-create-error').textContent(), /入力してください/);
+    await win.locator('#flow-teach-purpose').fill('変更依頼を調査し、並列に実装して品質を確認したい');
+    await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
+    assert.strictEqual(await win.locator('#flow-teach-agent').isVisible(), true);
+    assert.strictEqual(await win.locator('#flow-teach-model').isVisible(), true);
+    assert.strictEqual(await win.locator('#flow-teach-permission').isVisible(), true);
+    await workspace.locator('.teaching-create h2').click();
+    assert.strictEqual(await win.locator('#flow-teach-launch .teach-execution-settings').getAttribute('open'), null);
+    if (process.env.AGENT_APP_FLOW_NEW_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_FLOW_NEW_SCREENSHOT });
+    }
+    // 作成フォームから設定を渡し、下書きへ移る。実際の AI 起動だけを省く。
+    await win.evaluate(() => {
+      window.originalFlowCreate = FlowTeaching.create;
+      FlowTeaching.create = async ({ root, purpose, options }) => {
+        window.flowCreateOptions = options;
+        const prepared = await api.automation.flowTeachPrepare({ repo: root, purpose, ...options });
+        return prepared.workflowId;
+      };
+    });
+    await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
+    await win.locator('#flow-teach-model').fill('workflow-test-model');
+    await win.locator('#flow-teach-permission').selectOption('auto');
+    await workspace.locator('.teaching-create h2').click();
+    await win.locator('#flow-teach-start').click();
+    await workspace.locator('.execution-title').filter({ hasText: '変更依頼を調査し' }).waitFor();
+    const creationOptions = await win.evaluate(() => window.flowCreateOptions);
+    assert.strictEqual(creationOptions.model, 'workflow-test-model');
+    assert.strictEqual(creationOptions.autoApprove, true);
+    assert.strictEqual(await win.locator('#flow-teach-start').textContent(), '編集開始');
+    await win.evaluate(() => { FlowTeaching.create = window.originalFlowCreate; });
+    await win.locator('#workflows .list-pick').filter({ hasText: '並列レビュー' }).first().click();
     if (process.env.AGENT_APP_FLOW_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_FLOW_SCREENSHOT });
     }
