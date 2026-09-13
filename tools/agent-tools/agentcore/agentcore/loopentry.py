@@ -226,6 +226,30 @@ def _command_env(value) -> "dict[str, str]":
     return env
 
 
+def _command_skip_if_missing(value) -> "list[str]":
+    """実行の前に存在を確かめるパスの一覧。宣言が無ければ空。
+
+    「未導入なら何もしない」という判断を、フックの中の `if not os.path.isfile(...)` から
+    宣言へ出すための口。先頭の `~` は home へ広げ、`{…}` は argv と同じく実行時の補完に
+    残す。相対パスは `cwd` から読む（読むのは `commandrun` 側）。
+    """
+    if value is None:
+        return []
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, (list, tuple)):
+        raise LoopEntryError("command.skip_if_missing は文字列または文字列の配列です")
+    paths: "list[str]" = []
+    for raw in items:
+        if not isinstance(raw, str) or not raw.strip():
+            raise LoopEntryError(
+                f"command.skip_if_missing は文字列または文字列の配列です: {raw!r}")
+        text = raw.strip()
+        text = os.path.expanduser(text) if text.startswith("~") else text
+        if text not in paths:
+            paths.append(text)
+    return paths
+
+
 def _command_allow_status(value) -> "list[int]":
     """成功として扱う終了コードの一覧。宣言が無ければ `[0]`。
 
@@ -253,7 +277,8 @@ def _command_allow_status(value) -> "list[int]":
 def command_spec(entry) -> "dict | None":
     """entry の `command:` 宣言を正規化する。宣言が無ければ None。
 
-    返り値: `{"argv": [...], "timeout_sec": int, "env": {...}, "allow_status": [int]}`
+    返り値: `{"argv": [...], "timeout_sec": int, "env": {...}, "allow_status": [int],
+    "skip_if_missing": [...]}`
 
     3 形を受ける（`statemachine-use` の `check:` と同じ綴り——利用者は既にこれを知っている）。
 
@@ -290,7 +315,9 @@ def command_spec(entry) -> "dict | None":
             raise LoopEntryError(f"command.timeout_sec は 1 以上です: {timeout}")
         env = _command_env(declared.get("env"))
         allow_status = _command_allow_status(declared.get("allow_status"))
-        unknown = sorted(set(declared) - {"argv", "timeout_sec", "env", "allow_status"})
+        skip_if_missing = _command_skip_if_missing(declared.get("skip_if_missing"))
+        unknown = sorted(set(declared) - {"argv", "timeout_sec", "env", "allow_status",
+                                          "skip_if_missing"})
         if unknown:
             raise LoopEntryError(f"command に知らないキーがあります: {', '.join(unknown)}")
     else:
@@ -298,7 +325,9 @@ def command_spec(entry) -> "dict | None":
         timeout = COMMAND_TIMEOUT_SEC
         env = {}
         allow_status = [0]
+        skip_if_missing = []
     return {"argv": argv, "timeout_sec": timeout, "env": env, "allow_status": allow_status,
+            "skip_if_missing": skip_if_missing,
             **({"commands": commands} if commands else {})}
 
 
@@ -306,6 +335,9 @@ def render_command(spec, values, *, resolve=None) -> dict:
     rendered = {**spec, "argv": render_argv(spec["argv"], values, resolve=resolve)}
     if spec.get("commands"):
         rendered["commands"] = [render_argv(argv, values, resolve=resolve) for argv in spec["commands"]]
+    if spec.get("skip_if_missing"):
+        # 存在を確かめるパスも `{…}` を持てる（材料で置き場が決まるため）。規則は argv と同じ。
+        rendered["skip_if_missing"] = render_argv(spec["skip_if_missing"], values, resolve=resolve)
     return rendered
 
 

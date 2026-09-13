@@ -49,6 +49,21 @@ def _first_line(text: str) -> str:
     return ""
 
 
+def _missing_paths(paths, work_dir: str) -> "list[str]":
+    """`skip_if_missing` に挙がったもののうち、実際に無いものを返す。
+
+    相対パスは作業ディレクトリから読む（宣言の `cwd` と同じ基準にする）。
+    """
+    missing: "list[str]" = []
+    for raw in paths or []:
+        path = os.path.expanduser(str(raw))
+        if not os.path.isabs(path):
+            path = os.path.join(work_dir, path)
+        if not os.path.exists(path):
+            missing.append(path)
+    return missing
+
+
 def _terminate(proc) -> None:
     """タイムアウトした子を、その子が起こした孫ごと止める。
 
@@ -80,6 +95,10 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
 
     戻り値: `{ok, status, stopReason, stdout, stderr, argv, durationSec, logFile}`
     （`statemachine` / `run` と同じ「結果は 1 つの dict」の作法。`stdout` は上限まで）。
+
+    `skip_if_missing` に挙げたパスが 1 つでも無ければ、**コマンドを起こさずに**
+    `command_skipped` を返す（未導入のノードで「回っているつもりで何もしていない」を
+    後から見つけられるよう、jsonl には 1 行残す）。
 
     成否は終了コードで決まる。`allow_status`（既定 `[0]`）に挙がっている番号なら成功で、
     「この段は 1 で正常」を持つコマンドはそこへ書く。タイムアウトは終了コードを持たない
@@ -121,6 +140,17 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
         raise CommandRunError("command.timeout_sec が不正です") from None
 
     allow_status = spec.get("allow_status") or [0]
+
+    missing = _missing_paths(spec.get("skip_if_missing"), work_dir)
+    if missing:
+        detail = "、".join(missing)
+        if log_file:
+            _tl_append_log(log_file, {"event": "command_skipped", "argv": argv,
+                                      "cwd": work_dir, "missing": missing})
+        _tl_progress(f"未導入のため飛ばしました: {detail}", tag)
+        return {"ok": True, "status": None, "stopReason": stopreason.COMMAND_SKIPPED,
+                "stdout": "", "stderr": "", "error": "", "argv": argv,
+                "durationSec": 0.0, "logFile": log_file}
 
     child_env = dict(os.environ)
     child_env.update({str(k): str(v) for k, v in (spec.get("env") or {}).items()})
