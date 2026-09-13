@@ -77,5 +77,17 @@ test('command task: create, retain selection, edit and run without AI', async (t
     await panel.locator('.history-log pre').filter({ hasText: 'scheduled command output' }).waitFor();
     recordScheduled('scheduled-while-open');
     await scheduledRows.nth(1).waitFor({ timeout: 20000 });
+    const loopPath = path.join(bin, 'agent-loop');
+    const workingLoop = fs.readFileSync(loopPath, 'utf8');
+    fs.writeFileSync(loopPath, '#!/bin/sh\necho "test inspect failure" >&2\nexit 1\n');
+    await panel.locator('[data-task-tab="overview"]').click();
+    await panel.locator('[data-task-tab="history"]').click();
+    await panel.locator('[role="alert"]').filter({ hasText: 'test inspect failure' }).waitFor();
+    assert.equal(await panel.locator('[data-task-tab="history"]').isEnabled(), true);
+    assert.match(await panel.locator('.execution-title').textContent(), /Renamed command/);
+    assert.equal(await scheduledRows.count(), 2);
+    fs.writeFileSync(loopPath, workingLoop);
+    await panel.locator('#snapshot-retry').click();
+    await panel.locator('#snapshot-retry').waitFor({ state: 'detached' });
   } finally { await electron.close(); }
 });

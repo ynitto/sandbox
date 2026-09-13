@@ -759,6 +759,7 @@ function homeHtml() {
 
 function bindHome(main) {
   const on = (id, fn) => { const el = main.querySelector(`#${id}`); if (el) el.addEventListener('click', fn); };
+  on('snapshot-retry', refreshExecutionSnapshot);
   on('h-add', addFolder);
   on('h-ai-draft', openAiDraft);
   on('h-new', newMachine);
@@ -1025,8 +1026,14 @@ function taskDetailTabsHtml(machine, activeTab) {
   return `<nav class="task-detail-tabs" role="tablist" aria-label="タスク詳細">
     <button type="button" role="tab" id="task-tab-overview" aria-controls="task-tab-panel" data-task-tab="overview" aria-selected="${activeTab === 'overview'}" class="${activeTab === 'overview' ? 'is-on' : ''}">概要</button>
     ${machine.kind === 'statemachine' ? `<button type="button" role="tab" id="task-tab-steps" aria-controls="task-tab-panel" data-task-tab="steps" aria-selected="${activeTab === 'steps'}" class="${activeTab === 'steps' ? 'is-on' : ''}">手順</button>` : ''}
-    <button type="button" role="tab" id="task-tab-history" aria-controls="task-tab-panel" data-task-tab="history" aria-selected="${activeTab === 'history'}" class="${activeTab === 'history' ? 'is-on' : ''}" ${state.execution.snapshot && state.execution.snapshot.available === false ? 'disabled' : ''}>履歴</button>
+    <button type="button" role="tab" id="task-tab-history" aria-controls="task-tab-panel" data-task-tab="history" aria-selected="${activeTab === 'history'}" class="${activeTab === 'history' ? 'is-on' : ''}">履歴</button>
   </nav>`;
+}
+
+function snapshotWarningHtml() {
+  const snapshot = state.execution.snapshot;
+  if (!snapshot || snapshot.available !== false) return '';
+  return `<div class="run-result warn" role="alert">${esc(snapshot.error || '実行情報を取得できませんでした')}${snapshot.stale ? '<p>前回取得したタスクと履歴を表示しています。</p>' : ''}<button type="button" id="snapshot-retry">再取得</button></div>`;
 }
 
 function taskDetailShellHtml(machine, activeTab, content, { editor = false, teaching = false } = {}) {
@@ -1037,7 +1044,7 @@ function taskDetailShellHtml(machine, activeTab, content, { editor = false, teac
   const deleteAction = machine.kind === 'statemachine' && machine.machine ? '<button type="button" class="danger ghost" data-task-delete>削除</button>' : '';
   const metadataAction = machine.kind === 'statemachine' && machine.machine ? '<button type="button" class="ghost" data-task-metadata>名前と説明を編集</button>' : '';
   const header = `<header class="execution-title">${presentation.header}${teachAction || metadataAction || deleteAction ? `<div class="row">${teachAction}${metadataAction}${deleteAction}</div>` : ''}</header>`;
-  return `<div class="task-detail-shell${editor ? ' is-editor' : ''}${teaching ? ' is-teaching' : ''}">${header}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
+  return `<div class="task-detail-shell${editor ? ' is-editor' : ''}${teaching ? ' is-teaching' : ''}">${header}${snapshotWarningHtml()}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
 }
 
 function openTaskMetadata(machine) {
@@ -1122,7 +1129,7 @@ async function stopEditing() {
 function executionHtml() {
   const machines = executionMachines();
   if (state.execution.loading && !machines.length) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
-  if (!machines.length) return '<div class="blank compact"><h2>実行できるタスクがありません</h2><p>タスクを作成すると、ここから実行できます。</p><div class="row">' + commandAddButtonHtml() + '</div></div>';
+  if (!machines.length) return snapshotWarningHtml() + '<div class="blank compact"><h2>実行できるタスクがありません</h2><p>タスクを作成すると、ここから実行できます。</p><div class="row">' + commandAddButtonHtml() + '</div></div>';
   const selected = selectedExecutionMachine() || machines[0];
   // 実行状態が届く前は定義だけで描いている。履歴も定期実行もまだ分からないので、確定した
   // 「未実行」「予定なし」とは書かない。
@@ -1211,7 +1218,7 @@ function executionDetailHtml(machine) {
       : machine.kind === 'command' ? '<p class="run-result warn">コマンドのタスクは定期実行で起動します。</p>' : '';
   const detail = state.execution.detailTab === 'history'
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
-    : state.execution.detailTab === 'overview' ? `${!checking && snapshot.available === false && machine.kind !== 'statemachine' ? `<p class="run-result warn">${esc(snapshot.error || '実行基盤に接続できませんでした')}</p>` : ''}
+    : state.execution.detailTab === 'overview' ? `
       ${machine.kind === 'command' ? (taskIdentity(machine) === 'new-command' ? '' : `<section class="execution-card"><div class="execution-card-head"><h3>コマンド</h3><button type="button" id="command-edit">名前・コマンドを編集</button></div><pre>${esc(commandText(machine.entry?.command))}</pre>${machine.error ? `<p class="run-result ng">${esc(machine.error)}</p>` : ''}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || machine.error ? 'disabled' : ''}>今すぐ実行</button><button type="button" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${result}${logView}</section>`) : `<section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${displayedRun.running ? 'active' : ''}">${displayedRun.running ? '実行中' : '待機中'}</span></div>
         ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${displayedRun.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>`}
       <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>リポジトリ全体のスケジューラー · ${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '定期実行を停止' : '定期実行を開始'}</button>${['statemachine', 'prompt', 'command'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';

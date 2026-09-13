@@ -340,9 +340,10 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('flow:run:openDelivery', (p) => agentFlow.openDelivery(
     selectedRoot(p), p.runId, options.hooks && options.hooks.openDelivery, hostRootOf(p),
   ));
+  const readSnapshot = require('./snapshot-reader')((root) => agentLoop.inspect({ root, capture: runCapture }));
   register('run:snapshot', async (p) => {
     const root = selectedRoot(p);
-    return taskInputs.enrichSnapshot(root, await agentLoop.inspect({ root, capture: runCapture }));
+    return taskInputs.enrichSnapshot(root, await readSnapshot(root));
   });
   register('run:schedule', (p) => agentLoop.saveSchedule({
     root: selectedRoot(p), payload: p.schedule, capture: runCapture,
