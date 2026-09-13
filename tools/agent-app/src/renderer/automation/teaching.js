@@ -106,12 +106,12 @@
       if (view.loading) return '<div class="blank compact"><p>タスクを読み込んでいます…</p></div>';
       if (view.creating) {
         announce({ root: root(), machine: '', creating: true, editing: true, published: false, title: '' });
-        return '<div class="blank teaching-create"><span class="eyebrow">新しいタスクを作成</span><h2>何を自動化したいですか？</h2><p>工程や分岐は AI が考えます。ほしい結果を書いてください。</p><slot name="teaching"></slot></div>';
+        return '<div class="blank teaching-create"><h2>新しいタスク</h2><slot name="teaching"></slot></div>';
       }
       const item = selectedItem();
       if (!item) {
         announce(null);
-        return '<div class="blank compact"><h2>タスクを選んでください</h2><p>新しいタスクは、目的を伝えるところから始められます。</p></div>';
+        return '<div class="blank compact"><h2>タスクを選んでください</h2></div>';
       }
       const present = item.view || presentOf(item.machine);
       announce({ root: root(), machine: item.machine, creating: false, editing: true, published: present.published, title: item.title });

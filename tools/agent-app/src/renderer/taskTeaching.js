@@ -107,7 +107,7 @@
     $('task-launch-model').disabled = state.pending || hasTerminal;
     // 権限は会話が開いていても変えられる（次の依頼から効く。tmux の CLI は起動し直す）
     $('task-launch-permission').disabled = state.pending;
-    $('task-launch-status').textContent = state.pending ? '起動中です...' : '';
+    $('task-launch-status').textContent = '';
     $('task-launch-phase').textContent = state.pending ? '起動中' : '起動前';
     $('task-launch-phase').className = `phase ${state.pending ? 'starting' : ''}`.trim();
     const note = $('task-open-note');
@@ -273,7 +273,7 @@
     const purpose = $('task-purpose').value.trim();
     const machine = $('task-machine').value.trim();
     const errorNode = $('task-create-error');
-    if (!purpose) { errorNode.textContent = '何を自動化したいかを書いてください'; errorNode.hidden = false; return; }
+    if (!purpose) { errorNode.textContent = '自動化したいことを入力してください'; errorNode.hidden = false; return; }
     errorNode.hidden = true;
     $('task-create-start').disabled = true;
     try {
@@ -301,7 +301,7 @@
     if (!text || !sess) throw new Error('AI との会話を開いてから送ってください');
     const shared = state.input && state.input.mode === 'share';
     state.pending = true;
-    status('pending', shared ? '受付済み・共有の列へ' : `受付済み・${sess.cli}を準備中`);
+    status('pending', shared ? '共有に送信中…' : `${sess.cli}を準備中…`);
     renderShell();
     try {
       let res;
@@ -324,7 +324,7 @@
       if (!shared && (res.restarted || term().current() !== sess.id)) await attach(await api.readSession(sess.id));
       if (res.warning) state.deps.notice(res.warning);
       const at = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      status('success', shared ? `✓ 共有の列に並べた ${at}` : `✓ ${sess.cli}へ送信済み ${at}`, 4000);
+      status('success', shared ? `共有に送信済み ${at}` : `${sess.cli}へ送信済み ${at}`, 4000);
       return res;
     } finally {
       state.pending = false;
@@ -341,7 +341,7 @@
       onRecordingSent(text);
     } catch (err) {
       error(err.message);
-      status('error', '送信失敗・入力内容を保持しました');
+      status('error', '送信できませんでした。入力は残っています');
     }
   }
 

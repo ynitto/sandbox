@@ -182,7 +182,7 @@ function renderRepos() {
 }
 
 async function removeConversation(session) {
-  if (!session || !confirm(isTmux(session) ? 'この会話を削除する？（tmux セッションも終了する）' : 'この会話を削除する？')) return;
+  if (!session || !confirm(isTmux(session) ? 'この会話を削除しますか？端末セッションも終了します。' : 'この会話を削除しますか？')) return;
   const selected = !!(state.current && state.current.id === session.id);
   const wt = session.worktree || '';
   if (selected) Term.detach();
@@ -196,7 +196,7 @@ async function removeConversation(session) {
   state.sessions = await api.listSessions(state.repo);
   // 作業フォルダは会話とは別物なので、他の会話が使っていないときだけ別に聞く。
   const others = state.sessions.filter((s) => s.worktree === wt).length;
-  if (wt && !others && confirm(`作業フォルダ ${wt} も削除する？（ブランチは残る）`)) {
+  if (wt && !others && confirm(`作業フォルダ ${wt} も削除しますか？ブランチは残ります。`)) {
     try { await api.removeWorktree(state.repo, wt, { force: false }); } catch (err) { notice(err.message, 'error'); }
     await refreshWorktrees();
   }
@@ -407,7 +407,7 @@ async function loadWorkflowItems(repo) {
       api.automation.flowTeachingList(repo),
     ]);
     const ready = workflows || [];
-    const labels = { draft: '理解中', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち' };
+    const labels = { draft: '作成中', 'needs-trial': '試運転待ち', 'awaiting-confirmation': '確認待ち' };
     const drafts = (teaching || []).filter((item) => item.status !== 'ready' && !ready.some((flow) => flow.id === item.workflowId)).map((item) => ({
       id: item.workflowId, name: item.title, nodes: 0, valid: true, teaching: true,
       teachingStatus: labels[item.status] || item.status,
@@ -449,9 +449,8 @@ function syncAutomationWorkbench(action = '') {
 function renderAutomationHeader() {
   const workflows = state.area === 'workflows';
   $('automation-title').textContent = workflows ? 'ワークフロー' : 'タスク';
-  $('automation-description').textContent = workflows
-    ? '複数の工程をまとめて実行・管理します'
-    : '繰り返す作業を実行・管理します';
+  $('automation-description').hidden = true;
+  $('automation-description').textContent = '';
 }
 
 function setAutomationLoading(loading) {
@@ -643,17 +642,17 @@ function renderWorktreeList() {
   }
   if (!state.worktrees.length) {
     const tr = el('tr');
-    tr.append(el('td', 'sub', 'git リポジトリではない（worktree は使えない）'));
+    tr.append(el('td', 'sub', 'Gitリポジトリではないため、作業フォルダを作成できません'));
     tb.append(tr);
   }
 }
 
 async function removeWorktree(w, used) {
   const warn = [
-    `${w.name}（${w.branch || 'detached'}）を削除する？`,
-    used ? `この作業フォルダを使っている会話が ${used} 件ある（会話の記録は残るが、続きは動かせなくなる）` : '',
-    w.dirty ? `未コミットの変更が ${w.dirty} 件ある` : '',
-    w.ahead ? `本体に無いコミットが ${w.ahead} 件ある（ブランチ ${w.branch} は残す）` : '',
+    `${w.name}（${w.branch || 'detached'}）を削除しますか？`,
+    used ? `このフォルダを使う ${used} 件の会話は続行できなくなります。履歴は残ります。` : '',
+    w.dirty ? `未コミットの変更: ${w.dirty} 件` : '',
+    w.ahead ? `本体にないコミット: ${w.ahead} 件。ブランチ ${w.branch} は残ります。` : '',
   ].filter(Boolean).join('\n');
   if (!confirm(warn)) return;
   dialogError('');
@@ -661,7 +660,7 @@ async function removeWorktree(w, used) {
     await api.removeWorktree(state.repo, w.name, { force: false });
   } catch (err) {
     // 未コミットの変更が残っていると git が断る。押し切るかはここで聞く
-    if (!/未コミット/.test(err.message) || !confirm(`${err.message}\n\n変更ごと削除する？`)) { dialogError(err.message); return; }
+    if (!/未コミット/.test(err.message) || !confirm(`${err.message}\n\n未コミットの変更も削除しますか？`)) { dialogError(err.message); return; }
     try { await api.removeWorktree(state.repo, w.name, { force: true }); } catch (e2) { dialogError(e2.message); return; }
   }
   await afterWorktreeChange();
@@ -679,7 +678,7 @@ async function createWorktree() {
     $('wt-path').textContent = '';
     await afterWorktreeChange();
     if (state.draft) { state.worktree = w.name; await selectWorktree(w.name); }
-    notice(w.reusedBranch ? `既にあるブランチ ${w.branch} を ${w.name} に持ってきた` : `${w.name}（${w.branch}）を作った`);
+    notice(w.reusedBranch ? `既存ブランチ ${w.branch} の作業フォルダ ${w.name} を作成しました` : `${w.name}（${w.branch}）を作成しました`);
   } catch (err) {
     dialogError(err.message);
   } finally {
@@ -878,7 +877,7 @@ function renderRunSettingsSummary() {
   $('share-priority-field').hidden = !shared;
   $('worktree-field').hidden = shared || !worktreeUI();
   const waiting = shareWaiting();
-  $('send').setAttribute('aria-label', waiting ? 'ひとことを送る' : (shared ? '依頼を共有へ送信' : '依頼を送信'));
+  $('send').setAttribute('aria-label', waiting ? 'メッセージを送信' : (shared ? '依頼を共有へ送信' : '依頼を送信'));
   $('send').querySelector('.send-label').textContent = waiting ? '送る' : (shared ? '依頼する' : '送信');
   renderTurnSkills();
 }
@@ -1005,7 +1004,7 @@ function renderHeader() {
   $('conversation-history').classList.toggle('history-only', !mirror);
   if (cur && !mirror) $('conversation-history').open = true;
   $('history-count').textContent = cur && cur.messages ? `${cur.messages.length}件` : '';
-  $('term-agent').textContent = waiting ? `${waiting.node || '仲間'} の ${waiting.cli || 'AI'}`
+  $('term-agent').textContent = waiting ? `${waiting.node || '参加者'} の ${waiting.cli || 'AI'}`
     : (tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '');
   $('term-name').textContent = waiting ? '共有 · 閲覧のみ' : (ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '');
   // 待っている間は、引き受けた人の tmux の画面をそのまま描く（キーは送れない）
@@ -1260,7 +1259,7 @@ async function handoffConversation() {
     state.handoffId = next.id;
     state.pending.add(next.id);
     renderHeader();
-    inputStatus('pending', '新しいセッションを準備中です。端末に確認が表示されたら操作してください');
+    inputStatus('pending', '起動中… 確認が出たら端末で応答してください');
     try {
       const turn = await api.send(next.id, '保存済みの会話要約を引き継ぎ、利用者からの次の指示を待ってください。', {
         cli: next.cli, model: next.model, policy: next.policy, readonly: next.readonly,
@@ -1367,10 +1366,8 @@ function renderMessages() {
   start.replaceChildren();
   const cur = state.current;
   if (!cur) {
-    start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリから始めましょう'));
-    start.append(el('p', '', state.repo
-      ? '下の入力欄に依頼を書けば、新しい会話が始まります。'
-      : '作業するローカルリポジトリを登録してください。'));
+    start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリがありません'));
+    if (!state.repo) start.append(el('p', '', '作業するローカルリポジトリを登録してください。'));
     if (!state.repo) {
       const button = el('button', 'primary', 'リポジトリを追加');
       button.onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
@@ -1456,7 +1453,7 @@ function turnOptions() {
 
 // 待っている間の送信は、引き受けた人へのひとこと（CLI には入らない）
 async function sayToExecutor(waiting, text) {
-  inputStatus('pending', '送っています…');
+  inputStatus('pending', '送信中…');
   try {
     await api.share.say(waiting.id, text);
     $('prompt').value = '';
@@ -1465,7 +1462,7 @@ async function sayToExecutor(waiting, text) {
     renderHeader();
   } catch (err) {
     notice(err.message, 'error');
-    inputStatus('error', '送信失敗・入力内容を保持しました');
+    inputStatus('error', '送信できませんでした。入力は残っています');
   }
 }
 
@@ -1477,13 +1474,13 @@ async function sendPrompt() {
   const opts = turnOptions();
   const selected = selectedExecution(opts.policy);
   const shared = opts.policy === 'shared';
-  inputStatus('pending', shared ? '受付済み・共有の列へ' : `受付済み・${selected.cli}を準備中`);
+  inputStatus('pending', shared ? '共有に送信中…' : `${selected.cli}を準備中…`);
   // 起動直後は CLI の有無と tmux の有無がまだ届いていないことがある（ホストの返事待ち）。
   // 経路（tmux / ヘッドレス）はその答えで決まるので、ここで待つ。
   await Promise.all([state.agentsReady, state.hostReady]);
   const agent = state.agents.find((a) => a.name === selected.cli && a.available);
   // 共有は相手の PC の CLI で動くので、この PC に使えるエージェントが無くてもよい
-  if (!agent && !shared) { inputStatus(); notice('使えるエージェントがない', 'error'); return; }
+  if (!agent && !shared) { inputStatus(); notice('利用できるエージェントがありません', 'error'); return; }
   try {
     if (!state.current) {
       const transport = (state.config.transport === 'tmux' && state.host && state.host.tmux && agent && agent.interactive && !shared) ? 'tmux' : 'headless';
@@ -1532,7 +1529,7 @@ async function sendPrompt() {
     else if (!shareWaiting()) Term.detach();
     if (res.warning) notice(res.warning);
     const sentAt = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    inputStatus('success', shared ? `✓ 共有の列に並べた ${sentAt}` : `✓ ${selected.cli}へ送信済み ${sentAt}`, 4000);
+    inputStatus('success', shared ? `共有に送信済み ${sentAt}` : `${selected.cli}へ送信済み ${sentAt}`, 4000);
     $('send').classList.add('sent');
     setTimeout(() => $('send').classList.remove('sent'), 700);
     renderHeader();
@@ -1540,7 +1537,7 @@ async function sendPrompt() {
     renderSessions();
   } catch (err) {
     notice(err.message, 'error');
-    inputStatus('error', '送信失敗・入力内容を保持しました');
+    inputStatus('error', '送信できませんでした。入力は残っています');
     renderHeader();
   }
 }
@@ -1590,15 +1587,15 @@ async function pickAttachments() {
 function attachRepoFile(rel) {
   if (!rel) return;
   addAttachments([{ rel, name: rel.split('/').pop() }]);
-  notice(`添付に加えた: ${rel}（次の依頼に付く）`);
+  notice(`添付しました: ${rel}`);
 }
 
 // 「ファイル」画面で開いているファイルを添える
 function attachOpenFile() {
   const f = Files.state.open;
-  if (!f) { notice('ファイルを開いてから押す'); return; }
+  if (!f) { notice('添付するファイルを開いてください'); return; }
   const wt = Files.state.worktree || '';
-  if (wt !== activeWorktree()) { notice('見ているフォルダが会話の作業フォルダと違う。会話の作業フォルダの中のファイルだけ添付できる', 'error'); return; }
+  if (wt !== activeWorktree()) { notice('会話の作業フォルダ内のファイルを選んでください', 'error'); return; }
   attachRepoFile(f.rel);
 }
 
@@ -1940,10 +1937,10 @@ async function renderShareStatus() {
   const box = $('share-status');
   try {
     const s = await api.share.status();
-    if (!s.enabled) { box.textContent = '使っていない'; return; }
-    if (s.state !== 'on') { box.textContent = s.error || '起動していない'; return; }
-    const peers = s.peers.length ? s.peers.map((p) => `${p.node}${p.info && p.info.can_accept ? '' : '（受けない）'}`).join(', ') : 'まだ誰も見つかっていない';
-    box.textContent = `${s.node} · ポート ${s.port}${s.udp ? '' : ' · UDP なし'} · 今日 ${s.today ? s.today.count : 0} 件 · 仲間: ${peers}`;
+    if (!s.enabled) { box.textContent = '無効'; return; }
+    if (s.state !== 'on') { box.textContent = s.error || '停止中'; return; }
+    const peers = s.peers.length ? s.peers.map((p) => `${p.node}${p.info && p.info.can_accept ? '' : '（受けない）'}`).join(', ') : '未接続';
+    box.textContent = `${s.node} · ポート ${s.port}${s.udp ? '' : ' · UDP なし'} · 今日 ${s.today ? s.today.count : 0} 件 · 参加者: ${peers}`;
   } catch (error) {
     box.textContent = error.message;
   }
@@ -2154,7 +2151,7 @@ async function init() {
   $('repo-add').onclick = () => { $('repo-more').open = false; addRepo().catch((err) => notice(err.message, 'error')); };
   $('repo-remove').onclick = async () => {
     $('repo-more').open = false;
-    if (!state.repo || !confirm(`${basename(state.repo)} の登録を外す？（会話は残る）`)) return;
+    if (!state.repo || !confirm(`${basename(state.repo)} の登録を解除しますか？会話は残ります。`)) return;
     state.config = await api.removeRepo(state.repo);
     await selectRepo(state.config.lastRepo);
   };
@@ -2214,7 +2211,7 @@ async function init() {
       const live = state.current.live;
       const same = live.cli === selected.cli && String(live.model || '') === selected.model
         && !!live.readonly === opts.readonly && !!live.autoApprove === opts.autoApprove;
-      notice(same ? '' : `次の依頼から ${selected.cli}${selected.model ? `（${selected.model}）` : ''}${opts.readonly ? '・Ask' : ''} で続ける（CLI を起動し直す）`);
+      notice(same ? '' : `次の依頼から ${selected.cli}${selected.model ? `（${selected.model}）` : ''}${opts.readonly ? '・Ask' : ''} に切り替わります`);
     }
     renderRunSettingsSummary();
     renderSessions();

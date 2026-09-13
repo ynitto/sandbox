@@ -153,7 +153,7 @@
               <button type="button" data-terminal-key="Left">←</button>
               <button type="button" data-terminal-key="Right">→</button>
               <button type="button" data-terminal-key="C-c">Ctrl+C</button>
-              <span class="terminal-key-focus">キーボード → CLI</span>
+              <span class="terminal-key-focus">キーボードで端末を操作</span>
             </div>
             <div class="composer-toolbar">
               <button type="button" id="attach" class="quiet" title="ファイルを添付する">
@@ -163,7 +163,7 @@
               <details id="run-settings" class="run-settings">
                 <summary><span id="run-settings-summary">実行設定</span></summary>
                 <div class="settings-popover">
-                  <div class="popover-head">次の依頼の実行設定</div>
+                  <div class="popover-head">実行設定</div>
                   <label id="policy-field">起動方針
                     <select id="policy">
                       <option value="recommended">おすすめ</option>
@@ -263,12 +263,12 @@
           <div slot="teaching" id="task-teaching" hidden>
             <section id="task-create" class="teaching-create-form" hidden>
               <label class="task-save-name" for="task-machine"><strong>保存名</strong><input id="task-machine" placeholder="未指定なら自動で決定" size="28"></label>
-              <label class="task-create-label" for="task-purpose"><strong>自動化したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>
+              <label class="task-create-label" for="task-purpose"><strong>自動化したいこと</strong></label>
               <textarea id="task-purpose" rows="6" placeholder="例: 毎月、売上画面から前月分を取得してレポートを作りたい"></textarea>
               <div class="task-actions">
                 <details class="run-settings teach-execution-settings">
                   <summary><span id="task-create-settings"></span></summary>
-                  <div class="settings-popover"><div class="popover-head">今回の作成設定</div><div class="direct-agent-settings">
+                  <div class="settings-popover"><div class="popover-head">作成設定</div><div class="direct-agent-settings">
                     <label>エージェント<select id="task-create-agent"></select></label>
                     <label>モデル<input id="task-create-model" class="mono" placeholder="自動"></label>
                     <label>権限<select id="task-create-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option></select></label>
@@ -285,7 +285,7 @@
                   <div id="task-launch-heading"><strong>下書きの編集を続ける</strong></div>
                   <details class="run-settings teach-execution-settings">
                     <summary><span id="task-launch-settings-summary"></span></summary>
-                    <div class="settings-popover"><div class="popover-head">今回の編集設定</div><div class="direct-agent-settings">
+                    <div class="settings-popover"><div class="popover-head">編集設定</div><div class="direct-agent-settings">
                       <label>エージェント<select id="task-launch-agent"></select></label>
                       <label>モデル<input id="task-launch-model" class="mono" placeholder="自動"></label>
                       <label>権限<select id="task-launch-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option></select></label>
@@ -296,7 +296,7 @@
                   <button type="button" id="task-launch-start" class="primary">編集開始</button>
                 </div>
                 <div id="task-terminal-placeholder" class="terminal-stage">
-                  <div class="terminal-head"><span class="terminal-agent">編集セッション</span><span id="task-launch-phase" class="phase starting">起動前</span></div>
+                  <div class="terminal-head"><span class="terminal-agent">編集セッション</span><span id="task-launch-phase" class="phase starting" role="status" aria-live="polite">起動前</span></div>
                   <div class="teach-terminal-placeholder-body"><p id="task-launch-status" role="status" aria-live="polite"></p></div>
                 </div>
                 <div id="task-composer-placeholder" aria-hidden="true"></div>
@@ -333,7 +333,7 @@
                   <button type="button" data-task-key="Left">←</button>
                   <button type="button" data-task-key="Right">→</button>
                   <button type="button" data-task-key="C-c">Ctrl+C</button>
-                  <span class="terminal-key-focus">キーボード → CLI</span>
+                  <span class="terminal-key-focus">キーボードで端末を操作</span>
                 </div>
                 <div class="composer-toolbar" id="task-composer-toolbar">
                   <button type="button" id="task-record-open" class="quiet" title="ブラウザや Windows アプリの操作を見本として記録し、AI へ渡す">操作の見本</button>
@@ -366,14 +366,14 @@
             <div id="flow-teach-session-actions" class="teach-start-toolbar" hidden><span class="spacer"></span><button type="button" id="flow-teach-new-session" class="small">新しいセッションで編集</button></div>
             <section id="flow-teach-launch" class="teaching-create-form" hidden>
               <div id="flow-teach-create" class="teaching-create-form" hidden>
-                <label class="task-create-label" for="flow-teach-purpose"><strong>実現したいこと</strong><span class="sub">目的とほしい結果を入力</span></label>
+                <label class="task-create-label" for="flow-teach-purpose"><strong>実現したいこと</strong></label>
                 <textarea id="flow-teach-purpose" rows="6" placeholder="例: 変更依頼を調査し、並列に実装して、品質を確認したい"></textarea>
               </div>
               <div class="teach-start-toolbar">
                 <div id="flow-teach-heading"><strong>下書きの編集を続ける</strong></div>
                 <details class="run-settings teach-execution-settings">
                   <summary><span id="flow-teach-settings-summary"></span></summary>
-                  <div class="settings-popover"><div class="popover-head" id="flow-teach-settings-title">今回の編集設定</div><div class="direct-agent-settings">
+                  <div class="settings-popover"><div class="popover-head" id="flow-teach-settings-title">編集設定</div><div class="direct-agent-settings">
                     <label>エージェント<select id="flow-teach-agent"></select></label>
                     <label>モデル<input id="flow-teach-model" class="mono" placeholder="自動"></label>
                     <label>権限<select id="flow-teach-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option></select></label>
@@ -419,7 +419,7 @@
                 <button type="button" data-flow-teach-key="Left">←</button>
                 <button type="button" data-flow-teach-key="Right">→</button>
                 <button type="button" data-flow-teach-key="C-c">Ctrl+C</button>
-                <span class="terminal-key-focus">キーボード → CLI</span>
+                <span class="terminal-key-focus">キーボードで端末を操作</span>
               </div>
               <div class="composer-toolbar" id="flow-teach-composer-toolbar">
                 <span class="spacer"></span>
@@ -473,12 +473,12 @@
         </details>
         <div id="share-composer" class="composer-shell" hidden>
           <div class="input-mode-switch" role="group" aria-label="入力先">
-            <button type="button" id="share-mode-talk" aria-pressed="true">ひとこと</button>
+            <button type="button" id="share-mode-talk" aria-pressed="true">メッセージ</button>
             <button type="button" id="share-mode-terminal" aria-pressed="false">端末操作</button>
             <span id="share-input-status" class="input-status" role="status" aria-live="polite"></span>
           </div>
           <div id="share-message-input">
-            <label class="sr-only" for="share-prompt">相手へのひとこと</label>
+            <label class="sr-only" for="share-prompt">相手へのメッセージ</label>
             <textarea id="share-prompt" rows="3" placeholder="相手に伝える"></textarea>
           </div>
           <div id="share-terminal-keys" class="terminal-keys" hidden>
@@ -491,7 +491,7 @@
             <button type="button" data-share-key="Left">←</button>
             <button type="button" data-share-key="Right">→</button>
             <button type="button" data-share-key="C-c">Ctrl+C</button>
-            <span class="terminal-key-focus">キーボード → CLI</span>
+            <span class="terminal-key-focus">キーボードで端末を操作</span>
           </div>
           <div class="composer-toolbar" id="share-composer-toolbar">
             <span class="spacer"></span>
@@ -508,7 +508,7 @@
         <span id="changes-where">変更</span>
         <span>
           <span class="seg">
-            <button id="scope-worktree" class="small on" title="まだコミットしていない変更">作業ツリー</button><button id="scope-branch" class="small" title="分岐元から積んだコミット">ブランチ</button>
+            <button id="scope-worktree" class="small on" title="まだコミットしていない変更">作業ツリー</button><button id="scope-branch" class="small" title="分岐元以降のコミット">ブランチ</button>
           </span>
           <button id="diff-style" class="small" title="並べて表示 / 1 列表示">並べて</button>
           <button id="changes-refresh" class="small">更新</button>
@@ -532,14 +532,14 @@
         <section data-settings-panel="app" class="settings-list" role="tabpanel">
           <label class="setting-check"><input type="checkbox" id="use-tmux"><span><strong>対話セッションを維持</strong><small>tmuxを使って、エージェントとの会話を継続します</small></span></label>
           <label class="setting-check"><input type="checkbox" id="use-worktree"><span><strong>会話ごとに作業を分離</strong><small>Git worktreeで同時作業の変更が混ざらないようにします</small></span></label>
-          <label class="setting-check"><input type="checkbox" id="notify-background"><span><strong>前面に無いときに通知する</strong><small>応答の完了と確認待ちをOSの通知で知らせます</small></span></label>
+          <label class="setting-check"><input type="checkbox" id="notify-background"><span><strong>バックグラウンドで通知する</strong><small>応答の完了と確認待ちをOSの通知で知らせます</small></span></label>
           <label id="wsl-row" class="setting-field" hidden><span><strong>WSLディストリビューション</strong><small>Windows上で利用する環境</small></span><input id="wsl-distro" placeholder="既定" size="12"></label>
           <div class="environment-status"><strong>実行環境</strong><div id="host-status" class="sub"></div></div>
         </section>
 
         <section data-settings-panel="instructions" class="settings-list" role="tabpanel" hidden>
-          <label class="setting-check"><input type="checkbox" id="instruction-enabled"><span><strong>共通指示を使う</strong><small>すべての依頼に短い運用方針を追加します</small></span></label>
-          <label class="setting-check"><input type="checkbox" id="fork-enabled"><span><strong>別のフォルダへの書き込みは会話を分岐して受ける</strong><small>エージェントが別の登録リポジトリへの依頼を返したとき、回答の下から分岐できます</small></span></label>
+          <label class="setting-check"><input type="checkbox" id="instruction-enabled"><span><strong>共通指示を使う</strong><small>すべての依頼に以下の指示を追加します</small></span></label>
+          <label class="setting-check"><input type="checkbox" id="fork-enabled"><span><strong>別のリポジトリへの依頼を分岐する</strong><small>回答内の依頼を、別のリポジトリの新しい会話へ送れます</small></span></label>
           <label class="stacked-field" for="instruction-text"><span><strong>指示</strong><small id="instruction-count">0 / 8000</small></span><textarea id="instruction-text" rows="7" maxlength="8000" placeholder="例: 変更前に既存テストを確認し、完了時に検証結果を要約する"></textarea></label>
           <div class="settings-group">
             <div class="settings-group-head"><span><strong>自動選択の候補</strong></span></div>
@@ -549,7 +549,7 @@
             <div id="recommended-skills" class="setting-chips"></div>
           </div>
           <div class="settings-group">
-            <div class="settings-group-head"><span><strong>定型の依頼</strong><small>回答の下に並べます。押すと入力欄に入ります</small></span><button type="button" id="quick-add" class="small">追加</button></div>
+            <div class="settings-group-head"><span><strong>定型の依頼</strong><small>回答の下に表示し、クリックすると入力欄に挿入します</small></span><button type="button" id="quick-add" class="small">追加</button></div>
             <div id="quick-requests" class="startup-actions"></div>
           </div>
           <div class="settings-group">
@@ -559,7 +559,7 @@
         </section>
 
         <section data-settings-panel="execution" class="settings-list" role="tabpanel" hidden>
-          <label class="setting-check"><input type="checkbox" id="optimize-agents"><span><strong>エージェントを最適化する</strong><small>節約・品質重視の起動方針と small / large tier を使います</small></span></label>
+          <label class="setting-check"><input type="checkbox" id="optimize-agents"><span><strong>節約・品質重視を使う</strong><small>起動方針に応じてエージェントとモデルを切り替えます</small></span></label>
           <fieldset class="policy-fieldset">
             <legend>既定の起動方針</legend>
             <label><input type="radio" name="default-policy" value="recommended">おすすめ <small>標準 tier</small></label>
@@ -571,24 +571,24 @@
             <div class="tier-row"><span><strong>medium</strong><small>標準</small></span><label>エージェント<select id="tier-medium-cli"></select></label><label>モデル<input id="tier-medium-model" placeholder="自動"></label></div>
             <div class="tier-row"><span><strong>large</strong><small>品質重視</small></span><label>エージェント<select id="tier-large-cli"></select></label><label>モデル<input id="tier-large-model" placeholder="自動"></label></div>
           </div>
-          <label class="setting-field"><span><strong>会話の既定権限</strong><small>新しい会話と、タスクを AI と作る会話に適用します</small></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
-          <label class="setting-field"><span><strong>同時実行数</strong><small>上限に達した場合は待ち行列へ入れず、再実行を案内します</small></span><input id="max-concurrent" type="number" min="1" max="8" step="1"></label>
+          <label class="setting-field"><span><strong>会話の既定権限</strong><small>新しい会話と、タスク・ワークフローの編集に適用します</small></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
+          <label class="setting-field"><span><strong>同時実行数</strong><small>上限に達したら、実行中の処理が終わってから送信してください</small></span><input id="max-concurrent" type="number" min="1" max="8" step="1"></label>
         </section>
         <section data-settings-panel="share" class="settings-list" role="tabpanel" hidden>
-          <label class="setting-check"><input type="checkbox" id="share-enabled"><span><strong>共有を使う</strong><small>同じ LAN の agent-app と依頼を回し合います。依頼の本文は参加者に見えます</small></span></label>
-          <label class="setting-field"><span><strong>合言葉</strong><small>参加者全員で同じもの</small></span><input id="share-passphrase" type="password" size="16" autocomplete="off"></label>
-          <label class="setting-field"><span><strong>参加者名</strong><small>空なら ユーザー名.PC名</small></span><input id="share-node" size="16" placeholder="自動"></label>
-          <label class="setting-field"><span><strong>仲間の PC</strong><small>ホスト名か IP。1 台知れば全員に広がります</small></span><input id="share-peers" size="24" placeholder="pc-b, 192.168.1.20:47801"></label>
-          <label class="setting-field"><span><strong>受け口のポート</strong><small>TCP。初回に OS の許可が出ます</small></span><input id="share-port" type="number" min="0" max="65535" step="1"></label>
-          <label class="setting-field"><span><strong>依頼の引き受け方</strong><small>agent-app を開いている間だけ。共有の画面からも変えられます</small></span><select id="share-accept"><option value="auto">自動で受ける</option><option value="manual">選んで受ける</option><option value="off">受けない</option></select></label>
+          <label class="setting-check"><input type="checkbox" id="share-enabled"><span><strong>共有を使う</strong><small>同じLANの参加者に作業を依頼できます。依頼内容は参加者に公開されます</small></span></label>
+          <label class="setting-field"><span><strong>合言葉</strong><small>参加者全員で同じ合言葉を設定します</small></span><input id="share-passphrase" type="password" size="16" autocomplete="off"></label>
+          <label class="setting-field"><span><strong>参加者名</strong><small>未入力の場合は「ユーザー名.PC名」</small></span><input id="share-node" size="16" placeholder="自動"></label>
+          <label class="setting-field"><span><strong>接続先のPC</strong><small>ホスト名またはIPアドレスを指定します</small></span><input id="share-peers" size="24" placeholder="pc-b, 192.168.1.20:47801"></label>
+          <label class="setting-field"><span><strong>接続ポート</strong><small>TCP接続に使用します。初回にOSの許可が必要な場合があります</small></span><input id="share-port" type="number" min="0" max="65535" step="1"></label>
+          <label class="setting-field"><span><strong>依頼の引き受け方</strong><small>アプリの起動中に受け付けます。共有画面からも変更できます</small></span><select id="share-accept"><option value="auto">自動で受ける</option><option value="manual">選んで受ける</option><option value="off">受けない</option></select></label>
           <div class="settings-group">
-            <div class="settings-group-head"><span><strong>提供する AI</strong><small>何も選ばなければ使えるもの全部</small></span></div>
+            <div class="settings-group-head"><span><strong>提供する AI</strong><small>未選択の場合は、利用可能なAIすべて</small></span></div>
             <div id="share-clis" class="skill-choice-list"></div>
           </div>
-          <label class="setting-field"><span><strong>同時に受ける数</strong></span><input id="share-max-concurrent" type="number" min="1" max="4" step="1"></label>
-          <label class="setting-field"><span><strong>1 日に受ける上限</strong><small>0 = 無制限</small></span><input id="share-daily-cap" type="number" min="0" max="1000" step="1"></label>
+          <label class="setting-field"><span><strong>同時受付数</strong></span><input id="share-max-concurrent" type="number" min="1" max="4" step="1"></label>
+          <label class="setting-field"><span><strong>1日の受付上限</strong><small>0 = 無制限</small></span><input id="share-daily-cap" type="number" min="0" max="1000" step="1"></label>
           <label class="setting-field"><span><strong>依頼者 1 人あたりの上限</strong><small>0 = 無制限</small></span><input id="share-per-requester-cap" type="number" min="0" max="1000" step="1"></label>
-          <div class="environment-status"><strong>いまの状態</strong><div id="share-status" class="sub"></div></div>
+          <div class="environment-status"><strong>接続状態</strong><div id="share-status" class="sub"></div></div>
         </section>
         <div id="settings-error" class="dlg-error" hidden></div>
       </div>
@@ -599,11 +599,11 @@
   <dialog id="wt-dialog">
     <div class="dlg-head"><strong>作業フォルダ（git worktree）</strong><span class="spacer"></span><button id="wt-close" class="small">閉じる</button></div>
     <div class="dlg-body">
-      <p class="sub">会話ごとに別のフォルダ・別のブランチで作業する。本体（登録したフォルダ）はそのまま残るので、並行して進めても混ざらない。置き場は <code>&lt;リポジトリ&gt;/.worktrees/&lt;名前&gt;</code>。</p>
+      <p class="sub">会話ごとの作業用ブランチを、<code>&lt;リポジトリ&gt;/.worktrees/&lt;名前&gt;</code> に作成します。</p>
       <div class="wt-form">
         <label>ブランチ <input id="wt-branch" placeholder="feature/xxx" size="24"></label>
         <label>分岐元 <input id="wt-base" placeholder="現在の HEAD" size="14"></label>
-        <button id="wt-create" class="primary small">作る</button>
+        <button id="wt-create" class="primary small">作成</button>
       </div>
       <div id="wt-path" class="sub"></div>
       <div id="wt-error" class="dlg-error" hidden></div>

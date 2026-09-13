@@ -494,7 +494,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     }
     await win.click('#session-new');
     await win.locator('#task-create:not([hidden])').waitFor();
-    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいタスク[\s\S]*何を自動化したいですか/);
+    assert.equal(await workspace.locator('.teaching-create h2').textContent(), '新しいタスク');
     assert.strictEqual(await win.locator('#task-purpose').isVisible(), true, '目的の入力欄が親の作成フォームに出る');
     assert.strictEqual(await win.locator('#task-create-start').isVisible(), true, '作成を開始できる');
     assert.strictEqual(await win.locator('#task-create-start').textContent(), '作成開始');
@@ -532,13 +532,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('#flow-teach-launch').isVisible(), true, '編集開始の前に起動領域を出す');
     assert.strictEqual(await win.locator('#flow-teach-start').textContent(), '編集開始');
     assert.strictEqual(await win.locator('#flow-teach-terminal').isVisible(), false, 'tmux を開く前に端末は出さない');
-    assert.match(await workspace.locator('.execution-title').textContent(), /ワークフローを教える/);
+    assert.match(await workspace.locator('.execution-title').textContent(), /ワークフローを編集/);
     if (process.env.AGENT_APP_FLOW_TEACHING_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_FLOW_TEACHING_SCREENSHOT });
     }
     await win.click('#session-new');
     await workspace.locator('.teaching-create').waitFor();
-    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいワークフローを作成/);
+    assert.match(await workspace.locator('.teaching-create').textContent(), /新しいワークフロー/);
     assert.strictEqual(await win.locator('#flow-teach-purpose').isVisible(), true);
     assert.strictEqual(await win.locator('#flow-teach-start').textContent(), '作成開始');
     assert.strictEqual(await win.locator('#flow-teach-placeholder').isVisible(), false);

@@ -1182,7 +1182,7 @@ test('前面に無いときの通知は、既に流している合図から出�
   assert.match(ipc, /onRunExit: \(\{ name, mode, result \}\)/);
   assert.match(ipc, /enabled: \(\) => store\.loadConfig\(userData\(\)\)\.notify\.background !== false/);
   assert.match(preload, /onNotifyOpen: on\('notify:open'\)/);
-  assert.match(html, /id="notify-background"[\s\S]*前面に無いときに通知する/);
+  assert.match(html, /id="notify-background"[\s\S]*バックグラウンドで通知する/);
 });
 
 test('変更ビューの行からも、ファイルビュアーと同じ「会話に添付」ができる', () => {

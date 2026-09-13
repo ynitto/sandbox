@@ -695,7 +695,7 @@ function homeHtml() {
   if (!roots.length) {
     return `<div class="blank">
       <h2>フォルダを登録します</h2>
-      <p>登録したフォルダのワークフローを表示します。</p>
+      <p>登録したフォルダのタスクを表示します。</p>
       <div class="row"><button type="button" class="primary" id="h-add">フォルダを登録</button></div>
     </div>`;
   }
@@ -1058,7 +1058,7 @@ function editingCardHtml(machine) {
   const selected = reviewScopeValue(state.aiReview.scope);
   const targets = spec.steps.map((step, index) => `<option value="step:${esc(step.id)}" ${selected === `step:${step.id}` ? 'selected' : ''}>工程 ${index + 1}: ${esc(step.title || kindOf(step.kind).label)}</option>`).join('');
   return `<section class="task-conversation-editor">
-    <div class="task-conversation-toolbar"><label class="editing-target" for="editing-target"><strong>編集</strong><span>編集対象</span><select id="editing-target"><option value="workflow" ${selected === 'workflow' ? 'selected' : ''}>全体</option>${targets}</select></label><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
+    <div class="task-conversation-toolbar"><label class="editing-target" for="editing-target"><strong>編集対象</strong><select id="editing-target"><option value="workflow" ${selected === 'workflow' ? 'selected' : ''}>全体</option>${targets}</select></label><button type="button" class="tiny" data-edit-back>‹ 工程に戻る</button></div>
     ${teachingFeature.editorSlotHtml(machine, selected === 'workflow' ? 'タスク全体' : `工程 ${selected.slice(5)}`)}
   </section>`;
 }
@@ -1105,7 +1105,7 @@ async function stopEditing() {
 function executionHtml() {
   const machines = executionMachines();
   if (state.execution.loading && !machines.length) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
-  if (!machines.length) return '<div class="blank compact"><h2>実行できるワークフローがありません</h2><p>ワークフローを作成すると、ここから実行できます。</p></div>';
+  if (!machines.length) return '<div class="blank compact"><h2>実行できるタスクがありません</h2><p>タスクを作成すると、ここから実行できます。</p></div>';
   const selected = selectedExecutionMachine() || machines[0];
   // 実行状態が届く前は定義だけで描いている。履歴も定期実行もまだ分からないので、確定した
   // 「未実行」「予定なし」とは書かない。
@@ -1350,7 +1350,7 @@ function editorHtml() {
     <span class="workflow-card-purpose">${esc(spec.purpose || '目的と終了条件を設定')}</span>
   </button>`);
   if (!spec.steps.length) {
-    parts.push(`<div class="empty-steps"><p>最初の工程を選びます。</p>${pickerHtml(0)}</div>`);
+    parts.push(`<div class="empty-steps"><p>最初の工程を選んでください。</p>${pickerHtml(0)}</div>`);
   } else {
     spec.steps.forEach((_s, i) => { parts.push(stepHtml(spec, i)); parts.push(edgeHtml(spec, i)); });
   }
@@ -1845,7 +1845,7 @@ function openRecord() {
     </div>
     <div class="row"><button type="button" id="r-start" ${rec.active || rec.busy || (windows && !onWindows) ? 'disabled' : ''}>記録を始める</button>
       <button type="button" id="r-stop" class="primary" ${!rec.active || rec.busy ? 'disabled' : ''}>終了して工程を作成</button>
-      <span class="small muted">${windows ? (onWindows ? '操作したあとに終えてください。' : 'Windows のアプリは Windows でだけ記録できます。') : '見える形でブラウザが開きます。'}</span></div>
+      <span class="small muted">${windows ? (onWindows ? '操作後に「終了して工程を作成」を押してください。' : 'Windowsアプリの記録にはWindowsが必要です。') : 'ブラウザで操作を記録します。'}</span></div>
     <p id="r-message" class="msg ${rec.ok ? '' : 'err'}" ${rec.message ? '' : 'hidden'}>${esc(rec.message)}</p>
     ${rec.active && !windows ? recordPickHtml(rec) : ''}
     <details ${rec.text ? 'open' : ''}><summary>記録を貼り付ける</summary>
@@ -1958,7 +1958,7 @@ async function recordingAction(action) {
 async function openFiles() {
   const dlg = dialog('dlg-files', '生成ファイル', 'files', '<p class="muted small">生成中…</p>');
   const res = state.preview || await previewMachine();
-  if (!res) { dlg.querySelector('.dlg-body').innerHTML = '<p class="msg err">組み立てられませんでした</p>'; return; }
+  if (!res) { dlg.querySelector('.dlg-body').innerHTML = '<p class="msg err">ファイルを生成できませんでした</p>'; return; }
   const files = res.files || {};
   const names = Object.keys(files);
   if (!names.includes(state.fileTab)) state.fileTab = names[0] || '';
@@ -1985,7 +1985,7 @@ function aiBusyHtml(flow) {
 }
 
 function aiQuestionsHtml(flow) {
-  return `<p class="muted small">判断に必要な点だけ確認します。回答すると、内容を含めてもう一度見直します。</p>
+  return `<p class="muted small">回答をもとに再検討します。</p>
     <div class="ai-question-list">${flow.questions.map((question) => `<div class="ai-question">
       <label for="answer-${esc(question.id)}">${esc(question.text)}</label>
       ${question.reason ? `<p>${esc(question.reason)}</p>` : ''}
@@ -2017,7 +2017,7 @@ function openAiDraft() {
       <div class="row"><button type="button" class="primary" data-ai-open-draft>編集画面で確認</button><button type="button" data-ai-back>作り直す</button></div>`;
   } else {
     body = `${aiAgentHtml()}${flow.error ? `<p class="msg err">${esc(flow.error)}</p>` : ''}
-      <div class="field"><label for="ai-draft-request">作りたいワークフロー</label><textarea id="ai-draft-request" rows="6" placeholder="例: 毎朝、申請一覧を確認し、不備がある申請をまとめて担当者へ知らせたい">${esc(flow.request)}</textarea><small>目的と大まかな流れだけで始められます。</small></div>
+      <div class="field"><label for="ai-draft-request">作りたいタスク</label><textarea id="ai-draft-request" rows="6" placeholder="例: 毎朝、申請一覧を確認し、不備がある申請をまとめて担当者へ知らせたい">${esc(flow.request)}</textarea></div>
       <div class="row"><button type="button" class="primary" data-ai-start-draft ${state.agents.length ? '' : 'disabled'}>下書きを作る</button></div>`;
   }
   const dlg = dialog('dlg-ai-draft', 'AIで下書き', 'work', `<div class="ai-flow">${body}</div>`);
@@ -2087,8 +2087,8 @@ function reviewResultHtml(result) {
     ${findings ? `<ul class="ai-findings">${findings}</ul>` : ''}
     ${assumptionsHtml(result.assumptions)}
     ${changes ? `<div class="ai-select-head"><strong>反映する提案</strong><label><input type="checkbox" data-ai-all checked> すべて選択</label></div><div class="ai-change-list">${changes}</div>
-      <div class="row"><button type="button" class="primary" data-ai-apply>選んだ提案を反映</button><button type="button" data-ai-back>見直し直す</button></div>`
-    : '<p class="msg ai-no-change">変更の提案はありません。現在の内容で問題ありません。</p><div class="row"><button type="button" data-ai-back>もう一度見直す</button></div>'}`;
+      <div class="row"><button type="button" class="primary" data-ai-apply>選んだ提案を反映</button><button type="button" data-ai-back>もう一度見直す</button></div>`
+    : '<p class="msg ai-no-change">変更の提案はありません。</p><div class="row"><button type="button" data-ai-back>もう一度見直す</button></div>'}`;
 }
 
 function bindAiCommon(dlg, flow, repaint) {
@@ -2115,7 +2115,7 @@ function bindAiCommon(dlg, flow, repaint) {
 
 async function startAi(flow) {
   if (flow.busy) return;
-  if (flow.mode === 'draft' && !String(flow.request || '').trim()) { toast('作りたいワークフローを入力してください', true); return; }
+  if (flow.mode === 'draft' && !String(flow.request || '').trim()) { toast('作りたいタスクを入力してください', true); return; }
   flow.busy = true;
   flow.phase = 'processing';
   flow.error = '';

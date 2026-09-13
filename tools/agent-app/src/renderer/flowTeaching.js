@@ -69,10 +69,10 @@
     $('flow-teach-heading').hidden = !state.existing;
     $('flow-teach-create').hidden = !state.creating;
     $('flow-teach-placeholder').hidden = state.creating;
-    $('flow-teach-settings-title').textContent = state.creating ? '今回の作成設定' : '今回の編集設定';
+    $('flow-teach-settings-title').textContent = state.creating ? '作成設定' : '編集設定';
     $('flow-teach-start').textContent = state.creating ? '作成開始' : sess ? '編集中' : '編集開始';
     $('flow-teach-start').disabled = state.pending || !!sess;
-    $('flow-teach-status').textContent = state.pending ? 'AI との会話を開いています…' : '';
+    $('flow-teach-status').textContent = state.pending ? '起動中…' : '';
     $('flow-teach-terminal').hidden = !sess;
     $('flow-teach-composer').hidden = !sess;
     if (!sess) return;
@@ -200,7 +200,7 @@
     if (!text || !sess) return;
     const shared = state.input && state.input.mode === 'share';
     state.pending = true;
-    status('pending', shared ? '受付済み・共有の列へ' : `受付済み・${sess.cli}を準備中`);
+    status('pending', shared ? '共有に送信中…' : `${sess.cli}を準備中…`);
     renderShell();
     try {
       let res;
@@ -222,10 +222,10 @@
       if (!shared && (res.restarted || term().current() !== sess.id)) await attach(await api.readSession(sess.id));
       if (res.warning) state.deps.notice(res.warning);
       const at = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      status('success', shared ? `✓ 共有の列に並べた ${at}` : `✓ ${sess.cli}へ送信済み ${at}`, 4000);
+      status('success', shared ? `共有に送信済み ${at}` : `${sess.cli}へ送信済み ${at}`, 4000);
     } catch (err) {
       error(err.message);
-      status('error', '送信失敗・入力内容を保持しました');
+      status('error', '送信できませんでした。入力は残っています');
     } finally {
       state.pending = false;
       renderShell();

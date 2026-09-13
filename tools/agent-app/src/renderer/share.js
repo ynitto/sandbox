@@ -99,7 +99,7 @@
     const list = items();
     const current = selected();
     if (!list.length) {
-      box.append(el('li', 'empty', state.status && state.status.enabled ? 'まだ依頼がない' : '設定 > 共有で使うと決める'));
+      box.append(el('li', 'empty', state.status && state.status.enabled ? '依頼はありません' : '設定 > 共有で有効にしてください'));
       return;
     }
     for (const group of GROUPS) {
@@ -145,14 +145,14 @@
     const s = state.status;
     const mode = s ? s.accept : 'off';
     if (mode === 'auto') {
-      return card('この PC で引き受ける', item.canAccept ? '空きが出しだい自動で引き受けます' : (item.reason || '自動で引き受けます'));
+      return card('この PC で引き受ける', item.canAccept ? '空きができると自動で引き受けます' : (item.reason || '自動で引き受けます'));
     }
-    if (mode === 'off') return card('この PC で引き受ける', '「受けない」にしています');
+    if (mode === 'off') return card('この PC で引き受ける', '依頼の受付は停止中です');
     const button = el('button', 'primary', '引き受ける');
     button.disabled = !item.canAccept || state.busy;
     button.onclick = () => accept(item.id);
     const detail = item.canAccept
-      ? `${item.cli} で読み取り専用に実行${s && s.today ? ` · 今日 ${s.today.count}${s.capacity ? '' : '（空き無し）'} 件` : ''}`
+      ? `${item.cli}（読み取り専用）${s && s.today ? ` · 今日 ${s.today.count}${s.capacity ? '' : '（空き無し）'} 件` : ''}`
       : item.reason;
     return card('この PC で引き受ける', detail, item.canAccept ? button : null);
   }
@@ -173,13 +173,13 @@
       cancel.onclick = () => run(() => window.api.share.cancel(item.id));
       row.append(priority, cancel);
       return card('自分が出した依頼', item.state === 'working'
-        ? `${item.executor || '仲間'} が実行中${item.claimedAt ? ` · ${elapsed(item.claimedAt)}` : ''}`
-        : '空いている参加者が拾うのを待っています', row);
+        ? `${item.executor || '参加者'} が実行中${item.claimedAt ? ` · ${elapsed(item.claimedAt)}` : ''}`
+        : '引き受ける参加者を待っています', row);
     }
     const open = el('button', '', '会話を開く');
     open.disabled = !item.sessionId;
     open.onclick = () => state.deps.openSession(item.sessionId);
-    return card('答え', item.state === 'done'
+    return card('結果', item.state === 'done'
       ? `${item.executor || ''}${item.executorCli ? ` · ${item.executorCli}` : ''} から会話に届いています`
       : (item.error || STATE_LABEL[item.state] || ''), open);
   }
@@ -190,12 +190,12 @@
     const item = selected();
     const s = state.status;
     if (!s || !s.enabled) {
-      box.append(blank('共有を使っていません', '設定 > 共有で合言葉と仲間の PC を入れると、この画面に依頼が並びます。'));
+      box.append(blank('共有は無効です', '設定 > 共有で合言葉と接続先のPCを指定してください。'));
       return;
     }
-    if (s.state !== 'on') { box.append(blank('共有が動いていません', s.error || 'もう一度 設定 > 共有 を確かめてください。')); return; }
+    if (s.state !== 'on') { box.append(blank('共有は停止中です', s.error || '設定 > 共有を確認してください。')); return; }
     if (!item) {
-      box.append(blank('依頼はまだありません', s.peers.length ? '仲間が依頼を出すとここに並びます。' : 'まだ仲間が見つかっていません。'));
+      box.append(blank('依頼はまだありません', s.peers.length ? '参加者の依頼がここに表示されます。' : '参加者が見つかりません。'));
       return;
     }
     // 見出しが依頼の 1 行目そのものなので、本文が 1 行で収まっているなら繰り返さない
@@ -210,7 +210,7 @@
     const box = $('share-cards');
     box.replaceChildren();
     const s = state.status;
-    if (!s || s.state !== 'on') { box.append(blank('共有が動いていません', s && s.error ? s.error : '設定 > 共有で使うと決めてください。')); return; }
+    if (!s || s.state !== 'on') { box.append(blank('共有は停止中です', s && s.error ? s.error : '設定 > 共有を有効にしてください。')); return; }
     const section = card('参加者', '同じ合言葉で見つかった PC');
     const table = el('table', 'share-nodes');
     const rows = [{ node: `${s.node}（この PC）`, info: s.me, self: true }, ...s.peers.map((p) => ({ node: p.node, info: p.info, seenAt: p.seenAt }))];
@@ -271,8 +271,8 @@
     $('share-terminal').hidden = !show;
     if (!show) { if (term().isRemote()) term().detach(); return; }
     $('share-term-agent').textContent = item.kind === 'accepted'
-      ? `${item.cli} · この PC` : `${item.executor || '仲間'} の ${item.executorCli || 'AI'}`;
-    $('share-term-note').textContent = item.kind === 'accepted' ? '依頼者にも同じ画面が届きます' : '閲覧のみ';
+      ? `${item.cli} · この PC` : `${item.executor || '参加者'} の ${item.executorCli || 'AI'}`;
+    $('share-term-note').textContent = item.kind === 'accepted' ? '依頼者にも表示されます' : '閲覧のみ';
     const stop = $('share-term-stop');
     stop.hidden = item.kind !== 'accepted';
     stop.onclick = () => run(() => window.api.share.stopAccepted(item.id));
@@ -293,7 +293,7 @@
   function talkPartner(item) {
     if (!item) return '';
     if (item.kind === 'accepted') return item.who;
-    if (item.kind === 'mine' && item.state === 'working') return item.executor || '仲間';
+    if (item.kind === 'mine' && item.state === 'working') return item.executor || '参加者';
     return '';
   }
 

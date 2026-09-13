@@ -83,7 +83,7 @@
   async function renderRoot() {
     const root = $('tree');
     root.replaceChildren();
-    if (!state.repo) { root.append(el('li', 'empty', 'リポジトリを選ぶ')); return; }
+    if (!state.repo) { root.append(el('li', 'empty', 'リポジトリを選んでください')); return; }
     root.append(el('li', 'empty', '読み込み中…'));
     try {
       const res = await api.listDir(state.repo, state.worktree, '');
@@ -134,7 +134,7 @@
       if (seq !== state.filterSeq) return;
       const hits = Array.isArray(res) ? res : (res && res.hits) || [];
       box.replaceChildren();
-      if (res && res.truncated) box.append(el('li', 'empty', '大きなフォルダのため、索引は浅い階層まで（深い所は開いて探す）'));
+      if (res && res.truncated) box.append(el('li', 'empty', '検索対象の上限に達しました。見つからないファイルはフォルダを開いて探してください'));
       for (const h of hits) {
         const li = el('li', `node ${h.type}`);
         const row = el('button', 'row');
@@ -145,7 +145,7 @@
         li.append(row);
         box.append(li);
       }
-      if (!hits.length) box.append(el('li', 'empty', '見つからない'));
+      if (!hits.length) box.append(el('li', 'empty', '該当するファイルはありません'));
     } catch (err) {
       if (seq === state.filterSeq) box.replaceChildren(el('li', 'empty', err.message));
     }
@@ -177,7 +177,7 @@
     if (!f) {
       head.hidden = true;
       body.className = 'viewer-body';
-      body.replaceChildren(el('div', 'viewer-empty', 'ツリーからファイルを選ぶ'));
+      body.replaceChildren(el('div', 'viewer-empty', '一覧からファイルを選んでください'));
       return;
     }
     head.hidden = false;
@@ -210,7 +210,7 @@
       body.classList.add('image');
       body.append(img);
     } else if (f.kind === 'binary') {
-      body.append(el('div', 'viewer-empty', `${f.reason}のため表示できない（「開く」で既定のアプリへ）`));
+      body.append(el('div', 'viewer-empty', `${f.reason}のため表示できません。「開く」で外部アプリを使用してください`));
     } else if (isMd && state.mode === 'preview') {
       const box = el('div', 'md-preview');
       body.classList.add('preview');

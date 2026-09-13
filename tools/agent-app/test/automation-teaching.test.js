@@ -304,7 +304,7 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(html, /id="task-launch-settings-summary"[\s\S]*id="task-launch-agent"[\s\S]*id="task-launch-model"/,
     '編集開始も新規作成と同じ設定コントロールを使う');
   assert.match(html, /id="task-launch-start"[^>]*>編集開始</);
-  assert.match(renderer, /'起動中です\.\.\.'/, 'tmux の準備中は待機領域へ状態を表示する');
+  assert.match(renderer, /state\.pending \? '起動中' : '起動前'/, 'tmux の準備中は待機領域へ状態を表示する');
   assert.doesNotMatch(html, /id="task-launch-title"[^>]*>AIと編集</, '編集画面の中で「AIと編集」を繰り返さない');
   assert.match(renderer, /\$\('task-launch-heading'\)\.hidden = state\.published/, '公開済みタスクでは下書き用見出しも隠す');
   assert.match(renderer, /api\.automation\.recordingStart\(\{ root: state\.repo, source: 'windows'/);
