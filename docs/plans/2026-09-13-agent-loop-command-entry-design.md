@@ -94,11 +94,53 @@ argv の各字句は先頭の `~` だけ展開する（`hook_config` で `expand
 | 併用 | 扱い |
 |---|---|
 | `cron` / `interval_minutes` / `run_immediately_on_startup` / `cwd` / `exclude_from_concurrency` / `id` / `enabled` | そのまま効く |
-| `prompt` / `slash` / `statemachine` / `hooks` / `webhook` | 起動エラー（種別が 2 つになる。`hooks` との組合せ——フックが「回すかどうか」を決めて command を回す——は将来課題として §未実装 に残す） |
+| `hooks` / `event_hook_fallback` / `hook_config` | 効く。フックが「回すかどうか」と材料を決め、コマンドが仕事をする（§hooks との併用） |
+| `prompt` / `slash` / `statemachine` / `webhook` | 起動エラー（種別が 2 つになる。`webhook` は将来課題として §未実装 に残す） |
 | `agent_cli` / `model` / `session` / `acceptance` / `acceptance_judge` / `tuning_profile` / `fresh_context` | 起動エラー（LLM も対話面も無いので意味を持たない） |
 | `mode: ralph` / `oneshot` / `clean_session` / `target` | 起動エラー |
-| `adaptive` | 起動エラー。無風の概念が無い（回せば必ず「実行した」）。間隔を伸ばしたいなら `cron` か `interval_minutes` で書く |
+| `adaptive` | `hooks` が無ければ起動エラー。無風の概念が無い（回せば必ず「実行した」）。`hooks` があれば `check()` の `None` が無風なので従来どおり効く |
 | `preflight` | そのまま効く（送る前の判定はコマンドにも意味がある） |
+
+### hooks との併用
+
+フック契約（§3.1）はそのまま使う。`check()` が `None` を返せば回さない。返した値の
+使い道だけをコマンド向けに定める。
+
+| `check()` の返り値 | コマンドでの扱い |
+|---|---|
+| `None` | 回さない（無風。`adaptive` の後退対象） |
+| `str` | 本文として**標準入力**へ渡す |
+| `dict.prompt` | 同上 |
+| `dict.cwd` | 実在するディレクトリなら作業ディレクトリ（従来どおり） |
+| `dict.vars` | argv の各**字句**へ `{key}` で差し込む（`prompt.format_map` と同じ規則。`_SafeDict` で未定義キーは残す） |
+
+`vars` の置換は字句単位なので、値に空白や記号があっても引数の数は変わらない。
+シェル記号の検査は**宣言時の字句**にだけ掛け、置換後の値には掛けない（値は材料であって
+コマンドラインではない）。
+
+```yaml
+  - name: "Issue 同期"
+    hooks: gitlab-issue-hook
+    command: ["python3", "scripts/sync-issue.py", "--iid", "{issue_iid}"]
+    interval_minutes: 5
+```
+
+`check()` の 30 秒制限は据え置く。フックは「回すかどうか」を決めるだけで、仕事は
+コマンド側へ移るので、制限は狙いどおりに効く。`check()` の中で `subprocess.run` を
+回す書き方（いまの流用）は移行で無くす。
+
+**`ack()` は終了コード 0 のときに呼ぶ。** いま `ack()` を呼ぶのはペインへの送信が
+成功した場所だけで（`_dispatch_prompt` の末尾）、`_run_headless` は呼んでいない。
+つまり `hooks` + `session: per-run` や `hooks` + `statemachine` の headless 実行は
+**既にイベントを既読にできず、次回同じイベントを拾う**。`command` は必ず headless
+なのでこの穴を踏む。併用を許す前提で、headless 経路の完了時（command は終了コード 0、
+statemachine は `ok`、prompt は `verified`）に `_call_hook_ack` を呼ぶよう直す。
+失敗した実行は ack しない——送信失敗と同じ扱いで、次回もう一度拾われる。
+
+**同じエントリは直列。** フックが N 件返すと dispatch request が N 件でき、それぞれが
+headless スロットを取って並走する。同期スクリプトの多重起動は事故になりやすいので、
+`command` エントリは**エントリ単位で 1 実行ずつ**にする（2 件目以降は pending のまま
+待つ。`max_concurrent` の枠とは別）。並走してよいコマンドは、いまのところ無い。
 
 ### 実行経路
 
@@ -177,6 +219,8 @@ agent-herd  harness command --entry "記憶メンテナンス"
    タイムアウト・jsonl 記録。`stopreason` に `COMMAND_EXIT` / `COMMAND_TIMEOUT`。
 3. `scheduler.validate_entries` — `command` の採用と併用検査。`_dispatch` の経路分岐、
    `_run_headless` の第 3 分岐、`record_repository_run` の `kind`。
+   headless 経路の完了時に `_call_hook_ack` を呼ぶ（既存の穴。statemachine / prompt の
+   headless 実行にも効く）。`command` エントリのエントリ単位直列化。
 4. `agent-loop command --entry`、`agent-herd harness command --entry`。
 5. `repository_ui.inspect` の `kind: command` と `cmd_repository_command`。
 6. `agent-loop.yaml.example` の 4 件を `command:` へ書き換え、`hooks/` の該当 4 ファイルを
@@ -186,9 +230,7 @@ agent-herd  harness command --entry "記憶メンテナンス"
 
 ## 未実装・将来課題
 
-- `hooks` + `command`（フックが「回すかどうか」を決め、本文の代わりに command を回す）。
-  いまの流用のうち「GitLab に更新があったら同期スクリプトを回す」型はこれが要る。
-  v1 は起動エラーで断り、要るものが出てから契約を決める。
-- `webhook` + `command`（push で回す）。同上。
+- `webhook` + `command`（push で回す）。パススルーの受信 JSON を標準入力へ渡せば
+  `hooks` と同じ形になるはずだが、要るものが出てから決める。
 - stdout を次のプロンプトの材料にする（command の出力を `input` に渡す）。それは
   ステートマシンの `check:` か `run` の仕事で、本設計は「送らずに実行する」に限る。
