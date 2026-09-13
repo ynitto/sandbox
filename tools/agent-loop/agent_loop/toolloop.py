@@ -16,6 +16,9 @@ from __future__ import annotations
 
 from agentcore import harness as _harness  # noqa: E402
 from agentcore.harness import toolloop as _harness_toolloop  # noqa: E402,F401
+# `command:` を宣言した entry の実行（LLM を起こさない）。読み方は loopentry と同じく
+# agent-herd・dashboard と共有する 1 実装。
+from agentcore import commandrun as _commandrun  # noqa: E402,F401
 
 # 継ぎ目（記帳・control 解決）は**呼び出しのたびに共有名前空間を引く**。関数オブジェクトを
 # 直に渡すと、テストが `agent_loop._node_budget_record` を差し替えても効かなくなる。

@@ -23,6 +23,7 @@ from __future__ import annotations
 FINAL = "final"                        # モデルが final を返した
 VERIFIED = "verified"                  # 機械層の受入が通ったので final を待たずに終えた
 TERMINAL_STATE = "terminal_state"      # ステートマシンが終端ステートへ到達した
+COMMAND_EXIT = "command_exit"          # 宣言された固定コマンドが終了した（成否は終了コード）
 
 # --- 打ち切り側 -----------------------------------------------------------
 MAX_ROUNDS = "max_rounds"              # 1 ステート内のツールループが呼び出し上限へ到達
@@ -37,11 +38,16 @@ NO_COMMAND = "no_command"              # 規約どおりのコマンドを最後
 # 名指しした path しか見ず、ハーネスは git を使わない。段 9b（git 差分観測）に依存する
 # 名前を先に置くのは、配線する日に綴りを決め直さないためである（レビュー §3-9）。
 OUT_OF_SCOPE = "out_of_scope"
+COMMAND_TIMEOUT = "command_timeout"    # 固定コマンドが宣言のタイムアウトに達した
+COMMAND_ERROR = "command_error"        # 固定コマンドを起こせなかった（実行ファイルが無い等）
 
-COMPLETED = frozenset({FINAL, VERIFIED, TERMINAL_STATE})
+# `COMMAND_EXIT` を完了側へ置くのは、**実行が最後まで走った**ことを言う名前だから。
+# 成否は終了コードが決める（`ok` を見る）——非 0 は「失敗して終わった」であって、
+# 上位の段へ回す打ち切り（ESCALATING）ではない。
+COMPLETED = frozenset({FINAL, VERIFIED, TERMINAL_STATE, COMMAND_EXIT})
 ESCALATING = frozenset({MAX_ROUNDS, MAX_STEPS, CHECK_EXHAUSTED, NO_PROGRESS,
                         CONTEXT_EXHAUSTED, TOOL_DENIED, RUN_ERROR, NO_COMMAND,
-                        OUT_OF_SCOPE})
+                        OUT_OF_SCOPE, COMMAND_TIMEOUT, COMMAND_ERROR})
 ALL = frozenset(COMPLETED | ESCALATING)
 
 # 既存の綴りからの写像。**層の内部語彙は変えない**（`ollama_loop` の `status` は replay と

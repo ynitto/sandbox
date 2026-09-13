@@ -24,13 +24,23 @@ dashboard（JS）は同じ規則を discover.js / cowork.js に持つが、規�
 `check:` まで進んで初めて落ちる（1 回ぶんの課金と時間を捨てる）。
 両方書くのは許す。衝突するのは `input` キーだけで、そこは黙って片方を勝たせず落とす。
 
-仕様: docs/specs/agent-loop-spec.md §2.3 / §3.5。
+## 固定コマンド（`command:`）も同じ入口で読む
+
+    command: ["python3", "scripts/sync-issue.py", "--iid", "{issue_iid}"]
+
+`statemachine:` と同じく「この entry は本文を送るのではなく実行形で回す」宣言なので、
+読み方の正典もここに置く。`{…}` の補完は本文テンプレートと同じ規則（`str.format_map`）で、
+材料はフック / webhook が返した辞書。補完そのものは呼ぶ側（scheduler・CLI）が
+本文経路と同じ 1 実装で行い、ここは**宣言の正規化だけ**を持つ。
+
+仕様: docs/specs/agent-loop-spec.md §2.3 / §2.3.2 / §3.5。
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 
 # agent-loop の設定ファイル名と探索順（agent_loop/config.py の DEFAULT_CONFIG_NAMES と
@@ -44,6 +54,14 @@ WORKFLOW_FILE = "workflow.yaml"
 
 # `.statemachine/<名前>/` として使える名前。パス区切りを含まない値はこの規約で展開する。
 _SM_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+# `command:` の既定タイムアウト（秒）。流用していたフック 4 件の既定と揃える。
+COMMAND_TIMEOUT_SEC = 300
+
+# argv の字句に現れたら断るシェル記号。argv を直接実行する（シェルを通さない）ので、
+# これらは「効かないのに書けてしまう」——`statemachine-use` の `check:` と同じ検査。
+# パイプや条件分岐が要るならスクリプトファイルにして、それを argv に書く。
+_COMMAND_SHELL_TOKENS = ("|", "&", ";", "<", ">", "$", "`", "(", ")", "&&", "||")
 
 
 class LoopEntryError(Exception):
@@ -162,6 +180,128 @@ def statemachine_spec(entry, *, prompt=None) -> "dict | None":
 
 
 
+def _command_argv(value) -> "list[str]":
+    """`command:` / `command.argv` の値を argv の配列へ。"""
+    if isinstance(value, str):
+        try:
+            parts = shlex.split(value)
+        except ValueError as exc:
+            raise LoopEntryError(f"command を字句に分けられません: {exc}") from exc
+    elif isinstance(value, (list, tuple)):
+        parts = []
+        for item in value:
+            if isinstance(item, (dict, list, tuple, bool)) or item is None:
+                raise LoopEntryError("command の配列は文字列だけです")
+            parts.append(str(item))
+    else:
+        raise LoopEntryError("command は文字列・配列・マップのいずれかです")
+    parts = [token for token in (str(t).strip() for t in parts) if token]
+    if not parts:
+        raise LoopEntryError("command が空です")
+    for token in parts:
+        for mark in _COMMAND_SHELL_TOKENS:
+            if mark in token:
+                raise LoopEntryError(
+                    f"command にシェル記号 '{mark}' は使えません: {token}"
+                    "（argv を直接実行します。パイプや条件分岐が要るならスクリプトに"
+                    "まとめ、そのスクリプトを command に書いてください）")
+    # 先頭の `~` だけ広げる。`{…}` は補完のプレースホルダなので触らない。
+    return [os.path.expanduser(t) if t.startswith("~") else t for t in parts]
+
+
+def _command_env(value) -> "dict[str, str]":
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise LoopEntryError("command.env はマップです")
+    env: "dict[str, str]" = {}
+    for key, raw in value.items():
+        name = _scalar(key)
+        if not name:
+            raise LoopEntryError("command.env のキーが空です")
+        if raw is None or isinstance(raw, (dict, list, tuple)):
+            raise LoopEntryError(f"command.env の値はスカラです: {name}")
+        text = "true" if raw is True else "false" if raw is False else str(raw)
+        env[name] = os.path.expanduser(text) if text.startswith("~") else text
+    return env
+
+
+def command_spec(entry) -> "dict | None":
+    """entry の `command:` 宣言を正規化する。宣言が無ければ None。
+
+    返り値: `{"argv": [...], "timeout_sec": int, "env": {...}}`
+
+    3 形を受ける（`statemachine-use` の `check:` と同じ綴り——利用者は既にこれを知っている）。
+
+        command: "node scripts/resource-control.js --control-dir ~/.agents/control"
+        command: ["agent-audit", "calibrate"]
+        command: {argv: [...], timeout_sec: 600, env: {...}}
+
+    `{…}` はそのまま残す。補完はフック / webhook が材料を返した実行時の仕事で、
+    宣言を読む時点では誰も値を持っていない。
+    """
+    if not isinstance(entry, dict):
+        raise LoopEntryError("entry はマップです")
+    declared = entry.get("command")
+    if declared is None or (isinstance(declared, str) and not declared.strip()):
+        return None
+    if isinstance(declared, bool):
+        raise LoopEntryError("command は文字列・配列・マップのいずれかです")
+    if isinstance(declared, dict):
+        if "argv" not in declared:
+            raise LoopEntryError("command.argv は必須です")
+        argv = _command_argv(declared.get("argv"))
+        raw_timeout = declared.get("timeout_sec", COMMAND_TIMEOUT_SEC)
+        try:
+            timeout = int(float(raw_timeout))
+        except (TypeError, ValueError) as exc:
+            raise LoopEntryError(
+                f"command.timeout_sec は数値です: {raw_timeout!r}") from exc
+        if timeout < 1:
+            raise LoopEntryError(f"command.timeout_sec は 1 以上です: {timeout}")
+        env = _command_env(declared.get("env"))
+        unknown = sorted(set(declared) - {"argv", "timeout_sec", "env"})
+        if unknown:
+            raise LoopEntryError(f"command に知らないキーがあります: {', '.join(unknown)}")
+    else:
+        argv = _command_argv(declared)
+        timeout = COMMAND_TIMEOUT_SEC
+        env = {}
+    return {"argv": argv, "timeout_sec": timeout, "env": env}
+
+
+class _SafeValues(dict):
+    """`str.format_map` 用。未定義キーは `{key}` のまま残す（本文テンプレートと同じ）。"""
+
+    def __missing__(self, key):
+        return "{" + str(key) + "}"
+
+
+def render_argv(argv, values, *, resolve=None) -> "list[str]":
+    """argv の各**字句**へ `{key}` を差し込む。
+
+    規則は本文テンプレートと同じ（`str.format_map` + 未定義キーは残す）。字句単位なので、
+    値に空白や記号があっても引数の数は変わらない——値は材料であってコマンドラインでは
+    ないので、置換後の字句にシェル記号の検査は掛けない。
+
+    `resolve` は字句 1 つを先に変換する任意の関数（遅延 lookup の解決を呼ぶ側から渡す。
+    `format_map` は `{{` を `{` に潰すので、後からでは解決できない）。
+    """
+    if not values:
+        return [str(token) for token in argv]
+    safe = _SafeValues({str(k): v for k, v in dict(values).items()})
+    rendered: "list[str]" = []
+    for token in argv:
+        text = str(token)
+        if resolve is not None:
+            text = resolve(text)
+        try:
+            rendered.append(text.format_map(safe))
+        except (IndexError, ValueError) as exc:
+            raise LoopEntryError(f"command の補完に失敗しました: {token}（{exc}）") from exc
+    return rendered
+
+
 # `shlex.split` が 1 トークンとして読む綴り。**引用は必要なときだけ**——条件の値は
 # ほとんど日本語で、`shlex.quote` のように ASCII 以外を一律で包むと、ペインに出る 1 行が
 # 引用符だらけになって人が読めない。空白とシェルが特別扱いする記号だけを見る。
@@ -276,6 +416,25 @@ def find_entry(name, *, cwd, config=None) -> "tuple[dict, Path]":
     known = ", ".join(_scalar(e.get("name")) for e in entries if _scalar(e.get("name")))
     raise LoopEntryError(f"entry が見つかりません: {wanted}"
                          + (f"（{path} にあるのは: {known}）" if known else f"（{path} は空です）"))
+
+
+def resolve_command_entry(name, *, cwd, config=None) -> dict:
+    """`command --entry` の解決結果。コマンドを宣言していない entry はここで断る。
+
+    返り値: `{"entry", "config", "command", "cwd"}`
+    """
+    entry, path = find_entry(name, cwd=cwd, config=config)
+    spec = command_spec(entry)
+    if spec is None:
+        raise LoopEntryError(
+            f"entry「{_scalar(entry.get('name'))}」は command を宣言していません（{path}）")
+    entry_cwd = _scalar(entry.get("cwd"))
+    return {
+        "entry": entry,
+        "config": str(path),
+        "command": spec,
+        "cwd": os.path.expanduser(entry_cwd) if entry_cwd else "",
+    }
 
 
 def resolve_entry(name, *, cwd, config=None) -> dict:

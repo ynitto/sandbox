@@ -123,7 +123,9 @@ class WebhookServer:
             log.error("[WebhookServer] テンプレート注入エラー (%s): %s", name, exc, exc_info=True)
             return 500, "template error"
 
-        if not self._scheduler.enqueue_external(route["name"], prompt_text):
+        # `inject` は本文へ注入した素の材料。`command:` を宣言した entry では、これが
+        # そのまま argv の `{…}` へ差し込まれる（補完の規則は本文と同じ 1 実装）。
+        if not self._scheduler.enqueue_external(route["name"], prompt_text, dict(inject)):
             return 404, "route vanished"
         return 202, "accepted"
 

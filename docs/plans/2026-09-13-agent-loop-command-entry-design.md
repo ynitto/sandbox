@@ -1,6 +1,6 @@
 # agent-loop: 固定コマンドを実行するエントリ（`command:`）の設計
 
-> **状態（2026-09-13）**: 検討段階。実装前。
+> **実装状況（2026-09-13）**: 実装計画 1〜6 を実装済み。**未実施は 7**（agent-app の「今すぐ実行」——画面の変更は ASCII 承認の手順で別途）と、既存フック 3 件の移行（下記の移行表を参照）。
 
 ## 背景と課題
 
@@ -211,15 +211,17 @@ agent-herd  harness command --entry "記憶メンテナンス"
 
 ### 既存フックの移行
 
-| いま | 移行後 |
-|---|---|
-| `resource-control-hook`（audit collect → node 制御スクリプト） | 2 エントリに割る。collect は best-effort なので `command` の失敗が制御を止めない（別エントリなら自然にそうなる） |
-| `audit-calibrate-hook` | `agent-audit calibrate …` の 1 エントリ |
-| `memory-maintenance-hook`（複数スクリプトの順次実行） | フック本体の「何をどの順で呼ぶか」を `scripts/memory-maintenance.py` に移し、1 エントリで呼ぶ。「削除は走らせない」の禁止事項はスクリプト側の責務のまま |
-| `moltbook-duty-hook` | 同上。`hook_config` の `skill_home` / `label_conn` は argv の引数へ |
+| いま | 状態 | 移行後 |
+|---|---|---|
+| `resource-control-hook`（audit collect → node 制御スクリプト） | **移行済み**（フックは削除） | 2 エントリに割った。collect は best-effort なので、別エントリなら失敗が制御を止めない |
+| `audit-calibrate-hook` | 保留 | 段ごとに「この終了コードは許す」（`allow_blocked`）がある。順序と許容を 1 本のスクリプトへまとめてから 1 エントリにする |
+| `memory-maintenance-hook`（複数スクリプトの順次実行） | 保留 | 未導入のスキルを飛ばす判断を持つ。「何をどの順で呼ぶか」を `scripts/memory-maintenance.py` へ移し、1 エントリで呼ぶ。「削除は走らせない」の禁止事項はスクリプト側の責務のまま |
+| `moltbook-duty-hook` | 保留 | 同上（未導入なら何もしない）。`hook_config` の `skill_home` / `label_conn` は argv の引数へ |
 
-移行は 1 件ずつ。`hooks/` の 4 ファイルは移行が済むまで残し、済んだら消す。フック契約
-そのもの（GitLab 系・file-watch・webhook）は触らない。
+保留の 3 件はどれも**条件分岐を持つ**——1 エントリ 1 コマンドの `command:` へそのまま
+移すと、飛ばす判断や許容する終了コードが落ちる。移すのは「その判断をスクリプトへ移す」
+変更とセットで、1 件ずつ行う（振る舞いを変えない付け替えなので、それ自体が別の変更に値する）。
+フック契約そのもの（GitLab 系・file-watch・webhook）は触らない。
 
 ## 実装計画
 

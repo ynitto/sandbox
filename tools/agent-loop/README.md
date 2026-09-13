@@ -108,6 +108,7 @@ agent-loop run [--agent-cli NAME] [--model MODEL] [--acceptance TEXT ...] [--jud
 agent-loop statemachine (--workflow PATH | --entry NAME [--config PATH])
                         [--agent-cli NAME] [--model MODEL]
                         [--param KEY=VALUE ...] [--input TEXT] [-d DIR]
+agent-loop command --entry NAME [--config PATH] [--param KEY=VALUE ...] [-d DIR]
 agent-loop inspect --json [-d DIR]
 agent-loop schedule --json [-d DIR]     # stdin: 単純な定期実行のJSON
 agent-loop log --json [-d DIR]          # stdin: workflow と runId のJSON
@@ -152,6 +153,11 @@ agent-loop --version
   `next_state.py` が確定します。終了時に `RESULT {json}` を 1 行出力します
   （dashboard はこの行を実行結果の契約として読みます）。`--workflow` は作業ディレクトリ
   内のパスに限ります（dashboard からは cwd 相対で渡されます）。
+- `command` は entry が宣言した**固定コマンド**を 1 回実行します（LLM も対話ペインも
+  使いません）。デーモンでの定期実行と同じ宣言・同じ実行器を使うので、手で回した結果と
+  定期実行の結果がずれません。`--param` は、定期実行でフック / webhook が渡す材料の
+  代わりにその場で打つ値です。終了時に `RESULT {json}` を 1 行出し、終了コードは
+  コマンドの成否をそのまま返します。
 - `inspect` / `schedule` / `log` は agent-app のタスク画面などの薄い管理画面向け境界です。
   `inspect` はリポジトリ内のワークフロー・単純な予定・次回時刻・実行履歴・daemon状態をまとめて返します。
   `schedule` は毎日・毎週・一定間隔だけを検査してから設定ファイルへ原子的に保存し、稼働中daemonへ
@@ -319,6 +325,12 @@ prompts:
     interval_minutes: 5
     enabled: true
 
+  # command: 固定コマンドを実行する（LLM を起こさない。下記）
+  - name: "資源制御"
+    command: "node scripts/resource-control.js --control-dir ~/.agents/control"
+    interval_minutes: 5
+    enabled: true
+
   # statemachine: ステートマシンを実行する（下記）
   - name: "日次ダイジェスト"
     statemachine: digest        # .statemachine/digest/workflow.yaml
@@ -328,6 +340,39 @@ prompts:
     cron: "0 7 * * *"
     enabled: true
 ```
+
+### command（固定コマンドを実行する）
+
+`command` を書いたエントリは、本文を送る代わりに**宣言した引数列をそのまま 1 回実行**
+します。AI は関与せず、成否は終了コードが決めます。LLM が要らない定期処理（資源制御・
+較正・索引の再構築・巡回）はこちらで書きます。
+
+```yaml
+prompts:
+  - name: "使用量較正"
+    command: ["agent-audit", "calibrate", "--audit-dir", "~/.agents/audit"]
+    cron: "0 * * * *"
+
+  - name: "記憶メンテナンス"
+    command:
+      argv: ["python3", "scripts/memory-maintenance.py", "--scope", "home"]
+      timeout_sec: 600          # 既定 300
+      env: { LTM_HOME: ~/.claude/skills }
+    cwd: ~/notes
+```
+
+- シェルは通しません（`|` や `;` を書いたエントリは起動時に断ります）。つなげたい処理は
+  スクリプトにまとめ、そのスクリプトを書いてください。
+- 同じエントリは同時に 2 つ走りません。前回が終わっていない回は見送ります。
+- `hooks` / `webhook` と併用できます。フックが返した辞書は、引数に書いた `{キー}` へ
+  差し込まれます（差し込みの規則は本文テンプレートと同じ）。`ack()` はコマンドが
+  成功した回だけ呼ばれます。
+- `agent_cli` / `model` / `session` / `acceptance` / `mode: ralph` などは、AI も対話面も
+  使わないので併用を断ります。`adaptive` は `hooks` があるときだけ使えます。
+- 手で 1 回だけ回す: `agent-loop command --entry "記憶メンテナンス"`
+
+詳細な仕様は
+[`docs/specs/agent-loop-spec.md` §2.3.2](../../docs/specs/agent-loop-spec.md)。
 
 ### statemachine（ステートマシンを実行する）
 
@@ -438,10 +483,13 @@ def check() -> str | None:
 |---|---|
 | `gitlab-issue-hook.py` | 新規/更新 Issue を検知して送信。更新が無くフォールバック有効ならランダムな Issue を送る。 |
 | `gitlab-mr-hook.py` | 新規/更新 MR を検知して送信。更新が無くフォールバック有効ならランダムな MR を送る。 |
-| `resource-control-hook.py` | LLM へは送信せず、agent-auditでCLI quotaを収集してから、dashboard共通のheadless入口で予算再配分とprofile適用を行う。収集失敗時も既存の予算制御は継続する。 |
 | `audit-calibrate-hook.py` | LLM へは送信せず、audit 収集後に候補適格性を更新し、`rates.per_cli` を実測中央値へ較正する。 |
 | `memory-maintenance-hook.py` | LLM へは送信せず、記憶の索引再構築・忘却曲線の更新・wiki lint・`agent-audit collect --source memory-store` を回す。**削除は実行しない**（判断の要る整理・削除・整理後の回帰確認（`regression_check.py`）は「記憶メンテナンス当番」の定期プロンプトが AI だけで行う。人の承認経路は持たない）。 |
 | `moltbook-duty-hook.py` | LLM へは送信せず、moltbook-use の outbox publish backlog を privacy gate に通して sweep する。**新しい reply の判断はしない**（timeline 確認・根拠つき reply・good は「Moltbook 当番」の定期プロンプトへ）。moltbook は各ノードの AI だけが操作する前提で、人の承認経路は持たない。 |
+
+LLM へ送らずコマンドだけを回すものは、上の 3 つのように**段ごとの許容やスキップの判断**を
+持つものだけが残っています。判断の要らない定期処理は `command:` で書いてください
+（資源制御はそちらへ移しました）。
 
 GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用します。`GITLAB_TOKEN` を
 設定し、必要に応じて環境変数（`AGENT_LOOP_GL_PY`, `AGENT_LOOP_GL_CWD`,

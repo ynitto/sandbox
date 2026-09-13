@@ -220,13 +220,27 @@ prompts:
     enabled: false
 
   # dashboard を開かずに CLI quota を収集し、node-budget の再配分と
-  # profile の候補切替・降格/復帰を適用する。どちらも LLM は使わない。
+  # profile の候補切替・降格/復帰を適用する。どちらも LLM は使わないので `command:` で
+  # 書く（フックの `check()` を実行に流用しない——あちらは「送るかどうか」を決める口で、
+  # 30 秒で隔離され、成功しても「何もなかった回」と数えられる）。
+  #
+  # 2 つに割ってあるのは、収集の失敗で制御まで止めないため。エントリが別なら自然にそうなる。
+  - name: "資源の観測"
+    command: ["agent-audit", "--audit-dir", "~/.agents/audit", "collect",
+              "--source", "cli-quota"]
+    interval_minutes: 5
+    enabled: false
+
   - name: "資源制御"
-    hooks: resource-control-hook
+    command: ["node", "tools/agent-dashboard/scripts/resource-control.js",
+              "--control-dir", "~/.agents/control", "--budget-dir", "~/.agents/budget"]
     interval_minutes: 5
     enabled: false
 
   # 収集済みの実測を rates.per_cli へ定期較正し、旧推定との乖離も audit 台帳へ残す。
+  # 段ごとに「この終了コードは許す」があるので、フックのままにしてある（`command:` は
+  # 1 エントリ 1 コマンドで、終了コードをそのまま成否にする）。順序と許容を 1 本の
+  # スクリプトへまとめれば `command:` へ移せる。
   - name: "使用量較正"
     hooks: audit-calibrate-hook
     interval_minutes: 60
@@ -234,6 +248,7 @@ prompts:
 
   # 記憶の整理のうち LLM が要らない分（索引再構築・忘却曲線の更新・wiki lint・
   # memory-store の収集）を人手ゼロで回す。削除は絶対に走らせない。
+  # 未導入のスキルを飛ばす判断を持つので、これもフックのまま（上の「使用量較正」と同じ）。
   - name: "記憶メンテナンス"
     hooks: memory-maintenance-hook
     hook_config:

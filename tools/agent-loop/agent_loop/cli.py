@@ -350,6 +350,36 @@ def main() -> None:
         help="作業ディレクトリ（省略時: カレントディレクトリ）",
     )
 
+    cmd_parser = subparsers.add_parser(
+        "command",
+        help="entry が宣言した固定コマンドを 1 回実行する（LLM を起こさない）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="agent-loop.yaml の entry が宣言した `command` を、デーモンも tmux も"
+                    "無しに 1 回実行する。成否は終了コードで決まる",
+        epilog="""
+使い方:
+  agent-loop command --entry "記憶メンテナンス"
+  agent-loop command --entry "記憶メンテナンス" --param scope=home
+""",
+    )
+    cmd_parser.add_argument(
+        "--entry", required=True, metavar="NAME",
+        help="agent-loop.yaml の prompts エントリ名",
+    )
+    cmd_parser.add_argument(
+        "--config", default=None, metavar="PATH",
+        help="--entry を引く設定ファイル（省略時は agent-loop と同じ順で探す）",
+    )
+    cmd_parser.add_argument(
+        "--param", action="append", default=[], metavar="KEY=VALUE",
+        help="argv の {キー} へ差し込む値。繰り返し指定可"
+             "（デーモンではフック / webhook が返す材料に当たる）",
+    )
+    cmd_parser.add_argument(
+        "--dir", "-d", default=None, metavar="DIR",
+        help="作業ディレクトリ（省略時: カレントディレクトリ）",
+    )
+
     inspect_parser = subparsers.add_parser(
         "inspect",
         help="リポジトリのステートマシン実行状態を表示する",
@@ -491,6 +521,10 @@ def main() -> None:
 
     if args.subcommand == "statemachine":
         cmd_repository_statemachine(args, cwd)
+        return
+
+    if args.subcommand == "command":
+        cmd_repository_command(args, cwd)
         return
 
     if args.subcommand == "inspect":

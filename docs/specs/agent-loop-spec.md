@@ -349,6 +349,7 @@ tmux を使うかどうかはこの層とは独立です。tmux は送る手段�
 | `session` | `keep` \| `per-run` | keep | それ以外は起動エラー |
 | `acceptance` | str \| list[str] | `[]` | 受入条件。文字列 1 本は 1 項目として扱う |
 | `acceptance_judge` | bool | 未指定 | パスを含まない受入条件を検証エージェントに判定させる（§3.4）。トップレベルの既定を上書きする |
+| `command` | str \| list[str] \| dict | なし | 実行する固定コマンド。LLM も対話セッションも使わない（§2.3.2） |
 | `statemachine` | str | なし | 実行するステートマシン。`.statemachine/<名前>/workflow.yaml` の名前か、作業ディレクトリからの相対パス（§2.3.1） |
 | `input` | dict | なし | ステートマシンの実行条件。値はスカラのみ。dict 以外・入れ子・空値は起動エラー |
 
@@ -399,6 +400,83 @@ agent-herd  harness statemachine --entry "日次ダイジェスト"
 `cron` は「分 時 日 月 曜日」の 5 フィールドで、判定はデーモンが動いている端末のローカル時刻です。曜日の `7` は日曜として扱い、日と曜日を両方指定したときは Vixie cron と同じ OR になります（どちらかに当たれば発火）。
 
 CLI とモデルの解決順は、control.json の `workloads.routine`（予算枯渇時の `degraded` 差し替えを含む）、エントリ、グローバル設定、既定の順です。エントリは管理面より上には行きません。
+
+##### 2.3.2 固定コマンド実行（`command`）
+
+`command` を書いたエントリは、本文を送る代わりに宣言された引数列をそのまま 1 回実行します。AI は関与しません。成否は**終了コード**が決めます（0 が成功）。
+
+書き方は 3 つで、どれも同じものになります。
+
+```yaml
+prompts:
+  # 1 行で書く（空白で区切る）
+  - name: "資源制御"
+    command: "node scripts/resource-control.js --control-dir ~/.agents/control"
+    interval_minutes: 5
+
+  # 引数ごとに分けて書く（値に空白が入るときはこちら）
+  - name: "使用量較正"
+    command: ["agent-audit", "calibrate", "--audit-dir", "~/.agents/audit"]
+    interval_minutes: 60
+
+  # 時間の上限や環境変数を足す
+  - name: "記憶メンテナンス"
+    command:
+      argv: ["python3", "scripts/memory-maintenance.py", "--scope", "home"]
+      timeout_sec: 600          # 既定 300。超えたら止めて失敗にする
+      env: { LTM_HOME: ~/.claude/skills }
+    cwd: ~/notes
+    cron: "0 3 * * *"
+```
+
+| 項目 | 型 | 既定 | 意味 |
+|---|---|---|---|
+| `command` | str \| list[str] \| dict | — | 実行する引数列 |
+| `command.timeout_sec` | int | 300 | 上限。超えたら、そのコマンドが起こした子ごと止めて失敗にします |
+| `command.env` | dict | なし | 追加の環境変数。値の先頭の `~` は home へ広げます |
+
+シェルは通しません。パイプ（`|`）やセミコロンのような記号を書いたエントリは**起動時に断ります**——書けても効かないためです。複数の処理をつなげたいときはスクリプトにまとめ、そのスクリプトを `command` に書いてください。引数の先頭の `~` は home へ広げ、相対パスは `cwd` から読みます。
+
+1 エントリにつきコマンドは 1 つです。順番に回したいものはスクリプトにまとめるか、エントリを分けてください（分ければ、どこで失敗したかが記録に残ります）。
+
+**同じエントリは同時に 2 つ走りません。** 前回の実行が終わっていなければ、その回は見送って次の周期を待ちます。
+
+**書ける組合せ。** `cron` / `interval_minutes` / `run_immediately_on_startup` / `cwd` / `exclude_from_concurrency` / `preflight` はそのまま効きます。`hooks` と `webhook` も併用できます（下記）。`prompt` / `slash` / `statemachine` との併用は、1 つのエントリが回すものが 2 つになるため断ります。`agent_cli` / `model` / `session` / `acceptance` / `fresh_context` / `mode: ralph` / `oneshot` / `clean_session` / `target` は、AI も対話セッションも使わないので断ります。`adaptive` は `hooks` があるときだけ使えます（後述の「何もなかった回」が無いと、間隔を伸ばす材料がないためです）。
+
+##### 材料を受け取って引数に差し込む
+
+`hooks` や `webhook` は**辞書**を返します。その値は、引数に書いた `{キー}` へ差し込まれます。差し込みの書き方と規則は、本文（`prompt`）に書くときと同じです。
+
+```yaml
+prompts:
+  - name: "Issue 同期"
+    hooks: gitlab-issue-hook
+    command: ["python3", "scripts/sync-issue.py", "--iid", "{issue_iid}", "--title", "{title}"]
+    interval_minutes: 5
+
+  - name: "MR 受信"
+    webhook: { hook: gitlab-mr-webhook }
+    command: ["python3", "scripts/on-mr.py", "--iid", "{iid}", "--action", "{action}"]
+```
+
+| 発火のしかた | 差し込みに使う値 |
+|---|---|
+| `hooks` | `check()` が返した `vars` と本文（本文は `{prompt}` で参照できます） |
+| `webhook` | `handle()` が返した辞書とルート名（`{name}`）。フックを指定していなければ受信した JSON |
+| 時刻だけ（`cron` / `interval_minutes`） | 何も差し込みません。`{…}` はそのまま渡ります |
+
+差し込みは**引数 1 つずつ**に対して行うので、値に空白や記号が入っても引数の数は変わりません。名前のない値は `{キー}` のまま残します。値そのものは材料であってコマンドの一部ではないので、記号の検査は宣言したときの引数にだけ掛けます。
+
+イベントを既読にするのは `ack()` です。**コマンドが成功した回だけ**呼ばれます。失敗した回は既読にしないので、次の周期でもう一度拾われます。
+
+##### 手で 1 回だけ回す
+
+```
+agent-loop command --entry "記憶メンテナンス"
+agent-loop command --entry "Issue 同期" --param issue_iid=42
+```
+
+デーモンも tmux も要りません。`--param` は、定期実行でフックや webhook が渡す材料の代わりに、その場で打つ値です。終了時に `RESULT {json}` を 1 行出し、コマンドが成功すれば 0、失敗すれば 1 で終わります。
 
 #### 2.4 エントリが採用される条件
 
