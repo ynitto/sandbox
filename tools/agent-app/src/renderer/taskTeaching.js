@@ -184,6 +184,7 @@
   // ---- 会話（tmux）を開く ------------------------------------------------------
 
   async function loadView() {
+    state.readyError = null;
     const token = (state.token += 1);
     state.session = null;
     state.availableSession = null;
@@ -194,7 +195,7 @@
     renderShell();
     if (!state.repo || !state.machine) return;
     let view;
-    try { view = await api.automation.teachSession(state.repo, state.machine); } catch (err) { error(err.message); return; }
+    try { view = await api.automation.teachSession(state.repo, state.machine); } catch (err) { state.readyError = err; error(err.message); return; }
     if (token !== state.token) return;
     state.tools = view.tools || null;
     state.availableSession = view.session || null;
@@ -207,6 +208,13 @@
     }
   }
 
+  async function whenReady() {
+    await state.ready;
+    if (state.readyError) throw state.readyError;
+    if (!state.session || term().current() !== state.session.id) throw new Error('端末表示の準備ができませんでした。作成画面から再試行してください');
+    await new Promise(resolve => requestAnimationFrame(resolve));
+  }
+
   async function attach(session, token = state.token) {
     state.session = session;
     state.running = state.deps.isRunning(session.id);
@@ -217,9 +225,10 @@
       state.phase = { phase: r.phase, detail: r.detail, name: r.name };
       if (r.warning) state.deps.notice(r.warning);
       renderShell();
-      await term().attach(session.id, $('task-term-host'));
+      await term().attach(session.id, $('task-term-host'), { strict: true });
       requestAnimationFrame(() => term().refit());
     } catch (err) {
+      state.readyError = err;
       if (token === state.token) error(err.message);
     }
   }
@@ -262,6 +271,7 @@
       state.deps.reloadTasks();
     } catch (err) {
       if (token !== state.token) return;
+      state.readyError = err;
       state.pending = false;
       error(err.message);
     }
@@ -296,6 +306,7 @@
     const view = await api.automation.teachPrepare({ repo, purpose: method.purpose, ...options });
     state.autoStart = { repo, machine: view.machine, options };
     await state.deps.openTask(view.machine);
+    await whenReady();
   }
 
   // ---- 依頼の送信 ---------------------------------------------------------------
@@ -614,7 +625,7 @@
     $('task-composer').classList.remove('awaiting-send');
     resetExecutionInputs();
     if (state.creating) { state.token += 1; state.session = null; state.availableSession = null; term().detach(); renderShell(); return; }
-    loadView();
+    state.ready = loadView();
   }
 
   function hide() {
@@ -713,5 +724,5 @@
     renderShell();
   }
 
-  window.TaskTeaching = { init, show, hide, prefill, importMethod, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
+  window.TaskTeaching = { init, show, hide, prefill, importMethod, whenReady, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
 })();

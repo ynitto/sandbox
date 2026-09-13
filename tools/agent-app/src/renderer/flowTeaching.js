@@ -115,6 +115,7 @@
   // ---- 会話（tmux）を開く -------------------------------------------------------------
 
   async function loadView() {
+    state.readyError = null;
     const token = (state.token += 1);
     state.session = null;
     state.availableSession = null;
@@ -125,7 +126,7 @@
     renderShell();
     if (!state.repo || !state.workflowId) return;
     let view;
-    try { view = await api.automation.flowTeachSession(state.repo, state.workflowId); } catch (err) { error(err.message); return; }
+    try { view = await api.automation.flowTeachSession(state.repo, state.workflowId); } catch (err) { state.readyError = err; error(err.message); return; }
     if (token !== state.token) return;
     state.availableSession = view.session || null;
     if (view.session) populateExecutionInputs({ agent: view.session.cli, model: view.session.model, autoApprove: !!view.session.autoApprove });
@@ -135,6 +136,13 @@
       state.autoStart = null;
       await start(token, autoStart.options);
     }
+  }
+
+  async function whenReady() {
+    await state.ready;
+    if (state.readyError) throw state.readyError;
+    if (!state.session || term().current() !== state.session.id) throw new Error('端末表示の準備ができませんでした。作成画面から再試行してください');
+    await new Promise(resolve => requestAnimationFrame(resolve));
   }
 
   async function attach(session, token = state.token) {
@@ -147,9 +155,10 @@
       state.phase = { phase: r.phase, detail: r.detail, name: r.name };
       if (r.warning) state.deps.notice(r.warning);
       renderShell();
-      await term().attach(session.id, $('flow-teach-term-host'));
+      await term().attach(session.id, $('flow-teach-term-host'), { strict: true });
       requestAnimationFrame(() => term().refit());
     } catch (err) {
+      state.readyError = err;
       if (token === state.token) error(err.message);
     }
   }
@@ -186,6 +195,7 @@
       state.deps.reloadWorkflows();
     } catch (err) {
       if (token !== state.token) return;
+      state.readyError = err;
       state.pending = false;
       error(err.message);
     }
@@ -287,7 +297,10 @@
     state.existing = next.existing;
     state.context = detail.context || '';
     state.visible = true;
-    if (changed || (!state.session && !state.creating) || enteringCreate) loadView().catch((err) => error(err.message));
+    if (changed || (!state.session && !state.creating) || enteringCreate) {
+      state.ready = loadView();
+      state.ready.catch(err => { state.readyError = err; error(err.message); });
+    }
     else renderShell();
   }
 
@@ -369,5 +382,5 @@
     });
   }
 
-  window.FlowTeaching = { init, show, create, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
+  window.FlowTeaching = { init, show, create, whenReady, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
 }());

@@ -113,7 +113,7 @@ function createTerm(api = window.api) {
   }
 
   // 会話 ID を切り替える。前の会話の監視は外し、新しい会話を監視する。
-  async function attach(id, hostEl) {
+  async function attach(id, hostEl, { strict = false } = {}) {
     ensure(hostEl);
     if (state.id && !state.remote && state.id !== id) api.termUnwatch(state.id).catch(() => {});
     state.remote = false;
@@ -122,7 +122,8 @@ function createTerm(api = window.api) {
     state.term.reset();
     if (!id) return;
     refit();
-    await api.termWatch(id).catch(() => {});
+    const watching = await api.termWatch(id).catch(err => { if (strict) throw err; });
+    if (strict && watching === false) throw new Error('端末に接続できませんでした');
   }
 
   // 共有の端末を映す。画面は share の便りで届くので、この PC の tmux は見ない（監視も大きさの

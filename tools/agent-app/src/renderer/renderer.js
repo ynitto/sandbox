@@ -1329,14 +1329,14 @@ async function forkConversation(index, request) {
 }
 
 // 別のリポジトリの会話を開く（リポジトリ選択も切り替える。分岐元 ⇄ 分岐先の行き来）。
-async function openSessionInRepo(repo, id) {
+async function openSessionInRepo(repo, id, options = {}) {
   if (repo && repo !== state.repo) {
     if (!state.config.repos.includes(repo)) throw new Error('登録していないフォルダです');
     await selectRepo(repo);
     renderRepos();
   }
   await showArea('conversation');
-  await openSession(id);
+  await openSession(id, options);
 }
 
 function renderPresets() {
@@ -1507,7 +1507,7 @@ function newDraft() {
 }
 
 // answer … 「確認待ち」から開いたとき。端末がつながってから端末操作へ移し、そのまま打てるようにする
-async function openSession(id, { answer = false } = {}) {
+async function openSession(id, { answer = false, waitForTerminal = false } = {}) {
   try {
     state.current = await api.readSession(id);
   } catch (err) {
@@ -1524,27 +1524,29 @@ async function openSession(id, { answer = false } = {}) {
   Files.setRoot(state.repo, activeWorktree(), {}).catch(() => {});
   if (state.changesOpen) refreshChanges();
   let attaching = null;
-  if (isTmux(state.current)) attaching = attachTerm(state.current.id);
+  if (isTmux(state.current)) attaching = attachTerm(state.current.id, { strict: waitForTerminal });
   else if (!shareWaiting()) Term.detach();
   setInputMode('message', { focus: false });
-  if (!answer || !attaching) return;
+  if ((!answer && !waitForTerminal) || !attaching) return;
   await attaching;
-  if (state.current && state.current.id === id) setInputMode('terminal');
+  if (answer && state.current && state.current.id === id) setInputMode('terminal');
 }
 
 // tmux の会話を開く: main に tmux セッションを（無ければ起動して）持たせ、端末ミラーをつなぐ。
-async function attachTerm(id) {
+async function attachTerm(id, { strict = false } = {}) {
   const size = Term.size();
   try {
     const r = await api.termOpen(id, size.cols, size.rows);
     state.phases.set(id, { phase: r.phase, detail: r.detail, name: r.name });
     if (r.warning) notice(r.warning);
     if (state.current && state.current.id === id) {
-      await Term.attach(id, $('term-host'));
+      await Term.attach(id, $('term-host'), { strict });
+      if (strict) await new Promise(resolve => requestAnimationFrame(resolve));
       renderHeader();
     }
   } catch (err) {
     notice(err.message, 'error');
+    if (strict) throw err;
   }
 }
 
@@ -2166,11 +2168,12 @@ async function init() {
         const id = await FlowTeaching.create({ root: result.repo, purpose: result.method.purpose, options: result.options });
         state.selectedWorkflow = id;
         await syncAutomationWorkbench('teach');
+        await FlowTeaching.whenReady();
         loadAreaItems().catch(err => notice(err.message, 'error'));
       }
     },
     sendCreated: async ({ session, prompt }) => {
-      await openSessionInRepo(session.repo, session.id);
+      await openSessionInRepo(session.repo, session.id, { waitForTerminal: true });
       state.pending.add(session.id); renderHeader();
       try {
         const turn = await api.send(session.id, prompt, { policy: 'direct', cli: session.cli, model: session.model,
@@ -2179,7 +2182,7 @@ async function init() {
         state.current = await api.readSession(session.id);
         state.sessions = await api.listSessions(session.repo);
         renderSessions(); renderMessages();
-      } catch (err) { fillPrompt(prompt); notice(`送信できませんでした。この会話から再送できます: ${err.message}`, 'error'); }
+      } catch (err) { fillPrompt(prompt); notice(`送信できませんでした。この会話から再送できます: ${err.message}`, 'error'); throw err; }
       finally { state.pending.delete(session.id); renderHeader(); }
     },
   });

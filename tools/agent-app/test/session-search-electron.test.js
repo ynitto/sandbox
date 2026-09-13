@@ -92,6 +92,7 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await win.click('#search-execution-settings > summary');
     assert.equal(await win.inputValue('#search-boundary'), 'r1:assistant');
     await win.fill('#search-request', '別の観点で確認する');
+    assert.equal(await win.locator('#search-transfer-start').evaluate(b => b.getBoundingClientRect().right > b.parentElement.getBoundingClientRect().left + b.parentElement.clientWidth * 0.8), true);
     await win.screenshot({ path: '/tmp/agent-app-session-transfer.png' });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(520, 800));
     assert.equal(await win.evaluate(() => { const body = document.querySelector('#search-transfer-dialog .dlg-body'); return body.scrollWidth <= body.clientWidth; }), true);
@@ -113,6 +114,14 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     assert.equal(store.readSession(data, original.id).messages.length, 2);
     await app.evaluate(({ ipcMain }) => {
       global.methodStarts = [];
+      global.releaseImportTerminal = null;
+      ipcMain.removeHandler('term:open');
+      ipcMain.handle('term:open', async () => {
+        await new Promise(resolve => { global.releaseImportTerminal = resolve; });
+        return { ok: true, data: { phase: 'ready' } };
+      });
+      ipcMain.removeHandler('term:watch');
+      ipcMain.handle('term:watch', () => ({ ok: true, data: {} }));
       for (const prefix of ['automation:teach', 'automation:flow:teach']) {
         const read = ipcMain._invokeHandlers.get(prefix + ':session');
         ipcMain.removeHandler(prefix + ':start');
@@ -135,6 +144,16 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
       await win.click('#search-execution-settings > summary');
       await win.selectOption('#search-intent', 'routine');
       await win.click('#search-transfer-start');
+      if (kind !== 'skill') {
+        await win.waitForFunction(() => document.getElementById('search-transfer-status').textContent.includes('表示を準備'));
+        for (let attempt = 0; attempt < 100; attempt++) {
+          if (await app.evaluate(() => !!global.releaseImportTerminal)) break;
+          await win.waitForTimeout(50);
+        }
+        assert.equal(await app.evaluate(() => !!global.releaseImportTerminal), true);
+        assert.equal(await win.locator('#search-transfer-dialog').evaluate(d => d.open), true);
+        await app.evaluate(() => { global.releaseImportTerminal(); global.releaseImportTerminal = null; });
+      }
       await win.waitForFunction(() => !document.getElementById('search-transfer-dialog').open);
       if (kind === 'skill') {
         const skillSent = await app.evaluate(() => global.sentTransfer);

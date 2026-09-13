@@ -1148,7 +1148,7 @@ test('「確認待ち」は答える場所（端末操作）への行き先で�
   assert.match(css, /\.phase\.answerable \{[^}]*cursor: pointer/);
   // 一覧からも、開いてそのまま端末操作まで行く
   assert.match(renderer, /pick\.onclick = \(\) => openSession\(s\.id, \{ answer: answering \}\)/);
-  assert.match(renderer, /await attaching;\s*\n\s*if \(state\.current && state\.current\.id === id\) setInputMode\('terminal'\)/);
+  assert.match(renderer, /await attaching;\s*\n\s*if \(answer && state\.current && state\.current\.id === id\) setInputMode\('terminal'\)/);
   // ポップアップの種別は元の 2 つに戻る
   assert.match(renderer, /POPUP_MENU_SELECTOR = 'details\.more-menu\[open\], details\.run-settings\[open\]'/);
 });

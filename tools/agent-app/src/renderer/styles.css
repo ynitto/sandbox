@@ -650,3 +650,5 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 
 #search-transfer-dialog .setting-field > select { min-width: 0; max-width: 65%; }
 #search-execution-settings > summary { max-width: 100%; overflow-wrap: anywhere; }
+
+#search-transfer-start, .search-preview-actions > .primary { margin-left: auto; }

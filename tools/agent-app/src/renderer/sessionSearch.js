@@ -161,6 +161,7 @@ const SessionSearch = (() => {
       current.creating = true; $('search-transfer-close').disabled = true;
       const result = await api.create({ token: prepared.token, summary: prepared.summary, request: $('search-request').value, permission: $('search-target-permission').value });
       if (transfer !== current) return;
+      $('search-transfer-status').textContent = '取り込みを開始し、表示を準備しています…';
       if (result.method) await deps.importMethod(result);
       else await deps.sendCreated(result);
       $('search-transfer-dialog').close(); close();
