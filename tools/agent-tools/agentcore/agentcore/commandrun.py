@@ -16,8 +16,8 @@
 
 ## 呼ぶ側
 
-常駐デーモン（agent-loop の scheduler）、`agent-loop command --entry`、
-`agent-herd harness command --entry`。宣言の読み方は `agentcore.loopentry.command_spec`、
+常駐デーモン（agent-loop の scheduler）、`agent-loop command --entry`、agent-app の
+「今すぐ実行」（`repository_ui`）。宣言の読み方は `agentcore.loopentry.command_spec`、
 `{…}` の補完は `agentcore.loopentry.render_argv` で、どちらも 1 実装を共有する。
 
 設計: docs/plans/2026-09-13-agent-loop-command-entry-design.md

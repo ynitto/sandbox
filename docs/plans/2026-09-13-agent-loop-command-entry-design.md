@@ -196,7 +196,6 @@ headless スロットを取って並走する。同期スクリプトの多重�
 
 ```
 agent-loop command --entry "記憶メンテナンス" [-d DIR] [--config PATH]
-agent-herd  harness command --entry "記憶メンテナンス"
 ```
 
 `statemachine --entry` と同じく `agentcore.loopentry` で宣言を引き、同じ `run_command` を
@@ -234,7 +233,7 @@ agent-herd  harness command --entry "記憶メンテナンス"
    `_run_headless` の第 3 分岐、`record_repository_run` の `kind`。
    headless 経路の完了時に `_call_hook_ack` を呼ぶ（既存の穴。statemachine / prompt の
    headless 実行にも効く）。`command` エントリのエントリ単位直列化。
-4. `agent-loop command --entry`、`agent-herd harness command --entry`。
+4. `agent-loop command --entry`。
 5. `repository_ui.inspect` の `kind: command` と `cmd_repository_command`。
 6. `agent-loop.yaml.example` の 4 件を `command:` へ書き換え、`hooks/` の該当 4 ファイルを
    削除。README / `docs/specs/agent-loop-spec.md` §2.3 に `command` 行と §2.3.2 を足す
@@ -245,3 +244,6 @@ agent-herd  harness command --entry "記憶メンテナンス"
 
 - stdout を次のプロンプトの材料にする（command の出力を `input` に渡す）。それは
   ステートマシンの `check:` か `run` の仕事で、本設計は「送らずに実行する」に限る。
+- `agent-herd harness` の `command` 種別は**未実装**（`HARNESS_KINDS` は `statemachine` /
+  `run` のまま）。手で回す口は `agent-loop command --entry` と agent-app の「今すぐ実行」で
+  足りているので、要る場面が出てから足す。
