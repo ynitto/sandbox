@@ -90,12 +90,17 @@ const SessionSearch = (() => {
       for (const message of record.messages) {
         const row = node('article', 'search-message', '');
         row.append(node('strong', '', message.role === 'user' ? '利用者' : 'AI'), node('div', 'search-message-body', message.text));
-        if (!record.partial && message.role === 'assistant' && message.complete !== false) row.append(button('取り込む', 'small quiet', () => beginTransfer(record, message.id)));
+        if (!record.partial && message.role === 'assistant' && message.complete !== false) {
+          // 会話画面の応答の下と同じ部品（.message-actions / .message-action）で出す。
+          const actions = node('div', 'message-actions', '');
+          actions.append(button('フォーク', 'message-action', () => beginTransfer(record, message.id)));
+          row.append(actions);
+        }
         box.append(row);
       }
       const actions = node('div', 'row search-preview-actions', '');
       if (record.appId) actions.append(button('元の会話を開く', 'small', () => { close(); deps.openSession(record.repo, record.appId); }));
-      const start = button('取り込む', 'primary', () => beginTransfer(record));
+      const start = button('フォーク', 'primary', () => beginTransfer(record));
       start.disabled = record.partial || !record.messages.some(m => m.role === 'assistant' && m.complete !== false);
       actions.append(start); box.append(actions);
     } catch (err) { if (version === previewVersion) $('search-preview').replaceChildren(node('p', 'sub', err.message)); }
@@ -108,7 +113,7 @@ const SessionSearch = (() => {
     const current = transfer;
     if (!current) return;
     current.loading = true;
-    $('search-transfer-start').textContent = '取り込む'; $('search-transfer-start').disabled = true;
+    $('search-transfer-start').textContent = 'フォーク'; $('search-transfer-start').disabled = true;
     const repo = $('search-target-repo').value;
     $('search-target-agent').replaceChildren(new Option('エージェントを確認中…', ''));
     if (!repo) { current.loading = false; return; }
@@ -129,7 +134,7 @@ const SessionSearch = (() => {
   }
   function beginTransfer(record, boundary = null) {
     transfer = { record, boundary, mode: boundary == null ? 'handoff' : 'fork', busy: false };
-    $('search-transfer-title').textContent = '取り込む';
+    $('search-transfer-title').textContent = 'フォーク';
     const turns = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
     $('search-boundary').replaceChildren(...turns.map((m, i) => new Option(`${i + 1}: ${m.text.slice(0, 80)}`, m.id)));
     $('search-boundary').value = boundary == null ? turns.at(-1)?.id || '' : boundary;
@@ -138,8 +143,19 @@ const SessionSearch = (() => {
     const excerpt = boundary == null ? '' : ' · ' + record.messages.find(m => m.id === boundary)?.text.slice(0, 100);
     $('search-transfer-source').textContent = record.title + excerpt;
     $('search-request').value = ''; $('search-transfer-status').textContent = '';
-    repos(deps.getConfig().lastRepo || ''); $('search-target-permission').value = 'confirm';
+    const config = deps.getConfig();
+    repos((config.repos || []).includes(record.repo) ? record.repo : config.lastRepo || ''); $('search-target-permission').value = 'confirm';
     $('search-transfer-dialog').showModal(); targetChanged();
+  }
+  // 会話画面から、いま開いている会話をフォークする（検索画面と同じダイアログ）。
+  // boundary・target を渡すと、その位置とフォーク先を選んだ状態で開く。
+  async function forkCurrent(id, { boundary = '', target = '' } = {}) {
+    const record = await api.read('app:' + id);
+    const completed = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
+    const at = completed.some(m => m.id === boundary) ? boundary : completed.at(-1)?.id;
+    if (!at) throw new Error('フォークできる応答がありません');
+    beginTransfer(record, at);
+    if (target) $('search-intent').value = target;
   }
   function executionLabel() {
     $('search-execution-summary').textContent = [$('search-target-agent').value || 'エージェントを選択', $('search-target-model').value || 'モデル自動', $('search-target-permission').selectedOptions[0]?.textContent].filter(Boolean).join(' · ');
@@ -153,10 +169,10 @@ const SessionSearch = (() => {
       const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
       if (!repo || !cli) throw new Error('保存先とエージェントを選んでください');
       for (const id of controls) $(id).disabled = true;
-      // 取り込み先。セッション以外は、選ばれた種類の作り方として整理する。
+      // フォーク先。セッション以外は、選ばれた形の作り方として整理する。
       const target = $('search-intent').value, intent = target === 'session' ? 'session' : 'routine';
       const label = $('search-intent').selectedOptions[0]?.textContent;
-      $('search-transfer-status').textContent = intent === 'session' ? '取り込む内容を整理しています…' : `内容を整理し、${label}としてまとめています…`;
+      $('search-transfer-status').textContent = intent === 'session' ? 'フォークする内容を整理しています…' : `内容を整理し、${label}としてまとめています…`;
       current.requestId = crypto.randomUUID();
       const prepared = await api.prepare({ requestId: current.requestId, key: current.record.key, revision: current.record.revision,
         boundary: $('search-boundary').value, mode: current.mode, intent, kind: intent === 'session' ? 'auto' : target, request: $('search-request').value, repo, cli, model });
@@ -164,7 +180,7 @@ const SessionSearch = (() => {
       current.creating = true; $('search-transfer-close').disabled = true;
       const result = await api.create({ token: prepared.token, summary: prepared.summary, request: $('search-request').value, permission: $('search-target-permission').value });
       if (transfer !== current) return;
-      $('search-transfer-status').textContent = '取り込みを開始し、表示を準備しています…';
+      $('search-transfer-status').textContent = 'フォークを開始し、表示を準備しています…';
       if (result.method) await deps.importMethod(result);
       else await deps.sendCreated(result);
       $('search-transfer-dialog').close(); close();
@@ -237,5 +253,5 @@ const SessionSearch = (() => {
     $('search-source').value = origin.provider === 'vscode' ? 'vscode' : 'cli';
     open();
   }
-  return { init, open, close, openOrigin };
+  return { init, open, close, forkCurrent, openOrigin };
 })();

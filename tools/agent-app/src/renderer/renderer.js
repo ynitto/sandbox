@@ -51,7 +51,6 @@ const state = {
   turnSkills: [],
   turnSkillPreview: [],
   skillPreviewTimer: null,
-  pendingTaskIntent: null,
   routine: null,
   filledPrompt: '',     // 入力欄へこちらが置いた本文（書きかけと見分けるため）
 };
@@ -429,13 +428,11 @@ async function loadAreaItems() {
   else await loadWorkflowItems(state.repo);
 }
 
-// 会話からの「この依頼をタスクにする」（intent）は、新しいタスクの画面（action: new）として開き、
-// 本文は親の作成フォーム（taskTeaching.js）が受け取る。
 function frameMessage(action = '') {
   return {
     type: 'agent-app:navigate', area: state.area, root: state.repo,
     selected: state.area === 'tasks' ? state.selectedTask : state.selectedWorkflow,
-    action: action || (state.area === 'tasks' && state.pendingTaskIntent ? 'new' : ''),
+    action,
   };
 }
 
@@ -458,7 +455,6 @@ function setAutomationLoading(loading) {
 
 // AI と作り始めたタスクを選び直し、その会話（AI相談）を開く。
 async function openTaughtTask(machine) {
-  state.pendingTaskIntent = null;
   state.selectedTask = `machine:${machine}`;
   const selected = state.selectedTask;
   const lastTask = { ...(state.config.lastTask || {}), [state.repo]: selected };
@@ -524,7 +520,6 @@ async function selectAreaItem(area, id) {
 async function selectRepo(repo) {
   state.repo = repo || '';
   const token = (state.repoToken += 1);
-  if (state.pendingTaskIntent && state.pendingTaskIntent.root !== state.repo) state.pendingTaskIntent = null;
   if (repo) state.config = await api.saveConfig({ lastRepo: repo });
   state.sessions = repo ? await api.listSessions(repo) : [];
   state.worktree = (state.config.lastWorktree || {})[state.repo] || '';
@@ -1001,6 +996,8 @@ function renderHeader() {
   $('session-routine').hidden = !cur;
   $('session-routine').disabled = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
+  $('session-fork').hidden = !cur || cur.kind !== 'conversation';
+  $('session-fork').disabled = busy || !cur?.messages.some(m => m.role === 'assistant' && m.complete !== false);
   $('session-handoff').hidden = !cur || cur.kind !== 'conversation';
   $('session-handoff').disabled = busy || !!state.handoffId || !cur?.messages.length;
   $('session-handoff').textContent = state.handoffId === cur?.id ? '引き継ぎ中…' : '新しいセッションに引き継ぐ';
@@ -1149,52 +1146,66 @@ function fillPrompt(text, { attachments: files = [] } = {}) {
   refreshTurnSkillPreview();
 }
 
-// ターンが終わったあとの「次の一手」。設定 > 共通指示 の定型の依頼を、最後の応答の下にだけ
-// 並べる（履歴の全応答に並べると画面が埋まる）。押すと入力欄に入るだけで、送らない。
-function quickRequestActions(index) {
-  const cur = state.current;
-  if (!cur || index !== cur.messages.length - 1) return null;
-  if (state.running.has(cur.id) || state.pending.has(cur.id)) return null;
-  const requests = (state.config.instructions.quickRequests || []).filter((item) => item && item.text);
-  if (!requests.length) return null;
-  const actions = el('div', 'message-actions');
+// 設定 > 共通指示 の定型の依頼は、入力欄の「定型」から選ぶ（会話の履歴には置かない）。
+// 押すと本文が入力欄に入るだけで、送るのは利用者。
+function renderQuickRequestMenu() {
+  const requests = (state.config.instructions?.quickRequests || []).filter((item) => item && item.text);
+  const menu = $('quick-menu');
+  menu.hidden = !requests.length;
+  if (!requests.length) { menu.open = false; return; }
+  const box = $('quick-menu-list');
+  box.replaceChildren();
   for (const request of requests) {
-    const button = el('button', 'message-action', request.label);
+    const button = el('button', '', request.label || request.text.slice(0, 20));
     button.type = 'button';
     button.title = request.text;
-    button.onclick = () => fillPrompt(request.text);
-    actions.append(button);
+    button.onclick = () => { menu.open = false; fillPrompt(request.text); };
+    box.append(button);
   }
+}
+
+// 応答ごとのフォーク。検索画面のプレビューと同じ言葉で、押すと同じダイアログを
+// その応答の位置で開く。まだ完了していない応答には出さない。
+function responseForkActions(m, index) {
+  const cur = state.current;
+  if (!cur || index < 0 || m.error || m.stopped || !m.text) return null;
+  const actions = el('div', 'message-actions');
+  const button = el('button', 'message-action', 'フォーク');
+  button.type = 'button';
+  button.title = 'この応答までを新しいセッション・タスク・ワークフロー・スキルへ分ける';
+  button.onclick = () => SessionSearch.forkCurrent(cur.id, { boundary: String(index) }).catch((err) => notice(err.message, 'error'));
+  actions.append(button);
   return actions;
 }
 
 // index … 会話の messages の中の位置（分岐の関連づけに使う）
 function messageNode(m, index = -1) {
-  const n = el('div', m.role === 'user' ? 'msg user' : 'response-turn');
+  // 依頼も応答も「吹き出し＋その下の操作」の同じ組み立てにする（.response-turn の中に置き、
+  // 操作の行は吹き出しの外で同じ端にそろえる）。
+  const n = el('div', m.role === 'user' ? 'response-turn user-turn' : 'response-turn');
   if (m.role === 'user') {
+    const bubble = el('div', 'msg user');
     // どのエージェント・モデル・モードへ出した依頼か（ターンごとに変わりうる）
     if (m.cli) {
       const who = el('div', 'who');
       who.append(el('span', 'tag', m.cli));
       if (m.model) who.append(el('span', 'tag', m.model));
       if (m.readonly) who.append(el('span', 'tag', 'Ask'));
-      n.append(who);
+      bubble.append(who);
     }
-    n.append(document.createTextNode(m.text || ''));
+    bubble.append(document.createTextNode(m.text || ''));
     if (m.attachments && m.attachments.length) {
       const files = el('div', 'files');
       for (const a of m.attachments) files.append(chipNode(a));
-      n.append(files);
+      bubble.append(files);
     }
+    n.append(bubble);
     const actions = el('div', 'message-actions');
-    const teach = el('button', 'message-action', 'この依頼をタスクにする');
-    teach.type = 'button';
-    teach.onclick = () => beginTaskTeaching(m);
     const again = el('button', 'message-action', '入力欄に戻す');
     again.type = 'button';
     again.title = '本文と添付を入力欄へ戻す（送らない）';
     again.onclick = () => fillPrompt(m.text, { attachments: m.attachments || [] });
-    actions.append(teach, again);
+    actions.append(again);
     n.append(actions);
   } else {
     const who = el('div', 'response-who');
@@ -1233,8 +1244,8 @@ function messageNode(m, index = -1) {
     if (info) n.append(info);
     const forkActions = forkActionsNode(m, index);
     if (forkActions) n.append(forkActions);
-    const quick = quickRequestActions(index);
-    if (quick) n.append(quick);
+    const fork = responseForkActions(m, index);
+    if (fork) n.append(fork);
   }
   return n;
 }
@@ -1425,20 +1436,6 @@ async function createRoutine() {
   }
 }
 
-function beginTaskTeaching(message) {
-  try {
-    const selected = selectedExecution(message.policy || 'direct');
-    state.pendingTaskIntent = TaskIntent.create({
-      id: globalThis.crypto && globalThis.crypto.randomUUID ? globalThis.crypto.randomUUID() : `intent-${Date.now().toString(36)}`,
-      root: state.repo,
-      message,
-      execution: { agent: message.cli || selected.cli, model: message.model || selected.model },
-    });
-    showArea('tasks').catch((err) => notice(err.message, 'error'));
-  } catch (err) {
-    notice(err.message, 'error');
-  }
-}
 
 function workingNode(id, tmuxMode) {
   const n = el('div', 'response-turn working');
@@ -2129,6 +2126,7 @@ async function saveSettings() {
     state.settingsSkills = [...state.config.instructions.skills];
     state.settingsActions = state.config.instructions.startupActions.map((action) => ({ ...action }));
     state.settingsQuick = (state.config.instructions.quickRequests || []).map((item) => ({ ...item }));
+    renderQuickRequestMenu();
     $('settings-status').textContent = '保存しました';
     if (before.wslDistro !== state.config.wslDistro) {
       try { state.host = await api.hostInfo(); } catch (error) { state.host = { platform: api.platform, tmux: '', error: error.message }; }
@@ -2202,6 +2200,7 @@ async function init() {
   });
   state.config = await api.getConfig();
   state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
+  renderQuickRequestMenu();
   state.hostReady = api.hostInfo()
     .then((info) => { state.host = info; }, (err) => { state.host = { platform: api.platform, tmux: '', error: err.message }; })
     .then(() => { renderHostStatus(); renderAgents(); renderRunSettingsSummary(); });
@@ -2266,11 +2265,6 @@ async function init() {
       const model = overrides.model != null ? overrides.model : selected.model;
       const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
       return `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
-    },
-    takeIntent: () => {
-      const intent = state.pendingTaskIntent && state.pendingTaskIntent.root === state.repo ? state.pendingTaskIntent : null;
-      state.pendingTaskIntent = null;
-      return intent;
     },
     openTask: (machine) => openTaughtTask(machine),
     cancelCreate: () => syncAutomationWorkbench(),
@@ -2358,6 +2352,10 @@ async function init() {
       catch (err) { notice(err.message, 'error'); }
     }
     renderRunSettingsSummary(); refreshTurnSkillPreview();
+  };
+  $('session-fork').onclick = () => {
+    $('chat-more').open = false;
+    if (state.current) SessionSearch.forkCurrent(state.current.id).catch(err => notice(err.message, 'error'));
   };
   $('session-routine').onclick = beginRoutine;
   $('routine-retry').onclick = inspectRoutine;

@@ -289,6 +289,10 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .msg .who .tag { margin-right: 4px; background: var(--panel); }
 .msg .files { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; white-space: normal; }
 .message-actions { display: flex; justify-content: flex-end; margin-top: 7px; white-space: normal; }
+/* 吹き出しの下に置く操作は、依頼・応答・検索のプレビューで同じ右端にそろえる。 */
+.response-turn > .message-actions { align-self: stretch; margin-top: 0; }
+.user-turn { align-items: flex-end; }
+.user-turn > .msg.user { margin-left: 0; }
 .message-action { padding: 4px 7px; border: 0; background: transparent; color: var(--accent); font-size: 11px; }
 .message-action:hover { background: var(--panel); }
 .msg .err { margin-top: 6px; padding: 6px 10px; border-radius: 6px; color: var(--danger); background: var(--del); font-size: 12px; white-space: pre-wrap; }
@@ -625,6 +629,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .search-filters > input { width: 100%; }
 .search-filters .row { flex-wrap: wrap; }
 #search-more .menu-panel { min-width: 240px; }
+/* 入力欄の「定型」は画面下にあるので、同じ menu-panel を上向きに出す。 */
+#quick-menu .menu-panel { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
 #search-more label { display: grid; gap: 6px; padding: 8px; }
 #search-split { display: grid; grid-template-columns: minmax(220px, 36%) minmax(0, 1fr); min-height: 0; flex: 1; }
 #search-results-pane, #search-preview { min-width: 0; overflow: auto; padding: 16px; }

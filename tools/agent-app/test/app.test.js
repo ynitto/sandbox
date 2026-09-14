@@ -23,7 +23,7 @@ const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
   for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/notify.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
-    'main/automation/teaching.js', 'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/taskIntent.js', 'renderer/teachingProtocol.js', 'renderer/taskTeaching.js', 'renderer/automation/flow.js', 'renderer/automation/teaching.js', 'renderer/automation/renderer.js']) {
+    'main/automation/teaching.js', 'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/teachingProtocol.js', 'renderer/taskTeaching.js', 'renderer/automation/flow.js', 'renderer/automation/teaching.js', 'renderer/automation/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
   const main = fs.readFileSync(path.join(SRC, 'main/main.js'), 'utf8');
@@ -545,18 +545,22 @@ test('ワークフロー詳細は選択中リポジトリの実行履歴へ移�
   assert.match(css, /:host \.execution-list,[\s\S]*:host \.flow-home-head\s*\{\s*display:\s*none/);
 });
 
-test('会話の依頼と新しいタスクを同じ作成フォーム（AI との tmux 会話）へつなぐ', () => {
+test('タスクやワークフローを作る導線は、フォークのダイアログ 1 か所に合流する', () => {
   const shell = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const maker = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   const teaching = fs.readFileSync(path.join(SRC, 'renderer', 'taskTeaching.js'), 'utf8');
-  assert.ok(html.includes('src="taskIntent.js"') && html.includes('src="taskTeaching.js"') && html.includes('src="teachingProtocol.js"'));
-  assert.match(shell, /この依頼をタスクにする/);
-  assert.match(shell, /TaskIntent\.create/);
-  assert.match(shell, /state\.area === 'tasks' && state\.pendingTaskIntent/, 'intent は新しいタスクの画面として開く');
+  assert.ok(html.includes('src="taskTeaching.js"') && html.includes('src="teachingProtocol.js"'));
+  // 応答ごとの操作も、会話の「その他」も、同じ SessionSearch.forkCurrent を通す
+  assert.match(shell, /el\('button', 'message-action', 'フォーク'\)/);
+  assert.match(shell, /SessionSearch\.forkCurrent\(cur\.id, \{ boundary: String\(index\) \}\)/);
+  assert.match(shell, /\$\('session-fork'\)\.onclick/);
+  assert.ok(!/この依頼をタスクにする/.test(shell), 'タスクを作る導線はフォーク先の選択に寄せる');
+  // 会話から作成フォームへ本文を先渡しする別経路は残さない
+  assert.ok(!/TaskIntent|pendingTaskIntent|takeIntent/.test(shell + teaching + html), '独自の受け渡しを作らない');
+  assert.ok(!fs.existsSync(path.join(SRC, 'renderer', 'taskIntent.js')));
   assert.match(shell, /api\.automation\.teachingList/);
   assert.match(maker, /payload\.action === 'new'[\s\S]*teachingFeature\.create\(\)/);
-  assert.match(teaching, /takeIntent/, '作成フォームが依頼の本文を受け取る');
   assert.match(teaching, /api\.automation\.teachStart\(/);
 });
 
@@ -1153,21 +1157,19 @@ test('「確認待ち」は答える場所（端末操作）への行き先で�
   assert.match(renderer, /POPUP_MENU_SELECTOR = 'details\.more-menu\[open\], details\.run-settings\[open\]'/);
 });
 
-test('回答の下の「定型の依頼」と「入力欄に戻す」は入力欄に入れるだけで送らない', () => {
+test('「定型の依頼」は入力欄のメニューから、「入力欄に戻す」は依頼の下から入れるだけで送らない', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
-  // 部品は既存の .message-actions / .message-action（「この依頼をタスクにする」と同じ）
-  const quick = renderer.slice(renderer.indexOf('function quickRequestActions('), renderer.indexOf('// index … 会話の messages'));
-  assert.match(quick, /el\('div', 'message-actions'\)/);
-  assert.match(quick, /el\('button', 'message-action', request\.label\)/);
-  // 出すのは最後の応答の下だけ。応答中は出さない
-  assert.match(quick, /index !== cur\.messages\.length - 1/);
-  assert.match(quick, /state\.running\.has\(cur\.id\) \|\| state\.pending\.has\(cur\.id\)/);
+  // 入力欄の「定型」は、ヘッダーの「その他」と同じ .more-menu / .menu-panel を借りる
+  assert.match(html, /<details id="quick-menu" class="more-menu" hidden>[\s\S]*<summary>定型<\/summary>[\s\S]*<div class="menu-panel" id="quick-menu-list"><\/div>/);
+  const quick = renderer.slice(renderer.indexOf('function renderQuickRequestMenu('), renderer.indexOf('// 応答ごとのフォーク'));
+  assert.match(quick, /menu\.hidden = !requests\.length/, '定型の依頼が無ければ出さない');
   // 押しても送らない（送信は利用者）
-  assert.match(quick, /button\.onclick = \(\) => fillPrompt\(request\.text\)/);
+  assert.match(quick, /button\.onclick = \(\) => \{ menu\.open = false; fillPrompt\(request\.text\); \}/);
   assert.ok(!/fillPrompt[\s\S]{0,400}sendPrompt\(\)/.test(renderer.slice(renderer.indexOf('function fillPrompt('))), 'fillPrompt は送信しない');
-  // 依頼を入力欄へ戻すのは、本文と添付の両方
+  // 会話の履歴に残る操作は「入力欄に戻す」と応答の「フォーク」だけ
   assert.match(renderer, /again\.onclick = \(\) => fillPrompt\(m\.text, \{ attachments: m\.attachments \|\| \[\] \}\)/);
+  assert.ok(!/quickRequestActions/.test(renderer), '定型の依頼を応答の下に戻さない');
   // 設定の行は起動時アクションと同じ形
   assert.match(html, /id="quick-add" class="small">追加<\/button>[\s\S]*id="quick-requests" class="startup-actions"/);
   assert.match(renderer, /el\('div', 'startup-row quick-row'\)/);

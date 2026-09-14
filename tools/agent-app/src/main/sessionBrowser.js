@@ -202,7 +202,7 @@ class SessionBrowser {
   async prepare({ key: id, revision, boundary, repo, cli, model, mode, intent = 'session', kind = 'auto', request = '' }, generate) {
     const record = await this.read(id);
     if (record.revision !== revision) throw new Error('会話が更新されました。プレビューを開き直してください');
-    if (!['session', 'routine'].includes(intent)) throw new Error('取り込む目的を選んでください');
+    if (!['session', 'routine'].includes(intent)) throw new Error('フォーク先を選んでください');
     if (!routine.KINDS.includes(kind) && kind !== 'auto') throw new Error('定型化の種類を選んでください');
     const selected = takeBoundary(record, boundary);
     const summary = await handoff.summarize(selected, generate);
@@ -230,7 +230,7 @@ class SessionBrowser {
       readonly: permission === 'ask', autoApprove: permission === 'auto', transport,
       origin: r.appId ? { sessionId: r.appId, repo: r.repo, index: Number(r.boundary) } : null,
       externalOrigin: r.appId ? null : { key: r.key, provider: r.provider, nativeId: r.nativeId, repo: r.repo, title: r.title, boundary: r.boundary, revision: r.revision, capturedAt: new Date().toISOString(), mode: plan.mode } });
-    store.updateSession(this.userData(), session.id, { title: `${r.title}（${plan.mode === 'fork' ? 'fork' : '引き継ぎ'}）` });
+    store.updateSession(this.userData(), session.id, { title: `${r.title}（フォーク）` });
     plan.createdId = session.id; plan.prompt = prompt;
     return { session: store.readSession(this.userData(), session.id), prompt };
   }
