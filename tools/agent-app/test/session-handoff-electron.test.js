@@ -24,7 +24,7 @@ async function until(read, description) {
   assert.fail(description);
 }
 
-test('Electron: 会話の要約引き継ぎと、タスク・ワークフローの新しい編集セッション', async (t) => {
+test('Electron: 統一したフォークで設定を引き継ぎ、タスク・ワークフローは新しい編集セッションを使う', async (t) => {
   const pw = playwright();
   if (!pw || spawnSync('tmux', ['-V']).status !== 0) { t.skip('Playwright または tmux が無い'); return; }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'app-handoff-e2e-'));
@@ -64,9 +64,11 @@ for line in sys.stdin: print('> ',flush=True)
     purpose: 'implementation', entry: ['review'], exit: ['review'],
     nodes: [{ id: 'review', label: '確認', kind: 'work', goal: '{{request}} を確認する', deps: [], tier: 'auto' }],
   }, 'create');
+  fs.mkdirSync(path.join(root, '.worktrees', 'current'), { recursive: true });
   const sessions = ['conversation', 'task', 'workflow'].map((kind) => {
     const session = store.createSession(ud, { repo: root, kind, cli: 'claude',
-      task: { machine: 'edit-target' }, workflow: { id: 'edit-flow' } });
+      task: { machine: 'edit-target' }, workflow: { id: 'edit-flow' },
+      ...(kind === 'conversation' ? { readonly: true, model: 'same-model', worktree: 'current', branch: 'codex/current' } : {}) });
     store.appendMessage(ud, session.id, { role: 'user', text: '旧セッションだけの長い依頼' });
     store.appendMessage(ud, session.id, { role: 'assistant', text: '日本語で実装すると決定した' });
     store.setCliEntry(ud, session.id, 'claude', { id: session.id, seen: 2 });
@@ -80,7 +82,7 @@ for line in sys.stdin: print('> ',flush=True)
       env: { ...process.env, KIRO_AGENTS_DIR: definitions },
     });
     const win = await app.firstWindow();
-    await win.waitForFunction(() => !!window.api && !!window.TaskTeaching);
+    await win.waitForFunction(() => typeof openSessionInRepo === 'function' && typeof document.getElementById('session-fork')?.onclick === 'function');
     const errors = [];
     win.on('pageerror', (error) => errors.push(error.message));
     await win.evaluate((id) => openSessionInRepo(state.repo, id), sessions[0].id);
@@ -97,26 +99,44 @@ for line in sys.stdin: print('> ',flush=True)
     await win.screenshot({ path: path.join(root, 'handoff-narrow.png') });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 900));
     fs.writeFileSync(path.join(root, 'wait-ready'), 'wait');
-    await win.locator('#session-handoff').click();
+    assert.equal(await win.locator('#session-handoff').count(), 0);
+    assert.equal(await win.evaluate(() => typeof api.handoffSession), 'undefined');
+    await win.click('#chat-more > summary');
+    await win.click('#session-fork');
+    await win.locator('#search-target-agent option[value="claude"]').waitFor({ state: 'attached' });
+    assert.equal(await win.inputValue('#search-boundary'), '1');
+    assert.equal(await win.inputValue('#search-target-agent'), 'claude');
+    assert.equal(await win.inputValue('#search-target-model'), 'same-model');
+    assert.equal(await win.inputValue('#search-target-permission'), 'ask');
+    assert.match(await win.locator('#search-worktree-note').textContent(), /current/);
+    await win.click('#search-transfer-start');
     await until(() => win.evaluate((id) => state.current?.id !== id, sessions[0].id), '新しい会話に切り替わる');
     const current = await win.evaluate(() => state.current);
     await until(() => win.evaluate((id) => Term.current() === id, current.id), '入力受付を待たずに新しい端末を表示する');
-    assert.ok(store.readSession(ud, current.id).messages.length, '起動待ちの間も要約を保存している');
+    assert.equal(current.worktree, 'current');
+    assert.equal(current.readonly, true);
+    assert.equal(current.model, 'same-model');
     fs.unlinkSync(path.join(root, 'wait-ready'));
-    await until(() => win.evaluate(() => !state.handoffId), '引き継ぎ依頼を送信する');
+    await until(() => win.evaluate(() => !document.getElementById('search-transfer-dialog').open), 'フォークの依頼を送信する');
+    await until(() => store.readSession(ud, current.id).messages.length >= 2, '要約と応答を保存する');
+    const savedFork = store.readSession(ud, current.id);
     assert.equal(current.origin.sessionId, sessions[0].id);
-    assert.match(current.messages[0].text, /目的: 画面を統一する/);
-    assert.doesNotMatch(current.messages[0].text, /旧セッションだけの長い依頼/);
+    assert.match(savedFork.messages[0].text, /目的: 画面を統一する/);
+    assert.doesNotMatch(savedFork.messages[0].text.split('以下は会話の要約です。')[1], /旧セッションだけの長い依頼/);
     assert.match(fs.readFileSync(path.join(root, 'summary.txt'), 'utf8'), /旧セッションだけの長い依頼/);
     assert.equal(await win.evaluate((id) => state.sessions.some((s) => s.id === id), current.id), true);
-    assert.match(await win.locator('#chat-title').textContent(), /引き継ぎ/);
-    await until(() => store.readSession(ud, current.id).messages.length >= 3, '引き継ぎプロンプトの応答が終わる');
+    assert.match(await win.locator('#chat-title').textContent(), /フォーク/);
+    await until(() => store.readSession(ud, current.id).messages.length >= 2, '引き継ぎプロンプトの応答が終わる');
     assert.notEqual(store.cliEntry(store.readSession(ud, current.id), 'claude').id, sessions[0].id);
 
     // 要約できなければ新しい会話を作らず、元の履歴を維持する。
     fs.writeFileSync(path.join(root, 'fail-summary'), 'fail');
     const count = store.listSessions(ud, root).length;
-    await assert.rejects(win.evaluate((id) => api.handoffSession(id), sessions[0].id), /要約失敗/);
+    await assert.rejects(win.evaluate(async ({ id, repo }) => {
+      const record = await api.sessionBrowser.read('app:' + id);
+      return api.sessionBrowser.prepare({ key: record.key, revision: record.revision, boundary: '1',
+        repo, cli: 'claude', model: '', mode: 'fork' });
+    }, { id: sessions[0].id, repo: root }), /要約失敗/);
     assert.equal(store.listSessions(ud, root).length, count);
     fs.unlinkSync(path.join(root, 'fail-summary'));
 

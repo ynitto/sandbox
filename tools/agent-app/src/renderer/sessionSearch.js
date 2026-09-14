@@ -117,6 +117,9 @@ const SessionSearch = (() => {
     current.loading = true;
     $('search-transfer-start').textContent = 'フォーク'; $('search-transfer-start').disabled = true;
     const repo = $('search-target-repo').value;
+    const worktree = current.record.appId && current.record.repo === repo ? current.record.defaults?.worktree : '';
+    $('search-worktree-note').hidden = !worktree;
+    $('search-worktree-note').textContent = worktree ? `現在の作業フォルダを使います: ${worktree}` : '';
     $('search-target-agent').replaceChildren(new Option('エージェントを確認中…', ''));
     if (!repo) { current.loading = false; return; }
     try {
@@ -135,7 +138,7 @@ const SessionSearch = (() => {
     finally { if (transfer === current) { current.loading = false; executionLabel(); } }
   }
   function beginTransfer(record, boundary = null) {
-    transfer = { record, boundary, mode: boundary == null ? 'handoff' : 'fork', busy: false };
+    transfer = { record, boundary, mode: 'fork', busy: false };
     $('search-transfer-title').textContent = 'フォーク';
     const turns = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
     $('search-boundary').replaceChildren(...turns.map((m, i) => new Option(`${i + 1}: ${m.text.slice(0, 80)}`, m.id)));
@@ -146,7 +149,8 @@ const SessionSearch = (() => {
     $('search-transfer-source').textContent = record.title + excerpt;
     $('search-request').value = ''; $('search-transfer-status').textContent = '';
     const config = deps.getConfig();
-    repos((config.repos || []).includes(record.repo) ? record.repo : config.lastRepo || ''); $('search-target-permission').value = 'confirm';
+    repos((config.repos || []).includes(record.repo) ? record.repo : config.lastRepo || '');
+    $('search-target-permission').value = record.appId ? record.defaults?.permission || 'confirm' : 'confirm';
     $('search-transfer-dialog').showModal(); targetChanged();
   }
   // 会話画面から、いま開いている会話をフォークする（検索画面と同じダイアログ）。

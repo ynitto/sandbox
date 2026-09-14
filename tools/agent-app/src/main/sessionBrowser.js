@@ -6,6 +6,7 @@ const { spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const host = require('./host');
 const store = require('./store');
+const worktree = require('./worktree');
 const handoff = require('./sessionHandoff');
 const routine = require('./automation/routine');
 const reuse = require('../shared/reuse');
@@ -25,6 +26,8 @@ function matches(s, q) {
 function appRecord(s) {
   const messages = s.messages.map((m, i) => ({ ...m, id: String(i), complete: !m.error && !m.stopped })).filter(m => ['user', 'assistant'].includes(m.role));
   return { key: 'app:' + s.id, appId: s.id, provider: s.cli, source: 'app', agent: s.cli, repo: s.repo,
+    defaults: { permission: s.readonly ? 'ask' : s.autoApprove ? 'auto' : 'confirm',
+      worktree: s.worktree || '', branch: s.branch || '', transport: s.transport },
     nativeId: s.cliSessions?.[s.cli]?.id || '', model: s.model || '', title: s.title || messages[0]?.text?.slice(0, 120) || '無題',
     createdAt: Date.parse(s.createdAt) / 1000, updatedAt: Date.parse(s.updatedAt) / 1000,
     revision: key(messages), messages, archived: !!s.supersededBy, partial: false };
@@ -226,13 +229,17 @@ class SessionBrowser {
     if (plan.createdId) return { session: store.readSession(this.userData(), plan.createdId), prompt: plan.prompt };
     if (typeof summary !== 'string' || !summary.trim() || summary.length > 30000 || typeof request !== 'string' || request.length > 30000) throw new Error('引き継ぎ内容を確認してください');
     const r = plan.record;
-    let prompt = `元の会話: ${r.title}\n元の作業フォルダ: ${r.repo || '不明'}\n保存先: ${plan.repo}\n会話の文脈を新規セッションへ引き継ぎます。ファイルの変更やツールの実行状態は複製されていません。参照パスは保存先で確認してください。\n\n${handoff.handoffPrompt(summary.trim())}\n\n${request.trim() ? '今回の依頼（こちらを実行してください）:\n' + request.trim() : ''}`;
+    const sameRepo = r.appId && r.repo === plan.repo;
+    const sourceDir = r.appId ? worktree.dirsFor(r.repo, r.defaults?.worktree || '').fsDir : r.repo;
+    const targetDir = sameRepo ? sourceDir : plan.repo;
+    let prompt = `元の会話: ${r.title}\n元の作業フォルダ: ${sourceDir || '不明'}\n保存先: ${targetDir}\n会話の文脈を新規セッションへ引き継ぎます。ファイルの変更やツールの実行状態は複製されていません。参照パスは保存先で確認してください。\n\n${handoff.handoffPrompt(summary.trim())}\n\n${request.trim() ? '今回の依頼（こちらを実行してください）:\n' + request.trim() : ''}`;
     if (plan.method) {
       prompt = reuse.creationPrompt({ kind: plan.method.kind, purpose: plan.method.purpose, repo: plan.repo, originRepo: r.repo });
       if (plan.method.kind !== 'skill') return { method: { ...plan.method, purpose: prompt }, repo: plan.repo,
         options: { policy: 'direct', cli: plan.cli, model: plan.model, readonly: permission === 'ask', autoApprove: permission === 'auto' } };
     }
     const session = store.createSession(this.userData(), { repo: plan.repo, cli: plan.cli, model: plan.model,
+      worktree: sameRepo ? r.defaults?.worktree || '' : '', branch: sameRepo ? r.defaults?.branch || '' : '',
       readonly: permission === 'ask', autoApprove: permission === 'auto', transport,
       origin: r.appId ? { sessionId: r.appId, repo: r.repo, index: Number(r.boundary) } : null,
       externalOrigin: r.appId ? null : { key: r.key, provider: r.provider, nativeId: r.nativeId, repo: r.repo, title: r.title, boundary: r.boundary, revision: r.revision, capturedAt: new Date().toISOString(), mode: plan.mode } });

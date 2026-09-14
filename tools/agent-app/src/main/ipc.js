@@ -16,9 +16,7 @@ const worktree = require('./worktree');
 const attachments = require('./attachments');
 const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
-const sessionHandoff = require('./sessionHandoff');
 const { SessionBrowser } = require('./sessionBrowser');
-const handingOff = new Set();
 const notify = require('./notify');
 const forkProtocol = require('../renderer/forkProtocol');
 const response = require('./response');
@@ -1334,7 +1332,11 @@ function registerIpcHandlers(getWindow) {
     if (!agent) throw new Error('このフォルダでは選択したエージェントを起動できません');
     const cfg = store.loadConfig(userData());
     const info = await host.probe(distroFor(plan.repo));
-    const transport = cfg.transport === 'tmux' && info.tmux && agent.interactive ? 'tmux' : 'headless';
+    const sameRepo = plan.record.appId && plan.record.repo === plan.repo;
+    const preferredTransport = sameRepo ? plan.record.defaults?.transport || cfg.transport : cfg.transport;
+    // A local fork shares its original working directory; validate it before creating the session.
+    dirsOf(plan.repo, sameRepo ? plan.record.defaults?.worktree || '' : '', { mustExist: true });
+    const transport = preferredTransport === 'tmux' && info.tmux && agent.interactive ? 'tmux' : 'headless';
     return sessionBrowser.create({ ...p, transport });
   });
   handle('session:list', (p) => store.listSessions(userData(), p.repo || ''));
@@ -1375,44 +1377,8 @@ function registerIpcHandlers(getWindow) {
     }, send);
     return { session: presentSession(store.readSession(ud, created.id), ud), turn };
   });
-  handle('session:handoff', async (p) => {
-    const ud = userData();
-    const origin = store.readSession(ud, p.id);
-    if (origin.kind !== 'conversation') throw new Error('会話画面から引き継いでください');
-    if (handingOff.has(origin.id)) throw new Error('この会話は引き継ぎ中です');
-    if (conversations.get(origin.id)?.turn || running.has(origin.id)) throw new Error('応答の完了後に引き継いでください');
-    const cfg = store.loadConfig(ud);
-    const dirs = dirsOf(origin.repo, origin.worktree, { mustExist: true });
-    handingOff.add(origin.id);
-    let held = false;
-    try {
-      turnGate.acquire(origin.id, cfg.execution.maxConcurrent);
-      held = true;
-      const selected = concreteCli({ cli: origin.cli, model: origin.model, readonly: true }, await listAgents(origin.repo));
-      const summary = await sessionHandoff.summarize(origin, async (prompt) => {
-        const result = await runPrompt({ cli: selected.cli, model: selected.model, prompt,
-          readonly: true, repo: origin.repo, cwd: dirs.fsDir, timeoutMs: 180000 }).done;
-        if (result.error || result.code !== 0 || result.stopped) throw new Error(result.error || '会話の要約に失敗しました');
-        return result.text;
-      });
-      const created = store.createSession(ud, { ...origin,
-        origin: { sessionId: origin.id, repo: origin.repo, index: -1 },
-      });
-      store.updateSession(ud, created.id, { title: `${origin.title || '会話'}（引き継ぎ）` });
-      turnGate.release(origin.id, cfg.execution.maxConcurrent);
-      held = false;
-      // CLI の起動確認・開始スキルの完了を待つ前に要約を保存して画面へ返す。
-      // 新しい端末が見える状態で renderer が最初の依頼を送る。
-      store.appendMessage(ud, created.id, { role: 'user', text: sessionHandoff.handoffPrompt(summary) });
-      return { session: presentSession(store.readSession(ud, created.id), ud) };
-    } finally {
-      if (held) turnGate.release(origin.id, cfg.execution.maxConcurrent);
-      handingOff.delete(origin.id);
-    }
-  });
   handle('session:update', (p) => store.updateSession(userData(), p.id, p.patch));
   handle('session:remove', async (p) => {
-    if (handingOff.has(p.id)) throw new Error('引き継ぎの完了後に削除してください');
     if (running.has(p.id)) running.get(p.id).stop();
     const conv = conversations.get(p.id);
     if (conv) { conversations.delete(p.id); await conv.kill(); }

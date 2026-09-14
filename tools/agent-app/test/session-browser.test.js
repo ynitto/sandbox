@@ -180,3 +180,31 @@ test('a chosen method kind skips classification and overrides the AI answer', as
   assert.equal(browser.create({ token: prepared.token, summary: prepared.summary, permission: 'auto' }).method.kind, 'workflow');
   await assert.rejects(browser.prepare({ key: record.key, revision: record.revision, boundary: '1', mode: 'handoff', intent: 'routine', kind: 'other', repo, cli: 'claude', model: 'm' }, async () => ''), /種類/);
 });
+
+test('local forks keep the working directory and expose current defaults; cross-repo forks use the destination root', async t => {
+  const { dir, repo } = fixture(t);
+  const original = store.createSession(dir, { repo, cli: 'claude', model: 'current-model', worktree: 'topic',
+    branch: 'codex/topic', readonly: true, transport: 'tmux' });
+  store.appendMessage(dir, original.id, { role: 'user', text: 'first' });
+  store.appendMessage(dir, original.id, { role: 'assistant', text: 'done' });
+  store.appendMessage(dir, original.id, { role: 'user', text: 'second' });
+  store.appendMessage(dir, original.id, { role: 'assistant', text: 'latest' });
+  store.setCliEntry(dir, original.id, 'claude', { id: 'old-cli-session' });
+  const browser = new SessionBrowser({ userData: () => dir });
+  const record = await browser.read('app:' + original.id);
+  assert.equal(record.defaults.permission, 'ask'); assert.equal(record.defaults.transport, 'tmux');
+  assert.equal(takeBoundary(record).boundary, '3');
+  for (const target of [repo, '/other']) {
+    const prepared = await browser.prepare({ key: record.key, revision: record.revision, repo: target,
+      cli: record.agent, model: record.model, mode: 'fork' }, async () => 'summary');
+    const result = browser.create({ token: prepared.token, summary: prepared.summary, permission: record.defaults.permission });
+    assert.equal(result.session.worktree, target === repo ? 'topic' : '');
+    assert.ok(result.prompt.includes(`保存先: ${target === repo ? path.join(repo, '.worktrees', 'topic') : target}`));
+    assert.equal(result.session.branch, target === repo ? 'codex/topic' : '');
+    assert.equal(result.session.readonly, true); assert.equal(result.session.model, 'current-model');
+    assert.equal(result.session.origin.index, 3); assert.deepEqual(result.session.cliSessions, {});
+  }
+  store.updateSession(dir, original.id, { readonly: false, autoApprove: true });
+  assert.equal((await browser.read(record.key)).defaults.permission, 'auto');
+  assert.equal(store.readSession(dir, original.id).messages.length, 4);
+});

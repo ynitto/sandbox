@@ -90,7 +90,6 @@
           <button type="button" id="view-files" class="tab">ファイル</button>
         </nav>
         <span class="spacer"></span>
-        <button type="button" id="session-handoff" class="small" hidden>新しいセッションに引き継ぐ</button>
         <button type="button" id="changes-toggle" class="small">変更を確認</button>
         <details id="chat-more" class="more-menu">
           <summary aria-label="その他の操作">その他</summary>
@@ -640,6 +639,7 @@
       <div class="repository-control"><select id="search-target-repo" aria-label="リポジトリ"></select>
         <details class="more-menu side-more"><summary aria-label="リポジトリを管理">•••</summary><div class="menu-panel"><button type="button" id="search-target-add">リポジトリを追加</button></div></details>
       </div>
+      <p id="search-worktree-note" class="sub" hidden></p>
       <details id="search-execution-settings" class="run-settings teach-execution-settings">
         <summary><span id="search-execution-summary">実行設定</span></summary>
         <div class="settings-popover"><div class="popover-head">実行設定</div><div id="search-execution-inputs"></div>
