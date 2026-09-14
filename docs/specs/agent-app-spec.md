@@ -1109,6 +1109,9 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
 | 取り込み（`apply`） | agent-tools → 本体の順。ファイルは `<userData>/updates/` へ写し（URL なら取得）、`sha256` があれば照合する。agent-tools はホストで `tar xzf` → `bash tools/agent-tools/install.sh </dev/null` → 印を書く（15 分まで）。失敗したら出力の末尾 8 行を添えて断り、印は変えない。本体は `<portable>.new` に置き、`%TEMP%\agent-app-update-<pid>.cmd` を `detached` で起こして `app.quit()` する |
 | 入れ替えの cmd | 自分の PID が消えるのを待ち、`move` で元の exe を `.old` へ退かし（動いている exe は名前を変えられる。60 回まで 1 秒おきに再試行）、`.new` を元の名前へ移して `start` する。失敗したら `.old` を戻して起動し直す。経過は `%TEMP%\agent-app-update.log` |
 
+agent-project の自己更新（`update_enabled`、リポジトリの main の SHA が物差し）とは経路も物差しも別で、
+互いを知らない。1 台の PC ではどちらか片方にする（README「配って更新する」）。
+
 manifest の `file` はファイル名だけを受け付ける（区切りを含むものは無視。更新元の外を指させない）。
 画面は `update:changed` を受けて設定 > アプリの 1 行を描き直し、自動の確認で `plan.any` なら
 `#app-update` を出す（「あとで」で閉じた同じ内容は次の起動まで出さない。手動の確認では出す）。

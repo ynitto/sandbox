@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### agent-app: 共有フォルダから自動更新する（本体と WSL 側の agent-tools）
+### agent-app: 共有フォルダから自動更新する（本体と WSL 側の agent-tools）（0.3.0）
 
 - **外部サービス無しで配って更新できる。** `npm run dist:portable` のあと `npm run publish:update -- <更新元>`
   で、portable 版の exe と agent-tools の tar を共有フォルダ（または社内 HTTP の文書ルート）へ置き、

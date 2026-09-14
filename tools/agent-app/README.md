@@ -118,6 +118,14 @@ npm run publish:update -- \\server\share\agent-app --tools-only --notes "端末�
 | Agent App 本体 | 新しい exe を隣に置き、終了後に入れ替えて起動し直す（動いている exe は自分で上書きできないので、小さな cmd を切り離して走らせる） | Windows の **portable 版**だけ。開発起動や NSIS 版では案内だけ出す |
 | agent-tools | CLI と同じホスト（Windows なら WSL）で tar を展開し、`tools/agent-tools/install.sh` を叩く。入れた版は `~/.local/share/agent-app/agent-tools.version` に残す | どの形態でも |
 
+**agent-project の自己更新との住み分け。** agent-project にも、常駐（`run --watch`）のアイドル時に
+リポジトリの main を `git ls-remote` で見て `install.sh` を叩き直す自己更新がある（既定 ON）。同じ
+`install.sh` を 2 つの経路から叩き、しかも版の物差しが違う（あちらはコミット SHA、こちらは
+manifest の版）ので、**1 台の PC ではどちらか片方にする**。agent-app で配る PC（WSL からリポジトリへ
+git で届かない Windows が典型）では agent-project の設定を `update_enabled: false` にし、
+常駐が git から自己更新する PC では agent-app の更新元を空にするか、ダイアログで agent-tools の
+チェックを外す。両方が動くと、manifest が main より古いときに入れ替えが行き来する。
+
 取得したファイルは sha256 を照合してから使う。入れ替えに失敗したら元の exe で起動し直し、経過は
 `%TEMP%\agent-app-update.log` に残る。agent-tools の `install.sh` が失敗したときは、その出力の末尾を
 ダイアログに出し、版の印は変えない。
