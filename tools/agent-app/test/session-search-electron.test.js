@@ -155,12 +155,9 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
       await win.selectOption('#search-target-agent', 'claude');
       await win.fill('#search-target-model', kind + '-model');
       await win.click('#search-execution-settings > summary');
-      assert.equal(await win.locator('#search-method').evaluate(d => d.hidden), true);
-      await win.selectOption('#search-intent', 'routine');
-      assert.equal(await win.locator('#search-method').evaluate(d => d.hidden), false);
-      assert.equal(await win.inputValue('#search-method-kind'), 'auto');
-      // 利用者が種類を選んでも、選んだ後の遷移は内容から判断したときと同じ
-      if (kind === 'workflow') { await win.selectOption('#search-method-kind', kind); await win.screenshot({ path: '/tmp/agent-app-session-transfer-kind.png' }); }
+      // 取り込み先を選ぶだけで、選んだ後の遷移はこれまでと同じ
+      await win.selectOption('#search-intent', kind);
+      if (kind === 'workflow') await win.screenshot({ path: '/tmp/agent-app-session-transfer-kind.png' });
       await win.click('#search-transfer-start');
       if (kind !== 'skill') {
         await win.waitForFunction(() => document.getElementById('search-transfer-status').textContent.includes('表示を準備'));

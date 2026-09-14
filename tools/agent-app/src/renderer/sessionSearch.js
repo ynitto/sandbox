@@ -133,7 +133,7 @@ const SessionSearch = (() => {
     const turns = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
     $('search-boundary').replaceChildren(...turns.map((m, i) => new Option(`${i + 1}: ${m.text.slice(0, 80)}`, m.id)));
     $('search-boundary').value = boundary == null ? turns.at(-1)?.id || '' : boundary;
-    $('search-intent').value = 'session'; $('search-method-kind').value = 'auto'; intentChanged();
+    $('search-intent').value = 'session';
     $('search-execution-settings').open = false;
     const excerpt = boundary == null ? '' : ' · ' + record.messages.find(m => m.id === boundary)?.text.slice(0, 100);
     $('search-transfer-source').textContent = record.title + excerpt;
@@ -141,27 +141,25 @@ const SessionSearch = (() => {
     repos(deps.getConfig().lastRepo || ''); $('search-target-permission').value = 'confirm';
     $('search-transfer-dialog').showModal(); targetChanged();
   }
-  // 「やり方を取り込む」を選んだときだけ種類を出す。既定は今までどおり内容から判断する。
-  function intentChanged() { $('search-method').hidden = $('search-intent').value !== 'routine'; }
   function executionLabel() {
     $('search-execution-summary').textContent = [$('search-target-agent').value || 'エージェントを選択', $('search-target-model').value || 'モデル自動', $('search-target-permission').selectedOptions[0]?.textContent].filter(Boolean).join(' · ');
   }
   async function startTransfer() {
     const current = transfer;
     if (!current || current.busy || current.loading) return;
-    const controls = ['search-target-repo', 'search-target-agent', 'search-target-model', 'search-target-add', 'search-target-permission', 'search-boundary', 'search-intent', 'search-method-kind', 'search-request'];
+    const controls = ['search-target-repo', 'search-target-agent', 'search-target-model', 'search-target-add', 'search-target-permission', 'search-boundary', 'search-intent', 'search-request'];
     current.busy = true; $('search-transfer-start').disabled = true;
     try {
       const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
       if (!repo || !cli) throw new Error('保存先とエージェントを選んでください');
       for (const id of controls) $(id).disabled = true;
-      const intent = $('search-intent').value, kind = intent === 'routine' ? $('search-method-kind').value : 'auto';
-      const kindLabel = $('search-method-kind').selectedOptions[0]?.textContent;
-      $('search-transfer-status').textContent = intent !== 'routine' ? '取り込む内容を整理しています…'
-        : kind === 'auto' ? '内容を整理し、タスク・ワークフロー・スキルを検討しています…' : `内容を整理し、${kindLabel}としてまとめています…`;
+      // 取り込み先。セッション以外は、選ばれた種類の作り方として整理する。
+      const target = $('search-intent').value, intent = target === 'session' ? 'session' : 'routine';
+      const label = $('search-intent').selectedOptions[0]?.textContent;
+      $('search-transfer-status').textContent = intent === 'session' ? '取り込む内容を整理しています…' : `内容を整理し、${label}としてまとめています…`;
       current.requestId = crypto.randomUUID();
       const prepared = await api.prepare({ requestId: current.requestId, key: current.record.key, revision: current.record.revision,
-        boundary: $('search-boundary').value, mode: current.mode, intent, kind, request: $('search-request').value, repo, cli, model });
+        boundary: $('search-boundary').value, mode: current.mode, intent, kind: intent === 'session' ? 'auto' : target, request: $('search-request').value, repo, cli, model });
       if (transfer !== current) return;
       current.creating = true; $('search-transfer-close').disabled = true;
       const result = await api.create({ token: prepared.token, summary: prepared.summary, request: $('search-request').value, permission: $('search-target-permission').value });
@@ -203,7 +201,6 @@ const SessionSearch = (() => {
     control.querySelector('#cli').id = 'search-target-agent'; control.querySelector('#model').id = 'search-target-model';
     $('search-execution-inputs').append(control);
     $('session-search-open').onclick = open; $('session-search-close').onclick = close;
-    $('search-intent').onchange = intentChanged;
     $('search-cancel').onclick = () => { cancel(); $('search-status').textContent = '検索を中止しました'; };
     $('search-next').onclick = () => search(cursor);
     $('search-prev').onclick = () => search(previous);

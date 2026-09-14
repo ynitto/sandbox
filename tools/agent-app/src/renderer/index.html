@@ -640,11 +640,7 @@
           <label>権限<select id="search-target-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
         </div>
       </details>
-      <label class="setting-field"><span>取り込む目的</span><select id="search-intent"><option value="session">セッションを開始する</option><option value="routine">やり方を取り込む</option></select></label>
-      <div id="search-method" hidden>
-        <label class="setting-field"><span>種類</span><select id="search-method-kind"><option value="auto">内容から判断</option><option value="skill">スキル</option><option value="task">タスク</option><option value="workflow">ワークフロー</option></select></label>
-        <p class="sub">スキル: 知識・判断を再利用 ／ タスク: 1つの仕事を完了 ／ ワークフロー: 複数担当を連携</p>
-      </div>
+      <label class="setting-field"><span>取り込み先</span><select id="search-intent"><option value="session">セッション</option><option value="task">タスク</option><option value="workflow">ワークフロー</option><option value="skill">スキル</option></select></label>
       <label class="task-create-label" for="search-request">追加の依頼（任意）</label><textarea id="search-request" rows="2"></textarea>
       <p id="search-transfer-status" class="sub" role="status"></p>
     </div>
