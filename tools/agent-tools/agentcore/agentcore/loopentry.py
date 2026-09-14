@@ -303,16 +303,24 @@ def _command_allow_status(value) -> "list[int]":
 
 
 _COMMAND_UNIT_KEYS = ("argv", "shell", "timeout_sec", "env", "allow_status",
-                      "skip_if_missing")
+                      "skip_if_missing", "continue_on_error")
 _COMMAND_DEFAULTS = {"timeout_sec": COMMAND_TIMEOUT_SEC, "env": {}, "allow_status": [0],
-                     "skip_if_missing": []}
+                     "skip_if_missing": [], "continue_on_error": False}
 
 
 def _command_inherit(defaults: dict) -> dict:
     """上位の既定を段へ配る（可変の値は複製する——段ごとに書き換わるため）。"""
     return {"timeout_sec": defaults["timeout_sec"], "env": dict(defaults["env"]),
             "allow_status": list(defaults["allow_status"]),
-            "skip_if_missing": list(defaults["skip_if_missing"])}
+            "skip_if_missing": list(defaults["skip_if_missing"]),
+            "continue_on_error": defaults["continue_on_error"]}
+
+
+def _command_continue_on_error(value) -> bool:
+    """その段で列を止めないか。**失敗は失敗のまま**残す（見逃すのは `allow_status`）。"""
+    if isinstance(value, bool):
+        return value
+    raise LoopEntryError(f"command.continue_on_error は true / false です: {value!r}")
 
 
 def _command_timeout(value) -> int:
@@ -342,6 +350,9 @@ def _command_options(declared: dict, defaults: dict, *, extra_keys=()) -> dict:
                          if "allow_status" in declared else list(defaults["allow_status"])),
         "skip_if_missing": (_command_skip_if_missing(declared["skip_if_missing"])
                             if "skip_if_missing" in declared else list(defaults["skip_if_missing"])),
+        "continue_on_error": (_command_continue_on_error(declared["continue_on_error"])
+                              if "continue_on_error" in declared
+                              else defaults["continue_on_error"]),
     }
 
 
@@ -386,7 +397,8 @@ def command_spec(entry) -> "dict | None":
           ./run.sh | tee last.log
 
     順番に回すコマンドの列は `commands:` に並べる。段は上位の宣言を既定として継ぎ、
-    自分で書いたものだけを上書きする（「6 段のうち 2 段だけ 1 を許す」が書ける）。
+    自分で書いたものだけを上書きする（「6 段のうち 2 段だけ 1 を許す」「この段が失敗しても
+    残りは回す」が書ける）。
 
         command:
           commands:

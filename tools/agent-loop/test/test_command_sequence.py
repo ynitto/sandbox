@@ -100,6 +100,61 @@ class CommandListTest(unittest.TestCase):
             self.assertEqual(result['completedCommands'], 2)
             self.assertTrue((root / 'last').exists())
 
+    def test_a_step_that_declares_it_can_fail_does_not_stop_the_rest(self):
+        # 「索引が壊れていても収集は続けたい」列のための宣言。見逃すのではないので、
+        # 1 段でも失敗していれば全体は失敗のまま。
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'last.py').write_text("from pathlib import Path\nPath('last').touch()\n")
+            spec = al._loopentry.command_spec({'command': {
+                'commands': [self._exit(root, 'fail.py', 2), f'"{sys.executable}" last.py'],
+                'continue_on_error': True, 'timeout_sec': 30}})
+            result = al._commandrun.run_command(spec, cwd=td)
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['completedCommands'], 1)
+            self.assertIn('1 行目のコマンドが失敗しました', result['error'])
+            self.assertTrue((root / 'last').exists())
+
+    def test_every_failure_is_reported_not_just_the_last_one(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            spec = al._loopentry.command_spec({'command': {
+                'commands': [self._exit(root, 'one.py', 1), self._exit(root, 'two.py', 2)],
+                'continue_on_error': True, 'timeout_sec': 30}})
+            result = al._commandrun.run_command(spec, cwd=td)
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['completedCommands'], 0)
+            self.assertIn('1 行目', result['error'])
+            self.assertIn('2 行目', result['error'])
+
+    def test_a_step_can_opt_out_of_the_inherited_tolerance(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'last.py').write_text("from pathlib import Path\nPath('last').touch()\n")
+            spec = al._loopentry.command_spec({'command': {
+                'commands': [{'argv': self._exit(root, 'fail.py', 2), 'continue_on_error': False},
+                             f'"{sys.executable}" last.py'],
+                'continue_on_error': True, 'timeout_sec': 30}})
+            result = al._commandrun.run_command(spec, cwd=td)
+            self.assertFalse(result['ok'])
+            self.assertFalse((root / 'last').exists())
+
+    def test_a_tolerated_status_is_not_a_failure_at_all(self):
+        # allow_status は「見逃す」、continue_on_error は「止めない」。別の宣言であること。
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            spec = al._loopentry.command_spec({'command': {
+                'commands': [{'argv': self._exit(root, 'one.py', 1), 'allow_status': [0, 1]}],
+                'timeout_sec': 30}})
+            result = al._commandrun.run_command(spec, cwd=td)
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['error'], '')
+            self.assertEqual(result['completedCommands'], 1)
+
+    def test_continue_on_error_must_be_a_boolean(self):
+        with self.assertRaisesRegex(al._loopentry.LoopEntryError, "true / false"):
+            al._loopentry.command_spec({'command': {'argv': ['a'], 'continue_on_error': 'yes'}})
+
     def test_an_argv_array_with_a_newline_argument_is_still_one_command(self):
         # 引数の中の改行は「複数行の文字列」ではない（配列は 1 つのコマンドの引数）。
         spec = al._loopentry.command_spec({'command': ['echo', 'one\ntwo']})
