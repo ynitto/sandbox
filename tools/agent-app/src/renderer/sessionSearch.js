@@ -153,10 +153,13 @@ const SessionSearch = (() => {
       const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
       if (!repo || !cli) throw new Error('保存先とエージェントを選んでください');
       for (const id of controls) $(id).disabled = true;
-      $('search-transfer-status').textContent = $('search-intent').value === 'routine' ? '内容を整理し、タスク・ワークフロー・スキルを検討しています…' : '取り込む内容を整理しています…';
+      // 取り込み先。セッション以外は、選ばれた種類の作り方として整理する。
+      const target = $('search-intent').value, intent = target === 'session' ? 'session' : 'routine';
+      const label = $('search-intent').selectedOptions[0]?.textContent;
+      $('search-transfer-status').textContent = intent === 'session' ? '取り込む内容を整理しています…' : `内容を整理し、${label}としてまとめています…`;
       current.requestId = crypto.randomUUID();
       const prepared = await api.prepare({ requestId: current.requestId, key: current.record.key, revision: current.record.revision,
-        boundary: $('search-boundary').value, mode: current.mode, intent: $('search-intent').value, request: $('search-request').value, repo, cli, model });
+        boundary: $('search-boundary').value, mode: current.mode, intent, kind: intent === 'session' ? 'auto' : target, request: $('search-request').value, repo, cli, model });
       if (transfer !== current) return;
       current.creating = true; $('search-transfer-close').disabled = true;
       const result = await api.create({ token: prepared.token, summary: prepared.summary, request: $('search-request').value, permission: $('search-target-permission').value });
