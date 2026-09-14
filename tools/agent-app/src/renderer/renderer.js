@@ -337,27 +337,45 @@ function repoName(repo) {
   return String(repo || '').split(/[\\/]/).filter(Boolean).pop() || String(repo || '');
 }
 
+function attentionSummary() {
+  const a = state.attention;
+  return [a.action ? `要対応 ${a.action}` : '', a.unread ? `未読 ${a.unread}` : ''].filter(Boolean).join(' · ');
+}
+
+// メニューの「受信箱」に件数を出す（「共有」の未読と同じ印）。領域を開いていれば一覧と本文も描く
 function renderInbox() {
-  const box = $('inbox');
+  const a = state.attention;
+  const button = $('area-inbox');
+  const count = a.action + a.unread;
+  let badge = button.querySelector('.unread');
+  if (!count) { if (badge) badge.remove(); } else {
+    if (!badge) { badge = el('span', 'unread'); button.append(badge); }
+    badge.textContent = String(count);
+  }
+  button.title = count ? attentionSummary() : '';
+  if (state.area === 'inbox') renderInboxItems();
+}
+
+// 領域「受信箱」の一覧（サイドバー。リポジトリと領域を横断する）と本文（件数の 1 行）
+function renderInboxItems() {
   const a = state.attention;
   const ul = $('inbox-items');
   ul.replaceChildren();
-  box.hidden = !(a.action + a.unread);
-  if (box.hidden) return;
-  $('inbox-count').textContent = [a.action ? `要対応 ${a.action}` : '', a.unread ? `未読 ${a.unread}` : ''].filter(Boolean).join(' · ');
   for (const item of a.items) {
     const li = el('li', `row-item${item.queue === 'action' ? ' attention' : ''}`);
     const pick = el('button', 'list-pick');
     const body = el('span', 'grow');
     body.append(el('div', '', item.title));
-    const where = item.repo && item.repo !== state.repo ? ` · ${repoName(item.repo)}` : '';
-    body.append(el('div', 'sub', `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)}${where}`));
+    body.append(el('div', 'sub', `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)} · ${repoName(item.repo)}`));
     pick.append(body);
     pick.title = item.queue === 'action' ? `「${item.title}」を開いて答える` : `「${item.title}」を開く`;
     pick.onclick = () => openAttentionItem(item).catch((err) => notice(err.message, 'error'));
     li.append(pick);
     ul.append(li);
   }
+  if (!a.items.length) ul.append(el('li', 'empty', '見るもの・答えるものはありません'));
+  $('inbox-title').textContent = a.items.length ? attentionSummary() : '受信箱は空です';
+  $('inbox-sub').textContent = a.items.length ? '項目を押すと、その会話・タスク・ワークフローへ行きます' : '終わった結果と、人の答えを待つものがここに集まります';
 }
 
 // 「見た」を main に書き、受信箱からその項目を落とす（要対応は答えが届くまで残る）
@@ -422,11 +440,12 @@ function renderAreaContext() {
   $('area-list-title').textContent = info.label;
   $('session-new').setAttribute('aria-label', info.createLabel);
   $('session-new').title = info.createLabel;
-  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests']) $(id).hidden = id !== info.listId;
-  $('session-new').hidden = state.area === 'share';      // 共有の依頼は会話から出す
+  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests', 'inbox-items']) $(id).hidden = id !== info.listId;
+  $('session-new').hidden = state.area === 'share' || state.area === 'inbox';      // 共有の依頼は会話から出す。受信箱は入口だけ
   if (state.area === 'conversation') renderSessions();
   else if (state.area === 'tasks') renderTaskItems();
   else if (state.area === 'workflows') renderWorkflowItems();
+  else if (state.area === 'inbox') renderInboxItems();
   else Share.render();
 }
 
@@ -1866,6 +1885,7 @@ async function showArea(area, { persist = true } = {}) {
   SessionSearch.close();
   state.area = AgentNavigation.normalizeArea(area);
   const share = state.area === 'share';
+  const inbox = state.area === 'inbox';
   const automation = state.area === 'tasks' || state.area === 'workflows';
   const workspace = state.area !== 'conversation';
   renderAutomationHeader();
@@ -1873,8 +1893,9 @@ async function showArea(area, { persist = true } = {}) {
   $('main').hidden = workspace;
   $('automation').hidden = !automation;
   $('share-area').hidden = !share;
+  $('inbox-area').hidden = !inbox;
   if (!share) Share.hide();
-  const buttons = { conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), share: $('area-share') };
+  const buttons = { conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), share: $('area-share'), inbox: $('area-inbox') };
   for (const [name, button] of Object.entries(buttons)) {
     const selected = name === state.area;
     button.classList.toggle('on', selected);
@@ -1886,6 +1907,8 @@ async function showArea(area, { persist = true } = {}) {
   $('changes').hidden = workspace || !state.changesOpen;
   if (share) {
     await Share.show();
+  } else if (inbox) {
+    await refreshAttention();
   } else if (automation) {
     // 読み込み中に直前の領域の操作を残さない。見出しを先に切り替え、内容は準備後に一度で見せる。
     // タスクの実行状態（ファイル実体の確認を伴い遅い）はここでは待たない——一覧は定義が
@@ -2289,6 +2312,7 @@ async function init() {
 
   $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
   $('area-tasks').onclick = () => showArea('tasks').catch((err) => notice(err.message, 'error'));
+  $('area-inbox').onclick = () => showArea('inbox').catch((err) => notice(err.message, 'error'));
   $('area-workflows').onclick = () => showArea('workflows').catch((err) => notice(err.message, 'error'));
   $('area-share').onclick = () => showArea('share').catch((err) => notice(err.message, 'error'));
   $('automation-workbench').addEventListener('statemachine:changed', (event) => {

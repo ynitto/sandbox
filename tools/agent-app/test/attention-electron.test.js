@@ -1,8 +1,8 @@
 'use strict';
 
 // 受信箱を Electron 実機で通す: 正典（会話・タスクの実行履歴・agent-flow の bus）だけを置いて起動し、
-// サイドバーの受信箱に「要対応」「未読」が出ること、項目から既存の画面へ行けること、
-// 開いたら「見た」が config.json に足されて未読が消えることを確かめる。
+// メニューの「受信箱」に件数が出ること、領域を開くと「要対応」「未読」が並ぶこと、項目から既存の画面へ
+// 行けること、開いたら「見た」が config.json に足されて未読が消えることを確かめる。
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -103,20 +103,25 @@ test('実機: 受信箱に要対応と未読が並び、項目から既存の画
     win.on('pageerror', (err) => errors.push(err.message));
     win.setDefaultTimeout(20000);
 
+    // メニューの件数（「共有」と同じ印）→ 領域を開く
+    await win.waitForFunction(() => document.querySelector('#area-inbox .unread')?.textContent === '3');
+    await win.click('#area-inbox');
+    await win.waitForSelector('#inbox-area:not([hidden])');
+    assert.strictEqual((await win.textContent('#area-list-title')).trim(), '受信箱');
+    assert.ok(await win.$eval('#session-new', (node) => node.hidden), '受信箱には作る操作が無い');
     // IPC: 投影そのものを preload の窓口から読む（判定は main。renderer は出すだけ）
-    await win.waitForSelector('#inbox:not([hidden])');
     const view = await win.evaluate(() => window.api.attention.list());
     assert.strictEqual(view.action, 1);
     assert.strictEqual(view.unread, 2);
     // 要対応を先に、未読は新しい結果から（会話は今つくったので、置いた日付のタスクより新しい）
     assert.deepStrictEqual(view.items.map((item) => [item.kind, item.queue]), [['workflow', 'action'], ['conversation', 'unread'], ['task', 'unread']]);
     assert.ok(!view.items.some((item) => item.target.id === asked.id), '依頼で終わっている会話は出ない');
-    assert.strictEqual((await win.textContent('#inbox-count')).trim(), '要対応 1 · 未読 2');
+    assert.strictEqual((await win.textContent('#inbox-title')).trim(), '要対応 1 · 未読 2');
     const rows = await win.$$eval('#inbox-items li', (nodes) => nodes.map((node) => ({ cls: node.className, text: node.textContent })));
     assert.strictEqual(rows.length, 3);
     assert.ok(rows[0].cls.includes('attention') && rows[0].text.includes('月次レポートの実行') && rows[0].text.includes('承認待ち'), JSON.stringify(rows[0]));
     assert.ok(rows[1].text.includes('画面を確認して') && rows[1].text.includes('完了'), JSON.stringify(rows[1]));
-    assert.ok(rows[2].text.includes('月次集計') && rows[2].text.includes('完了'), JSON.stringify(rows[2]));
+    assert.ok(rows[2].text.includes('月次集計') && rows[2].text.includes('完了') && rows[2].text.includes(path.basename(repo)), JSON.stringify(rows[2]));
     if (process.env.SMOKE_OUT) {
       fs.mkdirSync(process.env.SMOKE_OUT, { recursive: true });
       await win.screenshot({ path: path.join(process.env.SMOKE_OUT, 'attention-inbox-full.png') });
@@ -127,19 +132,23 @@ test('実機: 受信箱に要対応と未読が並び、項目から既存の画
     await win.waitForSelector('#automation:not([hidden])');
     await win.waitForFunction(() => document.getElementById('area-workflows').classList.contains('on'));
     await win.waitForFunction(() => (document.querySelector('#workflows li.active')?.textContent || '').includes('月次レポート'));
-    assert.strictEqual((await win.textContent('#inbox-count')).trim(), '要対応 1 · 未読 2');
+    assert.strictEqual((await win.textContent('#area-inbox .unread')).trim(), '3');
 
     // 未読（タスク）→ タスク画面でその項目を選ぶ。開いたので未読から消える
+    await win.click('#area-inbox');
+    await win.waitForSelector('#inbox-area:not([hidden])');
     await win.click('#inbox-items li:nth-child(3) .list-pick');
     await win.waitForFunction(() => document.getElementById('area-tasks').classList.contains('on'));
     await win.waitForFunction(() => (document.querySelector('#tasks li.active')?.textContent || '').includes('月次集計'));
-    await win.waitForFunction(() => document.getElementById('inbox-count').textContent.trim() === '要対応 1 · 未読 1');
+    await win.waitForFunction(() => document.querySelector('#area-inbox .unread')?.textContent === '2');
 
     // 未読（会話）→ 会話を開く（通知と同じ経路）。config.json に「見た」だけが足される
+    await win.click('#area-inbox');
+    await win.waitForSelector('#inbox-area:not([hidden])');
     await win.click('#inbox-items li:nth-child(2) .list-pick');
     await win.waitForFunction(() => document.getElementById('area-work').classList.contains('on'));
     await win.waitForFunction(() => document.getElementById('chat-title').textContent.includes('画面を確認して'));
-    await win.waitForFunction(() => document.getElementById('inbox-count').textContent.trim() === '要対応 1');
+    await win.waitForFunction(() => document.querySelector('#area-inbox .unread')?.textContent === '1');
     const after = await win.evaluate(() => window.api.attention.list());
     assert.deepStrictEqual(after.items.map((item) => item.queue), ['action']);
     const cfg = JSON.parse(fs.readFileSync(path.join(userData, 'config.json'), 'utf8'));
@@ -152,6 +161,9 @@ test('実機: 受信箱に要対応と未読が並び、項目から既存の画
     fs.writeFileSync(path.join(runDir, 'interactions', 'ix-0123456789abcdef', 'responses', 'response-1.json'), JSON.stringify({ answer: { decision: 'approved' } }));
     const resolved = await win.evaluate(() => window.api.attention.list());
     assert.deepStrictEqual(resolved, { action: 0, unread: 0, items: [] });
+    await win.click('#area-inbox');
+    await win.waitForFunction(() => document.getElementById('inbox-title').textContent === '受信箱は空です');
+    assert.strictEqual(await win.$('#area-inbox .unread'), null);
 
     if (process.env.SMOKE_OUT) {
       fs.mkdirSync(process.env.SMOKE_OUT, { recursive: true });

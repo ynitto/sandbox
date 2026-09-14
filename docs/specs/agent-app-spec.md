@@ -109,17 +109,19 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 
 ### 受信箱（未読・要対応）
 
-サイドバーの上に「受信箱」が出ます。出るのは、人が見るべきもの・答えるべきものがあるときだけです。
+主要メニューの「受信箱」に、人が見るべきもの・答えるべきものの件数が出ます（「共有」の未読と同じ印）。
+開くと、登録しているすべてのリポジトリ・すべての領域（会話・タスク・ワークフロー）を横断して並びます。
 
 - **要対応** … 人の答えが無いと進まないもの。tmux の会話が確認を求めているとき（「確認待ち」）、
   ワークフローの実行が承認・選択・入力を待っているとき。答えが届くと消えます
 - **未読** … 終わった結果で、まだ開いていないもの。会話の応答（失敗も含む）、タスクの実行、
   ワークフローの実行。開くと消えます。いま開いている画面に結果が届いたときも、開き直さずに消えます
 
-項目を押すと既存の画面へ行きます。会話は通知を押したときと同じ経路でその会話を開き（要対応なら
-入力先を「端末操作」に切り替えます）、タスク・ワークフローはその領域でその項目を選びます。
-答え方・フォーク・実行の操作は、行き先の画面のものをそのまま使います。受信箱には新しい操作を
-置きません。応答中・実行中のものは出ません。利用者が止めたものも出ません。
+項目を押すと既存の画面へ行きます。別のリポジトリの項目ならリポジトリを切り替えます。会話は通知を
+押したときと同じ経路でその会話を開き（要対応なら入力先を「端末操作」に切り替えます）、タスク・
+ワークフローはその領域でその項目を選びます。答え方・フォーク・実行の操作は、行き先の画面のものを
+そのまま使います。受信箱には新しい操作を置きません。応答中・実行中のものは出ません。利用者が止めた
+ものも出ません。
 
 ### 入力先を切り替える
 
@@ -482,7 +484,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `wslDistro` | `''` | Windows でドライブパスのリポジトリを扱うディストロ |
 | `transport` | `tmux` | `tmux` または `headless` |
 | `useWorktree` | `true` | 会話ごとに worktree を選べるか |
-| `area` | `conversation` | `conversation` / `tasks` / `workflows`。旧値 `work` → `conversation`、`automation` → `tasks` |
+| `area` | `conversation` | `conversation` / `tasks` / `workflows` / `share` / `inbox`。旧値 `work` → `conversation`、`automation` → `tasks` |
 | `view` | `chat` | 会話領域の表示（`chat` / `files`） |
 | `lastFiles` / `lastWorktree` / `lastTask` / `lastWorkflow` | `{}` | リポジトリ → 最後の対象 |
 | `lastTaskInputs` | `{}` | リポジトリ → タスクの保存名 → 前回の手動実行で入れた実行条件（値だけ。1 つ 400 字で切る） |
@@ -1113,7 +1115,7 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
       ↓ classify … 材料 1 つ → action | unread | none（純粋関数）
 project … { action, unread, items }（要対応を先に、あとは新しい結果から。30 件まで）
       ↓ attention:list
-サイドバーの受信箱 → 既存の画面（会話 / タスク / ワークフロー）
+領域「受信箱」（メニューに件数、サイドバーに一覧、本文は件数の 1 行）→ 既存の画面（会話 / タスク / ワークフロー）
 ```
 
 派生元:
@@ -1129,7 +1131,9 @@ project … { action, unread, items }（要対応を先に、あとは新しい�
 `stopped` は結果として扱わない（止めた人が見ている）。失敗は unread であって action ではない。
 
 利用者側に残すのは `attentionSeen`（§3）だけ。要対応は「見た」で消えず、正典の側で答えが届いて閉じたときに
-消える。画面（renderer）は投影を出すだけで判定を持たない。読み直すのは、`turn:done` / `term:phase` /
+消える。画面（renderer）は投影を出すだけで判定を持たない。領域「受信箱」（`area: inbox`）はメニューの件数
+（`.unread`）、サイドバーの一覧（他の領域と同じ `.list` の行。リポジトリ名を添える）、本文の `.empty-state`
+（件数の見出しと 1 行）だけで、作る操作は無い。読み直すのは、領域を開いたとき、`turn:done` / `term:phase` /
 `automation:run:exit` のたびと、背景の実行（agent-flow）を拾うための 15 秒周期。
 
 含めないもの（MVP）: agent-loop の定期実行の履歴（`run:snapshot` は agent-loop を起こすので受信箱では読まない）、
@@ -1148,9 +1152,9 @@ project … { action, unread, items }（要対応を先に、あとは新しい�
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
 | `herd.test.js` | `herd` の一族判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
-| `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形、受信箱は既存の箱と行で組み判定は main） | なし |
+| `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形、受信箱はメニューの領域・一覧の行・件数の印で組み判定は main） | なし |
 | `attention.test.js` | 受信箱の投影（§16）: 完了＋未見 → 未読、完了＋既読 → none、承認・選択・入力の待ち → 要対応、答えが届けば消える、実行中 → none、古いデータ・基準時刻、`attentionSeen` の保存 | なし |
-| `attention-electron.test.js` | Electron 実機で受信箱を通す: 正典（会話・実行履歴・bus）だけを置いて起動し、`attention:list` の投影、サイドバーの件数と行、項目から会話・タスク・ワークフローの画面へ、開いたら `attentionSeen` に足されて未読が消える、答えが届けば要対応が消える | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
+| `attention-electron.test.js` | Electron 実機で受信箱を通す: 正典（会話・実行履歴・bus）だけを置いて起動し、メニューの件数、領域の一覧と本文、`attention:list` の投影、項目から会話・タスク・ワークフローの画面へ、開いたら `attentionSeen` に足されて未読が消える、答えが届けば要対応が消える | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 | `electron-smoke.test.js` | Electron 実機で四領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの「変更を相談」で会話の置き場を開き、共有の一覧・カード・参加者と、会話の入力先「共有に依頼」を通す | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 
 `test/smoke.js` は `npm test` に含めない手動スモークで、画面のある環境で疑似 CLI と会話しスクリーンショットを
