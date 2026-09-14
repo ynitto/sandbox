@@ -38,11 +38,13 @@ class CommandSpecTests(unittest.TestCase):
         with self.assertRaisesRegex(loopentry.LoopEntryError, "知らないキー"):
             loopentry.command_spec({"command": {"argv": ["a"], "timeout_secs": 60}})
 
-    def test_the_defaults_of_the_two_declarations_that_replace_hook_judgements(self):
-        # 「この終了コードは許す」と「未導入なら飛ばす」は、書かなければ効かない。
+    def test_the_defaults_of_the_declarations_that_replace_hook_judgements(self):
+        # 「この終了コードは許す」「未導入なら飛ばす」「失敗しても止めない」は、
+        # 書かなければ効かない。
         spec = loopentry.command_spec({"command": "echo hi"})
         self.assertEqual(spec["allow_status"], [0])
         self.assertEqual(spec["skip_if_missing"], [])
+        self.assertIs(spec["continue_on_error"], False)
         self.assertEqual(spec["timeout_sec"], loopentry.COMMAND_TIMEOUT_SEC)
         self.assertEqual(spec["env"], {})
 

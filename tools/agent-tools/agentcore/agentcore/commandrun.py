@@ -109,6 +109,8 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
 
     `commands` を持つ宣言は**コマンドの列**で、段を上から順に実行し、最初の失敗で止める
     （段はそれぞれ 1 つの宣言と同じ形を持つので、この関数を段ごとに呼び直すだけでよい）。
+    `continue_on_error` の段だけは止めずに次へ進むが、失敗は最後まで覚えていて全体は
+    `ok: False` になる。`completedCommands` は**成功した段の数**。
 
     例外を投げるのは実行を**始められなかった**ときだけ。始まった実行の失敗
     （許していない終了コード・タイムアウト）は `ok: False` で返す——呼ぶ側はどちらも同じ
@@ -117,6 +119,8 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     if spec.get("commands"):
         started = time.monotonic()
         stdout, stderr = "", ""
+        failures: "list[str]" = []
+        succeeded = 0
         for index, step in enumerate(spec["commands"], 1):
             _tl_progress(f"コマンド {index}/{len(spec['commands'])}", tag)
             try:
@@ -127,12 +131,19 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
                           "argv": step.get("argv") or [], "logFile": log_file}
             stdout = (stdout + result.get("stdout", ""))[-OUTPUT_LIMIT:]
             stderr = (stderr + result.get("stderr", ""))[-OUTPUT_LIMIT:]
-            if not result["ok"]:
-                result["error"] = f"{index} 行目のコマンドが失敗しました: {result.get('error') or result.get('stopReason')}"
+            if result["ok"]:
+                succeeded += 1
+                continue
+            failures.append(f"{index} 行目のコマンドが失敗しました: "
+                            f"{result.get('error') or result.get('stopReason')}")
+            # `continue_on_error` の段は失敗を覚えたまま次へ進む（一部が壊れていても残りは
+            # 回したい列のため）。**見逃すのではない**——1 つでも失敗していれば全体は失敗。
+            if not step.get("continue_on_error"):
                 break
-        return {**result, "stdout": stdout, "stderr": stderr,
+        return {**result, "ok": not failures, "stdout": stdout, "stderr": stderr,
+                "error": " / ".join(failures),
                 "durationSec": round(time.monotonic() - started, 3),
-                "completedCommands": index if result["ok"] else index - 1}
+                "completedCommands": succeeded}
     argv = [str(token) for token in (spec or {}).get("argv") or []]
     if not argv:
         raise CommandRunError("command が空です")

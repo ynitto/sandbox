@@ -369,6 +369,8 @@ prompts:
 - 順番に回すコマンドは `commands` に並べます。上から順に実行し、失敗した段で止めます。
   段は上位の `timeout_sec` / `env` / `allow_status` / `skip_if_missing` を既定として継ぎ、
   自分で書いたものだけを上書きします（段ごとに許す終了コードを変えられます）。
+- `continue_on_error: true` の段は、失敗しても列を止めません。見逃すわけではないので、
+  1 段でも失敗していればその回は失敗として記録されます（見逃すのは `allow_status`）。
 - `skip_if_missing` にパスを書くと、それが無いノードでは**実行せず**に成功として
   終えます（未導入のスキルを飛ばす用途）。飛ばしたことは実行ログに 1 行残ります。
 - `allow_status: [0, 1]` と書くと、挙げた終了コードを成功として扱います（`0` 以外を
@@ -494,13 +496,15 @@ def check() -> str | None:
 | `gitlab-issue-hook.py` | 新規/更新 Issue を検知して送信。更新が無くフォールバック有効ならランダムな Issue を送る。 |
 | `gitlab-mr-hook.py` | 新規/更新 MR を検知して送信。更新が無くフォールバック有効ならランダムな MR を送る。 |
 | `audit-calibrate-hook.py` | LLM へは送信せず、audit 収集後に候補適格性を更新し、`rates.per_cli` を実測中央値へ較正する。**設定例では `command:` へ移した**（`commands:` に 6 段を並べ、抽出と蒸留の段にだけ `allow_status: [0, 1]` を書く）。 |
-| `memory-maintenance-hook.py` | LLM へは送信せず、記憶の索引再構築・忘却曲線の更新・wiki lint・`agent-audit collect --source memory-store` を回す。**削除は実行しない**（判断の要る整理・削除・整理後の回帰確認（`regression_check.py`）は「記憶メンテナンス当番」の定期プロンプトが AI だけで行う。人の承認経路は持たない）。 |
+| `memory-maintenance-hook.py` | LLM へは送信せず、記憶の索引再構築・忘却曲線の更新・wiki lint・`agent-audit collect --source memory-store` を回す。**削除は実行しない**（判断の要る整理・削除・整理後の回帰確認（`regression_check.py`）は「記憶メンテナンス当番」の定期プロンプトが AI だけで行う。人の承認経路は持たない）。**設定例では `command:` へ移した**（段ごとの `skip_if_missing` で未導入のスキルを飛ばし、`continue_on_error` で一部が失敗しても残りを回す）。 |
 | `moltbook-duty-hook.py` | LLM へは送信せず、moltbook-use の outbox publish backlog を privacy gate に通して sweep する。**新しい reply の判断はしない**（timeline 確認・根拠つき reply・good は「Moltbook 当番」の定期プロンプトへ）。moltbook は各ノードの AI だけが操作する前提で、人の承認経路は持たない。**設定例では `command:` へ移した**（同じ引数列を宣言し、未導入のノードは `skip_if_missing` で飛ばす）。 |
 
-LLM へ送らずコマンドだけを回すものは、上の 3 つが残っています。**段ごとの許容やスキップの
-判断**は `command:` の `commands:` で書けるようになったので、設定例では Moltbook 巡回と
-使用量較正をそちらへ移しました（フックは見比べられるよう残してあります）。判断の要らない
-定期処理も `command:` で書いてください（資源制御はそちらへ移しました）。
+LLM へ送らずコマンドだけを回す 3 つは、**設定例ではすべて `command:` へ移しました**。
+段ごとの許容（`allow_status`）・スキップ（`skip_if_missing`）・「失敗しても止めない」
+（`continue_on_error`）が宣言で書けるので、フックの中に判断を置く理由が無くなったためです。
+フック自体は移行前後を見比べられるよう残してあります。定期処理でコマンドだけを回すものは
+`command:` で書いてください（フックの `check()` は「送るかどうかを決める」ための口で、
+与えられる時間も 30 秒です）。
 
 GitLab 用の前二つは `gitlab-idd` スキルの `scripts/gl.py` を利用します。`GITLAB_TOKEN` を
 設定し、必要に応じて環境変数（`AGENT_LOOP_GL_PY`, `AGENT_LOOP_GL_CWD`,
