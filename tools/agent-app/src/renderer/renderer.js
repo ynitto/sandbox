@@ -51,7 +51,6 @@ const state = {
   turnSkills: [],
   turnSkillPreview: [],
   skillPreviewTimer: null,
-  pendingTaskIntent: null,
   routine: null,
   filledPrompt: '',     // 入力欄へこちらが置いた本文（書きかけと見分けるため）
 };
@@ -429,13 +428,11 @@ async function loadAreaItems() {
   else await loadWorkflowItems(state.repo);
 }
 
-// 会話からの「この依頼をタスクにする」（intent）は、新しいタスクの画面（action: new）として開き、
-// 本文は親の作成フォーム（taskTeaching.js）が受け取る。
 function frameMessage(action = '') {
   return {
     type: 'agent-app:navigate', area: state.area, root: state.repo,
     selected: state.area === 'tasks' ? state.selectedTask : state.selectedWorkflow,
-    action: action || (state.area === 'tasks' && state.pendingTaskIntent ? 'new' : ''),
+    action,
   };
 }
 
@@ -458,7 +455,6 @@ function setAutomationLoading(loading) {
 
 // AI と作り始めたタスクを選び直し、その会話（AI相談）を開く。
 async function openTaughtTask(machine) {
-  state.pendingTaskIntent = null;
   state.selectedTask = `machine:${machine}`;
   const selected = state.selectedTask;
   const lastTask = { ...(state.config.lastTask || {}), [state.repo]: selected };
@@ -524,7 +520,6 @@ async function selectAreaItem(area, id) {
 async function selectRepo(repo) {
   state.repo = repo || '';
   const token = (state.repoToken += 1);
-  if (state.pendingTaskIntent && state.pendingTaskIntent.root !== state.repo) state.pendingTaskIntent = null;
   if (repo) state.config = await api.saveConfig({ lastRepo: repo });
   state.sessions = repo ? await api.listSessions(repo) : [];
   state.worktree = (state.config.lastWorktree || {})[state.repo] || '';
@@ -1191,7 +1186,8 @@ function messageNode(m, index = -1) {
     const actions = el('div', 'message-actions');
     const teach = el('button', 'message-action', 'この依頼をタスクにする');
     teach.type = 'button';
-    teach.onclick = () => beginTaskTeaching(m);
+    teach.title = 'この依頼への応答までをフォークして、タスクを作る';
+    teach.onclick = () => forkRequest(m);
     const again = el('button', 'message-action', '入力欄に戻す');
     again.type = 'button';
     again.title = '本文と添付を入力欄へ戻す（送らない）';
@@ -1427,19 +1423,15 @@ async function createRoutine() {
   }
 }
 
-function beginTaskTeaching(message) {
-  try {
-    const selected = selectedExecution(message.policy || 'direct');
-    state.pendingTaskIntent = TaskIntent.create({
-      id: globalThis.crypto && globalThis.crypto.randomUUID ? globalThis.crypto.randomUUID() : `intent-${Date.now().toString(36)}`,
-      root: state.repo,
-      message,
-      execution: { agent: message.cli || selected.cli, model: message.model || selected.model },
-    });
-    showArea('tasks').catch((err) => notice(err.message, 'error'));
-  } catch (err) {
-    notice(err.message, 'error');
-  }
+// 依頼からタスクを作る導線も、会話のフォークと同じダイアログに合流させる。
+// 位置はその依頼への応答、フォーク先はタスクを選んだ状態で開く。
+function forkRequest(message) {
+  const cur = state.current;
+  if (!cur) return;
+  const asked = cur.messages.indexOf(message);
+  const answered = cur.messages.findIndex((m, i) => i > asked && m.role === 'assistant' && !m.error && !m.stopped);
+  if (asked < 0 || answered < 0) { notice('この依頼への応答が終わってからフォークできます', 'error'); return; }
+  SessionSearch.forkCurrent(cur.id, { boundary: String(answered), target: 'task' }).catch((err) => notice(err.message, 'error'));
 }
 
 function workingNode(id, tmuxMode) {
@@ -2268,11 +2260,6 @@ async function init() {
       const model = overrides.model != null ? overrides.model : selected.model;
       const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
       return `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
-    },
-    takeIntent: () => {
-      const intent = state.pendingTaskIntent && state.pendingTaskIntent.root === state.repo ? state.pendingTaskIntent : null;
-      state.pendingTaskIntent = null;
-      return intent;
     },
     openTask: (machine) => openTaughtTask(machine),
     cancelCreate: () => syncAutomationWorkbench(),

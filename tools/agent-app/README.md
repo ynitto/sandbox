@@ -36,7 +36,7 @@ GitHub との連携は持たない。見に行くのは登録したフォルダ�
   `statemachine-use` スキルの作成モードで `.statemachine/<名前>/` を直接書き、画面操作の見本が
   要るときは `@record` の 1 行で頼んでくる（→「タスクを AI と作る」）。既存タスクの変更は「手順」タブの
   「編集」から同じ会話で続ける。定義があるタスクは会話の途中でも実行できる。
-  会話の利用者メッセージにある「この依頼をタスクにする」から、依頼の本文を作成フォームへ引き継げる。
+  会話の利用者メッセージにある「この依頼をタスクにする」は、フォークのダイアログをタスク向けに開く。
   設計: [`docs/plans/2026-09-08-agent-app-statemachine-maker-consolidation-tmux-teaching-design.md`](../../docs/plans/2026-09-08-agent-app-statemachine-maker-consolidation-tmux-teaching-design.md)
 - **中央「ファイル」**: リポジトリのフォルダツリーと、コード（言語ごとの配色・行番号）／
   Markdown（プレビュー ⇄ ソース切り替え、Mermaid 図）／画像のビュアー。名前検索はフォルダ全体の

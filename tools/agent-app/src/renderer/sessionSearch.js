@@ -143,11 +143,14 @@ const SessionSearch = (() => {
     $('search-transfer-dialog').showModal(); targetChanged();
   }
   // 会話画面から、いま開いている会話をフォークする（検索画面と同じダイアログ）。
-  async function forkCurrent(id) {
+  // boundary・target を渡すと、その位置とフォーク先を選んだ状態で開く。
+  async function forkCurrent(id, { boundary = '', target = '' } = {}) {
     const record = await api.read('app:' + id);
-    const last = record.messages.filter(m => m.role === 'assistant' && m.complete !== false).at(-1);
-    if (!last) throw new Error('フォークできる応答がありません');
-    beginTransfer(record, last.id);
+    const completed = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
+    const at = completed.some(m => m.id === boundary) ? boundary : completed.at(-1)?.id;
+    if (!at) throw new Error('フォークできる応答がありません');
+    beginTransfer(record, at);
+    if (target) $('search-intent').value = target;
   }
   function executionLabel() {
     $('search-execution-summary').textContent = [$('search-target-agent').value || 'エージェントを選択', $('search-target-model').value || 'モデル自動', $('search-target-permission').selectedOptions[0]?.textContent].filter(Boolean).join(' · ');

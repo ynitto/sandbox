@@ -124,6 +124,13 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     assert.match(store.readSession(data, sent.id).title, /（フォーク）/);
     // 会話画面からも、同じダイアログで開いている会話をフォークできる
     await win.evaluate(({ repo, id }) => openSessionInRepo(repo, id), { repo, id: original.id });
+    // 依頼の下の「この依頼をタスクにする」も同じダイアログに合流する（位置は応答、フォーク先はタスク）
+    await win.getByRole('button', { name: 'この依頼をタスクにする' }).first().click();
+    await win.locator('#search-transfer-dialog[open]').waitFor();
+    assert.equal(await win.inputValue('#search-intent'), 'task');
+    assert.equal(await win.inputValue('#search-boundary'), '1');
+    await win.click('#search-transfer-close');
+    await win.waitForFunction(() => !document.getElementById('search-transfer-dialog').open);
     await win.locator('#chat-more summary').click();
     await win.click('#session-fork');
     await win.locator('#search-transfer-dialog[open]').waitFor();

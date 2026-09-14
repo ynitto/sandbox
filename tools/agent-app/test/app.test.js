@@ -23,7 +23,7 @@ const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
   for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/notify.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
-    'main/automation/teaching.js', 'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/taskIntent.js', 'renderer/teachingProtocol.js', 'renderer/taskTeaching.js', 'renderer/automation/flow.js', 'renderer/automation/teaching.js', 'renderer/automation/renderer.js']) {
+    'main/automation/teaching.js', 'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/teachingProtocol.js', 'renderer/taskTeaching.js', 'renderer/automation/flow.js', 'renderer/automation/teaching.js', 'renderer/automation/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
   const main = fs.readFileSync(path.join(SRC, 'main/main.js'), 'utf8');
@@ -545,18 +545,22 @@ test('ワークフロー詳細は選択中リポジトリの実行履歴へ移�
   assert.match(css, /:host \.execution-list,[\s\S]*:host \.flow-home-head\s*\{\s*display:\s*none/);
 });
 
-test('会話の依頼と新しいタスクを同じ作成フォーム（AI との tmux 会話）へつなぐ', () => {
+test('会話の依頼からタスクを作る導線は、フォークのダイアログ 1 か所に合流する', () => {
   const shell = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   const maker = fs.readFileSync(path.join(SRC, 'renderer', 'automation', 'renderer.js'), 'utf8');
   const teaching = fs.readFileSync(path.join(SRC, 'renderer', 'taskTeaching.js'), 'utf8');
-  assert.ok(html.includes('src="taskIntent.js"') && html.includes('src="taskTeaching.js"') && html.includes('src="teachingProtocol.js"'));
+  assert.ok(html.includes('src="taskTeaching.js"') && html.includes('src="teachingProtocol.js"'));
   assert.match(shell, /この依頼をタスクにする/);
-  assert.match(shell, /TaskIntent\.create/);
-  assert.match(shell, /state\.area === 'tasks' && state\.pendingTaskIntent/, 'intent は新しいタスクの画面として開く');
+  // 依頼の下の操作も、会話の「その他」も、同じ SessionSearch.forkCurrent を通す
+  assert.match(shell, /teach\.onclick = \(\) => forkRequest\(m\)/);
+  assert.match(shell, /SessionSearch\.forkCurrent\(cur\.id, \{ boundary: String\(answered\), target: 'task' \}\)/);
+  assert.match(shell, /\$\('session-fork'\)\.onclick/);
+  // 会話から作成フォームへ本文を先渡しする別経路は残さない
+  assert.ok(!/TaskIntent|pendingTaskIntent|takeIntent/.test(shell + teaching + html), '独自の受け渡しを作らない');
+  assert.ok(!fs.existsSync(path.join(SRC, 'renderer', 'taskIntent.js')));
   assert.match(shell, /api\.automation\.teachingList/);
   assert.match(maker, /payload\.action === 'new'[\s\S]*teachingFeature\.create\(\)/);
-  assert.match(teaching, /takeIntent/, '作成フォームが依頼の本文を受け取る');
   assert.match(teaching, /api\.automation\.teachStart\(/);
 });
 

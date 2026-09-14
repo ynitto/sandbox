@@ -76,16 +76,7 @@
     populateExecutionInputs('task-create');
     $('task-create-settings').textContent = state.deps.executionLabel(readExecutionInputs('task-create'));
     $('task-create-error').hidden = true;
-    const purpose = $('task-purpose');
-    if (!purpose.value && state.deps.takeIntent) {
-      const intent = state.deps.takeIntent();
-      if (intent) {
-        purpose.value = intent.purpose || '';
-        populateExecutionInputs('task-create', { agent: intent.agent, model: intent.model });
-        $('task-create-settings').textContent = state.deps.executionLabel(readExecutionInputs('task-create'));
-      }
-    }
-    purpose.focus();
+    $('task-purpose').focus();
   }
 
   function renderWorkspace() {
