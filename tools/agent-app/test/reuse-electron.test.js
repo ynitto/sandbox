@@ -7,7 +7,7 @@ function playwright() {
   try { return require('playwright'); } catch {}
   try { return require(path.join(path.dirname(path.dirname(process.execPath)), 'lib/node_modules/@playwright/cli/node_modules/playwright-core')); } catch { return null; }
 }
-test('reuse UI: classify, edit, create fresh sessions for all three kinds in a selected repository, save settings, reuse inputs and open artifacts', async t => {
+test('reuse UI: classify, edit, create fresh sessions for all three kinds in a selected repository, edit execution settings, reuse inputs and open artifacts', async t => {
   const pw = playwright(); let binary;
   try { binary = require('electron'); } catch {}
   if (!pw?._electron || !binary || (process.platform === 'linux' && !process.env.DISPLAY)) return t.skip('Electron display unavailable');
@@ -83,12 +83,36 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
     }
     await win.evaluate(async ({ repo, id }) => { await openSessionInRepo(repo, id); }, { repo, id: session.id });
     await win.locator('#run-settings summary').click();
-    await win.click('#preset-save'); await win.fill('#preset-name', '調査用');
-    await win.selectOption('#permission-mode', 'ask'); await win.click('#preset-save');
-    await win.waitForFunction(() => [...document.getElementById('run-preset').options].some(o => o.value === '調査用'));
-    await win.selectOption('#permission-mode', 'confirm'); await win.selectOption('#run-preset', '調査用');
-    assert.equal(await win.inputValue('#permission-mode'), 'ask');
-    assert.equal(store.loadConfig(data).runPresets[0].readonly, true);
+    assert.equal(await win.locator('#run-preset, #preset-save, #preset-delete').count(), 0);
+    await win.selectOption('#permission-mode', 'ask');
+    await win.locator('#run-settings summary').click();
+    assert.match(await win.locator('#run-settings-summary').textContent(), /読み取り専用/);
+    await win.locator('#run-settings summary').click();
+    await win.fill('#model', 'long-model-name-for-layout-verification-2026');
+    await win.locator('#run-settings summary').click();
+    for (const width of [1280, 768, 375]) {
+      await win.setViewportSize({ width, height: 900 });
+      await win.waitForTimeout(250); // サイドバーの幅変更アニメーションが終わってから測る
+      const label = win.locator(width <= 640 ? '.run-settings-compact' : '#run-settings-summary');
+      const dimensions = await label.evaluate(node => ({
+        client: node.clientWidth, scroll: node.scrollWidth,
+        left: node.getBoundingClientRect().left, right: node.getBoundingClientRect().right,
+      }));
+      assert.ok(dimensions.client >= dimensions.scroll, `設定が文字切れしている: ${width}`);
+      assert.ok(dimensions.left >= 0 && dimensions.right <= width, `設定が画面外に出ている: ${width}`);
+      const trigger = await win.locator('#run-settings > summary').boundingBox();
+      const prompt = await win.locator('#prompt').boundingBox();
+      if (width === 375) await win.screenshot({ path: '/tmp/agent-app-settings-narrow.png' });
+      assert.ok(trigger.y >= prompt.y + prompt.height && trigger.y + trigger.height <= 900, `設定が入力欄と重なる: ${width} ${JSON.stringify({ trigger, prompt })}`);
+    }
+    await win.screenshot({ path: '/tmp/agent-app-settings-narrow.png' });
+    await win.locator('#run-settings summary').click();
+    await win.fill('#model', '');
+    await win.locator('#run-settings summary').click();
+    await win.setViewportSize({ width: 1280, height: 900 });
+    await win.screenshot({ path: '/tmp/agent-app-settings-summary.png' });
+    await win.locator('#run-settings summary').click();
+    await win.screenshot({ path: '/tmp/agent-app-settings-popover.png' });
     await win.click('#area-tasks');
     await win.locator('#tasks .row-item').filter({ hasText: '月次集計' }).click();
     const panel = win.locator('#automation-workbench');

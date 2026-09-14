@@ -20,11 +20,11 @@ const DEFAULT_QUICK_REQUESTS = [
 ];
 // 起動方針「共有」。tier を持たず、依頼を LAN の参加者へ渡す（src/main/share/）。
 const SHARED_POLICY = 'shared';
-// 引き受け方（accept）… 'auto' 自動で拾う / 'manual' 選んだものだけ / 'off' 受けない
-const ACCEPT_MODES = ['auto', 'manual', 'off'];
+// 共有の有効・無効は enabled、自動で拾うかどうかは accept で決める。
+const ACCEPT_MODES = ['auto', 'manual'];
 const SHARE_DEFAULTS = {
   enabled: false, node: '', passphrase: '', port: 47801, udp: true, peers: [],
-  accept: 'off', clis: [], acceptWrite: false, maxConcurrent: 1, dailyCap: 20, perRequesterDailyCap: 5,
+  accept: 'manual', clis: [], acceptWrite: false, maxConcurrent: 1, dailyCap: 20, perRequesterDailyCap: 5,
 };
 
 function pair(value, fallback) {
@@ -86,7 +86,8 @@ function bounded(value, fallback, min, max) {
 // 引き受け方。accept が無い保存値は、以前の participate（受ける／受けない）から読み替える。
 function acceptMode(source) {
   if (ACCEPT_MODES.includes(source.accept)) return source.accept;
-  return source.participate ? 'auto' : 'off';
+  if (source.accept === 'off') return 'manual'; // 旧「受けない」は自動では引き受けない設定へ移行
+  return source.participate ? 'auto' : 'manual';
 }
 
 // 設定 > 共有。port 0 は空いているポート、上限の 0 は無制限。
@@ -101,7 +102,7 @@ function share(raw) {
     peers: uniqueStrings(source.peers).slice(0, 50),
     accept: acceptMode(source),
     // 以前の版の「受ける／受けない」。引き受け方から導き、古い画面や保存値とも噛み合わせる
-    participate: acceptMode(source) !== 'off',
+    participate: Boolean(source.enabled),
     clis: uniqueStrings(source.clis).map((name) => name.toLowerCase()),
     acceptWrite: Boolean(source.acceptWrite),
     maxConcurrent: bounded(source.maxConcurrent, SHARE_DEFAULTS.maxConcurrent, 1, 4),

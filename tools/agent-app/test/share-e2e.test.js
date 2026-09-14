@@ -235,7 +235,7 @@ test('再起動: 列は requests.json に残り、会話に印だけ残った依
 
 test('設定: share の正規化と、起動方針「共有」の解決', () => {
   const normalized = settings.normalize({ share: { enabled: true, node: ' Nitto ', port: 99999, peers: ['pc-b', 'pc-b', ' '], clis: ['Claude'], maxConcurrent: 9, dailyCap: -1, perRequesterDailyCap: 'x' } });
-  assert.deepEqual(normalized.share, { enabled: true, node: 'Nitto', passphrase: '', port: 65535, udp: true, peers: ['pc-b'], accept: 'off', participate: false, clis: ['claude'], acceptWrite: false, maxConcurrent: 4, dailyCap: 0, perRequesterDailyCap: 5 });
+  assert.deepEqual(normalized.share, { enabled: true, node: 'Nitto', passphrase: '', port: 65535, udp: true, peers: ['pc-b'], accept: 'manual', participate: true, clis: ['claude'], acceptWrite: false, maxConcurrent: 4, dailyCap: 0, perRequesterDailyCap: 5 });
   assert.deepEqual(settings.resolve(normalized, { policy: 'shared', cli: '*', model: 'm' }), { policy: 'shared', tier: '', cli: '', model: 'm', source: 'shared' });
   assert.equal(settings.resolve(normalized, { policy: 'shared', cli: 'Claude' }).cli, 'claude');
   assert.throws(() => settings.resolve(settings.normalize({}), { policy: 'shared' }), /共有が設定されていません/);
@@ -267,7 +267,7 @@ test('引き受け方: 「選んで受ける」は自動で拾わず、画面か
   });
 });
 
-test('引き受け方: 「受けない」は画面から選んでも拾わない。拾えない理由は 1 行で返る', async (t) => {
+test('旧「受けない」は手動へ移行し、選んだ依頼だけ引き受ける', async (t) => {
   await withNodes(t, async (open) => {
     const a = await open('a');
     const b = await open('b', { accept: 'off', clis: ['fake'], seeds: [`127.0.0.1:${a.share.port}`] });
@@ -275,13 +275,16 @@ test('引き受け方: 「受けない」は画面から選んでも拾わない
     const sess = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
     const request = a.share.post({ sessionId: sess.id, goal: 'q' });
     await waitFor(() => b.share.status().others.some((r) => r.id === request.id));
-    await assert.rejects(() => b.share.accept(request.id), /受けない/);
+    assert.equal(b.share.status().accept, 'manual');
+    assert.equal(a.share.requester.get(request.id).state, 'open');
+    await b.share.accept(request.id);
+    await waitFor(() => a.share.requester.get(request.id).state === 'done');
     // 提供していないエージェントを名指しした依頼は、理由つきで押せない
     const other = a.share.post({ sessionId: sess.id, goal: 'q2', requires: { agent_cli: ['nosuch'] } });
     const view = await waitFor(() => b.share.status().others.find((r) => r.id === other.id));
     assert.equal(view.canAccept, false);
     assert.match(view.reason, /提供していません/);
-    assert.equal(a.share.requester.get(request.id).state, 'open');
+    assert.equal(a.share.requester.get(other.id).state, 'open');
   });
 });
 

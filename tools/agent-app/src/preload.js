@@ -87,6 +87,7 @@ contextBridge.exposeInMainWorld('api', {
   findFiles: (repo, worktree, query, opts) => invoke('fs:find', { repo, worktree, query, ...(opts || {}) }),
   changes: (repo, worktree, scope) => invoke('git:changes', { repo, worktree, scope }),
   fileDiff: (repo, worktree, file, scope) => invoke('git:file', { repo, worktree, file, scope }),
+  openVSCode: (repo, worktree) => invoke('shell:openVSCode', { repo, worktree }),
   openFolder: (repo, worktree) => invoke('shell:openFolder', { repo, worktree }),
   openFile: (repo, worktree, rel) => invoke('shell:openFile', { repo, worktree, rel }),
   showFile: (repo, worktree, rel) => invoke('shell:showFile', { repo, worktree, rel }),

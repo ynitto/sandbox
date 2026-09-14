@@ -1040,7 +1040,7 @@ function taskDetailTabsHtml(machine, activeTab) {
 function snapshotWarningHtml() {
   const snapshot = state.execution.snapshot;
   if (!snapshot || snapshot.available !== false) return '';
-  return `<div class="run-result warn" role="alert">${esc(snapshot.error || '実行情報を取得できませんでした')}${snapshot.stale ? '<p>前回取得したタスクと履歴を表示しています。</p>' : ''}<button type="button" id="snapshot-retry">再取得</button></div>`;
+  return `<details class="muted small"><summary>定期実行・履歴の情報を取得できません</summary><p>${esc(snapshot.error || '実行情報を取得できませんでした')}</p>${snapshot.stale ? '<p>前回取得したタスクと履歴を表示しています。</p>' : ''}<button type="button" id="snapshot-retry">再取得</button></details>`;
 }
 
 function taskDetailShellHtml(machine, activeTab, content, { editor = false, teaching = false } = {}) {
@@ -1240,9 +1240,8 @@ function executionDetailHtml(machine) {
   const skillMode = state.run.skillMode || selection.defaultMode || 'auto';
   const runFields = `<details id="task-run-settings" class="run-settings task-run-settings"><summary><span id="task-run-settings-summary">${esc(taskRunSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">今回の実行設定</div><label>起動方針<select id="run-policy">${policyOptions}</select></label><div id="run-direct-settings" class="direct-agent-settings" ${direct ? '' : 'hidden'}><label>エージェント<select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.run.agent || state.config.agent)}</select></label><label>モデル<input id="run-model" class="mono" value="${esc(state.run.model || state.config.model || '')}" placeholder="自動"></label></div><p class="muted small">手動実行ではツールを自動承認します。</p><label>スキル<select id="run-skill-mode"><option value="auto" ${skillMode === 'auto' ? 'selected' : ''}>自動</option><option value="manual" ${skillMode === 'manual' ? 'selected' : ''}>手動選択</option><option value="off" ${skillMode === 'off' ? 'selected' : ''}>使用しない</option></select></label><div id="run-skill-list" class="skill-choice-list" ${skillMode === 'off' ? 'hidden' : ''}>${taskSkillChoicesHtml()}</div></div></details>`;
   const taskWarning = machine.error
-    ? `<p class="run-result ng">${esc(machine.error)}</p>`
-    : machine.kind === 'hook' ? '<p class="run-result warn">フックだけのタスクは定期実行で起動します。</p>'
-      : machine.kind === 'command' ? '<p class="run-result warn">コマンドのタスクは定期実行で起動します。</p>' : '';
+    ? `<details class="muted small"><summary>実行できません · 詳細を確認</summary><p>${esc(machine.error)}</p></details>`
+    : machine.kind === 'hook' ? '<p class="muted small">定期実行から起動するタスクです。</p>' : '';
   const detail = state.execution.detailTab === 'history'
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
     : state.execution.detailTab === 'overview' ? `

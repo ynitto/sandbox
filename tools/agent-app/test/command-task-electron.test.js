@@ -82,7 +82,10 @@ test('command task: create, retain selection, edit and run without AI', async (t
     fs.writeFileSync(loopPath, '#!/bin/sh\necho "test inspect failure" >&2\nexit 1\n');
     await panel.locator('[data-task-tab="overview"]').click();
     await panel.locator('[data-task-tab="history"]').click();
-    await panel.locator('[role="alert"]').filter({ hasText: 'test inspect failure' }).waitFor();
+    const connectionNote = panel.locator('details').filter({ hasText: 'test inspect failure' });
+    await connectionNote.locator('summary').waitFor();
+    assert.equal(await connectionNote.getAttribute('open'), null);
+    await connectionNote.locator('summary').click();
     assert.equal(await panel.locator('[data-task-tab="history"]').isEnabled(), true);
     assert.match(await panel.locator('.execution-title').textContent(), /Renamed command/);
     assert.equal(await scheduledRows.count(), 2);

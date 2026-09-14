@@ -712,7 +712,7 @@ async function selectWorktree(name) {
 // ---- 上: エージェント・モデル・モード ------------------------------------
 
 const POLICY_VIEW = {
-  recommended: { label: 'おすすめ', tier: 'medium' },
+  recommended: { label: '標準', tier: 'medium' },
   saving: { label: '節約', tier: 'small' },
   quality: { label: '品質重視', tier: 'large' },
   direct: { label: '直接指定', tier: '' },
@@ -868,15 +868,20 @@ function renderRunSettingsSummary() {
   const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
   const agent = selected.cli || (shared ? 'どれでも' : 'エージェント未設定');
   const model = selected.model;
-  const mode = (shared || $('permission-mode').value === 'ask') ? 'Ask'
-    : ($('permission-mode').value === 'auto' ? '自動承認' : '確認あり');
+  const mode = (shared || $('permission-mode').value === 'ask') ? '読み取り専用'
+    : ($('permission-mode').value === 'auto' ? '自動承認' : '確認して実行');
   const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
   const skillLabel = `スキル ${SKILL_MODE_LABEL[state.turnSkillMode] || SKILL_MODE_LABEL.auto}`;
   // 共有は「誰が・どの優先度で」だけ。起動方針・権限・作業フォルダはこの PC の話なので出さない
+  const agentLabel = `${agent}${model ? ` / ${model}` : ''}`;
+  const priorityLabel = `優先度 ${PRIORITY_LABEL[$('priority').value] || '通常'}`;
   summary.textContent = shared
-    ? [`${agent}${model ? ` / ${model}` : ''}`, `優先度 ${PRIORITY_LABEL[$('priority').value] || '通常'}`, skillLabel].join(' · ')
-    : [policy.label, `${agent}${model ? ` / ${model}` : ''}`, skillLabel, mode, location].filter(Boolean).join(' · ');
-  summary.title = summary.textContent;
+    ? [agent, priorityLabel].join(' · ')
+    : [selected.policy === 'direct' ? '' : policy.label, agent, mode].filter(Boolean).join(' · ');
+  summary.title = shared
+    ? [agentLabel, priorityLabel, skillLabel].join(' · ')
+    : [policy.label, agentLabel, skillLabel, mode, location].join(' · ');
+  summary.parentElement.setAttribute('aria-label', `実行設定: ${summary.title}`);
   $('direct-agent-settings').hidden = !(selected.policy === 'direct' || shared);
   $('policy-field').hidden = shared;
   $('permission-field').hidden = shared;
@@ -1021,7 +1026,8 @@ function renderHeader() {
   $('history-count').textContent = cur && cur.messages ? `${cur.messages.length}件` : '';
   $('term-agent').textContent = waiting ? `${waiting.node || '参加者'} の ${waiting.cli || 'AI'}`
     : (tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '');
-  $('term-name').textContent = waiting ? '共有 · 閲覧のみ' : (ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '');
+  $('term-name').textContent = waiting ? '共有 · 閲覧のみ' : '';
+  $('term-agent').title = !waiting && ph?.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
   // 待っている間は、引き受けた人の tmux の画面をそのまま描く（キーは送れない）
   if (waiting && waiting.state === 'working') {
     const fresh = Term.current() !== waiting.id;
@@ -1353,14 +1359,6 @@ async function openSessionInRepo(repo, id, options = {}) {
   await openSession(id, options);
 }
 
-function renderPresets() {
-  const select = $('run-preset');
-  const selected = select.value;
-  select.replaceChildren(new Option('選択', ''));
-  for (const p of Reuse.presets(state.config.runPresets)) select.append(new Option(p.name, p.name));
-  select.value = selected;
-}
-
 async function inspectRoutine() {
   const source = state.routine;
   if (!source || source.busy) return;
@@ -1477,9 +1475,6 @@ function renderMessages() {
   if (!cur) {
     start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリがありません'));
     if (!state.repo) start.append(el('p', '', '作業するローカルリポジトリを登録してください。'));
-    const search = el('button', 'small quiet', '過去の会話から始める');
-    search.onclick = () => SessionSearch.open();
-    start.append(search);
     if (!state.repo) {
       const button = el('button', 'primary', 'リポジトリを追加');
       button.onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
@@ -2022,7 +2017,7 @@ function settingsPatch() {
       node: $('share-node').value.trim(),
       peers: $('share-peers').value.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean),
       port: Number($('share-port').value),
-      accept: $('share-accept').value,
+      accept: $('share-accept').checked ? 'auto' : 'manual',
       clis: [...document.querySelectorAll('#share-clis input:checked')].map((input) => input.value),
       maxConcurrent: Number($('share-max-concurrent').value),
       dailyCap: Number($('share-daily-cap').value),
@@ -2099,7 +2094,7 @@ async function openSettings() {
   $('share-node').value = share.node || '';
   $('share-peers').value = (share.peers || []).join(', ');
   $('share-port').value = share.port != null ? share.port : 47801;
-  $('share-accept').value = share.accept || (share.participate ? 'auto' : 'off');
+  $('share-accept').checked = share.accept === 'auto';
   $('share-max-concurrent').value = share.maxConcurrent || 1;
   $('share-daily-cap').value = share.dailyCap != null ? share.dailyCap : 20;
   $('share-per-requester-cap').value = share.perRequesterDailyCap != null ? share.perRequesterDailyCap : 5;
@@ -2318,41 +2313,6 @@ async function init() {
     await removeConversation(state.current);
   };
   $('session-handoff').onclick = () => handoffConversation().catch((err) => notice(err.message, 'error'));
-  renderPresets();
-  $('run-settings').addEventListener('toggle', () => { if ($('run-settings').open) renderPresets(); });
-  $('preset-save').onclick = async () => {
-    const field = $('preset-name');
-    if (field.hidden) { field.hidden = false; field.focus(); return; }
-    const name = field.value.trim();
-    if (!name) { field.focus(); return; }
-    const values = { ...turnOptions(), ...selectedExecution(), name: name.trim() };
-    const previous = Reuse.presets(state.config.runPresets);
-    if (!previous.some(p => p.name === values.name) && previous.length >= 20) { notice('保存できる設定は20件までです', 'error'); return; }
-    if (previous.some(p => p.name === values.name) && !confirm('同じ名前の設定を上書きしますか？')) return;
-    try { state.config = await api.saveConfig({ runPresets: [...previous.filter(p => p.name !== values.name), values] }); field.hidden = true; field.value = ''; renderPresets(); }
-    catch (err) { notice(err.message, 'error'); }
-  };
-  $('preset-delete').onclick = async () => {
-    const name = $('run-preset').value;
-    if (!name) return;
-    try { state.config = await api.saveConfig({ runPresets: Reuse.presets(state.config.runPresets).filter(p => p.name !== name) }); renderPresets(); }
-    catch (err) { notice(err.message, 'error'); }
-  };
-  $('run-preset').onchange = async () => {
-    const p = Reuse.presets(state.config.runPresets).find(p => p.name === $('run-preset').value);
-    if (!p) return;
-    if (p.policy !== effectivePolicy(p.policy) || (p.policy === 'direct' && ![...$('cli').options].some(o => o.value === p.cli))) { notice('この設定のエージェントまたは起動方針は現在利用できません', 'error'); return; }
-    $('policy').value = p.policy; $('cli').value = p.cli; $('model').value = p.model;
-    $('permission-mode').value = p.readonly ? 'ask' : p.autoApprove ? 'auto' : 'confirm';
-    state.turnSkillMode = p.skillMode; state.turnSkills = [...p.skills];
-    $('turn-skill-mode').value = p.skillMode;
-    const current = state.current;
-    if (current) {
-      try { const saved = await api.updateSession(current.id, { policy: p.policy, cli: p.cli, model: p.model, readonly: p.readonly, autoApprove: p.autoApprove, skillMode: p.skillMode, skills: p.skills, tier: selectedExecution().tier }); if (state.current?.id === current.id) state.current = saved; }
-      catch (err) { notice(err.message, 'error'); }
-    }
-    renderRunSettingsSummary(); refreshTurnSkillPreview();
-  };
   $('session-fork').onclick = () => {
     $('chat-more').open = false;
     if (state.current) SessionSearch.forkCurrent(state.current.id).catch(err => notice(err.message, 'error'));
@@ -2467,6 +2427,10 @@ async function init() {
   $('diff-style').onclick = () => { state.diffSide = !state.diffSide; $('diff-style').classList.toggle('on', state.diffSide); renderDiff(state.diffText); };
   $('scope-worktree').onclick = () => { state.diffScope = 'worktree'; refreshChanges(); };
   $('scope-branch').onclick = () => { state.diffScope = 'branch'; refreshChanges(); };
+  $('open-vscode').onclick = () => {
+    $('chat-more').open = false;
+    if (state.repo) api.openVSCode(state.repo, activeWorktree()).catch((err) => notice(err.message, 'error'));
+  };
   $('open-folder').onclick = () => {
     $('chat-more').open = false;
     if (state.repo) api.openFolder(state.repo, activeWorktree()).catch((e) => notice(e.message, 'error'));

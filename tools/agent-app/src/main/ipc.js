@@ -1531,6 +1531,13 @@ function registerIpcHandlers(getWindow) {
     const base = scope === 'branch' && dirs.name ? await mainBranch(repo, distro) : '';
     return git.fileDiff(dirs.hostDir, String(p.file || ''), distro, { scope, base });
   });
+  handle('shell:openVSCode', async (p) => {
+    const target = dirsOf(p.repo, p.worktree, { mustExist: true }).fsDir;
+    const url = new URL('vscode://file');
+    url.pathname = target.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+    try { await shell.openExternal(url.href); }
+    catch { throw new Error('VS Codeを開けませんでした。VS Codeがインストールされているか確認してください。'); }
+  });
   handle('shell:openFolder', (p) => shell.openPath(dirsOf(p.repo, p.worktree, { mustExist: true }).fsDir));
   handle('shell:openFile', async (p) => {
     const { target } = files.resolveInside(dirsOf(p.repo, p.worktree).fsDir, p.rel || '');

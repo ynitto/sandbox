@@ -83,7 +83,8 @@
       $('flow-teach-phase').className = `phase ${ph.phase}`;
       $('flow-teach-phase').title = ph.detail || '';
     }
-    $('flow-teach-term-name').textContent = ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
+    $('flow-teach-term-name').textContent = '';
+    $('flow-teach-term-agent').title = ph?.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
     $('flow-teach-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
     $('flow-teach-stop').hidden = !state.running;
     $('flow-teach-send').disabled = state.pending;

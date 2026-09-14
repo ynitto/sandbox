@@ -107,7 +107,8 @@
     $('task-terminal').hidden = !hasTerminal;
     $('task-composer').hidden = !hasTerminal;
     $('task-term-agent').textContent = sess ? [sess.cli, sess.model].filter(Boolean).join(' · ') : '';
-    $('task-term-name').textContent = ph && ph.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
+    $('task-term-name').textContent = '';
+    $('task-term-agent').title = ph?.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
     const phaseNode = $('task-phase');
     phaseNode.hidden = !ph;
     if (ph) { phaseNode.textContent = PHASE_LABEL[ph.phase] || ph.phase; phaseNode.className = `phase ${ph.phase}`; phaseNode.title = ph.detail || ''; }

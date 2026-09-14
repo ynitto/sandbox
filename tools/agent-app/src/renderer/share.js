@@ -258,8 +258,10 @@
     }
     $('share-view-request').classList.toggle('on', state.view === 'request');
     $('share-view-nodes').classList.toggle('on', state.view === 'nodes');
-    if (s) $('share-accept-mode').value = s.accept || 'off';
-    $('share-accept-mode').disabled = !(s && s.enabled);
+    $('share-accept-mode').checked = s?.accept === 'auto';
+    const enabled = !!(s && s.enabled);
+    $('share-accept-control').hidden = !enabled;
+    $('share-accept-mode').disabled = state.busy;
   }
 
   // 端末は「自分が引き受けている依頼」と「仲間が自分の依頼を実行している間」に出す。
@@ -370,6 +372,7 @@
   async function run(action) {
     if (state.busy) return;
     state.busy = true;
+    $('share-accept-mode').disabled = true;
     try {
       const next = await action();
       if (next && next.state) state.status = next;
@@ -416,7 +419,10 @@
     }
     term().configure({ onFocus: () => setInputMode('terminal', { focus: false }), onError: (error) => notice(error.message, 'error') });
     $('share-view-nodes').onclick = () => { state.view = 'nodes'; render(); };
-    $('share-accept-mode').onchange = (event) => run(() => window.api.share.setMode(event.target.value));
+    $('share-accept-mode').onchange = (event) => {
+      const mode = event.target.checked ? 'auto' : 'manual';
+      run(() => window.api.share.setMode(mode));
+    };
     window.api.share.onChanged((status) => { state.status = status; render(); });
     window.api.share.onScreen((p) => {
       if (!p || !p.id) return;

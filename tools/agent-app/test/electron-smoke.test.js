@@ -36,6 +36,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   if (process.platform === 'linux' && !process.env.DISPLAY) { t.skip('表示先が無い'); return; }
 
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-automation-repo-'));
+  fs.writeFileSync(path.join(repo, 'ux-preview.txt'), 'ファイル操作の確認');
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-automation-userdata-'));
   const appStore = require('../src/main/store');
   const machineStore = require('../src/main/automation/store');
@@ -156,6 +157,29 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.textContent('#side'), /会話.*タスク.*ワークフロー/s);
     await win.locator('#conversation-start').waitFor();
     const composerBefore = await win.locator('#composer').boundingBox();
+    await electron.evaluate(({ shell }) => { global.originalOpenExternal = shell.openExternal; shell.openExternal = async url => { global.openedEditorUrl = url; }; });
+    await win.locator('#chat-more > summary').click();
+    await win.locator('#open-vscode').click();
+    const editorUrl = await electron.evaluate(() => global.openedEditorUrl);
+    assert.equal(new URL(editorUrl).protocol, 'vscode:');
+    assert.equal(decodeURIComponent(new URL(editorUrl).pathname), repo);
+    await electron.evaluate(({ shell }) => { shell.openExternal = global.originalOpenExternal; });
+
+    // 補助操作は既存メニューから使え、再読み込み後もファイルを表示できる。
+    await win.locator('#view-files').click();
+    await win.evaluate(() => Files.openFile('ux-preview.txt'));
+    await win.locator('#viewer-head').waitFor();
+    assert.strictEqual(await win.locator('#viewer-reload').isVisible(), false);
+    await win.locator('#viewer-more > summary').click();
+    for (const id of ['viewer-open', 'viewer-show', 'viewer-reload']) {
+      assert.strictEqual(await win.locator(`#${id}`).isVisible(), true);
+    }
+    await win.locator('#viewer-reload').click();
+    assert.match(await win.locator('#viewer-body').textContent(), /ファイル操作の確認/);
+    if (process.env.AGENT_APP_FILES_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_FILES_SCREENSHOT });
+    await win.locator('#view-chat').click();
+    assert.strictEqual(await win.locator('#viewer-more').getAttribute('open'), null);
+
     await win.locator('#sessions .list-pick').filter({ hasText: '画面を確認して' }).click();
     await win.locator('.answer-bubble').first().waitFor();
     assert.strictEqual(await win.locator('#conversation-history').getAttribute('open'), '', '端末がない会話では履歴を主表示する');
@@ -590,7 +614,14 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#share-cards .execution-card').first().waitFor();
     assert.match(await win.locator('#share-head').textContent(), /優先度 高/);
     assert.match(await win.locator('#share-cards').textContent(), /依頼の本文/);
-    assert.strictEqual(await win.locator('#share-accept-mode').inputValue(), 'manual');
+    assert.strictEqual(await win.locator('#share-accept-mode').isChecked(), false);
+    assert.strictEqual(await win.locator('#share-accept-mode').isEnabled(), true);
+    await win.locator('#share-accept-mode').check();
+    await win.waitForFunction(() => !document.getElementById('share-accept-mode').disabled);
+    assert.equal(appStore.loadConfig(userData).share.accept, 'auto');
+    await win.locator('#share-accept-mode').uncheck();
+    await win.waitForFunction(() => !document.getElementById('share-accept-mode').disabled);
+    assert.equal(appStore.loadConfig(userData).share.accept, 'manual');
     await win.locator('#share-view-nodes').click();
     await win.locator('.share-nodes').waitFor();
     assert.match(await win.locator('#share-cards').textContent(), /参加者/);
@@ -655,6 +686,25 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_SHARE_COMPOSER_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_COMPOSER_SCREENSHOT });
     await win.keyboard.press('Escape');
     if (process.env.AGENT_APP_SHARE_SWITCH_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_SWITCH_SCREENSHOT });
+    await win.evaluate(async () => { const cfg = await api.getConfig(); await api.saveConfig({ share: { ...cfg.share, enabled: false } }); });
+    await win.locator('#area-share').click();
+    await win.waitForFunction(() => document.getElementById('share-accept-control').hidden);
+    assert.equal(await win.locator('#share-enable-settings').count(), 0);
+    assert.equal(await win.locator('#share-accept-control').isVisible(), false);
+    await win.locator('#settings-open').click();
+    await win.locator('[data-settings-tab="share"]').click();
+    assert.equal(await win.locator('[data-settings-panel="share"]').isVisible(), true);
+    assert.equal(await win.locator('#share-accept').isChecked(), false);
+    await win.locator('#share-accept').check();
+    await win.locator('#settings-save').click();
+    await win.waitForFunction(() => document.getElementById('settings-status').textContent === '保存しました');
+    assert.equal(appStore.loadConfig(userData).share.accept, 'auto');
+    assert.equal(appStore.loadConfig(userData).share.enabled, false);
+    await win.locator('#share-accept').uncheck();
+    await win.locator('#settings-save').click();
+    await win.waitForFunction(() => document.getElementById('settings-status').textContent === '保存しました');
+    assert.equal(appStore.loadConfig(userData).share.accept, 'manual');
+    if (process.env.AGENT_APP_SHARE_SETTINGS_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_SETTINGS_SCREENSHOT });
     assert.deepStrictEqual(errors, [], '画面でエラーが発生した');
   } finally {
     await electron.close();

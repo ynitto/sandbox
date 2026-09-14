@@ -133,6 +133,8 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #share-cards { width: min(100%, 900px); margin-inline: auto; display: flex; flex-direction: column; gap: 14px; }
 #share-terminal { width: min(100%, 900px); min-height: 260px; margin-inline: auto; }
 #share-thread, #share-composer { width: min(100%, 900px); margin-inline: auto; }
+#share-head { gap: 16px; flex-wrap: wrap; }
+#share-head .area-heading { flex: 0 1 auto; }
 .share-accept-control { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .share-nodes { width: 100%; border-collapse: collapse; font-size: 13px; }
 .share-nodes td { padding: 5px 8px 5px 0; border-top: 1px solid var(--line); }
@@ -389,10 +391,17 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .composer-toolbar { min-width: 0; grid-row: 3; display: flex; align-items: center; gap: 4px; padding-top: 4px; }
 .composer-toolbar > button { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
 .run-settings { position: relative; min-width: 0; }
-.run-settings > summary { min-height: 36px; max-width: 310px; display: flex; align-items: center; padding: 7px 10px; overflow: hidden; border-radius: 8px; color: var(--muted); white-space: nowrap; cursor: pointer; list-style: none; }
+#run-settings { flex: 1; }
+#composer .composer-toolbar > .spacer { flex: none; }
+.run-settings-compact { display: none; }
+@media (max-width: 640px) {
+  #run-settings-summary { display: none; }
+  .run-settings-compact { display: inline; }
+}
+.run-settings > summary { min-height: 36px; display: flex; align-items: center; padding: 7px 10px; border-radius: 8px; color: var(--muted); white-space: nowrap; cursor: pointer; list-style: none; }
 .run-settings > summary::before { content: ''; width: 7px; height: 7px; margin-right: 8px; flex: none; border-radius: 50%; background: var(--ok); }
 .run-settings > summary::after { content: '⌄'; flex: none; margin-left: 6px; color: var(--muted); }
-.run-settings > summary > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-settings > summary > span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .run-settings > summary:hover { color: var(--text); background: #f1f3f5; }
 .settings-popover { position: absolute; z-index: 35; bottom: calc(100% + 8px); left: 0; width: min(380px, calc(100vw - 36px)); padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 14px 36px rgba(31, 35, 40, .16); }
 .popover-head { margin-bottom: 12px; font-weight: 650; }
@@ -411,7 +420,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .action-button.sending .send-progress { display: inline-block; animation: rot .8s linear infinite; }
 .action-button.sent svg { display: none; }
 .action-button.sent .send-progress { display: inline-block; width: 8px; height: 14px; border: 0; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; border-radius: 0; transform: rotate(45deg); }
-.send-hint { color: var(--muted); font-size: 11px; }
+.send-hint { align-self: flex-end; margin: 0 12px 3px 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .attach-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 4px 4px; }
 .chip { max-width: 320px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 8px; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: var(--code-bg); font-size: 11px; white-space: nowrap; cursor: default; }
 .chip .name { overflow: hidden; text-overflow: ellipsis; }
@@ -527,7 +536,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .tier-row.is-off { pointer-events: none; }
 .policy-fieldset label small { margin-left: auto; color: var(--muted); }
 .tier-grid { display: flex; flex-direction: column; gap: 7px; padding-bottom: 14px; }
-.tier-row { display: grid; grid-template-columns: 90px minmax(130px, 1fr) minmax(130px, 1fr); align-items: end; gap: 8px; padding: 8px 4px; border: 1px solid var(--line); border-radius: 9px; }
+.tier-row { display: grid; grid-template-columns: 90px minmax(130px, 1fr) minmax(130px, 1fr); align-items: end; gap: 12px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 9px; }
 .tier-row > span { align-items: flex-start; flex-direction: column; gap: 0; align-self: center; }
 .tier-row label { display: flex; align-items: stretch; flex-direction: column; gap: 3px; }
 .tier-row select, .tier-row input { min-width: 0; width: 100%; }
