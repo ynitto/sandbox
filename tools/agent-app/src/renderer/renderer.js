@@ -8,6 +8,8 @@ const state = {
   config: null,
   area: 'conversation',
   host: null,           // host:info（platform / tmux の有無）。届くまで null
+  update: null,         // update:status（更新元・確認結果・適用中の進み）。届くまで null
+  updateDismissed: '',  // 「あとで」で閉じた更新の内容（同じ内容は次の起動まで自動では出さない）
   hostReady: null,      // host:info の返事を待つ Promise（送信前に待つ）
   repo: '',
   repoToken: 0,         // selectRepo のたびに進める。遅れて届いたホストの返事を捨てる印
@@ -1955,6 +1957,7 @@ function settingsPatch() {
   return {
     transport: $('use-tmux').checked ? 'tmux' : 'headless',
     notify: { background: $('notify-background').checked },
+    update: { source: $('update-source').value.trim(), onStartup: $('update-on-startup').checked, intervalHours: Number($('update-interval').value) },
     useWorktree: $('use-worktree').checked,
     wslDistro: $('wsl-distro').value.trim(),
     instructions: {
@@ -2036,6 +2039,11 @@ async function openSettings() {
   $('use-worktree').checked = state.config.useWorktree;
   $('notify-background').checked = (state.config.notify || {}).background !== false;
   $('wsl-distro').value = state.config.wslDistro || '';
+  const update = state.config.update || {};
+  $('update-source').value = update.source || '';
+  $('update-on-startup').checked = update.onStartup !== false;
+  $('update-interval').value = String([0, 6, 24, 168].includes(update.intervalHours) ? update.intervalHours : 24);
+  renderUpdateStatus();
   $('instruction-enabled').checked = instructions.enabled;
   $('fork-enabled').checked = instructions.forkEnabled !== false;
   $('instruction-text').value = instructions.text || '';
@@ -2107,6 +2115,109 @@ async function saveSettings() {
       renderRestrictions();
     }
   } catch (error) {
+    $('settings-error').textContent = error.message;
+    $('settings-error').hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// ---- 更新 --------------------------------------------------------------------
+//
+// 確認は main（起動時・定期）と「今すぐ確認」で行い、結果は update:changed で届く。ここでは
+// 見つかった更新を 1 つのダイアログで見せ、利用者が「更新する」を押した分だけ apply へ渡す。
+// 「あとで」は同じ内容を次の起動まで出さない（手動の確認では改めて出す）。
+
+const fmtCheckedAt = (at) => {
+  const d = new Date(at);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+function updateKey(plan) {
+  return plan ? `${plan.app.available ? plan.app.next : ''}|${plan.tools.available ? plan.tools.next : ''}` : '';
+}
+
+function renderUpdateStatus() {
+  const u = state.update;
+  const line = $('update-status');
+  const button = $('update-check');
+  if (!line) return;
+  button.disabled = !!(u && (u.checking || u.applying));
+  if (!u) { line.textContent = ''; return; }
+  const parts = [`Agent App ${u.appVersion}`];
+  if (u.checking) parts.push('確認しています…');
+  else if (u.applying) parts.push(u.progress || '更新しています…');
+  else if (u.error) parts.push(u.error);
+  else if (!u.source) parts.push('更新元が未設定');
+  else if (!u.lastCheckAt) parts.push('まだ確認していません');
+  else {
+    const p = u.plan;
+    const found = [];
+    if (p && p.app.available) found.push(`Agent App ${p.app.next}${p.app.applicable ? '' : '（この起動形態では手動で入れ替え）'}`);
+    if (p && p.tools.available) found.push(`agent-tools ${p.tools.next}`);
+    parts.push(found.length ? `新しい版: ${found.join(' / ')}` : '最新です');
+    parts.push(`${fmtCheckedAt(u.lastCheckAt)} 確認`);
+  }
+  if (u.plan && u.plan.tools.current && !u.plan.tools.available) parts.push(`agent-tools ${u.plan.tools.current}`);
+  line.textContent = parts.join(' · ');
+}
+
+function renderUpdateDialog() {
+  const u = state.update || {};
+  const p = u.plan;
+  if (!p) return;
+  const appOk = p.app.available && p.app.applicable;
+  $('update-app-row').hidden = !appOk;
+  $('update-app').checked = appOk;
+  $('update-app-detail').textContent = appOk ? `${p.app.current} → ${p.app.next}（入れ替えのために再起動します）` : '';
+  $('update-tools-row').hidden = !p.tools.available;
+  $('update-tools').checked = p.tools.available;
+  $('update-tools-detail').textContent = p.tools.available
+    ? `${p.tools.current || (p.tools.installed ? '版の記録なし' : '未導入')} → ${p.tools.next}（${api.platform === 'win32' ? 'WSL' : 'この端末'}で入れ直します）` : '';
+  $('update-notes').textContent = p.notes || '';
+  $('update-notes').hidden = !p.notes;
+  $('update-progress').textContent = u.applying ? (u.progress || '更新しています…') : '';
+  $('update-apply').disabled = !!u.applying;
+  $('update-later').disabled = !!u.applying;
+  $('update-close').disabled = !!u.applying;
+}
+
+function openUpdateDialog() {
+  const dlg = $('app-update');
+  $('update-error').hidden = true;
+  renderUpdateDialog();
+  if (!dlg.open) dlg.showModal();
+}
+
+async function applyUpdate() {
+  const choice = { app: !$('update-app-row').hidden && $('update-app').checked, tools: !$('update-tools-row').hidden && $('update-tools').checked };
+  if (!choice.app && !choice.tools) { $('app-update').close(); return; }
+  $('update-error').hidden = true;
+  $('update-apply').disabled = true;
+  try {
+    const result = await api.update.apply(choice);
+    if (result.app) { $('update-progress').textContent = '入れ替えのために終了します…'; return; }
+    $('app-update').close();
+    if (result.tools) notice(`agent-tools を ${result.tools} に更新しました`);
+  } catch (error) {
+    $('update-error').textContent = error.message;
+    $('update-error').hidden = false;
+    $('update-apply').disabled = false;
+  }
+}
+
+async function checkUpdateNow() {
+  const button = $('update-check');
+  button.disabled = true;
+  try {
+    const plan = await api.update.check();
+    state.update = await api.update.status();
+    renderUpdateStatus();
+    if (plan && plan.any) { state.updateDismissed = ''; openUpdateDialog(); }
+  } catch (error) {
+    state.update = await api.update.status().catch(() => state.update);
+    renderUpdateStatus();
     $('settings-error').textContent = error.message;
     $('settings-error').hidden = false;
   } finally {
@@ -2462,6 +2573,18 @@ async function init() {
   $('settings-open').onclick = () => openSettings().catch((error) => notice(error.message, 'error'));
   $('settings-close').onclick = () => $('app-settings').close();
   $('settings-save').onclick = saveSettings;
+  $('update-check').onclick = checkUpdateNow;
+  $('update-apply').onclick = applyUpdate;
+  $('update-later').onclick = () => { state.updateDismissed = updateKey((state.update || {}).plan); $('app-update').close(); };
+  $('update-close').onclick = () => $('app-update').close();
+  api.update.onChanged((u) => {
+    state.update = u;
+    renderUpdateStatus();
+    if ($('app-update').open) renderUpdateDialog();
+    // 起動時・定期の確認で見つかった分は、同じ内容を「あとで」で閉じていなければ出す
+    if (u.trigger === 'auto' && u.plan && u.plan.any && !u.applying && updateKey(u.plan) !== state.updateDismissed) openUpdateDialog();
+  });
+  api.update.status().then((u) => { state.update = u; renderUpdateStatus(); }).catch(() => {});
   $('optimize-agents').onchange = renderSettingsRestrictions;
   $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));
   $('side-backdrop').onclick = () => setSidebar(false);

@@ -553,6 +553,17 @@
     </aside>
   </div>
 
+  <dialog id="app-update">
+    <div class="dlg-head"><strong>更新があります</strong><span class="spacer"></span><button type="button" id="update-close" class="small quiet">閉じる</button></div>
+    <div class="dlg-body settings-list">
+      <label id="update-app-row" class="setting-check"><input type="checkbox" id="update-app"><span><strong>Agent App</strong><small id="update-app-detail"></small></span></label>
+      <label id="update-tools-row" class="setting-check"><input type="checkbox" id="update-tools"><span><strong>agent-tools</strong><small id="update-tools-detail"></small></span></label>
+      <div id="update-notes" class="sub" hidden></div>
+      <div id="update-error" class="dlg-error" hidden></div>
+    </div>
+    <div class="dlg-actions"><span id="update-progress" class="sub"></span><span class="spacer"></span><button type="button" id="update-later" class="quiet">あとで</button><button type="button" id="update-apply" class="primary">更新する</button></div>
+  </dialog>
+
   <dialog id="app-settings">
     <div class="dlg-head"><strong>設定</strong><span class="spacer"></span><button type="button" id="settings-close" class="small quiet">閉じる</button></div>
     <div class="settings-layout">
@@ -568,6 +579,10 @@
           <label class="setting-check"><input type="checkbox" id="use-worktree"><span><strong>会話ごとに作業を分離</strong><small>別々のフォルダで作業し、変更が混ざるのを防ぎます</small></span></label>
           <label class="setting-check"><input type="checkbox" id="notify-background"><span><strong>バックグラウンドで通知する</strong><small>応答の完了と確認待ちをOSの通知で知らせます</small></span></label>
           <label id="wsl-row" class="setting-field" hidden><span><strong>WSLディストリビューション</strong><small>Windows上で利用する環境</small></span><input id="wsl-distro" placeholder="既定" size="12"></label>
+          <label class="setting-field"><span><strong>更新元</strong><small>配布物を置いた共有フォルダかURL</small></span><input id="update-source" size="28" placeholder="\\server\share\agent-app"></label>
+          <label class="setting-check"><input type="checkbox" id="update-on-startup"><span><strong>起動時に更新を確認する</strong></span></label>
+          <label class="setting-field"><span><strong>更新を確認する間隔</strong></span><select id="update-interval"><option value="0">確認しない</option><option value="6">6時間ごと</option><option value="24">1日ごと</option><option value="168">1週間ごと</option></select></label>
+          <div class="environment-status"><div class="row"><strong>更新</strong><span class="spacer"></span><button type="button" id="update-check" class="small">今すぐ確認</button></div><div id="update-status" class="sub"></div></div>
           <div class="environment-status"><strong>実行環境</strong><div id="host-status" class="sub"></div></div>
         </section>
 

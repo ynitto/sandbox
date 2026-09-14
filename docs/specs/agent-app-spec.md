@@ -243,7 +243,7 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 
 | 画面 | 項目 |
 |---|---|
-| アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、前面に無いときに通知する（既定 ON）、WSL ディストリビューション、実行環境の状態 |
+| アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、前面に無いときに通知する（既定 ON）、WSL ディストリビューション、更新元・起動時に更新を確認する（既定 ON）・更新を確認する間隔（既定 1 日ごと）・「今すぐ確認」、実行環境の状態 |
 | 共通指示 | 共通指示の有効・本文（8000 字まで）、別のフォルダへの書き込みを会話の分岐で受ける（既定 ON）、スキル選択の有効・既定の選択・自動選択の候補、定型の依頼（最大 3 つ）、起動時アクション |
 | 実行制御 | エージェントを最適化する（既定 ON。agent-herd が使えるときだけ効き、効いていなければ起動方針は おすすめ / 直接指定 だけ、tier は medium だけ）、既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
 
@@ -383,6 +383,9 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `host:info` | `hostInfo()` | — | `{ platform, distro, ok, tmux, git, home, tmuxVersion, error, socket }` |
 | `config:get` | `getConfig()` | — | 正規化済み設定 |
 | `config:save` | `saveConfig(patch)` | `patch` | 正規化済み設定。`wslDistro` が変わると常駐シェルとキャッシュを捨てる |
+| `update:status` | `update.status()` | — | `{ source, appVersion, portable, checking, applying, progress, lastCheckAt, error, plan }`。§16 |
+| `update:check` | `update.check()` | — | `plan`（§16）。更新元が無い・読めないときは断る |
+| `update:apply` | `update.apply({ app, tools })` | 承認した対象 | `{ tools: <入れた版>, app: <入れた版> }`。`app` を入れたときは直後に終了して入れ替える |
 | `repo:add` | `addRepo()` | —（ダイアログ） | 設定、または `null`（キャンセル） |
 | `repo:remove` | `removeRepo(repo)` | `repo` | 設定 |
 | `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ）。agent-herd 一族（aider / ollama）が 1 つでもあれば末尾に仮想の `herd`（`virtual: true, members: [...]`）を足す（§6.3）。実体は `src/main/agents.js` で、タスク・ワークフローの `automation:agents:list` も同じ一覧（使えるものの名前だけ）を返す |
@@ -447,6 +450,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `term:screen` | `onTermScreen` | `{ id, text, cursor: { x, y }, cols, rows, tail }`（色付き画面と末尾 14 行） |
 | `term:phase` | `onTermPhase` | `{ id, phase, detail, name }` |
 | `notify:open` | `onNotifyOpen` | `{ id }`。OS の通知を押したとき（main が前面へ戻したあと） |
+| `update:changed` | `update.onChanged` | `update:status` と同じ形に `trigger`（`auto` / `manual`）を添える。確認の前後と取り込みの進みで届く |
 | `automation:ai:progress` / `automation:ai:result` / `automation:run:line` / `automation:run:exit` | `api.automation.on*` | 共有ワークベンチの契約 |
 
 タスクの会話（kind: task）とワークフローの会話（kind: workflow）は `turn:*` / `term:*` を
@@ -466,6 +470,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `wslDistro` | `''` | Windows でドライブパスのリポジトリを扱うディストロ |
 | `transport` | `tmux` | `tmux` または `headless` |
 | `useWorktree` | `true` | 会話ごとに worktree を選べるか |
+| `update` | `{ source: '', onStartup: true, intervalHours: 24 }` | 更新元（共有フォルダのパスか `http(s)://`。500 字まで）、起動時に確認するか、定期確認の間隔（時間。0 は確認しない、720 まで）。§16 |
 | `area` | `conversation` | `conversation` / `tasks` / `workflows`。旧値 `work` → `conversation`、`automation` → `tasks` |
 | `view` | `chat` | 会話領域の表示（`chat` / `files`） |
 | `lastFiles` / `lastWorktree` / `lastTask` / `lastWorkflow` | `{}` | リポジトリ → 最後の対象 |
@@ -1084,6 +1089,30 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
 `turn:running` に載り、「停止」は `turn:stop` から取り下げになる。成果の納品（書き込みの依頼）は
 未実装で、`share.acceptWrite` は将来のための設定。
 
+### 16. 自動更新（`src/main/update.js`）
+
+外部サービスを使わない。更新元は利用者が用意した共有フォルダか社内の HTTP で、そこに
+`scripts/publish-update.js` が書いた配布物がある。
+
+```text
+<更新元>/
+├── manifest.json               { schema, publishedAt, notes, app: { version, file, sha256, size }, tools: { … } }
+├── agent-app-<版>.exe          npm run dist:portable の成果物（版は package.json の version）
+└── agent-tools-<版>.tar.gz     tools/agent-tools と各エンジン（agent-project / agent-flow / agent-amigos /
+                                agent-audit / agent-loop / codd-gate）を HEAD から git archive。版は <yyyymmdd>-<短い SHA>
+```
+
+| 段 | 何をするか |
+|---|---|
+| 確認（`check`） | `manifest.json` を読み、ホスト（Windows なら WSL）で `~/.local/share/agent-app/agent-tools.version` と `agent-project` の有無を 1 コマンドで読む。`plan` は `app: { current, next, available, applicable }`、`tools: { current, installed, next, available }`、`notes`、`any`。本体は版が大きいとき（数の並びで比べる。正式版 > 先行版）、agent-tools は印と違うときに `available`。本体の `applicable` は Windows の portable 版（`PORTABLE_EXECUTABLE_FILE` がある）だけ |
+| 契機 | 起動 15 秒後（`update.onStartup`）、5 分ごとの tick で前回から `intervalHours` 以上たっていれば、そして `update:check`。自動の失敗は `status.error` に残すだけで画面には出さない（手動は断る） |
+| 取り込み（`apply`） | agent-tools → 本体の順。ファイルは `<userData>/updates/` へ写し（URL なら取得）、`sha256` があれば照合する。agent-tools はホストで `tar xzf` → `bash tools/agent-tools/install.sh </dev/null` → 印を書く（15 分まで）。失敗したら出力の末尾 8 行を添えて断り、印は変えない。本体は `<portable>.new` に置き、`%TEMP%\agent-app-update-<pid>.cmd` を `detached` で起こして `app.quit()` する |
+| 入れ替えの cmd | 自分の PID が消えるのを待ち、`move` で元の exe を `.old` へ退かし（動いている exe は名前を変えられる。60 回まで 1 秒おきに再試行）、`.new` を元の名前へ移して `start` する。失敗したら `.old` を戻して起動し直す。経過は `%TEMP%\agent-app-update.log` |
+
+manifest の `file` はファイル名だけを受け付ける（区切りを含むものは無視。更新元の外を指させない）。
+画面は `update:changed` を受けて設定 > アプリの 1 行を描き直し、自動の確認で `plan.any` なら
+`#app-update` を出す（「あとで」で閉じた同じ内容は次の起動まで出さない。手動の確認では出す）。
+
 ### 付録. テスト
 
 `npm test` は `node --test test/*.test.js` を実行する。
@@ -1097,6 +1126,7 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
 | `herd.test.js` | `herd` の一族判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
+| `update.test.js` | 版の比較、更新元の判定、manifest の正規化、取得と sha256 の照合、確認・取り込み（偽のホストシェル）、入れ替えの cmd、起動時と定期、`scripts/publish-update.js` | なし |
 | `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形） | なし |
 | `electron-smoke.test.js` | Electron 実機で四領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの「変更を相談」で会話の置き場を開き、共有の一覧・カード・参加者と、会話の入力先「共有に依頼」を通す | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 

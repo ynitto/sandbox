@@ -13,6 +13,7 @@
     "test": "node --test test/*.test.js",
     "dist": "electron-builder --win",
     "dist:portable": "electron-builder --win portable",
+    "publish:update": "node scripts/publish-update.js",
     "predist": "node scripts/check-dist.js",
     "predist:portable": "node scripts/check-dist.js"
   },

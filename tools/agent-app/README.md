@@ -92,6 +92,36 @@ npm run dist:portable    # portable だけ
 - Linux 上でも `npm run dist` は通る（electron-builder 26 は wine なしで exe のアイコン・バージョン情報を
   書き換え、NSIS も同梱の物を使う）。署名は行わない。
 
+### 配って更新する（自動更新）
+
+外部サービスは使わない。**更新元**（みんなが読める共有フォルダ、または社内の HTTP）に配布物を置き、
+各 PC の agent-app がそこを見に行く。ビルドと配置は手元で行う（CI は要らない）。
+
+```bash
+cd tools/agent-app
+npm run dist:portable                                   # release/agent-app.exe
+npm run publish:update -- \\server\share\agent-app      # exe と agent-tools の tar を写し、manifest.json を書く
+npm run publish:update -- \\server\share\agent-app --tools-only --notes "端末の表示を直した"
+```
+
+更新元に置かれるのは `manifest.json`（版・ファイル名・sha256）、`agent-app-<版>.exe`（版は
+`package.json` の `version`。**上げてから**ビルドする）、`agent-tools-<版>.tar.gz`（リポジトリの
+`tools/` のうち agent-tools と各エンジンを HEAD から `git archive` したもの。版は日付と短い SHA）。
+片方だけ置き直すときは、もう片方の項目を前の `manifest.json` から引き継ぐ。
+
+受け手は「設定 > アプリ」で更新元を入れる。確認は **起動時**（既定 ON）、**定期**（既定 1 日ごと）、
+**「今すぐ確認」** の 3 つで、見つかった分は 1 つのダイアログに並び、**「更新する」を押した分だけ**
+取り込む（黙って入れ替えない。「あとで」で閉じた内容は次の起動まで自動では出さない）。
+
+| 対象 | 何をするか | できる形態 |
+|---|---|---|
+| Agent App 本体 | 新しい exe を隣に置き、終了後に入れ替えて起動し直す（動いている exe は自分で上書きできないので、小さな cmd を切り離して走らせる） | Windows の **portable 版**だけ。開発起動や NSIS 版では案内だけ出す |
+| agent-tools | CLI と同じホスト（Windows なら WSL）で tar を展開し、`tools/agent-tools/install.sh` を叩く。入れた版は `~/.local/share/agent-app/agent-tools.version` に残す | どの形態でも |
+
+取得したファイルは sha256 を照合してから使う。入れ替えに失敗したら元の exe で起動し直し、経過は
+`%TEMP%\agent-app-update.log` に残る。agent-tools の `install.sh` が失敗したときは、その出力の末尾を
+ダイアログに出し、版の印は変えない。
+
 ### 前提
 
 | | Linux / macOS | Windows |

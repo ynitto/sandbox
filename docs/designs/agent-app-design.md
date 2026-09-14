@@ -770,6 +770,7 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession` |
 | 別のリポジトリへの分岐 | `src/renderer/forkProtocol.js`、`src/main/ipc.js` の `session:fork`、`src/main/sessionSetup.js`、`renderer.js` の `forkActionsNode` / `forkConversation` | 約束事（`@fork` 行）は main と renderer が同じモジュールを読むこと、分岐先が `requireRepo` を通ること、`origin` の後方互換、`test/fork.test.js` |
 | 外部ライブラリ・共有ファイルの追加 | `scripts/vendor.js`、`index.html` | vendor と index.html の対応テスト、CSP |
+| 自動更新（更新元の形式、入れ替えの手順） | `src/main/update.js`、`scripts/publish-update.js`、`renderer.js` の `renderUpdateStatus` / `applyUpdate`、`index.html` の `#app-update` | manifest の形は送り手と受け手で同じであること、取り込みは承認のあとだけであること、`test/update.test.js`、README「配って更新する」 |
 | タスク・ワークフローの機能 | `src/main/automation/`、`src/renderer/automation/` | `api.automation.*` と `handlers.js` の `register` の対応、`<statemachine-workbench>` の Shadow DOM、`navigate` payload と DOM イベント、`automation-workbench.css` の `:host` 上書き、`test/automation-*.test.js` |
 | タスクを AI と作る会話 | `src/main/ipc.js` の `startTeaching` / `demonstrate` / `launchTeachingBrowser` / `teachingBrowserPage`、`src/main/automation/teaching.js`、`src/main/automation/browser.js`、`src/renderer/taskTeaching.js`、`src/renderer/teachingProtocol.js` | 依頼文の約束事（`@record`、段と固定文 `@recording open` / `start` / `stop` / `cancel`）は main と renderer が同じモジュールを読むこと、見本のボタンは 1 つで段だけが進むこと、固定文は会話の送信経路（tmux）で送ること、記録の所在を WSL 表記へ直すこと、kind: task の会話が会話一覧に出ないこと |
 
@@ -1020,6 +1021,25 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 - 代償: 通知が使えない環境（権限を切っている OS）では何も出ない。判定は「前面かどうか」だけで、
   別のウィンドウで同じ会話を見ている場合は考えない。
 - 見直し条件: 通知の数が邪魔になり、種類ごとの出し分けが要るようになった場合。
+- 確信度: 中。
+
+### ADR-16 更新は利用者の置き場（共有フォルダ / 社内 HTTP）から取り、承認した分だけ入れ替える
+
+- 決定: 自動更新の更新元は利用者が用意した共有フォルダか社内の HTTP で、`scripts/publish-update.js` が
+  手元のビルドを `manifest.json`（版・sha256）付きで置く。アプリは起動時・定期・手動の 3 つの契機で
+  同じ確認を行い、見つかった本体と agent-tools を 1 つのダイアログに並べ、「更新する」を押した分だけ
+  取り込む。本体は Windows の portable 版だけ入れ替える（新しい exe を隣に置き、終了後に切り離した cmd が
+  入れ替えて起動し直す）。agent-tools は CLI と同じホスト（WSL）で tar を展開して `install.sh` を叩く。
+- 背景: 配布は `npm run dist:portable` の 1 ファイルで、外部サービス（GitHub Releases・更新サーバー）は
+  使えず、ビルド環境（CI）も無い。WSL 側の agent-tools も版がずれると会話やタスクの実行が噛み合わない。
+- 却下: electron-updater（更新サーバーか GitHub Releases を前提にし、portable 版を扱わない）。
+  黙って入れ替える案（利用者の作業中に再起動が入る。承認は必須）。agent-project の自己更新
+  （sparse-checkout）をそのまま借りる案（git の到達性と資格情報を各 PC に要求する。ここでは tar 1 つで足りる）。
+  NSIS 版の自動更新（配布形態は portable に絞る。NSIS 版は案内だけ）。
+- 代償: 版の印は agent-app が書く（`~/.local/share/agent-app/agent-tools.version`）ので、手で
+  `install.sh` を叩いた PC では印が古いままになり「更新あり」が出る（入れ直しても害は無い）。
+  更新元の内容は sha256 で照合するが署名はしない（更新元の書き込み権限が信頼の境界）。
+- 見直し条件: 更新サーバーを置ける環境になったとき、または NSIS 版を配る必要が出たとき。
 - 確信度: 中。
 
 ## 付録 B. 関連文書

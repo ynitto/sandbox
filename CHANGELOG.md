@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 共有フォルダから自動更新する（本体と WSL 側の agent-tools）
+
+- **外部サービス無しで配って更新できる。** `npm run dist:portable` のあと `npm run publish:update -- <更新元>`
+  で、portable 版の exe と agent-tools の tar を共有フォルダ（または社内 HTTP の文書ルート）へ置き、
+  `manifest.json`（版・sha256）を書く。ビルドは手元で行う（CI は要らない）。
+- **確認は起動時・定期・手動、取り込みは承認したときだけ。** 設定 > アプリに更新元・起動時に確認・
+  確認する間隔・「今すぐ確認」が加わり、見つかった本体と agent-tools は 1 つのダイアログに並ぶ。
+  「更新する」を押した分だけ取り込み、「あとで」で閉じた内容は次の起動まで自動では出さない。
+- **本体は portable 版だけ入れ替える。** 新しい exe を隣に置き、終了後に切り離した cmd が入れ替えて
+  起動し直す（失敗したら元の exe で起動し直す）。開発起動や NSIS 版では案内だけ出す。
+- **agent-tools は WSL の中で入れ直す。** CLI と同じホストで tar を展開して `install.sh` を叩き、入れた版を
+  `~/.local/share/agent-app/agent-tools.version` に残す。設計は設計書 ADR-16、仕様は仕様書 §16。
+
 ### agent-tools: 長いツール出力を捨てずに外へ置き、AI には抜粋と所在だけを渡す
 
 - **AI の文脈に載せる量は増やさず、材料は失わない。** ローカルの AI の実行ループ（`--tools`）で
