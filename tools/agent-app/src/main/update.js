@@ -17,7 +17,8 @@
 // （process.execPath は一時展開先なので使わない）。それ以外の起動形態（開発起動・NSIS 版）では
 // 本体の更新は案内だけにとどめ、agent-tools の更新だけを行う。
 //
-// agent-tools は CLI と同じホスト（Windows なら WSL）で tar を展開して install.sh を叩く。
+// agent-tools は CLI と同じホスト（Windows なら WSL）で tar を展開して install.sh を叩く。入れ直すのは
+// agent-app が呼ぶ 3 本（agent-herd / agent-loop / agent-flow）だけで、agent-project などは触らない。
 // 入れた版は $HOME/.local/share/agent-app/agent-tools.version に残し、次の確認はそれと比べる。
 
 const fs = require('fs');
@@ -173,7 +174,7 @@ async function fetchToFile(source, item, dest) {
 //   manifest       … normalizeManifest の結果
 //   appVersion     … いま動いている本体の版
 //   canApplyApp    … 本体を入れ替えられる起動形態か（Windows の portable 版）
-//   tools          … { version, installed }（ホストで読んだ印と、agent-project の有無）
+//   tools          … { version, installed }（ホストで読んだ印と、3 本のどれかが PATH にあるか）
 function plan({ manifest, appVersion, canApplyApp, tools }) {
   const m = manifest || {};
   const app = { current: String(appVersion || ''), next: '', available: false, applicable: !!canApplyApp };
@@ -239,15 +240,21 @@ function applyScript({ target, staged, pid, log }) {
 
 // ---- agent-tools（ホスト側）---------------------------------------------------------
 
-// ホストの印と agent-tools の有無を 1 回で読む
+// agent-app が呼ぶ 3 本。install.sh の --only で入れ直す対象（agent-loop は install.sh が常に一緒に入れ直す）
+const TOOLS = ['agent-herd', 'agent-loop', 'agent-flow'];
+const INSTALL_ONLY = 'agent-flow,agent-herd';
+
+// ホストの印と 3 本の有無を 1 回で読む
 function toolsProbeScript() {
-  return `printf 'version=%s\\nproject=%s\\nherd=%s\\n' "$(cat ${TOOLS_STAMP} 2>/dev/null | head -1 || true)" "$(command -v agent-project || true)" "$(command -v agent-herd || true)"`;
+  const probes = TOOLS.map((name) => `${name}=%s`).join('\\n');
+  const args = TOOLS.map((name) => `"$(command -v ${name} || true)"`).join(' ');
+  return `printf 'version=%s\\n${probes}\\n' "$(cat ${TOOLS_STAMP} 2>/dev/null | head -1 || true)" ${args}`;
 }
 
 function parseToolsProbe(output) {
   const info = { version: '', installed: false };
   for (const line of String(output || '').split('\n')) {
-    const m = line.match(/^(version|project|herd)=(.*)$/);
+    const m = line.match(/^(version|agent-herd|agent-loop|agent-flow)=(.*)$/);
     if (!m) continue;
     if (m[1] === 'version') info.version = m[2].trim();
     else if (m[2].trim()) info.installed = true;
@@ -263,7 +270,7 @@ function toolsInstallScript({ archive, version }) {
     'dir="$(mktemp -d "${TMPDIR:-/tmp}/agent-tools-update.XXXXXX")"',
     'tar xzf "$archive" -C "$dir"',
     'test -f "$dir/tools/agent-tools/install.sh" || { echo "配布物に tools/agent-tools/install.sh がありません"; exit 1; }',
-    'bash "$dir/tools/agent-tools/install.sh" </dev/null',
+    `bash "$dir/tools/agent-tools/install.sh" --only ${INSTALL_ONLY} </dev/null`,
     `mkdir -p "$(dirname ${TOOLS_STAMP})"`,
     `printf '%s\\n' ${sq(version)} > ${TOOLS_STAMP}`,
     'rm -rf "$dir"',
@@ -438,6 +445,6 @@ class Updater {
 }
 
 module.exports = {
-  MANIFEST, TOOLS_STAMP, compareVersions, sourceKind, joinSource, normalizeManifest, readManifest, fetchToFile, sha256Of,
+  MANIFEST, TOOLS_STAMP, TOOLS, INSTALL_ONLY, compareVersions, sourceKind, joinSource, normalizeManifest, readManifest, fetchToFile, sha256Of,
   plan, applyScript, toolsProbeScript, parseToolsProbe, toolsInstallScript, Updater,
 };

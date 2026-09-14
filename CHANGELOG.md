@@ -17,7 +17,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   「更新する」を押した分だけ取り込み、「あとで」で閉じた内容は次の起動まで自動では出さない。
 - **本体は portable 版だけ入れ替える。** 新しい exe を隣に置き、終了後に切り離した cmd が入れ替えて
   起動し直す（失敗したら元の exe で起動し直す）。開発起動や NSIS 版では案内だけ出す。
-- **agent-tools は WSL の中で入れ直す。** CLI と同じホストで tar を展開して `install.sh` を叩き、入れた版を
+- **agent-tools は WSL の中で入れ直す。** 対象は agent-app が呼ぶ agent-herd / agent-loop / agent-flow の
+  3 本だけ。CLI と同じホストで tar を展開して `install.sh --only` を叩き、入れた版を
   `~/.local/share/agent-app/agent-tools.version` に残す。設計は設計書 ADR-16、仕様は仕様書 §16。
 
 ### agent-tools: 長いツール出力を捨てずに外へ置き、AI には抜粋と所在だけを渡す

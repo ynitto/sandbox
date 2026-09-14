@@ -40,8 +40,8 @@ function fakeShell({ version = '', installed = true, installOk = true } = {}) {
     runs,
     async run(script) {
       runs.push(script);
-      if (script.includes('command -v agent-project')) {
-        return { ok: true, status: 0, output: `version=${version}\nproject=${installed ? '/home/me/.local/bin/agent-project' : ''}\nherd=\n`, error: '' };
+      if (script.includes('command -v agent-herd')) {
+        return { ok: true, status: 0, output: `version=${version}\nagent-herd=${installed ? '/home/me/.local/bin/agent-herd' : ''}\nagent-loop=\nagent-flow=\n`, error: '' };
       }
       return installOk ? { ok: true, status: 0, output: '[OK] installed', error: '' } : { ok: false, status: 1, output: 'boom\ninstall.sh failed', error: 'install.sh failed' };
     },
@@ -163,7 +163,7 @@ test('agent-tools の更新はホストで tar を展開して install.sh を叩
   assert.equal(result.tools, '20260914-abc1234');
   const script = shell.runs[shell.runs.length - 1];
   assert.match(script, /tar xzf "\$archive"/);
-  assert.match(script, /bash "\$dir\/tools\/agent-tools\/install.sh" <\/dev\/null/);
+  assert.match(script, /bash "\$dir\/tools\/agent-tools\/install.sh" --only agent-flow,agent-herd <\/dev\/null/);
   assert.match(script, /printf '%s\\n' '20260914-abc1234' > \$HOME\/\.local\/share\/agent-app\/agent-tools\.version/);
   assert.equal(updater.plan.tools.available, false);
   assert.equal(updater.plan.tools.current, '20260914-abc1234');
@@ -245,7 +245,12 @@ test('publish-update は portable 版と tools/ の tar を写し、manifest に
   assert.equal(manifest.tools.sha256, sha(fs.readFileSync(tar)));
   const listing = execFileSync('tar', ['tzf', tar], { encoding: 'utf8' });
   assert.match(listing, /^tools\/agent-tools\/install\.sh$/m);
-  assert.match(listing, /^tools\/agent-project\//m);
+  assert.match(listing, /^tools\/agent-flow\//m);
+  assert.match(listing, /^tools\/agent-loop\/install\.sh$/m);
+  assert.match(listing, /^tools\/agent-tools\/agentcore\//m);
+  assert.match(listing, /^agents\/[^/]+\.json$/m, 'CLI 定義も配る');
+  assert.match(listing, /^commands\//m);
+  assert.doesNotMatch(listing, /^tools\/agent-project\//m, 'agent-app が呼ばないものは入れない');
   assert.doesNotMatch(listing, /^tools\/agent-app\//m);
   // 受け手がそのまま読める
   const read = update.normalizeManifest(JSON.parse(fs.readFileSync(path.join(dest, 'manifest.json'), 'utf8')));

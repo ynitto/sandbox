@@ -8,7 +8,7 @@
 // 更新元は共有フォルダ（\\server\share\agent-app / /mnt/share/agent-app）か、社内の HTTP で
 // 配るならその文書ルート。書くのは 3 つ:
 //   agent-app-<版>.exe        … release/agent-app.exe（package.json の version を版とする）
-//   agent-tools-<版>.tar.gz   … リポジトリの tools/（agent-tools と各エンジン）を HEAD から git archive
+//   agent-tools-<版>.tar.gz   … agent-app が呼ぶ 3 本（agent-herd / agent-loop / agent-flow）の元を HEAD から git archive
 //   manifest.json             … 上の 2 つの版・ファイル名・sha256・大きさ。片方だけ置き直すときは
 //                               もう片方の項目を前の manifest から引き継ぐ
 //
@@ -21,8 +21,11 @@ const { execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const REPO = path.join(ROOT, '..', '..');
-// install.sh が隣に要るもの（tools/agent-tools/install.sh の TOOLS_DIR 参照先）。無いものは飛ばす。
-const TOOL_DIRS = ['tools/agent-tools', 'tools/agent-project', 'tools/agent-flow', 'tools/agent-amigos', 'tools/agent-audit', 'tools/agent-loop', 'tools/codd-gate'];
+// agent-app が呼ぶのは agent-herd（tools/agent-tools/agentcore に住む）・agent-loop・agent-flow の 3 本だけ。
+// それ以外のエンジン（agent-project / agent-amigos / agent-audit …）は入れず、入れ直しもしない。
+// agents/（CLI 定義）と commands/（用途コマンド）は install.sh が 3 本の共通の置き場へ配る分で、
+// 無いと入れた道具が組み込み CLI を「未知」と言う。
+const TOOL_DIRS = ['tools/agent-tools', 'tools/agent-flow', 'tools/agent-loop', 'agents', 'commands'];
 
 function parseArgs(argv) {
   const opts = { dest: '', app: true, tools: true, notes: '', exe: '' };

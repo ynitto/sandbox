@@ -1029,7 +1029,8 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
   手元のビルドを `manifest.json`（版・sha256）付きで置く。アプリは起動時・定期・手動の 3 つの契機で
   同じ確認を行い、見つかった本体と agent-tools を 1 つのダイアログに並べ、「更新する」を押した分だけ
   取り込む。本体は Windows の portable 版だけ入れ替える（新しい exe を隣に置き、終了後に切り離した cmd が
-  入れ替えて起動し直す）。agent-tools は CLI と同じホスト（WSL）で tar を展開して `install.sh` を叩く。
+  入れ替えて起動し直す）。agent-tools は CLI と同じホスト（WSL）で tar を展開して `install.sh --only` で agent-app が呼ぶ 3 本
+  （agent-herd / agent-loop / agent-flow）だけを入れ直す。
 - 背景: 配布は `npm run dist:portable` の 1 ファイルで、外部サービス（GitHub Releases・更新サーバー）は
   使えず、ビルド環境（CI）も無い。WSL 側の agent-tools も版がずれると会話やタスクの実行が噛み合わない。
 - 却下: electron-updater（更新サーバーか GitHub Releases を前提にし、portable 版を扱わない）。
@@ -1038,6 +1039,8 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
   NSIS 版の自動更新（配布形態は portable に絞る。NSIS 版は案内だけ）。
 - 代償: 版の印は agent-app が書く（`~/.local/share/agent-app/agent-tools.version`）ので、手で
   `install.sh` を叩いた PC では印が古いままになり「更新あり」が出る（入れ直しても害は無い）。
+  同じ PC に agent-project があっても触らないので、agentcore の契約が変わる更新では agent-project 側を
+  その自己更新で揃える必要がある。
   更新元の内容は sha256 で照合するが署名はしない（更新元の書き込み権限が信頼の境界）。
 - 見直し条件: 更新サーバーを置ける環境になったとき、または NSIS 版を配る必要が出たとき。
 - 確信度: 中。

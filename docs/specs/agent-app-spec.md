@@ -1098,19 +1098,19 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
 <更新元>/
 ├── manifest.json               { schema, publishedAt, notes, app: { version, file, sha256, size }, tools: { … } }
 ├── agent-app-<版>.exe          npm run dist:portable の成果物（版は package.json の version）
-└── agent-tools-<版>.tar.gz     tools/agent-tools と各エンジン（agent-project / agent-flow / agent-amigos /
-                                agent-audit / agent-loop / codd-gate）を HEAD から git archive。版は <yyyymmdd>-<短い SHA>
+└── agent-tools-<版>.tar.gz     agent-app が呼ぶ 3 本の元（tools/agent-tools（agent-herd を含む）/ tools/agent-flow /
+                                tools/agent-loop）と agents/ commands/ を HEAD から git archive。版は <yyyymmdd>-<短い SHA>
 ```
 
 | 段 | 何をするか |
 |---|---|
-| 確認（`check`） | `manifest.json` を読み、ホスト（Windows なら WSL）で `~/.local/share/agent-app/agent-tools.version` と `agent-project` の有無を 1 コマンドで読む。`plan` は `app: { current, next, available, applicable }`、`tools: { current, installed, next, available }`、`notes`、`any`。本体は版が大きいとき（数の並びで比べる。正式版 > 先行版）、agent-tools は印と違うときに `available`。本体の `applicable` は Windows の portable 版（`PORTABLE_EXECUTABLE_FILE` がある）だけ |
+| 確認（`check`） | `manifest.json` を読み、ホスト（Windows なら WSL）で `~/.local/share/agent-app/agent-tools.version` と agent-herd / agent-loop / agent-flow の有無を 1 コマンドで読む。`plan` は `app: { current, next, available, applicable }`、`tools: { current, installed, next, available }`、`notes`、`any`。本体は版が大きいとき（数の並びで比べる。正式版 > 先行版）、agent-tools は印と違うときに `available`。本体の `applicable` は Windows の portable 版（`PORTABLE_EXECUTABLE_FILE` がある）だけ |
 | 契機 | 起動 15 秒後（`update.onStartup`）、5 分ごとの tick で前回から `intervalHours` 以上たっていれば、そして `update:check`。自動の失敗は `status.error` に残すだけで画面には出さない（手動は断る） |
-| 取り込み（`apply`） | agent-tools → 本体の順。ファイルは `<userData>/updates/` へ写し（URL なら取得）、`sha256` があれば照合する。agent-tools はホストで `tar xzf` → `bash tools/agent-tools/install.sh </dev/null` → 印を書く（15 分まで）。失敗したら出力の末尾 8 行を添えて断り、印は変えない。本体は `<portable>.new` に置き、`%TEMP%\agent-app-update-<pid>.cmd` を `detached` で起こして `app.quit()` する |
+| 取り込み（`apply`） | agent-tools → 本体の順。ファイルは `<userData>/updates/` へ写し（URL なら取得）、`sha256` があれば照合する。agent-tools はホストで `tar xzf` → `bash tools/agent-tools/install.sh --only agent-flow,agent-herd </dev/null`（agent-loop は install.sh が常に一緒に入れ直す）→ 印を書く（15 分まで）。失敗したら出力の末尾 8 行を添えて断り、印は変えない。本体は `<portable>.new` に置き、`%TEMP%\agent-app-update-<pid>.cmd` を `detached` で起こして `app.quit()` する |
 | 入れ替えの cmd | 自分の PID が消えるのを待ち、`move` で元の exe を `.old` へ退かし（動いている exe は名前を変えられる。60 回まで 1 秒おきに再試行）、`.new` を元の名前へ移して `start` する。失敗したら `.old` を戻して起動し直す。経過は `%TEMP%\agent-app-update.log` |
 
-agent-project の自己更新（`update_enabled`、リポジトリの main の SHA が物差し）とは経路も物差しも別で、
-互いを知らない。1 台の PC ではどちらか片方にする（README「配って更新する」）。
+入れ直すのは agent-app が呼ぶ 3 本だけで、agent-project などは触らない（agent-project の自己更新とは
+対象が重ならない）。
 
 manifest の `file` はファイル名だけを受け付ける（区切りを含むものは無視。更新元の外を指させない）。
 画面は `update:changed` を受けて設定 > アプリの 1 行を描き直し、自動の確認で `plan.any` なら
