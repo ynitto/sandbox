@@ -386,3 +386,32 @@ test('受け口のポート: 0 は「空いているポート」（既定の 478
   assert.equal(second.state, 'on', second.error);
   assert.notEqual(second.port, share.port);
 });
+
+test('自分から公開: 終了済み会話を別の参加者が検索・閲覧・コメントでき、停止後は取得できない', async t => {
+  await withNodes(t, async open => {
+    const a = await open('publisher');
+    const b = await open('reader', { seeds: [`127.0.0.1:${a.share.port}`] });
+    await waitFor(() => b.share.peers.peers().some(p => p.node === 'publisher'));
+    const s = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
+    store.appendMessage(a.userData, s.id, { role: 'user', text: 'publish-fixture' });
+    store.appendMessage(a.userData, s.id, { role: 'assistant', text: '完了済みの結果' });
+    const entry = a.share.publish(s.id);
+    assert.equal(a.share.status().mine.length, 0, '依頼キューには入らない');
+    const result = await b.share.searchPublic('publisher', { text: 'publish-fixture' }, '');
+    assert.equal(result.sessions.length, 1);
+    const key = result.sessions[0].key;
+    assert.equal((await b.share.readPublic(key)).messages[1].text, '完了済みの結果');
+    await b.share.sayPublic(key, '確認しました');
+    assert.equal((await a.share.readPublic(key, true)).talk[0].who, 'reader');
+    await a.share.sayPublic(key, 'ありがとう');
+    assert.equal((await b.share.readPublic(key, true)).talk.length, 2);
+    assert.equal((await b.share.refreshPublic()).publicCatalog.length, 1);
+    assert.equal(store.readSession(a.userData, s.id).messages.length, 2, 'コメントはCLIへ渡らない');
+    const denied = await call({ address: '127.0.0.1', port: a.share.port }, 'POST', '/publications/search', { key: 'wrong', body: { query: {} } });
+    assert.equal(denied.status, 401);
+    a.share.unpublish(entry.id);
+    await assert.rejects(b.share.readPublic(key), /公開が停止/);
+    await assert.rejects(b.share.sayPublic(key, '停止後'), /公開が停止/);
+    assert.equal((await b.share.searchPublic('publisher', {}, '')).sessions.length, 0);
+  });
+});

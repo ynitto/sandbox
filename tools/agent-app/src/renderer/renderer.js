@@ -1001,6 +1001,8 @@ function renderHeader() {
   $('session-routine').hidden = !cur;
   $('session-routine').disabled = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
+  $('session-publish').hidden = !cur || cur.kind !== 'conversation';
+  $('session-publish').textContent = Share.status()?.publications?.some(p => p.sessionId === cur?.id) ? '公開を停止' : 'セッションを公開';
   $('session-fork').hidden = !cur || cur.kind !== 'conversation';
   $('session-fork').disabled = busy || !cur?.messages.some(m => m.role === 'assistant' && m.complete !== false);
   $('session-handoff').hidden = !cur || cur.kind !== 'conversation';
@@ -2313,6 +2315,21 @@ async function init() {
     await removeConversation(state.current);
   };
   $('session-handoff').onclick = () => handoffConversation().catch((err) => notice(err.message, 'error'));
+  $('session-publish').onclick = async () => {
+    const session = state.current;
+    if (!session) return;
+    $('session-publish').disabled = true; $('chat-more').open = false;
+    try {
+      const status = await api.share.status();
+      const entry = status.publications?.find(p => p.sessionId === session.id);
+      if (entry) await api.share.unpublish(entry.id);
+      else await api.share.publish(session.id);
+      await Share.refresh();
+      $('session-publish').textContent = entry ? 'セッションを公開' : '公開を停止';
+      notice(entry ? '公開を停止しました' : '同じ合言葉の参加者にセッションを公開しました');
+    } catch (err) { notice(err.message, 'error'); }
+    finally { $('session-publish').disabled = false; }
+  };
   $('session-fork').onclick = () => {
     $('chat-more').open = false;
     if (state.current) SessionSearch.forkCurrent(state.current.id).catch(err => notice(err.message, 'error'));

@@ -19,12 +19,16 @@
   const GROUPS = [
     // 実行中には「自分が引き受けている依頼」と「仲間が自分の依頼を実行している分」が並ぶ。
     // どちらかは行の副題（誰の依頼か・どの PC か）と、選んだときの見出しで分かる。
+    { key: 'public', label: '公開セッション', mark: '◎' },
     { key: 'working', label: '実行中', mark: '●' },
     { key: 'waiting', label: '順番待ち', mark: '○' },
     { key: 'done', label: '今日 完了', mark: '✓' },
   ];
 
   const state = { deps: null, visible: false, status: null, selected: '', view: 'request', screens: new Map(), busy: false, input: 'talk' };
+
+  const publicViews = new Map(), publicFailures = new Map();
+  let publicTimer, publicLoading = false, pendingComment;
 
   function term() { return window.ShareTerm; }
   function el(...args) { return state.deps.el(...args); }
@@ -50,6 +54,13 @@
     const s = state.status;
     if (!s) return [];
     const out = [];
+    for (const entry of [...(s.publications || []).map(p => ({ ...p, key: `public:${s.node}:${p.id}`, own: true })), ...(s.publicCatalog || [])]) {
+      const view = publicViews.get(entry.key);
+      out.push({ id: entry.key, publicationId: entry.publicationId || entry.id, kind: 'public', group: 'public',
+        title: view?.title || entry.title, who: entry.owner, cli: view?.agent || entry.cli || entry.agent,
+        state: 'published', own: !!entry.own, sessionId: entry.own ? entry.sessionId : '', talk: view?.talk || [],
+        postedAt: entry.publishedAt, record: view, failure: publicFailures.get(entry.key) });
+    }
     for (const item of s.inflight || []) {
       out.push({
         id: item.id, kind: 'accepted', group: 'working', title: item.title || item.id,
@@ -181,7 +192,7 @@
     open.onclick = () => state.deps.openSession(item.sessionId);
     return card('結果', item.state === 'done'
       ? `${item.executor || ''}${item.executorCli ? ` · ${item.executorCli}` : ''} から会話に届いています`
-      : (item.error || STATE_LABEL[item.state] || ''), open);
+      : (item.error || STATE_LABEL[item.state] || (item.state === 'published' ? '公開中' : '')), open);
   }
 
   function requestView() {
@@ -201,7 +212,29 @@
     // 見出しが依頼の 1 行目そのものなので、本文が 1 行で収まっているなら繰り返さない
     const body = String(item.summary || '');
     if (body.includes('\n') || body.length > 60) box.append(card('依頼の本文', body));
-    if (item.kind === 'mine') box.append(mineCard(item));
+    if (item.kind === 'public') {
+      const actions = el('div', 'row');
+      if (item.own) {
+        const stop = el('button', 'danger', '公開を停止');
+        stop.onclick = () => run(async () => { await window.api.share.unpublish(item.publicationId); publicViews.delete(item.id); });
+        actions.append(stop);
+      }
+      const inspect = el('button', 'small', 'フォーク');
+      inspect.disabled = !!item.failure || !item.record?.messages.some(m => m.role === 'assistant' && m.complete !== false);
+      inspect.onclick = () => SessionSearch.forkPublic(item.id).catch(err => notice(err.message, 'error'));
+      actions.append(inspect);
+      box.append(card('公開セッション', `${item.who} · 同じ合言葉の参加者に公開中`, actions));
+      if (item.failure) box.append(blank('公開セッションを取得できません', item.failure));
+      else if (!item.record) box.append(blank('会話を読み込んでいます…', ''));
+      else {
+        for (const m of item.record.messages) {
+          const row = el('article', 'search-message');
+          row.append(el('strong', '', m.role === 'user' ? '利用者' : 'AI'), el('div', 'search-message-body', m.text));
+          box.append(row);
+        }
+      }
+    }
+    else if (item.kind === 'mine') box.append(mineCard(item));
     else if (item.kind === 'theirs') box.append(acceptCard(item));
     else if (item.kind === 'accepted') box.append(card('引き受けた依頼', `${item.who} の依頼を ${item.cli} で実行中 · ${elapsed(item.startedAt)}`));
   }
@@ -227,6 +260,7 @@
       table.append(tr);
     }
     section.append(table);
+    for (const error of s.publicErrors || []) section.append(el('p', 'sub', error.message));
     box.append(section);
   }
 
@@ -252,7 +286,7 @@
     const badge = $('share-request-status');
     badge.hidden = !item;
     if (item) {
-      const label = item.kind === 'accepted' ? '引き受け中' : (STATE_LABEL[item.state] || '');
+      const label = item.kind === 'accepted' ? '引き受け中' : (STATE_LABEL[item.state] || (item.state === 'published' ? '公開中' : ''));
       badge.textContent = item.state === 'working' && item.kind === 'theirs' && item.executor ? `${label} ${item.executor}` : label;
       badge.className = `status${item.state === 'working' ? ' active' : item.state === 'done' ? ' ok' : item.state === 'failed' ? ' ng' : ''}`;
     }
@@ -269,11 +303,11 @@
   function renderTerminal() {
     const item = selected();
     const show = state.view === 'request' && !!item
-      && (item.kind === 'accepted' || (item.kind === 'mine' && item.state === 'working'));
+      && (item.kind === 'accepted' || (item.kind === 'mine' && item.state === 'working') || (item.kind === 'public' && !!item.record?.screen && !item.failure));
     $('share-terminal').hidden = !show;
     if (!show) { if (term().isRemote()) term().detach(); return; }
     $('share-term-agent').textContent = item.kind === 'accepted'
-      ? `${item.cli} · この PC` : `${item.executor || '参加者'} の ${item.executorCli || 'AI'}`;
+      ? `${item.cli} · この PC` : item.kind === 'public' ? `${item.who} の ${item.cli || 'AI'}` : `${item.executor || '参加者'} の ${item.executorCli || 'AI'}`;
     $('share-term-note').textContent = item.kind === 'accepted' ? '依頼者にも表示されます' : '閲覧のみ';
     const stop = $('share-term-stop');
     stop.hidden = item.kind !== 'accepted';
@@ -282,9 +316,9 @@
     term().attachRemote(item.id, $('share-term-host'), {
       keys: item.kind === 'accepted' ? (data) => window.api.share.keys(item.id, data) : null,
     });
-    const text = state.screens.get(item.id);
+    const text = item.kind === 'public' ? item.record?.screen : state.screens.get(item.id);
     if (text) term().applyScreen({ id: item.id, text });
-    else window.api.share.screen(item.id).then((body) => {
+    else if (item.kind !== 'public') window.api.share.screen(item.id).then((body) => {
       if (!body) return;
       state.screens.set(item.id, body);
       if (term().current() === item.id) term().applyScreen({ id: item.id, text: body });
@@ -294,6 +328,7 @@
   // ひとこと（人と人）。相手がいる間だけ出す——引き受けた依頼か、仲間が実行中の自分の依頼。
   function talkPartner(item) {
     if (!item) return '';
+    if (item.kind === 'public') return !item.failure && item.record ? 'このセッションの参加者' : '';
     if (item.kind === 'accepted') return item.who;
     if (item.kind === 'mine' && item.state === 'working') return item.executor || '参加者';
     return '';
@@ -346,8 +381,13 @@
     if (!item || !text) return;
     $('share-send').disabled = true;
     try {
-      await window.api.share.say(item.id, text);
-      $('share-prompt').value = '';
+      if (item.kind === 'public') {
+        if (!pendingComment || pendingComment.key !== item.id || pendingComment.text !== text) pendingComment = { key: item.id, text, id: crypto.randomUUID() };
+        await window.api.share.publicSay(item.id, text, pendingComment.id);
+        pendingComment = null;
+        await loadPublic(item.id);
+      } else await window.api.share.say(item.id, text);
+      if (selected()?.id === item.id && $('share-prompt').value.trim() === text) $('share-prompt').value = '';
       await refresh();
       render();
     } catch (error) {
@@ -365,6 +405,27 @@
     else nodesView();
     renderTerminal();
     renderThread();
+    const item = selected();
+    if (item?.kind === 'public' && !publicViews.has(item.id) && !publicFailures.has(item.id)) loadPublic(item.id);
+  }
+
+  async function loadPublic(key) {
+    if (publicLoading || !state.visible || $('share-area').hidden || state.view !== 'request') return;
+    publicLoading = true;
+    try {
+      const previous = publicViews.get(key);
+      const update = await window.api.share.publicView(key, previous?.revision || '');
+      if (!state.visible || selected()?.id !== key) return;
+      const view = update.unchanged ? { ...previous, ...update } : update;
+      publicFailures.delete(key);
+      publicViews.set(key, view);
+      while (publicViews.size > 5) publicViews.delete(publicViews.keys().next().value);
+      if (!previous || previous.revision !== view.revision || JSON.stringify(previous.talk) !== JSON.stringify(view.talk)) render();
+      else if (!!previous.screen !== !!view.screen) renderTerminal();
+      else if (term().current() === key) term().applyScreen({ id: key, text: view.screen || '' });
+    } catch (err) {
+      if (state.visible && selected()?.id === key) { publicViews.delete(key); publicFailures.set(key, err.message); render(); }
+    } finally { publicLoading = false; }
   }
 
   // ---- 操作 --------------------------------------------------------------------------
@@ -418,6 +479,7 @@
       };
     }
     term().configure({ onFocus: () => setInputMode('terminal', { focus: false }), onError: (error) => notice(error.message, 'error') });
+    $('share-refresh').onclick = () => run(async () => window.api.share.publicRefresh());
     $('share-view-nodes').onclick = () => { state.view = 'nodes'; render(); };
     $('share-accept-mode').onchange = (event) => {
       const mode = event.target.checked ? 'auto' : 'manual';
@@ -436,10 +498,18 @@
     await refresh();
     render();
     term().refit();
+    clearInterval(publicTimer);
+    publicTimer = setInterval(() => {
+      const item = selected();
+      if (item?.kind === 'public') loadPublic(item.id);
+    }, 3000);
+    try { state.status = await window.api.share.publicRefresh(); render(); }
+    catch (err) { if (state.status?.enabled) notice(err.message, 'error'); }
   }
 
   function hide() {
     state.visible = false;
+    clearInterval(publicTimer); publicViews.clear(); publicFailures.clear();
     if (term().isRemote()) term().detach();
   }
 

@@ -8,6 +8,8 @@ const SessionSearch = (() => {
   const node = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; };
   const button = (label, cls, fn) => { const b = node('button', cls, label); b.type = 'button'; b.onclick = fn; return b; };
   const date = value => value ? new Date(value * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '日時不明';
+  let includeShared = false;
+  function sharedMode(value) { includeShared = value; $('search-shared').setAttribute('aria-pressed', String(value)); $('search-shared').classList.toggle('on', value); }
   function filters() {
     let since = 0, until = 0;
     const mode = $('search-date').value;
@@ -23,7 +25,7 @@ const SessionSearch = (() => {
       const end = new Date(today); if (mode !== 'yesterday') end.setDate(end.getDate() + 1);
       until = end.getTime() / 1000;
     }
-    return { text: $('search-text').value.trim(), agent: $('search-agent').value, since, until,
+    return { shared: includeShared, text: $('search-text').value.trim(), agent: $('search-agent').value, since, until,
       repo: $('search-repo').value.trim(), model: $('search-model').value.trim(), source: $('search-source').value,
       dateField: $('search-date-field').value, archived: $('search-archived').checked };
   }
@@ -60,7 +62,7 @@ const SessionSearch = (() => {
       $('search-results').replaceChildren();
       for (const record of result.sessions) {
         const row = button('', 'list-pick', () => preview(record.key));
-        row.append(node('strong', '', record.title), node('span', 'sub', `${record.agent} · ${source(record.source)}`),
+        row.append(node('strong', '', record.title), node('span', 'sub', `${record.agent} · ${source(record.source)}${record.owner ? ` · ${record.owner}（共有）` : ''}`),
           node('span', 'sub', `${name(record.repo)} · ${date(record.updatedAt)}`), node('span', 'sub', record.snippet));
         row.dataset.key = record.key;
         if (selected?.key === record.key) row.classList.add('on');
@@ -85,7 +87,7 @@ const SessionSearch = (() => {
       for (const row of $('search-results').querySelectorAll('[data-key]')) row.parentElement.classList.toggle('active', row.dataset.key === key);
       const box = $('search-preview'); box.replaceChildren();
       const back = button('検索結果へ戻る', 'small', () => $('search-split').classList.remove('has-preview')); back.id = 'search-back'; box.append(back);
-      box.append(node('h3', '', record.title), node('p', 'sub', `${record.agent} · ${source(record.source)} · ${record.model || 'モデル不明'} · ${date(record.updatedAt)}`), node('p', 'sub', record.repo || 'フォルダ不明'));
+      box.append(node('h3', '', record.title), node('p', 'sub', `${record.agent} · ${source(record.source)}${record.owner ? ` · ${record.owner}（共有）` : ''} · ${record.model || 'モデル不明'} · ${date(record.updatedAt)}`), node('p', 'sub', record.repo || 'フォルダ不明'));
       if (record.partial) box.append(node('p', 'sub', '会話の一部を読み取れません。元のアプリから会話のJSONを取り込んでください。'));
       for (const message of record.messages) {
         const row = node('article', 'search-message', '');
@@ -200,7 +202,7 @@ const SessionSearch = (() => {
     panels = ['main', 'automation', 'share-area', 'changes'].map(id => [id, $(id).hidden]);
     for (const [id] of panels) $(id).hidden = true;
     $('session-search').hidden = false; $('session-search-open').setAttribute('aria-expanded', 'true');
-    $('search-text').focus(); search();
+    sharedMode(false); $('search-text').focus(); search();
   }
   function close() {
     if (!visible) return;
@@ -218,12 +220,14 @@ const SessionSearch = (() => {
     $('search-execution-inputs').append(control);
     $('session-search-open').onclick = open; $('session-search-close').onclick = close;
     $('search-cancel').onclick = () => { cancel(); $('search-status').textContent = '検索を中止しました'; };
+    $('search-shared').onclick = () => { sharedMode(true); search(); };
     $('search-next').onclick = () => search(cursor);
     $('search-prev').onclick = () => search(previous);
-    const changed = () => { cancel(); clearResults(); $('search-date-range').hidden = $('search-date').value !== 'range'; timer = setTimeout(() => search(), 300); };
+    const changed = () => { sharedMode(false); cancel(); clearResults(); $('search-date-range').hidden = $('search-date').value !== 'range'; timer = setTimeout(() => search(), 300); };
     for (const id of ['search-text', 'search-agent', 'search-date', 'search-repo', 'search-model', 'search-source', 'search-date-field', 'search-archived', 'search-since', 'search-until']) $(id).addEventListener('input', changed);
     $('search-text').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); search(); } };
     $('search-reset').onclick = () => {
+      sharedMode(false);
       for (const id of ['search-text', 'search-agent', 'search-date', 'search-repo', 'search-model', 'search-source', 'search-since', 'search-until']) $(id).value = '';
       $('search-date-field').value = 'updated'; $('search-archived').checked = false; $('search-date-range').hidden = true; search();
     };
@@ -250,8 +254,10 @@ const SessionSearch = (() => {
   function openOrigin(origin) {
     $('search-reset').click();
     $('search-text').value = origin.title || '';
-    $('search-source').value = origin.provider === 'vscode' ? 'vscode' : 'cli';
+    $('search-source').value = origin.key?.startsWith('public:') ? 'app' : origin.provider === 'vscode' ? 'vscode' : 'cli';
     open();
+    if (origin.key?.startsWith('public:')) { sharedMode(true); search(); }
   }
-  return { init, open, close, forkCurrent, openOrigin };
+  async function forkPublic(key) { beginTransfer(await api.read(key)); }
+  return { init, open, close, forkCurrent, openOrigin, forkPublic };
 })();

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "commit": "HEAD",
+  "tasks": ["T1", "T2", "T3"],
+  "repeat": 1,
+  "seed": 20260914,
+  "wall_seconds": 600,
+  "verify_seconds": 60,
+  "cascade_draft_seconds": 180,
+  "critique_draft_seconds": 300,
+  "critic_seconds": 60,
+  "baseline": {"cli": "copilot", "model": "REPLACE_BASELINE_MODEL", "family": "REPLACE_BASELINE_FAMILY"},
+  "starter": {"cli": "copilot", "model": "REPLACE_STARTER_MODEL", "family": "REPLACE_STARTER_FAMILY"},
+  "critic": {
+    "model": "REPLACE_CRITIC_MODEL",
+    "family": "REPLACE_DIFFERENT_FAMILY",
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "api_key_env": "ORCHESTRATION_CRITIC_API_KEY",
+    "max_tokens": 4096,
+    "response_model_aliases": [],
+    "prices_per_million": null
+  }
+}

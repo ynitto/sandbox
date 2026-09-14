@@ -53,6 +53,11 @@ contextBridge.exposeInMainWorld('api', {
   // 共有（LAN の参加者に依頼を回す）。投函は send の policy: 'shared' で行い、ここは列と参加者の観測・調整だけ
   share: {
     status: () => invoke('share:status'),
+    publish: id => invoke('share:publish', { id }),
+    unpublish: id => invoke('share:unpublish', { id }),
+    publicRefresh: () => invoke('share:publicRefresh'),
+    publicView: (key, revision) => invoke('share:publicView', { key, revision }),
+    publicSay: (key, text, messageId) => invoke('share:publicSay', { key, text, messageId }),
     cancel: (id) => invoke('share:cancel', { id }),
     setPriority: (id, priority) => invoke('share:priority', { id, priority }),
     // 引き受け方（'auto' 自動で受ける / 'manual' 選んで受ける / 'off' 受けない）

@@ -15,7 +15,9 @@ const os = require('os');
 const path = require('path');
 const store = require('../store');
 const { Peers, keyOf, HTTP_PORT } = require('./peers');
-const { createServer } = require('./server');
+const { createServer, call } = require('./server');
+const { Publications } = require('./publications');
+const crypto = require('crypto');
 const { Requester } = require('./requester');
 const { Participant } = require('./participant');
 const { Ledger } = require('./ledger');
@@ -41,7 +43,7 @@ class Share {
   // userData … 保存先。config … 正規化済みの設定（share を含む）。send … renderer へのイベント
   // runPrompt… CLI を 1 回起こす関数（ipc.js が持つ）。agents … () => 使える CLI 名。repoFor … (url) => 登録フォルダ
   // options … テスト用: udp（false で切る）、peersOptions、timers
-  constructor({ userData, config, send = () => {}, runPrompt, agents = () => [], repoFor = () => '', options = {} }) {
+  constructor({ userData, config, send = () => {}, runPrompt, agents = () => [], repoFor = () => '', options = {}, screen = async () => '' }) {
     this.userData = userData;
     this.config = config;
     this.send = send;
@@ -58,6 +60,11 @@ class Share {
     this.participant = null;
     this.ledger = null;
     this.error = '';
+    this.publicScreen = screen;
+    this.publications = null;
+    this.publicCatalog = [];
+    this.publicErrors = [];
+    this.catalogAt = 0;
   }
 
   get cfg() { return (this.config && this.config.share) || {}; }
@@ -85,9 +92,18 @@ class Share {
       file: path.join(dir, 'outbox.json'), now: this.options.now,
       ...(this.options.participant || {}),
     });
+    this.publications = new Publications({ userData: this.userData, node: this.node, screen: this.publicScreen,
+      changed: () => this.send('share:changed', this.status()) });
     this.server = createServer({
       key,
       handlers: {
+        publications: async (method, parts, body) => {
+          if (method === 'POST' && parts.length === 1 && parts[0] === 'search') return this.publications.search(body.query, body.cursor);
+          if (method === 'GET' && parts.length === 1) return this.publications.read(parts[0]);
+          if (method === 'POST' && parts.length === 2 && parts[1] === 'view') return this.publications.view(parts[0], body.revision);
+          if (method === 'POST' && parts.length === 2 && parts[1] === 'message') return this.publications.comment(parts[0], body);
+          throw new Error('不明な公開セッション操作です');
+        },
         hello: (body, remote) => this.peers.onHello(body, remote),
         notify: (body, remote) => this.peers.onNotify(body, remote),
         node: () => ({ status: 200, body: this.participant.nodeInfo() }),
@@ -138,6 +154,7 @@ class Share {
     this.server = null;
     this.state = 'off';
     this.port = 0;
+    this.publicCatalog = []; this.publicErrors = []; this.catalogAt = 0;
   }
 
   async reconfigure(config) {
@@ -177,11 +194,80 @@ class Share {
       accept: on ? this.participant.mode() : (cfg.accept || 'off'), capacity: on ? this.participant.capacity() : 0,
       me: on ? this.participant.nodeInfo() : null,
       peers: on ? this.peers.peers().map((p) => ({ node: p.node, address: p.address, port: p.port, seenAt: p.seenAt, via: p.via, info: p.info })) : [],
+      publications: on ? this.publications.list() : [],
+      publicCatalog: on ? this.publicCatalog : [], publicErrors: this.publicErrors,
       mine: on ? this.requester.view() : [],
       others: on ? this.participant.gatheredView() : [],
       inflight: on ? this.participant.inflightView() : [],
       today: on ? this.ledger.today() : null,
     };
+  }
+
+  requirePublic() {
+    if (this.state !== 'on') throw new Error(this.error || '共有が動いていません（設定 > 共有）');
+    return this.publications;
+  }
+  publish(id) { return this.requirePublic().publish(id); }
+  unpublish(id) { return this.requirePublic().stop(id); }
+  publicPeers() { this.requirePublic(); return this.peers.peers().map(p => ({ node: p.node })); }
+  async publicCall(node, method, pathname, body, signal) {
+    this.requirePublic();
+    const generation = this.publications;
+    const peer = this.peers.peers().find(p => p.node === node);
+    if (!peer) throw new Error(`${node} に接続できません`);
+    const result = await call(peer, method, pathname, { key: keyOf(this.cfg.passphrase), body, signal });
+    if (generation !== this.publications || this.state !== 'on') throw new Error('共有設定が変更されました。やり直してください');
+    if (result.status !== 200) throw new Error(result.body.error || `${node} は共有セッションに対応していません`);
+    return result.body;
+  }
+  async searchPublic(node, query, cursor, signal) {
+    const result = await this.publicCall(node, 'POST', '/publications/search', { query, cursor }, signal);
+    if (!Array.isArray(result.sessions) || result.sessions.length > 50 || !Array.isArray(result.errors)) throw new Error('共有検索の応答が不正です');
+    return { ...result, sessions: result.sessions.map(r => ({ ...r, appId: undefined, nativeId: '', owner: node,
+      key: `public:${node}:${r.publicationId}` })) };
+  }
+  publicTarget(key) {
+    const match = /^public:([\w.-]+):([0-9a-f-]{36})$/.exec(String(key));
+    if (!match) throw new Error('共有セッションを選び直してください');
+    return { node: match[1], id: match[2] };
+  }
+  async readPublic(key, view = false, revision = '') {
+    this.requirePublic();
+    const { node, id } = this.publicTarget(key);
+    const record = node === this.node ? await (view ? this.publications.view(id, revision) : this.publications.read(id))
+      : await this.publicCall(node, view ? 'POST' : 'GET', `/publications/${id}${view ? '/view' : ''}`, view ? { revision } : null);
+    if (!(view && record.unchanged && record.revision === revision) && !Array.isArray(record.messages)) throw new Error('共有セッションの応答が不正です');
+    return { ...record, key, owner: node, appId: undefined, nativeId: '' };
+  }
+  async sayPublic(key, text, messageId = crypto.randomUUID()) {
+    this.requirePublic();
+    const { node, id } = this.publicTarget(key);
+    const body = { text, who: this.node, messageId };
+    return node === this.node ? this.publications.comment(id, body)
+      : this.publicCall(node, 'POST', `/publications/${id}/message`, body);
+  }
+  async refreshPublic() {
+    this.requirePublic();
+    if (this.catalogJob) return this.catalogJob;
+    if (Date.now() - this.catalogAt < 30000) return this.status();
+    const peers = this.publicPeers(), generation = this.publications;
+    this.catalogJob = (async () => {
+      const records = [], errors = [];
+      for (let i = 0; i < peers.length; i += 3) {
+        if (generation !== this.publications || this.state !== 'on') break;
+        const results = await Promise.allSettled(peers.slice(i, i + 3).map(p => this.searchPublic(p.node, {}, '')));
+        results.forEach((r, j) => {
+          if (r.status === 'fulfilled') { records.push(...r.value.sessions); errors.push(...r.value.errors);
+            if (r.value.cursor) errors.push({ message: `${peers[i + j].node}: 続きは「会話を検索」の共有検索から探せます` });
+          } else errors.push({ message: `${peers[i + j].node}: ${r.reason.message}` });
+        });
+      }
+      if (generation === this.publications && this.state === 'on') {
+        this.publicCatalog = records; this.publicErrors = errors; this.catalogAt = Date.now();
+      }
+      return this.status();
+    })();
+    try { return await this.catalogJob; } finally { this.catalogJob = null; }
   }
 
   post(input, opts) {

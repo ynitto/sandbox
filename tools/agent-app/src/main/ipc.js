@@ -1232,11 +1232,21 @@ function registerIpcHandlers(getWindow) {
     try { const info = await host.probe(process.platform === 'win32' ? store.loadConfig(userData()).wslDistro : ''); shareTmuxOk = !!(info.ok && info.tmux); } catch { shareTmuxOk = false; }
     await refreshRepoUrls().catch(() => {});
   };
-  shareInstance = new share.Share({ userData: userData(), config: store.loadConfig(userData()), send, runPrompt: runSharedPrompt, agents: () => shareAgentNames, repoFor });
+  shareInstance = new share.Share({ userData: userData(), config: store.loadConfig(userData()), send, runPrompt: runSharedPrompt, agents: () => shareAgentNames, repoFor,
+    screen: async id => {
+      const conv = conversations.get(id);
+      if (conv) { const captured = await conv.capture(); if (captured.ok) return captured.screen.text; }
+      return store.readSession(userData(), id).terminalSnapshots?.at(-1)?.screenText || '';
+    } });
   refreshShareCaches().then(() => shareInstance.start()).catch((err) => { shareInstance.error = err.message; });
   const shareTimer = setInterval(() => { refreshShareCaches().catch(() => {}); }, 5 * 60 * 1000);
   if (shareTimer.unref) shareTimer.unref();
   handle('share:status', () => shareInstance.status());
+  handle('share:publish', p => shareInstance.publish(String(p.id || '')));
+  handle('share:unpublish', p => shareInstance.unpublish(String(p.id || '')));
+  handle('share:publicRefresh', () => shareInstance.refreshPublic());
+  handle('share:publicView', p => shareInstance.readPublic(String(p.key || ''), true, String(p.revision || '')));
+  handle('share:publicSay', p => shareInstance.sayPublic(String(p.key || ''), p.text, p.messageId));
   handle('share:cancel', (p) => shareInstance.cancel(String(p.id || '')));
   handle('share:priority', (p) => shareInstance.setPriority(String(p.id || ''), p.priority));
   handle('share:accept', (p) => shareInstance.accept(String(p.id || '')));
@@ -1275,7 +1285,7 @@ function registerIpcHandlers(getWindow) {
     return { ...result, selected: result.selected.map(({ content, path: skillPath, ...item }) => item) };
   });
 
-  const sessionBrowser = new SessionBrowser({ userData });
+  const sessionBrowser = new SessionBrowser({ userData, share: shareInstance });
   const summaryJobs = new Map();
   handle('sessions:search', p => sessionBrowser.search(p.query, p.requestId, p.cursor));
   handle('sessions:cancel', p => {

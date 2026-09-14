@@ -1,5 +1,8 @@
 # agent-tools 評価ハーネス
 
+Single / Cascade / Critique の固定3群比較は [ORCHESTRATION.md](ORCHESTRATION.md) を参照。
+既存worker fixtureとCLI定義を再利用し、モデルを呼ばないdry-runから開始できる。
+
 Ollama のモデルを交換するときに、**モデルの実力**と**エージェント・ハーネスの影響**を
 混同せず比較するための測定群。処理単位ごとに直接実行でき、まとめて同条件で回すこともできる。
 

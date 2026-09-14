@@ -9,6 +9,7 @@ const store = require('./store');
 const handoff = require('./sessionHandoff');
 const routine = require('./automation/routine');
 const reuse = require('../shared/reuse');
+const { SharedSessionSearch } = require('./sharedSessionSearch');
 const exec = promisify(execFile);
 
 function key(value) { return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
@@ -37,8 +38,10 @@ function takeBoundary(record, boundary) {
 }
 
 class SessionBrowser {
-  constructor({ userData, resourcesPath = process.resourcesPath, platform = process.platform, runWorker, getTargets, execFileFn = exec, spawnFn = spawn, env = process.env } = {}) {
+  constructor({ userData, resourcesPath = process.resourcesPath, platform = process.platform, runWorker, getTargets, share, execFileFn = exec, spawnFn = spawn, env = process.env } = {}) {
     this.userData = userData;
+    this.share = share;
+    this.sharedSearch = share ? new SharedSessionSearch(this, share) : null;
     this.platform = platform; this.exec = execFileFn; this.spawn = spawnFn; this.env = env;
     const packaged = resourcesPath && path.join(resourcesPath, 'audit-runtime');
     this.runtime = packaged && fs.existsSync(packaged) ? packaged : path.resolve(__dirname, '../../../agent-audit');
@@ -92,10 +95,12 @@ class SessionBrowser {
     store.saveConfig(this.userData(), { sessionSearch: { imports: this.imports, codeRoots: this.codeRoots } });
   }
   cancel(id) {
+    if (!String(id).endsWith(':local')) this.sharedSearch?.cancel(id);
     const job = this.jobs.get(id);
     if (job) { job.cancelled = true; for (const child of job.children) child.kill(); }
   }
   async search(query = {}, requestId = crypto.randomUUID(), cursor = '') {
+    if (query.shared && this.sharedSearch) return this.sharedSearch.search(query, requestId, cursor);
     const job = { children: new Set(), cancelled: false }; this.jobs.set(requestId, job);
     try {
       let id, page, index = 0;
@@ -192,6 +197,7 @@ class SessionBrowser {
     } finally { this.jobs.delete(requestId); }
   }
   async read(id) {
+    if (id.startsWith('public:') && this.share) return this.share.readPublic(id);
     if (id.startsWith('app:')) return appRecord(store.readSession(this.userData(), id.slice(4)));
     const source = this.sources.get(id);
     if (!source) throw new Error('検索して会話を選び直してください');

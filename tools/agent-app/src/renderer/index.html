@@ -97,6 +97,7 @@
           <div class="menu-panel">
             <button type="button" id="open-folder">フォルダを開く</button>
             <button type="button" id="open-vscode">VS Codeで開く</button>
+            <button type="button" id="session-publish" hidden>セッションを公開</button>
             <button type="button" id="session-fork" hidden>この会話をフォーク</button>
             <button type="button" id="session-routine" hidden>この作業を定型化</button>
             <button type="button" id="session-rename" hidden>会話名を変更</button>
@@ -270,6 +271,7 @@
             <button type="button" id="search-import">会話のJSONを取り込む</button>
             <button type="button" id="search-folder">会話の保存フォルダを追加</button>
           </div></details>
+          <button type="button" id="search-shared" class="small" aria-pressed="false">共有も検索</button>
           <button type="button" id="search-reset" class="small quiet">条件を解除</button>
         </div>
         <div id="search-date-range" class="row" hidden><label>開始日<input type="date" id="search-since"></label><label>終了日<input type="date" id="search-until"></label></div>
@@ -479,7 +481,8 @@
         </div>
         <span id="share-request-status" class="status" hidden></span>
         <nav class="views" aria-label="共有の表示">
-          <button type="button" id="share-view-request" class="tab on">依頼</button>
+          <button type="button" id="share-view-request" class="tab on">セッション・依頼</button>
+          <button type="button" id="share-refresh" class="small">一覧を更新</button>
           <button type="button" id="share-view-nodes" class="tab">参加者</button>
         </nav>
         <span class="spacer"></span>

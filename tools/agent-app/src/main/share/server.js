@@ -72,6 +72,12 @@ function createServer({ key, handlers }) {
         json(res, r.status || 200, r.body);
         return;
       }
+      if (parts[0] === 'publications' && handlers.publications) {
+        const body = req.method === 'POST' ? await readBody(req, 16384) : {};
+        const result = await handlers.publications(req.method, parts.slice(1), body);
+        if (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 * 1024) throw new Error('共有データが取得上限を超えています');
+        json(res, 200, result); return;
+      }
       if (req.method === 'GET' && parts[0] === 'node' && parts.length === 1) { const r = await handlers.node(); json(res, r.status || 200, r.body); return; }
       if (req.method === 'GET' && parts[0] === 'requests' && parts.length === 1) { const r = await handlers.requests(); json(res, r.status || 200, r.body); return; }
       if (parts[0] === 'requests' && parts.length === 4 && parts[2] === 'attachments' && req.method === 'GET') {
@@ -110,15 +116,17 @@ function createServer({ key, handlers }) {
 }
 
 // 相手の agent-app を呼ぶ。返り値 { status, body }。つながらなければ throw。
-function call(peer, method, pathname, { key, body = null, timeoutMs = TIMEOUT_MS } = {}) {
+function call(peer, method, pathname, { key, body = null, timeoutMs = TIMEOUT_MS, signal, maxBytes = 32 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
     const data = body == null ? null : Buffer.from(JSON.stringify(body));
     const req = http.request({
-      host: peer.address, port: peer.port, method, path: pathname, timeout: timeoutMs,
+      host: peer.address, port: peer.port, method, path: pathname, timeout: timeoutMs, signal,
       headers: { 'x-share-key': key, ...(data ? { 'content-type': 'application/json', 'content-length': data.length } : {}) },
     }, (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let size = 0;
+      res.on('data', (c) => { size += c.length; if (size > maxBytes) { req.destroy(new Error('共有データが取得上限を超えています')); return; } chunks.push(c); });
+      res.on('error', reject);
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8');
         let parsed = {};
@@ -126,6 +134,9 @@ function call(peer, method, pathname, { key, body = null, timeoutMs = TIMEOUT_MS
         resolve({ status: res.statusCode, body: parsed });
       });
     });
+    const deadline = timeoutMs > 0 ? setTimeout(() => req.destroy(new Error('応答がありません')), timeoutMs) : null;
+    if (deadline?.unref) deadline.unref();
+    req.on('close', () => clearTimeout(deadline));
     req.on('timeout', () => { req.destroy(new Error('応答がありません')); });
     req.on('error', reject);
     if (data) req.write(data);

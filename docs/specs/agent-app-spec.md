@@ -1009,6 +1009,35 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 `/requests` に載るのは依頼の見出しと、**利用者が書いた依頼文だけ**（`summary`。600 字）。履歴と
 共通指示を含む本文（`goal`）は claim した 1 人にだけ渡す。
 
+#### 自分からの公開と検索
+
+`publications.js` が `userData/share/publications.json` に公開ID・ローカル会話ID・見出し・公開日時・ひとことを保存する。依頼キュー、`session.share`、CLI実行とは独立する。公開停止・会話削除後は本文とコメントを取得できない。公開状態は再起動後も維持されるが、共有無効時は配信しない。
+
+| IPC | preload | 用途 |
+|---|---|---|
+| `share:publish` | `share.publish(id)` | ローカル会話を公開。終了後も可、重複公開は同じ公開IDを返す |
+| `share:unpublish` | `share.unpublish(id)` | 自分の公開IDを指定して停止 |
+| `share:publicRefresh` | `share.publicRefresh()` | 公開一覧を取得。30秒保持、最大3並列 |
+| `share:publicView` | `share.publicView(key, revision)` | 会話・端末・ひとこと。本文未変更なら `unchanged: true` と更新情報のみ |
+| `share:publicSay` | `share.publicSay(key, text, messageId)` | ひとことを所有者側に永続化。再送時も同一UUIDを使う |
+
+既存の合言葉認証下に次のHTTP契約を追加する。
+
+| HTTP | 入力 | 出力 |
+|---|---|---|
+| `POST /publications/search` | `{ query, cursor }` | `{ sessions, errors, cursor }`。sessionsは本文を含まない検索結果 |
+| `GET /publications/<id>` | 公開ID | SessionBrowser形式の会話。ローカルappId・添付・CLI内部状態は含めない |
+| `POST /publications/<id>/view` | `{ revision }` | 会話と `talk`, `screen`。revision一致なら本文なしの `unchanged: true` |
+| `POST /publications/<id>/message` | `{ who, text, messageId }` | 直近50件のひとこと。本文500文字、再送UUIDで重複排除 |
+
+公開検索は最大200候補または本文約8M文字を調べ、最大50件を返す。会話ファイルは16MiBまで、読取キャッシュは50件かつ合計32MiBまで。検索カーソルは条件に結び付けた公開IDのスナップショットで5分有効・最大20検索。公開を停止したIDはキャッシュにあっても取得しない。端末キャプチャは1秒保持し、同時閲覧の取得をまとめる。
+
+`SessionBrowser` の `query.shared: true` で `sharedSessionSearch.js` による統合検索を行う。ローカル1ページと共有先最大2台のページを並行取得し、見出しのみをバッファして1ページ最大50件を表示する。共有先は既知の参加者に限定し、5秒タイムアウト、受信サイズ上限32MiB、キャンセル時のHTTP中断を適用する。一部の接続失敗はエラー欄へ出し、ほかの結果を残す。前ページは再通信せず戻れる。異なるページ間での厳密な更新日時順は保証しない。
+
+検索画面は既定でローカルのみ。明示的な「共有も検索」で通信を開始し、条件変更時はローカルへ戻す。共有結果のキーは `public:<node>:<公開ID>`。閲覧とフォーク準備は所有者から読み直し、revision変更・公開停止を検出する。新規セッション・タスク・ワークフロー・スキルへの転用は既存のフォーク契約を使う。
+
+共有画面の公開一覧は各参加者の先頭50件を30秒保持し、続きは共有検索へ案内する。選択して画面に表示している公開セッションだけ3秒ごとに本文のrevision、端末、ひとことを更新する。端末は閲覧のみ。終了済み会話も同じひとこと部品でコメントできる。送信エラー時は入力を残し、再送は同じUUIDを使う。
+
 #### 15.0 ひとこと（人と人のやり取り）
 
 依頼にはもう 1 本、**CLI に入らない**やり取りがぶら下がる。`POST /requests/<id>/message`
