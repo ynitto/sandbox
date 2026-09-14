@@ -163,3 +163,20 @@ for (const kind of ['task', 'workflow', 'skill']) test(`import method classifies
     assert.equal(result.options.policy, 'direct'); assert.equal(result.options.autoApprove, true);
   }
 });
+
+test('a chosen method kind skips classification and overrides the AI answer', async t => {
+  const { dir, repo } = fixture(t);
+  const original = store.createSession(dir, { repo, cli: 'codex' });
+  for (const [role, text] of [['user', 'before'], ['assistant', 'completed']]) store.appendMessage(dir, original.id, { role, text });
+  const browser = new SessionBrowser({ userData: () => dir });
+  const record = await browser.read('app:' + original.id);
+  const inputs = [];
+  const prepared = await browser.prepare({ key: record.key, revision: record.revision, boundary: '1', mode: 'handoff', intent: 'routine', kind: 'workflow', repo, cli: 'claude', model: 'm' }, async prompt => {
+    inputs.push(prompt);
+    return inputs.length === 1 ? 'reusable steps' : JSON.stringify({ kind: 'task', reason: 'ignored', purpose: 'create reusable method' });
+  });
+  assert.match(inputs[1], /「ワークフロー」と決めています/);
+  assert.equal(prepared.method.kind, 'workflow');
+  assert.equal(browser.create({ token: prepared.token, summary: prepared.summary, permission: 'auto' }).method.kind, 'workflow');
+  await assert.rejects(browser.prepare({ key: record.key, revision: record.revision, boundary: '1', mode: 'handoff', intent: 'routine', kind: 'other', repo, cli: 'claude', model: 'm' }, async () => ''), /種類/);
+});

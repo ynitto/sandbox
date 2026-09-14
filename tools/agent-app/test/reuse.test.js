@@ -19,6 +19,11 @@ test('routine retains corrections, validates routing and rejects incomplete AI r
   for (const kind of ['skill', 'task', 'workflow']) assert.equal(routine.parse(JSON.stringify({ kind, reason: '根拠', purpose: '手順' })).kind, kind);
   assert.throws(() => routine.parse('{"kind":"task","purpose":"手順"}'));
   assert.throws(() => routine.parse('{"kind":"other","reason":"根拠","purpose":"手順"}'));
+  // 利用者が種類を選んだときは判定を求めず、応答の種類より選択を優先する
+  assert.match(routine.prompt(text, 'workflow'), /「ワークフロー」と決めています/);
+  assert.doesNotMatch(routine.prompt(text, 'workflow'), /種類を判断してください/);
+  assert.equal(routine.parse(JSON.stringify({ kind: 'task', reason: '観点', purpose: '手順' }), 'workflow').kind, 'workflow');
+  assert.throws(() => routine.prompt(text, 'other'));
   assert.throws(() => reuse.conversation([{ role: 'user', text: 'x'.repeat(100001) }]));
 });
 test('artifact links retain relative files and exclude outside paths and URLs', () => {

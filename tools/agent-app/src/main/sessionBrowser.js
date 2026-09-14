@@ -199,13 +199,16 @@ class SessionBrowser {
     const { descriptor, ...view } = record;
     return { ...view, key: id };
   }
-  async prepare({ key: id, revision, boundary, repo, cli, model, mode, intent = 'session', request = '' }, generate) {
+  async prepare({ key: id, revision, boundary, repo, cli, model, mode, intent = 'session', kind = 'auto', request = '' }, generate) {
     const record = await this.read(id);
     if (record.revision !== revision) throw new Error('会話が更新されました。プレビューを開き直してください');
     if (!['session', 'routine'].includes(intent)) throw new Error('取り込む目的を選んでください');
+    if (!routine.KINDS.includes(kind) && kind !== 'auto') throw new Error('定型化の種類を選んでください');
     const selected = takeBoundary(record, boundary);
     const summary = await handoff.summarize(selected, generate);
-    const method = intent === 'routine' ? routine.parse(await generate(routine.prompt(summary + (request ? '\n今回の追加要望:\n' + String(request).slice(0, 30000) : '')))) : null;
+    // 種類を利用者が選んだときは判定を任せず、その種類の手順としてまとめさせる。
+    const fixed = kind === 'auto' ? null : kind;
+    const method = intent === 'routine' ? routine.parse(await generate(routine.prompt(summary + (request ? '\n今回の追加要望:\n' + String(request).slice(0, 30000) : ''), fixed)), fixed) : null;
     const token = crypto.randomUUID();
     this.prepared.set(token, { record: selected, repo, cli, model, mode, intent, method, createdId: null });
     while (this.prepared.size > 10) this.prepared.delete(this.prepared.keys().next().value);
