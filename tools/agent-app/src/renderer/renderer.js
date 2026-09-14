@@ -28,6 +28,7 @@ const state = {
   current: null,        // 開いている会話（store の中身）
   draft: false,         // 「新しい会話」を押してまだ 1 通も送っていない
   running: new Set(),   // 応答中の会話 ID
+  attention: { action: 0, unread: 0, items: [] }, // 受信箱（attention:list の投影。判定は main）
   pending: new Set(),   // 送信中（main が CLI を起動し直している間など）の会話 ID
   logs: new Map(),      // 会話 ID → 応答中に流れた行（ヘッドレス）
   tails: new Map(),     // 会話 ID → 端末の末尾（tmux）
@@ -318,6 +319,92 @@ function renderWorkflowItems() {
     ul.append(li);
   }
   if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'まだワークフローがない' : '')));
+}
+
+// ---- 受信箱 ----
+// main の投影（attention:list）を出すだけ。未読・要対応の判定はここでしない。
+// 項目を押すと既存の画面（会話・タスク・ワークフロー）へ行く。答え方も画面もここでは作らない。
+const ATTENTION_KIND = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー' };
+const ATTENTION_ACTION = { terminal: '確認待ち', approval: '承認待ち', choice: '選択待ち', input: '入力待ち' };
+const ATTENTION_RESULT = { done: '完了', failed: '失敗', escalated: '要確認' };
+
+function attentionStatus(item) {
+  if (item.queue === 'action') return ATTENTION_ACTION[item.interaction && item.interaction.mode] || '確認待ち';
+  return ATTENTION_RESULT[item.outcome] || '完了';
+}
+
+function repoName(repo) {
+  return String(repo || '').split(/[\\/]/).filter(Boolean).pop() || String(repo || '');
+}
+
+function renderInbox() {
+  const box = $('inbox');
+  const a = state.attention;
+  const ul = $('inbox-items');
+  ul.replaceChildren();
+  box.hidden = !(a.action + a.unread);
+  if (box.hidden) return;
+  $('inbox-count').textContent = [a.action ? `要対応 ${a.action}` : '', a.unread ? `未読 ${a.unread}` : ''].filter(Boolean).join(' · ');
+  for (const item of a.items) {
+    const li = el('li', `row-item${item.queue === 'action' ? ' attention' : ''}`);
+    const pick = el('button', 'list-pick');
+    const body = el('span', 'grow');
+    body.append(el('div', '', item.title));
+    const where = item.repo && item.repo !== state.repo ? ` · ${repoName(item.repo)}` : '';
+    body.append(el('div', 'sub', `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)}${where}`));
+    pick.append(body);
+    pick.title = item.queue === 'action' ? `「${item.title}」を開いて答える` : `「${item.title}」を開く`;
+    pick.onclick = () => openAttentionItem(item).catch((err) => notice(err.message, 'error'));
+    li.append(pick);
+    ul.append(li);
+  }
+}
+
+// 「見た」を main に書き、受信箱からその項目を落とす（要対応は答えが届くまで残る）
+async function markAttentionSeen(item) {
+  if (item.queue !== 'unread' || !item.resultAt) return;
+  try { await api.attention.seen(item.key, item.resultAt); } catch { /* 印が書けなくても開くのは止めない */ }
+  const a = state.attention;
+  if (!a.items.some((held) => held.key === item.key)) return;
+  a.items = a.items.filter((held) => held.key !== item.key);
+  a.unread = Math.max(0, a.unread - 1);
+}
+
+// いま画面に出ている項目は、開き直さなくても「見た」
+function attentionItemVisible(item) {
+  const t = item.target || {};
+  if (t.kind === 'conversation') return state.area === 'conversation' && !state.draft && !!state.current && state.current.id === t.id;
+  if (t.repo !== state.repo) return false;
+  if (t.kind === 'task') return state.area === 'tasks' && (state.selectedTask === `machine:${t.id}` || state.selectedTask === t.id);
+  return state.area === 'workflows' && !!t.id && state.selectedWorkflow === t.id;
+}
+
+let attentionBusy = false;
+async function refreshAttention() {
+  if (attentionBusy) return;
+  attentionBusy = true;
+  try {
+    state.attention = await api.attention.list();
+    for (const item of [...state.attention.items]) if (attentionItemVisible(item)) await markAttentionSeen(item);
+    renderInbox();
+  } catch { /* main が読めない間は前回のまま */ } finally { attentionBusy = false; }
+}
+
+// 受信箱の項目 → 既存の画面へ。会話は通知と同じ経路（openSessionInRepo）、タスク・ワークフローは
+// 領域を切り替えて一覧の項目を選ぶ（フォークや回答の経路はそれぞれの画面のもの）。
+async function openAttentionItem(item) {
+  await markAttentionSeen(item);
+  renderInbox();
+  const t = item.target || {};
+  if (t.kind === 'conversation') { await openSessionInRepo(t.repo, t.id, { answer: item.queue === 'action' }); return; }
+  if (t.repo && t.repo !== state.repo) {
+    if (!state.config.repos.includes(t.repo)) throw new Error('登録していないフォルダです');
+    await selectRepo(t.repo);
+    renderRepos();
+  }
+  const area = t.kind === 'task' ? 'tasks' : 'workflows';
+  await showArea(area);
+  if (t.id) await selectAreaItem(area, t.kind === 'task' ? `machine:${t.id}` : t.id);
 }
 
 // サイドバーの「共有」に未読のひとことの数を出す
@@ -2195,6 +2282,10 @@ async function init() {
   await selectRepo(state.config.lastRepo);
   showView(state.config.view);
   await showArea(state.config.area, { persist: false });
+  // 受信箱は、終わった・聞かれた合図（turn:done / term:phase / run:exit）のたびと、背景の実行
+  // （agent-flow）を拾うための緩い周期で読み直す。通知も予定表も新しく作らない
+  refreshAttention();
+  setInterval(refreshAttention, 15000);
 
   $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
   $('area-tasks').onclick = () => showArea('tasks').catch((err) => notice(err.message, 'error'));
@@ -2496,7 +2587,8 @@ async function init() {
     const node = document.querySelector(`#working-${id} .log`);
     if (node) { node.append(logLine({ kind, text })); node.scrollTop = node.scrollHeight; }
   });
-  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); FlowTeaching.onTurnDone(p); return onTurnDone(p); });
+  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); FlowTeaching.onTurnDone(p); return onTurnDone(p).finally(refreshAttention); });
+  api.automation.onRunExit(() => { refreshAttention(); });
   api.share.onScreen((p) => {
     if (!p || !p.sessionId) return;
     TaskTeaching.onShareScreen(p);
@@ -2535,6 +2627,7 @@ async function init() {
       }
     }
     renderSessions();
+    refreshAttention();
   });
 }
 

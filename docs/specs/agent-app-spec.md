@@ -107,6 +107,20 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 分岐先はふつうの会話と同じに扱えます（削除・エージェントの切替・作業フォルダの変更ビュー）。
 この作法を添えないようにするには「設定 > 共通指示」のチェックを外します。
 
+### 受信箱（未読・要対応）
+
+サイドバーの上に「受信箱」が出ます。出るのは、人が見るべきもの・答えるべきものがあるときだけです。
+
+- **要対応** … 人の答えが無いと進まないもの。tmux の会話が確認を求めているとき（「確認待ち」）、
+  ワークフローの実行が承認・選択・入力を待っているとき。答えが届くと消えます
+- **未読** … 終わった結果で、まだ開いていないもの。会話の応答（失敗も含む）、タスクの実行、
+  ワークフローの実行。開くと消えます。いま開いている画面に結果が届いたときも、開き直さずに消えます
+
+項目を押すと既存の画面へ行きます。会話は通知を押したときと同じ経路でその会話を開き（要対応なら
+入力先を「端末操作」に切り替えます）、タスク・ワークフローはその領域でその項目を選びます。
+答え方・フォーク・実行の操作は、行き先の画面のものをそのまま使います。受信箱には新しい操作を
+置きません。応答中・実行中のものは出ません。利用者が止めたものも出ません。
+
 ### 入力先を切り替える
 
 入力欄の上には入力先が 3 つ並びます。「メッセージ」はこの PC の AI へ、「端末操作」は端末へキーを、
@@ -397,6 +411,8 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `turn:send` | `send(id, prompt, opts)` | §5 | tmux: `{ name, restarted, warning }`、headless: `{ pid, argv }` |
 | `turn:stop` | `stop(id)` | `id` | 止めたか |
 | `turn:running` | `running()` | — | 応答中の会話 ID 配列 |
+| `attention:list` | `attention.list()` | — | 受信箱の投影 `{ action, unread, items: [{ key, kind, repo, title, queue, outcome, resultAt, interaction, target }] }`。§16 |
+| `attention:seen` | `attention.seen(key, resultAt)` | 項目の `key` とその `resultAt` | 保存した `attentionSeen`。その時刻までの結果を「見た」にする（古い時刻へは戻さない） |
 | `share:status` | `share.status()` | なし | 共有の状態（自分の宣言・仲間・自分の依頼の列・受けている依頼・今日の実績）。§15 |
 | `share:cancel` | `share.cancel(id)` | `id` | 自分の依頼を取り下げる。執行者には `/cancel` で伝える |
 | `share:priority` | `share.setPriority(id, priority)` | `id`, `priority`（high / normal / low） | open の依頼の優先度を変える |
@@ -478,6 +494,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `instructions.startupActions` | `[]` | `[{ type: skill|command, value, onError: warn|fail }]`。空の `value` は落とす |
 | `instructions.quickRequests` | 既定の 2 つ | 入力欄の「定型」に並べる定型の依頼 `[{ label, text }]`。最大 3、`label` 24 字 / `text` 400 字。保存値が無ければ既定（コミット・テスト）、空配列なら並べない |
 | `notify.background` | `true` | 前面に無いときに OS の通知を出すか |
+| `attentionSeen` | `{ since: '', items: {} }` | 受信箱の「見た」（§16）。`since` は受信箱を使い始めた時刻（最初の `attention:list` で書く。それ以前の結果は既読扱い）、`items` は項目の `key` → `{ resultAt }`（最大 500。古い結果から落とす）。`config:save` の `patch` は `items` をキーごとに重ねる |
 | `execution.defaultPolicy` | `recommended` | `recommended` / `saving` / `quality` |
 | `execution.optimizeAgents` | `true` | `false` なら（または agent-herd が無ければ）`saving` / `quality` を `recommended` として解決する（`settings.effectivePolicy`）。画面は同じ規則で選べなくする |
 | `execution.defaultReadonly` | `lastReadonly` | 新規会話の既定 Ask |
@@ -1084,6 +1101,40 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
 `turn:running` に載り、「停止」は `turn:stop` から取り下げになる。成果の納品（書き込みの依頼）は
 未実装で、`share.acceptWrite` は将来のための設定。
 
+### 16. 受信箱の投影（`src/main/attention.js`）
+
+背景で終わった・聞いてきたものへ人の注意を向けるための薄い層。**既存の会話・実行・確認が唯一の
+正典**で、受信箱はそこから表示状態を派生させるだけ（状態を複製せず、通知・予定・待ち受けも新設しない）。
+
+```
+既存の正典（session / run / interaction）
+      ↓ *Sources … 正典の要約を「材料」へ写す
+材料 { key, kind, repo, title, running, resultAt, outcome, interaction, target }
+      ↓ classify … 材料 1 つ → action | unread | none（純粋関数）
+project … { action, unread, items }（要対応を先に、あとは新しい結果から。30 件まで）
+      ↓ attention:list
+サイドバーの受信箱 → 既存の画面（会話 / タスク / ワークフロー）
+```
+
+派生元:
+
+| 種類 | 正典 | 結果（`resultAt` / `outcome`） | 人の答え待ち（`interaction`） | 実行中（`running`） | 行き先（`target`） |
+|---|---|---|---|---|---|
+| 会話 | `session:list` の要約（`result` = 末尾の応答メッセージの `at` と結末）と、tmux の phase | 末尾が応答なら `done` / `failed`（`error`）/ `stopped` | phase が `attention`（`mode: terminal`） | `turn:running` に載っている | `{ kind: conversation, repo, id }` → 通知と同じ `openSessionInRepo` |
+| タスク | `run-history/<root>.json`（手動実行の記録。保存名ごとに最新 1 件） | `finishedAt`、`ok` → `done` / `escalate` → `escalated` / それ以外 `failed` | なし（答える口が無いので未読として出す） | 持たない（実行中は前の結果が既読なので出ない） | `{ kind: task, repo, id: 保存名 }` → 領域「タスク」でその項目を選ぶ |
+| ワークフローの実行 | agent-flow の bus（`listRuns` / 待っているものだけ `readRun`） | `terminal` なら `updatedAt`、`done` / `cancelled` → `stopped` / それ以外 `failed` | `interactions` に `state: open` があるもの（`mode`: approval / choice / input） | `terminal` でなく、答え待ちでもない（`stalled` を含む） | `{ kind: workflow, repo, id: workflowId, runId }` → 領域「ワークフロー」でそのワークフローを選ぶ |
+
+判定（`classify`）: `running` → none。`interaction` → action。`resultAt` が「見た」時刻（`attentionSeen.items[key].resultAt`）
+より新しければ unread。見た記録が無く `since` より前の結果は none（導入時に古い会話が一斉に未読にならない）。
+`stopped` は結果として扱わない（止めた人が見ている）。失敗は unread であって action ではない。
+
+利用者側に残すのは `attentionSeen`（§3）だけ。要対応は「見た」で消えず、正典の側で答えが届いて閉じたときに
+消える。画面（renderer）は投影を出すだけで判定を持たない。読み直すのは、`turn:done` / `term:phase` /
+`automation:run:exit` のたびと、背景の実行（agent-flow）を拾うための 15 秒周期。
+
+含めないもの（MVP）: agent-loop の定期実行の履歴（`run:snapshot` は agent-loop を起こすので受信箱では読まない）、
+タスク・ワークフローを AI と作る会話（kind: task / workflow）の確認待ち、`stalled` の実行、共有の依頼。
+
 ### 付録. テスト
 
 `npm test` は `node --test test/*.test.js` を実行する。
@@ -1097,7 +1148,9 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
 | `herd.test.js` | `herd` の一族判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
-| `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形） | なし |
+| `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形、受信箱は既存の箱と行で組み判定は main） | なし |
+| `attention.test.js` | 受信箱の投影（§16）: 完了＋未見 → 未読、完了＋既読 → none、承認・選択・入力の待ち → 要対応、答えが届けば消える、実行中 → none、古いデータ・基準時刻、`attentionSeen` の保存 | なし |
+| `attention-electron.test.js` | Electron 実機で受信箱を通す: 正典（会話・実行履歴・bus）だけを置いて起動し、`attention:list` の投影、サイドバーの件数と行、項目から会話・タスク・ワークフローの画面へ、開いたら `attentionSeen` に足されて未読が消える、答えが届けば要対応が消える | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 | `electron-smoke.test.js` | Electron 実機で四領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの「変更を相談」で会話の置き場を開き、共有の一覧・カード・参加者と、会話の入力先「共有に依頼」を通す | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 
 `test/smoke.js` は `npm test` に含めない手動スモークで、画面のある環境で疑似 CLI と会話しスクリーンショットを

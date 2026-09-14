@@ -188,3 +188,28 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   assert.match(css, /\.response-turn > \.message-actions \{[^}]*align-self: stretch/, '操作の行は吹き出しの外で同じ端にそろえる');
   assert.match(renderer, /'response-turn user-turn'/, '依頼も応答と同じ組み立て（吹き出し＋下の操作）にする');
 });
+
+test('受信箱は既存の部品（畳める箱と一覧の行）で組み、判定は main に置く', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  const renderer = read('renderer/renderer.js');
+  const preload = read('preload.js');
+  // 1. 箱は会話画面の「会話履歴」と同じ <details class="conversation-history">、項目は会話一覧と同じ .list の行
+  assert.match(html, /<details id="inbox" class="conversation-history" open hidden>\s*<summary><span>受信箱<\/span><span id="inbox-count" class="sub"><\/span><\/summary>\s*<ul id="inbox-items" class="list"><\/ul>/);
+  assert.match(renderer, /el\('li', `row-item\$\{item\.queue === 'action' \? ' attention' : ''\}`\)/, '要対応の行は会話一覧の「確認待ち」と同じ印');
+  assert.match(renderer, /const pick = el\('button', 'list-pick'\);[\s\S]*?pick\.onclick = \(\) => openAttentionItem/, '項目は会話一覧と同じ .list-pick');
+  // 2. 受信箱に足した規則は置き場と高さだけ。色・枠・影を足さない
+  const added = css.match(/^#inbox[^{]*\{[^}]*\}$/gm) || [];
+  assert.strictEqual(added.length, 2, '受信箱の規則は 2 つ（置き場・一覧の高さ）だけ');
+  for (const rule of added) assert.ok(!/color|background|border|shadow|#[0-9a-fA-F]{3,8}\b/.test(rule), `受信箱に見た目の規則を足さない: ${rule}`);
+  for (const clone of ['.inbox-card {', '.inbox-item {', '.attention-inbox {']) assert.ok(!css.includes(clone), `共有部品の私物な複製がある: ${clone}`);
+  // 3. 未読・要対応の判定は main（attention:list）。renderer は投影を出すだけ
+  assert.match(preload, /attention: \{\s*list: \(\) => invoke\('attention:list'\),\s*seen: \(key, resultAt\) => invoke\('attention:seen'/);
+  assert.ok(!/queue\s*[:=]\s*['"](?:unread|action)['"]/.test(renderer), 'renderer で未読・要対応を決めない');
+  // 4. 項目から行くのは既存の画面（通知と同じ openSessionInRepo、領域の切替と一覧の選択）。答え方や画面を作らない
+  assert.match(renderer, /openSessionInRepo\(t\.repo, t\.id, \{ answer: item\.queue === 'action' \}\)/);
+  assert.match(renderer, /await showArea\(area\);\s*if \(t\.id\) await selectAreaItem\(area/);
+  assert.ok(!html.includes('id="inbox-answer"') && !html.includes('inbox-fork'), '受信箱に答える面やフォークの複製を置かない');
+  // 5. 説明文を常駐させない（見出しは「受信箱」と件数の 1 行だけ）
+  assert.ok(!/<p[^>]*id="inbox-/.test(html), '受信箱に説明の段落を置かない');
+});

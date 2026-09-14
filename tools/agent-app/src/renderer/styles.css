@@ -181,6 +181,9 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .side-more .menu-panel { min-width: 190px; }
 #area-sidebar-context { min-height: 0; flex: 1; display: flex; flex-direction: column; padding-top: 7px; }
 #area-sidebar-context .list.grow { min-height: 0; flex: 1; overflow: auto; }
+/* 受信箱（未読・要対応）。会話画面の「会話履歴」と同じ畳める箱を、サイドバーの幅に合わせて置くだけ */
+#inbox, #inbox[open] { flex: none; height: auto; margin: 0 2px 6px; }
+#inbox .list { max-height: 36vh; overflow: auto; }
 .context-new { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 6px; border-color: transparent; color: var(--muted); background: transparent; }
 .context-new:hover { color: var(--text); background: #eceff3; }
 .side-settings { min-height: 42px; display: flex; align-items: center; gap: 10px; margin-top: auto; padding: 8px 10px; border-color: transparent; color: var(--muted); background: transparent; text-align: left; }
