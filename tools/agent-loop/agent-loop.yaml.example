@@ -258,13 +258,26 @@ prompts:
     enabled: false
 
   # 記憶の整理のうち LLM が要らない分（索引再構築・忘却曲線の更新・wiki lint・
-  # memory-store の収集）を人手ゼロで回す。削除は絶対に走らせない。
-  # 未導入のスキルを飛ばす判断を持つので、これもフックのまま（上の「使用量較正」と同じ）。
+  # memory-store の収集）を人手ゼロで回す。**削除は絶対に走らせない**——ここに並ぶのは
+  # 非破壊のものだけで、判断の要る整理と削除は下の「記憶メンテナンス当番」が担う。
+  #
+  # LLM へ 1 文字も送らない純バッチなので `command:` で書く。未導入のスキルは段ごとに
+  # skip_if_missing で飛ばし（スクリプト置き場が無ければその段は走らない）、どれかが
+  # 失敗しても continue_on_error で残りは回す——索引が壊れていても収集までは進めたい。
+  # 1 段でも失敗していれば、その回は失敗として記録される。
   - name: "記憶メンテナンス"
-    hooks: memory-maintenance-hook
-    hook_config:
-      skill_home: ~/.claude/skills   # ltm-use / wiki-use のスクリプトを探す親
-      ltm_scopes: [home]
+    command:
+      commands:
+        - argv: ["python3", "~/.claude/skills/ltm-use/scripts/build_index.py",
+                 "--scope", "home", "--force"]
+          skip_if_missing: "~/.claude/skills/ltm-use/scripts"
+        - argv: ["python3", "~/.claude/skills/ltm-use/scripts/review_memory.py",
+                 "--scope", "home", "--update-retention"]
+          skip_if_missing: "~/.claude/skills/ltm-use/scripts"
+        - argv: ["python3", "~/.claude/skills/wiki-use/scripts/wiki_lint.py"]
+          skip_if_missing: "~/.claude/skills/wiki-use/scripts"
+        - "agent-audit collect --source memory-store"
+      continue_on_error: true
     interval_minutes: 360
     enabled: false
 
