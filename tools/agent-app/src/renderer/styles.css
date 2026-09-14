@@ -625,6 +625,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .search-filters > input { width: 100%; }
 .search-filters .row { flex-wrap: wrap; }
 #search-more .menu-panel { min-width: 240px; }
+/* 入力欄の「定型」は画面下にあるので、同じ menu-panel を上向きに出す。 */
+#quick-menu .menu-panel { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
 #search-more label { display: grid; gap: 6px; padding: 8px; }
 #search-split { display: grid; grid-template-columns: minmax(220px, 36%) minmax(0, 1fr); min-height: 0; flex: 1; }
 #search-results-pane, #search-preview { min-width: 0; overflow: auto; padding: 16px; }

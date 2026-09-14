@@ -1146,22 +1146,35 @@ function fillPrompt(text, { attachments: files = [] } = {}) {
   refreshTurnSkillPreview();
 }
 
-// ターンが終わったあとの「次の一手」。設定 > 共通指示 の定型の依頼を、最後の応答の下にだけ
-// 並べる（履歴の全応答に並べると画面が埋まる）。押すと入力欄に入るだけで、送らない。
-function quickRequestActions(index) {
-  const cur = state.current;
-  if (!cur || index !== cur.messages.length - 1) return null;
-  if (state.running.has(cur.id) || state.pending.has(cur.id)) return null;
-  const requests = (state.config.instructions.quickRequests || []).filter((item) => item && item.text);
-  if (!requests.length) return null;
-  const actions = el('div', 'message-actions');
+// 設定 > 共通指示 の定型の依頼は、入力欄の「定型」から選ぶ（会話の履歴には置かない）。
+// 押すと本文が入力欄に入るだけで、送るのは利用者。
+function renderQuickRequestMenu() {
+  const requests = (state.config.instructions?.quickRequests || []).filter((item) => item && item.text);
+  const menu = $('quick-menu');
+  menu.hidden = !requests.length;
+  if (!requests.length) { menu.open = false; return; }
+  const box = $('quick-menu-list');
+  box.replaceChildren();
   for (const request of requests) {
-    const button = el('button', 'message-action', request.label);
+    const button = el('button', '', request.label || request.text.slice(0, 20));
     button.type = 'button';
     button.title = request.text;
-    button.onclick = () => fillPrompt(request.text);
-    actions.append(button);
+    button.onclick = () => { menu.open = false; fillPrompt(request.text); };
+    box.append(button);
   }
+}
+
+// 応答ごとのフォーク。検索画面のプレビューと同じ言葉で、押すと同じダイアログを
+// その応答の位置で開く。まだ完了していない応答には出さない。
+function responseForkActions(m, index) {
+  const cur = state.current;
+  if (!cur || index < 0 || m.error || m.stopped || !m.text) return null;
+  const actions = el('div', 'message-actions');
+  const button = el('button', 'message-action', 'フォーク');
+  button.type = 'button';
+  button.title = 'この応答までを新しいセッション・タスク・ワークフロー・スキルへ分ける';
+  button.onclick = () => SessionSearch.forkCurrent(cur.id, { boundary: String(index) }).catch((err) => notice(err.message, 'error'));
+  actions.append(button);
   return actions;
 }
 
@@ -1184,15 +1197,11 @@ function messageNode(m, index = -1) {
       n.append(files);
     }
     const actions = el('div', 'message-actions');
-    const teach = el('button', 'message-action', 'この依頼をタスクにする');
-    teach.type = 'button';
-    teach.title = 'この依頼への応答までをフォークして、タスクを作る';
-    teach.onclick = () => forkRequest(m);
     const again = el('button', 'message-action', '入力欄に戻す');
     again.type = 'button';
     again.title = '本文と添付を入力欄へ戻す（送らない）';
     again.onclick = () => fillPrompt(m.text, { attachments: m.attachments || [] });
-    actions.append(teach, again);
+    actions.append(again);
     n.append(actions);
   } else {
     const who = el('div', 'response-who');
@@ -1231,8 +1240,8 @@ function messageNode(m, index = -1) {
     if (info) n.append(info);
     const forkActions = forkActionsNode(m, index);
     if (forkActions) n.append(forkActions);
-    const quick = quickRequestActions(index);
-    if (quick) n.append(quick);
+    const fork = responseForkActions(m, index);
+    if (fork) n.append(fork);
   }
   return n;
 }
@@ -1423,16 +1432,6 @@ async function createRoutine() {
   }
 }
 
-// 依頼からタスクを作る導線も、会話のフォークと同じダイアログに合流させる。
-// 位置はその依頼への応答、フォーク先はタスクを選んだ状態で開く。
-function forkRequest(message) {
-  const cur = state.current;
-  if (!cur) return;
-  const asked = cur.messages.indexOf(message);
-  const answered = cur.messages.findIndex((m, i) => i > asked && m.role === 'assistant' && !m.error && !m.stopped);
-  if (asked < 0 || answered < 0) { notice('この依頼への応答が終わってからフォークできます', 'error'); return; }
-  SessionSearch.forkCurrent(cur.id, { boundary: String(answered), target: 'task' }).catch((err) => notice(err.message, 'error'));
-}
 
 function workingNode(id, tmuxMode) {
   const n = el('div', 'response-turn working');
@@ -2123,6 +2122,7 @@ async function saveSettings() {
     state.settingsSkills = [...state.config.instructions.skills];
     state.settingsActions = state.config.instructions.startupActions.map((action) => ({ ...action }));
     state.settingsQuick = (state.config.instructions.quickRequests || []).map((item) => ({ ...item }));
+    renderQuickRequestMenu();
     $('settings-status').textContent = '保存しました';
     if (before.wslDistro !== state.config.wslDistro) {
       try { state.host = await api.hostInfo(); } catch (error) { state.host = { platform: api.platform, tmux: '', error: error.message }; }
@@ -2196,6 +2196,7 @@ async function init() {
   });
   state.config = await api.getConfig();
   state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
+  renderQuickRequestMenu();
   state.hostReady = api.hostInfo()
     .then((info) => { state.host = info; }, (err) => { state.host = { platform: api.platform, tmux: '', error: err.message }; })
     .then(() => { renderHostStatus(); renderAgents(); renderRunSettingsSummary(); });

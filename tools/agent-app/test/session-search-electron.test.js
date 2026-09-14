@@ -124,13 +124,24 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     assert.match(store.readSession(data, sent.id).title, /（フォーク）/);
     // 会話画面からも、同じダイアログで開いている会話をフォークできる
     await win.evaluate(({ repo, id }) => openSessionInRepo(repo, id), { repo, id: original.id });
-    // 依頼の下の「この依頼をタスクにする」も同じダイアログに合流する（位置は応答、フォーク先はタスク）
-    await win.getByRole('button', { name: 'この依頼をタスクにする' }).first().click();
+    // 応答の下の「フォーク」も同じダイアログを、その応答の位置で開く
+    await win.getByRole('button', { name: 'フォーク', exact: true }).first().click();
     await win.locator('#search-transfer-dialog[open]').waitFor();
-    assert.equal(await win.inputValue('#search-intent'), 'task');
     assert.equal(await win.inputValue('#search-boundary'), '1');
+    assert.equal(await win.inputValue('#search-intent'), 'session');
     await win.click('#search-transfer-close');
     await win.waitForFunction(() => !document.getElementById('search-transfer-dialog').open);
+    // 定型の依頼は入力欄の「定型」から入れる（会話の履歴には出さない）
+    assert.equal(await win.locator('#quick-menu').evaluate(m => m.hidden), false);
+    await win.locator('#quick-menu summary').click();
+    const quick = win.locator('#quick-menu-list button');
+    assert.ok(await quick.count() > 0);
+    const label = await quick.first().textContent();
+    await win.screenshot({ path: '/tmp/agent-app-conversation-actions.png' });
+    await quick.first().click();
+    await win.waitForFunction(() => !document.getElementById('quick-menu').open);
+    assert.ok((await win.inputValue('#prompt')).length > 0, label + ' の本文が入力欄に入る');
+    await win.fill('#prompt', '');
     await win.locator('#chat-more summary').click();
     await win.click('#session-fork');
     await win.locator('#search-transfer-dialog[open]').waitFor();
