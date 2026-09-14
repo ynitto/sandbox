@@ -316,6 +316,12 @@ def validate_entries(
                 raise ValueError(
                     f"entry {name!r}: command と agent_cli / model / session / "
                     "fresh_context は併用できません（LLM を起こしません）")
+            if command.get("shell") and (hooks or webhook):
+                # 材料をシェルへ差し込むと、値の中の記号がコマンドとして読まれる。argv なら
+                # 値は 1 字句のままなので、差し込みが要るときはそちらで書いてもらう。
+                raise ValueError(
+                    f"entry {name!r}: 複数行（シェル）の command と hooks / webhook は"
+                    "併用できません（材料を差し込むなら argv の形で書いてください）")
             if adaptive is not None and not hooks:
                 # 無風（idle）の概念が無い——回せば必ず「実行した」になる。フックがあれば
                 # `check()` の None が無風なので、そのときだけ従来どおり効く。

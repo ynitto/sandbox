@@ -16,8 +16,8 @@
 
 ## 呼ぶ側
 
-常駐デーモン（agent-loop の scheduler）、`agent-loop command --entry`、
-`agent-herd harness command --entry`。宣言の読み方は `agentcore.loopentry.command_spec`、
+常駐デーモン（agent-loop の scheduler）、`agent-loop command --entry`、agent-app の
+「今すぐ実行」（`repository_ui`）。宣言の読み方は `agentcore.loopentry.command_spec`、
 `{…}` の補完は `agentcore.loopentry.render_argv` で、どちらも 1 実装を共有する。
 
 設計: docs/plans/2026-09-13-agent-loop-command-entry-design.md
@@ -47,6 +47,21 @@ def _first_line(text: str) -> str:
         if line.strip():
             return line.strip()
     return ""
+
+
+def _missing_paths(paths, work_dir: str) -> "list[str]":
+    """`skip_if_missing` に挙がったもののうち、実際に無いものを返す。
+
+    相対パスは作業ディレクトリから読む（宣言の `cwd` と同じ基準にする）。
+    """
+    missing: "list[str]" = []
+    for raw in paths or []:
+        path = os.path.expanduser(str(raw))
+        if not os.path.isabs(path):
+            path = os.path.join(work_dir, path)
+        if not os.path.exists(path):
+            missing.append(path)
+    return missing
 
 
 def _terminate(proc) -> None:
@@ -81,22 +96,35 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     戻り値: `{ok, status, stopReason, stdout, stderr, argv, durationSec, logFile}`
     （`statemachine` / `run` と同じ「結果は 1 つの dict」の作法。`stdout` は上限まで）。
 
+    `skip_if_missing` に挙げたパスが 1 つでも無ければ、**コマンドを起こさずに**
+    `command_skipped` を返す（未導入のノードで「回っているつもりで何もしていない」を
+    後から見つけられるよう、jsonl には 1 行残す）。
+
+    成否は終了コードで決まる。`allow_status`（既定 `[0]`）に挙がっている番号なら成功で、
+    「この段は 1 で正常」を持つコマンドはそこへ書く。タイムアウトは終了コードを持たない
+    ので、`allow_status` に何を書いても失敗のまま。
+
+    `shell` を持つ宣言は 1 つのシェルへ渡すスクリプトで、argv はその起動形。行をまたぐ
+    状態が効く代わりに、上限も終了コードもスクリプト全体のものになる。
+
+    `commands` を持つ宣言は**コマンドの列**で、段を上から順に実行し、最初の失敗で止める
+    （段はそれぞれ 1 つの宣言と同じ形を持つので、この関数を段ごとに呼び直すだけでよい）。
+
     例外を投げるのは実行を**始められなかった**ときだけ。始まった実行の失敗
-    （非 0 終了・タイムアウト）は `ok: False` で返す——呼ぶ側はどちらも同じ
+    （許していない終了コード・タイムアウト）は `ok: False` で返す——呼ぶ側はどちらも同じ
     「失敗として記録する」に落とすが、記録に残す理由が違う。
     """
     if spec.get("commands"):
         started = time.monotonic()
         stdout, stderr = "", ""
-        for index, argv in enumerate(spec["commands"], 1):
+        for index, step in enumerate(spec["commands"], 1):
             _tl_progress(f"コマンド {index}/{len(spec['commands'])}", tag)
-            single = {key: value for key, value in spec.items() if key != "commands"}
-            single["argv"] = argv
             try:
-                result = run_command(single, cwd=cwd, log_file=log_file, env=env, tag=tag)
+                result = run_command(step, cwd=cwd, log_file=log_file, env=env, tag=tag)
             except CommandRunError as exc:
                 result = {"ok": False, "status": None, "stopReason": stopreason.COMMAND_ERROR,
-                          "stdout": "", "stderr": str(exc), "error": str(exc), "argv": argv, "logFile": log_file}
+                          "stdout": "", "stderr": str(exc), "error": str(exc),
+                          "argv": step.get("argv") or [], "logFile": log_file}
             stdout = (stdout + result.get("stdout", ""))[-OUTPUT_LIMIT:]
             stderr = (stderr + result.get("stderr", ""))[-OUTPUT_LIMIT:]
             if not result["ok"]:
@@ -116,6 +144,19 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     except (TypeError, ValueError):
         raise CommandRunError("command.timeout_sec が不正です") from None
 
+    allow_status = spec.get("allow_status") or [0]
+
+    missing = _missing_paths(spec.get("skip_if_missing"), work_dir)
+    if missing:
+        detail = "、".join(missing)
+        if log_file:
+            _tl_append_log(log_file, {"event": "command_skipped", "argv": argv,
+                                      "cwd": work_dir, "missing": missing})
+        _tl_progress(f"未導入のため飛ばしました: {detail}", tag)
+        return {"ok": True, "status": None, "stopReason": stopreason.COMMAND_SKIPPED,
+                "stdout": "", "stderr": "", "error": "", "argv": argv,
+                "durationSec": 0.0, "logFile": log_file}
+
     child_env = dict(os.environ)
     child_env.update({str(k): str(v) for k, v in (spec.get("env") or {}).items()})
     child_env.update({str(k): str(v) for k, v in (env or {}).items()})
@@ -123,7 +164,13 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     if log_file:
         _tl_append_log(log_file, {"event": "command_start", "argv": argv,
                                   "cwd": work_dir, "timeout_sec": timeout})
-    _tl_progress(f"コマンドを実行します: {' '.join(argv)}", tag)
+    script = str(spec.get("shell") or "")
+    if script:
+        lines = [line for line in script.splitlines() if line.strip()]
+        _tl_progress(f"シェルで実行します: {lines[0]}"
+                     + (f" …（全 {len(lines)} 行）" if len(lines) > 1 else ""), tag)
+    else:
+        _tl_progress(f"コマンドを実行します: {' '.join(argv)}", tag)
 
     started = time.monotonic()
     try:
@@ -159,7 +206,7 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     stdout = _tl_decode(out or b"")
     stderr = _tl_decode(err or b"")
     status = None if timed_out else proc.returncode
-    ok = status == 0
+    ok = status in allow_status
 
     if timed_out:
         stop = stopreason.COMMAND_TIMEOUT
@@ -169,7 +216,10 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
         error = ""
     else:
         stop = stopreason.COMMAND_EXIT
-        error = _first_line(stderr) or _first_line(stdout) or f"status={status}"
+        # スクリプトの stdout は成果の出力なので、失敗の理由には使わない（`-e` で落ちた
+        # ときの最後の 1 行は、たいてい直前の成功した行が出したものになる）。
+        error = (_first_line(stderr) or (_first_line(stdout) if not script else "")
+                 or f"status={status}")
 
     if log_file:
         _tl_append_log(log_file, {

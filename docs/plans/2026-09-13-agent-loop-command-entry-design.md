@@ -196,7 +196,6 @@ headless スロットを取って並走する。同期スクリプトの多重�
 
 ```
 agent-loop command --entry "記憶メンテナンス" [-d DIR] [--config PATH]
-agent-herd  harness command --entry "記憶メンテナンス"
 ```
 
 `statemachine --entry` と同じく `agentcore.loopentry` で宣言を引き、同じ `run_command` を
@@ -214,7 +213,7 @@ agent-herd  harness command --entry "記憶メンテナンス"
 | いま | 状態 | 移行後 |
 |---|---|---|
 | `resource-control-hook`（audit collect → node 制御スクリプト） | **移行済み**（フックは削除） | 2 エントリに割った。collect は best-effort なので、別エントリなら失敗が制御を止めない |
-| `audit-calibrate-hook` | 保留 | 段ごとに「この終了コードは許す」（`allow_blocked`）がある。順序と許容を 1 本のスクリプトへまとめてから 1 エントリにする |
+| `audit-calibrate-hook` | **移行済み**（設定例。フックは残す） | 段ごとに「この終了コードは許す」（`allow_blocked`）がある。`commands:` の列と段ごとの `allow_status` で表せるようになったので、スクリプトへまとめずに 1 エントリへ移した |
 | `memory-maintenance-hook`（複数スクリプトの順次実行） | 保留 | 未導入のスキルを飛ばす判断を持つ。「何をどの順で呼ぶか」を `scripts/memory-maintenance.py` へ移し、1 エントリで呼ぶ。「削除は走らせない」の禁止事項はスクリプト側の責務のまま |
 | `moltbook-duty-hook` | 保留 | 同上（未導入なら何もしない）。`hook_config` の `skill_home` / `label_conn` は argv の引数へ |
 
@@ -234,7 +233,7 @@ agent-herd  harness command --entry "記憶メンテナンス"
    `_run_headless` の第 3 分岐、`record_repository_run` の `kind`。
    headless 経路の完了時に `_call_hook_ack` を呼ぶ（既存の穴。statemachine / prompt の
    headless 実行にも効く）。`command` エントリのエントリ単位直列化。
-4. `agent-loop command --entry`、`agent-herd harness command --entry`。
+4. `agent-loop command --entry`。
 5. `repository_ui.inspect` の `kind: command` と `cmd_repository_command`。
 6. `agent-loop.yaml.example` の 4 件を `command:` へ書き換え、`hooks/` の該当 4 ファイルを
    削除。README / `docs/specs/agent-loop-spec.md` §2.3 に `command` 行と §2.3.2 を足す
@@ -245,3 +244,6 @@ agent-herd  harness command --entry "記憶メンテナンス"
 
 - stdout を次のプロンプトの材料にする（command の出力を `input` に渡す）。それは
   ステートマシンの `check:` か `run` の仕事で、本設計は「送らずに実行する」に限る。
+- `agent-herd harness` の `command` 種別は**未実装**（`HARNESS_KINDS` は `statemachine` /
+  `run` のまま）。手で回す口は `agent-loop command --entry` と agent-app の「今すぐ実行」で
+  足りているので、要る場面が出てから足す。

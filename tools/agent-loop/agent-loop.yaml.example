@@ -238,11 +238,22 @@ prompts:
     enabled: false
 
   # 収集済みの実測を rates.per_cli へ定期較正し、旧推定との乖離も audit 台帳へ残す。
-  # 段ごとに「この終了コードは許す」があるので、フックのままにしてある（`command:` は
-  # 1 エントリ 1 コマンドで、終了コードをそのまま成否にする）。順序と許容を 1 本の
-  # スクリプトへまとめれば `command:` へ移せる。
+  #
+  # LLM へ 1 文字も送らない純バッチなので `command:` で書く。段ごとに「この終了コードは
+  # 許す」があるが、それは commands: の段に allow_status を書いて表す——抽出と蒸留は
+  # 「対象なし」を 1 で返すので、その 2 段だけ 1 を成功として扱う（他の段は非 0 で失敗）。
+  # 置き場は agent-audit 側の設定に任せる（--audit-dir を書くとその設定より優先される）。
   - name: "使用量較正"
-    hooks: audit-calibrate-hook
+    command:
+      commands:
+        - "agent-audit collect"
+        - "agent-audit qualify --apply"
+        - "agent-audit calibrate --write"
+        - argv: "agent-audit extract"
+          allow_status: [0, 1]
+        - argv: "agent-audit distill --review"
+          allow_status: [0, 1]
+        - "agent-audit tune --apply"
     interval_minutes: 60
     enabled: false
 
@@ -289,19 +300,19 @@ prompts:
   # 空き時間の Moltbook 運転のうち LLM が要らない分（outbox の publish backlog を
   # privacy gate に通す sweep）を人手ゼロで回す。新しい判断はしない——既に置かれた
   # 候補を gate に通すだけ。
+  #
+  # LLM へ 1 文字も送らない純バッチなので `command:` で書く（フックの check() に与えられる
+  # 時間は 30 秒で、超えると隔離され、成功しても「何もなかった回」と数えられる）。
+  # moltbook-use が入っていないノードでは skip_if_missing で飛ばす——フックが黙って
+  # 抜けていたのと同じ振る舞いを、宣言で書く。
   - name: "Moltbook 巡回"
-    hooks: moltbook-duty-hook
-    hook_config:
-      skill_home: ~/.claude/skills
-      label_conn: default
+    command:
+      argv: ["python3", "~/.claude/skills/moltbook-use/scripts/moltbook_batch.py",
+             "--label-conn", "default", "--direction", "publish"]
+      skip_if_missing: "~/.claude/skills/moltbook-use/scripts/moltbook_batch.py"
     interval_minutes: 30
-    # adaptive で「暇なときだけ、財布の内側で」を既存機構だけで成立させる（新設しない）。
-    # adaptive:
-    #   enabled: true
-    #   min_interval_seconds: 300
-    #   max_interval_seconds: 3600
-    #   backoff_factor: 1.5
-    #   idle_threshold: 3
+    # adaptive は hooks があるエントリだけで使える（「何もなかった回」が無いと間隔を
+    # 伸ばす材料がないため）。command: へ移したこの形では書けない。
     enabled: false
 
   # 未回答質問の確認・根拠つき返信・good の判断（LLM が要る分）を回す当番。

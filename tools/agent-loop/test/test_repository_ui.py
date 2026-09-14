@@ -258,6 +258,7 @@ class RepositoryScheduleTest(unittest.TestCase):
                 self.assertNotIn("agent_cli", updated["entry"])
                 self.assertEqual(al._loopentry.command_spec(updated["entry"]), {
                     "argv": ["python3", "scripts/two words.py"], "env": {"SCOPE": "home"}, "timeout_sec": 900,
+                    "allow_status": [0], "skip_if_missing": [],
                 })
                 with self.assertRaisesRegex(ValueError, "見つかりません|変更"):
                     al.update_repository_schedule(root, {
