@@ -467,7 +467,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 
 /* ---- ダイアログ ---- */
 #wt-dialog, #app-settings, #routine-dialog, #search-transfer-dialog { max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--panel); box-shadow: 0 24px 60px rgba(31, 35, 40, .2); }
-#wt-dialog, #routine-dialog, #search-transfer-dialog { width: 720px; }
+#wt-dialog, #routine-dialog { width: 720px; }
+#search-transfer-dialog { width: 600px; }
 #app-settings { width: 780px; height: min(720px, calc(100vh - 40px)); }
 #app-settings[open] { display: flex; flex-direction: column; }
 #wt-dialog::backdrop, #app-settings::backdrop, #routine-dialog::backdrop, #search-transfer-dialog::backdrop { background: rgba(18, 23, 31, .42); }
