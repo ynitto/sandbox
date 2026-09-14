@@ -180,4 +180,11 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   // 5. 実行条件の「前回」は補助の 1 行（.muted）で、新しいカードや見出しを作らない
   assert.match(workbench, /<small class="muted">前回: /);
   assert.ok(!/<h3>前回/.test(workbench), '前回の値に見出しを足さない');
+  // 6. 吹き出しの下の操作（入力欄に戻す・フォーク）は、会話と検索のプレビューで同じ部品・同じ端
+  const search = read('renderer/sessionSearch.js');
+  assert.match(search, /button\('フォーク', 'message-action'/, '検索のプレビューも .message-action を使う');
+  assert.ok(!/button\('フォーク', 'small quiet'/.test(search), 'フォークだけ別の見た目にしない');
+  assert.match(renderer, /el\('button', 'message-action', 'フォーク'\)/);
+  assert.match(css, /\.response-turn > \.message-actions \{[^}]*align-self: stretch/, '操作の行は吹き出しの外で同じ端にそろえる');
+  assert.match(renderer, /'response-turn user-turn'/, '依頼も応答と同じ組み立て（吹き出し＋下の操作）にする');
 });

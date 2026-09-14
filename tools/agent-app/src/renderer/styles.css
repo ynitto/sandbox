@@ -289,6 +289,10 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .msg .who .tag { margin-right: 4px; background: var(--panel); }
 .msg .files { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; white-space: normal; }
 .message-actions { display: flex; justify-content: flex-end; margin-top: 7px; white-space: normal; }
+/* 吹き出しの下に置く操作は、依頼・応答・検索のプレビューで同じ右端にそろえる。 */
+.response-turn > .message-actions { align-self: stretch; margin-top: 0; }
+.user-turn { align-items: flex-end; }
+.user-turn > .msg.user { margin-left: 0; }
 .message-action { padding: 4px 7px; border: 0; background: transparent; color: var(--accent); font-size: 11px; }
 .message-action:hover { background: var(--panel); }
 .msg .err { margin-top: 6px; padding: 6px 10px; border-radius: 6px; color: var(--danger); background: var(--del); font-size: 12px; white-space: pre-wrap; }

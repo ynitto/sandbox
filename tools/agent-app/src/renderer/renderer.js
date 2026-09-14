@@ -1180,22 +1180,26 @@ function responseForkActions(m, index) {
 
 // index … 会話の messages の中の位置（分岐の関連づけに使う）
 function messageNode(m, index = -1) {
-  const n = el('div', m.role === 'user' ? 'msg user' : 'response-turn');
+  // 依頼も応答も「吹き出し＋その下の操作」の同じ組み立てにする（.response-turn の中に置き、
+  // 操作の行は吹き出しの外で同じ端にそろえる）。
+  const n = el('div', m.role === 'user' ? 'response-turn user-turn' : 'response-turn');
   if (m.role === 'user') {
+    const bubble = el('div', 'msg user');
     // どのエージェント・モデル・モードへ出した依頼か（ターンごとに変わりうる）
     if (m.cli) {
       const who = el('div', 'who');
       who.append(el('span', 'tag', m.cli));
       if (m.model) who.append(el('span', 'tag', m.model));
       if (m.readonly) who.append(el('span', 'tag', 'Ask'));
-      n.append(who);
+      bubble.append(who);
     }
-    n.append(document.createTextNode(m.text || ''));
+    bubble.append(document.createTextNode(m.text || ''));
     if (m.attachments && m.attachments.length) {
       const files = el('div', 'files');
       for (const a of m.attachments) files.append(chipNode(a));
-      n.append(files);
+      bubble.append(files);
     }
+    n.append(bubble);
     const actions = el('div', 'message-actions');
     const again = el('button', 'message-action', '入力欄に戻す');
     again.type = 'button';

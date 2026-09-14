@@ -90,7 +90,12 @@ const SessionSearch = (() => {
       for (const message of record.messages) {
         const row = node('article', 'search-message', '');
         row.append(node('strong', '', message.role === 'user' ? '利用者' : 'AI'), node('div', 'search-message-body', message.text));
-        if (!record.partial && message.role === 'assistant' && message.complete !== false) row.append(button('フォーク', 'small quiet', () => beginTransfer(record, message.id)));
+        if (!record.partial && message.role === 'assistant' && message.complete !== false) {
+          // 会話画面の応答の下と同じ部品（.message-actions / .message-action）で出す。
+          const actions = node('div', 'message-actions', '');
+          actions.append(button('フォーク', 'message-action', () => beginTransfer(record, message.id)));
+          row.append(actions);
+        }
         box.append(row);
       }
       const actions = node('div', 'row search-preview-actions', '');
