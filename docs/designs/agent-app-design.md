@@ -1040,6 +1040,7 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 - [`2026-09-07-agent-app-startup-and-herd-design.md`](../plans/2026-09-07-agent-app-startup-and-herd-design.md): 起動時の重さ（Windows）の原因と対処、`herd` を会話・タスク・ワークフローで使う規則の検討記録。
 - [`2026-09-09-agent-app-standalone-and-herd-benefits-design.md`](../plans/2026-09-09-agent-app-standalone-and-herd-benefits-design.md): agent-tools 無しでメイン機能を閉じる決定（ADR-11）と、agent-herd ありで増えるもの（任意機能・トークン効率）の設計。
 - [`2026-09-12-agent-app-usability-proposals.md`](../plans/2026-09-12-agent-app-usability-proposals.md): 毎回の往復（確認待ち・定型の依頼・通知・前回の値・失敗の引き渡し）を既存の部品の上で減らす検討記録（ADR-14 / ADR-15）。
+- [`2026-09-14-agent-app-optional-tools-usability-proposal.md`](../plans/2026-09-14-agent-app-optional-tools-usability-proposal.md): agent-tools がある時だけ、既存画面へ次の操作を 1 つ足す段階導入案。未導入時は会話とタスクの主経路を変えない。
 
 個別画面の検討経緯は `docs/plans/` に残す。本書は、現在の実装を変更するときに必要な境界、データの流れ、
 実行経路、失敗時の扱いを持つ。
