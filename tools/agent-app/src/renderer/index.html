@@ -97,6 +97,7 @@
           <summary aria-label="その他の操作">その他</summary>
           <div class="menu-panel">
             <button type="button" id="open-folder">フォルダを開く</button>
+            <button type="button" id="session-fork" hidden>この会話をフォーク</button>
             <button type="button" id="session-routine" hidden>この作業を定型化</button>
             <button type="button" id="session-rename" hidden>会話名を変更</button>
             <button type="button" id="session-delete" class="danger" hidden>会話を削除</button>
@@ -626,10 +627,10 @@
   </dialog>
 
   <dialog id="search-transfer-dialog">
-    <div class="dlg-head"><strong id="search-transfer-title">取り込む</strong><span class="spacer"></span><button type="button" id="search-transfer-close" class="small">閉じる</button></div>
+    <div class="dlg-head"><strong id="search-transfer-title">フォーク</strong><span class="spacer"></span><button type="button" id="search-transfer-close" class="small">閉じる</button></div>
     <div class="dlg-body">
       <p id="search-transfer-source" class="sub"></p>
-      <label class="setting-field"><span>取り込み位置</span><select id="search-boundary"></select></label>
+      <label class="setting-field"><span>フォークする位置</span><select id="search-boundary"></select></label>
       <label for="search-target-repo">リポジトリ</label>
       <div class="repository-control"><select id="search-target-repo" aria-label="リポジトリ"></select>
         <details class="more-menu side-more"><summary aria-label="リポジトリを管理">•••</summary><div class="menu-panel"><button type="button" id="search-target-add">リポジトリを追加</button></div></details>
@@ -640,11 +641,11 @@
           <label>権限<select id="search-target-permission"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">Ask（読み取り専用）</option></select></label>
         </div>
       </details>
-      <label class="setting-field"><span>取り込み先</span><select id="search-intent"><option value="session">セッション</option><option value="task">タスク</option><option value="workflow">ワークフロー</option><option value="skill">スキル</option></select></label>
+      <label class="setting-field"><span>フォーク先</span><select id="search-intent"><option value="session">セッション</option><option value="task">タスク</option><option value="workflow">ワークフロー</option><option value="skill">スキル</option></select></label>
       <label class="task-create-label" for="search-request">追加の依頼（任意）</label><textarea id="search-request" rows="2"></textarea>
       <p id="search-transfer-status" class="sub" role="status"></p>
     </div>
-    <div class="dlg-actions"><button type="button" id="search-transfer-start" class="primary">取り込む</button></div>
+    <div class="dlg-actions"><button type="button" id="search-transfer-start" class="primary">フォーク</button></div>
   </dialog>
   <dialog id="routine-dialog">
     <div class="dlg-head"><strong>この作業を定型化</strong><span class="spacer"></span><button type="button" id="routine-close" class="small">閉じる</button></div>

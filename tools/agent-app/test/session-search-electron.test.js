@@ -71,7 +71,7 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await win.evaluate(() => { document.getElementById('search-source').value = 'vscode'; document.getElementById('search-text').value = 'fixture-import-unique'; });
     await win.click('#session-search-open');
     await win.locator('#search-results').getByRole('button', { name: /外部の月次集計/ }).click();
-    await win.getByRole('button', { name: '取り込む', exact: true }).first().waitFor();
+    await win.getByRole('button', { name: 'フォーク', exact: true }).first().waitFor();
     await win.screenshot({ path: '/tmp/agent-app-session-search.png' });
     await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setMinimumSize(400, 400); w.setSize(520, 800); });
     await win.locator('#search-back').waitFor({ state: 'visible' });
@@ -83,7 +83,7 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await win.locator('#search-results').getByRole('button', { name: /外部の月次集計/ }).click();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 900));
     assert.doesNotMatch(await win.locator('#session-search').innerText(), /WSL|Windows/);
-    await win.getByRole('button', { name: '取り込む', exact: true }).first().click();
+    await win.getByRole('button', { name: 'フォーク', exact: true }).first().click();
     await win.selectOption('#search-target-repo', repo);
     await win.locator('#search-target-agent option[value="claude"]').waitFor({ state: 'attached' });
     await win.click('#search-execution-settings > summary');
@@ -121,6 +121,25 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     assert.equal(created.externalOrigin.nativeId, 'fixture-import-unique');
     assert.deepEqual(created.cliSessions, {});
     assert.equal(store.readSession(data, original.id).messages.length, 2);
+    assert.match(store.readSession(data, sent.id).title, /（フォーク）/);
+    // 会話画面からも、同じダイアログで開いている会話をフォークできる
+    await win.evaluate(({ repo, id }) => openSessionInRepo(repo, id), { repo, id: original.id });
+    await win.locator('#chat-more summary').click();
+    await win.click('#session-fork');
+    await win.locator('#search-transfer-dialog[open]').waitFor();
+    assert.equal(await win.locator('#search-boundary option').count(), 1);
+    assert.equal(await win.inputValue('#search-target-repo'), repo);
+    await win.locator('#search-target-agent option[value="claude"]').waitFor({ state: 'attached' });
+    await win.screenshot({ path: '/tmp/agent-app-conversation-fork.png' });
+    await win.click('#search-transfer-start');
+    await win.waitForFunction(id => state.current?.id !== id && !document.getElementById('search-transfer-dialog').open, original.id);
+    await app.evaluate(() => { global.releaseImportStart(); global.releaseImportStart = null; });
+    await win.waitForFunction(() => state.pending.size === 0);
+    const forked = await app.evaluate(() => global.sentTransfer);
+    assert.match(forked.prompt, /元の会話:/);
+    assert.notEqual(forked.id, sent.id);
+    assert.equal(store.readSession(data, forked.id).origin.sessionId, original.id);
+    assert.equal(store.readSession(data, original.id).messages.length, 2);
     await app.evaluate(({ ipcMain }) => {
       global.methodStarts = [];
       global.releaseImportTerminal = null;
@@ -148,14 +167,14 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
       fs.writeFileSync(methodFile, kind);
       await win.click('#session-search-open');
       await win.locator('#search-results').getByRole('button', { name: /外部の月次集計/ }).click();
-      await win.getByRole('button', { name: '取り込む', exact: true }).first().click();
+      await win.getByRole('button', { name: 'フォーク', exact: true }).first().click();
       await win.selectOption('#search-target-repo', repo);
       await win.locator('#search-target-agent option[value="claude"]').waitFor({ state: 'attached' });
       await win.click('#search-execution-settings > summary');
       await win.selectOption('#search-target-agent', 'claude');
       await win.fill('#search-target-model', kind + '-model');
       await win.click('#search-execution-settings > summary');
-      // 取り込み先を選ぶだけで、選んだ後の遷移はこれまでと同じ
+      // フォーク先を選ぶだけで、選んだ後の遷移はこれまでと同じ
       await win.selectOption('#search-intent', kind);
       if (kind === 'workflow') await win.screenshot({ path: '/tmp/agent-app-session-transfer-kind.png' });
       await win.click('#search-transfer-start');

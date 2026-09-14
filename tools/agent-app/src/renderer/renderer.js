@@ -1001,6 +1001,8 @@ function renderHeader() {
   $('session-routine').hidden = !cur;
   $('session-routine').disabled = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
+  $('session-fork').hidden = !cur || cur.kind !== 'conversation';
+  $('session-fork').disabled = busy || !cur?.messages.some(m => m.role === 'assistant' && m.complete !== false);
   $('session-handoff').hidden = !cur || cur.kind !== 'conversation';
   $('session-handoff').disabled = busy || !!state.handoffId || !cur?.messages.length;
   $('session-handoff').textContent = state.handoffId === cur?.id ? '引き継ぎ中…' : '新しいセッションに引き継ぐ';
@@ -2358,6 +2360,10 @@ async function init() {
       catch (err) { notice(err.message, 'error'); }
     }
     renderRunSettingsSummary(); refreshTurnSkillPreview();
+  };
+  $('session-fork').onclick = () => {
+    $('chat-more').open = false;
+    if (state.current) SessionSearch.forkCurrent(state.current.id).catch(err => notice(err.message, 'error'));
   };
   $('session-routine').onclick = beginRoutine;
   $('routine-retry').onclick = inspectRoutine;
