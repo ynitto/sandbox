@@ -2159,7 +2159,10 @@ function renderUpdateStatus() {
     parts.push(found.length ? `新しい版: ${found.join(' / ')}` : '最新です');
     parts.push(`${fmtCheckedAt(u.lastCheckAt)} 確認`);
   }
-  if (u.plan && u.plan.tools.current && !u.plan.tools.available) parts.push(`agent-tools ${u.plan.tools.current}`);
+  const t = u.plan && u.plan.tools;
+  if (t && t.installed && !t.available) {
+    parts.push(!t.configured ? 'agent-tools: 更新元の設定なし' : t.error ? `agent-tools: ${t.error}` : t.current ? `agent-tools ${t.current}` : 'agent-tools');
+  }
   line.textContent = parts.join(' · ');
 }
 
@@ -2174,7 +2177,7 @@ function renderUpdateDialog() {
   $('update-tools-row').hidden = !p.tools.available;
   $('update-tools').checked = p.tools.available;
   $('update-tools-detail').textContent = p.tools.available
-    ? `${p.tools.current || (p.tools.installed ? '版の記録なし' : '未導入')} → ${p.tools.next}（${api.platform === 'win32' ? 'WSL' : 'この端末'}で入れ直します）` : '';
+    ? `${p.tools.current} → ${p.tools.next}（${api.platform === 'win32' ? 'WSL' : 'この端末'}で入れ直します）` : '';
   $('update-notes').textContent = p.notes || '';
   $('update-notes').hidden = !p.notes;
   $('update-progress').textContent = u.applying ? (u.progress || '更新しています…') : '';

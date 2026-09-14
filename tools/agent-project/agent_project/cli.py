@@ -129,6 +129,8 @@ def main(argv=None) -> int:
     up.add_argument("--now", action="store_true",
                     help="更新があれば即座に install.sh を実行して再起動する")
     up.add_argument("--check", action="store_true", help="更新の有無だけを表示（取り込まない）")
+    up.add_argument("--json", action="store_true",
+                    help="結果を 1 行の JSON で出す（agent-app などが読む。--now でも再起動しない）")
 
     enq = sub.add_parser("enqueue", help="汎用の取り込み口（CLI/stdin/JSON から backlog タスクを作る）")
     _add_common(enq)
@@ -365,7 +367,8 @@ def main(argv=None) -> int:
                                      getattr(args, "json", False),
                                      cutover_from=getattr(args, "node_id_cutover", None)),
         "update": lambda: cmd_update(cfg, getattr(args, "now", False),
-                                     getattr(args, "check", False)),
+                                     getattr(args, "check", False),
+                                     getattr(args, "json", False)),
         "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason,

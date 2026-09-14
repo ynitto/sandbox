@@ -1091,26 +1091,24 @@ tmux が無い PC・対話定義を持たない CLI ではこれまでどおり�
 
 ### 16. 自動更新（`src/main/update.js`）
 
-外部サービスを使わない。更新元は利用者が用意した共有フォルダか社内の HTTP で、そこに
-`scripts/publish-update.js` が書いた配布物がある。
+外部サービスを使わない。本体の更新元は利用者が用意した共有フォルダか社内の HTTP で、そこに
+`scripts/publish-update.js` が書いた配布物がある。WSL 側の agent-tools は agent-project の自己更新
+（git のリポジトリから sparse-checkout して `install.sh`。物差しはコミット SHA）に乗り、agent-app は
+`agent-project update --check --json` / `--now --json` を叩いて最後の行の JSON を読むだけ。更新元（git の
+置き場 `update_repo`）も版も agent-project 側が持ち、agent-app は印を持たない。
 
 ```text
 <更新元>/
-├── manifest.json               { schema, publishedAt, notes, app: { version, file, sha256, size }, tools: { … } }
-├── agent-app-<版>.exe          npm run dist:portable の成果物（版は package.json の version）
-└── agent-tools-<版>.tar.gz     agent-app が呼ぶ 3 本の元（tools/agent-tools（agent-herd を含む）/ tools/agent-flow /
-                                tools/agent-loop）と agents/ commands/ を HEAD から git archive。版は <yyyymmdd>-<短い SHA>
+├── manifest.json               { schema, publishedAt, notes, app: { version, file, sha256, size } }
+└── agent-app-<版>.exe          npm run dist:portable の成果物（版は package.json の version）
 ```
 
 | 段 | 何をするか |
 |---|---|
-| 確認（`check`） | `manifest.json` を読み、ホスト（Windows なら WSL）で `~/.local/share/agent-app/agent-tools.version` と agent-herd / agent-loop / agent-flow の有無を 1 コマンドで読む。`plan` は `app: { current, next, available, applicable }`、`tools: { current, installed, next, available }`、`notes`、`any`。本体は版が大きいとき（数の並びで比べる。正式版 > 先行版）、agent-tools は印と違うときに `available`。本体の `applicable` は Windows の portable 版（`PORTABLE_EXECUTABLE_FILE` がある）だけ |
+| 確認（`check`） | `manifest.json` を読み、ホスト（Windows なら WSL）で `agent-project update --check --json`（無ければ `{"installed":false}`）を叩く（90 秒まで。`git ls-remote` を含む）。`plan` は `app: { current, next, available, applicable }`、`tools: { installed, configured, current, next, available, error }`（`current` / `next` は SHA の先頭 8 桁）、`notes`、`any`。本体は版が大きいとき（数の並びで比べる。正式版 > 先行版）、agent-tools は agent-project が入っていて `enabled`（`update_repo` が解決できる）かつ `available` のとき。本体の `applicable` は Windows の portable 版（`PORTABLE_EXECUTABLE_FILE` がある）だけ |
 | 契機 | 起動 15 秒後（`update.onStartup`）、5 分ごとの tick で前回から `intervalHours` 以上たっていれば、そして `update:check`。自動の失敗は `status.error` に残すだけで画面には出さない（手動は断る） |
-| 取り込み（`apply`） | agent-tools → 本体の順。ファイルは `<userData>/updates/` へ写し（URL なら取得）、`sha256` があれば照合する。agent-tools はホストで `tar xzf` → `bash tools/agent-tools/install.sh --only agent-flow,agent-herd </dev/null`（agent-loop は install.sh が常に一緒に入れ直す）→ 印を書く（15 分まで）。失敗したら出力の末尾 8 行を添えて断り、印は変えない。本体は `<portable>.new` に置き、`%TEMP%\agent-app-update-<pid>.cmd` を `detached` で起こして `app.quit()` する |
+| 取り込み（`apply`） | agent-tools → 本体の順。agent-tools はホストで `agent-project update --now --json`（15 分まで）を叩き、最後の行の `applied` が真なら `plan.tools` を進める。偽なら JSON の `error`（無ければ出力の末尾 8 行）を添えて断り、`plan` は変えない。本体は更新元の exe を `<userData>/updates/` 経由で `<portable>.new` に置き（URL なら取得。`sha256` があれば照合）、`%TEMP%\agent-app-update-<pid>.cmd` を `detached` で起こして `app.quit()` する |
 | 入れ替えの cmd | 自分の PID が消えるのを待ち、`move` で元の exe を `.old` へ退かし（動いている exe は名前を変えられる。60 回まで 1 秒おきに再試行）、`.new` を元の名前へ移して `start` する。失敗したら `.old` を戻して起動し直す。経過は `%TEMP%\agent-app-update.log` |
-
-入れ直すのは agent-app が呼ぶ 3 本だけで、agent-project などは触らない（agent-project の自己更新とは
-対象が重ならない）。
 
 manifest の `file` はファイル名だけを受け付ける（区切りを含むものは無視。更新元の外を指させない）。
 画面は `update:changed` を受けて設定 > アプリの 1 行を描き直し、自動の確認で `plan.any` なら
@@ -1129,7 +1127,7 @@ manifest の `file` はファイル名だけを受け付ける（区切りを含
 | `worktree.test.js` | 名前、パス、`--porcelain`、作成・削除・納品ブランチの統合 | 統合のみ git が無い |
 | `herd.test.js` | `herd` の一族判定、共通 TUI とスラッシュ行、タスク・ワークフローの名前の渡し方、配線 | なし |
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
-| `update.test.js` | 版の比較、更新元の判定、manifest の正規化、取得と sha256 の照合、確認・取り込み（偽のホストシェル）、入れ替えの cmd、起動時と定期、`scripts/publish-update.js` | なし |
+| `update.test.js` | 版の比較、更新元の判定、manifest の正規化、取得と sha256 の照合、`agent-project update --json` の読み方、確認・取り込み（偽のホストシェル）、入れ替えの cmd、起動時と定期、`scripts/publish-update.js` | なし |
 | `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形） | なし |
 | `electron-smoke.test.js` | Electron 実機で四領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの「変更を相談」で会話の置き場を開き、共有の一覧・カード・参加者と、会話の入力先「共有に依頼」を通す | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 

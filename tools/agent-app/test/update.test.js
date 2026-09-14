@@ -1,7 +1,8 @@
 'use strict';
 
 // 自動更新（src/main/update.js）と配布物を置く側（scripts/publish-update.js）。
-// 更新元は一時フォルダ、ホストのシェルは偽物で、取得・照合・判定・入れ替え台本を通す。
+// 更新元は一時フォルダ、ホストのシェル（agent-project update --json を答える）は偽物で、
+// 取得・照合・判定・入れ替え台本を通す。
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -9,7 +10,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
 const update = require('../src/main/update');
 const settings = require('../src/main/settings');
 const store = require('../src/main/store');
@@ -18,32 +18,42 @@ const publish = require('../scripts/publish-update');
 const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `agent-app-${name}-`));
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
-// 更新元（フォルダ）を作る。app / tools のどちらも中身は適当なバイト列でよい。
-function makeSource({ appVersion = '0.3.0', toolsVersion = '20260914-abc1234', notes = '' } = {}) {
+// 更新元（フォルダ）を作る。exe の中身は適当なバイト列でよい。
+function makeSource({ appVersion = '0.3.0', notes = '' } = {}) {
   const dir = tmp('source');
   const exe = Buffer.from(`exe ${appVersion}`);
-  const tar = Buffer.from(`tar ${toolsVersion}`);
   fs.writeFileSync(path.join(dir, `agent-app-${appVersion}.exe`), exe);
-  fs.writeFileSync(path.join(dir, `agent-tools-${toolsVersion}.tar.gz`), tar);
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
     schema: 1, notes,
     app: { version: appVersion, file: `agent-app-${appVersion}.exe`, sha256: sha(exe), size: exe.length },
-    tools: { version: toolsVersion, file: `agent-tools-${toolsVersion}.tar.gz`, sha256: sha(tar), size: tar.length },
   }));
   return dir;
 }
 
-// ホストのシェルの偽物。走った台本を覚え、agent-tools の印を answer で返す。
-function fakeShell({ version = '', installed = true, installOk = true } = {}) {
+const APPLIED = 'aaaaaaaa1111111111111111111111111111aaaa';
+const REMOTE = 'bbbbbbbb2222222222222222222222222222bbbb';
+
+// ホストのシェルの偽物。走った台本を覚え、agent-project update --json の答えを返す。
+//   installed … agent-project が PATH にあるか
+//   enabled   … update_repo が設定されているか
+//   available … 新しいコミットがあるか
+//   installOk … --now が成功するか
+function fakeShell({ installed = true, enabled = true, available = true, installOk = true } = {}) {
   const runs = [];
+  const report = (extra) => JSON.stringify({ enabled, repo: enabled ? '/mnt/x/sandbox.git' : '', branch: 'main', applied_sha: APPLIED, remote_sha: enabled ? REMOTE : '', available: enabled && available, baseline: false, applied: false, error: enabled ? '' : 'update_repo が未設定です', ...extra });
   return {
     runs,
     async run(script) {
       runs.push(script);
-      if (script.includes('command -v agent-herd')) {
-        return { ok: true, status: 0, output: `version=${version}\nagent-herd=${installed ? '/home/me/.local/bin/agent-herd' : ''}\nagent-loop=\nagent-flow=\n`, error: '' };
+      if (script.includes('update --check --json')) {
+        if (!installed) return { ok: true, status: 0, output: '{"installed":false}', error: '' };
+        return { ok: true, status: enabled ? 0 : 2, output: report({}), error: '' };
       }
-      return installOk ? { ok: true, status: 0, output: '[OK] installed', error: '' } : { ok: false, status: 1, output: 'boom\ninstall.sh failed', error: 'install.sh failed' };
+      if (script.includes('update --now --json')) {
+        if (installOk) return { ok: true, status: 0, output: `[update] 更新を適用しました（${REMOTE.slice(0, 8)}）。\n${report({ applied_sha: REMOTE, available: false, applied: true })}`, error: '' };
+        return { ok: false, status: 1, output: `[update] install.sh 失敗（更新を見送り）: boom\n${report({ applied: false, error: 'install.sh に失敗しました（journal を確認）' })}`, error: 'x' };
+      }
+      return { ok: false, status: 1, output: '', error: `unexpected: ${script}` };
     },
   };
 }
@@ -81,28 +91,47 @@ test('更新元はフォルダか URL で、manifest のファイル名は更新
   assert.equal(update.sourceKind('\\\\server\\share\\agent-app'), 'dir');
   assert.equal(update.sourceKind('https://intra.example/agent-app/'), 'url');
   assert.equal(update.joinSource('https://intra.example/agent-app/', 'manifest.json'), 'https://intra.example/agent-app/manifest.json');
-  const m = update.normalizeManifest({ app: { version: '1.0.0', file: '../x.exe' }, tools: { version: 'a', file: 'agent-tools-a.tar.gz', sha256: 'ABC' }, notes: 'n' });
+  const m = update.normalizeManifest({ app: { version: '1.0.0', file: '../x.exe' }, notes: 'n' });
   assert.equal(m.app, null);
-  assert.deepEqual(m.tools, { version: 'a', file: 'agent-tools-a.tar.gz', sha256: 'abc', size: 0 });
   assert.equal(m.notes, 'n');
+  const ok = update.normalizeManifest({ app: { version: '1.0.0', file: 'agent-app-1.0.0.exe', sha256: 'ABC' } });
+  assert.deepEqual(ok.app, { version: '1.0.0', file: 'agent-app-1.0.0.exe', sha256: 'abc', size: 0 });
 });
 
-test('何を更新できるかは版の違いと起動形態で決まる', () => {
-  const manifest = update.normalizeManifest({ app: { version: '0.3.0', file: 'a.exe' }, tools: { version: 'b', file: 't.tar.gz' } });
-  const portable = update.plan({ manifest, appVersion: '0.2.0', canApplyApp: true, tools: { version: 'a', installed: true } });
+test('agent-project update --json の答えは最後の行だけを読む', () => {
+  const r = update.parseToolsReport(`[update] 経過\n{"enabled":true,"applied_sha":"${APPLIED}","remote_sha":"${REMOTE}","available":true,"applied":false,"error":""}`);
+  assert.deepEqual(r, { installed: true, enabled: true, appliedSha: 'aaaaaaaa', remoteSha: 'bbbbbbbb', available: true, applied: false, error: '' });
+  assert.equal(update.parseToolsReport('{"installed":false}').installed, false);
+  const broken = update.parseToolsReport('bash: agent-project: command not found');
+  assert.equal(broken.enabled, false);
+  assert.match(broken.error, /command not found/);
+  assert.match(update.toolsCheckScript(), /command -v agent-project .* agent-project update --check --json/);
+  assert.equal(update.toolsApplyScript(), 'agent-project update --now --json');
+});
+
+test('何を更新できるかは版の違い・起動形態・agent-project の答えで決まる', () => {
+  const manifest = update.normalizeManifest({ app: { version: '0.3.0', file: 'a.exe' } });
+  const newer = { installed: true, enabled: true, appliedSha: 'aaaaaaaa', remoteSha: 'bbbbbbbb', available: true };
+  const portable = update.plan({ manifest, appVersion: '0.2.0', canApplyApp: true, tools: newer });
   assert.equal(portable.app.available, true);
   assert.equal(portable.app.applicable, true);
-  assert.equal(portable.tools.available, true);
+  assert.deepEqual(portable.tools, { installed: true, configured: true, current: 'aaaaaaaa', next: 'bbbbbbbb', available: true, error: '' });
   assert.equal(portable.any, true);
-  // 開発起動では本体は案内だけ。agent-tools が同じ版なら何も無い
-  const dev = update.plan({ manifest, appVersion: '0.2.0', canApplyApp: false, tools: { version: 'b', installed: true } });
+  // 開発起動では本体は案内だけ。agent-tools が最新なら何も無い
+  const dev = update.plan({ manifest, appVersion: '0.2.0', canApplyApp: false, tools: { ...newer, available: false } });
   assert.equal(dev.app.available, true);
   assert.equal(dev.app.applicable, false);
   assert.equal(dev.tools.available, false);
   assert.equal(dev.any, false);
-  // 本体が同じか新しければ本体は無し
-  const same = update.plan({ manifest, appVersion: '0.3.1', canApplyApp: true, tools: { version: 'b', installed: true } });
+  // 本体が同じか新しければ本体は無し。agent-project が無い・更新元が未設定なら agent-tools は無し
+  const same = update.plan({ manifest, appVersion: '0.3.1', canApplyApp: true, tools: { installed: false } });
   assert.equal(same.app.available, false);
+  assert.equal(same.tools.installed, false);
+  assert.equal(same.tools.available, false);
+  const unconfigured = update.plan({ manifest, appVersion: '0.3.1', canApplyApp: true, tools: { installed: true, enabled: false, available: true, error: 'update_repo が未設定です' } });
+  assert.equal(unconfigured.tools.configured, false);
+  assert.equal(unconfigured.tools.available, false);
+  assert.equal(unconfigured.any, false);
 });
 
 test('設定の update は既定で起動時 ON・1 日ごと、間隔と更新元の長さを抑える', () => {
@@ -118,9 +147,9 @@ test('設定の update は既定で起動時 ON・1 日ごと、間隔と更新�
 test('取得は sha256 を照合し、合わなければ置かない', async () => {
   const source = makeSource();
   const manifest = await update.readManifest(source);
-  const dest = path.join(tmp('fetch'), 'agent-tools.tar.gz');
-  await update.fetchToFile(source, manifest.tools, dest);
-  assert.equal(fs.readFileSync(dest, 'utf8'), 'tar 20260914-abc1234');
+  const dest = path.join(tmp('fetch'), 'agent-app.exe');
+  await update.fetchToFile(source, manifest.app, dest);
+  assert.equal(fs.readFileSync(dest, 'utf8'), 'exe 0.3.0');
   const bad = { ...manifest.app, sha256: 'deadbeef' };
   await assert.rejects(update.fetchToFile(source, bad, `${dest}.exe`), /sha256/);
   assert.equal(fs.existsSync(`${dest}.exe`), false);
@@ -138,46 +167,55 @@ test('更新元が無い・読めないときは手動なら断り、自動な�
   assert.ok(broken.posts.some((p) => p.channel === 'update:changed' && p.payload.trigger === 'auto'));
 });
 
-test('確認は manifest とホストの印を突き合わせ、renderer へ知らせる', async () => {
+test('確認は manifest と agent-project update --check を突き合わせ、renderer へ知らせる', async () => {
   const source = makeSource({ notes: '端末の表示を直した' });
-  const { updater, posts, shell } = makeUpdater({ source, shell: fakeShell({ version: '20260901-0000000' }) });
+  const { updater, posts, shell } = makeUpdater({ source, shell: fakeShell() });
   const plan = await updater.check({ manual: true });
   assert.equal(plan.app.next, '0.3.0');
   assert.equal(plan.app.applicable, false);           // linux の開発起動
-  assert.equal(plan.tools.current, '20260901-0000000');
-  assert.equal(plan.tools.next, '20260914-abc1234');
+  assert.equal(plan.tools.current, 'aaaaaaaa');
+  assert.equal(plan.tools.next, 'bbbbbbbb');
   assert.equal(plan.notes, '端末の表示を直した');
-  assert.ok(shell.runs[0].includes('agent-tools.version'));
+  assert.match(shell.runs[0], /agent-project update --check --json/);
   const last = posts.filter((p) => p.channel === 'update:changed').pop();
   assert.equal(last.payload.trigger, 'manual');
   assert.equal(last.payload.plan.tools.available, true);
   assert.ok(last.payload.lastCheckAt > 0);
 });
 
-test('agent-tools の更新はホストで tar を展開して install.sh を叩き、印を書く', async () => {
+test('agent-tools の更新はホストで agent-project update --now --json を叩き、答えで plan を進める', async () => {
   const source = makeSource();
   const { updater, shell } = makeUpdater({ source });
   await assert.rejects(updater.apply({ tools: true }), /先に更新を確認/);
   await updater.check({ manual: true });
   const result = await updater.apply({ tools: true });
-  assert.equal(result.tools, '20260914-abc1234');
-  const script = shell.runs[shell.runs.length - 1];
-  assert.match(script, /tar xzf "\$archive"/);
-  assert.match(script, /bash "\$dir\/tools\/agent-tools\/install.sh" --only agent-flow,agent-herd <\/dev\/null/);
-  assert.match(script, /printf '%s\\n' '20260914-abc1234' > \$HOME\/\.local\/share\/agent-app\/agent-tools\.version/);
+  assert.equal(result.tools, 'bbbbbbbb');
+  assert.equal(shell.runs[shell.runs.length - 1], 'agent-project update --now --json');
   assert.equal(updater.plan.tools.available, false);
-  assert.equal(updater.plan.tools.current, '20260914-abc1234');
+  assert.equal(updater.plan.tools.current, 'bbbbbbbb');
   assert.equal(updater.status().applying, false);
-  assert.equal(fs.readdirSync(path.join(updater.userData, 'updates')).length, 0, '取得した tar は消す');
 });
 
-test('install.sh が失敗したら末尾の出力を添えて断り、印は変えない', async () => {
+test('agent-project の取り込みが失敗したら、その理由を添えて断り、plan は変えない', async () => {
   const source = makeSource();
-  const { updater } = makeUpdater({ source, shell: fakeShell({ version: 'old', installOk: false }) });
+  const { updater } = makeUpdater({ source, shell: fakeShell({ installOk: false }) });
   await updater.check({ manual: true });
-  await assert.rejects(updater.apply({ tools: true }), /agent-tools の更新に失敗しました\n.*install\.sh failed/s);
-  assert.equal(updater.plan.tools.current, 'old');
+  await assert.rejects(updater.apply({ tools: true }), /agent-tools の更新に失敗しました\ninstall\.sh に失敗しました/);
+  assert.equal(updater.plan.tools.current, 'aaaaaaaa');
   assert.equal(updater.plan.tools.available, true);
+});
+
+test('agent-project が無い・更新元が未設定のホストでは agent-tools を出さない', async () => {
+  const source = makeSource();
+  const missing = makeUpdater({ source, shell: fakeShell({ installed: false }) });
+  const p1 = await missing.updater.check({ manual: true });
+  assert.equal(p1.tools.installed, false);
+  assert.equal(p1.tools.available, false);
+  const unconfigured = makeUpdater({ source, shell: fakeShell({ enabled: false }) });
+  const p2 = await unconfigured.updater.check({ manual: true });
+  assert.equal(p2.tools.installed, true);
+  assert.equal(p2.tools.configured, false);
+  assert.equal(p2.tools.available, false);
 });
 
 test('本体の入れ替えは portable 版だけ。新しい exe を隣に置き、入れ替えの cmd を切り離して終了する', async () => {
@@ -188,7 +226,7 @@ test('本体の入れ替えは portable 版だけ。新しい exe を隣に置�
   const dev = makeUpdater({ source, platform: 'win32', portableFile: '' });
   await dev.updater.check({ manual: true });
   await assert.rejects(dev.updater.apply({ app: true }), /先に更新を確認|この起動形態/);
-  const { updater, posts } = makeUpdater({ source, platform: 'win32', portableFile, shell: fakeShell({ version: '20260914-abc1234' }) });
+  const { updater, posts } = makeUpdater({ source, platform: 'win32', portableFile, shell: fakeShell({ available: false }) });
   const plan = await updater.check({ manual: true });
   assert.equal(plan.app.applicable, true);
   assert.equal(plan.tools.available, false);
@@ -230,35 +268,22 @@ test('起動時と定期の確認は設定に従う', async () => {
   assert.equal(updater.lastCheckAt, checkedAt);
 });
 
-test('publish-update は portable 版と tools/ の tar を写し、manifest に版と sha256 を書く', () => {
+test('publish-update は portable 版を写し、manifest に版と sha256 を書く', () => {
   const dest = tmp('dest');
   const exe = path.join(tmp('exe'), 'agent-app.exe');
   fs.writeFileSync(exe, 'portable exe');
-  const manifest = publish.publish({ dest, app: true, tools: true, notes: '試験', exe });
+  const manifest = publish.publish({ dest, notes: '試験', exe });
   const pkg = require('../package.json');
   assert.equal(manifest.app.version, pkg.version);
   assert.equal(manifest.app.file, `agent-app-${pkg.version}.exe`);
   assert.equal(manifest.app.sha256, sha(Buffer.from('portable exe')));
-  assert.match(manifest.tools.version, /^\d{8}-[0-9a-f]{7,}$/);
-  assert.equal(manifest.tools.file, `agent-tools-${manifest.tools.version}.tar.gz`);
-  const tar = path.join(dest, manifest.tools.file);
-  assert.equal(manifest.tools.sha256, sha(fs.readFileSync(tar)));
-  const listing = execFileSync('tar', ['tzf', tar], { encoding: 'utf8' });
-  assert.match(listing, /^tools\/agent-tools\/install\.sh$/m);
-  assert.match(listing, /^tools\/agent-flow\//m);
-  assert.match(listing, /^tools\/agent-loop\/install\.sh$/m);
-  assert.match(listing, /^tools\/agent-tools\/agentcore\//m);
-  assert.match(listing, /^agents\/[^/]+\.json$/m, 'CLI 定義も配る');
-  assert.match(listing, /^commands\//m);
-  assert.doesNotMatch(listing, /^tools\/agent-project\//m, 'agent-app が呼ばないものは入れない');
-  assert.doesNotMatch(listing, /^tools\/agent-app\//m);
+  assert.equal(fs.readFileSync(path.join(dest, manifest.app.file), 'utf8'), 'portable exe');
+  assert.equal(manifest.tools, undefined, 'agent-tools は git（agent-project の自己更新）で配る');
   // 受け手がそのまま読める
   const read = update.normalizeManifest(JSON.parse(fs.readFileSync(path.join(dest, 'manifest.json'), 'utf8')));
   assert.equal(read.app.version, pkg.version);
   assert.equal(read.notes, '試験');
-  // 片方だけ置き直すと、もう片方は前の manifest から引き継ぐ
-  const again = publish.publish({ dest, app: false, tools: true });
-  assert.deepEqual(again.app, manifest.app);
   assert.throws(() => publish.parseArgs([]), /使い方/);
-  assert.deepEqual(publish.parseArgs(['X', '--tools-only', '--notes', 'n']), { dest: 'X', app: false, tools: true, notes: 'n', exe: '' });
+  assert.throws(() => publish.publish({ dest, exe: path.join(dest, 'none.exe') }), /portable 版がありません/);
+  assert.deepEqual(publish.parseArgs(['X', '--notes', 'n']), { dest: 'X', notes: 'n', exe: '' });
 });

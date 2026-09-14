@@ -72,12 +72,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   process.env.AGENT_APP_FLOW_BUS = flowBus;
   // 別のリポジトリへの分岐を実機で通すための 2 つ目のリポジトリ
   const otherRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-shared-lib-'));
-  // 更新元（共有フォルダの代わりの一時フォルダ）。本体は新しい版、agent-tools は印が無いので「更新あり」
+  // 更新元（共有フォルダの代わりの一時フォルダ）。本体は新しい版。agent-tools は偽の agent-project が
+  // 「新しいコミットがある」と答える（下の fakeBin）
   const updateSource = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-update-source-'));
   const publishUpdate = require('../scripts/publish-update');
   const fakeExe = path.join(updateSource, 'built.exe');
   fs.writeFileSync(fakeExe, 'portable exe');
-  publishUpdate.publish({ dest: updateSource, app: true, tools: true, exe: fakeExe, notes: '端末の表示を直した' });
+  publishUpdate.publish({ dest: updateSource, exe: fakeExe, notes: '端末の表示を直した' });
   const published = JSON.parse(fs.readFileSync(path.join(updateSource, 'manifest.json'), 'utf8'));
   published.app.version = '99.0.0';
   fs.writeFileSync(path.join(updateSource, 'manifest.json'), JSON.stringify(published));
@@ -148,7 +149,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-fakebin-'));
   fs.writeFileSync(path.join(fakeBin, 'agent-herd'), '#!/bin/sh\nexit 0\n');
   fs.writeFileSync(path.join(fakeBin, 'agent-flow'), '#!/bin/sh\ncase "$1" in patterns) echo "[]";; esac\nexit 0\n');
-  for (const name of ['agent-herd', 'agent-flow']) fs.chmodSync(path.join(fakeBin, name), 0o755);
+  // 自動更新の確認先。update --check --json に「新しいコミットがある」と答える
+  fs.writeFileSync(path.join(fakeBin, 'agent-project'), '#!/bin/sh\ncase "$1 $2" in "update --check") echo \'{"enabled":true,"repo":"/mnt/x/sandbox.git","branch":"main","applied_sha":"aaaaaaaa1111","remote_sha":"bbbbbbbb2222","available":true,"baseline":false,"applied":false,"error":""}\';; esac\nexit 0\n');
+  for (const name of ['agent-herd', 'agent-flow', 'agent-project']) fs.chmodSync(path.join(fakeBin, name), 0o755);
   const electron = await pw._electron.launch({
     executablePath: binary,
     args: [APP, '--no-sandbox', `--user-data-dir=${userData}`],
@@ -321,12 +324,12 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#app-update[open]').waitFor({ timeout: 30000 });
     assert.strictEqual(await win.locator('#update-app-row').isHidden(), true, '開発起動では本体の入れ替えを出さない');
     assert.strictEqual(await win.locator('#update-tools-row').isVisible(), true);
-    assert.match(await win.textContent('#update-tools-detail'), /→ \d{8}-[0-9a-f]+/);
+    assert.match(await win.textContent('#update-tools-detail'), /aaaaaaaa → bbbbbbbb/);
     assert.match(await win.textContent('#update-notes'), /端末の表示を直した/);
     if (process.env.AGENT_APP_UPDATE_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_UPDATE_SCREENSHOT });
     await win.click('#update-later');
     assert.strictEqual(await win.locator('#app-update').getAttribute('open'), null);
-    assert.match(await win.textContent('#update-status'), /新しい版: Agent App 99\.0\.0（この起動形態では手動で入れ替え） \/ agent-tools \d{8}-[0-9a-f]+ · .* 確認/);
+    assert.match(await win.textContent('#update-status'), /新しい版: Agent App 99\.0\.0（この起動形態では手動で入れ替え） \/ agent-tools bbbbbbbb · .* 確認/);
     await win.click('#settings-close');
 
     // 親画面のポップアップは、メニュー外の背景をクリックすると閉じる。

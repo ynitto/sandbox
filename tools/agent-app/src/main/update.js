@@ -6,7 +6,6 @@
 //   更新元/
 //     manifest.json             … scripts/publish-update.js が書く（版・ファイル名・sha256）
 //     agent-app-<版>.exe        … npm run dist:portable の成果物
-//     agent-tools-<版>.tar.gz   … リポジトリの tools/ を git archive したもの（WSL 側の agent-tools）
 //
 // 確認は 3 つの契機（起動時・定期・手動）で同じ check() を呼ぶだけで、**取り込みは apply() を
 // 利用者が押したときだけ**行う。黙って差し替えない。
@@ -17,21 +16,21 @@
 // （process.execPath は一時展開先なので使わない）。それ以外の起動形態（開発起動・NSIS 版）では
 // 本体の更新は案内だけにとどめ、agent-tools の更新だけを行う。
 //
-// agent-tools は CLI と同じホスト（Windows なら WSL）で tar を展開して install.sh を叩く。入れ直すのは
-// agent-app が呼ぶ 3 本（agent-herd / agent-loop / agent-flow）だけで、agent-project などは触らない。
-// 入れた版は $HOME/.local/share/agent-app/agent-tools.version に残し、次の確認はそれと比べる。
+// agent-tools（WSL 側の一族）は agent-project の自己更新（git のリポジトリから sparse-checkout して
+// install.sh）に乗る。ここは CLI と同じホスト（Windows なら WSL）で
+// `agent-project update --check --json` / `--now --json` を叩いて結果を読むだけで、更新元（git の
+// 置き場）も版（コミット SHA）も agent-project 側が持つ。二重に持たない。
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
-const { sq } = require('./host');
 
 const MANIFEST = 'manifest.json';
-const TOOLS_STAMP = '$HOME/.local/share/agent-app/agent-tools.version';
 const FETCH_TIMEOUT_MS = 30000;
-const TOOLS_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
+const TOOLS_CHECK_TIMEOUT_MS = 90000;             // git ls-remote（共有フォルダの bare か社内の git）
+const TOOLS_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;  // sparse-checkout + install.sh
 const MAX_REDIRECTS = 5;
 
 // ---- 版の比較 -------------------------------------------------------------------
@@ -117,7 +116,6 @@ function normalizeManifest(raw) {
   const m = raw && typeof raw === 'object' ? raw : {};
   return {
     app: entry(m.app),
-    tools: entry(m.tools),
     notes: String(m.notes || '').trim().slice(0, 400),
     publishedAt: String(m.publishedAt || '').trim(),
   };
@@ -174,14 +172,20 @@ async function fetchToFile(source, item, dest) {
 //   manifest       … normalizeManifest の結果
 //   appVersion     … いま動いている本体の版
 //   canApplyApp    … 本体を入れ替えられる起動形態か（Windows の portable 版）
-//   tools          … { version, installed }（ホストで読んだ印と、3 本のどれかが PATH にあるか）
+//   tools          … parseToolsReport の結果（agent-project update --check --json）
 function plan({ manifest, appVersion, canApplyApp, tools }) {
   const m = manifest || {};
   const app = { current: String(appVersion || ''), next: '', available: false, applicable: !!canApplyApp };
   if (m.app && compareVersions(m.app.version, appVersion) > 0) { app.next = m.app.version; app.available = true; }
   const t = tools || {};
-  const toolsPlan = { current: String(t.version || ''), installed: !!t.installed, next: '', available: false, applicable: true };
-  if (m.tools && m.tools.version !== toolsPlan.current) { toolsPlan.next = m.tools.version; toolsPlan.available = true; }
+  const toolsPlan = {
+    installed: !!t.installed,
+    configured: !!t.enabled,
+    current: t.appliedSha || '',
+    next: t.available ? t.remoteSha : '',
+    available: !!(t.installed && t.enabled && t.available),
+    error: t.error || '',
+  };
   return {
     app,
     tools: toolsPlan,
@@ -238,43 +242,38 @@ function applyScript({ target, staged, pid, log }) {
   ].join('\r\n');
 }
 
-// ---- agent-tools（ホスト側）---------------------------------------------------------
+// ---- agent-tools（ホスト側。agent-project の自己更新に乗る）------------------------------
 
-// agent-app が呼ぶ 3 本。install.sh の --only で入れ直す対象（agent-loop は install.sh が常に一緒に入れ直す）
-const TOOLS = ['agent-herd', 'agent-loop', 'agent-flow'];
-const INSTALL_ONLY = 'agent-flow,agent-herd';
-
-// ホストの印と 3 本の有無を 1 回で読む
-function toolsProbeScript() {
-  const probes = TOOLS.map((name) => `${name}=%s`).join('\\n');
-  const args = TOOLS.map((name) => `"$(command -v ${name} || true)"`).join(' ');
-  return `printf 'version=%s\\n${probes}\\n' "$(cat ${TOOLS_STAMP} 2>/dev/null | head -1 || true)" ${args}`;
+// agent-project が無いホストでは JSON の代わりに固定の 1 行を出す（installed: false）。
+function toolsCheckScript() {
+  return `if command -v agent-project >/dev/null 2>&1; then agent-project update --check --json; else echo '{"installed":false}'; fi`;
 }
 
-function parseToolsProbe(output) {
-  const info = { version: '', installed: false };
-  for (const line of String(output || '').split('\n')) {
-    const m = line.match(/^(version|agent-herd|agent-loop|agent-flow)=(.*)$/);
-    if (!m) continue;
-    if (m[1] === 'version') info.version = m[2].trim();
-    else if (m[2].trim()) info.installed = true;
+function toolsApplyScript() {
+  return 'agent-project update --now --json';
+}
+
+// 出力の最後の行が JSON（取り込みの経過 [update] … が先に出ることがある）。
+//   { installed, enabled, appliedSha, remoteSha, available, applied, error }
+function parseToolsReport(output) {
+  const lines = String(output || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const last = lines.length ? lines[lines.length - 1] : '';
+  let raw = null;
+  try { raw = JSON.parse(last); } catch { raw = null; }
+  if (!raw || typeof raw !== 'object') {
+    return { installed: true, enabled: false, appliedSha: '', remoteSha: '', available: false, applied: false, error: lines.slice(-4).join('\n') || '応答がありません' };
   }
-  return info;
-}
-
-// tar を展開して install.sh を叩き、成功したら印を書く。archive はホスト表記（/mnt/c/… など）。
-function toolsInstallScript({ archive, version }) {
-  return [
-    'set -e',
-    `archive=${sq(archive)}`,
-    'dir="$(mktemp -d "${TMPDIR:-/tmp}/agent-tools-update.XXXXXX")"',
-    'tar xzf "$archive" -C "$dir"',
-    'test -f "$dir/tools/agent-tools/install.sh" || { echo "配布物に tools/agent-tools/install.sh がありません"; exit 1; }',
-    `bash "$dir/tools/agent-tools/install.sh" --only ${INSTALL_ONLY} </dev/null`,
-    `mkdir -p "$(dirname ${TOOLS_STAMP})"`,
-    `printf '%s\\n' ${sq(version)} > ${TOOLS_STAMP}`,
-    'rm -rf "$dir"',
-  ].join('\n');
+  if (raw.installed === false) return { installed: false, enabled: false, appliedSha: '', remoteSha: '', available: false, applied: false, error: '' };
+  const short = (v) => String(v || '').slice(0, 8);
+  return {
+    installed: true,
+    enabled: !!raw.enabled,
+    appliedSha: short(raw.applied_sha),
+    remoteSha: short(raw.remote_sha),
+    available: !!raw.available,
+    applied: !!raw.applied,
+    error: String(raw.error || ''),
+  };
 }
 
 // ---- まとめ役 -------------------------------------------------------------------
@@ -345,8 +344,8 @@ class Updater {
     this.notifyChanged();
     try {
       const manifest = await readManifest(cfg.source);
-      const probe = await this.shellFor(cfg.distro).run(toolsProbeScript(), { timeoutMs: 20000 });
-      const tools = probe.ok ? parseToolsProbe(probe.output) : { version: '', installed: false, error: probe.error };
+      const probe = await this.shellFor(cfg.distro).run(toolsCheckScript(), { timeoutMs: TOOLS_CHECK_TIMEOUT_MS });
+      const tools = parseToolsReport(probe.output || probe.error);
       this.manifest = manifest;
       this.plan = plan({ manifest, appVersion: this.appVersion, canApplyApp: this.canApplyApp(), tools });
       this.lastError = '';
@@ -378,21 +377,17 @@ class Updater {
     const result = { tools: '', app: '' };
     this.applying = true;
     try {
-      if (doTools && this.plan.tools.available && this.manifest.tools) {
-        const item = this.manifest.tools;
-        this.step(`agent-tools ${item.version} を取得しています…`);
-        const archive = await fetchToFile(cfg.source, item, path.join(dir, item.file));
+      if (doTools && this.plan.tools.available) {
         this.step('agent-tools を入れ直しています（数分かかります）…');
-        const { toHostPath } = require('./host');
-        const r = await this.shellFor(cfg.distro).run(toolsInstallScript({ archive: toHostPath(archive), version: item.version }), { timeoutMs: TOOLS_INSTALL_TIMEOUT_MS });
-        try { fs.unlinkSync(archive); } catch { /* 残っても次で上書き */ }
-        if (!r.ok) {
+        const r = await this.shellFor(cfg.distro).run(toolsApplyScript(), { timeoutMs: TOOLS_INSTALL_TIMEOUT_MS });
+        const report = parseToolsReport(r.output || r.error);
+        if (!r.ok || !report.applied) {
           const tail = String(r.output || r.error || '').split('\n').filter(Boolean).slice(-8).join('\n');
-          throw new Error(`agent-tools の更新に失敗しました\n${tail}`);
+          throw new Error(`agent-tools の更新に失敗しました\n${report.error || tail}`);
         }
-        this.plan = { ...this.plan, tools: { ...this.plan.tools, current: item.version, next: '', available: false, installed: true } };
+        this.plan = { ...this.plan, tools: { ...this.plan.tools, current: report.appliedSha, next: '', available: false, error: '' } };
         this.plan.any = this.plan.app.available && this.plan.app.applicable;
-        result.tools = item.version;
+        result.tools = report.appliedSha;
       }
       if (doApp && this.plan.app.available && this.manifest.app) {
         if (!this.canApplyApp()) throw new Error('この起動形態では本体を入れ替えられません（portable 版だけ）');
@@ -445,6 +440,6 @@ class Updater {
 }
 
 module.exports = {
-  MANIFEST, TOOLS_STAMP, TOOLS, INSTALL_ONLY, compareVersions, sourceKind, joinSource, normalizeManifest, readManifest, fetchToFile, sha256Of,
-  plan, applyScript, toolsProbeScript, parseToolsProbe, toolsInstallScript, Updater,
+  MANIFEST, compareVersions, sourceKind, joinSource, normalizeManifest, readManifest, fetchToFile, sha256Of,
+  plan, applyScript, toolsCheckScript, toolsApplyScript, parseToolsReport, Updater,
 };

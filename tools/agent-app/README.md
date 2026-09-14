@@ -94,37 +94,39 @@ npm run dist:portable    # portable だけ
 
 ### 配って更新する（自動更新）
 
-外部サービスは使わない。**更新元**（みんなが読める共有フォルダ、または社内の HTTP）に配布物を置き、
-各 PC の agent-app がそこを見に行く。ビルドと配置は手元で行う（CI は要らない）。
+外部サービスは使わない。本体（exe）は**更新元**（みんなが読める共有フォルダ、または社内の HTTP）に
+置き、WSL 側の agent-tools は **agent-project の自己更新**（git のリポジトリから取り込む）に乗せる。
+ビルドと配置は手元で行う（CI は要らない）。
 
 ```bash
 cd tools/agent-app
 npm run dist:portable                                   # release/agent-app.exe
-npm run publish:update -- \\server\share\agent-app      # exe と agent-tools の tar を写し、manifest.json を書く
-npm run publish:update -- \\server\share\agent-app --tools-only --notes "端末の表示を直した"
+npm run publish:update -- \\server\share\agent-app      # exe を写し、manifest.json を書く
+npm run publish:update -- \\server\share\agent-app --notes "端末の表示を直した"
 ```
 
-更新元に置かれるのは `manifest.json`（版・ファイル名・sha256）、`agent-app-<版>.exe`（版は
-`package.json` の `version`。**上げてから**ビルドする）、`agent-tools-<版>.tar.gz`（agent-app が呼ぶ
-**agent-herd / agent-loop / agent-flow** の元（`tools/agent-tools` `tools/agent-flow` `tools/agent-loop`）と、
-それらが読む CLI 定義 `agents/`・用途コマンド `commands/` を HEAD から `git archive` したもの。版は日付と短い SHA）。
-片方だけ置き直すときは、もう片方の項目を前の `manifest.json` から引き継ぐ。
+更新元に置かれるのは `manifest.json`（版・ファイル名・sha256）と `agent-app-<版>.exe`（版は
+`package.json` の `version`。**上げてから**ビルドする）の 2 つ。
 
-受け手は「設定 > アプリ」で更新元を入れる。確認は **起動時**（既定 ON）、**定期**（既定 1 日ごと）、
-**「今すぐ確認」** の 3 つで、見つかった分は 1 つのダイアログに並び、**「更新する」を押した分だけ**
-取り込む（黙って入れ替えない。「あとで」で閉じた内容は次の起動まで自動では出さない）。
+agent-tools の送り手は **git push だけ**。外部サービスを使わないなら、共有フォルダに bare リポジトリを
+置いて（`git clone --bare <このリポジトリ> \\server\share\sandbox.git`、以後 `git push`）、各 PC の WSL で
+agent-project の設定（`~/.agents/agent-project.yaml`）の `update_repo` に `/mnt/<ドライブ>/…/sandbox.git`
+（`net use` したドライブ）や社内 git の URL を書く。取り込む範囲は agent-project の既定で**一族まとめて**
+（4 エンジン + agent-herd + agent-loop と `agents/` `commands/`。agent-project の README「自動アップデート」）。
+
+受け手は「設定 > アプリ」で更新元（exe の置き場）を入れる。確認は **起動時**（既定 ON）、**定期**（既定
+1 日ごと）、**「今すぐ確認」** の 3 つで、見つかった分は 1 つのダイアログに並び、**「更新する」を押した
+分だけ**取り込む（黙って入れ替えない。「あとで」で閉じた内容は次の起動まで自動では出さない）。
 
 | 対象 | 何をするか | できる形態 |
 |---|---|---|
-| Agent App 本体 | 新しい exe を隣に置き、終了後に入れ替えて起動し直す（動いている exe は自分で上書きできないので、小さな cmd を切り離して走らせる） | Windows の **portable 版**だけ。開発起動や NSIS 版では案内だけ出す |
-| agent-tools | CLI と同じホスト（Windows なら WSL）で tar を展開し、`tools/agent-tools/install.sh --only agent-flow,agent-herd`（agent-loop も一緒に入る）を叩く。入れた版は `~/.local/share/agent-app/agent-tools.version` に残す | どの形態でも |
+| Agent App 本体 | 更新元の exe を隣に置き、終了後に入れ替えて起動し直す（動いている exe は自分で上書きできないので、小さな cmd を切り離して走らせる） | Windows の **portable 版**だけ。開発起動や NSIS 版では案内だけ出す |
+| agent-tools | CLI と同じホスト（Windows なら WSL）で `agent-project update --check --json` を叩いて有無を見て、承認後に `agent-project update --now --json` で取り込む（sparse-checkout → `install.sh`）。物差しはコミット SHA で、agent-app は印を持たない | agent-project が WSL に入っていて `update_repo` が解決できるとき。無ければ行を出さない・「更新元の設定なし」と出す |
 
-入れ直すのは agent-app が呼ぶ 3 本だけで、同じ PC にある agent-project などのエンジンは触らない
-（それらは agent-project 自身の自己更新に任せる。物差しが別なので、agent-app はそちらを見ない）。
-
-取得したファイルは sha256 を照合してから使う。入れ替えに失敗したら元の exe で起動し直し、経過は
-`%TEMP%\agent-app-update.log` に残る。agent-tools の `install.sh` が失敗したときは、その出力の末尾を
-ダイアログに出し、版の印は変えない。
+取得した exe は sha256 を照合してから使う。入れ替えに失敗したら元の exe で起動し直し、経過は
+`%TEMP%\agent-app-update.log` に残る。agent-project の取り込みが失敗したときは、その理由（JSON の
+`error`）をダイアログに出す。常駐の agent-project が動いている PC では、常駐自身も 6 時間ごとに同じ
+更新を見に行く（同じ SHA なら二重には適用しない）。
 
 ### 前提
 

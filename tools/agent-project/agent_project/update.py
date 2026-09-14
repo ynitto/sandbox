@@ -317,9 +317,32 @@ def maybe_self_update(cfg: "Config", runner=None) -> bool:
     return apply_update(cfg, info, runner=runner)
 
 
-def cmd_update(cfg: "Config", now: bool = False, check: bool = False) -> int:
+def update_report(info: dict, applied: "bool | None" = None, error: str = "") -> dict:
+    """`update --json` の 1 行。agent-app など機械が読む相手向けに、check_update の結果を
+    そのまま JSON 化できる形（None を含まない）へ写す。applied は取り込みを試みたときだけ真偽。"""
+    return {
+        "enabled": bool(info.get("enabled")),
+        "repo": info.get("repo") or "",
+        "branch": info.get("branch") or "",
+        "applied_sha": info.get("applied_sha") or "",
+        "remote_sha": info.get("remote_sha") or "",
+        "available": bool(info.get("available")),
+        "baseline": bool(info.get("baseline")),
+        "applied": bool(applied) if applied is not None else False,
+        "error": error,
+    }
+
+
+def cmd_update(cfg: "Config", now: bool = False, check: bool = False, as_json: bool = False) -> int:
     """手動アップデート: 更新の有無を確認し、--now で取り込んで再起動する。
-    終了コード: 0=最新/ベースライン記録/更新あり表示 / 1=取り込み失敗 / 2=未設定・取得不能。"""
+    終了コード: 0=最新/ベースライン記録/更新あり表示 / 1=取り込み失敗 / 2=未設定・取得不能。
+
+    --json は機械向け（agent-app が WSL で叩く）: 結果を**最後の 1 行**の JSON で出し（取り込みの
+    経過 `[update] …` が先に出ることがある）、**再起動しない**
+    （一回実行の update を execv で起動し直しても、同じ update をもう一度回すだけで意味が無く、
+    出力も 2 度出て読めなくなる）。常駐の自己更新（maybe_self_update）はこの関数を通らない。"""
+    if as_json:
+        return _cmd_update_json(cfg, now)
     info = check_update(cfg)
     if not info["enabled"]:
         print("[agent-project] update: update_repo が未設定です（設定ファイルで指定してください）。",
@@ -348,4 +371,26 @@ def cmd_update(cfg: "Config", now: bool = False, check: bool = False) -> int:
         print("  本体（update_subdir）に変更が無かったため適用をスキップし、ベースラインだけ進めました。")
         return 0
     print("  更新の取り込みに失敗しました（ログを確認してください）。", file=sys.stderr)
+    return 1
+
+
+def _cmd_update_json(cfg: "Config", now: bool) -> int:
+    info = check_update(cfg)
+    if not info["enabled"]:
+        print(json.dumps(update_report(info, error="update_repo が未設定です"), ensure_ascii=False))
+        return 2
+    if info["remote_sha"] is None:
+        print(json.dumps(update_report(info, error=f"リモート {info['repo']}@{info['branch']} を取得できませんでした"),
+                         ensure_ascii=False))
+        return 2
+    if not now or not info["available"]:
+        print(json.dumps(update_report(info), ensure_ascii=False))
+        return 0
+    ok = apply_update(cfg, info)
+    if ok or read_update_state().get("applied_sha") == info.get("remote_sha"):
+        after = check_update(cfg)
+        print(json.dumps(update_report(after, applied=True), ensure_ascii=False))
+        return 0
+    print(json.dumps(update_report(info, applied=False, error="install.sh に失敗しました（journal を確認）"),
+                     ensure_ascii=False))
     return 1
