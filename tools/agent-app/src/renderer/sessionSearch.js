@@ -59,7 +59,7 @@ const SessionSearch = (() => {
     // （前に読んだ分を索引から返したかどうかは、利用者には速さとしてだけ現れる）。
     if (running) text = pool ? `${number(scanned)} / ${number(pool)} 件を調査 · ${number(matched)} 件一致` : '会話を検索しています…';
     else if (matched) text = `${number(pool)} 件から ${number(matched)} 件一致`;
-    else text = pool ? `${number(pool)} 件を調べましたが、条件に合う会話はありません` : '条件に合う会話がありません';
+    else text = pool ? `該当なし（${number(pool)} 件を検索）` : '該当する会話なし';
     if (capped) text += ' · 表示はここまでです。条件を絞ってください';
     if (partial) text += '（取得できた範囲）';
     if (errors) text += ` · ${errors}件の取得エラー（詳細を確認）`;

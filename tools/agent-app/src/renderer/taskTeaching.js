@@ -30,7 +30,7 @@
   const RECORD_LABEL = { open: 'ブラウザを開く', start: '記録を始める', stop: '終了してAIへ渡す' };
   const RECORD_PROGRESS = { open: 'ブラウザを開いています…', start: '記録を始めています…' };
   // 入力欄に入れた段が、送られるのを待っているときの案内（入力欄の状態行に出す）。
-  const AWAITING_SEND = '文面を確かめて「送信」を押してください';
+  const AWAITING_SEND = '内容を確認して送信';
 
   const state = {
     deps: null, visible: false, repo: '', machine: '', title: '', context: '', agent: '', creating: false, editing: false, card: false, published: false,
@@ -351,7 +351,7 @@
       onRecordingSent(text);
     } catch (err) {
       error(err.message);
-      status('error', '送信できませんでした。入力は残っています');
+      status('error', '送信失敗（入力は保持）');
     }
   }
 

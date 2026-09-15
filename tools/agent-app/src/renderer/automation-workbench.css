@@ -52,3 +52,7 @@
   :host .editing-target { width: 100%; }
   :host .editing-target select { flex: 1; min-width: 0; max-width: none; }
 }
+
+:host .teaching-create, :host .manual-task-create { width: min(100%, 760px); margin-inline: auto; text-align: left; padding: 28px 20px; box-sizing: border-box; }
+:host .teaching-create h2 { margin: 0 0 24px; }
+:host .manual-task-create { display: grid; gap: 16px; }

@@ -524,7 +524,7 @@ async function recordWindowsStop({ timeoutMs = 15000 } = {}) {
   for (const f of [rec.out, rec.stop]) { try { rec.fsImpl.unlinkSync(f); } catch { /* 残っても害は無い */ } }
   if (!raw.trim()) {
     const why = (exit.stderr || '').split(/\r?\n/).filter(Boolean).slice(-2).join(' / ');
-    throw new Error(`記録が空です${why ? `（${why}）` : ''}。winauto が動く Windows 上で記録してください`);
+    throw new Error(`操作の記録がありません${why ? `（${why}）` : ''}。winauto が動く Windows 上で記録してください`);
   }
   return stepsFromRecording({ source: 'windows', text: raw, app: rec.app });
 }

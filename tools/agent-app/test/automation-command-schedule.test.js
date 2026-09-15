@@ -19,13 +19,13 @@ function fixture() {
     loadExecutionSnapshot: async () => {}, notifyHost() {}, toast() {},
     selectedAgent: () => { throw new Error('command must not use AI settings'); },
   });
-  vm.runInContext(source.slice(source.indexOf('function commandAddButtonHtml('), source.indexOf('async function toggleDaemon(')), ctx);
+  vm.runInContext(source.slice(source.indexOf('function manualTaskHtml('), source.indexOf('async function toggleDaemon(')), ctx);
   return { ctx, state, calls };
 }
 
 test('new command schedule saves without AI settings and keeps typed values across frequency changes', async () => {
   const { ctx, state, calls } = fixture();
-  ctx.newCommandSchedule();
+  ctx.createManualTask();
   const draft = ctx.ensureScheduleDraft(state.execution.newCommand);
   const fields = {};
   for (const id of ['schedule-command', 'schedule-timeout', 'schedule-kind']) {
@@ -100,16 +100,16 @@ test('WSLの状態取得待ち・失敗でもコマンド作成フォームを�
   for (const snapshot of [null, { available: false }, { available: true }]) {
     const { ctx, state } = fixture();
     state.execution.snapshot = snapshot;
-    assert.doesNotMatch(ctx.commandAddButtonHtml(), /disabled/);
-    ctx.newCommandSchedule();
+    ctx.createManualTask();
+    assert.equal(state.homeTab, 'manual');
+    assert.match(ctx.manualTaskHtml(), /id="schedule-command"/);
     assert.equal(state.execution.newCommand.kind, 'command');
     assert.equal(state.execution.scheduleOpen, true);
     assert.match(ctx.scheduleEditorHtml(state.execution.newCommand), /id="schedule-command"/);
   }
   const { ctx, state } = fixture();
   state.root = '';
-  assert.match(ctx.commandAddButtonHtml(), /disabled/);
-  ctx.newCommandSchedule();
+  ctx.createManualTask();
   assert.equal(state.execution.newCommand, undefined);
 });
 

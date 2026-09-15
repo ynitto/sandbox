@@ -183,7 +183,7 @@ function turnSpec(sess, p) {
   const readonly = p.readonly != null ? Boolean(p.readonly) : Boolean(sess.readonly);
   const autoApprove = p.autoApprove != null ? Boolean(p.autoApprove) : Boolean(sess.autoApprove);
   const text = String(p.prompt || '').trim();
-  if (!text && !(p.attachments || []).length) throw new Error('依頼が空です');
+  if (!text && !(p.attachments || []).length) throw new Error('依頼内容を入力してください');
   return { cli, model, readonly, autoApprove, text };
 }
 
@@ -1388,7 +1388,7 @@ function registerIpcHandlers(getWindow) {
     const repo = requireRepo(p.repo);
     if (repo === origin.repo) throw new Error('分岐先には別のリポジトリを選んでください');
     const prompt = String(p.prompt || '').trim();
-    if (!prompt) throw new Error('分岐先へ送る依頼が空です');
+    if (!prompt) throw new Error('分岐先への依頼を入力してください');
     const created = store.createSession(ud, {
       repo, cli: origin.cli, model: origin.model, policy: origin.policy, tier: origin.tier,
       readonly: origin.readonly, autoApprove: origin.autoApprove, transport: origin.transport, worktree: '',

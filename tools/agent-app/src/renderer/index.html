@@ -25,6 +25,10 @@
 
       <button type="button" id="session-search-open" class="quiet row"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><span>会話を検索</span></button>
       <nav id="areas" class="app-menu" aria-label="主要メニュー">
+        <button type="button" id="area-inbox">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 13V6h16v7M4 13l2 5h12l2-5M4 13h5l1 2h4l1-2h5"/></svg>
+          <span>受信箱</span>
+        </button>
         <button type="button" id="area-work" class="on" aria-current="page">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 10h8M8 14h5M5 19l1.2-3.2A7 7 0 1 1 19 12a7 7 0 0 1-7 7z"/></svg>
           <span>会話</span>
@@ -40,10 +44,6 @@
         <button type="button" id="area-share">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM6 15a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm12 0a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM11 9 7 15m6-6 4 6M8 17h8"/></svg>
           <span>共有</span>
-        </button>
-        <button type="button" id="area-inbox">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 13V6h16v7M4 13l2 5h12l2-5M4 13h5l1 2h4l1-2h5"/></svg>
-          <span>受信箱</span>
         </button>
       </nav>
 
@@ -317,6 +317,7 @@
                   </div></div>
                 </details>
                 <span class="spacer"></span>
+                <button type="button" id="task-create-manual">手動で作成</button>
                 <button type="button" id="task-create-start" class="primary">作成開始</button>
               </div>
               <p id="task-create-error" class="dlg-error" hidden></p>
@@ -407,11 +408,12 @@
           <div slot="flow-teaching" id="flow-teaching" hidden>
             <div id="flow-teach-session-actions" class="teach-start-toolbar" hidden><span class="spacer"></span><button type="button" id="flow-teach-new-session" class="small">新しいセッションで編集</button></div>
             <section id="flow-teach-launch" class="teaching-create-form" hidden>
-              <div id="flow-teach-create" class="teaching-create-form" hidden>
+              <div id="flow-teach-create" class="teaching-create-fields" hidden>
+                <label class="task-save-name" for="flow-teach-save-name"><strong>保存名</strong><input id="flow-teach-save-name" placeholder="未指定なら自動で決定" size="28"></label>
                 <label class="task-create-label" for="flow-teach-purpose"><strong>実現したいこと</strong></label>
                 <textarea id="flow-teach-purpose" rows="6" placeholder="例: 変更依頼を調査し、並列に実装して、品質を確認したい"></textarea>
               </div>
-              <div class="teach-start-toolbar">
+              <div class="task-actions">
                 <div id="flow-teach-heading"><strong>下書きの編集を続ける</strong></div>
                 <details class="run-settings teach-execution-settings">
                   <summary><span id="flow-teach-settings-summary"></span></summary>
@@ -422,6 +424,7 @@
                   </div></div>
                 </details>
                 <span class="spacer"></span>
+                <button type="button" id="flow-teach-manual" hidden>手動で作成</button>
                 <button type="button" id="flow-teach-start" class="primary">編集開始</button>
               </div>
               <p id="flow-teach-create-error" class="dlg-error" role="alert" hidden></p>

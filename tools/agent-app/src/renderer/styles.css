@@ -399,7 +399,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 }
 .run-settings > summary { min-height: 36px; display: flex; align-items: center; padding: 7px 10px; border-radius: 8px; color: var(--muted); white-space: nowrap; cursor: pointer; list-style: none; }
 .run-settings > summary::before { content: ''; width: 7px; height: 7px; margin-right: 8px; flex: none; border-radius: 50%; background: var(--ok); }
-.run-settings > summary::after { content: '⌄'; flex: none; margin-left: 6px; color: var(--muted); }
+.run-settings > summary::after { content: ''; width: 10px; height: 10px; flex: none; margin: -5px 3px 0 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); }
 .run-settings > summary > span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .run-settings > summary:hover { color: var(--text); background: #f1f3f5; }
 .settings-popover { position: absolute; z-index: 35; bottom: calc(100% + 8px); left: 0; width: min(380px, calc(100vw - 36px)); padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 14px 36px rgba(31, 35, 40, .16); }
@@ -442,7 +442,9 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .tree .row { width: 100%; display: flex; align-items: center; gap: 4px; padding: 2px 6px; border: 0; border-radius: 4px; color: var(--text); background: transparent; font: inherit; white-space: nowrap; text-align: left; cursor: pointer; }
 .tree .row:hover { background: #f3f4f6; }
 .tree .row.active { background: var(--accent-bg); }
-.tree .arrow { width: 12px; flex: none; color: var(--muted); font-size: 11px; }
+.tree .arrow { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--muted); }
+.tree .arrow.is-folder::before { content: ""; width: 9px; height: 9px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); }
+.tree .arrow.is-folder.is-open::before { transform: translateY(-2px) rotate(45deg); }
 .tree .icon { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
 .tree .icon svg { width: 15px; height: 15px; }
 .tree .name { overflow: hidden; text-overflow: ellipsis; }
@@ -663,3 +665,5 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #search-execution-settings > summary { max-width: 100%; overflow-wrap: anywhere; }
 
 #search-transfer-start, .search-preview-actions > .primary { margin-left: auto; }
+
+.teaching-create-fields { display: contents; }

@@ -257,7 +257,7 @@ class Requester extends EventEmitter {
     if (!r) return { status: 404, body: { error: 'その依頼はありません' } };
     const who = String(body.who || '').trim();
     if (!who) return { status: 400, body: { error: 'who が要ります' } };
-    if (r.state !== 'open') return { status: 409, body: { error: '既に誰かが拾いました', state: r.state, executor: r.executor ? r.executor.node : '' } };
+    if (r.state !== 'open') return { status: 409, body: { error: 'この依頼は引き受け済みです', state: r.state, executor: r.executor ? r.executor.node : '' } };
     r.state = 'working';
     r.executor = { node: who, address: String(remote || ''), port: Number(body.port) || 0, cli: String(body.cli || '') };
     r.claimed_at = nowIso();

@@ -67,6 +67,7 @@
     $('flow-teach-session-actions').hidden = state.creating;
     $('flow-teach-new-session').disabled = state.pending || state.running || !!((state.session || state.availableSession) && state.deps.isRunning((state.session || state.availableSession).id));
     $('flow-teach-heading').hidden = !state.existing;
+    $('flow-teach-manual').hidden = !state.creating;
     $('flow-teach-create').hidden = !state.creating;
     $('flow-teach-placeholder').hidden = state.creating;
     $('flow-teach-settings-title').textContent = state.creating ? '作成設定' : '編集設定';
@@ -237,7 +238,7 @@
       status('success', shared ? `共有に送信済み ${at}` : `${sess.cli}へ送信済み ${at}`, 4000);
     } catch (err) {
       error(err.message);
-      status('error', '送信できませんでした。入力は残っています');
+      status('error', '送信失敗（入力は保持）');
     } finally {
       state.pending = false;
       renderShell();
@@ -257,7 +258,7 @@
     state.pending = true;
     renderShell();
     try {
-      await state.onCreate({ purpose, options: state.deps.executionOptions(readExecutionInputs()) });
+      await state.onCreate({ purpose, saveName: $('flow-teach-save-name').value.trim(), options: state.deps.executionOptions(readExecutionInputs()) });
     } catch (err) {
       errorNode.textContent = err.message;
       errorNode.hidden = false;
@@ -286,10 +287,12 @@
     const enteringCreate = !!detail.creating && (!state.creating || state.repo !== detail.root);
     state.creating = !!detail.creating;
     state.onCreate = detail.onCreate || null;
+    state.onManual = detail.onManual || null;
     if (enteringCreate) {
       delete $('flow-teach-permission').dataset.pinned;
       populateExecutionInputs(state.deps.executionDefaults());
       $('flow-teach-purpose').value = '';
+      $('flow-teach-save-name').value = '';
       $('flow-teach-create-error').hidden = true;
     }
     const next = { root: detail.root, workflowId: detail.workflowId, existing: !!detail.existing };
@@ -307,9 +310,9 @@
   }
 
   // 新しいワークフロー: 目的を書いて AI と作り始める（ワークベンチの「AIに相談する」から）。
-  async function create({ root, purpose, options = null }) {
+  async function create({ root, purpose, saveName = '', options = null }) {
     const chosen = options || state.deps.executionOptions({});
-    const view = await api.automation.flowTeachPrepare({ repo: root, purpose, ...chosen });
+    const view = await api.automation.flowTeachPrepare({ repo: root, purpose, workflowId: saveName, ...chosen });
     state.autoStart = { repo: root, workflowId: view.workflowId, options: chosen };
     return view.workflowId;
   }
@@ -351,6 +354,7 @@
   function init(deps) {
     state.deps = deps;
     $('flow-teach-new-session').onclick = () => start(state.token, null, true).catch((err) => error(err.message));
+    $('flow-teach-manual').onclick = () => state.onManual?.();
     $('flow-teach-start').onclick = () => state.creating ? submitCreate() : start();
     $('flow-teach-purpose').oninput = () => { $('flow-teach-create-error').hidden = true; };
     $('flow-teach-send').onclick = () => send();

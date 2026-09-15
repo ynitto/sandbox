@@ -28,11 +28,17 @@ test('command task: create, retain selection, edit and run without AI', async (t
     await win.waitForFunction(() => typeof document.getElementById('area-tasks')?.onclick === 'function');
     await win.click('#area-tasks');
     const panel = win.locator('#automation-workbench');
-    await panel.locator('.task-detail-tabs').waitFor();
+    await win.locator('#task-create').waitFor();
+    await win.screenshot({ path: '/tmp/agent-app-ux-task-create.png' });
+    assert.equal(await win.locator('#areas > button').first().getAttribute('id'), 'area-inbox');
     assert.equal(await panel.locator('#command-add').count(), 0);
-    await win.click('#session-new');
-    await panel.locator('#command-add:not([disabled])').waitFor();
-    await panel.locator('#command-add').click();
+    await win.click('#task-create-manual');
+    await panel.locator('.manual-task-create').waitFor();
+    assert.equal(await panel.locator('#manual-steps').isVisible(), true);
+    assert.equal(await panel.locator('.task-detail-tabs').count(), 0);
+    await panel.locator('#schedule-kind').selectOption('weekly');
+    assert.equal(await panel.locator('.manual-task-create').isVisible(), true);
+    await win.screenshot({ path: '/tmp/agent-app-ux-manual.png' });
     await panel.locator('#schedule-name').fill('My command');
     await panel.locator('#schedule-command').fill('echo command-first');
     await panel.locator('#schedule-enabled').uncheck();
@@ -92,5 +98,65 @@ test('command task: create, retain selection, edit and run without AI', async (t
     fs.writeFileSync(loopPath, workingLoop);
     await panel.locator('#snapshot-retry').click();
     await panel.locator('#snapshot-retry').waitFor({ state: 'detached' });
+    await win.click('#area-workflows');
+    await win.locator('#flow-teach-create').waitFor();
+    await win.screenshot({ path: '/tmp/agent-app-ux-workflow-create.png' });
+    assert.equal(await win.locator('#flow-teach-manual').isVisible(), true);
+    await win.click('#flow-teach-manual');
+    await panel.locator('[data-flow-save]').waitFor();
+    await win.click('#area-tasks');
+    await win.locator('#task-create').waitFor();
+    assert.equal(await win.locator('#task-create .flow-patterns').count(), 0);
+    const taskLayout = await Promise.all(['#task-machine', '#task-purpose', '#task-create .task-actions'].map(id => win.locator(id).boundingBox()));
+    await win.click('#area-workflows');
+    await win.locator('#flow-teach-create').waitFor();
+    assert.equal(await win.locator('#flow-teach-launch .flow-patterns').count(), 0);
+    const flowLayout = await Promise.all(['#flow-teach-save-name', '#flow-teach-purpose', '#flow-teach-launch .task-actions'].map(id => win.locator(id).boundingBox()));
+    for (let i = 0; i < taskLayout.length; i++) {
+      for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(taskLayout[i][key] - flowLayout[i][key]) < 2, `creation layout ${i} ${key}`);
+    }
+    await win.click('#flow-teach-manual');
+    await panel.locator('[data-flow-save]').waitFor();
+    const catalog = await win.evaluate(() => api.automation.flowCatalog());
+    assert.ok(catalog.patterns.length > 0);
+    await panel.locator('.flow-patterns > summary').click();
+    const patterns = win.locator('[data-flow-pattern]');
+    await patterns.first().waitFor();
+    assert.equal(await patterns.count(), catalog.patterns.length);
+    await win.screenshot({ path: '/tmp/agent-app-ux-workflow-patterns.png' });
+    await patterns.first().click();
+    await panel.locator('[data-flow-save]').waitFor();
+    assert.equal(await win.locator('#area-workflows').getAttribute('aria-current'), 'page');
+    assert.equal(await panel.locator('select[data-flow-pattern]').count(), 0);
+    assert.equal(await panel.locator('[data-flow-meta="name"]').inputValue(), catalog.patterns[0].template.name || catalog.patterns[0].label);
+    assert.equal(await panel.locator('[data-flow-node][data-key="id"]').count(), catalog.patterns[0].template.nodes.length);
+    await panel.locator('[data-flow-save]').click();
+    await win.locator('#workflows .list-pick').filter({ hasText: catalog.patterns[0].template.name || catalog.patterns[0].label }).waitFor();
   } finally { await electron.close(); }
+});
+
+test('startup restores the workflow creation form before any navigation', async (t) => {
+  const pw = playwright();
+  if (!pw?._electron || process.platform !== 'darwin') return t.skip('local Electron test requires Playwright and macOS');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-startup-ui-'));
+  const repo = path.join(temp, 'repo'), userData = path.join(temp, 'userdata');
+  fs.mkdirSync(repo);
+  require('../src/main/store').saveConfig(userData, { repos: [repo], lastRepo: repo, area: 'workflows' });
+  const electron = await pw._electron.launch({ executablePath: require('electron'), args: [APP, '--no-sandbox', `--user-data-dir=${userData}`] });
+  try {
+    const win = await electron.firstWindow();
+    await win.waitForFunction(() => typeof document.getElementById('session-new')?.onclick === 'function');
+    const status = await win.evaluate(() => ({
+      title: document.getElementById('automation-workbench').shadowRoot.querySelector('.teaching-create h2')?.textContent,
+      visible: window.FlowTeaching.state.visible,
+      creating: window.FlowTeaching.state.creating,
+      hidden: document.getElementById('flow-teaching').hidden,
+    }));
+    assert.equal(status.title, '新しいワークフロー');
+    assert.deepEqual(status, { title: '新しいワークフロー', visible: true, creating: true, hidden: false });
+    await win.locator('#flow-teach-purpose').waitFor();
+    await win.locator('#flow-teach-save-name').fill('startup-workflow');
+    await win.click('#flow-teach-manual');
+    await win.locator('#automation-workbench [data-flow-save]').waitFor();
+  } finally { await electron.close(); fs.rmSync(temp, { recursive: true, force: true }); }
 });

@@ -217,11 +217,11 @@ class Participant extends EventEmitter {
     if (!this.capacity()) throw new Error('同時に受けられる数か、1 日の上限に達しています');
     const all = this.lastGathered.length ? this.lastGathered : await this.gather();
     const request = all.find((r) => r.id === wanted);
-    if (!request) throw new Error('その依頼は見つかりません（取り下げられたか、誰かが拾いました）');
+    if (!request) throw new Error('依頼は取り下げ済み、または引き受け済みです');
     const verdict = queue.eligible(request, this.context());
     if (!verdict.ok) throw new Error(reasonText(verdict.reason));
     const claimed = await this.claim(request, verdict.cli);
-    if (!claimed) throw new Error('先に誰かが拾いました');
+    if (!claimed) throw new Error('ほかの参加者が引き受けました');
     this.run({ request, cli: verdict.cli, mode: verdict.mode, peer: request.peer, post: claimed }).catch(() => {});
     this.emit('changed');
     return { id: wanted, cli: verdict.cli };

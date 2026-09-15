@@ -259,8 +259,8 @@ test('設定は三領域とリポジトリごとの最後のタスク・ワー�
 test('領域切替はタスクとワークフローを独立して共有編集面へ伝える', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   assert.match(renderer, /AgentNavigation\.normalizeArea/);
-  assert.match(renderer, /\$\('area-tasks'\)\.onclick\s*=\s*\(\)\s*=>\s*showArea\('tasks'\)/);
-  assert.match(renderer, /\$\('area-workflows'\)\.onclick\s*=\s*\(\)\s*=>\s*showArea\('workflows'\)/);
+  assert.match(renderer, /\$\('area-tasks'\)\.onclick\s*=\s*\(\)\s*=>\s*showArea\('tasks', \{ action: 'new' \}\)/);
+  assert.match(renderer, /\$\('area-workflows'\)\.onclick\s*=\s*\(\)\s*=>\s*showArea\('workflows', \{ action: 'new' \}\)/);
   assert.match(renderer, /type:\s*'agent-app:navigate'/);
   assert.doesNotMatch(renderer, /\$\('area-automation'\)/);
 });
@@ -281,7 +281,7 @@ test('領域切替中は前の領域の操作を隠し、共通見出しを先�
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
   assert.match(renderer, /function renderAutomationHeader\(\)/);
-  assert.match(renderer, /setAutomationLoading\(true\)[\s\S]*await loadAreaItems\(\)[\s\S]*await syncAutomationWorkbench\(\)[\s\S]*setAutomationLoading\(false\)/);
+  assert.match(renderer, /setAutomationLoading\(true\)[\s\S]*await loadAreaItems\(\)[\s\S]*await syncAutomationWorkbench\(action\)[\s\S]*setAutomationLoading\(false\)/);
   assert.match(css, /#automation-content\[aria-busy="true"\] #automation-workbench\s*\{[^}]*visibility:\s*hidden/);
   assert.match(css, /\.area-head\s*\{[^}]*min-height:\s*60px/);
 });
@@ -701,7 +701,7 @@ test('応答から端末の装飾と kiro の入力欄を剥がす', () => {
   const sess = { cli: 'claude', model: 'm1', readonly: false, autoApprove: false };
   assert.deepStrictEqual(ipc.turnSpec(sess, { prompt: ' p ' }), { cli: 'claude', model: 'm1', readonly: false, autoApprove: false, text: 'p' });
   assert.deepStrictEqual(ipc.turnSpec(sess, { prompt: 'p', cli: 'Codex', model: '', readonly: true, autoApprove: true }), { cli: 'codex', model: '', readonly: true, autoApprove: true, text: 'p' });
-  assert.throws(() => ipc.turnSpec(sess, { prompt: ' ' }), /空/);
+  assert.throws(() => ipc.turnSpec(sess, { prompt: ' ' }), /依頼内容を入力/);
   assert.strictEqual(ipc.turnSpec(sess, { prompt: '', attachments: [{ rel: 'a' }] }).text, '', '添付だけの依頼は通す');
   const config = settings.normalize({});
   config.execution.tiers.small = { cli: 'codex', model: 'small-model' };
