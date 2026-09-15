@@ -276,6 +276,8 @@ function registerIpcHandlers(getWindow, options = {}) {
       cwd: root, capture: runCapture,
       agentDefinitions: () => agentDefinitions({ cwd: root, capture: runCapture }),
       flowAvailable: () => agentFlow.patterns(runCapture, root).then((found) => !!found.ok),
+      // 追加操作を押した時点では PATH の変化を取り込む。通常表示は従来どおり 60 秒覚える。
+      ttlMs: p.refresh ? 0 : 60000,
     });
   });
 

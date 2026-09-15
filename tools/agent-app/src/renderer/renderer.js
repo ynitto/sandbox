@@ -728,7 +728,7 @@ const BASIC_POLICIES = ['recommended'];
 // ローカル実行系（agent-herd の一族）が使えるか。一覧の仮想の `herd` の印で見る。届く前は「使える」と
 // みなす（先に薄くして後で戻すより、戻すほうが目立たない）。
 function herdAvailable() {
-  if (state.agentsLoading || !state.agents.length) return state.capabilities ? !!state.capabilities.herd : true;
+  if (state.agentsLoading || !state.agents.length) return state.capabilities ? state.capabilities.herd === 'available' : true;
   return state.agents.some((a) => a.virtual && a.name === 'herd' && a.available);
 }
 
@@ -768,7 +768,7 @@ function renderRestrictions() {
   for (const option of select.options) option.disabled = !on && !BASIC_POLICIES.includes(option.value) && option.value !== 'direct';
   if (select.selectedOptions[0] && select.selectedOptions[0].disabled) { select.value = 'recommended'; renderRunSettingsSummary(); }
   const caps = state.capabilities;
-  $('area-workflows').disabled = !!(caps && caps.agentFlow === false);
+  $('area-workflows').disabled = !!(caps && caps.agentFlow !== 'available');
   renderSettingsRestrictions();
 }
 

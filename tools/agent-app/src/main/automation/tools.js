@@ -205,17 +205,24 @@ async function toolStatus({ cwd = '', capture, skillDir = '', agentDefinitions: 
 }
 
 // 任意の道具の有無だけを { herd, agentLoop, agentFlow } で返す（60 秒キャッシュ。cwd ごと）。
+// 診断そのものが失敗した場合は「無い」と断定せず unknown にする。renderer は unknown を
+// unavailable と同じく扱い、診断待ちや通知を主経路へ増やさない。
 const capabilityCache = new Map();
 async function capabilities({ cwd = '', capture, agentDefinitions: listDefinitions, flowAvailable, ttlMs = 60000, now = Date.now } = {}) {
   const key = String(cwd || '');
   const hit = capabilityCache.get(key);
   if (hit && now() - hit.at < ttlMs) return hit.value;
-  const [names, loop, flow] = await Promise.all([
-    Promise.resolve().then(() => (typeof listDefinitions === 'function' ? listDefinitions() : [])).catch(() => []),
-    capture('agent-loop', ['--version'], { cwd, timeoutMs: 10000 }).then((r) => !!(r && r.ok)).catch(() => false),
-    Promise.resolve().then(() => (typeof flowAvailable === 'function' ? flowAvailable() : false)).catch(() => false),
+  const [names, loop, flow] = await Promise.allSettled([
+    Promise.resolve().then(() => (typeof listDefinitions === 'function' ? listDefinitions() : [])),
+    capture('agent-loop', ['--version'], { cwd, timeoutMs: 10000 }),
+    Promise.resolve().then(() => (typeof flowAvailable === 'function' ? flowAvailable() : false)),
   ]);
-  const value = { herd: (Array.isArray(names) ? names : []).includes('herd'), agentLoop: loop, agentFlow: flow };
+  const stateOf = (result, available) => result.status === 'rejected' ? 'unknown' : (available(result.value) ? 'available' : 'unavailable');
+  const value = {
+    herd: stateOf(names, (value) => (Array.isArray(value) ? value : []).includes('herd')),
+    agentLoop: stateOf(loop, (value) => !!(value && value.ok)),
+    agentFlow: stateOf(flow, Boolean),
+  };
   capabilityCache.set(key, { at: now(), value });
   return value;
 }
