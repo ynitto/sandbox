@@ -60,7 +60,7 @@ function sessionIds(sessions) {
   return new Set((sessions || []).map((s) => String((s && s.id) || '')).filter(Boolean));
 }
 
-// 端末画面の控えは会話ファイルの中にあるので、パスではなく「その会話の控えの文字数」を数える。
+// 端末の画面記録は会話ファイルの中にあるので、パスではなく「その会話の控えの文字数」を数える。
 // 動いている会話（live）の控えは画面の続きに使うので残す。
 function snapshotsOf(sessions) {
   const out = [];
@@ -100,8 +100,8 @@ function tempOwner(name) {
 const KINDS = [
   {
     key: 'temp',
-    title: '使い終わった一時ファイル',
-    detail: 'AIとのやり取りに使った作業用のファイル',
+    title: '一時ファイル',
+    detail: '使い終わった作業用ファイルを削除します。',
     defaultOn: true,
     collect({ tmpdir, pid }) {
       const out = [];
@@ -122,8 +122,8 @@ const KINDS = [
   },
   {
     key: 'attachments',
-    title: '参照されていない添付ファイル',
-    detail: '削除した会話に添えたファイルの写し',
+    title: '添付ファイル',
+    detail: '会話で使われていない添付ファイルを削除します。',
     defaultOn: true,
     collect({ userData, sessions }) {
       const used = usedAttachments(sessions);
@@ -133,8 +133,8 @@ const KINDS = [
   },
   {
     key: 'cliSessions',
-    title: '終了した会話の再開情報',
-    detail: '削除した会話をAIが再開するための控え',
+    title: '会話の再開情報',
+    detail: '削除済みの会話の再開情報を削除します。',
     defaultOn: true,
     collect({ home, sessions }) {
       const ids = sessionIds(sessions);
@@ -144,8 +144,8 @@ const KINDS = [
   },
   {
     key: 'runHistory',
-    title: '登録を外したフォルダの実行履歴',
-    detail: 'タスクとワークフローを実行した記録',
+    title: '実行履歴',
+    detail: '登録を解除したリポジトリの実行履歴を削除します。',
     defaultOn: true,
     collect({ userData, repos }) {
       const keep = new Set((repos || []).map((repo) => `${crypto.createHash('sha256').update(String(repo)).digest('hex')}.json`));
@@ -155,8 +155,8 @@ const KINDS = [
   },
   {
     key: 'updates',
-    title: '取得済みの更新ファイル',
-    detail: '入れ替えが終わった配布物',
+    title: '更新ファイル',
+    detail: 'ダウンロードした更新ファイルを削除します。',
     defaultOn: true,
     collect({ userData }) {
       const base = path.join(userData, 'updates');
@@ -165,8 +165,8 @@ const KINDS = [
   },
   {
     key: 'share',
-    title: '古い共有の記録',
-    detail: `${LEDGER_KEEP_DAYS}日より前に引き受けた依頼の控えと、残った作業場`,
+    title: '共有の履歴',
+    detail: `${LEDGER_KEEP_DAYS}日より前の受付記録と一時作業フォルダを削除します。`,
     defaultOn: true,
     collect({ userData, now }) {
       const out = [];
@@ -183,8 +183,8 @@ const KINDS = [
   },
   {
     key: 'browserProfile',
-    title: '記録用ブラウザの保存データ',
-    detail: '次に画面操作を記録するとき、ログインし直しになります',
+    title: 'ブラウザデータ',
+    detail: '記録用ブラウザのデータを削除します。再ログインが必要です。',
     defaultOn: false,
     collect({ userData }) {
       const base = path.join(userData, 'recording-browser-profile');
@@ -196,8 +196,8 @@ const KINDS = [
 // 会話ファイルの中にある控えは、パスを消すのではなく会話を書き直して外す。
 const SNAPSHOTS = {
   key: 'snapshots',
-  title: '端末画面の控え',
-  detail: '会話に残した実行中の画面。やり取りの本文は残ります',
+  title: '端末の画面記録',
+  detail: '端末の画面記録を削除し、会話の本文は残します。',
   defaultOn: true,
 };
 

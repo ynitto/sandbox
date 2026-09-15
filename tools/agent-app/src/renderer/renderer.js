@@ -2017,7 +2017,7 @@ function renderCleanup() {
   const scanning = !state.cleanup;
   $('cleanup-rescan').disabled = scanning || !!state.cleanupBusy;
   if (scanning) {
-    box.replaceChildren(el('div', 'sub', state.cleanupError || '調べています…'));
+    box.replaceChildren(el('div', 'sub', state.cleanupError || '容量を確認中…'));
     renderCleanupTotal();
     return;
   }
@@ -2044,7 +2044,7 @@ async function scanCleanup() {
   $('cleanup-status').textContent = '';
   try {
     state.cleanup = await api.cleanup.scan();
-    $('cleanup-status').textContent = `${fmtCheckedAt(state.cleanup.scannedAt)} 時点`;
+    $('cleanup-status').textContent = `確認日時：${fmtCheckedAt(state.cleanup.scannedAt)}`;
   } catch (error) {
     state.cleanupError = error.message;
   }
@@ -2055,14 +2055,14 @@ async function runCleanup() {
   const keys = cleanupChecked();
   if (!keys.length) return;
   state.cleanupBusy = true;
-  $('cleanup-status').textContent = '削除しています…';
+  $('cleanup-status').textContent = '削除中…';
   renderCleanup();
   try {
     const result = await api.cleanup.remove(keys);
     state.cleanup = result.scan;
     $('cleanup-status').textContent = result.failed
-      ? `${fmtBytes(result.freed)} を空けました（${result.failed} 件は使用中のため残りました）`
-      : `${fmtBytes(result.freed)} を空けました`;
+      ? `${fmtBytes(result.freed)} を削除（${result.failed} 件は削除できませんでした）`
+      : `${fmtBytes(result.freed)} を削除しました`;
   } catch (error) {
     $('cleanup-status').textContent = '';
     $('settings-error').textContent = error.message;
