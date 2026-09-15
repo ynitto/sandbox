@@ -12,19 +12,23 @@ const path = require('path');
 const crypto = require('crypto');
 const settings = require('./settings');
 const reuse = require('../shared/reuse');
+const attention = require('./attention');
 
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
 // useWorktree  … 会話ごとに git worktree で作業フォルダを分ける機能を使うか（既定 true）
-// area         … 最後に開いていた主要領域（conversation | tasks | workflows）
+// area         … 最後に開いていた主要領域（conversation | tasks | workflows | share | inbox）
 // view         … 会話領域で最後に開いていた画面（chat | files）
 // lastWorktree … リポジトリ → 最後に選んだ作業フォルダ名（'' はリポジトリ本体）
 // lastTaskInputs … リポジトリ → タスクの保存名 → 前回の手動実行で入れた実行条件（値だけ。パスは持たない）
+// attentionSeen … 受信箱（attention.js）が使う「最後に見た結果の時刻」。{ since, items: { key → { resultAt } } }。
+//                 since は受信箱を使い始めた時刻（それ以前の結果は既読扱い）。作業の状態は持たない
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
   wslDistro: '', transport: 'tmux', useWorktree: true, area: 'conversation', view: 'chat', lastFiles: {}, lastWorktree: {},
   lastTask: {}, lastWorkflow: {}, lastTaskInputs: {},
   automationSkillDir: '', automationAgent: '', automationModel: '',
+  attentionSeen: { since: '', items: {} },
 };
 const MAX_REPOS = 30;
 const MAX_TASK_INPUT_CHARS = 400;
@@ -67,7 +71,7 @@ function normalize(raw) {
   next.transport = next.transport === 'headless' ? 'headless' : 'tmux';
   next.useWorktree = next.useWorktree !== false;
   next.area = next.area === 'automation' ? 'tasks'
-    : ['tasks', 'workflows'].includes(next.area) ? next.area : 'conversation';
+    : ['tasks', 'workflows', 'share', 'inbox'].includes(next.area) ? next.area : 'conversation';
   next.view = next.view === 'files' ? 'files' : 'chat';
   next.lastFiles = next.lastFiles && typeof next.lastFiles === 'object' ? next.lastFiles : {};
   next.lastWorktree = next.lastWorktree && typeof next.lastWorktree === 'object' ? next.lastWorktree : {};
@@ -78,6 +82,7 @@ function normalize(raw) {
   next.automationSkillDir = String(next.automationSkillDir || '').trim();
   next.automationAgent = String(next.automationAgent || '').trim();   // 空 = 会話の「おすすめ」と同じ CLI（automation/ipc.js）
   next.automationModel = String(next.automationModel || '').trim();
+  next.attentionSeen = attention.normalizeSeen(next.attentionSeen);
   const userSettings = settings.normalize(next);
   const rawInstructions = next.instructions && typeof next.instructions === 'object' ? next.instructions : {};
   const rawExecution = next.execution && typeof next.execution === 'object' ? next.execution : {};
@@ -126,6 +131,12 @@ function saveConfig(userData, patch) {
     };
   }
   if (instructionsPatch) merged.instructions = { ...current.instructions, ...instructionsPatch };
+  if (p.attentionSeen && typeof p.attentionSeen === 'object') {
+    merged.attentionSeen = {
+      since: 'since' in p.attentionSeen ? p.attentionSeen.since : current.attentionSeen.since,
+      items: { ...current.attentionSeen.items, ...(p.attentionSeen.items && typeof p.attentionSeen.items === 'object' ? p.attentionSeen.items : {}) },
+    };
+  }
   const next = normalize(merged);
   fs.mkdirSync(userData, { recursive: true });
   const target = configPath(userData);
@@ -155,6 +166,20 @@ function removeRepo(userData, repo) {
 // 登録したリポジトリだけを触る。画面から届いたパスをそのまま信じない。
 function isRegistered(userData, repo) {
   return loadConfig(userData).repos.includes(String(repo || ''));
+}
+
+// 受信箱の基準時刻。無ければ今を書いて返す（これより前の結果は「見た記録が無くても既読」）。
+function attentionBaseline(userData, now = new Date()) {
+  const cfg = loadConfig(userData);
+  if (cfg.attentionSeen.since) return cfg.attentionSeen;
+  return saveConfig(userData, { attentionSeen: { since: now.toISOString() } }).attentionSeen;
+}
+
+// 「この項目の結果をここまで見た」を書く。key は attention.js の材料の key、resultAt はその結果の時刻。
+function markAttentionSeen(userData, key, resultAt) {
+  const cfg = loadConfig(userData);
+  const items = attention.markSeen(cfg.attentionSeen.items, key, resultAt);
+  return saveConfig(userData, { attentionSeen: { items } }).attentionSeen;
 }
 
 function sessionPath(userData, id) {
@@ -286,6 +311,8 @@ function sessionSummary(file) {
     transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
     supersededBy: String(s.supersededBy || ''), title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
     origin: normalizeOrigin(s.origin),
+    // 末尾の応答（受信箱の「未読」の材料）。{ at, outcome: done | failed | stopped }、応答で終わっていなければ null
+    result: attention.conversationResult(s.messages),
   };
   summaryCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, summary });
   return summary;
@@ -419,5 +446,6 @@ module.exports = {
   DEFAULTS, loadConfig, saveConfig, addRepo, removeRepo, isRegistered,
   createSession, replaceEditingSession, readSession, listSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
+  attentionBaseline, markAttentionSeen,
   TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot,
 };

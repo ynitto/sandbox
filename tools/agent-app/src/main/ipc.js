@@ -28,6 +28,9 @@ const herd = require('./herd');
 const agentsMod = require('./agents');
 const share = require('./share');
 const { registerAutomationIpc } = require('./automation/ipc');
+const attention = require('./attention');
+const runHistory = require('./automation/run-history');
+const agentFlow = require('./automation/agent-flow');
 const automationTools = require('./automation/tools');
 const machineStore = require('./automation/store');
 const teaching = require('./automation/teaching');
@@ -1429,12 +1432,41 @@ function registerIpcHandlers(getWindow) {
     const conv = conversations.get(p.id);
     return conv ? conv.stop() : false;
   });
-  handle('turn:running', () => [...new Set([
+  const runningTurnIds = () => [...new Set([
     ...turnGate.snapshot(store.loadConfig(userData()).execution.maxConcurrent).ids,
     ...running.keys(),
     ...[...conversations.values()].filter((c) => c.turn).map((c) => c.id),
     ...(shareInstance ? shareInstance.pendingSessionIds() : []),
-  ])]);
+  ])];
+  handle('turn:running', () => runningTurnIds());
+
+  // 受信箱（attention.js）。正典（会話の要約・タスクの実行履歴・ワークフローの実行）を読んで
+  // 「未読」「要対応」を派生させる。ここで状態は持たず、書くのは「見た」（config.json の attentionSeen）だけ。
+  handle('attention:list', () => {
+    const ud = userData();
+    const cfg = store.loadConfig(ud);
+    const repos = new Set(cfg.repos);
+    const phaseOf = (id) => { const c = conversations.get(id); return c ? { phase: c.phase, detail: c.detail } : null; };
+    const sources = attention.conversationSources(
+      store.listSessions(ud, '').filter((s) => repos.has(s.repo)), { runningIds: runningTurnIds(), phaseOf },
+    );
+    for (const repo of cfg.repos) {
+      try {
+        const names = Object.fromEntries(machineStore.list(repo).map((item) => [item.machine, item.name]));
+        sources.push(...attention.taskSources(repo, runHistory.read(ud, repo), names));
+      } catch { /* 定義や履歴が読めないリポジトリは飛ばす */ }
+      try {
+        const hostRoot = host.toHostPath(repo);
+        const runs = agentFlow.listRuns(repo, 100, hostRoot).map((row) => (
+          row.waiting ? agentFlow.readRun(repo, row.runId, hostRoot) : row
+        ));
+        sources.push(...attention.workflowSources(repo, runs));
+      } catch { /* agent-flow の bus が無い・読めないリポジトリは飛ばす */ }
+    }
+    const seen = store.attentionBaseline(ud);
+    return attention.project(sources, { seen: seen.items, since: seen.since });
+  });
+  handle('attention:seen', (p) => store.markAttentionSeen(userData(), String(p.key || ''), String(p.resultAt || '')));
 
   // 端末（tmux）
   handle('term:open', (p) => openConversation(p.id, send, { cols: p.cols, rows: p.rows }));

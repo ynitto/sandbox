@@ -37,6 +37,7 @@ workbenchRoot.addEventListener('keydown', (event) => {
 
 const state = {
   config: { roots: [], lastRoot: '' },
+  capabilities: null,
   root: '',
   machines: [],
   agents: [],
@@ -332,6 +333,24 @@ function refreshExecutionSnapshot() {
   return loadExecutionSnapshot().then(renderIfIdle);
 }
 
+// 任意ツールの診断は画面を待たせず、失敗も通知にしない。unknown / unavailable は同じく
+// 追加操作を出さないため、主機能（会話・作成・手動実行）には影響しない。
+let capabilitiesToken = 0;
+function loadCapabilities({ refresh = false } = {}) {
+  if (!state.root) { state.capabilities = null; return Promise.resolve(null); }
+  const token = (capabilitiesToken += 1);
+  const root = state.root;
+  return automationHost.capabilities(root, refresh).then((value) => {
+    if (token !== capabilitiesToken || root !== state.root) return null;
+    state.capabilities = value;
+    renderIfIdle();
+    return value;
+  }, () => {
+    if (token === capabilitiesToken && root === state.root) state.capabilities = null;
+    return null;
+  });
+}
+
 // 定期実行はこのウィンドウの run:exit を通らないため、表示中の履歴を更新する。
 async function refreshVisibleHistory() {
   if (!state.root || document.hidden || state.view !== 'home' || state.homeTab !== 'run'
@@ -506,6 +525,7 @@ async function selectRoot(root) {
 // フォルダを選び直したあと。手元のファイルで分かる定義の一覧だけを待って描き、
 // ホスト（WSL）に聞くもの（AI の一覧・実行状態）は待たずに裏で取りに行く。
 async function afterRootChange() {
+  state.capabilities = null;
   state.execution.snapshot = null;
   state.execution.newCommand = null;
   state.execution.scheduleDraft = null;
@@ -518,6 +538,7 @@ async function afterRootChange() {
   render();
   loadAgents();
   refreshExecutionSnapshot();
+  loadCapabilities();
 }
 
 async function addFolder() {
@@ -794,6 +815,7 @@ function bindHome(main) {
   on('run-stop', () => automationHost.runStop());
   on('command-edit', () => { state.execution.scheduleOpen = true; state.execution.scheduleDraft = null; render(); });
   on('schedule-toggle', () => { state.execution.scheduleOpen = !state.execution.scheduleOpen; render(); });
+  on('schedule-after-run', openScheduleAfterRun);
   on('schedule-save', saveSchedule);
   for (const button of main.querySelectorAll('[data-schedule-edit]')) button.addEventListener('click', () => {
     const machine = selectedExecutionMachine();
@@ -1223,8 +1245,13 @@ function executionDetailHtml(machine) {
   const historyLog = state.execution.log
     ? `<div class="history-log"><div class="execution-card-head"><strong>実行ログ</strong><button type="button" class="tiny" data-history-log="">閉じる</button></div>${state.execution.log.error ? `<p class="run-result ng">${esc(state.execution.log.error)}</p>` : `<pre>${esc(state.execution.log.text || '')}</pre>${state.execution.log.truncated ? '<small class="muted">末尾のみ表示しています。</small>' : ''}`}</div>`
     : '';
+  const canOfferSchedule = state.capabilities?.agentLoop === 'available'
+    && taskIdentity(machine) !== 'new-command' && displayedRun.manualSuccess === true
+    && !schedules.some((item) => item.enabled !== false && item.effective !== false);
+  const scheduleOffer = canOfferSchedule
+    ? '<div class="schedule-offer"><span>次回から自動で動かせます</span><button type="button" id="schedule-after-run">定期実行にする</button></div>' : '';
   const result = displayedRun.result
-    ? `<p class="run-result ${displayedRun.result.ok ? 'ok' : displayedRun.result.escalate ? 'warn' : 'ng'}">${displayedRun.result.ok ? '実行が完了しました' : displayedRun.result.escalate ? `確認が必要です${displayedRun.result.error ? `: ${esc(displayedRun.result.error)}` : ''}` : esc(displayedRun.result.error || '実行に失敗しました')}</p>`
+    ? `<div><p class="run-result ${displayedRun.result.ok ? 'ok' : displayedRun.result.escalate ? 'warn' : 'ng'}">${displayedRun.result.ok ? '実行が完了しました' : displayedRun.result.escalate ? `確認が必要です${displayedRun.result.error ? `: ${esc(displayedRun.result.error)}` : ''}` : esc(displayedRun.result.error || '実行に失敗しました')}</p>${scheduleOffer}</div>`
     : displayedRun.error ? `<p class="run-result ng">${esc(displayedRun.error)}</p>` : '';
   const log = displayedRun.lines.map((line) => `<div class="${line.kind === 'stderr' ? 'e' : ''}">${esc(line.line)}</div>`).join('') || (displayedRun.terminal ? '' : '<span class="muted">実行すると、ここに進行状況が表示されます。</span>');
   const logBody = `<div class="log" id="run-log">${log}</div>`;
@@ -1270,6 +1297,21 @@ function newCommandSchedule() {
   state.execution.scheduleOpen = true;
   state.homeTab = 'run';
   render();
+}
+
+async function openScheduleAfterRun() {
+  const machine = selectedExecutionMachine();
+  if (!machine || taskIdentity(machine) === 'new-command') return;
+  // 表示後にツールが消えていることがあるので、遷移の直前にも main process で確かめる。
+  const capabilities = await loadCapabilities({ refresh: true });
+  if (!capabilities || capabilities.agentLoop !== 'available') {
+    toast('定期実行を利用できません。「実行環境」を確認してください', true);
+    return;
+  }
+  state.execution.scheduleDraft = null;
+  state.execution.scheduleOpen = true;
+  render();
+  workbenchRoot.querySelector('.schedule-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function ensureScheduleDraft(machine) {
@@ -2327,7 +2369,7 @@ async function startRun(mode) {
     await rememberRunParameters(machine, state.run.parameters);
   }
   if (run.running) return;
-  if (run.taskKey) taskRunResults.set(run.taskKey, { lines: [...run.lines], result: run.result, error: run.error, running: false });
+  if (run.taskKey) taskRunResults.set(run.taskKey, { lines: [...run.lines], result: run.result, error: run.error, manualSuccess: run.manualSuccess, running: false });
   run.taskKey = runTaskKey(machine);
   run.lines = [];
   run.requestId = '';
@@ -2336,6 +2378,7 @@ async function startRun(mode) {
   run.screen = null;
   if (runTerm) runTerm.detach();
   run.result = null;
+  run.manualSuccess = false;
   run.error = '';
   run.running = true;
   render();
@@ -2552,6 +2595,7 @@ async function init() {
     if (state.run.requestId && p.requestId && state.run.requestId !== p.requestId) return;
     state.run.running = false;
     state.run.result = p.result || { ok: p.code === 0 };
+    state.run.manualSuccess = p.mode === 'run' && state.run.result.ok === true;
     state.run.error = p.error || '';
     appendLog({ kind: state.run.result.ok ? 'stdout' : 'stderr', line: state.run.result.ok ? (p.mode === 'check' ? '— 構成を確認しました' : '— 実行が完了しました') : '— 実行を完了できませんでした' });
     notifyHost('tasks', state.execution.selected);
@@ -2572,7 +2616,7 @@ async function init() {
   if (state.root && state.homeTab === 'teach') await teachingFeature.activate();
   render();
   loadAgents();
-  if (state.root) refreshExecutionSnapshot();
+  if (state.root) { refreshExecutionSnapshot(); loadCapabilities(); }
 }
 
 initPromise = init();

@@ -115,7 +115,7 @@ contextBridge.exposeInMainWorld('api', {
     listAgents: (root) => invoke('automation:agents:list', { root }),
     selectSkills: (root, text, mode, selected) => invoke('automation:skills:select', { root, text, mode, selected }),
     toolStatus: (root) => invoke('automation:tools:status', { root }),
-    capabilities: (root) => invoke('automation:capabilities', { root }),
+    capabilities: (root, refresh = false) => invoke('automation:capabilities', { root, refresh }),
     recordingStart: (payload) => invoke('automation:recording:start', payload),
     recordingStop: (payload) => invoke('automation:recording:stop', payload),
     recordingImport: (payload) => invoke('automation:recording:import', payload),
@@ -174,6 +174,11 @@ contextBridge.exposeInMainWorld('api', {
     onRunScreen: on('automation:run:screen'),
     onRunLine: on('automation:run:line'),
     onRunExit: on('automation:run:exit'),
+  },
+  // 受信箱: 未読（見るべき結果）と要対応（人の答え待ち）。項目を開いたら seen で「見た」を書く
+  attention: {
+    list: () => invoke('attention:list'),
+    seen: (key, resultAt) => invoke('attention:seen', { key, resultAt }),
   },
   onTurnStarted: on('turn:started'),
   onTurnProgress: on('turn:progress'),

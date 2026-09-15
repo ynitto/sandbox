@@ -8,7 +8,8 @@
 //             端末に打てるのは引き受けた人だけ。依頼者は閲覧のみ。
 //   ひとこと… 依頼にぶら下がる人と人のやり取り（`talk.js`。会話画面と同じ吹き出し）。CLI には入らない。
 //   参加者  … 同じ合言葉で見つかった PC の一覧（1 枚のカード）。
-//   引き受け … 自動で受ける / 選んで受ける / 受けない。設定 > 共有と同じ値で、ここからも変えられる。
+//   引き受け … 自動で受ける / 選んで受ける。この PC の受け持ちなので「参加者」のカードに置く
+//             （設定 > 共有と同じ値で、ここからも変えられる）。
 //
 // 状態は main の share:changed（`api.share.status()` と同じ形）で丸ごと届く。画面は持たない。
 (function initShare() {
@@ -25,6 +26,7 @@
     { key: 'done', label: '今日 完了', mark: '✓' },
   ];
 
+  let acceptControl = null;
   const state = { deps: null, visible: false, status: null, selected: '', view: 'request', screens: new Map(), busy: false, input: 'talk' };
 
   const publicViews = new Map(), publicFailures = new Map();
@@ -32,6 +34,7 @@
 
   function term() { return window.ShareTerm; }
   function el(...args) { return state.deps.el(...args); }
+  function acceptMode() { return acceptControl.querySelector('input'); }
   function notice(message, kind) { state.deps.notice(message, kind); }
 
   function time(value) {
@@ -261,6 +264,7 @@
     }
     section.append(table);
     for (const error of s.publicErrors || []) section.append(el('p', 'sub', error.message));
+    if (acceptControl) section.append(acceptControl);
     box.append(section);
   }
 
@@ -290,12 +294,13 @@
       badge.textContent = item.state === 'working' && item.kind === 'theirs' && item.executor ? `${label} ${item.executor}` : label;
       badge.className = `status${item.state === 'working' ? ' active' : item.state === 'done' ? ' ok' : item.state === 'failed' ? ' ng' : ''}`;
     }
-    $('share-view-request').classList.toggle('on', state.view === 'request');
-    $('share-view-nodes').classList.toggle('on', state.view === 'nodes');
-    $('share-accept-mode').checked = s?.accept === 'auto';
-    const enabled = !!(s && s.enabled);
-    $('share-accept-control').hidden = !enabled;
-    $('share-accept-mode').disabled = state.busy;
+    for (const [id, view] of [['share-view-request', 'request'], ['share-view-nodes', 'nodes']]) {
+      $(id).classList.toggle('on', state.view === view);
+      $(id).setAttribute('aria-selected', String(state.view === view));
+    }
+    acceptMode().checked = s?.accept === 'auto';
+    acceptControl.hidden = !(s && s.enabled) || state.view !== 'nodes';
+    acceptMode().disabled = state.busy;
   }
 
   // 端末は「自分が引き受けている依頼」と「仲間が自分の依頼を実行している間」に出す。
@@ -433,7 +438,7 @@
   async function run(action) {
     if (state.busy) return;
     state.busy = true;
-    $('share-accept-mode').disabled = true;
+    acceptMode().disabled = true;
     try {
       const next = await action();
       if (next && next.state) state.status = next;
@@ -462,6 +467,7 @@
 
   function init(deps) {
     state.deps = deps;
+    acceptControl = $('share-accept-control');
     $('share-view-request').onclick = () => { state.view = 'request'; render(); };
     $('share-send').onclick = () => say();
     $('share-stop').onclick = () => { const item = selected(); if (item) run(() => window.api.share.stopAccepted(item.id)); };
@@ -481,7 +487,7 @@
     term().configure({ onFocus: () => setInputMode('terminal', { focus: false }), onError: (error) => notice(error.message, 'error') });
     $('share-refresh').onclick = () => run(async () => window.api.share.publicRefresh());
     $('share-view-nodes').onclick = () => { state.view = 'nodes'; render(); };
-    $('share-accept-mode').onchange = (event) => {
+    acceptMode().onchange = (event) => {
       const mode = event.target.checked ? 'auto' : 'manual';
       run(() => window.api.share.setMode(mode));
     };

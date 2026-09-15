@@ -171,7 +171,7 @@ test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄
   assert.match(renderer, /function optimized\(config = state\.config\)/);
   assert.match(renderer, /execution\.optimizeAgents !== false && herdAvailable\(\)/);
   assert.match(renderer, /option\.disabled = !on && !BASIC_POLICIES\.includes\(option\.value\) && option\.value !== 'direct'/, 'ターンごとの起動方針は おすすめ / 直接指定 だけ');
-  assert.match(renderer, /\$\('area-workflows'\)\.disabled = !!\(caps && caps\.agentFlow === false\)/, 'agent-flow が無ければワークフローを押せない');
+  assert.match(renderer, /\$\('area-workflows'\)\.disabled = !!\(caps && caps\.agentFlow !== 'available'\)/, 'agent-flow が available でなければワークフローを押せない');
   assert.match(renderer, /const allowed = on \|\| tier === 'medium';/, 'tier は medium だけ');
   assert.match(renderer, /optimizeAgents: \$\('optimize-agents'\)\.checked,/);
   assert.doesNotMatch(renderer, /agent-herd が要ります/, '理由は出さない');
@@ -195,10 +195,27 @@ test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄
   const capture = async (command) => { calls.push(command); return { ok: command === 'agent-loop', stdout: '', stderr: '' }; };
   let clock = 0;
   const caps = await tools.capabilities({ cwd: '/r', capture, agentDefinitions: async () => ['claude', 'herd'], flowAvailable: async () => false, now: () => clock });
-  assert.deepStrictEqual(caps, { herd: true, agentLoop: true, agentFlow: false });
+  assert.deepStrictEqual(caps, { herd: 'available', agentLoop: 'available', agentFlow: 'unavailable' });
   clock = 1000;
   await tools.capabilities({ cwd: '/r', capture, agentDefinitions: async () => [], flowAvailable: async () => true, now: () => clock });
   assert.strictEqual(calls.length, 1, '60 秒以内は起動し直さない');
+  const unknown = await tools.capabilities({
+    cwd: '/unknown', capture: async () => { throw new Error('timeout'); },
+    agentDefinitions: async () => { throw new Error('timeout'); }, flowAvailable: async () => { throw new Error('timeout'); },
+  });
+  assert.deepStrictEqual(unknown, { herd: 'unknown', agentLoop: 'unknown', agentFlow: 'unknown' });
   assert.strictEqual(agents.herdAvailable([{ name: 'herd', virtual: true, available: true }]), true);
   assert.strictEqual(agents.herdAvailable([{ name: 'herd', virtual: true, available: false }, { name: 'claude', available: true }]), false);
+});
+
+test('任意ツールの追加操作: 成功した保存済みタスクだけに定期実行への導線を出し、クリック時に再確認する', () => {
+  const maker = read('renderer/automation/renderer.js');
+  assert.match(maker, /state\.capabilities\?\.agentLoop === 'available'/);
+  assert.match(maker, /taskIdentity\(machine\) !== 'new-command' && displayedRun\.manualSuccess === true/);
+  assert.match(maker, /!schedules\.some\(\(item\) => item\.enabled !== false && item\.effective !== false\)/);
+  assert.match(maker, /id="schedule-after-run">定期実行にする<\/button>/);
+  assert.match(maker, /automationHost\.capabilities\(root, refresh\)/, 'クリック時は refresh=true で IPC に再確認する');
+  assert.match(maker, /state\.execution\.scheduleOpen = true/);
+  const handler = maker.slice(maker.indexOf('async function openScheduleAfterRun'), maker.indexOf('function ensureScheduleDraft'));
+  assert.doesNotMatch(handler, /saveRunSchedule/, '導線は設定を保存しない');
 });

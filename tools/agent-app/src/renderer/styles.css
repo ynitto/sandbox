@@ -106,10 +106,13 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #automation { grid-area: main; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
 #automation-content { position: relative; min-width: 0; min-height: 0; flex: 1; background: var(--bg); }
 #automation-workbench { display: block; width: 100%; height: 100%; background: var(--bg); }
-.area-head { min-height: 60px; display: flex; align-items: center; padding: 8px 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); }
-.area-heading { min-width: 0; }
-.area-heading .title { font-weight: 650; }
-.area-heading p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
+.area-head { min-height: 60px; display: flex; align-items: center; gap: 8px; padding: 8px 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); white-space: nowrap; }
+.area-heading, .area-head .title-stack { min-width: 0; }
+.area-head .title { min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; }
+.area-heading p, .area-head .title-stack p { margin: 1px 0 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; }
+/* 題名・1 行の説明・状態の印をひとまとまりにする（会話ヘッダーと共有ヘッダーで同じ形） */
+.area-head .title-row { min-width: 140px; max-width: 42%; display: flex; align-items: center; gap: 9px; }
+.area-head .title-stack { display: flex; flex-direction: column; }
 .workspace-loading { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; color: var(--muted); background: var(--bg); font-size: 12px; }
 #automation-content[aria-busy="true"] #automation-workbench { visibility: hidden; }
 /* ひとこと（人と人のやり取り）。会話の吹き出しと同じ作法で、相手は左の枠つき、自分は右の色つき。
@@ -128,14 +131,13 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 /* 共有の画面。会話画面と同じ骨格（一覧はサイドバー、右が 1 件）で、一枚のまとまりは
    タスクの概要と同じ .execution-card。共有ワークベンチの同じ部品は影の DOM の中にあって
    ここからは使えないので、同じ名前・同じ形をアプリのトークンで置く（別名の複製は作らない）。 */
-#share-area { grid-area: main; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
+#share-area, #inbox-area { grid-area: main; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
 #share-body { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 18px; overflow: auto; background: var(--bg); }
 #share-cards { width: min(100%, 900px); margin-inline: auto; display: flex; flex-direction: column; gap: 14px; }
 #share-terminal { width: min(100%, 900px); min-height: 260px; margin-inline: auto; }
 #share-thread, #share-composer { width: min(100%, 900px); margin-inline: auto; }
-#share-head { gap: 16px; flex-wrap: wrap; }
-#share-head .area-heading { flex: 0 1 auto; }
 .share-accept-control { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+#share-accept-control { align-self: start; }
 .share-nodes { width: 100%; border-collapse: collapse; font-size: 13px; }
 .share-nodes td { padding: 5px 8px 5px 0; border-top: 1px solid var(--line); }
 .execution-card { min-width: 0; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px rgba(31, 35, 40, .04); }
@@ -176,9 +178,9 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #repository-context > label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; }
 .repository-control { display: flex; align-items: center; gap: 4px; }
 .repository-control > select { min-width: 0; flex: 1; }
-.side-more { flex: none; }
-.side-more > summary { width: 34px; justify-content: center; padding-inline: 4px; letter-spacing: 1px; }
-.side-more .menu-panel { min-width: 190px; }
+.more-dots { flex: none; }
+.more-dots > summary { width: 34px; justify-content: center; padding-inline: 4px; letter-spacing: 1px; }
+.more-dots .menu-panel { min-width: 190px; }
 #area-sidebar-context { min-height: 0; flex: 1; display: flex; flex-direction: column; padding-top: 7px; }
 #area-sidebar-context .list.grow { min-height: 0; flex: 1; overflow: auto; }
 .context-new { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 6px; border-color: transparent; color: var(--muted); background: transparent; }
@@ -186,6 +188,7 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .side-settings { min-height: 42px; display: flex; align-items: center; gap: 10px; margin-top: auto; padding: 8px 10px; border-color: transparent; color: var(--muted); background: transparent; text-align: left; }
 .side-settings:hover { color: var(--text); background: #eceff3; }
 .side-head { min-height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
+#changes > .side-head { min-height: 60px; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 
 .list { margin: 0; padding: 0 2px 8px; list-style: none; }
 .list li { min-height: 38px; display: flex; align-items: center; gap: 7px; padding: 7px 9px; overflow: hidden; border-radius: 8px; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
@@ -209,10 +212,6 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 
 /* ---- 会話ヘッダー ---- */
 #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); }
-#chat-head { min-height: 60px; display: flex; align-items: center; gap: 8px; padding: 8px 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); white-space: nowrap; }
-#chat-head .title-row { min-width: 120px; max-width: 42%; display: flex; align-items: center; gap: 9px; }
-#chat-head .title-stack { min-width: 0; display: flex; flex-direction: column; }
-#chat-head .title { min-width: 0; overflow: hidden; font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
 /* 分岐元へのリンク。題名の下の 1 行（.sub と同じ文字）で、押すと元の会話を開く */
 #chat-head .title-origin { max-width: 100%; padding: 0; border: 0; overflow: hidden; background: none; color: var(--accent); text-align: left; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
 #chat-head .title-origin:hover { text-decoration: underline; }
@@ -552,18 +551,17 @@ pre.mermaid-error { border-color: var(--danger) !important; }
   #nav-toggle { display: inline-flex; }
   #side { position: fixed; z-index: 40; inset: 0 auto 0 0; width: min(286px, 86vw); transform: translateX(-102%); transition: transform .2s ease; box-shadow: 10px 0 30px rgba(31, 35, 40, .16); }
   #app.sidebar-open #side { transform: translateX(0); }
-  #chat-head { padding-left: 62px; }
-  #chat-head .title-row { max-width: 34%; }
+  .area-head { padding-left: 62px; }
+  .area-head .title-row { max-width: 34%; }
 }
 
 @media (max-width: 620px) {
-  #chat-head { min-height: 58px; gap: 3px; padding-right: 8px; flex-wrap: wrap; }
-  #chat-head .title-row { max-width: none; flex: 1; }
-  #chat-head .phase, .views { display: none; }
+  .area-head { min-height: 58px; gap: 3px; padding-right: 8px; flex-wrap: wrap; }
+  .area-head .title-row { max-width: none; flex: 1; }
+  #chat-head .phase { display: none; }
+  .views .tab { padding-inline: 7px; }
   #changes-toggle { width: 38px; padding: 0; font-size: 0; }
   #changes-toggle::before { content: '変更'; font-size: 11px; }
-  #chat-more > summary { width: 38px; justify-content: center; padding: 7px; font-size: 0; }
-  #chat-more > summary::before { content: '•••'; font-size: 13px; letter-spacing: 2px; }
   #messages { padding: 22px 14px 10px; }
   #terminal-stage, .conversation-history { margin-inline: 8px; }
   .conversation-history[open] { max-height: 25%; }
@@ -660,10 +658,6 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 }
 
 #search-error-detail { white-space: pre-wrap; overflow-wrap: anywhere; }
-
-@media (max-width: 820px) {
-  #session-search > .area-head { padding-left: 62px; }
-}
 
 #search-transfer-dialog .setting-field > select { min-width: 0; max-width: 65%; }
 #search-execution-settings > summary { max-width: 100%; overflow-wrap: anywhere; }

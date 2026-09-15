@@ -168,6 +168,8 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .run-result.ok { color: var(--ok); background: var(--ok-soft); }
 .run-result.warn { color: var(--warn); background: var(--warn-soft); }
 .run-result.ng { color: var(--ng); background: var(--ng-soft); }
+.schedule-offer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0 0; color: var(--muted); font-size: 12.5px; }
+.schedule-offer button { flex: none; }
 .run-card .log { height: 210px; }
 .schedule-editor { min-width: 0; display: grid; gap: 12px; padding-top: 2px; }
 .check-label { display: inline-flex; width: fit-content; align-items: center; gap: 7px; font-weight: 600; }

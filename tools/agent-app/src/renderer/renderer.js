@@ -30,6 +30,7 @@ const state = {
   current: null,        // 開いている会話（store の中身）
   draft: false,         // 「新しい会話」を押してまだ 1 通も送っていない
   running: new Set(),   // 応答中の会話 ID
+  attention: { action: 0, unread: 0, items: [] }, // 受信箱（attention:list の投影。判定は main）
   pending: new Set(),   // 送信中（main が CLI を起動し直している間など）の会話 ID
   logs: new Map(),      // 会話 ID → 応答中に流れた行（ヘッドレス）
   tails: new Map(),     // 会話 ID → 端末の末尾（tmux）
@@ -322,6 +323,110 @@ function renderWorkflowItems() {
   if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'まだワークフローがない' : '')));
 }
 
+// ---- 受信箱 ----
+// main の投影（attention:list）を出すだけ。未読・要対応の判定はここでしない。
+// 項目を押すと既存の画面（会話・タスク・ワークフロー）へ行く。答え方も画面もここでは作らない。
+const ATTENTION_KIND = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー' };
+const ATTENTION_ACTION = { terminal: '確認待ち', approval: '承認待ち', choice: '選択待ち', input: '入力待ち' };
+const ATTENTION_RESULT = { done: '完了', failed: '失敗', escalated: '要確認' };
+
+function attentionStatus(item) {
+  if (item.queue === 'action') return ATTENTION_ACTION[item.interaction && item.interaction.mode] || '確認待ち';
+  return ATTENTION_RESULT[item.outcome] || '完了';
+}
+
+function repoName(repo) {
+  return String(repo || '').split(/[\\/]/).filter(Boolean).pop() || String(repo || '');
+}
+
+function attentionSummary() {
+  const a = state.attention;
+  return [a.action ? `要対応 ${a.action}` : '', a.unread ? `未読 ${a.unread}` : ''].filter(Boolean).join(' · ');
+}
+
+// メニューの「受信箱」に件数を出す（「共有」の未読と同じ印）。領域を開いていれば一覧と本文も描く
+function renderInbox() {
+  const a = state.attention;
+  const button = $('area-inbox');
+  const count = a.action + a.unread;
+  let badge = button.querySelector('.unread');
+  if (!count) { if (badge) badge.remove(); } else {
+    if (!badge) { badge = el('span', 'unread'); button.append(badge); }
+    badge.textContent = String(count);
+  }
+  button.title = count ? attentionSummary() : '';
+  if (state.area === 'inbox') renderInboxItems();
+}
+
+// 領域「受信箱」の一覧（サイドバー。リポジトリと領域を横断する）と本文（件数の 1 行）
+function renderInboxItems() {
+  const a = state.attention;
+  const ul = $('inbox-items');
+  ul.replaceChildren();
+  for (const item of a.items) {
+    const li = el('li', `row-item${item.queue === 'action' ? ' attention' : ''}`);
+    const pick = el('button', 'list-pick');
+    const body = el('span', 'grow');
+    body.append(el('div', '', item.title));
+    body.append(el('div', 'sub', `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)} · ${repoName(item.repo)}`));
+    pick.append(body);
+    pick.title = item.queue === 'action' ? `「${item.title}」を開いて答える` : `「${item.title}」を開く`;
+    pick.onclick = () => openAttentionItem(item).catch((err) => notice(err.message, 'error'));
+    li.append(pick);
+    ul.append(li);
+  }
+  if (!a.items.length) ul.append(el('li', 'empty', '見るもの・答えるものはありません'));
+  $('inbox-meta').textContent = a.items.length ? attentionSummary() : '空です';
+  $('inbox-sub').textContent = a.items.length ? '一覧から選ぶと、その会話・タスク・ワークフローへ移ります' : '終わった結果と、人の答えを待つものがここに集まります';
+}
+
+// 「見た」を main に書き、受信箱からその項目を落とす（要対応は答えが届くまで残る）
+async function markAttentionSeen(item) {
+  if (item.queue !== 'unread' || !item.resultAt) return;
+  try { await api.attention.seen(item.key, item.resultAt); } catch { /* 印が書けなくても開くのは止めない */ }
+  const a = state.attention;
+  if (!a.items.some((held) => held.key === item.key)) return;
+  a.items = a.items.filter((held) => held.key !== item.key);
+  a.unread = Math.max(0, a.unread - 1);
+}
+
+// いま画面に出ている項目は、開き直さなくても「見た」
+function attentionItemVisible(item) {
+  const t = item.target || {};
+  if (t.kind === 'conversation') return state.area === 'conversation' && !state.draft && !!state.current && state.current.id === t.id;
+  if (t.repo !== state.repo) return false;
+  if (t.kind === 'task') return state.area === 'tasks' && (state.selectedTask === `machine:${t.id}` || state.selectedTask === t.id);
+  return state.area === 'workflows' && !!t.id && state.selectedWorkflow === t.id;
+}
+
+let attentionBusy = false;
+async function refreshAttention() {
+  if (attentionBusy) return;
+  attentionBusy = true;
+  try {
+    state.attention = await api.attention.list();
+    for (const item of [...state.attention.items]) if (attentionItemVisible(item)) await markAttentionSeen(item);
+    renderInbox();
+  } catch { /* main が読めない間は前回のまま */ } finally { attentionBusy = false; }
+}
+
+// 受信箱の項目 → 既存の画面へ。会話は通知と同じ経路（openSessionInRepo）、タスク・ワークフローは
+// 領域を切り替えて一覧の項目を選ぶ（フォークや回答の経路はそれぞれの画面のもの）。
+async function openAttentionItem(item) {
+  await markAttentionSeen(item);
+  renderInbox();
+  const t = item.target || {};
+  if (t.kind === 'conversation') { await openSessionInRepo(t.repo, t.id, { answer: item.queue === 'action' }); return; }
+  if (t.repo && t.repo !== state.repo) {
+    if (!state.config.repos.includes(t.repo)) throw new Error('登録していないフォルダです');
+    await selectRepo(t.repo);
+    renderRepos();
+  }
+  const area = t.kind === 'task' ? 'tasks' : 'workflows';
+  await showArea(area);
+  if (t.id) await selectAreaItem(area, t.kind === 'task' ? `machine:${t.id}` : t.id);
+}
+
 // サイドバーの「共有」に未読のひとことの数を出す
 function renderShareUnread() {
   const button = $('area-share');
@@ -337,11 +442,12 @@ function renderAreaContext() {
   $('area-list-title').textContent = info.label;
   $('session-new').setAttribute('aria-label', info.createLabel);
   $('session-new').title = info.createLabel;
-  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests']) $(id).hidden = id !== info.listId;
-  $('session-new').hidden = state.area === 'share';      // 共有の依頼は会話から出す
+  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests', 'inbox-items']) $(id).hidden = id !== info.listId;
+  $('session-new').hidden = state.area === 'share' || state.area === 'inbox';      // 共有の依頼は会話から出す。受信箱は入口だけ
   if (state.area === 'conversation') renderSessions();
   else if (state.area === 'tasks') renderTaskItems();
   else if (state.area === 'workflows') renderWorkflowItems();
+  else if (state.area === 'inbox') renderInboxItems();
   else Share.render();
 }
 
@@ -728,7 +834,7 @@ const BASIC_POLICIES = ['recommended'];
 // ローカル実行系（agent-herd の一族）が使えるか。一覧の仮想の `herd` の印で見る。届く前は「使える」と
 // みなす（先に薄くして後で戻すより、戻すほうが目立たない）。
 function herdAvailable() {
-  if (state.agentsLoading || !state.agents.length) return state.capabilities ? !!state.capabilities.herd : true;
+  if (state.agentsLoading || !state.agents.length) return state.capabilities ? state.capabilities.herd === 'available' : true;
   return state.agents.some((a) => a.virtual && a.name === 'herd' && a.available);
 }
 
@@ -768,7 +874,7 @@ function renderRestrictions() {
   for (const option of select.options) option.disabled = !on && !BASIC_POLICIES.includes(option.value) && option.value !== 'direct';
   if (select.selectedOptions[0] && select.selectedOptions[0].disabled) { select.value = 'recommended'; renderRunSettingsSummary(); }
   const caps = state.capabilities;
-  $('area-workflows').disabled = !!(caps && caps.agentFlow === false);
+  $('area-workflows').disabled = !!(caps && caps.agentFlow !== 'available');
   renderSettingsRestrictions();
 }
 
@@ -1769,8 +1875,10 @@ function showView(view) {
   state.view = view === 'files' ? 'files' : 'chat';
   $('chat').hidden = state.view !== 'chat';
   $('files').hidden = state.view !== 'files';
-  $('view-chat').classList.toggle('on', state.view === 'chat');
-  $('view-files').classList.toggle('on', state.view === 'files');
+  for (const [id, view] of [['view-chat', 'chat'], ['view-files', 'files']]) {
+    $(id).classList.toggle('on', state.view === view);
+    $(id).setAttribute('aria-selected', String(state.view === view));
+  }
   $('view-chat').setAttribute('aria-current', state.view === 'chat' ? 'page' : 'false');
   $('view-files').setAttribute('aria-current', state.view === 'files' ? 'page' : 'false');
   api.saveConfig({ view: state.view }).catch(() => {});
@@ -1781,6 +1889,7 @@ async function showArea(area, { persist = true } = {}) {
   SessionSearch.close();
   state.area = AgentNavigation.normalizeArea(area);
   const share = state.area === 'share';
+  const inbox = state.area === 'inbox';
   const automation = state.area === 'tasks' || state.area === 'workflows';
   const workspace = state.area !== 'conversation';
   renderAutomationHeader();
@@ -1788,8 +1897,9 @@ async function showArea(area, { persist = true } = {}) {
   $('main').hidden = workspace;
   $('automation').hidden = !automation;
   $('share-area').hidden = !share;
+  $('inbox-area').hidden = !inbox;
   if (!share) Share.hide();
-  const buttons = { conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), share: $('area-share') };
+  const buttons = { conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), share: $('area-share'), inbox: $('area-inbox') };
   for (const [name, button] of Object.entries(buttons)) {
     const selected = name === state.area;
     button.classList.toggle('on', selected);
@@ -1801,6 +1911,8 @@ async function showArea(area, { persist = true } = {}) {
   $('changes').hidden = workspace || !state.changesOpen;
   if (share) {
     await Share.show();
+  } else if (inbox) {
+    await refreshAttention();
   } else if (automation) {
     // 読み込み中に直前の領域の操作を残さない。見出しを先に切り替え、内容は準備後に一度で見せる。
     // タスクの実行状態（ファイル実体の確認を伴い遅い）はここでは待たない——一覧は定義が
@@ -2309,9 +2421,14 @@ async function init() {
   await selectRepo(state.config.lastRepo);
   showView(state.config.view);
   await showArea(state.config.area, { persist: false });
+  // 受信箱は、終わった・聞かれた合図（turn:done / term:phase / run:exit）のたびと、背景の実行
+  // （agent-flow）を拾うための緩い周期で読み直す。通知も予定表も新しく作らない
+  refreshAttention();
+  setInterval(refreshAttention, 15000);
 
   $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
   $('area-tasks').onclick = () => showArea('tasks').catch((err) => notice(err.message, 'error'));
+  $('area-inbox').onclick = () => showArea('inbox').catch((err) => notice(err.message, 'error'));
   $('area-workflows').onclick = () => showArea('workflows').catch((err) => notice(err.message, 'error'));
   $('area-share').onclick = () => showArea('share').catch((err) => notice(err.message, 'error'));
   $('automation-workbench').addEventListener('statemachine:changed', (event) => {
@@ -2622,7 +2739,8 @@ async function init() {
     const node = document.querySelector(`#working-${id} .log`);
     if (node) { node.append(logLine({ kind, text })); node.scrollTop = node.scrollHeight; }
   });
-  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); FlowTeaching.onTurnDone(p); return onTurnDone(p); });
+  api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); FlowTeaching.onTurnDone(p); return onTurnDone(p).finally(refreshAttention); });
+  api.automation.onRunExit(() => { refreshAttention(); });
   api.share.onScreen((p) => {
     if (!p || !p.sessionId) return;
     TaskTeaching.onShareScreen(p);
@@ -2661,6 +2779,7 @@ async function init() {
       }
     }
     renderSessions();
+    refreshAttention();
   });
 }
 
