@@ -113,7 +113,7 @@ contextBridge.exposeInMainWorld('api', {
     listAgents: (root) => invoke('automation:agents:list', { root }),
     selectSkills: (root, text, mode, selected) => invoke('automation:skills:select', { root, text, mode, selected }),
     toolStatus: (root) => invoke('automation:tools:status', { root }),
-    capabilities: (root) => invoke('automation:capabilities', { root }),
+    capabilities: (root, refresh = false) => invoke('automation:capabilities', { root, refresh }),
     recordingStart: (payload) => invoke('automation:recording:start', payload),
     recordingStop: (payload) => invoke('automation:recording:stop', payload),
     recordingImport: (payload) => invoke('automation:recording:import', payload),
