@@ -226,6 +226,31 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   assert.match(renderer, /'response-turn user-turn'/, '依頼も応答と同じ組み立て（吹き出し＋下の操作）にする');
 });
 
+test('保存データの整理は設定の既存の器（設定の行・状態の印・足元の集計）で組む', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  const renderer = read('renderer/renderer.js');
+  const panel = html.match(/<section data-settings-panel="storage"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.ok(panel, '設定に「保存データ」の面が無い');
+  // 1. タブ名で分かることを本文で繰り返さない（面の中に見出しと説明の常駐を作らない）
+  assert.ok(!/<h[1-4][\s>]/.test(panel), '設定の面に見出しを置かない（タブ名が名乗る）');
+  assert.ok(!/<p[\s>]/.test(panel), '仕組みの説明は README に置く');
+  // 2. 種類の行は設定の行（.setting-check）、大きさは状態の印（.status）をそのまま借りる
+  assert.match(renderer, /el\('label', 'setting-check'\)/, '種類の行は設定の行を借りる');
+  assert.match(renderer, /el\('span', 'status', item\.bytes/, '大きさは状態の印を借りる');
+  assert.ok(!/\.cleanup-row|\.cleanup-item|\.cleanup-size/.test(css), '設定の行の私物な複製を作らない');
+  // 3. 足元の集計と操作は「更新」「実行環境」と同じ器（.environment-status + .row）
+  assert.match(panel, /<div class="environment-status">/);
+  assert.strictEqual((panel.match(/class="row"/g) || []).length, 2, '集計と操作は .row に並べる');
+  // 4. 色は主操作と状態の区別にだけ。この面の主ボタンはダイアログの「保存」なので、削除は .danger
+  assert.match(panel, /id="cleanup-run" class="danger"/);
+  assert.ok(!/id="cleanup-run"[^>]*class="[^"]*primary/.test(panel), '1 つの面に主ボタンを 2 つ置かない');
+  // 5. 足した規則に直値の色を入れない
+  const added = css.match(/^\.setting-check > \.status \{[^}]*\}$/m) || [];
+  assert.strictEqual(added.length, 1, '右端の大きさの規則が 1 つだけある');
+  assert.deepStrictEqual(added.join('').match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークン（var(--…)）を使う');
+});
+
 test('受信箱は既存の部品（メニューの領域・一覧の行・件数の印）で組み、判定は main に置く', () => {
   const html = read('renderer/index.html');
   const css = read('renderer/styles.css');

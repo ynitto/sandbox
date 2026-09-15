@@ -121,6 +121,11 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     });
   }
 
+  // 保存データの整理で数える対象: 取得済みの更新ファイルと、端末画面の控え
+  fs.mkdirSync(path.join(userData, 'updates'), { recursive: true });
+  fs.writeFileSync(path.join(userData, 'updates', 'agent-app-99.0.0.exe'), 'x'.repeat(200000));
+  appStore.addTerminalSnapshot(userData, session.id, { agentCli: 'codex', model: 'gpt-test', screenText: 'y'.repeat(50000) });
+
   const { Requester } = require('../src/main/share/requester');
   const shareRequests = new Requester({ userData, node: 'smoke-pc', file: path.join(userData, 'share', 'requests.json') });
   shareRequests.post({
@@ -330,6 +335,23 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('#update-later');
     assert.strictEqual(await win.locator('#app-update').getAttribute('open'), null);
     assert.match(await win.textContent('#update-status'), /新しい版: Agent App 99\.0\.0（この起動形態では手動で入れ替え） \/ agent-tools bbbbbbbb · .* 確認/);
+    // 保存データの整理: 開くと種類ごとに数え、選んだ種類だけ消す（OS の一時ファイル削除と同じ形）
+    await win.click('[data-settings-tab="storage"]');
+    await win.waitForFunction(() => document.querySelectorAll('[data-cleanup-key]').length > 0);
+    const updatesRow = win.locator('[data-cleanup-key="updates"]').locator('xpath=..');
+    assert.match(await updatesRow.textContent(), /取得済みの更新ファイル/);
+    assert.match(await updatesRow.locator('.status').textContent(), /KB|MB/);
+    assert.strictEqual(await win.locator('[data-cleanup-key="updates"]').isChecked(), true, '既定で選ばれている');
+    // 消すと作業に影響が出るものは既定で外れている
+    assert.strictEqual(await win.locator('[data-cleanup-key="browserProfile"]').isChecked(), false);
+    assert.match(await win.textContent('#cleanup-total'), /合計 \d/);
+    if (process.env.AGENT_APP_STORAGE_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_STORAGE_SCREENSHOT });
+    await win.click('#cleanup-run');
+    await win.waitForFunction(() => /を空けました/.test(document.getElementById('cleanup-status').textContent));
+    assert.strictEqual(fs.existsSync(path.join(userData, 'updates', 'agent-app-99.0.0.exe')), false, '更新ファイルを消す');
+    assert.strictEqual(appStore.readSession(userData, session.id).terminalSnapshots.length, 0, '端末画面の控えを外す');
+    assert.ok(appStore.readSession(userData, session.id).messages.length > 3, 'やり取りの本文は残す');
+    assert.match(await win.locator('[data-cleanup-key="updates"]').locator('xpath=..').textContent(), /なし/);
     await win.click('#settings-close');
 
     // 親画面のポップアップは、メニュー外の背景をクリックすると閉じる。
