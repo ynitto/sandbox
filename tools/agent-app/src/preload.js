@@ -187,6 +187,11 @@ contextBridge.exposeInMainWorld('api', {
   onTermPhase: on('term:phase'),
   // OS の通知を押した（main がウィンドウを前面へ戻したあと、開く会話を知らせる）
   onNotifyOpen: on('notify:open'),
+  // 保存データの整理（アプリが作ったファイルを数え、選んだ種類だけ消す）
+  cleanup: {
+    scan: () => invoke('cleanup:scan'),
+    remove: (keys) => invoke('cleanup:remove', { keys }),
+  },
   // 自動更新（更新元の manifest を見て、承認のもとで本体と agent-tools を入れ替える）
   update: {
     status: () => invoke('update:status'),

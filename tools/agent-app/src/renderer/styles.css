@@ -508,6 +508,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .setting-check strong, .setting-field strong, .environment-status > strong { font-size: 13px; font-weight: 600; }
 .setting-check small, .setting-field small { color: var(--muted); font-size: 11px; line-height: 1.4; }
 .setting-field input { width: 140px; }
+/* 保存データの整理: 行の右端の大きさは .status の形のまま（伸びるのは左の説明だけ） */
+.setting-check > .status { flex: none; flex-direction: row; }
 .environment-status { align-items: flex-start; flex-direction: column; border-bottom: 0; cursor: default; }
 .environment-status > .row { align-self: stretch; }
 .stacked-field { display: flex; align-items: stretch; flex-direction: column; gap: 7px; padding: 10px 4px 14px; color: var(--text); }
