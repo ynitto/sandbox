@@ -238,6 +238,6 @@ test('受信箱は既存の部品（メニューの領域・一覧の行・件�
   assert.match(renderer, /openSessionInRepo\(t\.repo, t\.id, \{ answer: item\.queue === 'action' \}\)/);
   assert.match(renderer, /await showArea\(area\);\s*if \(t\.id\) await selectAreaItem\(area/);
   assert.ok(!html.includes('id="inbox-answer"') && !html.includes('inbox-fork'), '受信箱に答える面やフォークの複製を置かない');
-  // 5. 説明は 1 行だけ（.empty-state の p）。段落を並べない
+  // 5. 説明は 1 行だけ（本文の .blank の p）。段落を並べない
   assert.strictEqual((html.match(/id="inbox-sub"/g) || []).length, 1);
 });
