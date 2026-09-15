@@ -7,12 +7,17 @@ from __future__ import annotations
 # 自動アップデートは update_repo のこのパス以下だけを temp 領域へ sparse-checkout して
 # install.sh を実行する（doctor と同じ流儀で、操作は決定的・無関係ファイルは取得しない）。
 #
-# **共有物のパスも並べる**（カンマ/空白区切り。`update.split_subdirs`）。cone mode の
-# sparse-checkout は指定ディレクトリの**兄弟を含まない**ため、本体だけ取ると
-# `tools/agent-tools`（統合インストーラ + agentcore＝3 エンジンで共有するものの置き場）が
-# 無く、installer が `agentcore パッケージが見つかりません` で必ず失敗する
-# （自己更新が毎回サイレントに見送られる）。先頭が installer とダイジェストの基準ディレクトリ。
-TOOL_SUBDIR = "tools/agent-project tools/agent-tools"
+# 既定は**一族まとめて**（tools/agent-tools/install.sh が入れる 4 エンジン + agent-herd +
+# agent-loop と、install.sh が配る agents/ commands/）。agentcore の契約は一族で揃っていなければ
+# ならず、本体だけ入れ直すと片方だけ古いノードができる（install.sh の入口が 1 本な理由と同じ）。
+# agent-app（Windows）も WSL 側の一族をこの経路で更新する（`agent-project update --json`）。
+# 先頭のパスが installer とダイジェストの基準ディレクトリ——先頭を tools/agent-tools にしているので
+# `update_installer: install.sh` は統合インストーラを指す。cone mode の sparse-checkout は
+# 指定ディレクトリの**兄弟を含まない**ため、要るものは全部並べる（カンマ/空白区切り。
+# `update.split_subdirs`）。本体だけに戻したいときは
+# `update_subdir: tools/agent-project tools/agent-tools`（tools/agent-tools は外せない）。
+TOOL_SUBDIR = ("tools/agent-tools tools/agent-project tools/agent-flow tools/agent-loop "
+               "tools/agent-amigos tools/agent-audit agents commands")
 # スキルリポジトリ（git URL/パス）の既定。空なら install.py が生成する skill-registry.json から
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""

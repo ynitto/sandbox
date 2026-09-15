@@ -90,6 +90,7 @@ function normalize(raw) {
   next.instructions = { ...rawInstructions, ...userSettings.instructions };
   next.share = userSettings.share;
   next.notify = userSettings.notify;
+  next.update = userSettings.update;
   next.execution = {
     ...rawExecution,
     ...userSettings.execution,

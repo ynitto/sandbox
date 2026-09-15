@@ -465,3 +465,74 @@ class TestGitlabRejectRetry(unittest.TestCase):
             km._settle_failure(cfg, t, "verify NG", cycle=1, ev="", reasons={}, location="local")
         self.assertEqual(t.norm_status(), "ready")          # 積み直し
         self.assertEqual(t.feedback(), "命名を直す")          # 却下コメントを feedback に注入
+
+
+class SelfUpdateJsonTests(unittest.TestCase):
+    """`agent-project update --json`（agent-app が WSL で叩く機械向けの出口）。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ka-update-json-"))
+        self.state = self.tmp / "state"
+        self.state.mkdir(parents=True, exist_ok=True)
+        self._old = {k: os.environ.get(k) for k in ("KIRO_STATE_HOME", "HOME")}
+        os.environ["KIRO_STATE_HOME"] = str(self.state)
+        os.environ["HOME"] = str(self.tmp / "home")     # fixture の install.sh は $HOME/.local/bin へ書く
+        km._UPDATE_LAST_CHECK["t"] = 0.0
+        self.repo = _make_skill_repo(self.tmp)
+
+    def tearDown(self):
+        for k, v in self._old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        km._UPDATE_LAST_CHECK["t"] = 0.0
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, cfg, **kw):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = km.cmd_update(cfg, as_json=True, **kw)
+        # 取り込みの経過（apply_update の [update] 行）が先に出ることがある。JSON は最後の 1 行
+        lines = [ln for ln in out.getvalue().splitlines() if ln.strip()]
+        self.assertTrue(lines, out.getvalue())
+        self.assertTrue(all(ln.startswith("[update]") for ln in lines[:-1]), out.getvalue())
+        return rc, json.loads(lines[-1])
+
+    def test_default_subdir_covers_the_family(self):
+        parts = km.split_subdirs(km.TOOL_SUBDIR)
+        self.assertEqual(parts[0], "tools/agent-tools", "先頭が統合インストーラの置き場")
+        for p in ("tools/agent-project", "tools/agent-flow", "tools/agent-loop", "agents", "commands"):
+            self.assertIn(p, parts)
+
+    def test_json_reports_and_applies_without_restart(self):
+        cfg = cfg_for(self.tmp, update_repo=str(self.repo), update_branch="main",
+                      update_subdir="tools/agent-project tools/agent-tools",
+                      update_installer="install.sh", update_check_interval=60.0)
+        rc, rep = self._run(cfg, check=True)                 # 初回: ベースライン
+        self.assertEqual(rc, 0)
+        self.assertTrue(rep["enabled"] and rep["baseline"])
+        self.assertFalse(rep["available"])
+        _commit_change(self.repo, "tools/agent-project/N3.txt")
+        rc, rep = self._run(cfg, check=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(rep["available"])
+        self.assertNotEqual(rep["applied_sha"], rep["remote_sha"])
+        self.assertFalse(rep["applied"])
+        rc, rep = self._run(cfg, now=True)                   # 取り込む。execv しないでここへ戻る
+        self.assertEqual(rc, 0, rep)
+        self.assertTrue(rep["applied"])
+        self.assertFalse(rep["available"])
+        self.assertTrue(os.path.isfile(os.path.join(os.environ["HOME"], ".local", "bin", "INSTALLED_MARKER")))
+        self.assertEqual(rep["applied_sha"], rep["remote_sha"])
+
+    def test_json_when_unconfigured_or_unreachable(self):
+        rc, rep = self._run(cfg_for(self.tmp, update_repo=None), check=True)
+        self.assertEqual(rc, 2)
+        self.assertFalse(rep["enabled"])
+        self.assertIn("update_repo", rep["error"])
+        rc, rep = self._run(cfg_for(self.tmp, update_repo=str(self.tmp / "nowhere"), update_branch="main"), check=True)
+        self.assertEqual(rc, 2)
+        self.assertIn("取得できませんでした", rep["error"])

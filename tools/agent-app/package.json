@@ -1,6 +1,6 @@
 {
   "name": "agent-app",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "GitHub Copilot App 風のデスクトップ。agents/*.json の CLI 定義（copilot / claude / codex / kiro …）を tmux 上で対話起動し、ローカルリポジトリに対して会話形式で動かす Electron アプリ。同じリポジトリのタスク（statemachine-use で動くステートマシン）とワークフロー（agent-flow）も、AI との tmux 会話で作って実行できる",
   "author": "sandbox",
   "license": "MIT",
@@ -13,6 +13,7 @@
     "test": "node --test test/*.test.js",
     "dist": "electron-builder --win",
     "dist:portable": "electron-builder --win portable",
+    "publish:update": "node scripts/publish-update.js",
     "predist": "node scripts/check-dist.js",
     "predist:portable": "node scripts/check-dist.js"
   },
