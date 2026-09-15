@@ -290,8 +290,10 @@
       badge.textContent = item.state === 'working' && item.kind === 'theirs' && item.executor ? `${label} ${item.executor}` : label;
       badge.className = `status${item.state === 'working' ? ' active' : item.state === 'done' ? ' ok' : item.state === 'failed' ? ' ng' : ''}`;
     }
-    $('share-view-request').classList.toggle('on', state.view === 'request');
-    $('share-view-nodes').classList.toggle('on', state.view === 'nodes');
+    for (const [id, view] of [['share-view-request', 'request'], ['share-view-nodes', 'nodes']]) {
+      $(id).classList.toggle('on', state.view === view);
+      $(id).setAttribute('aria-selected', String(state.view === view));
+    }
     $('share-accept-mode').checked = s?.accept === 'auto';
     const enabled = !!(s && s.enabled);
     $('share-accept-control').hidden = !enabled;

@@ -30,6 +30,29 @@ function slotOf(html, name) {
 }
 function teachingSlot(html) { return slotOf(html, 'teaching'); }
 
+test('領域の見出し帯は 1 つの形（会話・会話を検索・タスク・共有・受信箱）', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  // 1. 主要な領域はどれも .area-head を名乗る（寸法・罫線・狭い幅の逃げを 1 か所で持つ）
+  for (const head of ['<header id="chat-head" class="area-head">', '<header id="automation-head" class="area-head">',
+    '<header id="share-head" class="area-head">']) assert.ok(html.includes(head), `${head} が無い`);
+  assert.strictEqual((html.match(/class="area-head"/g) || []).length, 5, '見出し帯は 会話・会話を検索・タスク・共有・受信箱 の 5 つ');
+  // 2. 寸法と題名の規則は .area-head の側にだけ置く（画面ごとに書き直さない）
+  assert.match(css, /^\.area-head \{[^}]*min-height: 60px/m);
+  assert.match(css, /^\.area-head \.title \{[^}]*font-weight: 650/m);
+  assert.ok(!/^#chat-head \{/m.test(css), '会話ヘッダーで寸法を書き直さない');
+  assert.ok(!/^#share-head/m.test(css), '共有ヘッダーで寸法を書き直さない');
+  // 3. 狭い幅で、メニューを開くボタンに題名が隠れない（逃げはすべての見出し帯に効く）
+  assert.match(css, /@media \(max-width: 820px\)[^@]*\.area-head \{ padding-left: 62px; \}/);
+  // 4. 変更パネルの見出しも、隣の見出し帯と高さと罫線を合わせる
+  assert.match(css, /^#changes > \.side-head \{[^}]*min-height: 60px/m);
+  // 5. タブの列に置くのはタブだけ（操作のボタンを混ぜない。狭い幅でタブごと消える）
+  for (const nav of html.match(/<nav class="views"[\s\S]*?<\/nav>/g) || []) {
+    assert.ok(!/class="(?:small|primary|quiet|danger)"/.test(nav), `タブの列に操作のボタンが混ざっている: ${nav}`);
+    assert.match(nav, /aria-selected="/, 'タブは選択状態を持つ');
+  }
+});
+
 test('端末ミラーと入力欄は会話画面と同じ実体を使う（見た目を作り直さない）', () => {
   const html = read('renderer/index.html');
   const css = read('renderer/styles.css');
@@ -203,8 +226,8 @@ test('受信箱は既存の部品（メニューの領域・一覧の行・件�
   assert.match(renderer, /el\('li', `row-item\$\{item\.queue === 'action' \? ' attention' : ''\}`\)/, '要対応の行は会話一覧の「確認待ち」と同じ印');
   assert.match(renderer, /const pick = el\('button', 'list-pick'\);[\s\S]*?pick\.onclick = \(\) => openAttentionItem/, '項目は会話一覧と同じ .list-pick');
   assert.match(renderer, /const button = \$\('area-inbox'\);[\s\S]*?badge = el\('span', 'unread'\)/, '件数は「共有」と同じ .unread の印');
-  // 2. 本文は既存の .empty-state（見出し 1 行と説明 1 行）だけ。受信箱に見た目の規則・私物の部品を足さない
-  assert.match(html, /<section id="inbox-area" aria-label="受信箱" hidden>\s*<div class="empty-state"><h2 id="inbox-title"><\/h2><p id="inbox-sub"><\/p><\/div>\s*<\/section>/);
+  // 2. 見出しは他の領域と同じ .area-head、本文は 1 行だけ。受信箱に見た目の規則・私物の部品を足さない
+  assert.match(html, /<section id="inbox-area" aria-label="受信箱" hidden>\s*<header class="area-head">\s*<div class="area-heading">\s*<div class="title">受信箱<\/div>\s*<p id="inbox-meta"><\/p>\s*<\/div>\s*<\/header>\s*<div class="blank compact"><p id="inbox-sub"><\/p><\/div>\s*<\/section>/);
   assert.match(css, /^#share-area, #inbox-area \{/m, '本文の面は「共有」と同じ規則を共有する');
   assert.deepStrictEqual(css.match(/^#inbox[^{]*\{/gm) || [], [], '受信箱だけの規則を足さない');
   for (const clone of ['.inbox-card {', '.inbox-item {', '.attention-inbox {', '.inbox-panel {']) assert.ok(!css.includes(clone), `共有部品の私物な複製がある: ${clone}`);
