@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 共有フォルダから自動更新する（本体と WSL 側の agent-tools）（0.3.0）
+
+- **外部サービス無しで配って更新できる。** `npm run dist:portable` のあと `npm run publish:update -- <更新元>`
+  で、portable 版の exe を共有フォルダ（または社内 HTTP の文書ルート）へ置き、`manifest.json`
+  （版・sha256）を書く。ビルドは手元で行う（CI は要らない）。
+- **確認は起動時・定期・手動、取り込みは承認したときだけ。** 設定 > アプリに更新元・起動時に確認・
+  確認する間隔・「今すぐ確認」が加わり、見つかった本体と agent-tools は 1 つのダイアログに並ぶ。
+  「更新する」を押した分だけ取り込み、「あとで」で閉じた内容は次の起動まで自動では出さない。
+- **本体は portable 版だけ入れ替える。** 新しい exe を隣に置き、終了後に切り離した cmd が入れ替えて
+  起動し直す（失敗したら元の exe で起動し直す）。開発起動や NSIS 版では案内だけ出す。
+- **agent-tools は agent-project の自己更新に乗せる。** 送り手は git push だけ（共有フォルダの bare
+  リポジトリでよい）。agent-app は WSL で `agent-project update --check --json` を叩いて有無を見せ、承認後に
+  `--now --json` で取り込む。物差しはコミット SHA 1 つで、agent-app は版の印を持たない。
+  設計は設計書 ADR-16、仕様は仕様書 §16。
+
+### agent-project: 自己更新は既定で一族まとめて入れ直し、`update --json` で機械にも答える
+
+- **`update_subdir` の既定を一族全体に広げた。** `tools/agent-tools` を先頭に 4 エンジン + agent-loop と
+  `agents/` `commands/` を取り、`install.sh` は統合インストーラを指す。本体だけ入れ直して片方だけ古い
+  ノードができるのを避ける。本体だけに戻すなら `update_subdir: tools/agent-project tools/agent-tools`。
+- **`agent-project update --check --json` / `--now --json`。** 結果を最後の行の JSON で出し、`--now` でも
+  再起動しない（一回実行の出口。常駐の自己更新は従来どおり）。agent-app（Windows）が WSL 側の更新に使う。
+
 ### agent-tools: 長いツール出力を捨てずに外へ置き、AI には抜粋と所在だけを渡す
 
 - **AI の文脈に載せる量は増やさず、材料は失わない。** ローカルの AI の実行ループ（`--tools`）で

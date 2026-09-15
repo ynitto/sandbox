@@ -71,6 +71,19 @@ function notify(raw) {
   return { background: source.background !== false };
 }
 
+// 設定 > アプリ「更新」。source は共有フォルダのパスか http(s) の URL（空なら確認しない）。
+// intervalHours 0 は定期確認をしない。
+const UPDATE_DEFAULTS = { source: '', onStartup: true, intervalHours: 24 };
+const UPDATE_INTERVALS = [0, 6, 24, 168];
+function update(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    source: String(source.source || '').trim().slice(0, 500),
+    onStartup: source.onStartup !== false,
+    intervalHours: bounded(source.intervalHours, UPDATE_DEFAULTS.intervalHours, 0, 720),
+  };
+}
+
 function concurrent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 2;
@@ -147,6 +160,7 @@ function normalize(raw) {
     },
     share: share(source.share),
     notify: notify(source.notify),
+    update: update(source.update),
   };
 }
 
@@ -192,6 +206,6 @@ function resolve(config, request = {}, { optimized: on = true } = {}) {
 
 module.exports = {
   TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS, SHARED_POLICY, SHARE_DEFAULTS, ACCEPT_MODES,
-  MAX_QUICK_REQUESTS, DEFAULT_QUICK_REQUESTS,
-  normalize, resolve, optimized, effectivePolicy, share, acceptMode, quickRequests, notify,
+  MAX_QUICK_REQUESTS, DEFAULT_QUICK_REQUESTS, UPDATE_DEFAULTS, UPDATE_INTERVALS,
+  normalize, resolve, optimized, effectivePolicy, share, acceptMode, quickRequests, notify, update,
 };

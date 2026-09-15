@@ -92,6 +92,42 @@ npm run dist:portable    # portable だけ
 - Linux 上でも `npm run dist` は通る（electron-builder 26 は wine なしで exe のアイコン・バージョン情報を
   書き換え、NSIS も同梱の物を使う）。署名は行わない。
 
+### 配って更新する（自動更新）
+
+外部サービスは使わない。本体（exe）は**更新元**（みんなが読める共有フォルダ、または社内の HTTP）に
+置き、WSL 側の agent-tools は **agent-project の自己更新**（git のリポジトリから取り込む）に乗せる。
+ビルドと配置は手元で行う（CI は要らない）。
+
+```bash
+cd tools/agent-app
+npm run dist:portable                                   # release/agent-app.exe
+npm run publish:update -- \\server\share\agent-app      # exe を写し、manifest.json を書く
+npm run publish:update -- \\server\share\agent-app --notes "端末の表示を直した"
+```
+
+更新元に置かれるのは `manifest.json`（版・ファイル名・sha256）と `agent-app-<版>.exe`（版は
+`package.json` の `version`。**上げてから**ビルドする）の 2 つ。
+
+agent-tools の送り手は **git push だけ**。外部サービスを使わないなら、共有フォルダに bare リポジトリを
+置いて（`git clone --bare <このリポジトリ> \\server\share\sandbox.git`、以後 `git push`）、各 PC の WSL で
+agent-project の設定（`~/.agents/agent-project.yaml`）の `update_repo` に `/mnt/<ドライブ>/…/sandbox.git`
+（`net use` したドライブ）や社内 git の URL を書く。取り込む範囲は agent-project の既定で**一族まとめて**
+（4 エンジン + agent-herd + agent-loop と `agents/` `commands/`。agent-project の README「自動アップデート」）。
+
+受け手は「設定 > アプリ」で更新元（exe の置き場）を入れる。確認は **起動時**（既定 ON）、**定期**（既定
+1 日ごと）、**「今すぐ確認」** の 3 つで、見つかった分は 1 つのダイアログに並び、**「更新する」を押した
+分だけ**取り込む（黙って入れ替えない。「あとで」で閉じた内容は次の起動まで自動では出さない）。
+
+| 対象 | 何をするか | できる形態 |
+|---|---|---|
+| Agent App 本体 | 更新元の exe を隣に置き、終了後に入れ替えて起動し直す（動いている exe は自分で上書きできないので、小さな cmd を切り離して走らせる） | Windows の **portable 版**だけ。開発起動や NSIS 版では案内だけ出す |
+| agent-tools | CLI と同じホスト（Windows なら WSL）で `agent-project update --check --json` を叩いて有無を見て、承認後に `agent-project update --now --json` で取り込む（sparse-checkout → `install.sh`）。物差しはコミット SHA で、agent-app は印を持たない | agent-project が WSL に入っていて `update_repo` が解決できるとき。無ければ行を出さない・「更新元の設定なし」と出す |
+
+取得した exe は sha256 を照合してから使う。入れ替えに失敗したら元の exe で起動し直し、経過は
+`%TEMP%\agent-app-update.log` に残る。agent-project の取り込みが失敗したときは、その理由（JSON の
+`error`）をダイアログに出す。常駐の agent-project が動いている PC では、常駐自身も 6 時間ごとに同じ
+更新を見に行く（同じ SHA なら二重には適用しない）。
+
 ### 前提
 
 | | Linux / macOS | Windows |

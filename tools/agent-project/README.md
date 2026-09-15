@@ -1212,7 +1212,16 @@ env/config 修正と program 起票を担う**（本体は agent-flow 由来の�
 ```bash
 agent-project update --check    # 更新の有無だけ表示（取り込まない）
 agent-project update --now      # 更新があれば install.sh を実行して再起動
+agent-project update --check --json   # 機械向け 1 行 JSON（agent-app が WSL で叩く）
+agent-project update --now --json     # 取り込んで JSON を出す。再起動はしない
 ```
+
+`--json` は `{"enabled","repo","branch","applied_sha","remote_sha","available","baseline","applied","error"}` の
+1 行（取り込みの経過 `[update] …` が先に出ることがあるので、読む側は**最後の行**を取る）。agent-app（Windows）は WSL 側の一族をこの 2 つで確認・更新する（agent-app の README「配って更新する」）。
+
+**入れ直す範囲は一族まとめて**（既定の `update_subdir` が `tools/agent-tools` を先頭に 4 エンジン +
+agent-loop + `agents/` `commands/` を並べ、`install.sh` は統合インストーラを指す）。agentcore の契約は
+一族で揃っていないと噛み合わないので、本体だけを入れ直す既定にはしない。
 
 設定ファイル（`~/.agents/agent-project.yaml`）で調整できる（すべて任意。**既定のままで有効**）。
 
@@ -1221,8 +1230,9 @@ update_enabled: true                  # 自動アップデートの ON/OFF（fal
 update_check_interval: 21600          # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
 update_repo: ""                       # 空なら skill-registry.json から自動解決。別 repo を使うときだけ指定
 update_branch: main                   # 追従するブランチ（空/既定なら registry の branch を採用）
-update_subdir: tools/agent-project tools/agent-tools  # 取得対象パス（カンマ/空白区切りで複数）
-update_installer: install.sh          # サブディレクトリ内で実行するインストーラ
+update_subdir: tools/agent-tools tools/agent-project tools/agent-flow tools/agent-loop tools/agent-amigos tools/agent-audit agents commands
+                                      # 取得対象パス（カンマ/空白区切りで複数）。先頭が installer の基準
+update_installer: install.sh          # 先頭ディレクトリ内で実行するインストーラ（既定は統合インストーラ）
 ```
 
 > 初回チェックは「いま動いている本体が最新」とみなし、その時点の SHA をベースラインとして記録するだけ

@@ -18,6 +18,7 @@ const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
 const { SessionBrowser } = require('./sessionBrowser');
 const notify = require('./notify');
+const { Updater } = require('./update');
 const forkProtocol = require('../renderer/forkProtocol');
 const response = require('./response');
 const { createGate } = require('./executionGate');
@@ -1208,6 +1209,20 @@ function registerIpcHandlers(getWindow) {
   // 写したが送らずに閉じた添付を掃除する
   try { attachments.sweep(userData(), store.readAllSessions(userData())); } catch { /* 消せなくても動く */ }
 
+  // 自動更新（update.js）。確認は起動時・定期・手動、取り込みは利用者が押したときだけ。
+  const updater = new Updater({
+    userData: userData(),
+    appVersion: app.getVersion(),
+    loadConfig: () => store.loadConfig(userData()),
+    shellFor: (distro) => host.shellFor(distro),
+    post,
+    quit: () => app.quit(),
+  });
+  handle('update:status', () => updater.status());
+  handle('update:check', () => updater.check({ manual: true }));
+  handle('update:apply', (p) => updater.apply({ app: !!p.app, tools: !!p.tools }));
+  updater.schedule();
+
   handle('host:info', async () => {
     const cfg = store.loadConfig(userData());
     const info = await host.probe(process.platform === 'win32' ? cfg.wslDistro : '');
@@ -1218,6 +1233,7 @@ function registerIpcHandlers(getWindow) {
     const before = store.loadConfig(userData());
     const next = store.saveConfig(userData(), p.patch);
     if (before.wslDistro !== next.wslDistro) { host.closeAll(); availCache.clear(); }
+    if (JSON.stringify(before.update) !== JSON.stringify(next.update)) updater.schedule();
     if (shareInstance) shareInstance.reconfigure(next).catch(() => {});
     if (JSON.stringify(before.repos) !== JSON.stringify(next.repos)) refreshRepoUrls().catch(() => {});
     return next;
@@ -1534,6 +1550,7 @@ function registerIpcHandlers(getWindow) {
   app.on('before-quit', () => {
     clearInterval(sweepTimer);
     clearInterval(shareTimer);
+    updater.unschedule();
     if (shareInstance) shareInstance.stop().catch(() => {});
     for (const c of running.values()) c.stop();
     for (const c of conversations.values()) {
