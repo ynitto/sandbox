@@ -980,25 +980,57 @@ function renderRunSettingsSummary() {
     : ($('permission-mode').value === 'auto' ? '自動承認' : '確認して実行');
   const location = activeWorktree() ? '分離フォルダ' : 'リポジトリ本体';
   const skillLabel = `スキル ${SKILL_MODE_LABEL[state.turnSkillMode] || SKILL_MODE_LABEL.auto}`;
-  // 共有は「誰が・どの優先度で」だけ。起動方針・権限・作業フォルダはこの PC の話なので出さない
+  // 共有は「誰に・誰が・どの優先度で」だけ。起動方針・権限・作業フォルダはこの PC の話なので出さない
+  if (shared) renderShareTargets();
   const agentLabel = `${agent}${model ? ` / ${model}` : ''}`;
   const priorityLabel = `優先度 ${PRIORITY_LABEL[$('priority').value] || '通常'}`;
+  const targetLabel = shareTarget() ? `${shareTarget()} 宛て` : '';
   summary.textContent = shared
-    ? [agent, priorityLabel].join(' · ')
+    ? [agent, targetLabel, priorityLabel].filter(Boolean).join(' · ')
     : [selected.policy === 'direct' ? '' : policy.label, agent, mode].filter(Boolean).join(' · ');
   summary.title = shared
-    ? [agentLabel, priorityLabel, skillLabel].join(' · ')
+    ? [agentLabel, targetLabel || 'どの参加者でも', priorityLabel, skillLabel].join(' · ')
     : [policy.label, agentLabel, skillLabel, mode, location].join(' · ');
   summary.parentElement.setAttribute('aria-label', `実行設定: ${summary.title}`);
   $('direct-agent-settings').hidden = !(selected.policy === 'direct' || shared);
   $('policy-field').hidden = shared;
   $('permission-field').hidden = shared;
+  $('share-target-field').hidden = !shared;
   $('share-priority-field').hidden = !shared;
   $('worktree-field').hidden = shared || !worktreeUI();
   const waiting = shareWaiting();
   $('send').setAttribute('aria-label', waiting ? 'メッセージを送信' : (shared ? '依頼を共有へ送信' : '依頼を送信'));
   $('send').querySelector('.send-label').textContent = waiting ? '送る' : (shared ? '依頼する' : '送信');
   renderTurnSkills();
+}
+
+// 依頼先。空は「どれでも」（仲間の誰でも拾えるブロードキャスト）、名前なら その参加者だけが拾う
+function shareTarget() {
+  return $('share-target').value;
+}
+
+// 依頼先の選択肢は、いま見えている参加者（共有画面の「参加者」と同じ表）。選んでいた名前が
+// 見えなくなっても、送るまでは選択肢に残す（不在の印だけ付ける）
+function renderShareTargets() {
+  const sel = $('share-target');
+  const status = Share.status();
+  const peers = status && Array.isArray(status.peers) ? status.peers : [];
+  const chosen = sel.value;
+  const names = peers.map((p) => p.node);
+  if (chosen && !names.includes(chosen)) names.push(chosen);
+  sel.replaceChildren();
+  const any = el('option', '', 'どれでも');
+  any.value = '';
+  sel.append(any);
+  for (const name of names) {
+    const peer = peers.find((p) => p.node === name);
+    const stale = !peer || (peer.seenAt && Date.now() - Date.parse(peer.seenAt) > 90 * 1000);
+    const o = el('option', '', stale ? `${name}（不在）` : name);
+    o.value = name;
+    sel.append(o);
+  }
+  sel.value = chosen && names.includes(chosen) ? chosen : '';
+  sel.disabled = !names.length;
 }
 
 // 共有のときだけ、エージェントの選択肢の先頭に「どれでも」を置く（外したら元の選択へ戻す）。
@@ -1632,7 +1664,7 @@ function turnOptions() {
     autoApprove: $('permission-mode').value === 'auto',
     skillMode: state.turnSkillMode,
     skills: state.turnSkillMode === 'manual' ? [...state.turnSkills] : [],
-    ...(selected.policy === 'shared' ? { priority: $('priority').value } : {}),
+    ...(selected.policy === 'shared' ? { priority: $('priority').value, to: shareTarget() } : {}),
   };
 }
 
@@ -1659,7 +1691,8 @@ async function sendPrompt() {
   const opts = turnOptions();
   const selected = selectedExecution(opts.policy);
   const shared = opts.policy === 'shared';
-  inputStatus('pending', shared ? '共有に送信中…' : `${selected.cli}を準備中…`);
+  const shareLabel = opts.to ? `${opts.to} へ` : '共有に';
+  inputStatus('pending', shared ? `${shareLabel}送信中…` : `${selected.cli}を準備中…`);
   // 起動直後は CLI の有無と tmux の有無がまだ届いていないことがある（ホストの返事待ち）。
   // 経路（tmux / ヘッドレス）はその答えで決まるので、ここで待つ。
   await Promise.all([state.agentsReady, state.hostReady]);
@@ -1714,7 +1747,7 @@ async function sendPrompt() {
     else if (!shareWaiting()) Term.detach();
     if (res.warning) notice(res.warning);
     const sentAt = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    inputStatus('success', shared ? `共有に送信済み ${sentAt}` : `${selected.cli}へ送信済み ${sentAt}`, 4000);
+    inputStatus('success', shared ? `${shareLabel}送信済み ${sentAt}` : `${selected.cli}へ送信済み ${sentAt}`, 4000);
     $('send').classList.add('sent');
     setTimeout(() => $('send').classList.remove('sent'), 700);
     renderHeader();
@@ -2616,6 +2649,8 @@ async function init() {
   $('cli').onchange = () => onTurnOptionChange('cli');
   $('model').onchange = () => onTurnOptionChange('model');
   $('permission-mode').onchange = () => onTurnOptionChange('permission');
+  $('share-target').onchange = () => renderRunSettingsSummary();
+  $('priority').onchange = () => renderRunSettingsSummary();
   $('turn-skill-mode').onchange = () => {
     state.turnSkillMode = $('turn-skill-mode').value;
     state.turnSkills = [];
@@ -2752,6 +2787,7 @@ async function init() {
   api.share.onChanged(() => {
     renderShareUnread();
     if (state.current && state.current.share) renderHeader();
+    if (sharing()) renderRunSettingsSummary();
   });
   api.onTermScreen((p) => {
     state.tails.set(p.id, p.tail || '');

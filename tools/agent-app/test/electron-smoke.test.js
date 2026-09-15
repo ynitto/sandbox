@@ -82,12 +82,23 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   const published = JSON.parse(fs.readFileSync(path.join(updateSource, 'manifest.json'), 'utf8'));
   published.app.version = '99.0.0';
   fs.writeFileSync(path.join(updateSource, 'manifest.json'), JSON.stringify(published));
+  // 共有の仲間を 1 台、この試験のプロセスに立てる（依頼先の選択肢に出す。UDP は使わず TCP の /hello で見つけ合う）
+  const { Share } = require('../src/main/share');
+  const settings = require('../src/main/settings');
+  const peerData = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-smoke-peer-'));
+  const peer = new Share({
+    userData: peerData, agents: () => ['claude'],
+    config: settings.normalize({ share: { enabled: true, node: 'pc-b', passphrase: 'smoke', participate: true, clis: ['claude'] } }),
+    options: { udp: false, port: 0, host: '127.0.0.1', peers: { helloMs: 500, staleMs: 60000 } },
+  });
+  await peer.start();
+  assert.strictEqual(peer.state, 'on', peer.error);
   appStore.saveConfig(userData, {
     repos: [repo, otherRepo], lastRepo: repo, area: 'work',
     update: { source: updateSource, onStartup: false, intervalHours: 0 },
-    // 共有: 合言葉だけ入れて受け口を開く（仲間はいない）。自分が出した依頼を画面に出すため、
+    // 共有: 合言葉と仲間 1 台（pc-b）を入れて受け口を開く。自分が出した依頼を画面に出すため、
     // 依頼の控え（requests.json）を先に置く。
-    share: { enabled: true, passphrase: 'smoke', node: 'smoke-pc', port: 0, udp: false, accept: 'manual' },
+    share: { enabled: true, passphrase: 'smoke', node: 'smoke-pc', port: 0, udp: false, accept: 'manual', peers: [`127.0.0.1:${peer.port}`] },
   });
   const session = appStore.createSession(userData, {
     repo, cli: 'codex', model: 'gpt-test', policy: 'quality', tier: 'large', transport: 'headless',
@@ -343,6 +354,23 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await win.click(background, { position: { x: 4, y: 4 } });
       assert.strictEqual(await win.locator(menu).getAttribute('open'), null, `${menu} が背景クリックで閉じない`);
     }
+
+    // 共有に依頼: 実行設定は依頼先・エージェント・優先度だけ。依頼先は「どれでも」（ブロードキャスト）が既定で、
+    // 見つかっている仲間（pc-b）を名指しできる
+    await win.locator('#input-mode-share:not([hidden])').waitFor({ timeout: 20000 });
+    await win.click('#input-mode-share');
+    await win.click('#run-settings > summary');
+    await win.locator('#share-target-field').waitFor();
+    await win.waitForFunction(() => [...document.getElementById('share-target').options].some((o) => o.value === 'pc-b'), null, { timeout: 20000 });
+    assert.strictEqual(await win.locator('#share-target').inputValue(), '', '既定はどれでも');
+    assert.strictEqual(await win.locator('#policy-field').isVisible(), false, '共有では起動方針を出さない');
+    assert.match(await win.locator('#run-settings-summary').textContent(), /^どれでも · 優先度 通常$/);
+    await win.selectOption('#share-target', 'pc-b');
+    assert.match(await win.locator('#run-settings-summary').textContent(), /^どれでも · pc-b 宛て · 優先度 通常$/);
+    if (process.env.AGENT_APP_SHARE_TARGET_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_TARGET_SCREENSHOT });
+    await win.click('#chat-title', { position: { x: 4, y: 4 } });
+    await win.click('#input-mode-message');
+    assert.strictEqual(await win.locator('#share-target-field').isVisible(), false, '共有以外では依頼先を出さない');
 
     await win.click('#area-tasks');
     const workspace = win.locator('#automation-workbench');
@@ -744,6 +772,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_SHARE_SETTINGS_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_SETTINGS_SCREENSHOT });
     assert.deepStrictEqual(errors, [], '画面でエラーが発生した');
   } finally {
+    await peer.stop();
     await electron.close();
   }
 });

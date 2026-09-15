@@ -129,8 +129,9 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 「共有に依頼」は同じ LAN の仲間の AI へ依頼を回します（設定 > 共有を使うと決めているときだけ出ます）。
 会話・タスクを AI と作る会話・ワークフローを AI と作る会話のどれでも同じ 3 つです。
 
-「共有に依頼」を選ぶと、実行設定はエージェントと優先度だけになり、送信ボタンが「依頼する」に
-変わります。答えは同じ会話に、どの PC のどの AI が答えたかを添えて戻ります。
+「共有に依頼」を選ぶと、実行設定は依頼先・エージェント・優先度だけになり、送信ボタンが「依頼する」に
+変わります。依頼先は「どれでも」（仲間の誰でも拾える）か、参加者の 1 台を名指しします。
+答えは同じ会話に、どの PC のどの AI が答えたかを添えて戻ります。
 
 待っている間は、端末ミラーに引き受けた人の端末が映り（見るだけ）、その下に「やり取り」が出ます。
 入力欄はそのまま**引き受けた人へのひとこと**になり（他の入力先は押せません）、送信ボタンは「送る」、
@@ -161,6 +162,7 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 | スキル | 自動 / 手動選択 / 使用しない | 設定 > 共通指示の候補から、依頼に合うスキルを選んで渡す |
 | Ask モード | on / off | 読み取り専用の起動引数で CLI を起動する。保証できない CLI では警告が出る |
 | 作業フォルダ | リポジトリ本体 / `.worktrees/<名前>` | 会話を作る前だけ選べる。作ったあとは変えられない |
+| 依頼先 | どれでも / 参加者の名前 | 入力先が「共有に依頼」のときだけ。名指しした参加者だけが拾う。「どれでも」は仲間の誰でも拾える（§15） |
 | 優先度 | 高 / 通常 / 低 | 入力先が「共有に依頼」のときだけ。仲間が拾う順に効く（§15） |
 
 入力先が「共有に依頼」のときは、起動方針・Ask モード・作業フォルダは出ません（どれもこの PC の
@@ -421,6 +423,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `share:status` | `share.status()` | なし | 共有の状態（自分の宣言・仲間・自分の依頼の列・受けている依頼・今日の実績）。§15 |
 | `share:cancel` | `share.cancel(id)` | `id` | 自分の依頼を取り下げる。執行者には `/cancel` で伝える |
 | `share:priority` | `share.setPriority(id, priority)` | `id`, `priority`（high / normal / low） | open の依頼の優先度を変える |
+| `share:target` | `share.setTarget(id, to)` | `id`, `to`（参加者の名前。空でどれでも） | open の依頼の依頼先を変える。仲間へ NEW を流し直す |
 | `share:mode` | `share.setMode(mode)` | `mode`（auto / manual / off） | 設定 `share.accept` を書き換えて立て直す。設定 > 共有の選択と同じ値 |
 | `share:accept` | `share.accept(id)` | `id` | 「選んで受ける」で 1 件を拾う。拾えなければ理由を投げる（`participant.reasonText`） |
 | `share:stop` | `share.stopAccepted(id)` | `id` | 引き受けて実行している依頼を自分から止める |
@@ -1032,9 +1035,9 @@ CLI の管轄で、agent-app は ID を覚えるだけである。
 |---|---|
 | `peers.js` | 仲間の表。`/hello`（30 秒ごと）と UDP の HELLO で覚え、90 秒便りが無ければ不在。投函の通知（NEW）を TCP と UDP で流す |
 | `server.js` | HTTP。`POST /hello` `POST /notify` `GET /node` `GET /requests` `POST /requests/<id>/{claim,heartbeat,result,cancel,message}` `GET /requests/<id>/attachments/<name>` |
-| `requester.js` | 自分の依頼の列（`userData/share/requests.json`）。claim は先着 1 件だけ 200、以後 409。心拍が 90 秒途絶えたら open に戻して NEW を流す。心拍に `screen` が載っていれば覚えて `share:screen` を送る。ひとこと（§15.0）の受け渡しと送り直し。答えは会話へ assistant のメッセージとして保存し `turn:done` を送る。参加者側の枠切れ（`quota`）と一過性（`transient`）の失敗は 1 回だけ黙って再投函する |
+| `requester.js` | 自分の依頼の列（`userData/share/requests.json`）。依頼には宛先 `to`（参加者の名前。空でブロードキャスト）を持ち、`/requests` の一覧にも載せる。claim は先着 1 件だけ 200、以後 409。心拍が 90 秒途絶えたら open に戻して NEW を流す。心拍に `screen` が載っていれば覚えて `share:screen` を送る。ひとこと（§15.0）の受け渡しと送り直し。答えは会話へ assistant のメッセージとして保存し `turn:done` を送る。参加者側の枠切れ（`quota`）と一過性（`transient`）の失敗は 1 回だけ黙って再投函する |
 | `participant.js` | ひとことの受け渡しと、引き受けた端末へのキー送り（`keys`）。引き受け方（`mode()`）が `auto` のときだけ仲間の `/requests` を集めて `queue.js` で並べ、上から claim。`manual` では画面から `accept(id)` で 1 件だけ拾う。拾ったら読み取り専用で CLI を 1 回起こす（`ipc.runSharedPrompt`。cwd は `workspace.url` と一致する登録リポジトリか `userData/share/scratch/<id>`）。30 秒ごとに heartbeat、2 回届かなければ CLI を止める。端末の画面が変わったら 2 秒ごとに心拍へ載せて依頼者へ送る（48 KB まで）。答えは依頼者へ直送し、届かなければ `outbox.json` に持って 60 秒ごとに再送（24 時間） |
-| `queue.js` | 並び鍵 `(実効優先度 降順, 依頼者の今日の落札数 昇順, posted_at 昇順, id)`。実効優先度 = high 2 / normal 1 / low 0 + 待ち 30 分ごとに 1（上限 2）。資格 = 自分の依頼でない ∧ CLI が交わる ∧ その CLI の枠が残る ∧ write は受ける設定 ∧ 依頼者あたりの上限内 ∧ workspace があれば同じリポジトリを登録している |
+| `queue.js` | 並び鍵 `(実効優先度 降順, 依頼者の今日の落札数 昇順, posted_at 昇順, id)`。実効優先度 = high 2 / normal 1 / low 0 + 待ち 30 分ごとに 1（上限 2）。資格 = 自分の依頼でない ∧ （`to` があれば）自分宛て ∧ CLI が交わる ∧ その CLI の枠が残る ∧ write は受ける設定 ∧ 依頼者あたりの上限内 ∧ workspace があれば同じリポジトリを登録している |
 | `ledger.js` | `userData/share/ledger/<YYYYMMDD>.jsonl`（件数・秒・CLI・依頼者・結果）。CLI の `errors` が `class: quota` を返したら、`exhausted` はその日の残り、`rate_limit` は 10 分その CLI を受けない |
 | `index.js` | 配線。設定 `share` が変わったら受け口ごと立て直す。再起動のとき、会話に `share.id` の印だけ残った依頼は失敗として閉じる |
 

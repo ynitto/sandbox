@@ -553,14 +553,14 @@ async function runShared(id, sess, dirs, p, requested, cfg, send, release) {
   if (conversations.has(id) || sess.live) await closeConversation(id);
   const request = shareInstance.post({
     sessionId: id, title: requested.text.split('\n')[0], summary: requested.text, goal, requires: { agent_cli: requested.cli ? [requested.cli] : [] },
-    mode: 'read', model: requested.model, priority: p.priority || 'normal', attachments: served, workspace,
+    mode: 'read', model: requested.model, priority: p.priority || 'normal', to: p.to || '', attachments: served, workspace,
   }, { onDone: release });
   store.updateSession(ud, id, {
     cli: requested.cli || sess.cli, model: requested.model, readonly: true, policy: settings.SHARED_POLICY, tier: '', transport: 'headless',
     share: { id: request.id },
   });
   send('turn:started', { id, argv: [], warning: '' });
-  send('turn:progress', { id, item: { text: `共有の列に並べた（${request.id}）`, status: 'running' } });
+  send('turn:progress', { id, item: { text: `${request.to ? `${request.to} 宛てに` : ''}共有の列に並べた（${request.id}）`, status: 'running' } });
   for (const item of skillDelivery.information) send('turn:info', { id, item });
   return { pid: 0, argv: [], shared: request.id };
 }
@@ -1266,6 +1266,7 @@ function registerIpcHandlers(getWindow) {
   handle('share:publicSay', p => shareInstance.sayPublic(String(p.key || ''), p.text, p.messageId));
   handle('share:cancel', (p) => shareInstance.cancel(String(p.id || '')));
   handle('share:priority', (p) => shareInstance.setPriority(String(p.id || ''), p.priority));
+  handle('share:target', (p) => shareInstance.setTarget(String(p.id || ''), p.to));
   handle('share:accept', (p) => shareInstance.accept(String(p.id || '')));
   handle('share:stop', (p) => shareInstance.stopAccepted(String(p.id || '')));
   handle('share:screen', (p) => shareInstance.screenOf(String(p.id || '')));

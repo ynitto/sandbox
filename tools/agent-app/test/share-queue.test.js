@@ -39,6 +39,10 @@ test('資格: 自分の依頼・CLI の不一致・書き込み・依頼者の�
   assert.equal(queue.eligible(req({ posted_by: 'heavy' }), ctx).reason, 'requester_cap');
   assert.equal(queue.eligible(req({ workspace: { url: 'git@x:team/other.git' } }), ctx).reason, 'repo');
   assert.equal(queue.eligible(req({ state: 'working' }), ctx).reason, 'state');
+  // 宛先: 名指しされた参加者だけが拾える。空（ブロードキャスト）は誰でも
+  assert.equal(queue.eligible(req({ to: 'other' }), ctx).reason, 'target');
+  assert.deepEqual(queue.eligible(req({ to: 'me' }), ctx), { ok: true, cli: 'claude', mode: 'read' });
+  assert.deepEqual(queue.eligible(req({ to: '' }), ctx), { ok: true, cli: 'claude', mode: 'read' });
   assert.deepEqual(queue.eligible(req({ requires: { agent_cli: ['codex', 'claude'] } }), ctx), { ok: true, cli: 'claude', mode: 'read' });
   assert.deepEqual(queue.eligible(req({ workspace: { url: 'git@x:team/app.git' } }), ctx), { ok: true, cli: 'claude', mode: 'read' });
   assert.equal(queue.eligible(req({ mode: 'write' }), { ...ctx, acceptWrite: true }).mode, 'write');

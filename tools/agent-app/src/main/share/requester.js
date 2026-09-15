@@ -37,6 +37,11 @@ const KEEP_TALK = 50;              // 1 つの依頼に残すひとことの数
 
 function nowIso() { return new Date().toISOString(); }
 
+// 宛先の名前。仲間の名前と同じ正規化（peers の node と一致させる）。空はブロードキャスト
+function targetOf(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 60);
+}
+
 function newId() {
   const ts = nowIso().replace(/[-:T]/g, '').slice(0, 14);
   return `dg-${ts}-${crypto.randomBytes(2).toString('hex')}`;
@@ -100,8 +105,9 @@ class Requester extends EventEmitter {
 
   // ---- 投函 ------------------------------------------------------------------------
 
-  // input: { sessionId, title, goal, requires: { agent_cli: [] }, mode, model, priority, attachments: [{ id, name, path }],
+  // input: { sessionId, title, goal, requires: { agent_cli: [] }, mode, model, priority, to, attachments: [{ id, name, path }],
   //          workspace: { url, base }, retryOf, attempts }
+  //   to … 宛先の参加者の名前。空なら誰でも拾える（ブロードキャスト）
   post(input, { onDone = null } = {}) {
     const id = newId();
     const request = {
@@ -114,6 +120,7 @@ class Requester extends EventEmitter {
       // （合成した本文（goal）は履歴も含むので配らない。全文は claim した人にだけ渡す）
       summary: String(input.summary || input.title || '').slice(0, MAX_SUMMARY),
       priority: priorityOf(input.priority),
+      to: targetOf(input.to),
       mode: input.mode === 'write' ? 'write' : 'read',
       requires: { agent_cli: [...new Set((Array.isArray(input.requires && input.requires.agent_cli) ? input.requires.agent_cli : []).map((c) => String(c || '').trim().toLowerCase()).filter(Boolean))] },
       model: String(input.model || ''),
@@ -218,7 +225,7 @@ class Requester extends EventEmitter {
   publicView(r) {
     return {
       id: r.id, state: r.state, posted_by: r.posted_by, posted_at: r.posted_at, title: r.title, summary: r.summary,
-      priority: r.priority, mode: r.mode, requires: r.requires, model: r.model, workspace: r.workspace,
+      priority: r.priority, to: r.to || '', mode: r.mode, requires: r.requires, model: r.model, workspace: r.workspace,
       attachments: r.attachments.map((a) => a.name),
       executor: r.executor ? r.executor.node : '', claimed_at: r.claimed_at,
       requester_served_today: this.served(),
@@ -412,6 +419,17 @@ class Requester extends EventEmitter {
     return this.publicView(r);
   }
 
+  // 待っている依頼の宛先を変える（空にすれば誰でも拾える）。広げたときは仲間へもう一度 NEW を流す
+  setTarget(id, to) {
+    const r = this.get(id);
+    if (!r || r.state !== 'open') return null;
+    r.to = targetOf(to);
+    this.save();
+    this.notify(r.id).catch(() => {});
+    this.emit('changed');
+    return this.publicView(r);
+  }
+
   attachmentPath(id, name) {
     const r = this.get(id);
     if (!r) return '';
@@ -447,4 +465,4 @@ class Requester extends EventEmitter {
   }
 }
 
-module.exports = { Requester, newId, WATCHDOG_MS, TICK_MS, MAX_ATTEMPTS, MAX_ANSWER, MAX_SCREEN, MAX_SUMMARY, MAX_TALK, KEEP_TALK };
+module.exports = { Requester, newId, targetOf, WATCHDOG_MS, TICK_MS, MAX_ATTEMPTS, MAX_ANSWER, MAX_SCREEN, MAX_SUMMARY, MAX_TALK, KEEP_TALK };
