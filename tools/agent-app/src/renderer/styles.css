@@ -137,6 +137,7 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #share-terminal { width: min(100%, 900px); min-height: 260px; margin-inline: auto; }
 #share-thread, #share-composer { width: min(100%, 900px); margin-inline: auto; }
 .share-accept-control { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+#share-accept-control { align-self: start; }
 .share-nodes { width: 100%; border-collapse: collapse; font-size: 13px; }
 .share-nodes td { padding: 5px 8px 5px 0; border-top: 1px solid var(--line); }
 .execution-card { min-width: 0; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 1px 2px rgba(31, 35, 40, .04); }
@@ -177,9 +178,9 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #repository-context > label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; }
 .repository-control { display: flex; align-items: center; gap: 4px; }
 .repository-control > select { min-width: 0; flex: 1; }
-.side-more { flex: none; }
-.side-more > summary { width: 34px; justify-content: center; padding-inline: 4px; letter-spacing: 1px; }
-.side-more .menu-panel { min-width: 190px; }
+.more-dots { flex: none; }
+.more-dots > summary { width: 34px; justify-content: center; padding-inline: 4px; letter-spacing: 1px; }
+.more-dots .menu-panel { min-width: 190px; }
 #area-sidebar-context { min-height: 0; flex: 1; display: flex; flex-direction: column; padding-top: 7px; }
 #area-sidebar-context .list.grow { min-height: 0; flex: 1; overflow: auto; }
 .context-new { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 6px; border-color: transparent; color: var(--muted); background: transparent; }
@@ -557,11 +558,10 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 @media (max-width: 620px) {
   .area-head { min-height: 58px; gap: 3px; padding-right: 8px; flex-wrap: wrap; }
   .area-head .title-row { max-width: none; flex: 1; }
-  #chat-head .phase, .views { display: none; }
+  #chat-head .phase { display: none; }
+  .views .tab { padding-inline: 7px; }
   #changes-toggle { width: 38px; padding: 0; font-size: 0; }
   #changes-toggle::before { content: '変更'; font-size: 11px; }
-  #chat-more > summary { width: 38px; justify-content: center; padding: 7px; font-size: 0; }
-  #chat-more > summary::before { content: '•••'; font-size: 13px; letter-spacing: 2px; }
   #messages { padding: 22px 14px 10px; }
   #terminal-stage, .conversation-history { margin-inline: 8px; }
   .conversation-history[open] { max-height: 25%; }

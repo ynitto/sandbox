@@ -51,7 +51,7 @@
         <label for="repo-select">リポジトリ</label>
         <div class="repository-control">
           <select id="repo-select" aria-label="リポジトリ"></select>
-          <details id="repo-more" class="more-menu side-more">
+          <details id="repo-more" class="more-menu more-dots">
             <summary aria-label="リポジトリを管理">•••</summary>
             <div class="menu-panel">
               <button type="button" id="repo-add">リポジトリを追加</button>
@@ -96,8 +96,8 @@
         </nav>
         <span class="spacer"></span>
         <button type="button" id="changes-toggle" class="small">変更を確認</button>
-        <details id="chat-more" class="more-menu">
-          <summary aria-label="その他の操作">その他</summary>
+        <details id="chat-more" class="more-menu more-dots">
+          <summary aria-label="その他の操作">•••</summary>
           <div class="menu-panel">
             <button type="button" id="open-folder">フォルダを開く</button>
             <button type="button" id="open-vscode">VS Codeで開く</button>
@@ -245,8 +245,8 @@
             </span>
             <button id="viewer-wrap" class="small" title="長い行を折り返す">折り返し</button>
             <button id="viewer-attach" class="small" title="このファイルを次の依頼に添付する（写さずにパスを伝える）">会話に添付</button>
-            <details class="more-menu" id="viewer-more">
-              <summary aria-label="ファイルのその他の操作">その他</summary>
+            <details class="more-menu more-dots" id="viewer-more">
+              <summary aria-label="ファイルのその他の操作">•••</summary>
               <div class="menu-panel">
                 <button id="viewer-open" type="button">既定のアプリで開く</button>
                 <button id="viewer-show" type="button">フォルダで表示</button>
@@ -487,17 +487,17 @@
           <span id="share-request-status" class="status" hidden></span>
         </div>
         <nav class="views" aria-label="共有の表示">
-          <button type="button" id="share-view-request" class="tab on" aria-selected="true">セッション・依頼</button>
+          <button type="button" id="share-view-request" class="tab on" aria-selected="true">セッション</button>
           <button type="button" id="share-view-nodes" class="tab" aria-selected="false">参加者</button>
         </nav>
         <span class="spacer"></span>
-        <label id="share-accept-control" class="share-accept-control">
-          <input type="checkbox" id="share-accept-mode">自動で引き受ける
-        </label>
-        <button type="button" id="share-refresh" class="small">一覧を更新</button>
+        <button type="button" id="share-refresh" class="small">更新</button>
       </header>
       <div id="share-body">
         <div id="share-cards"></div>
+        <label id="share-accept-control" class="share-accept-control" hidden>
+          <input type="checkbox" id="share-accept-mode">自動で引き受ける
+        </label>
         <section id="share-terminal" class="terminal-stage" hidden>
           <div class="terminal-head">
             <span id="share-term-agent" class="terminal-agent"></span>
@@ -669,7 +669,7 @@
       <label class="setting-field"><span>フォークする位置</span><select id="search-boundary"></select></label>
       <label for="search-target-repo">リポジトリ</label>
       <div class="repository-control"><select id="search-target-repo" aria-label="リポジトリ"></select>
-        <details class="more-menu side-more"><summary aria-label="リポジトリを管理">•••</summary><div class="menu-panel"><button type="button" id="search-target-add">リポジトリを追加</button></div></details>
+        <details class="more-menu more-dots"><summary aria-label="リポジトリを管理">•••</summary><div class="menu-panel"><button type="button" id="search-target-add">リポジトリを追加</button></div></details>
       </div>
       <p id="search-worktree-note" class="sub" hidden></p>
       <details id="search-execution-settings" class="run-settings teach-execution-settings">

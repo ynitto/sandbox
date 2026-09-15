@@ -644,6 +644,12 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#share-cards .execution-card').first().waitFor();
     assert.match(await win.locator('#share-head').textContent(), /優先度 高/);
     assert.match(await win.locator('#share-cards').textContent(), /依頼の本文/);
+    await win.locator('#share-view-nodes').click();
+    await win.locator('.share-nodes').waitFor();
+    assert.match(await win.locator('#share-cards').textContent(), /参加者/);
+    // 「自動で引き受ける」はこの PC の受け持ちなので、参加者のカードの中にある（ヘッダーには置かない）
+    assert.match(await win.locator('#share-cards').textContent(), /自動で引き受ける/);
+    assert.ok(!(await win.locator('#share-head').textContent()).includes('自動で引き受ける'), 'ヘッダーには置かない');
     assert.strictEqual(await win.locator('#share-accept-mode').isChecked(), false);
     assert.strictEqual(await win.locator('#share-accept-mode').isEnabled(), true);
     await win.locator('#share-accept-mode').check();
@@ -652,9 +658,6 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#share-accept-mode').uncheck();
     await win.waitForFunction(() => !document.getElementById('share-accept-mode').disabled);
     assert.equal(appStore.loadConfig(userData).share.accept, 'manual');
-    await win.locator('#share-view-nodes').click();
-    await win.locator('.share-nodes').waitFor();
-    assert.match(await win.locator('#share-cards').textContent(), /参加者/);
     await win.locator('#share-view-request').click();
     // 実行中の依頼は、引き受けた人の端末がそのまま出る（会話と同じ .terminal-stage）
     await win.locator('#share-requests .list-pick').filter({ hasText: 'テスト方針の相談' }).click();

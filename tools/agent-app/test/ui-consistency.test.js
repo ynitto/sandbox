@@ -46,11 +46,25 @@ test('領域の見出し帯は 1 つの形（会話・会話を検索・タス�
   assert.match(css, /@media \(max-width: 820px\)[^@]*\.area-head \{ padding-left: 62px; \}/);
   // 4. 変更パネルの見出しも、隣の見出し帯と高さと罫線を合わせる
   assert.match(css, /^#changes > \.side-head \{[^}]*min-height: 60px/m);
-  // 5. タブの列に置くのはタブだけ（操作のボタンを混ぜない。狭い幅でタブごと消える）
+  // 5. タブの列に置くのはタブだけ（操作のボタンを混ぜない）
   for (const nav of html.match(/<nav class="views"[\s\S]*?<\/nav>/g) || []) {
     assert.ok(!/class="(?:small|primary|quiet|danger)"/.test(nav), `タブの列に操作のボタンが混ざっている: ${nav}`);
     assert.match(nav, /aria-selected="/, 'タブは選択状態を持つ');
   }
+  // 6. 狭い幅でもタブは消さない（消すと「ファイル」「参加者」へ行けなくなる）
+  assert.ok(!/\.views[^{]*\{[^}]*display: none/.test(css), '狭い幅でタブを消さない（詰めて残す）');
+  // 7. 名前を持たない「その他」の menu は、置き場に依らず同じ ••• の印にする
+  //    （サイドバーのリポジトリ管理・会話ヘッダー・ファイル。「定型」のように名前がある menu は別）
+  const dotted = (html.match(/<details[^>]*class="[^"]*more-menu[^"]*"[\s\S]*?<\/summary>/g) || [])
+    .filter((menu) => /aria-label="[^"]*(?:その他|管理)/.test(menu));
+  assert.ok(dotted.length >= 3, `••• の menu が見つからない: ${dotted.length}`);
+  for (const menu of dotted) {
+    assert.match(menu, /class="[^"]*more-dots/, `••• の印を使っていない: ${menu}`);
+    assert.match(menu, /<summary[^>]*>•••<\/summary>/, `「その他」の印は ••• に揃える: ${menu}`);
+  }
+  // 8. 共有の見出し帯に置くのは、その画面の操作だけ（この PC の受け持ちは「参加者」の側）
+  const shareHead = html.match(/<header id="share-head"[\s\S]*?<\/header>/)?.[0] || '';
+  assert.ok(!shareHead.includes('share-accept'), '「自動で引き受ける」は見出し帯に置かない');
 });
 
 test('端末ミラーと入力欄は会話画面と同じ実体を使う（見た目を作り直さない）', () => {
