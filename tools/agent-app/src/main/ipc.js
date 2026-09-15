@@ -1304,7 +1304,12 @@ function registerIpcHandlers(getWindow) {
 
   const sessionBrowser = new SessionBrowser({ userData, share: shareInstance });
   const summaryJobs = new Map();
-  handle('sessions:search', p => sessionBrowser.search(p.query, p.requestId, p.cursor));
+  // 検索は見つかった端から流す（hit / progress）。打ち止めは invoke の戻り値。画面はページを持たない。
+  const searchStream = requestId => event => {
+    const [kind, payload] = Object.entries(event)[0];
+    post('sessions:search:' + kind, { requestId, ...payload });
+  };
+  handle('sessions:search', p => sessionBrowser.search(p.query, p.requestId, searchStream(p.requestId)));
   handle('sessions:cancel', p => {
     sessionBrowser.cancel(p.requestId);
     const job = summaryJobs.get(p.requestId);

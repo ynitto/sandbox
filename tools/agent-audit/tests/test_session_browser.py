@@ -147,5 +147,82 @@ class BrowserTests(unittest.TestCase):
         p = self.write('pending.json', obj, False)
         self.assertFalse(browser.read_file({'path': str(p), 'provider': 'vscode'})['messages'][-1]['complete'])
 
+    # --- 安いふるい（本文を解析する前に落とす）---------------------------------
+    def chat(self, name, value, title=None):
+        obj = self.vscode()
+        obj['requests'][0]['response'] = [{'value': value}]
+        if title:
+            obj['customTitle'] = title
+        return self.write(f'.vscode-server/data/User/workspaceStorage/w/chatSessions/{name}.json', obj, False)
+
+    def test_sieve_skips_unrelated_conversations_without_parsing_them(self):
+        for i in range(8):
+            self.chat(f'other{i}', '別の話題')
+        self.chat('hit', '稀なキーワードを含む回答')
+        with patch.object(browser, 'read_file', wraps=browser.read_file) as read:
+            result = browser.scan({'home': str(self.root), 'query': {'text': '稀なキーワード'}})
+        self.assertEqual([s['snippet'] for s in result['sessions']], ['稀なキーワードを含む回答'])
+        self.assertEqual(read.call_count, 1, '一致しない 8 件は解析しない')
+
+    def test_sieve_keeps_escaped_and_differently_cased_spellings(self):
+        path = self.root / '.vscode-server/data/User/workspaceStorage/w/chatSessions/escaped.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        obj = self.vscode()
+        obj['requests'][0]['response'] = [{'value': '請求書の取り込み'}]
+        # \uXXXX へ逃がして書かれた保存形式でも取りこぼさない。
+        path.write_text(json.dumps(obj, ensure_ascii=True))
+        self.chat('ascii', 'INVOICE was imported')
+        found = browser.scan({'home': str(self.root), 'query': {'text': '請求書'}})
+        self.assertEqual(len(found['sessions']), 1)
+        self.assertEqual(len(browser.scan({'home': str(self.root), 'query': {'text': 'invoice'}})['sessions']), 1)
+
+    def test_sieve_stands_down_when_the_needle_could_come_from_scrubbing(self):
+        # scrub が作る綴り（[REDACTED] と重なる語・ホームの ~）は、生バイトでは判定できない。
+        for needle in ('[REDACTED]', 'redact', 'ted', '~/work'):
+            self.assertIsNone(browser.sieve_forms(needle), needle)
+        # 大小の畳み込みが ASCII の外に及ぶ語も、ふるいには使わない。
+        self.assertIsNone(browser.sieve_forms('ＩＮＶＯＩＣＥ'))
+        self.assertIsNotNone(browser.sieve_forms('請求書'))
+        self.chat('secret', 'password: ghp-abcdefghijklmnop')
+        found = browser.scan({'home': str(self.root), 'query': {'text': '[REDACTED]'}})
+        self.assertEqual(len(found['sessions']), 1, '隠した後にだけ現れる語も見つかる')
+
+    def test_sieve_uses_the_candidate_timestamp_only_where_it_is_safe(self):
+        desc = {'path': str(self.chat('dated', '集計')), 'provider': 'vscode', 'updatedAt': 100}
+        query = {'since': 200}
+        self.assertFalse(browser.passes_sieve(desc, query, None))
+        # 作成日時が条件のときは mtime から判断できないので、解析へ回す。
+        self.assertTrue(browser.passes_sieve(desc, {'since': 200, 'dateField': 'created'}, None))
+
+    # --- 逐次の流し出しと索引 ---------------------------------------------------
+    def test_stream_emits_each_hit_before_the_request_finishes(self):
+        for i in range(3):
+            self.chat(f'stream{i}', '稀なキーワード')
+        events = []
+        result = browser.stream({'home': str(self.root), 'query': {'text': '稀なキーワード'}}, events.append)
+        self.assertEqual(len([e for e in events if 'hit' in e]), 3)
+        self.assertEqual(result['scanned'], 3)
+        self.assertEqual(result['errors'], [])
+
+    def test_index_records_carry_the_body_and_the_candidate_identifier(self):
+        descriptor = {'path': str(self.chat('indexed', '集計しました', title='月次の集計')), 'provider': 'vscode'}
+        events = []
+        result = browser.index_records({'descriptors': [descriptor]}, events.append)
+        record = events[0]['record']
+        self.assertEqual(result['indexed'], 1)
+        self.assertEqual(record['title'], '月次の集計')
+        self.assertIn('集計しました', record['body'])
+        self.assertEqual(record['descriptorId'], '')
+        self.assertFalse(record['truncated'])
+
+    def test_index_marks_conversations_whose_body_exceeds_the_limit(self):
+        descriptor = {'path': str(self.chat('huge', 'あ' * (browser.INDEX_BODY_LIMIT + 10))), 'provider': 'vscode'}
+        events = []
+        browser.index_records({'descriptors': [descriptor]}, events.append)
+        record = events[0]['record']
+        self.assertTrue(record['truncated'])
+        self.assertEqual(len(record['body']), browser.INDEX_BODY_LIMIT)
+
+
 if __name__ == '__main__':
     unittest.main()
