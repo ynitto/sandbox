@@ -67,6 +67,7 @@ test('manual run button displays a terminal, preserves it across tabs, and sends
   win.on('pageerror', (error) => errors.push(error.message));
   await win.reload();
   await win.click('#area-tasks');
+  await win.locator('#tasks .list-pick').first().click();
   const workspace = win.locator('#automation-workbench');
   await workspace.locator('#run-start').click();
   const terminal = win.locator('[slot="task-run-terminal"]');

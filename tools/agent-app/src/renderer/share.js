@@ -23,7 +23,7 @@
     { key: 'public', label: '公開セッション', mark: '◎' },
     { key: 'working', label: '実行中', mark: '●' },
     { key: 'waiting', label: '順番待ち', mark: '○' },
-    { key: 'done', label: '今日 完了', mark: '✓' },
+    { key: 'done', label: '今日の完了', mark: '✓' },
   ];
 
   let acceptControl = null;
@@ -113,7 +113,7 @@
     const list = items();
     const current = selected();
     if (!list.length) {
-      box.append(el('li', 'empty', state.status && state.status.enabled ? '依頼はありません' : '設定 > 共有で有効にしてください'));
+      box.append(el('li', 'empty', state.status && state.status.enabled ? '依頼なし' : '設定 > 共有で有効にしてください'));
       return;
     }
     for (const group of GROUPS) {
@@ -204,12 +204,12 @@
     const item = selected();
     const s = state.status;
     if (!s || !s.enabled) {
-      box.append(blank('共有は無効です', '設定 > 共有で合言葉と接続先のPCを指定してください。'));
+      box.append(blank('共有オフ', '設定 > 共有で合言葉と接続先のPCを指定してください。'));
       return;
     }
-    if (s.state !== 'on') { box.append(blank('共有は停止中です', s.error || '設定 > 共有を確認してください。')); return; }
+    if (s.state !== 'on') { box.append(blank('共有停止中', s.error || '設定 > 共有を確認してください。')); return; }
     if (!item) {
-      box.append(blank('依頼はまだありません', s.peers.length ? '参加者の依頼がここに表示されます。' : '参加者が見つかりません。'));
+      box.append(blank('依頼なし', s.peers.length ? '参加者からの依頼を表示します。' : '参加者が見つかりません。'));
       return;
     }
     // 見出しが依頼の 1 行目そのものなので、本文が 1 行で収まっているなら繰り返さない
@@ -246,7 +246,7 @@
     const box = $('share-cards');
     box.replaceChildren();
     const s = state.status;
-    if (!s || s.state !== 'on') { box.append(blank('共有は停止中です', s && s.error ? s.error : '設定 > 共有を有効にしてください。')); return; }
+    if (!s || s.state !== 'on') { box.append(blank('共有停止中', s && s.error ? s.error : '設定 > 共有を有効にしてください。')); return; }
     const section = card('参加者', '同じ合言葉で見つかった PC');
     const table = el('table', 'share-nodes');
     const rows = [{ node: `${s.node}（この PC）`, info: s.me, self: true }, ...s.peers.map((p) => ({ node: p.node, info: p.info, seenAt: p.seenAt }))];

@@ -369,7 +369,9 @@ def inventory(options):
             if query.get("source") and query["source"] != ("vscode" if provider == "vscode" else "cli"):
                 continue
             try:
-                descriptors.append({**desc, "updatedAt": desc.get("updatedAt") or Path(desc["path"]).stat().st_mtime})
+                stat = Path(desc["path"]).stat()
+                descriptors.append({**desc, "updatedAt": desc.get("updatedAt") or stat.st_mtime,
+                                    "size": stat.st_size})
             except OSError as exc:
                 errors.append({"provider": provider, "message": str(exc)})
             if len(descriptors) >= MAX_FILES:
@@ -379,6 +381,79 @@ def inventory(options):
     return {"descriptors": descriptors, "errors": errors[:20], "partial": False}
 
 
+SIEVE_CHUNK = 1 << 20
+# scrub_text が作り出す文字列。これらと重なりうる語は、生バイトのふるいで落とせない。
+SCRUB_TOKENS = ("[redacted]", "~")
+
+
+def ascii_lower(value):
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in value)
+
+
+def touches(needle, token):
+    """needle の一致が token と重なりうるか（前後のはみ出しも見る）。"""
+    if token in needle or needle in token:
+        return True
+    return any(needle[:i] == token[-i:] or needle[-i:] == token[:i]
+               for i in range(1, min(len(needle), len(token))))
+
+
+def sieve_forms(needle):
+    """本文を解析する前に生バイトで探す綴りの形。使えないときは None を返す。
+
+    落とすのは「確実に一致しない」ときだけにしたいので、次のときは None にして
+    従来どおり解析へ回す。 (1) 大小の畳み込みが ASCII の外に及ぶ語（bytes の小文字化で
+    再現できない）。(2) scrub が作る `[REDACTED]` や `~` と重なりうる語（元のファイルには
+    その綴りが無い）。
+    """
+    if not needle:
+        return None
+    low = needle.casefold()
+    if low != ascii_lower(needle):
+        return None
+    if any(touches(low, token) for token in SCRUB_TOKENS):
+        return None
+    # 生のまま・JSON の逃がし（" \ 改行）・\uXXXX 形。どれで書かれていても拾う。
+    forms = {low, json.dumps(low, ensure_ascii=False)[1:-1], json.dumps(low)[1:-1]}
+    return [f.encode("utf-8").lower() for f in forms if f]
+
+
+def sieve_file(path, forms):
+    """ファイルを読むだけで判定する。真なら解析へ進む（偽は確実に一致しない）。"""
+    overlap = max(len(f) for f in forms) - 1
+    tail = b""
+    try:
+        with open(path, "rb") as stream:
+            while True:
+                chunk = stream.read(SIEVE_CHUNK)
+                if not chunk:
+                    return False
+                blob = (tail + chunk).lower()
+                if any(f in blob for f in forms):
+                    return True
+                tail = chunk[-overlap:] if overlap > 0 else b""
+    except OSError:
+        return True
+
+
+def passes_sieve(desc, query, forms):
+    """解析する価値があるか。落とすのは確実に不一致のときだけ。"""
+    provider = desc["provider"]
+    if query.get("agent") and query["agent"] != ("copilot" if provider == "vscode" else provider):
+        return False
+    if query.get("source") and query["source"] != ("vscode" if provider == "vscode" else "cli"):
+        return False
+    # 実際の更新日時は必ず mtime 以下なので、開始日より古いファイルは確実に範囲外。
+    # 終了日は逆向き（mtime が新しくても中身は古くありうる）なので、ふるいに使わない。
+    if query.get("since") and query.get("dateField") != "created":
+        stamp = desc.get("updatedAt") or 0
+        if stamp and stamp < query["since"]:
+            return False
+    if forms and provider != "kiro" and not sieve_file(desc["path"], forms):
+        return False
+    return True
+
+
 def comparable_path(value):
     value = str(value or "").replace("\\", "/")
     if len(value) > 2 and value[1] == ":":
@@ -386,57 +461,127 @@ def comparable_path(value):
     return value.casefold()
 
 
-def scan(options):
-    sessions, errors = [], []
+INDEX_BODY_LIMIT = 512 * 1024
+
+
+def inspect(desc, query, needle):
+    """1 件を解析して、条件に合えば一覧用の姿で返す。合わなければ None。"""
+    obj = read_file(desc)
+    if not obj["messages"]:
+        return None
+    if not query.get("archived") and obj["archived"]:
+        return None
+    stamp = obj.get("createdAt" if query.get("dateField") == "created" else "updatedAt", 0)
+    if query.get("since") and stamp < query["since"]:
+        return None
+    if query.get("until") and stamp >= query["until"]:
+        return None
+    if query.get("repo") and comparable_path(query["repo"]) not in comparable_path(obj["repo"]):
+        return None
+    if query.get("model") and query["model"].casefold() not in obj["model"].casefold():
+        return None
+    match = next((m["text"] for m in obj["messages"] if needle in m["text"].casefold()), "")
+    if needle and not match and needle not in obj["title"].casefold():
+        return None
+    match = match or obj["messages"][0]["text"]
+    offset = max(0, match.casefold().find(needle) - 50) if needle else 0
+    obj["snippet"] = match[offset:offset + 180]
+    obj["count"] = len(obj.pop("messages"))
+    return obj
+
+
+def walk(options, found, progress=None):
+    """候補を順に見て、一致を found へ渡す。ふるいで落ちたものは解析しない。"""
+    errors, partial, scanned = [], False, 0
     query = options.get("query", {})
     needle = str(query.get("text", "")).casefold()
-    partial = False
+    forms = sieve_forms(query.get("text", ""))
     for i, desc in enumerate(options["descriptors"] if "descriptors" in options else discover(options)):
         if i >= MAX_FILES:
             partial = True
             break
-        if query.get("agent") and query["agent"] != ("copilot" if desc["provider"] == "vscode" else desc["provider"]):
-            continue
-        source = "vscode" if desc["provider"] == "vscode" else "cli"
-        if query.get("source") and query["source"] != source:
-            continue
+        scanned += 1
         try:
-            obj = read_file(desc)
-            if not obj["messages"]:
+            if not passes_sieve(desc, query, forms):
                 continue
-            if not query.get("archived") and obj["archived"]:
-                continue
-            stamp = obj.get("createdAt" if query.get("dateField") == "created" else "updatedAt", 0)
-            if query.get("since") and stamp < query["since"]:
-                continue
-            if query.get("until") and stamp >= query["until"]:
-                continue
-            if query.get("repo") and comparable_path(query["repo"]) not in comparable_path(obj["repo"]):
-                continue
-            if query.get("model") and query["model"].casefold() not in obj["model"].casefold():
-                continue
-            match = next((m["text"] for m in obj["messages"] if needle in m["text"].casefold()), "")
-            if needle and not match and needle not in obj["title"].casefold():
-                continue
-            match = match or obj["messages"][0]["text"]
-            offset = max(0, match.casefold().find(needle) - 50) if needle else 0
-            obj["snippet"] = match[offset:offset + 180]
-            obj["count"] = len(obj.pop("messages"))
-            sessions.append(obj)
+            obj = inspect(desc, query, needle)
+            if obj is not None:
+                found(obj)
         except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
             if len(errors) < 20:
                 errors.append({"provider": desc["provider"], "message": str(exc), "file": Path(desc["path"]).name})
-    return {"sessions": sessions, "errors": errors, "partial": partial}
+        if progress and scanned % 200 == 0:
+            progress(scanned)
+    return {"errors": errors, "partial": partial, "scanned": scanned}
+
+
+def scan(options):
+    sessions = []
+    result = walk(options, sessions.append)
+    return {"sessions": sessions, "errors": result["errors"], "partial": result["partial"]}
+
+
+def stream(options, emit):
+    """一致を見つけ次第送り出す。呼び出し側は最後まで待たずに表示できる。"""
+    result = walk(options, lambda obj: emit({"hit": obj}),
+                  lambda scanned: emit({"progress": {"scanned": scanned}}))
+    return result
+
+
+def index_records(options, emit):
+    """索引へ入れる本文つきの記録を送り出す。条件での絞り込みはしない。"""
+    errors, indexed = [], 0
+    for desc in options["descriptors"]:
+        try:
+            obj = read_file(desc)
+            body = "\n".join(m["text"] for m in obj["messages"])
+            stat = Path(desc["path"]).stat()
+            emit({"record": {"path": desc["path"], "provider": desc["provider"],
+                             "descriptorId": desc.get("nativeId", ""), "nativeId": obj["nativeId"], "size": stat.st_size, "mtime": stat.st_mtime,
+                             "repo": obj["repo"], "model": obj["model"], "title": obj["title"],
+                             "createdAt": obj["createdAt"], "updatedAt": obj["updatedAt"],
+                             "archived": obj["archived"], "count": len(obj["messages"]),
+                             "partial": obj["partial"], "body": body[:INDEX_BODY_LIMIT],
+                             "truncated": len(body) > INDEX_BODY_LIMIT}})
+            indexed += 1
+        except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+            if len(errors) < 20:
+                errors.append({"provider": desc["provider"], "message": str(exc), "file": Path(desc["path"]).name})
+            emit({"skip": {"path": desc["path"], "nativeId": desc.get("nativeId", "")}})
+    return {"errors": errors, "indexed": indexed}
+
+
+def handle(options, emit):
+    mode = options.get("mode")
+    if mode == "read":
+        return read_file(options["descriptor"])
+    if mode == "inventory":
+        return inventory(options)
+    if mode == "stream":
+        return stream(options, emit)
+    if mode == "index":
+        return index_records(options, emit)
+    return scan(options)
 
 
 def main():
-    try:
-        options = json.load(sys.stdin)
-        result = (read_file(options["descriptor"]) if options.get("mode") == "read" else
-                  inventory(options) if options.get("mode") == "inventory" else scan(options))
-        print(json.dumps({"ok": True, "data": result}, ensure_ascii=False))
-    except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+    """1 行 1 要求の NDJSON。要求ごとに途中経過を流し、最後に ok 行で閉じる。
+
+    呼び出し側は 1 回の検索につきこのプロセスを 1 つだけ起こし、終わったら標準入力を
+    閉じて終了させる（検索していない間はプロセスを残さない）。
+    """
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        request = {}
+        try:
+            request = json.loads(line)
+            token = request.get("id", 0)
+            def emit(payload, token=token):
+                print(json.dumps({"id": token, **payload}, ensure_ascii=False), flush=True)
+            print(json.dumps({"id": token, "ok": True, "data": handle(request, emit)}, ensure_ascii=False), flush=True)
+        except Exception as exc:
+            print(json.dumps({"id": request.get("id", 0), "ok": False, "error": str(exc)}, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

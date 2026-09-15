@@ -69,7 +69,7 @@ async function inspect({ root, capture }) {
   try {
     return JSON.parse(result.stdout);
   } catch (err) {
-    throw new Error('実行情報の応答を読み取れませんでした: ' + String(result.stderr || result.stdout || 'agent-loop inspect の出力が空です').trim().slice(-1000), { cause: err });
+    throw new Error('実行情報の応答を読み取れませんでした: ' + String(result.stderr || result.stdout || 'agent-loop inspect の出力なし').trim().slice(-1000), { cause: err });
   }
 }
 

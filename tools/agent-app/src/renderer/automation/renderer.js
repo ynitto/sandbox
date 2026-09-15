@@ -594,6 +594,9 @@ async function openMachine(machine) {
 
 function newMachine() {
   if (!state.root) { toast('先にフォルダを登録してください', true); return; }
+  state.execution.newCommand = null;
+  state.execution.scheduleDraft = null;
+  state.execution.scheduleOpen = false;
   cancelAi(state.aiDraft);
   cancelAi(state.aiReview);
   state.current = { machine: '', isNew: true, spec: newSpec(), dirty: true, warnings: [], dir: '' };
@@ -755,6 +758,7 @@ function homeHtml() {
   // 定義があるタスクは実行詳細（概要 / 手順 / 履歴）で開く。
   const homeContent = state.homeTab === 'teach'
     ? teachingFeature.html()
+    : state.homeTab === 'manual' ? manualTaskHtml()
     : state.homeTab === 'run' ? executionHtml()
     : state.homeTab === 'flows'
       ? flowFeature.html()
@@ -764,7 +768,6 @@ function homeHtml() {
         <div><h1>${esc(folderName(state.root))}</h1><div class="where">${esc(state.root)}</div></div>${workflowActions}
       </div>
       <div class="home-tabs" role="tablist"><button type="button" data-home-tab="teach" class="${state.homeTab === 'teach' ? 'is-on' : ''}">タスク</button><button type="button" data-home-tab="run" class="${state.homeTab === 'run' ? 'is-on' : ''}">実行</button><button type="button" data-home-tab="workflows" class="${state.homeTab === 'workflows' ? 'is-on' : ''}">高度な編集</button><button type="button" data-home-tab="flows" class="${state.homeTab === 'flows' ? 'is-on' : ''}">AIワークフロー</button></div>
-      ${state.homeTab === 'teach' ? `<div class="row command-actions">${commandAddButtonHtml()}</div>` : ''}
       ${homeContent}`
     : '<div class="blank"><h2>左のフォルダを選んでください</h2></div>';
   // 登録したフォルダを左、ワークフローを右に置く。読む順（切り替え → 内容）に合わせて
@@ -784,7 +787,8 @@ function bindHome(main) {
   on('h-add', addFolder);
   on('h-ai-draft', openAiDraft);
   on('h-new', newMachine);
-  on('command-add', newCommandSchedule);
+  on('manual-steps', newMachine);
+  on('manual-back', () => { state.execution.newCommand = null; state.execution.scheduleDraft = null; state.execution.scheduleOpen = false; state.homeTab = 'teach'; teachingFeature.create(); });
   for (const b of main.querySelectorAll('[data-root]')) b.addEventListener('click', () => selectRoot(b.dataset.root));
   for (const b of main.querySelectorAll('[data-drop]')) b.addEventListener('click', () => removeFolder(b.dataset.drop));
   for (const b of main.querySelectorAll('[data-open]')) b.addEventListener('click', () => openMachine(b.dataset.open));
@@ -1158,7 +1162,7 @@ async function stopEditing() {
 function executionHtml() {
   const machines = executionMachines();
   if (state.execution.loading && !machines.length) return '<div class="blank compact"><p>実行情報を読み込んでいます…</p></div>';
-  if (!machines.length) return snapshotWarningHtml() + '<div class="blank compact"><h2>実行できるタスクがありません</h2><p>タスクを作成すると、ここから実行できます。</p><div class="row">' + commandAddButtonHtml() + '</div></div>';
+  if (!machines.length) return snapshotWarningHtml() + '<div class="blank compact"><h2>実行できるタスクがありません</h2><p>タスクを作成して実行できます。</p></div>';
   const selected = selectedExecutionMachine() || machines[0];
   // 実行状態が届く前は定義だけで描いている。履歴も定期実行もまだ分からないので、確定した
   // 「未実行」「予定なし」とは書かない。
@@ -1270,7 +1274,7 @@ function executionDetailHtml(machine) {
     ? `<details class="muted small"><summary>実行できません · 詳細を確認</summary><p>${esc(machine.error)}</p></details>`
     : machine.kind === 'hook' ? '<p class="muted small">定期実行から起動するタスクです。</p>' : '';
   const detail = state.execution.detailTab === 'history'
-    ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴はまだありません。</p>'}${historyLog}</section>`
+    ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴なし</p>'}${historyLog}</section>`
     : state.execution.detailTab === 'overview' ? `
       ${machine.kind === 'command' ? (taskIdentity(machine) === 'new-command' ? '' : `<section class="execution-card"><div class="execution-card-head"><h3>コマンド</h3><button type="button" id="command-edit">名前・コマンドを編集</button></div><pre>${esc(commandText(machine.entry?.command))}</pre>${machine.error ? `<p class="run-result ng">${esc(machine.error)}</p>` : ''}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || machine.error ? 'disabled' : ''}>今すぐ実行</button><button type="button" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${result}${logView}</section>`) : `<section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${displayedRun.running ? 'active' : ''}">${displayedRun.running ? '実行中' : '待機中'}</span></div>
         ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${Reuse.artifacts(displayedRun.lines.map(item => item.line).join('\n')).map(rel => `<button type="button" class="tiny" data-artifact="${esc(rel)}">${esc(rel)}</button>`).join('')}${displayedRun.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>`}
@@ -1278,8 +1282,9 @@ function executionDetailHtml(machine) {
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
 
-function commandAddButtonHtml() {
-  return `<button type="button" id="command-add" ${state.root ? '' : 'disabled'}>新しいコマンドタスク</button>`;
+function manualTaskHtml() {
+  const machine = selectedExecutionMachine();
+  return `<div class="manual-task-create"><div class="execution-card-head"><h2>タスクを手動で作成</h2><button type="button" id="manual-back">戻る</button></div><section class="execution-card"><div class="execution-card-head"><div><h3>工程を組み立てる</h3><p>AIへの依頼や操作を工程として追加します。</p></div><button type="button" id="manual-steps">工程を追加</button></div></section><section class="execution-card"><h3>コマンドタスク</h3>${scheduleEditorHtml(machine)}</section></div>`;
 }
 
 function commandText(command) {
@@ -1288,14 +1293,14 @@ function commandText(command) {
   return argv.map((arg) => "'" + String(arg).replaceAll("'", "'\\''") + "'").join(' ');
 }
 
-function newCommandSchedule() {
+function createManualTask() {
   if (!state.root) return;
   state.execution.newCommand = { id: 'new-command', kind: 'command', name: '新しいコマンド', entry: { command: '' }, schedules: [], history: [] };
   state.execution.selected = 'new-command';
   state.execution.detailTab = 'overview';
   state.execution.scheduleDraft = null;
   state.execution.scheduleOpen = true;
-  state.homeTab = 'run';
+  state.homeTab = 'manual';
   render();
 }
 
@@ -1347,7 +1352,7 @@ function scheduleEditorHtml(machine) {
     ? `<div class="field"><label for="schedule-command">コマンド</label><textarea id="schedule-command" rows="3" placeholder="python3 scripts/maintenance.py">${esc(draft.command)}</textarea><small class="muted">1行に1コマンドを入力します。上から順に実行し、失敗時は停止します。空行は無視します。各コマンドは選択したリポジトリで実行します。パイプやリダイレクトは使えません。</small></div><div class="field"><label for="schedule-timeout">各コマンドのタイムアウト（秒）</label><input id="schedule-timeout" type="number" min="1" step="1" value="${esc(draft.timeout)}"></div>` : '';
   const agents = [...new Set([draft.agentCli, ...(state.agents || []).map((agent) => typeof agent === 'string' ? agent : agent.id || agent.cli)].filter(Boolean))];
   const aiFields = machine.kind === 'command' ? '' : `<div class="grid2"><div class="field"><label for="schedule-agent">自動実行のエージェント</label><select id="schedule-agent"><option value="">agent-loop の既定値</option>${agents.map((agent) => `<option value="${esc(agent)}" ${draft.agentCli === agent ? 'selected' : ''}>${esc(agent)}</option>`).join('')}</select></div><div class="field"><label for="schedule-model">自動実行のモデル</label><input id="schedule-model" value="${esc(draft.model)}" placeholder="エージェントの既定値"></div></div>`;
-  return `<div class="schedule-editor">${commandFields}${aiFields}<div class="grid2"><div class="field"><label>${machine.kind === 'command' ? 'タスク名' : '予定名'}</label><input id="schedule-name" value="${esc(draft.entryName)}"></div><div class="field"><label>保存先</label><select id="schedule-destination" ${draft.kind === 'preserve' ? 'disabled' : ''}><option value="repository" ${draft.destination === 'repository' ? 'selected' : ''}>このリポジトリ</option><option value="global" ${draft.destination === 'global' ? 'selected' : ''}>共通設定</option></select></div></div><label class="check-label"><input id="schedule-enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>有効にする</label><div class="grid2"><div class="field"><label>繰り返し</label><select id="schedule-kind">${draft.kind === 'preserve' ? '<option value="preserve" selected>現在の設定を維持</option>' : ''}<option value="daily" ${draft.kind === 'daily' ? 'selected' : ''}>毎日</option><option value="weekly" ${draft.kind === 'weekly' ? 'selected' : ''}>毎週</option><option value="interval" ${draft.kind === 'interval' ? 'selected' : ''}>一定間隔</option></select></div>${timing}</div>${inputs ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${inputs}</div></div>` : ''}<div class="row"><button type="button" class="primary" id="schedule-save">保存</button><button type="button" id="schedule-new">別の予定を追加</button></div></div>`;
+  return `<div class="schedule-editor">${commandFields}${aiFields}<div class="grid2"><div class="field"><label>${machine.kind === 'command' ? 'タスク名' : '予定名'}</label><input id="schedule-name" value="${esc(draft.entryName)}"></div><div class="field"><label>保存先</label><select id="schedule-destination" ${draft.kind === 'preserve' ? 'disabled' : ''}><option value="repository" ${draft.destination === 'repository' ? 'selected' : ''}>このリポジトリ</option><option value="global" ${draft.destination === 'global' ? 'selected' : ''}>共通設定</option></select></div></div><label class="check-label"><input id="schedule-enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>有効にする</label><div class="grid2"><div class="field"><label>繰り返し</label><select id="schedule-kind">${draft.kind === 'preserve' ? '<option value="preserve" selected>現在の設定を維持</option>' : ''}<option value="daily" ${draft.kind === 'daily' ? 'selected' : ''}>毎日</option><option value="weekly" ${draft.kind === 'weekly' ? 'selected' : ''}>毎週</option><option value="interval" ${draft.kind === 'interval' ? 'selected' : ''}>一定間隔</option></select></div>${timing}</div>${inputs ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${inputs}</div></div>` : ''}<div class="row"><button type="button" class="primary" id="schedule-save">保存</button>${taskIdentity(machine) === 'new-command' ? '' : '<button type="button" id="schedule-new">別の予定を追加</button>'}</div></div>`;
 }
 
 function bindScheduleEditor(main) {
@@ -1404,6 +1409,7 @@ async function saveSchedule() {
   }));
   if (!result) return;
   state.execution.newCommand = null;
+  state.homeTab = 'run';
   await loadExecutionSnapshot();
   const saved = executionMachines().find((task) => taskIdentity(task) === result.entryRef) || executionMachines().find((task) => task.kind === machine.kind && task.name === draft.entryName && task.source?.scope === draft.destination);
   if (saved) state.execution.selected = taskIdentity(saved);
@@ -2233,7 +2239,7 @@ function reviewResultHtml(result) {
     ${assumptionsHtml(result.assumptions)}
     ${changes ? `<div class="ai-select-head"><strong>反映する提案</strong><label><input type="checkbox" data-ai-all checked> すべて選択</label></div><div class="ai-change-list">${changes}</div>
       <div class="row"><button type="button" class="primary" data-ai-apply>選んだ提案を反映</button><button type="button" data-ai-back>もう一度見直す</button></div>`
-    : '<p class="msg ai-no-change">変更の提案はありません。</p><div class="row"><button type="button" data-ai-back>もう一度見直す</button></div>'}`;
+    : '<p class="msg ai-no-change">変更提案なし</p><div class="row"><button type="button" data-ai-back>もう一度見直す</button></div>'}`;
 }
 
 function bindAiCommon(dlg, flow, repaint) {
@@ -2403,7 +2409,7 @@ async function startRun(mode) {
 
 function openRunInputDialog(machine, fields) {
   const dlg = dialog('dlg-run', '実行前の入力', 'record', `
-    <p class="muted small">このタスクを始めるために必要な内容を入力してください。</p>
+    <p class="muted small">実行に必要な内容を入力してください。</p>
     <div class="run-input-grid">${fields.map((name) => `<div class="field"><label>${esc(name)}</label><input data-required-input="${esc(name)}"></div>`).join('')}</div>
     <p class="msg err" data-input-error hidden>すべて入力してください。</p>
     <div class="row"><button type="button" class="primary" data-input-run>入力して実行</button></div>`);
@@ -2492,6 +2498,12 @@ async function navigateEmbedded(payload) {
 
   state.view = 'home';
   state.current = null;
+  if (state.execution.newCommand) {
+    state.execution.newCommand = null;
+    state.execution.selected = '';
+    state.execution.scheduleDraft = null;
+    state.execution.scheduleOpen = false;
+  }
   if (root && root !== state.root) await selectRoot(root);
   if (token !== navigationToken) return;
   if (!root && state.root) {
@@ -2519,6 +2531,12 @@ async function navigateEmbedded(payload) {
     if (token !== navigationToken) return;
     if (payload.action === 'new') flowFeature.create();
     else render();
+    return;
+  }
+
+  if (payload.action === 'manual') {
+    teachingFeature.cancelCreate();
+    createManualTask();
     return;
   }
 

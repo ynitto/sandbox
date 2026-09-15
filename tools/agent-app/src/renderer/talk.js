@@ -39,7 +39,7 @@
     const atBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 24;
     host.replaceChildren();
     if (!talk.length) {
-      host.append(el('p', 'talk-empty', 'まだやり取りはありません'));
+      host.append(el('p', 'talk-empty', 'メッセージなし'));
       return;
     }
     for (const item of talk) {

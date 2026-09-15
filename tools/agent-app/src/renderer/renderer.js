@@ -172,7 +172,7 @@ function renderRepos() {
   const select = $('repo-select');
   select.replaceChildren();
   if (!state.config.repos.length) {
-    const option = el('option', '', 'リポジトリを追加してください');
+    const option = el('option', '', 'リポジトリを追加');
     option.value = '';
     select.append(option);
   }
@@ -239,7 +239,7 @@ function renderSessions() {
     li.append(pick, remove);
     ul.append(li);
   }
-  if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? 'まだ会話がない' : ''));
+  if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? '会話なし' : ''));
 }
 
 // 会話の名前を変える（既定は最初の依頼の先頭。長い会話ほど見分けが付かなくなる）
@@ -297,7 +297,7 @@ function renderTaskItems() {
     li.append(pick);
     ul.append(li);
   }
-  if (!state.tasks.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'まだタスクがない' : '')));
+  if (!state.tasks.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'タスク未作成' : '')));
 }
 
 function workflowState(workflow) {
@@ -321,7 +321,7 @@ function renderWorkflowItems() {
     li.append(pick);
     ul.append(li);
   }
-  if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'まだワークフローがない' : '')));
+  if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'ワークフロー未作成' : '')));
 }
 
 // ---- 受信箱 ----
@@ -371,14 +371,14 @@ function renderInboxItems() {
     body.append(el('div', '', item.title));
     body.append(el('div', 'sub', `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)} · ${repoName(item.repo)}`));
     pick.append(body);
-    pick.title = item.queue === 'action' ? `「${item.title}」を開いて答える` : `「${item.title}」を開く`;
+    pick.title = item.queue === 'action' ? `「${item.title}」を開いて回答する` : `「${item.title}」を開く`;
     pick.onclick = () => openAttentionItem(item).catch((err) => notice(err.message, 'error'));
     li.append(pick);
     ul.append(li);
   }
-  if (!a.items.length) ul.append(el('li', 'empty', '見るもの・答えるものはありません'));
-  $('inbox-meta').textContent = a.items.length ? attentionSummary() : '空です';
-  $('inbox-sub').textContent = a.items.length ? '一覧から選ぶと、その会話・タスク・ワークフローへ移ります' : '終わった結果と、人の答えを待つものがここに集まります';
+  if (!a.items.length) ul.append(el('li', 'empty', '未読・要対応なし'));
+  $('inbox-meta').textContent = a.items.length ? attentionSummary() : '未読・要対応なし';
+  $('inbox-sub').textContent = a.items.length ? '項目を選んで詳細を確認' : '実行結果や確認依頼が届きます';
 }
 
 // 「見た」を main に書き、受信箱からその項目を落とす（要対応は答えが届くまで残る）
@@ -961,7 +961,7 @@ function renderAgents() {
   }
   if (!usable.length) {
     sel.append(el('option', '', state.agentsLoading || !state.host ? 'CLI を確認中…'
-      : (state.host.platform === 'win32' ? 'WSL に CLI が無い' : 'この PC に CLI が無い')));
+      : (state.host.platform === 'win32' ? 'WSL に CLI 未検出' : 'CLI 未検出')));
   }
   const want = state.current ? state.current.cli : state.config.lastCli;
   if ([...sel.options].some((o) => o.value === want)) sel.value = want;
@@ -1550,8 +1550,8 @@ function renderMessages() {
   start.replaceChildren();
   const cur = state.current;
   if (!cur) {
-    start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリがありません'));
-    if (!state.repo) start.append(el('p', '', '作業するローカルリポジトリを登録してください。'));
+    start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリを登録してください'));
+    if (!state.repo) start.append(el('p', '', 'サイドバーから追加できます。'));
     if (!state.repo) {
       const button = el('button', 'primary', 'リポジトリを追加');
       button.onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
@@ -1648,7 +1648,7 @@ async function sayToExecutor(waiting, text) {
     renderHeader();
   } catch (err) {
     notice(err.message, 'error');
-    inputStatus('error', '送信できませんでした。入力は残っています');
+    inputStatus('error', '送信失敗（入力は保持）');
   }
 }
 
@@ -1723,7 +1723,7 @@ async function sendPrompt() {
     renderSessions();
   } catch (err) {
     notice(err.message, 'error');
-    inputStatus('error', '送信できませんでした。入力は残っています');
+    inputStatus('error', '送信失敗（入力は保持）');
     renderHeader();
   }
 }
@@ -1866,7 +1866,7 @@ async function refreshChanges() {
     ul.append(li);
   }
   if (res.error) ul.append(el('li', 'empty', res.error));
-  else if (!res.files.length) ul.append(el('li', 'empty', scope === 'branch' ? '分岐元からのコミットは無い' : '作業ツリーは綺麗'));
+  else if (!res.files.length) ul.append(el('li', 'empty', scope === 'branch' ? '分岐元との差分なし' : '未コミットの変更なし'));
   renderDiff(res.diff);
 }
 
@@ -1886,7 +1886,7 @@ function showView(view) {
   if (state.view === 'chat') Term.refit();
 }
 
-async function showArea(area, { persist = true } = {}) {
+async function showArea(area, { persist = true, action = '' } = {}) {
   SessionSearch.close();
   state.area = AgentNavigation.normalizeArea(area);
   const share = state.area === 'share';
@@ -1921,7 +1921,7 @@ async function showArea(area, { persist = true } = {}) {
     setAutomationLoading(true);
     try {
       await loadAreaItems();
-      await syncAutomationWorkbench();
+      await syncAutomationWorkbench(action);
     } finally {
       setAutomationLoading(false);
     }
@@ -2099,7 +2099,7 @@ function renderQuickRequests() {
     box.append(row);
   }
   $('quick-add').disabled = state.settingsQuick.length >= 3;
-  if (!state.settingsQuick.length) box.append(el('div', 'sub settings-empty', '定型の依頼はありません'));
+  if (!state.settingsQuick.length) box.append(el('div', 'sub settings-empty', '登録なし'));
 }
 
 function renderStartupActions() {
@@ -2146,7 +2146,7 @@ function renderStartupActions() {
     row.append(type, value, onError, controls);
     box.append(row);
   }
-  if (!state.settingsActions.length) box.append(el('div', 'sub settings-empty', '起動時アクションはありません'));
+  if (!state.settingsActions.length) box.append(el('div', 'sub settings-empty', '設定なし'));
 }
 
 function settingsPatch() {
@@ -2212,7 +2212,7 @@ function renderShareClis(selected) {
     label.append(input, el('span', '', a.name));
     box.append(label);
   }
-  if (!usable.length) box.append(el('span', 'sub', 'この PC に使える CLI が無い'));
+  if (!usable.length) box.append(el('span', 'sub', '利用可能な CLI なし'));
 }
 
 async function renderShareStatus() {
@@ -2354,7 +2354,7 @@ function renderUpdateStatus() {
   else if (u.applying) parts.push(u.progress || '更新しています…');
   else if (u.error) parts.push(u.error);
   else if (!u.source) parts.push('更新元が未設定');
-  else if (!u.lastCheckAt) parts.push('まだ確認していません');
+  else if (!u.lastCheckAt) parts.push('未確認');
   else {
     const p = u.plan;
     const found = [];
@@ -2510,19 +2510,6 @@ async function init() {
   Share.refresh().then(() => { renderHeader(); renderShareUnread(); }).catch(() => {});
   renderHostStatus();
   api.running().then((ids) => { for (const id of ids) state.running.add(id); renderSessions(); renderHeader(); }).catch(() => {});
-  await selectRepo(state.config.lastRepo);
-  showView(state.config.view);
-  await showArea(state.config.area, { persist: false });
-  // 受信箱は、終わった・聞かれた合図（turn:done / term:phase / run:exit）のたびと、背景の実行
-  // （agent-flow）を拾うための緩い周期で読み直す。通知も予定表も新しく作らない
-  refreshAttention();
-  setInterval(refreshAttention, 15000);
-
-  $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
-  $('area-tasks').onclick = () => showArea('tasks').catch((err) => notice(err.message, 'error'));
-  $('area-inbox').onclick = () => showArea('inbox').catch((err) => notice(err.message, 'error'));
-  $('area-workflows').onclick = () => showArea('workflows').catch((err) => notice(err.message, 'error'));
-  $('area-share').onclick = () => showArea('share').catch((err) => notice(err.message, 'error'));
   $('automation-workbench').addEventListener('statemachine:changed', (event) => {
     handleAutomationEvent(event.detail).catch((err) => notice(err.message, 'error'));
   });
@@ -2587,6 +2574,21 @@ async function init() {
     },
   });
 
+  // 初期画面の表示通知を取り逃さないよう、フォームとイベントを先に初期化する。
+  await selectRepo(state.config.lastRepo);
+  showView(state.config.view);
+  await showArea(state.config.area, { persist: false });
+  // 受信箱は、終わった・聞かれた合図（turn:done / term:phase / run:exit）のたびと、背景の実行
+  // （agent-flow）を拾うための緩い周期で読み直す。通知も予定表も新しく作らない
+  refreshAttention();
+  setInterval(refreshAttention, 15000);
+
+  $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
+  $('task-create-manual').onclick = () => syncAutomationWorkbench('manual').catch((err) => notice(err.message, 'error'));
+  $('area-tasks').onclick = () => showArea('tasks', { action: 'new' }).catch((err) => notice(err.message, 'error'));
+  $('area-inbox').onclick = () => showArea('inbox').catch((err) => notice(err.message, 'error'));
+  $('area-workflows').onclick = () => showArea('workflows', { action: 'new' }).catch((err) => notice(err.message, 'error'));
+  $('area-share').onclick = () => showArea('share').catch((err) => notice(err.message, 'error'));
   $('repo-select').onchange = () => selectRepo($('repo-select').value).catch((err) => notice(err.message, 'error'));
   $('repo-add').onclick = () => { $('repo-more').open = false; addRepo().catch((err) => notice(err.message, 'error')); };
   $('repo-remove').onclick = async () => {

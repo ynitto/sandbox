@@ -530,3 +530,9 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
 
 .schedule-list li { grid-template-columns: minmax(0, 1fr) auto; }
 .schedule-list .status { justify-self: start; white-space: nowrap; }
+
+.flow-patterns { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
+.flow-patterns > summary { cursor: pointer; font-weight: 600; }
+.flow-pattern-list { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 10px; }
+.flow-pattern { display: grid; gap: 6px; padding: 14px; text-align: left; white-space: normal; }
+.flow-pattern .muted { margin: 0; line-height: 1.6; }

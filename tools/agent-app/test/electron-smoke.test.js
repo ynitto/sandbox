@@ -323,7 +323,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('[data-settings-tab="app"]');
     assert.strictEqual(await win.inputValue('#update-source'), updateSource);
     assert.strictEqual(await win.inputValue('#update-interval'), '0');
-    assert.match(await win.textContent('#update-status'), /まだ確認していません/);
+    assert.match(await win.textContent('#update-status'), /未確認/);
     if (process.env.AGENT_APP_UPDATE_SETTINGS_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_UPDATE_SETTINGS_SCREENSHOT });
     await win.click('#update-check');
     await win.locator('#app-update[open]').waitFor({ timeout: 30000 });
@@ -371,6 +371,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#tasks .list-pick').first().waitFor({ timeout: 20000 });
     assert.strictEqual(await win.locator('#tasks .list-pick').count(), 1, `タスク一覧を取得できない: ${await win.locator('#tasks').textContent()} / ${errors.join(' | ')}`);
     assert.match(await win.locator('#tasks').textContent(), /リリース確認/);
+    await win.locator('#task-create').waitFor();
+    await win.locator('#tasks .list-pick').first().click();
     // 定義がある既存タスクは、教示ではなく実行詳細から開く。名前の横に「利用可能」が付く
     await workspace.locator('.task-detail-tabs').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.execution-title').textContent(), /リリース確認.*利用可能/s);
@@ -534,7 +536,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       window.TaskTeaching.prefill({ text: 'このタスクの実行が失敗しました。原因を調べて、手順を直してください。' });
     });
     assert.strictEqual(await win.locator('#task-prompt').inputValue(), 'このタスクの実行が失敗しました。原因を調べて、手順を直してください。');
-    assert.strictEqual(await win.locator('#task-input-status').textContent(), '文面を確かめて「送信」を押してください');
+    assert.strictEqual(await win.locator('#task-input-status').textContent(), '内容を確認して送信');
     await win.evaluate(() => {
       window.TaskTeaching.state.session = null;
       document.getElementById('task-prompt').value = '';
@@ -588,6 +590,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('#area-workflows');
     await win.locator('#workflows .list-pick').first().waitFor({ timeout: 20000 });
     assert.match(await win.locator('#workflows').textContent(), /並列レビュー/);
+    await win.locator('#flow-teach-create').waitFor();
+    await win.locator('#workflows .list-pick').first().click();
     await workspace.locator('.flow-overview').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.flow-overview').textContent(), /変更を確認/);
     await workspace.locator('[data-flow-tab="history"]').click();

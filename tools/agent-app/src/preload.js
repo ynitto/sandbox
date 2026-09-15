@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('api', {
   platform: process.platform,
   sessionBrowser: {
     search: payload => invoke('sessions:search', payload),
+    onHit: on('sessions:search:hit'),
+    onProgress: on('sessions:search:progress'),
     cancel: requestId => invoke('sessions:cancel', { requestId }),
     read: key => invoke('sessions:read', { key }),
     import: folder => invoke('sessions:import', { folder }),

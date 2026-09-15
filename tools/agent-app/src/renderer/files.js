@@ -42,7 +42,7 @@
     li.dataset.rel = entry.rel;
     const row = el('button', 'row');
     row.type = 'button';
-    row.append(el('span', 'arrow', entry.type === 'dir' ? '▸' : ''));
+    row.append(el('span', entry.type === 'dir' ? 'arrow is-folder' : 'arrow', ''));
     row.append(fileIcon(entry));
     row.append(el('span', 'name', entry.name));
     if (entry.type === 'file' && entry.size) row.append(el('span', 'size', fmtSize(entry.size)));
@@ -76,7 +76,7 @@
     const open = force != null ? force : kids.hidden;
     if (open && !kids.dataset.loaded) { await loadChildren(li, rel); kids.dataset.loaded = '1'; }
     kids.hidden = !open;
-    li.querySelector(':scope > .row > .arrow').textContent = open ? '▾' : '▸';
+    li.querySelector(':scope > .row > .arrow').classList.toggle('is-open', open);
     if (open) state.expanded.add(rel); else state.expanded.delete(rel);
   }
 
@@ -134,7 +134,7 @@
       if (seq !== state.filterSeq) return;
       const hits = Array.isArray(res) ? res : (res && res.hits) || [];
       box.replaceChildren();
-      if (res && res.truncated) box.append(el('li', 'empty', '検索対象の上限に達しました。見つからないファイルはフォルダを開いて探してください'));
+      if (res && res.truncated) box.append(el('li', 'empty', '検索上限に達しました。フォルダからも探せます'));
       for (const h of hits) {
         const li = el('li', `node ${h.type}`);
         const row = el('button', 'row');
@@ -145,7 +145,7 @@
         li.append(row);
         box.append(li);
       }
-      if (!hits.length) box.append(el('li', 'empty', '該当するファイルはありません'));
+      if (!hits.length) box.append(el('li', 'empty', '該当ファイルなし'));
     } catch (err) {
       if (seq === state.filterSeq) box.replaceChildren(el('li', 'empty', err.message));
     }
@@ -177,7 +177,7 @@
     if (!f) {
       head.hidden = true;
       body.className = 'viewer-body';
-      body.replaceChildren(el('div', 'viewer-empty', '一覧からファイルを選んでください'));
+      body.replaceChildren(el('div', 'viewer-empty', 'ファイルを選択'));
       return;
     }
     head.hidden = false;
