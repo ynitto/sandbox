@@ -376,8 +376,8 @@ function renderInboxItems() {
     ul.append(li);
   }
   if (!a.items.length) ul.append(el('li', 'empty', '見るもの・答えるものはありません'));
-  $('inbox-title').textContent = a.items.length ? attentionSummary() : '受信箱は空です';
-  $('inbox-sub').textContent = a.items.length ? '項目を押すと、その会話・タスク・ワークフローへ行きます' : '終わった結果と、人の答えを待つものがここに集まります';
+  $('inbox-meta').textContent = a.items.length ? attentionSummary() : '空です';
+  $('inbox-sub').textContent = a.items.length ? '一覧から選ぶと、その会話・タスク・ワークフローへ移ります' : '終わった結果と、人の答えを待つものがここに集まります';
 }
 
 // 「見た」を main に書き、受信箱からその項目を落とす（要対応は答えが届くまで残る）
@@ -1875,8 +1875,10 @@ function showView(view) {
   state.view = view === 'files' ? 'files' : 'chat';
   $('chat').hidden = state.view !== 'chat';
   $('files').hidden = state.view !== 'files';
-  $('view-chat').classList.toggle('on', state.view === 'chat');
-  $('view-files').classList.toggle('on', state.view === 'files');
+  for (const [id, view] of [['view-chat', 'chat'], ['view-files', 'files']]) {
+    $(id).classList.toggle('on', state.view === view);
+    $(id).setAttribute('aria-selected', String(state.view === view));
+  }
   $('view-chat').setAttribute('aria-current', state.view === 'chat' ? 'page' : 'false');
   $('view-files').setAttribute('aria-current', state.view === 'files' ? 'page' : 'false');
   api.saveConfig({ view: state.view }).catch(() => {});

@@ -116,7 +116,7 @@ test('実機: 受信箱に要対応と未読が並び、項目から既存の画
     // 要対応を先に、未読は新しい結果から（会話は今つくったので、置いた日付のタスクより新しい）
     assert.deepStrictEqual(view.items.map((item) => [item.kind, item.queue]), [['workflow', 'action'], ['conversation', 'unread'], ['task', 'unread']]);
     assert.ok(!view.items.some((item) => item.target.id === asked.id), '依頼で終わっている会話は出ない');
-    assert.strictEqual((await win.textContent('#inbox-title')).trim(), '要対応 1 · 未読 2');
+    assert.strictEqual((await win.textContent('#inbox-meta')).trim(), '要対応 1 · 未読 2');
     const rows = await win.$$eval('#inbox-items li', (nodes) => nodes.map((node) => ({ cls: node.className, text: node.textContent })));
     assert.strictEqual(rows.length, 3);
     assert.ok(rows[0].cls.includes('attention') && rows[0].text.includes('月次レポートの実行') && rows[0].text.includes('承認待ち'), JSON.stringify(rows[0]));
@@ -162,7 +162,7 @@ test('実機: 受信箱に要対応と未読が並び、項目から既存の画
     const resolved = await win.evaluate(() => window.api.attention.list());
     assert.deepStrictEqual(resolved, { action: 0, unread: 0, items: [] });
     await win.click('#area-inbox');
-    await win.waitForFunction(() => document.getElementById('inbox-title').textContent === '受信箱は空です');
+    await win.waitForFunction(() => document.getElementById('inbox-meta').textContent === '空です');
     assert.strictEqual(await win.$('#area-inbox .unread'), null);
 
     if (process.env.SMOKE_OUT) {
