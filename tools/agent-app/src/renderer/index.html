@@ -595,6 +595,7 @@
         <button type="button" data-settings-tab="instructions" role="tab" aria-selected="false">共通指示</button>
         <button type="button" data-settings-tab="execution" role="tab" aria-selected="false">実行制御</button>
         <button type="button" data-settings-tab="share" role="tab" aria-selected="false">共有</button>
+        <button type="button" data-settings-tab="storage" role="tab" aria-selected="false">保存データ</button>
       </nav>
       <div class="dlg-body settings-content">
         <section data-settings-panel="app" class="settings-list" role="tabpanel">
@@ -661,6 +662,13 @@
           <label class="setting-field"><span><strong>1日の受付上限</strong><small>0 = 無制限</small></span><input id="share-daily-cap" type="number" min="0" max="1000" step="1"></label>
           <label class="setting-field"><span><strong>依頼者 1 人あたりの上限</strong><small>0 = 無制限</small></span><input id="share-per-requester-cap" type="number" min="0" max="1000" step="1"></label>
           <div class="environment-status"><strong>接続状態</strong><div id="share-status" class="sub"></div></div>
+        </section>
+        <section data-settings-panel="storage" class="settings-list" role="tabpanel" hidden>
+          <div id="cleanup-items"></div>
+          <div class="environment-status">
+            <div class="row"><strong>削除の対象</strong><span class="spacer"></span><span id="cleanup-total" class="status"></span></div>
+            <div class="row"><span id="cleanup-status" class="sub"></span><span class="spacer"></span><button type="button" id="cleanup-rescan" class="small">調べ直す</button><button type="button" id="cleanup-run" class="danger">削除する</button></div>
+          </div>
         </section>
         <div id="settings-error" class="dlg-error" hidden></div>
       </div>

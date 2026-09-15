@@ -14,6 +14,7 @@ const host = require('./host');
 const tmux = require('./tmux');
 const worktree = require('./worktree');
 const attachments = require('./attachments');
+const cleanup = require('./cleanup');
 const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
 const { SessionBrowser } = require('./sessionBrowser');
@@ -1211,6 +1212,19 @@ function registerIpcHandlers(getWindow) {
   handle('automation:teach:browser:page', () => teachingBrowserPage());
   // 写したが送らずに閉じた添付を掃除する
   try { attachments.sweep(userData(), store.readAllSessions(userData())); } catch { /* 消せなくても動く */ }
+
+  // 保存データの整理（cleanup.js）。数えるのはいつでも、消すのは利用者が選んだ種類だけ。
+  function cleanupInput() {
+    const ud = userData();
+    return { userData: ud, sessions: store.readAllSessions(ud), repos: store.loadConfig(ud).repos };
+  }
+  handle('cleanup:scan', () => cleanup.scan(cleanupInput()));
+  handle('cleanup:remove', (p) => {
+    const ud = userData();
+    const result = cleanup.remove(cleanupInput(), Array.isArray(p && p.keys) ? p.keys : [],
+      { clearSnapshots: (id) => store.dropTerminalSnapshots(ud, id) });
+    return { ...result, scan: cleanup.scan(cleanupInput()) };
+  });
 
   // 自動更新（update.js）。確認は起動時・定期・手動、取り込みは利用者が押したときだけ。
   const updater = new Updater({

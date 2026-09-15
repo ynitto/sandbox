@@ -9,6 +9,7 @@ const state = {
   area: 'conversation',
   host: null,           // host:info（platform / tmux の有無）。届くまで null
   update: null,         // update:status（更新元・確認結果・適用中の進み）。届くまで null
+  cleanup: null,        // cleanup:scan（保存データの種類ごとの大きさ）。開くまで null
   updateDismissed: '',  // 「あとで」で閉じた更新の内容（同じ内容は次の起動まで自動では出さない）
   hostReady: null,      // host:info の返事を待つ Promise（送信前に待つ）
   repo: '',
@@ -1982,6 +1983,94 @@ function selectSettingsTab(name) {
     button.setAttribute('aria-selected', String(selected));
   }
   for (const panel of document.querySelectorAll('[data-settings-panel]')) panel.hidden = panel.dataset.settingsPanel !== name;
+  if (name === 'storage' && !state.cleanup) scanCleanup();
+}
+
+// ---- 保存データの整理 --------------------------------------------------------
+
+const CLEANUP_UNITS = [['GB', 1073741824], ['MB', 1048576], ['KB', 1024]];
+
+function fmtBytes(bytes) {
+  const n = Number(bytes) || 0;
+  for (const [unit, size] of CLEANUP_UNITS) {
+    if (n >= size) return `${(n / size).toFixed(n / size >= 10 ? 0 : 1)} ${unit}`;
+  }
+  return `${n} B`;
+}
+
+function cleanupChecked() {
+  const out = [];
+  for (const box of document.querySelectorAll('[data-cleanup-key]')) if (box.checked) out.push(box.dataset.cleanupKey);
+  return out;
+}
+
+function renderCleanupTotal() {
+  const items = (state.cleanup && state.cleanup.items) || [];
+  const keys = new Set(cleanupChecked());
+  const total = items.filter((item) => keys.has(item.key)).reduce((n, item) => n + item.bytes, 0);
+  $('cleanup-total').textContent = state.cleanup ? `合計 ${fmtBytes(total)}` : '';
+  $('cleanup-run').disabled = !state.cleanup || state.cleanupBusy || !total;
+}
+
+function renderCleanup() {
+  const box = $('cleanup-items');
+  const scanning = !state.cleanup;
+  $('cleanup-rescan').disabled = scanning || !!state.cleanupBusy;
+  if (scanning) {
+    box.replaceChildren(el('div', 'sub', state.cleanupError || '調べています…'));
+    renderCleanupTotal();
+    return;
+  }
+  box.replaceChildren(...state.cleanup.items.map((item) => {
+    const row = el('label', 'setting-check');
+    const check = el('input');
+    check.type = 'checkbox';
+    check.dataset.cleanupKey = item.key;
+    check.checked = item.defaultOn && item.bytes > 0;
+    check.disabled = !item.bytes;
+    check.onchange = renderCleanupTotal;
+    const text = el('span');
+    text.append(el('strong', '', item.title), el('small', '', item.detail));
+    row.append(check, text, el('span', 'status', item.bytes ? fmtBytes(item.bytes) : 'なし'));
+    return row;
+  }));
+  renderCleanupTotal();
+}
+
+async function scanCleanup() {
+  state.cleanup = null;
+  state.cleanupError = '';
+  renderCleanup();
+  $('cleanup-status').textContent = '';
+  try {
+    state.cleanup = await api.cleanup.scan();
+    $('cleanup-status').textContent = `${fmtCheckedAt(state.cleanup.scannedAt)} 時点`;
+  } catch (error) {
+    state.cleanupError = error.message;
+  }
+  renderCleanup();
+}
+
+async function runCleanup() {
+  const keys = cleanupChecked();
+  if (!keys.length) return;
+  state.cleanupBusy = true;
+  $('cleanup-status').textContent = '削除しています…';
+  renderCleanup();
+  try {
+    const result = await api.cleanup.remove(keys);
+    state.cleanup = result.scan;
+    $('cleanup-status').textContent = result.failed
+      ? `${fmtBytes(result.freed)} を空けました（${result.failed} 件は使用中のため残りました）`
+      : `${fmtBytes(result.freed)} を空けました`;
+  } catch (error) {
+    $('cleanup-status').textContent = '';
+    $('settings-error').textContent = error.message;
+    $('settings-error').hidden = false;
+  } finally {
+    state.cleanupBusy = false;
+    renderCleanup();
+  }
 }
 
 function fillAgentSelect(select, value) {
@@ -2227,6 +2316,9 @@ async function openSettings() {
   $('skill-options').replaceChildren(...candidates.map((name) => {
     const option = el('option'); option.value = name; return option;
   }));
+  state.cleanup = null;
+  state.cleanupBusy = false;
+  $('cleanup-status').textContent = '';
   selectSettingsTab('app');
   setSidebar(false);
   $('app-settings').showModal();
@@ -2731,6 +2823,8 @@ async function init() {
   $('settings-close').onclick = () => $('app-settings').close();
   $('settings-save').onclick = saveSettings;
   $('update-check').onclick = checkUpdateNow;
+  $('cleanup-rescan').onclick = scanCleanup;
+  $('cleanup-run').onclick = runCleanup;
   $('update-apply').onclick = applyUpdate;
   $('update-later').onclick = () => { state.updateDismissed = updateKey((state.update || {}).plan); $('app-update').close(); };
   $('update-close').onclick = () => $('app-update').close();

@@ -437,6 +437,14 @@ function addTerminalSnapshot(userData, id, snapshot) {
   return entry;
 }
 
+// 端末画面の控えだけを外す（やり取りの本文は残す。保存データの整理から呼ぶ）。
+function dropTerminalSnapshots(userData, id) {
+  const sess = readSession(userData, id);
+  if (!sess.terminalSnapshots.length) return sess;
+  sess.terminalSnapshots = [];
+  return writeSession(userData, sess);
+}
+
 function removeSession(userData, id) {
   try { fs.unlinkSync(sessionPath(userData, id)); } catch { /* 無ければ無いでよい */ }
   return true;
@@ -447,5 +455,5 @@ module.exports = {
   createSession, replaceEditingSession, readSession, listSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
   attentionBaseline, markAttentionSeen,
-  TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot,
+  TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot, dropTerminalSnapshots,
 };
