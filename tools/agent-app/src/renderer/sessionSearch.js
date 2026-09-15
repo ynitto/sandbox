@@ -2,7 +2,12 @@
 const SessionSearch = (() => {
   const $ = id => document.getElementById(id);
   const api = window.api.sessionBrowser;
-  let deps, visible = false, panels = [], requestId = '', generation = 0, timer, cursor = '', previous = '', selected, transfer;
+  // pending は中止に使う「まだ動いている検索」、showing は「いま画面に出している検索」。
+  // 流れてくる結果は打ち止めの返事と競争するので、終わっても showing は消さない。
+  let deps, visible = false, panels = [], pending = '', showing = '', generation = 0, timer, selected, transfer;
+  // 見つかった端から受け取り、画面には 100 件ずつ足す（下まで来たら続きを描く）。
+  const PAGE = 100;
+  let rows = [], rendered = 0, state = null;
   const name = p => String(p || '').split(/[/\\]/).filter(Boolean).pop() || 'フォルダ不明';
   const source = s => s === 'app' ? 'agent-app' : s === 'vscode' ? 'VS Code' : 'CLI';
   const node = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; };
@@ -31,8 +36,8 @@ const SessionSearch = (() => {
   }
   function cancel() {
     clearTimeout(timer); generation++;
-    if (requestId) api.cancel(requestId).catch(() => {});
-    requestId = ''; $('search-cancel').hidden = true;
+    if (pending) api.cancel(pending).catch(() => {});
+    pending = ''; showing = ''; $('search-cancel').hidden = true;
   }
   function clearPreview() {
     previewVersion++; selected = null;
@@ -41,40 +46,64 @@ const SessionSearch = (() => {
     for (const row of $('search-results').querySelectorAll('.active, .on')) row.classList.remove('active', 'on');
   }
   function clearResults() {
-    clearPreview(); cursor = ''; previous = '';
+    clearPreview(); rows = []; rendered = 0;
     $('search-results').replaceChildren();
-    $('search-next').hidden = true; $('search-prev').hidden = true;
     $('search-errors').hidden = true; $('search-error-detail').textContent = '';
   }
-  async function search(pageCursor = '') {
-    cancel(); const version = generation;
-    if (!pageCursor) clearResults();
-    else clearPreview();
-    if (!visible) return;
-    requestId = crypto.randomUUID();
-    $('search-status').textContent = '会話を検索しています…'; $('search-cancel').hidden = false;
-    $('search-next').disabled = true; $('search-prev').disabled = true;
-    try {
-      const result = await api.search({ query: filters(), requestId, cursor: pageCursor });
-      if (version !== generation) return;
-      cursor = result.cursor; previous = result.previous || '';
-      clearPreview();
-      $('search-results').replaceChildren();
-      for (const record of result.sessions) {
-        const row = button('', 'list-pick', () => preview(record.key));
-        row.append(node('strong', '', record.title), node('span', 'sub', `${record.agent} · ${source(record.source)}${record.owner ? ` · ${record.owner}（共有）` : ''}`),
-          node('span', 'sub', `${name(record.repo)} · ${date(record.updatedAt)}`), node('span', 'sub', record.snippet));
-        row.dataset.key = record.key;
-        if (selected?.key === record.key) row.classList.add('on');
-        const item = node('li', 'row-item', ''); item.classList.toggle('active', selected?.key === record.key); item.append(row); $('search-results').append(item);
-      }
-      $('search-status').textContent = `${result.page || 1}ページ · ${result.sessions.length}件表示${result.totalExact === false ? ' · 続きがあります' : ''}${result.partial ? '（取得できた範囲）' : ''}${result.errors.length ? ' · ' + `${result.errors.length}件の取得エラー（詳細を確認）` : !result.sessions.length ? (cursor ? ' · この範囲に一致する会話はありません' : ' · 条件に合う会話がありません') : ''}`;
-      $('search-errors').hidden = !result.errors.length;
-      $('search-error-detail').textContent = result.errors.map(e => `${e.provider === 'vscode' ? 'VS Code' : e.provider || ''}: ${e.message}`).join('\n');
-      $('search-next').hidden = !cursor; $('search-prev').hidden = !previous;
-    } catch (err) { if (version === generation) $('search-status').textContent = err.message; }
-    finally { if (version === generation) { requestId = ''; $('search-cancel').hidden = true; $('search-next').disabled = false; $('search-prev').disabled = false; } }
+  const number = value => Number(value || 0).toLocaleString();
+  function status() {
+    if (!state) return;
+    const { running, scanned, pool, matched, errors, partial, capped } = state;
+    let text;
+    // 走査の途中だけ進みを出す。終わったら「いくつの会話から何件見つかったか」だけでよい
+    // （前に読んだ分を索引から返したかどうかは、利用者には速さとしてだけ現れる）。
+    if (running) text = pool ? `${number(scanned)} / ${number(pool)} 件を調査 · ${number(matched)} 件一致` : '会話を検索しています…';
+    else if (matched) text = `${number(pool)} 件から ${number(matched)} 件一致`;
+    else text = pool ? `${number(pool)} 件を調べましたが、条件に合う会話はありません` : '条件に合う会話がありません';
+    if (capped) text += ' · 表示はここまでです。条件を絞ってください';
+    if (partial) text += '（取得できた範囲）';
+    if (errors) text += ` · ${errors}件の取得エラー（詳細を確認）`;
+    $('search-status').textContent = text;
   }
+  function addRow(record) {
+    const row = button('', 'list-pick', () => preview(record.key));
+    row.append(node('strong', '', record.title), node('span', 'sub', `${record.agent} · ${source(record.source)}${record.owner ? ` · ${record.owner}（共有）` : ''}`),
+      node('span', 'sub', `${name(record.repo)} · ${date(record.updatedAt)}`), node('span', 'sub', record.snippet));
+    row.dataset.key = record.key;
+    const item = node('li', 'row-item', '');
+    if (selected?.key === record.key) { row.classList.add('on'); item.classList.add('active'); }
+    item.append(row); $('search-results').append(item);
+  }
+  // 画面が埋まるまで描き、あとはスクロールに合わせて足す。
+  function renderMore() {
+    const pane = $('search-results-pane');
+    do {
+      const slice = rows.slice(rendered, rendered + PAGE);
+      if (!slice.length) return;
+      for (const record of slice) addRow(record);
+      rendered += slice.length;
+    } while (rendered < rows.length && pane.scrollHeight <= pane.clientHeight);
+  }
+  async function search() {
+    cancel();
+    clearResults();
+    if (!visible) return;
+    const version = generation;
+    const id = pending = showing = crypto.randomUUID();
+    state = { running: true, scanned: 0, pool: 0, matched: 0, errors: 0, partial: false, capped: false };
+    status();
+    $('search-cancel').hidden = false;
+    try {
+      const done = await api.search({ query: filters(), requestId: id });
+      if (version !== generation) return;
+      state = { ...state, ...done, running: false, errors: done.errors.length, matched: rows.length };
+      $('search-errors').hidden = !done.errors.length;
+      $('search-error-detail').textContent = done.errors.map(e => `${e.provider === 'vscode' ? 'VS Code' : e.provider || ''}: ${e.message}`).join('\n');
+      status();
+    } catch (err) { if (version === generation) $('search-status').textContent = err.message; }
+    finally { if (version === generation) { pending = ''; $('search-cancel').hidden = true; } }
+  }
+
   let previewVersion = 0;
   async function preview(key) {
     const version = ++previewVersion;
@@ -225,8 +254,20 @@ const SessionSearch = (() => {
     $('session-search-open').onclick = open; $('session-search-close').onclick = close;
     $('search-cancel').onclick = () => { cancel(); $('search-status').textContent = '検索を中止しました'; };
     $('search-shared').onclick = () => { sharedMode(true); search(); };
-    $('search-next').onclick = () => search(cursor);
-    $('search-prev').onclick = () => search(previous);
+    api.onHit(payload => {
+      if (payload.requestId !== showing) return;
+      rows.push(...payload.sessions);
+      if (state) { state.matched = rows.length; status(); }
+      renderMore();
+    });
+    api.onProgress(payload => {
+      if (payload.requestId !== showing || !state) return;
+      state.scanned = payload.scanned; state.pool = payload.pool; status();
+    });
+    $('search-results-pane').addEventListener('scroll', () => {
+      const pane = $('search-results-pane');
+      if (rendered < rows.length && pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 200) renderMore();
+    });
     const changed = () => { sharedMode(false); cancel(); clearResults(); $('search-date-range').hidden = $('search-date').value !== 'range'; timer = setTimeout(() => search(), 300); };
     for (const id of ['search-text', 'search-agent', 'search-date', 'search-repo', 'search-model', 'search-source', 'search-date-field', 'search-archived', 'search-since', 'search-until']) $(id).addEventListener('input', changed);
     $('search-text').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); search(); } };

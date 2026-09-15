@@ -38,13 +38,12 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await win.evaluate(() => { document.getElementById('search-source').value = 'app'; });
     await win.click('#session-search-open');
     await win.locator('#search-results button').first().waitFor();
-    assert.equal(await win.locator('#search-results button').count(), 50);
-    await win.click('#search-next');
-    await win.waitForFunction(() => document.getElementById('search-status').textContent.startsWith('2ページ'));
-    assert.equal(await win.locator('#search-results button').count(), 2);
-    await win.click('#search-prev');
-    await win.waitForFunction(() => document.getElementById('search-status').textContent.startsWith('1ページ'));
-    assert.equal(await win.locator('#search-results button').count(), 50);
+    // ページ送りは無い。52 件すべてが新しい順のまま一覧へ積まれる。
+    await win.waitForFunction(() => document.querySelectorAll('#search-results button').length === 52);
+    await win.waitForFunction(() => /件一致/.test(document.getElementById('search-status').textContent));
+    assert.match(await win.textContent('#search-status'), /52 件一致/);
+    assert.equal(await win.locator('#search-next').count(), 0);
+    assert.equal(await win.locator('#search-prev').count(), 0);
     await win.locator('#search-results button').first().click();
     await win.locator('#search-preview h3').waitFor();
     await win.fill('#search-text', '存在しない条件');

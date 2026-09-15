@@ -66,28 +66,33 @@ test('public search applies filters, bounds sparse scans, binds cursors, and exc
   store.removeSession(userData, ids[0].sessionId);
   await assert.rejects(pub.read(ids[0].id), /ENOENT/);
 });
-test('federated results share preview and fork paths, preserve local results on peer failure, paginate without duplicates', async t => {
+// 流れてくる結果を集める（画面と同じ受け取り方）。
+async function stream(browser, query, requestId = 'req') {
+  const sessions = [];
+  const done = await browser.search(query, requestId, event => { if (event.hit) sessions.push(...event.hit.sessions); });
+  return { sessions, done };
+}
+test('federated results share preview and fork paths and preserve local results when a peer fails', async t => {
   const { userData, pub, create } = fixture(t);
   const entry = pub.publish(create('共有の内容').id);
   const r = await pub.read(entry.id);
   let calls = 0;
   const share = {
     publicPeers: () => [{ node: 'alice' }, { node: 'offline' }],
-    searchPublic: async node => { calls++; if (node === 'offline') throw new Error('offline'); return pub.search({}); },
+    searchPublic: async (node, query, cursor) => { calls++; if (node === 'offline') throw new Error('offline'); return pub.search(query, cursor); },
     readPublic: async () => pub.read(entry.id),
   };
-  const browser = new SessionBrowser({ userData: () => userData, share, getTargets: async () => [] });
-  await browser.search({ source: 'app' }, 'local'); assert.equal(calls, 0);
+  const browser = new SessionBrowser({ userData: () => userData, share, index: null, getTargets: async () => [] });
+  await stream(browser, { source: 'app' }, 'local'); assert.equal(calls, 0);
   for (let i = 0; i < 55; i++) create();
   const query = { shared: true, source: 'app' };
-  let page = await browser.search(query, 'shared'), records = [...page.sessions];
-  assert.equal(page.sessions.length, 50); assert.ok(page.errors.some(e => e.message === 'offline'));
-  const first = page;
-  while (page.cursor) { page = await browser.search(query, crypto.randomUUID(), page.cursor); records.push(...page.sessions); }
-  assert.equal(records.length, 57); assert.equal(new Set(records.map(r => r.key)).size, 57);
-  assert.equal(calls, 2);
-  assert.ok(records.some(r => r.owner === 'alice'));
-  assert.deepEqual(await browser.search(query, 'back', page.previous), first);
+  const found = await stream(browser, query, 'shared');
+  assert.equal(found.sessions.length, 57);
+  assert.equal(new Set(found.sessions.map(s => s.key)).size, 57);
+  assert.ok(found.done.errors.some(e => e.message === 'offline'));
+  assert.ok(found.sessions.some(s => s.owner === 'alice'));
+  const stamps = found.sessions.map(s => s.updatedAt);
+  assert.deepEqual(stamps, [...stamps].sort((a, b) => b - a));
   const preview = await browser.read(r.key);
   let summaryInput = '';
   const prepared = await browser.prepare({ key: r.key, revision: preview.revision, boundary: '1', repo: '/target', cli: 'codex', model: '', mode: 'fork' }, async prompt => { summaryInput = prompt; return '引き継ぎ'; });
@@ -99,40 +104,33 @@ test('federated results share preview and fork paths, preserve local results on 
   await assert.rejects(browser.prepare({ key: r.key, revision: preview.revision }, () => ''), /更新/);
   pub.stop(entry.id); await assert.rejects(browser.read(r.key), /公開が停止/);
 });
-test('cancelling federated search aborts peer I/O without committing results', async t => {
+test('cancelling a federated search aborts peer I/O and keeps nothing running', async t => {
   const { userData } = fixture(t);
   let requested;
   const reached = new Promise(resolve => { requested = resolve; });
   const share = { publicPeers: () => [{ node: 'slow' }], searchPublic: (_node, _query, _cursor, signal) => new Promise((resolve, reject) => {
     requested(); signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
   }) };
-  const browser = new SessionBrowser({ userData: () => userData, share, getTargets: async () => [] });
-  const job = browser.search({ shared: true, source: 'app' }, 'cancel');
+  const browser = new SessionBrowser({ userData: () => userData, share, index: null, getTargets: async () => [] });
+  const job = browser.search({ shared: true, source: 'app' }, 'cancel', () => {});
   await reached; browser.cancel('cancel'); await assert.rejects(job, /中止/);
   assert.equal(browser.sharedSearch.jobs.size, 0);
 });
 
-test('cancelling a later remote page preserves the cursor and all unread results for retry', async t => {
+test('a peer that fails on a later page keeps the results already received', async t => {
   const { userData } = fixture(t);
-  let calls = 0, entered;
-  const waiting = new Promise(resolve => { entered = resolve; });
+  let calls = 0;
   const share = {
     publicPeers: () => [{ node: 'remote' }],
-    searchPublic: async (_node, _query, cursor, signal) => {
+    searchPublic: async (_node, _query, cursor) => {
       calls++;
-      if (!cursor) return { sessions: Array.from({ length: 50 }, (_, i) => ({ key: `remote-${i}`, updatedAt: i })), errors: [], cursor: 'next' };
-      assert.equal(cursor, 'next');
-      if (calls === 2) return new Promise((_resolve, reject) => { entered(); signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); });
-      return { sessions: [{ key: 'last', updatedAt: 0 }], errors: [], cursor: '' };
+      if (!cursor) return { sessions: Array.from({ length: 50 }, (_, i) => ({ key: `remote-${i}`, updatedAt: 1000 - i })), errors: [], cursor: 'next' };
+      throw new Error('相手と通信できません');
     },
   };
-  const browser = new SessionBrowser({ userData: () => userData, share, getTargets: async () => [] });
-  const query = { shared: true, source: 'app' };
-  const first = await browser.search(query, 'one');
-  const second = browser.search(query, 'two', first.cursor);
-  await waiting; browser.cancel('two'); await assert.rejects(second, /中止/);
-  const retry = await browser.search(query, 'retry', first.cursor);
-  assert.equal(retry.sessions[0].key, 'last'); assert.equal(retry.errors.length, 0);
-  assert.equal(retry.total, 51); assert.equal(calls, 3);
-  assert.deepEqual(await browser.search(query, 'back', retry.previous), first);
+  const browser = new SessionBrowser({ userData: () => userData, share, index: null, getTargets: async () => [] });
+  const found = await stream(browser, { shared: true, source: 'app' }, 'one');
+  assert.equal(found.sessions.length, 50);
+  assert.equal(calls, 2);
+  assert.ok(found.done.errors.some(e => e.message === '相手と通信できません'));
 });
