@@ -155,12 +155,18 @@ class BuildQualificationsTests(unittest.TestCase):
         self.assertEqual(qualifications_errors(doc), [])
 
 
+# cmd_qualify は実時刻で観測窓（既定 30 日）を切る。固定の NOW で刻むと日付が進んだとき
+# に窓から外れて落ちるので、receipt は「今から 60 秒前」で刻む。
+def _recent_epoch() -> float:
+    return dt.datetime.now(dt.timezone.utc).timestamp() - 60
+
+
 class CmdQualifyTests(AuditTestCase):
     def _store_with_receipts(self, n_pass=6):
         st = self.make_store()
         for i in range(n_pass):
             st.append_record({
-                "id": f"aud-r{i}", "_epoch": NOW.timestamp() - 60,
+                "id": f"aud-r{i}", "_epoch": _recent_epoch(),
                 "kind": "result", "source": "flow-bus", "workload": "flow",
                 "agent_cli": "aider", "model": "gemma4:e4b",
                 "operation_class": "existing-test-repair", "status": "done",
@@ -205,7 +211,7 @@ class CmdQualifyTests(AuditTestCase):
         store = self._store_with_receipts(6)
         qualifications.cmd_qualify(args, store)
         store.append_record({
-            "id": "aud-r6", "_epoch": NOW.timestamp() - 60,
+            "id": "aud-r6", "_epoch": _recent_epoch(),
             "kind": "result", "source": "flow-bus", "workload": "flow",
             "agent_cli": "aider", "model": "gemma4:e4b",
             "operation_class": "existing-test-repair", "status": "done",
