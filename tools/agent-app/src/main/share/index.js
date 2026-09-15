@@ -301,6 +301,7 @@ class Share {
   cancelSession(sessionId) { return this.requester ? this.requester.cancelSession(sessionId) : null; }
   cancel(id) { return this.requester ? this.requester.cancel(id, '利用者が取り下げた') : false; }
   setPriority(id, priority) { return this.requester ? this.requester.setPriority(id, priority) : null; }
+  setTarget(id, to) { return this.requester ? this.requester.setTarget(id, to) : null; }
   pendingSessionIds() { return this.requester ? this.requester.pendingSessionIds() : []; }
   knownClis() {
     const out = new Set();

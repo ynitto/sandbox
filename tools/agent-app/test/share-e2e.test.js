@@ -135,6 +135,44 @@ test('先着 1 人だけ: 同じ依頼への 2 つ目の claim は 409。自分�
   });
 });
 
+test('依頼先: 名指しした参加者だけが拾い、空にすれば（ブロードキャスト）誰でも拾う', async (t) => {
+  await withNodes(t, async (open) => {
+    const a = await open('a');
+    const seeds = [`127.0.0.1:${a.share.port}`];
+    const runB = fakeRunner([{ text: 'FROM-B' }]);
+    const runC = fakeRunner([{ text: 'FROM-C' }]);
+    const b = await open('b', { participate: true, clis: ['fake'], runPrompt: runB, seeds });
+    const c = await open('c', { participate: true, clis: ['fake'], runPrompt: runC, seeds });
+    await waitFor(() => a.share.peers.peers().length === 2 && b.share.peers.peers().length === 2 && c.share.peers.peers().length === 2);
+    // b 宛て: c は「別の参加者に宛てた依頼」として拾わない
+    const sess = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
+    const r = a.share.post({ sessionId: sess.id, goal: 'q', to: 'B', requires: { agent_cli: ['fake'] } });
+    assert.equal(r.to, 'b', '宛先は仲間の名前と同じ正規化');
+    assert.equal(a.share.requester.list()[0].to, 'b', '一覧に宛先が載る');
+    await waitFor(() => a.share.requester.get(r.id).state === 'done');
+    assert.equal(a.share.requester.get(r.id).executor.node, 'b');
+    assert.equal(runB.calls.length, 1);
+    assert.equal(runC.calls.length, 0);
+    // c 宛てに出して b の画面で見ると、拾えない理由が出る
+    const r2 = a.share.post({ sessionId: sess.id, goal: 'q2', to: 'c', requires: { agent_cli: ['fake'] } });
+    await waitFor(() => a.share.requester.get(r2.id).state === 'done');
+    assert.equal(a.share.requester.get(r2.id).executor.node, 'c');
+    assert.equal(runB.calls.length, 1);
+    // 誰もいない宛先は待ち続け、宛先を空に戻せば誰かが拾う
+    const r3 = a.share.post({ sessionId: sess.id, goal: 'q3', to: 'nobody', requires: { agent_cli: ['fake'] } });
+    await waitFor(() => b.share.participant.gatheredView().some((x) => x.id === r3.id));
+    const seen = b.share.participant.gatheredView().find((x) => x.id === r3.id);
+    assert.equal(seen.canAccept, false);
+    assert.equal(seen.reason, '別の参加者に宛てた依頼です');
+    await assert.rejects(b.share.accept(r3.id), /別の参加者に宛てた依頼です/);
+    await new Promise((res) => setTimeout(res, 300));
+    assert.equal(a.share.requester.get(r3.id).state, 'open');
+    assert.equal(a.share.setTarget(r3.id, '').to, '');
+    await waitFor(() => a.share.requester.get(r3.id).state === 'done');
+    assert.ok(['b', 'c'].includes(a.share.requester.get(r3.id).executor.node));
+  });
+});
+
 test('心拍が途絶えたら列へ戻し、取り下げは執行者の CLI を止める', async (t) => {
   await withNodes(t, async (open) => {
     const a = await open('a');

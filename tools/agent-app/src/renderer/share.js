@@ -79,7 +79,7 @@
         title: item.title || item.id, who: item.posted_by, state: item.state, priority: item.priority,
         summary: item.summary, requires: (item.requires && item.requires.agent_cli) || [], postedAt: item.posted_at,
         executor: item.executor, canAccept: !!item.canAccept, reason: item.reason || '', cli: item.cli || '', talk: [],
-        mode: item.mode, workspace: item.workspace,
+        mode: item.mode, workspace: item.workspace, to: item.to || '',
       });
     }
     for (const item of s.mine || []) {
@@ -90,7 +90,7 @@
         summary: item.summary, requires: (item.requires && item.requires.agent_cli) || [], postedAt: item.posted_at,
         executor: item.executor, executorCli: item.executorCli, sessionId: item.sessionId, talk: item.talk || [],
         answer: item.answer, error: item.error, finishedAt: item.finished_at, claimedAt: item.claimed_at,
-        mode: item.mode, workspace: item.workspace,
+        mode: item.mode, workspace: item.workspace, to: item.to || '',
       });
     }
     return out;
@@ -183,12 +183,27 @@
       priority.value = item.priority || 'normal';
       priority.disabled = item.state !== 'open';
       priority.onchange = () => run(() => window.api.share.setPriority(item.id, priority.value));
+      // 宛先: どれでも（ブロードキャスト）か、いま見えている参加者の 1 台
+      const target = el('select');
+      const any = el('option', '', '依頼先 どれでも');
+      any.value = '';
+      target.append(any);
+      const names = (state.status && state.status.peers ? state.status.peers : []).map((p) => p.node);
+      if (item.to && !names.includes(item.to)) names.push(item.to);
+      for (const name of names) {
+        const option = el('option', '', `依頼先 ${name}`);
+        option.value = name;
+        target.append(option);
+      }
+      target.value = item.to || '';
+      target.disabled = item.state !== 'open';
+      target.onchange = () => run(() => window.api.share.setTarget(item.id, target.value));
       const cancel = el('button', 'danger', '取り下げ');
       cancel.onclick = () => run(() => window.api.share.cancel(item.id));
-      row.append(priority, cancel);
+      row.append(target, priority, cancel);
       return card('自分が出した依頼', item.state === 'working'
         ? `${item.executor || '参加者'} が実行中${item.claimedAt ? ` · ${elapsed(item.claimedAt)}` : ''}`
-        : '引き受ける参加者を待っています', row);
+        : (item.to ? `${item.to} が引き受けるのを待っています` : '引き受ける参加者を待っています'), row);
     }
     const open = el('button', '', '会話を開く');
     open.disabled = !item.sessionId;
@@ -282,6 +297,7 @@
     const meta = item ? [
       item.kind === 'mine' ? '自分' : item.who,
       time(item.postedAt || item.startedAt),
+      item.to ? `${item.to} 宛て` : '',
       item.priority ? `優先度 ${PRIORITY_LABEL[item.priority]}` : '',
       item.requires && item.requires.length ? item.requires.join(' か ') : '',
       item.kind === 'accepted' ? item.cli : '',

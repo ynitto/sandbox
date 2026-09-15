@@ -34,7 +34,7 @@ function order(requests, now = Date.now()) {
 }
 
 // 1 件の依頼を、この参加者が拾えるか。
-//   ctx.node            … 自分の名前
+//   ctx.node            … 自分の名前（依頼に宛先 to があれば、その名前のときだけ拾える）
 //   ctx.clis            … 提供できる CLI（この PC で使えるもの ∩ 設定で提供すると決めたもの）
 //   ctx.cliOk(cli)      … その CLI がいま受けられるか（quota 切れでない）
 //   ctx.acceptWrite     … 書き込みの依頼を受けるか
@@ -45,6 +45,7 @@ function order(requests, now = Date.now()) {
 function eligible(request, ctx) {
   if (!request || request.state !== 'open') return { ok: false, reason: 'state' };
   if (request.posted_by === ctx.node) return { ok: false, reason: 'own' };
+  if (request.to && request.to !== ctx.node) return { ok: false, reason: 'target' };
   const mode = request.mode === 'write' ? 'write' : 'read';
   if (mode === 'write' && !ctx.acceptWrite) return { ok: false, reason: 'write' };
   const offered = Array.isArray(ctx.clis) ? ctx.clis : [];

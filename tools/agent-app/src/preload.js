@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('api', {
     publicSay: (key, text, messageId) => invoke('share:publicSay', { key, text, messageId }),
     cancel: (id) => invoke('share:cancel', { id }),
     setPriority: (id, priority) => invoke('share:priority', { id, priority }),
+    setTarget: (id, to) => invoke('share:target', { id, to }),
     // 引き受け方（'auto' 自動で受ける / 'manual' 選んで受ける / 'off' 受けない）
     setMode: (mode) => invoke('share:mode', { mode }),
     accept: (id) => invoke('share:accept', { id }),

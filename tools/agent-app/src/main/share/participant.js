@@ -43,6 +43,7 @@ function nowIso() { return new Date().toISOString(); }
 const REASONS = {
   state: 'その依頼はもう受け付けていません',
   own: '自分が出した依頼です',
+  target: '別の参加者に宛てた依頼です',
   write: '書き込みの依頼は受けない設定です',
   cli: '依頼が指定するエージェントをこの PC は提供していません',
   quota: 'この PC のエージェントは今日の枠を使い切っています',
