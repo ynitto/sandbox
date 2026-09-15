@@ -41,6 +41,10 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM6 15a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm12 0a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM11 9 7 15m6-6 4 6M8 17h8"/></svg>
           <span>共有</span>
         </button>
+        <button type="button" id="area-inbox">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 13V6h16v7M4 13l2 5h12l2-5M4 13h5l1 2h4l1-2h5"/></svg>
+          <span>受信箱</span>
+        </button>
       </nav>
 
       <div id="repository-context">
@@ -68,6 +72,7 @@
         <ul id="tasks" class="list grow" hidden></ul>
         <ul id="workflows" class="list grow" hidden></ul>
         <ul id="share-requests" class="list grow" hidden></ul>
+        <ul id="inbox-items" class="list grow" hidden></ul>
       </div>
 
       <button type="button" id="settings-open" class="side-settings">
@@ -535,6 +540,10 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <section id="inbox-area" aria-label="受信箱" hidden>
+      <div class="empty-state"><h2 id="inbox-title"></h2><p id="inbox-sub"></p></div>
     </section>
 
     <aside id="changes" hidden>

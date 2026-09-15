@@ -128,7 +128,7 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 /* 共有の画面。会話画面と同じ骨格（一覧はサイドバー、右が 1 件）で、一枚のまとまりは
    タスクの概要と同じ .execution-card。共有ワークベンチの同じ部品は影の DOM の中にあって
    ここからは使えないので、同じ名前・同じ形をアプリのトークンで置く（別名の複製は作らない）。 */
-#share-area { grid-area: main; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
+#share-area, #inbox-area { grid-area: main; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
 #share-body { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 18px; overflow: auto; background: var(--bg); }
 #share-cards { width: min(100%, 900px); margin-inline: auto; display: flex; flex-direction: column; gap: 14px; }
 #share-terminal { width: min(100%, 900px); min-height: 260px; margin-inline: auto; }

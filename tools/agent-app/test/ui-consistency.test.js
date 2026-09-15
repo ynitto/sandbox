@@ -188,3 +188,33 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   assert.match(css, /\.response-turn > \.message-actions \{[^}]*align-self: stretch/, '操作の行は吹き出しの外で同じ端にそろえる');
   assert.match(renderer, /'response-turn user-turn'/, '依頼も応答と同じ組み立て（吹き出し＋下の操作）にする');
 });
+
+test('受信箱は既存の部品（メニューの領域・一覧の行・件数の印）で組み、判定は main に置く', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  const renderer = read('renderer/renderer.js');
+  const preload = read('preload.js');
+  const navigation = read('renderer/navigation.js');
+  // 1. 受信箱は主要メニューの 1 領域（会話・タスク・ワークフロー・共有と同じ並び）。一覧は同じ .list、件数は「共有」と同じ .unread
+  const menu = html.match(/<nav id="areas"[\s\S]*?<\/nav>/)?.[0] || '';
+  assert.match(menu, /id="area-inbox">[\s\S]*?<span>受信箱<\/span>/);
+  assert.match(html, /<ul id="inbox-items" class="list grow" hidden><\/ul>/);
+  assert.match(navigation, /inbox: \{ label: '受信箱', createLabel: '新しい会話', listId: 'inbox-items' \}/);
+  assert.match(renderer, /el\('li', `row-item\$\{item\.queue === 'action' \? ' attention' : ''\}`\)/, '要対応の行は会話一覧の「確認待ち」と同じ印');
+  assert.match(renderer, /const pick = el\('button', 'list-pick'\);[\s\S]*?pick\.onclick = \(\) => openAttentionItem/, '項目は会話一覧と同じ .list-pick');
+  assert.match(renderer, /const button = \$\('area-inbox'\);[\s\S]*?badge = el\('span', 'unread'\)/, '件数は「共有」と同じ .unread の印');
+  // 2. 本文は既存の .empty-state（見出し 1 行と説明 1 行）だけ。受信箱に見た目の規則・私物の部品を足さない
+  assert.match(html, /<section id="inbox-area" aria-label="受信箱" hidden>\s*<div class="empty-state"><h2 id="inbox-title"><\/h2><p id="inbox-sub"><\/p><\/div>\s*<\/section>/);
+  assert.match(css, /^#share-area, #inbox-area \{/m, '本文の面は「共有」と同じ規則を共有する');
+  assert.deepStrictEqual(css.match(/^#inbox[^{]*\{/gm) || [], [], '受信箱だけの規則を足さない');
+  for (const clone of ['.inbox-card {', '.inbox-item {', '.attention-inbox {', '.inbox-panel {']) assert.ok(!css.includes(clone), `共有部品の私物な複製がある: ${clone}`);
+  // 3. 未読・要対応の判定は main（attention:list）。renderer は投影を出すだけ
+  assert.match(preload, /attention: \{\s*list: \(\) => invoke\('attention:list'\),\s*seen: \(key, resultAt\) => invoke\('attention:seen'/);
+  assert.ok(!/queue\s*[:=]\s*['"](?:unread|action)['"]/.test(renderer), 'renderer で未読・要対応を決めない');
+  // 4. 項目から行くのは既存の画面（通知と同じ openSessionInRepo、領域の切替と一覧の選択）。答え方や画面を作らない
+  assert.match(renderer, /openSessionInRepo\(t\.repo, t\.id, \{ answer: item\.queue === 'action' \}\)/);
+  assert.match(renderer, /await showArea\(area\);\s*if \(t\.id\) await selectAreaItem\(area/);
+  assert.ok(!html.includes('id="inbox-answer"') && !html.includes('inbox-fork'), '受信箱に答える面やフォークの複製を置かない');
+  // 5. 説明は 1 行だけ（.empty-state の p）。段落を並べない
+  assert.strictEqual((html.match(/id="inbox-sub"/g) || []).length, 1);
+});
