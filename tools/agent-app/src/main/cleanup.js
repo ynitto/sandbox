@@ -164,6 +164,16 @@ const KINDS = [
     },
   },
   {
+    key: 'exports',
+    title: '書き出したテキスト',
+    detail: '会話から書き出したテキストファイルを削除します。会話の本文は残ります。',
+    defaultOn: true,
+    collect({ userData }) {
+      const base = path.join(userData, 'exports');
+      return listDir(base).map((name) => path.join(base, name));
+    },
+  },
+  {
     key: 'share',
     title: '共有の履歴',
     detail: `${LEDGER_KEEP_DAYS}日より前の受付記録と一時作業フォルダを削除します。`,

@@ -166,3 +166,27 @@ test('前面に無いときの通知は既定でON', () => {
   assert.strictEqual(settings.normalize({ notify: {} }).notify.background, true);
   assert.strictEqual(settings.normalize({ notify: { background: false } }).notify.background, false);
 });
+
+test('壊れた config.json は退避して既定値で起動し、そのことを 1 回だけ返す', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-config-'));
+  // 無いだけなら初回起動: 何も言わない
+  assert.deepStrictEqual(store.loadConfig(dir).repos, []);
+  assert.strictEqual(store.takeConfigProblem(), null);
+  fs.writeFileSync(path.join(dir, 'config.json'), '{ "repos": [', 'utf8');
+  const config = store.loadConfig(dir);
+  assert.deepStrictEqual(config.repos, []);
+  const problem = store.takeConfigProblem();
+  assert.ok(problem && problem.reason);
+  assert.match(path.basename(problem.backup), /^config\.json\.broken-\d{8}T\d{6}$/);
+  assert.ok(fs.existsSync(problem.backup), '壊れたファイルは同じ場所へ退避する');
+  assert.ok(!fs.existsSync(path.join(dir, 'config.json')), '元の場所には残さない');
+  assert.strictEqual(store.takeConfigProblem(), null, '2 回目は返さない');
+  // 次の保存は新しいファイルを作り、問題は残らない
+  assert.deepStrictEqual(store.saveConfig(dir, { repos: ['/repo'] }).repos, ['/repo']);
+  assert.deepStrictEqual(store.loadConfig(dir).repos, ['/repo']);
+  assert.strictEqual(store.takeConfigProblem(), null);
+  // JSON としては読めても形が違うものも同じ扱い
+  fs.writeFileSync(path.join(dir, 'config.json'), '[1, 2]', 'utf8');
+  store.loadConfig(dir);
+  assert.match(store.takeConfigProblem().reason, /形が違います/);
+});

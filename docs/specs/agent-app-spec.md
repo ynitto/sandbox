@@ -314,7 +314,12 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 src/
 ├── main/
 │   ├── main.js          ウィンドウ作成と IPC 登録
-│   ├── ipc.js           全チャネル。requireRepo / dirsOf で登録リポジトリの内側に限定
+│   ├── ipc.js           全チャネル。会話 1 ターンの実行（tmux / ヘッドレス）と共有の依頼もここ
+│   ├── paths.js         userData と、登録リポジトリ・作業フォルダの解決（触ってよい場所を決める 1 か所）
+│   ├── proc.js          子プロセスの起こし方（Windows は WSL 経由）と終わらせ方
+│   ├── teachingIpc.js   タスク・ワークフローを AI と作る会話（会話の実行は ipc から受け取る）
+│   ├── crashGuard.js    落ち方の記録と、画面の読み直し・固まりの扱い
+│   ├── sessionExport.js 会話をテキストに書き出す（制御文字と飾りを落とす）
 │   ├── agentCli.js      agents/*.json の読取りと argv 組立（会話に要る分だけ）
 │   ├── tmux.js          Conversation（tmux セッション 1 つ分の駆動）、画面判定、応答抽出
 │   ├── host.js          常駐シェル（bash -l / wsl.exe）、パス変換、tmux・git の有無
@@ -330,6 +335,7 @@ src/
 │   ├── files.js         ツリー・本文・検索（読むだけ）
 │   ├── git.js           変更ビュー（読むだけ）
 │   ├── text.js          ANSI 剥がし、ERE → RegExp
+│   ├── share/           LAN の共有（公開・依頼・受け口）。run.js は引き受けた依頼を 1 回だけ走らせる
 │   └── automation/      タスク・ワークフローの共有ワークベンチ（旧 statemachine-maker の main）
 │       ├── ipc.js       handlers.js を automation: 接頭辞で載せ、登録リポジトリと設定をアダプトする
 │       ├── handlers.js  全チャネル（定義・実行・記録・AI 下書き/見直し・ワークフロー・下書き一覧）
@@ -344,6 +350,9 @@ src/
 └── renderer/
     ├── index.html       会話・ファイル・変更・設定・worktree ダイアログ・タスクの会話（slot）
     ├── renderer.js      画面状態と描画、送信、設定
+    ├── format.js        数と時刻の整形（Fmt）
+    ├── storage.js       設定 > 保存データ（種類ごとの大きさと削除）
+    ├── appUpdate.js     設定 > アプリの更新と、更新のダイアログ
     ├── files.js         ファイルビュー
     ├── term.js          端末ミラー（xterm.js）。createTerm() で会話用 Term とタスク用 TaskTerm を持つ
     ├── taskTeaching.js  タスクを AI と作る会話（端末ミラー・入力欄・操作の見本・作成フォーム）
@@ -414,6 +423,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `session:read` | `readSession(id)` | `id` | 会話（`presentSession` 適用後。`originSession: { id, repo, title } | null` と `forks: [{ id, repo, title, index }]` を添える） |
 | `session:update` | `updateSession(id, patch)` | 許可キー: `title` `cli` `model` `readonly` `policy` `tier` `transport` `live` | 会話 |
 | `session:remove` | `removeSession(id)` | `id` | `true`。応答中なら止め、tmux を kill し、添付を消す |
+| `session:export` | `exportSession(id)` | `id` | `{ name, warning }`。会話を整形して userData の `exports/<会話名>-<YYYYMMDD-HHMM>.txt` に書き、`shell.openPath` で開く。開けなかった理由は `warning` に入れ、失敗にはしない（ファイルは書けている） |
 | `session:fork` | `forkSession(payload)` | `{ originId, repo, prompt, index?, skillMode? }` | `{ session, turn }`。元の会話の起動条件を写した会話を分岐先（登録済み・元と別のリポジトリ）の本体に作り、`forkPrompt`（元の会話の所在 + 本文）を最初のターンとして `turn:send` と同じ経路で送る。`index` は元の会話の応答メッセージの位置（`messages` の添字） |
 | `turn:send` | `send(id, prompt, opts)` | §5 | tmux: `{ name, restarted, warning }`、headless: `{ pid, argv }` |
 | `turn:stop` | `stop(id)` | `id` | 止めたか |
@@ -480,8 +490,11 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 ### 3. 設定（`config.json`）
 
 `store.normalize` が既定値と重ね、`settings.normalize` が `instructions` / `execution` を正規化する。
-未知キーは保持する。保存は temp ファイルへ書いてから rename する。読取りまたは parse に失敗した場合は
-既定値で起動する（通知は無い）。
+未知キーは保持する。保存は temp ファイルへ書いてから rename する。ファイルが無ければ既定値で起動する
+（初回起動。通知は無い）。ファイルはあるが parse できない・オブジェクトでない場合は、同じ場所へ
+`config.json.broken-<YYYYMMDDTHHMMSS>` として退避してから既定値で起動し、`config:problem`（起動後 1 回だけ
+`{ file, backup, reason, at }` を返し、以後 `null`）で画面に知らせる。読取りが `ENOENT` 以外で失敗した
+場合は退避せず、同じ窓口で理由だけを返す。
 
 | キー | 既定 | 意味 |
 |---|---|---|
@@ -803,6 +816,7 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 | 削除 | `worktree remove [--force]`。`deleteBranch` で `branch -d`（`forceBranch` で `-D`） |
 | 一覧 | `worktree list --porcelain` + まとめて撃つ `status --porcelain` 件数と `rev-list --count` |
 | 添付の置き場 | userData の `attachments/<UUID>/<名前>` |
+| 書き出したテキストの置き場 | userData の `exports/<会話名>-<YYYYMMDD-HHMM>.txt`（会話名は 40 字まで。`\ / : * ? " < > |` は `_` に置き換え、空なら「会話」） |
 | 添付の上限 | 1 件 25 MB、1 ターン 20 件。名前は 1 要素・120 字に丸める |
 | 掃除 | 起動時に、どの会話からも参照されない添付を消す。会話削除でその会話の添付を消す |
 

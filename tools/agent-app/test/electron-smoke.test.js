@@ -261,6 +261,19 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await forkButton.scrollIntoViewIfNeeded();
       await win.screenshot({ path: process.env.AGENT_APP_CHAT_SCREENSHOT });
     }
+    // テキストへの書き出し: ••• から 1 押しで、userData の exports/ に置いて既定のアプリで開く
+    await electron.evaluate(({ shell }) => { global.originalOpenPath = shell.openPath; shell.openPath = async (target) => { global.openedExportPath = target; return ''; }; });
+    await win.locator('#chat-more > summary').click();
+    if (process.env.AGENT_APP_EXPORT_MENU_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_EXPORT_MENU_SCREENSHOT });
+    await win.locator('#session-export').click();
+    await win.locator('#notice:visible').waitFor();
+    assert.match(await win.textContent('#notice'), /テキストに書き出しました（.+\.txt）$/);
+    const exported = await electron.evaluate(() => global.openedExportPath);
+    assert.strictEqual(path.dirname(exported), path.join(userData, 'exports'), '書き出したファイルをそのまま開く');
+    const exportedText = fs.readFileSync(exported, 'utf8');
+    assert.match(exportedText, /^会話: 画面を確認して\nリポジトリ: /);
+    assert.match(exportedText, /\[依頼\].*\n画面を確認して/);
+    await electron.evaluate(({ shell }) => { shell.openPath = global.originalOpenPath; });
     // 分岐先を開く: リポジトリ選択が切り替わり、会話一覧はふつうの会話と同じ形、ヘッダーに分岐元の 1 行
     await forkLink.click();
     await win.locator('#chat-origin:visible').waitFor();
@@ -350,7 +363,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.click('[data-settings-tab="storage"]');
     await win.waitForFunction(() => document.querySelectorAll('[data-cleanup-key]').length > 0);
     const updatesRow = win.locator('[data-cleanup-key="updates"]').locator('xpath=..');
-    assert.match(await updatesRow.textContent(), /取得済みの更新ファイル/);
+    assert.match(await updatesRow.textContent(), /ダウンロードした更新ファイル/);
     assert.match(await updatesRow.locator('.status').textContent(), /KB|MB/);
     assert.strictEqual(await win.locator('[data-cleanup-key="updates"]').isChecked(), true, '既定で選ばれている');
     // 消すと作業に影響が出るものは既定で外れている
@@ -358,7 +371,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.textContent('#cleanup-total'), /合計 \d/);
     if (process.env.AGENT_APP_STORAGE_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_STORAGE_SCREENSHOT });
     await win.click('#cleanup-run');
-    await win.waitForFunction(() => /を空けました/.test(document.getElementById('cleanup-status').textContent));
+    await win.waitForFunction(() => /を削除/.test(document.getElementById('cleanup-status').textContent));
     assert.strictEqual(fs.existsSync(path.join(userData, 'updates', 'agent-app-99.0.0.exe')), false, '更新ファイルを消す');
     assert.strictEqual(appStore.readSession(userData, session.id).terminalSnapshots.length, 0, '端末画面の控えを外す');
     assert.ok(appStore.readSession(userData, session.id).messages.length > 3, 'やり取りの本文は残す');

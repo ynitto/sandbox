@@ -1,7 +1,7 @@
 'use strict';
 
 const { ipcMain, dialog, shell, app } = require('electron');
-const { spawn, execFile } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -17,6 +17,7 @@ const attachments = require('./attachments');
 const cleanup = require('./cleanup');
 const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
+const sessionExport = require('./sessionExport');
 const { SessionBrowser } = require('./sessionBrowser');
 const notify = require('./notify');
 const { Updater } = require('./update');
@@ -32,17 +33,14 @@ const { registerAutomationIpc } = require('./automation/ipc');
 const attention = require('./attention');
 const runHistory = require('./automation/run-history');
 const agentFlow = require('./automation/agent-flow');
-const automationTools = require('./automation/tools');
 const machineStore = require('./automation/store');
 const teaching = require('./automation/teaching');
-const flowStore = require('./automation/flow-store');
-const flowTeachingStore = require('./automation/flow-teaching-store');
-const flowTeachingModel = require('./automation/flow-teaching-model');
-const flowTeachingPrompt = require('./automation/flow-teaching-prompt');
-const recordingBrowser = require('./automation/browser');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
-
-function userData() { return app.getPath('userData'); }
+const { userData, requireRepo, distroFor, dirsOf, sessionDirs, mainBranch } = require('./paths');
+const { spawnSpec, capture, killTree } = require('./proc');
+const shareRun = require('./share/run');
+const teachingIpcModule = require('./teachingIpc');
+const { runPrompt, runSharedPrompt, normalizeRepoUrl, refreshRepoUrls, repoFor } = shareRun;
 
 // 修正前に保存された Aider 応答も、読み出し時に同じ表示契約へ移す。
 // ディスク上の生データは変更せず、新しい応答は保存前に既に構造化される。
@@ -96,62 +94,7 @@ function handle(channel, fn) {
   });
 }
 
-// 触ってよいのは**登録したリポジトリだけ**。登録に無いパスは、実在していても断る。
-function requireRepo(repo) {
-  const dir = String(repo || '').trim();
-  if (!dir) throw new Error('リポジトリを選んでください');
-  if (!store.isRegistered(userData(), dir)) throw new Error('登録していないフォルダです');
-  let st;
-  try { st = fs.statSync(dir); } catch { st = null; }
-  if (!st || !st.isDirectory()) throw new Error('フォルダが見つかりません');
-  return dir;
-}
-
-function distroFor(repo) {
-  return host.hostOf(repo, store.loadConfig(userData()).wslDistro).distro;
-}
-
-// 作業フォルダ。画面から受け取るのは worktree の**名前**だけで、生のパスは受け取らない
-// （名前は worktree.checkName が形を検査するので `..` を持ち込めない）。
-function dirsOf(repo, name, { mustExist = false } = {}) {
-  const dirs = worktree.dirsFor(requireRepo(repo), name || '');
-  if (mustExist && dirs.name) {
-    let st;
-    try { st = fs.statSync(dirs.fsDir); } catch { st = null; }
-    if (!st || !st.isDirectory()) {
-      throw new Error(`作業フォルダが見つかりません: ${worktree.SUBDIR}/${dirs.name}（この画面の外で消された可能性があります）`);
-    }
-  }
-  return dirs;
-}
-
-function sessionDirs(sess) {
-  return dirsOf(sess.repo, sess.worktree || '');
-}
-
-// 「ブランチ全体」の差分の分岐元。登録したフォルダ（＝ふつうは本体の worktree）の今のブランチ。
-async function mainBranch(repo, distro) {
-  const r = await host.shellFor(distro).exec(['git', '-C', host.toHostPath(repo), 'rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: 20000 });
-  const name = r.ok ? r.output.trim() : '';
-  return name && name !== 'HEAD' ? name : '';
-}
-
 // ---- ヘッドレス（1 ターン 1 プロセス）。tmux が無いときの代替 --------------------------
-
-// Windows では CLI は WSL に居るので wsl.exe -e bash -lc に載せる（cwd も WSL 表記へ）。
-// Linux / macOS はそのまま起動する。
-function spawnSpec(command, args, { cwd = '', env = {}, distro = '' } = {}) {
-  if (process.platform !== 'win32') return { command, args, extra: { cwd, env: { ...process.env, ...env }, detached: true } };
-  const wsl = host.wslArgv(command, args, { cwd, env, distro });
-  return { command: wsl.command, args: wsl.args, extra: { windowsHide: true } };
-}
-
-function capture(argv, cwd) {
-  return new Promise((resolve) => {
-    execFile(argv[0], argv.slice(1), { cwd, windowsHide: true, timeout: 30000, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout) => resolve(err && !stdout ? '' : String(stdout || '')));
-  });
-}
 
 // 走っているヘッドレスのターン。セッション ID → 子プロセス。
 const running = new Map();
@@ -161,15 +104,6 @@ const instanceId = crypto.randomUUID();
 function emitResponseParts(send, id, added) {
   for (const item of (added && added.thinking) || []) send('turn:progress', { id, item });
   for (const item of (added && added.information) || []) send('turn:info', { id, item });
-}
-
-function killTree(child) {
-  try {
-    if (process.platform === 'win32') execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
-    else process.kill(-child.pid, 'SIGTERM');
-  } catch {
-    try { child.kill(); } catch { /* 既に終わっている */ }
-  }
 }
 
 // 1 ターンの起動条件。画面からターンごとに届く（無ければ会話の「次のターン」の既定）。
@@ -270,6 +204,7 @@ function runHeadless(id, turn, send) {
     turn.release();
     throw new Error(`起動できません: ${(err && err.message) || err}`);
   }
+  child.cli = cli;
   running.set(id, child);
   send('turn:started', { id, argv: cmd.argv, warning: [turn.setupWarning, cmd.readonlyWarning].filter(Boolean).join('\n') });
   send('turn:progress', { id, item: { text: `${cli} を起動しました`, status: 'running' } });
@@ -339,166 +274,6 @@ function runHeadless(id, turn, send) {
   });
   return { pid: child.pid, argv: cmd.argv };
 }
-
-// ---- 共有（LAN の参加者として CLI を 1 回起こす） --------------------------------------------
-//
-// 会話を持たない単発。セッション ID も履歴も無く、定義に no_session_args があれば付けて
-// 参加者の CLI にセッションを残さない。読み取り専用で起こす。
-//   { cli, prompt, model, readonly, cwd, files, timeoutMs, onLine }
-//   → { done: Promise<{ text, code, stopped, error, errorClass, quotaKind, elapsedMs, usage }>, stop(reason) }
-function runPrompt({ cli, prompt, model = '', readonly = true, cwd, files = [], timeoutMs = 0, onLine = () => {}, repo = '' }) {
-  const cfg = store.loadConfig(userData());
-  const distro = host.hostOf(repo || cwd, cfg.wslDistro).distro;
-  const spec = agentCli.load(cli, repo);
-  const cmd = agentCli.turnCmd(spec, { prompt, model, readonly, cliSession: '', history: [], files });
-  let argv = cmd.argv;
-  if (spec.noSessionArgs && spec.noSessionArgs.length) argv = agentCli.insertAfterSubcommand(argv, spec.noSessionArgs);
-  const startedAt = Date.now();
-  const spec2 = spawnSpec(argv[0], argv.slice(1), { cwd: host.toHostPath(cwd), env: cmd.env, distro });
-  let child;
-  let stopped = false;
-  let stopReason = '';
-  const done = new Promise((resolve) => {
-    try {
-      child = spawn(spec2.command, spec2.args, { windowsHide: true, ...spec2.extra });
-    } catch (err) {
-      resolve({ text: '', code: 1, stopped: false, error: `起動できません: ${(err && err.message) || err}`, errorClass: 'env', quotaKind: '', elapsedMs: 0, usage: null });
-      return;
-    }
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
-    child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
-    child.stdout.on('data', lineEmitter((line) => onLine('stdout', line)));
-    child.stderr.on('data', lineEmitter((line) => onLine('stderr', line)));
-    child.on('error', (err) => { stderr += `\n起動エラー: ${(err && err.message) || err}`; });
-    child.stdin.on('error', () => { /* 先に終わった CLI へ書いた EPIPE */ });
-    child.stdin.end(cmd.stdin == null ? '' : cmd.stdin);
-    const timer = timeoutMs > 0 ? setTimeout(() => { stopped = true; stopReason = '時間切れ'; killTree(child); }, timeoutMs) : null;
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
-      let answer = '';
-      if (cmd.outputFile) {
-        try { answer = fs.readFileSync(cmd.outputFile, 'utf8'); } catch { /* 書かれなかった */ }
-        try { fs.unlinkSync(cmd.outputFile); } catch { /* 無ければよい */ }
-      } else {
-        answer = stdout;
-      }
-      answer = response.parseTranscript(cli, cleanAnswer(answer)).text;
-      const failed = stopped || code !== 0 || !answer;
-      const rule = failed ? agentCli.classifyError(spec, `${stripAnsi(stderr)}\n${stdout}`) : null;
-      resolve({
-        text: answer, code, stopped, elapsedMs: Date.now() - startedAt, usage: null,
-        error: !failed ? '' : (stopped ? stopReason : (rule ? rule.hint : (stripAnsi(stderr).trim() || stdout.trim()).split('\n').slice(-6).join('\n'))),
-        errorClass: !failed ? '' : (stopped ? 'transient' : (rule && rule.cls ? rule.cls : 'cli')),
-        quotaKind: rule && rule.quotaKind ? rule.quotaKind : '',
-      });
-    });
-  });
-  return { done, stop(reason) { stopped = true; stopReason = reason || '止めた'; if (child) killTree(child); } };
-}
-
-// ---- 共有（引き受けた依頼を tmux の画面で走らせる） ------------------------------------------
-//
-// 依頼者は自分の端末ミラーで「他人の PC で何が起きているか」を見ながら待つ。そのため引き受けた
-// 側は会話と同じ tmux セッション（agent-app-share-<依頼 id>）で CLI を起こし、画面が変わるたびに
-// onScreen で渡す（participant が心拍に載せて依頼者へ送る）。tmux が無い PC ではヘッドレスに倒す。
-let shareRunSeq = 0;              // 引き受けた依頼の tmux 名を分ける連番（`tmux.sharePaneId`）
-let shareTmuxOk = false;
-
-function shareOutcome(message, { cli, spec, conv, startedAt, stopped = false }) {
-  const structured = response.parseTranscript(cli, message.text || '');
-  const halted = stopped || !!message.stopped;
-  const failed = halted || !!message.error || !structured.text;
-  const rule = failed ? agentCli.classifyError(spec, conv.lastText || '') : null;
-  return {
-    text: structured.text, code: failed ? 1 : 0, stopped: halted, elapsedMs: Date.now() - startedAt, usage: null,
-    error: failed ? (message.error || '画面から答えを読み取れませんでした') : '',
-    errorClass: !failed ? '' : (halted ? 'transient' : (rule && rule.cls ? rule.cls : 'cli')),
-    quotaKind: rule && rule.quotaKind ? rule.quotaKind : '',
-  };
-}
-
-function runPromptTmux(opts) {
-  const { cli, prompt, model = '', cwd, timeoutMs = 0, onScreen = () => {}, shareId } = opts;
-  const cfg = store.loadConfig(userData());
-  const spec = agentCli.load(cli, '');
-  const { shell } = host.hostOf('', cfg.wslDistro);
-  const cmd = agentCli.interactiveCmd(spec, { model, readonly: true, autoApprove: false, cliSession: '', history: [] });
-  shareRunSeq = (shareRunSeq + 1) % 1000;
-  const id = tmux.sharePaneId(shareId, shareRunSeq);
-  const startedAt = Date.now();
-  let stopped = false;
-  const conv = new tmux.Conversation({
-    id, shell, cwd: host.toHostPath(cwd), argv: cmd.argv, patterns: tmux.compilePatterns(spec.interactive),
-    launch: { cli, model, readonly: true, autoApprove: false },
-    emit: (channel, payload) => { if (channel === 'term:screen') onScreen(payload.text); },
-  });
-  conv.watchers = 1;                       // 依頼者が見ているので、画面は常に取る
-  let timer = null;
-  const cleanup = async () => {
-    if (timer) clearTimeout(timer);
-    await conv.kill().catch(() => {});
-  };
-  const done = new Promise((resolve) => {
-    (async () => {
-      try {
-        await conv.open({ reuse: false });
-        await conv.waitReady();
-        if (timeoutMs > 0) timer = setTimeout(() => { stopped = true; conv.stop().catch(() => {}); }, timeoutMs);
-        await conv.send(prompt, (message) => resolve(shareOutcome(message, { cli, spec, conv, startedAt, stopped })));
-      } catch (err) {
-        resolve({ text: '', code: 1, stopped: false, error: `起動できません: ${(err && err.message) || err}`, errorClass: 'env', quotaKind: '', elapsedMs: Date.now() - startedAt, usage: null });
-      }
-    })();
-  }).then(async (outcome) => { await cleanup(); return outcome; });
-  return {
-    done,
-    // 引き受けた人だけが打てる（自分の PC の自分の CLI）。依頼者には送れない
-    keys(data) { conv.keys(data).catch(() => {}); },
-    // 止めるときは生成を止めてから tmux ごと終わらせる（kill が待っているターンも閉じる）
-    stop() {
-      stopped = true;
-      conv.stop().catch(() => {}).then(() => cleanup()).catch(() => {});
-    },
-  };
-}
-
-// 共有で 1 件を走らせる。tmux が使えて対話定義のある CLI なら画面つき、無ければヘッドレス。
-function runSharedPrompt(opts) {
-  const spec = opts.cli ? agentCli.load(opts.cli, '') : null;
-  const cfg = store.loadConfig(userData());
-  if (shareTmuxOk && opts.shareId && spec && spec.interactive && cfg.transport !== 'headless') {
-    try { return runPromptTmux(opts); } catch { /* 定義や tmux の都合で作れなければヘッドレス */ }
-  }
-  return runPrompt(opts);
-}
-
-// 登録リポジトリの origin URL（共有の依頼の workspace と突き合わせる）。60 秒ごとに引き直す。
-const repoUrls = new Map();
-function normalizeRepoUrl(url) {
-  return String(url || '').trim().toLowerCase()
-    .replace(/\/+$/, '')            // 末尾の /
-    .replace(/\.git$/, '')          // .git
-    .replace(/^[a-z+]+:\/\//, '')   // scheme://
-    .replace(/^[^@/:]+@/, '')       // user@
-    .replace(/^([^/:]+):/, '$1/');  // host:path → host/path
-}
-async function refreshRepoUrls() {
-  const cfg = store.loadConfig(userData());
-  const next = new Map();
-  for (const repo of cfg.repos) {
-    try {
-      const dirs = dirsOf(repo, '');
-      const r = await host.shellFor(distroFor(repo)).exec(['git', '-C', dirs.hostDir, 'remote', 'get-url', 'origin'], { timeoutMs: 5000 });
-      if (r.ok && r.output.trim()) next.set(normalizeRepoUrl(r.output), repo);
-    } catch { /* origin が無いリポジトリは突き合わせの対象外 */ }
-  }
-  repoUrls.clear();
-  for (const [k, v] of next) repoUrls.set(k, v);
-  return repoUrls;
-}
-function repoFor(url) { return repoUrls.get(normalizeRepoUrl(url)) || ''; }
 
 let shareInstance = null;
 
@@ -807,6 +582,22 @@ async function runTmux(id, turn, send) {
   return { name: conv.name, started: true, restarted: !!(opened && opened.restarted), warning };
 }
 
+// いま応答中の会話（ヘッドレスの子プロセスと、ターン中の tmux 会話）。混線の注意（continueClashWarning）に使う
+function activeTurns(ud) {
+  const out = [];
+  const seen = new Set();
+  const push = (id, cli) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    let sess;
+    try { sess = store.readSession(ud, id); } catch { return; }
+    out.push({ id, repo: sess.repo, cli: cli || sess.cli || '', name: sess.name || '' });
+  };
+  for (const [id, child] of running) push(id, child.cli);
+  for (const conv of conversations.values()) if (conv.turn) push(conv.id, conv.launch && conv.launch.cli);
+  return out;
+}
+
 // 1 ターン。CLI・モデル・モードはターンごとに決め、tmux か ヘッドレスかもここで決める
 // （対話定義を持つ CLI で tmux が使えるなら tmux）。
 async function runTurn(id, p, send, { config = null, release = () => {}, resumeContext } = {}) {
@@ -862,6 +653,12 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   });
   const skillDelivery = skillSelection.deliver(selectedSkills, spec);
   setupInformation.push(...skillDelivery.information);
+  // 直前のセッションを拾う CLI が同じリポジトリで並行していれば、送る前に 1 行出す（止めない）
+  const clash = agentCli.continueClashWarning({ id, repo: sess.repo, cli: base.cli, spec }, activeTurns(ud));
+  if (clash) {
+    setupWarning = [setupWarning, clash].filter(Boolean).join('\n');
+    setupInformation.push({ type: 'status', title: clash, status: 'attention' });
+  }
   setupSkills.push(...skillDelivery.commands.map((command) => ({
     command, name: command.replace(/^[$/]+/, ''), onError: selectedSkills.mode === 'manual' ? 'fail' : 'warn',
   })));
@@ -944,227 +741,19 @@ function automationAppRoot() {
   return path.join(__dirname, '..', '..');
 }
 
-// ---- タスクを AI と作る会話（tmux）。会話基盤をそのまま使い、kind: 'task' の会話をタスクに紐づける ----
-//
-// 手動実行の画面と同じく、作成・変更も tmux の端末ミラーの中で進める。CLI は会話と同じ
-// 定義・同じ起動方針で起こし、cwd はリポジトリ本体。最初の依頼（teaching.prompt）が
-// statemachine-use の作成モードと、見本の依頼の作法（@record 行）を伝える。
-// ブラウザの見本は、**この端末**（Windows ならその Windows 側）で Edge をリモートデバッグ付きで起こし、
-// 固定文で AI に知らせて AI 自身が CDP 越しに記録を取る（automation:teach:browser。固定文は renderer が
-// 会話の送信経路で送る）。ボタンは 1 つで、押すたびに「開く（準備）→ 記録開始 → 終了」と進み、段ごとに
-// 別の固定文（@recording open / start / stop）が渡る。Windows アプリの見本（winauto）はこの端末で取り、できた Markdown の所在を
-// WSL 表記に直して会話へ送る。
-
-function teachingTools() {
-  return {
-    browser: !!recordingBrowser.findBrowser({ resolvePath: (name) => agentCli.resolvePath(name) }),
-    windows: process.platform === 'win32' && !!agentCli.resolvePath('winauto'),
-  };
-}
-
-// 「ブラウザを開く」: Edge（無ければ Chrome）を記録専用プロファイルで、リモートデバッグ付きで起こす。
-// この時点ではまだ記録は始まらない（利用者がログインや画面の移動をする）。
-function launchTeachingBrowser(p) {
-  return recordingBrowser.launchRecordingBrowser({
-    url: p.url, profileDir: path.join(userData(), recordingBrowser.PROFILE_DIR),
-    resolvePath: (name) => agentCli.resolvePath(name),
-  });
-}
-
-// 「記録を始める」: 準備の間に利用者が移動した先を記録の起点として AI へ渡すため、いま開いている
-// ページを DevTools から読む。読めなくても記録は始められるので、失敗は url: '' で返す。
-function teachingBrowserPage() {
-  return recordingBrowser.activePage();
-}
-
-function teachingSkillDir(repo, cfg) {
-  const dir = automationTools.findSkillDir({ root: repo, configured: cfg.automationSkillDir, appRoot: automationAppRoot() });
-  return dir ? host.toHostPath(dir) : '';
-}
-
-function taskConversationView(ud, repo, machine) {
-  const summary = store.findTaskSession(ud, repo, machine);
-  const session = summary ? presentSession(store.readSession(ud, summary.id)) : null;
-  return {
-    machine, session, sidecar: teaching.load(repo, machine), published: machineStore.exists(repo, machine),
-    tools: teachingTools(),
-  };
-}
-
-function prepareTeaching(p) {
-  const ud = userData();
-  const repo = requireRepo(p.repo);
-  const cfg = store.loadConfig(ud);
-  const purpose = String(p.purpose || '').trim();
-  const machine = String(p.machine || '').trim() || teaching.machineNameFor(purpose);
-  machineStore.machineDir(repo, machine);            // 保存名の字種を検査する（不正なら投げる）
-  const existing = machineStore.exists(repo, machine);
-  let sidecar = teaching.load(repo, machine);
-  if (!existing && !sidecar) {
-    if (!purpose) throw new Error('教えたいタスクを入力してください');
-    sidecar = teaching.save(repo, machine, { title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose });
-  }
-  let summary = store.findTaskSession(ud, repo, machine);
-  const replacing = !!summary && p.newSession;
-  if (!summary) {
-    const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
-    const created = store.createSession(ud, {
-      repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier,
-      readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
-      transport: 'tmux', worktree: '', kind: 'task', task: { machine },
-    });
-    summary = { id: created.id };
-    sidecar = teaching.save(repo, machine, { ...(sidecar || { title: machine, purpose }), sessionId: created.id });
-  } else if (sidecar && sidecar.sessionId !== summary.id) {
-    sidecar = teaching.save(repo, machine, { ...sidecar, sessionId: summary.id });
-  }
-  if (replacing) {
-    if (turnGate.snapshot(cfg.execution.maxConcurrent).ids.includes(summary.id)
-      || running.has(summary.id) || conversations.get(summary.id)?.turn) throw new Error('応答の完了後に新しいセッションを作成してください');
-    const created = store.replaceEditingSession(ud, summary.id, {
-      readonly: false, ...(p.cli ? { cli: p.cli, model: p.model || '' } : {}),
-      autoApprove: p.autoApprove != null ? !!p.autoApprove : store.readSession(ud, summary.id).autoApprove,
-    });
-    summary = { id: created.id };
-    sidecar = teaching.save(repo, machine, { ...sidecar, sessionId: created.id });
-  }
-  // 既にある会話でも権限は画面の選択に合わせる（自動承認へ切り替えたら、次の依頼で CLI を起動し直す）
-  if (p.autoApprove != null) store.updateSession(ud, summary.id, { autoApprove: !!p.autoApprove });
-  const session = store.readSession(ud, summary.id);
-  return { ud, repo, cfg, purpose, machine, existing, sidecar, session };
-}
-
-function prepareTeachingView(p) {
-  const prepared = prepareTeaching(p);
-  return { ...taskConversationView(prepared.ud, prepared.repo, prepared.machine), existing: prepared.existing };
-}
-
-async function startTeaching(p, send) {
-  const { ud, repo, cfg, purpose, machine, existing, sidecar, session } = prepareTeaching(p);
-  const conversation = conversations.get(session.id);
-  const busy = running.has(session.id) || !!(conversation && conversation.turn);
-  let started = false;
-  // 再開時の説明は CLI の復元結果に応じて runTmux で省略する。初回依頼は必ず送る。
-  if (!busy) {
-    const common = { machine, purpose: sidecar ? sidecar.purpose : purpose, existing };
-    const prompt = session.messages.length
-      ? teaching.resumePrompt({ ...common, context: p.context })
-      : teaching.prompt({ ...common, skillDir: teachingSkillDir(repo, cfg), tools: teachingTools() });
-    const context = String(p.context || '').trim().slice(0, 1000);
-    const result = await guardedRunTurn(session.id, {
-      prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
-      skillMode: 'off', skills: [], attachments: [],
-    }, send, {
-      resumeContext: session.messages.length ? (context ? `今回の編集対象: ${context}` : '') : undefined,
-    });
-    started = result.started !== false;
-  }
-  return { ...taskConversationView(ud, repo, machine), existing, started };
-}
-
-// ---- ワークフローを AI と作る会話（タスクと同じ作り。kind: 'workflow'） ---------------------
-//
-// 下書き（.agents/workflows/.teaching/<id>.json）が会話 ID を覚え、AI は会話の中で
-// .agents/workflows/<id>.json を直接書く。画面はその 1 ファイルを読んで「候補の工程」を出す。
-
-function flowConversationView(ud, repo, id) {
-  const summary = store.findWorkflowSession(ud, repo, id);
-  const session = summary ? presentSession(store.readSession(ud, summary.id)) : null;
-  let workflow = null;
-  try { workflow = flowStore.read(repo, id); } catch { workflow = null; }   // まだ書かれていない
-  return { workflowId: id, session, sidecar: flowTeachingStore.load(repo, id), workflow, published: !!(workflow && !workflow.issues.some((item) => item.level === 'error')) };
-}
-
-function prepareFlowTeaching(p) {
-  const ud = userData();
-  const repo = requireRepo(p.repo);
-  const cfg = store.loadConfig(ud);
-  const purpose = String(p.purpose || '').trim();
-  const id = String(p.workflowId || '').trim() || flowTeachingPrompt.workflowIdFor(purpose);
-  let sidecar = flowTeachingStore.load(repo, id);
-  let existing = true;
-  try { flowStore.read(repo, id); } catch { existing = false; }
-  if (!existing && !sidecar.title) {
-    if (!purpose) throw new Error('教えたいワークフローを入力してください');
-    sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose }));
-  }
-  let summary = store.findWorkflowSession(ud, repo, id);
-  const replacing = !!summary && p.newSession;
-  if (!summary) {
-    const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
-    const created = store.createSession(ud, {
-      repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier,
-      readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
-      transport: 'tmux', worktree: '', kind: 'workflow', workflow: { id },
-    });
-    summary = { id: created.id };
-  }
-  if (replacing) {
-    if (turnGate.snapshot(cfg.execution.maxConcurrent).ids.includes(summary.id)
-      || running.has(summary.id) || conversations.get(summary.id)?.turn) throw new Error('応答の完了後に新しいセッションを作成してください');
-    const created = store.replaceEditingSession(ud, summary.id, {
-      readonly: false, ...(p.cli ? { cli: p.cli, model: p.model || '' } : {}),
-      autoApprove: p.autoApprove != null ? !!p.autoApprove : store.readSession(ud, summary.id).autoApprove,
-    });
-    summary = { id: created.id };
-  }
-  if (sidecar.sessionId !== summary.id) sidecar = flowTeachingStore.save(repo, id, { ...sidecar, sessionId: summary.id });
-  if (p.autoApprove != null) store.updateSession(ud, summary.id, { autoApprove: !!p.autoApprove });
-  return { ud, repo, purpose, id, existing, sidecar, session: store.readSession(ud, summary.id) };
-}
-
-async function startFlowTeaching(p, send) {
-  const { ud, repo, purpose, id, existing, sidecar, session } = prepareFlowTeaching(p);
-  const conversation = conversations.get(session.id);
-  const busy = running.has(session.id) || !!(conversation && conversation.turn);
-  let started = false;
-  if (!busy) {
-    const common = { id, purpose: sidecar.understanding.purpose || purpose, existing };
-    const prompt = session.messages.length
-      ? flowTeachingPrompt.resumePrompt({ ...common, context: p.context })
-      : flowTeachingPrompt.prompt(common);
-    const context = String(p.context || '').trim().slice(0, 1000);
-    const result = await guardedRunTurn(session.id, {
-      prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
-      skillMode: 'off', skills: [], attachments: [],
-    }, send, {
-      resumeContext: session.messages.length ? (context ? `今回の編集対象: ${context}` : '') : undefined,
-    });
-    started = result.started !== false;
-  }
-  return { ...flowConversationView(ud, repo, id), existing, started };
-}
-
-// AI が書いた定義を、この下書きの「候補」として取り込む（試運転と利用可能にする手順は今までどおり）。
-function adoptFlowDraft(p) {
-  const repo = requireRepo(p.repo);
-  const id = String(p.workflowId || '').trim();
-  const read = flowStore.read(repo, id);
-  if (read.issues.some((item) => item.level === 'error')) throw new Error('定義にまだ直すところがあります');
-  const session = flowTeachingStore.load(repo, id);
-  const active = session.generations.find((item) => item.id === session.activeGenerationId);
-  if (active && active.digest === read.digest) return session;               // 変わっていない
-  const next = flowTeachingModel.addGeneration(session, {
-    id: `file-${read.digest.slice(0, 12)}`, summary: read.workflow.description || read.workflow.name,
-    workflow: read.workflow, digest: read.digest,
-  });
-  return flowTeachingStore.save(repo, id, next);
-}
-
-// Windows アプリの見本を保存し、AI へ渡す本文を**返す**。送りはしない——本文は入力欄に入り、
-// 利用者が見たものの補足を足してから送る（ブラウザの「終了してAIへ渡す」と同じ扱い）。
-// 送る経路が会話の 1 本だけになるので、AI が応答中でもここで断る必要がない。
-function demonstrate(p) {
-  const repo = requireRepo(p.repo);
-  const machine = String(p.machine || '').trim();
-  const saved = teaching.saveRecording(repo, machine, p.recording);
-  const hostPath = host.toHostPath(saved.file);
-  const prompt = teaching.demonstrationPrompt({
-    machine, hostPath, source: saved.source, target: saved.target, steps: saved.steps,
-    parameters: saved.parameters, requested: p.requested !== false,
-  });
-  return { file: saved.file, relative: saved.relative, hostPath, source: saved.source, steps: saved.steps, prompt };
-}
+// タスク・ワークフローを AI と作る会話。会話の実行（tmux・同時実行枠）はここから渡す
+const teachingIpc = teachingIpcModule.create({
+  presentSession,
+  appRoot: automationAppRoot,
+  busy: (id) => running.has(id) || !!conversations.get(id)?.turn,
+  queuedTurnIds: (max) => turnGate.snapshot(max).ids,
+  runTurn: (id, payload, send, options) => guardedRunTurn(id, payload, send, options),
+});
+const {
+  teachingTools, launchTeachingBrowser, teachingBrowserPage, taskConversationView,
+  prepareTeachingView, startTeaching, demonstrate,
+  flowConversationView, prepareFlowTeaching, startFlowTeaching, adoptFlowDraft,
+} = teachingIpc;
 
 function registerIpcHandlers(getWindow) {
   const post = (channel, payload) => {
@@ -1246,6 +835,7 @@ function registerIpcHandlers(getWindow) {
     return { platform: process.platform, distro: cfg.wslDistro, ...info, socket: tmux.SOCKET };
   });
   handle('config:get', () => store.loadConfig(userData()));
+  handle('config:problem', () => store.takeConfigProblem());
   handle('config:save', (p) => {
     const before = store.loadConfig(userData());
     const next = store.saveConfig(userData(), p.patch);
@@ -1260,7 +850,7 @@ function registerIpcHandlers(getWindow) {
   let shareAgentNames = [];
   const refreshShareCaches = async () => {
     try { shareAgentNames = (await listAgents('')).filter((a) => a.available && !a.virtual).map((a) => a.name); } catch { /* 次の周で */ }
-    try { const info = await host.probe(process.platform === 'win32' ? store.loadConfig(userData()).wslDistro : ''); shareTmuxOk = !!(info.ok && info.tmux); } catch { shareTmuxOk = false; }
+    try { const info = await host.probe(process.platform === 'win32' ? store.loadConfig(userData()).wslDistro : ''); shareRun.setTmuxAvailable(info.ok && info.tmux); } catch { shareRun.setTmuxAvailable(false); }
     await refreshRepoUrls().catch(() => {});
   };
   shareInstance = new share.Share({ userData: userData(), config: store.loadConfig(userData()), send, runPrompt: runSharedPrompt, agents: () => shareAgentNames, repoFor,
@@ -1581,6 +1171,14 @@ function registerIpcHandlers(getWindow) {
     url.pathname = target.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
     try { await shell.openExternal(url.href); }
     catch { throw new Error('VS Codeを開けませんでした。VS Codeがインストールされているか確認してください。'); }
+  });
+  // 会話をテキストにして開く。開けなくてもファイルは書けているので、理由だけ返す
+  handle('session:export', async (p) => {
+    const ud = userData();
+    const sess = store.readSession(ud, p.id);
+    const out = sessionExport.write(ud, sess);
+    const error = await shell.openPath(out.path);
+    return { name: out.name, warning: error ? `書き出したファイルを開けませんでした: ${error}` : '' };
   });
   handle('shell:openFolder', (p) => shell.openPath(dirsOf(p.repo, p.worktree, { mustExist: true }).fsDir));
   handle('shell:openFile', async (p) => {

@@ -8,9 +8,6 @@ const state = {
   config: null,
   area: 'conversation',
   host: null,           // host:info（platform / tmux の有無）。届くまで null
-  update: null,         // update:status（更新元・確認結果・適用中の進み）。届くまで null
-  cleanup: null,        // cleanup:scan（保存データの種類ごとの大きさ）。開くまで null
-  updateDismissed: '',  // 「あとで」で閉じた更新の内容（同じ内容は次の起動まで自動では出さない）
   hostReady: null,      // host:info の返事を待つ Promise（送信前に待つ）
   repo: '',
   repoToken: 0,         // selectRepo のたびに進める。遅れて届いたホストの返事を捨てる印
@@ -75,13 +72,20 @@ function notice(text, kind = '') {
   n.hidden = !text;
 }
 
+// 設定ファイルが読めなかった（壊れていた）ことを、起動の最初に 1 回だけ伝える。
+// 既定値で動いているので登録リポジトリと設定は空に見える——その理由を言う。
+function reportConfigProblem(problem) {
+  if (!problem) return;
+  const where = problem.backup ? `壊れたファイルは ${problem.backup.split(/[\\/]/).pop()} として同じ場所に退避しました。` : '';
+  notice(`設定を読めなかったため、既定の設定で起動しました（${problem.reason}）。${where}登録したフォルダと設定を入れ直してください`, 'error');
+}
+
 const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
 // 端末へそのまま送るキー。端末操作の仮想キー（index.html の data-terminal-key）と同じ表を使う。
 const TERMINAL_KEYS = {
   Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03',
 };
 const POPUP_MENU_SELECTOR = 'details.more-menu[open], details.run-settings[open]';
-const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 function closePopupMenus(root, event = null) {
   const path = event && typeof event.composedPath === 'function' ? event.composedPath() : [];
@@ -243,6 +247,13 @@ function renderSessions() {
 }
 
 // 会話の名前を変える（既定は最初の依頼の先頭。長い会話ほど見分けが付かなくなる）
+// 会話をテキストにして、そのまま既定のアプリで開く（保存名は会話名から決めるので聞かない）
+async function exportConversation() {
+  if (!state.current) return;
+  const result = await api.exportSession(state.current.id);
+  notice(`テキストに書き出しました（${result.name}）${result.warning ? `。${result.warning}` : ''}`, result.warning ? 'error' : '');
+}
+
 async function renameConversation() {
   const cur = state.current;
   if (!cur) return;
@@ -1139,6 +1150,7 @@ function renderHeader() {
   $('composer').hidden = !state.repo;
   $('session-delete').hidden = !cur;
   $('session-rename').hidden = !cur;
+  $('session-export').hidden = !cur;
   $('session-routine').hidden = !cur;
   $('session-routine').disabled = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
@@ -1198,7 +1210,7 @@ function renderHeader() {
 function chipNode(a, { onRemove = null } = {}) {
   const c = el('span', `chip${a.rel ? ' repo' : ''}${onRemove ? '' : ' link'}`);
   c.append(el('span', 'name', a.rel || a.name));
-  if (a.size != null) c.append(el('span', 'sub', fmtSize(a.size)));
+  if (a.size != null) c.append(el('span', 'sub', Fmt.size(a.size)));
   c.title = a.rel ? `${a.rel}（作業フォルダの中。パスを伝えるだけで写さない）` : a.name;
   if (onRemove) {
     const x = el('button', 'x', '×');
@@ -1542,7 +1554,6 @@ async function createRoutine() {
     $('routine-retry').disabled = false;
   }
 }
-
 
 function workingNode(id, tmuxMode) {
   const n = el('div', 'response-turn working');
@@ -1983,94 +1994,7 @@ function selectSettingsTab(name) {
     button.setAttribute('aria-selected', String(selected));
   }
   for (const panel of document.querySelectorAll('[data-settings-panel]')) panel.hidden = panel.dataset.settingsPanel !== name;
-  if (name === 'storage' && !state.cleanup) scanCleanup();
-}
-
-// ---- 保存データの整理 --------------------------------------------------------
-
-const CLEANUP_UNITS = [['GB', 1073741824], ['MB', 1048576], ['KB', 1024]];
-
-function fmtBytes(bytes) {
-  const n = Number(bytes) || 0;
-  for (const [unit, size] of CLEANUP_UNITS) {
-    if (n >= size) return `${(n / size).toFixed(n / size >= 10 ? 0 : 1)} ${unit}`;
-  }
-  return `${n} B`;
-}
-
-function cleanupChecked() {
-  const out = [];
-  for (const box of document.querySelectorAll('[data-cleanup-key]')) if (box.checked) out.push(box.dataset.cleanupKey);
-  return out;
-}
-
-function renderCleanupTotal() {
-  const items = (state.cleanup && state.cleanup.items) || [];
-  const keys = new Set(cleanupChecked());
-  const total = items.filter((item) => keys.has(item.key)).reduce((n, item) => n + item.bytes, 0);
-  $('cleanup-total').textContent = state.cleanup ? `合計 ${fmtBytes(total)}` : '';
-  $('cleanup-run').disabled = !state.cleanup || state.cleanupBusy || !total;
-}
-
-function renderCleanup() {
-  const box = $('cleanup-items');
-  const scanning = !state.cleanup;
-  $('cleanup-rescan').disabled = scanning || !!state.cleanupBusy;
-  if (scanning) {
-    box.replaceChildren(el('div', 'sub', state.cleanupError || '容量を確認中…'));
-    renderCleanupTotal();
-    return;
-  }
-  box.replaceChildren(...state.cleanup.items.map((item) => {
-    const row = el('label', 'setting-check');
-    const check = el('input');
-    check.type = 'checkbox';
-    check.dataset.cleanupKey = item.key;
-    check.checked = item.defaultOn && item.bytes > 0;
-    check.disabled = !item.bytes;
-    check.onchange = renderCleanupTotal;
-    const text = el('span');
-    text.append(el('strong', '', item.title), el('small', '', item.detail));
-    row.append(check, text, el('span', 'status', item.bytes ? fmtBytes(item.bytes) : 'なし'));
-    return row;
-  }));
-  renderCleanupTotal();
-}
-
-async function scanCleanup() {
-  state.cleanup = null;
-  state.cleanupError = '';
-  renderCleanup();
-  $('cleanup-status').textContent = '';
-  try {
-    state.cleanup = await api.cleanup.scan();
-    $('cleanup-status').textContent = `確認日時：${fmtCheckedAt(state.cleanup.scannedAt)}`;
-  } catch (error) {
-    state.cleanupError = error.message;
-  }
-  renderCleanup();
-}
-
-async function runCleanup() {
-  const keys = cleanupChecked();
-  if (!keys.length) return;
-  state.cleanupBusy = true;
-  $('cleanup-status').textContent = '削除中…';
-  renderCleanup();
-  try {
-    const result = await api.cleanup.remove(keys);
-    state.cleanup = result.scan;
-    $('cleanup-status').textContent = result.failed
-      ? `${fmtBytes(result.freed)} を削除（${result.failed} 件は削除できませんでした）`
-      : `${fmtBytes(result.freed)} を削除しました`;
-  } catch (error) {
-    $('cleanup-status').textContent = '';
-    $('settings-error').textContent = error.message;
-    $('settings-error').hidden = false;
-  } finally {
-    state.cleanupBusy = false;
-    renderCleanup();
-  }
+  if (name === 'storage') Storage.open();
 }
 
 function fillAgentSelect(select, value) {
@@ -2277,7 +2201,7 @@ async function openSettings() {
   $('update-source').value = update.source || '';
   $('update-on-startup').checked = update.onStartup !== false;
   $('update-interval').value = String([0, 6, 24, 168].includes(update.intervalHours) ? update.intervalHours : 24);
-  renderUpdateStatus();
+  AppUpdate.renderStatus();
   $('instruction-enabled').checked = instructions.enabled;
   $('fork-enabled').checked = instructions.forkEnabled !== false;
   $('instruction-text').value = instructions.text || '';
@@ -2316,9 +2240,7 @@ async function openSettings() {
   $('skill-options').replaceChildren(...candidates.map((name) => {
     const option = el('option'); option.value = name; return option;
   }));
-  state.cleanup = null;
-  state.cleanupBusy = false;
-  $('cleanup-status').textContent = '';
+  Storage.reset();
   selectSettingsTab('app');
   setSidebar(false);
   $('app-settings').showModal();
@@ -2352,112 +2274,6 @@ async function saveSettings() {
       renderRestrictions();
     }
   } catch (error) {
-    $('settings-error').textContent = error.message;
-    $('settings-error').hidden = false;
-  } finally {
-    button.disabled = false;
-  }
-}
-
-// ---- 更新 --------------------------------------------------------------------
-//
-// 確認は main（起動時・定期）と「今すぐ確認」で行い、結果は update:changed で届く。ここでは
-// 見つかった更新を 1 つのダイアログで見せ、利用者が「更新する」を押した分だけ apply へ渡す。
-// 「あとで」は同じ内容を次の起動まで出さない（手動の確認では改めて出す）。
-
-const fmtCheckedAt = (at) => {
-  const d = new Date(at);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-};
-
-function updateKey(plan) {
-  return plan ? `${plan.app.available ? plan.app.next : ''}|${plan.tools.available ? plan.tools.next : ''}` : '';
-}
-
-function renderUpdateStatus() {
-  const u = state.update;
-  const line = $('update-status');
-  const button = $('update-check');
-  if (!line) return;
-  button.disabled = !!(u && (u.checking || u.applying));
-  if (!u) { line.textContent = ''; return; }
-  const parts = [`Agent App ${u.appVersion}`];
-  if (u.checking) parts.push('確認しています…');
-  else if (u.applying) parts.push(u.progress || '更新しています…');
-  else if (u.error) parts.push(u.error);
-  else if (!u.source) parts.push('更新元が未設定');
-  else if (!u.lastCheckAt) parts.push('未確認');
-  else {
-    const p = u.plan;
-    const found = [];
-    if (p && p.app.available) found.push(`Agent App ${p.app.next}${p.app.applicable ? '' : '（この起動形態では手動で入れ替え）'}`);
-    if (p && p.tools.available) found.push(`agent-tools ${p.tools.next}`);
-    parts.push(found.length ? `新しい版: ${found.join(' / ')}` : '最新です');
-    parts.push(`${fmtCheckedAt(u.lastCheckAt)} 確認`);
-  }
-  const t = u.plan && u.plan.tools;
-  if (t && t.installed && !t.available) {
-    parts.push(!t.configured ? 'agent-tools: 更新元の設定なし' : t.error ? `agent-tools: ${t.error}` : t.current ? `agent-tools ${t.current}` : 'agent-tools');
-  }
-  line.textContent = parts.join(' · ');
-}
-
-function renderUpdateDialog() {
-  const u = state.update || {};
-  const p = u.plan;
-  if (!p) return;
-  const appOk = p.app.available && p.app.applicable;
-  $('update-app-row').hidden = !appOk;
-  $('update-app').checked = appOk;
-  $('update-app-detail').textContent = appOk ? `${p.app.current} → ${p.app.next}（入れ替えのために再起動します）` : '';
-  $('update-tools-row').hidden = !p.tools.available;
-  $('update-tools').checked = p.tools.available;
-  $('update-tools-detail').textContent = p.tools.available
-    ? `${p.tools.current} → ${p.tools.next}（${api.platform === 'win32' ? 'WSL' : 'この端末'}で入れ直します）` : '';
-  $('update-notes').textContent = p.notes || '';
-  $('update-notes').hidden = !p.notes;
-  $('update-progress').textContent = u.applying ? (u.progress || '更新しています…') : '';
-  $('update-apply').disabled = !!u.applying;
-  $('update-later').disabled = !!u.applying;
-  $('update-close').disabled = !!u.applying;
-}
-
-function openUpdateDialog() {
-  const dlg = $('app-update');
-  $('update-error').hidden = true;
-  renderUpdateDialog();
-  if (!dlg.open) dlg.showModal();
-}
-
-async function applyUpdate() {
-  const choice = { app: !$('update-app-row').hidden && $('update-app').checked, tools: !$('update-tools-row').hidden && $('update-tools').checked };
-  if (!choice.app && !choice.tools) { $('app-update').close(); return; }
-  $('update-error').hidden = true;
-  $('update-apply').disabled = true;
-  try {
-    const result = await api.update.apply(choice);
-    if (result.app) { $('update-progress').textContent = '入れ替えのために終了します…'; return; }
-    $('app-update').close();
-    if (result.tools) notice(`agent-tools を ${result.tools} に更新しました`);
-  } catch (error) {
-    $('update-error').textContent = error.message;
-    $('update-error').hidden = false;
-    $('update-apply').disabled = false;
-  }
-}
-
-async function checkUpdateNow() {
-  const button = $('update-check');
-  button.disabled = true;
-  try {
-    const plan = await api.update.check();
-    state.update = await api.update.status();
-    renderUpdateStatus();
-    if (plan && plan.any) { state.updateDismissed = ''; openUpdateDialog(); }
-  } catch (error) {
-    state.update = await api.update.status().catch(() => state.update);
-    renderUpdateStatus();
     $('settings-error').textContent = error.message;
     $('settings-error').hidden = false;
   } finally {
@@ -2513,6 +2329,7 @@ async function init() {
     },
   });
   state.config = await api.getConfig();
+  reportConfigProblem(await api.configProblem().catch(() => null));
   state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
   renderQuickRequestMenu();
   state.hostReady = api.hostInfo()
@@ -2690,6 +2507,10 @@ async function init() {
     $('chat-more').open = false;
     renameConversation().catch((err) => notice(err.message, 'error'));
   };
+  $('session-export').onclick = () => {
+    $('chat-more').open = false;
+    exportConversation().catch((err) => notice(err.message, 'error'));
+  };
   $('send').onclick = sendPrompt;
   $('stop').onclick = () => state.current && api.stop(state.current.id);
   $('input-mode-message').onclick = () => setInputMode('message');
@@ -2822,20 +2643,8 @@ async function init() {
   $('settings-open').onclick = () => openSettings().catch((error) => notice(error.message, 'error'));
   $('settings-close').onclick = () => $('app-settings').close();
   $('settings-save').onclick = saveSettings;
-  $('update-check').onclick = checkUpdateNow;
-  $('cleanup-rescan').onclick = scanCleanup;
-  $('cleanup-run').onclick = runCleanup;
-  $('update-apply').onclick = applyUpdate;
-  $('update-later').onclick = () => { state.updateDismissed = updateKey((state.update || {}).plan); $('app-update').close(); };
-  $('update-close').onclick = () => $('app-update').close();
-  api.update.onChanged((u) => {
-    state.update = u;
-    renderUpdateStatus();
-    if ($('app-update').open) renderUpdateDialog();
-    // 起動時・定期の確認で見つかった分は、同じ内容を「あとで」で閉じていなければ出す
-    if (u.trigger === 'auto' && u.plan && u.plan.any && !u.applying && updateKey(u.plan) !== state.updateDismissed) openUpdateDialog();
-  });
-  api.update.status().then((u) => { state.update = u; renderUpdateStatus(); }).catch(() => {});
+  Storage.init();
+  AppUpdate.init({ notice });
   $('optimize-agents').onchange = renderSettingsRestrictions;
   $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));
   $('side-backdrop').onclick = () => setSidebar(false);
