@@ -229,15 +229,15 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
 test('保存データの整理は設定の既存の器（設定の行・状態の印・足元の集計）で組む', () => {
   const html = read('renderer/index.html');
   const css = read('renderer/styles.css');
-  const renderer = read('renderer/renderer.js');
+  const storage = read('renderer/storage.js');          // 保存データの面を描くのはこのモジュール
   const panel = html.match(/<section data-settings-panel="storage"[\s\S]*?<\/section>/)?.[0] || '';
   assert.ok(panel, '設定に「保存データ」の面が無い');
   // 1. タブ名で分かることを本文で繰り返さない（面の中に見出しと説明の常駐を作らない）
   assert.ok(!/<h[1-4][\s>]/.test(panel), '設定の面に見出しを置かない（タブ名が名乗る）');
   assert.ok(!/<p[\s>]/.test(panel), '仕組みの説明は README に置く');
   // 2. 種類の行は設定の行（.setting-check）、大きさは状態の印（.status）をそのまま借りる
-  assert.match(renderer, /el\('label', 'setting-check'\)/, '種類の行は設定の行を借りる');
-  assert.match(renderer, /el\('span', 'status', item\.bytes/, '大きさは状態の印を借りる');
+  assert.match(storage, /el\('label', 'setting-check'\)/, '種類の行は設定の行を借りる');
+  assert.match(storage, /el\('span', 'status', item\.bytes/, '大きさは状態の印を借りる');
   assert.ok(!/\.cleanup-row|\.cleanup-item|\.cleanup-size/.test(css), '設定の行の私物な複製を作らない');
   // 3. 足元の集計と操作は「更新」「実行環境」と同じ器（.environment-status + .row）
   assert.match(panel, /<div class="environment-status">/);

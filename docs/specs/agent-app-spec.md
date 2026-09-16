@@ -314,7 +314,12 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 src/
 ├── main/
 │   ├── main.js          ウィンドウ作成と IPC 登録
-│   ├── ipc.js           全チャネル。requireRepo / dirsOf で登録リポジトリの内側に限定
+│   ├── ipc.js           全チャネル。会話 1 ターンの実行（tmux / ヘッドレス）と共有の依頼もここ
+│   ├── paths.js         userData と、登録リポジトリ・作業フォルダの解決（触ってよい場所を決める 1 か所）
+│   ├── proc.js          子プロセスの起こし方（Windows は WSL 経由）と終わらせ方
+│   ├── teachingIpc.js   タスク・ワークフローを AI と作る会話（会話の実行は ipc から受け取る）
+│   ├── crashGuard.js    落ち方の記録と、画面の読み直し・固まりの扱い
+│   ├── sessionExport.js 会話をテキストに書き出す（制御文字と飾りを落とす）
 │   ├── agentCli.js      agents/*.json の読取りと argv 組立（会話に要る分だけ）
 │   ├── tmux.js          Conversation（tmux セッション 1 つ分の駆動）、画面判定、応答抽出
 │   ├── host.js          常駐シェル（bash -l / wsl.exe）、パス変換、tmux・git の有無
@@ -330,6 +335,7 @@ src/
 │   ├── files.js         ツリー・本文・検索（読むだけ）
 │   ├── git.js           変更ビュー（読むだけ）
 │   ├── text.js          ANSI 剥がし、ERE → RegExp
+│   ├── share/           LAN の共有（公開・依頼・受け口）。run.js は引き受けた依頼を 1 回だけ走らせる
 │   └── automation/      タスク・ワークフローの共有ワークベンチ（旧 statemachine-maker の main）
 │       ├── ipc.js       handlers.js を automation: 接頭辞で載せ、登録リポジトリと設定をアダプトする
 │       ├── handlers.js  全チャネル（定義・実行・記録・AI 下書き/見直し・ワークフロー・下書き一覧）
@@ -344,6 +350,9 @@ src/
 └── renderer/
     ├── index.html       会話・ファイル・変更・設定・worktree ダイアログ・タスクの会話（slot）
     ├── renderer.js      画面状態と描画、送信、設定
+    ├── format.js        数と時刻の整形（Fmt）
+    ├── storage.js       設定 > 保存データ（種類ごとの大きさと削除）
+    ├── appUpdate.js     設定 > アプリの更新と、更新のダイアログ
     ├── files.js         ファイルビュー
     ├── term.js          端末ミラー（xterm.js）。createTerm() で会話用 Term とタスク用 TaskTerm を持つ
     ├── taskTeaching.js  タスクを AI と作る会話（端末ミラー・入力欄・操作の見本・作成フォーム）

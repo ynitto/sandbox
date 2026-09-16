@@ -775,6 +775,9 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | 画面判定 | `src/main/tmux.js` の既定パターン、定義の `interactive` 節 | 実画面の fixture を `tmux.test.js` に足す |
 | 実行設定の項目 | `src/main/settings.js`、`renderer.js` の `turnOptions` / `settingsPatch`、`index.html` | 正規化、移行、`executionSpec`、メッセージに残す項目 |
 | 開始アクション・スキル | `src/main/sessionSetup.js`、`skillSelection.js`、`automation/ipc.js` の `prepareRun` | tmux とヘッドレスの両経路、タスク手動実行 |
+| 触れてよい場所（登録リポジトリ・作業フォルダ・userData） | `src/main/paths.js` | ここを通さずに fs へ触らないこと（ADR-2）。`ipc.js` は再輸出するだけ |
+| 子プロセスの起こし方 | `src/main/proc.js` | Windows の WSL 経由と、木ごと終わらせる後始末が 1 か所であること |
+| 共有で引き受けた依頼の実行 | `src/main/share/run.js` | tmux の有無で画面つき / ヘッドレスに分かれること、`ipc.js` が `setTmuxAvailable` で有無を渡すこと、`test/share-runprompt.test.js` |
 | 会話の書き出し | `src/main/sessionExport.js`、`ipc.js` の `session:export`、`renderer.js` の `exportConversation` | 落とす文字の範囲（制御・飾り・幅を持たない）と行の整え方は `cleanText` 1 か所、書き出したら開くこと、`test/session-export.test.js` と実機の検査 |
 | 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession`、壊れた `config.json` の退避と `takeConfigProblem`（`test/settings.test.js`） |
 | 落ち方（例外・画面の落ち・固まり） | `src/main/crashGuard.js`、`src/main/main.js` の `install` / `attach` | 判断（読み直す回数の上限、ダイアログの回数）は `createCrashGuard` に閉じ、Electron 無しで `test/crash-guard.test.js` が固定する。ログは `logs/crash.log` 1 本 |
@@ -782,7 +785,7 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | 外部ライブラリ・共有ファイルの追加 | `scripts/vendor.js`、`index.html` | vendor と index.html の対応テスト、CSP |
 | 自動更新（更新元の形式、入れ替えの手順） | `src/main/update.js`、`scripts/publish-update.js`、`renderer.js` の `renderUpdateStatus` / `applyUpdate`、`index.html` の `#app-update`、agent-project の `update --json`（`tools/agent-project/agent_project/update.py`） | manifest の形は送り手と受け手で同じであること、`update --json` の最後の行の形が agent-project と agent-app で同じであること、取り込みは承認のあとだけであること、`test/update.test.js`、README「配って更新する」 |
 | タスク・ワークフローの機能 | `src/main/automation/`、`src/renderer/automation/` | `api.automation.*` と `handlers.js` の `register` の対応、`<statemachine-workbench>` の Shadow DOM、`navigate` payload と DOM イベント、`automation-workbench.css` の `:host` 上書き、`test/automation-*.test.js` |
-| タスクを AI と作る会話 | `src/main/ipc.js` の `startTeaching` / `demonstrate` / `launchTeachingBrowser` / `teachingBrowserPage`、`src/main/automation/teaching.js`、`src/main/automation/browser.js`、`src/renderer/taskTeaching.js`、`src/renderer/teachingProtocol.js` | 依頼文の約束事（`@record`、段と固定文 `@recording open` / `start` / `stop` / `cancel`）は main と renderer が同じモジュールを読むこと、見本のボタンは 1 つで段だけが進むこと、固定文は会話の送信経路（tmux）で送ること、記録の所在を WSL 表記へ直すこと、kind: task の会話が会話一覧に出ないこと |
+| タスクを AI と作る会話 | `src/main/teachingIpc.js`（`startTeaching` / `demonstrate` / `launchTeachingBrowser` / `teachingBrowserPage`。会話の実行は `ipc.js` が 5 つの窓口で渡す）、`src/main/automation/teaching.js`、`src/main/automation/browser.js`、`src/renderer/taskTeaching.js`、`src/renderer/teachingProtocol.js` | 依頼文の約束事（`@record`、段と固定文 `@recording open` / `start` / `stop` / `cancel`）は main と renderer が同じモジュールを読むこと、見本のボタンは 1 つで段だけが進むこと、固定文は会話の送信経路（tmux）で送ること、記録の所在を WSL 表記へ直すこと、kind: task の会話が会話一覧に出ないこと |
 
 ## 付録 A. ADR
 

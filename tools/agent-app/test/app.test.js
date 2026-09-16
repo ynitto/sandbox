@@ -22,7 +22,7 @@ const automationIpc = require('../src/main/automation/ipc');
 const SRC = path.join(__dirname, '..', 'src');
 
 test('main / ipc / preload / renderer は構文検査を通る', () => {
-  for (const f of ['main/main.js', 'main/ipc.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/notify.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
+  for (const f of ['main/main.js', 'main/ipc.js', 'main/paths.js', 'main/proc.js', 'main/share/run.js', 'main/teachingIpc.js', 'main/crashGuard.js', 'main/sessionExport.js', 'renderer/format.js', 'renderer/storage.js', 'renderer/appUpdate.js', 'main/automation/ipc.js', 'main/agentCli.js', 'main/store.js', 'main/settings.js', 'main/sessionSetup.js', 'main/notify.js', 'main/executionGate.js', 'main/response.js', 'main/skills.js', 'main/git.js', 'main/host.js', 'main/tmux.js', 'main/files.js', 'main/text.js', 'main/attachments.js',
     'main/automation/teaching.js', 'preload.js', 'renderer/renderer.js', 'renderer/md.js', 'renderer/inputMode.js', 'renderer/term.js', 'renderer/files.js', 'renderer/navigation.js', 'renderer/teachingProtocol.js', 'renderer/taskTeaching.js', 'renderer/automation/flow.js', 'renderer/automation/teaching.js', 'renderer/automation/renderer.js']) {
     execFileSync(process.execPath, ['--check', path.join(SRC, f)]);
   }
@@ -384,7 +384,7 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
   }
   const teaching = fs.readFileSync(path.join(SRC, 'renderer', 'taskTeaching.js'), 'utf8');
   assert.match(teaching, /autoApprove: \$\(`\$\{prefix\}-permission`\)\.value === 'auto'/, '起動条件に権限を含める');
-  assert.match(fs.readFileSync(path.join(SRC, 'main', 'ipc.js'), 'utf8'), /if \(p\.autoApprove != null\) store\.updateSession\(ud, summary\.id, \{ autoApprove: !!p\.autoApprove \}\)/,
+  assert.match(fs.readFileSync(path.join(SRC, 'main', 'teachingIpc.js'), 'utf8'), /if \(p\.autoApprove != null\) store\.updateSession\(ud, summary\.id, \{ autoApprove: !!p\.autoApprove \}\)/,
     '既にある会話でも権限の切り替えが効く');
   assert.match(renderer, /id="b-assist"[^>]*>編集</);
   assert.match(renderer, /id="b-run"[^>]*>テスト</);

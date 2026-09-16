@@ -236,6 +236,7 @@ test('タスクの会話は kind: task で保存名に紐づき、会話一覧�
 
 test('タスクの会話は agent-app の会話基盤で開き、ブラウザの見本は Edge を起こして固定文を tmux へ、Windows アプリの見本は所在を WSL 表記で送る', () => {
   const ipc = fs.readFileSync(path.join(SRC, 'main', 'ipc.js'), 'utf8');
+  const teachingIpc = fs.readFileSync(path.join(SRC, 'main', 'teachingIpc.js'), 'utf8');   // 教示の中身はこちら
   const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(SRC, 'renderer', 'taskTeaching.js'), 'utf8');
   const html = fs.readFileSync(path.join(SRC, 'renderer', 'index.html'), 'utf8');
@@ -243,16 +244,18 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
     assert.ok(ipc.includes(`handle('${channel}'`), channel);
     assert.ok(preload.includes(`invoke('${channel}'`), channel);
   }
-  assert.match(ipc, /kind: 'task', task: \{ machine \}/, 'タスクの会話は kind: task');
-  assert.match(ipc, /await guardedRunTurn\(session\.id, \{\s*prompt,/, '最初の依頼は会話と同じターンの経路で送る');
-  assert.match(ipc, /if \(!busy\) \{[\s\S]*teaching\.resumePrompt/,
+  assert.match(teachingIpc, /kind: 'task', task: \{ machine \}/, 'タスクの会話は kind: task');
+  assert.match(teachingIpc, /await deps\.runTurn\(session\.id, \{\s*prompt,/, '最初の依頼はターンの経路で送る');
+  assert.match(ipc, /runTurn: \(id, payload, send, options\) => guardedRunTurn\(id, payload, send, options\)/,
+    'その経路は会話と同じ（同時実行枠を通す）'); 
+  assert.match(teachingIpc, /if \(!busy\) \{[\s\S]*teaching\.resumePrompt/,
     '明示的に編集を始めたら、起動済み tmux にも編集対象を伝える');
-  assert.match(ipc, /const hostPath = host\.toHostPath\(saved\.file\)/, '記録の所在は WSL 表記へ直してから AI へ');
-  assert.match(ipc, /function demonstrate\(p\) \{[\s\S]*return \{ file: saved\.file[\s\S]*prompt \};/, '見本の本文は返すだけ（送るのは入力欄から利用者が）');
-  assert.doesNotMatch(ipc, /AI が応答中です。終わってからもう一度送ってください/, '送る経路が会話の 1 本になったので断らない');
-  assert.match(ipc, /recordingBrowser\.findBrowser\(/, '見本を取るブラウザはこの端末で探す');
-  assert.match(ipc, /recordingBrowser\.launchRecordingBrowser\(\{[\s\S]*profileDir: path\.join\(userData\(\), recordingBrowser\.PROFILE_DIR\)/, '記録用のプロファイルは userData の下');
-  assert.doesNotMatch(ipc, /resolvePath\('playwright-cli'\)/, 'ブラウザの見本にこの端末の playwright-cli は要らない（AI 側が使う）');
+  assert.match(teachingIpc, /const hostPath = host\.toHostPath\(saved\.file\)/, '記録の所在は WSL 表記へ直してから AI へ');
+  assert.match(teachingIpc, /function demonstrate\(p\) \{[\s\S]*return \{ file: saved\.file[\s\S]*prompt \};/, '見本の本文は返すだけ（送るのは入力欄から利用者が）');
+  assert.doesNotMatch(teachingIpc, /AI が応答中です。終わってからもう一度送ってください/, '送る経路が会話の 1 本になったので断らない');
+  assert.match(teachingIpc, /recordingBrowser\.findBrowser\(/, '見本を取るブラウザはこの端末で探す');
+  assert.match(teachingIpc, /recordingBrowser\.launchRecordingBrowser\(\{[\s\S]*profileDir: path\.join\(userData\(\), recordingBrowser\.PROFILE_DIR\)/, '記録用のプロファイルは userData の下');
+  assert.doesNotMatch(teachingIpc, /resolvePath\('playwright-cli'\)/, 'ブラウザの見本にこの端末の playwright-cli は要らない（AI 側が使う）');
   // 固定文は renderer が会話の送信経路（send / termSubmit = tmux）で送る。main は Edge を起こすだけ
   assert.match(renderer, /api\.automation\.teachBrowser\(rec\.target\)/);
   // 「開く」「終了」は入力欄へ入れて利用者が送る。「記録を始める」「やり直す」は押した時点で送る
