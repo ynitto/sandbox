@@ -270,6 +270,7 @@ function runHeadless(id, turn, send) {
     turn.release();
     throw new Error(`起動できません: ${(err && err.message) || err}`);
   }
+  child.cli = cli;
   running.set(id, child);
   send('turn:started', { id, argv: cmd.argv, warning: [turn.setupWarning, cmd.readonlyWarning].filter(Boolean).join('\n') });
   send('turn:progress', { id, item: { text: `${cli} を起動しました`, status: 'running' } });
@@ -807,6 +808,22 @@ async function runTmux(id, turn, send) {
   return { name: conv.name, started: true, restarted: !!(opened && opened.restarted), warning };
 }
 
+// いま応答中の会話（ヘッドレスの子プロセスと、ターン中の tmux 会話）。混線の注意（continueClashWarning）に使う
+function activeTurns(ud) {
+  const out = [];
+  const seen = new Set();
+  const push = (id, cli) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    let sess;
+    try { sess = store.readSession(ud, id); } catch { return; }
+    out.push({ id, repo: sess.repo, cli: cli || sess.cli || '', name: sess.name || '' });
+  };
+  for (const [id, child] of running) push(id, child.cli);
+  for (const conv of conversations.values()) if (conv.turn) push(conv.id, conv.launch && conv.launch.cli);
+  return out;
+}
+
 // 1 ターン。CLI・モデル・モードはターンごとに決め、tmux か ヘッドレスかもここで決める
 // （対話定義を持つ CLI で tmux が使えるなら tmux）。
 async function runTurn(id, p, send, { config = null, release = () => {}, resumeContext } = {}) {
@@ -862,6 +879,12 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   });
   const skillDelivery = skillSelection.deliver(selectedSkills, spec);
   setupInformation.push(...skillDelivery.information);
+  // 直前のセッションを拾う CLI が同じリポジトリで並行していれば、送る前に 1 行出す（止めない）
+  const clash = agentCli.continueClashWarning({ id, repo: sess.repo, cli: base.cli, spec }, activeTurns(ud));
+  if (clash) {
+    setupWarning = [setupWarning, clash].filter(Boolean).join('\n');
+    setupInformation.push({ type: 'status', title: clash, status: 'attention' });
+  }
   setupSkills.push(...skillDelivery.commands.map((command) => ({
     command, name: command.replace(/^[$/]+/, ''), onError: selectedSkills.mode === 'manual' ? 'fail' : 'warn',
   })));
@@ -1246,6 +1269,7 @@ function registerIpcHandlers(getWindow) {
     return { platform: process.platform, distro: cfg.wslDistro, ...info, socket: tmux.SOCKET };
   });
   handle('config:get', () => store.loadConfig(userData()));
+  handle('config:problem', () => store.takeConfigProblem());
   handle('config:save', (p) => {
     const before = store.loadConfig(userData());
     const next = store.saveConfig(userData(), p.patch);

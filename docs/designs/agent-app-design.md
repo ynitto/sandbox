@@ -693,9 +693,13 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | 開始コマンドが失敗 | 設定どおり続行（warn）または開始中止（fail）。実行情報に残す | 設定 > 共通指示 |
 | 手動選択したスキルが無い | `SKILL_NOT_FOUND` で送信を止める | 選び直す |
 | 同時実行上限 | `CONCURRENCY_LIMIT`。キューへ積まない | 終わってから再送 |
+| 直前のセッションを拾う CLI（SESSION に無く `continue_args` だけ）を同じリポジトリの別の会話が使って応答中 | 送る前に会話名を挙げた注意を warning と実行情報に載せる（`agentCli.continueClashWarning`）。送信は止めない | 終わってから送るか別の CLI を選ぶ。根本は SESSION に ID の拾い方を足すこと |
+| main の未処理の例外・未処理の Promise | `logs/crash.log` に残す。例外はダイアログでも 1 回知らせる（`crashGuard`） | ログを見る |
+| renderer が落ちた | 記録して画面を読み直す（tmux の CLI は main 側で生きている）。1 分に 4 回目からは読み直さず知らせる | アプリを開き直す |
+| renderer が固まった | 「待つ」（既定）か「読み直す」を聞く | — |
 | worktree に未コミットの変更 | git が断り、「変更ごと削除」で押し切れる | 確認のうえ force |
 | 会話ファイルへ保存できない | tmux へは送信済みなので失敗扱いにせず warning で伝える | userData の書込み権限 |
-| `config.json` が壊れている | 既定値で起動する | 現在は警告も退避もない |
+| `config.json` が壊れている | 同じ場所へ `config.json.broken-<時刻>` として退避し、既定値で起動する。画面は起動の最初に理由と退避先を 1 行で出す（`config:problem`。1 回だけ） | 退避したファイルから登録リポジトリを手で戻す |
 | 共有編集面が未初期化 | 要素が最後の `navigate` を保留し、共有 renderer が controller を登録した時点で一度だけ渡す | — |
 | タスクの会話で AI が応答中に見本を渡す | 記録は保存し、本文は入力欄に入る。送るのは会話と同じ経路なので、応答中でも端末へ流れる | そのまま「送信」。AI が取り込むのは応答が終わってから |
 | 見本の道具がこの端末に無い | 依頼文にその旨を書き、見本のカードにも出す | Edge（ブラウザ）/ `winauto` を入れる。Windows アプリは Windows 上でだけ |
@@ -735,10 +739,9 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 - ターン完了と応答抽出は画面判定に依存する。新しい CLI の入力欄が既定パターンに合わなければ、完了が
   `ready_timeout_sec` まで遅れるか、本文の切り出しが崩れる（端末ミラーの表示は影響を受けない）。
 - 会話 1 つにつきライブ CLI は 1 つ。複数エージェントの端末を同時に維持しない。
-- `--continue` 型の CLI は「直前のセッション」を拾うため、同じ CLI を並行して使うと混線しうる。
+- `--continue` 型の CLI は「直前のセッション」を拾うため、同じ CLI を並行して使うと混線しうる。送る前に注意は出すが（§10）、止めはしない。
 - 思考・進捗の詳しさは CLI と経路で違う。tmux 経路では Aider / copilot の画面解析だけで、他は
   アプリ自身の進捗しか出ない。
-- `config.json` の破損を通知せず、既定値で静かに起動する。
 - 同時実行枠は agent-app が起動したターンだけを数える。ワークフローエンジンの内部並列は対象外。
 - Windows / WSL の CJK・絵文字の表示幅と、`/mnt/c` の I/O 低下は実機でしか確かめられない。起動時はホストの
   確認（WSL 起動 + ログインシェル）と git を待たずに画面を出し、CLI の有無・worktree の変更数は届き次第
@@ -760,7 +763,7 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 - ワークフロー教示の状態（理解中 / 試運転待ち / 確認待ち）は sidecar の `status` の写しで、agent-app は
   一覧の副題に出すだけである。試運転の run と通常の run は履歴上で区別しない。
 
-見直しの優先順位は、設定破損の可視化、判定パターンの外部化と実測の拡充の順とする。
+見直しの優先順位は、判定パターンの外部化と実測の拡充とする（設定破損の可視化は済み: §10）。
 
 ## 13. 変更時の見取り図
 
@@ -771,7 +774,8 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | 画面判定 | `src/main/tmux.js` の既定パターン、定義の `interactive` 節 | 実画面の fixture を `tmux.test.js` に足す |
 | 実行設定の項目 | `src/main/settings.js`、`renderer.js` の `turnOptions` / `settingsPatch`、`index.html` | 正規化、移行、`executionSpec`、メッセージに残す項目 |
 | 開始アクション・スキル | `src/main/sessionSetup.js`、`skillSelection.js`、`automation/ipc.js` の `prepareRun` | tmux とヘッドレスの両経路、タスク手動実行 |
-| 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession` |
+| 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession`、壊れた `config.json` の退避と `takeConfigProblem`（`test/settings.test.js`） |
+| 落ち方（例外・画面の落ち・固まり） | `src/main/crashGuard.js`、`src/main/main.js` の `install` / `attach` | 判断（読み直す回数の上限、ダイアログの回数）は `createCrashGuard` に閉じ、Electron 無しで `test/crash-guard.test.js` が固定する。ログは `logs/crash.log` 1 本 |
 | 別のリポジトリへの分岐 | `src/renderer/forkProtocol.js`、`src/main/ipc.js` の `session:fork`、`src/main/sessionSetup.js`、`renderer.js` の `forkActionsNode` / `forkConversation` | 約束事（`@fork` 行）は main と renderer が同じモジュールを読むこと、分岐先が `requireRepo` を通ること、`origin` の後方互換、`test/fork.test.js` |
 | 外部ライブラリ・共有ファイルの追加 | `scripts/vendor.js`、`index.html` | vendor と index.html の対応テスト、CSP |
 | 自動更新（更新元の形式、入れ替えの手順） | `src/main/update.js`、`scripts/publish-update.js`、`renderer.js` の `renderUpdateStatus` / `applyUpdate`、`index.html` の `#app-update`、agent-project の `update --json`（`tools/agent-project/agent_project/update.py`） | manifest の形は送り手と受け手で同じであること、`update --json` の最後の行の形が agent-project と agent-app で同じであること、取り込みは承認のあとだけであること、`test/update.test.js`、README「配って更新する」 |

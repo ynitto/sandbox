@@ -546,7 +546,9 @@ Electron の userData（macOS は `~/Library/Application Support/agent-app`）�
 
 ```
 config.json          登録リポジトリ、アプリ設定、共通指示・推奨スキル・起動時アクション、実行方針・tier・同時実行数、
-                     受信箱で「見た」結果の時刻（項目ごと。作業の状態は持たない）
+                     受信箱で「見た」結果の時刻（項目ごと。作業の状態は持たない）。読めないときは同じ場所に
+                     config.json.broken-<時刻> として退避し、既定の設定で起動して最初にそう知らせる
+logs/crash.log       メインの未処理の例外・未処理の Promise、画面が落ちた・固まった記録（1 MB で crash.log.1 へ回す）
 sessions/<id>.json   会話 1 つ。リポジトリ・次のターンの方針 / CLI / モデル / モード・transport（tmux | headless）・作業フォルダ・
                      メッセージ列（各依頼の起動条件・添付、応答の思考 / 回答 / 実行情報）・CLI ごとのセッション ID と見たメッセージ数・
                      tmux で動いている CLI の起動条件。タスクを AI と作る会話は kind: task で保存名（task.machine）に紐づき、

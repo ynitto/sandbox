@@ -480,8 +480,11 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 ### 3. 設定（`config.json`）
 
 `store.normalize` が既定値と重ね、`settings.normalize` が `instructions` / `execution` を正規化する。
-未知キーは保持する。保存は temp ファイルへ書いてから rename する。読取りまたは parse に失敗した場合は
-既定値で起動する（通知は無い）。
+未知キーは保持する。保存は temp ファイルへ書いてから rename する。ファイルが無ければ既定値で起動する
+（初回起動。通知は無い）。ファイルはあるが parse できない・オブジェクトでない場合は、同じ場所へ
+`config.json.broken-<YYYYMMDDTHHMMSS>` として退避してから既定値で起動し、`config:problem`（起動後 1 回だけ
+`{ file, backup, reason, at }` を返し、以後 `null`）で画面に知らせる。読取りが `ENOENT` 以外で失敗した
+場合は退避せず、同じ窓口で理由だけを返す。
 
 | キー | 既定 | 意味 |
 |---|---|---|

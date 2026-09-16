@@ -1,12 +1,14 @@
 'use strict';
 
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, dialog } = require('electron');
 const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
+const crashGuard = require('./crashGuard');
 
 const SRC_ROOT = path.join(__dirname, '..');
 
 let mainWindow = null;
+let guard = null;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -27,6 +29,7 @@ function createWindow() {
   // Markdown プレビューや応答の中のリンクで画面が遷移しないように。外部 URL は既定のブラウザへ。
   win.webContents.on('will-navigate', (e, url) => { e.preventDefault(); if (/^https?:/i.test(url)) shell.openExternal(url); });
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
+  if (guard) guard.attach(win);
   win.loadFile(path.join(SRC_ROOT, 'renderer', 'index.html'));
   win.on('closed', () => { if (mainWindow === win) mainWindow = null; });
   mainWindow = win;
@@ -34,6 +37,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  guard = crashGuard.install({ app, dialog, userData: app.getPath('userData') });
   registerIpcHandlers(() => mainWindow);
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

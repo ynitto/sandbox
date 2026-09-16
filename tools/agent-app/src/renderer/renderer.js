@@ -75,6 +75,14 @@ function notice(text, kind = '') {
   n.hidden = !text;
 }
 
+// 設定ファイルが読めなかった（壊れていた）ことを、起動の最初に 1 回だけ伝える。
+// 既定値で動いているので登録リポジトリと設定は空に見える——その理由を言う。
+function reportConfigProblem(problem) {
+  if (!problem) return;
+  const where = problem.backup ? `壊れたファイルは ${problem.backup.split(/[\\/]/).pop()} として同じ場所に退避しました。` : '';
+  notice(`設定を読めなかったため、既定の設定で起動しました（${problem.reason}）。${where}登録したフォルダと設定を入れ直してください`, 'error');
+}
+
 const PHASE_LABEL = { starting: '起動中', ready: '待機', busy: '応答中', attention: '確認待ち', dead: '終了', gone: 'セッション消失' };
 // 端末へそのまま送るキー。端末操作の仮想キー（index.html の data-terminal-key）と同じ表を使う。
 const TERMINAL_KEYS = {
@@ -2513,6 +2521,7 @@ async function init() {
     },
   });
   state.config = await api.getConfig();
+  reportConfigProblem(await api.configProblem().catch(() => null));
   state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
   renderQuickRequestMenu();
   state.hostReady = api.hostInfo()

@@ -399,8 +399,28 @@ function classifyError(spec, blob) {
   return null;
 }
 
+// 「直前のセッション」を再開する CLI（SESSION に無く continue_args だけを持つ）か。
+// ヘッドレスと対話起動のどちらかがそうなら、同じリポジトリで並行すると相手の続きを拾いうる。
+function continuesLatest(spec) {
+  if (!spec || spec.session) return false;
+  return !!((spec.continueArgs && spec.continueArgs.length) || (spec.interactive && spec.interactive.continueArgs.length));
+}
+
+// 混線の注意。この会話（turn）と同じリポジトリ・同じ CLI で応答中の別の会話があれば 1 行返す。
+// 止めはしない（設計書 §12 の既知の制約で、直すなら SESSION に ID の拾い方を足す）。送信前に見えればよい。
+//   turn   … { id, repo, cli, spec }
+//   active … [{ id, repo, cli, name }]（いま応答中の会話）
+function continueClashWarning(turn, active) {
+  if (!turn || !continuesLatest(turn.spec)) return '';
+  const others = (active || []).filter((t) => t && t.id !== turn.id && t.repo === turn.repo && t.cli === turn.cli);
+  if (!others.length) return '';
+  const names = others.map((t) => `「${t.name || t.id}」`).join('、');
+  return `${turn.cli} は直前のセッションを再開する CLI です。同じリポジトリで${names}が応答中のため、会話が混線するおそれがあります（終わってから送るか、別の CLI を選んでください）`;
+}
+
 module.exports = {
   SESSION, searchDirs, load, list, resolvePath, turnCmd, oneShotCmd, interactiveCmd, insertAfterSubcommand,
+  continuesLatest, continueClashWarning,
   relativeCost, isLocal,
   replayPrompt, pickListedSession, classifyError, normalizeInteractive,
 };

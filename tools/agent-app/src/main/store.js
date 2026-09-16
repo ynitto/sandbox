@@ -1,7 +1,7 @@
 'use strict';
 
 // userData の中だけを読み書きする。
-//   config.json          … 登録したリポジトリと最後に選んだもの
+//   config.json          … 登録したリポジトリと最後に選んだもの（壊れていれば .broken-<時刻> へ退避して既定値）
 //   sessions/<id>.json   … 会話 1 つ = 1 ファイル（リポジトリ・次のターンの CLI / モデル / モード・
 //                          メッセージ列・CLI ごとのセッション ID）
 //   attachments/<id>/    … 添付ファイル（attachments.js）
@@ -105,8 +105,47 @@ function normalize(raw) {
   return next;
 }
 
+// 壊れた config.json は黙って捨てない。同じ場所へ退避して（config.json.broken-<時刻>）、何が起きたかを
+// 1 回だけ画面へ渡せるように覚えておく（takeConfigProblem）。無いだけなら初回起動なので何も残さない。
+let configProblem = null;
+
+function quarantineConfig(userData, reason) {
+  const target = configPath(userData);
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '');
+  const backup = `${target}.broken-${stamp}`;
+  let saved = '';
+  try { fs.renameSync(target, backup); saved = backup; } catch { /* 退避できなくても既定値では起動する */ }
+  configProblem = { file: target, backup: saved, reason, at: new Date().toISOString() };
+  return configProblem;
+}
+
 function loadConfig(userData) {
-  try { return normalize(JSON.parse(fs.readFileSync(configPath(userData), 'utf8'))); } catch { return normalize(null); }
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath(userData), 'utf8');
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') configProblem = { file: configPath(userData), backup: '', reason: err.message, at: new Date().toISOString() };
+    return normalize(null);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    quarantineConfig(userData, err.message);
+    return normalize(null);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    quarantineConfig(userData, '設定の形が違います（JSON のオブジェクトではない）');
+    return normalize(null);
+  }
+  return normalize(parsed);
+}
+
+// 起動後に 1 回だけ返す。画面が受け取ったら消える
+function takeConfigProblem() {
+  const problem = configProblem;
+  configProblem = null;
+  return problem;
 }
 
 function saveConfig(userData, patch) {
@@ -451,7 +490,7 @@ function removeSession(userData, id) {
 }
 
 module.exports = {
-  DEFAULTS, loadConfig, saveConfig, addRepo, removeRepo, isRegistered,
+  DEFAULTS, loadConfig, takeConfigProblem, saveConfig, addRepo, removeRepo, isRegistered,
   createSession, replaceEditingSession, readSession, listSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
   attentionBaseline, markAttentionSeen,

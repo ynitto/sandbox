@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   hostInfo: () => invoke('host:info'),
   getConfig: () => invoke('config:get'),
+  configProblem: () => invoke('config:problem'),
   saveConfig: (patch) => invoke('config:save', { patch }),
   addRepo: () => invoke('repo:add'),
   removeRepo: (repo) => invoke('repo:remove', { repo }),
