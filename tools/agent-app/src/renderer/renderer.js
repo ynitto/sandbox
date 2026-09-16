@@ -251,6 +251,13 @@ function renderSessions() {
 }
 
 // 会話の名前を変える（既定は最初の依頼の先頭。長い会話ほど見分けが付かなくなる）
+// 会話をテキストにして、そのまま既定のアプリで開く（保存名は会話名から決めるので聞かない）
+async function exportConversation() {
+  if (!state.current) return;
+  const result = await api.exportSession(state.current.id);
+  notice(`テキストに書き出しました（${result.name}）${result.warning ? `。${result.warning}` : ''}`, result.warning ? 'error' : '');
+}
+
 async function renameConversation() {
   const cur = state.current;
   if (!cur) return;
@@ -1147,6 +1154,7 @@ function renderHeader() {
   $('composer').hidden = !state.repo;
   $('session-delete').hidden = !cur;
   $('session-rename').hidden = !cur;
+  $('session-export').hidden = !cur;
   $('session-routine').hidden = !cur;
   $('session-routine').disabled = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
@@ -2698,6 +2706,10 @@ async function init() {
   $('session-rename').onclick = () => {
     $('chat-more').open = false;
     renameConversation().catch((err) => notice(err.message, 'error'));
+  };
+  $('session-export').onclick = () => {
+    $('chat-more').open = false;
+    exportConversation().catch((err) => notice(err.message, 'error'));
   };
   $('send').onclick = sendPrompt;
   $('stop').onclick = () => state.current && api.stop(state.current.id);

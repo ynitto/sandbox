@@ -577,6 +577,7 @@ git が断り、確認のうえ `--force` で押し切れる。その作業フ�
 | 設定 | userData の `config.json` | agent-app | `settings.normalize` で既知キーを正規化し、未知キーは保持。temp + rename で保存 |
 | 会話 | userData の `sessions/<id>.json` | agent-app | 1 会話 1 ファイル。読み出し時に旧形式（`cliSession` 1 つ）を `cliSessions` へ写す |
 | 添付 | userData の `attachments/<id>/` | agent-app | 会話から参照されないものは起動時に掃除 |
+| 書き出したテキスト | userData の `exports/` | 利用者 | 会話から作る写しで、正典ではない。設定 > 保存データから消せる |
 | CLI 定義 | `agents/*.json`（探索順は agent-cli 仕様） | agent-tools | 読むだけ。同名は先勝ち |
 | CLI 側のセッションログ | `~/.claude/projects` など | 各 CLI | 触らない。ID だけを会話に覚える |
 | worktree | `<リポジトリ>/.worktrees/` | git | 追加・削除だけ書く |
@@ -774,6 +775,7 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 | 画面判定 | `src/main/tmux.js` の既定パターン、定義の `interactive` 節 | 実画面の fixture を `tmux.test.js` に足す |
 | 実行設定の項目 | `src/main/settings.js`、`renderer.js` の `turnOptions` / `settingsPatch`、`index.html` | 正規化、移行、`executionSpec`、メッセージに残す項目 |
 | 開始アクション・スキル | `src/main/sessionSetup.js`、`skillSelection.js`、`automation/ipc.js` の `prepareRun` | tmux とヘッドレスの両経路、タスク手動実行 |
+| 会話の書き出し | `src/main/sessionExport.js`、`ipc.js` の `session:export`、`renderer.js` の `exportConversation` | 落とす文字の範囲（制御・飾り・幅を持たない）と行の整え方は `cleanText` 1 か所、書き出したら開くこと、`test/session-export.test.js` と実機の検査 |
 | 保存形式 | `src/main/store.js` | `normalizeSession` の後方互換、`presentSession`、壊れた `config.json` の退避と `takeConfigProblem`（`test/settings.test.js`） |
 | 落ち方（例外・画面の落ち・固まり） | `src/main/crashGuard.js`、`src/main/main.js` の `install` / `attach` | 判断（読み直す回数の上限、ダイアログの回数）は `createCrashGuard` に閉じ、Electron 無しで `test/crash-guard.test.js` が固定する。ログは `logs/crash.log` 1 本 |
 | 別のリポジトリへの分岐 | `src/renderer/forkProtocol.js`、`src/main/ipc.js` の `session:fork`、`src/main/sessionSetup.js`、`renderer.js` の `forkActionsNode` / `forkConversation` | 約束事（`@fork` 行）は main と renderer が同じモジュールを読むこと、分岐先が `requireRepo` を通ること、`origin` の後方互換、`test/fork.test.js` |

@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('api', {
   listSessions: (repo) => invoke('session:list', { repo }),
   createSession: (payload) => invoke('session:create', payload),
   readSession: (id) => invoke('session:read', { id }),
+  exportSession: (id) => invoke('session:export', { id }),
   updateSession: (id, patch) => invoke('session:update', { id, patch }),
   removeSession: (id) => invoke('session:remove', { id }),
   // 別のリポジトリへ分岐する。payload: { originId, repo, prompt, index? }

@@ -17,6 +17,7 @@ const attachments = require('./attachments');
 const cleanup = require('./cleanup');
 const settings = require('./settings');
 const sessionSetup = require('./sessionSetup');
+const sessionExport = require('./sessionExport');
 const { SessionBrowser } = require('./sessionBrowser');
 const notify = require('./notify');
 const { Updater } = require('./update');
@@ -1605,6 +1606,14 @@ function registerIpcHandlers(getWindow) {
     url.pathname = target.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
     try { await shell.openExternal(url.href); }
     catch { throw new Error('VS Codeを開けませんでした。VS Codeがインストールされているか確認してください。'); }
+  });
+  // 会話をテキストにして開く。開けなくてもファイルは書けているので、理由だけ返す
+  handle('session:export', async (p) => {
+    const ud = userData();
+    const sess = store.readSession(ud, p.id);
+    const out = sessionExport.write(ud, sess);
+    const error = await shell.openPath(out.path);
+    return { name: out.name, warning: error ? `書き出したファイルを開けませんでした: ${error}` : '' };
   });
   handle('shell:openFolder', (p) => shell.openPath(dirsOf(p.repo, p.worktree, { mustExist: true }).fsDir));
   handle('shell:openFile', async (p) => {

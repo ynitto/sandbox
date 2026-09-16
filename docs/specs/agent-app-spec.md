@@ -414,6 +414,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `session:read` | `readSession(id)` | `id` | 会話（`presentSession` 適用後。`originSession: { id, repo, title } | null` と `forks: [{ id, repo, title, index }]` を添える） |
 | `session:update` | `updateSession(id, patch)` | 許可キー: `title` `cli` `model` `readonly` `policy` `tier` `transport` `live` | 会話 |
 | `session:remove` | `removeSession(id)` | `id` | `true`。応答中なら止め、tmux を kill し、添付を消す |
+| `session:export` | `exportSession(id)` | `id` | `{ name, warning }`。会話を整形して userData の `exports/<会話名>-<YYYYMMDD-HHMM>.txt` に書き、`shell.openPath` で開く。開けなかった理由は `warning` に入れ、失敗にはしない（ファイルは書けている） |
 | `session:fork` | `forkSession(payload)` | `{ originId, repo, prompt, index?, skillMode? }` | `{ session, turn }`。元の会話の起動条件を写した会話を分岐先（登録済み・元と別のリポジトリ）の本体に作り、`forkPrompt`（元の会話の所在 + 本文）を最初のターンとして `turn:send` と同じ経路で送る。`index` は元の会話の応答メッセージの位置（`messages` の添字） |
 | `turn:send` | `send(id, prompt, opts)` | §5 | tmux: `{ name, restarted, warning }`、headless: `{ pid, argv }` |
 | `turn:stop` | `stop(id)` | `id` | 止めたか |
@@ -806,6 +807,7 @@ spawn は Windows では `wsl.exe -e bash -lc 'export …; cd <cwd> && exec <arg
 | 削除 | `worktree remove [--force]`。`deleteBranch` で `branch -d`（`forceBranch` で `-D`） |
 | 一覧 | `worktree list --porcelain` + まとめて撃つ `status --porcelain` 件数と `rev-list --count` |
 | 添付の置き場 | userData の `attachments/<UUID>/<名前>` |
+| 書き出したテキストの置き場 | userData の `exports/<会話名>-<YYYYMMDD-HHMM>.txt`（会話名は 40 字まで。`\ / : * ? " < > |` は `_` に置き換え、空なら「会話」） |
 | 添付の上限 | 1 件 25 MB、1 ターン 20 件。名前は 1 要素・120 字に丸める |
 | 掃除 | 起動時に、どの会話からも参照されない添付を消す。会話削除でその会話の添付を消す |
 
