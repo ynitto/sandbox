@@ -269,7 +269,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#notice:visible').waitFor();
     assert.match(await win.textContent('#notice'), /テキストに書き出しました（.+\.txt）$/);
     const exported = await electron.evaluate(() => global.openedExportPath);
-    assert.strictEqual(path.dirname(exported), path.join(userData, 'exports'), '書き出したファイルをそのまま開く');
+    // macOS の一時フォルダは symlink（/var → /private/var）なので、実体で比べる
+    assert.strictEqual(fs.realpathSync(path.dirname(exported)),
+      fs.realpathSync(path.join(userData, 'exports')), '書き出したファイルをそのまま開く');
     const exportedText = fs.readFileSync(exported, 'utf8');
     assert.match(exportedText, /^会話: 画面を確認して\nリポジトリ: /);
     assert.match(exportedText, /\[依頼\].*\n画面を確認して/);
@@ -376,6 +378,20 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(appStore.readSession(userData, session.id).terminalSnapshots.length, 0, '端末画面の控えを外す');
     assert.ok(appStore.readSession(userData, session.id).messages.length > 3, 'やり取りの本文は残す');
     assert.match(await win.locator('[data-cleanup-key="updates"]').locator('xpath=..').textContent(), /なし/);
+
+    // 監査: 集計はホスト側の agent-audit が出す。入っていない環境では「見つかりません」と 1 行出し、
+    // 定型化したものの一覧は「まだ無い」と言う（面は出るが、数字は画面で作らない）
+    await win.click('[data-settings-tab="audit"]');
+    await win.waitForFunction(() => document.getElementById('audit-status').textContent.length > 0);
+    assert.match(await win.textContent('#audit-status'), /agent-audit が見つかりません|まだ集めていません|集めました/);
+    assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), false,
+      '共有先が空なら main へ直接の行は出さない');
+    await win.fill('#audit-share-repo', 'git@example:team/skills.git');
+    assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), true,
+      '共有先を入れたら出す');
+    await win.waitForFunction(() => document.getElementById('audit-artifacts').textContent.length > 0);
+    assert.match(await win.textContent('#audit-artifacts'), /初めて成功すると|様子見|基準を満たす|未測定/);
+    if (process.env.AGENT_APP_AUDIT_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_AUDIT_SCREENSHOT });
     await win.click('#settings-close');
 
     // 親画面のポップアップは、メニュー外の背景をクリックすると閉じる。

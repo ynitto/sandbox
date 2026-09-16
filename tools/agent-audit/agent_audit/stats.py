@@ -11,8 +11,36 @@ from .usage import _period_floor, _rate_for, _rates, load_period_records
 from .util import parse_iso
 
 
+# 台帳（kind: ledger）の成否。run record を持たないノード——agent-app だけが動いている PC——
+# でも「何回やって何回落ちたか」が要る。run 側の集計（tools）と混ぜないのは、run は工程 1 つ、
+# 台帳は実行 1 回で、粒度が違うため。
+_LEDGER_STATUSES = ("done", "failed", "cancelled", "escalate")
+
+
+def aggregate_ledger_outcomes(ledger: "list[dict]") -> dict:
+    by_workload: "dict[str, dict]" = {}
+    total = {"runs": 0, "status": {}, "error_class": {}}
+    for rec in ledger:
+        status = str(rec.get("status") or "")
+        if status not in _LEDGER_STATUSES:
+            continue        # 消費だけの行（成否を申告しないエンジン）は数えない
+        workload = str(rec.get("workload") or "(不明)")
+        b = by_workload.setdefault(workload, {"workload": workload, "runs": 0,
+                                              "status": {}, "error_class": {}})
+        for target in (b, total):
+            target["runs"] += 1
+            target["status"][status] = target["status"].get(status, 0) + 1
+            ec = str(rec.get("error_class") or "")
+            if ec:
+                target["error_class"][ec] = target["error_class"].get(ec, 0) + 1
+    out = {**total, "workloads": sorted(by_workload.values(), key=lambda b: b["workload"])}
+    if total["runs"]:
+        out["pass_rate"] = round(total["status"].get("done", 0) / total["runs"], 4)
+    return out
+
+
 def aggregate_stats(store: Store, period: str) -> dict:
-    _ledger, _session, runs = load_period_records(store, period)
+    ledger, _session, runs = load_period_records(store, period)
     by_tool: "dict[str, dict]" = {}
     by_decision: "dict[str, dict]" = {}
     for rec in runs:
@@ -50,7 +78,7 @@ def aggregate_stats(store: Store, period: str) -> dict:
     for d in sorted(by_decision.values(), key=lambda d: d["decision"]):
         decisions.append({**d, "agreement_rate": round(d["matches"] / d["samples"], 4)})
     return {"period": period, "tools": sorted(by_tool.values(), key=lambda b: b["tool"]),
-            "decisions": decisions}
+            "decisions": decisions, "ledger": aggregate_ledger_outcomes(ledger)}
 
 
 # 局所修正の適格判定を「拒否」へ配線しない代わりに置いた観測の、**解除条件**
@@ -109,8 +137,16 @@ def cmd_stats(args) -> int:
         print(json.dumps(scrub_obj(data), ensure_ascii=False, indent=1))
         return 0
     print(f"実行品質集計（period={period}）")
+    led = data["ledger"]
+    if led["runs"]:
+        rate = f"{led['pass_rate']:.0%}" if led.get("pass_rate") is not None else "-"
+        print(f"\n台帳の成否: {led['runs']} 回・成功 {rate}")
+        for b in led["workloads"]:
+            detail = " ".join(f"{k}={v}" for k, v in sorted(b["status"].items()))
+            print(f"  {b['workload']}: {b['runs']} 回（{detail}）")
     if not data["tools"]:
-        print("（run レコードがありません。まず agent-audit collect を実行してください）")
+        if not led["runs"]:
+            print("（run レコードがありません。まず agent-audit collect を実行してください）")
         return 0
     for b in data["tools"]:
         print(f"\n{b['tool']}: {b['runs']} run")

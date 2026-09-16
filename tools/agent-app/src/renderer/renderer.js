@@ -1995,6 +1995,7 @@ function selectSettingsTab(name) {
   }
   for (const panel of document.querySelectorAll('[data-settings-panel]')) panel.hidden = panel.dataset.settingsPanel !== name;
   if (name === 'storage') Storage.open();
+  if (name === 'audit') Audit.open();
 }
 
 function fillAgentSelect(select, value) {
@@ -2139,6 +2140,7 @@ function settingsPatch() {
       maxConcurrent: Number($('max-concurrent').value),
       tiers,
     },
+    audit: Audit.patch(),
     share: {
       ...(state.config.share || {}),
       enabled: $('share-enabled').checked,
@@ -2241,6 +2243,8 @@ async function openSettings() {
     const option = el('option'); option.value = name; return option;
   }));
   Storage.reset();
+  Audit.reset();
+  Audit.fill(state.config);
   selectSettingsTab('app');
   setSidebar(false);
   $('app-settings').showModal();
@@ -2644,6 +2648,7 @@ async function init() {
   $('settings-close').onclick = () => $('app-settings').close();
   $('settings-save').onclick = saveSettings;
   Storage.init();
+  Audit.init();
   AppUpdate.init({ notice });
   $('optimize-agents').onchange = renderSettingsRestrictions;
   $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));

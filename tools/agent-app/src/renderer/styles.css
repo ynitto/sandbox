@@ -516,7 +516,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #cleanup-items .setting-check { min-width: max-content; }
 #cleanup-items strong, #cleanup-items small { white-space: nowrap; }
 .environment-status { align-items: flex-start; flex-direction: column; border-bottom: 0; cursor: default; }
-.environment-status > .row { align-self: stretch; }
+.environment-status > .row, .environment-status > #audit-usage, .environment-status > #audit-artifacts { align-self: stretch; }
 .stacked-field { display: flex; align-items: stretch; flex-direction: column; gap: 7px; padding: 10px 4px 14px; color: var(--text); }
 .stacked-field > span, .settings-group-head > span, .tier-row > span { display: flex; align-items: center; gap: 8px; }
 .stacked-field small, .settings-group-head small, .tier-row small { color: var(--muted); font-size: 11px; font-weight: 400; }
@@ -529,7 +529,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .setting-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .setting-chip { display: inline-flex; align-items: center; gap: 3px; padding: 3px 5px 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--code-bg); font-size: 12px; }
 .setting-chip button { min-height: 20px; padding: 0 3px; border-radius: 50%; line-height: 1; }
-.startup-actions { display: flex; flex-direction: column; gap: 7px; }
+/* 設定の中の縦並びの一覧（起動時アクション・定型の依頼・監査の集計と成果物）は同じ間隔で並べる */
+.startup-actions, #audit-usage, #audit-artifacts { display: flex; flex-direction: column; gap: 7px; }
 .startup-row { display: grid; grid-template-columns: 92px minmax(120px, 1fr) 116px auto; align-items: center; gap: 6px; }
 .startup-row > input, .startup-row > select { min-width: 0; width: 100%; }
 .quick-row { grid-template-columns: 150px minmax(140px, 1fr) auto; }

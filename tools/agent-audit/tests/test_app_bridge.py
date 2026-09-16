@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from _shared import AuditTestCase  # noqa: E402
 
-from agent_audit import collect, qualifications, readers  # noqa: E402
+from agent_audit import collect, qualifications, readers, stats  # noqa: E402
 
 NOW = dt.datetime(2026, 9, 16, 6, 0, tzinfo=dt.timezone.utc)
 
@@ -244,6 +244,38 @@ class ArtifactQualificationTests(AuditTestCase):
         got = qualifications._qualify_artifacts(args, st, now=later, window_days=30)
         doc = _read(got["artifacts_file"])
         self.assertEqual(doc["artifacts"][0]["status"], "unknown")
+
+
+class LedgerOutcomeTests(AuditTestCase):
+    def test_counts_by_workload_and_skips_rows_without_verdict(self):
+        rows = [
+            {"workload": "chat", "status": "done"},
+            {"workload": "chat", "status": "cancelled"},
+            {"workload": "task", "status": "failed", "error_class": "verify"},
+            {"workload": "task", "status": "done"},
+            {"workload": "task"},                       # 消費だけの行（成否の申告なし）
+            {"workload": "task", "status": "running"},   # 終端でない
+        ]
+        got = stats.aggregate_ledger_outcomes(rows)
+        self.assertEqual(got["runs"], 4)
+        self.assertEqual(got["status"], {"done": 2, "cancelled": 1, "failed": 1})
+        self.assertEqual(got["error_class"], {"verify": 1})
+        self.assertEqual(got["pass_rate"], 0.5)
+        self.assertEqual([b["workload"] for b in got["workloads"]], ["chat", "task"])
+
+    def test_no_rows_has_no_rate(self):
+        got = stats.aggregate_ledger_outcomes([])
+        self.assertEqual(got["runs"], 0)
+        self.assertNotIn("pass_rate", got)
+
+    def test_stats_reports_app_feed_without_run_records(self):
+        st = self.make_store()
+        st.append_record({"id": "l1", "_epoch": NOW.timestamp(), "ts": "2026-09-16T05:00:00Z",
+                          "kind": "ledger", "tool": "agent-app", "workload": "chat",
+                          "status": "done"})
+        got = stats.aggregate_stats(st, "month")
+        self.assertEqual(got["tools"], [])          # run レコードは無い
+        self.assertEqual(got["ledger"]["runs"], 1)  # それでも成否は出る
 
 
 if __name__ == "__main__":

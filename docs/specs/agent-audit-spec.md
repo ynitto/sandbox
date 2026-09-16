@@ -271,7 +271,7 @@ allowlist（`tuning.json` / `profiles.json` / budget `config.json` / `qualificat
 |---|---|---|
 | `collect [--source S]... [--since D] [--with-transcripts]` | 不使用 | 増分収集・正規化 |
 | `usage [--period P] [--by K] [--json]` | 不使用 | トークン・コスト集計（measured / estimated 別掲） |
-| `stats [--period P] [--json]` | 不使用 | 実行品質集計 + LLM 判断ごとの決定的ルール一致率 |
+| `stats [--period P] [--json]` | 不使用 | 実行品質集計（run は工程ごと、`ledger` は実行 1 回ごとの成否と用途別の内訳。run レコードが無いノードでも成否が出る）+ LLM 判断ごとの決定的ルール一致率 |
 | `ratings [--period P] [--methods] [--json]` | 不使用 | 仕事種別×モデルの格付け |
 | `trials [--period P] [--json]` | 不使用 | 2 variant trial の PASS 率・平均消費と差分判定 |
 | `calibrate [--write]` | 不使用 | rates 較正の提案（`--write` で budget config へ反映） |

@@ -147,6 +147,7 @@ test('config.json の主要設定を三つの設定画面から UI コントロ�
   assert.match(html, /data-settings-tab="app"[^>]*>アプリ</);
   assert.match(html, /data-settings-tab="instructions"[^>]*>共通指示</);
   assert.match(html, /data-settings-tab="execution"[^>]*>実行制御</);
+  assert.match(html, /data-settings-tab="audit"[^>]*>監査</);
   assert.match(html, /id="instruction-enabled"/);
   assert.match(html, /id="instruction-text"[^>]*maxlength="8000"/);
   assert.match(html, /id="recommended-skills"/);

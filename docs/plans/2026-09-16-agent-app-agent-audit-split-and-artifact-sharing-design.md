@@ -231,6 +231,9 @@ manifest に置き換える。
   `artifacts.json` へ書く（`qualify --json` が `observed_artifacts` と `artifact_changes` を返す）。
   種別の綴りは定型化（`shared/reuse.js`）と同じ `skill` / `task` / `workflow`——画面に出す言葉に
   内部の綴り（ステートマシン）を混ぜない。
+- `stats` に台帳の成否を足す。`ledger: { runs, status, error_class, workloads, pass_rate }`。既存の
+  `tools`（run レコードの集計）は工程 1 つの粒度で、台帳は実行 1 回の粒度なので混ぜない。agent-app
+  だけが動いている PC には run レコードが無く、これが無いと成否がどこにも出ない。
 - `collect --manifest <ndjson>`（実測後）。列挙を省いて渡された path を読む。
 
 ### 4.3 agent-app に足すもの

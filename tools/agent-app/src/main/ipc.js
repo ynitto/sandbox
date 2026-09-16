@@ -857,20 +857,30 @@ function registerIpcHandlers(getWindow) {
     reports: audit.reports(userData()),
     share: artifacts.list(),
   }));
+  // 成果物の行が持つ出所（`repo:<名前>`）から、登録済みリポジトリを引く。1 つに定まらない
+  // ときは断る——別のリポジトリの定義を勝手に触らない。
+  function repoOf(p) {
+    if (p && p.repo) return requireRepo(p.repo);
+    const name = String((p && p.origin) || '').replace(/^repo:/, '').trim();
+    const repos = (store.loadConfig(userData()).repos || []).filter((r) => path.basename(r) === name);
+    if (repos.length !== 1) throw new Error(`成果物のリポジトリを決められません（出所: ${name || '不明'}）`);
+    return requireRepo(repos[0]);
+  }
   // 提出と改善は押したときだけ（merge は人。ここは push までで止める）。
   handle('audit:submit', (p) => artifacts.submit({
-    repo: requireRepo(p.repo), kind: String(p.kind || ''), name: String(p.name || ''),
+    repo: repoOf(p), kind: String(p.kind || ''), name: String(p.name || ''),
     sessionId: String(p.sessionId || ''), force: !!p.force,
   }));
   handle('audit:improve', async (p) => {
     const cfg = store.loadConfig(userData());
-    const options = { optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(await listAgents(requireRepo(p.repo))) }) };
+    const repo = repoOf(p);
+    const options = { optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(await listAgents(repo)) }) };
     // 既定は節約（ローカル実行系があればそれ）。その tier が未設定なら会話の既定へ倒す。
     let selected;
     try { selected = settings.resolve(cfg, { policy: 'saving' }, options); }
     catch { selected = settings.resolve(cfg, {}, options); }
     return artifacts.improve({
-      repo: requireRepo(p.repo), kind: String(p.kind || ''), name: String(p.name || ''),
+      repo, kind: String(p.kind || ''), name: String(p.name || ''),
       evidence: Array.isArray(p.evidence) ? p.evidence : [],
       cli: String(p.cli || selected.cli), model: String(p.model != null ? p.model : selected.model),
     });

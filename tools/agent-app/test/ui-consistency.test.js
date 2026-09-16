@@ -280,3 +280,35 @@ test('受信箱は既存の部品（メニューの領域・一覧の行・件�
   // 5. 説明は 1 行だけ（本文の .blank の p）。段落を並べない
   assert.strictEqual((html.match(/id="inbox-sub"/g) || []).length, 1);
 });
+
+test('監査の面は設定の既存の器（設定の行・状態の印・足元の集計）で組む', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  const audit = read('renderer/audit.js');            // 監査の面を描くのはこのモジュール
+  const panel = html.match(/<section data-settings-panel="audit"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.ok(panel, '設定に「監査」の面が無い');
+  // 1. タブ名で分かることを本文で繰り返さない（見出しと説明の常駐を作らない）
+  assert.ok(!/<h[1-4][\s>]/.test(panel), '設定の面に見出しを置かない（タブ名が名乗る）');
+  assert.ok(!/<p[\s>]/.test(panel), '仕組みの説明は README に置く');
+  // 2. 設定の行と足元の集計は既存の器をそのまま借りる（.setting-check / .setting-field / .environment-status）
+  assert.match(panel, /class="setting-check"/);
+  assert.match(panel, /class="setting-field"/);
+  assert.strictEqual((panel.match(/class="environment-status"/g) || []).length, 3,
+    '集計・使用量・成果物は同じ器（.environment-status）に載せる');
+  assert.ok(!/\.audit-row|\.audit-card|\.audit-panel|\.audit-list/.test(css), '設定の行の私物な複製を作らない');
+  // 3. 並びと印も既存の部品（.row / .spacer / .status / .sub）を使う
+  assert.match(audit, /el\('div', 'row'\)/, '行は .row を借りる');
+  assert.match(audit, /el\('span', 'status', VERDICT/, '判定は状態の印を借りる');
+  // 4. 色は主操作と状態の区別にだけ。この面の主ボタンはダイアログの「保存」
+  assert.ok(!/id="audit-run"[^>]*class="[^"]*primary/.test(panel), '1 つの面に主ボタンを 2 つ置かない');
+  assert.ok(!/class="[^"]*danger/.test(panel), '普通の操作を警告色で塗らない');
+  // 5. 縦並びの一覧は既存の間隔の規則へ相乗りする（同じ見た目を別の名前で定義し直さない）
+  const list = css.match(/^\.startup-actions, #audit-usage, #audit-artifacts \{[^}]*\}$/m) || [];
+  assert.strictEqual(list.length, 1, '縦並びの一覧の規則は 1 か所だけ');
+  assert.deepStrictEqual(audit.match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークンを使う');
+  // 6. 必要になるまで入力欄を出さない（共有先が空なら main へ直接の行は隠す）
+  assert.match(panel, /id="audit-push-main-row" hidden/);
+  assert.match(audit, /\$\('audit-push-main-row'\)\.hidden = !\$\('audit-share-repo'\)\.value\.trim\(\)/);
+  // 7. 数字は main（agent-audit）が作る。画面で足し算しない
+  assert.ok(!/reduce\(|\+ row\.|runs \+/.test(audit), '集計は agent-audit に任せる（画面で作らない）');
+});
