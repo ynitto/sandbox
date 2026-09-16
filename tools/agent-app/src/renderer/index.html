@@ -597,7 +597,7 @@
         <button type="button" data-settings-tab="execution" role="tab" aria-selected="false">実行制御</button>
         <button type="button" data-settings-tab="share" role="tab" aria-selected="false">共有</button>
         <button type="button" data-settings-tab="storage" role="tab" aria-selected="false">保存データ</button>
-        <button type="button" data-settings-tab="audit" role="tab" aria-selected="false">監査</button>
+        <button type="button" data-settings-tab="audit" role="tab" aria-selected="false">利用状況</button>
       </nav>
       <div class="dlg-body settings-content">
         <section data-settings-panel="app" class="settings-list" role="tabpanel">
@@ -673,22 +673,29 @@
           </div>
         </section>
         <section data-settings-panel="audit" class="settings-list" role="tabpanel" hidden>
-          <label class="setting-check"><input type="checkbox" id="audit-enabled"><span><strong>記録を集める</strong><small>会話と実行の記録から使用量と成功率を出します</small></span></label>
-          <label class="setting-field"><span><strong>集める間隔</strong></span><select id="audit-interval"><option value="0">集めない</option><option value="30">30分ごと</option><option value="60">1時間ごと</option><option value="360">6時間ごと</option><option value="1440">1日ごと</option></select></label>
-          <label class="setting-field"><span><strong>定型化したものの共有先</strong><small>初めて成功したものをブランチにして出します</small></span><input id="audit-share-repo" size="28" placeholder="git@example:team/skills.git"></label>
-          <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>共有先のmainへ直接出す</strong><small>自分だけのリポジトリのとき</small></span></label>
           <div class="environment-status">
-            <div class="row"><strong>集計</strong><span class="spacer"></span><button type="button" id="audit-run" class="small">今すぐ集める</button></div>
-            <div id="audit-status" class="sub"></div>
+            <div class="row"><strong>利用枠</strong><span class="spacer"></span><button type="button" id="audit-run" class="small">今すぐ集める</button></div>
+            <div id="audit-status" class="sub" role="status"></div>
+            <div id="audit-limits" aria-live="polite"></div>
           </div>
           <div class="environment-status">
-            <div class="row"><strong>使用量</strong><span class="spacer"></span><select id="audit-by" aria-label="集計の軸"><option value="agent_cli">AIごと</option><option value="workload">用途ごと</option><option value="model">モデルごと</option></select></div>
-            <div id="audit-usage"></div>
+            <div class="row usage-controls"><strong>使用量</strong><span class="spacer"></span><select id="audit-period" aria-label="集計期間"><option value="day">今日</option><option value="month" selected>今月</option><option value="total">全期間</option></select></div>
+            <div id="audit-usage" aria-live="polite"></div>
+            <div class="row"><strong>内訳</strong><span class="spacer"></span><select id="audit-by" aria-label="集計の軸"><option value="agent_cli">AIごと</option><option value="workload">用途ごと</option><option value="model">モデルごと</option></select></div>
+            <div id="audit-breakdown"></div>
+            <small class="sub">今日・今月は UTC 基準</small>
           </div>
-          <div class="environment-status">
-            <strong>定型化したもの</strong>
-            <div id="audit-artifacts"></div>
-          </div>
+          <details class="usage-details">
+            <summary>定型化したもの</summary>
+            <div class="environment-status"><div id="audit-artifacts"></div></div>
+          </details>
+          <details class="usage-details">
+            <summary>収集・共有の設定</summary>
+            <label class="setting-check"><input type="checkbox" id="audit-enabled"><span><strong>記録を集める</strong><small>会話と実行の記録から使用量と成功率を出します</small></span></label>
+            <label class="setting-field"><span><strong>集める間隔</strong></span><select id="audit-interval"><option value="0">自動では集めない</option><option value="30">30分ごと</option><option value="60">1時間ごと</option><option value="360">6時間ごと</option><option value="1440">1日ごと</option></select></label>
+            <label class="setting-field"><span><strong>定型化したものの共有先</strong><small>初めて成功したものをブランチにして出します</small></span><input id="audit-share-repo" size="28" placeholder="git@example:team/skills.git"></label>
+            <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>共有先のmainへ直接出す</strong><small>自分だけのリポジトリのとき</small></span></label>
+          </details>
         </section>
         <div id="settings-error" class="dlg-error" hidden></div>
       </div>

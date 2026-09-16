@@ -353,19 +353,32 @@ class Auditor {
     if (!(await this.probe())) return { available: false, usage: null, quality: null };
     const base = ['agent-audit', '--config', this.configPath()];
     const shell = this.shell();
-    const [usage, quality] = await Promise.all([
+    const [usage, quality, limits] = await Promise.all([
       shell.run(host.quoteArgv([...base, 'usage', '--by', by, '--period', period, '--json']), { timeoutMs: 120000 }),
       shell.run(host.quoteArgv([...base, 'stats', '--period', period, '--json']), { timeoutMs: 120000 }),
+      // 利用枠は期間・内訳の選択によらず最新の観測を読む。
+      shell.run(host.quoteArgv([...base, 'usage', '--by', 'agent_cli', '--period', 'total', '--json']), { timeoutMs: 120000 }),
     ]);
     const parse = (r) => {
       if (!r.ok) return null;
       try { return JSON.parse(String(r.output || '').slice(String(r.output).indexOf('{'))); } catch { return null; }
     };
+    const usageData = parse(usage);
+    // agent-dashboard と同じく、CLI が重複排除済みの行を一度だけ足す。
+    const totals = usageData && Array.isArray(usageData.rows) ? usageData.rows.reduce((sum, row) => {
+      for (const key of ['measured_in', 'measured_out', 'estimated_tokens', 'unmeasured_runs', 'runs']) {
+        sum[key] += Number(row[key]) || 0;
+      }
+      return sum;
+    }, { measured_in: 0, measured_out: 0, estimated_tokens: 0, unmeasured_runs: 0, runs: 0 }) : null;
     return {
       available: true,
+      totals,
+      agentLimits: (parse(limits) || {}).agent_limits || [],
+      limitsError: !limits.ok || !parse(limits),
       by,
       period,
-      usage: parse(usage),
+      usage: usageData,
       quality: parse(quality),
       error: [usage.ok ? '' : (usage.error || usage.output || ''), quality.ok ? '' : (quality.error || quality.output || '')]
         .filter(Boolean).join('\n').split('\n').slice(-4).join('\n'),

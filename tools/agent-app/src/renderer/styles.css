@@ -529,7 +529,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .setting-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .setting-chip { display: inline-flex; align-items: center; gap: 3px; padding: 3px 5px 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--code-bg); font-size: 12px; }
 .setting-chip button { min-height: 20px; padding: 0 3px; border-radius: 50%; line-height: 1; }
-/* 設定の中の縦並びの一覧（起動時アクション・定型の依頼・監査の集計と成果物）は同じ間隔で並べる */
+/* 設定の中の縦並びの一覧（起動時アクション・定型の依頼・利用状況の集計と成果物）は同じ間隔で並べる */
 .startup-actions, #audit-usage, #audit-artifacts { display: flex; flex-direction: column; gap: 7px; }
 .startup-row { display: grid; grid-template-columns: 92px minmax(120px, 1fr) 116px auto; align-items: center; gap: 6px; }
 .startup-row > input, .startup-row > select { min-width: 0; width: 100%; }
@@ -673,3 +673,24 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #search-transfer-start, .search-preview-actions > .primary { margin-left: auto; }
 
 .teaching-create-fields { display: contents; }
+
+/* 利用状況: 設定の器の中に概要とサービスごとの利用枠を並べる。 */
+#audit-limits, #audit-breakdown { align-self: stretch; min-width: 0; }
+#audit-limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
+.usage-limit, .usage-breakdown-item { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.usage-limit .row, .usage-breakdown-item .row { flex-wrap: wrap; overflow-wrap: anywhere; }
+.usage-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.usage-metric { display: flex; flex-direction: column; gap: 2px; }
+.usage-metric > strong { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.usage-meter { appearance: none; width: 100%; height: 6px; border: 0; border-radius: 3px; overflow: hidden; background: var(--line); }
+.usage-meter::-webkit-progress-bar { background: var(--line); }
+.usage-meter::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
+.usage-meter.is-high::-webkit-progress-value { background: var(--warn); }
+.usage-breakdown-item { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.usage-breakdown-item:last-child { border-bottom: 0; }
+.usage-details { border-top: 1px solid var(--line); padding: 12px 4px; }
+.usage-details > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.usage-controls { flex-wrap: wrap; }
+@media (max-width: 560px) {
+  #audit-limits { grid-template-columns: minmax(0, 1fr); }
+}

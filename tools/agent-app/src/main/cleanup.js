@@ -193,8 +193,8 @@ const KINDS = [
   },
   {
     key: 'auditFeed',
-    title: '監査へ渡した記録',
-    detail: `${LEDGER_KEEP_DAYS}日より前の申告を削除します。監査の集計結果は残ります。`,
+    title: '利用状況の集計に使った記録',
+    detail: `${LEDGER_KEEP_DAYS}日より前の申告を削除します。利用状況の集計結果は残ります。`,
     defaultOn: true,
     collect({ userData, now }) {
       const out = [];

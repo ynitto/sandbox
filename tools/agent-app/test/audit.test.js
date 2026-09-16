@@ -199,6 +199,41 @@ test('自前の設定を指したら生成しない', async () => {
   assert.ok(!fs.existsSync(audit.configFile(ud)));
 });
 
+test('使用量の概要は実測と推定を分け、利用枠は表示期間と別に全期間から読む', async () => {
+  const calls = [];
+  const ud = tmp('audit-summary-');
+  const auditor = new audit.Auditor({ userData: ud, loadConfig: () => ({ audit: {} }), platform: 'linux', env: {},
+    shellFor: () => ({ run: async script => {
+      calls.push(script);
+      if (script.includes('command -v')) return { ok: true, output: 'yes' };
+      const payload = script.includes("'stats'") ? { ledger: { runs: 2 } }
+        : script.includes("'total'") ? { agent_limits: [{ agent_cli: 'claude', quota_used_percent: 60 }] }
+          : { rows: [
+            { measured_in: 100, measured_out: 20, estimated_tokens: 0, runs: 1 },
+            { measured_in: 0, measured_out: 0, estimated_tokens: 80, unmeasured_runs: 1, runs: 1 },
+          ] };
+      return { ok: true, output: JSON.stringify(payload) };
+    } }),
+  });
+  const got = await auditor.summary({ by: 'model', period: 'day' });
+  assert.deepEqual(got.totals, { measured_in: 100, measured_out: 20, estimated_tokens: 80, unmeasured_runs: 1, runs: 2 });
+  assert.equal(got.agentLimits[0].quota_used_percent, 60);
+  assert.ok(calls.some(s => s.includes("'model' '--period' 'day'")));
+  assert.ok(calls.some(s => s.includes("'agent_cli' '--period' 'total'")));
+});
+
+test('集計の失敗はゼロ使用として返さない', async () => {
+  const ud = tmp('audit-summary-fail-');
+  const auditor = new audit.Auditor({ userData: ud, loadConfig: () => ({ audit: {} }), platform: 'linux', env: {},
+    shellFor: () => ({ run: async script => script.includes('command -v')
+      ? { ok: true, output: 'yes' } : { ok: false, error: 'failed' } }),
+  });
+  const got = await auditor.summary();
+  assert.equal(got.totals, null);
+  assert.equal(got.usage, null);
+  assert.equal(got.limitsError, true);
+});
+
 test('成果物・洞察・レポートはストアのファイルをそのまま読む', () => {
   const ud = tmp('audit-read-');
   const store = audit.storeDir(ud);

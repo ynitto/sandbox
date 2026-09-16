@@ -386,6 +386,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.textContent('#audit-status'), /agent-audit が見つかりません|まだ集めていません|集めました/);
     assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), false,
       '共有先が空なら main へ直接の行は出さない');
+    await win.getByText('収集・共有の設定', { exact: true }).click();
     await win.fill('#audit-share-repo', 'git@example:team/skills.git');
     assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), true,
       '共有先を入れたら出す');
