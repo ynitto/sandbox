@@ -143,7 +143,7 @@ extract と distill は既定で決定的（`rules`）に動き、`agents.extrac
 
 | source | 読む場所 | 取るもの |
 |---|---|---|
-| `budget-ledger` | 設定 `budget_dir`（既定 `~/.agents/budget/`）の `ledger/*.jsonl` | ledger 行 → `kind: ledger`（消費の一次事実）。観測行（`quota` / `model_escalation`・消費 0）は `kind: event` へ分ける |
+| `budget-ledger` | 設定 `budget_dir`（既定 `~/.agents/budget/`）の `ledger/*.jsonl` ＋ 設定 `ledger_dirs`（agent-app の `audit-feed`） | ledger 行 → `kind: ledger`（消費の一次事実）。観測行（`quota` / `model_escalation`・消費 0）は `kind: event` へ分ける。`artifact`（成果物の種別・名前・出所）を持つ行は成果物の適格性の材料になる（§成果物） |
 | `cli-native` | `agents/<name>.json` の `session_log` 宣言（§3） | CLI 自身のセッション → `kind: session`。実測トークン・turn 数・transcript（`--with-transcripts` / 設定 `with_transcripts` で本文を統一セッションログ [`audit-session-log`](../../schemas/audit-session-log.schema.json) として副作用保存。保持は `gc_keep_days.transcripts`） |
 | `cli-quota` | 各 CLI が自分で表示する契約枠（`claude` / `codex` / `copilot` / `kiro-cli` が PATH にあるときだけ） | 残枠のスナップショット → `kind: event`。モデル実行なし |
 | `flow-bus` | 設定 `flow_buses` ＋ `project_roots` 配下の `bus/` | 終端 run の `meta.json` / `graph.json` / `events/*.jsonl` → `kind: run`、`results/*.json` → `kind: result` |
@@ -177,6 +177,7 @@ extract と distill は既定で決定的（`rules`）に動き、`agents.extrac
 |---|---|---|
 | `jsonl-dir` | 1 セッション = 1 `*.jsonl`（claude / codex / ollama 系） | 行直下に `role` / `content` を持つ行を会話として読む |
 | `kiro-sqlite` | `~/.kiro/store.db` | 1 行に会話配列が丸ごと入る |
+| `vscode-chat` | VS Code の Copilot チャット（`User/workspaceStorage/*/chatSessions/*.json`） | 初版 + 追記される差分を再生してから読む。使用量は保存されないので `usage: false` |
 
 パーサは `agent_audit/readers.py` に format ごと 1 実装です。新しい CLI が既存 format なら
 JSON への追記だけで収集できます。
@@ -219,6 +220,7 @@ source の native identity と保存済み record id を集合差で比較しま
   observations/<YYYYMMDD>.jsonl  # extract の出力（追記専用）
   insights/<id>.json             # distill の出力（1 洞察 1 ファイル）
   decisions/<id>.json            # tune の型付き調整候補・適用と退役の記録
+  artifacts.json                 # 成果物（スキル・タスク・ワークフロー）の適格性（§4.2）
   reports/<ts>-<kind>.md         # report の出力
 ```
 
@@ -232,6 +234,31 @@ source の native identity と保存済み record id を集合差で比較しま
 | `tune --apply` | `agent-tuning` の `profiles.<name>.injections\|env`、`agent-profiles` の `tiers.<name>.candidates`、budget `config.json` の `rates.per_cli.<cli>` | 型付きの許可パスだけ。任意パス・任意コマンドは受け付けない |
 
 書いた事実は `updated_by`（`agent-audit` / `agent-audit-retire`）と decision の `applied` に残します。
+
+#### 4.2 成果物の適格性（`artifacts.json`）
+
+定型化した成果物（スキル・タスク・ワークフロー）の合否は、`qualify` が候補と同じ
+evaluation profile（`min_samples` / `min_pass_rate` / `max_timeout_rate` / `window_days`）で
+判定し、audit ストアの `artifacts.json` へ書きます。
+
+```jsonc
+{"version": 1, "revision": 7, "generated_at": "…",
+ "evaluation_profile": {"min_samples": 5, "min_pass_rate": 0.8, …},
+ "artifacts": [{"kind": "statemachine", "name": "daily-report", "origin": "repo:sandbox",
+                "status": "qualified", "samples": 8, "passed": 8, "timeouts": 0,
+                "agent_clis": ["claude"], "last_seen": "…", "updated_at": "…"}]}
+```
+
+材料は `artifact`（`kind` / `name` / `origin`）と終端 `status` を持つレコードです。
+`status` は `qualified`（基準を満たす）・`trial`（実測はあるが未達）・`blocked`（禁止した
+失敗モードを観測）・`unknown`（窓に実測が無い）。窓から落ちた成果物は消さずに `unknown`
+へ倒します——消すと「一度も測っていない」と区別がつきません。
+
+**候補の `qualifications.json` へは混ぜません。** あちらは Compiler が読む
+`(agent_cli, model, operation_class)` の契約で、成果物は候補ではないため、混ぜると
+候補ゼロや偽の候補を焼きます。書き先を audit ストアに閉じることで、外部への書き込み
+allowlist（`tuning.json` / `profiles.json` / budget `config.json` / `qualifications.json`）も
+広げずに済みます。
 
 ---
 
@@ -249,7 +276,7 @@ source の native identity と保存済み record id を集合差で比較しま
 | `trials [--period P] [--json]` | 不使用 | 2 variant trial の PASS 率・平均消費と差分判定 |
 | `calibrate [--write]` | 不使用 | rates 較正の提案（`--write` で budget config へ反映） |
 | `tune [--apply] [--period P] [--json]` | 不使用 | 洞察 → 型付き調整候補。`--apply` で許可パスだけ宣言へ昇格し、悪化すれば退役 |
-| `qualify [--apply] [--window-days N]` | 不使用 | 本番 receipt から候補適格性を昇格・降格・期限切れ。`--apply` で qualifications.json へ原子書換（無変化なら書かない） |
+| `qualify [--apply] [--window-days N]` | 不使用 | 本番 receipt から候補適格性を昇格・降格・期限切れ。`--apply` で qualifications.json へ原子書換（無変化なら書かない）。同じ 1 回で成果物（`artifact` を持つレコード）の適格性を `<audit>/artifacts.json` へ書く |
 | `seed --from-recommendation F [--apply] [--force]` | 不使用 | おすすめ構成の適格性ブロックを qualifications.json へ置く。生成はしない |
 | `extract [--limit N] [--force]` | map | レコード → 観測。既定は `rules`（項目からテンプレで組む）。LLM を選んだときは transcript を持つレコードにだけ、ゲート（§6）を通ったときだけ呼ぶ |
 | `distill [--limit N] [--review] [--force]` | reduce | 観測クラスタ → 洞察。既定は `rules`（同じ鍵の観測を件数つきの定型文へ畳む。declaration は付けない）。`--review` は LLM 蒸留のときだけ効く |
@@ -299,6 +326,8 @@ node-budget を読み、超過中は LLM 段を実行しません。
 | `sources` | `[]` | 空 = 全種を有効。絞りたいときだけ列挙 |
 | `with_transcripts` | `false` | collect の副作用でセッション本文を統一セッションログ（`transcripts/<cli>/<sid>.jsonl`）として保存。`--with-transcripts` と同じ（定期実行の有効化はこちらで） |
 | `flow_buses` / `project_roots` / `amigos_buses` / `loop_logs` | `[]` | 明示指定が要る源泉の場所 |
+| `ledger_dirs` | `[]` | 追加で読む台帳ディレクトリ（agent-app の `audit-feed`）。`budget-ledger` と同じ行の形・同じ経路で読む |
+| `extra_homes` | `[]` | `session_log.paths` の `~/…` 宣言を展開する追加のホーム（WSL から `/mnt/c/Users/<me>` を読む）。絶対パスの宣言は載せ替えない |
 | `memory_stores` | `{}` | `ltm_dirs` / `wiki_root` / `persona_home` / `moltbook_home`。自動発見の上書きだけ書けばよい |
 | `memory_dormant_days` | `30` | `access_count=0` のまま眠っている日数（＝退役候補） |
 | `memory_share_threshold` | `70` | publish 待ちとみなす `share_score` |

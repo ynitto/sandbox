@@ -28,6 +28,14 @@ CONFIG_DEFAULTS = {
     "budget_dir": None,              # 既定 ~/.agents/budget（node-budget 契約の既定位置）
     # 源泉（空 = budget-ledger / cli-native / 対応CLI quota。他は宣言時だけ読む）
     "sources": [],
+    # 追加の台帳ディレクトリ（budget-ledger と同じ追記専用 JSONL。agent-app が
+    # Windows 側で書く audit-feed をここに並べる。カーソルの鍵はパスを含むので
+    # `<budget_dir>/ledger` と混ざらない）
+    "ledger_dirs": [],
+    # 追加のホーム。cli-native が `session_log.paths` の `~` をこれらの home でも
+    # 展開する（WSL から `/mnt/c/Users/<me>` の CLI ログを読む）。見つからない home は
+    # 黙って飛ばす——`doctor` が到達性を報告する。
+    "extra_homes": [],
     # collect の副作用でセッション本文を統一フォーマット（transcripts/<cli>/<sid>.jsonl。
     # 契約は schemas/audit-session-log.schema.json）で保存する。定期実行（cron /
     # agent-loop フック）はフラグを渡さないので、常時集約したいノードはここで有効化する。

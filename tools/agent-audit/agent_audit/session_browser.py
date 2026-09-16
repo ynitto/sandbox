@@ -12,25 +12,18 @@ import os
 import sqlite3
 from pathlib import Path
 import sys
-from urllib.parse import unquote, urlparse
 from . import readers
 from .scrub import scrub_text
 
 MAX_BYTES = 64 * 1024 * 1024
 MAX_FILES = 20000
 
-
-def text(value):
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return "\n".join(filter(None, (text(v) for v in value)))
-    if isinstance(value, dict):
-        # Only visible text/markdown, never arbitrary tool payloads.
-        if value.get("kind") not in (None, "markdownContent", "markdownVuln"):
-            return ""
-        return text(value.get("text", value.get("value", value.get("content", ""))))
-    return ""
+# VS Code チャットの読解は collect と同じ実装（readers）を借りる。
+text = readers.visible_text
+vscode_objects = readers.vscode_objects
+restore_vscode = readers.restore_vscode
+local_path = readers.local_path
+vscode_session = readers.vscode_session
 
 
 def json_objects(file):
@@ -53,127 +46,6 @@ def json_objects(file):
         if not result:
             raise ValueError("会話の保存形式を読み取れません")
         return result, broken
-
-
-def vscode_objects(file, status):
-    """Replay append-only logs without retaining superseded versions in memory."""
-    with file.open(encoding="utf-8-sig") as stream:
-        first = next((line for line in stream if line.strip()), "")
-        try:
-            obj = json.loads(first)
-        except ValueError:
-            # Pretty-printed JSON exports are a single document.
-            stream.seek(0)
-            try:
-                yield json.load(stream)
-            except ValueError as exc:
-                raise ValueError("会話の保存形式を読み取れません") from exc
-            return
-        yield obj
-        for line in stream:
-            if not line.strip():
-                continue
-            try:
-                yield json.loads(line)
-            except ValueError:
-                status["partial"] = True
-
-
-def restore_vscode(objects):
-    state = None
-    for entry in objects:
-        if not isinstance(entry, dict):
-            raise ValueError("未対応の会話更新形式です")
-        if state is None and "requests" in entry:
-            state = entry
-            continue
-        kind = entry.get("kind")
-        if kind == 0 and state is None:
-            state = entry["v"]
-            continue
-        keys = entry.get("k")
-        if state is None or kind not in (1, 2, 3) or not isinstance(keys, list):
-            raise ValueError("未対応の会話更新形式です")
-        if not keys:
-            if kind == 1:
-                state = entry["v"]
-                continue
-            target = state
-        else:
-            target = state
-            for key in keys[:-1]:
-                target = target[key]
-            key = keys[-1]
-            if kind == 1:
-                target[key] = entry["v"]
-                continue
-            if kind == 3:
-                if isinstance(target, dict):
-                    target.pop(key, None)
-                else:
-                    raise ValueError("未対応の会話更新形式です")
-                continue
-            target = target[key]
-        if kind == 2 and isinstance(target, list):
-            if "i" in entry:
-                i = entry["i"]
-                if not isinstance(i, int) or i < 0 or i > len(target):
-                    raise ValueError("不正な会話更新位置です")
-                del target[i:]
-            target.extend(entry.get("v", []))
-        else:
-            raise ValueError("未対応の会話更新形式です")
-    if not isinstance(state, dict) or not isinstance(state.get("requests"), list):
-        raise ValueError("会話の本文がありません")
-    return state
-
-
-def local_path(value):
-    if isinstance(value, dict):
-        value = value.get("path", "") if value.get("scheme") == "file" else ""
-    if not isinstance(value, str):
-        return ""
-    if value.startswith("file://"):
-        parsed = urlparse(value)
-        path = unquote(parsed.path)
-        if len(path) > 3 and path[0] == "/" and path[2] == ":":
-            path = path[1:]
-        return ("//" + parsed.netloc if parsed.netloc else "") + path
-    return value
-
-
-def vscode_session(file, objects):
-    obj = restore_vscode(objects)
-    messages = []
-    dates = []
-    model = ""
-    for i, req in enumerate(obj["requests"]):
-        if not isinstance(req, dict) or req.get("hiddenFromTranscript") or req.get("isHidden"):
-            continue
-        stamp = readers._epoch_sec(req.get("timestamp"))
-        if stamp:
-            dates.append(stamp)
-        rid = str(req.get("requestId") or i)
-        if not req.get("requestHiddenFromTranscript"):
-            body = text(req.get("message"))
-            if body:
-                messages.append({"id": rid + ":user", "role": "user", "text": body})
-        body = text(req.get("response"))
-        if body:
-            status = req.get("modelState", {})
-            status = status.get("value") if isinstance(status, dict) else status
-            messages.append({"id": rid + ":assistant", "role": "assistant", "text": body,
-                             "complete": not req.get("isCanceled") and status in (None, 1)})
-        model = req.get("modelId") or model
-    model = model or (obj.get("inputState", {}).get("selectedModel") or {}).get("identifier", "")
-    cwd = local_path(obj.get("workingDirectory", ""))
-    workspace = file.parent.parent / "workspace.json"
-    if not cwd and workspace.is_file():
-        info = json.loads(workspace.read_text(encoding="utf-8"))
-        cwd = local_path(info.get("folder", info.get("workspace", "")))
-    return {"nativeId": str(obj.get("sessionId") or file.stem), "title": obj.get("customTitle", ""),
-            "repo": cwd, "model": model, "messages": messages,
-            "createdAt": readers._epoch_sec(obj.get("creationDate")), "updatedAt": max(dates or [0])}
 
 
 def copilot_session(file, objects):

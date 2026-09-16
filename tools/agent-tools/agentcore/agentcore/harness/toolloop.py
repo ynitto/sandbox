@@ -1731,8 +1731,8 @@ def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
             # 「条件が無い」と「条件はあるが機械で照合できない」を区別して伝える。
             # 後者は書いた本人が検証されているつもりでいる分、黙って通す害が大きい。
             _tl_progress(
-                (f"受入条件（--acceptance）がありません。{agent['cli']} は自分でツールを回さない"
-                 "ため、done を検証できません。"
+                ("受入条件（--acceptance）がありません。完了を判定する条件がないため、"
+                 "ハーネスでは実行結果を検証できません。"
                  if not acceptance else
                  "受入条件にバッククォートで囲んだファイルパスがありません"
                  "（例: `reports/digest.md` が更新されている）。"

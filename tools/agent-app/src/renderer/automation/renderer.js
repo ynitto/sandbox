@@ -416,7 +416,7 @@ function executionMachines() {
 
 function savedExecutionMachines() {
   const tasks = state.execution.snapshot && state.execution.snapshot.tasks;
-  if (Array.isArray(tasks) && tasks.length) return tasks;
+  if (Array.isArray(tasks)) return tasks;
   const remote = state.execution.snapshot && state.execution.snapshot.machines;
   if (Array.isArray(remote) && remote.length) return remote.map((machine) => ({
     id: `machine:${machine.machine}`, kind: 'statemachine', schedules: machine.schedule ? [machine.schedule] : [], ...machine,
@@ -686,6 +686,7 @@ function render() {
     }
     if (taskEditing) {
       bindTaskDetailTabs(main);
+      for (const button of main.querySelectorAll('[data-task-prompt]')) button.addEventListener('click', () => openTaskPrompt(selectedExecutionMachine()));
       for (const button of main.querySelectorAll('[data-task-delete]')) button.addEventListener('click', () => deleteTask(selectedExecutionMachine()));
       for (const button of main.querySelectorAll('[data-task-metadata]')) button.addEventListener('click', () => openTaskMetadata(selectedExecutionMachine()));
       const back = main.querySelector('[data-edit-back]');
@@ -807,6 +808,7 @@ function bindHome(main) {
     render();
   });
   bindTaskDetailTabs(main);
+  for (const button of main.querySelectorAll('[data-task-prompt]')) button.addEventListener('click', () => openTaskPrompt(selectedExecutionMachine()));
   for (const button of main.querySelectorAll('[data-task-delete]')) button.addEventListener('click', () => deleteTask(selectedExecutionMachine()));
   for (const button of main.querySelectorAll('[data-task-metadata]')) button.addEventListener('click', () => openTaskMetadata(selectedExecutionMachine()));
   on('run-edit', () => { const machine = selectedExecutionMachine(); if (machine) openMachine(machine.machine); });
@@ -958,7 +960,7 @@ function dateLabel(value) {
 
 const teachingFeature = window.createTeachingFeature({
   root: () => state.root,
-  machines: () => state.machines,
+  machines: () => state.machines.filter(item => !(state.execution.snapshot?.deletedMachines || []).includes(item.machine)),
   editAgent: () => state.editAgent || selectedAgent(state.config.agent),
   isActive: () => state.view === 'home' && state.homeTab === 'teach',
   refresh: render,
@@ -977,8 +979,15 @@ const teachingFeature = window.createTeachingFeature({
     }));
   },
   bridge: {
-    list: (root) => automationHost.teachingList(root),
-    remove: (root, machine) => automationHost.deleteMachine(root, machine),
+    list: async (root) => (await automationHost.teachingList(root))
+      .filter(item => !(state.execution.snapshot?.deletedMachines || []).includes(item.machine)),
+    remove: async (root, machine) => {
+      const result = await automationHost.deleteMachine(root, machine);
+      await rememberRunParameters({ machine }, {});
+      await loadMachines();
+      await loadExecutionSnapshot();
+      return result;
+    },
   },
 });
 
@@ -1074,9 +1083,10 @@ function taskDetailShellHtml(machine, activeTab, content, { editor = false, teac
   const teachAction = !embedded && presentation.present
     ? '<button type="button" data-run-teach>AIに変更を相談</button>'
     : '';
-  const deleteAction = machine.kind === 'statemachine' && machine.machine ? '<button type="button" class="danger ghost" data-task-delete>削除</button>' : '';
+  const deleteAction = taskIdentity(machine) && taskIdentity(machine) !== 'new-command' ? `<button type="button" class="danger ghost" data-task-delete ${state.run.running ? 'disabled' : ''}>削除</button>` : '';
+  const promptAction = machine.kind === 'prompt' ? '<button type="button" class="ghost" data-task-prompt>プロンプトを編集</button>' : '';
   const metadataAction = machine.kind === 'statemachine' && machine.machine ? '<button type="button" class="ghost" data-task-metadata>名前と説明を編集</button>' : '';
-  const header = `<header class="execution-title">${presentation.header}${teachAction || metadataAction || deleteAction ? `<div class="row">${teachAction}${metadataAction}${deleteAction}</div>` : ''}</header>`;
+  const header = `<header class="execution-title">${presentation.header}${teachAction || metadataAction || promptAction || deleteAction ? `<div class="row">${teachAction}${metadataAction}${promptAction}${deleteAction}</div>` : ''}</header>`;
   return `<div class="task-detail-shell${editor ? ' is-editor' : ''}${teaching ? ' is-teaching' : ''}">${header}${snapshotWarningHtml()}${taskDetailTabsHtml(machine, activeTab)}<div class="task-tab-panel" id="task-tab-panel" role="tabpanel" aria-labelledby="task-tab-${activeTab}">${content}</div></div>`;
 }
 
@@ -1120,16 +1130,58 @@ function editingCardHtml(machine) {
   </section>`;
 }
 
+function taskMutation(machine, action) {
+  const entries = machine.entryRef ? [machine] : taskSchedules(machine);
+  return { action, taskId: taskIdentity(machine),
+    entries: Object.fromEntries(entries.map((item) => [item.entryRef, item.fingerprint])) };
+}
+
+function openTaskPrompt(machine) {
+  if (!machine || machine.kind !== 'prompt') return;
+  const root = state.root;
+  const dlg = dialog('dlg-run', 'プロンプトを編集', 'record', `
+    <div class="field"><label for="task-prompt-body">プロンプト</label><textarea id="task-prompt-body" rows="12" autofocus>${esc(machine.entry?.prompt || machine.description || '')}</textarea></div>
+    <p class="msg err" id="task-prompt-error" hidden></p>
+    <div class="row"><button type="button" class="primary" id="task-prompt-save">保存</button></div>`);
+  const button = dlg.querySelector('#task-prompt-save');
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const saved = await automationHost.mutateTask(root, {
+        ...taskMutation(machine, 'update-prompt'), prompt: dlg.querySelector('#task-prompt-body').value,
+      });
+      dlg.close();
+      state.execution.scheduleDraft = null;
+      await loadExecutionSnapshot();
+      state.execution.selected = saved.entryRef;
+      notifyHost('tasks', saved.entryRef);
+      render();
+      toast('プロンプトを保存しました');
+    } catch (err) {
+      const message = dlg.querySelector('#task-prompt-error');
+      message.textContent = err.message;
+      message.hidden = false;
+    } finally { button.disabled = false; }
+  });
+}
+
 async function deleteTask(machine) {
-  if (!machine || !machine.machine || !confirm(`「${machine.name}」を削除しますか？\n定義、作成中の会話情報、操作の見本も削除されます。`)) return;
-  const deleted = await guard('タスクの削除', () => automationHost.deleteMachine(state.root, machine.machine));
+  if (!machine || state.run.running) return;
+  const detail = machine.kind === 'statemachine'
+    ? 'タスク登録と定期実行などの設定を削除します。ステートマシン本体は残ります。'
+    : 'タスク登録と定期実行・フックなどの設定を削除します。';
+  if (!confirm(`「${machine.name}」を削除しますか？\n${detail}`)) return;
+  const deleted = await guard('タスクの削除', () => automationHost.mutateTask(state.root, taskMutation(machine, 'delete')));
   if (!deleted) return;
+  await rememberRunParameters(machine, {});
   state.current = null;
   state.view = 'home';
   state.execution.editing = false;
   state.execution.selected = '';
+  state.execution.scheduleOpen = false;
+  state.execution.scheduleDraft = null;
   await loadMachines();
-  await teachingFeature.activate();
+  await loadExecutionSnapshot();
   notifyHost('tasks', '');
   toast('タスクを削除しました');
   render();

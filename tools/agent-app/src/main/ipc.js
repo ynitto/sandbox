@@ -41,6 +41,8 @@ const { spawnSpec, capture, killTree } = require('./proc');
 const shareRun = require('./share/run');
 const teachingIpcModule = require('./teachingIpc');
 const { runPrompt, runSharedPrompt, normalizeRepoUrl, refreshRepoUrls, repoFor } = shareRun;
+const audit = require('./audit');
+const artifactShare = require('./artifactShare');
 
 // 修正前に保存された Aider 応答も、読み出し時に同じ表示契約へ移す。
 // ディスク上の生データは変更せず、新しい応答は保存前に既に構造化される。
@@ -269,6 +271,7 @@ function runHeadless(id, turn, send) {
       // セッション ID が分かる CLI は、ここまでのやり取りをその CLI が見たものとして覚える
       if (sid) store.setCliEntry(ud, id, cli, { id: sid, seen: saved.messages.length });
     } catch (err) { message.error = `${message.error}\n保存できません: ${err.message}`.trim(); }
+    audit.feedTurn(ud, { session: sess, message, sessionId: sid });
     turn.release();
     send('turn:done', { id, message });
   });
@@ -572,6 +575,7 @@ async function runTmux(id, turn, send) {
       conv.seen = saved.messages.length;
       store.setCliEntry(ud, id, cli, { seen: saved.messages.length });
     } catch (err) { message.error = `${message.error}\n保存できません: ${err.message}`.trim(); }
+    audit.feedTurn(ud, { session: sess, message });
     turn.release();
     send('turn:done', { id, message });
   });
@@ -829,6 +833,50 @@ function registerIpcHandlers(getWindow) {
   handle('update:apply', (p) => updater.apply({ app: !!p.app, tools: !!p.tools }));
   updater.schedule();
 
+  // 監査（audit.js）。収集と判定はホスト側の agent-audit が行い、ここは周期と表示だけ。
+  // 本人のターンが動いている間は回さない（busy）。
+  const auditor = new audit.Auditor({
+    userData: userData(),
+    loadConfig: () => store.loadConfig(userData()),
+    shellFor: (distro) => host.shellFor(distro),
+    post,
+    busy: () => running.size > 0 || conversations.size > 0,
+  });
+  const artifacts = new artifactShare.ArtifactShare({
+    userData: userData(),
+    loadConfig: () => store.loadConfig(userData()),
+    shellFor: (distro) => host.shellFor(distro),
+    runPrompt,
+  });
+  handle('audit:status', () => ({ ...auditor.status(), share: artifacts.list() }));
+  handle('audit:run', () => auditor.run({ manual: true }));
+  handle('audit:summary', (p) => auditor.summary({ by: p && p.by, period: p && p.period }));
+  handle('audit:artifacts', () => ({
+    ...audit.artifacts(userData()),
+    insights: audit.insights(userData()),
+    reports: audit.reports(userData()),
+    share: artifacts.list(),
+  }));
+  // 提出と改善は押したときだけ（merge は人。ここは push までで止める）。
+  handle('audit:submit', (p) => artifacts.submit({
+    repo: requireRepo(p.repo), kind: String(p.kind || ''), name: String(p.name || ''),
+    sessionId: String(p.sessionId || ''), force: !!p.force,
+  }));
+  handle('audit:improve', async (p) => {
+    const cfg = store.loadConfig(userData());
+    const options = { optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(await listAgents(requireRepo(p.repo))) }) };
+    // 既定は節約（ローカル実行系があればそれ）。その tier が未設定なら会話の既定へ倒す。
+    let selected;
+    try { selected = settings.resolve(cfg, { policy: 'saving' }, options); }
+    catch { selected = settings.resolve(cfg, {}, options); }
+    return artifacts.improve({
+      repo: requireRepo(p.repo), kind: String(p.kind || ''), name: String(p.name || ''),
+      evidence: Array.isArray(p.evidence) ? p.evidence : [],
+      cli: String(p.cli || selected.cli), model: String(p.model != null ? p.model : selected.model),
+    });
+  });
+  auditor.schedule();
+
   handle('host:info', async () => {
     const cfg = store.loadConfig(userData());
     const info = await host.probe(process.platform === 'win32' ? cfg.wslDistro : '');
@@ -841,6 +889,7 @@ function registerIpcHandlers(getWindow) {
     const next = store.saveConfig(userData(), p.patch);
     if (before.wslDistro !== next.wslDistro) { host.closeAll(); availCache.clear(); }
     if (JSON.stringify(before.update) !== JSON.stringify(next.update)) updater.schedule();
+    if (JSON.stringify(before.audit) !== JSON.stringify(next.audit)) auditor.schedule();
     if (shareInstance) shareInstance.reconfigure(next).catch(() => {});
     if (JSON.stringify(before.repos) !== JSON.stringify(next.repos)) refreshRepoUrls().catch(() => {});
     return next;
@@ -1201,6 +1250,7 @@ function registerIpcHandlers(getWindow) {
     clearInterval(sweepTimer);
     clearInterval(shareTimer);
     updater.unschedule();
+    auditor.unschedule();
     if (shareInstance) shareInstance.stop().catch(() => {});
     for (const c of running.values()) c.stop();
     for (const c of conversations.values()) {

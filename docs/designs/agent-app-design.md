@@ -1061,9 +1061,62 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 - 見直し条件: 更新サーバーを置ける環境になったとき、または NSIS 版を配る必要が出たとき。
 - 確信度: 中。
 
+### ADR-17 監査は agent-audit に読解と判定を任せ、agent-app は周期・申告・表示だけを持つ
+
+- 決定: **数字は agent-app で作らない。** 自分の出来事（会話のターン・タスクの実行・引き受けた依頼）を
+  node-budget と同じ台帳の行として `userData/audit-feed/` へ追記し、60 分ごとに agent-audit の連鎖
+  （`collect` → `qualify --apply` → `calibrate --write` → `extract` → `distill --review` → `tune --apply`）を
+  ホストで回し、`--json` の出力とストアのファイルを見せる。監査ストアは Windows 側（`userData/audit/`）に
+  置き、`--audit-dir` で渡す。書き手は agent-audit 1 本のまま、周期の主だけ agent-app が持つ。
+  境界を渡るものは 3 つ（追記専用の台帳・単発の JSON・ストアの中身）に限り、再帰 glob と SQLite は
+  渡さない。Windows 側の CLI ログと VS Code のチャットは、agent-audit の `extra_homes` に
+  `/mnt/c/Users/<me>` を渡して同じ定義のまま読ませる。
+- 背景: agent-app は Windows で動き、CLI は WSL に居る。WSL は境界が不安定でディスクが逼迫しやすく、
+  ストアを WSL に置くと作り直しで洞察ごと消える。一方 agent-app には集計・監査の面が無く、
+  agent-audit の `usage` / `stats` / `report` は WSL の端末からしか見えなかった。9p 越しに遅いのは
+  stat と glob と SQLite で、追記と rename は速い。agent-audit は pip 依存が無く、POSIX に縛られるのは
+  枠の読み取りだけなので、読解を WSL に残す代償は小さい。
+- 却下: (a) agent-app が Node で CLI のログを解釈して集計する——`readers.py` の写しができ、CLI 側の
+  形式変更のたびに両方直す。(b) agent-audit を Windows ネイティブで動かす——Python のスタックを
+  配布物に抱えるか Windows に Python を要求するかで、ADR-11 が避けた「更新の単位が 2 つ」を別の形で
+  持ち込む。しかも量の多い源泉（台帳・bus・project root）と枠の読み取りは WSL 側にあり、境界越えは
+  消えない。(c) ストアを WSL に置いたまま保持日数を縮める——作り直しで洞察が消える。(d) 両側に持って
+  突合する——書き手が 2 本になり、設計の不変条件を破る。(e) agent-loop の hook を周期の主にする——
+  任意ツールが本体機能の前提になり ADR-11 に反する。
+- 代償: 数字を見るにはホストの Python が要る（止まっていれば、ストアにある洞察・レポート・成果物の
+  合否だけが見える）。agent-app を起動していない日は集まらない（cron の代わりが常駐）。
+  `state.json` を毎周期 9p 越しに rename するので、失敗が続くなら周期を伸ばすのではなく
+  `state.json` を分けて小さくする。
+- 見直し条件: `/mnt/c` の走査が 1 巡 60 秒を超えたとき（Windows 側で歩いた一覧を `collect --manifest`
+  で手渡す）、または 9p 越しの書き込み失敗が週 1 回以上出たとき。
+- 確信度: 中。
+
+### ADR-18 定型化したものの共有と改善は agent-app が git で動かし、agent-audit は証跡と合否だけを出す
+
+- 決定: 共有先リポジトリへの提出（`share/<種別>-<名前>`）と改善案の提出（`improve/<種別>-<名前>`）は
+  agent-app が行う。成果物が**初めて成功したとき**に提出し、agent-audit が合否を `trial` / `blocked` に
+  落としたら、失敗の証跡を渡して直させた案を出す。merge は人。同じ成果物に未取り込みの改善が
+  あるうちは次を出さない。agent-audit は成果物の合否を `<audit>/artifacts.json` に書くだけで、
+  git には触らない。
+- 背景: agent-app には `git.js` / `worktree.js` があり、LAN 共有の納品も worktree と push で設計済み。
+  git の資格情報は CLI と同じ場所にある。agent-audit は「測る者に徹する」を掲げ、書ける先を
+  型付きの allowlist（`tuning.json` / `profiles.json` / budget `config.json` / `qualifications.json`）に
+  閉じている。
+- 却下: (a) agent-audit に `share` を足す——allowlist の不変条件を破る。(b) 成果物の合否を候補の
+  `qualifications.json` へ混ぜる——あちらは Compiler が読む `(agent_cli, model, operation_class)` の契約で、
+  混ぜると候補ゼロや偽の候補を焼く。(c) git-skill-manager の `push` を呼ぶ——Python のスキルで、
+  扱うのはスキルだけ。置き場の規約だけ合わせて pull 側の互換は保つ。(d) 自動で merge する——
+  共有先は他人も読む。(e) 一度も成功していない定義も出す——動かしていないものを人に渡さない。
+- 代償: 成果物の共有は「動いた」ものに限られる（狙いどおり）。改善は AI を 1 回呼ぶ（既定は節約の
+  tier。本人のターンが動いている間は回さない）。
+- 見直し条件: 改善案が取り込まれない比率が高いとき（閾値ではなく証跡の質を先に疑う）。
+- 確信度: 中。
+
 ## 付録 B. 関連文書
 
 - [`agent-app-spec.md`](../specs/agent-app-spec.md): 利用手順、IPC、設定、保存形式、上限。
+- [`2026-09-16-agent-app-agent-audit-split-and-artifact-sharing-design.md`](../plans/2026-09-16-agent-app-agent-audit-split-and-artifact-sharing-design.md):
+  agent-audit との責務分割（ADR-17）と、定型化したものの共有・改善（ADR-18）の設計。
 - [`agent-cli-spec.md`](../specs/agent-cli-spec.md): `agents/*.json` の探索順と `interactive` 節の項目。
 - [`agent-loop-design.md`](./agent-loop-design.md): タスクの実行・定期発火・履歴の正典。
 - [`2026-09-05-agent-app-statemachine-integration-design.md`](../plans/2026-09-05-agent-app-statemachine-integration-design.md): statemachine-maker 統合（初版）の検討記録。

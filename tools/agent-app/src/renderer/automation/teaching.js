@@ -125,7 +125,7 @@
       const remove = main.querySelector('[data-teach-delete]');
       if (remove) remove.addEventListener('click', async () => {
         const item = selectedItem();
-        if (!item || !window.confirm(`「${item.title || item.machine}」を削除しますか？\n作成中の会話情報と操作の見本も削除されます。`)) return;
+        if (!item || !window.confirm(`「${item.title || item.machine}」を削除しますか？\n${item.published ? 'タスク登録と定期実行などの設定を削除します。ステートマシン本体は残ります。' : '作成中の会話情報と操作の見本も削除されます。'}`)) return;
         const deleted = await ctx.guard('タスクの削除', () => ctx.bridge.remove(root(), item.machine));
         if (!deleted) return;
         view.selected = '';

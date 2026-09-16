@@ -21,6 +21,21 @@
     "clear_command": "/clear",
     "prompt_inject": "send-keys"
   },
+  "session_log": {
+    "format": "vscode-chat",
+    "paths": [
+      "~/.config/Code/User/workspaceStorage/*/chatSessions",
+      "~/.config/Code/User/globalStorage/emptyWindowChatSessions",
+      "~/.config/Code - Insiders/User/workspaceStorage/*/chatSessions",
+      "~/Library/Application Support/Code/User/workspaceStorage/*/chatSessions",
+      "~/Library/Application Support/Code/User/globalStorage/emptyWindowChatSessions",
+      "~/.vscode-server/data/User/workspaceStorage/*/chatSessions",
+      "~/AppData/Roaming/Code/User/workspaceStorage/*/chatSessions",
+      "~/AppData/Roaming/Code/User/globalStorage/emptyWindowChatSessions",
+      "~/AppData/Roaming/Code - Insiders/User/workspaceStorage/*/chatSessions"
+    ],
+    "usage": false
+  },
   "errors": [
     {"match": "bridge に接続できません|bridge endpoint を読めません", "class": "env",
      "hint": "VS Code 側の bridge が起動していません（通常は自動で起こします。--no-start を外してください）"},

@@ -99,14 +99,39 @@ def _dirs_of(args, key: str) -> "list[str]":
 
 # -- budget-ledger -----------------------------------------------------------
 
+def ledger_dirs(args) -> "list[str]":
+    """読む台帳ディレクトリ: node-budget の `<budget_dir>/ledger` + 設定 `ledger_dirs`。
+
+    agent-app（Windows）は自分の出来事を同じ行の形で `audit-feed/` へ追記する。
+    reader を増やさず同じ経路で読むので、境界を渡るものは「追記専用の台帳」1 種のまま。
+    存在しないディレクトリは飛ばす（エンジン未使用・app 未起動のノードでも動く）。
+    """
+    dirs = [os.path.join(resolve_budget_dir(args), "ledger")]
+    extra = getattr(args, "ledger_dirs", None) or []
+    if isinstance(extra, str):
+        extra = [extra]
+    for v in extra:
+        dirs.append(os.path.abspath(os.path.expanduser(str(v))))
+    out, seen = [], set()
+    for d in dirs:
+        real = os.path.realpath(d)
+        if real in seen or not os.path.isdir(d):
+            continue
+        seen.add(real)
+        out.append(d)
+    return out
+
+
 def collect_budget_ledger(args, store: Store) -> int:
     """ledger/<YYYYMMDD>.jsonl の新規行を kind:ledger レコードへ。
     カーソルはファイルごとのバイトオフセット（追記専用なので後退しない）。"""
-    ledger_dir = os.path.join(resolve_budget_dir(args), "ledger")
-    if not os.path.isdir(ledger_dir):
+    paths = []
+    for ledger_dir in ledger_dirs(args):
+        paths.extend(sorted(glob.glob(os.path.join(glob.escape(ledger_dir), "*.jsonl"))))
+    if not paths:
         return 0
     added = 0
-    for path in sorted(glob.glob(os.path.join(glob.escape(ledger_dir), "*.jsonl"))):
+    for path in paths:
         key = f"budget-ledger::{path}"
         offset = int(store.cursor(key) or 0)
         try:
@@ -168,9 +193,17 @@ def collect_budget_ledger(args, store: Store) -> int:
                         rec[key] = row[key]
                 if isinstance(row.get("escalation"), dict):
                     rec["escalation"] = row["escalation"]
-                for key in ("run_id", "flow_node"):
+                for key in ("run_id", "flow_node", "status", "error_class", "session_id",
+                            "task_id", "mode"):
                     if row.get(key):
                         rec[key] = row[key]
+                # 成果物の参照（agent-app の feed が載せる）。適格性の集計鍵になる。
+                if isinstance(row.get("artifact"), dict):
+                    art = row["artifact"]
+                    kind, name = str(art.get("kind") or ""), str(art.get("name") or "")
+                    if kind and name:
+                        rec["artifact"] = {"kind": kind, "name": name,
+                                           "origin": str(art.get("origin") or "")}
                 if isinstance(row.get("methods"), list):
                     rec["methods"] = [str(v) for v in row["methods"] if str(v)]
                 if isinstance(row.get("trial"), dict):
@@ -203,16 +236,26 @@ def agent_defs_with_session_log(project_dir: "str | None" = None) -> "list[tuple
             if isinstance(spec.get("session_log"), dict)]
 
 
+def extra_homes(args) -> "list[str]":
+    """設定 `extra_homes`。`~/` 宣言をこれらのホームへも展開して読む（§設計 2.3）。"""
+    vals = getattr(args, "extra_homes", None) or []
+    if isinstance(vals, str):
+        vals = [vals]
+    return [os.path.abspath(os.path.expanduser(str(v))) for v in vals]
+
+
 def collect_cli_native(args, store: Store, *, with_transcripts: bool, since: float = 0.0) -> int:
     from . import readers
     added = 0
+    homes = extra_homes(args)
     for name, spec in agent_defs_with_session_log():
         slog = spec["session_log"]
         if slog.get("format") not in readers.FORMATS:
             log("collect", f"{name}: session_log.format={slog.get('format')!r} は未対応のため"
                            "未収集です（対応 format: " + ", ".join(readers.FORMATS) + "）")
             continue
-        for sess in readers.read_sessions(slog, want_messages=with_transcripts):
+        for sess in readers.read_sessions(slog, want_messages=with_transcripts,
+                                          extra_homes=homes):
             if since and (sess["updated_at"] or 0) < since:
                 continue
             # parser revision をカーソルへ含め、usage の読み方を直したときは既存セッションも

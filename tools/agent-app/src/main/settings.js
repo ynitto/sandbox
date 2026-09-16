@@ -84,6 +84,22 @@ function update(raw) {
   };
 }
 
+// 設定 > アプリ「監査」。収集と判定は agent-audit（ホスト側）が行い、ここは周期と
+// 共有先だけを持つ。intervalMinutes 0 は定期実行をしない（手動だけ）。
+// configFile を指すと、audit_dir / ledger_dirs / extra_homes も利用者の設定に委ねる。
+const AUDIT_DEFAULTS = { enabled: true, intervalMinutes: 60, shareRepo: '', pushToMain: false, configFile: '' };
+const AUDIT_INTERVALS = [0, 30, 60, 360, 1440];
+function audit(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    enabled: source.enabled !== false,
+    intervalMinutes: bounded(source.intervalMinutes, AUDIT_DEFAULTS.intervalMinutes, 0, 1440),
+    shareRepo: String(source.shareRepo || '').trim().slice(0, 500),
+    pushToMain: Boolean(source.pushToMain),
+    configFile: String(source.configFile || '').trim().slice(0, 500),
+  };
+}
+
 function concurrent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 2;
@@ -161,6 +177,7 @@ function normalize(raw) {
     share: share(source.share),
     notify: notify(source.notify),
     update: update(source.update),
+    audit: audit(source.audit),
   };
 }
 
@@ -207,5 +224,6 @@ function resolve(config, request = {}, { optimized: on = true } = {}) {
 module.exports = {
   TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS, SHARED_POLICY, SHARE_DEFAULTS, ACCEPT_MODES,
   MAX_QUICK_REQUESTS, DEFAULT_QUICK_REQUESTS, UPDATE_DEFAULTS, UPDATE_INTERVALS,
-  normalize, resolve, optimized, effectivePolicy, share, acceptMode, quickRequests, notify, update,
+  AUDIT_DEFAULTS, AUDIT_INTERVALS,
+  normalize, resolve, optimized, effectivePolicy, share, acceptMode, quickRequests, notify, update, audit,
 };

@@ -514,6 +514,86 @@ def update_repository_schedule(cwd: "str | Path", payload: Any) -> dict[str, Any
     return result
 
 
+
+def _repository_deleted_machines(root: Path) -> list[str]:
+    path = root / ".agents" / "task-state.yaml"
+    data = _read_config_file(path) if path.is_file() else {}
+    return list(data.get("deleted_machines") or [])
+
+
+def update_repository_task(cwd: "str | Path", payload: Any) -> dict[str, Any]:
+    """タスク登録を編集する。ステートマシン定義や実行履歴は削除しない。"""
+    root = _repository_root(cwd)
+    if not isinstance(payload, dict) or payload.get("action") not in ("delete", "update-prompt"):
+        raise ValueError("タスクの操作が不正です")
+    snapshot = repository_snapshot(root)
+    task = next((item for item in snapshot["tasks"] if item["id"] == payload.get("taskId")), None)
+    if task is None:
+        raise ValueError("タスクが見つかりません。再読み込みしてください")
+    editing = payload["action"] == "update-prompt"
+    if editing and task["kind"] != "prompt":
+        raise ValueError("プロンプト型だけ本文を編集できます")
+    prompt = payload.get("prompt")
+    if editing and (not isinstance(prompt, str) or not prompt.strip()):
+        raise ValueError("プロンプトを入力してください")
+    expected = payload.get("entries")
+    references = task.get("schedules") or []
+    if task.get("entryRef"):
+        references = [task]
+    current = {item["entryRef"]: item["fingerprint"] for item in references}
+    if expected != current:
+        raise ValueError("タスク設定は読み込み後に変更されました。再読み込みしてください")
+
+    changes = {}
+    saved_ref = None
+    # パスはリクエストから受け取らず、現在の一覧にある保存元だけを編集する。
+    for item in references:
+        path = Path(item["source"]["path"])
+        if path not in changes:
+            data = _read_config_file(path)
+            changes[path] = (data, set())
+        data, indices = changes[path]
+        found = False
+        for index, entry in enumerate(data.get("prompts") or []):
+            if not isinstance(entry, dict):
+                continue
+            ref, fingerprint = _repository_entry_identity(path, index, entry)
+            if ref != item["entryRef"]:
+                continue
+            if fingerprint != item["fingerprint"]:
+                raise ValueError("タスク設定は変更されました。再読み込みしてください")
+            found = True
+            if editing:
+                entry["prompt"] = prompt
+                saved_ref = _repository_entry_identity(path, index, entry)[0]
+            else:
+                indices.add(index)
+            break
+        if not found:
+            raise ValueError("タスク設定を特定できません。再読み込みしてください")
+    for path, (data, indices) in changes.items():
+        if not editing:
+            data["prompts"] = [entry for index, entry in enumerate(data.get("prompts") or [])
+                               if index not in indices]
+        _repository_write_config(path, data)
+    if not editing and task["kind"] == "statemachine":
+        state_path = root / ".agents" / "task-state.yaml"
+        state = _read_config_file(state_path) if state_path.is_file() else {}
+        state["deleted_machines"] = sorted(set(_repository_deleted_machines(root)) | {task["machine"]})
+        _repository_write_config(state_path, state)
+    # 共通設定とリポジトリ設定の優先順位を再評価して、実際に有効な設定を通知する。
+    config, _, _ = load_config(root)
+    daemon_pid = _find_running_daemon(root)
+    if daemon_pid is not None:
+        write_loop_command(daemon_pid, "reload", {
+            "entries": config.get("prompts") or [],
+            "external_panes": config.get("external_panes") or [],
+            "environment_handoff": normalize_environment_handoff(config),
+        })
+    return {"saved": editing, "deleted": not editing, "entryRef": saved_ref,
+            "daemonRunning": daemon_pid is not None}
+
+
 def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str, Any]:
     """workflow、定期 entry、daemon 状態を repository 単位で返す。"""
     root = _repository_root(cwd)
@@ -582,6 +662,8 @@ def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str,
         "effective": True,
         "error": None,
     } for machine in machines]
+    deleted = _repository_deleted_machines(root)
+    tasks = [task for task in tasks if task.get("machine") not in deleted]
     known_workflows = {machine["workflow"] for machine in machines}
     for entry_path, index, entry, effective in selected_entries:
         task_id, fingerprint = _repository_entry_identity(entry_path, index, entry)
@@ -624,7 +706,8 @@ def repository_snapshot(cwd: "str | Path", history_limit: int = 20) -> dict[str,
                 root, str(entry.get("name") or ""), history_limit)
                 if kind == "command" else []),
         })
-    return {"available": True, "capabilities": {"commandSchedule": True, "commandSequence": True, "partialSchedule": True}, "machines": machines, "tasks": tasks,
+    return {"available": True, "capabilities": {"commandSchedule": True, "commandSequence": True, "partialSchedule": True, "taskMutation": True}, "machines": [machine for machine in machines if machine["machine"] not in deleted], "tasks": tasks,
+            "deletedMachines": deleted,
             "configSource": source,
             "daemon": _repository_daemon(root)}
 
@@ -650,7 +733,8 @@ def cmd_repository_schedule(args: argparse.Namespace, cwd: Path) -> None:
         sys.exit(1)
     try:
         request = json.loads(raw)
-        result = update_repository_schedule(Path(getattr(args, "dir", None) or cwd), request)
+        update = update_repository_task if getattr(args, "subcommand", "") == "task" else update_repository_schedule
+        result = update(Path(getattr(args, "dir", None) or cwd), request)
     except (TypeError, ValueError, OSError) as exc:
         if getattr(args, "json", False):
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))

@@ -257,13 +257,14 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 
 ### 設定
 
-サイドバー最下部の「設定」に三つの画面があります。生の JSON は編集しません。
+サイドバー最下部の「設定」に四つの画面があります。生の JSON は編集しません。
 
 | 画面 | 項目 |
 |---|---|
 | アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、前面に無いときに通知する（既定 ON）、WSL ディストリビューション、更新元・起動時に更新を確認する（既定 ON）・更新を確認する間隔（既定 1 日ごと）・「今すぐ確認」、実行環境の状態 |
 | 共通指示 | 共通指示の有効・本文（8000 字まで）、別のフォルダへの書き込みを会話の分岐で受ける（既定 ON）、スキル選択の有効・既定の選択・自動選択の候補、定型の依頼（最大 3 つ）、起動時アクション |
 | 実行制御 | エージェントを最適化する（既定 ON。agent-herd が使えるときだけ効き、効いていなければ起動方針は おすすめ / 直接指定 だけ、tier は medium だけ）、既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
+| 監査 | 記録を集める（既定 ON）、集める間隔（既定 1 時間ごと。0 で手動だけ）、定型化したものの共有先、共有先の main へ直接出す、「今すぐ集める」。agent-audit が無ければ足りないものを 1 行で出す |
 
 起動時アクションは「スキル」か「コマンド」で、CLI ごとの新しいセッションで上から一度だけ適用します。
 コマンドは作業フォルダで実行し、失敗時は「続行」か「停止」を選べます。
@@ -413,6 +414,12 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `update:status` | `update.status()` | — | `{ source, appVersion, portable, checking, applying, progress, lastCheckAt, error, plan }`。§16 |
 | `update:check` | `update.check()` | — | `plan`（§16）。更新元が無い・読めないときは断る |
 | `update:apply` | `update.apply({ app, tools })` | 承認した対象 | `{ tools: <入れた版>, app: <入れた版> }`。`app` を入れたときは直後に終了して入れ替える |
+| `audit:status` | `audit.status()` | — | `{ enabled, intervalMinutes, shareRepo, running, step, available, lastRunAt, lastError, steps, deferred, store, artifacts: { revision, generatedAt, count }, share: [...] }`。§18 |
+| `audit:run` | `audit.run()` | — | `{ steps: [{ key, label, status, ok, output }], error }`。動いていれば `{ skipped }`。agent-audit が無ければ断る |
+| `audit:summary` | `audit.summary({ by, period })` | 集計軸と期間 | `{ available, by, period, usage, quality, error }`（中身は agent-audit の `--json` そのまま） |
+| `audit:artifacts` | `audit.artifacts()` | — | 成果物の合否（`artifacts.json`）＋洞察 20 件・レポート 10 件の一覧・提出の記録 |
+| `audit:submit` | `audit.submit({ repo, kind, name, sessionId })` | 成果物 | `{ pushed, branch }`。出済みなら `{ skipped: 'already' }`、共有先未設定なら `{ skipped: 'no-share-repo' }` |
+| `audit:improve` | `audit.improve({ repo, kind, name, evidence, cli, model })` | 成果物と証跡 | `{ pushed, branch, improveNote }`。未取り込みの改善があれば `{ skipped: 'improve-open' }` |
 | `repo:add` | `addRepo()` | —（ダイアログ） | 設定、または `null`（キャンセル） |
 | `repo:remove` | `removeRepo(repo)` | `repo` | 設定 |
 | `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ）。agent-herd 一族（aider / ollama）が 1 つでもあれば末尾に仮想の `herd`（`virtual: true, members: [...]`）を足す（§6.3）。実体は `src/main/agents.js` で、タスク・ワークフローの `automation:agents:list` も同じ一覧（使えるものの名前だけ）を返す |
@@ -482,6 +489,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `term:phase` | `onTermPhase` | `{ id, phase, detail, name }` |
 | `notify:open` | `onNotifyOpen` | `{ id }`。OS の通知を押したとき（main が前面へ戻したあと） |
 | `update:changed` | `update.onChanged` | `update:status` と同じ形に `trigger`（`auto` / `manual`）を添える。確認の前後と取り込みの進みで届く |
+| `audit:changed` | `audit.onChanged` | `audit:status` と同じ形。連鎖の各段の前後と、延期したときに届く |
 | `automation:ai:progress` / `automation:ai:result` / `automation:run:line` / `automation:run:exit` | `api.automation.on*` | 共有ワークベンチの契約 |
 
 タスクの会話（kind: task）とワークフローの会話（kind: workflow）は `turn:*` / `term:*` を
@@ -1186,6 +1194,57 @@ project … { action, unread, items }（要対応を先に、あとは新しい�
 含めないもの（MVP）: agent-loop の定期実行の履歴（`run:snapshot` は agent-loop を起こすので受信箱では読まない）、
 タスク・ワークフローを AI と作る会話（kind: task / workflow）の確認待ち、`stalled` の実行、共有の依頼。
 
+### 18. 監査（`src/main/audit.js`・`src/main/artifactShare.js`）
+
+**読解と保存と判定は agent-audit（ホスト側の Python）が行い、agent-app は周期・申告・表示だけを持つ。**
+設計と却下した案は
+[責務分割の設計](../plans/2026-09-16-agent-app-agent-audit-split-and-artifact-sharing-design.md)。
+境界（Windows ↔ WSL）を渡るものは 3 つだけで、再帰 glob と SQLite は渡さない。
+
+```
+userData/audit-feed/<YYYYMMDD>.jsonl   申告（追記専用。agent-audit の ledger_dirs が byte offset で読む。
+                                       共有の台帳は形が違うので直接読ませず、同じ行の形へ写して足す）
+userData/audit/                        ストア（書き手は agent-audit 1 本・読むのは agent-app）
+userData/audit-config.json             生成する設定（audit_dir / ledger_dirs / extra_homes）
+```
+
+#### 18.1 申告（feed）
+
+台帳の行は node-budget と同じ形にする（reader を増やさないため）。足したのは `artifact` だけ。
+
+| 契機 | 実装 | 行 |
+|---|---|---|
+| 会話のターン | `audit.feedTurn`（ヘッドレスと tmux の応答保存の直後） | `workload: chat`・`ref` は会話 ID・`session_id` は CLI のネイティブ ID |
+| タスク・ワークフローの実行 | `audit.feedRun`（`run-history.append` の中。**履歴と申告を同じ 1 か所で残す**） | `workload: task`・`artifact: { kind, name, origin }` |
+| 共有で引き受けた依頼 | `audit.feedShare`（`share/ledger` の `onRecord`） | `workload: shared`・`ref` は依頼者 |
+
+`status` は `done` / `failed` / `cancelled` / `escalate` のどれか（知らない値は `failed` に倒す）。
+トークンは CLI が申告したときだけ書く。**申告の失敗は本体の処理を止めない**（監査は副産物）。
+
+#### 18.2 連鎖
+
+`collect` → `qualify --apply` → `calibrate --write` → `extract` → `distill --review` → `tune --apply`。
+agent-loop の `audit-calibrate-hook.py` と同じ並びで、`extract` / `distill` の終了コード 1 だけ許す。
+本体に複合コマンドを持たない決定の裏返しで、この表は hook と app の 2 か所にある。
+
+| 段 | 何をするか |
+|---|---|
+| 契機 | 起動 90 秒後と 1 分ごとの tick（前回から `intervalMinutes` 以上たっていれば）、そして `audit:run` |
+| 延期 | 会話のターンか端末が動いていれば回さない（`deferred` に数える）。手動は回す |
+| 前置き | `nice -n 19` と（あれば）`ionice -c 3` を付けてホストで走らせる |
+| 有無 | `command -v agent-audit` が無ければ何もしない（ADR-11。手動のときだけ理由を返す） |
+
+#### 18.3 共有と改善
+
+| 操作 | すること |
+|---|---|
+| 提出（`audit:submit`） | 共有先の浅いクローン（`userData/artifact-share/<鍵>`）を既定ブランチの先端へ戻し、成果物を正典の相対パスへ写し、出所（`origin.json`）を添えて `share/<種別>-<名前>` へ push する。`pushToMain` なら既定ブランチへ |
+| 改善（`audit:improve`） | 同じクローンで `improve/<種別>-<名前>` を作り、失敗の証跡を渡して CLI に直させ（書き込みで 1 回）、差分があれば push する |
+| 二重防止 | `userData/artifact-share/state.json` に提出と改善のブランチを記録する。提出済み・未取り込みの改善があるものは出さない |
+
+成果物の置き場は種別ごとの正典（`.agents/skills/<名前>` か `.github/skills/<名前>` / `.statemachine/<名前>` /
+`.agents/workflows/<名前>.json`）。merge は人が行う——push までで止める。
+
 ### 付録. テスト
 
 `npm test` は `node --test test/*.test.js` を実行する。
@@ -1201,6 +1260,7 @@ project … { action, unread, items }（要対応を先に、あとは新しい�
 | `settings.test.js` / `session-setup.test.js` / `skill-selection.test.js` / `skills.test.js` / `response.test.js` / `input-mode.test.js` / `task-intent.test.js` / `execution-gate.test.js` | 各モジュールの純粋関数 | なし |
 | `update.test.js` | 版の比較、更新元の判定、manifest の正規化、取得と sha256 の照合、`agent-project update --json` の読み方、確認・取り込み（偽のホストシェル）、入れ替えの cmd、起動時と定期、`scripts/publish-update.js` | なし |
 | `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形、受信箱はメニューの領域・一覧の行・件数の印で組み判定は main） | なし |
+| `audit.test.js` | 監査（§18）: 台帳の行の形、申告が本体を止めないこと、連鎖の許容終了コードと打ち切り、延期、agent-audit が無い場合、生成する設定、成果物・洞察・レポートの読み取り、提出と改善（偽のホストシェル）、二重防止、申告の結線（実行履歴・共有の台帳）、整理 | なし |
 | `attention.test.js` | 受信箱の投影（§17）: 完了＋未見 → 未読、完了＋既読 → none、承認・選択・入力の待ち → 要対応、答えが届けば消える、実行中 → none、古いデータ・基準時刻、`attentionSeen` の保存 | なし |
 | `attention-electron.test.js` | Electron 実機で受信箱を通す: 正典（会話・実行履歴・bus）だけを置いて起動し、メニューの件数、領域の一覧と本文、`attention:list` の投影、項目から会話・タスク・ワークフローの画面へ、開いたら `attentionSeen` に足されて未読が消える、答えが届けば要対応が消える | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 | `electron-smoke.test.js` | Electron 実機で四領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの「変更を相談」で会話の置き場を開き、共有の一覧・カード・参加者と、会話の入力先「共有に依頼」を通す | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |

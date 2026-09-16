@@ -237,7 +237,19 @@ function registerIpcHandlers(getWindow, options = {}) {
     const res = store.save(root, p.spec);
     return { dir: res.dir, written: res.written, warnings: res.warnings, machine: res.spec.machine };
   });
-  register('machine:delete', (p) => store.remove(selectedRoot(p), String(p.machine || '')));
+  register('machine:delete', async (p) => {
+    const root = selectedRoot(p);
+    const machine = String(p.machine || '');
+    // 定義がまだ無い作成途中の下書きだけ従来の削除を使う。
+    if (!store.exists(root, machine)) return store.remove(root, machine);
+    const snapshot = await agentLoop.inspect({ root, capture: runCapture });
+    const task = (snapshot.tasks || []).find(item => item.machine === machine);
+    if (!task) throw new Error('タスク設定を取得できません。再読み込みしてください');
+    return agentLoop.mutateTask({ root, capture: runCapture, payload: {
+      action: 'delete', taskId: task.id,
+      entries: Object.fromEntries((task.schedules || []).map(item => [item.entryRef, item.fingerprint])),
+    } });
+  });
   register('machine:updateMetadata', (p) => {
     const root = selectedRoot(p);
     const before = String(p.machine || '');
@@ -349,7 +361,8 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('run:snapshot', async (p) => {
     const root = selectedRoot(p);
     const snapshot = await readSnapshot(root);
-    const missing = store.list(root).filter(item => !(snapshot.tasks || []).some(task => task.machine === item.machine));
+    const missing = store.list(root).filter(item => !(snapshot.deletedMachines || []).includes(item.machine)
+      && !(snapshot.tasks || []).some(task => task.machine === item.machine));
     const machines = missing.map(item => {
       try { return { ...item, parameters: model.normalizeProcedure(store.read(root, item.machine).raw).parameters }; } catch { return item; }
     });
@@ -357,6 +370,9 @@ function registerIpcHandlers(getWindow, options = {}) {
   });
   register('run:schedule', (p) => agentLoop.saveSchedule({
     root: selectedRoot(p), payload: p.schedule, capture: runCapture,
+  }));
+  register('task:mutate', (p) => agentLoop.mutateTask({
+    root: selectedRoot(p), payload: p.mutation, capture: runCapture,
   }));
   register('run:daemon', (p) => {
     const root = selectedRoot(p);
@@ -502,7 +518,7 @@ function registerIpcHandlers(getWindow, options = {}) {
       // 掛かり、クラウドではトークン消費が跳ねる——同じ分け方を agent-loop のデーモンと
       // agent-dashboard も持つ。仮想の名前（`herd`）は実体へ写してから判定する。
       const named = await resolveAgent(requestedAgent, 'direct', root);
-      const oneSession = task.kind === 'statemachine'
+      const oneSession = ['statemachine', 'prompt'].includes(task.kind)
         && sessionRun.runsInOneSession(named, root, String(p.model || cfg.model || ''));
       // ハーネスへ渡す名前は従来どおり（`herd` は '' ＝ agent-herd の既定と宣言に任せる）。
       const agent = oneSession || !loopAvailable
@@ -527,9 +543,9 @@ function registerIpcHandlers(getWindow, options = {}) {
         })
         : {};
       if (oneSession) {
-        // 送るのは発動文 1 つ。工程の進行・検査・遷移は CLI 側のスキルが持つ。
+        // プロンプト本文またはステートマシンの発動文を 1 セッションで送る。
         const spec = sessionRun.runSpec({
-          root, machine, agent, model: p.model || cfg.model, parameters,
+          root, machine, task, agent, model: p.model || cfg.model, parameters,
           instruction: preparation.instruction || '',
         });
         command = spec.command;
@@ -541,7 +557,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         stripDecoration = true;          // CLI を直に起こすので端末の装飾が混ざる
         resultSource = 'exit-code';      // この経路は RESULT 行を出さない
         terminalPayload = { root, agent, model: p.model || cfg.model, prompt: spec.prompt };
-        const checks = declaredChecks(root, machine);
+        const checks = task.kind === 'statemachine' ? declaredChecks(root, machine) : 0;
         launchWarning = [
           spec.warning,
           checks ? `この AI は最初から最後まで通して実行します。確認コマンド（${checks} 件）は実行されません。` : '',

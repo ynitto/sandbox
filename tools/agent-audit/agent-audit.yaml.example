@@ -19,6 +19,17 @@ project_roots: []             # agent-project の state clone ルート（bus/ �
 amigos_buses: []              # agent-amigos のバス
 loop_logs: []                 # agent-loop 本体ログ（例: [~/.agents/agent-loop.log]）
 
+# ---- 別ホスト側（agent-app が Windows で動いているノード） --------------------
+# agent-app は自分の出来事（会話のターン・タスクの実行・共有の受託）を node-budget と
+# 同じ行の形で audit-feed へ追記します。ここへ並べると budget-ledger と同じ経路で
+# 読みます（reader は増えません）。存在しなければ飛ばします。
+ledger_dirs: []               # 例: [/mnt/c/Users/me/AppData/Roaming/agent-app/audit-feed]
+# `session_log.paths` の `~/…` 宣言を、ここに並べたホームへも展開して読みます
+# （WSL から Windows 側の CLI ログ・VS Code チャットを読む）。絶対パスの宣言は
+# そのホスト固有の場所なので載せ替えません。見つからないホームは黙って飛ばします
+# （`doctor` が到達性を報告します）。
+extra_homes: []               # 例: [/mnt/c/Users/me]
+
 # ---- 記憶 3 層 + 共有路（memory-store 源泉。通常は設定不要） -------------------
 # 既定では skill-registry.json（wiki-use.wiki_root / persona-use.persona_home /
 # moltbook-use.home。ltm-use は常に {agent_home}/memory/home）から自動発見します

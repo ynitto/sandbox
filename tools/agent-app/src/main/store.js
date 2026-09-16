@@ -91,6 +91,7 @@ function normalize(raw) {
   next.share = userSettings.share;
   next.notify = userSettings.notify;
   next.update = userSettings.update;
+  next.audit = userSettings.audit;
   next.execution = {
     ...rawExecution,
     ...userSettings.execution,

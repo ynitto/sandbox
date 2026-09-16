@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 
-from .collect import SourceError, agent_defs_with_session_log
+from .collect import SourceError, agent_defs_with_session_log, extra_homes as _extra_homes
 from .configfile import resolve_audit_dir
 from .store import Store, record_id
 from .util import elog, parse_iso
 
 
-def reconcile(store: Store, *, since: float = 0.0, only=None) -> list[dict]:
+def reconcile(store: Store, *, since: float = 0.0, only=None, extra_homes=()) -> list[dict]:
     from . import readers
     wanted = set(only or [])
     stored_by_source = {}
@@ -30,7 +30,8 @@ def reconcile(store: Store, *, since: float = 0.0, only=None) -> list[dict]:
             continue
         source = f"{name}-native"
         known.add(source)
-        identities = readers.session_identities(spec["session_log"], since=since)
+        identities = readers.session_identities(spec["session_log"], since=since,
+                                                extra_homes=extra_homes)
         native = {record_id(f"cli-native:{name}", item["store"], item["native_id"]):
                   item["native_id"] for item in identities}
         stored = stored_by_source.get(source, set())
@@ -62,7 +63,8 @@ def cmd_reconcile(args) -> int:
     store = Store(resolve_audit_dir(args))
     try:
         since = parse_iso(args.since) or 0.0 if getattr(args, "since", None) else 0.0
-        reports = reconcile(store, since=since, only=getattr(args, "source", None))
+        reports = reconcile(store, since=since, only=getattr(args, "source", None),
+                            extra_homes=_extra_homes(args))
     except (OSError, SourceError, ValueError) as exc:
         elog(f"reconcile: {exc}")
         return 2

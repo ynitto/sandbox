@@ -374,9 +374,10 @@
         "format": {
           "enum": [
             "jsonl-dir",
-            "kiro-sqlite"
+            "kiro-sqlite",
+            "vscode-chat"
           ],
-          "description": "パーサの選択（実装は agent-audit に format ごと 1 つ）。jsonl-dir=1 セッション 1 *.jsonl のディレクトリ（claude / codex 系） / kiro-sqlite=kiro-cli の SQLite ストア（1 行に会話配列が丸ごと入る形）"
+          "description": "パーサの選択（実装は agent-audit に format ごと 1 つ）。jsonl-dir=1 セッション 1 *.jsonl のディレクトリ（claude / codex 系） / kiro-sqlite=kiro-cli の SQLite ストア（1 行に会話配列が丸ごと入る形） / vscode-chat=VS Code の Copilot チャット（1 会話 1 *.json・初版 + 追記される差分。paths はグロブ可）"
         },
         "paths": {
           "type": "array",

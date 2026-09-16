@@ -17,21 +17,45 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from . import cleaning
 from .util import elog
 
-FORMATS = ("jsonl-dir", "kiro-sqlite")
+FORMATS = ("jsonl-dir", "kiro-sqlite", "vscode-chat")
+
+
+def expand_paths(paths, extra_homes=()) -> "list[str]":
+    """宣言された `paths` を、ホームと `extra_homes` の両方へ展開する。
+
+    `~/` で始まる宣言だけを追加のホームへ載せ替える。絶対パスの宣言はそのホスト固有の
+    場所を指しているので載せ替えない。WSL から `/mnt/c/Users/<me>` を渡すと、Windows 側の
+    CLI ログを同じ定義のまま読める。存在しない展開先は呼び先の glob が空を返すだけで、
+    黙って飛ばす（使っていないホストを「未収集」と騒がない）。
+    """
+    out: "list[str]" = []
+    seen: "set[str]" = set()
+    for raw in paths or []:
+        cands = [os.path.expanduser(str(raw))]
+        if str(raw).startswith("~/"):
+            for home in extra_homes or ():
+                cands.append(os.path.join(os.path.expanduser(str(home)), str(raw)[2:]))
+        for cand in cands:
+            key = os.path.normpath(cand)
+            if key not in seen:
+                seen.add(key)
+                out.append(cand)
+    return out
 
 
 def read_sessions(session_log: dict, *, want_messages: bool = False,
-                   limit: "int | None" = None) -> "list[dict]":
+                   limit: "int | None" = None, extra_homes=()) -> "list[dict]":
     """limit を指定すると、更新が新しい順に最大 limit セッションだけ読む
     （doctor の棚卸しなど、全件走査が高くつく場面向けの間引き。通常の collect は
     limit なし = 全件・冪等）。"""
     session_log = session_log or {}
     fmt = session_log.get("format")
-    paths = [os.path.expanduser(p) for p in session_log.get("paths") or []]
+    paths = expand_paths(session_log.get("paths"), extra_homes)
     clean = session_log.get("clean") if isinstance(session_log.get("clean"), dict) else None
     if fmt == "jsonl-dir":
         out = []
@@ -44,10 +68,15 @@ def read_sessions(session_log: dict, *, want_messages: bool = False,
             for db in _dbs(p):
                 out.extend(_read_kiro_sqlite(db, want_messages=want_messages, clean=clean))
         return _cap(out, limit)
+    if fmt == "vscode-chat":
+        out = []
+        for p in paths:
+            out.extend(_read_vscode_dir(p, want_messages=want_messages, limit=limit))
+        return _cap(out, limit)
     return []          # 未知 format は「未収集」— 呼び出し側（doctor / collect）が明示する
 
 
-def session_identities(session_log: dict, *, since: float = 0.0) -> "list[dict]":
+def session_identities(session_log: dict, *, since: float = 0.0, extra_homes=()) -> "list[dict]":
     """Enumerate source identities through the same parsers used by collect.
 
     Keeping this deliberately thin prevents reconcile from acquiring a second implementation
@@ -55,7 +84,8 @@ def session_identities(session_log: dict, *, since: float = 0.0) -> "list[dict]"
     """
     return [{"native_id": session["native_id"], "store": session["store"],
              "updated_at": session.get("updated_at") or 0.0}
-            for session in read_sessions(session_log, want_messages=False)
+            for session in read_sessions(session_log, want_messages=False,
+                                         extra_homes=extra_homes)
             if not since or (session.get("updated_at") or 0.0) >= since]
 
 
@@ -447,4 +477,193 @@ def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
         "usage_measured": False,
         "messages": messages,
         "_clean_warnings": warnings,
+    }
+
+
+# -- vscode-chat（VS Code の Copilot チャット: 1 会話 = 1 *.json） --------------
+#
+# VS Code は会話を「初版 + 追記される差分」として書く。読解はここだけに置き、
+# デスクトップ側の閲覧口（session_browser）もこの関数を呼ぶ——同じ形式の
+# パーサを 2 つ持つと、VS Code が書き方を変えたときに片方だけ直る。
+
+def visible_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(filter(None, (visible_text(v) for v in value)))
+    if isinstance(value, dict):
+        # Only visible text/markdown, never arbitrary tool payloads.
+        if value.get("kind") not in (None, "markdownContent", "markdownVuln"):
+            return ""
+        return visible_text(value.get("text", value.get("value", value.get("content", ""))))
+    return ""
+
+
+def vscode_objects(file, status):
+    """Replay append-only logs without retaining superseded versions in memory."""
+    with file.open(encoding="utf-8-sig") as stream:
+        first = next((line for line in stream if line.strip()), "")
+        try:
+            obj = json.loads(first)
+        except ValueError:
+            # Pretty-printed JSON exports are a single document.
+            stream.seek(0)
+            try:
+                yield json.load(stream)
+            except ValueError as exc:
+                raise ValueError("会話の保存形式を読み取れません") from exc
+            return
+        yield obj
+        for line in stream:
+            if not line.strip():
+                continue
+            try:
+                yield json.loads(line)
+            except ValueError:
+                status["partial"] = True
+
+
+def restore_vscode(objects):
+    state = None
+    for entry in objects:
+        if not isinstance(entry, dict):
+            raise ValueError("未対応の会話更新形式です")
+        if state is None and "requests" in entry:
+            state = entry
+            continue
+        kind = entry.get("kind")
+        if kind == 0 and state is None:
+            state = entry["v"]
+            continue
+        keys = entry.get("k")
+        if state is None or kind not in (1, 2, 3) or not isinstance(keys, list):
+            raise ValueError("未対応の会話更新形式です")
+        if not keys:
+            if kind == 1:
+                state = entry["v"]
+                continue
+            target = state
+        else:
+            target = state
+            for key in keys[:-1]:
+                target = target[key]
+            key = keys[-1]
+            if kind == 1:
+                target[key] = entry["v"]
+                continue
+            if kind == 3:
+                if isinstance(target, dict):
+                    target.pop(key, None)
+                else:
+                    raise ValueError("未対応の会話更新形式です")
+                continue
+            target = target[key]
+        if kind == 2 and isinstance(target, list):
+            if "i" in entry:
+                i = entry["i"]
+                if not isinstance(i, int) or i < 0 or i > len(target):
+                    raise ValueError("不正な会話更新位置です")
+                del target[i:]
+            target.extend(entry.get("v", []))
+        else:
+            raise ValueError("未対応の会話更新形式です")
+    if not isinstance(state, dict) or not isinstance(state.get("requests"), list):
+        raise ValueError("会話の本文がありません")
+    return state
+
+
+def local_path(value):
+    if isinstance(value, dict):
+        value = value.get("path", "") if value.get("scheme") == "file" else ""
+    if not isinstance(value, str):
+        return ""
+    if value.startswith("file://"):
+        parsed = urlparse(value)
+        path = unquote(parsed.path)
+        if len(path) > 3 and path[0] == "/" and path[2] == ":":
+            path = path[1:]
+        return ("//" + parsed.netloc if parsed.netloc else "") + path
+    return value
+
+
+def vscode_session(file, objects):
+    obj = restore_vscode(objects)
+    messages = []
+    dates = []
+    model = ""
+    for i, req in enumerate(obj["requests"]):
+        if not isinstance(req, dict) or req.get("hiddenFromTranscript") or req.get("isHidden"):
+            continue
+        stamp = _epoch_sec(req.get("timestamp"))
+        if stamp:
+            dates.append(stamp)
+        rid = str(req.get("requestId") or i)
+        if not req.get("requestHiddenFromTranscript"):
+            body = visible_text(req.get("message"))
+            if body:
+                messages.append({"id": rid + ":user", "role": "user", "text": body})
+        body = visible_text(req.get("response"))
+        if body:
+            status = req.get("modelState", {})
+            status = status.get("value") if isinstance(status, dict) else status
+            messages.append({"id": rid + ":assistant", "role": "assistant", "text": body,
+                             "complete": not req.get("isCanceled") and status in (None, 1)})
+        model = req.get("modelId") or model
+    model = model or (obj.get("inputState", {}).get("selectedModel") or {}).get("identifier", "")
+    cwd = local_path(obj.get("workingDirectory", ""))
+    workspace = file.parent.parent / "workspace.json"
+    if not cwd and workspace.is_file():
+        info = json.loads(workspace.read_text(encoding="utf-8"))
+        cwd = local_path(info.get("folder", info.get("workspace", "")))
+    return {"nativeId": str(obj.get("sessionId") or file.stem), "title": obj.get("customTitle", ""),
+            "repo": cwd, "model": model, "messages": messages,
+            "createdAt": _epoch_sec(obj.get("creationDate")), "updatedAt": max(dates or [0])}
+
+
+def _read_vscode_dir(root: str, *, want_messages: bool,
+                      limit: "int | None" = None) -> "list[dict]":
+    """`root` はグロブでもよい（`.../workspaceStorage/*/chatSessions`）。"""
+    files: "list[Path]" = []
+    for base in _dbs(root):
+        p = Path(base)
+        if p.is_dir():
+            files.extend(sorted(q for q in p.glob("*.json") if q.is_file()))
+        elif p.is_file() and p.suffix == ".json":
+            files.append(p)
+    if limit is not None and len(files) > limit:
+        files = sorted(files, key=lambda q: _safe_mtime(str(q)), reverse=True)[:limit]
+    out = []
+    for file in files:
+        got = _parse_vscode_session(file, want_messages=want_messages)
+        if got:
+            out.append(got)
+    return out
+
+
+def _parse_vscode_session(file, *, want_messages: bool) -> "dict | None":
+    file = Path(file)
+    try:
+        obj = vscode_session(file, vscode_objects(file, {"partial": False}))
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return None
+    if not obj["messages"]:
+        return None         # 開いただけで何も訊いていないチャット。測るものが無い
+    mtime = _safe_mtime(str(file))
+    messages = [(m["role"], m["text"]) for m in obj["messages"]] if want_messages else []
+    return {
+        "native_id": obj["nativeId"],
+        "store": str(file),
+        "cwd": obj.get("repo") or "",
+        "created_at": obj.get("createdAt") or mtime,
+        "updated_at": obj.get("updatedAt") or mtime,
+        "model": obj.get("model") or "",
+        "log_version": "",
+        "turns": len(obj["messages"]),
+        # VS Code は使用量を保存しない。推定へ回す（measured にはしない）。
+        "tokens_in": None,
+        "tokens_out": None,
+        "usage_measured": False,
+        "messages": messages,
+        "message_completion": [bool(m.get("complete", True)) for m in obj["messages"]],
+        "_clean_warnings": [],
     }

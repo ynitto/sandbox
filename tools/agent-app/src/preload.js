@@ -167,6 +167,7 @@ contextBridge.exposeInMainWorld('api', {
     flowRunOpenDelivery: (root, runId) => invoke('automation:flow:run:openDelivery', { root, runId }),
     runSnapshot: (root) => invoke('automation:run:snapshot', { root }),
     saveRunSchedule: (root, schedule) => invoke('automation:run:schedule', { root, schedule }),
+    mutateTask: (root, mutation) => invoke('automation:task:mutate', { root, mutation }),
     setRunDaemon: (root, action) => invoke('automation:run:daemon', { root, action }),
     runLog: (root, identity) => invoke('automation:run:log', { root, identity }),
     runStart: (payload) => invoke('automation:run:start', payload),
@@ -203,5 +204,15 @@ contextBridge.exposeInMainWorld('api', {
     check: () => invoke('update:check'),
     apply: (choice) => invoke('update:apply', choice),
     onChanged: on('update:changed'),
+  },
+  // 監査（集めた記録の集計と、定型化物の共有・改善）。数字はホスト側の agent-audit が作る
+  audit: {
+    status: () => invoke('audit:status'),
+    run: () => invoke('audit:run'),
+    summary: (options) => invoke('audit:summary', options || {}),
+    artifacts: () => invoke('audit:artifacts'),
+    submit: (target) => invoke('audit:submit', target),
+    improve: (target) => invoke('audit:improve', target),
+    onChanged: on('audit:changed'),
   },
 });

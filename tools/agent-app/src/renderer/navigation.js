@@ -27,16 +27,18 @@
   function taskItems(snapshot, definitions, teaching) {
     const tasks = snapshot && Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
     const runtime = snapshot && Array.isArray(snapshot.machines) ? snapshot.machines : [];
-    const base = tasks.length ? tasks : runtime.length ? runtime : (Array.isArray(definitions) ? definitions : []).map((task) => ({
+    const deleted = new Set(snapshot?.deletedMachines || []);
+    const candidates = tasks.length ? tasks : runtime.length ? runtime : (Array.isArray(definitions) ? definitions : []).map((task) => ({
       ...task, parameters: [], schedule: null, history: [],
     }));
+    const base = deleted.size ? candidates.filter((task) => !deleted.has(task.machine)) : candidates;
     const machineOf = (task) => String(task.machine || String(task.id || '').replace(/^machine:/, ''));
     const machines = new Set(base.map(machineOf));
     const sessions = (Array.isArray(teaching) ? teaching : []).filter((item) => item && item.machine);
     // 定義がまだ無い下書き（AI との会話の途中）だけを、教示中の項目として一覧に足す。
     // 定義があるタスクは会話の途中でも実行できるので、そのまま。
     const drafts = sessions
-      .filter((item) => !machines.has(String(item.machine)))
+      .filter((item) => !machines.has(String(item.machine)) && !deleted.has(item.machine))
       .map((item) => ({
         id: `machine:${item.machine}`,
         machine: item.machine,

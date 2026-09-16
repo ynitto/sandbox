@@ -56,11 +56,13 @@ function invocation({ machine, parameters = {}, instruction = '' }) {
 
 // { command, args, input, host, env, outputFile, prompt } を返す。
 //   agent … 定義の名前（`herd` のような仮想名は呼ぶ側で実体へ写してから渡す）
-function runSpec({ root, machine, agent, model = '', parameters = {}, instruction = '' } = {}) {
+function runSpec({ root, machine, task, agent, model = '', parameters = {}, instruction = '' } = {}) {
   if (!agent) throw new Error('使う AI を選んでください');
   const spec = agentCli.load(agent, root);
   const cmd = agentCli.oneShotCmd(spec, { model, readonly: false });
-  const prompt = invocation({ machine, parameters, instruction });
+  const prompt = task?.kind === 'prompt'
+    ? agentLoop.taskPrompt(task, instruction)
+    : invocation({ machine, parameters, instruction });
   let outputFile = '';
   const argv = cmd.argv.map((token) => {
     if (!token.includes('{output_file}')) return token;

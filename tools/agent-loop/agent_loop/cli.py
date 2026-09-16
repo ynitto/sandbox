@@ -404,6 +404,10 @@ def main() -> None:
         help="対象リポジトリ（省略時: カレントディレクトリ）",
     )
 
+    task_parser = subparsers.add_parser("task", help="タスク本文の編集・登録の削除")
+    task_parser.add_argument("--json", action="store_true", help="stdin の JSON を読み、JSON で結果を返す")
+    task_parser.add_argument("--dir", "-d", default=None, metavar="DIR")
+
     log_parser = subparsers.add_parser(
         "log",
         help="ステートマシンの実行履歴に対応するログを表示する",
@@ -531,7 +535,7 @@ def main() -> None:
         cmd_repository_inspect(args, cwd)
         return
 
-    if args.subcommand == "schedule":
+    if args.subcommand in ("schedule", "task"):
         cmd_repository_schedule(args, cwd)
         return
 

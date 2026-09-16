@@ -728,3 +728,107 @@ class RepositoryCliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepositoryTaskMutationTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "repo"
+        self.root.mkdir()
+        self.home = Path(self.temp.name) / "home"
+        self.home.mkdir()
+        self.config = self.root / ".agents" / "agent-loop.yaml"
+        self.config.parent.mkdir()
+        self.patch = mock.patch.object(al, "agent_home_dir", return_value=self.home)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.daemon = mock.patch.object(al, "_find_running_daemon", return_value=None)
+        self.daemon.start()
+        self.addCleanup(self.daemon.stop)
+
+    def write(self, entries, path=None):
+        al._repository_write_config(path or self.config, {"prompts": entries, "custom": "keep"})
+
+    def request(self, task, action="delete", **values):
+        refs = [task] if task.get("entryRef") else task.get("schedules", [])
+        return {"action": action, "taskId": task["id"],
+                "entries": {item["entryRef"]: item["fingerprint"] for item in refs}, **values}
+
+    def test_prompt_edit_preserves_all_schedule_and_agent_settings(self):
+        entry = {"name": "digest", "prompt": "old", "cron": "*/7 * * * *",
+                 "agent_cli": "cursor", "model": "M", "enabled": False}
+        self.write([entry])
+        task = al.repository_snapshot(self.root)["tasks"][0]
+        result = al.update_repository_task(self.root, self.request(task, "update-prompt", prompt="new\nbody"))
+        data = al._read_config_file(self.config)
+        self.assertEqual(data["prompts"], [{**entry, "prompt": "new\nbody"}])
+        self.assertEqual(data["custom"], "keep")
+        self.assertEqual(al.repository_snapshot(self.root)["tasks"][0]["id"], result["entryRef"])
+        with self.assertRaisesRegex(ValueError, "見つかりません"):
+            al.update_repository_task(self.root, self.request(task))
+
+    def test_all_entry_kinds_delete_only_the_selected_registration(self):
+        for entry in [{"prompt": "run"}, {"command": ["echo", "hi"]},
+                      {"event_hook": "hook.py"}, {"statemachine": "missing"}]:
+            with self.subTest(entry=entry):
+                self.write([{"name": "target", "interval_minutes": 5, **entry},
+                            {"name": "keep", "prompt": "keep", "interval_minutes": 10}])
+                task = al.repository_snapshot(self.root)["tasks"][0]
+                al.update_repository_task(self.root, self.request(task))
+                self.assertEqual([t["name"] for t in al.repository_snapshot(self.root)["tasks"]], ["keep"])
+
+    def test_machine_delete_removes_local_and_global_schedules_but_keeps_definition(self):
+        workflow = self.root / ".statemachine" / "digest" / "workflow.yaml"
+        workflow.parent.mkdir(parents=True)
+        body = "name: digest\nstates:\n  done:\n    terminal: true\n"
+        workflow.write_text(body)
+        self.write([{"name": name, "statemachine": "digest", "interval_minutes": 5}
+                    for name in ["morning", "evening"]])
+        global_file = self.home / "agent-loop.yaml"
+        other = {"name": "other", "statemachine": "digest", "cwd": str(self.root.parent / "other"), "interval_minutes": 20}
+        self.write([{"name": "global", "statemachine": "digest", "cwd": str(self.root), "interval_minutes": 10}, other], global_file)
+        task = al.repository_snapshot(self.root)["tasks"][0]
+        self.assertEqual(len(task["schedules"]), 3)
+        with mock.patch.object(al, "_find_running_daemon", return_value=123), mock.patch.object(al, "write_loop_command") as reload:
+            al.update_repository_task(self.root, self.request(task))
+        self.assertEqual(reload.call_args.args[2]["entries"], [])
+        self.assertEqual(workflow.read_text(), body)
+        self.assertEqual(al._read_config_file(self.config)["prompts"], [])
+        self.assertEqual(al._read_config_file(global_file)["prompts"], [other])
+        for _ in range(2):
+            snapshot = al.repository_snapshot(self.root)
+            self.assertEqual(snapshot["tasks"], [])
+            self.assertEqual(snapshot["deletedMachines"], ["digest"])
+
+    def test_unscheduled_machine_can_be_deleted_without_removing_files(self):
+        workflow = self.root / ".statemachine" / "manual" / "workflow.yaml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("name: manual\nstates: {}\n")
+        task = al.repository_snapshot(self.root)["tasks"][0]
+        al.update_repository_task(self.root, self.request(task))
+        self.assertTrue(workflow.exists())
+        self.assertEqual(al.repository_snapshot(self.root)["tasks"], [])
+
+    def test_blank_prompt_or_stale_schedule_set_is_rejected_without_writes(self):
+        self.write([{"name": "p", "prompt": "old", "interval_minutes": 5}])
+        task = al.repository_snapshot(self.root)["tasks"][0]
+        before = self.config.read_bytes()
+        with self.assertRaisesRegex(ValueError, "プロンプト"):
+            al.update_repository_task(self.root, self.request(task, "update-prompt", prompt=" "))
+        with self.assertRaisesRegex(ValueError, "変更"):
+            al.update_repository_task(self.root, {**self.request(task), "entries": {}})
+        self.assertEqual(self.config.read_bytes(), before)
+
+
+    def test_task_cli_accepts_json_and_deletes_the_registration(self):
+        self.write([{"name": "p", "prompt": "old", "interval_minutes": 5}])
+        task = al.repository_snapshot(self.root)["tasks"][0]
+        cli = Path(__file__).resolve().parents[1] / "agent-loop.py"
+        completed = subprocess.run(
+            [sys.executable, str(cli), "task", "--json", "--dir", str(self.root)],
+            input=json.dumps(self.request(task)), text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(json.loads(completed.stdout)["deleted"])
+        self.assertEqual(al._read_config_file(self.config)["prompts"], [])

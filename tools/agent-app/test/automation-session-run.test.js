@@ -94,7 +94,6 @@ test('起動仕様は定義から組み、本文の渡し方も定義に従う',
 test('配線: 1 セッションでは結果を終了コードで見て、確認コマンドの宣言があれば言う', () => {
   const handlers = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'main', 'automation', 'handlers.js'), 'utf8');
-  assert.match(handlers, /const oneSession = task\.kind === 'statemachine'\s*\n\s*&& sessionRun\.runsInOneSession\(/);
   assert.match(handlers, /if \(oneSession\) \{/);
   assert.match(handlers, /resultSource = 'exit-code';/);
   assert.match(handlers, /resultSource === 'result-line'\s*\n\s*\? agentLoop\.parseResult\(/);
@@ -127,7 +126,10 @@ function withStubbedHandlers(run) {
       name === 'agent-loop' && args[0] === 'inspect'
         ? { ok: true, status: 0, stderr: '', stdout: JSON.stringify({
           available: true, machines: [], history: [], daemon: { running: false },
-          tasks: [{ id: 'machine:digest', kind: 'statemachine', machine: 'digest' }],
+          tasks: [
+            { id: 'machine:digest', kind: 'statemachine', machine: 'digest' },
+            { id: 'prompt:digest', kind: 'prompt', entry: { prompt: '日次集計を作って' } },
+          ],
         }) }
         : { ok: false, status: 1, stdout: '', stderr: '', error: 'stub' }),
     stream: (command, args, options) => { launches.push({ command, args, options }); return { pid: 1 }; },
@@ -148,7 +150,7 @@ function withStubbedHandlers(run) {
   }
 }
 
-async function startRun(agent, terminalHook = null) {
+async function startRun(agent, terminalHook = null, taskId = 'machine:digest') {
   return withStubbedHandlers(async ({ handlers, registered, launches }) => {
     const spawnSpecCalls = [];
     handlers.registerIpcHandlers(() => null, {
@@ -162,12 +164,12 @@ async function startRun(agent, terminalHook = null) {
         removeRoot: (_u, r) => r,
         isRegistered: () => true,
       },
-      agentDefinitions: async () => ['kiro', 'aider', 'herd'],
+      agentDefinitions: async () => ['kiro', 'aider', 'herd', 'cursor'],
       // 起動をどちら側（この端末 / WSL）へ載せるかは、ここへ渡る host で決まる。
       commandSpawnSpec: (name, opts) => { spawnSpecCalls.push({ name, ...(opts || {}) }); return undefined; },
       hooks: {
         resolveAgent: async ({ agent: name }) => ({ agent: name }),
-        prepareRun: async () => ({ instruction: '', information: [], warning: '' }),
+        prepareRun: async () => ({ instruction: taskId.startsWith('prompt:') ? '共通指示を守って' : '', information: [], warning: '' }),
         ...(terminalHook ? { prepareTerminalRun: terminalHook } : {}),
       },
     });
@@ -176,7 +178,7 @@ async function startRun(agent, terminalHook = null) {
     const sender = { isDestroyed: () => false, send: () => {} };
     // 登録した実体は ipcMain.handle の (event, args) 版なので、その順で呼ぶ。
     const result = await start({ sender },
-      { root: REPO, machine: 'digest', taskId: 'machine:digest', mode: 'run', agent });
+      { root: REPO, taskId, mode: 'run', agent });
     assert.strictEqual(result.ok, true, result.error);
     if (terminalHook) return { result: result.data, launches, registered, sender };
     assert.strictEqual(launches.length, 1, '1 回だけ起こす');
@@ -245,4 +247,37 @@ test('実行時: 完了した端末にもスクロールとサイズ変更を送
   assert.equal(next.ok, true, '前回が完了していれば次の実行を開始できる');
   assert.notEqual(next.data.requestId, p.requestId);
   assert.equal((await run.registered.get('automation:run:scroll')(event, p)).ok, false, '前回の履歴は次の実行で置き換える');
+});
+
+
+test('プロンプト型: Cursor に共通指示と本文を対話送信し、終了結果を通知する', async () => {
+  let payload;
+  const run = await startRun('cursor', async (p) => {
+    payload = p;
+    return { start() {} };
+  }, 'prompt:digest');
+  await new Promise(setImmediate);
+  assert.equal(run.result.transport, 'tmux');
+  assert.equal(run.launches.length, 0);
+  assert.equal(payload.agent, 'cursor');
+  assert.equal(payload.prompt, '共通指示を守って\n\n日次集計を作って');
+  const events = [];
+  run.sender.send = (channel, data) => events.push({ channel, data });
+  payload.onExit({ code: 0, stdout: '集計完了', stderr: '', truncated: false });
+  assert.equal(events.find((e) => e.channel === 'automation:run:exit').data.result.ok, true);
+});
+
+test('プロンプト型: 対話不可時も同じ本文で Cursor を一度だけ実行する', async () => {
+  const run = await startRun('cursor', async () => ({ warning: 'tmux unavailable' }), 'prompt:digest');
+  assert.equal(run.launches.length, 1);
+  assert.equal(run.launches[0].command, 'cursor-agent');
+  assert.equal(run.launches[0].options.input, '共通指示を守って\n\n日次集計を作って');
+  assert.match(run.result.warning, /tmux unavailable/);
+});
+
+test('プロンプト型: ローカル AI はハーネス経由を維持する', async () => {
+  const run = await startRun('aider', async () => { throw new Error('対話経路には入らない'); }, 'prompt:digest');
+  assert.equal(run.launches.length, 1);
+  assert.equal(run.launches[0].command, 'agent-loop');
+  assert.deepEqual(run.launches[0].args.slice(0, 2), ['run', '共通指示を守って\n\n日次集計を作って']);
 });

@@ -36,7 +36,7 @@ import os
 import re
 
 from .configfile import agent_home_dir
-from .util import now_iso, parse_iso, read_json, write_json_atomic
+from .util import epoch_to_iso, now_iso, parse_iso, read_json, write_json_atomic
 
 # 既定 evaluation profile（doc に無い operation_class 用）。保守的な側に倒す。
 DEFAULT_PROFILE_ID = "receipt-default"
@@ -87,6 +87,116 @@ def collect_candidate_stats(store, *, now_epoch: float, window_days: int) -> dic
             if mode in _TIMEOUT_MODES:
                 entry["timeouts"] += 1
     return stats
+
+
+ARTIFACTS_VERSION = 1
+
+
+def artifacts_file(store) -> str:
+    """成果物の適格性は audit ストアが持つ（`<audit>/artifacts.json`）。
+
+    候補（agent_cli / model）の qualifications.json へは混ぜない——あちらは
+    Compiler が読む契約で、成果物は候補ではないので、混ぜると候補ゼロや偽の候補を
+    焼く。書き先を自分のストアに閉じれば、外部への書き込み allowlist も広げずに済む。
+    """
+    return os.path.join(store.root, "artifacts.json")
+
+
+def collect_artifact_stats(store, *, now_epoch: float, window_days: int) -> dict:
+    """(kind, name) → {samples, passed, timeouts, failure_modes, origin, agent_clis}。
+
+    対象は `artifact` を持つレコード（agent-app の feed・flow result・statemachine run）。
+    定型化した成果物 1 つを 1 セルとして数える。
+    """
+    stats: dict = {}
+    since = now_epoch - window_days * 86400
+    for rec in store.iter_records(since_epoch=since):
+        art = rec.get("artifact")
+        if not isinstance(art, dict):
+            continue
+        kind, name = str(art.get("kind") or ""), str(art.get("name") or "")
+        status = str(rec.get("status") or "")
+        if not kind or not name or status not in _PASS_STATUSES | _FAIL_STATUSES:
+            continue
+        entry = stats.setdefault((kind, name), {
+            "samples": 0, "passed": 0, "timeouts": 0, "failure_modes": set(),
+            "origin": "", "agent_clis": set(), "last_seen": 0.0})
+        entry["samples"] += 1
+        entry["origin"] = entry["origin"] or str(art.get("origin") or "")
+        if rec.get("agent_cli"):
+            entry["agent_clis"].add(str(rec["agent_cli"]))
+        # `_epoch` は保存時に落ちる（store.append_record）。読むのは保存された `ts`。
+        entry["last_seen"] = max(entry["last_seen"], parse_iso(rec.get("ts")) or 0.0)
+        if status in _PASS_STATUSES:
+            entry["passed"] += 1
+        else:
+            mode = str(rec.get("error_class") or status)
+            entry["failure_modes"].add(mode)
+            if mode in _TIMEOUT_MODES:
+                entry["timeouts"] += 1
+    return stats
+
+
+def build_artifacts(existing: dict, stats: dict, *, now: dt.datetime) -> dict:
+    """既存 doc + 実測 → 次の artifacts doc（revision +1・決定的）。
+
+    判定は候補と同じ evaluation profile（`_judge`）を使う。実測が窓から落ちた成果物は
+    `unknown` にして残す——消すと「一度も測っていない」と区別がつかない。
+    """
+    existing = existing if isinstance(existing, dict) else {}
+    profile = dict(DEFAULT_PROFILE)
+    profile.update({k: v for k, v in (existing.get("evaluation_profile") or {}).items()
+                    if k in DEFAULT_PROFILE})
+    now_iso_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    prev = {}
+    for row in existing.get("artifacts") or []:
+        if isinstance(row, dict) and row.get("kind") and row.get("name"):
+            prev[(str(row["kind"]), str(row["name"]))] = row
+
+    rows = []
+    for key in sorted(set(prev) | set(stats)):
+        kind, name = key
+        before = prev.get(key) or {}
+        entry = stats.get(key)
+        if entry is None:
+            rows.append({**before, "status": "unknown", "samples": 0,
+                         "updated_at": before.get("updated_at") or now_iso_str})
+            continue
+        status = _judge(entry, profile)
+        row = {
+            "kind": kind,
+            "name": name,
+            "origin": entry["origin"] or str(before.get("origin") or ""),
+            "status": status,
+            "samples": entry["samples"],
+            "passed": entry["passed"],
+            "timeouts": entry["timeouts"],
+            "agent_clis": sorted(entry["agent_clis"]),
+            "last_seen": epoch_to_iso(entry["last_seen"]) if entry["last_seen"] else "",
+            "updated_at": now_iso_str,
+        }
+        if entry["failure_modes"]:
+            row["failure_modes"] = sorted(entry["failure_modes"])
+        if before.get("status") != status:
+            row["changed_at"] = now_iso_str
+        elif before.get("changed_at"):
+            row["changed_at"] = before["changed_at"]
+        rows.append(row)
+    return {
+        "version": ARTIFACTS_VERSION,
+        "revision": int(existing.get("revision") or 0) + 1,
+        "generated_at": now_iso_str,
+        "evaluation_profile": profile,
+        "artifacts": rows,
+    }
+
+
+def _artifact_payload(document) -> list:
+    """revision / generated_at / updated_at を除いた比較用（無変化なら書かない）。"""
+    if not isinstance(document, dict):
+        return []
+    return [{k: v for k, v in row.items() if k not in ("updated_at",)}
+            for row in document.get("artifacts") or [] if isinstance(row, dict)]
 
 
 def _judge(entry: dict, profile: dict) -> str:
@@ -303,6 +413,7 @@ def cmd_qualify(args, store) -> dict:
     summary = {"file": path, "revision": document["revision"], "window_days": window,
                "observed_cells": len(stats), "status_changes": changed,
                "applied": False}
+    summary.update(_qualify_artifacts(args, store, now=now, window_days=window))
     if not getattr(args, "apply", False):
         return summary
     exists = os.path.exists(path)
@@ -319,3 +430,35 @@ def cmd_qualify(args, store) -> dict:
         return {**summary, "error": "target-changed-concurrently"}
     write_json_atomic(path, document)
     return {**summary, "applied": True}
+
+
+def _qualify_artifacts(args, store, *, now: dt.datetime, window_days: int) -> dict:
+    """成果物（スキル・タスク・ワークフロー）の適格性を `<audit>/artifacts.json` へ。
+
+    候補の qualify と同じ 1 回で回す——別サブコマンドにすると、周期の連鎖が 1 段増えて
+    「どこまで進んで止まったか」が増える。書き先はストア内なので楽観ロックは要らない
+    （書き手は 1 本という不変条件が守る）。
+    """
+    path = artifacts_file(store)
+    existing = read_json(path) or {}
+    stats = collect_artifact_stats(store, now_epoch=now.timestamp(), window_days=window_days)
+    document = build_artifacts(existing, stats, now=now)
+    changed = []
+    prev = {(str(r.get("kind")), str(r.get("name"))): r
+            for r in (existing.get("artifacts") or []) if isinstance(r, dict)}
+    for row in document["artifacts"]:
+        before = prev.get((row["kind"], row["name"])) or {}
+        if before.get("status") != row.get("status"):
+            changed.append({"kind": row["kind"], "name": row["name"],
+                            "from": before.get("status") or "(none)",
+                            "to": row["status"], "samples": row.get("samples")})
+    out = {"artifacts_file": path, "observed_artifacts": len(stats),
+           "artifact_changes": changed}
+    if not getattr(args, "apply", False):
+        return out
+    if not existing and not stats:
+        return out          # 初回で実測なし。空ファイルを作らない
+    if _artifact_payload(document) == _artifact_payload(existing):
+        return {**out, "artifacts_unchanged": True}
+    write_json_atomic(path, document)
+    return {**out, "artifacts_applied": True}

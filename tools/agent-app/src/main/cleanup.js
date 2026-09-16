@@ -192,6 +192,22 @@ const KINDS = [
     },
   },
   {
+    key: 'auditFeed',
+    title: '監査へ渡した記録',
+    detail: `${LEDGER_KEEP_DAYS}日より前の申告を削除します。監査の集計結果は残ります。`,
+    defaultOn: true,
+    collect({ userData, now }) {
+      const out = [];
+      const feed = path.join(userData, 'audit-feed');
+      const limit = now - LEDGER_KEEP_DAYS * 86400000;
+      for (const name of listDir(feed)) {
+        const day = dayNumber(name);
+        if (day != null && day < limit) out.push(path.join(feed, name));
+      }
+      return out;
+    },
+  },
+  {
     key: 'browserProfile',
     title: 'ブラウザデータ',
     detail: '記録用ブラウザのデータを削除します。再ログインが必要です。',

@@ -203,7 +203,7 @@ agent-loop本体ログは標準出力やセッションIDを持たない。ERROR
 
 セッションログの場所と形式は `agents/<name>.json` の `session_log` に置く。定義ファイルの探索順はagent CLIプラグインと共通で、同名定義は先に見つかったものを使う。agent-audit本体がCLI名でパスを切り替えることはしない。
 
-現在のreader formatは `jsonl-dir` と `kiro-sqlite` である。既存formatに沿うCLIは定義の追加だけで収集できる。未知のformatは警告して未収集にする。
+現在のreader formatは `jsonl-dir`、`kiro-sqlite`、`vscode-chat` である。既存formatに沿うCLIは定義の追加だけで収集できる。未知のformatは警告して未収集にする。
 
 `session_log.clean` は本文のノイズ除去規則を宣言する。ルールは閉じた種類だけを受け付け、ログversionに応じて一組を選ぶ。未知のルール、不正な正規表現、閉じていないタグは該当ルールだけを飛ばし、本文を残す側へ倒す。監査証跡を消し過ぎないためである。
 

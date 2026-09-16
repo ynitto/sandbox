@@ -25,9 +25,11 @@ function nextDayStart(now = Date.now()) {
 }
 
 class Ledger {
-  constructor(dir, { now = () => Date.now() } = {}) {
+  //   onRecord … 1 行足すたびに呼ぶ（監査への申告。失敗しても引き受けの記録は残す）
+  constructor(dir, { now = () => Date.now(), onRecord = () => {} } = {}) {
     this.dir = dir;
     this.now = now;
+    this.onRecord = onRecord;
     this.day = '';
     this.rows = [];
     this.quota = new Map();     // cli → { until, kind }
@@ -65,6 +67,7 @@ class Ledger {
     fs.mkdirSync(this.dir, { recursive: true });
     fs.appendFileSync(this.file(this.day), `${JSON.stringify(rec)}\n`, 'utf8');
     this.rows.push(rec);
+    try { this.onRecord(rec); } catch { /* 申告は副産物。引き受けの記録を巻き戻さない */ }
     return rec;
   }
 

@@ -26,6 +26,15 @@ function runSpec({ root, machine, agent = '', model = '', parameters = {}, instr
   return { command: 'agent-loop', args };
 }
 
+function taskPrompt(task, instruction = '') {
+  const item = task && typeof task === 'object' ? task : {};
+  if (item.kind !== 'prompt') throw new Error('このタスクはプロンプト型ではありません');
+  const entry = item.entry && typeof item.entry === 'object' ? item.entry : {};
+  const prompt = String(entry.prompt || item.description || '').trim();
+  if (!prompt) throw new Error('手動実行するプロンプトがありません');
+  return [String(instruction || '').trim(), prompt].filter(Boolean).join('\n\n');
+}
+
 function taskRunSpec({ root, task, agent = '', model = '', parameters = {}, instruction = '', allowShells = [] }) {
   const item = task && typeof task === 'object' ? task : {};
   if (item.kind === 'statemachine' || item.machine) {
@@ -39,15 +48,25 @@ function taskRunSpec({ root, task, agent = '', model = '', parameters = {}, inst
     return { command: 'agent-loop', args };
   }
   if (item.kind !== 'prompt') throw new Error('このタスクは手動実行できません');
-  const entry = item.entry && typeof item.entry === 'object' ? item.entry : {};
-  const prompt = String(entry.prompt || item.description || '').trim();
-  if (!prompt) throw new Error('手動実行するプロンプトがありません');
-  const text = [String(instruction || '').trim(), prompt].filter(Boolean).join('\n\n');
+  const text = taskPrompt(item, instruction);
   const args = ['run', text];
   if (agent) args.push('--agent-cli', String(agent));
   if (model) args.push('--model', String(model));
   args.push('--dir', String(root || ''));
   return { command: 'agent-loop', args };
+}
+
+async function mutateTask({ root, payload, capture }) {
+  const snapshot = await inspect({ root, capture });
+  if (snapshot.available === false) throw new Error(snapshot.error);
+  if (!snapshot.capabilities?.taskMutation) throw new Error('タスクの編集・削除には agent-loop の更新が必要です');
+  const result = await capture('agent-loop', ['task', '--json', '--dir', String(root || '')], {
+    cwd: String(root || ''), timeoutMs: 15000, input: JSON.stringify(payload),
+  });
+  let response;
+  try { response = JSON.parse(result.stdout || '{}'); } catch { throw new Error('タスクの更新結果を読み取れませんでした'); }
+  if (!result.ok || (!response.saved && !response.deleted)) throw new Error(response.error || result.error || result.stderr || 'タスクを更新できませんでした');
+  return response;
 }
 
 async function inspect({ root, capture }) {
@@ -151,4 +170,4 @@ async function readLog({ root, identity, capture }) {
   return response;
 }
 
-module.exports = { machineName, runSpec, taskRunSpec, inspect, saveSchedule, parseResult, startDaemon, stopDaemon, readLog };
+module.exports = { machineName, runSpec, taskPrompt, taskRunSpec, mutateTask, inspect, saveSchedule, parseResult, startDaemon, stopDaemon, readLog };

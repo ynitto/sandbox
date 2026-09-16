@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from .collect import agent_defs_with_session_log
+from .collect import agent_defs_with_session_log, extra_homes as _extra_homes, ledger_dirs
 from .configfile import INERT_KEYS, resolve_audit_dir, resolve_budget_dir
 from .store import Store, home_relative
 
@@ -89,6 +89,20 @@ def cmd_doctor(args) -> int:
           f"（台帳 {n_ledger} ファイル）" if n_ledger else
           f"node-budget: {home_relative(bdir)}（台帳なし — エンジン未使用なら正常）")
 
+    # 追加の台帳（agent-app の audit-feed など）。到達可否と行数の目安を出す。
+    for d in ledger_dirs(args)[1:]:
+        n = len([n for n in os.listdir(d) if n.endswith(".jsonl")])
+        print(f"ledger_dirs: {home_relative(d)}（{n} ファイル）")
+    for v in (getattr(args, "ledger_dirs", None) or []):
+        p = os.path.abspath(os.path.expanduser(str(v)))
+        if not os.path.isdir(p):
+            print(f"ledger_dirs: {v} — 見つかりません（agent-app 未起動なら正常）")
+
+    homes = _extra_homes(args)
+    for h in homes:
+        state = "到達可" if os.path.isdir(h) else "見つかりません"
+        print(f"extra_homes: {home_relative(h)} — {state}")
+
     # session_log 宣言の棚卸し: 宣言あり / なし（未収集）を明示する（黙ってスキップしない）
     from agentcore import agentcli as _agentcli
     import glob as _glob
@@ -103,7 +117,8 @@ def cmd_doctor(args) -> int:
     for name in sorted(all_names):
         if name in with_log:
             slog = with_log[name]["session_log"]
-            paths = [os.path.expanduser(p) for p in slog.get("paths") or []]
+            from . import readers as _readers
+            paths = _readers.expand_paths(slog.get("paths"), homes)
             found = any(_glob.glob(p) or os.path.exists(p) for p in paths)
             state = "到達可" if found else "パス未検出（この CLI を未使用なら正常）"
             print(f"  {name}: session_log あり（format={slog.get('format')}・{state}）")
@@ -127,7 +142,7 @@ def cmd_doctor(args) -> int:
     n_ins = sum(1 for _ in store.iter_insights())
     print(f"\nストア: records={n_rec} / observations={n_obs} / insights={n_ins}")
     from .reconcile import reconcile
-    coverage = reconcile(store)
+    coverage = reconcile(store, extra_homes=homes)
     abnormal = [r for r in coverage if r["missing"] or r["orphaned"]]
     if abnormal:
         print("警告: reconcile coverage 異常: " + ", ".join(

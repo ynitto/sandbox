@@ -111,6 +111,7 @@ agent-loop statemachine (--workflow PATH | --entry NAME [--config PATH])
 agent-loop command --entry NAME [--config PATH] [--param KEY=VALUE ...] [-d DIR]
 agent-loop inspect --json [-d DIR]
 agent-loop schedule --json [-d DIR]     # stdin: 単純な定期実行のJSON
+agent-loop task --json [-d DIR]         # stdin: タスク本文の編集・登録削除のJSON
 agent-loop log --json [-d DIR]          # stdin: workflow と runId のJSON
 agent-loop pause | resume | cancel TARGET | drain | reload
 agent-loop doctor [--json] [--fix]
@@ -158,7 +159,7 @@ agent-loop --version
   定期実行の結果がずれません。`--param` は、定期実行でフック / webhook が渡す材料の
   代わりにその場で打つ値です。終了時に `RESULT {json}` を 1 行出し、終了コードは
   コマンドの成否をそのまま返します。
-- `inspect` / `schedule` / `log` は agent-app のタスク画面などの薄い管理画面向け境界です。
+- `inspect` / `schedule` / `task` / `log` は agent-app のタスク画面などの薄い管理画面向け境界です。
   `inspect` はリポジトリ内のワークフロー・単純な予定・次回時刻・実行履歴・daemon状態をまとめて返します。
   `schedule` は毎日・毎週・一定間隔だけを検査してから設定ファイルへ原子的に保存し、稼働中daemonへ
   reloadを要求します。`log` は履歴の `workflow` と `runId` で照合し、リポジトリ内の対応ログだけを返します。
@@ -603,3 +604,5 @@ python3 scripts/check.py
 ```
 
 agent-app のタスクの「履歴」→「ログ」では、ステートマシンのログと agent-loop の定期コマンド実行ログを取得できます。選択リポジトリの実行履歴に記録されたファイルだけを読み、長いログは末尾を表示します。
+
+`task --json` は `action`（`update-prompt` / `delete`）、`taskId`、`entries`（現在の entryRef と fingerprint の対応表）を受け取ります。本文編集では `prompt` も渡します。読み込み後に設定が変わっていれば更新を拒否します。削除では設定エントリを除去し、ステートマシン定義は残して `.agents/task-state.yaml` に削除済みとして記録します。稼働中のリポジトリのデーモンには、有効な設定を再読み込みする要求を送ります。

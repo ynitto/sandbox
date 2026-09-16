@@ -21,6 +21,7 @@ const crypto = require('crypto');
 const { Requester } = require('./requester');
 const { Participant } = require('./participant');
 const { Ledger } = require('./ledger');
+const audit = require('../audit');
 
 const SHARE_KEYS = ['enabled', 'node', 'passphrase', 'port', 'udp', 'peers'];
 
@@ -75,7 +76,11 @@ class Share {
     this.node = normalizeNode(cfg.node || defaultNode());
     const key = keyOf(cfg.passphrase);
     const dir = path.join(this.userData, 'share');
-    this.ledger = new Ledger(path.join(dir, 'ledger'), { now: this.options.now });
+    // 台帳に 1 行足すたびに監査へも申告する（引き受けた仕事も集計の対象。audit.js）。
+    this.ledger = new Ledger(path.join(dir, 'ledger'), {
+      now: this.options.now,
+      onRecord: (row) => audit.feedShare(this.userData, row, { node: this.node }),
+    });
     this.requester = new Requester({
       userData: this.userData, node: this.node, key, file: path.join(dir, 'requests.json'), send: this.send,
       notify: (id) => (this.peers ? this.peers.notifyNew(id) : Promise.resolve()),
