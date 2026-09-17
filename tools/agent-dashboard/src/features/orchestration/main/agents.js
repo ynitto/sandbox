@@ -33,7 +33,9 @@ const PROMPT_VIA_ENUM = ['stdin', 'argv'];
 const ERROR_CLASS_ENUM = ['quota', 'auth', 'env', 'transient'];
 const READONLY_ENUM = ['enforced', 'best-effort'];
 const HEADLESS_AUTONOMY_ENUM = ['tool-loop', 'single-shot'];
-const SESSION_LOG_FORMAT_ENUM = ['jsonl-dir', 'kiro-sqlite'];
+// agent-cli.schema.json の session_log.format と同じ並び。片方に足してもう片方を忘れると、
+// 同梱の agents/*.json が「未知の形式」で丸ごと落ちる（vscode-chat を足したときに起きた）。
+const SESSION_LOG_FORMAT_ENUM = ['jsonl-dir', 'kiro-sqlite', 'vscode-chat'];
 const STRING_ARRAY_FIELDS = ['command_suffix', 'write_args', 'readonly_args', 'no_session_args',
   'continue_args', 'resume_args'];
 

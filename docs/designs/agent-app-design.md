@@ -1117,6 +1117,9 @@ agent-loop が答えないときの手動実行は同梱の statemachine-use ス
 - [`agent-app-spec.md`](../specs/agent-app-spec.md): 利用手順、IPC、設定、保存形式、上限。
 - [`2026-09-16-agent-app-agent-audit-split-and-artifact-sharing-design.md`](../plans/2026-09-16-agent-app-agent-audit-split-and-artifact-sharing-design.md):
   agent-audit との責務分割（ADR-17）と、定型化したものの共有・改善（ADR-18）の設計。
+- [`2026-09-16-agent-app-audit-availability-manual-quota-and-agent-rotation-design.md`](../plans/2026-09-16-agent-app-audit-availability-manual-quota-and-agent-rotation-design.md):
+  agent-audit が無いときの見せ方、手動で入れる利用枠（申告）、tier の候補列と利用枠に応じた既定の
+  切り替えの提案（未実装。画面は ASCII の承認待ち）。
 - [`agent-cli-spec.md`](../specs/agent-cli-spec.md): `agents/*.json` の探索順と `interactive` 節の項目。
 - [`agent-loop-design.md`](./agent-loop-design.md): タスクの実行・定期発火・履歴の正典。
 - [`2026-09-05-agent-app-statemachine-integration-design.md`](../plans/2026-09-05-agent-app-statemachine-integration-design.md): statemachine-maker 統合（初版）の検討記録。
