@@ -671,9 +671,13 @@
             <label class="setting-field"><span><strong>リポジトリ</strong></span><select id="skills-repo"></select></label>
             <label class="setting-field"><span><strong>AI</strong></span><select id="skills-agent"></select></label>
           </div>
-          <div class="environment-status"><div id="skills-list" aria-live="polite"></div></div>
           <label class="setting-field"><span><strong>公開先リポジトリ</strong><small>選んだものをブランチにして出します</small></span><input id="audit-share-repo" size="28" placeholder="git@example:team/skills.git"></label>
           <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>公開先のmainへ直接出す</strong><small>自分だけのリポジトリのとき</small></span></label>
+          <div id="skills-list" aria-live="polite"></div>
+          <div class="environment-status">
+            <div class="row"><span id="skills-count" class="sub"></span><span class="spacer"></span><button type="button" id="skills-publish" class="small">公開する</button></div>
+            <div id="skills-status" class="sub" role="status" aria-live="polite"></div>
+          </div>
         </section>
         <section data-settings-panel="storage" class="settings-list" role="tabpanel" hidden>
           <div id="cleanup-items"></div>

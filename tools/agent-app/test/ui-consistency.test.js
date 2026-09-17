@@ -308,7 +308,7 @@ test('利用状況の面は設定の既存の器（設定の行・状態の印�
   assert.ok(!/id="audit-artifacts"/.test(html), '定型化したものの一覧を設定へ戻さない');
 });
 
-test('スキルの面は 1 つの一覧で、未公開を先頭に出す', () => {
+test('スキルの面は 1 つの一覧で、未公開を先頭に出し、操作は足元に 1 つだけ', () => {
   const html = read('renderer/index.html');
   const css = read('renderer/styles.css');
   const skills = read('renderer/skills.js');
@@ -317,15 +317,21 @@ test('スキルの面は 1 つの一覧で、未公開を先頭に出す', () =>
   // 1. タブ名で分かることを本文で繰り返さない
   assert.ok(!/<h[1-4][\s>]/.test(panel), '設定の面に見出しを置かない（タブ名が名乗る）');
   assert.ok(!/<p[\s>]/.test(panel), '仕組みの説明は README に置く');
-  // 2. 器は既存のまま（設定の行と足元の一覧）
+  // 2. 器は「保存データ」の面をそのまま借りる（設定の行 → 一覧 → 足元に操作）
   assert.match(panel, /class="setting-field"/);
   assert.match(panel, /class="environment-status"/);
+  assert.match(skills, /el\('label', 'setting-check'\)/, '行は保存データと同じ .setting-check を借りる');
   assert.ok(!/\.skill-row|\.skill-card|\.skill-panel|\.skills-list\b/.test(css), 'スキルの行の私物な複製を作らない');
-  // 3. 行と印は既存の部品を借りる
-  assert.match(skills, /el\('div', 'row'\)/, '行は .row を借りる');
-  assert.match(skills, /el\('span', 'status warn', mark\)/, '未公開の札は状態の印を借りる');
+  // 3. 設定は一覧の上。押せる操作は足元に 1 つだけで、行にボタンを並べない
+  assert.ok(panel.indexOf('audit-share-repo') < panel.indexOf('skills-list'), '公開先の設定は一覧の上に置く');
+  assert.ok(panel.indexOf('skills-list') < panel.indexOf('skills-publish'), '操作は一覧の足元に置く');
+  assert.ok(!/el\('button'/.test(skills.slice(skills.indexOf('function render()'), skills.indexOf('function say('))),
+    '行ごとにボタンを作らない（一覧がボタンの壁になる）');
+  assert.strictEqual((panel.match(/<button/g) || []).length, 1, 'この面に置くボタンは 1 つ');
+  // 4. 状態は印を借りる。未公開を先頭に並べる
+  assert.match(skills, /el\('span', `status \$\{item\.status === 'published' \? 'ok' : 'warn'\}`, mark\)/, '状態の印を借りる');
   assert.match(skills, /const ORDER = /, '未公開を先頭に並べる');
-  // 4. 必要になるまで入力欄を出さない（公開先が空なら main へ直接の行は隠す）
+  // 5. 必要になるまで入力欄を出さない（公開先が空なら main へ直接の行は隠す）
   assert.match(panel, /id="audit-push-main-row" hidden/);
   assert.match(skills, /\$\('audit-push-main-row'\)\.hidden = !\$\('audit-share-repo'\)\.value\.trim\(\)/);
   assert.deepStrictEqual(skills.match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークンを使う');

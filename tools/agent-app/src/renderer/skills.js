@@ -5,8 +5,9 @@
 // **公開**はリポジトリへ push して人に渡すこと（artifactShare.js）。LAN の参加者に
 // 見せる「共有」とは別物なので、この画面では「共有」という言葉を使わない。
 //
-// 行の形は「利用状況」の一覧と同じ `.row`（名前 → 補助の文字 → spacer → 状態 → 操作）。
-// 新しい部品は作らない。
+// 形は「保存データ」の面をそのまま借りる——行は `.setting-check`（チェック・名前と
+// 1 行の補助・右端に状態）、足元の `.environment-status` に選んだ数と**操作を 1 つだけ**。
+// 行ごとにボタンを並べない（一覧がボタンの壁になる）。
 (function initSkills() {
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
@@ -15,7 +16,8 @@
   const VERDICT = { trial: '様子見', blocked: '使わない' };
 
   let request = 0;
-  const state = { doc: null, error: '', loading: false, repo: '', agent: '' };
+  // picked … 利用者が外した行を覚える（未公開は既定で入れる。保存データの面と同じ作法）
+  const state = { doc: null, error: '', repo: '', agent: '', busy: false, picked: null };
 
   // 未公開を先頭に。公開済みと、リポジトリの外にあるものは後ろへ回す。
   const ORDER = { unpublished: 0, updated: 0, published: 1, missing: 1, outside: 2 };
@@ -26,6 +28,7 @@
   function label(item) {
     if (item.status === 'unpublished') return '未公開';
     if (item.status === 'updated') return '未公開の変更';
+    if (item.status === 'published') return '公開済み';
     return '';
   }
 
@@ -41,74 +44,127 @@
     if (item.description) parts.push(short(item.description));
     if (item.version) parts.push(`v${item.version}`);
     parts.push(PLACE[item.place] || '');
-    if (item.status === 'published' && item.branch) parts.push(`公開済み ${item.branch}`);
     if (item.improving) parts.push('改善案を出しました');
     else if (VERDICT[item.verdict]) parts.push(VERDICT[item.verdict]);
     return parts.filter(Boolean).join(' · ');
   }
 
+  // 既定は「未公開のものすべて」。一度でも触ったら、その選択を覚える。
+  function chosen(item) {
+    if (!item.canPublish) return false;
+    return state.picked ? state.picked.has(item.name) : true;
+  }
+
+  function picks() {
+    const items = (state.doc && state.doc.items) || [];
+    return items.filter((item) => chosen(item)).map((item) => item.name);
+  }
+
+  function toggle(name, on) {
+    if (!state.picked) {
+      const items = (state.doc && state.doc.items) || [];
+      state.picked = new Set(items.filter((item) => item.canPublish).map((item) => item.name));
+    }
+    if (on) state.picked.add(name); else state.picked.delete(name);
+    renderFoot();
+  }
+
+  // 足元は 1 行。選んだ数と、押せる操作を 1 つだけ。
+  function renderFoot() {
+    const items = (state.doc && state.doc.items) || [];
+    const waiting = items.filter((item) => item.canPublish).length;
+    const improvable = items.filter((item) => item.canImprove);
+    const count = picks().length;
+    const configured = !state.doc || state.doc.configured;
+    $('skills-count').textContent = !configured ? '公開先リポジトリを入れると公開できます'
+      : waiting ? `未公開 ${waiting} 件` : '';
+    const button = $('skills-publish');
+    button.hidden = !configured || !waiting;
+    button.disabled = state.busy || !count;
+    button.textContent = count > 1 ? `選んだ ${count} 件を公開` : '公開する';
+    // 実測が基準を割ったものだけ、足元にもう 1 つ（要るまで出さない）
+    const previous = $('skills-improve');
+    if (previous) previous.remove();
+    if (configured && improvable.length) {
+      const next = el('button', 'small quiet', improvable.length > 1 ? `改善案を出す（${improvable.length} 件）` : '改善案を出す');
+      next.type = 'button';
+      next.id = 'skills-improve';
+      next.disabled = state.busy;
+      next.onclick = () => runImprove(improvable);
+      button.parentNode.insertBefore(next, button);
+    }
+  }
+
   function render() {
     const box = $('skills-list');
     if (!box) return;
-    if (state.error) { box.replaceChildren(el('div', 'sub', state.error)); return; }
-    if (!state.doc) { box.replaceChildren(el('div', 'sub', '読み込んでいます…')); return; }
+    if (state.error) { box.replaceChildren(el('div', 'sub', state.error)); renderFoot(); return; }
+    if (!state.doc) { box.replaceChildren(el('div', 'sub', '読み込んでいます…')); renderFoot(); return; }
     const items = state.doc.items || [];
     if (!items.length) {
       box.replaceChildren(el('div', 'sub', 'このAIが読むスキルは見つかりません'));
+      renderFoot();
       return;
     }
     box.replaceChildren(...sorted(items).map((item) => {
-      const row = el('div', 'row');
-      const name = el('span', '', item.name);
-      row.append(name);
+      const row = el('label', 'setting-check');
+      const check = el('input');
+      check.type = 'checkbox';
+      check.dataset.skill = item.name;
+      check.checked = chosen(item);
+      check.disabled = !item.canPublish || state.busy;
+      check.onchange = () => toggle(item.name, check.checked);
+      const text = el('span');
+      text.append(el('strong', '', item.name), el('small', '', detail(item)));
+      row.append(check, text);
       const mark = label(item);
-      if (mark) row.append(el('span', 'status warn', mark));
-      row.append(el('small', 'sub', detail(item)), el('span', 'spacer'));
-      if (item.canPublish) {
-        const button = el('button', 'small', '公開する');
-        button.type = 'button';
-        button.onclick = () => publish(item, button);
-        row.append(button);
-      }
-      if (item.canImprove) {
-        const button = el('button', 'small', '改善案を出す');
-        button.type = 'button';
-        button.onclick = () => improve(item, button);
-        row.append(button);
-      }
+      if (mark) row.append(el('span', `status ${item.status === 'published' ? 'ok' : 'warn'}`, mark));
       return row;
     }));
-    if (!state.doc.configured) box.append(el('small', 'sub', '公開するには、下の公開先リポジトリを入れてください'));
+    renderFoot();
   }
 
-  function say(text) { $('settings-status').textContent = text; }
+  function say(text) { $('skills-status').textContent = text; }
 
   function fail(error) {
     $('settings-error').textContent = error.message;
     $('settings-error').hidden = false;
   }
 
-  async function publish(item, button) {
-    button.disabled = true;
-    const before = button.textContent;
-    button.textContent = '出しています…';
+  // 1 件ずつ順に出す。途中で失敗したら、そこで止めて理由を 1 行で出す。
+  async function each(names, run, verb) {
+    state.busy = true;
+    render();
+    const done = [];
     try {
-      const result = await window.api.publish.submit({ repo: state.repo, kind: 'skill', name: item.name });
-      if (result.skipped) say(result.skipped === 'no-share-repo' ? '公開先を入れてください' : `公開できませんでした（${result.error || result.skipped}）`);
-      else say(`${result.branch} に公開しました`);
+      for (const name of names) {
+        say(`${name} を出しています…（${done.length + 1} / ${names.length}）`);
+        const result = await run(name);
+        if (result.skipped) {
+          say(result.skipped === 'no-share-repo' ? '公開先リポジトリを入れてください'
+            : `${name} は出せませんでした（${result.error || result.skipped}）`);
+          return;
+        }
+        done.push(result.branch);
+      }
+      say(done.length === 1 ? `${done[0]} に${verb}しました` : `${done.length} 件を${verb}しました`);
+    } catch (error) {
+      fail(error);
+    } finally {
+      state.busy = false;
+      state.picked = null;
       await load();
-    } catch (error) { fail(error); } finally { button.disabled = false; button.textContent = before; }
+    }
   }
 
-  async function improve(item, button) {
-    button.disabled = true;
-    button.textContent = '出しています…';
-    try {
-      const result = await window.api.publish.improve({ repo: state.repo, kind: 'skill', name: item.name });
-      if (result.skipped) say(result.skipped === 'no-share-repo' ? '公開先を入れてください' : `出せませんでした（${result.error || result.skipped}）`);
-      else say(`${result.branch} を出しました`);
-      await load();
-    } catch (error) { fail(error); } finally { button.disabled = false; button.textContent = '改善案を出す'; }
+  function publish() {
+    const names = picks();
+    if (!names.length) return;
+    each(names, (name) => window.api.publish.submit({ repo: state.repo, kind: 'skill', name }), '公開');
+  }
+
+  function runImprove(items) {
+    each(items.map((item) => item.name), (name) => window.api.publish.improve({ repo: state.repo, kind: 'skill', name }), '提出');
   }
 
   async function load() {
@@ -133,12 +189,13 @@
   function fillChoices(config, agents) {
     const repoSelect = $('skills-repo');
     const previousRepo = repoSelect.value;
-    repoSelect.replaceChildren(...(config.repos || []).map((repo) => {
+    const repos = (config && config.repos) || [];
+    repoSelect.replaceChildren(...repos.map((repo) => {
       const option = el('option', '', repo.split(/[\\/]/).filter(Boolean).pop() || repo);
       option.value = repo;
       return option;
     }));
-    repoSelect.value = (config.repos || []).includes(previousRepo) ? previousRepo : (config.repos || [])[0] || '';
+    repoSelect.value = repos.includes(previousRepo) ? previousRepo : repos[0] || '';
     const agentSelect = $('skills-agent');
     const previousAgent = agentSelect.value;
     // AI が引けていないときは、置き場を絞らずに全部見せる（空の選択肢を出さない）。
@@ -170,16 +227,18 @@
     };
   }
 
-  function reset() { request += 1; state.doc = null; state.error = ''; }
+  function reset() { request += 1; state.doc = null; state.error = ''; state.busy = false; state.picked = null; }
 
   function open(config, agents) {
     fillChoices(config || {}, agents || []);
+    say('');
     load();
   }
 
   function init() {
-    $('skills-repo').onchange = load;
-    $('skills-agent').onchange = load;
+    $('skills-repo').onchange = () => { state.picked = null; load(); };
+    $('skills-agent').onchange = () => { state.picked = null; load(); };
+    $('skills-publish').onclick = publish;
     $('audit-share-repo').oninput = renderPublishRepoRow;
   }
 
