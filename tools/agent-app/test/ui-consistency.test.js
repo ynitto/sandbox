@@ -281,34 +281,75 @@ test('受信箱は既存の部品（メニューの領域・一覧の行・件�
   assert.strictEqual((html.match(/id="inbox-sub"/g) || []).length, 1);
 });
 
-test('監査の面は設定の既存の器（設定の行・状態の印・足元の集計）で組む', () => {
+test('利用状況の面は設定の既存の器（設定の行・状態の印・足元の集計）で組む', () => {
   const html = read('renderer/index.html');
   const css = read('renderer/styles.css');
-  const audit = read('renderer/audit.js');            // 監査の面を描くのはこのモジュール
-  const panel = html.match(/<section data-settings-panel="audit"[\s\S]*?<\/section>/)?.[0] || '';
-  assert.ok(panel, '設定に「監査」の面が無い');
+  const audit = read('renderer/audit.js');            // 利用状況の面を描くのはこのモジュール
+  const panel = html.match(/<section data-settings-panel="audit"[\s\S]*?<div id="settings-error"/)?.[0] || '';
+  assert.ok(panel, '設定に「利用状況」の面が無い');
   // 1. タブ名で分かることを本文で繰り返さない（見出しと説明の常駐を作らない）
   assert.ok(!/<h[1-4][\s>]/.test(panel), '設定の面に見出しを置かない（タブ名が名乗る）');
-  assert.ok(!/<p[\s>]/.test(panel), '仕組みの説明は README に置く');
-  // 2. 設定の行と足元の集計は既存の器をそのまま借りる（.setting-check / .setting-field / .environment-status）
+  // 2. 設定の行と足元の集計は既存の器をそのまま借りる
   assert.match(panel, /class="setting-check"/);
   assert.match(panel, /class="setting-field"/);
-  assert.strictEqual((panel.match(/class="environment-status"/g) || []).length, 3,
-    '集計・使用量・成果物は同じ器（.environment-status）に載せる');
   assert.ok(!/\.audit-row|\.audit-card|\.audit-panel|\.audit-list/.test(css), '設定の行の私物な複製を作らない');
   // 3. 並びと印も既存の部品（.row / .spacer / .status / .sub）を使う
   assert.match(audit, /el\('div', 'row'\)/, '行は .row を借りる');
-  assert.match(audit, /el\('span', 'status', VERDICT/, '判定は状態の印を借りる');
   // 4. 色は主操作と状態の区別にだけ。この面の主ボタンはダイアログの「保存」
   assert.ok(!/id="audit-run"[^>]*class="[^"]*primary/.test(panel), '1 つの面に主ボタンを 2 つ置かない');
   assert.ok(!/class="[^"]*danger/.test(panel), '普通の操作を警告色で塗らない');
   // 5. 縦並びの一覧は既存の間隔の規則へ相乗りする（同じ見た目を別の名前で定義し直さない）
-  const list = css.match(/^\.startup-actions, #audit-usage, #audit-artifacts \{[^}]*\}$/m) || [];
+  const list = css.match(/^\.startup-actions, #audit-usage, #skills-list \{[^}]*\}$/m) || [];
   assert.strictEqual(list.length, 1, '縦並びの一覧の規則は 1 か所だけ');
   assert.deepStrictEqual(audit.match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークンを使う');
-  // 6. 必要になるまで入力欄を出さない（共有先が空なら main へ直接の行は隠す）
-  assert.match(panel, /id="audit-push-main-row" hidden/);
-  assert.match(audit, /\$\('audit-push-main-row'\)\.hidden = !\$\('audit-share-repo'\)\.value\.trim\(\)/);
-  // 7. 数字は main（agent-audit）が作る。画面で足し算しない
+  // 6. 数字は main（agent-audit）が作る。画面で足し算しない
   assert.ok(!/reduce\(|\+ row\.|runs \+/.test(audit), '集計は agent-audit に任せる（画面で作らない）');
+  // 7. 定型化したものの公開は、そのものが居る画面が持つ（設定に一覧を戻さない）
+  assert.ok(!/id="audit-artifacts"/.test(html), '定型化したものの一覧を設定へ戻さない');
+});
+
+test('スキルの面は 1 つの一覧で、未公開を先頭に出し、操作は足元に 1 つだけ', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  const skills = read('renderer/skills.js');
+  const panel = html.match(/<section data-settings-panel="skills"[\s\S]*?<\/section>\s*<section data-settings-panel="storage"/)?.[0] || '';
+  assert.ok(panel, '設定に「スキル」の面が無い');
+  // 1. タブ名で分かることを本文で繰り返さない
+  assert.ok(!/<h[1-4][\s>]/.test(panel), '設定の面に見出しを置かない（タブ名が名乗る）');
+  assert.ok(!/<p[\s>]/.test(panel), '仕組みの説明は README に置く');
+  // 2. 器は「保存データ」の面をそのまま借りる（設定の行 → 一覧 → 足元に操作）
+  assert.match(panel, /class="setting-field"/);
+  assert.match(panel, /class="environment-status"/);
+  assert.match(skills, /el\('label', 'setting-check'\)/, '行は保存データと同じ .setting-check を借りる');
+  assert.ok(!/\.skill-row|\.skill-card|\.skill-panel|\.skills-list\b/.test(css), 'スキルの行の私物な複製を作らない');
+  // 3. 設定は一覧の上。押せる操作は足元に 1 つだけで、行にボタンを並べない
+  assert.ok(panel.indexOf('audit-share-repo') < panel.indexOf('skills-list'), '公開先の設定は一覧の上に置く');
+  assert.ok(panel.indexOf('skills-list') < panel.indexOf('skills-publish'), '操作は一覧の足元に置く');
+  assert.ok(!/el\('button'/.test(skills.slice(skills.indexOf('function render()'), skills.indexOf('function say('))),
+    '行ごとにボタンを作らない（一覧がボタンの壁になる）');
+  assert.strictEqual((panel.match(/<button/g) || []).length, 1, 'この面に置くボタンは 1 つ');
+  // 4. 状態は印を借りる。未公開を先頭に並べる
+  assert.match(skills, /el\('span', `status \$\{item\.status === 'published' \? 'ok' : 'warn'\}`, mark\)/, '状態の印を借りる');
+  assert.match(skills, /const ORDER = /, '未公開を先頭に並べる');
+  // 5. 必要になるまで入力欄を出さない（公開先が空なら main へ直接の行は隠す）
+  assert.match(panel, /id="audit-push-main-row" hidden/);
+  assert.match(skills, /\$\('audit-push-main-row'\)\.hidden = !\$\('audit-share-repo'\)\.value\.trim\(\)/);
+  assert.deepStrictEqual(skills.match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークンを使う');
+});
+
+test('公開の札とカードは 1 か所で作り、タスクとワークフローが同じ形を借りる', () => {
+  const publish = read('renderer/publish.js');
+  const css = read('renderer/styles.css');
+  // 1. カードは「一枚のまとまり」の既存の形（.execution-card + .execution-card-head）
+  assert.match(publish, /class="execution-card"/);
+  assert.match(publish, /class="execution-card-head"/);
+  assert.match(publish, /<h3>公開<\/h3>/, '見出しは 1 つ、説明は 1 行');
+  assert.ok(!/\.publish-card|\.publish-row|\.publish-badge/.test(css), '同じ見た目を別の名前で定義し直さない');
+  // 2. 札は状態の印を借りる
+  assert.match(publish, /<span class="status warn">未公開<\/span>/);
+  // 3. 押せる操作が無いときはカードを出さない（説明だけの面を残さない）
+  assert.match(publish, /if \(!actions && info\.status === 'published'/);
+  // 4. 言葉を混ぜない。LAN は「共有」、リポジトリへ出すのは「公開」
+  assert.ok(!/共有先|共有する/.test(publish), 'リポジトリへ出すことを「共有」と呼ばない');
+  assert.deepStrictEqual(publish.match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークンを使う');
 });

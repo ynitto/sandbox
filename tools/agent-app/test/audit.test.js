@@ -323,6 +323,57 @@ test('初めて成功した成果物を share/ ブランチへ出し、二度目
   assert.equal(second.skipped, 'already');
 });
 
+test('公開の状態は「未公開・未公開の変更・公開済み」を中身で見分ける', async () => {
+  const ud = tmp('publish-state-');
+  const repo = repoWith('skill', 'reviewer');
+  const share = new artifactShare.ArtifactShare({
+    userData: ud, loadConfig: () => ({ audit: { shareRepo: 'git@example:team/skills.git' } }),
+    shellFor: () => fakeShell([]), now: () => NOW,
+  });
+  const before = share.state({ repo, kind: 'skill', name: 'reviewer' });
+  assert.equal(before.status, 'unpublished');
+  assert.equal(before.canPublish, true);
+
+  await share.submit({ repo, kind: 'skill', name: 'reviewer' });
+  const published = share.state({ repo, kind: 'skill', name: 'reviewer' });
+  assert.equal(published.status, 'published');
+  assert.equal(published.canPublish, false, '同じ中身を二度出さない');
+
+  // 時刻だけを動かしても「変更」にしない（git の checkout や写しで時刻は動く）
+  const file = path.join(repo, '.agents', 'skills', 'reviewer', 'SKILL.md');
+  const later = new Date(Date.now() + 60000);
+  fs.utimesSync(file, later, later);
+  assert.equal(share.state({ repo, kind: 'skill', name: 'reviewer' }).status, 'published', '時刻では判定しない');
+
+  // 中身を直したら、先頭に出すために「未公開の変更」へ戻る
+  fs.writeFileSync(file, '# s\n直した\n');
+  const updated = share.state({ repo, kind: 'skill', name: 'reviewer' });
+  assert.equal(updated.status, 'updated');
+  assert.equal(updated.canPublish, true, '直したものは公開し直せる');
+});
+
+test('公開先が空なら、画面に公開の操作を出さない', () => {
+  const ud = tmp('publish-off-');
+  const repo = repoWith('task', 'daily');
+  const share = new artifactShare.ArtifactShare({ userData: ud, loadConfig: () => ({ audit: {} }), shellFor: () => fakeShell([]) });
+  const state = share.state({ repo, kind: 'task', name: 'daily' });
+  assert.equal(state.configured, false);
+  assert.equal(state.canPublish, false);
+  assert.equal(state.canImprove, false);
+});
+
+test('改善案は実測が基準を割ったときだけ出せる（未取り込みのうちは重ねない）', () => {
+  const ud = tmp('publish-improve-');
+  const repo = repoWith('task', 'daily');
+  const share = new artifactShare.ArtifactShare({
+    userData: ud, loadConfig: () => ({ audit: { shareRepo: 'git@e:r.git' } }), shellFor: () => fakeShell([]),
+  });
+  assert.equal(share.state({ repo, kind: 'task', name: 'daily', verdict: 'qualified' }).canImprove, false);
+  assert.equal(share.state({ repo, kind: 'task', name: 'daily', verdict: 'trial' }).canImprove, true);
+  artifactShare.record(ud, 'task', 'daily', { improveBranch: 'improve/task-daily', improveMergedAt: '' });
+  assert.equal(share.state({ repo, kind: 'task', name: 'daily', verdict: 'blocked' }).canImprove, false, '未取り込みの改善案があるうちは出さない');
+});
+
 test('main へ直接の設定なら既定ブランチへ push する', async () => {
   const ud = tmp('share-main-');
   const log = [];

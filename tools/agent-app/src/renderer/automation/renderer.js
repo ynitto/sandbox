@@ -31,6 +31,12 @@ function closePopupMenus(event = null) {
 }
 
 workbenchRoot.addEventListener('click', (event) => closePopupMenus(event));
+// 公開（リポジトリへ push して人に渡す）の操作。札とカードは publish.js が作る。
+workbenchRoot.addEventListener('click', (event) => window.Publish.handle(event, state.root));
+window.Publish.configure({
+  notify: (message, kind) => toast(message, kind === 'error'),
+  onChange: () => renderIfIdle(),
+});
 workbenchRoot.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closePopupMenus();
 });
@@ -1054,9 +1060,11 @@ const flowFeature = window.createFlowFeature({
 
 function taskPresentation(machine) {
   const present = machine.kind === 'statemachine' && machine.machine ? teachingFeature.statusOf(machine.machine) : null;
-  const badges = present
-    ? `<span class="status ${present.status === 'ready' ? 'ok' : ''}">${esc(window.teachingStatusLabel(present.status))}</span>`
-    : '';
+  // 名前の右: 作成の状態と、公開の状態（未公開なら札が出る）。
+  const badges = [
+    present ? `<span class="status ${present.status === 'ready' ? 'ok' : ''}">${esc(window.teachingStatusLabel(present.status))}</span>` : '',
+    machine.machine ? window.Publish.badgeHtml(state.root, 'task', machine.machine) : '',
+  ].filter(Boolean).join('');
   const eyebrow = embedded ? '' : '<span class="eyebrow">タスク</span>';
   return {
     present,
@@ -1330,7 +1338,7 @@ function executionDetailHtml(machine) {
     : state.execution.detailTab === 'overview' ? `
       ${machine.kind === 'command' ? (taskIdentity(machine) === 'new-command' ? '' : `<section class="execution-card"><div class="execution-card-head"><h3>コマンド</h3><button type="button" id="command-edit">名前・コマンドを編集</button></div><pre>${esc(commandText(machine.entry?.command))}</pre>${machine.error ? `<p class="run-result ng">${esc(machine.error)}</p>` : ''}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || machine.error ? 'disabled' : ''}>今すぐ実行</button><button type="button" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${result}${logView}</section>`) : `<section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${displayedRun.running ? 'active' : ''}">${displayedRun.running ? '実行中' : '待機中'}</span></div>
         ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${Reuse.artifacts(displayedRun.lines.map(item => item.line).join('\n')).map(rel => `<button type="button" class="tiny" data-artifact="${esc(rel)}">${esc(rel)}</button>`).join('')}${displayedRun.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>`}
-      <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>リポジトリ全体のスケジューラー · ${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '定期実行を停止' : '定期実行を開始'}</button>${['statemachine', 'prompt', 'command'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>` : '';
+      <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>リポジトリ全体のスケジューラー · ${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '定期実行を停止' : '定期実行を開始'}</button>${['statemachine', 'prompt', 'command'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>${machine.machine ? window.Publish.cardHtml(state.root, 'task', machine.machine) : ''}` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
 

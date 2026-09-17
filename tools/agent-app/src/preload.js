@@ -205,14 +205,20 @@ contextBridge.exposeInMainWorld('api', {
     apply: (choice) => invoke('update:apply', choice),
     onChanged: on('update:changed'),
   },
-  // 監査（集めた記録の集計と、定型化物の共有・改善）。数字はホスト側の agent-audit が作る
+  // 利用状況（集めた記録の集計）。数字はホスト側の agent-audit が作る
   audit: {
     status: () => invoke('audit:status'),
     run: () => invoke('audit:run'),
     summary: (options) => invoke('audit:summary', options || {}),
-    artifacts: () => invoke('audit:artifacts'),
-    submit: (target) => invoke('audit:submit', target),
-    improve: (target) => invoke('audit:improve', target),
     onChanged: on('audit:changed'),
+  },
+  // 公開（定型化したスキル・タスク・ワークフローを公開先リポジトリへ出す）。
+  // LAN の参加者に見せる「共有」（share）とは別物。
+  publish: {
+    configured: () => invoke('publish:configured'),
+    skills: (repo, agent) => invoke('publish:skills', { repo, agent }),
+    state: (repo, kind, name) => invoke('publish:state', { repo, kind, name }),
+    submit: (target) => invoke('publish:submit', target),
+    improve: (target) => invoke('publish:improve', target),
   },
 });

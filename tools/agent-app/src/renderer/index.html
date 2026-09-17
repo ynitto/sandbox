@@ -596,6 +596,7 @@
         <button type="button" data-settings-tab="instructions" role="tab" aria-selected="false">共通指示</button>
         <button type="button" data-settings-tab="execution" role="tab" aria-selected="false">実行制御</button>
         <button type="button" data-settings-tab="share" role="tab" aria-selected="false">共有</button>
+        <button type="button" data-settings-tab="skills" role="tab" aria-selected="false">スキル</button>
         <button type="button" data-settings-tab="storage" role="tab" aria-selected="false">保存データ</button>
         <button type="button" data-settings-tab="audit" role="tab" aria-selected="false">利用状況</button>
       </nav>
@@ -665,6 +666,19 @@
           <label class="setting-field"><span><strong>依頼者 1 人あたりの上限</strong><small>0 = 無制限</small></span><input id="share-per-requester-cap" type="number" min="0" max="1000" step="1"></label>
           <div class="environment-status"><strong>接続状態</strong><div id="share-status" class="sub"></div></div>
         </section>
+        <section data-settings-panel="skills" class="settings-list" role="tabpanel" hidden>
+          <div class="row">
+            <label class="setting-field"><span><strong>リポジトリ</strong></span><select id="skills-repo"></select></label>
+            <label class="setting-field"><span><strong>AI</strong></span><select id="skills-agent"></select></label>
+          </div>
+          <label class="setting-field"><span><strong>公開先リポジトリ</strong><small>選んだものをブランチにして出します</small></span><input id="audit-share-repo" size="28" placeholder="git@example:team/skills.git"></label>
+          <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>公開先のmainへ直接出す</strong><small>自分だけのリポジトリのとき</small></span></label>
+          <div id="skills-list" aria-live="polite"></div>
+          <div class="environment-status">
+            <div class="row"><span id="skills-count" class="sub"></span><span class="spacer"></span><button type="button" id="skills-publish" class="small">公開する</button></div>
+            <div id="skills-status" class="sub" role="status" aria-live="polite"></div>
+          </div>
+        </section>
         <section data-settings-panel="storage" class="settings-list" role="tabpanel" hidden>
           <div id="cleanup-items"></div>
           <div class="environment-status">
@@ -686,15 +700,9 @@
             <small class="sub">今日・今月は UTC 基準</small>
           </div>
           <details class="usage-details">
-            <summary>定型化したもの</summary>
-            <div class="environment-status"><div id="audit-artifacts"></div></div>
-          </details>
-          <details class="usage-details">
-            <summary>収集・共有の設定</summary>
+            <summary>収集の設定</summary>
             <label class="setting-check"><input type="checkbox" id="audit-enabled"><span><strong>記録を集める</strong><small>会話と実行の記録から使用量と成功率を出します</small></span></label>
             <label class="setting-field"><span><strong>集める間隔</strong></span><select id="audit-interval"><option value="0">自動では集めない</option><option value="30">30分ごと</option><option value="60">1時間ごと</option><option value="360">6時間ごと</option><option value="1440">1日ごと</option></select></label>
-            <label class="setting-field"><span><strong>定型化したものの共有先</strong><small>初めて成功したものをブランチにして出します</small></span><input id="audit-share-repo" size="28" placeholder="git@example:team/skills.git"></label>
-            <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>共有先のmainへ直接出す</strong><small>自分だけのリポジトリのとき</small></span></label>
           </details>
         </section>
         <div id="settings-error" class="dlg-error" hidden></div>
@@ -779,6 +787,7 @@
   <script src="talk.js"></script>
   <script src="files.js"></script>
   <script src="navigation.js"></script>
+  <script src="publish.js"></script>
   <script src="teachingProtocol.js"></script>
   <script src="forkProtocol.js"></script>
   <script src="taskTeaching.js"></script>
@@ -792,6 +801,7 @@
   <script src="format.js"></script>
   <script src="storage.js"></script>
   <script src="audit.js"></script>
+  <script src="skills.js"></script>
   <script src="appUpdate.js"></script>
   <script src="renderer.js"></script>
 </body>

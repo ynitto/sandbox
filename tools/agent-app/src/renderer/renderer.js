@@ -1996,6 +1996,7 @@ function selectSettingsTab(name) {
   for (const panel of document.querySelectorAll('[data-settings-panel]')) panel.hidden = panel.dataset.settingsPanel !== name;
   if (name === 'storage') Storage.open();
   if (name === 'audit') Audit.open();
+  if (name === 'skills') Skills.open(state.config, state.settingsAgents);
 }
 
 function fillAgentSelect(select, value) {
@@ -2140,7 +2141,9 @@ function settingsPatch() {
       maxConcurrent: Number($('max-concurrent').value),
       tiers,
     },
-    audit: Audit.patch(),
+    // 「利用状況」が収集の設定を、「スキル」が公開先を持つ。画面に出していない設定
+    // （configFile など）は触らずに残す。
+    audit: { ...(state.config.audit || {}), ...Audit.patch(), ...Skills.patch() },
     share: {
       ...(state.config.share || {}),
       enabled: $('share-enabled').checked,
@@ -2245,6 +2248,8 @@ async function openSettings() {
   Storage.reset();
   Audit.reset();
   Audit.fill(state.config);
+  Skills.reset();
+  Skills.fill(state.config);
   selectSettingsTab('app');
   setSidebar(false);
   $('app-settings').showModal();
@@ -2649,6 +2654,7 @@ async function init() {
   $('settings-save').onclick = saveSettings;
   Storage.init();
   Audit.init();
+  Skills.init();
   AppUpdate.init({ notice });
   $('optimize-agents').onchange = renderSettingsRestrictions;
   $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));

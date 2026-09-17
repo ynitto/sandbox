@@ -1,9 +1,12 @@
 'use strict';
 
-// 定型化した成果物（スキル・タスク・ワークフロー）を、指定した共有先リポジトリへ出す。
+// 定型化した成果物（スキル・タスク・ワークフロー）を、指定した公開先リポジトリへ出す。
+//
+// **言葉の使い分け**: LAN の参加者に依頼やセッションを見せるのは「共有」（src/main/share/）。
+// リポジトリへ push して人に渡すのがここで、画面でも文書でも「公開」と呼ぶ。
 //
 // 設計は docs/plans/2026-09-16-agent-app-agent-audit-split-and-artifact-sharing-design.md §2.4・§2.5。
-//   提出   … 初めて成功した成果物を share/<種別>-<名前> ブランチへ push する
+//   公開   … 成果物を share/<種別>-<名前> ブランチへ push する
 //   改善   … 適格性が落ちた成果物を、証跡を渡して直させ improve/<種別>-<名前> へ push する
 // merge は人。ここは push までで止める。
 //
@@ -11,7 +14,7 @@
 // 同じ場所のものを使う。agent-audit へは持ち込まない——あちらは測る側で、書ける先を
 // 型付きの allowlist に閉じている。
 //
-// 同じ成果物を二度出さない・未マージの改善に重ねて出さないための記録は
+// 同じ中身を二度出さない・未マージの改善に重ねて出さないための記録は
 // userData/artifact-share/state.json（1 ファイル・原子置換）。
 
 const fs = require('fs');
@@ -74,6 +77,34 @@ function locate(repo, kind, name) {
   return null;
 }
 
+// 中身の指紋。公開したあとで直したかは、**更新時刻ではなく中身**で見る——
+// git の checkout や写しは時刻だけを動かすので、時刻で見ると直していないものが
+// 「未公開の変更」に化ける。
+const FINGERPRINT_FILES = 200;
+const FINGERPRINT_BYTES = 1024 * 1024;
+function fingerprint(target) {
+  const files = [];
+  const stack = [{ full: target, rel: path.basename(target) }];
+  while (stack.length && files.length < FINGERPRINT_FILES) {
+    const current = stack.pop();
+    let stat;
+    try { stat = fs.statSync(current.full); } catch { continue; }
+    if (stat.isDirectory()) {
+      let children = [];
+      try { children = fs.readdirSync(current.full); } catch { children = []; }
+      for (const child of children) stack.push({ full: path.join(current.full, child), rel: `${current.rel}/${child}` });
+    } else files.push({ ...current, size: stat.size });
+  }
+  const hash = crypto.createHash('sha256');
+  for (const file of files.sort((a, b) => a.rel.localeCompare(b.rel))) {
+    hash.update(`${file.rel}:${file.size}\n`);
+    if (file.size <= FINGERPRINT_BYTES) {
+      try { hash.update(fs.readFileSync(file.full)); } catch { hash.update('unreadable'); }
+    }
+  }
+  return `${files.length}-${hash.digest('hex').slice(0, 32)}`;
+}
+
 function branchFor(prefix, kind, name) {
   return `${prefix}/${kind}-${String(name).replace(/[^A-Za-z0-9_.-]/g, '-')}`;
 }
@@ -103,7 +134,31 @@ class ArtifactShare {
     return { ok: r.ok, out: String(r.output || ''), error: String(r.error || r.output || '').split('\n').slice(-4).join('\n') };
   }
 
-  // 共有先の作業用クローン。無ければ浅く clone、あれば fetch し直す。
+  // 公開先が設定されているか（空なら画面に公開の操作を出さない）。
+  configured() { return !!String(this.config().shareRepo || '').trim(); }
+
+  // 公開の状態。画面（スキルタブ・タスク・ワークフロー）はこの 1 つの形だけを見る。
+  //   unpublished … まだ出していない        updated … 出したあとで直した
+  //   published   … 出したものと同じ         missing … 正典の置き場に無い（公開できない）
+  state({ repo = '', kind = '', name = '', verdict = '' } = {}) {
+    const configured = this.configured();
+    const found = repo ? locate(repo, kind, name) : null;
+    const known = statusOf(this.userData, kind, name) || {};
+    // 指紋を残していない古い記録は「変わっていない」と見る（更新しただけで未公開に見せない）。
+    const changed = !!(found && known.submittedBranch && known.fingerprint
+      && fingerprint(found.full) !== known.fingerprint);
+    const improving = !!(known.improveBranch && !known.improveMergedAt);
+    const status = !found ? 'missing' : !known.submittedBranch ? 'unpublished' : changed ? 'updated' : 'published';
+    return {
+      kind, name, configured, status, improving, verdict: String(verdict || ''),
+      branch: known.submittedBranch || '', publishedAt: known.submittedAt || '',
+      improveBranch: known.improveBranch || '',
+      canPublish: configured && !!found && status !== 'published',
+      canImprove: configured && !!found && !improving && ['trial', 'blocked'].includes(String(verdict || '')),
+    };
+  }
+
+  // 公開先の作業用クローン。無ければ浅く clone、あれば fetch し直す。
   async ensureClone(shareRepo) {
     const dir = cloneDir(this.userData, shareRepo);
     const hostDir = host.toHostPath(dir);
@@ -112,11 +167,11 @@ class ArtifactShare {
       fs.mkdirSync(path.dirname(dir), { recursive: true });
       const r = await shell.exec(['git', 'clone', '--depth', '50', String(shareRepo), hostDir],
         { timeoutMs: CLONE_TIMEOUT_MS });
-      if (!r.ok) throw new Error(`共有先を取得できません: ${String(r.error || r.output || '').split('\n').slice(-3).join('\n')}`);
+      if (!r.ok) throw new Error(`公開先を取得できません: ${String(r.error || r.output || '').split('\n').slice(-3).join('\n')}`);
       return { dir, hostDir };
     }
     const fetched = await this.git(hostDir, ['fetch', '--depth', '50', 'origin'], { timeoutMs: CLONE_TIMEOUT_MS });
-    if (!fetched.ok) throw new Error(`共有先を更新できません: ${fetched.error}`);
+    if (!fetched.ok) throw new Error(`公開先を更新できません: ${fetched.error}`);
     return { dir, hostDir };
   }
 
@@ -126,11 +181,11 @@ class ArtifactShare {
     return name || 'main';
   }
 
-  // 共有先の作業ツリーを、既定ブランチの先端から <branch> へ移す。
+  // 公開先の作業ツリーを、既定ブランチの先端から <branch> へ移す。
   async startBranch(hostDir, branch) {
     const base = await this.defaultBranch(hostDir);
     const reset = await this.git(hostDir, ['checkout', '-B', branch, `origin/${base}`]);
-    if (!reset.ok) throw new Error(`共有先でブランチを作れません: ${reset.error}`);
+    if (!reset.ok) throw new Error(`公開先でブランチを作れません: ${reset.error}`);
     return base;
   }
 
@@ -145,16 +200,16 @@ class ArtifactShare {
 
   async commitAndPush(hostDir, { branch, message, pushToMain = false }) {
     const staged = await this.git(hostDir, ['add', '-A']);
-    if (!staged.ok) throw new Error(`共有先へ追加できません: ${staged.error}`);
+    if (!staged.ok) throw new Error(`公開先へ追加できません: ${staged.error}`);
     const diff = await this.git(hostDir, ['diff', '--cached', '--quiet']);
     if (diff.ok) return { pushed: false, unchanged: true, branch };
     const committed = await this.git(hostDir, ['-c', 'user.name=agent-app', '-c', 'user.email=agent-app@localhost',
       'commit', '-m', message]);
-    if (!committed.ok) throw new Error(`共有先へコミットできません: ${committed.error}`);
+    if (!committed.ok) throw new Error(`公開先へコミットできません: ${committed.error}`);
     const target = pushToMain ? await this.defaultBranch(hostDir) : branch;
     const pushed = await this.git(hostDir, ['push', 'origin', `HEAD:refs/heads/${target}`],
       { timeoutMs: CLONE_TIMEOUT_MS });
-    if (!pushed.ok) throw new Error(`共有先へ push できません: ${pushed.error}`);
+    if (!pushed.ok) throw new Error(`公開先へ push できません: ${pushed.error}`);
     return { pushed: true, branch: target, unchanged: false };
   }
 
@@ -177,13 +232,14 @@ class ArtifactShare {
     return payload;
   }
 
-  // 初めて成功した成果物を共有先へ出す。既に出していれば何もしない。
+  // 成果物を公開先へ出す。出したあと直していなければ、同じものを二度出さない。
   async submit({ repo, kind, name, sessionId = '', force = false }) {
     const cfg = this.config();
     const shareRepo = String(cfg.shareRepo || '').trim();
     if (!shareRepo) return { skipped: 'no-share-repo' };
     const known = statusOf(this.userData, kind, name);
-    if (known && known.submittedBranch && !force) return { skipped: 'already', ...known };
+    if (known && known.submittedBranch && !force
+      && this.state({ repo, kind, name }).status === 'published') return { skipped: 'already', ...known };
     const found = locate(repo, kind, name);
     if (!found) return { skipped: 'not-found' };
     const { hostDir } = await this.ensureClone(shareRepo);
@@ -193,12 +249,12 @@ class ArtifactShare {
     if (found.dir) await this.originJson(hostDir, { sourceRepo: repo, rel: found.rel, kind, name, sessionId });
     const result = await this.commitAndPush(hostDir, {
       branch,
-      message: `share(${kind}): ${name}\n\n初めて成功した定型化物を共有します（agent-app が自動で出しました）。`,
+      message: `share(${kind}): ${name}\n\n定型化したものを公開します（agent-app から出しました）。`,
       pushToMain: cfg.pushToMain === true,
     });
     const saved = record(this.userData, kind, name, {
       kind, name, repo, submittedBranch: result.branch, submittedAt: new Date(this.now()).toISOString(),
-      unchanged: result.unchanged,
+      fingerprint: fingerprint(found.full), unchanged: result.unchanged,
     });
     return { ...result, ...saved };
   }
@@ -270,5 +326,5 @@ function improvePrompt({ kind, name, rel, evidence }) {
 
 module.exports = {
   DIR, LAYOUT, ArtifactShare, locate, branchFor, cloneDir, stateFile, readState, statusOf, record,
-  improvePrompt, evidenceLines,
+  improvePrompt, evidenceLines, fingerprint,
 };

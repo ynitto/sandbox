@@ -264,7 +264,8 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 | アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、前面に無いときに通知する（既定 ON）、WSL ディストリビューション、更新元・起動時に更新を確認する（既定 ON）・更新を確認する間隔（既定 1 日ごと）・「今すぐ確認」、実行環境の状態 |
 | 共通指示 | 共通指示の有効・本文（8000 字まで）、別のフォルダへの書き込みを会話の分岐で受ける（既定 ON）、スキル選択の有効・既定の選択・自動選択の候補、定型の依頼（最大 3 つ）、起動時アクション |
 | 実行制御 | エージェントを最適化する（既定 ON。agent-herd が使えるときだけ効き、効いていなければ起動方針は おすすめ / 直接指定 だけ、tier は medium だけ）、既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、既定を Ask にする、同時実行数（1〜8） |
-| 監査 | 記録を集める（既定 ON）、集める間隔（既定 1 時間ごと。0 で手動だけ）、定型化したものの共有先、共有先の main へ直接出す、「今すぐ集める」、使用量（AI / 用途 / モデルごと）と成功率、定型化したものの合否と「改善案を出す」。agent-audit が無ければ足りないものを 1 行で出す |
+| スキル | 上に設定（リポジトリと AI の選択、公開先リポジトリ、公開先の main へ直接出す。公開先が空なら「main へ直接」は隠す）、その下にそのAIが読むスキルの一覧（名前・説明・版・置き場。未公開を先頭に出し、行のチェックで選ぶ）、足元に選んだ数と操作を 1 つ（「選んだ n 件を公開」。基準を割ったものがあるときだけ「改善案を出す」を添える） |
+| 利用状況 | 「今すぐ集める」、利用枠、使用量（AI / 用途 / モデルごと）と成功率、記録を集める（既定 ON）、集める間隔（既定 1 時間ごと。0 で手動だけ）。agent-audit が無ければ足りないものを 1 行で出す |
 
 起動時アクションは「スキル」か「コマンド」で、CLI ごとの新しいセッションで上から一度だけ適用します。
 コマンドは作業フォルダで実行し、失敗時は「続行」か「停止」を選べます。
@@ -417,9 +418,11 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `audit:status` | `audit.status()` | — | `{ enabled, intervalMinutes, shareRepo, running, step, available, lastRunAt, lastError, steps, deferred, store, artifacts: { revision, generatedAt, count }, share: [...] }`。§18 |
 | `audit:run` | `audit.run()` | — | `{ steps: [{ key, label, status, ok, output }], error }`。動いていれば `{ skipped }`。agent-audit が無ければ断る |
 | `audit:summary` | `audit.summary({ by, period })` | 集計軸と期間 | `{ available, by, period, usage, quality, error }`（中身は agent-audit の `--json` そのまま） |
-| `audit:artifacts` | `audit.artifacts()` | — | 成果物の合否（`artifacts.json`）＋洞察 20 件・レポート 10 件の一覧・提出の記録 |
-| `audit:submit` | `audit.submit({ repo, kind, name, sessionId })` | 成果物 | `{ pushed, branch }`。出済みなら `{ skipped: 'already' }`、共有先未設定なら `{ skipped: 'no-share-repo' }` |
-| `audit:improve` | `audit.improve({ repo, kind, name, evidence, cli, model })` | 成果物と証跡 | `{ pushed, branch, improveNote }`。未取り込みの改善があれば `{ skipped: 'improve-open' }` |
+| `publish:configured` | `publish.configured()` | — | `{ configured }`。公開先が空なら画面に公開の操作を出さない |
+| `publish:state` | `publish.state(repo, kind, name)` | 成果物 | `{ status, canPublish, canImprove, branch, verdict, … }`。`status` は `unpublished` / `updated` / `published` / `missing` |
+| `publish:skills` | `publish.skills(repo, agent)` | リポジトリと AI | `{ repo, configured, items }`。行は名前・説明・版・置き場と公開の状態 |
+| `publish:submit` | `publish.submit({ repo, kind, name, sessionId })` | 成果物 | `{ pushed, branch }`。中身が同じなら `{ skipped: 'already' }`、公開先未設定なら `{ skipped: 'no-share-repo' }` |
+| `publish:improve` | `publish.improve({ repo, kind, name, evidence, cli, model })` | 成果物と証跡 | `{ pushed, branch, improveNote }`。未取り込みの改善があれば `{ skipped: 'improve-open' }` |
 | `repo:add` | `addRepo()` | —（ダイアログ） | 設定、または `null`（キャンセル） |
 | `repo:remove` | `removeRepo(repo)` | `repo` | 設定 |
 | `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ）。agent-herd 一族（aider / ollama）が 1 つでもあれば末尾に仮想の `herd`（`virtual: true, members: [...]`）を足す（§6.3）。実体は `src/main/agents.js` で、タスク・ワークフローの `automation:agents:list` も同じ一覧（使えるものの名前だけ）を返す |
@@ -1243,18 +1246,30 @@ agent-loop の `audit-calibrate-hook.py` と同じ並びで、`extract` / `disti
 
 | 面 | 中身 |
 |---|---|
-| 設定の行 | 記録を集める・集める間隔・共有先・main へ直接（共有先が空なら隠す） |
+| 設定の行 | 記録を集める・集める間隔（公開先と main へ直接は「スキル」の面が持つ） |
 | 集計 | 「今すぐ集める」と 1 行の状態（段の名前・最後に集めた時刻・足りないもの） |
 | 使用量 | 軸の切り替え（AI / 用途 / モデル）と行（回数・実測トークン）、末尾に成功率 |
-| 定型化したもの | 1 件 1 行（名前・種別・回数・共有の状態）、右端に合否、`trial` / `blocked` にだけ「改善案を出す」 |
 
-#### 18.4 共有と改善
+#### 18.4 公開と改善
+
+**言葉の使い分け**: 同じ LAN の参加者に依頼やセッションを見せるのが「共有」、リポジトリへ push して
+人に渡すのが「公開」。画面でも文書でもこの 2 つを混ぜない。
+
+公開の操作は、そのものが居る画面に置く。タスクは「概要」の定期実行の下、ワークフローは「概要」の
+末尾で、同じ札（未公開 / 未公開の変更）と同じカード（`.execution-card`）を使う。作りは 1 か所
+（`renderer/publish.js`）に置く。
+
+スキルは数が多いので、行ごとにボタンを置かず「保存データ」の面と同じ作法にする——行の
+チェックで選び、足元に操作を 1 つだけ出す。未公開のものは既定で選ぶ。
 
 | 操作 | すること |
 |---|---|
-| 提出（`audit:submit`） | 共有先の浅いクローン（`userData/artifact-share/<鍵>`）を既定ブランチの先端へ戻し、成果物を正典の相対パスへ写し、出所（`origin.json`）を添えて `share/<種別>-<名前>` へ push する。`pushToMain` なら既定ブランチへ |
-| 改善（`audit:improve`） | 同じクローンで `improve/<種別>-<名前>` を作り、失敗の証跡を渡して CLI に直させ（書き込みで 1 回）、差分があれば push する |
-| 二重防止 | `userData/artifact-share/state.json` に提出と改善のブランチを記録する。提出済み・未取り込みの改善があるものは出さない |
+| 公開（`publish:submit`） | 公開先の浅いクローン（`userData/artifact-share/<鍵>`）を既定ブランチの先端へ戻し、成果物を正典の相対パスへ写し、出所（`origin.json`）を添えて `share/<種別>-<名前>` へ push する。`pushToMain` なら既定ブランチへ |
+| 改善（`publish:improve`） | 同じクローンで `improve/<種別>-<名前>` を作り、失敗の証跡を渡して CLI に直させ（書き込みで 1 回）、差分があれば push する |
+| 二重防止 | `userData/artifact-share/state.json` に公開と改善のブランチ、公開した中身の指紋を記録する。中身が同じものと、未取り込みの改善があるものは出さない |
+
+公開したあとに直したかは**更新時刻ではなく中身の指紋**で見る。git の checkout や写しは時刻だけを
+動かすので、時刻で見ると直していないものが「未公開の変更」に化ける。
 
 成果物の置き場は種別ごとの正典（`.agents/skills/<名前>` か `.github/skills/<名前>` / `.statemachine/<名前>` /
 `.agents/workflows/<名前>.json`）。merge は人が行う——push までで止める。
