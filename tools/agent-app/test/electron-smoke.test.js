@@ -379,20 +379,27 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.ok(appStore.readSession(userData, session.id).messages.length > 3, 'やり取りの本文は残す');
     assert.match(await win.locator('[data-cleanup-key="updates"]').locator('xpath=..').textContent(), /なし/);
 
-    // 監査: 集計はホスト側の agent-audit が出す。入っていない環境では「見つかりません」と 1 行出し、
-    // 定型化したものの一覧は「まだ無い」と言う（面は出るが、数字は画面で作らない）
+    // 利用状況: 集計はホスト側の agent-audit が出す。入っていない環境では「見つかりません」と
+    // 1 行出すだけ（面は出るが、数字は画面で作らない）
     await win.click('[data-settings-tab="audit"]');
     await win.waitForFunction(() => document.getElementById('audit-status').textContent.length > 0);
     assert.match(await win.textContent('#audit-status'), /agent-audit が見つかりません|まだ集めていません|集めました/);
+    await win.getByText('収集の設定', { exact: true }).click();
+    if (process.env.AGENT_APP_AUDIT_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_AUDIT_SCREENSHOT });
+
+    // スキル: 使えるスキルを 1 つの一覧で出し、公開先を入れるまで「main へ直接」は出さない。
+    // 公開（リポジトリへ push）と、LAN の「共有」は別の言葉で呼ぶ。
+    await win.click('[data-settings-tab="skills"]');
+    await win.waitForFunction(() => document.getElementById('skills-list').textContent.length > 0);
+    assert.match(await win.textContent('#skills-list'), /読み込んでいます|見つかりません|未公開|公開/);
     assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), false,
-      '共有先が空なら main へ直接の行は出さない');
-    await win.getByText('収集・共有の設定', { exact: true }).click();
+      '公開先が空なら main へ直接の行は出さない');
     await win.fill('#audit-share-repo', 'git@example:team/skills.git');
     assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), true,
-      '共有先を入れたら出す');
-    await win.waitForFunction(() => document.getElementById('audit-artifacts').textContent.length > 0);
-    assert.match(await win.textContent('#audit-artifacts'), /初めて成功すると|様子見|基準を満たす|未測定/);
-    if (process.env.AGENT_APP_AUDIT_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_AUDIT_SCREENSHOT });
+      '公開先を入れたら出す');
+    const skillsPanel = await win.textContent('[data-settings-panel="skills"]');
+    assert.ok(!/共有/.test(skillsPanel), 'リポジトリへ出すことを「共有」と呼ばない');
+    if (process.env.AGENT_APP_SKILLS_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SKILLS_SCREENSHOT });
     await win.click('#settings-close');
 
     // 親画面のポップアップは、メニュー外の背景をクリックすると閉じる。

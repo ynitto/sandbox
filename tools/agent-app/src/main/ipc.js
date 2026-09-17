@@ -851,12 +851,6 @@ function registerIpcHandlers(getWindow) {
   handle('audit:status', () => ({ ...auditor.status(), share: artifacts.list() }));
   handle('audit:run', () => auditor.run({ manual: true }));
   handle('audit:summary', (p) => auditor.summary({ by: p && p.by, period: p && p.period }));
-  handle('audit:artifacts', () => ({
-    ...audit.artifacts(userData()),
-    insights: audit.insights(userData()),
-    reports: audit.reports(userData()),
-    share: artifacts.list(),
-  }));
   // 成果物の行が持つ出所（`repo:<名前>`）から、登録済みリポジトリを引く。1 つに定まらない
   // ときは断る——別のリポジトリの定義を勝手に触らない。
   function repoOf(p) {
@@ -866,12 +860,44 @@ function registerIpcHandlers(getWindow) {
     if (repos.length !== 1) throw new Error(`成果物のリポジトリを決められません（出所: ${name || '不明'}）`);
     return requireRepo(repos[0]);
   }
-  // 提出と改善は押したときだけ（merge は人。ここは push までで止める）。
-  handle('audit:submit', (p) => artifacts.submit({
+  // 実測の判定（基準を満たす / 様子見 / 使わない）。公開の画面はこれを添えて改善を出せる。
+  // 一覧では 1 件ごとに読み直さない——judged() で 1 回読み、その表を使い回す。
+  const NO_VERDICT = { verdict: '', failureModes: [], samples: 0, passed: 0 };
+  function judged() {
+    const rows = audit.artifacts(userData()).items || [];
+    return new Map(rows.map((item) => [`${item.kind}/${item.name}`, {
+      verdict: String(item.status || ''), failureModes: item.failure_modes || [],
+      samples: item.samples || 0, passed: item.passed || 0,
+    }]));
+  }
+  function verdictOf(kind, name) { return judged().get(`${kind}/${name}`) || NO_VERDICT; }
+  function publishState(repo, kind, name, verdicts) {
+    const measured = (verdicts || judged()).get(`${kind}/${name}`) || NO_VERDICT;
+    return { ...artifacts.state({ repo, kind, name, verdict: measured.verdict }), ...measured };
+  }
+  // 公開先が入っているか（画面は入っていなければ公開の操作を出さない）。
+  handle('publish:configured', () => ({ configured: artifacts.configured() }));
+  handle('publish:state', (p) => publishState(p.repo ? requireRepo(p.repo) : '', String(p.kind || ''), String(p.name || '')));
+  // 設定 > スキル の一覧。AI を選ぶと「その AI の置き場 + 共通の置き場」を歩く。
+  handle('publish:skills', (p) => {
+    const repo = p && p.repo ? requireRepo(p.repo) : '';
+    const configured = artifacts.configured();
+    const verdicts = judged();
+    // 公開できるのはリポジトリの中にあるものだけ。共通の置き場の個人のスキルは一覧に出すが、
+    // 公開の操作は出さない（押せないものを出さない）。
+    const items = skills.catalog(repo, String((p && p.agent) || '')).map((item) => ({
+      name: item.name, description: item.description, version: item.version, place: item.place,
+      ...(item.place === 'repo' ? publishState(repo, 'skill', item.name, verdicts)
+        : { ...NO_VERDICT, status: 'outside', canPublish: false, canImprove: false, configured }),
+    }));
+    return { repo, configured, items };
+  });
+  // 公開と改善は押したときだけ（merge は人。ここは push までで止める）。
+  handle('publish:submit', (p) => artifacts.submit({
     repo: repoOf(p), kind: String(p.kind || ''), name: String(p.name || ''),
     sessionId: String(p.sessionId || ''), force: !!p.force,
   }));
-  handle('audit:improve', async (p) => {
+  handle('publish:improve', async (p) => {
     const cfg = store.loadConfig(userData());
     const repo = repoOf(p);
     const options = { optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(await listAgents(repo)) }) };
@@ -879,9 +905,13 @@ function registerIpcHandlers(getWindow) {
     let selected;
     try { selected = settings.resolve(cfg, { policy: 'saving' }, options); }
     catch { selected = settings.resolve(cfg, {}, options); }
+    const kind = String(p.kind || '');
+    const name = String(p.name || '');
+    // 証跡は押した側が渡さなくてよい。実測の失敗クラスをここで添える。
+    const evidence = Array.isArray(p.evidence) && p.evidence.length ? p.evidence
+      : verdictOf(kind, name).failureModes.map((mode) => ({ status: 'failed', error_class: mode }));
     return artifacts.improve({
-      repo, kind: String(p.kind || ''), name: String(p.name || ''),
-      evidence: Array.isArray(p.evidence) ? p.evidence : [],
+      repo, kind, name, evidence,
       cli: String(p.cli || selected.cli), model: String(p.model != null ? p.model : selected.model),
     });
   });

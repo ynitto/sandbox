@@ -34,10 +34,40 @@ test('自動選択用にスキルの説明・タグ・本文を読む', () => {
   fs.mkdirSync(path.join(skillRoot, 'ui-helper'), { recursive: true });
   fs.writeFileSync(path.join(skillRoot, 'ui-helper', 'SKILL.md'), '---\nname: ui-helper\ndescription: UIを改善する\ntags:\n  - ui\n  - ux\n---\n# Rules\nKeep it compact.\n');
   assert.deepStrictEqual(skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]), [{
-    name: 'ui-helper', description: 'UIを改善する', tags: ['ui', 'ux'],
+    name: 'ui-helper', description: 'UIを改善する', tags: ['ui', 'ux'], version: '',
     path: path.join(skillRoot, 'ui-helper', 'SKILL.md'),
     content: '---\nname: ui-helper\ndescription: UIを改善する\ntags:\n  - ui\n  - ux\n---\n# Rules\nKeep it compact.\n',
+    place: '', repo: '', dir: path.join(skillRoot, 'ui-helper'),
   }]);
+});
+
+test('一覧に出す版は frontmatter の version から読む', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-version-'));
+  const skillRoot = path.join(root, 'skills');
+  fs.mkdirSync(path.join(skillRoot, 'release-notes'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'release-notes', 'SKILL.md'), "---\nname: release-notes\nversion: '1.2.0'\n---\n# notes\n");
+  const [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.strictEqual(item.version, '1.2.0');
+});
+
+test('AI を選ぶと、その AI の置き場と共通の置き場だけを歩く', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-agent-'));
+  const claude = skills.sourceRoots(repo, 'claude').map((item) => item.path);
+  assert.ok(claude.some((dir) => dir.endsWith(path.join('.claude', 'commands'))), 'その AI の置き場');
+  assert.ok(claude.some((dir) => dir.endsWith(path.join('.agents', 'skills'))), '共通の置き場');
+  assert.ok(!claude.some((dir) => dir.includes(`${path.sep}.codex${path.sep}`)), '別の AI の置き場は歩かない');
+  // リポジトリの中を先に見る（同じ名前なら、その仕事の分を優先する）
+  assert.strictEqual(claude[0], path.join(repo, '.claude', 'skills'));
+  assert.ok(skills.sourceRoots(repo).some((item) => item.path.includes(`${path.sep}.codex${path.sep}`)), 'AI を指定しなければ全部');
+});
+
+test('置き場がリポジトリの中か共通かを行に残す（公開できるのはリポジトリの中だけ）', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-place-'));
+  fs.mkdirSync(path.join(repo, '.agents', 'skills', 'deploy'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.agents', 'skills', 'deploy', 'SKILL.md'), '# deploy');
+  const [item] = skills.catalogFromRoots([{ path: path.join(repo, '.agents', 'skills'), kind: 'skill-dir', place: 'repo', repo }]);
+  assert.strictEqual(item.place, 'repo');
+  assert.strictEqual(item.repo, repo);
 });
 
 test('自動選択用に複数行の説明を読む', () => {

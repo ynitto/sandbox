@@ -1,26 +1,56 @@
 'use strict';
 
+// スキルの置き場を歩いて、名前・説明・版・場所を拾う。
+//
+// 置き場は 2 種類ある。**共通**（どの AI も読む）と、**その AI だけ**が読むもの。
+// 画面で AI を選ぶと「その AI の置き場 + 共通の置き場」を出す（設定 > スキル）。
+// 依頼に添えるスキルの自動選択（skillSelection.js）は AI を絞らないので、
+// agent を渡さなければ今までどおり全部の置き場を見る。
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+
+// 走査の上限。置き場に何万も入っている PC で画面を止めない。
+const MAX_ENTRIES = 400;
 
 function entries(dir) {
   try { return fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
 }
 
-function sourceRoots(repo = '') {
+// その AI だけが読む置き場（ホーム / リポジトリの順に足す）。
+const AGENT_DIRS = {
+  claude: [['.claude', 'skills', 'skill-dir'], ['.claude', 'commands', 'command-dir']],
+  codex: [['.codex', 'skills', 'skill-dir']],
+  kiro: [['.kiro', 'commands', 'command-dir']],
+  copilot: [['.github', 'skills', 'skill-dir']],
+};
+
+// どの AI も読む置き場。
+const COMMON_DIRS = [['.agents', 'skills', 'skill-dir']];
+
+function agentKey(agent) {
+  const name = String(agent || '').toLowerCase();
+  return Object.keys(AGENT_DIRS).find((key) => name === key || name.startsWith(`${key}-`) || name.includes(key)) || '';
+}
+
+// repo … 選択中のリポジトリ（無ければ ''）。agent … '' なら全部の置き場。
+function sourceRoots(repo = '', agent = '') {
   const home = os.homedir();
-  const roots = [
-    { path: path.join(home, '.agents', 'skills'), kind: 'skill-dir' },
-    { path: path.join(home, '.codex', 'skills'), kind: 'skill-dir' },
-    { path: path.join(home, '.claude', 'commands'), kind: 'command-dir' },
-    { path: path.join(home, '.kiro', 'commands'), kind: 'command-dir' },
-  ];
-  if (repo) roots.unshift(
-    { path: path.join(repo, '.agents', 'skills'), kind: 'skill-dir' },
-    { path: path.join(repo, '.codex', 'skills'), kind: 'skill-dir' },
-  );
+  const key = agentKey(agent);
+  const shapes = key ? [...AGENT_DIRS[key], ...COMMON_DIRS]
+    : [...Object.values(AGENT_DIRS).flat(), ...COMMON_DIRS];
+  const roots = [];
+  // リポジトリの中を先に置く（同じ名前なら、その仕事の分を優先する）。
+  if (repo) for (const [a, b, kind] of shapes) roots.push({ path: path.join(repo, a, b), kind, place: 'repo', repo });
+  for (const [a, b, kind] of shapes) roots.push({ path: path.join(home, a, b), kind, place: 'home', repo: '' });
   return roots;
+}
+
+// frontmatter の 1 行の値（引用符を外す）。
+function headerValue(header, name) {
+  const hit = header.match(new RegExp(`^${name}:\\s*([^\\n]*)`, 'm'));
+  return hit ? hit[1].trim().replace(/^['"]|['"]$/g, '') : '';
 }
 
 function metadata(name, file, content) {
@@ -40,7 +70,7 @@ function metadata(name, file, content) {
   }
   const tagsBlock = (header.match(/^tags:\s*\n((?:\s+-[^\n]*\n?)*)/m) || [])[1] || '';
   const tags = [...tagsBlock.matchAll(/^\s+-\s*(.+)$/gm)].map((match) => match[1].trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-  return { name, description, tags, path: file, content };
+  return { name, description, tags, version: headerValue(header, 'version'), path: file, content };
 }
 
 function catalogFromRoots(roots) {
@@ -49,19 +79,28 @@ function catalogFromRoots(roots) {
     const dir = String((root && root.path) || '');
     if (!dir) continue;
     for (const entry of entries(dir)) {
+      if (found.size >= MAX_ENTRIES) break;
       let name = '';
       let file = '';
+      let home = '';
       if (root.kind === 'command-dir') {
         if (entry.isFile() && entry.name.endsWith('.md')) {
           name = entry.name.slice(0, -3);
           file = path.join(dir, entry.name);
+          home = file;
         }
       } else if (entry.isDirectory() && fs.existsSync(path.join(dir, entry.name, 'SKILL.md'))) {
         name = entry.name;
         file = path.join(dir, entry.name, 'SKILL.md');
+        home = path.join(dir, entry.name);
       }
       if (!name || found.has(name)) continue;
-      try { found.set(name, metadata(name, file, fs.readFileSync(file, 'utf8'))); } catch { /* unreadable */ }
+      try {
+        found.set(name, {
+          ...metadata(name, file, fs.readFileSync(file, 'utf8')),
+          place: root.place || '', repo: root.repo || '', dir: home,
+        });
+      } catch { /* unreadable */ }
     }
   }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -71,10 +110,10 @@ function listFromRoots(roots) {
   return catalogFromRoots(roots).map((item) => item.name);
 }
 
-function list(repo = '') {
-  return listFromRoots(sourceRoots(repo));
+function list(repo = '', agent = '') {
+  return listFromRoots(sourceRoots(repo, agent));
 }
 
-function catalog(repo = '') { return catalogFromRoots(sourceRoots(repo)); }
+function catalog(repo = '', agent = '') { return catalogFromRoots(sourceRoots(repo, agent)); }
 
-module.exports = { list, listFromRoots, catalog, catalogFromRoots };
+module.exports = { list, listFromRoots, catalog, catalogFromRoots, sourceRoots, AGENT_DIRS, COMMON_DIRS };

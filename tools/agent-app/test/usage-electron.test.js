@@ -53,11 +53,15 @@ test('Electron: 利用枠・未取得・期間切替・折りたたみ・狭幅'
     await win.getByText('example-model', { exact: true }).waitFor();
     await win.waitForTimeout(400);
     assert.match(await win.textContent('#audit-breakdown'), /example-model/);
-    await win.getByText('収集・共有の設定', { exact: true }).click();
+    await win.getByText('収集の設定', { exact: true }).click();
     assert.equal(await win.locator('#audit-enabled').isVisible(), true);
+    await win.getByText('収集の設定', { exact: true }).click();
+    // 公開先は「スキル」の面が持つ（LAN の「共有」と混ぜない）
+    await win.getByRole('tab', { name: 'スキル', exact: true }).click();
+    assert.equal(await win.locator('#audit-push-main').isVisible(), false, '公開先が空なら main へ直接は隠す');
     await win.fill('#audit-share-repo', 'git@example:team/skills.git');
     assert.equal(await win.locator('#audit-push-main').isVisible(), true);
-    await win.getByText('収集・共有の設定', { exact: true }).click();
+    await win.getByRole('tab', { name: '利用状況', exact: true }).click();
     await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setMinimumSize(400, 400); w.setSize(520, 800); });
     await win.screenshot({ path: '/tmp/agent-app-usage-narrow.png' });
     assert.equal(await win.locator('.settings-content').evaluate(n => n.scrollWidth <= n.clientWidth), true);

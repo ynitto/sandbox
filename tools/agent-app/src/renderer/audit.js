@@ -1,18 +1,17 @@
 'use strict';
 
-// 「設定 > 利用状況」: 集めた記録の集計と、定型化したものの共有・改善。
+// 「設定 > 利用状況」: 集めた記録の集計。
 // **数字はここで作らない。** 集計と判定は main 経由で agent-audit（ホスト側）が出し、
-// ここは並べて、押せる操作を出すだけ（storage.js と同じ作法）。
+// ここは並べるだけ（storage.js と同じ作法）。
+// 定型化したものの公開と改善は、スキルはスキルタブ（skills.js）、タスクとワークフローは
+// それぞれの画面が持つ——押せる場所を、そのものが居る画面に置く。
 (function initAudit() {
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 
   // status … audit:status（周期と連鎖の状態）。summary … 集計（開くまで null）
   let summaryRequest = 0;
-  const state = { status: null, summary: null, artifacts: null, error: '', busy: false };
-
-  const KIND_LABEL = { skill: 'スキル', task: 'タスク', workflow: 'ワークフロー' };
-  const VERDICT = { qualified: '基準を満たす', trial: '様子見', blocked: '使わない', unknown: '未測定' };
+  const state = { status: null, summary: null, error: '', busy: false };
 
   function tokens(n) {
     const value = Number(n) || 0;
@@ -40,7 +39,6 @@
     else if (s.lastError) parts.push(s.lastError);
     else if (!s.lastRunAt) parts.push('まだ集めていません');
     else parts.push(`${Fmt.checkedAt(s.lastRunAt)} に集めました`);
-    if (!s.running && s.artifacts && s.artifacts.count) parts.push(`定型化したもの ${s.artifacts.count} 件`);
     box.textContent = parts.join(' · ');
   }
 
@@ -137,47 +135,9 @@
     box.replaceChildren(...out);
   }
 
-  // 成果物 1 件 1 行。基準を割ったものにだけ「改善案を出す」を出す（押せる操作だけ並べる）。
-  function renderArtifacts() {
-    const box = $('audit-artifacts');
-    const doc = state.artifacts;
-    if (!doc) { box.replaceChildren(el('div', 'sub', '確認しています…')); return; }
-    const shared = new Map((doc.share || []).map((item) => [`${item.kind}/${item.name}`, item]));
-    const items = doc.items || [];
-    if (!items.length) {
-      box.replaceChildren(el('div', 'sub', '会話から定型化したものが、初めて成功するとここに並びます'));
-      return;
-    }
-    box.replaceChildren(...items.map((item) => {
-      const row = el('div', 'row');
-      const share = shared.get(`${item.kind}/${item.name}`) || {};
-      // 右端は判定だけを短く出し、回数と共有の状態は補助の文字にする（長いチップにしない）
-      const notes = [];
-      if (item.samples) notes.push(`${item.samples} 回中 ${item.passed || 0} 成功`);
-      if (share.improveBranch && !share.improveMergedAt) notes.push('改善案を出しました');
-      else if (share.submittedBranch) notes.push('共有しました');
-      // 判定とボタンは右端に置く（行ごとに位置が動かないよう、回数は名前側へ寄せる）
-      row.append(
-        el('span', '', item.name),
-        el('small', 'sub', [KIND_LABEL[item.kind] || item.kind, ...notes].join(' · ')),
-        el('span', 'spacer'),
-        el('span', 'status', VERDICT[item.status] || item.status),
-      );
-      if ((item.status === 'trial' || item.status === 'blocked')
-          && !(share.improveBranch && !share.improveMergedAt)) {
-        const button = el('button', 'small', '改善案を出す');
-        button.type = 'button';
-        button.onclick = () => improve(item, button);
-        row.append(button);
-      }
-      return row;
-    }));
-  }
-
   function render() {
     renderStatus();
     renderUsage();
-    renderArtifacts();
   }
 
   async function loadSummary() {
@@ -196,17 +156,12 @@
     renderUsage();
   }
 
-  async function loadArtifacts() {
-    try { state.artifacts = await api.audit.artifacts(); } catch { state.artifacts = { items: [] }; }
-    renderArtifacts();
-  }
-
   async function run() {
     state.busy = true;
     renderStatus();
     try {
       await api.audit.run();
-      await Promise.all([loadSummary(), loadArtifacts()]);
+      await loadSummary();
     } catch (error) {
       $('settings-error').textContent = error.message;
       $('settings-error').hidden = false;
@@ -216,50 +171,17 @@
     }
   }
 
-  async function improve(item, button) {
-    button.disabled = true;
-    button.textContent = '出しています…';
-    try {
-      const result = await api.audit.improve({
-        origin: item.origin, kind: item.kind, name: item.name,
-        evidence: (item.failure_modes || []).map((mode) => ({ status: 'failed', error_class: mode })),
-      });
-      if (result.skipped) {
-        $('settings-status').textContent = result.skipped === 'no-share-repo'
-          ? '共有先を入れてください' : `出せませんでした（${result.error || result.skipped}）`;
-      } else {
-        $('settings-status').textContent = `${result.branch} を出しました`;
-      }
-      await loadArtifacts();
-    } catch (error) {
-      $('settings-error').textContent = error.message;
-      $('settings-error').hidden = false;
-    } finally {
-      button.disabled = false;
-      button.textContent = '改善案を出す';
-    }
-  }
-
-  // 設定の値を画面へ。共有先が空なら「main へ直接」は出さない（要るまで出さない）。
+  // 設定の値を画面へ。公開先は「設定 > スキル」が持つ（skills.js）。
   function fill(config) {
     const cfg = (config && config.audit) || {};
     $('audit-enabled').checked = cfg.enabled !== false;
     $('audit-interval').value = String([0, 30, 60, 360, 1440].includes(cfg.intervalMinutes) ? cfg.intervalMinutes : 60);
-    $('audit-share-repo').value = cfg.shareRepo || '';
-    $('audit-push-main').checked = !!cfg.pushToMain;
-    renderShareRepoRow();
-  }
-
-  function renderShareRepoRow() {
-    $('audit-push-main-row').hidden = !$('audit-share-repo').value.trim();
   }
 
   function patch() {
     return {
       enabled: $('audit-enabled').checked,
       intervalMinutes: Number($('audit-interval').value),
-      shareRepo: $('audit-share-repo').value.trim(),
-      pushToMain: $('audit-push-main').checked,
     };
   }
 
@@ -267,7 +189,6 @@
   function reset() {
     summaryRequest += 1;
     state.summary = null;
-    state.artifacts = null;
     state.error = '';
     state.busy = false;
   }
@@ -276,14 +197,12 @@
   function open() {
     if (!state.status) api.audit.status().then((got) => { state.status = got; renderStatus(); }).catch(() => {});
     if (!state.summary) loadSummary();
-    if (!state.artifacts) loadArtifacts();
   }
 
   function init() {
     $('audit-run').onclick = run;
     $('audit-by').onchange = loadSummary;
     $('audit-period').onchange = loadSummary;
-    $('audit-share-repo').oninput = renderShareRepoRow;
     api.audit.onChanged((got) => { state.status = got; renderStatus(); });
   }
 
