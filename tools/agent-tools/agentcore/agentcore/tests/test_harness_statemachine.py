@@ -1178,6 +1178,11 @@ class NextStateJudgeTests(unittest.TestCase):
         self.repo = os.path.realpath(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
         self.log_file = os.path.join(self.repo, "run.jsonl")
+        # 開発機の AGENT_JUDGE_MODEL に左右されない（既定＝ローカル定義だけ、を縛る）。
+        env = {k: v for k, v in os.environ.items() if k != sm.judge.ENV_MODEL}
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _events(self):
         return [json.loads(line) for line
@@ -1233,6 +1238,27 @@ class NextStateJudgeTests(unittest.TestCase):
                                             log_file=self.log_file)
         self.assertEqual(evals, {})
         self.assertFalse(os.path.exists(self.log_file), "何もしていないことを判定として記録しない")
+
+    def test_a_pinned_judge_model_serves_a_cloud_agent(self):
+        """AGENT_JUDGE_MODEL があれば、クラウド CLI の実行でも判定だけが judge へ行く。"""
+        agent = {"cli": "claude", "model": None, "spec": {"name": "claude", "relative_cost": 1}}
+        with mock.patch.dict(os.environ, {sm.judge.ENV_MODEL: "gemma4:e4b"}), \
+             mock.patch.object(sm.judge, "evaluate",
+                               return_value=self._answers(**{"1": False, "2": True})) as call:
+            evals = sm._sm_judge_conditions(self.PENDING, output="x", agent=agent,
+                                            log_file=self.log_file)
+        self.assertEqual(evals, {"1": False, "2": True})
+        self.assertEqual(call.call_args.kwargs["model"], "gemma4:e4b")
+        start = [e for e in self._events() if e["event"] == "condition_judge_start"][0]
+        self.assertEqual(start["model"], "gemma4:e4b")
+
+    def test_off_keeps_even_a_local_agent_on_the_control_response_path(self):
+        with mock.patch.dict(os.environ, {sm.judge.ENV_MODEL: "off"}), \
+             mock.patch.object(sm.judge, "evaluate",
+                               side_effect=AssertionError("judge must not be called")):
+            evals = sm._sm_judge_conditions(self.PENDING, output="x", agent=self._local_agent(),
+                                            log_file=self.log_file)
+        self.assertEqual(evals, {})
 
     def test_judge_failure_falls_back_and_leaves_a_trace(self):
         with mock.patch.object(sm.judge, "evaluate",

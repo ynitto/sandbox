@@ -798,9 +798,11 @@ _SM_JUDGE_MIN_CONFIDENCE = 0.0
 def _sm_judge_model(agent: "dict | None") -> "str | None":
     """遷移条件を judge（分布の読み出し）で判定できるモデル。できなければ None。
 
-    judge は LAN の ollama を直に叩く。だから使えるのは**ローカルの定義**（`relative_cost`
+    judge は LAN の ollama を直に叩く。だから既定で使えるのは**ローカルの定義**（`relative_cost`
     が 0 の aider / ollama）で回しているときだけで、クラウド CLI の実行ではこれまでどおり
     制御応答（生成経路）に訊く。モデルはハーネスの指定を持ち越し、無ければ定義の既定。
+    `AGENT_JUDGE_MODEL` でモデルを指名すると、クラウド CLI の実行でも判定だけがそのモデルの
+    judge へ行く（判定に高価なクラウドのトークンを使わない）。`off` なら judge を使わない。
     """
     return judge.model_for_spec((agent or {}).get("spec"), (agent or {}).get("model"))
 

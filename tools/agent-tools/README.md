@@ -383,7 +383,9 @@ agent-herd replay --arm model=gemma4:e4b,think=off,repeat=3
 画面は従来と同じ（`ready_pattern` の `> ` も含めて変わらない）。
 
 環境変数: `OLLAMA_HOST` / `AGENT_OLLAMA_THINK`（on|off|prompt） / `AGENT_OLLAMA_OPTIONS`（JSON・`num_ctx` 等を
-リクエスト単位で足す）/ `AGENT_OLLAMA_KEEP_ALIVE` / `AGENT_OLLAMA_LOG_DIR` /
+リクエスト単位で足す）/ `AGENT_OLLAMA_KEEP_ALIVE` / `AGENT_JUDGE_MODEL`（判定 `judge` に使うモデルの
+指名。置くとクラウド CLI で回している実行でも遷移条件・route・filter・assess の判定だけを LAN の
+ollama へ回し、判定にクラウドのトークンを使わない。`off` で judge を止める）/ `AGENT_OLLAMA_LOG_DIR` /
 `AGENT_OLLAMA_SYSTEM_PROMPT`（追加の system instruction。未指定なら送らない）/
 `AGENT_OLLAMA_SKILLS_DIR` / `AGENT_OLLAMA_STALL_TIMEOUT` / `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` /
 `AGENT_OLLAMA_CONNECT_TIMEOUT`（接続の上限秒・既定 120。到達時に生存確認が通れば

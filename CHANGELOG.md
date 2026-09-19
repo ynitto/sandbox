@@ -41,8 +41,15 @@ TypeSafe AI の Jev（System One モデル）が示した「文章を生成せ�
   採ると分布の情報を捨てる）。記録する書式は変えないので、採点を読む側（リスクダイジェスト・
   spec ルーティング）は無改修。judge が決めなければ生成経路、それも駄目なら従来どおり
   決定的ヒューリスティック。
-- 実装: `agentcore/judge.py`・`herdcli.cmd_judge`。テスト: `test_judge`（16 件）・
-  `test_herdcli.JudgeTests`（7 件）。設計:
+- **クラウド CLI の実行でも判定だけを judge へ回せる（`AGENT_JUDGE_MODEL`）。** 上の配線 4 件は
+  ローカル定義で回しているときだけ効いていて、判定にいちばん高いトークンを払っている
+  クラウド CLI（Claude Code など）の実行では、遷移条件 1 件ごとに出力全文と workflow を添えて
+  JSON を生成させていた。`AGENT_JUDGE_MODEL=gemma4:e4b` のようにモデルを指名すると、実行の
+  定義に関係なく遷移条件・route・filter・assess の判定はそのモデルの judge へ行き、クラウドは
+  作業だけに使う。`off` でどの実行でも judge を使わない。未設定の振る舞いは変えていない。
+  `agent-herd judge` の `--model` の既定も同じ変数を見る。
+- 実装: `agentcore/judge.py`・`herdcli.cmd_judge`。テスト: `test_judge`（21 件）・
+  `test_herdcli.JudgeTests`（7 件）・`test_harness_statemachine`（judge 配線 8 件）。設計:
   [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)。
   gemma4:e4b での実測（`coverage` の分布・確度と正答の関係）は設計 §6 のとおり未着手。
 

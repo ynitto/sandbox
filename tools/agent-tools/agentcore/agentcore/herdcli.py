@@ -499,7 +499,7 @@ JUDGE_HELP = f"""使い方: {PROG} judge --questions <問い> [オプション] 
                            {{"type":"score","instructions":"…","criteria":["low","mid","high"]}}
                            どの型も "other":"説明" で「どれでもない」を足せる
   --state <パス>           状態をファイルから読む（省略時は stdin）
-  --model <モデル>         既定 {DEFAULT_MODEL_PLACEHOLDER}
+  --model <モデル>         既定は AGENT_JUDGE_MODEL、無ければ {DEFAULT_MODEL_PLACEHOLDER}
   --min-confidence <0-1>   確度がこれ未満の問いを abstained に載せ、終了コード 1
   --samples <N>            ollama が logprobs を返さないとき、N 回引いて票数を確率にする
   --think on|off|auto      thinking の指定（既定 off。auto は送らない）
@@ -520,7 +520,7 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
         print(JUDGE_HELP.replace(DEFAULT_MODEL_PLACEHOLDER, judge.DEFAULT_MODEL))
         return 0
     questions_arg = state_path = None
-    model = judge.DEFAULT_MODEL
+    model: "str | None" = None
     min_confidence = 0.0
     samples = 1
     think: "bool | None" = False
@@ -590,6 +590,8 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
 
     from agentcore.hostenv import load_profile_env
     load_profile_env()
+    # 既定モデルは profile を読んだ後に決める（AGENT_JUDGE_MODEL を ~/.profile に書く人のため）。
+    model = model or judge.env_model() or judge.DEFAULT_MODEL
     try:
         result = judge.evaluate(state, questions, model=model, think=think,
                                 samples=samples, request=request)

@@ -513,7 +513,9 @@ agent-herd harness run PROMPT...
 定義の既定。答えはそのまま `next_state.py` の `--evals` に載る。judge が使えない
 （Ollama に届かない、`logprobs` を読めない）か確度が下限に届かない場合は、従来どおり
 制御応答（JSON を生成させる経路）で判定し直し、証跡に `condition_judge_fallback` を残す。
-クラウド CLI の実行では judge を使わない。
+クラウド CLI の実行では既定で judge を使わない。`AGENT_JUDGE_MODEL` にモデル名を置くと、
+クラウド CLI の実行でも遷移条件の判定だけをそのモデルの judge へ回し、判定にクラウドの
+トークンを使わない（§5.5）。
 
 引数の誤りと未知のハーネス種別は終了コード 2。それ以外はハーネス本体の終了コードを返す。
 
@@ -540,6 +542,23 @@ agent-herd judge --questions (JSON | PATH) [--state PATH] [--model MODEL]
 `method` が付く。`method` は確率の出どころで、`logprobs`（1 トークン目の分布を読んだ）、
 `vote`（`--samples` 回引いた票数）、`text`（本文の 1 文字を読んだだけ。`coverage` は 0）の
 いずれか。`logprobs` 以外は確率を目安として扱う。
+
+`--model` を省いたときのモデルは `AGENT_JUDGE_MODEL`、それも無ければ `gemma4:e4b`。
+
+judge を組み込みで使う判定（遷移条件、書込先の `route`、単一基準の `filter`、投入時の
+`assess`）は、既定ではローカルの定義（`relative_cost` が 0 の `aider` / `ollama`）で回して
+いるときだけ judge へ行き、クラウド CLI の実行ではそのクラウドに JSON を生成させる。
+`AGENT_JUDGE_MODEL` の値で切り替える。
+
+| 値 | 判定の行き先 |
+|---|---|
+| 未設定 | ローカルの定義の実行だけ judge（モデルは実行の指定か定義の既定）。クラウド CLI の実行は生成経路 |
+| モデル名（例 `gemma4:e4b`） | どの定義の実行でも、判定はそのモデルの judge。実行のモデルは持ち越さない |
+| `off` | どの定義の実行でも judge を使わず、生成経路 |
+
+判定は選択肢の 1 文字で済むので、クラウド CLI で回している実行ほど、指名して判定を LAN の
+Ollama へ逃がす効果が大きい。judge が使えない・確度が足りないときの縮退は値に関係なく同じ
+（生成経路へ倒し、証跡に残す）。
 
 問いごとに Ollama の chat API を 1 回、`logprobs` を求めて呼ぶ。生成上限は 4 トークンで、
 `--think` の既定は `off`。Ollama が `logprobs` を返さない場合、`--samples` が 2 以上なら
@@ -694,6 +713,7 @@ frontmatter は 1 行の `key: value` だけを受け付ける。
 | `AGENT_OLLAMA_THINK` | モデル既定 | `on`、`off`、`prompt` |
 | `AGENT_OLLAMA_OPTIONS` | なし | API の `options` に渡す JSON |
 | `AGENT_OLLAMA_KEEP_ALIVE` | なし | API の `keep_alive` |
+| `AGENT_JUDGE_MODEL` | なし | `judge` に使うモデルの指名。置くとクラウド CLI の実行でも判定は judge へ。`off` で judge を使わない（§5.5） |
 | `AGENT_OLLAMA_SYSTEM_PROMPT` | なし | system prompt の差し替え |
 | `AGENT_OLLAMA_LOG_DIR` | `~/.agents/logs/ollama` | JSONL ログのディレクトリ |
 | `AGENT_OLLAMA_SKILLS_DIR` | なし | 追加のスキル探索先。`:` 区切り |

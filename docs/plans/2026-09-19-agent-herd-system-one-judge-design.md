@@ -147,6 +147,30 @@ Python からは `agentcore.judge.evaluate(state, questions, model=…)`。`requ
 | agent-flow の `filter`（単一基準・`decision` 無し） | **配線済み（2026-09-19）。** `agent.filter_judge` が依存 1 件 = 候補 1 件で boolean を 1 問ずつ訊き、`kept` を作る。依存が 1 件（本文に候補が並ぶ形）は候補を列挙できないので生成経路。多基準（`decision` あり）は従来どおり抽出 → 機械判定 |
 | agent-project の `assess` | **配線済み（2026-09-19）。** c / r / a の 3 段の採点は `score` 型そのもの。`prioritize.assess_judge` が軸 1 つを問い 1 つにし、確率加重の `score` を四捨五入（偶数丸めを避けるため自前）して 1〜3 にする。記録する書式 （`c=N r=N a=N`）は変えないので、読む側（リスクダイジェスト・spec ルーティング）は無改修。judge が決めなければ生成経路、それも駄目なら既存のヒューリスティック |
 
+### 5.1 クラウド CLI の実行でも判定だけを judge へ（`AGENT_JUDGE_MODEL`、2026-09-19 追記）
+
+§5 の配線 4 件はどれも「ローカル定義（`relative_cost` 0）で回しているときだけ」だった。
+理由は judge が LAN の ollama を直に叩くことで、ollama の無い環境で勝手に叩きに行かない
+ための門。ただしこの門のせいで、**判定にいちばん高いトークンを払っている実行——Claude Code
+などクラウド CLI で回している実行——では judge が一度も使われない**。遷移条件 1 件ごとに
+出力全文と workflow ファイルを添えて「JSON で true/false を返せ」と生成させ、route / filter /
+assess も同じ形でクラウドに訊いていた。
+
+門を環境変数 1 つで開けられるようにした。`AGENT_JUDGE_MODEL=<モデル>` があれば
+`judge.model_for_spec` / `local_model` は定義を見ずにそのモデルを返し、4 件の配線はクラウド
+CLI の実行でも判定だけを judge へ回す。`off` なら逆にどの実行でも judge を使わない。
+既定（未設定）の振る舞いは変えていない。
+
+| | 実行の定義 | 判定の行き先（未設定） | 判定の行き先（`AGENT_JUDGE_MODEL=gemma4:e4b`） |
+|---|---|---|---|
+| 遷移条件 | claude | 制御応答（出力全文 + workflow を添えて JSON 生成） | judge（prefill 1 回 + 4 トークン × 条件数） |
+| route / filter / assess | claude | クラウドに JSON 生成 | judge |
+| どれも | aider / ollama | judge（実行のモデル） | judge（指名したモデルに固定） |
+
+指名したモデルを実行のモデルより優先するのは意図で、「実行は 12b、判定は e4b」のように
+判定だけ軽いモデルへ寄せられる。judge が使えない・確度が足りないときの縮退（生成経路へ
+倒して証跡に残す）は値に関係なく同じで、ollama に届かないときも実行は止まらない。
+
 ## 6. 測ってから決めること
 
 本設計は ollama の無い環境で書いたので、**gemma4:e4b での実測は未着手**。入れる前に

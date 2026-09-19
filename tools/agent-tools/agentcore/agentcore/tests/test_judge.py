@@ -15,6 +15,7 @@ import math
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -194,6 +195,61 @@ class EvaluateTests(unittest.TestCase):
     def test_abstain_uses_confidence(self):
         answers = {"a": {"confidence": 0.9}, "b": {"confidence": 0.55}}
         self.assertEqual(judge.abstained(answers, 0.7), ["b"])
+
+
+class ModelSelectionTests(unittest.TestCase):
+    """どの実行で judge を使うか。
+
+    既定はローカル定義（`relative_cost` 0）だけ。`AGENT_JUDGE_MODEL` でモデルを指名すると
+    クラウド CLI の定義でも judge を使い（判定をクラウドのトークンで払わない）、`off` なら
+    どの定義でも使わない。
+    """
+
+    LOCAL = {"name": "aider", "relative_cost": 0, "default_model": "gemma4:e4b"}
+    CLOUD = {"name": "claude", "relative_cost": 1}
+
+    def _env(self, value=None):
+        env = {k: v for k, v in os.environ.items() if k != judge.ENV_MODEL}
+        if value is not None:
+            env[judge.ENV_MODEL] = value
+        return mock.patch.dict(os.environ, env, clear=True)
+
+    def test_default_is_local_definitions_only(self):
+        with self._env():
+            self.assertEqual(judge.model_for_spec(self.LOCAL), "gemma4:e4b")
+            self.assertEqual(judge.model_for_spec(self.LOCAL, "gemma4:12b"), "gemma4:12b")
+            self.assertIsNone(judge.model_for_spec(self.CLOUD))
+            self.assertIsNone(judge.model_for_spec(None))
+
+    def test_a_pinned_model_serves_cloud_definitions_too(self):
+        with self._env("gemma4:e4b"):
+            self.assertEqual(judge.model_for_spec(self.CLOUD), "gemma4:e4b")
+            self.assertEqual(judge.model_for_spec(self.CLOUD, "claude-opus-5"), "gemma4:e4b",
+                             "実行のモデルは持ち越さない——判定は指名したモデルに固定する")
+            self.assertEqual(judge.model_for_spec(self.LOCAL, "gemma4:12b"), "gemma4:e4b")
+
+    def test_off_disables_judge_for_every_definition(self):
+        for value in ("off", "OFF", "none", "0"):
+            with self._env(value):
+                self.assertIsNone(judge.model_for_spec(self.LOCAL), value)
+                self.assertIsNone(judge.model_for_spec(self.CLOUD), value)
+                self.assertIsNone(judge.env_model(), value)
+                self.assertTrue(judge.env_disabled(), value)
+
+    def test_blank_means_unset(self):
+        with self._env("  "):
+            self.assertIsNone(judge.env_model())
+            self.assertFalse(judge.env_disabled())
+            self.assertEqual(judge.model_for_spec(self.LOCAL), "gemma4:e4b")
+
+    def test_local_model_does_not_resolve_a_definition_when_pinned(self):
+        with self._env("gemma4:e4b"):
+            self.assertEqual(judge.local_model("no-such-definition"), "gemma4:e4b")
+        with self._env("off"):
+            self.assertIsNone(judge.local_model("aider"))
+        with self._env():
+            self.assertIsNone(judge.local_model("no-such-definition"),
+                              "指名が無ければ、解決できない定義では judge を使わない")
 
 
 if __name__ == "__main__":
