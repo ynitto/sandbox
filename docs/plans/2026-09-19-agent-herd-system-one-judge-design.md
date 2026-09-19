@@ -124,17 +124,26 @@ Python からは `agentcore.judge.evaluate(state, questions, model=…)`。`requ
 ## 4. ollama が logprobs を返さないとき（縮退の順序）
 
 `logprobs` / `top_logprobs` は ollama の chat / generate API にある（0.12 系後半で追加）。
-古い配布や一部のランタイムでは応答に `logprobs` が無い。そのときの順序:
+古い配布や一部のランタイムでは応答に `logprobs` が無い。**入っていても読めないことがある**
+——OpenAI 互換の `{"content": [...]}` のように形が違う場合で、判定は「キーの有無」ではなく
+**ラベルの質量を読めたかどうか**で行う。そのときの順序:
 
-| 条件 | 振る舞い | `method` | `coverage` |
-|---|---|---|---|
-| `logprobs` があり、ラベルに質量が落ちた | 分布を読む（本来の形） | `logprobs` | 落ちた質量 |
-| `logprobs` が無く `--samples N`（N ≥ 2） | structured outputs（enum）で N 回引き、票数を確率に | `vote` | 読めた票 / N |
-| `logprobs` が無く N = 1 | 本文の 1 文字を読む | `text` | 0 |
-| ラベルをどこからも読めない | `JudgeError`（答えを作らない） | — | — |
+| 条件 | 振る舞い | `method` | `confidence` | `coverage` |
+|---|---|---|---|---|
+| ラベルに質量が落ちた | 分布を読む（本来の形） | `logprobs` | 最頻ラベルの確率 | 落ちた質量 |
+| 読めず（`logprobs` が無い／形が違う）、`--samples N`（N ≥ 2） | structured outputs（enum）で N 回引き、票数を確率に | `vote` | 最頻ラベルの得票率 | 読めた票 / N |
+| 読めず、N = 1 | 本文の 1 文字を読む | `text` | **0**（確度の材料が無い） | 0 |
+| ラベルをどこからも読めない | `JudgeError`（答えを作らない） | — | — | — |
 
-「確率 1.0 を捏造する」経路は無い。`text` は確率の形をしているが `coverage: 0` で、
-呼び出し側は `method` を見れば区別できる。
+「確率 1.0 を捏造する」経路は無い。`text` は読み取れた事実（`choice` / `value` / `bucket` と
+ラベル 1 つに立った `probabilities`）だけを残し、確度は名乗らない。`abstained()` は
+`method` が `text` の答えを**しきい値に関わらず棄権に入れる**——`--min-confidence` が 0.0
+（実測前の置き値。§6）の呼び出しでは `confidence` の比較だけでは止まらないため。本文の
+ラベルで足りる呼び出しは `abstained(answers, min, allow_text=True)` で受け取れる。
+
+> 2026-09-20 の修正前、この表には「`logprobs` があるが読めない」の行が無く、実装もその
+> 状態を `text` へ直行させていた（`confidence` 1.0・`--samples` は黙って無視）。表に無い
+> 状態は実装でも見落とされる。縮退の条件を足すときは表を先に直す。
 
 ## 5. 何を置き換え、何を置き換えないか
 
