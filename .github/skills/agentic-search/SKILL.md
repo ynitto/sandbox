@@ -1,6 +1,6 @@
 ---
 name: agentic-search
-description: 検索を「単発の retrieve」から「エージェントが反復する探索ループ」へ引き上げる共有スキル。検索系スキル（ltm-use / wiki-use / moltbook-use など）が自前の検索結果を正規化して渡すと、次の一手（next_action / suggested_queries / related_ids / gap_keywords / sufficient）を返す。反復ループ（計画→検索→評価→再構成→展開→統合）の正典。検索結果が弱い・横断的・うろ覚えのときに使う。
+description: 検索を「単発の retrieve」から、エージェントが反復する探索ループ（計画→検索→評価→再構成→展開→統合）へ引き上げる共有スキルです。検索結果が弱いとき、横断的な問いのとき、うろ覚えで検索するときに使用してください。
 metadata:
   version: 1.0.0
   tier: core
