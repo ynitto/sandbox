@@ -12,6 +12,7 @@
 """
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from unittest import mock
 from _shared import *  # noqa: E402,F401,F403
 
 from agentcore import verifycontract as vc
@@ -28,6 +29,81 @@ def _charter_cfg(d: Path, **kw):
     write_charter(d, _CHARTER)
     kw.setdefault("route_planner", "none")
     return cfg_for(d, **kw)
+
+
+class RouteJudgeTests(unittest.TestCase):
+    """書込先の自動ルーティングを judge（選択肢の上の確率分布）で決める。
+
+    答えは候補の集合の外に出られず、`other` は「判断できない」= "" に写す（RO3 の面）。
+    ローカル定義で回しているときだけ使い、judge が決めなかったときは生成経路へ倒す。
+    """
+
+    WORKSPACES = [{"name": "api", "url": "u1", "owns": ["services/api/**"], "desc": "API"},
+                  {"name": "web", "url": "u2", "owns": ["apps/web/**"]}]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kp-route-judge-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.cfg = _charter_cfg(Path(self.tmp), route_planner="agent")
+        self.task = km.Task(id="T1", title="ログイン API の応答を速くする", verify="true")
+
+    @staticmethod
+    def _answer(choice, confidence=0.9):
+        return {"answers": {"workspace": {"type": "choice", "choice": choice,
+                                          "probabilities": {}, "confidence": confidence,
+                                          "coverage": 0.95, "method": "logprobs"}},
+                "usage": {"tokens_in": 1, "tokens_out": 1}, "model": "gemma4:e4b"}
+
+    def _route(self, *, local=True, answer=None, error=None):
+        seen = {}
+
+        def fake_evaluate(state, questions, **kwargs):
+            seen.update(state=state, questions=questions, kwargs=kwargs)
+            if error:
+                raise km._judge.JudgeError(error)
+            return answer
+
+        with mock.patch.object(km._judge, "evaluate", side_effect=fake_evaluate), \
+             mock.patch.object(km._judge, "local_model",
+                               return_value="gemma4:e4b" if local else None), \
+             mock.patch.object(km, "_run_agent_cli",
+                               side_effect=lambda p, m, purpose="": (
+                                   seen.__setitem__("generated", p) or '{"workspace": "web"}')):
+            picked = km.route_agent(self.cfg, self.task, self.WORKSPACES)
+        return picked, seen
+
+    def test_judge_picks_a_candidate_and_other_means_undecided(self):
+        picked, seen = self._route(answer=self._answer("api"))
+        self.assertEqual(picked, "api")
+        self.assertNotIn("generated", seen, "judge が決めたので生成経路は呼ばない")
+        q = seen["questions"]["workspace"]
+        self.assertEqual(q["type"], "choice")
+        self.assertEqual(sorted(q["criteria"]), ["api", "web"])
+        self.assertIn("services/api/**", q["criteria"]["api"])
+        self.assertTrue(q["other"], "「どの候補にも属さない」を明示の選択肢として持つ")
+        self.assertIn("ログイン API", seen["state"])
+        # other は「判断できない」＝空（無理に 1 つ選ばない）
+        picked, _seen = self._route(answer=self._answer("other"))
+        self.assertEqual(picked, "")
+
+    def test_cloud_agent_keeps_the_generative_path(self):
+        picked, seen = self._route(local=False)
+        self.assertEqual(picked, "web")
+        self.assertIn("generated", seen)
+
+    def test_judge_failure_and_low_confidence_fall_back(self):
+        picked, seen = self._route(error="ollama に接続できません")
+        self.assertEqual((picked, "generated" in seen), ("web", True))
+        with mock.patch.object(km, "_ROUTE_JUDGE_MIN_CONFIDENCE", 0.95):
+            picked, seen = self._route(answer=self._answer("api", confidence=0.6))
+        self.assertEqual((picked, "generated" in seen), ("web", True))
+
+    def test_an_explicit_agent_run_bypasses_judge(self):
+        with mock.patch.object(km._judge, "evaluate",
+                               side_effect=AssertionError("judge must not be called")):
+            picked = km.route_agent(self.cfg, self.task, self.WORKSPACES,
+                                    agent_run=lambda p, m: '{"workspace": "api"}')
+        self.assertEqual(picked, "api")
 
 
 class ResolveWorksetTests(unittest.TestCase):

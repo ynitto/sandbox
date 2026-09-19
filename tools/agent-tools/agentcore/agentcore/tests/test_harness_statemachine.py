@@ -1160,6 +1160,123 @@ class NextStateContractTest(unittest.TestCase):
             self.assertNotIn("--list-conditions", call)
 
 
+class NextStateJudgeTests(unittest.TestCase):
+    """遷移条件の判定を judge（分布の読み出し）へ配線する。
+
+    ローカルの定義で回しているときだけ judge を使い、クラウド CLI・judge の失敗・
+    確度不足は従来の制御応答（生成経路）へ倒す。倒したことは証跡に残る。
+    """
+
+    PENDING = [{"index": 1, "to": "ask", "priority": 2,
+                "condition": "{{last_output}} が判断できない場合", "description": "",
+                "needs_llm_eval": True},
+               {"index": 2, "to": "retry", "priority": 3,
+                "condition": "再試行すべき", "description": "一時的な失敗", "needs_llm_eval": True}]
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="agent-loop-sm-judge-")
+        self.repo = os.path.realpath(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.log_file = os.path.join(self.repo, "run.jsonl")
+
+    def _events(self):
+        return [json.loads(line) for line
+                in pathlib.Path(self.log_file).read_text(encoding="utf-8").splitlines()]
+
+    @staticmethod
+    def _local_agent(model=None):
+        return {"cli": "aider", "model": model,
+                "spec": {"name": "aider", "relative_cost": 0, "default_model": "gemma4:e4b"}}
+
+    @staticmethod
+    def _answers(**values):
+        return {"answers": {name: {"type": "boolean", "value": v, "probability": 0.9 if v else 0.1,
+                                   "confidence": 0.9, "coverage": 0.95, "method": "logprobs"}
+                            for name, v in values.items()},
+                "usage": {"tokens_in": 1, "tokens_out": 1}, "model": "gemma4:e4b"}
+
+    def test_local_agent_asks_judge_one_boolean_per_condition(self):
+        seen = {}
+
+        def fake_evaluate(state, questions, **kwargs):
+            seen.update(state=state, questions=questions, kwargs=kwargs)
+            return self._answers(**{"1": True, "2": False})
+
+        with mock.patch.object(sm.judge, "evaluate", side_effect=fake_evaluate):
+            evals = sm._sm_judge_conditions(self.PENDING, output="???", agent=self._local_agent(),
+                                            log_file=self.log_file)
+        self.assertEqual(evals, {"1": True, "2": False})
+        self.assertEqual(seen["state"], "???")
+        self.assertEqual(seen["kwargs"]["model"], "gemma4:e4b", "指定が無ければ定義の既定モデル")
+        self.assertEqual(sorted(seen["questions"]), ["1", "2"])
+        for q in seen["questions"].values():
+            self.assertEqual(q["type"], "boolean")
+        self.assertIn("一時的な失敗", seen["questions"]["2"]["instructions"])
+        events = [e["event"] for e in self._events()]
+        self.assertEqual(events, ["condition_judge_start", "condition_judge_done"])
+        done = self._events()[-1]
+        self.assertEqual(done["answers"]["1"]["method"], "logprobs")
+        self.assertEqual(done["abstained"], [])
+
+    def test_the_harness_model_is_carried_over(self):
+        with mock.patch.object(sm.judge, "evaluate",
+                               return_value=self._answers(**{"1": True, "2": True})) as call:
+            sm._sm_judge_conditions(self.PENDING, output="x", agent=self._local_agent("gemma4:12b"),
+                                    log_file=self.log_file)
+        self.assertEqual(call.call_args.kwargs["model"], "gemma4:12b")
+
+    def test_cloud_agent_keeps_the_control_response_path(self):
+        agent = {"cli": "claude", "model": None, "spec": {"name": "claude", "relative_cost": 1}}
+        with mock.patch.object(sm.judge, "evaluate",
+                               side_effect=AssertionError("judge must not be called")):
+            evals = sm._sm_judge_conditions(self.PENDING, output="x", agent=agent,
+                                            log_file=self.log_file)
+        self.assertEqual(evals, {})
+        self.assertFalse(os.path.exists(self.log_file), "何もしていないことを判定として記録しない")
+
+    def test_judge_failure_falls_back_and_leaves_a_trace(self):
+        with mock.patch.object(sm.judge, "evaluate",
+                               side_effect=sm.judge.JudgeError("ollama に接続できません")):
+            evals = sm._sm_judge_conditions(self.PENDING, output="x", agent=self._local_agent(),
+                                            log_file=self.log_file)
+        self.assertEqual(evals, {})
+        fallback = [e for e in self._events() if e["event"] == "condition_judge_fallback"]
+        self.assertEqual(len(fallback), 1)
+        self.assertIn("ollama に接続できません", fallback[0]["reason"])
+
+    def test_low_confidence_abstains_to_the_control_response_path(self):
+        with mock.patch.object(sm.judge, "evaluate",
+                               return_value=self._answers(**{"1": True, "2": False})), \
+                patch_harness("_SM_JUDGE_MIN_CONFIDENCE", 0.95):
+            evals = sm._sm_judge_conditions(self.PENDING, output="x", agent=self._local_agent(),
+                                            log_file=self.log_file)
+        self.assertEqual(evals, {})
+        self.assertEqual(self._events()[-1]["abstained"], ["1", "2"])
+
+    def test_next_state_uses_judge_evals_without_a_control_call(self):
+        """_sm_next_state 経由: judge の答えがそのまま --evals に載り、制御応答は呼ばれない。"""
+        fake = pathlib.Path(self.repo, "fake-next-state.py")
+        fake.write_text("\n".join([
+            "import json, sys",
+            "argv = sys.argv[1:]",
+            "if '--auto-eval' in argv:",
+            "    print(json.dumps({'state': 'classify', 'conditions': %r, 'resolved': None}))" % self.PENDING,
+            "else:",
+            "    evals = json.loads(argv[argv.index('--evals') + 1])",
+            "    print('ask' if evals.get('1') is True else 'NONE')",
+        ]), encoding="utf-8")
+        calls = []
+        with mock.patch.object(sm.judge, "evaluate",
+                               return_value=self._answers(**{"1": True, "2": False})), \
+                patch_harness("_tl_run_agent", side_effect=lambda *a, **k: calls.append(a) or "{}"):
+            state = sm._sm_next_state(
+                scripts={"next": str(fake)}, workflow_path=str(fake), state_id="classify",
+                output="???", outputs={}, agent=self._local_agent(), cwd=self.repo,
+                log_file=self.log_file)
+        self.assertEqual(state, "ask")
+        self.assertEqual(calls, [], "judge が答えたので制御応答は呼ばない")
+
+
 class NextStateContractGateTest(unittest.TestCase):
     """配布された statemachine-use がハーネスの契約と噛み合うかを起動時に確かめる。
 

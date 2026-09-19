@@ -135,6 +135,86 @@ class AssessTests(unittest.TestCase):
                                  agent_run=lambda p, m: (_ for _ in ()).throw(RuntimeError()))
             self.assertEqual(val, "c=1 r=1 a=1")
 
+    @staticmethod
+    def _scores(**axes):
+        """judge の `score` 応答（軸 → 確率加重の値）。"""
+        return {"answers": {axis: {"type": "score", "score": value,
+                                   "bucket": "1" if value is None else str(int(value + 0.5)),
+                                   "probabilities": {}, "confidence": 0.8,
+                                   "coverage": 0.95, "method": "logprobs"}
+                            for axis, value in axes.items()},
+                "usage": {"tokens_in": 30, "tokens_out": 3}, "model": "gemma4:e4b"}
+
+    def _assess(self, *, local=True, result=None, error=None, generated="{\"c\": 2, \"r\": 2, \"a\": 2}"):
+        seen = {}
+
+        def fake_evaluate(state, questions, **kwargs):
+            seen.update(state=state, questions=questions, kwargs=kwargs)
+            if error:
+                raise km._judge.JudgeError(error)
+            return result
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), executor="kiro")
+            t = km.Task(id="T1", title="決済の締め処理をやり直す", verify="true")
+            with mock.patch.object(km._judge, "evaluate", side_effect=fake_evaluate), \
+                 mock.patch.object(km._judge, "local_model",
+                                   return_value="gemma4:e4b" if local else None), \
+                 mock.patch.object(km, "_run_agent_cli",
+                                   side_effect=lambda p, m, purpose="": (
+                                       seen.__setitem__("generated", p) or generated)):
+                val = km.assess_task(cfg, t)
+        return val, seen
+
+    def test_judge_scores_three_axes_with_one_question_each(self):
+        """3 軸 = `score` の問い 3 つ。値は確率加重の四捨五入（最頻だけを採らない）。"""
+        val, seen = self._assess(result=self._scores(c=1.4, r=2.6, a=1.2))
+        self.assertEqual(val, "c=1 r=3 a=1")
+        self.assertNotIn("generated", seen, "judge が採点したので生成経路は呼ばない")
+        self.assertEqual(sorted(seen["questions"]), ["a", "c", "r"])
+        for q in seen["questions"].values():
+            self.assertEqual(q["type"], "score")
+            self.assertEqual(sorted(q["criteria"]), ["1", "2", "3"])
+        self.assertIn("決済の締め処理", seen["state"])
+        self.assertEqual(seen["kwargs"]["model"], "gemma4:e4b")
+
+    def test_judge_values_are_clamped_to_the_scale(self):
+        val, _seen = self._assess(result=self._scores(c=0.2, r=9.9, a=2.5))
+        self.assertEqual(val, "c=1 r=3 a=3")
+
+    def test_cloud_agent_keeps_the_generative_path(self):
+        val, seen = self._assess(local=False)
+        self.assertEqual(val, "c=2 r=2 a=2")
+        self.assertIn("generated", seen)
+
+    def test_judge_failure_and_low_confidence_fall_back(self):
+        val, seen = self._assess(error="ollama に接続できません")
+        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=2", True))
+        with mock.patch.object(km, "_ASSESS_JUDGE_MIN_CONFIDENCE", 0.95):
+            val, seen = self._assess(result=self._scores(c=1.0, r=1.0, a=1.0))
+        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=2", True))
+
+    def test_an_unreadable_score_falls_back_instead_of_guessing(self):
+        val, seen = self._assess(result=self._scores(c=1.0, r=2.0, a=None))
+        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=2", True))
+
+    def test_an_explicit_agent_run_bypasses_judge(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), executor="kiro")
+            t = km.Task(id="T1", title="x", verify="true")
+            with mock.patch.object(km._judge, "evaluate",
+                                   side_effect=AssertionError("judge must not be called")):
+                val = km.assess_task(cfg, t, agent_run=lambda p, m: '{"c": 1, "r": 2, "a": 3}')
+        self.assertEqual(val, "c=1 r=2 a=3")
+
+    def test_both_paths_read_the_same_material(self):
+        """材料は 1 実装（`_assess_material`）。経路で材料が違うと採点差の原因が追えない。"""
+        t = km.Task(id="T1", title="決済の締め処理", verify="true")
+        t.extra.append(("why", "月次の締めがずれている"))
+        material = km._assess_material(t)
+        self.assertIn(material, km._assess_prompt(t))
+        self.assertIn("月次の締めがずれている", material)
+
     def test_assess_is_idempotent(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

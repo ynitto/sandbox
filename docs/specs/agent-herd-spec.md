@@ -169,6 +169,28 @@ agent-herd defs ollama --purpose verify
 agent-herd defs aider --model gemma4:e4b --json
 ```
 
+### 型付きの問いに確率つきで答えさせる
+
+選択肢が決まっている判断（振り分け、可否、段階の採点）は `judge` を使う。文章を生成させず、
+選択肢の上の確率分布を返すので、呼び出し側は確度で分岐できる。
+
+```bash
+cat > questions.json <<'EOS'
+{
+  "team":   {"type": "choice",  "instructions": "どのチームが扱うべきか",
+             "criteria": {"billing": "請求と返金", "support": "それ以外"}},
+  "urgent": {"type": "boolean", "instructions": "至急か"},
+  "severity": {"type": "score", "instructions": "深刻さ",
+             "criteria": ["low", "medium", "high"]}
+}
+EOS
+cat ticket.txt | agent-herd judge --questions questions.json --min-confidence 0.7
+```
+
+stdout は 1 行の JSON で、問いごとに `choice` / `value` / `score` と `probabilities`、
+`confidence` が付く。確度が `--min-confidence` に届かない問いは `abstained` に載り、
+終了コードは 1 になる。答えを黙って採用させないためで、その問いは人か上位へ返す。
+
 ### スキルを読み込む
 
 スキルは自動選択されない。名前を明示する。
@@ -303,6 +325,7 @@ Cursor の定義は、それぞれの CLI を直接起動する。
 - Ollama: `agentcore.ollama_adapter` と `agentcore.ollama_*`
 - Aider: `agentcore.aider_adapter`
 - ハーネス: `agentcore.harness`
+- 型付きの判断: `agentcore.judge`
 - 環境補完: `agentcore.hostenv`
 
 ### 2. 起動名とディスパッチ
@@ -336,12 +359,14 @@ agent-herd SUBCOMMAND ...   -> SUBCOMMAND ...
 | `exec NAME` | stdin | 定義経由でヘッドレス実行する |
 | `harness statemachine ...` | 引数 | ステートマシンを実行する |
 | `harness run ...` | 引数 | 1 件の依頼をハーネスで実行する |
+| `decide --decision CONTRACT` | stdin | 候補から事実を抽出し、機械が選別する |
+| `judge --questions QUESTIONS` | stdin | 型付きの問いに確率つきで答える |
 | `status [LOG]` | JSONL ログ | 現在の状態を JSON で表示する |
 | `follow [LOG]` | JSONL ログ | 状態を追尾表示する |
 | `replay [PATH] ...` | JSONL ログ | 記録済みの依頼を再生する |
 
 `aider`、`ollama`、`edit` と観測コマンドの残りの引数は adapter が解釈する。`chat`、`defs`、
-`exec`、`harness` は、各節に記載した引数以外を終了コード 2 で拒否する。
+`exec`、`harness`、`decide`、`judge` は、各節に記載した引数以外を終了コード 2 で拒否する。
 
 トップレベルでは、次の 2 つも受け付ける。
 
@@ -482,7 +507,47 @@ agent-herd harness run PROMPT...
 `read_files`、`write_files`、`run`、`final` の限定ツール契約を付ける。`tool-loop` は対象 CLI の
 ツールループへ 1 回渡す。
 
+遷移条件のうち決定的な規則で決まらないもの（`needs_llm_eval`）は、ローカルの定義
+（`relative_cost` が 0 の `aider` / `ollama`）で回しているときは `judge`（§5.5）で判定する。
+条件 1 件を boolean の問い 1 つにし、状態はその工程の出力、モデルは `--model` の指定か
+定義の既定。答えはそのまま `next_state.py` の `--evals` に載る。judge が使えない
+（Ollama に届かない、`logprobs` を読めない）か確度が下限に届かない場合は、従来どおり
+制御応答（JSON を生成させる経路）で判定し直し、証跡に `condition_judge_fallback` を残す。
+クラウド CLI の実行では judge を使わない。
+
 引数の誤りと未知のハーネス種別は終了コード 2。それ以外はハーネス本体の終了コードを返す。
+
+#### 5.5 `judge`
+
+```text
+agent-herd judge --questions (JSON | PATH) [--state PATH] [--model MODEL]
+                 [--min-confidence 0-1] [--samples N] [--think on|off|auto]
+```
+
+状態は stdin か `--state` から読む。空なら終了コード 2。`--questions` は
+`{名前: 問い}` のオブジェクトで、問いは次の 3 型。
+
+| 型 | 問いの項目 | 答えの項目 |
+|---|---|---|
+| `choice` | `instructions`、`criteria`（キー → 説明。順序を保つ） | `choice`、`probabilities` |
+| `boolean` | `instructions` | `value`、`probability`（yes の確率） |
+| `score` | `instructions`、`criteria`（順序つき。キーが全部数ならその値、そうでなければ 0 からの順位） | `score`（確率加重）、`bucket`（最頻）、`probabilities` |
+
+どの型も `other` に説明を書くと「どれでもない」を選択肢として足す（答えの `other` に確率が出る）。
+選択肢は 26 個まで。
+
+すべての答えに `confidence`（最大確率）、`coverage`（モデルの分布のうち選択肢に落ちた割合）、
+`method` が付く。`method` は確率の出どころで、`logprobs`（1 トークン目の分布を読んだ）、
+`vote`（`--samples` 回引いた票数）、`text`（本文の 1 文字を読んだだけ。`coverage` は 0）の
+いずれか。`logprobs` 以外は確率を目安として扱う。
+
+問いごとに Ollama の chat API を 1 回、`logprobs` を求めて呼ぶ。生成上限は 4 トークンで、
+`--think` の既定は `off`。Ollama が `logprobs` を返さない場合、`--samples` が 2 以上なら
+structured outputs でその回数引いて票数を確率にし、1 なら本文を読む。
+
+stdout は `{"answers": {名前: 答え}, "abstained": [名前…]}` の 1 行。stderr に
+`@agent-usage` を出す。終了コードは 0 が全問に答えた、1 が `abstained` あり
+（`confidence` が `--min-confidence` 未満）または Ollama の失敗、2 が引数の誤り。
 
 ### 6. 定義と profile
 

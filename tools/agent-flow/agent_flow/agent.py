@@ -5,6 +5,7 @@ from __future__ import annotations
 # Executor — タスク実行（エージェント CLI or stub）
 # --------------------------------------------------------------------------
 from agentcore import promptrender  # noqa: E402
+from agentcore import judge as _judge  # noqa: E402
 
 
 class EmptyOutputError(RuntimeError):
@@ -1358,6 +1359,68 @@ def _flow_worker_prompt(payload: dict) -> "str | None":
         return None
 
 
+# 単一基準 filter を judge で決めるときの確度の下限。0 なら棄権しない。F1 を judge
+# 経路で引き直してから既定を決める（judge 設計 2026-09-19 §6）。届かなければ生成経路で訊く。
+_FILTER_JUDGE_MIN_CONFIDENCE = 0.0
+
+
+def _filter_judge_questions(goal: str, deps: dict) -> dict:
+    """候補（依存 1 件 = 候補 1 件）ごとに boolean の問いを 1 つ。多基準を 1 問で訊かない。"""
+    criterion = " ".join(str(goal or "").split())
+    return {dep: {"type": "boolean",
+                  "instructions": f"Does candidate [{dep}] satisfy this criterion? {criterion}"}
+            for dep in deps}
+
+
+def _filter_judge_state(deps: dict) -> str:
+    lines = []
+    for dep, r in deps.items():
+        line = f"[{dep}] {_dep_text(r)}"
+        dv = _dep_data(r)
+        if dv is not None:
+            line += f"\n  data: {promptrender.dumps_prompt(dv)[:400]}"
+        lines.append(line)
+    return "Candidates:\n" + "\n".join(lines)
+
+
+def filter_judge(goal: str, deps: dict, model: "str | None",
+                 agent: "dict | None" = None) -> "tuple[str, dict] | None":
+    """判定契約の無い filter を judge（選択肢の上の確率分布）で決める。
+
+    候補は依存 1 件 = 候補 1 件（generate × N → filter / map → filter の形）。依存が 1 件
+    しか無いときは、その本文の中に候補が並んでいる形（[c1] [c2] …）で候補を先に列挙
+    できないので生成経路に任せる。None は「judge で決めなかった」——ローカル定義でない・
+    ollama に届かない・確度不足——で、呼び出し側は従来の生成経路へ倒す。
+    """
+    if len(deps) < 2:
+        return None
+    cli, effective_model = _effective_agent("filter", model, agent)
+    judge_model = _judge.local_model(cli, effective_model)
+    if judge_model is None:
+        return None
+    started = time.time()
+    try:
+        result = _judge.evaluate(_filter_judge_state(deps), _filter_judge_questions(goal, deps),
+                                 model=judge_model)
+    except _judge.JudgeError:
+        return None
+    usage = result.get("usage") or {}
+    _node_budget_record(time.time() - started, "filter", _canonical_cli(cli), judge_model,
+                        tokens_in=usage.get("tokens_in"), tokens_out=usage.get("tokens_out"))
+    answers = result["answers"]
+    if _judge.abstained(answers, _FILTER_JUDGE_MIN_CONFIDENCE):
+        return None
+    kept = [dep for dep in deps if bool(answers[dep].get("value"))]
+    probabilities = {dep: answers[dep].get("probability") for dep in deps}
+    methods = sorted({str(a.get("method")) for a in answers.values()})
+    data = {"kept": kept, "decided_by": "judge", "probabilities": probabilities,
+            "method": methods[0] if len(methods) == 1 else methods,
+            "coverage": min(float(a.get("coverage") or 0.0) for a in answers.values())}
+    detail = ", ".join(f"{dep}={probabilities[dep]}" for dep in deps)
+    text = f"[filter] 採用={','.join(kept) or '(なし)'}（judge: {detail}）"
+    return text, data
+
+
 def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                  art_dir: "str | None" = None, dep_arts: "dict | None" = None,
                  repo_instruction: str = "", workspace: "dict | None" = None,
@@ -1384,6 +1447,13 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     deps = dep_results
     if kind in ("reduce", "synthesize", "filter", "judge"):
         deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}
+    if kind == "filter" and not pipe:
+        # 単一基準の filter は、ローカル定義で回しているとき judge（分布の読み出し）で
+        # 決める。生成経路（JSON を書かせて kept を拾う）へ倒すのは judge が決めなかった
+        # ときだけ。判定契約（pipe）のある多基準は従来どおり抽出 → 機械判定。
+        judged = filter_judge(goal, deps, model, agent)
+        if judged is not None:
+            return judged
     art_note = artifact_instruction(art_dir, dep_arts)
     repair_note = repair_instruction(repair)   # 案 B-1・オプトイン（repair=None なら空文字）
     read_note = render_read_allocation(read_allocation)

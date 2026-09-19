@@ -1733,6 +1733,96 @@ class GlobalInstructionsTests(unittest.TestCase):
         self.assertEqual(rec["instructions_revision_applied"], 3)
 
 
+class FilterJudgeTests(unittest.TestCase):
+    """判定契約の無い filter を judge（分布の読み出し）で決める。
+
+    候補は依存 1 件 = 候補 1 件。ローカル定義で回しているときだけ使い、judge が決めなかった
+    （クラウド CLI・失敗・確度不足・依存 1 件）ときは従来の生成経路へ倒す。
+    """
+
+    DEPS = {"g1": {"output": "案 A: pandas を追加。テスト pass"},
+            "g2": {"output": "案 B: 標準ライブラリのみ。テスト fail"},
+            "g3": {"output": "案 C: 標準ライブラリのみ。テスト pass", "data": {"lines": 41}}}
+
+    @staticmethod
+    def _answers(**values):
+        return {"answers": {name: {"type": "boolean", "value": v,
+                                   "probability": 0.9 if v else 0.1, "confidence": 0.9,
+                                   "coverage": 0.95, "method": "logprobs"}
+                            for name, v in values.items()},
+                "usage": {"tokens_in": 30, "tokens_out": 3}, "model": "gemma4:e4b"}
+
+    def _run(self, deps, *, local=True, judge_result=None, judge_error=None):
+        seen = {}
+
+        def fake_evaluate(state, questions, **kwargs):
+            seen.update(state=state, questions=questions, kwargs=kwargs)
+            if judge_error:
+                raise kf._judge.JudgeError(judge_error)
+            return judge_result
+
+        def fake_run(prompt, model, purpose="", **_kw):
+            seen["generated"] = prompt
+            return '{"kept": ["g1"]}'
+
+        with mock.patch.object(kf._judge, "evaluate", side_effect=fake_evaluate), \
+             mock.patch.object(kf._judge, "local_model",
+                               return_value="gemma4:e4b" if local else None), \
+             mock.patch.object(kf, "_node_budget_record"), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            text, data = kf.execute_agent("filter", "テストが pass する案だけ残す", deps, None)
+        return text, data, seen
+
+    def test_local_filter_is_decided_by_judge_one_boolean_per_candidate(self):
+        text, data, seen = self._run(self.DEPS, judge_result=self._answers(g1=True, g2=False, g3=True))
+        self.assertEqual(data["kept"], ["g1", "g3"])
+        self.assertEqual(data["decided_by"], "judge")
+        self.assertEqual(data["method"], "logprobs")
+        self.assertTrue(text.startswith("[filter] 採用=g1,g3"))
+        self.assertNotIn("generated", seen, "judge が決めたので生成経路は呼ばない")
+        self.assertEqual(sorted(seen["questions"]), ["g1", "g2", "g3"])
+        for q in seen["questions"].values():
+            self.assertEqual(q["type"], "boolean")
+            self.assertIn("テストが pass する案だけ残す", q["instructions"])
+        # 状態は候補の列挙（依存の本文と data）。全問が同じ状態を共有する。
+        self.assertIn("[g2] 案 B", seen["state"])
+        self.assertIn("lines", seen["state"])
+        self.assertEqual(seen["kwargs"]["model"], "gemma4:e4b")
+
+    def test_cloud_agent_keeps_the_generative_path(self):
+        text, data, seen = self._run(self.DEPS, local=False)
+        self.assertIn("generated", seen)
+        self.assertEqual(data, {"kept": ["g1"]})
+
+    def test_a_single_dependency_is_not_enumerable_and_goes_to_the_model(self):
+        _text, _data, seen = self._run({"gen": {"output": "[c1] … [c2] …"}},
+                                       judge_result=self._answers(gen=True))
+        self.assertIn("generated", seen)
+        self.assertNotIn("questions", seen, "候補を列挙できない形では judge に訊かない")
+
+    def test_judge_failure_falls_back_to_the_model(self):
+        _text, data, seen = self._run(self.DEPS, judge_error="ollama に接続できません")
+        self.assertIn("generated", seen)
+        self.assertEqual(data, {"kept": ["g1"]})
+
+    def test_low_confidence_falls_back_to_the_model(self):
+        with mock.patch.object(kf, "_FILTER_JUDGE_MIN_CONFIDENCE", 0.95):
+            _text, data, seen = self._run(self.DEPS,
+                                          judge_result=self._answers(g1=True, g2=False, g3=True))
+        self.assertIn("generated", seen)
+        self.assertEqual(data, {"kept": ["g1"]})
+
+    def test_decision_contract_still_wins_over_judge(self):
+        """判定契約（多基準）のあるノードは judge に訊かない（抽出 → 機械判定のまま）。"""
+        with mock.patch.object(kf._judge, "evaluate",
+                               side_effect=AssertionError("judge must not be called")), \
+             mock.patch.object(kf._judge, "local_model", return_value="gemma4:e4b"), \
+             mock.patch.object(kf, "run_agent", return_value=DecisionPipeTests.FACTS):
+            _text, data = kf.execute_agent("filter", "候補から選ぶ", self.DEPS, None,
+                                           decision=DecisionPipeTests.DECISION)
+        self.assertEqual(data["decided_by"], "machine")
+
+
 class DecisionPipeTests(unittest.TestCase):
     """filter / judge の決定化パイプ（node.decision）: モデルは事実だけ、判定は機械。"""
 

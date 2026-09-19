@@ -105,6 +105,9 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
   判定（抽出 → 機械判定。採否はモデルではなく機械が決める）:
     decide --decision <契約>  候補（stdin）から事実を抽出し、契約どおりに選別する
 
+  判断（型付きの問いに確率つきで答える。文章は生成しない）:
+    judge --questions <問い>  状態（stdin）に対して choice / boolean / score で答える
+
   観測（LLM を呼ばない）:
     status [LOG]          いまの進捗を 1 行 JSON で返す
     follow [LOG]          進捗ログを追尾表示する
@@ -478,6 +481,130 @@ def cmd_decide(argv, *, err=None, runner=None, stdin=None, out=None) -> int:
     print(json.dumps(result, ensure_ascii=False), file=out)
     # 欠測が残る＝機械が決め切れていない。静かに合否へ倒さず、終了コードで伝える。
     return 1 if result["undecided"] else 0
+
+
+# ---------------------------------------------------------------------------
+# judge — 型付きの判断を確率つきで返す（System One 型の判断 AI）
+# ---------------------------------------------------------------------------
+DEFAULT_MODEL_PLACEHOLDER = "<既定モデル>"
+
+JUDGE_HELP = f"""使い方: {PROG} judge --questions <問い> [オプション] < 状態
+
+  状態（stdin か --state）に対して、名前付きの問いに型付きで答える。文章は生成せず、
+  選択肢の上の確率分布を返す（1 トークン目の分布の読み出し）。
+
+  --questions <JSON|パス>  問いの集合 {{名前: 問い}}。問いの形:
+                           {{"type":"choice","instructions":"…","criteria":{{"キー":"説明",…}}}}
+                           {{"type":"boolean","instructions":"…"}}
+                           {{"type":"score","instructions":"…","criteria":["low","mid","high"]}}
+                           どの型も "other":"説明" で「どれでもない」を足せる
+  --state <パス>           状態をファイルから読む（省略時は stdin）
+  --model <モデル>         既定 {DEFAULT_MODEL_PLACEHOLDER}
+  --min-confidence <0-1>   確度がこれ未満の問いを abstained に載せ、終了コード 1
+  --samples <N>            ollama が logprobs を返さないとき、N 回引いて票数を確率にする
+  --think on|off|auto      thinking の指定（既定 off。auto は送らない）
+
+  stdout は {{"answers": {{名前: 答え}}, "abstained": [名前…]}} の 1 行。答えには
+  probabilities / confidence / coverage / method が付く。method が logprobs 以外なら
+  確率は目安にすぎない。usage は stderr の @agent-usage。"""
+
+
+def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
+    """Jev 型の判断: 状態 + 型付きの問い → 確率つきの答え。判定規則は `agentcore.judge`。"""
+    err = err or sys.stderr
+    out = out or sys.stdout
+    from agentcore import judge
+
+    tokens = list(argv)
+    if tokens and tokens[0] in ("-h", "--help", "help"):
+        print(JUDGE_HELP.replace(DEFAULT_MODEL_PLACEHOLDER, judge.DEFAULT_MODEL))
+        return 0
+    questions_arg = state_path = None
+    model = judge.DEFAULT_MODEL
+    min_confidence = 0.0
+    samples = 1
+    think: "bool | None" = False
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in ("--questions", "--state", "--model", "--min-confidence",
+                     "--samples", "--think"):
+            if i + 1 >= len(tokens):
+                _err(f"{token} には値が必要です", err=err)
+                return 2
+            i += 1
+            value = tokens[i]
+            if token == "--questions":
+                questions_arg = value
+            elif token == "--state":
+                state_path = value
+            elif token == "--model":
+                model = value
+            elif token == "--min-confidence":
+                try:
+                    min_confidence = float(value)
+                except ValueError:
+                    _err(f"--min-confidence は数です: {value!r}", err=err)
+                    return 2
+            elif token == "--samples":
+                try:
+                    samples = max(1, int(value))
+                except ValueError:
+                    _err(f"--samples は整数です: {value!r}", err=err)
+                    return 2
+            else:
+                if value not in ("on", "off", "auto"):
+                    _err("--think は on / off / auto のどれかです", err=err)
+                    return 2
+                think = {"on": True, "off": False, "auto": None}[value]
+        else:
+            _err(f"judge は {token} を受け取りません（問いは --questions、状態は stdin か --state）",
+                 err=err)
+            return 2
+        i += 1
+    if not questions_arg:
+        _err("--questions に問いの集合（JSON のパスか JSON そのもの）が必要です", err=err)
+        return 2
+    try:
+        path = Path(questions_arg).expanduser()
+        raw = path.read_text(encoding="utf-8") if path.is_file() else questions_arg
+        questions = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        _err(f"問いを読めません: {exc}", err=err)
+        return 2
+    errors = judge.question_errors(questions)
+    if errors:
+        _err("問いが不正です: " + " / ".join(errors), err=err)
+        return 2
+    if state_path:
+        try:
+            state = Path(state_path).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            _err(f"状態を読めません: {exc}", err=err)
+            return 2
+    else:
+        state = _read_prompt(stdin)
+    if not state.strip():
+        _err("状態が空です（stdin か --state で渡します）", err=err)
+        return 2
+
+    from agentcore.hostenv import load_profile_env
+    load_profile_env()
+    try:
+        result = judge.evaluate(state, questions, model=model, think=think,
+                                samples=samples, request=request)
+    except judge.JudgeError as exc:
+        _err(str(exc), err=err)
+        return 1
+    held = judge.abstained(result["answers"], min_confidence)
+    print(json.dumps({"answers": result["answers"], "abstained": held}, ensure_ascii=False),
+          file=out)
+    usage = result["usage"]
+    print(f"@agent-usage tokens_in={usage['tokens_in']} tokens_out={usage['tokens_out']}",
+          file=err)
+    # 確度が足りない＝決めていない。静かに答えへ倒さず、終了コードで伝える（decide と同じ作法）。
+    return 1 if held else 0
+
 
 
 def _capture_argv(built: dict) -> "tuple[int, str]":
@@ -872,13 +999,16 @@ def main(argv=None, prog=None) -> int:
         return cmd_harness(rest)
     if sub == "decide":
         return cmd_decide(rest)
+    if sub == "judge":
+        return cmd_judge(rest)
 
     # 未知。定義名なら exec を案内する（黙って別解釈しない）。
     if _known_definition(sub):
         _err(f"{sub!r} は定義であって adapter ではありません。"
              f"定義を指定して回すなら: {PROG} exec {sub} [--model <モデル>]")
         return 2
-    known = sorted({*ADAPTERS, *OBSERVE_ALIASES, "defs", "exec", "chat", "harness", "decide"})
+    known = sorted({*ADAPTERS, *OBSERVE_ALIASES, "defs", "exec", "chat", "harness", "decide",
+                    "judge"})
     _err(f"未知のサブコマンド: {sub!r}（使えるのは {', '.join(known)}）")
     return 2
 

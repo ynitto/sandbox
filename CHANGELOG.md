@@ -7,6 +7,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 型付きの問いに確率つきで答える `judge`（Jev 型の判断 AI をローカルで）
+
+TypeSafe AI の Jev（System One モデル）が示した「文章を生成せず、決まった選択肢の上の
+確率分布を返す」形を、LAN の ollama（既定 `gemma4:e4b`）で真似る口を足した。
+
+- **`agent-herd judge --questions <問い> < 状態`。** 問いは Jev と同じ `{名前: {type, instructions,
+  criteria}}` で、型は `choice` / `boolean` / `score`。答えには `probabilities` /
+  `confidence` / `coverage` / `method` が付く。`--min-confidence` に届かない問いは
+  `abstained` に載せて終了コード 1——確度が足りない答えを黙って採用させない（`decide` と同じ作法）。
+- **生成しない。** 選択肢に A / B / C … を振り、`logprobs` で 1 トークン目の分布を読んで
+  正規化する。生成上限は 4 トークン、温度 0。JSON が壊れる・散文が混じる・暴走する、という
+  生成経路の故障モードが原理的に無い。同じ状態への複数の問いは状態を先に並べて接頭辞
+  キャッシュに乗せる。
+- **確率の出どころを隠さない。** ollama が `logprobs` を返さなければ `--samples N` の票数
+  （`method: vote`）か本文の 1 文字（`method: text`・`coverage: 0`）へ縮退し、確率 1.0 を
+  捏造しない。
+- Python からは `agentcore.judge.evaluate(state, questions)`。`request` を差し替えられるので、
+  消費側のテストは ollama 無しで書ける。
+- **statemachine の遷移条件に配線した。** 決定的な規則で決まらない条件（`needs_llm_eval`）は、
+  ローカル定義（aider / ollama）で回しているとき judge に条件ごと boolean で訊き、答えを
+  そのまま `next_state.py` の `--evals` に載せる。判定 1 件が prefill 1 回で終わり、JSON を
+  読めずに落ちる形が消える。judge が使えない・確度が足りないときは従来の制御応答へ倒し、
+  証跡に `condition_judge_fallback` を残す。クラウド CLI の実行は従来どおり。
+- **agent-project の route と agent-flow の単一基準 filter にも配線した。** route は候補
+  リポジトリを `choice` の選択肢にし、「どの候補にも属さない」を明示の選択肢（`other`）に
+  して空（書込先なし）へ写す。filter は依存 1 件 = 候補 1 件で boolean を 1 問ずつ訊き、
+  `kept` と `probabilities` を `data` に返す（`decided_by: "judge"`）。どちらもローカル定義で
+  回しているときだけで、judge が決めなければ（クラウド CLI・接続不能・確度不足・候補を
+  列挙できない）従来の生成経路。多基準の `decision` は従来どおり抽出 → 機械判定。
+- **agent-project の投入時採点（assess）にも配線した。** 複雑さ・リスク・曖昧さの 3 軸を
+  3 段の `score` の問い 3 つにし、確率加重の値を四捨五入して 1〜3 にする（最頻の段だけを
+  採ると分布の情報を捨てる）。記録する書式は変えないので、採点を読む側（リスクダイジェスト・
+  spec ルーティング）は無改修。judge が決めなければ生成経路、それも駄目なら従来どおり
+  決定的ヒューリスティック。
+- 実装: `agentcore/judge.py`・`herdcli.cmd_judge`。テスト: `test_judge`（16 件）・
+  `test_herdcli.JudgeTests`（7 件）。設計:
+  [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)。
+  gemma4:e4b での実測（`coverage` の分布・確度と正答の関係）は設計 §6 のとおり未着手。
+
 ### agent-app: 定型化したものの「公開」を、そのものが居る画面に置く（0.13.0）
 
 **言葉を分けた。** 同じ LAN の参加者に依頼やセッションを見せるのが「共有」、リポジトリへ出して
