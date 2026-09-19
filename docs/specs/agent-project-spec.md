@@ -291,7 +291,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 | `multi_workspace` | false | 書込先が複数になること（workset）を許すか。true のとき、`owns` が複数 repo にヒットしたタスクを「両方に書く」と読む。人の明示 `- workspace: a, b` と `route: ... -> a+b` はこの設定に関係なく効く。auto-route（LLM）には複数を選ばせない |
 | `planner_skill` | backlog-planner | 分解のプロンプト・出力契約を供給するスキル（見つからなければ組み込みへ落ちる） |
 | `plan_sections` | required | 必須項目（why / desc / acceptance / size）の欠落を 1 回再要求し、なお欠ければ人の目へ回す（`warn` は注記だけ） |
-| `assess` | true | 複雑さ・リスク・曖昧さの採点 |
+| `assess` | true | 複雑さ・リスク・曖昧さの採点。ローカル定義で回しているときは判断 AI（`agent-herd judge` と同じ分布の読み出し）が軸ごとに 3 段の確率を出し、確率加重の値を四捨五入して 1〜3 にする。クラウド CLI、Ollama に届かない、確度不足のときはモデルに JSON を書かせる従来経路、それも駄目なら決定的ヒューリスティック |
 | `spec_threshold_full` / `spec_threshold_light` | 3 / 2 | 採点がこの値以上ならフル spec（spec / design / tasks）／ライト spec（design.md 1 枚）を前置する。`light > full` は full へ丸める |
 | `repo_map` | false | `context/<repo>.md` の生成。読み出しは常時で、plan と spec の経路は設定に関わらず生成する（既存コードの文脈が無いと必須セクションが書けないため） |
 | `rules_capture` | true | 効いた learn の `rules.md` への昇格 |

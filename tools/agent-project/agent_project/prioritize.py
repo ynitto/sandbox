@@ -6,6 +6,7 @@ from __future__ import annotations
 # LLM 応答からの JSON 抽出は agentcore の 1 実装を使う（写しを置かない・C7）。
 from agentcore import llmjson as _llmjson  # noqa: E402
 from agentcore import judge as _judge  # noqa: E402
+import math as _math  # noqa: E402
 def consumable_tasks(tasks: "list[Task]") -> "list[Task]":
     return [t for t in tasks if t.consumable()]
 
@@ -850,19 +851,85 @@ def _assess_heuristic(cfg: "Config", task: Task) -> dict:
     return {"c": c, "r": r, "a": a}
 
 
+def _assess_material(task: Task) -> str:
+    """採点の材料（タスク定義から取れるものだけ）。生成経路と judge 経路で同じものを渡す
+    ——材料が経路で違うと、採点が変わったのがモデルのせいか材料のせいか分からなくなる。"""
+    return (
+        f"タイトル: {task.title}\n"
+        f"verify: {task.verify or '（未定義）'}\n"
+        f"受入基準: {' / '.join(task_acceptance(task)) or '（なし）'}\n"
+        f"note: {task.get('note') or '（なし）'}\n"
+        + "".join(f"{k}: {task.get(k)}\n"       # 誘導・レビュー記述があれば採点材料に足す（有るものだけ）
+                  for k in ("why", "desc", "scope", "constraints") if task.get(k)))
+
+
 def _assess_prompt(task: Task) -> str:
     return (
         "あなたはタスクの事前アセスメント役です。以下のタスクを 3 軸で採点してください（各 1〜3 の整数）。\n"
         "- c=複雑さ: 関与するファイル・コンポーネント・手順の多さ（3=多岐にわたる）\n"
         "- r=リスク: 壊したときの影響の大きさ（認証・決済・データ移行・本番設定などは 3）\n"
         "- a=曖昧さ: 完了条件・やり方の不確かさ（verify が具体的なら 1）\n\n"
-        f"タイトル: {task.title}\n"
-        f"verify: {task.verify or '（未定義）'}\n"
-        f"受入基準: {' / '.join(task_acceptance(task)) or '（なし）'}\n"
-        f"note: {task.get('note') or '（なし）'}\n"
-        + "".join(f"{k}: {task.get(k)}\n"       # 誘導・レビュー記述があれば採点材料に足す（有るものだけ）
-                  for k in ("why", "desc", "scope", "constraints") if task.get(k))
+        + _assess_material(task)
         + '\n出力は JSON オブジェクトのみ（説明文なし）: {"c": 1, "r": 1, "a": 1}')
+
+
+# 採点を judge で決めるときの確度の下限。0 なら棄権しない。AS1 / AS2 を judge 経路で
+# 引き直してから既定を決める（judge 設計 2026-09-19 §6）。届かなければ生成経路で訊く。
+_ASSESS_JUDGE_MIN_CONFIDENCE = 0.0
+
+# 3 軸 × 3 段の段の説明。生成経路の軸定義（`_assess_prompt` の 3 行）と同じ意味を、
+# 段ごとに分けて書いたもの。judge は選択肢の説明を読んで 1 段を選ぶ。
+_ASSESS_AXES = (
+    ("c", "このタスクの複雑さ（関与するファイル・コンポーネント・手順の多さ）はどれか。",
+     {"1": "単一のファイル・単純な手順で終わる", "2": "複数のファイルや手順にまたがる",
+      "3": "多岐にわたる（多くの対象・段取りが要る）"}),
+    ("r", "このタスクのリスク（壊したときの影響の大きさ）はどれか。",
+     {"1": "壊れても影響が小さい", "2": "中程度の影響がある",
+      "3": "影響が大きい（認証・決済・データ移行・本番設定など）"}),
+    ("a", "このタスクの曖昧さ（完了条件・やり方の不確かさ）はどれか。",
+     {"1": "verify が具体的で、完了条件がはっきりしている",
+      "2": "受入基準は自然文だけで、確かめ方は決まっていない",
+      "3": "完了条件もやり方も決まっていない"}),
+)
+
+
+def _assess_judge_questions() -> dict:
+    """3 軸を `score`（順序つき 3 段）の問い 3 つにする。1 軸 1 問——3 軸を 1 問で訊かない。"""
+    return {axis: {"type": "score", "instructions": text, "criteria": buckets}
+            for axis, text, buckets in _ASSESS_AXES}
+
+
+def assess_judge(cfg: "Config", task: Task) -> "dict | None":
+    """投入時アセスメントを judge（段ごとの確率分布）で採点する。
+
+    各軸の値は確率加重の `score` を四捨五入した 1〜3——最頻の段だけを採ると分布の情報を
+    捨てる（判断 AI 設計 §2.1）。記録する書式（`c=N r=N a=N`）は生成経路と同じなので、
+    読む側（リスクダイジェスト・spec ルーティング）は何も変えなくてよい。
+
+    None は「judge で採点しなかった」——ローカル定義でない・ollama に届かない・確度が
+    下限に届かない・段を読めない——で、呼び出し側は生成経路（さらにその先はヒューリス
+    ティック）へ倒す。
+    """
+    cli, model_ov = _agent_for("assess")
+    model = _judge.local_model(cli, model_ov or cfg.model)
+    if model is None:
+        return None
+    try:
+        result = _judge.evaluate(_assess_material(task), _assess_judge_questions(), model=model)
+    except _judge.JudgeError:
+        return None
+    answers = result["answers"]
+    if _judge.abstained(answers, _ASSESS_JUDGE_MIN_CONFIDENCE):
+        return None
+    scores: dict = {}
+    for axis, _text, _buckets in _ASSESS_AXES:
+        value = answers.get(axis, {}).get("score")
+        if value is None:
+            return None
+        # 四捨五入は自前で行う——組み込みの round() は偶数丸めで、ちょうど 2.5 が 2 へ
+        # 落ちる（段の境目で下振れする）。
+        scores[axis] = min(3, max(1, _math.floor(float(value) + 0.5)))
+    return scores
 
 
 def assess_task(cfg: "Config", task: Task, agent_run=None) -> "str | None":
@@ -872,7 +939,11 @@ def assess_task(cfg: "Config", task: Task, agent_run=None) -> "str | None":
     if task.get("assess"):
         return task.get("assess")
     scores = None
-    if cfg.executor != "stub":
+    if cfg.executor != "stub" and agent_run is None:
+        # ローカル定義で回しているときは、まず judge（段ごとの分布）に訊く。決めなければ
+        # 従来の生成経路へ。`agent_run` を明示した呼び出しは生成経路だけを使う。
+        scores = assess_judge(cfg, task)
+    if scores is None and cfg.executor != "stub":
         run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="assess"))
         try:
             obj = _extract_json_obj(run(_assess_prompt(task), cfg.model)) or {}

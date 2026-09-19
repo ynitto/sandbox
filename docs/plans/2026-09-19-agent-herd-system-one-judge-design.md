@@ -145,7 +145,7 @@ Python からは `agentcore.judge.evaluate(state, questions, model=…)`。`requ
 | statemachine の遷移条件（`needs_llm_eval`） | **配線済み（2026-09-19）。** 条件は真偽で答えの集合が固定、同じ出力（状態）に複数の条件（問い）という形が本設計の得意な形そのもの。`_sm_judge_conditions` が条件 1 件を boolean 1 問にして `judge.evaluate` を呼び、答えを `--evals` へ載せる。使うのはローカル定義（`relative_cost` 0）のときだけで、judge の失敗・確度不足（`_SM_JUDGE_MIN_CONFIDENCE`、既定 0）は従来の制御応答へ倒し、証跡（`condition_judge_*`）に残す。しきい値の既定は §6 の実測後に決める |
 | agent-project の `route`（書込先の自動ルーティング） | **配線済み（2026-09-19）。** `request.route_judge` が候補リポジトリを `choice` の選択肢に、`other` を「どの候補にも属さない」にして 1 問で訊く。`other` は ""（書込先なし）に写す——RO3 の「決められないと言えるか」が明示の選択肢になる。judge が決めなければ従来の `_route_agent_prompt` |
 | agent-flow の `filter`（単一基準・`decision` 無し） | **配線済み（2026-09-19）。** `agent.filter_judge` が依存 1 件 = 候補 1 件で boolean を 1 問ずつ訊き、`kept` を作る。依存が 1 件（本文に候補が並ぶ形）は候補を列挙できないので生成経路。多基準（`decision` あり）は従来どおり抽出 → 機械判定 |
-| agent-project の `assess` | 次の候補。c / r / a の 3 段の採点は `score` 型そのもの |
+| agent-project の `assess` | **配線済み（2026-09-19）。** c / r / a の 3 段の採点は `score` 型そのもの。`prioritize.assess_judge` が軸 1 つを問い 1 つにし、確率加重の `score` を四捨五入（偶数丸めを避けるため自前）して 1〜3 にする。記録する書式 （`c=N r=N a=N`）は変えないので、読む側（リスクダイジェスト・spec ルーティング）は無改修。judge が決めなければ生成経路、それも駄目なら既存のヒューリスティック |
 
 ## 6. 測ってから決めること
 

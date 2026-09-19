@@ -36,6 +36,11 @@ TypeSafe AI の Jev（System One モデル）が示した「文章を生成せ�
   `kept` と `probabilities` を `data` に返す（`decided_by: "judge"`）。どちらもローカル定義で
   回しているときだけで、judge が決めなければ（クラウド CLI・接続不能・確度不足・候補を
   列挙できない）従来の生成経路。多基準の `decision` は従来どおり抽出 → 機械判定。
+- **agent-project の投入時採点（assess）にも配線した。** 複雑さ・リスク・曖昧さの 3 軸を
+  3 段の `score` の問い 3 つにし、確率加重の値を四捨五入して 1〜3 にする（最頻の段だけを
+  採ると分布の情報を捨てる）。記録する書式は変えないので、採点を読む側（リスクダイジェスト・
+  spec ルーティング）は無改修。judge が決めなければ生成経路、それも駄目なら従来どおり
+  決定的ヒューリスティック。
 - 実装: `agentcore/judge.py`・`herdcli.cmd_judge`。テスト: `test_judge`（16 件）・
   `test_herdcli.JudgeTests`（7 件）。設計:
   [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)。

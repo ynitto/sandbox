@@ -418,7 +418,7 @@ split / extract / retrieve に 1 回）と寛容パーサだけで、内容に�
 | 評価役・検証役・分類 | E1〜E3・V1〜V3・CL1 |
 | 取得（`retrieve`。`ollama-read` profile・道具 read） | RT1・RT2 |
 | 統合（`synthesize`。落とさず足さず） | SY1 |
-| 順序付け・事前採点・門番・蒸留 | PR1・AS1〜2・AD1〜2・DS1 |
+| 順序付け・事前採点・門番・蒸留 | PR1・AS1〜2・AD1〜2・DS1。事前採点（`assess`）はローカル定義のとき `judge` の `score` で段を採り、judge が決めなければ生成経路 |
 | dashboard の下書き・候補提案 | MD1・AC1・EA1・CD1・CR1・FS1・SC1 |
 | チーム編成・合議の手続き（amigos） | TB1・CO1・RA1 |
 
