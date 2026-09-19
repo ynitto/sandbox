@@ -1,6 +1,6 @@
 ---
 name: table-spec-extractor
-description: "【非推奨】spec-value-finder を使用してください。Excel/PDFの仕様書テーブルをTable TransformerでAST化しNeo4jグラフへ保存・GraphRAG検索するパイプライン（deprecated）。Neo4j・GPU依存が重く可搬性に欠けるため後継スキルへ移行。"
+description: 【非推奨】spec-value-finder を使用してください。Excel/PDF の仕様書テーブルを Table Transformer でAST 化し、Neo4j グラフへ保存・GraphRAG 検索します。既存の Neo4j 資産を読む場合にだけ使用してください。
 metadata:
   version: "2.4.0"
   tier: deprecated

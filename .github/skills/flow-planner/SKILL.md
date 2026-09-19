@@ -1,6 +1,6 @@
 ---
 name: flow-planner
-description: agent-flow の orchestrator 向け高精度タスク分解・戦略選択スキル。要求を分析し、7パターン（map-reduce 含む）＋複合パターンから最適な戦略を選定し、実行可能なタスクグラフを生成する。decomposition スキルの分解能力を内包し、agent-flow の `--planner flow-planner` で利用する。
+description: agent-flow の orchestrator 向けに、要求を分析して 7 パターン＋複合パターンから最適な戦略を選び、実行可能なタスクグラフを生成します。agent-flow を `--planner flow-planner` で動かす場合に使用してください。
 metadata:
   version: 1.0.1
   tier: experimental

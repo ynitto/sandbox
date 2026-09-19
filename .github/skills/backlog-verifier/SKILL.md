@@ -1,6 +1,6 @@
 ---
 name: backlog-verifier
-description: agent-project のタスクを「受入基準チェックリスト × 証跡」で検証する検証エージェント向けスキル。1 行のシェルコマンドの exit 0 を done の唯一の根拠にする方式をやめ、基準ごとに実行時にコマンドを試行錯誤して充足を確かめ、証跡付きの判定レポートを返す。agent-project の settle（verifier）から呼ばれる。
+description: agent-project のタスクを「受入基準チェックリスト × 証跡」で検証し、基準ごとの判定レポートを返します。agent-project の settle（verifier）から呼ばれる場合に使用してください。
 metadata:
   version: 1.0.0
   tier: experimental
