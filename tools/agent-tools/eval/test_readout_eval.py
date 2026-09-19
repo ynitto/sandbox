@@ -9,6 +9,11 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+import json
+import tempfile
+import urllib.error
+from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -61,6 +66,134 @@ class SummarizeTests(unittest.TestCase):
         self.assertIsNone(summary["coverage"]["share_below_floor"])
         self.assertIsNone(summary["coverage"]["median"])
         self.assertIn("信頼度図", readout_eval.format_report(summary))
+
+
+def calibration_row(cid="A", confidence=.8, correct=True, method="logprobs", coverage=.95):
+    answer = {"type": "boolean", "value": correct, "method": method,
+              "probabilities": {"yes": confidence if correct else 1-confidence,
+                                "no": 1-confidence if correct else confidence},
+              "confidence": 0 if method == "text" else confidence, "coverage": coverage}
+    return {"schema_version": 1, "model": "fake", "source": "fake", "case": cid,
+            "run": 1, "status": "ok", "answers": {"q": answer}, "expected": {"q": "yes"},
+            "question_ok": {"q": correct}, "ok": correct, "wall": .1,
+            "usage": {"tokens_in": None, "tokens_out": None}}
+
+
+class CalibrationTests(unittest.TestCase):
+    def report(self, rows, **kwargs):
+        return readout_eval.calibration_report(rows, model="fake", **kwargs)
+
+    def test_brier_binary_and_multiclass(self):
+        self.assertAlmostEqual(readout_eval.brier(calibration_row()["answers"]["q"], "yes"), .08)
+        self.assertAlmostEqual(readout_eval.brier({"probabilities": {"a": .6, "b": .3, "c": .1}}, "b"), .86)
+
+    def test_sweep_abstention_boundary_and_ece(self):
+        group = self.report([calibration_row(), calibration_row("B", .6, False)], min_confidence=.8)["methods"][0]
+        self.assertEqual((group["answered"], group["abstained"], group["answer_rate"]), (1, 1, .5))
+        self.assertEqual(group["accuracy_answered"], 1)
+        self.assertAlmostEqual(group["brier"], .4)
+        self.assertAlmostEqual(group["ece"], .4)
+        sweep = {r["min_confidence"]: r for r in group["thresholds"]}
+        self.assertEqual(sweep[.6]["accepted_cases"], 2)
+        self.assertEqual(sweep[.8]["accepted_cases"], 1)
+        self.assertIsNone(sweep[.9]["accuracy"])
+        self.assertEqual(group["abstained_case_ids"], ["B:1:q"])
+
+    def test_coverage_percentiles_and_bucket_endpoints(self):
+        rows = [calibration_row(str(i), c, coverage=c) for i, c in enumerate([.5, .79, .8, 1.0])]
+        group = self.report(rows)["methods"][0]
+        self.assertAlmostEqual(group["coverage"]["p10"], .587)
+        self.assertAlmostEqual(group["coverage"]["p50"], .795)
+        self.assertAlmostEqual(group["coverage"]["p90"], .94)
+        self.assertEqual(group["coverage"]["below_0_8"], 2)
+        self.assertEqual(group["coverage"]["low_case_ids"], ["0:1:q", "1:1:q"])
+        self.assertEqual(group["buckets"][-1]["n"], 2)
+
+    def test_methods_and_mixed_cell_are_separate(self):
+        mixed = calibration_row()
+        mixed["answers"]["v"] = calibration_row(method="vote")["answers"]["q"]
+        mixed["expected"]["v"] = "yes"
+        mixed["question_ok"]["v"] = True
+        report = self.report([mixed, calibration_row("T", 1, method="text", coverage=0)])
+        self.assertEqual([g["cases"] for g in report["methods"]], [1, 1, 1])
+        text = report["methods"][2]
+        self.assertIsNone(text["brier"])
+        self.assertIsNone(text["ece"])
+        self.assertEqual(text["abstained"], 1)
+        self.assertTrue(all(r["accepted_cases"] == 0 for r in text["thresholds"]))
+        self.assertIn(["logprobs", "vote"], [g["methods"] for g in report["cell_gates"]])
+
+    def test_empty_and_repeats_are_insufficient(self):
+        self.assertEqual(self.report([])["status"], "insufficient_data")
+        report = self.report([calibration_row()] * 120)
+        self.assertEqual(report["status"], "insufficient_data")
+        self.assertEqual(report["methods"][0]["unique_cases"], 1)
+        self.assertEqual(report["methods"][0]["thresholds"][0]["status"], "insufficient_data")
+
+    def test_failure_is_not_wrong_and_missing_usage_is_explicit(self):
+        failed = calibration_row("fail")
+        failed.update(status="transport_failure", error="offline")
+        report = self.report([calibration_row(), failed])
+        self.assertEqual(report["transport_failures"], 1)
+        self.assertEqual(report["methods"][0]["accuracy_answered"], 1)
+        self.assertEqual(report["usage"]["tokens_in"]["missing_cells"], 2)
+
+    def test_fixture_oracles_and_fake_real_schema(self):
+        for cid in readout_eval.CELLS:
+            fake = readout_eval.calibration_run_one(cid, 1, "fake", fake=True)
+            self.assertTrue(fake["ok"], cid)
+            with patch.object(readout_eval.judge, "evaluate", return_value={"answers": fake["answers"]}):
+                real = readout_eval.calibration_run_one(cid, 1, "fake")
+            self.assertEqual(set(fake), set(real))
+            self.assertEqual(set(self.report([fake])), set(self.report([real])))
+            self.assertEqual(fake["expected"], real["expected"])
+
+    def test_transport_and_response_failure(self):
+        error = readout_eval.judge.JudgeError("unreachable")
+        error.__cause__ = urllib.error.URLError("offline")
+        with patch.object(readout_eval.judge, "post_chat", side_effect=error):
+            row = readout_eval.calibration_run_one("J2", 1, "fake")
+        self.assertEqual(row["status"], "transport_failure")
+        with patch.object(readout_eval.judge, "post_chat", return_value={"message": {"content": ""}}):
+            row = readout_eval.calibration_run_one("J2", 1, "fake")
+        self.assertEqual(row["status"], "response_failure")
+        self.assertIsNone(row["usage"]["tokens_in"])
+
+    def test_usage_observes_actual_response_fields(self):
+        response = {"message": {"content": "A"}, "prompt_eval_count": 17, "eval_count": 1}
+        with patch.object(readout_eval.judge, "post_chat", return_value=response):
+            row = readout_eval.calibration_run_one("J2", 1, "fake")
+        self.assertEqual(row["usage"], {"tokens_in": 17, "tokens_out": 1})
+        self.assertEqual(row["answers"]["winner"]["method"], "text")
+
+    def test_reject_legacy_mixed_models_and_invalid_numbers(self):
+        with self.assertRaises(ValueError):
+            self.report([_row(.8, True)])
+        row = calibration_row()
+        row["answers"]["q"]["confidence"] = float("nan")
+        with self.assertRaises(ValueError):
+            self.report([row])
+        with self.assertRaises(ValueError):
+            self.report([], min_confidence=float("nan"))
+
+    def test_oracle_refuses_ambiguous_labels(self):
+        q = {"q": {"type": "boolean", "instructions": "test"}}
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            readout_eval.oracle(q, lambda a: a, lambda a: (True, ""))
+
+    def test_fake_cli_and_replay_same_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "first"
+            args = ["readout_eval.py", "--fake-run", "--cases", "F1,J2", "--repeat", "1",
+                    "--model", "fake", "--output-dir", str(out)]
+            with patch.object(sys, "argv", args):
+                self.assertEqual(readout_eval.main(), 0)
+            replay = Path(tmp) / "replay"
+            with patch.object(sys, "argv", ["readout_eval.py", "--replay", str(out / "ledger.jsonl"),
+                                          "--model", "fake", "--output-dir", str(replay)]):
+                self.assertEqual(readout_eval.main(), 0)
+            self.assertEqual(json.loads((out / "report.json").read_text()),
+                             json.loads((replay / "report.json").read_text()))
 
 
 if __name__ == "__main__":

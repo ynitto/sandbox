@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('api', {
   removeRepo: (repo) => invoke('repo:remove', { repo }),
   listAgents: (repo) => invoke('agents:list', { repo }),
   listSkills: (repo) => invoke('skills:list', { repo }),
+  removeSkills: (repo, agent, keys) => invoke('skills:remove', { repo, agent, keys }),
   selectSkills: (repo, text, mode, selected) => invoke('skills:select', { repo, text, mode, selected }),
   listSessions: (repo) => invoke('session:list', { repo }),
   createSession: (payload) => invoke('session:create', payload),

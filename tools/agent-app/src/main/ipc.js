@@ -25,6 +25,7 @@ const forkProtocol = require('../renderer/forkProtocol');
 const response = require('./response');
 const { createGate } = require('./executionGate');
 const skills = require('./skills');
+const skillRemoval = require('./skillRemoval');
 const skillSelection = require('./skillSelection');
 const herd = require('./herd');
 const agentsMod = require('./agents');
@@ -962,7 +963,8 @@ function registerIpcHandlers(getWindow) {
     const verdicts = judged();
     // 公開できるのはリポジトリの中にあるものだけ。共通の置き場の個人のスキルは一覧に出すが、
     // 公開の操作は出さない（押せないものを出さない）。
-    const catalog = skills.catalog(repo, String((p && p.agent) || ''));
+    const roots = skills.sourceRoots(repo, String((p && p.agent) || ''));
+    const catalog = skills.catalogFromRoots(roots);
     const published = await skillPublication.states(catalog, artifacts.config().shareRepo);
     const items = catalog.map((item) => {
       const base = item.place === 'repo' ? publishState(repo, 'skill', item.name, verdicts)
@@ -970,9 +972,33 @@ function registerIpcHandlers(getWindow) {
       // 表示した実体と公開処理が読む正典が違う場合、別の同名スキルを公開させない。
       const found = item.place === 'repo' ? artifactShare.locate(repo, 'skill', item.name) : null;
       const actionable = !!found && path.resolve(found.full) === path.resolve(item.dir);
-      return skillPublication.present(item, base, published.get(item.path), actionable);
+      return { ...skillPublication.present(item, base, published.get(item.path), actionable), ...skillRemoval.describe(item, roots) };
     });
     return { repo, configured, items };
+  });
+  let removingSkills = false;
+  handle('skills:remove', async (p) => {
+    if (removingSkills) throw new Error('スキルの削除処理中です');
+    removingSkills = true;
+    try {
+      const result = await skillRemoval.remove({
+        keys: p.keys,
+        roots: () => skills.sourceRoots(p.repo ? requireRepo(p.repo) : '', String(p.agent || '')),
+        confirm: async (items) => {
+          const answer = await dialog.showMessageBox(getWindow(), {
+            type: 'warning', title: 'スキルを削除',
+            message: `${items.length} 件のスキルをゴミ箱へ移動しますか？`,
+            detail: items.map((item) => `${item.name}\n${item.deletePath}`).join('\n\n')
+              + '\n\nスキルのフォルダ全体（コマンド形式はファイル）を移動します。共通のスキルは他のリポジトリでも使えなくなります。',
+            buttons: ['キャンセル', 'ゴミ箱へ移動'], defaultId: 0, cancelId: 0, noLink: true,
+          });
+          return answer.response === 1;
+        },
+        trashItem: (target) => shell.trashItem(target),
+      });
+      if (result.removed.length) skillPublication.cache.clear();
+      return result;
+    } finally { removingSkills = false; }
   });
   // 公開と改善は押したときだけ（merge は人。ここは push までで止める）。
   handle('publish:submit', async (p) => {

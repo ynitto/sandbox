@@ -264,7 +264,7 @@ CLI は依頼文末尾の「添付ファイル: <パス>」を自分のファイ
 | アプリ | 対話セッションを維持（tmux）、会話ごとに作業を分離（worktree）、前面に無いときに通知する（既定 ON）、WSL ディストリビューション、更新元・起動時に更新を確認する（既定 ON）・更新を確認する間隔（既定 1 日ごと）・「今すぐ確認」、実行環境の状態 |
 | 共通指示 | 共通指示の有効・本文（8000 字まで）、別のフォルダへの書き込みを会話の分岐で受ける（既定 ON）、スキル選択の有効・既定の選択・自動選択の候補、定型の依頼（最大 3 つ）、起動時アクション |
 | 実行制御 | エージェントを最適化する（既定 ON。agent-herd が使えるときだけ効き、効いていなければ起動方針は おすすめ / 直接指定 だけ、tier は medium だけ）、既定の起動方針、tier ごとのエージェントとモデル（ローカルは `herd` の 1 語でよい）、遷移や振り分けの判定（ローカルの AI で作業しているときだけ / いつも指定したモデルで / 使わない。「いつも」を選んだときだけモデルの欄が出る。値は agent-herd 側の設定ファイルにあり、agent-herd が無ければ行は薄くなる）、既定を Ask にする、同時実行数（1〜8） |
-| スキル | 上に設定（リポジトリと AI の選択、公開先リポジトリ、公開先の main へ直接出す。公開先が空なら「main へ直接」は隠す）、その下にそのAIが読むスキルの一覧（名前・説明・版・置き場。未公開を先頭に出し、行のチェックで選ぶ）、足元に選んだ数と操作を 1 つ（「選んだ n 件を公開」。基準を割ったものがあるときだけ「改善案を出す」を添える） |
+| スキル | 上に設定（リポジトリと AI の選択、公開先リポジトリ、公開先の main へ直接出す。公開先が空なら「main へ直接」は隠す）、その下にそのAIが読むスキルの一覧（名前・説明・版・置き場。未公開を先頭に出し、行のチェックで選ぶ）、足元に公開と「削除する項目を選ぶ」。削除モードは全件未選択で始まり、保存先を表示する。名前と保存先の確認後、選んだ実体をゴミ箱へ移動し一覧を更新する。共通スキルも対象。公開用の選択とは分離する |
 | 利用状況 | 「今すぐ集める」、利用枠、使用量（AI / 用途 / モデルごと）と成功率、記録を集める（既定 ON）、集める間隔（既定 1 時間ごと。0 で手動だけ）。agent-audit が無ければ足りないものを 1 行で出す |
 
 起動時アクションは「スキル」か「コマンド」で、CLI ごとの新しいセッションで上から一度だけ適用します。
@@ -427,6 +427,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `repo:remove` | `removeRepo(repo)` | `repo` | 設定 |
 | `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ）。agent-herd 一族（aider / ollama）が 1 つでもあれば末尾に仮想の `herd`（`virtual: true, members: [...]`）を足す（§6.3）。実体は `src/main/agents.js` で、タスク・ワークフローの `automation:agents:list` も同じ一覧（使えるものの名前だけ）を返す |
 | `skills:list` | `listSkills(repo)` | `repo?` | スキル名の配列 |
+| `skills:remove` | `removeSkills(repo, agent, keys)` | `repo?`, `agent?`, `keys`（一覧の `removalKey`） | main が現在のカタログと実体を照合し、ネイティブ確認後にゴミ箱へ移動。`cancelled`, `removed[]`, `failed[]`（各失敗の `error`）。任意のパスは受け付けない |
 | `skills:select` | `selectSkills(repo, text, mode, selected)` | — | 選定結果（`content` / `path` を除く） |
 | `session:list` | `listSessions(repo)` | `repo?` | 会話の要約配列（更新日時の降順） |
 | `session:create` | `createSession(payload)` | `{ repo, policy?, cli?, model?, readonly?, transport, worktree? }` | 会話 |

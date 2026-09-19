@@ -6,7 +6,7 @@
 // 見せる「共有」とは別物なので、この画面では「共有」という言葉を使わない。
 //
 // 形は「保存データ」の面をそのまま借りる——行は `.setting-check`（チェック・名前と
-// 1 行の補助・右端に状態）、足元の `.environment-status` に選んだ数と**操作を 1 つだけ**。
+// 1 行の補助・右端に状態）、足元の `.environment-status` に選択と操作を置く。
 // 行ごとにボタンを並べない（一覧がボタンの壁になる）。
 (function initSkills() {
   const $ = (id) => document.getElementById(id);
@@ -17,7 +17,8 @@
 
   let request = 0;
   // picked … 利用者が外した行を覚える（未公開は既定で入れる。保存データの面と同じ作法）
-  const state = { doc: null, error: '', repo: '', agent: '', busy: false, picked: null };
+  const state = { doc: null, error: '', repo: '', agent: '', busy: false, picked: null,
+    removing: false, removalPicked: new Set() };
   let savedRepo = ''; let savedAgent = ''; let tokenChanged = false;
 
   // ローカルの版が新しいものを先頭にする。
@@ -47,6 +48,7 @@
 
   // 既定は「未公開のものすべて」。一度でも触ったら、その選択を覚える。
   function chosen(item) {
+    if (state.removing) return !!item.removalKey && state.removalPicked.has(item.removalKey);
     if (!item.canPublish) return false;
     return state.picked ? state.picked.has(item.name) : true;
   }
@@ -57,6 +59,11 @@
   }
 
   function toggle(name, on) {
+    if (state.removing) {
+      if (on) state.removalPicked.add(name); else state.removalPicked.delete(name);
+      renderFoot();
+      return;
+    }
     if (!state.picked) {
       const items = (state.doc && state.doc.items) || [];
       state.picked = new Set(items.filter((item) => item.canPublish).map((item) => item.name));
@@ -65,23 +72,32 @@
     renderFoot();
   }
 
-  // 足元は 1 行。選んだ数と、押せる操作を 1 つだけ。
+  // 削除モードは公開用の初期選択を使わず、毎回未選択から始める。
   function renderFoot() {
     const items = (state.doc && state.doc.items) || [];
     const waiting = items.filter((item) => item.canPublish).length;
     const improvable = items.filter((item) => item.canImprove);
     const count = picks().length;
     const configured = !state.doc || state.doc.configured;
-    $('skills-count').textContent = !configured ? '公開先リポジトリを入れると公開できます'
+    $('skills-count').textContent = state.removing ? `削除対象 ${state.removalPicked.size} 件`
+      : !configured ? '公開先リポジトリを入れると公開できます'
       : waiting ? `未公開 ${waiting} 件` : '';
     const button = $('skills-publish');
-    button.hidden = !configured || !waiting;
+    button.hidden = state.removing || !configured || !waiting;
     button.disabled = state.busy || !count;
     button.textContent = count > 1 ? `選んだ ${count} 件を公開` : '公開する';
     // 実測が基準を割ったものだけ、足元にもう 1 つ（要るまで出さない）
     const previous = $('skills-improve');
     if (previous) previous.remove();
-    if (configured && improvable.length) {
+    const removeMode = $('skills-remove-mode');
+    removeMode.hidden = !items.length && !state.removing;
+    removeMode.disabled = state.busy;
+    removeMode.textContent = state.removing ? 'キャンセル' : '削除する項目を選ぶ';
+    const remove = $('skills-remove');
+    remove.hidden = !state.removing;
+    remove.disabled = state.busy || !state.doc || !state.removalPicked.size;
+    remove.textContent = state.removalPicked.size > 1 ? `選んだ ${state.removalPicked.size} 件をゴミ箱へ移動` : 'ゴミ箱へ移動';
+    if (!state.removing && configured && improvable.length) {
       const next = el('button', 'small quiet', improvable.length > 1 ? `改善案を出す（${improvable.length} 件）` : '改善案を出す');
       next.type = 'button';
       next.id = 'skills-improve';
@@ -110,12 +126,13 @@
       check.type = 'checkbox';
       check.dataset.skill = item.name;
       check.checked = chosen(item);
-      check.disabled = !item.canPublish || state.busy;
-      check.onchange = () => toggle(item.name, check.checked);
+      check.disabled = state.busy || (state.removing ? !item.removalKey : !item.canPublish);
+      check.onchange = () => toggle(state.removing ? item.removalKey : item.name, check.checked);
       const text = el('span');
       const version = item.localVersion || item.version;
       const title = `${item.name}  ${version ? `v${version.replace(/^v/, '')}` : 'バージョン未設定'}`;
-      text.append(el('strong', '', title), el('small', '', detail(item)));
+      text.append(el('strong', '', title), el('small', '', state.removing
+        ? item.deletePath || item.removalError || '削除できません' : detail(item)));
       row.append(check, text);
       const mark = label(item);
       if (mark) row.append(el('span', 'status warn', mark));
@@ -159,13 +176,48 @@
   }
 
   function publish() {
+    if (state.busy || state.removing) return;
     const names = picks();
     if (!names.length) return;
     each(names, (name) => window.api.publish.submit({ repo: state.repo, kind: 'skill', name }), '公開');
   }
 
   function runImprove(items) {
+    if (state.busy || state.removing) return;
     each(items.map((item) => item.name), (name) => window.api.publish.improve({ repo: state.repo, kind: 'skill', name }), '提出');
+  }
+
+  function toggleRemoval() {
+    if (state.busy || !state.doc) return;
+    state.removing = !state.removing;
+    state.removalPicked.clear();
+    say('');
+    render();
+  }
+
+  async function removeSelected() {
+    if (state.busy || !state.removing) return;
+    const keys = ((state.doc && state.doc.items) || []).filter(chosen).map((item) => item.removalKey);
+    if (!keys.length) return;
+    const token = ++request;
+    state.busy = true;
+    say('削除対象を確認しています…');
+    render();
+    try {
+      const result = await window.api.removeSkills(state.repo, state.agent, keys);
+      if (token !== request) return;
+      if (result.cancelled) { say('削除をキャンセルしました'); return; }
+      say(`${result.removed.length} 件をゴミ箱へ移動しました`
+        + (result.failed.length ? `。削除できなかった項目: ${result.failed.map((item) => `${item.name}（${item.error}）`).join('、')}` : ''));
+    } catch (error) {
+      if (token === request) { say('削除できませんでした'); fail(error); }
+    } finally {
+      if (token === request) {
+        state.busy = false;
+        state.removalPicked.clear();
+        await load();
+      }
+    }
   }
 
   async function load() {
@@ -237,18 +289,28 @@
     };
   }
 
-  function reset() { request += 1; state.doc = null; state.error = ''; state.busy = false; state.picked = null; }
+  function reset() {
+    request += 1; state.doc = null; state.error = ''; state.busy = false; state.picked = null;
+    state.removing = false; state.removalPicked.clear();
+  }
 
   function open(config, agents) {
+    state.removing = false;
+    state.removalPicked.clear();
     fillChoices(config || {}, agents || []);
     say('');
     load();
   }
 
   function init() {
-    $('skills-repo').onchange = () => { state.picked = null; load(); };
-    $('skills-agent').onchange = () => { state.picked = null; load(); };
+    const changeScope = () => {
+      state.picked = null; state.removing = false; state.removalPicked.clear(); say(''); load();
+    };
+    $('skills-repo').onchange = changeScope;
+    $('skills-agent').onchange = changeScope;
     $('skills-publish').onclick = publish;
+    $('skills-remove-mode').onclick = toggleRemoval;
+    $('skills-remove').onclick = removeSelected;
     $('audit-share-repo').oninput = renderPublishRepoRow;
     $('audit-share-token').oninput = () => { tokenChanged = true; };
   }

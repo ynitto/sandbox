@@ -551,6 +551,17 @@ statemachine-use の transitions の項目）があれば、「結果はどれ�
 
 #### 5.5 `judge`
 
+**Calibration gate**: `tools/agent-tools/eval/readout_eval.py --calibration`は既存fixtureの
+決定的checkerをoracleにし、schema_version=1のJSON台帳・reportを作る。judge APIは変更しない。
+method別（logprobs / vote / text）のanswered accuracy・棄権率・threshold sweep・coverageと、
+boolean/choiceのBrier・confidence bucket・ECEを出す。textは常時棄権かつBrier/ECE対象外。
+問い単位とセル全問採用の集計を分け、低coverage ID・通信失敗・応答失敗・観測usageを残す。
+データ不足は`insufficient_data`とし、thresholdや`judge.model`へ自動適用しない。
+`--fake-run`と`--replay`も同じreport schemaを使う。手順・分母・Brier定義・archiveは
+[eval README](../../tools/agent-tools/eval/README.md#judge-calibration-gatereadout_eval)を参照。
+PR #862の段0 attributionは独立して利用できる。段1のjudge自動評価は対象用途のcalibrationを
+人が確認してから有効化する運用を推奨する。本gateはUIや有効化設定を変更しない。
+
 ```text
 agent-herd judge --questions (JSON | PATH) [--state PATH] [--model MODEL]
                  [--min-confidence 0-1] [--samples N] [--think on|off|auto]

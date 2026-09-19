@@ -232,7 +232,13 @@ judge が無い経路では `outcome` を条件文（「最後の出力の結果
 
 ## 6. 測ってから決めること
 
-本設計は ollama の無い環境で書いたので、**gemma4:e4b での実測は未着手**。入れる前に
+設計時はollamaが無く未測定だったが、2026-09-20に9セル×3回の
+[初回実測](2026-09-20-judge-readout-first-measurement.md)を記録した。
+E3はconfidence 0.951で誤答し、0.9のthresholdでも除けない。小標本のため既定値は確定しない。
+追加した`readout_eval.py --calibration`はmethod別のBrier・ECE・threshold sweep・coverage・
+棄権・失敗・usageをJSONに残す。fake/replayも同じschemaを使い、旧台帳から分布を推測しない。
+手順とPR #862の段0/段1境界は[eval README](../../tools/agent-tools/eval/README.md#judge-calibration-gatereadout_eval)
+を参照。次に対象workloadの標本を増やす際は、
 `tools/agent-tools/eval` の既存セル（F1 / J2 / RO1〜RO3 / CL1 / E1〜E3 の単一基準の判定）を
 `judge` 経路で引き直し、次を見る。
 

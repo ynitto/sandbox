@@ -2329,3 +2329,100 @@ python3 tools/agent-tools/eval/moe_ram_probe.py --model gemma4:26b --output /tmp
 `--model gemma4:26b` を差し替え、基準線（e4b・12b）と並べる。e4b（8.95 GiB）との同居は
 25.7 GiB + KV で際どいので、`keep_alive` で両方常駐させる運用は前提にしない（probe の判定は
 単独常駐の話である）。
+
+
+## Judge Calibration Gate（readout_eval）
+
+`readout_eval.py --calibration` は既存9セルを `agentcore.judge.evaluate` で実行し、
+問いごとの分布を保存する。旧readout台帳の最小confidenceからBrierを復元することはしない。
+judge API・`judge.model`・consumerのthresholdは変更しない。新しい依存は不要。
+
+| セル | 型・問数 | 正解の出所と意味 |
+|---|---|---|
+| F1 | boolean × 6 | judge_evalのcheck_id_set。採用集合c1,c3,c4を満たすyes/noの組 |
+| J2 | choice × 1 | judge_evalのcheck_winner。テスト成功候補の最短c4 |
+| CL1 | choice × 1 | judge_evalのcheck_class。bug |
+| E1 / E2 / E3 | choice × 各1 | judge_evalのcheck_decision。replan / done / replan |
+| RO1〜RO3 | choice × 各1 | project_evalのcheck。既存workspaceラベル／RO3はother→空workspace |
+
+この表は説明用。実装は既存checkerに有限の回答組を列挙して、一意に合格する組をoracleとする。
+複数正解・正解なし・4096組超は実行前にエラーとし、LLMをoracleにしない。
+F1の部分問の正誤とセル全体の集合一致を分ける。ROの問いと入力は本番ビルダーを呼ぶ。
+F1は本番filterと同じboolean形式だが、単一deps本文から候補を展開する評価アダプタであり、
+本番filterの複数deps経路そのもののend-to-end評価ではない。
+assessのscore、statemachine固有の遷移条件、PR #862の品質・原因分類はこの9セルでは未測定。
+
+```bash
+# Python 3.11推奨。Ollama不要の計算・fixture・失敗分類テスト
+python3 -m unittest discover -s tools/agent-tools/eval -p test_readout_eval.py
+python3 -m unittest discover -s tools/agent-tools/agentcore/agentcore/tests -p test_judge.py
+
+# fake: 正解を使った合成分布。モデル性能の実測ではない
+python3 tools/agent-tools/eval/readout_eval.py --fake-run --repeat 1 \
+  --model gemma4:e4b --output-dir /tmp/judge-calibration-fake
+
+# real: gemma4:e4bが既にあるOllama環境で（CLIと同じhost profileを読む）
+# output-dirは新規ディレクトリにする。既存結果を上書きしない
+OLLAMA_TIMEOUT=120 python3 tools/agent-tools/eval/readout_eval.py --calibration \
+  --model gemma4:e4b --repeat 3 --min-confidence 0.7 \
+  --output-dir tools/agent-tools/eval/results/20260920-gemma4-e4b-calibration
+
+# --samples 5ならlogprobsが読めない場合にvoteへfallback。常にvoteを強制する指定ではない
+# 保存済みv1台帳から同じschemaで再集計（ネットワーク不要）
+python3 tools/agent-tools/eval/readout_eval.py --replay \
+  tools/agent-tools/eval/results/20260920-gemma4-e4b-calibration/ledger.jsonl \
+  --model gemma4:e4b --min-confidence 0.8 \
+  --output-dir /tmp/judge-calibration-replay
+```
+
+通常結果は既存`results/<run>/`規約に従い、`manifest.json`（revision・dirty・実行引数・完了状態）、
+`command.txt`、`ledger.jsonl`、`report.json`を保存する。output-dir省略時はUTC timestampで新規作成。
+結論の根拠にするrunだけ、そのディレクトリ一式を`results/archive/<run>/`へ保存する。
+fakeはmanifestの引数と台帳・reportの`source: fake`で識別し、realと混ぜない。
+台帳には毎回のraw answers・oracle・問別正誤・セル正誤と入力のSHA-256を残す。通信不能でも失敗行とreportを残し
+終了コード1を返す。設定・fixture不備は非ゼロで停止し、manifestをcompletedにしない。
+
+### report schema v1の読み方
+
+- `methods`: logprobs / vote / textを別々に集計。`unit: question`。
+  `accuracy_answered`はmin-confidenceを満たした問いのみ、`answer_rate` / `abstention_rate`の
+  分母はそのmethodで応答できた全問。textはthreshold 0でも棄権。棄権IDも明示する。
+- `thresholds`: 0.0 / 0.5 / 0.6 / 0.7 / 0.8 / 0.9ごとのaccepted_cases・answer_rate・accuracy。
+  confidenceがthresholdと等しければ採用。0件のaccuracyはnull。
+  RO3のotherも有効な型付き回答として数える（書込先を選ばない決定であり、自動実行を意味しない）。
+- `brier`: boolean/choiceの全有効応答（confidence不足も含む）について
+  `sum_k (p_k - one_hot(label)_k)^2`の平均。範囲0〜2、binaryも2クラス合計なので
+  yesだけのbinary Brierの2倍。textは除外しnull。
+- `buckets`: [0,.2), [.2,.4), [.4,.6), [.6,.8), [.8,1]のn・accuracy・mean_confidence。
+  `ece`はbucketの件数で重み付けした`abs(accuracy - mean_confidence)`。textは対象外。
+- `coverage`: (n−1)×pの線形補間によるp10/p50/p90、`below_0_8`、
+  `low_case_ids`（セル:反復:問い）。低coverageを集計から除外しない。
+  logprobsではラベル質量、voteでは読めた票の比率、textでは0であり、confidenceとは別物。
+- `cell_gates`: セル全問がthresholdを満たすときだけ採用。正誤は既存checkerのセル全体一致。
+  methodの組ごとに分け、混在セルを単一methodへ押し込まない。`by_case`でE3等の誤りを追跡できる。
+- `transport_failures` / `response_failures` / `failures`: 通信・HTTP・timeoutをtransport、
+  読めない応答をresponseとして正誤から分離。両者は採用率の分母からも除外する。
+  attempted_cellsとsuccessful_cellsも併記し、通信不能を高い採用率で隠さない。
+- latencyは失敗を含む呼び出しの壁時計秒。usageはAPI応答のprompt_eval_count / eval_countを
+  直接観測する。欠損はnull、集計はobserved_totalとmissing_cells。judge APIが欠損を0へ補完する
+  挙動を引き継がず、失敗リクエストのtokenは推測しない。usageを問い・methodへ按分しない。
+
+`status: insufficient_data`は異なるセルが30未満の場合。反復を増やしても独立した入力が増えたとは
+扱わない。30は最低限の記述統計用の目安で、安全性保証ではない。満たしても`descriptive_only`で
+自動承認はしない。現在の9セルは常にinsufficient_dataであり、各用途の実workloadのラベル付き入力を
+増やす前にthresholdを確定しない。fake-runから性能に関する結論を出さない。
+
+### PR #862との境界
+
+PR #862は現行origin/mainでマージ済み。段0の`used.skills / commands / tools` attributionは継続可能。
+段1は既存実装がquality scoreとissue choiceをjudgeへ送り、min-confidence 0.55、sampleを既定に
+しているが、この値がcalibration済みという意味ではない。本変更はUI・自動評価・その設定を変更しない。
+運用上は既存の自動評価offを使い、当該用途・モデル・methodのreportを人が確認してから
+有効化する構成を推奨する。この9セルの合格をquality評価の合格に読み替えない。
+実行の成否は既存の決定的verification、品質・原因の正解は人の確定ラベルを必要とする。
+thresholdを本番設定へ書く処理・自動routeの有効化処理は本gateにない。
+
+既存の初回実測記録（2026-09-20、9セル×3回）ではE3がconfidence 0.951で3回とも誤答した。
+threshold 0.9でも止まらないため、自動完了判定を任せられるとは言えない。
+元台帳が問い単位の分布を持たない場合はBrier/ECEを後付けしない。
+今回のfake結果はその実測の更新ではなく、特定confidenceで自動化できる用途の推奨は行わない。

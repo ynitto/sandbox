@@ -310,7 +310,7 @@ test('利用状況の面は設定の既存の器（設定の行・状態の印�
   assert.ok(!/id="audit-artifacts"/.test(html), '定型化したものの一覧を設定へ戻さない');
 });
 
-test('スキルの面は 1 つの一覧で、未公開を先頭に出し、操作は足元に 1 つだけ', () => {
+test('スキルの面は 1 つの一覧で、未公開を先頭に出し、公開と削除の操作は足元に置く', () => {
   const html = read('renderer/index.html');
   const css = read('renderer/styles.css');
   const skills = read('renderer/skills.js');
@@ -324,12 +324,15 @@ test('スキルの面は 1 つの一覧で、未公開を先頭に出し、操�
   assert.match(panel, /class="environment-status"/);
   assert.match(skills, /el\('label', 'setting-check'\)/, '行は保存データと同じ .setting-check を借りる');
   assert.ok(!/\.skill-row|\.skill-card|\.skill-panel|\.skills-list\b/.test(css), 'スキルの行の私物な複製を作らない');
-  // 3. 設定は一覧の上。押せる操作は足元に 1 つだけで、行にボタンを並べない
+  // 3. 設定は一覧の上。操作は足元で切り替え、行にボタンを並べない
   assert.ok(panel.indexOf('audit-share-repo') < panel.indexOf('skills-list'), '公開先の設定は一覧の上に置く');
   assert.ok(panel.indexOf('skills-list') < panel.indexOf('skills-publish'), '操作は一覧の足元に置く');
   assert.ok(!/el\('button'/.test(skills.slice(skills.indexOf('function render()'), skills.indexOf('function say('))),
     '行ごとにボタンを作らない（一覧がボタンの壁になる）');
-  assert.strictEqual((panel.match(/<button/g) || []).length, 1, 'この面に置くボタンは 1 つ');
+  for (const id of ['skills-remove-mode', 'skills-remove']) {
+    assert.ok(panel.indexOf('skills-list') < panel.indexOf(id), '削除の操作も一覧の足元に置く');
+  }
+  assert.match(panel, /id="skills-remove" class="small danger" hidden/);
   // 4. 状態は印を借りる。未公開を先頭に並べる
   assert.match(skills, /el\('span', 'status warn', mark\)/, '状態の印を借りる');
   assert.match(skills, /versionComparison === 'local-newer'/, '新しいローカル版だけを未公開とする');

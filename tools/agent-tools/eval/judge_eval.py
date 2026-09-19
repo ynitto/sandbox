@@ -628,7 +628,13 @@ CASES = {
     # E1 / E2 は**機械的に決まる**側の 2 ケースである——「失敗ノードがある」「全部 done で
     # verify も pass」は、engine が既に構造化して持っている status から従う。評価役に固有の
     # 仕事はその先、**状態は全部 green なのに要求を満たしていない**を見抜くことなので、
-    # そのケースを 1 つ置く（要求は 3 段だが、出力段のノードがそもそもグラフに無い）。
+    # E3〜E6 はその面だけを 4 通りに振る。
+    #
+    # 4 つで**変えているのは要求の 3 段（収集・集計・出力）のどれが欠けているかだけ**で、
+    # verify の文面（「2 ノードを再導出して突き合わせ済み」）は 4 つとも同じにしてある。
+    # verify の言い回しに反応しているのか、段の有無を見ているのかを分けるため。E6 は同じ
+    # 弱い verify を持つが 3 段そろっており、**done のまま**でなければならない（欠落を
+    # 探しに行くモデルが「弱い verify ＝ replan」へ倒れていないかの対照）。
     "E3": dict(role="evaluator", expect="replan（全 done・verify pass だが出力段が無い）",
                results=[("t1", "work", "done", "run ログを読み込む reader を実装。テスト 6 件 pass。"),
                         ("t2", "work", "done", "日次のトークン合計を出す集計を実装。テスト 4 件 pass。"),
@@ -636,6 +642,31 @@ CASES = {
                          'verify=pass。{"ok": true, "issues": []}'
                          "（reader と集計の 2 ノードを再導出して突き合わせ済み）")],
                check=lambda d: check_decision(d, "replan")),
+    "E4": dict(role="evaluator", expect="replan（全 done・verify pass だが集計段が無い）",
+               results=[("t1", "work", "done", "run ログを読み込む reader を実装。テスト 6 件 pass。"),
+                        ("t2", "work", "done",
+                         "日次レポートを Markdown で書き出す writer を実装。テスト 3 件 pass。"),
+                        ("t3", "verify", "done",
+                         'verify=pass。{"ok": true, "issues": []}'
+                         "（reader と writer の 2 ノードを再導出して突き合わせ済み）")],
+               check=lambda d: check_decision(d, "replan")),
+    "E5": dict(role="evaluator", expect="replan（全 done・verify pass だが収集段が無い）",
+               results=[("t1", "work", "done", "日次のトークン合計を出す集計を実装。テスト 4 件 pass。"),
+                        ("t2", "work", "done",
+                         "日次レポートを Markdown で書き出す writer を実装。テスト 3 件 pass。"),
+                        ("t3", "verify", "done",
+                         'verify=pass。{"ok": true, "issues": []}'
+                         "（集計と writer の 2 ノードを再導出して突き合わせ済み）")],
+               check=lambda d: check_decision(d, "replan")),
+    "E6": dict(role="evaluator", expect="done（3 段そろう・verify の文面は E3〜E5 と同じ）",
+               results=[("t1", "work", "done", "run ログを読み込む reader を実装。テスト 6 件 pass。"),
+                        ("t2", "work", "done", "日次のトークン合計を出す集計を実装。テスト 4 件 pass。"),
+                        ("t3", "work", "done",
+                         "日次レポートを Markdown で書き出す writer を実装。テスト 3 件 pass。追加依存なし。"),
+                        ("t4", "verify", "done",
+                         'verify=pass。{"ok": true, "issues": []}'
+                         "（reader と writer の 2 ノードを再導出して突き合わせ済み）")],
+               check=lambda d: check_decision(d, "done")),
     # --- 検証役（agent-flow の kind=verify。coverage.json で missing のまま）
     # 本番は `ollama-verify`（`--think off --format json`・**道具なし**）で走る。道具が
     # 無い verifier は実行できないので、測れるのは 2 つだけ:

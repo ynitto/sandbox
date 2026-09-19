@@ -12,3 +12,7 @@
 
 比較時はモデル以外の manifest 条件を揃える。ハーネス調整では逆にモデルを固定し、変更する
 条件を 1 つにする。
+
+Calibrationは`readout_eval.py --calibration`で`<run>/manifest.json`・`command.txt`・
+`ledger.jsonl`・`report.json`を保存する。fake/replayも同じschemaでsourceを明記する。
+根拠として残す場合はrun一式を`archive/<run>/`へ保存する（fakeは実測と混ぜない）。

@@ -5,19 +5,23 @@ judge_eval.py とは**別物**なので、ファイルも台帳も分ける—�
 上の役割名（`kind="judge"` の J1 / J2 セル）で、こちらは `agentcore.judge`（選択肢の上の確率
 分布を返す判断 AI）の読み出し経路。混ぜると台帳の行がどちらの judge なのか読めなくなる。
 
-測るのは設計 §6 の 2 つだけ（壁時計の比較は別の日）:
+既定の旧モードは設計 §6 の次の2つを測る。`--calibration`では問い単位の分布を
+保存し、method別Brier/ECE・threshold sweep・棄権・失敗・usageまで集計する。
+`--fake-run`と`--replay`はOllama不要で同じreport schemaを出す。詳細はeval README。
+
+旧モードの集計:
 
 1. `coverage` の分布。ラベルに落ちた質量が低い（< 0.8）割合。低ければプロンプトの形の問題で、
    確率を信じる前にそちらを直す。
 2. `confidence` の区間ごとの正答率（信頼度図）。`--min-confidence` の既定の根拠になる。
 
-ケースの入力と正解は既存セルから**借りる**（写さない）。judge_eval の F1 / J2 / CL1 / E1〜E3、
+ケースの入力と正解は既存セルから**借りる**（写さない）。judge_eval の F1 / J2 / CL1 / E1〜E6、
 project_eval の RO1〜RO3——RO は judge_eval でなく project_eval にある。合否はそのセルの
 `check` に通して決めるので、正解はこのファイルのどこにも書かない。このファイルが持つのは
 「同じ入力をどう**問い**の形にするか」だけで、route は本番の問い（`_route_judge_questions`）を
 そのまま呼ぶ。
 
-ollama に届かない環境では 1 件も走らせず、台帳へ何も書かずに終了コード 0 で終わる。CI は
+旧モードはollama に届かない環境では 1 件も走らせず、台帳へ何も書かずに終了コード 0 で終わる。CI は
 ollama を持たないので、**測っていないものを数字として残さない**（設計 §6 が「実測は未着手」と
 書いているのと同じ作法）。
 
@@ -28,6 +32,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import itertools
+import math
+import subprocess
+import shlex
+import hashlib
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -130,6 +140,9 @@ CELLS = {
     "E1": ("judge_eval", _evaluator_cell),
     "E2": ("judge_eval", _evaluator_cell),
     "E3": ("judge_eval", _evaluator_cell),
+    "E4": ("judge_eval", _evaluator_cell),
+    "E5": ("judge_eval", _evaluator_cell),
+    "E6": ("judge_eval", _evaluator_cell),
     "RO1": ("project_eval", _route_cell),
     "RO2": ("project_eval", _route_cell),
     "RO3": ("project_eval", _route_cell),
@@ -226,12 +239,289 @@ def run_one(cid: str, run: int, model: str) -> dict:
                 usage=result["usage"], wall=round(time.time() - started, 2))
 
 
+# Calibration mode keeps raw per-question distributions; legacy summaries above
+# remain readable but cannot reconstruct a Brier score from minimum confidence.
+THRESHOLDS = (0.0, 0.5, 0.6, 0.7, 0.8, 0.9)
+MIN_UNIQUE_CASES = 30  # descriptive-data floor, never an authorization to deploy
+
+
+def oracle(questions, to_check, check):
+    """Find the unique assignment accepted by the existing deterministic checker.
+
+    F1 has 2**6 assignments. No labels are copied or inferred by another LLM.
+    Refuse ambiguous/non-finite fixtures before making any network request.
+    """
+    names = list(questions)
+    domains = [[k for k, _ in judge.normalize_question(n, questions[n])["options"]]
+               for n in names]
+    if math.prod(map(len, domains)) > 4096:
+        raise ValueError("oracle search exceeds 4096 assignments")
+    valid = []
+    for values in itertools.product(*domains):
+        answers = {n: {"choice": v, "value": v == "yes"}
+                   for n, v in zip(names, values)}
+        if check(to_check(answers))[0]:
+            valid.append(dict(zip(names, values)))
+    if len(valid) != 1:
+        raise ValueError(f"oracle must accept exactly one assignment, got {len(valid)}")
+    return valid[0]
+
+
+def percentile(values, p):
+    """Linear interpolation at (n - 1) * p; empty data is null."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * p
+    low = int(index)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (index - low)
+
+
+def brier(answer, expected):
+    """Multiclass sum of squared errors (0..2), including binary's two classes."""
+    return sum((p - int(key == expected)) ** 2
+               for key, p in answer["probabilities"].items())
+
+
+def _rate(n, total):
+    return n / total if total else None
+
+
+def _accepted(row, threshold):
+    return not judge.abstained(row["answers"], threshold)
+
+
+def _sweep(rows, thresholds):
+    out = []
+    for threshold in thresholds:
+        accepted = [r for r in rows if _accepted(r, threshold)]
+        out.append({"min_confidence": threshold, "accepted_cases": len(accepted),
+                    "answer_rate": _rate(len(accepted), len(rows)),
+                    "accuracy": _rate(sum(r["ok"] for r in accepted), len(accepted)),
+                    "unique_cases": len({r["case"] for r in accepted}),
+                    "status": "insufficient_data" if len({r["case"] for r in accepted})
+                    < MIN_UNIQUE_CASES else "descriptive_only"})
+    return out
+
+
+def calibration_report(rows, *, model, min_confidence=0.0, thresholds=THRESHOLDS):
+    """Pure offline aggregation of versioned real/fake ledger rows."""
+    if not 0 <= min_confidence <= 1 or any(not 0 <= t <= 1 for t in thresholds):
+        raise ValueError("confidence thresholds must be finite and in [0, 1]")
+    for row in rows:
+        if row.get("schema_version") != 1 or row.get("model") != model:
+            raise ValueError("calibration requires v1 rows from one model")
+    if len({r["source"] for r in rows}) > 1:
+        raise ValueError("do not pool fake and real observations")
+    successful = [r for r in rows if r["status"] == "ok"]
+    for row in successful:
+        if not row["answers"] or set(row["answers"]) != set(row["expected"]):
+            raise ValueError("incomplete answers/oracle")
+        for name, answer in row["answers"].items():
+            probs = answer["probabilities"]
+            if (answer["method"] not in ("logprobs", "vote", "text")
+                    or row["expected"][name] not in probs
+                    or any(not math.isfinite(v) or not 0 <= v <= 1 for v in
+                           [answer["confidence"], answer["coverage"], *probs.values()])
+                    or abs(sum(probs.values()) - 1) > .002):
+                raise ValueError("invalid calibration distribution")
+    groups = []
+    for method in ("logprobs", "vote", "text"):
+        points = []
+        for row in successful:
+            for name, answer in row["answers"].items():
+                if answer["method"] == method:
+                    points.append({"case": row["case"], "id": f"{row['case']}:{row['run']}:{name}",
+                                   "answers": {name: answer}, "answer": answer,
+                                   "ok": row["question_ok"][name],
+                                   "expected": row["expected"][name]})
+        accepted = [r for r in points if _accepted(r, min_confidence)]
+        calibrated = [r for r in points if method != "text" and
+                      r["answer"]["type"] in ("boolean", "choice")]
+        buckets = []
+        for low, high in BINS:
+            bucket = [r for r in calibrated if bin_of(r["answer"]["confidence"]) == (low, high)]
+            buckets.append({"low": low, "high": high, "n": len(bucket),
+                            "accuracy": _rate(sum(r["ok"] for r in bucket), len(bucket)),
+                            "mean_confidence": _rate(sum(r["answer"]["confidence"] for r in bucket), len(bucket))})
+        cov = [r["answer"]["coverage"] for r in points]
+        low_ids = [r["id"] for r in points if r["answer"]["coverage"] < COVERAGE_FLOOR]
+        groups.append({"method": method, "unit": "question", "cases": len(points),
+                       "unique_cases": len({r["case"] for r in points}),
+                       "status": "insufficient_data" if len({r["case"] for r in calibrated})
+                       < MIN_UNIQUE_CASES else "descriptive_only",
+                       "answered": len(accepted), "abstained": len(points) - len(accepted),
+                       "abstained_case_ids": [r["id"] for r in points if not _accepted(r, min_confidence)],
+                       "accuracy_answered": _rate(sum(r["ok"] for r in accepted), len(accepted)),
+                       "answer_rate": _rate(len(accepted), len(points)),
+                       "abstention_rate": _rate(len(points) - len(accepted), len(points)),
+                       "calibration_n": len(calibrated),
+                       "brier": _rate(sum(brier(r["answer"], r["expected"]) for r in calibrated), len(calibrated)),
+                       "ece": _rate(sum(b["n"] * abs(b["accuracy"] - b["mean_confidence"])
+                                        for b in buckets if b["n"]), len(calibrated)),
+                       "buckets": buckets,
+                       "coverage": {"p10": percentile(cov, .1), "p50": percentile(cov, .5),
+                                    "p90": percentile(cov, .9), "below_0_8": len(low_ids),
+                                    "low_case_ids": low_ids},
+                       "thresholds": _sweep(points, thresholds)})
+    # Mixed-method cells have their own gate group, never a pooled calibration.
+    cell_groups = []
+    signatures = sorted({tuple(sorted({a["method"] for a in r["answers"].values()}))
+                         for r in successful})
+    for signature in signatures:
+        cells = [r for r in successful if tuple(sorted({a["method"] for a in r["answers"].values()})) == signature]
+        baseline = _sweep(cells, (min_confidence,))[0]
+        cell_groups.append({"methods": list(signature), "unit": "cell", "cases": len(cells),
+                            "min_confidence": min_confidence,
+                            "answered": baseline["accepted_cases"],
+                            "abstained": len(cells) - baseline["accepted_cases"],
+                            "answer_rate": baseline["answer_rate"],
+                            "abstention_rate": 1 - baseline["answer_rate"],
+                            "accuracy_answered": baseline["accuracy"],
+                            "thresholds": _sweep(cells, thresholds),
+                            "by_case": [{"case": cid, "thresholds": _sweep(
+                                [r for r in cells if r["case"] == cid], thresholds)}
+                                for cid in sorted({r["case"] for r in cells})]})
+    failures = [{"case": r["case"], "run": r["run"], "status": r["status"], "error": r["error"]}
+                for r in rows if r["status"] != "ok"]
+    return {"schema_version": 1, "model": model,
+            "source": rows[0]["source"] if rows else None,
+            "status": "insufficient_data" if len({r["case"] for r in successful}) < MIN_UNIQUE_CASES
+            else "descriptive_only", "minimum_unique_cases": MIN_UNIQUE_CASES,
+            "min_confidence": min_confidence, "attempted_cells": len(rows),
+            "successful_cells": len(successful), "failures": failures,
+            "transport_failures": sum(r["status"] == "transport_failure" for r in rows),
+            "response_failures": sum(r["status"] == "response_failure" for r in rows),
+            "methods": groups, "cell_gates": cell_groups,
+            "latency_seconds": {"p50": percentile([r["wall"] for r in rows], .5),
+                                "p90": percentile([r["wall"] for r in rows], .9)},
+            "usage": {key: {"observed_total": sum(r["usage"][key] for r in rows if r["usage"].get(key) is not None),
+                            "missing_cells": sum(r["usage"].get(key) is None for r in rows)}
+                      for key in ("tokens_in", "tokens_out")},
+            "limitations": ["Repeated fixtures are not independent workload samples.",
+                            "No production threshold is recommended or applied.",
+                            "text is excluded from Brier/ECE; vote coverage is valid votes / samples.",
+                            "Answer-rate denominators exclude request/response failures.",
+                            "Brier uses sum over all classes (binary range 0..2)."]}
+
+
+def calibration_run_one(cid, run, model, *, samples=1, fake=False):
+    module, build = CELLS[cid]
+    case = importlib.import_module(module).CASES[cid]
+    state, questions, to_check = build(case)
+    expected = oracle(questions, to_check, case["check"])
+    usage = {"tokens_in": None, "tokens_out": None}
+    totals = {"tokens_in": 0, "tokens_out": 0}
+    missing = set()
+    requests = 0
+    transport = False
+
+    def request(payload):
+        nonlocal requests, transport
+        try:
+            data = judge.post_chat(payload)
+        except (judge.JudgeError, OSError, ValueError) as exc:
+            missing.update(totals)
+            transport = isinstance(exc, OSError) or isinstance(exc.__cause__, (OSError, urllib.error.URLError))
+            raise
+        requests += 1
+        for key, field in (("tokens_in", "prompt_eval_count"), ("tokens_out", "eval_count")):
+            if field not in data or data[field] is None:
+                missing.add(key)
+            else:
+                totals[key] += data[field]
+        return data
+
+    started = time.monotonic()
+    row = {"schema_version": 1, "case": cid, "run": run, "model": model,
+           "source": "fake" if fake else "real", "samples": samples, "expected": expected,
+           "input_sha256": hashlib.sha256(json.dumps({"state": state, "questions": questions},
+                                                       ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
+    try:
+        if fake:
+            answers = {}
+            for name, raw in questions.items():
+                normalized = judge.normalize_question(name, raw)
+                options = normalized["options"]
+                probs = [.75 if k == expected[name] else .25 / (len(options) - 1) for k, _ in options]
+                answers[name] = judge.shape_answer(normalized, probs, method="logprobs", coverage=.95)
+        else:
+            answers = judge.evaluate(state, questions, model=model, samples=samples, request=request)["answers"]
+        ok, note = case["check"](to_check(answers))
+        row.update(status="ok", ok=bool(ok), note=note, answers=answers,
+                   question_ok={n: ("yes" if a["value"] else "no") == expected[n]
+                                if a["type"] == "boolean" else a["choice"] == expected[n]
+                                for n, a in answers.items()})
+    except (judge.JudgeError, OSError, ValueError) as exc:
+        row.update(status="transport_failure" if transport else "response_failure", error=str(exc))
+    if requests:
+        usage = {key: None if key in missing else value for key, value in totals.items()}
+    row.update(usage=usage, wall=time.monotonic() - started, successful_requests=requests)
+    return row
+
+
+def calibration_main(args):
+    if args.fake_run and args.replay:
+        raise ValueError("fake-run and replay are mutually exclusive")
+    if args.repeat < 1 or args.samples < 1 or not 0 <= args.min_confidence <= 1:
+        raise ValueError("repeat/samples must be positive; min-confidence must be in [0,1]")
+    cids = [c.strip() for c in args.cases.split(",")]
+    if any(c not in CELLS for c in cids) or len(cids) != len(set(cids)):
+        raise ValueError("unknown or duplicate case ID")
+    if args.replay:
+        rows = [json.loads(line) for line in Path(args.replay).read_text().splitlines() if line.strip()]
+    else:
+        from agentcore.hostenv import load_profile_env
+        if not args.fake_run:
+            load_profile_env()
+        rows = []
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    output = Path(args.output_dir) if args.output_dir else Path(__file__).parent / "results" / (stamp + "-calibration")
+    output.mkdir(parents=True, exist_ok=False)
+    revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
+    manifest = {"schema_version": 1, "created_at": stamp, "revision": revision,
+                "arguments": vars(args), "state": "running",
+                "dirty": bool(subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
+                                              capture_output=True, text=True).stdout.strip())}
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (output / "command.txt").write_text(shlex.join([sys.executable, *sys.argv]) + "\n")
+    if not args.replay:
+        with (output / "ledger.jsonl").open("w") as ledger:
+            for cid in cids:
+                for run in range(1, args.repeat + 1):
+                    row = calibration_run_one(cid, run, args.model, samples=args.samples, fake=args.fake_run)
+                    rows.append(row)
+                    ledger.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    ledger.flush()
+                    print(f"{cid}-{run}: {row['status']}", file=sys.stderr)
+    else:
+        (output / "ledger.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    report = calibration_report(rows, model=args.model, min_confidence=args.min_confidence)
+    (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+    manifest["state"] = "completed_with_failures" if report["failures"] else "completed"
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Calibration report: {output / 'report.json'}")
+    return 1 if report["failures"] else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__ and __doc__.splitlines()[0])
     parser.add_argument("--model", default=MODEL)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--cases", default=",".join(CELLS))
+    parser.add_argument("--calibration", action="store_true", help="write versioned calibration ledger/report")
+    parser.add_argument("--fake-run", action="store_true", help="synthetic smoke run, implies --calibration")
+    parser.add_argument("--replay", help="recompute a v1 calibration ledger offline")
+    parser.add_argument("--output-dir", help="new results directory (must not exist)")
+    parser.add_argument("--samples", type=int, default=1)
+    parser.add_argument("--min-confidence", type=float, default=0.0)
     args = parser.parse_args()
+    if args.calibration or args.fake_run or args.replay:
+        try:
+            return calibration_main(args)
+        except ValueError as exc:
+            parser.error(str(exc))
     cids = [c.strip() for c in args.cases.split(",") if c.strip() in CELLS]
     if not cids:
         print(f"測れるセルがありません（選べるのは {', '.join(CELLS)}）")
