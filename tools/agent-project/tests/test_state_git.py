@@ -9,6 +9,16 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔離・km ロード・共通ヘルパ）
 
 
+
+def _quiet_git(d: Path) -> None:
+    """テスト用リポジトリの背景メンテナンスを止める。
+
+    push / clone の後に git が起こす auto gc が .git/objects を書いている最中に
+    TemporaryDirectory の後始末が走ると `Directory not empty: 'objects'` で落ちる
+    （CI で断続的に再現）。テストの意味は変えず、後始末を決定的にするだけ。"""
+    subprocess.run(["git", "-C", str(d), "config", "gc.auto", "0"], check=True)
+    subprocess.run(["git", "-C", str(d), "config", "maintenance.auto", "false"], check=True)
+
 class TestStateSyncBatching(unittest.TestCase):
     """state sync コミットの集約: 未 push の連続 sync は --amend で 1 つに束ね、同期のたびの
     1 行差分コミットが履歴を埋め尽くさないようにする。push 済み・人のコミットは書き換えない。"""
@@ -20,6 +30,7 @@ class TestStateSyncBatching(unittest.TestCase):
                        check=True)
         subprocess.run(["git", "-C", str(d), "config", "user.email", "t@test"], check=True)
         subprocess.run(["git", "-C", str(d), "config", "user.name", "t"], check=True)
+        _quiet_git(d)
 
     @staticmethod
     def _log(d: Path) -> "list[str]":
@@ -61,6 +72,7 @@ class TestStateSyncBatching(unittest.TestCase):
             tmp = Path(tmp)
             remote = tmp / "remote.git"
             subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            _quiet_git(remote)
             subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
                             "refs/heads/main"], check=True)
             d = tmp / "root"
@@ -217,6 +229,7 @@ class TestStateSyncBatching(unittest.TestCase):
             tmp = Path(tmp)
             remote = tmp / "remote.git"
             subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            _quiet_git(remote)
             subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
                             "refs/heads/main"], check=True)
             top = tmp / "wt"
@@ -235,6 +248,7 @@ class TestStateSyncBatching(unittest.TestCase):
             # 別ホストが origin を 1 コミット進める（= こちらは behind 1 → push は non-FF）
             other = tmp / "other"
             subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+            _quiet_git(other)
             subprocess.run(["git", "-C", str(other), "config", "user.email", "o@test"], check=True)
             subprocess.run(["git", "-C", str(other), "config", "user.name", "o"], check=True)
             (other / "other.md").write_text("from another host\n", encoding="utf-8")
@@ -262,6 +276,7 @@ class TestStateSyncBatching(unittest.TestCase):
             tmp = Path(tmp)
             remote = tmp / "remote.git"
             subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            _quiet_git(remote)
             subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
                             "refs/heads/main"], check=True)
             top = tmp / "wt"
@@ -279,6 +294,7 @@ class TestStateSyncBatching(unittest.TestCase):
 
             other = tmp / "other"             # 別ホストが同じ 2 ファイルを両方書き換えて push
             subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+            _quiet_git(other)
             subprocess.run(["git", "-C", str(other), "config", "user.email", "o@t"], check=True)
             subprocess.run(["git", "-C", str(other), "config", "user.name", "o"], check=True)
             (other / ".agent-project" / "charter.md").write_text("人の更新\n", encoding="utf-8")
@@ -310,6 +326,7 @@ class TestStateSyncBatching(unittest.TestCase):
             tmp = Path(tmp)
             remote = tmp / "remote.git"
             subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            _quiet_git(remote)
             subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
                             "refs/heads/main"], check=True)
             top = tmp / "wt"
@@ -333,6 +350,7 @@ class TestStateSyncBatching(unittest.TestCase):
 
             other = tmp / "other"              # リモートの viewer が指示を積む
             subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+            _quiet_git(other)
             subprocess.run(["git", "-C", str(other), "config", "user.email", "o@t"], check=True)
             subprocess.run(["git", "-C", str(other), "config", "user.name", "o"], check=True)
             cdir = other / ".agent-project" / "commands"
@@ -366,6 +384,7 @@ class TestStateSyncBatching(unittest.TestCase):
             tmp = Path(tmp)
             remote = tmp / "remote.git"
             subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            _quiet_git(remote)
             subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
                             "refs/heads/main"], check=True)
             top = tmp / "wt"
@@ -384,6 +403,7 @@ class TestStateSyncBatching(unittest.TestCase):
 
             other = tmp / "other"              # 別書き手（viewer）が run の進捗と成果を積む
             subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+            _quiet_git(other)
             subprocess.run(["git", "-C", str(other), "config", "user.email", "o@t"], check=True)
             subprocess.run(["git", "-C", str(other), "config", "user.name", "o"], check=True)
             orun = other / ".agent-project" / "bus" / "runs" / "r1"
