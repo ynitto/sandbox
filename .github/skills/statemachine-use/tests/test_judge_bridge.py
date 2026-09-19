@@ -320,3 +320,286 @@ class JudgeClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─────────────────────────────────────────────
+#  ステートの中: 判定だけのステート / 出力契約の正規化 / 検査失敗の選別
+# ─────────────────────────────────────────────
+JUDGE_STATE = textwrap.dedent("""
+    name: triage
+    initial_state: classify
+    states:
+      classify:
+        judge:
+          question: "このイシューの種類はどれか"
+          choices:
+            BUG: "動作の不具合の報告"
+            FEATURE: "新しい機能の要望"
+            QUESTION: "使い方の質問"
+        output_key: classification
+      bug:
+        terminal: true
+      feature:
+        terminal: true
+      question:
+        terminal: true
+      ask:
+        terminal: true
+    transitions:
+      - from: classify
+        to: bug
+        condition_rule: "startswith:classification:BUG"
+        priority: 1
+      - from: classify
+        to: feature
+        condition_rule: "startswith:classification:FEATURE"
+        priority: 2
+      - from: classify
+        to: question
+        condition_rule: "startswith:classification:QUESTION"
+        priority: 3
+      - from: classify
+        to: ask
+        priority: 4
+""")
+
+
+def _state_answer(picked, confidence=0.9):
+    return {judge_bridge.STATE_JUDGE_QUESTION: {
+        "type": "choice", "choice": picked, "confidence": confidence, "coverage": 0.95,
+        "method": "logprobs", "probabilities": {picked: confidence}}}
+
+
+class JudgeStateSpecTests(unittest.TestCase):
+    def test_normalizes_and_derives_the_contract(self):
+        spec = judge_bridge.normalize_judge_state(
+            {"question": "種類は", "choices": {"BUG": "不具合", "FEATURE": "要望"}},
+            default_input="{{input}}")
+        self.assertEqual(spec["choices"], [("BUG", "不具合"), ("FEATURE", "要望")])
+        self.assertEqual(spec["unsure"], "UNSURE")
+        self.assertEqual(spec["input"], "{{input}}")
+        self.assertEqual(judge_bridge.judge_state_validator(spec), "startswith:BUG,FEATURE,UNSURE")
+        q = judge_bridge.judge_state_question(spec)[judge_bridge.STATE_JUDGE_QUESTION]
+        self.assertEqual(q["type"], "choice")
+        self.assertEqual(q["criteria"], {"BUG": "不具合", "FEATURE": "要望"})
+        self.assertTrue(q["other"])
+
+    def test_rejects_broken_declarations(self):
+        for bad in ({"choices": {"A": "", "B": ""}},                       # 問い無し
+                    {"question": "q", "choices": {"A": ""}},               # 1 択
+                    {"question": "q", "choices": {"A B": "", "C": ""}},    # 空白入りのキー
+                    {"question": "q", "choices": {"A": "", "UNSURE": ""}}, # unsure と重複
+                    "just a string"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                judge_bridge.normalize_judge_state(bad, default_input="x")
+        self.assertIsNone(judge_bridge.normalize_judge_state(None, default_input="x"))
+
+    def test_fallback_action_is_short_and_asks_for_one_word(self):
+        spec = judge_bridge.normalize_judge_state(
+            {"question": "種類は", "choices": {"BUG": "不具合", "FEATURE": "要望"}},
+            default_input="{{input}}")
+        text = judge_bridge.judge_state_fallback_action(spec)
+        self.assertIn("{{input}}", text)
+        self.assertIn("- BUG: 不具合", text)
+        self.assertIn("- UNSURE", text)
+        self.assertIn("exactly one choice key", text)
+        self.assertLess(len(text), 400, "生成経路でも短い（本文も理由も書かせない）")
+
+    def test_answers_map_to_a_key_or_unsure(self):
+        spec = judge_bridge.normalize_judge_state(
+            {"question": "q", "choices": {"BUG": "", "FEATURE": ""}, "min_confidence": 0.7},
+            default_input="x")
+        self.assertEqual(judge_bridge.judge_state_output(spec, _state_answer("BUG")), "BUG")
+        self.assertEqual(judge_bridge.judge_state_output(spec, _state_answer("other")), "UNSURE")
+        self.assertEqual(judge_bridge.judge_state_output(spec, _state_answer("BUG", 0.5)), "UNSURE",
+                         "確度不足は最頻に倒さず unsure")
+        self.assertIsNone(judge_bridge.judge_state_output(spec, None))
+        self.assertIsNone(judge_bridge.judge_state_output(spec, _state_answer("NOPE")))
+
+
+class ContractNormalizationTests(unittest.TestCase):
+    P = ["APPROVED", "NEEDS_REVISION", "REJECTED"]
+
+    def test_already_valid_is_unchanged(self):
+        self.assertEqual(judge_bridge.normalize_contract_line("APPROVED\n理由", self.P), "APPROVED\n理由")
+
+    def test_word_inside_the_first_line_moves_to_the_front(self):
+        self.assertEqual(judge_bridge.normalize_contract_line("結論: APPROVED。問題なし\n詳細", self.P),
+                         "APPROVED\n詳細")
+        self.assertEqual(judge_bridge.normalize_contract_line("verdict is needs_revision", self.P),
+                         "NEEDS_REVISION")
+
+    def test_longer_word_wins_and_substrings_do_not_match(self):
+        self.assertEqual(judge_bridge.normalize_contract_line("result: PASSED all", ["PASS", "PASSED"]),
+                         "PASSED")
+        self.assertIsNone(judge_bridge.normalize_contract_line("it is PASSING by", ["PASS"]))
+
+    def test_a_later_line_starting_with_the_word_is_promoted(self):
+        self.assertEqual(judge_bridge.normalize_contract_line("レビュー結果です。\nRejected: 根拠が無い\nx", self.P),
+                         "REJECTED: 根拠が無い\nx")
+
+    def test_unfixable_is_none(self):
+        self.assertIsNone(judge_bridge.normalize_contract_line("承認します", self.P))
+        self.assertIsNone(judge_bridge.normalize_contract_line("", self.P))
+
+    def test_judge_fills_the_word_only_with_confidence(self):
+        q = judge_bridge.contract_question(self.P)[judge_bridge.CONTRACT_QUESTION]
+        self.assertEqual(sorted(q["criteria"]), sorted(self.P))
+        ok = {judge_bridge.CONTRACT_QUESTION: {"choice": "APPROVED", "confidence": 0.9}}
+        self.assertEqual(judge_bridge.contract_from_answers("承認します", self.P, ok), "APPROVED\n承認します")
+        weak = {judge_bridge.CONTRACT_QUESTION: {"choice": "APPROVED", "confidence": 0.4}}
+        self.assertIsNone(judge_bridge.contract_from_answers("承認します", self.P, weak))
+        other = {judge_bridge.CONTRACT_QUESTION: {"choice": "other", "confidence": 0.9}}
+        self.assertIsNone(judge_bridge.contract_from_answers("承認します", self.P, other))
+
+
+class CheckTriageTests(unittest.TestCase):
+    def test_environment_failures_are_recognized(self):
+        for text in ("bash: pytest: command not found", "ModuleNotFoundError: No module named 'x'",
+                     "検査コマンドを実行できません: [Errno 2] …", "EACCES: permission denied"):
+            self.assertIsNotNone(judge_bridge.check_failure_environment(text), text)
+        self.assertIsNone(judge_bridge.check_failure_environment(
+            "FAILED tests/test_x.py::test_a - AssertionError: 1 != 2"))
+
+    def test_verdict_stops_only_on_a_confident_no(self):
+        q = judge_bridge.CHECK_TRIAGE_QUESTION
+        self.assertIs(judge_bridge.check_triage_verdict({q: {"value": False, "confidence": 0.9}}), False)
+        self.assertIs(judge_bridge.check_triage_verdict({q: {"value": False, "confidence": 0.6}}), True)
+        self.assertIs(judge_bridge.check_triage_verdict({q: {"value": True, "confidence": 0.9}}), True)
+        self.assertIsNone(judge_bridge.check_triage_verdict(None))
+
+
+class JudgeStateEngineTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="sm-judge-state-")
+        self.addCleanup(self._tmp.cleanup)
+        self.workflow = Path(self._tmp.name, "workflow.yaml")
+        self.workflow.write_text(JUDGE_STATE, encoding="utf-8")
+
+    def _run(self, judge, llm_answers, input_text="ログインで 500 が出る"):
+        prompts = []
+
+        async def llm_fn(prompt):
+            prompts.append(prompt)
+            return llm_answers.pop(0)
+
+        engine = StateMachineEngine(llm_fn=llm_fn, judge=judge)
+        result = asyncio.run(engine.run(load_workflow(self.workflow), input_text=input_text))
+        return result, prompts
+
+    def test_judge_state_needs_no_generation_at_all(self):
+        judge = FakeJudge(_state_answer("BUG"))
+        result, prompts = self._run(judge, [])
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.final_state, "bug")
+        self.assertEqual(prompts, [], "アクションも遷移も LLM を呼ばない")
+        state_text, questions = judge.calls[0]
+        self.assertIn("ログインで 500 が出る", state_text)
+        self.assertEqual(questions[judge_bridge.STATE_JUDGE_QUESTION]["type"], "choice")
+        self.assertEqual(result.context["classification"], "BUG")
+
+    def test_other_becomes_unsure_and_falls_through(self):
+        result, prompts = self._run(FakeJudge(_state_answer("other")), [])
+        self.assertEqual(result.context["classification"], "UNSURE")
+        self.assertEqual(result.final_state, "ask")
+
+    def test_without_judge_a_short_one_word_generation_runs(self):
+        result, prompts = self._run(None, ["FEATURE"])
+        self.assertEqual(result.final_state, "feature")
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("ログインで 500 が出る", prompts[0])
+        self.assertIn("exactly one choice key", prompts[0])
+        self.assertLess(len(prompts[0]), 500)
+
+    def test_without_judge_a_chatty_answer_is_normalized_not_regenerated(self):
+        result, prompts = self._run(None, ["I think this is a FEATURE request."])
+        self.assertEqual(result.final_state, "feature")
+        self.assertEqual(len(prompts), 1, "契約の語が本文にあれば再生成しない")
+
+    def test_judge_undecided_falls_back_to_generation(self):
+        result, prompts = self._run(FakeJudge(None), ["QUESTION"])
+        self.assertEqual(result.final_state, "question")
+        self.assertEqual(len(prompts), 1)
+
+    def test_judge_and_action_together_is_a_validation_error(self):
+        self.workflow.write_text(JUDGE_STATE.replace('    output_key: classification',
+                                                     '    output_key: classification\n    action: "分類せよ"'),
+                                 encoding="utf-8")
+        from scripts.engine import validate_workflow
+        errors = validate_workflow(load_workflow(self.workflow))
+        self.assertTrue(any("judge と action" in e for e in errors), errors)
+
+    def test_state_judge_flag_exposes_the_spec(self):
+        proc = subprocess.run([sys.executable, str(NEXT_STATE), str(self.workflow),
+                               "--state", "classify", "--state-judge"],
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["judge"]["choices"]["BUG"], "動作の不具合の報告")
+        self.assertEqual(data["judge"]["input"], "{{input}}")
+        self.assertEqual(data["output_validator"], "startswith:BUG,FEATURE,QUESTION,UNSURE")
+        self.assertIn("exactly one choice key", data["fallback_action"])
+        self.assertEqual(data["question"][judge_bridge.STATE_JUDGE_QUESTION]["type"], "choice")
+        proc = subprocess.run([sys.executable, str(NEXT_STATE), str(self.workflow),
+                               "--state", "bug", "--state-judge"],
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertIsNone(json.loads(proc.stdout)["judge"])
+
+
+class CheckTriageEngineTests(unittest.TestCase):
+    """検査が落ちた後、やり直しても直らない失敗には再投入を積まない。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="sm-triage-")
+        self.addCleanup(self._tmp.cleanup)
+
+    def _workflow(self, check_script: str):
+        script = Path(self._tmp.name, "check.py")
+        script.write_text(check_script, encoding="utf-8")
+        wf = Path(self._tmp.name, "workflow.yaml")
+        wf.write_text(textwrap.dedent(f"""
+            name: gated
+            initial_state: work
+            states:
+              work:
+                action: "作業せよ"
+                check: {json.dumps([sys.executable, str(script)])}
+                check_retries: 3
+                check_on_exhausted: continue
+              done:
+                terminal: true
+            transitions:
+              - from: work
+                to: done
+        """), encoding="utf-8")
+        return wf
+
+    def _run(self, wf, judge=None):
+        calls = []
+
+        async def llm_fn(prompt):
+            calls.append(prompt)
+            return "OK"
+
+        engine = StateMachineEngine(llm_fn=llm_fn, judge=judge)
+        return asyncio.run(engine.run(load_workflow(wf))), calls
+
+    def test_environment_failure_stops_retries_without_judge(self):
+        wf = self._workflow("import sys\nprint('bash: pytest: command not found', file=sys.stderr)\nsys.exit(127)\n")
+        result, calls = self._run(wf)
+        self.assertEqual(len(calls), 1, "環境の失敗にはやり直しを積まない")
+        self.assertIn("環境の失敗", result.steps[0]["check"]["triage"])
+
+    def test_code_failure_retries_as_before(self):
+        wf = self._workflow("import sys\nprint('FAILED tests/test_x.py::t - AssertionError')\nsys.exit(1)\n")
+        result, calls = self._run(wf)
+        self.assertEqual(len(calls), 4, "コードの失敗は従来どおり check_retries まで再投入")
+
+    def test_judge_can_stop_retries_only_when_confident(self):
+        wf = self._workflow("import sys\nprint('some odd failure')\nsys.exit(1)\n")
+        stop = FakeJudge({judge_bridge.CHECK_TRIAGE_QUESTION: {"value": False, "confidence": 0.95}})
+        result, calls = self._run(wf, judge=stop)
+        self.assertEqual(len(calls), 1)
+        weak = FakeJudge({judge_bridge.CHECK_TRIAGE_QUESTION: {"value": False, "confidence": 0.5}})
+        result, calls = self._run(wf, judge=weak)
+        self.assertEqual(len(calls), 4)

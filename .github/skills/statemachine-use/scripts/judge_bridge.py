@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -193,3 +194,223 @@ def state_text(ctx: "dict[str, Any]") -> str:
     rest = {k: v for k, v in ctx.items() if k not in ("history", "last_output")}
     return ("Last output:\n" + last_output + "\n\nContext:\n"
             + json.dumps(rest, ensure_ascii=False, indent=2, default=str))
+
+
+# ─────────────────────────────────────────────
+#  ステートの中で使う 3 つの口
+#  （判定だけのステート / 出力契約の正規化 / 検査失敗の選別）
+#  どれも「決定的な手段 → 判定 AI → 生成」の順で、判定 AI が無くてもトークンが最小になる形。
+# ─────────────────────────────────────────────
+STATE_JUDGE_QUESTION = "answer"
+STATE_JUDGE_UNSURE = "UNSURE"
+STATE_JUDGE_OTHER = "None of the choices applies, or it cannot be decided from the input."
+STATE_JUDGE_MIN_CONFIDENCE = 0.0
+
+
+def normalize_judge_state(value, *, default_input: str) -> "dict | None":
+    """state の `judge:` 宣言を正規化する。無ければ None、形が違えば ValueError。
+
+    受ける形:
+      judge:
+        question: "このイシューの種類はどれか"
+        choices: {BUG: "動作の不具合", FEATURE: "機能の要望"}   # 順序つき。list でもよい
+        input: "{{input}}"          # 判定 AI が読む状態（省略時は初期ステートなら input、他は last_output）
+        unsure: "UNSURE"            # どれでもない・確度不足のときに出す語（省略時 UNSURE）
+        min_confidence: 0.0         # これ未満なら unsure に倒す
+
+    出力の契約は「選択肢のキー（か unsure）を第 1 行に 1 語」。`output_validator` を書かなければ
+    ここから作る（`startswith:BUG,FEATURE,UNSURE`）。
+    """
+    if value is None or value == "":
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("judge はオブジェクト（question / choices …）で書きます")
+    question = str(value.get("question") or value.get("instructions") or "").strip()
+    if not question:
+        raise ValueError("judge.question（問いの文）が必要です")
+    raw = value.get("choices") if value.get("choices") is not None else value.get("criteria")
+    choices: "list[tuple[str, str]]" = []
+    if isinstance(raw, dict):
+        choices = [(str(k).strip(), "" if v is None else str(v).strip()) for k, v in raw.items()]
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                key = item.get("key", item.get("name"))
+                if key is None:
+                    continue
+                choices.append((str(key).strip(), str(item.get("description") or "").strip()))
+            else:
+                choices.append((str(item).strip(), ""))
+    choices = [(k, d) for k, d in choices if k]
+    if len(choices) < 2:
+        raise ValueError("judge.choices には選択肢が 2 つ以上必要です")
+    if len({k for k, _ in choices}) != len(choices):
+        raise ValueError("judge.choices のキーが重複しています")
+    if any(" " in k or "\n" in k for k, _ in choices):
+        raise ValueError("judge.choices のキーは空白を含まない 1 語にします（出力の第 1 行になる）")
+    unsure = str(value.get("unsure") or STATE_JUDGE_UNSURE).strip()
+    if unsure in {k for k, _ in choices}:
+        raise ValueError(f"judge.unsure（{unsure}）が choices と重なっています")
+    try:
+        min_confidence = float(value.get("min_confidence", STATE_JUDGE_MIN_CONFIDENCE) or 0.0)
+    except (TypeError, ValueError):
+        raise ValueError("judge.min_confidence は数です")
+    return {"question": question, "choices": choices, "unsure": unsure,
+            "input": str(value.get("input") or default_input),
+            "min_confidence": min(1.0, max(0.0, min_confidence))}
+
+
+def judge_state_keys(spec: dict) -> "list[str]":
+    return [k for k, _ in spec["choices"]] + [spec["unsure"]]
+
+
+def judge_state_validator(spec: dict) -> str:
+    return "startswith:" + ",".join(judge_state_keys(spec))
+
+
+def judge_state_question(spec: dict) -> dict:
+    """`agent-herd judge --questions` にそのまま渡せる 1 問（choice + other）。"""
+    return {STATE_JUDGE_QUESTION: {
+        "type": "choice", "instructions": spec["question"],
+        "criteria": {k: d for k, d in spec["choices"]}, "other": STATE_JUDGE_OTHER}}
+
+
+def judge_state_output(spec: dict, answers: "dict | None") -> "str | None":
+    """判定 AI の答えをステートの出力（キー 1 語）へ。決めていなければ None。
+
+    `other` と確度不足は unsure の語にする——「決められない」を黙って最頻の選択肢に
+    倒さない（決められないと言えることが judge を使う理由の 1 つ）。
+    """
+    if not isinstance(answers, dict):
+        return None
+    answer = answers.get(STATE_JUDGE_QUESTION)
+    if not isinstance(answer, dict):
+        return None
+    picked = str(answer.get("choice") or "")
+    keys = {k for k, _ in spec["choices"]}
+    if not picked or (picked != "other" and picked not in keys):
+        return None
+    confidence = float(answer.get("confidence") or 0.0)
+    if picked == "other" or confidence < spec["min_confidence"]:
+        return spec["unsure"]
+    return picked
+
+
+def judge_state_fallback_action(spec: dict) -> str:
+    """判定 AI が無いときの生成用プロンプト。**短く、答えは 1 語**——これが生成経路で
+    いちばん安い形（本文も理由も書かせない）。"""
+    lines = [spec["question"], "", "Input:", "<<<", spec["input"], ">>>", "", "Choices:"]
+    for key, desc in spec["choices"]:
+        lines.append(f"- {key}" + (f": {desc}" if desc else ""))
+    lines.append(f"- {spec['unsure']}: none of the above / cannot be decided")
+    lines += ["", "Answer with exactly one choice key on the first line. No explanation."]
+    return "\n".join(lines)
+
+
+# ── 出力契約の正規化（output_validator: startswith:A,B,C）──────────────────
+def validator_prefixes(rule) -> "list[str]":
+    text = str(rule or "")
+    if not text.startswith("startswith:"):
+        return []
+    return [p.strip() for p in text[len("startswith:"):].split(",") if p.strip()]
+
+
+def normalize_contract_line(output: str, prefixes: "list[str]") -> "str | None":
+    """契約の語が第 1 行の先頭に無い出力を、再生成せずに直す（決定的）。
+
+    直せる形: 契約の語が第 1 行の途中にある（「結論: APPROVED。」）、大文字小文字が違う、
+    契約の語で始まる行が後ろにある。直せなければ None（呼び出し側が判定 AI か再生成へ）。
+    """
+    text = str(output or "").strip()
+    if not text or not prefixes:
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    first = lines[0]
+    if any(first.startswith(p) for p in prefixes):
+        return text
+    # 第 1 行の中に語として現れる（前後が英数字でない）。長い語から試す（PASS と PASSED）。
+    for prefix in sorted(prefixes, key=len, reverse=True):
+        pattern = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(prefix) + r"(?![A-Za-z0-9_])", re.I)
+        if pattern.search(first):
+            return "\n".join([prefix, *lines[1:]]) if len(lines) > 1 else prefix
+    # 契約の語で始まる行が後ろにある（前置きを書いた）。その行から採る。
+    for i, line in enumerate(lines[1:4], start=1):
+        for prefix in prefixes:
+            if line.upper().startswith(prefix.upper()):
+                return "\n".join([prefix + line[len(prefix):], *lines[i + 1:]])
+    return None
+
+
+CONTRACT_QUESTION = "contract"
+
+
+def contract_question(prefixes: "list[str]") -> dict:
+    """出力がどの契約の語に当たるかを判定 AI に訊く 1 問（other = どれでもない → 再生成）。"""
+    return {CONTRACT_QUESTION: {
+        "type": "choice",
+        "instructions": "Which contract word does this output's conclusion correspond to?",
+        "criteria": {p: f"The output concludes '{p}'." for p in prefixes},
+        "other": "The output does not clearly conclude any of these."}}
+
+
+def contract_from_answers(output: str, prefixes: "list[str]", answers: "dict | None",
+                          *, min_confidence: float = 0.6) -> "str | None":
+    if not isinstance(answers, dict):
+        return None
+    answer = answers.get(CONTRACT_QUESTION) or {}
+    picked = str(answer.get("choice") or "")
+    if picked not in prefixes or float(answer.get("confidence") or 0.0) < min_confidence:
+        return None
+    return "\n".join([picked, *str(output or "").strip().splitlines()])
+
+
+# ── 検査（check）失敗の選別 ───────────────────────────────────────────────
+# 同じアクションをやり直しても直らない失敗の印。検査コマンド自体が動いていない形で、
+# どれも実出力に現れる定型句。ここに無い失敗は「直るかもしれない」側（再投入）。
+_ENVIRONMENT_PATTERNS = (
+    re.compile(r"command not found|No such file or directory|not recognized as an internal", re.I),
+    re.compile(r"No module named|ModuleNotFoundError|cannot find module|Cannot find package", re.I),
+    re.compile(r"Permission denied|EACCES", re.I),
+    re.compile(r"検査コマンドを実行できません|検査コマンドがタイムアウトしました", re.I),
+    re.compile(r"ENOENT|EADDRINUSE|Connection refused|Could not resolve host", re.I),
+)
+CHECK_TRIAGE_QUESTION = "fixable"
+CHECK_TRIAGE_MIN_CONFIDENCE = 0.85
+
+
+def check_failure_environment(detail: str) -> "str | None":
+    """検査の出力が環境の失敗（やり直しても直らない）なら、その根拠の 1 行。無ければ None。"""
+    for line in str(detail or "").splitlines():
+        for pattern in _ENVIRONMENT_PATTERNS:
+            if pattern.search(line):
+                return line.strip()[:200]
+    return None
+
+
+def check_triage_question(argv: "list[str]", detail: str) -> dict:
+    """「同じアクションをやり直せば直る失敗か」を boolean で訊く 1 問。"""
+    return {CHECK_TRIAGE_QUESTION: {
+        "type": "boolean",
+        "instructions": ("Can redoing the same action (editing the work product) make this "
+                         "check pass? Answer no only if the failure is caused by the "
+                         "environment (missing tool or dependency, permissions, network, "
+                         "the check itself cannot run). Check command: " + " ".join(argv)),
+    }}
+
+
+def check_triage_verdict(answers: "dict | None",
+                         *, min_confidence: float = CHECK_TRIAGE_MIN_CONFIDENCE) -> "bool | None":
+    """False = やり直しても直らない（確度が十分なときだけ）。True / None = 従来どおり再投入。"""
+    if not isinstance(answers, dict):
+        return None
+    answer = answers.get(CHECK_TRIAGE_QUESTION) or {}
+    if answer.get("value") is None:
+        return None
+    if answer.get("value") is False and float(answer.get("confidence") or 0.0) >= min_confidence:
+        return False
+    return True
+
+
+def check_detail(result: dict) -> str:
+    return "\n".join(x for x in (result.get("error", ""), result.get("stderr", ""),
+                                 result.get("stdout", "")) if x).strip()

@@ -64,6 +64,7 @@ states:
 | `check_on_exhausted` | 文字列 | いいえ | `escalate` | 再投入を使い切っても落ちるときの動作。`escalate` \| `continue` \| `error` |
 | `check_feedback` | 真偽値 | いいえ | true | 再投入時に検査の出力を課題文へ足すか |
 | `max_tool_rounds` | 整数 | いいえ | 0（＝宣言なし） | 外部ハーネスがこのステートのツールループに許すモデル呼び出し回数（[呼び出し回数の上限](#呼び出し回数の上限-max_tool_rounds)） |
+| `judge` | オブジェクト | いいえ | — | **判定だけのステート**。`action` の代わりに問いと選択肢を書き、判定 AI が 1 語を選ぶ（[判定だけのステート](#判定だけのステート-judge)）。`action` / `check` / `terminal` とは併用できない |
 
 ### 呼び出し回数の上限 (max_tool_rounds)
 
@@ -200,6 +201,52 @@ states:
 遷移するステートでは、編集 CLI が契約文を返さず黙って直しても、書込完了を機械契約で
 受理して check に判定を委ねる。検査の再投入も同様に、前の試行が書いたファイルへの
 編集から直接入る。
+
+### 判定だけのステート (judge)
+
+「N 語のどれかを 1 語で答える」だけのステート（分類・振り分け・段階の評価）は、アクションを
+書かずに `judge:` で宣言する。
+
+```yaml
+states:
+  classify:
+    judge:
+      question: "このイシューの種類はどれか"
+      choices:
+        BUG: "動作の不具合の報告"
+        FEATURE: "新しい機能の要望"
+        QUESTION: "使い方の質問"
+      # input: "{{input}}"       # 判定 AI が読む状態。省略時は初期ステートなら input、他は last_output
+      # unsure: "UNSURE"         # どれでもない・確度不足のときに出す語
+      # min_confidence: 0.0      # これ未満なら unsure に倒す
+    output_key: classification
+transitions:
+  - from: classify
+    to: bug
+    condition_rule: "startswith:classification:BUG"
+```
+
+出力は選ばれたキー（か `unsure` の語）の 1 語で、`output_key` と `condition_rule` は通常の
+ステートと同じに使える。`output_validator` を書かなければ `startswith:BUG,FEATURE,QUESTION,UNSURE`
+が自動で付く。
+
+| 実行の形 | ステートの中で起きること |
+|---|---|
+| 判定 AI がある（ハーネス、`run_machine.py --judge auto` で agent-herd が使える） | judge に choice 1 問。**生成は 0**。`other`（どれでもない）と確度不足は `unsure` の語になる |
+| 判定 AI が無い | 宣言から作った短いプロンプト（選択肢を列挙し、キーを 1 語だけ答えさせる）で 1 回生成する。理由も本文も書かせないので、生成経路でもいちばん安い形 |
+
+`unsure` の語は `condition_rule` で拾える（例: `startswith:classification:UNSURE` で人へ回す）。
+どの候補にも当たらなければ優先度の低い無条件トランジションへ落ちる。
+
+### 出力契約の正規化と検査失敗の選別（実行系の動き）
+
+定義に書く項目ではないが、実行系はステートの中で次の順に動く。どれも「決定的な手段 →
+判定 AI → 生成」の順で、判定 AI が無くても生成（いちばん高い呼び出し）を増やさない。
+
+| 場面 | 決定的 | 判定 AI があれば | 最後の手段 |
+|---|---|---|---|
+| `output_validator` に合わない出力 | 契約の語が第 1 行の途中にある・大文字小文字が違う・後ろの行にある、を直す | 「どの契約の語に当たるか」を 1 問（確度 0.6 以上で採用） | 再生成（`max_retries`） |
+| `check` が落ちた | 環境の失敗（コマンド不在・モジュール不在・権限・接続・検査自体が動かない）なら再投入せず `check_on_exhausted` へ | 「同じ作業のやり直しで直るか」を 1 問（確度 0.85 以上の「直らない」だけ止める） | 従来どおり再投入（`check_retries`） |
 
 ### アクションの自動探索
 

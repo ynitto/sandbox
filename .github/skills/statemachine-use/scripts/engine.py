@@ -41,6 +41,10 @@ class StateConfig:
     # 外部ハーネスの 1 ステート内ツールループに許す呼び出し回数（0 = 宣言なし＝ハーネスの既定）。
     # このエンジン自身は使わない——宣言の置き場をここにするための素通しである。
     max_tool_rounds: int = 0
+    # 判定だけのステート（`judge:`）。アクションを生成させず、判定 AI が選択肢から 1 語を選ぶ。
+    # 判定 AI が無ければ `action` に入れた短い生成用プロンプト（1 語で答えよ）で回す。
+    judge: "dict | None" = None          # judge_bridge.normalize_judge_state の形
+    judge_error: str = ""
 
 
 @dataclass
@@ -297,6 +301,27 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
         except ValueError as exc:
             check_error = f"ステート '{state_id}' の check が不正です: {exc}"
 
+        # 判定だけのステート。アクションは書かず、判定 AI が無いときの生成用プロンプトを
+        # ここで作る（短く、答えは 1 語）。出力契約も選択肢のキーから作る。
+        judge_spec: "dict | None" = None
+        judge_error = ""
+        output_validator = sdef.get("output_validator", "")
+        try:
+            from scripts import judge_bridge as _jb
+            judge_spec = _jb.normalize_judge_state(
+                sdef.get("judge"),
+                default_input="{{input}}" if state_id == data.get("initial_state") else "{{last_output}}")
+        except ValueError as exc:
+            judge_error = f"ステート '{state_id}' の judge が不正です: {exc}"
+        if judge_spec is not None:
+            if action or action_file:
+                judge_error = (f"ステート '{state_id}' は judge と action を両方持てません"
+                               "（判定だけのステートは action を書かない）")
+            else:
+                action = _jb.judge_state_fallback_action(judge_spec)
+            if not output_validator:
+                output_validator = _jb.judge_state_validator(judge_spec)
+
         states[state_id] = StateConfig(
             id=state_id,
             description=sdef.get("description", state_id),
@@ -306,7 +331,7 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             on_exit=sdef.get("on_exit", ""),
             output_key=sdef.get("output_key", ""),
             max_retries=sdef.get("max_retries", 0),
-            output_validator=sdef.get("output_validator", ""),
+            output_validator=output_validator,
             check=check,
             # 検査の再投入予算。未宣言なら max_retries を継ぐ（実測ハーネスと同じ意味）。
             check_retries=int(sdef.get("check_retries", sdef.get("max_retries", 0)) or 0),
@@ -314,6 +339,8 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             check_feedback=bool(sdef.get("check_feedback", True)),
             max_tool_rounds=int(sdef.get("max_tool_rounds", 0) or 0),
             check_error=check_error,
+            judge=judge_spec,
+            judge_error=judge_error,
         )
 
     # トランジション（priority 順にソート）
@@ -393,6 +420,13 @@ def validate_workflow(wf: WorkflowDefinition) -> list[str]:
     for state_id, state in wf.states.items():
         if state.check_error:
             errors.append(state.check_error)
+        if state.judge_error:
+            errors.append(state.judge_error)
+        if state.judge and state.terminal:
+            errors.append(f"終端ステート '{state_id}' は judge を持てません")
+        if state.judge and state.check:
+            errors.append(f"ステート '{state_id}' は judge と check を両方持てません"
+                          "（判定だけのステートに測る成果物は無い）")
         if state.check and state.terminal:
             errors.append(f"終端ステート '{state_id}' は check を持てません（アクションが無い）")
         if state.check_on_exhausted not in CHECK_ON_EXHAUSTED:
@@ -621,7 +655,9 @@ class StateMachineEngine:
                 "state": current_state_id,
                 "output": output,
                 **({"check": {"ok": gate["ok"], "status": gate["status"],
-                              "attempts": gate["attempts"]}} if gate else {}),
+                              "attempts": gate["attempts"],
+                              **({"triage": gate["triage"]} if gate.get("triage") else {})}}
+                   if gate else {}),
             })
 
             # 検査が最後まで通らなかった。ここから先は宣言が決める。
@@ -735,15 +771,78 @@ class StateMachineEngine:
                                f"(status={result['context']['check_status']})")
             if result["ok"] or attempt == attempts - 1:
                 return output, {**result, "attempts": attempt + 1}
+            # 再投入はいちばん高い呼び出し。やり直しても直らない失敗（環境）なら積まない。
+            triage = self._triage_check_failure(result, verbose)
+            if triage:
+                self._log(verbose, f"  再投入を止めます（{triage}）")
+                return output, {**result, "attempts": attempt + 1, "triage": triage}
             note = (check_feedback_note(state.check, result, attempt + 1, attempts)
                     if state.check_feedback else
                     f"Retry {attempt + 1}/{attempts - 1}: the declared check failed. "
                     "Fix the work so it succeeds.")
         return "", None   # 到達しない（ループ内で必ず返る）
 
+    def _triage_check_failure(self, result: dict, verbose: bool) -> "str | None":
+        """検査が落ちた理由を選別する。戻り値は「やり直しても直らない」根拠（None = 再投入）。
+
+        順は 決定的（環境の失敗の定型句）→ 判定 AI（確度が十分なときだけ）。判定 AI が無い
+        ときは決定的な分だけで、それ以外は従来どおり再投入する。
+        """
+        from scripts import judge_bridge
+
+        detail = judge_bridge.check_detail(result)
+        hit = judge_bridge.check_failure_environment(detail)
+        if hit:
+            return f"環境の失敗: {hit}"
+        if not self.judge or not detail:
+            return None
+        answers = self.judge.evaluate(
+            "Check command: " + " ".join(result["argv"]) + "\n\nCheck output:\n" + detail[-2000:],
+            judge_bridge.check_triage_question(result["argv"], detail))
+        if judge_bridge.check_triage_verdict(answers) is False:
+            return "判定 AI: 同じ作業のやり直しでは直らない失敗"
+        return None
+
+    def _judge_state_output(self, state: StateConfig, ctx: dict, verbose: bool) -> "str | None":
+        """判定だけのステートを判定 AI で終わらせる。決めなければ None（生成へ）。"""
+        from scripts import judge_bridge
+
+        if not self.judge or not state.judge:
+            return None
+        text = render_template(state.judge["input"], ctx)
+        answers = self.judge.evaluate(text, judge_bridge.judge_state_question(state.judge))
+        output = judge_bridge.judge_state_output(state.judge, answers)
+        if output is None:
+            self._log(verbose, "  判定 AI が決めなかったため、生成で答えます")
+            return None
+        self._log(verbose, f"  判定 AI（judge）の答え: {output}")
+        return output
+
+    def _normalize_contract(self, output: str, validator: str, verbose: bool) -> "str | None":
+        """契約に合わない出力を、再生成の前に直す（決定的 → 判定 AI）。直せなければ None。"""
+        from scripts import judge_bridge
+
+        prefixes = judge_bridge.validator_prefixes(validator)
+        if not prefixes:
+            return None
+        fixed = judge_bridge.normalize_contract_line(output, prefixes)
+        if fixed is not None:
+            self._log(verbose, f"  出力の第 1 行を契約の語に直しました: {fixed.splitlines()[0]}")
+            return fixed
+        if not self.judge:
+            return None
+        answers = self.judge.evaluate(output, judge_bridge.contract_question(prefixes))
+        fixed = judge_bridge.contract_from_answers(output, prefixes, answers)
+        if fixed is not None:
+            self._log(verbose, f"  判定 AI が契約の語を補いました: {fixed.splitlines()[0]}")
+        return fixed
+
     async def _execute_state(
         self, state: StateConfig, ctx: dict, verbose: bool, check_note: str = ""
     ) -> str:
+        judged = self._judge_state_output(state, ctx, verbose)
+        if judged is not None:
+            return judged
         parts = []
         if state.on_enter:
             parts.append(render_template(state.on_enter, ctx))
@@ -776,6 +875,10 @@ class StateMachineEngine:
 
             if state.output_validator:
                 if self._validate_output(output, state.output_validator):
+                    break
+                fixed = self._normalize_contract(output, state.output_validator, verbose)
+                if fixed is not None:
+                    output = fixed
                     break
                 if attempt < state.max_retries:
                     self._log(verbose, f"  ⚠ 出力バリデーション失敗、リトライします ({attempt+1}/{max_attempts})")

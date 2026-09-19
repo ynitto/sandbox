@@ -56,9 +56,15 @@ TypeSafe AI の Jev（System One モデル）が示した「文章を生成せ�
   あれば、条件ごとの boolean N 問ではなく「結果はどれか」の choice 1 問で遷移先を選ぶ
   （prefill が 1 回になり、2 つの条件が同時に真になる矛盾が構造として消える）。「どれでもない」は
   明示の選択肢で、選ばれると全候補が偽。
+- **ステートの中でも使う。** ハーネスは statemachine-use の `judge:` 宣言（判定だけのステート）を
+  `next_state.py --state-judge` から読み、judge が使えれば生成なしで 1 語を選ぶ
+  （`state_judge_done`）。使えなければ宣言の短い生成用プロンプトで回す。出力契約に合わない出力は
+  再生成の前に決定的に直し（`_sm_validated_output`）、それでも駄目なら judge に「どの語か」を
+  1 問（`contract_judge_done`）。検査が落ちたときは環境の失敗（決定的）と judge の確信ある
+  「直らない」（`check_triage`）には再投入を積まない。
 - 実装: `agentcore/judge.py`・`agentcore/herdconfig.py`・`herdcli.cmd_judge` / `cmd_config`。
   テスト: `test_judge`（23 件）・`test_herdconfig`（16 件）・`test_herdcli.JudgeTests`（7 件）・
-  `test_harness_statemachine`（judge 配線 11 件）。設計:
+  `test_harness_statemachine`（judge 配線 11 件 + ステート内 8 件）。設計:
   [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)
   §5.1 / §5.2。
 
@@ -76,7 +82,17 @@ TypeSafe AI の Jev（System One モデル）が示した「文章を生成せ�
   にそのまま渡せる問い）を返し、`--judge-answers` に judge の stdout を渡せば遷移先が確定する
   （確度不足 `abstained` は終了コード 3 で止め、`--eval` で渡し直す）。実行モードの Step 0 で
   agent-herd を 1 回確かめ、③ で使い分ける手順を SKILL.md に書いた。
-- テスト: `tests/test_judge_bridge.py`（22 件）。
+- **ステートの中でも使う（判定 AI が無くてもトークン最小）。** どれも「決定的 → 判定 AI → 生成」の順。
+  - `judge:` — 判定だけのステート。アクションの代わりに問いと選択肢を書き、判定 AI があれば生成 0 で
+    1 語を選ぶ。無ければ宣言から作った短いプロンプト（選択肢を列挙し 1 語で答えさせる）で 1 回だけ
+    生成する。`other` と確度不足は `unsure` の語（既定 UNSURE）。`output_validator` は自動で付く。
+    `next_state.py --state-judge` が宣言を返し、ハーネスもそこから読む。作例 `issue_triage.yaml`。
+  - 出力契約の正規化 — `output_validator` に合わない出力を再生成の前に直す。契約の語が第 1 行の
+    途中・後ろの行・大文字小文字違いなら決定的に、それでも駄目なら判定 AI に「どの語か」を 1 問。
+  - 検査失敗の選別 — `check` が落ちたとき、環境の失敗（コマンド不在・モジュール不在・権限・接続）
+    なら再投入を積まずに `check_on_exhausted` へ。判定 AI があれば「やり直しで直るか」を 1 問し、
+    確度 0.85 以上の「直らない」だけ止める。
+- テスト: `tests/test_judge_bridge.py`（44 件）。
 
 ### agent-app: 遷移や振り分けの判定を設定から選べる（0.14.0）
 

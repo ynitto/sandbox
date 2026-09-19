@@ -144,6 +144,11 @@ def main() -> None:
         help="そのステートの決定的検査（check）を正規化して JSON で表示して終了"
     )
     parser.add_argument(
+        "--state-judge", dest="state_judge", action="store_true",
+        help="そのステートの判定宣言（judge）を正規化して JSON で表示して終了"
+        "（question は agent-herd judge に渡せる形。fallback_action は判定 AI が無いときの生成用）"
+    )
+    parser.add_argument(
         "--context", default=None, metavar="JSON",
         help='コンテキスト変数の JSON オブジェクト。'
         ' 例: \'{"last_output":"BUG","result":"PASS"}\''
@@ -188,6 +193,24 @@ def main() -> None:
             "check_on_exhausted": state.check_on_exhausted,
             "check_feedback": state.check_feedback,
             "max_tool_rounds": state.max_tool_rounds,
+        }, ensure_ascii=False, indent=2))
+        return
+
+    # --state-judge: 判定だけのステートの宣言を返す（外部ハーネスが YAML を読み直さずに済む口）
+    if args.state_judge:
+        errors = [e for e in validate_workflow(wf) if args.state in e]
+        if errors:
+            print("ERROR: " + "\n".join(errors), file=sys.stderr)
+            sys.exit(1)
+        spec = state.judge
+        print(json.dumps({
+            "state": args.state,
+            "judge": ({"question": spec["question"], "choices": dict(spec["choices"]),
+                       "unsure": spec["unsure"], "input": spec["input"],
+                       "min_confidence": spec["min_confidence"]} if spec else None),
+            "question": judge_bridge.judge_state_question(spec) if spec else None,
+            "fallback_action": state.action if spec else "",
+            "output_validator": state.output_validator,
         }, ensure_ascii=False, indent=2))
         return
 

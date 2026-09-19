@@ -1923,3 +1923,174 @@ class OneDeliverablePerStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InStateJudgeTests(unittest.TestCase):
+    """ステートの中で judge を使う 3 つの口。judge が無くてもトークンが最小の形で回ること。
+
+    1. 判定だけのステート（`judge:`）— judge があればアクションを生成させない。無ければ
+       宣言から作った短い 1 語のプロンプトで回し、契約は決定的に直す。
+    2. 出力契約の正規化 — 再生成の前に決定的に直し、それでも駄目なら judge に 1 問。
+    3. 検査失敗の選別 — 環境の失敗（決定的）と judge の確信ある「直らない」には再投入を積まない。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="agent-loop-sm-instate-")
+        self.repo = os.path.realpath(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": self.repo})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.machine = pathlib.Path(self.repo, ".statemachine", "triage")
+        self.machine.mkdir(parents=True)
+
+    LOCAL = {"cli": "aider", "model": None,
+             "spec": {"name": "aider", "relative_cost": 0, "default_model": "gemma4:e4b"}}
+
+    def _judge_workflow(self) -> str:
+        (self.machine / "workflow.yaml").write_text("\n".join([
+            "name: triage",
+            "initial_state: classify",
+            "config: {max_steps: 3}",
+            "states:",
+            "  classify:",
+            "    judge:",
+            '      question: "このイシューの種類はどれか"',
+            "      choices: {BUG: 動作の不具合, FEATURE: 機能の要望}",
+            "    output_key: classification",
+            "  bug: {terminal: true}",
+            "  feature: {terminal: true}",
+            "  ask: {terminal: true}",
+            "transitions:",
+            '  - {from: classify, to: bug, condition_rule: "startswith:classification:BUG", priority: 1}',
+            '  - {from: classify, to: feature, condition_rule: "startswith:classification:FEATURE", priority: 2}',
+            "  - {from: classify, to: ask, priority: 3}",
+            "",
+        ]), encoding="utf-8")
+        return str(self.machine / "workflow.yaml")
+
+    @staticmethod
+    def _choice(picked, confidence=0.9):
+        return {"answers": {"answer": {"type": "choice", "choice": picked, "confidence": confidence,
+                                       "coverage": 0.95, "method": "logprobs",
+                                       "probabilities": {picked: confidence}}},
+                "usage": {"tokens_in": 1, "tokens_out": 1}, "model": "gemma4:e4b"}
+
+    def _events(self, result):
+        return [json.loads(line) for line
+                in pathlib.Path(result["logFile"]).read_text(encoding="utf-8").splitlines()]
+
+    def test_judge_state_skips_generation_entirely(self):
+        calls = []
+        with mock.patch.object(sm.judge, "evaluate", return_value=self._choice("BUG")) as judged, \
+                patch_harness("_tl_run_agent", side_effect=lambda *a, **k: calls.append(a) or "BUG"):
+            result = sm.run_statemachine(workflow_path=self._judge_workflow(), cwd=self.repo,
+                                         parameters={"input": "ログインで 500"}, agent=self.LOCAL)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["finalState"], "bug")
+        self.assertEqual(calls, [], "アクションも遷移も生成を呼ばない")
+        state_text, questions = judged.call_args.args
+        self.assertIn("ログインで 500", state_text)
+        self.assertEqual(questions["answer"]["type"], "choice")
+        kinds = [e["event"] for e in self._events(result)]
+        self.assertIn("state_judge_done", kinds)
+
+    def test_other_becomes_unsure(self):
+        with mock.patch.object(sm.judge, "evaluate", return_value=self._choice("other")), \
+                patch_harness("_tl_run_agent", side_effect=AssertionError("no generation")):
+            result = sm.run_statemachine(workflow_path=self._judge_workflow(), cwd=self.repo,
+                                         parameters={"input": "x"}, agent=self.LOCAL)
+        self.assertEqual(result["finalState"], "ask")
+        self.assertEqual(result["stdout"], "UNSURE")
+
+    def test_without_judge_a_short_prompt_runs_and_the_answer_is_normalized(self):
+        prompts = []
+        with mock.patch.object(sm.judge, "evaluate", side_effect=AssertionError("cloud: no judge")), \
+                patch_harness("_SM_MAX_TOOL_ROUNDS", 1), \
+                patch_harness("_tl_run_agent",
+                              side_effect=lambda agent, prompt, **k: prompts.append(prompt)
+                              or "I would say FEATURE here."):
+            result = sm.run_statemachine(workflow_path=self._judge_workflow(), cwd=self.repo,
+                                         parameters={"input": "ダークモードが欲しい"}, agent={})
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["finalState"], "feature")
+        self.assertEqual(len(prompts), 1, "契約の語が本文にあれば再生成しない")
+        self.assertIn("exactly one choice key", prompts[0])
+        self.assertIn("ダークモードが欲しい", prompts[0])
+
+    def test_validated_output_fixes_the_first_line_deterministically(self):
+        self.assertEqual(sm._sm_validated_output("結論: OK です\n詳細", "startswith:OK,FAILED"),
+                         "OK\n詳細")
+        self.assertEqual(sm._sm_validated_output("前置き\nfailed: 根拠なし", "startswith:OK,FAILED"),
+                         "FAILED: 根拠なし")
+        self.assertEqual(sm._sm_validated_output("承認します", "startswith:OK,FAILED"), "")
+        self.assertEqual(sm._sm_validated_output("OK\n本文", "startswith:OK"), "OK\n本文")
+
+    def test_contract_by_judge_needs_a_model_and_confidence(self):
+        log = os.path.join(self.repo, "run.jsonl")
+        self.assertEqual(sm._sm_contract_by_judge("承認します", "startswith:OK,FAILED",
+                                                  agent={}, log_file=log), "")
+        weak = {"answers": {"contract": {"choice": "OK", "confidence": 0.3}}}
+        strong = {"answers": {"contract": {"choice": "OK", "confidence": 0.9}}}
+        with mock.patch.object(sm.judge, "evaluate", return_value=weak):
+            self.assertEqual(sm._sm_contract_by_judge("承認します", "startswith:OK,FAILED",
+                                                      agent=self.LOCAL, log_file=log), "")
+        with mock.patch.object(sm.judge, "evaluate", return_value=strong):
+            self.assertEqual(sm._sm_contract_by_judge("承認します", "startswith:OK,FAILED",
+                                                      agent=self.LOCAL, log_file=log),
+                             "OK\n承認します")
+
+    def _gated_workflow(self, check_script: str) -> str:
+        script = pathlib.Path(self.repo, "check.py")
+        script.write_text(check_script, encoding="utf-8")
+        (self.machine / "actions").mkdir(exist_ok=True)
+        (self.machine / "actions" / "work.md").write_text("作業する。\n", encoding="utf-8")
+        (self.machine / "workflow.yaml").write_text("\n".join([
+            "name: gated", "initial_state: work", "config: {max_steps: 3}",
+            "states:",
+            "  work:",
+            "    action_file: actions/work.md",
+            '    output_validator: "startswith:OK"',
+            f"    check: {json.dumps([sys.executable, str(script)])}",
+            "    check_retries: 3",
+            "  done: {terminal: true}",
+            "transitions:",
+            '  - {from: work, to: done, condition_rule: "equals:check_ok:true"}',
+            "",
+        ]), encoding="utf-8")
+        return str(self.machine / "workflow.yaml")
+
+    def _run_gated(self, workflow, agent):
+        calls = []
+        with patch_harness("_SM_MAX_TOOL_ROUNDS", 1), \
+                patch_harness("_tl_run_agent",
+                              side_effect=lambda *a, **k: calls.append(a) or '{"type":"final","output":"OK"}'):
+            return sm.run_statemachine(workflow_path=workflow, cwd=self.repo, parameters={},
+                                       agent=agent), calls
+
+    def test_environment_failure_stops_retries_without_judge(self):
+        wf = self._gated_workflow("import sys\nprint('bash: pytest: command not found', file=sys.stderr)\nsys.exit(127)\n")
+        result, calls = self._run_gated(wf, agent={})
+        self.assertFalse(result["ok"])
+        self.assertTrue(result.get("escalate"))
+        self.assertEqual(len(calls), 1, "環境の失敗にはやり直しを積まない")
+        self.assertEqual(result["check"]["attempts"], 1)
+        triage = [e for e in self._events(result) if e["event"] == "check_triage"]
+        self.assertEqual(triage[0]["kind"], "environment")
+
+    def test_code_failure_still_retries(self):
+        wf = self._gated_workflow("import sys\nprint('FAILED tests/test_x.py::t - AssertionError')\nsys.exit(1)\n")
+        result, calls = self._run_gated(wf, agent={})
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(result["check"]["attempts"], 4)
+
+    def test_judge_stops_retries_only_when_confident(self):
+        wf = self._gated_workflow("import sys\nprint('some odd failure')\nsys.exit(1)\n")
+        stop = {"answers": {"fixable": {"value": False, "confidence": 0.95}}}
+        with mock.patch.object(sm.judge, "evaluate", return_value=stop):
+            result, calls = self._run_gated(wf, agent=self.LOCAL)
+        self.assertEqual(len(calls), 1)
+        weak = {"answers": {"fixable": {"value": False, "confidence": 0.5}}}
+        with mock.patch.object(sm.judge, "evaluate", return_value=weak):
+            result, calls = self._run_gated(wf, agent=self.LOCAL)
+        self.assertEqual(len(calls), 4)
