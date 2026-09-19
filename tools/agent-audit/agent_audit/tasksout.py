@@ -14,11 +14,14 @@ from .store import Store
 from .util import log
 
 
-def insight_tasks(store: Store) -> "tuple[list[dict], list[str]]":
-    """(タスク一覧, 元になった洞察 id 一覧) を返す。"""
+def insight_tasks(store: Store, only: "list[str] | None" = None) -> "tuple[list[dict], list[str]]":
+    """(タスク一覧, 元になった洞察 id 一覧) を返す。only を渡すとその id だけ。"""
     tasks = []
     insight_ids = []
+    wanted_ids = {str(v) for v in (only or []) if str(v)}
     for ins in sorted(store.iter_insights(), key=lambda i: i.get("id") or ""):
+        if wanted_ids and str(ins.get("id")) not in wanted_ids:
+            continue
         if ins.get("exported"):
             continue
         if not str(ins.get("suggested_action") or "").strip():
@@ -43,7 +46,7 @@ def insight_tasks(store: Store) -> "tuple[list[dict], list[str]]":
 
 def cmd_tasks(args) -> int:
     store = Store(resolve_audit_dir(args))
-    tasks, insight_ids = insight_tasks(store)
+    tasks, insight_ids = insight_tasks(store, getattr(args, "insight_ids", None))
     print(json.dumps(scrub_obj(tasks), ensure_ascii=False, indent=1))
     if getattr(args, "mark_exported", False):
         wanted = set(insight_ids)

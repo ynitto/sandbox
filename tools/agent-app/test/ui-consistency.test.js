@@ -198,7 +198,7 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   const renderer = read('renderer/renderer.js');
   const workbench = read('renderer/automation/renderer.js');
   // 1. 確認待ちは答えを並べる面を持たない。状態の印のまま、端末操作（既存の入力先）へ連れて行く。
-  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 5, '会話・作成・編集・取り込みの実行設定は共通ポップオーバーを使う');
+  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 6, '会話・作成・編集・取り込み・まとめて評価の実行設定は共通ポップオーバーを使う');
   assert.ok(!css.includes('.phase-popover {'), '共有部品の私物な複製がある: .phase-popover');
   assert.ok(!css.includes('.attention-panel {'), '共有部品の私物な複製がある: .attention-panel');
   assert.ok(!css.includes('.phase-menu {'), '確認待ちに自分用のパネルを作らない');
@@ -267,7 +267,8 @@ test('受信箱は既存の部品（メニューの領域・一覧の行・件�
   assert.match(renderer, /const pick = el\('button', 'list-pick'\);[\s\S]*?pick\.onclick = \(\) => openAttentionItem/, '項目は会話一覧と同じ .list-pick');
   assert.match(renderer, /const button = \$\('area-inbox'\);[\s\S]*?badge = el\('span', 'unread'\)/, '件数は「共有」と同じ .unread の印');
   // 2. 見出しは他の領域と同じ .area-head、本文は 1 行だけ。受信箱に見た目の規則・私物の部品を足さない
-  assert.match(html, /<section id="inbox-area" aria-label="受信箱" hidden>\s*<header class="area-head">\s*<div class="area-heading">\s*<div class="title">受信箱<\/div>\s*<p id="inbox-meta"><\/p>\s*<\/div>\s*<\/header>\s*<div class="blank compact"><p id="inbox-sub"><\/p><\/div>\s*<\/section>/);
+  // 課題（agent-audit の洞察）の本文はタスクの概要と同じ .execution-card の並び（.issue-cards は並べる器だけ）
+  assert.match(html, /<section id="inbox-area" aria-label="受信箱" hidden>\s*<header class="area-head">\s*<div class="area-heading">\s*<div class="title">受信箱<\/div>\s*<p id="inbox-meta"><\/p>\s*<\/div>\s*<\/header>\s*<div class="blank compact"><p id="inbox-sub"><\/p><\/div>\s*<div id="inbox-issues" class="issue-cards" hidden><\/div>\s*<\/section>/);
   assert.match(css, /^#share-area, #inbox-area \{/m, '本文の面は「共有」と同じ規則を共有する');
   assert.deepStrictEqual(css.match(/^#inbox[^{]*\{/gm) || [], [], '受信箱だけの規則を足さない');
   for (const clone of ['.inbox-card {', '.inbox-item {', '.attention-inbox {', '.inbox-panel {']) assert.ok(!css.includes(clone), `共有部品の私物な複製がある: ${clone}`);
@@ -353,4 +354,27 @@ test('公開の札とカードは 1 か所で作り、タスクとワークフ�
   // 4. 言葉を混ぜない。LAN は「共有」、リポジトリへ出すのは「公開」
   assert.ok(!/共有先|共有する/.test(publish), 'リポジトリへ出すことを「共有」と呼ばない');
   assert.deepStrictEqual(publish.match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークンを使う');
+});
+test('評価と課題は既存の部品で組む（設定の行・検索の足元・受信箱のカード）。人が点を付けるボタンは持たない', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  const renderer = read('renderer/renderer.js');
+  const search = read('renderer/sessionSearch.js');
+  // 1. 自動評価の設定は「遷移や振り分けの判定」と同じ .setting-field の 1 行で、モデルの欄を増やさない
+  assert.match(html, /<label class="setting-field" id="evaluation-row">[\s\S]*?<select id="evaluation-mode">/);
+  assert.ok(!html.includes('id="evaluation-model"'), '判定に使うモデルは上の行と共有する');
+  // 2. まとめて評価は検索の足元に操作 1 つ。使う AI は会話の入力欄と同じ .run-settings / .settings-popover
+  const footer = html.slice(html.indexOf('<footer id="search-batch"'), html.indexOf('</footer>', html.indexOf('<footer id="search-batch"')));
+  assert.strictEqual((footer.match(/class="primary"/g) || []).length, 1, '主ボタンは足元に 1 つ');
+  assert.match(footer, /<details id="search-batch-settings" class="run-settings">[\s\S]*class="settings-popover"/);
+  assert.ok(!/search-batch-all|すべて選ぶ/.test(search), '「すべて選ぶ」は置かない（検索の絞り込みで対象を決める）');
+  // 3. 課題のカードはタスクの概要と同じ .execution-card。改善案の文は置かない
+  assert.match(renderer, /function renderIssueCards[\s\S]*el\('section', 'execution-card'\)[\s\S]*el\('div', 'execution-card-head'\)/);
+  assert.ok(!/suggested_action/.test(renderer), '課題に agent-audit の定型の改善案を添えない');
+  assert.ok(!/<h2|<h3/.test(html.slice(html.indexOf('id="inbox-area"'), html.indexOf('</section>', html.indexOf('id="inbox-area"')))), '受信箱の本文は見出しを描かない（カードが持つ）');
+  // 4. 人が応答に点を付ける口は無い（方針: 評価は自動か、まとめて）
+  assert.ok(!/良い|悪い|thumbs/.test(renderer.slice(renderer.indexOf('function responseForkActions'), renderer.indexOf('function responseForkActions') + 4000)), '応答の下に評価ボタンを置かない');
+  // 5. 足した面に直値の色を足さない
+  const added = css.slice(css.indexOf('/* 課題（受信箱）'));
+  assert.ok(!/#[0-9a-f]{3,6}\b/i.test(added), `直値の色: ${added}`);
 });

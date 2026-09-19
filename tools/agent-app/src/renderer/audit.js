@@ -87,11 +87,27 @@
     }));
   }
 
+  const TARGET_LABEL = { skill: 'スキル', task: 'タスク', workflow: 'ワークフロー', tool: 'ツール', general: '全体' };
+  // 評価（自動評価・まとめて評価）の 1 行。agent-audit の usage --json の evaluation をそのまま並べる。
+  function renderEvaluation() {
+    const box = $('audit-evaluation');
+    const data = state.summary;
+    const ev = data && data.usage && data.usage.evaluation;
+    const shown = !!ev && !state.error && data.available !== false;
+    $('audit-evaluation-head').hidden = !shown;
+    box.hidden = !shown;
+    if (!shown) { box.textContent = ''; return; }
+    if (!ev.evaluations) { box.textContent = 'この期間の評価はありません'; return; }
+    const targets = Object.entries(ev.by_target || {}).filter(([, n]) => n > 0).map(([k, n]) => `${TARGET_LABEL[k] || k} ${n}`).join(' · ');
+    box.textContent = `評価 ${ev.evaluations} 件 · 品質 平均 ${ev.quality_avg != null ? ev.quality_avg : '—'} / 3 · 課題あり ${ev.issues} 件${targets ? `（${targets}）` : ''}`;
+  }
+
   function renderUsage() {
     const box = $('audit-usage');
     const breakdown = $('audit-breakdown');
     breakdown.replaceChildren();
     renderLimits();
+    renderEvaluation();
     if (state.error) { box.replaceChildren(el('div', 'sub', state.error)); return; }
     if (!state.summary) { box.replaceChildren(el('div', 'sub', '集計しています…')); return; }
     if (state.summary.available === false) {
@@ -125,6 +141,7 @@
         const detail = [`入力 ${tokens(item.measured_in)}`, `出力 ${tokens(item.measured_out)}`];
         if (item.estimated_tokens) detail.push(`推定 ${tokens(item.estimated_tokens)}`);
         if (item.unmeasured_runs) detail.push(`未計測 ${item.unmeasured_runs} 件`);
+        if (item.evaluations) detail.push(`品質 ${item.quality_avg != null ? item.quality_avg : '—'}`, `課題 ${item.issues || 0}`);
         group.append(line(name || item.group || '未記録', `${item.runs || 0} 回`), el('small', 'sub', detail.join(' · ')));
         return group;
       }));

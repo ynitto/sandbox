@@ -8,6 +8,9 @@ const SessionSearch = (() => {
   // 見つかった端から受け取り、画面には 100 件ずつ足す（下まで来たら続きを描く）。
   const PAGE = 100;
   let rows = [], rendered = 0, state = null;
+  // まとめて評価: 行のチェックで選び、足元の操作 1 つで出す（設定の一覧と同じ作法）。
+  const picked = new Set();
+  let evaluation = null;   // evaluation:status（進み具合は main が持つ）
   const name = p => String(p || '').split(/[/\\]/).filter(Boolean).pop() || 'フォルダ不明';
   const source = s => s === 'app' ? 'agent-app' : s === 'vscode' ? 'VS Code' : 'CLI';
   const node = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; };
@@ -45,7 +48,7 @@ const SessionSearch = (() => {
     for (const row of $('search-results').querySelectorAll('.active, .on')) row.classList.remove('active', 'on');
   }
   function clearResults() {
-    clearPreview(); rows = []; rendered = 0;
+    clearPreview(); rows = []; rendered = 0; picked.clear(); batchControls();
     $('search-results').replaceChildren();
     $('search-errors').hidden = true; $('search-error-detail').textContent = '';
   }
@@ -68,7 +71,48 @@ const SessionSearch = (() => {
     row.dataset.key = record.key;
     const item = node('li', 'row-item', '');
     if (selected?.key === record.key) { row.classList.add('on'); item.classList.add('active'); }
-    item.append(row); $('search-results').append(item);
+    const check = document.createElement('input');
+    check.type = 'checkbox'; check.className = 'row-check'; check.checked = picked.has(record.key);
+    check.setAttribute('aria-label', `「${record.title}」を評価の対象にする`);
+    check.onchange = () => { if (check.checked) picked.add(record.key); else picked.delete(record.key); batchControls(); };
+    item.append(check, row); $('search-results').append(item);
+  }
+  // 足元の操作。選んだ件数・使う AI・状態の 1 行。数字は main（evaluation:status）のもの。
+  function batchControls() {
+    const n = picked.size;
+    const busy = !!(evaluation && evaluation.batch && evaluation.batch.running);
+    $('search-batch-count').textContent = n ? `選んだ ${n} 件` : '会話を選ぶとまとめて評価できます';
+    $('search-batch-start').disabled = !n || busy;
+    const b = evaluation && evaluation.batch;
+    let text = '';
+    if (b && b.running) text = `評価中 ${b.done + b.skipped} / ${b.total}`;
+    else if (b) text = `評価しました ${b.done} 件（課題あり ${b.issues} 件${b.skipped ? `・評価できず ${b.skipped} 件` : ''}）。課題は受信箱に届きます`;
+    if (evaluation && evaluation.lastError && b && !b.running) text += ` · ${evaluation.lastError}`;
+    $('search-batch-status').textContent = text || (n ? '評価は背景で進み、終わると受信箱に課題が届きます' : '');
+    $('search-batch-summary').textContent = `評価に使うAI: ${$('search-batch-agent').value || 'herd'}${$('search-batch-model').value.trim() ? ` · ${$('search-batch-model').value.trim()}` : ''}`;
+  }
+  async function batchAgents() {
+    const select = $('search-batch-agent');
+    const held = select.value;
+    const repo = deps.getConfig().lastRepo || (deps.getConfig().repos || [])[0] || '';
+    let entries = [];
+    try { entries = repo ? await window.api.listAgents(repo) : []; } catch { entries = []; }
+    const names = entries.filter(a => a.available).map(a => a.name);
+    if (!names.includes('herd')) names.unshift('herd');
+    select.replaceChildren(...names.map(n => new Option(n === 'herd' ? 'herd（ローカルの判定AI）' : n, n)));
+    select.value = names.includes(held) ? held : 'herd';
+    batchControls();
+  }
+  async function startBatch() {
+    const keys = [...picked];
+    if (!keys.length) return;
+    $('search-batch-start').disabled = true;
+    try {
+      evaluation = await window.api.evaluation.batch({ keys, cli: $('search-batch-agent').value, model: $('search-batch-model').value.trim() });
+      picked.clear();
+      for (const check of $('search-results').querySelectorAll('.row-check')) check.checked = false;
+    } catch (err) { $('search-batch-status').textContent = err.message; }
+    batchControls();
   }
   // 画面が埋まるまで描き、あとはスクロールに合わせて足す。
   function renderMore() {
@@ -257,6 +301,7 @@ const SessionSearch = (() => {
   function open() {
     if (visible) { $('search-text').focus(); return; }
     visible = true; deps.hideSidebar();
+    batchAgents().catch(() => {});
     panels = ['main', 'automation', 'share-area', 'inbox-area', 'changes'].map(id => [id, $(id).hidden]);
     for (const [id] of panels) $(id).hidden = true;
     $('session-search').hidden = false; $('session-search-open').setAttribute('aria-expanded', 'true');
@@ -315,6 +360,11 @@ const SessionSearch = (() => {
       transfer = null;
     });
     $('search-transfer-start').onclick = startTransfer;
+    $('search-batch-start').onclick = startBatch;
+    $('search-batch-agent').onchange = () => { $('search-batch-model').value = ''; batchControls(); };
+    $('search-batch-model').oninput = batchControls;
+    window.api.evaluation.onChanged(status => { evaluation = status; batchControls(); });
+    window.api.evaluation.status().then(status => { evaluation = status; batchControls(); }).catch(() => {});
     $('session-search').addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); close(); } });
   }
   function openOrigin(origin) {

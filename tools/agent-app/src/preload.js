@@ -189,6 +189,14 @@ contextBridge.exposeInMainWorld('api', {
     list: () => invoke('attention:list'),
     seen: (key, resultAt) => invoke('attention:seen', { key, resultAt }),
   },
+  evaluation: {
+    status: () => invoke('evaluation:status'),
+    batch: (payload) => invoke('evaluation:batch', payload || {}),
+    onChanged: on('evaluation:changed'),
+  },
+  insight: {
+    handoff: (id) => invoke('insight:handoff', { id }),
+  },
   onTurnStarted: on('turn:started'),
   onTurnProgress: on('turn:progress'),
   onTurnInfo: on('turn:info'),

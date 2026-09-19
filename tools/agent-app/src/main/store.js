@@ -92,6 +92,7 @@ function normalize(raw) {
   next.notify = userSettings.notify;
   next.update = userSettings.update;
   next.audit = userSettings.audit;
+  next.evaluation = userSettings.evaluation;
   next.execution = {
     ...rawExecution,
     ...userSettings.execution,
