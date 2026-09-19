@@ -1,5 +1,13 @@
 # HTML Output Template Guide
 
+## 目次
+
+- [Section Order](#section-order)
+- [Component Reference](#component-reference)
+- [Rules](#rules)
+
+---
+
 Reference: `references/template.html`
 
 Use `template.html` as the structural and visual foundation for every generated HTML file. Copy its CSS verbatim and follow the section order below. Add or remove sections based on the source material, but keep the overall layout, class names, and styling consistent.

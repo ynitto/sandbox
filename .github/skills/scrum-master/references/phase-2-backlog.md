@@ -1,5 +1,18 @@
 # Phase 2: バックログ作成
 
+## 目次
+
+- [フロー概要](#フロー概要)
+- [目次](#目次)
+- [Step 2-0: requirements.md の存在チェックと JSON 変換](#step-2-0-requirementsmd-の存在チェックと-json-変換)
+- [Step 2-1: scrum-master がプレインタビューを実施し、requirements-definer に委譲する](#step-2-1-scrum-master-がプレインタビューを実施しrequirements-definer-に委譲する)
+- [Step 2-2: requirements.json → バックログ変換](#step-2-2-requirementsjson-バックログ変換)
+- [Step 2-3: プロダクトゴールと完成の定義を設定する](#step-2-3-プロダクトゴールと完成の定義を設定する)
+- [Step 2-4: plan.json 保存](#step-2-4-planjson-保存)
+- [ゲート条件（Phase 3 に進む前に確認）](#ゲート条件phase-3-に進む前に確認)
+
+---
+
 > **開始時出力**: `=== PHASE 2: バックログ作成 開始 ===`
 
 ## フロー概要

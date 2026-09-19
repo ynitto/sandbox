@@ -1,5 +1,14 @@
 # Design Doc テンプレート
 
+## 目次
+
+- [テンプレート検出手順](#テンプレート検出手順)
+- [デフォルト `_body.md` テンプレート](#デフォルト-_bodymd-テンプレート)
+- [Design Doc セクションの説明](#design-doc-セクションの説明)
+- ⚠️ 推測: の使い方
+
+---
+
 gitlab-idd でイシューを design doc として運用するためのデフォルトテンプレート。
 
 プロジェクト固有の GitLab issue template（`.gitlab/issue_templates/`）が存在する場合は

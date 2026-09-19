@@ -1,5 +1,14 @@
 # markitdown（Office/PDFファイル変換）
 
+## 目次
+
+- [対応フォーマット](#対応フォーマット)
+- [使い方](#使い方)
+- [ワークフロー（3段階）](#ワークフロー3段階)
+- [変換例](#変換例)
+
+---
+
 markitdown CLIでOffice/PDFファイルをMarkdownに変換する。変換後は `ofm_formatter.py` で機械的後処理を行い、さらにLLMが意味的変換を加えてObsidian Flavored Markdownに整形する。
 
 > **HTMLファイルは対象外** — `.html` / `.htm` ファイルは defuddle を使うこと → [defuddle.md](defuddle.md)
