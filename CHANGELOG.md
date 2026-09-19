@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 型付きの問いに確率つきで答える `judge`（Jev 型の判断 AI をローカルで）
+
+TypeSafe AI の Jev（System One モデル）が示した「文章を生成せず、決まった選択肢の上の
+確率分布を返す」形を、LAN の ollama（既定 `gemma4:e4b`）で真似る口を足した。
+
+- **`agent-herd judge --questions <問い> < 状態`。** 問いは Jev と同じ `{名前: {type, instructions,
+  criteria}}` で、型は `choice` / `boolean` / `score`。答えには `probabilities` /
+  `confidence` / `coverage` / `method` が付く。`--min-confidence` に届かない問いは
+  `abstained` に載せて終了コード 1——確度が足りない答えを黙って採用させない（`decide` と同じ作法）。
+- **生成しない。** 選択肢に A / B / C … を振り、`logprobs` で 1 トークン目の分布を読んで
+  正規化する。生成上限は 4 トークン、温度 0。JSON が壊れる・散文が混じる・暴走する、という
+  生成経路の故障モードが原理的に無い。同じ状態への複数の問いは状態を先に並べて接頭辞
+  キャッシュに乗せる。
+- **確率の出どころを隠さない。** ollama が `logprobs` を返さなければ `--samples N` の票数
+  （`method: vote`）か本文の 1 文字（`method: text`・`coverage: 0`）へ縮退し、確率 1.0 を
+  捏造しない。
+- Python からは `agentcore.judge.evaluate(state, questions)`。`request` を差し替えられるので、
+  消費側のテストは ollama 無しで書ける。
+- 実装: `agentcore/judge.py`・`herdcli.cmd_judge`。テスト: `test_judge`（16 件）・
+  `test_herdcli.JudgeTests`（7 件）。設計:
+  [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)。
+  gemma4:e4b での実測（`coverage` の分布・確度と正答の関係）は設計 §6 のとおり未着手。
+
 ### agent-app: 定型化したものの「公開」を、そのものが居る画面に置く（0.13.0）
 
 **言葉を分けた。** 同じ LAN の参加者に依頼やセッションを見せるのが「共有」、リポジトリへ出して
