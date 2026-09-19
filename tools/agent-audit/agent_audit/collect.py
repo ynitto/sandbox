@@ -204,6 +204,26 @@ def collect_budget_ledger(args, store: Store) -> int:
                     if kind and name:
                         rec["artifact"] = {"kind": kind, "name": name,
                                            "origin": str(art.get("origin") or "")}
+                # 何を使ったか（agent-app の feed が載せる。観測の対象を引く鍵）。
+                if isinstance(row.get("used"), dict):
+                    used = {}
+                    for key in ("skills", "commands", "tools"):
+                        vals = row["used"].get(key)
+                        if isinstance(vals, list):
+                            used[key] = [str(v) for v in vals if str(v)][:20]
+                    if used:
+                        rec["used"] = used
+                # 評価の行（workload: evaluation）。数字は作らず、そのまま持つ。
+                if isinstance(row.get("evaluation"), dict):
+                    ev = row["evaluation"]
+                    rec["evaluation"] = {
+                        "quality": ev.get("quality"),
+                        "confidence": ev.get("confidence"),
+                        "issue": str(ev.get("issue") or "none"),
+                        "method": str(ev.get("method") or ""),
+                        "judge_model": str(ev.get("judge_model") or ""),
+                        "note": str(ev.get("note") or "")[:400],
+                    }
                 if isinstance(row.get("methods"), list):
                     rec["methods"] = [str(v) for v in row["methods"] if str(v)]
                 if isinstance(row.get("trial"), dict):

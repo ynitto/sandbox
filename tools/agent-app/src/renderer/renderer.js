@@ -351,12 +351,18 @@ function renderWorkflowItems() {
 // ---- 受信箱 ----
 // main の投影（attention:list）を出すだけ。未読・要対応の判定はここでしない。
 // 項目を押すと既存の画面（会話・タスク・ワークフロー）へ行く。答え方も画面もここでは作らない。
-const ATTENTION_KIND = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー' };
+const ATTENTION_KIND = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー', issue: '課題', evaluation: 'まとめて評価' };
+const ISSUE_TARGET = { skill: 'スキル', task: 'タスク', workflow: 'ワークフロー', tool: 'ツール' };
+function issueTargetLabel(issue) {
+  const t = issue && issue.target;
+  return t && t.kind ? `${ISSUE_TARGET[t.kind] || t.kind} ${t.name}` : '全体';
+}
 const ATTENTION_ACTION = { terminal: '確認待ち', approval: '承認待ち', choice: '選択待ち', input: '入力待ち' };
 const ATTENTION_RESULT = { done: '完了', failed: '失敗', escalated: '要確認' };
 
 function attentionStatus(item) {
   if (item.queue === 'action') return ATTENTION_ACTION[item.interaction && item.interaction.mode] || '確認待ち';
+  if (item.kind === 'issue') return item.issue && item.issue.occurrences ? `観測 ${item.issue.occurrences} 件` : '未読';
   return ATTENTION_RESULT[item.outcome] || '完了';
 }
 
@@ -392,8 +398,11 @@ function renderInboxItems() {
     const li = el('li', `row-item${item.queue === 'action' ? ' attention' : ''}`);
     const pick = el('button', 'list-pick');
     const body = el('span', 'grow');
-    body.append(el('div', '', item.title));
-    body.append(el('div', 'sub', `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)} · ${repoName(item.repo)}`));
+    const issue = item.kind === 'issue';
+    body.append(el('div', '', issue ? `課題: ${issueTargetLabel(item.issue)}` : item.title));
+    body.append(el('div', 'sub', issue || item.kind === 'evaluation'
+      ? `${ATTENTION_KIND[item.kind]} · ${attentionStatus(item)}`
+      : `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)} · ${repoName(item.repo)}`));
     pick.append(body);
     pick.title = item.queue === 'action' ? `「${item.title}」を開いて回答する` : `「${item.title}」を開く`;
     pick.onclick = () => openAttentionItem(item).catch((err) => notice(err.message, 'error'));
@@ -402,12 +411,75 @@ function renderInboxItems() {
   }
   if (!a.items.length) ul.append(el('li', 'empty', '未読・要対応なし'));
   $('inbox-meta').textContent = a.items.length ? attentionSummary() : '未読・要対応なし';
-  $('inbox-sub').textContent = a.items.length ? '項目を選んで詳細を確認' : '実行結果や確認依頼が届きます';
+  const issues = a.items.filter((item) => item.kind === 'issue');
+  $('inbox-sub').textContent = issues.length ? '対象ごとにまとめた課題。会話に渡して改善策を決めます'
+    : a.items.length ? '項目を選んで詳細を確認' : '実行結果や確認依頼が届きます';
+  renderIssueCards(issues);
+}
+
+// 課題（agent-audit の洞察）の本文。タスクの概要と同じ .execution-card。置くのは対象・課題・根拠と
+// 「会話で扱う」だけで、改善案の文は置かない（改善策は会話で決める）。
+function renderIssueCards(issues) {
+  const box = $('inbox-issues');
+  box.replaceChildren();
+  box.hidden = !issues.length;
+  for (const item of issues) {
+    const issue = item.issue || {};
+    const card = el('section', 'execution-card');
+    card.dataset.issueId = issue.id || '';
+    const head = el('div', 'execution-card-head');
+    const heading = el('div');
+    heading.append(el('h3', '', issueTargetLabel(issue)), el('p', '', issue.statement || item.title));
+    head.append(heading, el('span', 'status', issue.occurrences ? `観測 ${issue.occurrences} 件` : '課題'));
+    card.append(head);
+    const facts = [issue.confidence ? `確度 ${issue.confidence}` : '', item.resultAt ? Fmt.checkedAt(item.resultAt) : ''].filter(Boolean);
+    const row = el('div', 'row');
+    row.append(el('span', 'sub', facts.join(' · ')), el('span', 'spacer'));
+    const go = el('button', 'small primary', '会話で扱う');
+    go.type = 'button';
+    go.onclick = () => handoffIssue(item, go).catch((err) => notice(err.message, 'error'));
+    row.append(go);
+    // 根拠: 元の会話・タスクへのリンク（応答の下の操作と同じ .message-action）。読み込みは 1 回だけ
+    const evidence = el('div', 'message-actions issue-evidence');
+    evidence.append(el('span', 'sub', '根拠を読み込んでいます…'));
+    card.append(evidence, row);
+    box.append(card);
+    renderIssueEvidence(evidence, issue).catch(() => { evidence.replaceChildren(el('span', 'sub', '根拠を読み込めませんでした')); });
+  }
+}
+
+const EVIDENCE_KIND = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー' };
+async function renderIssueEvidence(box, issue) {
+  const items = await api.insight.evidence(issue.evidence || []);
+  box.replaceChildren();
+  if (!items.length) { box.append(el('span', 'sub', '根拠の会話は見つかりません')); return; }
+  box.append(el('span', 'sub', '根拠:'));
+  for (const item of items.slice(0, 6)) {
+    if (item.kind === 'external' || !item.repo) { box.append(el('span', 'sub', item.title)); continue; }
+    const link = el('button', 'message-action', `${EVIDENCE_KIND[item.kind] || ''} ${item.title}`);
+    link.type = 'button';
+    link.title = item.ts ? Fmt.checkedAt(item.ts) : '';
+    link.onclick = () => openAttentionItem({ kind: item.kind, queue: 'none', target: { kind: item.kind, repo: item.repo, id: item.id } }).catch((err) => notice(err.message, 'error'));
+    box.append(link);
+  }
+  if (items.length > 6) box.append(el('span', 'sub', `ほか ${items.length - 6} 件`));
+}
+
+// 課題を新しい会話へ渡す。フォークと同じダイアログ（リポジトリ・AI・モデル・権限）で始める。
+// 渡し終えたら agent-audit 側で exported になり、受信箱から消える（ダイアログを閉じただけなら残る）。
+async function handoffIssue(item, button) {
+  if (!state.config.repos.length) throw new Error('リポジトリを登録してから課題を会話へ渡してください');
+  if (button) button.disabled = true;
+  try {
+    const handed = await api.insight.handoff(item.issue.id, { mark: false });
+    await SessionSearch.handoffIssue({ id: item.issue.id, title: handed.title, prompt: handed.prompt, agent: '' });
+  } finally { if (button) button.disabled = false; }
 }
 
 // 「見た」を main に書き、受信箱からその項目を落とす（要対応は答えが届くまで残る）
 async function markAttentionSeen(item) {
   if (item.queue !== 'unread' || !item.resultAt) return;
+  if (item.kind === 'issue') return;   // 課題は「見た」で消さない。会話へ渡したときに消える
   try { await api.attention.seen(item.key, item.resultAt); } catch { /* 印が書けなくても開くのは止めない */ }
   const a = state.attention;
   if (!a.items.some((held) => held.key === item.key)) return;
@@ -441,6 +513,13 @@ async function openAttentionItem(item) {
   await markAttentionSeen(item);
   renderInbox();
   const t = item.target || {};
+  if (t.kind === 'evaluation') { SessionSearch.open(); return; }   // まとめて評価の結果は検索の足元に出ている
+  if (t.kind === 'issue') {
+    // 課題は受信箱の本文にカードで出ている。その場で見せるだけ（開く画面は無い）。
+    const card = [...$('inbox-issues').querySelectorAll('[data-issue-id]')].find((c) => c.dataset.issueId === t.id);
+    if (card) { card.scrollIntoView({ block: 'nearest' }); card.querySelector('button')?.focus(); }
+    return;
+  }
   if (t.kind === 'conversation') { await openSessionInRepo(t.repo, t.id, { answer: item.queue === 'action' }); return; }
   if (t.repo && t.repo !== state.repo) {
     if (!state.config.repos.includes(t.repo)) throw new Error('登録していないフォルダです');
@@ -932,6 +1011,9 @@ function renderJudgeSetting() {
   mode.closest('.setting-field').classList.toggle('is-off', !available);
   $('judge-model-row').hidden = !(available && mode.value === 'model');
   $('judge-model').disabled = !available;
+  // 応答と実行の自動評価も同じ判定 AI（agent-herd）を使う。無ければ同じく薄くする
+  $('evaluation-mode').disabled = !available;
+  $('evaluation-row').classList.toggle('is-off', !available);
 }
 
 function judgeValue() {
@@ -2185,6 +2267,7 @@ function settingsPatch() {
     // 「利用状況」が収集の設定を、「スキル」が公開先を持つ。画面に出していない設定
     // （configFile など）は触らずに残す。
     audit: { ...(state.config.audit || {}), ...Audit.patch(), ...Skills.patch() },
+    evaluation: { mode: $('evaluation-mode').value },
     share: {
       ...(state.config.share || {}),
       enabled: $('share-enabled').checked,
@@ -2270,6 +2353,7 @@ async function openSettings() {
   $('default-permission-mode').value = execution.defaultReadonly ? 'ask'
     : (execution.defaultAutoApprove ? 'auto' : 'confirm');
   $('max-concurrent').value = execution.maxConcurrent;
+  $('evaluation-mode').value = (state.config.evaluation && state.config.evaluation.mode) || 'sample';
   const share = state.config.share || {};
   $('share-enabled').checked = !!share.enabled;
   $('share-passphrase').value = share.passphrase || '';
@@ -2354,6 +2438,8 @@ async function saveSettings() {
 async function init() {
   SessionSearch.init({
     getConfig: () => state.config,
+    notice,
+    attentionChanged: () => { refreshAttention().catch(() => {}); },
     setConfig: cfg => { state.config = cfg; renderRepos(); },
     hideSidebar: () => setSidebar(false),
     openSession: openSessionInRepo,

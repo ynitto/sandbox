@@ -207,10 +207,17 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
         return groups.setdefault(key or "(なし)", {
             "group": key or "(なし)", "runs": 0, "seconds": 0.0,
             "measured_in": 0, "measured_out": 0, "estimated_tokens": 0,
-            "unmeasured_runs": 0, "usd": 0.0})
+            "unmeasured_runs": 0, "usd": 0.0,
+            "evaluations": 0, "quality_avg": None, "issues": 0})
 
     linked_sessions = set(links.values())
     for led in ledger:
+        if _is_evaluation(led):
+            # 評価の行は消費ではない。runs に数えず、評価の列にだけ足す（by=workload は評価
+            # された側の用途 = purpose で束ねる）。
+            group = led.get("purpose") if by == "workload" else led.get(by)
+            _add_evaluation(bucket(str(group or "")), led["evaluation"])
+            continue
         sess = sess_by_id.get(links.get(led["id"], ""))
         if by == "purpose":
             group = led.get("purpose") or led.get("ref")
@@ -267,7 +274,60 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
         b["runs"] += 1
         b["measured_in"] += int(sess.get("tokens_in") or 0)
         b["measured_out"] += int(sess.get("tokens_out") or 0)
-    return sorted(groups.values(), key=lambda g: g["group"])
+    rows = sorted(groups.values(), key=lambda g: g["group"])
+    for row in rows:
+        _finish_evaluation(row)
+    return rows
+
+
+# -- 評価（agent-app の自動評価・まとめて評価が書く行。数字は足して割るだけ） -----------
+
+def _is_evaluation(led: dict) -> bool:
+    return led.get("workload") == "evaluation" and isinstance(led.get("evaluation"), dict)
+
+
+def _add_evaluation(b: dict, ev: dict) -> None:
+    b["evaluations"] += 1
+    try:
+        q = float(ev.get("quality"))
+    except (TypeError, ValueError):
+        q = None
+    if q is not None:
+        b["_quality_sum"] = b.get("_quality_sum", 0.0) + q
+        b["_quality_n"] = b.get("_quality_n", 0) + 1
+    if str(ev.get("issue") or "none") != "none":
+        b["issues"] += 1
+
+
+def _finish_evaluation(b: dict) -> None:
+    n = b.pop("_quality_n", 0)
+    total = b.pop("_quality_sum", 0.0)
+    b["quality_avg"] = round(total / n, 2) if n else None
+
+
+def evaluation_summary(ledger: "list[dict]") -> dict:
+    """期間内の評価の全体像: 件数・品質の平均・問題ありの件数と対象の種類ごとの内訳。"""
+    out = {"evaluations": 0, "quality_avg": None, "issues": 0,
+           "by_target": {"skill": 0, "task": 0, "workflow": 0, "tool": 0, "general": 0},
+           "by_issue": {}}
+    acc: dict = {"evaluations": 0, "issues": 0}
+    for led in ledger:
+        if not _is_evaluation(led):
+            continue
+        ev = led["evaluation"]
+        _add_evaluation(acc, ev)
+        if str(ev.get("issue") or "none") != "none":
+            from .rules import target_of
+            target = target_of(led)
+            kind = target["kind"] if target and target["kind"] in out["by_target"] else "general"
+            out["by_target"][kind] += 1
+            issue = str(ev.get("issue"))
+            out["by_issue"][issue] = out["by_issue"].get(issue, 0) + 1
+    _finish_evaluation(acc)
+    out["evaluations"] = acc["evaluations"]
+    out["issues"] = acc["issues"]
+    out["quality_avg"] = acc["quality_avg"]
+    return out
 
 
 def cmd_usage(args) -> int:
@@ -282,6 +342,8 @@ def cmd_usage(args) -> int:
         args, store, rows, rows_period=period) if by == "agent_cli" else []
     if getattr(args, "json", False):
         payload = {"period": period, "by": by, "rows": rows}
+        ledger, _sess, _run = load_period_records(store, period)
+        payload["evaluation"] = evaluation_summary(ledger)
         if by == "agent_cli":
             payload["agent_limits"] = limits
         print(json.dumps(scrub_obj(payload),

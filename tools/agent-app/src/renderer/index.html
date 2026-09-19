@@ -288,6 +288,24 @@
         <section id="search-results-pane" aria-label="検索結果"><ul id="search-results" class="list"></ul></section>
         <section id="search-preview" aria-label="会話のプレビュー"><p class="sub">会話を選ぶと内容を確認できます</p></section>
       </div>
+      <footer id="search-batch" class="search-batch">
+        <div class="row">
+          <span id="search-batch-count" class="sub">会話を選ぶとまとめて評価できます</span>
+          <span class="spacer"></span>
+          <details id="search-batch-settings" class="run-settings">
+            <summary><span id="search-batch-summary">評価に使うAI</span></summary>
+            <div class="settings-popover">
+              <div class="popover-head">評価に使うAI</div>
+              <div class="direct-agent-settings">
+                <label>エージェント<select id="search-batch-agent"></select></label>
+                <label>モデル<input id="search-batch-model" placeholder="自動" size="14"></label>
+              </div>
+            </div>
+          </details>
+          <button type="button" id="search-batch-start" class="primary" disabled>選んだ会話をまとめて評価</button>
+        </div>
+        <div id="search-batch-status" class="sub" role="status" aria-live="polite"></div>
+      </footer>
     </section>
 
     <section id="automation" aria-label="タスクとワークフロー" hidden>
@@ -557,6 +575,7 @@
         </div>
       </header>
       <div class="blank compact"><p id="inbox-sub"></p></div>
+      <div id="inbox-issues" class="issue-cards" hidden></div>
     </section>
 
     <aside id="changes" hidden>
@@ -647,6 +666,7 @@
           </div>
           <label class="setting-field"><span><strong>遷移や振り分けの判定</strong><small>クラウドのAIで作業しているときも、判定だけをローカルのAIに任せられます</small></span><select id="judge-mode"><option value="auto">ローカルのAIで作業しているときだけ</option><option value="model">いつも、指定したモデルで</option><option value="off">使わない</option></select></label>
           <label class="setting-field" id="judge-model-row" hidden><span><strong>判定に使うモデル</strong></span><input id="judge-model" placeholder="gemma4:e4b"></label>
+          <label class="setting-field" id="evaluation-row"><span><strong>応答と実行の自動評価</strong><small>終わった応答と実行をローカルのAIが評価し、課題を受信箱に出します</small></span><select id="evaluation-mode"><option value="sample">5 件に 1 件</option><option value="all">すべて</option><option value="off">使わない</option></select></label>
           <label class="setting-field"><span><strong>会話の既定権限</strong><small>新しい会話と、タスク・ワークフローの編集に適用します</small></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">読み取り専用</option></select></label>
           <label class="setting-field"><span><strong>同時実行数</strong><small>上限に達したら、実行中の処理が終わってから送信してください</small></span><input id="max-concurrent" type="number" min="1" max="8" step="1"></label>
         </section>
@@ -699,6 +719,8 @@
           <div class="environment-status">
             <div class="row usage-controls"><strong>使用量</strong><span class="spacer"></span><select id="audit-period" aria-label="集計期間"><option value="day">今日</option><option value="month" selected>今月</option><option value="total">全期間</option></select></div>
             <div id="audit-usage" aria-live="polite"></div>
+            <div class="row" id="audit-evaluation-head" hidden><strong>評価</strong></div>
+            <div id="audit-evaluation" class="sub" aria-live="polite" hidden></div>
             <div class="row"><strong>内訳</strong><span class="spacer"></span><select id="audit-by" aria-label="集計の軸"><option value="agent_cli">AIごと</option><option value="workload">用途ごと</option><option value="model">モデルごと</option></select></div>
             <div id="audit-breakdown"></div>
             <small class="sub">今日・今月は UTC 基準</small>

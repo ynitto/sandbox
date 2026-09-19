@@ -103,6 +103,17 @@ function audit(raw) {
   };
 }
 
+// 設定 > 実行制御「応答と実行の自動評価」。終わった応答・実行をローカルの判定 AI（agent-herd judge）で
+// 評価し、問題ありなら観測として agent-audit へ渡す（src/main/evaluation.js）。
+//   sample … 5 件に 1 件（失敗した応答・実行は必ず）。既定
+//   all    … すべて
+//   off    … 使わない
+const EVALUATION_MODES = ['sample', 'all', 'off'];
+function evaluation(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return { mode: EVALUATION_MODES.includes(source.mode) ? source.mode : 'sample' };
+}
+
 function concurrent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 2;
@@ -181,6 +192,7 @@ function normalize(raw) {
     notify: notify(source.notify),
     update: update(source.update),
     audit: audit(source.audit),
+    evaluation: evaluation(source.evaluation),
   };
 }
 
@@ -228,5 +240,5 @@ module.exports = {
   TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS, SHARED_POLICY, SHARE_DEFAULTS, ACCEPT_MODES,
   MAX_QUICK_REQUESTS, DEFAULT_QUICK_REQUESTS, UPDATE_DEFAULTS, UPDATE_INTERVALS,
   AUDIT_DEFAULTS, AUDIT_INTERVALS,
-  normalize, resolve, optimized, effectivePolicy, share, acceptMode, quickRequests, notify, update, audit,
+  normalize, resolve, optimized, effectivePolicy, share, acceptMode, quickRequests, notify, update, audit, evaluation, EVALUATION_MODES,
 };
