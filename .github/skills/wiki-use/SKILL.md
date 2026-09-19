@@ -27,7 +27,7 @@ Karpathy LLM Wiki パターンを Claude Code で実装する知識ベース管�
 wiki-use は **意味的・参照的な知識**（概念・用語・人物・組織・製品の定義、外部ソースの要約、横断的な合成）を扱う。
 手続き的・エピソード的な運用知（手順・設計判断）は **ltm-use**、ユーザー自身の嗜好・専門領域は **persona-use** に保存する。
 判定に迷ったとき・取り違えたときのルーティングとブリッジは
-[`../../instructions/common.instructions.md`](../../instructions/common.instructions.md) の「記憶レイヤの役割分担」を正典とする。
+`../../instructions/common.instructions.md` の「記憶レイヤの役割分担」を正典とする。
 **同一の情報を他レイヤと重複保存しないこと。**
 
 ---

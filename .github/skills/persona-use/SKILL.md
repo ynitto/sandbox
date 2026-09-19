@@ -25,7 +25,7 @@ metadata:
 persona-use は **ユーザー自身のモデル**（コミュニケーションスタイル・技術嗜好・専門領域）を扱う。
 自分／チームの運用知（手順・設計判断）は **ltm-use**、世界・ドメインの知識（概念・外部ソース）は **wiki-use** に保存する。
 判定に迷ったとき・取り違えたときのルーティングとブリッジは
-[`../../instructions/common.instructions.md`](../../instructions/common.instructions.md) の「記憶レイヤの役割分担」を正典とする。
+`../../instructions/common.instructions.md` の「記憶レイヤの役割分担」を正典とする。
 **同一の情報を他レイヤと重複保存しないこと。**
 
 ## ペルソナの構造
