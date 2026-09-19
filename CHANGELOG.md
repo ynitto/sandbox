@@ -41,16 +41,53 @@ TypeSafe AI の Jev（System One モデル）が示した「文章を生成せ�
   採ると分布の情報を捨てる）。記録する書式は変えないので、採点を読む側（リスクダイジェスト・
   spec ルーティング）は無改修。judge が決めなければ生成経路、それも駄目なら従来どおり
   決定的ヒューリスティック。
-- **クラウド CLI の実行でも判定だけを judge へ回せる（`AGENT_JUDGE_MODEL`）。** 上の配線 4 件は
+- **クラウド CLI の実行でも判定だけを judge へ回せる（設定 `judge.model`）。** 上の配線 4 件は
   ローカル定義で回しているときだけ効いていて、判定にいちばん高いトークンを払っている
   クラウド CLI（Claude Code など）の実行では、遷移条件 1 件ごとに出力全文と workflow を添えて
-  JSON を生成させていた。`AGENT_JUDGE_MODEL=gemma4:e4b` のようにモデルを指名すると、実行の
-  定義に関係なく遷移条件・route・filter・assess の判定はそのモデルの judge へ行き、クラウドは
-  作業だけに使う。`off` でどの実行でも judge を使わない。未設定の振る舞いは変えていない。
-  `agent-herd judge` の `--model` の既定も同じ変数を見る。
-- 実装: `agentcore/judge.py`・`herdcli.cmd_judge`。テスト: `test_judge`（21 件）・
-  `test_herdcli.JudgeTests`（7 件）・`test_harness_statemachine`（judge 配線 8 件）。設計:
-  [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)。
+  JSON を生成させていた。`agent-herd config set judge.model gemma4:e4b` とモデルを指名すると、
+  実行の定義に関係なく遷移条件・route・filter・assess の判定はそのモデルの judge へ行き、
+  クラウドは作業だけに使う。`off` でどの実行でも judge を使わない。未設定（`auto`）の振る舞いは
+  変えていない。`agent-herd judge` の `--model` の既定も同じ設定を見る。
+- **設定ファイルと `agent-herd config`。** 各 PC の `~/.agents/agent-herd.yaml`（`.yml` / `.json`
+  も可）を `agent-herd config [set|unset]` で読み書きする。環境変数にしなかったのは、判定を呼ぶ
+  agent-herd / agent-loop / agent-flow が WSL 側に居て、agent-app から環境変数が届かないため。
+  `--json` は app が読む形、`--check judge` はスキルが「judge に任せてよいか」を確かめる口。
+- **ステートマシンの分岐を「結果の選択肢」で判定する（`outcome`）。** 候補すべてに `outcome` が
+  あれば、条件ごとの boolean N 問ではなく「結果はどれか」の choice 1 問で遷移先を選ぶ
+  （prefill が 1 回になり、2 つの条件が同時に真になる矛盾が構造として消える）。「どれでもない」は
+  明示の選択肢で、選ばれると全候補が偽。
+- 実装: `agentcore/judge.py`・`agentcore/herdconfig.py`・`herdcli.cmd_judge` / `cmd_config`。
+  テスト: `test_judge`（23 件）・`test_herdconfig`（16 件）・`test_herdcli.JudgeTests`（7 件）・
+  `test_harness_statemachine`（judge 配線 11 件）。設計:
+  [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)
+  §5.1 / §5.2。
+
+### statemachine-use: 遷移条件の判定を agent-herd の judge に任せる（2.2.0）
+
+- **`outcome`。** transitions に「この遷移が成立する結果の短い名前」を書く項目を足した。同じ
+  ステートの候補すべてにあれば、判定 AI が「結果はどれか」を 1 問で選ぶ。judge の無い環境では
+  同じ `outcome` が条件文になるので、定義は 1 つでよい。作成モードの設計原則に足し、scaffold の
+  骨組みにも案内を入れた。作例 `examples/review_outcomes.yaml`。
+- **スキル自身の実行系（`run_machine.py`）が agent-herd の有無を確かめる。** `--judge auto`（既定）は
+  `agent-herd` が PATH にあり `agent-herd config --check judge` が通れば、条件の評価を
+  `agent-herd judge` に任せる（`scripts/judge_bridge.py`）。無ければ従来どおり LLM に YES/NO を
+  生成させる。`herd` で強制、`off` で止める。judge が失敗したら以後は呼ばず、条件は LLM へ倒す。
+- **会話内の手動実行にも同じ口。** `next_state.py --auto-eval` が `judge_questions`（`agent-herd judge`
+  にそのまま渡せる問い）を返し、`--judge-answers` に judge の stdout を渡せば遷移先が確定する
+  （確度不足 `abstained` は終了コード 3 で止め、`--eval` で渡し直す）。実行モードの Step 0 で
+  agent-herd を 1 回確かめ、③ で使い分ける手順を SKILL.md に書いた。
+- テスト: `tests/test_judge_bridge.py`（22 件）。
+
+### agent-app: 遷移や振り分けの判定を設定から選べる（0.14.0）
+
+- **設定 > 実行制御に「遷移や振り分けの判定」を足した。** 「ローカルの AI で作業しているときだけ」
+  「いつも、指定したモデルで」「使わない」の 3 択。「いつも」を選んだときだけ「判定に使うモデル」の
+  欄が出る（既定の候補 gemma4:e4b）。クラウドの AI で作業しているときも、判定だけをローカルの AI に
+  任せてトークンを節約する口。
+- **値はアプリの config.json ではなく agent-herd の設定ファイルにある。** 読み書きは
+  `agent-herd config`（Windows では WSL 経由）に頼み、agent-herd が無ければ行を薄くして触れなく
+  する。保存は値を変えたときだけ書きに行く。
+- テスト: `test/judge-setting.test.js`（4 件）。
   gemma4:e4b での実測（`coverage` の分布・確度と正答の関係）は設計 §6 のとおり未着手。
 
 ### agent-app: 定型化したものの「公開」を、そのものが居る画面に置く（0.13.0）

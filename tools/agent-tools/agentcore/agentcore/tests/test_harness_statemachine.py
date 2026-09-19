@@ -1178,11 +1178,14 @@ class NextStateJudgeTests(unittest.TestCase):
         self.repo = os.path.realpath(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
         self.log_file = os.path.join(self.repo, "run.jsonl")
-        # 開発機の AGENT_JUDGE_MODEL に左右されない（既定＝ローカル定義だけ、を縛る）。
-        env = {k: v for k, v in os.environ.items() if k != sm.judge.ENV_MODEL}
-        patcher = mock.patch.dict(os.environ, env, clear=True)
+        # 開発機の ~/.agents/agent-herd.yaml に左右されない（既定＝ローカル定義だけ、を縛る）。
+        patcher = mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": self.repo})
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def _configure_judge(self, model: str):
+        pathlib.Path(self.repo, "agent-herd.yaml").write_text(
+            f"judge:\n  model: {model}\n", encoding="utf-8")
 
     def _events(self):
         return [json.loads(line) for line
@@ -1240,10 +1243,10 @@ class NextStateJudgeTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.log_file), "何もしていないことを判定として記録しない")
 
     def test_a_pinned_judge_model_serves_a_cloud_agent(self):
-        """AGENT_JUDGE_MODEL があれば、クラウド CLI の実行でも判定だけが judge へ行く。"""
+        """設定でモデルを指名してあれば、クラウド CLI の実行でも判定だけが judge へ行く。"""
         agent = {"cli": "claude", "model": None, "spec": {"name": "claude", "relative_cost": 1}}
-        with mock.patch.dict(os.environ, {sm.judge.ENV_MODEL: "gemma4:e4b"}), \
-             mock.patch.object(sm.judge, "evaluate",
+        self._configure_judge("gemma4:e4b")
+        with mock.patch.object(sm.judge, "evaluate",
                                return_value=self._answers(**{"1": False, "2": True})) as call:
             evals = sm._sm_judge_conditions(self.PENDING, output="x", agent=agent,
                                             log_file=self.log_file)
@@ -1253,12 +1256,75 @@ class NextStateJudgeTests(unittest.TestCase):
         self.assertEqual(start["model"], "gemma4:e4b")
 
     def test_off_keeps_even_a_local_agent_on_the_control_response_path(self):
-        with mock.patch.dict(os.environ, {sm.judge.ENV_MODEL: "off"}), \
-             mock.patch.object(sm.judge, "evaluate",
+        self._configure_judge("off")
+        with mock.patch.object(sm.judge, "evaluate",
                                side_effect=AssertionError("judge must not be called")):
             evals = sm._sm_judge_conditions(self.PENDING, output="x", agent=self._local_agent(),
                                             log_file=self.log_file)
         self.assertEqual(evals, {})
+
+    OUTCOMES = [{"index": 0, "to": "approve", "priority": 1, "condition": "",
+                 "outcome": "承認できる", "needs_llm_eval": True},
+                {"index": 1, "to": "revise", "priority": 2, "condition": "",
+                 "outcome": "直すべき指摘がある", "needs_llm_eval": True},
+                {"index": 2, "to": "ask", "priority": 3, "condition": "",
+                 "outcome": "判断できない", "needs_llm_eval": True}]
+
+    @staticmethod
+    def _choice(picked, **probabilities):
+        return {"answers": {sm._SM_OUTCOME_QUESTION: {
+                    "type": "choice", "choice": picked, "probabilities": probabilities,
+                    "confidence": max(probabilities.values()), "coverage": 0.97,
+                    "method": "logprobs"}},
+                "usage": {"tokens_in": 1, "tokens_out": 1}, "model": "gemma4:e4b"}
+
+    def test_outcomes_become_one_choice_question(self):
+        """全候補に outcome があれば boolean N 問ではなく choice 1 問。選ばれた候補だけ真。"""
+        seen = {}
+
+        def fake_evaluate(state, questions, *, model):
+            seen.update(questions)
+            return self._choice("1", **{"0": 0.1, "1": 0.8, "2": 0.05, "other": 0.05})
+
+        with mock.patch.object(sm.judge, "evaluate", side_effect=fake_evaluate):
+            evals = sm._sm_judge_conditions(self.OUTCOMES, output="MINOR: typo",
+                                            agent=self._local_agent(), log_file=self.log_file)
+        self.assertEqual(list(seen), [sm._SM_OUTCOME_QUESTION])
+        question = seen[sm._SM_OUTCOME_QUESTION]
+        self.assertEqual(question["type"], "choice")
+        self.assertEqual(question["criteria"], {"0": "承認できる", "1": "直すべき指摘がある",
+                                                "2": "判断できない"})
+        self.assertTrue(question["other"])
+        self.assertEqual(evals, {"0": False, "1": True, "2": False})
+        done = [e for e in self._events() if e["event"] == "condition_judge_done"][0]
+        self.assertEqual(done["shape"], "choice")
+        self.assertEqual(done["answers"][sm._SM_OUTCOME_QUESTION]["choice"], "1")
+
+    def test_other_means_no_outcome_matched(self):
+        with mock.patch.object(sm.judge, "evaluate",
+                               return_value=self._choice("other", **{"0": 0.1, "1": 0.1,
+                                                                     "2": 0.1, "other": 0.7})):
+            evals = sm._sm_judge_conditions(self.OUTCOMES, output="???",
+                                            agent=self._local_agent(), log_file=self.log_file)
+        self.assertEqual(evals, {"0": False, "1": False, "2": False})
+
+    def test_a_missing_outcome_falls_back_to_booleans(self):
+        pending = [dict(self.OUTCOMES[0]), dict(self.OUTCOMES[1], outcome="")]
+        pending[1]["condition"] = "直すべき指摘がある"
+        seen = {}
+
+        def fake_evaluate(state, questions, *, model):
+            seen.update(questions)
+            return self._answers(**{"0": True, "1": False})
+
+        with mock.patch.object(sm.judge, "evaluate", side_effect=fake_evaluate):
+            evals = sm._sm_judge_conditions(pending, output="OK", agent=self._local_agent(),
+                                            log_file=self.log_file)
+        self.assertEqual(sorted(seen), ["0", "1"])
+        self.assertTrue(all(q["type"] == "boolean" for q in seen.values()))
+        self.assertIn("承認できる", seen["0"]["instructions"],
+                      "条件文が無い候補は outcome を条件文として訊く")
+        self.assertEqual(evals, {"0": True, "1": False})
 
     def test_judge_failure_falls_back_and_leaves_a_trace(self):
         with mock.patch.object(sm.judge, "evaluate",

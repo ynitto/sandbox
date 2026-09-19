@@ -29,7 +29,9 @@ const skillSelection = require('./skillSelection');
 const herd = require('./herd');
 const agentsMod = require('./agents');
 const share = require('./share');
-const { registerAutomationIpc } = require('./automation/ipc');
+const { registerAutomationIpc, makeTaskCommandSpawnSpec } = require('./automation/ipc');
+const runner = require('./automation/runner');
+const judgeSetting = require('./judgeSetting');
 const attention = require('./attention');
 const runHistory = require('./automation/run-history');
 const agentFlow = require('./automation/agent-flow');
@@ -923,6 +925,13 @@ function registerIpcHandlers(getWindow) {
     return { platform: process.platform, distro: cfg.wslDistro, ...info, socket: tmux.SOCKET };
   });
   handle('config:get', () => store.loadConfig(userData()));
+  // 設定 > 実行制御「遷移や振り分けの判定」。値は agent-herd の設定ファイル（python が動く側の
+  // ~/.agents）にあるので、agent-herd config に読み書きを頼む（Windows では WSL 経由）。
+  const herdCapture = (name, args, opts = {}) => runner.capture(name, args, {
+    ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined,
+  });
+  handle('judge:get', () => judgeSetting.read({ capture: herdCapture }));
+  handle('judge:set', (p) => judgeSetting.write({ capture: herdCapture, value: p && p.value }));
   handle('config:problem', () => store.takeConfigProblem());
   handle('config:save', (p) => {
     const before = store.loadConfig(userData());

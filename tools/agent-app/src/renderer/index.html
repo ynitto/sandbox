@@ -647,6 +647,8 @@
             <div class="tier-row"><span><strong>標準</strong></span><label>エージェント<select id="tier-medium-cli"></select></label><label>モデル<input id="tier-medium-model" placeholder="自動"></label></div>
             <div class="tier-row"><span><strong>品質重視</strong></span><label>エージェント<select id="tier-large-cli"></select></label><label>モデル<input id="tier-large-model" placeholder="自動"></label></div>
           </div>
+          <label class="setting-field"><span><strong>遷移や振り分けの判定</strong><small>クラウドのAIで作業しているときも、判定だけをローカルのAIに任せられます</small></span><select id="judge-mode"><option value="auto">ローカルのAIで作業しているときだけ</option><option value="model">いつも、指定したモデルで</option><option value="off">使わない</option></select></label>
+          <label class="setting-field" id="judge-model-row" hidden><span><strong>判定に使うモデル</strong></span><input id="judge-model" placeholder="gemma4:e4b"></label>
           <label class="setting-field"><span><strong>会話の既定権限</strong><small>新しい会話と、タスク・ワークフローの編集に適用します</small></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">読み取り専用</option></select></label>
           <label class="setting-field"><span><strong>同時実行数</strong><small>上限に達したら、実行中の処理が終わってから送信してください</small></span><input id="max-concurrent" type="number" min="1" max="8" step="1"></label>
         </section>

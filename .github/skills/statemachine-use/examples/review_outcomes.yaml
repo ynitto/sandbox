@@ -1,0 +1,46 @@
+# レビューの結論で分岐する最小例。分岐を「条件の列」ではなく「結果の選択肢」（outcome）で書く。
+#
+# 判定 AI（agent-herd judge）があれば「結果はどれか」を 1 問で選び、無ければ同じ outcome を
+# 条件文にして LLM に YES/NO を訊く——定義はこの 1 つでよい。
+#   agent-herd harness statemachine --workflow examples/review_outcomes.yaml
+#   python scripts/run_machine.py examples/review_outcomes.yaml --input "対象の文書"
+name: "レビューの結論で分岐"
+initial_state: review
+config:
+  max_steps: 10
+
+states:
+  review:
+    description: "文書をレビューする"
+    action: |
+      次の文書をレビューしてください。
+      **対象:** {{input}}
+
+      第 1 行に APPROVED / NEEDS_REVISION / UNCLEAR のいずれか一語、続けて理由を書いてください。
+
+      この指示に従ってタスクを実行してください。
+      完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
+    output_validator: "startswith:APPROVED,NEEDS_REVISION,UNCLEAR"
+  approve:
+    description: "承認"
+    terminal: true
+  revise:
+    description: "修正を依頼"
+    terminal: true
+  ask:
+    description: "人に確認"
+    terminal: true
+
+transitions:
+  - from: review
+    to: approve
+    outcome: "指摘なしで承認できる"
+    priority: 1
+  - from: review
+    to: revise
+    outcome: "直すべき指摘がある"
+    priority: 2
+  - from: review
+    to: ask
+    outcome: "文書だけでは判断できない"
+    priority: 3

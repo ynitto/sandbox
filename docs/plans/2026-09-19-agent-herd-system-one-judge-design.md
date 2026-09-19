@@ -147,7 +147,7 @@ Python からは `agentcore.judge.evaluate(state, questions, model=…)`。`requ
 | agent-flow の `filter`（単一基準・`decision` 無し） | **配線済み（2026-09-19）。** `agent.filter_judge` が依存 1 件 = 候補 1 件で boolean を 1 問ずつ訊き、`kept` を作る。依存が 1 件（本文に候補が並ぶ形）は候補を列挙できないので生成経路。多基準（`decision` あり）は従来どおり抽出 → 機械判定 |
 | agent-project の `assess` | **配線済み（2026-09-19）。** c / r / a の 3 段の採点は `score` 型そのもの。`prioritize.assess_judge` が軸 1 つを問い 1 つにし、確率加重の `score` を四捨五入（偶数丸めを避けるため自前）して 1〜3 にする。記録する書式 （`c=N r=N a=N`）は変えないので、読む側（リスクダイジェスト・spec ルーティング）は無改修。judge が決めなければ生成経路、それも駄目なら既存のヒューリスティック |
 
-### 5.1 クラウド CLI の実行でも判定だけを judge へ（`AGENT_JUDGE_MODEL`、2026-09-19 追記）
+### 5.1 クラウド CLI の実行でも判定だけを judge へ（設定 `judge.model`、2026-09-19 追記）
 
 §5 の配線 4 件はどれも「ローカル定義（`relative_cost` 0）で回しているときだけ」だった。
 理由は judge が LAN の ollama を直に叩くことで、ollama の無い環境で勝手に叩きに行かない
@@ -156,20 +156,50 @@ Python からは `agentcore.judge.evaluate(state, questions, model=…)`。`requ
 出力全文と workflow ファイルを添えて「JSON で true/false を返せ」と生成させ、route / filter /
 assess も同じ形でクラウドに訊いていた。
 
-門を環境変数 1 つで開けられるようにした。`AGENT_JUDGE_MODEL=<モデル>` があれば
-`judge.model_for_spec` / `local_model` は定義を見ずにそのモデルを返し、4 件の配線はクラウド
-CLI の実行でも判定だけを judge へ回す。`off` なら逆にどの実行でも judge を使わない。
-既定（未設定）の振る舞いは変えていない。
+門を設定 1 つで開けられるようにした。各 PC の `~/.agents/agent-herd.yaml`（`agentcore.herdconfig`）
+の `judge.model` にモデル名があれば `judge.model_for_spec` / `local_model` は定義を見ずに
+そのモデルを返し、4 件の配線はクラウド CLI の実行でも判定だけを judge へ回す。`off` なら逆に
+どの実行でも judge を使わない。既定（`auto`）の振る舞いは変えていない。
 
-| | 実行の定義 | 判定の行き先（未設定） | 判定の行き先（`AGENT_JUDGE_MODEL=gemma4:e4b`） |
+| | 実行の定義 | 判定の行き先（`auto`） | 判定の行き先（`judge.model: gemma4:e4b`） |
 |---|---|---|---|
-| 遷移条件 | claude | 制御応答（出力全文 + workflow を添えて JSON 生成） | judge（prefill 1 回 + 4 トークン × 条件数） |
+| 遷移条件 | claude | 制御応答（出力全文 + workflow を添えて JSON 生成） | judge（prefill 1 回 + 4 トークン） |
 | route / filter / assess | claude | クラウドに JSON 生成 | judge |
 | どれも | aider / ollama | judge（実行のモデル） | judge（指名したモデルに固定） |
+
+**環境変数ではなく設定ファイルにした理由。** 最初は `AGENT_JUDGE_MODEL` で開けたが、judge を
+呼ぶのは agent-herd / agent-loop / agent-flow で、agent-app（Windows）から WSL 側のそれらへ
+環境変数は届かない（ログインシェルが env を作る）。ファイルなら python が動く側の home に
+残り、`agent-herd config set judge.model …` という 1 本の口を app もスキルも人も共有できる。
+app の「設定 > 実行制御」はこのコマンドに書き込みを頼む（app の config.json には持たない——
+持つと 2 か所に真実ができる）。
 
 指名したモデルを実行のモデルより優先するのは意図で、「実行は 12b、判定は e4b」のように
 判定だけ軽いモデルへ寄せられる。judge が使えない・確度が足りないときの縮退（生成経路へ
 倒して証跡に残す）は値に関係なく同じで、ollama に届かないときも実行は止まらない。
+
+### 5.2 ステートマシンの分岐を「結果の選択肢」として書く（`outcome`、2026-09-19 追記）
+
+遷移条件の判定は「条件 1 件 = boolean 1 問」だった。これは Jev の形としては半分で、
+同じステートから出る候補は本来 **1 つの choice**（状態 → 遷移先の分布）である。候補が 3 つ
+なら prefill が 3 回から 1 回になり、「2 つの条件が同時に真」という矛盾が構造として消える
+（priority で先勝ちにする必要が無い）。
+
+statemachine-use の transitions に `outcome`（この遷移が成立する結果の短い名前）を足した。
+同じ元ステートの LLM 評価が要る候補すべてに `outcome` があれば、ハーネス
+（`_sm_condition_questions`）とスキル自身の実行系（`scripts/judge_bridge.py`）は
+「結果はどれか」の choice 1 問を組み、`other`（どれでもない）を明示の選択肢にする。
+`condition_rule` で測れる候補は選択肢に入れない——測れるものは測り、残りだけを選ばせる。
+
+| 実行の形 | judge の使い方 |
+|---|---|
+| `agent-herd harness statemachine` | ハーネスが `judge.evaluate` を直に呼ぶ（従来どおり）。問いの形だけ choice が増えた |
+| `run_machine.py`（スキル自身の実行系） | `--judge auto`: `agent-herd` が PATH にあり `agent-herd config --check judge` が 0 なら `agent-herd judge` を subprocess で呼ぶ。無ければ従来の YES/NO 生成 |
+| 会話内の手動実行 | `next_state.py --auto-eval` が `judge_questions` を返し、モデルは `agent-herd judge` に渡して `--judge-answers` で確定する。無ければ従来の `--eval` |
+
+judge が無い経路では `outcome` を条件文（「最後の出力の結果が『…』である」）にして YES/NO で
+評価するので、**定義は 1 つでよい**。スキルの作成モードには「出力の内容で分岐する遷移は
+`outcome` で書く」を設計原則に足し、scaffold の骨組みにもその案内を入れた。
 
 ## 6. 測ってから決めること
 

@@ -236,6 +236,36 @@ transitions:
 | `condition_rule` | 文字列 | いいえ | — | 決定論的評価ルール。**LLM評価より優先**して実行される。書式は下記「condition_rule 書式」参照 |
 | `priority` | 整数 | いいえ | 0 | 評価順序（小さいほど先） |
 | `description` | 文字列 | いいえ | — | 人が読めるラベル |
+| `outcome` | 文字列 | いいえ | — | この遷移が成立する「結果」の短い名前。判定 AI の選択肢になる（下記「outcome と判定 AI」）。`condition` が無ければ条件文の代わりにもなる |
+
+### outcome と判定 AI（agent-herd judge）
+
+同じ元ステートから出る候補のうち **LLM 評価が要るものすべて**に `outcome` があると、
+評価は「条件ごとの YES/NO」ではなく **「結果はどれか」を選ぶ 1 問**になる。選択肢は各候補の
+`outcome`、それに「どれでもない」が自動で足される（選ばれると全候補が偽 = `NONE`）。
+
+```yaml
+transitions:
+  - from: review
+    to: approve
+    outcome: "指摘なしで承認できる"
+    priority: 1
+  - from: review
+    to: revise
+    outcome: "直すべき指摘がある"
+    priority: 2
+```
+
+| 実行の形 | 判定の行き先 |
+|---|---|
+| `agent-herd harness statemachine` | ハーネスが judge（1 トークン目の分布の読み出し）に 1 問で訊く。judge を使う条件は agent-herd の設定 `judge.model`（`agent-herd config`）による |
+| `run_machine.py`（既定 `--judge auto`） | agent-herd が PATH にあり `agent-herd config --check judge` が 0 なら judge に訊く。無ければ `outcome` を条件文にして LLM に YES/NO を生成させる |
+| 会話内の手動実行（`next_state.py`） | `--auto-eval` が `judge_questions` を返す。`agent-herd judge` に渡して `--judge-answers` で確定する（無ければ従来の `--eval`） |
+
+制約: `outcome` は同じ元ステートの中で互いに違う文にする（同じ文が 2 つあると選択肢に
+ならず、条件ごとの YES/NO に戻る）。`condition_rule` で決まる候補は選択肢に入らない。
+`outcome` だけの遷移は**無条件ではない**（無条件は `condition` も `condition_rule` も
+`outcome` も無い遷移）。
 
 ### 条件の自動探索
 
@@ -243,7 +273,7 @@ transitions:
 
 ### 無条件トランジション
 
-自動探索でも条件が見つからず `condition_rule` も無いトランジションは**無条件**として扱い、評価せずそのまま成立させる（空の条件文を LLM に渡さない）。
+自動探索でも条件が見つからず `condition_rule` も `outcome` も無いトランジションは**無条件**として扱い、評価せずそのまま成立させる（空の条件文を LLM に渡さない）。
 
 `next_state.py --auto-eval` は、最優先の候補が無条件のとき `conditions` を組まずに次の応答を返す:
 

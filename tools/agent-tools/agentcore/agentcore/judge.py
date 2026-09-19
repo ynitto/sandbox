@@ -23,16 +23,18 @@ fixed labels）。選択肢に A / B / C … の 1 文字ラベルを振り、�
 生成トークンは高々 4 つなので、走行時間は prefill でほぼ決まる。同じ状態への複数の問いは
 **状態を先・問いを後**に並べて、ollama の接頭辞キャッシュに乗せる（案 D と同じ理屈）。
 
-## どの実行で judge を使うか（`AGENT_JUDGE_MODEL`）
+## どの実行で judge を使うか（設定ファイル `~/.agents/agent-herd.yaml` の `judge.model`）
 
-既定では**ローカルの定義**（`relative_cost` が 0 の aider / ollama）で回している実行だけが
-judge を使う——judge は LAN の ollama を直に叩くので、ollama の無い環境で勝手に叩かない。
+既定（`auto`）では**ローカルの定義**（`relative_cost` が 0 の aider / ollama）で回している実行
+だけが judge を使う——judge は LAN の ollama を直に叩くので、ollama の無い環境で勝手に叩かない。
 クラウド CLI（Claude Code など）で回している実行では、判定（遷移条件・route・filter・assess）を
 そのクラウドの生成経路に訊いていて、そこがトークンの出どころになる。
 
-`AGENT_JUDGE_MODEL=<モデル名>` を置くと、実行の定義に関係なく判定はその ollama モデルの judge へ
+`judge.model: <モデル名>` を置くと、実行の定義に関係なく判定はその ollama モデルの judge へ
 行く。判定は yes/no や選択肢の 1 文字で済むので、クラウドの高価なトークンを使う理由が無い。
-`AGENT_JUDGE_MODEL=off` なら judge を一切使わず、従来の生成経路に留まる。
+`judge.model: off` なら judge を一切使わず、従来の生成経路に留まる。設定は
+`agent-herd config set judge.model …`（agent-app の「設定 > 実行制御」も同じ口）で書く。
+読み方は `agentcore.herdconfig`。
 
 ## ollama が logprobs を返さないとき
 
@@ -52,7 +54,7 @@ import os
 import urllib.error
 import urllib.request
 
-from agentcore import ollama_loop
+from agentcore import herdconfig, ollama_loop
 
 QUESTION_TYPES = ("choice", "boolean", "score")
 LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -63,10 +65,6 @@ DEFAULT_TOP_LOGPROBS = 20
 DEFAULT_NUM_PREDICT = 4
 BOOLEAN_CRITERIA = (("yes", "The answer is yes."), ("no", "The answer is no."))
 OTHER_KEY = "other"
-# 判定に使うモデルの指名。未指定ならローカル定義の実行だけが judge を使う（`model_for_spec`）。
-# モデル名を置くと、クラウド CLI の実行でも判定だけを LAN の ollama へ逃がす。`off` で止める。
-ENV_MODEL = "AGENT_JUDGE_MODEL"
-_ENV_OFF_VALUES = frozenset({"off", "none", "no", "false", "0"})
 
 # `method` の語彙（呼び出し側が確率の信頼度を決めるための印）。
 METHOD_LOGPROBS = "logprobs"   # 1 トークン目の分布を読んだ（本来の形）
@@ -417,38 +415,39 @@ def evaluate(state, questions: dict, *, model: str = DEFAULT_MODEL, think=False,
     return {"answers": answers, "usage": usage, "model": model}
 
 
-def env_model() -> "str | None":
-    """`AGENT_JUDGE_MODEL` で指名されたモデル名。未指定と `off` は None。"""
-    raw = os.environ.get(ENV_MODEL, "").strip()
-    if not raw or raw.lower() in _ENV_OFF_VALUES:
-        return None
-    return raw
+def setting() -> dict:
+    """設定ファイルの `judge` の解決結果（`herdconfig.judge_setting`）: mode は auto / pinned / off。"""
+    return herdconfig.judge_setting()
 
 
-def env_disabled() -> bool:
-    """`AGENT_JUDGE_MODEL=off`（か同義の値）——judge をどの実行でも使わない。"""
-    raw = os.environ.get(ENV_MODEL, "").strip().lower()
-    return bool(raw) and raw in _ENV_OFF_VALUES
+def pinned_model() -> "str | None":
+    """設定で指名されたモデル名。`auto` と `off` は None。"""
+    current = setting()
+    return current["model"] if current["mode"] == "pinned" else None
+
+
+def disabled() -> bool:
+    """設定が `judge.model: off`——judge をどの実行でも使わない。"""
+    return setting()["mode"] == "off"
 
 
 def model_for_spec(spec, model: "str | None" = None) -> "str | None":
     """定義（agents/<name>.json の正規化済み dict）で judge を使えるなら、そのモデル名。
 
-    解決の順:
+    解決の順（設定は `~/.agents/agent-herd.yaml` の `judge.model`）:
 
-    1. `AGENT_JUDGE_MODEL=off` なら None（judge を使わない）。
-    2. `AGENT_JUDGE_MODEL=<モデル>` なら、定義がクラウド CLI でもそのモデル。判定を実行の
-       モデルから切り離して LAN の ollama に固定する口で、クラウド CLI の実行で判定に
-       使っていたトークンがここで消える。
-    3. どちらも無ければ**ローカルの定義**（`relative_cost` が 0 の aider / ollama）だけ。
+    1. `off` なら None（judge を使わない）。
+    2. モデル名なら、定義がクラウド CLI でもそのモデル。判定を実行のモデルから切り離して
+       LAN の ollama に固定する口で、クラウド CLI の実行で判定に使っていたトークンがここで消える。
+    3. `auto`（未設定）なら**ローカルの定義**（`relative_cost` が 0 の aider / ollama）だけ。
        judge は ollama を直に叩くので、指名なしにクラウド CLI の定義で叩きに行かない。
        モデルは呼び出し側の指定を持ち越し、無ければ定義の既定。
     """
-    if env_disabled():
+    current = setting()
+    if current["mode"] == "off":
         return None
-    pinned = env_model()
-    if pinned:
-        return pinned
+    if current["mode"] == "pinned":
+        return current["model"]
     if not isinstance(spec, dict) or spec.get("relative_cost") != 0:
         return None
     name = str(model or spec.get("default_model") or "").strip()
@@ -458,12 +457,12 @@ def model_for_spec(spec, model: "str | None" = None) -> "str | None":
 def local_model(cli: str, model: "str | None" = None, *, project_dir=None) -> "str | None":
     """定義名（`ollama-json` のような profile 綴りも可）から `model_for_spec` を引く。
     定義を解決できなければ None（設定ミスで実行を殺さない——agentcli の方針と同じ）。
-    `AGENT_JUDGE_MODEL` の指名があれば定義を解決せずにそれを返す（定義に依らない）。"""
-    if env_disabled():
+    設定でモデルを指名してあれば定義を解決せずにそれを返す（定義に依らない）。"""
+    current = setting()
+    if current["mode"] == "off":
         return None
-    pinned = env_model()
-    if pinned:
-        return pinned
+    if current["mode"] == "pinned":
+        return current["model"]
     from agentcore import agentcli
     try:
         spec = agentcli.load_cli(str(cli or ""), project_dir=project_dir)

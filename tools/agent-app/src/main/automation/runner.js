@@ -38,6 +38,9 @@ function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, i
     child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
     child.on('error', (err) => { clearTimeout(timer); finish({ ok: false, status: -1, stdout, stderr, error: String((err && err.message) || err) }); });
     child.on('close', (code) => { clearTimeout(timer); finish({ ok: code === 0, status: code, stdout, stderr, error: '' }); });
+    // stdin を読まずに終わるコマンド（`agent-herd config` など）では、書き込みが EPIPE になる。
+    // 結果は close の終了コードで決まるので、この error はプロセスを落とす理由にしない。
+    child.stdin.on('error', () => {});
     child.stdin.end(String(input == null ? '' : input));
   });
 }

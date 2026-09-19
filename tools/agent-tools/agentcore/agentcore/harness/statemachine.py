@@ -798,17 +798,49 @@ _SM_JUDGE_MIN_CONFIDENCE = 0.0
 def _sm_judge_model(agent: "dict | None") -> "str | None":
     """遷移条件を judge（分布の読み出し）で判定できるモデル。できなければ None。
 
-    judge は LAN の ollama を直に叩く。だから既定で使えるのは**ローカルの定義**（`relative_cost`
-    が 0 の aider / ollama）で回しているときだけで、クラウド CLI の実行ではこれまでどおり
-    制御応答（生成経路）に訊く。モデルはハーネスの指定を持ち越し、無ければ定義の既定。
-    `AGENT_JUDGE_MODEL` でモデルを指名すると、クラウド CLI の実行でも判定だけがそのモデルの
-    judge へ行く（判定に高価なクラウドのトークンを使わない）。`off` なら judge を使わない。
+    judge は LAN の ollama を直に叩く。だから既定（設定 `judge.model: auto`）で使えるのは
+    **ローカルの定義**（`relative_cost` が 0 の aider / ollama）で回しているときだけで、
+    クラウド CLI の実行ではこれまでどおり制御応答（生成経路）に訊く。モデルはハーネスの
+    指定を持ち越し、無ければ定義の既定。設定でモデルを指名してあると（`agent-herd config set
+    judge.model gemma4:e4b`）、クラウド CLI の実行でも判定だけがそのモデルの judge へ行く
+    （判定に高価なクラウドのトークンを使わない）。`off` なら judge を使わない。
     """
     return judge.model_for_spec((agent or {}).get("spec"), (agent or {}).get("model"))
 
 
+# 遷移先を 1 問の choice で選ぶときの問いの名前（next_state.py の index と衝突しない綴り）。
+_SM_OUTCOME_QUESTION = "__outcome__"
+_SM_OUTCOME_OTHER = "None of the outcomes above applies."
+
+
+def _sm_outcomes(pending: "list[dict]") -> "dict[str, str] | None":
+    """全候補が `outcome`（結果の短い名前）を持つときだけ、index → outcome を返す。
+
+    `outcome` は statemachine-use の transitions の項目で、「この遷移が成立するのはアクションの
+    結果がこれのとき」を選択肢として書いたもの。全候補にあれば、条件ごとの boolean N 問では
+    なく **結果を 1 つ選ぶ choice 1 問**にできる——prefill が N 回から 1 回になり、候補の間で
+    答えが矛盾しない（2 つの条件が同時に真になる形が構造として消える）。
+    """
+    if len(pending) < 2:
+        return None
+    outcomes = {str(c.get("index")): str(c.get("outcome") or "").strip() for c in pending}
+    if not all(outcomes.values()) or len(set(outcomes.values())) != len(outcomes):
+        return None
+    return outcomes
+
+
 def _sm_condition_questions(pending: "list[dict]") -> dict:
-    """needs_llm_eval の条件を boolean の問いへ。名前は next_state.py の index（--evals の鍵）。"""
+    """needs_llm_eval の条件を問いへ。名前は next_state.py の index（--evals の鍵）。
+
+    全候補に `outcome` があれば choice 1 問（`_sm_outcomes`）、そうでなければ条件 1 件に
+    boolean 1 問（多基準を 1 問で訊かない）。
+    """
+    outcomes = _sm_outcomes(pending)
+    if outcomes:
+        return {_SM_OUTCOME_QUESTION: {
+            "type": "choice",
+            "instructions": "Which outcome does the completed action output show?",
+            "criteria": dict(outcomes), "other": _SM_OUTCOME_OTHER}}
     questions: dict = {}
     for cond in pending:
         text = str(cond.get("condition") or "").strip()
@@ -816,12 +848,23 @@ def _sm_condition_questions(pending: "list[dict]") -> dict:
         if desc and desc != text:
             text = f"{text}（{desc}）" if text else desc
         if not text:
+            text = str(cond.get("outcome") or "").strip()
+        if not text:
             continue
         questions[str(cond.get("index"))] = {
             "type": "boolean",
             "instructions": "Does the completed action output satisfy this condition? " + text,
         }
     return questions
+
+
+def _sm_evals_from_answers(questions: dict, answers: dict) -> dict:
+    """judge の答えを next_state.py の `--evals`（index → bool）へ。choice は選ばれた候補だけ真。"""
+    if _SM_OUTCOME_QUESTION in questions:
+        picked = str(answers.get(_SM_OUTCOME_QUESTION, {}).get("choice") or "")
+        return {index: index == picked
+                for index in questions[_SM_OUTCOME_QUESTION]["criteria"]}
+    return {name: bool(a.get("value")) for name, a in answers.items()}
 
 
 def _sm_judge_conditions(pending: "list[dict]", *, output: str, agent: "dict | None",
@@ -838,9 +881,12 @@ def _sm_judge_conditions(pending: "list[dict]", *, output: str, agent: "dict | N
     questions = _sm_condition_questions(pending)
     if model is None or not questions or not str(output or "").strip():
         return {}
-    _sm_progress(f"遷移条件 {len(questions)} 件を judge（{model}）で判定しています")
+    if _SM_OUTCOME_QUESTION in questions:
+        _sm_progress(f"遷移先 {len(pending)} 候補から judge（{model}）で 1 つ選んでいます")
+    else:
+        _sm_progress(f"遷移条件 {len(questions)} 件を judge（{model}）で判定しています")
     _sm_append_log(log_file, {"event": "condition_judge_start", "model": model,
-                              "conditions": sorted(questions)})
+                              "conditions": sorted(str(c.get("index")) for c in pending)})
     try:
         result = judge.evaluate(str(output), questions, model=model)
     except judge.JudgeError as exc:
@@ -851,13 +897,16 @@ def _sm_judge_conditions(pending: "list[dict]", *, output: str, agent: "dict | N
     held = judge.abstained(answers, _SM_JUDGE_MIN_CONFIDENCE)
     _sm_append_log(log_file, {
         "event": "condition_judge_done", "model": model, "abstained": held,
-        "answers": {name: {"value": a.get("value"), "probability": a.get("probability"),
+        "shape": "choice" if _SM_OUTCOME_QUESTION in questions else "boolean",
+        "answers": {name: {"value": a.get("value"), "choice": a.get("choice"),
+                           "probability": a.get("probability"),
+                           "probabilities": a.get("probabilities"),
                            "coverage": a.get("coverage"), "method": a.get("method")}
                     for name, a in answers.items()}})
     if held:
         _sm_progress(f"確度が足りない条件 {len(held)} 件があるため制御応答で判定し直します")
         return {}
-    return {name: bool(a.get("value")) for name, a in answers.items()}
+    return _sm_evals_from_answers(questions, answers)
 
 
 def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: str,

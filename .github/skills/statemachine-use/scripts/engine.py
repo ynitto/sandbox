@@ -51,6 +51,10 @@ class TransitionConfig:
     condition_rule: str = ""  # 決定論的評価ルール（LLM評価より優先）
     priority: int = 0
     description: str = ""
+    # この遷移が成立する「結果」の短い名前（例: "承認できる"）。同じ元ステートの全候補に
+    # あれば、判定 AI（agent-herd judge）が条件ごとの YES/NO ではなく「結果はどれか」を
+    # 1 問の choice で選ぶ。条件文が無ければ条件文の代わりにもなる（下の load_workflow）。
+    outcome: str = ""
 
 
 @dataclass
@@ -328,6 +332,11 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             auto = base_dir / "conditions" / f"{from_id}_to_{t['to']}.md"
             if auto.exists():
                 condition = auto.read_text(encoding="utf-8")
+        outcome = str(t.get("outcome", "") or "").strip()
+        if not condition and outcome:
+            # outcome だけの遷移は無条件ではない。judge が無い経路（YES/NO 生成）でも
+            # 同じ意味で評価できるよう、結果の名前を条件文にする。
+            condition = f"最後の出力の結果が「{outcome}」である"
 
         transitions.append(TransitionConfig(
             from_state=t["from"],
@@ -336,6 +345,7 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             condition_rule=t.get("condition_rule", ""),
             priority=t.get("priority", 0),
             description=t.get("description", ""),
+            outcome=outcome,
         ))
     transitions.sort(key=lambda t: t.priority)
 
@@ -528,6 +538,9 @@ class ExecutionResult:
 # ─────────────────────────────────────────────
 
 LLMFn = Callable[[str], Awaitable[str]]
+# 判定 AI への橋（scripts/judge_bridge.JudgeClient と同じ形）。evaluate(state_text, questions)
+# が答えの dict を返し、使えないときは None を返す。
+JudgeLike = Any
 
 
 class StateMachineEngine:
@@ -538,9 +551,13 @@ class StateMachineEngine:
             ステートアクションとトランジション条件の評価の両方で呼び出される。
     """
 
-    def __init__(self, llm_fn: LLMFn, verbose: bool = False, instruction: str = ""):
+    def __init__(self, llm_fn: LLMFn, verbose: bool = False, instruction: str = "",
+                 judge: "JudgeLike | None" = None):
         self.llm_fn = llm_fn
         self.verbose = verbose
+        # 遷移条件の判定を任せる判定 AI（agent-herd judge）。None なら llm_fn に YES/NO を
+        # 生成させる従来の形。判定が None を返したときも同じ形へ倒す（同じ定義が両方で回る）。
+        self.judge = judge
         # 実行時の共通指示（呼び出し側の設定）。工程のアクションにだけ前置し、遷移条件の
         # 評価には付けない。形は agentcore.harness.statemachine と同じ（"## 今回の工程"）。
         self.instruction = str(instruction or "").strip()
@@ -790,7 +807,11 @@ class StateMachineEngine:
             if t.from_state == current_state_id or t.from_state == "*"
         ]
 
-        for transition in candidates:
+        # 判定 AI があれば、LLM 評価が要る候補をまとめて先に訊く（全候補に outcome が
+        # あれば choice 1 問、無ければ boolean を候補ごと）。答えは index → bool。
+        judged = self._judge_candidates(candidates, ctx, verbose) if self.judge else {}
+
+        for index, transition in enumerate(candidates):
             label = transition.description or f"{transition.from_state} → {transition.to_state}"
 
             # 0. 無条件トランジション（条件文もルールも無い）は評価せず成立させる。
@@ -807,7 +828,15 @@ class StateMachineEngine:
                     return transition.to_state
                 continue
 
-            # 2. LLM フォールバック
+            # 2. 判定 AI の答え（あれば）
+            if str(index) in judged:
+                matches = judged[str(index)]
+                self._log(verbose, f"  条件 [{label}] (judge): {'✓ 真' if matches else '✗ 偽'}")
+                if matches:
+                    return transition.to_state
+                continue
+
+            # 3. LLM フォールバック
             condition = render_template(transition.condition, ctx)
             matches = await self._evaluate_condition(condition, ctx, verbose)
             self._log(verbose, f"  条件 [{label}] (llm): {'✓ 真' if matches else '✗ 偽'}")
@@ -815,6 +844,33 @@ class StateMachineEngine:
                 return transition.to_state
 
         return None
+
+    def _judge_candidates(self, candidates: list[TransitionConfig], ctx: dict,
+                          verbose: bool) -> dict:
+        """LLM 評価が要る候補を判定 AI に訊く。使えない・決めなかったら空 dict（従来の形へ）。"""
+        from scripts import judge_bridge
+
+        pending = []
+        for index, t in enumerate(candidates):
+            if not t.condition.strip() and not t.condition_rule.strip():
+                break   # 無条件の候補に届いた。ここから先は評価しない
+            if evaluate_condition_rule(t.condition_rule, ctx) is not None:
+                continue
+            pending.append({"index": index, "to": t.to_state,
+                            "condition": render_template(t.condition, ctx),
+                            "description": t.description or "", "outcome": t.outcome})
+        if not pending:
+            return {}
+        questions = judge_bridge.judge_questions(pending)
+        if not questions:
+            return {}
+        answers = self.judge.evaluate(judge_bridge.state_text(ctx), questions)
+        if not answers:
+            self._log(verbose, "  判定 AI が決めなかったため、条件を LLM で評価します")
+            return {}
+        shape = "choice" if judge_bridge.OUTCOME_QUESTION in questions else "boolean"
+        self._log(verbose, f"  判定 AI（judge, {shape}）が {len(pending)} 候補を判定しました")
+        return judge_bridge.evals_from_answers(questions, answers)
 
     async def _evaluate_condition(
         self, condition: str, ctx: dict, verbose: bool

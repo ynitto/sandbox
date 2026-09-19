@@ -13,6 +13,7 @@ condition_rule フィールドがある場合は LLM 評価が不要な条件を
   python scripts/next_state.py {名前} --initial-state
   python scripts/next_state.py {名前} --state classify --auto-eval --context '{"last_output":"BUG"}'
   python scripts/next_state.py {名前} --state classify --eval '{"1": false}' --context '{"last_output":"BUG"}'
+  python scripts/next_state.py {名前} --state classify --judge-answers "$(agent-herd judge …)" --context '…'
   python scripts/next_state.py {名前} --state implement --state-check
 
   旧ハーネス互換（非推奨。--context の不足値を補完する）:
@@ -27,6 +28,12 @@ condition_rule フィールドがある場合は LLM 評価が不要な条件を
 
 --auto-eval の JSON には resolved が付く。condition_rule だけで遷移先が確定した場合は
 その state_id（全条件が偽なら "NONE"）が入り、LLM 評価は不要。
+
+resolved が null なら judge_questions も付く。これは `agent-herd judge --questions` に
+そのまま渡せる問い（全候補に outcome があれば「結果はどれか」の choice 1 問、無ければ
+条件ごとの boolean）。judge の stdout を --judge-answers に渡せば、--eval を組む代わりに
+このスクリプトが答えを読んで遷移先を確定する（確度不足 abstained があれば終了コード 3 で
+止まり、従来どおり --eval で渡し直す）。
 
 --state-check は、そのステートが宣言する決定的検査を正規化して返す（外部ハーネスが
 自前で YAML を読み直さずに済むように、正規化の実装をここ 1 つに保つための口）。
@@ -55,6 +62,7 @@ from scripts.engine import (
     load_workflow, render_template, resolve_workflow_path, evaluate_condition_rule,
     validate_workflow,
 )
+from scripts import judge_bridge
 
 
 def _build_ctx(context_json: "str | None", last_output: str, output_pairs: list[str]) -> dict:
@@ -121,6 +129,11 @@ def main() -> None:
         help='条件評価結果 JSON: {"0": true, "1": false, ...}'
         ' (現在ステートからの候補トランジションをpriority順で0始まりにインデックス)'
         ' condition_rule がある条件は --context から自動評価されるため省略可'
+    )
+    parser.add_argument(
+        "--judge-answers", dest="judge_answers", default=None, metavar="JSON",
+        help="`agent-herd judge` の stdout（{\"answers\":…}）。--eval の代わりに judge の答えから"
+        "遷移先を確定する。abstained があれば終了コード 3（決めていない）",
     )
     parser.add_argument(
         "--auto-eval", "--list-conditions", dest="auto_eval", action="store_true",
@@ -216,6 +229,7 @@ def main() -> None:
                 "priority": t.priority,
                 "condition": render_template(t.condition, ctx),
                 "description": t.description or "",
+                "outcome": t.outcome,
                 "needs_llm_eval": True,
             }
             if _unconditional(t):
@@ -231,10 +245,15 @@ def main() -> None:
                     entry["needs_llm_eval"] = False
             conditions_out.append(entry)
 
+        resolved = _resolve(conditions_out)
+        pending = [c for c in conditions_out if c["needs_llm_eval"]]
         result = {
             "state": args.state,
             "conditions": conditions_out,
-            "resolved": _resolve(conditions_out),
+            "resolved": resolved,
+            # resolved が null のときだけ: agent-herd judge にそのまま渡せる問い。
+            **({"judge_questions": judge_bridge.judge_questions(pending)}
+               if resolved is None and pending else {}),
             "note": (
                 "resolved が null 以外なら遷移先は condition_rule だけで確定しており、"
                 "LLM 評価も --eval も不要。"
@@ -245,16 +264,48 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
-    if args.evals is None:
-        print("ERROR: --eval は --auto-eval なしの場合は必須です", file=sys.stderr)
+    if args.evals is None and args.judge_answers is None:
+        print("ERROR: --eval（か --judge-answers）は --auto-eval なしの場合は必須です",
+              file=sys.stderr)
         sys.exit(1)
 
     # 評価結果をパース
-    try:
-        evals: dict = json.loads(args.evals)
-    except json.JSONDecodeError as e:
-        print(f"ERROR: --eval の JSON が不正です: {e}", file=sys.stderr)
-        sys.exit(1)
+    evals: dict = {}
+    if args.evals is not None:
+        try:
+            evals = json.loads(args.evals)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: --eval の JSON が不正です: {e}", file=sys.stderr)
+            sys.exit(1)
+    if args.judge_answers is not None:
+        # judge の答えを --eval の形へ。問いは --auto-eval と同じ組み方で作り直す（同じ
+        # ワークフロー・同じ状態なら同じ問いになる）。
+        pending = []
+        for idx, t in enumerate(candidates):
+            if _unconditional(t):
+                break
+            if evaluate_condition_rule(t.condition_rule, ctx) is not None:
+                continue
+            pending.append({"index": idx, "to": t.to_state,
+                            "condition": render_template(t.condition, ctx),
+                            "description": t.description or "", "outcome": t.outcome})
+        questions = judge_bridge.judge_questions(pending)
+        try:
+            judged = json.loads(args.judge_answers)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: --judge-answers の JSON が不正です: {e}", file=sys.stderr)
+            sys.exit(1)
+        if isinstance(judged, dict) and judged.get("abstained"):
+            print("ERROR: judge が確度不足で決めていない条件があります: "
+                  + ", ".join(map(str, judged["abstained"]))
+                  + "（--eval で渡し直してください）", file=sys.stderr)
+            sys.exit(3)
+        from_judge = judge_bridge.evals_from_judge_output(questions, judged)
+        if from_judge is None:
+            print("ERROR: --judge-answers を読めません（{\"answers\": …} の形で渡します）",
+                  file=sys.stderr)
+            sys.exit(1)
+        evals = {**from_judge, **evals}
 
     # priority 順で最初に true となるトランジションの遷移先を返す
     # condition_rule がある条件は自動評価を優先し、LLM eval を上書きする
