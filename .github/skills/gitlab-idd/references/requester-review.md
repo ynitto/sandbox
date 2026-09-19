@@ -163,7 +163,7 @@ python scripts/gl.py list-issues --label "status:review-ready"
 取得したイシューを `author.username` で分類する:
 
 - `author.username == MY_USER` → **リクエスターレビューキュー**（自分発行）
-- `author.username != MY_USER` → **非リクエスターレビューキュー**（他者発行、[references/non-requester-review.md](non-requester-review.md) の手順で処理）
+- `author.username != MY_USER` → **非リクエスターレビューキュー**（他者発行、`references/non-requester-review.md` の手順で処理）
 
 **優先順位**: リクエスターレビューキューを先に処理し、完了後に非リクエスターレビューキューを処理する。
 
@@ -477,7 +477,7 @@ python scripts/gl.py create-issue \
 派生元: #{source_issue_id} {タイトル} のレビュー中に発見
 ```
 
-**新規イシューの場合** — **[requester-post のフェーズ 1・3〜5](requester-post.md)** と同じフローを実行する：
+**新規イシューの場合** — **requester-post のフェーズ 1・3〜5**（`references/requester-post.md`） と同じフローを実行する：
 
 1. **新規統合ブランチを作成**（requester-post フェーズ 4 の統合ブランチ作成と同じ手順）:
 

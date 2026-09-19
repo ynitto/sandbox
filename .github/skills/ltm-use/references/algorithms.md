@@ -398,7 +398,7 @@ final_score = 0.5 * keyword + 0.35 * tfidf_sim + 0.15 * meta_boost
 
 反復ループ（plan→search→evaluate→reformulate→expand→synthesize）・ヒント計算・`next_action`
 決定ロジック・収束条件は、検索系スキル横断の共有スキル **agentic-search** に集約されている。
-正典は [`agentic-search/references/protocol.md`](../../agentic-search/references/protocol.md) を参照。
+正典は `agentic-search/references/protocol.md` を参照。
 
 `recall_memory.py` のヒント計算は agentic-search の `hints.py` に委譲する（`build_hints`）。
 共有スキルが未導入の場合は同等のローカル実装にフォールバックする（オプショナル依存）。

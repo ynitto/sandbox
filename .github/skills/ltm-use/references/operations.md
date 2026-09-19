@@ -150,8 +150,8 @@ python scripts/recall_memory.py --ids mem-20260301-002 --json --no-track
 
 ヒント計算は共有スキル **agentic-search** の `hints.py` に委譲される（未導入時はローカル実装に
 フォールバック）。反復ループ・収束条件の正典は
-[`agentic-search/references/protocol.md`](../../agentic-search/references/protocol.md)、
-ltm-use 固有の連携は [`algorithms.md`](algorithms.md) の「Agentic Search」を参照。
+`agentic-search/references/protocol.md`、
+ltm-use 固有の連携は `algorithms.md` の「Agentic Search」を参照。
 
 ### 手順（スクリプトなし・手動）
 
@@ -290,7 +290,7 @@ python3 tools/agent-tools/eval/retrieval_eval.py --production \
 - 埋め込み段は `lexical`（用語がそのまま重なる問い）を助けない。見るのは
   `paraphrase`（用語を忘れた訊き方）の列で、`lexical` は落ちていないことだけ確認する。
 
-採った値は `config.json` の `embedding_threshold` へ書く（[設定リファレンス](configuration.md)）。
+採った値は `config.json` の `embedding_threshold` へ書く（設定リファレンス `configuration.md`）。
 索引が無ければ段は不発火のまま黙って TF-IDF へ倒れる——recall はそのとき 1 行伝える
 （「埋め込み段は索引が無いため不発火」）ので、出たら `build_index.py --embeddings` を先に回す。
 
