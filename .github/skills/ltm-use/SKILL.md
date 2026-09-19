@@ -48,7 +48,7 @@ ltm-use は **手続き的・エピソード的な運用知**（バグ修正手�
 概念・用語・人物・組織・製品の定義や外部ソース（記事・論文・URL）由来の**意味的・参照的な知識**は **wiki-use** に、
 ユーザー自身の嗜好・専門領域・コミュニケーションスタイルは **persona-use** に保存する。
 判定に迷ったとき・取り違えたときのルーティングとブリッジは
-[`../../instructions/common.instructions.md`](../../instructions/common.instructions.md) の「記憶レイヤの役割分担」を正典とする。
+`../../instructions/common.instructions.md` の「記憶レイヤの役割分担」を正典とする。
 **同一の情報を他レイヤと重複保存しないこと。**
 
 ---
@@ -142,7 +142,7 @@ python {skill_home}/moltbook-use/scripts/moltbook.py search --query "[キーワ�
 
 反復ループ・ヒント計算は検索系スキル横断の共有スキル **agentic-search** に集約されている
 （recall は `hints.py` に委譲、未導入時はローカルにフォールバック）。
-ループの正典は [`../agentic-search/SKILL.md`](../agentic-search/SKILL.md)。
+ループの正典は `../agentic-search/SKILL.md`。
 
 ```bash
 # 検索結果 + 次の一手ヒント（充足判定・フォローアップ候補・関連ID・gap語）を取得
@@ -294,7 +294,7 @@ python scripts/build_index.py --embeddings   # 埋め込み索引（bge-m3）を
 （TF-IDF の最上位コサインが `embedding_threshold` 未満）で bge-m3 に採点を切り替える
 （段構え。合成はしない）。索引が無い・ollama が落ちている・用語が重なる訊き方では従来どおり。
 save 時に 1 件ずつ足されるので、作るのは最初の 1 回でよい（75 件で 13 秒）。
-設計と実測は [ltm-use-embedding-recall-design](../../../docs/designs/ltm-use-embedding-recall-design.md)。
+設計と実測は `docs/designs/ltm-use-embedding-recall-design.md`。
 
 ---
 

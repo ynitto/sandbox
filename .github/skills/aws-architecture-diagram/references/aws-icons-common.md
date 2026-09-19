@@ -1,5 +1,13 @@
 # Common Icons: General Resources, Groups, Arrows
 
+## 目次
+
+- [General Resources](#general-resources-232f3e)
+- [Groups (container shapes)](#groups-container-shapes)
+- [Arrows (edge styles)](#arrows-edge-styles)
+
+---
+
 ## General Resources (`#232F3E`)
 
 ### Dedicated shapes

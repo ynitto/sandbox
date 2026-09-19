@@ -1,5 +1,16 @@
 # Storage & Database Icons
 
+## 目次
+
+- [Storage](#storage-7aa116)
+  - [resourceIcon (service-level)](#resourceicon-service-level)
+  - [Dedicated shapes (resource-level)](#dedicated-shapes-resource-level)
+- [Database](#database-c925d1)
+  - [resourceIcon (service-level)](#resourceicon-service-level-1)
+  - [Dedicated shapes (resource-level)](#dedicated-shapes-resource-level-1)
+
+---
+
 ## Storage (`#7AA116`)
 
 ### resourceIcon (service-level)

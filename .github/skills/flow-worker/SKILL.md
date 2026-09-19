@@ -76,7 +76,7 @@ python3 scripts/git_worktree.py push "$WT" --branch <専用ブランチ> -m "<�
   共有チェックアウトのブランチを動かさない。reject は fetch + rebase で自動リトライし、
   並行コミットと衝突しない。
 - パターンの正典は
-  [docs/designs/git-worktree-cache-pattern.md](../../../docs/designs/git-worktree-cache-pattern.md)
+  `docs/designs/git-worktree-cache-pattern.md`
   （INV-1 鮮度 / INV-2 直列化・自己修復 / INV-3 direct clone フォールバック）。
 
 ## 利用方法

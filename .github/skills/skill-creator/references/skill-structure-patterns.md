@@ -14,8 +14,8 @@ pdfplumberでテキスト抽出:
 [コード例]
 
 ## 高度な機能
-- **フォーム入力**: [FORMS.md](FORMS.md) 参照
-- **APIリファレンス**: [REFERENCE.md](REFERENCE.md) 参照
+- **フォーム入力**: `FORMS.md` 参照
+- **APIリファレンス**: `REFERENCE.md` 参照
 ```
 
 ## パターン2: ドメイン別整理
@@ -39,11 +39,11 @@ bigquery-skill/
 # DOCX処理
 
 ## ドキュメント作成
-docx-jsで新規作成。[DOCX-JS.md](DOCX-JS.md) 参照。
+docx-jsで新規作成。`DOCX-JS.md` 参照。
 
 ## 編集
 単純な編集はXMLを直接変更。
-**変更履歴付き**: [REDLINING.md](REDLINING.md) 参照
+**変更履歴付き**: `REDLINING.md` 参照
 ```
 
 ## 共通ルール

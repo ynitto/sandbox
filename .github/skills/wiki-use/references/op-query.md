@@ -1,5 +1,14 @@
 # query — Wiki を検索する
 
+## 目次
+
+- [ステップ 0（任意）: コンテキストを確認する](#ステップ-0任意-コンテキストを確認する)
+- [ステップ 1: 検索](#ステップ-1-検索)
+- [ステップ 2: 回答をwikiにファイルバックする](#ステップ-2-回答をwikiにファイルバックする)
+- [ステップ 3: クエリを保存する](#ステップ-3-クエリを保存する)
+
+---
+
 > **このフローはユーザーが明示的に「wikiを検索して」と言わなくても実行する。**
 > ユーザーの質問に答える前に、wiki 検索（ステップ 1）を必ず先に行う。
 
@@ -54,7 +63,7 @@ python scripts/wiki_query.py hot
 - 単発検索で手がかりが弱いときは `--json` / `--suggest` で **agentic search（反復探索）** に切り替える。
   `next_action`（refine/expand/broaden/synthesize）に従い、`suggested_queries` で再検索したり
   `related_ids`（本文の `[[wikilink]]`）を辿ってマルチホップ展開する。ループの正典は共有スキル
-  [`../../agentic-search/SKILL.md`](../../agentic-search/SKILL.md)（未導入時はヒントを省略し通常検索のみ）。
+  `../../agentic-search/SKILL.md`（未導入時はヒントを省略し通常検索のみ）。
 
 ---
 
