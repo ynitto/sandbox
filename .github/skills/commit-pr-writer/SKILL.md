@@ -1,6 +1,6 @@
 ---
 name: commit-pr-writer
-description: 変更内容（diff・コミット履歴）から Conventional Commits 準拠のコミットメッセージ、Pull Request のタイトル・説明文、CHANGELOG / リリースノート、semver バージョン判定を生成するスキル。「コミットメッセージを書いて」「コミットメッセージ考えて」「PRの説明を書いて」「プルリクの説明文作って」「PRタイトル考えて」「CHANGELOGを作って」「リリースノートを書いて」「バージョンを上げて」「semverどれ？」などのリクエストで発動する。
+description: 変更内容（diff・コミット履歴）から、Conventional Commits 準拠のコミットメッセージ、Pull Request のタイトル・説明文、CHANGELOG / リリースノート、semver バージョン判定を生成します。これらの作成を頼まれた場合に使用してください。
 metadata:
   version: 1.0.0
   tier: experimental

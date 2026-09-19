@@ -1,6 +1,6 @@
 ---
 name: flow-worker
-description: agent-flow の executor=agent 向け実行系プロンプト強化スキル。worker（全 kind）・verify・evaluator の各 LLM 呼び出しへ、flow-worker の実行規律 —「三つの約束」（前提を書く・範囲を守る・検証してから渡す）・再導出検証・受け入れ評価 — と、git 操作を worktree に限定する git 利用規約を織り込んだプロンプトを供給する。flow-planner と対をなし、agent-flow が自動検出して利用する（ユーザーが直接発動するスキルではない）。
+description: agent-flow の executor=agent 向けに、worker・verify・evaluator の各 LLM 呼び出しへ渡す実行系プロンプトを強化します。agent-flow がノードを実行する場合に自動検出されて使われるスキルで、利用者が直接発動するものではありません。
 metadata:
   version: 2.0.0
   tier: experimental
