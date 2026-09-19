@@ -2306,6 +2306,8 @@ async function saveSettings() {
   $('settings-error').hidden = true;
   try {
     state.config = await api.saveConfig(settingsPatch());
+    Skills.fill(state.config);
+    if (!document.querySelector('[data-settings-panel="skills"]').hidden) await Skills.load();
     // 判定の設定は agent-herd 側のファイル。変えたときだけ書きに行く（agent-herd が無ければ触らない）。
     if (state.judge && state.judge.available) {
       const next = judgeValue();

@@ -171,6 +171,7 @@ function saveConfig(userData, patch) {
     };
   }
   if (instructionsPatch) merged.instructions = { ...current.instructions, ...instructionsPatch };
+  if (p.audit && typeof p.audit === 'object') merged.audit = { ...current.audit, ...p.audit };
   if (p.attentionSeen && typeof p.attentionSeen === 'object') {
     merged.attentionSeen = {
       since: 'since' in p.attentionSeen ? p.attentionSeen.since : current.attentionSeen.since,

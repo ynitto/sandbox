@@ -615,7 +615,8 @@ test('argv: セッション機能の無い CLI は履歴を再送する', () => 
   const t = agentCli.turnCmd(agentCli.load('vscode-copilot'), { prompt: 'c', history });
   assert.ok(t.stdin.includes('[user] a') && t.stdin.includes('[assistant] b') && t.stdin.endsWith('新しい依頼:\nc'));
   const cursor = agentCli.turnCmd(agentCli.load('cursor'), { prompt: 'c', history });
-  assert.ok(cursor.argv.includes('--continue'), 'continue_args を持つ CLI はそれを使う');
+  assert.ok(!cursor.argv.includes('--continue'), 'Cursor はIDが無くても直前の会話を拾わない');
+  assert.ok(cursor.stdin.includes('[user] a') && cursor.stdin.includes('[assistant] b'));
 });
 
 // ターンごとにエージェントを変えられる: history は「その CLI がまだ見ていない分」で、

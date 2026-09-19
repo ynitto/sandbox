@@ -22,6 +22,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const host = require('./host');
+const { gitExec } = require('./skillCredentials');
 
 const DIR = 'artifact-share';
 const STATE = 'state.json';
@@ -115,8 +116,8 @@ function cloneDir(userData, shareRepo) {
 }
 
 class ArtifactShare {
-  constructor({ userData, shellFor = host.shellFor, loadConfig = () => ({}), runPrompt = null, now = () => Date.now() }) {
-    Object.assign(this, { userData, shellFor, loadConfig, runPrompt, now });
+  constructor({ userData, shellFor = host.shellFor, loadConfig = () => ({}), loadToken = () => '', runPrompt = null, now = () => Date.now() }) {
+    Object.assign(this, { userData, shellFor, loadConfig, loadToken, runPrompt, now });
   }
 
   config() {
@@ -130,7 +131,7 @@ class ArtifactShare {
   shell() { return this.shellFor(this.config().distro); }
 
   async git(cwd, args, { timeoutMs = GIT_TIMEOUT_MS } = {}) {
-    const r = await this.shell().exec(['git', '-C', cwd, ...args], { timeoutMs });
+    const r = await gitExec(this.shell(), ['git', '-C', cwd, ...args], { timeoutMs }, { url: this.config().shareRepo, token: this.loadToken() });
     return { ok: r.ok, out: String(r.output || ''), error: String(r.error || r.output || '').split('\n').slice(-4).join('\n') };
   }
 
@@ -165,8 +166,8 @@ class ArtifactShare {
     const shell = this.shell();
     if (!fs.existsSync(path.join(dir, '.git'))) {
       fs.mkdirSync(path.dirname(dir), { recursive: true });
-      const r = await shell.exec(['git', 'clone', '--depth', '50', String(shareRepo), hostDir],
-        { timeoutMs: CLONE_TIMEOUT_MS });
+      const r = await gitExec(shell, ['git', 'clone', '--depth', '50', String(shareRepo), hostDir],
+        { timeoutMs: CLONE_TIMEOUT_MS }, { url: shareRepo, token: this.loadToken() });
       if (!r.ok) throw new Error(`公開先を取得できません: ${String(r.error || r.output || '').split('\n').slice(-3).join('\n')}`);
       return { dir, hostDir };
     }
@@ -176,14 +177,18 @@ class ArtifactShare {
   }
 
   async defaultBranch(hostDir) {
-    const head = await this.git(hostDir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
-    const name = head.ok ? head.out.trim().replace(/^origin\//, '') : '';
-    return name || 'main';
+    // origin/HEAD はクローン後に古くなることがあるため、公開先の現在の HEAD を問い合わせる。
+    const head = await this.git(hostDir, ['ls-remote', '--symref', 'origin', 'HEAD']);
+    const name = head.ok ? head.out.match(/^ref: refs\/heads\/([^\s]+)\s+HEAD\r?$/m)?.[1] : '';
+    if (!name) throw new Error('公開先のデフォルトブランチを確認できません。');
+    return name;
   }
 
   // 公開先の作業ツリーを、既定ブランチの先端から <branch> へ移す。
   async startBranch(hostDir, branch) {
     const base = await this.defaultBranch(hostDir);
+    const fetched = await this.git(hostDir, ['fetch', '--depth', '50', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`]);
+    if (!fetched.ok) throw new Error(`デフォルトブランチを取得できません: ${fetched.error}`);
     const reset = await this.git(hostDir, ['checkout', '-B', branch, `origin/${base}`]);
     if (!reset.ok) throw new Error(`公開先でブランチを作れません: ${reset.error}`);
     return base;
@@ -198,19 +203,18 @@ class ArtifactShare {
     if (!r.ok) throw new Error(`成果物を写せません: ${String(r.error || r.output || '').split('\n').slice(-3).join('\n')}`);
   }
 
-  async commitAndPush(hostDir, { branch, message, pushToMain = false }) {
+  async commitAndPush(hostDir, { branch, message, targetBranch = branch }) {
     const staged = await this.git(hostDir, ['add', '-A']);
     if (!staged.ok) throw new Error(`公開先へ追加できません: ${staged.error}`);
     const diff = await this.git(hostDir, ['diff', '--cached', '--quiet']);
-    if (diff.ok) return { pushed: false, unchanged: true, branch };
+    if (diff.ok) return { pushed: false, unchanged: true, branch: targetBranch };
     const committed = await this.git(hostDir, ['-c', 'user.name=agent-app', '-c', 'user.email=agent-app@localhost',
       'commit', '-m', message]);
     if (!committed.ok) throw new Error(`公開先へコミットできません: ${committed.error}`);
-    const target = pushToMain ? await this.defaultBranch(hostDir) : branch;
-    const pushed = await this.git(hostDir, ['push', 'origin', `HEAD:refs/heads/${target}`],
+    const pushed = await this.git(hostDir, ['push', 'origin', `HEAD:refs/heads/${targetBranch}`],
       { timeoutMs: CLONE_TIMEOUT_MS });
     if (!pushed.ok) throw new Error(`公開先へ push できません: ${pushed.error}`);
-    return { pushed: true, branch: target, unchanged: false };
+    return { pushed: true, branch: targetBranch, unchanged: false };
   }
 
   // 出所。どのリポジトリのどのコミットから来たかを成果物の隣に残す。
@@ -244,13 +248,14 @@ class ArtifactShare {
     if (!found) return { skipped: 'not-found' };
     const { hostDir } = await this.ensureClone(shareRepo);
     const branch = branchFor('share', kind, name);
-    await this.startBranch(hostDir, branch);
+    const defaultBranch = await this.startBranch(hostDir, branch);
     await this.copyInto(hostDir, { sourceRepo: repo, rel: found.rel, dir: found.dir });
     if (found.dir) await this.originJson(hostDir, { sourceRepo: repo, rel: found.rel, kind, name, sessionId });
     const result = await this.commitAndPush(hostDir, {
       branch,
       message: `share(${kind}): ${name}\n\n定型化したものを公開します（agent-app から出しました）。`,
-      pushToMain: cfg.pushToMain === true,
+      // 保存済み設定のキーは互換性のため残し、値は実際のデフォルトブランチに解決する。
+      targetBranch: cfg.pushToMain === true ? defaultBranch : branch,
     });
     const saved = record(this.userData, kind, name, {
       kind, name, repo, submittedBranch: result.branch, submittedAt: new Date(this.now()).toISOString(),
@@ -284,7 +289,6 @@ class ArtifactShare {
     const result = await this.commitAndPush(hostDir, {
       branch,
       message: `improve(${kind}): ${name}\n\n${evidenceLines(evidence).join('\n')}`,
-      pushToMain: false,
     });
     if (result.unchanged) return { skipped: 'no-change', branch };
     const saved = record(this.userData, kind, name, {

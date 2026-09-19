@@ -330,8 +330,11 @@ test('スキルの面は 1 つの一覧で、未公開を先頭に出し、操�
     '行ごとにボタンを作らない（一覧がボタンの壁になる）');
   assert.strictEqual((panel.match(/<button/g) || []).length, 1, 'この面に置くボタンは 1 つ');
   // 4. 状態は印を借りる。未公開を先頭に並べる
-  assert.match(skills, /el\('span', `status \$\{item\.status === 'published' \? 'ok' : 'warn'\}`, mark\)/, '状態の印を借りる');
-  assert.match(skills, /const ORDER = /, '未公開を先頭に並べる');
+  assert.match(skills, /el\('span', 'status warn', mark\)/, '状態の印を借りる');
+  assert.match(skills, /versionComparison === 'local-newer'/, '新しいローカル版だけを未公開とする');
+  assert.match(panel, /class="setting-field setting-field-wide"/);
+  assert.match(panel, /id="audit-share-token" type="password"/);
+  assert.ok(!panel.includes('stacked-field'), '他の設定と同じ横並びの項目');
   // 5. 必要になるまで入力欄を出さない（公開先が空なら main へ直接の行は隠す）
   assert.match(panel, /id="audit-push-main-row" hidden/);
   assert.match(skills, /\$\('audit-push-main-row'\)\.hidden = !\$\('audit-share-repo'\)\.value\.trim\(\)/);

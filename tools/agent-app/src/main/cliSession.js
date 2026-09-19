@@ -7,7 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { parse } = require('smol-toml');
 const host = require('./host');
-const supported = (cli) => cli === 'codex' || cli === 'kiro';
+const supported = (cli) => ['codex', 'kiro', 'cursor'].includes(cli);
 
 function runtimePath({ home, id, cli }) {
   if (!/^[a-zA-Z0-9_-]+$/.test(id) || !/^[a-zA-Z0-9_-]+$/.test(cli)) throw new Error('セッション記録先が不正です');
@@ -15,7 +15,7 @@ function runtimePath({ home, id, cli }) {
 }
 
 async function read(options) {
-  if (!supported(options.cli)) return '';
+  if (!supported(options.cli) || options.cli === 'cursor') return '';
   const result = await options.shell.exec(['cat', host.joinHost(runtimePath(options), 'session.json')]);
   if (!result.ok) return '';
   try {
@@ -54,6 +54,16 @@ async function codexNotify({ shell, home, env = {}, argv }) {
 
 async function prepare(options) {
   const { shell, cli, argv, env = {} } = options;
+  if (cli === 'cursor') {
+    if (argv.some((arg) => arg === '--resume' || arg.startsWith('--resume='))) return { argv, env };
+    const command = ['env', ...Object.entries(env).map(([key, value]) => `${key}=${value}`), argv[0], 'create-chat'];
+    const result = await shell.run(`cd ${host.sq(options.cwd)} && ${host.quoteArgv(command)}`, { timeoutMs: 30000 });
+    const sessionId = String(result.output || '').trim();
+    if (!result.ok || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(sessionId)) {
+      throw new Error('Cursor のセッションIDを作成できません。直前のセッションは使わず、会話履歴を添えて新規起動します。');
+    }
+    return { argv: [argv[0], '--resume', sessionId, ...argv.slice(1)], env, sessionId };
+  }
   if (!supported(cli)) return { argv, env };
   const chained = cli === 'codex' ? await codexNotify(options) : [];
   const runtime = runtimePath(options);

@@ -1,6 +1,6 @@
 'use strict';
 
-const { ipcMain, dialog, shell, app } = require('electron');
+const { ipcMain, dialog, shell, app, safeStorage } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -45,6 +45,8 @@ const teachingIpcModule = require('./teachingIpc');
 const { runPrompt, runSharedPrompt, normalizeRepoUrl, refreshRepoUrls, repoFor } = shareRun;
 const audit = require('./audit');
 const artifactShare = require('./artifactShare');
+const { SkillPublication } = require('./skillPublication');
+const skillCredentials = require('./skillCredentials');
 
 // 修正前に保存された Aider 応答も、読み出し時に同じ表示契約へ移す。
 // ディスク上の生データは変更せず、新しい応答は保存前に既に構造化される。
@@ -178,7 +180,7 @@ function withAttachments(ud, text, list, dirs) {
   return { prompt: body ? `${body}\n\n${note}` : note, atts, files: paths };
 }
 
-function runHeadless(id, turn, send) {
+async function runHeadless(id, turn, send) {
   const ud = userData();
   const sess = store.readSession(ud, id);
   const repo = requireRepo(sess.repo);
@@ -189,7 +191,17 @@ function runHeadless(id, turn, send) {
   const collector = response.createCollector(cli);
   for (const item of turn.setupInformation || []) collector.addInformation(item);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
-  const entry = store.cliEntry(sess, cli);
+  let entry = store.cliEntry(sess, cli);
+  if (spec.session?.kind === 'create' && !entry?.id) {
+    try {
+      const prepared = await cliSession.prepare({ cli, shell: host.shellFor(distroFor(repo)),
+        cwd: dirs.hostDir, argv: [spec.command[0]], env: spec.env });
+      if (prepared.sessionId) {
+        store.setCliEntry(ud, id, cli, { id: prepared.sessionId, seen: 0 });
+        entry = store.cliEntry(store.readSession(ud, id), cli);
+      }
+    } catch (error) { turn.setupWarning = [turn.setupWarning, error.message].filter(Boolean).join('\n'); }
+  }
   // その CLI がまだ見ていない分だけ再送する（セッション ID が無い CLI は毎回ぜんぶ）
   const unseen = entry && entry.id ? history.slice(entry.seen) : history;
   const cmd = agentCli.turnCmd(spec, {
@@ -415,7 +427,11 @@ async function openConversationNow(id, send, { cols, rows, fresh = false, launch
   let lastSync = 0;
   const conv = new tmux.Conversation({
     prepareLaunch: async () => {
-      try { return await cliSession.prepare({ ...captureOptions, argv: cmd.argv, env: cmd.env }); }
+      try {
+        const prepared = await cliSession.prepare({ ...captureOptions, argv: cmd.argv, env: cmd.env });
+        if (prepared.sessionId) store.setCliEntry(ud, id, want.cli, { id: prepared.sessionId, seen: 0 });
+        return prepared;
+      }
       catch (err) { captureWarning = err.message; return { argv: cmd.argv, env: cmd.env }; }
     },
     syncSession: async () => {
@@ -847,8 +863,13 @@ function registerIpcHandlers(getWindow) {
   const artifacts = new artifactShare.ArtifactShare({
     userData: userData(),
     loadConfig: () => store.loadConfig(userData()),
+    loadToken: () => skillCredentials.readToken(store.loadConfig(userData()), safeStorage),
     shellFor: (distro) => host.shellFor(distro),
     runPrompt,
+  });
+  const skillPublication = new SkillPublication({
+    userData: userData(), shell: () => artifacts.shell(),
+    loadAuth: () => ({ url: artifacts.config().shareRepo, token: artifacts.loadToken() }),
   });
   handle('audit:status', () => ({ ...auditor.status(), share: artifacts.list() }));
   handle('audit:run', () => auditor.run({ manual: true }));
@@ -881,24 +902,46 @@ function registerIpcHandlers(getWindow) {
   handle('publish:configured', () => ({ configured: artifacts.configured() }));
   handle('publish:state', (p) => publishState(p.repo ? requireRepo(p.repo) : '', String(p.kind || ''), String(p.name || '')));
   // 設定 > スキル の一覧。AI を選ぶと「その AI の置き場 + 共通の置き場」を歩く。
-  handle('publish:skills', (p) => {
+  handle('publish:skills', async (p) => {
     const repo = p && p.repo ? requireRepo(p.repo) : '';
     const configured = artifacts.configured();
     const verdicts = judged();
     // 公開できるのはリポジトリの中にあるものだけ。共通の置き場の個人のスキルは一覧に出すが、
     // 公開の操作は出さない（押せないものを出さない）。
-    const items = skills.catalog(repo, String((p && p.agent) || '')).map((item) => ({
-      name: item.name, description: item.description, version: item.version, place: item.place,
-      ...(item.place === 'repo' ? publishState(repo, 'skill', item.name, verdicts)
-        : { ...NO_VERDICT, status: 'outside', canPublish: false, canImprove: false, configured }),
-    }));
+    const catalog = skills.catalog(repo, String((p && p.agent) || ''));
+    const published = await skillPublication.states(catalog, artifacts.config().shareRepo);
+    const items = catalog.map((item) => {
+      const base = item.place === 'repo' ? publishState(repo, 'skill', item.name, verdicts)
+        : { ...NO_VERDICT, status: 'outside', canPublish: false, canImprove: false, configured };
+      // 表示した実体と公開処理が読む正典が違う場合、別の同名スキルを公開させない。
+      const found = item.place === 'repo' ? artifactShare.locate(repo, 'skill', item.name) : null;
+      const actionable = !!found && path.resolve(found.full) === path.resolve(item.dir);
+      return skillPublication.present(item, base, published.get(item.path), actionable);
+    });
     return { repo, configured, items };
   });
   // 公開と改善は押したときだけ（merge は人。ここは push までで止める）。
-  handle('publish:submit', (p) => artifacts.submit({
-    repo: repoOf(p), kind: String(p.kind || ''), name: String(p.name || ''),
-    sessionId: String(p.sessionId || ''), force: !!p.force,
-  }));
+  handle('publish:submit', async (p) => {
+    const options = {
+      repo: repoOf(p), kind: String(p.kind || ''), name: String(p.name || ''),
+      sessionId: String(p.sessionId || ''), force: !!p.force,
+    };
+    if (options.kind === 'skill' && artifacts.configured()) {
+      const found = artifactShare.locate(options.repo, 'skill', options.name);
+      if (found) {
+        const item = { ...options, dir: found.full, path: path.join(found.full, 'SKILL.md') };
+        const state = (await skillPublication.states([item], artifacts.config().shareRepo)).get(item.path);
+        if (state?.status === 'unknown') throw new Error('公開先を確認できません。接続を確認して再試行してください。');
+        if (state && state.versionComparison !== 'local-newer' && !options.force) return { skipped: 'not-newer' };
+        if (state?.status === 'published' && !options.force) return { skipped: 'already', branch: state.branch };
+        // 別の公開先・同名スキルの古いローカル履歴で、必要な公開をスキップしない。
+        if (state && state.status !== 'published') options.force = true;
+      }
+    }
+    const result = await artifacts.submit(options);
+    skillPublication.cache.clear();
+    return result;
+  });
   handle('publish:improve', async (p) => {
     const cfg = store.loadConfig(userData());
     const repo = repoOf(p);
@@ -935,7 +978,8 @@ function registerIpcHandlers(getWindow) {
   handle('config:problem', () => store.takeConfigProblem());
   handle('config:save', (p) => {
     const before = store.loadConfig(userData());
-    const next = store.saveConfig(userData(), p.patch);
+    const next = store.saveConfig(userData(), skillCredentials.preparePatch(p.patch, before.audit, safeStorage));
+    if (JSON.stringify(before.audit) !== JSON.stringify(next.audit)) skillPublication.cache.clear();
     if (before.wslDistro !== next.wslDistro) { host.closeAll(); availCache.clear(); }
     if (JSON.stringify(before.update) !== JSON.stringify(next.update)) updater.schedule();
     if (JSON.stringify(before.audit) !== JSON.stringify(next.audit)) auditor.schedule();

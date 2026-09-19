@@ -667,12 +667,11 @@
           <div class="environment-status"><strong>接続状態</strong><div id="share-status" class="sub"></div></div>
         </section>
         <section data-settings-panel="skills" class="settings-list" role="tabpanel" hidden>
-          <div class="row">
-            <label class="setting-field"><span><strong>リポジトリ</strong></span><select id="skills-repo"></select></label>
-            <label class="setting-field"><span><strong>AI</strong></span><select id="skills-agent"></select></label>
-          </div>
-          <label class="setting-field"><span><strong>公開先リポジトリ</strong><small>選んだものをブランチにして出します</small></span><input id="audit-share-repo" size="28" placeholder="git@example:team/skills.git"></label>
-          <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>公開先のmainへ直接出す</strong><small>自分だけのリポジトリのとき</small></span></label>
+          <label class="setting-field"><span><strong>リポジトリ</strong></span><select id="skills-repo"></select></label>
+          <label class="setting-field"><span><strong>AI</strong></span><select id="skills-agent"></select></label>
+          <label class="setting-field setting-field-wide"><span><strong>公開先リポジトリ</strong></span><input id="audit-share-repo" placeholder="https://example.com/team/skills.git"></label>
+          <label class="setting-field setting-field-wide"><span><strong>アクセストークン</strong></span><input id="audit-share-token" type="password" autocomplete="new-password" placeholder="未設定"></label>
+          <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>デフォルトブランチへ公開</strong></span></label>
           <div id="skills-list" aria-live="polite"></div>
           <div class="environment-status">
             <div class="row"><span id="skills-count" class="sub"></span><span class="spacer"></span><button type="button" id="skills-publish" class="small">公開する</button></div>

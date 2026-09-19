@@ -18,18 +18,15 @@
   let request = 0;
   // picked … 利用者が外した行を覚える（未公開は既定で入れる。保存データの面と同じ作法）
   const state = { doc: null, error: '', repo: '', agent: '', busy: false, picked: null };
+  let savedRepo = ''; let savedAgent = ''; let tokenChanged = false;
 
-  // 未公開を先頭に。公開済みと、リポジトリの外にあるものは後ろへ回す。
-  const ORDER = { unpublished: 0, updated: 0, published: 1, missing: 1, outside: 2 };
+  // ローカルの版が新しいものを先頭にする。
   function sorted(items) {
-    return [...items].sort((a, b) => (ORDER[a.status] ?? 3) - (ORDER[b.status] ?? 3) || a.name.localeCompare(b.name));
+    return [...items].sort((a, b) => Number(b.versionComparison === 'local-newer') - Number(a.versionComparison === 'local-newer') || a.name.localeCompare(b.name));
   }
 
   function label(item) {
-    if (item.status === 'unpublished') return '未公開';
-    if (item.status === 'updated') return '未公開の変更';
-    if (item.status === 'published') return '公開済み';
-    return '';
+    return item.versionComparison === 'local-newer' ? '未公開' : '';
   }
 
   // 説明は 1 行に収める。長い説明をそのまま出すと、行ごとに高さが変わって一覧が読めなくなる。
@@ -42,7 +39,6 @@
   function detail(item) {
     const parts = [];
     if (item.description) parts.push(short(item.description));
-    if (item.version) parts.push(`v${item.version}`);
     parts.push(PLACE[item.place] || '');
     if (item.improving) parts.push('改善案を出しました');
     else if (VERDICT[item.verdict]) parts.push(VERDICT[item.verdict]);
@@ -98,6 +94,8 @@
   function render() {
     const box = $('skills-list');
     if (!box) return;
+    $('skills-repo').disabled = state.busy;
+    $('skills-agent').disabled = state.busy;
     if (state.error) { box.replaceChildren(el('div', 'sub', state.error)); renderFoot(); return; }
     if (!state.doc) { box.replaceChildren(el('div', 'sub', '読み込んでいます…')); renderFoot(); return; }
     const items = state.doc.items || [];
@@ -115,10 +113,13 @@
       check.disabled = !item.canPublish || state.busy;
       check.onchange = () => toggle(item.name, check.checked);
       const text = el('span');
-      text.append(el('strong', '', item.name), el('small', '', detail(item)));
+      const version = item.localVersion || item.version;
+      const title = `${item.name}  ${version ? `v${version.replace(/^v/, '')}` : 'バージョン未設定'}`;
+      text.append(el('strong', '', title), el('small', '', detail(item)));
       row.append(check, text);
       const mark = label(item);
-      if (mark) row.append(el('span', `status ${item.status === 'published' ? 'ok' : 'warn'}`, mark));
+      if (mark) row.append(el('span', 'status warn', mark));
+      if (item.error) row.title = item.error;
       return row;
     }));
     renderFoot();
@@ -172,7 +173,8 @@
     state.repo = $('skills-repo').value || '';
     state.agent = $('skills-agent').value || '';
     state.error = '';
-    if (!state.doc) render();
+    state.doc = null;
+    render();
     try {
       const doc = await window.api.publish.skills(state.repo, state.agent);
       if (token !== request) return;
@@ -188,7 +190,7 @@
   // 選べるものは開くたびに入れ直す（リポジトリや使える AI は外で増える）。
   function fillChoices(config, agents) {
     const repoSelect = $('skills-repo');
-    const previousRepo = repoSelect.value;
+    const previousRepo = repoSelect.value || savedRepo;
     const repos = (config && config.repos) || [];
     repoSelect.replaceChildren(...repos.map((repo) => {
       const option = el('option', '', repo.split(/[\\/]/).filter(Boolean).pop() || repo);
@@ -197,7 +199,7 @@
     }));
     repoSelect.value = repos.includes(previousRepo) ? previousRepo : repos[0] || '';
     const agentSelect = $('skills-agent');
-    const previousAgent = agentSelect.value;
+    const previousAgent = agentSelect.value || savedAgent;
     // AI が引けていないときは、置き場を絞らずに全部見せる（空の選択肢を出さない）。
     const names = [...new Set((agents || []).map((agent) => String((agent && agent.name) || agent || '')).filter(Boolean))];
     const choices = names.length ? names : [''];
@@ -212,6 +214,11 @@
   function fill(config) {
     const cfg = (config && config.audit) || {};
     $('audit-share-repo').value = cfg.shareRepo || '';
+    $('audit-share-token').value = '';
+    $('audit-share-token').placeholder = cfg.shareTokenEncrypted ? '保存済み（変更する場合に入力）' : '未設定';
+    tokenChanged = false;
+    savedRepo = cfg.skillRepo || '';
+    savedAgent = cfg.skillAgent || '';
     $('audit-push-main').checked = !!cfg.pushToMain;
     renderPublishRepoRow();
   }
@@ -223,6 +230,9 @@
   function patch() {
     return {
       shareRepo: $('audit-share-repo').value.trim(),
+      ...(tokenChanged ? { shareToken: $('audit-share-token').value.trim() } : {}),
+      skillRepo: $('skills-repo').value || savedRepo,
+      skillAgent: $('skills-agent').value || savedAgent,
       pushToMain: $('audit-push-main').checked,
     };
   }
@@ -240,7 +250,8 @@
     $('skills-agent').onchange = () => { state.picked = null; load(); };
     $('skills-publish').onclick = publish;
     $('audit-share-repo').oninput = renderPublishRepoRow;
+    $('audit-share-token').oninput = () => { tokenChanged = true; };
   }
 
-  window.Skills = { init, open, reset, fill, patch, render };
+  window.Skills = { init, open, reset, fill, patch, render, load };
 }());

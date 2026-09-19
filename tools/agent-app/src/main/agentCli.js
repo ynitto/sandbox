@@ -17,6 +17,7 @@ const crypto = require('crypto');
 // ponytail: CLI 固有のセッション ID の作法。定義ファイル（schema）へ昇格するまでここに置く。
 //   mint    … こちらで UUID を発行し、初回に newArgs で渡す。2 回目以降は resume_args
 //   capture … 初回の出力からセッション ID を拾う（codex は --json の thread.started）
+//   create  … CLI の create-chat で起動前に ID を確保する（cursor）
 //   list    … ターンのあと CLI のセッション一覧から最新を拾う（kiro）
 // どれにも無い CLI は、continue_args があればそれ（直前セッション＝並行運転で混線する）、
 // 無ければ会話履歴をプロンプトへ再送する。
@@ -24,6 +25,7 @@ const SESSION = {
   claude: { kind: 'mint', newArgs: ['--session-id', '{session}'] },
   copilot: { kind: 'mint', newArgs: ['--session-id', '{session}'] },
   codex: { kind: 'capture', extraArgs: ['--json'], pattern: /"thread_id"\s*:\s*"([^"]+)"/ },
+  cursor: { kind: 'create', resumeArgs: ['--resume', '{session}'] },
   kiro: {
     kind: 'list',
     resumeArgs: ['--resume-id', '{session}'],
@@ -360,7 +362,7 @@ function interactiveCmd(spec, { model = '', readonly = false, autoApprove = fals
   } else if (strategy) {
     // capture/list 型は ID を特定できたときだけ再開する。--last は同じ CLI の
     // 別会話を拾うため、ID が無い場合は新規起動して未読履歴を再送する。
-    warning = `${spec.name} のセッション ID が無いため、新しい会話として起動します`;
+    if (strategy.kind !== 'create') warning = `${spec.name} のセッション ID が無いため、新しい会話として起動します`;
   } else if (allowContinue && history.length && inter.continueArgs.length) {
     frag = inter.continueArgs;
     resumed = true;

@@ -510,6 +510,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .setting-check strong, .setting-field strong, .environment-status > strong { font-size: 13px; font-weight: 600; }
 .setting-check small, .setting-field small { color: var(--muted); font-size: 11px; line-height: 1.4; }
 .setting-field input { width: 140px; }
+.setting-field-wide input { width: 360px; max-width: 60%; min-width: 0; }
 /* 保存データの整理: 行の右端の大きさは .status の形のまま（伸びるのは左の説明だけ） */
 .setting-check > .status { flex: none; flex-direction: row; }
 #cleanup-items { overflow-x: auto; }

@@ -48,6 +48,8 @@ test('一覧に出す版は frontmatter の version から読む', () => {
   fs.writeFileSync(path.join(skillRoot, 'release-notes', 'SKILL.md'), "---\nname: release-notes\nversion: '1.2.0'\n---\n# notes\n");
   const [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
   assert.strictEqual(item.version, '1.2.0');
+  fs.writeFileSync(path.join(skillRoot, 'release-notes', 'SKILL.md'), '---\nmetadata:\n  version: 1.10\n---\n# notes\n');
+  assert.equal(skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }])[0].version, '1.10');
 });
 
 test('AI を選ぶと、その AI の置き場と共通の置き場だけを歩く', () => {

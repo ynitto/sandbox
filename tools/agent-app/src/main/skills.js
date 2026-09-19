@@ -10,6 +10,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { readVersion } = require('./skillVersion');
 
 // 走査の上限。置き場に何万も入っている PC で画面を止めない。
 const MAX_ENTRIES = 400;
@@ -47,12 +48,6 @@ function sourceRoots(repo = '', agent = '') {
   return roots;
 }
 
-// frontmatter の 1 行の値（引用符を外す）。
-function headerValue(header, name) {
-  const hit = header.match(new RegExp(`^${name}:\\s*([^\\n]*)`, 'm'));
-  return hit ? hit[1].trim().replace(/^['"]|['"]$/g, '') : '';
-}
-
 function metadata(name, file, content) {
   const front = String(content || '').match(/^---\s*\n([\s\S]*?)\n---(?:\s*\n|$)/);
   const header = front ? front[1] : '';
@@ -70,7 +65,7 @@ function metadata(name, file, content) {
   }
   const tagsBlock = (header.match(/^tags:\s*\n((?:\s+-[^\n]*\n?)*)/m) || [])[1] || '';
   const tags = [...tagsBlock.matchAll(/^\s+-\s*(.+)$/gm)].map((match) => match[1].trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-  return { name, description, tags, version: headerValue(header, 'version'), path: file, content };
+  return { name, description, tags, version: readVersion(content), path: file, content };
 }
 
 function catalogFromRoots(roots) {

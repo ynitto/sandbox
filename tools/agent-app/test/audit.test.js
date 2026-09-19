@@ -291,6 +291,7 @@ function fakeShell(log, { fail = () => false } = {}) {
       if (failure) return { ok: false, status: 1, output: '', error: String(failure) };
       if (argv.includes('diff') && argv.includes('--cached')) return { ok: false, status: 1, output: '' };
       if (argv.includes('symbolic-ref')) return { ok: true, status: 0, output: 'origin/main' };
+      if (argv.includes('ls-remote')) return { ok: true, status: 0, output: 'ref: refs/heads/main\tHEAD\nabc123\tHEAD' };
       if (argv.includes('rev-parse')) return { ok: true, status: 0, output: 'abc123' };
       return { ok: true, status: 0, output: '' };
     },
@@ -374,7 +375,7 @@ test('改善案は実測が基準を割ったときだけ出せる（未取り�
   assert.equal(share.state({ repo, kind: 'task', name: 'daily', verdict: 'blocked' }).canImprove, false, '未取り込みの改善案があるうちは出さない');
 });
 
-test('main へ直接の設定なら既定ブランチへ push する', async () => {
+test('デフォルトブランチへ公開する設定なら既定ブランチへ push する', async () => {
   const ud = tmp('share-main-');
   const log = [];
   const share = new artifactShare.ArtifactShare({
@@ -474,6 +475,7 @@ test('設定は周期と共有先だけを持ち、範囲外の値を丸める',
   const got = settings.normalize({ audit: { intervalMinutes: 99999, shareRepo: ' git@e:r.git ', pushToMain: 'yes' } }).audit;
   assert.deepEqual(got, {
     enabled: true, intervalMinutes: 1440, shareRepo: 'git@e:r.git', pushToMain: true, configFile: '',
+    shareTokenEncrypted: '', skillRepo: '', skillAgent: '',
   });
   assert.equal(settings.normalize({}).audit.intervalMinutes, 60);
   assert.equal(settings.normalize({ audit: { enabled: false } }).audit.enabled, false);
