@@ -25,6 +25,11 @@ TypeSafe AI の Jev（System One モデル）が示した「文章を生成せ�
   捏造しない。
 - Python からは `agentcore.judge.evaluate(state, questions)`。`request` を差し替えられるので、
   消費側のテストは ollama 無しで書ける。
+- **statemachine の遷移条件に配線した。** 決定的な規則で決まらない条件（`needs_llm_eval`）は、
+  ローカル定義（aider / ollama）で回しているとき judge に条件ごと boolean で訊き、答えを
+  そのまま `next_state.py` の `--evals` に載せる。判定 1 件が prefill 1 回で終わり、JSON を
+  読めずに落ちる形が消える。judge が使えない・確度が足りないときは従来の制御応答へ倒し、
+  証跡に `condition_judge_fallback` を残す。クラウド CLI の実行は従来どおり。
 - 実装: `agentcore/judge.py`・`herdcli.cmd_judge`。テスト: `test_judge`（16 件）・
   `test_herdcli.JudgeTests`（7 件）。設計:
   [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)。

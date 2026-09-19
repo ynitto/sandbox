@@ -142,7 +142,7 @@ Python からは `agentcore.judge.evaluate(state, questions, model=…)`。`requ
 |---|---|
 | `agent-herd decide`（抽出 → 機械判定） | **置き換えない。** 多基準の採否は機械が決める形が正しい（08-29 実測）。`judge` は単一基準の問いを確率で答える別の道具。多基準を `judge` に 1 問で訊かない（基準ごとに問いを分ける） |
 | `harness run --judge`（受入条件の判定） | 現状維持。受入条件は自然文で、選択肢が先に決まっていない。設計書「任せない」表のとおり、自然文の受入は役割ごと撤去の方向 |
-| statemachine の遷移条件（`needs_llm_eval`） | **次の消費先候補。** 条件は真偽で答えの集合が固定、同じ出力（状態）に複数の条件（問い）という形が本設計の得意な形そのもの。配線は本設計の外（消費側の変更）で、`confidence` のしきい値と `abstained` の扱い（park か再試行か）を決めてから入れる |
+| statemachine の遷移条件（`needs_llm_eval`） | **配線済み（2026-09-19）。** 条件は真偽で答えの集合が固定、同じ出力（状態）に複数の条件（問い）という形が本設計の得意な形そのもの。`_sm_judge_conditions` が条件 1 件を boolean 1 問にして `judge.evaluate` を呼び、答えを `--evals` へ載せる。使うのはローカル定義（`relative_cost` 0）のときだけで、judge の失敗・確度不足（`_SM_JUDGE_MIN_CONFIDENCE`、既定 0）は従来の制御応答へ倒し、証跡（`condition_judge_*`）に残す。しきい値の既定は §6 の実測後に決める |
 | agent-flow の `route` / `filter`（単一基準）/ `assess` | 同上。`variants` で `ollama-json` へ振っている用途のうち、答えの集合が先に決まるものが対象 |
 
 ## 6. 測ってから決めること

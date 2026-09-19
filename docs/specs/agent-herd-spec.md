@@ -507,6 +507,14 @@ agent-herd harness run PROMPT...
 `read_files`、`write_files`、`run`、`final` の限定ツール契約を付ける。`tool-loop` は対象 CLI の
 ツールループへ 1 回渡す。
 
+遷移条件のうち決定的な規則で決まらないもの（`needs_llm_eval`）は、ローカルの定義
+（`relative_cost` が 0 の `aider` / `ollama`）で回しているときは `judge`（§5.5）で判定する。
+条件 1 件を boolean の問い 1 つにし、状態はその工程の出力、モデルは `--model` の指定か
+定義の既定。答えはそのまま `next_state.py` の `--evals` に載る。judge が使えない
+（Ollama に届かない、`logprobs` を読めない）か確度が下限に届かない場合は、従来どおり
+制御応答（JSON を生成させる経路）で判定し直し、証跡に `condition_judge_fallback` を残す。
+クラウド CLI の実行では judge を使わない。
+
 引数の誤りと未知のハーネス種別は終了コード 2。それ以外はハーネス本体の終了コードを返す。
 
 #### 5.5 `judge`

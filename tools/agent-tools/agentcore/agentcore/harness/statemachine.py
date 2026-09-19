@@ -25,7 +25,7 @@ import time
 import uuid
 from pathlib import Path
 
-from agentcore import stopreason
+from agentcore import judge, stopreason
 from agentcore.harness import _borrowed
 from agentcore.harness.toolloop import (  # noqa: F401  (本文が toolloop から借りる名前)
     ToolLoopError,
@@ -789,6 +789,79 @@ def _sm_require_next_state_contract(script: str, *, cwd: str, log_file: str) -> 
         "  再配布: `python install.py --agent <エージェント> --all-skills`")
 
 
+# 遷移条件の判断で「決めない」へ倒す確度の下限。0 なら棄権しない（judge の答えを
+# そのまま使う）。gemma4:e4b で確度と正答の関係を測ってから既定を決める
+# （設計 2026-09-19 §6）。上げると、届かない条件は制御応答（生成経路）で判定し直す。
+_SM_JUDGE_MIN_CONFIDENCE = 0.0
+
+
+def _sm_judge_model(agent: "dict | None") -> "str | None":
+    """遷移条件を judge（分布の読み出し）で判定できるモデル。できなければ None。
+
+    judge は LAN の ollama を直に叩く。だから使えるのは**ローカルの定義**（`relative_cost`
+    が 0 の aider / ollama）で回しているときだけで、クラウド CLI の実行ではこれまでどおり
+    制御応答（生成経路）に訊く。モデルはハーネスの指定を持ち越し、無ければ定義の既定。
+    """
+    spec = (agent or {}).get("spec")
+    if not isinstance(spec, dict) or spec.get("relative_cost") != 0:
+        return None
+    model = str((agent or {}).get("model") or spec.get("default_model") or "").strip()
+    return model or judge.DEFAULT_MODEL
+
+
+def _sm_condition_questions(pending: "list[dict]") -> dict:
+    """needs_llm_eval の条件を boolean の問いへ。名前は next_state.py の index（--evals の鍵）。"""
+    questions: dict = {}
+    for cond in pending:
+        text = str(cond.get("condition") or "").strip()
+        desc = str(cond.get("description") or "").strip()
+        if desc and desc != text:
+            text = f"{text}（{desc}）" if text else desc
+        if not text:
+            continue
+        questions[str(cond.get("index"))] = {
+            "type": "boolean",
+            "instructions": "Does the completed action output satisfy this condition? " + text,
+        }
+    return questions
+
+
+def _sm_judge_conditions(pending: "list[dict]", *, output: str, agent: "dict | None",
+                         log_file: str) -> dict:
+    """遷移条件を judge で判定する。使えない・読めない・確度不足なら空 dict を返し、
+    呼び出し側が制御応答（従来の生成経路）へ倒す。**倒したことは進捗と証跡に残す**——
+    黙って経路が変わると、同じワークフローが実行によって別の判定を受けたときに
+    原因を追えない。
+
+    問いは条件 1 件につき boolean 1 つ（多基準を 1 問で訊かない）。状態はアクションの出力で、
+    全問が同じ状態を先頭に持つので接頭辞キャッシュに乗る。
+    """
+    model = _sm_judge_model(agent)
+    questions = _sm_condition_questions(pending)
+    if model is None or not questions or not str(output or "").strip():
+        return {}
+    _sm_progress(f"遷移条件 {len(questions)} 件を judge（{model}）で判定しています")
+    _sm_append_log(log_file, {"event": "condition_judge_start", "model": model,
+                              "conditions": sorted(questions)})
+    try:
+        result = judge.evaluate(str(output), questions, model=model)
+    except judge.JudgeError as exc:
+        _sm_progress(f"judge を使えないため制御応答で判定します: {exc}")
+        _sm_append_log(log_file, {"event": "condition_judge_fallback", "reason": str(exc)})
+        return {}
+    answers = result["answers"]
+    held = judge.abstained(answers, _SM_JUDGE_MIN_CONFIDENCE)
+    _sm_append_log(log_file, {
+        "event": "condition_judge_done", "model": model, "abstained": held,
+        "answers": {name: {"value": a.get("value"), "probability": a.get("probability"),
+                           "coverage": a.get("coverage"), "method": a.get("method")}
+                    for name, a in answers.items()}})
+    if held:
+        _sm_progress(f"確度が足りない条件 {len(held)} 件があるため制御応答で判定し直します")
+        return {}
+    return {name: bool(a.get("value")) for name, a in answers.items()}
+
+
 def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: str,
                    outputs: dict, agent: dict, cwd: str, log_file: str,
                    extra: "dict | None" = None) -> str:
@@ -811,10 +884,12 @@ def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: 
     pending = [c for c in listed["conditions"] if c.get("needs_llm_eval") is True]
     evals: dict = {}
     if pending:
-        judge = _tl_control_agent(agent, cwd)
-        _sm_progress(f"遷移条件 {len(pending)} 件を {_sm_agent_name(judge)} に判定させています")
+        evals = _sm_judge_conditions(pending, output=output, agent=agent, log_file=log_file)
+    if pending and not evals:
+        controller = _tl_control_agent(agent, cwd)
+        _sm_progress(f"遷移条件 {len(pending)} 件を {_sm_agent_name(controller)} に判定させています")
         raw = _sm_run_control(
-            judge,
+            controller,
             "Evaluate only these state-machine conditions against the completed action "
             "output. Return one JSON object mapping each index to true or false.\n"
             f"Output:\n{output}\nConditions:\n{json.dumps(pending, ensure_ascii=False)}",
