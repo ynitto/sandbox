@@ -69,7 +69,8 @@ jobs:
             suites: tools/agent-loop/test
           # 評価ハーネス（worker_eval の手順制御・engine の解決）。LLM もエージェント
           # CLI も呼ばない部分だけを見る。**測定の道具が壊れていると、壊れたことが
-          # モデルの数字として台帳へ残る**ので、ここも CI で押さえる。
+          # モデルの数字として台帳へ残る**ので、ここも CI で押さえる。readout_eval の
+          # 区間分けと集計も同じ理由でここに入る（ollama を呼ぶ部分は CI では走らない）。
           - package: eval
             suites: tools/agent-tools/eval
     env:
