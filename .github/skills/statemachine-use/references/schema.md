@@ -64,7 +64,7 @@ states:
 | `check_on_exhausted` | 文字列 | いいえ | `escalate` | 再投入を使い切っても落ちるときの動作。`escalate` \| `continue` \| `error` |
 | `check_feedback` | 真偽値 | いいえ | true | 再投入時に検査の出力を課題文へ足すか |
 | `max_tool_rounds` | 整数 | いいえ | 0（＝宣言なし） | 外部ハーネスがこのステートのツールループに許すモデル呼び出し回数（[呼び出し回数の上限](#呼び出し回数の上限-max_tool_rounds)） |
-| `judge` | オブジェクト | いいえ | — | **判定だけのステート**。`action` の代わりに問いと選択肢を書き、判定 AI が 1 語を選ぶ（[判定だけのステート](#判定だけのステート-judge)）。`action` / `check` / `terminal` とは併用できない |
+| `judge` | オブジェクト | いいえ | — | **判定だけのステート**。問いと選択肢を書き、判定 AI が 1 語を選ぶ（[判定だけのステート](#判定だけのステート-judge)）。`action` を併記するとそれが判定 AI の無いときの生成用プロンプト（省略時は宣言から短い文を作る）。`check` / `terminal` とは併用できない |
 
 ### 呼び出し回数の上限 (max_tool_rounds)
 
@@ -228,7 +228,8 @@ transitions:
 
 出力は選ばれたキー（か `unsure` の語）の 1 語で、`output_key` と `condition_rule` は通常の
 ステートと同じに使える。`output_validator` を書かなければ `startswith:BUG,FEATURE,QUESTION,UNSURE`
-が自動で付く。
+が自動で付く。`action` / `action_file` を併記した場合、判定 AI があるときは使われず、無いときの
+生成用プロンプトになる（省略時は宣言から短い文を自動で作る。理由や本文を書かせないそちらの方が安い）。
 
 | 実行の形 | ステートの中で起きること |
 |---|---|

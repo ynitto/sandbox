@@ -314,10 +314,10 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
         except ValueError as exc:
             judge_error = f"ステート '{state_id}' の judge が不正です: {exc}"
         if judge_spec is not None:
-            if action or action_file:
-                judge_error = (f"ステート '{state_id}' は judge と action を両方持てません"
-                               "（判定だけのステートは action を書かない）")
-            else:
+            # action を併記してあれば、それが判定 AI の無いときの生成用プロンプト（作者の文）。
+            # 無ければ宣言から短い文を作る（選択肢を列挙し、キーを 1 語だけ答えさせる）。
+            # agent-app のように常に action_file を書く道具が定義を書き戻しても壊れない。
+            if not action.strip():
                 action = _jb.judge_state_fallback_action(judge_spec)
             if not output_validator:
                 output_validator = _jb.judge_state_validator(judge_spec)

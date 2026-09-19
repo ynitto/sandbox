@@ -521,13 +521,21 @@ class JudgeStateEngineTests(unittest.TestCase):
         self.assertEqual(result.final_state, "question")
         self.assertEqual(len(prompts), 1)
 
-    def test_judge_and_action_together_is_a_validation_error(self):
+    def test_an_explicit_action_becomes_the_fallback_prompt(self):
+        """action を併記すると、判定 AI が無いときの生成用プロンプトになる（判定 AI は先に使う）。"""
         self.workflow.write_text(JUDGE_STATE.replace('    output_key: classification',
-                                                     '    output_key: classification\n    action: "分類せよ"'),
+                                                     '    output_key: classification\n    action: "種類を 1 語で: {{input}}"'),
                                  encoding="utf-8")
         from scripts.engine import validate_workflow
-        errors = validate_workflow(load_workflow(self.workflow))
-        self.assertTrue(any("judge と action" in e for e in errors), errors)
+        wf = load_workflow(self.workflow)
+        self.assertEqual(validate_workflow(wf), [])
+        self.assertEqual(wf.states["classify"].action, "種類を 1 語で: {{input}}")
+        self.assertEqual(wf.states["classify"].output_validator, "startswith:BUG,FEATURE,QUESTION,UNSURE")
+        result, prompts = self._run(FakeJudge(_state_answer("BUG")), [])
+        self.assertEqual(result.final_state, "bug")
+        self.assertEqual(prompts, [])
+        result, prompts = self._run(None, ["BUG"])
+        self.assertEqual(prompts, ["種類を 1 語で: ログインで 500 が出る"])
 
     def test_state_judge_flag_exposes_the_spec(self):
         proc = subprocess.run([sys.executable, str(NEXT_STATE), str(self.workflow),
