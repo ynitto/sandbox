@@ -38,10 +38,13 @@ fixed labels）。選択肢に A / B / C … の 1 文字ラベルを振り、�
 
 ## ollama が logprobs を返さないとき
 
-古い ollama は `logprobs` を知らない。そのときは黙って「確率 1.0」を作らない——
-`samples` が 2 以上なら structured outputs（`format` の enum）で複数回引いて票数を確率に
-する（`method: "vote"`）。1 回だけなら本文のラベルを読み、`method: "text"` と
-`coverage: 0` を返す。呼び出し側は `method` を見て、確率をどこまで信じるかを決める。
+古い ollama は `logprobs` を知らない。応答に入っていても、こちらが読める形でないこと
+がある（OpenAI 互換の `{"content": [...]}` など）。どちらも「読めなかった」として同じ
+扱いにする——黙って「確率 1.0」を作らない。`samples` が 2 以上なら structured outputs
+（`format` の enum）で複数回引いて票数を確率にする（`method: "vote"`）。1 回だけなら本文
+のラベルを読み、`method: "text"` と `coverage: 0`、そして **`confidence: 0`** を返す
+（読めたラベルは `choice` / `value` / `bucket` に残すが、確度は名乗らない）。`text` の答えは
+`abstained()` がしきい値に関わらず棄権に入れる。
 
 設計: docs/plans/2026-09-19-agent-herd-system-one-judge-design.md。
 仕様: docs/specs/agent-herd-spec.md §5.5。
@@ -69,7 +72,7 @@ OTHER_KEY = "other"
 # `method` の語彙（呼び出し側が確率の信頼度を決めるための印）。
 METHOD_LOGPROBS = "logprobs"   # 1 トークン目の分布を読んだ（本来の形）
 METHOD_VOTE = "vote"           # 複数回引いた票数（logprobs 非対応の ollama）
-METHOD_TEXT = "text"           # 本文のラベルを読んだだけ（確率は 1.0 / 0.0 の目安）
+METHOD_TEXT = "text"           # 本文のラベルを読んだだけ（確度は無い＝confidence 0.0）
 
 
 class JudgeError(RuntimeError):
@@ -260,8 +263,11 @@ def shape_answer(question: dict, probs: "list[float]", *, method: str, coverage:
     keys = [key for key, _ in question["options"]]
     by_key = {key: round(p, 4) for key, p in zip(keys, probs)}
     top = max(range(len(probs)), key=lambda i: probs[i]) if probs else 0
+    # 案 B（2026-09-20）: `text` は本文から読み取れた事実（choice / value / bucket）は残し、
+    # 確度だけを 0.0 にする——質量を均す案 A だと probabilities まで潰れて事実が消える。
+    confidence = 0.0 if method == METHOD_TEXT else (round(probs[top], 4) if probs else 0.0)
     answer: dict = {"type": question["type"], "probabilities": by_key,
-                    "confidence": round(probs[top], 4) if probs else 0.0,
+                    "confidence": confidence,
                     "coverage": round(coverage, 4), "method": method}
     if question["has_other"]:
         answer["other"] = by_key.get(OTHER_KEY, 0.0)
@@ -395,13 +401,15 @@ def evaluate(state, questions: dict, *, model: str = DEFAULT_MODEL, think=False,
         count = len(question["options"])
         data = send(_payload(model, prompt, think=think, options=options, readout_mode=True))
         _usage_add(usage, data)
-        read = readout(data.get("logprobs"), count) if "logprobs" in data else None
+        read = readout(data.get("logprobs"), count)
         if read is not None:
             masses, coverage = read
             answers[name] = shape_answer(question, _normalize(masses),
                                          method=METHOD_LOGPROBS, coverage=coverage)
             continue
-        if "logprobs" not in data and samples > 1:
+        # ここから先は「分布を読めなかった」——`logprobs` が無い場合と、あっても形が違って
+        # 読めない場合の両方。どちらも票で確率を作り直せるので `--samples` を効かせる。
+        if samples > 1:
             answers[name] = _vote(question, prompt, model=model, think=think, options=options,
                                   samples=samples, request=send, usage=usage)
             continue
@@ -471,7 +479,14 @@ def local_model(cli: str, model: "str | None" = None, *, project_dir=None) -> "s
     return model_for_spec(spec, model)
 
 
-def abstained(answers: dict, min_confidence: float) -> "list[str]":
-    """確度がしきい値に届かない問いの名前（呼び出し側が「決めない」へ倒すため）。"""
+def abstained(answers: dict, min_confidence: float, *, allow_text: bool = False) -> "list[str]":
+    """確度がしきい値に届かない問いの名前（呼び出し側が「決めない」へ倒すため）。
+
+    `method` が `text` の答えは、しきい値に関わらず棄権に入れる。本文からラベルを 1 つ
+    読んだだけで確度の材料が無く、`min_confidence` が 0.0（「実測してから決める」の置き値）
+    の呼び出しでは `confidence` の比較だけでは素通りするため。本文のラベルで足りる
+    呼び出しは `allow_text=True` を渡す。
+    """
     return [name for name, answer in answers.items()
-            if float(answer.get("confidence") or 0.0) < min_confidence]
+            if (not allow_text and answer.get("method") == METHOD_TEXT)
+            or float(answer.get("confidence") or 0.0) < min_confidence]
