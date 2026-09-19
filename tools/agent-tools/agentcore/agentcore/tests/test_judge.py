@@ -194,6 +194,39 @@ class EvaluateTests(unittest.TestCase):
             judge.evaluate("x", {"route": {"type": "choice"}},
                            request=lambda p: self.fail("request must not happen"))
 
+    # OpenAI 互換の応答は `logprobs` が dict（`{"content": [...]}`）で、位置ごとのリストを
+    # 読む実装には読めない。**キーはあるが読めない**——縮退表（設計 §4）の 4 行目。
+    UNREADABLE = {"message": {"content": " B.\n"},
+                  "logprobs": {"content": [{"token": "B", "logprob": 0.0}]}}
+
+    def test_unreadable_logprobs_do_not_become_confidence_one(self):
+        """読めない形でも確度を捏造しない。読めた事実（choice / probabilities）は残す。"""
+        result = judge.evaluate("x", {"route": ROUTE}, request=lambda p: dict(self.UNREADABLE))
+        answer = result["answers"]["route"]
+        self.assertEqual((answer["choice"], answer["method"]), ("support", "text"))
+        self.assertEqual(answer["confidence"], 0.0)
+        self.assertEqual(answer["probabilities"]["support"], 1.0)
+
+    def test_a_text_answer_abstains_even_at_a_zero_threshold(self):
+        """しきい値 0.0（実測前の置き値）の呼び出しでも、確度の無い答えは素通りしない。"""
+        result = judge.evaluate("x", {"route": ROUTE}, request=lambda p: dict(self.UNREADABLE))
+        self.assertEqual(judge.abstained(result["answers"], 0.0), ["route"])
+        self.assertEqual(judge.abstained(result["answers"], 0.0, allow_text=True), [])
+
+    def test_unreadable_logprobs_still_reach_the_vote(self):
+        """`--samples` は「logprobs が無い」ではなく「分布を読めなかった」で効く。"""
+        seen = []
+
+        def request(payload):
+            seen.append(payload)
+            if payload.get("logprobs"):
+                return dict(self.UNREADABLE)
+            return {"message": {"content": json.dumps({"answer": "A"})}}
+
+        result = judge.evaluate("x", {"route": ROUTE}, samples=2, request=request)
+        self.assertEqual(result["answers"]["route"]["method"], "vote")
+        self.assertGreaterEqual(len(seen), 2, "読み出し 1 回 + 票 2 回")
+
     def test_abstain_uses_confidence(self):
         answers = {"a": {"confidence": 0.9}, "b": {"confidence": 0.55}}
         self.assertEqual(judge.abstained(answers, 0.7), ["b"])
