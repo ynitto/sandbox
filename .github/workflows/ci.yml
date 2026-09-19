@@ -13,7 +13,10 @@ name: CI
 #      を統合済み）。生成した定義を statemachine-use スキルの run_machine.py --dry-run に通す
 #      結合テストを含むので python も要る。実機の起動（electron）は CI では skip される。
 #   3. docs    … 利用者向け文書の内部名検査（R10）、スキルの references/ 健全性検査
-#                （切れリンク・孤児・未許可の2ホップ参照）、それぞれの検査自身の単体テスト。
+#                （切れリンク・孤児・未許可の2ホップ参照）、スキル自身の品質検査
+#                （skill-evaluator 同梱の quality_check.py。frontmatter の未知キーなど
+#                エラーだけで落ち、description の字数超過は警告なので落ちない）、
+#                それぞれの検査自身の単体テスト。
 #   4. vscode-copilot … このスイートだけ pytest 形式（tmp_path などを使う）なので
 #                独立したジョブにする。**上の python matrix へ足してはいけない**——
 #                あちらは `unittest discover` で、pytest 形式のテストは 1 件も収集
@@ -171,7 +174,7 @@ jobs:
         run: node --test tools/vscode-copilot/extension/test/extension.test.js
 
   docs:
-    name: docs (R10 / スキル参照検査)
+    name: docs (R10 / スキル参照・品質検査)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -183,5 +186,11 @@ jobs:
         run: python tools/ci/check_user_docs.py
       - name: スキルの references/ に切れリンク・孤児・未許可の2ホップ参照が無いこと
         run: python tools/ci/check_skill_references.py
+      # skill-evaluator スキル同梱の検査器を、リポジトリ内のパスを直接叩いて回す
+      # （install.py が ~/.agents/ へ配る写しには依存しない）。落ちるのはエラー
+      # だけで、description の字数超過などの警告では落ちない設計——警告も落とす
+      # 厳しさにするのは、いま残っている警告を 0 にしてから。
+      - name: スキルの frontmatter に未知のキーが無いこと
+        run: python .github/skills/skill-evaluator/scripts/quality_check.py --path .github/skills
       - name: 検査自身の単体テスト
         run: python -m unittest discover -s tools/ci/tests
