@@ -1,6 +1,6 @@
 ---
 name: outlook-use
-description: Python + Microsoft Graph API を使って Outlook のメール・カレンダーを操作する。「メールを送って」「受信トレイを確認して」「メールを検索して」「予定を確認して」「カレンダーに予定を追加して」「予定を削除して」「Outlookを確認して」「未読メールを見せて」「〇〇に返信して」「会議を作成して」などのリクエストで発動する。Windows / macOS / Linux 環境の Python から Graph API を呼び出す。認証は MSAL デバイスコードフロー（初回のみブラウザ）。
+description: Python と Microsoft Graph API を使って、Outlook のメールとカレンダーを操作します。メールの送信・検索・返信や受信トレイの確認、予定の確認・追加・削除を頼まれた場合に使用してください。
 metadata:
   version: 1.0.0
   tier: experimental
@@ -18,6 +18,7 @@ metadata:
 
 Python から Microsoft Graph API 経由で Outlook のメールとカレンダーを操作する。
 認証は MSAL デバイスコードフロー（初回のみブラウザ認証、以降はトークンキャッシュを利用）。
+Windows / macOS / Linux のいずれの Python からでも動作する。
 
 セットアップ手順: [`references/setup-guide.md`](references/setup-guide.md)
 

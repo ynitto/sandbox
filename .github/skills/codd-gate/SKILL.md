@@ -1,6 +1,6 @@
 ---
 name: codd-gate
-description: ドキュメント・コード・テストの一貫性を機械的に維持する codd-gate（CoDD 流用の決定的ゲート。agent-project から完全独立で単体で CI/git hook から使え、連携時は state repo の共通チェックから呼ぶ）を運用するスキル。「ドキュメントとコードの整合を常にとって」「一貫性ゲートを入れて」「ドリフトを backlog に積んで」「接続マップを作って」「未文書化・未テストを棚卸しして」「done 前にドキュメント置き去りを止めて」などで発動する。単発のドリフト調査レポートが欲しいだけなら doc-drift-detector を使う。
+description: doc・code・test の一貫性を決定的に検査する codd-gate を運用します。ドキュメントとコードの整合を常に取りたい場合、一貫性ゲートを CI や git hook に入れる場合、ドリフトを backlog へ積む場合に使用してください。単発のドリフト調査レポートなら doc-drift-detector を使います。
 metadata:
   version: "1.1.0"
   tier: experimental

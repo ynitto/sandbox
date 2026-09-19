@@ -1,6 +1,6 @@
 ---
 name: agent-flow
-description: agent-flow CLI を呼び出して分散 Dynamic Workflow を実行・監視し、完了後は最終結果を提示するスキル。kiro-cli を頭脳に、要求を6パターンから戦略化してタスクグラフへ分解し、git/ローカルのファイルバス上で複数ワーカーに分散実行する。「ワークフローを実行して」「agent-flow で動かして」「タスクを分散実行して」「要求を投入して」「デーモンを起動して」「run の状態を見て」「結果を見せて」「最終結果は？」「成果物を出して」「古い run を掃除して」などで発動する。Claude Dynamic Workflows 風の動的分解・再計画・データ駆動 fan-out を使いたい場合に選択する。
+description: agent-flow CLI を呼び出して分散 Dynamic Workflow を実行・監視し、完了後は最終結果を提示します。ワークフローの実行、要求の投入、タスクの分散実行、デーモンの起動、run の状態や結果の確認を頼まれた場合に使用してください。
 metadata:
   version: 1.0.0
   tier: experimental
@@ -17,7 +17,7 @@ metadata:
 # agent-flow — 分散 Dynamic Workflow CLI スキル
 
 `agent-flow` CLI（`tools/agent-flow/agent-flow.py`）を呼び出して、要求を動的にタスク分解 →
-複数ワーカーで分散実行 → 結果を評価して再計画 → 統合する。LLM 実行は kiro-cli が既定
+複数ワーカーで分散実行 → 結果を評価して再計画 → 統合する。分散は git / ローカルのファイルバス上で行う。LLM 実行は kiro-cli が既定
 （設定 `agent_cli` で claude / copilot / codex ヘッドレスへ切替可）。
 kiro-cli が無い環境では `--planner stub --executor stub` で挙動を確認できる。
 
