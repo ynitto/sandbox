@@ -306,6 +306,54 @@ function insights(userData, { limit = 20 } = {}) {
     .slice(0, limit);
 }
 
+// 洞察の根拠（観測 id）→ 元の出来事。observations/*.jsonl の record_id を records/*.jsonl で引き、
+// 台帳の行（tool: agent-app）なら会話 ID（ref）や成果物へ辿れる形にする。数字は作らない。
+// 受信箱の一覧（15 秒ごと）からは呼ばない——カードを描くときに 1 回だけ（insight:evidence）。
+function readJsonl(file) {
+  const out = [];
+  let text = '';
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return out; }
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try { out.push(JSON.parse(t)); } catch { /* 追記中の尻切れ */ }
+  }
+  return out;
+}
+function evidenceOf(userData, observationIds = [], { limit = 20 } = {}) {
+  const wanted = new Set((Array.isArray(observationIds) ? observationIds : []).map((v) => String(v || '')).filter(Boolean));
+  if (!wanted.size) return [];
+  const store = storeDir(userData);
+  const list = (dir) => { try { return fs.readdirSync(dir).filter((n) => n.endsWith('.jsonl')).sort().reverse(); } catch { return []; } };
+  const recordIds = new Map();      // record id → observation id（先勝ち）
+  for (const name of list(path.join(store, 'observations'))) {
+    for (const obs of readJsonl(path.join(store, 'observations', name))) {
+      if (!obs || !wanted.has(String(obs.id || ''))) continue;
+      for (const rid of [obs.record_id, ...(Array.isArray(obs.evidence) ? obs.evidence : [])]) {
+        if (rid && !recordIds.has(String(rid))) recordIds.set(String(rid), String(obs.id));
+      }
+    }
+  }
+  const found = [];
+  const seen = new Set();
+  for (const name of list(path.join(store, 'records'))) {
+    if (found.length >= limit || seen.size >= recordIds.size) break;
+    for (const rec of readJsonl(path.join(store, 'records', name))) {
+      const id = String((rec && rec.id) || '');
+      if (!recordIds.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      found.push({
+        observationId: recordIds.get(id), recordId: id, ts: String(rec.ts || ''), tool: String(rec.tool || ''),
+        workload: String(rec.workload || ''), purpose: String(rec.purpose || ''), ref: String(rec.ref || ''),
+        sessionId: String(rec.session_id || ''), agentCli: String(rec.agent_cli || ''),
+        artifact: rec.artifact && typeof rec.artifact === 'object' ? { kind: String(rec.artifact.kind || ''), name: String(rec.artifact.name || ''), origin: String(rec.artifact.origin || '') } : null,
+      });
+      if (found.length >= limit) break;
+    }
+  }
+  return found.sort((a, b) => b.ts.localeCompare(a.ts));
+}
+
 function reports(userData, { limit = 10 } = {}) {
   const dir = path.join(storeDir(userData), 'reports');
   try {
@@ -496,5 +544,5 @@ class Auditor {
 module.exports = {
   FEED_DIR, STORE_DIR, CONFIG_NAME, ARTIFACT_KINDS, STATUSES, STEPS,
   feedDir, storeDir, configFile, row, feed, feedTurn, feedRun, feedShare, feedEvaluation, usedOf, onFeed,
-  generateConfig, stepScript, artifacts, insights, reports, Auditor,
+  generateConfig, stepScript, artifacts, insights, evidenceOf, reports, Auditor,
 };

@@ -251,3 +251,49 @@ test('まとめて評価: クラウドの AI を選ぶと伏せ字化してか�
   assert.equal(rows[0].evaluation.judge_model, 'claude:sonnet');
   assert.equal(rows[0].evaluation.method, 'text');
 });
+
+test('まとめて評価の記録: 終わったら batches.json に残り、受信箱の材料になる（進行中は出ない）', async () => {
+  const record = { appId: '1', agent: 'claude', messages: [{ role: 'user', text: 'q' }, { role: 'assistant', text: 'a' }] };
+  const { ev, userData } = makeEvaluator({ readRecord: async () => record });
+  await ev.startBatch({ keys: ['app:1', 'app:2'] });
+  await ev.drain();
+  const batches = evaluation.readBatches(userData);
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].done, 2);
+  assert.equal(batches[0].running, false);
+  assert.ok(batches[0].finishedAt);
+  const attention = require('../src/main/attention');
+  const sources = attention.batchSources([...batches, { id: 'live', running: true, finishedAt: '' }]);
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].kind, 'evaluation');
+  assert.equal(sources[0].title, 'まとめて評価 2 件（課題あり 2 件）');
+  assert.deepEqual(sources[0].target, { kind: 'evaluation', id: batches[0].id });
+  assert.equal(attention.classify(sources[0], {}), 'unread');
+  // 20 件までしか残さない
+  for (let i = 0; i < 25; i += 1) evaluation.appendBatch(userData, { id: `b${i}`, done: 1, issues: 0, skipped: 0, finishedAt: '2026-09-19T00:00:00Z' });
+  assert.equal(evaluation.readBatches(userData).length, 20);
+});
+
+test('根拠: 観測 id → record を引き、台帳の行の ref（会話 ID）と成果物へ辿れる', () => {
+  const userData = tmp();
+  const store = audit.storeDir(userData);
+  fs.mkdirSync(path.join(store, 'observations'), { recursive: true });
+  fs.mkdirSync(path.join(store, 'records'), { recursive: true });
+  fs.writeFileSync(path.join(store, 'observations', '20260918.jsonl'), [
+    JSON.stringify({ id: 'obs-1', record_id: 'rec-1', evidence: ['rec-1'] }),
+    JSON.stringify({ id: 'obs-2', record_id: 'rec-2', evidence: ['rec-2', 'rec-3'] }),
+    'broken line',
+  ].join('\n'));
+  fs.writeFileSync(path.join(store, 'records', '20260917.jsonl'), `${JSON.stringify({ id: 'rec-3', ts: '2026-09-17T00:00:00Z', tool: 'agent-app', workload: 'task', ref: 'monthly', artifact: { kind: 'task', name: 'monthly', origin: 'repo:demo' } })}\n`);
+  fs.writeFileSync(path.join(store, 'records', '20260918.jsonl'), [
+    JSON.stringify({ id: 'rec-1', ts: '2026-09-18T00:00:00Z', tool: 'agent-app', workload: 'evaluation', purpose: 'chat', ref: 'sess-1', session_id: 'n1' }),
+    JSON.stringify({ id: 'rec-2', ts: '2026-09-18T01:00:00Z', tool: 'agent-flow', workload: 'flow', ref: 'run-9' }),
+    JSON.stringify({ id: 'rec-x', ts: '2026-09-18T02:00:00Z', tool: 'agent-app', workload: 'chat', ref: 'other' }),
+  ].join('\n'));
+  const found = audit.evidenceOf(userData, ['obs-1', 'obs-2', 'obs-missing']);
+  assert.deepEqual(found.map((f) => [f.recordId, f.observationId, f.ref]), [['rec-2', 'obs-2', 'run-9'], ['rec-1', 'obs-1', 'sess-1'], ['rec-3', 'obs-2', 'monthly']]);
+  assert.equal(found[1].purpose, 'chat');
+  assert.deepEqual(found[2].artifact, { kind: 'task', name: 'monthly', origin: 'repo:demo' });
+  assert.deepEqual(audit.evidenceOf(userData, []), []);
+  assert.deepEqual(audit.evidenceOf(tmp(), ['obs-1']), []);
+});

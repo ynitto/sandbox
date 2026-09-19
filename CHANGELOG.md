@@ -23,8 +23,11 @@ OSS の Opik が持つ「評価して、まとめて、改善につなげる」�
   クラウドの AI を選ぶと `agent-audit scrub` で伏せ字化してから渡す。1 回 200 件まで。
 - **課題を受信箱に。** agent-audit の洞察を受信箱の「課題」として、対象（スキル / タスク /
   ワークフロー / ツール / 全体）ごとにカードで並べる。置くのは対象・課題・根拠と「会話で扱う」だけで、
-  改善案の文は置かない。押すと新しい会話に課題が最初の依頼として渡り、改善策はそこで決める。
-  渡した課題は `exported` になって受信箱から消える。
+  改善案の文は置かない。根拠は元の会話・タスクへのリンク（観測 → record → 会話 ID で引く）。
+  「会話で扱う」はフォークと同じダイアログ（リポジトリ・AI・モデル・権限）を開き、新しい会話に課題が
+  最初の依頼として渡る。改善策はそこで決める。渡した課題は `exported` になって受信箱から消える
+  （ダイアログを閉じただけなら残る）。まとめて評価が終わると、受信箱に「まとめて評価 n 件（課題あり m 件）」
+  が未読で届く。
 - **申告の行に「何を使ったか」。** 会話のターンの行に `used`（採用したスキル・実行したコマンド・
   そこから引いたツール名）を載せ、評価は `workload: evaluation` の別の 1 行にした。
 - **利用状況に「評価」の 1 行**（件数・品質の平均・課題ありの件数と対象の種類）。数字は
@@ -32,7 +35,8 @@ OSS の Opik が持つ「評価して、まとめて、改善につなげる」�
 - agent-audit 側: `used` / `evaluation` を record に写し、`issue` が `none` 以外の行を対象つきの観測に
   する（`rules.target_of`。`tool-failure` を観測の種類に追加）。`usage --json` に評価の列、
   `scrub` と `tasks --id` の口を足した。
-- テスト: `test/evaluation.test.js`（15 件）、`attention.test.js` / `ui-consistency.test.js` に追加、
+- テスト: `test/evaluation.test.js`（17 件）、`test/evaluation-electron.test.js`（実機 1 件）、
+  `attention.test.js` / `ui-consistency.test.js` に追加、
   agent-audit `tests/test_evaluation.py`（9 件）。agent-project `tests/test_state_git.py` の
   一時リポジトリで git の auto gc を止めた（後始末との競合で CI が断続的に落ちていた）。
 

@@ -15,7 +15,30 @@
 // 問いは固定文で、人が編集する設定にはしない（§18.2 の連鎖と同じ作法）。`issue` の選択肢は
 // agent-audit の観測の種類（OBSERVATION_KINDS）と同じ語彙。
 
+const fs = require('fs');
+const path = require('path');
 const audit = require('./audit');
+
+// まとめて評価の記録（userData/evaluation/batches.json。最新 20 件）。受信箱が「終わった」を未読として
+// 出すための正典で、進み具合そのものは Evaluator が持つ。
+const BATCH_DIR = 'evaluation';
+const BATCH_FILE = 'batches.json';
+const BATCH_KEEP = 20;
+function batchFile(userData) { return path.join(userData, BATCH_DIR, BATCH_FILE); }
+function readBatches(userData) {
+  try {
+    const value = JSON.parse(fs.readFileSync(batchFile(userData), 'utf8'));
+    return Array.isArray(value) ? value.filter((b) => b && typeof b === 'object' && b.id) : [];
+  } catch { return []; }
+}
+function appendBatch(userData, batch) {
+  const file = batchFile(userData);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const next = [batch, ...readBatches(userData).filter((b) => b.id !== batch.id)].slice(0, BATCH_KEEP);
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(next));
+  fs.renameSync(`${file}.tmp`, file);
+  return next;
+}
 
 const QUESTIONS = {
   quality: {
@@ -304,9 +327,7 @@ class Evaluator {
       }
     } finally {
       this.running = false;
-      if (this.batch && this.batch.running && !this.queue.some((q) => q.kind === 'batch')) {
-        this.batch.running = false;
-      }
+      if (this.batch && this.batch.running && !this.queue.some((q) => q.kind === 'batch')) this.finishBatch();
       this.notifyChanged();
       if (this.queue.length) this.schedule(RETRY_MS);
     }
@@ -348,6 +369,14 @@ class Evaluator {
     }
   }
 
+  // まとめて評価が終わった。記録に残す（受信箱が未読として出す）。書けなくても評価は無かったことにしない。
+  finishBatch() {
+    if (!this.batch || !this.batch.running) return;
+    this.batch.running = false;
+    this.batch.finishedAt = new Date(this.now()).toISOString();
+    try { appendBatch(this.userData, { ...this.batch }); } catch { /* 記録は副産物 */ }
+  }
+
   // クラウドの AI に渡す前の伏せ字化は agent-audit の規則で行う（規則を JS へ写さない）。
   async scrub(text) {
     const res = await this.capture('agent-audit', ['scrub'], { input: text, timeoutMs: 20000 });
@@ -365,7 +394,7 @@ class Evaluator {
     const useCli = String(cli || '').trim();
     if (useCli && useCli !== 'herd' && !this.runPrompt) throw new Error('この AI でまとめて評価する口がありません');
     if (!useCli || useCli === 'herd') { if (!(await this.probe({ force: true }))) throw new Error('agent-herd がホストにありません（任意。agent-tools の install.sh で入ります）'); }
-    this.batch = { total: list.length, done: 0, issues: 0, skipped: 0, cli: useCli || 'herd', model: String(model || ''), running: true, startedAt: new Date(this.now()).toISOString() };
+    this.batch = { id: `batch-${this.now()}`, total: list.length, done: 0, issues: 0, skipped: 0, cli: useCli || 'herd', model: String(model || ''), running: true, startedAt: new Date(this.now()).toISOString(), finishedAt: '' };
     for (const key of list) {
       let record;
       try { record = await this.readRecord(key); } catch { this.batch.skipped += 1; continue; }
@@ -381,7 +410,7 @@ class Evaluator {
         state: stateText({ prompt: exchange.prompt, answer: exchange.answer, information: exchange.message.parts && exchange.message.parts.information, used, status: '完了' }),
       });
     }
-    if (!this.queue.some((q) => q.kind === 'batch')) this.batch.running = false;
+    if (!this.queue.some((q) => q.kind === 'batch')) this.finishBatch();
     this.notifyChanged();
     return this.status();
   }
@@ -390,4 +419,5 @@ class Evaluator {
 module.exports = {
   QUESTIONS, ISSUES, MODES, MIN_CONFIDENCE, SAMPLE_EVERY, BATCH_LIMIT, STATE_CHARS,
   shouldEvaluate, stateText, lastExchange, parseJudge, parseHeadless, headlessPrompt, handoffPrompt, Evaluator,
+  readBatches, appendBatch, batchFile,
 };

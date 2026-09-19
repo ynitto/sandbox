@@ -351,7 +351,7 @@ function renderWorkflowItems() {
 // ---- 受信箱 ----
 // main の投影（attention:list）を出すだけ。未読・要対応の判定はここでしない。
 // 項目を押すと既存の画面（会話・タスク・ワークフロー）へ行く。答え方も画面もここでは作らない。
-const ATTENTION_KIND = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー', issue: '課題' };
+const ATTENTION_KIND = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー', issue: '課題', evaluation: 'まとめて評価' };
 const ISSUE_TARGET = { skill: 'スキル', task: 'タスク', workflow: 'ワークフロー', tool: 'ツール' };
 function issueTargetLabel(issue) {
   const t = issue && issue.target;
@@ -400,8 +400,8 @@ function renderInboxItems() {
     const body = el('span', 'grow');
     const issue = item.kind === 'issue';
     body.append(el('div', '', issue ? `課題: ${issueTargetLabel(item.issue)}` : item.title));
-    body.append(el('div', 'sub', issue
-      ? `${ATTENTION_KIND.issue} · ${attentionStatus(item)}`
+    body.append(el('div', 'sub', issue || item.kind === 'evaluation'
+      ? `${ATTENTION_KIND[item.kind]} · ${attentionStatus(item)}`
       : `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)} · ${repoName(item.repo)}`));
     pick.append(body);
     pick.title = item.queue === 'action' ? `「${item.title}」を開いて回答する` : `「${item.title}」を開く`;
@@ -439,28 +439,40 @@ function renderIssueCards(issues) {
     go.type = 'button';
     go.onclick = () => handoffIssue(item, go).catch((err) => notice(err.message, 'error'));
     row.append(go);
-    card.append(row);
+    // 根拠: 元の会話・タスクへのリンク（応答の下の操作と同じ .message-action）。読み込みは 1 回だけ
+    const evidence = el('div', 'message-actions issue-evidence');
+    evidence.append(el('span', 'sub', '根拠を読み込んでいます…'));
+    card.append(evidence, row);
     box.append(card);
+    renderIssueEvidence(evidence, issue).catch(() => { evidence.replaceChildren(el('span', 'sub', '根拠を読み込めませんでした')); });
   }
 }
 
-// 課題を新しい会話へ渡す。いまのリポジトリで、会話の既定の起動方針で始める（AI はその会話で変えられる）。
-// 渡した課題は agent-audit 側で exported になり、受信箱から消える。
+const EVIDENCE_KIND = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー' };
+async function renderIssueEvidence(box, issue) {
+  const items = await api.insight.evidence(issue.evidence || []);
+  box.replaceChildren();
+  if (!items.length) { box.append(el('span', 'sub', '根拠の会話は見つかりません')); return; }
+  box.append(el('span', 'sub', '根拠:'));
+  for (const item of items.slice(0, 6)) {
+    if (item.kind === 'external' || !item.repo) { box.append(el('span', 'sub', item.title)); continue; }
+    const link = el('button', 'message-action', `${EVIDENCE_KIND[item.kind] || ''} ${item.title}`);
+    link.type = 'button';
+    link.title = item.ts ? Fmt.checkedAt(item.ts) : '';
+    link.onclick = () => openAttentionItem({ kind: item.kind, queue: 'none', target: { kind: item.kind, repo: item.repo, id: item.id } }).catch((err) => notice(err.message, 'error'));
+    box.append(link);
+  }
+  if (items.length > 6) box.append(el('span', 'sub', `ほか ${items.length - 6} 件`));
+}
+
+// 課題を新しい会話へ渡す。フォークと同じダイアログ（リポジトリ・AI・モデル・権限）で始める。
+// 渡し終えたら agent-audit 側で exported になり、受信箱から消える（ダイアログを閉じただけなら残る）。
 async function handoffIssue(item, button) {
-  if (!state.repo) throw new Error('リポジトリを登録してから課題を会話へ渡してください');
+  if (!state.config.repos.length) throw new Error('リポジトリを登録してから課題を会話へ渡してください');
   if (button) button.disabled = true;
   try {
-    const handed = await api.insight.handoff(item.issue.id);
-    const policy = (state.config.execution && state.config.execution.defaultPolicy) || 'recommended';
-    const session = await api.createSession({ repo: state.repo, policy, readonly: false, autoApprove: false, transport: state.config.transport, worktree: '' });
-    await openSessionInRepo(session.repo, session.id, { waitForTerminal: true });
-    await api.send(session.id, handed.prompt, { policy, readonly: false, autoApprove: false, skillMode: 'auto', skills: [], attachments: [] });
-    state.running.add(session.id);
-    state.current = await api.readSession(session.id);
-    state.sessions = await api.listSessions(session.repo);
-    renderSessions(); renderMessages(); renderHeader();
-    if (handed.warning) notice(handed.warning, 'error');
-    refreshAttention().catch(() => {});
+    const handed = await api.insight.handoff(item.issue.id, { mark: false });
+    await SessionSearch.handoffIssue({ id: item.issue.id, title: handed.title, prompt: handed.prompt, agent: '' });
   } finally { if (button) button.disabled = false; }
 }
 
@@ -501,6 +513,7 @@ async function openAttentionItem(item) {
   await markAttentionSeen(item);
   renderInbox();
   const t = item.target || {};
+  if (t.kind === 'evaluation') { SessionSearch.open(); return; }   // まとめて評価の結果は検索の足元に出ている
   if (t.kind === 'issue') {
     // 課題は受信箱の本文にカードで出ている。その場で見せるだけ（開く画面は無い）。
     const card = [...$('inbox-issues').querySelectorAll('[data-issue-id]')].find((c) => c.dataset.issueId === t.id);
@@ -2423,6 +2436,8 @@ async function saveSettings() {
 async function init() {
   SessionSearch.init({
     getConfig: () => state.config,
+    notice,
+    attentionChanged: () => { refreshAttention().catch(() => {}); },
     setConfig: cfg => { state.config = cfg; renderRepos(); },
     hideSidebar: () => setSidebar(false),
     openSession: openSessionInRepo,

@@ -195,7 +195,8 @@ contextBridge.exposeInMainWorld('api', {
     onChanged: on('evaluation:changed'),
   },
   insight: {
-    handoff: (id) => invoke('insight:handoff', { id }),
+    handoff: (id, options) => invoke('insight:handoff', { id, ...(options || {}) }),
+    evidence: (observationIds) => invoke('insight:evidence', { observationIds }),
   },
   onTurnStarted: on('turn:started'),
   onTurnProgress: on('turn:progress'),

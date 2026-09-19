@@ -153,6 +153,24 @@ function insightSources(insights) {
   return out;
 }
 
+// まとめて評価の記録（evaluation.readBatches）→ 材料。終わったものだけ。行き先は「会話を検索」。
+function batchSources(batches) {
+  const out = [];
+  for (const b of Array.isArray(batches) ? batches : []) {
+    if (!b || typeof b !== 'object' || !b.id || b.running || !stamp(b.finishedAt)) continue;
+    const done = Number(b.done) || 0;
+    const issues = Number(b.issues) || 0;
+    const skipped = Number(b.skipped) || 0;
+    out.push({
+      key: `evaluation:${b.id}`, kind: 'evaluation', repo: '',
+      title: `まとめて評価 ${done} 件（課題あり ${issues} 件${skipped ? `・評価できず ${skipped} 件` : ''}）`,
+      running: false, resultAt: text(b.finishedAt, 40), outcome: 'done', interaction: null,
+      target: { kind: 'evaluation', id: String(b.id) },
+    });
+  }
+  return out;
+}
+
 // 材料 1 つ → 列。
 //   seen  … key → { resultAt }（最後に見た結果の時刻）
 //   since … 受信箱を使い始めた時刻。それ以前の結果は、見た記録が無くても既読と扱う
@@ -217,6 +235,6 @@ function normalizeSeen(raw) {
 
 module.exports = {
   QUEUES, MAX_ITEMS, MAX_SEEN,
-  conversationResult, conversationSources, taskSources, workflowSources, insightSources, targetOfInsight,
+  conversationResult, conversationSources, taskSources, workflowSources, insightSources, targetOfInsight, batchSources,
   classify, project, markSeen, normalizeSeen,
 };

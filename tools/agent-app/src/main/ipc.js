@@ -873,14 +873,36 @@ function registerIpcHandlers(getWindow) {
   audit.onFeed((rec, raw, extra) => { if (rec.workload === 'task' && extra && extra.record) evaluator.noteRun(extra); });
   handle('evaluation:status', () => evaluator.status());
   handle('evaluation:batch', (p) => evaluator.startBatch({ keys: p.keys, cli: p.cli, model: p.model }));
-  // 課題（agent-audit の洞察）を会話へ渡す。依頼文を組み、洞察に exported を書かせる（書くのは agent-audit）。
+  // 課題（agent-audit の洞察）を会話へ渡す。依頼文を組む（mark: false）／渡し終えたら洞察に exported を
+  // 書かせる（mark: true。書くのは agent-audit）。ダイアログを閉じただけの課題は消さない。
   handle('insight:handoff', async (p) => {
     const id = String(p.id || '');
     const source = attention.insightSources(audit.insights(userData(), { limit: 200 })).find((item) => item.issue && item.issue.id === id);
     if (!source) throw new Error('その課題は見つかりません（渡した、または反証されたものは出しません）');
     const prompt = evaluation.handoffPrompt(source.issue);
+    if (!p.mark) return { id, title: source.title, prompt, exported: false, warning: '' };
     const res = await auditor.markExported(id);
     return { id, title: source.title, prompt, exported: !!res.ok, warning: res.ok ? '' : `受信箱から消せませんでした: ${res.error || ''}` };
+  });
+  // 課題の根拠（観測 → record）。会話（ref = 会話 ID）と成果物へ辿れる形にして返す。
+  handle('insight:evidence', (p) => {
+    const ud = userData();
+    const cfg = store.loadConfig(ud);
+    const ids = Array.isArray(p.observationIds) ? p.observationIds : [];
+    return audit.evidenceOf(ud, ids).map((item) => {
+      if (item.tool === 'agent-app' && (item.workload === 'chat' || item.purpose === 'chat') && item.ref) {
+        try {
+          const sess = store.readSession(ud, item.ref);
+          if (sess && cfg.repos.includes(sess.repo)) return { ...item, kind: 'conversation', title: sess.title || item.ref, repo: sess.repo, id: sess.id };
+        } catch { /* アプリ外の会話や消えた会話 */ }
+      }
+      if (item.artifact && item.artifact.name) {
+        const base = item.artifact.origin.replace(/^repo:/, '');
+        const repo = cfg.repos.find((r) => String(r).split(/[\\/]/).filter(Boolean).pop() === base) || '';
+        return { ...item, kind: item.artifact.kind === 'workflow' ? 'workflow' : 'task', title: item.artifact.name, repo, id: item.artifact.name };
+      }
+      return { ...item, kind: 'external', title: item.ref || item.recordId, repo: '', id: '' };
+    });
   });
   handle('audit:status', () => ({ ...auditor.status(), share: artifacts.list() }));
   handle('audit:run', () => auditor.run({ manual: true }));
@@ -1208,6 +1230,7 @@ function registerIpcHandlers(getWindow) {
     }
     // 課題（agent-audit の洞察）。反証されたもの・会話へ渡したものは insightSources が落とす。
     sources.push(...attention.insightSources(audit.insights(ud, { limit: 50 })));
+    sources.push(...attention.batchSources(evaluation.readBatches(ud)));
     const seen = store.attentionBaseline(ud);
     return attention.project(sources, { seen: seen.items, since: seen.since });
   });
