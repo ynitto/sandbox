@@ -143,7 +143,9 @@ Python からは `agentcore.judge.evaluate(state, questions, model=…)`。`requ
 | `agent-herd decide`（抽出 → 機械判定） | **置き換えない。** 多基準の採否は機械が決める形が正しい（08-29 実測）。`judge` は単一基準の問いを確率で答える別の道具。多基準を `judge` に 1 問で訊かない（基準ごとに問いを分ける） |
 | `harness run --judge`（受入条件の判定） | 現状維持。受入条件は自然文で、選択肢が先に決まっていない。設計書「任せない」表のとおり、自然文の受入は役割ごと撤去の方向 |
 | statemachine の遷移条件（`needs_llm_eval`） | **配線済み（2026-09-19）。** 条件は真偽で答えの集合が固定、同じ出力（状態）に複数の条件（問い）という形が本設計の得意な形そのもの。`_sm_judge_conditions` が条件 1 件を boolean 1 問にして `judge.evaluate` を呼び、答えを `--evals` へ載せる。使うのはローカル定義（`relative_cost` 0）のときだけで、judge の失敗・確度不足（`_SM_JUDGE_MIN_CONFIDENCE`、既定 0）は従来の制御応答へ倒し、証跡（`condition_judge_*`）に残す。しきい値の既定は §6 の実測後に決める |
-| agent-flow の `route` / `filter`（単一基準）/ `assess` | 同上。`variants` で `ollama-json` へ振っている用途のうち、答えの集合が先に決まるものが対象 |
+| agent-project の `route`（書込先の自動ルーティング） | **配線済み（2026-09-19）。** `request.route_judge` が候補リポジトリを `choice` の選択肢に、`other` を「どの候補にも属さない」にして 1 問で訊く。`other` は ""（書込先なし）に写す——RO3 の「決められないと言えるか」が明示の選択肢になる。judge が決めなければ従来の `_route_agent_prompt` |
+| agent-flow の `filter`（単一基準・`decision` 無し） | **配線済み（2026-09-19）。** `agent.filter_judge` が依存 1 件 = 候補 1 件で boolean を 1 問ずつ訊き、`kept` を作る。依存が 1 件（本文に候補が並ぶ形）は候補を列挙できないので生成経路。多基準（`decision` あり）は従来どおり抽出 → 機械判定 |
+| agent-project の `assess` | 次の候補。c / r / a の 3 段の採点は `score` 型そのもの |
 
 ## 6. 測ってから決めること
 

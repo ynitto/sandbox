@@ -409,12 +409,12 @@ split / extract / retrieve に 1 回）と寛容パーサだけで、内容に�
 |---|---|
 | 実装（成果物 1 つ・局所修正） | T1min・T2・T4 |
 | 定型のテキスト業務 | T7digest・T8log |
-| 選別・比較（単一基準） | F1・J2 |
+| 選別・比較（単一基準） | F1・J2。`decision` 無しの filter はローカル定義のとき `judge`（分布の読み出し）で決め、judge が決めなければ生成経路 |
 | 集約（reduce）・分割（split） | R1・R2・S1 |
 | 分析・抽出・短い要約 | AN・EX・SM1・EX1F |
 | 候補生成（選ぶ: パス・テスト名） | CG2・CG3 |
 | 環境診断（dashboard doctor 4 モード） | DR1〜DR4 |
-| ルーティング（`route`。決定論で決まらないときだけ呼ぶ） | RO1〜RO3 |
+| ルーティング（`route`。決定論で決まらないときだけ呼ぶ） | RO1〜RO3。ローカル定義のとき `judge` の `choice` + `other` で選び、judge が決めなければ生成経路 |
 | 評価役・検証役・分類 | E1〜E3・V1〜V3・CL1 |
 | 取得（`retrieve`。`ollama-read` profile・道具 read） | RT1・RT2 |
 | 統合（`synthesize`。落とさず足さず） | SY1 |

@@ -802,11 +802,7 @@ def _sm_judge_model(agent: "dict | None") -> "str | None":
     が 0 の aider / ollama）で回しているときだけで、クラウド CLI の実行ではこれまでどおり
     制御応答（生成経路）に訊く。モデルはハーネスの指定を持ち越し、無ければ定義の既定。
     """
-    spec = (agent or {}).get("spec")
-    if not isinstance(spec, dict) or spec.get("relative_cost") != 0:
-        return None
-    model = str((agent or {}).get("model") or spec.get("default_model") or "").strip()
-    return model or judge.DEFAULT_MODEL
+    return judge.model_for_spec((agent or {}).get("spec"), (agent or {}).get("model"))
 
 
 def _sm_condition_questions(pending: "list[dict]") -> dict:

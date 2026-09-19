@@ -402,6 +402,30 @@ def evaluate(state, questions: dict, *, model: str = DEFAULT_MODEL, think=False,
     return {"answers": answers, "usage": usage, "model": model}
 
 
+def model_for_spec(spec, model: "str | None" = None) -> "str | None":
+    """定義（agents/<name>.json の正規化済み dict）で judge を使えるなら、そのモデル名。
+
+    judge は LAN の ollama を直に叩く。だから使えるのは**ローカルの定義**（`relative_cost`
+    が 0 の aider / ollama）だけで、クラウド CLI の定義には None を返す（呼び出し側は
+    従来の生成経路に留まる）。モデルは呼び出し側の指定を持ち越し、無ければ定義の既定。
+    """
+    if not isinstance(spec, dict) or spec.get("relative_cost") != 0:
+        return None
+    name = str(model or spec.get("default_model") or "").strip()
+    return name or DEFAULT_MODEL
+
+
+def local_model(cli: str, model: "str | None" = None, *, project_dir=None) -> "str | None":
+    """定義名（`ollama-json` のような profile 綴りも可）から `model_for_spec` を引く。
+    定義を解決できなければ None（設定ミスで実行を殺さない——agentcli の方針と同じ）。"""
+    from agentcore import agentcli
+    try:
+        spec = agentcli.load_cli(str(cli or ""), project_dir=project_dir)
+    except Exception:                       # noqa: BLE001  解決できない＝judge を使わない
+        return None
+    return model_for_spec(spec, model)
+
+
 def abstained(answers: dict, min_confidence: float) -> "list[str]":
     """確度がしきい値に届かない問いの名前（呼び出し側が「決めない」へ倒すため）。"""
     return [name for name, answer in answers.items()

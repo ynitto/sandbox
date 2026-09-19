@@ -5,6 +5,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # LLM 応答からの JSON 抽出は agentcore の 1 実装を使う（写しを置かない・C7）。
 from agentcore import llmjson as _llmjson  # noqa: E402
+from agentcore import judge as _judge  # noqa: E402
 def consumable_tasks(tasks: "list[Task]") -> "list[Task]":
     return [t for t in tasks if t.consumable()]
 

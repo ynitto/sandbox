@@ -30,6 +30,12 @@ TypeSafe AI の Jev（System One モデル）が示した「文章を生成せ�
   そのまま `next_state.py` の `--evals` に載せる。判定 1 件が prefill 1 回で終わり、JSON を
   読めずに落ちる形が消える。judge が使えない・確度が足りないときは従来の制御応答へ倒し、
   証跡に `condition_judge_fallback` を残す。クラウド CLI の実行は従来どおり。
+- **agent-project の route と agent-flow の単一基準 filter にも配線した。** route は候補
+  リポジトリを `choice` の選択肢にし、「どの候補にも属さない」を明示の選択肢（`other`）に
+  して空（書込先なし）へ写す。filter は依存 1 件 = 候補 1 件で boolean を 1 問ずつ訊き、
+  `kept` と `probabilities` を `data` に返す（`decided_by: "judge"`）。どちらもローカル定義で
+  回しているときだけで、judge が決めなければ（クラウド CLI・接続不能・確度不足・候補を
+  列挙できない）従来の生成経路。多基準の `decision` は従来どおり抽出 → 機械判定。
 - 実装: `agentcore/judge.py`・`herdcli.cmd_judge`。テスト: `test_judge`（16 件）・
   `test_herdcli.JudgeTests`（7 件）。設計:
   [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)。

@@ -287,7 +287,7 @@ host.yaml のトップレベルの綻び（未知キー・層違い・型違い�
 | キー | 既定 | 意味 |
 |---|---|---|
 | `plan_review` | true | 実行前レビュー。status を明示しない新規投入はすべて `proposed` で入る |
-| `planner` / `route_planner` | — / agent | 優先順位付けとルーティングの計画役 |
+| `planner` / `route_planner` | — / agent | 優先順位付けとルーティングの計画役。`route_planner: agent` の自動ルーティングは、ローカル定義で回しているとき判断 AI（`agent-herd judge` と同じ分布の読み出し）で候補から 1 つ選び、「どの候補にも属さない」なら空（書込先なし）を返す。クラウド CLI、Ollama に届かない、確度不足のときはモデルに JSON を書かせる従来経路 |
 | `multi_workspace` | false | 書込先が複数になること（workset）を許すか。true のとき、`owns` が複数 repo にヒットしたタスクを「両方に書く」と読む。人の明示 `- workspace: a, b` と `route: ... -> a+b` はこの設定に関係なく効く。auto-route（LLM）には複数を選ばせない |
 | `planner_skill` | backlog-planner | 分解のプロンプト・出力契約を供給するスキル（見つからなければ組み込みへ落ちる） |
 | `plan_sections` | required | 必須項目（why / desc / acceptance / size）の欠落を 1 回再要求し、なお欠ければ人の目へ回す（`warn` は注記だけ） |
