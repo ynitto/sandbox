@@ -1,8 +1,17 @@
 # markitdown（Office/PDFファイル変換）
 
+## 目次
+
+- [対応フォーマット](#対応フォーマット)
+- [使い方](#使い方)
+- [ワークフロー（3段階）](#ワークフロー3段階)
+- [変換例](#変換例)
+
+---
+
 markitdown CLIでOffice/PDFファイルをMarkdownに変換する。変換後は `ofm_formatter.py` で機械的後処理を行い、さらにLLMが意味的変換を加えてObsidian Flavored Markdownに整形する。
 
-> **HTMLファイルは対象外** — `.html` / `.htm` ファイルは defuddle を使うこと → [defuddle.md](defuddle.md)
+> **HTMLファイルは対象外** — `.html` / `.htm` ファイルは defuddle を使うこと → `defuddle.md`
 
 未インストールの場合: `pip install markitdown`
 
@@ -56,7 +65,7 @@ markitdown document.docx | python references/ofm_formatter.py - output.md
 - **空白正規化**: 行末空白の除去、3行以上連続する空行を2行に圧縮
 - **フロントマター付加**: `title`・`date`・`tags: [imported]`・`source` を自動生成（既存フロントマターがある場合はスキップ）
 - **画像リンク変換**: `![alt](path/to/image.png)` → `![[image.png]]`（外部URLは除外）
-- **内部リンク変換**: `[text](note.md)` → `[[note|text]]`（`.md` ファイルへのリンクのみ・保守的）
+- **内部リンク変換**: Markdown の相対リンク（`[text]` ＋ `(note.md)`）→ `[[note|text]]`（`.md` ファイルへのリンクのみ・保守的）
 - **見出し正規化**: H1が複数ある場合、2番目以降をH2に降格
 
 > スクリプトの詳細: [ofm_formatter.py](ofm_formatter.py)

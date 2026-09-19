@@ -1,5 +1,14 @@
 # コミット・PR 規約リファレンス
 
+## 目次
+
+- [Conventional Commits](#conventional-commits)
+- [type → CHANGELOG セクション マッピング](#type-changelog-セクション-マッピング)
+- [semver 判定の優先順位](#semver-判定の優先順位)
+- [PR 本文の節構成（テンプレート未定義時の既定）](#pr-本文の節構成テンプレート未定義時の既定)
+
+---
+
 ## Conventional Commits
 
 ```

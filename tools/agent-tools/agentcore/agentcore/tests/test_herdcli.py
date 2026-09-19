@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import os
@@ -414,6 +415,101 @@ class DecideTests(unittest.TestCase):
                                     runner=lambda b: (0, self.FACTS), out=out)
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(out.getvalue())["kept"], ["c2", "c3"])
+
+
+class JudgeTests(unittest.TestCase):
+    """`judge` — 型付きの問いに確率つきで答える（文章は生成しない）。
+
+    判定規則は `agentcore.judge` の 1 実装。ここで縛るのは入口の契約だけ:
+    問いの形が違えば 2、確度が足りなければ 1（静かに答えへ倒さない）、
+    usage は stderr の `@agent-usage`。
+    """
+
+    QUESTIONS = {"route": {"type": "choice", "instructions": "Which team?",
+                           "criteria": {"billing": "Billing", "support": "Other"}},
+                 "urgent": {"type": "boolean", "instructions": "Is it urgent?"}}
+
+    @staticmethod
+    def _reply(top):
+        import math
+        return {"message": {"content": next(iter(top))},
+                "logprobs": [{"token": next(iter(top)), "logprob": 0.0,
+                              "top_logprobs": [{"token": t, "logprob": math.log(p)}
+                                               for t, p in top.items()]}],
+                "prompt_eval_count": 20, "eval_count": 1}
+
+    def _run(self, argv, *, state="ticket: refund please", replies=None):
+        out, err = io.StringIO(), io.StringIO()
+        replies = list(replies or [{"A": 0.9, "B": 0.1}, {"B": 0.7, "A": 0.3}])
+        seen = []
+
+        def request(payload):
+            seen.append(payload)
+            return self._reply(replies.pop(0))
+
+        rc = herdcli.cmd_judge(argv, stdin=io.StringIO(state), request=request,
+                               out=out, err=err)
+        return rc, out.getvalue().strip(), err.getvalue(), seen
+
+    def test_answers_are_typed_and_usage_goes_to_stderr(self):
+        rc, out, err, seen = self._run(["--questions", json.dumps(self.QUESTIONS)])
+        self.assertEqual(rc, 0)
+        data = json.loads(out)
+        self.assertEqual(data["answers"]["route"]["choice"], "billing")
+        self.assertFalse(data["answers"]["urgent"]["value"])
+        self.assertEqual(data["abstained"], [])
+        self.assertEqual(agentcli.parse_usage(err), (40, 2))
+        # 状態は stdin から、問いごとに 1 回ずつ。生成はしない（logprobs の読み出し）。
+        self.assertEqual(len(seen), 2)
+        self.assertIn("ticket: refund please", seen[0]["messages"][0]["content"])
+        self.assertTrue(seen[0]["logprobs"])
+
+    def test_low_confidence_abstains_with_exit_code_1(self):
+        rc, out, _err, _seen = self._run(
+            ["--questions", json.dumps(self.QUESTIONS), "--min-confidence", "0.8"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(out)["abstained"], ["urgent"])
+
+    def test_the_model_and_think_flags_reach_the_request(self):
+        rc, _out, _err, seen = self._run(["--questions", json.dumps(self.QUESTIONS),
+                                          "--model", "gemma4:12b", "--think", "auto"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen[0]["model"], "gemma4:12b")
+        self.assertNotIn("think", seen[0])
+
+    def test_broken_questions_are_rejected_before_any_request(self):
+        err = io.StringIO()
+        rc = herdcli.cmd_judge(["--questions", json.dumps({"q": {"type": "choice"}})],
+                               stdin=io.StringIO("state"),
+                               request=lambda p: self.fail("request must not happen"), err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("問いが不正", err.getvalue())
+
+    def test_an_empty_state_is_an_argument_error(self):
+        err = io.StringIO()
+        rc = herdcli.cmd_judge(["--questions", json.dumps(self.QUESTIONS)],
+                               stdin=io.StringIO(""), request=lambda p: {}, err=err)
+        self.assertEqual(rc, 2)
+        self.assertIn("状態が空", err.getvalue())
+
+    def test_questions_and_state_can_be_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = pathlib.Path(tmp) / "questions.json"
+            qpath.write_text(json.dumps(self.QUESTIONS), encoding="utf-8")
+            spath = pathlib.Path(tmp) / "state.txt"
+            spath.write_text("ticket: refund", encoding="utf-8")
+            rc, out, _err, seen = self._run(["--questions", str(qpath), "--state", str(spath)],
+                                            state="")
+        self.assertEqual(rc, 0)
+        self.assertIn("ticket: refund", seen[0]["messages"][0]["content"])
+        self.assertEqual(json.loads(out)["answers"]["route"]["choice"], "billing")
+
+    def test_judge_is_a_known_subcommand(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = herdcli.main(["judge"], prog="/x/agent-herd")
+        self.assertEqual(rc, 2)
+        self.assertIn("--questions", err.getvalue())
 
 
 class HarnessTests(unittest.TestCase):

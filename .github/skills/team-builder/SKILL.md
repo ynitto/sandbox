@@ -1,6 +1,6 @@
 ---
 name: team-builder
-description: agent-amigos 向けに、ミッション（ゴール）だけから最適なノード役割と各役割へ渡すプロンプトを設計し、mission.schema.json 準拠のロールミッション表を組み立てるスキル。「チームを組んで」「役割を設計して」「ミッションだけ投げてチームビルディングして」「このゴールに必要なロールを作って」「役割ミッション表を自動生成して」「誰に何をやらせるか決めて」で発動する。従来の post（役割指定）はそのまま、ロール未定のミッションから設計する。build-team コマンド（CLI / dashboard）から呼ばれる機械可読な出力契約を持つ。
+description: agent-amigos 向けに、ミッション（ゴール）だけから最適なノード役割と各役割へ渡すプロンプトを設計し、mission.schema.json 準拠のロールミッション表を組み立てます。ロールが決まっていないミッションからチーム構成や役割を設計する場合に使用してください。
 metadata:
   version: 1.0.0
   tier: stable
@@ -32,8 +32,8 @@ agent-amigos の従来入力（design doc ＋ ロールミッション表）は�
   に投げ、下記「出力契約」の JSON を受け取ってロールミッション表として公示する。
   正典実装は [`agent_amigos/teambuilding.py`](../../../tools/agent-amigos/agent_amigos/teambuilding.py)。
 
-ロールミッション表の契約: [`docs/specs/agent-amigos-spec.md`](../../../docs/specs/agent-amigos-spec.md) §7。
-設計の「なぜ」: [`docs/designs/agent-amigos-design.md`](../../../docs/designs/agent-amigos-design.md)。
+ロールミッション表の契約: `docs/specs/agent-amigos-spec.md` §7。
+設計の「なぜ」: `docs/designs/agent-amigos-design.md`。
 
 ---
 
@@ -102,7 +102,7 @@ agent-amigos の従来入力（design doc ＋ ロールミッション表）は�
 > **探索木・動的分解（Tree/Graph-of-Thoughts・LATS・G4）は agent-flow へ委譲**する
 > （target=agent-flow）。まだ無いのは pairwise-rank（ranker ロールで代替）等。各 JSON の
 > `feasibility_note` と、全体の対応状況は
-> [`docs/specs/agent-amigos-spec.md`](../../../docs/specs/agent-amigos-spec.md) §11。
+> `docs/specs/agent-amigos-spec.md` §11。
 
 ---
 

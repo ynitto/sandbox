@@ -1,5 +1,16 @@
 # Analytics & AI/ML Icons
 
+## 目次
+
+- [Analytics](#analytics-8c4fff)
+  - [resourceIcon (service-level)](#resourceicon-service-level)
+  - [Dedicated shapes (resource-level)](#dedicated-shapes-resource-level)
+- [AI / Machine Learning](#ai-machine-learning-01a88d)
+  - [resourceIcon (service-level)](#resourceicon-service-level-1)
+  - [Dedicated shapes (resource-level)](#dedicated-shapes-resource-level-1)
+
+---
+
 ## Analytics (`#8C4FFF`)
 
 ### resourceIcon (service-level)

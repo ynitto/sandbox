@@ -1,5 +1,16 @@
 # Application Integration & Management Icons
 
+## 目次
+
+- [Application Integration](#application-integration-e7157b)
+  - [resourceIcon (service-level)](#resourceicon-service-level)
+  - [Dedicated shapes (resource-level)](#dedicated-shapes-resource-level)
+- [Management & Governance](#management-governance-e7157b)
+  - [resourceIcon (service-level)](#resourceicon-service-level-1)
+  - [Dedicated shapes (resource-level)](#dedicated-shapes-resource-level-1)
+
+---
+
 ## Application Integration (`#E7157B`)
 
 ### resourceIcon (service-level)

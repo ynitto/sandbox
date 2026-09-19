@@ -1,5 +1,16 @@
 # Compute & Containers Icons
 
+## 目次
+
+- [Compute](#compute-ed7100)
+  - [resourceIcon (service-level)](#resourceicon-service-level)
+  - [Dedicated shapes (resource-level)](#dedicated-shapes-resource-level)
+- [Containers](#containers-ed7100)
+  - [resourceIcon (service-level)](#resourceicon-service-level-1)
+  - [Dedicated shapes (resource-level)](#dedicated-shapes-resource-level-1)
+
+---
+
 ## Compute (`#ED7100`)
 
 ### resourceIcon (service-level)

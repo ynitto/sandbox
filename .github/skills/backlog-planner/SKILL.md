@@ -1,6 +1,6 @@
 ---
 name: backlog-planner
-description: agent-project の charter（プロジェクト憲章）と観点メモを、人がレビューできる粒度のバックログへ分解するプランナー向けスキル。各タスクに why・作業概要・受入基準チェックリスト（acceptance）・規模感を必ず書かせ、既存タスクと墓標を入力に取って重複を出さない。agent-project の plan から呼ばれる。
+description: agent-project の charter（プロジェクト憲章）と観点メモを、人がレビューできる粒度のバックログへ分解します。既存タスクと墓標を入力に取り、重複を出しません。agent-project の plan から呼ばれる場合に使用してください。
 metadata:
   version: 1.0.0
   tier: experimental

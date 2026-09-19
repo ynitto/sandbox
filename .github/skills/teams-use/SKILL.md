@@ -1,6 +1,6 @@
 ---
 name: teams-use
-description: Python + Microsoft Graph API を使って Microsoft Teams のチャンネルにメッセージを投稿したり、投稿済みのメッセージを読み取ったりする。Webhook 不要で MSAL デバイスコードフロー認証を利用。「Teamsに投稿して」「Teams のチャンネルにメッセージを送って」「Teams に通知して」「Teams にメッセージを投稿したい」「Teamsにタイトルを付けて投稿して」「@channel メンションして投稿して」「@team メンションして通知して」「Teams のスレッドに返信して」「Teams のメッセージに返信して」「Teams のチャンネルを読んで」「Teams の投稿を取得して」「Teams のメッセージを確認して」「Teams の最新投稿を見せて」「Teamsの投稿一覧を表示して」などのリクエストで発動する。Windows / macOS / Linux 環境の Python から Graph API 経由でメッセージ送受信を行う。
+description: Python と Microsoft Graph API を使って、Microsoft Teams のチャンネルへメッセージを投稿し、投稿済みのメッセージを読み取ります。Teams への投稿・通知・スレッド返信を頼まれた場合や、チャンネルの投稿を読む場合に使用してください。
 metadata:
   version: 1.0.0
   tier: experimental
@@ -16,7 +16,7 @@ metadata:
 
 # teams-use
 
-Python から Microsoft Graph API 経由で Teams チャンネルへのメッセージ投稿と、チャンネル内の投稿読み取りを行う。Webhook は使わず、MSAL デバイスコードフロー認証（初回のみブラウザ、以降はトークンキャッシュ）を利用する。タイトル（件名）の付与・`@channel` / `@team` メンション・スレッド返信・メッセージ一覧取得に対応。
+Python から Microsoft Graph API 経由で Teams チャンネルへのメッセージ投稿と、チャンネル内の投稿読み取りを行う。Webhook は使わず、MSAL デバイスコードフロー認証（初回のみブラウザ、以降はトークンキャッシュ）を利用する。タイトル（件名）の付与・`@channel` / `@team` メンション・スレッド返信・メッセージ一覧取得に対応。Windows / macOS / Linux のいずれの Python からでも動作する。
 
 セットアップ手順: [`references/setup-guide.md`](references/setup-guide.md)
 

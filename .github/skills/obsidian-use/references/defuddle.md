@@ -52,5 +52,5 @@ defuddle parse <url-or-file.html> -p domain
 |-------------|-----------|
 | `.html` / `.htm`（ローカル） | **defuddle**（このページ） |
 | URL（http/https） | **defuddle**（このページ） |
-| `.docx` / `.xlsx` / `.pptx` / `.pdf` | **markitdown** → [markitdown.md](markitdown.md) |
+| `.docx` / `.xlsx` / `.pptx` / `.pdf` | **markitdown** → `markitdown.md` |
 | `.md` ファイルのURL | WebFetch を直接使う |

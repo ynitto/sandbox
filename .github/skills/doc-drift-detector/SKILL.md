@@ -1,6 +1,6 @@
 ---
 name: doc-drift-detector
-description: 既存ドキュメント（仕様書・README・ランブック・ADR・OpenAPI）とコードベースの乖離（ドリフト）を検出するスキル。「ドキュメントの乖離を検出して」「仕様書とコードのズレを確認して」「READMEが古くなってないか確認して」「ドキュメントの鮮度をチェックして」「仕様と実装の差分を調べて」などで発動する。検証可能な記述を抽出してコードと突き合わせ、ドキュメント陳腐化・実装の仕様違反・要確認に分類した根拠付きレポートを出す。新規ドキュメントの作成は technical-writer / code-to-specs を使う。
+description: 既存ドキュメント（仕様書・README・ランブック・ADR・OpenAPI）とコードベースの乖離（ドリフト）を検出し、根拠付きレポートを出します。仕様書とコードのズレやドキュメントの鮮度を確認したい場合に使用してください。新規ドキュメントの作成は technical-writer / code-to-specs を使います。
 metadata:
   version: "1.0.0"
   tier: experimental

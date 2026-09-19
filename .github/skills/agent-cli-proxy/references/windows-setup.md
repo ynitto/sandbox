@@ -1,5 +1,16 @@
 # AI CLI ツール セットアップガイド（Windows / macOS / Linux）
 
+## 目次
+
+- [Claude Code（`claude`）](#claude-codeclaude)
+- [GitHub Copilot CLI（`gh copilot`）](#github-copilot-cligh-copilot)
+- [OpenAI Codex CLI（`codex`）](#openai-codex-clicodex)
+- [Kiro（`kiro-cli`）](#kirokiro-cli)
+- [環境変数の一括設定（`.env` テンプレート）](#環境変数の一括設定env-テンプレート)
+- [バージョン確認スクリプト](#バージョン確認スクリプト)
+
+---
+
 各 AI CLI ツールのインストール・初期設定手順。
 
 ---

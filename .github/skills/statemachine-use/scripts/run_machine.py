@@ -14,6 +14,14 @@ run_machine.py  —  yaml-statemachine スキル用 CLI ランナー
   python scripts/run_machine.py workflow.yaml --agent exec \
       --agent-command '["claude","-p","--dangerously-skip-permissions"]' --prompt-via stdin \
       --instruction "共通指示" --result-line
+  python scripts/run_machine.py workflow.yaml --judge herd     # 遷移条件の判定を agent-herd judge に
+
+遷移条件の判定（--judge、既定 auto）:
+  auto   agent-herd が PATH にあり、設定が判定をモデル指名で回す形（`agent-herd config --check judge`
+         が 0）なら、条件の評価を judge（選択肢の上の確率分布）に任せる。無ければ LLM に YES/NO
+         を生成させる従来の形。どちらでも同じ定義が回る。
+  herd   agent-herd があれば設定に関係なく judge を使う（judge の既定モデル）
+  off    judge を使わない
 
 LLM バックエンド:
   claude     Claude Code CLI (`claude -p`)
@@ -44,6 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.engine import StateMachineEngine, load_workflow, validate_workflow
+from scripts import judge_bridge
 
 
 # ─────────────────────────────────────────────
@@ -267,6 +276,15 @@ def parse_args() -> argparse.Namespace:
             "省略時はバックエンドのデフォルトモデルを使用。"
         ),
     )
+    parser.add_argument(
+        "--judge", choices=["auto", "herd", "off"], default="auto",
+        help=(
+            "遷移条件の判定を agent-herd judge に任せるか (デフォルト: auto)\n"
+            "  auto : agent-herd があり、判定モデルが設定されていれば使う\n"
+            "  herd : agent-herd があれば使う\n"
+            "  off  : 使わない（LLM に YES/NO を生成させる）"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -367,8 +385,17 @@ async def main() -> None:
         async def llm_fn(prompt: str) -> str:
             return await call_cli_llm(prompt, cli=cli, model=model)
 
+    # 遷移条件の判定 AI。無ければ llm_fn に YES/NO を生成させる（同じ定義が両方で回る）。
+    judge = judge_bridge.resolve_judge(args.judge, log=lambda msg: print(f"  [judge] {msg}"))
+    if judge:
+        print(f"  遷移条件の判定: agent-herd judge"
+              + (f" ({judge.model})" if judge.model else ""))
+    elif args.judge == "herd":
+        print("  遷移条件の判定: agent-herd が見つからないため LLM の YES/NO で行います")
+
     # Run
-    engine = StateMachineEngine(llm_fn=llm_fn, verbose=args.verbose, instruction=args.instruction)
+    engine = StateMachineEngine(llm_fn=llm_fn, verbose=args.verbose, instruction=args.instruction,
+                                judge=judge)
     try:
         result = await engine.run(workflow, input_text=args.input, context=context)
     except Exception as exc:  # LLM 呼び出しの失敗（CLI の非 0 終了など）も RESULT で申告する

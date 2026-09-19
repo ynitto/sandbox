@@ -520,9 +520,71 @@ def _route_agent_prompt(task: Task, workspaces: "list[dict]") -> str:
     return "\n".join(lines)
 
 
+# route を judge で決めるときの確度の下限。0 なら棄権しない。RO1〜RO3 を judge 経路で
+# 引き直してから既定を決める（judge 設計 2026-09-19 §6）。届かなければ生成経路で訊き直す。
+_ROUTE_JUDGE_MIN_CONFIDENCE = 0.0
+_ROUTE_OTHER = "どの候補にも属さない（判断できない）"
+
+
+def _route_judge_questions(workspaces: "list[dict]") -> dict:
+    criteria = {}
+    for s in workspaces:
+        name = str(s.get("name") or s.get("url") or "").strip()
+        if not name or name in criteria:
+            continue
+        owns = "・".join(s.get("owns", []))
+        desc = " / ".join(part for part in ((f"担当: {owns}" if owns else ""),
+                                            str(s.get("desc") or "")) if part)
+        criteria[name] = desc
+    return {"workspace": {
+        "type": "choice",
+        "instructions": "このタスクの変更をコミットすべき書込先リポジトリはどれか。",
+        "criteria": criteria, "other": _ROUTE_OTHER}}
+
+
+def _route_judge_state(task: Task) -> str:
+    done_hint = " / ".join([c["command"] for c in task_verification_commands(task)][:2]
+                           + task_acceptance(task)[:2])
+    return f"タスク: {task.title}\n完了条件: {done_hint or '（未定義）'}"
+
+
+def route_judge(cfg: "Config", task: Task, workspaces: "list[dict]") -> "str | None":
+    """書込先を judge（選択肢の上の確率分布）で選ぶ。答えは repo 名、`other` なら ""。
+
+    None は「judge で決めなかった」——ローカル定義でない・ollama に届かない・確度不足——で、
+    呼び出し側は従来の生成経路（`_route_agent_prompt`）へ倒す。生成経路との違いは、
+    答えが候補の集合の外に出られないことと、確度で「決めない」へ倒せること（RO3 の面）。
+    """
+    if len(workspaces) < 2:
+        return None
+    cli, model_ov = _agent_for("route")
+    model = _judge.local_model(cli, model_ov or cfg.model)
+    if model is None:
+        return None
+    questions = _route_judge_questions(workspaces)
+    if len(questions["workspace"]["criteria"]) < 2:
+        return None
+    try:
+        result = _judge.evaluate(_route_judge_state(task), questions, model=model)
+    except _judge.JudgeError:
+        return None
+    answer = result["answers"]["workspace"]
+    if _judge.abstained(result["answers"], _ROUTE_JUDGE_MIN_CONFIDENCE):
+        return None
+    choice = str(answer.get("choice") or "")
+    return "" if choice == _judge.OTHER_KEY else choice
+
+
 def route_agent(cfg: "Config", task: Task, workspaces: "list[dict]",
                 agent_run=None) -> str:
-    """曖昧なタスクの書込先を LLM に1つ選ばせる（決定論で決まらなかったときのみ）。失敗時は ""。"""
+    """曖昧なタスクの書込先を LLM に1つ選ばせる（決定論で決まらなかったときのみ）。失敗時は ""。
+
+    ローカル定義で回しているときは先に judge（`route_judge`）で選び、judge が決めなかった
+    ときだけ従来の生成経路に訊く。`agent_run` を明示した呼び出しは生成経路だけを使う。"""
+    if agent_run is None:
+        judged = route_judge(cfg, task, workspaces)
+        if judged is not None:
+            return judged
     agent_run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="route"))
     try:
         out = agent_run(_route_agent_prompt(task, workspaces), cfg.model)

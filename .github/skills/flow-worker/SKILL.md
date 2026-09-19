@@ -1,6 +1,6 @@
 ---
 name: flow-worker
-description: agent-flow の executor=agent 向け実行系プロンプト強化スキル。worker（全 kind）・verify・evaluator の各 LLM 呼び出しへ、flow-worker の実行規律 —「三つの約束」（前提を書く・範囲を守る・検証してから渡す）・再導出検証・受け入れ評価 — と、git 操作を worktree に限定する git 利用規約を織り込んだプロンプトを供給する。flow-planner と対をなし、agent-flow が自動検出して利用する（ユーザーが直接発動するスキルではない）。
+description: agent-flow の executor=agent 向けに、worker・verify・evaluator の各 LLM 呼び出しへ渡す実行系プロンプトを強化します。agent-flow がノードを実行する場合に自動検出されて使われるスキルで、利用者が直接発動するものではありません。
 metadata:
   version: 2.0.0
   tier: experimental
@@ -76,7 +76,7 @@ python3 scripts/git_worktree.py push "$WT" --branch <専用ブランチ> -m "<�
   共有チェックアウトのブランチを動かさない。reject は fetch + rebase で自動リトライし、
   並行コミットと衝突しない。
 - パターンの正典は
-  [docs/designs/git-worktree-cache-pattern.md](../../../docs/designs/git-worktree-cache-pattern.md)
+  `docs/designs/git-worktree-cache-pattern.md`
   （INV-1 鮮度 / INV-2 直列化・自己修復 / INV-3 direct clone フォールバック）。
 
 ## 利用方法

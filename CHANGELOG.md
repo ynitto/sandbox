@@ -7,6 +7,105 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 型付きの問いに確率つきで答える `judge`（Jev 型の判断 AI をローカルで）
+
+TypeSafe AI の Jev（System One モデル）が示した「文章を生成せず、決まった選択肢の上の
+確率分布を返す」形を、LAN の ollama（既定 `gemma4:e4b`）で真似る口を足した。
+
+- **`agent-herd judge --questions <問い> < 状態`。** 問いは Jev と同じ `{名前: {type, instructions,
+  criteria}}` で、型は `choice` / `boolean` / `score`。答えには `probabilities` /
+  `confidence` / `coverage` / `method` が付く。`--min-confidence` に届かない問いは
+  `abstained` に載せて終了コード 1——確度が足りない答えを黙って採用させない（`decide` と同じ作法）。
+- **生成しない。** 選択肢に A / B / C … を振り、`logprobs` で 1 トークン目の分布を読んで
+  正規化する。生成上限は 4 トークン、温度 0。JSON が壊れる・散文が混じる・暴走する、という
+  生成経路の故障モードが原理的に無い。同じ状態への複数の問いは状態を先に並べて接頭辞
+  キャッシュに乗せる。
+- **確率の出どころを隠さない。** ollama が `logprobs` を返さなければ `--samples N` の票数
+  （`method: vote`）か本文の 1 文字（`method: text`・`coverage: 0`）へ縮退し、確率 1.0 を
+  捏造しない。
+- Python からは `agentcore.judge.evaluate(state, questions)`。`request` を差し替えられるので、
+  消費側のテストは ollama 無しで書ける。
+- **statemachine の遷移条件に配線した。** 決定的な規則で決まらない条件（`needs_llm_eval`）は、
+  ローカル定義（aider / ollama）で回しているとき judge に条件ごと boolean で訊き、答えを
+  そのまま `next_state.py` の `--evals` に載せる。判定 1 件が prefill 1 回で終わり、JSON を
+  読めずに落ちる形が消える。judge が使えない・確度が足りないときは従来の制御応答へ倒し、
+  証跡に `condition_judge_fallback` を残す。クラウド CLI の実行は従来どおり。
+- **agent-project の route と agent-flow の単一基準 filter にも配線した。** route は候補
+  リポジトリを `choice` の選択肢にし、「どの候補にも属さない」を明示の選択肢（`other`）に
+  して空（書込先なし）へ写す。filter は依存 1 件 = 候補 1 件で boolean を 1 問ずつ訊き、
+  `kept` と `probabilities` を `data` に返す（`decided_by: "judge"`）。どちらもローカル定義で
+  回しているときだけで、judge が決めなければ（クラウド CLI・接続不能・確度不足・候補を
+  列挙できない）従来の生成経路。多基準の `decision` は従来どおり抽出 → 機械判定。
+- **agent-project の投入時採点（assess）にも配線した。** 複雑さ・リスク・曖昧さの 3 軸を
+  3 段の `score` の問い 3 つにし、確率加重の値を四捨五入して 1〜3 にする（最頻の段だけを
+  採ると分布の情報を捨てる）。記録する書式は変えないので、採点を読む側（リスクダイジェスト・
+  spec ルーティング）は無改修。judge が決めなければ生成経路、それも駄目なら従来どおり
+  決定的ヒューリスティック。
+- **クラウド CLI の実行でも判定だけを judge へ回せる（設定 `judge.model`）。** 上の配線 4 件は
+  ローカル定義で回しているときだけ効いていて、判定にいちばん高いトークンを払っている
+  クラウド CLI（Claude Code など）の実行では、遷移条件 1 件ごとに出力全文と workflow を添えて
+  JSON を生成させていた。`agent-herd config set judge.model gemma4:e4b` とモデルを指名すると、
+  実行の定義に関係なく遷移条件・route・filter・assess の判定はそのモデルの judge へ行き、
+  クラウドは作業だけに使う。`off` でどの実行でも judge を使わない。未設定（`auto`）の振る舞いは
+  変えていない。`agent-herd judge` の `--model` の既定も同じ設定を見る。
+- **設定ファイルと `agent-herd config`。** 各 PC の `~/.agents/agent-herd.yaml`（`.yml` / `.json`
+  も可）を `agent-herd config [set|unset]` で読み書きする。環境変数にしなかったのは、判定を呼ぶ
+  agent-herd / agent-loop / agent-flow が WSL 側に居て、agent-app から環境変数が届かないため。
+  `--json` は app が読む形、`--check judge` はスキルが「judge に任せてよいか」を確かめる口。
+- **ステートマシンの分岐を「結果の選択肢」で判定する（`outcome`）。** 候補すべてに `outcome` が
+  あれば、条件ごとの boolean N 問ではなく「結果はどれか」の choice 1 問で遷移先を選ぶ
+  （prefill が 1 回になり、2 つの条件が同時に真になる矛盾が構造として消える）。「どれでもない」は
+  明示の選択肢で、選ばれると全候補が偽。
+- **ステートの中でも使う。** ハーネスは statemachine-use の `judge:` 宣言（判定だけのステート）を
+  `next_state.py --state-judge` から読み、judge が使えれば生成なしで 1 語を選ぶ
+  （`state_judge_done`）。使えなければ宣言の短い生成用プロンプトで回す。出力契約に合わない出力は
+  再生成の前に決定的に直し（`_sm_validated_output`）、それでも駄目なら judge に「どの語か」を
+  1 問（`contract_judge_done`）。検査が落ちたときは環境の失敗（決定的）と judge の確信ある
+  「直らない」（`check_triage`）には再投入を積まない。
+- 実装: `agentcore/judge.py`・`agentcore/herdconfig.py`・`herdcli.cmd_judge` / `cmd_config`。
+  テスト: `test_judge`（23 件）・`test_herdconfig`（16 件）・`test_herdcli.JudgeTests`（7 件）・
+  `test_harness_statemachine`（judge 配線 11 件 + ステート内 8 件）。設計:
+  [2026-09-19 agent-herd judge 設計](docs/plans/2026-09-19-agent-herd-system-one-judge-design.md)
+  §5.1 / §5.2。
+
+### statemachine-use: 遷移条件の判定を agent-herd の judge に任せる（2.2.0）
+
+- **`outcome`。** transitions に「この遷移が成立する結果の短い名前」を書く項目を足した。同じ
+  ステートの候補すべてにあれば、判定 AI が「結果はどれか」を 1 問で選ぶ。judge の無い環境では
+  同じ `outcome` が条件文になるので、定義は 1 つでよい。作成モードの設計原則に足し、scaffold の
+  骨組みにも案内を入れた。作例 `examples/review_outcomes.yaml`。
+- **スキル自身の実行系（`run_machine.py`）が agent-herd の有無を確かめる。** `--judge auto`（既定）は
+  `agent-herd` が PATH にあり `agent-herd config --check judge` が通れば、条件の評価を
+  `agent-herd judge` に任せる（`scripts/judge_bridge.py`）。無ければ従来どおり LLM に YES/NO を
+  生成させる。`herd` で強制、`off` で止める。judge が失敗したら以後は呼ばず、条件は LLM へ倒す。
+- **会話内の手動実行にも同じ口。** `next_state.py --auto-eval` が `judge_questions`（`agent-herd judge`
+  にそのまま渡せる問い）を返し、`--judge-answers` に judge の stdout を渡せば遷移先が確定する
+  （確度不足 `abstained` は終了コード 3 で止め、`--eval` で渡し直す）。実行モードの Step 0 で
+  agent-herd を 1 回確かめ、③ で使い分ける手順を SKILL.md に書いた。
+- **ステートの中でも使う（判定 AI が無くてもトークン最小）。** どれも「決定的 → 判定 AI → 生成」の順。
+  - `judge:` — 判定だけのステート。アクションの代わりに問いと選択肢を書き、判定 AI があれば生成 0 で
+    1 語を選ぶ。無ければ宣言から作った短いプロンプト（選択肢を列挙し 1 語で答えさせる）で 1 回だけ
+    生成する。`other` と確度不足は `unsure` の語（既定 UNSURE）。`output_validator` は自動で付く。
+    `next_state.py --state-judge` が宣言を返し、ハーネスもそこから読む。作例 `issue_triage.yaml`。
+  - 出力契約の正規化 — `output_validator` に合わない出力を再生成の前に直す。契約の語が第 1 行の
+    途中・後ろの行・大文字小文字違いなら決定的に、それでも駄目なら判定 AI に「どの語か」を 1 問。
+  - 検査失敗の選別 — `check` が落ちたとき、環境の失敗（コマンド不在・モジュール不在・権限・接続）
+    なら再投入を積まずに `check_on_exhausted` へ。判定 AI があれば「やり直しで直るか」を 1 問し、
+    確度 0.85 以上の「直らない」だけ止める。
+- テスト: `tests/test_judge_bridge.py`（44 件）。
+
+### agent-app: 遷移や振り分けの判定を設定から選べる（0.14.0）
+
+- **設定 > 実行制御に「遷移や振り分けの判定」を足した。** 「ローカルの AI で作業しているときだけ」
+  「いつも、指定したモデルで」「使わない」の 3 択。「いつも」を選んだときだけ「判定に使うモデル」の
+  欄が出る（既定の候補 gemma4:e4b）。クラウドの AI で作業しているときも、判定だけをローカルの AI に
+  任せてトークンを節約する口。
+- **値はアプリの config.json ではなく agent-herd の設定ファイルにある。** 読み書きは
+  `agent-herd config`（Windows では WSL 経由）に頼み、agent-herd が無ければ行を薄くして触れなく
+  する。保存は値を変えたときだけ書きに行く。
+- テスト: `test/judge-setting.test.js`（4 件）。
+  gemma4:e4b での実測（`coverage` の分布・確度と正答の関係）は設計 §6 のとおり未着手。
+
 ### agent-app: 定型化したものの「公開」を、そのものが居る画面に置く（0.13.0）
 
 **言葉を分けた。** 同じ LAN の参加者に依頼やセッションを見せるのが「共有」、リポジトリへ出して

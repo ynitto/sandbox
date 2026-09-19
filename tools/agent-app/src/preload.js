@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('api', {
   getConfig: () => invoke('config:get'),
   configProblem: () => invoke('config:problem'),
   saveConfig: (patch) => invoke('config:save', { patch }),
+  judge: {
+    get: () => invoke('judge:get'),
+    set: (value) => invoke('judge:set', { value }),
+  },
   addRepo: () => invoke('repo:add'),
   removeRepo: (repo) => invoke('repo:remove', { repo }),
   listAgents: (repo) => invoke('agents:list', { repo }),

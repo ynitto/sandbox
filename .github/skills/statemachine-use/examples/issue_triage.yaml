@@ -8,15 +8,16 @@ initial_state: classify
 states:
   classify:
     description: "受信イシューを分類"
-    action: |
-      以下のイシューを BUG、FEATURE、QUESTION のいずれか一つに分類してください。
-      イシュー: {{input}}
-
-      カテゴリの単語（BUG、FEATURE、QUESTION）のみで回答してください。
-      説明は不要です。
+    # 判定だけのステート。判定 AI（agent-herd judge）があれば生成なしで 1 語を選び、
+    # 無ければこの宣言から作った短いプロンプトで 1 回だけ生成する（出力契約は自動で付く）。
+    judge:
+      question: "このイシューの種類はどれか"
+      choices:
+        BUG: "動作の不具合の報告"
+        FEATURE: "新しい機能の要望"
+        QUESTION: "使い方や仕様の質問"
     output_key: classification
-    output_validator: "startswith:BUG,FEATURE,QUESTION"  # 第1行がこれらで始まること
-    max_retries: 2  # 形式違反時に最大2回リトライ
+    max_retries: 2  # 生成経路で形式違反のときだけ効く
 
   handle_bug:
     description: "バグ報告の処理"
