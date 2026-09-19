@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .configfile import resolve_config
 
@@ -77,6 +78,10 @@ def _build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser("tasks", help="洞察 → 改善タスク（task.schema.json 形を stdout へ）")
     t.add_argument("--mark-exported", action="store_true", dest="mark_exported",
                    help="出力した洞察を exported=true にする")
+    t.add_argument("--id", action="append", dest="insight_ids", default=[],
+                   help="この洞察 id だけを対象にする（複数可。agent-app が課題を渡したときに使う）")
+
+    sub.add_parser("scrub", help="stdin の本文を伏せ字化して stdout へ（資格情報・ホームのパス）")
 
     tune = sub.add_parser("tune", help="洞察から型付き調整候補を生成し、条件を満たせば昇格・退役")
     tune.add_argument("--apply", action="store_true", help="再現・品質・予算ゲートを通った候補を宣言へ反映")
@@ -175,6 +180,10 @@ def main(argv=None) -> int:
     if args.command == "tasks":
         from .tasksout import cmd_tasks
         return cmd_tasks(args)
+    if args.command == "scrub":
+        from .scrub import scrub_text
+        sys.stdout.write(scrub_text(sys.stdin.read()))
+        return 0
     if args.command == "tune":
         from .tuning import cmd_tune
         return cmd_tune(args)

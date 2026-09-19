@@ -16,7 +16,8 @@ from .llm import LlmBlocked, LlmError, parse_json_reply, run_llm
 from .store import Store, observation_id
 from .util import elog, log, now_iso
 
-OBSERVATION_KINDS = ("learn", "avoid", "skill-gap", "prompt-issue", "config-issue")
+OBSERVATION_KINDS = ("learn", "avoid", "skill-gap", "prompt-issue", "config-issue",
+                     "tool-failure")
 
 _PROMPT = """あなたはエージェント実行証跡の監査係です。以下の 1 件の実行レコードを読み、
 今後の実行を改善しうる観測（learn / avoid / skill-gap / prompt-issue / config-issue）を
@@ -38,6 +39,10 @@ _REPAIR = """先ほどの出力は要求した JSON 契約に一致しません�
 
 
 def is_candidate(rec: dict, filters: "list[str]") -> bool:
+    # 評価の行（agent-app の自動評価・まとめて評価）は、問題ありと出たものだけを候補にする。
+    # 集めるための filters とは独立——評価は「観測を作る」ために書かれた行なので、常に読む。
+    if rules.evaluation_issue(rec):
+        return True
     f = set(filters or [])
     status = str(rec.get("status") or "")
     if "failed" in f and (status == "failed" or rec.get("error_class")):
@@ -140,7 +145,8 @@ def cmd_extract(args) -> int:
                 "text": o["text"],
                 "group": o["group"],
                 "scope": {"purpose": str(rec.get("purpose") or ""),
-                          "model": str(rec.get("model") or "")},
+                          "model": str(rec.get("model") or ""),
+                          **({"target": o["target"]} if o.get("target") else {})},
                 "evidence": [rec["id"]],
                 "extract_agent": rules.AGENT,
                 "extract_model": "",

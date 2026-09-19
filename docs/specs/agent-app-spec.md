@@ -528,6 +528,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `instructions.startupActions` | `[]` | `[{ type: skill|command, value, onError: warn|fail }]`。空の `value` は落とす |
 | `instructions.quickRequests` | 既定の 2 つ | 入力欄の「定型」に並べる定型の依頼 `[{ label, text }]`。最大 3、`label` 24 字 / `text` 400 字。保存値が無ければ既定（コミット・テスト）、空配列なら並べない |
 | `notify.background` | `true` | 前面に無いときに OS の通知を出すか |
+| `evaluation` | `{ mode: 'sample' }` | 応答と実行の自動評価（§19）。`sample`（5 件に 1 件。失敗は必ず）/ `all` / `off` |
 | `attentionSeen` | `{ since: '', items: {} }` | 受信箱の「見た」（§17）。`since` は受信箱を使い始めた時刻（最初の `attention:list` で書く。それ以前の結果は既読扱い）、`items` は項目の `key` → `{ resultAt }`（最大 500。古い結果から落とす）。`config:save` の `patch` は `items` をキーごとに重ねる |
 | `execution.defaultPolicy` | `recommended` | `recommended` / `saving` / `quality` |
 | `execution.optimizeAgents` | `true` | `false` なら（または agent-herd が無ければ）`saving` / `quality` を `recommended` として解決する（`settings.effectivePolicy`）。画面は同じ規則で選べなくする |
@@ -1182,6 +1183,8 @@ project … { action, unread, items }（要対応を先に、あとは新しい�
 |---|---|---|---|---|---|
 | 会話 | `session:list` の要約（`result` = 末尾の応答メッセージの `at` と結末）と、tmux の phase | 末尾が応答なら `done` / `failed`（`error`）/ `stopped` | phase が `attention`（`mode: terminal`） | `turn:running` に載っている | `{ kind: conversation, repo, id }` → 通知と同じ `openSessionInRepo` |
 | タスク | `run-history/<root>.json`（手動実行の記録。保存名ごとに最新 1 件） | `finishedAt`、`ok` → `done` / `escalate` → `escalated` / それ以外 `failed` | なし（答える口が無いので未読として出す） | 持たない（実行中は前の結果が既読なので出ない） | `{ kind: task, repo, id: 保存名 }` → 領域「タスク」でその項目を選ぶ |
+| 課題 | agent-audit の洞察（`userData/audit/insights/*.json`。`audit.insights` で読む） | `updated_at`（洞察が改訂されればまた未読）。`outcome` は `issue` | なし | なし | `{ kind: issue, id: 洞察 id }` → 受信箱の本文のカード（開く画面は無い）。反証された（`review.verdict: refuted`）ものと会話へ渡した（`exported`）ものは出さない。「見た」では消えず、会話へ渡したときに消える |
+| まとめて評価 | `userData/evaluation/batches.json`（終わった記録。最新 20 件） | `finishedAt`。`outcome` は `done` | なし | なし（進行中は出ない） | `{ kind: evaluation, id }` → 「会話を検索」（足元に結果の 1 行） |
 | ワークフローの実行 | agent-flow の bus（`listRuns` / 待っているものだけ `readRun`） | `terminal` なら `updatedAt`、`done` / `cancelled` → `stopped` / それ以外 `failed` | `interactions` に `state: open` があるもの（`mode`: approval / choice / input） | `terminal` でなく、答え待ちでもない（`stalled` を含む） | `{ kind: workflow, repo, id: workflowId, runId }` → 領域「ワークフロー」でそのワークフローを選ぶ |
 
 判定（`classify`）: `running` → none。`interaction` → action。`resultAt` が「見た」時刻（`attentionSeen.items[key].resultAt`）
@@ -1213,13 +1216,14 @@ userData/audit-config.json             生成する設定（audit_dir / ledger_d
 
 #### 18.1 申告（feed）
 
-台帳の行は node-budget と同じ形にする（reader を増やさないため）。足したのは `artifact` だけ。
+台帳の行は node-budget と同じ形にする（reader を増やさないため）。足したのは `artifact`・`used`・`evaluation` の 3 つ。
 
 | 契機 | 実装 | 行 |
 |---|---|---|
-| 会話のターン | `audit.feedTurn`（ヘッドレスと tmux の応答保存の直後） | `workload: chat`・`ref` は会話 ID・`session_id` は CLI のネイティブ ID |
+| 会話のターン | `audit.feedTurn`（ヘッドレスと tmux の応答保存の直後） | `workload: chat`・`ref` は会話 ID・`session_id` は CLI のネイティブ ID・`used: { skills, commands, tools }`（採用したスキル、実行情報の `command` の先頭行、そこから引いた既知のツール名。各 20 件まで。観測の対象を引く鍵） |
 | タスク・ワークフローの実行 | `audit.feedRun`（`run-history.append` の中。**履歴と申告を同じ 1 か所で残す**） | `workload: task`・`artifact: { kind, name, origin }` |
 | 共有で引き受けた依頼 | `audit.feedShare`（`share/ledger` の `onRecord`） | `workload: shared`・`ref` は依頼者 |
+| 評価（§19） | `audit.feedEvaluation`（自動評価・まとめて評価が 1 件終わるたび） | `workload: evaluation`・`purpose` は評価された側の用途（chat / task）・`ref` は会話 ID か保存名・`evaluation: { quality 1〜3, confidence, issue, method, judge_model, note }`・`used` / `artifact` は評価された側のもの。評価された側の行は書き換えない |
 
 `status` は `done` / `failed` / `cancelled` / `escalate` のどれか（知らない値は `failed` に倒す）。
 トークンは CLI が申告したときだけ書く。**申告の失敗は本体の処理を止めない**（監査は副産物）。
@@ -1249,6 +1253,7 @@ agent-loop の `audit-calibrate-hook.py` と同じ並びで、`extract` / `disti
 | 設定の行 | 記録を集める・集める間隔（公開先と main へ直接は「スキル」の面が持つ） |
 | 集計 | 「今すぐ集める」と 1 行の状態（段の名前・最後に集めた時刻・足りないもの） |
 | 使用量 | 軸の切り替え（AI / 用途 / モデル）と行（回数・実測トークン）、末尾に成功率 |
+| 評価 | 1 行（評価の件数・品質の平均・課題ありの件数と対象の種類ごとの内訳）。内訳の行にも品質と課題の数。`usage --json` の `evaluation` と行の `evaluations` / `quality_avg` / `issues` をそのまま並べる |
 
 #### 18.4 公開と改善
 
@@ -1274,6 +1279,31 @@ agent-loop の `audit-calibrate-hook.py` と同じ並びで、`extract` / `disti
 成果物の置き場は種別ごとの正典（`.agents/skills/<名前>` か `.github/skills/<名前>` / `.statemachine/<名前>` /
 `.agents/workflows/<名前>.json`）。merge は人が行う——push までで止める。
 
+### 19. 評価（`src/main/evaluation.js`）
+
+**人が画面で応答に点を付ける口は持たない。** 評価は自動（応答・実行の完了時）か、会話の横断検索から
+まとめて行い、結果は §18.1 の `workload: evaluation` の行として agent-audit へ渡す。観測への変換
+（`extract`）・洞察への畳み込み（`distill`）・集計（`usage`）は agent-audit が行い、agent-app は数字を
+作らない。設計と却下した案は
+[Opik 相当の設計](../plans/2026-09-19-agent-app-opik-equivalent-observability-design.md)。
+
+| 項目 | 内容 |
+|---|---|
+| 問い | 固定文 2 つ（`QUESTIONS`）。`quality` は 3 段の `score`、`issue` は `none` / `skill-gap` / `prompt-issue` / `tool-failure` / `config-issue` / `avoid` の `choice`（agent-audit の観測の種類と同じ語彙）。人が編集する設定にはしない |
+| 判定 AI | 自動は agent-herd `judge`（`--min-confidence 0.55`。棄権したら行を書かない）だけ。まとめて評価は選んだ AI のヘッドレス 1 回（読み取り専用。JSON で答えさせる）でもよく、そのときは本文を `agent-audit scrub` で伏せ字化してから渡す（規則を JS へ写さない） |
+| 契機（自動） | `turn:done` の直前（`evaluator.noteTurn`）と `run-history.append`（`audit.onFeed` の聞き手 `noteRun`）。`config.evaluation.mode` が `sample` なら成功した応答・実行は 5 件に 1 件、失敗は必ず。`all` はすべて、`off` は無し |
+| 契機（まとめて） | `evaluation:batch { keys, cli, model }`。`keys` は検索の record の key。1 回 200 件まで。同時に 1 つ |
+| 進め方 | キューに積んで背景で 1 件ずつ（ターンや端末が動いていれば 30 秒後にやり直す）。agent-herd が無ければ何もしない（ADR-11） |
+| 状態 | `evaluation:status` / `evaluation:changed` … `{ mode, available, running, queued, evaluated, issues, lastError, batch: { total, done, issues, skipped, cli, model, running } }` |
+| 課題を渡す | `insight:handoff { id, mark }` → `{ title, prompt, exported, warning }`。依頼文は `handoffPrompt`（対象・課題・根拠。改善案は載せない）。renderer はフォークと同じダイアログ（リポジトリ・AI・モデル・権限。位置とフォーク先は隠す）を開き、新しい会話を作ってその依頼文を最初のターンとして送る（`sendCreated`）。送れたら `mark: true` で呼び直し、`agent-audit tasks --mark-exported --id <id>` で洞察が `exported` になる（監査ストアに書くのは agent-audit だけ）。ダイアログを閉じただけなら課題は残る |
+| 課題の根拠 | `insight:evidence { observationIds }` → `[{ kind: conversation \| task \| workflow \| external, title, repo, id, ts, … }]`。`audit.evidenceOf` が `observations/*.jsonl` の `record_id` / `evidence` を `records/*.jsonl` で引き、`tool: agent-app` の会話の行は会話 ID（`ref`）から `sessions/<id>.json` へ、成果物の行は `artifact` へ写す。カードを描くときに 1 回だけ呼ぶ（受信箱の一覧からは呼ばない） |
+| まとめて評価の記録 | 終わった batch を `userData/evaluation/batches.json`（最新 20 件）に残す。受信箱が §17 の材料にする |
+
+agent-audit 側の受け口: 台帳の `used` / `evaluation` を record に写し、`evaluation.issue` が `none` 以外の行は
+`extract` の filters に関係なく観測 1 つ（`kind` = issue、`scope.target` に対象、`group` に `<kind>:<name>`）
+にする。対象は `artifact` → `used.skills[0]` → `used.tools[0]` の順で引く（`rules.target_of`）。`usage --json` は
+評価の行を `runs` に数えず、`evaluations` / `quality_avg` / `issues` と全体の `evaluation` を出す。
+
 ### 付録. テスト
 
 `npm test` は `node --test test/*.test.js` を実行する。
@@ -1290,6 +1320,8 @@ agent-loop の `audit-calibrate-hook.py` と同じ並びで、`extract` / `disti
 | `update.test.js` | 版の比較、更新元の判定、manifest の正規化、取得と sha256 の照合、`agent-project update --json` の読み方、確認・取り込み（偽のホストシェル）、入れ替えの cmd、起動時と定期、`scripts/publish-update.js` | なし |
 | `ui-consistency.test.js` | 画面の一貫性（端末ミラーと入力欄は共有の実体、私物の複製を作らない、直値の色を足さない、見出しを 2 つの層で描かない、「共有に依頼」はどの入力欄でも同じ形、受信箱はメニューの領域・一覧の行・件数の印で組み判定は main） | なし |
 | `audit.test.js` | 監査（§18）: 台帳の行の形、申告が本体を止めないこと、連鎖の許容終了コードと打ち切り、延期、agent-audit が無い場合、生成する設定、成果物・洞察・レポートの読み取り、提出と改善（偽のホストシェル）、二重防止、申告の結線（実行履歴・共有の台帳）、整理 | なし |
+| `evaluation.test.js` | 評価（§19）: 設定の正規化、標本、判定 AI に渡す本文、judge とヘッドレスの出力の読み方、会話へ渡す依頼文、`used` と評価の行の形、自動評価（失敗は必ず・sample・棄権・agent-herd 無し・延期）、実行の評価の結線、まとめて評価（上限・進み具合・伏せ字化・記録と受信箱の材料）、根拠の引き方 | なし |
+| `evaluation-electron.test.js` | Electron 実機で評価を通す: 課題のカードと根拠のリンクから会話へ、「会話で扱う」のダイアログ（閉じただけなら残る）、検索の足元から「まとめて評価」（偽の agent-herd judge）→ 台帳の評価の行 → 受信箱の未読 | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 | `attention.test.js` | 受信箱の投影（§17）: 完了＋未見 → 未読、完了＋既読 → none、承認・選択・入力の待ち → 要対応、答えが届けば消える、実行中 → none、古いデータ・基準時刻、`attentionSeen` の保存 | なし |
 | `attention-electron.test.js` | Electron 実機で受信箱を通す: 正典（会話・実行履歴・bus）だけを置いて起動し、メニューの件数、領域の一覧と本文、`attention:list` の投影、項目から会話・タスク・ワークフローの画面へ、開いたら `attentionSeen` に足されて未読が消える、答えが届けば要対応が消える | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
 | `electron-smoke.test.js` | Electron 実機で四領域を移動し、タスクの「手順」→「編集」と＋の作成フォーム（親の slot）を開き、ワークフローの「変更を相談」で会話の置き場を開き、共有の一覧・カード・参加者と、会話の入力先「共有に依頼」を通す | electron バイナリ、Playwright の Electron ドライバ、表示先のいずれかが無い |
@@ -1313,3 +1345,5 @@ agent-loop の `audit-calibrate-hook.py` と同じ並びで、`extract` / `disti
 サイドバー上部の「会話を検索」と新規会話の「過去の会話から始める」から同じ検索画面を開く。アプリ内外の保存済み会話を対象に、タイトル・本文、エージェント、日付、リポジトリ、取得元、モデルで絞り込む。日付指定なしを既定とし、保存先の更新情報（ファイル更新時刻またはDBの更新日時）を使って候補を新しい順に並べ、見つかった会話から順に一覧へ積む。ページも「前へ」「次へ」も持たず、状態の1行に調べた件数・一致件数を出し、いつでも中止できる。一覧は100件ずつ描き、下端まで来たら続きを描く。1回の検索で表示するのは2000件までとし、超えたときは条件を絞るよう1行で伝える。一度調べた会話は次の検索から読み直さないので、2回目以降は待ち時間なく一致件数と総件数を確定して出せる。検索条件を変更した時点で選択・詳細・古い結果をクリアし、読み込み中だった詳細が後から戻らないようにする。走査の途中では総件数を確定値として表示しない。実行環境の区別は内部で処理し、利用者に選択を求めない。
 
 選択した会話は読み取り専用でプレビューする。会話末尾と各完了応答の操作を「フォーク」に統一する。ダイアログでフォークする位置を変更でき、指定した完了応答までを対象にする。開いている会話も「••• → この会話をフォーク」から同じダイアログを開き、既定は最後の完了応答、作業フォルダは元の会話と同じものを初期選択する。会話の完了した回答の下の「フォーク」も同じダイアログを開き、位置はその回答を初期選択する。リポジトリは左ペインと同じコンボボックス形式、エージェント・モデル・権限は会話入力欄と同じポップオーバー形式で選択する。フォーク先はセッション・タスク・ワークフロー・スキルから選ぶ。「セッション」は選択設定の新規会話で開始する。それ以外は判定を行わず、選ばれた形（スキルは知識・判断、タスクは単独担当の定型手順、ワークフローは複数担当の引き渡し・統合）の作成依頼として整理し、同じエージェント・モデルで、タスク・ワークフローは専用の作成画面、スキルは新規会話で作成を開始する。青い「フォーク」ボタンは右寄せにする。フォーク時は、端末接続・表示準備と初回送信の受付通知が揃った時点でダイアログを閉じる。会話・タスク・ワークフロー共通で、送信受付後のデータ再取得や一覧更新、AIの応答完了は待たない。送信受付後のエラーは作成先画面で知らせる。準備に失敗した場合はダイアログにエラーを表示する。元の会話の継続にはしない。取得中の更新や本文の欠損を検知した場合は、再取得または会話のJSON追加へ案内する。フォークしたセッションの表題は元の会話名に「（フォーク）」を添える。検索画面を閉じても元画面の入力を保持する。
+
+結果の行にはチェックがあり、足元の「選んだ会話をまとめて評価」で選んだ会話（アプリ外の CLI・VS Code の会話を含む）を評価に回す（§19）。「すべて選ぶ」は置かず、検索の絞り込みで対象を決める。一度に 200 件まで。使う AI は足元の実行設定（会話の入力欄と同じポップオーバー）で選び、既定はローカルの判定 AI。評価は背景で進み、足元の 1 行に進み具合が出る。

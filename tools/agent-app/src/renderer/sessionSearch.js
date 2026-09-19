@@ -8,6 +8,9 @@ const SessionSearch = (() => {
   // 見つかった端から受け取り、画面には 100 件ずつ足す（下まで来たら続きを描く）。
   const PAGE = 100;
   let rows = [], rendered = 0, state = null;
+  // まとめて評価: 行のチェックで選び、足元の操作 1 つで出す（設定の一覧と同じ作法）。
+  const picked = new Set();
+  let evaluation = null;   // evaluation:status（進み具合は main が持つ）
   const name = p => String(p || '').split(/[/\\]/).filter(Boolean).pop() || 'フォルダ不明';
   const source = s => s === 'app' ? 'agent-app' : s === 'vscode' ? 'VS Code' : 'CLI';
   const node = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; };
@@ -45,7 +48,7 @@ const SessionSearch = (() => {
     for (const row of $('search-results').querySelectorAll('.active, .on')) row.classList.remove('active', 'on');
   }
   function clearResults() {
-    clearPreview(); rows = []; rendered = 0;
+    clearPreview(); rows = []; rendered = 0; picked.clear(); batchControls();
     $('search-results').replaceChildren();
     $('search-errors').hidden = true; $('search-error-detail').textContent = '';
   }
@@ -68,7 +71,48 @@ const SessionSearch = (() => {
     row.dataset.key = record.key;
     const item = node('li', 'row-item', '');
     if (selected?.key === record.key) { row.classList.add('on'); item.classList.add('active'); }
-    item.append(row); $('search-results').append(item);
+    const check = document.createElement('input');
+    check.type = 'checkbox'; check.className = 'row-check'; check.checked = picked.has(record.key);
+    check.setAttribute('aria-label', `「${record.title}」を評価の対象にする`);
+    check.onchange = () => { if (check.checked) picked.add(record.key); else picked.delete(record.key); batchControls(); };
+    item.append(check, row); $('search-results').append(item);
+  }
+  // 足元の操作。選んだ件数・使う AI・状態の 1 行。数字は main（evaluation:status）のもの。
+  function batchControls() {
+    const n = picked.size;
+    const busy = !!(evaluation && evaluation.batch && evaluation.batch.running);
+    $('search-batch-count').textContent = n ? `選んだ ${n} 件` : '会話を選ぶとまとめて評価できます';
+    $('search-batch-start').disabled = !n || busy;
+    const b = evaluation && evaluation.batch;
+    let text = '';
+    if (b && b.running) text = `評価中 ${b.done + b.skipped} / ${b.total}`;
+    else if (b) text = `評価しました ${b.done} 件（課題あり ${b.issues} 件${b.skipped ? `・評価できず ${b.skipped} 件` : ''}）。課題は受信箱に届きます`;
+    if (evaluation && evaluation.lastError && b && !b.running) text += ` · ${evaluation.lastError}`;
+    $('search-batch-status').textContent = text || (n ? '評価は背景で進み、終わると受信箱に課題が届きます' : '');
+    $('search-batch-summary').textContent = `評価に使うAI: ${$('search-batch-agent').value || 'herd'}${$('search-batch-model').value.trim() ? ` · ${$('search-batch-model').value.trim()}` : ''}`;
+  }
+  async function batchAgents() {
+    const select = $('search-batch-agent');
+    const held = select.value;
+    const repo = deps.getConfig().lastRepo || (deps.getConfig().repos || [])[0] || '';
+    let entries = [];
+    try { entries = repo ? await window.api.listAgents(repo) : []; } catch { entries = []; }
+    const names = entries.filter(a => a.available).map(a => a.name);
+    if (!names.includes('herd')) names.unshift('herd');
+    select.replaceChildren(...names.map(n => new Option(n === 'herd' ? 'herd（ローカルの判定AI）' : n, n)));
+    select.value = names.includes(held) ? held : 'herd';
+    batchControls();
+  }
+  async function startBatch() {
+    const keys = [...picked];
+    if (!keys.length) return;
+    $('search-batch-start').disabled = true;
+    try {
+      evaluation = await window.api.evaluation.batch({ keys, cli: $('search-batch-agent').value, model: $('search-batch-model').value.trim() });
+      picked.clear();
+      for (const check of $('search-results').querySelectorAll('.row-check')) check.checked = false;
+    } catch (err) { $('search-batch-status').textContent = err.message; }
+    batchControls();
   }
   // 画面が埋まるまで描き、あとはスクロールに合わせて足す。
   function renderMore() {
@@ -168,9 +212,10 @@ const SessionSearch = (() => {
     const current = transfer;
     if (!current) return;
     current.loading = true;
-    $('search-transfer-start').textContent = current.routine ? '作成' : 'フォーク'; $('search-transfer-start').disabled = true;
+    $('search-transfer-start').textContent = current.mode === 'issue' ? '会話を始める' : current.routine ? '作成' : 'フォーク'; $('search-transfer-start').disabled = true;
     const repo = $('search-target-repo').value;
-    const worktree = current.record.appId && current.record.repo === repo ? current.record.defaults?.worktree : '';
+    const record = current.record || {};
+    const worktree = record.appId && record.repo === repo ? record.defaults?.worktree : '';
     $('search-worktree-note').hidden = !worktree;
     $('search-worktree-note').textContent = worktree ? `現在の作業フォルダを使います: ${worktree}` : '';
     $('search-target-agent').replaceChildren(new Option('エージェントを確認中…', ''));
@@ -182,9 +227,9 @@ const SessionSearch = (() => {
       current.agents = available;
       $('search-target-agent').replaceChildren(...available.map(a => new Option(a.name, a.name)));
       if (!available.length) $('search-target-agent').append(new Option('利用できるエージェントがありません', ''));
-      const preferred = available.find(a => a.name === current.record.agent);
+      const preferred = available.find(a => a.name === record.agent);
       if (preferred) $('search-target-agent').value = preferred.name;
-      $('search-target-model').value = preferred ? current.record.model || '' : '';
+      $('search-target-model').value = preferred ? record.model || '' : '';
       $('search-transfer-start').disabled = !available.length;
       $('search-transfer-status').textContent = '';
     } catch (err) { if (transfer === current) $('search-transfer-status').textContent = err.message; }
@@ -192,6 +237,8 @@ const SessionSearch = (() => {
   }
   function beginTransfer(record, boundary = null, routine = false) {
     transfer = { record, boundary, mode: 'fork', routine, busy: false };
+    $('search-boundary').closest('label').hidden = false;
+    $('search-intent').closest('label').hidden = false;
     $('search-transfer-title').textContent = routine ? 'この作業を定型化' : 'フォーク';
     const turns = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
     $('search-boundary').replaceChildren(...turns.map((m, i) => new Option(`${i + 1}: ${m.text.slice(0, 80)}`, m.id)));
@@ -206,6 +253,38 @@ const SessionSearch = (() => {
     repos((config.repos || []).includes(record.repo) ? record.repo : config.lastRepo || '');
     $('search-target-permission').value = record.appId ? record.defaults?.permission || 'confirm' : 'confirm';
     $('search-transfer-dialog').showModal(); targetChanged();
+  }
+  // 課題（受信箱）を新しい会話へ渡す。フォークと同じダイアログで、リポジトリ・AI・モデル・権限だけを選ぶ
+  // （フォークする位置・フォーク先は課題に無いので隠す）。
+  async function handoffIssue(issue) {
+    transfer = { record: null, issue, mode: 'issue', routine: false, busy: false };
+    $('search-transfer-title').textContent = '課題を会話で扱う';
+    $('search-transfer-source').textContent = issue.title || '';
+    $('search-boundary').closest('label').hidden = true;
+    $('search-intent').closest('label').hidden = true;
+    $('search-request').value = ''; $('search-transfer-status').textContent = '';
+    $('search-execution-settings').open = false;
+    const config = deps.getConfig();
+    repos(config.lastRepo || (config.repos || [])[0] || '');
+    $('search-target-permission').value = 'confirm';
+    $('search-transfer-dialog').showModal(); await targetChanged();
+  }
+  async function startIssue(current) {
+    const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
+    if (!repo || !cli) throw new Error('リポジトリとエージェントを選んでください');
+    const permission = $('search-target-permission').value;
+    const extra = $('search-request').value.trim();
+    const prompt = extra ? `${current.issue.prompt}\n\n## 追加の依頼\n${extra}` : current.issue.prompt;
+    $('search-transfer-status').textContent = '会話を作っています…';
+    const config = deps.getConfig();
+    const session = await window.api.createSession({ repo, cli, model, policy: 'direct', readonly: permission === 'ask', autoApprove: permission === 'auto', transport: config.transport, worktree: '' });
+    current.creating = true; $('search-transfer-close').disabled = true;
+    $('search-transfer-status').textContent = '課題を送っています…';
+    await deps.sendCreated({ session: { ...session, cli, model, readonly: permission === 'ask', autoApprove: permission === 'auto' }, prompt });
+    try { const handed = await window.api.insight.handoff(current.issue.id, { mark: true }); if (handed.warning) deps.notice(handed.warning, 'error'); }
+    catch (err) { deps.notice(`受信箱から消せませんでした: ${err.message}`, 'error'); }
+    deps.attentionChanged();
+    $('search-transfer-dialog').close(); close();
   }
   // 会話画面から、いま開いている会話をフォークする（検索画面と同じダイアログ）。
   // boundary・target を渡すと、その位置とフォーク先を選んだ状態で開く。
@@ -226,6 +305,7 @@ const SessionSearch = (() => {
     const controls = ['search-target-repo', 'search-target-agent', 'search-target-model', 'search-target-add', 'search-target-permission', 'search-boundary', 'search-intent', 'search-request'];
     current.busy = true; $('search-transfer-start').disabled = true;
     try {
+      if (current.mode === 'issue') { for (const id of controls) $(id).disabled = true; await startIssue(current); return; }
       const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
       if (!repo || !cli) throw new Error('保存先とエージェントを選んでください');
       for (const id of controls) $(id).disabled = true;
@@ -257,6 +337,7 @@ const SessionSearch = (() => {
   function open() {
     if (visible) { $('search-text').focus(); return; }
     visible = true; deps.hideSidebar();
+    batchAgents().catch(() => {});
     panels = ['main', 'automation', 'share-area', 'inbox-area', 'changes'].map(id => [id, $(id).hidden]);
     for (const [id] of panels) $(id).hidden = true;
     $('session-search').hidden = false; $('session-search-open').setAttribute('aria-expanded', 'true');
@@ -315,6 +396,11 @@ const SessionSearch = (() => {
       transfer = null;
     });
     $('search-transfer-start').onclick = startTransfer;
+    $('search-batch-start').onclick = startBatch;
+    $('search-batch-agent').onchange = () => { $('search-batch-model').value = ''; batchControls(); };
+    $('search-batch-model').oninput = batchControls;
+    window.api.evaluation.onChanged(status => { evaluation = status; batchControls(); });
+    window.api.evaluation.status().then(status => { evaluation = status; batchControls(); }).catch(() => {});
     $('session-search').addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); close(); } });
   }
   function openOrigin(origin) {
@@ -325,5 +411,5 @@ const SessionSearch = (() => {
     if (origin.key?.startsWith('public:')) { sharedMode(true); search(); }
   }
   async function forkPublic(key) { beginTransfer(await api.read(key)); }
-  return { init, open, close, forkCurrent, openOrigin, forkPublic };
+  return { init, open, close, forkCurrent, openOrigin, forkPublic, handoffIssue };
 })();

@@ -119,6 +119,58 @@ function workflowSources(repo, runs) {
   return out;
 }
 
+// 課題（agent-audit の洞察）→ 材料。人が結果を見るべきものなので受信箱に載せる。
+//   insights … audit.insights() の配列（洞察 1 つ = 1 ファイル。改訂されれば updated_at が進み、また未読になる）
+//   反証された（review.verdict: refuted）ものと、会話へ渡した（exported）ものは出さない。
+function targetOfInsight(ins) {
+  const scope = ins && ins.scope && typeof ins.scope === 'object' ? ins.scope : {};
+  const target = scope.target && typeof scope.target === 'object' ? scope.target : null;
+  const kind = target ? String(target.kind || '') : '';
+  const name = target ? String(target.name || '') : '';
+  return kind && name ? { kind, name } : null;
+}
+function insightSources(insights) {
+  const out = [];
+  for (const ins of Array.isArray(insights) ? insights : []) {
+    if (!ins || typeof ins !== 'object' || !ins.id) continue;
+    if (ins.exported) continue;
+    if (ins.review && ins.review.verdict === 'refuted') continue;
+    const target = targetOfInsight(ins);
+    const at = text(ins.updated_at || ins.ts || ins.created_at, 40);
+    if (!stamp(at)) continue;
+    out.push({
+      key: `issue:${ins.id}`, kind: 'issue', repo: '',
+      title: text(ins.statement, 120) || String(ins.id),
+      running: false, resultAt: at, outcome: 'issue', interaction: null,
+      target: { kind: 'issue', id: String(ins.id) },
+      issue: {
+        id: String(ins.id), target, statement: text(ins.statement, 400), kind: String(ins.kind || ''),
+        occurrences: Number(ins.occurrences) || 0, confidence: String(ins.confidence || ''),
+        evidence: (Array.isArray(ins.observation_ids) ? ins.observation_ids : []).slice(0, 20).map((v) => String(v)),
+      },
+    });
+  }
+  return out;
+}
+
+// まとめて評価の記録（evaluation.readBatches）→ 材料。終わったものだけ。行き先は「会話を検索」。
+function batchSources(batches) {
+  const out = [];
+  for (const b of Array.isArray(batches) ? batches : []) {
+    if (!b || typeof b !== 'object' || !b.id || b.running || !stamp(b.finishedAt)) continue;
+    const done = Number(b.done) || 0;
+    const issues = Number(b.issues) || 0;
+    const skipped = Number(b.skipped) || 0;
+    out.push({
+      key: `evaluation:${b.id}`, kind: 'evaluation', repo: '',
+      title: `まとめて評価 ${done} 件（課題あり ${issues} 件${skipped ? `・評価できず ${skipped} 件` : ''}）`,
+      running: false, resultAt: text(b.finishedAt, 40), outcome: 'done', interaction: null,
+      target: { kind: 'evaluation', id: String(b.id) },
+    });
+  }
+  return out;
+}
+
 // 材料 1 つ → 列。
 //   seen  … key → { resultAt }（最後に見た結果の時刻）
 //   since … 受信箱を使い始めた時刻。それ以前の結果は、見た記録が無くても既読と扱う
@@ -183,6 +235,6 @@ function normalizeSeen(raw) {
 
 module.exports = {
   QUEUES, MAX_ITEMS, MAX_SEEN,
-  conversationResult, conversationSources, taskSources, workflowSources,
+  conversationResult, conversationSources, taskSources, workflowSources, insightSources, targetOfInsight, batchSources,
   classify, project, markSeen, normalizeSeen,
 };

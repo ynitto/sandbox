@@ -17,7 +17,7 @@ LONG_SESSION_SECONDS = 1800.0
 # observation kind → insight kind / 定型の提案
 _INSIGHT_KIND = {"avoid": "rule-candidate", "skill-gap": "skill-improvement",
                  "config-issue": "config-fix", "prompt-issue": "usage-optimization",
-                 "learn": "usage-optimization"}
+                 "learn": "usage-optimization", "tool-failure": "config-fix"}
 _ACTION = {
     "avoid": "同じ失敗が繰り返されている。rules.md か tuning の禁止事項へ足すか、"
              "その CLI / モデルを候補から外す",
@@ -25,6 +25,18 @@ _ACTION = {
     "config-issue": "収集器か設定の欠落。reader か宣言を直す",
     "prompt-issue": "再試行が続いている。プロンプトか受入基準を見直す",
     "learn": "利用量の傾向。予算配分か文脈長の既定を見直す",
+    "tool-failure": "使っているツールで失敗が続いている。ツールの手順か設定を見直す",
+}
+# 観測の文に出す対象の呼び名（画面の言葉に合わせる。内部の綴りを混ぜない）。
+_TARGET_LABEL = {"skill": "スキル", "task": "タスク", "workflow": "ワークフロー", "tool": "ツール"}
+# 評価（agent-app の自動評価・まとめて評価）の issue → 観測の種類。`none` は観測にしない。
+EVALUATION_ISSUES = ("skill-gap", "prompt-issue", "tool-failure", "config-issue", "avoid")
+_ISSUE_TEXT = {
+    "skill-gap": "スキルの手順が足りず、依頼を満たせていない",
+    "prompt-issue": "依頼の書き方か受入基準が曖昧で、答えが要点を外している",
+    "tool-failure": "使っているツールの失敗で、作業が止まるかやり直しになっている",
+    "config-issue": "設定の不足か食い違いで、期待どおりに動いていない",
+    "avoid": "同じ失敗が繰り返されている",
 }
 
 
@@ -51,16 +63,53 @@ def _who(rec: dict) -> str:
     return f"{rec.get('agent_cli') or '?'}:{rec.get('model') or '?'}"
 
 
+def target_of(rec: dict) -> "dict | None":
+    """観測を紐づける対象 {kind, name}。成果物（タスク・ワークフロー・スキル）が最優先、
+    次に使ったスキル、次に使ったツール。無ければ None（「全体」の課題として扱う）。"""
+    art = rec.get("artifact")
+    if isinstance(art, dict) and art.get("kind") and art.get("name"):
+        return {"kind": str(art["kind"]), "name": str(art["name"])}
+    used = rec.get("used") if isinstance(rec.get("used"), dict) else {}
+    for kind, key in (("skill", "skills"), ("tool", "tools")):
+        vals = [str(v) for v in (used.get(key) or []) if str(v)]
+        if vals:
+            return {"kind": kind, "name": vals[0]}
+    return None
+
+
+def evaluation_issue(rec: dict) -> str:
+    """評価の行が指す問題の種類。評価でない・問題なし・知らない種類なら空。"""
+    ev = rec.get("evaluation")
+    if not isinstance(ev, dict):
+        return ""
+    issue = str(ev.get("issue") or "none")
+    return issue if issue in EVALUATION_ISSUES else ""
+
+
 def observe(rec: dict) -> "list[dict]":
     """record → 観測の芯（key / kind / text / group）。id・ts・evidence は呼び出し側が付ける。
     text は record 固有の数字を含めない一般形にし、同じ group の観測は同じ洞察へ畳む。"""
     out: "list[dict]" = []
     where, who = _where(rec), _who(rec)
+    target = target_of(rec)
+    target_key = f"{target['kind']}:{target['name']}" if target else ""
 
     def add(rule: str, kind: str, text: str, extra: str = "") -> None:
-        out.append({"key": f"rule:{rule}" + (f":{extra}" if extra else ""),
-                    "kind": kind, "text": text,
-                    "group": "|".join([kind, rule, where, who, extra])})
+        item = {"key": f"rule:{rule}" + (f":{extra}" if extra else ""),
+                "kind": kind, "text": text,
+                "group": "|".join([kind, rule, where, who, extra] + ([target_key] if target_key else []))}
+        if target:
+            item["target"] = dict(target)
+        out.append(item)
+
+    issue = evaluation_issue(rec)
+    if issue:
+        # 評価の行は「この 1 件をどう評価したか」しか言わない。他の規則（failed 等）は
+        # 評価される側の行に付くので、ここでは評価の観測 1 つだけを出して終える。
+        label = (f"{_TARGET_LABEL.get(target['kind'], target['kind'])} {target['name']}"
+                 if target else where)
+        add("evaluation", issue, f"{label} で {_ISSUE_TEXT[issue]}（{who} の評価）", issue)
+        return out
 
     status = str(rec.get("status") or "")
     error_class = str(rec.get("error_class") or "")

@@ -7,6 +7,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 応答と実行を自動で評価し、課題を受信箱に出す（0.15.0）
+
+OSS の Opik が持つ「評価して、まとめて、改善につなげる」を、サーバも SDK も入れずに既存の部品で組んだ
+（設計: `docs/plans/2026-09-19-agent-app-opik-equivalent-observability-design.md`）。人が画面で点を
+付ける口は持たない。
+
+- **自動評価。** 応答（`turn:done`）とタスク・ワークフローの実行が終わるたび、ローカルの判定 AI
+  （agent-herd `judge`）に「品質（3 段）」と「改善すべき点の原因（skill-gap / prompt-issue /
+  tool-failure / config-issue / avoid）」を訊く。設定 > 実行制御「応答と実行の自動評価」で
+  5 件に 1 件（既定。失敗は必ず）/ すべて / 使わない。確度が足りなければ行を書かない。
+  ターンや端末が動いている間は回さない。agent-herd が無ければ行が薄くなり、何も起きない。
+- **まとめて評価。** 「会話を検索」の結果にチェックと、足元の「選んだ会話をまとめて評価」を足した。
+  アプリ外（CLI・VS Code）の会話も対象。使う AI は足元の実行設定で選び、既定はローカルの判定 AI。
+  クラウドの AI を選ぶと `agent-audit scrub` で伏せ字化してから渡す。1 回 200 件まで。
+- **課題を受信箱に。** agent-audit の洞察を受信箱の「課題」として、対象（スキル / タスク /
+  ワークフロー / ツール / 全体）ごとにカードで並べる。置くのは対象・課題・根拠と「会話で扱う」だけで、
+  改善案の文は置かない。根拠は元の会話・タスクへのリンク（観測 → record → 会話 ID で引く）。
+  「会話で扱う」はフォークと同じダイアログ（リポジトリ・AI・モデル・権限）を開き、新しい会話に課題が
+  最初の依頼として渡る。改善策はそこで決める。渡した課題は `exported` になって受信箱から消える
+  （ダイアログを閉じただけなら残る）。まとめて評価が終わると、受信箱に「まとめて評価 n 件（課題あり m 件）」
+  が未読で届く。
+- **申告の行に「何を使ったか」。** 会話のターンの行に `used`（採用したスキル・実行したコマンド・
+  そこから引いたツール名）を載せ、評価は `workload: evaluation` の別の 1 行にした。
+- **利用状況に「評価」の 1 行**（件数・品質の平均・課題ありの件数と対象の種類）。数字は
+  `agent-audit usage --json` のもの。
+- agent-audit 側: `used` / `evaluation` を record に写し、`issue` が `none` 以外の行を対象つきの観測に
+  する（`rules.target_of`。`tool-failure` を観測の種類に追加）。`usage --json` に評価の列、
+  `scrub` と `tasks --id` の口を足した。
+- テスト: `test/evaluation.test.js`（17 件）、`test/evaluation-electron.test.js`（実機 1 件）、
+  `attention.test.js` / `ui-consistency.test.js` に追加、
+  agent-audit `tests/test_evaluation.py`（9 件）。agent-project `tests/test_state_git.py` の
+  一時リポジトリで git の auto gc を止めた（後始末との競合で CI が断続的に落ちていた）。
+
 ### agent-herd: 型付きの問いに確率つきで答える `judge`（Jev 型の判断 AI をローカルで）
 
 TypeSafe AI の Jev（System One モデル）が示した「文章を生成せず、決まった選択肢の上の

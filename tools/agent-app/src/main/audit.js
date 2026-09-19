@@ -65,6 +65,47 @@ function artifactOf(raw) {
   return { kind, name, origin: String(raw.origin || '') };
 }
 
+// 何を使ったか。応答の実行情報（type: command）と採用したスキルから引く。観測を「どのスキル・
+// どのツールの課題か」に束ねる鍵になる（agent-audit の rules.target_of）。数は 20 件で打ち切る。
+const USED_LIMIT = 20;
+const KNOWN_TOOLS = ['agent-herd', 'agent-loop', 'agent-flow', 'agent-project', 'agent-audit', 'agent-amigos',
+  'winauto', 'browser', 'wt-manager', 'git', 'npm', 'python', 'python3', 'node', 'tmux', 'docker', 'gh', 'glab'];
+function usedOf(message = {}) {
+  const skills = [];
+  const selection = message.skillSelection;
+  for (const item of Array.isArray(selection) ? selection : (selection && Array.isArray(selection.selected) ? selection.selected : [])) {
+    const name = typeof item === 'string' ? item : (item && (item.name || item.skill));
+    if (name && !skills.includes(String(name))) skills.push(String(name));
+  }
+  const commands = [];
+  const information = message.parts && Array.isArray(message.parts.information) ? message.parts.information : [];
+  for (const item of information) {
+    if (!item || item.type !== 'command') continue;
+    const line = String(item.title || item.detail || '').trim().split('\n')[0].slice(0, 120);
+    if (line && !commands.includes(line)) commands.push(line);
+  }
+  const tools = [];
+  for (const line of commands) {
+    const word = line.split(/\s+/)[0].replace(/^.*[\\/]/, '');
+    if (KNOWN_TOOLS.includes(word) && !tools.includes(word)) tools.push(word);
+  }
+  const out = {};
+  if (skills.length) out.skills = skills.slice(0, USED_LIMIT);
+  if (commands.length) out.commands = commands.slice(0, USED_LIMIT);
+  if (tools.length) out.tools = tools.slice(0, USED_LIMIT);
+  return Object.keys(out).length ? out : null;
+}
+
+function usedRow(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  for (const key of ['skills', 'commands', 'tools']) {
+    const list = Array.isArray(raw[key]) ? raw[key].map((v) => String(v || '').trim()).filter(Boolean) : [];
+    if (list.length) out[key] = list.slice(0, USED_LIMIT);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 // 台帳 1 行。`ts` が無い行は agent-audit が読み飛ばすので、ここで必ず刻む。
 function row(raw, { now = Date.now(), node = os.hostname() } = {}) {
   const out = {
@@ -88,8 +129,22 @@ function row(raw, { now = Date.now(), node = os.hostname() } = {}) {
   if (raw.mode) out.mode = String(raw.mode);
   const artifact = artifactOf(raw.artifact);
   if (artifact) out.artifact = artifact;
+  const used = usedRow(raw.used);
+  if (used) out.used = used;
+  if (raw.evaluation && typeof raw.evaluation === 'object') {
+    const ev = raw.evaluation;
+    out.evaluation = {
+      quality: num(ev.quality), confidence: num(ev.confidence),
+      issue: String(ev.issue || 'none'), method: String(ev.method || ''),
+      judge_model: String(ev.judge_model || ''), note: String(ev.note || '').slice(0, 400),
+    };
+  }
   return out;
 }
+
+// 申告を聞く側（自動評価など）。申告の失敗と同じく、聞く側の失敗も本体を止めない。
+const listeners = new Set();
+function onFeed(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
 // 1 行を足す。**この呼び出しが失敗しても本体の処理は止めない**——監査は副産物で、
 // 会話やタスクの成否を左右してはいけない（呼ぶ側は try で包まずに済む）。
@@ -100,6 +155,7 @@ function feed(userData, raw, options = {}) {
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(path.join(dir, `${dayKey(options.now || Date.now())}.jsonl`),
       `${JSON.stringify(rec)}\n`, 'utf8');
+    for (const fn of listeners) { try { fn(rec, raw, options.extra || null); } catch { /* 聞く側の失敗は申告に影響しない */ } }
     return rec;
   } catch {
     return null;
@@ -122,6 +178,27 @@ function feedTurn(userData, { session = {}, message = {}, sessionId = '' } = {},
     status: message.stopped ? 'cancelled' : failed ? 'failed' : 'done',
     error_class: failed && message.error ? 'answer' : '',
     session_id: sessionId,
+    used: usedOf(message),
+  }, options);
+}
+
+// 評価 1 件（自動評価・まとめて評価）。評価された側の行は書き換えず、別の 1 行として足す。
+//   evaluated … { workload, ref, session_id?, agent_cli, model, used?, artifact? }（評価された側）
+//   evaluation … { quality, confidence, issue, method, judge_model, note? }
+function feedEvaluation(userData, { evaluated = {}, evaluation = {} } = {}, options = {}) {
+  if (!evaluation || typeof evaluation !== 'object') return null;
+  return feed(userData, {
+    workload: 'evaluation',
+    ref: String(evaluated.ref || ''),
+    purpose: String(evaluated.workload || 'chat'),
+    agent_cli: String(evaluated.agent_cli || ''),
+    model: String(evaluated.model || ''),
+    seconds: 0,
+    status: 'done',
+    session_id: evaluated.session_id,
+    used: evaluated.used,
+    artifact: evaluated.artifact,
+    evaluation,
   }, options);
 }
 
@@ -146,7 +223,7 @@ function feedRun(userData, { root = '', record = {}, kind = 'task' } = {}, optio
     task_id: String(record.taskId || ''),
     run_id: String(record.runId || ''),
     artifact: { kind, name, origin: root ? `repo:${path.basename(root)}` : '' },
-  }, { ...options, now: Number.isFinite(finished) ? finished : options.now });
+  }, { ...options, now: Number.isFinite(finished) ? finished : options.now, extra: { root, record, kind } });
 }
 
 // 共有（LAN）で引き受けた依頼 1 件。share/ledger の行を台帳の形へ写す。
@@ -227,6 +304,54 @@ function insights(userData, { limit = 20 } = {}) {
   return items
     .sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))
     .slice(0, limit);
+}
+
+// 洞察の根拠（観測 id）→ 元の出来事。observations/*.jsonl の record_id を records/*.jsonl で引き、
+// 台帳の行（tool: agent-app）なら会話 ID（ref）や成果物へ辿れる形にする。数字は作らない。
+// 受信箱の一覧（15 秒ごと）からは呼ばない——カードを描くときに 1 回だけ（insight:evidence）。
+function readJsonl(file) {
+  const out = [];
+  let text = '';
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return out; }
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try { out.push(JSON.parse(t)); } catch { /* 追記中の尻切れ */ }
+  }
+  return out;
+}
+function evidenceOf(userData, observationIds = [], { limit = 20 } = {}) {
+  const wanted = new Set((Array.isArray(observationIds) ? observationIds : []).map((v) => String(v || '')).filter(Boolean));
+  if (!wanted.size) return [];
+  const store = storeDir(userData);
+  const list = (dir) => { try { return fs.readdirSync(dir).filter((n) => n.endsWith('.jsonl')).sort().reverse(); } catch { return []; } };
+  const recordIds = new Map();      // record id → observation id（先勝ち）
+  for (const name of list(path.join(store, 'observations'))) {
+    for (const obs of readJsonl(path.join(store, 'observations', name))) {
+      if (!obs || !wanted.has(String(obs.id || ''))) continue;
+      for (const rid of [obs.record_id, ...(Array.isArray(obs.evidence) ? obs.evidence : [])]) {
+        if (rid && !recordIds.has(String(rid))) recordIds.set(String(rid), String(obs.id));
+      }
+    }
+  }
+  const found = [];
+  const seen = new Set();
+  for (const name of list(path.join(store, 'records'))) {
+    if (found.length >= limit || seen.size >= recordIds.size) break;
+    for (const rec of readJsonl(path.join(store, 'records', name))) {
+      const id = String((rec && rec.id) || '');
+      if (!recordIds.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      found.push({
+        observationId: recordIds.get(id), recordId: id, ts: String(rec.ts || ''), tool: String(rec.tool || ''),
+        workload: String(rec.workload || ''), purpose: String(rec.purpose || ''), ref: String(rec.ref || ''),
+        sessionId: String(rec.session_id || ''), agentCli: String(rec.agent_cli || ''),
+        artifact: rec.artifact && typeof rec.artifact === 'object' ? { kind: String(rec.artifact.kind || ''), name: String(rec.artifact.name || ''), origin: String(rec.artifact.origin || '') } : null,
+      });
+      if (found.length >= limit) break;
+    }
+  }
+  return found.sort((a, b) => b.ts.localeCompare(a.ts));
 }
 
 function reports(userData, { limit = 10 } = {}) {
@@ -385,6 +510,14 @@ class Auditor {
     };
   }
 
+  // 課題を会話へ渡したら、その洞察に exported を書かせる（監査ストアに書くのは agent-audit だけ）。
+  async markExported(id) {
+    if (!(await this.probe())) return { ok: false, error: 'agent-audit がホストにありません' };
+    const base = ['agent-audit', '--config', this.configPath()];
+    const r = await this.shell().run(host.quoteArgv([...base, 'tasks', '--mark-exported', '--id', String(id)]), { timeoutMs: 60000 });
+    return { ok: !!r.ok, error: r.ok ? '' : String(r.error || r.output || '').split('\n').slice(-2).join('\n') };
+  }
+
   schedule({ startupDelayMs = 90000, tickMs = 60 * 1000 } = {}) {
     this.unschedule();
     const cfg = this.config();
@@ -410,6 +543,6 @@ class Auditor {
 
 module.exports = {
   FEED_DIR, STORE_DIR, CONFIG_NAME, ARTIFACT_KINDS, STATUSES, STEPS,
-  feedDir, storeDir, configFile, row, feed, feedTurn, feedRun, feedShare,
-  generateConfig, stepScript, artifacts, insights, reports, Auditor,
+  feedDir, storeDir, configFile, row, feed, feedTurn, feedRun, feedShare, feedEvaluation, usedOf, onFeed,
+  generateConfig, stepScript, artifacts, insights, evidenceOf, reports, Auditor,
 };
