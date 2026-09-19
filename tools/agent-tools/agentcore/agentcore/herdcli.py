@@ -108,6 +108,11 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
   判断（型付きの問いに確率つきで答える。文章は生成しない）:
     judge --questions <問い>  状態（stdin）に対して choice / boolean / score で答える
 
+  設定（各 PC の ~/.agents/agent-herd.yaml）:
+    config                  いまの設定を表示する（--json / --check judge）
+    config set <鍵> <値>    設定を書く（鍵: judge.model、値: モデル名 / auto / off）
+    config unset <鍵>       設定を消す（auto に戻す）
+
   観測（LLM を呼ばない）:
     status [LOG]          いまの進捗を 1 行 JSON で返す
     follow [LOG]          進捗ログを追尾表示する
@@ -499,7 +504,7 @@ JUDGE_HELP = f"""使い方: {PROG} judge --questions <問い> [オプション] 
                            {{"type":"score","instructions":"…","criteria":["low","mid","high"]}}
                            どの型も "other":"説明" で「どれでもない」を足せる
   --state <パス>           状態をファイルから読む（省略時は stdin）
-  --model <モデル>         既定 {DEFAULT_MODEL_PLACEHOLDER}
+  --model <モデル>         既定は設定（config の judge.model）、無ければ {DEFAULT_MODEL_PLACEHOLDER}
   --min-confidence <0-1>   確度がこれ未満の問いを abstained に載せ、終了コード 1
   --samples <N>            ollama が logprobs を返さないとき、N 回引いて票数を確率にする
   --think on|off|auto      thinking の指定（既定 off。auto は送らない）
@@ -520,7 +525,7 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
         print(JUDGE_HELP.replace(DEFAULT_MODEL_PLACEHOLDER, judge.DEFAULT_MODEL))
         return 0
     questions_arg = state_path = None
-    model = judge.DEFAULT_MODEL
+    model: "str | None" = None
     min_confidence = 0.0
     samples = 1
     think: "bool | None" = False
@@ -590,6 +595,7 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
 
     from agentcore.hostenv import load_profile_env
     load_profile_env()
+    model = model or judge.pinned_model() or judge.DEFAULT_MODEL
     try:
         result = judge.evaluate(state, questions, model=model, think=think,
                                 samples=samples, request=request)
@@ -605,6 +611,88 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
     # 確度が足りない＝決めていない。静かに答えへ倒さず、終了コードで伝える（decide と同じ作法）。
     return 1 if held else 0
 
+
+
+# ---------------------------------------------------------------------------
+# config — 各 PC の設定ファイル（~/.agents/agent-herd.yaml）
+# ---------------------------------------------------------------------------
+CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
+       {PROG} config set <鍵> <値>
+       {PROG} config unset <鍵>
+
+  各 PC の設定ファイル（~/.agents/agent-herd.yaml / .yml / .json）を読み書きする。
+
+  鍵と値:
+    judge.model   判定 AI（judge）に使うモデル。
+                  auto   … ローカル定義（aider / ollama）で回しているときだけ judge（既定）
+                  <名前> … どの実行でも判定はこのモデルの judge へ（例 gemma4:e4b）
+                  off    … judge をどの実行でも使わない
+
+  --json          設定を JSON で出す（agent-app が読む形）
+  --check judge   判定をモデル指名で回す設定なら終了コード 0、それ以外は 1
+                  （スキルが「judge に任せてよいか」を確かめる口）"""
+
+
+def cmd_config(argv, *, err=None, out=None) -> int:
+    """設定ファイルの表示と書き換え。値の語彙は `agentcore.herdconfig`。"""
+    err = err or sys.stderr
+    out = out or sys.stdout
+    from agentcore import herdconfig
+
+    tokens = list(argv)
+    if tokens and tokens[0] in ("-h", "--help", "help"):
+        print(CONFIG_HELP)
+        return 0
+    if tokens and tokens[0] in ("set", "unset"):
+        verb, rest = tokens[0], tokens[1:]
+        expected = 2 if verb == "set" else 1
+        if len(rest) != expected:
+            _err(f"config {verb} は鍵{'と値' if verb == 'set' else ''}を取ります"
+                 f"（例: config set judge.model gemma4:e4b）", err=err)
+            return 2
+        try:
+            path = (herdconfig.set_value(rest[0], rest[1]) if verb == "set"
+                    else herdconfig.unset_value(rest[0]))
+        except herdconfig.ConfigError as exc:
+            _err(str(exc), err=err)
+            return 2 if "未知の設定" in str(exc) else 1
+        print(json.dumps({"path": str(path), **{"judge": herdconfig.judge_setting()}},
+                         ensure_ascii=False), file=out)
+        return 0
+    as_json = False
+    check = None
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--json":
+            as_json = True
+        elif token == "--check":
+            if i + 1 >= len(tokens) or tokens[i + 1] != "judge":
+                _err("--check は judge だけを受け取ります", err=err)
+                return 2
+            check = "judge"
+            i += 1
+        else:
+            _err(f"config は {token} を受け取りません", err=err)
+            return 2
+        i += 1
+    info = herdconfig.describe()
+    if check == "judge":
+        judge_info = info["judge"]
+        print(json.dumps(judge_info, ensure_ascii=False), file=out)
+        return 0 if judge_info["mode"] == "pinned" else 1
+    if as_json:
+        print(json.dumps(info, ensure_ascii=False), file=out)
+        return 0
+    judge_info = info["judge"]
+    print(f"設定ファイル: {info['path'] or '（無し。既定の置き場: ' + info['default_path'] + '）'}",
+          file=out)
+    label = {"auto": "auto（ローカル定義の実行だけ judge）", "off": "off（judge を使わない）"}
+    print("judge.model: " + (judge_info["model"] if judge_info["mode"] == "pinned"
+                            else label[judge_info["mode"]]), file=out)
+    if judge_info.get("error"):
+        print(f"注意: {judge_info['error']}", file=out)
+    return 0
 
 
 def _capture_argv(built: dict) -> "tuple[int, str]":
@@ -1001,6 +1089,8 @@ def main(argv=None, prog=None) -> int:
         return cmd_decide(rest)
     if sub == "judge":
         return cmd_judge(rest)
+    if sub == "config":
+        return cmd_config(rest)
 
     # 未知。定義名なら exec を案内する（黙って別解釈しない）。
     if _known_definition(sub):
@@ -1008,7 +1098,7 @@ def main(argv=None, prog=None) -> int:
              f"定義を指定して回すなら: {PROG} exec {sub} [--model <モデル>]")
         return 2
     known = sorted({*ADAPTERS, *OBSERVE_ALIASES, "defs", "exec", "chat", "harness", "decide",
-                    "judge"})
+                    "judge", "config"})
     _err(f"未知のサブコマンド: {sub!r}（使えるのは {', '.join(known)}）")
     return 2
 

@@ -393,6 +393,12 @@ agent-herd replay --arm model=gemma4:e4b,think=off,repeat=3
 **記録の置き場ではない**——会話の JSONL は `AGENT_OLLAMA_LOG_DIR` のまま）/
 `AGENT_OLLAMA_HISTORY` / `AGENT_OLLAMA_NO_READLINE`（TUI の行編集を切る）。
 
+設定ファイル: `~/.agents/agent-herd.yaml`（`agent-herd config` で読み書き）。いま置けるのは
+`judge.model`——判定 AI（`agent-herd judge`）に使うモデル。`agent-herd config set judge.model gemma4:e4b`
+とすると、クラウド CLI で回している実行でも遷移条件・route・filter・assess の判定だけを LAN の
+ollama へ回し、判定にクラウドのトークンを使わない。`off` で judge を止め、`unset` で既定
+（ローカル定義の実行だけ）に戻る。agent-app の「設定 > 実行制御」からも同じ設定を変えられる。
+
 `OLLAMA_HOST` が未設定のときは `~/.profile` を評価して `OLLAMA_*` / `AGENT_OLLAMA_*` を
 補完する。エンジンは agent-ollama を**非ログインシェル**の subprocess として起動するため、
 `~/.profile` の `export OLLAMA_HOST=...` はそのままでは届かない——設定はあるのに既定の

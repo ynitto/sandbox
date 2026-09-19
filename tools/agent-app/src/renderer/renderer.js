@@ -906,6 +906,38 @@ function renderSettingsRestrictions() {
     $(`tier-${tier}-model`).disabled = !allowed;
     $(`tier-${tier}-cli`).closest('.tier-row').classList.toggle('is-off', !allowed);
   }
+  renderJudgeSetting();
+}
+
+// 設定 > 実行制御「遷移や振り分けの判定」。値は agent-herd の設定ファイルにあり（読み書きは
+// main が agent-herd config に頼む）、agent-herd が無ければ行を薄くして触れなくする。
+// モデルの入力欄は「いつも、指定したモデルで」を選んだときだけ出す。
+function renderJudgeSetting() {
+  const available = !!(state.judge && state.judge.available);
+  const mode = $('judge-mode');
+  mode.disabled = !available;
+  mode.closest('.setting-field').classList.toggle('is-off', !available);
+  $('judge-model-row').hidden = !(available && mode.value === 'model');
+  $('judge-model').disabled = !available;
+}
+
+function judgeValue() {
+  return { mode: $('judge-mode').value, model: $('judge-model').value.trim() };
+}
+
+async function loadJudgeSetting() {
+  state.judge = { available: false, value: { mode: 'auto', model: '' } };
+  $('judge-mode').value = 'auto';
+  $('judge-model').value = '';
+  renderJudgeSetting();
+  try {
+    state.judge = await api.judge.get();
+  } catch {
+    state.judge = { available: false, value: { mode: 'auto', model: '' } };
+  }
+  $('judge-mode').value = state.judge.value.mode;
+  $('judge-model').value = state.judge.value.model || '';
+  renderJudgeSetting();
 }
 
 function skillCandidates() {
@@ -2224,6 +2256,8 @@ async function openSettings() {
   const policy = document.querySelector(`input[name="default-policy"][value="${execution.defaultPolicy}"]`);
   if (policy) policy.checked = true;
   renderSettingsRestrictions();
+  // agent-herd に聞くので待たない。届いたら行だけ直す。
+  const judgeLoaded = loadJudgeSetting();
   $('default-permission-mode').value = execution.defaultReadonly ? 'ask'
     : (execution.defaultAutoApprove ? 'auto' : 'confirm');
   $('max-concurrent').value = execution.maxConcurrent;
@@ -2253,6 +2287,7 @@ async function openSettings() {
   selectSettingsTab('app');
   setSidebar(false);
   $('app-settings').showModal();
+  await judgeLoaded;
 }
 
 async function saveSettings() {
@@ -2262,6 +2297,17 @@ async function saveSettings() {
   $('settings-error').hidden = true;
   try {
     state.config = await api.saveConfig(settingsPatch());
+    // 判定の設定は agent-herd 側のファイル。変えたときだけ書きに行く（agent-herd が無ければ触らない）。
+    if (state.judge && state.judge.available) {
+      const next = judgeValue();
+      const prev = state.judge.value;
+      if (next.mode !== prev.mode || (next.mode === 'model' && next.model !== prev.model)) {
+        state.judge = { ...state.judge, value: await api.judge.set(next) };
+        $('judge-mode').value = state.judge.value.mode;
+        $('judge-model').value = state.judge.value.model || '';
+        renderJudgeSetting();
+      }
+    }
     state.settingsSkills = [...state.config.instructions.skills];
     state.settingsActions = state.config.instructions.startupActions.map((action) => ({ ...action }));
     state.settingsQuick = (state.config.instructions.quickRequests || []).map((item) => ({ ...item }));
@@ -2657,6 +2703,7 @@ async function init() {
   Skills.init();
   AppUpdate.init({ notice });
   $('optimize-agents').onchange = renderSettingsRestrictions;
+  $('judge-mode').onchange = renderJudgeSetting;
   $('nav-toggle').onclick = () => setSidebar(!$('app').classList.contains('sidebar-open'));
   $('side-backdrop').onclick = () => setSidebar(false);
   document.addEventListener('click', (event) => closePopupMenus(document, event));

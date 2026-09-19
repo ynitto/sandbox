@@ -2,7 +2,7 @@
 name: statemachine-use
 description: 「ステートマシンを実行して」「ステートマシンを作成/作って」「YAMLワークフローを動かして」「ワークフローを回して」「エージェントループを起動して」「このYAMLを実行して」などで発動。作成モード（手順を.statemachine/{名前}/に生成）と実行モード（YAMLをLLM駆動で実行）を持つ。
 metadata:
-  version: 2.1.1
+  version: 2.2.0
   tier: experimental
   category: workflow
   tags:
@@ -56,6 +56,30 @@ ls .github/skills/
 7. **成功条件を `output_validator` で定義する** — 「第1行が `OK` か `FAILED`」のような機械が判定できる出力契約を states に書く。書かないとアクションの成否を確認できず、失敗したまま次のステートへ進む
 8. **成果物の正しさは `check` で測る** — `output_validator` が見るのは書式だけで、「OK」と書くのはモデル自身である。**成果物が実際に仕様どおり動くかを見るには、ハーネスが実行する検査コマンドを宣言する**（下記）
 9. **1 ステート 1 成果物** — 1 つのステートで作るファイルは 1 つだけにする（`write` に 2 つ以上を宣言した定義は投入前に落ちる）。小さいモデルは成果物を 2 つ同時に渡されると片方を丸ごと落とし、再投入を積んでも同じ落ち方をする（実測: 一括 0/3・1 成果物ずつ 3/3）。実装とテストなら 2 つのステートに割り、それぞれに `check` を付ける
+10. **分類・振り分け・段階の評価だけのステートは `judge:` で書く** — 「N 語のどれかを 1 語で答える」ステート（issue_triage の classify、レビューの結論など）は、アクションを書かず `judge:` に問いと選択肢を書く（`references/schema.md`「判定だけのステート」）。判定 AI があれば生成 0 で終わり、無ければ宣言から作った短いプロンプトで 1 回だけ生成する（`action` を併記すればそれが生成用の文になるが、書かない方が短くて安い）。理由や本文が要るステートには使わない（それは通常のアクション）
+11. **出力の内容で分岐する遷移は `outcome` で書く** — 同じステートから出る候補ごとに「この遷移が成立する結果」の短い名前を `outcome:` に書く（下記）。判定 AI（agent-herd の judge）はそれを選択肢にして「結果はどれか」を **1 問**で選ぶ——候補ごとに YES/NO を訊くより速く安く、2 つの条件が同時に真になる矛盾が構造として消える。judge が無い環境では同じ `outcome` が条件文として LLM に渡るので、定義を書き分けなくてよい
+
+**`outcome` — 分岐を「条件の列」ではなく「結果の選択肢」として書く**
+
+```yaml
+transitions:
+  - from: review
+    to: approve
+    outcome: "指摘なしで承認できる"        # 判定 AI の選択肢 A
+    priority: 1
+  - from: review
+    to: revise
+    outcome: "直すべき指摘がある"          # 選択肢 B
+    priority: 2
+  - from: review
+    to: ask
+    outcome: "判断できない"                # 選択肢 C（どれでもない、は自動で足される）
+    priority: 3
+```
+
+- 同じ元ステートの **LLM 評価が要る候補すべて**に `outcome` があるときだけ 1 問の選択になる。1 つでも欠けると従来どおり条件ごとの YES/NO
+- `condition_rule` で決まる候補（`check_ok` など）は選択肢に入らない。測れるものは測り、測れない残りだけを判定 AI に選ばせる
+- `condition` と併記してもよい（`condition` は judge が無い経路の条件文、`outcome` は選択肢の名前）。`condition` を省くと `outcome` が条件文の代わりになる
 
 **`check` — 遷移の材料を自己申告から実測へ移す**
 
@@ -181,6 +205,11 @@ transitions:
 name: "コードレビュー"
 initial_state: analyze
 states:
+  triage:                                    # 判定だけのステートは judge で書く（生成 0）
+    judge:
+      question: "このコードの変更はどの種類か"
+      choices: {BUGFIX: "不具合の修正", FEATURE: "機能の追加", REFACTOR: "振る舞いを変えない整理"}
+    output_key: change_kind
   analyze:
     action_file: actions/analyze.md
     output_key: analysis_result
@@ -193,12 +222,16 @@ states:
 transitions:
   - from: analyze
     to: approve
-    condition: "analysis_result が PASS で始まる"
+    condition_rule: "startswith:analysis_result:PASS"   # 第 1 行の書式で決まるなら測る
     priority: 1
   - from: analyze
     to: request_revision
-    condition: "analysis_result が PASS 以外で始まる"
+    outcome: "直すべき問題が見つかった"                    # 残りは判定 AI に選ばせる
     priority: 2
+  - from: analyze
+    to: approve
+    outcome: "問題は見つからなかった"
+    priority: 3
 ```
 
 ```markdown
@@ -259,6 +292,18 @@ python .github/skills/statemachine-use/scripts/next_state.py {名前} --initial-
 
 出力された `state_id` を現在のステートとして実行を開始する。
 
+**agent-herd の有無を 1 回だけ確かめる。** あれば遷移条件の判定を判定 AI（judge）に任せ、
+自分で YES/NO を考えない（③ で使う）。無ければ従来どおり自分で評価する——定義は同じでよい。
+
+```bash
+command -v agent-herd >/dev/null 2>&1 && agent-herd config --check judge >/dev/null 2>&1 \
+  && echo "JUDGE=yes" || echo "JUDGE=no"
+```
+
+> `agent-herd harness statemachine --workflow …` が使える環境では、この手順をすべて
+> ハーネスに任せる方が確実（ハーネスは同じ判定 AI を自分で呼ぶ）。会話の中で 1 ステートずつ
+> 回すときだけ、以下の手順に従う。
+
 ### Step 1〜N: ステートループ（terminal まで繰り返す）
 
 **現在のステートに入ったことを宣言する（毎ステート必須）:**
@@ -272,6 +317,17 @@ python .github/skills/statemachine-use/scripts/next_state.py {名前} --initial-
 現在のステートのアクションプロンプトを実行し、出力を `last_output` として記録する。
 
 > **重要**: アクション実行前に条件を確認してはならない。出力が確定してから条件リストを取得する。
+
+`judge:` を宣言したステート（判定だけのステート）は、アクションの代わりに次を行う:
+
+```bash
+python .github/skills/statemachine-use/scripts/next_state.py {名前} --state {現在のstate_id} --state-judge
+```
+
+- `judge` が `null` なら通常のステート。上のとおりアクションを実行する。
+- JUDGE=yes なら、`question` を `agent-herd judge` に渡す（stdin は `input` の展開文）。答えの `choice` が
+  `last_output`（`other` なら `unsure` の語）。**自分では選ばない。**
+- JUDGE=no なら、`fallback_action` をそのまま実行し、選択肢のキーを 1 語だけ答える。
 
 **② 条件を自動評価する（Python）**
 
@@ -296,9 +352,16 @@ python .github/skills/statemachine-use/scripts/next_state.py {名前} \
 > 旧ハーネス互換として `--list-conditions` / `--last-output` / `--output KEY=VALUE` も受け付ける。
 > 旧引数は `--context` に無いキーの補完としてのみ効く。新規の呼び出しでは使わない。
 
-**③ 残った条件を評価する（LLM）**
+**③ 残った条件を評価する（JUDGE=yes なら判定 AI、no なら LLM）**
 
-`needs_llm_eval: true` の条件のみ `last_output` に対して YES / NO で評価し、JSON を構築する:
+*JUDGE=yes* — ② の応答にある `judge_questions` をそのまま `agent-herd judge` に渡す。
+状態（アクションの出力全文）は stdin。自分では評価しない:
+
+```bash
+printf '%s' "{last_output 全文}" | agent-herd judge --questions '{②の judge_questions}' > .statemachine/{名前}/judge.json
+```
+
+*JUDGE=no* — `needs_llm_eval: true` の条件のみ `last_output` に対して YES / NO で評価し、JSON を構築する:
 ```json
 {"1": false}
 ```
@@ -307,6 +370,12 @@ python .github/skills/statemachine-use/scripts/next_state.py {名前} \
 **④ 遷移先を確定する（Python）**
 
 ```bash
+# JUDGE=yes: judge の答えをそのまま渡す（choice も boolean もスクリプトが読む）
+python .github/skills/statemachine-use/scripts/next_state.py {名前} \
+  --state {現在のstate_id} --judge-answers "$(cat .statemachine/{名前}/judge.json)" \
+  --context '{"last_output":"{last_outputの第1行}"}'
+
+# JUDGE=no: 自分で評価した JSON を渡す
 python .github/skills/statemachine-use/scripts/next_state.py {名前} \
   --state {現在のstate_id} --eval '{"1": false}' \
   --context '{"last_output":"{last_outputの第1行}"}'
@@ -314,7 +383,9 @@ python .github/skills/statemachine-use/scripts/next_state.py {名前} \
 
 出力: 次の `state_id`、`NONE`（一致なし）、`TERMINAL`（終端）
 
-> `condition_rule` がある条件は `--context` から自動評価され、`--eval` の値を上書きする。
+> `condition_rule` がある条件は `--context` から自動評価され、`--eval` / `--judge-answers` の値を上書きする。
+> `--judge-answers` が終了コード 3 で止まったら、judge が確度不足で決めていない。その条件だけ
+> 自分で評価して `--eval` で渡し直す。
 
 **⑤ 完了を記録する**
 

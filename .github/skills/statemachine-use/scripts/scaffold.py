@@ -85,6 +85,8 @@ def build_workflow_yaml(name: str, states: list[tuple[str, str]],
         "transitions:",
         "  # 直列の骨組み。check を宣言したステートからの遷移は",
         '  # condition_rule: "equals:check_ok:true" へ置き換える（測った事実で進む）。',
+        "  # 出力の内容で分岐する遷移は、候補ごとに outcome: \"結果の短い名前\" を書く",
+        "  # （判定 AI が「結果はどれか」を 1 問で選ぶ。無ければ条件ごとの YES/NO）。",
     ]
     chain = [state_id for state_id, _ in states] + [terminal_id]
     for src, dst in zip(chain, chain[1:]):

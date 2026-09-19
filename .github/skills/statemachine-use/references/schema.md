@@ -64,6 +64,7 @@ states:
 | `check_on_exhausted` | 文字列 | いいえ | `escalate` | 再投入を使い切っても落ちるときの動作。`escalate` \| `continue` \| `error` |
 | `check_feedback` | 真偽値 | いいえ | true | 再投入時に検査の出力を課題文へ足すか |
 | `max_tool_rounds` | 整数 | いいえ | 0（＝宣言なし） | 外部ハーネスがこのステートのツールループに許すモデル呼び出し回数（[呼び出し回数の上限](#呼び出し回数の上限-max_tool_rounds)） |
+| `judge` | オブジェクト | いいえ | — | **判定だけのステート**。問いと選択肢を書き、判定 AI が 1 語を選ぶ（[判定だけのステート](#判定だけのステート-judge)）。`action` を併記するとそれが判定 AI の無いときの生成用プロンプト（省略時は宣言から短い文を作る）。`check` / `terminal` とは併用できない |
 
 ### 呼び出し回数の上限 (max_tool_rounds)
 
@@ -201,6 +202,53 @@ states:
 受理して check に判定を委ねる。検査の再投入も同様に、前の試行が書いたファイルへの
 編集から直接入る。
 
+### 判定だけのステート (judge)
+
+「N 語のどれかを 1 語で答える」だけのステート（分類・振り分け・段階の評価）は、アクションを
+書かずに `judge:` で宣言する。
+
+```yaml
+states:
+  classify:
+    judge:
+      question: "このイシューの種類はどれか"
+      choices:
+        BUG: "動作の不具合の報告"
+        FEATURE: "新しい機能の要望"
+        QUESTION: "使い方の質問"
+      # input: "{{input}}"       # 判定 AI が読む状態。省略時は初期ステートなら input、他は last_output
+      # unsure: "UNSURE"         # どれでもない・確度不足のときに出す語
+      # min_confidence: 0.0      # これ未満なら unsure に倒す
+    output_key: classification
+transitions:
+  - from: classify
+    to: bug
+    condition_rule: "startswith:classification:BUG"
+```
+
+出力は選ばれたキー（か `unsure` の語）の 1 語で、`output_key` と `condition_rule` は通常の
+ステートと同じに使える。`output_validator` を書かなければ `startswith:BUG,FEATURE,QUESTION,UNSURE`
+が自動で付く。`action` / `action_file` を併記した場合、判定 AI があるときは使われず、無いときの
+生成用プロンプトになる（省略時は宣言から短い文を自動で作る。理由や本文を書かせないそちらの方が安い）。
+
+| 実行の形 | ステートの中で起きること |
+|---|---|
+| 判定 AI がある（ハーネス、`run_machine.py --judge auto` で agent-herd が使える） | judge に choice 1 問。**生成は 0**。`other`（どれでもない）と確度不足は `unsure` の語になる |
+| 判定 AI が無い | 宣言から作った短いプロンプト（選択肢を列挙し、キーを 1 語だけ答えさせる）で 1 回生成する。理由も本文も書かせないので、生成経路でもいちばん安い形 |
+
+`unsure` の語は `condition_rule` で拾える（例: `startswith:classification:UNSURE` で人へ回す）。
+どの候補にも当たらなければ優先度の低い無条件トランジションへ落ちる。
+
+### 出力契約の正規化と検査失敗の選別（実行系の動き）
+
+定義に書く項目ではないが、実行系はステートの中で次の順に動く。どれも「決定的な手段 →
+判定 AI → 生成」の順で、判定 AI が無くても生成（いちばん高い呼び出し）を増やさない。
+
+| 場面 | 決定的 | 判定 AI があれば | 最後の手段 |
+|---|---|---|---|
+| `output_validator` に合わない出力 | 契約の語が第 1 行の途中にある・大文字小文字が違う・後ろの行にある、を直す | 「どの契約の語に当たるか」を 1 問（確度 0.6 以上で採用） | 再生成（`max_retries`） |
+| `check` が落ちた | 環境の失敗（コマンド不在・モジュール不在・権限・接続・検査自体が動かない）なら再投入せず `check_on_exhausted` へ | 「同じ作業のやり直しで直るか」を 1 問（確度 0.85 以上の「直らない」だけ止める） | 従来どおり再投入（`check_retries`） |
+
 ### アクションの自動探索
 
 `action` も `action_file` も指定されていない場合、`actions/{state_id}.md` が存在すれば自動で読み込む。
@@ -236,6 +284,36 @@ transitions:
 | `condition_rule` | 文字列 | いいえ | — | 決定論的評価ルール。**LLM評価より優先**して実行される。書式は下記「condition_rule 書式」参照 |
 | `priority` | 整数 | いいえ | 0 | 評価順序（小さいほど先） |
 | `description` | 文字列 | いいえ | — | 人が読めるラベル |
+| `outcome` | 文字列 | いいえ | — | この遷移が成立する「結果」の短い名前。判定 AI の選択肢になる（下記「outcome と判定 AI」）。`condition` が無ければ条件文の代わりにもなる |
+
+### outcome と判定 AI（agent-herd judge）
+
+同じ元ステートから出る候補のうち **LLM 評価が要るものすべて**に `outcome` があると、
+評価は「条件ごとの YES/NO」ではなく **「結果はどれか」を選ぶ 1 問**になる。選択肢は各候補の
+`outcome`、それに「どれでもない」が自動で足される（選ばれると全候補が偽 = `NONE`）。
+
+```yaml
+transitions:
+  - from: review
+    to: approve
+    outcome: "指摘なしで承認できる"
+    priority: 1
+  - from: review
+    to: revise
+    outcome: "直すべき指摘がある"
+    priority: 2
+```
+
+| 実行の形 | 判定の行き先 |
+|---|---|
+| `agent-herd harness statemachine` | ハーネスが judge（1 トークン目の分布の読み出し）に 1 問で訊く。judge を使う条件は agent-herd の設定 `judge.model`（`agent-herd config`）による |
+| `run_machine.py`（既定 `--judge auto`） | agent-herd が PATH にあり `agent-herd config --check judge` が 0 なら judge に訊く。無ければ `outcome` を条件文にして LLM に YES/NO を生成させる |
+| 会話内の手動実行（`next_state.py`） | `--auto-eval` が `judge_questions` を返す。`agent-herd judge` に渡して `--judge-answers` で確定する（無ければ従来の `--eval`） |
+
+制約: `outcome` は同じ元ステートの中で互いに違う文にする（同じ文が 2 つあると選択肢に
+ならず、条件ごとの YES/NO に戻る）。`condition_rule` で決まる候補は選択肢に入らない。
+`outcome` だけの遷移は**無条件ではない**（無条件は `condition` も `condition_rule` も
+`outcome` も無い遷移）。
 
 ### 条件の自動探索
 
@@ -243,7 +321,7 @@ transitions:
 
 ### 無条件トランジション
 
-自動探索でも条件が見つからず `condition_rule` も無いトランジションは**無条件**として扱い、評価せずそのまま成立させる（空の条件文を LLM に渡さない）。
+自動探索でも条件が見つからず `condition_rule` も `outcome` も無いトランジションは**無条件**として扱い、評価せずそのまま成立させる（空の条件文を LLM に渡さない）。
 
 `next_state.py --auto-eval` は、最優先の候補が無条件のとき `conditions` を組まずに次の応答を返す:
 

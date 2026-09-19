@@ -191,6 +191,21 @@ stdout は 1 行の JSON で、問いごとに `choice` / `value` / `score` と 
 `confidence` が付く。確度が `--min-confidence` に届かない問いは `abstained` に載り、
 終了コードは 1 になる。答えを黙って採用させないためで、その問いは人か上位へ返す。
 
+ステートマシンの遷移条件、書込先の振り分け、単一基準の選別、投入時の採点は、agent-herd
+自身がこの `judge` を使う。既定ではローカルの定義（`aider` / `ollama`）で回しているときだけ
+使い、クラウド CLI で回しているときはそのクラウドに JSON を生成させる。クラウド CLI で作業
+しながら**判定だけをローカルに逃がす**には、判定に使うモデルを設定しておく:
+
+```bash
+agent-herd config set judge.model gemma4:e4b   # どの実行でも判定はこのモデルの judge へ
+agent-herd config                              # いまの設定を見る
+agent-herd config set judge.model off          # judge をどの実行でも使わない
+agent-herd config unset judge.model            # 既定（ローカルの定義のときだけ）に戻す
+```
+
+設定は各 PC の `~/.agents/agent-herd.yaml` に置かれる（§9.3）。agent-app の
+「設定 > 実行制御」からも同じ設定を変えられる。
+
 ### スキルを読み込む
 
 スキルは自動選択されない。名前を明示する。
@@ -361,12 +376,13 @@ agent-herd SUBCOMMAND ...   -> SUBCOMMAND ...
 | `harness run ...` | 引数 | 1 件の依頼をハーネスで実行する |
 | `decide --decision CONTRACT` | stdin | 候補から事実を抽出し、機械が選別する |
 | `judge --questions QUESTIONS` | stdin | 型付きの問いに確率つきで答える |
+| `config [set KEY VALUE \| unset KEY]` | 引数 | 各 PC の設定（`~/.agents/agent-herd.yaml`）を表示・変更する |
 | `status [LOG]` | JSONL ログ | 現在の状態を JSON で表示する |
 | `follow [LOG]` | JSONL ログ | 状態を追尾表示する |
 | `replay [PATH] ...` | JSONL ログ | 記録済みの依頼を再生する |
 
 `aider`、`ollama`、`edit` と観測コマンドの残りの引数は adapter が解釈する。`chat`、`defs`、
-`exec`、`harness`、`decide`、`judge` は、各節に記載した引数以外を終了コード 2 で拒否する。
+`exec`、`harness`、`decide`、`judge`、`config` は、各節に記載した引数以外を終了コード 2 で拒否する。
 
 トップレベルでは、次の 2 つも受け付ける。
 
@@ -507,13 +523,29 @@ agent-herd harness run PROMPT...
 `read_files`、`write_files`、`run`、`final` の限定ツール契約を付ける。`tool-loop` は対象 CLI の
 ツールループへ 1 回渡す。
 
-遷移条件のうち決定的な規則で決まらないもの（`needs_llm_eval`）は、ローカルの定義
-（`relative_cost` が 0 の `aider` / `ollama`）で回しているときは `judge`（§5.5）で判定する。
-条件 1 件を boolean の問い 1 つにし、状態はその工程の出力、モデルは `--model` の指定か
-定義の既定。答えはそのまま `next_state.py` の `--evals` に載る。judge が使えない
-（Ollama に届かない、`logprobs` を読めない）か確度が下限に届かない場合は、従来どおり
-制御応答（JSON を生成させる経路）で判定し直し、証跡に `condition_judge_fallback` を残す。
-クラウド CLI の実行では judge を使わない。
+遷移条件のうち決定的な規則で決まらないもの（`needs_llm_eval`）は `judge`（§5.5）で判定する。
+使う条件は設定 `judge.model`（§9.3）による——既定（`auto`）ではローカルの定義
+（`relative_cost` が 0 の `aider` / `ollama`）で回しているときだけで、モデル名を設定して
+あればクラウド CLI の実行でも判定だけがそのモデルの judge へ行く。状態はその工程の出力、
+モデルは設定のモデル、無ければ `--model` の指定か定義の既定。
+
+問いの形は候補の書き方で決まる。候補すべてに `outcome`（この遷移が成立する結果の短い名前。
+statemachine-use の transitions の項目）があれば、「結果はどれか」を **choice 1 問**で訊き、
+選ばれた候補だけを真にする（「どれでもない」は明示の選択肢で、選ばれると全候補が偽）。
+無ければ条件 1 件を boolean の問い 1 つにする。答えはそのまま `next_state.py` の `--evals`
+に載る。judge が使えない（Ollama に届かない、`logprobs` を読めない）か確度が下限に届かない
+場合は、従来どおり制御応答（JSON を生成させる経路）で判定し直し、証跡に
+`condition_judge_fallback` を残す。
+
+ステートの中でも同じ judge を使う。`judge:` を宣言したステート（判定だけのステート。問いと
+選択肢を書き、アクションを書かない）は、judge が使えれば生成なしで選択肢の 1 語を出力にし
+（`state_judge_done`）、使えなければ宣言から作った短い生成用プロンプトで回す。`output_validator`
+に合わない出力は、再生成の前に決定的に直し（契約の語が第 1 行の途中・後ろの行・大文字小文字違い）、
+それでも直らなければ judge に「どの契約の語か」を 1 問訊く（`contract_judge_done`、確度 0.6 以上で
+採用）。`check` が落ちたときは、環境の失敗（コマンド不在・モジュール不在・権限・接続）なら
+再投入を積まず、judge が使えれば「同じ作業のやり直しで直るか」を 1 問訊いて確度 0.85 以上の
+「直らない」だけ止める（`check_triage`）。どの段も judge が無ければ決定的な分だけ効き、生成の
+回数は増えない。
 
 引数の誤りと未知のハーネス種別は終了コード 2。それ以外はハーネス本体の終了コードを返す。
 
@@ -541,6 +573,23 @@ agent-herd judge --questions (JSON | PATH) [--state PATH] [--model MODEL]
 `vote`（`--samples` 回引いた票数）、`text`（本文の 1 文字を読んだだけ。`coverage` は 0）の
 いずれか。`logprobs` 以外は確率を目安として扱う。
 
+`--model` を省いたときのモデルは設定 `judge.model`（§9.3）、それも無ければ `gemma4:e4b`。
+
+judge を組み込みで使う判定（遷移条件、書込先の `route`、単一基準の `filter`、投入時の
+`assess`）は、既定ではローカルの定義（`relative_cost` が 0 の `aider` / `ollama`）で回して
+いるときだけ judge へ行き、クラウド CLI の実行ではそのクラウドに JSON を生成させる。
+設定 `judge.model` の値で切り替える（`agent-herd config set judge.model <値>`）。
+
+| 値 | 判定の行き先 |
+|---|---|
+| `auto`（未設定） | ローカルの定義の実行だけ judge（モデルは実行の指定か定義の既定）。クラウド CLI の実行は生成経路 |
+| モデル名（例 `gemma4:e4b`） | どの定義の実行でも、判定はそのモデルの judge。実行のモデルは持ち越さない |
+| `off` | どの定義の実行でも judge を使わず、生成経路 |
+
+判定は選択肢の 1 文字で済むので、クラウド CLI で回している実行ほど、指名して判定を LAN の
+Ollama へ逃がす効果が大きい。judge が使えない・確度が足りないときの縮退は値に関係なく同じ
+（生成経路へ倒し、証跡に残す）。
+
 問いごとに Ollama の chat API を 1 回、`logprobs` を求めて呼ぶ。生成上限は 4 トークンで、
 `--think` の既定は `off`。Ollama が `logprobs` を返さない場合、`--samples` が 2 以上なら
 structured outputs でその回数引いて票数を確率にし、1 なら本文を読む。
@@ -548,6 +597,27 @@ structured outputs でその回数引いて票数を確率にし、1 なら本�
 stdout は `{"answers": {名前: 答え}, "abstained": [名前…]}` の 1 行。stderr に
 `@agent-usage` を出す。終了コードは 0 が全問に答えた、1 が `abstained` あり
 （`confidence` が `--min-confidence` 未満）または Ollama の失敗、2 が引数の誤り。
+
+#### 5.6 `config`
+
+```text
+agent-herd config [--json] [--check judge]
+agent-herd config set KEY VALUE
+agent-herd config unset KEY
+```
+
+各 PC の設定ファイル（§9.3）を読み書きする。引数なしは設定ファイルの場所と各項目を人向けに、
+`--json` は `{"path", "default_path", "judge": {"mode", "model", "error"}}` を 1 行で出す
+（agent-app が読む形）。`--check judge` は判定がモデル指名（`mode` が `pinned`）で回る設定なら
+終了コード 0、それ以外は 1——スキルやスクリプトが「判定を judge に任せてよいか」を確かめる口。
+
+`set` は鍵と値を取り、`unset` は鍵だけを取る。鍵は次の 1 つ。
+
+| 鍵 | 値 | 意味 |
+|---|---|---|
+| `judge.model` | `auto` / `off` / モデル名 | §5.5 の表のとおり。`unset` は `auto` と同じ |
+
+未知の鍵と引数の誤りは終了コード 2、ファイルを書けないときは 1。
 
 ### 6. 定義と profile
 
@@ -702,6 +772,21 @@ frontmatter は 1 行の `key: value` だけを受け付ける。
 | `AGENT_OLLAMA_NO_READLINE` | なし | `1` で readline を使わない |
 
 `AGENT_OLLAMA_*` の名前は `agent-herd`、`agent-aider`、`agent-ollama` のどの起動名でも同じ。
+
+#### 9.3 設定ファイル
+
+環境変数では届かない・残らない設定は、各 PC の `~/.agents/agent-herd.yaml`（`.yml` / `.json`
+も可。見つかった最初の 1 つを読む）に置く。`AGENT_PROJECT_AGENTS_HOME` で `~/.agents` を
+差し替えられる（定義の探索と同じ変数）。
+
+```yaml
+judge:
+  model: gemma4:e4b   # auto（省略）/ off / モデル名
+```
+
+書くのは `agent-herd config`（§5.6）か agent-app の「設定 > 実行制御」。手で書いてもよい
+（裸の `off` は YAML では真偽値になるが、同じ意味に読む）。壊れたファイルは「設定なし」として
+動き、`agent-herd config` が理由を出す。
 
 ### 10. stdout、stderr、終了コード
 

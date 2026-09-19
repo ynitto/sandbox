@@ -13,8 +13,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import pathlib
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -194,6 +197,77 @@ class EvaluateTests(unittest.TestCase):
     def test_abstain_uses_confidence(self):
         answers = {"a": {"confidence": 0.9}, "b": {"confidence": 0.55}}
         self.assertEqual(judge.abstained(answers, 0.7), ["b"])
+
+
+class ModelSelectionTests(unittest.TestCase):
+    """どの実行で judge を使うか（設定ファイル `~/.agents/agent-herd.yaml` の `judge.model`）。
+
+    既定（auto）はローカル定義（`relative_cost` 0）だけ。モデルを指名するとクラウド CLI の
+    定義でも judge を使い（判定をクラウドのトークンで払わない）、`off` ならどの定義でも
+    使わない。
+    """
+
+    LOCAL = {"name": "aider", "relative_cost": 0, "default_model": "gemma4:e4b"}
+    CLOUD = {"name": "claude", "relative_cost": 1}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="agent-herd-config-")
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": self._tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write(self, text: str, name: str = "agent-herd.yaml"):
+        pathlib.Path(self._tmp.name, name).write_text(text, encoding="utf-8")
+
+    def test_default_is_local_definitions_only(self):
+        self.assertEqual(judge.setting()["mode"], "auto")
+        self.assertEqual(judge.model_for_spec(self.LOCAL), "gemma4:e4b")
+        self.assertEqual(judge.model_for_spec(self.LOCAL, "gemma4:12b"), "gemma4:12b")
+        self.assertIsNone(judge.model_for_spec(self.CLOUD))
+        self.assertIsNone(judge.model_for_spec(None))
+
+    def test_a_pinned_model_serves_cloud_definitions_too(self):
+        self._write("judge:\n  model: gemma4:e4b\n")
+        self.assertEqual(judge.model_for_spec(self.CLOUD), "gemma4:e4b")
+        self.assertEqual(judge.model_for_spec(self.CLOUD, "claude-opus-5"), "gemma4:e4b",
+                         "実行のモデルは持ち越さない——判定は指名したモデルに固定する")
+        self.assertEqual(judge.model_for_spec(self.LOCAL, "gemma4:12b"), "gemma4:e4b")
+        self.assertEqual(judge.pinned_model(), "gemma4:e4b")
+
+    def test_off_disables_judge_for_every_definition(self):
+        for text in ("judge:\n  model: off\n", "judge:\n  model: OFF\n"):
+            self._write(text)
+            self.assertIsNone(judge.model_for_spec(self.LOCAL), text)
+            self.assertIsNone(judge.model_for_spec(self.CLOUD), text)
+            self.assertIsNone(judge.pinned_model(), text)
+            self.assertTrue(judge.disabled(), text)
+
+    def test_blank_and_auto_mean_unset(self):
+        for text in ("judge:\n  model: ''\n", "judge:\n  model: auto\n", "judge: {}\n", ""):
+            self._write(text)
+            self.assertEqual(judge.setting()["mode"], "auto", repr(text))
+            self.assertEqual(judge.model_for_spec(self.LOCAL), "gemma4:e4b", repr(text))
+
+    def test_json_file_is_read_too(self):
+        self._write('{"judge": {"model": "gemma4:12b"}}', name="agent-herd.json")
+        self.assertEqual(judge.model_for_spec(self.CLOUD), "gemma4:12b")
+
+    def test_a_broken_file_falls_back_to_auto_and_says_why(self):
+        self._write("judge: [\n")
+        current = judge.setting()
+        self.assertEqual(current["mode"], "auto")
+        self.assertIn("YAML", current["error"])
+        self.assertIsNone(judge.model_for_spec(self.CLOUD))
+
+    def test_local_model_does_not_resolve_a_definition_when_pinned(self):
+        self._write("judge:\n  model: gemma4:e4b\n")
+        self.assertEqual(judge.local_model("no-such-definition"), "gemma4:e4b")
+        self._write("judge:\n  model: off\n")
+        self.assertIsNone(judge.local_model("aider"))
+        self._write("")
+        self.assertIsNone(judge.local_model("no-such-definition"),
+                          "指名が無ければ、解決できない定義では judge を使わない")
 
 
 if __name__ == "__main__":

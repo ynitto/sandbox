@@ -163,7 +163,17 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   // 答え、サイドバーの「ワークフロー」を押せるようにする（実行は bus のファイルで見る）。agent-loop は置かない
   // ——履歴タブと定期実行のカードが薄くなる側を通すため。
   const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-fakebin-'));
-  fs.writeFileSync(path.join(fakeBin, 'agent-herd'), '#!/bin/sh\nexit 0\n');
+  // agent-herd は設定（config）にも答える。判定の設定の保存は set の引数をファイルに残して見る。
+  const judgeLog = path.join(fakeBin, 'judge-set.log');
+  fs.writeFileSync(path.join(fakeBin, 'agent-herd'), [
+    '#!/bin/sh',
+    'case "$1 $2" in',
+    `  "config --json") echo '{"path":null,"judge":{"mode":"auto","model":null,"error":null}}';;`,
+    `  "config set") echo "$3=$4" >> '${judgeLog}'; echo '{"path":"/home/x/.agents/agent-herd.yaml"}';;`,
+    'esac',
+    'exit 0',
+    '',
+  ].join('\n'));
   fs.writeFileSync(path.join(fakeBin, 'agent-flow'), '#!/bin/sh\ncase "$1" in patterns) echo "[]";; esac\nexit 0\n');
   // 自動更新の確認先。update --check --json に「新しいコミットがある」と答える
   fs.writeFileSync(path.join(fakeBin, 'agent-project'), '#!/bin/sh\ncase "$1 $2" in "update --check") echo \'{"enabled":true,"repo":"/mnt/x/sandbox.git","branch":"main","applied_sha":"aaaaaaaa1111","remote_sha":"bbbbbbbb2222","available":true,"baseline":false,"applied":false,"error":""}\';; esac\nexit 0\n');
@@ -327,10 +337,20 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('input[name="default-policy"][value="quality"]').isDisabled(), false, 'herd があれば元に戻る');
     await win.check('input[name="default-policy"][value="quality"]');
     await win.fill('#tier-large-model', 'gpt-quality');
+    // 遷移や振り分けの判定: agent-herd の設定（auto）が読めていて選べる。モデルの欄は「いつも」を
+    // 選んだときだけ出る。保存すると agent-herd config set に 1 語で渡る。
+    await win.waitForFunction(() => !document.getElementById('judge-mode').disabled);
+    assert.strictEqual(await win.inputValue('#judge-mode'), 'auto');
+    assert.strictEqual(await win.locator('#judge-model-row').isVisible(), false, 'モデルの欄は必要になるまで出さない');
+    await win.selectOption('#judge-mode', 'model');
+    assert.strictEqual(await win.locator('#judge-model-row').isVisible(), true);
+    await win.fill('#judge-model', 'gemma4:e4b');
     if (process.env.AGENT_APP_SETTINGS_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SETTINGS_SCREENSHOT });
     await win.click('#settings-save');
     await win.waitForFunction(() => document.getElementById('settings-status').textContent === '保存しました');
     const saved = appStore.loadConfig(userData);
+    assert.strictEqual(fs.readFileSync(judgeLog, 'utf8').trim(), 'judge.model=gemma4:e4b', '判定の設定は agent-herd config set へ');
+    assert.ok(!('judge' in saved), '判定の設定はアプリの config.json に持たない');
     assert.strictEqual(saved.instructions.text, '回答は簡潔な日本語にする');
     assert.deepStrictEqual(saved.instructions.skills, ['self-checking']);
     assert.deepStrictEqual(saved.instructions.skillSelection, { enabled: true, defaultMode: 'auto', candidates: ['self-checking'] });

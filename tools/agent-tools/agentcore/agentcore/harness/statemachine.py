@@ -215,21 +215,80 @@ def _sm_validates(output, rule) -> bool:
     return any(first.startswith(v.strip()) for v in validator[len("startswith:"):].split(","))
 
 
+def _sm_validator_prefixes(rule) -> "list[str]":
+    validator = str(rule or "")
+    if not validator.startswith("startswith:"):
+        return []
+    return [v.strip() for v in validator[len("startswith:"):].split(",") if v.strip()]
+
+
 def _sm_validated_output(output, rule) -> str:
+    """契約（`startswith:A,B`）に合う形へ出力を寄せる（決定的）。直せなければ ""。
+
+    再生成はいちばん高い直し方なので、その前にここで拾う: 契約の語で始まる行が後ろにある、
+    契約の語が第 1 行の途中にある（「結論: APPROVED。」）、大文字小文字が違う。
+    statemachine-use の `judge_bridge.normalize_contract_line` と同じ規則。
+    """
     text = str(output or "").strip()
     if _sm_validates(text, rule):
         return text
-    validator = str(rule or "")
-    if not validator.startswith("startswith:"):
+    prefixes = _sm_validator_prefixes(rule)
+    if not prefixes:
         return text
-    prefixes = [v.strip() for v in validator[len("startswith:"):].split(",")]
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
     at = -1
     for i in range(len(lines) - 1, -1, -1):
         if any(lines[i].startswith(p) for p in prefixes):
             at = i
             break
-    return "" if at < 0 else "\n".join(lines[at:at + 4])
+    if at >= 0:
+        return "\n".join(lines[at:at + 4])
+    for prefix in sorted(prefixes, key=len, reverse=True):
+        pattern = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(prefix) + r"(?![A-Za-z0-9_])", re.I)
+        if pattern.search(lines[0]):
+            return "\n".join([prefix, *lines[1:4]])
+    for i, line in enumerate(lines[1:4], start=1):
+        for prefix in prefixes:
+            if line.upper().startswith(prefix.upper()):
+                return "\n".join([prefix + line[len(prefix):], *lines[i + 1:i + 4]])
+    return ""
+
+
+def _sm_contract_by_judge(output, rule, *, agent: "dict | None", log_file: str) -> str:
+    """決定的に直せない出力を、再生成の前に judge へ「どの契約の語か」と 1 問訊く。
+    judge が使えない・確度不足・「どれでもない」なら ""（呼び出し側が再生成へ）。"""
+    prefixes = _sm_validator_prefixes(rule)
+    text = str(output or "").strip()
+    model = _sm_judge_model(agent)
+    if not prefixes or not text or model is None:
+        return ""
+    questions = {"contract": {
+        "type": "choice",
+        "instructions": "Which contract word does this output's conclusion correspond to?",
+        "criteria": {p: f"The output concludes '{p}'." for p in prefixes},
+        "other": "The output does not clearly conclude any of these."}}
+    try:
+        result = judge.evaluate(text, questions, model=model)
+    except judge.JudgeError as exc:
+        _sm_append_log(log_file, {"event": "contract_judge_fallback", "reason": str(exc)})
+        return ""
+    answer = result["answers"].get("contract") or {}
+    picked = str(answer.get("choice") or "")
+    confidence = float(answer.get("confidence") or 0.0)
+    _sm_append_log(log_file, {"event": "contract_judge_done", "model": model, "choice": picked,
+                              "confidence": confidence, "coverage": answer.get("coverage"),
+                              "method": answer.get("method")})
+    if picked not in prefixes or confidence < _SM_CONTRACT_JUDGE_MIN_CONFIDENCE:
+        return ""
+    _sm_progress(f"出力の第 1 行に契約の語を補いました: {picked}")
+    return "\n".join([picked, *text.splitlines()])
+
+
+# 契約の語を judge に補わせるときの確度の下限（低い確度で語を足すと、書式違反を静かに
+# 通したことになる）。
+_SM_CONTRACT_JUDGE_MIN_CONFIDENCE = 0.6
 
 
 def _sm_terminal_status(state_id, output) -> dict:
@@ -416,7 +475,9 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                     parsed = _sm_parse_tool_request(raw)
                 except StateMachineHarnessError as exc:
                     # ツール要求ですらない = 素の本文。Output Contract を満たすならそれが答え。
-                    contract = _sm_validated_output(raw, validator)
+                    contract = (_sm_validated_output(raw, validator)
+                                or _sm_contract_by_judge(raw, validator, agent=agent,
+                                                         log_file=log_file))
                     if contract and not _sm_final_evidence_error(raw, cwd, evidence, touched):
                         _sm_progress(f"工程の出力を受け取りました: {_sm_first_line(contract)}")
                         return contract
@@ -465,6 +526,13 @@ def _sm_execute_action(*, workflow_path: str, state_id: str, state: dict, contex
                         _sm_progress("工程の出力を受け取りました: "
                                      f"{_sm_first_line(request['output'])}")
                         return request["output"]
+                    fixed = (_sm_validated_output(request["output"], validator)
+                             or _sm_contract_by_judge(request["output"], validator,
+                                                      agent=agent, log_file=log_file))
+                    if fixed:
+                        _sm_progress("工程の出力を受け取りました（契約の語を第 1 行へ直しました）: "
+                                     f"{_sm_first_line(fixed)}")
+                        return fixed
                     _sm_progress("完了の申告が契約の書式（"
                                  f"{_sm_scalar(validator) or '任意'}）と違います: "
                                  f"{_sm_first_line(request['output'])}")
@@ -664,6 +732,131 @@ def _sm_state_check_spec(*, scripts: dict, workflow_path: str, state_id: str,
             "max_tool_rounds": spec.get("max_tool_rounds")}
 
 
+def _sm_state_judge_supported(script: str, *, cwd: str, log_file: str) -> bool:
+    """next_state.py が `--state-judge`（判定だけのステートの宣言）を知っているか。
+    古い配布では無い——そのときは judge 宣言を持つ定義でも従来どおりアクションを回す
+    （宣言は無いものとして扱われるが、次の `--dry-run` は通る）。"""
+    usage = " ".join(str(_sm_harness_script(script, ["--help"], cwd=cwd, log_file=log_file)
+                         or "").split())
+    return "--state-judge" in usage
+
+
+def _sm_state_judge_spec(*, scripts: dict, workflow_path: str, state_id: str,
+                         cwd: str, log_file: str) -> "dict | None":
+    """ステートの判定宣言（judge）を statemachine-use から取得する。宣言が無ければ None。
+
+    正規化はスキル側の 1 実装（`judge_bridge.normalize_judge_state`）。返るのは
+    {judge: {question, choices, unsure, input, min_confidence}, question, fallback_action,
+    output_validator}。"""
+    if not scripts.get("state_judge"):
+        return None
+    spec = _sm_parse_json_object(_sm_harness_script(
+        scripts["next"], [workflow_path, "--state", state_id, "--state-judge"],
+        cwd=cwd, log_file=log_file))
+    if not spec or not isinstance(spec.get("judge"), dict):
+        return None
+    return spec
+
+
+def _sm_judge_state_output(spec: dict, *, context: dict, agent: "dict | None",
+                           log_file: str) -> "str | None":
+    """判定だけのステートを judge で終わらせる（アクションを生成させない）。
+
+    決めなければ None——呼び出し側は宣言から作った短い生成用プロンプト（1 語で答えよ）で
+    回す。`other`（どれでもない）と確度不足は unsure の語にする（最頻へ倒さない）。
+    """
+    model = _sm_judge_model(agent)
+    if model is None:
+        return None
+    declared = spec["judge"]
+    keys = list((declared.get("choices") or {}).keys())
+    unsure = str(declared.get("unsure") or "UNSURE")
+    try:
+        min_confidence = float(declared.get("min_confidence") or 0.0)
+    except (TypeError, ValueError):
+        min_confidence = 0.0
+    state_text = _sm_render_template(str(declared.get("input") or "{{last_output}}"), context)
+    if not state_text.strip() or not keys:
+        return None
+    _sm_progress(f"judge（{model}）が {len(keys)} 択から選んでいます")
+    _sm_append_log(log_file, {"event": "state_judge_start", "model": model, "choices": keys})
+    try:
+        result = judge.evaluate(state_text, spec["question"], model=model)
+    except judge.JudgeError as exc:
+        _sm_progress(f"judge を使えないため生成で答えます: {exc}")
+        _sm_append_log(log_file, {"event": "state_judge_fallback", "reason": str(exc)})
+        return None
+    answer = next(iter(result["answers"].values()), {}) if result["answers"] else {}
+    picked = str(answer.get("choice") or "")
+    confidence = float(answer.get("confidence") or 0.0)
+    _sm_append_log(log_file, {"event": "state_judge_done", "model": model, "choice": picked,
+                              "confidence": confidence, "coverage": answer.get("coverage"),
+                              "method": answer.get("method"),
+                              "probabilities": answer.get("probabilities")})
+    if not picked or (picked != "other" and picked not in keys):
+        return None
+    if picked == "other" or confidence < min_confidence:
+        _sm_progress(f"judge は決められないと答えました → {unsure}")
+        return unsure
+    _sm_progress(f"judge の答え: {picked}")
+    return picked
+
+
+# 同じアクションをやり直しても直らない失敗の印（検査コマンド自体が動いていない形）。
+# statemachine-use の `judge_bridge._ENVIRONMENT_PATTERNS` と同じ語彙。
+_SM_ENVIRONMENT_PATTERNS = (
+    re.compile(r"command not found|No such file or directory|not recognized as an internal", re.I),
+    re.compile(r"No module named|ModuleNotFoundError|cannot find module|Cannot find package", re.I),
+    re.compile(r"Permission denied|EACCES", re.I),
+    re.compile(r"検査コマンドを実行できません|検査コマンドがタイムアウトしました", re.I),
+    re.compile(r"ENOENT|EADDRINUSE|Connection refused|Could not resolve host", re.I),
+)
+# judge に「やり直しで直るか」を訊いて止めるときの確度の下限（誤って止めると直る課題を
+# 落とすので高め。実測後に見直す）。
+_SM_CHECK_TRIAGE_MIN_CONFIDENCE = 0.85
+
+
+def _sm_check_triage(checked: dict, *, agent: "dict | None", log_file: str) -> "str | None":
+    """落ちた検査を選別する。「やり直しても直らない」根拠を返す（None = 従来どおり再投入）。
+
+    順は 決定的（環境の失敗の定型句）→ judge（確度が十分なときだけ）。judge が無ければ
+    決定的な分だけ。再投入はいちばん高い呼び出しなので、積まずに済む根拠があれば積まない。
+    """
+    detail = "\n".join(x for x in (checked.get("error"), checked.get("stderr"),
+                                   checked.get("stdout")) if x).strip()
+    for line in detail.splitlines():
+        if any(p.search(line) for p in _SM_ENVIRONMENT_PATTERNS):
+            reason = f"環境の失敗: {line.strip()[:200]}"
+            _sm_append_log(log_file, {"event": "check_triage", "kind": "environment",
+                                      "reason": reason})
+            return reason
+    model = _sm_judge_model(agent)
+    if model is None or not detail:
+        return None
+    questions = {"fixable": {
+        "type": "boolean",
+        "instructions": ("Can redoing the same action (editing the work product) make this "
+                         "check pass? Answer no only if the failure is caused by the "
+                         "environment (missing tool or dependency, permissions, network, "
+                         "the check itself cannot run). Check command: "
+                         + " ".join(checked.get("argv") or []))}}
+    try:
+        result = judge.evaluate("Check command: " + " ".join(checked.get("argv") or [])
+                                + "\n\nCheck output:\n" + detail[-_SM_CHECK_OUTPUT_LIMIT:],
+                                questions, model=model)
+    except judge.JudgeError as exc:
+        _sm_append_log(log_file, {"event": "check_triage_fallback", "reason": str(exc)})
+        return None
+    answer = result["answers"].get("fixable") or {}
+    confidence = float(answer.get("confidence") or 0.0)
+    _sm_append_log(log_file, {"event": "check_triage", "kind": "judge", "model": model,
+                              "fixable": answer.get("value"), "confidence": confidence,
+                              "coverage": answer.get("coverage"), "method": answer.get("method")})
+    if answer.get("value") is False and confidence >= _SM_CHECK_TRIAGE_MIN_CONFIDENCE:
+        return "judge: 同じ作業のやり直しでは直らない失敗"
+    return None
+
+
 def _sm_check_context(status, stdout: str, stderr: str, error: str) -> dict:
     """検査結果 → condition_rule のコンテキスト値。
 
@@ -798,15 +991,49 @@ _SM_JUDGE_MIN_CONFIDENCE = 0.0
 def _sm_judge_model(agent: "dict | None") -> "str | None":
     """遷移条件を judge（分布の読み出し）で判定できるモデル。できなければ None。
 
-    judge は LAN の ollama を直に叩く。だから使えるのは**ローカルの定義**（`relative_cost`
-    が 0 の aider / ollama）で回しているときだけで、クラウド CLI の実行ではこれまでどおり
-    制御応答（生成経路）に訊く。モデルはハーネスの指定を持ち越し、無ければ定義の既定。
+    judge は LAN の ollama を直に叩く。だから既定（設定 `judge.model: auto`）で使えるのは
+    **ローカルの定義**（`relative_cost` が 0 の aider / ollama）で回しているときだけで、
+    クラウド CLI の実行ではこれまでどおり制御応答（生成経路）に訊く。モデルはハーネスの
+    指定を持ち越し、無ければ定義の既定。設定でモデルを指名してあると（`agent-herd config set
+    judge.model gemma4:e4b`）、クラウド CLI の実行でも判定だけがそのモデルの judge へ行く
+    （判定に高価なクラウドのトークンを使わない）。`off` なら judge を使わない。
     """
     return judge.model_for_spec((agent or {}).get("spec"), (agent or {}).get("model"))
 
 
+# 遷移先を 1 問の choice で選ぶときの問いの名前（next_state.py の index と衝突しない綴り）。
+_SM_OUTCOME_QUESTION = "__outcome__"
+_SM_OUTCOME_OTHER = "None of the outcomes above applies."
+
+
+def _sm_outcomes(pending: "list[dict]") -> "dict[str, str] | None":
+    """全候補が `outcome`（結果の短い名前）を持つときだけ、index → outcome を返す。
+
+    `outcome` は statemachine-use の transitions の項目で、「この遷移が成立するのはアクションの
+    結果がこれのとき」を選択肢として書いたもの。全候補にあれば、条件ごとの boolean N 問では
+    なく **結果を 1 つ選ぶ choice 1 問**にできる——prefill が N 回から 1 回になり、候補の間で
+    答えが矛盾しない（2 つの条件が同時に真になる形が構造として消える）。
+    """
+    if len(pending) < 2:
+        return None
+    outcomes = {str(c.get("index")): str(c.get("outcome") or "").strip() for c in pending}
+    if not all(outcomes.values()) or len(set(outcomes.values())) != len(outcomes):
+        return None
+    return outcomes
+
+
 def _sm_condition_questions(pending: "list[dict]") -> dict:
-    """needs_llm_eval の条件を boolean の問いへ。名前は next_state.py の index（--evals の鍵）。"""
+    """needs_llm_eval の条件を問いへ。名前は next_state.py の index（--evals の鍵）。
+
+    全候補に `outcome` があれば choice 1 問（`_sm_outcomes`）、そうでなければ条件 1 件に
+    boolean 1 問（多基準を 1 問で訊かない）。
+    """
+    outcomes = _sm_outcomes(pending)
+    if outcomes:
+        return {_SM_OUTCOME_QUESTION: {
+            "type": "choice",
+            "instructions": "Which outcome does the completed action output show?",
+            "criteria": dict(outcomes), "other": _SM_OUTCOME_OTHER}}
     questions: dict = {}
     for cond in pending:
         text = str(cond.get("condition") or "").strip()
@@ -814,12 +1041,23 @@ def _sm_condition_questions(pending: "list[dict]") -> dict:
         if desc and desc != text:
             text = f"{text}（{desc}）" if text else desc
         if not text:
+            text = str(cond.get("outcome") or "").strip()
+        if not text:
             continue
         questions[str(cond.get("index"))] = {
             "type": "boolean",
             "instructions": "Does the completed action output satisfy this condition? " + text,
         }
     return questions
+
+
+def _sm_evals_from_answers(questions: dict, answers: dict) -> dict:
+    """judge の答えを next_state.py の `--evals`（index → bool）へ。choice は選ばれた候補だけ真。"""
+    if _SM_OUTCOME_QUESTION in questions:
+        picked = str(answers.get(_SM_OUTCOME_QUESTION, {}).get("choice") or "")
+        return {index: index == picked
+                for index in questions[_SM_OUTCOME_QUESTION]["criteria"]}
+    return {name: bool(a.get("value")) for name, a in answers.items()}
 
 
 def _sm_judge_conditions(pending: "list[dict]", *, output: str, agent: "dict | None",
@@ -836,9 +1074,12 @@ def _sm_judge_conditions(pending: "list[dict]", *, output: str, agent: "dict | N
     questions = _sm_condition_questions(pending)
     if model is None or not questions or not str(output or "").strip():
         return {}
-    _sm_progress(f"遷移条件 {len(questions)} 件を judge（{model}）で判定しています")
+    if _SM_OUTCOME_QUESTION in questions:
+        _sm_progress(f"遷移先 {len(pending)} 候補から judge（{model}）で 1 つ選んでいます")
+    else:
+        _sm_progress(f"遷移条件 {len(questions)} 件を judge（{model}）で判定しています")
     _sm_append_log(log_file, {"event": "condition_judge_start", "model": model,
-                              "conditions": sorted(questions)})
+                              "conditions": sorted(str(c.get("index")) for c in pending)})
     try:
         result = judge.evaluate(str(output), questions, model=model)
     except judge.JudgeError as exc:
@@ -849,13 +1090,16 @@ def _sm_judge_conditions(pending: "list[dict]", *, output: str, agent: "dict | N
     held = judge.abstained(answers, _SM_JUDGE_MIN_CONFIDENCE)
     _sm_append_log(log_file, {
         "event": "condition_judge_done", "model": model, "abstained": held,
-        "answers": {name: {"value": a.get("value"), "probability": a.get("probability"),
+        "shape": "choice" if _SM_OUTCOME_QUESTION in questions else "boolean",
+        "answers": {name: {"value": a.get("value"), "choice": a.get("choice"),
+                           "probability": a.get("probability"),
+                           "probabilities": a.get("probabilities"),
                            "coverage": a.get("coverage"), "method": a.get("method")}
                     for name, a in answers.items()}})
     if held:
         _sm_progress(f"確度が足りない条件 {len(held)} 件があるため制御応答で判定し直します")
         return {}
-    return {name: bool(a.get("value")) for name, a in answers.items()}
+    return _sm_evals_from_answers(questions, answers)
 
 
 def _sm_next_state(*, scripts: dict, workflow_path: str, state_id: str, output: str,
@@ -983,6 +1227,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
     _sm_progress(f"ワークフロー「{_sm_scalar(workflow.get('name')) or os.path.basename(os.path.dirname(workflow_file)) or workflow_file}」"
                  f"を始めます（定義: {os.path.relpath(workflow_file, root)}、ログ: {log_file}）")
     _sm_require_next_state_contract(scripts["next"], cwd=root, log_file=log_file)
+    scripts["state_judge"] = _sm_state_judge_supported(scripts["next"], cwd=root, log_file=log_file)
     _sm_harness_script(scripts["dry"], [workflow_file, "--dry-run"], cwd=root, log_file=log_file)
     current = _sm_harness_script(scripts["next"], [workflow_file, "--initial-state"],
                                  cwd=root, log_file=log_file)
@@ -1025,7 +1270,21 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
         checked: "dict | None" = None
         note = ""
         retry_paths: list = []
-        for attempt in range(attempts):
+        tried = 0
+        # 判定だけのステート（judge 宣言）。judge で決まればアクションを生成させない。
+        # 決まらなければ、宣言から作った短い生成用プロンプト（1 語で答えよ）で回す。
+        judged_spec = _sm_state_judge_spec(scripts=scripts, workflow_path=workflow_file,
+                                           state_id=current, cwd=root, log_file=log_file)
+        judged_output = (_sm_judge_state_output(judged_spec, context=context, agent=agent,
+                                                log_file=log_file) if judged_spec else None)
+        if judged_spec and judged_output is None:
+            state = {**state, "action": judged_spec.get("fallback_action") or "",
+                     "action_file": "", "output_validator": judged_spec.get("output_validator")}
+        for attempt in range(1 if judged_output is not None else attempts):
+            if judged_output is not None:
+                last_output = judged_output
+                break
+            tried = attempt + 1
             try:
                 last_output = _sm_execute_action(
                     workflow_path=workflow_file, state_id=current, state=state, context=context,
@@ -1047,6 +1306,11 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                                     log_file=log_file)
             if checked["ok"] or attempt == attempts - 1:
                 break
+            # 再投入はいちばん高い呼び出し。やり直しても直らない失敗なら積まない。
+            triage = _sm_check_triage(checked, agent=agent, log_file=log_file)
+            if triage:
+                _sm_progress(f"再投入を止めます（{triage}）")
+                break
             _sm_progress(f"検査が通るまで同じ工程をやり直します（{attempt + 1}/{attempts - 1} 回目）")
             note = _sm_check_note(checked, attempt + 1, attempts, feedback=gate["feedback"])
             # 再投入は前の試行が書いたファイルへの編集から入る（成果の所在は契約の path 行）。
@@ -1064,11 +1328,12 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
             # 上限到達は「この段では解けない」の宣告。実測ではこの型の失敗は同形で揺れないので、
             # 引き直しても埋まらない——上位の段へ回すシグナルとして失敗一般と区別する。
             escalate = gate["on_exhausted"] == "escalate"
-            reason = (f"ステート {current} の検査が {attempts} 回とも失敗しました: "
+            tried = tried or attempts
+            reason = (f"ステート {current} の検査が {tried} 回とも失敗しました: "
                       + (checks["check_output"] or f"status={checks['check_status']}"))
             _sm_append_log(log_file, {"event": "check_exhausted", "state": current,
-                                      "attempts": attempts, "escalate": escalate, **checks})
-            _sm_progress(f"検査が {attempts} 回とも通りませんでした: "
+                                      "attempts": tried, "escalate": escalate, **checks})
+            _sm_progress(f"検査が {tried} 回とも通りませんでした: "
                          f"{_sm_state_label(workflow, current)}"
                          + ("。この段では解けないので上位の段へ回します" if escalate else ""))
             if not escalate:
@@ -1078,7 +1343,7 @@ def run_statemachine(*, workflow_path: str, cwd: str, parameters: "dict | None" 
                     "stderr": str(checked["stderr"] or checked["stdout"] or "")
                     [-_SM_CHECK_OUTPUT_LIMIT:],
                     "finalState": current, "logFile": log_file, "files": sorted(touched),
-                    "check": {"state": current, "attempts": attempts,
+                    "check": {"state": current, "attempts": tried,
                               "argv": checked["argv"], **checks}}
         nxt = _sm_next_state(scripts=scripts, workflow_path=workflow_file, state_id=current,
                              output=last_output, outputs=outputs, agent=agent, cwd=root,
