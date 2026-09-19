@@ -35,15 +35,52 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await win.waitForFunction(() => typeof document.getElementById('session-search-open')?.onclick === 'function');
     await win.evaluate(({ repo, id }) => openSessionInRepo(repo, id), { repo, id: original.id });
     await win.fill('#prompt', '書きかけを保持');
+    await win.click('#area-inbox');
+    await win.click('#session-search-open');
+    assert.equal(await win.locator('#inbox-area').isVisible(), false);
+    assert.equal(await win.locator('#session-search').isVisible(), true);
+    await win.click('#session-search-close');
+    assert.equal(await win.locator('#inbox-area').isVisible(), true);
+    await win.click('#area-work');
+    await win.click('#settings-open');
+    await win.click('[data-settings-tab="storage"]');
+    await app.evaluate(({ dialog }) => { dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] }); });
+    await win.click('#session-import');
+    assert.equal(await win.locator('#session-folder').isVisible(), true);
+    await win.click('#settings-close');
     await win.evaluate(() => { document.getElementById('search-source').value = 'app'; });
     await win.click('#session-search-open');
     await win.locator('#search-results button').first().waitFor();
     // ページ送りは無い。52 件すべてが新しい順のまま一覧へ積まれる。
     await win.waitForFunction(() => document.querySelectorAll('#search-results button').length === 52);
-    await win.waitForFunction(() => /件一致/.test(document.getElementById('search-status').textContent));
-    assert.match(await win.textContent('#search-status'), /52 件一致/);
+    await win.waitForFunction(() => /件の検索結果/.test(document.getElementById('search-status').textContent));
+    assert.match(await win.textContent('#search-status'), /52件の検索結果/);
     assert.equal(await win.locator('#search-next').count(), 0);
     assert.equal(await win.locator('#search-prev').count(), 0);
+    await win.click('#search-more > summary');
+    assert.equal(await win.locator('#search-more #session-import').count(), 0);
+    assert.equal(await win.locator('#search-shared').getAttribute('type'), 'checkbox');
+    assert.equal(await win.locator('#search-archived').evaluate(input => {
+      const a = input.getBoundingClientRect(), b = input.nextElementSibling.getBoundingClientRect();
+      return Math.abs((a.y + a.height / 2) - (b.y + b.height / 2)) < 2;
+    }), true);
+    await app.evaluate(({ ipcMain }) => {
+      const search = ipcMain._invokeHandlers.get('sessions:search');
+      ipcMain.removeHandler('sessions:search');
+      ipcMain.handle('sessions:search', (...args) => { global.lastSearchQuery = args[1].query; return search(...args); });
+    });
+    await win.check('#search-shared');
+    await win.fill('#search-model', 'test-model');
+    assert.equal(await win.isChecked('#search-shared'), true);
+    await win.waitForFunction(() => document.getElementById('search-cancel').hidden);
+    await win.waitForTimeout(350);
+    const query = await app.evaluate(() => global.lastSearchQuery);
+    assert.equal(query.shared, true);
+    assert.equal(query.model, 'test-model');
+    await win.fill('#search-model', '');
+    await win.uncheck('#search-shared');
+    await win.click('#search-more > summary');
+    await win.locator('#search-results button').first().waitFor();
     await win.locator('#search-results button').first().click();
     await win.locator('#search-preview h3').waitFor();
     await win.fill('#search-text', '存在しない条件');
@@ -66,11 +103,43 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     await win.click('#session-search-close');
     assert.equal(await win.inputValue('#prompt'), '書きかけを保持');
     await app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }); }, exported);
-    await win.evaluate(() => api.sessionBrowser.import(false));
+    await win.click('#settings-open');
+    await win.click('[data-settings-tab="storage"]');
+    await win.click('#session-import');
+    await win.waitForFunction(() => document.getElementById('session-import-status').textContent === '会話を取り込みました');
+    await win.click('#settings-close');
     await win.evaluate(() => { document.getElementById('search-source').value = 'vscode'; document.getElementById('search-text').value = 'fixture-import-unique'; });
     await win.click('#session-search-open');
     await win.locator('#search-results').getByRole('button', { name: /外部の月次集計/ }).click();
     await win.getByRole('button', { name: 'フォーク', exact: true }).first().waitFor();
+    await win.locator('#search-preview details > summary').click();
+    await app.evaluate(({ shell }) => { shell.openPath = async file => { global.exportedConversation = file; return ''; }; });
+    await win.getByRole('button', { name: 'テキストに書き出す', exact: true }).click();
+    await win.waitForFunction(() => document.getElementById('search-status').textContent.includes('テキストに書き出しました'));
+    const exportPath = await app.evaluate(() => global.exportedConversation);
+    assert.match(fs.readFileSync(exportPath, 'utf8'), /fixture-import-unique 集計を作成/);
+    assert.match(fs.readFileSync(exportPath, 'utf8'), /後の結果/);
+    await win.locator('#search-preview details > summary').click();
+    await win.getByRole('button', { name: 'この作業を定型化', exact: true }).click();
+    assert.equal(await win.inputValue('#search-intent'), 'task');
+    assert.equal(await win.textContent('#search-transfer-title'), 'この作業を定型化');
+    await win.click('#search-transfer-close');
+
+    // 長い会話をスクロールしてもフッターの下・左右から本文が見えない。
+    const originalBody = await win.locator('.search-message-body').first().textContent();
+    await win.locator('.search-message-body').first().evaluate(el => { el.textContent = '長い会話\n'.repeat(100); });
+    await win.locator('#search-preview').evaluate(el => { el.scrollTop = 200; });
+    const footerBounds = await win.locator('#search-preview').evaluate(pane => {
+      const footer = pane.querySelector('.search-preview-actions');
+      const p = pane.getBoundingClientRect(), f = footer.getBoundingClientRect();
+      return { bottom: Math.abs(p.bottom - f.bottom), left: Math.abs(p.left - f.left),
+        coversBottom: footer.contains(document.elementFromPoint(p.left + 30, p.bottom - 2)) };
+    });
+    assert.ok(footerBounds.bottom <= 1, JSON.stringify(footerBounds));
+    assert.ok(footerBounds.left <= 1, JSON.stringify(footerBounds));
+    assert.equal(footerBounds.coversBottom, true);
+    await win.locator('.search-message-body').first().evaluate((el, text) => { el.textContent = text; }, originalBody);
+    await win.locator('#search-preview').evaluate(el => { el.scrollTop = 0; });
     await win.screenshot({ path: '/tmp/agent-app-session-search.png' });
     await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setMinimumSize(400, 400); w.setSize(520, 800); });
     await win.locator('#search-back').waitFor({ state: 'visible' });
@@ -123,6 +192,18 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
     assert.match(store.readSession(data, sent.id).title, /（フォーク）/);
     // 会話画面からも、同じダイアログで開いている会話をフォークできる
     await win.evaluate(({ repo, id }) => openSessionInRepo(repo, id), { repo, id: original.id });
+    await win.evaluate(() => { document.getElementById('search-source').value = 'app'; document.getElementById('search-text').value = '元の会話'; });
+    await win.click('#session-search-open');
+    await win.locator('#search-results button').first().click();
+    await win.locator('#search-preview details > summary').click();
+    for (const label of ['会話名を変更', '会話を削除', 'セッションを公開', 'この作業を定型化']) {
+      assert.equal(await win.locator('#search-preview').getByRole('button', { name: label, exact: true }).isVisible(), true);
+    }
+    await win.locator('#search-preview').getByRole('button', { name: 'テキストに書き出す', exact: true }).click();
+    await win.waitForFunction(() => document.getElementById('notice').textContent.includes('テキストに書き出しました'));
+    assert.equal(await win.evaluate(() => state.current.id), original.id);
+    assert.match(fs.readFileSync(await app.evaluate(() => global.exportedConversation), 'utf8'), /元の結果/);
+    await win.evaluate(() => { document.getElementById('search-source').value = 'vscode'; document.getElementById('search-text').value = 'fixture-import-unique'; });
     // 応答の下の「フォーク」も同じダイアログを、その応答の位置で開く
     await win.getByRole('button', { name: 'フォーク', exact: true }).first().click();
     await win.locator('#search-transfer-dialog[open]').waitFor();
@@ -184,7 +265,10 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
       fs.writeFileSync(methodFile, kind);
       await win.click('#session-search-open');
       await win.locator('#search-results').getByRole('button', { name: /外部の月次集計/ }).click();
-      await win.getByRole('button', { name: 'フォーク', exact: true }).first().click();
+      if (kind === 'task') {
+        await win.locator('#search-preview details > summary').click();
+        await win.getByRole('button', { name: 'この作業を定型化', exact: true }).click();
+      } else await win.getByRole('button', { name: 'フォーク', exact: true }).first().click();
       await win.selectOption('#search-target-repo', repo);
       await win.locator('#search-target-agent option[value="claude"]').waitFor({ state: 'attached' });
       await win.click('#search-execution-settings > summary');

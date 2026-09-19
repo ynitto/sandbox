@@ -648,14 +648,18 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 /* 入力欄の「定型」は画面下にあるので、同じ menu-panel を上向きに出す。 */
 #quick-menu .menu-panel { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
 #search-more label { display: grid; gap: 6px; padding: 8px; }
+#search-more .search-check { display: flex; align-items: center; gap: 8px; }
+#search-more .search-check input { width: auto; flex: 0 0 auto; margin: 0; }
+.search-preview-actions { flex-wrap: wrap; }
 #search-split { display: grid; grid-template-columns: minmax(220px, 36%) minmax(0, 1fr); min-height: 0; flex: 1; }
 #search-results-pane, #search-preview { min-width: 0; overflow: auto; padding: 16px; }
 #search-results-pane { border-right: 1px solid var(--line); }
+#search-preview { padding-bottom: 0; }
 #search-results .list-pick { width: 100%; text-align: left; display: grid; gap: 5px; margin-bottom: 6px; white-space: normal; }
 #search-results .sub { overflow-wrap: anywhere; }
 #search-preview .search-message { margin: 18px 0; }
 #search-preview .search-message-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
-#search-preview .search-preview-actions { position: sticky; bottom: 0; padding: 12px 0; background: var(--panel); }
+#search-preview .search-preview-actions { position: sticky; bottom: 0; margin: 0 -16px; padding: 12px 16px; background: var(--panel); }
 #search-transfer-dialog[open] { display: flex; flex-direction: column; }
 #search-transfer-dialog textarea { width: 100%; }
 #search-back { display: none; }
@@ -694,3 +698,5 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 @media (max-width: 560px) {
   #audit-limits { grid-template-columns: minmax(0, 1fr); }
 }
+
+.search-preview-actions .menu-panel { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }

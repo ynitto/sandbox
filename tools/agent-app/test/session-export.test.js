@@ -118,5 +118,5 @@ test('ipc は書き出したファイルを開き、開けなければ理由だ�
   assert.match(html, /<button type="button" id="session-export" hidden>テキストに書き出す<\/button>/);
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'), 'utf8');
   assert.match(renderer, /api\.exportSession\(state\.current\.id\)/);
-  assert.match(renderer, /\$\('session-export'\)\.hidden = !cur;/);
+  assert.match(renderer, /id: 'session-export', label: 'テキストに書き出す', hidden: !cur/);
 });

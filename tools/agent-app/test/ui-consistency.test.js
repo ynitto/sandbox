@@ -241,7 +241,8 @@ test('保存データの整理は設定の既存の器（設定の行・状態�
   assert.ok(!/\.cleanup-row|\.cleanup-item|\.cleanup-size/.test(css), '設定の行の私物な複製を作らない');
   // 3. 足元の集計と操作は「更新」「実行環境」と同じ器（.environment-status + .row）
   assert.match(panel, /<div class="environment-status">/);
-  assert.strictEqual((panel.match(/class="row"/g) || []).length, 2, '集計と操作は .row に並べる');
+  const cleanup = panel.slice(panel.indexOf('<div id="cleanup-items">'));
+  assert.strictEqual((cleanup.match(/class="row"/g) || []).length, 2, '集計と操作は .row に並べる');
   // 4. 色は主操作と状態の区別にだけ。この面の主ボタンはダイアログの「保存」なので、削除は .danger
   assert.match(panel, /id="cleanup-run" class="danger"/);
   assert.ok(!/id="cleanup-run"[^>]*class="[^"]*primary/.test(panel), '1 つの面に主ボタンを 2 つ置かない');

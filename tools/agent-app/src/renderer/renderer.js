@@ -246,8 +246,21 @@ function renderSessions() {
   if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? '会話なし' : ''));
 }
 
-// 会話の名前を変える（既定は最初の依頼の先頭。長い会話ほど見分けが付かなくなる）
-// 会話をテキストにして、そのまま既定のアプリで開く（保存名は会話名から決めるので聞かない）
+// 会話画面と検索結果で、操作名と実行可否を共有する。
+function conversationActions(cur) {
+  const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
+  const published = Share.status()?.publications?.some(p => p.sessionId === cur?.id);
+  return [
+    { id: 'session-publish', label: published ? '公開を停止' : 'セッションを公開', hidden: !cur || cur.kind !== 'conversation' },
+    { id: 'session-fork', label: 'この会話をフォーク', hidden: !cur || cur.kind !== 'conversation', disabled: busy || !cur?.messages.some(m => m.role === 'assistant' && m.complete !== false) },
+    { id: 'session-routine', label: 'この作業を定型化', hidden: !cur, disabled: busy },
+    { id: 'session-export', label: 'テキストに書き出す', hidden: !cur },
+    { id: 'session-rename', label: '会話名を変更', hidden: !cur },
+    { id: 'session-delete', label: '会話を削除', hidden: !cur },
+  ];
+}
+
+// 会話をテキストにして、既定のアプリで開く。
 async function exportConversation() {
   if (!state.current) return;
   const result = await api.exportSession(state.current.id);
@@ -1148,16 +1161,12 @@ function renderHeader() {
   $('changes-toggle').disabled = !state.repo;
   $('chat-more').hidden = !state.repo;
   $('composer').hidden = !state.repo;
-  $('session-delete').hidden = !cur;
-  $('session-rename').hidden = !cur;
-  $('session-export').hidden = !cur;
-  $('session-routine').hidden = !cur;
-  $('session-routine').disabled = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
+  for (const action of conversationActions(cur)) {
+    $(action.id).hidden = action.hidden;
+    $(action.id).disabled = !!action.disabled;
+    $(action.id).textContent = action.label;
+  }
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
-  $('session-publish').hidden = !cur || cur.kind !== 'conversation';
-  $('session-publish').textContent = Share.status()?.publications?.some(p => p.sessionId === cur?.id) ? '公開を停止' : 'セッションを公開';
-  $('session-fork').hidden = !cur || cur.kind !== 'conversation';
-  $('session-fork').disabled = busy || !cur?.messages.some(m => m.role === 'assistant' && m.complete !== false);
   $('stop').hidden = !busy;
   $('send').disabled = !state.repo || (!!cur && state.pending.has(cur.id));
   $('send').classList.toggle('sending', !!cur && state.pending.has(cur.id));
@@ -2300,6 +2309,12 @@ async function init() {
     setConfig: cfg => { state.config = cfg; renderRepos(); },
     hideSidebar: () => setSidebar(false),
     openSession: openSessionInRepo,
+    getSessionActions: async record => conversationActions(await api.readSession(record.appId)),
+    runSessionAction: async (record, id) => {
+      await openSessionInRepo(record.repo, record.appId);
+      const control = $(id);
+      if (!control.hidden && !control.disabled) control.click();
+    },
     importMethod: async result => {
       await selectRepo(result.repo);
       await showArea(result.method.kind === 'task' ? 'tasks' : 'workflows');
@@ -2649,6 +2664,14 @@ async function init() {
   $('skill-entry').onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); $('skill-add').click(); } };
   $('quick-add').onclick = () => { if (state.settingsQuick.length < 3) state.settingsQuick.push({ label: '', text: '' }); renderQuickRequests(); };
   $('startup-add').onclick = () => { state.settingsActions.push({ type: 'skill', value: '', onError: 'warn' }); renderStartupActions(); };
+  for (const [id, folder] of [['session-import', false], ['session-folder', true]]) $(id).onclick = async () => {
+    $(id).disabled = true;
+    $('session-import-status').textContent = '';
+    try {
+      if (await api.sessionBrowser.import(folder)) $('session-import-status').textContent = folder ? '保存フォルダを追加しました' : '会話を取り込みました';
+    } catch (err) { $('session-import-status').textContent = err.message; }
+    finally { $(id).disabled = false; }
+  };
   $('settings-open').onclick = () => openSettings().catch((error) => notice(error.message, 'error'));
   $('settings-close').onclick = () => $('app-settings').close();
   $('settings-save').onclick = saveSettings;

@@ -13,8 +13,7 @@ const SessionSearch = (() => {
   const node = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; };
   const button = (label, cls, fn) => { const b = node('button', cls, label); b.type = 'button'; b.onclick = fn; return b; };
   const date = value => value ? new Date(value * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '日時不明';
-  let includeShared = false;
-  function sharedMode(value) { includeShared = value; $('search-shared').setAttribute('aria-pressed', String(value)); $('search-shared').classList.toggle('on', value); }
+  function sharedMode(value) { $('search-shared').checked = value; }
   function filters() {
     let since = 0, until = 0;
     const mode = $('search-date').value;
@@ -30,7 +29,7 @@ const SessionSearch = (() => {
       const end = new Date(today); if (mode !== 'yesterday') end.setDate(end.getDate() + 1);
       until = end.getTime() / 1000;
     }
-    return { shared: includeShared, text: $('search-text').value.trim(), agent: $('search-agent').value, since, until,
+    return { shared: $('search-shared').checked, text: $('search-text').value.trim(), agent: $('search-agent').value, since, until,
       repo: $('search-repo').value.trim(), model: $('search-model').value.trim(), source: $('search-source').value,
       dateField: $('search-date-field').value, archived: $('search-archived').checked };
   }
@@ -55,14 +54,11 @@ const SessionSearch = (() => {
     if (!state) return;
     const { running, scanned, pool, matched, errors, partial, capped } = state;
     let text;
-    // 走査の途中だけ進みを出す。終わったら「いくつの会話から何件見つかったか」だけでよい
-    // （前に読んだ分を索引から返したかどうかは、利用者には速さとしてだけ現れる）。
-    if (running) text = pool ? `${number(scanned)} / ${number(pool)} 件を調査 · ${number(matched)} 件一致` : '会話を検索しています…';
-    else if (matched) text = `${number(pool)} 件から ${number(matched)} 件一致`;
-    else text = pool ? `該当なし（${number(pool)} 件を検索）` : '該当する会話なし';
-    if (capped) text += ' · 表示はここまでです。条件を絞ってください';
-    if (partial) text += '（取得できた範囲）';
-    if (errors) text += ` · ${errors}件の取得エラー（詳細を確認）`;
+    if (running) text = pool ? `検索中… ${number(scanned)} / ${number(pool)}件` : '検索中…';
+    else text = matched ? `${number(matched)}件の検索結果` : '該当する会話はありません';
+    if (capped) text += '（表示件数の上限）';
+    if (partial) text += '・一部の結果のみ表示';
+    if (errors) text += `・${number(errors)}件を読み込めませんでした`;
     $('search-status').textContent = text;
   }
   function addRow(record) {
@@ -117,7 +113,7 @@ const SessionSearch = (() => {
       const box = $('search-preview'); box.replaceChildren();
       const back = button('検索結果へ戻る', 'small', () => $('search-split').classList.remove('has-preview')); back.id = 'search-back'; box.append(back);
       box.append(node('h3', '', record.title), node('p', 'sub', `${record.agent} · ${source(record.source)}${record.owner ? ` · ${record.owner}（共有）` : ''} · ${record.model || 'モデル不明'} · ${date(record.updatedAt)}`), node('p', 'sub', record.repo || 'フォルダ不明'));
-      if (record.partial) box.append(node('p', 'sub', '会話の一部を読み取れません。元のアプリから会話のJSONを取り込んでください。'));
+      if (record.partial) box.append(node('p', 'sub', '会話の一部を読み取れません。設定の「保存データ」から会話のJSONを取り込んでください。'));
       for (const message of record.messages) {
         const row = node('article', 'search-message', '');
         row.append(node('strong', '', message.role === 'user' ? '利用者' : 'AI'), node('div', 'search-message-body', message.text));
@@ -133,7 +129,35 @@ const SessionSearch = (() => {
       if (record.appId) actions.append(button('元の会話を開く', 'small', () => { close(); deps.openSession(record.repo, record.appId); }));
       const start = button('フォーク', 'primary', () => beginTransfer(record));
       start.disabled = record.partial || !record.messages.some(m => m.role === 'assistant' && m.complete !== false);
-      actions.append(start); box.append(actions);
+      const more = node('details', 'more-menu', '');
+      more.append(node('summary', '', 'その他の操作'));
+      const menu = node('div', 'menu-panel', '');
+      more.append(menu);
+      actions.append(more, start); box.append(actions);
+      if (record.appId) {
+        const entries = await deps.getSessionActions(record);
+        if (version !== previewVersion || !visible) return;
+        start.disabled = !!entries.find(a => a.id === 'session-fork')?.disabled;
+        for (const entry of entries.filter(a => !a.hidden && a.id !== 'session-fork')) {
+          const action = button(entry.label, entry.id === 'session-delete' ? 'danger' : '', async () => {
+            more.open = false; close();
+            try { await deps.runSessionAction(record, entry.id); }
+            catch (err) { alert(err.message); }
+          });
+          action.disabled = !!entry.disabled;
+          menu.append(action);
+        }
+      } else {
+        const routine = button('この作業を定型化', '', () => { more.open = false; beginTransfer(record, null, true); });
+        routine.disabled = start.disabled;
+        menu.append(routine, button('テキストに書き出す', '', async () => {
+          more.open = false;
+          try {
+            const result = await api.export(record.key);
+            $('search-status').textContent = result.warning || `テキストに書き出しました（${result.name}）`;
+          } catch (err) { $('search-status').textContent = err.message; }
+        }));
+      }
     } catch (err) { if (version === previewVersion) $('search-preview').replaceChildren(node('p', 'sub', err.message)); }
   }
   function repos(selectedRepo = '') {
@@ -144,7 +168,7 @@ const SessionSearch = (() => {
     const current = transfer;
     if (!current) return;
     current.loading = true;
-    $('search-transfer-start').textContent = 'フォーク'; $('search-transfer-start').disabled = true;
+    $('search-transfer-start').textContent = current.routine ? '作成' : 'フォーク'; $('search-transfer-start').disabled = true;
     const repo = $('search-target-repo').value;
     const worktree = current.record.appId && current.record.repo === repo ? current.record.defaults?.worktree : '';
     $('search-worktree-note').hidden = !worktree;
@@ -166,13 +190,14 @@ const SessionSearch = (() => {
     } catch (err) { if (transfer === current) $('search-transfer-status').textContent = err.message; }
     finally { if (transfer === current) { current.loading = false; executionLabel(); } }
   }
-  function beginTransfer(record, boundary = null) {
-    transfer = { record, boundary, mode: 'fork', busy: false };
-    $('search-transfer-title').textContent = 'フォーク';
+  function beginTransfer(record, boundary = null, routine = false) {
+    transfer = { record, boundary, mode: 'fork', routine, busy: false };
+    $('search-transfer-title').textContent = routine ? 'この作業を定型化' : 'フォーク';
     const turns = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
     $('search-boundary').replaceChildren(...turns.map((m, i) => new Option(`${i + 1}: ${m.text.slice(0, 80)}`, m.id)));
     $('search-boundary').value = boundary == null ? turns.at(-1)?.id || '' : boundary;
-    $('search-intent').value = 'session';
+    $('search-intent').querySelector('[value="session"]').disabled = routine;
+    $('search-intent').value = routine ? 'task' : 'session';
     $('search-execution-settings').open = false;
     const excerpt = boundary == null ? '' : ' · ' + record.messages.find(m => m.id === boundary)?.text.slice(0, 100);
     $('search-transfer-source').textContent = record.title + excerpt;
@@ -232,10 +257,10 @@ const SessionSearch = (() => {
   function open() {
     if (visible) { $('search-text').focus(); return; }
     visible = true; deps.hideSidebar();
-    panels = ['main', 'automation', 'share-area', 'changes'].map(id => [id, $(id).hidden]);
+    panels = ['main', 'automation', 'share-area', 'inbox-area', 'changes'].map(id => [id, $(id).hidden]);
     for (const [id] of panels) $(id).hidden = true;
     $('session-search').hidden = false; $('session-search-open').setAttribute('aria-expanded', 'true');
-    sharedMode(false); $('search-text').focus(); search();
+    $('search-text').focus(); search();
   }
   function close() {
     if (!visible) return;
@@ -253,7 +278,6 @@ const SessionSearch = (() => {
     $('search-execution-inputs').append(control);
     $('session-search-open').onclick = open; $('session-search-close').onclick = close;
     $('search-cancel').onclick = () => { cancel(); $('search-status').textContent = '検索を中止しました'; };
-    $('search-shared').onclick = () => { sharedMode(true); search(); };
     api.onHit(payload => {
       if (payload.requestId !== showing) return;
       rows.push(...payload.sessions);
@@ -268,16 +292,13 @@ const SessionSearch = (() => {
       const pane = $('search-results-pane');
       if (rendered < rows.length && pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 200) renderMore();
     });
-    const changed = () => { sharedMode(false); cancel(); clearResults(); $('search-date-range').hidden = $('search-date').value !== 'range'; timer = setTimeout(() => search(), 300); };
-    for (const id of ['search-text', 'search-agent', 'search-date', 'search-repo', 'search-model', 'search-source', 'search-date-field', 'search-archived', 'search-since', 'search-until']) $(id).addEventListener('input', changed);
+    const changed = () => { cancel(); clearResults(); $('search-date-range').hidden = $('search-date').value !== 'range'; timer = setTimeout(() => search(), 300); };
+    for (const id of ['search-text', 'search-agent', 'search-date', 'search-repo', 'search-model', 'search-source', 'search-date-field', 'search-archived', 'search-shared', 'search-since', 'search-until']) $(id).addEventListener('input', changed);
     $('search-text').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); search(); } };
     $('search-reset').onclick = () => {
       sharedMode(false);
       for (const id of ['search-text', 'search-agent', 'search-date', 'search-repo', 'search-model', 'search-source', 'search-since', 'search-until']) $(id).value = '';
       $('search-date-field').value = 'updated'; $('search-archived').checked = false; $('search-date-range').hidden = true; search();
-    };
-    for (const [id, folder] of [['search-import', false], ['search-folder', true]]) $(id).onclick = async () => {
-      try { if (await api.import(folder)) { $('search-more').open = false; search(); } } catch (err) { $('search-status').textContent = err.message; }
     };
     $('search-target-repo').onchange = targetChanged;
     $('search-target-agent').onchange = () => { $('search-target-model').value = ''; executionLabel(); };

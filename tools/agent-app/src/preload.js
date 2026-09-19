@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('api', {
     onProgress: on('sessions:search:progress'),
     cancel: requestId => invoke('sessions:cancel', { requestId }),
     read: key => invoke('sessions:read', { key }),
+    export: key => invoke('sessions:export', { key }),
     import: folder => invoke('sessions:import', { folder }),
     prepare: payload => invoke('sessions:prepare', payload),
     create: payload => invoke('sessions:create', payload),

@@ -275,11 +275,9 @@
             <label>取得元<select id="search-source"><option value="">すべて</option><option value="app">agent-app</option><option value="cli">CLI</option><option value="vscode">VS Code</option></select></label>
             <label>モデル<input id="search-model" placeholder="指定なし"></label>
             <label>日付の基準<select id="search-date-field"><option value="updated">更新日時</option><option value="created">作成日時</option></select></label>
-            <label><input type="checkbox" id="search-archived">アーカイブを含める</label>
-            <button type="button" id="search-import">会話のJSONを取り込む</button>
-            <button type="button" id="search-folder">会話の保存フォルダを追加</button>
+            <label class="search-check"><input type="checkbox" id="search-archived"><span>アーカイブを含める</span></label>
+            <label class="search-check"><input type="checkbox" id="search-shared"><span>共有された会話を含める</span></label>
           </div></details>
-          <button type="button" id="search-shared" class="small" aria-pressed="false">共有も検索</button>
           <button type="button" id="search-reset" class="small quiet">条件を解除</button>
         </div>
         <div id="search-date-range" class="row" hidden><label>開始日<input type="date" id="search-since"></label><label>終了日<input type="date" id="search-until"></label></div>
@@ -680,6 +678,11 @@
           </div>
         </section>
         <section data-settings-panel="storage" class="settings-list" role="tabpanel" hidden>
+          <div class="environment-status">
+            <strong>会話の取り込み</strong>
+            <div class="row"><button type="button" id="session-import">会話のJSONを取り込む</button><button type="button" id="session-folder">会話の保存フォルダを追加</button></div>
+            <div id="session-import-status" class="sub" role="status"></div>
+          </div>
           <div id="cleanup-items"></div>
           <div class="environment-status">
             <div class="row"><strong>削除対象</strong><span class="spacer"></span><span id="cleanup-total" class="status"></span></div>

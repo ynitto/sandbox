@@ -1010,6 +1010,13 @@ function registerIpcHandlers(getWindow) {
     if (job) { job.cancelled = true; job.active?.stop('引き継ぎを中止しました'); }
   });
   handle('sessions:read', p => sessionBrowser.read(String(p.key || '')));
+  handle('sessions:export', async p => {
+    const record = await sessionBrowser.read(String(p.key || ''));
+    const sess = record.appId ? store.readSession(userData(), record.appId) : record;
+    const out = sessionExport.write(userData(), sess);
+    const error = await shell.openPath(out.path);
+    return { name: out.name, warning: error ? `書き出したファイルを開けませんでした: ${error}` : '' };
+  });
   handle('sessions:import', async p => {
     const folder = p.folder === true;
     const picked = await dialog.showOpenDialog(getWindow(), folder
