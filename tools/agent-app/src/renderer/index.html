@@ -75,6 +75,7 @@
         <ul id="inbox-items" class="list grow" hidden></ul>
       </div>
 
+      <button type="button" id="usage-open" class="side-settings"><span id="usage-indicator">AIの利用状況</span></button>
       <button type="button" id="settings-open" class="side-settings">
         <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM19 13.5v-3l-2-.6a7 7 0 0 0-.7-1.6l1-1.9-2.1-2.1-1.9 1A7 7 0 0 0 11.5 5L11 3H8l-.6 2a7 7 0 0 0-1.7.7l-1.8-1-2.2 2.2 1 1.8A7 7 0 0 0 2 10.5l-2 .5v3l2 .6a7 7 0 0 0 .7 1.7l-1 1.8 2.2 2.2 1.8-1a7 7 0 0 0 1.7.7l.6 2h3l.5-2a7 7 0 0 0 1.8-.7l1.9 1 2.1-2.1-1-1.9a7 7 0 0 0 .7-1.7z" transform="translate(1.5 -0.5) scale(.88)"/></svg>
         <span>設定</span>
@@ -173,6 +174,8 @@
                 <summary><span id="run-settings-summary">実行設定</span><span class="run-settings-compact" aria-hidden="true">実行設定</span></summary>
                 <div class="settings-popover">
                   <div class="popover-head">実行設定</div>
+                  <button type="button" id="run-usage-open" class="small">利用枠と配分を見る</button>
+                  <label id="run-allocation-field">今回の配分<select id="run-allocation"><option value="">通常設定に従う</option><option value="configured">通常の配分</option><option value="local">ローカル優先</option><option value="cloud">クラウド優先</option><option value="local-only">クラウドを使わない</option></select></label>
                   <label id="policy-field">起動方針
                     <select id="policy">
                       <option value="recommended">標準</option>
@@ -264,7 +267,15 @@
     </main>
 
     <section id="session-search" aria-label="会話を検索" hidden>
-      <header class="area-head"><div class="area-heading"><div class="title">会話を検索</div></div><span class="spacer"></span><button type="button" id="session-search-close" class="small">閉じる</button></header>
+      <header class="area-head"><div class="area-heading"><div class="title">会話を検索</div></div><span class="spacer"></span><details id="search-sources" class="more-menu">
+        <summary>検索対象を追加</summary>
+        <div class="menu-panel">
+          <small class="sub">通常の保存先は自動で検索します</small>
+          <button type="button" id="session-import">VS Code の会話ファイルを追加</button>
+          <button type="button" id="session-folder">会話の保存フォルダを追加</button>
+          <div id="session-import-status" class="sub" role="status" aria-live="polite"></div>
+        </div>
+      </details><button type="button" id="session-search-close" class="small">閉じる</button></header>
       <div class="search-filters">
         <input id="search-text" type="search" placeholder="会話のタイトル・内容を検索" aria-label="会話のタイトル・内容を検索">
         <div class="row">
@@ -604,10 +615,10 @@
         <button type="button" class="on" data-settings-tab="app" role="tab" aria-selected="true">アプリ</button>
         <button type="button" data-settings-tab="instructions" role="tab" aria-selected="false">共通指示</button>
         <button type="button" data-settings-tab="execution" role="tab" aria-selected="false">実行制御</button>
+        <button type="button" data-settings-tab="audit" role="tab" aria-selected="false">利用状況</button>
         <button type="button" data-settings-tab="share" role="tab" aria-selected="false">共有</button>
         <button type="button" data-settings-tab="skills" role="tab" aria-selected="false">スキル</button>
         <button type="button" data-settings-tab="storage" role="tab" aria-selected="false">保存データ</button>
-        <button type="button" data-settings-tab="audit" role="tab" aria-selected="false">利用状況</button>
       </nav>
       <div class="dlg-body settings-content">
         <section data-settings-panel="app" class="settings-list" role="tabpanel">
@@ -643,25 +654,35 @@
           </div>
         </section>
 
-        <section data-settings-panel="execution" class="settings-list" role="tabpanel" hidden>
-          <label class="setting-check"><input type="checkbox" id="optimize-agents"><span><strong>節約・品質重視を使う</strong><small>起動方針に応じてエージェントとモデルを切り替えます</small></span></label>
-          <fieldset class="policy-fieldset">
-            <legend>既定の起動方針</legend>
-            <label><input type="radio" name="default-policy" value="recommended">標準</label>
-            <label><input type="radio" name="default-policy" value="saving">節約</label>
-            <label><input type="radio" name="default-policy" value="quality">品質重視</label>
-          </fieldset>
-          <div class="tier-grid" aria-label="起動方針ごとのエージェントとモデル">
-            <div class="tier-row"><span><strong>節約</strong></span><label>エージェント<select id="tier-small-cli"></select></label><label>モデル<input id="tier-small-model" placeholder="自動"></label></div>
-            <div class="tier-row"><span><strong>標準</strong></span><label>エージェント<select id="tier-medium-cli"></select></label><label>モデル<input id="tier-medium-model" placeholder="自動"></label></div>
-            <div class="tier-row"><span><strong>品質重視</strong></span><label>エージェント<select id="tier-large-cli"></select></label><label>モデル<input id="tier-large-model" placeholder="自動"></label></div>
+        <section data-settings-panel="execution" class="settings-list execution-settings" role="tabpanel" hidden>
+          <div class="settings-group">
+            <div class="settings-group-head"><span><strong>使うAI</strong></span><small class="sub">新しい会話・手動実行に適用</small></div>
+            <label class="setting-field"><span><strong>使用方針</strong></span><select id="usage-mode"><option value="configured">通常の配分</option><option value="local">ローカル優先</option><option value="cloud">クラウド優先</option><option value="local-only">クラウドを使わない</option></select></label>
+            <label class="setting-check"><input type="checkbox" id="optimize-agents"><span><strong>起動方針ごとにAIを使い分ける</strong></span></label>
+            <table class="wt-table settings-table execution-models" aria-label="起動方針ごとのエージェントとモデル"><thead><tr><th scope="col">起動方針・既定</th><th scope="col">エージェント</th><th scope="col">モデル</th></tr></thead><tbody>
+<tr class="tier-row"><td><label><input type="radio" name="default-policy" value="saving">節約</label></td><td><select id="tier-small-cli" aria-label="節約のエージェント"></select></td><td><input id="tier-small-model" aria-label="節約のモデル" placeholder="既定のモデル"></td></tr>
+<tr class="tier-row"><td><label><input type="radio" name="default-policy" value="recommended">標準</label></td><td><select id="tier-medium-cli" aria-label="標準のエージェント"></select></td><td><input id="tier-medium-model" aria-label="標準のモデル" placeholder="既定のモデル"></td></tr>
+<tr class="tier-row"><td><label><input type="radio" name="default-policy" value="quality">品質重視</label></td><td><select id="tier-large-cli" aria-label="品質重視のエージェント"></select></td><td><input id="tier-large-model" aria-label="品質重視のモデル" placeholder="既定のモデル"></td></tr>
+              <tr><td>ローカル優先時</td><td>ローカル<small id="usage-local-status" class="sub"></small></td><td><input id="usage-local-model" aria-label="ローカル優先時のモデル" placeholder="既定のモデル" maxlength="160"></td></tr>
+            </tbody></table>
           </div>
-          <label class="setting-field"><span><strong>遷移や振り分けの判定</strong><small>クラウドのAIで作業しているときも、判定だけをローカルのAIに任せられます</small></span><select id="judge-mode"><option value="auto">ローカルのAIで作業しているときだけ</option><option value="model">いつも、指定したモデルで</option><option value="off">使わない</option></select></label>
+          <div class="settings-group">
+            <div class="settings-group-head"><span><strong>一時的な変更</strong></span><button type="button" id="execution-usage-open" class="small quiet">利用状況を見る →</button></div>
+            <div id="usage-quota-note" class="sub"></div>
+            <label class="setting-field"><span><strong>ローカルを優先する期間</strong></span><select id="usage-until"><option value="off">変更しない</option><option value="today">今日だけ</option><option value="reset">利用枠が戻るまで</option><option value="manual">解除するまで</option></select></label>
+            <label id="usage-reset-row" class="setting-field" hidden><span><strong>復帰を待つ利用枠</strong></span><select id="usage-reset-agent"></select></label>
+            <div id="usage-allocation-state" class="allocation-preview" role="status"></div>
+          </div>
+          <div class="settings-group"><div class="settings-group-head"><span><strong>判定と評価</strong></span></div>
+          <label class="setting-field"><span><strong>振り分けの判定</strong></span><select id="judge-mode"><option value="auto">ローカル実行時のみ</option><option value="model">指定モデルで判定</option><option value="off">使わない</option></select></label>
           <label class="setting-field" id="judge-model-row" hidden><span><strong>判定に使うモデル</strong></span><input id="judge-model" placeholder="gemma4:e4b"></label>
-          <label class="setting-field" id="evaluation-row"><span><strong>応答と実行の自動評価</strong><small>終わった応答と実行をローカルのAIが評価し、課題を受信箱に出します</small></span><select id="evaluation-mode"><option value="sample">5 件に 1 件</option><option value="all">すべて</option><option value="off">使わない</option></select></label>
-          <label class="setting-field"><span><strong>評価方法</strong><small>根拠別評価は明示された受入条件を確認します。証拠不足は保留し、実行の完了判定には使いません</small></span><select id="evaluation-strategy"><option value="legacy">従来の品質点</option><option value="evidence-shadow">根拠別評価を比較・記録</option><option value="evidence-advisory">根拠付きの改善候補を提示</option></select></label>
-          <label class="setting-field"><span><strong>会話の既定権限</strong><small>新しい会話と、タスク・ワークフローの編集に適用します</small></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">読み取り専用</option></select></label>
+          <label class="setting-field" id="evaluation-row"><span><strong>自動評価の頻度</strong></span><select id="evaluation-mode"><option value="sample">5 件に 1 件</option><option value="all">すべて</option><option value="off">使わない</option></select></label>
+          <label class="setting-field"><span><strong>評価方法</strong></span><select id="evaluation-strategy"><option value="legacy">従来の品質点</option><option value="evidence-shadow">根拠別評価を比較・記録</option><option value="evidence-advisory">根拠付きの改善候補を提示</option></select></label>
+          </div>
+          <div class="settings-group"><div class="settings-group-head"><span><strong>実行の制限</strong></span></div>
+          <label class="setting-field"><span><strong>既定の権限</strong></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">読み取り専用</option></select></label>
           <label class="setting-field"><span><strong>同時実行数</strong><small>上限に達したら、実行中の処理が終わってから送信してください</small></span><input id="max-concurrent" type="number" min="1" max="8" step="1"></label>
+          </div>
         </section>
         <section data-settings-panel="share" class="settings-list" role="tabpanel" hidden>
           <label class="setting-check"><input type="checkbox" id="share-enabled"><span><strong>共有を使う</strong><small>同じLANの参加者に作業を依頼できます。依頼内容は参加者に公開されます</small></span></label>
@@ -680,11 +701,19 @@
           <div class="environment-status"><strong>接続状態</strong><div id="share-status" class="sub"></div></div>
         </section>
         <section data-settings-panel="skills" class="settings-list" role="tabpanel" hidden>
-          <label class="setting-field"><span><strong>リポジトリ</strong></span><select id="skills-repo"></select></label>
-          <label class="setting-field"><span><strong>AI</strong></span><select id="skills-agent"></select></label>
-          <label class="setting-field setting-field-wide"><span><strong>公開先リポジトリ</strong></span><input id="audit-share-repo" placeholder="https://example.com/team/skills.git"></label>
-          <label class="setting-field setting-field-wide"><span><strong>アクセストークン</strong></span><input id="audit-share-token" type="password" autocomplete="new-password" placeholder="未設定"></label>
-          <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>デフォルトブランチへ公開</strong></span></label>
+          <details class="usage-details" id="skills-publish-settings">
+            <summary>公開設定</summary>
+            <label class="setting-field setting-field-wide"><span><strong>公開先リポジトリ</strong></span><input id="audit-share-repo" placeholder="https://example.com/team/skills.git"></label>
+            <label class="setting-field setting-field-wide"><span><strong>アクセストークン</strong></span><input id="audit-share-token" type="password" autocomplete="new-password" placeholder="未設定"></label>
+            <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>デフォルトブランチへ公開</strong></span></label>
+          </details>
+          <div class="search-filters" role="group" aria-label="スキルの絞り込み">
+            <div class="row">
+              <span class="sub">絞り込み</span>
+              <label class="row"><span class="sub">リポジトリ</span><select id="skills-repo"></select></label>
+              <label class="row"><span class="sub">AI</span><select id="skills-agent"></select></label>
+            </div>
+          </div>
           <div class="row">
             <button type="button" id="skills-remove-mode" class="small quiet" aria-pressed="false">選択</button>
             <span class="spacer"></span>
@@ -698,37 +727,35 @@
           </div>
         </section>
         <section data-settings-panel="storage" class="settings-list" role="tabpanel" hidden>
-          <div class="environment-status">
-            <strong>会話の取り込み</strong>
-            <div class="row"><button type="button" id="session-import">会話のJSONを取り込む</button><button type="button" id="session-folder">会話の保存フォルダを追加</button></div>
-            <div id="session-import-status" class="sub" role="status"></div>
-          </div>
           <div id="cleanup-items"></div>
           <div class="environment-status">
             <div class="row"><strong>削除対象</strong><span class="spacer"></span><span id="cleanup-total" class="status"></span></div>
             <div class="row"><span id="cleanup-status" class="sub"></span><span class="spacer"></span><button type="button" id="cleanup-rescan" class="small">再確認</button><button type="button" id="cleanup-run" class="danger">削除する</button></div>
           </div>
         </section>
-        <section data-settings-panel="audit" class="settings-list" role="tabpanel" hidden>
-          <div class="environment-status">
-            <div class="row"><strong>利用枠</strong><span class="spacer"></span><button type="button" id="audit-run" class="small">今すぐ集める</button></div>
+        <section data-settings-panel="audit" class="settings-list usage-settings" role="tabpanel" hidden>
+          <div class="settings-group">
+            <div class="settings-group-head"><span><strong>利用枠</strong></span><button type="button" id="audit-run" class="small">更新</button></div>
             <div id="audit-status" class="sub" role="status"></div>
-            <div id="audit-limits" aria-live="polite"></div>
+            <table class="wt-table settings-table quota-table" aria-label="サービス別の利用枠"><thead><tr><th scope="col">サービス</th><th scope="col">残り</th><th scope="col">リセット</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="audit-limits">
+              <tr id="usage-manual-row" hidden><td colspan="4"><div class="row usage-controls">
+                <label>残り（%）<input id="usage-manual-remaining" type="number" min="0" max="100" step="0.1"></label>
+                <label>リセット日時<input id="usage-manual-reset" type="datetime-local"></label>
+                <button type="button" id="usage-manual-save" class="small">記録する</button><button type="button" id="usage-manual-cancel" class="small quiet">取消</button>
+              </div><div id="usage-error" class="dlg-error" role="alert" hidden></div></td></tr>
+            </tbody></table>
+            <div class="row allocation-context"><span id="usage-active-allocation" class="sub"></span><span class="spacer"></span><button type="button" id="usage-execution" class="small">AI・配分を変更 →</button></div>
           </div>
-          <div class="environment-status">
-            <div class="row usage-controls"><strong>使用量</strong><span class="spacer"></span><select id="audit-period" aria-label="集計期間"><option value="day">今日</option><option value="month" selected>今月</option><option value="total">全期間</option></select></div>
+          <div class="settings-group">
+            <div class="settings-group-head"><span><strong>使用実績</strong></span><label class="row"><span class="sub">期間</span><select id="audit-period"><option value="day">今日</option><option value="month" selected>今月</option><option value="total">全期間</option></select></label></div>
             <div id="audit-usage" aria-live="polite"></div>
-            <div class="row" id="audit-evaluation-head" hidden><strong>評価</strong></div>
-            <div id="audit-evaluation" class="sub" aria-live="polite" hidden></div>
-            <div class="row"><strong>内訳</strong><span class="spacer"></span><select id="audit-by" aria-label="集計の軸"><option value="agent_cli">AIごと</option><option value="workload">用途ごと</option><option value="model">モデルごと</option></select></div>
-            <div id="audit-breakdown"></div>
-            <small class="sub">今日・今月は UTC 基準</small>
+            <div class="settings-group-head"><span><strong>内訳</strong></span><select id="audit-by" aria-label="内訳の集計軸"><option value="agent_cli">AI別</option><option value="workload" selected>用途別</option><option value="model">モデル別</option></select></div>
+            <table class="wt-table settings-table breakdown-table" aria-label="使用量の内訳"><thead><tr><th id="audit-group-label" scope="col">用途</th><th scope="col">実行</th><th scope="col">実測</th><th scope="col">推定</th><th scope="col">未計測</th></tr></thead><tbody id="audit-breakdown"></tbody></table>
+            <small class="sub">実測・推定はトークン数。期間はUTC基準。</small>
           </div>
-          <details class="usage-details">
-            <summary>収集の設定</summary>
-            <label class="setting-check"><input type="checkbox" id="audit-enabled"><span><strong>記録を集める</strong><small>会話と実行の記録から使用量と成功率を出します</small></span></label>
-            <label class="setting-field"><span><strong>集める間隔</strong></span><select id="audit-interval"><option value="0">自動では集めない</option><option value="30">30分ごと</option><option value="60">1時間ごと</option><option value="360">6時間ごと</option><option value="1440">1日ごと</option></select></label>
-          </details>
+          <div class="settings-group"><div class="settings-group-head"><span><strong>記録の収集</strong></span></div>
+            <label class="setting-field"><span><strong>収集する間隔</strong></span><select id="audit-interval"><option value="off">収集しない</option><option value="0">手動で集める</option><option value="30">30分ごと</option><option value="60">1時間ごと</option><option value="360">6時間ごと</option><option value="1440">1日ごと</option></select></label>
+          </div>
         </section>
         <div id="settings-error" class="dlg-error" hidden></div>
       </div>
@@ -807,6 +834,7 @@
   <script src="vendor/diff2html-ui.min.js"></script>
   <script src="md.js"></script>
   <script src="../shared/reuse.js"></script>
+  <script src="../shared/allocation.js"></script>
   <script src="inputMode.js"></script>
   <script src="term.js"></script>
   <script src="talk.js"></script>

@@ -225,6 +225,8 @@ contextBridge.exposeInMainWorld('api', {
     status: () => invoke('audit:status'),
     run: () => invoke('audit:run'),
     summary: (options) => invoke('audit:summary', options || {}),
+    limits: () => invoke('audit:limits'),
+    manualLimit: (value) => invoke('audit:manualLimit', value),
     onChanged: on('audit:changed'),
   },
   // 公開（定型化したスキル・タスク・ワークフローを公開先リポジトリへ出す）。

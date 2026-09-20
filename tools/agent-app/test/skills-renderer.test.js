@@ -19,7 +19,7 @@ function fixture() {
   const publications = [];
   const window = { api: {
     publish: {
-      skills: (repo) => new Promise((resolve) => pending.push({ repo, resolve })),
+      skills: (repo, agent) => new Promise((resolve) => pending.push({ repo, agent, resolve })),
       submit: (options) => { publications.push(options); return Promise.resolve({ branch: 'published' }); },
     },
     removeSkills: (repo, agent, keys) => new Promise((resolve, reject) => removals.push({ repo, agent, keys, resolve, reject })),
@@ -138,6 +138,7 @@ test('選択トグルは未選択で開始し、OFFで解除する。共通ス�
 
 test('削除中は連打・公開・モード切替を防ぎ、実体のキーだけ渡して部分失敗を表示し再読込する', async () => {
   const f = fixture();
+  f.window.Skills.fill({ audit: { skillAgent: 'claude' } });
   f.window.Skills.open({ repos: ['a'] }, ['claude']);
   f.pending[0].resolve(removableDoc());
   await tick();
@@ -263,4 +264,24 @@ test('公開は未公開のスキルを対象にし、公開設定が未保存�
   assert.deepEqual(JSON.parse(JSON.stringify(f.publications)), [{ repo: 'a', kind: 'skill', name: 'review' }]);
   f.pending[1].resolve({ configured: true, items: [] });
   await tick();
+});
+
+
+test('AI の絞り込みとすべてを送信し、すべてへの解除も保存・復元できる', () => {
+  const { window, nodes, pending } = fixture();
+  const config = { repos: ['a'], audit: { skillAgent: 'claude' } };
+  window.Skills.fill(config);
+  window.Skills.open(config, ['claude', 'cursor']);
+  assert.equal(pending[0].agent, 'claude');
+  assert.ok(nodes.get('skills-agent').children.some(option => option.value === '' && option.textContent === 'すべて'));
+  nodes.get('skills-agent').value = 'cursor';
+  nodes.get('skills-agent').onchange();
+  assert.equal(pending[1].agent, 'cursor');
+  nodes.get('skills-agent').value = '';
+  nodes.get('skills-agent').onchange();
+  assert.equal(pending[2].agent, '');
+  assert.equal(window.Skills.patch().skillAgent, '');
+  window.Skills.open(config, ['claude', 'cursor']);
+  assert.equal(nodes.get('skills-agent').value, '');
+  assert.equal(pending[3].agent, '');
 });

@@ -134,11 +134,15 @@ function turnSpec(sess, p) {
 // policy を持たない旧画面・旧セッションは、それまでの直接指定の意味を保つ。
 //   optimized … 「エージェントを最適化する」が効いているか（設定 × herd の有無）。false なら節約 /
 //               品質重視は「おすすめ」として解決する（settings.effectivePolicy）
-function executionSpec(sess, p, config, { optimized = true } = {}) {
+function executionSpec(sess, p, config, { optimized = true, agents = null } = {}) {
+  // Global allocation changes and expiry only affect new work, never an existing conversation.
+  if (p.policy && !['shared', 'direct'].includes(p.policy) && p.policy === sess.policy && (!p.cli || p.cli === sess.cli)) {
+    return { ...turnSpec(sess, { ...p, cli: sess.cli, model: sess.model }), policy: sess.policy, tier: sess.tier, source: 'session' };
+  }
   const legacyDirect = !p.policy;
   const selected = settings.resolve(config, legacyDirect ? {
     policy: 'direct', cli: p.cli || sess.cli, model: p.model != null ? p.model : sess.model,
-  } : p, { optimized });
+  } : p, { optimized, agents });
   const base = turnSpec(sess, { ...p, cli: selected.cli, model: selected.model });
   return { ...base, policy: selected.policy, tier: selected.tier, source: selected.source };
 }
@@ -635,7 +639,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   const cfg = config || store.loadConfig(ud);
   const agents = await listAgents(repo);
-  const requested = executionSpec(sess, p, cfg, { optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
+  const requested = executionSpec(sess, p, cfg, { agents, optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
   if (requested.policy === settings.SHARED_POLICY) return runShared(id, sess, dirs, p, requested, cfg, send, release);
   const base = concreteCli(requested, agents, { attachments: p.attachments });
   const spec = agentCli.load(base.cli, repo);
@@ -862,7 +866,7 @@ function registerIpcHandlers(getWindow) {
   const auditor = new audit.Auditor({
     userData: userData(),
     loadConfig: () => store.loadConfig(userData()),
-    shellFor: (distro) => host.shellFor(distro),
+    shellFor: (distro) => host.shellFor(distro, { lane: 'audit' }),
     post,
     busy: () => running.size > 0 || conversations.size > 0,
   });
@@ -929,6 +933,15 @@ function registerIpcHandlers(getWindow) {
   handle('audit:status', () => ({ ...auditor.status(), share: artifacts.list() }));
   handle('audit:run', () => auditor.run({ manual: true }));
   handle('audit:summary', (p) => auditor.summary({ by: p && p.by, period: p && p.period }));
+  handle('audit:limits', () => auditor.limits());
+  handle('audit:manualLimit', (p) => {
+    const allocation = require('../shared/allocation');
+    const cfg = store.loadConfig(userData());
+    const rows = allocation.manualLimits([{ ...p, observed_at: new Date().toISOString() }]);
+    if (!rows.length || !allocation.validLimit(rows[0])) throw new Error('残量と未来のリセット日時を入力してください');
+    return store.saveConfig(userData(), { audit: { ...cfg.audit,
+      manualLimits: [...cfg.audit.manualLimits.filter(x => x.agent_cli !== rows[0].agent_cli), rows[0]] } });
+  });
   // 成果物の行が持つ出所（`repo:<名前>`）から、登録済みリポジトリを引く。1 つに定まらない
   // ときは断る——別のリポジトリの定義を勝手に触らない。
   function repoOf(p) {
@@ -1160,7 +1173,7 @@ function registerIpcHandlers(getWindow) {
     const folder = p.folder === true;
     const picked = await dialog.showOpenDialog(getWindow(), folder
       ? { title: '会話の保存フォルダを追加', properties: ['openDirectory'] }
-      : { title: '会話を取り込む', properties: ['openFile', 'multiSelections'], filters: [{ name: '会話のJSON', extensions: ['json', 'jsonl'] }] });
+      : { title: 'VS Code の会話ファイルを追加', properties: ['openFile', 'multiSelections'], filters: [{ name: 'VS Code の会話（JSON）', extensions: ['json', 'jsonl'] }] });
     if (picked.canceled) return null;
     (folder ? sessionBrowser.codeRoots : sessionBrowser.imports).push(...picked.filePaths);
     sessionBrowser.saveSources();
@@ -1207,9 +1220,10 @@ function registerIpcHandlers(getWindow) {
   handle('session:create', async (p) => {
     const repo = requireRepo(p.repo);
     const cfg = store.loadConfig(userData());
+    const availableAgents = await listAgents(repo);
     const selected = settings.resolve(cfg, p.policy ? p : {
       policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model,
-    });
+    }, { agents: availableAgents, optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(availableAgents) }) });
     let branch = '';
     if (p.worktree) branch = (await worktree.find(repo, p.worktree, distroFor(repo))).branch;
     return store.createSession(userData(), {

@@ -55,9 +55,11 @@ test('Electron: publish after completion, shared comments, explicit search, comm
     await win.evaluate(() => { document.getElementById('search-source').value = 'app'; });
     const before = remoteSearches;
     await win.fill('#search-text', '共有fixture');
-    await win.waitForFunction(() => /^該当なし（|^該当する会話なし/.test(document.getElementById('search-status').textContent));
+    await win.waitForFunction(() => /^該当なし（|^該当する会話なし|^該当する会話はありません/.test(document.getElementById('search-status').textContent));
     assert.equal(remoteSearches, before);
+    await win.click('#search-more > summary');
     await win.click('#search-shared');
+    await win.click('#search-more > summary');
     await win.locator('#search-results button').filter({ hasText: '共有fixture集計' }).click();
     await win.locator('#search-preview').getByText('集計の結果です', { exact: true }).waitFor();
     assert.ok(remoteSearches > before);

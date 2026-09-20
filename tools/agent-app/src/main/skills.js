@@ -39,8 +39,9 @@ function agentKey(agent) {
 function sourceRoots(repo = '', agent = '') {
   const home = os.homedir();
   const key = agentKey(agent);
-  const shapes = key ? [...AGENT_DIRS[key], ...COMMON_DIRS]
-    : [...Object.values(AGENT_DIRS).flat(), ...COMMON_DIRS];
+  // 未対応の AI を選んだときも、他の AI の置き場へ範囲を広げない。
+  const specific = String(agent || '').trim() ? (AGENT_DIRS[key] || []) : Object.values(AGENT_DIRS).flat();
+  const shapes = [...specific, ...COMMON_DIRS];
   const roots = [];
   // リポジトリの中を先に置く（同じ名前なら、その仕事の分を優先する）。
   if (repo) for (const [a, b, kind] of shapes) roots.push({ path: path.join(repo, a, b), kind, place: 'repo', repo });

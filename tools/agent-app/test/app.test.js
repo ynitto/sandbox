@@ -74,7 +74,7 @@ test('tmux会話はメッセージ入力と端末操作を明示的に切り替�
   assert.match(renderer, /Newline:\s*'\\n'/);
   assert.match(fs.readFileSync(path.join(SRC, 'renderer/taskTeaching.js'), 'utf8'), /Newline:\s*'\\n'/);
   assert.match(term, /attachCustomKeyEventHandler\(\(event\) => \{[\s\S]*event\.shiftKey[\s\S]*sendData\('\\n'\)/);
-  assert.match(preload, /termScroll:\s*\(id, lines\)\s*=>\s*invoke\('term:scroll'/);
+  assert.match(preload, /termScroll:\s*\(id, lines, position\)\s*=>\s*invoke\('term:scroll'/);
   // xterm の既定ホイール処理を止めるには hostEl の wheel リスナーでは足りない。
   // attachCustomWheelEventHandler で受け取り、tmux へ転送したら false を返す。
   assert.doesNotMatch(term, /addEventListener\('wheel'/);
@@ -200,7 +200,7 @@ test('主要メニューは会話・タスク・ワークフローの三領域�
 test('リポジトリ選択と作成操作は選択中領域の一覧にまとめる', () => {
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   assert.match(html, /id="repository-context"[\s\S]*?id="repo-select"/);
-  const context = html.match(/<div id="area-sidebar-context"[\s\S]*?<\/div>\s*<button[^>]+id="settings-open"/)?.[0] || '';
+  const context = html.match(/<div id="area-sidebar-context"[\s\S]*?<\/div>\s*<button[^>]+id="usage-open"/)?.[0] || '';
   assert.match(context, /id="area-list-title"/);
   assert.match(context, /id="session-new"[^>]*aria-label="新しい会話"/);
   assert.ok(html.indexOf('id="session-new"') > html.indexOf('id="areas"'), '作成操作を主要メニューより後へ置く');

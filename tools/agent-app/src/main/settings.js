@@ -1,6 +1,7 @@
 'use strict';
 
 const TIERS = ['small', 'medium', 'large'];
+const allocation = require('../shared/allocation');
 const POLICY_TIER = { recommended: 'medium', saving: 'small', quality: 'large' };
 const POLICIES = Object.keys(POLICY_TIER);
 // 「エージェントを最適化する」が効いていないとき（設定で OFF、またはローカル実行系 agent-herd が
@@ -100,6 +101,7 @@ function audit(raw) {
     skillAgent: String(source.skillAgent || ''),
     pushToMain: Boolean(source.pushToMain),
     configFile: String(source.configFile || '').trim().slice(0, 500),
+    manualLimits: allocation.manualLimits(source.manualLimits),
   };
 }
 
@@ -189,6 +191,7 @@ function normalize(raw) {
       maxConcurrent: concurrent(execution.maxConcurrent),
       tiers: Object.fromEntries(TIERS.map((tier) => [tier, pair(tiers[tier], legacy)])),
     },
+    allocation: allocation.normalize(source.allocation),
     share: share(source.share),
     notify: notify(source.notify),
     update: update(source.update),
@@ -213,7 +216,7 @@ function effectivePolicy(policy, { optimized: on = true } = {}) {
 }
 
 //   optimized … false なら節約 / 品質重視を「おすすめ」へ写す（呼ぶ側が herd の有無を見て決める）
-function resolve(config, request = {}, { optimized: on = true } = {}) {
+function resolve(config, request = {}, { optimized: on = true, agents = null, now = Date.now() } = {}) {
   const requestedPolicy = String(request.policy || '');
   if (requestedPolicy === SHARED_POLICY) {
     // 共有: CLI は「どれでも」（空）か、参加者が提供している名前。tier は持たない。
@@ -234,7 +237,8 @@ function resolve(config, request = {}, { optimized: on = true } = {}) {
   const tier = POLICY_TIER[policy];
   const selected = configured.tiers[tier];
   if (!selected || !String(selected.cli || '').trim()) throw new Error(`${tier} Tier のエージェントを設定してください`);
-  return { policy, tier, cli: selected.cli, model: selected.model, source: 'policy' };
+  return allocation.select({ policy, tier, cli: selected.cli, model: selected.model, source: 'policy' }, config,
+    { agents, now, preference: request.allocation });
 }
 
 module.exports = {
