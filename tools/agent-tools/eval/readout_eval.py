@@ -114,6 +114,44 @@ def _evaluator_cell(case: dict):
     return state, questions, lambda answers: {"decision": answers["decision"]["choice"]}
 
 
+def _request_stages(request: str) -> "list[str]":
+    """要求の本文から段の名前を取り出す（「収集・集計・出力の 3 段で」→ 3 つ）。
+
+    ここで段を書き写すと、要求を書き換えたときに問いだけが古いまま残る。件数が本文と
+    食い違ったら、測らずに落とす。
+    """
+    found = re.search(r"([^。、]+?)の\s*(\d+)\s*段", request)
+    if found is None:
+        raise ValueError(f"要求から段を読めません: {request[:60]!r}")
+    stages = [s for s in found.group(1).split("・") if s]
+    if len(stages) != int(found.group(2)):
+        raise ValueError(f"段の数が本文と食い違います: {stages}（本文は {found.group(2)} 段）")
+    return stages
+
+
+def _evaluator_stages_cell(case: dict):
+    """evaluator のもう 1 つの問い方: 要求の段を**選択肢の側**へ出す。
+
+    既定の問い（「この結果で要求を満たしたか」）は、全ノードが green なら要求の段が欠けて
+    いても `done` へ倒れた（2026-09-20 の実測で E3〜E5 が 0/9）。モデルはノードの status
+    しか読んでいない。こちらは段を選択肢に並べて「どの段の成果が出ていないか」を訊き、
+    `done` 以外は機械が `replan` へ畳む——**モデルには段の有無だけを言わせ、判定は機械が
+    決める**。段の名前は要求の本文から取り出すので、要求を書き換えれば選択肢も変わる。
+    """
+    judge_eval = importlib.import_module("judge_eval")
+    state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
+                      for nid, kind, status, out in case["results"])
+    criteria = {"done": "どの段も成果が出ており、足す仕事は無い"}
+    criteria.update({f"missing:{stage}": f"「{stage}」の段の成果が出ていない"
+                                         "（ノードが無い・失敗している）"
+                     for stage in _request_stages(judge_eval.REQUEST)})
+    questions = {"decision": {
+        "type": "choice", "criteria": criteria,
+        "instructions": f"要求は「{judge_eval.REQUEST}」。結果に成果が出ていない段はどれか。"}}
+    return state, questions, lambda answers: {
+        "decision": "done" if answers["decision"]["choice"] == "done" else "replan"}
+
+
 def _route_cell(case: dict):
     """route: 本番の問いと状態（`agent_project` の `_route_judge_*`）をそのまま呼ぶ。
 
@@ -133,6 +171,9 @@ def _route_cell(case: dict):
 
 # セル → (ケース定義を持つモジュール, 問いの立て方)。モジュールは遅延 import する
 # （project_eval は agent_project が読めない木で SystemExit する）。
+# `E3+stages` のような**変種**は、同じケース（入力と正解は 1 つのまま）を別の問いの形で
+# 引く。問いの立て方を変えたときに、どちらが当たるかを同じ台帳の上で比べるため。
+VARIANT_SEP = "+"
 CELLS = {
     "F1": ("judge_eval", _filter_cell),
     "J2": ("judge_eval", _judge_cell),
@@ -147,6 +188,20 @@ CELLS = {
     "RO2": ("project_eval", _route_cell),
     "RO3": ("project_eval", _route_cell),
 }
+
+# 要求の段を選択肢の側へ出した問い（同じ E1〜E6 を別の形で引く）。**旧モード専用**——
+# 答えを機械が `done` / `replan` へ畳むので、`missing:` のどれを選んでも正解になる。
+# calibration の `oracle` は「正解を通す割り当てがちょうど 1 つ」を要求するため、多対一の
+# 変種はそちらへ載せない（載せるなら期待値を集合で持つ話になる。今回は決めない）。
+VARIANTS = {f"E{i}{VARIANT_SEP}stages": ("judge_eval", _evaluator_stages_cell)
+            for i in range(1, 7)}
+ALL_CELLS = {**CELLS, **VARIANTS}
+
+
+def case_of(cid: str):
+    """セル id から (ケース, 問いの立て方) を解く。変種（`E3+stages`）は元のケースを指す。"""
+    module, build = ALL_CELLS[cid]
+    return importlib.import_module(module).CASES[cid.split(VARIANT_SEP)[0]], build
 
 
 # --------------------------------------------------------------------------- 集計（ollama を呼ばない）
@@ -219,8 +274,7 @@ def run_one(cid: str, run: int, model: str) -> dict:
     棄権は全問一括（`abstained` に 1 つでも載れば呼び出し側は倒れる）なので、束を代表する
     のは最も弱い問い。1 セル = 1 点として信頼度図に載せる。
     """
-    module, build = CELLS[cid]
-    case = importlib.import_module(module).CASES[cid]
+    case, build = case_of(cid)
     state, questions, to_check = build(case)
     started = time.time()
     row = {"case": cid, "run": run, "model": model, "questions": len(questions)}
@@ -407,8 +461,7 @@ def calibration_report(rows, *, model, min_confidence=0.0, thresholds=THRESHOLDS
 
 
 def calibration_run_one(cid, run, model, *, samples=1, fake=False):
-    module, build = CELLS[cid]
-    case = importlib.import_module(module).CASES[cid]
+    case, build = case_of(cid)
     state, questions, to_check = build(case)
     expected = oracle(questions, to_check, case["check"])
     usage = {"tokens_in": None, "tokens_out": None}
@@ -509,7 +562,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__ and __doc__.splitlines()[0])
     parser.add_argument("--model", default=MODEL)
     parser.add_argument("--repeat", type=int, default=3)
-    parser.add_argument("--cases", default=",".join(CELLS))
+    parser.add_argument("--cases", default=None)
     parser.add_argument("--calibration", action="store_true", help="write versioned calibration ledger/report")
     parser.add_argument("--fake-run", action="store_true", help="synthetic smoke run, implies --calibration")
     parser.add_argument("--replay", help="recompute a v1 calibration ledger offline")
@@ -517,14 +570,17 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--min-confidence", type=float, default=0.0)
     args = parser.parse_args()
-    if args.calibration or args.fake_run or args.replay:
+    calibrating = bool(args.calibration or args.fake_run or args.replay)
+    if args.cases is None:      # 変種は旧モードの既定にだけ入れる（上の VARIANTS の注）。
+        args.cases = ",".join(CELLS if calibrating else ALL_CELLS)
+    if calibrating:
         try:
             return calibration_main(args)
         except ValueError as exc:
             parser.error(str(exc))
-    cids = [c.strip() for c in args.cases.split(",") if c.strip() in CELLS]
+    cids = [c.strip() for c in args.cases.split(",") if c.strip() in ALL_CELLS]
     if not cids:
-        print(f"測れるセルがありません（選べるのは {', '.join(CELLS)}）")
+        print(f"測れるセルがありません（選べるのは {', '.join(ALL_CELLS)}）")
         return 2
     if not ollama_reachable():
         print(f"ollama に届かないので測っていない（{ollama_loop.host_url()}）。台帳は書かない。")
