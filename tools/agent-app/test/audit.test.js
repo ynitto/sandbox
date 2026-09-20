@@ -234,6 +234,38 @@ test('集計の失敗はゼロ使用として返さない', async () => {
   assert.equal(got.limitsError, true);
 });
 
+test('利用枠の入口は品質集計や収集を実行せず、壊れた応答を未取得として返す', async () => {
+  const calls = [];
+  const auditor = new audit.Auditor({ userData: tmp('audit-limits-'), loadConfig: () => ({ audit: {} }), platform: 'linux', env: {},
+    shellFor: () => ({ run: async script => {
+      calls.push(script);
+      return script.includes('command -v') ? { ok: true, output: 'yes' } : { ok: true, output: 'bad json' };
+    } }),
+  });
+  const result = await auditor.limits();
+  assert.equal(result.limitsError, true);
+  assert.deepEqual(result.agentLimits, []);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].includes("'usage' '--by' 'agent_cli' '--period' 'total'"));
+});
+
+test('ローカルの割合は実行回数を使い、未分類も分母に含める', async () => {
+  const rows = [
+    { group: 'claude', runs: 2, measured_in: 100, measured_out: 20, unmeasured_runs: 1 },
+    { group: 'ollama', runs: 5, measured_in: 2000 },
+    { group: 'custom', runs: 3, measured_in: 50 },
+  ];
+  const auditor = new audit.Auditor({ userData: tmp('audit-allocation-'), loadConfig: () => ({ audit: {} }), platform: 'linux', env: {},
+    shellFor: () => ({ run: async script => script.includes('command -v') ? { ok: true, output: 'yes' }
+      : { ok: true, output: JSON.stringify({ rows }) } }),
+  });
+  const result = await auditor.summary({ by: 'agent_cli' });
+  assert.equal(result.allocationUsage.localPercent, 50);
+  assert.equal(result.allocationUsage.cloud.tokens, 120);
+  assert.equal(result.allocationUsage.cloud.unmeasured, 1);
+  assert.equal(result.allocationUsage.other.runs, 3);
+});
+
 test('成果物・洞察・レポートはストアのファイルをそのまま読む', () => {
   const ud = tmp('audit-read-');
   const store = audit.storeDir(ud);
@@ -475,7 +507,7 @@ test('設定は周期と共有先だけを持ち、範囲外の値を丸める',
   const got = settings.normalize({ audit: { intervalMinutes: 99999, shareRepo: ' git@e:r.git ', pushToMain: 'yes' } }).audit;
   assert.deepEqual(got, {
     enabled: true, intervalMinutes: 1440, shareRepo: 'git@e:r.git', pushToMain: true, configFile: '',
-    shareTokenEncrypted: '', skillRepo: '', skillAgent: '',
+    shareTokenEncrypted: '', skillRepo: '', skillAgent: '', manualLimits: [],
   });
   assert.equal(settings.normalize({}).audit.intervalMinutes, 60);
   assert.equal(settings.normalize({ audit: { enabled: false } }).audit.enabled, false);

@@ -292,11 +292,13 @@ test('利用状況の面は設定の既存の器（設定の行・状態の印�
   // 1. タブ名で分かることを本文で繰り返さない（見出しと説明の常駐を作らない）
   assert.ok(!/<h[1-4][\s>]/.test(panel), '設定の面に見出しを置かない（タブ名が名乗る）');
   // 2. 設定の行と足元の集計は既存の器をそのまま借りる
-  assert.match(panel, /class="setting-check"/);
+  assert.match(panel, /class="wt-table settings-table/);
   assert.match(panel, /class="setting-field"/);
   assert.ok(!/\.audit-row|\.audit-card|\.audit-panel|\.audit-list/.test(css), '設定の行の私物な複製を作らない');
   // 3. 並びと印も既存の部品（.row / .spacer / .status / .sub）を使う
-  assert.match(audit, /el\('div', 'row'\)/, '行は .row を借りる');
+  assert.match(panel, /class="row allocation-context"/, '操作は .row を借りる');
+  assert.ok(!/<details|id="audit-evaluation/.test(panel), '実績を畳まず、評価結果を表示しない');
+  assert.ok(!/id="usage-mode"|id="usage-local-model"/.test(panel), '配分とモデルの編集は実行制御に集約');
   // 4. 色は主操作と状態の区別にだけ。この面の主ボタンはダイアログの「保存」
   assert.ok(!/id="audit-run"[^>]*class="[^"]*primary/.test(panel), '1 つの面に主ボタンを 2 つ置かない');
   assert.ok(!/class="[^"]*danger/.test(panel), '普通の操作を警告色で塗らない');
@@ -320,7 +322,7 @@ test('スキルの面は 1 つの一覧で、未公開を先頭に出し、公�
   assert.ok(!/<h[1-4][\s>]/.test(panel), '設定の面に見出しを置かない（タブ名が名乗る）');
   assert.ok(!/<p[\s>]/.test(panel), '仕組みの説明は README に置く');
   // 2. 器は「保存データ」の面をそのまま借りる（設定の行 → 一覧 → 足元に操作）
-  assert.match(panel, /class="setting-field"/);
+  assert.match(panel, /class="setting-field(?: setting-field-wide)?"/);
   assert.match(panel, /class="environment-status"/);
   assert.match(skills, /el\('label', 'setting-check'\)/, '行は保存データと同じ .setting-check を借りる');
   assert.ok(!/\.skill-row|\.skill-card|\.skill-panel|\.skills-list\b/.test(css), 'スキルの行の私物な複製を作らない');

@@ -1103,14 +1103,16 @@ async function refreshTurnSkillPreview() {
   renderRunSettingsSummary();
 }
 
-function selectedExecution(policy = currentPolicy()) {
+function selectedExecution(policy = currentPolicy(), { forNew = false } = {}) {
+  if (!forNew && state.current && policy === state.current.policy && !['shared', 'direct'].includes(policy)) return { policy, tier: state.current.tier, cli: state.current.cli, model: state.current.model || '' };
   if (policy === 'direct') return { policy, tier: '', cli: $('cli').value, model: $('model').value.trim() };
   policy = effectivePolicy(policy);
   // 共有: エージェントは「どれでも」（'*' → 空）か、参加者が提供している名前
   if (policy === 'shared') return { policy, tier: '', cli: $('cli').value === '*' ? '' : $('cli').value, model: $('model').value.trim() };
   const view = POLICY_VIEW[policy] || POLICY_VIEW.recommended;
   const tier = state.config.execution.tiers[view.tier];
-  return { policy, tier: view.tier, cli: tier.cli, model: tier.model || '' };
+  return Allocation.select({ policy, tier: view.tier, cli: tier.cli, model: tier.model || '' }, state.config,
+    { agents: state.agentsLoading ? null : state.agents, preference: forNew ? undefined : $('run-allocation').value });
 }
 
 function renderAgents() {
@@ -1138,7 +1140,9 @@ function renderRunSettingsSummary() {
   // 「どれでも」の選択肢は、要約を組み立てる前に入れ替える（選ばれている CLI がそこで変わる）
   const shared = sharing();
   renderAnyAgentOption(shared);
-  const selected = selectedExecution();
+  $('run-allocation-field').hidden = !!state.current || shared || currentPolicy() === 'direct';
+  let selected;
+  try { selected = selectedExecution(); } catch (error) { summary.textContent = error.message; summary.title = error.message; return; }
   const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
   const agent = selected.cli || (shared ? 'どれでも' : 'エージェント未設定');
   const model = selected.model;
@@ -1153,7 +1157,7 @@ function renderRunSettingsSummary() {
   const targetLabel = shareTarget() ? `${shareTarget()} 宛て` : '';
   summary.textContent = shared
     ? [agent, targetLabel, priorityLabel].filter(Boolean).join(' · ')
-    : [selected.policy === 'direct' ? '' : policy.label, agent, mode].filter(Boolean).join(' · ');
+    : [selected.allocation ? Allocation.LABELS[selected.allocation] : selected.policy === 'direct' ? '' : policy.label, agent === 'herd' ? 'ローカル' : agent, mode].filter(Boolean).join(' · ');
   summary.title = shared
     ? [agentLabel, targetLabel || 'どの参加者でも', priorityLabel, skillLabel].join(' · ')
     : [policy.label, agentLabel, skillLabel, mode, location].join(' · ');
@@ -1759,6 +1763,7 @@ function renderMessages() {
 }
 
 function newDraft() {
+  $('run-allocation').value = '';
   state.current = null;
   state.draft = !!state.repo;
   notice('');
@@ -1820,7 +1825,8 @@ function turnOptions() {
   const selected = selectedExecution();
   return {
     policy: selected.policy,
-    ...(selected.policy === 'direct' || selected.policy === 'shared' ? { cli: selected.cli, model: selected.model } : {}),
+    cli: selected.cli, model: selected.model,
+    ...(!state.current && $('run-allocation').value ? { allocation: $('run-allocation').value } : {}),
     // 共有は読み取り専用（相手の PC で動く）
     readonly: selected.policy === 'shared' || $('permission-mode').value === 'ask',
     autoApprove: $('permission-mode').value === 'auto',
@@ -1850,14 +1856,13 @@ async function sendPrompt() {
   const waiting = shareWaiting();
   if (waiting) { if (text) await sayToExecutor(waiting, text); return; }
   if ((!text && !state.attachments.length) || !state.repo) return;
-  const opts = turnOptions();
-  const selected = selectedExecution(opts.policy);
+  // Resolve local preference only after availability has arrived.
+  await Promise.all([state.agentsReady, state.hostReady]);
+  let opts, selected;
+  try { opts = turnOptions(); selected = selectedExecution(opts.policy); } catch (error) { notice(error.message, 'error'); return; }
   const shared = opts.policy === 'shared';
   const shareLabel = opts.to ? `${opts.to} へ` : '共有に';
   inputStatus('pending', shared ? `${shareLabel}送信中…` : `${selected.cli}を準備中…`);
-  // 起動直後は CLI の有無と tmux の有無がまだ届いていないことがある（ホストの返事待ち）。
-  // 経路（tmux / ヘッドレス）はその答えで決まるので、ここで待つ。
-  await Promise.all([state.agentsReady, state.hostReady]);
   const agent = state.agents.find((a) => a.name === selected.cli && a.available);
   // 共有は相手の PC の CLI で動くので、この PC に使えるエージェントが無くてもよい
   if (!agent && !shared) { inputStatus(); notice('利用できるエージェントがありません', 'error'); return; }
@@ -2265,6 +2270,7 @@ function settingsPatch() {
     tiers[tier] = { cli: $(`tier-${tier}-cli`).value, model: $(`tier-${tier}-model`).value.trim() };
   }
   return {
+    allocation: Audit.allocationPatch(),
     transport: $('use-tmux').checked ? 'tmux' : 'headless',
     notify: { background: $('notify-background').checked },
     update: { source: $('update-source').value.trim(), onStartup: $('update-on-startup').checked, intervalHours: Number($('update-interval').value) },
@@ -2341,7 +2347,12 @@ async function renderShareStatus() {
   }
 }
 
-async function openSettings() {
+async function openUsageSettings() {
+  if ($('app-settings').open) selectSettingsTab('audit');
+  else await openSettings('audit');
+}
+
+async function openSettings(initialTab = 'app') {
   state.config = await api.getConfig();
   const instructions = state.config.instructions;
   const execution = state.config.execution;
@@ -2405,7 +2416,7 @@ async function openSettings() {
   Audit.fill(state.config);
   Skills.reset();
   Skills.fill(state.config);
-  selectSettingsTab('app');
+  selectSettingsTab(initialTab);
   setSidebar(false);
   $('app-settings').showModal();
   await judgeLoaded;
@@ -2418,6 +2429,7 @@ async function saveSettings() {
   $('settings-error').hidden = true;
   try {
     state.config = await api.saveConfig(settingsPatch());
+    Audit.fill(state.config);
     Skills.fill(state.config);
     if (!document.querySelector('[data-settings-panel="skills"]').hidden) await Skills.load();
     // 判定の設定は agent-herd 側のファイル。変えたときだけ書きに行く（agent-herd が無ければ触らない）。
@@ -2558,17 +2570,17 @@ async function init() {
     shareEnabled: () => shareEnabled(),
     isRunning: (id) => state.running.has(id),
     executionOptions: (overrides = {}) => {
-      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
       const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
       return { policy: selected.policy, cli: overrides.agent || selected.cli, model: overrides.model != null ? overrides.model : selected.model, autoApprove };
     },
     executionDefaults: () => {
-      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
       return { agent: selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
     },
     agentNames: () => state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name),
     executionLabel: (overrides = {}) => {
-      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
       const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
       const cli = overrides.agent || selected.cli;
       const model = overrides.model != null ? overrides.model : selected.model;
@@ -2588,16 +2600,16 @@ async function init() {
     isRunning: (id) => state.running.has(id),
     agentNames: () => state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name),
     executionOptions: (overrides = {}) => {
-      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
       const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
       return { policy: selected.policy, cli: overrides.agent || selected.cli, model: overrides.model != null ? overrides.model : selected.model, autoApprove };
     },
     executionDefaults: () => {
-      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
       return { agent: selected.cli, model: selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
     },
     executionLabel: (overrides = {}) => {
-      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy));
+      const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
       const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
       const cli = overrides.agent || selected.cli;
       const model = overrides.model != null ? overrides.model : selected.model;
@@ -2727,7 +2739,7 @@ async function init() {
     const opts = turnOptions();
     const selected = selectedExecution(opts.policy);
     if (state.current) {
-      const patch = key === 'policy' ? { policy: opts.policy, tier: selected.tier }
+      const patch = key === 'policy' ? { policy: opts.policy, tier: selected.tier, cli: selected.cli, model: selected.model }
         : key === 'permission' ? { readonly: opts.readonly, autoApprove: opts.autoApprove }
           : { [key]: selected[key] };
       state.current = await api.updateSession(state.current.id, patch);
@@ -2744,9 +2756,9 @@ async function init() {
     renderRunSettingsSummary();
     renderSessions();
   };
-  $('policy').onchange = () => onTurnOptionChange('policy');
-  $('cli').onchange = () => onTurnOptionChange('cli');
-  $('model').onchange = () => onTurnOptionChange('model');
+  $('policy').onchange = () => onTurnOptionChange('policy').catch(err => notice(err.message, 'error'));
+  $('cli').onchange = () => onTurnOptionChange('cli').catch(err => notice(err.message, 'error'));
+  $('model').onchange = () => onTurnOptionChange('model').catch(err => notice(err.message, 'error'));
   $('permission-mode').onchange = () => onTurnOptionChange('permission');
   $('share-target').onchange = () => renderRunSettingsSummary();
   $('priority').onchange = () => renderRunSettingsSummary();
@@ -2826,19 +2838,27 @@ async function init() {
   $('skill-entry').onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); $('skill-add').click(); } };
   $('quick-add').onclick = () => { if (state.settingsQuick.length < 3) state.settingsQuick.push({ label: '', text: '' }); renderQuickRequests(); };
   $('startup-add').onclick = () => { state.settingsActions.push({ type: 'skill', value: '', onError: 'warn' }); renderStartupActions(); };
-  for (const [id, folder] of [['session-import', false], ['session-folder', true]]) $(id).onclick = async () => {
-    $(id).disabled = true;
-    $('session-import-status').textContent = '';
-    try {
-      if (await api.sessionBrowser.import(folder)) $('session-import-status').textContent = folder ? '保存フォルダを追加しました' : '会話を取り込みました';
-    } catch (err) { $('session-import-status').textContent = err.message; }
-    finally { $(id).disabled = false; }
-  };
   $('settings-open').onclick = () => openSettings().catch((error) => notice(error.message, 'error'));
   $('settings-close').onclick = () => $('app-settings').close();
   $('settings-save').onclick = saveSettings;
   Storage.init();
-  Audit.init();
+  Audit.init({
+    getConfig: () => state.config,
+    setConfig: cfg => { state.config = cfg; renderRunSettingsSummary(); },
+    localAvailable: () => state.agentsLoading ? null : herdAvailable(),
+    preview: allocation => {
+      const tiers = Object.fromEntries(['small', 'medium', 'large'].map(tier => [tier, { cli: $(`tier-${tier}-cli`).value, model: $(`tier-${tier}-model`).value.trim() }]));
+      const policy = document.querySelector('input[name="default-policy"]:checked')?.value || 'recommended';
+      const tier = (POLICY_VIEW[policy] || POLICY_VIEW.recommended).tier;
+      return Allocation.select({ policy, tier, ...tiers[tier] }, { ...state.config, allocation, execution: { ...state.config.execution, tiers } }, { agents: state.agentsLoading ? null : state.agents });
+    },
+    refreshPreview: renderRunSettingsSummary,
+    openExecution: async () => { if (!$('app-settings').open) await openSettings('execution'); else selectSettingsTab('execution'); $('usage-until').focus(); },
+  });
+  $('usage-open').onclick = () => openUsageSettings().catch(err => notice(err.message, 'error'));
+  $('run-allocation').onchange = renderRunSettingsSummary;
+  $('run-usage-open').onclick = () => { $('run-settings').open = false; openUsageSettings().catch(err => notice(err.message, 'error')); };
+  $('execution-usage-open').onclick = () => openUsageSettings().catch(err => notice(err.message, 'error'));
   Skills.init();
   AppUpdate.init({ notice });
   $('optimize-agents').onchange = renderSettingsRestrictions;

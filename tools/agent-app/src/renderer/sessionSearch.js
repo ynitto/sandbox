@@ -365,6 +365,17 @@ const SessionSearch = (() => {
     control.querySelector('#cli').id = 'search-target-agent'; control.querySelector('#model').id = 'search-target-model';
     $('search-execution-inputs').append(control);
     $('session-search-open').onclick = open; $('session-search-close').onclick = close;
+    for (const [id, folder] of [['session-import', false], ['session-folder', true]]) $(id).onclick = async () => {
+      $('session-import').disabled = $('session-folder').disabled = true;
+      $('session-import-status').textContent = '';
+      try {
+        if (await api.import(folder)) {
+          $('session-import-status').textContent = '検索対象に追加しました';
+          search();
+        }
+      } catch (err) { $('session-import-status').textContent = err.message; }
+      finally { $('session-import').disabled = $('session-folder').disabled = false; }
+    };
     $('search-cancel').onclick = () => { cancel(); $('search-status').textContent = '検索を中止しました'; };
     api.onHit(payload => {
       if (payload.requestId !== showing) return;

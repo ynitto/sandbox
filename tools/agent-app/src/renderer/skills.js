@@ -244,10 +244,10 @@
     }));
     repoSelect.value = repos.includes(previousRepo) ? previousRepo : repos[0] || '';
     const agentSelect = $('skills-agent');
-    const previousAgent = agentSelect.value || savedAgent;
-    // AI が引けていないときは、置き場を絞らずに全部見せる（空の選択肢を出さない）。
+    const previousAgent = agentSelect.children.length ? agentSelect.value : savedAgent;
+    // 空文字は明示的な「すべて」。選択解除も保存・復元する。
     const names = [...new Set((agents || []).map((agent) => String((agent && agent.name) || agent || '')).filter(Boolean))];
-    const choices = names.length ? names : [''];
+    const choices = ['', ...names];
     agentSelect.replaceChildren(...choices.map((name) => {
       const option = el('option', '', name || 'すべて');
       option.value = name;
@@ -279,7 +279,7 @@
       shareRepo: $('audit-share-repo').value.trim(),
       ...(tokenChanged ? { shareToken: $('audit-share-token').value.trim() } : {}),
       skillRepo: $('skills-repo').value || savedRepo,
-      skillAgent: $('skills-agent').value || savedAgent,
+      skillAgent: $('skills-agent').children.length ? $('skills-agent').value : savedAgent,
       pushToMain: $('audit-push-main').checked,
     };
   }

@@ -80,3 +80,25 @@ test('自動選択用に複数行の説明を読む', () => {
   const [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
   assert.strictEqual(item.description, 'UIとUXを設計する。 画面レイアウトも扱う。');
 });
+
+
+test('未対応の AI を選んでも他の AI 専用のスキルを混ぜない', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-filter-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repo = path.join(root, 'repo');
+  const home = path.join(root, 'home');
+  t.mock.method(os, 'homedir', () => home);
+  for (const base of [repo, home]) {
+    for (const [dir, name] of [['.agents', 'common'], ['.claude', 'claude-only'], ['.codex', 'codex-only']]) {
+      const target = path.join(base, dir, 'skills', name);
+      fs.mkdirSync(target, { recursive: true });
+      fs.writeFileSync(path.join(target, 'SKILL.md'), '# test');
+    }
+  }
+  assert.deepEqual(skills.list(repo, 'claude'), ['claude-only', 'common']);
+  assert.deepEqual(skills.list(repo, 'codex'), ['codex-only', 'common']);
+  for (const agent of ['cursor', 'aider', 'ollama', 'herd']) {
+    assert.deepEqual(skills.list(repo, agent), ['common'], agent);
+  }
+  assert.deepEqual(skills.list(repo, ''), ['claude-only', 'codex-only', 'common']);
+});

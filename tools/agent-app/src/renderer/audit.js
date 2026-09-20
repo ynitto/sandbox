@@ -1,230 +1,235 @@
 'use strict';
 
-// 「設定 > 利用状況」: 集めた記録の集計。
-// **数字はここで作らない。** 集計と判定は main 経由で agent-audit（ホスト側）が出し、
-// ここは並べるだけ（storage.js と同じ作法）。
-// 定型化したものの公開と改善は、スキルはスキルタブ（skills.js）、タスクとワークフローは
-// それぞれの画面が持つ——押せる場所を、そのものが居る画面に置く。
+// 記録の数値は main 経由の観測値。実行制御の入力は保存までドラフトとして保持する。
 (function initAudit() {
-  const $ = (id) => document.getElementById(id);
+  const $ = id => document.getElementById(id);
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
-
-  // status … audit:status（周期と連鎖の状態）。summary … 集計（開くまで null）
-  let summaryRequest = 0;
+  const AI_LABEL = { claude: 'Claude', codex: 'Codex', copilot: 'Copilot', kiro: 'Kiro', herd: 'ローカル' };
+  const WORKLOAD_LABEL = { chat: '会話', task: 'タスク', workflow: 'ワークフロー', shared: '共有の依頼', evaluation: '評価', audit: '記録の収集・分析', judge: '振り分け・判定' };
+  let context = {}, quotaData = null, quotaPromise = null, loadingKey = '', summaryRequest = 0;
+  let originalTemporary = null, manualAgent = '', filled = false, draftChanged = false;
   const state = { status: null, summary: null, error: '', busy: false };
 
   function tokens(n) {
-    const value = Number(n) || 0;
-    if (value >= 1000000000) return `${(value / 1000000000).toFixed(1)}B`;
-    if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-    if (value >= 1000) return `${Math.round(value / 1000)}k`;
-    return String(value);
+    const v = Number(n) || 0;
+    if (v >= 1000000000) return `${(v / 1000000000).toFixed(1)}B`;
+    if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
+    if (v >= 1000) return `${(v / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+    return String(v);
   }
-
-  function line(label, value) {
-    const row = el('div', 'row');
-    row.append(el('span', '', label), el('span', 'spacer'), el('small', 'sub', value));
-    return row;
+  function date(value) {
+    return Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
   }
-
-  // 連鎖の状態と、足りないものの 1 行。
+  function currentLimits() { return Allocation.limits(quotaData?.agentLimits, context.getConfig?.().audit?.manualLimits); }
+  function setError(error) {
+    $('usage-error').hidden = !error;
+    $('usage-error').textContent = error ? error.message || String(error) : '';
+  }
   function renderStatus() {
     const s = state.status;
-    const box = $('audit-status');
-    $('audit-run').disabled = !s || s.running || state.busy;
-    if (!s) { box.textContent = ''; return; }
-    const parts = [];
-    if (s.running) parts.push(`${s.step || '集めています'}…`);
-    else if (s.available === false) parts.push('agent-audit が見つかりません（agent-tools の install.sh で入ります）');
-    else if (s.lastError) parts.push(s.lastError);
-    else if (!s.lastRunAt) parts.push('まだ集めていません');
-    else parts.push(`${Fmt.checkedAt(s.lastRunAt)} に集めました`);
-    box.textContent = parts.join(' · ');
+    $('audit-run').disabled = !!(s?.running || state.busy);
+    $('audit-status').textContent = s?.running ? '記録を集めています…'
+      : s?.lastError || (quotaData?.limitsError ? '利用枠を取得できませんでした。手動で入力できます'
+        : quotaData?.available === false ? '利用枠の収集が未設定です。手動で入力できます'
+          : s?.lastRunAt ? `${Fmt.checkedAt(s.lastRunAt)} に集めました` : '');
   }
-
-  const AI_LABEL = { claude: 'Claude', codex: 'Codex', copilot: 'Copilot', kiro: 'Kiro' };
-  const WORKLOAD_LABEL = { chat: '会話', task: 'タスク', workflow: 'ワークフロー', shared: '共有の依頼' };
-
   function renderLimits() {
-    const box = $('audit-limits');
-    const data = state.summary;
-    if (!data || state.error || data.available === false) { box.replaceChildren(); return; }
-    if (data.limitsError) { box.replaceChildren(el('span', 'sub', '利用枠を取得できませんでした')); return; }
-    const limits = data.agentLimits || [];
-    const names = [...new Set([...Object.keys(AI_LABEL), ...limits.map((item) => item.agent_cli)])];
-    box.replaceChildren(...names.map((name) => {
-      const item = limits.find((limit) => limit.agent_cli === name) || {};
-      const group = el('div', 'usage-limit');
-      const raw = item.quota_used_percent;
-      const reset = Date.parse(item.reset_at);
-      // 期限切れの観測は現在の使用率として出さない。手動上限からも推測しない。
-      const expired = Number.isFinite(reset) && reset <= Date.now();
-      const percent = !expired && raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw))
-        ? Math.max(0, Math.min(100, Number(raw))) : null;
-      const row = el('div', 'row');
-      row.append(el('strong', '', AI_LABEL[name] || name), el('span', 'spacer'),
-        el('span', '', percent === null ? (expired ? '更新待ち' : '取得できず') : `${percent}% 使用`));
-      group.append(row);
-      if (percent !== null) {
-        const bar = el('progress', 'usage-meter');
-        bar.max = 100;
-        bar.value = percent;
-        bar.setAttribute('aria-label', `${AI_LABEL[name] || name} の利用枠使用率`);
-        if (percent >= 90) bar.classList.add('is-high');
-        group.append(bar);
+    const box = $('audit-limits'), editor = $('usage-manual-row');
+    const focused = editor.contains(document.activeElement) ? document.activeElement : null;
+    const limits = currentLimits();
+    const names = [...new Set([...Object.keys(AI_LABEL), ...limits.map(r => r.agent_cli)])].filter(n => !Allocation.isLocal(n));
+    const result = [];
+    for (const name of names) {
+      const observed = limits.filter(r => r.agent_cli === name);
+      // A manual snapshot replaces an expired observation for the same service.
+      const rows = observed.some(r => r.quota_source === 'manual' && Allocation.validLimit(r))
+        ? observed.filter(r => r.quota_source === 'manual') : observed;
+      for (const [index, item] of (rows.length ? rows : [null]).entries()) {
+        const tr = el('tr');
+        const service = el('td', '', AI_LABEL[name] || name);
+        if (rows.length > 1) service.append(el('small', 'sub', `利用枠 ${index + 1}`));
+        const percent = Allocation.validLimit(item) ? Math.round((100 - Number(item.quota_used_percent)) * 10) / 10 : null;
+        const expired = item && Date.parse(item.reset_at) <= Date.now();
+        const remaining = el('td', '', percent === null ? expired ? '更新待ち' : '未取得' : `残り ${percent}%${item.quota_source === 'manual' ? '（手動）' : ''}`);
+        if (percent !== null) {
+          const bar = el('progress', 'usage-meter'); bar.max = 100; bar.value = percent;
+          bar.setAttribute('aria-label', `${AI_LABEL[name] || name} の利用枠残量`);
+          if (percent <= 10) bar.classList.add('is-high');
+          remaining.append(bar);
+        }
+        if (item?.observed_at) remaining.append(el('small', 'sub', `${item.quota_source === 'manual' ? '申告' : '取得'} ${Fmt.checkedAt(item.observed_at)}`));
+        const reset = el('td', '', item?.reset_source === 'period' ? '—' : date(item?.reset_at));
+        if (item?.reset_estimated) reset.append(el('small', 'sub', '推定'));
+        const actions = el('td');
+        if (index === 0) {
+          const edit = el('button', 'small quiet', '手動入力'); edit.type = 'button'; edit.dataset.manualAgent = name;
+          edit.setAttribute('aria-label', `${AI_LABEL[name] || name} の利用枠を手動入力`);
+          edit.onclick = () => {
+            manualAgent = name; tr.after(editor); editor.hidden = false; setError(null);
+            $('usage-manual-remaining').value = ''; $('usage-manual-reset').value = '';
+            $('usage-manual-remaining').focus();
+          };
+          actions.append(edit);
+        }
+        tr.append(service, remaining, reset, actions); result.push(tr);
+        if (index === 0 && name === manualAgent) result.push(editor);
       }
-      // period は手動上限の更新時刻なので、サービスのリセット日時と混同しない。
-      const serviceReset = item.reset_source !== 'period' && Number.isFinite(reset);
-      const notes = [];
-      if (serviceReset && !expired) notes.push(`リセット ${new Date(reset).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}${item.reset_estimated ? '（推定）' : ''}`);
-      if (item.observed_at) notes.push(`取得 ${Fmt.checkedAt(item.observed_at)}`);
-      if (notes.length) group.append(el('small', 'sub', notes.join(' · ')));
-      if (Number(item.max_tokens) > 0) {
-        const period = { day: '日', month: '月', total: '全期間' }[item.period] || item.period;
-        group.append(el('small', 'sub', `手動上限（${period}）: ${tokens(item.used_tokens)} / ${tokens(item.max_tokens)} トークン`));
-      }
-      return group;
-    }));
-  }
-
-  const TARGET_LABEL = { skill: 'スキル', task: 'タスク', workflow: 'ワークフロー', tool: 'ツール', general: '全体' };
-  // 評価（自動評価・まとめて評価）の 1 行。agent-audit の usage --json の evaluation をそのまま並べる。
-  function renderEvaluation() {
-    const box = $('audit-evaluation');
-    const data = state.summary;
-    const ev = data && data.usage && data.usage.evaluation;
-    const shown = !!ev && !state.error && data.available !== false;
-    $('audit-evaluation-head').hidden = !shown;
-    box.hidden = !shown;
-    if (!shown) { box.textContent = ''; return; }
-    if (!ev.evaluations) { box.textContent = 'この期間の評価はありません'; return; }
-    const targets = Object.entries(ev.by_target || {}).filter(([, n]) => n > 0).map(([k, n]) => `${TARGET_LABEL[k] || k} ${n}`).join(' · ');
-    box.textContent = `評価 ${ev.evaluations} 件 · 品質 平均 ${ev.quality_avg != null ? ev.quality_avg : '—'} / 3 · 課題あり ${ev.issues} 件${targets ? `（${targets}）` : ''}`;
-    if (ev.evidence && Object.values(ev.evidence).some(Number)) {
-      box.textContent += ` · 根拠別: 記録あり ${ev.evidence.supported || 0} / 不足候補 ${ev.evidence.problem || 0} / 保留 ${ev.evidence.unknown || 0}（比較記録 ${ev.evidence.shadow || 0}）`;
     }
+    if (!result.includes(editor)) result.push(editor);
+    box.replaceChildren(...result);
+    focused?.focus({ preventScroll: true });
+    const local = context.localAvailable?.();
+    $('usage-local-status').textContent = local === true ? '利用可能' : local === false ? '準備が必要' : '確認中';
+    const valid = limits.filter(r => Allocation.validLimit(r));
+    const risk = valid.filter(r => Number(r.quota_used_percent) >= 90).sort((a, b) => b.quota_used_percent - a.quota_used_percent)[0];
+    const preference = Allocation.mode(context.getConfig?.().allocation);
+    $('usage-indicator').textContent = preference !== 'configured' ? `AIの利用状況 · ${Allocation.LABELS[preference]}`
+      : risk ? `AIの利用状況 · ${AI_LABEL[risk.agent_cli] || risk.agent_cli} 残りわずか` : 'AIの利用状況';
+    $('usage-indicator').title = quotaData?.limitsError ? '利用枠を取得できませんでした' : '';
+    $('usage-quota-note').textContent = risk ? `${AI_LABEL[risk.agent_cli] || risk.agent_cli} 残り ${100 - Number(risk.quota_used_percent)}% · リセット ${date(risk.reset_at)}`
+      : valid.length ? '利用枠に余裕があります' : '利用枠は未取得です';
+    const cfg = context.getConfig?.().allocation;
+    $('usage-active-allocation').textContent = `使用方針：${Allocation.LABELS[Allocation.normalize(cfg).mode]}${Allocation.active(cfg) ? ' · 一時的にローカル優先' : ''}`;
+    const select = $('usage-reset-agent'), previous = select.value;
+    select.replaceChildren(...valid.filter(r => Date.parse(r.reset_at) > Date.now() && r.reset_source !== 'period')
+      .map(r => new Option(`${AI_LABEL[r.agent_cli] || r.agent_cli} · ${date(r.reset_at)}`, r.reset_at)));
+    // Do not silently substitute a different deadline while a form is being edited.
+    if (previous && ![...select.options].some(o => o.value === previous)) select.append(new Option(`選択した利用枠 · ${date(previous)}`, previous));
+    if (previous) select.value = previous;
   }
 
+  function allocationPatch() {
+    let temporary = null;
+    const until = $('usage-until').value;
+    if (until === 'keep') temporary = originalTemporary;
+    else if (until !== 'off') {
+      let deadline = null;
+      if (until === 'today') { const end = new Date(); end.setHours(24, 0, 0, 0); deadline = end.toISOString(); }
+      else if (until === 'reset') {
+        deadline = $('usage-reset-agent').value;
+        if (!currentLimits().some(r => r.reset_at === deadline && Allocation.validLimit(r) && r.reset_source !== 'period' && Date.parse(deadline) > Date.now())) {
+          throw new Error('実行制御で、復帰を待つ有効な利用枠を選んでください');
+        }
+      }
+      temporary = { mode: 'local', until: deadline };
+    }
+    return Allocation.normalize({ mode: $('usage-mode').value, localModel: $('usage-local-model').value, temporary });
+  }
+  function renderAllocation() {
+    if (!filled) return;
+    $('usage-reset-row').hidden = $('usage-until').value !== 'reset';
+    try {
+      const allocation = allocationPatch();
+      const selected = context.preview?.(allocation);
+      const local = ['local', 'local-only'].includes(Allocation.mode(allocation));
+      $('usage-allocation-state').textContent = [
+        selected ? `${draftChanged ? '保存後の' : ''}新しい実行：${AI_LABEL[selected.cli] || selected.cli} / ${selected.model || '既定のモデル'}` : '',
+        Allocation.active(allocation) ? `一時的にローカル優先 · ${allocation.temporary.until ? date(allocation.temporary.until) + ' まで' : '解除するまで'}` : '',
+        local && context.localAvailable?.() === false ? 'ローカルが未準備のため通常の配分を使用' : '',
+      ].filter(Boolean).join(' · ');
+    } catch (error) { $('usage-allocation-state').textContent = error.message; }
+  }
+  async function refreshLimits() {
+    if (quotaPromise) return quotaPromise;
+    quotaPromise = (async () => {
+      try { quotaData = await api.audit.limits(); }
+      catch { quotaData = { limitsError: true, agentLimits: [] }; }
+      renderLimits(); renderAllocation(); renderStatus();
+    })().finally(() => { quotaPromise = null; });
+    return quotaPromise;
+  }
   function renderUsage() {
-    const box = $('audit-usage');
-    const breakdown = $('audit-breakdown');
+    const box = $('audit-usage'), breakdown = $('audit-breakdown');
     breakdown.replaceChildren();
-    renderLimits();
-    renderEvaluation();
+    $('audit-group-label').textContent = { agent_cli: 'AI', workload: '用途', model: 'モデル' }[$('audit-by').value];
     if (state.error) { box.replaceChildren(el('div', 'sub', state.error)); return; }
     if (!state.summary) { box.replaceChildren(el('div', 'sub', '集計しています…')); return; }
-    if (state.summary.available === false) {
-      box.replaceChildren(el('div', 'sub', '利用状況の収集ツールが見つかりません'));
-      return;
-    }
     const data = state.summary;
-    if (!data.usage || !data.totals) {
-      box.replaceChildren(el('div', 'sub', '使用量を取得できませんでした。もう一度集めてください。'));
-      return;
+    if (data.available === false || !data.usage || !data.totals) { box.replaceChildren(el('div', 'sub', '使用量を取得できませんでした。記録の収集設定を確認してください')); return; }
+    const rows = data.usage.rows || [], total = data.totals, allocation = data.allocationUsage;
+    if (!rows.length) { box.replaceChildren(el('div', 'sub', 'この期間の記録はありません')); return; }
+    const overview = el('div', 'usage-overview');
+    for (const [label, value] of [
+      ['クラウド実測トークン', allocation ? allocation.cloud.unmeasured && !allocation.cloud.tokens ? '未計測' : tokens(allocation.cloud.tokens) : '未取得'],
+      ['ローカル実行の割合', allocation && allocation.localPercent !== null ? `${allocation.localPercent}%` : '—'],
+      ['未計測の実行', `${total.unmeasured_runs || 0} 件`],
+    ]) {
+      const metric = el('div', 'usage-metric'); metric.append(el('small', 'sub', label), el('strong', '', value)); overview.append(metric);
     }
-    const rows = data.usage.rows || [];
-    const total = data.totals;
-    const out = [];
-    if (rows.length) {
-      const overview = el('div', 'usage-overview');
-      for (const [label, value] of [
-        ['実測トークン', total.measured_in + total.measured_out > 0 || !total.unmeasured_runs
-          ? tokens(total.measured_in + total.measured_out) : '未計測'],
-        ['推定トークン', tokens(total.estimated_tokens)],
-      ]) {
-        const metric = el('div', 'usage-metric');
-        metric.append(el('small', 'sub', label), el('strong', '', value));
-        overview.append(metric);
-      }
-      out.push(overview, el('small', 'sub', `実測の内訳：入力 ${tokens(total.measured_in)} / 出力 ${tokens(total.measured_out)}`));
-      if (total.unmeasured_runs) out.push(el('small', 'sub', `実測できなかった呼び出し ${total.unmeasured_runs} 件`));
-      breakdown.replaceChildren(...rows.map((item) => {
-        const name = data.by === 'agent_cli' ? AI_LABEL[item.group] : data.by === 'workload' ? WORKLOAD_LABEL[item.group] : '';
-        const group = el('div', 'usage-breakdown-item');
-        const detail = [`入力 ${tokens(item.measured_in)}`, `出力 ${tokens(item.measured_out)}`];
-        if (item.estimated_tokens) detail.push(`推定 ${tokens(item.estimated_tokens)}`);
-        if (item.unmeasured_runs) detail.push(`未計測 ${item.unmeasured_runs} 件`);
-        if (item.evaluations) detail.push(`品質 ${item.quality_avg != null ? item.quality_avg : '—'}`, `課題 ${item.issues || 0}`);
-        group.append(line(name || item.group || '未記録', `${item.runs || 0} 回`), el('small', 'sub', detail.join(' · ')));
-        return group;
-      }));
-    } else out.push(el('div', 'sub', 'この期間の記録はありません'));
-    const led = (data.quality || {}).ledger;
-    if (led && led.runs) out.push(line('実行の成功率', `${Math.round((led.pass_rate || 0) * 100)}%（${(led.status || {}).done || 0} / ${led.runs} 件）`));
-    if (data.error || !data.quality) out.push(el('small', 'sub', '一部の集計を取得できませんでした'));
+    const out = [overview];
+    if (allocation) out.push(el('small', 'sub', `ローカル ${allocation.local.runs} / 全 ${allocation.runs} 回（実行回数）${allocation.other.runs ? ` · 実行先未分類 ${allocation.other.runs} 回` : ''}`));
+    if (data.error) out.push(el('small', 'sub', '一部の使用量を取得できませんでした'));
     box.replaceChildren(...out);
+    for (const item of rows) {
+      const tr = el('tr');
+      const name = data.by === 'agent_cli' ? AI_LABEL[item.group] : data.by === 'workload' ? WORKLOAD_LABEL[item.group] : '';
+      const measured = (Number(item.measured_in) || 0) + (Number(item.measured_out) || 0);
+      for (const value of [name || item.group || '未記録', item.runs || 0, !measured && item.unmeasured_runs ? '未計測' : tokens(measured), tokens(item.estimated_tokens), item.unmeasured_runs || 0]) tr.append(el('td', '', value));
+      const note = el('small', 'sub', `入力 ${tokens(item.measured_in)} / 出力 ${tokens(item.measured_out)}`);
+      tr.children[2].append(note); breakdown.append(tr);
+    }
   }
-
-  function render() {
-    renderStatus();
-    renderUsage();
-  }
-
+  function render() { renderStatus(); renderUsage(); }
   async function loadSummary() {
+    const key = `${$('audit-by').value}:${$('audit-period').value}`;
+    if (loadingKey === key) return;
+    loadingKey = key;
     const request = ++summaryRequest;
-    state.summary = null;
-    state.error = '';
-    renderUsage();
+    state.summary = null; state.error = ''; renderUsage();
     try {
       const summary = await api.audit.summary({ by: $('audit-by').value, period: $('audit-period').value });
       if (request !== summaryRequest) return;
       state.summary = summary;
-    } catch (error) {
-      if (request !== summaryRequest) return;
-      state.error = error.message;
-    }
+    } catch (error) { if (request !== summaryRequest) return; state.error = error.message; }
+    finally { if (request === summaryRequest) loadingKey = ''; }
     renderUsage();
   }
-
   async function run() {
-    state.busy = true;
-    renderStatus();
-    try {
-      await api.audit.run();
-      await loadSummary();
-    } catch (error) {
-      $('settings-error').textContent = error.message;
-      $('settings-error').hidden = false;
-    } finally {
-      state.busy = false;
-      renderStatus();
-    }
+    state.busy = true; renderStatus();
+    try { await api.audit.run(); await refreshLimits(); await loadSummary(); }
+    catch (error) { $('audit-status').textContent = error.message; }
+    finally { state.busy = false; $('audit-run').disabled = !!state.status?.running; }
   }
-
-  // 設定の値を画面へ。公開先は「設定 > スキル」が持つ（skills.js）。
   function fill(config) {
-    const cfg = (config && config.audit) || {};
-    $('audit-enabled').checked = cfg.enabled !== false;
-    $('audit-interval').value = String([0, 30, 60, 360, 1440].includes(cfg.intervalMinutes) ? cfg.intervalMinutes : 60);
+    const cfg = config.audit || {};
+    $('audit-interval').value = cfg.enabled === false ? 'off' : String([0, 30, 60, 360, 1440].includes(cfg.intervalMinutes) ? cfg.intervalMinutes : 60);
+    const allocation = Allocation.normalize(config.allocation);
+    originalTemporary = Allocation.active(allocation);
+    $('usage-mode').value = allocation.mode; $('usage-local-model').value = allocation.localModel;
+    $('usage-until').querySelector('[value="keep"]')?.remove();
+    if (originalTemporary) $('usage-until').append(new Option(originalTemporary.until ? `${date(originalTemporary.until)} まで（設定済み）` : '解除するまで（設定済み）', 'keep'));
+    $('usage-until').value = originalTemporary ? 'keep' : 'off';
+    filled = true; draftChanged = false; renderAllocation(); renderLimits();
   }
-
   function patch() {
-    return {
-      enabled: $('audit-enabled').checked,
-      intervalMinutes: Number($('audit-interval').value),
-    };
+    const value = $('audit-interval').value;
+    return { enabled: value !== 'off', intervalMinutes: value === 'off' ? context.getConfig?.().audit?.intervalMinutes ?? 60 : Number(value) };
   }
-
-  // 設定ダイアログを開くたびに数え直す（前に開いたときの数は出さない）
-  function reset() {
-    summaryRequest += 1;
-    state.summary = null;
-    state.error = '';
-    state.busy = false;
-  }
-
-  // 「利用状況」のタブを開いたとき
+  function reset() { summaryRequest += 1; loadingKey = ''; state.summary = null; state.error = ''; state.busy = false; filled = false; manualAgent = ''; $('usage-manual-row').hidden = true; setError(null); }
   function open() {
-    if (!state.status) api.audit.status().then((got) => { state.status = got; renderStatus(); }).catch(() => {});
-    if (!state.summary) loadSummary();
+    if (!state.status) api.audit.status().then(got => { state.status = got; renderStatus(); }).catch(() => {});
+    refreshLimits(); if (!state.summary) loadSummary();
   }
-
-  function init() {
-    $('audit-run').onclick = run;
-    $('audit-by').onchange = loadSummary;
-    $('audit-period').onchange = loadSummary;
-    api.audit.onChanged((got) => { state.status = got; renderStatus(); });
+  function init(options = {}) {
+    context = options;
+    document.querySelector('[data-settings-panel="execution"]').addEventListener('input', () => { draftChanged = true; renderAllocation(); $('settings-status').textContent = '未保存の変更があります'; });
+    document.querySelector('[data-settings-panel="execution"]').addEventListener('change', renderAllocation);
+    $('usage-execution').onclick = () => context.openExecution?.();
+    $('usage-manual-cancel').onclick = () => { $('usage-manual-row').hidden = true; setError(null); };
+    $('usage-manual-save').onclick = async () => {
+      const remaining = $('usage-manual-remaining'), reset = $('usage-manual-reset'); setError(null);
+      if (!manualAgent || !remaining.value || !remaining.checkValidity() || !reset.value || Date.parse(reset.value) <= Date.now()) { setError('残量（0〜100%）と未来のリセット日時を入力してください'); return; }
+      $('usage-manual-save').disabled = true;
+      try {
+        context.setConfig(await api.audit.manualLimit({ agent_cli: manualAgent, quota_used_percent: 100 - Number(remaining.value), reset_at: new Date(reset.value).toISOString() }));
+        $('usage-manual-row').hidden = true; renderLimits();
+      } catch (error) { setError(error); }
+      finally { $('usage-manual-save').disabled = false; }
+    };
+    $('audit-run').onclick = run; $('audit-by').onchange = loadSummary; $('audit-period').onchange = loadSummary;
+    renderLimits(); refreshLimits();
+    setInterval(() => { renderLimits(); if ($('app-settings').open) renderAllocation(); context.refreshPreview?.(); }, 30000);
+    api.audit.onChanged(got => { state.status = got; renderStatus(); if (!got.running) { refreshLimits(); if ($('app-settings').open && !document.querySelector('[data-settings-panel="audit"]').hidden) loadSummary(); } });
   }
-
-  window.Audit = { init, open, reset, fill, patch, render };
+  window.Audit = { init, open, reset, fill, patch, allocationPatch, render, renderAllocation, renderLimits };
 })();

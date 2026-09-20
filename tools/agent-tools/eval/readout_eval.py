@@ -31,7 +31,9 @@ ollama を持たないので、**測っていないものを数字として残�
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib
+import math
 import itertools
 import math
 import subprocess
@@ -50,6 +52,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(REPO / "tools/agent-tools/agentcore"))
+sys.path.insert(0, str(REPO / "tools/agent-flow"))
 
 from agentcore import judge, ollama_loop  # noqa: E402
 
@@ -64,9 +67,18 @@ BINS = ((0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0))
 # 既存セルの入力（goal / deps / results / task）を judge の問いへ写す。**正解は写さない**
 # ——合否はセルの `check` がつける。
 
-def _filter_cell(case: dict):
+# 候補の説明から依存の話を落とす（「pandas を追加して 30 行」→「30 行」）。素材そのものは
+# 書き換えない——依存の属性は F2 / J1 / F2P / J1P の**正解**（`extra_deps`）で、消すとその
+# 4 セルが測れなくなる。F1 の基準は「テストが通っている」だけなので、状態の側で落として
+# 引いたときに確度が上がるかだけを見る。
+_DEPS_CLAUSE = re.compile(r"(?:\S+ を追加して|標準ライブラリのみで)\s*")
+
+
+def _filter_cell(case: dict, *, drop_deps: bool = False):
     """filter: 候補 1 件 = boolean の問い 1 つ（本番 agent-flow の `filter_judge` と同じ立て方）。"""
     text = case["deps"]["gen"]["output"]
+    if drop_deps:
+        text = _DEPS_CLAUSE.sub("", text)
     ids = re.findall(r"^\[([^\]]+)\]", text, re.M)
     criterion = " ".join(str(case["goal"]).split())
     questions = {i: {"type": "boolean",
@@ -103,11 +115,26 @@ DECISIONS = {"done": "要求を満たしており、これ以上の仕事は要�
              "replan": "足りない仕事があり、計画を足す必要がある"}
 
 
-def _evaluator_cell(case: dict):
-    """evaluator: done / replan の choice 1 問。結果要約は本番（continuation.py）と同じ 1 行形式。"""
+def _results_state(case: dict, *, closed: bool) -> str:
+    """結果要約。1 行形式は本番（continuation.py）と同じ。
+
+    `closed` は**閉世界を状態の側で明示する**——「ノードはこれがすべてで、ここに無い仕事は
+    行われていない」。既定の状態はノードを並べるだけで、並んでいないものが**無い**とは
+    言っていない。素材から含意を外してもモデルが実在しない段を「ある」と答え続けたので
+    （2026-09-20）、その黙約を書き下して効くかを測る。
+    """
+    rows = [f"- {nid} ({kind}) [{status}]: {out[:160]}"
+            for nid, kind, status, out in case["results"]]
+    if not closed:
+        return "\n".join(rows)
+    return (f"このワークフローのノードは次の {len(rows)} 件がすべてで、"
+            "ここに現れていない仕事は行われていない。\n" + "\n".join(rows))
+
+
+def _evaluator_cell(case: dict, *, closed: bool = False):
+    """evaluator: done / replan の choice 1 問。"""
     request = importlib.import_module("judge_eval").REQUEST
-    state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
-                      for nid, kind, status, out in case["results"])
+    state = _results_state(case, closed=closed)
     questions = {"decision": {"type": "choice", "criteria": DECISIONS,
                               "instructions": f"要求は「{request}」。この結果で要求を"
                                               "満たしたか、計画を足すべきか。"}}
@@ -129,7 +156,96 @@ def _request_stages(request: str) -> "list[str]":
     return stages
 
 
-def _evaluator_stages_cell(case: dict):
+# 欠けている段を状態へ書き下す診断。**正解を入力に混ぜる**ので、これは能力の測定ではない。
+# 「明示されても直らない」なら推測で埋めているのではなく読んだ上で上書きしている、という
+# 別の話になる——その切り分けだけのために置く。台帳の行 id は `+told` で見分ける。
+def _nodes(case: dict) -> "list[tuple[str, str, str, str]]":
+    return [tuple(row) for row in case["results"]]
+
+
+def _done_ids(case: dict) -> "set[str]":
+    """段の成果を出しうるノード（`kind` が work で `status` が done）。
+
+    `kind` も `status` も本番のグラフが持っている値で、モデルに訊く必要が無い——訊くのは
+    「どの段か」だけにする。**verify ノードを外すのは後付けではなく、検証役は段の成果物を
+    出さないから**である。初版はこの条件が抜けており、E1 の verify ノード（本文に
+    「出力段が無いため」と書いてある）を「出力の段」と答えたモデルの回答が、そのまま
+    「出力の段は done」として通っていた（2026-09-20 に判明）。
+    """
+    return {nid for nid, kind, status, _out in _nodes(case)
+            if kind == "work" and status == "done"}
+
+
+def _evaluator_locate_cell(case: dict):
+    """段ごとに「その段をやったノードはどれか」を訊く（choice。`other` が「どれでもない」）。
+
+    `+checklist` の boolean は「あるか」を訊くので、状態を読まずに要求から埋められる
+    （2026-09-20 の E4 / E5 がそれ）。こちらは**状態に並んだノードを指させる**ので、
+    答えるには行を読むしかない。判定は機械——どの段も done のノードを指していれば `done`、
+    `other` を選んだ段があるか、指した先が done でなければ `replan`。
+    """
+    judge_eval = importlib.import_module("judge_eval")
+    done = _done_ids(case)
+    # 候補は work のノードだけ。検証役は段の成果物を出さないので、指させる先に置かない。
+    criteria = {nid: f"[{status}] {out[:70]}" for nid, kind, status, out in _nodes(case)
+                if kind == "work"}
+    questions = {stage: {"type": "choice", "criteria": criteria,
+                         "other": "どのノードもこの段をやっていない",
+                         "instructions": f"要求は「{judge_eval.REQUEST}」。"
+                                         f"このうち「{stage}」の段の成果を出したノードはどれか。"}
+                 for stage in _request_stages(judge_eval.REQUEST)}
+    return _results_state(case, closed=True), questions, lambda answers: {
+        "decision": "done" if all(a.get("choice") in done for a in answers.values())
+                    else "replan"}
+
+
+def _evaluator_classify_cell(case: dict):
+    """ノードごとに「どの段にあたるか」を訊き、**足りない段は機械が差集合で出す**。
+
+    `+locate` はまだ段の側から「これをやったノードはあるか」と訊いていて、「あるはず」の
+    構えが残る。こちらはモデルに欠落の話を一切させない——1 ノード 1 問で段を言わせるだけで、
+    要求の段が揃っているかは機械が集合演算で決める（判定は機械・モデルは転記）。
+    """
+    judge_eval = importlib.import_module("judge_eval")
+    stages = _request_stages(judge_eval.REQUEST)
+    criteria = {stage: f"要求の「{stage}」の段" for stage in stages}
+    done = _done_ids(case)
+    questions = {nid: {"type": "choice", "criteria": criteria,
+                       "other": "この 3 段のどれでもない（検証など）",
+                       "instructions": f"要求は「{judge_eval.REQUEST}」。"
+                                       f"ノード {nid} の成果は、このうちどの段にあたるか。"}
+                 for nid, _kind, _status, _out in _nodes(case)}
+
+    def to_check(answers):
+        covered = {answers[nid]["choice"] for nid in answers if nid in done}
+        return {"decision": "done" if set(stages) <= covered else "replan"}
+
+    return _results_state(case, closed=True), questions, to_check
+
+
+def _told_state(case: dict) -> str:
+    """閉世界の状態に「その段のノードは無い」を足す（欠けている段は `expect` から読む）。
+
+    段の名前は要求の本文から取り、そのどれを `expect` が名指しているかだけを見る。正解は
+    judge_eval 側（`expect`）にあるままで、こちらへは写さない。段を名指していないケース
+    （E1 / E2 / E6）では何も足さないので、`+checklist_closed` と同じ状態になる。
+    """
+    state = _results_state(case, closed=True)
+    expect = str(case.get("expect") or "")
+    missing = [s for s in _request_stages(importlib.import_module("judge_eval").REQUEST)
+               if f"{s}段が無い" in expect]
+    if not missing:
+        return state
+    return state + f"\nなお、「{missing[0]}」の段のノードはこのワークフローに無い。"
+
+
+def _evaluator_told_cell(case: dict):
+    """`+checklist_closed` と同じ問いを、欠けている段を明示した状態で引く（診断専用）。"""
+    state, questions, to_check = _evaluator_checklist_cell(case, closed=True)
+    return _told_state(case), questions, to_check
+
+
+def _evaluator_stages_cell(case: dict, *, closed: bool = False):
     """evaluator のもう 1 つの問い方: 要求の段を**選択肢の側**へ出す。
 
     既定の問い（「この結果で要求を満たしたか」）は、全ノードが green なら要求の段が欠けて
@@ -139,8 +255,7 @@ def _evaluator_stages_cell(case: dict):
     決める**。段の名前は要求の本文から取り出すので、要求を書き換えれば選択肢も変わる。
     """
     judge_eval = importlib.import_module("judge_eval")
-    state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
-                      for nid, kind, status, out in case["results"])
+    state = _results_state(case, closed=closed)
     criteria = {"done": "どの段も成果が出ており、足す仕事は無い"}
     criteria.update({f"missing:{stage}": f"「{stage}」の段の成果が出ていない"
                                          "（ノードが無い・失敗している）"
@@ -152,16 +267,19 @@ def _evaluator_stages_cell(case: dict):
         "decision": "done" if answers["decision"]["choice"] == "done" else "replan"}
 
 
-def _evaluator_checklist_cell(case: dict):
+def _evaluator_checklist_cell(case: dict, *, closed: bool = False):
     """evaluator の 3 つめの問い方: 段ごとに boolean 1 問へ割る。
 
     `+stages` は段を選択肢に並べても 1 問のままで、モデルは「全部 green なら done」を
     選び続けた。こちらは**段の数だけ問いを立てて**、1 段ずつ「成果が出ているか」を訊く。
     判定はモデルに訊かない——全部 yes なら `done`、1 つでも no なら `replan` と機械が畳む。
+
+    `+stages` との違いは合否の読めかたにもある: あちらは `missing:` のどれを選んでも
+    `replan` へ畳まれるので、**欠けている段を取り違えても正解になる**（2026-09-20 の E4 が
+    その形で当たった）。こちらは段ごとに yes / no が残るので、どの段を取り違えたかが見える。
     """
     judge_eval = importlib.import_module("judge_eval")
-    state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
-                      for nid, kind, status, out in case["results"])
+    state = _results_state(case, closed=closed)
     stages = _request_stages(judge_eval.REQUEST)
     questions = {stage: {"type": "boolean",
                          "instructions": f"要求は「{judge_eval.REQUEST}」。"
@@ -169,6 +287,135 @@ def _evaluator_checklist_cell(case: dict):
                  for stage in stages}
     return state, questions, lambda answers: {
         "decision": "done" if all(answers[s].get("value") for s in stages) else "replan"}
+
+
+# --------------------------------------------------------------------------- ステートマシンの 2 面
+def _numbered(text: str) -> "list[tuple[str, str]]":
+    """出力を行番号つきの候補にする（指させる先）。空行は落とす。"""
+    return [(f"L{i}", line.strip())
+            for i, line in enumerate(str(text or "").splitlines(), 1) if line.strip()]
+
+
+def _transition_cell(case: dict, *, locate: bool = False):
+    """遷移条件。既定は**本番の問い**（`_sm_condition_questions` をそのまま呼ぶ）。
+
+    `locate` は同じ条件を「満たしていることを示す行はどれか」に替え、`other`（そんな行は
+    無い）を置く。boolean は出力を読まずにも答えられるが、行を指すには読むしかない。
+    判定は機械——行を指したら満たす、`other` なら満たさない。
+    """
+    sm = importlib.import_module("agentcore.harness.statemachine")
+    lines = dict(_numbered(case["output"]))
+    if not locate:
+        questions = sm._sm_condition_questions(case["conditions"])
+        return case["output"], questions, lambda answers: {
+            name: bool(a.get("value")) for name, a in answers.items()}
+    questions = {str(c["index"]): {
+        "type": "choice", "criteria": lines,
+        "other": "その条件を満たしていることを示す行は無い",
+        "instructions": "Which line of the completed action output shows that this "
+                        f"condition is satisfied? {c['condition']}"}
+        for c in case["conditions"]}
+    return case["output"], questions, lambda answers: {
+        name: a.get("choice") in lines for name, a in answers.items()}
+
+
+# 失敗の直し先。`classify` はこの 3 つから 1 つを選ばせ、機械が fixable へ畳む
+# （作業物の中だけが「やり直しで直る」）。
+_TRIAGE_CAUSES = {"work": "作業物（コード・設定・成果物）の誤り",
+                  "environment": "環境や前提の不足（道具・権限・接続・資源）",
+                  "check": "検査そのものが動いていない"}
+
+
+def _triage_cell(case: dict, *, classify: bool = False):
+    """検査失敗の選別。既定は**本番の問い**（boolean「やり直せば通るか」）。
+
+    `classify` は「失敗の直し先はどこか」を 3 択にし、`work` だけを fixable へ畳む。
+    locate（行を指す）はこの面に当てはまらない——欲しいのは行の所在ではなく原因の種別で、
+    指された行を種別へ落とす決定的な規則が機械の側に無い（本番の決定的な段はこの素材に
+    掛からない）。指すのではなく**札を貼らせて機械が畳む**のが同じ狙いの形になる。
+    """
+    sm = importlib.import_module("agentcore.harness.statemachine")
+    command = "Check command: " + " ".join(case["argv"])
+    state = command + "\n\nCheck output:\n" + case["output"]
+    if not classify:
+        questions = {"fixable": {"type": "boolean", "instructions": sm._SM_TRIAGE_QUESTION
+                     if hasattr(sm, "_SM_TRIAGE_QUESTION") else
+                     ("Can redoing the same action (editing the work product) make this "
+                      "check pass? Answer no only if the failure is caused by the "
+                      "environment (missing tool or dependency, permissions, network, "
+                      "the check itself cannot run). " + command)}}
+        return state, questions, lambda answers: answers["fixable"].get("value")
+    questions = {"cause": {"type": "choice", "criteria": _TRIAGE_CAUSES,
+                           "instructions": "この検査の失敗は、どこを直せば通るようになるか。"}}
+    return state, questions, lambda answers: answers["cause"].get("choice") == "work"
+
+
+# assess のセルは入力をドライバの中（`ap.assess_task(…, assess_risky())`）に持っているので、
+# タスクを作る関数を名前で借りる。ケース定義も正解も project_eval 側のまま。
+_ASSESS_TASKS = {"AS1": "assess_risky", "AS2": "assess_clear"}
+
+
+def _assess_cell(case: dict, *, cid: str = ""):
+    """投入時アセスメント。問いは本番（`_assess_judge_questions`）をそのまま呼ぶ。
+
+    **locate は当てはまらない面である**——状態はタスクの文で、指させる行が無い。訊くのは
+    段（1〜3）の上の分布で、答えは確率加重の `score`。本番と同じく四捨五入を自前で行う
+    （組み込みの `round()` は偶数丸めで、ちょうど 2.5 が 2 へ落ちる。`prioritize.py` の
+    `assess_judge` と同じ式）。記録の書式 `c=N r=N a=N` も本番と同じで、
+    project_eval の `check_assess` がその形を読む。
+    """
+    project_eval = importlib.import_module("project_eval")
+    ap = project_eval.ap
+    task = getattr(project_eval, _ASSESS_TASKS[cid])()
+    questions = ap._assess_judge_questions()
+
+    def to_check(answers):
+        scores = {}
+        for axis in questions:
+            value = answers.get(axis, {}).get("score")
+            if value is None:
+                return ""
+            scores[axis] = min(3, max(1, math.floor(float(value) + 0.5)))
+        return " ".join(f"{axis}={scores[axis]}" for axis in ("c", "r", "a"))
+
+    return ap._assess_material(task), questions, to_check
+
+
+def _contract_cell(case: dict):
+    """契約の語。問いは本番（`_sm_contract_by_judge`）と同じ形で、語は宣言（`output_validator`）
+    から取る。採否も本番と同じ——選んだ語が宣言に無いか確度が下限に届かなければ補わない。"""
+    sm = importlib.import_module("agentcore.harness.statemachine")
+    prefixes = sm._sm_validator_prefixes(case["rule"])
+    questions = {"contract": {
+        "type": "choice",
+        "instructions": "Which contract word does this output's conclusion correspond to?",
+        "criteria": {p: f"The output concludes '{p}'." for p in prefixes},
+        "other": "The output does not clearly conclude any of these."}}
+
+    def to_check(answers):
+        answer = answers["contract"]
+        picked = str(answer.get("choice") or "")
+        if picked not in prefixes:
+            return ""
+        return picked if float(answer.get("confidence") or 0.0) >= \
+            sm._SM_CONTRACT_JUDGE_MIN_CONFIDENCE else ""
+
+    return case["output"], questions, to_check
+
+
+def _state_judge_cell(case: dict):
+    """判定ステート。問いも答えの読み方も本番（statemachine-use の `judge_bridge`）を呼ぶ。
+
+    `other` と確度不足を unsure の語にするのは `judge_state_output` の仕事で、ここには
+    書き写さない。スキル側のスクリプトは Python 3.10 以上が要るので、読めない木では
+    このセルだけ落ちる（測らずに落ちる方がよい——別実装で測ると本番を測っていない）。
+    """
+    sys.path.insert(0, str(REPO / ".github/skills/statemachine-use/scripts"))
+    judge_bridge = importlib.import_module("judge_bridge")
+    spec = judge_bridge.normalize_judge_state(case["judge"], default_input="{{last_output}}")
+    questions = judge_bridge.judge_state_question(spec)
+    return (case["input"], questions,
+            lambda answers: judge_bridge.judge_state_output(spec, answers) or "")
 
 
 def _route_cell(case: dict):
@@ -214,9 +461,49 @@ CELLS = {
 # calibration の `oracle` は「正解を通す割り当てがちょうど 1 つ」を要求するため、多対一の
 # 変種はそちらへ載せない（載せるなら期待値を集合で持つ話になる。今回は決めない）。
 VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
-            for name, build in (("stages", _evaluator_stages_cell),
-                                ("checklist", _evaluator_checklist_cell))
+            for name, build in (
+                ("stages", _evaluator_stages_cell),
+                ("checklist", _evaluator_checklist_cell),
+                # 状態の側で閉世界を明示した組（問いの立て方は上の 3 つと同じ）。
+                ("closed", functools.partial(_evaluator_cell, closed=True)),
+                ("stages_closed", functools.partial(_evaluator_stages_cell, closed=True)),
+                ("checklist_closed",
+                 functools.partial(_evaluator_checklist_cell, closed=True)))
             for i in range(1, 7)}
+# ステートマシンの 2 面。既定は本番の問い、変種は指させる／札を貼らせる形。
+VARIANTS.update({
+    "AS1": ("project_eval", functools.partial(_assess_cell, cid="AS1")),
+    "AS2": ("project_eval", functools.partial(_assess_cell, cid="AS2")),
+    "CW1": ("statemachine_cells", _contract_cell),
+    "CW2": ("statemachine_cells", _contract_cell),
+    "JS1": ("statemachine_cells", _state_judge_cell),
+    "JS2": ("statemachine_cells", _state_judge_cell),
+    "TR1": ("statemachine_cells", _transition_cell),
+    "TR3": ("statemachine_cells", _transition_cell),
+    f"TR3{VARIANT_SEP}locate": ("statemachine_cells",
+                                functools.partial(_transition_cell, locate=True)),
+    "TR2": ("statemachine_cells", _transition_cell),
+    "CT1": ("statemachine_cells", _triage_cell),
+    "CT2": ("statemachine_cells", _triage_cell),
+    f"TR1{VARIANT_SEP}locate": ("statemachine_cells",
+                                functools.partial(_transition_cell, locate=True)),
+    f"TR2{VARIANT_SEP}locate": ("statemachine_cells",
+                                functools.partial(_transition_cell, locate=True)),
+    f"CT1{VARIANT_SEP}classify": ("statemachine_cells",
+                                  functools.partial(_triage_cell, classify=True)),
+    f"CT2{VARIANT_SEP}classify": ("statemachine_cells",
+                                  functools.partial(_triage_cell, classify=True))})
+# 状態と突き合わせないと答えられない形（段 → ノード / ノード → 段）。
+VARIANTS.update({f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
+                 for name, build in (("locate", _evaluator_locate_cell),
+                                     ("classify", _evaluator_classify_cell))
+                 for i in range(1, 7)})
+# 欠けている段を状態に書き下した診断（正解が入力に入る。上の _told_state の注を読むこと）。
+VARIANTS.update({f"E{i}{VARIANT_SEP}told": ("judge_eval", _evaluator_told_cell)
+                 for i in (3, 4, 5)})
+# 候補の説明から基準外の属性（依存）を落とした F1。正解は変わらない（基準はテストの合否）。
+VARIANTS[f"F1{VARIANT_SEP}nodeps"] = ("judge_eval",
+                                      functools.partial(_filter_cell, drop_deps=True))
 ALL_CELLS = {**CELLS, **VARIANTS}
 
 

@@ -632,6 +632,12 @@ CASES = {
     #
     # 4 つで**変えているのは要求の 3 段（収集・集計・出力）のどれが欠けているかだけ**で、
     # verify の文面（「2 ノードを再導出して突き合わせ済み」）は 4 つとも同じにしてある。
+    #
+    # 各ノードの説明は**自分の段のことだけを言う**。欠けている段の仕事が済んでいると読める
+    # 記述を他のノードへ置かない——初版の E4 / E5 は writer を「日次レポートを書き出す」、
+    # 集計を「日次のトークン合計を出す」と書いており、前者は集計が、後者は収集が済んでいる
+    # ことを含意していた。実測でモデルはその含意どおり「集計あり 0.940」「収集あり 0.923」と
+    # 答えており、**素材が正解と食い違っていた**（2026-09-20 に修正）。
     # verify の言い回しに反応しているのか、段の有無を見ているのかを分けるため。E6 は同じ
     # 弱い verify を持つが 3 段そろっており、**done のまま**でなければならない（欠落を
     # 探しに行くモデルが「弱い verify ＝ replan」へ倒れていないかの対照）。
@@ -645,15 +651,15 @@ CASES = {
     "E4": dict(role="evaluator", expect="replan（全 done・verify pass だが集計段が無い）",
                results=[("t1", "work", "done", "run ログを読み込む reader を実装。テスト 6 件 pass。"),
                         ("t2", "work", "done",
-                         "日次レポートを Markdown で書き出す writer を実装。テスト 3 件 pass。"),
+                         "Markdown のファイルへ書き出す writer を実装。テスト 3 件 pass。"),
                         ("t3", "verify", "done",
                          'verify=pass。{"ok": true, "issues": []}'
                          "（reader と writer の 2 ノードを再導出して突き合わせ済み）")],
                check=lambda d: check_decision(d, "replan")),
     "E5": dict(role="evaluator", expect="replan（全 done・verify pass だが収集段が無い）",
-               results=[("t1", "work", "done", "日次のトークン合計を出す集計を実装。テスト 4 件 pass。"),
+               results=[("t1", "work", "done", "日付ごとの合計を出す集計を実装。テスト 4 件 pass。"),
                         ("t2", "work", "done",
-                         "日次レポートを Markdown で書き出す writer を実装。テスト 3 件 pass。"),
+                         "Markdown のファイルへ書き出す writer を実装。テスト 3 件 pass。"),
                         ("t3", "verify", "done",
                          'verify=pass。{"ok": true, "issues": []}'
                          "（集計と writer の 2 ノードを再導出して突き合わせ済み）")],

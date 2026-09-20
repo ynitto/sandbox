@@ -177,7 +177,7 @@ test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄
   assert.doesNotMatch(renderer, /agent-herd が要ります/, '理由は出さない');
   const html = read('renderer/index.html');
   assert.match(html, /id="optimize-agents"/);
-  assert.match(html, /節約・品質重視を使う/);
+  assert.match(html, /起動方針ごとにAIを使い分ける/);
   const maker = read('renderer/automation/renderer.js');
   assert.match(maker, /return state\.agents\.includes\('herd'\);/);
   assert.match(maker, /policyOn \|\| BASIC_POLICIES\.includes\(value\) \|\| value === 'direct' \? '' : 'disabled'/);

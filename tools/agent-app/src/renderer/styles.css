@@ -646,7 +646,10 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .search-filters { padding: 16px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
 .search-filters > input { width: 100%; }
 .search-filters .row { flex-wrap: wrap; }
+.settings-list > .search-filters { padding: 12px 4px; }
+.settings-list > .search-filters select { min-width: 0; max-width: 100%; }
 #search-more .menu-panel { min-width: 240px; }
+#search-sources .menu-panel { width: 280px; max-width: calc(100vw - 36px); white-space: normal; }
 /* 入力欄の「定型」は画面下にあるので、同じ menu-panel を上向きに出す。 */
 #quick-menu .menu-panel { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
 #search-more label { display: grid; gap: 6px; padding: 8px; }
@@ -680,25 +683,66 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 
 .teaching-create-fields { display: contents; }
 
-/* 利用状況: 設定の器の中に概要とサービスごとの利用枠を並べる。 */
-#audit-limits, #audit-breakdown { align-self: stretch; min-width: 0; }
-#audit-limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
-.usage-limit, .usage-breakdown-item { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.usage-limit .row, .usage-breakdown-item .row { flex-wrap: wrap; overflow-wrap: anywhere; }
-.usage-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
-.usage-metric { display: flex; flex-direction: column; gap: 2px; }
+/* 実行制御・利用状況: 既存設定の行と表を使い、編集と観測を分ける。 */
+#app-settings { width: 960px; height: min(870px, calc(100vh - 40px)); }
+#app-settings > .dlg-head, #app-settings > .dlg-actions { flex-shrink: 0; }
+.execution-settings > *, .usage-settings > * { flex-shrink: 0; }
+.execution-settings .settings-group, .usage-settings .settings-group { padding: 18px 4px; }
+.execution-settings .settings-group:first-child, .usage-settings .settings-group:first-child { border-top: 0; padding-top: 4px; }
+.execution-settings .settings-group-head, .usage-settings .settings-group-head { flex-wrap: wrap; }
+.execution-settings input, .execution-settings select, .usage-settings input, .usage-settings select { min-width: 0; max-width: 100%; }
+.execution-settings .setting-field > select { max-width: 60%; }
+.settings-table { table-layout: fixed; margin-bottom: 10px; }
+.settings-table th { text-align: left; padding: 8px; background: var(--side-bg); font-size: 12px; color: var(--muted); font-weight: 500; }
+.settings-table td { padding: 10px 8px; overflow-wrap: anywhere; }
+.settings-table td:first-child { font-weight: 600; }
+.settings-table small { display: block; font-weight: 400; margin-top: 4px; font-size: 11px; }
+.execution-models th:first-child { width: 26%; }
+.execution-models th:nth-child(2) { width: 31%; }
+.execution-models tr.tier-row { display: table-row; border: 0; }
+.execution-models td > select, .execution-models td > input { width: 100%; }
+.execution-models label { flex-direction: row; align-items: center; gap: 8px; min-height: 36px; cursor: pointer; }
+.execution-models input[type="radio"] { width: 18px; height: 18px; flex: none; }
+.allocation-preview { padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--side-bg); line-height: 1.6; font-size: 13px; }
+.allocation-context { flex-wrap: wrap; padding: 10px 0; }
+#usage-open { margin-top: 0; flex-shrink: 0; }
+#usage-open + .side-settings { margin-top: 0; }
+#usage-indicator { overflow-wrap: anywhere; font-size: 12px; }
+#usage-manual-remaining { width: 90px; }
+#usage-manual-row { background: var(--side-bg); }
+#usage-manual-row td { font-weight: 400; }
+.usage-controls { flex-wrap: wrap; align-items: flex-end; }
+.usage-controls > label { display: flex; flex-direction: column; gap: 4px; }
+.quota-table th:first-child { width: 21%; }
+.quota-table th:nth-child(2) { width: 31%; }
+.quota-table th:nth-child(3) { width: 25%; }
+.quota-table progress { display: block; margin-top: 6px; }
+.quota-table button { white-space: normal; }
+.breakdown-table th:first-child { width: 24%; }
+.breakdown-table th:nth-child(3) { width: 28%; }
+.breakdown-table th:not(:first-child), .breakdown-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+#audit-usage { margin-bottom: 18px; }
+.usage-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.usage-metric { display: flex; flex-direction: column; gap: 4px; border-left: 1px solid var(--line); padding-left: 16px; }
+.usage-metric:first-child { border-left: 0; padding-left: 0; }
 .usage-metric > strong { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .usage-meter { appearance: none; width: 100%; height: 6px; border: 0; border-radius: 3px; overflow: hidden; background: var(--line); }
 .usage-meter::-webkit-progress-bar { background: var(--line); }
 .usage-meter::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
 .usage-meter.is-high::-webkit-progress-value { background: var(--warn); }
-.usage-breakdown-item { padding: 8px 0; border-bottom: 1px solid var(--line); }
-.usage-breakdown-item:last-child { border-bottom: 0; }
 .usage-details { border-top: 1px solid var(--line); padding: 12px 4px; }
 .usage-details > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
-.usage-controls { flex-wrap: wrap; }
-@media (max-width: 560px) {
-  #audit-limits { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 680px) {
+  .settings-tabs { overflow-x: auto; flex-wrap: nowrap; }
+  .settings-tabs button { white-space: nowrap; flex: none; }
+  .settings-table td, .settings-table th { padding: 8px 4px; }
+  .settings-table select, .settings-table input { font-size: 12px; padding: 6px; }
+  .execution-models label { gap: 4px; }
+  .usage-overview { gap: 8px; }
+  .usage-metric { padding-left: 8px; }
+  .usage-metric > strong { font-size: 21px; }
+  .quota-table button { padding: 4px; font-size: 12px; }
+  .quota-table th:nth-child(3) { width: 22%; }
 }
 
 .search-preview-actions .menu-panel { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
