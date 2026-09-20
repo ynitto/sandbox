@@ -353,7 +353,28 @@ def _triage_cell(case: dict, *, classify: bool = False):
 # assess のセルは入力をドライバの中（`ap.assess_task(…, assess_risky())`）に持っているので、
 # タスクを作る関数を名前で借りる。ケース定義も正解も project_eval 側のまま。
 _ASSESS_TASKS = {"AS1": "assess_risky", "AS2": "assess_clear",
-                 "AS3": "assess_risky_but_clear", "AS4": "assess_vague_but_safe"}
+                 "AS3": "assess_risky_but_clear", "AS4": "assess_vague_but_safe",
+                 "AS5": "assess_auth_without_the_word", "AS6": "assess_prod_word_but_doc"}
+
+# 段の説明に出てくる語をそのまま材料から探す実装。**本番ではない**——「材料の属性で書き
+# 切った基準は、そもそも機械で決まるのか」を judge と突き合わせるための当て馬である。
+# a（`_assess_ambiguity`）が機械へ移せたので、c と r も移せるかを同じ土俵で測る。
+_RISK_WORDS = ("認証", "決済", "課金", "データ移行", "本番設定", "個人情報")
+_FILE_TOKEN = re.compile(r"[\w.-]+/[\w./-]+|[\w-]+\.[A-Za-z0-9]{1,5}")
+
+
+def assess_by_string_match(material: str) -> dict:
+    """c と r を文字列一致だけで決める当て馬（judge と比べるための下限）。
+
+    r は段の説明が並べている語を材料から探す。c は材料に現れるファイルらしい綴りの
+    異なり数を数える（1 / 2〜5 / 6 以上）。どちらも「書いてある属性」をそのまま拾う実装で、
+    これで足りるなら judge は要らない。
+    """
+    text = str(material or "")
+    risk = 3 if any(word in text for word in _RISK_WORDS) else 1
+    files = {m.group(0) for m in _FILE_TOKEN.finditer(text)}
+    complexity = 1 if len(files) <= 1 else (2 if len(files) <= 5 else 3)
+    return {"c": complexity, "r": risk}
 
 
 def _assess_cell(case: dict, *, cid: str = ""):
@@ -479,6 +500,8 @@ VARIANTS.update({
     "AS2": ("project_eval", functools.partial(_assess_cell, cid="AS2")),
     "AS3": ("project_eval", functools.partial(_assess_cell, cid="AS3")),
     "AS4": ("project_eval", functools.partial(_assess_cell, cid="AS4")),
+    "AS5": ("project_eval", functools.partial(_assess_cell, cid="AS5")),
+    "AS6": ("project_eval", functools.partial(_assess_cell, cid="AS6")),
     "CW1": ("statemachine_cells", _contract_cell),
     "CW2": ("statemachine_cells", _contract_cell),
     "JS1": ("statemachine_cells", _state_judge_cell),

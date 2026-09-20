@@ -177,6 +177,25 @@ def assess_vague_but_safe() -> "ap.Task":
                    extra=[("note", "styles.css の設定画面まわり。どうなれば良いかは未定")])
 
 
+# 文字列一致と読みを分ける 2 つ。AS5 は高リスク領域（認証）だが**その語が出てこない**、
+# AS6 は「本番設定」の語が出るが**触るのは手順書**。段の説明の語をそのまま探す実装では
+# どちらも外す——「材料の属性で書き切った基準は機械で決まるのか」を測るための素材である。
+def assess_auth_without_the_word() -> "ap.Task":
+    """r=3 / c=1 / a=1。認証の領域だが「認証」の語は材料に無い。"""
+    return ap.Task(id="t14", title="ログイン後のセッション維持時間を 8 時間へ延ばす",
+                   verify="python -m pytest -q tests/test_session.py",
+                   extra=[("acceptance", "tests/test_session.py が通る"),
+                          ("note", "auth/session.py の定数 1 つを変える")])
+
+
+def assess_prod_word_but_doc() -> "ap.Task":
+    """r=1 / c=1 / a=1。「本番設定」の語は出るが、触るのは手順書だけ。"""
+    return ap.Task(id="t15", title="本番設定の手順書にある誤記を直す",
+                   verify="python tools/ci/check_user_docs.py",
+                   extra=[("acceptance", "check_user_docs.py が通る"),
+                          ("note", "docs/runbook.md の 1 行。設定そのものは変えない")])
+
+
 # review の材料。本番は `_project_evaluate` が**その場で実行した**受入コマンドの判定を
 # レビュアへ渡す（レビューが走るのは `passed == total` のときだけ＝全 PASS）。
 REVIEW_RESULTS = [("python -m pytest -q tests", True, "")]
@@ -549,6 +568,14 @@ CASES = {
                 driver=lambda cwd: ap.assess_task(project_config(cwd),
                                                   assess_vague_but_safe()),
                 check=lambda v: check_assess(v, {"c": 1, "r": 1, "a": 3})),
+    "AS5": dict(purpose="assess", expect="c=1 r=3 a=1（認証だが語が出てこない）",
+                driver=lambda cwd: ap.assess_task(project_config(cwd),
+                                                  assess_auth_without_the_word()),
+                check=lambda v: check_assess(v, {"c": 1, "r": 3, "a": 1})),
+    "AS6": dict(purpose="assess", expect="c=1 r=1 a=1（本番設定の語が出るが手順書）",
+                driver=lambda cwd: ap.assess_task(project_config(cwd),
+                                                  assess_prod_word_but_doc()),
+                check=lambda v: check_assess(v, {"c": 1, "r": 1, "a": 1})),
 }
 
 # ------------------------------------------------------------------ 実行

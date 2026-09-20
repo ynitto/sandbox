@@ -239,3 +239,32 @@ class ProductionCalibrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StringMatchBaselineTests(unittest.TestCase):
+    """当て馬（`assess_by_string_match`）の限界を固定する。
+
+    c と r を「段の説明に出てくる語を材料から探す」だけで決められるかの下限。ここで
+    落ちる 3 つが、judge を残す理由そのものである（実測 2026-09-20: 当て馬 3/6・judge 6/6）。
+    """
+
+    def test_a_risk_domain_without_its_word_is_missed(self):
+        """同義の言い換え（ログイン＝認証）は語の一致で拾えない。"""
+        material = "タイトル: ログイン後のセッション維持時間を 8 時間へ延ばす\nnote: auth/session.py"
+        self.assertEqual(readout_eval.assess_by_string_match(material)["r"], 1)
+
+    def test_a_risk_word_in_a_doc_task_is_a_false_positive(self):
+        """「本番設定の手順書」は手順書を触るだけだが、語だけ見ると本番設定に当たる。"""
+        material = "タイトル: 本番設定の手順書にある誤記を直す\nnote: docs/runbook.md の 1 行"
+        self.assertEqual(readout_eval.assess_by_string_match(material)["r"], 3)
+
+    def test_files_named_by_verify_are_counted_as_touched(self):
+        """verify に出てくる検査対象は「触るファイル」ではないが、綴りとしては数えられる。"""
+        material = ("note: payments/client.py の定数 1 行だけを変える\n"
+                    "verify: python -m pytest -q tests/test_payments.py")
+        self.assertEqual(readout_eval.assess_by_string_match(material)["c"], 2)
+
+    def test_it_does_get_the_easy_ones(self):
+        """語がそのまま出ていて、触るファイルが 1 つなら当たる（だから下限として使える）。"""
+        got = readout_eval.assess_by_string_match("タイトル: 決済 API の修正\nnote: pay/client.py")
+        self.assertEqual((got["c"], got["r"]), (1, 3))
