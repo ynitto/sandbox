@@ -303,6 +303,23 @@ test('tmux コマンド文字列は自前のソケットを使い、引用が壊
   assert.strictEqual(tmux.sessionName('0123abcd-ef00-1111-2222-333344445555'), 'agent-app-0123abcdef00');
 });
 
+test('端末用の常駐シェルはバックグラウンド処理の終了を待たず、同じ用途では再利用する', async () => {
+  const background = host.shellFor();
+  const terminal = host.hostOf('/tmp', '', { lane: 'terminal' }).shell;
+  try {
+    assert.notStrictEqual(terminal, background);
+    assert.strictEqual(terminal, host.shellFor('', { lane: 'terminal' }));
+    assert.strictEqual(background, host.hostOf('/tmp').shell);
+    await Promise.all([background.run('true'), terminal.run('true')]);
+    const finished = [];
+    const slow = background.run('sleep 0.3; printf background').then(() => finished.push('background'));
+    const screen = terminal.run('printf screen').then((result) => { finished.push('screen'); return result; });
+    assert.strictEqual((await screen).output, 'screen');
+    await slow;
+    assert.deepStrictEqual(finished, ['screen', 'background']);
+  } finally { host.closeAll(); }
+});
+
 test('常駐シェル: 逐次にコマンドを流し、終了コードと出力を返す', async () => {
   const sh = new host.HostShell({ platform: 'linux' });
   try {

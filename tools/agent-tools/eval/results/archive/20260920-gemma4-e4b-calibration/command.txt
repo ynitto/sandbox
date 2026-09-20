@@ -1,0 +1,1 @@
+/Library/Developer/CommandLineTools/usr/bin/python3 tools/agent-tools/eval/readout_eval.py --calibration --model gemma4:e4b --repeat 3 --output-dir tools/agent-tools/eval/results/20260920-gemma4-e4b-calibration-real

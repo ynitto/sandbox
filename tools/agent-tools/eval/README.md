@@ -2426,3 +2426,14 @@ thresholdを本番設定へ書く処理・自動routeの有効化処理は本gat
 threshold 0.9でも止まらないため、自動完了判定を任せられるとは言えない。
 元台帳が問い単位の分布を持たない場合はBrier/ECEを後付けしない。
 今回のfake結果はその実測の更新ではなく、特定confidenceで自動化できる用途の推奨は行わない。
+
+
+### 2026-09-20 実測・暫定適用
+
+現行のE4〜E6も含めて12セル×3回をgemma4:e4bで測定した。
+全51問がlogprobs、正解42/51、Brier 0.351062、ECE 0.162747、低coverage・通信／応答失敗0。
+E5はconfidence 0.9905でも誤答し、全用途共通thresholdを上げる判断はできなかった。
+[report](results/archive/20260920-gemma4-e4b-calibration/report.json)と
+[用途別判断・適用状態](../../../docs/plans/2026-09-20-judge-calibration-application.md)を参照。
+filter=0.6・route=0.8はinsufficient_dataのままの暫定運用案で、精度保証ではない。
+report生成から設定への自動反映は追加せず、人の指示で`judge.calibration`を保存する口を追加した。

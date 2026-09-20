@@ -69,6 +69,27 @@ class HerdConfigTests(unittest.TestCase):
             herdconfig.load()
         self.assertIn("YAML", herdconfig.judge_setting()["error"])
 
+    def test_calibration_roundtrip_and_unset_preserve_model(self):
+        policy = {"model": "gemma4:e4b", "method": "logprobs", "min_coverage": .8,
+                  "thresholds": {"route": .8, "filter": .6, "assess": None}}
+        herdconfig.set_value("judge.model", "gemma4:e4b")
+        herdconfig.set_value("judge.calibration", json.dumps(policy))
+        self.assertEqual(herdconfig.describe()["calibration"], policy)
+        herdconfig.unset_value("judge.calibration")
+        self.assertIsNone(herdconfig.calibration_setting())
+        self.assertEqual(herdconfig.judge_setting()["model"], "gemma4:e4b")
+
+    def test_invalid_calibration_never_overwrites_settings(self):
+        policy = {"model": "gemma4:e4b", "method": "logprobs", "min_coverage": .8,
+                  "thresholds": {"route": .8}}
+        herdconfig.set_value("judge.calibration", policy)
+        for patch in ({"method": "text"}, {"min_coverage": float("nan")},
+                      {"thresholds": {"route": 1.1}}, {"thresholds": {"typo": .8}},
+                      {"thresholds": {"route": True}}, {"model": ""}):
+            with self.assertRaises(herdconfig.ConfigError):
+                herdconfig.set_value("judge.calibration", {**policy, **patch})
+            self.assertEqual(herdconfig.calibration_setting(), policy)
+
 
 class ConfigCommandTests(HerdConfigTests):
     def _run(self, argv):

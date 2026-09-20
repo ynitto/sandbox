@@ -15,6 +15,50 @@ function playwright() {
   try { return require(path.join(prefix, 'lib/node_modules/@playwright/cli/node_modules/playwright-core')); } catch { return null; }
 }
 
+test('実機: 過去の tmux 会話はバックグラウンド処理の完了前に埋め込み表示できる', { timeout: 30000 }, async (t) => {
+  const pw = playwright();
+  if (!pw || spawnSync('tmux', ['-V']).status !== 0) return t.skip('Playwright または tmux が無い');
+  if (process.platform === 'linux' && !process.env.DISPLAY) return t.skip('表示先が無い');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'app-terminal-latency-'));
+  const ud = path.join(root, 'userdata');
+  const gate = path.join(root, 'release-background');
+  const shell = new host.HostShell();
+  let app;
+  let id;
+  t.after(async () => {
+    fs.writeFileSync(gate, 'release');
+    try {
+      if (app) await app.close();
+      if (id) await shell.run(tmux.cmdKill(tmux.sessionName(id)));
+    } finally { shell.close(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  store.saveConfig(ud, { repos: [root], lastRepo: root, share: { enabled: false }, evaluation: { mode: 'off' } });
+  const session = store.createSession(ud, { repo: root, cli: 'copilot' });
+  id = session.id;
+  store.appendMessage(ud, id, { role: 'user', text: '以前の依頼' });
+  store.appendMessage(ud, id, { role: 'assistant', text: '以前の回答' });
+  const created = await shell.run(tmux.cmdNew({ name: tmux.sessionName(id), cwd: root,
+    argv: ['sh', '-c', 'printf "PAST SESSION READY\\n"; cat'], cols: 120, rows: 36 }));
+  assert.ok(created.ok, created.error);
+  store.createSession(ud, { repo: root, cli: 'copilot', transport: 'headless' });
+  app = await pw._electron.launch({ executablePath: require('electron'),
+    args: [path.resolve(__dirname, '..'), '--no-sandbox', `--user-data-dir=${ud}`],
+  });
+  const win = await app.firstWindow();
+  await win.waitForFunction(() => typeof document.getElementById('settings-open').onclick === 'function');
+  await app.evaluate(({ app }, gatePath) => {
+    const require = process.getBuiltinModule('module').createRequire(`${app.getAppPath()}/package.json`);
+    const host = require('./src/main/host');
+    global.backgroundFinished = false;
+    host.shellFor().run(`while [ ! -f ${host.sq(gatePath)} ]; do sleep 0.02; done`)
+      .then(() => { global.backgroundFinished = true; });
+  }, gate);
+  await win.evaluate((sessionId) => { openSession(sessionId, { waitForTerminal: true }).catch(e => { window.openError = e.message; }); }, id);
+  await win.waitForFunction(() => document.querySelector('#term-host .xterm-rows')?.textContent.includes('PAST SESSION READY'), null, { timeout: 5000 });
+  assert.equal(await app.evaluate(() => global.backgroundFinished), false, 'バックグラウンド処理はまだ終了していない');
+  assert.equal(await win.evaluate(() => window.openError || ''), '');
+});
+
 test('実機: CLI IDをtmux再起動後に復元し、編集再開の説明を必要な場合だけ送る', async (t) => {
   const pw = playwright();
   if (!pw || spawnSync('tmux', ['-V']).status !== 0) { t.skip('Playwright または tmux が無い'); return; }

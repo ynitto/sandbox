@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "created_at": "20260919T233955015808Z",
+  "revision": "71f187e67b68d1da004bd434d3d724cf6b67ed70",
+  "arguments": {
+    "model": "gemma4:e4b",
+    "repeat": 3,
+    "cases": "F1,J2,CL1,E1,E2,E3,E4,E5,E6,RO1,RO2,RO3",
+    "calibration": true,
+    "fake_run": false,
+    "replay": null,
+    "output_dir": "tools/agent-tools/eval/results/20260920-gemma4-e4b-calibration-real",
+    "samples": 1,
+    "min_confidence": 0.0
+  },
+  "state": "completed",
+  "dirty": false,
+  "all_input_hashes_verified_after_run": true,
+  "post_run_source_sha256": {
+    "tools/agent-tools/eval/readout_eval.py": "7f7e7fbc59cf5b6726e9f5aab2831b4f39eafa9a8644b21cc697d777315aef21",
+    "tools/agent-tools/eval/judge_eval.py": "9a565d6fa638961b1665724f1bfbb001e6989d885837dd4b6798c277b116b2b0",
+    "tools/agent-tools/eval/project_eval.py": "e558d300ae1770e4bd096f7282f5ba29dd96db0c389052006714c551e58dfbfb",
+    "tools/agent-tools/agentcore/agentcore/judge.py": "cbc64eb9b57a32acca348f11f8ec6278c256b6adf305ea953868729c60094ac9"
+  },
+  "verification_revision": "f4aa0c2ebba3feb744fa2be2dad56bd0093086f4"
+}

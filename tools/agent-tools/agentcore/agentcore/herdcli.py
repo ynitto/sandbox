@@ -628,6 +628,9 @@ CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
                   <名前> … どの実行でも判定はこのモデルの judge へ（例 gemma4:e4b）
                   off    … judge をどの実行でも使わない
 
+    judge.calibration  手動承認した用途別 gate（model / method / min_coverage / thresholds の JSON）。
+                       用途 filter / route / assess / transition。null・省略した用途は保留。
+
   --json          設定を JSON で出す（agent-app が読む形）
   --check judge   判定をモデル指名で回す設定なら終了コード 0、それ以外は 1
                   （スキルが「judge に任せてよいか」を確かめる口）"""
@@ -656,7 +659,7 @@ def cmd_config(argv, *, err=None, out=None) -> int:
         except herdconfig.ConfigError as exc:
             _err(str(exc), err=err)
             return 2 if "未知の設定" in str(exc) else 1
-        print(json.dumps({"path": str(path), **{"judge": herdconfig.judge_setting()}},
+        print(json.dumps(herdconfig.describe(),
                          ensure_ascii=False), file=out)
         return 0
     as_json = False
@@ -690,6 +693,10 @@ def cmd_config(argv, *, err=None, out=None) -> int:
     label = {"auto": "auto（ローカル定義の実行だけ judge）", "off": "off（judge を使わない）"}
     print("judge.model: " + (judge_info["model"] if judge_info["mode"] == "pinned"
                             else label[judge_info["mode"]]), file=out)
+    if info.get("calibration") is not None:
+        print("judge.calibration: " + json.dumps(info["calibration"], ensure_ascii=False), file=out)
+    if info.get("calibration_error"):
+        print("calibration error: " + info["calibration_error"], file=out)
     if judge_info.get("error"):
         print(f"注意: {judge_info['error']}", file=out)
     return 0

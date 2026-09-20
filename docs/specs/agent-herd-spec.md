@@ -627,6 +627,8 @@ agent-herd config unset KEY
 | 鍵 | 値 | 意味 |
 |---|---|---|
 | `judge.model` | `auto` / `off` / モデル名 | §5.5 の表のとおり。`unset` は `auto` と同じ |
+| `judge.calibration` | JSON object / unset | 人が承認したmodel・method・min_coverage・thresholds。用途filter/route/assess/transition。null・省略した用途、未測定model/method、低coverageは既存fallbackへ。未設定なら従来動作。report生成は書き換えない |
+
 
 未知の鍵と引数の誤りは終了コード 2、ファイルを書けないときは 1。
 
@@ -1057,3 +1059,11 @@ bash tools/agent-tools/install.sh [--only agent-herd]
 インストール後は `agent-herd --help` と `agent-ollama --help` を実行し、zipapp と起動名の分岐を
 確認する。agent-loop は別の zipapp なので、agentcore の契約を更新した場合は agent-loop も
 同時に入れ直す。
+
+
+### Judge calibrationの暫定運用
+
+2026-09-20の実測（12セル×3回）と用途別設定の根拠・適用状態は
+[calibration適用記録](../plans/2026-09-20-judge-calibration-application.md)を参照。
+`judge.calibration`はconsumerの採用gateで、standalone judge APIは変更しない。
+`agent-herd config --json`のcalibration / calibration_errorで設定・不備を確認できる。

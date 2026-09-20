@@ -196,12 +196,14 @@ class HostShell {
   }
 }
 
-// ディストロごとに 1 本。Linux / macOS では distro は常に ''。
+// ディストロと用途ごとに 1 本。端末の表示・入力を Git 等の長い処理の後ろに並べない。
+// Linux / macOS では distro は常に ''。
 const shells = new Map();
 
-function shellFor(distro = '') {
-  const key = process.platform === 'win32' ? String(distro || '') : '';
-  if (!shells.has(key)) shells.set(key, new HostShell({ distro: key }));
+function shellFor(distro = '', { lane = '' } = {}) {
+  const target = process.platform === 'win32' ? String(distro || '') : '';
+  const key = JSON.stringify([target, lane]);
+  if (!shells.has(key)) shells.set(key, new HostShell({ distro: target }));
   return shells.get(key);
 }
 
@@ -212,18 +214,18 @@ function closeAll() {
 
 // リポジトリのパスから、それを扱うホスト（ディストロ）と WSL 表記のパスを決める。
 //   defaultDistro … UNC でも ドライブでもない（=既定のディストロ）ときに使う設定値
-function hostOf(repo, defaultDistro = '') {
+function hostOf(repo, defaultDistro = '', options = {}) {
   const distro = process.platform === 'win32' ? (wslDistro(repo) || String(defaultDistro || '')) : '';
-  return { distro, cwd: toHostPath(repo), shell: shellFor(distro) };
+  return { distro, cwd: toHostPath(repo), shell: shellFor(distro, options) };
 }
 
 // ホストに tmux / git があるか（結果はディストロごとに少しの間だけ覚える）
 const probeCache = new Map();
-async function probe(distro = '', { force = false } = {}) {
+async function probe(distro = '', { force = false, lane = '' } = {}) {
   const key = String(distro || '');
   const hit = probeCache.get(key);
   if (hit && !force && Date.now() - hit.at < 60000) return hit.info;
-  const shell = shellFor(distro);
+  const shell = shellFor(distro, { lane });
   const r = await shell.run('printf "tmux=%s\\ngit=%s\\nhome=%s\\n" "$(command -v tmux || true)" "$(command -v git || true)" "$HOME"; tmux -V 2>/dev/null || true', { timeoutMs: 20000 });
   const info = { ok: r.ok, tmux: '', git: '', home: '', tmuxVersion: '', error: r.ok ? '' : r.error };
   for (const line of r.output.split('\n')) {

@@ -452,17 +452,28 @@ const EVIDENCE_KIND = { conversation: '会話', task: 'タスク', workflow: '�
 async function renderIssueEvidence(box, issue) {
   const items = await api.insight.evidence(issue.evidence || []);
   box.replaceChildren();
-  if (!items.length) { box.append(el('span', 'sub', '根拠の会話は見つかりません')); return; }
-  box.append(el('span', 'sub', '根拠:'));
-  for (const item of items.slice(0, 6)) {
-    if (item.kind === 'external' || !item.repo) { box.append(el('span', 'sub', item.title)); continue; }
+  if (!items.length) { box.append(el('span', 'sub', '元の会話・実行は見つかりません')); return; }
+  const available = items.filter((item) => EVIDENCE_KIND[item.kind] && item.repo && item.id);
+  const sources = [...new Map(available.map((item) => [JSON.stringify([item.kind, item.repo, item.id]), item])).values()];
+  if (sources.length) box.append(el('span', 'sub', '元の会話・実行を確認:'));
+  const linkFor = (item) => {
     const link = el('button', 'message-action', `${EVIDENCE_KIND[item.kind] || ''} ${item.title}`);
     link.type = 'button';
-    link.title = item.ts ? Fmt.checkedAt(item.ts) : '';
+    link.title = `${item.title}${item.ts ? `\n${Fmt.checkedAt(item.ts)}` : ''}`;
     link.onclick = () => openAttentionItem({ kind: item.kind, queue: 'none', target: { kind: item.kind, repo: item.repo, id: item.id } }).catch((err) => notice(err.message, 'error'));
-    box.append(link);
+    return link;
+  };
+  for (const item of sources.slice(0, 6)) box.append(linkFor(item));
+  if (sources.length > 6) {
+    const more = el('details');
+    more.append(el('summary', 'sub', `ほか ${sources.length - 6} 件の参照元`));
+    const links = el('div', 'message-actions issue-evidence');
+    for (const item of sources.slice(6)) links.append(linkFor(item));
+    more.append(links);
+    box.append(more);
   }
-  if (items.length > 6) box.append(el('span', 'sub', `ほか ${items.length - 6} 件`));
+  const unavailable = items.length - available.length;
+  if (unavailable) box.append(el('span', 'sub', `このアプリから開けない記録 ${unavailable} 件`));
 }
 
 // 課題を新しい会話へ渡す。フォークと同じダイアログ（リポジトリ・AI・モデル・権限）で始める。

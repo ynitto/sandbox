@@ -1408,7 +1408,8 @@ def filter_judge(goal: str, deps: dict, model: "str | None",
     _node_budget_record(time.time() - started, "filter", _canonical_cli(cli), judge_model,
                         tokens_in=usage.get("tokens_in"), tokens_out=usage.get("tokens_out"))
     answers = result["answers"]
-    if _judge.abstained(answers, _FILTER_JUDGE_MIN_CONFIDENCE):
+    if _judge.calibrated_abstained(answers, _FILTER_JUDGE_MIN_CONFIDENCE,
+                                  purpose="filter", model=judge_model):
         return None
     kept = [dep for dep in deps if bool(answers[dep].get("value"))]
     probabilities = {dep: answers[dep].get("probability") for dep in deps}

@@ -27,6 +27,7 @@ agent-app の「設定 > 実行制御」はこのファイルを直接は触ら�
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -39,7 +40,7 @@ CONFIG_NAMES = ("agent-herd.yaml", "agent-herd.yml", "agent-herd.json")
 JUDGE_AUTO = "auto"
 JUDGE_OFF = "off"
 # 設定の項目名（`agent-herd config set` が受け付ける鍵）。増やすならここと `describe()`。
-KNOWN_KEYS = ("judge.model",)
+KNOWN_KEYS = ("judge.model", "judge.calibration")
 
 
 class ConfigError(RuntimeError):
@@ -165,6 +166,39 @@ def judge_setting() -> dict:
     return {"mode": "pinned", "model": value, "error": None}
 
 
+CALIBRATION_PURPOSES = ("filter", "route", "assess", "transition")
+
+
+def normalize_calibration(value) -> dict:
+    """Explicit operator policy; never derive or apply thresholds from a report."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError as exc:
+            raise ConfigError("judge.calibration は JSON オブジェクトで指定します") from exc
+    if not isinstance(value, dict):
+        raise ConfigError("judge.calibration はオブジェクトです")
+    if not isinstance(value.get("model"), str) or not value["model"].strip():
+        raise ConfigError("judge.calibration.model が必要です")
+    if value.get("method") not in ("logprobs", "vote"):
+        raise ConfigError("judge.calibration.method は logprobs / vote です")
+    thresholds = value.get("thresholds")
+    if not isinstance(thresholds, dict) or set(thresholds) - set(CALIBRATION_PURPOSES):
+        raise ConfigError("judge.calibration.thresholds の用途が不正です")
+    numbers = [value.get("min_coverage"), *[v for v in thresholds.values() if v is not None]]
+    if any(isinstance(v, bool) or not isinstance(v, (int, float))
+           or not math.isfinite(v) or not 0 <= v <= 1 for v in numbers):
+        raise ConfigError("calibration の confidence / coverage は 0〜1 です（用途の null は保留）")
+    return value
+
+
+def calibration_setting():
+    section = load().get("judge")
+    if not isinstance(section, dict) or "calibration" not in section:
+        return None
+    return normalize_calibration(section["calibration"])
+
+
 def set_value(key: str, value) -> Path:
     """`agent-herd config set KEY VALUE`。鍵は KNOWN_KEYS だけ（未知の鍵は黙って書かない）。"""
     if key not in KNOWN_KEYS:
@@ -181,6 +215,16 @@ def set_value(key: str, value) -> Path:
             data["judge"] = section
         else:
             data.pop("judge", None)
+    elif key == "judge.calibration":
+        section = data.get("judge") if isinstance(data.get("judge"), dict) else {}
+        if value is None:
+            section.pop("calibration", None)
+        else:
+            section["calibration"] = normalize_calibration(value)
+        if section:
+            data["judge"] = section
+        else:
+            data.pop("judge", None)
     return save(data)
 
 
@@ -191,6 +235,11 @@ def unset_value(key: str) -> Path:
 def describe() -> dict:
     """`agent-herd config` が出す姿: 設定ファイルの場所と、解決済みの各項目。"""
     path = find_path()
-    return {"path": str(path) if path else None,
+    try:
+        calibration, calibration_error = calibration_setting(), None
+    except ConfigError as exc:
+        calibration, calibration_error = None, str(exc)
+    return {"calibration": calibration, "calibration_error": calibration_error,
+            "path": str(path) if path else None,
             "default_path": str(agents_home() / CONFIG_NAMES[0]),
             "judge": judge_setting()}

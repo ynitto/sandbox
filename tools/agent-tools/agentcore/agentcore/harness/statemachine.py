@@ -1087,7 +1087,8 @@ def _sm_judge_conditions(pending: "list[dict]", *, output: str, agent: "dict | N
         _sm_append_log(log_file, {"event": "condition_judge_fallback", "reason": str(exc)})
         return {}
     answers = result["answers"]
-    held = judge.abstained(answers, _SM_JUDGE_MIN_CONFIDENCE)
+    held = judge.calibrated_abstained(answers, _SM_JUDGE_MIN_CONFIDENCE,
+                                      purpose="transition", model=model)
     _sm_append_log(log_file, {
         "event": "condition_judge_done", "model": model, "abstained": held,
         "shape": "choice" if _SM_OUTCOME_QUESTION in questions else "boolean",

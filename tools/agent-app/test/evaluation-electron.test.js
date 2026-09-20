@@ -28,6 +28,87 @@ function playwright() {
   try { return require('/opt/node22/lib/node_modules/playwright'); } catch { return null; }
 }
 
+test('受信箱: 長い参照元でも崩れず、IDを表示せずに元の会話を開け、最後の課題までスクロールできる', { timeout: 30000 }, async (t) => {
+  const binary = electronBinary();
+  const pw = playwright();
+  if (!binary || !pw?._electron) return t.skip('Electron / Playwright がありません');
+  if (process.platform === 'linux' && !process.env.DISPLAY) return t.skip('表示先がありません');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inbox-scroll-'));
+  const repo = path.join(root, 'repo');
+  const userData = path.join(root, 'data');
+  fs.mkdirSync(repo);
+  let electron;
+  t.after(async () => {
+    try { if (electron) await electron.close(); }
+    finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  require('../src/main/store').saveConfig(userData, {
+    repos: [repo], lastRepo: repo, transport: 'headless', share: { enabled: false },
+    evaluation: { mode: 'off' }, audit: { enabled: false },
+    attentionSeen: { since: '2026-01-01T00:00:00.000Z' },
+  });
+  const appStore = require('../src/main/store');
+  const source = appStore.createSession(userData, { repo, cli: 'codex', transport: 'headless' });
+  const longTitle = `元の会話-${'LongTitle'.repeat(60)}`;
+  appStore.updateSession(userData, source.id, { title: longTitle });
+  const storeDir = require('../src/main/audit').storeDir(userData);
+  const insights = path.join(storeDir, 'insights');
+  fs.mkdirSync(insights, { recursive: true });
+  fs.mkdirSync(path.join(storeDir, 'observations'), { recursive: true });
+  fs.mkdirSync(path.join(storeDir, 'records'), { recursive: true });
+  const externalId = `external-record-${'a'.repeat(600)}`;
+  fs.writeFileSync(path.join(storeDir, 'observations', 'test.jsonl'), JSON.stringify({
+    id: 'obs-scroll', record_id: externalId, evidence: ['record-source', 'record-duplicate'],
+  }) + '\n');
+  fs.writeFileSync(path.join(storeDir, 'records', 'test.jsonl'), [
+    { id: externalId, ref: externalId, tool: 'external-tool' },
+    { id: 'record-source', tool: 'agent-app', workload: 'chat', ref: source.id },
+    { id: 'record-duplicate', tool: 'agent-app', workload: 'chat', ref: source.id },
+  ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+  for (let i = 0; i < 16; i += 1) {
+    fs.writeFileSync(path.join(insights, `issue-${i}.json`), JSON.stringify({
+      id: `issue-${i}`, ts: new Date().toISOString(), updated_at: new Date().toISOString(),
+      kind: 'skill-improvement', occurrences: 3, confidence: 'low',
+      statement: `スクロール確認 ${i + 1}: 手順が不足しています。`, observation_ids: ['obs-scroll'],
+      scope: { target: { kind: 'skill', name: `skill-${i}` } }, exported: false,
+    }));
+  }
+  electron = await pw._electron.launch({ executablePath: binary,
+    args: [APP, '--no-sandbox', `--user-data-dir=${userData}`],
+  });
+  const win = await electron.firstWindow();
+  await win.waitForFunction(() => document.querySelector('#area-inbox .unread')?.textContent === '16');
+  await win.locator('#area-inbox').click();
+  await win.waitForFunction(() => document.querySelectorAll('#inbox-issues .execution-card').length === 16);
+  await win.waitForFunction(() => document.querySelectorAll('#inbox-issues .issue-evidence .message-action').length === 16);
+  assert.ok(!(await win.locator('#inbox-issues').innerText()).includes(externalId), '開けない記録のIDを出さない');
+  assert.equal(await win.locator('#inbox-issues .issue-evidence .message-action').first().getAttribute('title'), longTitle);
+  assert.match(await win.locator('#inbox-issues .issue-evidence').first().innerText(), /このアプリから開けない記録 1 件/);
+  const header = win.locator('#inbox-area > .area-head');
+  const cards = win.locator('#inbox-issues .execution-card');
+  for (const size of [{ width: 1200, height: 800 }, { width: 700, height: 600 }]) {
+    await win.setViewportSize(size);
+    assert.ok(await win.locator('#inbox-body').evaluate((body) => body.scrollWidth <= body.clientWidth), '長い参照元で横にはみ出さない');
+    const before = await header.boundingBox();
+    const area = await win.locator('#inbox-area').boundingBox();
+    await win.mouse.move(area.x + area.width / 2, area.y + area.height - 50);
+    await win.mouse.wheel(0, 100000);
+    await win.waitForFunction(() => {
+      const last = document.querySelector('#inbox-issues .execution-card:last-child').getBoundingClientRect();
+      return last.bottom <= window.innerHeight && last.top >= 0;
+    }, null, { timeout: 3000 });
+    assert.equal((await header.boundingBox()).y, before.y, '見出しはスクロールしない');
+    await cards.last().locator('.primary').click();
+    await win.locator('#search-transfer-dialog[open]').waitFor();
+    await win.locator('#search-transfer-close').click();
+    await win.mouse.move(area.x + area.width / 2, area.y + area.height - 50);
+    await win.mouse.wheel(0, -100000);
+    await win.waitForFunction(() => document.querySelector('#inbox-issues .execution-card').getBoundingClientRect().top > 0);
+  }
+  await cards.first().locator('.issue-evidence .message-action').click();
+  await win.waitForFunction((title) => document.getElementById('chat-title').textContent.includes(title), longTitle);
+});
+
 test('実機: 課題が受信箱に並び、根拠から会話へ行け、まとめて評価が判定 AI を呼んで台帳に残り、受信箱に届く', async (t) => {
   const binary = electronBinary();
   const pw = playwright();

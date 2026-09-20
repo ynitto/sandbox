@@ -303,5 +303,42 @@ class ModelSelectionTests(unittest.TestCase):
                           "指名が無ければ、解決できない定義では judge を使わない")
 
 
+
+class CalibrationPolicyTests(unittest.TestCase):
+    POLICY = {"model": "gemma4:e4b", "method": "logprobs", "min_coverage": .8,
+              "thresholds": {"route": .8, "filter": .6, "assess": None, "transition": None}}
+
+    def gate(self, *, policy=POLICY, model="gemma4:e4b", purpose="route",
+             confidence=.8, coverage=.8, method="logprobs", minimum=0):
+        answers = {"q": {"confidence": confidence, "coverage": coverage, "method": method}}
+        with mock.patch.object(judge.herdconfig, "calibration_setting", return_value=policy):
+            return judge.calibrated_abstained(answers, minimum, purpose=purpose, model=model)
+
+    def test_boundary_and_caller_minimum(self):
+        self.assertEqual(self.gate(), [])
+        self.assertEqual(self.gate(confidence=.7999), ["q"])
+        self.assertEqual(self.gate(coverage=.7999), ["q"])
+        self.assertEqual(self.gate(minimum=.9), ["q"])
+        self.assertEqual(self.gate(purpose="filter", confidence=.6), [])
+
+    def test_unmeasured_purpose_model_method_are_held(self):
+        for purpose in ("assess", "transition", "quality"):
+            self.assertEqual(self.gate(purpose=purpose, confidence=1), ["q"])
+        self.assertEqual(self.gate(model="gemma4:12b"), ["q"])
+        self.assertEqual(self.gate(method="vote"), ["q"])
+        self.assertEqual(self.gate(method="text", confidence=1), ["q"])
+        self.assertEqual(self.gate(coverage=float("nan")), ["q"])
+
+    def test_no_policy_preserves_old_behavior(self):
+        self.assertEqual(self.gate(policy=None, confidence=.5), [])
+        self.assertEqual(self.gate(policy=None, method="text"), ["q"])
+
+    def test_invalid_policy_holds_every_answer(self):
+        with mock.patch.object(judge.herdconfig, "calibration_setting",
+                               side_effect=judge.herdconfig.ConfigError("bad policy")):
+            self.assertEqual(judge.calibrated_abstained({"q": {}}, 0,
+                                                       purpose="route", model="gemma4:e4b"), ["q"])
+
+
 if __name__ == "__main__":
     unittest.main()

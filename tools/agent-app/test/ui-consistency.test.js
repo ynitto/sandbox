@@ -268,9 +268,9 @@ test('受信箱は既存の部品（メニューの領域・一覧の行・件�
   assert.match(renderer, /const button = \$\('area-inbox'\);[\s\S]*?badge = el\('span', 'unread'\)/, '件数は「共有」と同じ .unread の印');
   // 2. 見出しは他の領域と同じ .area-head、本文は 1 行だけ。受信箱に見た目の規則・私物の部品を足さない
   // 課題（agent-audit の洞察）の本文はタスクの概要と同じ .execution-card の並び（.issue-cards は並べる器だけ）
-  assert.match(html, /<section id="inbox-area" aria-label="受信箱" hidden>\s*<header class="area-head">\s*<div class="area-heading">\s*<div class="title">受信箱<\/div>\s*<p id="inbox-meta"><\/p>\s*<\/div>\s*<\/header>\s*<div class="blank compact"><p id="inbox-sub"><\/p><\/div>\s*<div id="inbox-issues" class="issue-cards" hidden><\/div>\s*<\/section>/);
+  assert.match(html, /<section id="inbox-area" aria-label="受信箱" hidden>\s*<header class="area-head">\s*<div class="area-heading">\s*<div class="title">受信箱<\/div>\s*<p id="inbox-meta"><\/p>\s*<\/div>\s*<\/header>\s*<div id="inbox-body">\s*<div class="blank compact"><p id="inbox-sub"><\/p><\/div>\s*<div id="inbox-issues" class="issue-cards" hidden><\/div>\s*<\/div>\s*<\/section>/);
   assert.match(css, /^#share-area, #inbox-area \{/m, '本文の面は「共有」と同じ規則を共有する');
-  assert.deepStrictEqual(css.match(/^#inbox[^{]*\{/gm) || [], [], '受信箱だけの規則を足さない');
+  assert.deepStrictEqual(css.match(/^#inbox[^{]*\{/gm) || [], ['#inbox-body {'], '本文のスクロール領域以外に専用の規則を足さない');
   for (const clone of ['.inbox-card {', '.inbox-item {', '.attention-inbox {', '.inbox-panel {']) assert.ok(!css.includes(clone), `共有部品の私物な複製がある: ${clone}`);
   // 3. 未読・要対応の判定は main（attention:list）。renderer は投影を出すだけ
   assert.match(preload, /attention: \{\s*list: \(\) => invoke\('attention:list'\),\s*seen: \(key, resultAt\) => invoke\('attention:seen'/);

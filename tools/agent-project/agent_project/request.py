@@ -569,7 +569,8 @@ def route_judge(cfg: "Config", task: Task, workspaces: "list[dict]") -> "str | N
     except _judge.JudgeError:
         return None
     answer = result["answers"]["workspace"]
-    if _judge.abstained(result["answers"], _ROUTE_JUDGE_MIN_CONFIDENCE):
+    if _judge.calibrated_abstained(result["answers"], _ROUTE_JUDGE_MIN_CONFIDENCE,
+                                  purpose="route", model=model):
         return None
     choice = str(answer.get("choice") or "")
     return "" if choice == _judge.OTHER_KEY else choice

@@ -1,0 +1,1069 @@
+{
+  "schema_version": 1,
+  "model": "gemma4:e4b",
+  "source": "real",
+  "status": "insufficient_data",
+  "minimum_unique_cases": 30,
+  "min_confidence": 0.0,
+  "attempted_cells": 36,
+  "successful_cells": 36,
+  "failures": [],
+  "transport_failures": 0,
+  "response_failures": 0,
+  "methods": [
+    {
+      "method": "logprobs",
+      "unit": "question",
+      "cases": 51,
+      "unique_cases": 12,
+      "status": "insufficient_data",
+      "answered": 51,
+      "abstained": 0,
+      "abstained_case_ids": [],
+      "accuracy_answered": 0.8235294117647058,
+      "answer_rate": 1.0,
+      "abstention_rate": 0.0,
+      "calibration_n": 51,
+      "brier": 0.3510618292156863,
+      "ece": 0.16274705882352952,
+      "buckets": [
+        {
+          "low": 0.0,
+          "high": 0.2,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.2,
+          "high": 0.4,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.4,
+          "high": 0.6,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.6,
+          "high": 0.8,
+          "n": 3,
+          "accuracy": 1.0,
+          "mean_confidence": 0.6272
+        },
+        {
+          "low": 0.8,
+          "high": 1.0,
+          "n": 48,
+          "accuracy": 0.8125,
+          "mean_confidence": 0.9621187500000001
+        }
+      ],
+      "coverage": {
+        "p10": 0.9969,
+        "p50": 0.9999,
+        "p90": 1.0,
+        "below_0_8": 0,
+        "low_case_ids": []
+      },
+      "thresholds": [
+        {
+          "min_confidence": 0.0,
+          "accepted_cases": 51,
+          "answer_rate": 1.0,
+          "accuracy": 0.8235294117647058,
+          "unique_cases": 12,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.5,
+          "accepted_cases": 51,
+          "answer_rate": 1.0,
+          "accuracy": 0.8235294117647058,
+          "unique_cases": 12,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.6,
+          "accepted_cases": 51,
+          "answer_rate": 1.0,
+          "accuracy": 0.8235294117647058,
+          "unique_cases": 12,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.7,
+          "accepted_cases": 48,
+          "answer_rate": 0.9411764705882353,
+          "accuracy": 0.8125,
+          "unique_cases": 12,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.8,
+          "accepted_cases": 48,
+          "answer_rate": 0.9411764705882353,
+          "accuracy": 0.8125,
+          "unique_cases": 12,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.9,
+          "accepted_cases": 39,
+          "answer_rate": 0.7647058823529411,
+          "accuracy": 0.7692307692307693,
+          "unique_cases": 11,
+          "status": "insufficient_data"
+        }
+      ]
+    },
+    {
+      "method": "vote",
+      "unit": "question",
+      "cases": 0,
+      "unique_cases": 0,
+      "status": "insufficient_data",
+      "answered": 0,
+      "abstained": 0,
+      "abstained_case_ids": [],
+      "accuracy_answered": null,
+      "answer_rate": null,
+      "abstention_rate": null,
+      "calibration_n": 0,
+      "brier": null,
+      "ece": null,
+      "buckets": [
+        {
+          "low": 0.0,
+          "high": 0.2,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.2,
+          "high": 0.4,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.4,
+          "high": 0.6,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.6,
+          "high": 0.8,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.8,
+          "high": 1.0,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        }
+      ],
+      "coverage": {
+        "p10": null,
+        "p50": null,
+        "p90": null,
+        "below_0_8": 0,
+        "low_case_ids": []
+      },
+      "thresholds": [
+        {
+          "min_confidence": 0.0,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.5,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.6,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.7,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.8,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.9,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        }
+      ]
+    },
+    {
+      "method": "text",
+      "unit": "question",
+      "cases": 0,
+      "unique_cases": 0,
+      "status": "insufficient_data",
+      "answered": 0,
+      "abstained": 0,
+      "abstained_case_ids": [],
+      "accuracy_answered": null,
+      "answer_rate": null,
+      "abstention_rate": null,
+      "calibration_n": 0,
+      "brier": null,
+      "ece": null,
+      "buckets": [
+        {
+          "low": 0.0,
+          "high": 0.2,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.2,
+          "high": 0.4,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.4,
+          "high": 0.6,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.6,
+          "high": 0.8,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        },
+        {
+          "low": 0.8,
+          "high": 1.0,
+          "n": 0,
+          "accuracy": null,
+          "mean_confidence": null
+        }
+      ],
+      "coverage": {
+        "p10": null,
+        "p50": null,
+        "p90": null,
+        "below_0_8": 0,
+        "low_case_ids": []
+      },
+      "thresholds": [
+        {
+          "min_confidence": 0.0,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.5,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.6,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.7,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.8,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.9,
+          "accepted_cases": 0,
+          "answer_rate": null,
+          "accuracy": null,
+          "unique_cases": 0,
+          "status": "insufficient_data"
+        }
+      ]
+    }
+  ],
+  "cell_gates": [
+    {
+      "methods": [
+        "logprobs"
+      ],
+      "unit": "cell",
+      "cases": 36,
+      "min_confidence": 0.0,
+      "answered": 36,
+      "abstained": 0,
+      "answer_rate": 1.0,
+      "abstention_rate": 0.0,
+      "accuracy_answered": 0.75,
+      "thresholds": [
+        {
+          "min_confidence": 0.0,
+          "accepted_cases": 36,
+          "answer_rate": 1.0,
+          "accuracy": 0.75,
+          "unique_cases": 12,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.5,
+          "accepted_cases": 36,
+          "answer_rate": 1.0,
+          "accuracy": 0.75,
+          "unique_cases": 12,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.6,
+          "accepted_cases": 36,
+          "answer_rate": 1.0,
+          "accuracy": 0.75,
+          "unique_cases": 12,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.7,
+          "accepted_cases": 33,
+          "answer_rate": 0.9166666666666666,
+          "accuracy": 0.7272727272727273,
+          "unique_cases": 11,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.8,
+          "accepted_cases": 33,
+          "answer_rate": 0.9166666666666666,
+          "accuracy": 0.7272727272727273,
+          "unique_cases": 11,
+          "status": "insufficient_data"
+        },
+        {
+          "min_confidence": 0.9,
+          "accepted_cases": 30,
+          "answer_rate": 0.8333333333333334,
+          "accuracy": 0.7,
+          "unique_cases": 10,
+          "status": "insufficient_data"
+        }
+      ],
+      "by_case": [
+        {
+          "case": "CL1",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "E1",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "E2",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "E3",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "E4",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "E5",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 0.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "E6",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "F1",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 0,
+              "answer_rate": 0.0,
+              "accuracy": null,
+              "unique_cases": 0,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 0,
+              "answer_rate": 0.0,
+              "accuracy": null,
+              "unique_cases": 0,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 0,
+              "answer_rate": 0.0,
+              "accuracy": null,
+              "unique_cases": 0,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "J2",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "RO1",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "RO2",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            }
+          ]
+        },
+        {
+          "case": "RO3",
+          "thresholds": [
+            {
+              "min_confidence": 0.0,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.5,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.6,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.7,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.8,
+              "accepted_cases": 3,
+              "answer_rate": 1.0,
+              "accuracy": 1.0,
+              "unique_cases": 1,
+              "status": "insufficient_data"
+            },
+            {
+              "min_confidence": 0.9,
+              "accepted_cases": 0,
+              "answer_rate": 0.0,
+              "accuracy": null,
+              "unique_cases": 0,
+              "status": "insufficient_data"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "latency_seconds": {
+    "p50": 0.49253812500000294,
+    "p90": 2.574284020999997
+  },
+  "usage": {
+    "tokens_in": {
+      "observed_total": 14502,
+      "missing_cells": 0
+    },
+    "tokens_out": {
+      "observed_total": 102,
+      "missing_cells": 0
+    }
+  },
+  "limitations": [
+    "Repeated fixtures are not independent workload samples.",
+    "No production threshold is recommended or applied.",
+    "text is excluded from Brier/ECE; vote coverage is valid votes / samples.",
+    "Answer-rate denominators exclude request/response failures.",
+    "Brier uses sum over all classes (binary range 0..2)."
+  ]
+}

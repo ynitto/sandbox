@@ -919,7 +919,8 @@ def assess_judge(cfg: "Config", task: Task) -> "dict | None":
     except _judge.JudgeError:
         return None
     answers = result["answers"]
-    if _judge.abstained(answers, _ASSESS_JUDGE_MIN_CONFIDENCE):
+    if _judge.calibrated_abstained(answers, _ASSESS_JUDGE_MIN_CONFIDENCE,
+                                  purpose="assess", model=model):
         return None
     scores: dict = {}
     for axis, _text, _buckets in _ASSESS_AXES:

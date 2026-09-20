@@ -490,3 +490,32 @@ def abstained(answers: dict, min_confidence: float, *, allow_text: bool = False)
     return [name for name, answer in answers.items()
             if (not allow_text and answer.get("method") == METHOD_TEXT)
             or float(answer.get("confidence") or 0.0) < min_confidence]
+
+
+def calibrated_abstained(answers: dict, min_confidence: float, *, purpose: str,
+                         model: str) -> "list[str]":
+    """Apply an explicitly configured, model/method-specific consumer gate.
+
+    Absent policy preserves existing behavior. Invalid policy, mismatched model,
+    unmeasured purpose/method and low coverage fail closed to the consumer's
+    existing fallback. The pure abstained API and standalone judge stay unchanged.
+    """
+    try:
+        policy = herdconfig.calibration_setting()
+    except herdconfig.ConfigError:
+        return list(answers)
+    if policy is None:
+        return abstained(answers, min_confidence)
+    threshold = policy["thresholds"].get(purpose)
+    if model != policy["model"] or threshold is None:
+        return list(answers)
+    held = set(abstained(answers, max(min_confidence, threshold)))
+    for name, answer in answers.items():
+        coverage = answer.get("coverage")
+        confidence = answer.get("confidence")
+        if (answer.get("method") != policy["method"]
+                or any(not isinstance(v, (int, float)) or not math.isfinite(v)
+                       or not 0 <= v <= 1 for v in (coverage, confidence))
+                or coverage < policy["min_coverage"]):
+            held.add(name)
+    return [name for name in answers if name in held]

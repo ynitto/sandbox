@@ -406,9 +406,9 @@ async function openConversationNow(id, send, { cols, rows, fresh = false, launch
   }
   const spec = agentCli.load(want.cli, repo);
   if (!spec.interactive) throw new Error(`${want.cli} は対話起動（interactive）の定義を持ちません`);
-  const { distro, shell } = host.hostOf(repo, cfg.wslDistro);
+  const { distro, shell } = host.hostOf(repo, cfg.wslDistro, { lane: 'terminal' });
   const cwd = dirsOf(sess.repo, sess.worktree || '', { mustExist: true }).hostDir;
-  const info = await host.probe(distro);
+  const info = await host.probe(distro, { lane: 'terminal' });
   if (!info.ok) throw new Error(info.error || 'ホストのシェルを起動できません');
   if (!info.tmux) throw new Error(process.platform === 'win32' ? 'WSL に tmux が見つかりません（sudo apt install tmux）' : 'tmux が見つかりません');
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
@@ -915,15 +915,15 @@ function registerIpcHandlers(getWindow) {
       if (item.tool === 'agent-app' && (item.workload === 'chat' || item.purpose === 'chat') && item.ref) {
         try {
           const sess = store.readSession(ud, item.ref);
-          if (sess && cfg.repos.includes(sess.repo)) return { ...item, kind: 'conversation', title: sess.title || item.ref, repo: sess.repo, id: sess.id };
+          if (sess && cfg.repos.includes(sess.repo)) return { ...item, kind: 'conversation', title: sess.title || '無題の会話', repo: sess.repo, id: sess.id };
         } catch { /* アプリ外の会話や消えた会話 */ }
       }
-      if (item.artifact && item.artifact.name) {
+      if (item.artifact && item.artifact.name && ['task', 'workflow'].includes(item.artifact.kind)) {
         const base = item.artifact.origin.replace(/^repo:/, '');
         const repo = cfg.repos.find((r) => String(r).split(/[\\/]/).filter(Boolean).pop() === base) || '';
         return { ...item, kind: item.artifact.kind === 'workflow' ? 'workflow' : 'task', title: item.artifact.name, repo, id: item.artifact.name };
       }
-      return { ...item, kind: 'external', title: item.ref || item.recordId, repo: '', id: '' };
+      return { ...item, kind: 'external', title: '', repo: '', id: '' };
     });
   });
   handle('audit:status', () => ({ ...auditor.status(), share: artifacts.list() }));

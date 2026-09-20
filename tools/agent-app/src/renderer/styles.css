@@ -132,6 +132,7 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
    タスクの概要と同じ .execution-card。共有ワークベンチの同じ部品は影の DOM の中にあって
    ここからは使えないので、同じ名前・同じ形をアプリのトークンで置く（別名の複製は作らない）。 */
 #share-area, #inbox-area { grid-area: main; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
+#inbox-body { min-height: 0; flex: 1; overflow: auto; }
 #share-body { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 18px; overflow: auto; background: var(--bg); }
 #share-cards { width: min(100%, 900px); margin-inline: auto; display: flex; flex-direction: column; gap: 14px; }
 #share-terminal { width: min(100%, 900px); min-height: 260px; margin-inline: auto; }
@@ -705,6 +706,10 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 /* 課題（受信箱）: タスクの概要と同じ .execution-card を並べるだけ。器の色や影は持たない */
 .issue-cards { display: grid; gap: 12px; width: min(100%, 760px); margin: 0 auto; padding: 0 16px 24px; }
 .issue-cards .execution-card-head h3 { overflow-wrap: anywhere; }
+.issue-evidence { min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; }
+.issue-evidence > details { min-width: 0; max-width: 100%; }
+.issue-evidence summary { cursor: pointer; }
+.issue-evidence .message-action { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 /* 会話を検索: 行のチェック（設定の一覧と同じ作法）と、足元の操作 1 つ */
 #search-results li.row-item { gap: 0; }
 #search-results .row-check { flex: none; margin: 0 2px 0 9px; }

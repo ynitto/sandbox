@@ -14,6 +14,8 @@ import tempfile
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
+import importlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -195,6 +197,45 @@ class CalibrationTests(unittest.TestCase):
             self.assertEqual(json.loads((out / "report.json").read_text()),
                              json.loads((replay / "report.json").read_text()))
 
+
+
+class ProductionCalibrationTests(unittest.TestCase):
+    POLICY = {"model": "gemma4:e4b", "method": "logprobs", "min_coverage": .8,
+              "thresholds": {"filter": .6, "route": .8}}
+
+    def test_filter_applies_policy_to_production_consumer(self):
+        importlib.import_module("judge_eval")  # loads production agent_flow through engine
+        flow = importlib.import_module("agent_flow")
+        result = {"answers": {"a": {"value": True, "confidence": .65, "coverage": .9,
+                                      "method": "logprobs"},
+                              "b": {"value": False, "confidence": .9, "coverage": .9,
+                                      "method": "logprobs"}}, "usage": {}}
+        with patch.object(flow, "_effective_agent", return_value=("ollama", "gemma4:e4b")), \
+             patch.object(flow._judge, "local_model", return_value="gemma4:e4b"), \
+             patch.object(flow._judge.herdconfig, "calibration_setting", return_value=self.POLICY), \
+             patch.object(flow._judge, "evaluate", return_value=result), \
+             patch.object(flow, "_node_budget_record"):
+            deps = {"a": {"output": "tests pass"}, "b": {"output": "tests fail"}}
+            self.assertEqual(flow.filter_judge("keep passing", deps, None)[1]["kept"], ["a"])
+            result["answers"]["a"]["confidence"] = .59
+            self.assertIsNone(flow.filter_judge("keep passing", deps, None))
+
+    def test_route_applies_policy_and_assess_is_held(self):
+        ap = importlib.import_module("project_eval").ap
+        result = {"answers": {"workspace": {"choice": "repo-a", "confidence": .82,
+                                               "coverage": .9, "method": "logprobs"}}}
+        cfg = SimpleNamespace(model="gemma4:e4b")
+        with patch.object(ap, "_agent_for", return_value=("ollama", None)), \
+             patch.object(ap._judge, "local_model", return_value="gemma4:e4b"), \
+             patch.object(ap._judge.herdconfig, "calibration_setting", return_value=self.POLICY), \
+             patch.object(ap._judge, "evaluate", return_value=result), \
+             patch.object(ap, "_route_judge_questions", return_value={"workspace": {"criteria": {"repo-a": "a", "repo-b": "b"}}}), \
+             patch.object(ap, "_route_judge_state", return_value="state"), \
+             patch.object(ap, "_assess_material", return_value="state"):
+            self.assertEqual(ap.route_judge(cfg, {}, [{}, {}]), "repo-a")
+            result["answers"]["workspace"]["method"] = "vote"
+            self.assertIsNone(ap.route_judge(cfg, {}, [{}, {}]))
+            self.assertIsNone(ap.assess_judge(cfg, {}))
 
 if __name__ == "__main__":
     unittest.main()
