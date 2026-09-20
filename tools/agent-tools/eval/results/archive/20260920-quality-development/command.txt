@@ -1,0 +1,1 @@
+/Library/Developer/CommandLineTools/usr/bin/python3 tools/agent-tools/eval/quality_eval.py --cases E1,E2,E3 --repeat 1 --output-dir tools/agent-tools/eval/results/20260920-quality-development

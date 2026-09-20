@@ -286,6 +286,13 @@ def _is_evaluation(led: dict) -> bool:
     return led.get("workload") == "evaluation" and isinstance(led.get("evaluation"), dict)
 
 
+def _evaluation_problem(ev: dict) -> bool:
+    proposal = ev.get("proposal")
+    if isinstance(proposal, dict):
+        return proposal.get("stage") == "advisory" and proposal.get("status") == "problem"
+    return str(ev.get("issue") or "none") != "none"
+
+
 def _add_evaluation(b: dict, ev: dict) -> None:
     b["evaluations"] += 1
     try:
@@ -295,7 +302,7 @@ def _add_evaluation(b: dict, ev: dict) -> None:
     if q is not None:
         b["_quality_sum"] = b.get("_quality_sum", 0.0) + q
         b["_quality_n"] = b.get("_quality_n", 0) + 1
-    if str(ev.get("issue") or "none") != "none":
+    if _evaluation_problem(ev):
         b["issues"] += 1
 
 
@@ -308,6 +315,7 @@ def _finish_evaluation(b: dict) -> None:
 def evaluation_summary(ledger: "list[dict]") -> dict:
     """期間内の評価の全体像: 件数・品質の平均・問題ありの件数と対象の種類ごとの内訳。"""
     out = {"evaluations": 0, "quality_avg": None, "issues": 0,
+           "evidence": {"supported": 0, "problem": 0, "unknown": 0, "shadow": 0},
            "by_target": {"skill": 0, "task": 0, "workflow": 0, "tool": 0, "general": 0},
            "by_issue": {}}
     acc: dict = {"evaluations": 0, "issues": 0}
@@ -315,13 +323,20 @@ def evaluation_summary(ledger: "list[dict]") -> dict:
         if not _is_evaluation(led):
             continue
         ev = led["evaluation"]
+        proposal = ev.get("proposal")
+        if isinstance(proposal, dict):
+            status = proposal.get("status")
+            if status in ("supported", "problem", "unknown"):
+                out["evidence"][status] += 1
+            if proposal.get("stage") == "shadow":
+                out["evidence"]["shadow"] += 1
         _add_evaluation(acc, ev)
-        if str(ev.get("issue") or "none") != "none":
+        if _evaluation_problem(ev):
             from .rules import target_of
             target = target_of(led)
             kind = target["kind"] if target and target["kind"] in out["by_target"] else "general"
             out["by_target"][kind] += 1
-            issue = str(ev.get("issue"))
+            issue = "quality-review" if isinstance(ev.get("proposal"), dict) else str(ev.get("issue"))
             out["by_issue"][issue] = out["by_issue"].get(issue, 0) + 1
     _finish_evaluation(acc)
     out["evaluations"] = acc["evaluations"]

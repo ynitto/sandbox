@@ -162,7 +162,7 @@ test('実機: 受信箱に要対応と未読が並び、項目から既存の画
     const resolved = await win.evaluate(() => window.api.attention.list());
     assert.deepStrictEqual(resolved, { action: 0, unread: 0, items: [] });
     await win.click('#area-inbox');
-    await win.waitForFunction(() => document.getElementById('inbox-meta').textContent === '未読・要対応なし');
+    await win.waitForFunction(() => document.getElementById('inbox-sub').textContent === '新しい通知はありません');
     assert.strictEqual(await win.$('#area-inbox .unread'), null);
 
     if (process.env.SMOKE_OUT) {

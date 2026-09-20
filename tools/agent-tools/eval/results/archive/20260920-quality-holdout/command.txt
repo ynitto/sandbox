@@ -1,0 +1,1 @@
+/Library/Developer/CommandLineTools/usr/bin/python3 tools/agent-tools/eval/quality_eval.py --cases E4,E5,E6 --repeat 3 --output-dir tools/agent-tools/eval/results/20260920-quality-holdout

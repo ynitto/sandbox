@@ -1,0 +1,14 @@
+{
+  "before_sha256": "70b493272aab030a5f702501b6da3815930c6972b567ae80ace169549cf203ef",
+  "after_sha256": "853383becf9c86f4f72e73d6efbdad414067c41b3788e584b40880a0abb1329c",
+  "changed": [
+    "agent_audit/collect.py",
+    "agent_audit/distill.py",
+    "agent_audit/extract.py",
+    "agent_audit/rules.py",
+    "agent_audit/usage.py"
+  ],
+  "installed_at": "20260920T002504Z",
+  "backup": "/Users/nitto/.local/bin/agent-audit.before-quality-20260920T002504Z",
+  "scope": "Only agent-audit evidence proposal collection and aggregation; five modules"
+}

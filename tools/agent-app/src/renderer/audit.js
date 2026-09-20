@@ -100,6 +100,9 @@
     if (!ev.evaluations) { box.textContent = 'この期間の評価はありません'; return; }
     const targets = Object.entries(ev.by_target || {}).filter(([, n]) => n > 0).map(([k, n]) => `${TARGET_LABEL[k] || k} ${n}`).join(' · ');
     box.textContent = `評価 ${ev.evaluations} 件 · 品質 平均 ${ev.quality_avg != null ? ev.quality_avg : '—'} / 3 · 課題あり ${ev.issues} 件${targets ? `（${targets}）` : ''}`;
+    if (ev.evidence && Object.values(ev.evidence).some(Number)) {
+      box.textContent += ` · 根拠別: 記録あり ${ev.evidence.supported || 0} / 不足候補 ${ev.evidence.problem || 0} / 保留 ${ev.evidence.unknown || 0}（比較記録 ${ev.evidence.shadow || 0}）`;
+    }
   }
 
   function renderUsage() {

@@ -137,3 +137,47 @@ class PipelineTests(AuditTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProposalTests(AuditTestCase):
+    def test_advisory_proposal_is_review_not_skill_blame(self):
+        proposal = {"schema_version": 1, "stage": "advisory", "status": "problem", "cause": "unknown",
+                    "checks": [{"text": "render", "status": "unmet", "evidence_id": "e2"}]}
+        row = evaluation_row(evaluation={"quality": None, "issue": "none", "proposal": proposal})
+        obs = rules.observe(row)
+        self.assertEqual(len(obs), 1)
+        self.assertEqual(obs[0]["kind"], "quality-review")
+        self.assertIn("未承認", obs[0]["text"])
+        self.assertIn("e2", obs[0]["text"])
+        report = usage.evaluation_summary([row])
+        self.assertIsNone(report["quality_avg"])
+        self.assertEqual(report["issues"], 1)
+        proposal["stage"] = "shadow"
+        self.assertEqual(rules.observe(row), [])
+        self.assertEqual(usage.evaluation_summary([row])["issues"], 0)
+
+    def test_collect_preserves_unknown_and_evidence(self):
+        proposal = {"schema_version": 1, "stage": "advisory", "status": "unknown", "cause": "unknown",
+                    "checks": [], "evidence": [{"id": "e1", "text": "done", "source": "reported_output"}]}
+        self.write_ledger("20260803", [evaluation_row(evaluation={"quality": None, "issue": "none", "proposal": proposal})])
+        st = self.make_store()
+        collect.collect_budget_ledger(self.make_args(), st)
+        ev = next(st.iter_records())["evaluation"]
+        self.assertEqual(ev["proposal"], proposal)
+        self.assertIsNone(ev["quality"])
+
+    def test_proposal_distillation_cannot_generate_settings_or_call_llm(self):
+        proposal = {"schema_version": 1, "stage": "advisory", "status": "problem", "cause": "unknown",
+                    "checks": [{"text": "render", "status": "unmet", "evidence_id": "e2"}]}
+        self.write_ledger("20260803", [evaluation_row(evaluation={"quality": None, "issue": "none", "proposal": proposal})])
+        st = self.make_store()
+        collect.collect_budget_ledger(self.make_args(), st)
+        args = self.make_args(force=True, distill_min_occurrences=1, review=True)
+        extract.cmd_extract(args)
+        with mock.patch.object(distill, "agent_for", return_value=("fake-cloud", "fake")), \
+             mock.patch.object(distill, "run_llm", side_effect=AssertionError("must not call LLM")):
+            self.assertEqual(distill.cmd_distill(args), 0)
+        insights = list(self.make_store().iter_insights())
+        self.assertEqual(len(insights), 1)
+        self.assertEqual(insights[0]["kind"], "quality-review")
+        self.assertIsNone(insights[0]["declaration"])

@@ -1,0 +1,47 @@
+{
+  "applied_at": "2026-09-20T00:29:56.129958+00:00",
+  "backup": "/Users/nitto/.agents/calibration-backups/20260920T002955Z",
+  "judge_config": "/Users/nitto/.agents/agent-herd.yaml",
+  "judge_model_mode": "auto",
+  "policy": {
+    "model": "gemma4:e4b",
+    "method": "logprobs",
+    "min_coverage": 0.8,
+    "thresholds": {
+      "filter": 0.6,
+      "route": 0.8,
+      "assess": null,
+      "transition": null
+    },
+    "status": "provisional",
+    "evidence": "tools/agent-tools/eval/results/archive/20260920-gemma4-e4b-calibration/report.json"
+  },
+  "evaluation_before": {
+    "mode": "sample"
+  },
+  "evaluation_after": {
+    "mode": "sample",
+    "strategy": "evidence-shadow"
+  },
+  "binaries": {
+    "agent-herd": "1a06c59146632d4d71994b9b5dff99bd842942a98ae16950ed1c1ae13ff09f32",
+    "agent-flow": "a171e66e6c44fb7a8c832021504ed33ea5b5f07d8f1499ae9390af7aa053c145",
+    "agent-project": "179ed202bfe99153bbc671dd34cb57e061cc7173a5fa6403b99b28bcbc44d402",
+    "agent-loop": "4512a96bcc81c5c2cb08c52e6a0b2a01b162df31756499daa83ffe3b9ca71b3c"
+  },
+  "aliases_share_herd_inode": true,
+  "verification": {
+    "judge_unit_tests": 30,
+    "installed_cli_checks": [
+      "help",
+      "filter_boundary",
+      "route_boundary",
+      "low_coverage",
+      "text_fallback",
+      "model_mismatch",
+      "assess_hold",
+      "transition_hold"
+    ],
+    "result": "passed"
+  }
+}

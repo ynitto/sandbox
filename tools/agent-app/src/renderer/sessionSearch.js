@@ -258,7 +258,7 @@ const SessionSearch = (() => {
   // （フォークする位置・フォーク先は課題に無いので隠す）。
   async function handoffIssue(issue) {
     transfer = { record: null, issue, mode: 'issue', routine: false, busy: false };
-    $('search-transfer-title').textContent = '課題を会話で扱う';
+    $('search-transfer-title').textContent = '会話を始める';
     $('search-transfer-source').textContent = issue.title || '';
     $('search-boundary').closest('label').hidden = true;
     $('search-intent').closest('label').hidden = true;

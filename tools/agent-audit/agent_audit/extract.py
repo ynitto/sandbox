@@ -17,7 +17,7 @@ from .store import Store, observation_id
 from .util import elog, log, now_iso
 
 OBSERVATION_KINDS = ("learn", "avoid", "skill-gap", "prompt-issue", "config-issue",
-                     "tool-failure")
+                     "tool-failure", "quality-review")
 
 _PROMPT = """あなたはエージェント実行証跡の監査係です。以下の 1 件の実行レコードを読み、
 今後の実行を改善しうる観測（learn / avoid / skill-gap / prompt-issue / config-issue）を

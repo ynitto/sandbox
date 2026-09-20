@@ -704,7 +704,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .search-preview-actions .menu-panel { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
 
 /* 課題（受信箱）: タスクの概要と同じ .execution-card を並べるだけ。器の色や影は持たない */
-.issue-cards { display: grid; gap: 12px; width: min(100%, 760px); margin: 0 auto; padding: 0 16px 24px; }
+.issue-cards { display: grid; gap: 12px; width: min(100%, 760px); margin: 0 auto; padding: 16px 16px 24px; }
 .issue-cards .execution-card-head h3 { overflow-wrap: anywhere; }
 .issue-evidence { min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; }
 .issue-evidence > details { min-width: 0; max-width: 100%; }

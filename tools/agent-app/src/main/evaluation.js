@@ -18,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const audit = require('./audit');
+const qualityEvaluation = require('./quality-evaluation');
 
 // まとめて評価の記録（userData/evaluation/batches.json。最新 20 件）。受信箱が「終わった」を未読として
 // 出すための正典で、進み具合そのものは Evaluator が持つ。
@@ -255,6 +256,8 @@ class Evaluator {
         workload: 'chat', ref: String(session.id || ''), session_id: sessionId,
         agent_cli: String(message.cli || session.cli || ''), model: String(message.model || session.model || ''), used,
       },
+      qualityInput: { prompt: exchange ? exchange.prompt : '', answer: message.text || '',
+        information: message.parts && message.parts.information },
       state: stateText({
         prompt: exchange ? exchange.prompt : '', answer: message.text || '',
         information: message.parts && message.parts.information, used,
@@ -279,6 +282,9 @@ class Evaluator {
         workload: 'task', ref: name, agent_cli: String(record.agentCli || ''), model: String(record.model || ''),
         artifact: { kind: kind === 'workflow' ? 'workflow' : 'task', name, origin: root ? `repo:${root.split(/[\\/]/).filter(Boolean).pop()}` : '' },
       },
+      qualityInput: { prompt: record.request || '', criteria: record.acceptance,
+        answer: record.output || record.logText || record.summary || '',
+        verification: record.verificationReceipts, information: record.information },
       state: stateText({
         prompt: `${kind === 'workflow' ? 'ワークフロー' : 'タスク'}「${name}」の実行`,
         answer: JSON.stringify(summary, null, 1),
@@ -323,6 +329,7 @@ class Evaluator {
     try {
       while (this.queue.length && !this.busy()) {
         const item = this.queue.shift();
+        if (item.kind === 'auto' && this.mode() === 'off') continue;
         await this.evaluateOne(item);
       }
     } finally {
@@ -336,7 +343,29 @@ class Evaluator {
   async evaluateOne(item) {
     let evaluation = null;
     try {
-      if (item.cli) {
+      const strategy = (this.loadConfig().evaluation || {}).strategy || 'legacy';
+      if (!item.cli && strategy.startsWith('evidence-')) {
+        const ask = async (state, questions, minimum = qualityEvaluation.MIN_CONFIDENCE) => {
+          const res = await this.capture('agent-herd',
+            ['judge', '--model', qualityEvaluation.MODEL, '--questions', JSON.stringify(questions),
+              '--min-confidence', String(minimum)],
+            { input: state, timeoutMs: JUDGE_TIMEOUT_MS });
+          if (!res || (!res.ok && res.status !== 1)) throw new Error((res && res.error) || 'judge request failed');
+          let doc;
+          try { doc = JSON.parse(res.stdout); } catch { throw new Error('judge response is not JSON'); }
+          if (!doc || !doc.answers || typeof doc.answers !== 'object') throw new Error('judge response has no answers');
+          return doc;
+        };
+        const proposal = await qualityEvaluation.evaluate(item.qualityInput || {}, ask);
+        proposal.stage = strategy === 'evidence-advisory' ? 'advisory' : 'shadow';
+        if (proposal.stage === 'shadow') {
+          try { proposal.baseline = parseJudge(JSON.stringify(await ask(item.state, QUESTIONS, MIN_CONFIDENCE))); }
+          catch (error) { proposal.baseline_error = String(error.message); }
+        }
+        evaluation = { quality: null, confidence: null, issue: 'none', method: '',
+          judge_model: qualityEvaluation.MODEL, proposal,
+          note: `改善候補（未承認）: ${proposal.status}。完了判定・routeには使用しない。` };
+      } else if (item.cli) {
         if (!this.runPrompt) throw new Error('この AI でまとめて評価する口がありません');
         const state = item.scrubbed ? item.state : await this.scrub(item.state);
         const run = this.runPrompt({ cli: item.cli, model: item.model || '', prompt: headlessPrompt(state), readonly: true, cwd: item.cwd || this.userData, repo: item.cwd || '', timeoutMs: HEADLESS_TIMEOUT_MS });
@@ -352,7 +381,7 @@ class Evaluator {
         const modelLine = String(res.stderr || '').match(/model[=:]\s*(\S+)/);
         evaluation = parseJudge(res.stdout, { model: modelLine ? modelLine[1] : '' });
       }
-      this.lastError = '';
+      this.lastError = evaluation && evaluation.proposal && evaluation.proposal.error ? evaluation.proposal.error.message : '';
     } catch (err) {
       this.lastError = String((err && err.message) || err);
       if (this.batch && item.kind === 'batch') this.batch.skipped += 1;
@@ -363,7 +392,7 @@ class Evaluator {
     const rec = this.feed(this.userData, { evaluated: item.evaluated, evaluation }, { now: this.now() });
     if (!rec) return;
     this.evaluated += 1;
-    if (evaluation.issue !== 'none') {
+    if (evaluation.issue !== 'none' || (evaluation.proposal && evaluation.proposal.stage === 'advisory' && evaluation.proposal.status === 'problem')) {
       this.issues += 1;
       if (item.kind === 'batch' && this.batch) this.batch.issues += 1;
     }
@@ -407,6 +436,7 @@ class Evaluator {
           workload: 'chat', ref: record.appId ? String(record.appId) : String(key), session_id: String(record.nativeId || ''),
           agent_cli: String(record.agent || ''), model: String(record.model || ''), used,
         },
+        qualityInput: { prompt: exchange.prompt, answer: exchange.answer, information: exchange.message.parts && exchange.message.parts.information },
         state: stateText({ prompt: exchange.prompt, answer: exchange.answer, information: exchange.message.parts && exchange.message.parts.information, used, status: '完了' }),
       });
     }

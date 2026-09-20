@@ -2416,7 +2416,7 @@ fakeはmanifestの引数と台帳・reportの`source: fake`で識別し、real�
 
 PR #862は現行origin/mainでマージ済み。段0の`used.skills / commands / tools` attributionは継続可能。
 段1は既存実装がquality scoreとissue choiceをjudgeへ送り、min-confidence 0.55、sampleを既定に
-しているが、この値がcalibration済みという意味ではない。本変更はUI・自動評価・その設定を変更しない。
+しているが、この値がcalibration済みという意味ではない。calibration runner自身はUI・自動評価・その設定を変更しない。後続の根拠別評価は下記参照。
 運用上は既存の自動評価offを使い、当該用途・モデル・methodのreportを人が確認してから
 有効化する構成を推奨する。この9セルの合格をquality評価の合格に読み替えない。
 実行の成否は既存の決定的verification、品質・原因の正解は人の確定ラベルを必要とする。
@@ -2437,3 +2437,55 @@ E5はconfidence 0.9905でも誤答し、全用途共通thresholdを上げる判�
 [用途別判断・適用状態](../../../docs/plans/2026-09-20-judge-calibration-application.md)を参照。
 filter=0.6・route=0.8はinsufficient_dataのままの暫定運用案で、精度保証ではない。
 report生成から設定への自動反映は追加せず、人の指示で`judge.calibration`を保存する口を追加した。
+
+
+### 根拠別の自動品質評価（2026-09-20）
+
+`quality_eval.py`はAgent Appの本番用JS builder/reducerを呼び、既存Eセルの同じ依頼・作業結果を
+従来のquality/issue評価と根拠別評価へ渡す。正解は`judge_eval.py`の既存checkerを再利用する。
+E1〜E3を開発用、E4〜E6を確認用に分けた。確認用も既知の人工fixtureであり、
+独立した本番workloadや人が新しくラベル付けしたholdoutではない。反復は独立標本に数えない。
+
+```sh
+# repository root。既存Ollama接続環境とgemma4:e4b、Python、Nodeが必要
+python3 tools/agent-tools/eval/quality_eval.py --model gemma4:e4b \
+  --cases E1,E2,E3 --repeat 1 --output-dir /tmp/quality-development
+python3 tools/agent-tools/eval/quality_eval.py --model gemma4:e4b \
+  --cases E4,E5,E6 --repeat 3 --output-dir /tmp/quality-confirmation
+python3 tools/agent-tools/eval/quality_eval.py --fake-run --repeat 1 \
+  --output-dir /tmp/quality-fake
+python3 -m unittest discover -s tools/agent-tools/eval -p 'test_quality_eval.py'
+node --test tools/agent-app/test/quality-evaluation.test.js
+```
+
+出力先は未作成のディレクトリを指定する。`manifest.json`に引数・git revision・builder SHA、
+`command.txt`に実行コマンド、`ledger.jsonl`に各armの結果・raw answers・実測usage・壁時計秒、
+`report.json`に集計を残す。通信失敗は正誤から分離する。fakeは台帳の`source: fake`で区別し、
+realと同じreport schemaを使うが、性能の根拠にはしない。採用するrunだけ既存規約どおり
+`results/archive/<run>/`へ一式を保存し、実行したbuilderも保存する。
+
+確認用3入力×3回の結果（両armとも通信失敗0）:
+
+| 指標 | 従来quality/issue | 根拠別 |
+|---|---:|---:|
+| 問題のあるケースを問題なしとした回数 | 6/6 | 0/6 |
+| 問題を明示的に検出した回数 | 0/6 | 0/6 |
+| unknown | 0/9 | 6/9 |
+| 判定できた割合 | 9/9 | 3/9 |
+
+E4/E5を`unknown`へ留めた結果であり、不足を検出できるようになったとは言えない。
+開発用ではE3をproblemへ改善したが、汎化の証拠にはしない。
+[開発用report](results/archive/20260920-quality-development/report.json)と
+[確認用report](results/archive/20260920-quality-holdout/report.json)はどちらも`insufficient_data`。
+confidence 0.7・coverage 0.8はこの比較で用いた暫定値で、本番の自動承認精度を保証しない。
+
+Agent Appの`evaluation.strategy`は`legacy`（既定）、`evidence-shadow`（比較・記録）、
+`evidence-advisory`（根拠付き改善候補）の3種類。評価頻度のsample/all/offとは独立する。
+このMacはsample + evidence-shadowへ設定済みで、次回Agent App起動から新しいコードが有効。
+今回の実測ではadvisoryへの自動昇格は行わない。段0のused attributionは従来どおり継続する。
+段1は要件ごとのmet/unmet/unknownと引用を記録し、完了・route・スキル変更には使用しない。
+`evidence-advisory`でも改善候補は人が確認する。評価器をラベルoracleには使用しない。
+
+2026-09-20の追加明示指示により、4 CLIとalias、上記暫定policyを本番適用済み。
+[適用receipt](results/archive/20260920-gemma4-e4b-calibration/deployment.json)にバックアップと検証結果を記録した。
+品質評価はsample + evidence-shadowを維持し、自動採否には使わない。

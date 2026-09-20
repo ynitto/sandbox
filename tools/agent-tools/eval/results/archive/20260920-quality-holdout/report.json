@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "status": "insufficient_data",
+  "groups": [
+    {
+      "split": "development",
+      "arm": "legacy",
+      "cases": 0,
+      "unique_cases": 0,
+      "failures": 0,
+      "false_clear_count": 0,
+      "problem_cases": 0,
+      "false_clear_rate": null,
+      "problem_detection_rate": null,
+      "resolved_rate": null,
+      "unknown_count": 0,
+      "accuracy_resolved": null,
+      "false_alarm_count": 0
+    },
+    {
+      "split": "development",
+      "arm": "evidence",
+      "cases": 0,
+      "unique_cases": 0,
+      "failures": 0,
+      "false_clear_count": 0,
+      "problem_cases": 0,
+      "false_clear_rate": null,
+      "problem_detection_rate": null,
+      "resolved_rate": null,
+      "unknown_count": 0,
+      "accuracy_resolved": null,
+      "false_alarm_count": 0
+    },
+    {
+      "split": "holdout",
+      "arm": "legacy",
+      "cases": 9,
+      "unique_cases": 3,
+      "failures": 0,
+      "false_clear_count": 6,
+      "problem_cases": 6,
+      "false_clear_rate": 1.0,
+      "problem_detection_rate": 0.0,
+      "resolved_rate": 1.0,
+      "unknown_count": 0,
+      "accuracy_resolved": 0.3333333333333333,
+      "false_alarm_count": 0
+    },
+    {
+      "split": "holdout",
+      "arm": "evidence",
+      "cases": 9,
+      "unique_cases": 3,
+      "failures": 0,
+      "false_clear_count": 0,
+      "problem_cases": 6,
+      "false_clear_rate": 0.0,
+      "problem_detection_rate": 0.0,
+      "resolved_rate": 0.3333333333333333,
+      "unknown_count": 6,
+      "accuracy_resolved": 1.0,
+      "false_alarm_count": 0
+    }
+  ],
+  "limitations": [
+    "Constructed fixtures, not human-labeled production workload.",
+    "Repeated inputs are not independent samples.",
+    "Cause correctness is not labeled or calibrated.",
+    "Supported means reported evidence, not verified task completion."
+  ]
+}

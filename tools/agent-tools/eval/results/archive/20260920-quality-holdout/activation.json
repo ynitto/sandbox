@@ -1,0 +1,13 @@
+{
+  "updated_at": "20260920T002128Z",
+  "scope": "Agent App evaluation settings only",
+  "before": {
+    "mode": "sample"
+  },
+  "after": {
+    "mode": "sample",
+    "strategy": "evidence-shadow"
+  },
+  "backup": "/Users/nitto/Library/Application Support/agent-app/config.before-quality-shadow-20260920T002128Z.json",
+  "effective": "next Agent App restart"
+}

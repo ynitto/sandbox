@@ -151,7 +151,8 @@ def cmd_distill(args) -> int:
         if made >= budget:
             log("distill", f"段別上限に達したため打ち切ります（{budget} 件）")
             break
-        if use_llm:
+        proposal_only = any(o.get("kind") == "quality-review" for o in c["observations"])
+        if use_llm and not proposal_only:
             try:
                 ins = _distill_one(args, c)
             except LlmBlocked as e:
@@ -166,7 +167,7 @@ def cmd_distill(args) -> int:
         else:
             ins = rules.insight(c)
         made += 1
-        if review:
+        if review and not proposal_only:
             ins["review"] = _review_one(args, ins, c)
         store.write_insight(ins)
         known[c["cluster_id"]] = len(c["observations"])

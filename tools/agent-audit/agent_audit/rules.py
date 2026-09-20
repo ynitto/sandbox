@@ -17,8 +17,10 @@ LONG_SESSION_SECONDS = 1800.0
 # observation kind → insight kind / 定型の提案
 _INSIGHT_KIND = {"avoid": "rule-candidate", "skill-gap": "skill-improvement",
                  "config-issue": "config-fix", "prompt-issue": "usage-optimization",
-                 "learn": "usage-optimization", "tool-failure": "config-fix"}
+                 "learn": "usage-optimization", "tool-failure": "config-fix",
+                 "quality-review": "quality-review"}
 _ACTION = {
+    "quality-review": "根拠と受入条件を人が確認する。候補だけで完了判定・route・スキルを変更しない",
     "avoid": "同じ失敗が繰り返されている。rules.md か tuning の禁止事項へ足すか、"
              "その CLI / モデルを候補から外す",
     "skill-gap": "人への差し戻しが続いている。該当スキルの手順か受入基準を見直す",
@@ -82,6 +84,9 @@ def evaluation_issue(rec: dict) -> str:
     ev = rec.get("evaluation")
     if not isinstance(ev, dict):
         return ""
+    proposal = ev.get("proposal")
+    if isinstance(proposal, dict):
+        return "quality-review" if proposal.get("stage") == "advisory" and proposal.get("status") == "problem" else ""
     issue = str(ev.get("issue") or "none")
     return issue if issue in EVALUATION_ISSUES else ""
 
@@ -101,6 +106,16 @@ def observe(rec: dict) -> "list[dict]":
         if target:
             item["target"] = dict(target)
         out.append(item)
+
+    ev = rec.get("evaluation") or {}
+    proposal = ev.get("proposal") if isinstance(ev, dict) else None
+    if isinstance(proposal, dict):
+        if proposal.get("stage") == "advisory" and proposal.get("status") == "problem":
+            checks = [c for c in proposal.get("checks", []) if isinstance(c, dict) and c.get("status") == "unmet"]
+            details = "; ".join(f"{c.get('text', '')[:160]}（根拠 {c.get('evidence_id') or c.get('basis', '')}）" for c in checks[:3])
+            add("quality-review", "quality-review", f"改善候補（未承認）: {details}。原因: {proposal.get('cause', 'unknown')}")
+        # Shadow/unknown are retained as measurements, never as skill blame.
+        return out
 
     issue = evaluation_issue(rec)
     if issue:

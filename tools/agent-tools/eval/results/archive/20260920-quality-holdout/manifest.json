@@ -1,0 +1,13 @@
+{
+  "created_at": "2026-09-20T00:11:39.994824+00:00",
+  "arguments": {
+    "model": "gemma4:e4b",
+    "cases": "E4,E5,E6",
+    "repeat": 3,
+    "fake_run": false,
+    "output_dir": "tools/agent-tools/eval/results/20260920-quality-holdout"
+  },
+  "revision": "0934c0169d3070a56108fa3929048e67c642b07a",
+  "builder_sha256": "a5fe5dc0e5985f27b18d994c14363a86ad28e90088c560f42842a233da44dd87",
+  "state": "completed"
+}

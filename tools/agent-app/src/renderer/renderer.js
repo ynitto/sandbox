@@ -362,7 +362,7 @@ const ATTENTION_RESULT = { done: '完了', failed: '失敗', escalated: '要確�
 
 function attentionStatus(item) {
   if (item.queue === 'action') return ATTENTION_ACTION[item.interaction && item.interaction.mode] || '確認待ち';
-  if (item.kind === 'issue') return item.issue && item.issue.occurrences ? `観測 ${item.issue.occurrences} 件` : '未読';
+  if (item.kind === 'issue') return item.issue && item.issue.occurrences ? `${item.issue.occurrences} 件` : '未読';
   return ATTENTION_RESULT[item.outcome] || '完了';
 }
 
@@ -399,7 +399,7 @@ function renderInboxItems() {
     const pick = el('button', 'list-pick');
     const body = el('span', 'grow');
     const issue = item.kind === 'issue';
-    body.append(el('div', '', issue ? `課題: ${issueTargetLabel(item.issue)}` : item.title));
+    body.append(el('div', '', issue ? issueTargetLabel(item.issue) : item.title));
     body.append(el('div', 'sub', issue || item.kind === 'evaluation'
       ? `${ATTENTION_KIND[item.kind]} · ${attentionStatus(item)}`
       : `${ATTENTION_KIND[item.kind] || ''} · ${attentionStatus(item)} · ${repoName(item.repo)}`));
@@ -410,15 +410,15 @@ function renderInboxItems() {
     ul.append(li);
   }
   if (!a.items.length) ul.append(el('li', 'empty', '未読・要対応なし'));
-  $('inbox-meta').textContent = a.items.length ? attentionSummary() : '未読・要対応なし';
+  $('inbox-meta').textContent = attentionSummary();
   const issues = a.items.filter((item) => item.kind === 'issue');
-  $('inbox-sub').textContent = issues.length ? '対象ごとにまとめた課題。会話に渡して改善策を決めます'
-    : a.items.length ? '項目を選んで詳細を確認' : '実行結果や確認依頼が届きます';
+  $('inbox-sub').parentElement.hidden = !!issues.length;
+  $('inbox-sub').textContent = a.items.length ? '項目を選択してください' : '新しい通知はありません';
   renderIssueCards(issues);
 }
 
 // 課題（agent-audit の洞察）の本文。タスクの概要と同じ .execution-card。置くのは対象・課題・根拠と
-// 「会話で扱う」だけで、改善案の文は置かない（改善策は会話で決める）。
+// 「会話を始める」だけで、改善案の文は置かない（改善策は会話で決める）。
 function renderIssueCards(issues) {
   const box = $('inbox-issues');
   box.replaceChildren();
@@ -430,21 +430,21 @@ function renderIssueCards(issues) {
     const head = el('div', 'execution-card-head');
     const heading = el('div');
     heading.append(el('h3', '', issueTargetLabel(issue)), el('p', '', issue.statement || item.title));
-    head.append(heading, el('span', 'status', issue.occurrences ? `観測 ${issue.occurrences} 件` : '課題'));
+    head.append(heading, el('span', 'status', issue.occurrences ? `${issue.occurrences} 件` : '課題'));
     card.append(head);
-    const facts = [issue.confidence ? `確度 ${issue.confidence}` : '', item.resultAt ? Fmt.checkedAt(item.resultAt) : ''].filter(Boolean);
+    const updatedAt = item.resultAt ? Fmt.checkedAt(item.resultAt) : '';
     const row = el('div', 'row');
-    row.append(el('span', 'sub', facts.join(' · ')), el('span', 'spacer'));
-    const go = el('button', 'small primary', '会話で扱う');
+    row.append(el('span', 'sub', updatedAt), el('span', 'spacer'));
+    const go = el('button', 'small primary', '会話を始める');
     go.type = 'button';
     go.onclick = () => handoffIssue(item, go).catch((err) => notice(err.message, 'error'));
     row.append(go);
     // 根拠: 元の会話・タスクへのリンク（応答の下の操作と同じ .message-action）。読み込みは 1 回だけ
     const evidence = el('div', 'message-actions issue-evidence');
-    evidence.append(el('span', 'sub', '根拠を読み込んでいます…'));
+    evidence.append(el('span', 'sub', '参照元を読み込み中…'));
     card.append(evidence, row);
     box.append(card);
-    renderIssueEvidence(evidence, issue).catch(() => { evidence.replaceChildren(el('span', 'sub', '根拠を読み込めませんでした')); });
+    renderIssueEvidence(evidence, issue).catch(() => { evidence.replaceChildren(el('span', 'sub', '参照元を読み込めませんでした')); });
   }
 }
 
@@ -452,10 +452,25 @@ const EVIDENCE_KIND = { conversation: '会話', task: 'タスク', workflow: '�
 async function renderIssueEvidence(box, issue) {
   const items = await api.insight.evidence(issue.evidence || []);
   box.replaceChildren();
-  if (!items.length) { box.append(el('span', 'sub', '元の会話・実行は見つかりません')); return; }
+  if (!items.length) { box.append(el('span', 'sub', '参照元が見つかりません')); return; }
+  for (const item of items) {
+    const proposal = item.proposal;
+    if (!proposal || !Array.isArray(proposal.checks)) continue;
+    const details = el('details', 'quality-evidence');
+    details.append(el('summary', 'sub', '受入条件と評価の根拠（未承認）'));
+    for (const check of proposal.checks.slice(0, 8)) {
+      const cited = (proposal.evidence || []).find(e => e.id === check.evidence_id);
+      const status = { met: '記録あり', unmet: '不足の候補', unknown: '確認できない' }[check.status] || '確認できない';
+      details.append(el('p', 'sub', `${check.text}: ${status}`));
+      if (cited) details.append(el('blockquote', 'sub', cited.text));
+      else if (check.evidence_id === 'inventory') details.append(el('p', 'sub', '完全な作業一覧と受入条件の比較'));
+      for (const receipt of check.receipts || []) details.append(el('p', 'sub', `${receipt.command}（終了コード ${receipt.exitCode}）`));
+    }
+    box.append(details);
+  }
   const available = items.filter((item) => EVIDENCE_KIND[item.kind] && item.repo && item.id);
   const sources = [...new Map(available.map((item) => [JSON.stringify([item.kind, item.repo, item.id]), item])).values()];
-  if (sources.length) box.append(el('span', 'sub', '元の会話・実行を確認:'));
+  if (sources.length) box.append(el('span', 'sub', '参照元'));
   const linkFor = (item) => {
     const link = el('button', 'message-action', `${EVIDENCE_KIND[item.kind] || ''} ${item.title}`);
     link.type = 'button';
@@ -466,20 +481,20 @@ async function renderIssueEvidence(box, issue) {
   for (const item of sources.slice(0, 6)) box.append(linkFor(item));
   if (sources.length > 6) {
     const more = el('details');
-    more.append(el('summary', 'sub', `ほか ${sources.length - 6} 件の参照元`));
+    more.append(el('summary', 'sub', `ほか${sources.length - 6}件`));
     const links = el('div', 'message-actions issue-evidence');
     for (const item of sources.slice(6)) links.append(linkFor(item));
     more.append(links);
     box.append(more);
   }
   const unavailable = items.length - available.length;
-  if (unavailable) box.append(el('span', 'sub', `このアプリから開けない記録 ${unavailable} 件`));
+  if (unavailable) box.append(el('span', 'sub', `開けない参照元: ${unavailable}件`));
 }
 
 // 課題を新しい会話へ渡す。フォークと同じダイアログ（リポジトリ・AI・モデル・権限）で始める。
 // 渡し終えたら agent-audit 側で exported になり、受信箱から消える（ダイアログを閉じただけなら残る）。
 async function handoffIssue(item, button) {
-  if (!state.config.repos.length) throw new Error('リポジトリを登録してから課題を会話へ渡してください');
+  if (!state.config.repos.length) throw new Error('リポジトリを登録して会話を始めてください');
   if (button) button.disabled = true;
   try {
     const handed = await api.insight.handoff(item.issue.id, { mark: false });
@@ -1024,6 +1039,7 @@ function renderJudgeSetting() {
   $('judge-model').disabled = !available;
   // 応答と実行の自動評価も同じ判定 AI（agent-herd）を使う。無ければ同じく薄くする
   $('evaluation-mode').disabled = !available;
+  $('evaluation-strategy').disabled = !available;
   $('evaluation-row').classList.toggle('is-off', !available);
 }
 
@@ -2278,7 +2294,7 @@ function settingsPatch() {
     // 「利用状況」が収集の設定を、「スキル」が公開先を持つ。画面に出していない設定
     // （configFile など）は触らずに残す。
     audit: { ...(state.config.audit || {}), ...Audit.patch(), ...Skills.patch() },
-    evaluation: { mode: $('evaluation-mode').value },
+    evaluation: { mode: $('evaluation-mode').value, strategy: $('evaluation-strategy').value },
     share: {
       ...(state.config.share || {}),
       enabled: $('share-enabled').checked,
@@ -2365,6 +2381,7 @@ async function openSettings() {
     : (execution.defaultAutoApprove ? 'auto' : 'confirm');
   $('max-concurrent').value = execution.maxConcurrent;
   $('evaluation-mode').value = (state.config.evaluation && state.config.evaluation.mode) || 'sample';
+  $('evaluation-strategy').value = (state.config.evaluation && state.config.evaluation.strategy) || 'legacy';
   const share = state.config.share || {};
   $('share-enabled').checked = !!share.enabled;
   $('share-passphrase').value = share.passphrase || '';

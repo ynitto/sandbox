@@ -134,10 +134,11 @@ function row(raw, { now = Date.now(), node = os.hostname() } = {}) {
   if (raw.evaluation && typeof raw.evaluation === 'object') {
     const ev = raw.evaluation;
     out.evaluation = {
-      quality: num(ev.quality), confidence: num(ev.confidence),
+      quality: ev.quality == null ? null : num(ev.quality), confidence: ev.confidence == null ? null : num(ev.confidence),
       issue: String(ev.issue || 'none'), method: String(ev.method || ''),
       judge_model: String(ev.judge_model || ''), note: String(ev.note || '').slice(0, 400),
     };
+    if (ev.proposal && ev.proposal.schema_version === 1) out.evaluation.proposal = ev.proposal;
   }
   return out;
 }
@@ -346,6 +347,7 @@ function evidenceOf(userData, observationIds = [], { limit = 20 } = {}) {
         observationId: recordIds.get(id), recordId: id, ts: String(rec.ts || ''), tool: String(rec.tool || ''),
         workload: String(rec.workload || ''), purpose: String(rec.purpose || ''), ref: String(rec.ref || ''),
         sessionId: String(rec.session_id || ''), agentCli: String(rec.agent_cli || ''),
+        proposal: rec.evaluation && rec.evaluation.proposal || null,
         artifact: rec.artifact && typeof rec.artifact === 'object' ? { kind: String(rec.artifact.kind || ''), name: String(rec.artifact.name || ''), origin: String(rec.artifact.origin || '') } : null,
       });
       if (found.length >= limit) break;

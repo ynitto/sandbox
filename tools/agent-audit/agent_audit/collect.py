@@ -224,6 +224,8 @@ def collect_budget_ledger(args, store: Store) -> int:
                         "judge_model": str(ev.get("judge_model") or ""),
                         "note": str(ev.get("note") or "")[:400],
                     }
+                    if isinstance(ev.get("proposal"), dict) and ev["proposal"].get("schema_version") == 1:
+                        rec["evaluation"]["proposal"] = ev["proposal"]
                 if isinstance(row.get("methods"), list):
                     rec["methods"] = [str(v) for v in row["methods"] if str(v)]
                 if isinstance(row.get("trial"), dict):

@@ -613,6 +613,7 @@ function registerIpcHandlers(getWindow, options = {}) {
           try { runHistory.append(getUserData(), root, {
             runId: requestId, taskId: task.id || taskId, machine, source: 'manual', startedAt,
             finishedAt: new Date().toISOString(), ...result, parameters: actualInputs,
+            request: String(task.entry && task.entry.prompt || task.description || ''),
             agentCli: actualAgent, model: actualModel, skillMode: p.skillMode || 'auto', skills: p.skills || [],
             artifacts: reuse.artifacts(answerText || stdout),
             logText: String(answerText || stdout || stderr || '').split(/\r?\n/).slice(-60).join('\n').slice(-2000),

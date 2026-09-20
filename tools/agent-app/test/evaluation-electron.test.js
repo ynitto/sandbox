@@ -1,6 +1,6 @@
 'use strict';
 
-// Electron 実機で評価（§19）を通す: 受信箱の課題カード（根拠のリンク・会話で扱うのダイアログ）、
+// Electron 実機で評価（§19）を通す: 受信箱の課題カード（根拠のリンク・会話を始めるのダイアログ）、
 // 会話を検索の足元から「まとめて評価」（偽の agent-herd judge）、終わったら受信箱に未読で届くこと。
 // 判定 AI と agent-audit は PATH に置いた偽のシェルスクリプト。
 
@@ -83,9 +83,12 @@ test('受信箱: 長い参照元でも崩れず、IDを表示せずに元の会�
   await win.waitForFunction(() => document.querySelectorAll('#inbox-issues .issue-evidence .message-action').length === 16);
   assert.ok(!(await win.locator('#inbox-issues').innerText()).includes(externalId), '開けない記録のIDを出さない');
   assert.equal(await win.locator('#inbox-issues .issue-evidence .message-action').first().getAttribute('title'), longTitle);
-  assert.match(await win.locator('#inbox-issues .issue-evidence').first().innerText(), /このアプリから開けない記録 1 件/);
+  assert.match(await win.locator('#inbox-issues .issue-evidence').first().innerText(), /開けない参照元: 1件/);
   const header = win.locator('#inbox-area > .area-head');
   const cards = win.locator('#inbox-issues .execution-card');
+  assert.equal(await win.locator('#inbox-sub').isVisible(), false, '課題カードがあるときは案内を重ねない');
+  assert.equal(await cards.first().locator('.primary').innerText(), '会話を始める');
+  assert.ok(!(await cards.first().innerText()).includes('確度 low'), '内部の評価値を本文に混ぜない');
   for (const size of [{ width: 1200, height: 800 }, { width: 700, height: 600 }]) {
     await win.setViewportSize(size);
     assert.ok(await win.locator('#inbox-body').evaluate((body) => body.scrollWidth <= body.clientWidth), '長い参照元で横にはみ出さない');
@@ -100,6 +103,7 @@ test('受信箱: 長い参照元でも崩れず、IDを表示せずに元の会�
     assert.equal((await header.boundingBox()).y, before.y, '見出しはスクロールしない');
     await cards.last().locator('.primary').click();
     await win.locator('#search-transfer-dialog[open]').waitFor();
+    assert.equal(await win.locator('#search-transfer-title').innerText(), '会話を始める');
     await win.locator('#search-transfer-close').click();
     await win.mouse.move(area.x + area.width / 2, area.y + area.height - 50);
     await win.mouse.wheel(0, -100000);
@@ -141,7 +145,9 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
     scope: { target: { kind: 'skill', name: 'statemachine-use' } }, exported: false,
   }));
   fs.writeFileSync(path.join(storeDir, 'observations', '20260918.jsonl'), `${JSON.stringify({ id: 'obs-1', record_id: 'rec-1', evidence: ['rec-1'], kind: 'skill-gap' })}\n`);
-  fs.writeFileSync(path.join(storeDir, 'records', '20260918.jsonl'), `${JSON.stringify({ id: 'rec-1', ts: '2026-09-18T01:00:00Z', kind: 'ledger', tool: 'agent-app', workload: 'evaluation', purpose: 'chat', ref: s1.id })}\n`);
+  fs.writeFileSync(path.join(storeDir, 'records', '20260918.jsonl'), `${JSON.stringify({ id: 'rec-1', ts: '2026-09-18T01:00:00Z', kind: 'ledger', tool: 'agent-app', workload: 'evaluation', purpose: 'chat', ref: s1.id,
+    evaluation: { proposal: { schema_version: 1, checks: [{ text: '出力工程', status: 'unmet', evidence_id: 'e1' }],
+      evidence: [{ id: 'e1', text: '出力は未作成' }] } } })}\n`);
 
   // 偽の道具: agent-herd（config / judge）・agent-audit（scrub / tasks）・agent-flow
   const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-eval-fakebin-'));
@@ -168,7 +174,7 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
     win.on('pageerror', (err) => errors.push(err.message));
     win.setDefaultTimeout(20000);
 
-    // 受信箱: 課題が未読として並び、本文はカード（対象・課題・根拠・会話で扱う）
+    // 受信箱: 課題が未読として並び、本文はカード（対象・課題・根拠・会話を始める）
     await win.waitForFunction(() => document.querySelector('#area-inbox .unread')?.textContent === '3');
     await win.click('#area-inbox');
     await win.waitForSelector('#inbox-issues:not([hidden])');
@@ -176,22 +182,24 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
     const issue = view.items.find((item) => item.kind === 'issue');
     assert.ok(issue, JSON.stringify(view.items));
     assert.deepStrictEqual(issue.issue.target, { kind: 'skill', name: 'statemachine-use' });
-    assert.ok((await win.textContent('#inbox-items')).includes('課題: スキル statemachine-use'));
+    assert.ok((await win.textContent('#inbox-items')).includes('スキル statemachine-use'));
     const card = await win.textContent('#inbox-issues .execution-card');
-    assert.ok(card.includes('スキル statemachine-use') && card.includes('観測 3 件') && card.includes('会話で扱う'), card);
+    assert.ok(card.includes('スキル statemachine-use') && card.includes('3 件') && card.includes('会話を始める'), card);
     assert.ok(!card.includes('rules.md'), '改善案の文は置かない');
+    await win.waitForSelector('#inbox-issues .quality-evidence');
+    assert.ok((await win.textContent('#inbox-issues .quality-evidence')).includes('出力は未作成'));
     // 根拠: 観測 → record → 会話 s1 へのリンク
     await win.waitForFunction(() => document.querySelector('#inbox-issues .issue-evidence .message-action'));
     assert.strictEqual((await win.textContent('#inbox-issues .issue-evidence .message-action')).trim(), '会話 設定画面の見直し');
     await win.click('#inbox-issues .issue-evidence .message-action');
     await win.waitForFunction(() => document.getElementById('chat-title').textContent.includes('設定画面の見直し'));
 
-    // 会話で扱う: フォークと同じダイアログ（位置とフォーク先は隠す）。閉じただけなら課題は残る
+    // 会話を始める: フォークと同じダイアログ（位置とフォーク先は隠す）。閉じただけなら課題は残る
     await win.click('#area-inbox');
     await win.waitForSelector('#inbox-issues:not([hidden])');
     await win.click('#inbox-issues .execution-card .primary');
     await win.waitForSelector('#search-transfer-dialog[open]');
-    assert.strictEqual((await win.textContent('#search-transfer-title')).trim(), '課題を会話で扱う');
+    assert.strictEqual((await win.textContent('#search-transfer-title')).trim(), '会話を始める');
     assert.ok(await win.$eval('#search-boundary', (n) => n.closest('label').hidden), 'フォークする位置は隠す');
     assert.ok(await win.$eval('#search-intent', (n) => n.closest('label').hidden), 'フォーク先は隠す');
     assert.strictEqual((await win.textContent('#search-transfer-start')).trim(), '会話を始める');
@@ -205,9 +213,9 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
     await win.waitForSelector('#session-search:not([hidden])');
     await win.waitForFunction(() => document.querySelectorAll('#search-results .row-check').length >= 2);
     assert.ok(await win.$eval('#search-batch-start', (n) => n.disabled), '選ぶまで押せない');
-    const checks = await win.$$('#search-results .row-check');
-    await checks[0].check();
-    await checks[1].check();
+    // Select the fixture conversations, never whichever real history happens to be newest.
+    await win.getByRole('checkbox', { name: '「設定画面の見直し」を評価の対象にする', exact: true }).check();
+    await win.getByRole('checkbox', { name: '「ログ整形の依頼」を評価の対象にする', exact: true }).check();
     await win.waitForFunction(() => document.getElementById('search-batch-count').textContent === '選んだ 2 件');
     assert.ok((await win.textContent('#search-batch-summary')).includes('herd'));
     await win.click('#search-batch-start');
