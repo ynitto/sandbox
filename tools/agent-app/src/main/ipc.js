@@ -33,6 +33,9 @@ const share = require('./share');
 const { registerAutomationIpc, makeTaskCommandSpawnSpec } = require('./automation/ipc');
 const runner = require('./automation/runner');
 const judgeSetting = require('./judgeSetting');
+const modelSelection = require('./modelSelection');
+const selecting = new Map();
+let selectionLimits = async () => ({ agentLimits: [] });
 const attention = require('./attention');
 const runHistory = require('./automation/run-history');
 const agentFlow = require('./automation/agent-flow');
@@ -153,10 +156,12 @@ function executionSpec(sess, p, config, { optimized = true, agents = null } = {}
 //   agents      … listAgents の結果（ホストで使えるかの印つき）
 //   attachments … 添付（作業フォルダの中のファイルがあれば /edit）
 function concreteCli(spec, agents, { attachments = [] } = {}) {
-  if (!herd.isHerd(spec.cli)) return { ...spec, requested: spec.cli, family: '', slash: '' };
+  const virtual = herd.isHerd(spec.cli);
+  const selectedMember = spec.autoSelected && herd.isMember(agents.find(a => a.name === spec.cli));
+  if (!virtual && !selectedMember) return { ...spec, requested: spec.cli, family: '', slash: '' };
   const purpose = herd.purposeOf({ readonly: spec.readonly, workFiles: herd.hasWorkFiles(attachments) });
-  const picked = herd.resolveChat(purpose, agents);
-  return { ...spec, cli: picked.cli, requested: herd.HERD, family: herd.HERD, slash: picked.slash, familyReason: picked.reason };
+  const picked = herd.resolveChat(purpose, virtual ? agents : agents.filter(a => a.name === spec.cli));
+  return { ...spec, cli: picked.cli, requested: virtual ? herd.HERD : spec.cli, family: herd.HERD, slash: picked.slash, familyReason: picked.reason };
 }
 
 // 添付ファイルを確かめ、依頼文の末尾に「どこにあるか」を添える。
@@ -395,6 +400,7 @@ function sameLaunch(a, b) {
 async function openConversationNow(id, send, { cols, rows, fresh = false, launch = null } = {}) {
   const ud = userData();
   const sess = store.readSession(ud, id);
+  if (!launch && modelSelection.pending(sess)) throw new Error('最初の依頼を送るとAIを自動選択します');
   const repo = requireRepo(sess.repo);
   const cfg = store.loadConfig(ud);
   const defaults = { cli: sess.cli, model: sess.model || '', readonly: !!sess.readonly, autoApprove: !!sess.autoApprove };
@@ -639,8 +645,26 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   const cfg = config || store.loadConfig(ud);
   const agents = await listAgents(repo);
-  const requested = executionSpec(sess, p, cfg, { agents, optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
+  let requested = executionSpec(sess, p, cfg, { agents, optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
   if (requested.policy === settings.SHARED_POLICY) return runShared(id, sess, dirs, p, requested, cfg, send, release);
+  let chosen = null;
+  if (modelSelection.pending(sess) && requested.policy !== 'direct') {
+    const controller = new AbortController();
+    selecting.set(id, controller);
+    try {
+      const limits = await selectionLimits().catch(() => ({ agentLimits: [] }));
+      if (controller.signal.aborted) throw new Error('自動選択を停止しました');
+      chosen = await modelSelection.select({ config: cfg, agents: sess.kind === 'conversation' ? agents : agents.filter(a => a.interactive || a.virtual), load: cli => agentCli.load(cli, repo),
+        prompt: requested.text || (p.attachments || []).map(a => a.name || a.rel || '').join('\n'),
+        readonly: requested.readonly, attachments: p.attachments, cwd: dirs.fsDir, observed: limits.agentLimits,
+        signal: controller.signal, capture: (name, args, opts) => runner.capture(name, args, {
+          ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined,
+        }),
+      });
+      requested = { ...requested, cli: chosen.cli, model: chosen.model, source: 'auto' };
+    } finally { selecting.delete(id); }
+  }
+  requested.autoSelected = !!(chosen || sess.modelSelection) && requested.policy !== 'direct';
   const base = concreteCli(requested, agents, { attachments: p.attachments });
   const spec = agentCli.load(base.cli, repo);
   const available = agents.find((item) => item.name === base.cli);
@@ -657,7 +681,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     if (info.ok && info.tmux) transport = 'tmux';
   }
   const attached = withAttachments(ud, base.text, p.attachments, dirs);
-  let setupInformation = [...familyInfo];
+  let setupInformation = [...familyInfo, ...(chosen ? [modelSelection.information(chosen)] : [])];
   let setupWarning = '';
   let setupSkills = [];
   // CLI ごとの最初の起動だけに開始アクションを適用する。既存 entry は設定変更後も再実行しない。
@@ -670,7 +694,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
       const script = `cd ${host.sq(dirs.hostDir)} && ${command}`;
       return host.shellFor(distroFor(repo)).run(script, { timeoutMs });
     });
-    setupInformation = startup.information;
+    setupInformation.push(...startup.information);
     setupWarning = [plan.warning, startup.warning].filter(Boolean).join('\n');
     setupSkills = plan.skills;
     store.setCliEntry(ud, id, base.cli, { setupApplied: true });
@@ -712,6 +736,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   store.updateSession(ud, id, {
     cli: base.requested || base.cli, model: base.model, readonly: base.readonly, autoApprove: base.autoApprove,
     policy: base.policy, tier: base.tier, transport,
+    ...(chosen ? { modelSelection: chosen } : {}),
   });
   if (transport === 'headless') {
     // ヘッドレスの CLI へ移るなら、動いていた tmux の CLI は止める（同時に 2 つは持たない）
@@ -812,6 +837,7 @@ function registerIpcHandlers(getWindow) {
     }
   };
   registerAutomationIpc({
+    selectionLimits: () => selectionLimits(),
     getWindow,
     userData,
     appRoot: automationAppRoot(),
@@ -934,6 +960,7 @@ function registerIpcHandlers(getWindow) {
   handle('audit:run', () => auditor.run({ manual: true }));
   handle('audit:summary', (p) => auditor.summary({ by: p && p.by, period: p && p.period }));
   handle('audit:limits', () => auditor.limits());
+  selectionLimits = () => auditor.limits();
   handle('audit:manualLimit', (p) => {
     const allocation = require('../shared/allocation');
     const cfg = store.loadConfig(userData());
@@ -1229,6 +1256,7 @@ function registerIpcHandlers(getWindow) {
     return store.createSession(userData(), {
       ...p, repo, branch, cli: selected.cli, model: selected.model,
       policy: selected.policy, tier: selected.tier,
+      allocation: selected.allocation,
       readonly: p.readonly != null ? p.readonly : cfg.execution.defaultReadonly,
       autoApprove: p.autoApprove != null ? p.autoApprove : cfg.execution.defaultAutoApprove,
     });
@@ -1257,6 +1285,7 @@ function registerIpcHandlers(getWindow) {
   });
   handle('session:update', (p) => store.updateSession(userData(), p.id, p.patch));
   handle('session:remove', async (p) => {
+    selecting.get(p.id)?.abort();
     if (running.has(p.id)) running.get(p.id).stop();
     const conv = conversations.get(p.id);
     if (conv) { conversations.delete(p.id); await conv.kill(); }
@@ -1280,6 +1309,7 @@ function registerIpcHandlers(getWindow) {
   handle('attach:discard', (p) => attachments.discard(userData(), p.id));
   handle('attach:open', (p) => shell.openPath(attachments.resolve(userData(), p.id, p.name).path));
   handle('turn:stop', async (p) => {
+    if (selecting.has(p.id)) { selecting.get(p.id).abort(); return true; }
     if (shareInstance && shareInstance.pendingSessionIds().includes(p.id)) { await shareInstance.cancelSession(p.id); return true; }
     const c = running.get(p.id);
     if (c) { c.stop(); return true; }
@@ -1450,6 +1480,7 @@ function registerIpcHandlers(getWindow) {
   setTimeout(() => sweepTerminalSessions().catch(() => {}), 0);
 
   app.on('before-quit', () => {
+    for (const controller of selecting.values()) controller.abort();
     clearInterval(sweepTimer);
     clearInterval(shareTimer);
     updater.unschedule();

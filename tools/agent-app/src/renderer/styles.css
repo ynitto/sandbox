@@ -708,7 +708,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #usage-open { margin-top: 0; flex-shrink: 0; }
 #usage-open + .side-settings { margin-top: 0; }
 #usage-indicator { overflow-wrap: anywhere; font-size: 12px; }
-#usage-manual-remaining { width: 90px; }
+#usage-manual-row .setting-field > input { width: 220px; max-width: 60%; }
+#usage-manual-row .setting-field > span { min-width: 0; }
 #usage-manual-row { background: var(--side-bg); }
 #usage-manual-row td { font-weight: 400; }
 .usage-controls { flex-wrap: wrap; align-items: flex-end; }
@@ -722,7 +723,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .breakdown-table th:nth-child(3) { width: 28%; }
 .breakdown-table th:not(:first-child), .breakdown-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 #audit-usage { margin-bottom: 18px; }
-.usage-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.usage-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .usage-metric { display: flex; flex-direction: column; gap: 4px; border-left: 1px solid var(--line); padding-left: 16px; }
 .usage-metric:first-child { border-left: 0; padding-left: 0; }
 .usage-metric > strong { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -738,7 +739,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
   .settings-table td, .settings-table th { padding: 8px 4px; }
   .settings-table select, .settings-table input { font-size: 12px; padding: 6px; }
   .execution-models label { gap: 4px; }
-  .usage-overview { gap: 8px; }
+  .usage-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 8px; }
+  .usage-metric:nth-child(3) { border-left: 0; padding-left: 0; }
   .usage-metric { padding-left: 8px; }
   .usage-metric > strong { font-size: 21px; }
   .quota-table button { padding: 4px; font-size: 12px; }

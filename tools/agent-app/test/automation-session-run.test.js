@@ -150,7 +150,7 @@ function withStubbedHandlers(run) {
   }
 }
 
-async function startRun(agent, terminalHook = null, taskId = 'machine:digest') {
+async function startRun(agent, terminalHook = null, taskId = 'machine:digest', extraHooks = {}) {
   return withStubbedHandlers(async ({ handlers, registered, launches }) => {
     const spawnSpecCalls = [];
     handlers.registerIpcHandlers(() => null, {
@@ -171,6 +171,7 @@ async function startRun(agent, terminalHook = null, taskId = 'machine:digest') {
         resolveAgent: async ({ agent: name }) => ({ agent: name }),
         prepareRun: async () => ({ instruction: taskId.startsWith('prompt:') ? '共通指示を守って' : '', information: [], warning: '' }),
         ...(terminalHook ? { prepareTerminalRun: terminalHook } : {}),
+        ...extraHooks,
       },
     });
     const start = registered.get('automation:run:start');
@@ -178,7 +179,7 @@ async function startRun(agent, terminalHook = null, taskId = 'machine:digest') {
     const sender = { isDestroyed: () => false, send: () => {} };
     // 登録した実体は ipcMain.handle の (event, args) 版なので、その順で呼ぶ。
     const result = await start({ sender },
-      { root: REPO, taskId, mode: 'run', agent });
+      { root: REPO, taskId, mode: 'run', agent, policy: 'recommended' });
     assert.strictEqual(result.ok, true, result.error);
     if (terminalHook) return { result: result.data, launches, registered, sender };
     assert.strictEqual(launches.length, 1, '1 回だけ起こす');
@@ -280,4 +281,18 @@ test('プロンプト型: ローカル AI はハーネス経由を維持する',
   assert.equal(run.launches.length, 1);
   assert.equal(run.launches[0].command, 'agent-loop');
   assert.deepEqual(run.launches[0].args.slice(0, 2), ['run', '共通指示を守って\n\n日次集計を作って']);
+});
+
+
+test('manual execution uses the selected agent and model before choosing its transport', async () => {
+  const launch = await startRun('aider', null, 'prompt:digest', {
+    selectExecution: async ({ prompt, policy, signal }) => {
+      assert.match(prompt, /日次集計/);
+      assert.equal(policy, 'recommended');
+      assert.equal(signal.aborted, false);
+      return { cli: 'kiro', model: 'selected-model', stage: 'jev' };
+    },
+  });
+  assert.equal(launch.command, 'kiro-cli');
+  assert.equal(launch.args[launch.args.indexOf('--model') + 1], 'selected-model');
 });

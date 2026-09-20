@@ -40,6 +40,13 @@ test('短いコマンドへ設定JSONを標準入力で渡せる', async () => {
   assert.strictEqual(result.stdout, input);
 });
 
+test('capture can abort a selector while it is waiting', async () => {
+  const controller = new AbortController();
+  const result = runner.capture(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { signal: controller.signal, timeoutMs: 5000 });
+  controller.abort();
+  assert.strictEqual((await result).ok, false);
+});
+
 test('capture / stream / startDetached は spawnSpec オプションで起動仕様を差し替えられる', async () => {
   const calls = [];
   const fakeSpec = (name, args) => { calls.push([name, args]); return { command: 'echo-fake', args: ['ok'], options: {} }; };

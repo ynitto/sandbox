@@ -215,10 +215,10 @@ test('使用量の概要は実測と推定を分け、利用枠は表示期間�
       return { ok: true, output: JSON.stringify(payload) };
     } }),
   });
-  const got = await auditor.summary({ by: 'model', period: 'day' });
+  const got = await auditor.summary({ by: 'model', period: 'week' });
   assert.deepEqual(got.totals, { measured_in: 100, measured_out: 20, estimated_tokens: 80, unmeasured_runs: 1, runs: 2 });
   assert.equal(got.agentLimits[0].quota_used_percent, 60);
-  assert.ok(calls.some(s => s.includes("'model' '--period' 'day'")));
+  assert.ok(calls.some(s => s.includes("'model' '--period' 'week'")));
   assert.ok(calls.some(s => s.includes("'agent_cli' '--period' 'total'")));
 });
 

@@ -1,7 +1,7 @@
 'use strict';
 (function expose(global) {
-  const MODES = ['configured', 'local', 'cloud', 'local-only'];
-  const LABELS = { configured: '通常の配分', local: 'ローカル優先', cloud: 'クラウド優先', 'local-only': 'クラウドを使わない' };
+  const MODES = ['auto', 'configured', 'local', 'cloud', 'local-only'];
+  const LABELS = { auto: '自動選択', configured: '通常の配分', local: 'ローカル優先', cloud: 'クラウド優先', 'local-only': 'クラウドを使わない' };
   function normalize(raw) {
     const s = raw && typeof raw === 'object' ? raw : {};
     const t = s.temporary;
@@ -25,6 +25,7 @@
     if (['direct', 'shared'].includes(selected.policy)) return selected;
     const s = normalize(config.allocation);
     const effective = MODES.includes(preference) ? preference : mode(s, now);
+    if (effective === 'auto') return { ...selected, allocation: 'auto' };
     const available = cli => !agents || agents.some(a => a.name === cli && a.available);
     if (effective === 'local' || effective === 'local-only') {
       if (available('herd')) return { ...selected, cli: 'herd', model: s.localModel, allocation: effective };

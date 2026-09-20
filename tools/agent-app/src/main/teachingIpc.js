@@ -29,6 +29,13 @@ const automationTools = require('./automation/tools');
 const recordingBrowser = require('./automation/browser');
 
 function create(deps) {
+  function configurePendingSession(ud, id, cfg, p) {
+    const session = store.readSession(ud, id);
+    if (!p.policy || session.messages.length || session.modelSelection || deps.busy(id)
+      || deps.queuedTurnIds(cfg.execution.maxConcurrent).includes(id)) return;
+    const selected = settings.resolve(cfg, p);
+    store.updateSession(ud, id, { ...selected, allocation: selected.allocation || '' });
+  }
   // ---- タスクを AI と作る会話（tmux）。会話基盤をそのまま使い、kind: 'task' の会話をタスクに紐づける ----
   //
   // 手動実行の画面と同じく、作成・変更も tmux の端末ミラーの中で進める。CLI は会話と同じ
@@ -94,7 +101,7 @@ function create(deps) {
     if (!summary) {
       const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
       const created = store.createSession(ud, {
-        repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier,
+        repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier, allocation: selected.allocation,
         readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
         transport: 'tmux', worktree: '', kind: 'task', task: { machine },
       });
@@ -107,14 +114,16 @@ function create(deps) {
       if (deps.queuedTurnIds(cfg.execution.maxConcurrent).includes(summary.id) || deps.busy(summary.id)) {
         throw new Error('応答の完了後に新しいセッションを作成してください');
       }
+      const selected = p.policy ? settings.resolve(cfg, p) : null;
       const created = store.replaceEditingSession(ud, summary.id, {
-        readonly: false, ...(p.cli ? { cli: p.cli, model: p.model || '' } : {}),
+        readonly: false, ...(selected ? { ...selected, allocation: selected.allocation || '' } : p.cli ? { cli: p.cli, model: p.model || '' } : {}),
         autoApprove: p.autoApprove != null ? !!p.autoApprove : store.readSession(ud, summary.id).autoApprove,
       });
       summary = { id: created.id };
       sidecar = teaching.save(repo, machine, { ...sidecar, sessionId: created.id });
     }
     // 既にある会話でも権限は画面の選択に合わせる（自動承認へ切り替えたら、次の依頼で CLI を起動し直す）
+    configurePendingSession(ud, summary.id, cfg, p);
     if (p.autoApprove != null) store.updateSession(ud, summary.id, { autoApprove: !!p.autoApprove });
     const session = store.readSession(ud, summary.id);
     return { ud, repo, cfg, purpose, machine, existing, sidecar, session };
@@ -178,7 +187,7 @@ function create(deps) {
     if (!summary) {
       const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
       const created = store.createSession(ud, {
-        repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier,
+        repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier, allocation: selected.allocation,
         readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
         transport: 'tmux', worktree: '', kind: 'workflow', workflow: { id },
       });
@@ -188,13 +197,15 @@ function create(deps) {
       if (deps.queuedTurnIds(cfg.execution.maxConcurrent).includes(summary.id) || deps.busy(summary.id)) {
         throw new Error('応答の完了後に新しいセッションを作成してください');
       }
+      const selected = p.policy ? settings.resolve(cfg, p) : null;
       const created = store.replaceEditingSession(ud, summary.id, {
-        readonly: false, ...(p.cli ? { cli: p.cli, model: p.model || '' } : {}),
+        readonly: false, ...(selected ? { ...selected, allocation: selected.allocation || '' } : p.cli ? { cli: p.cli, model: p.model || '' } : {}),
         autoApprove: p.autoApprove != null ? !!p.autoApprove : store.readSession(ud, summary.id).autoApprove,
       });
       summary = { id: created.id };
     }
     if (sidecar.sessionId !== summary.id) sidecar = flowTeachingStore.save(repo, id, { ...sidecar, sessionId: summary.id });
+    configurePendingSession(ud, summary.id, cfg, p);
     if (p.autoApprove != null) store.updateSession(ud, summary.id, { autoApprove: !!p.autoApprove });
     return { ud, repo, purpose, id, existing, sidecar, session: store.readSession(ud, summary.id) };
   }

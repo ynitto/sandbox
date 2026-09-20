@@ -34,13 +34,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         "ノード外へは出さない）")
 
     u = sub.add_parser("usage", help="トークン・コスト集計（measured / estimated 別掲）")
-    u.add_argument("--period", choices=["day", "month", "total"], default=None)
+    u.add_argument("--period", choices=["day", "week", "month", "total"], default=None)
     u.add_argument("--by", choices=["workload", "tool", "agent_cli", "model", "purpose", "ref", "node"],
                    default=None)
     u.add_argument("--json", action="store_true")
 
     s = sub.add_parser("stats", help="実行品質集計（status・失敗クラス・verify）")
-    s.add_argument("--period", choices=["day", "month", "total"], default=None)
+    s.add_argument("--period", choices=["day", "week", "month", "total"], default=None)
     s.add_argument("--json", action="store_true")
 
     rating = sub.add_parser("ratings", help="仕事種別×モデルの PASS 率と平均消費の格付け")

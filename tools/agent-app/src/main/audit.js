@@ -20,6 +20,7 @@ const os = require('os');
 const path = require('path');
 
 const host = require('./host');
+const usagePresentation = require('../shared/usagePresentation');
 
 const FEED_DIR = 'audit-feed';
 const STORE_DIR = 'audit';
@@ -507,8 +508,7 @@ class Auditor {
     const usageData = parse(usage);
     const agentRows = (by === 'agent_cli' ? usageData : parse(agents))?.rows;
     const allocationUsage = Array.isArray(agentRows) ? agentRows.reduce((acc, row) => {
-      const group = ['herd', 'ollama', 'aider'].includes(row.group) ? 'local'
-        : ['claude', 'codex', 'copilot', 'kiro'].includes(row.group) ? 'cloud' : 'other';
+      const group = usagePresentation.site(row.group);
       acc[group].runs += Number(row.runs) || 0;
       acc[group].tokens += (Number(row.measured_in) || 0) + (Number(row.measured_out) || 0);
       acc[group].unmeasured += Number(row.unmeasured_runs) || 0;

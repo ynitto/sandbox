@@ -30,6 +30,7 @@ bash tools/agent-tools/install.sh --only agent-audit
 ```bash
 agent-audit collect                  # 源泉 + 対応CLI quotaの増分収集（LLM不使用）
 agent-audit usage --period month --by agent_cli
+agent-audit usage --period week --by workload # 今週（UTCの月曜0時から）
 agent-audit stats                    # 実行品質 + LLM判断と決定的ルールの一致率
 agent-audit report                   # Markdown レポート（usage + quality + knowledge + insights）
 agent-audit report --kind knowledge [--json]

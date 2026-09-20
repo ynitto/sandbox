@@ -507,23 +507,15 @@ function registerIpcHandlers(getWindow, options = {}) {
       args = spec.args;
     } else {
       const cfg = settings.load(getUserData());
-      const requestedAgent = String(p.agent || cfg.agent || '');
+      let requestedAgent = String(p.agent || cfg.agent || '');
       if (!requestedAgent) throw new Error('使う AI を選んでください（「実行環境」で確認できます）');
       const definitions = await agentDefinitions({ cwd: root, capture: runCapture });
-      if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」はこの環境で使えません`);
       const loopAvailable = snapshot.available !== false;
       // **経路は CLI の宣言だけで決める**（判定は session-run.js の 1 か所）。クラウドで自分の
       // ツールループを持つ CLI は 1 セッションで通し、それ以外は従来どおり工程ごとのハーネスで
       // 回す。工程ごとに起こすと起動・文脈の再構築・システムプロンプトの再送が工程の数だけ
       // 掛かり、クラウドではトークン消費が跳ねる——同じ分け方を agent-loop のデーモンと
       // agent-dashboard も持つ。仮想の名前（`herd`）は実体へ写してから判定する。
-      const named = await resolveAgent(requestedAgent, 'direct', root);
-      const oneSession = ['statemachine', 'prompt'].includes(task.kind)
-        && sessionRun.runsInOneSession(named, root, String(p.model || cfg.model || ''));
-      // ハーネスへ渡す名前は従来どおり（`herd` は '' ＝ agent-herd の既定と宣言に任せる）。
-      const agent = oneSession || !loopAvailable
-        ? named
-        : await resolveAgent(requestedAgent, 'task', root);
       const parameters = p.parameters && typeof p.parameters === 'object'
         ? reuse.resolveInputs(p.parameters)
         : { ...(p.context && typeof p.context === 'object' ? p.context : {}), ...(p.input ? { input: p.input } : {}) };
@@ -535,17 +527,33 @@ function registerIpcHandlers(getWindow, options = {}) {
         throw error;
       }
       Object.assign(parameters, reuse.resolveInputs(input.values));
-      actualInputs = { ...parameters }; actualAgent = requestedAgent; actualModel = p.model || cfg.model || '';
+      const selected = options.hooks?.selectExecution
+        ? await options.hooks.selectExecution({ root, policy: p.policy, signal: p.selectionSignal,
+          prompt: JSON.stringify({ task, parameters, ...(machine ? { procedure: store.read(root, machine).raw } : {}) }) }) : null;
+      if (p.selectionSignal?.aborted) throw new Error('自動選択を停止しました');
+      if (selected) requestedAgent = selected.cli;
+      if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」はこの環境で使えません`);
+      const runModel = selected ? selected.model : (p.model || cfg.model || '');
+      const named = await resolveAgent(requestedAgent, 'direct', root);
+      const oneSession = ['statemachine', 'prompt'].includes(task.kind)
+        && sessionRun.runsInOneSession(named, root, String(runModel));
+      // ハーネスへ渡す名前は従来どおり（`herd` は '' ＝ agent-herd の既定と宣言に任せる）。
+      const agent = oneSession || !loopAvailable
+        ? named
+        : await resolveAgent(requestedAgent, 'task', root);
+
+      actualInputs = { ...parameters }; actualAgent = requestedAgent; actualModel = runModel;
       preparation = options.hooks && options.hooks.prepareRun
         ? await options.hooks.prepareRun({
-          root, task, agent, model: p.model || cfg.model, parameters,
+          root, task, agent, model: runModel, parameters,
           skillMode: p.skillMode, selectedSkills: p.skills,
         })
         : {};
+      if (selected?.stage) preparation.information = [...(preparation.information || []), require('../modelSelection').information(selected)];
       if (oneSession) {
         // プロンプト本文またはステートマシンの発動文を 1 セッションで送る。
         const spec = sessionRun.runSpec({
-          root, machine, task, agent, model: p.model || cfg.model, parameters,
+          root, machine, task, agent, model: runModel, parameters,
           instruction: preparation.instruction || '',
         });
         command = spec.command;
@@ -556,7 +564,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         launchEnv = spec.env || {};
         stripDecoration = true;          // CLI を直に起こすので端末の装飾が混ざる
         resultSource = 'exit-code';      // この経路は RESULT 行を出さない
-        terminalPayload = { root, agent, model: p.model || cfg.model, prompt: spec.prompt };
+        terminalPayload = { root, agent, model: runModel, prompt: spec.prompt };
         const checks = task.kind === 'statemachine' ? declaredChecks(root, machine) : 0;
         launchWarning = [
           spec.warning,
@@ -565,7 +573,7 @@ function registerIpcHandlers(getWindow, options = {}) {
       } else if (loopAvailable) {
         const spec = agentLoop.taskRunSpec({
           root, task, agent,
-          model: p.model || cfg.model, parameters,
+          model: runModel, parameters,
           instruction: preparation.instruction || '',
           allowShells: allowedShellsFor(mode, p),
         });
@@ -577,7 +585,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         const py = process.platform === 'win32' ? { command: directRun.WSL_PYTHON } : await pythonFor();
         if (!py) throw new Error('Python を起動できません（「実行環境」を確認してください）');
         const spec = directRun.runSpec({
-          root, machine, agent, model: p.model || cfg.model, parameters,
+          root, machine, agent, model: runModel, parameters,
           instruction: preparation.instruction || '', skillDir, python: py.command, hostPath,
         });
         command = spec.command;
@@ -630,6 +638,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         }
       },
     };
+    if (p.selectionSignal?.aborted) throw new Error('実行を停止しました');
     let started;
     const prepareTerminal = options.hooks && options.hooks.prepareTerminalRun;
     if (terminalPayload && prepareTerminal) {
@@ -660,13 +669,18 @@ function registerIpcHandlers(getWindow, options = {}) {
       warning: [preparation.warning, launchWarning].filter(Boolean).join('\n'),
     };
   }
+  let selectionController = null;
   register('run:start', async (p, event) => {
     if (runStarting || activeTerminalRun || runner.isRunning('run')) throw new Error('タスクを実行中です');
     runStarting = true;
     completedTerminalRun = null;
-    try { return await startManualRun(p, event); } finally { runStarting = false; }
+    selectionController = new AbortController();
+    try { return await startManualRun({ ...p, selectionSignal: selectionController.signal }, event); } finally { runStarting = false; selectionController = null; }
   });
-  register('run:stop', () => activeTerminalRun ? activeTerminalRun.stop() : runner.stop('run'));
+  register('run:stop', () => {
+    if (selectionController) { selectionController.abort(); return true; }
+    return activeTerminalRun ? activeTerminalRun.stop() : runner.stop('run');
+  });
   const terminalFor = (p, { history = false } = {}) => {
     const run = activeTerminalRun || (history ? completedTerminalRun : null);
     if (!run || run.requestId !== p.requestId) throw new Error('操作できる端末がありません');
@@ -675,7 +689,7 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('run:keys', (p) => terminalFor(p).keys(String(p.data || '')));
   register('run:resize', (p) => terminalFor(p, { history: true }).resize(p.cols, p.rows));
   register('run:scroll', (p) => terminalFor(p, { history: true }).scroll(p.lines));
-  if (typeof app.on === 'function') app.on('before-quit', () => { if (activeTerminalRun) activeTerminalRun.stop().catch(() => {}); });
+  if (typeof app.on === 'function') app.on('before-quit', () => { selectionController?.abort(); if (activeTerminalRun) activeTerminalRun.stop().catch(() => {}); });
 }
 
 module.exports = { registerIpcHandlers };

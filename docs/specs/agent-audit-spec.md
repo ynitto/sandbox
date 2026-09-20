@@ -33,6 +33,10 @@ agent-audit reconcile --since 2026-09-01T00:00:00Z
 agent-audit reconcile --since 2026-09-01T00:00:00Z --json
 agent-audit usage --period month --by agent_cli
 agent-audit stats --period month
+
+# 今週（UTCの月曜0時から）
+agent-audit usage --period week --by workload
+agent-audit stats --period week
 ```
 
 `collect` は同じ記録を重複登録しません。定期実行しても、前回以降に増えた分だけが反映されます。

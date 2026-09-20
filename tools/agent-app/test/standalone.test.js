@@ -172,7 +172,7 @@ test('最適化: 会話は herd の有無と設定で節約 / 品質重視を薄
   assert.match(renderer, /execution\.optimizeAgents !== false && herdAvailable\(\)/);
   assert.match(renderer, /option\.disabled = !on && !BASIC_POLICIES\.includes\(option\.value\) && option\.value !== 'direct'/, 'ターンごとの起動方針は おすすめ / 直接指定 だけ');
   assert.match(renderer, /\$\('area-workflows'\)\.disabled = !!\(caps && caps\.agentFlow !== 'available'\)/, 'agent-flow が available でなければワークフローを押せない');
-  assert.match(renderer, /const allowed = on \|\| tier === 'medium';/, 'tier は medium だけ');
+  assert.match(renderer, /const allowed = automatic \|\| on \|\| tier === 'medium';/, '通常の最適化が無効でも、自動選択の候補はすべて編集できる');
   assert.match(renderer, /optimizeAgents: \$\('optimize-agents'\)\.checked,/);
   assert.doesNotMatch(renderer, /agent-herd が要ります/, '理由は出さない');
   const html = read('renderer/index.html');

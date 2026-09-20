@@ -473,17 +473,22 @@ function taskRunExecution() {
   }
   const view = RUN_POLICIES[policy] || RUN_POLICIES.recommended;
   const tier = execution.tiers && execution.tiers[view.tier] || {};
-  return { policy, agent: selectedAgent(tier.cli || state.config.agent), model: tier.model || state.config.model || '' };
+  const selected = { policy, cli: selectedAgent(tier.cli || state.config.agent), model: tier.model || state.config.model || '' };
+  try {
+    const resolved = window.Allocation ? Allocation.select(selected, state.config, { agents: state.agents.map(name => ({ name, available: true })) }) : selected;
+    return { ...resolved, agent: resolved.cli };
+  } catch (error) { return { ...selected, agent: selected.cli, error: error.message }; }
 }
 
 function taskRunSettingsLabel() {
   const selected = taskRunExecution();
+  if (selected.error) return selected.error;
   const policy = RUN_POLICIES[selected.policy] || RUN_POLICIES.recommended;
   const agent = selected.agent || 'エージェント未設定';
   const selection = state.config.instructions && state.config.instructions.skillSelection || {};
   const skillMode = state.run.skillMode || selection.defaultMode || 'auto';
   const skillLabel = { auto: 'スキル 自動', manual: 'スキル 手動選択', off: 'スキル 使用しない' }[skillMode] || 'スキル 自動';
-  return [policy.label, `${agent}${selected.model ? ` / ${selected.model}` : ''}`, skillLabel].join(' · ');
+  return [selected.allocation === 'auto' ? '自動選択' : policy.label, selected.allocation === 'auto' ? '依頼内容から選択' : `${agent}${selected.model ? ` / ${selected.model}` : ''}`, skillLabel].join(' · ');
 }
 
 function taskSkillCandidates() {
@@ -2425,6 +2430,7 @@ async function startRun(mode) {
   const machine = selectedExecutionMachine();
   if (!machine) return;
   const selected = taskRunExecution();
+  if (mode === 'run' && selected.error) { toast(selected.error, true); return; }
   const runAgent = machine.kind === 'command' ? '' : selectedAgent(selected.agent);
   if (mode === 'run' && machine.kind !== 'command' && !runAgent) { toast('実行環境で使う AI を確認してください', true); return; }
   if (mode === 'run' && machine.kind !== 'command') {
@@ -2450,7 +2456,7 @@ async function startRun(mode) {
   render();
   const res = await guard('実行', () => automationHost.runStart({
     root: state.root, taskId: taskIdentity(machine), machine: machine.machine || '', mode,
-    agent: runAgent, model: selected.model, parameters: run.parameters, autoApprove: true,
+    agent: runAgent, model: selected.model, policy: selected.policy, parameters: run.parameters, autoApprove: true,
     skillMode: run.skillMode || (state.config.instructions && state.config.instructions.skillSelection && state.config.instructions.skillSelection.defaultMode) || 'auto',
     skills: run.skillMode === 'manual' ? run.skills : [],
   }));

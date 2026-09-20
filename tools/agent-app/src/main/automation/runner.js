@@ -14,14 +14,15 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const command = require('./command');
+const { killTree } = require('../proc');
 const MAX_STREAM_OUTPUT = 1024 * 1024;
 
-function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, input = '', spawnSpec = command.spawnSpec } = {}) {
+function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, input = '', signal, spawnSpec = command.spawnSpec } = {}) {
   const spec = spawnSpec(name, args, { cwd, env });
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(spec.command, spec.args, spec.options);
+      child = spawn(spec.command, spec.args, { ...spec.options, ...(signal ? { signal, detached: process.platform !== 'win32' } : {}) });
     } catch (err) {
       resolve({ ok: false, status: -1, stdout: '', stderr: '', error: String((err && err.message) || err) });
       return;
@@ -29,9 +30,11 @@ function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, i
     let stdout = '';
     let stderr = '';
     let done = false;
-    const finish = (res) => { if (!done) { done = true; resolve(res); } };
+    const abort = () => killTree(child);
+    signal?.addEventListener('abort', abort, { once: true });
+    const finish = (res) => { if (!done) { done = true; signal?.removeEventListener('abort', abort); resolve(res); } };
     const timer = setTimeout(() => {
-      try { child.kill(); } catch { /* 既に終わっている */ }
+      try { if (signal) killTree(child); else child.kill(); } catch { /* 既に終わっている */ }
       finish({ ok: false, status: -1, stdout, stderr, error: `${name} が ${Math.round(timeoutMs / 1000)} 秒以内に終わりませんでした` });
     }, timeoutMs);
     child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });

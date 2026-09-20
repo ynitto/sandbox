@@ -25,7 +25,10 @@ test('Electron: 利用枠・未取得・期間切替・折りたたみ・狭幅'
         return { ok: true, data: {
           available: true, by, period,
           totals: { measured_in: 100000, measured_out: 24000, estimated_tokens: 8000, unmeasured_runs: 2, runs: 20 },
-          usage: { rows: [{ group: by === 'model' ? 'example-model' : 'claude', runs: 20, measured_in: 100000, measured_out: 24000, estimated_tokens: 8000, unmeasured_runs: 2 }] },
+          usage: { rows: period === 'week' || by === 'model'
+            ? [{ group: period === 'week' ? 'week-result' : 'example-model', runs: 20, measured_in: 100000, measured_out: 24000, estimated_tokens: 8000, unmeasured_runs: 2 }]
+            : by === 'agent_cli' ? [{ group: 'claude', runs: 14, measured_in: 100000, measured_out: 24000 }, { group: '(なし)', runs: 2, estimated_tokens: 8000, unmeasured_runs: 2 }, { group: 'custom', runs: 4 }]
+              : [{ group: 'flow', runs: 6, measured_in: 100000, measured_out: 24000 }, { group: 'workflow', runs: 4 }, { group: 'project', runs: 4 }, { group: 'routine', runs: 3 }, { group: 'task', runs: 1 }, { group: '(なし)', runs: 2, estimated_tokens: 8000, unmeasured_runs: 2 }] },
           quality: { ledger: { runs: 20, status: { done: 19, cancelled: 1 }, pass_rate: 0.95 } },
           agentLimits: [
             { agent_cli: 'claude', quota_used_percent: 60, reset_at: new Date(Date.now() + 3600000).toISOString(), reset_source: 'observed', observed_at: new Date().toISOString() },
@@ -51,9 +54,28 @@ test('Electron: 利用枠・未取得・期間切替・折りたたみ・狭幅'
     assert.equal(await win.locator('#audit-limits progress').count(), 2);
     await win.waitForFunction(() => document.getElementById('audit-breakdown').textContent.includes('124k'));
     assert.match(await win.textContent('#audit-breakdown'), /124k/);
-    assert.doesNotMatch(await win.textContent('#audit-usage'), /成功率|品質/);
+    assert.doesNotMatch(await win.textContent('#audit-usage'), /成功率|品質|実行先未分類|実行回数）/);
+    assert.match(await win.textContent('#audit-usage'), /総実行回数20 回/);
+    assert.equal(await win.locator('.usage-metric').count(), 4);
+    for (const label of ['ワークフロー', 'プロジェクト', 'タスク', 'その他']) assert.match(await win.textContent('#audit-breakdown'), new RegExp(label));
+    assert.equal(await win.locator('#audit-breakdown tr').filter({ hasText: 'ワークフロー' }).count(), 1);
+    const taskRow = win.locator('#audit-breakdown tr').filter({ hasText: 'タスク' });
+    assert.equal(await taskRow.count(), 1);
+    assert.equal(await taskRow.locator('td').nth(1).textContent(), '4');
+    await win.screenshot({ path: '/tmp/agent-app-usage-panels.png' });
+    await win.setViewportSize({ width: 375, height: 900 });
+    await win.screenshot({ path: '/tmp/agent-app-usage-panels-narrow.png' });
+    assert.equal(await win.locator('.settings-content').evaluate(n => n.scrollWidth <= n.clientWidth + 1), true);
+    await win.setViewportSize({ width: 1280, height: 900 });
+    await win.selectOption('#audit-by', 'agent_cli');
+    const other = win.locator('#audit-breakdown tr').filter({ hasText: 'その他' });
+    await win.waitForFunction(() => document.querySelector('#audit-breakdown tr:last-child td:nth-child(2)')?.textContent === '6');
+    assert.equal(await other.locator('td').nth(1).textContent(), '6');
+    await win.selectOption('#audit-by', 'workload');
     assert.equal(await win.locator('#audit-interval').isVisible(), true);
 
+    await win.selectOption('#audit-period', 'week');
+    await win.getByText('week-result', { exact: true }).waitFor();
     await win.selectOption('#audit-period', 'day');
     await win.selectOption('#audit-period', 'total');
     await win.selectOption('#audit-by', 'model');

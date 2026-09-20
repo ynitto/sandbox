@@ -95,7 +95,7 @@
     $('task-new-session').hidden = !state.editing || state.creating;
     $('task-new-session').disabled = state.pending || state.running || !!((state.session || state.availableSession) && state.deps.isRunning((state.session || state.availableSession).id));
     $('task-launch-agent').disabled = state.pending || hasTerminal || $('task-launch-agent').disabled;
-    $('task-launch-model').disabled = state.pending || hasTerminal;
+    $('task-launch-model').disabled = state.pending || hasTerminal || $('task-launch-agent').value === 'auto';
     // 権限は会話が開いていても変えられる（次の依頼から効く。tmux の CLI は起動し直す）
     $('task-launch-permission').disabled = state.pending;
     $('task-launch-status').textContent = '';
@@ -133,10 +133,11 @@
     const wanted = String((preferred && preferred.agent) || select.value || state.agent || defaults.agent || '');
     const agents = state.deps.agentNames();
     select.innerHTML = agents.length
-      ? agents.map((name) => `<option value="${name.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"${name === wanted ? ' selected' : ''}>${name}</option>`).join('')
+      ? agents.map((name) => `<option value="${name.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"${name === wanted ? ' selected' : ''}>${name === 'auto' ? '自動選択' : name}</option>`).join('')
       : '<option value="">利用できるエージェントがありません</option>';
     select.disabled = !agents.length;
     if (agents.includes(wanted)) select.value = wanted;
+    model.disabled = select.value === 'auto';
     if (preferred && preferred.model != null) model.value = preferred.model;
     else if (!model.value) model.value = defaults.model || '';
   }
@@ -246,7 +247,7 @@
       // 表示し、その画面を見せたまま Kiro 等の入力受付と最初の依頼送信を待つ。
       // Windows → WSL は起動に時間がかかるため、teachStart の完了後まで attach を遅らせると
       // 「押しても何も出ない」状態になり、途中で画面を開き直すと素の CLI だけが残る。
-      if (state.availableSession && !state.session) {
+      if (state.availableSession && !state.session && options.allocation !== 'auto' && !(state.availableSession.allocation === 'auto' && !state.availableSession.modelSelection)) {
         await attach(state.availableSession, token);
         if (token !== state.token) return;
       }
@@ -687,6 +688,7 @@
     $('task-launch-start').onclick = () => startTeaching().catch((err) => error(err.message));
     for (const prefix of ['task-create', 'task-launch']) {
       const refreshExecutionSummary = () => {
+        $(`${prefix}-model`).disabled = $(`${prefix}-agent`).value === 'auto';
         $(`${prefix}-settings${prefix === 'task-launch' ? '-summary' : ''}`).textContent = state.deps.executionLabel(readExecutionInputs(prefix));
       };
       $(`${prefix}-agent`).addEventListener('change', refreshExecutionSummary);
@@ -697,7 +699,7 @@
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); create().catch((err) => error(err.message)); }
     });
     $('task-send').onclick = () => send();
-    $('task-stop').onclick = () => { if (state.session) api.stop(state.session.id).catch((err) => error(err.message)); };
+    $('task-stop').onclick = () => { if (state.session || state.availableSession) api.stop((state.session || state.availableSession).id).catch((err) => error(err.message)); };
     $('task-term-restart').onclick = () => restart();
     $('task-mode-message').onclick = () => setInputMode('message');
     $('task-mode-terminal').onclick = () => setInputMode('terminal');

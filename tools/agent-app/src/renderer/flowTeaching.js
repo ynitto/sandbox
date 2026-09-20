@@ -43,11 +43,12 @@
       for (const name of names) {
         const option = document.createElement('option');
         option.value = name;
-        option.textContent = name;
+        option.textContent = name === 'auto' ? '自動選択' : name;
         select.append(option);
       }
     }
     if (names.includes(wanted)) select.value = wanted;
+    $('flow-teach-model').disabled = select.value === 'auto';
     if (values && values.model != null) $('flow-teach-model').value = values.model;
     if (values && values.autoApprove != null && !$('flow-teach-permission').dataset.pinned) {
       $('flow-teach-permission').value = values.autoApprove ? 'auto' : 'confirm';
@@ -182,7 +183,7 @@
         state.running = false;
         state.phase = null;
       }
-      if (state.availableSession && !state.session) {
+      if (state.availableSession && !state.session && options.allocation !== 'auto' && !(state.availableSession.allocation === 'auto' && !state.availableSession.modelSelection)) {
         await attach(state.availableSession, token);
         if (token !== state.token) return;
       }
@@ -358,7 +359,7 @@
     $('flow-teach-start').onclick = () => state.creating ? submitCreate() : start();
     $('flow-teach-purpose').oninput = () => { $('flow-teach-create-error').hidden = true; };
     $('flow-teach-send').onclick = () => send();
-    $('flow-teach-stop').onclick = () => state.session && api.stop(state.session.id).catch((err) => error(err.message));
+    $('flow-teach-stop').onclick = () => (state.session || state.availableSession) && api.stop((state.session || state.availableSession).id).catch((err) => error(err.message));
     $('flow-teach-restart').onclick = () => state.session && attach(state.session).catch((err) => error(err.message));
     $('flow-teach-mode-message').onclick = () => setInputMode('message');
     $('flow-teach-mode-terminal').onclick = () => setInputMode('terminal');

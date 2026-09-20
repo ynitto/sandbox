@@ -306,7 +306,7 @@ function writeSession(userData, sess) {
 // kind / task / workflow … タスク（kind: 'task'）とワークフロー（kind: 'workflow'）を AI と作る会話は、
 // それぞれ task.machine / workflow.id に紐づき、会話一覧には出ない。
 // origin … 別のリポジトリの会話から分岐したとき、その分岐元（normalizeOrigin）。
-function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null, externalOrigin = null }) {
+function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', allocation = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null, externalOrigin = null }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   if (kind === 'task' && !(task && task.machine)) throw new Error('タスクの会話には保存名が要ります');
@@ -318,7 +318,8 @@ function createSession(userData, { repo, cli, model = '', readonly = false, auto
     task: kind === 'task' ? { machine: String(task.machine) } : null,
     workflow: kind === 'workflow' ? { id: String(workflow.id) } : null,
     readonly: Boolean(readonly), autoApprove: Boolean(autoApprove), policy: String(policy || 'direct'), tier: String(tier || ''),
-    transport: transport === 'headless' ? 'headless' : 'tmux',
+    allocation: allocation === 'auto' && !['direct', 'shared'].includes(policy) ? 'auto' : '',
+    transport: allocation === 'auto' || transport === 'headless' ? 'headless' : 'tmux',
     worktree: String(worktree || ''), branch: String(branch || ''), origin, externalOrigin,
     title: '', cliSessions: {}, live: null, terminalSession: null, terminalSnapshots: [], messages: [], createdAt: now, updatedAt: now,
   }));
@@ -413,7 +414,7 @@ function listForks(userData, originId) {
 
 function updateSession(userData, id, patch) {
   const sess = readSession(userData, id);
-  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live', 'share'];
+  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live', 'share', 'modelSelection', 'allocation'];
   for (const k of allowed) if (patch && k in patch) sess[k] = patch[k];
   if (patch && 'cli' in patch) sess.cli = String(sess.cli || '');
   if (patch && 'model' in patch) sess.model = String(sess.model || '');
@@ -421,9 +422,15 @@ function updateSession(userData, id, patch) {
   if (patch && 'autoApprove' in patch) sess.autoApprove = Boolean(sess.autoApprove);
   if (patch && 'policy' in patch) sess.policy = ['recommended', 'saving', 'quality', 'direct', 'shared'].includes(sess.policy) ? sess.policy : 'direct';
   if (patch && 'tier' in patch) sess.tier = ['small', 'medium', 'large'].includes(sess.tier) ? sess.tier : '';
+  if (patch && 'allocation' in patch) sess.allocation = sess.allocation === 'auto' && !['direct', 'shared'].includes(sess.policy) ? 'auto' : '';
   if (patch && 'transport' in patch) sess.transport = sess.transport === 'headless' ? 'headless' : 'tmux';
   if (patch && 'live' in patch) sess.live = sess.live && typeof sess.live === 'object' ? sess.live : null;
   if (patch && 'share' in patch) sess.share = sess.share && typeof sess.share === 'object' && sess.share.id ? { id: String(sess.share.id) } : null;
+  if (patch && 'modelSelection' in patch) {
+    const choice = patch.modelSelection;
+    sess.modelSelection = choice && ['jev', 'judge', 'audit'].includes(choice.stage)
+      ? { cli: String(choice.cli || ''), model: String(choice.model || ''), stage: choice.stage } : null;
+  }
   return writeSession(userData, sess);
 }
 

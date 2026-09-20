@@ -66,6 +66,13 @@ test('Electron: usage, temporary allocation, manual quota, history, and existing
     await win.click('[data-manual-agent="kiro"]');
     await win.fill('#usage-manual-remaining', '25');
     await win.fill('#usage-manual-reset', '2030-10-01T10:00');
+    assert.equal(await win.locator('#usage-manual-row .setting-field').count(), 2);
+    assert.equal(await win.textContent('#usage-execution'), '実行制御を変更 →');
+    await win.screenshot({ path: '/tmp/agent-app-manual-quota.png' });
+    await win.setViewportSize({ width: 375, height: 900 });
+    assert.equal(await win.locator('.settings-content').evaluate(n => n.scrollWidth <= n.clientWidth + 1), true);
+    await win.screenshot({ path: '/tmp/agent-app-manual-quota-narrow.png' });
+    await win.setViewportSize({ width: 1280, height: 900 });
     await win.evaluate(() => Audit.renderLimits());
     assert.equal(await win.inputValue('#usage-manual-remaining'), '25');
     await win.click('#usage-manual-save');

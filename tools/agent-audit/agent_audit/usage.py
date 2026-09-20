@@ -25,6 +25,10 @@ def _period_floor(period: str, now: "_dt.datetime | None" = None) -> float:
     now = now or _dt.datetime.now(_dt.timezone.utc)
     if period == "day":
         return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    if period == "week":
+        utc = now.astimezone(_dt.timezone.utc)
+        monday = utc.replace(hour=0, minute=0, second=0, microsecond=0) - _dt.timedelta(days=utc.weekday())
+        return monday.timestamp()
     if period == "month":
         return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
     return 0.0

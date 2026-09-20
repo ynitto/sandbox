@@ -5,7 +5,7 @@
   const $ = id => document.getElementById(id);
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
   const AI_LABEL = { claude: 'Claude', codex: 'Codex', copilot: 'Copilot', kiro: 'Kiro', herd: 'ローカル' };
-  const WORKLOAD_LABEL = { chat: '会話', task: 'タスク', workflow: 'ワークフロー', shared: '共有の依頼', evaluation: '評価', audit: '記録の収集・分析', judge: '振り分け・判定' };
+  const WORKLOAD_LABEL = UsagePresentation.WORKLOAD_LABEL;
   let context = {}, quotaData = null, quotaPromise = null, loadingKey = '', summaryRequest = 0;
   let originalTemporary = null, manualAgent = '', filled = false, draftChanged = false;
   const state = { status: null, summary: null, error: '', busy: false };
@@ -123,7 +123,7 @@
       const selected = context.preview?.(allocation);
       const local = ['local', 'local-only'].includes(Allocation.mode(allocation));
       $('usage-allocation-state').textContent = [
-        selected ? `${draftChanged ? '保存後の' : ''}新しい実行：${AI_LABEL[selected.cli] || selected.cli} / ${selected.model || '既定のモデル'}` : '',
+        selected?.allocation === 'auto' ? '新しい会話・手動実行：依頼内容からAIとモデルを選択' : selected ? `${draftChanged ? '保存後の' : ''}新しい実行：${AI_LABEL[selected.cli] || selected.cli} / ${selected.model || '既定のモデル'}` : '',
         Allocation.active(allocation) ? `一時的にローカル優先 · ${allocation.temporary.until ? date(allocation.temporary.until) + ' まで' : '解除するまで'}` : '',
         local && context.localAvailable?.() === false ? 'ローカルが未準備のため通常の配分を使用' : '',
       ].filter(Boolean).join(' · ');
@@ -146,10 +146,11 @@
     if (!state.summary) { box.replaceChildren(el('div', 'sub', '集計しています…')); return; }
     const data = state.summary;
     if (data.available === false || !data.usage || !data.totals) { box.replaceChildren(el('div', 'sub', '使用量を取得できませんでした。記録の収集設定を確認してください')); return; }
-    const rows = data.usage.rows || [], total = data.totals, allocation = data.allocationUsage;
+    const rows = UsagePresentation.breakdown(data.usage.rows, data.by), total = data.totals, allocation = data.allocationUsage;
     if (!rows.length) { box.replaceChildren(el('div', 'sub', 'この期間の記録はありません')); return; }
     const overview = el('div', 'usage-overview');
     for (const [label, value] of [
+      ['総実行回数', `${total.runs || 0} 回`],
       ['クラウド実測トークン', allocation ? allocation.cloud.unmeasured && !allocation.cloud.tokens ? '未計測' : tokens(allocation.cloud.tokens) : '未取得'],
       ['ローカル実行の割合', allocation && allocation.localPercent !== null ? `${allocation.localPercent}%` : '—'],
       ['未計測の実行', `${total.unmeasured_runs || 0} 件`],
@@ -157,12 +158,11 @@
       const metric = el('div', 'usage-metric'); metric.append(el('small', 'sub', label), el('strong', '', value)); overview.append(metric);
     }
     const out = [overview];
-    if (allocation) out.push(el('small', 'sub', `ローカル ${allocation.local.runs} / 全 ${allocation.runs} 回（実行回数）${allocation.other.runs ? ` · 実行先未分類 ${allocation.other.runs} 回` : ''}`));
     if (data.error) out.push(el('small', 'sub', '一部の使用量を取得できませんでした'));
     box.replaceChildren(...out);
     for (const item of rows) {
       const tr = el('tr');
-      const name = data.by === 'agent_cli' ? AI_LABEL[item.group] : data.by === 'workload' ? WORKLOAD_LABEL[item.group] : '';
+      const name = item.group === 'other' ? 'その他' : data.by === 'agent_cli' ? AI_LABEL[item.group] : data.by === 'workload' ? WORKLOAD_LABEL[item.group] : '';
       const measured = (Number(item.measured_in) || 0) + (Number(item.measured_out) || 0);
       for (const value of [name || item.group || '未記録', item.runs || 0, !measured && item.unmeasured_runs ? '未計測' : tokens(measured), tokens(item.estimated_tokens), item.unmeasured_runs || 0]) tr.append(el('td', '', value));
       const note = el('small', 'sub', `入力 ${tokens(item.measured_in)} / 出力 ${tokens(item.measured_out)}`);

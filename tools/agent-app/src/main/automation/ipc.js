@@ -19,6 +19,8 @@ const skills = require('../skills');
 const skillSelection = require('../skillSelection');
 const sessionSetup = require('../sessionSetup');
 const tmuxRun = require('./tmux-run');
+const modelSelection = require('../modelSelection');
+const runner = require('./runner');
 
 // タスク・ワークフローの「使う AI」の既定。設定していなければ会話の「おすすめ」（medium tier）
 // と同じ CLI——会話で使えている CLI がそのままタスクでも動く（agent-herd の aider を
@@ -40,6 +42,7 @@ function automationConfig(config) {
     model: String(cfg.automationModel || ''),
     instructions: cfg.instructions && typeof cfg.instructions === 'object' ? { ...cfg.instructions } : {},
     execution: cfg.execution && typeof cfg.execution === 'object' ? { ...cfg.execution } : {},
+    ...(cfg.allocation ? { allocation: cfg.allocation } : {}),
     // 前回の手動実行で入れた実行条件（リポジトリ → タスクの保存名 → 値）。次回の既定に使う
     taskInputs: cfg.lastTaskInputs && typeof cfg.lastTaskInputs === 'object' ? { ...cfg.lastTaskInputs } : {},
   };
@@ -207,7 +210,7 @@ function configAdapter() {
   };
 }
 
-function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit }) {
+function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit, selectionLimits = async () => ({ agentLimits: [] }) }) {
   makerIpc.registerIpcHandlers(getWindow, {
     channelPrefix: 'automation:',
     onRunExit,
@@ -220,6 +223,21 @@ function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit }) {
     // 登録した表記のままでは向こうで開けない。ホスト（Windows なら WSL）から見た表記を渡す。
     hostPath: host.toHostPath,
     hooks: {
+      selectExecution: async ({ root, policy, prompt, signal }) => {
+        if (!policy || policy === 'direct') return null;
+        const cfg = store.loadConfig(userData());
+        const distro = host.hostOf(root, cfg.wslDistro).distro;
+        const entries = await agents.listAgents(root, { distro });
+        const selected = settings.resolve(cfg, { policy }, { agents: entries });
+        if (selected.allocation !== 'auto') return { cli: selected.cli, model: selected.model };
+        const limits = await selectionLimits().catch(() => ({ agentLimits: [] }));
+        if (signal?.aborted) throw new Error('自動選択を停止しました');
+        return modelSelection.select({ config: cfg, agents: entries, observed: limits.agentLimits, load: cli => agentCli.load(cli, root),
+          prompt, cwd: root, signal, capture: (name, args, opts) => runner.capture(name, args, {
+            ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined,
+          }),
+        });
+      },
       resolveAgent: (payload) => resolveAgent(payload, { userData }),
       assistRunSpec,
       prepareRun: (payload) => prepareRun(userData, payload),

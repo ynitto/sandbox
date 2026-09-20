@@ -15,6 +15,37 @@ def _iso_now(offset_sec: float = 0.0) -> str:
 
 
 class UsageTests(AuditTestCase):
+    def test_week_starts_monday_utc_across_month_and_year(self):
+        for instant, monday in [
+            ("2026-09-14T00:00:00+00:00", "2026-09-14T00:00:00+00:00"),
+            ("2026-09-20T23:59:59+00:00", "2026-09-14T00:00:00+00:00"),
+            ("2026-09-21T00:00:00+00:00", "2026-09-21T00:00:00+00:00"),
+            ("2026-10-01T12:00:00+00:00", "2026-09-28T00:00:00+00:00"),
+            ("2026-01-01T12:00:00+00:00", "2025-12-29T00:00:00+00:00"),
+            ("2026-09-21T08:59:59+09:00", "2026-09-14T00:00:00+00:00"),
+        ]:
+            with self.subTest(instant=instant):
+                self.assertEqual(usage._period_floor("week", datetime.fromisoformat(instant)),
+                                 datetime.fromisoformat(monday).timestamp())
+
+    def test_week_records_include_monday_but_exclude_previous_sunday(self):
+        from unittest.mock import patch
+        st = self.make_store()
+        stamps = ["2026-09-13T23:59:59Z", "2026-09-14T00:00:00Z", "2026-09-20T12:00:00Z"]
+        for i, ts in enumerate(stamps):
+            st.append_record({"id": f"week-{i}", "ts": ts, "_epoch": util.parse_iso(ts),
+                              "kind": "ledger", "workload": "chat", "status": "done"})
+        floor = datetime(2026, 9, 14, tzinfo=timezone.utc).timestamp()
+        with patch.object(usage, "_period_floor", return_value=floor):
+            ledger, _, _ = usage.load_period_records(st, "week")
+            self.assertEqual([r["id"] for r in ledger], ["week-1", "week-2"])
+            self.assertEqual(stats.aggregate_stats(st, "week")["ledger"]["runs"], 2)
+
+    def test_usage_and_stats_cli_accept_week(self):
+        from agent_audit.cli import _build_parser
+        for command in ("usage", "stats"):
+            self.assertEqual(_build_parser().parse_args([command, "--period", "week"]).period, "week")
+
     def _seed(self, *, with_session=False, rates=None, cli="claude"):
         """当月内の時刻で台帳（+セッション）レコードを直接ストアへ入れる。"""
         st = self.make_store()
