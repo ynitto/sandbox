@@ -364,14 +364,18 @@ _RISK_WORDS = ("認証", "決済", "課金", "データ移行", "本番設定", 
 _FILE_TOKEN = re.compile(r"[\w.-]+/[\w./-]+|[\w-]+\.[A-Za-z0-9]{1,5}")
 # 「何を触るか」ではなく「どう確かめるか」を書いている行（`_assess_material` の見出し）。
 _CHECK_LINES = ("verify:", "受入基準:")
+# 「40 ファイル」のように**数だけ書いてある**材料。モデルはこの数を段のしきい値と比べない
+# （実測 2026-09-20: 3 / 7 / 12 / 40 のどれでも 2 を選ぶ）が、正規表現なら拾える。
+_FILE_COUNT = re.compile(r"(\d+)\s*(?:個|つ)?\s*(?:の)?\s*ファイル")
 
 
 def assess_by_string_match(material: str) -> dict:
     """c と r を文字列一致だけで決める当て馬（judge と比べるための下限）。
 
     r は段の説明が並べている語を材料から探す。c は材料に現れるファイルらしい綴りの
-    異なり数を数える（1 / 2〜5 / 6 以上）。どちらも「書いてある属性」をそのまま拾う実装で、
-    これで足りるなら judge は要らない。
+    異なり数と、「40 ファイル」のように書いてある数の大きいほうを段へ落とす（1 / 2〜5 /
+    6 以上）。どちらも「書いてある属性」をそのまま拾う実装で、これで足りるなら judge は
+    要らない。
     """
     text = str(material or "")
     risk = 3 if any(word in text for word in _RISK_WORDS) else 1
@@ -381,7 +385,9 @@ def assess_by_string_match(material: str) -> dict:
     touched = "\n".join(line for line in text.splitlines()
                         if not line.startswith(_CHECK_LINES))
     files = {m.group(0) for m in _FILE_TOKEN.finditer(touched)}
-    complexity = 1 if len(files) <= 1 else (2 if len(files) <= 5 else 3)
+    counted = [int(m.group(1)) for m in _FILE_COUNT.finditer(touched)]
+    how_many = max([len(files)] + counted)
+    complexity = 1 if how_many <= 1 else (2 if how_many <= 5 else 3)
     return {"c": complexity, "r": risk}
 
 

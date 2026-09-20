@@ -273,3 +273,24 @@ class StringMatchBaselineTests(unittest.TestCase):
         """語がそのまま出ていて、触るファイルが 1 つなら当たる（だから下限として使える）。"""
         got = readout_eval.assess_by_string_match("タイトル: 決済 API の修正\nnote: pay/client.py")
         self.assertEqual((got["c"], got["r"]), (1, 3))
+
+
+class BaselineCountTests(unittest.TestCase):
+    """材料が「40 ファイル」と数だけ書いている場合。
+
+    モデルはこの数を段のしきい値と比べない（実測 2026-09-20: 3 / 7 / 12 / 40 のどれでも
+    2 を選ぶ）。比較は機械の仕事なので、当て馬は数を拾ってから段へ落とす。
+    """
+
+    def test_a_count_written_in_prose_beats_the_spellings(self):
+        material = "note: docs/ 以下の 40 ファイルの見出しを同じ記法へ直す"
+        self.assertEqual(readout_eval.assess_by_string_match(material)["c"], 3)
+
+    def test_named_files_still_decide_when_no_count_is_written(self):
+        material = "note: tests/test_a.py・tests/test_b.py・tests/test_c.py を共通化する"
+        self.assertEqual(readout_eval.assess_by_string_match(material)["c"], 2)
+
+    def test_a_count_in_the_check_lines_is_not_read(self):
+        """確かめ方の行は読まない——「40 ファイルが通る」は触る数ではない。"""
+        material = "note: styles.css を直す\n受入基準: docs/ の 40 ファイルが通る"
+        self.assertEqual(readout_eval.assess_by_string_match(material)["c"], 1)
