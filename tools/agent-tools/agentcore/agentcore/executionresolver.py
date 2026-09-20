@@ -26,6 +26,9 @@ Adapter（flow / loop / amigos / project / audit）は入力の変換だけを�
   ``selection_policy`` がある限り legacy を再解釈しない——§6.6）。
 - 決定は入力の純関数（同じ入力・control revision・qualification revision から
   同じ候補）。時刻は ``now`` 引数で受け、内部で時計を読まない。
+- ``selector``（任意）は prompt を見て**適格候補の中から**選ぶ入力である
+  （:mod:`agentcore.modelselect`）。policy の外の候補を返しても無視し、決めなければ
+  rank 順——再採点ではなく、同順位群の中で「この仕事に足る最小」を選ぶ口。
 - 選択した候補と理由を receipt へ残せる情報を必ず返す
   （:func:`receipt_execution_decision`）。
 """
@@ -147,7 +150,7 @@ def _purpose_scope(policy, purpose_or_role):
 def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract=None,
                       explicit_pin=None, budget_state=None, compiled_control=None,
                       profiles_default=None, unavailable=(), attempt_counts=None,
-                      now=None) -> dict:
+                      now=None, selector=None) -> dict:
     """実行直前の候補決定。ExecutionDecision（dict）を返す。
 
     - ``explicit_pin``: Execution Envelope 由来の明示固定。
@@ -159,6 +162,9 @@ def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract
     - ``attempt_counts``: candidate_id → これまでの失敗 attempt 数。
     - ``now``: control 期限判定に使う aware datetime。省略時は期限を判定しない
       （決定の再現性のため、内部で時計を読まない）。
+    - ``selector``: 適格候補が複数あるときに呼ぶ関数（候補列 → ``{"agent_cli", "model", …}``
+      か None）。返した候補が適格候補に無ければ無視して rank 順。決定には ``selector``
+      ブロック（stage / confidence / reason）を残す。
     """
     control = compiled_control if isinstance(compiled_control, dict) else {}
     wl = (control.get("workloads") or {}).get(workload) or {}
@@ -288,9 +294,16 @@ def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract
                                    int(base["retry_limit"]))]
         if remaining:
             chosen, fallback = remaining[0], remaining[1:]
+            reason = f"strategy={policy.get('strategy')} の順位 {chosen.get('rank')} 位"
+            picked = _apply_selector(selector, remaining)
+            if picked is not None:
+                chosen = picked["candidate"]
+                fallback = [c for c in remaining if c is not chosen]
+                base = dict(base, selector=picked["selector"])
+                reason = (f"prompt を見た選択（{picked['selector'].get('stage')}）: "
+                          f"順位 {chosen.get('rank')} 位の候補")
             return _selected(
-                chosen, "qualified-candidate",
-                f"strategy={policy.get('strategy')} の順位 {chosen.get('rank')} 位",
+                chosen, "qualified-candidate", reason,
                 base=base, fallback=fallback, rank=chosen.get("rank"),
                 refs=chosen.get("qualification_refs") or [])
         # --- 手順8: 候補枯渇。legacy fallback を再解釈せず park ---
@@ -327,6 +340,26 @@ def resolve_execution(workload: str, *, purpose_or_role=None, execution_contract
                  "管理面が workload の候補を設定する", base=base)
 
 
+def _apply_selector(selector, remaining: "list[dict]") -> "dict | None":
+    """selector に適格候補を渡し、返った候補が列にあればそれを。無ければ None（rank 順）。"""
+    if selector is None or len(remaining) < 2:
+        return None
+    try:
+        pick = selector([dict(c) for c in remaining])
+    except Exception:                       # noqa: BLE001  判断の失敗で実行を止めない
+        return None
+    if not isinstance(pick, dict):
+        return None
+    cli, model = str(pick.get("agent_cli") or ""), str(pick.get("model") or "")
+    for candidate in remaining:
+        if str(candidate.get("agent_cli")) == cli and str(candidate.get("model")) == model:
+            return {"candidate": candidate,
+                    "selector": {"stage": pick.get("stage"), "confidence": pick.get("confidence"),
+                                 "reason": pick.get("reason"),
+                                 "dropped": list(pick.get("dropped") or [])}}
+    return None
+
+
 def receipt_execution_decision(decision: dict, *, fallback_from=None) -> dict:
     """ExecutionDecision → 実行 receipt の ``execution_decision`` ブロック（§6.5）。
 
@@ -345,4 +378,5 @@ def receipt_execution_decision(decision: dict, *, fallback_from=None) -> dict:
         "reason": decision.get("reason"),
         "fallback_from": fallback_from,
         "eligible_candidate_ids": list(decision.get("eligible_candidate_ids") or []),
+        **({"selector": decision["selector"]} if isinstance(decision.get("selector"), dict) else {}),
     }

@@ -93,6 +93,7 @@ agent-herd chat [<cli>]   # 定義の interactive で対話起動する（既定
 agent-herd defs [<名前>]   # 定義の一覧と実効 argv（エンジンが組むのと同じもの）
 agent-herd exec <cli>     # 定義どおりにヘッドレス実行する（人のデバッグ用。本文は stdin）
 agent-herd harness …      # statemachine / run を tmux もデーモンも無しに回す
+agent-herd select …       # 依頼文に合うエージェント・モデルを候補から選ぶ（jev → judge → 格付け）
 agent-herd status|follow|replay   # 観測と測定（ollama の同名フラグの別名）
 ```
 
@@ -398,6 +399,10 @@ agent-herd replay --arm model=gemma4:e4b,think=off,repeat=3
 とすると、クラウド CLI で回している実行でも遷移条件・route・filter・assess の判定だけを LAN の
 ollama へ回し、判定にクラウドのトークンを使わない。`off` で judge を止め、`unset` で既定
 （ローカル定義の実行だけ）に戻る。agent-app の「設定 > 実行制御」からも同じ設定を変えられる。
+`select.*`（`select.jev.api_key` / `select.jev.endpoint` / `select.jev.model` /
+`select.min_confidence`）は `agent-herd select`——依頼文を見て、候補のどのエージェント・
+モデルに任せるかを本家 Jev → judge → agent-audit の格付けの順で決める口——の設定。
+API キーは表示で伏せる。
 
 `OLLAMA_HOST` が未設定のときは `~/.profile` を評価して `OLLAMA_*` / `AGENT_OLLAMA_*` を
 補完する。エンジンは agent-ollama を**非ログインシェル**の subprocess として起動するため、

@@ -7,6 +7,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 依頼文を見てエージェント・モデルを選ぶ `select`（本家 Jev → judge → agent-audit の格付けの順）
+
+候補ベース実行は用途ごとの順位（agent-audit の実測）で 1 位を取っていたが、同じ用途でも
+依頼 1 件ごとに要る能力は違う。実行直前に依頼文そのものを見て、適格候補の中から
+「足りる最も安い 1 件」を選ぶ口を足した（設計:
+`docs/plans/2026-09-20-agent-tools-model-selection-design.md`）。
+
+- **`agent-herd select [--candidate <cli[/model]>]… [--purpose …] [--ratings …] [--workload …] < prompt`。**
+  候補の特性（相対コスト・ローカル / クラウド・自律度・`agent-audit ratings --json` の PASS 率と
+  平均消費）、トークン量（依頼文の推定トークン数・文脈上限・node-budget の残量）、利用制限
+  （台帳の quota 観測: 枯渇・レート制限と復帰時刻）を 1 つの状態にして choice 1 問で訊く。
+- **3 段で縮退し、どの段が決めたかを隠さない。** 本家 Jev（TypeSafe AI の API。
+  `select.jev.api_key` か環境変数 `TYPESAFE_API_KEY` があるとき）→ agent-herd `judge`
+  （`judge.model` が off でなく、指名かローカル候補があるとき）→ agent-audit の格付け・policy の
+  順位・相対コストによる決定的な順位（LLM 不使用。必ず決める）。上の段が使えない、確度が
+  `select.min_confidence`（既定 0.6）に届かない、「どれでもない」を選んだときだけ次へ倒し、
+  `stage` / `attempts` に残す。
+- **LLM に訊く前に決定的に落とす。** quota が枯渇・レート制限中、文脈上限が足りない、
+  node-budget 超過の縮退指定でのクラウド候補。残りが 1 件なら LLM を呼ばない。
+- **Resolver に差し込める。** `executionresolver.resolve_execution(..., selector=…)` は適格候補が
+  複数のときだけ selector を呼び、policy の外の候補は無視する（順位の再採点ではなく、同じ
+  適格集合の中で選ぶ）。決定と receipt の `execution_decision` に `selector`（段・確度・理由）が
+  残る。agent-flow の `run_agent` に配線済み（明示指定・run 固定では選ばない）。
+- 設定 `select.jev.api_key` / `select.jev.endpoint` / `select.jev.model` / `select.min_confidence`
+  を `agent-herd config set` に追加。API キーは表示で伏せる。
+- テスト: agentcore `test_modelselect.py`（27 件）、agent-flow `test_agent_cli.py` に 2 件。
+
 ### agent-app: 実行制御と利用状況の再デザイン（0.17.0）
 
 - エージェント・モデル・配分を実行制御に集約し、設定下部の保存でまとめて適用。タブ切替や利用枠更新でも未保存の入力を保持する。
