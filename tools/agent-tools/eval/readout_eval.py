@@ -51,6 +51,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(REPO / "tools/agent-tools/agentcore"))
+sys.path.insert(0, str(REPO / "tools/agent-flow"))
 
 from agentcore import judge, ollama_loop  # noqa: E402
 
@@ -287,6 +288,67 @@ def _evaluator_checklist_cell(case: dict, *, closed: bool = False):
         "decision": "done" if all(answers[s].get("value") for s in stages) else "replan"}
 
 
+# --------------------------------------------------------------------------- ステートマシンの 2 面
+def _numbered(text: str) -> "list[tuple[str, str]]":
+    """出力を行番号つきの候補にする（指させる先）。空行は落とす。"""
+    return [(f"L{i}", line.strip())
+            for i, line in enumerate(str(text or "").splitlines(), 1) if line.strip()]
+
+
+def _transition_cell(case: dict, *, locate: bool = False):
+    """遷移条件。既定は**本番の問い**（`_sm_condition_questions` をそのまま呼ぶ）。
+
+    `locate` は同じ条件を「満たしていることを示す行はどれか」に替え、`other`（そんな行は
+    無い）を置く。boolean は出力を読まずにも答えられるが、行を指すには読むしかない。
+    判定は機械——行を指したら満たす、`other` なら満たさない。
+    """
+    sm = importlib.import_module("agentcore.harness.statemachine")
+    lines = dict(_numbered(case["output"]))
+    if not locate:
+        questions = sm._sm_condition_questions(case["conditions"])
+        return case["output"], questions, lambda answers: {
+            name: bool(a.get("value")) for name, a in answers.items()}
+    questions = {str(c["index"]): {
+        "type": "choice", "criteria": lines,
+        "other": "その条件を満たしていることを示す行は無い",
+        "instructions": "Which line of the completed action output shows that this "
+                        f"condition is satisfied? {c['condition']}"}
+        for c in case["conditions"]}
+    return case["output"], questions, lambda answers: {
+        name: a.get("choice") in lines for name, a in answers.items()}
+
+
+# 失敗の直し先。`classify` はこの 3 つから 1 つを選ばせ、機械が fixable へ畳む
+# （作業物の中だけが「やり直しで直る」）。
+_TRIAGE_CAUSES = {"work": "作業物（コード・設定・成果物）の誤り",
+                  "environment": "環境や前提の不足（道具・権限・接続・資源）",
+                  "check": "検査そのものが動いていない"}
+
+
+def _triage_cell(case: dict, *, classify: bool = False):
+    """検査失敗の選別。既定は**本番の問い**（boolean「やり直せば通るか」）。
+
+    `classify` は「失敗の直し先はどこか」を 3 択にし、`work` だけを fixable へ畳む。
+    locate（行を指す）はこの面に当てはまらない——欲しいのは行の所在ではなく原因の種別で、
+    指された行を種別へ落とす決定的な規則が機械の側に無い（本番の決定的な段はこの素材に
+    掛からない）。指すのではなく**札を貼らせて機械が畳む**のが同じ狙いの形になる。
+    """
+    sm = importlib.import_module("agentcore.harness.statemachine")
+    command = "Check command: " + " ".join(case["argv"])
+    state = command + "\n\nCheck output:\n" + case["output"]
+    if not classify:
+        questions = {"fixable": {"type": "boolean", "instructions": sm._SM_TRIAGE_QUESTION
+                     if hasattr(sm, "_SM_TRIAGE_QUESTION") else
+                     ("Can redoing the same action (editing the work product) make this "
+                      "check pass? Answer no only if the failure is caused by the "
+                      "environment (missing tool or dependency, permissions, network, "
+                      "the check itself cannot run). " + command)}}
+        return state, questions, lambda answers: answers["fixable"].get("value")
+    questions = {"cause": {"type": "choice", "criteria": _TRIAGE_CAUSES,
+                           "instructions": "この検査の失敗は、どこを直せば通るようになるか。"}}
+    return state, questions, lambda answers: answers["cause"].get("choice") == "work"
+
+
 def _route_cell(case: dict):
     """route: 本番の問いと状態（`agent_project` の `_route_judge_*`）をそのまま呼ぶ。
 
@@ -339,6 +401,23 @@ VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
                 ("checklist_closed",
                  functools.partial(_evaluator_checklist_cell, closed=True)))
             for i in range(1, 7)}
+# ステートマシンの 2 面。既定は本番の問い、変種は指させる／札を貼らせる形。
+VARIANTS.update({
+    "TR1": ("statemachine_cells", _transition_cell),
+    "TR3": ("statemachine_cells", _transition_cell),
+    f"TR3{VARIANT_SEP}locate": ("statemachine_cells",
+                                functools.partial(_transition_cell, locate=True)),
+    "TR2": ("statemachine_cells", _transition_cell),
+    "CT1": ("statemachine_cells", _triage_cell),
+    "CT2": ("statemachine_cells", _triage_cell),
+    f"TR1{VARIANT_SEP}locate": ("statemachine_cells",
+                                functools.partial(_transition_cell, locate=True)),
+    f"TR2{VARIANT_SEP}locate": ("statemachine_cells",
+                                functools.partial(_transition_cell, locate=True)),
+    f"CT1{VARIANT_SEP}classify": ("statemachine_cells",
+                                  functools.partial(_triage_cell, classify=True)),
+    f"CT2{VARIANT_SEP}classify": ("statemachine_cells",
+                                  functools.partial(_triage_cell, classify=True))})
 # 状態と突き合わせないと答えられない形（段 → ノード / ノード → 段）。
 VARIANTS.update({f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
                  for name, build in (("locate", _evaluator_locate_cell),
