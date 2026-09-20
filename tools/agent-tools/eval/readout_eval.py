@@ -31,6 +31,7 @@ ollama を持たないので、**測っていないものを数字として残�
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib
 import itertools
 import math
@@ -103,11 +104,26 @@ DECISIONS = {"done": "要求を満たしており、これ以上の仕事は要�
              "replan": "足りない仕事があり、計画を足す必要がある"}
 
 
-def _evaluator_cell(case: dict):
-    """evaluator: done / replan の choice 1 問。結果要約は本番（continuation.py）と同じ 1 行形式。"""
+def _results_state(case: dict, *, closed: bool) -> str:
+    """結果要約。1 行形式は本番（continuation.py）と同じ。
+
+    `closed` は**閉世界を状態の側で明示する**——「ノードはこれがすべてで、ここに無い仕事は
+    行われていない」。既定の状態はノードを並べるだけで、並んでいないものが**無い**とは
+    言っていない。素材から含意を外してもモデルが実在しない段を「ある」と答え続けたので
+    （2026-09-20）、その黙約を書き下して効くかを測る。
+    """
+    rows = [f"- {nid} ({kind}) [{status}]: {out[:160]}"
+            for nid, kind, status, out in case["results"]]
+    if not closed:
+        return "\n".join(rows)
+    return (f"このワークフローのノードは次の {len(rows)} 件がすべてで、"
+            "ここに現れていない仕事は行われていない。\n" + "\n".join(rows))
+
+
+def _evaluator_cell(case: dict, *, closed: bool = False):
+    """evaluator: done / replan の choice 1 問。"""
     request = importlib.import_module("judge_eval").REQUEST
-    state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
-                      for nid, kind, status, out in case["results"])
+    state = _results_state(case, closed=closed)
     questions = {"decision": {"type": "choice", "criteria": DECISIONS,
                               "instructions": f"要求は「{request}」。この結果で要求を"
                                               "満たしたか、計画を足すべきか。"}}
@@ -129,7 +145,7 @@ def _request_stages(request: str) -> "list[str]":
     return stages
 
 
-def _evaluator_stages_cell(case: dict):
+def _evaluator_stages_cell(case: dict, *, closed: bool = False):
     """evaluator のもう 1 つの問い方: 要求の段を**選択肢の側**へ出す。
 
     既定の問い（「この結果で要求を満たしたか」）は、全ノードが green なら要求の段が欠けて
@@ -139,8 +155,7 @@ def _evaluator_stages_cell(case: dict):
     決める**。段の名前は要求の本文から取り出すので、要求を書き換えれば選択肢も変わる。
     """
     judge_eval = importlib.import_module("judge_eval")
-    state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
-                      for nid, kind, status, out in case["results"])
+    state = _results_state(case, closed=closed)
     criteria = {"done": "どの段も成果が出ており、足す仕事は無い"}
     criteria.update({f"missing:{stage}": f"「{stage}」の段の成果が出ていない"
                                          "（ノードが無い・失敗している）"
@@ -152,7 +167,7 @@ def _evaluator_stages_cell(case: dict):
         "decision": "done" if answers["decision"]["choice"] == "done" else "replan"}
 
 
-def _evaluator_checklist_cell(case: dict):
+def _evaluator_checklist_cell(case: dict, *, closed: bool = False):
     """evaluator の 3 つめの問い方: 段ごとに boolean 1 問へ割る。
 
     `+stages` は段を選択肢に並べても 1 問のままで、モデルは「全部 green なら done」を
@@ -164,8 +179,7 @@ def _evaluator_checklist_cell(case: dict):
     その形で当たった）。こちらは段ごとに yes / no が残るので、どの段を取り違えたかが見える。
     """
     judge_eval = importlib.import_module("judge_eval")
-    state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
-                      for nid, kind, status, out in case["results"])
+    state = _results_state(case, closed=closed)
     stages = _request_stages(judge_eval.REQUEST)
     questions = {stage: {"type": "boolean",
                          "instructions": f"要求は「{judge_eval.REQUEST}」。"
@@ -218,8 +232,14 @@ CELLS = {
 # calibration の `oracle` は「正解を通す割り当てがちょうど 1 つ」を要求するため、多対一の
 # 変種はそちらへ載せない（載せるなら期待値を集合で持つ話になる。今回は決めない）。
 VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
-            for name, build in (("stages", _evaluator_stages_cell),
-                                ("checklist", _evaluator_checklist_cell))
+            for name, build in (
+                ("stages", _evaluator_stages_cell),
+                ("checklist", _evaluator_checklist_cell),
+                # 状態の側で閉世界を明示した組（問いの立て方は上の 3 つと同じ）。
+                ("closed", functools.partial(_evaluator_cell, closed=True)),
+                ("stages_closed", functools.partial(_evaluator_stages_cell, closed=True)),
+                ("checklist_closed",
+                 functools.partial(_evaluator_checklist_cell, closed=True)))
             for i in range(1, 7)}
 ALL_CELLS = {**CELLS, **VARIANTS}
 
