@@ -108,6 +108,9 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
   判断（型付きの問いに確率つきで答える。文章は生成しない）:
     judge --questions <問い>  状態（stdin）に対して choice / boolean / score で答える
 
+  選択（この prompt をどのエージェント・モデルに任せるか。jev → judge → 格付けの順）:
+    select [--candidate <cli[/model]>]…  prompt（stdin）に合う候補を 1 件選ぶ（--purpose / --json）
+
   設定（各 PC の ~/.agents/agent-herd.yaml）:
     config                  いまの設定を表示する（--json / --check judge）
     config set <鍵> <値>    設定を書く（鍵: judge.model、値: モデル名 / auto / off）
@@ -614,6 +617,130 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# select — 呼び出し先（エージェント・モデル）の選択
+# ---------------------------------------------------------------------------
+SELECT_HELP = f"""使い方: {PROG} select [--candidate <cli[/model]>]... [--purpose <用途>]
+                         [--ratings <PATH>] [--workload <名前>] [--min-confidence 0-1]
+                         [--stages jev,judge,audit] [--json] < prompt
+
+  prompt（stdin）を読み、候補のうちどのエージェント・モデルに任せるかを 1 件選ぶ。
+  判断の順は 本家 Jev → agent-herd judge → agent-audit の格付け（決定的）。上の段が使えない・
+  決めない（確度不足 / どれでもない）ときは次の段へ倒し、どの段が決めたかを結果に残す。
+
+  --candidate <cli[/model]>  候補（繰り返し可）。省略時は解決できる定義すべて（既定モデル）
+  --purpose <用途>           用途の 1 語（格付けの行を引く鍵。例 worker / review / planner）
+  --ratings <PATH>           `agent-audit ratings --json` の出力。候補の PASS 率・平均消費を材料にする
+  --workload <名前>          node-budget の残量を材料にする（routine / project / flow / amigos）
+  --min-confidence <数>      jev / judge の答えを採る確度の下限（既定は設定 select.min_confidence、無ければ 0.6）
+  --stages <段,…>            使う段を絞る（既定 jev,judge,audit）
+  --json                     結果の全体（状態・落とした候補・各段の記録）を出す
+
+  stdout は 1 行の JSON（selected / stage / confidence / reason）。stderr に @agent-usage。
+  終了コード: 0 = 選んだ、1 = 選べない（候補が全滅）か入力の誤り以外の失敗、2 = 引数の誤り"""
+
+
+def cmd_select(argv, *, err=None, out=None, stdin=None, jev_request=None,
+               judge_request=None) -> int:
+    """呼び出し先の選択。判断の順と材料は `agentcore.modelselect`。"""
+    err = err or sys.stderr
+    out = out or sys.stdout
+    from agentcore import modelselect
+
+    tokens = list(argv)
+    if tokens and tokens[0] in ("-h", "--help", "help"):
+        print(SELECT_HELP)
+        return 0
+    candidates: "list[str]" = []
+    purpose = ""
+    ratings_path = workload = None
+    min_confidence: "float | None" = None
+    stages = modelselect.STAGES
+    as_json = False
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--json":
+            as_json = True
+        elif token in ("--candidate", "--purpose", "--ratings", "--workload",
+                       "--min-confidence", "--stages"):
+            if i + 1 >= len(tokens):
+                _err(f"{token} には値が必要です", err=err)
+                return 2
+            i += 1
+            value = tokens[i]
+            if token == "--candidate":
+                candidates.append(value)
+            elif token == "--purpose":
+                purpose = value
+            elif token == "--ratings":
+                ratings_path = value
+            elif token == "--workload":
+                workload = value
+            elif token == "--min-confidence":
+                try:
+                    min_confidence = float(value)
+                except ValueError:
+                    _err(f"--min-confidence は数です: {value!r}", err=err)
+                    return 2
+                if not 0 <= min_confidence <= 1:
+                    _err("--min-confidence は 0〜1 です", err=err)
+                    return 2
+            else:
+                picked = tuple(s.strip() for s in value.split(",") if s.strip())
+                if not picked or any(s not in modelselect.STAGES for s in picked):
+                    _err(f"--stages は {', '.join(modelselect.STAGES)} の組み合わせです", err=err)
+                    return 2
+                stages = picked
+        else:
+            _err(f"select は {token} を受け取りません（prompt は stdin）", err=err)
+            return 2
+        i += 1
+    if not candidates:
+        candidates = _definition_names()
+        if not candidates:
+            _err("候補が 1 つもありません（--candidate で指定するか、定義を配ってください）", err=err)
+            return 2
+    try:
+        normalized = modelselect.normalize_candidates(candidates)
+    except modelselect.SelectError as exc:
+        _err(str(exc), err=err)
+        return 2
+    ratings = None
+    if ratings_path:
+        try:
+            ratings = json.loads(Path(ratings_path).expanduser().read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            _err(f"--ratings を読めません: {exc}", err=err)
+            return 2
+    prompt = _read_prompt(stdin)
+    if not prompt.strip():
+        _err("prompt が空です（stdin で渡します）", err=err)
+        return 2
+
+    from agentcore.hostenv import load_profile_env
+    load_profile_env()
+    budget = modelselect.budget_summary(workload) if workload else None
+    try:
+        result = modelselect.select(prompt, normalized, purpose=purpose, ratings=ratings,
+                                    budget=budget, min_confidence=min_confidence,
+                                    stages=stages, jev_request=jev_request,
+                                    judge_request=judge_request)
+    except modelselect.SelectError as exc:
+        _err(str(exc), err=err)
+        return 1
+    usage = result["usage"]
+    print(f"@agent-usage tokens_in={usage['tokens_in']} tokens_out={usage['tokens_out']}",
+          file=err)
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False), file=out)
+    else:
+        print(json.dumps({"selected": result["selected"], "stage": result["stage"],
+                          "confidence": result["confidence"], "reason": result["reason"],
+                          "dropped": result["dropped"]}, ensure_ascii=False), file=out)
+    return 0 if result["selected"] else 1
+
+
+# ---------------------------------------------------------------------------
 # config — 各 PC の設定ファイル（~/.agents/agent-herd.yaml）
 # ---------------------------------------------------------------------------
 CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
@@ -630,6 +757,12 @@ CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
 
     judge.calibration  手動承認した用途別 gate（model / method / min_coverage / thresholds の JSON）。
                        用途 filter / route / assess / transition。null・省略した用途は保留。
+
+    select.jev.api_key     本家 Jev（TypeSafe AI）の API キー。`select` の第 1 段を有効にする
+                           （無ければ環境変数 TYPESAFE_API_KEY。off で使わない）
+    select.jev.endpoint    Jev の URL（省略時 https://api.typesafe.ai/v1/systemone）
+    select.jev.model       Jev のモデル（省略時 jev-latest）
+    select.min_confidence  jev / judge の答えを採る確度の下限（0〜1。省略時 0.6）
 
   --json          設定を JSON で出す（agent-app が読む形）
   --check judge   判定をモデル指名で回す設定なら終了コード 0、それ以外は 1
@@ -1096,6 +1229,8 @@ def main(argv=None, prog=None) -> int:
         return cmd_decide(rest)
     if sub == "judge":
         return cmd_judge(rest)
+    if sub == "select":
+        return cmd_select(rest)
     if sub == "config":
         return cmd_config(rest)
 
@@ -1105,7 +1240,7 @@ def main(argv=None, prog=None) -> int:
              f"定義を指定して回すなら: {PROG} exec {sub} [--model <モデル>]")
         return 2
     known = sorted({*ADAPTERS, *OBSERVE_ALIASES, "defs", "exec", "chat", "harness", "decide",
-                    "judge", "config"})
+                    "judge", "select", "config"})
     _err(f"未知のサブコマンド: {sub!r}（使えるのは {', '.join(known)}）")
     return 2
 

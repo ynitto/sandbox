@@ -39,7 +39,7 @@ agentcore が import する側
 | `commands` | 指示ドロップ（`commands/<name>.json`）の取り込み規約 | `pending` / `read_command` / `reject` / `write_receipt` / `prune_receipts` / `prune_rejected` |
 | `interaction` | 人の介在（needs）の検証と決定的決着 | `normalize_spec` / `build_request` / `validate_response` / `resolve` |
 | `executioncontract` | 候補ベース実行 3 契約の語彙と形 | `candidate_id` / `qualifications_errors` / `selection_policy_errors` / `execution_receipt_errors` |
-| `executionresolver` | 実行直前の候補決定 | `resolve_execution` / `receipt_execution_decision` |
+| `executionresolver` | 実行直前の候補決定 | `resolve_execution`（任意の `selector` で適格候補の中から prompt を見て選ぶ） / `receipt_execution_decision` |
 | `nodecontract` | agent-flow のノード語彙と結果契約 | `validate_node_data` / `operation_contract_errors` / `decide_candidates` / `local_patch_blockers` |
 | `nodeid` | `node_id`（PC の身元）の正規化 | `normalize_node_id` / `default_node_id` |
 | `repolocal` | git URL の正規化一致とローカルクローン解決 | `normalize_repo_url` / `same_repo` / `load_host_declaration` / `resolve_local` / `merge_local` |
@@ -49,7 +49,7 @@ agentcore が import する側
 | `promptcompose` | プロンプトキャッシュに適合する注入順の正規化 | `compose` |
 | `promptrender` | プロンプトへ注入する構造化データの決定的な圧縮描画 | `dumps_prompt` / `render_table` |
 
-### 2.2 ローカル推論アダプタ（9 モジュール）
+### 2.2 ローカル推論アダプタ（10 モジュール）
 
 | モジュール | 役割 |
 |---|---|
@@ -62,7 +62,8 @@ agentcore が import する側
 | `ollama_replay` | 記録済みプロンプトのオフライン再生（測定の口） |
 | `aider_adapter` | Aider の実測トークンを共通 usage 契約へ渡す。`agent-aider` の実体 |
 | `judge` | 型付きの問い（choice / boolean / score）に、選択肢の上の確率分布で答える判断 AI。`agent-herd judge` の実体 |
-| `herdconfig` | 各 PC の設定ファイル `~/.agents/agent-herd.yaml`（`judge.model`）の読み書き。`agent-herd config` の実体 |
+| `modelselect` | 依頼文と候補の特性・トークン量・利用制限から、使うエージェント・モデルを 1 件選ぶ（本家 Jev → judge → agent-audit の格付けの順で縮退）。`agent-herd select` の実体。Resolver へは `resolver_selector` で差し込む |
+| `herdconfig` | 各 PC の設定ファイル `~/.agents/agent-herd.yaml`（`judge.model` / `select.*`）の読み書き。`agent-herd config` の実体 |
 
 詳細は [`docs/specs/agent-herd-spec.md`](./agent-herd-spec.md)。
 
@@ -130,7 +131,7 @@ python3 -m unittest discover -s agentcore/tests  # 24 ファイル・654 件
 | ルート | 対象 | 主なファイル |
 |---|---|---|
 | `agentcore/tests/` | 共通契約の 1 実装（§2.1） | `test_board` / `test_commands` / `test_executioncontract` / `test_executionresolver` / `test_interaction` / `test_nodebudget` / `test_nodecontract` / `test_nodeid` / `test_promptcompose` / `test_promptrender` / `test_repolocal` / `test_verifycontract` / `test_methods` / `test_agentcli_files` / `test_agentcli_jsonvariant` / `test_compiler_resolver_handshake` |
-| `agentcore/agentcore/tests/` | ローダの本体とローカル推論（§2.2） | `test_agentcli` / `test_protocol` / `test_transport` / `test_methods` / `test_aider_adapter` / `test_adapter_env_parity` / `test_ollama_{adapter,loop,context,events,skills,tui,replay}` |
+| `agentcore/agentcore/tests/` | ローダの本体とローカル推論（§2.2） | `test_agentcli` / `test_protocol` / `test_transport` / `test_methods` / `test_aider_adapter` / `test_adapter_env_parity` / `test_ollama_{adapter,loop,context,events,skills,tui,replay}` / `test_judge` / `test_herdconfig` / `test_modelselect` |
 
 `test_agentcli_files.py` / `test_agentcli_jsonvariant.py`（定義の探索順と `variants` の振り替え）と
 `test_agentcli.py`（argv 組み立てとトリアージ）が別ルートに分かれている点に注意してください。

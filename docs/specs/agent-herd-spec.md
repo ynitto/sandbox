@@ -206,6 +206,22 @@ agent-herd config unset judge.model            # 既定（ローカルの定義�
 設定は各 PC の `~/.agents/agent-herd.yaml` に置かれる（§9.3）。agent-app の
 「設定 > 実行制御」からも同じ設定を変えられる。
 
+### 依頼に合うエージェント・モデルを選ばせる
+
+候補が複数あって「これはローカルで足りるか、クラウドに出すべきか」を毎回決めたくないときは
+`select` を使う。依頼文と候補の特性・残量・利用制限を材料に 1 件を返す。判断は本家 Jev →
+`judge` → agent-audit の格付け（決定的）の順で、使える段が無くても必ず決める。
+
+```bash
+echo 'README の誤字を直して' | agent-herd select --candidate ollama --candidate claude
+agent-audit ratings --period month --json > ratings.json
+cat task.md | agent-herd select --purpose worker --ratings ratings.json --workload flow
+agent-herd config set select.jev.api_key sk-…     # 本家 Jev を第 1 段に使う
+```
+
+stdout の `stage` がどの段で決めたかを示す。確度が `select.min_confidence` に届かない答えは
+採らず次の段へ倒す（§5.7）。
+
 ### スキルを読み込む
 
 スキルは自動選択されない。名前を明示する。
@@ -376,13 +392,14 @@ agent-herd SUBCOMMAND ...   -> SUBCOMMAND ...
 | `harness run ...` | 引数 | 1 件の依頼をハーネスで実行する |
 | `decide --decision CONTRACT` | stdin | 候補から事実を抽出し、機械が選別する |
 | `judge --questions QUESTIONS` | stdin | 型付きの問いに確率つきで答える |
+| `select [--candidate CLI[/MODEL]]...` | stdin | 依頼文に合うエージェント・モデルを候補から 1 件選ぶ |
 | `config [set KEY VALUE \| unset KEY]` | 引数 | 各 PC の設定（`~/.agents/agent-herd.yaml`）を表示・変更する |
 | `status [LOG]` | JSONL ログ | 現在の状態を JSON で表示する |
 | `follow [LOG]` | JSONL ログ | 状態を追尾表示する |
 | `replay [PATH] ...` | JSONL ログ | 記録済みの依頼を再生する |
 
 `aider`、`ollama`、`edit` と観測コマンドの残りの引数は adapter が解釈する。`chat`、`defs`、
-`exec`、`harness`、`decide`、`judge`、`config` は、各節に記載した引数以外を終了コード 2 で拒否する。
+`exec`、`harness`、`decide`、`judge`、`select`、`config` は、各節に記載した引数以外を終了コード 2 で拒否する。
 
 トップレベルでは、次の 2 つも受け付ける。
 
@@ -622,15 +639,57 @@ agent-herd config unset KEY
 （agent-app が読む形）。`--check judge` は判定がモデル指名（`mode` が `pinned`）で回る設定なら
 終了コード 0、それ以外は 1——スキルやスクリプトが「判定を judge に任せてよいか」を確かめる口。
 
-`set` は鍵と値を取り、`unset` は鍵だけを取る。鍵は次の 1 つ。
+`set` は鍵と値を取り、`unset` は鍵だけを取る。鍵は次のとおり。
 
 | 鍵 | 値 | 意味 |
 |---|---|---|
 | `judge.model` | `auto` / `off` / モデル名 | §5.5 の表のとおり。`unset` は `auto` と同じ |
+| `select.jev.api_key` | API キー / `off` | 本家 Jev（TypeSafe AI）の API キー。`select`（§5.7）の第 1 段を有効にする。無ければ環境変数 `TYPESAFE_API_KEY`。`off` は環境変数があっても使わない。表示（`config` / `--json`）では伏せる |
+| `select.jev.endpoint` | URL | Jev の URL。省略時 `https://api.typesafe.ai/v1/systemone`（ゲートウェイ経由なら差し替える） |
+| `select.jev.model` | モデル名 | 省略時 `jev-latest` |
+| `select.min_confidence` | 0〜1 | `select` で jev / judge の答えを採る確度の下限。省略時 0.6（実測前の置き値） |
 | `judge.calibration` | JSON object / unset | 人が承認したmodel・method・min_coverage・thresholds。用途filter/route/assess/transition。null・省略した用途、未測定model/method、低coverageは既存fallbackへ。未設定なら従来動作。report生成は書き換えない |
 
 
 未知の鍵と引数の誤りは終了コード 2、ファイルを書けないときは 1。
+
+#### 5.7 `select`
+
+```text
+agent-herd select [--candidate CLI[/MODEL]]... [--purpose PURPOSE] [--ratings PATH]
+                  [--workload NAME] [--min-confidence 0-1] [--stages jev,judge,audit] [--json]
+```
+
+stdin の依頼文（prompt）を読み、候補（`--candidate`。省略時は解決できる定義すべてと
+その既定モデル）のうち、どのエージェント・モデルに任せるかを 1 件選ぶ。判断の材料は
+候補の特性（定義の相対コスト・ローカルかクラウドか・自律度、`--ratings` で渡した
+`agent-audit ratings --json` の PASS 率と平均消費）、トークン量（依頼文の推定トークン数、
+候補の文脈上限、`--workload` の node-budget の残量）、利用制限（node-budget 台帳の
+quota 観測: 枯渇・レート制限と復帰時刻）。判断の順は次のとおりで、上の段が使えない・
+決めない（確度が下限に届かない、「どれでもない」を選んだ）ときだけ次へ倒す。
+
+| 段 | 何で決めるか | 使う条件 |
+|---|---|---|
+| `jev` | 本家 Jev（TypeSafe AI の System One API）に状態と choice 1 問を送る | `select.jev.api_key`（§5.6）か環境変数 `TYPESAFE_API_KEY` がある |
+| `judge` | §5.5 の judge（LAN の Ollama で 1 トークン目の分布を読む） | `judge.model` が `off` でなく、指名があるか候補にローカル定義がある |
+| `audit` | agent-audit の格付け → policy の順位 → 相対コストの低い順（LLM を呼ばない） | いつでも。必ず決める |
+
+LLM に訊く前に決定的に落とせる候補は落とす: quota が枯渇・レート制限中、文脈上限が依頼文に
+足りない、node-budget 超過で `on_exhausted: degrade` のときのクラウド候補（ローカル候補が
+残る場合）。残りが 1 件なら LLM を呼ばない。全部落ちるときは落とさず判断に回す
+（止めるかどうかは呼び出し側の契約）。
+
+stdout は `{"selected": {"agent_cli", "model"}, "stage", "confidence", "reason", "dropped"}` の
+1 行。`--json` は状態（Jev / judge に送ったもの）・各段の記録（`attempts`）・使用量も出す。
+stderr に `@agent-usage`（jev と judge の合計）。終了コードは 0 が選んだ、1 が選べない
+（引数の誤り以外の失敗）、2 が引数の誤り。
+
+Python からは `agentcore.modelselect.select(prompt, candidates, purpose=…)`。エンジンは
+`executionresolver.resolve_execution(..., selector=modelselect.resolver_selector(prompt))` で
+差し込み、selection_policy の適格候補が複数あるときその中からだけ選ぶ（policy の外へは
+出ず、決めなければ順位どおり）。agent-flow はこれを配線済みで、明示指定・run 固定の
+呼び出しでは選ばない。決定には `selector`（段・確度・理由）が残り、receipt の
+`execution_decision` に写る。
 
 ### 6. 定義と profile
 
@@ -795,6 +854,12 @@ frontmatter は 1 行の `key: value` だけを受け付ける。
 ```yaml
 judge:
   model: gemma4:e4b   # auto（省略）/ off / モデル名
+select:
+  jev:
+    api_key: sk-…     # 本家 Jev の API キー（無ければ環境変数 TYPESAFE_API_KEY。off で使わない）
+    endpoint: https://api.typesafe.ai/v1/systemone
+    model: jev-latest
+  min_confidence: 0.6
 ```
 
 書くのは `agent-herd config`（§5.6）か agent-app の「設定 > 実行制御」。手で書いてもよい

@@ -14,6 +14,17 @@ judge:
 agent-app の「設定 > 実行制御」はこのファイルを直接は触らず、`agent-herd config set judge.model …`
 で書く——python が動く側（WSL なら WSL の home）の `~/.agents` に置くため。
 
+2 つ目の項目は `select`（呼び出し先の選択。`agentcore.modelselect`）:
+
+```yaml
+select:
+  jev:
+    api_key: sk-…          # 本家 Jev（TypeSafe AI）の API キー。無ければ環境変数 TYPESAFE_API_KEY
+    endpoint: https://…    # 省略時は https://api.typesafe.ai/v1/systemone（ゲートウェイ経由なら差し替え）
+    model: jev-latest      # 省略時は jev-latest
+  min_confidence: 0.6      # jev / judge の答えを採る確度の下限（0〜1）
+```
+
 ## 場所と形
 
 `~/.agents/agent-herd.yaml` / `.yml` / `.json` のうち見つかった最初の 1 つを読む
@@ -40,7 +51,9 @@ CONFIG_NAMES = ("agent-herd.yaml", "agent-herd.yml", "agent-herd.json")
 JUDGE_AUTO = "auto"
 JUDGE_OFF = "off"
 # 設定の項目名（`agent-herd config set` が受け付ける鍵）。増やすならここと `describe()`。
-KNOWN_KEYS = ("judge.model", "judge.calibration")
+SELECT_KEYS = ("select.jev.api_key", "select.jev.endpoint", "select.jev.model",
+               "select.min_confidence")
+KNOWN_KEYS = ("judge.model", "judge.calibration", *SELECT_KEYS)
 
 
 class ConfigError(RuntimeError):
@@ -199,6 +212,70 @@ def calibration_setting():
     return normalize_calibration(section["calibration"])
 
 
+def select_setting() -> dict:
+    """`select` の設定を 1 つの dict で: {"jev": {"api_key", "endpoint", "model", "source", "off"},
+    "min_confidence": float|None, "error": str|None}。壊れたファイルは「設定なし」に倒して理由を残す。"""
+    try:
+        data = load()
+    except ConfigError as exc:
+        return {"jev": {}, "min_confidence": None, "error": str(exc)}
+    section = data.get("select") if isinstance(data.get("select"), dict) else {}
+    jev_raw = section.get("jev") if isinstance(section.get("jev"), dict) else {}
+    jev: dict = {}
+    key = str(jev_raw.get("api_key") or "").strip()
+    if key:
+        jev["api_key"] = key
+        jev["source"] = "config"
+    if jev_raw.get("api_key") is False or str(jev_raw.get("api_key") or "").strip().lower() == JUDGE_OFF:
+        jev["off"] = True
+        jev.pop("api_key", None)
+        jev.pop("source", None)
+    for name in ("endpoint", "model"):
+        text = str(jev_raw.get(name) or "").strip()
+        if text:
+            jev[name] = text
+    raw_conf = section.get("min_confidence")
+    min_conf = None
+    if isinstance(raw_conf, (int, float)) and not isinstance(raw_conf, bool) \
+            and math.isfinite(raw_conf) and 0 <= raw_conf <= 1:
+        min_conf = float(raw_conf)
+    return {"jev": jev, "min_confidence": min_conf, "error": None}
+
+
+def _normalize_select_value(key: str, value):
+    if key == "select.min_confidence":
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("select.min_confidence は 0〜1 の数です") from exc
+        if not math.isfinite(number) or not 0 <= number <= 1:
+            raise ConfigError("select.min_confidence は 0〜1 の数です")
+        return number
+    if key == "select.jev.api_key" and value is False:
+        return JUDGE_OFF
+    text = str(value if value is not None else "").strip()
+    if not text:
+        raise ConfigError(f"{key} の値が空です（消すなら unset）")
+    return text
+
+
+def _set_path(data: dict, path: "tuple[str, ...]", value) -> None:
+    """入れ子の鍵へ書く（None は消す）。空になった節は落とす。"""
+    head, rest = path[0], path[1:]
+    if not rest:
+        if value is None:
+            data.pop(head, None)
+        else:
+            data[head] = value
+        return
+    child = data.get(head) if isinstance(data.get(head), dict) else {}
+    _set_path(child, rest, value)
+    if child:
+        data[head] = child
+    else:
+        data.pop(head, None)
+
+
 def set_value(key: str, value) -> Path:
     """`agent-herd config set KEY VALUE`。鍵は KNOWN_KEYS だけ（未知の鍵は黙って書かない）。"""
     if key not in KNOWN_KEYS:
@@ -225,6 +302,9 @@ def set_value(key: str, value) -> Path:
             data["judge"] = section
         else:
             data.pop("judge", None)
+    elif key in SELECT_KEYS:
+        normalized = None if value is None else _normalize_select_value(key, value)
+        _set_path(data, tuple(key.split(".")), normalized)
     return save(data)
 
 
@@ -239,7 +319,14 @@ def describe() -> dict:
         calibration, calibration_error = calibration_setting(), None
     except ConfigError as exc:
         calibration, calibration_error = None, str(exc)
+    select = select_setting()
+    jev = dict(select["jev"])
+    # API キーは表示しない（`config --json` は agent-app や人の画面へ流れる）。
+    if jev.get("api_key"):
+        jev["api_key"] = "(set)"
     return {"calibration": calibration, "calibration_error": calibration_error,
             "path": str(path) if path else None,
             "default_path": str(agents_home() / CONFIG_NAMES[0]),
-            "judge": judge_setting()}
+            "judge": judge_setting(),
+            "select": {"jev": jev, "min_confidence": select["min_confidence"],
+                       "error": select["error"]}}
