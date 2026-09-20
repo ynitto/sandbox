@@ -91,7 +91,11 @@ class RiskDigestTests(unittest.TestCase):
 
 class AssessTests(unittest.TestCase):
     """投入時アセスメント（c=複雑さ r=リスク a=曖昧さ・各1-3）。採点は情報のみで、
-    実行可否・done 条件を変えないことを検証する。"""
+    実行可否・done 条件を変えないことを検証する。
+
+    **訊くのは c と r だけ**——a はタスクの記録（verify・受入基準の有無）から
+    `_assess_ambiguity` が決める。経路（judge / 生成 / ヒューリスティック）に関わらず
+    同じ規則で、モデルが a を書いてきても無視する。"""
 
     def test_heuristic_scoring_is_deterministic(self):
         with tempfile.TemporaryDirectory() as d:
@@ -125,7 +129,7 @@ class AssessTests(unittest.TestCase):
             cfg = cfg_for(d, executor="kiro")           # 非 stub → エージェント採点
             t = km.Task(id="T1", title="x", verify="true")
             val = km.assess_task(cfg, t, agent_run=lambda p, m: '{"c": 9, "r": 0, "a": 2}')
-            self.assertEqual(val, "c=3 r=1 a=2")        # 1-3 にクランプ
+            self.assertEqual(val, "c=3 r=1 a=1")        # c/r は 1-3 にクランプ・a は verify から
             # 非 JSON・例外はヒューリスティックへフォールバック
             t2 = km.Task(id="T2", title="y", verify="true")
             val = km.assess_task(cfg, t2, agent_run=lambda p, m: "説明文だけ")
@@ -145,7 +149,7 @@ class AssessTests(unittest.TestCase):
                             for axis, value in axes.items()},
                 "usage": {"tokens_in": 30, "tokens_out": 3}, "model": "gemma4:e4b"}
 
-    def _assess(self, *, local=True, result=None, error=None, generated="{\"c\": 2, \"r\": 2, \"a\": 2}"):
+    def _assess(self, *, local=True, result=None, error=None, generated="{\"c\": 2, \"r\": 2}"):
         seen = {}
 
         def fake_evaluate(state, questions, **kwargs):
@@ -166,37 +170,42 @@ class AssessTests(unittest.TestCase):
                 val = km.assess_task(cfg, t)
         return val, seen
 
-    def test_judge_scores_three_axes_with_one_question_each(self):
-        """3 軸 = `score` の問い 3 つ。値は確率加重の四捨五入（最頻だけを採らない）。"""
-        val, seen = self._assess(result=self._scores(c=1.4, r=2.6, a=1.2))
-        self.assertEqual(val, "c=1 r=3 a=1")
+    def test_judge_scores_the_two_asked_axes_with_one_question_each(self):
+        """訊くのは c と r の 2 軸（`score` の問い 1 つずつ）。値は確率加重の四捨五入。
+
+        a は訊かない——`verify` と受入基準の有無から決まるので、問いに含めれば揺れるだけ。
+        """
+        val, seen = self._assess(result=self._scores(c=1.4, r=2.6))
+        self.assertEqual(val, "c=1 r=3 a=1", "a は verify='true' から 1")
         self.assertNotIn("generated", seen, "judge が採点したので生成経路は呼ばない")
-        self.assertEqual(sorted(seen["questions"]), ["a", "c", "r"])
+        self.assertEqual(sorted(seen["questions"]), ["c", "r"])
         for q in seen["questions"].values():
             self.assertEqual(q["type"], "score")
             self.assertEqual(sorted(q["criteria"]), ["1", "2", "3"])
         self.assertIn("決済の締め処理", seen["state"])
         self.assertEqual(seen["kwargs"]["model"], "gemma4:e4b")
 
-    def test_judge_values_are_clamped_to_the_scale(self):
+    def test_judge_values_are_clamped_and_a_ignores_the_model(self):
         val, _seen = self._assess(result=self._scores(c=0.2, r=9.9, a=2.5))
-        self.assertEqual(val, "c=1 r=3 a=3")
+        self.assertEqual(val, "c=1 r=3 a=1", "モデルが a を返しても採らない")
 
     def test_cloud_agent_keeps_the_generative_path(self):
         val, seen = self._assess(local=False)
-        self.assertEqual(val, "c=2 r=2 a=2")
+        self.assertEqual(val, "c=2 r=2 a=1")
         self.assertIn("generated", seen)
 
     def test_judge_failure_and_low_confidence_fall_back(self):
         val, seen = self._assess(error="ollama に接続できません")
-        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=2", True))
+        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=1", True))
         with mock.patch.object(km, "_ASSESS_JUDGE_MIN_CONFIDENCE", 0.95):
-            val, seen = self._assess(result=self._scores(c=1.0, r=1.0, a=1.0))
-        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=2", True))
+            val, seen = self._assess(result=self._scores(c=1.0, r=1.0))
+        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=1", True))
 
     def test_an_unreadable_score_falls_back_instead_of_guessing(self):
-        val, seen = self._assess(result=self._scores(c=1.0, r=2.0, a=None))
-        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=2", True))
+        """読めない軸があれば生成経路へ倒す。読めない軸は**訊いた軸**でなければ意味が無い
+        ので、a ではなく r を読めなくする（a はもう訊いていない）。"""
+        val, seen = self._assess(result=self._scores(c=1.0, r=None))
+        self.assertEqual((val, "generated" in seen), ("c=2 r=2 a=1", True))
 
     def test_an_explicit_agent_run_bypasses_judge(self):
         with tempfile.TemporaryDirectory() as d:
@@ -205,7 +214,7 @@ class AssessTests(unittest.TestCase):
             with mock.patch.object(km._judge, "evaluate",
                                    side_effect=AssertionError("judge must not be called")):
                 val = km.assess_task(cfg, t, agent_run=lambda p, m: '{"c": 1, "r": 2, "a": 3}')
-        self.assertEqual(val, "c=1 r=2 a=3")
+        self.assertEqual(val, "c=1 r=2 a=1", "生成経路でもモデルの a は採らない")
 
     def test_both_paths_read_the_same_material(self):
         """材料は 1 実装（`_assess_material`）。経路で材料が違うと採点差の原因が追えない。"""

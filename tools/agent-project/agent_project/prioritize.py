@@ -841,14 +841,26 @@ def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
 # ---------------------------------------------------------------------------
 # 投入時アセスメント（Spec Orchestrator の採点段）— c=複雑さ / r=リスク / a=曖昧さ（各1-3）
 # ---------------------------------------------------------------------------
+def _assess_ambiguity(task: Task) -> int:
+    """曖昧さ（a）はタスクの記録から決まる——verify にコマンドがあれば 1、受入基準の自然文
+    だけなら 2、どちらも無ければ 3。
+
+    **決定論で決まる問いはモデルまで来ない**（route が「決定論で決まらなかったときだけ訊く」
+    のと同じ作法）。段の説明を材料の属性で書き切った結果（2026-09-20）、a の境目は
+    `verify` と受入基準の有無そのものになり、訊く理由が無くなった。判定はここだけが持つ。
+    """
+    if task.verify or task.get("verify_template"):
+        return 1
+    return 2 if task_acceptance(task) else 3
+
+
 def _assess_heuristic(cfg: "Config", task: Task) -> dict:
     """エージェント不在・失敗・stub 時の決定的採点。材料はタスク定義と decisions/ の走査のみ。
     c: cohort（同種の繰り返し）は多対象＝3。r: 過去の回避判断（avoid）に類似＝3。
-    a: 決定的 verify あり=1 / 受入基準（自然言語）のみ=2 / どちらも無し=3。"""
+    a: `_assess_ambiguity`（経路によらず同じ規則）。"""
     c = 3 if (task.get("cohort_items") or task.get("cohort")) else 1
     r = 3 if find_avoidance(cfg, task) else 1
-    a = 1 if (task.verify or task.get("verify_template")) else (2 if task_acceptance(task) else 3)
-    return {"c": c, "r": r, "a": a}
+    return {"c": c, "r": r, "a": _assess_ambiguity(task)}
 
 
 def _assess_material(task: Task) -> str:
@@ -870,10 +882,10 @@ def _assess_prompt(task: Task) -> str:
         "3=6 つ以上か横断的）。完了条件の不確かさも試行回数も数えない（それは a）\n"
         "- r=リスク: 触る領域（1=ドキュメント・見た目・テスト / 2=利用者に見える機能 / "
         "3=認証・決済・課金・データ移行・本番設定・個人情報）。変更の大小は問わない\n"
-        "- a=曖昧さ: 完了の確かめ方（1=verify に実行できるコマンドがある / "
-        "2=verify は無く受入基準の自然文だけ / 3=どちらも無い）\n\n"
+        "\n"
         + _assess_material(task)
-        + '\n出力は JSON オブジェクトのみ（説明文なし）: {"c": 1, "r": 1, "a": 1}')
+        + '\n出力は JSON オブジェクトのみ（説明文なし）: {"c": 1, "r": 1}'
+        + "（曖昧さ a は訊きません——verify と受入基準の有無から機械が決めます）")
 
 
 # 採点を judge で決めるときの確度の下限。0 なら棄権しない。AS1 / AS2 を judge 経路で
@@ -904,11 +916,9 @@ _ASSESS_AXES = (
      {"1": "ドキュメント・見た目・テストなど、壊れても業務は止まらない",
       "2": "利用者に見える機能に触る（下の領域には触らない）",
       "3": "認証・決済・課金・データ移行・本番設定・個人情報のどれかに触る"}),
-    ("a", "このタスクの完了をどう確かめられるか。",
-     {"1": "verify に実行できるコマンドがある",
-      "2": "verify は無いが、受入基準が自然文で書いてある",
-      "3": "verify も受入基準も無い"}),
 )
+# a（曖昧さ）はここに無い。段の境目が `verify` と受入基準の有無そのものになったので、
+# `_assess_ambiguity` が機械で決める——訊けば揺れるだけで、決まるものを訊かない。
 
 
 def _assess_judge_questions() -> dict:
@@ -940,7 +950,7 @@ def assess_judge(cfg: "Config", task: Task) -> "dict | None":
     if _judge.calibrated_abstained(answers, _ASSESS_JUDGE_MIN_CONFIDENCE,
                                   purpose="assess", model=model):
         return None
-    scores: dict = {}
+    scores: dict = {"a": _assess_ambiguity(task)}
     for axis, _text, _buckets in _ASSESS_AXES:
         value = answers.get(axis, {}).get("score")
         if value is None:
@@ -966,9 +976,10 @@ def assess_task(cfg: "Config", task: Task, agent_run=None) -> "str | None":
         run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="assess"))
         try:
             obj = _extract_json_obj(run(_assess_prompt(task), cfg.model)) or {}
-            got = {k: int(obj[k]) for k in ("c", "r", "a") if k in obj}
-            if len(got) == 3:
+            got = {k: int(obj[k]) for k in ("c", "r") if k in obj}
+            if len(got) == 2:
                 scores = {k: min(3, max(1, v)) for k, v in got.items()}
+                scores["a"] = _assess_ambiguity(task)
         except Exception:  # noqa: BLE001  エージェント不在・タイムアウト・非 JSON はヒューリスティックへ
             scores = None
     if scores is None:

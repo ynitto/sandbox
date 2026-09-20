@@ -371,7 +371,9 @@ def _assess_cell(case: dict, *, cid: str = ""):
     questions = ap._assess_judge_questions()
 
     def to_check(answers):
-        scores = {}
+        # a は訊かない——本番が `_assess_ambiguity` で決める（verify と受入基準の有無）。
+        # ここでもその関数を呼ぶ。規則を写すと、片方を直したときにもう片方が古いまま残る。
+        scores = {"a": ap._assess_ambiguity(task)}
         for axis in questions:
             value = answers.get(axis, {}).get("score")
             if value is None:
