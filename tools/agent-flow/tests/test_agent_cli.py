@@ -1494,6 +1494,34 @@ class AgentControlTests(unittest.TestCase):
         self.assertEqual(execution_receipt_errors(
             {"attempt_id": "n1:ollama-gemma4-e4b:1", "execution_decision": block}), [])
 
+    def test_run_agent_lets_the_prompt_pick_among_policy_candidates(self):
+        # 適格候補が複数なら run_agent の間だけ prompt を見る selector が Resolver に届き、
+        # policy の中の rank2 を選べる。呼び出しの外では selector が無く rank1 に戻る。
+        self._control(self._policy_control())
+        used = []
+
+        def fake_once(prompt, model, purpose="", cwd=None, agent=None, files=None,
+                      read_files=None, readonly=None, **kw):
+            used.append(kf._effective_agent(purpose, model, agent))
+            return "ok"
+
+        def fake_selector(prompt, **kw):
+            return lambda cands: {"agent_cli": "kiro", "model": "sonnet", "stage": "judge",
+                                  "confidence": 0.9, "reason": "test"}
+        with mock.patch.object(kf, "_run_agent_once", fake_once), \
+                mock.patch.object(kf._modelselect, "resolver_selector", fake_selector):
+            kf.run_agent("small edit", None, purpose="work")
+        self.assertEqual(used, [("kiro", "sonnet")])
+        self.assertIsNone(getattr(kf._SELECTION_CTX, "selector", None))
+        self.assertEqual(kf._agent_for("work"), ("ollama", "gemma4:e4b"))
+
+    def test_explicit_agent_skips_prompt_selection(self):
+        self._control(self._policy_control())
+        with mock.patch.object(kf, "_run_agent_once", return_value="ok"), \
+                mock.patch.object(kf._modelselect, "resolver_selector",
+                                  side_effect=AssertionError("明示指定では選ばない")):
+            kf.run_agent("x", None, purpose="work", agent={"agent_cli": "ollama"})
+
     def test_selection_meta_pin_stays_legacy_labels(self):
         self._control(self._policy_control())
         meta = kf._selection_meta("verify", {"agent_cli": "ollama"})

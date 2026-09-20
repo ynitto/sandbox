@@ -4,8 +4,15 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # Executor — タスク実行（エージェント CLI or stub）
 # --------------------------------------------------------------------------
+import threading as _threading  # noqa: E402
+
 from agentcore import promptrender  # noqa: E402
 from agentcore import judge as _judge  # noqa: E402
+from agentcore import modelselect as _modelselect  # noqa: E402
+
+# run_agent が 1 回の呼び出しの間だけ置く「prompt を見て候補を選ぶ」関数（スレッド別）。
+# 候補の解決は Resolver の 1 実装のままで、ここは prompt という入力を届けるだけ。
+_SELECTION_CTX = _threading.local()
 
 
 class EmptyOutputError(RuntimeError):
@@ -691,7 +698,8 @@ def _control_policy_decision(purpose: str) -> "dict | None":
         _NODE_BUDGET_WORKLOAD, purpose_or_role=purpose,
         explicit_pin=_envelope_pin(purpose), compiled_control=ctl,
         attempt_counts=_attempt_counts_for(ctl),
-        now=datetime.now(timezone.utc))
+        now=datetime.now(timezone.utc),
+        selector=getattr(_SELECTION_CTX, "selector", None))
 
 
 def _candidate_fallback(purpose: str, decision: "dict | None") -> "dict | None":
@@ -988,6 +996,24 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
                 f"[agent-error:control] [selection-policy] park"
                 f"（{decision.get('park_reason')}）: {decision.get('reason')}。"
                 f"再開条件: {decision.get('resume_condition')}")
+    # 候補ベースの呼び出しでは、適格候補が複数あるとき prompt を見て 1 件を選ぶ
+    # （本家 Jev → agent-herd judge → agent-audit の格付け。agentcore.modelselect）。
+    # 明示指定・run 固定は人の決定なので選ばない。呼び出しの間だけ置き、抜けるときに消す。
+    policy_driven = not (agent and (agent.get("agent_cli") or agent.get("model"))) \
+        and not _execution_override(purpose)
+    if policy_driven:
+        _SELECTION_CTX.selector = _modelselect.resolver_selector(
+            prompt, purpose=purpose, workload=_NODE_BUDGET_WORKLOAD)
+    try:
+        return _run_agent_selected(prompt, model, purpose, cwd, agent, files, read_files,
+                                   readonly, lifecycle=lifecycle, nb=nb,
+                                   policy_driven=policy_driven)
+    finally:
+        _SELECTION_CTX.selector = None
+
+
+def _run_agent_selected(prompt, model, purpose, cwd, agent, files, read_files, readonly, *,
+                        lifecycle, nb, policy_driven) -> str:
     cli_used, model_used = _effective_agent(purpose, model, agent)
     prompt = _apply_methods(prompt, purpose, cli_used, model_used,
                             str((agent or {}).get("tier") or ""))
@@ -996,8 +1022,6 @@ def run_agent(prompt: str, model: str | None, purpose: str = "", cwd: "str | Non
                   pinned=bool(agent), tier=str((agent or {}).get("tier") or ""))
     # 候補ベースの呼び出し（明示指定も run 固定も無い）だけが縮退の対象。直近の縮退記録は
     # 呼び出しごとに消す（前の呼び出しの縮退を今回の result に付けない）。
-    policy_driven = not (agent and (agent.get("agent_cli") or agent.get("model"))) \
-        and not _execution_override(purpose)
     _LAST_FALLBACK.pop(purpose, None)
     last: "RuntimeError | None" = None
     empty_fixes = 0
