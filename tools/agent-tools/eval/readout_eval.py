@@ -158,6 +158,10 @@ def _evaluator_checklist_cell(case: dict):
     `+stages` は段を選択肢に並べても 1 問のままで、モデルは「全部 green なら done」を
     選び続けた。こちらは**段の数だけ問いを立てて**、1 段ずつ「成果が出ているか」を訊く。
     判定はモデルに訊かない——全部 yes なら `done`、1 つでも no なら `replan` と機械が畳む。
+
+    `+stages` との違いは合否の読めかたにもある: あちらは `missing:` のどれを選んでも
+    `replan` へ畳まれるので、**欠けている段を取り違えても正解になる**（2026-09-20 の E4 が
+    その形で当たった）。こちらは段ごとに yes / no が残るので、どの段を取り違えたかが見える。
     """
     judge_eval = importlib.import_module("judge_eval")
     state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
