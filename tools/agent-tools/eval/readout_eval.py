@@ -152,6 +152,25 @@ def _evaluator_stages_cell(case: dict):
         "decision": "done" if answers["decision"]["choice"] == "done" else "replan"}
 
 
+def _evaluator_checklist_cell(case: dict):
+    """evaluator の 3 つめの問い方: 段ごとに boolean 1 問へ割る。
+
+    `+stages` は段を選択肢に並べても 1 問のままで、モデルは「全部 green なら done」を
+    選び続けた。こちらは**段の数だけ問いを立てて**、1 段ずつ「成果が出ているか」を訊く。
+    判定はモデルに訊かない——全部 yes なら `done`、1 つでも no なら `replan` と機械が畳む。
+    """
+    judge_eval = importlib.import_module("judge_eval")
+    state = "\n".join(f"- {nid} ({kind}) [{status}]: {out[:160]}"
+                      for nid, kind, status, out in case["results"])
+    stages = _request_stages(judge_eval.REQUEST)
+    questions = {stage: {"type": "boolean",
+                         "instructions": f"要求は「{judge_eval.REQUEST}」。"
+                                         f"このうち「{stage}」の段の成果が、結果に出ているか。"}
+                 for stage in stages}
+    return state, questions, lambda answers: {
+        "decision": "done" if all(answers[s].get("value") for s in stages) else "replan"}
+
+
 def _route_cell(case: dict):
     """route: 本番の問いと状態（`agent_project` の `_route_judge_*`）をそのまま呼ぶ。
 
@@ -189,11 +208,14 @@ CELLS = {
     "RO3": ("project_eval", _route_cell),
 }
 
-# 要求の段を選択肢の側へ出した問い（同じ E1〜E6 を別の形で引く）。**旧モード専用**——
-# 答えを機械が `done` / `replan` へ畳むので、`missing:` のどれを選んでも正解になる。
+# 要求の段を問いの側へ出した 2 つの形（同じ E1〜E6 を別の問いで引く）。`+stages` は段を
+# 選択肢に並べた 1 問、`+checklist` は段ごとの boolean。どちらも**旧モード専用**——
+# 答えを機械が `done` / `replan` へ畳むので、正解を通す割り当てが複数ある。
 # calibration の `oracle` は「正解を通す割り当てがちょうど 1 つ」を要求するため、多対一の
 # 変種はそちらへ載せない（載せるなら期待値を集合で持つ話になる。今回は決めない）。
-VARIANTS = {f"E{i}{VARIANT_SEP}stages": ("judge_eval", _evaluator_stages_cell)
+VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
+            for name, build in (("stages", _evaluator_stages_cell),
+                                ("checklist", _evaluator_checklist_cell))
             for i in range(1, 7)}
 ALL_CELLS = {**CELLS, **VARIANTS}
 
