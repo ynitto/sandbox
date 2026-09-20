@@ -154,6 +154,31 @@ def _request_stages(request: str) -> "list[str]":
     return stages
 
 
+# 欠けている段を状態へ書き下す診断。**正解を入力に混ぜる**ので、これは能力の測定ではない。
+# 「明示されても直らない」なら推測で埋めているのではなく読んだ上で上書きしている、という
+# 別の話になる——その切り分けだけのために置く。台帳の行 id は `+told` で見分ける。
+def _told_state(case: dict) -> str:
+    """閉世界の状態に「その段のノードは無い」を足す（欠けている段は `expect` から読む）。
+
+    段の名前は要求の本文から取り、そのどれを `expect` が名指しているかだけを見る。正解は
+    judge_eval 側（`expect`）にあるままで、こちらへは写さない。段を名指していないケース
+    （E1 / E2 / E6）では何も足さないので、`+checklist_closed` と同じ状態になる。
+    """
+    state = _results_state(case, closed=True)
+    expect = str(case.get("expect") or "")
+    missing = [s for s in _request_stages(importlib.import_module("judge_eval").REQUEST)
+               if f"{s}段が無い" in expect]
+    if not missing:
+        return state
+    return state + f"\nなお、「{missing[0]}」の段のノードはこのワークフローに無い。"
+
+
+def _evaluator_told_cell(case: dict):
+    """`+checklist_closed` と同じ問いを、欠けている段を明示した状態で引く（診断専用）。"""
+    state, questions, to_check = _evaluator_checklist_cell(case, closed=True)
+    return _told_state(case), questions, to_check
+
+
 def _evaluator_stages_cell(case: dict, *, closed: bool = False):
     """evaluator のもう 1 つの問い方: 要求の段を**選択肢の側**へ出す。
 
@@ -250,6 +275,9 @@ VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
                 ("checklist_closed",
                  functools.partial(_evaluator_checklist_cell, closed=True)))
             for i in range(1, 7)}
+# 欠けている段を状態に書き下した診断（正解が入力に入る。上の _told_state の注を読むこと）。
+VARIANTS.update({f"E{i}{VARIANT_SEP}told": ("judge_eval", _evaluator_told_cell)
+                 for i in (3, 4, 5)})
 # 候補の説明から基準外の属性（依存）を落とした F1。正解は変わらない（基準はテストの合否）。
 VARIANTS[f"F1{VARIANT_SEP}nodeps"] = ("judge_eval",
                                       functools.partial(_filter_cell, drop_deps=True))
