@@ -15,7 +15,7 @@
 
 `agent-herd select --purpose work|plan --candidate cli/model ...` の標準入力に依頼を渡す。モデル名のスラッシュを維持し、空モデルは定義の defaultModel に展開して照合する。実行環境と cwd は既存の automation runner を使い、Windows は WSL を経由する。
 
-候補は設定の3 tier とローカルモデルから作り、仮想 herd を実体へ解決し、重複・利用不可・観測済み上限到達を除外する。node-budget の制約と Jev → judge → audit 段階の選択は agent-tools が担当する。ratings ファイルは渡していないため audit 段階の表示は「候補条件」とする。
+候補は設定の3 tier とローカルモデルから作り、仮想 herd を実体へ解決し、重複・利用不可・観測済み上限到達を除外する。用途は申告と同じ名前（会話は `chat`、手動タスクは `task`）を `--workload` で渡す。node-budget の残量の読み取りと Jev → judge → audit 段階の選択は agent-tools が担当する（宣言が無ければ材料にならないだけで、選択は止めない）。格付けは agent-audit に `ratings --json` で訊き、アプリのデータ置き場に写したファイルを `--ratings` で渡す（ストアには書かない）。agent-audit が無い・集計が壊れているときは渡さず、audit 段階の表示を「候補条件」にする。渡したときは「実測の格付け」。
 
 返されたCLI・モデルと stage を照合し、候補外の値、壊れた応答、空候補、プロセス失敗では作業を起動しない。既定候補への暗黙フォールバックはしない。Jev自体の不調は agent-tools 内で縮退する。
 

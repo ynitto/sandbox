@@ -25,6 +25,7 @@ const usagePresentation = require('../shared/usagePresentation');
 const FEED_DIR = 'audit-feed';
 const STORE_DIR = 'audit';
 const CONFIG_NAME = 'audit-config.json';
+const RATINGS_NAME = 'audit-ratings.json';
 // 成果物の種別。定型化（shared/reuse.js）の種類とそろえる——内部の綴り
 // （ステートマシン）を混ぜない。
 const ARTIFACT_KINDS = ['skill', 'task', 'workflow'];
@@ -48,6 +49,8 @@ const STEP_TIMEOUT_MS = 10 * 60 * 1000;
 function feedDir(userData) { return path.join(userData, FEED_DIR); }
 function storeDir(userData) { return path.join(userData, STORE_DIR); }
 function configFile(userData) { return path.join(userData, CONFIG_NAME); }
+// 自動選択へ渡す格付け（`agent-audit ratings --json` の写し）。ストアには書かない（書くのは agent-audit だけ）。
+function ratingsFile(userData) { return path.join(userData, RATINGS_NAME); }
 
 function dayKey(now) {
   return new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
@@ -488,6 +491,25 @@ class Auditor {
     } catch { return { available: true, limitsError: true, agentLimits: [] }; }
   }
 
+  // 自動選択（agent-herd select --ratings）へ渡す格付け。agent-herd が読める場所へ写し、そのパスを返す。
+  // agent-audit が無い・集計が壊れているときは ''（渡さない。選択は候補条件だけで進む）。
+  async ratings() {
+    if (!(await this.probe())) return '';
+    const result = await this.shell().run(host.quoteArgv(['agent-audit', '--config', this.configPath(), 'ratings', '--json']), { timeoutMs: 60000 });
+    let data;
+    try {
+      if (!result.ok) return '';
+      data = JSON.parse(String(result.output || '').slice(String(result.output).indexOf('{')));
+    } catch { return ''; }
+    if (!data || !Array.isArray(data.rows)) return '';
+    const file = ratingsFile(this.userData);
+    try {
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(data), 'utf8');
+      fs.renameSync(`${file}.tmp`, file);
+    } catch { return ''; }
+    return this.platform === 'win32' ? host.toWslPath(file) : file;
+  }
+
   // 集計は agent-audit に訊く（--json をそのまま渡す）。
   async summary({ by = 'agent_cli', period = 'month' } = {}) {
     if (!(await this.probe())) return { available: false, usage: null, quality: null };
@@ -574,6 +596,6 @@ class Auditor {
 
 module.exports = {
   FEED_DIR, STORE_DIR, CONFIG_NAME, ARTIFACT_KINDS, STATUSES, STEPS,
-  feedDir, storeDir, configFile, row, feed, feedTurn, feedRun, feedShare, feedEvaluation, usedOf, onFeed,
+  feedDir, storeDir, configFile, ratingsFile, row, feed, feedTurn, feedRun, feedShare, feedEvaluation, usedOf, onFeed,
   generateConfig, stepScript, artifacts, insights, evidenceOf, reports, Auditor,
 };

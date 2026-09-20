@@ -210,7 +210,7 @@ function configAdapter() {
   };
 }
 
-function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit, selectionLimits = async () => ({ agentLimits: [] }) }) {
+function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit, selectionLimits = async () => ({ agentLimits: [] }), selectionRatings = async () => '' }) {
   makerIpc.registerIpcHandlers(getWindow, {
     channelPrefix: 'automation:',
     onRunExit,
@@ -230,9 +230,9 @@ function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit, select
         const entries = await agents.listAgents(root, { distro });
         const selected = settings.resolve(cfg, { policy }, { agents: entries });
         if (selected.allocation !== 'auto') return { cli: selected.cli, model: selected.model };
-        const limits = await selectionLimits().catch(() => ({ agentLimits: [] }));
+        const [limits, ratings] = await Promise.all([selectionLimits().catch(() => ({ agentLimits: [] })), selectionRatings().catch(() => '')]);
         if (signal?.aborted) throw new Error('自動選択を停止しました');
-        return modelSelection.select({ config: cfg, agents: entries, observed: limits.agentLimits, load: cli => agentCli.load(cli, root),
+        return modelSelection.select({ config: cfg, agents: entries, observed: limits.agentLimits, ratings, workload: 'task', load: cli => agentCli.load(cli, root),
           prompt, cwd: root, signal, capture: (name, args, opts) => runner.capture(name, args, {
             ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined,
           }),

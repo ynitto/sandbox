@@ -249,6 +249,27 @@ test('利用枠の入口は品質集計や収集を実行せず、壊れた応�
   assert.ok(calls[1].includes("'usage' '--by' 'agent_cli' '--period' 'total'"));
 });
 
+test('格付けは agent-audit の出力を app の置き場へ写してパスを返し、壊れた応答や不在では渡さない', async () => {
+  const userData = tmp('audit-ratings-');
+  let output = JSON.stringify({ period: 'month', by_methods: false, rows: [{ purpose: 'work', model: 'x', pass_rate: 1 }] });
+  const calls = [];
+  const auditor = new audit.Auditor({ userData, loadConfig: () => ({ audit: {} }), platform: 'linux', env: {},
+    shellFor: () => ({ run: async script => {
+      calls.push(script);
+      return script.includes('command -v') ? { ok: true, output: 'yes' } : { ok: true, output: `noise\n${output}` };
+    } }),
+  });
+  const file = await auditor.ratings();
+  assert.equal(file, audit.ratingsFile(userData));
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).rows.length, 1);
+  assert.ok(calls[1].includes("'ratings' '--json'"));
+  output = 'bad json';
+  assert.equal(await auditor.ratings(), '');
+  const absent = new audit.Auditor({ userData, loadConfig: () => ({ audit: {} }), platform: 'linux', env: {},
+    shellFor: () => ({ run: async () => ({ ok: true, output: 'no' }) }) });
+  assert.equal(await absent.ratings(), '');
+});
+
 test('ローカルの割合は実行回数を使い、未分類も分母に含める', async () => {
   const rows = [
     { group: 'claude', runs: 2, measured_in: 100, measured_out: 20, unmeasured_runs: 1 },

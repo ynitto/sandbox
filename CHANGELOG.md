@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 自動選択に格付けと用途を渡す（0.21.0）
+
+- agent-audit の格付け（用途ごとの PASS 率・平均消費）を `agent-herd select --ratings` に渡す。写しはアプリのデータ置き場（監査ストアには書かない）。
+- agent-audit が無い・集計に失敗したときは渡さずに進み、実行情報の選択方法を「候補条件」のままにする。渡したときは「実測の格付け」。
+- 用途を `--workload` で渡す（会話 `chat`・手動タスク `task`。申告と同じ名前）。node-budget に宣言があれば残量が材料になる。
+
 ### agent-app: 内訳の表示順を調整（0.20.2）
 
 - 使用実績の内訳で「その他」を常に末尾に表示。

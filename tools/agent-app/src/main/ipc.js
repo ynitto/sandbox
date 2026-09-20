@@ -36,6 +36,7 @@ const judgeSetting = require('./judgeSetting');
 const modelSelection = require('./modelSelection');
 const selecting = new Map();
 let selectionLimits = async () => ({ agentLimits: [] });
+let selectionRatings = async () => '';
 const attention = require('./attention');
 const runHistory = require('./automation/run-history');
 const agentFlow = require('./automation/agent-flow');
@@ -652,11 +653,11 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     const controller = new AbortController();
     selecting.set(id, controller);
     try {
-      const limits = await selectionLimits().catch(() => ({ agentLimits: [] }));
+      const [limits, ratings] = await Promise.all([selectionLimits().catch(() => ({ agentLimits: [] })), selectionRatings().catch(() => '')]);
       if (controller.signal.aborted) throw new Error('自動選択を停止しました');
       chosen = await modelSelection.select({ config: cfg, agents: sess.kind === 'conversation' ? agents : agents.filter(a => a.interactive || a.virtual), load: cli => agentCli.load(cli, repo),
         prompt: requested.text || (p.attachments || []).map(a => a.name || a.rel || '').join('\n'),
-        readonly: requested.readonly, attachments: p.attachments, cwd: dirs.fsDir, observed: limits.agentLimits,
+        readonly: requested.readonly, attachments: p.attachments, cwd: dirs.fsDir, observed: limits.agentLimits, ratings, workload: 'chat',
         signal: controller.signal, capture: (name, args, opts) => runner.capture(name, args, {
           ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined,
         }),
@@ -838,6 +839,7 @@ function registerIpcHandlers(getWindow) {
   };
   registerAutomationIpc({
     selectionLimits: () => selectionLimits(),
+    selectionRatings: () => selectionRatings(),
     getWindow,
     userData,
     appRoot: automationAppRoot(),
@@ -961,6 +963,7 @@ function registerIpcHandlers(getWindow) {
   handle('audit:summary', (p) => auditor.summary({ by: p && p.by, period: p && p.period }));
   handle('audit:limits', () => auditor.limits());
   selectionLimits = () => auditor.limits();
+  selectionRatings = () => auditor.ratings();
   handle('audit:manualLimit', (p) => {
     const allocation = require('../shared/allocation');
     const cfg = store.loadConfig(userData());

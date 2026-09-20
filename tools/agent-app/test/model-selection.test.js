@@ -47,8 +47,24 @@ for (const stage of ['jev', 'judge', 'audit']) test(`selector uses stdin and acc
       assert.ok(args.includes('ollama/local/model'));
       return { ok: true, stdout: JSON.stringify({ selected: { agent_cli: 'ollama', model: 'local/model' }, stage, state: { secret: 'do not store' } }) };
     } });
-  assert.deepEqual(chosen, { cli: 'ollama', model: 'local/model', stage });
+  assert.deepEqual(chosen, { cli: 'ollama', model: 'local/model', stage, rated: false });
   assert.match(selection.information(chosen).title, /ollama/);
+});
+
+test('ratings from agent-audit reach agent-herd as a file path, and the display names the material', async () => {
+  const base = { config: config(), agents, load, prompt: 'task', cwd: '/repo' };
+  const reply = { ok: true, stdout: JSON.stringify({ selected: { agent_cli: 'ollama', model: 'local/model' }, stage: 'audit' }) };
+  const file = '/mnt/c/app/audit-ratings.json';
+  const rated = await selection.select({ ...base, ratings: file, workload: 'chat', capture: async (name, args) => {
+    assert.deepEqual(args.slice(args.indexOf('--ratings'), args.indexOf('--ratings') + 2), ['--ratings', file]);
+    assert.deepEqual(args.slice(args.indexOf('--workload'), args.indexOf('--workload') + 2), ['--workload', 'chat']);
+    return reply;
+  } });
+  assert.equal(rated.rated, true);
+  assert.match(selection.information(rated).detail, /実測の格付け/);
+  const plain = await selection.select({ ...base, capture: async (name, args) => { assert.equal(args.includes('--ratings') || args.includes('--workload'), false); return reply; } });
+  assert.equal(plain.rated, false);
+  assert.match(selection.information(plain).detail, /候補条件/);
 });
 
 test('selection fails closed for invalid output, unapproved models, no candidates and cancellation', async () => {

@@ -1213,6 +1213,7 @@ userData/audit-feed/<YYYYMMDD>.jsonl   申告（追記専用。agent-audit の l
                                        共有の台帳は形が違うので直接読ませず、同じ行の形へ写して足す）
 userData/audit/                        ストア（書き手は agent-audit 1 本・読むのは agent-app）
 userData/audit-config.json             生成する設定（audit_dir / ledger_dirs / extra_homes）
+userData/audit-ratings.json            自動選択へ渡す格付け（`agent-audit ratings --json` の写し。agent-herd が読む）
 ```
 
 #### 18.1 申告（feed）
@@ -1423,3 +1424,4 @@ quality/confidenceをnullにする。全体methodは空とし、各判定のraw�
 - Jevの接続設定を共有し、利用できない場合はローカル判定、候補の条件による選択へ進む。APIキーや判定用の依頼抜粋はアプリの選択記録に保存しない。
 - 設定済みの候補を実在するCLIへ解決し、利用不能や有効な観測で上限到達の候補を除外する。手動残量は自動観測のない場合に利用する。
 - 選択結果のエージェントとモデルを候補と照合してから起動し、実行情報に選択方法を表示する。選択失敗・停止時は実行しない。
+- agent-audit があれば格付け（用途ごとの PASS 率・平均消費）を選択の材料として渡す。無い場合や集計に失敗した場合は候補の条件だけで選び、表示で区別する。用途は申告と同じ名前（会話 `chat` / 手動タスク `task`）を渡し、利用枠の宣言があれば残量も材料になる（0.21.0）。

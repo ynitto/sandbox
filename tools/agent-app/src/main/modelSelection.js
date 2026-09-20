@@ -1,7 +1,8 @@
 'use strict';
 
 // Selection belongs to agent-tools. The app only supplies its configured, runnable
-// candidates and validates the returned choice before launching anything.
+// candidates (and agent-audit's ratings when it has them) and validates the returned
+// choice before launching anything.
 const allocation = require('../shared/allocation');
 const herd = require('./herd');
 
@@ -31,11 +32,13 @@ function candidates(config, agents, load, { readonly = false, attachments = [], 
   return [...out.values()];
 }
 
-async function select({ config, agents, load, prompt, readonly, attachments, cwd, capture, signal, observed }) {
+async function select({ config, agents, load, prompt, readonly, attachments, cwd, capture, signal, observed, ratings = '', workload = '' }) {
   if (signal?.aborted) throw new Error('自動選択を停止しました');
   const eligible = candidates(config, agents, load, { readonly, attachments, observed });
   if (!eligible.length) throw new Error('自動選択できるAIがありません。実行制御の候補と利用枠を確認してください');
   const args = ['select', '--purpose', readonly ? 'plan' : 'work', ...eligible.flatMap(c => ['--candidate', c.cli + (c.model ? `/${c.model}` : '')])];
+  if (ratings) args.push('--ratings', ratings);
+  if (workload) args.push('--workload', workload);
   const result = await capture('agent-herd', args, { cwd, input: prompt, signal, timeoutMs: 90000 });
   if (signal?.aborted) throw new Error('自動選択を停止しました');
   let value;
@@ -44,11 +47,11 @@ async function select({ config, agents, load, prompt, readonly, attachments, cwd
   if (!result?.ok || !value?.selected) throw new Error('AIを自動選択できませんでした。agent-toolsを更新するか、実行制御で通常の配分に変更してください');
   const chosen = eligible.find(c => c.cli === value.selected.agent_cli && c.model === value.selected.model);
   if (!chosen || !['jev', 'judge', 'audit'].includes(value.stage)) throw new Error('自動選択の結果が候補と一致しません。実行制御を確認してください');
-  return { ...chosen, stage: value.stage };
+  return { ...chosen, stage: value.stage, rated: !!ratings };
 }
 
 function information(choice) {
-  const method = { jev: 'Jev', judge: 'ローカル判定', audit: '候補条件' }[choice.stage];
+  const method = { jev: 'Jev', judge: 'ローカル判定', audit: choice.rated ? '実測の格付け' : '候補条件' }[choice.stage];
   return { type: 'status', title: `自動選択：${choice.cli}${choice.model ? ` / ${choice.model}` : ''}`, status: 'success', detail: `選択方法：${method}` };
 }
 
