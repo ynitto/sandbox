@@ -65,9 +65,18 @@ BINS = ((0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0))
 # 既存セルの入力（goal / deps / results / task）を judge の問いへ写す。**正解は写さない**
 # ——合否はセルの `check` がつける。
 
-def _filter_cell(case: dict):
+# 候補の説明から依存の話を落とす（「pandas を追加して 30 行」→「30 行」）。素材そのものは
+# 書き換えない——依存の属性は F2 / J1 / F2P / J1P の**正解**（`extra_deps`）で、消すとその
+# 4 セルが測れなくなる。F1 の基準は「テストが通っている」だけなので、状態の側で落として
+# 引いたときに確度が上がるかだけを見る。
+_DEPS_CLAUSE = re.compile(r"(?:\S+ を追加して|標準ライブラリのみで)\s*")
+
+
+def _filter_cell(case: dict, *, drop_deps: bool = False):
     """filter: 候補 1 件 = boolean の問い 1 つ（本番 agent-flow の `filter_judge` と同じ立て方）。"""
     text = case["deps"]["gen"]["output"]
+    if drop_deps:
+        text = _DEPS_CLAUSE.sub("", text)
     ids = re.findall(r"^\[([^\]]+)\]", text, re.M)
     criterion = " ".join(str(case["goal"]).split())
     questions = {i: {"type": "boolean",
@@ -241,6 +250,9 @@ VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
                 ("checklist_closed",
                  functools.partial(_evaluator_checklist_cell, closed=True)))
             for i in range(1, 7)}
+# 候補の説明から基準外の属性（依存）を落とした F1。正解は変わらない（基準はテストの合否）。
+VARIANTS[f"F1{VARIANT_SEP}nodeps"] = ("judge_eval",
+                                      functools.partial(_filter_cell, drop_deps=True))
 ALL_CELLS = {**CELLS, **VARIANTS}
 
 
