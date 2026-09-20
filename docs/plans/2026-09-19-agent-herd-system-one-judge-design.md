@@ -232,10 +232,12 @@ judge が無い経路では `outcome` を条件文（「最後の出力の結果
 
 ## 6. 測ってから決めること
 
-設計時は ollama が無く未測定だったが、2026-09-20 に 12 セル × 3 回の
-[初回実測](2026-09-20-judge-readout-first-measurement.md)を記録した。全ノードが green で
-要求の段が欠けている E3〜E5 が 0/9（確度 0.949〜0.991）で、**しきい値をどこに置いても
-除けない**——上げて落ちるのは正解していた回のほうである。小標本のため既定値は確定しない。
+設計時は ollama が無く未測定だったが、2026-09-20 に
+[実測](2026-09-20-judge-readout-first-measurement.md)を記録した。既定の問い方では、全ノードが
+green で要求の段が欠けている E3〜E5 が 0/9（確度 0.949〜0.991）で、しきい値をどこに置いても
+除けなかった。**問いを「状態の行を指させる」形へ変え、欠落の判定を機械へ移すと corpus 全体が
+36/36 になる**（同文書 §8）。確度の使いどころは、問いの形を決めてからでないと測れない。
+小標本のため既定値は確定しない。
 追加した`readout_eval.py --calibration`はmethod別のBrier・ECE・threshold sweep・coverage・
 棄権・失敗・usageをJSONに残す。fake/replayも同じschemaを使い、旧台帳から分布を推測しない。
 手順とPR #862の段0/段1境界は[eval README](../../tools/agent-tools/eval/README.md#judge-calibration-gatereadout_eval)

@@ -157,6 +157,70 @@ def _request_stages(request: str) -> "list[str]":
 # 欠けている段を状態へ書き下す診断。**正解を入力に混ぜる**ので、これは能力の測定ではない。
 # 「明示されても直らない」なら推測で埋めているのではなく読んだ上で上書きしている、という
 # 別の話になる——その切り分けだけのために置く。台帳の行 id は `+told` で見分ける。
+def _nodes(case: dict) -> "list[tuple[str, str, str, str]]":
+    return [tuple(row) for row in case["results"]]
+
+
+def _done_ids(case: dict) -> "set[str]":
+    """段の成果を出しうるノード（`kind` が work で `status` が done）。
+
+    `kind` も `status` も本番のグラフが持っている値で、モデルに訊く必要が無い——訊くのは
+    「どの段か」だけにする。**verify ノードを外すのは後付けではなく、検証役は段の成果物を
+    出さないから**である。初版はこの条件が抜けており、E1 の verify ノード（本文に
+    「出力段が無いため」と書いてある）を「出力の段」と答えたモデルの回答が、そのまま
+    「出力の段は done」として通っていた（2026-09-20 に判明）。
+    """
+    return {nid for nid, kind, status, _out in _nodes(case)
+            if kind == "work" and status == "done"}
+
+
+def _evaluator_locate_cell(case: dict):
+    """段ごとに「その段をやったノードはどれか」を訊く（choice。`other` が「どれでもない」）。
+
+    `+checklist` の boolean は「あるか」を訊くので、状態を読まずに要求から埋められる
+    （2026-09-20 の E4 / E5 がそれ）。こちらは**状態に並んだノードを指させる**ので、
+    答えるには行を読むしかない。判定は機械——どの段も done のノードを指していれば `done`、
+    `other` を選んだ段があるか、指した先が done でなければ `replan`。
+    """
+    judge_eval = importlib.import_module("judge_eval")
+    done = _done_ids(case)
+    # 候補は work のノードだけ。検証役は段の成果物を出さないので、指させる先に置かない。
+    criteria = {nid: f"[{status}] {out[:70]}" for nid, kind, status, out in _nodes(case)
+                if kind == "work"}
+    questions = {stage: {"type": "choice", "criteria": criteria,
+                         "other": "どのノードもこの段をやっていない",
+                         "instructions": f"要求は「{judge_eval.REQUEST}」。"
+                                         f"このうち「{stage}」の段の成果を出したノードはどれか。"}
+                 for stage in _request_stages(judge_eval.REQUEST)}
+    return _results_state(case, closed=True), questions, lambda answers: {
+        "decision": "done" if all(a.get("choice") in done for a in answers.values())
+                    else "replan"}
+
+
+def _evaluator_classify_cell(case: dict):
+    """ノードごとに「どの段にあたるか」を訊き、**足りない段は機械が差集合で出す**。
+
+    `+locate` はまだ段の側から「これをやったノードはあるか」と訊いていて、「あるはず」の
+    構えが残る。こちらはモデルに欠落の話を一切させない——1 ノード 1 問で段を言わせるだけで、
+    要求の段が揃っているかは機械が集合演算で決める（判定は機械・モデルは転記）。
+    """
+    judge_eval = importlib.import_module("judge_eval")
+    stages = _request_stages(judge_eval.REQUEST)
+    criteria = {stage: f"要求の「{stage}」の段" for stage in stages}
+    done = _done_ids(case)
+    questions = {nid: {"type": "choice", "criteria": criteria,
+                       "other": "この 3 段のどれでもない（検証など）",
+                       "instructions": f"要求は「{judge_eval.REQUEST}」。"
+                                       f"ノード {nid} の成果は、このうちどの段にあたるか。"}
+                 for nid, _kind, _status, _out in _nodes(case)}
+
+    def to_check(answers):
+        covered = {answers[nid]["choice"] for nid in answers if nid in done}
+        return {"decision": "done" if set(stages) <= covered else "replan"}
+
+    return _results_state(case, closed=True), questions, to_check
+
+
 def _told_state(case: dict) -> str:
     """閉世界の状態に「その段のノードは無い」を足す（欠けている段は `expect` から読む）。
 
@@ -275,6 +339,11 @@ VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
                 ("checklist_closed",
                  functools.partial(_evaluator_checklist_cell, closed=True)))
             for i in range(1, 7)}
+# 状態と突き合わせないと答えられない形（段 → ノード / ノード → 段）。
+VARIANTS.update({f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
+                 for name, build in (("locate", _evaluator_locate_cell),
+                                     ("classify", _evaluator_classify_cell))
+                 for i in range(1, 7)})
 # 欠けている段を状態に書き下した診断（正解が入力に入る。上の _told_state の注を読むこと）。
 VARIANTS.update({f"E{i}{VARIANT_SEP}told": ("judge_eval", _evaluator_told_cell)
                  for i in (3, 4, 5)})
