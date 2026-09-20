@@ -194,8 +194,8 @@ class ArtifactShare {
     return base;
   }
 
-  async copyInto(hostDir, { sourceRepo, rel, dir }) {
-    const from = host.joinHost(host.toHostPath(sourceRepo), rel);
+  async copyInto(hostDir, { sourceRepo, rel, dir, sourcePath }) {
+    const from = sourcePath ? host.toHostPath(sourcePath) : host.joinHost(host.toHostPath(sourceRepo), rel);
     const to = host.joinHost(hostDir, rel);
     const parent = to.slice(0, to.lastIndexOf('/')) || '/';
     const script = `mkdir -p ${host.sq(parent)} && rm -rf ${host.sq(to)} && cp -R ${host.sq(from)}${dir ? '/.' : ''} ${host.sq(to)}`;
@@ -237,19 +237,19 @@ class ArtifactShare {
   }
 
   // 成果物を公開先へ出す。出したあと直していなければ、同じものを二度出さない。
-  async submit({ repo, kind, name, sessionId = '', force = false }) {
+  async submit({ repo, kind, name, sessionId = '', force = false, source = null }) {
     const cfg = this.config();
     const shareRepo = String(cfg.shareRepo || '').trim();
     if (!shareRepo) return { skipped: 'no-share-repo' };
     const known = statusOf(this.userData, kind, name);
     if (known && known.submittedBranch && !force
       && this.state({ repo, kind, name }).status === 'published') return { skipped: 'already', ...known };
-    const found = locate(repo, kind, name);
+    const found = source || locate(repo, kind, name);
     if (!found) return { skipped: 'not-found' };
     const { hostDir } = await this.ensureClone(shareRepo);
     const branch = branchFor('share', kind, name);
     const defaultBranch = await this.startBranch(hostDir, branch);
-    await this.copyInto(hostDir, { sourceRepo: repo, rel: found.rel, dir: found.dir });
+    await this.copyInto(hostDir, { sourceRepo: repo, rel: found.rel, dir: found.dir, sourcePath: source?.full });
     if (found.dir) await this.originJson(hostDir, { sourceRepo: repo, rel: found.rel, kind, name, sessionId });
     const result = await this.commitAndPush(hostDir, {
       branch,

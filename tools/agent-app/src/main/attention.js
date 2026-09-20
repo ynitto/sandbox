@@ -136,6 +136,15 @@ function insightSources(insights) {
     if (ins.exported) continue;
     if (ins.review && ins.review.verdict === 'refuted') continue;
     const target = targetOfInsight(ins);
+    const improvement = ins.improvement;
+    if (ins.actionable === false || ins.kind !== 'quality-review' || !target
+      || !['skill', 'task', 'workflow'].includes(target.kind) || !target.name.trim()
+      || !improvement || improvement.version !== 1
+      || improvement.target?.kind !== target.kind || improvement.target?.name !== target.name
+      || !Array.isArray(improvement.criteria) || !improvement.criteria.length
+      || !improvement.criteria.every(c => c && typeof c.requirement === 'string' && c.requirement.trim()
+        && typeof c.evidence === 'string' && c.evidence.trim())
+      || !Array.isArray(ins.observation_ids) || !ins.observation_ids.length) continue;
     const at = text(ins.updated_at || ins.ts || ins.created_at, 40);
     if (!stamp(at)) continue;
     out.push({
@@ -145,6 +154,7 @@ function insightSources(insights) {
       target: { kind: 'issue', id: String(ins.id) },
       issue: {
         id: String(ins.id), target, statement: text(ins.statement, 400), kind: String(ins.kind || ''),
+        criteria: improvement.criteria,
         occurrences: Number(ins.occurrences) || 0, confidence: String(ins.confidence || ''),
         evidence: (Array.isArray(ins.observation_ids) ? ins.observation_ids : []).slice(0, 20).map((v) => String(v)),
       },

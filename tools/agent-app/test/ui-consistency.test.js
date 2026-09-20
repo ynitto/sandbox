@@ -198,7 +198,7 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   const renderer = read('renderer/renderer.js');
   const workbench = read('renderer/automation/renderer.js');
   // 1. 確認待ちは答えを並べる面を持たない。状態の印のまま、端末操作（既存の入力先）へ連れて行く。
-  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 6, '会話・作成・編集・取り込み・まとめて評価の実行設定は共通ポップオーバーを使う');
+  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 5, '会話・作成・編集・取り込みの実行設定は共通ポップオーバーを使う');
   assert.ok(!css.includes('.phase-popover {'), '共有部品の私物な複製がある: .phase-popover');
   assert.ok(!css.includes('.attention-panel {'), '共有部品の私物な複製がある: .attention-panel');
   assert.ok(!css.includes('.phase-menu {'), '確認待ちに自分用のパネルを作らない');
@@ -310,7 +310,7 @@ test('利用状況の面は設定の既存の器（設定の行・状態の印�
   assert.ok(!/id="audit-artifacts"/.test(html), '定型化したものの一覧を設定へ戻さない');
 });
 
-test('スキルの面は 1 つの一覧で、未公開を先頭に出し、公開と削除の操作は足元に置く', () => {
+test('スキルの面は 1 つの一覧で、未公開を先頭に出し、公開と削除の選択操作は設定の下に置く', () => {
   const html = read('renderer/index.html');
   const css = read('renderer/styles.css');
   const skills = read('renderer/skills.js');
@@ -326,13 +326,13 @@ test('スキルの面は 1 つの一覧で、未公開を先頭に出し、公�
   assert.ok(!/\.skill-row|\.skill-card|\.skill-panel|\.skills-list\b/.test(css), 'スキルの行の私物な複製を作らない');
   // 3. 設定は一覧の上。操作は足元で切り替え、行にボタンを並べない
   assert.ok(panel.indexOf('audit-share-repo') < panel.indexOf('skills-list'), '公開先の設定は一覧の上に置く');
-  assert.ok(panel.indexOf('skills-list') < panel.indexOf('skills-publish'), '操作は一覧の足元に置く');
+  assert.ok(panel.indexOf('audit-push-main-row') < panel.indexOf('skills-remove-mode'));
+  assert.ok(panel.indexOf('skills-publish') < panel.indexOf('skills-list'), '公開操作は設定の下に置く');
   assert.ok(!/el\('button'/.test(skills.slice(skills.indexOf('function render()'), skills.indexOf('function say('))),
     '行ごとにボタンを作らない（一覧がボタンの壁になる）');
-  for (const id of ['skills-remove-mode', 'skills-remove']) {
-    assert.ok(panel.indexOf('skills-list') < panel.indexOf(id), '削除の操作も一覧の足元に置く');
-  }
-  assert.match(panel, /id="skills-remove" class="small danger" hidden/);
+  assert.ok(panel.indexOf('skills-remove-mode') < panel.indexOf('skills-list'));
+  assert.ok(panel.indexOf('id="skills-remove"') < panel.indexOf('skills-list'), '削除の実行も設定の下に置く');
+  assert.match(panel, /id="skills-remove" class="small danger" disabled/);
   // 4. 状態は印を借りる。未公開を先頭に並べる
   assert.match(skills, /el\('span', 'status warn', mark\)/, '状態の印を借りる');
   assert.match(skills, /versionComparison === 'local-newer'/, '新しいローカル版だけを未公開とする');
@@ -369,10 +369,10 @@ test('評価と課題は既存の部品で組む（設定の行・検索の足�
   // 1. 自動評価の設定は「遷移や振り分けの判定」と同じ .setting-field の 1 行で、モデルの欄を増やさない
   assert.match(html, /<label class="setting-field" id="evaluation-row">[\s\S]*?<select id="evaluation-mode">/);
   assert.ok(!html.includes('id="evaluation-model"'), '判定に使うモデルは上の行と共有する');
-  // 2. まとめて評価は検索の足元に操作 1 つ。使う AI は会話の入力欄と同じ .run-settings / .settings-popover
+  // 2. まとめて評価は検索の足元に操作 1 つ。既定の判定経路を使い、AI の選択は置かない
   const footer = html.slice(html.indexOf('<footer id="search-batch"'), html.indexOf('</footer>', html.indexOf('<footer id="search-batch"')));
   assert.strictEqual((footer.match(/class="primary"/g) || []).length, 1, '主ボタンは足元に 1 つ');
-  assert.match(footer, /<details id="search-batch-settings" class="run-settings">[\s\S]*class="settings-popover"/);
+  assert.ok(!/<select|<input|<details/.test(footer), '評価のエージェント・モデル選択は置かない');
   assert.ok(!/search-batch-all|すべて選ぶ/.test(search), '「すべて選ぶ」は置かない（検索の絞り込みで対象を決める）');
   // 3. 課題のカードはタスクの概要と同じ .execution-card。改善案の文は置かない
   assert.match(renderer, /function renderIssueCards[\s\S]*el\('section', 'execution-card'\)[\s\S]*el\('div', 'execution-card-head'\)/);

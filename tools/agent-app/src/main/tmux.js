@@ -233,7 +233,7 @@ function cmdNew({ name, cwd, argv, cols, rows, env = {} }) {
 // 画面の状態 1 行（| 区切り。tmux は書式出力の制御文字を \037 のような 8 進表記へ直すので
 // 区切りは印字可能な文字にする）+ 画面本体（色付き）。頭と本体の間の \036 は自前の printf で出す。
 function cmdScreen(name, { history = false, joinHistory = true, offset = 0, rows = DEFAULT_ROWS } = {}) {
-  const fmt = '#{cursor_x}|#{cursor_y}|#{pane_width}|#{pane_height}|#{pane_dead}|#{pane_dead_status}|#{history_size}|#{pane_in_mode}';
+  const fmt = '#{cursor_x}|#{cursor_y}|#{pane_width}|#{pane_height}|#{pane_dead}|#{pane_dead_status}|#{history_size}|#{pane_in_mode}|#{mouse_any_flag}|#{mouse_sgr_flag}';
   const amount = Math.max(0, Math.floor(Number(offset) || 0));
   const height = Math.max(1, Math.floor(Number(rows) || DEFAULT_ROWS));
   // tmux の表示位置（copy-mode）自体は動かさない。0 は現在のペイン、1 以上は
@@ -260,6 +260,8 @@ function parseScreen(output) {
     deadStatus: head[5] === '' ? null : Number(head[5]),
     historySize: Number(head[6]) || 0,
     inMode: head[7] === '1',
+    mouseAny: head[8] === '1',
+    mouseSgr: head[9] === '1',
     text: body,
   };
 }
@@ -561,13 +563,32 @@ class Conversation {
     this.schedule(0);
   }
 
-  async scroll(lines) {
+  async scroll(lines, position = {}) {
     const amount = Number(lines) || 0;
     if (!amount) return false;
     if (!this.lastScreen) {
       const cap = await this.capture();
       if (!cap.ok) throw new Error(cap.error);
       this.lastScreen = cap.screen;
+    }
+    // 全画面TUIなど、マウス入力を要求するCLIは自身の履歴を持つ。
+    // tmuxのhistory_sizeが0でも、ホイールをCLIへ届ければスクロールできる。
+    const screen = this.lastScreen;
+    if (screen.mouseAny && !screen.dead && !screen.inMode) {
+      const coord = (value, size) => Math.max(1, Math.min(size, Math.floor(Number(value) || size / 2)));
+      const x = coord(position.x, screen.cols), y = coord(position.y, screen.rows);
+      const button = amount < 0 ? 64 : 65;
+      const data = screen.mouseSgr
+        ? Buffer.from(`\x1b[<${button};${x};${y}M`)
+        : Buffer.from([27, 91, 77, button + 32, Math.min(x, 223) + 32, Math.min(y, 223) + 32]);
+      const count = Math.max(1, Math.min(screen.rows, Math.ceil(Math.abs(amount))));
+      const bytes = Buffer.concat(Array.from({ length: count }, () => data));
+      const result = await this.shell.run(cmdKeys(this.name, ['-H', '--', ...Array.from(bytes, byte => byte.toString(16))]));
+      if (!result.ok) throw new Error(result.error || 'ホイール入力を送れません');
+      this.scrollOffset = 0;
+      this.sentOnce = false;
+      this.schedule(0);
+      return 0;
     }
     // xterm は上方向を負、下方向を正で渡す。履歴サイズを越えないようにする。
     this.scrollOffset = Math.max(0, Math.min(

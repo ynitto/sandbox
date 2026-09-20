@@ -220,25 +220,48 @@ test('正典の往復: 実行履歴に書かれた結果が未読になり、見
 
 test('課題: agent-audit の洞察を受信箱の材料にする。反証・渡したものは出さず、改訂されればまた未読', () => {
   const insights = [
-    { id: 'ins-1', statement: '見本の記録をやり直している', kind: 'skill-improvement', occurrences: 6, confidence: 'medium',
+    { id: 'ins-1', statement: '見本の記録をやり直している', kind: 'quality-review',
+      improvement: { version: 1, target: { kind: 'skill', name: 'statemachine-use' }, criteria: [{ requirement: '成果物を作る', evidence: '未作成と記録' }] }, occurrences: 6, confidence: 'medium',
       observation_ids: ['o1', 'o2'], scope: { target: { kind: 'skill', name: 'statemachine-use' } }, ts: T1, updated_at: T1 },
     { id: 'ins-2', statement: '反証', ts: T1, review: { verdict: 'refuted' } },
     { id: 'ins-3', statement: '渡した', ts: T1, exported: true },
     { id: 'ins-4', statement: '全体', ts: T1 },
+    { id: 'long-old', kind: 'usage-optimization', statement: 'codex:model の session が 30 turn または 1800 秒を超える（2 件）', ts: T1 },
+    { id: 'trend', kind: 'usage-optimization', statement: '利用傾向', actionable: false, ts: T1 },
   ];
   const sources = attention.insightSources(insights);
-  assert.deepEqual(sources.map((s) => s.key), ['issue:ins-1', 'issue:ins-4']);
+  assert.deepEqual(sources.map((s) => s.key), ['issue:ins-1']);
   assert.equal(sources[0].kind, 'issue');
   assert.equal(sources[0].title, '見本の記録をやり直している');
   assert.deepEqual(sources[0].target, { kind: 'issue', id: 'ins-1' });
   assert.deepEqual(sources[0].issue.target, { kind: 'skill', name: 'statemachine-use' });
   assert.deepEqual(sources[0].issue.evidence, ['o1', 'o2']);
-  assert.equal(sources[1].issue.target, null);
+  assert.equal(attention.insightSources([{ id: 'retry', kind: 'usage-optimization',
+    statement: '作業が 2 回以上再試行される', ts: T1 }]).length, 0, '再試行だけでは課題にしない');
   assert.equal(attention.classify(sources[0], {}), 'unread');
   assert.equal(attention.classify(sources[0], { 'issue:ins-1': { resultAt: T1 } }), 'none');
   const revised = attention.insightSources([{ ...insights[0], updated_at: T2 }])[0];
   assert.equal(attention.classify(revised, { 'issue:ins-1': { resultAt: T1 } }), 'unread');
   // 会話・実行の材料と同じ列に混ざる（未読として数える）
   const projected = attention.project([...sources], { seen: {} });
-  assert.equal(projected.unread, 2);
+  assert.equal(projected.unread, 1);
+});
+
+
+test('手順の改善候補: 対象・未達条件・根拠が揃ったものだけを受信箱へ出す', () => {
+  const base = { id: 'candidate', kind: 'quality-review', ts: T1, observation_ids: ['obs'],
+    scope: { target: { kind: 'task', name: 'daily' } },
+    improvement: { version: 1, target: { kind: 'task', name: 'daily' },
+      criteria: [{ requirement: 'レポートを保存する', evidence: '保存できなかった' }] } };
+  for (const kind of ['skill', 'task', 'workflow']) {
+    const target = { kind, name: 'daily' };
+    assert.equal(attention.insightSources([{ ...base, scope: { target }, improvement: { ...base.improvement, target } }]).length, 1);
+  }
+  for (const change of [
+    { improvement: undefined }, { kind: 'skill-improvement' }, { observation_ids: [] },
+    { scope: {} }, { scope: { target: { kind: 'tool', name: 'daily' } } },
+    { scope: { target: { kind: 'task', name: 'other' } } },
+    { improvement: { ...base.improvement, criteria: [] } },
+    { improvement: { ...base.improvement, criteria: [{ requirement: '保存', evidence: '' }] } },
+  ]) assert.equal(attention.insightSources([{ ...base, ...change }]).length, 0);
 });

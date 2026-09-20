@@ -13,6 +13,13 @@ def _forbid_llm(*_a, **_k):
 
 
 class ObserveTests(unittest.TestCase):
+    def test_usage_trend_and_retry_alone_are_not_actionable(self):
+        for kind, expected in [("learn", False), ("prompt-issue", False)]:
+            insight = rules.insight({"cluster_id": "test", "observations": [
+                {"id": "o1", "kind": kind, "text": "記録"},
+            ]})
+            self.assertIs(insight["actionable"], expected)
+
     def test_failed_run_yields_avoid_with_group(self):
         obs = rules.observe({"kind": "run", "tool": "agent-flow", "workload": "flow",
                              "status": "failed", "error_class": "transient",

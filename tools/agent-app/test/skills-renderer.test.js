@@ -8,7 +8,7 @@ const vm = require('vm');
 
 function fixture() {
   class Element {
-    constructor() { this.children = []; this.value = ''; this.dataset = {}; }
+    constructor() { this.children = []; this.value = ''; this.dataset = {}; this.checked = false; }
     append(...children) { this.children.push(...children); for (const child of children) child.parentNode = this; }
     replaceChildren(...children) { this.children = []; this.append(...children); }
   }
@@ -31,7 +31,7 @@ function fixture() {
   return { window, nodes, pending, removals, publications };
 }
 
-test('リポジトリ切り替え中は古い公開操作を隠し、遅れた応答で表示を戻さない', async () => {
+test('リポジトリ切り替え中は公開を無効にし、遅れた応答で有効に戻さない', async () => {
   const { window, nodes, pending } = fixture();
   window.Skills.open({ repos: ['a', 'b'] }, ['codex']);
   const doc = (status) => ({ configured: true, items: [{ name: 'review', place: 'repo', status, canPublish: status === 'unpublished' }] });
@@ -41,7 +41,7 @@ test('リポジトリ切り替え中は古い公開操作を隠し、遅れた�
 
   nodes.get('skills-repo').value = 'b';
   nodes.get('skills-repo').onchange();
-  assert.equal(nodes.get('skills-publish').hidden, true);
+  assert.equal(nodes.get('skills-publish').disabled, true);
   assert.equal(nodes.get('skills-list').children[0].textContent, '読み込んでいます…');
   nodes.get('skills-repo').value = 'a';
   nodes.get('skills-repo').onchange();
@@ -55,7 +55,7 @@ test('リポジトリ切り替え中は古い公開操作を隠し、遅れた�
   assert.equal(row.children.length, 2, '新しくないローカル版には公開ラベルを付けない');
   assert.match(row.children[1].children[0].textContent, /review\s+v1\.9\.0/);
   assert.doesNotMatch(row.children[1].children[1].textContent, /公開先|ローカル/);
-  assert.equal(nodes.get('skills-publish').hidden, true);
+  assert.equal(nodes.get('skills-publish').disabled, true);
 });
 
 test('各スキルに版を表示し、ローカルが新しいものだけ未公開ラベルを付ける', async () => {
@@ -100,17 +100,21 @@ const removableDoc = () => ({ configured: true, items: [
   { name: 'linked', canPublish: false, removalKey: '', removalError: 'リンク経由の保存先からは削除できません' },
 ] });
 
-test('削除は未選択で開始し、公開用選択と分離する。共通スキルも選べ、リンクの項目は理由を表示する', async () => {
+test('選択トグルは未選択で開始し、OFFで解除する。共通スキルも選べ、リンクの項目は理由を表示する', async () => {
   const f = fixture();
   f.window.Skills.open({ repos: ['a'] }, ['codex']);
   f.pending[0].resolve(removableDoc());
   await tick();
   const row = (name) => f.nodes.get('skills-list').children.find((r) => r.children[0].dataset.skill === name);
-  assert.equal(row('review').children[0].checked, true);
+  assert.equal(row('review').children[0].checked, false);
+  assert.equal(row('review').children[0].hidden, true);
   f.nodes.get('skills-remove-mode').onclick();
-  assert.equal(f.nodes.get('skills-publish').hidden, true);
+  assert.equal(f.nodes.get('skills-publish').disabled, true);
   assert.equal(f.nodes.get('skills-remove').disabled, true);
-  for (const r of f.nodes.get('skills-list').children) assert.equal(r.children[0].checked, false);
+  for (const r of f.nodes.get('skills-list').children) {
+    assert.equal(r.children[0].checked, false);
+    assert.equal(r.children[0].hidden, false);
+  }
   assert.equal(row('design').children[0].disabled, false);
   assert.match(row('design').children[1].children[1].textContent, /\/home\/.*design/);
   assert.equal(row('linked').children[0].disabled, true);
@@ -118,10 +122,15 @@ test('削除は未選択で開始し、公開用選択と分離する。共通�
   row('design').children[0].checked = true;
   row('design').children[0].onchange();
   assert.equal(f.nodes.get('skills-remove').disabled, false);
-  assert.equal(f.nodes.get('skills-count').textContent, '削除対象 1 件');
+  assert.equal(f.nodes.get('skills-count').textContent, '1 件選択');
+  assert.equal(f.nodes.get('skills-publish').disabled, true, '公開できない項目の選択中は公開を無効にする');
   f.nodes.get('skills-remove-mode').onclick();
   assert.equal(f.nodes.get('skills-publish').hidden, false);
-  assert.equal(row('review').children[0].checked, true);
+  assert.equal(f.nodes.get('skills-publish').disabled, true);
+  assert.equal(f.nodes.get('skills-remove-mode').ariaPressed, 'false');
+  assert.equal(f.nodes.get('skills-count').textContent, '');
+  assert.equal(row('review').children[0].checked, false);
+  assert.equal(row('review').children[0].hidden, true);
   assert.equal(row('design').children[0].checked, false);
   f.nodes.get('skills-remove-mode').onclick();
   assert.equal(f.nodes.get('skills-remove').disabled, true);
@@ -188,7 +197,7 @@ test('AI 切替と設定の開き直しで削除モードを解除し、古い�
   f.nodes.get('skills-agent').onchange();
   f.pending[1].resolve(removableDoc());
   await tick();
-  assert.equal(f.nodes.get('skills-remove').hidden, true);
+  assert.equal(f.nodes.get('skills-remove').disabled, true);
   f.nodes.get('skills-remove-mode').onclick();
   const box = f.nodes.get('skills-list').children[0].children[0];
   box.checked = true; box.onchange();
@@ -201,7 +210,7 @@ test('AI 切替と設定の開き直しで削除モードを解除し、古い�
   await done;
   assert.equal(f.pending.length, 3);
   assert.equal(f.nodes.get('skills-status').textContent, '');
-  assert.equal(f.nodes.get('skills-remove').hidden, true);
+  assert.equal(f.nodes.get('skills-remove').disabled, true);
   assert.equal(f.nodes.get('skills-repo').value, 'b');
 });
 
@@ -219,7 +228,39 @@ test('最後のスキルを削除して一覧が空になっても削除モー�
   f.pending[1].resolve({ configured: false, items: [] });
   await done;
   assert.equal(f.nodes.get('skills-remove-mode').hidden, false);
-  assert.equal(f.nodes.get('skills-remove-mode').textContent, 'キャンセル');
+  assert.equal(f.nodes.get('skills-remove-mode').ariaPressed, 'true');
   f.nodes.get('skills-remove-mode').onclick();
-  assert.equal(f.nodes.get('skills-remove').hidden, true);
+  assert.equal(f.nodes.get('skills-remove').disabled, true);
+});
+
+
+test('公開は未公開のスキルを対象にし、公開設定が未保存なら実行しない', async () => {
+  const f = fixture();
+  const config = { repos: ['a'], audit: { shareRepo: 'https://example.test/skills.git' } };
+  f.window.Skills.fill(config);
+  f.window.Skills.open(config, ['codex']);
+  f.pending[0].resolve(removableDoc());
+  await tick();
+  const button = f.nodes.get('skills-publish');
+  assert.equal(button.disabled, true);
+  f.nodes.get('skills-remove-mode').onclick();
+  assert.equal(f.nodes.get('skills-remove-mode').ariaPressed, 'true');
+  const check = f.nodes.get('skills-list').children.find(r => r.children[0].dataset.skill === 'review').children[0];
+  check.checked = true; check.onchange();
+  assert.equal(button.disabled, false);
+  assert.equal(f.nodes.get('skills-remove').disabled, false);
+  assert.equal(button.textContent, '公開');
+  f.nodes.get('audit-share-repo').value = 'https://example.test/other.git';
+  f.nodes.get('audit-share-repo').oninput();
+  assert.equal(button.disabled, true);
+  button.onclick();
+  assert.equal(f.publications.length, 0);
+  assert.equal(button.title, '公開設定を保存してください');
+  f.nodes.get('audit-share-repo').value = config.audit.shareRepo;
+  f.nodes.get('audit-share-repo').oninput();
+  button.onclick();
+  await tick();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.publications)), [{ repo: 'a', kind: 'skill', name: 'review' }]);
+  f.pending[1].resolve({ configured: true, items: [] });
+  await tick();
 });

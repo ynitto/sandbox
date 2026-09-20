@@ -67,7 +67,8 @@ function createTerm(api = window.api) {
     hostEl.addEventListener('pointerup', () => {
       if (!term.hasSelection() && state.onFocus) state.onFocus();
     });
-    // xterm 自身には履歴を二重保持せず、ホイール量を tmux 履歴の表示オフセットへ渡す。
+    // xterm 自身には履歴を二重保持せず、ホイール量と位置を main へ渡す。
+    // main がCLIのマウス入力とtmux履歴のスクロールを切り替える。
     // hostEl の wheel リスナーでは xterm 自身の既定ホイール処理（scrollback:0 なので何も
     // 動かない）を止められず、tmux へ届く前に握り潰されていた。xterm の
     // attachCustomWheelEventHandler で先に受け取り、false を返して既定処理を止める。
@@ -77,7 +78,12 @@ function createTerm(api = window.api) {
       event.preventDefault();
       const direction = event.deltaY < 0 ? -1 : 1;
       const lines = direction * Math.max(1, Math.min(state.rows, Math.ceil(Math.abs(event.deltaY) / 30)));
-      api.termScroll(state.id, lines).catch((error) => { if (state.onError) state.onError(error); });
+      const bounds = hostEl.querySelector('.xterm-screen').getBoundingClientRect();
+      const position = {
+        x: Math.floor((event.clientX - bounds.left) / bounds.width * state.cols) + 1,
+        y: Math.floor((event.clientY - bounds.top) / bounds.height * state.rows) + 1,
+      };
+      api.termScroll(state.id, lines, position).catch((error) => { if (state.onError) state.onError(error); });
       return false;
     });
     state.term = term; state.fit = fit; state.host = hostEl;

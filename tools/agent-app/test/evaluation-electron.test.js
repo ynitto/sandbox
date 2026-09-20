@@ -44,7 +44,7 @@ test('受信箱: 長い参照元でも崩れず、IDを表示せずに元の会�
   });
   require('../src/main/store').saveConfig(userData, {
     repos: [repo], lastRepo: repo, transport: 'headless', share: { enabled: false },
-    evaluation: { mode: 'off' }, audit: { enabled: false },
+    evaluation: { mode: 'off', strategy: 'legacy' }, audit: { enabled: false },
     attentionSeen: { since: '2026-01-01T00:00:00.000Z' },
   });
   const appStore = require('../src/main/store');
@@ -68,9 +68,10 @@ test('受信箱: 長い参照元でも崩れず、IDを表示せずに元の会�
   for (let i = 0; i < 16; i += 1) {
     fs.writeFileSync(path.join(insights, `issue-${i}.json`), JSON.stringify({
       id: `issue-${i}`, ts: new Date().toISOString(), updated_at: new Date().toISOString(),
-      kind: 'skill-improvement', occurrences: 3, confidence: 'low',
+      kind: 'quality-review', occurrences: 3, confidence: 'low',
       statement: `スクロール確認 ${i + 1}: 手順が不足しています。`, observation_ids: ['obs-scroll'],
       scope: { target: { kind: 'skill', name: `skill-${i}` } }, exported: false,
+      improvement: { version: 1, target: { kind: 'skill', name: `skill-${i}` }, criteria: [{ requirement: '成果物を作る', evidence: '未作成' }] },
     }));
   }
   electron = await pw._electron.launch({ executablePath: binary,
@@ -126,7 +127,7 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
   const audit = require('../src/main/audit');
 
   appStore.saveConfig(userData, { repos: [repo], lastRepo: repo, area: 'conversation', transport: 'headless', share: { enabled: false },
-    evaluation: { mode: 'off' }, attentionSeen: { since: '2026-01-01T00:00:00.000Z' } });
+    evaluation: { mode: 'off', strategy: 'legacy' }, attentionSeen: { since: '2026-01-01T00:00:00.000Z' } });
   const s1 = appStore.createSession(userData, { repo, cli: 'codex', model: 'gpt-test', transport: 'headless' });
   appStore.appendMessage(userData, s1.id, { role: 'user', text: '設定画面の見直し' });
   appStore.appendMessage(userData, s1.id, { role: 'assistant', cli: 'codex', text: '並びを整理しました。' });
@@ -140,9 +141,10 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
   fs.mkdirSync(path.join(storeDir, 'observations'), { recursive: true });
   fs.mkdirSync(path.join(storeDir, 'records'), { recursive: true });
   fs.writeFileSync(path.join(storeDir, 'insights', 'ins-1.json'), JSON.stringify({
-    id: 'ins-1', ts: '2026-09-18T02:00:00Z', updated_at: '2026-09-18T02:00:00Z', kind: 'skill-improvement', occurrences: 3, confidence: 'low',
+    id: 'ins-1', ts: '2026-09-18T02:00:00Z', updated_at: '2026-09-18T02:00:00Z', kind: 'quality-review', occurrences: 3, confidence: 'low',
     statement: 'スキル statemachine-use で手順が足りず、依頼を満たせていない（3 件）', observation_ids: ['obs-1'],
     scope: { target: { kind: 'skill', name: 'statemachine-use' } }, exported: false,
+    improvement: { version: 1, target: { kind: 'skill', name: 'statemachine-use' }, criteria: [{ requirement: '出力工程', evidence: '出力は未作成' }] },
   }));
   fs.writeFileSync(path.join(storeDir, 'observations', '20260918.jsonl'), `${JSON.stringify({ id: 'obs-1', record_id: 'rec-1', evidence: ['rec-1'], kind: 'skill-gap' })}\n`);
   fs.writeFileSync(path.join(storeDir, 'records', '20260918.jsonl'), `${JSON.stringify({ id: 'rec-1', ts: '2026-09-18T01:00:00Z', kind: 'ledger', tool: 'agent-app', workload: 'evaluation', purpose: 'chat', ref: s1.id,
@@ -208,19 +210,34 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
     const still = await win.evaluate(() => window.api.attention.list());
     assert.ok(still.items.some((item) => item.kind === 'issue'), '閉じただけでは消えない');
 
-    // まとめて評価: 検索の行のチェック → 足元の操作 → 偽の judge が呼ばれ、台帳に評価の行が残る
+    // 評価するときだけ選択欄を開き、選んだ会話を評価する。
     await win.click('#session-search-open');
     await win.waitForSelector('#session-search:not([hidden])');
-    await win.waitForFunction(() => document.querySelectorAll('#search-results .row-check').length >= 2);
-    assert.ok(await win.$eval('#search-batch-start', (n) => n.disabled), '選ぶまで押せない');
-    // Select the fixture conversations, never whichever real history happens to be newest.
-    await win.getByRole('checkbox', { name: '「設定画面の見直し」を評価の対象にする', exact: true }).check();
-    await win.getByRole('checkbox', { name: '「ログ整形の依頼」を評価の対象にする', exact: true }).check();
-    await win.waitForFunction(() => document.getElementById('search-batch-count').textContent === '選んだ 2 件');
-    assert.ok((await win.textContent('#search-batch-summary')).includes('herd'));
+    await win.fill('#search-repo', path.basename(repo));
+    await win.locator('#search-more > summary').click();
+    await win.selectOption('#search-source', 'app');
+    await win.locator('#search-more > summary').click();
+    await win.waitForFunction(() => document.getElementById('search-batch-start').textContent === 'まとめて評価' && document.querySelectorAll('#search-results .list-pick').length === 2 && !document.getElementById('search-batch-start').disabled);
+    assert.equal(await win.locator('#search-results input[type="checkbox"]:visible').count(), 0);
+    assert.equal(await win.locator('#search-batch-status').isVisible(), false, '実行前の説明は表示しない');
+    assert.equal(await win.locator('#search-batch select, #search-batch input').count(), 0, '評価のエージェント・モデル選択は置かない');
     await win.click('#search-batch-start');
-    await win.waitForFunction(() => document.getElementById('search-batch-status').textContent.startsWith('評価しました 2 件'));
-    assert.ok((await win.textContent('#search-batch-status')).includes('課題あり 2 件'));
+    assert.equal(await win.locator('#search-results .row-check:visible').count(), 2);
+    assert.equal(await win.locator('#search-results .row-check:checked').count(), 0);
+    assert.ok(await win.locator('#search-batch-start').isDisabled(), '初期状態では実行できない');
+    await win.click('#search-batch-cancel');
+    assert.equal(await win.locator('#search-results .row-check:visible').count(), 0);
+    assert.ok(!fs.existsSync(judgeLog), '選択をキャンセルしただけでは評価しない');
+    await win.click('#search-batch-start');
+    const checks = win.locator('#search-results .row-check');
+    assert.equal(await win.locator('#search-results .row-check:checked').count(), 0);
+    assert.ok(await win.locator('#search-batch-start').isDisabled(), '未選択では実行できない');
+    await checks.nth(0).check();
+    await checks.nth(1).check();
+    await win.click('#search-batch-start');
+    await win.waitForFunction(() => document.querySelectorAll('#search-results .row-check:not([hidden])').length === 0);
+    await win.waitForFunction(() => document.getElementById('search-batch-status').textContent.startsWith('評価完了 2件'));
+    assert.ok((await win.textContent('#search-batch-status')).includes('課題あり 2件'));
     const asked = fs.readFileSync(judgeLog, 'utf8');
     assert.ok(asked.includes('## 依頼\n設定画面の見直し') && asked.includes('## 依頼\nログ整形の依頼'), asked);
     const rows = fs.readdirSync(audit.feedDir(userData)).flatMap((name) => fs.readFileSync(path.join(audit.feedDir(userData), name), 'utf8').trim().split('\n').map((l) => JSON.parse(l)));

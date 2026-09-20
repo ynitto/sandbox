@@ -198,3 +198,47 @@ for line in sys.stdin:
     shell.close();
   }
 });
+
+
+test('実機: 全画面CLIの履歴は埋め込み端末のホイールで上下にスクロールできる', { timeout: 20000 }, async (t) => {
+  const pw = playwright();
+  if (!pw || spawnSync('tmux', ['-V']).status !== 0) return t.skip('Playwright または tmux が無い');
+  if (process.platform === 'linux' && !process.env.DISPLAY) return t.skip('表示先が無い');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'app-wheel-'));
+  const ud = path.join(root, 'userdata');
+  const stub = path.join(root, 'screen.py');
+  fs.writeFileSync(stub, `import os,sys,tty,re
+ tty.setraw(sys.stdin.fileno())
+ sys.stdout.write('\\x1b[?1049h\\x1b[?1000h\\x1b[?1006h\\x1b[HREADY')
+ sys.stdout.flush()
+ buf=''
+ while True:
+     buf+=os.read(0,1024).decode()
+     while (m:=re.search(r'\\x1b\\[<(64|65);([0-9]+);([0-9]+)M',buf)):
+         direction='UP' if m[1]=='64' else 'DOWN'
+         sys.stdout.write('\\x1b[H\\x1b[2KWHEEL '+direction)
+         sys.stdout.flush()
+         buf=buf[m.end():]
+`.replace(/^ /gm, ''));
+  const shell = new host.HostShell();
+  let app, id;
+  t.after(async () => {
+    try { if (app) await app.close(); if (id) await shell.run(tmux.cmdKill(tmux.sessionName(id))); }
+    finally { shell.close(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  store.saveConfig(ud, { repos: [root], lastRepo: root, share: { enabled: false }, evaluation: { mode: 'off' } });
+  id = store.createSession(ud, { repo: root, cli: 'copilot' }).id;
+  assert.ok((await shell.run(tmux.cmdNew({ name: tmux.sessionName(id), cwd: root,
+    argv: ['python3', stub], cols: 120, rows: 36 }))).ok);
+  app = await pw._electron.launch({ executablePath: require('electron'),
+    args: [path.resolve(__dirname, '..'), '--no-sandbox', `--user-data-dir=${ud}`] });
+  const win = await app.firstWindow();
+  await win.waitForFunction(() => typeof document.getElementById('settings-open').onclick === 'function');
+  await win.evaluate(id => openSession(id, { waitForTerminal: true }), id);
+  await win.waitForFunction(() => document.querySelector('#term-host .xterm-rows')?.textContent.includes('READY'));
+  await win.locator('#term-host .xterm-screen').hover();
+  await win.mouse.wheel(0, -120);
+  await win.waitForFunction(() => document.querySelector('#term-host .xterm-rows')?.textContent.includes('WHEEL UP'), null, { timeout: 3000 });
+  await win.mouse.wheel(0, 120);
+  await win.waitForFunction(() => document.querySelector('#term-host .xterm-rows')?.textContent.includes('WHEEL DOWN'), null, { timeout: 3000 });
+});

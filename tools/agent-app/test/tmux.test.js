@@ -501,3 +501,32 @@ test('新しく起動する時だけセッション記録を準備し、環境�
   await conv.open();
   assert.strictEqual(prepares, 1, '生きたtmuxへ再接続するときは記録を初期化しない');
 });
+
+
+test('スクロール: マウス対応CLIへSGRホイールを送り、通常端末ではtmux履歴を動かす', async () => {
+  const commands = [];
+  const conv = new tmux.Conversation({ id: 'wheel-test', shell: { run: async command => { commands.push(command); return { ok: true }; } } });
+  conv.schedule = () => {};
+  conv.lastScreen = { cols: 80, rows: 24, historySize: 100, mouseAny: true, mouseSgr: true };
+  await conv.scroll(-2, { x: 12, y: 7 });
+  const sent = commands[0].split("'--' ")[1].replace(/'/g, '').trim().split(/\s+/).map(n => parseInt(n, 16));
+  assert.equal(Buffer.from(sent).toString(), '\x1b[<64;12;7M'.repeat(2));
+  assert.equal(conv.scrollOffset, 0);
+  conv.lastScreen.mouseAny = false;
+  await conv.scroll(-10);
+  assert.equal(conv.scrollOffset, 10);
+  await conv.scroll(4);
+  assert.equal(conv.scrollOffset, 6);
+  assert.equal(commands.length, 1, '通常の履歴閲覧ではCLIへキーを送らない');
+});
+
+test('スクロール: マウス状態を取り込み、終了済みCLIへ入力しない', async () => {
+  const screen = tmux.parseScreen('0|0|80|24|1|0|12|0|1|1\n\x1ehistory');
+  assert.equal(screen.mouseAny, true);
+  assert.equal(screen.mouseSgr, true);
+  const conv = new tmux.Conversation({ id: 'dead-wheel', shell: { run: async () => { throw new Error('キー送信は禁止'); } } });
+  conv.schedule = () => {};
+  conv.lastScreen = screen;
+  await conv.scroll(-3);
+  assert.equal(conv.scrollOffset, 3);
+});

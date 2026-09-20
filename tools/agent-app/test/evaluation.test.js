@@ -42,7 +42,7 @@ function makeEvaluator(over = {}) {
   const calls = [];
   const capture = over.capture || fakeCapture({ calls, ...(over.fake || {}) });
   const ev = new evaluation.Evaluator({
-    userData, loadConfig: () => ({ evaluation: { mode: over.mode || 'all' } }), capture,
+    userData, loadConfig: () => ({ evaluation: { mode: over.mode || 'all', strategy: 'legacy' } }), capture,
     runPrompt: over.runPrompt || null, readRecord: over.readRecord || null,
     busy: over.busy || (() => false), post: () => {}, now: () => Date.parse('2026-09-19T00:00:00Z'),
     setTimer: (fn) => { fn(); return null; }, clearTimer: () => {},
@@ -53,6 +53,8 @@ function makeEvaluator(over = {}) {
 test('設定: evaluation.mode は sample / all / off。知らない値は sample', () => {
   assert.equal(settings.normalize({}).evaluation.mode, 'sample');
   assert.equal(settings.normalize({ evaluation: { mode: 'off' } }).evaluation.mode, 'off');
+  assert.equal(settings.normalize({}).evaluation.strategy, 'evidence-advisory');
+  assert.equal(settings.normalize({ evaluation: { strategy: 'legacy' } }).evaluation.strategy, 'legacy');
   assert.equal(settings.normalize({ evaluation: { mode: 'weird' } }).evaluation.mode, 'sample');
 });
 
@@ -97,6 +99,7 @@ test('会話へ渡す依頼文: 対象・課題・根拠を載せ、改善案は
   const prompt = evaluation.handoffPrompt({
     id: 'ins-1', target: { kind: 'skill', name: 'statemachine-use' }, statement: '見本の記録を 2 回以上やり直している',
     occurrences: 6, confidence: 'medium', kind: 'skill-improvement', evidence: ['obs-1', 'obs-2'],
+    criteria: [{ requirement: '成果物を保存する', evidence: '未作成' }],
   });
   assert.match(prompt, /まだ直さなくてよい/);
   assert.match(prompt, /## 対象\nスキル「statemachine-use」/);
@@ -104,6 +107,8 @@ test('会話へ渡す依頼文: 対象・課題・根拠を載せ、改善案は
   assert.match(prompt, /観測 6 件 · 確度 medium/);
   assert.match(prompt, /obs-1, obs-2/);
   assert.ok(!/suggested_action|rules\.md/.test(prompt));
+  assert.match(prompt, /条件: 成果物を保存する/);
+  assert.match(prompt, /同じ条件での再実行・検証方法/);
   assert.match(evaluation.handoffPrompt({ statement: 'x' }), /## 対象\n全体/);
 });
 
@@ -186,7 +191,7 @@ test('自動評価: ターンが動いている間は回さず、後でやり直
   const timers = [];
   const userData = tmp();
   const ev = new evaluation.Evaluator({
-    userData, loadConfig: () => ({ evaluation: { mode: 'all' } }), capture: fakeCapture(),
+    userData, loadConfig: () => ({ evaluation: { mode: 'all', strategy: 'legacy' } }), capture: fakeCapture(),
     busy: () => busy, post: () => {}, setTimer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimer: () => {},
   });
   ev.noteTurn({ session: { id: 's' }, message: { role: 'assistant', text: 'x' } });

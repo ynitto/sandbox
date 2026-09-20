@@ -91,6 +91,42 @@ def evaluation_issue(rec: dict) -> str:
     return issue if issue in EVALUATION_ISSUES else ""
 
 
+
+def improvement_of(rec: dict, proposal: dict) -> "dict | None":
+    """手順の改善に進める、受入条件と具体的な根拠のある候補だけを返す。"""
+    if (proposal.get("schema_version") != 1 or proposal.get("stage") != "advisory"
+            or proposal.get("status") != "problem" or proposal.get("truncated")
+            or proposal.get("error") or proposal.get("cause") in ("tool-failure", "config-issue")):
+        return None
+    target = target_of(rec)
+    if not target or target["kind"] not in ("skill", "task", "workflow") or not target["name"].strip():
+        return None
+    # 複数のスキルを使っただけでは、先頭のスキルに問題を帰属させない。
+    if not rec.get("artifact"):
+        used = rec.get("used") if isinstance(rec.get("used"), dict) else {}
+        skills = used.get("skills") if isinstance(used.get("skills"), list) else []
+        if len(set(str(v) for v in skills if str(v).strip())) != 1:
+            return None
+    evidence_rows = proposal.get("evidence") if isinstance(proposal.get("evidence"), list) else []
+    evidence = {e["id"]: e.get("text", "") for e in evidence_rows
+                if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    criteria = []
+    checks = proposal.get("checks") if isinstance(proposal.get("checks"), list) else []
+    for check in checks:
+        if not isinstance(check, dict) or check.get("status") != "unmet" or not str(check.get("text") or "").strip():
+            continue
+        proof = evidence.get(str(check.get("evidence_id") or ""), "")
+        if check.get("basis") == "verification":
+            receipts = check.get("receipts") if isinstance(check.get("receipts"), list) else []
+            failed = [r for r in receipts if isinstance(r, dict)
+                      and isinstance(r.get("exitCode"), int) and not isinstance(r.get("exitCode"), bool)
+                      and r["exitCode"] != 0 and str(r.get("command") or "").strip()]
+            proof = "; ".join(f"{r['command']} (exit {r['exitCode']})" for r in failed)
+        if isinstance(proof, str) and proof.strip():
+            criteria.append({"requirement": check["text"], "evidence": proof})
+    return {"version": 1, "target": target, "criteria": criteria} if criteria else None
+
+
 def observe(rec: dict) -> "list[dict]":
     """record → 観測の芯（key / kind / text / group）。id・ts・evidence は呼び出し側が付ける。
     text は record 固有の数字を含めない一般形にし、同じ group の観測は同じ洞察へ畳む。"""
@@ -114,6 +150,11 @@ def observe(rec: dict) -> "list[dict]":
             checks = [c for c in proposal.get("checks", []) if isinstance(c, dict) and c.get("status") == "unmet"]
             details = "; ".join(f"{c.get('text', '')[:160]}（根拠 {c.get('evidence_id') or c.get('basis', '')}）" for c in checks[:3])
             add("quality-review", "quality-review", f"改善候補（未承認）: {details}。原因: {proposal.get('cause', 'unknown')}")
+            improvement = improvement_of(rec, proposal)
+            if improvement:
+                out[-1]["improvement"] = improvement
+                out[-1]["text"] = "未達の条件: " + " / ".join(c["requirement"] for c in improvement["criteria"])
+
         # Shadow/unknown are retained as measurements, never as skill blame.
         return out
 
@@ -162,11 +203,26 @@ def insight(cluster: dict) -> dict:
     when = sorted(str(o.get("record_ts") or o.get("ts") or "")[:10] for o in obs)
     period = f"・{when[0]}〜{when[-1]}" if when and when[0] else ""
     kind = str(obs[0].get("kind") or "")
+    candidates = [o["improvement"] for o in obs if isinstance(o.get("improvement"), dict)]
+    improvement = None
+    if candidates:
+        target = candidates[0]["target"]
+        criteria = []
+        for candidate in candidates:
+            if candidate["target"] != target:
+                continue
+            for criterion in candidate["criteria"]:
+                if criterion not in criteria:
+                    criteria.append(criterion)
+        improvement = {"version": 1, "target": target, "criteria": criteria}
     return {
+        **({"improvement": improvement} if improvement else {}),
         "id": cluster["cluster_id"],
         "ts": now_iso(),
-        "statement": f"{obs[0].get('text') or ''}（{n} 件{period}）",
+        "statement": ("未達の条件: " + " / ".join(dict.fromkeys(c["requirement"] for c in improvement["criteria"]))
+                      if improvement else f"{obs[0].get('text') or ''}（{n} 件{period}）"),
         "kind": _INSIGHT_KIND.get(kind, "usage-optimization"),
+        "actionable": improvement is not None,
         "scope": dict(obs[0].get("scope") or {}),
         "observation_ids": [o["id"] for o in obs],
         "occurrences": n,

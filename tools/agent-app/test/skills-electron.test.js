@@ -66,7 +66,12 @@ test('Electron: スキル一覧から選択・確認・キャンセル・ゴミ�
   await win.locator('#settings-open').click();
   await win.locator('[data-settings-tab="skills"]').click();
   await win.waitForFunction(() => document.querySelectorAll('#skills-list input').length === 2);
-  assert.equal(await win.locator('#skills-publish').isVisible(), false, '公開先がなくても削除できる');
+  assert.equal(await win.locator('#skills-publish').isVisible(), true);
+  assert.equal(await win.locator('#skills-publish').isDisabled(), true, '公開先がなくても操作の場所は表示する');
+  assert.equal(await win.locator('#skills-list input:visible').count(), 0, '通常時はチェックボックスを隠す');
+  const controls = await win.locator('#skills-remove-mode').boundingBox();
+  const list = await win.locator('#skills-list').boundingBox();
+  assert.ok(controls.y < list.y, '削除の選択操作は一覧の上');
   await win.locator('#skills-remove-mode').click();
   assert.equal(await win.locator('#skills-remove').isDisabled(), true);
   assert.equal(await win.locator('#skills-list input:checked').count(), 0);

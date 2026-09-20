@@ -72,9 +72,9 @@ test('request failures remain unknown with error metadata', async () => {
   assert.equal(p.status, 'unknown'); assert.equal(p.error.kind, 'request_failure');
 });
 
-test('advisory automatic path records a proposal without a fabricated quality score', async () => {
+test('default automatic path records an advisory proposal without a fabricated quality score', async () => {
   const records = [];
-  const ev = new Evaluator({ userData: '/tmp/unused', loadConfig: () => ({ evaluation: { mode: 'all', strategy: 'evidence-advisory' } }),
+  const ev = new Evaluator({ userData: '/tmp/unused', loadConfig: () => ({ evaluation: { mode: 'all' } }),
     capture: async (_name, args) => ({ ok: true, stdout: JSON.stringify(JSON.parse(args[args.indexOf('--questions') + 1]).cause ? { answers: { cause: a('unknown') } } : response()) }),
     feed: (_dir, rec) => { records.push(rec); return rec; }, busy: () => false, post: () => {},
     setTimer: () => null, clearTimer: () => {} });

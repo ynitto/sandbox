@@ -51,6 +51,14 @@ function matches(local, remote) {
   return true;
 }
 
+// main が再走査したカタログからのみ作る。renderer の任意パスは受け付けない。
+function sourceOf(item) {
+  if (!item || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(item.name)
+    || path.basename(item.path || '') !== 'SKILL.md') return null;
+  return { full: item.dir, rel: `.agents/skills/${item.name}`, dir: true,
+    key: crypto.createHash('sha256').update(path.resolve(item.path)).digest('hex') };
+}
+
 class SkillPublication {
   constructor({ userData, shell, loadAuth = () => ({}), now = () => Date.now() }) {
     Object.assign(this, { userData, shell, loadAuth, now });
@@ -62,6 +70,7 @@ class SkillPublication {
     return {
       name: item.name, description: item.description, version: item.version, place: item.place,
       ...state,
+      publicationKey: sourceOf(item)?.key || '',
       canPublish: actionable && !!state.configured && state.versionComparison === 'local-newer',
       canImprove: actionable && !!base.canImprove && state.status !== 'unknown',
     };
@@ -183,4 +192,4 @@ class SkillPublication {
   }
 }
 
-module.exports = { SkillPublication };
+module.exports = { SkillPublication, sourceOf };

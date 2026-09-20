@@ -144,6 +144,7 @@ def cmd_extract(args) -> int:
                 "kind": o["kind"],
                 "text": o["text"],
                 "group": o["group"],
+                **({"improvement": o["improvement"]} if o.get("improvement") else {}),
                 "scope": {"purpose": str(rec.get("purpose") or ""),
                           "model": str(rec.get("model") or ""),
                           **({"target": o["target"]} if o.get("target") else {})},

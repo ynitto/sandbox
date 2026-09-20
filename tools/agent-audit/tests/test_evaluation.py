@@ -181,3 +181,42 @@ class ProposalTests(AuditTestCase):
         self.assertEqual(len(insights), 1)
         self.assertEqual(insights[0]["kind"], "quality-review")
         self.assertIsNone(insights[0]["declaration"])
+
+
+class ImprovementInboxTests(AuditTestCase):
+    def proposal(self):
+        return {"schema_version": 1, "stage": "advisory", "status": "problem", "cause": "unknown",
+                "checks": [{"text": "レポートを保存する", "status": "unmet", "evidence_id": "e1"}],
+                "evidence": [{"id": "e1", "text": "レポートは未作成"}]}
+
+    def test_requires_named_procedure_and_specific_evidence(self):
+        for kind in ("skill", "task", "workflow"):
+            row = evaluation_row(artifact={"kind": kind, "name": "daily"})
+            self.assertEqual(rules.improvement_of(row, self.proposal())["target"], row["artifact"])
+        for changes in ({"stage": "shadow"}, {"status": "unknown"}, {"truncated": True},
+                        {"cause": "tool-failure"}, {"cause": "config-issue"}, {"evidence": []},
+                        {"checks": []}, {"error": {"message": "failed"}}):
+            self.assertIsNone(rules.improvement_of(evaluation_row(), {**self.proposal(), **changes}))
+        for row in (evaluation_row(used={}), evaluation_row(used={"skills": ["a", "b"]}),
+                    evaluation_row(artifact={"kind": "tool", "name": "browser"})):
+            self.assertIsNone(rules.improvement_of(row, self.proposal()))
+
+    def test_failed_verification_has_a_reproducible_command(self):
+        p = self.proposal()
+        p["checks"] = [{"text": "検証に合格する", "status": "unmet", "basis": "verification",
+                        "receipts": [{"command": "npm test", "exitCode": 1}]}]
+        self.assertIn("npm test", rules.improvement_of(evaluation_row(), p)["criteria"][0]["evidence"])
+        p["checks"][0]["receipts"][0]["exitCode"] = 0
+        self.assertIsNone(rules.improvement_of(evaluation_row(), p))
+
+    def test_one_evidenced_failure_survives_collect_extract_distill(self):
+        self.write_ledger("20260803", [evaluation_row(evaluation={"proposal": self.proposal()})])
+        st = self.make_store()
+        collect.collect_budget_ledger(self.make_args(), st)
+        args = self.make_args(force=True, distill_min_occurrences=2)
+        extract.cmd_extract(args)
+        distill.cmd_distill(args)
+        insights = list(self.make_store().iter_insights())
+        self.assertEqual(len(insights), 1)
+        self.assertTrue(insights[0]["actionable"])
+        self.assertEqual(insights[0]["improvement"]["criteria"][0]["evidence"], "レポートは未作成")

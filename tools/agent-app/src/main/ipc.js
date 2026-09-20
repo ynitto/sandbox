@@ -47,7 +47,7 @@ const { runPrompt, runSharedPrompt, normalizeRepoUrl, refreshRepoUrls, repoFor }
 const audit = require('./audit');
 const evaluation = require('./evaluation');
 const artifactShare = require('./artifactShare');
-const { SkillPublication } = require('./skillPublication');
+const { SkillPublication, sourceOf: skillPublicationSource } = require('./skillPublication');
 const skillCredentials = require('./skillCredentials');
 
 // 修正前に保存された Aider 応答も、読み出し時に同じ表示契約へ移す。
@@ -899,7 +899,7 @@ function registerIpcHandlers(getWindow) {
   // 書かせる（mark: true。書くのは agent-audit）。ダイアログを閉じただけの課題は消さない。
   handle('insight:handoff', async (p) => {
     const id = String(p.id || '');
-    const source = attention.insightSources(audit.insights(userData(), { limit: 200 })).find((item) => item.issue && item.issue.id === id);
+    const source = attention.insightSources(audit.insights(userData(), { limit: Infinity })).find((item) => item.issue && item.issue.id === id);
     if (!source) throw new Error('その課題は見つかりません（渡した、または反証されたものは出しません）');
     const prompt = evaluation.handoffPrompt(source.issue);
     if (!p.mark) return { id, title: source.title, prompt, exported: false, warning: '' };
@@ -961,8 +961,7 @@ function registerIpcHandlers(getWindow) {
     const repo = p && p.repo ? requireRepo(p.repo) : '';
     const configured = artifacts.configured();
     const verdicts = judged();
-    // 公開できるのはリポジトリの中にあるものだけ。共通の置き場の個人のスキルは一覧に出すが、
-    // 公開の操作は出さない（押せないものを出さない）。
+    // リポジトリ内・共通の保存先とも、一覧で表示した実体を公開する。
     const roots = skills.sourceRoots(repo, String((p && p.agent) || ''));
     const catalog = skills.catalogFromRoots(roots);
     const published = await skillPublication.states(catalog, artifacts.config().shareRepo);
@@ -970,8 +969,7 @@ function registerIpcHandlers(getWindow) {
       const base = item.place === 'repo' ? publishState(repo, 'skill', item.name, verdicts)
         : { ...NO_VERDICT, status: 'outside', canPublish: false, canImprove: false, configured };
       // 表示した実体と公開処理が読む正典が違う場合、別の同名スキルを公開させない。
-      const found = item.place === 'repo' ? artifactShare.locate(repo, 'skill', item.name) : null;
-      const actionable = !!found && path.resolve(found.full) === path.resolve(item.dir);
+      const actionable = !!skillPublicationSource(item);
       return { ...skillPublication.present(item, base, published.get(item.path), actionable), ...skillRemoval.describe(item, roots) };
     });
     return { repo, configured, items };
@@ -1007,7 +1005,14 @@ function registerIpcHandlers(getWindow) {
       sessionId: String(p.sessionId || ''), force: !!p.force,
     };
     if (options.kind === 'skill' && artifacts.configured()) {
-      const found = artifactShare.locate(options.repo, 'skill', options.name);
+      let found = artifactShare.locate(options.repo, 'skill', options.name);
+      if (p.publicationKey) {
+        const item = skills.catalog(options.repo, String(p.agent || '')).find(item => item.name === options.name);
+        const source = skillPublicationSource(item);
+        if (!source || source.key !== p.publicationKey) throw new Error('スキルの保存先が変わりました。一覧を更新してください。');
+        options.source = source;
+        found = source;
+      }
       if (found) {
         const item = { ...options, dir: found.full, path: path.join(found.full, 'SKILL.md') };
         const state = (await skillPublication.states([item], artifacts.config().shareRepo)).get(item.path);
@@ -1299,7 +1304,7 @@ function registerIpcHandlers(getWindow) {
       } catch { /* agent-flow の bus が無い・読めないリポジトリは飛ばす */ }
     }
     // 課題（agent-audit の洞察）。反証されたもの・会話へ渡したものは insightSources が落とす。
-    sources.push(...attention.insightSources(audit.insights(ud, { limit: 50 })));
+    sources.push(...attention.insightSources(audit.insights(ud, { limit: Infinity })).slice(0, 50));
     sources.push(...attention.batchSources(evaluation.readBatches(ud)));
     const seen = store.attentionBaseline(ud);
     return attention.project(sources, { seen: seen.items, since: seen.since });
@@ -1347,7 +1352,7 @@ function registerIpcHandlers(getWindow) {
   handle('term:scroll', (p) => {
     const c = conversations.get(p.id);
     if (!c) throw new Error('端末が開いていない');
-    return c.scroll(p.lines);
+    return c.scroll(p.lines, p.position);
   });
   handle('term:resize', (p) => { const c = conversations.get(p.id); return c ? c.resize(p.cols, p.rows) : false; });
   handle('term:kill', async (p) => { const had = conversations.has(p.id); await closeConversation(p.id); return had; });

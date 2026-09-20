@@ -112,7 +112,7 @@ const EVALUATION_MODES = ['sample', 'all', 'off'];
 function evaluation(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   return { mode: EVALUATION_MODES.includes(source.mode) ? source.mode : 'sample',
-    strategy: ['legacy', 'evidence-shadow', 'evidence-advisory'].includes(source.strategy) ? source.strategy : 'legacy' };
+    strategy: ['legacy', 'evidence-shadow', 'evidence-advisory'].includes(source.strategy) ? source.strategy : 'evidence-advisory' };
 }
 
 function concurrent(value) {

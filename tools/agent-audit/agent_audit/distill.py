@@ -129,7 +129,8 @@ def cmd_distill(args) -> int:
         prev = int(known.get(c["cluster_id"]) or 0)
         if size > prev:
             new_obs_total += size - prev
-        if size >= min_occ and size > prev:
+        actionable = any(o.get("improvement") for o in c["observations"])
+        if (size >= min_occ or actionable) and size > prev:
             targets.append(c)
     reason = gate_reason(args, store, new_obs_total)
     if reason:

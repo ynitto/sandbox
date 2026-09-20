@@ -41,6 +41,19 @@ test('既存クローンが main を覚えていても、変更後のデフォ�
   assert.equal(result.branch, 'release/stable');
   assert.equal(git(remote, 'rev-parse', 'main'), original);
   assert.equal(git(remote, 'show', 'release/stable:.agents/skills/review/SKILL.md'), '# review');
+  // 一覧が共通の保存先を指す場合、同名のrepo側を誤って公開しない。
+  const home = path.join(root, 'home/.claude/skills/review');
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, 'SKILL.md'), '# selected home skill');
+  const { sourceOf, SkillPublication } = require('../src/main/skillPublication');
+  const item = { name: 'review', dir: home, path: path.join(home, 'SKILL.md'), place: 'home' };
+  const source = sourceOf(item);
+  const publication = new SkillPublication({ userData: path.join(root, 'data'), shell: () => shell });
+  assert.equal(publication.present(item, { configured: true }, { versionComparison: 'local-newer' }, !!source).canPublish, true);
+  await share.submit({ repo, kind: 'skill', name: 'review', source, force: true });
+  assert.equal(git(remote, 'show', 'release/stable:.agents/skills/review/SKILL.md'), '# selected home skill');
+  assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), '# review');
+
 });
 
 test('デフォルトブランチを確認できない場合は main を推測しない', async () => {

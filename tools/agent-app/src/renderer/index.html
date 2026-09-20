@@ -290,21 +290,11 @@
       </div>
       <footer id="search-batch" class="search-batch">
         <div class="row">
-          <span id="search-batch-count" class="sub">会話を選ぶとまとめて評価できます</span>
+          <div id="search-batch-status" class="sub" role="status" aria-live="polite" hidden></div>
           <span class="spacer"></span>
-          <details id="search-batch-settings" class="run-settings">
-            <summary><span id="search-batch-summary">評価に使うAI</span></summary>
-            <div class="settings-popover">
-              <div class="popover-head">評価に使うAI</div>
-              <div class="direct-agent-settings">
-                <label>エージェント<select id="search-batch-agent"></select></label>
-                <label>モデル<input id="search-batch-model" placeholder="自動" size="14"></label>
-              </div>
-            </div>
-          </details>
-          <button type="button" id="search-batch-start" class="primary" disabled>選んだ会話をまとめて評価</button>
+          <button type="button" id="search-batch-cancel" hidden>キャンセル</button>
+          <button type="button" id="search-batch-start" class="primary" disabled>まとめて評価</button>
         </div>
-        <div id="search-batch-status" class="sub" role="status" aria-live="polite"></div>
       </footer>
     </section>
 
@@ -695,9 +685,15 @@
           <label class="setting-field setting-field-wide"><span><strong>公開先リポジトリ</strong></span><input id="audit-share-repo" placeholder="https://example.com/team/skills.git"></label>
           <label class="setting-field setting-field-wide"><span><strong>アクセストークン</strong></span><input id="audit-share-token" type="password" autocomplete="new-password" placeholder="未設定"></label>
           <label class="setting-check" id="audit-push-main-row" hidden><input type="checkbox" id="audit-push-main"><span><strong>デフォルトブランチへ公開</strong></span></label>
+          <div class="row">
+            <button type="button" id="skills-remove-mode" class="small quiet" aria-pressed="false">選択</button>
+            <span class="spacer"></span>
+            <span id="skills-count" class="sub" role="status"></span>
+            <button type="button" id="skills-remove" class="small danger" disabled>ゴミ箱へ移動</button>
+            <button type="button" id="skills-publish" class="small primary" disabled>公開</button>
+          </div>
           <div id="skills-list" aria-live="polite"></div>
           <div class="environment-status">
-            <div class="row"><span id="skills-count" class="sub"></span><span class="spacer"></span><button type="button" id="skills-remove-mode" class="small quiet" hidden>削除する項目を選ぶ</button><button type="button" id="skills-remove" class="small danger" hidden>ゴミ箱へ移動</button><button type="button" id="skills-publish" class="small">公開する</button></div>
             <div id="skills-status" class="sub" role="status" aria-live="polite"></div>
           </div>
         </section>
