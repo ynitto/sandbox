@@ -196,6 +196,25 @@ def assess_prod_word_but_doc() -> "ap.Task":
                           ("note", "docs/runbook.md の 1 行。設定そのものは変えない")])
 
 
+# c=2 以上を正解に持つ 2 つ。AS7 は**ファイルを名指し**（綴りを数えれば当たる）、AS8 は
+# **数を文で言うだけ**（綴りは 1 つしか出てこない）。数える実装がどこまで届くかを分ける。
+def assess_three_named_files() -> "ap.Task":
+    """c=2 / r=1 / a=1。テストの重複を 3 ファイルにまたがって共通化する。"""
+    return ap.Task(id="t16", title="テストの重複ヘルパを共通化する",
+                   verify="python -m pytest -q tests",
+                   extra=[("acceptance", "tests が通る"),
+                          ("note", "tests/test_render.py・tests/test_index.py・"
+                                   "tests/test_summary.py の同じヘルパを 1 つにまとめる")])
+
+
+def assess_counted_but_unnamed() -> "ap.Task":
+    """c=3 / r=1 / a=1。触る数は文に書いてあるが、ファイル名は 1 つも出てこない。"""
+    return ap.Task(id="t17", title="手引きの見出し記法を揃える",
+                   verify="python tools/ci/check_user_docs.py",
+                   extra=[("acceptance", "check_user_docs.py が通る"),
+                          ("note", "docs/ 以下の 40 ファイルの見出しを同じ記法へ直す")])
+
+
 # review の材料。本番は `_project_evaluate` が**その場で実行した**受入コマンドの判定を
 # レビュアへ渡す（レビューが走るのは `passed == total` のときだけ＝全 PASS）。
 REVIEW_RESULTS = [("python -m pytest -q tests", True, "")]
@@ -576,6 +595,14 @@ CASES = {
                 driver=lambda cwd: ap.assess_task(project_config(cwd),
                                                   assess_prod_word_but_doc()),
                 check=lambda v: check_assess(v, {"c": 1, "r": 1, "a": 1})),
+    "AS7": dict(purpose="assess", expect="c=2 r=1 a=1（3 ファイルを名指し）",
+                driver=lambda cwd: ap.assess_task(project_config(cwd),
+                                                  assess_three_named_files()),
+                check=lambda v: check_assess(v, {"c": 2, "r": 1, "a": 1})),
+    "AS8": dict(purpose="assess", expect="c=3 r=1 a=1（40 ファイルだが名前は出ない）",
+                driver=lambda cwd: ap.assess_task(project_config(cwd),
+                                                  assess_counted_but_unnamed()),
+                check=lambda v: check_assess(v, {"c": 3, "r": 1, "a": 1})),
 }
 
 # ------------------------------------------------------------------ 実行

@@ -354,7 +354,8 @@ def _triage_cell(case: dict, *, classify: bool = False):
 # タスクを作る関数を名前で借りる。ケース定義も正解も project_eval 側のまま。
 _ASSESS_TASKS = {"AS1": "assess_risky", "AS2": "assess_clear",
                  "AS3": "assess_risky_but_clear", "AS4": "assess_vague_but_safe",
-                 "AS5": "assess_auth_without_the_word", "AS6": "assess_prod_word_but_doc"}
+                 "AS5": "assess_auth_without_the_word", "AS6": "assess_prod_word_but_doc",
+                 "AS7": "assess_three_named_files", "AS8": "assess_counted_but_unnamed"}
 
 # 段の説明に出てくる語をそのまま材料から探す実装。**本番ではない**——「材料の属性で書き
 # 切った基準は、そもそも機械で決まるのか」を judge と突き合わせるための当て馬である。
@@ -509,6 +510,8 @@ VARIANTS.update({
     "AS4": ("project_eval", functools.partial(_assess_cell, cid="AS4")),
     "AS5": ("project_eval", functools.partial(_assess_cell, cid="AS5")),
     "AS6": ("project_eval", functools.partial(_assess_cell, cid="AS6")),
+    "AS7": ("project_eval", functools.partial(_assess_cell, cid="AS7")),
+    "AS8": ("project_eval", functools.partial(_assess_cell, cid="AS8")),
     "CW1": ("statemachine_cells", _contract_cell),
     "CW2": ("statemachine_cells", _contract_cell),
     "JS1": ("statemachine_cells", _state_judge_cell),
