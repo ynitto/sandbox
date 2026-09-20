@@ -159,6 +159,24 @@ def assess_clear() -> "ap.Task":
                    extra=[("acceptance", "tests/test_docs.py が通る")])
 
 
+# AS1 / AS2 は 3 軸が同じ向きを指す素材なので、**全体の重さを 1 つ読んで 3 軸へ配っただけ**
+# でも通ってしまう（実測 2026-09-20: AS1 が 3/3/3、AS2 が 1/1/1）。軸ごとに見ているかを
+# 分けるため、**1 軸だけが 3 で残りが 1** の素材を 2 つ置く。正解は軸の定義から従う——
+# r は「決済・データ移行など」、a は「verify が具体的か」、c は「触る対象と段取りの多さ」。
+def assess_risky_but_clear() -> "ap.Task":
+    """r=3 / c=1 / a=1。決済に触るが、1 行の修正で完了条件も具体的。"""
+    return ap.Task(id="t12", title="決済 API のタイムアウトを 30 秒へ上げる",
+                   verify="python -m pytest -q tests/test_payments.py",
+                   extra=[("acceptance", "tests/test_payments.py が通る"),
+                          ("note", "payments/client.py の定数 1 行だけを変える")])
+
+
+def assess_vague_but_safe() -> "ap.Task":
+    """a=3 / c=1 / r=1。1 画面の見栄えだけだが、完了条件もやり方も決まっていない。"""
+    return ap.Task(id="t13", title="設定画面の余白を調整して見栄えを良くする", verify="",
+                   extra=[("note", "styles.css の設定画面まわり。どうなれば良いかは未定")])
+
+
 # review の材料。本番は `_project_evaluate` が**その場で実行した**受入コマンドの判定を
 # レビュアへ渡す（レビューが走るのは `passed == total` のときだけ＝全 PASS）。
 REVIEW_RESULTS = [("python -m pytest -q tests", True, "")]
@@ -522,6 +540,15 @@ CASES = {
     "AS2": dict(purpose="assess", expect="a=1（verify が具体的）",
                 driver=lambda cwd: ap.assess_task(project_config(cwd), assess_clear()),
                 check=lambda v: check_assess(v, {"a": 1})),
+    # AS3 / AS4 は 3 軸すべてを見る（1 軸だけ 3 の素材なので、揃った答えは不正解になる）。
+    "AS3": dict(purpose="assess", expect="c=1 r=3 a=1（決済だが 1 行・verify あり）",
+                driver=lambda cwd: ap.assess_task(project_config(cwd),
+                                                  assess_risky_but_clear()),
+                check=lambda v: check_assess(v, {"c": 1, "r": 3, "a": 1})),
+    "AS4": dict(purpose="assess", expect="c=1 r=1 a=3（1 画面だが完了条件が無い）",
+                driver=lambda cwd: ap.assess_task(project_config(cwd),
+                                                  assess_vague_but_safe()),
+                check=lambda v: check_assess(v, {"c": 1, "r": 1, "a": 3})),
 }
 
 # ------------------------------------------------------------------ 実行

@@ -352,7 +352,8 @@ def _triage_cell(case: dict, *, classify: bool = False):
 
 # assess のセルは入力をドライバの中（`ap.assess_task(…, assess_risky())`）に持っているので、
 # タスクを作る関数を名前で借りる。ケース定義も正解も project_eval 側のまま。
-_ASSESS_TASKS = {"AS1": "assess_risky", "AS2": "assess_clear"}
+_ASSESS_TASKS = {"AS1": "assess_risky", "AS2": "assess_clear",
+                 "AS3": "assess_risky_but_clear", "AS4": "assess_vague_but_safe"}
 
 
 def _assess_cell(case: dict, *, cid: str = ""):
@@ -474,6 +475,8 @@ VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
 VARIANTS.update({
     "AS1": ("project_eval", functools.partial(_assess_cell, cid="AS1")),
     "AS2": ("project_eval", functools.partial(_assess_cell, cid="AS2")),
+    "AS3": ("project_eval", functools.partial(_assess_cell, cid="AS3")),
+    "AS4": ("project_eval", functools.partial(_assess_cell, cid="AS4")),
     "CW1": ("statemachine_cells", _contract_cell),
     "CW2": ("statemachine_cells", _contract_cell),
     "JS1": ("statemachine_cells", _state_judge_cell),
