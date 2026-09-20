@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import functools
 import importlib
+import math
 import itertools
 import math
 import subprocess
@@ -349,6 +350,37 @@ def _triage_cell(case: dict, *, classify: bool = False):
     return state, questions, lambda answers: answers["cause"].get("choice") == "work"
 
 
+# assess のセルは入力をドライバの中（`ap.assess_task(…, assess_risky())`）に持っているので、
+# タスクを作る関数を名前で借りる。ケース定義も正解も project_eval 側のまま。
+_ASSESS_TASKS = {"AS1": "assess_risky", "AS2": "assess_clear"}
+
+
+def _assess_cell(case: dict, *, cid: str = ""):
+    """投入時アセスメント。問いは本番（`_assess_judge_questions`）をそのまま呼ぶ。
+
+    **locate は当てはまらない面である**——状態はタスクの文で、指させる行が無い。訊くのは
+    段（1〜3）の上の分布で、答えは確率加重の `score`。本番と同じく四捨五入を自前で行う
+    （組み込みの `round()` は偶数丸めで、ちょうど 2.5 が 2 へ落ちる。`prioritize.py` の
+    `assess_judge` と同じ式）。記録の書式 `c=N r=N a=N` も本番と同じで、
+    project_eval の `check_assess` がその形を読む。
+    """
+    project_eval = importlib.import_module("project_eval")
+    ap = project_eval.ap
+    task = getattr(project_eval, _ASSESS_TASKS[cid])()
+    questions = ap._assess_judge_questions()
+
+    def to_check(answers):
+        scores = {}
+        for axis in questions:
+            value = answers.get(axis, {}).get("score")
+            if value is None:
+                return ""
+            scores[axis] = min(3, max(1, math.floor(float(value) + 0.5)))
+        return " ".join(f"{axis}={scores[axis]}" for axis in ("c", "r", "a"))
+
+    return ap._assess_material(task), questions, to_check
+
+
 def _contract_cell(case: dict):
     """契約の語。問いは本番（`_sm_contract_by_judge`）と同じ形で、語は宣言（`output_validator`）
     から取る。採否も本番と同じ——選んだ語が宣言に無いか確度が下限に届かなければ補わない。"""
@@ -440,6 +472,8 @@ VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
             for i in range(1, 7)}
 # ステートマシンの 2 面。既定は本番の問い、変種は指させる／札を貼らせる形。
 VARIANTS.update({
+    "AS1": ("project_eval", functools.partial(_assess_cell, cid="AS1")),
+    "AS2": ("project_eval", functools.partial(_assess_cell, cid="AS2")),
     "CW1": ("statemachine_cells", _contract_cell),
     "CW2": ("statemachine_cells", _contract_cell),
     "JS1": ("statemachine_cells", _state_judge_cell),
