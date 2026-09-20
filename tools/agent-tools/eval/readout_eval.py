@@ -349,6 +349,43 @@ def _triage_cell(case: dict, *, classify: bool = False):
     return state, questions, lambda answers: answers["cause"].get("choice") == "work"
 
 
+def _contract_cell(case: dict):
+    """契約の語。問いは本番（`_sm_contract_by_judge`）と同じ形で、語は宣言（`output_validator`）
+    から取る。採否も本番と同じ——選んだ語が宣言に無いか確度が下限に届かなければ補わない。"""
+    sm = importlib.import_module("agentcore.harness.statemachine")
+    prefixes = sm._sm_validator_prefixes(case["rule"])
+    questions = {"contract": {
+        "type": "choice",
+        "instructions": "Which contract word does this output's conclusion correspond to?",
+        "criteria": {p: f"The output concludes '{p}'." for p in prefixes},
+        "other": "The output does not clearly conclude any of these."}}
+
+    def to_check(answers):
+        answer = answers["contract"]
+        picked = str(answer.get("choice") or "")
+        if picked not in prefixes:
+            return ""
+        return picked if float(answer.get("confidence") or 0.0) >= \
+            sm._SM_CONTRACT_JUDGE_MIN_CONFIDENCE else ""
+
+    return case["output"], questions, to_check
+
+
+def _state_judge_cell(case: dict):
+    """判定ステート。問いも答えの読み方も本番（statemachine-use の `judge_bridge`）を呼ぶ。
+
+    `other` と確度不足を unsure の語にするのは `judge_state_output` の仕事で、ここには
+    書き写さない。スキル側のスクリプトは Python 3.10 以上が要るので、読めない木では
+    このセルだけ落ちる（測らずに落ちる方がよい——別実装で測ると本番を測っていない）。
+    """
+    sys.path.insert(0, str(REPO / ".github/skills/statemachine-use/scripts"))
+    judge_bridge = importlib.import_module("judge_bridge")
+    spec = judge_bridge.normalize_judge_state(case["judge"], default_input="{{last_output}}")
+    questions = judge_bridge.judge_state_question(spec)
+    return (case["input"], questions,
+            lambda answers: judge_bridge.judge_state_output(spec, answers) or "")
+
+
 def _route_cell(case: dict):
     """route: 本番の問いと状態（`agent_project` の `_route_judge_*`）をそのまま呼ぶ。
 
@@ -403,6 +440,10 @@ VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
             for i in range(1, 7)}
 # ステートマシンの 2 面。既定は本番の問い、変種は指させる／札を貼らせる形。
 VARIANTS.update({
+    "CW1": ("statemachine_cells", _contract_cell),
+    "CW2": ("statemachine_cells", _contract_cell),
+    "JS1": ("statemachine_cells", _state_judge_cell),
+    "JS2": ("statemachine_cells", _state_judge_cell),
     "TR1": ("statemachine_cells", _transition_cell),
     "TR3": ("statemachine_cells", _transition_cell),
     f"TR3{VARIANT_SEP}locate": ("statemachine_cells",
