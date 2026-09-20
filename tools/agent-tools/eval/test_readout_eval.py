@@ -258,11 +258,16 @@ class StringMatchBaselineTests(unittest.TestCase):
         material = "タイトル: 本番設定の手順書にある誤記を直す\nnote: docs/runbook.md の 1 行"
         self.assertEqual(readout_eval.assess_by_string_match(material)["r"], 3)
 
-    def test_files_named_by_verify_are_counted_as_touched(self):
-        """verify に出てくる検査対象は「触るファイル」ではないが、綴りとしては数えられる。"""
+    def test_files_named_by_the_check_lines_are_not_counted(self):
+        """`verify` と受入基準が名指しするのは検査の対象で、触るファイルではない。
+
+        初版はこの 2 行も数えて AS3 を 2 と答えていた（2026-09-20）。行の見出しで分けられる
+        ——**構造の取り違えなので、これは読まなくても直る**。
+        """
         material = ("note: payments/client.py の定数 1 行だけを変える\n"
-                    "verify: python -m pytest -q tests/test_payments.py")
-        self.assertEqual(readout_eval.assess_by_string_match(material)["c"], 2)
+                    "verify: python -m pytest -q tests/test_payments.py\n"
+                    "受入基準: tests/test_payments.py が通る")
+        self.assertEqual(readout_eval.assess_by_string_match(material)["c"], 1)
 
     def test_it_does_get_the_easy_ones(self):
         """語がそのまま出ていて、触るファイルが 1 つなら当たる（だから下限として使える）。"""

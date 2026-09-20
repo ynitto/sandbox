@@ -361,6 +361,8 @@ _ASSESS_TASKS = {"AS1": "assess_risky", "AS2": "assess_clear",
 # a（`_assess_ambiguity`）が機械へ移せたので、c と r も移せるかを同じ土俵で測る。
 _RISK_WORDS = ("認証", "決済", "課金", "データ移行", "本番設定", "個人情報")
 _FILE_TOKEN = re.compile(r"[\w.-]+/[\w./-]+|[\w-]+\.[A-Za-z0-9]{1,5}")
+# 「何を触るか」ではなく「どう確かめるか」を書いている行（`_assess_material` の見出し）。
+_CHECK_LINES = ("verify:", "受入基準:")
 
 
 def assess_by_string_match(material: str) -> dict:
@@ -372,7 +374,12 @@ def assess_by_string_match(material: str) -> dict:
     """
     text = str(material or "")
     risk = 3 if any(word in text for word in _RISK_WORDS) else 1
-    files = {m.group(0) for m in _FILE_TOKEN.finditer(text)}
+    # 触るファイルを数えるので、**確かめ方の行は読まない**——`verify` と受入基準が名指しする
+    # のは検査の対象であって、このタスクが編集する先ではない（材料の行はどちらも
+    # `_assess_material` が付ける固定の見出しで始まる）。
+    touched = "\n".join(line for line in text.splitlines()
+                        if not line.startswith(_CHECK_LINES))
+    files = {m.group(0) for m in _FILE_TOKEN.finditer(touched)}
     complexity = 1 if len(files) <= 1 else (2 if len(files) <= 5 else 3)
     return {"c": complexity, "r": risk}
 
