@@ -413,7 +413,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.textContent('#skills-list'), /読み込んでいます|見つかりません|未公開|公開/);
     assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), false,
       '公開先が空なら main へ直接の行は出さない');
-    await win.click('#skills-publish-settings > summary');
+    assert.equal(await win.locator('#audit-share-repo').isVisible(), true);
     await win.fill('#audit-share-repo', 'git@example:team/skills.git');
     assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), true,
       '公開先を入れたら出す');

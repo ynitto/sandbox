@@ -64,6 +64,7 @@
     const ph = state.phase;
     populateExecutionInputs();
     $('flow-teach-settings-summary').textContent = state.deps.executionLabel(readExecutionInputs());
+    ExecutionChoice.sync($('flow-teach-agent'), $('flow-teach-model'), { models: state.deps.modelNames, locked: () => state.pending || !!sess });
     $('flow-teach-launch').hidden = !!sess;
     $('flow-teach-session-actions').hidden = state.creating;
     $('flow-teach-new-session').disabled = state.pending || state.running || !!((state.session || state.availableSession) && state.deps.isRunning((state.session || state.availableSession).id));

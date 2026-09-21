@@ -102,3 +102,19 @@ test('automatically selected local AI retains readonly/edit routing without swit
   assert.equal(ipc.concreteCli({ ...picked, readonly: false }, family, { attachments: [{ rel: 'app.js' }] }).slash, '/edit');
   assert.equal(ipc.concreteCli({ ...picked, autoSelected: false }, family).slash, '');
 });
+
+
+test('missing or older selection commands fall back only to eligible candidates', async () => {
+  const cfg = config();
+  cfg.audit.manualLimits = [{ agent_cli: 'claude', quota_used_percent: 100, reset_at: new Date(Date.now() + 60000).toISOString(), observed_at: new Date().toISOString() }];
+  for (const capture of [
+    async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+    async () => ({ ok: false, status: 127, stderr: 'command not found' }),
+    async () => ({ ok: false, status: -1, error: 'spawn agent-herd ENOENT' }),
+    async () => ({ ok: false, status: 2, stderr: "invalid choice: 'select'" }),
+  ]) {
+    assert.deepEqual(await selection.select({ config: cfg, agents, load, prompt: 'task', capture, ratings: '/unused' }),
+      { cli: 'ollama', model: 'local/model', stage: 'audit', rated: false });
+  }
+  await assert.rejects(selection.select({ config: cfg, agents, load, prompt: 'task', capture: async () => ({ ok: true, stdout: '{"selected":null}' }) }), /利用条件/);
+});

@@ -1013,7 +1013,8 @@ function renderSettingsRestrictions() {
   const toggle = $('optimize-agents');
   const automatic = $('usage-mode').value === 'auto';
   toggle.closest('label').hidden = automatic;
-  document.querySelector('.execution-models th').textContent = automatic ? '自動選択の候補' : '起動方針・既定';
+  $('execution-policy-label').textContent = automatic ? '自動選択の候補' : '起動方針';
+  $('execution-policy-hint').hidden = automatic;
   const on = toggle.checked && herdAvailable();
   for (const input of document.querySelectorAll('input[name="default-policy"]')) {
     const allowed = on || BASIC_POLICIES.includes(input.value);
@@ -1144,7 +1145,7 @@ function renderRunSettingsSummary() {
   // 「どれでも」の選択肢は、要約を組み立てる前に入れ替える（選ばれている CLI がそこで変わる）
   const shared = sharing();
   renderAnyAgentOption(shared);
-  $('run-allocation-field').hidden = !!state.current || shared || currentPolicy() === 'direct';
+  $('run-allocation-field').hidden = true;
   let selected;
   try { selected = selectedExecution(); } catch (error) { summary.textContent = error.message; summary.title = error.message; return; }
   const policy = POLICY_VIEW[selected.policy] || POLICY_VIEW.recommended;
@@ -1166,8 +1167,21 @@ function renderRunSettingsSummary() {
     ? [agentLabel, targetLabel || 'どの参加者でも', priorityLabel, skillLabel].join(' · ')
     : [policy.label, agentLabel, skillLabel, mode, location].join(' · ');
   summary.parentElement.setAttribute('aria-label', `実行設定: ${summary.title}`);
-  $('direct-agent-settings').hidden = !(selected.policy === 'direct' || shared);
-  $('policy-field').hidden = shared;
+  $('direct-agent-settings').hidden = false;
+  $('policy-field').hidden = true;
+  if (selected.policy !== 'direct' && !shared) { $('cli').value = selected.cli; $('model').value = selected.model || ''; }
+  if (!state.current && !shared && selected.allocation !== 'auto') $('policy').value = 'direct';
+  ExecutionChoice.sync($('cli'), $('model'), {
+    automatic: () => selected.allocation === 'auto', shared,
+    locked: () => !!state.current && !shared && (!!state.current.modelSelection || !!state.current.messages.length || state.pending.has(state.current.id)),
+    models: cli => Object.values(state.config.execution.tiers).filter(t => t.cli === cli).map(t => t.model),
+    changeMode: mode => {
+      $('policy').value = mode === 'auto' ? 'recommended' : 'direct';
+      $('run-allocation').value = mode === 'auto' ? 'auto' : '';
+      if (state.current) $('policy').dispatchEvent(new Event('change'));
+      else renderRunSettingsSummary();
+    },
+  });
   $('permission-field').hidden = shared;
   $('share-target-field').hidden = !shared;
   $('share-priority-field').hidden = !shared;
@@ -2283,7 +2297,6 @@ function settingsPatch() {
     instructions: {
       enabled: $('instruction-enabled').checked,
       text: $('instruction-text').value,
-      forkEnabled: $('fork-enabled').checked,
       skills: state.settingsSkills,
       skillSelection: {
         enabled: $('skill-selection-enabled').checked,
@@ -2374,7 +2387,6 @@ async function openSettings(initialTab = 'app') {
   $('update-interval').value = String([0, 6, 24, 168].includes(update.intervalHours) ? update.intervalHours : 24);
   AppUpdate.renderStatus();
   $('instruction-enabled').checked = instructions.enabled;
-  $('fork-enabled').checked = instructions.forkEnabled !== false;
   $('instruction-text').value = instructions.text || '';
   $('skill-selection-enabled').checked = instructions.skillSelection.enabled;
   $('default-skill-mode').value = instructions.skillSelection.defaultMode;
@@ -2585,6 +2597,7 @@ async function init() {
       const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
       return { agent: selected.allocation === 'auto' ? 'auto' : selected.cli, model: selected.allocation === 'auto' ? '' : selected.model, autoApprove: !!state.config.execution.defaultAutoApprove };
     },
+    modelNames: cli => Object.values(state.config.execution.tiers).filter(t => t.cli === cli).map(t => t.model),
     agentNames: () => ['auto', ...state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name)],
     executionLabel: (overrides = {}) => {
       const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
@@ -2592,7 +2605,7 @@ async function init() {
       const cli = overrides.agent || selected.cli;
       const model = overrides.model != null ? overrides.model : selected.model;
       const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
-      return `${cli === 'auto' ? '自動選択 · 依頼内容から選択' : `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}`}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
+      return `${cli === 'auto' ? '自動選択 · 依頼内容から選択' : `${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}`}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
     },
     openTask: (machine) => openTaughtTask(machine),
     cancelCreate: () => syncAutomationWorkbench(),
@@ -2605,6 +2618,7 @@ async function init() {
     notice,
     shareEnabled: () => shareEnabled(),
     isRunning: (id) => state.running.has(id),
+    modelNames: cli => Object.values(state.config.execution.tiers).filter(t => t.cli === cli).map(t => t.model),
     agentNames: () => ['auto', ...state.agents.filter((agent) => agent.available !== false && agent.interactive !== false).map((agent) => agent.name)],
     executionOptions: (overrides = {}) => {
       const selected = selectedExecution(effectivePolicy(state.config.execution.defaultPolicy), { forNew: true });
@@ -2622,7 +2636,7 @@ async function init() {
       const cli = overrides.agent || selected.cli;
       const model = overrides.model != null ? overrides.model : selected.model;
       const autoApprove = overrides.autoApprove != null ? !!overrides.autoApprove : !!state.config.execution.defaultAutoApprove;
-      return `${cli === 'auto' ? '自動選択 · 依頼内容から選択' : `${policy.label} · ${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}`}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
+      return `${cli === 'auto' ? '自動選択 · 依頼内容から選択' : `${cli || 'エージェント未設定'}${model ? ` / ${model}` : ''}`}${autoApprove ? ' · 自動承認' : ' · 確認あり'}`;
     },
     reloadWorkflows: async () => {
       await $('automation-workbench').reloadFlowTeaching();
@@ -2747,7 +2761,7 @@ async function init() {
     const opts = turnOptions();
     const selected = selectedExecution(opts.policy);
     if (state.current) {
-      const patch = key === 'policy' ? { policy: opts.policy, tier: selected.tier, cli: selected.cli, model: selected.model }
+      const patch = key === 'policy' ? { policy: opts.policy, tier: selected.tier, cli: selected.cli, model: selected.model, allocation: selected.allocation || '' }
         : key === 'permission' ? { readonly: opts.readonly, autoApprove: opts.autoApprove }
           : { [key]: selected[key] };
       state.current = await api.updateSession(state.current.id, patch);
@@ -2865,6 +2879,12 @@ async function init() {
   });
   $('usage-open').onclick = () => openUsageSettings().catch(err => notice(err.message, 'error'));
   $('run-allocation').onchange = renderRunSettingsSummary;
+  document.addEventListener('click', event => {
+    const button = event.composedPath().find(node => node.matches?.('button[data-usage-open]'));
+    if (!button) return;
+    button.closest('details').open = false;
+    openUsageSettings().catch(err => notice(err.message, 'error'));
+  });
   $('run-usage-open').onclick = () => { $('run-settings').open = false; openUsageSettings().catch(err => notice(err.message, 'error')); };
   $('execution-usage-open').onclick = () => openUsageSettings().catch(err => notice(err.message, 'error'));
   Skills.init();

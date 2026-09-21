@@ -135,3 +135,9 @@ python3 -m unittest discover -s agentcore/tests  # 24 ファイル・654 件
 
 `test_agentcli_files.py` / `test_agentcli_jsonvariant.py`（定義の探索順と `variants` の振り替え）と
 `test_agentcli.py`（argv 組み立てとトリアージ）が別ルートに分かれている点に注意してください。
+
+## modelselectのoutcome qualification（eval専用）
+
+`tools/agent-tools/eval/model_selection_eval.py` で、同一prompt/candidateの既知outcomeを使い、selector / audit / 最安 / 高格付け / fixture oracleを比較する。PASSは既存verification receipt正典、completionは固定checkpointの達成率（eval専用）。stage・confidence・horizon別集計と0.5〜0.9のthreshold sweepをJSONへ保存する。runtime・本番config・既定0.6は変更しない。
+
+`--selfcheck` はfake応答とoutcomeだけで検証し、`--real-run` は明示した課題を複数の既存Agent CLIで隔離実行してreceiptを収集する。付属9課題のoutcomeは合成値であり実測ではない。詳細は[評価仕様とreal-run手順](../../tools/agent-tools/eval/MODEL_SELECTION.md)を参照。

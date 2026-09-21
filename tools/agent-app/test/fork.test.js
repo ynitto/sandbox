@@ -40,7 +40,7 @@ test('分岐先の最初の依頼には元の会話の所在を添える', () =>
   assert.match(ForkProtocol.forkPrompt({ prompt: '本文' }), /^別の会話からの依頼です。\n\n本文$/);
 });
 
-test('共通指示に分岐の作法を添える（会話だけ。設定で外せる）', () => {
+test('会話の分岐案内は旧設定や共通指示のON/OFFにかかわらず添える', () => {
   const instructions = { enabled: true, text: '日本語で', forkEnabled: true };
   const fork = { repos: ['/repo/a', '/repo/b'], current: '/repo/a' };
   const withFork = setup.withInstructions('依頼', instructions, { fork });
@@ -50,10 +50,12 @@ test('共通指示に分岐の作法を添える（会話だけ。設定で外�
   assert.ok(withFork.indexOf('日本語で') < withFork.indexOf('@fork'));
   // 共通指示の本文が空でも、作法だけは添える
   assert.match(setup.withInstructions('依頼', { enabled: true, text: '', forkEnabled: true }, { fork }), /## 共通指示[\s\S]*@fork/);
-  // fork を渡さない（タスクの会話）・設定で外した・共通指示ごと無効、のときは添えない
+  // タスクには添えず、通常の会話では旧設定や共通指示の無効化に影響されない
   assert.strictEqual(setup.withInstructions('依頼', { enabled: true, text: '', forkEnabled: true }), '依頼');
-  assert.doesNotMatch(setup.withInstructions('依頼', { ...instructions, forkEnabled: false }, { fork }), /@fork/);
-  assert.strictEqual(setup.withInstructions('依頼', { ...instructions, enabled: false }, { fork }), '依頼');
+  assert.match(setup.withInstructions('依頼', { ...instructions, forkEnabled: false }, { fork }), /@fork/);
+  const withoutCustom = setup.withInstructions('依頼', { ...instructions, enabled: false }, { fork });
+  assert.match(withoutCustom, /@fork/);
+  assert.doesNotMatch(withoutCustom, /日本語で/);
 });
 
 test('分岐した会話は origin を持ち、分岐元からたどれる', () => {

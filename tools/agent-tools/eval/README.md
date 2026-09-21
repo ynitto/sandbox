@@ -2489,3 +2489,9 @@ Agent Appの`evaluation.strategy`は`legacy`（既定）、`evidence-shadow`（�
 2026-09-20の追加明示指示により、4 CLIとalias、上記暫定policyを本番適用済み。
 [適用receipt](results/archive/20260920-gemma4-e4b-calibration/deployment.json)にバックアップと検証結果を記録した。
 品質評価はsample + evidence-shadowを維持し、自動採否には使わない。
+
+## Selector Long-Horizon Qualification
+
+`tools/agent-tools/eval/model_selection_eval.py` で、同一prompt/candidateの既知outcomeを使い、selector / audit / 最安 / 高格付け / fixture oracleを比較する。PASSは既存verification receipt正典、completionは固定checkpointの達成率（eval専用）。stage・confidence・horizon別集計と0.5〜0.9のthreshold sweepをJSONへ保存する。runtime・本番config・既定0.6は変更しない。
+
+`--selfcheck` はfake応答とoutcomeだけで検証し、`--real-run` は明示した課題を複数の既存Agent CLIで隔離実行してreceiptを収集する。付属9課題のoutcomeは合成値であり実測ではない。詳細は[評価仕様とreal-run手順](MODEL_SELECTION.md)を参照。

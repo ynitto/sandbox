@@ -687,9 +687,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #app-settings { width: 960px; height: min(870px, calc(100vh - 40px)); }
 #app-settings > .dlg-head, #app-settings > .dlg-actions { flex-shrink: 0; }
 .execution-settings > *, .usage-settings > * { flex-shrink: 0; }
-.execution-settings .settings-group, .usage-settings .settings-group { padding: 18px 4px; }
-.execution-settings .settings-group:first-child, .usage-settings .settings-group:first-child { border-top: 0; padding-top: 4px; }
-.execution-settings .settings-group-head, .usage-settings .settings-group-head { flex-wrap: wrap; }
+
 .execution-settings input, .execution-settings select, .usage-settings input, .usage-settings select { min-width: 0; max-width: 100%; }
 .execution-settings .setting-field > select { max-width: 60%; }
 .settings-table { table-layout: fixed; margin-bottom: 10px; }
@@ -763,3 +761,42 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .search-batch > .row { align-items: flex-end; flex-wrap: nowrap; }
 #search-batch-status { min-width: 0; overflow-wrap: anywhere; }
 .search-batch > .row > button { flex-shrink: 0; }
+
+@media (max-width: 680px) {
+  .run-settings .settings-popover {
+    position: fixed;
+    inset: auto 18px 76px;
+    width: auto;
+    max-height: calc(100dvh - 110px);
+    overflow-y: auto;
+  }
+}
+
+/* Settings tabs share one spacing and description scale. */
+#app-settings { --settings-section-space: 20px; --settings-row-space: 12px; --settings-help-space: 4px; }
+#app-settings .settings-content { padding: var(--settings-section-space); }
+#app-settings [data-settings-panel] { gap: 0; margin: 0; padding: 0; }
+#app-settings :is(.setting-field, .setting-check, .environment-status, .stacked-field) { padding: var(--settings-row-space) 0; }
+#app-settings .settings-group { padding: var(--settings-section-space) 0; }
+#app-settings .settings-group:first-child { border-top: 0; padding-top: 0; }
+#app-settings .settings-group:last-child { padding-bottom: 0; }
+#app-settings .settings-group-head { min-height: 36px; margin-bottom: var(--settings-row-space); flex-wrap: wrap; }
+#app-settings :is(.setting-field > span, .setting-check > span, .settings-group-head > span) { gap: var(--settings-help-space); }
+#app-settings :is(.setting-field small, .setting-check small, .stacked-field small, .settings-group-head small, .settings-table small, .sub) { font-size: 12px; font-weight: 400; line-height: 1.5; color: var(--muted); }
+#app-settings .settings-table { margin-bottom: var(--settings-row-space); }
+#app-settings .settings-table :is(th, td):first-child { padding-left: 0; }
+#app-settings .settings-table :is(th, td):last-child { padding-right: 0; }
+#app-settings .setting-field > :is(input, select) { width: 240px; max-width: 50%; min-width: 0; }
+#app-settings :is(.usage-details, .search-filters) { padding: var(--settings-row-space) 0; }
+#app-settings .usage-details:first-child { border-top: 0; }
+#app-settings .usage-details > summary { min-height: 36px; align-content: center; }
+#app-settings [data-settings-panel="skills"] > .row { padding-block: var(--settings-row-space); }
+#app-settings #cleanup-items .setting-check { min-width: 0; }
+#app-settings #cleanup-items :is(strong, small) { white-space: normal; overflow-wrap: anywhere; }
+#app-settings .environment-status:has(> .sub:only-child:empty) { display: none; }
+@media (max-width: 680px) {
+  #app-settings .settings-content { padding: 16px; }
+  #app-settings .setting-field { flex-wrap: wrap; }
+  #app-settings .setting-field > :is(input, select) { width: 100%; max-width: 100%; }
+  #app-settings .setting-field > span { flex-basis: 100%; }
+}

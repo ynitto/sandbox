@@ -223,12 +223,12 @@ function registerAutomationIpc({ getWindow, userData, appRoot, onRunExit, select
     // 登録した表記のままでは向こうで開けない。ホスト（Windows なら WSL）から見た表記を渡す。
     hostPath: host.toHostPath,
     hooks: {
-      selectExecution: async ({ root, policy, prompt, signal }) => {
+      selectExecution: async ({ root, policy, allocation, prompt, signal }) => {
         if (!policy || policy === 'direct') return null;
         const cfg = store.loadConfig(userData());
         const distro = host.hostOf(root, cfg.wslDistro).distro;
         const entries = await agents.listAgents(root, { distro });
-        const selected = settings.resolve(cfg, { policy }, { agents: entries });
+        const selected = settings.resolve(cfg, { policy, allocation }, { agents: entries });
         if (selected.allocation !== 'auto') return { cli: selected.cli, model: selected.model };
         const [limits, ratings] = await Promise.all([selectionLimits().catch(() => ({ agentLimits: [] })), selectionRatings().catch(() => '')]);
         if (signal?.aborted) throw new Error('自動選択を停止しました');

@@ -119,3 +119,9 @@ API キーだけは環境変数 `TYPESAFE_API_KEY` でも受ける（既存の J
 - 絞り込み後に候補が 1 件になる割合。高ければ判断のトークンはほぼ 0 で、選択の効果は
   絞り込みだけで出ている。
 - 選んだ候補の PASS 率と平均消費を rank 1 位固定と比べる（同じ台帳・同じ格付けで測れる）。
+
+## 8. Outcome qualification（2026-09-21追加）
+
+`tools/agent-tools/eval/model_selection_eval.py` で、同一prompt/candidateの既知outcomeを使い、selector / audit / 最安 / 高格付け / fixture oracleを比較する。PASSは既存verification receipt正典、completionは固定checkpointの達成率（eval専用）。stage・confidence・horizon別集計と0.5〜0.9のthreshold sweepをJSONへ保存する。runtime・本番config・既定0.6は変更しない。
+
+`--selfcheck` はfake応答とoutcomeだけで検証し、`--real-run` は明示した課題を複数の既存Agent CLIで隔離実行してreceiptを収集する。付属9課題のoutcomeは合成値であり実測ではない。詳細は[評価仕様とreal-run手順](../../tools/agent-tools/eval/MODEL_SELECTION.md)を参照。

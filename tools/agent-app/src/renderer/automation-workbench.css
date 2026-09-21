@@ -56,3 +56,13 @@
 :host .teaching-create, :host .manual-task-create { width: min(100%, 760px); margin-inline: auto; text-align: left; padding: 28px 20px; box-sizing: border-box; }
 :host .teaching-create h2 { margin: 0 0 24px; }
 :host .manual-task-create { display: grid; gap: 16px; }
+
+@media (max-width: 680px) {
+  .run-settings .settings-popover {
+    position: fixed;
+    inset: auto 18px 76px;
+    width: auto;
+    max-height: calc(100dvh - 110px);
+    overflow-y: auto;
+  }
+}

@@ -59,6 +59,12 @@ def missing() -> "list[str]":
     return list(_MISSING)
 
 
+def selection_runtime():
+    """Selector qualification uses these canonical implementations, never copied ranks/gates."""
+    from agentcore import modelselect, executionresolver, verifycontract
+    return modelselect, executionresolver, verifycontract
+
+
 # ---------------------------------------------------------------- 子の起こし方
 
 

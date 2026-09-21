@@ -96,6 +96,7 @@
     $('task-new-session').disabled = state.pending || state.running || !!((state.session || state.availableSession) && state.deps.isRunning((state.session || state.availableSession).id));
     $('task-launch-agent').disabled = state.pending || hasTerminal || $('task-launch-agent').disabled;
     $('task-launch-model').disabled = state.pending || hasTerminal || $('task-launch-agent').value === 'auto';
+    ExecutionChoice.sync($('task-launch-agent'), $('task-launch-model'), { models: state.deps.modelNames, locked: () => state.pending || hasTerminal });
     // 権限は会話が開いていても変えられる（次の依頼から効く。tmux の CLI は起動し直す）
     $('task-launch-permission').disabled = state.pending;
     $('task-launch-status').textContent = '';
@@ -140,6 +141,7 @@
     model.disabled = select.value === 'auto';
     if (preferred && preferred.model != null) model.value = preferred.model;
     else if (!model.value) model.value = defaults.model || '';
+    ExecutionChoice.sync(select, model, { models: state.deps.modelNames });
   }
 
   // 別のタスクへ移ったら、権限の選択は設定の既定（か、その会話の値）へ戻す。

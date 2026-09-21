@@ -528,12 +528,12 @@ function registerIpcHandlers(getWindow, options = {}) {
       }
       Object.assign(parameters, reuse.resolveInputs(input.values));
       const selected = options.hooks?.selectExecution
-        ? await options.hooks.selectExecution({ root, policy: p.policy, signal: p.selectionSignal,
+        ? await options.hooks.selectExecution({ root, policy: p.policy, allocation: p.allocation, signal: p.selectionSignal,
           prompt: JSON.stringify({ task, parameters, ...(machine ? { procedure: store.read(root, machine).raw } : {}) }) }) : null;
       if (p.selectionSignal?.aborted) throw new Error('自動選択を停止しました');
       if (selected) requestedAgent = selected.cli;
       if (!definitions.includes(requestedAgent)) throw new Error(`使う AI「${requestedAgent}」はこの環境で使えません`);
-      const runModel = selected ? selected.model : (p.model || cfg.model || '');
+      const runModel = selected ? selected.model : (p.model ?? cfg.model ?? '');
       const named = await resolveAgent(requestedAgent, 'direct', root);
       const oneSession = ['statemachine', 'prompt'].includes(task.kind)
         && sessionRun.runsInOneSession(named, root, String(runModel));

@@ -101,7 +101,7 @@ const KINDS = [
   {
     key: 'temp',
     title: '一時ファイル',
-    detail: '使い終わった作業用ファイルを削除します。',
+    detail: '使い終わった作業用ファイルを削除します',
     defaultOn: true,
     collect({ tmpdir, pid }) {
       const out = [];
@@ -123,7 +123,7 @@ const KINDS = [
   {
     key: 'attachments',
     title: '添付ファイル',
-    detail: '会話で使われていない添付ファイルを削除します。',
+    detail: '会話で使われていない添付ファイルを削除します',
     defaultOn: true,
     collect({ userData, sessions }) {
       const used = usedAttachments(sessions);
@@ -134,7 +134,7 @@ const KINDS = [
   {
     key: 'cliSessions',
     title: '会話の再開情報',
-    detail: '削除済みの会話の再開情報を削除します。',
+    detail: '削除済みの会話の再開情報を削除します',
     defaultOn: true,
     collect({ home, sessions }) {
       const ids = sessionIds(sessions);
@@ -145,7 +145,7 @@ const KINDS = [
   {
     key: 'runHistory',
     title: '実行履歴',
-    detail: '登録を解除したリポジトリの実行履歴を削除します。',
+    detail: '登録を解除したリポジトリの実行履歴を削除します',
     defaultOn: true,
     collect({ userData, repos }) {
       const keep = new Set((repos || []).map((repo) => `${crypto.createHash('sha256').update(String(repo)).digest('hex')}.json`));
@@ -156,7 +156,7 @@ const KINDS = [
   {
     key: 'updates',
     title: '更新ファイル',
-    detail: 'ダウンロードした更新ファイルを削除します。',
+    detail: 'ダウンロードした更新ファイルを削除します',
     defaultOn: true,
     collect({ userData }) {
       const base = path.join(userData, 'updates');
@@ -166,7 +166,7 @@ const KINDS = [
   {
     key: 'exports',
     title: '書き出したテキスト',
-    detail: '会話から書き出したテキストファイルを削除します。会話の本文は残ります。',
+    detail: '会話の本文を残して、書き出したテキストファイルを削除します',
     defaultOn: true,
     collect({ userData }) {
       const base = path.join(userData, 'exports');
@@ -176,7 +176,7 @@ const KINDS = [
   {
     key: 'share',
     title: '共有の履歴',
-    detail: `${LEDGER_KEEP_DAYS}日より前の受付記録と一時作業フォルダを削除します。`,
+    detail: `${LEDGER_KEEP_DAYS}日より前の受付記録と一時作業フォルダを削除します`,
     defaultOn: true,
     collect({ userData, now }) {
       const out = [];
@@ -194,7 +194,7 @@ const KINDS = [
   {
     key: 'auditFeed',
     title: '利用状況の集計に使った記録',
-    detail: `${LEDGER_KEEP_DAYS}日より前の申告を削除します。利用状況の集計結果は残ります。`,
+    detail: `集計結果を残して、${LEDGER_KEEP_DAYS}日より前の申告を削除します`,
     defaultOn: true,
     collect({ userData, now }) {
       const out = [];
@@ -210,7 +210,7 @@ const KINDS = [
   {
     key: 'browserProfile',
     title: 'ブラウザデータ',
-    detail: '記録用ブラウザのデータを削除します。再ログインが必要です。',
+    detail: '記録用ブラウザのデータを削除すると再ログインが必要になります',
     defaultOn: false,
     collect({ userData }) {
       const base = path.join(userData, 'recording-browser-profile');
@@ -223,7 +223,7 @@ const KINDS = [
 const SNAPSHOTS = {
   key: 'snapshots',
   title: '端末の画面記録',
-  detail: '端末の画面記録を削除し、会話の本文は残します。',
+  detail: '端末の画面記録を削除し、会話の本文は残します',
   defaultOn: true,
 };
 

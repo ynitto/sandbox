@@ -469,13 +469,13 @@ function taskRunExecution() {
   const execution = state.config.execution && typeof state.config.execution === 'object' ? state.config.execution : {};
   const policy = effectivePolicy(state.run.policy || execution.defaultPolicy || 'recommended');
   if (policy === 'direct') {
-    return { policy, agent: selectedAgent(state.run.agent || state.config.agent), model: state.run.model || state.config.model || '' };
+    return { policy, agent: selectedAgent(state.run.agent || state.config.agent), model: state.run.model ?? state.config.model ?? '' };
   }
   const view = RUN_POLICIES[policy] || RUN_POLICIES.recommended;
   const tier = execution.tiers && execution.tiers[view.tier] || {};
   const selected = { policy, cli: selectedAgent(tier.cli || state.config.agent), model: tier.model || state.config.model || '' };
   try {
-    const resolved = window.Allocation ? Allocation.select(selected, state.config, { agents: state.agents.map(name => ({ name, available: true })) }) : selected;
+    const resolved = window.Allocation ? Allocation.select(selected, state.config, { agents: state.agents.map(name => ({ name, available: true })), preference: state.run.allocation }) : selected;
     return { ...resolved, agent: resolved.cli };
   } catch (error) { return { ...selected, agent: selected.cli, error: error.message }; }
 }
@@ -862,12 +862,26 @@ function bindHome(main) {
   const refreshRunSettings = () => {
     const direct = main.querySelector('#run-direct-settings');
     const summary = main.querySelector('#task-run-settings-summary');
-    if (direct) direct.hidden = (state.run.policy || runPolicy?.value) !== 'direct';
+    if (direct) direct.hidden = false;
     if (summary) summary.textContent = taskRunSettingsLabel();
   };
   if (runPolicy) runPolicy.addEventListener('change', () => { state.run.policy = runPolicy.value; refreshRunSettings(); });
   if (runAgent) runAgent.addEventListener('change', () => { state.run.agent = runAgent.value; refreshRunSettings(); });
   if (runModel) runModel.addEventListener('input', () => { state.run.model = runModel.value; refreshRunSettings(); });
+  if (runAgent && window.ExecutionChoice) {
+    const initial = taskRunExecution();
+    if (initial.allocation !== 'auto' && state.run.policy !== 'direct') {
+      state.run.policy = 'direct'; state.run.agent = initial.agent; state.run.model = initial.model;
+      runPolicy.value = 'direct'; runAgent.value = initial.agent; runModel.value = initial.model || '';
+    }
+    runPolicy.closest('label').hidden = true;
+    main.querySelector('#run-direct-settings').hidden = false;
+    ExecutionChoice.sync(runAgent, runModel, {
+      automatic: () => taskRunExecution().allocation === 'auto',
+      models: cli => Object.values(state.config.execution?.tiers || {}).filter(t => t.cli === cli).map(t => t.model),
+      changeMode: mode => { state.run.policy = mode === 'auto' ? 'recommended' : 'direct'; state.run.allocation = mode === 'auto' ? 'auto' : ''; runPolicy.value = state.run.policy; refreshRunSettings(); },
+    });
+  }
   const runSkillMode = main.querySelector('#run-skill-mode');
   const bindSkillChoices = () => {
     for (const input of main.querySelectorAll('[data-run-skill]')) input.addEventListener('change', () => {
@@ -1334,7 +1348,7 @@ function executionDetailHtml(machine) {
   const policyOptions = Object.entries(RUN_POLICIES).map(([value, item]) => `<option value="${value}" ${selectedRun.policy === value ? 'selected' : ''} ${policyOn || BASIC_POLICIES.includes(value) || value === 'direct' ? '' : 'disabled'}>${item.label}</option>`).join('');
   const selection = state.config.instructions && state.config.instructions.skillSelection || {};
   const skillMode = state.run.skillMode || selection.defaultMode || 'auto';
-  const runFields = `<details id="task-run-settings" class="run-settings task-run-settings"><summary><span id="task-run-settings-summary">${esc(taskRunSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">今回の実行設定</div><label>起動方針<select id="run-policy">${policyOptions}</select></label><div id="run-direct-settings" class="direct-agent-settings" ${direct ? '' : 'hidden'}><label>エージェント<select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.run.agent || state.config.agent)}</select></label><label>モデル<input id="run-model" class="mono" value="${esc(state.run.model || state.config.model || '')}" placeholder="自動"></label></div><p class="muted small">手動実行ではツールを自動承認します。</p><label>スキル<select id="run-skill-mode"><option value="auto" ${skillMode === 'auto' ? 'selected' : ''}>自動</option><option value="manual" ${skillMode === 'manual' ? 'selected' : ''}>手動選択</option><option value="off" ${skillMode === 'off' ? 'selected' : ''}>使用しない</option></select></label><div id="run-skill-list" class="skill-choice-list" ${skillMode === 'off' ? 'hidden' : ''}>${taskSkillChoicesHtml()}</div></div></details>`;
+  const runFields = `<details id="task-run-settings" class="run-settings task-run-settings"><summary><span id="task-run-settings-summary">${esc(taskRunSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head row"><span>今回の実行設定</span>${workbenchHost ? '<span class="spacer"></span><button type="button" class="small quiet" data-usage-open>利用状況を見る</button>' : ''}</div><label>起動方針<select id="run-policy">${policyOptions}</select></label><div id="run-direct-settings" class="direct-agent-settings" ${direct ? '' : 'hidden'}><label>エージェント<select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.run.agent || state.config.agent)}</select></label><label>モデル<input id="run-model" class="mono" value="${esc(state.run.model ?? state.config.model ?? '')}" placeholder="自動"></label></div><p class="muted small">手動実行ではツールを自動承認します。</p><label>スキル<select id="run-skill-mode"><option value="auto" ${skillMode === 'auto' ? 'selected' : ''}>自動</option><option value="manual" ${skillMode === 'manual' ? 'selected' : ''}>手動選択</option><option value="off" ${skillMode === 'off' ? 'selected' : ''}>使用しない</option></select></label><div id="run-skill-list" class="skill-choice-list" ${skillMode === 'off' ? 'hidden' : ''}>${taskSkillChoicesHtml()}</div></div></details>`;
   const taskWarning = machine.error
     ? `<details class="muted small"><summary>実行できません · 詳細を確認</summary><p>${esc(machine.error)}</p></details>`
     : machine.kind === 'hook' ? '<p class="muted small">定期実行から起動するタスクです。</p>' : '';
@@ -2456,7 +2470,7 @@ async function startRun(mode) {
   render();
   const res = await guard('実行', () => automationHost.runStart({
     root: state.root, taskId: taskIdentity(machine), machine: machine.machine || '', mode,
-    agent: runAgent, model: selected.model, policy: selected.policy, parameters: run.parameters, autoApprove: true,
+    agent: runAgent, model: selected.model, policy: selected.policy, allocation: state.run.allocation, parameters: run.parameters, autoApprove: true,
     skillMode: run.skillMode || (state.config.instructions && state.config.instructions.skillSelection && state.config.instructions.skillSelection.defaultMode) || 'auto',
     skills: run.skillMode === 'manual' ? run.skills : [],
   }));

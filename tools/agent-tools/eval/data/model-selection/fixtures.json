@@ -1,0 +1,2124 @@
+[
+  {
+    "id": "S1",
+    "title": "judge の1ファイルbug fix",
+    "horizon": "short",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "agentcore/judge.py の縮退処理を修正してください。logprobs が存在しても読めない場合は samples>=2 なら vote へ進み、text の confidence は常に0にしてください。abstained は text を既定で棄権し allow_text=True の明示時だけ許可してください。既存の choice/value/probabilities は維持し、fake request のテストで確認してください。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "S1",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore/judge.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 .qualification/check.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:c28389ccb8716509e4ee007af31a1f5ae0fe2bfb38cee6eda02104d018560693"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "86368c7c5a92c912c0532424f79440c53d100446",
+      "verification_revision": "f193c421e6a099f34570d393b306b2dadfa8046d",
+      "test_files": [
+        "tools/agent-tools/agentcore/agentcore/tests/test_judge.py"
+      ],
+      "verification_files": {
+        ".qualification/check.py": "import sys\nsys.path.insert(0,'tools/agent-tools/agentcore')\nfrom agentcore import judge\na={'q':{'method':'text','confidence':1.0}}\nassert judge.abstained(a,0)==['q']\nassert judge.abstained(a,0,allow_text=True)==[]\n"
+      },
+      "environment_checks": [
+        "python3 -c 'import pytest, yaml'"
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S1",
+          "plan_digest": "sha256:c28389ccb8716509e4ee007af31a1f5ae0fe2bfb38cee6eda02104d018560693",
+          "result_rev": "synthetic-S1-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore/judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S1-0",
+        "tokens": 800,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 30
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S1",
+          "plan_digest": "sha256:c28389ccb8716509e4ee007af31a1f5ae0fe2bfb38cee6eda02104d018560693",
+          "result_rev": "synthetic-S1-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore/judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S1-1",
+        "tokens": 1600,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 70
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S1",
+          "plan_digest": "sha256:c28389ccb8716509e4ee007af31a1f5ae0fe2bfb38cee6eda02104d018560693",
+          "result_rev": "synthetic-S1-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore/judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S1-2",
+        "tokens": 4400,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 180
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-small/v1",
+          "confidence": 0.65,
+          "method": "jev",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.85,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  },
+  {
+    "id": "S2",
+    "title": "eval の短いbug fixとtest",
+    "horizon": "short",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "tools/agent-tools/eval/readout_eval.py の deterministic assessor が、確かめ方の行に列挙されたファイルを変更対象として数えてしまう不具合を直してください。変更対象だけで complexity を決め、既存の受入基準やverifyの処理は維持してください。test_readout_eval.py に回帰テストを追加してください。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "S2",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "python3 -m compileall -q tools/agent-tools/eval/readout_eval.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-tools/eval/test_readout_eval.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:e90a8ff4802b44cbc501a3a21008f0e7cbb9ff6d806f9cc53e59df69605257ef"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "28a9dec198e68d0fbe291b26744aaf85a63cbe22",
+      "verification_revision": "50a94f872e112b29785bd39d512b49eebf9c3429",
+      "test_files": [
+        "tools/agent-tools/eval/test_readout_eval.py"
+      ],
+      "verification_files": {},
+      "environment_checks": [
+        "python3 -c 'import pytest, yaml'"
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S2",
+          "plan_digest": "sha256:e90a8ff4802b44cbc501a3a21008f0e7cbb9ff6d806f9cc53e59df69605257ef",
+          "result_rev": "synthetic-S2-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/eval/readout_eval.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/eval/test_readout_eval.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S2-0",
+        "tokens": 1000,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 30
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S2",
+          "plan_digest": "sha256:e90a8ff4802b44cbc501a3a21008f0e7cbb9ff6d806f9cc53e59df69605257ef",
+          "result_rev": "synthetic-S2-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/eval/readout_eval.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/eval/test_readout_eval.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S2-1",
+        "tokens": 1800,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 70
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S2",
+          "plan_digest": "sha256:e90a8ff4802b44cbc501a3a21008f0e7cbb9ff6d806f9cc53e59df69605257ef",
+          "result_rev": "synthetic-S2-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/eval/readout_eval.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/eval/test_readout_eval.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S2-2",
+        "tokens": 4600,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 180
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-small/v1",
+          "confidence": 0.55,
+          "method": "jev",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.75,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  },
+  {
+    "id": "S3",
+    "title": "judge縮退表のdocs修正",
+    "horizon": "short",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "docs/plans/2026-09-19-agent-herd-system-one-judge-design.md の縮退表を実装と合わせてください。logprobs が無い場合に加え「形が違う」場合、N>=2 のvote、N=1 のtextとconfidence 0を明記してください。abstained は「しきい値に関わらず棄権」、allow_text=True の例外を明記し、coverage とconfidenceを区別してください。コードは変更不要です。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "S3",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "python3 .qualification/check.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+          "source": "user"
+        },
+        {
+          "command": "git diff --check",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:f05f64f9348d08b82aac2d4621459e29b733f87e7c0282510430097da31dc2af"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "f193c421e6a099f34570d393b306b2dadfa8046d",
+      "verification_revision": "204a9682d492dcc5acd1b6d1a7cb692804a41d98",
+      "test_files": [],
+      "verification_files": {
+        ".qualification/check.py": "from pathlib import Path\ns=Path('docs/plans/2026-09-19-agent-herd-system-one-judge-design.md').read_text()\nfor term in ['形が違う','confidence','しきい値に関わらず棄権','allow_text=True']:\n assert term in s,term\n"
+      },
+      "environment_checks": [
+        "python3 -c 'import pytest, yaml'"
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S3",
+          "plan_digest": "sha256:f05f64f9348d08b82aac2d4621459e29b733f87e7c0282510430097da31dc2af",
+          "result_rev": "synthetic-S3-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "git diff --check",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S3-0",
+        "tokens": 1200,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 30
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S3",
+          "plan_digest": "sha256:f05f64f9348d08b82aac2d4621459e29b733f87e7c0282510430097da31dc2af",
+          "result_rev": "synthetic-S3-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "git diff --check",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S3-1",
+        "tokens": 2000,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 70
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "S3",
+          "plan_digest": "sha256:f05f64f9348d08b82aac2d4621459e29b733f87e7c0282510430097da31dc2af",
+          "result_rev": "synthetic-S3-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_judge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "git diff --check",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-S3-2",
+        "tokens": 4800,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 180
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "error",
+        "detail": "synthetic API failure",
+        "tokens": null,
+        "wall_seconds": 0.2
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.55,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  },
+  {
+    "id": "M1",
+    "title": "assessの3経路refactorとeval連携",
+    "horizon": "medium",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "agent-project assess の曖昧さ a をモデル判断から決定的処理へ移してください。verify または verify_template があれば1、自然文の受入基準だけなら2、どちらも無ければ3。judge/生成/heuristic の3経路が同じ関数を使い、モデルから a が返っても無視してください。モデルへ訊くのは c/r のみにし、eval の素材とテスト、仕様を整合させてください。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "M1",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "python3 -m compileall -q tools/agent-project/agent_project",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-project/tests/test_planning.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-tools/eval/test_readout_eval.py",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:570910ee31696423eeb098b4d6d4c52a553a9139fe4490282ce188aaa32a201d"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "b4e103003c51462f938848c80af0aa0fa95d1d8f",
+      "verification_revision": "976ee6abb70f24201ea1bbc8af307c221c6379b0",
+      "test_files": [
+        "tools/agent-project/tests/test_planning.py"
+      ],
+      "verification_files": {},
+      "environment_checks": [
+        "python3 -c 'import pytest, yaml'"
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M1",
+          "plan_digest": "sha256:570910ee31696423eeb098b4d6d4c52a553a9139fe4490282ce188aaa32a201d",
+          "result_rev": "synthetic-M1-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-project/agent_project",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-project/tests/test_planning.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/eval/test_readout_eval.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M1-0",
+        "tokens": 1400,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 60
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M1",
+          "plan_digest": "sha256:570910ee31696423eeb098b4d6d4c52a553a9139fe4490282ce188aaa32a201d",
+          "result_rev": "synthetic-M1-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-project/agent_project",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-project/tests/test_planning.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/eval/test_readout_eval.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M1-1",
+        "tokens": 2200,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 140
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M1",
+          "plan_digest": "sha256:570910ee31696423eeb098b4d6d4c52a553a9139fe4490282ce188aaa32a201d",
+          "result_rev": "synthetic-M1-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-project/agent_project",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-project/tests/test_planning.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/eval/test_readout_eval.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M1-2",
+        "tokens": 5000,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 360
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.75,
+          "method": "jev",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.9,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  },
+  {
+    "id": "M2",
+    "title": "statemachine featureとtestsとschema",
+    "horizon": "medium",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "statemachine-use の judge state に action を併記できるようにしてください。agent-app が action を補う往復保存でも壊れず、judge があるstateでは judge を優先してください。既存 action-only state の動作を保ち、engine、schema、SKILL、fake judge のテストを更新してください。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "M2",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "python3 -m compileall -q .github/skills/statemachine-use/scripts",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q .github/skills/statemachine-use/tests/test_judge_bridge.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:ced12b081f822dab2ca112a0ae0d3f792232a975a3876be12f4317b3ac76a592"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "6cdaab078c23b4ffdf7c5947fc05a4a5d0770261",
+      "verification_revision": "1629e968b85e0099d033f752a30af7e98c3aedf5",
+      "test_files": [
+        ".github/skills/statemachine-use/tests/test_judge_bridge.py"
+      ],
+      "verification_files": {},
+      "environment_checks": [
+        "python3 -c 'import pytest, yaml'"
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M2",
+          "plan_digest": "sha256:ced12b081f822dab2ca112a0ae0d3f792232a975a3876be12f4317b3ac76a592",
+          "result_rev": "synthetic-M2-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q .github/skills/statemachine-use/scripts",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q .github/skills/statemachine-use/tests/test_judge_bridge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M2-0",
+        "tokens": 1600,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 60
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M2",
+          "plan_digest": "sha256:ced12b081f822dab2ca112a0ae0d3f792232a975a3876be12f4317b3ac76a592",
+          "result_rev": "synthetic-M2-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q .github/skills/statemachine-use/scripts",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q .github/skills/statemachine-use/tests/test_judge_bridge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M2-1",
+        "tokens": 2400,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 140
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M2",
+          "plan_digest": "sha256:ced12b081f822dab2ca112a0ae0d3f792232a975a3876be12f4317b3ac76a592",
+          "result_rev": "synthetic-M2-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q .github/skills/statemachine-use/scripts",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q .github/skills/statemachine-use/tests/test_judge_bridge.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M2-2",
+        "tokens": 5200,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 360
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.85,
+          "method": "jev",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.65,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  },
+  {
+    "id": "M3",
+    "title": "IPCを5ファイルへ分離するrefactor",
+    "horizon": "medium",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "agent-app の main/ipc.js を機能ごとに分離してください。共通パスは main/paths.js、プロセス処理は main/proc.js、共有実行は main/share/run.js、見本づくりのIPCは main/teachingIpc.jsへ移し、ipc.js は登録をまとめる役にしてください。既存IPC名と振る舞いを維持し、見本づくりの回帰テストを通してください。今回の範囲はbackendの5ファイルと必要なtest/docです。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "M3",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "node --check tools/agent-app/src/main/ipc.js",
+          "source": "user"
+        },
+        {
+          "command": "python3 .qualification/check.py",
+          "source": "user"
+        },
+        {
+          "command": "node --test tools/agent-app/test/automation-teaching.test.js",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:60fac0d5a575049b73fe042c2022c4900a888ea7cccc3db403ca26fdc94e6605"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "ef6b4bab33d1b97f5ff699c27c53a4a457528703",
+      "verification_revision": "54b69d0da60b6fc29c47314cdb1a009441952011",
+      "test_files": [
+        "tools/agent-app/test/automation-teaching.test.js"
+      ],
+      "verification_files": {
+        ".qualification/check.py": "from pathlib import Path\np=Path('tools/agent-app/src/main')\nfor name in ['paths.js','proc.js','share/run.js','teachingIpc.js']:\n assert (p/name).is_file(),name\ns=(p/'ipc.js').read_text()\nfor name in ['./paths','./proc','./share/run','./teachingIpc']:\n assert name in s,name\n"
+      },
+      "setup_commands": [
+        "npm ci --ignore-scripts --prefix tools/agent-app"
+      ],
+      "environment_checks": [
+        "node -e \"require('./tools/agent-app/node_modules/yaml')\""
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M3",
+          "plan_digest": "sha256:60fac0d5a575049b73fe042c2022c4900a888ea7cccc3db403ca26fdc94e6605",
+          "result_rev": "synthetic-M3-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "node --check tools/agent-app/src/main/ipc.js",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/automation-teaching.test.js",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M3-0",
+        "tokens": 1800,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 60
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M3",
+          "plan_digest": "sha256:60fac0d5a575049b73fe042c2022c4900a888ea7cccc3db403ca26fdc94e6605",
+          "result_rev": "synthetic-M3-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "node --check tools/agent-app/src/main/ipc.js",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/automation-teaching.test.js",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M3-1",
+        "tokens": 2600,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 140
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "M3",
+          "plan_digest": "sha256:60fac0d5a575049b73fe042c2022c4900a888ea7cccc3db403ca26fdc94e6605",
+          "result_rev": "synthetic-M3-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "node --check tools/agent-app/src/main/ipc.js",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 .qualification/check.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/automation-teaching.test.js",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-M3-2",
+        "tokens": 5400,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 360
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.95,
+          "method": "jev",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.8,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  },
+  {
+    "id": "L1",
+    "title": "repo横断selector featureのhistorical replay",
+    "horizon": "long",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "agent-herd select を追加してください。prompt/purpose/candidateを入力に Jev→judge→audit の順で選び、confidenceが不足なら次段へ進みます。relative_cost/ratings/context/quota/budgetで候補を絞り、API failureやotherからfallbackしてください。agentcore modelselect、herd CLI/config、executionresolver selector injection、agent-flow配線とreceipt stage/confidence/reason、仕様とfake testsを一貫して実装してください。外部API不要のテストで複数回確認してください。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "L1",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_modelselect.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-flow/tests/test_agent_cli.py",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:a230864856e1121bdeba04677e7f717e34be16056e6203d727da6c992653de44"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "ece195f90bfffd091489f2b5d68c1d04562336a8",
+      "verification_revision": "6562572ec506035b9c5c0123cac21f194f5e0ead",
+      "test_files": [
+        "tools/agent-tools/agentcore/agentcore/tests/test_modelselect.py",
+        "tools/agent-flow/tests/test_agent_cli.py"
+      ],
+      "verification_files": {},
+      "environment_checks": [
+        "python3 -c 'import pytest, yaml'"
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L1",
+          "plan_digest": "sha256:a230864856e1121bdeba04677e7f717e34be16056e6203d727da6c992653de44",
+          "result_rev": "synthetic-L1-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_modelselect.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-flow/tests/test_agent_cli.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L1-0",
+        "tokens": 2000,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 90
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L1",
+          "plan_digest": "sha256:a230864856e1121bdeba04677e7f717e34be16056e6203d727da6c992653de44",
+          "result_rev": "synthetic-L1-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_modelselect.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-flow/tests/test_agent_cli.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L1-1",
+        "tokens": 2800,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 210
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L1",
+          "plan_digest": "sha256:a230864856e1121bdeba04677e7f717e34be16056e6203d727da6c992653de44",
+          "result_rev": "synthetic-L1-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_modelselect.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-flow/tests/test_agent_cli.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L1-2",
+        "tokens": 5600,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 540
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-large/v1",
+          "confidence": 0.65,
+          "method": "jev",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.95,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  },
+  {
+    "id": "L2",
+    "title": "2つのstatemachineへのjudge移行",
+    "horizon": "long",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "agentcore harness と .github/skills/statemachine-use の両方で、遷移条件だけでなくstate内の判定にもjudgeを使えるよう移行してください。判定専用state、出力契約の正規化、検査失敗の選別に対応し、judge不在時は従来経路へfallbackしてください。engine/bridge/next_state、core harness、schema、例と仕様を更新し、両系統のfakeテストを繰り返し確認してください。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "L2",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore .github/skills/statemachine-use/scripts",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+          "source": "user"
+        },
+        {
+          "command": "python3 -m pytest -q .github/skills/statemachine-use/tests/test_judge_bridge.py",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:27f0956c0349857d7ecc05e382181aef25a0962a585e5bb9b7f83024453d3981"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "d928f8e66c94d94a56adbbb079ac8ee816a87aa1",
+      "verification_revision": "6cdaab078c23b4ffdf7c5947fc05a4a5d0770261",
+      "test_files": [
+        "tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+        ".github/skills/statemachine-use/tests/test_judge_bridge.py"
+      ],
+      "verification_files": {},
+      "environment_checks": [
+        "python3 -c 'import pytest, yaml'"
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L2",
+          "plan_digest": "sha256:27f0956c0349857d7ecc05e382181aef25a0962a585e5bb9b7f83024453d3981",
+          "result_rev": "synthetic-L2-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore .github/skills/statemachine-use/scripts",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q .github/skills/statemachine-use/tests/test_judge_bridge.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L2-0",
+        "tokens": 2200,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 90
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L2",
+          "plan_digest": "sha256:27f0956c0349857d7ecc05e382181aef25a0962a585e5bb9b7f83024453d3981",
+          "result_rev": "synthetic-L2-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore .github/skills/statemachine-use/scripts",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q .github/skills/statemachine-use/tests/test_judge_bridge.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L2-1",
+        "tokens": 3000,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 210
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L2",
+          "plan_digest": "sha256:27f0956c0349857d7ecc05e382181aef25a0962a585e5bb9b7f83024453d3981",
+          "result_rev": "synthetic-L2-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m compileall -q tools/agent-tools/agentcore/agentcore .github/skills/statemachine-use/scripts",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q tools/agent-tools/agentcore/agentcore/tests/test_harness_statemachine.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "python3 -m pytest -q .github/skills/statemachine-use/tests/test_judge_bridge.py",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L2-2",
+        "tokens": 5800,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 540
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-large/v1",
+          "confidence": 0.55,
+          "method": "jev",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.65,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  },
+  {
+    "id": "L3",
+    "title": "weekly usageとmodel選択のmulti-verify task",
+    "horizon": "long",
+    "horizon_basis": "scope class, not measured elapsed days",
+    "provenance": "synthetic",
+    "objective": "verified-pass_then_audit-usage-policy_else_completion",
+    "prompt": "agent-auditからagent-appまでweekly usageを一貫して追加してください。CLI集計のweek period、app側のusage presentationとallocation、model選択の候補と設定、automation実行の引き継ぎ、UIと仕様を対応させてください。まずPython usage tests、次にNode model-selection/usage-presentation tests、最後にautomation testsを通し、不整合があれば修正して再検証してください。",
+    "purpose": "worker",
+    "workload": "development",
+    "candidates": [
+      {
+        "agent_cli": "fixture-small",
+        "model": "v1",
+        "relative_cost": 0,
+        "rank": 3,
+        "rating": {
+          "pass_rate": 0.82,
+          "average_tokens": 900
+        }
+      },
+      {
+        "agent_cli": "fixture-medium",
+        "model": "v1",
+        "relative_cost": 2,
+        "rank": 2,
+        "rating": {
+          "pass_rate": 0.9,
+          "average_tokens": 1800
+        }
+      },
+      {
+        "agent_cli": "fixture-large",
+        "model": "v1",
+        "relative_cost": 5,
+        "rank": 1,
+        "rating": {
+          "pass_rate": 0.95,
+          "average_tokens": 5000
+        }
+      }
+    ],
+    "quotas": {},
+    "ratings": [],
+    "budget": null,
+    "verification_plan": {
+      "version": 1,
+      "task_id": "L3",
+      "workspace": "sandbox",
+      "commands": [
+        {
+          "command": "python3 -m pytest -q tools/agent-audit/tests/test_usage.py",
+          "source": "user"
+        },
+        {
+          "command": "node --test tools/agent-app/test/model-selection.test.js tools/agent-app/test/usage-presentation.test.js",
+          "source": "user"
+        },
+        {
+          "command": "node --test tools/agent-app/test/automation-runner.test.js",
+          "source": "user"
+        }
+      ],
+      "criteria": [],
+      "digest": "sha256:613a6d44c94a89fc7383715e0f65805e1f40da97bdf918fbce9d1d7518c8be3d"
+    },
+    "checkpoints": [
+      {
+        "id": "CP1",
+        "command_index": 0,
+        "weight": 1,
+        "label": "build-or-primary-contract"
+      },
+      {
+        "id": "CP2",
+        "command_index": 1,
+        "weight": 1,
+        "label": "requested-behavior"
+      },
+      {
+        "id": "CP3",
+        "command_index": 2,
+        "weight": 1,
+        "label": "regression"
+      }
+    ],
+    "real_task": {
+      "base_revision": "22f3b1a371f1cd1decb3db00f1f29841e29b6889",
+      "verification_revision": "857244024cd21378fcc4f5fce80beb25bcf88159",
+      "test_files": [
+        "tools/agent-audit/tests/test_usage.py",
+        "tools/agent-app/test/model-selection.test.js",
+        "tools/agent-app/test/usage-presentation.test.js",
+        "tools/agent-app/test/automation-runner.test.js"
+      ],
+      "verification_files": {},
+      "setup_commands": [
+        "npm ci --ignore-scripts --prefix tools/agent-app"
+      ],
+      "environment_checks": [
+        "node -e \"require('./tools/agent-app/node_modules/yaml')\""
+      ]
+    },
+    "outcomes": {
+      "fixture-small/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L3",
+          "plan_digest": "sha256:613a6d44c94a89fc7383715e0f65805e1f40da97bdf918fbce9d1d7518c8be3d",
+          "result_rev": "synthetic-L3-0",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m pytest -q tools/agent-audit/tests/test_usage.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/model-selection.test.js tools/agent-app/test/usage-presentation.test.js",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/automation-runner.test.js",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L3-0",
+        "tokens": 2400,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 90
+      },
+      "fixture-medium/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L3",
+          "plan_digest": "sha256:613a6d44c94a89fc7383715e0f65805e1f40da97bdf918fbce9d1d7518c8be3d",
+          "result_rev": "synthetic-L3-1",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m pytest -q tools/agent-audit/tests/test_usage.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/model-selection.test.js tools/agent-app/test/usage-presentation.test.js",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/automation-runner.test.js",
+              "exit_code": 1,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "fail",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L3-1",
+        "tokens": 3200,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 210
+      },
+      "fixture-large/v1": {
+        "status": "ok",
+        "receipt": {
+          "version": 1,
+          "task_id": "L3",
+          "plan_digest": "sha256:613a6d44c94a89fc7383715e0f65805e1f40da97bdf918fbce9d1d7518c8be3d",
+          "result_rev": "synthetic-L3-2",
+          "workspace": "sandbox",
+          "commands": [
+            {
+              "command": "python3 -m pytest -q tools/agent-audit/tests/test_usage.py",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/model-selection.test.js tools/agent-app/test/usage-presentation.test.js",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            },
+            {
+              "command": "node --test tools/agent-app/test/automation-runner.test.js",
+              "exit_code": 0,
+              "output_tail": "SYNTHETIC fixture observation; not a real execution"
+            }
+          ],
+          "criteria": [],
+          "verdict": "pass",
+          "verified_by": "synthetic-offline-selfcheck"
+        },
+        "result_rev": "synthetic-L3-2",
+        "tokens": null,
+        "cost": null,
+        "currency": null,
+        "wall_seconds": 540
+      }
+    },
+    "selector_observations": {
+      "jev": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-large/v1",
+          "confidence": 0.5,
+          "method": "jev",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      },
+      "judge": {
+        "status": "answer",
+        "answer": {
+          "choice": "fixture-medium/v1",
+          "confidence": 0.55,
+          "method": "logprobs",
+          "usage": {
+            "tokens_in": 100,
+            "tokens_out": 1
+          }
+        },
+        "tokens": 101,
+        "wall_seconds": 0.1
+      }
+    }
+  }
+]

@@ -1132,3 +1132,9 @@ bash tools/agent-tools/install.sh [--only agent-herd]
 [calibration適用記録](../plans/2026-09-20-judge-calibration-application.md)を参照。
 `judge.calibration`はconsumerの採用gateで、standalone judge APIは変更しない。
 `agent-herd config --json`のcalibration / calibration_errorで設定・不備を確認できる。
+
+## Selectorのoutcome qualification（eval専用）
+
+`tools/agent-tools/eval/model_selection_eval.py` で、同一prompt/candidateの既知outcomeを使い、selector / audit / 最安 / 高格付け / fixture oracleを比較する。PASSは既存verification receipt正典、completionは固定checkpointの達成率（eval専用）。stage・confidence・horizon別集計と0.5〜0.9のthreshold sweepをJSONへ保存する。runtime・本番config・既定0.6は変更しない。
+
+`--selfcheck` はfake応答とoutcomeだけで検証し、`--real-run` は明示した課題を複数の既存Agent CLIで隔離実行してreceiptを収集する。付属9課題のoutcomeは合成値であり実測ではない。詳細は[評価仕様とreal-run手順](../../tools/agent-tools/eval/MODEL_SELECTION.md)を参照。

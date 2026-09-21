@@ -39,11 +39,20 @@ async function select({ config, agents, load, prompt, readonly, attachments, cwd
   const args = ['select', '--purpose', readonly ? 'plan' : 'work', ...eligible.flatMap(c => ['--candidate', c.cli + (c.model ? `/${c.model}` : '')])];
   if (ratings) args.push('--ratings', ratings);
   if (workload) args.push('--workload', workload);
-  const result = await capture('agent-herd', args, { cwd, input: prompt, signal, timeoutMs: 90000 });
+  let result;
+  try { result = await capture('agent-herd', args, { cwd, input: prompt, signal, timeoutMs: 90000 }); }
+  catch (error) {
+    if (signal?.aborted) throw new Error('自動選択を停止しました');
+    if (error.code !== 'ENOENT') throw error;
+    return { ...eligible[0], stage: 'audit', rated: false };
+  }
   if (signal?.aborted) throw new Error('自動選択を停止しました');
   let value;
   try { value = JSON.parse(result?.stdout); } catch { /* Older tools and process failures are not valid selections. */ }
   if (value && value.selected === null) throw new Error('利用条件を満たすAIがありません。実行制御の候補と利用枠を確認してください');
+  if (!result?.ok && (result?.status === 127 || result?.code === 127 || result?.exitCode === 127 || /ENOENT|command not found|not recognized|No module named|invalid choice.*select|unknown command.*select/i.test(`${result?.stderr || ''} ${result?.error || ''}`))) {
+    return { ...eligible[0], stage: 'audit', rated: false };
+  }
   if (!result?.ok || !value?.selected) throw new Error('AIを自動選択できませんでした。agent-toolsを更新するか、実行制御で通常の配分に変更してください');
   const chosen = eligible.find(c => c.cli === value.selected.agent_cli && c.model === value.selected.model);
   if (!chosen || !['jev', 'judge', 'audit'].includes(value.stage)) throw new Error('自動選択の結果が候補と一致しません。実行制御を確認してください');

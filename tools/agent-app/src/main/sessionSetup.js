@@ -5,12 +5,12 @@ const forkProtocol = require('../renderer/forkProtocol');
 const MARKER = '<!-- agent-app-instructions -->';
 
 // fork … { repos, current }。別のリポジトリへの分岐（@fork 行）の作法を添えるときだけ渡す
-//        （instructions.forkEnabled が効いていて、会話の種類が「会話」のとき）。
+//        （会話の種類が「会話」のとき）。
 function instructionBlock(instructions, { fork = null, artifacts = false } = {}) {
   const source = instructions && typeof instructions === 'object' ? instructions : {};
-  if (source.enabled === false) return '';
-  const text = String(source.text || '').trim();
-  const forkText = fork && source.forkEnabled !== false ? forkProtocol.instruction(fork) : '';
+  if (source.enabled === false && !fork) return '';
+  const text = source.enabled === false ? '' : String(source.text || '').trim();
+  const forkText = fork ? forkProtocol.instruction(fork) : '';
   if (!text && !forkText && !artifacts) return '';
   const lines = [
     MARKER,
@@ -19,7 +19,7 @@ function instructionBlock(instructions, { fork = null, artifacts = false } = {})
   ];
   if (text) lines.push('', text);
   if (forkText) lines.push('', forkText);
-  if (artifacts) lines.push('', '成果物を作成したら、回答の末尾に作業フォルダからの相対パスをMarkdownリンクで列挙してください。例: [集計結果](reports/result.xlsx)。作成していないファイルは含めないでください。');
+  if (artifacts && source.enabled !== false) lines.push('', '成果物を作成したら、回答の末尾に作業フォルダからの相対パスをMarkdownリンクで列挙してください。例: [集計結果](reports/result.xlsx)。作成していないファイルは含めないでください。');
   return lines.join('\n');
 }
 

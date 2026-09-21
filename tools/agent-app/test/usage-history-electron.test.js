@@ -89,7 +89,7 @@ test('Electron: 利用枠・未取得・期間切替・折りたたみ・狭幅'
     // 公開先は「スキル」の面が持つ（LAN の「共有」と混ぜない）
     await win.getByRole('tab', { name: 'スキル', exact: true }).click();
     assert.equal(await win.locator('#audit-push-main').isVisible(), false, '公開先が空なら main へ直接は隠す');
-    await win.click('#skills-publish-settings > summary');
+    assert.equal(await win.locator('#audit-share-repo').isVisible(), true);
     await win.fill('#audit-share-repo', 'git@example:team/skills.git');
     assert.equal(await win.locator('#audit-push-main').isVisible(), true);
     await win.getByRole('tab', { name: '利用状況', exact: true }).click();
