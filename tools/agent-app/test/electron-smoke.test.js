@@ -134,8 +134,11 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
   // 振り分けが会話を止めた案内（役割 routing）。開く / そのまま会話で実行 の 2 つが押せる
   appStore.appendMessage(userData, session.id, {
     role: 'routing', text: 'タスク「リリース確認」を流用できます。',
-    parts: { information: [{ type: 'status', title: '振り分け：タスク「リリース確認」を流用できます', status: 'success', detail: '選択方法：ローカル判定 0.82' }] },
-    routing: { kind: 'task', id: 'release-check', name: 'リリース確認', request: 'リリース前の確認をして', attachments: [] },
+    parts: { information: [
+      { type: 'status', title: '振り分け：タスク「リリース確認」を流用できます', status: 'success', detail: '選択方法：ローカル判定 0.82' },
+      { type: 'status', title: '入力：period=前月', status: 'success', detail: '依頼から写した値。タスクを開いて確認してから実行' },
+    ] },
+    routing: { kind: 'task', id: 'release-check', name: 'リリース確認', request: '前月分のリリース前の確認をして', attachments: [], inputs: { period: '@date:previous-month' } },
   });
 
   // 保存データの整理で数える対象: 取得済みの更新ファイルと、端末画面の控え
@@ -448,6 +451,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('.message-action', { hasText: 'そのまま会話で実行' }).count(), 1);
     const routingTurn = win.locator('.response-turn', { has: openTask });
     assert.strictEqual(await routingTurn.locator('.message-action', { hasText: 'フォーク' }).count(), 0, '案内にフォークは出さない');
+    assert.match(await routingTurn.textContent(), /入力：period=前月/, '写した入力値は実行情報に 1 行');
     assert.strictEqual(await win.locator('#turn-routing').inputValue(), 'auto', '依頼の扱いの既定は自動');
     if (process.env.AGENT_APP_ROUTING_SCREENSHOT) {
       await openTask.scrollIntoViewIfNeeded();

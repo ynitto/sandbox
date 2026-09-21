@@ -8,7 +8,7 @@
 > [judge 設計](./2026-09-19-agent-herd-system-one-judge-design.md)、
 > [呼び出し先の選択の設計](./2026-09-20-agent-tools-model-selection-design.md)
 > 状態: 段 0（agent-tools 側の `agent-herd route`）、段 1（agent-app 0.25.0 の配線と画面）、段 2（標本 40 件の
-> 実測。既定 0.6 / 0.75 を据え置き）まで 2026-09-21 に完了。段 3（流用時の入力値の抽出）は未着手
+> 実測。既定 0.6 / 0.75 を据え置き）、段 3（流用時の入力値を依頼から写す。agent-app 0.27.0）まで 2026-09-21 に完了
 > 効く柱・原則: 柱 3 / C9（判断を prefill 1 回の最小モデルへ流し、上位モデルを実行に温存）、
 > 柱 2 / C3（答える・流用で済む依頼を機械で決め、人が毎回選ばない）
 
@@ -372,7 +372,7 @@ hold の掃引（RT1 と RT2 を依頼ごとに突き合わせ。正解が task 
 | 0 | **済（2026-09-21）。** `modelselect` の段の試行を `ask_stages` に切り出し（`select` の出力と終了コードは不変。既存 916 件で確認）、`agentcore/route.py` + `agent-herd route` + `herdconfig` の 2 鍵。テストは `judge.evaluate` の `request` 差し替えで ollama 無し（`tests/test_route.py`）。仕様書 §5.8 と README。候補 1 件の流用先は judge の choice が 2 択以上を要るので boolean で訊く（実装で判明） | `python -m unittest` が通り、`agent-herd route --candidates x.json < 依頼` が JSON と終了コードを返す |
 | 1 | **済（2026-09-21）。** app: `requestRouting.js`、`runTurn` の配線、`skillSelection.select` の `judged` 引数、実行設定の行、実行情報、案内は役割 `routing` の記録（履歴の再送・要約・未読には入らない）。`package.json` を 0.25.0、CHANGELOG。候補はファイルで渡す（説明文の引用符を argv に通さない）。案内の操作は他の応答と同じ右端の `.message-action` に置いた（§5 の図では ⓘ の下に描いていたが、既存の形を借りる） | `request-routing.test.js`（ENOENT・旧版・確度不足で従来に倒れる）、electron-smoke で案内の 2 操作と「依頼の扱い」の行を確認、スクリーンショットで目視 |
 | 2 | **済（2026-09-21）。** §6.2 の実測。標本 `eval/data/route/corpus.json`、セル `RT1〜RT4`（`route_cells.py`、readout_eval に族名で名指し）、hold の掃引は `route_cells.py --hold-sweep`。既定 0.6 / 0.75 を据え置き、README の「置き値」を「標本 40 件で確認」に改めた | `RT1〜RT4` の `--calibration` 出力が eval README と archive に載る |
-| 3 | 流用時の入力値の抽出（`agent-herd decide` の「事実の転記 → 機械判定」で日付・対象を写す）。タスク画面の会話にも同じ振り分け | 段 2 の結果を見てから |
+| 3 | **済（2026-09-21、agent-app 0.27.0）。** 流用時の入力値: 日付の語（前月 / 今月 / 昨日 / 今日）は決定的に `@date:*` へ、残りのキーだけ `agent-herd --purpose extract`（ollama の json profile。`decide` は候補の選別の契約で、キー → 値の転記には合わないので使わない）に「依頼文の言葉をそのまま」写させ、宣言にあるキーの文字列だけ機械が受ける。案内に「入力：…」の 1 行、「タスクを開く」で概要の入力欄へ（今回の値として前回の値より優先）。ワークフローの入力は対象外。タスク画面の会話は §9 のとおり対象外のまま | `request-routing.test.js` に抽出 3 件、electron-smoke で案内の行 |
 
 非目標: 共有の依頼（SHARED_POLICY）の振り分け、agent-flow の工程内でのスキル選択、agent-project の
 バックログ投入の振り分け、タスクの自動実行。

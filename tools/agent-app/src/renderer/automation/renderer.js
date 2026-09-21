@@ -60,7 +60,7 @@ const state = {
   aiDraft: { mode: 'draft', phase: 'input', requestId: '', busy: false, request: '', history: [], questions: [], answers: {}, result: null, error: '', message: '' },
   aiReview: { mode: 'review', phase: 'input', requestId: '', busy: false, focus: '', scope: null, history: [], questions: [], answers: {}, result: null, error: '', message: '' },
   recording: { source: 'browser', url: '', app: '', text: '', active: false, busy: false, message: '', ok: true, pick: null, extracts: 0 },
-  run: { lines: [], running: false, policy: '', agent: '', model: '', skillMode: '', skills: [], skillPreview: [], parameters: {}, parametersFor: null, requestId: '', result: null, error: '' },
+  run: { lines: [], running: false, policy: '', agent: '', model: '', skillMode: '', skills: [], skillPreview: [], parameters: {}, parametersFor: null, prefill: null, requestId: '', result: null, error: '' },
   fileTab: '',
 };
 
@@ -385,14 +385,16 @@ function ensureRunParameters(machine) {
   state.run.parameters = initialRunParameters(machine);
 }
 
-// 実行条件の初期値。**今回打った値 → 前回の値 → 定期実行の既定値** の順。
+// 実行条件の初期値。**今回打った値（会話の振り分けが依頼から写した値を含む）→ 前回の値 →
+// 定期実行の既定値** の順。
 function initialRunParameters(machine) {
   if (!machine) return {};
   const defaults = (machine.parameterDefaults && typeof machine.parameterDefaults === 'object') ? machine.parameterDefaults : {};
   const previous = rememberedInputs(machine);
+  const prefill = state.run.prefill && state.run.prefill.machine === taskIdentity(machine) ? state.run.prefill.inputs : {};
   const values = {};
   for (const name of machine.parameters || []) {
-    const value = previous[name] != null ? previous[name] : defaults[name];
+    const value = prefill[name] != null ? prefill[name] : previous[name] != null ? previous[name] : defaults[name];
     if (value != null && String(value) !== '') values[name] = String(value);
   }
   return values;
@@ -2657,6 +2659,14 @@ async function navigateEmbedded(payload) {
     const identity = taskIdentity(selectedTask);
     if (state.execution.selected !== identity) state.execution.detailTab = 'overview';
     state.execution.selected = identity;
+    // 会話の振り分けが依頼から写した実行条件。今回の値として概要に入れる（宣言に無いキーは
+    // 描くときに落ちる）。実行は人が押す。
+    if (payload.inputs && typeof payload.inputs === 'object' && Object.keys(payload.inputs).length) {
+      state.run.prefill = { machine: identity, inputs: { ...payload.inputs } };
+      state.run.parametersFor = '';
+      state.execution.detailTab = 'overview';
+      toast('依頼から入力値を写しました。確認してから実行してください');
+    }
   }
   if (payload.action === 'new') newMachine();
   else render();

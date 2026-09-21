@@ -1526,6 +1526,9 @@ async function openRouted(routing) {
   const area = routing.kind === 'flow' ? 'workflows' : 'tasks';
   await showArea(area);
   await selectAreaItem(area, routing.id);
+  // 依頼から写した実行条件があれば、同じ選択のまま添えて送る（ワークベンチが概要の入力欄へ入れる）
+  const inputs = routing.inputs && typeof routing.inputs === 'object' ? routing.inputs : null;
+  if (inputs && Object.keys(inputs).length && area === 'tasks') await $('automation-workbench').navigate({ ...frameMessage(), inputs });
 }
 
 function responseForkActions(m, index) {

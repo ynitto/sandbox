@@ -99,6 +99,66 @@ async function route({ text, candidates: cands, cwd, capture, signal, file, toHo
   return validate(value, cands);
 }
 
+// ---- 流用時の入力値（実行条件）を依頼から写す ---------------------------------------------
+// 日付の語は決定的に写す（タスク画面の自動入力と同じ `@date:*`）。残りのキーだけ、ローカル LLM の
+// `extract`（`--format json`。文法で JSON オブジェクトを強制）に「依頼文の言葉をそのまま」写させ、
+// 宣言にあるキーの文字列だけを受ける。値の採否は機械、確認は人（実行のボタンは押さない）。
+const DATE_WORDS = [['@date:previous-month', /前月|先月/], ['@date:month', /今月/], ['@date:yesterday', /昨日/], ['@date:today', /今日|本日/]];
+const DATE_KEY = /date|day|month|week|period|期間|日付|年月|月|日/i;
+
+function dateWord(text) {
+  const hit = DATE_WORDS.find(([, re]) => re.test(String(text || '')));
+  return hit ? hit[0] : '';
+}
+
+function extractionPrompt(text, keys) {
+  return ['依頼文から次の入力値を抜き出し、JSON オブジェクトだけを返す。', `キー: ${keys.join(', ')}`,
+    '依頼文に書かれていないキーは null にする。値は依頼文の言葉をそのまま短く写し、推測で補わない。',
+    '', '依頼文:', String(text || '')].join('\n');
+}
+
+async function extractInputs({ text = '', parameters = [], cwd, capture, signal } = {}) {
+  const keys = [...new Set((Array.isArray(parameters) ? parameters : []).map(String).filter(Boolean))];
+  const values = {};
+  if (!keys.length) return values;
+  const fromText = dateWord(text);
+  const rest = [];
+  for (const key of keys) {
+    if (fromText && DATE_KEY.test(key)) values[key] = fromText;
+    else rest.push(key);
+  }
+  if (!rest.length || typeof capture !== 'function') return values;
+  let result;
+  try {
+    result = await capture('agent-herd', ['--purpose', 'extract', '--readonly', '-p', extractionPrompt(text, rest)], { cwd, signal, timeoutMs: TIMEOUT_MS });
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return values;
+  }
+  if (!result?.ok || signal?.aborted) return values;
+  let parsed;
+  try {
+    const raw = String(result.stdout || '');
+    parsed = JSON.parse(raw.slice(raw.indexOf('{')));
+  } catch { return values; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return values;
+  for (const key of rest) {
+    const value = parsed[key];
+    if (value == null || typeof value === 'object' || typeof value === 'boolean') continue;
+    const str = String(value).trim().slice(0, 200);
+    if (!str || /^(null|none|不明|なし)$/i.test(str)) continue;
+    values[key] = DATE_KEY.test(key) && dateWord(str) ? dateWord(str) : str;
+  }
+  return values;
+}
+
+const DATE_LABELS = { '@date:today': '今日', '@date:yesterday': '昨日', '@date:month': '今月', '@date:previous-month': '前月' };
+
+function inputsLine(inputs) {
+  const pairs = Object.entries(inputs || {}).map(([key, value]) => `${key}=${DATE_LABELS[value] || value}`);
+  return pairs.length ? { type: 'status', title: `入力：${pairs.join(' · ')}`, status: 'success', detail: '依頼から写した値。タスクを開いて確認してから実行' } : null;
+}
+
 const METHOD = { jev: 'Jev', judge: 'ローカル判定' };
 
 function information(result) {
@@ -121,18 +181,19 @@ function routineInformation() {
 
 // 会話を止めたときに会話へ残す案内（役割 routing）。本文と添付は入力欄に残るので、案内が持つのは
 // 開く先と、そのまま会話で実行するときの本文だけ。
-function heldMessage(result, { text = '', attachments = [] } = {}) {
+function heldMessage(result, { text = '', attachments = [], inputs = {} } = {}) {
   const kind = result.handling.choice;
   const noun = kind === 'flow' ? 'ワークフロー' : 'タスク';
   const name = result.target.name;
+  const values = inputs && typeof inputs === 'object' ? inputs : {};
   return {
     message: {
       role: 'routing', text: `${noun}「${name}」を流用できます。`,
-      parts: { information: [information(result)] },
-      routing: { kind, id: result.target.id, name, request: String(text), attachments: Array.isArray(attachments) ? attachments : [] },
+      parts: { information: [information(result), inputsLine(values)].filter(Boolean) },
+      routing: { kind, id: result.target.id, name, request: String(text), attachments: Array.isArray(attachments) ? attachments : [], inputs: values },
     },
     notice: `${noun}「${name}」を流用できます（入力は保持）`,
   };
 }
 
-module.exports = { LIMITS, TIMEOUT_MS, skipReason, candidates, validate, route, information, routineInformation, heldMessage };
+module.exports = { LIMITS, TIMEOUT_MS, skipReason, candidates, validate, route, information, routineInformation, heldMessage, dateWord, extractionPrompt, extractInputs, inputsLine };

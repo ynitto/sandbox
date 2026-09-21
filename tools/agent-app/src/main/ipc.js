@@ -42,6 +42,7 @@ const runHistory = require('./automation/run-history');
 const agentFlow = require('./automation/agent-flow');
 const machineStore = require('./automation/store');
 const flowStore = require('./automation/flow-store');
+const taskModel = require('./automation/model');
 const requestRouting = require('./requestRouting');
 const teaching = require('./automation/teaching');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
@@ -679,8 +680,18 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     } finally { selecting.delete(id); }
     if (controller.signal.aborted) throw new Error('振り分けを停止しました');
     if (routed.hold) {
-      // 会話は送らない。案内を 1 枚残して、開く / そのまま会話で実行 は人が選ぶ
-      const held = requestRouting.heldMessage(routed, { text: requested.text, attachments: p.attachments || [] });
+      // 会話は送らない。案内を 1 枚残して、開く / そのまま会話で実行 は人が選ぶ。
+      // タスクの流用なら、実行条件（{{key}}）を依頼から写しておく（日付は決定的、残りはローカル LLM の extract）
+      let inputs = {};
+      if (routed.handling.choice === 'task') {
+        let parameters = [];
+        try { parameters = taskModel.normalizeProcedure(machineStore.read(repo, routed.target.id).raw).parameters || []; } catch { /* 読めない定義は入力なし */ }
+        inputs = await requestRouting.extractInputs({
+          text: requested.text, parameters, cwd: dirs.fsDir,
+          capture: (name, args, opts) => runner.capture(name, args, { ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined }),
+        });
+      }
+      const held = requestRouting.heldMessage(routed, { text: requested.text, attachments: p.attachments || [], inputs });
       store.appendMessage(ud, id, held.message);
       release();
       return { held: { notice: held.notice }, acceptedAt: new Date().toISOString() };

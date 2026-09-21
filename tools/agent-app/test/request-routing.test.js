@@ -79,7 +79,7 @@ test('決めた答えは候補で検証し、hold は流用先があるときだ
   assert.equal(routing.information(result).title, '振り分け：タスク「日報」を流用できます');
   const held = routing.heldMessage(result, { text, attachments: [{ rel: 'a.md' }] });
   assert.equal(held.message.role, 'routing');
-  assert.deepEqual(held.message.routing, { kind: 'task', id: 'daily-report', name: '日報', request: text, attachments: [{ rel: 'a.md' }] });
+  assert.deepEqual(held.message.routing, { kind: 'task', id: 'daily-report', name: '日報', request: text, attachments: [{ rel: 'a.md' }], inputs: {} });
   assert.match(held.notice, /日報/);
 });
 
@@ -132,4 +132,48 @@ test('停止された振り分けは答えを使わない', async () => {
     capture: fakeCapture(() => { controller.abort(); return { ok: true, status: 0, stdout: JSON.stringify({ stage: 'judge', handling: { choice: 'answer', confidence: 0.9 } }) }; }) });
   assert.equal(result.decided, false);
   assert.equal(result.reason, 'aborted');
+});
+
+test('流用時の入力値: 日付の語は決定的に写し、残りだけ extract に訊く', async () => {
+  const seen = [];
+  const capture = async (name, args, opts) => {
+    seen.push({ name, args, opts });
+    return { ok: true, status: 0, stdout: '{"target": "sandbox リポジトリ", "owner": null, "count": 3, "ghost": "x"}' };
+  };
+  const dateOnly = await routing.extractInputs({ text: '前月分の日報をまとめて', parameters: ['period', 'report_date'], capture });
+  assert.deepEqual(dateOnly, { period: '@date:previous-month', report_date: '@date:previous-month' });
+  assert.equal(seen.length, 0, '日付だけなら LLM を呼ばない');
+  const mixed = await routing.extractInputs({ text: '昨日の日報を書いて。対象は sandbox リポジトリ', parameters: ['date', 'target', 'owner', 'count'], cwd: '/repo', capture });
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].args.slice(0, 3), ['--purpose', 'extract', '--readonly']);
+  assert.equal(seen[0].args[3], '-p');
+  assert.match(seen[0].args[4], /キー: target, owner, count/, '日付のキーは訊かない');
+  assert.match(seen[0].args[4], /昨日の日報を書いて/);
+  assert.equal(seen[0].opts.cwd, '/repo');
+  assert.deepEqual(mixed, { date: '@date:yesterday', target: 'sandbox リポジトリ', count: '3' }, 'null は落とし、宣言に無い ghost は受けない');
+  assert.deepEqual(await routing.extractInputs({ text: 'x', parameters: [], capture }), {});
+});
+
+test('流用時の入力値: extract が無い・失敗・壊れた出力でも日付の分は残す', async () => {
+  const text = '今月の集計をして';
+  for (const capture of [
+    async () => { throw Object.assign(new Error('nope'), { code: 'ENOENT' }); },
+    async () => ({ ok: false, status: 1, stdout: '', stderr: 'ollama に接続できません' }),
+    async () => ({ ok: true, status: 0, stdout: 'not json' }),
+    async () => ({ ok: true, status: 0, stdout: '[1,2]' }),
+  ]) {
+    assert.deepEqual(await routing.extractInputs({ text, parameters: ['month', 'target'], capture }), { month: '@date:month' });
+  }
+  const dated = await routing.extractInputs({ text: '集計して', parameters: ['period'], capture: async () => ({ ok: true, status: 0, stdout: '{"period": "先月分"}' }) });
+  assert.deepEqual(dated, { period: '@date:previous-month' }, 'LLM が返した日付の語も自動入力へ写す');
+  assert.equal(routing.dateWord('先週の分'), '', '自動入力に無い語は写さない');
+});
+
+test('案内は写した入力値を持ち、実行情報に 1 行出す', async () => {
+  const stdout = JSON.stringify({ handling: { choice: 'task', confidence: 0.82 }, task: { choice: 'daily-report', confidence: 0.77 }, hold: true, stage: 'judge' });
+  const result = await routing.route({ text, candidates: cands, file: tmpFile(), capture: fakeCapture({ ok: true, status: 0, stdout }) });
+  const held = routing.heldMessage(result, { text, inputs: { period: '@date:previous-month', target: 'sandbox' } });
+  assert.deepEqual(held.message.routing.inputs, { period: '@date:previous-month', target: 'sandbox' });
+  assert.equal(held.message.parts.information[1].title, '入力：period=前月 · target=sandbox');
+  assert.equal(routing.heldMessage(result, { text }).message.parts.information.length, 1, '入力が無ければ行を足さない');
 });
