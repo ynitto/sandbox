@@ -212,6 +212,7 @@ def collect(fixtures, candidates, out, timeout, *, resume=False, containment=Fal
         if not resume:
             f["selector_observations"], f["live_selector_result"] = capture_selector(f)
         f["containment"] = {"enabled": containment, "kiro_external_mcp": False if containment else "default",
+                            "policy": "workspace-writes-v2" if containment else None,
                             "protected_repositories": [str(p) for p in (engine.REPO, *protected_roots)]}
         write_json(root / "fixture.json", f)
         write_json(root / "selector.json", {"observations": f["selector_observations"], "result": f["live_selector_result"]})

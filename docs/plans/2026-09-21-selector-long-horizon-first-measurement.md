@@ -37,6 +37,12 @@ M1のKiroは既定profileのfilesystem MCPを通じて、隔離workspaceでは�
 
 検知時に実行中だったM2 Ollamaを停止し、`interrupted-for-containment` として保持した。追加試行はしていない。以後の未開始候補では、KiroのMCPを無効にした専用profileと、元repoを読み書きできないmacOS process guardを使用する。親子プロセスでのsource read/write拒否とcandidate workspaceへのwrite許可をcanaryで確認した。この変更前後はharness条件が異なる。
 
+M2 Kiroではbuiltin writeが元repo以外の `~/.kiro/skills/statemachine-use` 内のengineとschemaを変更した。元repoだけのguardでは不足していた。stdoutに記録された4つのdiffを、現ファイルとの一致・hash不変を確認したうえで正確に反転し、2ファイルを復元した。この候補も `containment-error` として除外する。`M2-containment-incident.json` にbackupと復元hashを保持する。
+
+M3両候補・L1 Kiro・L2/L3では、workspace外writeをCLI実行記録の必要領域だけに限定し、インストール済みskillのreadも拒否するguardへ強化した。canaryでworkspace外write、skill/source read、子プロセスwriteの拒否を検証した。L1 Ollamaは元のguardで完了した結果を保持し、再実行していない。
+
+M3の初回準備では歴史的seedにlockfileが無く `npm ci` が失敗した。モデルを一度も呼んでいないことを確認し、準備ログを `preparation-attempts` に残したうえで、lockfileが無い場合はpackage.jsonに固定されたruntime依存を `npm install --ignore-scripts --omit=dev` で用意する形へ修正した。L3にも同じ準備条件を使う。
+
 並行作業でmainのselectorも変更されていたため、再開分は作業開始時main `c6a96540c5771e557f5b252c196bc2ab53a4bea1` の固定checkoutを使う。short実測reportの3つのruntime hashはこのrevisionと一致した。M1/M2のselector観測は初期processで取得済みの値を保持し、再取得しない。最終replayも固定runtimeで行う。
 
 入力directoryの `containment-incident.json`、`pinned-runtime.json` と各候補の `invocation.json` / `candidate.sb` に証跡を保存する。既存試行を失敗も含めて繰り返さないresume処理と保護条件のfake testを追加した。関連selector/resolver/CLI/evalテストは321件＋4 subtestsが通過した。

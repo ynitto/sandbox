@@ -49,3 +49,15 @@ test('存在しないスキルの手動選択は実行前に拒否する', () =>
     (error) => error.code === 'SKILL_NOT_FOUND',
   );
 });
+
+test('振り分けの判定が決めたスキルは確率順に採り、文字列の一致の 1 位は使わない', () => {
+  const base = { mode: 'auto', text: 'UIの画面レイアウトを改善して', candidates: ['ui-designer', 'self-checking', 'pdf'], catalog };
+  const judged = selection.select({ ...base, judged: [{ name: 'pdf', probability: 0.7 }] });
+  assert.deepStrictEqual(judged.selected.map((item) => item.name), ['pdf', 'self-checking'], 'ui-designer は判定が採らなかったので拾い直さない');
+  assert.strictEqual(judged.selected[0].reason, '判定で選択 0.70');
+  const none = selection.select({ ...base, judged: [] });
+  assert.deepStrictEqual(none.selected.map((item) => item.name), ['self-checking'], '判定が全部 no でも成果物の検証は付く');
+  const explicit = selection.select({ ...base, text: 'ui-designer で画面を改善して', judged: [{ name: 'pdf', probability: 0.9 }] });
+  assert.deepStrictEqual(explicit.selected.map((item) => item.name), ['ui-designer', 'pdf', 'self-checking'], '依頼で明示したスキルが先');
+  assert.deepStrictEqual(selection.mentioned('pdf を作って', catalog).map((item) => item.name), ['pdf']);
+});

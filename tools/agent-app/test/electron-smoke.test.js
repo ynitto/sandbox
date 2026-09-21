@@ -131,6 +131,12 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       text: `スクロール確認 ${index + 1}: ${'履歴を十分に長くする。'.repeat(8)}`,
     });
   }
+  // 振り分けが会話を止めた案内（役割 routing）。開く / そのまま会話で実行 の 2 つが押せる
+  appStore.appendMessage(userData, session.id, {
+    role: 'routing', text: 'タスク「リリース確認」を流用できます。',
+    parts: { information: [{ type: 'status', title: '振り分け：タスク「リリース確認」を流用できます', status: 'success', detail: '選択方法：ローカル判定 0.82' }] },
+    routing: { kind: 'task', id: 'release-check', name: 'リリース確認', request: 'リリース前の確認をして', attachments: [] },
+  });
 
   // 保存データの整理で数える対象: 取得済みの更新ファイルと、端末画面の控え
   fs.mkdirSync(path.join(userData, 'updates'), { recursive: true });
@@ -432,6 +438,23 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       assert.strictEqual(await win.locator(menu).getAttribute('open'), '', `${menu} を開けない`);
       await win.click(background, { position: { x: 4, y: 4 } });
       assert.strictEqual(await win.locator(menu).getAttribute('open'), null, `${menu} が背景クリックで閉じない`);
+    }
+
+    // 振り分けの案内: 会話の中の 1 枚に「タスクを開く」「そのまま会話で実行」だけ。フォークは出さない。
+    // 実行設定には「依頼の扱い」の行（既定は自動）。「タスクを開く」はここでは押さない——押すと
+    // 最後に開いたタスク（lastTask）が変わり、後段のタスク画面の確認が別の前提になる
+    const openTask = win.locator('.message-action', { hasText: 'タスクを開く' });
+    assert.strictEqual(await openTask.count(), 1, '振り分けの案内にタスクを開くボタンが 1 つ');
+    assert.strictEqual(await win.locator('.message-action', { hasText: 'そのまま会話で実行' }).count(), 1);
+    const routingTurn = win.locator('.response-turn', { has: openTask });
+    assert.strictEqual(await routingTurn.locator('.message-action', { hasText: 'フォーク' }).count(), 0, '案内にフォークは出さない');
+    assert.strictEqual(await win.locator('#turn-routing').inputValue(), 'auto', '依頼の扱いの既定は自動');
+    if (process.env.AGENT_APP_ROUTING_SCREENSHOT) {
+      await openTask.scrollIntoViewIfNeeded();
+      await win.screenshot({ path: process.env.AGENT_APP_ROUTING_SCREENSHOT });
+      await win.click('#run-settings > summary');
+      await win.screenshot({ path: process.env.AGENT_APP_ROUTING_SCREENSHOT.replace(/\.png$/, '-settings.png') });
+      await win.click('#chat-title', { position: { x: 4, y: 4 } });
     }
 
     // 共有に依頼: 実行設定は依頼先・エージェント・優先度だけ。依頼先は「どれでも」（ブロードキャスト）が既定で、

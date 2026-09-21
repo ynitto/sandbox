@@ -7,7 +7,8 @@
 > 上位文書: [agent-herd 設計](../designs/agent-herd-design.md) ADR-4「権限と受入をモデルの外で判定する」、
 > [judge 設計](./2026-09-19-agent-herd-system-one-judge-design.md)、
 > [呼び出し先の選択の設計](./2026-09-20-agent-tools-model-selection-design.md)
-> 状態: 段 0（agent-tools 側の `agent-herd route`）実装済み 2026-09-21。段 1（app）は §5 の画面イメージの承認待ち
+> 状態: 段 0（agent-tools 側の `agent-herd route`）と段 1（agent-app 0.25.0 の配線と画面）を 2026-09-21 に実装済み。
+> 段 2（実測としきい値）は未着手
 > 効く柱・原則: 柱 3 / C9（判断を prefill 1 回の最小モデルへ流し、上位モデルを実行に温存）、
 > 柱 2 / C3（答える・流用で済む依頼を機械で決め、人が毎回選ばない）
 
@@ -320,7 +321,7 @@ judge の初回実測（09-20）は「問いの形を決めてからでないと
 | 段 | 何を | 受入 |
 |---|---|---|
 | 0 | **済（2026-09-21）。** `modelselect` の段の試行を `ask_stages` に切り出し（`select` の出力と終了コードは不変。既存 916 件で確認）、`agentcore/route.py` + `agent-herd route` + `herdconfig` の 2 鍵。テストは `judge.evaluate` の `request` 差し替えで ollama 無し（`tests/test_route.py`）。仕様書 §5.8 と README。候補 1 件の流用先は judge の choice が 2 択以上を要るので boolean で訊く（実装で判明） | `python -m unittest` が通り、`agent-herd route --candidates x.json < 依頼` が JSON と終了コードを返す |
-| 1 | app: `requestRouting.js`、`runTurn` の配線、`skillSelection.select` の `judged` 引数、実行設定の行、実行情報。`package.json` を 0.25.0（画面と動きの変更）、CHANGELOG | `route.test.js`（ENOENT・旧版・確度不足で従来に倒れる）、electron-smoke のスクリーンショット |
+| 1 | **済（2026-09-21）。** app: `requestRouting.js`、`runTurn` の配線、`skillSelection.select` の `judged` 引数、実行設定の行、実行情報、案内は役割 `routing` の記録（履歴の再送・要約・未読には入らない）。`package.json` を 0.25.0、CHANGELOG。候補はファイルで渡す（説明文の引用符を argv に通さない）。案内の操作は他の応答と同じ右端の `.message-action` に置いた（§5 の図では ⓘ の下に描いていたが、既存の形を借りる） | `request-routing.test.js`（ENOENT・旧版・確度不足で従来に倒れる）、electron-smoke で案内の 2 操作と「依頼の扱い」の行を確認、スクリーンショットで目視 |
 | 2 | §6 の実測。しきい値の既定を決めて README の「置き値」を消す | `RT1〜RT3` の `--calibration` 出力が eval README に載る |
 | 3 | 流用時の入力値の抽出（`agent-herd decide` の「事実の転記 → 機械判定」で日付・対象を写す）。タスク画面の会話にも同じ振り分け | 段 2 の結果を見てから |
 

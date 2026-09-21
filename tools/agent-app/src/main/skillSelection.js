@@ -25,11 +25,19 @@ function relevance(text, skill) {
   return wanted.size ? hits / wanted.size : 0;
 }
 
+// 依頼の本文に名前がそのまま出ているスキル（「依頼で明示」。判定には訊かない）。
+function mentioned(text, skills) {
+  return (Array.isArray(skills) ? skills : []).filter((skill) => skill && new RegExp(`(?:^|\\s)[$/]?${String(skill.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`, 'i').test(String(text)));
+}
+
 function item(skill, role, reason) {
   return { name: skill.name, role, reason, content: String(skill.content || ''), path: String(skill.path || '') };
 }
 
-function select({ mode = 'auto', text = '', requested = [], candidates = [], catalog = [] } = {}) {
+// judged … 振り分け（agent-herd route）が「添えると質が上がる」と判定したスキル [{ name, probability }]。
+// 配列なら判定が決めたことになり、bigram の 1 位は使わない（判定が no と言った候補を拾い直さない）。
+// null なら判定は無く、従来どおり文字列の一致で 1 件。
+function select({ mode = 'auto', text = '', requested = [], candidates = [], catalog = [], judged = null } = {}) {
   const available = new Map((Array.isArray(catalog) ? catalog : []).map((skill) => [cleanName(skill && skill.name), skill]));
   const pool = [...new Set((Array.isArray(candidates) ? candidates : []).map(cleanName).filter(Boolean))]
     .map((name) => available.get(name)).filter(Boolean);
@@ -44,12 +52,19 @@ function select({ mode = 'auto', text = '', requested = [], candidates = [], cat
   if (mode === 'manual') {
     return { mode, requested: asked, selected: asked.slice(0, MAX_SELECTED).map((name, index) => item(available.get(name), index ? 'support' : 'primary', '手動選択')), omitted: asked.slice(MAX_SELECTED).map((name) => ({ name, reason: '最大3件' })) };
   }
-  const explicit = [...available.values()].filter((skill) => new RegExp(`(?:^|\\s)[$/]?${String(skill.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`, 'i').test(String(text)));
+  const explicit = mentioned(text, [...available.values()]);
   const ranked = pool.filter((skill) => !explicit.includes(skill)).map((skill) => ({ skill, score: relevance(text, skill) }))
     .filter((entry) => entry.score >= 0.08).sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name));
   const chosen = [];
   for (const skill of explicit) if (chosen.length < MAX_SELECTED) chosen.push(item(skill, chosen.length ? 'support' : 'primary', '依頼で明示'));
-  if (ranked.length && chosen.length < MAX_SELECTED) chosen.push(item(ranked[0].skill, chosen.length ? 'support' : 'primary', '依頼内容に一致'));
+  if (Array.isArray(judged)) {
+    const byName = new Map(pool.map((skill) => [skill.name, skill]));
+    for (const entry of [...judged].sort((a, b) => Number(b && b.probability) - Number(a && a.probability))) {
+      const skill = byName.get(cleanName(entry && entry.name));
+      if (!skill || chosen.some((picked) => picked.name === skill.name) || chosen.length >= MAX_SELECTED) continue;
+      chosen.push(item(skill, chosen.length ? 'support' : 'primary', `判定で選択 ${Number(entry.probability || 0).toFixed(2)}`));
+    }
+  } else if (ranked.length && chosen.length < MAX_SELECTED) chosen.push(item(ranked[0].skill, chosen.length ? 'support' : 'primary', '依頼内容に一致'));
   const createsOutput = /(作|変更|修正|改善|実装|作成|build|fix|implement|edit)/i.test(String(text));
   const checking = pool.find((skill) => skill.name === 'self-checking');
   if (createsOutput && checking && !chosen.some((entry) => entry.name === checking.name) && chosen.length < MAX_SELECTED) {
@@ -86,4 +101,4 @@ function deliver(selection, spec = {}, { budgetChars = 12000 } = {}) {
   };
 }
 
-module.exports = { MAX_SELECTED, relevance, select, deliver };
+module.exports = { MAX_SELECTED, relevance, mentioned, select, deliver };

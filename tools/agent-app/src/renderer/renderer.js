@@ -49,6 +49,7 @@ const state = {
   settingsQuick: [],
   settingsAgents: [],
   turnSkillMode: 'auto',
+  turnRouting: 'auto',  // 依頼の扱い（auto = agent-herd route に振り分けを訊く / off = 会話で実行）
   turnSkills: [],
   turnSkillPreview: [],
   skillPreviewTimer: null,
@@ -1495,9 +1496,41 @@ function renderQuickRequestMenu() {
 
 // 応答ごとのフォーク。検索画面のプレビューと同じ言葉で、押すと同じダイアログを
 // その応答の位置で開く。まだ完了していない応答には出さない。
+// 振り分けが会話を止めたときの案内（役割 routing）の下の操作。押せるのは「開く」と
+// 「そのまま会話で実行」の 2 つだけ（実行のボタンは人が押す）。
+function routingActionsNode(routing) {
+  const actions = el('div', 'message-actions');
+  const flow = routing.kind === 'flow';
+  const open = el('button', 'message-action', flow ? 'ワークフローを開く' : 'タスクを開く');
+  open.type = 'button';
+  open.title = flow ? 'ワークフロー画面でこのワークフローを開く' : 'タスク画面でこのタスクを開く（実行は概要から）';
+  open.onclick = () => openRouted(routing).catch((err) => notice(err.message, 'error'));
+  const anyway = el('button', 'message-action', 'そのまま会話で実行');
+  anyway.type = 'button';
+  anyway.title = '振り分けを切って、この本文を会話で実行する';
+  anyway.onclick = () => {
+    state.turnRouting = 'off';
+    $('turn-routing').value = 'off';
+    // 「そのまま」= 止めたときの本文と添付で送る（入力欄の下書きではなく、案内が持つ本文）
+    $('prompt').value = routing.request;
+    state.filledPrompt = routing.request;
+    state.attachments = [...(routing.attachments || [])];
+    renderAttachments();
+    sendPrompt().catch((err) => notice(err.message, 'error'));
+  };
+  actions.append(open, anyway);
+  return actions;
+}
+
+async function openRouted(routing) {
+  const area = routing.kind === 'flow' ? 'workflows' : 'tasks';
+  await showArea(area);
+  await selectAreaItem(area, routing.id);
+}
+
 function responseForkActions(m, index) {
   const cur = state.current;
-  if (!cur || index < 0 || m.error || m.stopped || !m.text) return null;
+  if (!cur || index < 0 || m.error || m.stopped || !m.text || m.role === 'routing') return null;
   const actions = el('div', 'message-actions');
   const button = el('button', 'message-action', 'フォーク');
   button.type = 'button';
@@ -1571,6 +1604,7 @@ function messageNode(m, index = -1) {
     const infoHasError = information.some((item) => item && item.status === 'error');
     const info = responseDisclosure('information', '実行情報', information, { open: !!(m.error || m.stopped || (m.code != null && m.code !== 0) || infoHasError) });
     if (info) n.append(info);
+    if (m.role === 'routing' && m.routing) n.append(routingActionsNode(m.routing));
     const forkActions = forkActionsNode(m, index);
     if (forkActions) n.append(forkActions);
     const fork = responseForkActions(m, index);
@@ -1850,6 +1884,7 @@ function turnOptions() {
     autoApprove: $('permission-mode').value === 'auto',
     skillMode: state.turnSkillMode,
     skills: state.turnSkillMode === 'manual' ? [...state.turnSkills] : [],
+    routing: state.turnRouting,
     ...(selected.policy === 'shared' ? { priority: $('priority').value, to: shareTarget() } : {}),
   };
 }
@@ -1917,7 +1952,18 @@ async function sendPrompt() {
         res = await api.send(id, text, { ...opts, attachments: state.attachments });
       }
     } finally { state.pending.delete(id); }
+    if (res && res.held) {
+      // 振り分けが会話を止めた（タスク / ワークフローの流用）。本文と添付は入力欄に残し、
+      // 会話の中の案内（開く / そのまま会話で実行）から次を選んでもらう。
+      state.current = await api.readSession(id);
+      renderHeader();
+      renderMessages();
+      inputStatus('success', res.held.notice, 4000);
+      return;
+    }
     $('prompt').value = '';
+    state.turnRouting = 'auto';
+    $('turn-routing').value = 'auto';
     state.turnSkillMode = (state.config.instructions.skillSelection || {}).defaultMode || 'auto';
     state.turnSkills = [];
     state.turnSkillPreview = [];
@@ -2792,6 +2838,7 @@ async function init() {
     renderRunSettingsSummary();
     refreshTurnSkillPreview();
   };
+  $('turn-routing').onchange = () => { state.turnRouting = $('turn-routing').value; };
   // 添付: ボタン・ドロップ・貼り付け・「ファイル」画面から
   $('attach').onclick = pickAttachments;
   $('viewer-attach').onclick = attachOpenFile;

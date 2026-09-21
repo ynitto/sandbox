@@ -41,6 +41,8 @@ const attention = require('./attention');
 const runHistory = require('./automation/run-history');
 const agentFlow = require('./automation/agent-flow');
 const machineStore = require('./automation/store');
+const flowStore = require('./automation/flow-store');
+const requestRouting = require('./requestRouting');
 const teaching = require('./automation/teaching');
 const { stripAnsi, cleanAnswer, lineEmitter } = require('./text');
 const { userData, requireRepo, distroFor, dirsOf, sessionDirs, mainBranch } = require('./paths');
@@ -648,6 +650,43 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const agents = await listAgents(repo);
   let requested = executionSpec(sess, p, cfg, { agents, optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
   if (requested.policy === settings.SHARED_POLICY) return runShared(id, sess, dirs, p, requested, cfg, send, release);
+  const selectionConfig = cfg.instructions.skillSelection || {};
+  const skillMode = p.skillMode || selectionConfig.defaultMode || 'auto';
+  // 依頼の振り分け（agent-herd route）。会話だけが対象で、タスク・ワークフローを AI と作る会話は
+  // 振り分けない。決めなければ従来どおり（会話で実行、スキルは文字列の一致）。
+  const askedReadonly = requested.readonly;
+  let routed = null;
+  const routingSkip = sess.kind !== 'conversation' ? 'kind'
+    : requestRouting.skipReason({ text: requested.text, mode: p.routing, skillMode, quickRequests: cfg.instructions.quickRequests });
+  if (!routingSkip) {
+    const safe = (read) => { try { return read(); } catch { return []; } };
+    const names = selectionConfig.enabled === false ? [] : (selectionConfig.candidates || []);
+    const cands = requestRouting.candidates({
+      text: requested.text, repo: path.basename(repo), readonly: requested.readonly,
+      attachments: (Array.isArray(p.attachments) ? p.attachments : []).map((a) => a.name || a.rel || ''),
+      tasks: safe(() => machineStore.list(repo)).map((t) => ({ id: t.machine, name: t.name, description: t.description })),
+      flows: safe(() => flowStore.list(repo)).filter((f) => f.valid !== false).map((f) => ({ id: f.id, name: f.name, description: f.description })),
+      skills: skills.catalog(repo).filter((skill) => names.includes(skill.name)),
+    });
+    const controller = new AbortController();
+    selecting.set(id, controller);
+    try {
+      routed = await requestRouting.route({
+        text: requested.text, candidates: cands, cwd: dirs.fsDir, signal: controller.signal,
+        file: path.join(ud, 'routing', `${id}.json`), toHostPath: process.platform === 'win32' ? host.toWslPath : undefined,
+        capture: (name, args, opts) => runner.capture(name, args, { ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined }),
+      });
+    } finally { selecting.delete(id); }
+    if (controller.signal.aborted) throw new Error('振り分けを停止しました');
+    if (routed.hold) {
+      // 会話は送らない。案内を 1 枚残して、開く / そのまま会話で実行 は人が選ぶ
+      const held = requestRouting.heldMessage(routed, { text: requested.text, attachments: p.attachments || [] });
+      store.appendMessage(ud, id, held.message);
+      release();
+      return { held: { notice: held.notice }, acceptedAt: new Date().toISOString() };
+    }
+    if (routed.handling && routed.handling.choice === 'answer') requested = { ...requested, readonly: true };
+  }
   let chosen = null;
   if (modelSelection.pending(sess) && requested.policy !== 'direct') {
     const controller = new AbortController();
@@ -682,7 +721,11 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     if (info.ok && info.tmux) transport = 'tmux';
   }
   const attached = withAttachments(ud, base.text, p.attachments, dirs);
-  let setupInformation = [...familyInfo, ...(chosen ? [modelSelection.information(chosen)] : [])];
+  let setupInformation = [
+    ...(routed ? [requestRouting.information(routed)] : []),
+    ...(routed && routed.routine && routed.routine.value ? [requestRouting.routineInformation()] : []),
+    ...familyInfo, ...(chosen ? [modelSelection.information(chosen)] : []),
+  ];
   let setupWarning = '';
   let setupSkills = [];
   // CLI ごとの最初の起動だけに開始アクションを適用する。既存 entry は設定変更後も再実行しない。
@@ -700,9 +743,8 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     setupSkills = plan.skills;
     store.setCliEntry(ud, id, base.cli, { setupApplied: true });
   }
-  const selectionConfig = cfg.instructions.skillSelection || {};
   const selectedSkills = skillSelection.select({
-    mode: p.skillMode || selectionConfig.defaultMode || 'auto',
+    mode: skillMode, judged: routed && routed.decided ? routed.skills : null,
     text: [base.text, ...(Array.isArray(p.attachments) ? p.attachments.map((item) => item.name || item.rel || '') : [])].join('\n'),
     requested: p.skills,
     candidates: selectionConfig.enabled === false ? [] : selectionConfig.candidates,
@@ -735,7 +777,8 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   // 次のターンの既定として覚える（画面はこれを出す）。`herd` は写した先ではなく要求した
   // 名前のまま残す——次のターンは添付の有無でまた選び直す
   store.updateSession(ud, id, {
-    cli: base.requested || base.cli, model: base.model, readonly: base.readonly, autoApprove: base.autoApprove,
+    // 振り分けの「答えるだけ」はこのターンだけ読み取り専用にし、次のターンの既定には残さない
+    cli: base.requested || base.cli, model: base.model, readonly: routed && routed.handling && routed.handling.choice === 'answer' ? askedReadonly : base.readonly, autoApprove: base.autoApprove,
     policy: base.policy, tier: base.tier, transport,
     ...(chosen ? { modelSelection: chosen } : {}),
   });
