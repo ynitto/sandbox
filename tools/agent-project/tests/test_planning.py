@@ -144,11 +144,11 @@ class AssessTests(unittest.TestCase):
             self.assertEqual(val, "c=1 r=1 a=1")
 
     @staticmethod
-    def _scores(**axes):
-        """judge の `score` 応答（軸 → 確率加重の値）。"""
+    def _scores(confidence=0.95, **axes):
+        """judge の `score` 応答（軸 → 確率加重の値）。確度の既定は下限（0.9）を越える値。"""
         return {"answers": {axis: {"type": "score", "score": value,
                                    "bucket": "1" if value is None else str(int(value + 0.5)),
-                                   "probabilities": {}, "confidence": 0.8,
+                                   "probabilities": {}, "confidence": confidence,
                                    "coverage": 0.95, "method": "logprobs"}
                             for axis, value in axes.items()},
                 "usage": {"tokens_in": 30, "tokens_out": 3}, "model": "gemma4:e4b"}
@@ -202,9 +202,10 @@ class AssessTests(unittest.TestCase):
     def test_judge_failure_and_low_confidence_fall_back(self):
         val, seen = self._assess(error="ollama に接続できません")
         self.assertEqual((val, "generated" in seen), ("c=1 r=2 a=1", True))
-        with mock.patch.object(km, "_ASSESS_JUDGE_MIN_CONFIDENCE", 0.95):
-            val, seen = self._assess(result=self._scores(r=1.0))
+        # 下限 0.9 に届かない確度は棄権して生成経路へ（実測の正解の最小 0.9968 を切り下げた値）。
+        val, seen = self._assess(result=self._scores(r=1.0, confidence=0.8))
         self.assertEqual((val, "generated" in seen), ("c=1 r=2 a=1", True))
+        self.assertEqual(km._ASSESS_JUDGE_MIN_CONFIDENCE, 0.9)
 
     def test_an_unreadable_score_falls_back_instead_of_guessing(self):
         """読めない軸があれば生成経路へ倒す。読めない軸は**訊いた軸**でなければ意味が無い
