@@ -359,36 +359,24 @@ _ASSESS_TASKS = {"AS1": "assess_risky", "AS2": "assess_clear",
 
 # 段の説明に出てくる語をそのまま材料から探す実装。**本番ではない**——「材料の属性で書き
 # 切った基準は、そもそも機械で決まるのか」を judge と突き合わせるための当て馬である。
-# a（`_assess_ambiguity`）が機械へ移せたので、c と r も移せるかを同じ土俵で測る。
+# a に続いて c もここで育てた規則ごと本番（`_assess_complexity`）へ移った（2026-09-21）。
+# 残る r は当て馬のまま——6/8 のうち 2 件をここで落とす（同義語・係り先）のが、r には
+# 読みが要る＝judge を残す証拠として置いてある。
 _RISK_WORDS = ("認証", "決済", "課金", "データ移行", "本番設定", "個人情報")
-_FILE_TOKEN = re.compile(r"[\w.-]+/[\w./-]+|[\w-]+\.[A-Za-z0-9]{1,5}")
-# 「何を触るか」ではなく「どう確かめるか」を書いている行（`_assess_material` の見出し）。
-_CHECK_LINES = ("verify:", "受入基準:")
-# 「40 ファイル」のように**数だけ書いてある**材料。モデルはこの数を段のしきい値と比べない
-# （実測 2026-09-20: 3 / 7 / 12 / 40 のどれでも 2 を選ぶ）が、正規表現なら拾える。
-_FILE_COUNT = re.compile(r"(\d+)\s*(?:個|つ)?\s*(?:の)?\s*ファイル")
 
 
 def assess_by_string_match(material: str) -> dict:
-    """c と r を文字列一致だけで決める当て馬（judge と比べるための下限）。
+    """r を文字列一致だけで決める当て馬（judge と比べるための下限）。c は本番の規則を呼ぶ。
 
-    r は段の説明が並べている語を材料から探す。c は材料に現れるファイルらしい綴りの
-    異なり数と、「40 ファイル」のように書いてある数の大きいほうを段へ落とす（1 / 2〜5 /
-    6 以上）。どちらも「書いてある属性」をそのまま拾う実装で、これで足りるなら judge は
-    要らない。
+    r は段の説明が並べている語を材料から探す。c は本番（`_complexity_of_material`）——
+    確かめ方の行を落とした材料のファイルらしい綴りの異なり数と「40 ファイル」の数の大きい
+    ほうを段へ落とす——をそのまま呼ぶ。規則を写すと、片方を直したときにもう片方が古いまま
+    残る。
     """
     text = str(material or "")
     risk = 3 if any(word in text for word in _RISK_WORDS) else 1
-    # 触るファイルを数えるので、**確かめ方の行は読まない**——`verify` と受入基準が名指しする
-    # のは検査の対象であって、このタスクが編集する先ではない（材料の行はどちらも
-    # `_assess_material` が付ける固定の見出しで始まる）。
-    touched = "\n".join(line for line in text.splitlines()
-                        if not line.startswith(_CHECK_LINES))
-    files = {m.group(0) for m in _FILE_TOKEN.finditer(touched)}
-    counted = [int(m.group(1)) for m in _FILE_COUNT.finditer(touched)]
-    how_many = max([len(files)] + counted)
-    complexity = 1 if how_many <= 1 else (2 if how_many <= 5 else 3)
-    return {"c": complexity, "r": risk}
+    ap = importlib.import_module("project_eval").ap
+    return {"c": ap._complexity_of_material(text), "r": risk}
 
 
 def _assess_cell(case: dict, *, cid: str = ""):
@@ -406,9 +394,10 @@ def _assess_cell(case: dict, *, cid: str = ""):
     questions = ap._assess_judge_questions()
 
     def to_check(answers):
-        # a は訊かない——本番が `_assess_ambiguity` で決める（verify と受入基準の有無）。
-        # ここでもその関数を呼ぶ。規則を写すと、片方を直したときにもう片方が古いまま残る。
-        scores = {"a": ap._assess_ambiguity(task)}
+        # a と c は訊かない——本番が `_assess_ambiguity`（verify と受入基準の有無）と
+        # `_assess_complexity`（名指しファイルの数）で決める。ここでもその関数を呼ぶ。
+        # 規則を写すと、片方を直したときにもう片方が古いまま残る。judge に訊くのは r だけ。
+        scores = {"a": ap._assess_ambiguity(task), "c": ap._assess_complexity(task)}
         for axis in questions:
             value = answers.get(axis, {}).get("score")
             if value is None:
