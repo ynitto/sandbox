@@ -854,13 +854,48 @@ def _assess_ambiguity(task: Task) -> int:
     return 2 if task_acceptance(task) else 3
 
 
+# c（複雑さ）の材料。ファイルらしい綴り（`a/b.py`・`x.md`）と、「40 ファイル」のように
+# **数だけ書いてある**形。綴りの判定は素朴で `v1.2` も拾う——当て馬（readout_eval）で
+# 育てた規則をそのまま移したもので、語彙を足すなら素材（AS1〜AS8）で測ってから。
+_FILE_TOKEN = re.compile(r"[\w.-]+/[\w./-]+|[\w-]+\.[A-Za-z0-9]{1,5}")
+_FILE_COUNT = re.compile(r"(\d+)\s*(?:個|つ)?\s*(?:の)?\s*ファイル")
+# 「何を触るか」ではなく「どう確かめるか」を書いている行（`_assess_material` が付ける固定の
+# 見出し）。verify と受入基準が名指しするのは検査の対象で、このタスクが編集する先ではない。
+_CHECK_LINES = ("verify:", "受入基準:")
+
+
+def _complexity_of_material(material: str) -> int:
+    """`_assess_complexity` の規則本体。材料の文字列を受けるのは当て馬（readout_eval）が
+    同じ規則を呼ぶため——規則を写すと、片方を直したときにもう片方が古いまま残る。"""
+    touched = "\n".join(line for line in str(material or "").splitlines()
+                        if not line.startswith(_CHECK_LINES))
+    files = {m.group(0) for m in _FILE_TOKEN.finditer(touched)}
+    counted = [int(m.group(1)) for m in _FILE_COUNT.finditer(touched)]
+    how_many = max([len(files)] + counted)
+    return 1 if how_many <= 1 else (2 if how_many <= 5 else 3)
+
+
+def _assess_complexity(task: Task) -> int:
+    """複雑さ（c）は材料が名指ししているファイルの数で決まる——1 つなら 1、2〜5 なら 2、
+    6 つ以上なら 3。数は、確かめ方の行（verify / 受入基準）を落とした材料に現れるファイル
+    らしい綴りの異なり数と、「40 ファイル」のように書いてある数の大きいほう。
+
+    **数の比較はモデルまで来ない**（a と同じ作法）。段の境目を「名指しファイルの数」だけに
+    書き切った結果（2026-09-20）、残ったのは数の比較で、モデルはそれをしない——同じ問いで
+    数だけ変えて分布を取ると、3 でも 7 でも 40 でも 2 を選ぶ（3 の質量は 0.005 → 0.122 と
+    増えるが境目を跨がない）。数を拾って比べるのはコードの仕事で、当て馬は正解を持つ
+    6 セルで 6/6・judge は 5/6 だった。判定はここだけが持つ。
+    """
+    return _complexity_of_material(_assess_material(task))
+
+
 def _assess_heuristic(cfg: "Config", task: Task) -> dict:
     """エージェント不在・失敗・stub 時の決定的採点。材料はタスク定義と decisions/ の走査のみ。
-    c: cohort（同種の繰り返し）は多対象＝3。r: 過去の回避判断（avoid）に類似＝3。
-    a: `_assess_ambiguity`（経路によらず同じ規則）。"""
-    c = 3 if (task.get("cohort_items") or task.get("cohort")) else 1
+    r: 過去の回避判断（avoid）に類似＝3。c / a: 経路によらず同じ規則（`_assess_complexity` /
+    `_assess_ambiguity`）。cohort（同種の繰り返し）で c を 3 にしていた規則は捨てた——
+    cohort は「同じ作業を何回繰り返すか」で、軸の定義（名指しファイルの数）とは別の尺度。"""
     r = 3 if find_avoidance(cfg, task) else 1
-    return {"c": c, "r": r, "a": _assess_ambiguity(task)}
+    return {"c": _assess_complexity(task), "r": r, "a": _assess_ambiguity(task)}
 
 
 def _assess_material(task: Task) -> str:
@@ -877,58 +912,43 @@ def _assess_material(task: Task) -> str:
 
 def _assess_prompt(task: Task) -> str:
     return (
-        "あなたはタスクの事前アセスメント役です。以下のタスクを 3 軸で採点してください（各 1〜3 の整数）。\n"
-        "- c=複雑さ: 材料が名指ししているファイルの数（1=1 つ / 2=2〜5 つ / 3=6 つ以上）。"
-        "完了条件の不確かさも試行回数も数えない（それは a）\n"
+        "あなたはタスクの事前アセスメント役です。以下のタスクを次の軸で採点してください（1〜3 の整数）。\n"
         "- r=リスク: 触る領域（1=ドキュメント・見た目・テスト / 2=利用者に見える機能 / "
         "3=認証・決済・課金・データ移行・本番設定・個人情報）。変更の大小は問わない\n"
         "\n"
         + _assess_material(task)
-        + '\n出力は JSON オブジェクトのみ（説明文なし）: {"c": 1, "r": 1}'
-        + "（曖昧さ a は訊きません——verify と受入基準の有無から機械が決めます）")
+        + '\n出力は JSON オブジェクトのみ（説明文なし）: {"r": 1}'
+        + "（曖昧さ a と複雑さ c は訊きません——材料から機械が決めます）")
 
 
 # 採点を judge で決めるときの確度の下限。0 なら棄権しない。AS1 / AS2 を judge 経路で
 # 引き直してから既定を決める（judge 設計 2026-09-19 §6）。届かなければ生成経路で訊く。
 _ASSESS_JUDGE_MIN_CONFIDENCE = 0.0
 
-# 3 軸 × 3 段の段の説明。生成経路の軸定義（`_assess_prompt` の 3 行）と同じ意味を、
-# 段ごとに分けて書いたもの。judge は選択肢の説明を読んで 1 段を選ぶ。**両方を同時に直す**
-# ——片方だけ直すと、同じタスクが経路によって別の点になる。
+# モデルに訊く軸（いまは r だけ）× 3 段の段の説明。生成経路の軸定義（`_assess_prompt` の
+# r の行）と同じ意味を、段ごとに分けて書いたもの。judge は選択肢の説明を読んで 1 段を選ぶ。
+# **両方を同時に直す**——片方だけ直すと、同じタスクが経路によって別の点になる。
 #
 # 段は「材料のどれを見れば決まるか」で書く。**尺度を名前で呼ぶだけの説明にしない**——
 # 初版は r を「壊したときの影響の大きさ」と書いており、決済に触る 1 行の変更を e4b は
-# 2 と採点した（波及の小ささで採点しており、それは基準が訊いていない尺度である）。c も
-# 同じで、完了条件の不確かさを複雑さへ滲ませていた（実測 2026-09-20・AS3 / AS4）。
-# 段の説明から裁量を抜き、境目を材料の属性（触る領域・触るファイル数・verify の有無）に
-# 置き換えてある。
+# 2 と採点した（波及の小ささで採点しており、それは基準が訊いていない尺度である）。
+# 段の境目に「または〜」で質的な逃げ道を足すと、そこへ裁量が戻る——c で 2 度測った
+# （「2〜数個のファイル**か手順**」「6 つ以上、**または横断的な変更**」・2026-09-20）。
+# 足すときは、それが材料から数えられるかを確かめる。
 _ASSESS_AXES = (
-    # 境目は材料が名指ししている**ファイルの数**だけにする。質的な逃げ道を 1 つでも残すと
-    # そこへ裁量が戻るのを 2 度測った——「2〜数個のファイル**か手順**」で 1 ファイルの見た目
-    # 調整が 2 になり、「6 つ以上、**または対象を数え切れない横断的な変更**」で 3 ファイルの
-    # 共通化が 3 になった（2026-09-20）。段の境目に「または〜」を足すときは、それが材料から
-    # 数えられるかを確かめる。
-    #
-    # 材料が数を言っていない場合（「payments/ と migrations/ を触る」など）は、どの段とも
-    # 決まらない。そこは確度が落ちるのが正しい振る舞いで、下限を置けば棄権して生成経路へ
-    # 倒れる——数えられない材料に段を付けるのは、材料の側で直す問題である。
-    ("c", "このタスクは材料が名指ししているファイルをいくつ触るか。"
-          "完了条件の不確かさも、作業の試行回数も数えない（曖昧さは a で採点する）。",
-     {"1": "1 つ（1 つの画面・1 つの設定値も 1 つと数える）",
-      "2": "2〜5 つ",
-      "3": "6 つ以上"}),
     ("r", "このタスクはどの領域に触るか。"
           "変更の大小は問わない——1 行でも、その領域に触れば同じ段にする。",
      {"1": "ドキュメント・見た目・テストなど、壊れても業務は止まらない",
       "2": "利用者に見える機能に触る（下の領域には触らない）",
       "3": "認証・決済・課金・データ移行・本番設定・個人情報のどれかに触る"}),
 )
-# a（曖昧さ）はここに無い。段の境目が `verify` と受入基準の有無そのものになったので、
-# `_assess_ambiguity` が機械で決める——訊けば揺れるだけで、決まるものを訊かない。
+# a（曖昧さ）と c（複雑さ）はここに無い。a は段の境目が `verify` と受入基準の有無そのものに
+# なったので `_assess_ambiguity` が、c は境目が名指しファイル数の比較になったので
+# `_assess_complexity` が機械で決める——訊けば揺れるだけで、決まるものを訊かない。
 
 
 def _assess_judge_questions() -> dict:
-    """3 軸を `score`（順序つき 3 段）の問い 3 つにする。1 軸 1 問——3 軸を 1 問で訊かない。"""
+    """訊く軸を `score`（順序つき 3 段）の問いにする。1 軸 1 問——複数の軸を 1 問で訊かない。"""
     return {axis: {"type": "score", "instructions": text, "criteria": buckets}
             for axis, text, buckets in _ASSESS_AXES}
 
@@ -956,7 +976,7 @@ def assess_judge(cfg: "Config", task: Task) -> "dict | None":
     if _judge.calibrated_abstained(answers, _ASSESS_JUDGE_MIN_CONFIDENCE,
                                   purpose="assess", model=model):
         return None
-    scores: dict = {"a": _assess_ambiguity(task)}
+    scores: dict = {"a": _assess_ambiguity(task), "c": _assess_complexity(task)}
     for axis, _text, _buckets in _ASSESS_AXES:
         value = answers.get(axis, {}).get("score")
         if value is None:
@@ -982,10 +1002,10 @@ def assess_task(cfg: "Config", task: Task, agent_run=None) -> "str | None":
         run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="assess"))
         try:
             obj = _extract_json_obj(run(_assess_prompt(task), cfg.model)) or {}
-            got = {k: int(obj[k]) for k in ("c", "r") if k in obj}
-            if len(got) == 2:
-                scores = {k: min(3, max(1, v)) for k, v in got.items()}
-                scores["a"] = _assess_ambiguity(task)
+            if "r" in obj:
+                scores = {"c": _assess_complexity(task),
+                          "r": min(3, max(1, int(obj["r"]))),
+                          "a": _assess_ambiguity(task)}
         except Exception:  # noqa: BLE001  エージェント不在・タイムアウト・非 JSON はヒューリスティックへ
             scores = None
     if scores is None:
