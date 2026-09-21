@@ -1,0 +1,1 @@
+/Users/nitto/Workspace/sandbox/.venv/bin/python tools/agent-tools/eval/readout_eval.py --calibration --cases AS1,AS3,AS4,AS5,AS6,AS7,AS8 --repeat 3 --model gemma4:e4b --output-dir tools/agent-tools/eval/results/archive/20260921-gemma4-e4b-assess-calibration
