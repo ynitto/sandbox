@@ -40,10 +40,44 @@
   function detail(item) {
     const parts = [];
     if (item.description) parts.push(short(item.description));
-    parts.push(PLACE[item.place] || '');
     if (item.improving) parts.push('改善案を出しました');
     else if (VERDICT[item.verdict]) parts.push(VERDICT[item.verdict]);
     return parts.filter(Boolean).join(' · ');
+  }
+
+  let popup = null;
+  let popupRow = null;
+  function closePopup() {
+    if (popup?.matches(':popover-open')) popup.hidePopover();
+    popupRow?.setAttribute('aria-expanded', 'false');
+    popupRow = null;
+  }
+  function showMetadata(item, row) {
+    if (state.selecting || state.busy) return;
+    const same = popupRow === row && popup?.matches(':popover-open');
+    closePopup();
+    if (same) return;
+    if (!popup) {
+      popup = el('div', 'settings-popover skill-metadata');
+      popup.id = 'skill-metadata';
+      popup.setAttribute('popover', 'auto');
+      popup.setAttribute('role', 'region');
+      popup.setAttribute('aria-label', 'フロントマター');
+      popup.addEventListener('toggle', event => {
+        if (event.newState === 'closed') { popupRow?.setAttribute('aria-expanded', 'false'); popupRow = null; }
+      });
+      $('app-settings').append(popup);
+    }
+    const head = el('div', 'popover-head row');
+    const close = el('button', 'small quiet', '閉じる');
+    close.type = 'button';
+    close.onclick = closePopup;
+    head.append(el('strong', '', item.name), el('span', 'spacer'), close);
+    const body = el('pre', '', item.frontmatter || 'フロントマターはありません');
+    popup.replaceChildren(head, body);
+    popup.showPopover();
+    popupRow = row;
+    row.setAttribute('aria-expanded', 'true');
   }
 
   function chosen(item) {
@@ -95,6 +129,7 @@
   }
 
   function render() {
+    closePopup();
     const box = $('skills-list');
     if (!box) return;
     $('skills-repo').disabled = state.busy;
@@ -108,7 +143,16 @@
       return;
     }
     box.replaceChildren(...sorted(items).map((item) => {
-      const row = el('label', 'setting-check');
+      const row = el('label', 'setting-check skill-list-row');
+      row.tabIndex = state.selecting ? -1 : 0;
+      if (!state.selecting) { row.setAttribute('role', 'button'); row.setAttribute('aria-expanded', 'false'); }
+      row.onclick = event => {
+        if (state.selecting) return;
+        event.preventDefault(); showMetadata(item, row);
+      };
+      row.onkeydown = event => {
+        if (!state.selecting && ['Enter', ' '].includes(event.key)) { event.preventDefault(); showMetadata(item, row); }
+      };
       const check = el('input');
       check.type = 'checkbox';
       check.dataset.skill = item.name;
@@ -119,12 +163,14 @@
       const text = el('span');
       const version = item.localVersion || item.version;
       const title = `${item.name}  ${version ? `v${version.replace(/^v/, '')}` : 'バージョン未設定'}`;
-      text.append(el('strong', '', title), el('small', '', state.selecting
-        ? item.deletePath || item.removalError || '削除できません' : detail(item)));
+      const heading = el('strong', 'skill-title', title);
+      heading.append(el('small', 'skill-place', PLACE[item.place] || ''));
+      text.append(heading, el('small', '', detail(item)));
+      text.className = 'skill-text';
       row.append(check, text);
       const mark = label(item);
       if (mark) row.append(el('span', 'status warn', mark));
-      if (item.error) row.title = item.error;
+      if (item.error || item.removalError) row.title = item.error || item.removalError;
       return row;
     }));
     renderFoot();
@@ -285,6 +331,7 @@
   }
 
   function reset() {
+    closePopup();
     request += 1; state.doc = null; state.error = ''; state.busy = false;
     state.selecting = false; state.selectedKeys.clear();
   }
@@ -298,6 +345,9 @@
   }
 
   function init() {
+    document.addEventListener('click', event => {
+      if (event.target.closest('[data-settings-tab], #settings-close')) closePopup();
+    });
     const changeScope = () => {
       state.selecting = false; state.selectedKeys.clear(); say(''); load();
     };

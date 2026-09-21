@@ -800,3 +800,14 @@ pre.mermaid-error { border-color: var(--danger) !important; }
   #app-settings .setting-field > :is(input, select) { width: 100%; max-width: 100%; }
   #app-settings .setting-field > span { flex-basis: 100%; }
 }
+
+#app-settings .skill-list-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; }
+#app-settings .skill-list-row > input { grid-column: 1; grid-row: 1; }
+#app-settings .skill-list-row > .skill-text { grid-column: 2; grid-row: 1; }
+#app-settings .skill-list-row > .status { grid-column: 3; grid-row: 1; }
+#app-settings .skill-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+#app-settings .skill-title .skill-place { display: inline; margin: 0; }
+#app-settings .skill-list-row:has(input:checked) { background: var(--accent-bg); }
+#app-settings .skill-list-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#app-settings .skill-metadata { position: fixed; inset: 0; margin: auto; width: min(560px, calc(100vw - 32px)); height: fit-content; max-height: calc(100dvh - 64px); overflow: auto; color: var(--text); }
+#app-settings .skill-metadata pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); }

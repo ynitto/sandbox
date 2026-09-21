@@ -462,6 +462,26 @@ def _route_cell(case: dict):
     return ap._route_judge_state(case["task"]), questions, to_check
 
 
+def _rt_cell(case: dict):
+    """route（依頼の振り分け）: 本番の状態と問い（`agentcore.route.build_state` / `build_questions`）を
+    そのまま組み、セルの種類（handling / task / skills / routine）の問いだけを引く。
+    候補と正解は `route_cells`（corpus.json）にあり、ここは問いの切り出しだけ。"""
+    from agentcore import route
+    cands = route.normalize_candidates(case["candidates"])
+    state = route.build_state(case["request"], cands)
+    questions = route.build_questions(cands)
+    kind = case["kind"]
+    if kind == "handling":
+        return state, {"handling": questions["handling"]}, lambda a: str(a["handling"]["choice"])
+    if kind == "task":
+        return state, {"task": questions["task"]}, lambda a: str(a["task"]["choice"])
+    if kind == "skills":
+        picked = {k: v for k, v in questions.items() if k.startswith(route.SKILL_PREFIX)}
+        return (state, picked,
+                lambda a: sorted(k[len(route.SKILL_PREFIX):] for k, ans in a.items() if ans.get("value")))
+    return state, {"routine": questions["routine"]}, lambda a: "yes" if a["routine"].get("value") else "no"
+
+
 # セル → (ケース定義を持つモジュール, 問いの立て方)。モジュールは遅延 import する
 # （project_eval は agent_project が読めない木で SystemExit する）。
 # `E3+stages` のような**変種**は、同じケース（入力と正解は 1 つのまま）を別の問いの形で
@@ -540,6 +560,11 @@ VARIANTS.update({f"E{i}{VARIANT_SEP}told": ("judge_eval", _evaluator_told_cell)
 # 候補の説明から基準外の属性（依存）を落とした F1。正解は変わらない（基準はテストの合否）。
 VARIANTS[f"F1{VARIANT_SEP}nodeps"] = ("judge_eval",
                                       functools.partial(_filter_cell, drop_deps=True))
+# 依頼の振り分け（route）。標本 40 件 × 4 族。既定の calibration 集合には載せず、`--cases RT1,RT2`
+# のように族名で名指しする（`FAMILIES` が展開する）。
+import route_cells  # noqa: E402
+VARIANTS.update({cid: ("route_cells", _rt_cell) for cid in route_cells.CASES})
+FAMILIES = {family: route_cells.cell_ids(family) for family in route_cells.FAMILIES}
 ALL_CELLS = {**CELLS, **VARIANTS}
 
 
@@ -883,6 +908,8 @@ def calibration_main(args):
     if args.repeat < 1 or args.samples < 1 or not 0 <= args.min_confidence <= 1:
         raise ValueError("repeat/samples must be positive; min-confidence must be in [0,1]")
     cids = [c.strip() for c in args.cases.split(",")]
+    # 族名（RT1 など）はその族のセル全部へ展開する。
+    cids = [cid for name in cids for cid in (FAMILIES.get(name) or [name])]
     # 既定は `CELLS` だが、名指しなら旧モードのセル（assess の AS など）も測れる。割り当てが
     # 1 つに決まらないセルは oracle が測る前に断る（ollama を叩かない）。
     if any(c not in ALL_CELLS for c in cids) or len(cids) != len(set(cids)):

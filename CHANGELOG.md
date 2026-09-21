@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: スキル行と詳細表示を整理（0.26.0）
+
+- 保存場所を名前・版の右に表示。行を押すとフロントマターを一つのポップアップで表示。
+- 選択モードも同じ名前・説明を維持し、行クリックは選択の切り替えに使用。
+
 ### agent-herd: 依頼の扱い（答える / 会話で実行 / タスクやワークフローの流用 / スキル）を決める `route`
 
 `select` はどのエージェント・モデルに任せるかを決めるが、その 1 段手前の「この依頼を実行
@@ -24,6 +29,9 @@ agent-app の会話画面への配線は段 1）。
 - **段の試行は `select` と 1 実装を共有する**（`modelselect.ask_stages`）。`select` の出力と
   終了コードは変えていない。`judge` の契約も変えていない。
 - 設定 `route.min_confidence`（省略時は `select.min_confidence`）/ `route.hold_min_confidence`。
+- **実測して既定を据え置いた。** 標本 40 件（`eval/data/route/corpus.json`）を `readout_eval.py --calibration
+  --cases RT1,RT2,RT3,RT4` で引き、hold の掃引（`route_cells.py --hold-sweep`）で 0.75 が「誤って止める 0 件」の
+  最小値であることを確かめた。handling 32/40・流用先 35/40・スキル 39/40。
 
 ### agent-app: 依頼を送る前に扱いを振り分ける（0.25.0）
 

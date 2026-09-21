@@ -35,6 +35,7 @@ test('自動選択用にスキルの説明・タグ・本文を読む', () => {
   fs.writeFileSync(path.join(skillRoot, 'ui-helper', 'SKILL.md'), '---\nname: ui-helper\ndescription: UIを改善する\ntags:\n  - ui\n  - ux\n---\n# Rules\nKeep it compact.\n');
   assert.deepStrictEqual(skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]), [{
     name: 'ui-helper', description: 'UIを改善する', tags: ['ui', 'ux'], version: '',
+    frontmatter: 'name: ui-helper\ndescription: UIを改善する\ntags:\n  - ui\n  - ux',
     path: path.join(skillRoot, 'ui-helper', 'SKILL.md'),
     content: '---\nname: ui-helper\ndescription: UIを改善する\ntags:\n  - ui\n  - ux\n---\n# Rules\nKeep it compact.\n',
     place: '', repo: '', dir: path.join(skillRoot, 'ui-helper'),

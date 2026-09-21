@@ -240,7 +240,7 @@ git へ書き込むのはここだけ（worktree の追加・削除とブラン�
 会話で実行し、実行情報に「振り分け：決めず」と出ます。先頭がスラッシュのコマンド行、定型の依頼、
 スキルの手動選択のターンは振り分けません。タスクやワークフローを AI と作る会話も対象外です。
 判定の確度の下限は agent-tools 側の設定（`agent-herd config set route.min_confidence` /
-`route.hold_min_confidence`）で、既定は実測前の置き値です。
+`route.hold_min_confidence`）で、既定の 0.6 / 0.75 は標本 40 件の実測で据え置いた値です。
 
 同様に、agent-flow が無ければサイドバーの「ワークフロー」、agent-loop が無ければタスクの「履歴」タブと
 「定期実行」のカードが薄くなる。

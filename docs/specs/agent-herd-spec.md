@@ -671,7 +671,7 @@ agent-herd config unset KEY
 | `select.jev.model` | モデル名 | 省略時 `jev-latest` |
 | `select.min_confidence` | 0〜1 | `select` で jev / judge の答えを採る確度の下限。省略時 0.6（実測前の置き値） |
 | `route.min_confidence` | 0〜1 | `route`（§5.8）で答えを採る確度の下限。省略時は `select.min_confidence` と同じ |
-| `route.hold_min_confidence` | 0〜1 | `route` が会話を止めてタスク / ワークフローの流用を勧める（`hold`）確度の下限。省略時 0.75（実測前の置き値） |
+| `route.hold_min_confidence` | 0〜1 | `route` が会話を止めてタスク / ワークフローの流用を勧める（`hold`）確度の下限。省略時 0.75（2026-09-21 の標本 40 件で、誤って止める件数が 0 になる最小の値） |
 | `judge.calibration` | JSON object / unset | 人が承認したmodel・method・min_coverage・thresholds。用途filter/route/assess/transition。null・省略した用途、未測定model/method、低coverageは既存fallbackへ。未設定なら従来動作。report生成は書き換えない |
 
 

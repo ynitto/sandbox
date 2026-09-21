@@ -8,6 +8,7 @@ const vm = require('vm');
 
 function fixture() {
   class Element {
+    setAttribute(name, value) { this[name] = value; }
     constructor() { this.children = []; this.value = ''; this.dataset = {}; this.checked = false; }
     append(...children) { this.children.push(...children); for (const child of children) child.parentNode = this; }
     replaceChildren(...children) { this.children = []; this.append(...children); }
@@ -25,7 +26,7 @@ function fixture() {
     removeSkills: (repo, agent, keys) => new Promise((resolve, reject) => removals.push({ repo, agent, keys, resolve, reject })),
   } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/renderer/skills.js'), 'utf8'), {
-    window, document: { getElementById: (id) => nodes.get(id), createElement: () => new Element() },
+    window, document: { addEventListener() {}, getElementById: (id) => nodes.get(id), createElement: () => new Element() },
   });
   window.Skills.init();
   return { window, nodes, pending, removals, publications };
@@ -100,7 +101,7 @@ const removableDoc = () => ({ configured: true, items: [
   { name: 'linked', canPublish: false, removalKey: '', removalError: 'リンク経由の保存先からは削除できません' },
 ] });
 
-test('選択トグルは未選択で開始し、OFFで解除する。共通スキルも選べ、リンクの項目は理由を表示する', async () => {
+test('選択トグルは未選択で開始し、OFFで解除する。共通スキルも選べ、選択中も通常の説明を維持する', async () => {
   const f = fixture();
   f.window.Skills.open({ repos: ['a'] }, ['codex']);
   f.pending[0].resolve(removableDoc());
@@ -116,9 +117,9 @@ test('選択トグルは未選択で開始し、OFFで解除する。共通ス�
     assert.equal(r.children[0].hidden, false);
   }
   assert.equal(row('design').children[0].disabled, false);
-  assert.match(row('design').children[1].children[1].textContent, /\/home\/.*design/);
+  assert.equal(row('design').children[1].children[1].textContent, '');
   assert.equal(row('linked').children[0].disabled, true);
-  assert.match(row('linked').children[1].children[1].textContent, /リンク/);
+  assert.equal(row('linked').children[1].children[1].textContent, '');
   row('design').children[0].checked = true;
   row('design').children[0].onchange();
   assert.equal(f.nodes.get('skills-remove').disabled, false);

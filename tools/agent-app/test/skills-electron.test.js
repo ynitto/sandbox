@@ -72,7 +72,23 @@ test('Electron: スキル一覧から選択・確認・キャンセル・ゴミ�
   const controls = await win.locator('#skills-remove-mode').boundingBox();
   const list = await win.locator('#skills-list').boundingBox();
   assert.ok(controls.y < list.y, '削除の選択操作は一覧の上');
+  const reviewRow = win.locator('#skills-list .skill-list-row').filter({ hasText: 'review' });
+  const normalText = await reviewRow.innerText();
+  await reviewRow.click();
+  await win.locator('#skill-metadata:popover-open').waitFor();
+  assert.match(await win.locator('#skill-metadata pre').innerText(), /metadata:\s+version: 1.0.0/);
+  await win.locator('#skills-list .skill-list-row').filter({ hasText: 'design' }).click();
+  assert.equal(await win.locator('#skill-metadata:popover-open').count(), 1);
+  assert.match(await win.locator('#skill-metadata strong').innerText(), /design/);
+  await win.screenshot({ path: '/tmp/agent-app-skill-metadata.png' });
   await win.locator('#skills-remove-mode').click();
+  assert.equal(await win.locator('#skill-metadata:popover-open').count(), 0);
+  assert.equal(await reviewRow.innerText(), normalText);
+  await reviewRow.click();
+  assert.equal(await win.locator('#skills-list input[data-skill="review"]').isChecked(), true);
+  assert.equal(await win.locator('#skill-metadata:popover-open').count(), 0);
+  await reviewRow.click();
+  await win.screenshot({ path: '/tmp/agent-app-skill-selection.png' });
   assert.equal(await win.locator('#skills-remove').isDisabled(), true);
   assert.equal(await win.locator('#skills-list input:checked').count(), 0);
   const review = win.locator('#skills-list input[data-skill="review"]');
@@ -100,7 +116,7 @@ test('Electron: スキル一覧から選択・確認・キャンセル・ゴミ�
   assert.ok(fs.existsSync(homeCopy), '同名の共通コピーは残る');
   assert.ok(fs.existsSync(path.join(trash, '1-review/helper.py')), 'フォルダ全体を渡す');
   assert.equal(await review.isChecked(), false, '新しく表示された共通コピーは未選択');
-  assert.ok((await win.locator('#skills-list').innerText()).includes(fs.realpathSync(homeCopy)));
+  assert.match(await reviewRow.innerText(), /共通/);
 
   await win.locator('#skills-list input[data-skill="design"]').check();
   await win.locator('#skills-remove').click();

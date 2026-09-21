@@ -1,0 +1,70 @@
+{
+  "_note": "agent-herd route（依頼の振り分け）の較正標本。request は agent-app の入力欄に入る 1 件、handling / task / skills / routine が手で付けた正解。候補は agent-app が絞る前の固定集合（タスク 8 / ワークフロー 3 / スキル 6）で、本番より候補が多い側を測る。正解は人が付けたもので、LLM に付けさせていない。",
+  "candidates": {
+    "tasks": [
+      {"id": "daily-report", "name": "日報", "description": "前日の commit と課題から日報を書いて docs/reports に置く"},
+      {"id": "lint-fix", "name": "静的検査", "description": "lint を回して指摘を直す"},
+      {"id": "run-tests", "name": "テスト実行", "description": "変更したツールのテストを回して結果をまとめる"},
+      {"id": "deps-update", "name": "依存の更新", "description": "依存パッケージを更新して動作を確かめる"},
+      {"id": "usage-weekly", "name": "週次の利用状況", "description": "AI の利用状況を週次で集計して報告する"},
+      {"id": "docs-typo", "name": "文書の誤字直し", "description": "README と docs の誤字と表記ゆれを直す"},
+      {"id": "release-check", "name": "リリース前点検", "description": "版を上げ、CHANGELOG を確かめて配布物を作る"},
+      {"id": "backlog-triage", "name": "バックログ整理", "description": "未着手の課題を優先度で並べ直す"}
+    ],
+    "flows": [
+      {"id": "parallel-review", "name": "並列レビュー", "description": "複数の観点で変更を確認してレビューを納品する"},
+      {"id": "feature-delivery", "name": "機能の分担実装", "description": "要求を分解し、担当を分けて実装と検証を回す"},
+      {"id": "migration-plan", "name": "移行計画", "description": "大きな変更の移行手順を段階に分けて計画する"}
+    ],
+    "skills": [
+      {"name": "api-designer", "description": "REST API の設計と OpenAPI 仕様の生成"},
+      {"name": "test-driven-development", "description": "テストを先に書いて実装を進める"},
+      {"name": "mermaid-diagrammer", "description": "シーケンス図や ER 図などの図を Mermaid で描く"},
+      {"name": "commit-pr-writer", "description": "コミットメッセージや PR の説明文を書く"},
+      {"name": "dependency-auditor", "description": "依存関係の脆弱性とライセンスを監査する"},
+      {"name": "technical-writer", "description": "利用者向けの文書や手順書を書く"}
+    ]
+  },
+  "cases": [
+    {"id": "n01", "request": "この関数は何をしている？説明だけでいい", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n02", "request": "tools/agent-app の起動の流れを教えて。コードは触らないで", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n03", "request": "なぜ ollama の judge は think を off にしているの？", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n04", "request": "agent-flow と agent-project の違いを一言で", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n05", "request": "この設計書の §3 の判断は妥当だと思う？意見が欲しい", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n06", "request": "今のブランチで直近 5 コミットの要点をまとめて（変更はしない）", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n07", "request": "このエラーの意味を教えて: JudgeError: 問い 'flow' の criteria には選択肢が 2 つ以上必要です", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n08", "request": "package.json の version を上げるとき、他に直すファイルはある？", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n09", "request": "readonly と ask の違いは何？", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n10", "request": "この PR のリスクを洗い出して。直すのは後で", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n11", "request": "依存パッケージに既知の脆弱性があるか調べて（直さなくていい）", "handling": "answer", "task": null, "skills": ["dependency-auditor"], "routine": false},
+    {"id": "n12", "request": "このモジュールの呼び出し関係を図にして説明して", "handling": "answer", "task": null, "skills": ["mermaid-diagrammer"], "routine": false},
+    {"id": "n13", "request": "ユーザー API の OpenAPI を設計して実装まで進めて", "handling": "converse", "task": null, "skills": ["api-designer"], "routine": false},
+    {"id": "n14", "request": "skillSelection.js の bigram を trigram に変えて、テストも直して", "handling": "converse", "task": null, "skills": [], "routine": false},
+    {"id": "n15", "request": "この失敗しているテストを直して", "handling": "converse", "task": null, "skills": [], "routine": false},
+    {"id": "n16", "request": "renderer.js の messageNode を 2 つの関数に分けて", "handling": "converse", "task": null, "skills": [], "routine": false},
+    {"id": "n17", "request": "今の変更でコミットメッセージを書いてコミットして", "handling": "converse", "task": null, "skills": ["commit-pr-writer"], "routine": false},
+    {"id": "n18", "request": "README の「実行設定」の節を利用者向けに書き直して", "handling": "converse", "task": null, "skills": ["technical-writer"], "routine": false},
+    {"id": "n19", "request": "ログイン画面にパスワード再設定のリンクを足して", "handling": "converse", "task": null, "skills": [], "routine": false},
+    {"id": "n20", "request": "herdconfig に route.max_candidates の鍵を足して", "handling": "converse", "task": null, "skills": [], "routine": false},
+    {"id": "n21", "request": "この CSV を読んで月ごとの合計を出すスクリプトを書いて", "handling": "converse", "task": null, "skills": [], "routine": false},
+    {"id": "n22", "request": "TDD で日付パーサを実装して", "handling": "converse", "task": null, "skills": ["test-driven-development"], "routine": false},
+    {"id": "n23", "request": "この関数のシーケンス図を Mermaid で docs に追加して", "handling": "converse", "task": null, "skills": ["mermaid-diagrammer"], "routine": false},
+    {"id": "n24", "request": "PR の説明文を書いて gh で PR を作って", "handling": "converse", "task": null, "skills": ["commit-pr-writer"], "routine": false},
+    {"id": "n25", "request": "前月分の日報をまとめて", "handling": "task", "task": "daily-report", "skills": [], "routine": true},
+    {"id": "n26", "request": "昨日の日報を書いて", "handling": "task", "task": "daily-report", "skills": [], "routine": true},
+    {"id": "n27", "request": "lint を回して指摘を全部直して", "handling": "task", "task": "lint-fix", "skills": [], "routine": true},
+    {"id": "n28", "request": "変更したツールのテストを回して結果をまとめて", "handling": "task", "task": "run-tests", "skills": [], "routine": true},
+    {"id": "n29", "request": "依存パッケージを最新にして動作確認して", "handling": "task", "task": "deps-update", "skills": [], "routine": true},
+    {"id": "n30", "request": "今週の AI 利用状況を集計して報告して", "handling": "task", "task": "usage-weekly", "skills": [], "routine": true},
+    {"id": "n31", "request": "README と docs の誤字を直して", "handling": "task", "task": "docs-typo", "skills": [], "routine": true},
+    {"id": "n32", "request": "版を上げて CHANGELOG を確かめて配布物を作って", "handling": "task", "task": "release-check", "skills": [], "routine": true},
+    {"id": "n33", "request": "未着手の課題を優先度順に並べ直して", "handling": "task", "task": "backlog-triage", "skills": [], "routine": true},
+    {"id": "n34", "request": "先週分の日報を月曜から金曜まで作って", "handling": "task", "task": "daily-report", "skills": [], "routine": true},
+    {"id": "n35", "request": "この変更を複数の観点でレビューして納品して", "handling": "flow", "task": null, "flow": "parallel-review", "skills": [], "routine": false},
+    {"id": "n36", "request": "認証機能を要求から分解して、担当を分けて実装と検証まで回して", "handling": "flow", "task": null, "flow": "feature-delivery", "skills": [], "routine": false},
+    {"id": "n37", "request": "DB を PostgreSQL へ移行する手順を段階に分けて計画して", "handling": "flow", "task": null, "flow": "migration-plan", "skills": [], "routine": false},
+    {"id": "n38", "request": "セキュリティ・性能・可読性の 3 観点でこの PR を確認して", "handling": "flow", "task": null, "flow": "parallel-review", "skills": [], "routine": false},
+    {"id": "n39", "request": "毎朝 9 時に動く定期実行は何が登録されている？", "handling": "answer", "task": null, "skills": [], "routine": false},
+    {"id": "n40", "request": "この設定ファイルの typo を 1 か所直して", "handling": "converse", "task": null, "skills": [], "routine": false}
+  ]
+}

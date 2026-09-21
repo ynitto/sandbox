@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "created_at": "20260921T012918229192Z",
+  "revision": "6610061af9370da6036ce65af5321c769285ab28",
+  "arguments": {
+    "model": "gemma4:e4b",
+    "repeat": 1,
+    "cases": "RT1,RT2,RT3,RT4",
+    "calibration": true,
+    "fake_run": false,
+    "replay": null,
+    "output_dir": "tools/agent-tools/eval/results/20260921-route-calibration-real",
+    "samples": 1,
+    "min_confidence": 0.0
+  },
+  "state": "completed",
+  "dirty": true
+}

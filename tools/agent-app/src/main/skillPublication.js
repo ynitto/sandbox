@@ -68,7 +68,7 @@ class SkillPublication {
   present(item, base, remote, actionable) {
     const state = { ...base, ...remote };
     return {
-      name: item.name, description: item.description, version: item.version, place: item.place,
+      name: item.name, description: item.description, version: item.version, place: item.place, frontmatter: item.frontmatter || '',
       ...state,
       publicationKey: sourceOf(item)?.key || '',
       canPublish: actionable && !!state.configured && state.versionComparison === 'local-newer',

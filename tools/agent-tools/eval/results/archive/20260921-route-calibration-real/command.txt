@@ -1,0 +1,1 @@
+/Users/nitto/Workspace/sandbox/.venv/bin/python tools/agent-tools/eval/readout_eval.py --calibration --cases RT1,RT2,RT3,RT4 --repeat 1 --model gemma4:e4b --output-dir tools/agent-tools/eval/results/20260921-route-calibration-real

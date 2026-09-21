@@ -2382,6 +2382,42 @@ fakeはmanifestの引数と台帳・reportの`source: fake`で識別し、real�
 台帳には毎回のraw answers・oracle・問別正誤・セル正誤と入力のSHA-256を残す。通信不能でも失敗行とreportを残し
 終了コード1を返す。設定・fixture不備は非ゼロで停止し、manifestをcompletedにしない。
 
+### route（依頼の振り分け）の較正セル RT1〜RT4（2026-09-21）
+
+`agent-herd route`（agent-app の入力欄から「答える / 会話で実行 / タスクやワークフローの流用 /
+スキル」を決める口）の標本は `data/route/corpus.json`（依頼 40 件、候補はタスク 8 /
+ワークフロー 3 / スキル 6 の固定集合、正解は人が付けた）。問いの組み立ては本番
+（`agentcore.route.build_state` / `build_questions`）をそのまま呼び、セルは問いの種類ごとに
+分ける（oracle の総当たりを 4096 以内に収めるため）。既定の calibration 集合には載せず、
+族名で名指しする。
+
+| 族 | 問い | 正解 |
+|---|---|---|
+| RT1 | `handling` choice × 1 | answer / converse / task / flow |
+| RT2 | `task` choice × 1（候補 8 + other） | 流用するタスクの id。流用しない依頼は other |
+| RT3 | `skill:<name>` boolean × 6 | 添えるスキルの集合 |
+| RT4 | `routine` boolean × 1 | 入力だけ替えて繰り返す形か |
+
+```bash
+python3 -m unittest discover -s tools/agent-tools/eval -p test_route_cells.py
+python3 tools/agent-tools/eval/readout_eval.py --calibration --cases RT1,RT2,RT3,RT4 \
+  --repeat 1 --model gemma4:e4b --output-dir tools/agent-tools/eval/results/<run>
+# hold（会話を止めて流用を勧める）下限の掃引。RT1 と RT2 を依頼ごとに突き合わせる
+python3 tools/agent-tools/eval/route_cells.py --hold-sweep tools/agent-tools/eval/results/<run>/ledger.jsonl
+```
+
+`--hold-sweep` の `held` は handling が task でどちらの確度も下限以上（本番の `hold` と同じ式）、
+`correct` はそのうち正解も task で流用先が一致、`wrong_hold` は止めて誤り（人の手数が増える側）、
+`missed` は正解が task なのに止めなかった（従来どおり会話で実行。害は小さい）。flow の流用先は
+RT2 に無いので数えない（標本 4 件）。
+
+**2026-09-21 の実測**（gemma4:e4b、`results/archive/20260921-route-calibration-real/`）: 160 セル全部が
+logprobs、coverage p10 0.999、Brier 0.11、ECE 0.017。RT1 32/40（確度 0.6 以上で 29/36、0.9 以上で 20/22）、
+RT2 35/40、RT3 39/40（yes 9 件中 8 正解・見落とし 0）、RT4 31/40。hold の掃引は 0.7 以下で誤って止める
+1 件、0.75 で 0 件（止めた 8 / 止め損ね 2）。既定 `route.min_confidence` 0.6 / `route.hold_min_confidence`
+0.75 を据え置いた。壁時計は候補 0 / 8 / 20 件で 3.3 / 4.0 / 7.2 秒（warm）。読み方と残る癖は
+`docs/plans/2026-09-21-agent-app-judge-request-routing-design.md` §6.2。
+
 ### report schema v1の読み方
 
 - `methods`: logprobs / vote / textを別々に集計。`unit: question`。

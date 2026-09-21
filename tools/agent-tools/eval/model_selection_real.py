@@ -189,6 +189,7 @@ def collect(fixtures, candidates, out, timeout, *, resume=False, containment=Fal
     if len(normalized) < 2 or any(not c["model"] for c in normalized):
         raise ValueError("real-run needs at least two explicit agent/model candidates")
     results = []
+    unavailable = {}
     for original in fixtures:
         f = copy.deepcopy(original)
         if not resume:
@@ -226,6 +227,11 @@ def collect(fixtures, candidates, out, timeout, *, resume=False, containment=Fal
             cid = ms.candidate_id(candidate)
             if cid in f["outcomes"]:
                 print(f"{f['id']} {cid}: retained recorded outcome", flush=True)
+                continue
+            if cid in unavailable:
+                f["outcomes"][cid] = {"status": "api-unavailable", "reason": unavailable[cid]}
+                write_json(root / "outcomes.json", f["outcomes"])
+                print(f"{f['id']} {cid}: api-unavailable (not invoked)", flush=True)
                 continue
             if cid not in eligible:
                 f["outcomes"][cid] = {"status": "no-eligible-candidate"}
@@ -291,6 +297,10 @@ def collect(fixtures, candidates, out, timeout, *, resume=False, containment=Fal
             wall = time.monotonic() - start
             (run / "stdout.txt").write_text(stdout)
             (run / "stderr.txt").write_text(stderr)
+            if status == "cli-error" and candidate["agent_cli"] == "kiro" and "Monthly request limit reached" in stderr:
+                # A provider's explicit hard limit is not a task failure. Do not
+                # make more paid attempts for this candidate in this collection.
+                unavailable[cid] = "Kiro monthly request limit reached"
             # Restore pinned tests after the agent; deleting/editing checks is not success.
             restore_checks(f, workspace)
             rev = snapshot(workspace, "candidate result with fixed acceptance checks")

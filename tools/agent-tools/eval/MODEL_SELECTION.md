@@ -131,6 +131,8 @@ real adapterはcommand-only v1 plan、direct selector fixtureを対象とする�
 
 `measured-fixtures.json`、各candidateの`receipt.json` / `outcome.json`、`report.json`が成果物。毎candidate後にoutcome tableを保存する。CLI失敗やtimeoutでも最終receiptを保存するが、それらのrunは比較可能な成功/失敗率の分母から分離する。timeoutは各agent/準備/検証commandの上限で、課題全体の合計時間上限ではない。
 
+KiroがCLIエラーとともに明示的な `Monthly request limit reached` を返した場合、そのcollection内の後続課題では同じcandidateを起動せず `api-unavailable` にする。課題のFAILとは扱わず、未実行のusageもunknownとして残す。この抑止はeval内だけで、本番quota/configは書き換えない。
+
 中断後は、各課題の `fixture.json` に保存された入力・stage観測と `outcomes.json` を合わせてresume入力を作り、`--resume-dir /absolute/existing/run --fixtures /path/to/resume.json` を指定する。既存outcomeは失敗も含めて再実行しない。強制停止した試行は `interrupted-for-containment` 等のstatusで明示し、未開始候補だけを続行する。selector観測も再取得しない。新しいハーネス設定で再開した場合は同じ条件の反復とはみなさず、変更内容を報告する。
 
 並行作業でselectorのソースが変わる環境では固定revisionのcheckoutから測定する。reportのruntime hashはmodule import時に取得する。replay時のruntimeとlive観測時のruntimeが異なる場合は、その差を明記する。
@@ -153,4 +155,4 @@ horizonは変更範囲・必要な検証工程による分類であり、数日�
 
 9件すべてで固定開始revisionがFAIL、修正済みrevisionがPASSになることをローカルで確認した。これは**fixtureの検証**であり、candidateの実測ではない。Nodeのreferenceチェックには既存workspaceのdependency cacheをNODE_PATH経由で使った。通常real-runは各fixtureのlockfileから準備する。
 
-2026-09-21に9課題×2候補の初回実測を開始した。条件と結果は[初回実測記録](../../../docs/plans/2026-09-21-selector-long-horizon-first-measurement.md)を参照。`select.min_confidence=0.6`もstage順も自動変更しない。
+2026-09-21に9課題×2候補枠の初回測定を終了した（17試行、1件はKiro月間上限で未実行）。条件と結果は[初回実測記録](../../../docs/plans/2026-09-21-selector-long-horizon-first-measurement.md)を参照。`select.min_confidence=0.6`もstage順も自動変更しない。

@@ -212,6 +212,39 @@ class OfflineTests(unittest.TestCase):
 
 
 class RealAdapterTests(unittest.TestCase):
+    def test_provider_monthly_limit_prevents_later_candidate_invocation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            repo = root / "source"; repo.mkdir()
+            out = root / "runs"; out.mkdir()
+            (repo / "result.txt").write_text("bad")
+            real.git("init", "-q", cwd=repo)
+            rev = real.snapshot(repo, "base")
+            f = copy.deepcopy(FIXTURES[0])
+            f["verification_plan"] = ev.vc.build_plan(f["id"], commands=["python3 -c 'raise SystemExit(1)'"], workspace="sandbox")
+            f["checkpoints"] = [{"command_index": 0, "weight": 1}]
+            f["real_task"] = {"base_revision": rev, "verification_revision": rev}
+            second = copy.deepcopy(f); second["id"] = "second"
+            candidates = [{"agent_cli": "kiro", "model": "fake"}, {"agent_cli": "fake-b", "model": "v1"}]
+            calls = []
+            def command(name, *args, **kwargs):
+                calls.append(name)
+                code = "import sys; print('Monthly request limit reached', file=sys.stderr); sys.exit(1)" if name == "kiro" else "pass"
+                return {"argv": [sys.executable, "-c", code]}
+            with patch.object(ev.engine, "REPO", repo), \
+                    patch.object(real, "capture_selector", return_value=({}, {})), \
+                    patch.object(ev.engine, "headless_cmd", side_effect=command), \
+                    patch.object(ev.engine, "load_env", return_value={}), \
+                    patch.object(ev.ms, "_spec_of", return_value=None), \
+                    patch.object(ev.ms, "quota_observations", return_value={}), \
+                    patch.object(ev.ms, "budget_summary", return_value=None):
+                result = real.collect([f, second], candidates, out, 30)
+            self.assertEqual(calls, ["kiro", "fake-b", "fake-b"])
+            self.assertEqual(result[0]["outcomes"]["kiro/fake"]["status"], "cli-error")
+            self.assertEqual(result[1]["outcomes"]["kiro/fake"]["status"], "api-unavailable")
+            self.assertIsNone(ev.outcome(result[1], "kiro/fake")["verified_pass"])
+            self.assertIsNone(ev.outcome(result[1], "kiro/fake")["tokens"])
+
     def test_containment_wraps_kiro_and_disables_external_mcp(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
