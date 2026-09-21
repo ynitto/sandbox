@@ -324,7 +324,7 @@ test('スキルの面は 1 つの一覧で、未公開を先頭に出し、公�
   // 2. 器は「保存データ」の面をそのまま借りる（設定の行 → 一覧 → 足元に操作）
   assert.match(panel, /class="setting-field(?: setting-field-wide)?"/);
   assert.match(panel, /class="environment-status"/);
-  assert.match(skills, /el\('label', 'setting-check'\)/, '行は保存データと同じ .setting-check を借りる');
+  assert.match(skills, /el\('label', 'setting-check(?: [a-z-]+)*'\)/, '行は保存データと同じ .setting-check を借りる（並びの修飾だけ足してよい）');
   assert.ok(!/\.skill-row|\.skill-card|\.skill-panel|\.skills-list\b/.test(css), 'スキルの行の私物な複製を作らない');
   // 3. 設定は一覧の上。操作は足元で切り替え、行にボタンを並べない
   assert.ok(panel.indexOf('audit-share-repo') < panel.indexOf('skills-list'), '公開先の設定は一覧の上に置く');
