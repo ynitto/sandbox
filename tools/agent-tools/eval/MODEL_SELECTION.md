@@ -96,9 +96,13 @@ reportは腕別、stage別（jev/judge/audit）、confidence別（0.6–0.7 / 0.
 **このコマンドだけがremote selector / Agent CLIを実行し、実際の利用枠を消費する。** 通常offline実行とunit testsはネットワーク不要。
 
 1. 使用するAgent CLI、認証、model、Jev/judgeの接続設定を既存の方法で用意する。
-2. Pythonは既存eval/test依存（pytest、PyYAML等）を用意する。Node課題M3/L3はNode/npmも必要。adapterは隔離workspaceでlockfileに対して `npm ci --ignore-scripts` を実行する。失敗はenvironment-errorとなる。
+2. Pythonは既存eval/test依存（pytest、PyYAML等）を用意する。Node課題M3/L3はNode/npmも必要。隔離workspaceでlockfileがあれば `npm ci`、無ければ `npm install` を使い、いずれも `--ignore-scripts --omit=dev --no-audit --no-fund` で既存runtime依存だけを準備する。生成lockfileは成果workspaceに残る。失敗はenvironment-errorとなる。
 3. 実在するCLI/modelを2件以上書いたJSONファイルを作る。普段の候補定義のmetadataや、事前のratings snapshotも含められる。料金はadapterでは推定しない。
 4. 小さな課題から明示して実行する。
+
+real-run CLIはmacOSの `sandbox-exec` を必須にする。候補とその子プロセスからsource repoへの読み書きを拒否し、候補workspaceへのアクセスだけを例外にする（実行用Python環境はread-only例外）。workspace外の書き込みはCLIのcache/log/session/SQLite領域と標準deviceだけを許可する。TMPDIRはworkspace内へ置き、インストール済み `.kiro/skills`・`.agents/skills`・`.codex/skills` は読み取りも拒否する。別の固定runtime checkoutから動かす場合は `--protect-repo /absolute/source/repo` も指定する。これはfilesystem保護であり、任意の悪意あるコードや外部通信を完全に封じるsandboxではない。他OSでは外部で取得したreceiptをofflineで取り込む。
+
+Kiroはworkspace-localの `selector-qualification` profileを明示指定し、built-in read/write/shellだけを有効にする。MCPと外部resourceは有効にしない。既定profileのMCPがcwdとは別のrepoを操作する場合があるため、cwdの指定だけを隔離の根拠にしない。profileと保護対象repoは成果物に残る。他のCLIでも外部tool serverを使わない定義を用意する。
 
 ```sh
 .venv/bin/python tools/agent-tools/eval/model_selection_eval.py \
@@ -127,6 +131,10 @@ real adapterはcommand-only v1 plan、direct selector fixtureを対象とする�
 
 `measured-fixtures.json`、各candidateの`receipt.json` / `outcome.json`、`report.json`が成果物。毎candidate後にoutcome tableを保存する。CLI失敗やtimeoutでも最終receiptを保存するが、それらのrunは比較可能な成功/失敗率の分母から分離する。timeoutは各agent/準備/検証commandの上限で、課題全体の合計時間上限ではない。
 
+中断後は、各課題の `fixture.json` に保存された入力・stage観測と `outcomes.json` を合わせてresume入力を作り、`--resume-dir /absolute/existing/run --fixtures /path/to/resume.json` を指定する。既存outcomeは失敗も含めて再実行しない。強制停止した試行は `interrupted-for-containment` 等のstatusで明示し、未開始候補だけを続行する。selector観測も再取得しない。新しいハーネス設定で再開した場合は同じ条件の反復とはみなさず、変更内容を報告する。
+
+並行作業でselectorのソースが変わる環境では固定revisionのcheckoutから測定する。reportのruntime hashはmodule import時に取得する。replay時のruntimeとlive観測時のruntimeが異なる場合は、その差を明記する。
+
 ## 課題catalogと限界
 
 | ID | 区分 | sandboxの課題 |
@@ -145,4 +153,4 @@ horizonは変更範囲・必要な検証工程による分類であり、数日�
 
 9件すべてで固定開始revisionがFAIL、修正済みrevisionがPASSになることをローカルで確認した。これは**fixtureの検証**であり、candidateの実測ではない。Nodeのreferenceチェックには既存workspaceのdependency cacheをNODE_PATH経由で使った。通常real-runは各fixtureのlockfileから準備する。
 
-現時点でreal candidate比較は実行していない。`select.min_confidence=0.6`もstage順も改善を裏付けるデータはまだ無く、変更・自動適用はしない。
+2026-09-21に9課題×2候補の初回実測を開始した。条件と結果は[初回実測記録](../../../docs/plans/2026-09-21-selector-long-horizon-first-measurement.md)を参照。`select.min_confidence=0.6`もstage順も自動変更しない。

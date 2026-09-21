@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 依頼の扱い（答える / 会話で実行 / タスクやワークフローの流用 / スキル）を決める `route`
+
+`select` はどのエージェント・モデルに任せるかを決めるが、その 1 段手前の「この依頼を実行
+させるのか、答えるだけか、手元のタスクを回せば済むのか」は誰も決めていなかった。同じ
+Jev 型の判断（本家 Jev → judge）で振り分ける口を足した（設計:
+`docs/plans/2026-09-21-agent-app-judge-request-routing-design.md`。段 0 = agent-tools 側。
+agent-app の会話画面への配線は段 1）。
+
+- **`agent-herd route --candidates <JSON> < 依頼文`。** 候補（タスク・ワークフロー・スキル。各 25 件まで、
+  絞るのは呼び出し側）を渡すと、`handling`（answer / converse / task / flow）、流用先、添えるスキル、
+  定型化を勧めるか（`routine`）を 1 基準 1 問で訊いて返す。候補 1 件の流用先は boolean で訊く。
+- **決定的な段は無い。** `select` と違い必ず決める砦を持たず、確度不足・other・本文読みは
+  終了コード 1（決めず）。呼び出し側は従来の動きへ倒す。`hold`（会話を止めて流用を勧めてよい）は
+  `route.hold_min_confidence`（既定 0.75）を handling と流用先の両方に掛けたときだけ真。
+- **段の試行は `select` と 1 実装を共有する**（`modelselect.ask_stages`）。`select` の出力と
+  終了コードは変えていない。`judge` の契約も変えていない。
+- 設定 `route.min_confidence`（省略時は `select.min_confidence`）/ `route.hold_min_confidence`。
+
 ### agent-app: スキル一覧の見出しを追加（0.24.1）
 
 - スキルタブの一覧と絞り込みの前に「スキル一覧」を表示。

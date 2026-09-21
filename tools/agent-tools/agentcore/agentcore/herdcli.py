@@ -111,6 +111,9 @@ HELP = f"""使い方: {PROG} [オプション]              # クラウド CLI �
   選択（この prompt をどのエージェント・モデルに任せるか。jev → judge → 格付けの順）:
     select [--candidate <cli[/model]>]…  prompt（stdin）に合う候補を 1 件選ぶ（--purpose / --json）
 
+  振り分け（この依頼をどう扱うか。答える / 会話で実行 / タスクやワークフローの流用 / スキル。jev → judge）:
+    route --candidates <JSON>  依頼文（stdin）の扱いを決める。決めなければ終了コード 1（--json）
+
   設定（各 PC の ~/.agents/agent-herd.yaml）:
     config                  いまの設定を表示する（--json / --check judge）
     config set <鍵> <値>    設定を書く（鍵: judge.model、値: モデル名 / auto / off）
@@ -741,6 +744,117 @@ def cmd_select(argv, *, err=None, out=None, stdin=None, jev_request=None,
 
 
 # ---------------------------------------------------------------------------
+# route — 依頼の振り分け（答える / 会話で実行 / タスクやワークフローの流用 / スキル）
+# ---------------------------------------------------------------------------
+ROUTE_HELP = f"""使い方: {PROG} route --candidates <JSON|パス> [--min-confidence 0-1]
+                        [--hold-min-confidence 0-1] [--stages jev,judge] [--json] < 依頼文
+
+  依頼文（stdin）を読み、モデルに送る前に「どう扱うか」を決める。判断の順は 本家 Jev →
+  agent-herd judge。決定的な段は無く、決めない（確度不足 / どれでもない）ときは終了コード 1 で
+  伝える——呼び出し側は従来の動き（会話で実行）へ倒す。
+
+  --candidates <JSON|パス>   候補の 1 枚: {{"tasks": [{{"id","name","description"}}],
+                            "flows": [同], "skills": [{{"name","description"}}],
+                            "context": {{"repo", "attachments": [], "readonly": false}}}}
+                            各 25 件まで（絞るのは呼び出し側）。readonly なら handling は訊かない
+  --min-confidence <数>      答えを採る確度の下限（既定は設定 route.min_confidence、無ければ select と同じ 0.6）
+  --hold-min-confidence <数> 会話を止めて流用を勧める（hold）確度の下限（既定は設定 route.hold_min_confidence、無ければ 0.75）
+  --stages <段,…>            使う段を絞る（既定 jev,judge）
+  --json                     結果の全体（状態・問い・各段の記録・使用量）を出す
+
+  stdout は 1 行の JSON: handling / task / flow（各 {{choice, confidence}} か null）、
+  skills（[{{name, probability}}]）、routine（{{value, probability}} か null）、hold、stage、abstained。
+  stderr に @agent-usage。終了コード: 0 = 扱いを決めた、1 = 決めず（か失敗）、2 = 引数の誤り"""
+
+
+def cmd_route(argv, *, err=None, out=None, stdin=None, jev_request=None,
+              judge_request=None) -> int:
+    """依頼の振り分け。問いの組み立てと答えの形は `agentcore.route`。"""
+    err = err or sys.stderr
+    out = out or sys.stdout
+    from agentcore import route as routing
+
+    tokens = list(argv)
+    if tokens and tokens[0] in ("-h", "--help", "help"):
+        print(ROUTE_HELP)
+        return 0
+    candidates_arg = None
+    min_confidence = hold_min_confidence = None
+    stages = routing.STAGES
+    as_json = False
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--json":
+            as_json = True
+        elif token in ("--candidates", "--min-confidence", "--hold-min-confidence", "--stages"):
+            if i + 1 >= len(tokens):
+                _err(f"{token} には値が必要です", err=err)
+                return 2
+            i += 1
+            value = tokens[i]
+            if token == "--candidates":
+                candidates_arg = value
+            elif token in ("--min-confidence", "--hold-min-confidence"):
+                try:
+                    number = float(value)
+                except ValueError:
+                    _err(f"{token} は数です: {value!r}", err=err)
+                    return 2
+                if not 0 <= number <= 1:
+                    _err(f"{token} は 0〜1 です", err=err)
+                    return 2
+                if token == "--min-confidence":
+                    min_confidence = number
+                else:
+                    hold_min_confidence = number
+            else:
+                picked = tuple(s.strip() for s in value.split(",") if s.strip())
+                if not picked or any(s not in routing.STAGES for s in picked):
+                    _err(f"--stages は {', '.join(routing.STAGES)} の組み合わせです", err=err)
+                    return 2
+                stages = picked
+        else:
+            _err(f"route は {token} を受け取りません（依頼文は stdin）", err=err)
+            return 2
+        i += 1
+    if not candidates_arg:
+        _err("--candidates に候補（JSON のパスか JSON そのもの）が必要です", err=err)
+        return 2
+    try:
+        path = Path(candidates_arg).expanduser()
+        raw = path.read_text(encoding="utf-8") if path.is_file() else candidates_arg
+        candidates = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        _err(f"候補を読めません: {exc}", err=err)
+        return 2
+    prompt = _read_prompt(stdin)
+    if not prompt.strip():
+        _err("依頼文が空です（stdin で渡します）", err=err)
+        return 2
+
+    from agentcore.hostenv import load_profile_env
+    load_profile_env()
+    try:
+        result = routing.route(prompt, candidates, min_confidence=min_confidence,
+                               hold_min_confidence=hold_min_confidence, stages=stages,
+                               jev_request=jev_request, judge_request=judge_request)
+    except routing.RouteError as exc:
+        _err(str(exc), err=err)
+        return 2
+    usage = result["usage"]
+    print(f"@agent-usage tokens_in={usage['tokens_in']} tokens_out={usage['tokens_out']}",
+          file=err)
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False), file=out)
+    else:
+        print(json.dumps({key: result[key] for key in
+                          ("handling", "task", "flow", "skills", "routine", "hold", "stage",
+                           "abstained", "reason")}, ensure_ascii=False), file=out)
+    return 0 if result["stage"] else 1
+
+
+# ---------------------------------------------------------------------------
 # config — 各 PC の設定ファイル（~/.agents/agent-herd.yaml）
 # ---------------------------------------------------------------------------
 CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
@@ -763,6 +877,9 @@ CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
     select.jev.endpoint    Jev の URL（省略時 https://api.typesafe.ai/v1/systemone）
     select.jev.model       Jev のモデル（省略時 jev-latest）
     select.min_confidence  jev / judge の答えを採る確度の下限（0〜1。省略時 0.6）
+
+    route.min_confidence       `route`（依頼の振り分け）で答えを採る確度の下限（省略時 select.min_confidence）
+    route.hold_min_confidence  `route` が会話を止めてタスク / ワークフローの流用を勧める確度の下限（省略時 0.75）
 
   --json          設定を JSON で出す（agent-app が読む形）
   --check judge   判定をモデル指名で回す設定なら終了コード 0、それ以外は 1
@@ -1231,6 +1348,8 @@ def main(argv=None, prog=None) -> int:
         return cmd_judge(rest)
     if sub == "select":
         return cmd_select(rest)
+    if sub == "route":
+        return cmd_route(rest)
     if sub == "config":
         return cmd_config(rest)
 
@@ -1240,7 +1359,7 @@ def main(argv=None, prog=None) -> int:
              f"定義を指定して回すなら: {PROG} exec {sub} [--model <モデル>]")
         return 2
     known = sorted({*ADAPTERS, *OBSERVE_ALIASES, "defs", "exec", "chat", "harness", "decide",
-                    "judge", "select", "config"})
+                    "judge", "select", "route", "config"})
     _err(f"未知のサブコマンド: {sub!r}（使えるのは {', '.join(known)}）")
     return 2
 

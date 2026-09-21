@@ -94,6 +94,7 @@ agent-herd defs [<名前>]   # 定義の一覧と実効 argv（エンジンが�
 agent-herd exec <cli>     # 定義どおりにヘッドレス実行する（人のデバッグ用。本文は stdin）
 agent-herd harness …      # statemachine / run を tmux もデーモンも無しに回す
 agent-herd select …       # 依頼文に合うエージェント・モデルを候補から選ぶ（jev → judge → 格付け）
+agent-herd route …        # 依頼文の扱い（答える / 会話で実行 / タスクやワークフローの流用 / スキル）を決める
 agent-herd status|follow|replay   # 観測と測定（ollama の同名フラグの別名）
 ```
 
@@ -402,7 +403,8 @@ ollama へ回し、判定にクラウドのトークンを使わない。`off` �
 `select.*`（`select.jev.api_key` / `select.jev.endpoint` / `select.jev.model` /
 `select.min_confidence`）は `agent-herd select`——依頼文を見て、候補のどのエージェント・
 モデルに任せるかを本家 Jev → judge → agent-audit の格付けの順で決める口——の設定。
-API キーは表示で伏せる。
+API キーは表示で伏せる。`route.*`（`route.min_confidence` / `route.hold_min_confidence`）は
+`agent-herd route`——依頼の扱いを決める口——の確度の下限。
 
 `OLLAMA_HOST` が未設定のときは `~/.profile` を評価して `OLLAMA_*` / `AGENT_OLLAMA_*` を
 補完する。エンジンは agent-ollama を**非ログインシェル**の subprocess として起動するため、

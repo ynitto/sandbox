@@ -21,6 +21,8 @@ import engine
 from eval_io import new_run_dir, write_json
 
 ms, resolver, vc = engine.selection_runtime()
+RUNTIME_SHA256 = {module.__name__: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+                  for module in (ms, resolver, vc)}
 HERE = Path(__file__).resolve().parent
 THRESHOLDS = (.5, .6, .7, .8, .9)
 OBJECTIVE = "verified-pass_then_audit-usage-policy_else_completion"
@@ -108,7 +110,12 @@ def replay(f, threshold):
                 raise Unobserved(stage)
             if observation["status"] != "answer":
                 raise ms.SelectError(observation.get("detail", observation["status"]))
-            return copy.deepcopy(observation["answer"])
+            answer = copy.deepcopy(observation["answer"])
+            # Current ask_stages returns name -> answer; older selectors returned
+            # the sole answer directly. Keep archived observations replayable.
+            if ms.QUESTION_NAME in answer:
+                answer = answer[ms.QUESTION_NAME]
+            return {ms.QUESTION_NAME: answer} if hasattr(ms, "ask_stages") else answer
         return run
 
     kwargs = dict(purpose=f["purpose"], quotas=f.get("quotas", {}),
@@ -306,8 +313,7 @@ def report(fixtures):
         return {v: stats([r for r in items if r.get(key) == v]) for v in values}
     return {"schema_version": 1, "kind": "selector-outcome-qualification", "eval_only": True,
             "provenance": fixtures[0]["provenance"] if fixtures else None,
-            "runtime_sha256": {module.__name__: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
-                               for module in (ms, resolver, vc)},
+            "runtime_sha256": dict(RUNTIME_SHA256),
             "engine_missing": engine.missing(), "fixtures": fixtures, "runs": runs,
             "by_arm": grouped(default, "arm", sorted({r["arm"] for r in default})),
             "by_stage": grouped(selectors, "stage", ms.STAGES),
@@ -330,6 +336,10 @@ def main(argv=None):
     parser.add_argument("--candidates", type=Path, help="JSON list with explicit agent_cli/model for real runs")
     parser.add_argument("--case", action="append", help="Fixture ID; repeat to select multiple")
     parser.add_argument("--timeout", type=float, default=3600)
+    parser.add_argument("--protect-repo", type=Path, action="append", default=[],
+                        help="Additional source repositories denied to candidate processes")
+    parser.add_argument("--resume-dir", type=Path,
+                        help="Resume recorded fixtures, retaining existing outcomes/observations")
     args = parser.parse_args(argv)
     if args.selfcheck:
         import unittest
@@ -347,10 +357,14 @@ def main(argv=None):
         validate(f)
     if args.real_run and (not args.candidates or not args.case or args.timeout <= 0):
         parser.error("--real-run requires --candidates, --case and positive --timeout")
-    out = new_run_dir(args.output_root, "selector", "real" if args.real_run else "offline")
+    if args.resume_dir and not args.real_run:
+        parser.error("--resume-dir requires --real-run")
+    out = args.resume_dir or new_run_dir(args.output_root, "selector", "real" if args.real_run else "offline")
     if args.real_run:
         from model_selection_real import collect
-        fixtures = collect(fixtures, json.loads(args.candidates.read_text()), out, args.timeout)
+        fixtures = collect(fixtures, json.loads(args.candidates.read_text()), out, args.timeout,
+                           resume=bool(args.resume_dir), containment=True,
+                           protected_roots=args.protect_repo)
     result = report(fixtures)
     write_json(out / "report.json", result)
     print(out / "report.json")

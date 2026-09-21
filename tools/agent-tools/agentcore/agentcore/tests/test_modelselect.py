@@ -414,8 +414,10 @@ class JudgeOtherMappingTests(IsolatedHome):
     def test_judge_other_maps_to_none(self):
         fit = [modelselect.describe_candidate(CLAUDE), modelselect.describe_candidate(OLLAMA)]
         question = modelselect.build_question(fit)
-        answer = modelselect.ask_judge({"x": 1}, question, model="gemma4:e4b",
-                                       request=lambda b: _ollama_response({"C": 0.9, "A": 0.1}))
+        answers = modelselect.ask_judge({"x": 1}, {modelselect.QUESTION_NAME: question},
+                                        model="gemma4:e4b",
+                                        request=lambda b: _ollama_response({"C": 0.9, "A": 0.1}))
+        answer = answers[modelselect.QUESTION_NAME]
         self.assertEqual(answer["choice"], modelselect.OTHER_KEY)
         self.assertEqual(answer["method"], judge.METHOD_LOGPROBS)
 

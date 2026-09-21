@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import copy
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import shutil
 import tarfile
 import time
 from unittest.mock import patch
@@ -18,6 +20,56 @@ from unittest.mock import patch
 import engine
 from eval_io import safe_name, write_json
 from model_selection_eval import ms, vc, validate, number
+
+
+KIRO_PROFILE = {
+    "name": "selector-qualification",
+    "description": "Qualification run confined to the current task workspace",
+    "prompt": "Work only in the current working directory. Resolve relative task paths against this directory. Do not read or edit the source repository outside it. Use only the built-in read/write/shell tools.",
+    "tools": ["read", "write", "shell"], "allowedTools": ["read", "write", "shell"],
+    "mcpServers": {}, "resources": [], "includeMcpJson": False,
+}
+
+
+def containment_profile(workspace, protected_roots):
+    """macOS repository guard inherited by child processes; no remote MCP tools.
+
+    The Python environment remains readable. Writes outside the workspace are
+    limited to CLI runtime records. Installed skills are unreadable. This is a
+    filesystem guard, not a general malicious-code sandbox or an egress policy.
+    """
+    workspace = str(Path(workspace).resolve())
+    venv = str(Path(sys.prefix).resolve())
+    rules = ["(version 1)", "(allow default)"]
+    home = Path.home()
+    runtime_dirs = [home / ".kiro" / name for name in ("cache", "logs", "sessions", "session-index", "snapshots")]
+    runtime_files = [home / ".kiro/.cli_bash_history"]
+    storage = home / "Library/Application Support/kiro-cli"
+    runtime_dirs += [storage / "history", storage / "run-receipts"]
+    runtime_files += [storage / name for name in ("data.sqlite3", "data.sqlite3-wal", "data.sqlite3-shm", ".refresh.lock")]
+    allowed = [f"(subpath {json.dumps(workspace)})"]
+    allowed += [f"(subpath {json.dumps(str(p.resolve()))})" for p in runtime_dirs]
+    allowed += [f"(literal {json.dumps(str(p.resolve()))})" for p in runtime_files]
+    allowed += ['(literal "/dev/null")', '(literal "/dev/tty")']
+    rules.append("(deny file-write* (require-not (require-any " + " ".join(allowed) + ")))")
+    for directory in (home / ".kiro/skills", home / ".agents/skills", home / ".codex/skills"):
+        rules.append(f"(deny file-read* (subpath {json.dumps(str(directory.resolve()))}))")
+    for root in sorted({str(Path(p).resolve()) for p in protected_roots}):
+        quoted = json.dumps(root)
+        rules.append(f"(deny file-write* (require-all (subpath {quoted}) (require-not (subpath {json.dumps(workspace)}))))")
+        rules.append(f"(deny file-read* (require-all (subpath {quoted}) (require-not (require-any (subpath {json.dumps(workspace)}) (subpath {json.dumps(venv)})))))")
+    return "\n".join(rules) + "\n"
+
+
+def contained_command(argv, candidate, workspace, run, protected_roots):
+    if sys.platform != "darwin" or not shutil.which("sandbox-exec"):
+        raise RuntimeError("real-run requires macOS sandbox-exec repository containment; import external receipts on other hosts")
+    argv = list(argv)
+    if candidate["agent_cli"] == "kiro":
+        argv[2:2] = ["--agent", KIRO_PROFILE["name"]]
+    profile = run / "candidate.sb"
+    profile.write_text(containment_profile(workspace, protected_roots))
+    return ["/usr/bin/sandbox-exec", "-f", str(profile.resolve()), *argv]
 
 
 def git(*args, cwd=None, binary=False):
@@ -129,7 +181,9 @@ def capture_selector(f):
     return observations, result
 
 
-def collect(fixtures, candidates, out, timeout):
+def collect(fixtures, candidates, out, timeout, *, resume=False, containment=False, protected_roots=()):
+    if containment and (sys.platform != "darwin" or not shutil.which("sandbox-exec")):
+        raise RuntimeError("real-run requires macOS sandbox-exec repository containment; import external receipts on other hosts")
     # Explicit models prevent defaults changing between candidate runs.
     normalized = ms.normalize_candidates(candidates)
     if len(normalized) < 2 or any(not c["model"] for c in normalized):
@@ -137,11 +191,14 @@ def collect(fixtures, candidates, out, timeout):
     results = []
     for original in fixtures:
         f = copy.deepcopy(original)
-        f.update(provenance="measured", outcomes={}, selector_observations={})
-        f["quotas"] = ms.quota_observations()
-        f["budget"] = ms.budget_summary(f["workload"])
-        f["candidates"] = [ms.describe_candidate(c, quotas=f["quotas"], ratings=f.get("ratings", []),
-                                                  purpose=f["purpose"]) for c in normalized]
+        if not resume:
+            f.update(provenance="measured", outcomes={}, selector_observations={})
+            f["quotas"] = ms.quota_observations()
+            f["budget"] = ms.budget_summary(f["workload"])
+            f["candidates"] = [ms.describe_candidate(c, quotas=f["quotas"], ratings=f.get("ratings", []),
+                                                      purpose=f["purpose"]) for c in normalized]
+        elif {ms.candidate_id(c) for c in normalized} != {ms.candidate_id(c) for c in f["candidates"]}:
+            raise ValueError("resume candidate set must match recorded fixture")
         if f.get("resolver"):
             raise ValueError("real candidate override requires a direct-selector fixture; resolver snapshots are offline inputs")
         validate(f)
@@ -150,10 +207,15 @@ def collect(fixtures, candidates, out, timeout):
         target = git("rev-parse", task["verification_revision"] + "^{commit}")
         f["real_task"].update(base_revision=base, verification_revision=target)
         root = out / safe_name(f["id"])
-        root.mkdir()
+        root.mkdir(exist_ok=resume)
         # Capture decisions before learning any outcomes (no oracle leakage).
-        f["selector_observations"], f["live_selector_result"] = capture_selector(f)
+        if not resume:
+            f["selector_observations"], f["live_selector_result"] = capture_selector(f)
+        f["containment"] = {"enabled": containment, "kiro_external_mcp": False if containment else "default",
+                            "protected_repositories": [str(p) for p in (engine.REPO, *protected_roots)]}
+        write_json(root / "fixture.json", f)
         write_json(root / "selector.json", {"observations": f["selector_observations"], "result": f["live_selector_result"]})
+        print(f"{f['id']}: selector observations captured (threshold=0.9)", flush=True)
         live = f["live_selector_result"]
         eligible = {c["id"] for c in live.get("state", {}).get("candidates", f["candidates"])}
         dropped = {c["id"] for c in live.get("dropped", [])}
@@ -161,8 +223,12 @@ def collect(fixtures, candidates, out, timeout):
             eligible = set()
         for index, candidate in enumerate(f["candidates"]):
             cid = ms.candidate_id(candidate)
+            if cid in f["outcomes"]:
+                print(f"{f['id']} {cid}: retained recorded outcome", flush=True)
+                continue
             if cid not in eligible:
                 f["outcomes"][cid] = {"status": "no-eligible-candidate"}
+                print(f"{f['id']} {cid}: no-eligible-candidate", flush=True)
                 continue
             run = root / f"{index + 1}-{safe_name(cid)}"
             workspace = run / "workspace"
@@ -172,12 +238,15 @@ def collect(fixtures, candidates, out, timeout):
                 tf.extractall(workspace, filter="data")
             git("init", "-q", cwd=workspace)
             restore_checks(f, workspace)
+            if containment and candidate["agent_cli"] == "kiro":
+                write_json(workspace / ".kiro/agents/selector-qualification.json", KIRO_PROFILE)
             preparation = [vc.run_plan_command(command, str(workspace), timeout, env=test_environment())
                            for command in task.get("setup_commands", []) + task.get("environment_checks", [])]
             write_json(run / "environment.json", preparation)
             if any(p.get("exit_code") != 0 or p.get("inconclusive") for p in preparation):
                 f["outcomes"][cid] = {"status": "environment-error"}
                 write_json(root / "outcomes.json", f["outcomes"])
+                print(f"{f['id']} {cid}: environment-error", flush=True)
                 continue
             seed_rev = snapshot(workspace, "fixture seed and fixed acceptance checks")
             before, _ = verify(f, workspace, seed_rev, timeout)
@@ -185,10 +254,21 @@ def collect(fixtures, candidates, out, timeout):
             if vc.receipt_overall(before) != "fail":
                 f["outcomes"][cid] = {"status": "invalid-seed" if vc.receipt_overall(before) == "pass" else "environment-error"}
                 write_json(root / "outcomes.json", f["outcomes"])
+                print(f"{f['id']} {cid}: {f['outcomes'][cid]['status']}", flush=True)
                 continue
+            print(f"{f['id']} {cid}: running (timeout={timeout:g}s)", flush=True)
             start = time.monotonic()
             try:
                 built = engine.headless_cmd(candidate["agent_cli"], candidate["model"], f["prompt"], readonly=False, no_session=True)
+                if containment:
+                    built["argv"] = contained_command(built["argv"], candidate, workspace, run,
+                                                       (engine.REPO, *protected_roots))
+                    scratch = workspace / ".selector-tmp"
+                    scratch.mkdir()
+                    with (workspace / ".git/info/exclude").open("a") as excluded:
+                        excluded.write("\n.selector-tmp/\n")
+                    built["env"] = {**(built.get("env") or {}), "TMPDIR": str(scratch.resolve()),
+                                    "TMP": str(scratch.resolve()), "TEMP": str(scratch.resolve())}
                 write_json(run / "invocation.json", {"agent_cli": candidate["agent_cli"], "model": candidate["model"],
                                                       "argv": built["argv"], "base_revision": base, "timeout": timeout})
                 p = engine.run_process(built["argv"], input=built.get("stdin"), cwd=workspace,
@@ -196,8 +276,15 @@ def collect(fixtures, candidates, out, timeout):
                                        env={**os.environ, **test_environment(), **engine.load_env(candidate["agent_cli"]), **(built.get("env") or {})})
                 stdout, stderr = p.stdout or "", p.stderr or ""
                 status = "ok" if p.returncode == 0 else "cli-error"
-            except subprocess.TimeoutExpired:
-                stdout, stderr, status = "", "TIMEOUT", "timeout"
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.output or ""
+                stderr = exc.stderr or ""
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode("utf-8", "replace")
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", "replace")
+                stderr += "\nTIMEOUT"
+                status = "timeout"
             except (OSError, RuntimeError, ValueError) as exc:
                 stdout, stderr, status = "", str(exc), "environment-error"
             wall = time.monotonic() - start
@@ -217,9 +304,11 @@ def collect(fixtures, candidates, out, timeout):
                                    "tokens": tokens, "cost": None, "currency": None,
                                    "wall_seconds": wall + verify_wall, "agent_wall_seconds": wall,
                                    "verification_wall_seconds": verify_wall,
-                                   "usage": usage, "harness": candidate["agent_cli"]}
+                                   "usage": usage, "harness": candidate["agent_cli"],
+                                   "containment": dict(f["containment"])}
             write_json(run / "outcome.json", f["outcomes"][cid])
             write_json(root / "outcomes.json", f["outcomes"])
+            print(f"{f['id']} {cid}: {status}, receipt={receipt['verdict']}, wall={wall + verify_wall:.1f}s, tokens={tokens}", flush=True)
         results.append(f)
         write_json(out / "measured-fixtures.json", results)
     return results

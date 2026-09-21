@@ -530,12 +530,12 @@
           "source": "user"
         },
         {
-          "command": "git diff --check",
+          "command": "git diff --check \"$(git rev-list --max-parents=0 HEAD)\" HEAD",
           "source": "user"
         }
       ],
       "criteria": [],
-      "digest": "sha256:f05f64f9348d08b82aac2d4621459e29b733f87e7c0282510430097da31dc2af"
+      "digest": "sha256:fa9fb0edd9f4bc9c280232f379584566602575e9d061babb6ceb4391ff46e5fa"
     },
     "checkpoints": [
       {
@@ -554,7 +554,7 @@
         "id": "CP3",
         "command_index": 2,
         "weight": 1,
-        "label": "regression"
+        "label": "seed-to-result diff has no whitespace errors"
       }
     ],
     "real_task": {
@@ -574,7 +574,7 @@
         "receipt": {
           "version": 1,
           "task_id": "S3",
-          "plan_digest": "sha256:f05f64f9348d08b82aac2d4621459e29b733f87e7c0282510430097da31dc2af",
+          "plan_digest": "sha256:fa9fb0edd9f4bc9c280232f379584566602575e9d061babb6ceb4391ff46e5fa",
           "result_rev": "synthetic-S3-0",
           "workspace": "sandbox",
           "commands": [
@@ -589,7 +589,7 @@
               "output_tail": "SYNTHETIC fixture observation; not a real execution"
             },
             {
-              "command": "git diff --check",
+              "command": "git diff --check \"$(git rev-list --max-parents=0 HEAD)\" HEAD",
               "exit_code": 0,
               "output_tail": "SYNTHETIC fixture observation; not a real execution"
             }
@@ -609,7 +609,7 @@
         "receipt": {
           "version": 1,
           "task_id": "S3",
-          "plan_digest": "sha256:f05f64f9348d08b82aac2d4621459e29b733f87e7c0282510430097da31dc2af",
+          "plan_digest": "sha256:fa9fb0edd9f4bc9c280232f379584566602575e9d061babb6ceb4391ff46e5fa",
           "result_rev": "synthetic-S3-1",
           "workspace": "sandbox",
           "commands": [
@@ -624,7 +624,7 @@
               "output_tail": "SYNTHETIC fixture observation; not a real execution"
             },
             {
-              "command": "git diff --check",
+              "command": "git diff --check \"$(git rev-list --max-parents=0 HEAD)\" HEAD",
               "exit_code": 0,
               "output_tail": "SYNTHETIC fixture observation; not a real execution"
             }
@@ -644,7 +644,7 @@
         "receipt": {
           "version": 1,
           "task_id": "S3",
-          "plan_digest": "sha256:f05f64f9348d08b82aac2d4621459e29b733f87e7c0282510430097da31dc2af",
+          "plan_digest": "sha256:fa9fb0edd9f4bc9c280232f379584566602575e9d061babb6ceb4391ff46e5fa",
           "result_rev": "synthetic-S3-2",
           "workspace": "sandbox",
           "commands": [
@@ -659,7 +659,7 @@
               "output_tail": "SYNTHETIC fixture observation; not a real execution"
             },
             {
-              "command": "git diff --check",
+              "command": "git diff --check \"$(git rev-list --max-parents=0 HEAD)\" HEAD",
               "exit_code": 0,
               "output_tail": "SYNTHETIC fixture observation; not a real execution"
             }
@@ -1264,7 +1264,7 @@
         ".qualification/check.py": "from pathlib import Path\np=Path('tools/agent-app/src/main')\nfor name in ['paths.js','proc.js','share/run.js','teachingIpc.js']:\n assert (p/name).is_file(),name\ns=(p/'ipc.js').read_text()\nfor name in ['./paths','./proc','./share/run','./teachingIpc']:\n assert name in s,name\n"
       },
       "setup_commands": [
-        "npm ci --ignore-scripts --prefix tools/agent-app"
+        "if [ -f tools/agent-app/package-lock.json ]; then npm ci --ignore-scripts --omit=dev --no-audit --no-fund --prefix tools/agent-app; else npm install --ignore-scripts --omit=dev --no-audit --no-fund --prefix tools/agent-app; fi"
       ],
       "environment_checks": [
         "node -e \"require('./tools/agent-app/node_modules/yaml')\""
@@ -1977,7 +1977,7 @@
       ],
       "verification_files": {},
       "setup_commands": [
-        "npm ci --ignore-scripts --prefix tools/agent-app"
+        "if [ -f tools/agent-app/package-lock.json ]; then npm ci --ignore-scripts --omit=dev --no-audit --no-fund --prefix tools/agent-app; else npm install --ignore-scripts --omit=dev --no-audit --no-fund --prefix tools/agent-app; fi"
       ],
       "environment_checks": [
         "node -e \"require('./tools/agent-app/node_modules/yaml')\""

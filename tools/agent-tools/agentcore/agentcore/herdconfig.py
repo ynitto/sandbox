@@ -25,6 +25,14 @@ select:
   min_confidence: 0.6      # jev / judge の答えを採る確度の下限（0〜1）
 ```
 
+3 つ目は `route`（依頼の振り分け。`agentcore.route`）:
+
+```yaml
+route:
+  min_confidence: 0.6       # 省略時は select.min_confidence と同じ
+  hold_min_confidence: 0.75 # 会話を止めてタスク / ワークフローの流用を勧める確度の下限（省略時 0.75）
+```
+
 ## 場所と形
 
 `~/.agents/agent-herd.yaml` / `.yml` / `.json` のうち見つかった最初の 1 つを読む
@@ -53,7 +61,9 @@ JUDGE_OFF = "off"
 # 設定の項目名（`agent-herd config set` が受け付ける鍵）。増やすならここと `describe()`。
 SELECT_KEYS = ("select.jev.api_key", "select.jev.endpoint", "select.jev.model",
                "select.min_confidence")
-KNOWN_KEYS = ("judge.model", "judge.calibration", *SELECT_KEYS)
+# `route`（依頼の振り分け。`agentcore.route`）の確度の下限。min_confidence を省くと select と同じ値。
+ROUTE_KEYS = ("route.min_confidence", "route.hold_min_confidence")
+KNOWN_KEYS = ("judge.model", "judge.calibration", *SELECT_KEYS, *ROUTE_KEYS)
 
 
 class ConfigError(RuntimeError):
@@ -242,14 +252,34 @@ def select_setting() -> dict:
     return {"jev": jev, "min_confidence": min_conf, "error": None}
 
 
+def _confidence_or_none(value) -> "float | None":
+    if isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and math.isfinite(value) and 0 <= value <= 1:
+        return float(value)
+    return None
+
+
+def route_setting() -> dict:
+    """`route` の設定を 1 つの dict で: {"min_confidence": float|None,
+    "hold_min_confidence": float|None, "error": str|None}。壊れたファイルは「設定なし」に倒す。"""
+    try:
+        data = load()
+    except ConfigError as exc:
+        return {"min_confidence": None, "hold_min_confidence": None, "error": str(exc)}
+    section = data.get("route") if isinstance(data.get("route"), dict) else {}
+    return {"min_confidence": _confidence_or_none(section.get("min_confidence")),
+            "hold_min_confidence": _confidence_or_none(section.get("hold_min_confidence")),
+            "error": None}
+
+
 def _normalize_select_value(key: str, value):
-    if key == "select.min_confidence":
+    if key.endswith("min_confidence"):
         try:
             number = float(value)
         except (TypeError, ValueError) as exc:
-            raise ConfigError("select.min_confidence は 0〜1 の数です") from exc
+            raise ConfigError(f"{key} は 0〜1 の数です") from exc
         if not math.isfinite(number) or not 0 <= number <= 1:
-            raise ConfigError("select.min_confidence は 0〜1 の数です")
+            raise ConfigError(f"{key} は 0〜1 の数です")
         return number
     if key == "select.jev.api_key" and value is False:
         return JUDGE_OFF
@@ -302,7 +332,7 @@ def set_value(key: str, value) -> Path:
             data["judge"] = section
         else:
             data.pop("judge", None)
-    elif key in SELECT_KEYS:
+    elif key in SELECT_KEYS or key in ROUTE_KEYS:
         normalized = None if value is None else _normalize_select_value(key, value)
         _set_path(data, tuple(key.split(".")), normalized)
     return save(data)
@@ -329,4 +359,5 @@ def describe() -> dict:
             "default_path": str(agents_home() / CONFIG_NAMES[0]),
             "judge": judge_setting(),
             "select": {"jev": jev, "min_confidence": select["min_confidence"],
-                       "error": select["error"]}}
+                       "error": select["error"]},
+            "route": route_setting()}

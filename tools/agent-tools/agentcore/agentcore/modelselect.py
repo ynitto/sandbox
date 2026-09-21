@@ -372,15 +372,20 @@ def jev_setting() -> dict:
     return jev
 
 
-def jev_payload(state: dict, question: dict, *, model: str) -> dict:
-    """Jev の `/v1/systemone` の body。`other` は Jev には無いので選択肢 `none` として並べる。"""
-    criteria = dict(question["criteria"])
-    if question.get("other"):
-        criteria[OTHER_KEY] = str(question["other"])
-    return {"model": model, "state": state,
-            "questions": {QUESTION_NAME: {"type": "choice",
-                                          "instructions": question["instructions"],
-                                          "criteria": criteria}}}
+def jev_payload(state: dict, questions: dict, *, model: str) -> dict:
+    """Jev の `/v1/systemone` の body。問いは名前 → {type, instructions, criteria?, other?}
+    （`judge` と同じ形）。`other` は Jev には無いので選択肢 `none` として並べる。"""
+    body: dict = {}
+    for name, question in questions.items():
+        kind = str(question.get("type") or "choice")
+        item: dict = {"type": kind, "instructions": question["instructions"]}
+        if kind != "boolean":
+            criteria = dict(question["criteria"])
+            if question.get("other"):
+                criteria[OTHER_KEY] = str(question["other"])
+            item["criteria"] = criteria
+        body[str(name)] = item
+    return {"model": model, "state": state, "questions": body}
 
 
 def post_jev(payload: dict, *, endpoint: str, api_key: str,
@@ -404,14 +409,42 @@ def post_jev(payload: dict, *, endpoint: str, api_key: str,
     return data
 
 
-def read_jev_answer(data: dict, question: dict) -> dict:
-    """Jev の応答を judge と同じ形（choice / probabilities / confidence / method）へ。"""
+def _jev_usage(data: dict) -> dict:
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    return {"tokens_in": int(usage.get("input_tokens") or 0),
+            "tokens_out": int(usage.get("output_tokens") or 0)}
+
+
+def read_jev_answer(data: dict, question: dict, *, name: str = QUESTION_NAME) -> dict:
+    """Jev の応答の問い 1 つを judge と同じ形（choice / probabilities / confidence / method）へ。
+    boolean は `value` / `probability`（yes の確率）で、judge の答えと同じ鍵。"""
     answers = data.get("answers")
-    answer = answers.get(QUESTION_NAME) if isinstance(answers, dict) else None
+    answer = answers.get(name) if isinstance(answers, dict) else None
     if not isinstance(answer, dict):
-        raise SelectError("Jev の応答に答えがありません")
+        raise SelectError(f"Jev の応答に問い {name!r} の答えがありません")
     probs = answer.get("probabilities")
     probs = {str(k): float(v) for k, v in probs.items()} if isinstance(probs, dict) else {}
+    confidence = answer.get("confidence")
+    common = {"coverage": 1.0, "method": "jev", "model": data.get("model"),
+              "usage": _jev_usage(data)}
+    if str(question.get("type") or "choice") == "boolean":
+        value = answer.get("value")
+        if not isinstance(value, bool):
+            raise SelectError(f"Jev の問い {name!r} の答えが真偽ではありません")
+        probability = answer.get("probability")
+        try:
+            probability = float(probability) if probability is not None \
+                else float(probs.get("yes", 1.0 if value else 0.0))
+        except (TypeError, ValueError):
+            probability = 1.0 if value else 0.0
+        probs = probs or {"yes": probability, "no": 1.0 - probability}
+        try:
+            confidence = float(confidence) if confidence is not None \
+                else max(probability, 1.0 - probability)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return {"type": "boolean", "value": value, "probability": round(probability, 4),
+                "probabilities": probs, "confidence": round(confidence, 4), **common}
     choice = answer.get("choice")
     if choice is None and probs:
         choice = max(probs, key=probs.get)
@@ -419,29 +452,31 @@ def read_jev_answer(data: dict, question: dict) -> dict:
     known = set(question["criteria"]) | ({OTHER_KEY} if question.get("other") else set())
     if choice not in known:
         raise SelectError(f"Jev の答え {choice!r} は選択肢にありません")
-    confidence = answer.get("confidence")
     try:
         confidence = float(confidence) if confidence is not None else probs.get(choice, 0.0)
     except (TypeError, ValueError):
         confidence = 0.0
-    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     return {"type": "choice", "choice": choice, "probabilities": probs,
-            "confidence": round(confidence, 4), "coverage": 1.0, "method": "jev",
-            "model": data.get("model"),
-            "usage": {"tokens_in": int(usage.get("input_tokens") or 0),
-                      "tokens_out": int(usage.get("output_tokens") or 0)}}
+            "confidence": round(confidence, 4), **common}
 
 
-def ask_jev(state: dict, question: dict, *, setting: "dict | None" = None,
+def ask_jev(state: dict, questions: dict, *, setting: "dict | None" = None,
             request=None) -> dict:
-    """段 1。戻り値は judge と同形の答え。使えなければ SelectError。"""
+    """段 1。戻り値は問いの名前 → judge と同形の答え。使えなければ SelectError。
+    `usage` は最初の答えにだけ載る（Jev は 1 往復で全問に答える）。"""
     setting = setting if setting is not None else jev_setting()
     if not setting.get("enabled"):
         raise SelectError("Jev の API キーが設定にありません")
-    payload = jev_payload(state, question, model=str(setting.get("model") or JEV_DEFAULT_MODEL))
+    payload = jev_payload(state, questions, model=str(setting.get("model") or JEV_DEFAULT_MODEL))
     send = request or (lambda body: post_jev(body, endpoint=str(setting["endpoint"]),
                                              api_key=str(setting["api_key"])))
-    return read_jev_answer(send(payload), question)
+    data = send(payload)
+    answers = {name: read_jev_answer(data, question, name=str(name))
+               for name, question in questions.items()}
+    for index, answer in enumerate(answers.values()):
+        if index:
+            answer["usage"] = {"tokens_in": 0, "tokens_out": 0}
+    return answers
 
 
 # ---------------------------------------------------------------------------
@@ -464,20 +499,63 @@ def judge_model_for(fit: "list[dict]") -> "str | None":
     return str(local[0]["model"])
 
 
-def ask_judge(state: dict, question: dict, *, model: str, request=None,
+def ask_judge(state: dict, questions: dict, *, model: str, request=None,
               samples: int = 1) -> dict:
-    """段 2。judge の答えをそのまま（`other` は judge が付けた `other` キー）。"""
+    """段 2。問いの名前 → judge の答え（`other` は judge の `other` キーを `none` に写す）。
+    `usage` は最初の答えにだけ載る（judge は全問の合計を 1 つ返す）。"""
     try:
-        result = judge.evaluate(state, {QUESTION_NAME: question}, model=model,
-                                samples=samples, request=request)
+        result = judge.evaluate(state, questions, model=model, samples=samples, request=request)
     except judge.JudgeError as exc:
         raise SelectError(str(exc)) from exc
-    answer = dict(result["answers"][QUESTION_NAME])
-    if answer.get("choice") == judge.OTHER_KEY:
-        answer["choice"] = OTHER_KEY
-    answer["model"] = result.get("model")
-    answer["usage"] = dict(result.get("usage") or {})
-    return answer
+    answers: dict = {}
+    for index, name in enumerate(questions):
+        answer = dict(result["answers"][str(name)])
+        if answer.get("choice") == judge.OTHER_KEY:
+            answer["choice"] = OTHER_KEY
+        answer["model"] = result.get("model")
+        answer["usage"] = dict(result.get("usage") or {}) if not index \
+            else {"tokens_in": 0, "tokens_out": 0}
+        answers[name] = answer
+    return answers
+
+
+def ask_stages(state: dict, questions: dict, *, stages, attempts: "list[dict]",
+               usage: dict, jev_setting_override: "dict | None" = None, jev_request=None,
+               judge_model: "str | None" = None, judge_request=None):
+    """jev → judge を `stages` の順に試し、答えを得た段ごとに (段, 答えの dict) を yield する。
+
+    使えない段（Jev の鍵なし・judge のモデルなし）と失敗した段は `attempts` に残して次へ。
+    `usage` には得た答えの消費を足す。jev / judge 以外の段は (段, None) を yield し、
+    決定的な処理は呼び出し側が行う（`select` の audit 段）。`select` と `route` が共有する
+    唯一の「段の試行」で、判断の順と記録の形をここで揃える。
+    """
+    for stage in stages:
+        if stage == STAGE_JEV:
+            setting = jev_setting_override if jev_setting_override is not None else jev_setting()
+            if not setting.get("enabled"):
+                attempts.append({"stage": stage, "outcome": "not-configured"})
+                continue
+            try:
+                answers = ask_jev(state, questions, setting=setting, request=jev_request)
+            except SelectError as exc:
+                attempts.append({"stage": stage, "outcome": "error", "detail": str(exc)[:200]})
+                continue
+        elif stage == STAGE_JUDGE:
+            if not judge_model:
+                attempts.append({"stage": stage, "outcome": "not-available"})
+                continue
+            try:
+                answers = ask_judge(state, questions, model=judge_model, request=judge_request)
+            except SelectError as exc:
+                attempts.append({"stage": stage, "outcome": "error", "detail": str(exc)[:200]})
+                continue
+        else:
+            yield stage, None
+            continue
+        for answer in answers.values():
+            for key in ("tokens_in", "tokens_out"):
+                usage[key] += int((answer.get("usage") or {}).get(key) or 0)
+        yield stage, answers
 
 
 # ---------------------------------------------------------------------------
@@ -568,28 +646,12 @@ def select(prompt: str, candidates, *, purpose: str = "", project_dir=None,
         return done(fit[0], STAGE_AUDIT, None, "絞り込み後の候補が 1 件（判断は不要）")
 
     question = build_question(fit)
-    for stage in stages:
-        if stage == STAGE_JEV:
-            setting = jev_setting_override if jev_setting_override is not None else jev_setting()
-            if not setting.get("enabled"):
-                attempts.append({"stage": stage, "outcome": "not-configured"})
-                continue
-            try:
-                answer = ask_jev(state, question, setting=setting, request=jev_request)
-            except SelectError as exc:
-                attempts.append({"stage": stage, "outcome": "error", "detail": str(exc)[:200]})
-                continue
-        elif stage == STAGE_JUDGE:
-            model = judge_model or judge_model_for(fit)
-            if not model:
-                attempts.append({"stage": stage, "outcome": "not-available"})
-                continue
-            try:
-                answer = ask_judge(state, question, model=model, request=judge_request)
-            except SelectError as exc:
-                attempts.append({"stage": stage, "outcome": "error", "detail": str(exc)[:200]})
-                continue
-        else:
+    asked = ask_stages(state, {QUESTION_NAME: question}, stages=stages, attempts=attempts,
+                       usage=usage, jev_setting_override=jev_setting_override,
+                       jev_request=jev_request, judge_model=judge_model or judge_model_for(fit),
+                       judge_request=judge_request)
+    for stage, answers in asked:
+        if answers is None:
             ordered = audit_order(fit)
             attempts.append({"stage": stage, "outcome": "ranked",
                              "order": [c["id"] for c in ordered]})
@@ -598,8 +660,7 @@ def select(prompt: str, candidates, *, purpose: str = "", project_dir=None,
                      else "policy の順位" if top.get("rank") is not None
                      else "相対コストの低い順")
             return done(top, stage, None, f"{basis}で決定的に選択（上位の段は使えないか決めなかった）")
-        for key in ("tokens_in", "tokens_out"):
-            usage[key] += int((answer.get("usage") or {}).get(key) or 0)
+        answer = answers[QUESTION_NAME]
         cand, why = _pick(answer, fit, min_confidence=threshold)
         attempts.append({"stage": stage, "outcome": why, "choice": answer.get("choice"),
                          "confidence": answer.get("confidence"), "method": answer.get("method"),

@@ -212,6 +212,44 @@ class OfflineTests(unittest.TestCase):
 
 
 class RealAdapterTests(unittest.TestCase):
+    def test_containment_wraps_kiro_and_disables_external_mcp(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            workspace = root / "source/workspace"
+            workspace.mkdir(parents=True)
+            with patch.object(real.sys, "platform", "darwin"), patch.object(real.shutil, "which", return_value="/usr/bin/sandbox-exec"):
+                argv = real.contained_command(["kiro-cli", "chat", "--no-interactive"],
+                                              {"agent_cli": "kiro"}, workspace, root, [root / "source"])
+            self.assertEqual(argv[:2], ["/usr/bin/sandbox-exec", "-f"])
+            self.assertEqual(argv[3:7], ["kiro-cli", "chat", "--agent", "selector-qualification"])
+            profile = (root / "candidate.sb").read_text()
+            self.assertIn("deny file-write*", profile)
+            self.assertIn("deny file-read*", profile)
+            self.assertIn(str(workspace.resolve()), profile)
+            self.assertEqual(real.KIRO_PROFILE["mcpServers"], {})
+            self.assertFalse(real.KIRO_PROFILE["includeMcpJson"])
+            self.assertEqual(real.KIRO_PROFILE["tools"], ["read", "write", "shell"])
+
+    def test_unsupported_guard_fails_before_selector_or_agent_calls(self):
+        with patch.object(real.sys, "platform", "linux"), patch.object(real, "capture_selector") as capture:
+            with self.assertRaisesRegex(RuntimeError, "containment"):
+                real.collect([], [], Path("unused"), 30, containment=True)
+            capture.assert_not_called()
+
+    def test_committed_whitespace_regression_is_checked_against_seed(self):
+        f = copy.deepcopy(next(f for f in FIXTURES if f["id"] == "S3"))
+        command = f["verification_plan"]["commands"][2]["command"]
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "document.md").write_text("clean\n")
+            real.git("init", "-q", cwd=root)
+            real.snapshot(root, "seed")
+            (root / "document.md").write_text("trailing space \n")
+            real.snapshot(root, "result")
+            checked = ev.vc.run_plan_command(command, str(root), 10)
+            self.assertNotEqual(checked["exit_code"], 0)
+            self.assertEqual(ev.vc.run_plan_command("git diff --check", str(root), 10)["exit_code"], 0)
+
     def test_raw_usage_distinguishes_explicit_zero_from_missing(self):
         f = copy.deepcopy(FIXTURES[0])
         response = {"answers":{"candidate":{"choice":"fixture-small/v1", "confidence":.95}}}
@@ -249,6 +287,14 @@ class RealAdapterTests(unittest.TestCase):
                     patch.object(ev.ms,"quota_observations",return_value={}), \
                     patch.object(ev.ms,"budget_summary",return_value=None):
                 fixtures=real.collect([f],candidates,out,30)
+                # Resume retains observations and every outcome, including errors;
+                # it must never silently charge for a repeated candidate attempt.
+                fixtures[0]["outcomes"]["fake-a/v1"]["status"] = "cli-error"
+                with patch.object(real, "capture_selector", side_effect=AssertionError("selector called again")), \
+                        patch.object(engine, "headless_cmd", side_effect=AssertionError("candidate called again")):
+                    resumed = real.collect(fixtures, candidates, out, 30, resume=True)
+                self.assertEqual(resumed[0]["outcomes"], fixtures[0]["outcomes"])
+                fixtures[0]["outcomes"]["fake-a/v1"]["status"] = "ok"
             for cid,o in fixtures[0]["outcomes"].items():
                 self.assertEqual(o["tokens"],10)
                 self.assertTrue(ev.outcome(fixtures[0],cid)["verified_pass"])

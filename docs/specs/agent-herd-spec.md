@@ -222,6 +222,27 @@ agent-herd config set select.jev.api_key sk-…     # 本家 Jev を第 1 段に
 stdout の `stage` がどの段で決めたかを示す。確度が `select.min_confidence` に届かない答えは
 採らず次の段へ倒す（§5.7）。
 
+### 依頼の扱いを振り分けさせる
+
+「答えるだけでいいのか、会話の中で実行させるのか、手元のタスクやワークフローを回せば済むのか」を
+送る前に決めたいときは `route` を使う。候補（タスク・ワークフロー・スキル）は呼び出し側が
+JSON で渡し、判断は `select` と同じ本家 Jev → `judge` の順。決定的な段は無く、決めなければ
+終了コード 1 で伝えるので、呼び出し側は従来の動き（会話で実行）へ倒す。
+
+```bash
+cat > candidates.json <<'EOF'
+{"tasks": [{"id": "daily-report", "name": "日報", "description": "前日の commit から日報を書く"}],
+ "skills": [{"name": "api-designer", "description": "REST API の設計"}],
+ "context": {"repo": "sandbox", "readonly": false}}
+EOF
+echo '前月分の日報をまとめて' | agent-herd route --candidates candidates.json
+# {"handling": {"choice": "task", ...}, "task": {"choice": "daily-report", ...}, "hold": true, ...}
+```
+
+`hold` が真なら「会話を送らずにそのタスクを開く」を勧めてよい（`handling` と流用先の確度が
+どちらも `route.hold_min_confidence`、既定 0.75 以上）。`skills` は添えると質が上がると
+判定したスキル、`routine` は定型化を勧める形かどうか（§5.8）。
+
 ### スキルを読み込む
 
 スキルは自動選択されない。名前を明示する。
@@ -393,13 +414,14 @@ agent-herd SUBCOMMAND ...   -> SUBCOMMAND ...
 | `decide --decision CONTRACT` | stdin | 候補から事実を抽出し、機械が選別する |
 | `judge --questions QUESTIONS` | stdin | 型付きの問いに確率つきで答える |
 | `select [--candidate CLI[/MODEL]]...` | stdin | 依頼文に合うエージェント・モデルを候補から 1 件選ぶ |
+| `route --candidates CANDIDATES` | stdin | 依頼文の扱い（答える / 会話で実行 / タスクやワークフローの流用 / スキル）を決める |
 | `config [set KEY VALUE \| unset KEY]` | 引数 | 各 PC の設定（`~/.agents/agent-herd.yaml`）を表示・変更する |
 | `status [LOG]` | JSONL ログ | 現在の状態を JSON で表示する |
 | `follow [LOG]` | JSONL ログ | 状態を追尾表示する |
 | `replay [PATH] ...` | JSONL ログ | 記録済みの依頼を再生する |
 
 `aider`、`ollama`、`edit` と観測コマンドの残りの引数は adapter が解釈する。`chat`、`defs`、
-`exec`、`harness`、`decide`、`judge`、`select`、`config` は、各節に記載した引数以外を終了コード 2 で拒否する。
+`exec`、`harness`、`decide`、`judge`、`select`、`route`、`config` は、各節に記載した引数以外を終了コード 2 で拒否する。
 
 トップレベルでは、次の 2 つも受け付ける。
 
@@ -648,6 +670,8 @@ agent-herd config unset KEY
 | `select.jev.endpoint` | URL | Jev の URL。省略時 `https://api.typesafe.ai/v1/systemone`（ゲートウェイ経由なら差し替える） |
 | `select.jev.model` | モデル名 | 省略時 `jev-latest` |
 | `select.min_confidence` | 0〜1 | `select` で jev / judge の答えを採る確度の下限。省略時 0.6（実測前の置き値） |
+| `route.min_confidence` | 0〜1 | `route`（§5.8）で答えを採る確度の下限。省略時は `select.min_confidence` と同じ |
+| `route.hold_min_confidence` | 0〜1 | `route` が会話を止めてタスク / ワークフローの流用を勧める（`hold`）確度の下限。省略時 0.75（実測前の置き値） |
 | `judge.calibration` | JSON object / unset | 人が承認したmodel・method・min_coverage・thresholds。用途filter/route/assess/transition。null・省略した用途、未測定model/method、低coverageは既存fallbackへ。未設定なら従来動作。report生成は書き換えない |
 
 
@@ -690,6 +714,47 @@ Python からは `agentcore.modelselect.select(prompt, candidates, purpose=…)`
 出ず、決めなければ順位どおり）。agent-flow はこれを配線済みで、明示指定・run 固定の
 呼び出しでは選ばない。決定には `selector`（段・確度・理由）が残り、receipt の
 `execution_decision` に写る。
+
+#### 5.8 `route`
+
+```text
+agent-herd route --candidates (JSON | PATH) [--min-confidence 0-1] [--hold-min-confidence 0-1]
+                 [--stages jev,judge] [--json]
+```
+
+stdin の依頼文を読み、モデルに送る前に「どう扱うか」を決める。候補は呼び出し側が
+`--candidates` の 1 枚で渡す: `tasks` / `flows`（各 `{id, name, description}`）、`skills`
+（`{name, description}`）、`context`（`repo`、`attachments`、`readonly`）。各 25 件まで
+（judge の choice は A〜Z で、`other` の分を空ける）。絞るのは呼び出し側で、判断の口は
+渡された候補の中から選ぶだけ。
+
+問いは 1 基準 1 問で、同じ状態（依頼の先頭 1200 字 + 候補）を先に置く。
+
+| 問い | 型 | 答え |
+|---|---|---|
+| `handling` | choice | `answer`（実行せず読み取りだけで答える）/ `converse`（会話の中で実行）/ `task` / `flow`（候補の流用）/ other。`readonly` の依頼では訊かない。候補の無い `task` / `flow` は選択肢に出ない |
+| `task` / `flow` | choice | 流用するならどれか。候補 + other。候補が 1 件なら「それと同じ作業か」の boolean で訊き、yes をその候補に写す |
+| `skill:<name>` | boolean | そのスキルを添えると質が上がるか。候補ごとに 1 問 |
+| `routine` | boolean | 入力だけ替えて繰り返す形か |
+
+判断の順は `select`（§5.7）と同じ `jev` → `judge` で、段の試行は同じ実装を使う。
+**決定的な段は無い。** `handling` を確度 `route.min_confidence`（§5.6。省略時は
+`select.min_confidence`）以上で決めた段が答えを持ち、確度不足・other・本文読み
+（`method` が `text`）は決めたことにしない。`judge` は `judge.model` が `off` でなければ使う
+（`auto` は既定モデル。実行の定義が無いので「ローカル候補があるとき」の門は持たない）。
+
+stdout は `{"handling", "task", "flow", "skills", "routine", "hold", "stage", "abstained",
+"reason"}` の 1 行。`handling` / `task` / `flow` は `{choice, confidence, probabilities}` か
+null、`skills` は yes の確率が下限以上のものを確率順に `[{name, probability}]`、`routine` は
+`{value, probability, confidence}` か null。`hold` は「会話を送らずに流用を勧めてよい」で、
+`handling` が task / flow を指し、その確度と流用先の確度がどちらも `route.hold_min_confidence`
+（省略時 0.75）以上のときだけ真。`abstained` は確度が足りず決めていない問い（決めた上での
+other / no は入れない）。`--json` は状態・問いの名前・各段の記録（`attempts`）・使用量も出す。
+stderr に `@agent-usage`。終了コードは 0 が扱いを決めた（`stage` あり）、1 が決めず（か失敗）、
+2 が引数と候補の誤り。
+
+Python からは `agentcore.route.route(prompt, candidates)`。呼び出し側（agent-app の会話画面）は
+`stage` が null なら従来の動き（会話で実行、スキルは文字列の一致）へ倒す。
 
 ### 6. 定義と profile
 
