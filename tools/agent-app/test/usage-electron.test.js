@@ -13,7 +13,7 @@ test('Electron: usage, temporary allocation, manual quota, history, and existing
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-usage-ui-'));
   const repo = path.join(root, 'repo'), data = path.join(root, 'data');
   fs.mkdirSync(repo);
-  store.saveConfig(data, { repos: [repo], lastRepo: repo, lastCli: 'claude', transport: 'headless', useWorktree: false,
+  store.saveConfig(data, { repos: [repo], lastRepo: repo, area: 'conversation', lastCli: 'claude', transport: 'headless', useWorktree: false,
     execution: { tiers: { small: { cli: 'claude' }, medium: { cli: 'claude' }, large: { cli: 'claude' } } },
     audit: { enabled: false }, share: { enabled: false }, update: { onStartup: false } });
   const session = store.createSession(data, { repo, cli: 'claude', model: 'cloud-model', policy: 'recommended', transport: 'headless' });

@@ -294,19 +294,24 @@ function scheduleLabel(schedule) {
 
 function taskId(task) { return String(task && (task.id || task.machine) || ''); }
 
+// 状態語は共有ワークベンチと同じ4つ。定義があるタスクは実行結果を出し、AIとの変更が進んでいれば「変更中」を添える。
+// 実行状態（履歴・定期実行）はagent-loopがファイル実体を確かめるぶん遅い。定義は先に
+// 出し、まだ重ねていない間は「確認中」と分かるように出す（「未実行」と混同しない）。
+function taskStatus(task) {
+  const latest = (task.history || [])[0];
+  const teachingLabels = { draft: '下書き', ready: '利用可能' };
+  const pending = state.taskStatusPending && !task.teachingStatus;
+  return task.teachingStatus ? (teachingLabels[task.teachingStatus] || '下書き')
+    : pending ? '確認中…'
+      : `${latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行'}`;
+}
+
 function renderTaskItems() {
   const ul = $('tasks');
   ul.replaceChildren();
   for (const task of state.tasks) {
-    const latest = (task.history || [])[0];
-    // 状態語は共有ワークベンチと同じ4つ。定義があるタスクは実行結果を出し、AIとの変更が進んでいれば「変更中」を添える。
-    const teachingLabels = { draft: '下書き', ready: '利用可能' };
-    // 実行状態（履歴・定期実行）はagent-loopがファイル実体を確かめるぶん遅い。定義は先に
-    // 出し、まだ重ねていない間は「確認中」と分かるように出す（「未実行」と混同しない）。
     const pending = state.taskStatusPending && !task.teachingStatus;
-    const status = task.teachingStatus ? (teachingLabels[task.teachingStatus] || '下書き')
-      : pending ? '確認中…'
-        : `${latest ? (latest.ok ? '完了' : latest.escalate ? '要確認' : '失敗') : '未実行'}`;
+    const status = taskStatus(task);
     const id = taskId(task);
     const schedules = Array.isArray(task.schedules) ? task.schedules : (task.schedule ? [task.schedule] : []);
     const scheduleState = pending ? '確認中…'
@@ -347,6 +352,62 @@ function renderWorkflowItems() {
     ul.append(li);
   }
   if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'ワークフロー未作成' : '')));
+}
+
+// ---- ホーム ----
+// 1 つの入力欄から始める入口。面は会話画面そのもの（空状態と入力欄）で、判定は会話の送信経路
+// （runTurn の振り分け）に任せる。サイドバーは会話・タスク・ワークフローを横断した直近の一覧で、
+// 押すと行き先の画面でその項目を開く（受信箱と同じ経路）。判定も画面もここでは作らない。
+const HOME_LIMIT = 20;
+
+function homeItems() {
+  const runOf = (workflow) => state.workflowRuns.find((item) => item.workflowId === workflow.id || item.input?.workflowId === workflow.id);
+  const items = [
+    ...state.sessions.map((s) => ({ kind: 'conversation', id: s.id, title: s.title || '（無題）', at: s.updatedAt || '',
+      sub: `会話 · ${s.cli}${state.running.has(s.id) ? ' · 応答中' : ''}` })),
+    ...state.tasks.map((task) => ({ kind: 'task', id: taskId(task), title: task.name || task.machine || taskId(task),
+      at: ((task.history || [])[0] || {}).finishedAt || '', sub: `タスク · ${taskStatus(task)}` })),
+    ...state.workflows.map((workflow) => ({ kind: 'workflow', id: workflow.id, title: workflow.name || workflow.id,
+      at: (runOf(workflow) || {}).updatedAt || (runOf(workflow) || {}).createdAt || '', sub: `ワークフロー · ${workflow.teaching ? workflow.teachingStatus : workflowState(workflow)}` })),
+  ];
+  return items.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, HOME_LIMIT);
+}
+
+function renderHomeItems() {
+  const ul = $('home-items');
+  ul.replaceChildren();
+  for (const item of homeItems()) {
+    const li = el('li', `row-item${item.kind === 'conversation' && state.running.has(item.id) ? ' running' : ''}`);
+    const pick = el('button', 'list-pick');
+    const body = el('span', 'grow');
+    body.append(el('div', '', item.title), el('div', 'sub', item.sub));
+    pick.append(body);
+    pick.title = `「${item.title}」を開く`;
+    pick.onclick = () => openHomeItem(item).catch((err) => notice(err.message, 'error'));
+    li.append(pick);
+    ul.append(li);
+  }
+  if (!ul.children.length) ul.append(el('li', 'empty', state.repo ? '直近の項目なし' : ''));
+}
+
+// 項目から行くのは既存の画面（会話・タスク・ワークフロー）
+async function openHomeItem(item) {
+  if (item.kind === 'conversation') { await openSessionInRepo(state.repo, item.id); return; }
+  const area = item.kind === 'task' ? 'tasks' : 'workflows';
+  await showArea(area);
+  await selectAreaItem(area, item.id);
+}
+
+// ホームから振り分けがタスク／ワークフローの流用で止めたとき。案内の 1 枚しか無い会話は残さず、
+// 案内が指す先（タスク画面・ワークフロー画面）をそのまま開く。実行のボタンは人が押す。本文は入力欄に残る
+async function leaveHomeRouted(session) {
+  const routing = [...session.messages].reverse().find((m) => m.role === 'routing' && m.routing)?.routing;
+  await api.removeSession(session.id);
+  state.current = null;
+  state.draft = !!state.repo;
+  state.sessions = await api.listSessions(state.repo);
+  if (routing) await openRouted(routing);
+  else renderHeader();
 }
 
 // ---- 受信箱 ----
@@ -570,12 +631,13 @@ function renderShareUnread() {
 
 function renderAreaContext() {
   const info = AgentNavigation.areaInfo(state.area);
-  $('area-list-title').textContent = info.label;
+  $('area-list-title').textContent = info.listLabel || info.label;
   $('session-new').setAttribute('aria-label', info.createLabel);
   $('session-new').title = info.createLabel;
-  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests', 'inbox-items']) $(id).hidden = id !== info.listId;
-  $('session-new').hidden = state.area === 'share' || state.area === 'inbox';      // 共有の依頼は会話から出す。受信箱は入口だけ
+  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests', 'inbox-items', 'home-items']) $(id).hidden = id !== info.listId;
+  $('session-new').hidden = ['share', 'inbox', 'home'].includes(state.area);      // 共有の依頼は会話から出す。受信箱とホームは入口だけ
   if (state.area === 'conversation') renderSessions();
+  else if (state.area === 'home') renderHomeItems();
   else if (state.area === 'tasks') renderTaskItems();
   else if (state.area === 'workflows') renderWorkflowItems();
   else if (state.area === 'inbox') renderInboxItems();
@@ -664,6 +726,7 @@ async function loadAreaItems() {
   state.areaError = '';
   if (!state.repo || state.area === 'conversation') { renderAreaContext(); return; }
   if (state.area === 'tasks') await loadTaskItems(state.repo);
+  else if (state.area === 'home') await Promise.all([loadTaskItems(state.repo), loadWorkflowItems(state.repo)]);   // 直近の一覧の材料
   else await loadWorkflowItems(state.repo);
 }
 
@@ -1293,7 +1356,8 @@ function renderPhase(ph) {
 
 function renderHeader() {
   const cur = state.current;
-  $('chat-title').textContent = cur ? (cur.title || '（無題）') : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
+  $('chat-title').textContent = cur ? (cur.title || '（無題）') : state.area === 'home' ? 'ホーム'
+    : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
   // 別のリポジトリから分岐した会話は、題名の下に分岐元を 1 行出す（押すと元の会話へ戻る）
   const origin = cur && cur.originSession;
   const externalOrigin = cur && cur.externalOrigin;
@@ -1803,6 +1867,7 @@ function renderMessages() {
   const cur = state.current;
   if (!cur) {
     start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリを登録してください'));
+    if (state.repo && state.area === 'home') start.append(el('p', '', 'エージェント・スキル・進め方は依頼から決めます'));
     if (!state.repo) start.append(el('p', '', 'サイドバーから追加できます。'));
     if (!state.repo) {
       const button = el('button', 'primary', 'リポジトリを追加');
@@ -1957,12 +2022,13 @@ async function sendPrompt() {
     } finally { state.pending.delete(id); }
     if (res && res.held) {
       // 振り分けが会話を止めた（タスク / ワークフローの流用）。本文と添付は入力欄に残し、
-      // 会話の中の案内（開く / そのまま会話で実行）から次を選んでもらう。
+      // 会話の中の案内（開く / そのまま会話で実行）から次を選んでもらう。ホームからは案内を挟まず行き先を開く
       state.current = await api.readSession(id);
+      if (state.area === 'home') { await leaveHomeRouted(state.current); return res; }
       renderHeader();
       renderMessages();
       inputStatus('success', res.held.notice, 4000);
-      return;
+      return res;
     }
     $('prompt').value = '';
     state.turnRouting = 'auto';
@@ -1987,11 +2053,15 @@ async function sendPrompt() {
     renderHeader();
     renderMessages();
     renderSessions();
+    // ホームから送った会話は、会話画面で続ける
+    if (state.area === 'home') await showArea('conversation');
+    return res;
   } catch (err) {
     notice(err.message, 'error');
     inputStatus('error', '送信失敗（入力は保持）');
     renderHeader();
   }
+  return null;
 }
 
 // ---- 添付 --------------------------------------------------------------------
@@ -2157,8 +2227,9 @@ async function showArea(area, { persist = true, action = '' } = {}) {
   state.area = AgentNavigation.normalizeArea(area);
   const share = state.area === 'share';
   const inbox = state.area === 'inbox';
+  const home = state.area === 'home';
   const automation = state.area === 'tasks' || state.area === 'workflows';
-  const workspace = state.area !== 'conversation';
+  const workspace = state.area !== 'conversation' && !home;
   renderAutomationHeader();
   $('app').classList.toggle('workspace-mode', workspace);
   $('main').hidden = workspace;
@@ -2166,7 +2237,7 @@ async function showArea(area, { persist = true, action = '' } = {}) {
   $('share-area').hidden = !share;
   $('inbox-area').hidden = !inbox;
   if (!share) Share.hide();
-  const buttons = { conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), share: $('area-share'), inbox: $('area-inbox') };
+  const buttons = { home: $('area-home'), conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), share: $('area-share'), inbox: $('area-inbox') };
   for (const [name, button] of Object.entries(buttons)) {
     const selected = name === state.area;
     button.classList.toggle('on', selected);
@@ -2195,6 +2266,10 @@ async function showArea(area, { persist = true, action = '' } = {}) {
     const latest = await api.getConfig();
     state.config = latest;
     if (state.repo !== latest.lastRepo) await selectRepo(latest.lastRepo);
+    if (home) {
+      newDraft();                                   // ホームは常に新しい会話から
+      if (state.repo) await loadAreaItems();        // 直近の一覧（タスク・ワークフロー）
+    }
     Term.refit();
   }
   if (persist) state.config = await api.saveConfig({ area: state.area });
@@ -2702,6 +2777,7 @@ async function init() {
   refreshAttention();
   setInterval(refreshAttention, 15000);
 
+  $('area-home').onclick = () => showArea('home').catch((err) => notice(err.message, 'error'));
   $('area-work').onclick = () => showArea('conversation').catch((err) => notice(err.message, 'error'));
   $('task-create-manual').onclick = () => syncAutomationWorkbench('manual').catch((err) => notice(err.message, 'error'));
   $('area-tasks').onclick = () => showArea('tasks', { action: 'new' }).catch((err) => notice(err.message, 'error'));

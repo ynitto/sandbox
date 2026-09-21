@@ -25,6 +25,10 @@
 
       <button type="button" id="session-search-open" class="quiet row"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><span>会話を検索</span></button>
       <nav id="areas" class="app-menu" aria-label="主要メニュー">
+        <button type="button" id="area-home">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg>
+          <span>ホーム</span>
+        </button>
         <button type="button" id="area-inbox">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 13V6h16v7M4 13l2 5h12l2-5M4 13h5l1 2h4l1-2h5"/></svg>
           <span>受信箱</span>
@@ -73,6 +77,7 @@
         <ul id="workflows" class="list grow" hidden></ul>
         <ul id="share-requests" class="list grow" hidden></ul>
         <ul id="inbox-items" class="list grow" hidden></ul>
+        <ul id="home-items" class="list grow" hidden></ul>
       </div>
 
       <button type="button" id="usage-open" class="side-settings"><span id="usage-indicator">AIの利用状況</span></button>

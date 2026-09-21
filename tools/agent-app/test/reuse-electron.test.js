@@ -17,7 +17,7 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
   const target = path.join(dir, 'target'); fs.mkdirSync(target);
   const added = path.join(dir, 'added'); fs.mkdirSync(added);
   const store = require('../src/main/store');
-  store.saveConfig(data, { repos: [repo, target], lastRepo: repo, useWorktree: false, transport: 'headless' });
+  store.saveConfig(data, { repos: [repo, target], lastRepo: repo, area: 'conversation', useWorktree: false, transport: 'headless' });
   const session = store.createSession(data, { repo, cli: 'codex', transport: 'headless', readonly: true });
   store.appendMessage(data, session.id, { role: 'user', text: '月次集計を作成' });
   store.appendMessage(data, session.id, { role: 'assistant', text: '集計しました。\n@artifact reports/month.xlsx' });

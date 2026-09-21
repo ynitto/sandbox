@@ -16,7 +16,7 @@ test('Electron: automatic choice launches the selected model and persists across
   const stub = path.join(root, 'stub.js');
   fs.writeFileSync(stub, "process.stdin.resume(); process.stdin.on('end', () => setTimeout(() => console.log('answer from '+process.argv.slice(2).join(' ')), 200));");
   for (const cli of ['alpha', 'beta']) fs.writeFileSync(path.join(definitions, `${cli}.json`), JSON.stringify({ name: cli, command: [process.execPath, stub, cli], model_flag: '--model', default_model: cli + '-model', headless_autonomy: 'tool-loop', relative_cost: 1 }));
-  store.saveConfig(data, { repos: [root], lastRepo: root, lastCli: 'alpha', transport: 'headless', useWorktree: false,
+  store.saveConfig(data, { repos: [root], lastRepo: root, area: 'conversation', lastCli: 'alpha', transport: 'headless', useWorktree: false,
     allocation: { mode: 'auto' }, execution: { tiers: { small: { cli: 'alpha', model: 'alpha-model' }, medium: { cli: 'alpha', model: 'alpha-model' }, large: { cli: 'beta', model: 'beta-model' } } },
     audit: { enabled: false }, evaluation: { mode: 'off' }, share: { enabled: false }, update: { onStartup: false } });
   const app = await pw._electron.launch({ executablePath: require('electron'), args: [path.resolve(__dirname, '..'), '--no-sandbox', `--user-data-dir=${data}`], env: { ...process.env, KIRO_AGENTS_DIR: definitions } });

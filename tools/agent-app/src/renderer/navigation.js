@@ -4,6 +4,8 @@
 // Node からも読み込める純粋なモジュールにし、保存値の移行を画面なしで検証する。
 (function exposeNavigation() {
   const AREAS = {
+    // ホーム: 1 つの入力欄から始める入口。一覧は会話・タスク・ワークフローを横断した直近の項目
+    home: { label: 'ホーム', listLabel: '直近', createLabel: '新しい会話', listId: 'home-items' },
     conversation: { label: '会話', createLabel: '新しい会話', listId: 'sessions' },
     tasks: { label: 'タスク', createLabel: '新しいタスク', listId: 'tasks' },
     workflows: { label: 'ワークフロー', createLabel: '新しいワークフロー', listId: 'workflows' },
@@ -17,6 +19,7 @@
     if (value === 'workflows') return 'workflows';
     if (value === 'share') return 'share';
     if (value === 'inbox') return 'inbox';
+    if (value === 'home') return 'home';
     return 'conversation';
   }
 

@@ -202,7 +202,23 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
 
     await win.waitForSelector('#area-tasks');
     await win.waitForFunction(() => typeof document.getElementById('area-tasks').onclick === 'function', null, { timeout: 20000 });
-    assert.match(await win.textContent('#side'), /会話.*タスク.*ワークフロー/s);
+    assert.match(await win.textContent('#side'), /ホーム.*受信箱.*会話.*タスク.*ワークフロー/s);
+
+    // ホーム: 面は会話画面の空状態と入力欄そのもの。サイドバーは会話・タスク・ワークフローを横断した直近の一覧で、
+    // ＋ は出さない。押すと行き先の画面で開く（ここでは押さない——後段の前提を変えない）
+    await win.click('#area-home');
+    await win.waitForFunction(() => document.getElementById('chat-title').textContent === 'ホーム', null, { timeout: 20000 });
+    assert.strictEqual(await win.locator('#app > #main').isVisible(), true, 'ホームは会話画面の面を使う');
+    assert.strictEqual(await win.locator('#conversation-start').isVisible(), true);
+    assert.strictEqual(await win.locator('#composer .composer-shell').isVisible(), true, '入力欄は会話画面のもの');
+    assert.strictEqual(await win.locator('#session-new').isVisible(), false, 'ホームに ＋ は出さない（入口だけ）');
+    assert.strictEqual(await win.locator('#area-list-title').textContent(), '直近');
+    await win.waitForFunction(() => /ワークフロー/.test(document.getElementById('home-items').textContent), null, { timeout: 20000 });
+    const homeText = await win.locator('#home-items').textContent();
+    for (const name of ['画面を確認して', 'リリース確認', '並列レビュー']) assert.ok(homeText.includes(name), `直近の一覧に ${name} が無い: ${homeText}`);
+    assert.strictEqual(await win.locator('#home-items .list-pick').count(), (await win.locator('#home-items .row-item').count()), '行は会話一覧と同じ形');
+    if (process.env.AGENT_APP_HOME_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_HOME_SCREENSHOT });
+    await win.click('#area-work');
     await win.locator('#conversation-start').waitFor();
     const composerBefore = await win.locator('#composer').boundingBox();
     await electron.evaluate(({ shell }) => { global.originalOpenExternal = shell.openExternal; shell.openExternal = async url => { global.openedEditorUrl = url; }; });

@@ -386,3 +386,36 @@ test('評価と課題は既存の部品で組む（設定の行・検索の足�
   const added = css.slice(css.indexOf('/* 課題（受信箱）'));
   assert.ok(!/#[0-9a-f]{3,6}\b/i.test(added), `直値の色: ${added}`);
 });
+
+test('ホームは会話画面の面（空状態と入力欄）と一覧の行を借り、判定は会話の送信経路に置く', () => {
+  const html = read('renderer/index.html');
+  const css = read('renderer/styles.css');
+  const renderer = read('renderer/renderer.js');
+  const navigation = read('renderer/navigation.js');
+  const store = read('main/store.js');
+  // 1. 主要メニューの先頭の 1 領域。一覧は同じ .list、＋ は出さない（受信箱と同じ入口だけ）
+  const menu = html.match(/<nav id="areas"[\s\S]*?<\/nav>/)?.[0] || '';
+  assert.match(menu, /id="area-home">[\s\S]*?<span>ホーム<\/span>/);
+  assert.ok(menu.indexOf('id="area-home"') < menu.indexOf('id="area-inbox"'), 'ホームは主要メニューの先頭');
+  assert.match(html, /<ul id="home-items" class="list grow" hidden><\/ul>/);
+  assert.match(navigation, /home: \{ label: 'ホーム', listLabel: '直近', createLabel: '新しい会話', listId: 'home-items' \}/);
+  assert.match(renderer, /\$\('session-new'\)\.hidden = \['share', 'inbox', 'home'\]\.includes\(state\.area\)/);
+  // 2. 面は会話画面そのもの（#main の空状態と #composer）。ホーム専用の section・入力欄・見出し帯・CSS を作らない
+  assert.ok(!html.includes('id="home-area"') && !html.includes('id="home-prompt"') && !html.includes('id="home-head"'), 'ホーム専用の面や入力欄を作らない');
+  assert.match(renderer, /const workspace = state\.area !== 'conversation' && !home;/);
+  assert.match(renderer, /if \(home\) \{\s*newDraft\(\);/, 'ホームは常に新しい会話（空状態）から');
+  assert.deepStrictEqual(css.match(/^[^{\n]*home[^{\n]*\{/gm) || [], [], 'ホームに専用の見た目の規則を足さない');
+  assert.strictEqual((html.match(/class="area-head"/g) || []).length, 5, 'ホームは見出し帯を増やさない（会話の見出し帯を使う）');
+  // 3. 直近の一覧は会話一覧と同じ行（.row-item / .list-pick）。押すと既存の画面（会話・タスク・ワークフロー）へ行く
+  assert.match(renderer, /function renderHomeItems\(\)[\s\S]*?const pick = el\('button', 'list-pick'\);[\s\S]*?pick\.onclick = \(\) => openHomeItem\(item\)/);
+  assert.match(renderer, /async function openHomeItem\(item\) \{\s*if \(item\.kind === 'conversation'\) \{ await openSessionInRepo\(state\.repo, item\.id\); return; \}\s*const area = item\.kind === 'task' \? 'tasks' : 'workflows';\s*await showArea\(area\);\s*await selectAreaItem\(area, item\.id\);/);
+  // 4. 判定は会話の送信経路（runTurn の振り分け）そのまま。ホームは行き先を開くだけで、実行のボタンは押さない
+  assert.ok(!/home:route|homeRoute|api\.route\(/.test(renderer), 'ホーム専用の判定を作らない');
+  assert.match(renderer, /if \(state\.area === 'home'\) \{ await leaveHomeRouted\(state\.current\); return res; \}/);
+  assert.match(renderer, /async function leaveHomeRouted\(session\) \{[\s\S]*?await api\.removeSession\(session\.id\);[\s\S]*?if \(routing\) await openRouted\(routing\);/);
+  assert.match(renderer, /if \(state\.area === 'home'\) await showArea\('conversation'\);/);
+  assert.ok(!/leaveHomeRouted[\s\S]{0,600}automation\.run\(|leaveHomeRouted[\s\S]{0,600}flowRun\(/.test(renderer), '流用先を開くだけで実行しない');
+  // 5. 初回の既定画面はホーム。保存した領域はそのまま
+  assert.match(store, /area: 'home', view: 'chat'/);
+  assert.match(store, /\['tasks', 'workflows', 'share', 'inbox', 'home'\]\.includes\(next\.area\)/);
+});

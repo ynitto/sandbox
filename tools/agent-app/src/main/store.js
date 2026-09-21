@@ -17,7 +17,7 @@ const attention = require('./attention');
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
 // useWorktree  … 会話ごとに git worktree で作業フォルダを分ける機能を使うか（既定 true）
-// area         … 最後に開いていた主要領域（conversation | tasks | workflows | share | inbox）
+// area         … 最後に開いていた主要領域（home | conversation | tasks | workflows | share | inbox）。初回はホーム
 // view         … 会話領域で最後に開いていた画面（chat | files）
 // lastWorktree … リポジトリ → 最後に選んだ作業フォルダ名（'' はリポジトリ本体）
 // lastTaskInputs … リポジトリ → タスクの保存名 → 前回の手動実行で入れた実行条件（値だけ。パスは持たない）
@@ -25,7 +25,7 @@ const attention = require('./attention');
 //                 since は受信箱を使い始めた時刻（それ以前の結果は既読扱い）。作業の状態は持たない
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
-  wslDistro: '', transport: 'tmux', useWorktree: true, area: 'conversation', view: 'chat', lastFiles: {}, lastWorktree: {},
+  wslDistro: '', transport: 'tmux', useWorktree: true, area: 'home', view: 'chat', lastFiles: {}, lastWorktree: {},
   lastTask: {}, lastWorkflow: {}, lastTaskInputs: {},
   automationSkillDir: '', automationAgent: '', automationModel: '',
   attentionSeen: { since: '', items: {} },
@@ -71,7 +71,7 @@ function normalize(raw) {
   next.transport = next.transport === 'headless' ? 'headless' : 'tmux';
   next.useWorktree = next.useWorktree !== false;
   next.area = next.area === 'automation' ? 'tasks'
-    : ['tasks', 'workflows', 'share', 'inbox'].includes(next.area) ? next.area : 'conversation';
+    : ['tasks', 'workflows', 'share', 'inbox', 'home'].includes(next.area) ? next.area : 'conversation';
   next.view = next.view === 'files' ? 'files' : 'chat';
   next.lastFiles = next.lastFiles && typeof next.lastFiles === 'object' ? next.lastFiles : {};
   next.lastWorktree = next.lastWorktree && typeof next.lastWorktree === 'object' ? next.lastWorktree : {};

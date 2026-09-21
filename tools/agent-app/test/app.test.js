@@ -213,7 +213,9 @@ test('旧領域を三領域へ移行し、各領域の表示名を返す', () =>
   assert.strictEqual(navigation.normalizeArea('automation'), 'tasks');
   assert.strictEqual(navigation.normalizeArea('workflows'), 'workflows');
   assert.strictEqual(navigation.normalizeArea('unknown'), 'conversation');
+  assert.strictEqual(navigation.normalizeArea('home'), 'home');
   assert.deepStrictEqual(navigation.areaInfo('tasks'), { label: 'タスク', createLabel: '新しいタスク', listId: 'tasks' });
+  assert.deepStrictEqual(navigation.areaInfo('home'), { label: 'ホーム', listLabel: '直近', createLabel: '新しい会話', listId: 'home-items' });
 });
 
 test('実行状態を取得できない場合も保存済み定義をタスク一覧へ出す', () => {
@@ -250,6 +252,8 @@ test('設定は三領域とリポジトリごとの最後のタスク・ワー�
   const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-navigation-'));
   assert.strictEqual(store.saveConfig(ud, { area: 'automation' }).area, 'tasks');
   assert.strictEqual(store.saveConfig(ud, { area: 'workflows' }).area, 'workflows');
+  assert.strictEqual(store.saveConfig(ud, { area: 'home' }).area, 'home');
+  assert.strictEqual(store.saveConfig(ud, { area: 'bogus' }).area, 'conversation', '知らない値は会話（初回の既定だけホーム）');
   const config = store.saveConfig(ud, {
     area: 'tasks', lastTask: { '/repo/a': 'release-check' }, lastWorkflow: { '/repo/a': 'parallel-review' },
   });
