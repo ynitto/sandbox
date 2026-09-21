@@ -178,6 +178,25 @@ class CalibrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.report([], min_confidence=float("nan"))
 
+    def test_assess_cells_run_in_calibration_mode_with_score_questions(self):
+        """assess（`score` の問い）が calibration に載る。oracle は段の値を `score` に置き、
+        正誤は本番と同じ丸めで段へ落とす。r が 1 つに決まらない AS2 は測る前に断る。"""
+        row = readout_eval.calibration_run_one("AS7", 1, "fake", fake=True)
+        self.assertEqual((row["status"], row["expected"], row["question_ok"]),
+                         ("ok", {"r": "1"}, {"r": True}))
+        self.assertEqual(row["answers"]["r"]["type"], "score")
+        self.assertTrue(row["ok"], row["note"])
+        group = readout_eval.calibration_report([row], model="fake")["methods"][0]
+        self.assertEqual((group["calibration_n"], group["accuracy_answered"]), (1, 1))
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            readout_eval.calibration_run_one("AS2", 1, "fake", fake=True)
+
+    def test_question_ok_rounds_score_like_production(self):
+        ok = readout_eval._question_ok
+        self.assertTrue(ok({"type": "score", "score": 2.5}, "3"))      # 偶数丸めにしない
+        self.assertFalse(ok({"type": "score", "score": 2.4}, "3"))
+        self.assertFalse(ok({"type": "score", "score": None}, "1"))   # text は読めなかった扱い
+
     def test_oracle_refuses_ambiguous_labels(self):
         q = {"q": {"type": "boolean", "instructions": "test"}}
         with self.assertRaisesRegex(ValueError, "exactly one"):

@@ -486,7 +486,10 @@ CELLS = {
 # 選択肢に並べた 1 問、`+checklist` は段ごとの boolean。どちらも**旧モード専用**——
 # 答えを機械が `done` / `replan` へ畳むので、正解を通す割り当てが複数ある。
 # calibration の `oracle` は「正解を通す割り当てがちょうど 1 つ」を要求するため、多対一の
-# 変種はそちらへ載せない（載せるなら期待値を集合で持つ話になる。今回は決めない）。
+# 変種は既定の calibration 集合（`CELLS`）に載せない（載せるなら期待値を集合で持つ話になる。
+# 今回は決めない）。`--calibration --cases` で名指しすれば載せられ、割り当てが 1 つに
+# 決まらないセルは oracle が測る前に断る——assess の AS2 がそれで、check が a しか見ないので
+# r が決まらない。AS1 / AS3〜AS8 は r が 1 つに決まる（c と a は本番が機械で埋める）。
 VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
             for name, build in (
                 ("stages", _evaluator_stages_cell),
@@ -648,19 +651,39 @@ def oracle(questions, to_check, check):
     Refuse ambiguous/non-finite fixtures before making any network request.
     """
     names = list(questions)
-    domains = [[k for k, _ in judge.normalize_question(n, questions[n])["options"]]
-               for n in names]
+    normalized = [judge.normalize_question(n, questions[n]) for n in names]
+    domains = [[k for k, _ in q["options"]] for q in normalized]
     if math.prod(map(len, domains)) > 4096:
         raise ValueError("oracle search exceeds 4096 assignments")
     valid = []
     for values in itertools.product(*domains):
-        answers = {n: {"choice": v, "value": v == "yes"}
-                   for n, v in zip(names, values)}
+        answers = {n: _oracle_answer(q, v) for n, q, v in zip(names, normalized, values)}
         if check(to_check(answers))[0]:
             valid.append(dict(zip(names, values)))
     if len(valid) != 1:
         raise ValueError(f"oracle must accept exactly one assignment, got {len(valid)}")
     return valid[0]
+
+
+def _oracle_answer(question: dict, key: str) -> dict:
+    """その選択肢を確信した答え（oracle の総当たり用）。score は段の値そのものを `score` に
+    置く——本番（`assess_judge`）と `_assess_cell` は `score` を読むので、`choice` だけでは
+    to_check が空を返す。"""
+    answer = {"choice": key, "value": key == "yes"}
+    if question["type"] == "score":
+        answer.update(score=float(key), bucket=key)
+    return answer
+
+
+def _question_ok(answer: dict, expected: str) -> bool:
+    """問い 1 つの正誤。score は本番と同じ式で段へ落とす（確率加重の四捨五入・組み込みの
+    round() は偶数丸めで 2.5 が 2 へ落ちる）。分布が無い（text）score は読めなかった扱い。"""
+    if answer["type"] == "boolean":
+        return ("yes" if answer["value"] else "no") == expected
+    if answer["type"] == "score":
+        score = answer.get("score")
+        return score is not None and str(math.floor(float(score) + 0.5)) == expected
+    return answer["choice"] == expected
 
 
 def percentile(values, p):
@@ -734,7 +757,7 @@ def calibration_report(rows, *, model, min_confidence=0.0, thresholds=THRESHOLDS
                                    "expected": row["expected"][name]})
         accepted = [r for r in points if _accepted(r, min_confidence)]
         calibrated = [r for r in points if method != "text" and
-                      r["answer"]["type"] in ("boolean", "choice")]
+                      r["answer"]["type"] in ("boolean", "choice", "score")]
         buckets = []
         for low, high in BINS:
             bucket = [r for r in calibrated if bin_of(r["answer"]["confidence"]) == (low, high)]
@@ -845,9 +868,7 @@ def calibration_run_one(cid, run, model, *, samples=1, fake=False):
             answers = judge.evaluate(state, questions, model=model, samples=samples, request=request)["answers"]
         ok, note = case["check"](to_check(answers))
         row.update(status="ok", ok=bool(ok), note=note, answers=answers,
-                   question_ok={n: ("yes" if a["value"] else "no") == expected[n]
-                                if a["type"] == "boolean" else a["choice"] == expected[n]
-                                for n, a in answers.items()})
+                   question_ok={n: _question_ok(a, expected[n]) for n, a in answers.items()})
     except (judge.JudgeError, OSError, ValueError) as exc:
         row.update(status="transport_failure" if transport else "response_failure", error=str(exc))
     if requests:
@@ -862,7 +883,9 @@ def calibration_main(args):
     if args.repeat < 1 or args.samples < 1 or not 0 <= args.min_confidence <= 1:
         raise ValueError("repeat/samples must be positive; min-confidence must be in [0,1]")
     cids = [c.strip() for c in args.cases.split(",")]
-    if any(c not in CELLS for c in cids) or len(cids) != len(set(cids)):
+    # 既定は `CELLS` だが、名指しなら旧モードのセル（assess の AS など）も測れる。割り当てが
+    # 1 つに決まらないセルは oracle が測る前に断る（ollama を叩かない）。
+    if any(c not in ALL_CELLS for c in cids) or len(cids) != len(set(cids)):
         raise ValueError("unknown or duplicate case ID")
     if args.replay:
         rows = [json.loads(line) for line in Path(args.replay).read_text().splitlines() if line.strip()]
