@@ -1065,3 +1065,11 @@ route を決めたときの report と同じ扱いである。
 2 つの置き場の関係は `max(_ASSESS_JUDGE_MIN_CONFIDENCE, policy.assess)` で、policy を入れれば
 定数は緩める側にしか働かない。policy は人が承認して保存するものなので、値はここで決めず
 提案に留める。
+
+### 決めた（2026-09-21）
+
+人の承認を得て、両方を 0.9 にした——`_ASSESS_JUDGE_MIN_CONFIDENCE`（9ee6bc8a9）と、この mac の
+較正 policy の `thresholds.assess`（受領書は
+[`results/archive/20260921-gemma4-e4b-assess-calibration/deployment.json`](../../tools/agent-tools/eval/results/archive/20260921-gemma4-e4b-assess-calibration/deployment.json)）。
+policy の側の記録は較正適用設計 2026-09-20 の追記にある。配布物は再インストールしておらず、
+この mac の本番で効くのは policy の 0.9 だけ（旧コードは c も訊く）。

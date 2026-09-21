@@ -1,0 +1,49 @@
+{
+  "applied_at": "2026-09-21T01:05:06.730255+00:00",
+  "change": "thresholds.assess: null -> 0.9（filter / route / min_coverage は据え置き）",
+  "backup": "/Users/nitto/.agents/calibration-backups/20260921T010405Z",
+  "judge_config": "/Users/nitto/.agents/agent-herd.yaml",
+  "judge_model_mode": "auto",
+  "policy": {
+    "model": "gemma4:e4b",
+    "method": "logprobs",
+    "min_coverage": 0.8,
+    "thresholds": {
+      "filter": 0.6,
+      "route": 0.8,
+      "assess": 0.9,
+      "transition": null
+    },
+    "status": "provisional",
+    "evidence": [
+      "tools/agent-tools/eval/results/archive/20260920-gemma4-e4b-calibration/report.json",
+      "tools/agent-tools/eval/results/archive/20260921-gemma4-e4b-assess-calibration/report.json"
+    ]
+  },
+  "repository_revision": "b26490a01d80a97382f83bb2129b88eef26cba88",
+  "consumer_floor": {
+    "agent_project._ASSESS_JUDGE_MIN_CONFIDENCE": 0.9,
+    "commit": "9ee6bc8a9"
+  },
+  "binaries": {
+    "agent-herd": "6e7e3384e65aad0b2763f7f35b5a07a552e701017cb79ac904dd4c623b9a49f8",
+    "agent-flow": "8ab35a7480531398a496a3e3ac577453f95b9a889255ac8437ada6d9bbe07019",
+    "agent-project": "aca775fd052b484df667b4d35b70a53a6503367653c8ec80e5fcdb9f634862ac",
+    "agent-loop": "d3ee41828fd5898e83d0bc0053829fc9100544e64d81ff98def4edca50b95450"
+  },
+  "binaries_note": "配布物は再インストールしていない。~/.local/bin/agent-project（2026-09-20 17:11）は c を judge に訊く旧コードで、定数も 0.0 のまま——policy の 0.9 だけが効く。定数 0.9 と r だけを訊く形は install.sh の再実行で届く。",
+  "verification": {
+    "gate_checks": [
+      "assess_answers_at_0.95",
+      "assess_holds_at_0.85",
+      "assess_holds_low_coverage",
+      "assess_holds_model_mismatch",
+      "assess_holds_text",
+      "assess_judge_falls_back_below_0.9",
+      "assess_judge_scores_with_real_policy",
+      "consumer_floor_not_loosened",
+      "transition_still_held"
+    ],
+    "result": "passed"
+  }
+}

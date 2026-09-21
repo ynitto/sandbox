@@ -1,0 +1,16 @@
+{
+  "model": "gemma4:e4b",
+  "method": "logprobs",
+  "min_coverage": 0.8,
+  "thresholds": {
+    "filter": 0.6,
+    "route": 0.8,
+    "assess": 0.9,
+    "transition": null
+  },
+  "status": "provisional",
+  "evidence": [
+    "tools/agent-tools/eval/results/archive/20260920-gemma4-e4b-calibration/report.json",
+    "tools/agent-tools/eval/results/archive/20260921-gemma4-e4b-assess-calibration/report.json"
+  ]
+}

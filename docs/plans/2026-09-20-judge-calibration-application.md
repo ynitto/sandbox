@@ -40,7 +40,8 @@ E3（出力段不足）は0.9508、E4（集計段不足）は0.9487、E5（収�
 |---|---|---|
 | filter | min confidence 0.6 | F1の最小0.6272。3/3セル、18/18問正解。0.7では正解セルを全て棄権。1 fixtureのみで、実際の複数deps入力のend-to-end性能は未確定 |
 | route | min confidence 0.8 | RO1〜3が9/9正解。otherの0.8186を残す。otherは「書込先を決めない」有効回答で、自動実行を意味しない |
-| assess / statemachine transition | judge採用保留 | 当該用途のラベル付き実測なし。既存の生成経路へfallbackするため、ワークフロー全体の停止や人手承認を追加するものではない |
+| assess | min confidence 0.9（2026-09-21 適用） | 訊く軸が r だけになってから AS1〜AS8 × 3 で 24/24、calibration モード AS1 / AS3〜AS8 × 3 で 21/21・Brier 4e-6。正解の最小 0.9968 を 1 桁で切り下げた。7 セルで report は insufficient_data のまま。詳細は判定 AI 読み出し設計 2026-09-20 §20 |
+| statemachine transition | judge採用保留 | 当該用途のラベル付き実測なし。既存の生成経路へfallbackするため、ワークフロー全体の停止や人手承認を追加するものではない |
 | PR #862 自動quality評価 | sample + evidence-shadowで比較・記録 | 後続の根拠別評価を利用。完了・routeには使わない。E1〜6をquality score／issue choiceの校正結果と読み替えない |
 
 filter/routeも精度保証ではなく、ユーザーの適用指示に基づく暫定設定。
@@ -89,3 +90,31 @@ App設定はsample + evidence-shadowへ復元し、以前のoff化案は適用�
 バックアップは`/Users/nitto/.agents/calibration-backups/20260920T002955Z`。
 既存judgeテスト30件と、4つのインストール済みCLIのhelp起動・実設定を使うgate検証が成功した。
 gate検証にはthreshold境界、低coverage、text、別model、assess/transitionの保留を含む。
+
+## 追記: assess の保留を解く（2026-09-21）
+
+訊く軸が r だけになった（判定 AI 読み出し設計 2026-09-20 §19）ので、assess を測り直して
+`thresholds.assess` を null から 0.9 にした。filter / route / min_coverage は据え置き。
+statemachine transition は保留のまま。
+
+null は「保留」だが `calibrated_abstained` は保留の用途で全問を棄権扱いにするので、
+2026-09-20 の適用以降この mac の本番は assess で judge を使っておらず、毎回生成経路へ
+倒れていた。0.9 を入れて初めて judge の答えが採られる。
+
+| | 値 |
+|---|---|
+| 旧モード AS1〜AS8 × 3 | 24/24・確度 0.9968 以上 |
+| calibration モード AS1 / AS3〜AS8 × 3 | 21/21・Brier 4e-6・ECE 0.001・coverage p10 0.9999 |
+| しきい値 | 0.9（正解の最小 0.9968 を 1 桁で切り下げ。filter / route と同じ決め方） |
+| consumer 側の下限 | `_ASSESS_JUDGE_MIN_CONFIDENCE` 0.0 → 0.9（9ee6bc8a9）。policy とは max で合成 |
+
+証跡と受領書は
+[`results/archive/20260921-gemma4-e4b-assess-calibration/`](../../tools/agent-tools/eval/results/archive/20260921-gemma4-e4b-assess-calibration/deployment.json)。
+バックアップは `~/.agents/calibration-backups/` の当日分。gate 検証（0.95 で答える・0.85 と
+低 coverage・別 model・text は保留・consumer の下限を緩めない・transition は保留のまま）は
+リポジトリの agentcore で実設定を読んで通した。
+
+**配布物は再インストールしていない。** `~/.local/bin/agent-project`（2026-09-20 17:11）は
+c を judge に訊く旧コードで定数も 0.0 のままなので、この mac の本番で効くのは policy の 0.9
+だけ——旧コードは c の問いも 0.9 に届かなければ棄権する（AS8 の c は 0.727 だった）。定数 0.9
+と r だけを訊く形は `install.sh` の再実行で届く。
