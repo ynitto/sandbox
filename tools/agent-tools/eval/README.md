@@ -2368,6 +2368,8 @@ OLLAMA_TIMEOUT=120 python3 tools/agent-tools/eval/readout_eval.py --calibration 
   --output-dir tools/agent-tools/eval/results/20260920-gemma4-e4b-calibration
 
 # --samples 5ならlogprobsが読めない場合にvoteへfallback。常にvoteを強制する指定ではない
+# --rotations 3 で選択肢の並びを巡回させて読み対数平均する（judge の --rotations と同じ。
+# 省略は judge の既定 1）。台帳の各行に rotations が残るので、1 と 3 を別 run で比べる
 # 保存済みv1台帳から同じschemaで再集計（ネットワーク不要）
 python3 tools/agent-tools/eval/readout_eval.py --replay \
   tools/agent-tools/eval/results/20260920-gemma4-e4b-calibration/ledger.jsonl \

@@ -638,7 +638,7 @@ def ollama_reachable(timeout: float = 3.0) -> bool:
         return False
 
 
-def run_one(cid: str, run: int, model: str) -> dict:
+def run_one(cid: str, run: int, model: str, *, rotations=None) -> dict:
     """1 セルを judge で 1 回引く。確度と coverage は**問いをまたいだ最小**を採る。
 
     棄権は全問一括（`abstained` に 1 つでも載れば呼び出し側は倒れる）なので、束を代表する
@@ -647,9 +647,10 @@ def run_one(cid: str, run: int, model: str) -> dict:
     case, build = case_of(cid)
     state, questions, to_check = build(case)
     started = time.time()
-    row = {"case": cid, "run": run, "model": model, "questions": len(questions)}
+    row = {"case": cid, "run": run, "model": model, "questions": len(questions),
+           "rotations": rotations}
     try:
-        result = judge.evaluate(state, questions, model=model)
+        result = judge.evaluate(state, questions, model=model, rotations=rotations)
     except judge.JudgeError as exc:
         return dict(row, ok=False, confidence=None, coverage=None, note=str(exc),
                     wall=round(time.time() - started, 2))
@@ -850,7 +851,7 @@ def calibration_report(rows, *, model, min_confidence=0.0, thresholds=THRESHOLDS
                             "Brier uses sum over all classes (binary range 0..2)."]}
 
 
-def calibration_run_one(cid, run, model, *, samples=1, fake=False):
+def calibration_run_one(cid, run, model, *, samples=1, fake=False, rotations=None):
     case, build = case_of(cid)
     state, questions, to_check = build(case)
     expected = oracle(questions, to_check, case["check"])
@@ -878,7 +879,8 @@ def calibration_run_one(cid, run, model, *, samples=1, fake=False):
 
     started = time.monotonic()
     row = {"schema_version": 1, "case": cid, "run": run, "model": model,
-           "source": "fake" if fake else "real", "samples": samples, "expected": expected,
+           "source": "fake" if fake else "real", "samples": samples, "rotations": rotations,
+           "expected": expected,
            "input_sha256": hashlib.sha256(json.dumps({"state": state, "questions": questions},
                                                        ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
     try:
@@ -890,7 +892,8 @@ def calibration_run_one(cid, run, model, *, samples=1, fake=False):
                 probs = [.75 if k == expected[name] else .25 / (len(options) - 1) for k, _ in options]
                 answers[name] = judge.shape_answer(normalized, probs, method="logprobs", coverage=.95)
         else:
-            answers = judge.evaluate(state, questions, model=model, samples=samples, request=request)["answers"]
+            answers = judge.evaluate(state, questions, model=model, samples=samples, request=request,
+                                     rotations=rotations)["answers"]
         ok, note = case["check"](to_check(answers))
         row.update(status="ok", ok=bool(ok), note=note, answers=answers,
                    question_ok={n: _question_ok(a, expected[n]) for n, a in answers.items()})
@@ -935,7 +938,8 @@ def calibration_main(args):
         with (output / "ledger.jsonl").open("w") as ledger:
             for cid in cids:
                 for run in range(1, args.repeat + 1):
-                    row = calibration_run_one(cid, run, args.model, samples=args.samples, fake=args.fake_run)
+                    row = calibration_run_one(cid, run, args.model, samples=args.samples, fake=args.fake_run,
+                                              rotations=args.rotations)
                     rows.append(row)
                     ledger.write(json.dumps(row, ensure_ascii=False) + "\n")
                     ledger.flush()
@@ -960,6 +964,8 @@ def main() -> int:
     parser.add_argument("--replay", help="recompute a v1 calibration ledger offline")
     parser.add_argument("--output-dir", help="new results directory (must not exist)")
     parser.add_argument("--samples", type=int, default=1)
+    parser.add_argument("--rotations", type=int, default=None,
+                        help="選択肢の並びを巡回させて読む回数（省略は judge の既定。1 で回転なし）")
     parser.add_argument("--min-confidence", type=float, default=0.0)
     args = parser.parse_args()
     calibrating = bool(args.calibration or args.fake_run or args.replay)
@@ -984,7 +990,7 @@ def main() -> int:
     rows = []
     for cid in cids:
         for run in range(1, args.repeat + 1):
-            row = run_one(cid, run, args.model)
+            row = run_one(cid, run, args.model, rotations=args.rotations)
             rows.append(row)
             with ledger.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")

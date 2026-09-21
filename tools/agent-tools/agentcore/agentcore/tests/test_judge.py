@@ -342,3 +342,115 @@ class CalibrationPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RotationTests(unittest.TestCase):
+    """回転平均（ordering averaging）: 選択肢の並びを巡回させて読み、宣言順に戻して対数平均する。
+
+    位置だけを好む応答（A に置かれたものを常に選ぶ）は打ち消され、内容を好む応答（support を
+    どの位置でも選ぶ）は残る。この差が `agreement` に出る。
+    """
+
+    def test_orderings_by_type(self):
+        route = judge.normalize_question("route", ROUTE)               # choice 2 択
+        self.assertEqual(judge.orderings(route, 3), [[0, 1], [1, 0]], "選択肢の数まで")
+        self.assertEqual(judge.orderings(route, 1), [[0, 1]])
+        three = judge.normalize_question("t", dict(ROUTE, criteria={"a": "", "b": "", "c": ""}))
+        self.assertEqual(judge.orderings(three, 3), [[0, 1, 2], [1, 2, 0], [2, 0, 1]])
+        self.assertEqual(judge.orderings(three, 2), [[0, 1, 2], [1, 2, 0]])
+        sev = judge.normalize_question("sev", SEVERITY)                # score は正順と逆順だけ
+        self.assertEqual(judge.orderings(sev, 3), [[0, 1, 2], [2, 1, 0]])
+        self.assertEqual(judge.orderings(judge.normalize_question("u", URGENT), 5), [[0, 1], [1, 0]])
+
+    def test_rotated_prompt_moves_options_and_keeps_labels_in_place(self):
+        q = judge.normalize_question("route", ROUTE)
+        prompt = judge.build_prompt("s", q, [1, 0])
+        self.assertIn("A. support: Other requests", prompt)
+        self.assertIn("B. billing: Billing and refunds", prompt)
+        self.assertLess(prompt.index("A. support"), prompt.index("B. billing"))
+
+    def test_position_bias_is_averaged_out(self):
+        """A を常に好む応答——回転すると打ち消されて五分、agreement は 0.5。"""
+        result = judge.evaluate("x", {"route": ROUTE}, rotations=2,
+                                request=lambda p: _response({"A": 0.9, "B": 0.1}))
+        answer = result["answers"]["route"]
+        self.assertEqual(answer["rotations"], 2)
+        self.assertAlmostEqual(answer["probabilities"]["billing"], 0.5, places=3)
+        self.assertAlmostEqual(answer["confidence"], 0.5, places=3)
+        self.assertEqual(answer["agreement"], 0.5)
+        self.assertEqual(result["usage"], {"tokens_in": 20, "tokens_out": 2}, "2 回分の消費")
+
+    def test_content_preference_survives_rotation(self):
+        """support を好む応答は、どの位置でも support——agreement 1.0、確率はそのまま。"""
+        def request(payload):
+            prompt = payload["messages"][0]["content"]
+            label = "A" if "A. support" in prompt else "B"
+            return _response({label: 0.8, ("B" if label == "A" else "A"): 0.2})
+
+        result = judge.evaluate("x", {"route": ROUTE}, rotations=2, request=request)
+        answer = result["answers"]["route"]
+        self.assertEqual(answer["choice"], "support")
+        self.assertAlmostEqual(answer["probabilities"]["support"], 0.8, places=3)
+        self.assertEqual(answer["agreement"], 1.0)
+
+    def test_score_reversal_maps_back_to_the_scale(self):
+        """逆順で C に立った low の質量は、宣言順の low に戻る。"""
+        def request(payload):
+            prompt = payload["messages"][0]["content"]
+            return _response({"A": 0.7, "B": 0.2, "C": 0.1} if "A. low" in prompt
+                             else {"C": 0.7, "B": 0.2, "A": 0.1})
+
+        answer = judge.evaluate("x", {"sev": SEVERITY}, rotations=3, request=request)["answers"]["sev"]
+        self.assertEqual(answer["rotations"], 2)
+        self.assertEqual(answer["bucket"], "low")
+        self.assertAlmostEqual(answer["probabilities"]["low"], 0.7, places=3)
+        self.assertAlmostEqual(answer["score"], 0.4, places=3)    # 0.7*0 + 0.2*1 + 0.1*2
+
+    def test_one_rotation_is_a_single_read(self):
+        sent = []
+        answer = judge.evaluate("x", {"route": ROUTE}, rotations=1,
+                                request=lambda p: sent.append(p) or _response({"A": 0.7, "B": 0.3}))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual((answer["answers"]["route"]["rotations"], answer["answers"]["route"]["agreement"]),
+                         (1, 1.0))
+
+    def test_unreadable_first_read_falls_back_without_rotating(self):
+        """縮退（票・本文）は 1 回読みのまま——回転は分布を読めた問いだけ。"""
+        sent = []
+
+        def request(payload):
+            sent.append(payload)
+            return {"message": {"content": " B.\n"}}
+
+        result = judge.evaluate("x", {"route": ROUTE}, rotations=3, request=request)
+        self.assertEqual(result["answers"]["route"]["method"], "text")
+        self.assertEqual(len(sent), 1)
+
+    def test_a_rotation_that_cannot_be_read_is_skipped(self):
+        replies = iter([_response({"A": 0.9, "B": 0.1}), {"message": {"content": "?"}}])
+        answer = judge.evaluate("x", {"route": ROUTE}, rotations=2,
+                                request=lambda p: next(replies))["answers"]["route"]
+        self.assertEqual(answer["rotations"], 1)
+        self.assertAlmostEqual(answer["probabilities"]["billing"], 0.9, places=3)
+
+    def test_average_orderings_is_a_log_mean(self):
+        probs, agreement = judge.average_orderings([[0.9, 0.1], [0.1, 0.9]])
+        self.assertAlmostEqual(probs[0], 0.5, places=6)
+        self.assertEqual(agreement, 0.5)
+        probs, agreement = judge.average_orderings([[0.8, 0.2], [0.6, 0.4]])
+        self.assertGreater(probs[0], probs[1])
+        self.assertEqual(agreement, 1.0)
+
+    def test_default_rotations_come_from_config(self):
+        with tempfile.TemporaryDirectory(prefix="agent-herd-config-") as tmp, \
+                mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": tmp}):
+            self.assertEqual(judge.default_rotations(), judge.DEFAULT_ROTATIONS)
+            pathlib.Path(tmp, "agent-herd.yaml").write_text("judge:\n  rotations: 2\n", encoding="utf-8")
+            self.assertEqual(judge.default_rotations(), 2)
+            sent = []
+            judge.evaluate("x", {"route": ROUTE},
+                           request=lambda p: sent.append(p) or _response({"A": 0.7, "B": 0.3}))
+            self.assertEqual(len(sent), 2)
+            pathlib.Path(tmp, "agent-herd.yaml").write_text("judge:\n  rotations: many\n", encoding="utf-8")
+            self.assertEqual(judge.default_rotations(), judge.DEFAULT_ROTATIONS, "壊れた設定は既定へ")
+

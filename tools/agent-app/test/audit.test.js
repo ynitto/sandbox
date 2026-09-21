@@ -104,6 +104,34 @@ test('共有で引き受けた依頼は lost を打ち切りとして申告す�
   assert.equal(row.run_id, 'q1');
 });
 
+test('振り分けは消費でない観測行として 1 行だけ出る（hold の真偽によらず）', () => {
+  const ud = tmp('audit-feed-');
+  audit.feedRouting(ud, { sessionId: 's1', seconds: 5.04, routed: {
+    decided: true, handling: { choice: 'task', confidence: 0.91 }, hold: true,
+    target: { kind: 'task', id: 'daily-report', name: '日報' }, skills: [{ name: 'api-designer' }], routine: { value: true },
+  } }, { now: NOW, node: 'pc' });
+  // 決めなかった回も残す（棄権の割合を数えたい）
+  audit.feedRouting(ud, { sessionId: 's2', seconds: 4.2, routed: { decided: false, handling: null, hold: false, target: null, skills: [], routine: null } },
+    { now: NOW, node: 'pc' });
+  const rows = feedRows(ud);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].event, 'routing_decision', '観測行（collect が kind: event に入れる）');
+  assert.equal(rows[0].workload, 'routing');
+  assert.equal(rows[0].purpose, 'route');
+  assert.equal(rows[0].status, 'done', 'status に人の決着を持たせない');
+  assert.equal(rows[0].tokens_in, null, 'クラウド枠の消費に混ぜない');
+  assert.deepEqual(rows[0].routing, {
+    decided: true, choice: 'task', confidence: 0.91, hold: true,
+    target_kind: 'task', target_id: 'daily-report', skills: 1, routine: true,
+  });
+  assert.equal(rows[1].routing.decided, false);
+  assert.equal(rows[1].routing.choice, '');
+  assert.equal(rows[1].routing.confidence, null);
+  // 依頼文は載せない
+  assert.ok(!JSON.stringify(rows).includes('日報'));
+  assert.equal(audit.feedRouting(ud, { sessionId: 's3', routed: null }), null, '判定が無ければ書かない');
+});
+
 test('生成する設定は書き先・台帳・追加ホームだけを渡す', () => {
   const ud = tmp('audit-cfg-');
   const { file, config } = audit.generateConfig(ud, { platform: 'linux', env: {} });

@@ -91,6 +91,27 @@ test('ワークフロー: approval / choice / input が open → action、答え
   }
 });
 
+test('ワークフロー: 人待ちは経過時間を持ち、要対応の中で長い順に並ぶ', () => {
+  const NOW = Date.parse('2026-09-11T03:00:00.000Z');
+  const waiting = (runId, createdAt, expiresAt) => ({
+    runId, title: runId, workflowId: 'w', state: 'waiting', terminal: false, createdAt: T0, updatedAt: T1,
+    interactions: [{ interactionId: `ix-${runId}`, mode: 'approval', prompt: 'p', state: 'open', createdAt, expiresAt }],
+  });
+  const sources = attention.workflowSources('/repo', [
+    waiting('short', '2026-09-11T02:30:00.000Z', ''),
+    waiting('long', '2026-09-10T00:00:00.000Z', ''),
+    waiting('due', '2026-09-11T01:00:00.000Z', '2026-09-11T02:00:00.000Z'),
+  ]);
+  const view = attention.project(sources, { now: NOW });
+  assert.deepEqual(view.items.map((i) => i.target.runId), ['long', 'due', 'short'], '長く待たせている順');
+  assert.equal(view.items[0].waitedMs, 27 * 60 * 60 * 1000);
+  assert.equal(view.items[1].expired, true, '締め切りを過ぎたものは印が変わる');
+  assert.equal(view.items[2].expired, false);
+  // 正典が時刻を持たない材料は 0 のまま（再起動で 0 に戻る時計を出さない）
+  const noClock = attention.project(attention.workflowSources('/repo', [waiting('none', '', '')]), { now: NOW });
+  assert.equal(noClock.items[0].waitedMs, 0);
+});
+
 test('ワークフロー: 終了した実行は未読（失敗も未読であって要対応ではない）、停止は none、実行中は none', () => {
   const rows = [
     { runId: 'done', title: 'a', workflowId: 'w', state: 'done', terminal: true, createdAt: T0, updatedAt: T1 },

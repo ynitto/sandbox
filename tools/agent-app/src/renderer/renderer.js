@@ -431,8 +431,21 @@ function issueTargetLabel(issue) {
 const ATTENTION_ACTION = { terminal: '確認待ち', approval: '承認待ち', choice: '選択待ち', input: '入力待ち' };
 const ATTENTION_RESULT = { done: '完了', failed: '失敗', escalated: '要確認' };
 
+// 人待ちの長さ。分 → 時間 → 日で丸める（秒は出さない）。
+function waitedLabel(ms) {
+  const min = Math.floor(Number(ms) / 60000);
+  if (!Number.isFinite(min) || min < 1) return '';
+  if (min < 60) return `${min} 分待ち`;
+  const hours = Math.floor(min / 60);
+  return hours < 24 ? `${hours} 時間待ち` : `${Math.floor(hours / 24)} 日待ち`;
+}
+
 function attentionStatus(item) {
-  if (item.queue === 'action') return ATTENTION_ACTION[item.interaction && item.interaction.mode] || '確認待ち';
+  if (item.queue === 'action') {
+    const label = ATTENTION_ACTION[item.interaction && item.interaction.mode] || '確認待ち';
+    const waited = item.expired ? '期限切れ' : waitedLabel(item.waitedMs);
+    return waited ? `${label}（${waited}）` : label;
+  }
   if (item.kind === 'issue') return item.issue && item.issue.occurrences ? `${item.issue.occurrences} 件` : '未読';
   return ATTENTION_RESULT[item.outcome] || '完了';
 }

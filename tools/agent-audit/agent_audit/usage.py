@@ -53,7 +53,8 @@ def aggregate_agent_limits(args, store: Store, rows: "list[dict]", *, rows_perio
     now = now or _dt.datetime.now(_dt.timezone.utc)
     now_epoch = now.timestamp()
     cfg = read_json(os.path.join(resolve_budget_dir(args), "config.json")) or {}
-    period = cfg.get("period") if cfg.get("period") in ("day", "month", "total") else "day"
+    # week は _period_floor も画面も `--period week` も既に受ける。ここだけ落としていた。
+    period = cfg.get("period") if cfg.get("period") in ("day", "week", "month", "total") else "day"
     agents = ((cfg.get("allocation") or {}).get("agents") or {})
     agents = agents if isinstance(agents, dict) else {}
     latest: "dict[str, tuple[float, dict]]" = {}

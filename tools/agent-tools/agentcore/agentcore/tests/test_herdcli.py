@@ -464,6 +464,21 @@ class JudgeTests(unittest.TestCase):
         self.assertIn("ticket: refund please", seen[0]["messages"][0]["content"])
         self.assertTrue(seen[0]["logprobs"])
 
+    def test_rotations_flag_reads_each_question_in_every_order(self):
+        """--rotations 2 で 2 択の問いは 2 回読む（宣言順と逆順）。位置だけを好む応答は五分になる。"""
+        rc, out, _err, seen = self._run(
+            ["--questions", json.dumps(self.QUESTIONS), "--rotations", "2"],
+            replies=[{"A": 0.9, "B": 0.1}] * 4)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(seen), 4)
+        self.assertIn("A. support", seen[1]["messages"][0]["content"])
+        answer = json.loads(out)["answers"]["route"]
+        self.assertEqual((answer["rotations"], answer["agreement"]), (2, 0.5))
+        rc, _out, err, _seen = self._run(["--questions", json.dumps(self.QUESTIONS),
+                                         "--rotations", "x"])
+        self.assertEqual(rc, 2)
+        self.assertIn("--rotations", err)
+
     def test_low_confidence_abstains_with_exit_code_1(self):
         rc, out, _err, _seen = self._run(
             ["--questions", json.dumps(self.QUESTIONS), "--min-confidence", "0.8"])

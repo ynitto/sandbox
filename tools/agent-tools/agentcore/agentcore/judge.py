@@ -22,6 +22,19 @@ fixed labels）。選択肢に A / B / C … の 1 文字ラベルを振り、�
 
 生成トークンは高々 4 つなので、走行時間は prefill でほぼ決まる。同じ状態への複数の問いは
 **状態を先・問いを後**に並べて、ollama の接頭辞キャッシュに乗せる（案 D と同じ理屈）。
+実測（2026-09-22、gemma4:e4b）では、共有する接頭辞が約 512 トークンを超えるときだけ再利用が
+効く（2 問目以降 0.3 秒）。それより短い状態では問いごとに全量 prefill（約 1.5 秒）になる。
+
+## 位置バイアスと回転平均（`rotations`）
+
+1 トークン目の分布は選択肢の**置き場所**にも反応する（A に置いた選択肢が選ばれやすい、
+候補順を逆にすると答えが変わる——2026-09-21 の select の実測）。同じ問いを選択肢の並びを
+巡回させて `rotations` 回読み、宣言順に戻して**対数空間で平均**する（ruling の ordering
+averaging）。choice / boolean は巡回シフト、score は尺度の向きを保つため正順と逆順の 2 回。
+答えには読んだ回数 `rotations` と、並べ替え間で最頻の選択肢が一致した割合 `agreement` が
+付く——順序で判定が割れる問いは agreement が下がるので、確度と別に「割れている」と読める。
+回数は設定 `judge.rotations`（無ければ `DEFAULT_ROTATIONS` = 1、つまり回転しない）。呼び出しが
+r 倍になるので、有効にする値は実測（docs/plans/2026-09-22-judge-rotation-averaging.md）で決める。
 
 ## どの実行で judge を使うか（設定ファイル `~/.agents/agent-herd.yaml` の `judge.model`）
 
@@ -66,6 +79,13 @@ DEFAULT_MODEL = "gemma4:e4b"
 DEFAULT_TOP_LOGPROBS = 20
 # ラベル 1 文字の前に空白や改行が来ることがあるので、読む位置に少し余裕を持たせる。
 DEFAULT_NUM_PREDICT = 4
+# 選択肢の並びを巡回させて読む既定の回数。1 は従来どおりの 1 回読み（回転しない）。
+# 回転は問いごとの呼び出しを r 倍にし、状態が短い（共有接頭辞 < 約 512 トークン）と全量
+# prefill が r 回になる。有効にするのは設定 `judge.rotations`（全消費者）か呼び出し側の指定。
+# ruling の既定は 3（RULING_ROTATIONS）。実測は docs/plans/2026-09-22-judge-rotation-averaging.md。
+DEFAULT_ROTATIONS = 1
+# 対数平均で 0 の質量を受けるための下限（top_logprobs 20 個の外はこの下）。
+LOG_FLOOR = 1e-9
 BOOLEAN_CRITERIA = (("yes", "The answer is yes."), ("no", "The answer is no."))
 OTHER_KEY = "other"
 
@@ -171,8 +191,12 @@ def render_state(state) -> str:
         raise JudgeError(f"state を JSON にできません: {exc}") from exc
 
 
-def build_prompt(state_text: str, question: dict) -> str:
-    """状態を先、問いを後——複数の問いで接頭辞キャッシュに乗せるため。"""
+def build_prompt(state_text: str, question: dict, order: "list[int] | None" = None) -> str:
+    """状態を先、問いを後——複数の問いで接頭辞キャッシュに乗せるため。
+
+    `order` は選択肢を並べる順（`options` の添字の列。省略は宣言順）。ラベル A / B / … は
+    常に上から振るので、並びを変えると同じ選択肢が別のラベルに立つ（`orderings` が使う）。
+    """
     lines = [
         "You are a decision function, not a writer. Read the state, then answer the "
         "question by writing exactly one option letter. No words, no punctuation, "
@@ -186,10 +210,43 @@ def build_prompt(state_text: str, question: dict) -> str:
         f"Question: {question['instructions']}",
         "Options:",
     ]
-    for label, (key, desc) in zip(LABELS, question["options"]):
+    options = question["options"]
+    for label, index in zip(LABELS, order if order is not None else range(len(options))):
+        key, desc = options[index]
         lines.append(f"{label}. {key}: {desc}" if desc else f"{label}. {key}")
     lines.extend(["", "Answer (one letter):"])
     return "\n".join(lines)
+
+
+def orderings(question: dict, rotations: int) -> "list[list[int]]":
+    """選択肢の並べ方の列（`options` の添字の並び）。先頭は必ず宣言順。
+
+    choice / boolean は巡回シフト（`rotations` 回、選択肢の数まで）。score は尺度の向きを
+    保つため正順と逆順の 2 回だけ（巡回すると low / high の間に medium が来なくなる）。
+    """
+    count = len(question["options"])
+    base = list(range(count))
+    if rotations <= 1:
+        return [base]
+    if question["type"] == "score":
+        return [base, base[::-1]]
+    return [base[k:] + base[:k] for k in range(min(rotations, count))]
+
+
+def average_orderings(readings: "list[list[float]]") -> "tuple[list[float], float]":
+    """並べ替えごとの確率（宣言順に戻したもの）を対数空間で平均して正規化する。
+
+    戻り値は (確率, agreement)。agreement は並べ替えのうち最頻の選択肢が最終の選択と一致
+    した割合——1.0 なら位置を変えても答えが動かなかった、0.5 なら半分で割れた。
+    """
+    count = len(readings[0])
+    mean_log = [sum(math.log(max(r[i], LOG_FLOOR)) for r in readings) / len(readings)
+                for i in range(count)]
+    peak = max(mean_log)
+    probs = _normalize([math.exp(v - peak) for v in mean_log])
+    top = max(range(count), key=lambda i: probs[i])
+    agreed = sum(1 for r in readings if max(range(count), key=lambda i: r[i]) == top)
+    return probs, agreed / len(readings)
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +315,10 @@ def _text_label(text: str, count: int) -> "str | None":
     return _label_of(head, count) if head else None
 
 
-def shape_answer(question: dict, probs: "list[float]", *, method: str, coverage: float) -> dict:
-    """正規化した確率を、問いの型に応じた答えへ。"""
+def shape_answer(question: dict, probs: "list[float]", *, method: str, coverage: float,
+                 rotations: int = 1, agreement: float = 1.0) -> dict:
+    """正規化した確率を、問いの型に応じた答えへ。`rotations` は読んだ並べ替えの数、
+    `agreement` はその間の最頻の一致率（1 回読みなら 1 / 1.0）。"""
     keys = [key for key, _ in question["options"]]
     by_key = {key: round(p, 4) for key, p in zip(keys, probs)}
     top = max(range(len(probs)), key=lambda i: probs[i]) if probs else 0
@@ -268,7 +327,8 @@ def shape_answer(question: dict, probs: "list[float]", *, method: str, coverage:
     confidence = 0.0 if method == METHOD_TEXT else (round(probs[top], 4) if probs else 0.0)
     answer: dict = {"type": question["type"], "probabilities": by_key,
                     "confidence": confidence,
-                    "coverage": round(coverage, 4), "method": method}
+                    "coverage": round(coverage, 4), "method": method,
+                    "rotations": int(rotations), "agreement": round(agreement, 4)}
     if question["has_other"]:
         answer["other"] = by_key.get(OTHER_KEY, 0.0)
     if question["type"] == "choice":
@@ -382,17 +442,21 @@ def _vote(question: dict, prompt: str, *, model, think, options, samples, reques
 
 def evaluate(state, questions: dict, *, model: str = DEFAULT_MODEL, think=False,
              options: "dict | None" = None, samples: int = 1, request=None,
-             host: "str | None" = None, timeout: "float | None" = None) -> dict:
+             host: "str | None" = None, timeout: "float | None" = None,
+             rotations: "int | None" = None) -> dict:
     """状態と問いの集合から、問いごとの型付きの答えを返す。
 
     戻り値: {"answers": {名前: 答え}, "usage": {"tokens_in", "tokens_out"}, "model": …}。
     `request` は `/api/chat` の payload を受けて応答 dict を返す関数（テストと差し替え用）。
+    `rotations` は選択肢の並びを巡回させて読む回数（省略は設定 `judge.rotations`、無ければ
+    `DEFAULT_ROTATIONS`）。分布を読めた問いだけ回転し、票と本文の縮退は 1 回のまま。
     """
     errors = question_errors(questions)
     if errors:
         raise JudgeError(" / ".join(errors))
     state_text = render_state(state)
     send = request or (lambda payload: post_chat(payload, host=host, timeout=timeout))
+    turns = default_rotations() if rotations is None else max(1, int(rotations))
     usage = {"tokens_in": 0, "tokens_out": 0}
     answers: dict = {}
     for name, raw in questions.items():
@@ -404,8 +468,26 @@ def evaluate(state, questions: dict, *, model: str = DEFAULT_MODEL, think=False,
         read = readout(data.get("logprobs"), count)
         if read is not None:
             masses, coverage = read
-            answers[name] = shape_answer(question, _normalize(masses),
-                                         method=METHOD_LOGPROBS, coverage=coverage)
+            readings, coverages = [_normalize(masses)], [coverage]
+            # 並べ替えは宣言順の直後に続けて送る——状態と問いの文までが接頭辞として共有される。
+            for order in orderings(question, turns)[1:]:
+                data = send(_payload(model, build_prompt(state_text, question, order),
+                                     think=think, options=options, readout_mode=True))
+                _usage_add(usage, data)
+                turned = readout(data.get("logprobs"), count)
+                if turned is None:
+                    continue        # この並びだけ読めなかった。読めた分で平均する
+                masses, coverage = turned
+                canonical = [0.0] * count
+                for position, index in enumerate(order):
+                    canonical[index] = masses[position]
+                readings.append(_normalize(canonical))
+                coverages.append(coverage)
+            probs, agreement = (readings[0], 1.0) if len(readings) == 1 \
+                else average_orderings(readings)
+            answers[name] = shape_answer(question, probs, method=METHOD_LOGPROBS,
+                                         coverage=sum(coverages) / len(coverages),
+                                         rotations=len(readings), agreement=agreement)
             continue
         # ここから先は「分布を読めなかった」——`logprobs` が無い場合と、あっても形が違って
         # 読めない場合の両方。どちらも票で確率を作り直せるので `--samples` を効かせる。
@@ -426,6 +508,15 @@ def evaluate(state, questions: dict, *, model: str = DEFAULT_MODEL, think=False,
 def setting() -> dict:
     """設定ファイルの `judge` の解決結果（`herdconfig.judge_setting`）: mode は auto / pinned / off。"""
     return herdconfig.judge_setting()
+
+
+def default_rotations() -> int:
+    """設定 `judge.rotations`、無ければ `DEFAULT_ROTATIONS`。壊れた設定は既定に倒す。"""
+    try:
+        value = herdconfig.rotations_setting()
+    except herdconfig.ConfigError:
+        return DEFAULT_ROTATIONS
+    return DEFAULT_ROTATIONS if value is None else value
 
 
 def pinned_model() -> "str | None":

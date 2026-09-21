@@ -603,7 +603,7 @@ PR #862の段0 attributionは独立して利用できる。段1のjudge自動評
 
 ```text
 agent-herd judge --questions (JSON | PATH) [--state PATH] [--model MODEL]
-                 [--min-confidence 0-1] [--samples N] [--think on|off|auto]
+                 [--min-confidence 0-1] [--samples N] [--rotations N] [--think on|off|auto]
 ```
 
 状態は stdin か `--state` から読む。空なら終了コード 2。`--questions` は
@@ -621,7 +621,9 @@ agent-herd judge --questions (JSON | PATH) [--state PATH] [--model MODEL]
 すべての答えに `confidence`（最大確率）、`coverage`（モデルの分布のうち選択肢に落ちた割合）、
 `method` が付く。`method` は確率の出どころで、`logprobs`（1 トークン目の分布を読んだ）、
 `vote`（`--samples` 回引いた票数）、`text`（本文の 1 文字を読んだだけ。`coverage` は 0）の
-いずれか。`logprobs` 以外は確率を目安として扱う。
+いずれか。`logprobs` 以外は確率を目安として扱う。さらに `rotations`（選択肢の並びを変えて
+読んだ回数）と `agreement`（並べ替えの間で最頻の選択肢が一致した割合。1.0 なら位置を変えても
+答えが動かなかった）が付く。1 回読みでは 1 と 1.0。
 
 `--model` を省いたときのモデルは設定 `judge.model`（§9.3）、それも無ければ `gemma4:e4b`。
 
@@ -643,6 +645,14 @@ Ollama へ逃がす効果が大きい。judge が使えない・確度が足り�
 問いごとに Ollama の chat API を 1 回、`logprobs` を求めて呼ぶ。生成上限は 4 トークンで、
 `--think` の既定は `off`。Ollama が `logprobs` を返さない場合、`--samples` が 2 以上なら
 structured outputs でその回数引いて票数を確率にし、1 なら本文を読む。
+
+`--rotations N`（既定は設定 `judge.rotations`、無ければ 1）は、同じ問いを選択肢の並びを
+巡回させて N 回読み、宣言順に戻して対数空間で平均する。1 トークン目の分布は選択肢の置き場所
+にも反応する（先頭の選択肢が選ばれやすい、候補順を逆にすると答えが変わる）ので、その分を
+打ち消す。`choice` と `boolean` は巡回シフト（選択肢の数まで）、`score` は尺度の向きを保つため
+正順と逆順の 2 回。分布を読めた問いだけ回転し、`vote` / `text` の縮退は 1 回のまま。呼び出しは
+回数分に増える——状態が短い（共有する接頭辞が約 512 トークン未満）と Ollama の接頭辞
+キャッシュが効かず、1 回ごとに全量の prefill を払う。
 
 stdout は `{"answers": {名前: 答え}, "abstained": [名前…]}` の 1 行。stderr に
 `@agent-usage` を出す。終了コードは 0 が全問に答えた、1 が `abstained` あり
@@ -666,6 +676,7 @@ agent-herd config unset KEY
 | 鍵 | 値 | 意味 |
 |---|---|---|
 | `judge.model` | `auto` / `off` / モデル名 | §5.5 の表のとおり。`unset` は `auto` と同じ |
+| `judge.rotations` | 1〜26 | §5.5 の `--rotations` の既定。組み込みの判定（遷移条件・`route`・`filter`・`assess`・`select`）にも効く。省略時 1（回転しない） |
 | `select.jev.api_key` | API キー / `off` | 本家 Jev（TypeSafe AI）の API キー。`select`（§5.7）の第 1 段を有効にする。無ければ環境変数 `TYPESAFE_API_KEY`。`off` は環境変数があっても使わない。表示（`config` / `--json`）では伏せる |
 | `select.jev.endpoint` | URL | Jev の URL。省略時 `https://api.typesafe.ai/v1/systemone`（ゲートウェイ経由なら差し替える） |
 | `select.jev.model` | モデル名 | 省略時 `jev-latest` |
@@ -929,6 +940,7 @@ frontmatter は 1 行の `key: value` だけを受け付ける。
 ```yaml
 judge:
   model: gemma4:e4b   # auto（省略）/ off / モデル名
+  rotations: 1        # 選択肢の並びを巡回させて読む回数（省略 1。呼び出しが回数分に増える）
 select:
   jev:
     api_key: sk-…     # 本家 Jev の API キー（無ければ環境変数 TYPESAFE_API_KEY。off で使わない）

@@ -168,6 +168,12 @@ function concreteCli(spec, agents, { attachments = [] } = {}) {
   return { ...spec, cli: picked.cli, requested: virtual ? herd.HERD : spec.cli, family: herd.HERD, slash: picked.slash, familyReason: picked.reason };
 }
 
+// 宣言で readonly を保証できる CLI か（`agents/*.json` の readonly）。best-effort は
+// フラグを無視しても止まらないので、「答えるだけ」の依頼は配らない。
+function readonlyEnforced(cli, repo) {
+  try { return agentCli.load(cli, repo).readonly === 'enforced'; } catch { return false; }
+}
+
 // 添付ファイルを確かめ、依頼文の末尾に「どこにあるか」を添える。
 //   { id, name } … userData の attachments/<id>/<name>（ホスト側のパスで伝える）
 //   { rel }      … 作業フォルダの中のファイル（相対パスのまま伝える。写さない）
@@ -674,6 +680,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     });
     const controller = new AbortController();
     selecting.set(id, controller);
+    const routeStartedAt = Date.now();
     try {
       routed = await requestRouting.route({
         text: requested.text, candidates: cands, cwd: dirs.fsDir, signal: controller.signal,
@@ -682,6 +689,8 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
       });
     } finally { selecting.delete(id); }
     if (controller.signal.aborted) throw new Error('振り分けを停止しました');
+    // 判定 1 回に付き観測行 1 行（hold の真偽・決めたかによらず）。実会話の確度分布はここに溜まる。
+    audit.feedRouting(ud, { sessionId: id, routed, seconds: (Date.now() - routeStartedAt) / 1000 });
     preparing(`振り分け完了\n${requestRouting.information(routed).title}`);
     if (routed.hold) {
       // 会話は送らない。案内を 1 枚残して、開く / そのまま会話で実行 は人が選ぶ。
@@ -722,7 +731,18 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     } finally { selecting.delete(id); }
   }
   requested.autoSelected = !!(chosen || sess.modelSelection) && requested.policy !== 'direct';
-  const base = concreteCli(requested, agents, { attachments: p.attachments });
+  let base = concreteCli(requested, agents, { attachments: p.attachments });
+  // 「答えるだけ」は readonly を宣言で保証できる CLI にしか配らない。enforced が 1 つも無ければ
+  // answer の約束を取り下げ、利用者が選んだ権限へ戻す（黙って読み取り専用を名乗らない）。
+  let answerSwap = null;
+  if (requested.answerOnly && !readonlyEnforced(base.cli, repo)) {
+    const enforced = agents.find((item) => item.available && !item.virtual && readonlyEnforced(item.name, repo));
+    requested = enforced
+      ? { ...requested, cli: enforced.name, model: '', source: 'answer-readonly' }
+      : { ...requested, readonly: askedReadonly, answerOnly: false };
+    answerSwap = { from: base.cli, to: enforced ? enforced.name : '' };
+    base = concreteCli(requested, agents, { attachments: p.attachments });
+  }
   preparing(`準備中…\n${[base.cli, base.model].filter(Boolean).join(' / ')} を起動しています。`);
   const spec = agentCli.load(base.cli, repo);
   const available = agents.find((item) => item.name === base.cli);
@@ -741,6 +761,11 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const attached = withAttachments(ud, base.text, p.attachments, dirs);
   let setupInformation = [
     ...(routed ? [requestRouting.information(routed)] : []),
+    ...(answerSwap ? [{ type: 'status', status: answerSwap.to ? 'success' : 'warning',
+      title: answerSwap.to
+        ? `読み取り専用を保証できる ${answerSwap.to} で答えます`
+        : '読み取り専用を保証できる CLI が無いので、通常の権限で実行します',
+      detail: `${answerSwap.from} の readonly は best-effort（宣言を無視しても止まらない）` }] : []),
     ...(routed && routed.routine && routed.routine.value ? [requestRouting.routineInformation()] : []),
     ...familyInfo, ...(chosen ? [modelSelection.information(chosen)] : []),
   ];

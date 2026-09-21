@@ -398,24 +398,31 @@ test('ホームは会話画面の面（空状態と入力欄）と一覧の行�
   assert.match(menu, /id="area-home">[\s\S]*?<span>ホーム<\/span>/);
   assert.ok(menu.indexOf('id="area-home"') < menu.indexOf('id="area-inbox"'), 'ホームは主要メニューの先頭');
   assert.match(html, /<ul id="home-items" class="list grow" hidden><\/ul>/);
-  assert.match(navigation, /home: \{ label: 'ホーム', listLabel: '直近', createLabel: '新しい会話', listId: 'home-items' \}/);
+  assert.match(navigation, /home: \{ label: 'ホーム', listLabel: '最近の依頼', createLabel: '新しい会話', listId: 'home-items' \}/);
   assert.match(renderer, /\$\('session-new'\)\.hidden = \['share', 'inbox', 'home'\]\.includes\(state\.area\)/);
-  // 2. 面は会話画面そのもの（#main の空状態と #composer）。ホーム専用の section・入力欄・見出し帯・CSS を作らない
+  // 2. 面は会話画面そのもの（#main の空状態と #composer）。ホーム専用の面・入力欄・見出し帯を作らない
   assert.ok(!html.includes('id="home-area"') && !html.includes('id="home-prompt"') && !html.includes('id="home-head"'), 'ホーム専用の面や入力欄を作らない');
   assert.match(renderer, /const workspace = state\.area !== 'conversation' && !home;/);
   assert.match(renderer, /if \(home\) \{\s*newDraft\(\);/, 'ホームは常に新しい会話（空状態）から');
-  assert.deepStrictEqual(css.match(/^[^{\n]*home[^{\n]*\{/gm) || [], [], 'ホームに専用の見た目の規則を足さない');
   assert.strictEqual((html.match(/class="area-head"/g) || []).length, 5, 'ホームは見出し帯を増やさない（会話の見出し帯を使う）');
-  // 3. 直近の一覧は会話一覧と同じ行（.row-item / .list-pick）。押すと既存の画面（会話・タスク・ワークフロー）へ行く
+  // 3. リポジトリの選択は置き場を移すだけ（同じ #repository-context を付け替える。複製を作らない）
+  assert.strictEqual((html.match(/id="repository-context"/g) || []).length, 1, 'リポジトリ選択は 1 つだけ');
+  assert.match(renderer, /repositorySlot\.append\(\$\('repository-context'\)\)/, '同じコントロールを移す');
+  for (const rule of css.match(/^#home-[^{\n]*\{[^}]*\}/gm) || []) {
+    assert.doesNotMatch(rule, /background|box-shadow|border-radius|#[0-9a-fA-F]{3,8}\b/, `ホームの置き場に見た目を足さない（置き場所だけ）: ${rule}`);
+  }
+  // 4. 直近の一覧は会話一覧と同じ行（.row-item / .list-pick）。押すと既存の画面（会話・タスク・ワークフロー）へ行く
   assert.match(renderer, /function renderHomeItems\(\)[\s\S]*?const pick = el\('button', 'list-pick'\);[\s\S]*?pick\.onclick = \(\) => openHomeItem\(item\)/);
-  assert.match(renderer, /async function openHomeItem\(item\) \{\s*if \(item\.kind === 'conversation'\) \{ await openSessionInRepo\(state\.repo, item\.id\); return; \}\s*const area = item\.kind === 'task' \? 'tasks' : 'workflows';\s*await showArea\(area\);\s*await selectAreaItem\(area, item\.id\);/);
-  // 4. 判定は会話の送信経路（runTurn の振り分け）そのまま。ホームは行き先を開くだけで、実行のボタンは押さない
+  const open = renderer.match(/async function openHomeItem\(item\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(open, /openSessionInRepo\(item\.repo, item\.id\)/, '会話は通知・受信箱と同じ経路で開く');
+  assert.match(open, /await showArea\(area\);\s*await selectAreaItem\(area,/, 'タスク・ワークフローは領域の切替と一覧の選択だけ');
+  // 5. 判定は会話の送信経路（runTurn の振り分け）そのまま。ホームは行き先を開くだけで、実行のボタンは押さない
   assert.ok(!/home:route|homeRoute|api\.route\(/.test(renderer), 'ホーム専用の判定を作らない');
   assert.match(renderer, /if \(state\.area === 'home'\) \{ await leaveHomeRouted\(state\.current\); return res; \}/);
   assert.match(renderer, /async function leaveHomeRouted\(session\) \{[\s\S]*?await api\.removeSession\(session\.id\);[\s\S]*?if \(routing\) await openRouted\(routing\);/);
   assert.match(renderer, /if \(state\.area === 'home'\) await showArea\('conversation'\);/);
   assert.ok(!/leaveHomeRouted[\s\S]{0,600}automation\.run\(|leaveHomeRouted[\s\S]{0,600}flowRun\(/.test(renderer), '流用先を開くだけで実行しない');
-  // 5. 初回の既定画面はホーム。保存した領域はそのまま
+  // 6. 初回の既定画面はホーム。保存した領域はそのまま
   assert.match(store, /area: 'home', view: 'chat'/);
   assert.match(store, /\['tasks', 'workflows', 'share', 'inbox', 'home'\]\.includes\(next\.area\)/);
 });

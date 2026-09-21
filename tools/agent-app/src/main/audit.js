@@ -135,6 +135,8 @@ function row(raw, { now = Date.now(), node = os.hostname() } = {}) {
   if (artifact) out.artifact = artifact;
   const used = usedRow(raw.used);
   if (used) out.used = used;
+  if (raw.event) out.event = String(raw.event);
+  if (raw.routing && typeof raw.routing === 'object') out.routing = raw.routing;
   if (raw.evaluation && typeof raw.evaluation === 'object') {
     const ev = raw.evaluation;
     out.evaluation = {
@@ -229,6 +231,34 @@ function feedRun(userData, { root = '', record = {}, kind = 'task' } = {}, optio
     run_id: String(record.runId || ''),
     artifact: { kind, name, origin: root ? `repo:${path.basename(root)}` : '' },
   }, { ...options, now: Number.isFinite(finished) ? finished : options.now, extra: { root, record, kind } });
+}
+
+// 振り分け（agent-herd route）1 回。消費ではないので `event` 付きの観測行にする
+// （agent-audit の collect が `kind: event` で入れ、実行回数と pass_rate を動かさない）。
+// 人がどうしたか（追従・押し切り・無視）は列にしない——押し切りは routing 行の直後に
+// 同じ ref で来た chat 行として読む。依頼文は載せない。
+function feedRouting(userData, { sessionId = '', routed = null, seconds = 0 } = {}, options = {}) {
+  if (!routed || typeof routed !== 'object') return null;
+  const handling = routed.handling && typeof routed.handling === 'object' ? routed.handling : null;
+  return feed(userData, {
+    workload: 'routing',
+    ref: String(sessionId || ''),
+    purpose: 'route',
+    seconds,
+    status: 'done',
+    event: 'routing_decision',
+    session_id: String(sessionId || ''),
+    routing: {
+      decided: !!routed.decided,
+      choice: handling ? String(handling.choice || '') : '',
+      confidence: handling && handling.confidence != null ? num(handling.confidence) : null,
+      hold: !!routed.hold,
+      target_kind: routed.target ? String(routed.target.kind || '') : '',
+      target_id: routed.target ? String(routed.target.id || '') : '',
+      skills: Array.isArray(routed.skills) ? routed.skills.length : 0,
+      routine: routed.routine && typeof routed.routine.value === 'boolean' ? routed.routine.value : null,
+    },
+  }, options);
 }
 
 // 共有（LAN）で引き受けた依頼 1 件。share/ledger の行を台帳の形へ写す。
@@ -596,6 +626,6 @@ class Auditor {
 
 module.exports = {
   FEED_DIR, STORE_DIR, CONFIG_NAME, ARTIFACT_KINDS, STATUSES, STEPS,
-  feedDir, storeDir, configFile, ratingsFile, row, feed, feedTurn, feedRun, feedShare, feedEvaluation, usedOf, onFeed,
+  feedDir, storeDir, configFile, ratingsFile, row, feed, feedTurn, feedRun, feedShare, feedRouting, feedEvaluation, usedOf, onFeed,
   generateConfig, stepScript, artifacts, insights, evidenceOf, reports, Auditor,
 };

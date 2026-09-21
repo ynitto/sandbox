@@ -249,15 +249,12 @@ def _clone_task_element(cfg: "Config", task: "Task", spec: dict, dest: str) -> P
 # 不変条件は変えない: done は機械検証の PASS のみが根拠 / 必ず有限回で止まる。
 # 変わるのは検証の**表現**（コマンド 1 行 → 基準リスト）と**実行者**（シェル → エージェント）。
 
-# 差分の常設基準（red-green の代替）の**正典**。スキルへは `spec["diff_criterion"]` として
-# この文をそのまま渡す（P2-5。副作用制約 `side_effects_text` と同じ手）。
-#
-# 2 箇所で育てると、**検証レポートに出る基準文とエージェントが見た基準文が黙ってずれる**
-# ——判定は番号で突き合わせるので、ずれても機械は気付かない。スキル側にも同じ表が残るが、
-# 入力にこの文があればそちらが勝つので、実害のある重複ではなくなる（スキルは単体でも
-# 動く契約なので、受け皿としての定数は要る）。
-DIFF_CRITERION = ("このタスクの差分が、上の基準の対象範囲に実在すること"
-                  "（変更が無い・無関係な場所にしか無いなら fail）")
+# 差分の常設基準（red-green の代替）。**正典は agentcore.verifycontract**——`build_plan` を通る
+# 経路すべてに同じ砦を掛けるため、文と「足す規則」をあちらへ寄せた。ここは別名にすぎない。
+# スキルへは `spec["diff_criterion"]` としてこの文をそのまま渡す（P2-5。副作用制約
+# `side_effects_text` と同じ手）。2 箇所で育てると、検証レポートに出る基準文とエージェントが
+# 見た基準文が黙ってずれる——判定は番号で突き合わせるので、ずれても機械は気付かない。
+DIFF_CRITERION = _verifycontract.DIFF_CRITERION
 
 
 def no_diff_criterion(reason: str) -> str:
@@ -651,9 +648,10 @@ def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
     commands = task_verification_commands(task)
     if not criteria and not commands:
         return None
-    if criteria:
-        nd = str(task.get("no_diff") or "").strip()
-        criteria.append(no_diff_criterion(nd) if nd else DIFF_CRITERION)
+    # 差分の常設基準は build_plan が足す（正典は agentcore）。ここで渡すのは、差分を作らない
+    # 宣言のときの差し替えだけ。
+    nd = str(task.get("no_diff") or "").strip()
+    diff_criterion = no_diff_criterion(nd) if nd else None
     specs = _workspace_specs_for(cfg, task)
     policy = {"timeout_sec": cfg.verify_timeout, "confirm": cfg.verify_confirm,
               # タスク単位の検証条件。digest に入るので、条件を変えると別 plan になり
@@ -672,7 +670,7 @@ def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
         return _verifycontract.build_plan(
             task.id, criteria=criteria, commands=commands,
             workspaces=[workset_element_name(sp) for sp in specs],
-            policy=policy,
+            policy=policy, diff_criterion=diff_criterion,
             integration={"targets": targets} if targets else None)
     ws = specs[0] if specs else {}
     integration = ({"target": str(ws.get("target"))}
@@ -681,7 +679,7 @@ def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
     return _verifycontract.build_plan(
         task.id, criteria=criteria, commands=commands,
         workspace=str(ws.get("url") or ""),
-        policy=policy,
+        policy=policy, diff_criterion=diff_criterion,
         integration=integration)
 
 

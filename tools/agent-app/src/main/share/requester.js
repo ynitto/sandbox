@@ -445,9 +445,25 @@ class Requester extends EventEmitter {
       if (r.state !== 'working') continue;
       if (this.now() - (r.last_heartbeat || 0) <= this.watchdogMs) continue;
       const who = r.executor ? r.executor.node : '';
-      r.state = 'open';
       r.executor = null;
       r.claimed_at = '';
+      // 心拍途絶も試行として数える（失敗経路の finish と同じ判定）。数えないと、心拍を
+      // 落とし続ける参加者の間を依頼が無限に巡回し、1 周ごとに他人の CLI 時間が
+      // 最大 leaseMs 分焼ける。
+      if ((Number(r.attempts) || 1) >= MAX_ATTEMPTS) {
+        r.state = 'done';
+        r.finished_at = nowIso();
+        r.result = { status: 'failed', answer: '', error: `${who} の応答が途絶え、再投函の上限に達した`,
+          error_class: 'lost', agent_cli: '', model: '', elapsed_ms: 0, resolved_by: this.node, resolved_at: r.finished_at };
+        r.progress.push({ at: r.finished_at, text: `${who} の応答が途絶えた。再投函の上限（${MAX_ATTEMPTS}）に達したので打ち切る` });
+        this.turnProgress(r, `${who} の応答が途絶えた。再投函の上限に達したので打ち切る`);
+        this.screens.delete(r.id);
+        this.finish(r);
+        changed = true;
+        continue;
+      }
+      r.attempts = (Number(r.attempts) || 1) + 1;
+      r.state = 'open';
       r.progress.push({ at: nowIso(), text: `${who} の応答が途絶えた。列へ戻す` });
       this.turnProgress(r, `${who} の応答が途絶えた。列へ戻す`);
       this.notify(r.id).catch(() => {});

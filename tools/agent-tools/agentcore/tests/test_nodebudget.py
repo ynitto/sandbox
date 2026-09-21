@@ -267,5 +267,30 @@ class NodeBudgetCoreTests(unittest.TestCase):
         self.assertEqual(amigos_nb.state(), expect["amigos"])
 
 
+class PeriodWindowTests(unittest.TestCase):
+    """期間の窓。未知の値でフィルタが外れると上限が黙って消える（フェイルオープン）。"""
+
+    NOW = time.mktime(time.struct_time((2026, 9, 22, 3, 0, 0, 0, 265, 0))) - time.timezone
+
+    def test_unknown_period_falls_back_to_the_narrowest_window(self):
+        day = nb._period_prefix("day", self.NOW)
+        self.assertEqual(nb._period_prefix("", self.NOW), day)
+        self.assertEqual(nb._period_prefix("weekly", self.NOW), day, "綴り違いで窓を広げない")
+        self.assertEqual(nb._period_prefix("month", self.NOW), day[:6])
+        self.assertEqual(nb._period_prefix("total", self.NOW), "", "total だけが意図した窓なし")
+
+    def test_unknown_period_does_not_widen_the_ledger_selection(self):
+        base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        led = os.path.join(base, "ledger")
+        os.makedirs(led)
+        today = nb._period_prefix("day", self.NOW)
+        for name in (f"{today}.jsonl", "20200101.jsonl"):
+            open(os.path.join(led, name), "w", encoding="utf-8").close()
+        picked = [os.path.basename(p) for p in nb.ledger_paths(base, "nonsense", now=self.NOW)]
+        self.assertEqual(picked, [f"{today}.jsonl"], "未知の period で古い台帳まで拾わない")
+        self.assertEqual(len(nb.ledger_paths(base, "total", now=self.NOW)), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

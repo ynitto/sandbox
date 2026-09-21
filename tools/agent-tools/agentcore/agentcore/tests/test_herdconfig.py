@@ -63,6 +63,21 @@ class HerdConfigTests(unittest.TestCase):
         with self.assertRaises(herdconfig.ConfigError):
             herdconfig.set_value("judge.temperature", "0")
 
+    def test_rotations_roundtrip_and_validation(self):
+        self.assertIsNone(herdconfig.rotations_setting())
+        herdconfig.set_value("judge.rotations", "3")
+        self.assertEqual(herdconfig.rotations_setting(), 3)
+        self.assertEqual(herdconfig.describe()["rotations"], 3)
+        herdconfig.set_value("judge.model", "gemma4:e4b")
+        herdconfig.unset_value("judge.rotations")
+        self.assertIsNone(herdconfig.rotations_setting())
+        self.assertEqual(herdconfig.judge_setting()["model"], "gemma4:e4b", "他の judge の鍵は残る")
+        for bad in ("0", "27", "three", True):
+            with self.assertRaises(herdconfig.ConfigError):
+                herdconfig.set_value("judge.rotations", bad)
+        (self.home / "agent-herd.yaml").write_text("judge:\n  rotations: 0\n", encoding="utf-8")
+        self.assertIn("rotations", herdconfig.describe()["rotations_error"])
+
     def test_broken_file_is_reported_not_swallowed(self):
         (self.home / "agent-herd.yaml").write_text("judge: [\n", encoding="utf-8")
         with self.assertRaises(herdconfig.ConfigError):

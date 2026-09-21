@@ -400,6 +400,9 @@ agent-herd replay --arm model=gemma4:e4b,think=off,repeat=3
 とすると、クラウド CLI で回している実行でも遷移条件・route・filter・assess の判定だけを LAN の
 ollama へ回し、判定にクラウドのトークンを使わない。`off` で judge を止め、`unset` で既定
 （ローカル定義の実行だけ）に戻る。agent-app の「設定 > 実行制御」からも同じ設定を変えられる。
+`judge.rotations`——判定のとき選択肢の並びを巡回させて読む回数（省略 1）。先頭に置いた
+選択肢が選ばれやすい偏りを打ち消すが、判定の呼び出しが回数分に増える。
+`agent-herd judge --rotations 3` で 1 回だけ試せる。
 `select.*`（`select.jev.api_key` / `select.jev.endpoint` / `select.jev.model` /
 `select.min_confidence`）は `agent-herd select`——依頼文を見て、候補のどのエージェント・
 モデルに任せるかを本家 Jev → judge → agent-audit の格付けの順で決める口——の設定。

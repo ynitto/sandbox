@@ -100,12 +100,15 @@ def row_tokens(rec: dict, cfg: dict) -> float:
 
 
 def _period_prefix(period: str, now: "float | None" = None) -> str:
+    """期間 → 台帳ファイル名の前方一致。**未知の値は最も狭い窓（day）へ倒す**——
+    空文字を返すとフィルタが外れ、上限の窓が total 相当まで黙って広がる（設定の
+    打ち間違いが上限の消失になる）。total だけは意図した「窓なし」なので空のまま。"""
     gm = time.gmtime(now) if now is not None else time.gmtime()
-    if period == "day":
-        return time.strftime("%Y%m%d", gm)
     if period == "month":
         return time.strftime("%Y%m", gm)
-    return ""
+    if period == "total":
+        return ""
+    return time.strftime("%Y%m%d", gm)
 
 
 def ledger_paths(dir: "str | None" = None, period: str = "day",

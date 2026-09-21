@@ -513,11 +513,14 @@ JUDGE_HELP = f"""使い方: {PROG} judge --questions <問い> [オプション] 
   --model <モデル>         既定は設定（config の judge.model）、無ければ {DEFAULT_MODEL_PLACEHOLDER}
   --min-confidence <0-1>   確度がこれ未満の問いを abstained に載せ、終了コード 1
   --samples <N>            ollama が logprobs を返さないとき、N 回引いて票数を確率にする
+  --rotations <N>          選択肢の並びを巡回させて N 回読み、対数平均する（位置バイアスの
+                           打ち消し。既定は設定 judge.rotations、無ければ 1 = 回転しない）
   --think on|off|auto      thinking の指定（既定 off。auto は送らない）
 
   stdout は {{"answers": {{名前: 答え}}, "abstained": [名前…]}} の 1 行。答えには
-  probabilities / confidence / coverage / method が付く。method が logprobs 以外なら
-  確率は目安にすぎない。usage は stderr の @agent-usage。"""
+  probabilities / confidence / coverage / method / rotations / agreement が付く。method が
+  logprobs 以外なら確率は目安にすぎない。agreement は並べ替え間で最頻の選択肢が一致した
+  割合（1.0 なら位置を変えても動かない）。usage は stderr の @agent-usage。"""
 
 
 def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
@@ -534,12 +537,13 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
     model: "str | None" = None
     min_confidence = 0.0
     samples = 1
+    rotations: "int | None" = None
     think: "bool | None" = False
     i = 0
     while i < len(tokens):
         token = tokens[i]
         if token in ("--questions", "--state", "--model", "--min-confidence",
-                     "--samples", "--think"):
+                     "--samples", "--rotations", "--think"):
             if i + 1 >= len(tokens):
                 _err(f"{token} には値が必要です", err=err)
                 return 2
@@ -562,6 +566,12 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
                     samples = max(1, int(value))
                 except ValueError:
                     _err(f"--samples は整数です: {value!r}", err=err)
+                    return 2
+            elif token == "--rotations":
+                try:
+                    rotations = max(1, int(value))
+                except ValueError:
+                    _err(f"--rotations は整数です: {value!r}", err=err)
                     return 2
             else:
                 if value not in ("on", "off", "auto"):
@@ -604,7 +614,7 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
     model = model or judge.pinned_model() or judge.DEFAULT_MODEL
     try:
         result = judge.evaluate(state, questions, model=model, think=think,
-                                samples=samples, request=request)
+                                samples=samples, request=request, rotations=rotations)
     except judge.JudgeError as exc:
         _err(str(exc), err=err)
         return 1
@@ -873,6 +883,8 @@ CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
                   off    … judge をどの実行でも使わない
 
     judge.calibration  手動承認した用途別 gate（model / method / min_coverage / thresholds の JSON）。
+    judge.rotations    選択肢の並びを巡回させて読む回数（1〜26。省略時 1 = 回転しない。
+                       位置バイアスを打ち消すが、判定の呼び出しが回数分に増える）。
                        用途 filter / route / assess / transition。null・省略した用途は保留。
 
     select.jev.api_key     本家 Jev（TypeSafe AI）の API キー。`select` の第 1 段を有効にする
@@ -950,6 +962,10 @@ def cmd_config(argv, *, err=None, out=None) -> int:
         print("judge.calibration: " + json.dumps(info["calibration"], ensure_ascii=False), file=out)
     if info.get("calibration_error"):
         print("calibration error: " + info["calibration_error"], file=out)
+    if info.get("rotations") is not None:
+        print(f"judge.rotations: {info['rotations']}", file=out)
+    if info.get("rotations_error"):
+        print("rotations error: " + info["rotations_error"], file=out)
     if judge_info.get("error"):
         print(f"注意: {judge_info['error']}", file=out)
     return 0

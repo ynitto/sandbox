@@ -191,9 +191,13 @@ class RunnerTests(unittest.TestCase):
         origin, _work, _rev = _mkrepo(self.tmp)
         plan = _plan(commands=["true"], criteria=["hello.txt が存在する"])
         self._seed_meta(plan, workspace={"url": origin, "base": "main", "branch": "main"})
+        # 差分の常設基準（C2）は build_plan が足す。検証役はそれにも答えないと通らない
+        self.assertEqual(len(plan["criteria"]), 2)
         answer = json.dumps({"criteria": [
             {"id": "C1", "verdict": "pass",
-             "evidence": [{"kind": "command", "command": "test -f hello.txt", "exit_code": 0}]}]})
+             "evidence": [{"kind": "command", "command": "test -f hello.txt", "exit_code": 0}]},
+            {"id": "C2", "verdict": "pass",
+             "evidence": [{"kind": "command", "command": "git show --stat", "exit_code": 0}]}]})
         with mock.patch.object(kf, "run_agent", return_value=answer):
             r = kf.run_verification_plan(self.bus, self.args, "orch")
         self.assertEqual(r["verdict"], "pass")

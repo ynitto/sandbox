@@ -11,7 +11,7 @@ const path = require('node:path');
 const store = require('../src/main/store');
 const settings = require('../src/main/settings');
 const { Share } = require('../src/main/share');
-const { Requester } = require('../src/main/share/requester');
+const { Requester, MAX_ATTEMPTS } = require('../src/main/share/requester');
 const { call } = require('../src/main/share/server');
 const { keyOf } = require('../src/main/share/peers');
 
@@ -195,6 +195,29 @@ test('心拍が途絶えたら列へ戻し、取り下げは執行者の CLI を
     assert.equal(saved.messages.at(-1).stopped, true);
     assert.equal(a.share.requester.get(r.id).state, 'cancelled');
     assert.equal(b.share.ledger.today().count, 0, '取り下げは件数に数えない');
+  });
+});
+
+test('心拍の途絶も試行として数え、再投函の上限を超えたら lost で打ち切る', async (t) => {
+  await withNodes(t, async (open) => {
+    const a = await open('a');
+    const sess = store.createSession(a.userData, { repo: '/repo', cli: 'fake' });
+    const posted = a.share.post({ sessionId: sess.id, goal: 'q' });
+    const r = a.share.requester.get(posted.id);
+    const stall = (who) => Object.assign(r, { state: 'working', executor: { node: who, cli: 'fake' }, last_heartbeat: 1 });
+    // 投函が試行 1。心拍を落とし続ける参加者の間で、上限（MAX_ATTEMPTS）までは列へ戻る
+    assert.equal(r.attempts, 1);
+    for (let i = 2; i <= MAX_ATTEMPTS; i += 1) {
+      stall(`ghost${i}`);
+      a.share.requester.watchdog();
+      assert.equal(r.state, 'open', `${i} 回目は列へ戻す`);
+      assert.equal(r.attempts, i, '途絶を試行として数える');
+    }
+    stall('ghost-last');
+    a.share.requester.watchdog();
+    assert.equal(r.state, 'done', '上限を超えたら列へ戻さない');
+    assert.equal(r.result.error_class, 'lost', '再投函の対象にしない語彙で終端する');
+    assert.equal(store.readSession(a.userData, sess.id).messages.at(-1).role, 'assistant', '依頼者へ返す');
   });
 });
 

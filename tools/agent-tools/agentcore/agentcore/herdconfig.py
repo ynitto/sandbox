@@ -63,7 +63,7 @@ SELECT_KEYS = ("select.jev.api_key", "select.jev.endpoint", "select.jev.model",
                "select.min_confidence")
 # `route`（依頼の振り分け。`agentcore.route`）の確度の下限。min_confidence を省くと select と同じ値。
 ROUTE_KEYS = ("route.min_confidence", "route.hold_min_confidence")
-KNOWN_KEYS = ("judge.model", "judge.calibration", *SELECT_KEYS, *ROUTE_KEYS)
+KNOWN_KEYS = ("judge.model", "judge.calibration", "judge.rotations", *SELECT_KEYS, *ROUTE_KEYS)
 
 
 class ConfigError(RuntimeError):
@@ -187,6 +187,27 @@ def judge_setting() -> dict:
     if value == JUDGE_OFF:
         return {"mode": "off", "model": None, "error": None}
     return {"mode": "pinned", "model": value, "error": None}
+
+
+def normalize_rotations(value) -> "int | None":
+    """`judge.rotations`（選択肢の並びを巡回させて読む回数）: 1〜26 の整数。空は未設定。"""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise ConfigError("judge.rotations は 1 以上の整数です")
+    try:
+        count = int(str(value).strip())
+    except ValueError as exc:
+        raise ConfigError("judge.rotations は 1 以上の整数です") from exc
+    if not 1 <= count <= 26:
+        raise ConfigError("judge.rotations は 1〜26 です（選択肢は 26 個まで）")
+    return count
+
+
+def rotations_setting() -> "int | None":
+    """`judge.rotations` の値。未設定は None（judge 側が既定を使う）。壊れていれば ConfigError。"""
+    section = load().get("judge")
+    return normalize_rotations(section.get("rotations")) if isinstance(section, dict) else None
 
 
 CALIBRATION_PURPOSES = ("filter", "route", "assess", "transition")
@@ -332,6 +353,8 @@ def set_value(key: str, value) -> Path:
             data["judge"] = section
         else:
             data.pop("judge", None)
+    elif key == "judge.rotations":
+        _set_path(data, ("judge", "rotations"), normalize_rotations(value))
     elif key in SELECT_KEYS or key in ROUTE_KEYS:
         normalized = None if value is None else _normalize_select_value(key, value)
         _set_path(data, tuple(key.split(".")), normalized)
@@ -349,12 +372,17 @@ def describe() -> dict:
         calibration, calibration_error = calibration_setting(), None
     except ConfigError as exc:
         calibration, calibration_error = None, str(exc)
+    try:
+        rotations, rotations_error = rotations_setting(), None
+    except ConfigError as exc:
+        rotations, rotations_error = None, str(exc)
     select = select_setting()
     jev = dict(select["jev"])
     # API キーは表示しない（`config --json` は agent-app や人の画面へ流れる）。
     if jev.get("api_key"):
         jev["api_key"] = "(set)"
     return {"calibration": calibration, "calibration_error": calibration_error,
+            "rotations": rotations, "rotations_error": rotations_error,
             "path": str(path) if path else None,
             "default_path": str(agents_home() / CONFIG_NAMES[0]),
             "judge": judge_setting(),

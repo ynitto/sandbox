@@ -120,6 +120,11 @@ Python からは `agentcore.judge.evaluate(state, questions, model=…)`。`requ
    本文が空になる）。`--think auto` で送らない選択も残す（think 非対応モデルは `think` を
    受けると 400 になる）。
 5. **温度 0、`format` なし。** 文法制約は要らない——読むのは分布であって本文ではない。
+6. **選択肢の並びを巡回させて読む口（`rotations`、2026-09-22 追記）。** 1 トークン目の分布は
+   選択肢の置き場所にも反応する。同じ問いを並べ替えて読み、宣言順に戻して対数平均する
+   （ruling の ordering averaging）。既定は 1 回読みで、設定 `judge.rotations` か `--rotations`
+   で有効にする。根拠と実測（接頭辞キャッシュが効く条件・並列 slot・回転の効果）は
+   [回転平均の実測](2026-09-22-judge-rotation-averaging.md)。
 
 ## 4. ollama が logprobs を返さないとき（縮退の順序）
 

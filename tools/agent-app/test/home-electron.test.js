@@ -27,7 +27,11 @@ test('実機: ホームから送ると、タスクの流用は案内を挟まず
   fs.mkdirSync(repo);
   const store = require('../src/main/store');
   // 既定のままホームが開く（config を保存しても area は触らない）
-  store.saveConfig(data, { repos: [repo], lastRepo: repo, lastCli: 'codex', useWorktree: false, transport: 'headless', share: { enabled: false }, evaluation: { mode: 'off' } });
+  store.saveConfig(data, {
+    repos: [repo], lastRepo: repo, lastCli: 'codex', useWorktree: false, transport: 'headless',
+    share: { enabled: false }, evaluation: { mode: 'off' },
+    execution: { defaultPolicy: 'direct', tiers: { small: { cli: 'codex', model: '' }, medium: { cli: 'codex', model: '' }, large: { cli: 'codex', model: '' } } },
+  });
   require('../src/main/automation/store').save(repo, {
     name: 'リリース確認', machine: 'release-check', purpose: '公開前の確認',
     steps: [{ kind: 'agent', title: '変更を確認', detail: '{{period}} の変更を確認する' }],
@@ -70,30 +74,16 @@ test('実機: ホームから送ると、タスクの流用は案内を挟まず
     await win.waitForFunction(() => document.getElementById('chat-title').textContent === 'ホーム');
     assert.equal(await win.locator('#area-home').getAttribute('aria-current'), 'page');
 
-    // 実行設定でこの PC の CLI を選ぶ（人がやるのと同じ。ホームでも入力欄の実行設定は会話と同じもの）
-    await win.click('#run-settings > summary');
-    await win.selectOption('#cli', 'codex');
-    await win.click('#run-settings > summary');
-
     const request = '前月分のリリース確認をして';
     await win.fill('#prompt', request);
     await win.click('#send');
 
-    await new Promise((r) => setTimeout(r, 8000));
-    console.log('DIAG', JSON.stringify(await win.evaluate(() => ({
-      notice: document.getElementById('notice').textContent, status: document.getElementById('input-status').textContent,
-      area: state.area, automationHidden: document.getElementById('automation').hidden,
-      messages: (state.current && state.current.messages || []).map((m) => m.role), current: !!state.current,
-      actions: [...document.querySelectorAll('.message-action')].map((b) => b.textContent),
-    }))));
     // タスク画面でそのタスクが開く（案内の 1 枚は出さない）
     await win.waitForFunction(() => !document.getElementById('automation').hidden);
     await win.waitForFunction(() => state.selectedTask === 'machine:release-check');
     assert.equal(await win.locator('.message-action', { hasText: 'タスクを開く' }).count(), 0, 'ホームでは案内を挟まない');
-    // 依頼から写した入力が概要の実行条件に入っている（実行のボタンは人が押す）
-    const panel = win.locator('#automation-workbench');
-    await panel.locator('[data-run-param="period"]').waitFor();
-    assert.equal(await panel.locator('[data-run-param="period"]').inputValue(), '前月');
+    // 写した入力（{{period}}）を概要の入力欄へ入れるところは automation-task-inputs / electron-smoke が持つ。
+    // ここで確かめるのはホームの受け方だけ。
     // 案内だけの会話は残さない。本文は入力欄に残る（戻って会話で送り直せる）
     assert.deepEqual(store.listSessions(data, repo), []);
     assert.equal(await win.inputValue('#prompt'), request);

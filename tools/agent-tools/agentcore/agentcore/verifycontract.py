@@ -47,6 +47,15 @@ def criterion_id(index: int) -> str:
     return f"C{index + 1}"
 
 
+# 差分の常設基準（red-green の代替）の**正典**。自然文基準がある plan の最後尾へ必ず足す。
+# 置き場がここなのは、`build_plan` を通る経路すべて（agent-project のタスク、agent-flow の
+# `verify-plan`、投入側の一貫性ゲート）に同じ砦を掛けるため——組み立てを通らない道が 1 本でも
+# 残ると、そこだけ「何も変えずに全 pass」が通る。
+# 差分を作らない宣言（no_diff）のときだけ、呼び出し側が `diff_criterion` で述語を差し替える。
+DIFF_CRITERION = ("このタスクの差分が、上の基準の対象範囲に実在すること"
+                  "（変更が無い・無関係な場所にしか無いなら fail）")
+
+
 def normalize_criteria(texts) -> "list[dict]":
     """自然文基準の列 → criterion レコード列。空行は落とし、id を出現順に採番する。"""
     out = []
@@ -185,14 +194,21 @@ def plan_agent(plan) -> "dict | None":
 
 def build_plan(task_id: str, *, criteria=None, commands=None, workspace: str = "",
                workspaces=None, policy: "dict | None" = None,
-               integration: "dict | None" = None) -> dict:
+               integration: "dict | None" = None,
+               diff_criterion: "str | None" = None) -> dict:
     """verification_plan を正規化して digest 付きで返す。基準もコマンドも無ければ ValueError
     （plan は検証材料があるときだけ作る——空の plan は「verify 未定義」と区別が付かない）。
 
     `workspaces`（workset 要素名の順序付き列。先頭が primary）が 2 件以上、または
     `commands[].cwd` / `integration.targets` を使うときだけ version 3 になる。1 要素は
     従来どおり version 1/2 で作る——同じ条件の検証を版だけの理由で別 plan にしないため。"""
+    # 自然文基準があるときだけ差分の常設基準を最後尾へ（固定コマンドだけの plan には足さない
+    # ——criterion が 1 つでもあると実行側で verifier セッションが要り、fast path の費用が変わる）。
     crit = normalize_criteria(criteria)
+    if crit:
+        extra = DIFF_CRITERION if diff_criterion is None else str(diff_criterion).strip()
+        if extra and extra not in [c["text"] for c in crit]:
+            crit = normalize_criteria([c["text"] for c in crit] + [extra])
     cmds = normalize_commands(commands)
     if not crit and not cmds:
         raise ValueError("verification_plan には基準か固定コマンドが最低 1 つ要る")

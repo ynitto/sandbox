@@ -49,8 +49,21 @@ class PlanTests(unittest.TestCase):
         self.assertNotEqual(_plan()["digest"], _plan(criteria=["基準その 1"])["digest"])
 
     def test_criterion_ids_are_positional_1_based(self):
-        p = _plan(criteria=["a", " ", "b"])            # 空行は落ちて詰まる
+        p = _plan(criteria=["a", " ", "b"], diff_criterion="")   # 空行は落ちて詰まる
         self.assertEqual([c["id"] for c in p["criteria"]], ["C1", "C2"])
+
+    def test_diff_criterion_is_appended_to_every_plan_with_criteria(self):
+        """差分の常設基準は build_plan が足す（agent-project を通らない経路にも同じ砦）。"""
+        p = _plan(criteria=["a"])
+        self.assertEqual([c["text"] for c in p["criteria"]], ["a", vc.DIFF_CRITERION])
+        # 固定コマンドだけの plan には足さない（verifier セッションを増やさない）
+        self.assertEqual(_plan(criteria=[], commands=["true"])["criteria"], [])
+        # 差分を作らない宣言は述語だけ差し替える
+        swapped = _plan(criteria=["a"], diff_criterion="成果物が実在すること")
+        self.assertEqual([c["text"] for c in swapped["criteria"]], ["a", "成果物が実在すること"])
+        # 呼び出し側が自分で足していても二重にしない
+        twice = _plan(criteria=["a", vc.DIFF_CRITERION])
+        self.assertEqual([c["text"] for c in twice["criteria"]], ["a", vc.DIFF_CRITERION])
 
     def test_duplicate_commands_fold_to_one(self):
         p = _plan(commands=["pytest -q", {"command": "pytest -q", "source": "policy"}])
@@ -369,6 +382,8 @@ class WorksetReceiptTests(unittest.TestCase):
             result_rev="a" * 40,
             commands=[{"command": "true", "exit_code": 0}],
             criteria=[{"id": "C1", "text": "基準", "verdict": "pass",
+                       "evidence": [{"kind": "command"}]},
+                      {"id": "C2", "text": vc.DIFF_CRITERION, "verdict": "pass",
                        "evidence": [{"kind": "command"}]}],
             revisions={"api": "a" * 40, "web": "b" * 40},
             integrations=[{"name": "api", "target": "main", "target_rev": "c" * 40,
@@ -411,6 +426,8 @@ class WorksetReceiptTests(unittest.TestCase):
         r1 = vc.build_receipt(p1, result_rev="a" * 40,
                               commands=[{"command": "true", "exit_code": 0}],
                               criteria=[{"id": "C1", "verdict": "pass",
+                                         "evidence": [{"kind": "command"}]},
+                                        {"id": "C2", "verdict": "pass",
                                          "evidence": [{"kind": "command"}]}])
         self.assertEqual(r1["verdict"], "pass")
         self.assertNotIn("workspaces", r1)

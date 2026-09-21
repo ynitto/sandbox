@@ -66,7 +66,7 @@ Windows で `C:\…` のリポジトリを使う場合は、設定 > アプリ�
 
 主要メニューの「ホーム」は、1 つの入力欄から新しい依頼を始める入口です。初回起動はホームが開き、以後は
 最後に開いた画面が開きます。面は会話画面の空状態と入力欄そのもので、ホーム専用の設定はありません
-（リポジトリはサイドバーの選択、実行設定は入力欄のもの）。
+（実行設定は入力欄のもの。作業先のフォルダだけは入力欄の右に移り、選ぶものは他の画面と同じです）。
 
 1. 入力欄に依頼を書き、Enter で送ります。
 2. 送る前に会話と同じ判定（「実行設定を変える」の「依頼の扱い」）が、答えるだけか・会話で実行するか・
@@ -76,8 +76,9 @@ Windows で `C:\…` のリポジトリを使う場合は、設定 > アプリ�
    ワークフローの流用 → ワークフロー画面でそのワークフローを開きます。
    タスク・ワークフローへ移ったときは会話を残さず、本文は入力欄に残ります。
 
-サイドバーの「直近」は会話・タスク・ワークフローを横断した一覧（更新の新しい順、20 件まで）で、押すとその
-画面で開きます。ホームに ＋ は出ません。
+サイドバーの「最近の依頼」は、登録したすべてのフォルダと会話・タスク・ワークフローを横断した一覧
+（`session:recent`。更新の新しい順、20 件まで。差し替えられた会話は出しません）。押すとその画面で開き、
+別のフォルダの項目ならフォルダの選択も切り替わります。ホームに ＋ は出ません。
 
 ### 会話する
 
@@ -1243,7 +1244,9 @@ userData/audit-ratings.json            自動選択へ渡す格付け（`agent-a
 | タスク・ワークフローの実行 | `audit.feedRun`（`run-history.append` の中。**履歴と申告を同じ 1 か所で残す**） | `workload: task`・`artifact: { kind, name, origin }` |
 | 共有で引き受けた依頼 | `audit.feedShare`（`share/ledger` の `onRecord`） | `workload: shared`・`ref` は依頼者 |
 | 評価（§19） | `audit.feedEvaluation`（自動評価・まとめて評価が 1 件終わるたび） | `workload: evaluation`・`purpose` は評価された側の用途（chat / task）・`ref` は会話 ID か保存名・`evaluation: { quality 1〜3, confidence, issue, method, judge_model, note }`・`used` / `artifact` は評価された側のもの。評価された側の行は書き換えない |
+| 依頼の振り分け | `audit.feedRouting`（判定が返った直後。止めたかどうか・決めたかどうかによらず 1 行） | `workload: routing`・`event: routing_decision`・`purpose: route`・`ref` は会話 ID・`routing: { decided, choice, confidence, hold, target_kind, target_id, skills, routine }`。依頼文は載せない。人がどう応じたかは列にしない |
 
+`event` を持つ行は消費ではなく観測なので、agent-audit は実行回数にも合格率にも混ぜない。
 `status` は `done` / `failed` / `cancelled` / `escalate` のどれか（知らない値は `failed` に倒す）。
 トークンは CLI が申告したときだけ書く。**申告の失敗は本体の処理を止めない**（監査は副産物）。
 

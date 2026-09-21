@@ -101,7 +101,8 @@ function workflowSources(repo, runs) {
     if (!run || typeof run !== 'object' || !run.runId) continue;
     const open = (Array.isArray(run.interactions) ? run.interactions : []).find((item) => item && item.state === 'open');
     const interaction = open
-      ? { id: String(open.interactionId || ''), mode: String(open.mode || 'input'), prompt: text(open.prompt) }
+      ? { id: String(open.interactionId || ''), mode: String(open.mode || 'input'), prompt: text(open.prompt),
+          createdAt: text(open.createdAt, 40), expiresAt: text(open.expiresAt, 40) }
       : null;
     const state = String(run.state || '');
     const terminal = !!run.terminal;
@@ -202,12 +203,29 @@ function sortKey(item) {
   return item.queue === 'action' ? 0 : 1;
 }
 
-// 材料の列 → { action, unread, items }。要対応を先に、あとは新しい結果から。
-function project(sources, { seen = {}, since = '' } = {}) {
+// 人待ちが始まってからの経過（ミリ秒）。正典が時刻を持つものだけ——持たない材料は 0 のままで、
+// 画面にも出さない（再起動で 0 に戻る時計を「3 時間待ち」と書かないため）。
+function waited(source, now) {
+  const at = source.interaction ? stamp(source.interaction.createdAt) : 0;
+  return at && now > at ? now - at : 0;
+}
+
+// 締め切り（agent-flow の expires_at）を過ぎたか。しきい値はここで作らない。
+function expired(source, now) {
+  const at = source.interaction ? stamp(source.interaction.expiresAt) : 0;
+  return !!at && now >= at;
+}
+
+// 材料の列 → { action, unread, items }。要対応を先に（長く待たせている順）、あとは新しい結果から。
+function project(sources, { seen = {}, since = '', now = Date.now() } = {}) {
   const items = (Array.isArray(sources) ? sources : [])
-    .map((source) => ({ ...source, queue: classify(source, seen, since) }))
+    .map((source) => ({
+      ...source, queue: classify(source, seen, since),
+      waitedMs: waited(source, now), expired: expired(source, now),
+    }))
     .filter((item) => item.queue !== 'none')
-    .sort((a, b) => sortKey(a) - sortKey(b) || stamp(b.resultAt) - stamp(a.resultAt) || a.key.localeCompare(b.key));
+    .sort((a, b) => sortKey(a) - sortKey(b) || (b.waitedMs - a.waitedMs)
+      || stamp(b.resultAt) - stamp(a.resultAt) || a.key.localeCompare(b.key));
   return {
     action: items.filter((item) => item.queue === 'action').length,
     unread: items.filter((item) => item.queue === 'unread').length,
