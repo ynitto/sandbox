@@ -289,7 +289,21 @@ function forgetIndex(repo) {
   indexes.delete(root);
 }
 
+// Model-written Markdown is only a candidate, not evidence of a created artifact.
+async function existingArtifacts(repo, paths) {
+  const candidates = [...new Set(Array.isArray(paths) ? paths : [])].filter(rel =>
+    typeof rel === 'string' && rel && !/^(?:[a-z][a-z0-9+.-]*:|[/\\])/i.test(rel)
+    && !rel.split(/[/\\]/).includes('..')).slice(0, 20);
+  const checked = await mapLimit(candidates, IO_CONCURRENCY, async rel => {
+    try {
+      const { target } = await resolveInsideAsync(repo, rel);
+      return (await fsp.stat(target)).isFile() ? rel : null;
+    } catch { return null; }
+  });
+  return checked.filter(Boolean);
+}
+
 module.exports = {
-  languageOf, listDir, readFile, find, resolveInside, resolveInsideAsync, buildIndex, indexFromPaths, searchIndex, forgetIndex, mapLimit,
+  existingArtifacts, languageOf, listDir, readFile, find, resolveInside, resolveInsideAsync, buildIndex, indexFromPaths, searchIndex, forgetIndex, mapLimit,
   MAX_TEXT, EXT_LANG, NAME_LANG, SKIP_DIRS, SEARCH_SKIP_DIRS, SEARCH_MAX_DEPTH, INDEX_MAX_ENTRIES, INDEX_TTL_MS,
 };

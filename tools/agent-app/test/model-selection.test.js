@@ -99,6 +99,7 @@ test('automatically selected local AI retains readonly/edit routing without swit
   const picked = { cli: 'aider', model: 'chosen', autoSelected: true, readonly: true };
   assert.equal(ipc.concreteCli(picked, family).cli, 'aider');
   assert.equal(ipc.concreteCli(picked, family).slash, '/find');
+  assert.equal(ipc.concreteCli({ ...picked, answerOnly: true }, family).slash, '/ask');
   assert.equal(ipc.concreteCli({ ...picked, readonly: false }, family, { attachments: [{ rel: 'app.js' }] }).slash, '/edit');
   assert.equal(ipc.concreteCli({ ...picked, autoSelected: false }, family).slash, '');
 });
@@ -117,4 +118,16 @@ test('missing or older selection commands fall back only to eligible candidates'
       { cli: 'ollama', model: 'local/model', stage: 'audit', rated: false });
   }
   await assert.rejects(selection.select({ config: cfg, agents, load, prompt: 'task', capture: async () => ({ ok: true, stdout: '{"selected":null}' }) }), /利用条件/);
+});
+
+test('independent fit method and abstention reason reach the app without interpreting task keywords', async () => {
+  const base = { config: config(), agents, load, prompt: '任意の依頼' };
+  const chosen = await selection.select({ ...base, capture: async () => ({
+    ok: true, stdout: JSON.stringify({ selected: { agent_cli: 'claude', model: 'cloud' }, stage: 'judge', method: 'independent-fit' }),
+  }) });
+  assert.equal(chosen.method, 'independent-fit');
+  assert.match(selection.information(chosen).detail, /候補ごとの適合評価/);
+  await assert.rejects(selection.select({ ...base, capture: async () => ({
+    ok: false, stdout: JSON.stringify({ selected: null, reason: '候補ごとの適合判定で十分な候補を確認できませんでした' }),
+  }) }), /十分な候補/);
 });

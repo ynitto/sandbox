@@ -68,3 +68,13 @@ test('開始コマンドは順番に実行し、warn は継続、fail は停止�
     (error) => error.code === 'STARTUP_ACTION_FAILED' && /タイムアウト/.test(error.message),
   );
 });
+
+
+test('回答だけの依頼は不足情報を確認し、架空の成果物例を指示に含めない', () => {
+  const setup = require('../src/main/sessionSetup');
+  const prompt = setup.withInstructions('今日の天気は？', {}, { answerOnly: true });
+  assert.match(prompt, /不足.*確認/);
+  assert.match(prompt, /最新情報.*推測/);
+  assert.match(prompt, /今日の天気は？$/);
+  assert.doesNotMatch(setup.instructionBlock({}, { artifacts: true }), /\]\([^)]*\.xlsx\)/);
+});

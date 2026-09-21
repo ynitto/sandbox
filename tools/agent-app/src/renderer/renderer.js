@@ -16,6 +16,7 @@ const state = {
   agentsLoading: false, // agents:list（ホストの PATH を引く）の返事待ち
   agentsReady: null,
   sessions: [],
+  recentRequests: [],
   tasks: [],
   taskToken: 0,          // タスク一覧の読み込みのたびに進める。遅れて届いた実行状態を捨てる印
   selectionToken: 0,     // 項目を続けて選んだとき、古い設定保存の返事で表示状態を戻さない印
@@ -29,6 +30,7 @@ const state = {
   draft: false,         // 「新しい会話」を押してまだ 1 通も送っていない
   running: new Set(),   // 応答中の会話 ID
   attention: { action: 0, unread: 0, items: [] }, // 受信箱（attention:list の投影。判定は main）
+  preparation: null,    // 送信直後から判定・起動完了までの表示（会話作成前も含む）
   pending: new Set(),   // 送信中（main が CLI を起動し直している間など）の会話 ID
   logs: new Map(),      // 会話 ID → 応答中に流れた行（ヘッドレス）
   tails: new Map(),     // 会話 ID → 端末の末尾（tmux）
@@ -216,6 +218,7 @@ async function removeConversation(session) {
 }
 
 function renderSessions() {
+  if (RECENT_AREAS.has(state.area)) refreshRecentRequests();
   const ul = $('sessions');
   ul.replaceChildren();
   for (const s of state.sessions) {
@@ -358,44 +361,50 @@ function renderWorkflowItems() {
 // 1 つの入力欄から始める入口。面は会話画面そのもの（空状態と入力欄）で、判定は会話の送信経路
 // （runTurn の振り分け）に任せる。サイドバーは会話・タスク・ワークフローを横断した直近の一覧で、
 // 押すと行き先の画面でその項目を開く（受信箱と同じ経路）。判定も画面もここでは作らない。
-const HOME_LIMIT = 20;
+const RECENT_AREAS = new Set(['home']);
+let recentRequestsPending = null;
+function refreshRecentRequests() {
+  if (recentRequestsPending) return recentRequestsPending;
+  recentRequestsPending = api.recentSessions().then(items => {
+    state.recentRequests = items;
+    renderHomeItems();
+  }).catch(() => { /* 読めない間は前回の一覧を保つ */ }).finally(() => { recentRequestsPending = null; });
+  return recentRequestsPending;
+}
 
 function homeItems() {
-  const runOf = (workflow) => state.workflowRuns.find((item) => item.workflowId === workflow.id || item.input?.workflowId === workflow.id);
-  const items = [
-    ...state.sessions.map((s) => ({ kind: 'conversation', id: s.id, title: s.title || '（無題）', at: s.updatedAt || '',
-      sub: `会話 · ${s.cli}${state.running.has(s.id) ? ' · 応答中' : ''}` })),
-    ...state.tasks.map((task) => ({ kind: 'task', id: taskId(task), title: task.name || task.machine || taskId(task),
-      at: ((task.history || [])[0] || {}).finishedAt || '', sub: `タスク · ${taskStatus(task)}` })),
-    ...state.workflows.map((workflow) => ({ kind: 'workflow', id: workflow.id, title: workflow.name || workflow.id,
-      at: (runOf(workflow) || {}).updatedAt || (runOf(workflow) || {}).createdAt || '', sub: `ワークフロー · ${workflow.teaching ? workflow.teachingStatus : workflowState(workflow)}` })),
-  ];
-  return items.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, HOME_LIMIT);
+  const labels = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー' };
+  return state.recentRequests.map(s => ({ ...s, title: s.title || s.machine || s.workflow || '（無題）',
+    sub: `${labels[s.kind] || '会話'} · ${basename(s.repo)}${state.running.has(s.id) ? ' · 応答中' : ''}` }));
 }
 
 function renderHomeItems() {
   const ul = $('home-items');
   ul.replaceChildren();
   for (const item of homeItems()) {
-    const li = el('li', `row-item${item.kind === 'conversation' && state.running.has(item.id) ? ' running' : ''}`);
+    const li = el('li', `row-item${state.running.has(item.id) ? ' running' : ''}`);
     const pick = el('button', 'list-pick');
     const body = el('span', 'grow');
     body.append(el('div', '', item.title), el('div', 'sub', item.sub));
     pick.append(body);
-    pick.title = `「${item.title}」を開く`;
+    pick.title = `「${item.title}」を開く\n${item.repo}`;
     pick.onclick = () => openHomeItem(item).catch((err) => notice(err.message, 'error'));
     li.append(pick);
     ul.append(li);
   }
-  if (!ul.children.length) ul.append(el('li', 'empty', state.repo ? '直近の項目なし' : ''));
+  if (!ul.children.length) ul.append(el('li', 'empty', '最近の依頼はありません'));
 }
 
 // 項目から行くのは既存の画面（会話・タスク・ワークフロー）
 async function openHomeItem(item) {
-  if (item.kind === 'conversation') { await openSessionInRepo(state.repo, item.id); return; }
+  if (item.kind === 'conversation') { await openSessionInRepo(item.repo, item.id); return; }
+  if (item.repo !== state.repo) {
+    await selectRepo(item.repo);
+    renderRepos();
+  }
   const area = item.kind === 'task' ? 'tasks' : 'workflows';
   await showArea(area);
-  await selectAreaItem(area, item.id);
+  await selectAreaItem(area, item.kind === 'task' ? `machine:${item.machine}` : item.workflow);
 }
 
 // ホームから振り分けがタスク／ワークフローの流用で止めたとき。案内の 1 枚しか無い会話は残さず、
@@ -592,6 +601,7 @@ async function refreshAttention() {
     state.attention = await api.attention.list();
     for (const item of [...state.attention.items]) if (attentionItemVisible(item)) await markAttentionSeen(item);
     renderInbox();
+    if (RECENT_AREAS.has(state.area)) await refreshRecentRequests();
   } catch { /* main が読めない間は前回のまま */ } finally { attentionBusy = false; }
 }
 
@@ -630,14 +640,30 @@ function renderShareUnread() {
 }
 
 function renderAreaContext() {
+  const home = state.area === 'home';
+  if (home) showView('chat');
+  $('usage-open').hidden = !home;
+  $('chat-views').hidden = home;
+  $('changes-toggle').hidden = home;
+  $('chat-more').hidden = home || !state.repo;
+  if (home) $('chat-more').open = false;
+  const repositorySlot = $(home ? 'home-repository-slot' : 'sidebar-repository-slot');
+  // 選択状態と管理操作を共有する同じコントロールを、画面に応じて移す。
+  if ($('repository-context').parentElement !== repositorySlot) {
+    $('repo-more').open = false;
+    repositorySlot.append($('repository-context'));
+  }
+  $('home-repository-slot').hidden = !home;
+  $('sidebar-repository-slot').hidden = home;
   const info = AgentNavigation.areaInfo(state.area);
-  $('area-list-title').textContent = info.listLabel || info.label;
+  const recent = RECENT_AREAS.has(state.area);
+  $('area-list-title').textContent = recent ? '最近の依頼' : (info.listLabel || info.label);
   $('session-new').setAttribute('aria-label', info.createLabel);
   $('session-new').title = info.createLabel;
-  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests', 'inbox-items', 'home-items']) $(id).hidden = id !== info.listId;
+  for (const id of ['sessions', 'tasks', 'workflows', 'share-requests', 'inbox-items', 'home-items']) $(id).hidden = id !== (recent ? 'home-items' : info.listId);
   $('session-new').hidden = ['share', 'inbox', 'home'].includes(state.area);      // 共有の依頼は会話から出す。受信箱とホームは入口だけ
-  if (state.area === 'conversation') renderSessions();
-  else if (state.area === 'home') renderHomeItems();
+  if (recent) { renderHomeItems(); refreshRecentRequests(); }
+  else if (state.area === 'conversation') renderSessions();
   else if (state.area === 'tasks') renderTaskItems();
   else if (state.area === 'workflows') renderWorkflowItems();
   else if (state.area === 'inbox') renderInboxItems();
@@ -724,9 +750,9 @@ async function loadWorkflowItems(repo) {
 
 async function loadAreaItems() {
   state.areaError = '';
+  if (state.area === 'home') { await refreshRecentRequests(); renderAreaContext(); return; }
   if (!state.repo || state.area === 'conversation') { renderAreaContext(); return; }
   if (state.area === 'tasks') await loadTaskItems(state.repo);
-  else if (state.area === 'home') await Promise.all([loadTaskItems(state.repo), loadWorkflowItems(state.repo)]);   // 直近の一覧の材料
   else await loadWorkflowItems(state.repo);
 }
 
@@ -1356,6 +1382,8 @@ function renderPhase(ph) {
 
 function renderHeader() {
   const cur = state.current;
+  const preparing = state.preparation && state.preparation.repo === state.repo
+    && state.preparation.id === (cur?.id || null) ? state.preparation : null;
   $('chat-title').textContent = cur ? (cur.title || '（無題）') : state.area === 'home' ? 'ホーム'
     : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
   // 別のリポジトリから分岐した会話は、題名の下に分岐元を 1 行出す（押すと元の会話へ戻る）
@@ -1387,8 +1415,8 @@ function renderHeader() {
   }
   $('session-new').disabled = !state.repo;
   $('changes-toggle').disabled = !state.repo;
-  $('chat-more').hidden = !state.repo;
-  $('composer').hidden = !state.repo;
+  $('chat-more').hidden = state.area === 'home' || !state.repo;
+  $('composer').hidden = !state.repo && state.area !== 'home';
   for (const action of conversationActions(cur)) {
     $(action.id).hidden = action.hidden;
     $(action.id).disabled = !!action.disabled;
@@ -1396,23 +1424,26 @@ function renderHeader() {
   }
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   $('stop').hidden = !busy;
-  $('send').disabled = !state.repo || (!!cur && state.pending.has(cur.id));
+  $('send').disabled = !state.repo || !!state.preparation || (!!cur && state.pending.has(cur.id));
   $('send').classList.toggle('sending', !!cur && state.pending.has(cur.id));
   if (!state.pending.size) $('send').classList.remove('sending');
   const tm = isTmux(cur);
   const ph = tm ? state.phases.get(cur.id) : null;
   renderPhase(ph);
   const waiting = shareWaiting(cur);
-  $('term-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
-  $('conversation-start').hidden = !!cur;
-  $('terminal-stage').hidden = !(tm || (waiting && waiting.state === 'working'));
+  $('term-restart').hidden = !!preparing || !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
+  $('conversation-start').hidden = !!cur || !!preparing;
+  $('terminal-stage').hidden = !(preparing || tm || (waiting && waiting.state === 'working'));
   // 端末（手元の tmux か、共有で映している相手の画面）があるときは、履歴は畳んだ脇役のまま
-  const mirror = tm || !!(waiting && waiting.state === 'working');
-  $('conversation-history').hidden = !cur;
+  $('turn-preparation').hidden = !preparing;
+  $('term-host').hidden = !!preparing;
+  if (preparing) $('turn-preparation').textContent = preparing.text;
+  const mirror = !!preparing || tm || !!(waiting && waiting.state === 'working');
+  $('conversation-history').hidden = !cur || !!preparing;
   $('conversation-history').classList.toggle('history-only', !mirror);
   if (cur && !mirror) $('conversation-history').open = true;
   $('history-count').textContent = cur && cur.messages ? `${cur.messages.length}件` : '';
-  $('term-agent').textContent = waiting ? `${waiting.node || '参加者'} の ${waiting.cli || 'AI'}`
+  $('term-agent').textContent = preparing ? '準備中' : waiting ? `${waiting.node || '参加者'} の ${waiting.cli || 'AI'}`
     : (tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '');
   $('term-name').textContent = waiting ? '共有 · 閲覧のみ' : '';
   $('term-agent').title = !waiting && ph?.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
@@ -1428,7 +1459,7 @@ function renderHeader() {
   } else if (Term.isRemote()) Term.detach();
   if (state.input.mode === 'terminal' && !tm) setInputMode('message', { focus: false });
   else {
-    $('input-mode-terminal').disabled = !tm || !!(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
+    $('input-mode-terminal').disabled = !!preparing || !tm || !!(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
     Term.setInputEnabled(state.input.mode === 'terminal' && !$('input-mode-terminal').disabled);
   }
   $('run-settings').hidden = !state.repo || !!waiting;
@@ -1648,18 +1679,29 @@ function messageNode(m, index = -1) {
     const answer = el('div', 'msg assistant answer-bubble');
     const body = el('div');
     answer.append(body);
-    if (m.text) MD.mount(body, m.text).catch(() => { body.textContent = m.text; });
+    const mounted = m.text ? MD.mount(body, m.text).catch(() => { body.textContent = m.text; }) : Promise.resolve();
     if (m.error) answer.append(el('div', 'err', m.error));
     const artifactLinks = Reuse.artifacts(m.text);
     if (artifactLinks.length) {
       const files = el('div', 'message-actions');
       const repo = state.repo, worktree = activeWorktree();
-      for (const rel of artifactLinks) {
-        const button = el('button', 'message-action', rel);
-        button.onclick = () => api.openFile(repo, worktree, rel).catch(err => notice(err.message, 'error'));
-        files.append(button);
-      }
-      answer.append(files);
+      Promise.all([mounted, api.existingArtifacts(repo, worktree, artifactLinks)]).then(([, existing]) => {
+        const found = new Set(existing);
+        for (const link of body.querySelectorAll('a[href]')) {
+          const rel = link.getAttribute('href');
+          if (artifactLinks.includes(rel) && !found.has(rel)) {
+            const missing = el('span', '', link.textContent);
+            missing.title = `ファイルが見つかりません: ${rel}`;
+            link.replaceWith(missing);
+          }
+        }
+        for (const rel of existing) {
+          const button = el('button', 'message-action', rel);
+          button.onclick = () => api.openFile(repo, worktree, rel).catch(err => notice(err.message, 'error'));
+          files.append(button);
+        }
+        if (existing.length) answer.append(files);
+      }).catch(() => { /* 確認できない候補を成果物ボタンとして表示しない */ });
     }
     n.append(answer);
     const meta = [];
@@ -1868,7 +1910,7 @@ function renderMessages() {
   if (!cur) {
     start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリを登録してください'));
     if (state.repo && state.area === 'home') start.append(el('p', '', 'エージェント・スキル・進め方は依頼から決めます'));
-    if (!state.repo) start.append(el('p', '', 'サイドバーから追加できます。'));
+    if (!state.repo) start.append(el('p', '', state.area === 'home' ? '入力欄のリポジトリメニューから追加できます。' : 'サイドバーから追加できます。'));
     if (!state.repo) {
       const button = el('button', 'primary', 'リポジトリを追加');
       button.onclick = () => addRepo().catch((err) => notice(err.message, 'error'));
@@ -1973,6 +2015,26 @@ async function sayToExecutor(waiting, text) {
 }
 
 async function sendPrompt() {
+  if (state.preparation) return null;
+  if ((!$('prompt').value.trim() && !state.attachments.length) || !state.repo) return null;
+  // 端末への追加入力・共有宛てのひとことでは実際の画面を隠さない。
+  const preparing = !shareWaiting() && !(state.current && state.running.has(state.current.id));
+  if (preparing) {
+    state.preparation = { id: state.current?.id || null, repo: state.repo,
+      text: '判定中…\n依頼を受け付けました。実行環境を確認しています。' };
+    renderHeader();
+  }
+  try { return await sendPromptRequest(); }
+  catch (error) {
+    notice(error.message, 'error');
+    inputStatus('error', '送信失敗（入力は保持）');
+    return null;
+  } finally {
+    if (preparing) { state.preparation = null; renderHeader(); Term.refit(); }
+  }
+}
+
+async function sendPromptRequest() {
   const text = $('prompt').value.trim();
   const waiting = shareWaiting();
   if (waiting) { if (text) await sayToExecutor(waiting, text); return; }
@@ -1992,6 +2054,8 @@ async function sendPrompt() {
       const transport = (state.config.transport === 'tmux' && state.host && state.host.tmux && agent && agent.interactive && !shared && selected.allocation !== 'auto') ? 'tmux' : 'headless';
       state.current = await api.createSession({ repo: state.repo, ...opts, transport, worktree: state.worktree });
       state.draft = false;
+      if (state.preparation) state.preparation.id = state.current.id;
+      renderHeader();
       // CLI の起動確認に時間がかかっても、保存済みの会話はすぐ一覧に出す。
       state.sessions = await api.listSessions(state.repo);
       renderSessions();
@@ -2246,7 +2310,7 @@ async function showArea(area, { persist = true, action = '' } = {}) {
   }
   renderAreaContext();
   setSidebar(false);
-  $('changes').hidden = workspace || !state.changesOpen;
+  $('changes').hidden = home || workspace || !state.changesOpen;
   if (share) {
     await Share.show();
   } else if (inbox) {
@@ -3041,7 +3105,13 @@ async function init() {
       renderMessages();
     }
   });
-  api.onTurnProgress(({ id, item }) => addLivePart(id, 'thinking', item));
+  api.onTurnProgress(({ id, item }) => {
+    if (item.preparing && state.preparation?.id === id) {
+      state.preparation.text = item.text;
+      renderHeader();
+    }
+    addLivePart(id, 'thinking', item);
+  });
   api.onTurnInfo(({ id, item }) => addLivePart(id, 'information', item));
   api.onTurnLine(({ id, kind, text }) => {
     const lines = state.logs.get(id) || [];

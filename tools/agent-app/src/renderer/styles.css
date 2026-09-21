@@ -391,8 +391,8 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .composer-toolbar { min-width: 0; grid-row: 3; display: flex; align-items: center; gap: 4px; padding-top: 4px; }
 .composer-toolbar > button { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
 .run-settings { position: relative; min-width: 0; }
-#run-settings { flex: 1; }
-#composer .composer-toolbar > .spacer { flex: none; }
+#run-settings { flex: 0 1 auto; }
+#composer .composer-toolbar > .spacer { flex: 1; }
 .run-settings-compact { display: none; }
 @media (max-width: 640px) {
   #run-settings-summary { display: none; }
@@ -704,8 +704,6 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .allocation-preview { padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--side-bg); line-height: 1.6; font-size: 13px; }
 .allocation-context { flex-wrap: wrap; padding: 10px 0; }
 #usage-open { margin-top: 0; flex-shrink: 0; }
-#usage-open + .side-settings { margin-top: 0; }
-#usage-indicator { overflow-wrap: anywhere; font-size: 12px; }
 #usage-manual-row .setting-field > input { width: 220px; max-width: 60%; }
 #usage-manual-row .setting-field > span { min-width: 0; }
 #usage-manual-row { background: var(--side-bg); }
@@ -811,3 +809,29 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #app-settings .skill-list-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #app-settings .skill-metadata { position: fixed; inset: 0; margin: auto; width: min(560px, calc(100vw - 32px)); height: fit-content; max-height: calc(100dvh - 64px); overflow: auto; color: var(--text); }
 #app-settings .skill-metadata pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); }
+
+/* 判定中も会話の端末と同じ場所・配色で表示する。 */
+.terminal-preparation { flex: 1; min-height: 0; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--term-bg); color: var(--term-text); font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* ホームの作業先は実行設定の右隣。ほかの画面はサイドバーに戻す。 */
+#home-repository-slot { flex: 0 1 220px; min-width: 0; }
+#home-repository-slot #repository-context { display: flex; align-items: center; gap: 4px; margin: 0; padding: 0; border: 0; }
+#home-repository-slot #repository-context > label { display: none; }
+#home-repository-slot .repository-control { flex: 1; min-width: 0; }
+#home-repository-slot .menu-panel { top: auto; bottom: calc(100% + 6px); }
+
+/* 送信開始で停止ボタンが現れても、入力欄と操作欄の幅を変えない。 */
+#chat { grid-template-columns: minmax(0, 1fr); }
+#composer .composer-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: 34px minmax(82px, auto) minmax(40px, auto); }
+#composer .composer-toolbar { flex-wrap: wrap; }
+#composer .composer-toolbar > button,
+#composer .composer-toolbar > details { flex-shrink: 0; white-space: nowrap; }
+#composer #run-settings { max-width: 100%; }
+#composer #stop[hidden] { display: inline-flex !important; visibility: hidden; pointer-events: none; }
+#composer #send { width: 86px; justify-content: center; }
+@media (max-width: 620px) {
+  #composer #send { width: 38px; }
+}
+
+#composer .composer-actions { display: flex; flex: none; align-items: center; gap: 4px; margin-left: auto; }
+#composer .composer-actions > button { display: inline-flex; flex: none; align-items: center; gap: 6px; white-space: nowrap; }

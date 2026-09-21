@@ -6,20 +6,21 @@ const MARKER = '<!-- agent-app-instructions -->';
 
 // fork … { repos, current }。別のリポジトリへの分岐（@fork 行）の作法を添えるときだけ渡す
 //        （会話の種類が「会話」のとき）。
-function instructionBlock(instructions, { fork = null, artifacts = false } = {}) {
+function instructionBlock(instructions, { fork = null, artifacts = false, answerOnly = false } = {}) {
   const source = instructions && typeof instructions === 'object' ? instructions : {};
   if (source.enabled === false && !fork) return '';
   const text = source.enabled === false ? '' : String(source.text || '').trim();
   const forkText = fork ? forkProtocol.instruction(fork) : '';
-  if (!text && !forkText && !artifacts) return '';
+  if (!text && !forkText && !artifacts && !answerOnly) return '';
   const lines = [
     MARKER,
     '## 共通指示',
     '今回の依頼やリポジトリ固有の指示と競合する場合は、それらを優先してください。',
   ];
+  if (answerOnly) lines.push('質問に直接答えてください。場所や条件が不足している場合は、必要な情報を利用者に確認してください。最新情報を確認できない場合は、その制約を伝え、推測で事実を補ったり、未実行の調査やファイル作成を実施済みと説明したりしないでください。');
   if (text) lines.push('', text);
   if (forkText) lines.push('', forkText);
-  if (artifacts && source.enabled !== false) lines.push('', '成果物を作成したら、回答の末尾に作業フォルダからの相対パスをMarkdownリンクで列挙してください。例: [集計結果](reports/result.xlsx)。作成していないファイルは含めないでください。');
+  if (artifacts && source.enabled !== false) lines.push('', '成果物を作成したら、回答の末尾に作業フォルダからの相対パスをMarkdownリンクで列挙してください。作成していないファイルは含めないでください。');
   return lines.join('\n');
 }
 

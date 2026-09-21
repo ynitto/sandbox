@@ -163,7 +163,7 @@ function concreteCli(spec, agents, { attachments = [] } = {}) {
   const virtual = herd.isHerd(spec.cli);
   const selectedMember = spec.autoSelected && herd.isMember(agents.find(a => a.name === spec.cli));
   if (!virtual && !selectedMember) return { ...spec, requested: spec.cli, family: '', slash: '' };
-  const purpose = herd.purposeOf({ readonly: spec.readonly, workFiles: herd.hasWorkFiles(attachments) });
+  const purpose = herd.purposeOf({ readonly: spec.readonly, workFiles: herd.hasWorkFiles(attachments), answerOnly: spec.answerOnly });
   const picked = herd.resolveChat(purpose, virtual ? agents : agents.filter(a => a.name === spec.cli));
   return { ...spec, cli: picked.cli, requested: virtual ? herd.HERD : spec.cli, family: herd.HERD, slash: picked.slash, familyReason: picked.reason };
 }
@@ -648,6 +648,8 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const repo = requireRepo(sess.repo);
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   const cfg = config || store.loadConfig(ud);
+  const preparing = (text) => send('turn:progress', { id, item: { text, status: 'running', preparing: true } });
+  preparing('準備中…\n利用できるエージェントを確認しています。');
   const agents = await listAgents(repo);
   let requested = executionSpec(sess, p, cfg, { agents, optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
   if (requested.policy === settings.SHARED_POLICY) return runShared(id, sess, dirs, p, requested, cfg, send, release);
@@ -660,6 +662,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const routingSkip = sess.kind !== 'conversation' ? 'kind'
     : requestRouting.skipReason({ text: requested.text, mode: p.routing, skillMode, quickRequests: cfg.instructions.quickRequests });
   if (!routingSkip) {
+    preparing('判定中…\n依頼の内容から、会話・タスク・ワークフローの進め方を判定しています。');
     const safe = (read) => { try { return read(); } catch { return []; } };
     const names = selectionConfig.enabled === false ? [] : (selectionConfig.candidates || []);
     const cands = requestRouting.candidates({
@@ -679,11 +682,13 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
       });
     } finally { selecting.delete(id); }
     if (controller.signal.aborted) throw new Error('振り分けを停止しました');
+    preparing(`振り分け完了\n${requestRouting.information(routed).title}`);
     if (routed.hold) {
       // 会話は送らない。案内を 1 枚残して、開く / そのまま会話で実行 は人が選ぶ。
       // タスクの流用なら、実行条件（{{key}}）を依頼から写しておく（日付は決定的、残りはローカル LLM の extract）
       let inputs = {};
       if (routed.handling.choice === 'task') {
+        preparing('判定中…\nタスクに渡す入力値を依頼から読み取っています。');
         let parameters = [];
         try { parameters = taskModel.normalizeProcedure(machineStore.read(repo, routed.target.id).raw).parameters || []; } catch { /* 読めない定義は入力なし */ }
         inputs = await requestRouting.extractInputs({
@@ -696,10 +701,11 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
       release();
       return { held: { notice: held.notice }, acceptedAt: new Date().toISOString() };
     }
-    if (routed.handling && routed.handling.choice === 'answer') requested = { ...requested, readonly: true };
+    if (routed.handling && routed.handling.choice === 'answer') requested = { ...requested, readonly: true, answerOnly: true };
   }
   let chosen = null;
   if (modelSelection.pending(sess) && requested.policy !== 'direct') {
+    preparing('判定中…\n依頼に合うエージェントとモデルを選択しています。');
     const controller = new AbortController();
     selecting.set(id, controller);
     try {
@@ -717,6 +723,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   }
   requested.autoSelected = !!(chosen || sess.modelSelection) && requested.policy !== 'direct';
   const base = concreteCli(requested, agents, { attachments: p.attachments });
+  preparing(`準備中…\n${[base.cli, base.model].filter(Boolean).join(' / ')} を起動しています。`);
   const spec = agentCli.load(base.cli, repo);
   const available = agents.find((item) => item.name === base.cli);
   if (!available || !available.available) {
@@ -776,8 +783,9 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   // tmux は runTmux が 1 件ずつ先に送るので、本依頼へ混ぜない。
   // 「会話」だけ、別のリポジトリへ分岐する作法（@fork 行）を添える。タスクを AI と作る会話には添えない
   const instructedPrompt = sessionSetup.withInstructions(attached.prompt, cfg.instructions, {
-    artifacts: true,
-    fork: sess.kind === 'conversation' ? { repos: cfg.repos, current: sess.repo } : null,
+    answerOnly: !!base.answerOnly,
+    artifacts: !base.answerOnly,
+    fork: !base.answerOnly && sess.kind === 'conversation' ? { repos: cfg.repos, current: sess.repo } : null,
   });
   const contextualPrompt = skillDelivery.instruction ? `${skillDelivery.instruction}\n\n${instructedPrompt}` : instructedPrompt;
   const prompt = transport === 'headless' && setupSkills.length
@@ -1300,6 +1308,7 @@ function registerIpcHandlers(getWindow) {
     const transport = preferredTransport === 'tmux' && info.tmux && agent.interactive ? 'tmux' : 'headless';
     return sessionBrowser.create({ ...p, transport });
   });
+  handle('session:recent', () => store.recentSessions(userData(), store.loadConfig(userData()).repos));
   handle('session:list', (p) => store.listSessions(userData(), p.repo || ''));
   handle('session:create', async (p) => {
     const repo = requireRepo(p.repo);
@@ -1520,6 +1529,7 @@ function registerIpcHandlers(getWindow) {
     return { name: out.name, warning: error ? `書き出したファイルを開けませんでした: ${error}` : '' };
   });
   handle('shell:openFolder', (p) => shell.openPath(dirsOf(p.repo, p.worktree, { mustExist: true }).fsDir));
+  handle('fs:existingArtifacts', (p) => files.existingArtifacts(dirsOf(requireRepo(p.repo), p.worktree, { mustExist: true }).fsDir, p.paths));
   handle('shell:openFile', async (p) => {
     const { target } = files.resolveInside(dirsOf(p.repo, p.worktree).fsDir, p.rel || '');
     const error = await shell.openPath(target);

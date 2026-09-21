@@ -632,7 +632,9 @@ SELECT_HELP = f"""使い方: {PROG} select [--candidate <cli[/model]>]... [--pur
 
   --candidate <cli[/model]>  候補（繰り返し可）。省略時は解決できる定義すべて（既定モデル）
   --purpose <用途>           用途の 1 語（格付けの行を引く鍵。例 worker / review / planner）
-  --ratings <PATH>           `agent-audit ratings --json` の出力。候補の PASS 率・平均消費を材料にする
+  ローカル判定では要求水準を先に判定し、候補の適合度を一件ずつ費用抜きで評価する。
+  適合判定で十分な候補が無い場合は、最安候補へ降格せず終了コード1を返す。
+  --ratings <PATH>           `agent-audit ratings --json` の出力。同用途の完了率・件数・平均消費を材料にする
   --workload <名前>          node-budget の残量を材料にする（routine / project / flow / amigos）
   --min-confidence <数>      jev / judge の答えを採る確度の下限（既定は設定 select.min_confidence、無ければ 0.6）
   --stages <段,…>            使う段を絞る（既定 jev,judge,audit）
@@ -739,7 +741,8 @@ def cmd_select(argv, *, err=None, out=None, stdin=None, jev_request=None,
     else:
         print(json.dumps({"selected": result["selected"], "stage": result["stage"],
                           "confidence": result["confidence"], "reason": result["reason"],
-                          "dropped": result["dropped"]}, ensure_ascii=False), file=out)
+                          "dropped": result["dropped"],
+                          **({"method": result["method"]} if result.get("method") else {})}, ensure_ascii=False), file=out)
     return 0 if result["selected"] else 1
 
 

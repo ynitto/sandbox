@@ -36,8 +36,9 @@ const CHAT_BACKEND = 'ollama';
 const HARNESS_DEFAULT = 'aider';
 
 // 会話の用途 → 本文の先頭に置くスラッシュ行（'' はそのまま）。
-const SLASH = { ask: '/find', edit: '/edit', work: '' };
+const SLASH = { answer: '/ask', ask: '/find', edit: '/edit', work: '' };
 const REASON = {
+  answer: '答えるだけの依頼は /ask（道具なしの会話）で送る',
   ask: '読み取り専用の依頼は、共通 TUI に /find（読み取り専用の道具）で送る',
   edit: '作業フォルダのファイルを添えた依頼は、共通 TUI に /edit（編集ハーネス）で送る',
   work: 'ファイルを添えない作業依頼は、共通 TUI のツールループにそのまま送る',
@@ -59,7 +60,8 @@ function members(entries) {
 // 会話の起動条件から用途を決める。
 //   readonly  … Ask
 //   workFiles … 作業フォルダの中のファイル（{ rel }）を添えているか
-function purposeOf({ readonly = false, workFiles = false } = {}) {
+function purposeOf({ readonly = false, workFiles = false, answerOnly = false } = {}) {
+  if (answerOnly) return 'answer';
   if (readonly) return 'ask';
   return workFiles ? 'edit' : 'work';
 }

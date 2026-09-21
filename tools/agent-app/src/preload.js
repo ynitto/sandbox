@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('api', {
   listSkills: (repo) => invoke('skills:list', { repo }),
   removeSkills: (repo, agent, keys) => invoke('skills:remove', { repo, agent, keys }),
   selectSkills: (repo, text, mode, selected) => invoke('skills:select', { repo, text, mode, selected }),
+  recentSessions: () => invoke('session:recent'),
   listSessions: (repo) => invoke('session:list', { repo }),
   createSession: (payload) => invoke('session:create', payload),
   readSession: (id) => invoke('session:read', { id }),
@@ -104,6 +105,7 @@ contextBridge.exposeInMainWorld('api', {
   fileDiff: (repo, worktree, file, scope) => invoke('git:file', { repo, worktree, file, scope }),
   openVSCode: (repo, worktree) => invoke('shell:openVSCode', { repo, worktree }),
   openFolder: (repo, worktree) => invoke('shell:openFolder', { repo, worktree }),
+  existingArtifacts: (repo, worktree, paths) => invoke('fs:existingArtifacts', { repo, worktree, paths }),
   openFile: (repo, worktree, rel) => invoke('shell:openFile', { repo, worktree, rel }),
   showFile: (repo, worktree, rel) => invoke('shell:showFile', { repo, worktree, rel }),
   automation: {

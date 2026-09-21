@@ -55,3 +55,17 @@ test('creation request binds the selected kind and destination without resuming 
   assert.throws(() => reuse.creationPrompt({ kind: 'constructor', purpose: 'x', repo: '/target' }));
   assert.throws(() => reuse.creationPrompt({ kind: 'skill', purpose: ' ', repo: '/target' }));
 });
+
+
+test('成果物は実在するファイルだけを返す（欠落・ディレクトリ・外部リンクは除外）', async () => {
+  const fs = require('fs'), os = require('os'), path = require('path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-exists-'));
+  try {
+    fs.mkdirSync(path.join(root, 'reports'));
+    fs.writeFileSync(path.join(root, 'reports/result.xlsx'), 'test');
+    fs.symlinkSync(os.tmpdir(), path.join(root, 'outside'));
+    const found = await require('../src/main/files').existingArtifacts(root,
+      ['reports/result.xlsx', 'reports/results.xlsx', 'reports', '../outside', 'outside', '/etc/passwd']);
+    assert.deepEqual(found, ['reports/result.xlsx']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

@@ -14,13 +14,15 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reuse-ui-'));
   const repo = path.join(dir, 'repo'), data = path.join(dir, 'userdata');
   fs.mkdirSync(repo);
+  fs.mkdirSync(path.join(repo, 'reports'));
+  fs.writeFileSync(path.join(repo, 'reports/month.xlsx'), 'fixture');
   const target = path.join(dir, 'target'); fs.mkdirSync(target);
   const added = path.join(dir, 'added'); fs.mkdirSync(added);
   const store = require('../src/main/store');
   store.saveConfig(data, { repos: [repo, target], lastRepo: repo, area: 'conversation', useWorktree: false, transport: 'headless' });
   const session = store.createSession(data, { repo, cli: 'codex', transport: 'headless', readonly: true });
   store.appendMessage(data, session.id, { role: 'user', text: '月次集計を作成' });
-  store.appendMessage(data, session.id, { role: 'assistant', text: '集計しました。\n@artifact reports/month.xlsx' });
+  store.appendMessage(data, session.id, { role: 'assistant', text: '集計しました。\n@artifact reports/month.xlsx\n[未作成の例](reports/results.xlsx)' });
   const machine = { id: 'machine:report', kind: 'statemachine', machine: 'report', name: '月次集計', parameters: ['month'], history: [{ runId: 'previous', ok: true, agentCli: 'codex', model: 'test-model', parameters: { month: '2026-08' }, finishedAt: '2026-09-13' }] };
   require('../src/main/automation/store').save(repo, { name: '月次集計', machine: 'report', purpose: '集計', steps: [{ kind: 'agent', title: '集計', detail: '{{month}}を集計' }] });
   const electron = await pw._electron.launch({ executablePath: binary, args: [APP, '--no-sandbox', `--user-data-dir=${data}`] });
@@ -46,6 +48,8 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
     await win.locator('#sessions .row-item').first().click();
     await win.getByRole('button', { name: 'reports/month.xlsx', exact: true }).click();
     assert.equal((await electron.evaluate(() => global.lastArtifact)).rel, 'reports/month.xlsx');
+    assert.equal(await win.getByRole('button', { name: 'reports/results.xlsx', exact: true }).count(), 0);
+    assert.equal(await win.locator('a[href="reports/results.xlsx"]').count(), 0);
     const createdIds = new Set();
     for (const kind of ['task', 'workflow', 'skill']) {
       await win.evaluate(async ({ repo, id }) => { await openSessionInRepo(repo, id); }, { repo, id: session.id });
@@ -123,4 +127,29 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
     await win.screenshot({ path: '/tmp/agent-app-reuse.png' });
     assert.deepEqual(errors, []);
   } catch (err) { const win = await electron.firstWindow(); await win.screenshot({ path: '/tmp/agent-app-reuse-failure.png' }); throw err; } finally { await electron.close(); }
+});
+
+
+test('artifact UI: missing Markdown links are disabled and only existing files get buttons', async t => {
+  const pw = playwright();
+  if (!pw?._electron) return t.skip('Electron unavailable');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-ui-'));
+  const repo = path.join(dir, 'repo'), data = path.join(dir, 'userdata');
+  fs.mkdirSync(path.join(repo, 'reports'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'reports/result.xlsx'), 'fixture');
+  const store = require('../src/main/store');
+  store.saveConfig(data, { repos: [repo], lastRepo: repo, useWorktree: false, transport: 'headless', share: { enabled: false }, evaluation: { mode: 'off' } });
+  const session = store.createSession(data, { repo, cli: 'codex', transport: 'headless' });
+  store.appendMessage(data, session.id, { role: 'assistant', text: '[実在](reports/result.xlsx)\n[未作成](reports/results.xlsx)' });
+  const app = await pw._electron.launch({ executablePath: require('electron'), args: [APP, '--no-sandbox', `--user-data-dir=${data}`] });
+  try {
+    const win = await app.firstWindow();
+    await win.waitForFunction(() => typeof document.getElementById('session-routine')?.onclick === 'function');
+    await win.evaluate(async ({ repo, id }) => { await openSessionInRepo(repo, id); }, { repo, id: session.id });
+    await win.getByRole('button', { name: 'reports/result.xlsx', exact: true }).waitFor();
+    assert.equal(await win.getByRole('button', { name: 'reports/results.xlsx', exact: true }).count(), 0);
+    assert.equal(await win.locator('a[href="reports/results.xlsx"]').count(), 0);
+    assert.equal(await win.locator('a[href="reports/result.xlsx"]').count(), 1);
+    assert.equal(await win.locator('span[title="ファイルが見つかりません: reports/results.xlsx"]').textContent(), '未作成');
+  } finally { await app.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

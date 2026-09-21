@@ -383,6 +383,14 @@ function listSessions(userData, repo, { kind = 'conversation' } = {}) {
   return out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
+// 最近の依頼は種類・選択中の作業先に依存しない。開ける登録先だけを対象にする。
+function recentSessions(userData, repos, limit = 20) {
+  const allowed = new Set(repos || []);
+  return listSessions(userData, '', { kind: '' })
+    .filter(s => allowed.has(s.repo) && !s.supersededBy)
+    .slice(0, limit);
+}
+
 // そのタスクの会話（無ければ null）。同じ機械名に複数あれば最新のもの。
 function findTaskSession(userData, repo, machine) {
   const name = String(machine || '');
@@ -429,7 +437,8 @@ function updateSession(userData, id, patch) {
   if (patch && 'modelSelection' in patch) {
     const choice = patch.modelSelection;
     sess.modelSelection = choice && ['jev', 'judge', 'audit'].includes(choice.stage)
-      ? { cli: String(choice.cli || ''), model: String(choice.model || ''), stage: choice.stage } : null;
+      ? { cli: String(choice.cli || ''), model: String(choice.model || ''), stage: choice.stage,
+        ...(choice.method === 'independent-fit' ? { method: choice.method } : {}) } : null;
   }
   return writeSession(userData, sess);
 }
@@ -502,7 +511,7 @@ function removeSession(userData, id) {
 
 module.exports = {
   DEFAULTS, loadConfig, takeConfigProblem, saveConfig, addRepo, removeRepo, isRegistered,
-  createSession, replaceEditingSession, readSession, listSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
+  createSession, replaceEditingSession, readSession, listSessions, recentSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,
   attentionBaseline, markAttentionSeen,
   TERMINAL_TTL_MS, touchTerminalSession, clearTerminalSession, staleTerminalSessions, addTerminalSnapshot, dropTerminalSnapshots,

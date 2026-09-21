@@ -41,6 +41,16 @@ def _ollama_response(top: "dict[str, float]") -> dict:
             "prompt_eval_count": 50, "eval_count": 1}
 
 
+def _judge_prefers(cli):
+    def respond(body):
+        prompt = body["messages"][0]["content"]
+        material = json.loads(prompt.split("<<<\n", 1)[1].split("\n>>>", 1)[0])
+        candidate = material.get("candidate")
+        yes = 0.95 if candidate is None or candidate["agent_cli"] == cli else 0.05
+        return _ollama_response({"A": yes, "B": 1 - yes})
+    return respond
+
+
 def _jev_response(choice: str, probs: dict, confidence=None) -> dict:
     return {"model": "jev-1.13.0",
             "answers": {"candidate": {"type": "choice", "choice": choice,
@@ -92,7 +102,7 @@ class CandidateShapeTests(IsolatedHome):
         cand = modelselect.describe_candidate(CLAUDE, ratings=ratings, purpose="worker")
         self.assertEqual(cand["rating"]["pass_rate"], 0.7)
         cand = modelselect.describe_candidate(CLAUDE, ratings=ratings, purpose="planner")
-        self.assertEqual(cand["rating"]["pass_rate"], 0.9, "用途の行が無ければ最初の行へ")
+        self.assertNotIn("rating", cand, "別用途の実績を流用しない")
         self.assertNotIn("rating", modelselect.describe_candidate(OLLAMA, ratings=ratings))
 
 
@@ -196,7 +206,7 @@ class StageOrderTests(IsolatedHome):
             result = modelselect.select("summarize", [CLAUDE, OLLAMA], quotas={},
                                         jev_setting_override=self.JEV, jev_request=jev,
                                         judge_model="gemma4:e4b",
-                                        judge_request=lambda b: _ollama_response({"B": 0.9, "A": 0.05, "C": 0.05}))
+                                        judge_request=_judge_prefers("ollama"))
             self.assertEqual(result["stage"], "judge")
             self.assertEqual(result["selected"], OLLAMA)
             self.assertIn(result["attempts"][0]["outcome"], ("low-confidence", "none-of-them"))
@@ -207,7 +217,7 @@ class StageOrderTests(IsolatedHome):
         result = modelselect.select("summarize", [CLAUDE, OLLAMA], quotas={},
                                     jev_setting_override=self.JEV, jev_request=jev,
                                     judge_model="gemma4:e4b",
-                                    judge_request=lambda b: _ollama_response({"A": 0.95, "B": 0.05}))
+                                    judge_request=_judge_prefers("claude"))
         self.assertEqual(result["stage"], "judge")
         self.assertEqual(result["selected"], CLAUDE)
         self.assertEqual(result["attempts"][0], {"stage": "jev", "outcome": "error",
@@ -260,8 +270,8 @@ class StageOrderTests(IsolatedHome):
                                     jev_setting_override={"enabled": False},
                                     judge_model="gemma4:e4b",
                                     judge_request=lambda b: _ollama_response({"A": 0.9, "B": 0.1}))
-        self.assertEqual(result["stage"], "audit")
-        self.assertEqual(result["attempts"][1]["outcome"], "low-confidence")
+        self.assertIsNone(result["selected"])
+        self.assertEqual(result["attempts"][1]["outcome"], "no-adequate-candidate")
 
     def test_empty_prompt_is_refused(self):
         with self.assertRaises(modelselect.SelectError):
@@ -373,7 +383,7 @@ class SelectCommandTests(IsolatedHome):
     def test_json_carries_state_and_attempts(self):
         rc, out, _ = self._run(["--candidate", "claude", "--candidate", "ollama", "--json",
                                 "--purpose", "review"],
-                               judge_request=lambda b: _ollama_response({"A": 0.9, "B": 0.1}))
+                               judge_request=_judge_prefers("claude"))
         self.assertEqual(rc, 0)
         data = json.loads(out)
         self.assertEqual(data["stage"], "judge")
@@ -408,6 +418,81 @@ class SelectCommandTests(IsolatedHome):
         self.assertIn("jev", out.getvalue())
         self.assertIn("select", herdcli.HELP)
         self.assertIn("select.jev.api_key", herdcli.CONFIG_HELP)
+
+
+class IndependentFitTests(IsolatedHome):
+    def test_candidate_order_does_not_change_inputs_or_tie_break(self):
+        records = []
+        def capture(body):
+            material = json.loads(body["messages"][0]["content"].split("<<<\n", 1)[1].split("\n>>>", 1)[0])
+            records.append(material)
+            return _ollama_response({"A": 0.95, "B": 0.05})
+        results = []
+        for candidates in ([CLAUDE, OLLAMA], [OLLAMA, CLAUDE]):
+            results.append(modelselect.select("A simple request", candidates, quotas={},
+                stages=("judge", "audit"), judge_model="gemma4:e4b", judge_request=capture))
+        self.assertEqual(results[0]["selected"], results[1]["selected"])
+        self.assertEqual(results[0]["selected"], OLLAMA)
+        self.assertEqual(records[0], records[3])
+        self.assertEqual(records[1], records[5])
+        self.assertEqual(records[2], records[4])
+        for item in (records[1], records[2]):
+            self.assertNotIn("relative_cost", item["candidate"])
+            self.assertNotIn("site", item["candidate"])
+            self.assertNotIn("candidates", item)
+            self.assertIn("model_identity", item["candidate"])
+        self.assertEqual(results[0]["usage"], {"tokens_in": 150, "tokens_out": 3})
+        self.assertEqual(len(results[0]["attempts"][0]["candidate_fits"]), 2)
+
+    def test_completed_negative_fits_do_not_fall_back_to_cheapest(self):
+        result = modelselect.select("Unsuited work", [CLAUDE, OLLAMA], quotas={},
+            stages=("judge", "audit"), judge_model="gemma4:e4b",
+            judge_request=lambda b: _ollama_response({"A": 0.05, "B": 0.95}))
+        self.assertIsNone(result["selected"])
+        self.assertEqual(result["attempts"][0]["outcome"], "no-adequate-candidate")
+        self.assertFalse(any(a["stage"] == "audit" for a in result["attempts"]))
+
+    def test_unknown_candidate_cannot_hide_negative_fits_in_audit_fallback(self):
+        def respond(body):
+            content = body["messages"][0]["content"]
+            material = json.loads(content.split("<<<\n", 1)[1].split("\n>>>", 1)[0])
+            candidate = material.get("candidate")
+            if candidate and candidate["agent_cli"] == "ollama":
+                return {"message": {"content": "A"}, "prompt_eval_count": 10, "eval_count": 1}
+            return _ollama_response({"A": .05, "B": .95})
+        result = modelselect.select("Unknown capability", [CLAUDE, OLLAMA], quotas={},
+            stages=("judge", "audit"), judge_model="gemma4:e4b", judge_request=respond)
+        self.assertIsNone(result["selected"])
+        self.assertEqual(result["attempts"][0]["outcome"], "no-adequate-candidate")
+
+    def test_evidence_is_scoped_measured_and_identity_matched(self):
+        rows = [
+            {"agent_cli": "other", "model": "sonnet", "purpose": "worker", "outcome_runs": 9, "pass_rate": 1},
+            {"model": "sonnet", "purpose": "worker", "outcome_runs": 5, "pass_rate": .8},
+            {"agent_cli": "claude", "model": "sonnet", "purpose": "worker", "outcome_runs": 3, "pass_rate": .5,
+             "constraints": {"bounded_input": True}, "source": "fixture"},
+        ]
+        for data in (rows, list(reversed(rows))):
+            rating = modelselect.describe_candidate(CLAUDE, purpose="worker", ratings=data)["rating"]
+            self.assertEqual(rating["runs"], 3)
+            self.assertEqual(rating["source"], "fixture")
+            self.assertEqual(rating["constraints"], {"bounded_input": True})
+            self.assertEqual(rating["identity_match"], "cli-and-model")
+        for count in (0, None, -1, True):
+            self.assertNotIn("rating", modelselect.describe_candidate(
+                {**CLAUDE, "rating": {"runs": count, "pass_rate": 1}}))
+        self.assertNotIn("rating", modelselect.describe_candidate(
+            CLAUDE, purpose="planner", ratings=rows))
+        self.assertIn("not verified", modelselect.describe_candidate(
+            CLAUDE, purpose="worker", ratings=rows)["rating"]["metric"])
+
+    def test_model_source_is_explicit_default_or_unresolved(self):
+        self.assertEqual(modelselect.describe_candidate(CLAUDE)["model_source"], "explicit")
+        self.assertEqual(modelselect.describe_candidate({"agent_cli": "ollama"})["model_source"], "definition-default")
+        with mock.patch.object(modelselect, "_spec_of", return_value={"name": "custom", "relative_cost": 1}):
+            item = modelselect.describe_candidate({"agent_cli": "custom"})
+        self.assertEqual(item["model"], "")
+        self.assertEqual(item["model_source"], "provider-default-not-resolved")
 
 
 class JudgeOtherMappingTests(IsolatedHome):

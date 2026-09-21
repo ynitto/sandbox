@@ -33,6 +33,7 @@ sys.stdin/sys.stdout のとき）。パイプ入力・テスト・ログへの�
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -484,7 +485,7 @@ def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
     out = out or sys.stdout
     in_ = in_ or sys.stdin
     reader = LineReader(out, in_)
-    print(f"{label} TUI — model={model} tools={'on' if tools else 'off'} "
+    print(f"{label} TUI — input=prompt-file-v1 model={model} tools={'on' if tools else 'off'} "
           f"think={'既定' if think is None else ('on' if think else 'off')}", file=out)
     print("'/help' でローカルコマンド一覧"
           + ("、'/keys' でキー操作。" if reader.enabled else "。"), file=out)
@@ -567,6 +568,21 @@ def _loop(reader, runner, *, model: str, tools: bool, think: "bool | None", out,
         if line is None:                   # EOF（Ctrl-D / パイプ入力の終わり）
             return 0
         text = line.strip()
+        # Transport envelope: decode before slash routing so /find and its whole body
+        # form one request even with libedit or a plain line reader. The sender owns
+        # the temporary file and removes it after completion (never delete user files).
+        if text.startswith("@agent-prompt-file "):
+            try:
+                prompt_path = json.loads(text[len("@agent-prompt-file "):])
+                if not isinstance(prompt_path, str) or not Path(prompt_path).is_absolute():
+                    raise ValueError("absolute path required")
+                text = Path(prompt_path).read_text(encoding="utf-8").strip()
+                if not text:
+                    raise ValueError("empty prompt")
+            except (OSError, ValueError, TypeError) as exc:
+                print(f"✖ 依頼ファイルを読めません: {exc}", file=out)
+                _turn_hook("failure")
+                continue
         if not text:
             continue
         # 先頭 1 行をルータへ渡す（設計 2026-08-27 §3.2）。表に載っていれば種別 A の

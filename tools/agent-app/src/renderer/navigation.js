@@ -5,7 +5,7 @@
 (function exposeNavigation() {
   const AREAS = {
     // ホーム: 1 つの入力欄から始める入口。一覧は会話・タスク・ワークフローを横断した直近の項目
-    home: { label: 'ホーム', listLabel: '直近', createLabel: '新しい会話', listId: 'home-items' },
+    home: { label: 'ホーム', listLabel: '最近の依頼', createLabel: '新しい会話', listId: 'home-items' },
     conversation: { label: '会話', createLabel: '新しい会話', listId: 'sessions' },
     tasks: { label: 'タスク', createLabel: '新しいタスク', listId: 'tasks' },
     workflows: { label: 'ワークフロー', createLabel: '新しいワークフロー', listId: 'workflows' },

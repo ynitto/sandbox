@@ -83,9 +83,10 @@
     const valid = limits.filter(r => Allocation.validLimit(r));
     const risk = valid.filter(r => Number(r.quota_used_percent) >= 90).sort((a, b) => b.quota_used_percent - a.quota_used_percent)[0];
     const preference = Allocation.mode(context.getConfig?.().allocation);
-    $('usage-indicator').textContent = preference !== 'configured' ? `AIの利用状況 · ${Allocation.LABELS[preference]}`
-      : risk ? `AIの利用状況 · ${AI_LABEL[risk.agent_cli] || risk.agent_cli} 残りわずか` : 'AIの利用状況';
-    $('usage-indicator').title = quotaData?.limitsError ? '利用枠を取得できませんでした' : '';
+    $('usage-indicator').textContent = '利用状況';
+    $('usage-open').title = quotaData?.limitsError ? '利用枠を取得できませんでした'
+      : preference !== 'configured' ? Allocation.LABELS[preference]
+      : risk ? `${AI_LABEL[risk.agent_cli] || risk.agent_cli} 残りわずか` : '';
     $('usage-quota-note').textContent = risk ? `${AI_LABEL[risk.agent_cli] || risk.agent_cli} 残り ${100 - Number(risk.quota_used_percent)}% · リセット ${date(risk.reset_at)}`
       : valid.length ? '利用枠に余裕があります' : '利用枠は未取得です';
     const cfg = context.getConfig?.().allocation;

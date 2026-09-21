@@ -200,7 +200,7 @@ test('主要メニューは会話・タスク・ワークフローの三領域�
 test('リポジトリ選択と作成操作は選択中領域の一覧にまとめる', () => {
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   assert.match(html, /id="repository-context"[\s\S]*?id="repo-select"/);
-  const context = html.match(/<div id="area-sidebar-context"[\s\S]*?<\/div>\s*<button[^>]+id="usage-open"/)?.[0] || '';
+  const context = html.match(/<div id="area-sidebar-context"[\s\S]*?<\/div>\s*<button[^>]+id="settings-open"/)?.[0] || '';
   assert.match(context, /id="area-list-title"/);
   assert.match(context, /id="session-new"[^>]*aria-label="新しい会話"/);
   assert.ok(html.indexOf('id="session-new"') > html.indexOf('id="areas"'), '作成操作を主要メニューより後へ置く');
@@ -215,7 +215,7 @@ test('旧領域を三領域へ移行し、各領域の表示名を返す', () =>
   assert.strictEqual(navigation.normalizeArea('unknown'), 'conversation');
   assert.strictEqual(navigation.normalizeArea('home'), 'home');
   assert.deepStrictEqual(navigation.areaInfo('tasks'), { label: 'タスク', createLabel: '新しいタスク', listId: 'tasks' });
-  assert.deepStrictEqual(navigation.areaInfo('home'), { label: 'ホーム', listLabel: '直近', createLabel: '新しい会話', listId: 'home-items' });
+  assert.deepStrictEqual(navigation.areaInfo('home'), { label: 'ホーム', listLabel: '最近の依頼', createLabel: '新しい会話', listId: 'home-items' });
 });
 
 test('実行状態を取得できない場合も保存済み定義をタスク一覧へ出す', () => {
@@ -296,7 +296,7 @@ test('タスク一覧は定義を先に見せ、実行状態（ファイル実�
   // loadAreaItems（showArea が待つ側）は定義の確認までしか待たない。実行状態は
   // refreshTaskSnapshot が非同期に重ねる——loadTaskItems はそれを呼び出すが待たない。
   assert.match(renderer, /async function loadTaskItems\(repo\)/);
-  assert.match(renderer, /async function loadAreaItems\(\)[\s\S]{0,200}loadTaskItems\(state\.repo\)/);
+  assert.match(renderer, /async function loadAreaItems\(\)[\s\S]{0,500}loadTaskItems\(state\.repo\)/);
   const loadTaskItemsBody = renderer.slice(
     renderer.indexOf('async function loadTaskItems(repo)'),
     renderer.indexOf('async function loadWorkflowItems'),

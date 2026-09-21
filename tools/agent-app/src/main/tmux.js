@@ -13,6 +13,7 @@
 
 const { stripAnsi, ereToRegExp } = require('./text');
 const host = require('./host');
+const { randomUUID } = require('crypto');
 
 const SOCKET = 'agent-app';
 const TMUX = `tmux -L ${SOCKET}`;
@@ -323,6 +324,8 @@ class Conversation {
     this.watchers = 0;               // 端末ミラーを見ている画面の数（0 なら間隔を落とす）
     this.lastScreen = null;
     this.lastText = '';
+    this.promptFileSupported = false;
+    this.promptFiles = new Set();
     this.lastDisplayText = '';
     this.lastChangeAt = Date.now();
     this.startedAt = Date.now();
@@ -408,6 +411,7 @@ class Conversation {
       const screen = liveCap.screen;
       const text = stripAnsi(screen.text);
       const changed = text !== this.lastText;
+      this.observeInputProtocol(text);
       if (changed) { this.lastText = text; this.lastChangeAt = Date.now(); }
       const displayChanged = displayText !== this.lastDisplayText;
       if (displayChanged) this.lastDisplayText = displayText;
@@ -497,6 +501,7 @@ class Conversation {
     this.turn = null;
     let reply = text;
     if (reply == null) reply = extractReply(t.before, (await this.historyText()) || this.lastText, t.prompt);
+    await this.cleanupPromptFiles();
     const message = {
       role: 'assistant',
       text: reply || (stopped ? '（停止した）' : error ? '' : '（応答を画面から読み取れなかった。端末を確認）'),
@@ -511,30 +516,61 @@ class Conversation {
     if (this.turn) throw new Error('このセッションは応答中です');
     if (this.phase === 'dead' || this.phase === 'gone') throw new Error('CLI が終了しています。再起動してください');
     const before = (await this.historyText()) || this.lastText;
+    this.observeInputProtocol(before);
     const text = await this.writeLine(prompt, { enterCount });
     this.turn = { prompt: text, startedAt: Date.now(), before, sawBusy: false, readyCount: 0, stopped: false, done };
     this.setPhase('busy', '応答中');
     this.schedule(0);
   }
 
-  async writeLine(prompt, { enterCount = 1 } = {}) {
-    // 1 行なら send-keys -l、複数行なら set-buffer + paste-buffer -p（括弧付きペースト）。
-    // 改行を空白へ畳むと、箇条書きやコードを含む依頼が 1 行に潰れて CLI に届く。
-    const text = String(prompt || '').replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
-    const r = await this.shell.run(text.includes('\n')
-      ? cmdPaste(this.name, text)
-      : cmdKeys(this.name, ['-l', '--', text]));
-    if (!r.ok) throw new Error(`${text.includes('\n') ? 'paste-buffer' : 'send-keys'} に失敗: ${r.error}`);
-    // Codex の `$skill` は最初の Enter が補完候補の確定、次が送信になる。
-    // 通常入力は 1 回、呼び出し側が指定した開始スキルだけ 2 回送る。
-    const submits = Math.max(1, Math.min(2, Number(enterCount) || 1));
-    for (let i = 0; i < submits; i += 1) {
-      await sleep(350);
-      const entered = await this.shell.run(cmdKeys(this.name, ['--', 'Enter']));
-      if (!entered.ok) throw new Error(`Enter を送れません: ${entered.error}`);
+  observeInputProtocol(screen) {
+    if (/^agent-(?:ollama|aider|herd) TUI .*\binput=prompt-file-v1\b/m.test(screen || '')) this.promptFileSupported = true;
+  }
+
+  async cleanupPromptFiles() {
+    for (const file of this.promptFiles) {
+      try {
+        const result = await this.shell.run(`rm -f -- ${sq(file)}`);
+        if (result.ok) this.promptFiles.delete(file);
+      } catch { /* retry at the next turn completion */ }
     }
-    this.schedule(0);
-    return text;
+  }
+
+  async writeLine(prompt, { enterCount = 1 } = {}) {
+    let text = String(prompt || '').replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
+    this.observeInputProtocol(this.lastText);
+    const commonTui = ['ollama', 'aider'].includes(this.launch?.cli)
+      || this.argv?.some(arg => /(?:^|\/)agent-herd$/.test(arg));
+    if (text.includes('\n') && commonTui && !this.promptFileSupported) {
+      throw new Error('複数行の依頼に対応していません。agent-herd を更新し、端末を再起動してください');
+    }
+    let file;
+    try {
+      if (text.includes('\n') && this.promptFileSupported) {
+        // /tmp is on the CLI host (including WSL). A short ASCII envelope avoids
+        // readline/libedit paste handling and terminal line length limits entirely.
+        file = `/tmp/agent-app-prompt-${randomUUID()}`;
+        const written = await this.shell.run(`(umask 077; set -C; printf %s ${sq(text)} > ${sq(file)})`);
+        if (!written.ok) throw new Error(`依頼ファイルを作成できません: ${written.error}`);
+        this.promptFiles.add(file);
+        text = `@agent-prompt-file ${JSON.stringify(file)}`;
+      }
+      const r = await this.shell.run(text.includes('\n')
+        ? cmdPaste(this.name, text)
+        : cmdKeys(this.name, ['-l', '--', text]));
+      if (!r.ok) throw new Error(`依頼を送れません: ${r.error}`);
+      const submits = Math.max(1, Math.min(2, Number(enterCount) || 1));
+      for (let i = 0; i < submits; i += 1) {
+        await sleep(350);
+        const entered = await this.shell.run(cmdKeys(this.name, ['--', 'Enter']));
+        if (!entered.ok) throw new Error(`Enter を送れません: ${entered.error}`);
+      }
+      this.schedule(0);
+      return text;
+    } catch (error) {
+      if (file) await this.cleanupPromptFiles();
+      throw error;
+    }
   }
 
   // CLI が質問・承認・追加入力を待っている間も、既存ターンを壊さず文章を送る。

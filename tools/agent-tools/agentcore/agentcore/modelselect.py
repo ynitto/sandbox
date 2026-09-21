@@ -23,6 +23,10 @@ prompt そのものを材料にして**行う口で、根拠は 3 つ:
 「どれでもない（other）」のどれかなら次の段へ倒す。**どの段が決めたかを隠さない**
 （結果の `stage` と `attempts` に残す）。
 
+ローカル judge の候補選択は modelfit が依頼の要求水準を先に評価し、価格・他候補を
+伏せて各候補の適合度を独立評価する。最高値から0.01以内かつ確度下限以上の候補に
+既存の格付け・費用順位を適用する。評価済み候補が全て基準未達なら最安へ降格せず棄権する。
+
 LLM に訊く前に決定的に落とせる候補は落とす（`prefilter`）: quota が枯渇・レート制限中、
 文脈上限が prompt に足りない、node-budget 超過の縮退指定でクラウド候補を避ける。
 残りが 1 件なら LLM を呼ばない——判断の要らない場面で判断のトークンを払わない。
@@ -40,6 +44,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import math
 import os
 import urllib.error
 import urllib.request
@@ -152,8 +157,12 @@ def describe_candidate(candidate: dict, *, project_dir=None, quotas: "dict | Non
                 "site", "notes"):
         if candidate.get(key) is not None:
             out[key] = candidate[key]
+    out["model_source"] = ("explicit" if candidate.get("model") else
+                           "definition-default" if model else "provider-default-not-resolved")
     if isinstance(candidate.get("rating"), dict):
-        out["rating"] = dict(candidate["rating"])
+        rating = normalize_rating(candidate["rating"])
+        if rating and str(rating.get("purpose") or "") == str(purpose or ""):
+            out["rating"] = rating
     else:
         rating = _rating_for(out, ratings, purpose)
         if rating:
@@ -164,24 +173,50 @@ def describe_candidate(candidate: dict, *, project_dir=None, quotas: "dict | Non
     return out
 
 
-def _rating_for(candidate: dict, ratings, purpose: str) -> "dict | None":
-    """`agent-audit ratings --json` の rows から、この候補・用途の行を引く。
+def normalize_rating(row: dict) -> "dict | None":
+    """Completion observations are not verified capability or task success scores."""
+    runs = row.get("outcome_runs", row.get("runs"))
+    rate = row.get("pass_rate")
+    if (not isinstance(runs, int) or isinstance(runs, bool) or runs <= 0
+            or not isinstance(rate, (int, float)) or isinstance(rate, bool)
+            or not math.isfinite(rate) or not 0 <= rate <= 1):
+        return None
+    avg = row.get("average_tokens")
+    return {"purpose": "" if row.get("purpose") in (None, "", "(なし)") else str(row["purpose"]),
+            "pass_rate": rate, "runs": runs,
+            "average_tokens": avg if isinstance(avg, (int, float)) and not isinstance(avg, bool) and math.isfinite(avg) and avg >= 0 else None,
+            "rank": row.get("rank"),
+            "source": row.get("source") or "caller-supplied agent-audit ratings",
+            "metric": row.get("metric") or "reported node completion rate; not verified output quality",
+            "constraints": row.get("constraints") or "not supplied",
+            **{k: row[k] for k in ("evaluated_at", "execution_profile") if k in row}}
 
-    rows の `model` は台帳の model（無ければ agent_cli）なので、model と agent_cli の両方で
-    合わせる。用途の行が無ければ用途を問わない行（purpose が `(なし)`）へ落ちる。
-    """
+
+def _rating_for(candidate: dict, ratings, purpose: str) -> "dict | None":
+    """Use matching purposes only; never import a different task's first rating."""
     rows = ratings.get("rows") if isinstance(ratings, dict) else ratings
     if not isinstance(rows, list):
         return None
-    keys = {candidate.get("model") or "", candidate.get("agent_cli") or ""} - {""}
-    matched = [r for r in rows if isinstance(r, dict) and str(r.get("model") or "") in keys]
+    matched = []
+    cli, model = candidate["agent_cli"], candidate.get("model") or ""
+    for row in rows:
+        if not isinstance(row, dict) or row.get("agent_cli") not in (None, "", cli):
+            continue
+        rating = normalize_rating(row)
+        if not rating or rating["purpose"] != str(purpose or ""):
+            continue
+        if str(row.get("model") or "") != (model or cli):
+            continue
+        exact = row.get("agent_cli") == cli
+        rating["identity_match"] = "cli-and-model" if exact else "legacy-model-only; CLI unrecorded"
+        matched.append((exact, rating))
     if not matched:
         return None
-    wanted = [r for r in matched if str(r.get("purpose") or "") == str(purpose or "")]
-    row = (wanted or matched)[0]
-    return {"purpose": row.get("purpose"), "pass_rate": row.get("pass_rate"),
-            "average_tokens": row.get("average_tokens"), "runs": row.get("outcome_runs"),
-            "rank": row.get("rank")}
+    exact = any(item[0] for item in matched)
+    ratings_at_level = [r for level, r in matched if level == exact]
+    # Conflicting observations are not silently combined across unknown conditions.
+    first = ratings_at_level[0]
+    return first if all(r == first for r in ratings_at_level) else None
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +374,7 @@ def build_state(profile: dict, fit: "list[dict]", *, budget: "dict | None" = Non
         "candidates": [
             {k: v for k, v in cand.items() if k in (
                 "id", "agent_cli", "model", "site", "relative_cost", "autonomy",
-                "context_tokens", "rating", "quota", "rank", "status", "notes")}
+                "context_tokens", "rating", "quota", "rank", "status", "notes", "model_source", "qualification_refs")}
             for cand in fit],
         "excluded": list(dropped),
         "policy": POLICY_LINE,
@@ -500,10 +535,18 @@ def judge_model_for(fit: "list[dict]") -> "str | None":
 
 
 def ask_judge(state: dict, questions: dict, *, model: str, request=None,
-              samples: int = 1) -> dict:
+              samples: int = 1, min_confidence: "float | None" = None) -> dict:
     """段 2。問いの名前 → judge の答え（`other` は judge の `other` キーを `none` に写す）。
     `usage` は最初の答えにだけ載る（judge は全問の合計を 1 つ返す）。"""
     try:
+        if set(questions) == {QUESTION_NAME} and state.get("candidates") and state.get("task"):
+            from agentcore import modelfit
+            answer = modelfit.evaluate(
+                state, model=model, rank=audit_order,
+                min_confidence=min_confidence if min_confidence is not None else min_confidence_setting(),
+                request=request, samples=samples,
+            )
+            return {QUESTION_NAME: answer}
         result = judge.evaluate(state, questions, model=model, samples=samples, request=request)
     except judge.JudgeError as exc:
         raise SelectError(str(exc)) from exc
@@ -521,7 +564,7 @@ def ask_judge(state: dict, questions: dict, *, model: str, request=None,
 
 def ask_stages(state: dict, questions: dict, *, stages, attempts: "list[dict]",
                usage: dict, jev_setting_override: "dict | None" = None, jev_request=None,
-               judge_model: "str | None" = None, judge_request=None):
+               judge_model: "str | None" = None, judge_request=None, min_confidence: "float | None" = None):
     """jev → judge を `stages` の順に試し、答えを得た段ごとに (段, 答えの dict) を yield する。
 
     使えない段（Jev の鍵なし・judge のモデルなし）と失敗した段は `attempts` に残して次へ。
@@ -545,7 +588,7 @@ def ask_stages(state: dict, questions: dict, *, stages, attempts: "list[dict]",
                 attempts.append({"stage": stage, "outcome": "not-available"})
                 continue
             try:
-                answers = ask_judge(state, questions, model=judge_model, request=judge_request)
+                answers = ask_judge(state, questions, model=judge_model, request=judge_request, min_confidence=min_confidence)
             except SelectError as exc:
                 attempts.append({"stage": stage, "outcome": "error", "detail": str(exc)[:200]})
                 continue
@@ -638,7 +681,8 @@ def select(prompt: str, candidates, *, purpose: str = "", project_dir=None,
         result.update({"selected": {"agent_cli": cand["agent_cli"], "model": cand["model"]},
                        "stage": stage, "reason": reason,
                        "confidence": (answer or {}).get("confidence"),
-                       "probabilities": (answer or {}).get("probabilities")})
+                       "probabilities": (answer or {}).get("probabilities"),
+                       **({"method": answer["method"]} if (answer or {}).get("method") == "independent-fit" else {})})
         return result
 
     if len(fit) == 1:
@@ -649,7 +693,7 @@ def select(prompt: str, candidates, *, purpose: str = "", project_dir=None,
     asked = ask_stages(state, {QUESTION_NAME: question}, stages=stages, attempts=attempts,
                        usage=usage, jev_setting_override=jev_setting_override,
                        jev_request=jev_request, judge_model=judge_model or judge_model_for(fit),
-                       judge_request=judge_request)
+                       judge_request=judge_request, min_confidence=threshold)
     for stage, answers in asked:
         if answers is None:
             ordered = audit_order(fit)
@@ -661,10 +705,16 @@ def select(prompt: str, candidates, *, purpose: str = "", project_dir=None,
                      else "相対コストの低い順")
             return done(top, stage, None, f"{basis}で決定的に選択（上位の段は使えないか決めなかった）")
         answer = answers[QUESTION_NAME]
+        if answer.get("abstain"):
+            attempts.append({"stage": stage, "outcome": "no-adequate-candidate",
+                             "requirements": answer.get("requirements"), "candidate_fits": answer.get("candidate_fits")})
+            result["reason"] = "候補ごとの適合判定で十分な候補を確認できませんでした"
+            return result
         cand, why = _pick(answer, fit, min_confidence=threshold)
         attempts.append({"stage": stage, "outcome": why, "choice": answer.get("choice"),
                          "confidence": answer.get("confidence"), "method": answer.get("method"),
-                         "model": answer.get("model")})
+                         "model": answer.get("model"),
+                         **({k: answer[k] for k in ("requirements", "candidate_fits", "fit_tie_margin")} if "candidate_fits" in answer else {})})
         if cand is not None:
             return done(cand, stage, answer,
                         f"{stage} が確度 {float(answer.get('confidence') or 0):.2f} で選択")

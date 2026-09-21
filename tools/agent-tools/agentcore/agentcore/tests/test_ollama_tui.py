@@ -471,3 +471,29 @@ class TestRepl(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPromptFile(unittest.TestCase):
+    def test_multiline_request_is_one_turn(self):
+        prompt = '/find\n<!-- agent-app-instructions -->\n共通指示\n\n## 今回の依頼\n今日の天気は？'
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / '依頼 with spaces.txt'
+            file.write_text(prompt, encoding='utf-8')
+            runner = mock.Mock(return_value='どこの天気ですか？')
+            out = io.StringIO()
+            ollama_tui.repl(runner, model='test', tools=False, out=out,
+                            in_=io.StringIO('@agent-prompt-file ' + json.dumps(str(file)) + '\n/quit\n'))
+            runner.assert_called_once()
+            self.assertEqual(runner.call_args.args[0], prompt)
+            self.assertIn('input=prompt-file-v1', out.getvalue())
+            self.assertIn('どこの天気ですか？', out.getvalue())
+
+    def test_missing_or_invalid_file_never_reaches_model(self):
+        for value in ['"/missing/agent-app-prompt"', 'not-json', 'null']:
+            with self.subTest(value=value):
+                runner = mock.Mock()
+                out = io.StringIO()
+                ollama_tui.repl(runner, model='test', tools=False, out=out,
+                                in_=io.StringIO('@agent-prompt-file ' + value + '\n/quit\n'))
+                runner.assert_not_called()
+                self.assertIn('依頼ファイルを読めません', out.getvalue())

@@ -175,7 +175,7 @@ class OfflineTests(unittest.TestCase):
     def test_purpose_ratings_snapshot_is_used(self):
         for c in self.f["candidates"]:
             del c["rating"]
-        self.f["ratings"] = {"rows":[{"model":"fixture-small", "purpose":"worker", "pass_rate":.99,
+        self.f["ratings"] = {"rows":[{"agent_cli":"fixture-small", "model":"v1", "purpose":"worker", "pass_rate":.99,
                                      "average_tokens":200,"outcome_runs":4}]}
         self.assertEqual(self.rows()["audit-fallback"]["candidate"], "fixture-small/v1")
 

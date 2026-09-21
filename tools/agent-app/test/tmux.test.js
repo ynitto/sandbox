@@ -530,3 +530,54 @@ test('スクロール: マウス状態を取り込み、終了済みCLIへ入力
   await conv.scroll(-3);
   assert.equal(conv.scrollOffset, 3);
 });
+
+
+test('共通 TUI は複数行をファイルで渡し、echo と一時ファイルを残さない', async () => {
+  const calls = [];
+  const shell = { run: async command => { calls.push(command); return { ok: true, output: '' }; } };
+  const conv = new tmux.Conversation({ id: 'file-input', shell, patterns: tmux.compilePatterns({}) });
+  conv.phase = 'ready';
+  conv.historyText = async () => 'agent-ollama TUI — input=prompt-file-v1\n> ';
+  conv.schedule = () => {};
+  await conv.send('/find\n共通指示\n\n今日の天気は？', () => {});
+  assert.match(calls[0], /umask 077/);
+  assert.match(calls[0], /今日の天気は？/);
+  assert.match(calls[1], /send-keys.*@agent-prompt-file/);
+  assert.doesNotMatch(calls.join(''), /paste-buffer/);
+  assert.match(conv.turn.prompt, /^@agent-prompt-file /);
+  assert.equal(tmux.extractReply('> ', '> ' + conv.turn.prompt + '\nどこの天気ですか？\n> ', conv.turn.prompt), 'どこの天気ですか？');
+  await conv.finishTurn({ text: 'どこの天気ですか？' });
+  assert.match(calls.at(-1), /rm -f --.*agent-app-prompt-/);
+});
+
+test('旧共通 TUI へ複数行を分断して送らない', async () => {
+  const calls = [];
+  const conv = new tmux.Conversation({ id: 'old-tui', shell: { run: async c => { calls.push(c); return { ok: true }; } },
+    launch: { cli: 'ollama' }, patterns: tmux.compilePatterns({}) });
+  conv.schedule = () => {};
+  conv.phase = 'ready'; conv.historyText = async () => 'agent-ollama TUI — model=test\n> ';
+  await assert.rejects(conv.send('/find\n今日の天気は？', () => {}), /agent-herd.*更新/);
+  assert.equal(calls.length, 0);
+});
+
+
+test('統合: 共通 TUI へ長い日本語の複数行依頼が一度だけ届く', { skip: !hasTmux && 'tmux が無い', timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-herd-input-'));
+  const stub = path.join(dir, 'tui.py');
+  const received = path.join(dir, 'received.jsonl');
+  const core = path.resolve(__dirname, '../../agent-tools/agentcore');
+  fs.writeFileSync(stub, `import sys, json\nsys.path.insert(0, ${JSON.stringify(core)})\nfrom agentcore.ollama_tui import repl\ndef runner(prompt, **kwargs):\n    with open(${JSON.stringify(received)}, 'a', encoding='utf-8') as f: f.write(json.dumps(prompt, ensure_ascii=False) + '\\n')\n    return 'どこの天気ですか？'\nrepl(runner, model='test', tools=False)\n`);
+  const sh = new host.HostShell({ platform: 'linux' });
+  const conv = new tmux.Conversation({ id: `file${Date.now().toString(36)}`, shell: sh, cwd: dir,
+    argv: ['python', stub], launch: { cli: 'ollama' }, patterns: tmux.compilePatterns({ readyTimeoutSec: 10 }) });
+  try {
+    await conv.open(); await conv.waitReady();
+    const prompt = '/ask\n<!-- agent-app-instructions -->\n' + '長い共通指示。'.repeat(1500) + '\n\n## 今回の依頼\n今日の天気は？';
+    const reply = await new Promise((resolve, reject) => conv.send(prompt, resolve).catch(reject));
+    assert.equal(reply.error, '');
+    assert.equal(reply.text, 'どこの天気ですか？');
+    const entries = fs.readFileSync(received, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(entries, [prompt]);
+    assert.equal(conv.promptFiles.size, 0);
+  } finally { await conv.kill(); sh.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

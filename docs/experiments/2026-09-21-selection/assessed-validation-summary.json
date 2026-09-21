@@ -1,0 +1,443 @@
+[
+  {
+    "round": "holdout-normal",
+    "count": 6,
+    "wall_seconds": 25.13,
+    "matches": 6,
+    "judge_accepted": 5,
+    "rows": [
+      {
+        "case": "h1",
+        "expected": "local",
+        "raw": "local",
+        "confidence": 0.997,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.9902,
+            "demanding": 0.009,
+            "other": 0.0007
+          },
+          "confidence": 0.9902,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0007,
+          "choice": "routine"
+        }
+      },
+      {
+        "case": "h2",
+        "expected": "local",
+        "raw": "cloud",
+        "confidence": 0.5742,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "audit",
+        "pick_reason": "low-confidence",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.3004,
+            "demanding": 0.6994,
+            "other": 0.0003
+          },
+          "confidence": 0.6994,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0003,
+          "choice": "demanding"
+        }
+      },
+      {
+        "case": "h3",
+        "expected": "local",
+        "raw": "local",
+        "confidence": 0.9818,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.5682,
+            "demanding": 0.4317,
+            "other": 0.0001
+          },
+          "confidence": 0.5682,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0001,
+          "choice": "routine"
+        }
+      },
+      {
+        "case": "h4",
+        "expected": "cloud",
+        "raw": "cloud",
+        "confidence": 0.9294,
+        "final": "cloud",
+        "final_id": "claude",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0,
+            "demanding": 0.9999,
+            "other": 0.0
+          },
+          "confidence": 0.9999,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "demanding"
+        }
+      },
+      {
+        "case": "h5",
+        "expected": "cloud",
+        "raw": "cloud",
+        "confidence": 0.8982,
+        "final": "cloud",
+        "final_id": "claude",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0,
+            "demanding": 1.0,
+            "other": 0.0
+          },
+          "confidence": 1.0,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "demanding"
+        }
+      },
+      {
+        "case": "h6",
+        "expected": "cloud",
+        "raw": "cloud",
+        "confidence": 0.9535,
+        "final": "cloud",
+        "final_id": "claude",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0,
+            "demanding": 1.0,
+            "other": 0.0
+          },
+          "confidence": 1.0,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "demanding"
+        }
+      }
+    ]
+  },
+  {
+    "round": "holdout-reverse",
+    "count": 6,
+    "wall_seconds": 25.46,
+    "matches": 4,
+    "judge_accepted": 4,
+    "rows": [
+      {
+        "case": "h1",
+        "expected": "local",
+        "raw": "local",
+        "confidence": 0.9999,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.9902,
+            "demanding": 0.009,
+            "other": 0.0007
+          },
+          "confidence": 0.9902,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0007,
+          "choice": "routine"
+        }
+      },
+      {
+        "case": "h2",
+        "expected": "local",
+        "raw": "local",
+        "confidence": 0.9318,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.3004,
+            "demanding": 0.6994,
+            "other": 0.0003
+          },
+          "confidence": 0.6994,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0003,
+          "choice": "demanding"
+        }
+      },
+      {
+        "case": "h3",
+        "expected": "local",
+        "raw": "local",
+        "confidence": 0.9996,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.5682,
+            "demanding": 0.4317,
+            "other": 0.0001
+          },
+          "confidence": 0.5682,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0001,
+          "choice": "routine"
+        }
+      },
+      {
+        "case": "h4",
+        "expected": "cloud",
+        "raw": "local",
+        "confidence": 0.5908,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "audit",
+        "pick_reason": "low-confidence",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0,
+            "demanding": 0.9999,
+            "other": 0.0
+          },
+          "confidence": 0.9999,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "demanding"
+        }
+      },
+      {
+        "case": "h5",
+        "expected": "cloud",
+        "raw": "cloud",
+        "confidence": 0.5533,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "audit",
+        "pick_reason": "low-confidence",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0,
+            "demanding": 1.0,
+            "other": 0.0
+          },
+          "confidence": 1.0,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "demanding"
+        }
+      },
+      {
+        "case": "h6",
+        "expected": "cloud",
+        "raw": "cloud",
+        "confidence": 0.633,
+        "final": "cloud",
+        "final_id": "claude",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0,
+            "demanding": 1.0,
+            "other": 0.0
+          },
+          "confidence": 1.0,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "demanding"
+        }
+      }
+    ]
+  },
+  {
+    "round": "development-reverse",
+    "count": 6,
+    "wall_seconds": 26.05,
+    "matches": 3,
+    "judge_accepted": 5,
+    "rows": [
+      {
+        "case": "greeting",
+        "expected": "local",
+        "raw": "local",
+        "confidence": 0.9999,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.9992,
+            "demanding": 0.0007,
+            "other": 0.0001
+          },
+          "confidence": 0.9992,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0001,
+          "choice": "routine"
+        }
+      },
+      {
+        "case": "translation",
+        "expected": "local",
+        "raw": "local",
+        "confidence": 0.9999,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.8137,
+            "demanding": 0.1858,
+            "other": 0.0005
+          },
+          "confidence": 0.8137,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0005,
+          "choice": "routine"
+        }
+      },
+      {
+        "case": "fact",
+        "expected": "local",
+        "raw": "local",
+        "confidence": 0.9999,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.999,
+            "demanding": 0.001,
+            "other": 0.0
+          },
+          "confidence": 0.999,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "routine"
+        }
+      },
+      {
+        "case": "proposal",
+        "expected": "cloud",
+        "raw": "local",
+        "confidence": 0.7214,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0001,
+            "demanding": 0.9998,
+            "other": 0.0001
+          },
+          "confidence": 0.9998,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0001,
+          "choice": "demanding"
+        }
+      },
+      {
+        "case": "debug",
+        "expected": "cloud",
+        "raw": "local",
+        "confidence": 0.6429,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "judge",
+        "pick_reason": "chosen",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0,
+            "demanding": 1.0,
+            "other": 0.0
+          },
+          "confidence": 1.0,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "demanding"
+        }
+      },
+      {
+        "case": "architecture",
+        "expected": "cloud",
+        "raw": "local",
+        "confidence": 0.5244,
+        "final": "local",
+        "final_id": "ollama/gemma4:e4b",
+        "stage": "audit",
+        "pick_reason": "low-confidence",
+        "requirements": {
+          "type": "choice",
+          "probabilities": {
+            "routine": 0.0,
+            "demanding": 1.0,
+            "other": 0.0
+          },
+          "confidence": 1.0,
+          "coverage": 1.0,
+          "method": "logprobs",
+          "other": 0.0,
+          "choice": "demanding"
+        }
+      }
+    ]
+  }
+]
