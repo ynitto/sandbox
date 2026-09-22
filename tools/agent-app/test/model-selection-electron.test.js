@@ -80,11 +80,22 @@ test('Electron: automatic choice launches the selected model and persists across
     await choice.selectOption('manual');
     assert.equal(await win.locator('#cli').isVisible(), true);
     await win.selectOption('#cli', 'beta');
-    await win.locator('#run-settings [data-execution-model]').selectOption('beta-model');
+    assert.equal(await win.locator('#run-settings [data-execution-model]').count(), 1);
+    assert.equal(await win.locator('#model').getAttribute('placeholder'), '既定のモデル');
+    assert.deepEqual(await win.locator('#model-suggestions option').evaluateAll(nodes => nodes.map(n => n.value)), ['beta-model']);
+    await win.fill('#model', 'beta-model');
     assert.equal(await win.inputValue('#model'), 'beta-model');
-    await win.locator('#run-settings [data-execution-model]').selectOption('__custom__');
     await win.fill('#model', 'custom-model');
     assert.equal(await win.locator('#model').isVisible(), true);
+    assert.equal(await win.evaluate(() => selectedExecution().model), 'custom-model');
+    await win.fill('#model', '');
+    assert.equal(await win.evaluate(() => selectedExecution().model), '');
+    const defaultLaunch = await app.evaluate(({ app }) => {
+      const req = process.getBuiltinModule('module').createRequire(`${app.getAppPath()}/package.json`);
+      const cli = req('./src/main/agentCli');
+      return cli.turnCmd(cli.load('beta'), { prompt: 'test', model: '' });
+    });
+    assert.ok(defaultLaunch.argv.includes('beta-model'));
     await win.screenshot({ path: '/tmp/agent-app-execution-manual.png' });
     await win.setViewportSize({ width: 375, height: 900 });
     const popoverBounds = await win.locator('#run-settings .settings-popover').boundingBox();

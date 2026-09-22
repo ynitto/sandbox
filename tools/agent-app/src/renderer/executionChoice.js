@@ -19,16 +19,14 @@ window.ExecutionChoice = (() => {
       const note = document.createElement('p');
       note.className = 'sub'; note.setAttribute('role', 'status');
       modeField.after(note);
-      const modelChoiceField = document.createElement('label');
-      modelChoiceField.textContent = 'モデル';
-      const choice = document.createElement('select');
-      choice.dataset.executionModel = '';
-      modelChoiceField.append(choice);
-      modelField.before(modelChoiceField);
-      modelField.firstChild.textContent = 'モデル名';
-      model.placeholder = 'モデル名';
-      model.setAttribute('aria-label', 'モデル名');
-      ui = { modeField, mode, note, agentField, modelField, modelChoiceField, choice, options, manual: '', custom: false };
+      const suggestions = document.createElement('datalist');
+      suggestions.id = `${model.id}-suggestions`;
+      modelField.append(suggestions);
+      model.setAttribute('list', suggestions.id);
+      model.dataset.executionModel = '';
+      model.placeholder = '既定のモデル';
+      model.setAttribute('aria-label', 'モデル');
+      ui = { modeField, mode, note, agentField, modelField, suggestions, options, manual: '' };
       controls.set(agent, ui);
       mode.onchange = () => {
         if (ui.options.changeMode) ui.options.changeMode(mode.value);
@@ -39,17 +37,8 @@ window.ExecutionChoice = (() => {
         }
         sync(agent, model, ui.options);
       };
-      choice.onchange = () => {
-        ui.custom = choice.value === '__custom__';
-        model.value = ui.custom ? '' : choice.value;
-        model.dispatchEvent(new Event('input', { bubbles: true }));
-        model.dispatchEvent(new Event('change', { bubbles: true }));
-        sync(agent, model, ui.options);
-        if (ui.custom) model.focus();
-      };
       agent.addEventListener('change', () => {
         if (agent.value !== 'auto') ui.manual = agent.value;
-        ui.custom = false;
         model.value = '';
         model.dispatchEvent(new Event('input', { bubbles: true }));
         sync(agent, model, ui.options);
@@ -64,17 +53,11 @@ window.ExecutionChoice = (() => {
     ui.note.textContent = locked ? '実行先の変更は新しい会話から適用できます。' : '依頼内容に応じてエージェントとモデルを選びます。';
     ui.note.hidden = options.shared || (!automatic && !locked);
     ui.agentField.hidden = automatic;
-    ui.modelChoiceField.hidden = automatic;
-    ui.choice.disabled = locked;
     agent.disabled = locked;
     for (const option of agent.options) if (option.value === 'auto') option.hidden = true;
     const models = [...new Set((options.models?.(agent.value) || []).filter(Boolean))];
-    if (model.value && !models.includes(model.value)) ui.custom = true;
-    ui.choice.replaceChildren(new Option('既定のモデル', ''));
-    for (const name of models) ui.choice.add(new Option(name, name));
-    ui.choice.add(new Option('モデル名を入力', '__custom__'));
-    ui.choice.value = ui.custom ? '__custom__' : model.value;
-    ui.modelField.hidden = automatic || !ui.custom;
+    ui.suggestions.replaceChildren(...models.map(name => new Option(name, name)));
+    ui.modelField.hidden = automatic;
     model.disabled = locked || automatic;
   }
   return { sync };

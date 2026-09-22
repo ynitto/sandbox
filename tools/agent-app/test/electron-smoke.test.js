@@ -557,8 +557,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     // 方針の行は出さない（エージェントとモデルを直接選ぶ 1 組に畳んである）
     assert.strictEqual(await workspace.locator('#run-policy').isVisible(), false);
     await workspace.locator('#run-direct-settings').waitFor();
-    // モデル名の直接入力は「モデル名を入力」を選んでから（既定は tier のモデルから選ぶ）
-    await workspace.locator('#run-direct-settings [data-execution-model]').selectOption('__custom__');
+    // モデルは候補選択と直接入力を一つの入力欄で扱う。
     await workspace.locator('#run-model').fill('task-model');
     await workspace.locator('#run-skill-mode').selectOption('manual');
     await workspace.locator('[data-run-skill="self-checking"]').check();
@@ -763,7 +762,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#flow-teach-purpose').fill('変更依頼を調査し、並列に実装して品質を確認したい');
     await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
     assert.strictEqual(await win.locator('#flow-teach-agent').isVisible(), true);
-    // モデルは候補から選ぶ（名前の直接入力は「モデル名を入力」を選んだときだけ出す）
+    // モデルは候補選択と直接入力を一つの入力欄で扱う。
     assert.strictEqual(await win.locator('#flow-teach-launch [data-execution-model]').isVisible(), true);
     assert.strictEqual(await win.locator('#flow-teach-permission').isVisible(), true);
     await workspace.locator('.teaching-create h2').click();
@@ -781,7 +780,6 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       };
     });
     await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
-    await win.locator('#flow-teach-launch [data-execution-model]').selectOption('__custom__');
     await win.locator('#flow-teach-model').fill('workflow-test-model');
     await win.locator('#flow-teach-permission').selectOption('auto');
     await workspace.locator('.teaching-create h2').click();
