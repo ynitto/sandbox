@@ -695,6 +695,7 @@
           <div class="settings-group"><div class="settings-group-head"><span><strong>判定と評価</strong></span></div>
           <label class="setting-field"><span><strong>振り分けの判定</strong></span><select id="judge-mode"><option value="auto">ローカル実行時のみ</option><option value="model">指定モデルで判定</option><option value="off">使わない</option></select></label>
           <label class="setting-field" id="judge-model-row" hidden><span><strong>判定に使うモデル</strong></span><input id="judge-model" placeholder="gemma4:e4b"></label>
+          <label class="setting-field"><span><strong>判定モデルを残す時間（分）</strong></span><input id="judge-keep-alive" type="number" min="0" max="1440" step="1" placeholder="5"></label>
           <label class="setting-field" id="evaluation-row"><span><strong>自動評価の頻度</strong></span><select id="evaluation-mode"><option value="sample">5 件に 1 件</option><option value="all">すべて</option><option value="off">使わない</option></select></label>
           <label class="setting-field"><span><strong>評価方法</strong></span><select id="evaluation-strategy"><option value="legacy">従来の品質点</option><option value="evidence-shadow">根拠別評価を比較・記録</option><option value="evidence-advisory">根拠付きの改善候補を提示</option></select></label>
           </div>

@@ -5,7 +5,7 @@
 //
 //   下書き   … `.agents/workflows/.teaching/<保存名>.json`（会話 ID と、まだ利用可能でない印）
 //   定義     … `.agents/workflows/<保存名>.json`。AI はこの会話の中でこのファイルを直接書く
-//   試運転   … 画面の「試運転する」。実行は利用者が押す（AI は実行しない）
+//   テスト   … 画面の「テスト」。実行は利用者が押す（AI は実行しない）
 
 const flowModel = require('./flow-model');
 
@@ -42,7 +42,7 @@ function prompt({ id, purpose = '', existing = false } = {}) {
     '5. 人に確認する工程（`kind: "human"`）には `interaction` が要ります（`mode` は approval / choice / input、`prompt` は質問文、',
     '   choice のときは `options` を 2 つ以上）。失敗したときに前へ戻す線は `rework` に書きます（差し戻し元は human か verify）。',
     '6. 書いたら内容を読み直し、工程の並び・並列にした単位・人の確認の位置を短く報告してください。実行はしません',
-    '   （試運転は利用者が画面の「試運転する」で行います）。',
+    '   （テストは利用者が画面の「テスト」で行います）。',
     '',
     ...(existing ? [] : ['利用者の目的:', text(purpose) || '（未記入。まず何をさせたいかを聞いてください）']),
   ].join('\n');

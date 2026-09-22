@@ -31,7 +31,9 @@ test('home: preparation appears before readiness, updates during selection, and 
         event.sender.send('turn:progress', { id: p.id, item: { text: '判定中…\n進め方を判定しています。', status: 'running', preparing: true } });
         const fail = await new Promise(resolve => { global.finishPreparation = resolve; });
         if (fail) return { ok: false, error: '判定に失敗しました' };
-        store.updateSession(app.getPath('userData'), p.id, { transport: 'tmux' });
+        store.updateSession(app.getPath('userData'), p.id, { transport: 'tmux', cli: 'codex', model: 'test-model', modelSelection: { cli: 'codex', model: 'test-model', stage: 'audit' } });
+        store.appendMessage(app.getPath('userData'), p.id, { role: 'user', text: p.text });
+        store.appendMessage(app.getPath('userData'), p.id, { role: 'assistant', text: 'どこの天気ですか？' });
         return { ok: true, data: { acceptedAt: new Date().toISOString() } };
       });
       replace('term:open', () => ({ ok: true, data: { phase: 'ready', name: 'test-terminal' } }));
@@ -96,11 +98,43 @@ test('home: preparation appears before readiness, updates during selection, and 
     }
     await win.setViewportSize({ width: 1360, height: 821 });
     await win.screenshot({ path: '/tmp/agent-app-home-preparation.png' });
+
+    // 起動先が tmux に決まったら、依頼が CLI に届くのを待たずに端末ミラーを出す。
+    assert.equal(await win.evaluate(() => Term.current()), '', '起動先が決まるまでは端末を出さない');
+    await app.evaluate(() => preparationEvent.sender.send('turn:transport', { id: preparationId, transport: 'tmux' }));
+    await win.waitForFunction(() => Term.current() === state.current.id);
+    assert.equal(await win.evaluate(() => window.sendFinished), false, 'ターンはまだ終わっていない');
+    assert.equal(await win.locator('#term-host').isVisible(), true);
+    assert.equal(await win.locator('#turn-preparation').isVisible(), false, '端末が出たら黒い面は端末に渡す');
+    assert.match(await win.textContent('#term-agent'), /準備中/, '準備中はこの面の見出しに 1 行で残す');
+
     await app.evaluate(() => finishPreparation(false));
     await win.waitForFunction(() => window.sendFinished && state.area === 'conversation');
     assert.equal(await win.locator('#turn-preparation').isVisible(), false);
     assert.equal(await win.locator('#term-host').isVisible(), true);
     assert.equal(await win.inputValue('#prompt'), '');
+
+    // 応答完了後の返信でも、同じ会話と選択済みモデルを維持し準備画面を出さない。
+    const firstId = await win.evaluate(() => state.current.id);
+    await win.evaluate(() => {
+      state.running.clear();
+      $('prompt').value = '東京';
+      window.sendFinished = false;
+      window.submission = sendPrompt().finally(() => { window.sendFinished = true; });
+    });
+    await app.evaluate(async () => {
+      const deadline = Date.now() + 5000;
+      while (sendCount !== 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      if (sendCount !== 2) throw new Error('返信が送信処理へ届きませんでした');
+    });
+    assert.equal(await win.evaluate(() => state.preparation), null);
+    assert.equal(await win.locator('#turn-preparation').isVisible(), false);
+    assert.equal(await win.locator('#conversation-history').isVisible(), true);
+    assert.equal(await win.evaluate(() => state.current.id), firstId);
+    assert.equal(await win.evaluate(() => selectedExecution().allocation || ''), '');
+    await app.evaluate(() => finishPreparation(false));
+    await win.waitForFunction(() => window.sendFinished);
+    assert.equal(await win.evaluate(() => state.current.messages.length), 4);
 
     await win.evaluate(async () => {
       await showArea('home');
@@ -115,6 +149,6 @@ test('home: preparation appears before readiness, updates during selection, and 
     assert.equal(await win.inputValue('#prompt'), '失敗しても残す依頼');
     assert.match(await win.textContent('#notice'), /判定に失敗/);
     assert.equal(await win.locator('#send').isEnabled(), true);
-    assert.equal(await app.evaluate(() => sendCount), 2);
+    assert.equal(await app.evaluate(() => sendCount), 3);
   } finally { await app.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

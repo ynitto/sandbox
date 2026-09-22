@@ -1145,6 +1145,8 @@ function renderJudgeSetting() {
   mode.closest('.setting-field').classList.toggle('is-off', !available);
   $('judge-model-row').hidden = !(available && mode.value === 'model');
   $('judge-model').disabled = !available;
+  $('judge-keep-alive').disabled = !available || mode.value === 'off';
+  $('judge-keep-alive').closest('.setting-field').classList.toggle('is-off', !available || mode.value === 'off');
   // 応答と実行の自動評価も同じ判定 AI（agent-herd）を使う。無ければ同じく薄くする
   $('evaluation-mode').disabled = !available;
   $('evaluation-strategy').disabled = !available;
@@ -1152,22 +1154,28 @@ function renderJudgeSetting() {
 }
 
 function judgeValue() {
-  return { mode: $('judge-mode').value, model: $('judge-model').value.trim() };
+  const minutes = $('judge-keep-alive').value.trim();
+  return { mode: $('judge-mode').value, model: $('judge-model').value.trim(), keepMinutes: minutes === '' ? '' : Number(minutes) };
+}
+
+const emptyJudge = () => ({ available: false, value: { mode: 'auto', model: '', keepMinutes: '' } });
+
+function fillJudgeSetting(value) {
+  $('judge-mode').value = value.mode;
+  $('judge-model').value = value.model || '';
+  $('judge-keep-alive').value = value.keepMinutes === '' || value.keepMinutes == null ? '' : String(value.keepMinutes);
+  renderJudgeSetting();
 }
 
 async function loadJudgeSetting() {
-  state.judge = { available: false, value: { mode: 'auto', model: '' } };
-  $('judge-mode').value = 'auto';
-  $('judge-model').value = '';
-  renderJudgeSetting();
+  state.judge = emptyJudge();
+  fillJudgeSetting(state.judge.value);
   try {
     state.judge = await api.judge.get();
   } catch {
-    state.judge = { available: false, value: { mode: 'auto', model: '' } };
+    state.judge = emptyJudge();
   }
-  $('judge-mode').value = state.judge.value.mode;
-  $('judge-model').value = state.judge.value.model || '';
-  renderJudgeSetting();
+  fillJudgeSetting(state.judge.value);
 }
 
 function skillCandidates() {
@@ -1449,16 +1457,21 @@ function renderHeader() {
   $('conversation-start').hidden = !!cur || !!preparing;
   $('terminal-stage').hidden = !(preparing || tm || (waiting && waiting.state === 'working'));
   // 端末（手元の tmux か、共有で映している相手の画面）があるときは、履歴は畳んだ脇役のまま
-  $('turn-preparation').hidden = !preparing;
-  $('term-host').hidden = !!preparing;
+  // 起動先が tmux に決まると、依頼が届く前でも端末をつなぐ。つながっていれば黒い面は端末に
+  // 渡し、準備中はこの面の見出しへ 1 行で出す（同じことを 2 か所に出さない）。
+  const mirroring = !!cur && Term.current() === cur.id;
+  $('turn-preparation').hidden = !preparing || mirroring;
+  $('term-host').hidden = !!preparing && !mirroring;
   if (preparing) $('turn-preparation').textContent = preparing.text;
   const mirror = !!preparing || tm || !!(waiting && waiting.state === 'working');
   $('conversation-history').hidden = !cur || !!preparing;
   $('conversation-history').classList.toggle('history-only', !mirror);
   if (cur && !mirror) $('conversation-history').open = true;
   $('history-count').textContent = cur && cur.messages ? `${cur.messages.length}件` : '';
-  $('term-agent').textContent = preparing ? '準備中' : waiting ? `${waiting.node || '参加者'} の ${waiting.cli || 'AI'}`
-    : (tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '');
+  $('term-agent').textContent = preparing
+    ? (mirroring ? ['準備中', cur.cli, cur.model].filter(Boolean).join(' · ') : '準備中')
+    : waiting ? `${waiting.node || '参加者'} の ${waiting.cli || 'AI'}`
+      : (tm ? [cur.cli, cur.model].filter(Boolean).join(' · ') : '');
   $('term-name').textContent = waiting ? '共有 · 閲覧のみ' : '';
   $('term-agent').title = !waiting && ph?.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
   // 待っている間は、引き受けた人の tmux の画面をそのまま描く（キーは送れない）
@@ -2054,8 +2067,9 @@ async function sayToExecutor(waiting, text) {
 async function sendPrompt() {
   if (state.preparation) return null;
   if ((!$('prompt').value.trim() && !state.attachments.length) || !state.repo) return null;
-  // 端末への追加入力・共有宛てのひとことでは実際の画面を隠さない。
-  const preparing = !shareWaiting() && !(state.current && state.running.has(state.current.id));
+  // 準備画面は新規会話だけ。完了した応答への返信でも会話履歴を隠さない。
+  const hasHistory = state.current?.messages?.some(m => ['user', 'assistant'].includes(m.role));
+  const preparing = !hasHistory && !shareWaiting() && !(state.current && state.running.has(state.current.id));
   if (preparing) {
     state.preparation = { id: state.current?.id || null, repo: state.repo,
       text: '判定中…\n依頼を受け付けました。実行環境を確認しています。' };
@@ -2144,7 +2158,7 @@ async function sendPromptRequest() {
     state.current = await api.readSession(id);
     state.sessions = await api.listSessions(state.repo);
     // tmux で起動（し直）したなら端末ミラーをつなぎ直す。ヘッドレスの CLI へ移ったなら外す
-    if (isTmux(state.current)) { if (!wasTmux || res.restarted || Term.current() !== id) await attachTerm(id); }
+    if (isTmux(state.current)) { if (res.restarted || Term.current() !== id) await attachTerm(id); }
     else if (!shareWaiting()) Term.detach();
     if (res.warning) notice(res.warning);
     const sentAt = new Date(res.acceptedAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2679,11 +2693,11 @@ async function saveSettings() {
     if (state.judge && state.judge.available) {
       const next = judgeValue();
       const prev = state.judge.value;
-      if (next.mode !== prev.mode || (next.mode === 'model' && next.model !== prev.model)) {
-        state.judge = { ...state.judge, value: await api.judge.set(next) };
-        $('judge-mode').value = state.judge.value.mode;
-        $('judge-model').value = state.judge.value.model || '';
-        renderJudgeSetting();
+      const keepChanged = next.keepMinutes !== prev.keepMinutes;
+      if (next.mode !== prev.mode || (next.mode === 'model' && next.model !== prev.model) || keepChanged) {
+        // 残す時間は変えたときだけ書く（分では書けない値を人が入れていたら、そのまま残す）
+        state.judge = { ...state.judge, value: await api.judge.set(next, { keepAlive: keepChanged }) };
+        fillJudgeSetting(state.judge.value);
       }
     }
     state.settingsSkills = [...state.config.instructions.skills];
@@ -3190,6 +3204,17 @@ async function init() {
       .then((sess) => openSessionInRepo(sess.repo, p.id))
       .catch((err) => notice(err.message, 'error'));
   });
+  // 起動先が tmux に決まった合図。依頼が CLI に届くのを待たずに端末ミラーを出す——
+  // 自動選択では会話を作る時点で起動先が決まっておらず、ここまで端末を出せない。
+  api.onTurnTransport((p) => {
+    TaskTeaching.onTurnTransport(p);
+    FlowTeaching.onTurnTransport(p);
+    if (p.transport !== 'tmux' || !state.current || state.current.id !== p.id) return;
+    state.current = { ...state.current, transport: 'tmux', cli: p.cli || state.current.cli, model: p.model || state.current.model };
+    if (Term.current() === p.id) { renderHeader(); return; }
+    attachTerm(p.id).catch(() => { /* 端末は送信後にもう一度つなぎ直す */ });
+  });
+
   api.onTermPhase((p) => {
     state.phases.set(p.id, { phase: p.phase, detail: p.detail, name: p.name });
     TaskTeaching.onTermPhase(p);

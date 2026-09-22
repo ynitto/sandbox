@@ -57,6 +57,16 @@
 :host .teaching-create h2 { margin: 0 0 24px; }
 :host .manual-task-create { display: grid; gap: 16px; }
 
+/* 手動実行の設定も、作成設定（light DOM）と同じ文字・行・入力欄の配置にする。 */
+:host :is(.task-run-settings, .flow-run-settings) { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+:host :is(.task-run-settings, .flow-run-settings) .popover-head > .spacer { flex: 1; }
+:host :is(.task-run-settings, .flow-run-settings) .popover-head > button { min-height: 32px; padding: 4px 10px; border-radius: 8px; border-color: transparent; color: var(--muted); background: transparent; font-size: 12px; }
+:host :is(.task-run-settings, .flow-run-settings) .settings-popover > label,
+:host :is(.task-run-settings, .flow-run-settings) .direct-agent-settings > label { grid-template-columns: 100px minmax(0, 1fr); gap: 10px; font-size: 12px; }
+:host :is(.task-run-settings, .flow-run-settings) .settings-popover :is(input, select) { padding: 7px 9px; border-radius: 8px; font: inherit; }
+:host :is(.task-run-settings, .flow-run-settings) .sub { color: var(--muted); font-size: 11px; }
+:host :is(.task-run-settings, .flow-run-settings) > summary::after { content: ''; width: 7px; height: 7px; flex: none; margin: -3px 3px 0 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); }
+
 @media (max-width: 680px) {
   .run-settings .settings-popover {
     position: fixed;

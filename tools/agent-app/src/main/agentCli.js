@@ -121,6 +121,7 @@ function normalizeInteractive(raw) {
   const inherit = (key) => (Array.isArray(i[key]) ? strs(i[key]) : strs(raw[key]));
   return {
     command: strs(i.command),
+    retainsContext: i.retains_context !== false,
     writeArgs: strs(i.write_args),
     readonlyArgs: inherit('readonly_args'),
     continueArgs: inherit('continue_args'),

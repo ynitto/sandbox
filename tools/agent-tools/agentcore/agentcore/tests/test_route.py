@@ -7,6 +7,8 @@
    確度不足・`other`・本文読み（method text）は決めたことにしない。
 3. **`hold` は handling と流用先の両方が hold 下限以上のときだけ真。**
 4. **段の試行は `modelselect.ask_stages` を共有する**（attempts の形が select と同じ）。
+5. **`ask` で問いを絞っても、残った問いのプロンプトは変わらない**（1 問ごとに別のプロンプトで
+   訊くので、答えも変わらない）。急がない問いを呼び出し側が後回しにするための口。
 """
 from __future__ import annotations
 
@@ -102,6 +104,26 @@ class QuestionShapeTests(IsolatedHome):
         questions = route.build_questions(route.normalize_candidates({"skills": []}))
         self.assertEqual(list(questions), ["handling", "routine"])
         self.assertEqual(list(questions["handling"]["criteria"]), ["answer", "converse"])
+
+    def test_ask_narrows_the_questions_without_changing_them(self):
+        cands = route.normalize_candidates(CANDIDATES)
+        every = route.build_questions(cands)
+        narrowed = route.build_questions(cands, ask=("handling", "task", "flow", "skills"))
+        self.assertEqual(list(narrowed), [n for n in every if n != route.QUESTION_ROUTINE])
+        for name, question in narrowed.items():
+            self.assertEqual(question, every[name], "残った問いは 1 文字も変わらない")
+        only = route.build_questions(cands, ask=("routine",))
+        self.assertEqual(list(only), [route.QUESTION_ROUTINE])
+        self.assertEqual(only[route.QUESTION_ROUTINE], every[route.QUESTION_ROUTINE])
+        self.assertEqual(list(route.build_questions(cands, ask=("skills",))),
+                         ["skill:api-designer", "skill:self-checking"])
+        with self.assertRaises(route.RouteError):
+            route.build_questions(cands, ask=("handling", "bogus"))
+        with self.assertRaises(route.RouteError):
+            route.build_questions(cands, ask=())
+        empty = route.normalize_candidates({"context": {"readonly": True}})
+        with self.assertRaises(route.RouteError):
+            route.build_questions(empty, ask=("handling",))
 
     def test_readonly_skips_handling(self):
         questions = route.build_questions(route.normalize_candidates(
@@ -227,6 +249,23 @@ class StageTests(IsolatedHome):
         self.assertIsNone(result["handling"])
         self.assertEqual(result["attempts"][-1]["outcome"], "no-handling-question")
 
+    def test_routine_only_call_asks_one_question(self):
+        asked: "list[str]" = []
+
+        def request(payload):
+            prompt = payload["messages"][-1]["content"]
+            asked.append(prompt)
+            self.assertIn(Q_ROUTINE, prompt)
+            return _logprobs(TASK_ROUTE[Q_ROUTINE])
+
+        result = route.route("前月分の日報をまとめて", CANDIDATES, stages=(modelselect.STAGE_JUDGE,),
+                             ask=("routine",), judge_model="gemma4:e4b", judge_request=request)
+        self.assertEqual(len(asked), 1, "訊くのは routine の 1 問だけ")
+        self.assertEqual(result["questions"], ["routine"])
+        self.assertTrue(result["routine"]["value"])
+        self.assertEqual(result["stage"], modelselect.STAGE_JUDGE)
+        self.assertIsNone(result["handling"], "handling は訊いていない")
+
     def test_thresholds_come_from_the_config_file(self):
         herdconfig.set_value("route.min_confidence", 0.9)
         herdconfig.set_value("route.hold_min_confidence", 0.5)
@@ -285,12 +324,24 @@ class RouteCommandTests(IsolatedHome):
         self.assertEqual(self._run(["--candidates", "{}", "--bogus"])[0], 2)
         self.assertEqual(self._run(["--candidates", "{}"], stdin="")[0], 2)
 
+    def test_ask_picks_the_questions(self):
+        herdconfig.set_value("judge.model", "gemma4:e4b")
+        rc, out, err = self._run(["--candidates", json.dumps(CANDIDATES), "--ask", "routine", "--json"],
+                                 judge_request=_judge_by_question({Q_ROUTINE: TASK_ROUTE[Q_ROUTINE]}))
+        self.assertEqual(rc, 0, err)
+        data = json.loads(out)
+        self.assertEqual(data["questions"], ["routine"])
+        self.assertTrue(data["routine"]["value"])
+        self.assertEqual(self._run(["--candidates", "{}", "--ask", "bogus"])[0], 2)
+        self.assertEqual(self._run(["--candidates", "{}", "--ask"])[0], 2)
+
     def test_main_dispatches_route_and_help(self):
         out = io.StringIO()
         with mock.patch("sys.stdout", out):
             rc = herdcli.main(["route", "--help"], prog="agent-herd")
         self.assertEqual(rc, 0)
         self.assertIn("--candidates", out.getvalue())
+        self.assertIn("--ask", out.getvalue())
         self.assertIn("route", herdcli.HELP)
         self.assertIn("route.hold_min_confidence", herdcli.CONFIG_HELP)
 

@@ -411,6 +411,9 @@ ollama へ回し、判定にクラウドのトークンを使わない。`off` �
 モデルに任せるかを本家 Jev → judge → agent-audit の格付けの順で決める口——の設定。
 API キーは表示で伏せる。`route.*`（`route.min_confidence` / `route.hold_min_confidence`）は
 `agent-herd route`——依頼の扱いを決める口——の確度の下限。
+`route` は `--ask` で訊く問いを絞れる（`handling` / `task` / `flow` / `skills` / `routine`）。
+問いは 1 問ごとに別のプロンプトなので、絞っても残った問いの答えは変わらない——急がない問いを
+後回しにして、最初の答えを早く返すために使う。
 
 `OLLAMA_HOST` が未設定のときは `~/.profile` を評価して `OLLAMA_*` / `AGENT_OLLAMA_*` を
 補完する。エンジンは agent-ollama を**非ログインシェル**の subprocess として起動するため、

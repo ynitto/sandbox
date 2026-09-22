@@ -41,7 +41,7 @@ test('AIワークフローは既存のカードと2カラムを使い、編集�
   }
   assert.match(flow, /execution-layout flow-layout/);
   assert.match(css, /\.flow-layout\s*\{[^}]*grid-template-columns:/);
-  assert.ok(flow.includes('AIワークフロー') && flow.includes('読み取り専用で実行する'));
+  assert.ok(flow.includes('AIワークフロー') && flow.includes('読み取り専用</option>'));
 });
 
 test('標準パターンは動的工程を一枚で示し、反復設定を適用後も保持する', () => {

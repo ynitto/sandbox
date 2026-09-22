@@ -149,7 +149,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .run-toolbar-spacer { min-width: 8px; flex: 1; }
 .run-toolbar > button { flex: none; white-space: nowrap; }
 .run-settings { position: relative; min-width: 0; width: fit-content; max-width: 100%; }
-.run-settings > summary { min-height: 36px; max-width: 310px; display: flex; align-items: center; padding: 7px 10px; overflow: hidden; border-radius: 8px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; cursor: pointer; list-style: none; }
+.run-settings > summary { min-height: 36px; max-width: 440px; display: flex; align-items: center; padding: 7px 10px; overflow: hidden; border-radius: 8px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; cursor: pointer; list-style: none; }
 .run-settings > summary::-webkit-details-marker { display: none; }
 .run-settings > summary::before { content: ''; width: 7px; height: 7px; margin-right: 8px; flex: none; border-radius: 50%; background: var(--ok); }
 .run-settings > summary::after { content: '⌄'; flex: none; margin-left: 6px; color: var(--muted); }
@@ -160,6 +160,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .popover-head { margin-bottom: 12px; font-weight: 650; }
 .settings-popover > label, .direct-agent-settings > label { min-width: 0; display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 10px; align-items: center; margin-top: 10px; color: var(--fg); }
 .settings-popover select, .settings-popover input { min-width: 0; }
+.settings-popover select:disabled { opacity: .5; cursor: not-allowed; }
 .direct-agent-settings { display: contents; }
 .skill-choice-list { max-height: 150px; margin-top: 10px; padding: 8px; display: flex; flex-wrap: wrap; gap: 6px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
 .skill-choice { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 999px; background: var(--bg); font-size: 12px; cursor: pointer; }
@@ -205,7 +206,8 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .flow-node-summary li > div { min-width: 0; display: grid; gap: 2px; }
 .flow-node-summary small { color: var(--muted); }
 .flow-node-summary p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.flow-editor { min-width: 0; display: grid; gap: 12px; padding-bottom: 72px; }
+.flow-editor { min-width: 0; display: grid; gap: 12px; }
+.flow-editor > .execution-title { position: sticky; top: 0; z-index: 10; padding-block: 12px; background: var(--bg); }
 .flow-node-list { display: grid; gap: 10px; }
 .flow-graph-with-rework { min-width: 0; display: grid; gap: 12px; }
 .flow-rework-lane { padding: 12px; border: 1px dashed var(--warn); border-radius: 10px; background: var(--warn-soft); display: grid; gap: 8px; color: var(--warn); }
@@ -229,7 +231,6 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .flow-deps input { width: auto; }
 .flow-human { display: grid; gap: 10px; margin-top: 10px; padding: 12px; background: var(--warn-soft); border-radius: 9px; }
 .flow-add-node { border-style: dashed; min-height: 46px; color: var(--accent); }
-.flow-sticky-actions { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 12px; background: rgba(255, 255, 255, 0.94); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(8px); }
 .flow-issues { margin: 0; padding: 10px 12px 10px 30px; border-radius: 9px; background: var(--warn-soft); font-size: 12.5px; }
 .flow-issues .err { color: var(--ng); }
 .flow-issues .warn { color: var(--warn); }

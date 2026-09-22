@@ -547,7 +547,9 @@ test('共有編集面へ AI ワークフローの画面と IPC を同じ境界�
 test('ワークフロー詳細は選択中リポジトリの実行履歴へ移動できる', () => {
   const flow = fs.readFileSync(path.join(SRC, 'renderer/automation/flow.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/automation-workbench.css'), 'utf8');
-  assert.ok(flow.includes('data-flow-tab="overview"') && flow.includes('data-flow-tab="history"'));
+  // タブは一覧から描く。並びが増えても壊れないよう、持つべきタブと描き方だけを見る
+  assert.match(flow, /const tabs = \[.*'overview'.*'history'.*\];/, '概要と実行履歴のタブを持つ');
+  assert.match(flow, /data-flow-tab="\$\{id\}"/, 'タブは同じ形（data-flow-tab）で描く');
   assert.ok(flow.includes('function workflowRuns('), '選択中ワークフローへ履歴を絞る');
   assert.ok(flow.includes('data-flow-run'), '履歴から既存の実行詳細を開く');
   assert.match(flow, /class="execution-card flow-history"/);

@@ -304,6 +304,11 @@
           "default": "/clear",
           "description": "会話コンテキストを破棄するスラッシュコマンド（agent-loop の fresh_context 等が送る）。CLI により /clear / /new などに分かれる。空文字はクリア手段なしを表し、送信側は WARNING の上スキップする。"
         },
+        "retains_context": {
+          "type": "boolean",
+          "default": true,
+          "description": "対話プロセスがターン間で会話履歴を保持するか。false の場合、呼び出し側は毎回保存済みの会話履歴を本文へ再送する。tmux の再接続や CLI セッションIDの復元とは別の能力。"
+        },
         "prompt_inject": {
           "enum": [
             "send-keys",
@@ -694,6 +699,11 @@
                 "type": "string",
                 "default": "/clear",
                 "description": "会話コンテキストを破棄するスラッシュコマンド（agent-loop の fresh_context 等が送る）。CLI により /clear / /new などに分かれる。空文字はクリア手段なしを表し、送信側は WARNING の上スキップする。"
+              },
+              "retains_context": {
+                "type": "boolean",
+                "default": true,
+                "description": "対話プロセスがターン間で会話履歴を保持するか。false の場合、呼び出し側は毎回保存済みの会話履歴を本文へ再送する。tmux の再接続や CLI セッションIDの復元とは別の能力。"
               },
               "prompt_inject": {
                 "enum": [

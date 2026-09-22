@@ -45,6 +45,7 @@
   ],
   "readonly": "enforced",
   "interactive": {
+    "retains_context": false,
     "command": [
       "agent-herd",
       "ollama",

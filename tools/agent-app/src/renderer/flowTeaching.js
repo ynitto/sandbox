@@ -319,6 +319,15 @@
     return view.workflowId;
   }
 
+  // 起動先が tmux に決まった合図。自動選択では押した時点で起動先が決まらず、上の attach を
+  // 飛ばしている。ここで端末を出して、最初の依頼が届くまでの間も画面を見せる。
+  function onTurnTransport(p) {
+    if (p.transport !== 'tmux') return;
+    const session = state.session || state.availableSession;
+    if (!session || session.id !== p.id || term().current() === p.id) return;
+    attach(session);
+  }
+
   function onTermPhase(p) {
     if (!state.session || p.id !== state.session.id) return;
     state.phase = { phase: p.phase, detail: p.detail, name: p.name };
@@ -391,5 +400,5 @@
     });
   }
 
-  window.FlowTeaching = { init, show, create, whenReady, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
+  window.FlowTeaching = { init, show, create, whenReady, onTurnTransport, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
 }());

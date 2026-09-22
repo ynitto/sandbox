@@ -109,6 +109,20 @@ CLI との会話は二つの経路を持つ。対話定義（`interactive`）を
 それ以外は 1 ターン 1 プロセスのヘッドレス経路である。どちらも `runTurn` が起動条件を確定してから分岐し、
 renderer は経路の違いを `transport` の値として受け取るだけである。
 
+送信から CLI が依頼を受け取るまでの間に、`runTurn` は振り分け・自動選択・支度を挟む。**判断の答えに
+依らない支度は判断を待たない**: 利用枠（`agent-audit usage`）・格付け（`ratings`）・ホストの
+`tmux` の有無（`host.probe`）は振り分けの前に始めて、使う場所で待ち合わせる。Windows ではこの 3 件が
+それぞれ `wsl.exe` の起動を持つので、直列にすると判断の後ろに数秒積む。判断そのものは 1 か所
+（`route` → `select` → スキル選択）のまま分けない。
+
+起動先が決まった時点で `turn:transport`（`{id, transport, cli, model}`）を画面へ送る。tmux なら
+画面はこの合図で端末ミラーをつなぎ、開始スキルの適用や依頼の送信を待たない。自動選択では会話を
+作る時点で起動先が決まらず（`store.createSession` は `allocation: auto` を `headless` で作る）、
+それまで端末を開く口（`term:open`）も `modelSelection.pending` で閉じているため、この合図が
+無いと端末はターンが終わるまで出ない。受け口は会話・ホーム（`renderer.js`）とタスク教示・
+ワークフロー教示（`taskTeaching.js` / `flowTeaching.js`）の 3 つで、合図は 1 か所で受けて
+教示の 2 つへ渡す。端末が出ている間、準備中の案内は黒い面の見出しへ 1 行で畳む。
+
 ### 2.2 Electron の三層
 
 | 層 | 主な実装 | 責務 |

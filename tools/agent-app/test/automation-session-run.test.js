@@ -296,3 +296,40 @@ test('manual execution uses the selected agent and model before choosing its tra
   assert.equal(launch.command, 'kiro-cli');
   assert.equal(launch.args[launch.args.indexOf('--model') + 1], 'selected-model');
 });
+
+
+test('ワークフロー実行: 自動選択は依頼・入力・定義を渡し、選ばれたエージェントとモデルで起動する', async (t) => {
+  const flow = require('../src/main/automation/agent-flow');
+  const launches = [];
+  t.mock.method(flow, 'start', async payload => { launches.push(payload); return { runId: 'test-run' }; });
+  await withStubbedHandlers(async ({ handlers, registered }) => {
+    let selections = 0;
+    let failSelection = false;
+    handlers.registerIpcHandlers(() => null, {
+      channelPrefix: 'automation:', userData: () => '/tmp',
+      config: { load: () => ({ agent: 'aider', model: 'default-model' }), isRegistered: () => true },
+      hooks: {
+        selectExecution: async ({ policy, allocation, prompt }) => {
+          selections++;
+          assert.equal(policy, 'recommended');
+          assert.equal(allocation, 'auto');
+          assert.deepEqual(JSON.parse(prompt), { request: 'レビュー', parameters: { target: 'README' }, workflow: { id: 'review', nodes: [] } });
+          if (failSelection) throw new Error('選択に失敗');
+          return { cli: 'codex', model: 'selected-model' };
+        },
+      },
+    });
+    const run = registered.get('automation:flow:run:start');
+    const payload = { root: REPO, source: { type: 'draft', workflow: { id: 'review', nodes: [] } }, request: 'レビュー', parameters: { target: 'README' }, agent: 'aider', model: 'manual-model' };
+    assert.equal((await run({}, { ...payload, allocation: 'auto' })).ok, true);
+    assert.equal(launches[0].agent, 'codex');
+    assert.equal(launches[0].model, 'selected-model');
+    assert.equal((await run({}, { ...payload, policy: 'direct' })).ok, true);
+    assert.equal(selections, 1);
+    assert.equal(launches[1].agent, 'aider');
+    assert.equal(launches[1].model, 'manual-model');
+    failSelection = true;
+    assert.equal((await run({}, { ...payload, allocation: 'auto' })).ok, false);
+    assert.equal(launches.length, 2, '自動選択に失敗した場合は別の実行先で起動しない');
+  });
+});

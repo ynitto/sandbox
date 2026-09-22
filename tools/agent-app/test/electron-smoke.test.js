@@ -570,6 +570,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     // 方針の行は出さない（エージェントとモデルを直接選ぶ 1 組に畳んである）
     assert.strictEqual(await workspace.locator('#run-policy').isVisible(), false);
     await workspace.locator('#run-direct-settings').waitFor();
+    if (process.env.AGENT_APP_TASK_RUN_SETTINGS_SCREENSHOT) {
+      await win.screenshot({ path: process.env.AGENT_APP_TASK_RUN_SETTINGS_SCREENSHOT });
+    }
     // モデルは候補選択と直接入力を一つの入力欄で扱う。
     await workspace.locator('#run-model').fill('task-model');
     await workspace.locator('#run-skill-mode').selectOption('manual');
@@ -742,6 +745,29 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#workflows .list-pick').first().click();
     await workspace.locator('.flow-overview').waitFor({ timeout: 20000 });
     assert.match(await workspace.locator('.flow-overview').textContent(), /変更を確認/);
+    assert.equal(await workspace.locator('[data-flow-start]').textContent(), '実行');
+    assert.equal(await workspace.locator('[data-flow-agent]').isVisible(), false);
+    await workspace.locator('.flow-run-settings > summary').click();
+    assert.equal(await workspace.locator('[data-flow-agent]').isVisible(), true);
+    assert.equal(await workspace.locator('[data-flow-permission]').inputValue(), '自動承認');
+    assert.equal(await workspace.locator('[data-flow-permission]').isDisabled(), true);
+    await workspace.locator('[data-flow-model]').fill('workflow-model');
+    const readonlyLocked = await workspace.locator('[data-flow-readonly]').isDisabled();
+    if (!readonlyLocked) await workspace.locator('[data-flow-readonly]').selectOption('readonly');
+    assert.match(await workspace.locator('[data-flow-settings-summary]').textContent(), /workflow-model.*読み取り専用/);
+    const flowMode = workspace.locator('.flow-run-settings [data-execution-mode]');
+    await flowMode.selectOption('auto');
+    assert.equal(await workspace.locator('[data-flow-agent]').isVisible(), false);
+    assert.equal(await workspace.locator('[data-flow-model]').isVisible(), false);
+    assert.match(await workspace.locator('[data-flow-settings-summary]').textContent(), /自動選択/);
+    await flowMode.selectOption('manual');
+    assert.equal(await workspace.locator('[data-flow-agent]').isVisible(), true);
+    assert.equal(await workspace.locator('[data-flow-model]').isVisible(), true);
+    await workspace.locator('[data-flow-model]').fill('');
+    if (!readonlyLocked) await workspace.locator('[data-flow-readonly]').selectOption('write');
+    assert.match(await workspace.locator('[data-flow-settings-summary]').textContent(), /既定のモデル/);
+    await workspace.locator('.flow-overview h3').click();
+    assert.equal(await workspace.locator('[data-flow-agent]').isVisible(), false, '外側クリックで実行設定が閉じる');
     await workspace.locator('[data-flow-tab="history"]').click();
     await workspace.locator('.flow-history').waitFor();
     assert.match(await workspace.locator('.flow-history').textContent(), /完了.*以前の並列レビュー/s);
@@ -749,21 +775,64 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await workspace.locator('.flow-run-nodes').waitFor();
     assert.match(await workspace.locator('.execution-title').textContent(), /以前の並列レビュー/);
     await workspace.locator('[data-flow-back-run]').click();
-    await workspace.locator('[data-flow-edit]').click();
+    assert.equal(await workspace.locator('[data-flow-edit], [data-flow-change-consult]').count(), 0, '概要に重複した編集ボタンを置かない');
+    await workspace.locator('[data-flow-tab="steps"]').click();
     await workspace.locator('.flow-node-card').waitFor();
     assert.strictEqual(await workspace.locator('.flow-node-card').count(), 1, 'ワークフローの工程を編集できない');
     assert.strictEqual(await workspace.locator('[data-flow-start]').count(), 0, '編集時に実行フォームを重ねて出さない');
-    await workspace.locator('[data-flow-close-editor]').click();
-    // 「変更を相談」→ タスクと同じ形の会話（起動前は黒い端末の置き場と編集開始だけ）
-    await workspace.locator('[data-flow-change-consult]').click();
+    assert.strictEqual(await workspace.locator('.flow-editor > header [data-flow-save]').count(), 1, '保存は上部に置く');
+    assert.strictEqual(await workspace.locator('[data-flow-preview]').count(), 0, '自動検証と重複する確認ボタンは置かない');
+    await win.setViewportSize({ width: 1360, height: 560 });
+    await workspace.locator('.flow-node-more > summary').click();
+    await win.evaluate(() => {
+      const main = document.getElementById('automation-workbench').shadowRoot.querySelector('#main');
+      main.scrollTop = 150;
+      window.flowEditorNode = main.querySelector('.flow-editor');
+      window.flowScroll = main.scrollTop;
+    });
+    await win.evaluate(() => document.getElementById('automation-workbench').refresh());
+    assert.equal(await win.evaluate(() => {
+      const main = document.getElementById('automation-workbench').shadowRoot.querySelector('#main');
+      return main.querySelector('.flow-editor') === window.flowEditorNode && main.scrollTop === window.flowScroll && main.querySelector('.flow-node-more').open;
+    }), true, 'バックグラウンド更新で編集中のDOM・スクロール・展開状態を変えない');
+    await win.setViewportSize({ width: 1360, height: 821 });
+    await workspace.locator('[data-flow-save]').click();
+    await workspace.locator('.flow-node-card').waitFor();
+    assert.equal(await workspace.locator('[data-flow-tab="steps"]').getAttribute('aria-selected'), 'true', '保存後も手順タブで編集を続けられる');
+    // 手順タブの「編集」からタスクと同じ形の会話へ進む。
+    assert.equal(await workspace.locator('[data-flow-edit]').textContent(), '編集');
+    await workspace.locator('[data-flow-edit]').click();
     await win.locator('#flow-teaching:not([hidden])').waitFor({ timeout: 20000 });
     assert.strictEqual(await win.locator('#flow-teach-launch').isVisible(), true, '編集開始の前に起動領域を出す');
     assert.strictEqual(await win.locator('#flow-teach-start').textContent(), '編集開始');
     assert.strictEqual(await win.locator('#flow-teach-terminal').isVisible(), false, 'tmux を開く前に端末は出さない');
-    assert.match(await workspace.locator('.execution-title').textContent(), /ワークフローを編集/);
+    assert.equal(await workspace.locator('[data-flow-tab="steps"]').getAttribute('aria-selected'), 'true');
+    assert.equal(await workspace.locator('[data-flow-back-steps]').textContent(), '‹ 工程に戻る');
+    assert.equal(await workspace.locator('[data-flow-teaching-trial]').textContent(), 'テスト');
+    assert.equal(await workspace.locator('.execution-detail').textContent().then(text => text.includes('試運転')), false);
+    await win.setViewportSize({ width: 1360, height: 560 });
+    await win.evaluate(() => {
+      const main = document.getElementById('automation-workbench').shadowRoot.querySelector('#main');
+      main.scrollTop = 150;
+      window.flowTrialNode = main.querySelector('[data-flow-teaching-trial-request]');
+      window.flowScroll = main.scrollTop;
+    });
+    await win.evaluate(() => document.getElementById('automation-workbench').refresh());
+    assert.equal(await win.evaluate(() => {
+      const main = document.getElementById('automation-workbench').shadowRoot.querySelector('#main');
+      return main.querySelector('[data-flow-teaching-trial-request]') === window.flowTrialNode && main.scrollTop === window.flowScroll;
+    }), true, '試運転の入力欄をバックグラウンド更新で置き換えない');
+    await win.evaluate(() => document.getElementById('automation-workbench').reloadFlowTeaching());
+    assert.equal(await win.evaluate(() => document.getElementById('automation-workbench').shadowRoot.querySelector('#main').scrollTop), await win.evaluate(() => window.flowScroll), '候補更新時もスクロールを維持する');
+    await win.setViewportSize({ width: 1360, height: 821 });
     if (process.env.AGENT_APP_FLOW_TEACHING_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_FLOW_TEACHING_SCREENSHOT });
     }
+    await workspace.locator('[data-flow-back-steps]').click();
+    await workspace.locator('.flow-node-card').waitFor();
+    assert.equal(await win.locator('#flow-teaching').isVisible(), false, '工程に戻ると会話を閉じる');
+    await workspace.locator('[data-flow-tab="overview"]').click();
+    await workspace.locator('.flow-overview').waitFor();
     await win.click('#session-new');
     await workspace.locator('.teaching-create').waitFor();
     assert.match(await workspace.locator('.teaching-create').textContent(), /新しいワークフロー/);

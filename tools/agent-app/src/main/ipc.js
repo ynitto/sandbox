@@ -566,10 +566,12 @@ async function runTmux(id, turn, send) {
   }
   const sess = store.readSession(ud, id);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
-  const unseen = history.slice(conv.seen);
+  // 共通 TUI は各依頼を独立実行する。端末が生きていてもモデルに履歴は残らない。
+  const retainsContext = turn.spec.interactive?.retainsContext !== false;
+  const unseen = retainsContext ? history.slice(conv.seen) : history;
   // CLI が入力可能になるまで待ってから判断する。tmux の存在だけでは復元の根拠にしない。
   // 初回の作成依頼は残し、既存編集の再開説明だけを省く。未共有の履歴や今回の指示は届ける。
-  if (turn.resumeContext !== undefined && conv.resumed) {
+  if (turn.resumeContext !== undefined && conv.resumed && retainsContext) {
     if (!turn.resumeContext && !unseen.length) {
       turn.release();
       return { name: conv.name, started: false, restarted: !!(opened && opened.restarted), warning: opened?.warning || '' };
@@ -596,7 +598,7 @@ async function runTmux(id, turn, send) {
     }
   }
   // 用途のスラッシュ行は（履歴の再送があっても）本文の一番上。共通 TUI は先頭の /name 行だけを読む
-  const full = herd.withSlash(slash, unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed }) : prompt);
+  const full = herd.withSlash(slash, unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed && retainsContext }) : prompt);
   store.appendMessage(ud, id, { role: 'user', text, cli, family, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
   await conv.send(full, (message) => {
     const structured = response.parseTranscript(cli, message.text);
@@ -659,6 +661,14 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const agents = await listAgents(repo);
   let requested = executionSpec(sess, p, cfg, { agents, optimized: settings.optimized(cfg, { herdAvailable: agentsMod.herdAvailable(agents) }) });
   if (requested.policy === settings.SHARED_POLICY) return runShared(id, sess, dirs, p, requested, cfg, send, release);
+  // 振り分けの答えに依らない支度は、判定を待たずに始める。Windows では 1 件ごとに
+  // wsl.exe の起動が乗るので、直列にすると判定の後ろへ数秒積む。
+  const autoSelecting = modelSelection.pending(sess) && requested.policy !== 'direct';
+  const limitsAhead = autoSelecting ? selectionLimits().catch(() => ({ agentLimits: [] })) : null;
+  const ratingsAhead = autoSelecting ? selectionRatings().catch(() => '') : null;
+  // tmux で起こすなら host.probe が要る（transport の判定と openConversation の両方。
+  // probe の写しは distro ごとで lane を分けないので、1 回温めれば両方に効く）。
+  const probeAhead = cfg.transport === 'tmux' ? host.probe(distroFor(repo)).catch(() => ({ ok: false })) : null;
   const selectionConfig = cfg.instructions.skillSelection || {};
   const skillMode = p.skillMode || selectionConfig.defaultMode || 'auto';
   // 依頼の振り分け（agent-herd route）。会話だけが対象で、タスク・ワークフローを AI と作る会話は
@@ -713,12 +723,15 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     if (routed.handling && routed.handling.choice === 'answer') requested = { ...requested, readonly: true, answerOnly: true };
   }
   let chosen = null;
-  if (modelSelection.pending(sess) && requested.policy !== 'direct') {
+  if (autoSelecting) {
     preparing('判定中…\n依頼に合うエージェントとモデルを選択しています。');
     const controller = new AbortController();
     selecting.set(id, controller);
     try {
-      const [limits, ratings] = await Promise.all([selectionLimits().catch(() => ({ agentLimits: [] })), selectionRatings().catch(() => '')]);
+      const [limits, ratings] = await Promise.all([
+        limitsAhead || selectionLimits().catch(() => ({ agentLimits: [] })),
+        ratingsAhead || selectionRatings().catch(() => ''),
+      ]);
       if (controller.signal.aborted) throw new Error('自動選択を停止しました');
       chosen = await modelSelection.select({ config: cfg, agents: sess.kind === 'conversation' ? agents : agents.filter(a => a.interactive || a.virtual), load: cli => agentCli.load(cli, repo),
         prompt: requested.text || (p.attachments || []).map(a => a.name || a.rel || '').join('\n'),
@@ -755,7 +768,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     ? [{ type: 'status', title: `${base.family} → ${base.cli}${base.slash ? ` ${base.slash}` : ''}`, status: 'success', detail: base.familyReason }] : [];
   let transport = 'headless';
   if (cfg.transport === 'tmux' && spec.interactive) {
-    const info = await host.probe(distroFor(repo));
+    const info = await (probeAhead || host.probe(distroFor(repo)));
     if (info.ok && info.tmux) transport = 'tmux';
   }
   const attached = withAttachments(ud, base.text, p.attachments, dirs);
@@ -826,6 +839,9 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     policy: base.policy, tier: base.tier, transport,
     ...(chosen ? { modelSelection: chosen } : {}),
   });
+  // 起動先が決まったことを画面へ知らせる。tmux なら、開始スキルや依頼の送信を待たずに端末を
+  // 出せる——待ちは変わらないが、待っている間に何が起きているかが見える。
+  send('turn:transport', { id, transport, cli: base.cli, model: base.model });
   if (transport === 'headless') {
     // ヘッドレスの CLI へ移るなら、動いていた tmux の CLI は止める（同時に 2 つは持たない）
     if (conversations.has(id) || sess.live) await closeConversation(id);
@@ -1189,7 +1205,7 @@ function registerIpcHandlers(getWindow) {
     ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined,
   });
   handle('judge:get', () => judgeSetting.read({ capture: herdCapture }));
-  handle('judge:set', (p) => judgeSetting.write({ capture: herdCapture, value: p && p.value }));
+  handle('judge:set', (p) => judgeSetting.write({ capture: herdCapture, value: p && p.value, keepAlive: !(p && p.keepAlive === false) }));
   handle('config:problem', () => store.takeConfigProblem());
   handle('config:save', (p) => {
     const before = store.loadConfig(userData());

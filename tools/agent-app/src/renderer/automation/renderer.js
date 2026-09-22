@@ -164,6 +164,7 @@ function editingInMain() {
 }
 
 function renderIfIdle() {
+  if (state.homeTab === 'flows' && flowFeature.isEditing()) return;
   if (state.view === 'home' && !editingInMain()) render();
 }
 
@@ -681,10 +682,18 @@ function bindEditorControls(scope) {
   get('b-save').addEventListener('click', saveMachine);
 }
 
+let renderedFlowKey = '';
 function render() {
   renderBar();
   teachingFeature.beginRender();
   const main = $('main');
+  const flowKey = state.view === 'home' && state.homeTab === 'flows' ? flowFeature.viewKey() : '';
+  const keepView = flowKey && flowKey === renderedFlowKey;
+  const scroll = keepView ? { top: main.scrollTop, left: main.scrollLeft } : null;
+  const disclosures = keepView ? [...main.querySelectorAll('details')].map(node => node.open) : [];
+  const focused = keepView && main.contains(workbenchRoot.activeElement) ? workbenchRoot.activeElement : null;
+  const focusAttributes = focused ? [...focused.attributes].filter(attr => attr.name.startsWith('data-')).map(attr => `[${attr.name}="${CSS.escape(attr.value)}"]`).join('') : '';
+  const selection = focused && typeof focused.selectionStart === 'number' ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
   const editing = state.view === 'editor' && state.current;
   const taskEditing = isEmbeddedTaskEditor();
   workbenchBody.classList.toggle('is-editing', !!editing);
@@ -713,6 +722,19 @@ function render() {
       });
     }
   } else bindHome(main);
+  renderedFlowKey = flowKey;
+  if (keepView) {
+    main.querySelectorAll('details').forEach((node, index) => { if (index < disclosures.length) node.open = disclosures[index]; });
+    const nextFocus = focusAttributes ? main.querySelector(focusAttributes) : null;
+    if (nextFocus) {
+      nextFocus.focus({ preventScroll: true });
+      if (selection && nextFocus.setSelectionRange) nextFocus.setSelectionRange(...selection);
+      nextFocus.scrollTop = focused.scrollTop;
+      nextFocus.scrollLeft = focused.scrollLeft;
+    }
+    main.scrollTop = scroll.top;
+    main.scrollLeft = scroll.left;
+  }
   teachingFeature.endRender();
   renderRunTerminal();
   const runLogDetails = $('run-log-details');
@@ -1350,7 +1372,7 @@ function executionDetailHtml(machine) {
   const policyOptions = Object.entries(RUN_POLICIES).map(([value, item]) => `<option value="${value}" ${selectedRun.policy === value ? 'selected' : ''} ${policyOn || BASIC_POLICIES.includes(value) || value === 'direct' ? '' : 'disabled'}>${item.label}</option>`).join('');
   const selection = state.config.instructions && state.config.instructions.skillSelection || {};
   const skillMode = state.run.skillMode || selection.defaultMode || 'auto';
-  const runFields = `<details id="task-run-settings" class="run-settings task-run-settings"><summary><span id="task-run-settings-summary">${esc(taskRunSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head row"><span>今回の実行設定</span>${workbenchHost ? '<span class="spacer"></span><button type="button" class="small quiet" data-usage-open>利用状況を見る</button>' : ''}</div><label>起動方針<select id="run-policy">${policyOptions}</select></label><div id="run-direct-settings" class="direct-agent-settings" ${direct ? '' : 'hidden'}><label>エージェント<select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.run.agent || state.config.agent)}</select></label><label>モデル<input id="run-model" class="mono" value="${esc(state.run.model ?? state.config.model ?? '')}" placeholder="自動"></label></div><p class="muted small">手動実行ではツールを自動承認します。</p><label>スキル<select id="run-skill-mode"><option value="auto" ${skillMode === 'auto' ? 'selected' : ''}>自動</option><option value="manual" ${skillMode === 'manual' ? 'selected' : ''}>手動選択</option><option value="off" ${skillMode === 'off' ? 'selected' : ''}>使用しない</option></select></label><div id="run-skill-list" class="skill-choice-list" ${skillMode === 'off' ? 'hidden' : ''}>${taskSkillChoicesHtml()}</div></div></details>`;
+  const runFields = `<details id="task-run-settings" class="run-settings task-run-settings"><summary><span id="task-run-settings-summary">${esc(taskRunSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head row"><span>今回の実行設定</span>${workbenchHost ? '<span class="spacer"></span><button type="button" class="small quiet" data-usage-open>利用状況を見る</button>' : ''}</div><label>起動方針<select id="run-policy">${policyOptions}</select></label><div id="run-direct-settings" class="direct-agent-settings" ${direct ? '' : 'hidden'}><label>エージェント<select id="run-agent" ${state.agents.length ? '' : 'disabled'}>${agentOptions(state.run.agent || state.config.agent)}</select></label><label>モデル<input id="run-model" class="mono" value="${esc(state.run.model ?? state.config.model ?? '')}" placeholder="自動"></label></div><label>権限<select id="run-permission" disabled><option value="auto" selected>自動承認</option></select></label><label>スキル<select id="run-skill-mode"><option value="auto" ${skillMode === 'auto' ? 'selected' : ''}>自動</option><option value="manual" ${skillMode === 'manual' ? 'selected' : ''}>手動選択</option><option value="off" ${skillMode === 'off' ? 'selected' : ''}>使用しない</option></select></label><div id="run-skill-list" class="skill-choice-list" ${skillMode === 'off' ? 'hidden' : ''}>${taskSkillChoicesHtml()}</div></div></details>`;
   const taskWarning = machine.error
     ? `<details class="muted small"><summary>実行できません · 詳細を確認</summary><p>${esc(machine.error)}</p></details>`
     : machine.kind === 'hook' ? '<p class="muted small">定期実行から起動するタスクです。</p>' : '';

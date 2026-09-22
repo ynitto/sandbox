@@ -426,3 +426,29 @@ test('ホームは会話画面の面（空状態と入力欄）と一覧の行�
   assert.match(store, /area: 'home', view: 'chat'/);
   assert.match(store, /\['tasks', 'workflows', 'share', 'inbox', 'home'\]\.includes\(next\.area\)/);
 });
+
+// 8. tmux で起こす画面は、依頼が CLI に届くのを待たずに端末を出す
+//    （自動選択では会話を作る時点で起動先が決まらないため、main が決めた時点で合図を出す）
+test('tmux の起動は 3 つの画面とも同じ遷移で、起動先が決まった合図で端末を出す', () => {
+  const ipc = read('main/ipc.js');
+  assert.match(ipc, /send\('turn:transport', \{ id, transport/, 'main は起動先が決まった時点で合図を出す');
+  const decided = ipc.indexOf("send('turn:transport'");
+  assert.ok(decided > 0 && decided < ipc.indexOf('return runTmux(id, turn, send)'),
+    '合図は tmux を起こす前に出す（開始スキルの完了を待たない）');
+  assert.match(read('preload.js'), /onTurnTransport: on\('turn:transport'\)/);
+
+  const renderer = read('renderer/renderer.js');
+  assert.match(renderer, /api\.onTurnTransport\(/, '会話・ホームは合図を受ける');
+  assert.match(renderer, /TaskTeaching\.onTurnTransport\(p\)[\s\S]{0,80}FlowTeaching\.onTurnTransport\(p\)/,
+    '教示の 2 画面へも同じ合図を渡す（受け取り口は 1 か所）');
+  assert.match(renderer, /attachTerm\(p\.id\)/, '合図を受けたら端末をつなぐ');
+  // 黒い面は 1 つ。端末が出たら準備中の案内はその見出しへ畳む（同じことを 2 か所に出さない）
+  assert.match(renderer, /\$\('turn-preparation'\)\.hidden = !preparing \|\| mirroring/);
+  assert.match(renderer, /\$\('term-host'\)\.hidden = !!preparing && !mirroring/);
+
+  for (const file of ['renderer/taskTeaching.js', 'renderer/flowTeaching.js']) {
+    const source = read(file);
+    assert.match(source, /function onTurnTransport\(p\) \{[\s\S]{0,320}attach\(session\)/, `${file} は合図で端末をつなぐ`);
+    assert.match(source, /window\.(Task|Flow)Teaching = \{[^}]*onTurnTransport/, `${file} は合図の受け口を渡す`);
+  }
+});

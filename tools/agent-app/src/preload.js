@@ -35,7 +35,7 @@ contextBridge.exposeInMainWorld('api', {
   saveConfig: (patch) => invoke('config:save', { patch }),
   judge: {
     get: () => invoke('judge:get'),
-    set: (value) => invoke('judge:set', { value }),
+    set: (value, { keepAlive = true } = {}) => invoke('judge:set', { value, keepAlive }),
   },
   addRepo: () => invoke('repo:add'),
   removeRepo: (repo) => invoke('repo:remove', { repo }),
@@ -207,6 +207,7 @@ contextBridge.exposeInMainWorld('api', {
   onTurnLine: on('turn:line'),
   onTurnDone: on('turn:done'),
   onTermScreen: on('term:screen'),
+  onTurnTransport: on('turn:transport'),
   onTermPhase: on('term:phase'),
   // OS の通知を押した（main がウィンドウを前面へ戻したあと、開く会話を知らせる）
   onNotifyOpen: on('notify:open'),

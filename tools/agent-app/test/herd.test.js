@@ -99,7 +99,7 @@ test('herd: タスクとワークフローは共有編集面のフックで一�
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'direct', root\)/, 'agent-loop が無いときは定義を名指しする');
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'plan', root\)/);
   assert.match(makerIpc, /resolveAgent\(requestedAgent, 'flow', root\)/);
-  assert.match(makerIpc, /agentFlow\.start\(\{ \.\.\.p, agent \}/, 'agent-flow の --agent-cli には実在の定義名を渡す');
+  assert.match(makerIpc, /agentFlow\.start\(\{ \.\.\.p, agent[,}]/, 'agent-flow の --agent-cli には実在の定義名を渡す');
   assert.match(makerTools, /\.\.\.\(agent \? \['--agent', String\(agent\)\] : \[\]\)/, 'AI 支援は agent が空なら --agent を渡さない');
   const adapter = fs.readFileSync(path.join(SRC, 'main/automation/ipc.js'), 'utf8');
   // 共有編集面へ渡す配線。順番や隣接ではなく、項目ごとに見る（項目が増えても壊れない）

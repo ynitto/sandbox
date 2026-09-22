@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const teaching = require('../src/main/automation/flow-teaching-model');
 
-test('目的から候補を試運転し、利用者承認後だけ利用可能にする', () => {
+test('目的から候補をテストし、利用者承認後だけ利用可能にする', () => {
   let session = teaching.createSession({ workflowId: 'review-flow', purpose: '変更を柔軟にレビューする' });
   assert.strictEqual(session.status, 'draft');
   session = teaching.addGeneration(session, {

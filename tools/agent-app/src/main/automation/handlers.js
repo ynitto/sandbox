@@ -343,9 +343,19 @@ function registerIpcHandlers(getWindow, options = {}) {
       defaults: { agent: cfg.agent, model: cfg.model },
     });
     // agent-flow に渡す `--agent-cli` は実在の定義名でなければならない（`herd` は写してから）
-    const requestedAgent = String(p.agent || cfg.agent || '');
+    const automatic = p.allocation === 'auto';
+    if (automatic && !options.hooks?.selectExecution) throw new Error('自動選択を利用できません');
+    const workflow = automatic
+      ? (p.source?.type === 'workflow' ? flowStore.read(root, p.source.id).workflow : p.source?.workflow)
+      : null;
+    const selected = automatic ? await options.hooks.selectExecution({
+      root, policy: 'recommended', allocation: 'auto', signal: p.selectionSignal,
+      prompt: JSON.stringify({ request: p.request, parameters: p.parameters || {}, workflow }),
+    }) : null;
+    if (automatic && !selected?.cli) throw new Error('実行先を自動選択できませんでした');
+    const requestedAgent = String(selected ? selected.cli : p.agent || cfg.agent || '');
     const agent = requestedAgent ? await resolveAgent(requestedAgent, 'flow', root) : '';
-    return agentFlow.start({ ...p, agent }, { root, getContext, startDetached: runStartDetached, hostPath });
+    return agentFlow.start({ ...p, agent, model: selected ? selected.model : p.model }, { root, getContext, startDetached: runStartDetached, hostPath });
   });
   register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit, hostRootOf(p)));
   register('flow:run:read', (p) => agentFlow.readRun(selectedRoot(p), p.runId, hostRootOf(p)));

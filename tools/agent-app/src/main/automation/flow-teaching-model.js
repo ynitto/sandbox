@@ -95,7 +95,7 @@ function addGeneration(value, generation = {}) {
 function recordTrial(value, trial = {}) {
   const session = normalizeSession(value);
   const generationId = text(trial.generationId, 120) || session.activeGenerationId;
-  if (!session.generations.some((item) => item.id === generationId)) throw new Error('試運転する候補が見つかりません');
+  if (!session.generations.some((item) => item.id === generationId)) throw new Error('テストする候補が見つかりません');
   const outcome = ['passed', 'failed', 'approval-required'].includes(trial.outcome) ? trial.outcome : 'failed';
   session.trials.push(redact({
     id: text(trial.id, 120) || `trial-${session.trials.length + 1}`, generationId,
@@ -111,9 +111,9 @@ function confirmReady(value, generationId = '', digest = '') {
   const id = text(generationId, 120) || session.activeGenerationId;
   const generation = session.generations.find((item) => item.id === id);
   if (!generation) throw new Error('利用可能にする候補が見つかりません');
-  if (text(digest, 120) && generation.digest !== text(digest, 120)) throw new Error('試運転後に候補が変更されています');
+  if (text(digest, 120) && generation.digest !== text(digest, 120)) throw new Error('テスト後に候補が変更されています');
   if (!session.trials.some((trial) => trial.generationId === id && trial.outcome === 'passed')) {
-    throw new Error('成功した試運転を確認してから利用可能にしてください');
+    throw new Error('成功したテストを確認してから利用可能にしてください');
   }
   session.activeGenerationId = id;
   session.lastSuccessfulGenerationId = id;

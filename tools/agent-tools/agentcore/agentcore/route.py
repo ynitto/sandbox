@@ -36,6 +36,9 @@ QUESTION_FLOW = "flow"
 QUESTION_ROUTINE = "routine"
 SKILL_PREFIX = "skill:"
 
+# `ask` で名指しできる問いの群。`skills` は候補ごとの `skill:<name>` をまとめて指す。
+ASK_NAMES = (QUESTION_HANDLING, QUESTION_TASK, QUESTION_FLOW, "skills", QUESTION_ROUTINE)
+
 HANDLING_ANSWER = "answer"
 HANDLING_CONVERSE = "converse"
 HANDLING_TASK = "task"
@@ -122,12 +125,31 @@ def _describe(item: dict) -> str:
     return f"{item['name']}: {item['description']}" if item["description"] else item["name"]
 
 
-def build_questions(candidates: dict) -> dict:
+def ask_names(raw) -> "tuple[str, ...]":
+    """`ask` の指定を検査して揃える。None は全部（既定）。未知の名前は RouteError。"""
+    if raw is None:
+        return ASK_NAMES
+    names = tuple(str(name).strip() for name in raw if str(name).strip())
+    unknown = [name for name in names if name not in ASK_NAMES]
+    if unknown:
+        raise RouteError(f"訊けない問いです: {', '.join(unknown)}（{', '.join(ASK_NAMES)}）")
+    if not names:
+        raise RouteError("ask には訊く問いが 1 つ以上要ります")
+    return names
+
+
+def build_questions(candidates: dict, *, ask=None) -> dict:
     """候補から問いの集合を組む。読み取り専用の依頼は `handling` を訊かない（answer と
-    converse の差が無い）。候補の無い種類の問いと選択肢は組まない。"""
+    converse の差が無い）。候補の無い種類の問いと選択肢は組まない。
+
+    `ask` で問いを絞れる（`ASK_NAMES` の部分集合。`skills` は `skill:<name>` 全部）。
+    問いは 1 問ごとに別のプロンプトで訊くので、絞っても残った問いの文は変わらない
+    ——答えも変わらない。急がない問い（`routine`）を後回しにするために使う。
+    """
+    wanted = set(ask_names(ask))
     questions: dict = {}
     tasks, flows, skills = candidates["tasks"], candidates["flows"], candidates["skills"]
-    if not candidates["context"]["readonly"]:
+    if QUESTION_HANDLING in wanted and not candidates["context"]["readonly"]:
         criteria = {HANDLING_ANSWER: HANDLINGS[HANDLING_ANSWER],
                     HANDLING_CONVERSE: HANDLINGS[HANDLING_CONVERSE]}
         if tasks:
@@ -138,7 +160,7 @@ def build_questions(candidates: dict) -> dict:
             "type": "choice", "instructions": "How should this request be handled?",
             "criteria": criteria, "other": HANDLING_OTHER}
     for name, items, label in ((QUESTION_TASK, tasks, "task"), (QUESTION_FLOW, flows, "workflow")):
-        if not items:
+        if not items or name not in wanted:
             continue
         if len(items) == 1:
             # judge の choice は選択肢 2 つ以上。候補 1 件は「それか、違うか」の boolean で訊く。
@@ -151,15 +173,18 @@ def build_questions(candidates: dict) -> dict:
             "type": "choice", "instructions": f"If a listed {label} is reused, which one?",
             "criteria": {item["id"]: _describe(item) for item in items},
             "other": f"None of the listed {label}s does this work."}
-    for skill in skills:
+    for skill in (skills if "skills" in wanted else ()):
         questions[SKILL_PREFIX + skill["id"]] = {
             "type": "boolean",
             "instructions": f"Would attaching the skill '{_describe(skill)}' clearly raise "
                             "the quality of the result for this request?"}
-    questions[QUESTION_ROUTINE] = {
-        "type": "boolean",
-        "instructions": "Is this request a recurring shape that will be repeated later with "
-                        "only its inputs (dates, targets, names) changed?"}
+    if QUESTION_ROUTINE in wanted:
+        questions[QUESTION_ROUTINE] = {
+            "type": "boolean",
+            "instructions": "Is this request a recurring shape that will be repeated later with "
+                            "only its inputs (dates, targets, names) changed?"}
+    if not questions:
+        raise RouteError("訊く問いが残りません（候補と ask の指定を見直す）")
     return questions
 
 
@@ -276,7 +301,8 @@ def judge_model_setting() -> "str | None":
 
 def route(prompt: str, candidates, *, min_confidence: "float | None" = None,
           hold_min_confidence: "float | None" = None, stages: "tuple[str, ...]" = STAGES,
-          jev_request=None, judge_request=None, jev_setting_override: "dict | None" = None,
+          ask=None, jev_request=None, judge_request=None,
+          jev_setting_override: "dict | None" = None,
           judge_model: "str | None" = None) -> dict:
     """依頼と候補から扱いを決める。
 
@@ -287,6 +313,8 @@ def route(prompt: str, candidates, *, min_confidence: "float | None" = None,
      "usage": {"tokens_in", "tokens_out"}, "state": 状態, "questions": [問いの名前]}
 
     `stage` が None なら決めていない（呼び出し側は従来の動きへ倒す）。
+    `ask` は訊く問いの絞り込み（`ASK_NAMES` の部分集合。省略は全部）。絞っても残った問いの
+    プロンプトは変わらないので答えも変わらない。
     `jev_request` / `judge_request` はテストと差し替え用。
     """
     text = str(prompt or "")
@@ -294,7 +322,7 @@ def route(prompt: str, candidates, *, min_confidence: "float | None" = None,
         raise RouteError("prompt が空です")
     normalized = normalize_candidates(candidates)
     state = build_state(text, normalized)
-    questions = build_questions(normalized)
+    questions = build_questions(normalized, ask=ask)
     threshold = min_confidence if min_confidence is not None else min_confidence_setting()
     hold = hold_min_confidence if hold_min_confidence is not None else hold_min_confidence_setting()
     usage = {"tokens_in": 0, "tokens_out": 0}

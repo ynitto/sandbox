@@ -741,7 +741,7 @@ Python からは `agentcore.modelselect.select(prompt, candidates, purpose=…)`
 
 ```text
 agent-herd route --candidates (JSON | PATH) [--min-confidence 0-1] [--hold-min-confidence 0-1]
-                 [--stages jev,judge] [--json]
+                 [--stages jev,judge] [--ask handling,task,flow,skills,routine] [--json]
 ```
 
 stdin の依頼文を読み、モデルに送る前に「どう扱うか」を決める。候補は呼び出し側が
@@ -758,6 +758,12 @@ stdin の依頼文を読み、モデルに送る前に「どう扱うか」を�
 | `task` / `flow` | choice | 流用するならどれか。候補 + other。候補が 1 件なら「それと同じ作業か」の boolean で訊き、yes をその候補に写す |
 | `skill:<name>` | boolean | そのスキルを添えると質が上がるか。候補ごとに 1 問 |
 | `routine` | boolean | 入力だけ替えて繰り返す形か |
+
+`--ask` は訊く問いの絞り込み（既定は全部。`skills` は候補ごとの `skill:<name>` をまとめて指す）。
+問いは 1 問ごとに別のプロンプトで訊くので、**絞っても残った問いの文は変わらず、答えも変わらない**。
+急がない問いを後回しにして最初の答えを早く返すための口で、agent-app は起動前に `handling` /
+`task` / `flow` / `skills` を訊き、定型化の提案（`routine`）だけ会話を起こしてから訊く。
+訊く問いが残らない組み合わせ（読み取り専用の依頼で `handling` だけ、など）は終了コード 2。
 
 判断の順は `select`（§5.7）と同じ `jev` → `judge` で、段の試行は同じ実装を使う。
 **決定的な段は無い。** `handling` を確度 `route.min_confidence`（§5.6。省略時は

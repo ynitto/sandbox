@@ -760,7 +760,8 @@ def cmd_select(argv, *, err=None, out=None, stdin=None, jev_request=None,
 # route — 依頼の振り分け（答える / 会話で実行 / タスクやワークフローの流用 / スキル）
 # ---------------------------------------------------------------------------
 ROUTE_HELP = f"""使い方: {PROG} route --candidates <JSON|パス> [--min-confidence 0-1]
-                        [--hold-min-confidence 0-1] [--stages jev,judge] [--json] < 依頼文
+                        [--hold-min-confidence 0-1] [--stages jev,judge] [--ask 問い,…]
+                        [--json] < 依頼文
 
   依頼文（stdin）を読み、モデルに送る前に「どう扱うか」を決める。判断の順は 本家 Jev →
   agent-herd judge。決定的な段は無く、決めない（確度不足 / どれでもない）ときは終了コード 1 で
@@ -773,6 +774,9 @@ ROUTE_HELP = f"""使い方: {PROG} route --candidates <JSON|パス> [--min-confi
   --min-confidence <数>      答えを採る確度の下限（既定は設定 route.min_confidence、無ければ select と同じ 0.6）
   --hold-min-confidence <数> 会話を止めて流用を勧める（hold）確度の下限（既定は設定 route.hold_min_confidence、無ければ 0.75）
   --stages <段,…>            使う段を絞る（既定 jev,judge）
+  --ask <問い,…>             訊く問いを絞る（handling, task, flow, skills, routine。既定は全部）。
+                            問いは 1 問ごとに別のプロンプトなので、絞っても残った問いの答えは
+                            変わらない——急がない問いを後回しにするために使う
   --json                     結果の全体（状態・問い・各段の記録・使用量）を出す
 
   stdout は 1 行の JSON: handling / task / flow（各 {{choice, confidence}} か null）、
@@ -794,13 +798,15 @@ def cmd_route(argv, *, err=None, out=None, stdin=None, jev_request=None,
     candidates_arg = None
     min_confidence = hold_min_confidence = None
     stages = routing.STAGES
+    ask = None
     as_json = False
     i = 0
     while i < len(tokens):
         token = tokens[i]
         if token == "--json":
             as_json = True
-        elif token in ("--candidates", "--min-confidence", "--hold-min-confidence", "--stages"):
+        elif token in ("--candidates", "--min-confidence", "--hold-min-confidence", "--stages",
+                       "--ask"):
             if i + 1 >= len(tokens):
                 _err(f"{token} には値が必要です", err=err)
                 return 2
@@ -821,12 +827,18 @@ def cmd_route(argv, *, err=None, out=None, stdin=None, jev_request=None,
                     min_confidence = number
                 else:
                     hold_min_confidence = number
-            else:
+            elif token == "--stages":
                 picked = tuple(s.strip() for s in value.split(",") if s.strip())
                 if not picked or any(s not in routing.STAGES for s in picked):
                     _err(f"--stages は {', '.join(routing.STAGES)} の組み合わせです", err=err)
                     return 2
                 stages = picked
+            else:
+                asked = tuple(s.strip() for s in value.split(",") if s.strip())
+                if not asked or any(s not in routing.ASK_NAMES for s in asked):
+                    _err(f"--ask は {', '.join(routing.ASK_NAMES)} の組み合わせです", err=err)
+                    return 2
+                ask = asked
         else:
             _err(f"route は {token} を受け取りません（依頼文は stdin）", err=err)
             return 2
@@ -850,7 +862,7 @@ def cmd_route(argv, *, err=None, out=None, stdin=None, jev_request=None,
     load_profile_env()
     try:
         result = routing.route(prompt, candidates, min_confidence=min_confidence,
-                               hold_min_confidence=hold_min_confidence, stages=stages,
+                               hold_min_confidence=hold_min_confidence, stages=stages, ask=ask,
                                jev_request=jev_request, judge_request=judge_request)
     except routing.RouteError as exc:
         _err(str(exc), err=err)
