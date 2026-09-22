@@ -52,7 +52,10 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
     assert.equal(await win.locator('a[href="reports/results.xlsx"]').count(), 0);
     const createdIds = new Set();
     for (const kind of ['task', 'workflow', 'skill']) {
-      await win.evaluate(async ({ repo, id }) => { await openSessionInRepo(repo, id); }, { repo, id: session.id });
+      // 長いモデル名での省略表示を見る。実行先は「新しい会話から」なので画面では変えられない
+    // （選択方法が locked）。保存側に入れてから開く。
+    store.updateSession(data, session.id, { model: 'long-model-name-for-layout-verification-2026' });
+    await win.evaluate(async ({ repo, id }) => { await openSessionInRepo(repo, id); }, { repo, id: session.id });
       await win.locator('#chat-more summary').click(); await win.click('#session-routine');
       await win.locator('#routine-create:not([disabled])').waitFor();
       assert.equal(await win.inputValue('#routine-repo'), '');
@@ -91,9 +94,7 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
     await win.selectOption('#permission-mode', 'ask');
     await win.locator('#run-settings summary').click();
     assert.match(await win.locator('#run-settings-summary').textContent(), /読み取り専用/);
-    await win.locator('#run-settings summary').click();
-    await win.fill('#model', 'long-model-name-for-layout-verification-2026');
-    await win.locator('#run-settings summary').click();
+
     for (const width of [1280, 768, 375]) {
       await win.setViewportSize({ width, height: 900 });
       await win.waitForTimeout(250); // サイドバーの幅変更アニメーションが終わってから測る
@@ -110,9 +111,6 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
       assert.ok(trigger.y >= prompt.y + prompt.height && trigger.y + trigger.height <= 900, `設定が入力欄と重なる: ${width} ${JSON.stringify({ trigger, prompt })}`);
     }
     await win.screenshot({ path: '/tmp/agent-app-settings-narrow.png' });
-    await win.locator('#run-settings summary').click();
-    await win.fill('#model', '');
-    await win.locator('#run-settings summary').click();
     await win.setViewportSize({ width: 1280, height: 900 });
     await win.screenshot({ path: '/tmp/agent-app-settings-summary.png' });
     await win.locator('#run-settings summary').click();

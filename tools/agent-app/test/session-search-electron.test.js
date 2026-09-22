@@ -283,13 +283,19 @@ test('Electron: global search, VS Code import, fork boundary, editable target co
       await win.click('#search-transfer-start');
       if (kind !== 'skill') {
         await win.waitForFunction(() => document.getElementById('search-transfer-status').textContent.includes('表示を準備'));
-        for (let attempt = 0; attempt < 100; attempt++) {
-          if (await app.evaluate(() => !!global.releaseImportTerminal)) break;
-          await win.waitForTimeout(50);
+        // main が端末の保留に入る瞬間は、読み取りの返答も GC で失われることがある。失敗は
+        // 「まだ来ていない」として数え直す（待つ回数は変えない）。
+        let terminalHeld = false;
+        for (let attempt = 0; attempt < 100 && !terminalHeld; attempt++) {
+          terminalHeld = await app.evaluate(() => !!global.releaseImportTerminal).catch(() => false);
+          if (!terminalHeld) await win.waitForTimeout(50);
         }
-        assert.equal(await app.evaluate(() => !!global.releaseImportTerminal), true);
+        assert.equal(terminalHeld, true);
         assert.equal(await win.locator('#search-transfer-dialog').evaluate(d => d.open), true);
-        await app.evaluate(() => { global.releaseImportTerminal(); global.releaseImportTerminal = null; });
+        // 端末の保留を解くと画面を作り直すので、Playwright の返答が GC で失われることがある。
+        // 解除自体は main で走っており、効果は直後の待機で確かめる。
+        await app.evaluate(() => { global.releaseImportTerminal(); global.releaseImportTerminal = null; })
+          .catch((err) => { if (!/garbage collected/.test(String(err))) throw err; });
       }
       await win.waitForFunction(() => !document.getElementById('search-transfer-dialog').open);
       assert.equal(await app.evaluate(() => !!global.releaseImportStart), true);

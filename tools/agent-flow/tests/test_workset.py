@@ -827,16 +827,34 @@ def execute(kind, goal, dep_results, model=None, art_dir=None, dep_arts=None,
         pathlib.Path(plugins, "editing.py").write_text(self.EDITING_EXECUTOR, encoding="utf-8")
         # executor プラグインの検索先は設定ファイル経由で子プロセスへ伝える（--config は
         # `_child_base` が引き継ぐ。--executor-dir は親プロセスにしか効かない）。
+        # 評価役（evaluator）は executor が stub 以外だと必ずローカルの CLI を呼ぶ。この試験の
+        # 主題は書込先 2 つへの公開なので、決定的な偽 CLI を置いて実クレジットに依存させない
+        # （実 CLI に任せると、枠切れや認証切れでこの試験だけが落ちる）。
+        agents_dir = os.path.join(tmp, "agents")
+        os.makedirs(agents_dir)
+        fake = os.path.join(tmp, "fake_evaluator.py")
+        pathlib.Path(fake).write_text(
+            "import sys, json\n"
+            "sys.stdin.read()\n"
+            'print(json.dumps({"decision": "done", "reason": "stub", "new_tasks": []}))\n',
+            encoding="utf-8")
+        pathlib.Path(agents_dir, "fakeeval.json").write_text(json.dumps({
+            "name": "fakeeval", "headless_autonomy": "single-shot", "slash_native": False,
+            "relative_cost": 0, "command": [sys.executable, fake],
+            "prompt_via": "stdin", "output": "stdout", "empty_output_is_error": True,
+        }), encoding="utf-8")
         config = os.path.join(tmp, "agent-flow.json")
-        pathlib.Path(config).write_text(json.dumps({"executor_dir": plugins}), encoding="utf-8")
+        pathlib.Path(config).write_text(
+            json.dumps({"executor_dir": plugins, "agent_cli": "fakeeval"}), encoding="utf-8")
         bus = os.path.join(tmp, "bus")
         cmd = [sys.executable, str(SCRIPT), "--bus", bus, "--config", config,
                "--workspace", json.dumps({"url": api, "base": "main", "name": "api"}),
                "--workspace", json.dumps({"url": web, "base": "main", "name": "web"}),
                "run", "x", "--workers", "1", "--planner", "stub", "--executor", "editing",
                "--poll", "0.2"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        self.assertEqual(proc.returncode, 0, proc.stderr[-1500:])
+        env = dict(os.environ, KIRO_AGENTS_DIR=agents_dir)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+        self.assertEqual(proc.returncode, 0, (proc.stdout[-1500:] + proc.stderr[-1500:]))
 
         run_id = sorted(os.listdir(os.path.join(bus, "runs")))[0]
         meta = kf.read_json(os.path.join(bus, "runs", run_id, "meta.json"))

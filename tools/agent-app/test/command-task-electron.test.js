@@ -30,7 +30,7 @@ test('command task: create, retain selection, edit and run without AI', async (t
     const panel = win.locator('#automation-workbench');
     await win.locator('#task-create').waitFor();
     await win.screenshot({ path: '/tmp/agent-app-ux-task-create.png' });
-    assert.equal(await win.locator('#areas > button').first().getAttribute('id'), 'area-inbox');
+    assert.equal(await win.locator('#areas > button').first().getAttribute('id'), 'area-home');
     assert.equal(await panel.locator('#command-add').count(), 0);
     await win.click('#task-create-manual');
     await panel.locator('.manual-task-create').waitFor();

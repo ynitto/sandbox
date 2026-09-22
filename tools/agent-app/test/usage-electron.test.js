@@ -43,7 +43,9 @@ test('Electron: usage, temporary allocation, manual quota, history, and existing
     await win.waitForFunction(() => !state.agentsLoading);
     await win.evaluate(({ repo, id }) => openSessionInRepo(repo, id), { repo, id: session.id });
     await win.fill('#prompt', '書きかけを保持');
-    await win.click('#usage-open');
+    // 会話では利用状況の入口は実行設定の中（ヘッダーのボタンはホーム専用）
+    await win.locator('#run-settings summary').click();
+    await win.click('#run-usage-open');
     await win.waitForFunction(() => document.getElementById('audit-limits').textContent.includes('残り 8%'));
     await win.waitForFunction(() => document.getElementById('audit-usage').textContent.includes('60%'));
     assert.equal(await win.locator('dialog[open]').count(), 1);
@@ -94,7 +96,10 @@ test('Electron: usage, temporary allocation, manual quota, history, and existing
     await win.click('#session-new');
     assert.match(await win.textContent('#run-settings-summary'), /ローカル/);
     await win.click('#run-settings > summary');
-    await win.selectOption('#run-allocation', 'configured');
+    // 今回だけローカル優先から戻すのは、選択方法を手動指定にしてエージェントを選ぶ操作
+    // （#run-allocation は常時隠しになっている）
+    await win.selectOption('#run-settings [data-execution-mode]', 'manual');
+    await win.selectOption('#cli', 'claude');
     assert.match(await win.textContent('#run-settings-summary'), /claude/);
     await win.click('#run-usage-open');
     await win.click('#usage-execution');
@@ -112,7 +117,8 @@ test('Electron: usage, temporary allocation, manual quota, history, and existing
     assert.equal(store.loadConfig(data).allocation.temporary.until, deadline, 'unrelated save does not extend a temporary deadline');
     await win.fill('#usage-local-model', 'discard-this');
     await win.click('#settings-close');
-    await win.click('#usage-open');
+    await win.locator('#run-settings summary').click();
+    await win.click('#run-usage-open');
     await win.click('#usage-execution');
     assert.equal(await win.inputValue('#usage-local-model'), 'draft-local', 'closing without saving discards allocation edits');
     await win.click('#execution-usage-open');

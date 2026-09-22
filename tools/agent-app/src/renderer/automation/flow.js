@@ -267,7 +267,13 @@ window.createFlowFeature = function createFlowFeature(ctx) {
 
   function workflowHtml() {
     const workflow = view.workflow;
-    if (!workflow) return emptyHtml();
+    // 選んだ直後（定義を読み終える前）に emptyHtml へ落とさない——emptyHtml は
+    // `creatingTeaching` を立てるので、読み終えても「新しいワークフロー」の面に固定される。
+    if (!workflow) {
+      return view.selected
+        ? `<div class="blank compact"><p>${e(featureName)}を読み込んでいます…</p></div>`
+        : emptyHtml();
+    }
     const summary = view.flows.find((item) => item.id === workflow.id) || { parameterKeys: [] };
     const nodes = stageSummaryHtml(workflow);
     const stages = workflowStages(workflow.nodes);

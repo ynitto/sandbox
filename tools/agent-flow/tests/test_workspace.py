@@ -3,13 +3,20 @@
 from _shared import *  # noqa: F401,F403
 
 
+# 改行をそのまま書く（CRLF の実験なので変換させない）。`Path.write_text(newline=...)` は
+# 3.10 以降にしか無いので、この木が想定する 3.9 でも動く open() で書く。
+def _write_raw(path, body: str) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(body)
+
+
 def _init_repo(root: str, files: "dict[str, str]") -> str:
     env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
     for rel, body in files.items():
         p = pathlib.Path(root, rel)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(body, newline="")
+        _write_raw(p, body)
     for c in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
               ["git", "commit", "-q", "-m", "init"]):
         subprocess.run(c, cwd=root, env=env, check=True, capture_output=True)
@@ -22,7 +29,7 @@ class FixStagedWhitespaceTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def _stage(self, clone, rel, body):
-        pathlib.Path(clone, rel).write_text(body, newline="")
+        _write_raw(pathlib.Path(clone, rel), body)
         subprocess.run(["git", "add", "-A"], cwd=clone, check=True, capture_output=True)
 
     def _check(self, clone):

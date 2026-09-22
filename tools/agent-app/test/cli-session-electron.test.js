@@ -114,7 +114,8 @@ for line in sys.stdin:
     for (const session of sessions) {
       const opened = await win.evaluate((id) => Promise.all([api.termOpen(id), api.termOpen(id)]), session.id);
       assert.equal(opened.filter((item) => item.restarted).length, 1, '同時に開いても起動とID発行は1回だけ');
-      const until = Date.now() + 10000;
+      // 12 会話ぶんの CLI を実際に起こすので、他のテストと並んで走ると 10 秒では足りない
+      const until = Date.now() + 30000;
       while (!store.cliEntry(store.readSession(ud, session.id), session.cli)?.id && Date.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }

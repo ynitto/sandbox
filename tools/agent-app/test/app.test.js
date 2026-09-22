@@ -108,8 +108,11 @@ test('入力モード切替で入力ドックの基準高を変えず、会話�
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const history = html.match(/<details id="conversation-history"[^>]*>/)?.[0] || '';
   assert.ok(history && !/\sopen(?:\s|>)/.test(history), '会話履歴を初期状態で開かない');
-  assert.match(css, /\.composer-shell\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:\s*34px minmax\(82px,\s*auto\) 40px/s);
-  assert.match(css, /\.terminal-keys\s*\{[^}]*grid-row:\s*2\s*\/\s*4/s);
+  // 行の高さは 1 か所（--composer-body / --composer-tools）で決め、端末操作の面はその和から
+  // min-height を出す。別々の数値で書くと入力先の切り替えで背の高さがずれる。
+  assert.match(css, /\.composer-shell\s*\{[^}]*--composer-body:\s*82px;\s*--composer-tools:\s*40px/s);
+  assert.match(css, /\.composer-shell\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:\s*34px minmax\(var\(--composer-body\),\s*auto\) minmax\(var\(--composer-tools\),\s*auto\)/s);
+  assert.match(css, /\.terminal-keys\s*\{[^}]*min-height:\s*calc\(var\(--composer-body[^)]*\)\s*\+\s*var\(--composer-tools[^)]*\)\)[^}]*grid-row:\s*2\s*\/\s*4/s);
   assert.doesNotMatch(renderer, /conversation-history'\)\.open\s*=\s*false/, '再描画で利用者の開閉状態を上書きしない');
 });
 

@@ -65,7 +65,7 @@ test('home: preparation appears before readiness, updates during selection, and 
     });
     await win.waitForFunction(() => $('turn-preparation').textContent.includes('モデルを選択'));
     assert.deepEqual(await win.evaluate(() => layout()), await win.evaluate(() => beforeLayout));
-    for (const width of [1024, 768, 375]) {
+    for (const width of [1360, 1024, 900, 821, 768, 375]) {
       await win.setViewportSize({ width, height: 821 });
       const pair = await win.evaluate(() => {
         const preparation = state.preparation;
@@ -81,6 +81,18 @@ test('home: preparation appears before readiness, updates during selection, and 
       });
       assert.deepEqual(pair.after, pair.before, 'layout stable at ' + width);
       assert.equal(pair.overflow, false, 'no horizontal overflow at ' + width);
+      const toolbar = await win.evaluate(() => {
+        const ids = ['attach', 'run-settings', 'home-repository-slot', 'stop', 'send'];
+        const rects = ids.map(id => $(id).getBoundingClientRect());
+        return {
+          centers: rects.map(r => r.y + r.height / 2),
+          heights: rects.map(r => r.height),
+          widths: rects.map(r => r.width),
+        };
+      });
+      assert.ok(Math.max(...toolbar.centers) - Math.min(...toolbar.centers) < 2, 'toolbar stays on one row at ' + width);
+      assert.ok(Math.max(...toolbar.heights) <= 40, 'toolbar labels stay on one line at ' + width);
+      assert.ok(toolbar.widths.every(w => w > 0), 'all toolbar controls remain visible at ' + width);
     }
     await win.setViewportSize({ width: 1360, height: 821 });
     await win.screenshot({ path: '/tmp/agent-app-home-preparation.png' });

@@ -370,7 +370,12 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 /* ---- 入力 ---- */
 #composer { grid-row: 4; padding: 10px 20px 18px; background: var(--panel); }
 #composer.drop .composer-shell { outline: 2px dashed var(--accent); outline-offset: 2px; }
-.composer-shell { width: min(100%, 900px); min-height: 172px; display: grid; grid-template-rows: 34px minmax(82px, auto) 40px; margin: 0 auto; padding: 8px; border: 1px solid #d7dbe1; border-radius: 16px; background: var(--panel); box-shadow: 0 5px 18px rgba(31, 35, 40, .07); transition: border-color .18s ease, box-shadow .18s ease; }
+/* 行の高さは 1 か所（--composer-body / --composer-tools）で決める。端末操作の面は本文と操作欄の
+   2 行にまたがるので、同じ値から min-height を出す——別々に書くと入力先の切り替えで背の高さが
+   数 px ずれる。操作欄は送信ボタン群（38px）が入る高さで、余白はその差分だけ取る。 */
+.composer-shell { --composer-body: 82px; --composer-tools: 40px;
+  width: min(100%, 900px); min-height: 172px; display: grid;
+  grid-template-rows: 34px minmax(var(--composer-body), auto) minmax(var(--composer-tools), auto); margin: 0 auto; padding: 8px; border: 1px solid #d7dbe1; border-radius: 16px; background: var(--panel); box-shadow: 0 5px 18px rgba(31, 35, 40, .07); transition: border-color .18s ease, box-shadow .18s ease; }
 .composer-shell.sent { animation: composerAccepted .28s ease-out; }
 .composer-shell.error { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(198, 40, 53, .1); }
 .input-mode-switch { min-height: 34px; grid-row: 1; display: flex; align-items: center; gap: 3px; padding: 0 3px 5px; }
@@ -383,12 +388,12 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #message-input { min-height: 0; grid-row: 2; }
 .composer-shell textarea { min-height: 70px; max-height: 240px; width: 100%; display: block; padding: 8px 10px; resize: vertical; border: 0; border-radius: 10px; line-height: 1.55; }
 .composer-shell textarea:focus-visible { outline: none; }
-.terminal-keys { min-height: 122px; grid-row: 2 / 4; align-items: center; gap: 6px; padding: 12px 8px; }
+.terminal-keys { min-height: calc(var(--composer-body, 82px) + var(--composer-tools, 40px)); grid-row: 2 / 4; align-items: center; gap: 6px; padding: 12px 8px; }
 .terminal-keys:not([hidden]) { display: flex; }
 .terminal-keys button { min-width: 44px; min-height: 44px; padding: 7px 10px; border-color: #334155; color: var(--term-text); background: var(--term-panel); font: 12px var(--mono); }
 .terminal-keys button:hover, .terminal-keys button:focus-visible { border-color: var(--term-cursor); background: #182231; }
 .terminal-key-focus { margin-left: auto; color: var(--muted); font: 11px var(--mono); }
-.composer-toolbar { min-width: 0; grid-row: 3; display: flex; align-items: center; gap: 4px; padding-top: 4px; }
+.composer-toolbar { min-width: 0; grid-row: 3; display: flex; align-items: center; gap: 4px; padding-top: 2px; }
 .composer-toolbar > button { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
 .run-settings { position: relative; min-width: 0; }
 #run-settings { flex: 0 1 auto; }
@@ -822,11 +827,12 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 
 /* 送信開始で停止ボタンが現れても、入力欄と操作欄の幅を変えない。 */
 #chat { grid-template-columns: minmax(0, 1fr); }
-#composer .composer-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: 34px minmax(82px, auto) minmax(40px, auto); }
-#composer .composer-toolbar { flex-wrap: wrap; }
+#composer .composer-shell { grid-template-columns: minmax(0, 1fr); }
+#composer .composer-toolbar { flex-wrap: nowrap; }
 #composer .composer-toolbar > button,
 #composer .composer-toolbar > details { flex-shrink: 0; white-space: nowrap; }
-#composer #run-settings { max-width: 100%; }
+#composer #run-settings { flex-shrink: 1; max-width: 100%; }
+#composer #run-settings > summary > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #composer #stop[hidden] { display: inline-flex !important; visibility: hidden; pointer-events: none; }
 #composer #send { width: 86px; justify-content: center; }
 @media (max-width: 620px) {

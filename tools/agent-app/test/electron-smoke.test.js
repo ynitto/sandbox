@@ -212,10 +212,14 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('#conversation-start').isVisible(), true);
     assert.strictEqual(await win.locator('#composer .composer-shell').isVisible(), true, '入力欄は会話画面のもの');
     assert.strictEqual(await win.locator('#session-new').isVisible(), false, 'ホームに ＋ は出さない（入口だけ）');
-    assert.strictEqual(await win.locator('#area-list-title').textContent(), '直近');
-    await win.waitForFunction(() => /ワークフロー/.test(document.getElementById('home-items').textContent), null, { timeout: 20000 });
+    assert.strictEqual(await win.locator('#area-list-title').textContent(), '最近の依頼');
+    // 一覧は `session:recent`（会話・タスク・ワークフローの会話を、登録した全フォルダで横断）。
+    // 定義を置いただけの項目は依頼ではないので出ない。
+    await win.waitForFunction(() => /会話/.test(document.getElementById('home-items').textContent), null, { timeout: 20000 });
     const homeText = await win.locator('#home-items').textContent();
-    for (const name of ['画面を確認して', 'リリース確認', '並列レビュー']) assert.ok(homeText.includes(name), `直近の一覧に ${name} が無い: ${homeText}`);
+    for (const name of ['画面を確認して', '型定義 User に role を追加してください。'])
+      assert.ok(homeText.includes(name), `最近の依頼に ${name} が無い: ${homeText}`);
+    assert.match(homeText, new RegExp(`会話 · ${path.basename(otherRepo)}`), '別のフォルダの依頼も横断して出す');
     assert.strictEqual(await win.locator('#home-items .list-pick').count(), (await win.locator('#home-items .row-item').count()), '行は会話一覧と同じ形');
     if (process.env.AGENT_APP_HOME_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_HOME_SCREENSHOT });
     await win.click('#area-work');
@@ -547,10 +551,14 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     const toolbarCenters = toolbarControls.map((box) => box && box.y + (box.height / 2));
     assert.ok(toolbarCenters.every(Boolean) && Math.max(...toolbarCenters) - Math.min(...toolbarCenters) <= 1,
       `manual run settings and actions should share one row: ${JSON.stringify(toolbarControls)}`);
-    assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /品質重視.*copilot.*gpt-quality/);
+    // 実行設定は方針の名前でなく具体の 1 組で名乗る（方針の行は隠れ、tier の CLI とモデルが入る）
+    assert.match(await workspace.locator('#task-run-settings-summary').textContent(), /直接指定.*copilot.*gpt-quality/);
     await workspace.locator('#task-run-settings > summary').click();
-    await workspace.locator('#run-policy').selectOption('direct');
+    // 方針の行は出さない（エージェントとモデルを直接選ぶ 1 組に畳んである）
+    assert.strictEqual(await workspace.locator('#run-policy').isVisible(), false);
     await workspace.locator('#run-direct-settings').waitFor();
+    // モデル名の直接入力は「モデル名を入力」を選んでから（既定は tier のモデルから選ぶ）
+    await workspace.locator('#run-direct-settings [data-execution-model]').selectOption('__custom__');
     await workspace.locator('#run-model').fill('task-model');
     await workspace.locator('#run-skill-mode').selectOption('manual');
     await workspace.locator('[data-run-skill="self-checking"]').check();
@@ -755,7 +763,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#flow-teach-purpose').fill('変更依頼を調査し、並列に実装して品質を確認したい');
     await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
     assert.strictEqual(await win.locator('#flow-teach-agent').isVisible(), true);
-    assert.strictEqual(await win.locator('#flow-teach-model').isVisible(), true);
+    // モデルは候補から選ぶ（名前の直接入力は「モデル名を入力」を選んだときだけ出す）
+    assert.strictEqual(await win.locator('#flow-teach-launch [data-execution-model]').isVisible(), true);
     assert.strictEqual(await win.locator('#flow-teach-permission').isVisible(), true);
     await workspace.locator('.teaching-create h2').click();
     assert.strictEqual(await win.locator('#flow-teach-launch .teach-execution-settings').getAttribute('open'), null);
@@ -772,6 +781,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       };
     });
     await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
+    await win.locator('#flow-teach-launch [data-execution-model]').selectOption('__custom__');
     await win.locator('#flow-teach-model').fill('workflow-test-model');
     await win.locator('#flow-teach-permission').selectOption('auto');
     await workspace.locator('.teaching-create h2').click();
@@ -875,7 +885,11 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_SHARE_SWITCH_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_SWITCH_SCREENSHOT });
     await win.evaluate(async () => { const cfg = await api.getConfig(); await api.saveConfig({ share: { ...cfg.share, enabled: false } }); });
     await win.locator('#area-share').click();
-    await win.waitForFunction(() => document.getElementById('share-accept-control').hidden);
+    // 共有を切ると受け方の行は消える（残っていれば隠れている）
+    await win.waitForFunction(() => {
+      const control = document.getElementById('share-accept-control');
+      return !control || control.hidden;
+    });
     assert.equal(await win.locator('#share-enable-settings').count(), 0);
     assert.equal(await win.locator('#share-accept-control').isVisible(), false);
     await win.locator('#settings-open').click();
