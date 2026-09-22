@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-audit / agent-app: ホームからの送信に乗っていた 10 秒を外す（0.29.2）
+
+ホーム画面から依頼を送ると、会話画面から送るより 20 秒以上遅かった。ホームは送信のたびに新しい
+会話を作るので自動選択の経路が毎回走り、その手前で `agent-audit usage` が 10.6 秒かかっていた。
+
+- **`collect.correlate` が ledger 1 件ごとにセッションの時刻を解き直していた。** 記録 15,000 件で
+  `parse_iso` が 1,290 万回。セッションを `agent_cli` 別に束ね、時刻を 1 度だけ解いて終了時刻の
+  昇順に並べ、二分探索で窓の外を飛ばす `prepare_sessions` + `session_candidates` にした。
+  結び付け 870 件は 1 件も変わらない。束の中で最も長いセッションの分だけ余分に見てから
+  走査を打ち切るので、窓の中で始まって窓の後に終わる長いセッションも落とさない
+- **`usage.aggregate_usage` の未帰属判定も台帳行ごとに索引を作り直していた。** 候補を引くのに
+  `correlation_candidates` を呼んでいて、索引づくりが行の数だけ走る（7,273 回）。索引は
+  `aggregate_usage` の頭で 1 つだけ作るようにした。同じ木で 2 ファイルだけを戻して比べると
+  `usage --period total` が 10.38 秒 → 0.17 秒（61 倍）で、`agent_limits` の出力は完全一致
+- **app は `usage` に `--period total` を頼んでいた。** `agent_limits` は `--period` ではなく予算設定の
+  期間で集計し直されるので、total の集計はそのまま捨てられていた。`--period day` に変更。
+  両方の出力を突き合わせて `agent_limits` が完全一致することを確認済み
+- 監査画面（`summary`）の `--period total` はそのまま。期間の指定に意味があり、`correlate` の修正で
+  そちらも速くなる
+
 ### agent-herd: judge の回転平均（`--rotations` / `judge.rotations`）と接頭辞キャッシュの実測
 
 Jev クローン 7 本を読んだ記事（zephel01、2026-09-21）の部品のうち、judge に無かった ruling の

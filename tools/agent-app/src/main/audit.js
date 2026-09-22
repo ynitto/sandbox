@@ -510,10 +510,12 @@ class Auditor {
   }
 
   // Lightweight read for the always-visible quota entry; no collection or quality scan.
+  // 期間は day。agent_limits は --period でなく予算設定の期間で集計し直されるので、ここで
+  // total を頼んでも値は変わらず、全期間の突き合わせ（記録 15,000 件で 10.6 秒）だけが乗る。
   async limits() {
     if (!(await this.probe())) return { available: false, agentLimits: [] };
     const result = await this.shell().run(host.quoteArgv(['agent-audit', '--config', this.configPath(),
-      'usage', '--by', 'agent_cli', '--period', 'total', '--json']), { timeoutMs: 20000 });
+      'usage', '--by', 'agent_cli', '--period', 'day', '--json']), { timeoutMs: 20000 });
     try {
       if (!result.ok) throw new Error('unavailable');
       const data = JSON.parse(String(result.output || '').slice(String(result.output).indexOf('{')));

@@ -274,7 +274,10 @@ test('利用枠の入口は品質集計や収集を実行せず、壊れた応�
   assert.equal(result.limitsError, true);
   assert.deepEqual(result.agentLimits, []);
   assert.equal(calls.length, 2);
-  assert.ok(calls[1].includes("'usage' '--by' 'agent_cli' '--period' 'total'"));
+  // agent_limits は予算設定の期間で集計し直されるので total を頼む理由が無い。
+  // 頼むと全期間の突き合わせだけが乗る（記録 15,000 件で 10.6 秒）。
+  assert.ok(calls[1].includes("'usage' '--by' 'agent_cli' '--period' 'day'"));
+  assert.ok(!calls[1].includes("'--period' 'total'"));
 });
 
 test('格付けは agent-audit の出力を app の置き場へ写してパスを返し、壊れた応答や不在では渡さない', async () => {

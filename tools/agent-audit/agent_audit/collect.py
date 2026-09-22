@@ -8,6 +8,7 @@ node-budget の追記専用台帳へ観測行として写す。カーソルと�
 """
 from __future__ import annotations
 
+import bisect
 import glob
 import json
 import os
@@ -1149,8 +1150,40 @@ def collect_memory_stores(args, store: Store) -> int:
 
 # -- 相関（読み出し時・決定的。設計書 §4.1） -----------------------------------
 
-def correlation_candidates(led: dict, session_recs: "list[dict]", slack_sec: float = 120.0,
-                           used: "set[str] | None" = None) -> "list[dict]":
+def prepare_sessions(session_recs: "list[dict]") -> dict:
+    """セッションを agent_cli 別に束ね、時刻を 1 度だけ解いて終了時刻の昇順に並べる。
+
+    相関は ledger 1 件ごとに全セッションを走査するので、ここで解いておかないと**同じ時刻
+    文字列を ledger の件数だけ解き直す**——実測（記録 15,352 件）で `parse_iso` が 1,290 万回、
+    `agent-audit usage --period total` が 10.6 秒かかっていた。索引は ledger 全体で 1 つ作る。
+
+    値は `(終了時刻, 開始時刻, レコード)` の並びと、二分探索用の終了時刻だけの並び、
+    そして束の中で最も長いセッションの長さ（走査を打ち切る下限を出すため）。
+    """
+    buckets: "dict[str, list]" = {}
+    for sess in session_recs:
+        s1 = parse_iso(sess.get("ts"))
+        if s1 is None:
+            continue
+        # 元の実装と同じ `or` の連鎖（started_at が読めない・0 なら ts で代用する）。
+        s0 = parse_iso(sess.get("started_at")) or s1
+        buckets.setdefault(str(sess.get("agent_cli") or ""), []).append((s1, s0, sess))
+    prepared: dict = {}
+    for cli, items in buckets.items():
+        items.sort(key=lambda item: (item[0], str(item[2].get("id") or "")))
+        prepared[cli] = (items, [item[0] for item in items],
+                         max((max(0.0, s1 - s0) for s1, s0, _ in items), default=0.0))
+    return prepared
+
+
+def session_candidates(led: dict, prepared: dict, slack_sec: float = 120.0,
+                       used: "set[str] | None" = None) -> "list[tuple[float, float, dict]]":
+    """用意済みの索引（`prepare_sessions`）から 1 件分の候補を引く。
+
+    ledger を回す側はこちらを使う。`correlation_candidates` は呼ぶたびに索引を作り直すので、
+    ループの中で呼ぶと索引づくりが件数分だけ走る。
+    戻り値は `(終了時刻, 開始時刻, レコード)`。条件は `correlation_candidates` と同じ。
+    """
     ts = parse_iso(led.get("ts"))
     if ts is None:
         return []
@@ -1158,22 +1191,35 @@ def correlation_candidates(led: dict, session_recs: "list[dict]", slack_sec: flo
         seconds = float(led.get("seconds") or 0.0)
     except (TypeError, ValueError):
         seconds = 0.0
+    items, ends, max_span = prepared.get(str(led.get("agent_cli") or ""), ((), (), 0.0))
     lo, hi = ts - seconds - slack_sec, ts + slack_sec
-    candidates = []
-    for sess in session_recs:
+    lm = led.get("model") or ""
+    out: "list[tuple[float, float, dict]]" = []
+    # 終了時刻が lo 未満のセッションは条件を満たさないので、二分探索で頭を飛ばす。
+    for index in range(bisect.bisect_left(ends, lo), len(items)):
+        s1, s0, sess = items[index]
+        # 開始時刻は s1 - max_span 以上なので、ここから先はどれも hi より後に始まる。
+        # 束に 1 件でも長いセッションがあると打ち切りが緩むが、走査が増えるだけで結果は変わらない。
+        if s1 > hi + max_span:
+            break
+        if s0 > hi:
+            continue
         if used is not None and sess["id"] in used:
             continue
-        if (led.get("agent_cli") or "") != (sess.get("agent_cli") or ""):
-            continue
-        lm, sm = led.get("model") or "", sess.get("model") or ""
+        sm = sess.get("model") or ""
         if lm and sm and lm not in sm and sm not in lm:
             continue
-        s0 = parse_iso(sess.get("started_at")) or parse_iso(sess.get("ts"))
-        s1 = parse_iso(sess.get("ts"))
-        if s0 is None or s1 is None or s1 < lo or s0 > hi:
-            continue
-        candidates.append(sess)
-    return candidates
+        out.append((s1, s0, sess))
+    return out
+
+
+def correlation_candidates(led: dict, session_recs: "list[dict]", slack_sec: float = 120.0,
+                           used: "set[str] | None" = None) -> "list[dict]":
+    """1 件分の候補（渡された並び順のまま）。**呼ぶたびに索引を作り直す**ので、ledger を
+    回す側は `prepare_sessions` + `session_candidates` を使う。"""
+    found = {sess["id"] for _, _, sess in
+             session_candidates(led, prepare_sessions(session_recs), slack_sec, used)}
+    return [sess for sess in session_recs if sess.get("id") in found]
 
 
 def correlate(ledger_recs: "list[dict]", session_recs: "list[dict]",
@@ -1186,7 +1232,7 @@ def correlate(ledger_recs: "list[dict]", session_recs: "list[dict]",
     records は追記専用なので相関は書き戻さず、読み出しのたびに同じ結果を導く。"""
     links: "dict[str, str]" = {}
     used: "set[str]" = set()
-    sessions = sorted(session_recs, key=lambda r: r.get("id") or "")
+    prepared = prepare_sessions(session_recs)
     for led in sorted(ledger_recs, key=lambda r: (parse_iso(r.get("ts")) or 0.0,
                                                    r.get("id") or "")):
         ts = parse_iso(led.get("ts"))
@@ -1196,13 +1242,12 @@ def correlate(ledger_recs: "list[dict]", session_recs: "list[dict]",
             seconds = float(led.get("seconds") or 0.0)
         except (TypeError, ValueError):
             seconds = 0.0
-        candidates = correlation_candidates(led, sessions, slack_sec, used)
-        chosen = candidates[0] if len(candidates) == 1 else None
+        candidates = session_candidates(led, prepared, slack_sec, used)
+        chosen = candidates[0][2] if len(candidates) == 1 else None
         if len(candidates) > 1:
             scored = []
-            for sess in candidates:
-                s0 = parse_iso(sess.get("started_at")) or parse_iso(sess.get("ts")) or ts
-                s1 = parse_iso(sess.get("ts")) or ts
+            for s1, s0, sess in candidates:
+                s0, s1 = s0 or ts, s1 or ts
                 scored.append((abs(s1 - ts), abs((s1 - s0) - seconds), sess))
             scored.sort(key=lambda item: (item[0], item[1], item[2]["id"]))
             best = scored[0]

@@ -4,6 +4,7 @@ import json
 import os
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 
 from _shared import AuditTestCase, claude_session_jsonl, collect, ledger_row
 
@@ -317,6 +318,55 @@ class CorrelateTests(AuditTestCase):
         sess = {"id": "aud-s1", "ts": "2026-08-03T10:00:30Z",
                 "started_at": "2026-08-03T09:59:30Z", "agent_cli": "claude", "model": ""}
         self.assertEqual(collect.correlate([led], [sess]), {})
+
+    def test_long_session_is_not_skipped_by_the_scan_cutoff(self):
+        """終了が窓のずっと後でも、窓の中で始まったセッションは候補に残る。
+
+        索引は終了時刻の昇順で並べ、束の中の最長セッション分だけ余分に見てから走査を
+        打ち切る。この余白を詰めると、長い 1 件が静かに候補から消える。
+        """
+        led = {"id": "aud-l1", "ts": "2026-08-03T10:01:00Z", "seconds": 30.0,
+               "agent_cli": "claude", "model": ""}
+        # 10:00:50 に始まり 11:00:00 まで続く（終了は窓 +120 秒のはるか後）。
+        long_session = {"id": "aud-s2", "ts": "2026-08-03T11:00:00Z",
+                        "started_at": "2026-08-03T10:00:50Z", "agent_cli": "claude", "model": ""}
+        self.assertEqual(collect.correlate([led], [long_session]), {"aud-l1": "aud-s2"})
+        # 短いセッションが先に並んでいても、打ち切りの余白は最長の 1 件で決まる。
+        short = {"id": "aud-s1", "ts": "2026-08-03T09:00:00Z",
+                 "started_at": "2026-08-03T08:59:50Z", "agent_cli": "claude", "model": ""}
+        self.assertEqual(collect.correlate([led], [short, long_session]), {"aud-l1": "aud-s2"})
+
+    def test_sessions_are_parsed_once_for_the_whole_ledger(self):
+        """索引は ledger 全体で 1 つ。件数分だけ時刻を解き直さない（実測 1,290 万回の回帰）。"""
+        sessions = [{"id": f"aud-s{i}", "ts": "2026-08-03T10:00:30Z",
+                     "started_at": "2026-08-03T09:59:30Z", "agent_cli": "claude", "model": ""}
+                    for i in range(20)]
+        ledger = [{"id": f"aud-l{i}", "ts": "2026-08-03T10:01:00Z", "seconds": 60.0,
+                   "agent_cli": "claude", "model": ""} for i in range(20)]
+        calls = []
+        real = collect.parse_iso
+
+        def counted(value):
+            calls.append(value)
+            return real(value)
+
+        with mock.patch.object(collect, "parse_iso", counted):
+            collect.correlate(ledger, sessions)
+        started = [v for v in calls if v == "2026-08-03T09:59:30Z"]
+        self.assertEqual(len(started), len(sessions),
+                         "セッションの開始時刻は 1 件につき 1 回だけ解く")
+
+    def test_prepared_index_groups_by_agent_cli(self):
+        sessions = [{"id": "aud-s1", "ts": "2026-08-03T10:00:30Z",
+                     "started_at": "2026-08-03T09:59:30Z", "agent_cli": "claude", "model": ""},
+                    {"id": "aud-s2", "ts": "2026-08-03T10:00:31Z",
+                     "started_at": "2026-08-03T10:00:01Z", "agent_cli": "codex", "model": ""},
+                    {"id": "aud-s3", "ts": "bad", "agent_cli": "claude", "model": ""}]
+        prepared = collect.prepare_sessions(sessions)
+        self.assertEqual(sorted(prepared), ["claude", "codex"])
+        self.assertEqual([item[2]["id"] for item in prepared["claude"][0]], ["aud-s1"],
+                         "時刻を読めないセッションは索引に入れない")
+        self.assertAlmostEqual(prepared["codex"][2], 30.0, places=3)
 
 
 class CliNativeCollectTests(AuditTestCase):

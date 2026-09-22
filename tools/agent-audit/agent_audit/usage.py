@@ -11,7 +11,7 @@ import json
 import os
 import statistics
 
-from .collect import correlate, correlation_candidates
+from .collect import correlate, prepare_sessions, session_candidates
 from .configfile import resolve_audit_dir, resolve_budget_dir
 from .scrub import scrub_obj
 from .store import Store, record_id
@@ -191,7 +191,11 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
     """行の構成: 台帳行（linked セッションで実測を裏取り）+ 未結合セッション行。
     linked セッションは台帳行の実測へ吸収し二重計上しない。"""
     ledger, session, _run = load_period_records(store, period)
-    links = correlate(ledger, session, slack_sec=float(getattr(args, "join_slack_sec", 120.0)))
+    slack = float(getattr(args, "join_slack_sec", 120.0))
+    links = correlate(ledger, session, slack_sec=slack)
+    # 索引は ledger 全体で 1 つ。下の未帰属判定は台帳行ごとに候補を引くので、ここで
+    # 作らないと行の数だけ索引を作り直す（実測 7,273 回・37 秒）。
+    prepared_sessions = prepare_sessions(session)
     sess_by_id = {s["id"]: s for s in session}
     default_rate, per_cli = _rates(args)
 
@@ -253,8 +257,8 @@ def aggregate_usage(args, store: Store, period: str, by: str) -> "list[dict]":
                 continue
             # 相関が曖昧でも近傍に実測セッションがあるなら、未帰属の実測行として後段で
             # 数える。ここでも秒レートを足すと同じ呼び出しを実測＋推定で二重計上する。
-            if any(s.get("measured") for s in correlation_candidates(
-                    led, session, float(getattr(args, "join_slack_sec", 120.0)))):
+            if any(s.get("measured") for _, _, s in session_candidates(
+                    led, prepared_sessions, slack)):
                 continue
             if led.get("tool") == "agent-audit":
                 samples = operation_samples.get(_operation_key(led), [])
