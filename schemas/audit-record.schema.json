@@ -8,7 +8,7 @@
   "properties": {
     "id": {"type": "string", "description": "冪等キー aud-<sha256(source,store,native_id) 先頭 16 桁>。同じ実体は何度収集しても同じ id"},
     "ts": {"type": "string", "description": "ISO8601 UTC（レコードの代表時刻。session は最終更新）"},
-    "kind": {"enum": ["ledger", "event", "run", "result", "session", "memory"], "description": "ledger=消費 / event=非消費の観測 / run=ツール実行 / result=flow ノード結果 / session=CLI セッション / memory=記憶ストアのメタデータ snapshot"},
+    "kind": {"enum": ["ledger", "event", "run", "result", "session", "session-usage", "memory"], "description": "ledger=消費 / event=非消費の観測 / run=ツール実行 / result=flow ノード結果 / session=CLI セッション / memory=記憶ストアのメタデータ snapshot"},
     "source": {"type": "string", "description": "源泉（budget-ledger / flow-bus / project-runlog / amigos-bus / loop-log / memory-store / <cli>-native）"},
     "layer": {"type": "string", "enum": ["ltm", "wiki", "persona", "moltbook"], "description": "記憶レイヤ（kind=memory）"},
     "metrics": {"type": "object", "description": "記憶ストアの決定的な計数（kind=memory）。件数・滞留日数などのメタデータだけで、記憶の本文・タイトル・persona のファイル名は入れない（C1）", "additionalProperties": {"type": ["number", "integer", "null"]}},
@@ -27,6 +27,72 @@
     "turns": {"type": ["integer", "null"], "description": "メッセージ往復数（kind=session / run）"},
     "tokens_in": {"type": ["number", "null"], "description": "入力トークン（実測できたときだけ）"},
     "tokens_out": {"type": ["number", "null"], "description": "出力トークン（同上。project run-log 由来は @cost の合計がここに入る）"},
+    "usage_breakdown": {
+      "type": "object",
+      "description": "Optional observed usage; null is unavailable, not zero. Legacy tokens_in remains unchanged.",
+      "required": [
+        "input_total",
+        "input_uncached",
+        "cache_read",
+        "cache_write",
+        "output",
+        "semantics",
+        "completeness"
+      ],
+      "properties": {
+        "input_total": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "input_uncached": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cache_read": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cache_write": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "output": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "semantics": {
+          "enum": [
+            "anthropic-separate-input-components",
+            "openai-total-with-cached-subset",
+            "flat-total",
+            "unknown",
+            "mixed"
+          ]
+        },
+        "completeness": {
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "usd": {"type": ["number", "null"], "description": "コスト USD（補助情報）"},
     "measured": {"type": "boolean", "description": "tokens_* が実測か。false の行は読み出し時に rates で推定され、集計で measured と混ざらない"},
     "status": {"type": "string", "description": "done / failed / cancelled / 源泉の語彙のまま"},

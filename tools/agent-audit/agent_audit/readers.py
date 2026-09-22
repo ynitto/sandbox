@@ -8,6 +8,7 @@
 セッションの正規形(このモジュールの戻り値):
   {"native_id", "store", "cwd", "created_at", "updated_at",  # epoch 秒
    "model", "log_version", "turns", "tokens_in", "tokens_out", "usage_measured",
+   "usage_breakdown": {...},  # optional; unavailable components are null
    "messages": [(role, text), ...]}   # want_messages=True のときだけ
 """
 from __future__ import annotations
@@ -167,6 +168,9 @@ def _parse_jsonl_session(path: str, *, want_messages: bool,
     sum_in = sum_out = 0
     usage_by_message: "dict[str, tuple[int, int]]" = {}
     last_total = None
+    components = []
+    components_by_message = {}
+    total_components = None
     turns = 0
     messages: "list[tuple[str, str]]" = []
     for obj in objs:
@@ -196,10 +200,14 @@ def _parse_jsonl_session(path: str, *, want_messages: bool,
         if usage is None:
             flat = _flat_usage(obj)
             if flat is not None:
+                components.append(_usage_components(obj, semantics="flat-total"))
                 sum_in += flat[0]
                 sum_out += flat[1]
+            elif obj.get("kind") == "llm_end":
+                components.append(_usage_components(obj, semantics="flat-total"))
         if usage is not None:
             i, o = _usage_of(usage)
+            breakdown = _usage_components(usage)
             # Claude は 1 API 応答の thinking / text を別行にし、同じ message.id と
             # usage を各行へ再掲する。API 呼び出しを表す id がある行は最後の 1 件だけ数える。
             usage_id = None
@@ -209,12 +217,16 @@ def _parse_jsonl_session(path: str, *, want_messages: bool,
                     break
             if usage_id:
                 usage_by_message[usage_id] = (i, o)
+                components_by_message[usage_id] = breakdown
             else:
+                components.append(breakdown)
                 sum_in += i
                 sum_out += o
         total = _find_total_usage(obj)
         if total is not None:
             last_total = total
+            total_components = _usage_components(_find_total_usage_data(obj),
+                                                 semantics="openai-total-with-cached-subset")
         role_text = _message_of(obj)
         if role_text:
             role, text = role_text
@@ -246,6 +258,9 @@ def _parse_jsonl_session(path: str, *, want_messages: bool,
         "tokens_in": tokens_in or None,
         "tokens_out": tokens_out or None,
         "usage_measured": bool(tokens_in or tokens_out),
+        **({"usage_breakdown": total_components or _sum_components(
+            components + list(components_by_message.values()))}
+           if total_components is not None or components or components_by_message else {}),
         "messages": messages,
         "_clean_warnings": warnings,
     }
@@ -301,18 +316,75 @@ def _flat_usage(obj: dict) -> "tuple[int, int] | None":
 
 
 def _find_total_usage(obj: dict, depth: int = 0) -> "tuple[int, int] | None":
-    """累計形 total_token_usage（codex の token_count イベント等）を浅く探す。"""
+    u = _find_total_usage_data(obj, depth)
+    return _usage_of(u) if u is not None else None
+
+
+def _find_total_usage_data(obj: dict, depth: int = 0) -> "dict | None":
+    """Return the same last cumulative source for legacy totals and components."""
     if depth > 2 or not isinstance(obj, dict):
         return None
     u = obj.get("total_token_usage")
     if isinstance(u, dict):
-        return _usage_of(u)
+        return u
     for v in obj.values():
         if isinstance(v, dict):
-            got = _find_total_usage(v, depth + 1)
+            got = _find_total_usage_data(v, depth + 1)
             if got is not None:
                 return got
     return None
+
+
+USAGE_FIELDS = ("input_total", "input_uncached", "cache_read", "cache_write", "output")
+
+
+def _token_count(value):
+    # Missing, invalid, negative and boolean values are not measured zero.
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _usage_components(u: dict, *, semantics: str = "unknown") -> dict:
+    """Decode field families, never indiscriminately add cached subsets to input."""
+    result = dict.fromkeys(USAGE_FIELDS)
+    result["output"] = _token_count(u.get("output_tokens"))
+    anthropic = any(k in u for k in ("cache_creation_input_tokens", "cache_read_input_tokens"))
+    details = u.get("input_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    openai = "cached_input_tokens" in u or "cached_tokens" in details
+    if anthropic and openai:
+        semantics = "unknown"  # Conflicting families: no safe attribution.
+    elif anthropic:
+        semantics = "anthropic-separate-input-components"
+        result["input_uncached"] = _token_count(u.get("input_tokens"))
+        result["cache_read"] = _token_count(u.get("cache_read_input_tokens"))
+        result["cache_write"] = _token_count(u.get("cache_creation_input_tokens"))
+        parts = [result[k] for k in ("input_uncached", "cache_read", "cache_write")]
+        if all(v is not None for v in parts):
+            result["input_total"] = sum(parts)
+    elif openai or semantics == "openai-total-with-cached-subset":
+        semantics = "openai-total-with-cached-subset"
+        result["input_total"] = _token_count(u.get("input_tokens"))
+        result["cache_read"] = _token_count(u.get("cached_input_tokens", details.get("cached_tokens")))
+        total, cached = result["input_total"], result["cache_read"]
+        if total is not None and cached is not None and cached <= total:
+            result["input_uncached"] = total - cached
+        # Cache creation is not inferred from absence of a write field.
+    elif semantics == "flat-total":
+        result["input_total"] = _token_count(u.get("tokens_in"))
+        result["output"] = _token_count(u.get("tokens_out"))
+    result["semantics"] = semantics
+    result["completeness"] = "complete" if all(result[k] is not None for k in USAGE_FIELDS) else "partial"
+    return result
+
+
+def _sum_components(parts: list[dict]) -> dict:
+    # A partial call must not make the whole session look fully measured.
+    result = {k: sum(p[k] for p in parts) if all(p[k] is not None for p in parts) else None
+              for k in USAGE_FIELDS}
+    semantics = {p["semantics"] for p in parts}
+    result["semantics"] = next(iter(semantics)) if len(semantics) == 1 else "mixed"
+    result["completeness"] = "complete" if all(result[k] is not None for k in USAGE_FIELDS) else "partial"
+    return result
 
 
 def _message_of(obj: dict) -> "tuple[str, str] | None":

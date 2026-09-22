@@ -661,3 +661,19 @@ update_check_interval: 21600
 | `gc [--dry-run]` | — | 種別別保持日数での掃除 |
 | `doctor` | — | 源泉の到達性・設定・ストアの点検 |
 | `update [--check] [--now]` | — | 自己更新 |
+
+
+## Cache usage内訳を確認する
+
+更新後に`agent-audit collect --source cli-native`を実行すると、parser revision 4で
+native sessionを再読込し、既存recordにもappend-only補正で`usage_breakdown`を追加します。
+`--since`等で収集範囲を絞ると、その範囲だけが対象です。元ログが残っていないrecordの内訳は復元しません。
+
+`agent-audit ratings --period total --json`では、用途と結合できた実測sessionについて
+`average_cache_read`等と各`*_samples`、`cache_read_ratio`とそのtoken分母を確認できます。
+内訳のない旧recordはcache 0%ではありません。平均値と測定件数を必ず併せて読みます。
+Codexの正しい総入力は`usage_breakdown.input_total`です。legacy `tokens_in`は互換維持のため
+cached inputを重複加算する場合があり、費用評価には使えません。
+
+価格計算・selectorの選択方針は変更していません。fieldの意味・完全性と第2段階の案は
+[Cache-Aware Usage Ledger仕様](../specs/agent-audit-spec.md#cache-aware-usage-ledgerphase-12026-09-23)を参照してください。

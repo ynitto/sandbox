@@ -208,7 +208,6 @@ async function runHeadless(id, turn, send) {
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   if (running.has(id)) throw new Error('このセッションは応答中です');
   const { cli, model, readonly, autoApprove, text, atts, files: attFiles, spec, policy, tier, selectedSkills, family = '', slash = '' } = turn;
-  const prompt = herd.withSlash(slash, turn.prompt);          // 用途のスラッシュ行は本文の一番上
   const collector = response.createCollector(cli);
   for (const item of turn.setupInformation || []) collector.addInformation(item);
   const history = sess.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
@@ -225,6 +224,10 @@ async function runHeadless(id, turn, send) {
   }
   // その CLI がまだ見ていない分だけ再送する（セッション ID が無い CLI は毎回ぜんぶ）
   const unseen = entry && entry.id ? history.slice(entry.seen) : history;
+  // 共通指示も同じ規則: 再開するセッションが既に何かを見ていれば付けない（「答えるだけ」は
+  // そのターンだけの指示なので毎回）。用途のスラッシュ行は本文の一番上
+  const remembers = !!(entry && entry.id) && entry.seen > 0;
+  const prompt = herd.withSlash(slash, remembers && !turn.answerOnly ? turn.bare : turn.prompt);
   const cmd = agentCli.turnCmd(spec, {
     prompt, model, readonly, cliSession: entry ? entry.id : '', history: unseen, files: attFiles,
     allowContinue: !(sess.origin && sess.origin.repo === sess.repo),
@@ -502,6 +505,8 @@ async function openConversationNow(id, send, { cols, rows, fresh = false, launch
     conv.seen = cmd.resumed && entry ? entry.seen : 0;
     if (cmd.mintedSession) store.setCliEntry(ud, id, want.cli, { id: cmd.mintedSession, seen: 0 });
   }
+  // 文脈を引き継げた CLI は共通指示も既に見ている（何も見ていない再開は除く）
+  conv.instructed = conv.resumed && conv.seen > 0;
   store.updateSession(ud, id, { live: want, transport: 'tmux' });
   store.touchTerminalSession(ud, id, {
     name: conv.name, state: 'active', ownerInstanceId: instanceId, cli: want.cli, model: want.model,
@@ -544,7 +549,7 @@ async function sweepTerminalSessions() {
 async function runTmux(id, turn, send) {
   const ud = userData();
   const { cli, model, readonly, autoApprove, atts, policy, tier, selectedSkills, family = '', slash = '' } = turn;
-  let { text, prompt } = turn;
+  let { text, prompt, bare } = turn;
   const want = { cli, model, readonly, autoApprove };
   let conv = conversations.get(id);
   let opened = null;
@@ -569,15 +574,19 @@ async function runTmux(id, turn, send) {
   // 共通 TUI は各依頼を独立実行する。端末が生きていてもモデルに履歴は残らない。
   const retainsContext = turn.spec.interactive?.retainsContext !== false;
   const unseen = retainsContext ? history.slice(conv.seen) : history;
+  // この CLI の文脈が会話を持っているか: 再開できた（resumed）か、起動してから既にやり取りを
+  // 通した（seen > 0。ID を起動時に持てない list 型の CLI は resumed が立たないので、これで見る）
+  const retained = conv.resumed || conv.seen > 0;
   // CLI が入力可能になるまで待ってから判断する。tmux の存在だけでは復元の根拠にしない。
   // 初回の作成依頼は残し、既存編集の再開説明だけを省く。未共有の履歴や今回の指示は届ける。
-  if (turn.resumeContext !== undefined && conv.resumed && retainsContext) {
+  if (turn.resumeContext !== undefined && retained && retainsContext) {
     if (!turn.resumeContext && !unseen.length) {
       turn.release();
       return { name: conv.name, started: false, restarted: !!(opened && opened.restarted), warning: opened?.warning || '' };
     }
     text = turn.resumeContext || '未共有のやり取りを踏まえて編集を続けてください。';
-    prompt = turn.resumeContext ? turn.resumedPrompt : text;
+    prompt = text;            // 文脈を引き継げた CLI への再開文なので共通指示は付けない
+    bare = text;
   }
   // セッション開始スキルは本依頼へ連結しない。1 件ずつ独立した入力として適用し、
   // 完了を待ってからユーザーの依頼を送る（agent-loop の chat strategy=paste と同じ境界）。
@@ -597,8 +606,12 @@ async function runTmux(id, turn, send) {
       turn.setupWarning = [turn.setupWarning, message].filter(Boolean).join('\n');
     }
   }
+  // 共通指示は、この CLI の文脈がまだ持っていないときだけ前置する。文脈を保てない共通 TUI は毎回、
+  // 「答えるだけ」の依頼はそのターンだけの指示なので毎回
+  const withBlock = !retainsContext || !conv.instructed || !!turn.answerOnly;
+  const body = withBlock ? prompt : bare;
   // 用途のスラッシュ行は（履歴の再送があっても）本文の一番上。共通 TUI は先頭の /name 行だけを読む
-  const full = herd.withSlash(slash, unseen.length ? agentCli.replayPrompt(unseen, prompt, { resumed: conv.resumed && retainsContext }) : prompt);
+  const full = herd.withSlash(slash, unseen.length ? agentCli.replayPrompt(unseen, body, { resumed: retained && retainsContext }) : body);
   store.appendMessage(ud, id, { role: 'user', text, cli, family, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
   await conv.send(full, (message) => {
     const structured = response.parseTranscript(cli, message.text);
@@ -625,6 +638,7 @@ async function runTmux(id, turn, send) {
     turn.release();
     send('turn:done', { id, message });
   });
+  conv.instructed = true;                      // 届いてから記憶する（送れなければ次のターンにまた付ける）
   const warning = [turn.setupWarning, opened ? opened.warning : ''].filter(Boolean).join('\n');
   send('turn:started', { id, argv: [], warning });
   send('turn:progress', { id, item: { text: `${cli} が依頼を処理しています`, status: 'running' } });
@@ -820,17 +834,21 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   // ヘッドレスには対話セッションが無いため、先頭のコマンドブロックとして同じ実行へ載せる。
   // tmux は runTmux が 1 件ずつ先に送るので、本依頼へ混ぜない。
   // 「会話」だけ、別のリポジトリへ分岐する作法（@fork 行）を添える。タスクを AI と作る会話には添えない
-  const instructedPrompt = sessionSetup.withInstructions(attached.prompt, cfg.instructions, {
+  // 共通指示は付き（prompt）と無し（bare）の 2 本を組み、その CLI の文脈がまだ持っていないときだけ
+  // 付きを送る（runTmux / runHeadless が決める。文脈を保てる CLI に毎ターン貼らない）
+  const compose = (body) => {
+    const contextual = skillDelivery.instruction ? `${skillDelivery.instruction}\n\n${body}` : body;
+    return transport === 'headless' && setupSkills.length
+      ? `${setupSkills.map((item) => item.command).join('\n')}\n\n${contextual}`
+      : contextual;
+  };
+  const prompt = compose(sessionSetup.withInstructions(attached.prompt, cfg.instructions, {
     answerOnly: !!base.answerOnly,
     artifacts: !base.answerOnly,
     fork: !base.answerOnly && sess.kind === 'conversation' ? { repos: cfg.repos, current: sess.repo } : null,
-  });
-  const contextualPrompt = skillDelivery.instruction ? `${skillDelivery.instruction}\n\n${instructedPrompt}` : instructedPrompt;
-  const prompt = transport === 'headless' && setupSkills.length
-    ? `${setupSkills.map((item) => item.command).join('\n')}\n\n${contextualPrompt}`
-    : contextualPrompt;
-  const resumedPrompt = resumeContext ? sessionSetup.withInstructions(resumeContext, cfg.instructions) : '';
-  const turn = { ...base, resumeContext, resumedPrompt, prompt, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
+  }));
+  const bare = compose(attached.prompt);
+  const turn = { ...base, resumeContext, prompt, bare, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
   // 次のターンの既定として覚える（画面はこれを出す）。`herd` は写した先ではなく要求した
   // 名前のまま残す——次のターンは添付の有無でまた選び直す
   store.updateSession(ud, id, {

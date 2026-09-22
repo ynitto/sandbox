@@ -9,6 +9,7 @@ from .store import Store
 from .collect import correlate
 from .usage import _period_floor, _rate_for, _rates, load_period_records
 from .util import parse_iso
+from .readers import USAGE_FIELDS, _token_count
 
 
 # 台帳（kind: ledger）の成否。run record を持たないノード——agent-app だけが動いている PC——
@@ -186,6 +187,25 @@ def _method_key(rec: dict) -> "tuple[str, ...]":
     return tuple(sorted({str(v) for v in rec.get("methods") or [] if str(v)}))
 
 
+def _cache_metrics(parts: list[dict]) -> dict:
+    metrics = {}
+    for field in USAGE_FIELDS:
+        values = [_token_count(p.get(field)) for p in parts]
+        values = [v for v in values if v is not None]
+        if values:
+            metrics["average_" + field] = round(sum(values) / len(values), 1)
+            metrics["average_" + field + "_samples"] = len(values)
+    pairs = [(p.get("input_total"), p.get("cache_read")) for p in parts]
+    pairs = [(t, r) for t, r in pairs if _token_count(t) is not None
+             and _token_count(r) is not None and r <= t]
+    denominator = sum(t for t, _ in pairs)
+    if denominator:
+        metrics.update(cache_read_ratio=round(sum(r for _, r in pairs) / denominator, 4),
+                       cache_read_ratio_samples=len(pairs),
+                       cache_read_ratio_input_total=denominator)
+    return metrics
+
+
 def aggregate_ratings(args, store: Store, period: str, *, by_methods: bool = False) -> "list[dict]":
     """仕事種別×モデルで、台帳の消費と flow の**ノード単位**の結末を結合する。
 
@@ -215,6 +235,8 @@ def aggregate_ratings(args, store: Store, period: str, *, by_methods: bool = Fal
         b = bucket(purpose, model, _method_key(led))
         b["usage_runs"] += 1
         sess = sess_by_id.get(links.get(led["id"], ""))
+        if sess and sess.get("measured") and isinstance(sess.get("usage_breakdown"), dict):
+            b.setdefault("_usage_breakdowns", []).append(sess["usage_breakdown"])
         tin, tout = led.get("tokens_in"), led.get("tokens_out")
         if sess and sess.get("measured"):
             tin = sess.get("tokens_in") if sess.get("tokens_in") is not None else tin
@@ -248,8 +270,10 @@ def aggregate_ratings(args, store: Store, period: str, *, by_methods: bool = Fal
     for b in groups.values():
         usage_runs = b["usage_runs"]
         outcome_runs = b["outcome_runs"]
+        cache_metrics = _cache_metrics(b.pop("_usage_breakdowns", []))
         rows.append({
             **b,
+            **cache_metrics,
             "average_tokens": round(b["total_tokens"] / usage_runs, 1) if usage_runs else None,
             "pass_rate": round(b["outcome_ok"] / outcome_runs, 4) if outcome_runs else None,
         })

@@ -413,3 +413,114 @@ cd tools/agent-audit && python3 -m unittest discover -s tests
 ```
 
 `tests/_shared.py` は `KIRO_SKILL_REGISTRY`、`KIRO_AGENTS_DIR`、`HOME` を一時ディレクトリへ切り替え、開発者の実ストアを収集対象から外します。
+
+
+## Cache-Aware Usage Ledger（Phase 1、2026-09-23）
+
+価格やrouting policyを変えず、CLI native usageの内訳を任意の`usage_breakdown`として
+保存する。`tokens_in` / `tokens_out` / readerの`usage_measured` / recordの`measured`、
+ratingsの`average_tokens` / `pass_rate`は従来互換を維持する。
+
+### 調査したformatとsemantics
+
+`agents/claude.json`と`agents/codex.json`はともに`jsonl-dir`、`usage: true`。
+format名だけでは加算規則を決められないため、usage field familyと累計形式を識別する。
+既存`tests/test_readers.py`と追加`tests/test_cache_usage.py`のnative形式fixtureで固定する。
+
+| native形式 | fieldの意味 | 新しい正規化 | セッション集約 |
+|---|---|---|---|
+| Claude message.usage | `input_tokens`はcache read/writeを除く通常入力。`cache_creation_input_tokens`と`cache_read_input_tokens`は別成分 | uncached/read/writeを保存。3つとも判明した場合のみ合計をinput_totalにする | 同じmessage.idは最後の値で置換し、異なる呼び出しを加算 |
+| Codex payload.info.total_token_usage | `input_tokens`は総入力、`cached_input_tokens`は内数 | total=input、read=cached、uncached=total-read。writeは未報告ならnull | 最後の累計snapshotを採用。message usageや途中snapshotと加算しない |
+| OpenAI usage.input_tokens_details.cached_tokens | `input_tokens`の内数 | Codexと同じ差分計算 | 通常のusageとして呼び出しを加算 |
+| agentcore / agent-ollama llm_end | トップレベルの`tokens_in/out`。ollama_loopはprompt_eval_countとeval_count（欠けたoutputはチャンク数fallback）を出力 | flat-total。input_total/outputだけ保存、cache関連はnull | llm_endのみ加算。llm_progressは無視 |
+| generic usage / field family混在 | inputの合算関係を確定できない | semantics=unknown。output以外はnull。legacy値は保持 | 同じ重複排除・加算規則 |
+| kiro-sqlite / vscode-chat | 現行readerに実測usageなし | breakdownなし | 従来どおり |
+
+根拠（確認日2026-09-23）:
+[Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)、
+[OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)、
+[Codex token_usage.rs](https://github.com/openai/codex/blob/main/codex-rs/tui/src/token_usage.rs)。
+agentcoreの根拠は`tools/agent-tools/agentcore/agentcore/ollama_loop.py`のllm_end発行箇所。
+価格表やモデル公開日は本MVPの判定材料にしない。
+
+### 情報が失われていた箇所と追加経路
+
+```mermaid
+flowchart LR
+  N[Native usage] --> L[既存 _usage_of / _flat_usage: 2値に縮約]
+  L --> T[tokens_in / tokens_out]
+  T --> A[既存 average_tokens]
+  A --> S[既存 selector: 変更なし]
+  N --> B[追加 _usage_components: semantics別に分離]
+  B --> D[message ID重複排除 / 最後の累計優先]
+  D --> C[collect: optional usage_breakdown]
+  C --> R[Store JSONL / 最新revision読出し]
+  R --> M[ratings: 各平均とsamples / cache read比率と分母]
+```
+
+従来`_usage_of()`はinput、cache creation、cache read、cached inputを無条件に合算する。
+Claudeの別成分では総入力になるが、Codexのcached subsetでは二重計上となる。
+これを直すと既存`average_tokens`とselectorの順位が変わり得るため、今回はlegacyを維持する。
+例: Codex input=100 / cached=80ならlegacy tokens_in=180、breakdown.input_total=100。
+将来の費用評価はlegacy tokens_inを使わない。
+
+### 正規形と完全性
+
+```json
+{
+  "usage_breakdown": {
+    "input_total": 10000,
+    "input_uncached": 3200,
+    "cache_read": 6800,
+    "cache_write": null,
+    "output": 2000,
+    "semantics": "openai-total-with-cached-subset",
+    "completeness": "partial"
+  }
+}
+```
+
+- token値は非負整数またはnull。欠損、負数、不正型はnull。明示された0のみ0として保存する。
+- `input_uncached`はClaudeでは通常入力（writeを除く）、OpenAIではtotal-read。
+  writeとuncachedの関係をprovider間で同一と仮定しない。
+- `complete`は5つの数値が全て判明、その他は`partial`。OpenAIの未報告writeは0にせずpartial。
+- 同一sessionの対象usageのどれかで項目が欠ければ、その項目のsession合計はnull。
+  usageのないllm_endも欠測として扱う。これは読めたusageの完全性であり、nativeログ自体の
+  欠落や上流の推定fallbackまで保証するものではない。
+- 異なるsemanticsを集約した場合は`mixed`。cache > totalならuncachedはnullとし、
+  不整合なペアをcache_read_ratioに使わない。
+- 旧recordのbreakdown欠落はunknownでありcache 0%ではない。
+- collectのparser revisionは4。再収集時は既存のappend-only補正機構（session-usage）を使う。
+  load_period_recordsが最新revisionを1件として採用する。Storeの汎用保存・読出しを再利用する。
+  transcript metaの契約は変更せず、内訳はsession recordに保持する。
+
+### ratings（JSON出力）
+
+既存のledger→session一意相関を使い、`measured: true`のsessionだけを追加集計する。
+未結合sessionは用途に帰属できないためratingsに追加しない。usage宣言がfalseのCLIも対象外。
+
+- `average_input_total`, `average_input_uncached`, `average_cache_read`,
+  `average_cache_write`, `average_output`: 項目が判明しているsessionだけの平均。
+- 各平均に`<metric>_samples`を添える。0件ならmetric自体を省略する。
+  `usage_runs`は従来の全run件数であり、新しい平均の分母ではない。
+- `cache_read_ratio = sum(cache_read) / sum(input_total)`。両項目が判明しread<=totalの
+  同じsession群に限定する。`cache_read_ratio_samples`と`cache_read_ratio_input_total`を添える。
+  分母が0なら比率は省略する。runごとの比率の単純平均にはしない。
+- rank / average_tokens / pass_rateは不変。modelselect.normalize_ratingは追加指標を
+  選択材料にせず、runtime選択結果が変わらないことを回帰テストで確認する。
+
+### 第2段階: effective cost / verified PASS（未実装）
+
+十分な実測が溜まった後、`agent-audit effective-cost`またはratingsの`cost_per_pass`を検討する。
+価格はrunner coreへ埋め込まず、外部manifestまたはcaller-supplied priceから渡す。
+manifestはprovider、model、effective_from、source URL、通貨・token単位、
+input/cache-read/cache-write/output単価を持つ。write TTLなど単価を左右する情報が足りない場合は
+値を推測せず費用をunavailableとする。API換算額とsubscription CLIの支払い・quota消費を分離する。
+
+費用算出はsemanticsごとの成分関係を明示し、writeをuncachedと二重課金しない。
+価格の適用時点、利用したmanifest版、各成分の観測件数・coverageを結果へ残す。
+現在のpass_rateはnodeのreported done率でありverified PASSではない。
+第2段階では検証証跡を実行IDに結び、失敗・再試行を含む同じ母集団の総費用をverified PASS数で割る。
+PASSが0、成分不明、価格不明、少数sampleの場合は選択へ適用しない。
+同じ用途・execution profile・期間で比較し、最低sample数とcoverage、shadow評価を経てから
+明示的に有効化する。既存selectorへの入力追加で済ませ、新しいRouterは作らない。

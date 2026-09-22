@@ -85,7 +85,7 @@ test('herd: 会話は listAgents に仮想の行を足し、ターンごとに�
   assert.match(ipc, /cli: base\.requested \|\| base\.cli/, '次のターンの既定は herd のまま');
   assert.match(ipc, /role: 'user', text, cli, family,/);
   assert.match(ipc, /role: 'assistant', cli, family,/);
-  assert.match(ipc, /herd\.withSlash\(slash, turn\.prompt\)/, 'ヘッドレスでも本文の先頭にスラッシュ行');
+  assert.match(ipc, /herd\.withSlash\(slash, remembers && !turn\.answerOnly \? turn\.bare : turn\.prompt\)/, 'ヘッドレスでも本文の先頭にスラッシュ行（共通指示の有無は再開できるかで決める）');
   assert.match(ipc, /herd\.withSlash\(slash, unseen\.length \? agentCli\.replayPrompt/, 'tmux では履歴の再送より前にスラッシュ行');
   assert.match(ipc, /if \(herd\.isHerd\(want\.cli\)\) want = /, '会話を開いただけ・再起動でも共通 TUI を開く');
 });

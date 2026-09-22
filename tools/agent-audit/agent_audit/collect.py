@@ -28,7 +28,8 @@ KNOWN_SOURCES = ("budget-ledger", "cli-native", "cli-quota", "flow-bus", "projec
                  "amigos-bus", "loop-log", "memory-store")
 # 3: agent-ollama が書く平らな `tokens_in` / `tokens_out`（`llm_end`）を読むようにした。
 #    以前は入れ子の `usage` しか見ておらず、書いている側と読んでいる側が食い違っていた。
-SESSION_PARSER_REVISION = 3
+# 4: Preserve cache-aware components; replay existing sources once.
+SESSION_PARSER_REVISION = 4
 
 
 class SourceError(RuntimeError):
@@ -310,6 +311,8 @@ def collect_cli_native(args, store: Store, *, with_transcripts: bool, since: flo
                 "measured": bool(sess["usage_measured"]) and bool(slog.get("usage")),
                 "parser_revision": SESSION_PARSER_REVISION,
             }
+            if "usage_breakdown" in sess:
+                rec["usage_breakdown"] = sess["usage_breakdown"]
             if with_transcripts and sess["messages"]:
                 rec["excerpt_ref"] = _write_transcript(store, name, sess)
             if store.append_record(rec):

@@ -100,7 +100,9 @@ def prepare(opts):
         agent_file = next((item for item in candidates if item.is_file()), None)
         if (position is not None or selected != "default") and agent_file is None:
             raise ValueError("Kiro のカスタムエージェントが見つかりません: " + selected)
-        agent = json.loads(agent_file.read_text()) if agent_file else {"includeMcpJson": True}
+        # Built-in default: a custom agent without "tools" gets no built-in tools at all
+        # (kiro-cli 2.21: `/tools` shows Total 0), so declare all of them like kiro_default.
+        agent = json.loads(agent_file.read_text()) if agent_file else {"includeMcpJson": True, "tools": ["*"]}
         hooks = agent.setdefault("hooks", {})
         for event in ("agentSpawn", "stop"):
             hooks.setdefault(event, []).append({"command": shlex.join(hook)})

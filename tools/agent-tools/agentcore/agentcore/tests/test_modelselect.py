@@ -264,6 +264,26 @@ class StageOrderTests(IsolatedHome):
         by_cost = modelselect.select("x", [CLAUDE, OLLAMA], quotas={}, stages=("audit",))
         self.assertEqual(by_cost["selected"], OLLAMA, "何も無ければ安いほう")
 
+    def test_cache_observations_do_not_change_runtime_selection(self):
+        rows = [
+            {"purpose": "worker", "model": "gpt-6", "pass_rate": .9,
+             "average_tokens": 3000, "outcome_runs": 8, "rank": 1},
+            {"purpose": "worker", "model": "sonnet", "pass_rate": .9,
+             "average_tokens": 1500, "outcome_runs": 8, "rank": 2}]
+        before = modelselect.select("x", [CLOUD2, CLAUDE], purpose="worker", quotas={},
+                                    ratings={"rows": rows}, stages=("audit",))
+        enriched = [{**r, "average_input_total": 10000, "average_input_total_samples": 1,
+                     "average_input_uncached": 1 if i == 0 else 10000,
+                     "average_cache_read": 9999 if i == 0 else 0,
+                     "cache_read_ratio": .9999 if i == 0 else 0,
+                     "cache_read_ratio_samples": 1, "cache_read_ratio_input_total": 10000}
+                    for i, r in enumerate(rows)]
+        for old, new in zip(rows, enriched):
+            self.assertEqual(modelselect.normalize_rating(old), modelselect.normalize_rating(new))
+        after = modelselect.select("x", [CLOUD2, CLAUDE], purpose="worker", quotas={},
+                                   ratings={"rows": enriched}, stages=("audit",))
+        self.assertEqual(before, after)
+
     def test_min_confidence_comes_from_the_config_file(self):
         herdconfig.set_value("select.min_confidence", "0.95")
         result = modelselect.select("x", [CLAUDE, OLLAMA], quotas={},

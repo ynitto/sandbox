@@ -126,6 +126,19 @@ test('通知設定はプロファイルと明示指定を尊重し、不正な�
   } finally { shell.close(); }
 });
 
+test('Kiro の組み込み既定エージェントから作るときは道具を全部持たせる', () => {
+  // tools を書かないカスタムエージェントは組み込み道具が 0 個になる（kiro-cli 2.21 の /tools で Total 0）
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'app-cli-kiro-builtin-'));
+  const home = path.join(root, 'kiro');
+  fs.mkdirSync(home, { recursive: true });
+  const prepared = run('prepare', JSON.stringify({ cli: 'kiro', argv: ['kiro-cli', 'chat', '--trust-all-tools'],
+    env: { KIRO_HOME: home }, cwd: root, runtime: path.join(root, 'runtime'), token: 'builtin', chained: [] }));
+  const agent = JSON.parse(fs.readFileSync(path.join(prepared.env.KIRO_HOME, 'agents/agent-app.json')));
+  assert.deepEqual(agent.tools, ['*']);
+  assert.equal(agent.includeMcpJson, true);
+  assert.deepEqual(prepared.argv, ['kiro-cli', 'chat', '--trust-all-tools', '--agent', 'agent-app']);
+});
+
 test('Kiro の既定エージェント設定も継承する', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'app-cli-kiro-default-'));
   const home = path.join(root, 'kiro');
