@@ -33,8 +33,10 @@ fixed labels）。選択肢に A / B / C … の 1 文字ラベルを振り、�
 候補順を逆にすると答えが変わる——2026-09-21 の select の実測）。同じ問いを選択肢の並びを
 巡回させて `rotations` 回読み、宣言順に戻して**対数空間で平均**する（ruling の ordering
 averaging）。choice / boolean は巡回シフト、score は尺度の向きを保つため正順と逆順の 2 回。
-答えには読んだ回数 `rotations` と、並べ替え間で最頻の選択肢が一致した割合 `agreement` が
-付く——順序で判定が割れる問いは agreement が下がるので、確度と別に「割れている」と読める。
+答えには読んだ回数 `rotations` と、並べ替え間で最頻の選択肢が一致した割合 `agreement` が付く。
+`agreement` が見るのは**選択肢ラベルの置き場所**の偏りだけで、状態の中に並べた材料の順序では
+ない——材料は回さないので、全ての回転が同じ偏りを共有して `agreement` は 1.0 のまま出る
+（実測: docs/experiments/2026-09-21-selection/choice-retry-report.md）。
 回数は設定 `judge.rotations`（無ければ `DEFAULT_ROTATIONS` = 1、つまり回転しない）。呼び出しが
 r 倍になるので、有効にする値は実測（docs/plans/2026-09-22-judge-rotation-averaging.md）で決める。
 
@@ -402,7 +404,7 @@ def _payload(model: str, prompt: str, *, think, options: "dict | None",
         body["format"] = {"type": "object",
                           "properties": {"answer": {"type": "string", "enum": list(labels or [])}},
                           "required": ["answer"]}
-    keep_alive = os.environ.get("AGENT_OLLAMA_KEEP_ALIVE", "").strip()
+    keep_alive = os.environ.get("AGENT_OLLAMA_KEEP_ALIVE", "").strip() or default_keep_alive()
     if keep_alive:
         body["keep_alive"] = keep_alive
     return body
@@ -511,6 +513,18 @@ def evaluate(state, questions: dict, *, model: str = DEFAULT_MODEL, think=False,
 def setting() -> dict:
     """設定ファイルの `judge` の解決結果（`herdconfig.judge_setting`）: mode は auto / pinned / off。"""
     return herdconfig.judge_setting()
+
+
+def default_keep_alive() -> "str | None":
+    """設定 `judge.keep_alive`（ollama にモデルを残す時間）。未設定・壊れていれば None。
+
+    環境変数 `AGENT_OLLAMA_KEEP_ALIVE` が優先で、そちらが空のときだけ設定を見る
+    ——app（Windows）から WSL 側へ env は届かないので、設定ファイルが app からの唯一の口。
+    """
+    try:
+        return herdconfig.keep_alive_setting()
+    except herdconfig.ConfigError:
+        return None
 
 
 def default_rotations() -> int:

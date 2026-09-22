@@ -403,6 +403,9 @@ ollama へ回し、判定にクラウドのトークンを使わない。`off` �
 `judge.rotations`——判定のとき選択肢の並びを巡回させて読む回数（省略 1）。先頭に置いた
 選択肢が選ばれやすい偏りを打ち消すが、判定の呼び出しが回数分に増える。
 `agent-herd judge --rotations 3` で 1 回だけ試せる。
+`judge.keep_alive`——判定のモデルを Ollama に残す時間（`30m` / 秒数 / `-1` 常駐 / `0` 即解放）。
+省略すると Ollama の既定 5 分で、それを過ぎると次の判定がモデルの読み込みを待つ
+（gemma4:e4b の実測で 6.24 秒）。残す間はモデルがメモリを占めるので、機械の空きと相談して決める。
 `select.*`（`select.jev.api_key` / `select.jev.endpoint` / `select.jev.model` /
 `select.min_confidence`）は `agent-herd select`——依頼文を見て、候補のどのエージェント・
 モデルに任せるかを本家 Jev → judge → agent-audit の格付けの順で決める口——の設定。

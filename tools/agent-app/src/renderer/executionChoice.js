@@ -50,7 +50,7 @@ window.ExecutionChoice = (() => {
     ui.mode.value = automatic ? 'auto' : 'manual';
     ui.mode.disabled = locked;
     ui.modeField.hidden = !!options.shared;
-    ui.note.textContent = locked ? '実行先の変更は新しい会話から適用できます。' : '依頼内容に応じてエージェントとモデルを選びます。';
+    ui.note.textContent = locked ? (options.lockedMessage || '実行先の変更は新しい会話から適用できます。') : '依頼内容に応じてエージェントとモデルを選びます。';
     ui.note.hidden = options.shared || (!automatic && !locked);
     ui.agentField.hidden = automatic;
     agent.disabled = locked;

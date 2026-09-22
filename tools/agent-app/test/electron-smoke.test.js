@@ -270,7 +270,20 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.locator('.msg.user').first().textContent(), /画面を確認して/);
     assert.match(await win.locator('.answer-bubble').first().textContent(), /確認できました/);
     assert.strictEqual(await win.locator('.response-disclosure.thinking').first().getAttribute('open'), null, '完了後の思考は閉じる');
-    assert.strictEqual(await win.locator('.response-disclosure.information').first().getAttribute('open'), null, '成功時の実行情報は閉じる');
+    const executionInfo = win.locator('#execution-information');
+    assert.strictEqual(await executionInfo.getAttribute('open'), null, '実行情報は初期状態で閉じる');
+    assert.strictEqual(await win.locator('#messages .information').count(), 0, '実行情報は会話本文の外に置く');
+    assert.strictEqual(await win.locator('#conversation-history + #execution-information').count(), 1, '会話履歴の直下に置く');
+    await executionInfo.locator('summary').first().click();
+    assert.strictEqual(await win.locator('#execution-information-body').isVisible(), true);
+    await win.evaluate(() => renderMessages());
+    assert.notEqual(await executionInfo.getAttribute('open'), null, '再描画で折りたたみ状態を変えない');
+    const informationBounds = await executionInfo.boundingBox();
+    const historyBounds = await win.locator('#conversation-history').boundingBox();
+    const composerBounds = await win.locator('#composer').boundingBox();
+    assert.ok(informationBounds.y >= historyBounds.y + historyBounds.height);
+    assert.ok(composerBounds.y >= informationBounds.y + informationBounds.height);
+    await executionInfo.locator('summary').first().click();
     const historyScroll = await win.locator('#messages').evaluate((node) => {
       const before = node.scrollTop;
       node.scrollTop = 0;
@@ -471,7 +484,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('.message-action', { hasText: 'そのまま会話で実行' }).count(), 1);
     const routingTurn = win.locator('.response-turn', { has: openTask });
     assert.strictEqual(await routingTurn.locator('.message-action', { hasText: 'フォーク' }).count(), 0, '案内にフォークは出さない');
-    assert.match(await routingTurn.textContent(), /入力：period=前月/, '写した入力値は実行情報に 1 行');
+    assert.match(await win.locator('#execution-information-body').textContent(), /入力：period=前月/, '写した入力値は会話履歴の外の実行情報に 1 行');
     assert.strictEqual(await win.locator('#turn-routing').inputValue(), 'auto', '依頼の扱いの既定は自動');
     if (process.env.AGENT_APP_ROUTING_SCREENSHOT) {
       await openTask.scrollIntoViewIfNeeded();

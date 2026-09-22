@@ -144,7 +144,7 @@ test('Electron: automatic choice launches the selected model and persists across
     assert.equal(saved.modelSelection.stage, 'jev');
     assert.match(saved.messages.at(-1).text, /answer from beta --model beta-model/);
     assert.match(await win.textContent('#run-settings-summary'), /beta/);
-    assert.equal(await choice.isDisabled(), true);
+    assert.equal(await choice.isEnabled(), true);
     await win.fill('#prompt', '続けて');
     await win.click('#send');
     await win.waitForFunction(() => state.current?.messages.length >= 4 && !state.running.size);
@@ -152,6 +152,54 @@ test('Electron: automatic choice launches the selected model and persists across
     saved = store.readSession(data, id);
     assert.equal(saved.messages.at(-1).model, 'beta-model');
     await win.screenshot({ path: '/tmp/agent-app-jev-result.png' });
+    // Completed conversations can change agent/model for the next turn, without losing history.
+    await win.click('#run-settings > summary');
+    await win.selectOption('#cli', 'alpha');
+    await win.waitForFunction(() => state.current.cli === 'alpha' && state.current.policy === 'direct');
+    assert.equal(await win.inputValue('#model'), '');
+    assert.equal(store.readSession(data, id).model, '', 'changing agents clears the old model');
+    await win.fill('#model', 'custom-alpha');
+    await win.locator('#model').blur();
+    await win.waitForFunction(() => state.current.model === 'custom-alpha');
+    await win.click('#run-settings > summary');
+    await win.fill('#prompt', '別のエージェントで続けて');
+    await win.click('#send');
+    await win.waitForFunction(() => state.current?.messages.length >= 6 && !state.running.size && !state.pending.size);
+    saved = store.readSession(data, id);
+    assert.equal(saved.messages[1].model, 'beta-model');
+    assert.equal(saved.messages.at(-1).cli, 'alpha');
+    assert.equal(saved.messages.at(-1).model, 'custom-alpha');
+    assert.match(saved.messages.at(-1).text, /answer from alpha --model custom-alpha/);
+    assert.equal(saved.modelSelection, null);
+    await win.reload();
+    await win.waitForFunction(() => typeof document.getElementById('settings-open')?.onclick === 'function' && !state.agentsLoading);
+    await win.evaluate(id => openSession(id), id);
+    await win.waitForFunction(id => state.current?.id === id && !state.agentsLoading, id);
+    await win.click('#run-settings > summary');
+    assert.equal(await win.inputValue('#cli'), 'alpha');
+    assert.equal(await win.inputValue('#model'), 'custom-alpha');
+    await win.fill('#model', '');
+    await win.locator('#model').blur();
+    await win.waitForFunction(() => state.current.model === '');
+    await win.click('#run-settings > summary');
+    await win.fill('#prompt', '既定モデルで続けて');
+    await win.click('#send');
+    await win.waitForFunction(() => state.current?.messages.length >= 8 && !state.running.size && !state.pending.size);
+    assert.match(store.readSession(data, id).messages.at(-1).text, /answer from alpha --model alpha-model/);
+    const formatting = await win.evaluate(async () => {
+      const text = '一行目\n二行目\n\n- 項目A\n- 項目B\n\n```js\nconst a = 1;\nconst b = 2;\n```';
+      const node = messageNode({ role: 'assistant', text });
+      return {
+        breaks: node.querySelectorAll('.md p br').length,
+        items: node.querySelectorAll('.md li').length,
+        code: node.querySelector('pre code').textContent,
+        preview: MD.render('一行目\n二行目'),
+      };
+    });
+    assert.equal(formatting.breaks, 1);
+    assert.equal(formatting.items, 2);
+    assert.equal(formatting.code, 'const a = 1;\nconst b = 2;');
+    assert.doesNotMatch(formatting.preview, /<br/);
     const manual = await win.evaluate(root => api.automation.runStart({ root, taskId: 'prompt:demo', mode: 'run', agent: 'alpha', model: 'alpha-model', policy: 'recommended' }), root);
     assert.ok(manual.executionInformation.some(item => item.title.includes('beta / beta-model')));
     const launch = await app.evaluate(() => global.manualLaunch);

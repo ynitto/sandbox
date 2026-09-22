@@ -41,10 +41,10 @@
   }
 
   // Markdown → 無害化済み HTML 文字列。
-  function render(text) {
+  function render(text, { breaks = false } = {}) {
     const m = engine();
     let html;
-    try { html = m ? m.parse(String(text || '')) : `<pre>${escapeHtml(text)}</pre>`; } catch { html = `<pre>${escapeHtml(text)}</pre>`; }
+    try { html = m ? m.parse(String(text || ''), { breaks }) : `<pre>${escapeHtml(text)}</pre>`; } catch { html = `<pre>${escapeHtml(text)}</pre>`; }
     if (typeof DOMPurify === 'undefined') return html;
     return DOMPurify.sanitize(html, { FORBID_TAGS: ['style', 'form', 'button'] });
   }
@@ -75,8 +75,8 @@
   }
 
   // Markdown を要素へ流し込む（リンクは外部ブラウザ想定で target を付けない。クリックは呼び出し側が抑止）。
-  async function mount(el, text) {
-    el.innerHTML = render(text);
+  async function mount(el, text, options) {
+    el.innerHTML = render(text, options);
     el.classList.add('md');
     await mountMermaid(el);
   }

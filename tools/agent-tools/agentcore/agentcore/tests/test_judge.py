@@ -454,3 +454,43 @@ class RotationTests(unittest.TestCase):
             pathlib.Path(tmp, "agent-herd.yaml").write_text("judge:\n  rotations: many\n", encoding="utf-8")
             self.assertEqual(judge.default_rotations(), judge.DEFAULT_ROTATIONS, "壊れた設定は既定へ")
 
+
+class KeepAliveTests(unittest.TestCase):
+    """判定のモデルを ollama に残す時間。環境変数が優先で、無ければ設定を見る。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="agent-herd-config-")
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": self._tmp.name,
+                                               "AGENT_OLLAMA_KEEP_ALIVE": ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _sent(self):
+        sent = []
+        judge.evaluate("x", {"route": ROUTE},
+                       request=lambda p: sent.append(p) or _response({"A": 0.7, "B": 0.3}))
+        return sent[0]
+
+    def test_absent_config_sends_nothing(self):
+        self.assertIsNone(judge.default_keep_alive())
+        self.assertNotIn("keep_alive", self._sent())
+
+    def test_config_reaches_the_payload(self):
+        pathlib.Path(self._tmp.name, "agent-herd.yaml").write_text(
+            "judge:\n  keep_alive: 30m\n", encoding="utf-8")
+        self.assertEqual(judge.default_keep_alive(), "30m")
+        self.assertEqual(self._sent()["keep_alive"], "30m")
+
+    def test_environment_wins_over_config(self):
+        pathlib.Path(self._tmp.name, "agent-herd.yaml").write_text(
+            "judge:\n  keep_alive: 30m\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"AGENT_OLLAMA_KEEP_ALIVE": "1h"}):
+            self.assertEqual(self._sent()["keep_alive"], "1h")
+
+    def test_broken_config_does_not_stop_the_judgement(self):
+        pathlib.Path(self._tmp.name, "agent-herd.yaml").write_text(
+            "judge:\n  keep_alive: forever\n", encoding="utf-8")
+        self.assertIsNone(judge.default_keep_alive())
+        self.assertNotIn("keep_alive", self._sent())
+

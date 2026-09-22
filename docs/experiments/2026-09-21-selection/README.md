@@ -15,6 +15,7 @@
 | 証拠の扱いを見直し | [実装前レビュー](evidence-review.md) | 対応状況は実装結果を参照 |
 | 候補ごとの独立適合評価を試作 | [固定 holdout 評価](independent-holdout-report.md) | [independent.py](independent.py)、[開発結果](independent.jsonl)、[holdout スクリプト](independent-holdout.py)、[入力](independent-holdout-input.json)、[結果](independent-holdout.jsonl) |
 | 本番へ実装・検証 | [実装結果](implemented-independent.md)、[本番経路の検証](integration-validation.md) | [integration-validation.py](integration-validation.py)、[結果](integration-validation.jsonl) |
+| 回転平均で多肢選択を再試験。再び不採用 | [再試験](choice-retry-report.md) | [choice-retry.py](choice-retry.py)、[choice-state.py](choice-state.py)、[結果](choice-retry.jsonl) |
 
 `independent.py` の開発実験は同等幅0.05、固定 holdout と本番は0.01。異なる条件の結果を混ぜない。holdout 入力は assessed 検証と同じ6件であり、独立適合方式だけに対する完全な未見評価とは扱わない。
 

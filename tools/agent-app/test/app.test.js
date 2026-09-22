@@ -93,11 +93,12 @@ test('会話開始前後で本文と入力欄のグリッド位置を変えな�
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   assert.match(html, /id="conversation-start"[^>]*class="conversation-start"/);
   assert.match(css, /#chat\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto\s+auto/s);
-  // 段は 4 つ（端末 / ひとこと / 会話履歴 / 入力欄）。ひとことは共有を待っている間だけ出て、
+  // 段は 5 つ（端末 / ひとこと / 会話履歴 / 実行情報 / 入力欄）。ひとことは共有を待っている間だけ出て、
   // 隠れている間の段の高さは 0 なので、会話の見え方は変わらない。
   assert.match(css, /#share-talk\s*\{[^}]*grid-row:\s*2/s);
   assert.match(css, /#conversation-history\s*\{[^}]*grid-row:\s*3/s);
-  assert.match(css, /#composer\s*\{[^}]*grid-row:\s*4/s);
+  assert.match(css, /#execution-information\s*\{[^}]*grid-row:\s*4/s);
+  assert.match(css, /#composer\s*\{[^}]*grid-row:\s*5/s);
   assert.match(css, /scrollbar-gutter:\s*stable/);
   assert.match(renderer, /\$\('conversation-start'\)\.hidden\s*=\s*!!cur/);
 });
@@ -177,12 +178,12 @@ test('config.json の主要設定を三つの設定画面から UI コントロ�
   assert.match(renderer, /api\.listSkills/);
 });
 
-test('エージェント応答を思考・回答・実行情報の三層で表示する', () => {
+test('エージェント応答の思考・回答と独立した実行情報を表示する', () => {
   const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
   const css = fs.readFileSync(path.join(SRC, 'renderer/styles.css'), 'utf8');
   assert.match(renderer, /function responseDisclosure/);
   assert.match(renderer, /'思考・進捗'/);
-  assert.match(renderer, /'実行情報'/);
+  assert.match(fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8'), /id="execution-information"[\s\S]*?<span>実行情報<\/span>/);
   assert.match(renderer, /'msg assistant answer-bubble'/);
   assert.match(renderer, /api\.onTurnProgress/);
   assert.match(renderer, /api\.onTurnInfo/);

@@ -63,6 +63,22 @@ class HerdConfigTests(unittest.TestCase):
         with self.assertRaises(herdconfig.ConfigError):
             herdconfig.set_value("judge.temperature", "0")
 
+    def test_keep_alive_roundtrip_and_validation(self):
+        self.assertIsNone(herdconfig.keep_alive_setting())
+        for good in ("30m", "3600", "-1", "0", "1.5h"):
+            herdconfig.set_value("judge.keep_alive", good)
+            self.assertEqual(herdconfig.keep_alive_setting(), good)
+        self.assertEqual(herdconfig.describe()["keep_alive"], "1.5h")
+        herdconfig.set_value("judge.model", "gemma4:e4b")
+        herdconfig.unset_value("judge.keep_alive")
+        self.assertIsNone(herdconfig.keep_alive_setting())
+        self.assertEqual(herdconfig.judge_setting()["model"], "gemma4:e4b", "他の judge の鍵は残る")
+        for bad in ("forever", "10 minutes", "m30"):
+            with self.assertRaises(herdconfig.ConfigError):
+                herdconfig.set_value("judge.keep_alive", bad)
+        (self.home / "agent-herd.yaml").write_text("judge:\n  keep_alive: forever\n", encoding="utf-8")
+        self.assertIn("keep_alive", herdconfig.describe()["keep_alive_error"])
+
     def test_rotations_roundtrip_and_validation(self):
         self.assertIsNone(herdconfig.rotations_setting())
         herdconfig.set_value("judge.rotations", "3")

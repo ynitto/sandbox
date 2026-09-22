@@ -885,6 +885,9 @@ CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
     judge.calibration  手動承認した用途別 gate（model / method / min_coverage / thresholds の JSON）。
     judge.rotations    選択肢の並びを巡回させて読む回数（1〜26。省略時 1 = 回転しない。
                        位置バイアスを打ち消すが、判定の呼び出しが回数分に増える）。
+    judge.keep_alive   判定のモデルを ollama に残す時間（30m / 3600 / -1 常駐 / 0 即解放）。
+                       省略時は ollama の既定（5 分）。読み込み直しは 1 回目に数秒乗るが、
+                       残す間はメモリを占める。
                        用途 filter / route / assess / transition。null・省略した用途は保留。
 
     select.jev.api_key     本家 Jev（TypeSafe AI）の API キー。`select` の第 1 段を有効にする
@@ -966,6 +969,10 @@ def cmd_config(argv, *, err=None, out=None) -> int:
         print(f"judge.rotations: {info['rotations']}", file=out)
     if info.get("rotations_error"):
         print("rotations error: " + info["rotations_error"], file=out)
+    if info.get("keep_alive") is not None:
+        print(f"judge.keep_alive: {info['keep_alive']}", file=out)
+    if info.get("keep_alive_error"):
+        print("keep_alive error: " + info["keep_alive_error"], file=out)
     if judge_info.get("error"):
         print(f"注意: {judge_info['error']}", file=out)
     return 0

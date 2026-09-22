@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 判定のモデルを Ollama に残す時間を設定で決められるようにする（`judge.keep_alive`）
+
+Ollama の既定では 5 分でモデルが解放される。間が空いたあとの最初の判定は読み込みを待つ
+——この mac の実測（gemma4:e4b）で、`route` の 1 回目が 3.15 秒から 9.38 秒になる（**上乗せ 6.24 秒**）。
+ホーム画面のように毎回あたらしい会話から始める使い方では、この待ちがそのまま体感になる。
+
+- `agent-herd config set judge.keep_alive 30m`（秒数・`30m`・`-1` 常駐・`0` 即解放）。
+  省略時の動きは変えていない（Ollama の既定 5 分のまま）
+- 環境変数 `AGENT_OLLAMA_KEEP_ALIVE` があればそちらが優先。設定ファイルは agent-app（Windows）から
+  WSL 側へ env が届かないための口で、`judge.model` と同じ理由
+- 判定の出力は変わらない。`keep_alive` はモデルを常駐させる時間だけを決める。
+  残す間はメモリを占める（gemma4:e4b で約 3.9GB）ので既定は置かない
+
 ### agent-audit / agent-app: ホームからの送信に乗っていた 10 秒を外す（0.29.2）
 
 ホーム画面から依頼を送ると、会話画面から送るより 20 秒以上遅かった。ホームは送信のたびに新しい

@@ -63,7 +63,8 @@ SELECT_KEYS = ("select.jev.api_key", "select.jev.endpoint", "select.jev.model",
                "select.min_confidence")
 # `route`（依頼の振り分け。`agentcore.route`）の確度の下限。min_confidence を省くと select と同じ値。
 ROUTE_KEYS = ("route.min_confidence", "route.hold_min_confidence")
-KNOWN_KEYS = ("judge.model", "judge.calibration", "judge.rotations", *SELECT_KEYS, *ROUTE_KEYS)
+KNOWN_KEYS = ("judge.model", "judge.calibration", "judge.rotations", "judge.keep_alive",
+              *SELECT_KEYS, *ROUTE_KEYS)
 
 
 class ConfigError(RuntimeError):
@@ -187,6 +188,32 @@ def judge_setting() -> dict:
     if value == JUDGE_OFF:
         return {"mode": "off", "model": None, "error": None}
     return {"mode": "pinned", "model": value, "error": None}
+
+
+# ollama の `keep_alive` に渡せる書き方（秒数、`30m` のような単位つき、`-1` は常駐、`0` は即解放）。
+_KEEP_ALIVE = __import__("re").compile(r"^-1$|^\d+(?:\.\d+)?(?:ns|us|ms|s|m|h)?$")
+
+
+def normalize_keep_alive(value) -> "str | None":
+    """`judge.keep_alive` の値。空は未設定（ollama の既定 5 分に任せる）。
+
+    判定のたびにモデルが読み込み直されると、この mac の実測で 1 回目に 6.24 秒乗る
+    （gemma4:e4b）。長くすると速いが、その間メモリを占める（e4b で約 3.9GB）ので既定は置かない。
+    """
+    if value is None or (isinstance(value, bool)) or (isinstance(value, str) and not value.strip()):
+        return None if not isinstance(value, bool) else None
+    text = str(value).strip()
+    if not text:
+        return None
+    if not _KEEP_ALIVE.match(text):
+        raise ConfigError("judge.keep_alive は秒数か 30m のような時間、-1（常駐）、0（即解放）です")
+    return text
+
+
+def keep_alive_setting() -> "str | None":
+    """`judge.keep_alive` の値。未設定は None。壊れていれば ConfigError。"""
+    section = load().get("judge")
+    return normalize_keep_alive(section.get("keep_alive")) if isinstance(section, dict) else None
 
 
 def normalize_rotations(value) -> "int | None":
@@ -355,6 +382,8 @@ def set_value(key: str, value) -> Path:
             data.pop("judge", None)
     elif key == "judge.rotations":
         _set_path(data, ("judge", "rotations"), normalize_rotations(value))
+    elif key == "judge.keep_alive":
+        _set_path(data, ("judge", "keep_alive"), normalize_keep_alive(value))
     elif key in SELECT_KEYS or key in ROUTE_KEYS:
         normalized = None if value is None else _normalize_select_value(key, value)
         _set_path(data, tuple(key.split(".")), normalized)
@@ -376,6 +405,10 @@ def describe() -> dict:
         rotations, rotations_error = rotations_setting(), None
     except ConfigError as exc:
         rotations, rotations_error = None, str(exc)
+    try:
+        keep_alive, keep_alive_error = keep_alive_setting(), None
+    except ConfigError as exc:
+        keep_alive, keep_alive_error = None, str(exc)
     select = select_setting()
     jev = dict(select["jev"])
     # API キーは表示しない（`config --json` は agent-app や人の画面へ流れる）。
@@ -383,6 +416,7 @@ def describe() -> dict:
         jev["api_key"] = "(set)"
     return {"calibration": calibration, "calibration_error": calibration_error,
             "rotations": rotations, "rotations_error": rotations_error,
+            "keep_alive": keep_alive, "keep_alive_error": keep_alive_error,
             "path": str(path) if path else None,
             "default_path": str(agents_home() / CONFIG_NAMES[0]),
             "judge": judge_setting(),

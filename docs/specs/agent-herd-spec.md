@@ -677,6 +677,7 @@ agent-herd config unset KEY
 |---|---|---|
 | `judge.model` | `auto` / `off` / モデル名 | §5.5 の表のとおり。`unset` は `auto` と同じ |
 | `judge.rotations` | 1〜26 | §5.5 の `--rotations` の既定。組み込みの判定（遷移条件・`route`・`filter`・`assess`・`select`）にも効く。省略時 1（回転しない） |
+| `judge.keep_alive` | 秒数 / `30m` / `-1` / `0` | 判定のモデルを Ollama に残す時間。省略時は Ollama の既定（5 分）。環境変数 `AGENT_OLLAMA_KEEP_ALIVE` があればそちらが優先。読み込み直しは判定 1 回目に数秒乗る代わりに、残す間はモデルがメモリを占める |
 | `select.jev.api_key` | API キー / `off` | 本家 Jev（TypeSafe AI）の API キー。`select`（§5.7）の第 1 段を有効にする。無ければ環境変数 `TYPESAFE_API_KEY`。`off` は環境変数があっても使わない。表示（`config` / `--json`）では伏せる |
 | `select.jev.endpoint` | URL | Jev の URL。省略時 `https://api.typesafe.ai/v1/systemone`（ゲートウェイ経由なら差し替える） |
 | `select.jev.model` | モデル名 | 省略時 `jev-latest` |
@@ -941,6 +942,7 @@ frontmatter は 1 行の `key: value` だけを受け付ける。
 judge:
   model: gemma4:e4b   # auto（省略）/ off / モデル名
   rotations: 1        # 選択肢の並びを巡回させて読む回数（省略 1。呼び出しが回数分に増える）
+  keep_alive: 30m     # 判定のモデルを Ollama に残す時間（省略時は Ollama の既定 5 分）
 select:
   jev:
     api_key: sk-…     # 本家 Jev の API キー（無ければ環境変数 TYPESAFE_API_KEY。off で使わない）

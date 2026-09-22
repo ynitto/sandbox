@@ -1276,7 +1276,8 @@ function renderRunSettingsSummary() {
   if (!state.current && !shared && selected.allocation !== 'auto') $('policy').value = 'direct';
   ExecutionChoice.sync($('cli'), $('model'), {
     automatic: () => selected.allocation === 'auto', shared,
-    locked: () => !!state.current && !shared && (!!state.current.modelSelection || !!state.current.messages.length || state.pending.has(state.current.id)),
+    locked: () => !!state.current && !shared && (state.pending.has(state.current.id) || state.running.has(state.current.id)),
+    lockedMessage: '実行が終わると、次の依頼のエージェントとモデルを変更できます。',
     models: cli => Object.values(state.config.execution.tiers).filter(t => t.cli === cli).map(t => t.model),
     changeMode: mode => {
       $('policy').value = mode === 'auto' ? 'recommended' : 'direct';
@@ -1481,7 +1482,7 @@ function renderHeader() {
   if ((state.input.mode === 'share' && !shareEnabled()) || waiting) setInputMode(state.input.mode, { focus: false });
   else $('input-mode-share').hidden = !shareEnabled();
   // 共有の答えを待っている間、「停止」は列からの取り下げになる
-  $('stop').textContent = waiting ? '取り下げ' : '停止';
+  $('stop').textContent = waiting ? '取り下げ' : '中止';
   renderRunSettingsSummary();
 }
 
@@ -1692,7 +1693,7 @@ function messageNode(m, index = -1) {
     const answer = el('div', 'msg assistant answer-bubble');
     const body = el('div');
     answer.append(body);
-    const mounted = m.text ? MD.mount(body, m.text).catch(() => { body.textContent = m.text; }) : Promise.resolve();
+    const mounted = m.text ? MD.mount(body, m.text, { breaks: true }).catch(() => { body.textContent = m.text; }) : Promise.resolve();
     if (m.error) answer.append(el('div', 'err', m.error));
     const artifactLinks = Reuse.artifacts(m.text);
     if (artifactLinks.length) {
@@ -1717,15 +1718,6 @@ function messageNode(m, index = -1) {
       }).catch(() => { /* 確認できない候補を成果物ボタンとして表示しない */ });
     }
     n.append(answer);
-    const meta = [];
-    if (m.elapsedMs != null) meta.push(`${Math.round(m.elapsedMs / 1000)} 秒`);
-    if (m.code != null && m.code !== 0) meta.push(`終了コード ${m.code}`);
-    if (m.stopped) meta.push('停止');
-    const information = [...(Array.isArray(parts.information) ? parts.information : [])];
-    if (meta.length && !information.length) information.push({ type: 'status', title: '実行結果', detail: meta.join(' · '), status: m.error ? 'error' : 'success' });
-    const infoHasError = information.some((item) => item && item.status === 'error');
-    const info = responseDisclosure('information', '実行情報', information, { open: !!(m.error || m.stopped || (m.code != null && m.code !== 0) || infoHasError) });
-    if (info) n.append(info);
     if (m.role === 'routing' && m.routing) n.append(routingActionsNode(m.routing));
     const forkActions = forkActionsNode(m, index);
     if (forkActions) n.append(forkActions);
@@ -1889,14 +1881,45 @@ function workingNode(id, tmuxMode) {
   const ph = state.phases.get(id);
   const parts = state.liveParts.get(id) || { thinking: [], information: [] };
   const thinking = [...(Array.isArray(parts.thinking) ? parts.thinking : [])];
-  const liveInformation = Array.isArray(parts.information) ? parts.information : [];
   if (ph && ph.phase === 'attention') thinking.push({ text: ph.detail || '端末で確認を求めています', status: 'attention' });
   n.append(responseDisclosure('thinking', '思考・進捗', thinking, { open: true, running: true }));
-  const info = responseDisclosure('information', '実行情報', liveInformation, {
-    open: liveInformation.some((item) => item.status === 'error'), raw: rawExecutionNode(id, tmuxMode),
-  });
-  if (info) n.append(info);
   return n;
+}
+
+function renderExecutionInformation() {
+  const panel = $('execution-information');
+  const body = $('execution-information-body');
+  const cur = state.current;
+  if (panel.dataset.session !== (cur?.id || '')) panel.open = false;
+  panel.dataset.session = cur?.id || '';
+  body.replaceChildren();
+  let count = 0;
+  const append = (title, items, raw = null) => {
+    const info = responseDisclosure('information', title, items, { raw });
+    if (!info) return;
+    const group = el('section', 'execution-turn response-disclosure information');
+    group.append(el('div', 'response-who', title), info.querySelector('.disclosure-body'));
+    body.append(group);
+    count += items.length;
+  };
+  let turn = 0;
+  for (const m of cur?.messages || []) {
+    if (m.role === 'user') continue;
+    turn++;
+    const information = [...(Array.isArray(m.parts?.information) ? m.parts.information : [])];
+    const meta = [];
+    if (m.elapsedMs != null) meta.push(`${Math.round(m.elapsedMs / 1000)} 秒`);
+    if (m.code != null && m.code !== 0) meta.push(`終了コード ${m.code}`);
+    if (m.stopped) meta.push('停止');
+    if (meta.length && !information.length) information.push({ type: 'status', title: '実行結果', detail: meta.join(' · '), status: m.error ? 'error' : 'success' });
+    append([`応答 ${turn}`, m.cli, m.model].filter(Boolean).join(' · '), information);
+  }
+  if (cur && state.running.has(cur.id)) {
+    const live = state.liveParts.get(cur.id);
+    append('実行中', Array.isArray(live?.information) ? live.information : [], rawExecutionNode(cur.id, isTmux(cur)));
+  }
+  panel.hidden = !body.children.length;
+  $('execution-information-count').textContent = count ? `${count}件` : '';
 }
 
 function logLine(line) {
@@ -1915,6 +1938,7 @@ function terminalSnapshotNode(snapshot) {
 }
 
 function renderMessages() {
+  renderExecutionInformation();
   const box = $('messages');
   const start = $('conversation-start-content');
   box.replaceChildren();
@@ -2960,10 +2984,14 @@ async function init() {
   // 上の選択は「次のターン」の起動条件。会話にも覚えさせ（開き直しても残る）、tmux で動いている
   // CLI と違えば次の依頼のときに起動し直す（claude / copilot は --resume で文脈を引き継ぐ）
   const onTurnOptionChange = async (key) => {
+    if ((key === 'cli' || key === 'model') && currentPolicy() !== 'shared') {
+      $('policy').value = 'direct';
+      $('run-allocation').value = '';
+    }
     const opts = turnOptions();
     const selected = selectedExecution(opts.policy);
     if (state.current) {
-      const patch = key === 'policy' ? { policy: opts.policy, tier: selected.tier, cli: selected.cli, model: selected.model, allocation: selected.allocation || '' }
+      const patch = ['policy', 'cli', 'model'].includes(key) ? { policy: opts.policy, tier: selected.tier, cli: selected.cli, model: selected.model, allocation: selected.allocation || '', ...(opts.policy === 'direct' ? { modelSelection: null } : {}) }
         : key === 'permission' ? { readonly: opts.readonly, autoApprove: opts.autoApprove }
           : { [key]: selected[key] };
       state.current = await api.updateSession(state.current.id, patch);
@@ -3131,7 +3159,7 @@ async function init() {
     lines.push({ kind, text });
     if (lines.length > 2000) lines.shift();
     state.logs.set(id, lines);
-    const node = document.querySelector(`#working-${id} .log`);
+    const node = state.current?.id === id ? document.querySelector('#execution-information-body .log') : null;
     if (node) { node.append(logLine({ kind, text })); node.scrollTop = node.scrollHeight; }
   });
   api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); FlowTeaching.onTurnDone(p); return onTurnDone(p).finally(refreshAttention); });
@@ -3151,7 +3179,7 @@ async function init() {
     state.tails.set(p.id, p.tail || '');
     Term.applyScreen(p);
     TaskTerm.applyScreen(p);
-    const node = document.querySelector(`#working-${p.id} .tail`);
+    const node = state.current?.id === p.id ? document.querySelector('#execution-information-body .tail') : null;
     if (node) node.textContent = p.tail || '';
   });
   // OS の通知を押したとき（main が前面に戻してから知らせる）
