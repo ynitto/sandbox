@@ -139,6 +139,20 @@ def _err(message: str, *, err=None) -> None:
     print(f"[agent-error:env] {PROG}: {message}", file=err or sys.stderr)
 
 
+def _json_source(value: str) -> str:
+    """JSON のパスなら中身を、そうでなければ受け取った文字列そのものを返す。
+
+    長い JSON をそのまま渡されると is_file() が OSError（名前が長すぎる）で落ちるので、
+    パスとして見られない値は JSON 本体として扱う。
+    """
+    try:
+        path = Path(value).expanduser()
+        found = path.is_file()
+    except OSError:
+        return value
+    return path.read_text(encoding="utf-8") if found else value
+
+
 def _known_definition(name: str) -> bool:
     """定義として解決できる名前か（未知サブコマンドの案内を正確にするためだけに使う）。"""
     try:
@@ -452,8 +466,7 @@ def cmd_decide(argv, *, err=None, runner=None, stdin=None, out=None) -> int:
     from agentcore import llmjson, nodecontract
 
     try:
-        path = Path(decision_arg).expanduser()
-        raw = path.read_text(encoding="utf-8") if path.is_file() else decision_arg
+        raw = _json_source(decision_arg)
         decision = json.loads(raw)
     except (OSError, ValueError) as exc:
         _err(f"判定契約を読めません: {exc}", err=err)
@@ -587,8 +600,7 @@ def cmd_judge(argv, *, err=None, out=None, stdin=None, request=None) -> int:
         _err("--questions に問いの集合（JSON のパスか JSON そのもの）が必要です", err=err)
         return 2
     try:
-        path = Path(questions_arg).expanduser()
-        raw = path.read_text(encoding="utf-8") if path.is_file() else questions_arg
+        raw = _json_source(questions_arg)
         questions = json.loads(raw)
     except (OSError, ValueError) as exc:
         _err(f"問いを読めません: {exc}", err=err)
@@ -847,8 +859,7 @@ def cmd_route(argv, *, err=None, out=None, stdin=None, jev_request=None,
         _err("--candidates に候補（JSON のパスか JSON そのもの）が必要です", err=err)
         return 2
     try:
-        path = Path(candidates_arg).expanduser()
-        raw = path.read_text(encoding="utf-8") if path.is_file() else candidates_arg
+        raw = _json_source(candidates_arg)
         candidates = json.loads(raw)
     except (OSError, ValueError) as exc:
         _err(f"候補を読めません: {exc}", err=err)
