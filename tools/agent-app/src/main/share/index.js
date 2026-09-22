@@ -66,13 +66,28 @@ class Share {
     this.publicCatalog = [];
     this.publicErrors = [];
     this.catalogAt = 0;
+    this.chain = Promise.resolve();
   }
 
   get cfg() { return (this.config && this.config.share) || {}; }
 
-  async start() {
+  // start / stop / reconfigure は 1 本の列で順に動かす。起動時の start()（CLI の一覧やホストの探査を
+  // 待ってから走る）と、設定画面からの reconfigure() が重なると、同じポートを 2 度 listen して
+  // EADDRINUSE で止まっていた（Windows は WSL の探査が長く、共有を ON にした直後に重なりやすい）。
+  serial(fn) {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.catch(() => {});
+    return run;
+  }
+
+  start() { return this.serial(() => this.startNow()); }
+  stop() { return this.serial(() => this.stopNow()); }
+
+  async startNow() {
     const cfg = this.cfg;
     if (!cfg.enabled) { this.state = 'off'; return this; }
+    // 既に動いている受け口は開け直さない（設定が変わったときは reconfigure が止めてから来る）
+    if (this.state === 'on') return this;
     this.node = normalizeNode(cfg.node || defaultNode());
     const key = keyOf(cfg.passphrase);
     const dir = path.join(this.userData, 'share');
@@ -148,7 +163,7 @@ class Share {
     return this;
   }
 
-  async stop() {
+  async stopNow() {
     if (this.participant) this.participant.stop();
     if (this.requester) this.requester.stop();
     if (this.peers) this.peers.stop();
@@ -162,15 +177,17 @@ class Share {
     this.publicCatalog = []; this.publicErrors = []; this.catalogAt = 0;
   }
 
-  async reconfigure(config) {
-    const before = this.cfg;
-    this.config = config;
-    if (!sameShare(before, this.cfg) || (this.state !== 'on' && this.cfg.enabled)) {
-      await this.stop();
-      await this.start();
-    }
-    this.send('share:changed', this.status());
-    return this.status();
+  reconfigure(config) {
+    return this.serial(async () => {
+      const before = this.cfg;
+      this.config = config;
+      if (!sameShare(before, this.cfg) || (this.state !== 'on' && this.cfg.enabled)) {
+        await this.stopNow();
+        await this.startNow();
+      }
+      this.send('share:changed', this.status());
+      return this.status();
+    });
   }
 
   // 再起動のあと、待っていた依頼が列に残っていなければ会話に 1 行残して印を消す

@@ -111,7 +111,14 @@ function createServer({ key, handlers }) {
         server.listen(port, host, () => resolve(server.address().port));
       });
     },
-    close() { return new Promise((resolve) => server.close(() => resolve())); },
+    // 開いている接続も切ってから閉じる。keep-alive の接続が残っていると close が待ち続け、
+    // 設定を変えたあとの開け直しが遅れる（Windows では次の listen が塞がる）
+    close() {
+      return new Promise((resolve) => {
+        server.close(() => resolve());
+        if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+      });
+    },
   };
 }
 

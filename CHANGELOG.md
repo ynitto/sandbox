@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 共有を ON にした直後の「listen EADDRINUSE」を直す（0.30.1）
+
+- **共有の受け口を 2 度開けない。** 起動時の共有の開始は CLI の一覧とホストの探査（Windows では
+  `wsl.exe`）を待ってから走る。その間に「設定 > 共有」で ON にすると、設定の反映が先に受け口を
+  開け、遅れて来た起動時の開始が同じポートをもう一度 listen して
+  `listen EADDRINUSE: address already in use 0.0.0.0:<ポート>` で止まっていた。開始・停止・設定の
+  反映を 1 本の列で順に動かし、既に動いている受け口は開け直さない
+- 受け口を閉じるときは残っている接続も切る（keep-alive が残ると閉じ終わるのを待ち続け、
+  設定を変えたあとの開け直しが遅れる）
+
 ### agent-app: ホームから送って CLI が依頼を受け取るまでを短くする（0.30.0）
 
 送信から tmux の CLI に依頼が届くまでを実測したら 39 秒だった（ホーム・自動選択・ollama TUI、

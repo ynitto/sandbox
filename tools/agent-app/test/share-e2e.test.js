@@ -448,6 +448,28 @@ test('受け口のポート: 0 は「空いているポート」（既定の 478
   assert.notEqual(second.port, share.port);
 });
 
+test('受け口を 2 度開けない: 設定画面の reconfigure と起動時の start が重なっても EADDRINUSE にしない', async (t) => {
+  // 起動時の start() は CLI の一覧とホストの探査を待ってから走る。その間に「設定 > 共有」で ON にすると
+  // reconfigure() が先に受け口を開け、遅れて来た start() が同じポートをもう一度 listen していた
+  const config = settings.normalize({ share: { enabled: true, node: 'twice', passphrase: PASS, port: 0 } });
+  const share = new Share({ userData: tmp('twice'), config, runPrompt: fakeRunner([{ text: 'x' }]), options: { udp: false, host: '127.0.0.1' } });
+  t.after(() => share.stop());
+  await share.reconfigure(config);
+  assert.equal(share.state, 'on', share.error);
+  const fixed = settings.normalize({ share: { ...config.share, port: share.port } });
+  share.config = fixed;                                   // 以後は空きではなく、いま取ったポートを指す
+  const port = share.port;
+  await share.start();                                    // 遅れて来た起動時の start
+  assert.equal(share.state, 'on', share.error);
+  assert.equal(share.port, port, '同じ受け口をそのまま使う');
+  // 重なって呼ばれても順に動く（停止→開始の途中にもう 1 つの開始が割り込まない）
+  await Promise.all([share.reconfigure(settings.normalize({ share: { ...fixed.share, node: 'twice2' } })), share.start(), share.reconfigure(fixed)]);
+  assert.equal(share.state, 'on', share.error);
+  assert.equal(share.port, port);
+  const probe = await call({ address: '127.0.0.1', port }, 'GET', '/node', { key: keyOf(PASS) });
+  assert.equal(probe.status, 200);
+});
+
 test('自分から公開: 終了済み会話を別の参加者が検索・閲覧・コメントでき、停止後は取得できない', async t => {
   await withNodes(t, async open => {
     const a = await open('publisher');
