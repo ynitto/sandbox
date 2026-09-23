@@ -1521,7 +1521,19 @@ function registerIpcHandlers(getWindow) {
     const seen = store.attentionBaseline(ud);
     return attention.project(sources, { seen: seen.items, since: seen.since });
   });
-  handle('attention:seen', (p) => store.markAttentionSeen(userData(), String(p.key || ''), String(p.resultAt || '')));
+  handle('attention:seen', (p) => {
+    const ud = userData();
+    const key = String(p.key || '');
+    store.markAttentionSeen(ud, key, String(p.resultAt || ''));
+    if (!key.startsWith('finding:')) return;
+    const sessionId = key.slice('finding:'.length);
+    try {
+      const session = store.readSession(ud, sessionId);
+      if (session.kind !== 'conversation' && session.kind !== undefined) return;
+      const result = attention.conversationResult(session.messages);
+      if (result && result.at) store.markAttentionSeen(ud, `conversation:${sessionId}`, result.at);
+    } catch { /* 元セッションが消されていても発見は既読にできる */ }
+  });
 
   // 端末（tmux）
   handle('term:open', (p) => openConversation(p.id, send, { cols: p.cols, rows: p.rows }));

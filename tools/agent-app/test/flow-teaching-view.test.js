@@ -14,13 +14,18 @@ function setup(sessionPromise) {
     if (!nodes.has(id)) nodes.set(id, {
       hidden: false, disabled: false, value: id === 'flow-teach-agent' ? 'codex' : '',
       dataset: {}, options: [{ value: 'codex' }], classList: { toggle() {} },
-      setAttribute() {}, replaceChildren() {}, addEventListener() {},
+      setAttribute() {}, replaceChildren() {}, addEventListener() {}, focus() {},
     });
     return nodes.get(id);
   };
   let reads = 0;
   let detaches = 0;
-  const term = { detach() { detaches += 1; }, current() { return ''; }, setInputEnabled() {}, refit() {}, configure() {} };
+  let attached = '';
+  const term = {
+    detach() { detaches += 1; attached = ''; }, current() { return attached; },
+    async attach(id) { attached = id; }, size: () => ({ cols: 80, rows: 24 }),
+    setInputEnabled() {}, refit() {}, configure() {},
+  };
   const context = {
     window: { FlowTerm: term }, document: { getElementById: node, querySelectorAll: () => [] },
     api: { automation: { flowTeachSession() { reads += 1; return sessionPromise; } } },
@@ -33,7 +38,7 @@ function setup(sessionPromise) {
     notice() {}, agentNames: () => ['codex'], executionDefaults: () => ({ agent: 'codex' }),
     executionLabel: () => 'codex', modelNames: () => [], shareEnabled: () => false, isRunning: () => false,
   };
-  return { teaching: context.window.FlowTeaching, api: context.api, node, reads: () => reads, detaches: () => detaches };
+  return { teaching: context.window.FlowTeaching, api: context.api, node, term, reads: () => reads, detaches: () => detaches };
 }
 
 test('workflow redraw keeps an in-flight session load', async () => {
@@ -92,4 +97,56 @@ test('workflow redraw does not cancel an in-flight start', async () => {
   finishStart({ session: null, started: true });
   await opening;
   assert.equal(teaching.state.pending, false);
+});
+
+test('first edit prepares and attaches the terminal before sending the turn', async () => {
+  let releaseTurn;
+  let turnStarted;
+  const started = new Promise((resolve) => { turnStarted = resolve; });
+  const { teaching, api, node, term } = setup(Promise.resolve({ session: null }));
+  teaching.state.deps.executionOptions = () => ({ policy: 'direct', cli: 'codex', model: '' });
+  teaching.state.deps.reloadWorkflows = async () => {};
+  const calls = [];
+  const session = { id: 'session-1', cli: 'codex', model: '', policy: 'direct' };
+  api.automation.flowTeachPrepare = async () => { calls.push('prepare'); return { session }; };
+  api.termOpen = async () => { calls.push('open'); return { phase: 'ready' }; };
+  const originalAttach = term.attach;
+  term.attach = async (id) => { calls.push('attach'); await originalAttach(id); };
+  api.automation.flowTeachStart = () => {
+    calls.push('start');
+    turnStarted();
+    return new Promise((resolve) => { releaseTurn = resolve; });
+  };
+  teaching.show({ root: '/repo', workflowId: 'existing', existing: true });
+  await teaching.state.ready;
+  teaching.init(teaching.state.deps);
+  const opening = node('flow-teach-start').onclick();
+  await started;
+  assert.deepEqual(calls, ['prepare', 'open', 'attach', 'start']);
+  assert.equal(term.current(), session.id);
+  releaseTurn({ session, started: true });
+  await opening;
+});
+
+test('failed terminal connection keeps a visible retry action and restart reconnects', async () => {
+  const { teaching, api, node, term } = setup(Promise.resolve({ session: null }));
+  teaching.state.deps.executionOptions = () => ({ policy: 'direct', cli: 'codex', model: '' });
+  teaching.state.deps.reloadWorkflows = async () => {};
+  const session = { id: 'session-1', cli: 'codex', model: '', policy: 'direct' };
+  api.automation.flowTeachPrepare = async () => ({ session });
+  api.automation.flowTeachStart = async () => ({ session, started: false });
+  api.termOpen = async () => { throw new Error('tmux unavailable'); };
+  teaching.show({ root: '/repo', workflowId: 'existing', existing: true });
+  await teaching.state.ready;
+  teaching.init(teaching.state.deps);
+  await node('flow-teach-start').onclick();
+  assert.equal(teaching.state.phase.phase, 'gone');
+  assert.equal(node('flow-teach-restart').hidden, false);
+  assert.equal(term.current(), '');
+
+  api.termRestart = async () => ({ phase: 'ready', name: 'recovered' });
+  await node('flow-teach-restart').onclick();
+  assert.equal(teaching.state.phase.phase, 'ready');
+  assert.equal(term.current(), session.id);
+  assert.equal(node('flow-teach-restart').hidden, true);
 });

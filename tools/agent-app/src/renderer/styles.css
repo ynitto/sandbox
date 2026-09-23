@@ -632,7 +632,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #task-launch { display: contents; }
 #task-terminal-placeholder, #task-terminal,
 #flow-teach-placeholder, #flow-teach-terminal { width: min(100%, 900px); height: min(46vh, 480px); min-height: 260px; margin-inline: auto; }
-#task-composer-placeholder { width: min(100%, 900px); min-height: 174px; margin: 0 auto; visibility: hidden; }
+#task-composer-placeholder, #flow-teach-composer-placeholder { width: min(100%, 900px); min-height: 174px; margin: 0 auto; visibility: hidden; }
 /* 「AIと編集」は会話画面と同じ端末・入力欄を使う。見本は入力欄内のタブで切り替える。 */
 #task-teaching.in-card { height: 100%; min-height: 0; gap: 0; grid-template-rows: minmax(0, 1fr); }
 #task-teaching.in-card #task-workspace { height: 100%; min-height: 0; gap: 0; grid-template-rows: auto minmax(0, 1fr) auto; }
@@ -641,6 +641,13 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #task-teaching.in-card #task-terminal { grid-row: 2; height: auto; min-height: 220px; margin: 0 auto; }
 #task-teaching.in-card #task-composer-placeholder,
 #task-teaching.in-card #task-composer { grid-row: 3; margin: 10px auto 6px; }
+#flow-teaching.in-card { height: 100%; min-height: 0; gap: 0; grid-template-rows: auto minmax(0, 1fr) auto; }
+#flow-teaching.in-card #flow-teach-launch { display: contents; }
+#flow-teaching.in-card #flow-teach-launch > .task-actions { grid-row: 1; padding-bottom: 10px; }
+#flow-teaching.in-card #flow-teach-placeholder,
+#flow-teaching.in-card #flow-teach-terminal { grid-row: 2; height: auto; min-height: 220px; margin: 0 auto; }
+#flow-teaching.in-card #flow-teach-composer-placeholder,
+#flow-teaching.in-card #flow-teach-composer { grid-row: 3; margin: 10px auto 6px; }
 #task-record { grid-row: 2 / 4; min-width: 0; display: grid; align-content: start; gap: 8px; padding: 12px 8px; }
 #task-record input { min-width: 0; flex: 1 1 220px; }
 #task-record .task-actions { gap: 8px; }
@@ -761,6 +768,11 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .issue-evidence > details { min-width: 0; max-width: 100%; }
 .issue-evidence summary { cursor: pointer; }
 .issue-evidence .message-action { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.finding-excerpts { display: grid; gap: 8px; min-width: 0; margin: 0; padding-left: 20px; }
+.finding-excerpts li { overflow-wrap: anywhere; line-height: 1.5; }
+.finding-excerpts strong { margin-right: 8px; font-size: 11px; white-space: nowrap; }
+.finding-more summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.finding-more .finding-excerpts { margin-top: 8px; }
 .issue-request-control { display: grid; gap: 8px; min-width: 0; }
 .issue-request-control label { display: grid; gap: 6px; min-width: 0; font-size: 12px; font-weight: 600; }
 .issue-request-control textarea { width: 100%; min-width: 0; min-height: 64px; resize: vertical; line-height: 1.5; font-weight: 400; }

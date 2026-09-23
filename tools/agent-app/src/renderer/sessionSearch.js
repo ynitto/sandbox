@@ -269,12 +269,12 @@ const SessionSearch = (() => {
   // （フォークする位置・フォーク先は課題に無いので隠す）。
   async function handoffIssue(issue) {
     transfer = { record: null, issue, mode: 'issue', routine: false, busy: false };
-    $('search-transfer-title').textContent = '課題への依頼を始める';
-    $('search-transfer-start').textContent = '依頼を送る';
+    $('search-transfer-title').textContent = '新しいセッションの設定';
+    $('search-transfer-start').textContent = 'セッションを開始';
     $('search-transfer-source').textContent = issue.title || '';
     $('search-boundary').closest('label').hidden = true;
     $('search-intent').closest('label').hidden = true;
-    $('search-request').previousElementSibling.textContent = 'この課題への依頼';
+    $('search-request').previousElementSibling.textContent = '事前プロンプト';
     $('search-request').value = issue.request || ''; $('search-transfer-status').textContent = '';
     $('search-execution-settings').open = false;
     const config = deps.getConfig();
@@ -290,7 +290,7 @@ const SessionSearch = (() => {
     if (current.issue.fork && !current.issue.allowRepoChange && repo !== current.issue.repo) throw new Error('修正先のリポジトリが変わりました。課題を開き直してください');
     const permission = $('search-target-permission').value;
     const extra = $('search-request').value.trim();
-    if (!extra) throw new Error('この課題への依頼を入力してください');
+    if (!extra) throw new Error('事前プロンプトを入力してください');
     const prompt = `${current.issue.prompt}\n\n## 利用者の依頼\n${extra}`;
     $('search-transfer-status').textContent = '会話を作っています…';
     const config = deps.getConfig();

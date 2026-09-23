@@ -225,7 +225,15 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .flow-node-summary small { color: var(--muted); }
 .flow-node-summary p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .flow-editor { min-width: 0; display: grid; gap: 12px; }
-.flow-editor > .execution-title { position: sticky; top: 0; z-index: 10; padding-block: 12px; background: var(--bg); }
+.flow-editor-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 52px; padding: 8px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.flow-editor-toolbar .bar-center { min-width: 0; justify-content: flex-start; }
+.flow-editor-toolbar .bar-center .title-input { text-align: left; }
+.flow-editor-toolbar .bar-right { min-width: 0; display: flex; align-items: center; gap: 4px; }
+.flow-editor > .flow-editor-toolbar { position: sticky; top: 0; z-index: 10; }
+@media (max-width: 760px) {
+  .flow-editor-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .flow-editor-toolbar .bar-right { flex-wrap: wrap; }
+}
 .flow-node-list { display: grid; gap: 10px; }
 .flow-graph-with-rework { min-width: 0; display: grid; gap: 12px; }
 .flow-rework-lane { padding: 12px; border: 1px dashed var(--warn); border-radius: 10px; background: var(--warn-soft); display: grid; gap: 8px; color: var(--warn); }

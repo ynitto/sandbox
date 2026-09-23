@@ -14,7 +14,7 @@
   const TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
 
   const state = {
-    deps: null, visible: false, creating: false, onCreate: null, repo: '', workflowId: '', existing: false, context: '',
+    deps: null, visible: false, creating: false, card: false, onCreate: null, repo: '', workflowId: '', existing: false, context: '',
     session: null, availableSession: null, phase: null, running: false, pending: false, shareWait: false,
     token: 0, input: null, autoStart: null,
   };
@@ -58,24 +58,29 @@
   // ---- 画面 ------------------------------------------------------------------------
 
   function renderShell() {
-    $('flow-teaching').hidden = !state.visible;
+    const root = $('flow-teaching');
+    root.hidden = !state.visible;
+    root.classList.toggle('in-card', state.visible && state.card);
     if (!state.visible) return;
     const sess = state.session;
     const ph = state.phase;
     populateExecutionInputs();
     $('flow-teach-settings-summary').textContent = state.deps.executionLabel(readExecutionInputs());
     ExecutionChoice.sync($('flow-teach-agent'), $('flow-teach-model'), { models: state.deps.modelNames, locked: () => state.pending || !!sess });
-    $('flow-teach-launch').hidden = !!sess;
-    $('flow-teach-session-actions').hidden = state.creating;
+    $('flow-teach-launch').hidden = false;
+    $('flow-teach-new-session').hidden = state.creating;
     $('flow-teach-new-session').disabled = state.pending || state.running || !!((state.session || state.availableSession) && state.deps.isRunning((state.session || state.availableSession).id));
     $('flow-teach-heading').hidden = !state.existing;
     $('flow-teach-manual').hidden = !state.creating;
     $('flow-teach-create').hidden = !state.creating;
-    $('flow-teach-placeholder').hidden = state.creating;
+    $('flow-teach-placeholder').hidden = state.creating || !!sess;
+    $('flow-teach-composer-placeholder').hidden = state.creating || !!sess;
     $('flow-teach-settings-title').textContent = state.creating ? '作成設定' : '編集設定';
     $('flow-teach-start').textContent = state.creating ? '作成開始' : sess ? '編集中' : '編集開始';
     $('flow-teach-start').disabled = state.pending || !!sess;
     $('flow-teach-status').textContent = state.pending ? '起動中…' : '';
+    $('flow-teach-prephase').textContent = state.pending ? '起動中' : '起動前';
+    $('flow-teach-prephase').className = `phase ${state.pending ? 'starting' : ''}`.trim();
     $('flow-teach-terminal').hidden = !sess;
     $('flow-teach-composer').hidden = !sess;
     if (!sess) return;
@@ -89,7 +94,7 @@
     $('flow-teach-term-name').textContent = '';
     $('flow-teach-term-agent').title = ph?.name ? `tmux -L agent-app attach -t ${ph.name}` : '';
     $('flow-teach-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
-    $('flow-teach-stop').hidden = !state.running;
+    $('flow-teach-stop').hidden = !(state.running || state.pending);
     $('flow-teach-send').disabled = state.pending;
     setInputMode(state.input ? state.input.mode : 'message', { focus: false });
   }
@@ -161,10 +166,34 @@
       if (r.warning) state.deps.notice(r.warning);
       renderShell();
       await term().attach(session.id, $('flow-teach-term-host'), { strict: true });
+      state.readyError = null;
       requestAnimationFrame(() => term().refit());
     } catch (err) {
       state.readyError = err;
-      if (token === state.token) error(err.message);
+      if (token === state.token) {
+        state.phase = { phase: 'gone', detail: err.message };
+        renderShell();
+        error(err.message);
+      }
+    }
+  }
+
+  async function restart() {
+    const sess = state.session;
+    if (!sess) return;
+    const size = term().size();
+    try {
+      const r = await api.termRestart(sess.id, size.cols, size.rows);
+      state.phase = { phase: r.phase, detail: r.detail, name: r.name };
+      await term().attach(sess.id, $('flow-teach-term-host'));
+      state.readyError = null;
+      setInputMode('message');
+      renderShell();
+    } catch (err) {
+      state.readyError = err;
+      state.phase = { phase: 'gone', detail: err.message };
+      renderShell();
+      error(err.message);
     }
   }
 
@@ -174,15 +203,19 @@
     renderShell();
     try {
       const options = preferredOptions || state.deps.executionOptions(readExecutionInputs());
-      if (newSession) {
-        const prepared = await api.automation.flowTeachPrepare({ repo: state.repo, workflowId: state.workflowId, ...options, newSession: true });
+      // 既存の定義を初めて編集するときも、送信前に会話 ID を確保する。
+      // これが無いと turn:transport が来ても接続先が分からず、最初の応答が終わるまで端末が空になる。
+      if (newSession || (!state.session && !state.availableSession)) {
+        const prepared = await api.automation.flowTeachPrepare({ repo: state.repo, workflowId: state.workflowId, ...options, ...(newSession ? { newSession: true } : {}) });
         if (token !== state.token) return;
-        term().detach();
-        state.session = null;
+        if (newSession) {
+          term().detach();
+          state.session = null;
+          state.context = '';
+          state.running = false;
+          state.phase = null;
+        }
         state.availableSession = prepared.session;
-        state.context = '';
-        state.running = false;
-        state.phase = null;
       }
       if (state.availableSession && !state.session && options.allocation !== 'auto' && !(state.availableSession.allocation === 'auto' && !state.availableSession.modelSelection)) {
         await attach(state.availableSession, token);
@@ -282,6 +315,7 @@
     if (!detail || detail.hidden || (!detail.workflowId && !detail.creating)) {
       state.visible = false;
       state.creating = false;
+      state.card = false;
       state.token += 1;
       term().detach();
       renderShell();
@@ -291,6 +325,7 @@
     const previous = { root: state.repo, workflowId: state.workflowId, creating: state.creating };
     const enteringCreate = !!detail.creating && (!state.creating || state.repo !== detail.root);
     state.creating = !!detail.creating;
+    state.card = !!detail.card;
     state.onCreate = detail.onCreate || null;
     state.onManual = detail.onManual || null;
     if (enteringCreate) {
@@ -378,7 +413,7 @@
     $('flow-teach-purpose').oninput = () => { $('flow-teach-create-error').hidden = true; };
     $('flow-teach-send').onclick = () => send();
     $('flow-teach-stop').onclick = () => (state.session || state.availableSession) && api.stop((state.session || state.availableSession).id).catch((err) => error(err.message));
-    $('flow-teach-restart').onclick = () => state.session && attach(state.session).catch((err) => error(err.message));
+    $('flow-teach-restart').onclick = () => restart();
     $('flow-teach-mode-message').onclick = () => setInputMode('message');
     $('flow-teach-mode-terminal').onclick = () => setInputMode('terminal');
     $('flow-teach-mode-share').onclick = () => setInputMode('share');

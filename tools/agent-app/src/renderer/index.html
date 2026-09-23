@@ -447,7 +447,6 @@
           <!-- ワークフローを AI と作る会話。タスクと同じ形（端末ミラー + 入力欄）で、
                どの工程を出すかはワークベンチ側が決める。見出しはワークベンチが持つ。 -->
           <div slot="flow-teaching" id="flow-teaching" hidden>
-            <div id="flow-teach-session-actions" class="teach-start-toolbar" hidden><span class="spacer"></span><button type="button" id="flow-teach-new-session" class="small">新しいセッションで編集</button></div>
             <section id="flow-teach-launch" class="teaching-create-form" hidden>
               <div id="flow-teach-create" class="teaching-create-fields" hidden>
                 <label class="task-save-name" for="flow-teach-save-name"><strong>保存名</strong><input id="flow-teach-save-name" placeholder="未指定なら自動で決定" size="28"></label>
@@ -466,6 +465,7 @@
                 </details>
                 <span class="spacer"></span>
                 <button type="button" id="flow-teach-manual" hidden>手動で作成</button>
+                <button type="button" id="flow-teach-new-session" class="small" hidden>新しいセッションで編集</button>
                 <button type="button" id="flow-teach-start" class="primary">編集開始</button>
               </div>
               <p id="flow-teach-create-error" class="dlg-error" role="alert" hidden></p>
@@ -473,6 +473,7 @@
                 <div class="terminal-head"><span class="terminal-agent">編集セッション</span><span id="flow-teach-prephase" class="phase starting">起動前</span></div>
                 <div class="teach-terminal-placeholder-body"><p id="flow-teach-status" role="status" aria-live="polite"></p></div>
               </div>
+              <div id="flow-teach-composer-placeholder" aria-hidden="true" hidden></div>
             </section>
             <section id="flow-teach-terminal" class="terminal-stage" hidden>
               <div class="terminal-head">
@@ -804,7 +805,7 @@
         </div>
       </details>
       <label class="setting-field"><span>フォーク先</span><select id="search-intent"><option value="session">セッション</option><option value="task">タスク</option><option value="workflow">ワークフロー</option><option value="skill">スキル</option></select></label>
-      <label class="task-create-label" for="search-request">追加の依頼（任意）</label><textarea id="search-request" rows="2"></textarea>
+      <label class="task-create-label" for="search-request">追加の依頼（任意）</label><textarea id="search-request" rows="6"></textarea>
       <p id="search-transfer-status" class="sub" role="status"></p>
     </div>
     <div class="dlg-actions"><button type="button" id="search-transfer-start" class="primary">フォーク</button></div>

@@ -29,12 +29,23 @@
 :host .task-detail-shell.is-editor .task-tab-panel { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 /* AI と編集: 工程の代わりに会話（端末ミラーと入力欄）を出す。会話が残りの高さを使う。 */
 :host .task-detail-shell.is-teaching .task-tab-panel { grid-template-rows: minmax(0, 1fr); padding-bottom: 12px; }
+:host .machine-pane:has(.flow-screen.is-teaching) { overflow: hidden; padding-bottom: 20px; }
+:host .flow-screen.is-teaching { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-height: 0; }
+:host .flow-screen.is-teaching .flow-layout { grid-row: 2; }
+:host .flow-screen.is-teaching .flow-layout,
+:host .flow-screen.is-teaching .execution-detail { height: 100%; min-height: 0; }
+:host .flow-detail-shell.is-teaching { min-height: 0; overflow: hidden; }
+:host .flow-detail-shell.is-teaching .task-tab-panel { grid-template-rows: minmax(500px, 1fr) auto auto; overflow-y: auto; }
+:host .flow-teaching-page { height: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr); gap: 12px; }
+:host .flow-teaching-page slot[name="flow-teaching"],
+:host .flow-detail-shell.is-teaching slot[name="flow-teaching"] { display: block; height: 100%; min-height: 0; }
 :host .editing-target { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 :host .editing-target select { width: auto; min-width: 180px; max-width: 320px; padding-block: 5px; }
 :host .embedded-editor-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: center; gap: 12px; min-height: 52px; padding: 8px 16px; background: var(--card); border: 1px solid var(--line); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; }
 :host .embedded-editor-toolbar .bar-center { justify-content: start; }
 :host .embedded-editor-toolbar .bar-center .title-input { text-align: left; }
 :host .embedded-editor-toolbar .bar-right { min-width: 0; justify-content: flex-end; flex-wrap: nowrap; row-gap: 4px; }
+:host .flow-editor-toolbar { border-bottom: 1px solid var(--line); border-radius: var(--radius); }
 :host .embedded-editor-toolbar .edit-controls { min-width: 0; display: flex; align-items: center; gap: 4px; }
 :host .embedded-editor-toolbar .toolbar-field { min-width: 0; display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 :host .embedded-editor-toolbar .toolbar-field select { width: auto; min-width: 0; max-width: 180px; padding-block: 5px; }

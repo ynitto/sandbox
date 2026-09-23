@@ -70,28 +70,32 @@ function conversationSources(summaries, { runningIds = [], phaseOf = () => null 
   return out;
 }
 
-// 会話中で明示された問題点・回避策。原文と発言位置は sessionSummary の機械的な抽出結果。
+// 会話中で明示された問題点・回避策。元セッション 1 件につき受信箱も 1 件にする。
 function findingSources(summaries) {
   const out = [];
   for (const session of Array.isArray(summaries) ? summaries : []) {
-    if (!session || session.supersededBy) continue;
+    if (!session || !session.id || session.supersededBy) continue;
     const repo = String(session.repo || '');
     const sourceKind = session.kind === 'task' && session.machine ? 'task'
       : session.kind === 'workflow' && session.workflow ? 'workflow' : 'conversation';
     const sourceId = sourceKind === 'task' ? session.machine : sourceKind === 'workflow' ? session.workflow : session.id;
     if (!sourceId) continue;
-    for (const finding of Array.isArray(session.findings) ? session.findings : []) {
-      if (!finding || !finding.id || !stamp(finding.at)) continue;
-      const label = finding.kind === 'workaround' ? '回避・工夫' : '問題点';
-      out.push({
-        key: `finding:${finding.id}`, kind: 'finding', repo,
-        title: `${label}: ${text(finding.excerpt, 100)}`,
-        running: false, resultAt: text(finding.at, 40), outcome: finding.kind,
-        interaction: null, target: { kind: sourceKind, repo, id: String(sourceId) },
-        finding: { kind: finding.kind, excerpt: text(finding.excerpt, 300), sessionId: session.id,
-          index: finding.index, sessionTitle: text(session.title, 80) || '（無題）' },
-      });
-    }
+    const items = (Array.isArray(session.findings) ? session.findings : [])
+      .filter((finding) => finding && finding.id && stamp(finding.at))
+      .map((finding) => ({ id: String(finding.id), kind: finding.kind === 'workaround' ? 'workaround' : 'problem',
+        excerpt: text(finding.excerpt, 300), index: finding.index, at: text(finding.at, 40) }));
+    if (!items.length) continue;
+    const problems = items.filter((item) => item.kind === 'problem').length;
+    const workarounds = items.length - problems;
+    const resultAt = items.reduce((latest, item) => stamp(item.at) > stamp(latest) ? item.at : latest, '');
+    const sessionTitle = text(session.title, 80) || '（無題）';
+    out.push({
+      key: `finding:${session.id}`, kind: 'finding', repo,
+      title: sessionTitle,
+      running: false, resultAt, outcome: 'finding',
+      interaction: null, target: { kind: sourceKind, repo, id: String(sourceId) },
+      finding: { sessionId: session.id, sessionTitle, problems, workarounds, items },
+    });
   }
   return out;
 }
@@ -244,12 +248,16 @@ function expired(source, now) {
 
 // 材料の列 → { action, unread, items }。要対応を先に（長く待たせている順）、あとは新しい結果から。
 function project(sources, { seen = {}, since = '', now = Date.now() } = {}) {
-  const items = (Array.isArray(sources) ? sources : [])
+  const pending = (Array.isArray(sources) ? sources : [])
     .map((source) => ({
       ...source, queue: classify(source, seen, since),
       waitedMs: waited(source, now), expired: expired(source, now),
     }))
-    .filter((item) => item.queue !== 'none')
+    .filter((item) => item.queue !== 'none');
+  const findingSessions = new Set(pending.filter((item) => item.kind === 'finding' && item.queue === 'unread')
+    .map((item) => item.finding?.sessionId).filter(Boolean));
+  const items = pending
+    .filter((item) => !(item.kind === 'conversation' && item.queue === 'unread' && findingSessions.has(item.target?.id)))
     .sort((a, b) => sortKey(a) - sortKey(b) || (b.waitedMs - a.waitedMs)
       || stamp(b.resultAt) - stamp(a.resultAt) || a.key.localeCompare(b.key));
   return {
