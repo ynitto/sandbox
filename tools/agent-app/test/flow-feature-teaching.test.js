@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/automation/flow.js'), 'utf8');
 
-function featureFixture({ saved = false } = {}) {
+function featureFixture({ saved = false, issues = [] } = {}) {
   const workflow = {
     version: 2, id: 'sample', name: '調査と実装', description: '依頼を調査して実装する',
     nodes: [{ id: 'work', label: '実装', kind: 'work', goal: '{{region}} の {{request}}', deps: [] }],
@@ -29,7 +29,7 @@ function featureFixture({ saved = false } = {}) {
     bridge: {
       catalog: async () => ({ kinds: [{ kind: 'work', label: '作業' }], patterns: [] }),
       list: async () => saved ? [{ id: 'sample', name: workflow.name, parameterKeys: ['region'] }] : [],
-      read: async () => ({ workflow, issues: [] }),
+      read: async () => ({ workflow, issues }),
       context: async () => ({ agents: ['codex'], defaults: { agent: 'codex', model: '' }, tools: { agentFlow: { ok: true } }, workspace: { ok: true } }),
       runList: async () => [], runRead: async (_root, runId) => ({ runId, revision: 1, terminal: false }),
       teachingList: async () => saved ? [] : [{ workflowId: 'sample', title: workflow.name, status: 'needs-trial' }],
@@ -48,6 +48,20 @@ function input(value = '') {
     dispatch(name) { this.handlers[name]?.({ target: this }); },
   };
 }
+
+test('workflow editing shows no step list, only what to fix when the definition is broken', async () => {
+  const ok = featureFixture();
+  await ok.feature.activate();
+  await ok.feature.select('sample');
+  assert.doesNotMatch(ok.feature.html(), /候補の工程|flow-issues/);
+
+  const broken = featureFixture({ issues: [{ level: 'error', message: '接続先が見つかりません' }] });
+  await broken.feature.activate();
+  await broken.feature.select('sample');
+  const html = broken.feature.html();
+  assert.doesNotMatch(html, /候補の工程/);
+  assert.match(html, /<section class="task-conversation-editor">.*<ul class="flow-issues">.*接続先が見つかりません.*<slot name="flow-teaching">/s);
+});
 
 test('workflow teaching exposes test settings and sends the chosen request and inputs to the draft run', async () => {
   const { feature, calls } = featureFixture();
@@ -112,5 +126,7 @@ test('workflow steps test action opens the saved workflow run settings', async (
   });
   await run.handlers.click();
   assert.match(feature.html(), /class="execution-card flow-overview"/);
+  assert.match(feature.html(), /<h3>手動実行<\/h3>/);
+  assert.doesNotMatch(feature.html(), /flow-node-summary|固定工程/);
   assert.match(feature.html(), /data-flow-start/);
 });

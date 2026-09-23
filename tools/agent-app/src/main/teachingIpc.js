@@ -183,11 +183,18 @@ function create(deps) {
       sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose }));
     }
     let summary = store.findWorkflowSession(ud, repo, id);
-    const replacing = !!summary && p.newSession;
+    const selected = p.policy ? settings.resolve(cfg, p) : null;
+    const current = summary ? store.readSession(ud, summary.id) : null;
+    // 編集画面で起動先を変えたら、旧 CLI の履歴や復元 ID を持たない会話へ切り替える。
+    const changedSelection = !!(current && selected && (
+      (selected.allocation === 'auto') !== (current.allocation === 'auto')
+      || (selected.allocation !== 'auto' && (selected.cli !== current.cli || selected.model !== current.model))
+    ));
+    const replacing = !!summary && (p.newSession || changedSelection);
     if (!summary) {
-      const selected = settings.resolve(cfg, p.policy ? p : { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
+      const initial = selected || settings.resolve(cfg, { policy: 'direct', cli: p.cli || cfg.execution.tiers.medium.cli, model: p.model });
       const created = store.createSession(ud, {
-        repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier, allocation: selected.allocation,
+        repo, cli: initial.cli, model: initial.model, policy: initial.policy, tier: initial.tier, allocation: initial.allocation,
         readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
         transport: 'tmux', worktree: '', kind: 'workflow', workflow: { id },
       });
@@ -197,7 +204,6 @@ function create(deps) {
       if (deps.queuedTurnIds(cfg.execution.maxConcurrent).includes(summary.id) || deps.busy(summary.id)) {
         throw new Error('応答の完了後に新しいセッションを作成してください');
       }
-      const selected = p.policy ? settings.resolve(cfg, p) : null;
       const created = store.replaceEditingSession(ud, summary.id, {
         readonly: false, ...(selected ? { ...selected, allocation: selected.allocation || '' } : p.cli ? { cli: p.cli, model: p.model || '' } : {}),
         autoApprove: p.autoApprove != null ? !!p.autoApprove : store.readSession(ud, summary.id).autoApprove,

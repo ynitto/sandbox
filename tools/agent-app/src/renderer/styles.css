@@ -627,7 +627,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .teach-execution-settings .settings-popover { top: calc(100% + 8px); bottom: auto; }
 .teach-start-toolbar { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-bottom: 10px; }
 .teach-terminal-placeholder-body { min-height: 0; flex: 1; display: grid; place-items: center; padding: 24px; }
-.teach-terminal-placeholder-body p { margin: 0; color: var(--term-muted); }
+.teach-terminal-placeholder-body p { margin: 0; color: var(--term-muted); white-space: pre-line; text-align: center; }
 #task-workspace { min-width: 0; width: 100%; display: grid; gap: 10px; }
 #task-launch { display: contents; }
 #task-terminal-placeholder, #task-terminal,

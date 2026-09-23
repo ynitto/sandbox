@@ -134,6 +134,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .execution-card-head p { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 /* 会話画面と同じく、ツールバー（auto）の下に端末と入力欄（残りの高さ）を縦に並べる。 */
 .task-conversation-editor { min-width: 0; min-height: 0; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; }
+.task-conversation-editor:has(> .flow-issues) { grid-template-rows: auto auto minmax(0, 1fr); }
 .task-conversation-toolbar { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .flow-teaching-test-page { min-width: 0; display: grid; align-content: start; gap: 12px; }
 .task-conversation-toolbar .editing-target { min-width: 0; display: flex; align-items: center; gap: 8px; }
@@ -217,14 +218,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .flow-side-head { display: flex; justify-content: space-between; align-items: center; min-height: 30px; padding: 0 8px; color: var(--muted); font-size: 12px; font-weight: 650; }
 .flow-side-head .tiny { min-height: 26px; width: 28px; padding: 0; }
 .flow-run-head { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-.flow-overview { gap: 8px; }
-.flow-node-summary, .flow-run-nodes { list-style: none; padding: 0; margin: 0; display: grid; }
-.flow-node-summary li { min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
-.flow-node-summary li:first-child { border-top: 0; }
-.flow-node-state { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--bg); color: var(--muted); font-size: 12px; font-weight: 650; }
-.flow-node-summary li > div { min-width: 0; display: grid; gap: 2px; }
-.flow-node-summary small { color: var(--muted); }
-.flow-node-summary p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-run-nodes { list-style: none; padding: 0; margin: 0; display: grid; }
 .flow-editor { min-width: 0; display: grid; gap: 12px; }
 .flow-editor-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 52px; padding: 8px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 .flow-editor-toolbar .bar-center { min-width: 0; justify-content: flex-start; }
@@ -247,7 +241,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .flow-rework-editor { display: grid; gap: 10px; padding: 12px; margin-top: 10px; border-left: 4px solid var(--warn); border-radius: 9px; background: var(--warn-soft); }
 .flow-node-card { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 .flow-node-card.is-dynamic { border-style: dashed; background: var(--bg); box-shadow: none; }
-.flow-node-card.is-dynamic .flow-node-number, .flow-node-summary .is-dynamic .flow-node-state { border: 1px dashed var(--accent); background: var(--accent-soft); color: var(--accent); }
+.flow-node-card.is-dynamic .flow-node-number { border: 1px dashed var(--accent); background: var(--accent-soft); color: var(--accent); }
 .flow-dynamic-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .flow-node-card.is-dynamic p { margin: 0; color: var(--muted); }
 .flow-node-number { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: #edf0f4; border: 1px solid var(--line-strong); font-weight: 700; }

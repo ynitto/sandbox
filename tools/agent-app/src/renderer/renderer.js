@@ -3256,6 +3256,7 @@ async function init() {
       state.preparation.text = item.text;
       renderHeader();
     }
+    FlowTeaching.onTurnProgress({ id, item });
     addLivePart(id, 'thinking', item);
   });
   api.onTurnInfo(({ id, item }) => addLivePart(id, 'information', item));

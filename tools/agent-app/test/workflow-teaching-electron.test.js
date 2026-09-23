@@ -43,6 +43,23 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
     purpose: 'implementation', entry: ['review'], exit: ['review'],
     nodes: [{ id: 'review', label: '変更を確認', kind: 'work', goal: '{{request}} を確認する', deps: [], tier: 'auto' }],
   }, 'create');
+  const appStore = require('../src/main/store');
+  const previousEditing = appStore.createSession(userData, {
+    repo, kind: 'workflow', workflow: { id: 'review-flow' }, cli: 'kiro', model: 'previous-model',
+  });
+  appStore.appendMessage(userData, previousEditing.id, { role: 'user', text: '前回の編集依頼' });
+  appStore.appendMessage(userData, previousEditing.id, { role: 'assistant', text: '前回の回答' });
+  appStore.setCliEntry(userData, previousEditing.id, 'kiro', { id: 'old-kiro-session', seen: 2 });
+  appStore.setCliEntry(userData, previousEditing.id, 'codex', { id: 'old-codex-session', seen: 2 });
+  require('../src/main/automation/flow-store').save(repo, {
+    version: 2, id: 'model-flow', name: 'モデル変更の確認', description: 'モデル変更時の会話を確認する',
+    purpose: 'implementation', entry: ['review'], exit: ['review'],
+    nodes: [{ id: 'review', label: '確認', kind: 'work', goal: '{{request}} を確認する', deps: [], tier: 'auto' }],
+  }, 'create');
+  const previousModel = appStore.createSession(userData, {
+    repo, kind: 'workflow', workflow: { id: 'model-flow' }, cli: 'codex', model: 'old-model',
+  });
+  appStore.appendMessage(userData, previousModel.id, { role: 'user', text: '前回のモデルでの依頼' });
 
   let electron;
   try {
@@ -57,7 +74,9 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
       global.flowWatchCalls = [];
       global.releaseFlowStart = null;
       global.releaseAutoStart = null;
-      replace('agents:list', () => ({ ok: true, data: [{ name: 'codex', available: true, interactive: true }] }));
+      replace('agents:list', () => ({ ok: true, data: [
+        { name: 'codex', available: true, interactive: true }, { name: 'kiro', available: true, interactive: true },
+      ] }));
       replace('term:open', () => ({ ok: true, data: { phase: 'ready', name: 'workflow-test-terminal' } }));
       replace('term:watch', (event, { id }) => {
         global.flowWatchCalls.push(id);
@@ -92,17 +111,37 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
     await workbench.locator('[data-flow-tab="steps"]').click();
     await workbench.locator('[data-flow-edit]').click();
     await win.locator('#flow-teach-start').waitFor();
-    await workbench.locator('.flow-teaching-candidate').waitFor();
-    assert.match(await workbench.locator('.flow-teaching-candidate').textContent(), /候補の工程/);
+    await workbench.locator('[data-flow-teaching-open-test]').waitFor();
+    // 工程は手順タブで見る。編集画面は定義が壊れているときだけ直すところを出す。
+    assert.equal(await workbench.locator('.flow-teaching-candidate').count(), 0);
+    assert.equal(await workbench.locator('.task-conversation-editor .flow-issues').count(), 0);
     assert.equal(await workbench.locator('[data-flow-teaching-open-test]').isVisible(), true);
     assert.equal(await win.locator('#flow-teach-terminal').isVisible(), false);
     await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
     await win.locator('#flow-teach-agent').selectOption('codex');
+    await win.locator('#flow-teach-model').fill('new-model');
     await win.locator('#flow-teach-start').click();
 
     await win.waitForFunction(() => document.querySelector('#flow-teach-term-host .xterm-rows')?.textContent.includes('WORKFLOW TERMINAL READY 1'));
     const firstSession = await win.evaluate(() => FlowTerm.current());
     assert.ok(firstSession, 'the embedded terminal is attached to the workflow session');
+    assert.notEqual(firstSession, previousEditing.id, 'エージェント・モデルを変えた編集は新しい会話を使う');
+    assert.equal(appStore.readSession(userData, previousEditing.id).supersededBy, firstSession);
+    assert.equal(appStore.readSession(userData, firstSession).cli, 'codex');
+    assert.equal(appStore.readSession(userData, firstSession).model, 'new-model');
+    assert.equal(appStore.readSession(userData, firstSession).messages.length, 0, '前の会話履歴を引き継がない');
+    assert.deepEqual(appStore.readSession(userData, firstSession).cliSessions, {}, '前の CLI 復元 ID を引き継がない');
+    const modelChanged = await win.evaluate(({ repo }) => api.automation.flowTeachPrepare({
+      repo, workflowId: 'model-flow', policy: 'direct', cli: 'codex', model: 'next-model',
+    }), { repo });
+    assert.notEqual(modelChanged.session.id, previousModel.id, 'モデルだけの変更でも会話を切り替える');
+    assert.equal(appStore.readSession(userData, previousModel.id).supersededBy, modelChanged.session.id);
+    assert.equal(appStore.readSession(userData, modelChanged.session.id).model, 'next-model');
+    assert.equal(appStore.readSession(userData, modelChanged.session.id).messages.length, 0);
+    const sameModel = await win.evaluate(({ repo }) => api.automation.flowTeachPrepare({
+      repo, workflowId: 'model-flow', policy: 'direct', cli: 'codex', model: 'next-model',
+    }), { repo });
+    assert.equal(sameModel.session.id, modelChanged.session.id, '設定が同じなら会話を保つ');
     assert.equal(await win.locator('#flow-teach-terminal').isVisible(), true);
     assert.equal(await win.locator('#flow-teach-composer').isVisible(), true);
     assert.equal(await win.locator('#flow-teach-mode-message').isVisible(), true);
@@ -137,8 +176,6 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
     assert.ok(layout.composer.top >= 0 && layout.composer.bottom <= layout.viewport.height + 1, JSON.stringify(layout));
     assert.ok(layout.send.bottom <= layout.viewport.height + 1, JSON.stringify(layout));
     const composerWidth = layout.composer.right - layout.composer.left;
-    const candidateBox = await workbench.locator('.flow-teaching-candidate').boundingBox();
-    assert.ok(Math.abs(candidateBox.width - composerWidth) <= 2, `候補の工程と入力欄の幅: ${candidateBox.width} / ${composerWidth}`);
     assert.equal(await electron.evaluate(() => flowStartCalls.length), 1);
     assert.equal(await win.evaluate(() => FlowTeaching.state.pending), true, 'the terminal is visible before start completes');
 
@@ -146,8 +183,6 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
     await win.waitForFunction(() => !FlowTeaching.state.pending);
     assert.equal(await win.evaluate(() => FlowTerm.current()), firstSession);
     assert.match(await win.locator('#flow-teach-term-host .xterm-rows').textContent(), /WORKFLOW TERMINAL READY 1/);
-    await workbench.locator('.flow-teaching-candidate details > summary').click();
-    assert.match(await workbench.locator('.flow-teaching-candidate .flow-node-summary').textContent(), /変更を確認/);
     const testEntry = workbench.locator('[data-flow-teaching-open-test]');
     assert.equal(await testEntry.isVisible(), true, '編集画面の上部からテストへ進める');
     await testEntry.click();

@@ -744,7 +744,10 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#flow-teach-create').waitFor();
     await win.locator('#workflows .list-pick').first().click();
     await workspace.locator('.flow-overview').waitFor({ timeout: 20000 });
-    assert.match(await workspace.locator('.flow-overview').textContent(), /変更を確認/);
+    // 概要はタスクと同じ「手動実行」のカードだけ。工程は手順タブで見る。
+    assert.equal(await workspace.locator('.flow-overview h3').textContent(), '手動実行');
+    assert.equal(await workspace.locator('.flow-overview .status').textContent(), '待機中');
+    assert.equal(await workspace.locator('.flow-node-summary').count(), 0);
     assert.equal(await workspace.locator('[data-flow-start]').textContent(), '実行');
     assert.equal(await workspace.locator('[data-flow-agent]').isVisible(), false);
     await workspace.locator('.flow-run-settings > summary').click();

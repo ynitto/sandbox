@@ -16,7 +16,7 @@
   const state = {
     deps: null, visible: false, creating: false, card: false, onCreate: null, repo: '', workflowId: '', existing: false, context: '',
     session: null, availableSession: null, phase: null, running: false, pending: false, shareWait: false,
-    token: 0, input: null, autoStart: null,
+    token: 0, input: null, autoStart: null, preparing: '',
   };
 
   function term() { return window.FlowTerm; }
@@ -78,7 +78,8 @@
     $('flow-teach-settings-title').textContent = state.creating ? '作成設定' : '編集設定';
     $('flow-teach-start').textContent = state.creating ? '作成開始' : sess ? '編集中' : '編集開始';
     $('flow-teach-start').disabled = state.pending || !!sess;
-    $('flow-teach-status').textContent = state.pending ? '起動中…' : '';
+    // 起動先（自動選択なら CLI も）が決まるまで端末は開けない。その間は本体の準備の経過を出す。
+    $('flow-teach-status').textContent = state.pending ? state.preparing || '起動中…' : '';
     $('flow-teach-prephase').textContent = state.pending ? '起動中' : '起動前';
     $('flow-teach-prephase').className = `phase ${state.pending ? 'starting' : ''}`.trim();
     $('flow-teach-terminal').hidden = !sess;
@@ -139,7 +140,11 @@
     try { view = await api.automation.flowTeachSession(state.repo, state.workflowId); } catch (err) { state.readyError = err; error(err.message); return; }
     if (token !== state.token) return;
     state.availableSession = view.session || null;
-    if (view.session) populateExecutionInputs({ agent: view.session.cli, model: view.session.model, autoApprove: !!view.session.autoApprove });
+    if (view.session) populateExecutionInputs({
+      agent: view.session.allocation === 'auto' ? 'auto' : view.session.cli,
+      model: view.session.allocation === 'auto' ? '' : view.session.model,
+      autoApprove: !!view.session.autoApprove,
+    });
     renderShell();
     const autoStart = state.autoStart;
     if (autoStart && autoStart.repo === state.repo && autoStart.workflowId === state.workflowId) {
@@ -200,23 +205,23 @@
   // 設定を確かめてボタンを押した後にだけ tmux を開く（タスクと同じ順で、先に端末を見せる）。
   async function start(token = state.token, preferredOptions = null, newSession = false) {
     state.pending = true;
+    state.preparing = '';
     renderShell();
     try {
       const options = preferredOptions || state.deps.executionOptions(readExecutionInputs());
-      // 既存の定義を初めて編集するときも、送信前に会話 ID を確保する。
-      // これが無いと turn:transport が来ても接続先が分からず、最初の応答が終わるまで端末が空になる。
-      if (newSession || (!state.session && !state.availableSession)) {
-        const prepared = await api.automation.flowTeachPrepare({ repo: state.repo, workflowId: state.workflowId, ...options, ...(newSession ? { newSession: true } : {}) });
-        if (token !== state.token) return;
-        if (newSession) {
-          term().detach();
-          state.session = null;
-          state.context = '';
-          state.running = false;
-          state.phase = null;
-        }
-        state.availableSession = prepared.session;
+      // 設定変更なら main が新しい会話 ID を発行する。古い CLI を先に開かないよう、
+      // 起動のたびに選択を確定させてから端末へ接続する。
+      const previousId = (state.session || state.availableSession)?.id;
+      const prepared = await api.automation.flowTeachPrepare({ repo: state.repo, workflowId: state.workflowId, ...options, ...(newSession ? { newSession: true } : {}) });
+      if (token !== state.token) return;
+      if (newSession || (previousId && previousId !== prepared.session.id)) {
+        term().detach();
+        state.session = null;
+        state.context = '';
+        state.running = false;
+        state.phase = null;
       }
+      state.availableSession = prepared.session;
       if (state.availableSession && !state.session && options.allocation !== 'auto' && !(state.availableSession.allocation === 'auto' && !state.availableSession.modelSelection)) {
         await attach(state.availableSession, token);
         if (token !== state.token) return;
@@ -371,6 +376,13 @@
     attach(session);
   }
 
+  function onTurnProgress({ id, item }) {
+    const session = state.session || state.availableSession;
+    if (!item || !item.preparing || !session || session.id !== id) return;
+    state.preparing = item.text;
+    renderShell();
+  }
+
   function onTermPhase(p) {
     if (!state.session || p.id !== state.session.id) return;
     state.phase = { phase: p.phase, detail: p.detail, name: p.name };
@@ -443,5 +455,5 @@
     });
   }
 
-  window.FlowTeaching = { init, show, create, whenReady, onTurnTransport, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
+  window.FlowTeaching = { init, show, create, whenReady, onTurnTransport, onTurnProgress, onTermPhase, onTurnStarted, onTurnDone, onShareScreen, state };
 }());
