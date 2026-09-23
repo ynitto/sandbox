@@ -375,6 +375,13 @@ function rememberedInputs(machine) {
   return values && typeof values === 'object' ? values : {};
 }
 
+function rememberedInputHistory(machine, name) {
+  const all = (state.config && state.config.taskInputHistory) || {};
+  const key = String((machine && machine.machine) || taskIdentity(machine) || '');
+  const values = all[state.root]?.[key]?.[name];
+  return Array.isArray(values) ? values : [];
+}
+
 // 選んでいるタスクが変わったら、実行条件を初期値へ戻す。タスクは一覧からも、親（会話画面の
 // サイドバー）からも選ばれるので、判定は描くたびに行う（どの経路でも取りこぼさない）。
 function ensureRunParameters(machine) {
@@ -414,7 +421,17 @@ async function rememberRunParameters(machine, parameters) {
   if (Object.keys(kept).length) perRepo[key] = kept;
   else delete perRepo[key];
   all[state.root] = perRepo;
-  const saved = await guard('実行条件の記憶', () => automationHost.saveConfig({ ...state.config, taskInputs: all }));
+  const history = { ...((state.config && state.config.taskInputHistory) || {}) };
+  const repoHistory = { ...(history[state.root] || {}) };
+  const taskHistory = { ...(repoHistory[key] || {}) };
+  for (const [name, value] of Object.entries(kept)) {
+    if (Reuse.DATE_MODES[value]) continue;
+    taskHistory[name] = [value, ...(taskHistory[name] || []).filter((item) => item !== value)].slice(0, 8);
+  }
+  if (Object.keys(kept).length) repoHistory[key] = taskHistory;
+  else delete repoHistory[key];
+  history[state.root] = repoHistory;
+  const saved = await guard('実行条件の記憶', () => automationHost.saveConfig({ ...state.config, taskInputs: all, taskInputHistory: history }));
   if (saved) state.config = saved;
 }
 
@@ -1114,7 +1131,7 @@ function taskPresentation(machine) {
   const eyebrow = embedded ? '' : '<span class="eyebrow">タスク</span>';
   return {
     present,
-    header: `<div>${eyebrow}<h2>${esc(machine.name)}${badges ? ` <span class="task-badges">${badges}</span>` : ''}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div>`,
+    header: `<div>${eyebrow}<h2><span class="task-title-name" title="${esc(machine.name)}">${esc(machine.name)}</span>${badges ? `<span class="task-badges">${badges}</span>` : ''}</h2>${machine.description ? `<p>${esc(machine.description)}</p>` : ''}</div>`,
   };
 }
 
@@ -2053,6 +2070,7 @@ async function previewMachine() {
 
 async function saveMachine() {
   if (!state.current) return;
+  const creating = state.current.isNew;
   const preview = await previewMachine();
   if (!preview || preview.errors.length) { toast(preview ? preview.errors[0] : '保存できません', true); return; }
   const payload = specPayload();
@@ -2066,6 +2084,14 @@ async function saveMachine() {
   state.current.spec.machine = res.machine;
   toast('保存しました');
   await loadMachines();
+  if (creating && embedded) {
+    await loadExecutionSnapshot();
+    state.view = 'home';
+    state.current = null;
+    state.homeTab = 'run';
+    state.execution.selected = `machine:${res.machine}`;
+    state.execution.detailTab = 'overview';
+  }
   render();
   notifyHost('tasks', res.machine);
 }
@@ -2510,37 +2536,77 @@ async function startRun(mode, confirmed = false) {
   if (res.warning) appendLog({ kind: 'stderr', line: res.warning });
 }
 
+function parameterFormat(name) {
+  const key = String(name);
+  if (/(^|[_\s-])month$/i.test(key) || /[a-z]Month$/.test(key) || key.includes('年月')) return 'month';
+  if (/(^|[_\s-])date$/i.test(key) || /[a-z]Date$/.test(key) || key.includes('日付')) return 'date';
+  if (/(^|[_\s-])(email|mail)$/i.test(key) || /[a-z](Email|Mail)$/.test(key) || key.includes('メール')) return 'email';
+  if (/(^|[_\s-])(url|uri)$/i.test(key) || /[a-z](Url|Uri|URL|URI)$/.test(key) || key.includes('リンク')) return 'url';
+  return 'text';
+}
+
+function validParameter(value, format) {
+  if (value.length > 400) return '400文字以内で入力してください';
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) return '制御文字は入力できません';
+  if (format === 'date' && value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return '日付は YYYY-MM-DD で入力してください';
+    const date = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return '実在する日付を入力してください';
+  }
+  if (format === 'month' && value && !/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) return '年月は YYYY-MM で入力してください';
+  if (format === 'email' && value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return 'メールアドレスを確認してください';
+  if (format === 'url' && value) {
+    try { if (!['https:', 'http:'].includes(new URL(value).protocol)) return 'http または https の URL を入力してください'; }
+    catch { return 'URL を確認してください'; }
+  }
+  return '';
+}
+
 function openRunInputDialog(machine) {
   const fields = machine.parameters || [];
   const defaults = machine.parameterDefaults || {};
-  const previous = rememberedInputs(machine);
-  const dlg = dialog('dlg-run', '実行前の入力', 'run-input', `
-    <p class="muted small">文字や番号など任意の値を入力できます。日付を毎回更新する場合は入力方法から選んでください。入力した値は次回の実行時にも表示されます。</p>
+  const dlg = dialog('dlg-run', 'パラメータ', 'run-input', `
     <div class="run-input-grid">${fields.map((name, index) => {
-      const value = state.run.parameters[name] || '';
+      const format = parameterFormat(name);
+      const raw = state.run.parameters[name] || '';
+      const value = Reuse.resolveDate(raw);
       const optional = String(defaults[name] || '').trim();
-      const source = [previous[name] && previous[name] === value ? '前回の値' : optional ? '既定値' : '', optional ? '省略可' : '入力必須'].filter(Boolean).join(' · ');
-      return `<div class="field run-input-field"><label for="run-input-${index}">${esc(name)} <small class="muted">${source}</small></label>${dateInputHtml(name, value, 'confirm', `run-input-${index}`)}${optional ? `<small class="muted">空欄なら既定値「${esc(Reuse.DATE_MODES[optional] || optional)}」を使います。</small>` : ''}</div>`;
+      const history = rememberedInputHistory(machine, name);
+      const dateModes = format === 'date' ? ['@date:today', '@date:yesterday'] : format === 'month' ? ['@date:month', '@date:previous-month'] : [];
+      const shortcut = dateModes.length ? `<select data-parameter-date aria-label="${esc(name)}の日付指定"><option value="">日付指定</option>${dateModes.map((mode) => `<option value="${mode}" ${raw === mode ? 'selected' : ''}>${Reuse.DATE_MODES[mode]}</option>`).join('')}</select>` : '';
+      return `<div class="run-parameter-row"><label for="run-input-${index}" title="${esc(name)}">${esc(name)} <small>${optional ? '省略可' : '必須'}</small></label><div class="run-parameter-control"><input id="run-input-${index}" data-confirm-param="${esc(name)}" data-format="${format}" data-mode="${Reuse.DATE_MODES[raw] ? esc(raw) : ''}" list="run-history-${index}" value="${esc(value)}" maxlength="400" autocomplete="off" ${optional ? `placeholder="既定値: ${esc(Reuse.resolveDate(optional))}"` : ''}><datalist id="run-history-${index}">${history.map((item) => `<option value="${esc(item)}"></option>`).join('')}</datalist>${shortcut}</div></div>`;
     }).join('')}</div>
     <p class="msg err" data-input-error hidden></p>
-    <div class="row"><button type="button" class="primary" data-input-run>入力して実行</button></div>`);
-  for (const select of dlg.querySelectorAll('[data-date-mode="confirm"]')) select.addEventListener('change', () => {
-    const input = select.closest('.field').querySelector('[data-confirm-param]');
-    if (select.value) { input.dataset.manualValue = input.value; input.value = Reuse.resolveDate(select.value); input.readOnly = true; }
-    else { input.value = input.dataset.manualValue ?? input.value; input.readOnly = false; }
+    <div class="row"><button type="button" class="primary" data-input-run>実行</button></div>`);
+  for (const input of dlg.querySelectorAll('[data-confirm-param]')) input.addEventListener('input', () => {
+    input.dataset.mode = '';
+    input.removeAttribute('aria-invalid');
+    const select = input.parentElement.querySelector('[data-parameter-date]');
+    if (select) select.value = '';
+  });
+  for (const select of dlg.querySelectorAll('[data-parameter-date]')) select.addEventListener('change', () => {
+    const input = select.parentElement.querySelector('[data-confirm-param]');
+    input.value = Reuse.resolveDate(select.value);
+    input.dataset.mode = select.value;
+    input.removeAttribute('aria-invalid');
   });
   dlg.querySelector('[data-input-run]').addEventListener('click', () => {
     const supplied = {};
+    const errors = [];
     for (const input of dlg.querySelectorAll('[data-confirm-param]')) {
-      const mode = input.closest('.field').querySelector('[data-date-mode="confirm"]').value;
-      const value = mode || input.value.trim();
-      if (value) supplied[input.dataset.confirmParam] = value;
+      const name = input.dataset.confirmParam;
+      const value = input.value.trim();
+      const error = !value && !String(defaults[name] || '').trim() ? '入力してください' : validParameter(value, input.dataset.format);
+      if (error) input.setAttribute('aria-invalid', 'true');
+      else input.removeAttribute('aria-invalid');
+      if (error) errors.push(`${name}: ${error}`);
+      if (value) supplied[name] = input.dataset.mode || value;
     }
-    const missing = fields.filter((name) => !String(supplied[name] || defaults[name] || '').trim());
-    if (missing.length) {
+    if (errors.length) {
       const error = dlg.querySelector('[data-input-error]');
-      error.textContent = `入力してください: ${missing.join('、')}`;
+      error.textContent = errors.join(' / ');
       error.hidden = false;
+      dlg.querySelector('[aria-invalid="true"]')?.focus();
       return;
     }
     state.run.parameters = supplied;
@@ -2721,7 +2787,18 @@ async function navigateEmbedded(payload) {
 // 親の会話（AI がファイルを書いた）が終わるたびに、定義と実行状態を読み直す。
 async function refreshEmbedded() {
   if (!state.root) return;
+  const draft = state.view === 'home' && state.homeTab === 'teach' ? teachingFeature.selected() : '';
+  const wasReady = draft && teachingFeature.statusOf(draft).published;
   await loadMachines();
+  if (draft && !wasReady && teachingFeature.statusOf(draft).published) {
+    await loadExecutionSnapshot();
+    state.execution.selected = `machine:${draft}`;
+    state.execution.detailTab = 'overview';
+    state.homeTab = 'run';
+    render();
+    notifyHost('tasks', state.execution.selected);
+    return;
+  }
   renderIfIdle();
   refreshExecutionSnapshot();
 }

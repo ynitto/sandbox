@@ -18,6 +18,12 @@ test('入力先は明示的にメッセージと端末操作を切り替える',
   assert.strictEqual(state.mode, 'message');
 });
 
+test('操作の見本は入力欄のモードとして切り替えられる', () => {
+  const recording = InputMode.reduce(InputMode.create(), { type: 'record-focus' });
+  assert.strictEqual(recording.mode, 'record');
+  assert.strictEqual(InputMode.reduce(recording, { type: 'message-focus' }).mode, 'message');
+});
+
 test('端末操作のEscapeは1回目をCLIへ送り2回目でメッセージへ戻る', () => {
   let state = InputMode.reduce(InputMode.create(), { type: 'terminal-focus' });
 

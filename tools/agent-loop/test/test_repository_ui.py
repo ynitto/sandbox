@@ -205,6 +205,52 @@ class RepositorySnapshotTest(unittest.TestCase):
 
             self.assertEqual(machine["parameters"], ["month"])
 
+    def test_parameters_are_found_in_external_action_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            directory = root / ".statemachine" / "report"
+            (directory / "actions").mkdir(parents=True)
+            (directory / "workflow.yaml").write_text(
+                "name: レポート\n"
+                "context:\n  fixed: 既定値\n  optional: ''\n"
+                "states:\n"
+                "  analyze:\n    action_file: actions/analyze.md\n    output_key: summary\n"
+                "  done:\n    action: '{{summary}} を使う'\n    terminal: true\n"
+                "transitions:\n  - from: analyze\n    to: done\n"
+                "    condition: 'file:actions/condition.md'\n",
+                encoding="utf-8",
+            )
+            (directory / "actions" / "analyze.md").write_text(
+                "{{month}} の {{fixed}} と {{last_output}} と {{input}} を分析する",
+                encoding="utf-8",
+            )
+            (directory / "actions" / "condition.md").write_text(
+                "{{context.fixed}} と {{context.extra}} を判定する",
+                encoding="utf-8",
+            )
+
+            machine = al.repository_snapshot(root)["machines"][0]
+
+            self.assertEqual(machine["parameters"], ["context.extra", "input", "month", "optional"])
+
+    def test_parameters_are_found_in_automatically_discovered_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            directory = root / ".statemachine" / "auto"
+            (directory / "actions").mkdir(parents=True)
+            (directory / "conditions").mkdir()
+            (directory / "workflow.yaml").write_text(
+                "states:\n  start: {}\n  done:\n    terminal: true\n"
+                "transitions:\n  - from: start\n    to: done\n",
+                encoding="utf-8",
+            )
+            (directory / "actions" / "start.md").write_text("{{topic}} を調べる", encoding="utf-8")
+            (directory / "conditions" / "start_to_done.md").write_text("{{quality}} を満たす", encoding="utf-8")
+
+            machine = al.repository_snapshot(root)["machines"][0]
+
+            self.assertEqual(machine["parameters"], ["quality", "topic"])
+
 
 class RepositoryScheduleTest(unittest.TestCase):
     def test_command_name_and_argv_can_change_without_replacing_advanced_cron(self):

@@ -10,6 +10,82 @@ const CANDIDATES = [
   ['.agents', 'agent-loop.yaml'], ['.agents', 'agent-loop.yml'],
   ['.agent', 'agent-loop.yaml'], ['.agent', 'agent-loop.yml'],
 ];
+const RUNTIME_VALUES = new Set([
+  'last_output', 'history', 'step_count', 'today', 'now', 'check_ok', 'context',
+  'current_state', 'check_status', 'check_output',
+]);
+const PLACEHOLDER = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g;
+
+function definitionParameters(root, machine) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(String(machine || ''))) return null;
+  const base = path.join(root, '.statemachine', machine);
+  let definition;
+  try { definition = YAML.parse(fs.readFileSync(path.join(base, 'workflow.yaml'), 'utf8')); } catch { return null; }
+  if (!definition || typeof definition !== 'object' || Array.isArray(definition)) return null;
+  const context = definition.context && typeof definition.context === 'object' && !Array.isArray(definition.context)
+    ? definition.context : {};
+  const required = new Set();
+  const defaults = new Set();
+  for (const [name, value] of Object.entries(context)) {
+    (value == null || !String(value).trim() ? required : defaults).add(name);
+  }
+  const outputs = new Set();
+  const templates = new Set();
+  const references = new Set();
+  const visit = (value) => {
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    if (value && typeof value === 'object') {
+      if (typeof value.output_key === 'string' && value.output_key.trim()) {
+        outputs.add(value.output_key.trim().split('.')[0]);
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (typeof child === 'string' && (key.endsWith('_file') || (key === 'action' || key === 'condition') && child.startsWith('file:'))) {
+          references.add(child.replace(/^file:/, '').trim());
+        }
+        visit(child);
+      }
+      return;
+    }
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(PLACEHOLDER)) templates.add(match[1]);
+    }
+  };
+  visit(definition.states || {});
+  visit(definition.transitions || []);
+  if (definition.states && typeof definition.states === 'object' && !Array.isArray(definition.states)) {
+    for (const [stateId, state] of Object.entries(definition.states)) {
+      if (state && typeof state === 'object' && !state.action && !state.action_file) {
+        references.add(`actions/${stateId}.md`);
+      }
+    }
+  }
+  if (Array.isArray(definition.transitions)) {
+    for (const transition of definition.transitions) {
+      if (!transition || typeof transition !== 'object' || transition.condition || transition.condition_file || transition.condition_rule) continue;
+      if (typeof transition.from === 'string' && typeof transition.to === 'string') {
+        references.add(`conditions/${transition.from === '*' ? 'wildcard' : transition.from}_to_${transition.to}.md`);
+      }
+    }
+  }
+  for (const name of references) {
+    if (!name) continue;
+    try {
+      const directory = fs.realpathSync(base);
+      const file = fs.realpathSync(path.resolve(base, name));
+      if (file.startsWith(`${directory}${path.sep}`)) visit(fs.readFileSync(file, 'utf8'));
+    } catch { /* 存在しない参照は実行時に検出する */ }
+  }
+  for (const name of templates) {
+    const top = name.split('.')[0];
+    if (top === 'context') {
+      const key = name.split('.')[1];
+      if (key && !Object.hasOwn(context, key)) required.add(name);
+      continue;
+    }
+    if (!RUNTIME_VALUES.has(top) && !outputs.has(top) && !defaults.has(top)) required.add(name);
+  }
+  return [...required].sort();
+}
 
 function machineName(value) {
   const raw = String(value || '').trim().replace(/\\/g, '/');
@@ -65,15 +141,21 @@ function enrichSnapshot(root, snapshot) {
     .map((task) => {
       const machine = String(task.machine || '').trim();
       const extra = paired.get(machine);
-      if (!extra) return task;
+      const defined = task.kind === 'statemachine' ? definitionParameters(root, machine) : null;
+      if (!extra && defined === null) return task;
       const entrySchedules = tasks.filter((item) => entryMachine(item) === machine)
         .flatMap((item) => item.schedules || (item.schedule ? [item.schedule] : []));
+      const parameters = defined === null
+        ? [...new Set([...(task.parameters || []), ...extra.parameters])]
+        : defined;
+      const defaults = Object.fromEntries(Object.entries({ ...(task.parameterDefaults || {}), ...(extra?.defaults || {}) })
+        .filter(([name]) => parameters.includes(name)));
       return {
         ...task,
-        parameters: [...new Set([...(task.parameters || []), ...extra.parameters])],
-        parameterDefaults: extra.defaults,
+        parameters,
+        parameterDefaults: defaults,
         schedules: [...(task.schedules || (task.schedule ? [task.schedule] : [])), ...entrySchedules],
-        loopEntries: extra.entries.length,
+        loopEntries: extra?.entries.length || 0,
       };
     });
   return result;
@@ -110,4 +192,4 @@ function renameReferences(root, before, after) {
   return changed;
 }
 
-module.exports = { machineName, readEntries, enrichSnapshot, requiredInput, renameReferences };
+module.exports = { machineName, readEntries, definitionParameters, enrichSnapshot, requiredInput, renameReferences };

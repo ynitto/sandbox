@@ -45,6 +45,7 @@ function automationConfig(config) {
     ...(cfg.allocation ? { allocation: cfg.allocation } : {}),
     // 前回の手動実行で入れた実行条件（リポジトリ → タスクの保存名 → 値）。次回の既定に使う
     taskInputs: cfg.lastTaskInputs && typeof cfg.lastTaskInputs === 'object' ? { ...cfg.lastTaskInputs } : {},
+    taskInputHistory: cfg.taskInputHistory && typeof cfg.taskInputHistory === 'object' ? { ...cfg.taskInputHistory } : {},
   };
 }
 
@@ -161,6 +162,9 @@ function automationPatch(config) {
   if (Object.prototype.hasOwnProperty.call(src, 'model')) patch.automationModel = String(src.model || '');
   if (Object.prototype.hasOwnProperty.call(src, 'taskInputs')) {
     patch.lastTaskInputs = src.taskInputs && typeof src.taskInputs === 'object' ? src.taskInputs : {};
+  }
+  if (Object.prototype.hasOwnProperty.call(src, 'taskInputHistory')) {
+    patch.taskInputHistory = src.taskInputHistory && typeof src.taskInputHistory === 'object' ? src.taskInputHistory : {};
   }
   return patch;
 }

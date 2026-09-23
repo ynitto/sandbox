@@ -26,7 +26,7 @@ const attention = require('./attention');
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
   wslDistro: '', transport: 'tmux', useWorktree: true, area: 'home', view: 'chat', lastFiles: {}, lastWorktree: {},
-  lastTask: {}, lastWorkflow: {}, lastTaskInputs: {},
+  lastTask: {}, lastWorkflow: {}, lastTaskInputs: {}, taskInputHistory: {},
   automationSkillDir: '', automationAgent: '', automationModel: '',
   attentionSeen: { since: '', items: {} },
 };
@@ -60,6 +60,29 @@ function taskInputs(raw) {
   return out;
 }
 
+// リポジトリ・タスク・項目ごとの直近の入力候補。保存量を小さく保ち、設定ファイルの旧形式も維持する。
+function taskInputHistory(raw) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const out = {};
+  for (const [repo, tasks] of Object.entries(source)) {
+    if (!tasks || typeof tasks !== 'object' || Array.isArray(tasks)) continue;
+    const perRepo = {};
+    for (const [task, fields] of Object.entries(tasks)) {
+      if (!fields || typeof fields !== 'object' || Array.isArray(fields)) continue;
+      const perTask = {};
+      for (const [name, values] of Object.entries(fields)) {
+        if (!Array.isArray(values)) continue;
+        const kept = [...new Set(values.filter((value) => typeof value === 'string')
+          .map((value) => value.trim().slice(0, MAX_TASK_INPUT_CHARS)).filter(Boolean))].slice(0, 8);
+        if (kept.length) perTask[name] = kept;
+      }
+      if (Object.keys(perTask).length) perRepo[task] = perTask;
+    }
+    if (Object.keys(perRepo).length) out[repo] = perRepo;
+  }
+  return out;
+}
+
 function normalize(raw) {
   const next = { ...DEFAULTS, ...(raw && typeof raw === 'object' ? raw : {}) };
   next.repos = [...new Set((Array.isArray(next.repos) ? next.repos : []).map((r) => String(r || '')).filter(Boolean))].slice(0, MAX_REPOS);
@@ -78,6 +101,7 @@ function normalize(raw) {
   next.lastTask = next.lastTask && typeof next.lastTask === 'object' ? next.lastTask : {};
   next.lastWorkflow = next.lastWorkflow && typeof next.lastWorkflow === 'object' ? next.lastWorkflow : {};
   next.lastTaskInputs = taskInputs(next.lastTaskInputs);
+  next.taskInputHistory = taskInputHistory(next.taskInputHistory);
   next.runPresets = reuse.presets(next.runPresets);
   next.automationSkillDir = String(next.automationSkillDir || '').trim();
   next.automationAgent = String(next.automationAgent || '').trim();   // 空 = 会話の「おすすめ」と同じ CLI（automation/ipc.js）

@@ -116,7 +116,7 @@
       const present = item.view || presentOf(item.machine);
       announce({ root: root(), machine: item.machine, creating: false, editing: true, published: present.published, title: item.title });
       const done = present.published ? '<button type="button" data-teach-open-steps>手順を見る</button>' : '';
-      return `<div class="teaching-page"><div class="teaching-head"><div><span class="eyebrow">作成中のタスク</span><h2>${e(item.title || item.machine)}</h2><span class="teaching-badges"><span class="status">${e(teachingStatusLabel(present.status))}</span></span></div><div class="row">${done}<button type="button" class="danger ghost" data-teach-delete>削除</button></div></div><slot name="teaching"></slot></div>`;
+      return `<div class="teaching-page"><div class="teaching-head"><div><span class="eyebrow">作成中のタスク</span><h2 class="task-title-name" title="${e(item.title || item.machine)}">${e(item.title || item.machine)}</h2><span class="teaching-badges"><span class="status">${e(teachingStatusLabel(present.status))}</span></span></div><div class="row">${done}<button type="button" class="danger ghost" data-teach-delete>削除</button></div></div><slot name="teaching"></slot></div>`;
     }
 
     function bind(main) {

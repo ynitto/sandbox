@@ -374,7 +374,7 @@ function registerIpcHandlers(getWindow, options = {}) {
     const missing = store.list(root).filter(item => !(snapshot.deletedMachines || []).includes(item.machine)
       && !(snapshot.tasks || []).some(task => task.machine === item.machine));
     const machines = missing.map(item => {
-      try { return { ...item, parameters: model.normalizeProcedure(store.read(root, item.machine).raw).parameters }; } catch { return item; }
+      return { ...item, parameters: taskInputs.definitionParameters(root, item.machine) || [] };
     });
     return taskInputs.enrichSnapshot(root, runHistory.merge(getUserData(), root, snapshot, machines));
   });

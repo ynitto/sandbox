@@ -214,9 +214,9 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   const added = [...(css.match(/^\.phase\.answerable[^{]*\{[^}]*\}$/gm) || []), ...(css.match(/^\.quick-row[^{]*\{[^}]*\}$/gm) || [])];
   assert.strictEqual(added.length, 4, '確認待ちの行き先と定型の依頼の行の規則が揃っていない');
   assert.deepStrictEqual(added.join('\n').match(/#[0-9a-fA-F]{3,8}\b/g) || [], [], '直値の色ではなくトークン（var(--…)）を使う');
-  // 5. 実行条件の「前回」は補助の 1 行（.muted）で、新しいカードや見出しを作らない
-  assert.match(workbench, /<small class="muted">前回: /);
-  assert.ok(!/<h3>前回/.test(workbench), '前回の値に見出しを足さない');
+  // 5. パラメータの過去値は入力欄の候補に置き、余分な行を増やさない
+  assert.match(workbench, /<datalist id="run-history-\$\{index\}"/);
+  assert.ok(!/<h3>前回/.test(workbench), '履歴に見出しを足さない');
   // 6. 吹き出しの下の操作（入力欄に戻す・フォーク）は、会話と検索のプレビューで同じ部品・同じ端
   const search = read('renderer/sessionSearch.js');
   assert.match(search, /button\('フォーク', 'message-action'/, '検索のプレビューも .message-action を使う');

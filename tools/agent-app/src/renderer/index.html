@@ -401,6 +401,7 @@
                 <div class="input-mode-switch" role="group" aria-label="入力先">
                   <button type="button" id="task-mode-message" aria-pressed="true">メッセージ</button>
                   <button type="button" id="task-mode-terminal" aria-pressed="false">端末操作</button>
+                  <button type="button" id="task-mode-record" aria-pressed="false">操作の見本</button>
                   <button type="button" id="task-mode-share" aria-pressed="false" hidden>共有に依頼</button>
                   <span id="task-input-status" class="input-status" role="status" aria-live="polite"></span>
                 </div>
@@ -420,29 +421,27 @@
                   <button type="button" data-task-key="C-c">Ctrl+C</button>
                   <span class="terminal-key-focus">キーボードで端末を操作</span>
                 </div>
+                <section id="task-record" hidden aria-label="操作の見本">
+                  <p id="task-record-request" class="task-record-request" hidden></p>
+                  <div class="task-actions">
+                    <label for="task-record-source">画面</label>
+                    <select id="task-record-source"><option value="browser">ブラウザ</option><option value="windows">Windowsアプリ</option></select>
+                    <label id="task-record-target-label" for="task-record-target">URL</label>
+                    <input id="task-record-target" placeholder="https://…">
+                    <span class="spacer"></span>
+                    <button type="button" id="task-record-action" class="small primary">記録を始める</button>
+                    <button type="button" id="task-record-restart" class="small quiet" hidden>やり直す</button>
+                  </div>
+                  <p id="task-record-message" class="sub" hidden></p>
+                  <p id="task-record-note" class="sub" hidden></p>
+                </section>
                 <div class="composer-toolbar" id="task-composer-toolbar">
-                  <button type="button" id="task-record-open" class="quiet" title="ブラウザや Windows アプリの操作を見本として記録し、AI へ渡す">操作の見本</button>
                   <span class="spacer"></span>
                   <span class="send-hint">Enterで送信</span>
                   <button type="button" id="task-stop" class="danger action-button" hidden>停止</button>
                   <button type="button" id="task-send" class="primary action-button">送信</button>
                 </div>
               </div>
-              <section id="task-record" hidden aria-label="操作の見本">
-                <p id="task-record-request" class="task-record-request" hidden></p>
-                <div class="task-actions">
-                  <label for="task-record-source">画面</label>
-                  <select id="task-record-source"><option value="browser">ブラウザ</option><option value="windows">Windowsアプリ</option></select>
-                  <label id="task-record-target-label" for="task-record-target">URL</label>
-                  <input id="task-record-target" placeholder="https://…">
-                  <span class="spacer"></span>
-                  <button type="button" id="task-record-action" class="small primary">記録を始める</button>
-                  <button type="button" id="task-record-restart" class="small quiet" hidden>やり直す</button>
-                  <button type="button" id="task-record-close" class="small quiet">閉じる</button>
-                </div>
-                <p id="task-record-message" class="sub" hidden></p>
-                <p id="task-record-note" class="sub" hidden></p>
-              </section>
             </section>
           </div>
           <!-- ワークフローを AI と作る会話。タスクと同じ形（端末ミラー + 入力欄）で、

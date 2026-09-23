@@ -26,6 +26,12 @@ test('見本の依頼は @record の 1 行で拾う（最後の 1 件。引用�
   assert.strictEqual(protocol.recordLine('windows', '勤怠'), '@record windows 勤怠');
 });
 
+test('AI が自然文で操作の見本を求めても記録先を推定する', () => {
+  assert.deepStrictEqual(protocol.parseRecordRequest('ブラウザの操作を見せてください。https://example.test/start'), { source: 'browser', target: 'https://example.test/start' });
+  assert.deepStrictEqual(protocol.parseRecordRequest('Windows アプリの操作の見本をお願いします。'), { source: 'windows', target: '' });
+  assert.strictEqual(protocol.parseRecordRequest('ブラウザの操作を確認しました。'), null);
+});
+
 test('ブラウザの見本は 3 段（開く → 記録開始 → 終了）で、Windows アプリは 2 段', () => {
   assert.deepStrictEqual(protocol.recordingSteps('browser'), ['open', 'start', 'stop']);
   assert.deepStrictEqual(protocol.recordingSteps('windows'), ['start', 'stop']);
@@ -317,13 +323,14 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(html, /<div slot="teaching" id="task-teaching" hidden>/);
   assert.match(html, /id="task-term-host"/);
   assert.match(html, /id="task-mode-terminal"/);
-  assert.match(html, /id="task-record-open"[^>]*>操作の見本<\/button>/, 'AI編集の中から手動でも記録を開始できる');
+  assert.match(html, /id="task-mode-record"[^>]*>操作の見本<\/button>/, '見本は入力欄のタブから開ける');
+  assert.match(renderer, /setInputMode\('record', \{ focus: false \}\);\s*renderShell\(\);/, 'AI の依頼で記録タブへ切り替える');
   // 見本の操作はボタン 1 つ（ラベルは段で変わる）。やり直しはその隣の控えめなボタン
   assert.match(html, /id="task-record-action" class="small primary">記録を始める</);
   assert.match(html, /id="task-record-restart" class="small quiet" hidden>やり直す</);
   assert.doesNotMatch(html, /id="task-record-stop"/, '段ごとに別のボタンを並べない');
   const card = html.slice(html.indexOf('<section id="task-record"'), html.indexOf('</section>', html.indexOf('<section id="task-record"')));
-  assert.strictEqual((card.match(/<button/g) || []).length, 3, '見本のカードのボタンは 進める・やり直す・閉じる の 3 つだけ');
+  assert.strictEqual((card.match(/<button/g) || []).length, 2, '見本のタブには進める・やり直すだけを置く');
   assert.strictEqual((card.match(/class="small (primary|danger)"/g) || []).length, 1, '主ボタンは 1 つだけ');
   // 端末と入力欄は会話画面と同じ実体を使う（見た目を作り直さない）
   assert.match(html, /id="task-terminal" class="terminal-stage"/);

@@ -373,7 +373,7 @@ test('埋め込みワークベンチの初回表示も、AI 一覧と実行状�
   };
   for (const [label, body] of [
     ['起動', bodyOf('async function init() {', 'initPromise = init();')],
-    ['親からの遷移', bodyOf('async function navigateEmbedded(payload) {', 'if (workbenchHost) workbenchHost.setController')],
+    ['親からの遷移', bodyOf('async function navigateEmbedded(payload) {', '// 親の会話（AI がファイルを書いた）が終わるたびに')],
     ['リポジトリの切り替え', bodyOf('async function afterRootChange() {', 'async function addFolder()')],
   ]) {
     assert.doesNotMatch(body, /await\s+loadAgents\(/, `${label}が AI 一覧を待っている`);
@@ -441,8 +441,8 @@ test('タスク詳細は概要・手順・履歴に統一し、対象に応じ�
   assert.match(renderer, /class="edit-controls"/, 'エージェントと編集ボタンを一つの操作グループにする');
   assert.match(workbenchCss, /\.task-detail-shell\.is-editor \.task-tab-panel \{[^}]*grid-template-rows: auto minmax\(0, 1fr\)/,
     'ツールバーが折り返しても本文へ重ならない');
-  assert.match(workbenchCss, /\.embedded-editor-toolbar \.bar-right \{[^}]*flex-wrap: wrap/,
-    '狭いペインでは操作を折り返す');
+  assert.match(workbenchCss, /\.embedded-editor-toolbar \.bar-right \{[^}]*flex-wrap: nowrap/,
+    '操作ボタンは一行に保つ');
   assert.match(renderer, /state\.aiReview\.scope = selected \? \{ type: 'step', stepId: selected\.id \} : \{ type: 'workflow' \}/,
     '選択中の工程を編集画面の初期対象へ引き継ぐ');
   assert.match(renderer, /target\.value === 'workflow'[\s\S]*stepId: target\.value\.slice\(5\)/,
@@ -548,7 +548,7 @@ test('自動化は agent-app の登録リポジトリと設定を共有する', 
   assert.deepStrictEqual(cfg, {
     roots: ['/repo/a', '/repo/b'], lastRoot: '/repo/b', skillDir: '/skill', agent: 'codex', model: 'm', instructions: {},
     execution: { defaultPolicy: 'quality', tiers: { large: { cli: 'copilot', model: 'large' } } },
-    taskInputs: {},
+    taskInputs: {}, taskInputHistory: {},
   });
   assert.deepStrictEqual(automationIpc.automationPatch({
     roots: ['/ignored'], lastRoot: '/repo/a', skillDir: '/next', agent: 'aider', model: '',
@@ -562,6 +562,21 @@ test('自動化は agent-app の登録リポジトリと設定を共有する', 
   assert.deepStrictEqual(automationIpc.automationPatch({
     taskInputs: { '/repo/a': { monthly: { month: '2026-09' } } },
   }), { lastTaskInputs: { '/repo/a': { monthly: { month: '2026-09' } } } });
+  assert.deepStrictEqual(automationIpc.automationPatch({
+    taskInputHistory: { '/repo/a': { monthly: { month: ['2026-09'] } } },
+  }), { taskInputHistory: { '/repo/a': { monthly: { month: ['2026-09'] } } } });
+});
+
+test('パラメータ履歴はタスクと項目ごとに保持し、件数と長さを制限する', () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-input-history-'));
+  try {
+    const values = Array.from({ length: 12 }, (_, index) => `value-${index}`);
+    const saved = store.saveConfig(userData, { taskInputHistory: {
+      '/repo/a': { taskA: { date: [values[0], values[0], ...values, 42, 'x'.repeat(500)] }, taskB: { date: ['other'] } },
+    } });
+    assert.deepStrictEqual(saved.taskInputHistory['/repo/a'].taskA.date, values.slice(0, 8));
+    assert.deepStrictEqual(store.loadConfig(userData).taskInputHistory['/repo/a'].taskB.date, ['other']);
+  } finally { fs.rmSync(userData, { recursive: true, force: true }); }
 });
 
 test('共有編集面は agent-app の preload API（window.api.automation）へ直接つなぐ', () => {

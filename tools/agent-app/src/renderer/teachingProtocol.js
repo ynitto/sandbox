@@ -38,7 +38,8 @@
 
   // 返答本文から見本の依頼を拾う（最後の 1 件）。無ければ null。
   function parseRecordRequest(text) {
-    const lines = String(text || '').split(/\r?\n/);
+    const body = String(text || '');
+    const lines = body.split(/\r?\n/);
     let found = null;
     for (const line of lines) {
       const m = LINE_RE.exec(line);
@@ -47,7 +48,15 @@
       const target = String(m[2] || '').trim().replace(/^[`"'「]+|[`"'」]+$/g, '');
       found = { source, target };
     }
-    return found;
+    if (found) return found;
+    // @record が無くても、見本を求める自然文なら記録タブへ案内する。
+    const tail = body.slice(-2000);
+    const subject = /(?:操作|手順|画面|ブラウザ|Windowsアプリ|playwright|winauto).{0,40}(?:見本|記録|見せ|デモ)|(?:見本|記録|デモ).{0,40}(?:操作|手順|画面)/i;
+    const asking = /(?:ください|お願い|見せて|送って|共有して|いただけ|してほしい|できますか|please|could you|would you)/i;
+    if (!subject.test(tail) || !asking.test(tail)) return null;
+    const source = /(?:Windows|ウィンドウズ|winauto|デスクトップアプリ)/i.test(tail) ? 'windows' : 'browser';
+    const target = source === 'browser' ? (tail.match(/https?:\/\/[^\s）)>"']+/i) || [])[0] || '' : '';
+    return { source, target };
   }
 
   function recordLine(source, target = '') {

@@ -116,8 +116,8 @@
     $('task-term-restart').hidden = !(ph && (ph.phase === 'dead' || ph.phase === 'gone'));
     $('task-stop').hidden = !(state.running || state.pending);
     $('task-send').disabled = state.pending || !hasTerminal;
+    setInputMode(state.input && state.input.mode, { focus: false });
     renderRecord();
-    setInputMode(state.input && state.input.mode === 'terminal' ? 'terminal' : 'message', { focus: false });
     applyPrefill();
   }
 
@@ -153,27 +153,35 @@
     return { agent: $(`${prefix}-agent`).value, model: $(`${prefix}-model`).value.trim(), autoApprove: $(`${prefix}-permission`).value === 'auto' };
   }
 
-  // 入力先は会話画面と同じ 3 つ（メッセージ / 端末操作 / 共有に依頼）。
+  // 見本の記録も、メッセージや端末操作と同じ入力欄のタブで切り替える。
   function setInputMode(mode, { focus = true } = {}) {
     const alive = !!state.session && !['dead', 'gone'].includes((state.phase || {}).phase);
     const shareReady = state.deps.shareEnabled();
-    let next = mode === 'terminal' || mode === 'share' ? mode : 'message';
+    let next = ['terminal', 'share', 'record'].includes(mode) ? mode : 'message';
     if (next === 'terminal' && !alive) next = 'message';
     if (next === 'share' && !(shareReady && state.session)) next = 'message';
+    if (next === 'record' && !state.session) next = 'message';
     state.input = InputMode.reduce(state.input || InputMode.create(), { type: `${next}-focus` });
-    for (const [id, name] of [['task-mode-message', 'message'], ['task-mode-terminal', 'terminal'], ['task-mode-share', 'share']]) {
+    state.record.open = next === 'record';
+    for (const [id, name] of [['task-mode-message', 'message'], ['task-mode-terminal', 'terminal'], ['task-mode-record', 'record'], ['task-mode-share', 'share']]) {
       $(id).setAttribute('aria-pressed', String(next === name));
       $(id).classList.toggle('on', next === name);
     }
     $('task-mode-terminal').disabled = !alive;
+    $('task-mode-record').disabled = !state.session;
     $('task-mode-share').hidden = !(shareReady && state.session);
-    $('task-message-input').hidden = next === 'terminal';
+    $('task-message-input').hidden = next === 'terminal' || next === 'record';
     $('task-terminal-keys').hidden = next !== 'terminal';
-    $('task-composer-toolbar').hidden = next === 'terminal';
+    $('task-record').hidden = next !== 'record';
+    $('task-composer-toolbar').hidden = next === 'terminal' || next === 'record';
     $('task-prompt').placeholder = next === 'share' ? '参加者の AI に依頼する' : 'AI への返答や、変更したいこと';
     $('task-terminal').classList.toggle('input-terminal', next === 'terminal');
     term().setInputEnabled(next === 'terminal');
-    if (focus) { if (next === 'terminal') term().focus(); else $('task-prompt').focus(); }
+    if (focus) {
+      if (next === 'terminal') term().focus();
+      else if (next === 'record') $('task-record-target').focus();
+      else $('task-prompt').focus();
+    }
   }
 
   // ---- 会話（tmux）を開く ------------------------------------------------------
@@ -435,6 +443,7 @@
     if (step === 'stop') { resetRecord(rec); rec.message = rec.source === 'windows' ? '見本を AI へ渡しました。' : 'AI に操作の終了を伝えました。記録が工程に起こされるのを待ってください。'; }
     else { rec.step += 1; rec.message = `${rec.browser || 'ブラウザ'} を開きました。ログインや画面の移動を済ませてから次へ進めてください。`; }
     rec.ok = true;
+    setInputMode('record', { focus: false });
     renderShell();
   }
 
@@ -472,12 +481,13 @@
 
   function openRecord(request = null) {
     const rec = state.record;
-    rec.open = true;
     if (request) {
       rec.request = request;
       if (!rec.step) { rec.source = request.source; rec.target = request.target || rec.target; }
     }
+    setInputMode('record', { focus: false });
     renderShell();
+    if (request) $('task-record-target').focus();
   }
 
   // 1 段目（ブラウザ）: Edge をリモートデバッグ付きで起こし、接続だけしておくよう AI へ伝える文を
@@ -533,7 +543,10 @@
     const rec = state.record;
     if (rec.busy) return;
     const step = recordStep(rec);
-    if (rec.awaiting === step && $('task-prompt').value.trim()) { $('task-prompt').focus(); return; }
+    if (rec.awaiting === step && $('task-prompt').value.trim()) {
+      setInputMode('message');
+      return;
+    }
     rec.busy = true;
     rec.ok = true;
     rec.message = RECORD_PROGRESS[step] || (rec.source === 'windows' ? '記録を工程に整理しています…' : '');
@@ -618,6 +631,7 @@
     state.visible = true;
     clearFilled(state.record);
     state.record = { ...state.record, open: false, step: 0, request: null, message: '', endpoint: '', browser: '', opened: false, awaiting: '', filled: '' };
+    state.input = InputMode.create();
     $('task-composer').classList.remove('awaiting-send');
     resetExecutionInputs();
     if (state.creating) { state.token += 1; state.session = null; state.availableSession = null; term().detach(); renderShell(); return; }
@@ -677,7 +691,10 @@
     const request = TeachingProtocol.parseRecordRequest(message && message.text);
     if (request) openRecord(request);
     else renderShell();
-    try { await state.deps.refreshWorkbench(); } catch { /* 一覧の読み直しに失敗しても会話は続く */ }
+    // 見本を頼まれたターンでは、公開された定義への自動遷移より記録タブを優先する。
+    if (!request) {
+      try { await state.deps.refreshWorkbench(); } catch { /* 一覧の読み直しに失敗しても会話は続く */ }
+    }
     state.deps.reloadTasks();
   }
 
@@ -722,8 +739,7 @@
     for (const button of document.querySelectorAll('[data-task-key]')) {
       button.onclick = () => { setInputMode('terminal', { focus: false }); term().sendKey(TERMINAL_KEYS[button.dataset.taskKey] || ''); term().focus(); };
     }
-    $('task-record-open').onclick = () => openRecord();
-    $('task-record-close').onclick = () => { state.record.open = false; renderShell(); };
+    $('task-mode-record').onclick = () => openRecord();
     $('task-record-source').onchange = () => { state.record.source = $('task-record-source').value; renderRecord(); };
     $('task-record-target').addEventListener('input', () => { state.record.target = $('task-record-target').value; });
     $('task-record-action').onclick = () => advanceRecording();

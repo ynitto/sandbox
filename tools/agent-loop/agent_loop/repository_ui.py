@@ -10,7 +10,8 @@ _SIMPLE_CRON_RE = re.compile(
     r"^(?P<minute>\d{1,2})\s+(?P<hour>\d{1,2})\s+\*\s+\*\s+(?P<days>\*|[0-7](?:,[0-7])*)$"
 )
 _REPOSITORY_RUNTIME_VALUES = {
-    "last_output", "history", "step_count", "today", "now", "check_ok", "context",
+    "last_output", "history", "step_count", "today", "now", "current_state",
+    "check_ok", "check_status", "check_output", "context",
 }
 
 
@@ -107,7 +108,7 @@ def _repository_schedule_item(root: Path, config_path: Path, index: int,
     }
 
 
-def _repository_parameter_names(data: dict[str, Any]) -> list[str]:
+def _repository_parameter_names(data: dict[str, Any], file_texts: list[str] | None = None) -> list[str]:
     context = data.get("context") if isinstance(data.get("context"), dict) else {}
     required = {str(key) for key, value in context.items()
                 if value is None or str(value).strip() == ""}
@@ -131,11 +132,63 @@ def _repository_parameter_names(data: dict[str, Any]) -> list[str]:
                 templates.add(match.group(1))
 
     visit(data.get("states") or {})
+    visit(data.get("transitions") or [])
+    for body in file_texts or []:
+        visit(body)
     for name in templates:
         top = name.split(".", 1)[0]
+        if top == "context":
+            key = name.partition(".")[2].split(".", 1)[0]
+            if key and key not in context:
+                required.add(name)
+            continue
         if top not in _REPOSITORY_RUNTIME_VALUES and top not in outputs and top not in defaults:
             required.add(name)
     return sorted(required)
+
+
+def _repository_referenced_texts(workflow_file: Path, data: dict[str, Any]) -> list[str]:
+    """実際に参照する actions / conditions の本文もパラメータ宣言として読む。"""
+    base = workflow_file.parent.resolve()
+    names: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if isinstance(child, str) and (key.endswith("_file") or key in ("action", "condition") and child.startswith("file:")):
+                    names.add(child.removeprefix("file:").strip())
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(data.get("states") or {})
+    visit(data.get("transitions") or [])
+    states = data.get("states")
+    if isinstance(states, dict):
+        for state_id, state in states.items():
+            if isinstance(state, dict) and not state.get("action") and not state.get("action_file"):
+                names.add(f"actions/{state_id}.md")
+    transitions = data.get("transitions")
+    if isinstance(transitions, list):
+        for transition in transitions:
+            if not isinstance(transition, dict) or transition.get("condition") or transition.get("condition_file") or transition.get("condition_rule"):
+                continue
+            source = transition.get("from")
+            target = transition.get("to")
+            if isinstance(source, str) and isinstance(target, str):
+                names.add(f"conditions/{'wildcard' if source == '*' else source}_to_{target}.md")
+    texts = []
+    for name in sorted(names):
+        if not name:
+            continue
+        file = (base / name).resolve()
+        try:
+            file.relative_to(base)
+            texts.append(file.read_text(encoding="utf-8"))
+        except (ValueError, OSError, UnicodeError):
+            continue
+    return texts
 
 
 def _repository_workflow_summary(workflow_file: Path) -> dict[str, Any]:
@@ -150,7 +203,7 @@ def _repository_workflow_summary(workflow_file: Path) -> dict[str, Any]:
     return {
         "name": str(data.get("name") or workflow_file.parent.name),
         "description": str(data.get("description") or ""),
-        "parameters": _repository_parameter_names(data),
+        "parameters": _repository_parameter_names(data, _repository_referenced_texts(workflow_file, data)),
     }
 
 

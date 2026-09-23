@@ -7,6 +7,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const { execFileSync } = require('child_process');
 const tools = require('../src/main/automation/tools');
 
@@ -79,7 +80,7 @@ test('タスク概要の編集と、必要な事前入力は簡潔なダイア�
   const preload = read('preload.js');
   const handlers = read('main/automation/handlers.js');
   assert.ok(renderer.includes('名前と説明を編集') && renderer.includes("dialog('dlg-run', 'タスクの名前と説明'"));
-  assert.ok(renderer.includes("dialog('dlg-run', '実行前の入力'") && renderer.includes('入力して実行'));
+  assert.ok(renderer.includes("dialog('dlg-run', 'パラメータ'") && renderer.includes('data-input-run'));
   assert.ok(preload.includes('updateMachineMetadata'));
   assert.ok(handlers.includes("register('machine:updateMetadata'"));
 });
@@ -225,7 +226,7 @@ test('埋め込みタスクの切替は設定取得を待たず、古い切替�
   assert.match(navigate, /if \(token !== navigationToken\) return;/, '前のタスクの遅い応答は現在の選択へ反映しない');
 });
 
-test('手動実行の条件は実行ダイアログで確認し、前回の値と省略可能な既定値を示す', () => {
+test('手動実行の条件はパラメータ画面で確認し、履歴候補と省略可能な既定値を示す', () => {
   const renderer = read('renderer/automation/renderer.js');
   // 覚えるのは値だけ（パスは持たない）。置き場は agent-app の設定（lastTaskInputs）
   assert.match(renderer, /function rememberedInputs\(machine\) \{[\s\S]*state\.config && state\.config\.taskInputs/);
@@ -236,13 +237,34 @@ test('手動実行の条件は実行ダイアログで確認し、前回の値�
   assert.match(renderer, /function ensureRunParameters\(machine\) \{[\s\S]*\$\{taskIdentity\(machine\)\}#\$\{\(\(machine && machine\.parameters\) \|\| \[\]\)\.join\(','\)\}/);
   assert.match(renderer, /function executionDetailHtml\(machine\) \{\s*\n\s*ensureRunParameters\(machine\);/);
   assert.match(renderer, /if \(!confirmed && \(machine\.parameters \|\| \[\]\)\.length\) \{ openRunInputDialog\(machine\); return; \}/);
-  assert.match(renderer, /previous\[name\] && previous\[name\] === value \? '前回の値' : optional \? '既定値'/);
-  assert.match(renderer, /空欄なら既定値/);
+  assert.match(renderer, /rememberedInputHistory\(machine, name\)/);
+  assert.match(renderer, /<datalist id="run-history-\$\{index\}"/);
+  assert.match(renderer, /optional \? '省略可' : '必須'/);
   // 明示した値だけを覚え、省略した項目には実行時に既定値を使う。
   assert.match(renderer, /const values = \{ \.\.\.defaults, \.\.\.supplied \};/);
   assert.match(renderer, /await rememberRunParameters\(machine, supplied\)/);
-  assert.match(renderer, /automationHost\.saveConfig\(\{ \.\.\.state\.config, taskInputs: all \}\)/);
-  assert.match(renderer, /入力した値を使う/);
+  assert.match(renderer, /automationHost\.saveConfig\(\{ \.\.\.state\.config, taskInputs: all, taskInputHistory: history \}\)/);
+  assert.match(renderer, /function validParameter\(value, format\)/);
+  const dialog = renderer.slice(renderer.indexOf('function openRunInputDialog(machine) {'), renderer.indexOf('function appendLog(entry) {'));
+  assert.doesNotMatch(dialog, /入力した値を使う/);
+});
+
+test('パラメータの明確な形式は送信前に検証する', () => {
+  const renderer = read('renderer/automation/renderer.js');
+  const code = renderer.slice(renderer.indexOf('function parameterFormat(name) {'), renderer.indexOf('function openRunInputDialog(machine) {'));
+  const { parameterFormat, validParameter } = vm.runInNewContext(`${code}\n({ parameterFormat, validParameter })`, { URL });
+  assert.strictEqual(parameterFormat('startDate'), 'date');
+  assert.strictEqual(parameterFormat('report_month'), 'month');
+  assert.strictEqual(parameterFormat('contactEmail'), 'email');
+  assert.strictEqual(parameterFormat('callbackUrl'), 'url');
+  assert.strictEqual(parameterFormat('memo'), 'text');
+  assert.strictEqual(parameterFormat('update'), 'text');
+  assert.strictEqual(validParameter('2026-02-29', 'date'), '実在する日付を入力してください');
+  assert.strictEqual(validParameter('2024-02-29', 'date'), '');
+  assert.strictEqual(validParameter('2026-13', 'month'), '年月は YYYY-MM で入力してください');
+  assert.strictEqual(validParameter('hello@', 'email'), 'メールアドレスを確認してください');
+  assert.strictEqual(validParameter('file:///tmp/a', 'url'), 'http または https の URL を入力してください');
+  assert.strictEqual(validParameter('a'.repeat(401), 'text'), '400文字以内で入力してください');
 });
 
 test('失敗した実行は、ログごと AI の会話へ渡す（送るのは利用者）', () => {
