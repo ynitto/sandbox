@@ -14,11 +14,12 @@ function fixture() {
     replaceChildren(...children) { this.children = []; this.append(...children); }
   }
   const nodes = new Map(['skills-list', 'skills-repo', 'skills-agent', 'skills-count', 'skills-publish',
-    'skills-remove-mode', 'skills-remove', 'skills-status', 'audit-share-repo', 'audit-share-token', 'audit-push-main', 'audit-push-main-row', 'settings-error'].map((id) => [id, new Element()]));
+    'skills-remove-mode', 'skills-remove', 'skills-status', 'audit-share-repo', 'audit-share-token', 'audit-push-main', 'audit-push-main-row', 'skill-repository-path', 'skill-repository-pick', 'skill-repository-clear', 'issue-fork-enabled', 'settings-error'].map((id) => [id, new Element()]));
   const pending = [];
   const removals = [];
   const publications = [];
   const window = { api: {
+    pickSkillRepository: async () => '/work/picked-skills',
     publish: {
       skills: (repo, agent) => new Promise((resolve) => pending.push({ repo, agent, resolve })),
       submit: (options) => { publications.push(options); return Promise.resolve({ branch: 'published' }); },
@@ -59,6 +60,15 @@ test('リポジトリ切り替え中は公開を無効にし、遅れた応答�
   assert.equal(nodes.get('skills-publish').disabled, true);
 });
 
+test('共通スキル管理リポジトリをフォルダ選択で指定・解除できる', async () => {
+  const { window, nodes } = fixture();
+  window.Skills.fill({ audit: {} });
+  await nodes.get('skill-repository-pick').onclick();
+  assert.equal(window.Skills.patch().skillRepositoryPath, '/work/picked-skills');
+  nodes.get('skill-repository-clear').onclick();
+  assert.equal(window.Skills.patch().skillRepositoryPath, '');
+});
+
 test('各スキルに版を表示し、ローカルが新しいものだけ未公開ラベルを付ける', async () => {
   const { window, nodes, pending } = fixture();
   window.Skills.open({ repos: ['a'] }, ['codex']);
@@ -78,13 +88,17 @@ test('各スキルに版を表示し、ローカルが新しいものだけ未�
 
 test('保存したリポジトリとAIを復元し、変更していないトークンを空で上書きしない', () => {
   const { window, nodes } = fixture();
-  const config = { repos: ['a', 'b'], audit: { shareRepo: 'https://example.test/skills.git', shareTokenEncrypted: 'encrypted', skillRepo: 'b', skillAgent: 'claude' } };
+  const config = { repos: ['a', 'b'], audit: { shareRepo: 'https://example.test/skills.git', shareTokenEncrypted: 'encrypted', skillRepo: 'b', skillAgent: 'claude', skillRepositoryPath: '/work/skills', issueForkEnabled: true } };
   window.Skills.fill(config);
   window.Skills.open(config, ['codex', 'claude']);
   assert.equal(nodes.get('skills-repo').value, 'b');
   assert.equal(nodes.get('skills-agent').value, 'claude');
   assert.equal(nodes.get('audit-share-repo').value, config.audit.shareRepo);
   assert.equal(nodes.get('audit-share-token').value, '');
+  assert.equal(nodes.get('skill-repository-path').value, '/work/skills');
+  assert.equal(nodes.get('issue-fork-enabled').checked, true);
+  assert.equal(window.Skills.patch().skillRepositoryPath, '/work/skills');
+  assert.equal(window.Skills.patch().issueForkEnabled, true);
   assert.equal(Object.hasOwn(window.Skills.patch(), 'shareToken'), false);
   nodes.get('audit-share-token').value = 'new-token';
   nodes.get('audit-share-token').oninput();

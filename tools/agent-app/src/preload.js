@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('api', {
     set: (value, { keepAlive = true } = {}) => invoke('judge:set', { value, keepAlive }),
   },
   addRepo: () => invoke('repo:add'),
+  pickSkillRepository: () => invoke('skills:pickRepository'),
   removeRepo: (repo) => invoke('repo:remove', { repo }),
   listAgents: (repo) => invoke('agents:list', { repo }),
   listSkills: (repo) => invoke('skills:list', { repo }),
@@ -199,6 +200,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   insight: {
     handoff: (id, options) => invoke('insight:handoff', { id, ...(options || {}) }),
+    forkContext: (id) => invoke('insight:forkContext', { id }),
     evidence: (observationIds) => invoke('insight:evidence', { observationIds }),
   },
   onTurnStarted: on('turn:started'),

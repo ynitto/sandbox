@@ -100,7 +100,7 @@
     const unsaved = tokenChanged || $('audit-share-repo').value.trim() !== savedPublish.repo || $('audit-push-main').checked !== savedPublish.pushToMain;
     $('skills-count').textContent = count ? `${count} 件選択` : '';
     const button = $('skills-publish');
-    button.hidden = false;
+    button.hidden = !configured;
     button.disabled = state.busy || !configured || !count || unsaved || selected.some(item => !item.canPublish);
     button.textContent = '公開';
     button.title = unsaved ? '公開設定を保存してください' : !configured ? '公開先リポジトリを設定して保存してください'
@@ -310,6 +310,8 @@
     tokenChanged = false;
     savedRepo = cfg.skillRepo || '';
     savedAgent = cfg.skillAgent || '';
+    $('skill-repository-path').value = cfg.skillRepositoryPath || '';
+    $('issue-fork-enabled').checked = cfg.issueForkEnabled === true;
     $('audit-push-main').checked = !!cfg.pushToMain;
     savedPublish = { repo: cfg.shareRepo || '', pushToMain: !!cfg.pushToMain };
     renderPublishRepoRow();
@@ -326,6 +328,8 @@
       ...(tokenChanged ? { shareToken: $('audit-share-token').value.trim() } : {}),
       skillRepo: $('skills-repo').value || savedRepo,
       skillAgent: $('skills-agent').children.length ? $('skills-agent').value : savedAgent,
+      skillRepositoryPath: $('skill-repository-path').value.trim(),
+      issueForkEnabled: $('issue-fork-enabled').checked,
       pushToMain: $('audit-push-main').checked,
     };
   }
@@ -359,6 +363,13 @@
     $('audit-share-repo').oninput = renderPublishRepoRow;
     $('audit-share-token').oninput = () => { tokenChanged = true; renderFoot(); };
     $('audit-push-main').onchange = renderFoot;
+    $('skill-repository-pick').onclick = async () => {
+      try {
+        const selected = await window.api.pickSkillRepository();
+        if (selected) $('skill-repository-path').value = selected;
+      } catch (error) { fail(error); }
+    };
+    $('skill-repository-clear').onclick = () => { $('skill-repository-path').value = ''; };
   }
 
   window.Skills = { init, open, reset, fill, patch, render, load };

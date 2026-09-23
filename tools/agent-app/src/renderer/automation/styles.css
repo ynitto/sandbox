@@ -114,7 +114,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .execution-item span { color: var(--muted); font-size: 11.5px; }
 .execution-item:hover { background: var(--surface); }
 .execution-item.is-on { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
-.execution-detail { min-width: 0; max-width: 900px; display: grid; gap: 12px; }
+.execution-detail { min-width: 0; max-width: 1120px; display: grid; gap: 12px; }
 .task-detail-tabs { display: flex; gap: 4px; margin: 2px 0 6px; border-bottom: 1px solid var(--line); }
 .task-detail-tabs button { margin-bottom: -1px; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); background: transparent; }
 .task-detail-tabs button:hover { color: var(--text); background: var(--soft); }
@@ -144,7 +144,12 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .status.ng { color: var(--ng); background: var(--ng-soft); }
 .run-inputs { display: grid; gap: 7px; }
 .run-inputs h3 { font-size: 12.5px; color: var(--muted); }
-.run-input-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 9px; }
+.run-input-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; }
+.run-input-field { min-width: 0; }
+.run-input-field label { display: flex; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }
+.run-input-field input, .run-input-field select { min-width: 0; }
+.run-input-summary { margin: 0; color: var(--muted); font-size: 12px; }
+.run-terminal-help { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .run-toolbar { min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
 .run-toolbar-spacer { min-width: 8px; flex: 1; }
 .run-toolbar > button { flex: none; white-space: nowrap; }
@@ -346,6 +351,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 /* ---------- ダイアログ ---------- */
 dialog { border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 0; width: calc(100vw - 32px); max-height: calc(100vh - 32px); color: var(--fg); background: var(--card); }
 .dlg-record { max-width: 640px; }
+.dlg-run-input { max-width: 760px; }
 .dlg-settings { max-width: 720px; }
 .dlg-work { max-width: 960px; }
 .dlg-files { max-width: 1040px; }

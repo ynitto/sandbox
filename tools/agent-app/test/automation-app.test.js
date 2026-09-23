@@ -225,7 +225,7 @@ test('埋め込みタスクの切替は設定取得を待たず、古い切替�
   assert.match(navigate, /if \(token !== navigationToken\) return;/, '前のタスクの遅い応答は現在の選択へ反映しない');
 });
 
-test('手動実行の実行条件は、前回の値を既定にする（今回打った値 → 前回 → 定期実行の既定）', () => {
+test('手動実行の条件は実行ダイアログで確認し、前回の値と省略可能な既定値を示す', () => {
   const renderer = read('renderer/automation/renderer.js');
   // 覚えるのは値だけ（パスは持たない）。置き場は agent-app の設定（lastTaskInputs）
   assert.match(renderer, /function rememberedInputs\(machine\) \{[\s\S]*state\.config && state\.config\.taskInputs/);
@@ -235,13 +235,14 @@ test('手動実行の実行条件は、前回の値を既定にする（今回�
   assert.ok(!/state\.run\.parameters = \{\};/.test(renderer), '実行条件を空で始めない（前回の値を既定にする）');
   assert.match(renderer, /function ensureRunParameters\(machine\) \{[\s\S]*\$\{taskIdentity\(machine\)\}#\$\{\(\(machine && machine\.parameters\) \|\| \[\]\)\.join\(','\)\}/);
   assert.match(renderer, /function executionDetailHtml\(machine\) \{\s*\n\s*ensureRunParameters\(machine\);/);
-  // 前回の値は、入っているものと違うときだけ出す（同じことを 2 回言わない）
-  assert.match(renderer, /previous\[name\] && previous\[name\] !== value \? `<small class="muted">前回: /);
-  // 実行したら覚える
-  assert.match(renderer, /await rememberRunParameters\(machine, state\.run\.parameters\)/);
+  assert.match(renderer, /if \(!confirmed && \(machine\.parameters \|\| \[\]\)\.length\) \{ openRunInputDialog\(machine\); return; \}/);
+  assert.match(renderer, /previous\[name\] && previous\[name\] === value \? '前回の値' : optional \? '既定値'/);
+  assert.match(renderer, /空欄なら既定値/);
+  // 明示した値だけを覚え、省略した項目には実行時に既定値を使う。
+  assert.match(renderer, /const values = \{ \.\.\.defaults, \.\.\.supplied \};/);
+  assert.match(renderer, /await rememberRunParameters\(machine, supplied\)/);
   assert.match(renderer, /automationHost\.saveConfig\(\{ \.\.\.state\.config, taskInputs: all \}\)/);
-  // 横に出すのは補助の 1 行（新しい部品を足さない）
-  assert.match(renderer, /前回: \$\{esc\(Reuse\.DATE_MODES\[previous\[name\]\] \|\| previous\[name\]\)\}<\/small>/);
+  assert.match(renderer, /入力した値を使う/);
 });
 
 test('失敗した実行は、ログごと AI の会話へ渡す（送るのは利用者）', () => {

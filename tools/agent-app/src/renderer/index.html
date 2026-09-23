@@ -645,6 +645,7 @@
         <section data-settings-panel="app" class="settings-list" role="tabpanel">
           <label class="setting-check"><input type="checkbox" id="use-tmux"><span><strong>対話セッションを維持する</strong><small>画面を切り替えても会話を続けられます</small></span></label>
           <label class="setting-check"><input type="checkbox" id="use-worktree"><span><strong>会話ごとに作業を分離する</strong><small>作業フォルダを分けて変更の混在を防ぎます</small></span></label>
+          <label class="setting-check"><input type="checkbox" id="issue-fork-enabled"><span><strong>見つかった問題を新しい会話で修正する</strong><small>スキル・ステートマシン・ワークフローの問題から修正用の会話を作ります</small></span></label>
           <label class="setting-check"><input type="checkbox" id="notify-background"><span><strong>バックグラウンドで通知する</strong><small>応答の完了と確認待ちをOSの通知で知らせます</small></span></label>
           <label id="wsl-row" class="setting-field" hidden><span><strong>WSLディストリビューション</strong><small>Windows上で利用する環境を指定します</small></span><input id="wsl-distro" placeholder="既定" size="12"></label>
           <label class="setting-field"><span><strong>更新元</strong><small>配布物を置いた共有フォルダかURLを指定します</small></span><input id="update-source" size="28" placeholder="\\server\share\agent-app"></label>
@@ -721,7 +722,11 @@
           <div class="environment-status"><strong>接続状態</strong><div id="share-status" class="sub"></div></div>
         </section>
         <section data-settings-panel="skills" class="settings-list" role="tabpanel" hidden>
-          <div class="settings-group" id="skills-publish-settings">
+          <div class="settings-group">
+            <div class="settings-group-head"><span><strong>スキル設定</strong></span></div>
+            <div class="setting-field setting-field-wide"><span><label for="skill-repository-path"><strong>共通スキル管理リポジトリ</strong></label></span><div class="row skill-repo-picker"><input id="skill-repository-path" readonly placeholder="フォルダを選択してください"><button type="button" id="skill-repository-pick" class="small">選択</button><button type="button" id="skill-repository-clear" class="small quiet">解除</button></div></div>
+          </div>
+          <div class="settings-group" id="skills-publish-settings" hidden>
             <div class="settings-group-head"><span><strong>公開設定</strong></span></div>
             <label class="setting-field setting-field-wide"><span><strong>公開先リポジトリ</strong></span><input id="audit-share-repo" placeholder="https://example.com/team/skills.git"></label>
             <label class="setting-field setting-field-wide"><span><strong>アクセストークン</strong></span><input id="audit-share-token" type="password" autocomplete="new-password" placeholder="未設定"></label>

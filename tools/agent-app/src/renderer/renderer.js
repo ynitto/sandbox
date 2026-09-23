@@ -519,7 +519,7 @@ function renderIssueCards(issues) {
     const updatedAt = item.resultAt ? Fmt.checkedAt(item.resultAt) : '';
     const row = el('div', 'row');
     row.append(el('span', 'sub', updatedAt), el('span', 'spacer'));
-    const go = el('button', 'small primary', '会話を始める');
+    const go = el('button', 'small primary', state.config.audit?.issueForkEnabled ? 'この問題を修正する' : '会話を始める');
     go.type = 'button';
     go.onclick = () => handoffIssue(item, go).catch((err) => notice(err.message, 'error'));
     row.append(go);
@@ -581,8 +581,10 @@ async function handoffIssue(item, button) {
   if (!state.config.repos.length) throw new Error('リポジトリを登録して会話を始めてください');
   if (button) button.disabled = true;
   try {
-    const handed = await api.insight.handoff(item.issue.id, { mark: false });
-    await SessionSearch.handoffIssue({ id: item.issue.id, title: handed.title, prompt: handed.prompt, agent: '' });
+    const fork = state.config.audit?.issueForkEnabled;
+    const handed = fork ? await api.insight.forkContext(item.issue.id) : await api.insight.handoff(item.issue.id, { mark: false });
+    await SessionSearch.handoffIssue({ id: item.issue.id, title: handed.title, prompt: handed.prompt,
+      repo: handed.repo || '', origin: handed.origin || null, fork });
   } finally { if (button) button.disabled = false; }
 }
 
@@ -2685,6 +2687,7 @@ async function saveSettings() {
   $('settings-error').hidden = true;
   try {
     state.config = await api.saveConfig(settingsPatch());
+    renderInboxItems();
     Audit.fill(state.config);
   renderSettingsRestrictions();
     Skills.fill(state.config);

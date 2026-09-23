@@ -698,7 +698,9 @@ function render() {
   const taskEditing = isEmbeddedTaskEditor();
   workbenchBody.classList.toggle('is-editing', !!editing);
   workbenchBody.classList.toggle('is-task-editor', taskEditing);
-  main.innerHTML = editing ? (taskEditing ? embeddedTaskEditorHtml() : editorHtml()) : homeHtml();
+  main.innerHTML = editing
+    ? (taskEditing ? `<section class="machine-pane task-editor-pane">${embeddedTaskEditorHtml()}</section>` : editorHtml())
+    : homeHtml();
   if (editing) {
     // 「AIと編集」のときは工程の編集器そのものを描いていないので、その操作は結び付けない。
     const teachingCard = taskEditing && state.execution.editing;
@@ -854,6 +856,7 @@ function bindHome(main) {
   on('run-start', () => startRun('run'));
   on('run-check', () => startRun('check'));
   on('run-stop', () => automationHost.runStop());
+  on('run-terminal-focus', () => runTerm?.focus());
   on('command-edit', () => { state.execution.scheduleOpen = true; state.execution.scheduleDraft = null; render(); });
   on('schedule-toggle', () => { state.execution.scheduleOpen = !state.execution.scheduleOpen; render(); });
   on('schedule-after-run', openScheduleAfterRun);
@@ -1291,9 +1294,9 @@ function selectedTaskRun(machine = selectedExecutionMachine()) {
   return state.run.taskKey === key ? state.run : taskRunResults.get(key) || { lines: [], running: false };
 }
 
-function dateInputHtml(name, value, scope) {
+function dateInputHtml(name, value, scope, inputId = '') {
   const mode = Reuse.DATE_MODES[value] ? value : '';
-  return `<input data-${scope}-param="${esc(name)}" value="${esc(Reuse.resolveDate(value || ''))}" ${mode ? 'readonly' : ''}><select aria-label="${esc(name)}の自動入力" data-date-mode="${scope}" data-name="${esc(name)}"><option value="">固定値</option>${Object.entries(Reuse.DATE_MODES).map(([key, label]) => `<option value="${key}" ${mode === key ? 'selected' : ''}>${label}</option>`).join('')}</select>`;
+  return `<input ${inputId ? `id="${esc(inputId)}" ` : ''}data-${scope}-param="${esc(name)}" value="${esc(Reuse.resolveDate(value || ''))}" ${mode ? 'readonly' : ''}><select aria-label="${esc(name)}の入力方法" data-date-mode="${scope}" data-name="${esc(name)}"><option value="">入力した値を使う</option>${Object.entries(Reuse.DATE_MODES).map(([key, label]) => `<option value="${key}" ${mode === key ? 'selected' : ''}>${label}</option>`).join('')}</select>`;
 }
 
 function reuseHistory(runId) {
@@ -1327,14 +1330,7 @@ function executionDetailHtml(machine) {
     ? `${daemon.activeCount} 件を実行中${daemon.queueDepth ? `、${daemon.queueDepth} 件待機` : ''}`
     : daemon.running ? (daemon.queueDepth ? `${daemon.queueDepth} 件待機` : '自動実行は稼働中') : '自動実行は停止中';
   const parameters = machine.parameters || [];
-  // 実行条件は前回の値を既定にする（優先順位は initialRunParameters）。前回の値は、いま入って
-  // いるものと違うときだけ 1 行添える——同じものを 2 回言わない。
-  const previous = rememberedInputs(machine);
-  const inputs = parameters.length ? `<div class="run-inputs"><h3>実行条件</h3><div class="run-input-grid">${parameters.map((name) => {
-    const value = state.run.parameters[name] || '';
-    const hint = previous[name] && previous[name] !== value ? `<small class="muted">前回: ${esc(Reuse.DATE_MODES[previous[name]] || previous[name])}</small>` : '';
-    return `<div class="field"><label>${esc(name)}</label>${dateInputHtml(name, value, 'run')}${hint}</div>`;
-  }).join('')}</div></div>` : '';
+  const inputs = parameters.length ? `<p class="run-input-summary">実行条件 ${parameters.length} 件 · 実行を押すと入力できます。入力した値は次回も表示します。</p>` : '';
   // 失敗した行からは「手順」→「編集」と同じ会話を起こし、失敗の中身を入力欄へ置く
   const canTeach = !!(machine.machine && machine.kind === 'statemachine');
   const history = (machine.history || []).map((item) => {
@@ -1380,7 +1376,7 @@ function executionDetailHtml(machine) {
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴なし</p>'}${historyLog}</section>`
     : state.execution.detailTab === 'overview' ? `
       ${machine.kind === 'command' ? (taskIdentity(machine) === 'new-command' ? '' : `<section class="execution-card"><div class="execution-card-head"><h3>コマンド</h3><button type="button" id="command-edit">名前・コマンドを編集</button></div><pre>${esc(commandText(machine.entry?.command))}</pre>${machine.error ? `<p class="run-result ng">${esc(machine.error)}</p>` : ''}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || machine.error ? 'disabled' : ''}>今すぐ実行</button><button type="button" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${result}${logView}</section>`) : `<section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${displayedRun.running ? 'active' : ''}">${displayedRun.running ? '実行中' : '待機中'}</span></div>
-        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${Reuse.artifacts(displayedRun.lines.map(item => item.line).join('\n')).map(rel => `<button type="button" class="tiny" data-artifact="${esc(rel)}">${esc(rel)}</button>`).join('')}${displayedRun.terminal ? '<slot name="task-run-terminal"></slot>' : ''}${logView}</section>`}
+        ${taskWarning}<div class="run-toolbar">${runFields}<span class="run-toolbar-spacer"></span><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button>${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${inputs}${result}${Reuse.artifacts(displayedRun.lines.map(item => item.line).join('\n')).map(rel => `<button type="button" class="tiny" data-artifact="${esc(rel)}">${esc(rel)}</button>`).join('')}${displayedRun.terminal ? `<div class="run-terminal-help"><span>${displayedRun.running ? '確認や追加入力を求められたら、端末へ直接入力できます。' : '実行時の端末'}</span>${displayedRun.running ? '<button type="button" id="run-terminal-focus" class="tiny">端末に入力</button>' : ''}</div><slot name="task-run-terminal"></slot>` : ''}${logView}</section>`}
       <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>リポジトリ全体のスケジューラー · ${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '定期実行を停止' : '定期実行を開始'}</button>${['statemachine', 'prompt', 'command'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>${machine.machine ? window.Publish.cardHtml(state.root, 'task', machine.machine) : ''}` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
@@ -2463,7 +2459,7 @@ async function applyAiReview(dlg) {
   toast(`${ids.length} 件の提案を反映しました（未保存）`);
 }
 
-async function startRun(mode) {
+async function startRun(mode, confirmed = false) {
   const run = state.run;
   const machine = selectedExecutionMachine();
   if (!machine) return;
@@ -2473,10 +2469,13 @@ async function startRun(mode) {
   if (mode === 'run' && machine.kind !== 'command' && !runAgent) { toast('実行環境で使う AI を確認してください', true); return; }
   if (mode === 'run' && machine.kind !== 'command') {
     const defaults = machine.parameterDefaults || {};
-    const missing = (machine.parameters || []).filter((name) => !String(state.run.parameters[name] || defaults[name] || '').trim());
-    if (missing.length) { openRunInputDialog(machine, missing); return; }
-    state.run.parameters = { ...defaults, ...state.run.parameters };
-    await rememberRunParameters(machine, state.run.parameters);
+    if (!confirmed && (machine.parameters || []).length) { openRunInputDialog(machine); return; }
+    const supplied = Object.fromEntries(Object.entries(state.run.parameters).filter(([, value]) => String(value || '').trim()));
+    const values = { ...defaults, ...supplied };
+    const missing = (machine.parameters || []).filter((name) => !String(values[name] || '').trim());
+    if (missing.length) { toast(`入力してください: ${missing.join('、')}`, true); return; }
+    state.run.parameters = values;
+    await rememberRunParameters(machine, supplied);
   }
   if (run.running) return;
   if (run.taskKey) taskRunResults.set(run.taskKey, { lines: [...run.lines], result: run.result, error: run.error, manualSuccess: run.manualSuccess, running: false });
@@ -2511,17 +2510,42 @@ async function startRun(mode) {
   if (res.warning) appendLog({ kind: 'stderr', line: res.warning });
 }
 
-function openRunInputDialog(machine, fields) {
-  const dlg = dialog('dlg-run', '実行前の入力', 'record', `
-    <p class="muted small">実行に必要な内容を入力してください。</p>
-    <div class="run-input-grid">${fields.map((name) => `<div class="field"><label>${esc(name)}</label><input data-required-input="${esc(name)}"></div>`).join('')}</div>
-    <p class="msg err" data-input-error hidden>すべて入力してください。</p>
+function openRunInputDialog(machine) {
+  const fields = machine.parameters || [];
+  const defaults = machine.parameterDefaults || {};
+  const previous = rememberedInputs(machine);
+  const dlg = dialog('dlg-run', '実行前の入力', 'run-input', `
+    <p class="muted small">文字や番号など任意の値を入力できます。日付を毎回更新する場合は入力方法から選んでください。入力した値は次回の実行時にも表示されます。</p>
+    <div class="run-input-grid">${fields.map((name, index) => {
+      const value = state.run.parameters[name] || '';
+      const optional = String(defaults[name] || '').trim();
+      const source = [previous[name] && previous[name] === value ? '前回の値' : optional ? '既定値' : '', optional ? '省略可' : '入力必須'].filter(Boolean).join(' · ');
+      return `<div class="field run-input-field"><label for="run-input-${index}">${esc(name)} <small class="muted">${source}</small></label>${dateInputHtml(name, value, 'confirm', `run-input-${index}`)}${optional ? `<small class="muted">空欄なら既定値「${esc(Reuse.DATE_MODES[optional] || optional)}」を使います。</small>` : ''}</div>`;
+    }).join('')}</div>
+    <p class="msg err" data-input-error hidden></p>
     <div class="row"><button type="button" class="primary" data-input-run>入力して実行</button></div>`);
+  for (const select of dlg.querySelectorAll('[data-date-mode="confirm"]')) select.addEventListener('change', () => {
+    const input = select.closest('.field').querySelector('[data-confirm-param]');
+    if (select.value) { input.dataset.manualValue = input.value; input.value = Reuse.resolveDate(select.value); input.readOnly = true; }
+    else { input.value = input.dataset.manualValue ?? input.value; input.readOnly = false; }
+  });
   dlg.querySelector('[data-input-run]').addEventListener('click', () => {
-    for (const input of dlg.querySelectorAll('[data-required-input]')) state.run.parameters[input.dataset.requiredInput] = input.value.trim();
-    if (fields.some((name) => !state.run.parameters[name])) { dlg.querySelector('[data-input-error]').hidden = false; return; }
+    const supplied = {};
+    for (const input of dlg.querySelectorAll('[data-confirm-param]')) {
+      const mode = input.closest('.field').querySelector('[data-date-mode="confirm"]').value;
+      const value = mode || input.value.trim();
+      if (value) supplied[input.dataset.confirmParam] = value;
+    }
+    const missing = fields.filter((name) => !String(supplied[name] || defaults[name] || '').trim());
+    if (missing.length) {
+      const error = dlg.querySelector('[data-input-error]');
+      error.textContent = `入力してください: ${missing.join('、')}`;
+      error.hidden = false;
+      return;
+    }
+    state.run.parameters = supplied;
     dlg.close();
-    startRun('run');
+    startRun('run', true);
   });
 }
 

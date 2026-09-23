@@ -8,6 +8,13 @@ const path = require('node:path');
 const settings = require('../src/main/settings');
 const store = require('../src/main/store');
 
+test('修正フォーク設定は既定でオフ、ローカルパスと切替を保存できる', () => {
+  assert.equal(settings.normalize({}).audit.issueForkEnabled, false);
+  const configured = settings.normalize({ audit: { issueForkEnabled: true, skillRepositoryPath: ' /work/skills ' } });
+  assert.equal(configured.audit.issueForkEnabled, true);
+  assert.equal(configured.audit.skillRepositoryPath, '/work/skills');
+});
+
 test('旧設定のエージェントとモデルを3つのTierへ引き継ぐ', () => {
   const normalized = settings.normalize({ lastCli: 'codex', lastModel: 'gpt-5' });
   assert.deepStrictEqual(normalized.execution.tiers, {

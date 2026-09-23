@@ -178,10 +178,12 @@ function parseHeadless(text, { model = '' } = {}) {
 
 // 課題を会話へ渡すときの最初の依頼文。改善策はこの会話で決める（agent-app は作らない）。
 const TARGET_LABEL = { skill: 'スキル', task: 'タスク', workflow: 'ワークフロー', tool: 'ツール' };
-function handoffPrompt(issue = {}) {
+function handoffPrompt(issue = {}, { fix = false } = {}) {
   const target = issue.target && issue.target.kind ? `${TARGET_LABEL[issue.target.kind] || issue.target.kind}「${issue.target.name}」` : '全体';
   const lines = [
-    `評価で見つかった課題について、改善策を一緒に決めたいです。まだ直さなくてよいので、まず原因の見立てと、取りうる改善策を 2〜3 案、それぞれの利点と注意点つきで挙げてください。`,
+    fix
+      ? '評価で見つかった課題を修正してください。まず根拠と対象の実装を確認し、原因が確認できたら最小限の変更を加えて検証してください。原因が確認できない場合は、推測で変更せず調査結果を報告してください。'
+      : '評価で見つかった課題について、改善策を一緒に決めたいです。まだ直さなくてよいので、まず原因の見立てと、取りうる改善策を 2〜3 案、それぞれの利点と注意点つきで挙げてください。',
     '',
     `## 対象`, target,
     '',
@@ -203,6 +205,10 @@ function handoffPrompt(issue = {}) {
   if (evidence.length) lines.push(`- 観測: ${evidence.slice(0, 10).join(', ')}${evidence.length > 10 ? ' …' : ''}`);
   if (issue.id) lines.push(`- 洞察: ${issue.id}`);
   return lines.join('\n');
+}
+
+function fixPrompt(issue = {}) {
+  return handoffPrompt(issue, { fix: true });
 }
 
 // 評価の実行役。1 件ずつ背景で回し、ターンや端末が動いている間は延期する（監査の連鎖と同じ）。
@@ -455,6 +461,6 @@ class Evaluator {
 
 module.exports = {
   QUESTIONS, ISSUES, MODES, MIN_CONFIDENCE, SAMPLE_EVERY, BATCH_LIMIT, STATE_CHARS,
-  shouldEvaluate, stateText, lastExchange, parseJudge, parseHeadless, headlessPrompt, handoffPrompt, Evaluator,
+  shouldEvaluate, stateText, lastExchange, parseJudge, parseHeadless, headlessPrompt, handoffPrompt, fixPrompt, Evaluator,
   readBatches, appendBatch, batchFile,
 };

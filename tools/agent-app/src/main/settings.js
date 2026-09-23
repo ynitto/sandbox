@@ -88,7 +88,7 @@ function update(raw) {
 // 設定 > アプリ「監査」。収集と判定は agent-audit（ホスト側）が行い、ここは周期と
 // 共有先だけを持つ。intervalMinutes 0 は定期実行をしない（手動だけ）。
 // configFile を指すと、audit_dir / ledger_dirs / extra_homes も利用者の設定に委ねる。
-const AUDIT_DEFAULTS = { enabled: true, intervalMinutes: 60, shareRepo: '', shareTokenEncrypted: '', skillRepo: '', skillAgent: '', pushToMain: false, configFile: '' };
+const AUDIT_DEFAULTS = { enabled: true, intervalMinutes: 60, shareRepo: '', shareTokenEncrypted: '', skillRepo: '', skillAgent: '', skillRepositoryPath: '', issueForkEnabled: false, pushToMain: false, configFile: '' };
 const AUDIT_INTERVALS = [0, 30, 60, 360, 1440];
 function audit(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -99,6 +99,8 @@ function audit(raw) {
     shareTokenEncrypted: String(source.shareTokenEncrypted || ''),
     skillRepo: String(source.skillRepo || ''),
     skillAgent: String(source.skillAgent || ''),
+    skillRepositoryPath: String(source.skillRepositoryPath || '').trim().slice(0, 1000),
+    issueForkEnabled: source.issueForkEnabled === true,
     pushToMain: Boolean(source.pushToMain),
     configFile: String(source.configFile || '').trim().slice(0, 500),
     manualLimits: allocation.manualLimits(source.manualLimits),
