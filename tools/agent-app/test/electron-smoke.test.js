@@ -808,6 +808,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('#flow-teach-terminal').isVisible(), false, 'tmux を開く前に端末は出さない');
     assert.equal(await workspace.locator('[data-flow-tab="steps"]').getAttribute('aria-selected'), 'true');
     assert.equal(await workspace.locator('[data-flow-back-steps]').textContent(), '‹ 工程に戻る');
+    await workspace.locator('[data-flow-teaching-open-test]').click();
     assert.equal(await workspace.locator('[data-flow-teaching-trial]').textContent(), 'テスト');
     assert.equal(await workspace.locator('.execution-detail').textContent().then(text => text.includes('試運転')), false);
     await win.setViewportSize({ width: 1360, height: 560 });
@@ -828,6 +829,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     if (process.env.AGENT_APP_FLOW_TEACHING_SCREENSHOT) {
       await win.screenshot({ path: process.env.AGENT_APP_FLOW_TEACHING_SCREENSHOT });
     }
+    await workspace.locator('[data-flow-teaching-back-edit]').click();
     await workspace.locator('[data-flow-back-steps]').click();
     await workspace.locator('.flow-node-card').waitFor();
     assert.equal(await win.locator('#flow-teaching').isVisible(), false, '工程に戻ると会話を閉じる');

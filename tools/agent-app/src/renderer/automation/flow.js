@@ -7,7 +7,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     root: '', loading: false, catalog: { kinds: [], patterns: [] }, context: null,
     flows: [], selected: '', workflow: null, issues: [], editor: null,
     teachings: [], selectedTeaching: '', teaching: null, creatingTeaching: false,
-    teachingWorkflow: null, teachingParameterKeys: [], trialTeaching: null,
+    teachingWorkflow: null, teachingParameterKeys: [], trialTeaching: null, teachingTestOpen: false,
     runs: [], selectedRun: '', run: null, result: null, log: null, detailTab: 'overview',
     request: '', parameters: {}, readonly: false, agent: '', model: '', allocation: '', starting: false,
   };
@@ -248,8 +248,10 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const trialInputs = view.teachingParameterKeys.map((key) => `<div class="field"><label>${e(key)}</label><input data-flow-param="${e(key)}" value="${e(view.parameters[key] || '')}"></div>`).join('');
     const agents = (view.context?.agents || ctx.agents()).map((name) => `<option value="${e(name)}" ${name === view.agent ? 'selected' : ''}>${e(name)}</option>`).join('');
     const canTrial = !!draft && !broken.length && !!view.context?.tools?.agentFlow?.ok && !!agents && !view.starting;
-    const trial = draft ? `<section class="execution-card flow-teaching-trial"><div class="execution-card-head"><div><h3>テスト実行</h3><p>代表的な依頼で候補のワークフローを確かめます。</p></div></div>${!view.context?.tools?.agentFlow?.ok ? `<p class="run-result warn">${e(view.context?.tools?.agentFlow?.summary || '実行環境を確認してください')}</p>` : ''}<div class="field"><label>依頼内容</label><textarea rows="3" data-flow-teaching-trial-request placeholder="テストする依頼を入力">${e(view.request)}</textarea></div>${trialInputs ? `<div class="run-inputs"><h3>実行時の入力</h3><div class="run-input-grid">${trialInputs}</div></div>` : ''}<div class="run-toolbar"><details class="run-settings flow-run-settings"><summary aria-label="実行設定"><span data-flow-settings-summary title="${e(runSettingsLabel())}">${e(runSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">今回の実行設定</div><label>エージェント<select data-flow-agent ${agents ? '' : 'disabled'}>${agents || '<option>利用できるAIがありません</option>'}</select></label><label>モデル<input data-flow-model value="${e(view.model)}" placeholder="既定のモデル"></label><label>権限<select disabled><option selected>自動承認</option></select></label><label>実行方法<select data-flow-readonly ${view.context && !view.context.workspace.ok ? 'disabled' : ''}><option value="write" ${view.readonly ? '' : 'selected'}>成果を書き込む</option><option value="readonly" ${view.readonly ? 'selected' : ''}>読み取り専用</option></select></label>${view.context && !view.context.workspace.ok ? `<p class="sub">${e(view.context.workspace.reason)}。読み取り専用で実行できます。</p>` : ''}</div></details><span class="run-toolbar-spacer"></span><button type="button" class="primary" data-flow-teaching-trial ${canTrial ? '' : 'disabled'}>${view.starting ? '開始中…' : 'テスト'}</button>${session.status === 'awaiting-confirmation' ? '<button type="button" data-flow-teaching-confirm>利用可能にする</button>' : ''}</div></section>` : '';
-    const content = `<section class="task-conversation-editor"><div class="task-conversation-toolbar"><strong>編集対象：全体</strong>${draft ? '<button type="button" class="tiny" data-flow-back-steps>‹ 工程に戻る</button>' : ''}</div><slot name="flow-teaching"></slot></section>${candidate}${trial}`;
+    const trial = draft ? `<section class="execution-card flow-teaching-trial"><div class="execution-card-head"><div><h3>テスト実行</h3><p>代表的な依頼で候補のワークフローを確かめます。</p></div></div>${broken.length ? issueHtml(view.teachingWorkflow.issues) : ''}${!view.context?.tools?.agentFlow?.ok ? `<p class="run-result warn">${e(view.context?.tools?.agentFlow?.summary || '実行環境を確認してください')}</p>` : ''}<div class="field"><label>依頼内容</label><textarea rows="3" data-flow-teaching-trial-request placeholder="テストする依頼を入力">${e(view.request)}</textarea></div>${trialInputs ? `<div class="run-inputs"><h3>実行時の入力</h3><div class="run-input-grid">${trialInputs}</div></div>` : ''}<div class="run-toolbar"><details class="run-settings flow-run-settings"><summary aria-label="実行設定"><span data-flow-settings-summary title="${e(runSettingsLabel())}">${e(runSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">今回の実行設定</div><label>エージェント<select data-flow-agent ${agents ? '' : 'disabled'}>${agents || '<option>利用できるAIがありません</option>'}</select></label><label>モデル<input data-flow-model value="${e(view.model)}" placeholder="既定のモデル"></label><label>権限<select disabled><option selected>自動承認</option></select></label><label>実行方法<select data-flow-readonly ${view.context && !view.context.workspace.ok ? 'disabled' : ''}><option value="write" ${view.readonly ? '' : 'selected'}>成果を書き込む</option><option value="readonly" ${view.readonly ? 'selected' : ''}>読み取り専用</option></select></label>${view.context && !view.context.workspace.ok ? `<p class="sub">${e(view.context.workspace.reason)}。読み取り専用で実行できます。</p>` : ''}</div></details><span class="run-toolbar-spacer"></span><button type="button" class="primary" data-flow-teaching-trial ${canTrial ? '' : 'disabled'}>${view.starting ? '開始中…' : 'テスト'}</button>${session.status === 'awaiting-confirmation' ? '<button type="button" data-flow-teaching-confirm>利用可能にする</button>' : ''}</div></section>` : '';
+    const content = view.teachingTestOpen && draft
+      ? `<section class="flow-teaching-test-page"><div class="task-conversation-toolbar"><strong>テスト</strong><button type="button" class="tiny" data-flow-teaching-back-edit>‹ 編集に戻る</button></div>${trial}</section>`
+      : `<section class="task-conversation-editor"><div class="task-conversation-toolbar"><strong>編集対象：全体</strong><div class="row"><button type="button" class="ghost" data-flow-teaching-open-test ${draft ? '' : 'disabled title="定義ができるとテストできます"'}>テスト</button>${draft ? '<button type="button" class="tiny" data-flow-back-steps>‹ 工程に戻る</button>' : ''}</div></div><slot name="flow-teaching"></slot></section>${candidate}`;
     return draft ? detailShellHtml(draft, 'steps', content, { teaching: true })
       : `<div class="teaching-page flow-teaching-page"><header class="teaching-head"><div><span class="eyebrow">作成中のワークフロー</span><h2>${e(session.title || session.workflowId)}</h2></div></header>${content}</div>`;
   }
@@ -443,6 +445,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     view.result = null;
     view.log = null;
     view.editor = null;
+    view.teachingTestOpen = false;
     view.detailTab = 'overview';
     ctx.refresh();
     await readWorkflow(id);
@@ -519,6 +522,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     view.run = null;
     view.editor = null;
     view.creatingTeaching = false;
+    view.teachingTestOpen = false;
     ctx.refresh();
   }
 
@@ -615,6 +619,8 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     for (const button of main.querySelectorAll('[data-flow-new]')) button.addEventListener('click', create);
     for (const button of main.querySelectorAll('[data-flow-manual-new]')) button.addEventListener('click', () => { view.workflow = null; view.creatingTeaching = false; startEditor(null); });
     main.querySelector('[data-flow-teaching-trial-request]')?.addEventListener('input', (event) => { view.request = event.target.value; });
+    main.querySelector('[data-flow-teaching-open-test]')?.addEventListener('click', () => { view.teachingTestOpen = true; ctx.refresh(); });
+    main.querySelector('[data-flow-teaching-back-edit]')?.addEventListener('click', () => { view.teachingTestOpen = false; ctx.refresh(); });
     main.querySelector('[data-flow-teaching-trial]')?.addEventListener('click', startTeachingTrial);
     main.querySelector('[data-flow-teaching-confirm]')?.addEventListener('click', confirmTeaching);
     for (const button of main.querySelectorAll('[data-flow-teaching-trial-result]')) button.addEventListener('click', () => recordTeachingTrial(button.dataset.flowTeachingTrialResult));

@@ -93,9 +93,8 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
     await workbench.locator('[data-flow-edit]').click();
     await win.locator('#flow-teach-start').waitFor();
     await workbench.locator('.flow-teaching-candidate').waitFor();
-    await workbench.locator('.flow-teaching-trial').waitFor();
     assert.match(await workbench.locator('.flow-teaching-candidate').textContent(), /候補の工程/);
-    assert.match(await workbench.locator('.flow-teaching-trial').textContent(), /テスト実行/);
+    assert.equal(await workbench.locator('[data-flow-teaching-open-test]').isVisible(), true);
     assert.equal(await win.locator('#flow-teach-terminal').isVisible(), false);
     await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
     await win.locator('#flow-teach-agent').selectOption('codex');
@@ -137,6 +136,9 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
     assert.ok(layout.terminal.bottom <= layout.composer.top, JSON.stringify(layout));
     assert.ok(layout.composer.top >= 0 && layout.composer.bottom <= layout.viewport.height + 1, JSON.stringify(layout));
     assert.ok(layout.send.bottom <= layout.viewport.height + 1, JSON.stringify(layout));
+    const composerWidth = layout.composer.right - layout.composer.left;
+    const candidateBox = await workbench.locator('.flow-teaching-candidate').boundingBox();
+    assert.ok(Math.abs(candidateBox.width - composerWidth) <= 2, `候補の工程と入力欄の幅: ${candidateBox.width} / ${composerWidth}`);
     assert.equal(await electron.evaluate(() => flowStartCalls.length), 1);
     assert.equal(await win.evaluate(() => FlowTeaching.state.pending), true, 'the terminal is visible before start completes');
 
@@ -146,6 +148,18 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
     assert.match(await win.locator('#flow-teach-term-host .xterm-rows').textContent(), /WORKFLOW TERMINAL READY 1/);
     await workbench.locator('.flow-teaching-candidate details > summary').click();
     assert.match(await workbench.locator('.flow-teaching-candidate .flow-node-summary').textContent(), /変更を確認/);
+    const testEntry = workbench.locator('[data-flow-teaching-open-test]');
+    assert.equal(await testEntry.isVisible(), true, '編集画面の上部からテストへ進める');
+    await testEntry.click();
+    assert.equal(await workbench.locator('.task-conversation-editor').isVisible(), false);
+    assert.equal(await workbench.locator('.flow-teaching-trial').isVisible(), true);
+    const trialBox = await workbench.locator('.flow-teaching-trial').boundingBox();
+    assert.ok(Math.abs(trialBox.width - composerWidth) <= 2, `テスト欄と入力欄の幅: ${trialBox.width} / ${composerWidth}`);
+    await workbench.locator('[data-flow-teaching-back-edit]').click();
+    assert.equal(await workbench.locator('.task-conversation-editor').isVisible(), true);
+    assert.equal(await win.evaluate(() => FlowTerm.current()), firstSession, '編集に戻っても端末セッションを保つ');
+    assert.match(await win.locator('#flow-teach-term-host .xterm-rows').textContent(), /WORKFLOW TERMINAL READY 1/);
+    await workbench.locator('[data-flow-teaching-open-test]').click();
     const trial = workbench.locator('.flow-teaching-trial');
     await trial.locator('[data-flow-teaching-trial-request]').fill('代表的な変更を確認する');
     assert.equal(await trial.locator('[data-flow-teaching-trial-request]').inputValue(), '代表的な変更を確認する');
@@ -200,6 +214,7 @@ test('workflow editor shows the embedded tmux screen and composer for existing a
     assert.notEqual(await win.evaluate(() => FlowTerm.current()), firstSession);
     assert.equal(await win.locator('#flow-teach-terminal').isVisible(), true);
     assert.equal(await win.locator('#flow-teach-composer').isVisible(), true);
+    assert.equal(await workbench.locator('[data-flow-teaching-open-test]').isDisabled(), true, '新規作成は定義ができるまでテストを起動できない');
     assert.equal(await win.locator('#flow-teach-prompt').isVisible(), true);
     assert.equal(await win.locator('#flow-teach-composer-toolbar').isVisible(), true);
     const creationLayout = await win.evaluate(() => {

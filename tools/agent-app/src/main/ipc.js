@@ -579,7 +579,8 @@ async function runTmux(id, turn, send) {
   // 通した（seen > 0。ID を起動時に持てない list 型の CLI は resumed が立たないので、これで見る）
   const retained = conv.resumed || conv.seen > 0;
   // CLI が入力可能になるまで待ってから判断する。tmux の存在だけでは復元の根拠にしない。
-  // 初回の作成依頼は残し、既存編集の再開説明だけを省く。未共有の履歴や今回の指示は届ける。
+  // 初回の作成依頼は残す。既存タスクの再開説明だけは呼び出し側が空欄にしたときに省く。
+  // ワークフローの編集開始は対象ファイルと手順を毎回届ける。
   if (turn.resumeContext !== undefined && retained && retainsContext) {
     if (!turn.resumeContext && !unseen.length) {
       turn.release();
@@ -671,6 +672,8 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const repo = requireRepo(sess.repo);
   const dirs = dirsOf(sess.repo, sess.worktree || '', { mustExist: true });
   const cfg = config || store.loadConfig(ud);
+  // 教示画面は先に tmux を埋め込む。全体設定が headless でも同じ CLI へ依頼を送る。
+  const teachingTerminal = sess.kind === 'task' || sess.kind === 'workflow';
   const preparing = (text) => send('turn:progress', { id, item: { text, status: 'running', preparing: true } });
   preparing('準備中…\n利用できるエージェントを確認しています。');
   const agents = await listAgents(repo);
@@ -683,7 +686,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const ratingsAhead = autoSelecting ? selectionRatings().catch(() => '') : null;
   // tmux で起こすなら host.probe が要る（transport の判定と openConversation の両方。
   // probe の写しは distro ごとで lane を分けないので、1 回温めれば両方に効く）。
-  const probeAhead = cfg.transport === 'tmux' ? host.probe(distroFor(repo)).catch(() => ({ ok: false })) : null;
+  const probeAhead = cfg.transport === 'tmux' || teachingTerminal ? host.probe(distroFor(repo)).catch(() => ({ ok: false })) : null;
   const selectionConfig = cfg.instructions.skillSelection || {};
   const skillMode = p.skillMode || selectionConfig.defaultMode || 'auto';
   // 依頼の振り分け（agent-herd route）。会話だけが対象で、タスク・ワークフローを AI と作る会話は
@@ -782,7 +785,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   const familyInfo = base.family
     ? [{ type: 'status', title: `${base.family} → ${base.cli}${base.slash ? ` ${base.slash}` : ''}`, status: 'success', detail: base.familyReason }] : [];
   let transport = 'headless';
-  if (cfg.transport === 'tmux' && spec.interactive) {
+  if ((cfg.transport === 'tmux' || teachingTerminal) && spec.interactive) {
     const info = await (probeAhead || host.probe(distroFor(repo)));
     if (info.ok && info.tmux) transport = 'tmux';
   }

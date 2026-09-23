@@ -53,7 +53,16 @@ test('workflow teaching exposes test settings and sends the chosen request and i
   const { feature, calls } = featureFixture();
   await feature.activate();
   await feature.select('sample');
-  const html = feature.html();
+  let html = feature.html();
+  assert.match(html, /data-flow-teaching-open-test/);
+  assert.doesNotMatch(html, /class="execution-card flow-teaching-trial"/);
+  const openTest = input();
+  feature.bind({
+    querySelector: (selector) => selector === '[data-flow-teaching-open-test]' ? openTest : null,
+    querySelectorAll: () => [],
+  });
+  openTest.handlers.click();
+  html = feature.html();
   assert.match(html, /class="execution-card flow-teaching-trial"/);
   assert.match(html, /data-flow-teaching-trial-request/);
   assert.match(html, /data-flow-param="region"/);

@@ -59,7 +59,7 @@ test('実機: 過去の tmux 会話はバックグラウンド処理の完了前
   assert.equal(await win.evaluate(() => window.openError || ''), '');
 });
 
-test('実機: CLI IDをtmux再起動後に復元し、編集再開の説明を必要な場合だけ送る', async (t) => {
+test('実機: CLI ID復元後もワークフロー編集指示を tmux に送り、タスクの再開は重複させない', async (t) => {
   const pw = playwright();
   if (!pw || spawnSync('tmux', ['-V']).status !== 0) { t.skip('Playwright または tmux が無い'); return; }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'app-resume-e2e-'));
@@ -99,6 +99,15 @@ for line in sys.stdin:
   const sessions = [];
   for (const kind of ['conversation', 'task', 'workflow']) for (const cli of ['claude', 'copilot', 'codex', 'kiro']) {
     sessions.push(store.createSession(ud, { repo: root, kind, cli, task: { machine: `example-${cli}` }, workflow: { id: `example-${cli}` } }));
+  }
+  const flowDir = path.join(root, '.agents', 'workflows');
+  fs.mkdirSync(flowDir, { recursive: true });
+  for (const cli of ['claude', 'copilot', 'codex', 'kiro']) {
+    const id = `example-${cli}`;
+    fs.writeFileSync(path.join(flowDir, `${id}.json`), JSON.stringify({
+      version: 2, id, name: id, description: '既存の定義',
+      nodes: [{ id: 'review', label: 'レビュー', kind: 'work', goal: '内容を確認する', deps: [] }],
+    }));
   }
   const launch = () => pw._electron.launch({ executablePath: require('electron'),
     args: [path.resolve(__dirname, '..'), '--no-sandbox', `--user-data-dir=${ud}`],
@@ -141,20 +150,38 @@ for line in sys.stdin:
       assert.ok(result.argv.includes(saved.get(session.id)), `${session.kind}/${session.cli}: 保存IDで再開する`);
       assert.equal(store.cliEntry(store.readSession(ud, session.id), session.cli).id, saved.get(session.id));
       if (session.kind !== 'conversation') {
+        store.saveConfig(ud, { transport: 'headless' });
         const result = await win.evaluate(({ kind, repo, cli }) => {
           const payload = { repo, purpose: '既存の編集', machine: `example-${cli}`, workflowId: `example-${cli}` };
           return kind === 'task' ? api.automation.teachStart(payload) : api.automation.flowTeachStart(payload);
         }, { kind: session.kind, repo: root, cli: session.cli });
-        assert.equal(result.started, false, `${session.kind}/${session.cli}: 復元時は再開プロンプトを送らない`);
-        assert.equal(store.readSession(ud, session.id).messages.length, 2);
+        if (session.kind === 'task') {
+          assert.equal(result.started, false, `${session.kind}/${session.cli}: 復元時は再開プロンプトを送らない`);
+          assert.equal(store.readSession(ud, session.id).messages.length, 2);
+        } else {
+          assert.equal(result.started, true, `${session.kind}/${session.cli}: 編集開始を CLI へ送る`);
+          const until = Date.now() + 10000;
+          while (store.readSession(ud, session.id).messages.length < 4 && Date.now() < until) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          const current = store.readSession(ud, session.id);
+          assert.equal(current.transport, 'tmux', 'ワークフロー教示は画面の tmux に送る');
+          assert.equal(current.messages.length, 4);
+          const sent = fs.readFileSync(path.join(root, 'input.jsonl'), 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line)).filter((line) => line.sid === saved.get(session.id))
+            .map((line) => line.text).join('');
+          assert.match(sent, /このワークフローの編集を開始します/);
+          assert.match(sent, /\.agents\/workflows\/example-/);
+        }
       }
     }
+    store.saveConfig(ud, { transport: 'tmux' });
     // 復元後の明示指示・未共有の差分、新規／IDなしの初期説明も実際の入力で確かめる。
     for (const kind of ['task', 'workflow']) {
       for (const scenario of ['context', 'unseen', 'initial', 'no-id']) {
         let session = sessions.find((item) => item.kind === kind && item.cli === (scenario === 'context' ? 'codex' : 'claude'));
         if (scenario === 'initial' || scenario === 'no-id') {
-          session = store.createSession(ud, { repo: root, kind, cli: 'claude',
+          session = store.createSession(ud, { repo: root, kind, cli: kind === 'workflow' && scenario === 'initial' ? 'kiro' : 'claude',
             task: { machine: `${kind}-${scenario}` }, workflow: { id: `${kind}-${scenario}` } });
           sessions.push(session);
           if (scenario === 'no-id') store.appendMessage(ud, session.id, { role: 'user', text: '復元IDのない以前の依頼' });
@@ -178,15 +205,21 @@ for line in sys.stdin:
           .map((line) => line.text).join('');
         if (scenario === 'context') {
           assert.match(sent, /今回の編集対象: 工程2を修正する/);
-          assert.doesNotMatch(sent, /以前の依頼|まず内容を読み直し|まず workflow.yaml/);
+          if (kind === 'workflow') assert.match(sent, /このワークフローの編集を開始します/);
+          else assert.doesNotMatch(sent, /以前の依頼|まず内容を読み直し|まず workflow.yaml/);
         } else if (scenario === 'unseen') {
           assert.match(sent, /別エージェントで決めた変更/);
-          assert.doesNotMatch(sent, /以前の依頼|まず内容を読み直し|まず workflow.yaml/);
+          if (kind === 'workflow') assert.match(sent, /このワークフローの編集を開始します/);
+          else assert.doesNotMatch(sent, /以前の依頼|まず内容を読み直し|まず workflow.yaml/);
         } else if (scenario === 'no-id') {
           assert.match(sent, /復元IDのない以前の依頼/);
           assert.match(sent, /下書き作成を再開/);
         } else {
           assert.ok(current.messages[before].text.length > 100, '初回の作成手順を省かない');
+          if (kind === 'workflow') {
+            assert.match(sent, /あなたはこのリポジトリで「ワークフロー」/);
+            assert.match(sent, /\.agents\/workflows\/workflow-initial\.json/);
+          }
         }
       }
     }

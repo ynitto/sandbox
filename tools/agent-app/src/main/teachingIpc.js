@@ -219,12 +219,12 @@ function create(deps) {
       const prompt = session.messages.length
         ? flowTeachingPrompt.resumePrompt({ ...common, context: p.context })
         : flowTeachingPrompt.prompt(common);
-      const context = String(p.context || '').trim().slice(0, 1000);
+      // 埋め込み CLI が開いていても編集開始の指示は必要。runTmux の再開省略を避ける。
       const result = await deps.runTurn(session.id, {
         prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
         skillMode: 'off', skills: [], attachments: [],
       }, send, {
-        resumeContext: session.messages.length ? (context ? `今回の編集対象: ${context}` : '') : undefined,
+        resumeContext: session.messages.length ? prompt : undefined,
       });
       started = result.started !== false;
     }

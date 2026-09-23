@@ -35,7 +35,11 @@
 :host .flow-screen.is-teaching .flow-layout,
 :host .flow-screen.is-teaching .execution-detail { height: 100%; min-height: 0; }
 :host .flow-detail-shell.is-teaching { min-height: 0; overflow: hidden; }
-:host .flow-detail-shell.is-teaching .task-tab-panel { grid-template-rows: minmax(500px, 1fr) auto auto; overflow-y: auto; }
+:host .flow-detail-shell.is-teaching .task-tab-panel { grid-template-rows: minmax(500px, 1fr) auto; overflow-y: auto; }
+:host .flow-teaching-candidate,
+:host .flow-teaching-trial,
+:host .flow-teaching-test-page { width: min(100%, 900px); margin-inline: auto; }
+:host .flow-teaching-test-page { align-self: start; }
 :host .flow-teaching-page { height: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr); gap: 12px; }
 :host .flow-teaching-page slot[name="flow-teaching"],
 :host .flow-detail-shell.is-teaching slot[name="flow-teaching"] { display: block; height: 100%; min-height: 0; }

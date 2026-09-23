@@ -8,12 +8,38 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const vm = require('node:vm');
 const protocol = require('../src/renderer/teachingProtocol');
 const teaching = require('../src/main/automation/teaching');
 const machineStore = require('../src/main/automation/store');
 const store = require('../src/main/store');
 
 const SRC = path.join(__dirname, '..', 'src');
+
+test('ワークフローの編集開始は、既存の Kiro 会話にも対象ファイルと編集手順を送る', async () => {
+  const source = fs.readFileSync(path.join(SRC, 'main', 'teachingIpc.js'), 'utf8');
+  const start = source.indexOf('  async function startFlowTeaching(');
+  const end = source.indexOf('\n  // AI が書いた定義を', start);
+  const sent = [];
+  const session = { id: 'workflow-kiro', cli: 'kiro', model: '', policy: 'direct', autoApprove: true,
+    messages: [{ role: 'user', text: '前回の依頼' }, { role: 'assistant', text: '前回の回答' }] };
+  const context = vm.createContext({
+    prepareFlowTeaching: () => ({ ud: '/data', repo: '/repo', purpose: '', id: 'monthly', existing: true,
+      sidecar: { understanding: { purpose: '月次集計' } }, session }),
+    deps: { busy: () => false, runTurn: async (_id, payload, _send, options) => {
+      sent.push({ payload, options });
+      return { started: true };
+    } },
+    flowTeachingPrompt: require('../src/main/automation/flow-teaching-prompt'),
+    flowConversationView: () => ({ session }),
+  });
+  vm.runInContext(source.slice(start, end), context);
+  await context.startFlowTeaching({ context: '' }, () => {});
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].options.resumeContext, /このワークフローの編集を開始します/);
+  assert.match(sent[0].options.resumeContext, /\.agents\/workflows\/monthly\.json/);
+  assert.match(sent[0].options.resumeContext, /現在の工程を短く要約/);
+});
 
 test('見本の依頼は @record の 1 行で拾う（最後の 1 件。引用や箇条書きの飾りは無視）', () => {
   assert.deepStrictEqual(protocol.parseRecordRequest('了解です。\n@record browser https://example.test/list\n'), { source: 'browser', target: 'https://example.test/list' });
