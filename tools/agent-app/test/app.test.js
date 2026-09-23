@@ -5,6 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
+const vm = require('vm');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
@@ -56,6 +57,46 @@ test('会話は依頼ごとにスキルの自動・手動・不使用を選べ�
   assert.match(html, /id="turn-skill-mode"[\s\S]*value="auto"[\s\S]*value="manual"[\s\S]*value="off"/);
   assert.match(renderer, /skillMode:\s*state\.turnSkillMode/);
   assert.match(renderer, /api\.selectSkills/);
+});
+
+test('端末ミラーは選択中の Ctrl+C・右クリックでコピーし、選択が無い右クリックは貼り付ける', async () => {
+  let keyHandler; let selection = ''; const sent = []; const copied = []; const pasted = []; const listeners = {};
+  class Terminal {
+    constructor() { this.options = {}; }
+    loadAddon() {} open() {} onData(fn) { this.onDataFn = fn; } attachCustomWheelEventHandler() {} reset() {}
+    attachCustomKeyEventHandler(fn) { keyHandler = fn; }
+    hasSelection() { return !!selection; } getSelection() { return selection; } clearSelection() { selection = ''; }
+    paste(t) { pasted.push(t); }
+  }
+  const window = {};
+  vm.runInNewContext(fs.readFileSync(path.join(SRC, 'renderer/term.js'), 'utf8'), {
+    window, Terminal, FitAddon: { FitAddon: class { fit() {} } },
+    ResizeObserver: class { observe() {} },
+    navigator: { clipboard: { writeText: async (t) => { copied.push(t); }, readText: async () => 'from-clip' } },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }), document: { documentElement: {} },
+  });
+  const t = window.createTerm({ termWatch: async () => true, termKeys: async (_id, d) => { sent.push(d); }, termResize: async () => {} });
+  await t.attach('s1', { addEventListener(type, fn) { listeners[type] = fn; }, clientHeight: 0 });
+  const key = (k, mods = {}) => ({ type: 'keydown', key: k, ctrlKey: true, shiftKey: false, altKey: false, metaKey: false, preventDefault() {}, ...mods });
+  selection = 'hello';
+  assert.equal(keyHandler(key('c')), false);
+  assert.deepEqual(copied, ['hello']);
+  assert.equal(selection, '');
+  // 選択が無い Ctrl+C は xterm に任せる（\x03 として CLI へ）
+  assert.equal(keyHandler(key('c')), true);
+  selection = 'world';
+  assert.equal(keyHandler(key('C', { shiftKey: true })), false);
+  assert.equal(keyHandler(key('Insert')), false);
+  assert.deepEqual(copied, ['hello', 'world']);
+  const right = { preventDefault() {} };
+  selection = 'again';
+  listeners.contextmenu(right);
+  assert.deepEqual(copied, ['hello', 'world', 'again']);
+  assert.equal(selection, '');
+  assert.deepEqual(pasted, []);
+  listeners.contextmenu(right);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(pasted, ['from-clip']);
 });
 
 test('tmux会話はメッセージ入力と端末操作を明示的に切り替える', () => {

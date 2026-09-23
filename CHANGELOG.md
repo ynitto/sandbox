@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 端末ミラーの文字列を Windows でもコピーでき、右クリックでコピー・貼り付けする（0.32.0）
+
+- **Windows / WSL で端末の選択範囲をコピーできなかった。** Ctrl+C を端末が中断（`\x03`）として
+  CLI へ送ってしまい、コピーが起きていなかった（mac の Cmd+C は通っていた）。選択があるときの
+  Ctrl+C と、Ctrl+Shift+C・Ctrl+Insert をコピーにする。写したら選択を外すので、次の Ctrl+C は
+  従来どおり中断として届く
+- **端末の右クリックは Windows Terminal と同じ動きにする。** 選択があればコピーして選択を外し、
+  無ければクリップボードの中身を貼り付ける（貼り付けは Ctrl+V と同じ扱い）
+
 ### agent-app: tmux の kiro に道具を持たせ、共通指示を毎ターン貼らない（0.31.0）
 
 - **tmux で起こす kiro が道具ゼロだった。** セッション ID を拾うために生成するエージェント定義

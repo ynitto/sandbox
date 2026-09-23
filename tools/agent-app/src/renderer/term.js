@@ -59,10 +59,34 @@ function createTerm(api = window.api) {
     term.onData((data) => { sendData(data); });
     // xterm は Shift+Enter を Enter と同じ '\r' にする（送信になってしまう）。CLI の入力欄で
     // 「送信せずに行を足す」のは LF（Ctrl+J）なので、Shift+Enter はそれとして送る。
+    // Windows / Linux では Ctrl+C が xterm に取られて \x03 になり、選択範囲をコピーできない
+    // （mac の Cmd+C はメニューへ抜ける）。選択があるときの Ctrl+C と、Ctrl+Shift+C・Ctrl+Insert は
+    // コピーにする。選択が無い Ctrl+C は従来どおり CLI への中断。
     term.attachCustomKeyEventHandler((event) => {
-      if (event.type !== 'keydown' || event.key !== 'Enter' || !event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return true;
+      if (event.type !== 'keydown') return true;
+      const copyKey = event.ctrlKey && !event.altKey && !event.metaKey
+        && ((event.key.toLowerCase() === 'c' && (event.shiftKey || term.hasSelection())) || event.key === 'Insert');
+      if (copyKey) {
+        // 写したら選択を外す。次の Ctrl+C が中断として届くように（Windows Terminal と同じ）
+        if (term.hasSelection()) navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+        term.clearSelection();
+        event.preventDefault();
+        return false;
+      }
+      if (event.key !== 'Enter' || !event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return true;
       sendData('\n');
       return false;
+    });
+    // 右クリックは Windows Terminal と同じ。選択があればコピーして選択を外し、無ければ貼り付ける。
+    // 貼り付けは Ctrl+V と同じ term.paste を通す（端末操作でないときは sendData が捨てる）。
+    hostEl.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      if (term.hasSelection()) {
+        navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+        term.clearSelection();
+        return;
+      }
+      navigator.clipboard.readText().then((text) => { if (text) term.paste(text); }).catch(() => {});
     });
     hostEl.addEventListener('pointerup', () => {
       if (!term.hasSelection() && state.onFocus) state.onFocus();
