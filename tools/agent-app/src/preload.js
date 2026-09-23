@@ -200,7 +200,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   insight: {
     handoff: (id, options) => invoke('insight:handoff', { id, ...(options || {}) }),
-    forkContext: (id) => invoke('insight:forkContext', { id }),
+    forkContext: (id, action = 'custom') => invoke('insight:forkContext', { id, action }),
     evidence: (observationIds) => invoke('insight:evidence', { observationIds }),
   },
   onTurnStarted: on('turn:started'),

@@ -70,6 +70,32 @@ function conversationSources(summaries, { runningIds = [], phaseOf = () => null 
   return out;
 }
 
+// 会話中で明示された問題点・回避策。原文と発言位置は sessionSummary の機械的な抽出結果。
+function findingSources(summaries) {
+  const out = [];
+  for (const session of Array.isArray(summaries) ? summaries : []) {
+    if (!session || session.supersededBy) continue;
+    const repo = String(session.repo || '');
+    const sourceKind = session.kind === 'task' && session.machine ? 'task'
+      : session.kind === 'workflow' && session.workflow ? 'workflow' : 'conversation';
+    const sourceId = sourceKind === 'task' ? session.machine : sourceKind === 'workflow' ? session.workflow : session.id;
+    if (!sourceId) continue;
+    for (const finding of Array.isArray(session.findings) ? session.findings : []) {
+      if (!finding || !finding.id || !stamp(finding.at)) continue;
+      const label = finding.kind === 'workaround' ? '回避・工夫' : '問題点';
+      out.push({
+        key: `finding:${finding.id}`, kind: 'finding', repo,
+        title: `${label}: ${text(finding.excerpt, 100)}`,
+        running: false, resultAt: text(finding.at, 40), outcome: finding.kind,
+        interaction: null, target: { kind: sourceKind, repo, id: String(sourceId) },
+        finding: { kind: finding.kind, excerpt: text(finding.excerpt, 300), sessionId: session.id,
+          index: finding.index, sessionTitle: text(session.title, 80) || '（無題）' },
+      });
+    }
+  }
+  return out;
+}
+
 // タスク（run-history の記録）→ 材料。保存名ごとに最新の記録 1 つ。
 //   records … runHistory.read の配列 { machine, ok, escalate?, finishedAt, ... }
 //   names   … 保存名 → 表示名（定義の name。無ければ保存名）
@@ -263,6 +289,6 @@ function normalizeSeen(raw) {
 
 module.exports = {
   QUEUES, MAX_ITEMS, MAX_SEEN,
-  conversationResult, conversationSources, taskSources, workflowSources, insightSources, targetOfInsight, batchSources,
+  conversationResult, conversationSources, findingSources, taskSources, workflowSources, insightSources, targetOfInsight, batchSources,
   classify, project, markSeen, normalizeSeen,
 };

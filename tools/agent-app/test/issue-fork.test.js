@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { targetRepo } = require('../src/main/issueFork');
-const { fixPrompt } = require('../src/main/evaluation');
+const { fixPrompt, issueContextPrompt } = require('../src/main/evaluation');
 
 const config = { repos: ['/work/project', '/work/shared-skills'], audit: { skillRepositoryPath: '/work/shared-skills' } };
 const evidence = (kind, name) => [{ artifact: { kind, name, origin: 'repo:project' } }];
@@ -33,4 +33,14 @@ test('修正フォークの依頼は調査後の変更と検証を求める', ()
   assert.match(prompt, /修正してください/);
   assert.match(prompt, /検証してください/);
   assert.doesNotMatch(prompt, /まだ直さなくてよい/);
+});
+
+test('受信箱の課題は固定の対処方法を含めず、利用者の依頼を待つ', () => {
+  const issue = { target: { kind: 'task', name: 'report' }, statement: '月の入力が欠ける',
+    criteria: [{ requirement: '月を指定する', evidence: '実行記録に月がない' }] };
+  const prompt = issueContextPrompt(issue);
+  assert.match(prompt, /月の入力が欠ける/);
+  assert.match(prompt, /月を指定する/);
+  assert.match(prompt, /利用者の依頼に従って/);
+  assert.doesNotMatch(prompt, /コミット|push|gitlab-idd|修正してください/);
 });

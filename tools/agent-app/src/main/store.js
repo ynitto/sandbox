@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const settings = require('./settings');
 const reuse = require('../shared/reuse');
 const attention = require('./attention');
+const sessionFindings = require('./sessionFindings');
 
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
@@ -381,6 +382,7 @@ function sessionSummary(file) {
     origin: normalizeOrigin(s.origin),
     // 末尾の応答（受信箱の「未読」の材料）。{ at, outcome: done | failed | stopped }、応答で終わっていなければ null
     result: attention.conversationResult(s.messages),
+    findings: sessionFindings.fromSession(s),
   };
   summaryCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, summary });
   return summary;

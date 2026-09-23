@@ -273,7 +273,8 @@
   // ---- 外から ------------------------------------------------------------------------
 
   function sameView(a, b) {
-    return !!a && !!b && a.root === b.root && a.workflowId === b.workflowId && !!a.existing === !!b.existing;
+    // 定義ファイルの生成で existing が変わっても、同じ会話の端末はつなぎ直さない。
+    return !!a && !!b && a.root === b.root && a.workflowId === b.workflowId && !!a.creating === !!b.creating;
   }
 
   // ワークベンチからの「いまこのワークフローの会話を出している」。null なら隠す。
@@ -286,6 +287,8 @@
       renderShell();
       return;
     }
+    const wasVisible = state.visible;
+    const previous = { root: state.repo, workflowId: state.workflowId, creating: state.creating };
     const enteringCreate = !!detail.creating && (!state.creating || state.repo !== detail.root);
     state.creating = !!detail.creating;
     state.onCreate = detail.onCreate || null;
@@ -297,18 +300,23 @@
       $('flow-teach-save-name').value = '';
       $('flow-teach-create-error').hidden = true;
     }
-    const next = { root: detail.root, workflowId: detail.workflowId, existing: !!detail.existing };
-    const changed = !sameView(next, { root: state.repo, workflowId: state.workflowId, existing: state.existing });
+    const next = { root: detail.root, workflowId: detail.workflowId, creating: !!detail.creating, existing: !!detail.existing };
+    const changed = !wasVisible || !sameView(next, previous);
     state.repo = next.root;
     state.workflowId = next.workflowId;
     state.existing = next.existing;
     state.context = detail.context || '';
     state.visible = true;
-    if (changed || (!state.session && !state.creating) || enteringCreate) {
+    // ワークベンチは設定や一覧の到着でも再描画する。会話の読み込み・起動中に
+    // loadView を再実行すると token が進み、進行中の attach / start が破棄される。
+    if (changed) {
       state.ready = loadView();
       state.ready.catch(err => { state.readyError = err; error(err.message); });
     }
-    else renderShell();
+    else {
+      renderShell();
+      requestAnimationFrame(() => term().refit());
+    }
   }
 
   // 新しいワークフロー: 目的を書いて AI と作り始める（ワークベンチの「AIに相談する」から）。
