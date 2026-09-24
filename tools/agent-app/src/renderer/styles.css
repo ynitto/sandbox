@@ -764,19 +764,23 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 /* 課題（受信箱）: タスクの概要と同じ .execution-card を並べるだけ。器の色や影は持たない */
 .issue-cards { display: grid; gap: 12px; width: min(100%, 760px); margin: 0 auto; padding: 16px 16px 24px; }
 .issue-cards .execution-card-head h3 { overflow-wrap: anywhere; }
-.issue-evidence { min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; }
-.issue-evidence > details { min-width: 0; max-width: 100%; }
-.issue-evidence summary { cursor: pointer; }
-.issue-evidence .message-action { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .finding-excerpts { display: grid; gap: 8px; min-width: 0; margin: 0; padding-left: 20px; }
-.finding-excerpts li { overflow-wrap: anywhere; line-height: 1.5; }
+.finding-excerpts li { min-width: 0; overflow-wrap: anywhere; line-height: 1.5; }
 .finding-excerpts strong { margin-right: 8px; font-size: 11px; white-space: nowrap; }
+/* 項目の 2 行目（課題なら実際に起きたこと）。長いものは 1 行に畳み、全文はホバーで出す */
+.finding-excerpts li > .sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-card-foot { min-width: 0; flex-wrap: nowrap; }
+.inbox-card-foot > .sub { min-width: 0; overflow-wrap: anywhere; }
+.inbox-sources { flex: none; }
+/* 参照元が複数のときのメニューも、1 つのときの「元の会話を開く」（button.small）と同じ見た目にする */
+.inbox-sources .more-menu > summary { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line); color: var(--text); background: var(--panel); font-size: 12px; }
+.inbox-sources .menu-panel { width: 280px; max-width: calc(100vw - 36px); }
+.inbox-sources .menu-panel button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .finding-more summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .finding-more .finding-excerpts { margin-top: 8px; }
 .issue-request-control { display: grid; gap: 8px; min-width: 0; }
-.issue-request-control label { display: grid; gap: 6px; min-width: 0; font-size: 12px; font-weight: 600; }
+.issue-request-control > label { display: grid; gap: 6px; min-width: 0; font-size: 12px; font-weight: 600; }
 .issue-request-control textarea { width: 100%; min-width: 0; min-height: 64px; resize: vertical; line-height: 1.5; font-weight: 400; }
-.issue-request-control button { justify-self: end; }
 /* 会話を検索: 行のチェック（設定の一覧と同じ作法）と、足元の操作 1 つ */
 #search-results li.row-item { gap: 0; }
 #search-results .row-check { flex: none; margin: 0 2px 0 9px; }

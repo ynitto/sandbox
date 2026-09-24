@@ -1,6 +1,6 @@
 'use strict';
 
-// Electron 実機で評価（§19）を通す: 受信箱の課題カード（根拠のリンク・会話を始めるのダイアログ）、
+// Electron 実機で評価（§19）を通す: 受信箱の課題カード（未達の条件・元を開く・依頼欄の実行設定）、
 // 会話を検索の足元から「まとめて評価」（偽の agent-herd judge）、終わったら受信箱に未読で届くこと。
 // 判定 AI と agent-audit は PATH に置いた偽のシェルスクリプト。
 
@@ -81,14 +81,19 @@ test('受信箱: 長い参照元でも崩れず、IDを表示せずに元の会�
   await win.waitForFunction(() => document.querySelector('#area-inbox .unread')?.textContent === '16');
   await win.locator('#area-inbox').click();
   await win.waitForFunction(() => document.querySelectorAll('#inbox-issues .execution-card').length === 16);
-  await win.waitForFunction(() => document.querySelectorAll('#inbox-issues .issue-evidence .message-action').length === 16);
+  await win.waitForFunction(() => document.querySelectorAll('#inbox-issues .inbox-sources button').length === 16);
   assert.ok(!(await win.locator('#inbox-issues').innerText()).includes(externalId), '開けない記録のIDを出さない');
-  assert.equal(await win.locator('#inbox-issues .issue-evidence .message-action').first().getAttribute('title'), longTitle);
-  assert.match(await win.locator('#inbox-issues .issue-evidence').first().innerText(), /開けない参照元: 1件/);
+  const sourceButton = win.locator('#inbox-issues .inbox-sources button').first();
+  assert.equal(await sourceButton.innerText(), '元の会話を開く');
+  assert.equal(await sourceButton.getAttribute('title'), longTitle);
+  assert.match(await win.locator('#inbox-issues .inbox-card-foot').first().innerText(), /開けない参照元 1 件/);
   const header = win.locator('#inbox-area > .area-head');
   const cards = win.locator('#inbox-issues .execution-card');
   assert.equal(await win.locator('#inbox-sub').isVisible(), false, '課題カードがあるときは案内を重ねない');
-  assert.equal(await cards.first().locator('.primary').innerText(), '会話を始める');
+  assert.equal(await cards.first().locator('.primary').innerText(), '修正開始');
+  assert.ok(await cards.first().locator('.primary').isDisabled(), '事前プロンプトが空なら始められない');
+  assert.equal(await cards.first().locator('.execution-card-head p').innerText(), '課題 · 未達の条件 1 つ');
+  assert.ok(!(await cards.first().innerText()).includes('スクロール確認'), '未達の条件の連結文は出さない');
   assert.ok(!(await cards.first().innerText()).includes('確度 low'), '内部の評価値を本文に混ぜない');
   for (const size of [{ width: 1200, height: 800 }, { width: 700, height: 600 }]) {
     await win.setViewportSize(size);
@@ -102,15 +107,15 @@ test('受信箱: 長い参照元でも崩れず、IDを表示せずに元の会�
       return last.bottom <= window.innerHeight && last.top >= 0;
     }, null, { timeout: 3000 });
     assert.equal((await header.boundingBox()).y, before.y, '見出しはスクロールしない');
-    await cards.last().locator('.primary').click();
-    await win.locator('#search-transfer-dialog[open]').waitFor();
-    assert.equal(await win.locator('#search-transfer-title').innerText(), '会話を始める');
-    await win.locator('#search-transfer-close').click();
+    await cards.last().locator('.run-settings > summary').click();
+    await cards.last().locator('.settings-popover select').first().waitFor();
+    assert.ok(await win.locator('#inbox-body').evaluate((body) => body.scrollWidth <= body.clientWidth), '実行設定を開いても横にはみ出さない');
+    await cards.last().locator('.run-settings > summary').click();
     await win.mouse.move(area.x + area.width / 2, area.y + area.height - 50);
     await win.mouse.wheel(0, -100000);
     await win.waitForFunction(() => document.querySelector('#inbox-issues .execution-card').getBoundingClientRect().top > 0);
   }
-  await cards.first().locator('.issue-evidence .message-action').click();
+  await cards.first().locator('.inbox-sources button').click();
   await win.waitForFunction((title) => document.getElementById('chat-title').textContent.includes(title), longTitle);
 });
 
@@ -176,7 +181,7 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
     win.on('pageerror', (err) => errors.push(err.message));
     win.setDefaultTimeout(20000);
 
-    // 受信箱: 課題が未読として並び、本文はカード（対象・課題・根拠・会話を始める）
+    // 受信箱: 課題が未読として並び、本文はカード（対象・未達の条件と起きたこと・元を開く・依頼欄）
     await win.waitForFunction(() => document.querySelector('#area-inbox .unread')?.textContent === '3');
     await win.click('#area-inbox');
     await win.waitForSelector('#inbox-issues:not([hidden])');
@@ -186,29 +191,38 @@ test('実機: 課題が受信箱に並び、根拠から会話へ行け、まと
     assert.deepStrictEqual(issue.issue.target, { kind: 'skill', name: 'statemachine-use' });
     assert.ok((await win.textContent('#inbox-items')).includes('スキル statemachine-use'));
     const card = await win.textContent('#inbox-issues .execution-card');
-    assert.ok(card.includes('スキル statemachine-use') && card.includes('3 件') && card.includes('会話を始める'), card);
+    assert.ok(card.includes('スキル statemachine-use') && card.includes('3 件') && card.includes('修正開始'), card);
     assert.ok(!card.includes('rules.md'), '改善案の文は置かない');
-    await win.waitForSelector('#inbox-issues .quality-evidence');
-    assert.ok((await win.textContent('#inbox-issues .quality-evidence')).includes('出力は未作成'));
-    // 根拠: 観測 → record → 会話 s1 へのリンク
-    await win.waitForFunction(() => document.querySelector('#inbox-issues .issue-evidence .message-action'));
-    assert.strictEqual((await win.textContent('#inbox-issues .issue-evidence .message-action')).trim(), '会話 設定画面の見直し');
-    await win.click('#inbox-issues .issue-evidence .message-action');
+    assert.ok(!card.includes('手順が足りず'), '課題の連結文は出さず、条件を 1 件ずつ並べる');
+    assert.strictEqual((await win.textContent('#inbox-issues .finding-excerpts li')).trim(), '未達出力工程出力は未作成');
+    assert.strictEqual(await win.locator('#inbox-issues .quality-evidence').count(), 0, '評価の根拠の折りたたみは置かない');
+    // 元を開く: 観測 → record → 会話 s1
+    await win.waitForSelector('#inbox-issues .inbox-sources button');
+    assert.strictEqual((await win.textContent('#inbox-issues .inbox-sources button')).trim(), '元の会話を開く');
+    assert.ok((await win.getAttribute('#inbox-issues .inbox-sources button', 'title')).includes('設定画面の見直し'));
+    await win.click('#inbox-issues .inbox-sources button');
     await win.waitForFunction(() => document.getElementById('chat-title').textContent.includes('設定画面の見直し'));
 
-    // 会話を始める: フォークと同じダイアログ（位置とフォーク先は隠す）。閉じただけなら課題は残る
+    // 依頼欄: タスクの「作成開始」と同じ実行設定の折りたたみと主ボタン。ダイアログは挟まない。
+    // 課題の作業フォルダを使わない設定なので、行き先のリポジトリを実行設定で選ぶ
     await win.click('#area-inbox');
     await win.waitForSelector('#inbox-issues:not([hidden])');
-    await win.click('#inbox-issues .execution-card .primary');
-    await win.waitForSelector('#search-transfer-dialog[open]');
-    assert.strictEqual((await win.textContent('#search-transfer-title')).trim(), '会話を始める');
-    assert.ok(await win.$eval('#search-boundary', (n) => n.closest('label').hidden), 'フォークする位置は隠す');
-    assert.ok(await win.$eval('#search-intent', (n) => n.closest('label').hidden), 'フォーク先は隠す');
-    assert.strictEqual((await win.textContent('#search-transfer-start')).trim(), '会話を始める');
-    await win.click('#search-transfer-close');
-    await win.waitForFunction(() => !document.getElementById('search-transfer-dialog').open);
-    const still = await win.evaluate(() => window.api.attention.list());
-    assert.ok(still.items.some((item) => item.kind === 'issue'), '閉じただけでは消えない');
+    const issueCard = win.locator('#inbox-issues .execution-card').first();
+    assert.ok(await issueCard.locator('.primary').isDisabled(), '事前プロンプトが空なら始められない');
+    await issueCard.locator('.run-settings > summary').click();
+    const labels = await issueCard.locator('.settings-popover label').evaluateAll((nodes) => nodes.map((n) => n.firstChild.textContent));
+    assert.deepStrictEqual(labels, ['リポジトリ', 'エージェント', 'モデル', '権限']);
+    assert.strictEqual(await issueCard.locator('.settings-popover select').first().inputValue(), repo);
+    await issueCard.locator('.settings-popover input').fill('gpt-test');
+    assert.ok((await issueCard.locator('.run-settings > summary').innerText()).includes('/ gpt-test'), '選んだモデルを折りたたみの 1 行に出す');
+    await issueCard.locator('.run-settings > summary').click();
+    await issueCard.locator('textarea').fill('原因を調べてください');
+    assert.strictEqual(await win.locator('#search-transfer-dialog[open]').count(), 0);
+    if (process.env.SMOKE_OUT) {
+      fs.mkdirSync(process.env.SMOKE_OUT, { recursive: true });
+      await win.screenshot({ path: path.join(process.env.SMOKE_OUT, 'inbox-issue.png') });
+    }
+    await issueCard.locator('textarea').fill('');
 
     // 評価するときだけ選択欄を開き、選んだ会話を評価する。
     await win.click('#session-search-open');
