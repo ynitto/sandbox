@@ -113,6 +113,65 @@ def check_state_choice(value, want: str):
     return False, f"判定={got or '（決めていない）'}（期待 {want}）"
 
 
+# --- 2026-09-25 追加（本番の問いの形のまま入力だけを増やす）---------------------------
+# 遷移条件は「書いてあるが満たしていない」（未対応・未実行・作っただけ）を混ぜる。
+# 検査失敗は本番の決定的な段（`_SM_ENVIRONMENT_PATTERNS`）に掛からない文面だけにする。
+# 契約の語は PASS / RETRY / 無し を足す（既存は FAIL と無しの 2 件だけ）。
+_TR_MORE = {
+    "TR4": ([{"index": "1", "condition": "テストが全部通った"},
+             {"index": "2", "condition": "lint がエラー 0 で終わった"}],
+            "pytest -q を実行しました。\n30 passed, 0 failed（5.0s）\n"
+            "ruff check を実行しました。\nFound 2 errors.", {"1": True, "2": False}),
+    "TR5": ([{"index": "1", "condition": "PR を作成した"}],
+            "変更をコミットして git push しました。\nPR はまだ作成していません。", {"1": False}),
+    "TR6": ([{"index": "1", "condition": "PR を作成した"}],
+            "gh pr create を実行しました。\nhttps://github.com/example/report/pull/42",
+            {"1": True}),
+    "TR7": ([{"index": "1", "condition": "ビルドが成功した"},
+             {"index": "2", "condition": "dist/app.zip を書き出した"}],
+            "npm run build を実行しました。\nBuild completed in 12s.\n"
+            "dist/app.zip（2.1MB）を書き出しました。", {"1": True, "2": True}),
+    "TR8": ([{"index": "1", "condition": "テストが全部通った"}],
+            "render.py の修正を保存しました。\nテストはまだ実行していません。", {"1": False}),
+    "TR9": ([{"index": "1", "condition": "新しい依存を追加した"},
+             {"index": "2", "condition": "README を更新した"}],
+            "requirements.txt に httpx==0.27 を追加しました。\nREADME.md は変更していません。",
+            {"1": True, "2": False}),
+    "TR10": ([{"index": "1", "condition": "移行スクリプトを実行した"}],
+             "移行スクリプト migrate.py を書きました。\n実行は次の工程で行います。", {"1": False}),
+    "TR11": ([{"index": "1", "condition": "レビューの指摘 3 件をすべて直した"}],
+             "指摘 1: 修正済み\n指摘 2: 修正済み\n指摘 3: 未対応（仕様の確認待ち）", {"1": False}),
+}
+_CT_MORE = {
+    "CT3": (["ruff", "check", "src"],
+            "src/app.py:12:5: F401 `os` imported but unused\nFound 1 error.", True),
+    "CT4": (["git", "fetch", "origin"],
+            "fatal: unable to access 'https://github.com/example/report.git/': "
+            "Failed to connect to github.com port 443 after 21000 ms: Timeout was reached", False),
+    "CT5": (["npx", "tsc", "--noEmit"],
+            "src/list.ts(14,7): error TS2322: Type 'string' is not assignable to type 'number'.\n"
+            "Found 1 error in src/list.ts:14", True),
+    "CT6": (["python", "-m", "pytest", "-q"],
+            "OSError: [Errno 28] No space left on device: '/tmp/pytest-of-ci'\n"
+            "INTERNALERROR> 一時ディレクトリを作れません", False),
+    "CT7": (["python", "-m", "pytest", "-q", "tools/report"],
+            "E     File \"tools/report/render.py\", line 40\n"
+            "E       return total +\nE                    ^\nE   SyntaxError: invalid syntax", True),
+    "CT8": (["npm", "ci"],
+            "npm ERR! code E401\nnpm ERR! Unable to authenticate, need: "
+            "Basic realm=\"GitHub Package Registry\"", False),
+}
+_CW_MORE = {
+    "CW3": ("検査を実行しました。12 件すべて通り、要求の 3 項目を満たしています。\n"
+            "追加の作業はありません。", "PASS"),
+    "CW4": ("テストが 1 件だけ時間切れで落ちました。\n同じ入力で再実行すると通ることがあり、"
+            "一時的な失敗と見ています。\nもう一度流してください。", "RETRY"),
+    "CW5": ("ファイルの一覧を取得しました。\nsrc/ に 4 つのファイルがあります。", ""),
+    "CW6": ("要求された関数 export_csv が見つからず、実装されていません。\n"
+            "この状態では受入基準を満たせません。", "FAIL"),
+}
+
+
 CASES = {
     "CW1": dict(face="contract_word", expect="FAIL（再実行でも直らないと結論している）",
                 rule=CONTRACT_RULE, output=CW1_OUTPUT,
@@ -142,3 +201,12 @@ CASES = {
                 argv=CT2_ARGV, output=CT2_OUTPUT,
                 check=lambda value: check_fixable(value, True)),
 }
+CASES.update({cid: dict(face="transition", expect=str(want), conditions=conds, output=out,
+                        check=lambda evals, want=want: check_evals(evals, want))
+              for cid, (conds, out, want) in _TR_MORE.items()})
+CASES.update({cid: dict(face="check_triage", expect=f"fixable={want}", argv=argv, output=out,
+                        check=lambda value, want=want: check_fixable(value, want))
+              for cid, (argv, out, want) in _CT_MORE.items()})
+CASES.update({cid: dict(face="contract_word", expect=want or "（補わない）", rule=CONTRACT_RULE,
+                        output=out, check=lambda value, want=want: check_contract(value, want))
+              for cid, (out, want) in _CW_MORE.items()})
