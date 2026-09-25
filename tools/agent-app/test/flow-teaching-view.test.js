@@ -85,6 +85,7 @@ test('workflow redraw does not cancel an in-flight start', async () => {
   const { teaching, api, node, reads } = setup(Promise.resolve({ session: { id: 'session-1', cli: 'codex' } }));
   teaching.state.deps.executionOptions = () => ({ allocation: 'auto' });
   teaching.state.deps.reloadWorkflows = async () => {};
+  api.automation.flowTeachPrepare = async () => ({ session: { id: 'session-1', cli: 'codex' } });
   api.automation.flowTeachStart = () => started;
   teaching.show({ root: '/repo', workflowId: 'example', existing: false });
   await teaching.state.ready;
