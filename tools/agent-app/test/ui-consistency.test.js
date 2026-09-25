@@ -281,6 +281,12 @@ test('受信箱は既存の部品（メニューの領域・一覧の行・件�
   assert.ok(!html.includes('id="inbox-answer"') && !html.includes('inbox-fork'), '受信箱に答える面やフォークの複製を置かない');
   // 5. 説明は 1 行だけ（本文の .blank の p）。段落を並べない
   assert.strictEqual((html.match(/id="inbox-sub"/g) || []).length, 1);
+  // 6. 本文のカード（課題・セッションの発見）は同じ組み立て（inboxCard）で描き、依頼欄はタスクの「作成開始」と
+  //    同じ実行設定の折りたたみと主ボタン 1 つ。課題の連結文（statement）を見出しの下に出さない
+  assert.strictEqual((renderer.match(/= inboxCard\(\{/g) || []).length, 2, '課題と発見のカードは同じ inboxCard で組む');
+  assert.ok(!/el\('section', 'execution-card'\)/.test(renderer.slice(renderer.indexOf('function renderFindingCards'), renderer.indexOf('async function handoffIssue'))), 'カードごとに器を組み直さない');
+  assert.match(renderer, /el\('details', 'run-settings teach-execution-settings'\)[\s\S]*?el\('div', 'direct-agent-settings'\)[\s\S]*?el\('button', 'primary', '修正開始'\)/, '依頼欄は作成開始と同じ実行設定と主ボタン');
+  assert.ok(!renderer.includes("issue.statement || item.title)) ") && !renderer.includes('セッションの設定へ'), '課題の連結文やダイアログへの入口を置かない');
 });
 
 test('利用状況の面は設定の既存の器（設定の行・状態の印・足元の集計）で組む', () => {
@@ -377,7 +383,8 @@ test('評価と課題は既存の部品で組む（設定の行・検索の足�
   assert.ok(!/<select|<input|<details/.test(footer), '評価のエージェント・モデル選択は置かない');
   assert.ok(!/search-batch-all|すべて選ぶ/.test(search), '「すべて選ぶ」は置かない（検索の絞り込みで対象を決める）');
   // 3. 課題のカードはタスクの概要と同じ .execution-card。改善案の文は置かない
-  assert.match(renderer, /function renderIssueCards[\s\S]*el\('section', 'execution-card'\)[\s\S]*el\('div', 'execution-card-head'\)/);
+  assert.match(renderer, /function inboxCard[\s\S]*?el\('section', 'execution-card'\)[\s\S]*?el\('div', 'execution-card-head'\)/);
+  assert.match(renderer, /function renderIssueCards[\s\S]*?inboxCard\(\{/);
   assert.ok(!/suggested_action/.test(renderer), '課題に agent-audit の定型の改善案を添えない');
   assert.ok(!/<h2|<h3/.test(html.slice(html.indexOf('id="inbox-area"'), html.indexOf('</section>', html.indexOf('id="inbox-area"')))), '受信箱の本文は見出しを描かない（カードが持つ）');
   // 4. 人が応答に点を付ける口は無い（方針: 評価は自動か、まとめて）

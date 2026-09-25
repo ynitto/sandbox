@@ -560,6 +560,7 @@ test('設定は周期と共有先だけを持ち、範囲外の値を丸める',
   assert.deepEqual(got, {
     enabled: true, intervalMinutes: 1440, shareRepo: 'git@e:r.git', pushToMain: true, configFile: '',
     shareTokenEncrypted: '', skillRepo: '', skillAgent: '', manualLimits: [],
+    issueForkEnabled: false, skillRepositoryPath: '',
   });
   assert.equal(settings.normalize({}).audit.intervalMinutes, 60);
   assert.equal(settings.normalize({ audit: { enabled: false } }).audit.enabled, false);

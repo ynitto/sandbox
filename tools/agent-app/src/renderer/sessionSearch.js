@@ -219,7 +219,7 @@ const SessionSearch = (() => {
     const current = transfer;
     if (!current) return;
     current.loading = true;
-    $('search-transfer-start').textContent = current.mode === 'issue' ? (current.issue.fork ? '修正を始める' : '会話を始める') : current.routine ? '作成' : 'フォーク'; $('search-transfer-start').disabled = true;
+    $('search-transfer-start').textContent = current.routine ? '作成' : 'フォーク'; $('search-transfer-start').disabled = true;
     const repo = $('search-target-repo').value;
     const record = current.record || {};
     const worktree = record.appId && record.repo === repo ? record.defaults?.worktree : '';
@@ -265,52 +265,29 @@ const SessionSearch = (() => {
     $('search-target-permission').value = record.appId ? record.defaults?.permission || 'confirm' : 'confirm';
     $('search-transfer-dialog').showModal(); targetChanged();
   }
-  // 課題（受信箱）を新しい会話へ渡す。フォークと同じダイアログで、リポジトリ・AI・モデル・権限だけを選ぶ
-  // （フォークする位置・フォーク先は課題に無いので隠す）。
-  async function handoffIssue(issue) {
-    transfer = { record: null, issue, mode: 'issue', routine: false, busy: false };
-    $('search-transfer-title').textContent = '新しいセッションの設定';
-    $('search-transfer-start').textContent = 'セッションを開始';
-    $('search-transfer-source').textContent = issue.title || '';
-    $('search-boundary').closest('label').hidden = true;
-    $('search-intent').closest('label').hidden = true;
-    $('search-request').previousElementSibling.textContent = '事前プロンプト';
-    $('search-request').value = issue.request || ''; $('search-transfer-status').textContent = '';
-    $('search-execution-settings').open = false;
-    const config = deps.getConfig();
-    repos(issue.repo || config.lastRepo || (config.repos || [])[0] || '');
-    $('search-target-repo').disabled = !!issue.fork && !issue.allowRepoChange;
-    $('search-target-add').disabled = !!issue.fork && !issue.allowRepoChange;
-    $('search-target-permission').value = 'confirm';
-    $('search-transfer-dialog').showModal(); await targetChanged();
-  }
-  async function startIssue(current) {
-    const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
+  // 課題・セッションの発見（受信箱）を新しい会話へ渡す。受信箱の依頼欄で選んだリポジトリ・エージェント・
+  // モデル・権限でそのままセッションを作り、課題と依頼を最初のターンとして送る。
+  async function startIssue(issue, { repo, agent: cli, model = '', permission = 'confirm', request }) {
     if (!repo || !cli) throw new Error('リポジトリとエージェントを選んでください');
-    if (current.issue.fork && !current.issue.allowRepoChange && repo !== current.issue.repo) throw new Error('修正先のリポジトリが変わりました。課題を開き直してください');
-    const permission = $('search-target-permission').value;
-    const extra = $('search-request').value.trim();
+    if (issue.fork && !issue.allowRepoChange && repo !== issue.repo) throw new Error('修正先のリポジトリが変わりました。課題を開き直してください');
+    const extra = String(request || '').trim();
     if (!extra) throw new Error('事前プロンプトを入力してください');
-    const prompt = `${current.issue.prompt}\n\n## 利用者の依頼\n${extra}`;
-    $('search-transfer-status').textContent = '会話を作っています…';
+    const prompt = `${issue.prompt}\n\n## 利用者の依頼\n${extra}`;
     const config = deps.getConfig();
     const session = await window.api.createSession({ repo, cli, model, policy: 'direct', readonly: permission === 'ask', autoApprove: permission === 'auto', transport: config.transport, worktree: '',
-      ...(current.issue.fork ? { externalOrigin: { provider: current.issue.localFinding ? 'agent-app' : 'agent-audit', key: current.issue.id, title: current.issue.title, repo, mode: 'fork' } } : {}),
-      ...(current.issue.fork && current.issue.origin ? { origin: current.issue.origin } : {}) });
-    current.creating = true; $('search-transfer-close').disabled = true;
-    $('search-transfer-status').textContent = '課題を送っています…';
+      ...(issue.fork ? { externalOrigin: { provider: issue.localFinding ? 'agent-app' : 'agent-audit', key: issue.id, title: issue.title, repo, mode: 'fork' } } : {}),
+      ...(issue.fork && issue.origin ? { origin: issue.origin } : {}) });
     await deps.sendCreated({ session: { ...session, cli, model, readonly: permission === 'ask', autoApprove: permission === 'auto' }, prompt,
       skillMode: 'auto', skills: [] });
     try {
-      if (current.issue.localFinding) await window.api.attention.seen(current.issue.id, current.issue.resultAt);
+      if (issue.localFinding) await window.api.attention.seen(issue.id, issue.resultAt);
       else {
-        const handed = await window.api.insight.handoff(current.issue.id, { mark: true });
+        const handed = await window.api.insight.handoff(issue.id, { mark: true });
         if (handed.warning) deps.notice(handed.warning, 'error');
       }
     }
     catch (err) { deps.notice(`受信箱から消せませんでした: ${err.message}`, 'error'); }
     deps.attentionChanged();
-    $('search-transfer-dialog').close(); close();
   }
   // 会話画面から、いま開いている会話をフォークする（検索画面と同じダイアログ）。
   // boundary・target を渡すと、その位置とフォーク先を選んだ状態で開く。
@@ -331,7 +308,6 @@ const SessionSearch = (() => {
     const controls = ['search-target-repo', 'search-target-agent', 'search-target-model', 'search-target-add', 'search-target-permission', 'search-boundary', 'search-intent', 'search-request'];
     current.busy = true; $('search-transfer-start').disabled = true;
     try {
-      if (current.mode === 'issue') { for (const id of controls) $(id).disabled = true; await startIssue(current); return; }
       const repo = $('search-target-repo').value, cli = $('search-target-agent').value, model = $('search-target-model').value.trim();
       if (!repo || !cli) throw new Error('保存先とエージェントを選んでください');
       for (const id of controls) $(id).disabled = true;
@@ -451,5 +427,5 @@ const SessionSearch = (() => {
     if (origin.key?.startsWith('public:')) { sharedMode(true); search(); }
   }
   async function forkPublic(key) { beginTransfer(await api.read(key)); }
-  return { init, open, close, forkCurrent, openOrigin, forkPublic, handoffIssue };
+  return { init, open, close, forkCurrent, openOrigin, forkPublic, startIssue };
 })();
