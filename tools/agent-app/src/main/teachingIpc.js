@@ -19,6 +19,7 @@ const host = require('./host');
 const settings = require('./settings');
 const agentCli = require('./agentCli');
 const { userData, requireRepo } = require('./paths');
+const projectIpc = require('./projectIpc');
 const teaching = require('./automation/teaching');
 const machineStore = require('./automation/store');
 const flowStore = require('./automation/flow-store');
@@ -103,7 +104,7 @@ function create(deps) {
       const created = store.createSession(ud, {
         repo, cli: selected.cli, model: selected.model, policy: selected.policy, tier: selected.tier, allocation: selected.allocation,
         readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
-        transport: 'tmux', worktree: '', kind: 'task', task: { machine },
+        transport: 'tmux', worktree: '', kind: 'task', task: { machine }, project: projectIpc.projectFor(repo, cfg),
       });
       summary = { id: created.id };
       sidecar = teaching.save(repo, machine, { ...(sidecar || { title: machine, purpose }), sessionId: created.id });
@@ -196,7 +197,7 @@ function create(deps) {
       const created = store.createSession(ud, {
         repo, cli: initial.cli, model: initial.model, policy: initial.policy, tier: initial.tier, allocation: initial.allocation,
         readonly: false, autoApprove: p.autoApprove != null ? !!p.autoApprove : cfg.execution.defaultAutoApprove,
-        transport: 'tmux', worktree: '', kind: 'workflow', workflow: { id },
+        transport: 'tmux', worktree: '', kind: 'workflow', workflow: { id }, project: projectIpc.projectFor(repo, cfg),
       });
       summary = { id: created.id };
     }

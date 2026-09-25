@@ -183,13 +183,17 @@ function renderRepos() {
     option.value = '';
     select.append(option);
   }
-  for (const repo of state.config.repos) {
-    const option = el('option', '', basename(repo));
-    option.value = repo;
-    option.title = repo;
+  // プロジェクトを選んでいれば、その中のリポジトリだけ（役割を添える）。今開いているものは外さない
+  const choices = Projects.repoOptions() || state.config.repos.map((repo) => ({ value: repo, label: basename(repo) }));
+  if (state.repo && !choices.some((item) => item.value === state.repo)) choices.push({ value: state.repo, label: basename(state.repo) });
+  for (const choice of choices) {
+    const option = el('option', '', choice.label);
+    option.value = choice.value;
+    option.title = choice.value;
     select.append(option);
   }
   select.value = state.repo;
+  Projects.render();
   select.disabled = !state.config.repos.length;
   $('repo-remove').disabled = !state.repo;
 }
@@ -1821,6 +1825,8 @@ function responseForkActions(m, index) {
   button.title = 'この応答までを新しいセッション・タスク・ワークフロー・スキルへ分ける';
   button.onclick = () => SessionSearch.forkCurrent(cur.id, { boundary: String(index) }).catch((err) => notice(err.message, 'error'));
   actions.append(button);
+  const save = Projects.saveActions(cur);
+  if (save) actions.append(save);
   return actions;
 }
 
@@ -2249,6 +2255,12 @@ async function sendPromptRequest() {
   const waiting = shareWaiting();
   if (waiting) { if (text) await sayToExecutor(waiting, text); return; }
   if ((!text && !state.attachments.length) || !state.repo) return;
+  // プロジェクトの新しい会話は、依頼に合うリポジトリ（owns・名前が一意に当たったとき）へ移ってから始める
+  const moved = await Projects.routeDraft(text);
+  if (moved) {
+    if (state.preparation) state.preparation.repo = state.repo;
+    inputStatus('pending', `${moved} で始めます`);
+  }
   // Resolve local preference only after availability has arrived.
   await Promise.all([state.agentsReady, state.hostReady]);
   let opts, selected;
@@ -3044,6 +3056,8 @@ async function init() {
   });
 
   // 初期画面の表示通知を取り逃さないよう、フォームとイベントを先に初期化する。
+  Projects.init();
+  await Projects.load();
   await selectRepo(state.config.lastRepo);
   showView(state.config.view);
   await showArea(state.config.area, { persist: false });

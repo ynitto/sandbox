@@ -101,6 +101,9 @@ function normalize(raw, name, file) {
     continueArgs: strs(raw.continue_args),
     resumeArgs: strs(raw.resume_args),
     noSessionArgs: strs(raw.no_session_args),   // セッションを残さない起動（共有で他人の依頼を受けるとき）
+    // カレント以外のフォルダを読み書きの範囲に足すフラグ（`{dir}` をフォルダ 1 つずつに展開。プロジェクトの
+    // ほかのリポジトリとナレッジを渡す）。持たない CLI にはパスを本文で伝えるだけ
+    addDirArgs: strs(raw.add_dir_args),
     errors: (Array.isArray(raw.errors) ? raw.errors : []).map((e) => ({
       cls: String((e && e.class) || 'env'),
       quotaKind: String((e && e.quota_kind) || ''),
@@ -253,13 +256,23 @@ function replayPrompt(history, prompt, { resumed = false } = {}) {
   return `${head}\n${lines.join('\n\n')}\n\n---\n新しい依頼:\n${prompt}`;
 }
 
+// add_dir_args を、渡されたフォルダの数だけ並べる（宣言が無ければ何も足さない）
+function dirArgs(spec, dirs) {
+  const tokens = spec.addDirArgs || [];
+  if (!tokens.length) return [];
+  const out = [];
+  for (const dir of [...new Set((dirs || []).map(String).filter(Boolean))]) out.push(...tokens.map((t) => t.split('{dir}').join(dir)));
+  return out;
+}
+
 // 1 ターン分の起動仕様（実行はしない・決定的。UUID の発行だけは乱数）。
 //   cliSession … 既に分かっている CLI 側のセッション ID（空なら初回）
 //   history    … この CLI が**まだ見ていない**やり取り。セッションを再開できる CLI なら、別の
 //                CLI で進めた分だけ（無ければ空）。再開手段の無い CLI なら会話の全部
 //   files      … 添付ファイルのパス（file_flag を宣言する CLI にだけ argv で渡す。本文には
 //                呼び出し側が書いてある）
-function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', history = [], files = [], allowContinue = true } = {}) {
+//   extraDirs  … カレント以外に読み書きしてよいフォルダ（add_dir_args を宣言する CLI にだけ argv で渡す）
+function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', history = [], files = [], allowContinue = true, extraDirs = [] } = {}) {
   const vars = { model: String(model || spec.defaultModel || ''), session: cliSession };
   const holder = {};
   const strategy = spec.session;
@@ -289,6 +302,7 @@ function turnCmd(spec, { prompt, model = '', readonly = false, cliSession = '', 
   if (strategy && strategy.extraArgs) argv = argv.concat(strategy.extraArgs);
   argv = insertAfterSubcommand(argv, expand(frag, vars, holder));
   argv = argv.concat(expand(readonly ? spec.readonlyArgs : spec.writeArgs, vars, holder));
+  argv = argv.concat(dirArgs(spec, extraDirs));
   if (vars.model && spec.modelFlag && !spec.command.some((t) => t.includes('{model}'))) {
     argv.push(spec.modelFlag, vars.model);
   }
@@ -342,7 +356,7 @@ function oneShotCmd(spec, { model = '', readonly = false } = {}) {
 //   組み立て: interactive.command + [continue|resume] + (write_args | readonly_args) + model_flag model
 //   再開の作法はヘッドレスと同じ SESSION 表（claude / copilot は UUID を発行して --session-id）。
 //   tmux セッションが生きている限り CLI 自身が会話を保つので、resume が要るのは起動し直すときだけ。
-function interactiveCmd(spec, { model = '', readonly = false, autoApprove = false, cliSession = '', history = [], allowContinue = true } = {}) {
+function interactiveCmd(spec, { model = '', readonly = false, autoApprove = false, cliSession = '', history = [], allowContinue = true, extraDirs = [] } = {}) {
   const inter = spec.interactive;
   if (!inter) throw new Error(`${spec.name} は対話起動（interactive）の定義を持ちません`);
   const vars = { model: String(model || spec.defaultModel || ''), session: cliSession };
@@ -375,6 +389,7 @@ function interactiveCmd(spec, { model = '', readonly = false, autoApprove = fals
   argv = insertAfterSubcommand(argv, expand(frag, vars, holder));
   const permissionArgs = readonly ? inter.readonlyArgs : (autoApprove ? spec.writeArgs : inter.writeArgs);
   argv = argv.concat(expand(permissionArgs, vars, holder));
+  argv = argv.concat(dirArgs(spec, extraDirs));
   if (vars.model && spec.modelFlag && !inter.command.some((t) => t.includes('{model}'))) argv.push(spec.modelFlag, vars.model);
   return {
     argv, mintedSession, resumed, env: spec.env, warning,

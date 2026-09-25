@@ -179,6 +179,18 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #repository-context > label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; }
 .repository-control { display: flex; align-items: center; gap: 4px; }
 .repository-control > select { min-width: 0; flex: 1; }
+/* プロジェクトはリポジトリと同じ選択欄を上に 1 段足すだけ */
+#project-row { margin-bottom: 10px; }
+#project-row > label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; }
+/* 回答の下の選択肢つきの操作（ナレッジに保存）。見た目は .message-action のまま */
+.message-actions .more-menu > summary.message-action { min-height: 0; padding: 4px 7px; color: var(--accent); }
+/* 回答は画面の下のほうに来るので、「定型」と同じく menu-panel を上向きに出す */
+.message-actions .more-menu .menu-panel { top: auto; bottom: calc(100% + 6px); }
+/* プロジェクトのリポジトリ表: 役割・この PC・外す は中身の幅、説明が残りを取る */
+#project-dialog .settings-table th:nth-child(2) { width: 88px; }
+#project-dialog .settings-table th:nth-child(4) { width: 130px; }
+#project-dialog .settings-table th:nth-child(5) { width: 56px; }
+#project-dialog .settings-table td input { width: 100%; }
 .more-dots { flex: none; }
 .more-dots > summary { width: 34px; justify-content: center; padding-inline: 4px; letter-spacing: 1px; }
 .more-dots .menu-panel { min-width: 190px; }
@@ -489,13 +501,13 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .tag.ok { border-color: var(--ok); color: var(--ok); }
 
 /* ---- ダイアログ ---- */
-#wt-dialog, #app-settings, #app-update, #routine-dialog, #search-transfer-dialog { max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--panel); box-shadow: 0 24px 60px rgba(31, 35, 40, .2); }
-#wt-dialog, #routine-dialog { width: 720px; }
+#wt-dialog, #project-dialog, #app-settings, #app-update, #routine-dialog, #search-transfer-dialog { max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--panel); box-shadow: 0 24px 60px rgba(31, 35, 40, .2); }
+#wt-dialog, #project-dialog, #routine-dialog { width: 720px; }
 #search-transfer-dialog { width: 600px; }
 #app-update { width: 520px; }
 #app-settings { width: 780px; height: min(720px, calc(100vh - 40px)); }
 #app-settings[open] { display: flex; flex-direction: column; }
-#wt-dialog::backdrop, #app-settings::backdrop, #app-update::backdrop, #routine-dialog::backdrop, #search-transfer-dialog::backdrop { background: rgba(18, 23, 31, .42); }
+#wt-dialog::backdrop, #project-dialog::backdrop, #app-settings::backdrop, #app-update::backdrop, #routine-dialog::backdrop, #search-transfer-dialog::backdrop { background: rgba(18, 23, 31, .42); }
 .dlg-head { min-height: 54px; display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
 .dlg-body { padding: 14px 16px 18px; overflow: auto; }
 .dlg-body p { margin: 0 0 10px; }
@@ -847,7 +859,11 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #home-repository-slot { flex: 0 1 180px; min-width: 0; }
 #home-repository-slot #repository-context { display: flex; align-items: center; gap: 4px; margin: 0; padding: 0; border: 0; }
 #home-repository-slot #repository-context > label { display: none; }
+#home-repository-slot #project-row:not([hidden]) { display: contents; }
+#home-repository-slot #project-row > label { display: none; }
 #home-repository-slot .repository-control { flex: 1; min-width: 0; }
+/* ホームでプロジェクトを選んでいれば、リポジトリは依頼から決まるので選択欄はプロジェクトだけ */
+#home-repository-slot #repository-context.has-project > .repository-control { display: none; }
 #home-repository-slot .menu-panel { top: auto; bottom: calc(100% + 6px); }
 
 /* 送信開始で停止ボタンが現れても、入力欄と操作欄の幅を変えない。 */

@@ -50,6 +50,7 @@ const { userData, requireRepo, distroFor, dirsOf, sessionDirs, mainBranch } = re
 const { spawnSpec, capture, killTree } = require('./proc');
 const shareRun = require('./share/run');
 const teachingIpcModule = require('./teachingIpc');
+const projectIpc = require('./projectIpc');
 const { runPrompt, runSharedPrompt, normalizeRepoUrl, refreshRepoUrls, repoFor } = shareRun;
 const audit = require('./audit');
 const evaluation = require('./evaluation');
@@ -232,6 +233,7 @@ async function runHeadless(id, turn, send) {
   const cmd = agentCli.turnCmd(spec, {
     prompt, model, readonly, cliSession: entry ? entry.id : '', history: unseen, files: attFiles,
     allowContinue: !(sess.origin && sess.origin.repo === sess.repo),
+    extraDirs: projectIpc.launchDirs(sess, store.loadConfig(ud)),
   });
   store.appendMessage(ud, id, { role: 'user', text, cli, family, model, readonly, autoApprove, policy, tier, attachments: atts, skillSelection: selectedSkills });
   if (cmd.mintedSession) store.setCliEntry(ud, id, cli, { id: cmd.mintedSession });
@@ -451,6 +453,7 @@ async function openConversationNow(id, send, { cols, rows, fresh = false, launch
     model: want.model, readonly: want.readonly, autoApprove: want.autoApprove,
     cliSession: entry ? entry.id : '', history,
     allowContinue: !(sess.origin && sess.origin.repo === sess.repo),
+    extraDirs: projectIpc.launchDirs(sess, cfg),
   });
   let captureWarning = '';
   let lastSync = 0;
@@ -846,10 +849,13 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
       ? `${setupSkills.map((item) => item.command).join('\n')}\n\n${contextual}`
       : contextual;
   };
+  // プロジェクトの会話は、ほかのリポジトリを --add-dir とこの節で渡すので、分岐（@fork）の作法は添えない
+  const projectBlock = projectIpc.promptBlock(sess, cfg);
   const prompt = compose(sessionSetup.withInstructions(attached.prompt, cfg.instructions, {
     answerOnly: !!base.answerOnly,
     artifacts: !base.answerOnly,
-    fork: !base.answerOnly && sess.kind === 'conversation' ? { repos: cfg.repos, current: sess.repo } : null,
+    fork: !base.answerOnly && sess.kind === 'conversation' && !projectBlock ? { repos: cfg.repos, current: sess.repo } : null,
+    project: projectBlock,
   }));
   const bare = compose(attached.prompt);
   const turn = { ...base, resumeContext, prompt, bare, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
@@ -1327,6 +1333,7 @@ function registerIpcHandlers(getWindow) {
     return picked.canceled ? null : picked.filePaths[0] || null;
   });
   handle('repo:remove', (p) => store.removeRepo(userData(), p.repo));
+  projectIpc.register(handle, { dialog, getWindow });
   handle('agents:list', (p) => listAgents(p.repo ? requireRepo(p.repo) : ''));
   handle('skills:list', (p) => skills.list(p.repo ? requireRepo(p.repo) : ''));
   handle('skills:select', (p) => {
@@ -1423,7 +1430,8 @@ function registerIpcHandlers(getWindow) {
     let branch = '';
     if (p.worktree) branch = (await worktree.find(repo, p.worktree, distroFor(repo))).branch;
     return store.createSession(userData(), {
-      ...p, repo, branch, cli: selected.cli, model: selected.model,
+      // プロジェクトは選んでいるもの（main が覚えている lastProject）に repo が入っているときだけ付く
+      ...p, repo, branch, cli: selected.cli, model: selected.model, project: projectIpc.projectFor(repo, cfg),
       policy: selected.policy, tier: selected.tier,
       allocation: selected.allocation,
       readonly: p.readonly != null ? p.readonly : cfg.execution.defaultReadonly,

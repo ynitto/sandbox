@@ -4,6 +4,11 @@
 > [`docs/designs/agent-project-design.md`](../../docs/designs/agent-project-design.md)。
 > 改称方針: [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md)。
 
+> **移行のお知らせ**: 複数のリポジトリとナレッジを束ねて会話・タスク・ワークフローを始める用途は、
+> agent-app の「プロジェクト」へ移る予定です（常駐と状態専用リポジトリを持たない形）。状態フォルダは
+> agent-app の「agent-project から取り込む」か `tools/agent-app/scripts/import-agent-project.js` で取り込めます。
+> 手順: [agent-app README「プロジェクト」](../agent-app/README.md#プロジェクト複数のリポジトリとナレッジを束ねる)
+
 **単一プロジェクトのバックログを自律的に優先順位付け・実行・検証・収束させ、人の判断が要る分だけ差し戻す制御層。**
 カレントディレクトリ（または `--root`）をプロジェクトルートとし、`charter.md` / `repos.json` を入力に
 成果物（`archive/`・`DELIVERY.md`・`needs/`・`decisions/`）を出力する。

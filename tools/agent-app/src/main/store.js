@@ -24,12 +24,16 @@ const sessionFindings = require('./sessionFindings');
 // lastTaskInputs … リポジトリ → タスクの保存名 → 前回の手動実行で入れた実行条件（値だけ。パスは持たない）
 // attentionSeen … 受信箱（attention.js）が使う「最後に見た結果の時刻」。{ since, items: { key → { resultAt } } }。
 //                 since は受信箱を使い始めた時刻（それ以前の結果は既読扱い）。作業の状態は持たない
+// knowledgeRepos … プロジェクトの定義を読みに行くナレッジリポジトリ（登録フォルダ。projects.js）
+// repoPaths    … 正規化した git の URL → この PC のフォルダ（プロジェクトの定義は URL で書くので、その対応だけ）
+// lastProject  … 最後に選んだプロジェクト（'<ナレッジリポジトリ>#<フォルダ>'。'' はプロジェクトなし）
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
   wslDistro: '', transport: 'tmux', useWorktree: true, area: 'home', view: 'chat', lastFiles: {}, lastWorktree: {},
   lastTask: {}, lastWorkflow: {}, lastTaskInputs: {}, taskInputHistory: {},
   automationSkillDir: '', automationAgent: '', automationModel: '',
   attentionSeen: { since: '', items: {} },
+  knowledgeRepos: [], repoPaths: {}, lastProject: '',
 };
 const MAX_REPOS = 30;
 const MAX_TASK_INPUT_CHARS = 400;
@@ -108,6 +112,11 @@ function normalize(raw) {
   next.automationAgent = String(next.automationAgent || '').trim();   // 空 = 会話の「おすすめ」と同じ CLI（automation/ipc.js）
   next.automationModel = String(next.automationModel || '').trim();
   next.attentionSeen = attention.normalizeSeen(next.attentionSeen);
+  next.knowledgeRepos = [...new Set((Array.isArray(next.knowledgeRepos) ? next.knowledgeRepos : []).map((r) => String(r || '')).filter(Boolean))]
+    .filter((r) => next.repos.includes(r)).slice(0, 10);
+  next.repoPaths = Object.fromEntries(Object.entries(next.repoPaths && typeof next.repoPaths === 'object' && !Array.isArray(next.repoPaths) ? next.repoPaths : {})
+    .filter(([url, dir]) => url && typeof dir === 'string' && dir).slice(0, 200));
+  next.lastProject = String(next.lastProject || '');
   const userSettings = settings.normalize(next);
   const rawInstructions = next.instructions && typeof next.instructions === 'object' ? next.instructions : {};
   const rawExecution = next.execution && typeof next.execution === 'object' ? next.execution : {};
@@ -331,7 +340,7 @@ function writeSession(userData, sess) {
 // kind / task / workflow … タスク（kind: 'task'）とワークフロー（kind: 'workflow'）を AI と作る会話は、
 // それぞれ task.machine / workflow.id に紐づき、会話一覧には出ない。
 // origin … 別のリポジトリの会話から分岐したとき、その分岐元（normalizeOrigin）。
-function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', allocation = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null, externalOrigin = null }) {
+function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', allocation = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null, externalOrigin = null, project = '' }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   if (kind === 'task' && !(task && task.machine)) throw new Error('タスクの会話には保存名が要ります');
@@ -345,7 +354,7 @@ function createSession(userData, { repo, cli, model = '', readonly = false, auto
     readonly: Boolean(readonly), autoApprove: Boolean(autoApprove), policy: String(policy || 'direct'), tier: String(tier || ''),
     allocation: allocation === 'auto' && !['direct', 'shared'].includes(policy) ? 'auto' : '',
     transport: allocation === 'auto' || transport === 'headless' ? 'headless' : 'tmux',
-    worktree: String(worktree || ''), branch: String(branch || ''), origin, externalOrigin,
+    worktree: String(worktree || ''), branch: String(branch || ''), origin, externalOrigin, project: String(project || ''),
     title: '', cliSessions: {}, live: null, terminalSession: null, terminalSnapshots: [], messages: [], createdAt: now, updatedAt: now,
   }));
 }

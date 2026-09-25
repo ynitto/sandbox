@@ -53,6 +53,20 @@
 
       <div id="sidebar-repository-slot">
       <div id="repository-context">
+        <div id="project-row" hidden>
+          <label for="project-select">プロジェクト</label>
+          <div class="repository-control">
+            <select id="project-select" aria-label="プロジェクト"></select>
+            <details id="project-more" class="more-menu more-dots">
+              <summary aria-label="プロジェクトを管理">•••</summary>
+              <div class="menu-panel">
+                <button type="button" id="project-edit">編集</button>
+                <button type="button" id="project-pull">最新を取得</button>
+                <button type="button" id="project-new">新しいプロジェクト</button>
+              </div>
+            </details>
+          </div>
+        </div>
         <label for="repo-select">リポジトリ</label>
         <div class="repository-control">
           <select id="repo-select" aria-label="リポジトリ"></select>
@@ -60,6 +74,8 @@
             <summary aria-label="リポジトリを管理">•••</summary>
             <div class="menu-panel">
               <button type="button" id="repo-add">リポジトリを追加</button>
+              <button type="button" id="repo-project-new">新しいプロジェクト</button>
+              <button type="button" id="repo-knowledge">ナレッジリポジトリとして読む</button>
               <button type="button" id="repo-remove" class="danger">登録を外す</button>
             </div>
           </details>
@@ -821,6 +837,19 @@
     <div class="teaching-create-form"><label class="task-create-label" for="routine-purpose">作成する内容</label><textarea id="routine-purpose" rows="12"></textarea></div>
     </div><div class="dlg-actions"><button type="button" id="routine-create" class="primary" disabled>新しいセッションで作成</button><button type="button" id="routine-retry" class="small">再検討</button></div>
   </dialog>
+  <dialog id="project-dialog">
+    <div class="dlg-head"><strong id="project-title">プロジェクト</strong><span class="spacer"></span><button type="button" id="project-close" class="small">閉じる</button></div>
+    <div class="dlg-body settings-list">
+      <label class="setting-field setting-field-wide"><span><strong>名前</strong></span><input id="project-name" maxlength="80"></label>
+      <label class="setting-field"><span><strong>ナレッジリポジトリ</strong><small id="project-kb-path"></small></span><select id="project-kb"></select></label>
+      <table class="wt-table settings-table" aria-label="プロジェクトのリポジトリ"><thead><tr><th scope="col">リポジトリ</th><th scope="col">役割</th><th scope="col">説明</th><th scope="col">この PC</th><th scope="col"></th></tr></thead><tbody id="project-repos"></tbody></table>
+      <div id="project-add-row" class="row"><select id="project-add-repo" aria-label="足すリポジトリ"></select><button type="button" id="project-add" class="small">追加</button></div>
+      <label id="project-instructions-row" class="stacked-field" for="project-instructions"><span><strong>プロジェクトへの指示</strong><small>（任意）</small></span><textarea id="project-instructions" rows="3" maxlength="2000"></textarea></label>
+      <div id="project-summary" class="sub"></div>
+      <div id="project-error" class="dlg-error" hidden></div>
+    </div>
+    <div class="dlg-actions"><button type="button" id="project-import" class="small quiet">agent-project から取り込む</button><span class="spacer"></span><button type="button" id="project-save" class="primary">保存</button></div>
+  </dialog>
   <dialog id="wt-dialog">
     <div class="dlg-head"><strong>作業フォルダ</strong><span class="spacer"></span><button id="wt-close" class="small">閉じる</button></div>
     <div class="dlg-body">
@@ -883,6 +912,7 @@
   <script src="audit.js"></script>
   <script src="skills.js"></script>
   <script src="appUpdate.js"></script>
+  <script src="projects.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
