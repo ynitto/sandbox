@@ -73,10 +73,15 @@ class AmigoRunner:
         "設定 agent-amigos.yaml の agent_cli）か、ロールの agent_cli を指定してください。"
         "LLM なしで動かしたい場合だけ stub を明示指定します（--agent-cli stub）。")
 
-    def _resolve_cli(self, role: dict, nb: dict) -> "tuple[str, str | None]":
+    def _resolve_cli(self, role: dict, nb: dict,
+                     prompt_fn=None) -> "tuple[str, str | None]":
         """このターンで使う (agent CLI, モデル)。優先順位は
         agent-control（管理面の横断上書き）> ノード既定 > ロール指定。
         soft / 縮退中は degraded を重ねる。
+
+        ``prompt_fn``（このターンの依頼文を返す関数）を渡すと、候補ベースで適格候補が
+        複数あるときだけ依頼文を見て 1 件を選ぶ（本家 Jev → agent-herd judge →
+        agent-audit の格付け。agentcore.modelselect）。依頼文は選ぶときにだけ組む。
 
         **どこからも決まらない場合は stub へ落とさず環境エラーにする。** 以前は既定が
         `stub`（LLM なしのダミー応答）だったため、設定を読み落とした経路（旧 `join` /
@@ -88,7 +93,8 @@ class AmigoRunner:
         # 候補ベース（version 2 selection_policy）: control 層を Resolver の決定で置き換える。
         # park は弱い候補へ黙って降格せず環境エラーで paused へ（lifecycle と同じ運び方）。
         # 縮退（degraded）は legacy の口——候補ベースでは Compiler が消費を織り込むので重ねない。
-        decision = control.policy_decision(self.role_id)
+        decision = control.policy_decision(self.role_id,
+                                           selector=self._prompt_selector(prompt_fn))
         self._policy_decision = decision
         if decision is not None:
             if decision.get("parked"):
@@ -114,6 +120,31 @@ class AmigoRunner:
         if not cli:
             raise RuntimeError(self.NO_CLI_ERROR)
         return cli, model
+
+    def _prompt_selector(self, prompt_fn):
+        """Resolver に渡す selector。呼ばれたとき（適格候補が複数）に初めて依頼文を組む。"""
+        if prompt_fn is None:
+            return None
+        memo: dict = {}
+
+        def selector(candidates: list) -> "dict | None":
+            if "select" not in memo:
+                from agentcore import modelselect
+                memo["select"] = modelselect.resolver_selector(
+                    prompt_fn(), purpose=self.role_id, workload=control.WORKLOAD)
+            return memo["select"](candidates)
+        return selector
+
+    @staticmethod
+    def _lazy(build):
+        """依頼文を 1 回だけ組む関数（選択と実行で同じ文を使う）。"""
+        box: dict = {}
+
+        def get() -> str:
+            if "v" not in box:
+                box["v"] = build()
+            return box["v"]
+        return get
 
     def _turn_receipt(self, role: dict, turn: int, cli_seconds: float, cli: str,
                       model: "str | None", *, actions: int, rejected: int) -> dict:
@@ -250,8 +281,10 @@ class AmigoRunner:
                                body="予算のしきい値に達しました。新規の論点を開かず、"
                                     "現状を納品可能な形に整えてください。")
 
+        prompt = self._lazy(lambda: self._build_prompt(mission, roles, role, st, fresh,
+                                                       rnd, wrap_up))
         try:
-            cli, model = self._resolve_cli(role, nb)
+            cli, model = self._resolve_cli(role, nb, prompt_fn=prompt)
             control.write_status(effective_cli=cli, effective_model=model or "", life=life,
                                  budget=nb, role_id=self.role_id)
             if cli == "stub":
@@ -259,7 +292,8 @@ class AmigoRunner:
                                                           rnd, wrap_up), _stub_cost()
             else:
                 actions, cli_seconds, usage = self._llm_actions(
-                    mission, roles, role, st, fresh, rnd, wrap_up, cli, model)
+                    mission, roles, role, st, fresh, rnd, wrap_up, cli, model,
+                    prompt=prompt())
         except RuntimeError as e:
             triage = agentcli.classify_agent_failure(str(e))
             if triage and triage[0] in agentcli.AGENT_ERROR_ENV_CLASSES:
@@ -543,16 +577,17 @@ class AmigoRunner:
         readable = self._topology_readable(role, peers)
         peer_pos = ({p: self._read_round(p, r - 1) for p in readable}
                     if r >= 1 else {})
+        prompt = self._lazy(lambda: self._debate_prompt(mission, role, r, peer_pos))
         try:
             nb = nodebudget.state()
-            cli, model = self._resolve_cli(role, nb)
+            cli, model = self._resolve_cli(role, nb, prompt_fn=prompt)
             control.write_status(effective_cli=cli, effective_model=model or "",
                                  budget=nb, role_id=self.role_id)
             if cli == "stub":
                 content, secs, usage = self._stub_debate(role, r), _stub_cost(), ""
             else:
                 content, secs, usage = self._llm_debate(
-                    mission, role, r, peer_pos, cli, model)
+                    mission, role, r, peer_pos, cli, model, prompt=prompt())
         except RuntimeError as e:
             triage = agentcli.classify_agent_failure(str(e))
             if triage and triage[0] in agentcli.AGENT_ERROR_ENV_CLASSES:
@@ -580,7 +615,15 @@ class AmigoRunner:
         return f"# {self.role_id} round {r}\nposition: stub の主張（{role.get('title') or self.role_id}）\n"
 
     def _llm_debate(self, mission: dict, role: dict, r: int, peer_pos: dict,
-                    cli: str, model: "str | None") -> "tuple[str, float, str]":
+                    cli: str, model: "str | None",
+                    prompt: "str | None" = None) -> "tuple[str, float, str]":
+        if prompt is None:
+            prompt = self._debate_prompt(mission, role, r, peer_pos)
+        t0 = time.monotonic()
+        text = agentcli.run_agent(prompt, cli, model)
+        return text, time.monotonic() - t0, text
+
+    def _debate_prompt(self, mission: dict, role: dict, r: int, peer_pos: dict) -> str:
         design = ""
         try:
             with open(self.mp.design_doc(), encoding="utf-8") as f:
@@ -615,9 +658,7 @@ class AmigoRunner:
 
 このラウンドのあなたの主張を簡潔に述べてください。{quote_gate}前ラウンドの他者の主張を踏まえて自分の立場を
 更新・補強してかまいません。出力は主張の本文のみ（JSON もコードフェンスも不要）。"""
-        t0 = time.monotonic()
-        text = agentcli.run_agent(prompt, cli, model)
-        return text, time.monotonic() - t0, text
+        return prompt
 
     def _apply_debate(self, actions: list, roles: dict, role: dict, st: dict,
                       rnd: int, secs: float, cli: str = "", model: "str | None" = None,
@@ -830,8 +871,10 @@ class AmigoRunner:
     # --- LLM 実行（kiro/claude/copilot/codex/プラグイン） --------------------
     def _llm_actions(self, mission: dict, roles: dict, role: dict, st: dict,
                      fresh: list, rnd: int, wrap_up: bool, cli: str,
-                     model: "str | None" = None) -> "tuple[list, float, str]":
-        prompt = self._build_prompt(mission, roles, role, st, fresh, rnd, wrap_up)
+                     model: "str | None" = None,
+                     prompt: "str | None" = None) -> "tuple[list, float, str]":
+        if prompt is None:
+            prompt = self._build_prompt(mission, roles, role, st, fresh, rnd, wrap_up)
         t0 = time.monotonic()
         text = agentcli.run_agent(prompt, cli, model or self.model or role.get("model"))
         seconds = time.monotonic() - t0

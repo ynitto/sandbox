@@ -25,6 +25,9 @@ _EFFECTIVE_AGENT_MODEL: "str | None" = None
 # ファイルの最新値ではない——最新値を applied として報告すると、まだ適用していない
 # 設定が dashboard で「反映済み」に見える。
 _REVISION_APPLIED: "int | None" = None
+# 起動時の agent/model を候補ベース（selection_policy）の決定が埋めたか。埋めたときだけ
+# per-run の実行ごとに依頼文を見て適格候補の中から選び直せる（yaml の明示は人の決定）。
+_POLICY_SUPPLIED_AGENT = False
 
 
 def _utc_iso() -> str:
@@ -72,13 +75,14 @@ def _control_override() -> "tuple[str | None, str | None]":
     return (str(cli) if cli else None, str(model) if model else None)
 
 
-def _control_policy_decision(purpose: str = "") -> "dict | None":
+def _control_policy_decision(purpose: str = "", selector=None) -> "dict | None":
     """selection_policy（agent-control version 2）があるときの Resolver 決定。無ければ None。
 
     候補の解決は agentcore.executionresolver の 1 実装（設計 2026-08-15 §5.2）。version 1
     （または selection_policy 無し）は旧 reader として従来の `_control_override` 経路へ
     委ね、version >= 2 は壊れた policy・未知 version でも Resolver が park を返す——
     legacy fallback を再解釈しない（§6.6）。
+    ``selector`` は依頼文を見て適格候補の中から選ぶ関数（agentcore.modelselect）。
     """
     ctl = _load_control()
     version = ctl.get("version")
@@ -89,7 +93,28 @@ def _control_policy_decision(purpose: str = "") -> "dict | None":
     from agentcore import executionresolver
     return executionresolver.resolve_execution(
         _NODE_BUDGET_WORKLOAD, purpose_or_role=purpose, compiled_control=ctl,
-        now=_dt.datetime.now(_dt.timezone.utc))
+        now=_dt.datetime.now(_dt.timezone.utc), selector=selector)
+
+
+def _prompt_selected_decision(prompt: str, entry: "dict | None" = None) -> "dict | None":
+    """per-run の 1 実行で、依頼文を見て適格候補の中から 1 件を選んだ Resolver 決定。
+
+    候補ベースの決定が起動時の agent/model を埋めたデーモンで、entry が agent_cli /
+    model を明示していないときだけ選ぶ（yaml・entry の明示は人の決定なので選ばない）。
+    selector が決めなかった（適格候補が 1 件・判断できない）ときは None——呼び出し側は
+    起動時の候補のまま走る。
+    """
+    e = entry or {}
+    if not _POLICY_SUPPLIED_AGENT or e.get("agent_cli") or e.get("model"):
+        return None
+    if not str(prompt or "").strip():
+        return None
+    from agentcore import modelselect
+    decision = _control_policy_decision(selector=modelselect.resolver_selector(
+        prompt, workload=_NODE_BUDGET_WORKLOAD))
+    if decision is None or decision.get("parked") or not decision.get("selected"):
+        return None
+    return decision if isinstance(decision.get("selector"), dict) else None
 
 
 def _control_policy_park() -> "dict | None":
@@ -115,7 +140,7 @@ def _apply_control_agent(config: dict) -> dict:
     ここで適用した revision を控えておき、status の revision_applied として報告する——
     「いま読んだ revision」を applied と偽らないため。
     """
-    global _REVISION_APPLIED
+    global _REVISION_APPLIED, _POLICY_SUPPLIED_AGENT
     out = dict(config or {})
     configured_model = ((out.get("agent_cli_options") or {}).get("model")
                         or (out.get("kiro_options") or {}).get("model"))
@@ -127,7 +152,9 @@ def _apply_control_agent(config: dict) -> dict:
         # park は選択なし——新規実行は scheduler のディスパッチゲートが控える。
         selected = decision.get("selected") or {}
         cli, model = selected.get("agent_cli"), selected.get("model")
+        _POLICY_SUPPLIED_AGENT = bool(cli) and not out.get("agent_cli") and not configured_model
     else:
+        _POLICY_SUPPLIED_AGENT = False
         cli, model = _control_override()
         budget = _node_budget_state()
         if budget and (budget.get("soft") or

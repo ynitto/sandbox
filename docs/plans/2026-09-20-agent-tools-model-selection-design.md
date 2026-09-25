@@ -85,7 +85,18 @@ policy の外へは出ず、park の規則も変わらない。selector が例�
 agent-flow は `run_agent` の間だけスレッド別の selector を置き、`_control_policy_decision` が
 それを Resolver へ渡す。同じ呼び出しの中で Resolver が何度も解決し直しても、判断の LLM は
 候補集合ごとに 1 回（memo）。明示指定・run 固定の呼び出しでは置かない（人の決定を上書きしない）。
-agent-loop / agent-amigos への配線は同じ 1 行で足せる（今回は未配線）。
+agent-loop / agent-amigos へも同じ形で配線した（2026-09-25）。
+
+- **agent-loop**: 起動時に `_apply_control_agent` が selection_policy の決定で agent/model を
+  埋めたとき（yaml に明示が無いとき）だけ、headless（per-run）の本文実行ごとに
+  `_prompt_selected_decision` が selector 付きで Resolver を引き直す。per-run は毎回が
+  セッション境界なので差し替えてよい。entry が agent_cli / model を持てば選ばない。対話
+  ペインは会話を保つので選び直さず、ステートマシンは実行前に 1 回だけ決める形（用途を
+  渡さない決着）のまま。決定は実行ログ jsonl へ `event: execution_decision` の 1 行で残す。
+- **agent-amigos**: `_resolve_cli` に依頼文を返す関数を渡し、Resolver が適格候補 2 件以上で
+  selector を呼んだときに初めて依頼文を組む（候補 1 件のターンは組まない）。選択と実行は
+  同じ依頼文。amigos は管理面がノード既定・ロール指定より上なので、選択も同じ層で効く。
+  purpose はロール id。決定はターンの receipt の `execution_decision.selector` に残る。
 
 ## 5. 設定
 

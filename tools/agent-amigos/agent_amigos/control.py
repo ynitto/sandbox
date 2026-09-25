@@ -79,12 +79,13 @@ def degraded() -> "tuple[str | None, str | None]":
             str(d["model"]) if d.get("model") else None)
 
 
-def policy_decision(role_id: str = "") -> "dict | None":
+def policy_decision(role_id: str = "", selector=None) -> "dict | None":
     """selection_policy（version 2）があるときの Resolver 決定。無ければ None。
 
     version 1（または selection_policy 無し）は旧 reader として従来の override 経路へ
     委ねる。version >= 2 は壊れた policy・未知 version でも Resolver が park を返す
     ——legacy fallback を再解釈しない（設計 §6.6）。
+    ``selector`` は依頼文を見て適格候補の中から選ぶ関数（agentcore.modelselect）。
     """
     ctl = load_control()
     version = ctl.get("version")
@@ -95,7 +96,7 @@ def policy_decision(role_id: str = "") -> "dict | None":
     from agentcore import executionresolver
     return executionresolver.resolve_execution(
         WORKLOAD, purpose_or_role=role_id, compiled_control=ctl,
-        now=_dt.datetime.now(_dt.timezone.utc))
+        now=_dt.datetime.now(_dt.timezone.utc), selector=selector)
 
 
 def write_status(effective_cli: str = "", effective_model: str = "", life: str = "run",
