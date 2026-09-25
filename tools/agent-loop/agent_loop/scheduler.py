@@ -1439,13 +1439,37 @@ class PeriodicScheduler:
         with self._lock:
             self._command_running.pop(str(entry.get("id") or ""), None)
 
-    def _headless_agent(self, profile: Any, work_dir: str, name: str, log_file: str) -> Any:
-        """headless 実行で使う agent 定義を解決する（LLM を起こす経路だけが呼ぶ）。"""
-        agent = _harness_toolloop._tl_resolve_agent(
-            profile.name, profile.model or "", work_dir)
+    def _headless_agent(self, profile: Any, work_dir: str, name: str, log_file: str,
+                        prompt: "str | None" = None,
+                        entry: "dict[str, Any] | None" = None) -> Any:
+        """headless 実行で使う agent 定義を解決する（LLM を起こす経路だけが呼ぶ）。
+
+        ``prompt`` を渡すと、候補ベースで起動したデーモンでは依頼文を見て適格候補の
+        中から 1 件を選ぶ（本家 Jev → agent-herd judge → agent-audit の格付け。
+        agentcore.modelselect）。per-run は毎回がセッション境界なので実行ごとに選べる。
+        選んだ決定は実行ログ（jsonl）へ ``execution_decision`` として残す。
+        """
+        cli, model = profile.name, profile.model or ""
+        decision = (_prompt_selected_decision(prompt, entry)
+                    if prompt is not None else None)
+        if decision is not None:
+            selected = decision["selected"]
+            cli, model = str(selected["agent_cli"]), str(selected.get("model") or "")
+            picked = decision["selector"]
+            log.info("[%s] 依頼文を見て候補を選びました（%s）: cli=%s model=%s",
+                     name, picked.get("stage"), cli, model or "(定義の既定)")
+            try:
+                from agentcore import executionresolver
+                _harness_toolloop._tl_append_log(log_file, {
+                    "event": "execution_decision",
+                    **executionresolver.receipt_execution_decision(decision)})
+            except OSError:
+                pass
+        agent = _harness_toolloop._tl_resolve_agent(cli, model, work_dir)
+        autonomy = (profile.autonomy if decision is None else
+                    str((agent.get("spec") or {}).get("headless_autonomy") or "tool-loop"))
         log.info("[%s] headless 実行: cli=%s model=%s autonomy=%s log=%s",
-                 name, profile.name, profile.model or "(定義の既定)",
-                 profile.autonomy, log_file)
+                 name, cli, model or "(定義の既定)", autonomy, log_file)
         return agent
 
     def _deferred_lookup_resolver(self, values: dict[str, Any]):
@@ -1552,7 +1576,8 @@ class PeriodicScheduler:
             else:
                 result = _harness_toolloop.run_prompt(
                     goal=prompt, cwd=work_dir,
-                    agent=self._headless_agent(profile, work_dir, name, log_file),
+                    agent=self._headless_agent(profile, work_dir, name, log_file,
+                                               prompt=prompt, entry=entry),
                     log_file=log_file,
                     acceptance=acceptance, tag="agent-loop",
                     judge=self._acceptance_judge_enabled(entry),
