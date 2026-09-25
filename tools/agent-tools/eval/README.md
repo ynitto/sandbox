@@ -2333,7 +2333,7 @@ python3 tools/agent-tools/eval/moe_ram_probe.py --model gemma4:26b --output /tmp
 
 ## Judge Calibration Gate（readout_eval）
 
-`readout_eval.py --calibration` は既存9セルを `agentcore.judge.evaluate` で実行し、
+`readout_eval.py --calibration` は既定の66セル（`CELLS`）を `agentcore.judge.evaluate` で実行し、
 問いごとの分布を保存する。旧readout台帳の最小confidenceからBrierを復元することはしない。
 judge API・`judge.model`・consumerのthresholdは変更しない。新しい依存は不要。
 
@@ -2343,14 +2343,20 @@ judge API・`judge.model`・consumerのthresholdは変更しない。新しい�
 | J2 | choice × 1 | judge_evalのcheck_winner。テスト成功候補の最短c4 |
 | CL1 | choice × 1 | judge_evalのcheck_class。bug |
 | E1 / E2 / E3 | choice × 各1 | judge_evalのcheck_decision。replan / done / replan |
-| RO1〜RO3 | choice × 各1 | project_evalのcheck。既存workspaceラベル／RO3はother→空workspace |
+| RO1〜RO11 | choice × 各1 | project_evalのcheck_route。既存workspaceラベル／RO3・RO7・RO10はother→空workspace |
+| FL2〜FL10 | boolean × 4 | judge_evalのcheck_id_set。候補の行に書いた属性から従う採用集合（0件・全件を含む） |
+| AS1・AS3〜AS13 | score × 1（r） | project_evalのcheck_assess。c・aは本番の規則が決める。AS9・AS12がr=2 |
+| TR1〜TR11 | boolean × 条件数 | statemachine_cellsのcheck_evals。本番の遷移条件の問い |
+| CT1〜CT8 | boolean × 1 | check_fixable。本番の決定的な段に掛からない失敗だけ |
+| CW1〜CW6 | choice × 1 | check_contract。本番の確度下限0.6はセルでなく掃引で掛ける |
 
 この表は説明用。実装は既存checkerに有限の回答組を列挙して、一意に合格する組をoracleとする。
 複数正解・正解なし・4096組超は実行前にエラーとし、LLMをoracleにしない。
 F1の部分問の正誤とセル全体の集合一致を分ける。ROの問いと入力は本番ビルダーを呼ぶ。
 F1は本番filterと同じboolean形式だが、単一deps本文から候補を展開する評価アダプタであり、
 本番filterの複数deps経路そのもののend-to-end評価ではない。
-assessのscore、statemachine固有の遷移条件、PR #862の品質・原因分類はこの9セルでは未測定。
+FL・RO4以降・AS9以降・TR4以降・CT3以降・CW3以降は`shape_cells.py`と`statemachine_cells.py`にある。
+判定ステート（JS）はPython 3.10以上、AS2は正解が一意に決まらないので既定集合の外。PR #862の品質・原因分類は未測定。
 
 ```bash
 # Python 3.11推奨。Ollama不要の計算・fixture・失敗分類テスト
@@ -2447,7 +2453,8 @@ RT2 35/40、RT3 39/40（yes 9 件中 8 正解・見落とし 0）、RT4 31/40。
 
 `status: insufficient_data`は異なるセルが30未満の場合。反復を増やしても独立した入力が増えたとは
 扱わない。30は最低限の記述統計用の目安で、安全性保証ではない。満たしても`descriptive_only`で
-自動承認はしない。現在の9セルは常にinsufficient_dataであり、各用途の実workloadのラベル付き入力を
+自動承認はしない。`consumers`は読み手（filter / route / assess / transition / triage / contract …）ごとの掃引と
+誤答の確度（`wrong_confidences`）で、下限を決めるのはこの単位。読み手ごとには30セルに届かず、各用途の実workloadのラベル付き入力を
 増やす前にthresholdを確定しない。fake-runから性能に関する結論を出さない。
 
 ### PR #862との境界
@@ -2456,7 +2463,7 @@ PR #862は現行origin/mainでマージ済み。段0の`used.skills / commands /
 段1は既存実装がquality scoreとissue choiceをjudgeへ送り、min-confidence 0.55、sampleを既定に
 しているが、この値がcalibration済みという意味ではない。calibration runner自身はUI・自動評価・その設定を変更しない。後続の根拠別評価は下記参照。
 運用上は既存の自動評価offを使い、当該用途・モデル・methodのreportを人が確認してから
-有効化する構成を推奨する。この9セルの合格をquality評価の合格に読み替えない。
+有効化する構成を推奨する。この較正セルの合格をquality評価の合格に読み替えない。
 実行の成否は既存の決定的verification、品質・原因の正解は人の確定ラベルを必要とする。
 thresholdを本番設定へ書く処理・自動routeの有効化処理は本gateにない。
 
