@@ -274,6 +274,82 @@ class SelectionPolicyTests(unittest.TestCase):
         self.assertFalse(rec["effective"]["restart_required"])  # desired = 実効
 
 
+class PromptSelectionTests(unittest.TestCase):
+    """per-run の 1 実行で、依頼文を見て適格候補の中から選ぶ（agentcore.modelselect）。"""
+
+    POLICY = {
+        "strategy": "economy", "retry_limit": 1, "no_candidate": "park",
+        "qualification_revision": 5,
+        "candidates": [{"agent_cli": "aider", "model": "gemma4:e4b", "rank": 1},
+                       {"agent_cli": "claude", "model": "sonnet", "rank": 2}],
+    }
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="al-ctl-ps-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+        with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": 2, "revision": 7, "workloads": {"routine": {
+                "selection_policy": json.loads(json.dumps(self.POLICY))}}}, f)
+        al._CONTROL_CACHE["mtime"] = None
+        self.addCleanup(setattr, al, "_REVISION_APPLIED", al._REVISION_APPLIED)
+        self.addCleanup(setattr, al, "_POLICY_SUPPLIED_AGENT", al._POLICY_SUPPLIED_AGENT)
+
+    @staticmethod
+    def _selector(prompt, **kw):
+        return lambda cands: {"agent_cli": "claude", "model": "sonnet", "stage": "judge",
+                              "confidence": 0.9, "reason": "test"}
+
+    def _pick(self, prompt="big refactor", entry=None):
+        from agentcore import modelselect
+        with mock.patch.object(modelselect, "resolver_selector", self._selector):
+            return al._prompt_selected_decision(prompt, entry)
+
+    def test_policy_filled_daemon_picks_by_prompt(self):
+        al._apply_control_agent({})
+        decision = self._pick()
+        self.assertEqual(decision["selected"]["agent_cli"], "claude")
+        self.assertEqual(decision["selector"]["stage"], "judge")
+        from agentcore import executionresolver
+        block = executionresolver.receipt_execution_decision(decision)
+        self.assertEqual(block["selector"]["stage"], "judge")
+
+    def test_explicit_config_or_entry_is_not_reselected(self):
+        from agentcore import modelselect
+        al._apply_control_agent({"agent_cli": "kiro"})
+        with mock.patch.object(modelselect, "resolver_selector",
+                               side_effect=AssertionError("yaml の明示では選ばない")):
+            self.assertIsNone(al._prompt_selected_decision("x"))
+        al._apply_control_agent({})
+        with mock.patch.object(modelselect, "resolver_selector",
+                               side_effect=AssertionError("entry の明示では選ばない")):
+            self.assertIsNone(al._prompt_selected_decision("x", {"agent_cli": "aider"}))
+
+    def test_headless_agent_uses_the_prompt_pick_and_logs_the_decision(self):
+        al._apply_control_agent({})
+        sched = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+        profile = mock.Mock(model="gemma4:e4b", autonomy="single-shot")
+        profile.name = "aider"
+        log_file = os.path.join(self.dir, "run.jsonl")
+        from agentcore import modelselect
+        with mock.patch.object(modelselect, "resolver_selector", self._selector), \
+                mock.patch.object(al._harness_toolloop, "_tl_resolve_agent",
+                                  return_value={"cli": "claude", "spec": {}}) as resolve:
+            sched._headless_agent(profile, self.dir, "n", log_file,
+                                  prompt="big refactor", entry={"name": "n"})
+            resolve.assert_called_once_with("claude", "sonnet", self.dir)
+            resolve.reset_mock()
+            sched._headless_agent(profile, self.dir, "n", log_file)   # prompt 無し＝従来どおり
+            resolve.assert_called_once_with("aider", "gemma4:e4b", self.dir)
+        with open(log_file, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f]
+        self.assertEqual(rows[0]["event"], "execution_decision")
+        self.assertEqual(rows[0]["selector"]["stage"], "judge")
+
+
 class StatemachinePolicyGateTests(unittest.TestCase):
     """小型候補（policy 選択）では write 宣言のある state に check が必須（E3）。"""
 

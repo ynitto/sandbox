@@ -733,8 +733,9 @@ stderr に `@agent-usage`（jev と judge の合計）。終了コードは 0 �
 Python からは `agentcore.modelselect.select(prompt, candidates, purpose=…)`。エンジンは
 `executionresolver.resolve_execution(..., selector=modelselect.resolver_selector(prompt))` で
 差し込み、selection_policy の適格候補が複数あるときその中からだけ選ぶ（policy の外へは
-出ず、決めなければ順位どおり）。agent-flow はこれを配線済みで、明示指定・run 固定の
-呼び出しでは選ばない。決定には `selector`（段・確度・理由）が残り、receipt の
+出ず、決めなければ順位どおり）。agent-flow（明示指定・run 固定の呼び出しでは選ばない）、
+agent-loop（per-run の実行ごと。設定ファイルやエントリで CLI・モデルを明示していれば選ばない）、
+agent-amigos（ロールのターンごと）が配線済み。決定には `selector`（段・確度・理由）が残り、receipt の
 `execution_decision` に写る。
 
 #### 5.8 `route`

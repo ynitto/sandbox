@@ -26,6 +26,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **CLI 定義に `add_dir_args` を足した**（`schemas/agent-cli.schema.json`。claude / codex / copilot は
   `--add-dir {dir}`）。agent-dashboard の定義検査の許可リストにも足した
 
+### agent-loop・agent-amigos: 依頼文を見てエージェント・モデルを選ぶ（agent-flow と同じ `select` の配線）
+
+agent-herd `select`（本家 Jev → judge → agent-audit の格付け）を Resolver に差し込む配線は
+agent-flow だけだった。agent-loop と agent-amigos にも同じ形で足した（設計:
+`docs/plans/2026-09-20-agent-tools-model-selection-design.md` §4）。適格候補が複数あるときだけ
+その中から選び、policy の外へは出ない。
+
+- **agent-loop:** 選択ポリシーが起動時の CLI・モデルを決めたデーモン（`agent-loop.yaml` に明示が
+  無い）で、per-run の本文実行ごとに送る本文を見て選び直す。entry が `agent_cli` / `model` を
+  持つとき、対話ペインの実行、ステートマシンでは選ばない。決定は headless の実行ログ（jsonl）に
+  `event: execution_decision`（`selector` の段・確度・理由つき）で残る。
+- **agent-amigos:** ロールのターンごとに、そのターンの依頼文（討論ラウンドを含む）を見て選ぶ。
+  依頼文は Resolver が選択を求めたとき（適格候補 2 件以上）にだけ組み、選択と実行で同じ文を使う。
+  決定はターンの receipt の `execution_decision.selector` に残る。
+- テスト: agent-loop `test_node_budget.py` に 3 件、agent-amigos `test_control_policy.py` に 4 件。
+
 ### agent-app: 受信箱の課題カードを読みやすくし、その場で修正のセッションを始める（0.36.0）
 
 - **課題カードに「未達の条件: A / B / C」の連結文を出すのをやめた。** どのカードも同じ書き出しになり、
