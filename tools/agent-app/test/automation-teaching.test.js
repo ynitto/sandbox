@@ -341,7 +341,8 @@ test('タスクの会話は agent-app の会話基盤で開き、ブラウザの
   assert.match(html, /id="task-launch-start"[^>]*>編集開始</);
   assert.match(renderer, /state\.pending \? '起動中' : '起動前'/, 'tmux の準備中は待機領域へ状態を表示する');
   assert.doesNotMatch(html, /id="task-launch-title"[^>]*>AIと編集</, '編集画面の中で「AIと編集」を繰り返さない');
-  assert.match(renderer, /\$\('task-launch-heading'\)\.hidden = state\.published/, '公開済みタスクでは下書き用見出しも隠す');
+  assert.doesNotMatch(html, /id="task-launch-heading"/, '編集画面に下書き用の見出しは置かない（公開済みかどうかで出し分けない）');
+  assert.doesNotMatch(renderer, /task-launch-heading/);
   assert.match(renderer, /api\.automation\.recordingStart\(\{ root: state\.repo, source: 'windows'/);
   assert.match(renderer, /api\.automation\.teachDemonstration\(/);
   assert.match(renderer, /TeachingProtocol\.parseRecordRequest\(message && message\.text\)/, 'AI の @record 行で見本のカードを開く');
