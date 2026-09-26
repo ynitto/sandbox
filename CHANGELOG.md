@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app・agent-flow: ワークフローを定義なしで動かし、規模の目安で分けすぎを抑える（agent-app 0.38.0）
+
+- **agent-flow に規模の目安（`size`）を足した。** small（5 工程未満・既定）/ medium（10 未満）/ large（50 未満）/
+  unrestricted。Claude Code の dynamic workflows と同じ目盛りで、planner へ工程数の目安として渡す
+- **1 つの担当で終わる依頼は「作業 1 ＋ 別の担当による検証 1」にとどめる。** 粒度が auto のとき、
+  flow-planner は成果ノードの下限を 1 にし、1 ノード約 30 行のスコープ上限を外す。分けるのは
+  独立した検証・多数の対象への展開・複数案の比較・完了までの反復が要るときだけ
+- inbox 要求の `size` と `plan_gate` で、run ごとに規模と計画の確認を指定できる
+- agent-app: 定義なしの実行に規模と計画の確認を渡し、実行した工程をワークフローの下書きにできる。
+  agent-flow の設定（`agent-flow.yaml`）を読み書きする口を足した
+
 ### agent-app: プロジェクト（複数のリポジトリとナレッジを束ねる）と agent-project からの取り込み（0.37.0）
 
 - **プロジェクトを足した。** 1 つの仕事に関わるリポジトリを 主／作業／参照 の役割で束ね、そのうち 1 つを
