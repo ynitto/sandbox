@@ -158,6 +158,14 @@
       "default": [],
       "description": "読み取り専用（助言のみ・ファイルを書かない・コマンドを実行しない）にする追加フラグ。ヘッドレス・対話の両方に効く（対話だけ違うフラグが要る CLI は interactive.readonly_args で上書きする）。Doctor・構造化 Assist・対話診断が使う。"
     },
+    "add_dir_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "カレントディレクトリ以外のフォルダを、CLI が読み書きできる範囲に足すフラグ。`{dir}` をフォルダ 1 つずつに展開して、渡されたフォルダの数だけ並べる（claude / codex / copilot の `--add-dir {dir}`）。agent-app のプロジェクトが、ほかのリポジトリとナレッジリポジトリを渡すのに使う。宣言の無い CLI にはフォルダを依頼の本文で伝えるだけ。"
+    },
     "readonly": {
       "enum": [
         "enforced",

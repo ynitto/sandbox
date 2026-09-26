@@ -516,9 +516,11 @@ test('preload の窓口と ipc のチャネルが 1 対 1', () => {
   const pre = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
   const ipc = fs.readFileSync(path.join(SRC, 'main/ipc.js'), 'utf8');
   const makerIpc = fs.readFileSync(path.join(SRC, 'main', 'automation', 'handlers.js'), 'utf8');
+  const projectIpc = fs.readFileSync(path.join(SRC, 'main', 'projectIpc.js'), 'utf8');
   const invoked = [...pre.matchAll(/invoke\('([\w:]+)'/g)].map((m) => m[1]);
   const handled = [
     ...[...ipc.matchAll(/handle\('([\w:]+)'/g)].map((m) => m[1]),
+    ...[...projectIpc.matchAll(/handle\('([\w:]+)'/g)].map((m) => m[1]),
     ...[...makerIpc.matchAll(/register\('([\w:]+)'/g)].map((m) => `automation:${m[1]}`),
   ];
   assert.deepStrictEqual([...new Set(invoked)].sort(), handled.sort());

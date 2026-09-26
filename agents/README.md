@@ -40,6 +40,7 @@ argv = command + (write_args | readonly_args) + no_session_args? + spill.args?
 | `relative_cost` | 「より安い候補」を決める無次元値（ローカル=0、通常クラウド=1）。定義単位の値で、`opencode` のようにプロバイダを `--model provider/model` で切り替える CLI では、その定義でふだん使う経路の値を書く。モデル単位の差は任意の `models` で宣言する——`"models": {"sonnet": {"relative_cost": 1}, "opus": {"relative_cost": 3}}` のようにモデル名（`default_model` や `fallbacks` の `model` と同じ綴り）ごとに同じ尺度の値を置き、宣言の無いモデルは定義単位の値へ落ちる。失敗時の一段昇格（`fallbacks`）は現在側・候補側とも `agent_cli` + `model` の組でこの値を比べるので、**同梱定義は 0/1 の 2 値しか持たず、モデル別を宣言しない限り cloud 起点（claude / codex / copilot / kiro …）では `fallbacks` に何を並べても昇格しない**（宣言が無いのに `fallbacks` を書くと警告が出る）。同梱定義にモデル別の値は入れていない——実測（agent-audit の格付け）を根拠に、上位の探索先へ置いた写しで宣言する |
 | `write_args` | 既定モード（act・plan・charter 生成など書き込みを伴う実行） |
 | `readonly_args` | 読み取り専用モード（Doctor・構造化 Assist・対話診断） |
+| `add_dir_args` | カレント以外のフォルダを読み書きの範囲に足すとき（agent-app のプロジェクト）。`{dir}` をフォルダ 1 つずつに展開する。宣言の無い CLI にはフォルダを本文で伝えるだけ |
 | `no_session_args` | 使い捨て実行（診断）。セッション永続化を切る |
 | `spill.args` / `spill.instruction` | 長大プロンプトを一時ファイルへ退避したとき |
 | `command_suffix` | 位置引数を末尾に固定したい CLI（codex の `-`） |

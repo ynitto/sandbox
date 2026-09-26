@@ -125,6 +125,20 @@ CLI が処理中や質問待ちに見えても、入力欄からの送信は止�
 分岐先はふつうの会話と同じに扱えます（削除・エージェントの切替・作業フォルダの変更ビュー）。
 この作法を添えないようにするには「設定 > 共通指示」のチェックを外します。
 
+### プロジェクトで始める
+
+複数のリポジトリを役割（主・作業・参照）付きで束ね、ナレッジリポジトリに定義と知識を置きます（§20）。
+
+1. リポジトリの「•••」>「新しいプロジェクト」で、名前・ナレッジリポジトリ・リポジトリと役割を決めて保存します。
+   ほかの PC では、ナレッジリポジトリを登録して「ナレッジリポジトリとして読む」を選びます。
+2. サイドバーの「プロジェクト」で選ぶと、リポジトリの選択肢がそのプロジェクトの中だけになります。
+3. 新しい会話は主のリポジトリで始まります。依頼のパスが作業リポジトリの担当範囲に当たるか、依頼がその名前を
+   含むときはそちらで始まります。
+4. プロジェクトを選んでいるとホームが入口になり、指示とナレッジ（新しい 5 件）が並びます。ナレッジには
+   ファイルをドロップするか「追加」で足せます。会話の一覧はプロジェクトの会話をリポジトリ横断で並べます。
+5. 回答の下の「ナレッジに保存」で、知識を決まった置き場へ書く依頼を送れます。
+6. agent-project の状態フォルダは「新しいプロジェクト」の「agent-project から取り込む」で移せます。
+
 ### 受信箱（未読・要対応）
 
 主要メニューの「受信箱」に、人が見るべきもの・答えるべきものの件数が出ます（「共有」の未読と同じ印）。
@@ -443,11 +457,27 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `publish:improve` | `publish.improve({ repo, kind, name, evidence, cli, model })` | 成果物と証跡 | `{ pushed, branch, improveNote }`。未取り込みの改善があれば `{ skipped: 'improve-open' }` |
 | `repo:add` | `addRepo()` | —（ダイアログ） | 設定、または `null`（キャンセル） |
 | `repo:remove` | `removeRepo(repo)` | `repo` | 設定 |
+| `projects:list` | `projects.list()` | — | `{ items: [{ key, kb, folder, error, project, repos }], knowledgeRepos, lastProject }`。§20 |
+| `projects:open` | `projects.open(key)` | 鍵 | `{ key, kb, folder, project, repos: [{ url, role, desc, owns, label, path }] }`。フォルダの分からない URL を登録リポジトリの origin から埋めてから返す |
+| `projects:select` | `projects.select(key)` | 鍵（`''` はプロジェクトなし） | 設定 |
+| `projects:save` | `projects.save(key, kb, project)` | 既存なら鍵、新規なら `kb` | `{ key, committed, pushed, warning }`。`project.yaml`（新規なら README の雛形も）だけをコミットし、今のブランチを `origin` へ push する |
+| `projects:knowledgeRepos` | `projects.setKnowledgeRepos(repos)` | 登録リポジトリの列 | 設定 |
+| `projects:pickPath` | `projects.pickPath(url)` | 定義の URL | 選んだフォルダ（登録リポジトリにも足す）か `null` |
+| `projects:remote` | `projects.remote(repo)` | 登録リポジトリ | `{ url }`（origin。無ければ `''`） |
+| `projects:choose` | `projects.choose(key, text)` | 鍵・依頼 | `{ repo, reason }`。`reason` は `owns` / `name` / `main` |
+| `projects:pull` | `projects.pull(kb)` | ナレッジリポジトリ | `{ output }`（`git pull --ff-only`） |
+| `projects:knowledgePrompt` | `projects.knowledgePrompt(id, scope, kind)` | 会話・`project` か `shared`・`note` / `decision` / `rule` | `{ prompt }`（送るのは画面のいつもの送信） |
+| `projects:importPlan` | `projects.importPlan()` | —（ダイアログ） | `{ root, source, name, folder, repos, copies, leftBehind }` か `null` |
+| `projects:import` | `projects.import(root, kb, name)` | 状態フォルダ・ナレッジリポジトリ・名前 | `{ key, written, skipped, leftBehind, committed, pushed, warning }` |
+| `projects:files` | `projects.files(key)` | 鍵 | `{ recent: [{ rel, name, mtime }], total }`（定義と索引を除き新しい順に 5 件。ホームを開いたときだけ） |
+| `projects:addFile` | `projects.addFile(key, name, data)` | 鍵・名前・中身 | `{ written, committed, pushed, warning }`。`projects/<フォルダ>/files/` へ書き、そのファイルだけコミットして push。10 MB まで |
+| `projects:pickFiles` | `projects.pickFiles(key)` | 鍵（ダイアログ） | `addFile` と同じか `null` |
+| `projects:assign` | `projects.assign(id)` | 会話 | `{ project }`。選んでいるプロジェクトにその会話のリポジトリが入っているときだけ |
 | `agents:list` | `listAgents(repo)` | `repo?` | `[{ name, command, available, readonly, session, interactive }]`。`available` はホストの PATH で判定（60 秒キャッシュ）。agent-herd 一族（aider / ollama）が 1 つでもあれば末尾に仮想の `herd`（`virtual: true, members: [...]`）を足す（§6.3）。実体は `src/main/agents.js` で、タスク・ワークフローの `automation:agents:list` も同じ一覧（使えるものの名前だけ）を返す |
 | `skills:list` | `listSkills(repo)` | `repo?` | スキル名の配列 |
 | `skills:remove` | `removeSkills(repo, agent, keys)` | `repo?`, `agent?`, `keys`（一覧の `removalKey`） | main が現在のカタログと実体を照合し、ネイティブ確認後にゴミ箱へ移動。`cancelled`, `removed[]`, `failed[]`（各失敗の `error`）。任意のパスは受け付けない |
 | `skills:select` | `selectSkills(repo, text, mode, selected)` | — | 選定結果（`content` / `path` を除く） |
-| `session:list` | `listSessions(repo)` | `repo?` | 会話の要約配列（更新日時の降順） |
+| `session:list` | `listSessions(repo)` | `repo?` | 会話の要約配列（更新日時の降順）。選んでいるプロジェクトに `repo` が入っていれば、そのプロジェクトの会話をリポジトリ横断で返す（`session:recent` も同じ） |
 | `session:create` | `createSession(payload)` | `{ repo, policy?, cli?, model?, readonly?, transport, worktree? }` | 会話 |
 | `session:read` | `readSession(id)` | `id` | 会話（`presentSession` 適用後。`originSession: { id, repo, title } | null` と `forks: [{ id, repo, title, index }]` を添える） |
 | `session:update` | `updateSession(id, patch)` | 許可キー: `title` `cli` `model` `readonly` `policy` `tier` `transport` `live` | 会話 |
@@ -548,6 +578,9 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `instructions.quickRequests` | 既定の 2 つ | 入力欄の「定型」に並べる定型の依頼 `[{ label, text }]`。最大 3、`label` 24 字 / `text` 400 字。保存値が無ければ既定（コミット・テスト）、空配列なら並べない |
 | `notify.background` | `true` | 前面に無いときに OS の通知を出すか |
 | `evaluation` | `{ mode: 'sample' }` | 応答と実行の自動評価（§19）。`sample`（5 件に 1 件。失敗は必ず）/ `all` / `off` |
+| `knowledgeRepos` | `[]` | プロジェクトの定義を読みに行くナレッジリポジトリ（登録リポジトリに限る。10 まで）。§20 |
+| `repoPaths` | `{}` | 正規化した git の URL → この PC のフォルダ（200 まで） |
+| `lastProject` | `''` | 選んでいるプロジェクト（`<ナレッジリポジトリ>#<フォルダ>`） |
 | `attentionSeen` | `{ since: '', items: {} }` | 受信箱の「見た」（§17）。`since` は受信箱を使い始めた時刻（最初の `attention:list` で書く。それ以前の結果は既読扱い）、`items` は項目の `key` → `{ resultAt }`（最大 500。古い結果から落とす）。`config:save` の `patch` は `items` をキーごとに重ねる |
 | `execution.defaultPolicy` | `recommended` | `recommended` / `saving` / `quality` |
 | `execution.optimizeAgents` | `true` | `false` なら（または agent-herd が無ければ）`saving` / `quality` を `recommended` として解決する（`settings.effectivePolicy`）。画面は同じ規則で選べなくする |
@@ -580,6 +613,7 @@ host-stylesheet="automation-workbench.css">` を `#automation` に置く。そ�
 | `id` | UUID。ファイル名と tmux セッション名の元 |
 | `kind` / `task` | `conversation`（既定）か `task`。`task` は `{ machine }`（保存名）を持ち、会話一覧（`session:list`）には出ない |
 | `repo` / `worktree` / `branch` | リポジトリ、作業フォルダ名（`''` は本体）、そのブランチ。作ったあと変えない |
+| `project` | プロジェクトの鍵（§20）。作成時に、選んでいるプロジェクトにそのリポジトリが入っているときだけ付く。`''` はプロジェクトなし |
 | `origin` | 別のリポジトリの会話から分岐したときの分岐元 `{ sessionId, repo, index }`（`index` は分岐の依頼を書いた応答の `messages` での位置。不明なら -1）。分岐していなければ `null`。分岐先の一覧は保存せず、`origin` から引く（`listForks`） |
 | `cli` / `model` / `readonly` / `policy` / `tier` | **次のターン**の既定。`policy` は `recommended` / `saving` / `quality` / `direct` |
 | `transport` | 最後のターンの経路（`tmux` / `headless`） |
@@ -726,7 +760,7 @@ agentcore の `is_herd_family` と同じ規則）。
 
 ```text
 command + [session extraArgs] + (continue|resume をサブコマンド直後へ)
-        + (write_args | readonly_args) + model_flag model + file_flag <添付>… + command_suffix
+        + (write_args | readonly_args) + add_dir_args… + model_flag model + file_flag <添付>… + command_suffix
         + (prompt_via=argv なら prompt_flag 本文)
 ```
 
@@ -734,8 +768,11 @@ command + [session extraArgs] + (continue|resume をサブコマンド直後へ)
 
 ```text
 interactive.command + (continue|resume をサブコマンド直後へ)
-                    + (interactive.write_args | readonly_args) + model_flag model
+                    + (interactive.write_args | readonly_args) + add_dir_args… + model_flag model
 ```
+
+`add_dir_args` は `{dir}` をフォルダ 1 つずつに展開して並べる。渡すのはプロジェクトの会話で、カレント以外の
+（この PC にある）リポジトリとナレッジリポジトリ（§20）。宣言の無い CLI には何も足さない。
 
 `{model}` を含むトークンは model が空なら落とす。`{session}` と `{output_file}` を置換する。
 `readonly` かつ定義の `readonly` が `enforced` でない場合は警告文を返す。
@@ -1045,6 +1082,7 @@ sidecar（`<repo>/.agents/workflows/.teaching/<workflowId>.json`）:
 | ワークフロー教示 | 会話 1 件 4000 字、表示名 300 字、差し戻し 1〜20 回 | 変更不可 |
 | ファイル本文 | テキスト 2 MB、画像 8 MB | 変更不可 |
 | 名前検索 | 200 件、深さ 12、索引 100,000 件 / 10 秒、索引の保持 60 秒 | 変更不可 |
+| プロジェクトの定義 | 1 枚 16 KB、リポジトリ 20、説明 300 字、指示 2000 字、名前 80 字 | 変更不可 |
 | ホストコマンド | 既定 15 秒（git 20〜120 秒、tmux 起動 30 秒） | 呼び出し側 |
 
 ### 14. リポジトリ側に置くもの
@@ -1056,6 +1094,7 @@ sidecar（`<repo>/.agents/workflows/.teaching/<workflowId>.json`）:
 | `<リポジトリ>/.statemachine/<名前>/` | タスク定義（AI との会話で CLI が書く。「手順」タブの保存も）、下書きの印 `teaching.json`、見本の記録 `recordings/*.md` | CLI / 共有ワークベンチ |
 | `<リポジトリ>/.agents/workflows/<id>.json` | ワークフロー定義（`rework` を含む） | 共有ワークベンチ |
 | `<リポジトリ>/.agents/workflows/.teaching/<id>.json` | ワークフロー教示の sidecar | 共有ワークベンチ |
+| `<ナレッジリポジトリ>/projects/<フォルダ>/project.yaml`・`README.md`（雛形） | プロジェクトの定義（§20）。人が保存したときだけ書き、そのファイルだけをコミットする | agent-app |
 | `<リポジトリ>/.agents/agent-loop.yaml` など | 定期実行の設定 | 共有ワークベンチ / agent-loop |
 
 会話、設定、添付は userData にだけ書く。CLI 自身のセッションログ（`~/.claude/projects` など）は
@@ -1461,3 +1500,27 @@ quality/confidenceをnullにする。全体methodは空とし、各判定のraw�
 スキルタブの公開設定は折りたたまず、他のタブと同じグループ見出しと設定行で常時表示する。
 
 スキル一覧では名前・版の右に従来の補助文字色で保存場所を表示する。通常時の行クリックでフロントマター全体を単一のポップアップに表示し、別の行・外側クリック・Escape・タブ切り替え・選択モードへの切り替えで閉じる。選択モードでも行の名前・説明・配置を維持し、クリックは選択状態の切り替えだけを行う。
+
+### 20. プロジェクト（`src/main/projects.js`・`projectIpc.js`・`projectImport.js`）
+
+設計: [`docs/plans/2026-09-25-agent-app-projects-design.md`](../plans/2026-09-25-agent-app-projects-design.md)。
+
+- **定義**: `<ナレッジリポジトリ>/projects/<フォルダ>/project.yaml`。`version: 1`・`name`・`repos: [{ url, role, desc, owns? }]`・
+  `instructions?`。`role` は `main`（1 つ）/ `work` / `reference`。フォルダ名は作成時の名前から作り、名前を変えても動かさない
+- **鍵**: `<ナレッジリポジトリの登録パス>#<フォルダ>`
+- **読み込み**: `projects:list` / `projects:open` のときだけ。ファイル時刻と大きさが前回と同じなら読み直さない。
+  監視・定期 fetch はしない。16 KB を超える・`version` が 1 以外・形が違う定義は `error` を付けて一覧に残す
+- **URL の比べ方**: scp 形式を `host/path` に直し、スキーム・資格情報・ポート・末尾の `/` と `.git` を落とし、ホストを小文字にする
+- **始めるリポジトリ**（`chooseRepo`）: 新しい会話を送る直前に 1 回。依頼中のパスが主・作業の `owns` に一意に当たる →
+  そのリポジトリ、依頼が主・作業の名前（URL の末尾・3 字以上）を一意に含む → そのリポジトリ、ほかは主
+- **添える節**: 共通指示のブロックに「## プロジェクト」（共通指示がオフでも添える）。プロジェクトの会話には
+  `@fork` の作法を添えない。`rules.md` が 4 KB 以下なら中身を差し込む。回答の最後に「ナレッジに残す候補」を
+  挙げさせる（書かせない）。作業フォルダで動く会話では、そのブランチ名で作業リポジトリも変えるよう伝える
+- **ホーム**: 選んでいるプロジェクトがあると、ホームの空状態に名前・主リポジトリ・「指示」「ナレッジ」の
+  `.execution-card` を描く。ナレッジの一覧は `projects:files` をホームを開いたときに 1 回だけ呼ぶ
+- **会話の印**: 会話の `project` で絞る。題名の下（`#chat-origin`）に「<名前> · <リポジトリ>」、押すとホーム
+- **ナレッジに保存**: `note` → `projects/<フォルダ>/notes/<日付>-<名前>.md`、`decision` → `decisions/…`、`rule` → `rules.md` へ追記。
+  `shared` はフォルダの代わりに `shared/`。索引（`README.md` の「## 索引」）に 1 行、ナレッジリポジトリの中だけをコミットして push
+- **取り込み**（`projectImport.plan` / `apply`、`scripts/import-agent-project.js`）: 設計 §6 の対応表どおり。同じフォルダのプロジェクトが
+  既にあれば断る。写す先に同名ファイルがあれば上書きせず `skipped` に並べる
+

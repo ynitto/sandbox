@@ -459,3 +459,30 @@ test('tmux の起動は 3 つの画面とも同じ遷移で、起動先が決ま
     assert.match(source, /window\.(Task|Flow)Teaching = \{[^}]*onTurnTransport/, `${file} は合図の受け口を渡す`);
   }
 });
+
+test('プロジェクトは既存の器で組む（選択欄・ダイアログ・回答の下の操作）', () => {
+  const html = read('renderer/index.html');
+  const projects = read('renderer/projects.js');
+  const css = read('renderer/styles.css');
+  // 選択欄はリポジトリと同じ .repository-control を #repository-context の中に 1 段足すだけ（ホームへも一緒に移る）
+  const context = html.slice(html.indexOf('id="repository-context"'), html.indexOf('id="repo-select"'));
+  assert.match(context, /id="project-row"[\s\S]*class="repository-control"[\s\S]*id="project-select"/);
+  // 編集は作業フォルダと同じダイアログの形で、主ボタンは 1 つ
+  const dialog = html.slice(html.indexOf('<dialog id="project-dialog">'), html.indexOf('</dialog>', html.indexOf('<dialog id="project-dialog">')));
+  assert.match(dialog, /class="dlg-head"[\s\S]*class="dlg-body settings-list"[\s\S]*class="dlg-actions"/);
+  assert.strictEqual((dialog.match(/class="primary"/g) || []).length, 1, '主ボタンは 1 つ');
+  assert.match(dialog, /class="wt-table settings-table"/);
+  assert.ok(!/<p[\s>]/.test(dialog), '仕組みの説明は README に置く');
+  // ナレッジに保存は回答の下の .message-action と既存の選択肢メニュー
+  assert.match(projects, /el\('summary', 'message-action', 'ナレッジに保存'\)/);
+  assert.match(projects, /el\('details', 'more-menu'\)/);
+  assert.ok(!/innerHTML/.test(projects), '画面は el ヘルパで組む');
+  // ホームの入口は手動実行と同じ .execution-card + .execution-card-head で、主ボタンは入力欄の「送信」だけ
+  const home = projects.slice(projects.indexOf('function renderHome'), projects.indexOf('// ---- 会話の見出し'));
+  assert.match(home, /el\('section', 'execution-card'\)/);
+  assert.match(projects, /el\('div', 'execution-card-head'\)/);
+  assert.ok(!/'primary'/.test(home), 'ホームのカードに主ボタンを足さない');
+  // 足した CSS に直値の色を足さない
+  const added = css.split('\n').filter((line) => /project|message-actions \.more-menu/.test(line)).join('\n');
+  assert.ok(!/:[^;{}]*#[0-9a-f]{3,8}\b/i.test(added), '直値の色を足さない');
+});

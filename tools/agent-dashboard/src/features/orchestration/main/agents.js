@@ -20,7 +20,7 @@ const ALLOWED_KEYS = [
   'name', 'relative_cost', 'command', 'prompt_via', 'prompt_flag', 'file_flag', 'read_flag',
   'model_flag', 'default_model', 'output', 'env', 'timeout', 'empty_output_is_error',
   'variants', 'command_suffix', 'skill_command_prefix',
-  'write_args', 'readonly_args', 'readonly', 'headless_autonomy', 'slash_native',
+  'write_args', 'readonly_args', 'add_dir_args', 'readonly', 'headless_autonomy', 'slash_native',
   'no_session_args', 'continue_args', 'resume_args', 'spill',
   'interactive', 'errors', 'session_log',
   // 用途別の起動差（1 エージェント = 1 定義にするための入れ物）。
@@ -36,7 +36,7 @@ const HEADLESS_AUTONOMY_ENUM = ['tool-loop', 'single-shot'];
 // agent-cli.schema.json の session_log.format と同じ並び。片方に足してもう片方を忘れると、
 // 同梱の agents/*.json が「未知の形式」で丸ごと落ちる（vscode-chat を足したときに起きた）。
 const SESSION_LOG_FORMAT_ENUM = ['jsonl-dir', 'kiro-sqlite', 'vscode-chat'];
-const STRING_ARRAY_FIELDS = ['command_suffix', 'write_args', 'readonly_args', 'no_session_args',
+const STRING_ARRAY_FIELDS = ['command_suffix', 'write_args', 'readonly_args', 'add_dir_args', 'no_session_args',
   'continue_args', 'resume_args'];
 
 function expandHome(p) {

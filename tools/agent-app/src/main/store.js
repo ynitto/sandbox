@@ -24,12 +24,16 @@ const sessionFindings = require('./sessionFindings');
 // lastTaskInputs … リポジトリ → タスクの保存名 → 前回の手動実行で入れた実行条件（値だけ。パスは持たない）
 // attentionSeen … 受信箱（attention.js）が使う「最後に見た結果の時刻」。{ since, items: { key → { resultAt } } }。
 //                 since は受信箱を使い始めた時刻（それ以前の結果は既読扱い）。作業の状態は持たない
+// knowledgeRepos … プロジェクトの定義を読みに行くナレッジリポジトリ（登録フォルダ。projects.js）
+// repoPaths    … 正規化した git の URL → この PC のフォルダ（プロジェクトの定義は URL で書くので、その対応だけ）
+// lastProject  … 最後に選んだプロジェクト（'<ナレッジリポジトリ>#<フォルダ>'。'' はプロジェクトなし）
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
   wslDistro: '', transport: 'tmux', useWorktree: true, area: 'home', view: 'chat', lastFiles: {}, lastWorktree: {},
   lastTask: {}, lastWorkflow: {}, lastTaskInputs: {}, taskInputHistory: {},
   automationSkillDir: '', automationAgent: '', automationModel: '',
   attentionSeen: { since: '', items: {} },
+  knowledgeRepos: [], repoPaths: {}, lastProject: '',
 };
 const MAX_REPOS = 30;
 const MAX_TASK_INPUT_CHARS = 400;
@@ -108,6 +112,11 @@ function normalize(raw) {
   next.automationAgent = String(next.automationAgent || '').trim();   // 空 = 会話の「おすすめ」と同じ CLI（automation/ipc.js）
   next.automationModel = String(next.automationModel || '').trim();
   next.attentionSeen = attention.normalizeSeen(next.attentionSeen);
+  next.knowledgeRepos = [...new Set((Array.isArray(next.knowledgeRepos) ? next.knowledgeRepos : []).map((r) => String(r || '')).filter(Boolean))]
+    .filter((r) => next.repos.includes(r)).slice(0, 10);
+  next.repoPaths = Object.fromEntries(Object.entries(next.repoPaths && typeof next.repoPaths === 'object' && !Array.isArray(next.repoPaths) ? next.repoPaths : {})
+    .filter(([url, dir]) => url && typeof dir === 'string' && dir).slice(0, 200));
+  next.lastProject = String(next.lastProject || '');
   const userSettings = settings.normalize(next);
   const rawInstructions = next.instructions && typeof next.instructions === 'object' ? next.instructions : {};
   const rawExecution = next.execution && typeof next.execution === 'object' ? next.execution : {};
@@ -331,7 +340,7 @@ function writeSession(userData, sess) {
 // kind / task / workflow … タスク（kind: 'task'）とワークフロー（kind: 'workflow'）を AI と作る会話は、
 // それぞれ task.machine / workflow.id に紐づき、会話一覧には出ない。
 // origin … 別のリポジトリの会話から分岐したとき、その分岐元（normalizeOrigin）。
-function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', allocation = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null, externalOrigin = null }) {
+function createSession(userData, { repo, cli, model = '', readonly = false, autoApprove = false, policy = 'direct', tier = '', allocation = '', transport = 'tmux', worktree = '', branch = '', kind = 'conversation', task = null, workflow = null, origin = null, externalOrigin = null, project = '' }) {
   if (!repo) throw new Error('リポジトリを選んでください');
   if (!cli) throw new Error('エージェントを選んでください');
   if (kind === 'task' && !(task && task.machine)) throw new Error('タスクの会話には保存名が要ります');
@@ -345,7 +354,7 @@ function createSession(userData, { repo, cli, model = '', readonly = false, auto
     readonly: Boolean(readonly), autoApprove: Boolean(autoApprove), policy: String(policy || 'direct'), tier: String(tier || ''),
     allocation: allocation === 'auto' && !['direct', 'shared'].includes(policy) ? 'auto' : '',
     transport: allocation === 'auto' || transport === 'headless' ? 'headless' : 'tmux',
-    worktree: String(worktree || ''), branch: String(branch || ''), origin, externalOrigin,
+    worktree: String(worktree || ''), branch: String(branch || ''), origin, externalOrigin, project: String(project || ''),
     title: '', cliSessions: {}, live: null, terminalSession: null, terminalSnapshots: [], messages: [], createdAt: now, updatedAt: now,
   }));
 }
@@ -379,7 +388,7 @@ function sessionSummary(file) {
     policy: s.policy || 'direct', tier: s.tier || '',
     transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
     supersededBy: String(s.supersededBy || ''), title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
-    origin: normalizeOrigin(s.origin),
+    origin: normalizeOrigin(s.origin), project: String(s.project || ''),
     // 末尾の応答（受信箱の「未読」の材料）。{ at, outcome: done | failed | stopped }、応答で終わっていなければ null
     result: attention.conversationResult(s.messages),
     findings: sessionFindings.fromSession(s),
@@ -389,7 +398,8 @@ function sessionSummary(file) {
 }
 
 // kind … 'conversation'（既定。会話一覧）| 'task' | 'workflow' | '' （すべて）
-function listSessions(userData, repo, { kind = 'conversation' } = {}) {
+// project … プロジェクトの鍵。付けるとリポジトリを問わずそのプロジェクトの会話だけ（repo は見ない）
+function listSessions(userData, repo, { kind = 'conversation', project = '' } = {}) {
   let names;
   try { names = fs.readdirSync(sessionsDir(userData)); } catch { return []; }
   const out = [];
@@ -400,7 +410,7 @@ function listSessions(userData, repo, { kind = 'conversation' } = {}) {
     seen.add(file);
     try {
       const s = sessionSummary(file);
-      if (repo && s.repo !== repo) continue;
+      if (project ? s.project !== project : (repo && s.repo !== repo)) continue;
       if (kind && s.kind !== kind) continue;
       out.push({ ...s });
     } catch { /* 壊れたファイルは一覧に出さない */ }
@@ -410,9 +420,9 @@ function listSessions(userData, repo, { kind = 'conversation' } = {}) {
 }
 
 // 最近の依頼は種類・選択中の作業先に依存しない。開ける登録先だけを対象にする。
-function recentSessions(userData, repos, limit = 20) {
+function recentSessions(userData, repos, limit = 20, { project = '' } = {}) {
   const allowed = new Set(repos || []);
-  return listSessions(userData, '', { kind: '' })
+  return listSessions(userData, '', { kind: '', project })
     .filter(s => allowed.has(s.repo) && !s.supersededBy)
     .slice(0, limit);
 }
@@ -448,9 +458,10 @@ function listForks(userData, originId) {
 
 function updateSession(userData, id, patch) {
   const sess = readSession(userData, id);
-  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live', 'share', 'modelSelection', 'allocation'];
+  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live', 'share', 'modelSelection', 'allocation', 'project'];
   for (const k of allowed) if (patch && k in patch) sess[k] = patch[k];
   if (patch && 'cli' in patch) sess.cli = String(sess.cli || '');
+  if (patch && 'project' in patch) sess.project = String(sess.project || '');
   if (patch && 'model' in patch) sess.model = String(sess.model || '');
   if (patch && 'readonly' in patch) sess.readonly = Boolean(sess.readonly);
   if (patch && 'autoApprove' in patch) sess.autoApprove = Boolean(sess.autoApprove);
