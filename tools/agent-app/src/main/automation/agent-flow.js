@@ -9,6 +9,7 @@ const os = require('os');
 const path = require('path');
 const flowModel = require('./flow-model');
 const flowStore = require('./flow-store');
+const flowSettings = require('./flow-settings');
 const templateParameters = require('./template-parameters');
 
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'canceled']);
@@ -114,6 +115,18 @@ async function context({ root, capture, agentDefinitions, defaults = {} }) {
   };
 }
 
+const SIZES = new Set(flowSettings.FIELDS.size.values);
+
+// 画面で調整した設定が ~/.agents/agent-flow.yaml のとき、agent-flow にその 1 枚を名指しする。
+// Windows から WSL の agent-flow を起こす構成では、両者のホームが違って見つけられないため。
+// リポジトリ側に設定があるときは agent-flow が cwd から同じ 1 枚を見つけるので渡さない。
+function configArgs(root, hostPath) {
+  try {
+    const found = flowSettings.locate(root);
+    return found.exists && found.home ? ['--config', hostPath(found.file)] : [];
+  } catch { return []; }
+}
+
 function validateRunParameters(workflow, request, raw) {
   const result = flowModel.preview(workflow, request, raw);
   if (result.ok) return result;
@@ -163,6 +176,10 @@ async function start(payload, deps) {
     references: [],
     ...(checked ? { plan: checked.plan } : {}),
     ...(source.type === 'pattern' ? { pattern: String(source.pattern || '') } : {}),
+    // 定義なし（planner が工程を決める）ときだけ、規模の目安と計画の確認を run ごとに渡す。
+    // 未指定なら agent-flow の設定ファイル・既定に従う。保存済みの定義には効かない（工程は決まっている）。
+    ...(!workflow && SIZES.has(String(payload.size || '')) ? { size: String(payload.size) } : {}),
+    ...(!workflow && typeof payload.planGate === 'boolean' ? { plan_gate: payload.planGate } : {}),
     submitted_at: isoSeconds(),
     // submitter_context は agent-app 自身の覚え書きで、agent-flow は読まない。root は
     // **登録した表記のまま**置く——この画面が「どのリポジトリの実行か」を見分ける鍵で、
@@ -181,7 +198,7 @@ async function start(payload, deps) {
   const file = path.join(busDir(), 'inbox', `${id}.json`);
   flowStore.writeAtomic(file, inbox);
   fs.mkdirSync(logDir(), { recursive: true });
-  const args = ['--bus', busDir(), '--run-id', id, '--agent-cli', agent, 'run', '--from-inbox'];
+  const args = ['--bus', busDir(), ...configArgs(deps.root, hostPath), '--run-id', id, '--agent-cli', agent, 'run', '--from-inbox'];
   if (model) args.push('--model', model);
   try {
     await deps.startDetached('agent-flow', args, { cwd: deps.root, logFile });
@@ -555,8 +572,50 @@ async function openDelivery(root, id, hook, hostRoot = '') {
   return hook(root, detail.delivery);
 }
 
+// 定義なしで動かした実行の工程を、ワークフローの下書きにする（本家の「run を保存」に当たる）。
+// agent-flow が決定的に差し込んだ工程（計画の確認・base-sync）と実行時に展開された工程は落とし、
+// 落とした工程への依存はその先の依存へつなぎ直す。goal はその実行の依頼に即した文面のままなので、
+// 保存前に編集画面で直す前提で返す（保存はしない）。
+function planDraft(root, id, hostRoot = '') {
+  const { files, inbox } = requireRun(root, id, hostRoot);
+  const graph = readJson(path.join(files.run, 'graph.json'));
+  if (!graph || !graph.nodes) throw flowError('plan-unavailable', 'まだ工程が決まっていません');
+  const specs = topologicalNodes(graph);
+  const dropped = new Map();
+  const kept = [];
+  for (const spec of specs) {
+    const kind = String(spec.kind || 'work');
+    const drop = spec.dynamic || /^plan-gate(-\d+)?$/.test(spec.id) || !flowModel.VALID_KINDS.has(kind) || !flowModel.ID_RE.test(spec.id);
+    if (drop) dropped.set(spec.id, Array.isArray(spec.deps) ? spec.deps.map(String) : []);
+    else kept.push(spec);
+  }
+  const resolveDeps = (deps, seen = new Set()) => deps.flatMap((dep) => {
+    if (!dropped.has(dep)) return [dep];
+    if (seen.has(dep)) return [];
+    seen.add(dep);
+    return resolveDeps(dropped.get(dep), seen);
+  });
+  const label = (goal, fallback) => String(goal || '').split(/\r?\n/).map((line) => line.trim())
+    .find((line) => line && !/^\[(scope|out_of_scope)\]/i.test(line))?.slice(0, 40) || fallback;
+  const nodes = kept.slice(0, flowModel.MAX_NODES).map((spec) => ({
+    id: spec.id,
+    label: label(spec.goal, spec.id),
+    kind: String(spec.kind || 'work'),
+    goal: String(spec.goal || ''),
+    deps: [...new Set(resolveDeps(Array.isArray(spec.deps) ? spec.deps.map(String) : []))].filter((dep) => kept.some((node) => node.id === dep)),
+    tier: 'auto',
+  }));
+  if (!nodes.length) throw flowError('plan-unavailable', '保存できる工程がありません');
+  const title = String((inbox && inbox.title) || '').trim();
+  return {
+    version: 2, id: `flow-${Date.now().toString(36)}`, name: title.slice(0, 40), description: '',
+    purpose: 'implementation', entry: [], exit: [], nodes, rework: [],
+    defaultRequest: String((inbox && inbox.request) || ''),
+  };
+}
+
 module.exports = {
-  TERMINAL, NO_LEASE_GRACE_SECONDS, busDir, logDir, runIdNow, catalog, context, start,
+  planDraft, TERMINAL, NO_LEASE_GRACE_SECONDS, busDir, logDir, runIdNow, catalog, context, start,
   listRuns, readRun, cancel, respond, result, readLog, deleteRun, openDelivery,
   patterns, alive, claimWinner, interactionsOf, fileRevision, failureOf, deliveryOf,
 };

@@ -128,6 +128,14 @@
   **gitlab イシュー本文の『## 参照リポジトリ』節**に描画する（要求本文へ畳むと分解後のノード/イシューに届かないため）。
   未注釈のノードは worker 側で全 repo にフォールバックする（取りこぼし防止）。これにより fan-out で多数のノードに
   分解されても、各ノードは自分に必要な repo だけを clone する（URL 単位の重複排除と併せて無駄 clone を最小化）。
+- **規模の目安（`size` / `--size`）**：`small`（**既定**・5 工程未満）/ `medium`（10 未満）/
+  `large`（50 未満）/ `unrestricted`（目安なし）。Claude Code の dynamic workflows の
+  size guideline と同じ目盛りで、planner へ工程数の目安として渡す（上限の強制ではない）。
+  粒度が `auto` のときは 1 つの担当で終わる依頼を「作業 1 ノード＋別の担当による verify 1 ノード」に
+  とどめ、ノードを分けるのは独立した検証・列挙できる多数の対象への展開・複数案の比較・
+  完了までの反復が要るときだけにする。flow-planner では成果ノードの下限を 1 にし、1 ノード
+  「約 30 行」のスコープ上限を外す（明示の粒度と `tier: basic` では従来どおり）。inbox 要求の
+  `size` / `plan_gate` でも run ごとに指定できる（優先順は CLI > 要求 > 設定ファイル）。
 - **分解の粒度（`granularity` / `--granularity`）**：`auto`（**既定**・complexity から導出）/
   `coarse` / `fine` / `finest`（明示優先）。flow-planner は絶対レンジ（simple→1–3 / moderate→3–8 /
   complex→6–12）とスコープ契約（`[scope]` / `[out_of_scope]`、想定≤30行）で分解し、決定的ゲートで再生成する。

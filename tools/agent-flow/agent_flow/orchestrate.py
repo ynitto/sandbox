@@ -17,10 +17,11 @@ def _plan_strategy(args, bus, request=None):
     # 分割の単位はどの planner 経路でも同じ値を渡す（既定 flow-planner でだけ黙って
     # 無視される、という非対称を作らない）。stub は LLM を通らないので対象外。
     policy = split_policy(getattr(args, "split_policy", None))
+    size = resolve_size(getattr(args, "size", None))
     if args.planner == "flow-planner":
-        return plan_strategy_flow_planner(req, args.model, review, gran, ctx, tier, policy)
+        return plan_strategy_flow_planner(req, args.model, review, gran, ctx, tier, policy, size=size)
     if args.planner == "agent":
-        return plan_strategy_agent(req, args.model, review, gran, ctx, tier, policy)
+        return plan_strategy_agent(req, args.model, review, gran, ctx, tier, policy, size=size)
     return plan_strategy_stub(req, review, gran, tier)
 
 
