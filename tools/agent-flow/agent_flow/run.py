@@ -280,7 +280,8 @@ def _planning_args(args, request: "dict | None" = None) -> list:
     pat = named.get("pattern") or getattr(args, "pattern", None)
     granularity = named.get("granularity") or getattr(args, "granularity", "auto") or "auto"
     policy = named.get("split_policy") or getattr(args, "split_policy", "behavior") or "behavior"
-    out = ["--granularity", str(granularity), "--split-policy", str(policy)]
+    size = named.get("size") or getattr(args, "size", None) or "small"
+    out = ["--granularity", str(granularity), "--split-policy", str(policy), "--size", str(size)]
     if pat:
         out += ["--pattern", str(pat)]
     # ユーザー定義フロー（--plan-file 明示指定）を orchestrator へ伝搬する。
@@ -289,7 +290,8 @@ def _planning_args(args, request: "dict | None" = None) -> list:
         out += ["--plan-file", str(args.plan_file)]
     if getattr(args, "exemplar_first", False):
         out += ["--exemplar-first"]    # 見本先行分解
-    if getattr(args, "plan_gate", False):
+    gate = named.get("plan_gate") if isinstance(named.get("plan_gate"), bool) else getattr(args, "plan_gate", False)
+    if gate:
         out += ["--plan-gate"]         # 計画承認ゲート
         timeout = float(getattr(args, "plan_gate_timeout", 0) or 0)
         if timeout > 0:
@@ -350,6 +352,7 @@ _INBOX_PLANNING_KEYS = {
     "pattern": tuple(PATTERN_LIST),
     "granularity": ("auto", "coarse", "fine", "finest"),
     "split_policy": ("behavior", "file"),
+    "size": ("small", "medium", "large", "unrestricted"),
 }
 
 
@@ -389,6 +392,10 @@ def _apply_inbox_planning(rec: dict, args) -> None:
         value = str(rec.get(key) or "").strip()
         if value and key not in explicit:
             setattr(args, key, value)
+    # 計画承認ゲートは真偽値。投入側（agent-app の「実行前に計画を確認する」）が run ごとに
+    # 決めるので、同じ優先順（CLI > 要求 > 設定ファイル）で載せる。真偽値以外は無視する。
+    if isinstance(rec.get("plan_gate"), bool) and "plan_gate" not in explicit:
+        args.plan_gate = rec["plan_gate"]
 
 
 def _apply_inbox_request(bus: Bus, args) -> None:

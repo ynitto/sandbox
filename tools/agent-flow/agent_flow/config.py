@@ -105,6 +105,12 @@ CONFIG_DEFAULTS = {
     # 1 ノードが縦に持つ（既定）/ file=ファイル境界の水平分割（衝突回避が要る大規模変更の
     # 明示オプション）。設計: docs/plans/2026-08-15-workflow-feature-improvement-proposals.md P2
     "split_policy": "behavior",
+    # 規模の目安（Claude Code の workflowSizeGuideline と同じ目盛り）。計画の工程数の目安で、
+    # small=5 工程未満（既定）/ medium=10 未満 / large=50 未満 / unrestricted=目安なし。
+    # 上限の強制ではなく planner への目安（flow-planner は決定的ゲートのレンジにも使う）。
+    # 既定を small にするのは、1 セッションで終わる依頼を細切れにしないため——ワークフローに
+    # する意味は数ではなく、独立した検証・多数の対象への展開・複数案の比較にある。
+    "size": "small",
     # 計画承認ゲート（オプトイン・既定 off）。true で planner が作った計画の実行前に human
     # 承認ノード（plan-gate）を挿し、人の承認（approved）まで何も実行しない。差し戻し
     # （rejected＋コメント）は指摘を planner へ渡して再計画する（max_retries で有界）。
