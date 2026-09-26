@@ -95,3 +95,6 @@
     overflow-y: auto;
   }
 }
+
+/* 手順の固定ツールバーをスクロール領域の上端に合わせる。 */
+:host .machine-pane:has(.flow-editor) { padding-top: 0; }

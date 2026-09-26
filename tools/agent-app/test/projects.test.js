@@ -27,6 +27,13 @@ test('主は 1 つだけに正規化する（無ければ最初の作業、2 つ
   assert.deepEqual(twice.repos.map((r) => r.role), ['main', 'work']);
 });
 
+test('参照専用だけなら既定に昇格せず、唯一の作業用を既定にする', () => {
+  const repos = [{ url: 'a', role: 'reference' }, { url: 'b', role: 'reference' }];
+  assert.deepEqual(projects.normalize({ repos }).repos.map(r => r.role), ['reference', 'reference']);
+  repos[1].role = 'work';
+  assert.deepEqual(projects.normalize({ repos }).repos.map(r => r.role), ['reference', 'main']);
+});
+
 test('定義ファイルは小さく保つ（状態を持たず、大きすぎるものは読まない・書かない）', () => {
   const body = projects.serialize({ name: '受注', repos: [{ url: 'git@h:t/app.git', role: 'main', desc: '本体', owns: ['apps/**'] }], instructions: '' });
   assert.ok(Buffer.byteLength(body) < 400, body);
@@ -134,7 +141,7 @@ test('ナレッジに保存の指示は、置き場・索引・コミットの�
   assert.match(projects.knowledgePrompt({ kbHost: '/src/kb', folder: 'x', scope: 'shared', kind: 'rule' }), /\/src\/kb\/shared\/rules\.md/);
 });
 
-test('agent-project の状態フォルダを取り込む（repos・パス・知識を写し、backlog は数えるだけ）', () => {
+test('agent-project の状態フォルダを取り込む（repos・パス・知識を変換し、未完了タスクは任意）', () => {
   const root = tmp();
   fs.writeFileSync(path.join(root, 'charter.md'), [
     '<!-- 説明 -->', '# 受注システム', '', '## goal', '- 何か', '', '## repos',
@@ -143,9 +150,9 @@ test('agent-project の状態フォルダを取り込む（repos・パス・知�
   ].join('\n'));
   fs.writeFileSync(path.join(root, 'rules.md'), '- テストを通す\n');
   fs.mkdirSync(path.join(root, 'decisions'));
-  fs.writeFileSync(path.join(root, 'decisions', 't1.md'), '# 決定\n');
+  fs.writeFileSync(path.join(root, 'decisions', 't1.md'), '# 決定\n共有する設計判断\n');
   fs.mkdirSync(path.join(root, 'backlog'));
-  fs.writeFileSync(path.join(root, 'backlog', 'a.md'), '# a\n');
+  fs.writeFileSync(path.join(root, 'backlog', 'a.md'), '# a\n残りの作業\n');
   const hostYaml = path.join(root, 'host.yaml');
   fs.writeFileSync(hostYaml, 'repos:\n  - url: https://h/t/app\n    local: /src/app\n');
   const planned = projectImport.plan({ root, hostYaml });
@@ -154,12 +161,15 @@ test('agent-project の状態フォルダを取り込む（repos・パス・知�
   assert.deepEqual(planned.project.repos[0].owns, ['apps/**', 'services/**', 'web/**']);
   assert.equal(planned.project.repos[1].desc, '型の参照元');
   assert.deepEqual(planned.repoPaths, { [projects.normalizeUrl('git@h:t/app.git')]: '/src/app' });
-  assert.deepEqual(planned.leftBehind, { backlog: 1 });
+  assert.ok(planned.items.some(item => item.sources.includes('backlog/a.md')));
+  assert.ok(planned.excluded.some(item => item.path === 'host.yaml'));
+  assert.ok(planned.items.filter(item => item.group === 'pending').every(item => !planned.selected.includes(item.id)));
   const kb = tmp();
   const done = projectImport.apply(kb, planned);
   assert.ok(done.written.includes('projects/受注システム/project.yaml'));
-  assert.ok(done.written.includes('projects/受注システム/decisions/t1.md'));
-  assert.match(fs.readFileSync(path.join(kb, 'projects', '受注システム', 'README.md'), 'utf8'), /\[rules\.md\]\(rules\.md\)/);
+  assert.ok(done.written.includes('projects/受注システム/README.md'), '索引もコミット対象に含める');
+  assert.ok(done.written.includes('projects/受注システム/knowledge.md'));
+  assert.match(fs.readFileSync(path.join(kb, 'projects', '受注システム', 'README.md'), 'utf8'), /\[目的・方針\]\(rules\.md\)/);
   assert.equal(projects.list([kb])[0].project.repos.length, 2);
   assert.throws(() => projectImport.apply(kb, planned), /既にあります/);
 });
@@ -171,6 +181,11 @@ test('repos.json があればそちらを正として読む', () => {
   const planned = projectImport.plan({ root });
   assert.equal(planned.source, 'repos.json');
   assert.deepEqual(planned.project.repos.map((r) => projects.repoLabel(r.url)), ['lib']);
+  fs.unlinkSync(path.join(root, 'charter.md'));
+  const definitionOnly = projectImport.plan({ root });
+  const kb = tmp();
+  const result = projectImport.apply(kb, definitionOnly);
+  assert.ok(result.written.includes(`projects/${definitionOnly.folder}/README.md`), 'コピー対象がなくても索引を作る');
 });
 
 test('add_dir_args を宣言した CLI にだけ、ほかのフォルダを argv で渡す', () => {
@@ -182,4 +197,97 @@ test('add_dir_args を宣言した CLI にだけ、ほかのフォルダを argv
   assert.ok(inter.argv.join(' ').includes('--add-dir /src/kb'));
   const none = agentCli.turnCmd({ ...claude, addDirArgs: [] }, { prompt: 'x', extraDirs: ['/src/kb'] });
   assert.ok(!none.argv.includes('--add-dir'));
+});
+
+
+test('資料の重複と制御情報を削減し、選んだ知識・検証結果だけを統合する', () => {
+  const root = tmp(), kb = tmp();
+  const files = {
+    'charter.md': '# 過去の仕事\n<!-- 長い使い方 -->\n## goal\n安全に移行する\n## repos\n- app = https://h/app.git\n',
+    'archive/done.md': '## task-1: 完了タスク\n- status: done\n- retries: 3\n- acceptance: 全件検証\n## 納品書\n- verify: `test` → FAIL（強制完了）\n- 成果 : branch-1\n## run ブリーフ\n再試行には冪等性が必要\n',
+    'DELIVERY.md': '# 納品一覧\n重複する一覧\n',
+    'backlog/pending.md': '# 未完了タスク\n- status: ready\n- acceptance: 追加の検証\n',
+    'notes/one.md': '# 学び\n重複しない知識\n',
+    'notes/two.md': '# 学び\n重複しない知識\n',
+    'notes/large.md': '# 長い資料\n' + '長い本文'.repeat(3000),
+    'journal.md': '実行の時系列ログ'.repeat(1000),
+    'run-log.jsonl': '{"result":"ok"}\n',
+    'verifications/task/result.json': '{"passed":true}\n',
+    'bus/runs/run/artifacts/report.md': '# 生の実行出力\n',
+  };
+  for (const [name, content] of Object.entries(files)) {
+    const dest = path.join(root, name);
+    fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, content);
+  }
+  const outside = tmp();
+  fs.writeFileSync(path.join(outside, 'private.md'), 'outside');
+  fs.symlinkSync(outside, path.join(root, 'notes', 'linked'));
+  const planned = projectImport.plan({ root });
+  assert.ok(planned.excluded.some(item => item.path === 'notes/linked'));
+  const merged = planned.items.find(item => item.sources.includes('notes/one.md'));
+  assert.deepEqual(merged.sources, ['notes/one.md', 'notes/two.md']);
+  assert.ok(!planned.selected.includes(planned.items.find(item => item.sources.includes('notes/large.md')).id));
+  const selection = planned.selected.filter(id => id !== merged.id);
+  const pending = planned.items.find(item => item.group === 'pending');
+  selection.push(pending.id);
+  const done = projectImport.apply(kb, planned, selection);
+  const base = path.join(kb, projects.DIR, planned.folder);
+  assert.deepEqual(fs.readdirSync(base).sort(), ['README.md', 'outcomes.md', 'pending.md', 'project.yaml', 'rules.md']);
+  const outcomes = fs.readFileSync(path.join(base, 'outcomes.md'), 'utf8');
+  assert.match(outcomes, /FAIL（強制完了）/);
+  assert.match(outcomes, /冪等性/);
+  assert.doesNotMatch(outcomes, /status:|retries:/);
+  assert.match(outcomes, /出典: archive\/done.md/);
+  const policy = fs.readFileSync(path.join(base, 'rules.md'), 'utf8');
+  assert.doesNotMatch(policy, /長い使い方|https:\/\/h\/app/);
+  assert.match(policy, /目的/);
+  assert.match(outcomes, /検証: `test` → FAIL/);
+  assert.match(fs.readFileSync(path.join(base, 'pending.md'), 'utf8'), /追加の検証/);
+  assert.ok(done.bytes < Object.values(files).join('').length / 5);
+  for (const [name, content] of Object.entries(files)) assert.equal(fs.readFileSync(path.join(root, name), 'utf8'), content);
+  assert.throws(() => projectImport.apply(tmp(), planned, ['unknown']), /変更/);
+  fs.writeFileSync(path.join(root, 'backlog/pending.md'), '# 変更\n新しい内容');
+  assert.throws(() => projectImport.apply(tmp(), projectImport.plan({ root }), selection), /変更/);
+  fs.rmSync(root, { recursive: true }); fs.rmSync(kb, { recursive: true }); fs.rmSync(outside, { recursive: true });
+});
+
+test('取り込みのおすすめは容量を制限し、個別選択なら大きな本文も欠落なく保存する', () => {
+  const bundle = require('../src/shared/projectImportBundle');
+  const items = Array.from({ length: 20 }, (_, i) => ({ id: String(i), group: 'knowledge', title: '知識', content: 'x'.repeat(7000), sources: [`notes/${i}.md`] }));
+  assert.equal(bundle.recommended(items).length, 4);
+  const selected = bundle.build(items, ['0', '19']);
+  assert.equal(selected.documents.length, 1);
+  assert.equal(selected.items, 2);
+  assert.ok(selected.documents[0].content.includes('notes/19.md'));
+  assert.equal(bundle.build(items, []).documents.length, 0);
+  const original = '# 結果\n```sh\n- status: preserve code\n```\n- status: done\n- verify: FAIL\n';
+  assert.match(projectImport.extract(original, 'outcomes', 'archive/a.md'), /status: preserve code/);
+  assert.doesNotMatch(projectImport.extract(original, 'outcomes', 'archive/a.md'), /status: done/);
+  assert.match(projectImport.extract('```html\n<!-- 保持するコード -->\n```', 'knowledge', 'notes/code.md'), /<!-- 保持するコード -->/);
+  const distinct = [
+    { id: 'a', group: 'knowledge', title: 'A', content: '# A\n```md\n# code\n```\n## detail\nbody', sources: ['notes/a.md'] },
+  ];
+  const document = bundle.build(distinct, ['a']).documents[0].content;
+  assert.match(document, /## A\n/);
+  assert.match(document, /```md\n# code\n```/);
+  assert.match(document, /#### detail/);
+});
+
+test('リモート未設定のリポジトリをローカル識別子で保存・再解決する', () => {
+  const raw = { name: 'local', repos: [
+    { localId: 'local-123', label: 'sandbox-test', role: 'main', path: '/private/work' },
+    { localId: 'local-123', label: 'duplicate', role: 'work' },
+    { localId: '../bad', label: 'invalid' },
+    { url: 'https://example.com/team/remote.git', role: 'reference' },
+  ] };
+  const body = projects.serialize(raw);
+  assert.ok(!body.includes('/private/work'));
+  const restored = projects.parse(body);
+  assert.equal(restored.repos.length, 2);
+  assert.equal(restored.repos[0].localId, 'local-123');
+  assert.equal(restored.repos[0].label, 'sandbox-test');
+  assert.equal(projects.resolve(restored, {})[0].path, '', '別の端末では未設定');
+  const resolved = projects.resolve(restored, { 'local:local-123': '/private/work' });
+  assert.equal(resolved[0].path, '/private/work');
+  assert.equal(projects.chooseRepo(resolved, '修正して').repo.path, '/private/work');
 });

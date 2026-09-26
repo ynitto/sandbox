@@ -251,7 +251,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#sessions .list-pick').filter({ hasText: '画面を確認して' }).click();
     await win.locator('.answer-bubble').first().waitFor();
     assert.strictEqual(await win.locator('#conversation-history').getAttribute('open'), '', '端末がない会話では履歴を主表示する');
-    assert.equal(await win.locator('#home-repository-slot #repository-context').isVisible(), true);
+    assert.equal(await win.locator('#sidebar-repository-slot #repository-context').isVisible(), true);
     const conversationContext = await win.locator('#composer').evaluate(composer => {
       const shell = composer.querySelector('.composer-shell').getBoundingClientRect();
       const context = composer.querySelector('.composer-context').getBoundingClientRect();
@@ -568,9 +568,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await runToolbar.waitFor();
     const runCardBox = await workspace.locator('.run-card').boundingBox();
     const runToolbarBox = await runToolbar.boundingBox();
-    assert.ok(runToolbarBox.y >= runCardBox.y + runCardBox.height && Math.abs(runToolbarBox.x - runCardBox.x) <= 1,
-      'manual run controls sit below the card border, aligned left');
-    assert.equal(await workspace.locator('.run-card #task-run-settings, .run-card #run-start, .run-card #run-stop').count(), 0);
+    assert.ok(runToolbarBox.y > runCardBox.y && runToolbarBox.y + runToolbarBox.height < runCardBox.y + runCardBox.height,
+      'manual run controls stay inside the white card');
+    assert.equal(await workspace.locator('.run-card #task-run-settings, .run-card #run-start, .run-card #run-stop').count(), 3);
 
     assert.doesNotMatch(await workspace.locator('.run-card').textContent(), /実行ごとにエージェントとモデルを選べます/);
     const toolbarControls = await Promise.all(['#task-run-settings > summary', '#run-start', '#run-check', '#run-stop']

@@ -242,7 +242,7 @@ const SessionSearch = (() => {
     } catch (err) { if (transfer === current) $('search-transfer-status').textContent = err.message; }
     finally { if (transfer === current) { current.loading = false; executionLabel(); } }
   }
-  function beginTransfer(record, boundary = null, routine = false) {
+  function beginTransfer(record, boundary = null, routine = false, repo = '') {
     transfer = { record, boundary, mode: 'fork', routine, busy: false };
     $('search-target-repo').disabled = false;
     $('search-target-add').disabled = false;
@@ -261,7 +261,7 @@ const SessionSearch = (() => {
     $('search-request').previousElementSibling.textContent = '追加の依頼（任意）';
     $('search-request').value = ''; $('search-transfer-status').textContent = '';
     const config = deps.getConfig();
-    repos((config.repos || []).includes(record.repo) ? record.repo : config.lastRepo || '');
+    repos(repo || ((config.repos || []).includes(record.repo) ? record.repo : config.lastRepo || ''));
     $('search-target-permission').value = record.appId ? record.defaults?.permission || 'confirm' : 'confirm';
     $('search-transfer-dialog').showModal(); targetChanged();
   }
@@ -291,12 +291,12 @@ const SessionSearch = (() => {
   }
   // 会話画面から、いま開いている会話をフォークする（検索画面と同じダイアログ）。
   // boundary・target を渡すと、その位置とフォーク先を選んだ状態で開く。
-  async function forkCurrent(id, { boundary = '', target = '' } = {}) {
+  async function forkCurrent(id, { boundary = '', target = '', repo = '' } = {}) {
     const record = await api.read('app:' + id);
     const completed = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
     const at = completed.some(m => m.id === boundary) ? boundary : completed.at(-1)?.id;
     if (!at) throw new Error('フォークできる応答がありません');
-    beginTransfer(record, at);
+    beginTransfer(record, at, false, repo);
     if (target) $('search-intent').value = target;
   }
   function executionLabel() {

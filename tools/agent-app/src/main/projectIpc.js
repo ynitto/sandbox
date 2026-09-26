@@ -10,10 +10,12 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const store = require('./store');
 const host = require('./host');
 const projects = require('./projects');
 const projectImport = require('./projectImport');
+const projectWorkflows = require('./projectWorkflows');
 const { userData, requireRepo, distroFor } = require('./paths');
 
 const remotes = new Map();   // 登録フォルダ → origin の URL（アプリを閉じるまで。'' は origin 無し）
@@ -43,7 +45,7 @@ function context(key, cfg = store.loadConfig(userData())) {
 // まだフォルダの分からない URL を、登録リポジトリの origin から埋める（分かった分は repoPaths に残す）
 async function fillPaths(item) {
   const cfg = store.loadConfig(userData());
-  const missing = new Set(item.project.repos.map((repo) => projects.normalizeUrl(repo.url))
+  const missing = new Set(item.project.repos.filter(repo => repo.url).map((repo) => projects.normalizeUrl(repo.url))
     .filter((url) => !cfg.repos.includes(cfg.repoPaths[url] || '')));
   if (!missing.size) return false;
   const found = {};
@@ -61,7 +63,7 @@ function present(item) {
   return {
     key: item.key, kb: item.kb, folder: item.folder, error: item.error || '',
     project: item.project,
-    repos: (item.resolved || []).map(({ url, role, desc, owns, label, path: dir }) => ({ url, role, desc, owns: owns || [], label, path: dir })),
+    repos: (item.resolved || []).map(({ url, localId, role, desc, owns, label, path: dir }) => ({ url, localId, role, desc, owns: owns || [], label, path: dir })),
   };
 }
 
@@ -69,9 +71,12 @@ async function commit(kb, files, message) {
   if (!files.length) return { committed: false, warning: '' };
   const shell = host.shellFor(distroFor(kb));
   const dir = host.toHostPath(kb);
+  const tracked = await shell.exec(['git', '-C', dir, 'rev-parse', '--is-inside-work-tree'], { timeoutMs: 10000 });
+  if (!tracked.ok) return { committed: false, pushed: false, localOnly: true };
   const add = await shell.exec(['git', '-C', dir, 'add', '--', ...files], { timeoutMs: 20000 });
   const done = add.ok && (await shell.exec(['git', '-C', dir, 'commit', '-m', message, '--', ...files], { timeoutMs: 20000 })).ok;
   if (!done) return { committed: false, pushed: false, warning: 'ファイルは書きましたが、ナレッジリポジトリにコミットできませんでした（git の管理下か確認してください）' };
+  if (!await remoteOf(kb)) return { committed: true, pushed: false, localOnly: true };
   const push = await shell.exec(['git', '-C', dir, 'push', 'origin', 'HEAD'], { timeoutMs: 60000 });
   return push.ok ? { committed: true, pushed: true, warning: '' }
     : { committed: true, pushed: false, warning: `コミットしましたが push できませんでした: ${push.output.trim().split('\n').pop() || 'git push に失敗'}` };
@@ -173,7 +178,20 @@ function register(handle, { dialog, getWindow }) {
   });
 
   // 登録リポジトリの URL（編集画面でリポジトリを足すとき）
-  handle('projects:remote', async (p) => ({ url: await remoteOf(requireRepo(p.repo)) }));
+  handle('projects:remote', async (p) => {
+    const repo = requireRepo(p.repo);
+    const url = await remoteOf(repo);
+    const cfg = store.loadConfig(userData());
+    if (url) {
+      store.saveConfig(userData(), { repoPaths: { ...cfg.repoPaths, [projects.normalizeUrl(url)]: repo } });
+      return { url };
+    }
+    // 同じフォルダには同じ識別子を使い、共有する定義には端末のパスを含めない。
+    const previous = Object.entries(cfg.repoPaths).find(([key, dir]) => key.startsWith('local:') && dir === repo);
+    const localId = previous ? previous[0].slice(6) : randomUUID();
+    store.saveConfig(userData(), { repoPaths: { ...cfg.repoPaths, [`local:${localId}`]: repo } });
+    return { url: '', localId, label: path.basename(repo) };
+  });
 
   handle('projects:choose', (p) => {
     const item = context(p.key);
@@ -194,6 +212,18 @@ function register(handle, { dialog, getWindow }) {
     const item = context(p.key);
     if (!item) throw new Error('プロジェクトが見つかりません');
     return projects.knowledgeFiles(item.kb, item.folder, 5);
+  });
+
+  handle('projects:workflows', (p) => {
+    const item = context(p.key);
+    if (!item) throw new Error('プロジェクトが見つかりません');
+    return projectWorkflows.list(item).map(({ body, ...entry }) => entry);
+  });
+
+  handle('projects:openWorkflow', (p) => {
+    const item = context(p.key);
+    if (!item) throw new Error('プロジェクトが見つかりません');
+    return projectWorkflows.ensure(item, p.id);
   });
 
   // ナレッジにファイルを足す（ドロップ・ファイル選択）。files/ へ写して、そのファイルだけコミットして push
@@ -250,17 +280,18 @@ function register(handle, { dialog, getWindow }) {
     const res = await dialog.showOpenDialog(getWindow(), { properties: ['openDirectory'], title: 'agent-project の状態フォルダを選ぶ' });
     if (res.canceled || !res.filePaths.length) return null;
     const planned = projectImport.plan({ root: res.filePaths[0], hostYaml: defaultHostYaml() });
+    const cfg = store.loadConfig(userData());
     return {
       root: planned.root, source: planned.source, name: planned.project.name, folder: planned.folder,
-      repos: planned.project.repos.map((repo) => ({ label: projects.repoLabel(repo.url), role: repo.role })),
-      copies: planned.copies.length, leftBehind: planned.leftBehind,
+      repos: planned.project.repos.map((repo) => ({ ...repo, label: projects.repoLabel(repo.url), path: cfg.repoPaths[projects.normalizeUrl(repo.url)] || planned.repoPaths[projects.normalizeUrl(repo.url)] || '' })),
+      items: planned.items, selected: planned.selected, excluded: planned.excluded,
     };
   });
 
   handle('projects:import', async (p) => {
     const kb = requireRepo(p.kb);
     const planned = projectImport.plan({ root: p.root, hostYaml: defaultHostYaml(), name: p.name });
-    const done = projectImport.apply(kb, planned);
+    const done = projectImport.apply(kb, planned, p.selected);
     const cfg = store.loadConfig(userData());
     const local = Object.fromEntries(Object.entries(planned.repoPaths).filter(([, dir]) => {
       try { return fs.statSync(dir).isDirectory(); } catch { return false; }
@@ -272,8 +303,12 @@ function register(handle, { dialog, getWindow }) {
       knowledgeRepos: [...new Set([...cfg.knowledgeRepos, kb])],
       lastProject: key,
     });
+    const item = context(key);
+    await fillPaths(item);
+    const imported = projectWorkflows.register(context(key));
     const result = await commit(kb, done.written, `agent-app: agent-project「${planned.project.name}」を取り込み`);
-    return { key, written: done.written.length, skipped: done.skipped, leftBehind: planned.leftBehind, ...result };
+    return { key, written: done.written.length, skipped: done.skipped, ...result,
+      workflows: imported.registered.length, warning: [result.warning, ...imported.warnings].filter(Boolean).join('\n') };
   });
 }
 

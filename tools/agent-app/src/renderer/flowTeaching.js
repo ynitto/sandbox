@@ -70,7 +70,6 @@
     $('flow-teach-launch').hidden = false;
     $('flow-teach-new-session').hidden = state.creating;
     $('flow-teach-new-session').disabled = state.pending || state.running || !!((state.session || state.availableSession) && state.deps.isRunning((state.session || state.availableSession).id));
-    $('flow-teach-heading').hidden = !state.existing;
     $('flow-teach-manual').hidden = !state.creating;
     $('flow-teach-create').hidden = !state.creating;
     $('flow-teach-placeholder').hidden = state.creating || !!sess;

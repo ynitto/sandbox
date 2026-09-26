@@ -14,7 +14,7 @@
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
   const baseName = (p) => String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop();
-  const ROLE = { main: '主', work: '作業', reference: '参照' };
+  const ROLE = { main: '既定の作業先', work: '作業用', reference: '参照専用' };
   const SAVE_KINDS = [
     ['project', 'note', 'メモとして保存'],
     ['project', 'decision', '決めたこととして保存'],
@@ -24,7 +24,7 @@
 
   // items … 一覧（projects:list）。current … 選んでいるプロジェクト（projects:open。フォルダ付き）
   // files … ホームのナレッジ（projects:files。{ key, recent, total }、読み込み中は null）
-  const P = { items: [], current: null, dialog: null, files: null };
+  const P = { items: [], current: null, dialog: null, files: null, workflows: [] };
 
   function key() { return (state.config && state.config.lastProject) || ''; }
 
@@ -42,22 +42,41 @@
   }
 
   function render() {
-    const select = $('project-select');
-    select.replaceChildren(new Option('プロジェクトなし', ''));
+    const select = $('repo-select');
+    const projectsOnly = state.area === 'projects';
+    select.setAttribute('aria-label', projectsOnly ? 'プロジェクト' : 'プロジェクト・リポジトリ');
+    document.querySelector('label[for=repo-select]').textContent = projectsOnly ? 'プロジェクト' : 'プロジェクト・リポジトリ';
+    select.replaceChildren();
+    const projectGroup = el('optgroup');
+    projectGroup.label = 'プロジェクト';
     for (const item of P.items) {
-      const option = new Option(item.error ? `${item.folder}（読めません）` : item.project.name, item.key);
+      const option = new Option(item.error ? `${item.folder}（読めません）` : item.project.name, `project:${item.key}`);
       option.disabled = !!item.error;
-      option.title = item.error || `${baseName(item.kb)} / projects/${item.folder}`;
-      select.append(option);
+      option.title = item.error || item.project.name;
+      projectGroup.append(option);
     }
-    select.value = P.current ? P.current.key : '';
-    $('project-row').hidden = !P.items.length;
-    $('repository-context').classList.toggle('has-project', !!P.current);
-    $('project-edit').disabled = !P.current;
-    $('project-pull').disabled = !P.current;
-    const kb = (state.config && state.config.knowledgeRepos) || [];
-    $('repo-knowledge').textContent = kb.includes(state.repo) ? 'ナレッジリポジトリから外す' : 'ナレッジリポジトリとして読む';
-    $('repo-knowledge').disabled = !state.repo;
+    if (projectGroup.children.length) select.append(projectGroup);
+    const repoGroup = el('optgroup');
+    repoGroup.label = 'リポジトリ';
+    const repos = [...new Set([...(state.config.repos || []), state.repo].filter(Boolean))];
+    for (const repo of repos) {
+      const name = baseName(repo);
+      const duplicate = repos.some(other => other !== repo && baseName(other) === name);
+      const option = new Option(duplicate ? `${name} — ${repo}` : name, repo);
+      option.title = repo;
+      repoGroup.append(option);
+    }
+    if (!projectsOnly && repoGroup.children.length) select.append(repoGroup);
+    if (!select.options.length || (projectsOnly && !P.current)) select.prepend(new Option(projectsOnly ? 'プロジェクトを選択' : 'プロジェクト・リポジトリを追加', ''));
+    select.value = P.current ? `project:${P.current.key}` : projectsOnly ? '' : state.repo;
+    select.title = P.current ? P.current.project.name : state.repo;
+    $('repo-selection-label').textContent = select.selectedOptions[0]?.textContent || 'プロジェクト・リポジトリを選択';
+    select.disabled = projectsOnly ? !P.items.length : !repos.length && !P.items.length;
+    $('project-edit').hidden = !P.current;
+    $('project-pull').hidden = !P.current;
+    $('repo-remove').hidden = projectsOnly || !!P.current;
+    $('repo-remove').disabled = !state.repo;
+    Files.setRepositories(projectsOnly ? repoOptions() || [] : [], state.repo);
   }
 
   // サイドバーのリポジトリの選択肢。プロジェクトを選んでいるときはその中だけ（役割を添える）
@@ -79,12 +98,13 @@
     render();
     const repos = repoOptions();
     const target = mainPath() || (repos && repos[0] && repos[0].value) || '';
-    if (target && target !== state.repo) await selectRepo(target);
+    if (target) await selectRepo(target);
     else renderRepos();
     // 会話の一覧はプロジェクトで絞られるので、選び直したら読み直す
     state.sessions = state.repo ? await api.listSessions(state.repo) : [];
     renderAreaContext();
-    if (state.area === 'home') { refreshHome(); renderMessages(); }
+    if (state.area === 'projects') newDraft();
+    if (['home', 'projects'].includes(state.area)) { refreshHome(); renderMessages(); }
     renderHeader();
     const missing = P.current ? P.current.repos.filter((repo) => !repo.path).length : 0;
     if (missing) notice(`この PC のフォルダが未設定のリポジトリが ${missing} 件あります（プロジェクトの編集で選べます）`);
@@ -125,14 +145,26 @@
 
   // ---- ホーム（プロジェクトの入口） ----
   function refreshHome() {
-    if (!P.current) { P.files = null; return; }
+    if (!P.current) { P.files = null; P.workflows = []; return; }
     const target = P.current.key;
     P.files = null;
-    api.projects.files(target).then((files) => {
+    P.workflows = [];
+    Promise.all([api.projects.files(target), api.projects.workflows(target)]).then(([files, workflows]) => {
       if (!P.current || P.current.key !== target) return;
       P.files = { key: target, ...files };
-      if (state.area === 'home' && !state.current) renderMessages();
+      P.workflows = workflows;
+      if (['home', 'projects'].includes(state.area) && !state.current) renderMessages();
     }).catch((err) => notice(err.message, 'error'));
+  }
+
+  async function openImportedWorkflow(item) {
+    const flow = await api.projects.openWorkflow(P.current.key, item.id);
+    if (state.repo !== flow.root) await selectRepo(flow.root);
+    const lastWorkflow = { ...(state.config.lastWorkflow || {}), [flow.root]: flow.id };
+    state.config = await api.saveConfig({ lastWorkflow });
+    await showArea('workflows');
+    state.selectedWorkflow = flow.id;
+    await syncAutomationWorkbench();
   }
 
   function cardHead(title, lead, ...actions) {
@@ -160,7 +192,7 @@
   async function openKnowledge(rel) {
     const kb = P.current.kb;
     if (kb !== state.repo) { await selectRepo(kb); renderRepos(); }
-    await showArea('conversation');
+    if (state.area !== 'projects') await showArea('conversation');
     renderHeader();
     showView('files');
     await Files.setRoot(kb, '', {});
@@ -191,12 +223,14 @@
     const cur = P.current;
     const main = cur.repos.find((repo) => repo.role === 'main') || cur.repos[0];
     const others = cur.repos.length - (main ? 1 : 0);
-    start.append(el('h2', '', cur.project.name));
+    const heading = el('div', 'project-home-heading');
+    heading.append(el('h2', '', cur.project.name), button('プロジェクトを編集', () => openDialog('edit')));
+    start.append(heading);
     start.append(el('p', '', main ? `${main.label}${others ? ` ほか ${others} リポジトリ` : ''}` : 'リポジトリが未設定です'));
     const cards = el('div', 'project-home');
     const instructions = el('section', 'execution-card');
     const firstLine = String(cur.project.instructions || '').split('\n').find((line) => line.trim()) || '';
-    instructions.append(cardHead('指示', firstLine || '未設定', button('編集', () => openDialog('edit'))));
+    instructions.append(cardHead('指示', firstLine || '未設定'));
     const knowledge = el('section', 'execution-card');
     const files = P.files && P.files.key === cur.key ? P.files : null;
     knowledge.append(cardHead('ナレッジ', files ? `${files.total} 件` : '',
@@ -227,6 +261,19 @@
       dropFiles(e.dataTransfer.files).catch((err) => notice(err.message, 'error'));
     });
     cards.append(instructions, knowledge);
+    if (P.workflows.length) {
+      const tasks = el('section', 'execution-card');
+      tasks.append(cardHead('ワークフロー', `${P.workflows.length} 件`));
+      const list = el('ul', 'list project-files');
+      for (const task of P.workflows) {
+        const row = el('li', 'row-item');
+        const pick = button(task.name, () => openImportedWorkflow(task));
+        pick.className = 'list-pick';
+        pick.title = task.error || `ワークフロー画面で開く · ${baseName(task.root)}`;
+        row.append(pick); list.append(row);
+      }
+      tasks.append(list); cards.append(tasks);
+    }
     start.append(cards);
     return true;
   }
@@ -259,85 +306,190 @@
     $('project-error').hidden = !text;
   }
 
+  function renderDestination() {
+    const d = P.dialog;
+    const folder = d.mode === 'edit' ? d.folder : ProjectPath.folderName(d.project.name);
+    const destination = d.kb ? `${d.kb.replace(/[\\/]+$/, '')}/projects/${folder}/` : '';
+    $('project-kb-path').textContent = destination || 'ナレッジリポジトリを選択してください';
+    $('project-kb-path').title = destination;
+    const summary = $('project-summary');
+    summary.replaceChildren();
+    summary.hidden = d.mode !== 'import';
+    if (summary.hidden || !d.plan) return;
+    const result = ProjectImportBundle.build(d.plan.items, [...d.selected]);
+    const workflows = d.plan.items.filter(item => item.group === 'pending' && d.selected.has(item.id)).length;
+    summary.append(el('strong', '', `${result.sources} 資料 → ${result.documents.length} 文書・${formatSize(result.bytes)}${workflows ? ` ＋ ${workflows} ワークフロー` : ''}`));
+    const source = el('p', 'sub', `取り込み元: ${baseName(d.root)}`);
+    source.title = d.root;
+    summary.append(source);
+    summary.append(el('p', 'sub', '重複・管理情報を整理。元の資料は変更しません。'));
+    const groups = el('div', 'project-import-groups');
+    for (const group of ProjectImportBundle.groups) {
+      const items = d.plan.items.filter(item => item.group === group.id);
+      if (!items.length) continue;
+      const label = el('label', 'project-import-choice');
+      const check = el('input'); check.type = 'checkbox';
+      check.id = `project-import-group-${group.id}`;
+      const selected = items.filter(item => d.selected.has(item.id)).length;
+      check.checked = selected === items.length;
+      check.indeterminate = selected > 0 && selected < items.length;
+      check.onchange = () => { for (const item of items) { if (check.checked) d.selected.add(item.id); else d.selected.delete(item.id); } renderDestination(); $(check.id).focus(); };
+      label.append(check, el('span', '', group.label), el('span', 'sub', `${selected} / ${items.length}`));
+      groups.append(label);
+    }
+    summary.append(groups);
+    const actions = el('div', 'row');
+    const pick = button('内容を選ぶ', () => {
+      $('project-import-search').value = '';
+      $('project-import-preview').hidden = true;
+      renderImportPicker();
+      $('project-import-picker').showModal();
+    });
+    actions.append(pick, el('span', 'sub', '実行ログは対象外・定義と索引は別途作成'));
+    summary.append(actions);
+  }
+
+  function formatSize(bytes) { return `${(bytes / 1024).toFixed(1)} KB`; }
+
+  function renderImportPicker() {
+    const d = P.dialog;
+    const query = $('project-import-search').value.trim().toLowerCase();
+    const list = $('project-import-candidates'); list.replaceChildren();
+    const result = ProjectImportBundle.build(d.plan.items, [...d.selected]);
+    $('project-import-selection-count').textContent = `${result.items} / ${d.plan.items.length} 件を選択・${formatSize(result.bytes)}`;
+    for (const item of d.plan.items.filter(item => `${item.title} ${item.sources.join(' ')}`.toLowerCase().includes(query))) {
+      const row = el('div', 'project-import-candidate');
+      const label = el('label', 'project-import-choice');
+      const check = el('input'); check.type = 'checkbox'; check.checked = d.selected.has(item.id);
+      check.onchange = () => {
+        if (check.checked) d.selected.add(item.id); else d.selected.delete(item.id);
+        renderDestination();
+        const result = ProjectImportBundle.build(d.plan.items, [...d.selected]);
+        $('project-import-selection-count').textContent = `${result.items} / ${d.plan.items.length} 件を選択・${formatSize(result.bytes)}`;
+      };
+      const text = el('span');
+      text.append(el('strong', '', item.title), el('span', 'sub', `${item.sources.join(' / ')} · ${formatSize(ProjectImportBundle.bytes(item.content))}`));
+      label.append(check, text);
+      const preview = button('本文', () => {
+        $('project-import-preview').textContent = item.content;
+        $('project-import-preview').hidden = false;
+        $('project-import-preview').focus();
+      });
+      preview.setAttribute('aria-label', `${item.title} の本文`);
+      row.append(label, preview); list.append(row);
+    }
+    if (!list.children.length) list.append(el('p', 'sub', '該当する資料はありません'));
+  }
+
+  function repoOptionsForDialog(repos) {
+    return repos.map(repo => {
+      const name = baseName(repo);
+      const duplicate = repos.some(other => other !== repo && baseName(other) === name);
+      const option = new Option(duplicate ? `${name} — ${repo}` : name, repo);
+      option.title = repo;
+      return option;
+    });
+  }
+
   function renderDialog() {
     const d = P.dialog;
+    const working = d.repos.filter(repo => repo.role !== 'reference');
+    if (working.length && !working.some(repo => repo.role === 'main')) working[0].role = 'main';
     const importing = d.mode === 'import';
     $('project-title').textContent = d.mode === 'edit' ? 'プロジェクトを編集' : importing ? 'agent-project から取り込む' : '新しいプロジェクト';
     $('project-name').value = d.project.name;
     const kb = $('project-kb');
     const repos = state.config.repos || [];
-    kb.replaceChildren(...repos.map((repo) => new Option(baseName(repo), repo)));
-    if (!repos.length) kb.append(new Option('リポジトリを登録してください', ''));
-    kb.value = d.kb || (state.config.knowledgeRepos || [])[0] || '';
+    kb.replaceChildren(new Option(repos.length ? '保存先を選択してください' : 'リポジトリを登録してください', ''), ...repoOptionsForDialog(repos));
+    kb.value = d.kb || '';
     d.kb = kb.value;
+    kb.title = d.kb;
     kb.disabled = d.mode === 'edit';
-    $('project-kb-path').textContent = d.kb ? `${d.kb.replace(/[\\/]+$/, '')}/projects/${d.folder || '…'}` : '';
+    renderDestination();
     const body = $('project-repos');
     body.replaceChildren();
-    d.repos.forEach((repo, index) => {
-      const row = el('tr');
-      row.append(el('td', '', repo.label));
+    $('project-repo-section').hidden = importing && !d.repos.length;
+    $('project-repo-count').textContent = d.repos.length ? `${d.repos.length} 件` : '';
+    if (!d.repos.length) body.append(el('div', 'project-repo-empty', importing ? 'リポジトリの指定なし' : '追加したリポジトリがここに並びます'));
+    d.repos.forEach((repo) => {
+      const row = el('div', 'project-repo-row');
+      const name = el('strong', 'project-repo-name', repo.label);
+      if (repo.localId) name.append(el('span', 'sub', 'ローカル'));
       const role = el('select');
       role.setAttribute('aria-label', `${repo.label} の役割`);
-      for (const [value, text] of Object.entries(ROLE)) role.append(new Option(text, value));
-      role.value = repo.role;
+      for (const value of ['work', 'reference']) role.append(new Option(ROLE[value], value));
+      role.value = repo.role === 'main' ? 'work' : repo.role;
       role.disabled = importing;
       role.onchange = () => {
-        if (role.value === 'main') for (const other of d.repos) if (other !== repo && other.role === 'main') other.role = 'work';
         repo.role = role.value;
         renderDialog();
       };
-      const desc = el('input');
-      desc.value = repo.desc || '';
-      desc.placeholder = '説明（任意）';
-      desc.setAttribute('aria-label', `${repo.label} の説明`);
-      desc.disabled = importing;
-      desc.oninput = () => { repo.desc = desc.value; };
-      const cellRole = el('td');
-      cellRole.append(role);
-      const cellDesc = el('td');
-      cellDesc.append(desc);
-      const cellPath = el('td');
-      if (repo.path) cellPath.append(el('span', 'sub', baseName(repo.path)));
+      row.append(name, role);
+      if (!importing) {
+        const remove = el('button', 'quiet project-repo-remove', '×');
+        remove.type = 'button';
+        remove.setAttribute('aria-label', `${repo.label} を外す`);
+        remove.title = `${repo.label} を外す`;
+        remove.onclick = () => { d.repos.splice(d.repos.indexOf(repo), 1); renderDialog(); };
+        row.append(remove);
+      }
+      const details = el('div', 'project-repo-meta');
+      if (repo.role !== 'reference') {
+        const label = el('label', 'project-repo-default');
+        const radio = el('input');
+        radio.type = 'radio';
+        radio.name = 'project-default-repo';
+        radio.checked = repo.role === 'main';
+        radio.disabled = importing;
+        radio.setAttribute('aria-label', `${repo.label} を既定の作業先にする`);
+        radio.onchange = () => {
+          for (const other of working) other.role = other === repo ? 'main' : 'work';
+          renderDialog();
+        };
+        label.append(radio, document.createTextNode('既定の作業先'));
+        details.append(label);
+      }
+      if (repo.path) details.append(el('div', 'project-path', repo.path));
       else if (!importing) {
         const pick = el('button', 'small', 'フォルダを選ぶ');
         pick.type = 'button';
         pick.onclick = async () => {
-          try { const dir = await api.projects.pickPath(repo.url); if (dir) { repo.path = dir; state.config = await api.getConfig(); renderDialog(); } }
+          try { const dir = await api.projects.pickPath(repo.url || `local:${repo.localId}`); if (dir) { repo.path = dir; state.config = await api.getConfig(); renderDialog(); } }
           catch (err) { dialogError(err.message); }
         };
-        cellPath.append(pick);
-      } else cellPath.append(el('span', 'sub', '未設定'));
-      const cellAct = el('td', 'wt-act');
-      if (!importing) {
-        const remove = el('button', 'small quiet', '外す');
-        remove.type = 'button';
-        remove.onclick = () => { d.repos.splice(index, 1); renderDialog(); };
-        cellAct.append(remove);
-      }
-      row.append(cellRole, cellDesc, cellPath, cellAct);
+        details.append(pick);
+      } else details.append(el('div', 'sub', '取り込み後にフォルダを選択'));
+      const descLabel = el('label', '');
+      const desc = el('input');
+      desc.value = repo.desc || '';
+      desc.placeholder = '担当する内容（任意）';
+      desc.setAttribute('aria-label', `${repo.label} の説明`);
+      desc.disabled = importing;
+      desc.oninput = () => { repo.desc = desc.value; };
+      descLabel.append(desc);
+      details.append(descLabel);
+      row.append(details);
       body.append(row);
     });
     const add = $('project-add-repo');
     const known = new Set(d.repos.map((repo) => repo.path).filter(Boolean));
-    add.replaceChildren(...repos.filter((repo) => !known.has(repo) && repo !== d.kb).map((repo) => new Option(baseName(repo), repo)));
+    add.replaceChildren(...repoOptionsForDialog(repos.filter((repo) => !known.has(repo))));
     $('project-add-row').hidden = importing || !add.options.length;
     $('project-instructions').value = d.project.instructions || '';
     $('project-instructions-row').hidden = importing;
     $('project-import').hidden = d.mode !== 'new';
-    $('project-save').textContent = importing ? '取り込む' : '保存';
-    $('project-summary').textContent = d.summary || '';
+    $('project-save').textContent = importing ? '取り込む' : d.mode === 'edit' ? '保存' : '作成';
+
   }
 
   function openDialog(mode) {
     dialogError('');
     const cur = mode === 'edit' ? P.current : null;
     P.dialog = {
-      mode, key: cur ? cur.key : '', kb: cur ? cur.kb : (state.config.knowledgeRepos || []).includes(state.repo) ? state.repo : '',
+      mode, key: cur ? cur.key : '', kb: cur ? cur.kb : (state.config.knowledgeRepos || []).includes(state.repo) ? state.repo : (state.config.knowledgeRepos || [])[0] || '',
       folder: cur ? cur.folder : '',
       project: { name: cur ? cur.project.name : '', instructions: cur ? cur.project.instructions : '' },
       repos: cur ? cur.repos.map((repo) => ({ ...repo })) : [],
-      summary: '',
     };
     renderDialog();
     $('project-dialog').showModal();
@@ -347,82 +499,88 @@
     const d = P.dialog;
     const repo = $('project-add-repo').value;
     if (!repo) return;
+    $('project-add').disabled = true;
     try {
-      const { url } = await api.projects.remote(repo);
-      if (!url) { dialogError(`${baseName(repo)} には origin の URL がありません（git remote add origin … で付けてください）`); return; }
-      d.repos.push({ url, role: d.repos.some((item) => item.role === 'main') ? 'work' : 'main', desc: '', owns: [], label: baseName(repo), path: repo });
+      const { url, localId } = await api.projects.remote(repo);
+      d.repos.push({ url, localId, role: d.repos.some((item) => item.role === 'main') ? 'work' : 'main', desc: '', owns: [], label: baseName(repo), path: repo });
       dialogError('');
       renderDialog();
     } catch (err) { dialogError(err.message); }
+    finally { $('project-add').disabled = false; }
   }
 
   async function startImport() {
+    const draft = P.dialog;
+    $('project-import').disabled = true;
     try {
       const planned = await api.projects.importPlan();
-      if (!planned) return;
-      const left = Object.entries(planned.leftBehind).map(([name, n]) => `${name} ${n} 件`).join('・');
+      if (!planned || P.dialog !== draft) return;
       Object.assign(P.dialog, {
         mode: 'import', root: planned.root, folder: planned.folder,
-        project: { name: planned.name, instructions: '' },
-        repos: planned.repos.map((repo) => ({ ...repo, path: '' })),
-        summary: `写すファイル ${planned.copies} 件${left ? `。移さないもの: ${left}` : ''}`,
+        project: { name: $('project-name').value.trim() || planned.name, instructions: '' },
+        repos: planned.repos.map((repo) => ({ ...repo })),
+        plan: planned, selected: new Set(planned.selected),
       });
       dialogError('');
       renderDialog();
     } catch (err) { dialogError(err.message); }
+    finally { $('project-import').disabled = false; }
   }
 
   async function save() {
     const d = P.dialog;
-    d.project.name = d.project.name.trim();
+    d.project.name = $('project-name').value.trim();
     d.project.instructions = (d.project.instructions || '').trim();
     d.kb = $('project-kb').value;
-    if (!d.project.name) { dialogError('名前を入れてください'); return; }
-    if (!d.kb) { dialogError('ナレッジリポジトリを選んでください'); return; }
+    if (!d.project.name) { dialogError('名前を入れてください'); $('project-name').focus(); return; }
+    if (!d.kb) { dialogError('保存先を選んでください'); $('project-kb').focus(); return; }
     $('project-save').disabled = true;
     try {
       const result = d.mode === 'import'
-        ? await api.projects.import(d.root, d.kb, d.project.name)
-        : await api.projects.save(d.key, d.kb, { ...d.project, repos: d.repos.map(({ url, role, desc, owns }) => ({ url, role, desc, owns })) });
+        ? await api.projects.import(d.root, d.kb, d.project.name, [...d.selected])
+        : await api.projects.save(d.key, d.kb, { ...d.project, repos: d.repos.map(({ url, localId, label, role, desc, owns }) => ({ url, localId, label, role, desc, owns })) });
       $('project-dialog').close();
       state.config = await api.getConfig();
       await load();
       await choose(result.key);
       if (result.warning) notice(result.warning);
-      else if (d.mode === 'import') notice(`取り込みました（${result.written} ファイル）。旧フォルダはそのまま残っています`);
+      else notice(d.mode === 'import' ? `取り込みました（${result.written} ファイル）${result.skipped?.length ? `・同名 ${result.skipped.length} 件をスキップ` : ''}` : result.localOnly ? 'この端末に保存しました' : '保存しました');
     } catch (err) { dialogError(err.message); }
     finally { $('project-save').disabled = false; }
   }
 
-  async function toggleKnowledge() {
-    $('repo-more').open = false;
-    const kb = state.config.knowledgeRepos || [];
-    const next = kb.includes(state.repo) ? kb.filter((repo) => repo !== state.repo) : [...kb, state.repo];
-    state.config = await api.projects.setKnowledgeRepos(next);
-    await load();
-    if (!P.current && key()) state.config = await api.projects.select('');
+  async function chooseContext(value) {
+    if (value.startsWith('project:')) return choose(value.slice('project:'.length));
+    if (key()) {
+      state.config = await api.projects.select('');
+      P.current = null;
+      P.files = null;
+      P.workflows = [];
+    }
+    await selectRepo(value);
     render();
   }
 
   function init() {
-    $('project-select').onchange = () => choose($('project-select').value).catch((err) => notice(err.message, 'error'));
-    $('project-edit').onclick = () => { $('project-more').open = false; openDialog('edit'); };
-    $('project-new').onclick = () => { $('project-more').open = false; openDialog('new'); };
-    $('repo-project-new').onclick = () => { $('repo-more').open = false; openDialog('new'); };
-    $('repo-knowledge').onclick = () => toggleKnowledge().catch((err) => notice(err.message, 'error'));
+    $('project-edit').onclick = () => { $('repo-more').open = false; openDialog('edit'); };
+    $('project-new').onclick = () => { $('repo-more').open = false; openDialog('new'); };
     $('project-pull').onclick = async () => {
-      $('project-more').open = false;
+      $('repo-more').open = false;
       try { await api.projects.pull(P.current.kb); await load(); notice('ナレッジリポジトリを最新にしました'); }
       catch (err) { notice(err.message, 'error'); }
     };
     $('project-close').onclick = () => $('project-dialog').close();
-    $('project-name').oninput = () => { P.dialog.project.name = $('project-name').value; };
+    $('project-name').oninput = () => { P.dialog.project.name = $('project-name').value; renderDestination(); };
     $('project-instructions').oninput = () => { P.dialog.project.instructions = $('project-instructions').value; };
     $('project-kb').onchange = () => { P.dialog.kb = $('project-kb').value; renderDialog(); };
     $('project-add').onclick = addRepo;
     $('project-import').onclick = startImport;
     $('project-save').onclick = save;
+    $('project-import-picker-close').onclick = () => $('project-import-picker').close();
+    $('project-import-search').oninput = renderImportPicker;
+    $('project-import-recommended').onclick = () => { P.dialog.selected = new Set(P.dialog.plan.selected); renderImportPicker(); renderDestination(); };
+    $('project-import-clear').onclick = () => { P.dialog.selected.clear(); renderImportPicker(); renderDestination(); };
   }
 
-  window.Projects = { init, load, render, repoOptions, routeDraft, saveActions, renderHome, refreshHome, label, canAssign, assign };
+  window.Projects = { init, load, render, choose, chooseContext, repoOptions, routeDraft, saveActions, renderHome, refreshHome, label, canAssign, assign };
 })();

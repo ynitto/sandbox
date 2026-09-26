@@ -45,6 +45,10 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 4v5M6 15v5M18 4v5M18 15v5M6 9c0 3 12 0 12 3M18 15c0-3-12 0-12-3"/></svg>
           <span>ワークフロー</span>
         </button>
+        <button type="button" id="area-projects">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7V5h7l2 2h9v13H3z"/></svg>
+          <span>プロジェクト</span>
+        </button>
         <button type="button" id="area-share">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM6 15a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm12 0a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM11 9 7 15m6-6 4 6M8 17h8"/></svg>
           <span>共有</span>
@@ -53,30 +57,22 @@
 
       <div id="sidebar-repository-slot">
       <div id="repository-context">
-        <div id="project-row" hidden>
-          <label for="project-select">プロジェクト</label>
-          <div class="repository-control">
-            <select id="project-select" aria-label="プロジェクト"></select>
-            <details id="project-more" class="more-menu more-dots">
-              <summary aria-label="プロジェクトを管理">•••</summary>
-              <div class="menu-panel">
-                <button type="button" id="project-edit">編集</button>
-                <button type="button" id="project-pull">最新を取得</button>
-                <button type="button" id="project-new">新しいプロジェクト</button>
-              </div>
-            </details>
-          </div>
-        </div>
-        <label for="repo-select">リポジトリ</label>
+        <label for="repo-select">プロジェクト・リポジトリ</label>
         <div class="repository-control">
-          <select id="repo-select" aria-label="リポジトリ"></select>
+          <div class="repository-choice">
+            <select id="repo-select" aria-label="プロジェクト・リポジトリ"></select>
+            <span class="repository-choice-label" aria-hidden="true"><span id="repo-selection-label"></span></span>
+          </div>
           <details id="repo-more" class="more-menu more-dots">
-            <summary aria-label="リポジトリを管理">•••</summary>
+            <summary aria-label="プロジェクト・リポジトリを管理">•••</summary>
             <div class="menu-panel">
+              <button type="button" id="project-new">新しいプロジェクト</button>
+              <button type="button" id="project-edit">プロジェクトを編集</button>
+              <button type="button" id="project-pull">ナレッジの最新を取得</button>
+              <hr>
               <button type="button" id="repo-add">リポジトリを追加</button>
-              <button type="button" id="repo-project-new">新しいプロジェクト</button>
-              <button type="button" id="repo-knowledge">ナレッジリポジトリとして読む</button>
-              <button type="button" id="repo-remove" class="danger">登録を外す</button>
+
+              <button type="button" id="repo-remove" class="danger">リポジトリの登録を外す</button>
             </div>
           </details>
         </div>
@@ -167,6 +163,7 @@
           <div id="execution-information-body"></div>
         </details>
         <footer id="composer">
+          <label id="home-request-label" for="prompt" hidden>依頼から始める</label>
           <div class="composer-shell">
             <div id="input-mode-switch" class="input-mode-switch" role="group" aria-label="入力先">
               <button type="button" id="input-mode-message" aria-pressed="true">メッセージ</button>
@@ -265,13 +262,21 @@
                 </div>
               </div>
             </details>
-            <div id="home-repository-slot" hidden></div>
+            <div id="home-context-slot" hidden></div>
+            <details id="conversation-repository" class="run-settings" hidden>
+              <summary aria-label="会話のリポジトリ"><span id="conversation-repo-summary"></span></summary>
+              <div class="settings-popover">
+                <label for="conversation-repo">リポジトリ<select id="conversation-repo"></select></label>
+                <button type="button" id="conversation-repo-fork">別のリポジトリへフォーク</button>
+              </div>
+            </details>
           </div>
         </footer>
       </section>
 
       <section id="files" class="view" hidden>
         <aside id="tree-pane">
+          <div id="project-file-repositories" class="tree-tools" hidden><select id="project-file-repo" aria-label="プロジェクトのリポジトリ"></select></div>
           <div class="tree-tools">
             <select id="tree-root" title="見るフォルダ（リポジトリ本体 / 作業フォルダ）"></select>
             <button id="tree-refresh" class="small" title="ツリーを読み直す">更新</button>
@@ -386,7 +391,6 @@
             <section id="task-workspace" hidden>
               <section id="task-launch" hidden>
                 <div class="teach-start-toolbar">
-                  <div id="task-launch-heading"><strong>下書きの編集を続ける</strong></div>
                   <details class="run-settings teach-execution-settings">
                     <summary><span id="task-launch-settings-summary"></span></summary>
                     <div class="settings-popover"><div class="popover-head row"><span>編集設定</span><span class="spacer"></span><button type="button" class="small quiet" data-usage-open>利用状況を見る</button></div><div class="direct-agent-settings">
@@ -473,7 +477,6 @@
                 <textarea id="flow-teach-purpose" rows="6" placeholder="例: 変更依頼を調査し、並列に実装して、品質を確認したい"></textarea>
               </div>
               <div class="task-actions">
-                <div id="flow-teach-heading"><strong>下書きの編集を続ける</strong></div>
                 <details class="run-settings teach-execution-settings">
                   <summary><span id="flow-teach-settings-summary"></span></summary>
                   <div class="settings-popover"><div class="popover-head row"><span id="flow-teach-settings-title">編集設定</span><span class="spacer"></span><button type="button" class="small quiet" data-usage-open>利用状況を見る</button></div><div class="direct-agent-settings">
@@ -814,7 +817,7 @@
       <label class="setting-field"><span>フォークする位置</span><select id="search-boundary"></select></label>
       <label for="search-target-repo">リポジトリ</label>
       <div class="repository-control"><select id="search-target-repo" aria-label="リポジトリ"></select>
-        <details class="more-menu more-dots"><summary aria-label="リポジトリを管理">•••</summary><div class="menu-panel"><button type="button" id="search-target-add">リポジトリを追加</button></div></details>
+        <details class="more-menu more-dots"><summary aria-label="プロジェクト・リポジトリを管理">•••</summary><div class="menu-panel"><button type="button" id="search-target-add">リポジトリを追加</button></div></details>
       </div>
       <p id="search-worktree-note" class="sub" hidden></p>
       <details id="search-execution-settings" class="run-settings teach-execution-settings">
@@ -840,18 +843,34 @@
     <div class="teaching-create-form"><label class="task-create-label" for="routine-purpose">作成する内容</label><textarea id="routine-purpose" rows="12"></textarea></div>
     </div><div class="dlg-actions"><button type="button" id="routine-create" class="primary" disabled>新しいセッションで作成</button><button type="button" id="routine-retry" class="small">再検討</button></div>
   </dialog>
-  <dialog id="project-dialog">
+  <dialog id="project-dialog" aria-labelledby="project-title">
     <div class="dlg-head"><strong id="project-title">プロジェクト</strong><span class="spacer"></span><button type="button" id="project-close" class="small">閉じる</button></div>
     <div class="dlg-body settings-list">
-      <label class="setting-field setting-field-wide"><span><strong>名前</strong></span><input id="project-name" maxlength="80"></label>
-      <label class="setting-field"><span><strong>ナレッジリポジトリ</strong><small id="project-kb-path"></small></span><select id="project-kb"></select></label>
-      <table class="wt-table settings-table" aria-label="プロジェクトのリポジトリ"><thead><tr><th scope="col">リポジトリ</th><th scope="col">役割</th><th scope="col">説明</th><th scope="col">この PC</th><th scope="col"></th></tr></thead><tbody id="project-repos"></tbody></table>
-      <div id="project-add-row" class="row"><select id="project-add-repo" aria-label="足すリポジトリ"></select><button type="button" id="project-add" class="small">追加</button></div>
-      <label id="project-instructions-row" class="stacked-field" for="project-instructions"><span><strong>プロジェクトへの指示</strong><small>（任意）</small></span><textarea id="project-instructions" rows="3" maxlength="2000"></textarea></label>
-      <div id="project-summary" class="sub"></div>
-      <div id="project-error" class="dlg-error" hidden></div>
+      <label class="stacked-field" for="project-name"><strong>名前</strong><input id="project-name" maxlength="80" placeholder="プロジェクト名"></label>
+      <div class="project-field-group">
+        <label class="stacked-field" for="project-kb"><strong>ナレッジの保存先</strong><select id="project-kb"></select></label>
+        <div id="project-kb-path" class="project-path sub" aria-label="保存先のパス"></div>
+      </div>
+      <section id="project-repo-section" class="project-field-group" aria-labelledby="project-repos-title">
+        <div class="project-section-head"><strong id="project-repos-title">作業リポジトリ</strong><span id="project-repo-count" class="sub"></span></div>
+        <div id="project-add-row" class="row"><select id="project-add-repo" aria-label="追加するリポジトリ"></select><button type="button" id="project-add" class="small">追加</button></div>
+        <div id="project-repos" class="project-repo-list"></div>
+      </section>
+      <label id="project-instructions-row" class="stacked-field" for="project-instructions"><strong>指示 <span class="sub">任意</span></strong><textarea id="project-instructions" rows="2" maxlength="2000" placeholder="例：回答は日本語で、変更後はテストを実行"></textarea></label>
+      <section id="project-summary" class="project-import-summary" aria-label="取り込み内容" hidden></section>
+      <div id="project-error" class="dlg-error" role="alert" hidden></div>
     </div>
-    <div class="dlg-actions"><button type="button" id="project-import" class="small quiet">agent-project から取り込む</button><span class="spacer"></span><button type="button" id="project-save" class="primary">保存</button></div>
+    <div class="dlg-actions"><button type="button" id="project-import" class="small quiet">agent-project から取り込む</button><span class="spacer"></span><button type="button" id="project-save" class="primary">作成</button></div>
+  </dialog>
+  <dialog id="project-import-picker" aria-labelledby="project-import-picker-title">
+    <div class="dlg-head"><strong id="project-import-picker-title">取り込む内容を選ぶ</strong><span class="spacer"></span><button type="button" id="project-import-picker-close">完了</button></div>
+    <div class="dlg-body">
+      <div class="project-import-toolbar"><input id="project-import-search" type="search" aria-label="資料を検索" placeholder="タイトル・出典で検索"><button type="button" id="project-import-recommended">おすすめに戻す</button><button type="button" id="project-import-clear">すべて外す</button></div>
+      <div id="project-import-selection-count" class="sub" role="status"></div>
+      <p class="sub">対象は1 MB以下の文書。実行ログは除外しています。</p>
+      <div id="project-import-candidates"></div>
+      <pre id="project-import-preview" tabindex="0" aria-label="変換後の本文" hidden></pre>
+    </div>
   </dialog>
   <dialog id="wt-dialog">
     <div class="dlg-head"><strong>作業フォルダ</strong><span class="spacer"></span><button id="wt-close" class="small">閉じる</button></div>
@@ -890,6 +909,8 @@
   <script src="vendor/mermaid.min.js"></script>
   <script src="vendor/diff2html-ui.min.js"></script>
   <script src="md.js"></script>
+  <script src="../shared/projectPath.js"></script>
+  <script src="../shared/projectImportBundle.js"></script>
   <script src="../shared/reuse.js"></script>
   <script src="../shared/allocation.js"></script>
   <script src="../shared/usagePresentation.js"></script>

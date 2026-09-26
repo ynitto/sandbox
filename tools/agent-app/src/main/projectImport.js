@@ -1,21 +1,20 @@
 'use strict';
 
-// agent-project の状態フォルダ（旧 --root）を、agent-app のプロジェクトへ取り込む。
-//
-//   charter.md の ## repos / repos.{yaml,yml,json} … project.yaml の repos（owns あり → 作業、無し → 参照、
-//                                                   最初の作業 → 主。同じ URL の複数エントリは 1 つにまとめる）
-//   host.yaml の repos[].local                    … この PC のフォルダ（repoPaths）
-//   rules.md / decisions/ / notes/ / charter.md   … ナレッジリポジトリの projects/<フォルダ>/ へ写す
-//   backlog/ needs/ archive/ など                 … 移さない（件数だけ返す。旧フォルダは消さない）
-//
-// 読むのも書くのもファイルだけ。git のコミットは呼び出し側（ipc / scripts）が決める。
+// agent-project の再利用できる資料を Markdown に変換・統合する。元の資料は変更しない。
 
 const fs = require('fs');
 const path = require('path');
 const YAML = require('yaml');
 const projects = require('./projects');
 
-const LEFT_BEHIND = ['backlog', 'needs', 'archive', 'inbox', 'commands', 'journal-archive'];
+const crypto = require('crypto');
+const bundle = require('../shared/projectImportBundle');
+const IMPORT_GROUPS = [
+  { id: 'policy', paths: ['charter.md', 'rules.md'] },
+  { id: 'knowledge', paths: ['decisions', 'notes'] },
+  { id: 'outcomes', paths: ['archive', 'DELIVERY.md'] },
+  { id: 'pending', paths: ['backlog', 'backlog.md', 'needs', 'inbox'] },
+];
 const KEY_ALIAS = { 説明: 'desc', ベース: 'base', ターゲット: 'target', パス: 'path', 担当: 'owns' };
 
 function readText(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } }
@@ -96,20 +95,65 @@ function hostRepoPaths(hostYaml) {
   return out;
 }
 
-function mdFiles(dir) {
-  try { return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && d.name.endsWith('.md')).map((d) => d.name).sort(); }
-  catch { return []; }
+// 管理用メタデータとコメントを除く。本文・コード・検証の成否は原文のまま保つ。
+function extract(text, group, source) {
+  let section = '';
+  let fence = '';
+  let comment = false;
+  const lines = text.split(/\r?\n/);
+  const kept = [];
+  const headings = { goal: '目的', constraints: '制約', assumptions: '前提', deliverables: '成果物', acceptance: '受入基準', links: '参考資料' };
+  const fields = { why: '背景', desc: '内容', scope: '対象範囲', out_of_scope: '対象外', constraints: '制約', hints: '補足', risks: 'リスク', demo: '確認方法', accept: '受入基準', acceptance: '受入基準', task_acceptance_criteria: '受入基準', verify: '検証', verification_commands: '検証コマンド' };
+  for (let line of lines) {
+    if (!fence) {
+      if (comment) {
+        const end = line.indexOf('-->');
+        if (end < 0) continue;
+        line = line.slice(end + 3); comment = false;
+      }
+      line = line.replace(/<!--[\s\S]*?-->/g, '');
+      const start = line.indexOf('<!--');
+      if (start >= 0) { line = line.slice(0, start); comment = true; }
+      const heading = /^##\s+(.+)/.exec(line);
+      if (heading) section = heading[1].trim().toLowerCase();
+      if (source === 'charter.md' && section === 'repos') continue;
+    }
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (marker) {
+      if (!fence) fence = marker[1];
+      else if (fence[0] === marker[1][0] && marker[1].length >= fence.length) fence = '';
+      kept.push(line); continue;
+    }
+    if (fence) { kept.push(line); continue; }
+    if (['outcomes', 'pending'].includes(group) && /^\s*-\s*(status|source|priority|retries|review|level|track|claimed_by|lease|started_at|updated_at|attempts|after|workspace|routed_by|node|cohort_items|cohort|cohort_role|read_allocation)\s*[:：]/i.test(line)) continue;
+    if (source === 'charter.md') line = line.replace(/^##\s+(\w+)\s*$/, (all, key) => headings[key.toLowerCase()] ? `## ${headings[key.toLowerCase()]}` : all);
+    if (['outcomes', 'pending'].includes(group)) line = line.replace(/^-\s*(\w+)\s*[:：]\s*(.*)$/, (all, key, value) => fields[key] ? (value.trim() ? `- ${fields[key]}: ${value.replace(/\s*⏎\s*/g, '\n  ')}` : '') : all);
+    // 相対リンクの参照先はコピーしない。壊れたリンクにせず元資料の参照として残す。
+    kept.push(line.replace(/(!?)\[([^\]]*)\]\(([^)]+)\)/g, (all, image, label, target) =>
+      /^(?:https?:|mailto:|#)/i.test(target) ? all : `${label}（元資料: ${target}）`));
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function count(dir) {
-  try { return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && d.name.endsWith('.md')).length; }
-  catch { return 0; }
+// backlog.md の複数タスクも、選択・実行の単位を1件ずつに保つ。
+function pendingEntries(text) {
+  const lines = text.split(/\r?\n/), starts = [];
+  let fence = '', comment = false;
+  lines.forEach((line, index) => {
+    if (!fence && /<!--/.test(line)) comment = true;
+    if (comment) { if (/-->/.test(line)) comment = false; return; }
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (marker) { if (!fence) fence = marker[1]; else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = ''; return; }
+    if (!fence && /^##\s+[^\s:：]+[:：]\s*\S/.test(line)) starts.push(index);
+  });
+  if (starts.length < 2) return [{ text, suffix: '' }];
+  const preface = lines.slice(0, starts[0]).join('\n').replace(/<!--[\s\S]*?-->/g, '').replace(/^#.*$/gm, '').trim();
+  return starts.map((start, index) => ({
+    text: lines.slice(start, starts[index + 1] ?? lines.length).join('\n') + (preface ? `\n\n### 共通事項\n${preface}` : ''),
+    suffix: `#task-${index + 1}`,
+  }));
 }
 
-// 何をどこへ写すかを決める（まだ何も書かない）。
-//   root     … agent-project の状態フォルダ
-//   hostYaml … ~/.agents/agent-project.host.yaml（省略可）
-//   name     … プロジェクト名（省略時は charter の最初の見出し、無ければフォルダ名）
 function plan({ root, hostYaml = '', name = '' }) {
   const dir = path.resolve(String(root || ''));
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error(`フォルダが見つかりません: ${dir}`);
@@ -117,44 +161,62 @@ function plan({ root, hostYaml = '', name = '' }) {
   const reg = registry(dir);
   const title = (/^#\s+(.+)$/m.exec(charter.replace(/<!--[\s\S]*?-->/g, '')) || [])[1] || '';
   const project = projects.normalize({ name: name || title.trim() || path.basename(dir), repos: toProjectRepos(reg.repos) });
-  if (!project.repos.length && !charter && !fs.existsSync(path.join(dir, 'rules.md'))) {
-    throw new Error('agent-project の状態フォルダではないようです（charter.md・repos・rules.md のどれも無い）');
+  if (!project.repos.length && !charter && !fs.existsSync(path.join(dir, 'rules.md'))) throw new Error('agent-project の状態フォルダを選んでください');
+  const items = [], excluded = [], seen = new Map();
+  const add = (rel, group) => {
+    const full = path.join(dir, rel);
+    const info = fs.lstatSync(full);
+    if (info.isSymbolicLink() || path.basename(rel).startsWith('.')) { excluded.push({ path: rel, reason: 'リンク・管理データ' }); return; }
+    if (info.isDirectory()) {
+      for (const entry of fs.readdirSync(full).sort()) add(path.posix.join(rel, entry), group);
+      return;
+    }
+    if (!info.isFile() || !/\.(md|txt)$/i.test(rel) || info.size > 1024 * 1024) { excluded.push({ path: rel, reason: '文書以外・1 MB 超の資料' }); return; }
+    const raw = readText(full);
+    for (const entry of group === 'pending' ? pendingEntries(raw) : [{ text: raw, suffix: '' }]) {
+      const source = rel + entry.suffix;
+      const content = extract(entry.text, group, rel);
+      if (!content || !content.replace(/^#+.*$/gm, '').trim()) { excluded.push({ path: source, reason: '再利用する本文なし' }); continue; }
+      // コードの空白や見出しにも意味があるため、同じ本文の資料だけを一つにする。
+      const fingerprint = content;
+      const previous = seen.get(`${group}:${fingerprint}`);
+      if (previous) { previous.sources.push(source); continue; }
+      const item = {
+        id: crypto.createHash('sha256').update(`${group}\0${source}\0${content}`).digest('hex').slice(0, 24),
+        group, title: (/^#+\s+(.+)$/m.exec(content) || [])[1] || path.basename(rel),
+        content, sources: [source], sourceBytes: info.size,
+      };
+      items.push(item); seen.set(`${group}:${fingerprint}`, item);
+    }
+  };
+  for (const group of IMPORT_GROUPS) for (const rel of group.paths) {
+    if (!fs.existsSync(path.join(dir, rel))) continue;
+    if (rel === 'DELIVERY.md' && items.some(item => item.group === 'outcomes')) { excluded.push({ path: rel, reason: '完了記録と重複する索引' }); continue; }
+    add(rel, group.id);
   }
-  const copies = [];
-  if (charter) copies.push({ from: 'charter.md', to: 'charter.md' });
-  if (fs.existsSync(path.join(dir, 'rules.md'))) copies.push({ from: 'rules.md', to: 'rules.md' });
-  for (const sub of ['decisions', 'notes']) {
-    for (const file of mdFiles(path.join(dir, sub))) copies.push({ from: `${sub}/${file}`, to: `${sub}/${file}` });
-  }
-  const leftBehind = {};
-  for (const sub of LEFT_BEHIND) { const n = count(path.join(dir, sub)); if (n) leftBehind[sub] = n; }
-  const repoPaths = hostYaml ? hostRepoPaths(hostYaml) : {};
-  return { root: dir, source: reg.source, project, folder: projects.folderName(project.name), copies, leftBehind, repoPaths };
+  const roots = new Set(IMPORT_GROUPS.flatMap(group => group.paths));
+  for (const entry of fs.readdirSync(dir)) if (!roots.has(entry)) excluded.push({ path: entry, reason: /^repos\./.test(entry) ? 'project.yaml に変換' : '実行ログ・制御情報などの対象外データ' });
+  return { root: dir, source: reg.source, project, folder: projects.folderName(project.name), items,
+    selected: bundle.recommended(items), excluded, repoPaths: hostYaml ? hostRepoPaths(hostYaml) : {} };
 }
 
-// ナレッジリポジトリへ書く。既にあるファイルは上書きしない（skipped に並べる）。
-// 書いたファイル（kb からの相対）を返す。
-function apply(kb, planned) {
+function apply(kb, planned, selected = planned.selected) {
+  if (!Array.isArray(selected) || selected.some(id => !planned.items.some(item => item.id === id))) throw new Error('取り込み元が変更されています。もう一度選び直してください');
   const base = path.join(kb, projects.DIR, planned.folder);
-  if (fs.existsSync(projects.projectFile(kb, planned.folder))) {
-    throw new Error(`同じ名前のプロジェクトが既にあります: ${projects.DIR}/${planned.folder}`);
-  }
+  // 統合文書が別の資料と混ざらないよう、既存フォルダには書き込まない。
+  if (fs.existsSync(base)) throw new Error(`同じ名前のフォルダが既にあります: ${projects.DIR}/${planned.folder}`);
+  const result = bundle.build(planned.items, selected);
+  const documents = result.documents;
+  const links = documents.map(doc => `- [${doc.label}](${doc.file})`);
+  const readme = `# ${planned.project.name}\n\nagent-project の資料を整理した参照用ナレッジです。未完了タスクは自動実行されません。\n\n${links.join('\n')}\n`;
+  fs.mkdirSync(base, { recursive: true });
   const written = [];
-  const skipped = [];
-  for (const item of planned.copies) {
-    const target = path.join(base, item.to);
-    if (fs.existsSync(target)) { skipped.push(item.to); continue; }
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.copyFileSync(path.join(planned.root, item.from), target);
-    written.push(path.posix.join(projects.DIR, planned.folder, item.to));
-  }
-  const readme = path.join(base, 'README.md');
-  if (!fs.existsSync(readme)) {
-    const links = planned.copies.map((item) => `- [${item.to}](${item.to})`);
-    fs.writeFileSync(readme, `# ${planned.project.name}\n\n## 索引\n\n${links.join('\n')}${links.length ? '\n' : ''}`, 'utf8');
+  for (const doc of [...documents, { file: 'README.md', content: readme }]) {
+    fs.writeFileSync(path.join(base, doc.file), doc.content, 'utf8');
+    written.push(path.posix.join(projects.DIR, planned.folder, doc.file));
   }
   written.push(...projects.write(kb, planned.folder, planned.project));
-  return { written: [...new Set(written)], skipped };
+  return { written: [...new Set(written)], skipped: [], ...result };
 }
 
-module.exports = { charterRepos, registry, toProjectRepos, hostRepoPaths, plan, apply, LEFT_BEHIND };
+module.exports = { charterRepos, registry, toProjectRepos, hostRepoPaths, plan, apply, extract, pendingEntries };

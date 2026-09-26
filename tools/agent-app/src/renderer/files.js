@@ -230,6 +230,7 @@
     const next = String(worktree || '');
     if (repo === state.repo && next === state.worktree) return;
     state.repo = repo || '';
+    $('project-file-repo').value = state.repo;
     state.worktree = next;
     state.open = null;
     state.expanded.clear();
@@ -252,10 +253,21 @@
     renderRootSelect();
   }
 
+  let projectRepos = [], activeRepo = '';
+  function setRepositories(items, currentRepo) {
+    projectRepos = items;
+    activeRepo = currentRepo;
+    const select = $('project-file-repo');
+    $('project-file-repositories').hidden = !items.length;
+    select.replaceChildren(...items.map(item => { const option = new Option(item.label, item.value); option.title = item.value; return option; }));
+    select.value = state.repo;
+    renderRootSelect();
+  }
+
   function renderRootSelect() {
     const sel = $('tree-root');
     // 作業フォルダを使わない設定のときは出さない（見ているのが本体だけなら選ぶものが無い）
-    sel.hidden = !rootsEnabled && !state.worktree;
+    sel.hidden = (!rootsEnabled && !state.worktree) || (projectRepos.length > 0 && state.repo !== activeRepo);
     if (sel.hidden) return;
     sel.replaceChildren();
     const add = (value, label) => { const o = el('option', '', label); o.value = value; sel.append(o); };
@@ -266,6 +278,7 @@
   }
 
   function init() {
+    $('project-file-repo').onchange = () => setRoot($('project-file-repo').value, '', {}).catch(err => { $('tree').replaceChildren(el('li', 'empty', err.message)); });
     $('tree-root').onchange = () => setRoot(state.repo, $('tree-root').value, {});
     $('tree-filter').addEventListener('input', () => { clearTimeout(state.filterTimer); state.filterTimer = setTimeout(applyFilter, 250); });
     $('tree-refresh').onclick = async () => {
@@ -290,10 +303,12 @@
       if (/^https?:/i.test(href)) return;                      // 外部リンクは何もしない（main の will-navigate でも止める）
       if (!state.open || /^#/.test(href)) return;
       const base = state.open.rel.split('/').slice(0, -1);
-      const target = href.split('/').reduce((acc, seg) => { if (seg === '..') acc.pop(); else if (seg && seg !== '.') acc.push(seg); return acc; }, base).join('/');
+      let localHref;
+      try { localHref = decodeURIComponent(href.split('#')[0].split('?')[0]); } catch { return; }
+      const target = localHref.split('/').reduce((acc, seg) => { if (seg === '..') acc.pop(); else if (seg && seg !== '.') acc.push(seg); return acc; }, base).join('/');
       openFile(target).then(() => reveal(target));
     });
   }
 
-  window.Files = { init, setRoot, renderRoots, openFile, reveal, state };
+  window.Files = { init, setRoot, renderRoots, setRepositories, openFile, reveal, state };
 })();

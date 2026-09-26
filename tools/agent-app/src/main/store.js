@@ -18,14 +18,14 @@ const sessionFindings = require('./sessionFindings');
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
 // useWorktree  … 会話ごとに git worktree で作業フォルダを分ける機能を使うか（既定 true）
-// area         … 最後に開いていた主要領域（home | conversation | tasks | workflows | share | inbox）。初回はホーム
+// area         … 最後に開いていた主要領域（home | conversation | tasks | workflows | projects | share | inbox）。初回はホーム
 // view         … 会話領域で最後に開いていた画面（chat | files）
 // lastWorktree … リポジトリ → 最後に選んだ作業フォルダ名（'' はリポジトリ本体）
 // lastTaskInputs … リポジトリ → タスクの保存名 → 前回の手動実行で入れた実行条件（値だけ。パスは持たない）
 // attentionSeen … 受信箱（attention.js）が使う「最後に見た結果の時刻」。{ since, items: { key → { resultAt } } }。
 //                 since は受信箱を使い始めた時刻（それ以前の結果は既読扱い）。作業の状態は持たない
 // knowledgeRepos … プロジェクトの定義を読みに行くナレッジリポジトリ（登録フォルダ。projects.js）
-// repoPaths    … 正規化した git の URL → この PC のフォルダ（プロジェクトの定義は URL で書くので、その対応だけ）
+// repoPaths    … 正規化した git の URL または local:<識別子> → この PC のフォルダ
 // lastProject  … 最後に選んだプロジェクト（'<ナレッジリポジトリ>#<フォルダ>'。'' はプロジェクトなし）
 const DEFAULTS = {
   repos: [], lastRepo: '', lastCli: 'copilot', lastModel: '', lastReadonly: false,
@@ -99,7 +99,7 @@ function normalize(raw) {
   next.transport = next.transport === 'headless' ? 'headless' : 'tmux';
   next.useWorktree = next.useWorktree !== false;
   next.area = next.area === 'automation' ? 'tasks'
-    : ['tasks', 'workflows', 'share', 'inbox', 'home'].includes(next.area) ? next.area : 'conversation';
+    : ['tasks', 'workflows', 'projects', 'share', 'inbox', 'home'].includes(next.area) ? next.area : 'conversation';
   next.view = next.view === 'files' ? 'files' : 'chat';
   next.lastFiles = next.lastFiles && typeof next.lastFiles === 'object' ? next.lastFiles : {};
   next.lastWorktree = next.lastWorktree && typeof next.lastWorktree === 'object' ? next.lastWorktree : {};
