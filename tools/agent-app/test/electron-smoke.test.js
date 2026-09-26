@@ -251,6 +251,14 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#sessions .list-pick').filter({ hasText: '画面を確認して' }).click();
     await win.locator('.answer-bubble').first().waitFor();
     assert.strictEqual(await win.locator('#conversation-history').getAttribute('open'), '', '端末がない会話では履歴を主表示する');
+    assert.equal(await win.locator('#home-repository-slot #repository-context').isVisible(), true);
+    const conversationContext = await win.locator('#composer').evaluate(composer => {
+      const shell = composer.querySelector('.composer-shell').getBoundingClientRect();
+      const context = composer.querySelector('.composer-context').getBoundingClientRect();
+      return context.top >= shell.bottom && Math.abs(context.left - shell.left) <= 1
+        && !composer.querySelector('.composer-shell #run-settings');
+    });
+    assert.equal(conversationContext, true, 'conversation selectors sit below the input border, aligned left');
     const composerModeHeights = await win.locator('#composer .composer-shell').evaluate((shell) => {
       const message = document.getElementById('message-input');
       const terminal = document.getElementById('terminal-keys');
@@ -558,9 +566,18 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       'Shadow DOM 内の実行設定が背景クリックで閉じない');
     const runToolbar = workspace.locator('.run-toolbar');
     await runToolbar.waitFor();
+    const runCardBox = await workspace.locator('.run-card').boundingBox();
+    const runToolbarBox = await runToolbar.boundingBox();
+    assert.ok(runToolbarBox.y >= runCardBox.y + runCardBox.height && Math.abs(runToolbarBox.x - runCardBox.x) <= 1,
+      'manual run controls sit below the card border, aligned left');
+    assert.equal(await workspace.locator('.run-card #task-run-settings, .run-card #run-start, .run-card #run-stop').count(), 0);
+
     assert.doesNotMatch(await workspace.locator('.run-card').textContent(), /実行ごとにエージェントとモデルを選べます/);
     const toolbarControls = await Promise.all(['#task-run-settings > summary', '#run-start', '#run-check', '#run-stop']
       .map((selector) => workspace.locator(selector).boundingBox()));
+    const [, startBox, , stopBox] = toolbarControls;
+    assert.ok(Math.abs(startBox.x + startBox.width - runToolbarBox.x - runToolbarBox.width) <= 1
+      && stopBox.x + stopBox.width < startBox.x, 'run is rightmost, with stop immediately to its left');
     const toolbarCenters = toolbarControls.map((box) => box && box.y + (box.height / 2));
     assert.ok(toolbarCenters.every(Boolean) && Math.max(...toolbarCenters) - Math.min(...toolbarCenters) <= 1,
       `manual run settings and actions should share one row: ${JSON.stringify(toolbarControls)}`);

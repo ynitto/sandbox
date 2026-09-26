@@ -863,15 +863,15 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 /* 判定中も会話の端末と同じ場所・配色で表示する。 */
 .terminal-preparation { flex: 1; min-height: 0; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--term-bg); color: var(--term-text); font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
-/* ホームの作業先は実行設定の右隣。ほかの画面はサイドバーに戻す。 */
-#home-repository-slot { flex: 0 1 180px; min-width: 0; }
+/* ホーム・会話の作業先は実行設定の右隣。ほかの画面はサイドバーに戻す。 */
+#home-repository-slot { flex: 0 1 320px; min-width: 0; max-width: 100%; }
 #home-repository-slot #repository-context { display: flex; align-items: center; gap: 4px; margin: 0; padding: 0; border: 0; }
 #home-repository-slot #repository-context > label { display: none; }
 #home-repository-slot #project-row:not([hidden]) { display: contents; }
 #home-repository-slot #project-row > label { display: none; }
 #home-repository-slot .repository-control { flex: 1; min-width: 0; }
 /* ホームでプロジェクトを選んでいれば、リポジトリは依頼から決まるので選択欄はプロジェクトだけ */
-#home-repository-slot #repository-context.has-project > .repository-control { display: none; }
+#home-repository-slot.is-home #repository-context.has-project > .repository-control { display: none; }
 #home-repository-slot .menu-panel { top: auto; bottom: calc(100% + 6px); }
 
 /* 送信開始で停止ボタンが現れても、入力欄と操作欄の幅を変えない。 */
@@ -881,9 +881,6 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 #composer .composer-toolbar > button,
 #composer .composer-toolbar > details { flex-shrink: 0; white-space: nowrap; }
 #composer #run-settings { flex-shrink: 1; max-width: 100%; }
-@media (min-width: 1100px) {
-  #composer .composer-toolbar:has(#home-repository-slot:not([hidden])) #run-settings { flex-shrink: 0; max-width: 48%; }
-}
 #composer #run-settings > summary > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #composer #stop[hidden] { display: inline-flex !important; order: -1; visibility: hidden; pointer-events: none; }
 #composer #send { width: 86px; justify-content: center; }
@@ -893,3 +890,6 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 
 #composer .composer-actions { display: flex; flex: none; align-items: center; gap: 4px; margin-left: auto; }
 #composer .composer-actions > button { display: inline-flex; flex: none; align-items: center; gap: 6px; white-space: nowrap; }
+
+/* 入力枠の下に、実行先の選択を左寄せでまとめる。 */
+.composer-context { width: min(100%, 900px); min-width: 0; margin: 8px auto 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; }

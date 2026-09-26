@@ -826,14 +826,16 @@ function renderAreaContext() {
   $('changes-toggle').hidden = home;
   $('chat-more').hidden = home || !state.repo;
   if (home) $('chat-more').open = false;
-  const repositorySlot = $(home ? 'home-repository-slot' : 'sidebar-repository-slot');
+  const composerContext = home || state.area === 'conversation';
+  const repositorySlot = $(composerContext ? 'home-repository-slot' : 'sidebar-repository-slot');
   // 選択状態と管理操作を共有する同じコントロールを、画面に応じて移す。
   if ($('repository-context').parentElement !== repositorySlot) {
     $('repo-more').open = false;
     repositorySlot.append($('repository-context'));
   }
-  $('home-repository-slot').hidden = !home;
-  $('sidebar-repository-slot').hidden = home;
+  $('home-repository-slot').hidden = !composerContext;
+  $('home-repository-slot').classList.toggle('is-home', home);
+  $('sidebar-repository-slot').hidden = composerContext;
   const info = AgentNavigation.areaInfo(state.area);
   const recent = RECENT_AREAS.has(state.area);
   $('area-list-title').textContent = recent ? '最近の依頼' : (info.listLabel || info.label);

@@ -165,9 +165,10 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
   .run-parameter-control select { width: 104px; }
 }
 .run-terminal-help { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-.run-toolbar { min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
-.run-toolbar-spacer { min-width: 8px; flex: 1; }
-.run-toolbar > button { flex: none; white-space: nowrap; }
+.manual-run { min-width: 0; display: grid; gap: 8px; margin-bottom: 14px; }
+.run-toolbar { min-width: 0; display: flex; align-items: center; justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
+.run-actions { display: flex; flex: none; align-items: center; gap: 8px; margin-left: auto; }
+.run-toolbar > button, .run-actions > button { flex: none; white-space: nowrap; }
 .run-settings { position: relative; min-width: 0; width: fit-content; max-width: 100%; }
 .run-settings > summary { min-height: 36px; max-width: 440px; display: flex; align-items: center; padding: 7px 10px; overflow: hidden; border-radius: 8px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; cursor: pointer; list-style: none; }
 .run-settings > summary::-webkit-details-marker { display: none; }
@@ -459,7 +460,6 @@ dialog::backdrop { background: rgba(20, 24, 40, 0.25); }
 @media (max-width: 719px) {
   .grid2 { grid-template-columns: 1fr; }
   .run-toolbar { flex-wrap: wrap; }
-  .run-toolbar-spacer { display: none; }
   .home { grid-template-columns: 190px minmax(0, 1fr); }
   .machine-pane { padding-inline: 18px; }
   .dlg-body { padding: 14px; }

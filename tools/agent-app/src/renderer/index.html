@@ -200,61 +200,6 @@
                 <summary>定型</summary>
                 <div class="menu-panel" id="quick-menu-list"></div>
               </details>
-              <details id="run-settings" class="run-settings">
-                <summary><span id="run-settings-summary">実行設定</span><span class="run-settings-compact" aria-hidden="true">実行設定</span></summary>
-                <div class="settings-popover">
-                  <div class="popover-head row"><span>実行設定</span><span class="spacer"></span><button type="button" id="run-usage-open" class="small quiet">利用状況を見る</button></div>
-                  <label id="run-allocation-field" hidden>今回の配分<select id="run-allocation"><option value="">通常設定に従う</option><option value="auto">自動選択</option><option value="configured">通常の配分</option><option value="local">ローカル優先</option><option value="cloud">クラウド優先</option><option value="local-only">クラウドを使わない</option></select></label>
-                  <label id="policy-field" hidden>起動方針
-                    <select id="policy">
-                      <option value="recommended">標準</option>
-                      <option value="saving">節約</option>
-                      <option value="quality">品質重視</option>
-                      <option value="direct">直接指定</option>
-                    </select>
-                  </label>
-                  <label id="share-target-field" hidden>依頼先
-                    <select id="share-target"><option value="">どれでも</option></select>
-                  </label>
-                  <label id="share-priority-field" hidden>優先度
-                    <select id="priority">
-                      <option value="high">高</option>
-                      <option value="normal" selected>通常</option>
-                      <option value="low">低</option>
-                    </select>
-                  </label>
-                  <div id="direct-agent-settings" class="direct-agent-settings" hidden>
-                    <label>エージェント<select id="cli"></select></label>
-                    <label>モデル<input id="model" placeholder="自動" size="14"></label>
-                  </div>
-                  <label>スキル
-                    <select id="turn-skill-mode">
-                      <option value="auto">自動</option>
-                      <option value="manual">手動選択</option>
-                      <option value="off">使用しない</option>
-                    </select>
-                  </label>
-                  <div id="turn-skill-list" class="skill-choice-list" hidden></div>
-                  <label>依頼の扱い
-                    <select id="turn-routing">
-                      <option value="auto">自動で振り分ける</option>
-                      <option value="off">会話で実行</option>
-                    </select>
-                  </label>
-                  <label id="permission-field">権限
-                    <select id="permission-mode">
-                      <option value="confirm">確認して実行</option>
-                      <option value="auto">自動承認</option>
-                      <option value="ask">読み取り専用</option>
-                    </select>
-                  </label>
-                  <div class="worktree-setting" id="worktree-field">
-                    <label>作業フォルダ<select id="worktree" title="会話ごとに分ける作業フォルダ"></select></label>
-                    <button type="button" id="wt-manage" class="small quiet">管理</button>
-                  </div>
-                </div>
-              </details>
-              <div id="home-repository-slot" hidden></div>
               <span class="spacer"></span>
               <div class="composer-actions">
               <span class="send-hint">Enterで送信</span>
@@ -264,6 +209,63 @@
               </button>
               </div>
             </div>
+          </div>
+          <div class="composer-context">
+            <details id="run-settings" class="run-settings">
+              <summary><span id="run-settings-summary">実行設定</span><span class="run-settings-compact" aria-hidden="true">実行設定</span></summary>
+              <div class="settings-popover">
+                <div class="popover-head row"><span>実行設定</span><span class="spacer"></span><button type="button" id="run-usage-open" class="small quiet">利用状況を見る</button></div>
+                <label id="run-allocation-field" hidden>今回の配分<select id="run-allocation"><option value="">通常設定に従う</option><option value="auto">自動選択</option><option value="configured">通常の配分</option><option value="local">ローカル優先</option><option value="cloud">クラウド優先</option><option value="local-only">クラウドを使わない</option></select></label>
+                <label id="policy-field" hidden>起動方針
+                  <select id="policy">
+                    <option value="recommended">標準</option>
+                    <option value="saving">節約</option>
+                    <option value="quality">品質重視</option>
+                    <option value="direct">直接指定</option>
+                  </select>
+                </label>
+                <label id="share-target-field" hidden>依頼先
+                  <select id="share-target"><option value="">どれでも</option></select>
+                </label>
+                <label id="share-priority-field" hidden>優先度
+                  <select id="priority">
+                    <option value="high">高</option>
+                    <option value="normal" selected>通常</option>
+                    <option value="low">低</option>
+                  </select>
+                </label>
+                <div id="direct-agent-settings" class="direct-agent-settings" hidden>
+                  <label>エージェント<select id="cli"></select></label>
+                  <label>モデル<input id="model" placeholder="自動" size="14"></label>
+                </div>
+                <label>スキル
+                  <select id="turn-skill-mode">
+                    <option value="auto">自動</option>
+                    <option value="manual">手動選択</option>
+                    <option value="off">使用しない</option>
+                  </select>
+                </label>
+                <div id="turn-skill-list" class="skill-choice-list" hidden></div>
+                <label>依頼の扱い
+                  <select id="turn-routing">
+                    <option value="auto">自動で振り分ける</option>
+                    <option value="off">会話で実行</option>
+                  </select>
+                </label>
+                <label id="permission-field">権限
+                  <select id="permission-mode">
+                    <option value="confirm">確認して実行</option>
+                    <option value="auto">自動承認</option>
+                    <option value="ask">読み取り専用</option>
+                  </select>
+                </label>
+                <div class="worktree-setting" id="worktree-field">
+                  <label>作業フォルダ<select id="worktree" title="会話ごとに分ける作業フォルダ"></select></label>
+                  <button type="button" id="wt-manage" class="small quiet">管理</button>
+                </div>
+              </div>
+            </details>
+            <div id="home-repository-slot" hidden></div>
           </div>
         </footer>
       </section>

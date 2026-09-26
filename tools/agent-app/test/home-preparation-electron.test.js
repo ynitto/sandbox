@@ -84,7 +84,7 @@ test('home: preparation appears before readiness, updates during selection, and 
       assert.deepEqual(pair.after, pair.before, 'layout stable at ' + width);
       assert.equal(pair.overflow, false, 'no horizontal overflow at ' + width);
       const toolbar = await win.evaluate(() => {
-        const ids = ['attach', 'run-settings', 'home-repository-slot', 'stop', 'send'];
+        const ids = ['attach', 'stop', 'send'];
         const rects = ids.map(id => $(id).getBoundingClientRect());
         return {
           centers: rects.map(r => r.y + r.height / 2),
@@ -95,6 +95,17 @@ test('home: preparation appears before readiness, updates during selection, and 
       assert.ok(Math.max(...toolbar.centers) - Math.min(...toolbar.centers) < 2, 'toolbar stays on one row at ' + width);
       assert.ok(Math.max(...toolbar.heights) <= 40, 'toolbar labels stay on one line at ' + width);
       assert.ok(toolbar.widths.every(w => w > 0), 'all toolbar controls remain visible at ' + width);
+      const context = await win.evaluate(() => {
+        const shell = document.querySelector('#composer .composer-shell').getBoundingClientRect();
+        const controls = ['run-settings', 'home-repository-slot'].map(id => {
+          const element = $(id), r = element.getBoundingClientRect();
+          return { outside: !element.closest('.composer-shell'), x: r.x, y: r.y, width: r.width };
+        });
+        return { left: shell.left, bottom: shell.bottom, controls };
+      });
+      assert.ok(context.controls.every(c => c.outside && c.y >= context.bottom && c.width > 0), 'selectors below input border at ' + width);
+      assert.ok(Math.abs(context.controls[0].x - context.left) <= 1, 'selectors aligned left at ' + width);
+
     }
     await win.setViewportSize({ width: 1360, height: 821 });
     await win.screenshot({ path: '/tmp/agent-app-home-preparation.png' });
