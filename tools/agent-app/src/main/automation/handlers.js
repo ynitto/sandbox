@@ -21,6 +21,7 @@ const taskInputs = require('./task-inputs');
 const flowModel = require('./flow-model');
 const flowStore = require('./flow-store');
 const agentFlow = require('./agent-flow');
+const flowSettings = require('./flow-settings');
 const flowTeaching = require('./flow-teaching-model');
 const flowTeachingStore = require('./flow-teaching-store');
 const teaching = require('./teaching');
@@ -358,6 +359,9 @@ function registerIpcHandlers(getWindow, options = {}) {
     return agentFlow.start({ ...p, agent, model: selected ? selected.model : p.model }, { root, getContext, startDetached: runStartDetached, hostPath });
   });
   register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit, hostRootOf(p)));
+  register('flow:run:plan', (p) => agentFlow.planDraft(selectedRoot(p), p.runId, hostRootOf(p)));
+  register('flow:settings:read', (p) => flowSettings.read(selectedRoot(p)));
+  register('flow:settings:save', (p) => flowSettings.save(selectedRoot(p), p.values));
   register('flow:run:read', (p) => agentFlow.readRun(selectedRoot(p), p.runId, hostRootOf(p)));
   register('flow:run:cancel', (p) => agentFlow.cancel(selectedRoot(p), p.runId, p.reason, runCapture, hostRootOf(p)));
   register('flow:run:respond', (p) => agentFlow.respond(selectedRoot(p), p.runId, p.interactionId, p.answer, hostRootOf(p)));
