@@ -212,7 +212,7 @@ async function removeConversation(session) {
   state.tails.delete(session.id);
   state.sessions = await api.listSessions(state.repo);
   // 作業フォルダは会話とは別物なので、他の会話が使っていないときだけ別に聞く。
-  const others = state.sessions.filter((s) => s.worktree === wt).length;
+  const others = state.sessions.filter((s) => s.repo === state.repo && s.worktree === wt).length;
   if (wt && !others && confirm(`作業フォルダ ${wt} も削除しますか？ブランチは残ります。`)) {
     try { await api.removeWorktree(state.repo, wt, { force: false }); } catch (err) { notice(err.message, 'error'); }
     await refreshWorktrees();
@@ -232,7 +232,7 @@ function renderSessions() {
     const pick = el('button', 'list-pick');
     const body = el('span', 'grow');
     body.append(el('div', '', s.title || '（無題）'));
-    const where = s.worktree ? ` · ${s.branch || s.worktree}` : '';
+    const where = `${s.project ? ` · ${basename(s.repo)}` : ''}${s.worktree ? ` · ${s.branch || s.worktree}` : ''}`;
     const status = state.running.has(s.id) ? '応答中' : (ph && ph.phase === 'attention' ? '確認待ち' : `${s.count}件`);
     body.append(el('div', 'sub', `${s.cli}${s.readonly ? ' · Ask' : ''}${where} · ${status}`));
     pick.append(body);
@@ -240,6 +240,8 @@ function renderSessions() {
     const answering = !!(ph && ph.phase === 'attention');
     pick.title = answering ? `「${s.title || '無題の会話'}」を開いて端末操作で答える` : '';
     pick.onclick = () => openSession(s.id, { answer: answering });
+    // プロジェクトの一覧はリポジトリ横断なので、別のリポジトリの会話はそのリポジトリへ移って開く
+    if (s.repo && s.repo !== state.repo) pick.onclick = () => openSessionInRepo(s.repo, s.id, { answer: answering }).catch((err) => notice(err.message, 'error'));
     const remove = el('button', 'session-remove', '削除');
     remove.type = 'button';
     remove.title = `${s.title || '無題の会話'}を削除`;
@@ -262,6 +264,7 @@ function conversationActions(cur) {
     { id: 'session-publish', label: published ? '公開を停止' : 'セッションを公開', hidden: !cur || cur.kind !== 'conversation' },
     { id: 'session-fork', label: 'この会話をフォーク', hidden: !cur || cur.kind !== 'conversation', disabled: busy || !cur?.messages.some(m => m.role === 'assistant' && m.complete !== false) },
     { id: 'session-routine', label: 'この作業を定型化', hidden: !cur, disabled: busy },
+    { id: 'session-project', label: 'プロジェクトに入れる', hidden: !cur || cur.kind !== 'conversation' || !Projects.canAssign(cur) },
     { id: 'session-export', label: 'テキストに書き出す', hidden: !cur },
     { id: 'session-rename', label: '会話名を変更', hidden: !cur },
     { id: 'session-delete', label: '会話を削除', hidden: !cur },
@@ -1141,7 +1144,7 @@ function renderWorktreeList() {
     tr.append(el('td', 'sub', state_.join(' · ')));
     const act = el('td', 'wt-act');
     if (!w.main && w.name) {
-      const used = state.sessions.filter((s) => s.worktree === w.name).length;
+      const used = state.sessions.filter((s) => s.repo === state.repo && s.worktree === w.name).length;
       const b = el('button', 'small danger', '削除');
       b.title = used ? `この作業フォルダを使っている会話が ${used} 件ある（会話自体は残る）` : '';
       b.onclick = () => removeWorktree(w, used);
@@ -1583,6 +1586,12 @@ function renderHeader() {
     $('chat-origin').textContent = `引き継ぎ元: ${externalOrigin.title || '外部の会話'}`;
     $('chat-origin').title = externalOrigin.repo;
     $('chat-origin').onclick = () => SessionSearch.openOrigin(externalOrigin);
+  } else if (cur && cur.project && Projects.label(cur)) {
+    // プロジェクトの会話は、題名の下にプロジェクト名とリポジトリ（押すとホーム＝プロジェクトの入口へ）
+    $('chat-origin').hidden = false;
+    $('chat-origin').textContent = `${Projects.label(cur)} · ${basename(cur.repo)}`;
+    $('chat-origin').title = cur.repo;
+    $('chat-origin').onclick = () => showArea('home').catch((err) => notice(err.message, 'error'));
   }
   // エージェント・モデル・モードは「次のターン」のもの。会話を開いていても変えられる
   $('cli').disabled = !state.repo;
@@ -2122,6 +2131,7 @@ function renderMessages() {
   box.replaceChildren();
   start.replaceChildren();
   const cur = state.current;
+  if (!cur && state.area === 'home' && Projects.renderHome(start)) return;
   if (!cur) {
     start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリを登録してください'));
     if (state.repo && state.area === 'home') start.append(el('p', '', 'エージェント・スキル・進め方は依頼から決めます'));
@@ -2554,6 +2564,7 @@ async function showArea(area, { persist = true, action = '' } = {}) {
     if (state.repo !== latest.lastRepo) await selectRepo(latest.lastRepo);
     if (home) {
       newDraft();                                   // ホームは常に新しい会話から
+      Projects.refreshHome();                       // ナレッジの一覧はホームを開いたときだけ読む
       if (state.repo) await loadAreaItems();        // 直近の一覧（タスク・ワークフロー）
     }
     Term.refit();
@@ -3140,6 +3151,10 @@ async function init() {
   $('session-rename').onclick = () => {
     $('chat-more').open = false;
     renameConversation().catch((err) => notice(err.message, 'error'));
+  };
+  $('session-project').onclick = () => {
+    $('chat-more').open = false;
+    Projects.assign(state.current).catch((err) => notice(err.message, 'error'));
   };
   $('session-export').onclick = () => {
     $('chat-more').open = false;

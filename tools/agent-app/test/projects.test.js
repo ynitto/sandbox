@@ -81,11 +81,56 @@ test('最初の依頼に添える節は、ほかのリポジトリとナレッ�
   assert.match(block, /日本語で答える/);
 });
 
+test('節には rules.md の中身と、作業ブランチをそろえる指示と、残す候補の挙げ方が入る', () => {
+  const project = { name: '受注', repos: [{ url: 'git@h:t/app.git', role: 'main' }, { url: 'git@h:t/api.git', role: 'work' }] };
+  const resolved = projects.resolve(project, { [projects.normalizeUrl('git@h:t/app.git')]: '/src/app', [projects.normalizeUrl('git@h:t/api.git')]: '/src/api' });
+  const block = projects.contextBlock({ project, folder: '受注', resolved, current: '/src/app', kbHost: '/src/kb', rules: '- 互換を壊さない', branch: 'feat/login' });
+  assert.match(block, /### 守ること（rules\.md）\n- 互換を壊さない/);
+  assert.match(block, /ブランチ feat\/login を作って/);
+  assert.match(block, /main へ直接コミットせず/);
+  assert.match(block, /ナレッジに残す候補/);
+  const plain = projects.contextBlock({ project, folder: '受注', resolved, current: '/src/app', kbHost: '/src/kb' });
+  assert.doesNotMatch(plain, /ブランチ/);
+  assert.match(plain, /README\.md と rules\.md があれば読んで/);
+});
+
+test('ナレッジの一覧は新しい順で、定義と索引を除く。足すファイルは files/ に重ならない名前で置く', () => {
+  const kb = tmp();
+  projects.write(kb, 'p', { name: 'p', repos: [] });
+  const dir = path.join(kb, 'projects', 'p');
+  fs.mkdirSync(path.join(dir, 'notes'));
+  fs.writeFileSync(path.join(dir, 'notes', 'a.md'), 'a');
+  fs.writeFileSync(path.join(dir, 'rules.md'), 'r');
+  fs.utimesSync(path.join(dir, 'notes', 'a.md'), new Date(2020, 0, 1), new Date(2020, 0, 1));
+  const listed = projects.knowledgeFiles(kb, 'p', 1);
+  assert.equal(listed.total, 2);
+  assert.deepEqual(listed.recent.map((f) => f.rel), ['projects/p/rules.md']);
+  assert.equal(projects.fileTarget(kb, 'p', '../x/メモ.txt'), 'projects/p/files/メモ.txt');
+  fs.mkdirSync(path.join(dir, 'files'));
+  fs.writeFileSync(path.join(dir, 'files', 'メモ.txt'), '');
+  assert.equal(projects.fileTarget(kb, 'p', 'メモ.txt'), 'projects/p/files/メモ-2.txt');
+  assert.equal(projects.rulesText(kb, 'p'), 'r');
+  fs.writeFileSync(path.join(dir, 'rules.md'), 'x'.repeat(5000));
+  assert.equal(projects.rulesText(kb, 'p'), '');
+});
+
+test('プロジェクトの会話の一覧はリポジトリを問わず、印の付いた会話だけを並べる', () => {
+  const store = require('../src/main/store');
+  const ud = tmp();
+  const a = store.createSession(ud, { repo: '/src/app', cli: 'x', project: 'kb#p' });
+  store.createSession(ud, { repo: '/src/app', cli: 'x' });
+  const c = store.createSession(ud, { repo: '/src/api', cli: 'x', project: 'kb#p' });
+  assert.deepEqual(store.listSessions(ud, '/src/app', { project: 'kb#p' }).map((s) => s.id).sort(), [a.id, c.id].sort());
+  assert.equal(store.listSessions(ud, '/src/app').length, 2);
+  store.updateSession(ud, a.id, { project: '' });
+  assert.equal(store.listSessions(ud, '', { project: 'kb#p' }).length, 1);
+});
+
 test('ナレッジに保存の指示は、置き場・索引・コミットの範囲を決めて渡す', () => {
   const prompt = projects.knowledgePrompt({ kbHost: '/src/kb/', folder: '受注', kind: 'decision', date: '2026-09-25T00:00:00Z' });
   assert.match(prompt, /\/src\/kb\/projects\/受注\/decisions\/2026-09-25-/);
   assert.match(prompt, /README\.md/);
-  assert.match(prompt, /push はしない/);
+  assert.match(prompt, /コミットし、そのまま push する/);
   assert.match(projects.knowledgePrompt({ kbHost: '/src/kb', folder: 'x', scope: 'shared', kind: 'rule' }), /\/src\/kb\/shared\/rules\.md/);
 });
 

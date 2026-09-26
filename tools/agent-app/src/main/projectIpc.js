@@ -4,7 +4,7 @@
 //
 // ホストに聞くのは次の 3 つだけで、どれも人の操作のときに 1 回ずつ走る（監視・定期実行はしない）:
 //   - 登録リポジトリの origin の URL（定義の URL とこの PC のフォルダを結ぶため。結果は repoPaths に残す）
-//   - 定義を保存・取り込みしたときの git commit（そのファイルだけ。push はしない）
+//   - 定義を保存・取り込み・ファイルを足したときの git commit（そのファイルだけ）と push（今のブランチを origin へ）
 //   - 「最新を取得」の git pull --ff-only
 
 const fs = require('fs');
@@ -71,8 +71,10 @@ async function commit(kb, files, message) {
   const dir = host.toHostPath(kb);
   const add = await shell.exec(['git', '-C', dir, 'add', '--', ...files], { timeoutMs: 20000 });
   const done = add.ok && (await shell.exec(['git', '-C', dir, 'commit', '-m', message, '--', ...files], { timeoutMs: 20000 })).ok;
-  return done ? { committed: true, warning: '' }
-    : { committed: false, warning: 'ファイルは書きましたが、ナレッジリポジトリにコミットできませんでした（git の管理下か確認してください）' };
+  if (!done) return { committed: false, pushed: false, warning: 'ファイルは書きましたが、ナレッジリポジトリにコミットできませんでした（git の管理下か確認してください）' };
+  const push = await shell.exec(['git', '-C', dir, 'push', 'origin', 'HEAD'], { timeoutMs: 60000 });
+  return push.ok ? { committed: true, pushed: true, warning: '' }
+    : { committed: true, pushed: false, warning: `コミットしましたが push できませんでした: ${push.output.trim().split('\n').pop() || 'git push に失敗'}` };
 }
 
 // いま選んでいるプロジェクトに repo が入っていればその鍵（タスク・ワークフローを作る会話に付ける）
@@ -97,6 +99,7 @@ function promptBlock(sess, cfg) {
   if (!ctx) return '';
   return projects.contextBlock({
     project: ctx.project, folder: ctx.folder, current: sess.repo, kbHost: host.toHostPath(ctx.kb),
+    rules: projects.rulesText(ctx.kb, ctx.folder), branch: sess.worktree ? String(sess.branch || '') : '',
     resolved: ctx.resolved.map((repo) => ({ ...repo, hostPath: repo.path ? host.toHostPath(repo.path) : '' })),
   });
 }
@@ -184,6 +187,54 @@ function register(handle, { dialog, getWindow }) {
     const r = await host.shellFor(distroFor(kb)).exec(['git', '-C', host.toHostPath(kb), 'pull', '--ff-only'], { timeoutMs: 60000 });
     if (!r.ok) throw new Error(`最新を取得できませんでした: ${r.output.trim().split('\n').pop() || 'git pull に失敗'}`);
     return { output: r.output.trim() };
+  });
+
+  // ホームのナレッジのカード。開いたときに 1 回だけ読む
+  handle('projects:files', (p) => {
+    const item = context(p.key);
+    if (!item) throw new Error('プロジェクトが見つかりません');
+    return projects.knowledgeFiles(item.kb, item.folder, 5);
+  });
+
+  // ナレッジにファイルを足す（ドロップ・ファイル選択）。files/ へ写して、そのファイルだけコミットして push
+  //   items … [{ name, size, write(dest) }]
+  const addFiles = async (key, items) => {
+    const item = context(key);
+    if (!item) throw new Error('プロジェクトが見つかりません');
+    if (!items.length) throw new Error('ファイルがありません');
+    const big = items.find((file) => file.size > projects.MAX_FILE_BYTES);
+    if (big) throw new Error(`${big.name} は 10 MB を超えています`);
+    const written = [];
+    for (const file of items) {
+      const rel = projects.fileTarget(item.kb, item.folder, file.name);
+      fs.mkdirSync(path.dirname(path.join(item.kb, rel)), { recursive: true });
+      file.write(path.join(item.kb, rel));
+      written.push(rel);
+    }
+    const names = written.map((rel) => path.posix.basename(rel)).join('、');
+    return { written, ...(await commit(item.kb, written, `agent-app: ナレッジに ${names} を追加`)) };
+  };
+  // ドロップ: 画面から中身を受け取る（添付と同じ）
+  handle('projects:addFile', (p) => {
+    const data = Buffer.from(p.data || []);
+    const name = path.basename(String(p.name || '')) || 'file';
+    return addFiles(p.key, [{ name, size: data.length, write: (dest) => fs.writeFileSync(dest, data) }]);
+  });
+  handle('projects:pickFiles', async (p) => {
+    const res = await dialog.showOpenDialog(getWindow(), { properties: ['openFile', 'multiSelections'], title: 'ナレッジに追加するファイルを選ぶ' });
+    if (res.canceled || !res.filePaths.length) return null;
+    return addFiles(p.key, res.filePaths.map((source) => ({
+      name: path.basename(source), size: fs.statSync(source).size, write: (dest) => fs.copyFileSync(source, dest),
+    })));
+  });
+
+  // 既存の会話を、選んでいるプロジェクトに入れる（そのリポジトリが入っているときだけ）
+  handle('projects:assign', (p) => {
+    const sess = store.readSession(userData(), p.id);
+    const key = projectFor(sess.repo);
+    if (!key) throw new Error('選んでいるプロジェクトに、この会話のリポジトリが入っていません');
+    store.updateSession(userData(), sess.id, { project: key });
+    return { project: key };
   });
 
   // 会話の中から「ナレッジに保存」: 送る本文を組むだけ（送るのは画面のいつもの送信）

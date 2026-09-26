@@ -7,6 +7,8 @@
 //   編集   … 作業フォルダ（#wt-dialog）と同じダイアログ。行は設定の `.setting-field`、
 //            リポジトリの並びは設定の `.wt-table.settings-table`
 //   保存   … 回答の下の `.message-action` と、`.more-menu` の選択肢
+//   ホーム … プロジェクトを選んでいるときの空状態。見出し → 1 行 → `.execution-card` の「指示」「ナレッジ」
+//            （「概要」の手動実行と同じカード）。ナレッジの一覧はホームを開いたときだけ読む
 // renderer.js の state / selectRepo / renderRepos / notice を使う（読み込み順で後ろに来るので呼ぶ時に引く）。
 (function initProjects() {
   const $ = (id) => document.getElementById(id);
@@ -21,7 +23,8 @@
   ];
 
   // items … 一覧（projects:list）。current … 選んでいるプロジェクト（projects:open。フォルダ付き）
-  const P = { items: [], current: null, dialog: null };
+  // files … ホームのナレッジ（projects:files。{ key, recent, total }、読み込み中は null）
+  const P = { items: [], current: null, dialog: null, files: null };
 
   function key() { return (state.config && state.config.lastProject) || ''; }
 
@@ -78,6 +81,11 @@
     const target = mainPath() || (repos && repos[0] && repos[0].value) || '';
     if (target && target !== state.repo) await selectRepo(target);
     else renderRepos();
+    // 会話の一覧はプロジェクトで絞られるので、選び直したら読み直す
+    state.sessions = state.repo ? await api.listSessions(state.repo) : [];
+    renderAreaContext();
+    if (state.area === 'home') { refreshHome(); renderMessages(); }
+    renderHeader();
     const missing = P.current ? P.current.repos.filter((repo) => !repo.path).length : 0;
     if (missing) notice(`この PC のフォルダが未設定のリポジトリが ${missing} 件あります（プロジェクトの編集で選べます）`);
   }
@@ -113,6 +121,136 @@
     }
     menu.append(panel);
     return menu;
+  }
+
+  // ---- ホーム（プロジェクトの入口） ----
+  function refreshHome() {
+    if (!P.current) { P.files = null; return; }
+    const target = P.current.key;
+    P.files = null;
+    api.projects.files(target).then((files) => {
+      if (!P.current || P.current.key !== target) return;
+      P.files = { key: target, ...files };
+      if (state.area === 'home' && !state.current) renderMessages();
+    }).catch((err) => notice(err.message, 'error'));
+  }
+
+  function cardHead(title, lead, ...actions) {
+    const head = el('div', 'execution-card-head');
+    const text = el('div');
+    text.append(el('h3', '', title));
+    if (lead) text.append(el('p', '', lead));
+    head.append(text);
+    if (actions.length) {
+      const row = el('div', 'row');
+      row.append(...actions);
+      head.append(row);
+    }
+    return head;
+  }
+
+  function button(label, onclick) {
+    const b = el('button', 'small', label);
+    b.type = 'button';
+    b.onclick = () => Promise.resolve(onclick()).catch((err) => notice(err.message, 'error'));
+    return b;
+  }
+
+  // ナレッジのファイルを、既存のファイルビュアーで開く（ナレッジリポジトリへ移って開く）
+  async function openKnowledge(rel) {
+    const kb = P.current.kb;
+    if (kb !== state.repo) { await selectRepo(kb); renderRepos(); }
+    await showArea('conversation');
+    renderHeader();
+    showView('files');
+    await Files.setRoot(kb, '', {});
+    await Files.openFile(rel);
+    Files.reveal(rel);
+  }
+
+  async function afterAdd(result) {
+    if (!result) return;
+    notice(result.warning || `ナレッジに追加しました（${result.written.length} 件）`);
+    refreshHome();
+  }
+
+  async function dropFiles(list) {
+    const added = { written: [], warning: '' };
+    for (const file of [...(list || [])]) {
+      const data = new Uint8Array(await file.arrayBuffer());
+      const result = await api.projects.addFile(P.current.key, file.name, data);
+      added.written.push(...result.written);
+      if (result.warning) added.warning = result.warning;
+    }
+    if (added.written.length) await afterAdd(added);
+  }
+
+  // 空状態に描く（描いたら true）。プロジェクトを選んでいないときは今のまま（呼び出し側が描く）
+  function renderHome(start) {
+    if (!P.current) return false;
+    const cur = P.current;
+    const main = cur.repos.find((repo) => repo.role === 'main') || cur.repos[0];
+    const others = cur.repos.length - (main ? 1 : 0);
+    start.append(el('h2', '', cur.project.name));
+    start.append(el('p', '', main ? `${main.label}${others ? ` ほか ${others} リポジトリ` : ''}` : 'リポジトリが未設定です'));
+    const cards = el('div', 'project-home');
+    const instructions = el('section', 'execution-card');
+    const firstLine = String(cur.project.instructions || '').split('\n').find((line) => line.trim()) || '';
+    instructions.append(cardHead('指示', firstLine || '未設定', button('編集', () => openDialog('edit'))));
+    const knowledge = el('section', 'execution-card');
+    const files = P.files && P.files.key === cur.key ? P.files : null;
+    knowledge.append(cardHead('ナレッジ', files ? `${files.total} 件` : '',
+      button('追加', async () => afterAdd(await api.projects.pickFiles(cur.key))),
+      button('索引を開く', () => openKnowledge(`projects/${cur.folder}/README.md`))));
+    if (files && files.recent.length) {
+      const list = el('ul', 'list project-files');
+      for (const file of files.recent) {
+        const li = el('li', 'row-item');
+        const pick = el('button', 'list-pick');
+        const body = el('span', 'grow');
+        body.append(el('div', '', file.name));
+        pick.append(body, el('span', 'sub', new Date(file.mtime).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })));
+        pick.title = file.rel;
+        pick.onclick = () => openKnowledge(file.rel).catch((err) => notice(err.message, 'error'));
+        li.append(pick);
+        list.append(li);
+      }
+      knowledge.append(list);
+      if (files.total > files.recent.length) knowledge.append(el('span', 'sub', `ほか ${files.total - files.recent.length} 件`));
+    } else if (files) knowledge.append(el('span', 'sub', 'まだありません'));
+    knowledge.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); e.stopPropagation(); knowledge.classList.add('drop'); } });
+    knowledge.addEventListener('dragleave', () => knowledge.classList.remove('drop'));
+    knowledge.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      knowledge.classList.remove('drop');
+      dropFiles(e.dataTransfer.files).catch((err) => notice(err.message, 'error'));
+    });
+    cards.append(instructions, knowledge);
+    start.append(cards);
+    return true;
+  }
+
+  // ---- 会話の見出し・••• ----
+  // その会話のプロジェクト名（一覧にあるものだけ）
+  function label(session) {
+    const item = session && session.project ? P.items.find((entry) => entry.key === session.project && entry.project) : null;
+    return item ? item.project.name : '';
+  }
+
+  function canAssign(session) {
+    if (!session || session.project || !P.current) return false;
+    return session.repo === P.current.kb || P.current.repos.some((repo) => repo.path === session.repo);
+  }
+
+  async function assign(session) {
+    if (!canAssign(session)) return;
+    await api.projects.assign(session.id);
+    state.current = await api.readSession(session.id);
+    state.sessions = await api.listSessions(state.repo);
+    renderHeader();
+    renderSessions();
+    notice(`「${P.current.project.name}」に入れました`);
   }
 
   // ---- 編集のダイアログ ----
@@ -286,5 +424,5 @@
     $('project-save').onclick = save;
   }
 
-  window.Projects = { init, load, render, repoOptions, routeDraft, saveActions };
+  window.Projects = { init, load, render, repoOptions, routeDraft, saveActions, renderHome, refreshHome, label, canAssign, assign };
 })();

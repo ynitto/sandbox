@@ -388,7 +388,7 @@ function sessionSummary(file) {
     policy: s.policy || 'direct', tier: s.tier || '',
     transport: s.transport || 'headless', worktree: s.worktree || '', branch: s.branch || '',
     supersededBy: String(s.supersededBy || ''), title: s.title, updatedAt: s.updatedAt, count: (s.messages || []).length,
-    origin: normalizeOrigin(s.origin),
+    origin: normalizeOrigin(s.origin), project: String(s.project || ''),
     // 末尾の応答（受信箱の「未読」の材料）。{ at, outcome: done | failed | stopped }、応答で終わっていなければ null
     result: attention.conversationResult(s.messages),
     findings: sessionFindings.fromSession(s),
@@ -398,7 +398,8 @@ function sessionSummary(file) {
 }
 
 // kind … 'conversation'（既定。会話一覧）| 'task' | 'workflow' | '' （すべて）
-function listSessions(userData, repo, { kind = 'conversation' } = {}) {
+// project … プロジェクトの鍵。付けるとリポジトリを問わずそのプロジェクトの会話だけ（repo は見ない）
+function listSessions(userData, repo, { kind = 'conversation', project = '' } = {}) {
   let names;
   try { names = fs.readdirSync(sessionsDir(userData)); } catch { return []; }
   const out = [];
@@ -409,7 +410,7 @@ function listSessions(userData, repo, { kind = 'conversation' } = {}) {
     seen.add(file);
     try {
       const s = sessionSummary(file);
-      if (repo && s.repo !== repo) continue;
+      if (project ? s.project !== project : (repo && s.repo !== repo)) continue;
       if (kind && s.kind !== kind) continue;
       out.push({ ...s });
     } catch { /* 壊れたファイルは一覧に出さない */ }
@@ -419,9 +420,9 @@ function listSessions(userData, repo, { kind = 'conversation' } = {}) {
 }
 
 // 最近の依頼は種類・選択中の作業先に依存しない。開ける登録先だけを対象にする。
-function recentSessions(userData, repos, limit = 20) {
+function recentSessions(userData, repos, limit = 20, { project = '' } = {}) {
   const allowed = new Set(repos || []);
-  return listSessions(userData, '', { kind: '' })
+  return listSessions(userData, '', { kind: '', project })
     .filter(s => allowed.has(s.repo) && !s.supersededBy)
     .slice(0, limit);
 }
@@ -457,9 +458,10 @@ function listForks(userData, originId) {
 
 function updateSession(userData, id, patch) {
   const sess = readSession(userData, id);
-  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live', 'share', 'modelSelection', 'allocation'];
+  const allowed = ['title', 'cli', 'model', 'readonly', 'autoApprove', 'policy', 'tier', 'transport', 'live', 'share', 'modelSelection', 'allocation', 'project'];
   for (const k of allowed) if (patch && k in patch) sess[k] = patch[k];
   if (patch && 'cli' in patch) sess.cli = String(sess.cli || '');
+  if (patch && 'project' in patch) sess.project = String(sess.project || '');
   if (patch && 'model' in patch) sess.model = String(sess.model || '');
   if (patch && 'readonly' in patch) sess.readonly = Boolean(sess.readonly);
   if (patch && 'autoApprove' in patch) sess.autoApprove = Boolean(sess.autoApprove);

@@ -477,6 +477,11 @@ test('プロジェクトは既存の器で組む（選択欄・ダイアログ�
   assert.match(projects, /el\('summary', 'message-action', 'ナレッジに保存'\)/);
   assert.match(projects, /el\('details', 'more-menu'\)/);
   assert.ok(!/innerHTML/.test(projects), '画面は el ヘルパで組む');
+  // ホームの入口は手動実行と同じ .execution-card + .execution-card-head で、主ボタンは入力欄の「送信」だけ
+  const home = projects.slice(projects.indexOf('function renderHome'), projects.indexOf('// ---- 会話の見出し'));
+  assert.match(home, /el\('section', 'execution-card'\)/);
+  assert.match(projects, /el\('div', 'execution-card-head'\)/);
+  assert.ok(!/'primary'/.test(home), 'ホームのカードに主ボタンを足さない');
   // 足した CSS に直値の色を足さない
   const added = css.split('\n').filter((line) => /project|message-actions \.more-menu/.test(line)).join('\n');
   assert.ok(!/:[^;{}]*#[0-9a-f]{3,8}\b/i.test(added), '直値の色を足さない');

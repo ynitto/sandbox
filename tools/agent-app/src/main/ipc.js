@@ -1418,8 +1418,16 @@ function registerIpcHandlers(getWindow) {
     const transport = preferredTransport === 'tmux' && info.tmux && agent.interactive ? 'tmux' : 'headless';
     return sessionBrowser.create({ ...p, transport });
   });
-  handle('session:recent', () => store.recentSessions(userData(), store.loadConfig(userData()).repos));
-  handle('session:list', (p) => store.listSessions(userData(), p.repo || ''));
+  // プロジェクトを選んでいる間は、そのプロジェクトの会話をリポジトリ横断で並べる
+  handle('session:recent', () => {
+    const cfg = store.loadConfig(userData());
+    return store.recentSessions(userData(), cfg.repos, 20, { project: projectIpc.context(cfg.lastProject, cfg) ? cfg.lastProject : '' });
+  });
+  handle('session:list', (p) => {
+    const cfg = store.loadConfig(userData());
+    const project = p.repo ? projectIpc.projectFor(p.repo, cfg) : '';
+    return store.listSessions(userData(), p.repo || '', { project });
+  });
   handle('session:create', async (p) => {
     const repo = requireRepo(p.repo);
     const cfg = store.loadConfig(userData());

@@ -20,6 +20,9 @@ const SHARED_DIR = 'shared';
 const MAX_BYTES = 16 * 1024;
 const MAX_REPOS = 20;
 const MAX_TEXT = 2000;
+const FILES_DIR = 'files';                // 画面から足したファイルの置き場（projects/<フォルダ>/files/）
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_RULES_BYTES = 4 * 1024;         // 最初の依頼にそのまま差し込む rules.md の上限
 const ROLES = ['main', 'work', 'reference'];
 const ROLE_LABEL = { main: '主', work: '作業', reference: '参照' };
 const KINDS = {
@@ -179,6 +182,51 @@ function write(kb, folder, project) {
   return files;
 }
 
+// ナレッジの中身（定義と索引以外のファイル）を新しい順に。ホームを開いたときに 1 回だけ読む。
+//   → { recent: [{ rel, name, mtime }]（limit 件）, total }。rel はナレッジリポジトリからの相対
+function knowledgeFiles(kb, folder, limit = 5) {
+  const root = path.join(kb, DIR, folder);
+  const found = [];
+  const walk = (dir, depth) => {
+    let names;
+    try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of names) {
+      if (entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { if (depth < 3) walk(full, depth + 1); continue; }
+      if (!entry.isFile() || (dir === root && [FILE, 'README.md'].includes(entry.name))) continue;   // 定義と索引は別の口で開く
+      try { found.push({ rel: path.relative(kb, full).split(path.sep).join('/'), name: path.relative(root, full).split(path.sep).join('/'), mtime: fs.statSync(full).mtimeMs }); }
+      catch { /* 消えた */ }
+      if (found.length >= 2000) return;
+    }
+  };
+  walk(root, 0);
+  found.sort((a, b) => b.mtime - a.mtime);
+  return { recent: found.slice(0, limit), total: found.length };
+}
+
+// 画面から足すファイルの置き場（同じ名前があれば -2, -3 … を付ける）。kb からの相対を返す
+function fileTarget(kb, folder, name) {
+  const base = path.basename(String(name || '')).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/^\.+/, '') || 'file';
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length) || 'file';
+  for (let n = 1; n < 1000; n += 1) {
+    const rel = path.posix.join(DIR, folder, FILES_DIR, n === 1 ? base : `${stem}-${n}${ext}`);
+    if (!fs.existsSync(path.join(kb, rel))) return rel;
+  }
+  throw new Error('同じ名前のファイルが多すぎます');
+}
+
+// 最初の依頼に差し込む rules.md（無い・大きすぎるなら ''。大きいものは読む指示だけにする）
+function rulesText(kb, folder) {
+  const file = path.join(kb, DIR, folder, 'rules.md');
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > MAX_RULES_BYTES) return '';
+    return fs.readFileSync(file, 'utf8').trim();
+  } catch { return ''; }
+}
+
 // 定義のリポジトリに、この PC のフォルダを当てる。
 //   repoPaths … config.json の { 正規化した URL → フォルダ }
 function resolve(project, repoPaths = {}) {
@@ -225,7 +273,9 @@ function chooseRepo(resolved, request) {
 //   resolved … resolve() の結果に hostPath を足したもの
 //   current  … 今回のカレントディレクトリ（登録フォルダ）
 //   kbHost   … ナレッジリポジトリのホスト側パス
-function contextBlock({ project, folder, resolved = [], current = '', kbHost = '' }) {
+//   rules    … rules.md の中身（rulesText。'' なら差し込まない）
+//   branch   … いまの会話の作業ブランチ（作業フォルダで動くときだけ。ほかのリポジトリでも同じ名前を使わせる）
+function contextBlock({ project, folder, resolved = [], current = '', kbHost = '', rules = '', branch = '' }) {
   const p = normalize(project);
   const here = resolved.find((repo) => repo.path && repo.path === current);
   const lines = ['## プロジェクト',
@@ -238,11 +288,17 @@ function contextBlock({ project, folder, resolved = [], current = '', kbHost = '
       lines.push(`- ${repo.label}（${ROLE_LABEL[repo.role]}）: ${where}${repo.desc ? ` — ${repo.desc}` : ''}`);
     }
     if (others.some((repo) => repo.role === 'reference')) lines.push('参照のリポジトリは読むだけにし、変更しないでください。');
+    if (branch && others.some((repo) => repo.role !== 'reference')) {
+      lines.push(`作業のリポジトリを変更するときは、先にそのリポジトリでブランチ ${branch} を作って（あれば切り替えて）から書いてください。`
+        + 'main へ直接コミットせず、push と PR は頼まれたときだけにしてください。');
+    }
   }
   if (kbHost) {
     const dir = `${kbHost.replace(/\/+$/, '')}/${DIR}/${folder}`;
     lines.push('', `ナレッジ: ${dir}/（索引は README.md、常に守ることは rules.md）と、全プロジェクト共通の ${kbHost.replace(/\/+$/, '')}/${SHARED_DIR}/。`,
-      '作業を始める前に、README.md と rules.md があれば読んでください。');
+      rules ? '作業を始める前に、README.md があれば読んでください。' : '作業を始める前に、README.md と rules.md があれば読んでください。',
+      'あとの作業でも役に立つ決定や分かったことが出たら、回答の最後に「ナレッジに残す候補」として 1〜3 行で挙げてください（自分では書かない）。');
+    if (rules) lines.push('', '### 守ること（rules.md）', rules);
   }
   if (p.instructions) lines.push('', p.instructions);
   return lines.join('\n');
@@ -263,14 +319,15 @@ function knowledgePrompt({ kbHost, folder, scope = 'project', kind = 'note', dat
     k.file ? `- ${target} に、箇条書きで追記する（既にある内容と重複させない）`
       : `- ${target} に 1 ファイルで書く（見出し 1 つ・要点・根拠。会話の経過は書かない）`,
     `- ${base}/README.md の「## 索引」に、書いたファイルへのリンクを 1 行足す（無ければ作る）`,
-    `- ${root} の中の変更だけを git でコミットする（push はしない。ほかのリポジトリには触らない）`,
+    `- ${root} の中の変更だけを git でコミットし、そのまま push する（ほかのリポジトリには触らない）`,
     '- 書いたファイルのパスを最後に 1 行で答える',
   ];
   return lines.join('\n');
 }
 
 module.exports = {
-  DIR, FILE, SHARED_DIR, MAX_BYTES, MAX_REPOS, ROLES, ROLE_LABEL, KINDS,
+  DIR, FILE, SHARED_DIR, FILES_DIR, MAX_BYTES, MAX_FILE_BYTES, MAX_REPOS, ROLES, ROLE_LABEL, KINDS,
   folderName, normalize, parse, serialize, normalizeUrl, repoLabel, keyOf, splitKey, projectFile,
   list, read, write, resolve, chooseRepo, contextBlock, knowledgePrompt, globRegex,
+  knowledgeFiles, fileTarget, rulesText,
 };
