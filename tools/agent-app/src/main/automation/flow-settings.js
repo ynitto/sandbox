@@ -18,7 +18,10 @@ const FIELDS = {
   size: { type: 'enum', values: ['small', 'medium', 'large', 'unrestricted'], default: 'small' },
   granularity: { type: 'enum', values: ['auto', 'coarse', 'fine', 'finest'], default: 'auto' },
   split_policy: { type: 'enum', values: ['behavior', 'file'], default: 'behavior' },
-  plan_gate: { type: 'bool', default: false },
+  // agent-flow の既定は false だが、この画面から定義なしで動かすときは計画を見てから流すのを既定にする
+  // （本家の dynamic workflows も実行前に工程を見せて承認を取る）。実行ごとに要求で渡すので、
+  // ファイルに無いときの表示と実際の動きは一致する。
+  plan_gate: { type: 'bool', default: true },
   review: { type: 'review', values: ['auto', true, false], default: 'auto' },
   workers: { type: 'int', min: 1, max: 16, default: 2 },
   max_iterations: { type: 'int', min: 1, max: 20, default: 3 },
@@ -146,4 +149,11 @@ function save(root, raw, { home } = {}) {
   return read(root, { home });
 }
 
-module.exports = { FIELDS, locate, read, save, homeFile };
+// 直接編集のために開く 1 枚。まだ無ければ空のファイルを作ってから返す。
+function ensure(root, { home } = {}) {
+  const found = locate(root, home);
+  if (!found.exists) writeAtomic(found.file, '# agent-flow の設定。書けるキーは agent-flow.yaml.example を参照\n');
+  return found.file;
+}
+
+module.exports = { FIELDS, locate, read, save, ensure, homeFile };

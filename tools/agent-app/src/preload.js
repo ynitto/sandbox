@@ -191,6 +191,7 @@ contextBridge.exposeInMainWorld('api', {
     flowRunPlan: (root, runId) => invoke('automation:flow:run:plan', { root, runId }),
     flowSettingsRead: (root) => invoke('automation:flow:settings:read', { root }),
     flowSettingsSave: (root, values) => invoke('automation:flow:settings:save', { root, values }),
+    flowSettingsOpen: (root) => invoke('automation:flow:settings:open', { root }),
     flowRunRead: (root, runId) => invoke('automation:flow:run:read', { root, runId }),
     flowRunCancel: (root, runId, reason) => invoke('automation:flow:run:cancel', { root, runId, reason }),
     flowRunRespond: (root, runId, interactionId, answer) => invoke('automation:flow:run:respond', { root, runId, interactionId, answer }),

@@ -126,7 +126,37 @@ test('workflow steps test action opens the saved workflow run settings', async (
   });
   await run.handlers.click();
   assert.match(feature.html(), /class="execution-card flow-overview"/);
-  assert.match(feature.html(), /<h3>手動実行<\/h3>/);
+  assert.match(feature.html(), /<h3>実行<\/h3>/);
   assert.doesNotMatch(feature.html(), /flow-node-summary|固定工程/);
   assert.match(feature.html(), /data-flow-start/);
+});
+
+test('依頼から実行: 親の一覧から選ぶと定義なしの実行カードを出し、規模と計画の確認を実行に渡す', async () => {
+  const { feature, calls } = featureFixture({ saved: true });
+  await feature.activate();
+  await feature.select('@auto');
+  let html = feature.html();
+  assert.match(html, /class="execution-card flow-overview flow-auto"/);
+  assert.match(html, /<h3>依頼から実行<\/h3>/);
+  assert.match(html, /data-flow-size/);
+  assert.match(html, /<h3>実行履歴<\/h3>/);
+
+  const request = input('ログイン画面の文言を直す');
+  const size = input('medium');
+  const gate = input('skip');
+  const start = input();
+  feature.bind({
+    querySelector(selector) {
+      return ({ '[data-flow-request]': request, '[data-flow-size]': size, '[data-flow-plan-gate]': gate, '[data-flow-auto-start]': start })[selector] || null;
+    },
+    querySelectorAll: () => [],
+  });
+  request.dispatch('input');
+  size.dispatch('change');
+  gate.dispatch('change');
+  await start.handlers.click();
+  assert.equal(calls.start.source.type, 'auto');
+  assert.equal(calls.start.request, 'ログイン画面の文言を直す');
+  assert.equal(calls.start.size, 'medium');
+  assert.equal(calls.start.planGate, false);
 });
