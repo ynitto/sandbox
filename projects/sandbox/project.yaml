@@ -1,0 +1,13 @@
+# agent-app のプロジェクト定義。画面の「プロジェクト」から編集する
+version: 1
+name: sandbox
+repos:
+  - url: https://github.com/ynitto/sandbox
+    role: main
+    desc: agent-amigos / agent-dashboard / agent-flow / agent-loop / agent-project / skills
+    owns:
+      - tools/agent-amigos/**
+      - tools/agent-dashboard/**
+      - tools/agent-flow/**
+      - tools/agent-loop/**
+      - tools/agent-project/**
