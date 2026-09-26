@@ -1142,20 +1142,20 @@ oracle がどの語も通さないので、下限は掃引の側で掛けるよ�
 - **evaluator E3〜E5（切れない）**: §1 と同じ。0.92〜0.979 で誤り、正解（0.991 以上）と同じ帯にいる。
   evaluator の本番は §8 の locate 形で、この既定セルは読み出しの素の形である。
 
-### 提案（定数は変えていない）
+### 提案（transition だけ定数を 0.8 にした。他は据え置き）
 
 | 読み手 | いま | 提案 | 根拠 |
 |---|---|---|---|
 | filter | policy 0.6 | **0.6 据え置き** | 誤答は 0.979 で切れない。上げると正解を先に落とす |
 | route | policy 0.8・定数 `_ROUTE_JUDGE_MIN_CONFIDENCE` 0.0 | **0.8 据え置き** | 0.8 で RO10 を止め RO3 を通す。RO7 は切れない——other の癖は問いの側で直す |
 | assess | policy 0.9・定数 0.9 | **0.9 据え置き** | AS10 を 0.894 で止める。余白 0.05 なので下げない |
-| transition | policy null・定数 `_SM_JUDGE_MIN_CONFIDENCE` 0.0 | **0.8 を提案** | 0.7〜0.9 で誤答 3 だけが落ち正解 45 は全部残る。0.7 より余白を取って 0.8 |
+| transition | policy null・定数 `_SM_JUDGE_MIN_CONFIDENCE` 0.0 | **0.8（定数を変えた）** | 0.7〜0.9 で誤答 3 だけが落ち正解 45 は全部残る。0.7 より余白を取って 0.8 |
 | triage | 定数 `_SM_CHECK_TRIAGE_MIN_CONFIDENCE` 0.85（no の側だけ） | **0.85 据え置き** | 24/24、正解の最小 0.939 |
 | contract | 定数 `_SM_CONTRACT_JUDGE_MIN_CONFIDENCE` 0.6 | **0.6 据え置き** | 18/18。0.7 にすると CW1 の正しい FAIL（0.673）を捨てる |
 
 transition だけが「上げれば誤りだけが落ちる」形をしている。ただし誤答は TR4 の 1 セル（3 回とも
-同値）に由来し、実質 1 件で決めることになる。policy の `thresholds.transition` へ 0.8 を書くかは
-人が決める。filter の FL4 と route の RO7 は、どの下限でも止まらない誤りとして残る。
+同値）に由来し、実質 1 件で決めることになる。2026-09-26 に人が 0.8 を採り、
+定数 `_SM_JUDGE_MIN_CONFIDENCE` を 0.8 にした（policy とは max で合成されるので、policy の無い機でも効く）。filter の FL4 と route の RO7 は、どの下限でも止まらない誤りとして残る。
 
 ### 測れていないもの
 
