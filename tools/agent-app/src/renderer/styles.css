@@ -249,6 +249,8 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .list li.running::before, .list li.attention::before { content: ''; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--accent); }
 .list li.running::before { animation: pulse 1s infinite alternate; }
 .list li.attention::before { background: var(--warn); }
+/* 印（応答中・確認待ち）が 1 つでもある一覧は、印の無い行も同じ幅を空けて題名の位置をそろえる（色は付けない） */
+.list:has(> li.running, > li.attention) > li.row-item::before { content: ''; width: 8px; height: 8px; flex: none; border-radius: 50%; }
 .list li.empty { color: var(--muted); font-size: 12px; line-height: 1.45; white-space: normal; cursor: default; }
 .list li.empty:hover { background: none; }
 @keyframes pulse { from { opacity: .3; } to { opacity: 1; } }
