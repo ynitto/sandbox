@@ -45,7 +45,7 @@ test('home: preparation appears before readiness, updates during selection, and 
       state.agents = [{ name: 'codex', available: true, interactive: true }];
       state.agentsReady = new Promise(resolve => { window.releaseReady = resolve; });
       $('prompt').value = '今日の天気は？';
-      window.layout = () => Object.fromEntries(['main', 'chat', 'composer', 'prompt', 'run-settings', 'home-repository-slot'].map(id => {
+      window.layout = () => Object.fromEntries(['main', 'chat', 'composer', 'prompt', 'run-settings', 'sidebar-repository-slot'].map(id => {
         const r = $(id).getBoundingClientRect(); return [id, { x: r.x, y: r.y, width: r.width, height: r.height }];
       }));
       window.beforeLayout = layout();
@@ -97,7 +97,7 @@ test('home: preparation appears before readiness, updates during selection, and 
       assert.ok(toolbar.widths.every(w => w > 0), 'all toolbar controls remain visible at ' + width);
       const context = await win.evaluate(() => {
         const shell = document.querySelector('#composer .composer-shell').getBoundingClientRect();
-        const controls = ['run-settings', 'home-repository-slot'].map(id => {
+        const controls = ['run-settings', 'home-context-slot'].map(id => {
           const element = $(id), r = element.getBoundingClientRect();
           return { outside: !element.closest('.composer-shell'), x: r.x, y: r.y, width: r.width };
         });

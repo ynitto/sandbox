@@ -198,7 +198,7 @@ test('新しい操作は既存の部品で組む（確認待ちの行き先・�
   const renderer = read('renderer/renderer.js');
   const workbench = read('renderer/automation/renderer.js');
   // 1. 確認待ちは答えを並べる面を持たない。状態の印のまま、端末操作（既存の入力先）へ連れて行く。
-  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 5, '会話・作成・編集・取り込みの実行設定は共通ポップオーバーを使う');
+  assert.strictEqual((html.match(/class="settings-popover"/g) || []).length, 6, '会話・作成・編集・取り込みの実行設定は共通ポップオーバーを使う');
   assert.ok(!css.includes('.phase-popover {'), '共有部品の私物な複製がある: .phase-popover');
   assert.ok(!css.includes('.attention-panel {'), '共有部品の私物な複製がある: .attention-panel');
   assert.ok(!css.includes('.phase-menu {'), '確認待ちに自分用のパネルを作らない');
@@ -409,14 +409,14 @@ test('ホームは会話画面の面（空状態と入力欄）と一覧の行�
   assert.match(renderer, /\$\('session-new'\)\.hidden = \['share', 'inbox', 'home'\]\.includes\(state\.area\)/);
   // 2. 面は会話画面そのもの（#main の空状態と #composer）。ホーム専用の面・入力欄・見出し帯を作らない
   assert.ok(!html.includes('id="home-area"') && !html.includes('id="home-prompt"') && !html.includes('id="home-head"'), 'ホーム専用の面や入力欄を作らない');
-  assert.match(renderer, /const workspace = state\.area !== 'conversation' && !home;/);
+  assert.match(renderer, /const workspace = state\.area !== 'conversation' && state\.area !== 'projects' && !home;/);
   assert.match(renderer, /if \(home\) \{\s*newDraft\(\);/, 'ホームは常に新しい会話（空状態）から');
   assert.strictEqual((html.match(/class="area-head"/g) || []).length, 5, 'ホームは見出し帯を増やさない（会話の見出し帯を使う）');
-  // 3. リポジトリの選択は置き場を移すだけ（同じ #repository-context を付け替える。複製を作らない）
+  // 3. 選択欄はサイドバーに1つだけ配置する
   assert.strictEqual((html.match(/id="repository-context"/g) || []).length, 1, 'リポジトリ選択は 1 つだけ');
-  assert.match(renderer, /repositorySlot\.append\(\$\('repository-context'\)\)/, '同じコントロールを移す');
+  assert.match(renderer, /home \? 'home-context-slot' : 'sidebar-repository-slot'/, 'ホームでは実行先を入力欄の近くに置く');
   for (const rule of css.match(/^#home-[^{\n]*\{[^}]*\}/gm) || []) {
-    assert.doesNotMatch(rule, /background|box-shadow|border-radius|#[0-9a-fA-F]{3,8}\b/, `ホームの置き場に見た目を足さない（置き場所だけ）: ${rule}`);
+    assert.doesNotMatch(rule, /box-shadow|#[0-9a-fA-F]{3,8}\b/, `ホームの選択欄は共通色を使う: ${rule}`);
   }
   // 4. 直近の一覧は会話一覧と同じ行（.row-item / .list-pick）。押すと既存の画面（会話・タスク・ワークフロー）へ行く
   assert.match(renderer, /function renderHomeItems\(\)[\s\S]*?const pick = el\('button', 'list-pick'\);[\s\S]*?pick\.onclick = \(\) => openHomeItem\(item\)/);
@@ -431,7 +431,7 @@ test('ホームは会話画面の面（空状態と入力欄）と一覧の行�
   assert.ok(!/leaveHomeRouted[\s\S]{0,600}automation\.run\(|leaveHomeRouted[\s\S]{0,600}flowRun\(/.test(renderer), '流用先を開くだけで実行しない');
   // 6. 初回の既定画面はホーム。保存した領域はそのまま
   assert.match(store, /area: 'home', view: 'chat'/);
-  assert.match(store, /\['tasks', 'workflows', 'share', 'inbox', 'home'\]\.includes\(next\.area\)/);
+  assert.match(store, /\['tasks', 'workflows', 'projects', 'share', 'inbox', 'home'\]\.includes\(next\.area\)/);
 });
 
 // 8. tmux で起こす画面は、依頼が CLI に届くのを待たずに端末を出す
@@ -464,15 +464,17 @@ test('プロジェクトは既存の器で組む（選択欄・ダイアログ�
   const html = read('renderer/index.html');
   const projects = read('renderer/projects.js');
   const css = read('renderer/styles.css');
-  // 選択欄はリポジトリと同じ .repository-control を #repository-context の中に 1 段足すだけ（ホームへも一緒に移る）
+  // プロジェクトとリポジトリの選択欄・メニューを統合する
   const context = html.slice(html.indexOf('id="repository-context"'), html.indexOf('id="repo-select"'));
-  assert.match(context, /id="project-row"[\s\S]*class="repository-control"[\s\S]*id="project-select"/);
+  assert.match(context, /class="repository-control"/);
+  assert.doesNotMatch(html, /id="project-select"|id="project-more"/);
   // 編集は作業フォルダと同じダイアログの形で、主ボタンは 1 つ
-  const dialog = html.slice(html.indexOf('<dialog id="project-dialog">'), html.indexOf('</dialog>', html.indexOf('<dialog id="project-dialog">')));
+  const dialog = html.slice(html.indexOf('<dialog id="project-dialog"'), html.indexOf('</dialog>', html.indexOf('<dialog id="project-dialog"')));
   assert.match(dialog, /class="dlg-head"[\s\S]*class="dlg-body settings-list"[\s\S]*class="dlg-actions"/);
   assert.strictEqual((dialog.match(/class="primary"/g) || []).length, 1, '主ボタンは 1 つ');
-  assert.match(dialog, /class="wt-table settings-table"/);
-  assert.ok(!/<p[\s>]/.test(dialog), '仕組みの説明は README に置く');
+  assert.match(dialog, /class="project-repo-list"/);
+  assert.doesNotMatch(dialog, /<details/);
+  assert.match(dialog, /aria-label="保存先のパス"/);
   // ナレッジに保存は回答の下の .message-action と既存の選択肢メニュー
   assert.match(projects, /el\('summary', 'message-action', 'ナレッジに保存'\)/);
   assert.match(projects, /el\('details', 'more-menu'\)/);

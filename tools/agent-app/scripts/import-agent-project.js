@@ -11,6 +11,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const bundle = require('../src/shared/projectImportBundle');
 const projectImport = require('../src/main/projectImport');
 
 function args(argv) {
@@ -40,7 +41,8 @@ function main() {
   const summary = {
     name: planned.project.name, folder: planned.folder, source: planned.source,
     repos: planned.project.repos, localPaths: planned.repoPaths,
-    copies: planned.copies.map((item) => item.to), leftBehind: planned.leftBehind,
+    documents: bundle.build(planned.items, planned.selected).documents.map(({ file, bytes }) => ({ file, bytes })),
+    selected: planned.selected, candidates: planned.items.map(({ id, title, sources }) => ({ id, title, sources })), excluded: planned.excluded,
   };
   if (opt.dryRun) { console.log(JSON.stringify(summary, null, 2)); return; }
   const done = projectImport.apply(path.resolve(opt.kb), planned);

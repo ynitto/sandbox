@@ -74,6 +74,29 @@ test('実機: ホームから送ると、タスクの流用は案内を挟まず
     await win.waitForFunction(() => document.getElementById('chat-title').textContent === 'ホーム');
     assert.equal(await win.locator('#area-home').getAttribute('aria-current'), 'page');
 
+    assert.equal(await win.locator('[data-home-area]').count(), 4);
+    assert.equal(await win.locator('#sidebar-repository-slot').isVisible(), false);
+    assert.equal(await win.locator('#home-context-slot #repo-select').isVisible(), true);
+    assert.equal(await win.locator('#area-list-title').textContent(), '最近の作業');
+    for (const width of [1440, 1024, 768, 375]) {
+      await win.setViewportSize({ width, height: 900 });
+      assert.equal(await win.locator('.home-actions').evaluate(n => n.scrollWidth > n.clientWidth), false, 'portal fits at ' + width);
+      assert.equal(await win.locator('#composer').evaluate(n => n.scrollWidth > n.clientWidth), false, 'request controls fit at ' + width);
+    }
+    await win.setViewportSize({ width: 1360, height: 900 });
+    await win.screenshot({ path: '/tmp/agent-app-home-portal.png' });
+    await win.locator('[data-home-area="conversation"]').click();
+    await win.waitForFunction(() => state.area === 'conversation');
+    await win.locator('#area-home').click();
+    await win.locator('[data-home-area="tasks"]').click();
+    await win.waitForFunction(() => state.area === 'tasks');
+    await win.locator('#area-home').click();
+    await win.locator('[data-home-area="workflows"]').click();
+    await win.waitForFunction(() => state.area === 'workflows');
+    await win.locator('#area-home').click();
+    await win.locator('[data-home-area="projects"]').click();
+    await win.waitForFunction(() => state.area === 'projects');
+    await win.locator('#area-home').click();
     const request = '前月分のリリース確認をして';
     await win.fill('#prompt', request);
     await win.click('#send');
@@ -87,6 +110,14 @@ test('実機: ホームから送ると、タスクの流用は案内を挟まず
     // 案内だけの会話は残さない。本文は入力欄に残る（戻って会話で送り直せる）
     assert.deepEqual(store.listSessions(data, repo), []);
     assert.equal(await win.inputValue('#prompt'), request);
+    await win.evaluate(async () => {
+      await showArea('home');
+      state.config = { ...state.config, repos: [] };
+      state.repo = ''; state.current = null;
+      renderMessages();
+    });
+    assert.equal(await win.locator('.home-setup button').textContent(), 'リポジトリを追加');
+    assert.equal(await win.locator('[data-home-area]').count(), 4);
     assert.deepEqual(errors, []);
   } finally {
     await electron.close();

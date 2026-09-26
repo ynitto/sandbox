@@ -2,6 +2,7 @@
   --bg: #f5f6f8;
   --panel: #fff;
   --side-bg: #f8f9fb;
+  --control-hover: #f1f3f5;
   --line: #e1e4e8;
   --text: #20242b;
   --muted: #626b77;
@@ -53,7 +54,7 @@ button {
   cursor: pointer;
   transition: background-color .16s ease, border-color .16s ease, color .16s ease;
 }
-button:hover { background: #f1f3f5; }
+button:hover { background: var(--control-hover); }
 button.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 button.primary { border-color: var(--accent); color: #fff; background: var(--accent); }
 button.primary:hover { background: var(--accent-hover); }
@@ -178,19 +179,48 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 #repository-context { margin-top: 14px; padding: 12px 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 #repository-context > label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; }
 .repository-control { display: flex; align-items: center; gap: 4px; }
-.repository-control > select { min-width: 0; flex: 1; }
-/* プロジェクトはリポジトリと同じ選択欄を上に 1 段足すだけ */
-#project-row { margin-bottom: 10px; }
-#project-row > label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; }
+.repository-choice { min-width: 0; flex: 1; }
+.repository-choice > select { width: 100%; min-width: 0; }
+.repository-choice-label { display: none; }
 /* 回答の下の選択肢つきの操作（ナレッジに保存）。見た目は .message-action のまま */
 .message-actions .more-menu > summary.message-action { min-height: 0; padding: 4px 7px; color: var(--accent); }
 /* 回答は画面の下のほうに来るので、「定型」と同じく menu-panel を上向きに出す */
 .message-actions .more-menu .menu-panel { top: auto; bottom: calc(100% + 6px); }
-/* プロジェクトのリポジトリ表: 役割・この PC・外す は中身の幅、説明が残りを取る */
-#project-dialog .settings-table th:nth-child(2) { width: 88px; }
-#project-dialog .settings-table th:nth-child(4) { width: 130px; }
-#project-dialog .settings-table th:nth-child(5) { width: 56px; }
-#project-dialog .settings-table td input { width: 100%; }
+/* プロジェクト: 基本項目を直接表示し、資料の個別選択だけを別画面に分ける。 */
+#project-dialog { width: 720px; }
+#project-dialog[open] { display: flex; flex-direction: column; }
+#project-dialog .dlg-body { min-height: 0; display: grid; gap: 22px; padding: 24px; }
+#project-dialog .dlg-head, #project-dialog .dlg-actions { flex-shrink: 0; }
+#project-dialog :is(input, select, textarea) { min-width: 0; width: 100%; }
+#project-dialog :is(button, input, select) { min-height: 44px; }
+#project-dialog .stacked-field { min-width: 0; margin: 0; padding: 0; }
+#project-dialog .stacked-field strong, .project-section-head strong { font-size: 13px; font-weight: 600; }
+.project-field-group { min-width: 0; display: grid; gap: 10px; }
+.project-section-head { display: flex; align-items: center; gap: 8px; }
+#project-add-repo { flex: 1; }
+#project-add { flex: none; }
+.project-path { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; font: 12px/1.5 var(--mono); user-select: text; }
+.project-repo-list { display: grid; gap: 8px; }
+.project-repo-row { display: grid; grid-template-columns: minmax(0, 1fr) 152px 44px; align-items: center; gap: 8px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.project-repo-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.project-repo-name .sub { display: block; margin-top: 3px; font-size: 11px; font-weight: 400; }
+.project-repo-meta { grid-column: 1 / -1; min-width: 0; display: grid; gap: 8px; color: var(--muted); }
+#project-dialog .project-repo-default { display: flex; align-items: center; gap: 8px; min-height: 32px; font-size: 12px; cursor: pointer; }
+#project-dialog .project-repo-default input[type="radio"] { width: 18px; height: 18px; min-height: 0; flex: none; margin: 0; padding: 0; }
+.project-repo-remove { font-size: 18px; padding: 0; }
+.project-repo-empty { padding: 12px; text-align: center; color: var(--muted); font-size: 12px; }
+.project-import-summary { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--side-bg); }
+.project-import-summary > strong { font-size: 13px; }
+.project-import-summary > .sub { margin: 4px 0; }
+.project-import-summary ul { padding-left: 20px; overflow-wrap: anywhere; }
+.project-import-summary .project-path { margin-bottom: 12px; }
+@media (max-width: 520px) {
+  #project-dialog .dlg-body { padding: 16px; gap: 18px; }
+  #project-dialog :is(input, select, textarea) { font-size: 16px; }
+  .project-repo-row { grid-template-columns: minmax(0, 1fr) 44px; }
+  .project-repo-name { grid-column: 1 / -1; }
+  #project-dialog .dlg-actions { gap: 8px; flex-wrap: wrap; }
+}
 .more-dots { flex: none; }
 .more-dots > summary { width: 34px; justify-content: center; padding-inline: 4px; letter-spacing: 1px; }
 .more-dots .menu-panel { min-width: 190px; }
@@ -241,12 +271,12 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .phase.answerable:hover { color: var(--text); }
 .views { display: inline-flex; }
 .views .tab { min-height: 32px; padding: 4px 10px; border-color: transparent; color: var(--muted); background: transparent; }
-.views .tab:hover { color: var(--text); background: #f1f3f5; }
+.views .tab:hover { color: var(--text); background: var(--control-hover); }
 .views .tab.on { color: var(--text); background: #eceff3; }
 .more-menu { position: relative; }
 .more-menu > summary { min-height: 32px; display: flex; align-items: center; padding: 5px 10px; border-radius: 8px; color: var(--muted); cursor: pointer; list-style: none; }
 .more-menu > summary::-webkit-details-marker, .run-settings > summary::-webkit-details-marker { display: none; }
-.more-menu > summary:hover { color: var(--text); background: #f1f3f5; }
+.more-menu > summary:hover { color: var(--text); background: var(--control-hover); }
 .menu-panel { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; width: 180px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 12px 30px rgba(31, 35, 40, .14); }
 .menu-panel button { width: 100%; min-height: 38px; display: block; border-color: transparent; background: transparent; text-align: left; }
 #notice { margin: 8px 16px 0; padding: 8px 12px; border: 1px solid #d4a72c; border-radius: 8px; background: var(--warn-bg); font-size: 12px; white-space: pre-wrap; }
@@ -278,7 +308,7 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .response-disclosure > summary::-webkit-details-marker { display: none; }
 .response-disclosure > summary::before { content: '›'; font-size: 16px; line-height: 1; transition: transform .14s ease; }
 .response-disclosure[open] > summary::before { transform: rotate(90deg); }
-.response-disclosure > summary:hover { color: var(--text); background: #f1f3f5; }
+.response-disclosure > summary:hover { color: var(--text); background: var(--control-hover); }
 .disclosure-title { font-weight: 600; }
 .disclosure-count { color: var(--muted); font-size: 10px; }
 .disclosure-body { margin: 4px 0 2px 17px; padding: 5px 0 3px 13px; border-left: 1px solid var(--line); }
@@ -304,12 +334,12 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .empty-state p { max-width: 520px; margin: 0 auto 18px; }
 .empty-state button { min-height: 42px; }
 /* プロジェクトのホーム: 見出しと 1 行の下に、手動実行と同じ .execution-card を縦に 2 枚 */
-.project-home { display: grid; gap: 12px; margin-top: 6px; color: var(--text); text-align: left; }
+.project-home { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; max-width: 100%; gap: 12px; margin-top: 6px; color: var(--text); text-align: left; }
 .project-home .list { padding: 0; }
 .project-home .small { min-height: 0; }
 .project-home .execution-card-head p { max-width: none; margin: 2px 0 0; }
 .project-home .list li { min-height: 32px; }
-.project-home .list-pick { min-height: 32px; gap: 10px; padding: 5px 6px; }
+.project-home .list-pick { min-height: 32px; gap: 10px; padding: 5px 6px; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .project-home .execution-card.drop { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .msg .meta { margin-top: 6px; color: var(--muted); font-size: 11px; }
 .msg .who { margin-bottom: 4px; color: var(--muted); font-size: 11px; white-space: normal; }
@@ -432,7 +462,7 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .run-settings > summary::before { content: ''; width: 7px; height: 7px; margin-right: 8px; flex: none; border-radius: 50%; background: var(--ok); }
 .run-settings > summary::after { content: ''; width: 7px; height: 7px; flex: none; margin: -3px 3px 0 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); }
 .run-settings > summary > span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
-.run-settings > summary:hover { color: var(--text); background: #f1f3f5; }
+.run-settings > summary:hover { color: var(--text); background: var(--control-hover); }
 .settings-popover { position: absolute; z-index: 35; bottom: calc(100% + 8px); left: 0; width: min(380px, calc(100vw - 36px)); padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 14px 36px rgba(31, 35, 40, .16); }
 .popover-head { margin-bottom: 12px; font-weight: 650; }
 .settings-popover > label, .direct-agent-settings > label, .worktree-setting > label { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: center; gap: 10px; margin-top: 10px; color: var(--text); }
@@ -511,13 +541,13 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 .tag.ok { border-color: var(--ok); color: var(--ok); }
 
 /* ---- ダイアログ ---- */
-#wt-dialog, #project-dialog, #app-settings, #app-update, #routine-dialog, #search-transfer-dialog { max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--panel); box-shadow: 0 24px 60px rgba(31, 35, 40, .2); }
-#wt-dialog, #project-dialog, #routine-dialog { width: 720px; }
+#wt-dialog, #project-dialog, #project-import-picker, #app-settings, #app-update, #routine-dialog, #search-transfer-dialog { max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--panel); box-shadow: 0 24px 60px rgba(31, 35, 40, .2); }
+#wt-dialog, #routine-dialog { width: 720px; }
 #search-transfer-dialog { width: 600px; }
 #app-update { width: 520px; }
 #app-settings { width: 780px; height: min(720px, calc(100vh - 40px)); }
 #app-settings[open] { display: flex; flex-direction: column; }
-#wt-dialog::backdrop, #project-dialog::backdrop, #app-settings::backdrop, #app-update::backdrop, #routine-dialog::backdrop, #search-transfer-dialog::backdrop { background: rgba(18, 23, 31, .42); }
+#wt-dialog::backdrop, #project-dialog::backdrop, #project-import-picker::backdrop, #app-settings::backdrop, #app-update::backdrop, #routine-dialog::backdrop, #search-transfer-dialog::backdrop { background: rgba(18, 23, 31, .42); }
 .dlg-head { min-height: 54px; display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
 .dlg-body { padding: 14px 16px 18px; overflow: auto; }
 .dlg-body p { margin: 0 0 10px; }
@@ -865,16 +895,6 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 /* 判定中も会話の端末と同じ場所・配色で表示する。 */
 .terminal-preparation { flex: 1; min-height: 0; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--term-bg); color: var(--term-text); font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
-/* ホーム・会話の作業先は実行設定の右隣。ほかの画面はサイドバーに戻す。 */
-#home-repository-slot { flex: 0 1 320px; min-width: 0; max-width: 100%; }
-#home-repository-slot #repository-context { display: flex; align-items: center; gap: 4px; margin: 0; padding: 0; border: 0; }
-#home-repository-slot #repository-context > label { display: none; }
-#home-repository-slot #project-row:not([hidden]) { display: contents; }
-#home-repository-slot #project-row > label { display: none; }
-#home-repository-slot .repository-control { flex: 1; min-width: 0; }
-/* ホームでプロジェクトを選んでいれば、リポジトリは依頼から決まるので選択欄はプロジェクトだけ */
-#home-repository-slot.is-home #repository-context.has-project > .repository-control { display: none; }
-#home-repository-slot .menu-panel { top: auto; bottom: calc(100% + 6px); }
 
 /* 送信開始で停止ボタンが現れても、入力欄と操作欄の幅を変えない。 */
 #chat { grid-template-columns: minmax(0, 1fr); }
@@ -895,3 +915,72 @@ pre.mermaid-error { border-color: var(--danger) !important; }
 
 /* 入力枠の下に、実行先の選択を左寄せでまとめる。 */
 .composer-context { width: min(100%, 900px); min-width: 0; margin: 8px auto 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; }
+
+/* プロジェクト画面は左側の選択欄とセッション一覧を入口にする。 */
+
+/* 取り込み: 最大4分類の選択と、検索できる資料一覧。 */
+.project-import-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; margin: 12px 0; }
+.project-import-choice { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+#project-dialog .project-import-choice input, #project-import-picker input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; flex: none; }
+.project-import-choice > .sub { margin-left: auto; }
+#project-import-picker { width: 760px; }
+#project-import-picker[open] { display: flex; flex-direction: column; }
+#project-import-picker .dlg-head { flex-shrink: 0; }
+#project-import-picker .dlg-body { min-height: 0; display: grid; gap: 12px; padding: 24px; }
+#project-import-picker .dlg-body > .sub { margin: 0; }
+.project-import-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.project-import-toolbar input { flex: 1; min-width: 140px; }
+#project-import-picker button, .project-import-toolbar input { min-height: 44px; }
+#project-import-candidates { max-height: 40vh; overflow: auto; }
+.project-import-candidate { display: flex; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.project-import-candidate label { flex: 1; overflow-wrap: anywhere; }
+.project-import-candidate label .sub { display: block; margin-top: 4px; font-size: 11px; }
+#project-import-preview { max-height: 30vh; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--side-bg); font: 12px/1.6 var(--mono); }
+@media (max-width: 520px) { .project-import-groups { grid-template-columns: 1fr; } }
+
+#conversation-repository { max-width: min(320px, 100%); }
+#conversation-repository > summary::before { display: none; }
+#conversation-repository .settings-popover { top: auto; bottom: calc(100% + 6px); }
+
+/* ホーム: メインは開始、サイドバーは再開。入力・実行は既存の経路を共有する。 */
+.home-portal .conversation-start .empty-state { width: min(100%, 948px); text-align: left; padding: 32px 24px; }
+.home-portal .empty-state h2 { font-size: 28px; margin-bottom: 24px; }
+.home-portal .empty-state .home-eyebrow { margin: 0 0 8px; color: var(--muted); font-size: 11px; letter-spacing: .12em; font-weight: 650; }
+.home-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.home-action { display: flex; align-items: center; gap: 14px; min-width: 0; min-height: 96px; padding: 20px; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.home-action:hover { border-color: var(--accent); background: var(--accent-bg); }
+.home-action > svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; flex: none; color: var(--accent); }
+.home-action-text { display: grid; gap: 6px; min-width: 0; }
+.home-action-text strong { font-size: 15px; }
+.home-action-text > span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.home-action-arrow { margin-left: auto; color: var(--muted); }
+.home-setup { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; font-size: 12px; }
+#home-request-label { display: block; width: min(100%, 900px); margin: 0 auto 10px; font-size: 13px; font-weight: 600; }
+#home-context-slot { min-width: 0; flex: 0 1 auto; max-width: 100%; }
+#home-context-slot #repository-context { margin: 0; padding: 0; border: 0; }
+#home-context-slot #repository-context > label { display: none; }
+#home-context-slot .menu-panel { top: auto; bottom: calc(100% + 6px); }
+.home-portal #area-sidebar-context { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+@media (max-width: 600px) {
+  .home-portal .conversation-start .empty-state { padding: 20px 16px; }
+  .home-actions { gap: 8px; }
+  .home-action { padding: 12px; min-height: 100px; gap: 8px; }
+  .home-action > svg { width: 18px; height: 18px; }
+  .home-action-arrow { display: none; }
+  .home-action-text strong { font-size: 13px; }
+  .home-action-text > span { font-size: 11px; }
+  .home-setup { align-items: start; flex-direction: column; }
+}
+
+/* 表示は会話のリポジトリ操作に揃え、操作はネイティブの選択リストを直接使う。 */
+#home-context-slot .repository-choice { position: relative; flex: 0 1 auto; max-width: min(320px, calc(100vw - 90px)); }
+#home-context-slot .repository-choice > select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+#home-context-slot .repository-choice-label { display: flex; align-items: center; min-height: 36px; padding: 7px 10px; border-radius: 8px; color: var(--muted); }
+#home-context-slot .repository-choice-label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#home-context-slot .repository-choice-label::after { content: ''; width: 7px; height: 7px; flex: none; margin: -3px 3px 0 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); }
+#home-context-slot .repository-choice:hover .repository-choice-label { color: var(--text); background: var(--control-hover); }
+#home-context-slot .repository-choice:has(select:focus-visible) .repository-choice-label { outline: 3px solid var(--accent-bg); }
+#home-context-slot .repository-choice:has(select:disabled) { opacity: .55; }
+
+.project-home-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.project-home-heading h2 { margin: 0; overflow-wrap: anywhere; }

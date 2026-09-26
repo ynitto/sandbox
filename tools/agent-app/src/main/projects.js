@@ -7,7 +7,7 @@
 // 読むのは起動時・プロジェクトを選んだとき・編集画面を開いたときだけで、そのときファイルの時刻を
 // 見て変わった分だけ読み直す。監視も定期的な fetch もしない（他の PC の変更は利用者の pull で届く）。
 //
-// リポジトリは git の URL で書く（PC に依存しない）。この PC のフォルダとの対応は config.json の
+// リポジトリは git の URL、origin がない場合は localId で識別する。端末の絶対パスは定義へ書かず config.json の
 // repoPaths が持つ。ここはファイルと文字列だけを扱い、git やホストのシェルには触らない（ipc が持つ）。
 
 const fs = require('fs');
@@ -37,22 +37,14 @@ const KINDS = {
 const text = (value, max = MAX_TEXT) => String(value == null ? '' : value).trim().slice(0, max);
 
 // フォルダ名。人が付けた名前から、どの OS でもフォルダにできる形を作る（日本語はそのまま）。
-function folderName(name) {
-  const cleaned = String(name || '').trim()
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/^\.+/, '')
-    .slice(0, 60)
-    .replace(/[-.]+$/, '');
-  return cleaned || 'project';
-}
+const { folderName } = require('../shared/projectPath');
 
 function globs(value) {
   const list = Array.isArray(value) ? value : String(value || '').split(/[,\s]+/);
   return [...new Set(list.map((item) => text(item, 200)).filter(Boolean))].slice(0, 20);
 }
 
-// 定義の形をそろえる。主は 1 つだけ（無ければ最初の作業リポジトリ、それも無ければ最初の 1 つ）。
+// 既定は作業用から選ぶ。参照専用を作業用へ変更しない。
 function normalize(raw) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const seen = new Set();
@@ -60,9 +52,12 @@ function normalize(raw) {
   for (const item of Array.isArray(source.repos) ? source.repos : []) {
     if (!item || typeof item !== 'object') continue;
     const url = text(item.url, 500);
-    if (!url || seen.has(normalizeUrl(url))) continue;
-    seen.add(normalizeUrl(url));
-    const repo = { url, role: ROLES.includes(item.role) ? item.role : 'reference', desc: text(item.desc, 300) };
+    const localId = /^[a-zA-Z0-9-]{1,80}$/.test(item.localId || '') ? item.localId : '';
+    const reference = url ? normalizeUrl(url) : localId ? `local:${localId}` : '';
+    if (!reference || seen.has(reference)) continue;
+    seen.add(reference);
+    const repo = { ...(url ? { url } : { localId, label: text(item.label, 200) || 'ローカルフォルダ' }),
+      role: ROLES.includes(item.role) ? item.role : 'reference', desc: text(item.desc, 300) };
     const owns = globs(item.owns);
     if (owns.length) repo.owns = owns;
     repos.push(repo);
@@ -70,9 +65,9 @@ function normalize(raw) {
   }
   let main = repos.findIndex((repo) => repo.role === 'main');
   for (let i = 0; i < repos.length; i += 1) if (repos[i].role === 'main' && i !== main) repos[i].role = 'work';
-  if (main < 0 && repos.length) {
-    main = Math.max(0, repos.findIndex((repo) => repo.role === 'work'));
-    repos[main].role = 'main';
+  if (main < 0) {
+    main = repos.findIndex((repo) => repo.role === 'work');
+    if (main >= 0) repos[main].role = 'main';
   }
   return {
     version: 1,
@@ -248,7 +243,7 @@ function indexText(kb, folder) {
 //   repoPaths … config.json の { 正規化した URL → フォルダ }
 function resolve(project, repoPaths = {}) {
   return normalize(project).repos.map((repo) => ({
-    ...repo, label: repoLabel(repo.url), path: String((repoPaths || {})[normalizeUrl(repo.url)] || ''),
+    ...repo, label: repo.url ? repoLabel(repo.url) : repo.label, path: String((repoPaths || {})[repo.url ? normalizeUrl(repo.url) : `local:${repo.localId}`] || ''),
   }));
 }
 

@@ -174,6 +174,7 @@ function normalize(raw) {
       id,
       name,
       description: String(src.description || '').trim(),
+      ...(src.defaultRequest ? { defaultRequest: String(src.defaultRequest).trim() } : {}),
       purpose: 'implementation',
       entry: nodes.filter((node) => !node.deps.length).map((node) => node.id).filter(Boolean),
       exit: nodes.filter((node) => !used.has(node.id)).map((node) => node.id).filter(Boolean),
@@ -192,6 +193,7 @@ function definition(workflow) {
     id: workflow.id,
     name: workflow.name,
     description: workflow.description,
+    ...(workflow.defaultRequest ? { defaultRequest: workflow.defaultRequest } : {}),
     purpose: 'implementation',
     entry: workflow.entry,
     exit: workflow.exit,
@@ -230,7 +232,7 @@ function preview(raw, request, rawParameters) {
   const normalized = normalize(raw);
   const workflow = normalized.workflow;
   const issues = [...normalized.issues];
-  const requestText = String(request || '');
+  const requestText = String(request === undefined ? workflow.defaultRequest || '' : request || '');
   const keys = parameters.inputParameterKeys(requestText, ...workflow.nodes.map((node) => node.goal));
   const hasInputs = request !== undefined || rawParameters !== undefined;
   const supplied = plainObject(rawParameters) ? rawParameters : {};

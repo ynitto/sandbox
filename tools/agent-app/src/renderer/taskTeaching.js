@@ -88,7 +88,6 @@
     $('task-terminal-placeholder').hidden = hasTerminal;
     $('task-composer-placeholder').hidden = hasTerminal;
     populateExecutionInputs('task-launch');
-    $('task-launch-heading').hidden = state.published;
     $('task-launch-settings-summary').textContent = state.deps.executionLabel(readExecutionInputs('task-launch'));
     $('task-launch-start').textContent = hasTerminal ? '編集中' : '編集開始';
     $('task-launch-start').disabled = state.pending || hasTerminal;

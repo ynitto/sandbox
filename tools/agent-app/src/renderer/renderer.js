@@ -176,26 +176,7 @@ async function addRepo() {
 }
 
 function renderRepos() {
-  const select = $('repo-select');
-  select.replaceChildren();
-  if (!state.config.repos.length) {
-    const option = el('option', '', 'リポジトリを追加');
-    option.value = '';
-    select.append(option);
-  }
-  // プロジェクトを選んでいれば、その中のリポジトリだけ（役割を添える）。今開いているものは外さない
-  const choices = Projects.repoOptions() || state.config.repos.map((repo) => ({ value: repo, label: basename(repo) }));
-  if (state.repo && !choices.some((item) => item.value === state.repo)) choices.push({ value: state.repo, label: basename(state.repo) });
-  for (const choice of choices) {
-    const option = el('option', '', choice.label);
-    option.value = choice.value;
-    option.title = choice.value;
-    select.append(option);
-  }
-  select.value = state.repo;
   Projects.render();
-  select.disabled = !state.config.repos.length;
-  $('repo-remove').disabled = !state.repo;
 }
 
 async function removeConversation(session) {
@@ -225,7 +206,9 @@ function renderSessions() {
   if (RECENT_AREAS.has(state.area)) refreshRecentRequests();
   const ul = $('sessions');
   ul.replaceChildren();
-  for (const s of state.sessions) {
+  const sessions = state.area === 'projects'
+    ? state.sessions.filter(s => state.config.lastProject && s.project === state.config.lastProject) : state.sessions;
+  for (const s of sessions) {
     const ph = state.phases.get(s.id);
     const cls = [state.current && s.id === state.current.id ? 'active' : '', state.running.has(s.id) ? 'running' : (ph && ph.phase === 'attention' ? 'attention' : '')];
     const li = el('li', `row-item ${cls.join(' ')}`);
@@ -253,7 +236,7 @@ function renderSessions() {
     li.append(pick, remove);
     ul.append(li);
   }
-  if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? '会話なし' : ''));
+  if (!sessions.length) ul.append(el('li', 'empty', state.area === 'projects' ? (state.config.lastProject ? 'セッションなし' : 'プロジェクトを選択してください') : state.repo ? '会話なし' : ''));
   Projects.refreshProgress();
 }
 
@@ -366,9 +349,8 @@ function renderWorkflowItems() {
 }
 
 // ---- ホーム ----
-// 1 つの入力欄から始める入口。面は会話画面そのもの（空状態と入力欄）で、判定は会話の送信経路
-// （runTurn の振り分け）に任せる。サイドバーは会話・タスク・ワークフローを横断した直近の一覧で、
-// 押すと行き先の画面でその項目を開く（受信箱と同じ経路）。判定も画面もここでは作らない。
+// メインは4つの開始入口と依頼欄、サイドバーは全リポジトリの直近の作業。
+// 実行と再開は既存の画面・送信経路を使う。
 const RECENT_AREAS = new Set(['home']);
 let recentRequestsPending = null;
 function refreshRecentRequests() {
@@ -383,7 +365,7 @@ function refreshRecentRequests() {
 function homeItems() {
   const labels = { conversation: '会話', task: 'タスク', workflow: 'ワークフロー' };
   return state.recentRequests.map(s => ({ ...s, title: s.title || s.machine || s.workflow || '（無題）',
-    sub: `${labels[s.kind] || '会話'} · ${basename(s.repo)}${state.running.has(s.id) ? ' · 応答中' : ''}` }));
+    sub: `${labels[s.kind] || '会話'} · ${Projects.label(s) || basename(s.repo)}${state.running.has(s.id) ? ' · 応答中' : ''}` }));
 }
 
 function renderHomeItems() {
@@ -400,7 +382,7 @@ function renderHomeItems() {
     li.append(pick);
     ul.append(li);
   }
-  if (!ul.children.length) ul.append(el('li', 'empty', '最近の依頼はありません'));
+  if (!ul.children.length) ul.append(el('li', 'empty', 'まだ作業の履歴はありません'));
 }
 
 // 項目から行くのは既存の画面（会話・タスク・ワークフロー）
@@ -764,7 +746,7 @@ async function markAttentionSeen(item) {
 function attentionItemVisible(item) {
   if (item.kind === 'finding') return false;   // 発見は受信箱で開くまで残す
   const t = item.target || {};
-  if (t.kind === 'conversation') return state.area === 'conversation' && !state.draft && !!state.current && state.current.id === t.id;
+  if (t.kind === 'conversation') return ['conversation', 'projects'].includes(state.area) && !state.draft && !!state.current && state.current.id === t.id;
   if (t.repo !== state.repo) return false;
   if (t.kind === 'task') return state.area === 'tasks' && (state.selectedTask === `machine:${t.id}` || state.selectedTask === t.id);
   return state.area === 'workflows' && !!t.id && state.selectedWorkflow === t.id;
@@ -825,28 +807,29 @@ function renderAreaContext() {
   if (home) showView('chat');
   $('usage-open').hidden = !home;
   $('chat-views').hidden = home;
-  $('changes-toggle').hidden = home;
+  renderChangesVisibility();
   $('chat-more').hidden = home || !state.repo;
   if (home) $('chat-more').open = false;
-  const composerContext = home || state.area === 'conversation';
-  const repositorySlot = $(composerContext ? 'home-repository-slot' : 'sidebar-repository-slot');
-  // 選択状態と管理操作を共有する同じコントロールを、画面に応じて移す。
+  const repositorySlot = $(home ? 'home-context-slot' : 'sidebar-repository-slot');
   if ($('repository-context').parentElement !== repositorySlot) {
     $('repo-more').open = false;
     repositorySlot.append($('repository-context'));
   }
-  $('home-repository-slot').hidden = !composerContext;
-  $('home-repository-slot').classList.toggle('is-home', home);
-  $('sidebar-repository-slot').hidden = composerContext;
+  $('app').classList.toggle('home-portal', home);
+  $('home-context-slot').hidden = !home;
+  $('home-request-label').hidden = !home;
+  $('sidebar-repository-slot').hidden = home || state.area === 'inbox';
+  Projects.render();
+  renderConversationRepository();
   const info = AgentNavigation.areaInfo(state.area);
   const recent = RECENT_AREAS.has(state.area);
-  $('area-list-title').textContent = recent ? '最近の依頼' : (info.listLabel || info.label);
+  $('area-list-title').textContent = recent ? '最近の作業' : (info.listLabel || info.label);
   $('session-new').setAttribute('aria-label', info.createLabel);
   $('session-new').title = info.createLabel;
   for (const id of ['sessions', 'tasks', 'workflows', 'share-requests', 'inbox-items', 'home-items']) $(id).hidden = id !== (recent ? 'home-items' : info.listId);
   $('session-new').hidden = ['share', 'inbox', 'home'].includes(state.area);      // 共有の依頼は会話から出す。受信箱とホームは入口だけ
   if (recent) { renderHomeItems(); refreshRecentRequests(); }
-  else if (state.area === 'conversation') renderSessions();
+  else if (['conversation', 'projects'].includes(state.area)) renderSessions();
   else if (state.area === 'tasks') renderTaskItems();
   else if (state.area === 'workflows') renderWorkflowItems();
   else if (state.area === 'inbox') renderInboxItems();
@@ -934,7 +917,7 @@ async function loadWorkflowItems(repo) {
 async function loadAreaItems() {
   state.areaError = '';
   if (state.area === 'home') { await refreshRecentRequests(); renderAreaContext(); return; }
-  if (!state.repo || state.area === 'conversation') { renderAreaContext(); return; }
+  if (!state.repo || ['conversation', 'projects'].includes(state.area)) { renderAreaContext(); return; }
   if (state.area === 'tasks') await loadTaskItems(state.repo);
   else await loadWorkflowItems(state.repo);
 }
@@ -948,7 +931,7 @@ function frameMessage(action = '') {
 }
 
 function syncAutomationWorkbench(action = '') {
-  if (state.area === 'conversation') return;
+  if (['conversation', 'projects'].includes(state.area)) return;
   return $('automation-workbench').navigate(frameMessage(action));
 }
 
@@ -1420,7 +1403,28 @@ function renderAgents() {
   if ([...sel.options].some((o) => o.value === want)) sel.value = want;
 }
 
+function renderConversationRepository() {
+  const control = $('conversation-repository');
+  control.hidden = state.area !== 'conversation';
+  if (control.hidden) { control.open = false; return; }
+  const select = $('conversation-repo');
+  select.replaceChildren(...[...new Set([...(state.config.repos || []), state.repo].filter(Boolean))].map(repo => {
+    const option = new Option(basename(repo), repo); option.title = repo; return option;
+  }));
+  select.value = state.repo;
+  $('conversation-repo-summary').textContent = basename(state.repo) || 'リポジトリを選択';
+  $('conversation-repo-summary').title = state.repo;
+  const session = !state.draft && state.current;
+  const fork = $('conversation-repo-fork');
+  fork.hidden = !session;
+  const canFork = !!session && session.messages.some(m => m.role === 'assistant' && m.complete !== false);
+  const busy = !!session && (state.running.has(session.id) || state.pending.has(session.id));
+  select.disabled = busy || (!!session && !canFork);
+  fork.disabled = busy || !canFork;
+}
+
 function renderRunSettingsSummary() {
+  renderConversationRepository();
   const summary = $('run-settings-summary');
   if (!summary) return;
   // 「どれでも」の選択肢は、要約を組み立てる前に入れ替える（選ばれている CLI がそこで変わる）
@@ -1576,7 +1580,7 @@ function renderHeader() {
   const cur = state.current;
   const preparing = state.preparation && state.preparation.repo === state.repo
     && state.preparation.id === (cur?.id || null) ? state.preparation : null;
-  $('chat-title').textContent = cur ? (cur.title || '（無題）') : state.area === 'home' ? 'ホーム'
+  $('chat-title').textContent = cur ? (cur.title || '（無題）') : state.area === 'home' ? 'ホーム' : state.area === 'projects' ? 'プロジェクト'
     : (state.repo ? `${basename(state.repo)} で新しい会話` : 'リポジトリを登録して会話を始める');
   // 別のリポジトリから分岐した会話は、題名の下に分岐元を 1 行出す（押すと元の会話へ戻る）
   const origin = cur && cur.originSession;
@@ -1611,8 +1615,8 @@ function renderHeader() {
     $('permission-mode').value = state.config.execution.defaultReadonly ? 'ask'
       : (state.config.execution.defaultAutoApprove ? 'auto' : 'confirm');
   }
-  $('session-new').disabled = !state.repo;
-  $('changes-toggle').disabled = !state.repo;
+  $('session-new').disabled = !state.repo || (state.area === 'projects' && !state.config.lastProject);
+  renderChangesVisibility();
   $('chat-more').hidden = state.area === 'home' || !state.repo;
   $('composer').hidden = !state.repo && state.area !== 'home';
   for (const action of conversationActions(cur)) {
@@ -1622,7 +1626,7 @@ function renderHeader() {
   }
   const busy = !!cur && (state.running.has(cur.id) || state.pending.has(cur.id));
   $('stop').hidden = !busy;
-  $('send').disabled = !state.repo || !!state.preparation || (!!cur && state.pending.has(cur.id));
+  $('send').disabled = !state.repo || (state.area === 'projects' && !state.config.lastProject) || !!state.preparation || (!!cur && state.pending.has(cur.id));
   $('send').classList.toggle('sending', !!cur && state.pending.has(cur.id));
   if (!state.pending.size) $('send').classList.remove('sending');
   const tm = isTmux(cur);
@@ -1987,7 +1991,7 @@ async function openSessionInRepo(repo, id, options = {}) {
     await selectRepo(repo);
     renderRepos();
   }
-  await showArea('conversation');
+  if (state.area !== 'projects') await showArea('conversation');
   await openSession(id, options);
 }
 
@@ -2128,6 +2132,43 @@ function terminalSnapshotNode(snapshot) {
   return details;
 }
 
+function renderHomePortal(start) {
+  start.append(el('p', 'home-eyebrow', 'AGENT APP'), el('h2', '', '作業を始める'));
+  const actions = el('div', 'home-actions');
+  for (const [area, nav, label, description] of [
+    ['conversation', 'area-work', '会話', '相談しながら進める'],
+    ['tasks', 'area-tasks', 'タスク', '登録した作業を実行する'],
+    ['workflows', 'area-workflows', 'ワークフロー', '複数の工程を進める'],
+    ['projects', 'area-projects', 'プロジェクト', '仕事のまとまりから始める'],
+  ]) {
+    const button = el('button', 'home-action');
+    button.type = 'button';
+    button.dataset.homeArea = area;
+    const icon = $(nav).querySelector('svg').cloneNode(true);
+    const text = el('span', 'home-action-text');
+    text.append(el('strong', '', label), el('span', '', description));
+    const arrow = el('span', 'home-action-arrow', '→'); arrow.setAttribute('aria-hidden', 'true');
+    button.append(icon, text, arrow);
+    button.onclick = async () => {
+      try {
+        await showArea(area);
+        if (area === 'conversation') { newDraft(); $('prompt').focus(); }
+        if (area === 'tasks' && !state.selectedTask && state.tasks.length) await selectAreaItem(area, taskId(state.tasks[0]));
+        if (area === 'workflows' && !state.selectedWorkflow && state.workflows.length) await selectAreaItem(area, state.workflows[0].id);
+      } catch (err) { notice(err.message, 'error'); }
+    };
+    actions.append(button);
+  }
+  start.append(actions);
+  if (!state.config.repos.length) {
+    const setup = el('div', 'home-setup');
+    setup.append(el('span', '', 'まず作業するリポジトリを追加してください'));
+    const add = el('button', 'small', 'リポジトリを追加');
+    add.onclick = () => addRepo().catch(err => notice(err.message, 'error'));
+    setup.append(add); start.append(setup);
+  }
+}
+
 function renderMessages() {
   renderExecutionInformation();
   const box = $('messages');
@@ -2135,7 +2176,15 @@ function renderMessages() {
   box.replaceChildren();
   start.replaceChildren();
   const cur = state.current;
-  if (!cur && state.area === 'home' && Projects.renderHome(start)) return;
+  if (!cur && state.area === 'home') { renderHomePortal(start); return; }
+  if (!cur && state.area === 'projects' && Projects.renderHome(start)) return;
+  if (!cur && state.area === 'projects') {
+    start.append(el('h2', '', 'プロジェクトを選択してください'));
+    const create = el('button', 'primary', '新しいプロジェクト');
+    create.onclick = () => $('project-new').click();
+    start.append(create);
+    return;
+  }
   if (!cur) {
     start.append(el('h2', '', state.repo ? '何をしたいですか？' : 'リポジトリを登録してください'));
     if (state.repo && state.area === 'home') start.append(el('p', '', 'エージェント・スキル・進め方は依頼から決めます'));
@@ -2465,6 +2514,18 @@ function renderDiff(text) {
   }
 }
 
+function renderChangesVisibility() {
+  const selected = !state.draft && !!state.current && ['conversation', 'task', 'workflow'].includes(state.current.kind);
+  const visible = ['conversation', 'projects'].includes(state.area) && selected;
+  $('changes-toggle').hidden = !visible;
+  $('changes-toggle').disabled = !state.repo;
+  if (!visible) {
+    state.changesOpen = false;
+    $('changes').hidden = true;
+    $('changes-toggle').classList.remove('on');
+  }
+}
+
 async function refreshChanges() {
   if (!state.repo) return;
   const wt = activeWorktree();
@@ -2529,7 +2590,7 @@ async function showArea(area, { persist = true, action = '' } = {}) {
   const inbox = state.area === 'inbox';
   const home = state.area === 'home';
   const automation = state.area === 'tasks' || state.area === 'workflows';
-  const workspace = state.area !== 'conversation' && !home;
+  const workspace = state.area !== 'conversation' && state.area !== 'projects' && !home;
   renderAutomationHeader();
   $('app').classList.toggle('workspace-mode', workspace);
   $('main').hidden = workspace;
@@ -2537,7 +2598,7 @@ async function showArea(area, { persist = true, action = '' } = {}) {
   $('share-area').hidden = !share;
   $('inbox-area').hidden = !inbox;
   if (!share) Share.hide();
-  const buttons = { home: $('area-home'), conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), share: $('area-share'), inbox: $('area-inbox') };
+  const buttons = { home: $('area-home'), conversation: $('area-work'), tasks: $('area-tasks'), workflows: $('area-workflows'), projects: $('area-projects'), share: $('area-share'), inbox: $('area-inbox') };
   for (const [name, button] of Object.entries(buttons)) {
     const selected = name === state.area;
     button.classList.toggle('on', selected);
@@ -2570,6 +2631,11 @@ async function showArea(area, { persist = true, action = '' } = {}) {
       newDraft();                                   // ホームは常に新しい会話から
       Projects.refreshHome();                       // ナレッジの一覧はホームを開いたときだけ読む
       if (state.repo) await loadAreaItems();        // 直近の一覧（タスク・ワークフロー）
+    }
+    if (state.area === 'projects') {
+      showView('chat');
+      await Projects.load();
+      await Projects.choose(state.config.lastProject || '');
     }
     Term.refit();
   }
@@ -3087,8 +3153,23 @@ async function init() {
   $('area-tasks').onclick = () => showArea('tasks', { action: 'new' }).catch((err) => notice(err.message, 'error'));
   $('area-inbox').onclick = () => showArea('inbox').catch((err) => notice(err.message, 'error'));
   $('area-workflows').onclick = () => showArea('workflows', { action: 'new' }).catch((err) => notice(err.message, 'error'));
+  $('area-projects').onclick = () => showArea('projects').catch((err) => notice(err.message, 'error'));
   $('area-share').onclick = () => showArea('share').catch((err) => notice(err.message, 'error'));
-  $('repo-select').onchange = () => selectRepo($('repo-select').value).catch((err) => notice(err.message, 'error'));
+  $('conversation-repo').onchange = async () => {
+    const repo = $('conversation-repo').value;
+    $('conversation-repository').open = false;
+    try {
+      if (!state.draft && state.current) await SessionSearch.forkCurrent(state.current.id, { repo });
+      else if (Projects.repoOptions()?.some(item => item.value === repo)) await selectRepo(repo);
+      else await Projects.chooseContext(repo);
+    } catch (err) { notice(err.message, 'error'); }
+    finally { renderConversationRepository(); }
+  };
+  $('conversation-repo-fork').onclick = () => {
+    $('conversation-repository').open = false;
+    SessionSearch.forkCurrent(state.current.id).catch(err => notice(err.message, 'error'));
+  };
+  $('repo-select').onchange = () => Projects.chooseContext($('repo-select').value).catch((err) => notice(err.message, 'error'));
   $('repo-add').onclick = () => { $('repo-more').open = false; addRepo().catch((err) => notice(err.message, 'error')); };
   $('repo-remove').onclick = async () => {
     $('repo-more').open = false;
@@ -3097,7 +3178,7 @@ async function init() {
     await selectRepo(state.config.lastRepo);
   };
   $('session-new').onclick = () => {
-    if (state.area === 'conversation') newDraft();
+    if (['conversation', 'projects'].includes(state.area)) newDraft();
     else syncAutomationWorkbench('new');
   };
   $('session-delete').onclick = async () => {
