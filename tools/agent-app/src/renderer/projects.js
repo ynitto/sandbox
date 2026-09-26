@@ -7,8 +7,9 @@
 //   編集   … 作業フォルダ（#wt-dialog）と同じダイアログ。行は設定の `.setting-field`、
 //            リポジトリの並びは設定の `.wt-table.settings-table`
 //   保存   … 回答の下の `.message-action` と、`.more-menu` の選択肢
-//   ホーム … プロジェクトを選んでいるときの空状態。見出し → 1 行 → `.execution-card` の「指示」「ナレッジ」
-//            （「概要」の手動実行と同じカード）。ナレッジの一覧はホームを開いたときだけ読む
+//   ホーム … プロジェクトを選んでいるときの空状態。見出し → 1 行 → `.execution-card` の「進行中」「指示」「ナレッジ」
+//            （「概要」の手動実行と同じカード）。ナレッジの一覧はホームを開いたときだけ読む。
+//            「進行中」は受信箱（要対応・未読）と応答中の印を、このプロジェクトの会話で絞っただけ（状態を持たない）
 // renderer.js の state / selectRepo / renderRepos / notice を使う（読み込み順で後ろに来るので呼ぶ時に引く）。
 (function initProjects() {
   const $ = (id) => document.getElementById(id);
@@ -19,6 +20,7 @@
     ['project', 'note', 'メモとして保存'],
     ['project', 'decision', '決めたこととして保存'],
     ['project', 'rule', '守ることに追記'],
+    ['project', 'preference', '進め方の好みに追記'],
     ['shared', 'note', '共通のメモとして保存'],
   ];
 
@@ -185,6 +187,57 @@
     if (added.written.length) await afterAdd(added);
   }
 
+  // 「進行中」: このプロジェクトの会話を あなた待ち → 見てほしい → 作業中 の順に。何も無ければ出さない
+  const PROGRESS = [['action', 'あなた待ち'], ['unread', '見てほしい'], ['running', '作業中']];
+  const PROGRESS_MAX = 6;
+  function progressCard() {
+    const sessions = new Map((state.sessions || []).filter((s) => s.kind === 'conversation' && s.project === P.current.key).map((s) => [s.id, s]));
+    const queueOf = new Map();
+    for (const item of (state.attention && state.attention.items) || []) {
+      const t = item.target || {};
+      if (t.kind === 'conversation' && sessions.has(t.id) && !queueOf.has(t.id)) queueOf.set(t.id, item);
+    }
+    const rows = [];
+    for (const [queue, labelText] of PROGRESS) {
+      for (const s of sessions.values()) {
+        const item = queueOf.get(s.id);
+        const hit = queue === 'running' ? state.running.has(s.id) : !state.running.has(s.id) && item && item.queue === queue;
+        if (hit) rows.push({ session: s, item, label: labelText, queue });
+      }
+    }
+    if (!rows.length) return null;
+    const card = el('section', 'execution-card');
+    card.id = 'project-progress';
+    card.append(cardHead('進行中', ''));
+    const list = el('ul', 'list project-files');
+    for (const row of rows.slice(0, PROGRESS_MAX)) {
+      const li = el('li', `row-item${row.queue === 'action' ? ' attention' : row.queue === 'running' ? ' running' : ''}`);
+      const pick = el('button', 'list-pick');
+      const body = el('span', 'grow');
+      body.append(el('div', '', row.session.title || '（無題）'), el('div', 'sub', `${row.label} · ${baseName(row.session.repo)}`));
+      pick.append(body);
+      pick.onclick = () => (row.item ? openAttentionItem(row.item) : openSessionInRepo(row.session.repo, row.session.id))
+        .catch((err) => notice(err.message, 'error'));
+      li.append(pick);
+      list.append(li);
+    }
+    card.append(list);
+    if (rows.length > PROGRESS_MAX) card.append(el('span', 'sub', `ほか ${rows.length - PROGRESS_MAX} 件`));
+    return card;
+  }
+
+  // 受信箱や応答中が変わったら、ホームの「進行中」だけを描き直す（入力欄やほかのカードは触らない）
+  function refreshProgress() {
+    if (!P.current || state.area !== 'home' || state.current) return;
+    const cards = document.querySelector('.project-home');
+    if (!cards) return;
+    const held = document.getElementById('project-progress');
+    const next = progressCard();
+    if (held && next) held.replaceWith(next);
+    else if (held) held.remove();
+    else if (next) cards.prepend(next);
+  }
+
   // 空状態に描く（描いたら true）。プロジェクトを選んでいないときは今のまま（呼び出し側が描く）
   function renderHome(start) {
     if (!P.current) return false;
@@ -226,6 +279,8 @@
       knowledge.classList.remove('drop');
       dropFiles(e.dataTransfer.files).catch((err) => notice(err.message, 'error'));
     });
+    const progress = progressCard();
+    if (progress) cards.append(progress);
     cards.append(instructions, knowledge);
     start.append(cards);
     return true;
@@ -424,5 +479,5 @@
     $('project-save').onclick = save;
   }
 
-  window.Projects = { init, load, render, repoOptions, routeDraft, saveActions, renderHome, refreshHome, label, canAssign, assign };
+  window.Projects = { init, load, render, repoOptions, routeDraft, saveActions, renderHome, refreshHome, refreshProgress, label, canAssign, assign };
 })();

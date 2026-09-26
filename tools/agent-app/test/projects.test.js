@@ -94,6 +94,41 @@ test('節には rules.md の中身と、作業ブランチをそろえる指示�
   assert.match(plain, /README\.md と rules\.md があれば読んで/);
 });
 
+test('節には索引の先頭と進め方の好みが入り、残す候補の観点を伝える', () => {
+  const project = { name: '受注', repos: [{ url: 'git@h:t/app.git', role: 'main' }] };
+  const resolved = projects.resolve(project, { [projects.normalizeUrl('git@h:t/app.git')]: '/src/app' });
+  const block = projects.contextBlock({
+    project, folder: '受注', resolved, current: '/src/app', kbHost: '/src/kb', rules: '- r',
+    index: { text: '## 索引\n- notes/a.md', more: true }, preferences: '- 報告は結論だけ',
+  });
+  assert.match(block, /### 索引（README\.md の先頭）\n## 索引\n- notes\/a\.md\n（続きは README\.md）/);
+  assert.match(block, /### 進め方の好み（preferences\.md）\n- 報告は結論だけ/);
+  assert.match(block, /索引から、この依頼に関わるノートを開いて/);
+  assert.match(block, /やめた案や消した機能とその理由/);
+  assert.match(block, /確認が要る相手/);
+});
+
+test('索引は先頭 2 KB を行で切り、進め方の好みは小さいときだけ読む。保存の種類に進め方の好みがある', () => {
+  const kb = tmp();
+  projects.write(kb, 'p', { name: 'p', repos: [] });
+  const dir = path.join(kb, 'projects', 'p');
+  assert.deepEqual(projects.indexText(tmp(), 'p'), { text: '', more: false });
+  fs.writeFileSync(path.join(dir, 'README.md'), '# 索引\n');
+  assert.deepEqual(projects.indexText(kb, 'p'), { text: '# 索引', more: false });
+  fs.writeFileSync(path.join(dir, 'README.md'), Array.from({ length: 200 }, (_, i) => `- ノート ${i}`).join('\n'));
+  const long = projects.indexText(kb, 'p');
+  assert.equal(long.more, true);
+  assert.ok(Buffer.byteLength(long.text) <= 2048);
+  assert.match(long.text, /- ノート \d+$/);
+  fs.writeFileSync(path.join(dir, 'preferences.md'), '- 報告は結論だけ\n');
+  assert.equal(projects.preferencesText(kb, 'p'), '- 報告は結論だけ');
+  fs.writeFileSync(path.join(dir, 'preferences.md'), 'x'.repeat(3000));
+  assert.equal(projects.preferencesText(kb, 'p'), '');
+  const prompt = projects.knowledgePrompt({ kbHost: '/kb', folder: 'p', kind: 'preference' });
+  assert.match(prompt, /進め方の好み/);
+  assert.match(prompt, /\/kb\/projects\/p\/preferences\.md に、箇条書きで追記/);
+});
+
 test('ナレッジの一覧は新しい順で、定義と索引を除く。足すファイルは files/ に重ならない名前で置く', () => {
   const kb = tmp();
   projects.write(kb, 'p', { name: 'p', repos: [] });

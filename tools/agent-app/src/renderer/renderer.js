@@ -254,6 +254,7 @@ function renderSessions() {
     ul.append(li);
   }
   if (!state.sessions.length) ul.append(el('li', 'empty', state.repo ? '会話なし' : ''));
+  Projects.refreshProgress();
 }
 
 // 会話画面と検索結果で、操作名と実行可否を共有する。
@@ -618,6 +619,7 @@ function renderInbox() {
   }
   button.title = count ? attentionSummary() : '';
   if (state.area === 'inbox') renderInboxItems();
+  Projects.refreshProgress();
 }
 
 // 領域「受信箱」の一覧（サイドバー。リポジトリと領域を横断する）と本文（件数の 1 行）

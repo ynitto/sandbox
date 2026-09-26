@@ -99,7 +99,8 @@ function promptBlock(sess, cfg) {
   if (!ctx) return '';
   return projects.contextBlock({
     project: ctx.project, folder: ctx.folder, current: sess.repo, kbHost: host.toHostPath(ctx.kb),
-    rules: projects.rulesText(ctx.kb, ctx.folder), branch: sess.worktree ? String(sess.branch || '') : '',
+    rules: projects.rulesText(ctx.kb, ctx.folder), index: projects.indexText(ctx.kb, ctx.folder),
+    preferences: projects.preferencesText(ctx.kb, ctx.folder), branch: sess.worktree ? String(sess.branch || '') : '',
     resolved: ctx.resolved.map((repo) => ({ ...repo, hostPath: repo.path ? host.toHostPath(repo.path) : '' })),
   });
 }

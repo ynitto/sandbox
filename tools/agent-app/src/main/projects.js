@@ -23,12 +23,15 @@ const MAX_TEXT = 2000;
 const FILES_DIR = 'files';                // 画面から足したファイルの置き場（projects/<フォルダ>/files/）
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_RULES_BYTES = 4 * 1024;         // 最初の依頼にそのまま差し込む rules.md の上限
+const MAX_PREFERENCES_BYTES = 2 * 1024;   // 同じく preferences.md（進め方の好み）の上限
+const MAX_INDEX_BYTES = 2 * 1024;         // 索引 README.md は先頭のこの分だけ差し込む
 const ROLES = ['main', 'work', 'reference'];
 const ROLE_LABEL = { main: '主', work: '作業', reference: '参照' };
 const KINDS = {
   note: { label: 'メモ', dir: 'notes' },
   decision: { label: '決めたこと', dir: 'decisions' },
   rule: { label: '守ること', file: 'rules.md' },
+  preference: { label: '進め方の好み', file: 'preferences.md' },
 };
 
 const text = (value, max = MAX_TEXT) => String(value == null ? '' : value).trim().slice(0, max);
@@ -217,14 +220,28 @@ function fileTarget(kb, folder, name) {
   throw new Error('同じ名前のファイルが多すぎます');
 }
 
-// 最初の依頼に差し込む rules.md（無い・大きすぎるなら ''。大きいものは読む指示だけにする）
-function rulesText(kb, folder) {
-  const file = path.join(kb, DIR, folder, 'rules.md');
+// 最初の依頼にそのまま差し込む小さいファイル（無い・大きすぎるなら ''。大きいものは読む指示だけにする）
+function smallText(kb, folder, name, max) {
+  const file = path.join(kb, DIR, folder, name);
   try {
     const st = fs.statSync(file);
-    if (!st.isFile() || st.size > MAX_RULES_BYTES) return '';
+    if (!st.isFile() || st.size > max) return '';
     return fs.readFileSync(file, 'utf8').trim();
   } catch { return ''; }
+}
+
+function rulesText(kb, folder) { return smallText(kb, folder, 'rules.md', MAX_RULES_BYTES); }
+function preferencesText(kb, folder) { return smallText(kb, folder, KINDS.preference.file, MAX_PREFERENCES_BYTES); }
+
+// 索引 README.md の先頭（行の切れ目で切る）。何がどこにあるかを毎回渡し、必要なノートは自分で開かせる。
+//   → { text, more }（more … 続きがある）
+function indexText(kb, folder) {
+  let raw;
+  try { raw = fs.readFileSync(path.join(kb, DIR, folder, 'README.md')); } catch { return { text: '', more: false }; }
+  if (raw.length <= MAX_INDEX_BYTES) return { text: raw.toString('utf8').trim(), more: false };
+  const head = raw.subarray(0, MAX_INDEX_BYTES).toString('utf8');
+  const cut = head.lastIndexOf('\n');
+  return { text: (cut > 0 ? head.slice(0, cut) : head).replace(/\uFFFD+$/, '').trim(), more: true };
 }
 
 // 定義のリポジトリに、この PC のフォルダを当てる。
@@ -274,8 +291,10 @@ function chooseRepo(resolved, request) {
 //   current  … 今回のカレントディレクトリ（登録フォルダ）
 //   kbHost   … ナレッジリポジトリのホスト側パス
 //   rules    … rules.md の中身（rulesText。'' なら差し込まない）
+//   index    … 索引 README.md の先頭（indexText。{ text, more }）
+//   preferences … preferences.md の中身（preferencesText）
 //   branch   … いまの会話の作業ブランチ（作業フォルダで動くときだけ。ほかのリポジトリでも同じ名前を使わせる）
-function contextBlock({ project, folder, resolved = [], current = '', kbHost = '', rules = '', branch = '' }) {
+function contextBlock({ project, folder, resolved = [], current = '', kbHost = '', rules = '', index = null, preferences = '', branch = '' }) {
   const p = normalize(project);
   const here = resolved.find((repo) => repo.path && repo.path === current);
   const lines = ['## プロジェクト',
@@ -295,10 +314,15 @@ function contextBlock({ project, folder, resolved = [], current = '', kbHost = '
   }
   if (kbHost) {
     const dir = `${kbHost.replace(/\/+$/, '')}/${DIR}/${folder}`;
-    lines.push('', `ナレッジ: ${dir}/（索引は README.md、常に守ることは rules.md）と、全プロジェクト共通の ${kbHost.replace(/\/+$/, '')}/${SHARED_DIR}/。`,
-      rules ? '作業を始める前に、README.md があれば読んでください。' : '作業を始める前に、README.md と rules.md があれば読んでください。',
-      'あとの作業でも役に立つ決定や分かったことが出たら、回答の最後に「ナレッジに残す候補」として 1〜3 行で挙げてください（自分では書かない）。');
+    const indexed = index && index.text;
+    const unread = [indexed ? '' : 'README.md', rules ? '' : 'rules.md'].filter(Boolean);
+    lines.push('', `ナレッジ: ${dir}/（索引は README.md、常に守ることは rules.md、進め方の好みは preferences.md）と、全プロジェクト共通の ${kbHost.replace(/\/+$/, '')}/${SHARED_DIR}/。`,
+      unread.length ? `作業を始める前に、${unread.join(' と ')} があれば読んでください。` : '索引から、この依頼に関わるノートを開いてから作業を始めてください。',
+      'あとの作業でも役に立つことが出たら、回答の最後に「ナレッジに残す候補」として 1〜3 行で挙げてください（自分では書かない）。'
+        + '候補にするのは、決めたこと、やめた案や消した機能とその理由、変える前に確認が要る相手、利用者の進め方の好み（報告の頻度や細かさ、作業の分け方）です。');
+    if (indexed) lines.push('', '### 索引（README.md の先頭）', index.text, ...(index.more ? ['（続きは README.md）'] : []));
     if (rules) lines.push('', '### 守ること（rules.md）', rules);
+    if (preferences) lines.push('', '### 進め方の好み（preferences.md）', preferences);
   }
   if (p.instructions) lines.push('', p.instructions);
   return lines.join('\n');
@@ -329,5 +353,5 @@ module.exports = {
   DIR, FILE, SHARED_DIR, FILES_DIR, MAX_BYTES, MAX_FILE_BYTES, MAX_REPOS, ROLES, ROLE_LABEL, KINDS,
   folderName, normalize, parse, serialize, normalizeUrl, repoLabel, keyOf, splitKey, projectFile,
   list, read, write, resolve, chooseRepo, contextBlock, knowledgePrompt, globRegex,
-  knowledgeFiles, fileTarget, rulesText,
+  knowledgeFiles, fileTarget, rulesText, preferencesText, indexText,
 };
