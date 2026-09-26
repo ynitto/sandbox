@@ -7,9 +7,9 @@
 //   編集   … 作業フォルダ（#wt-dialog）と同じダイアログ。行は設定の `.setting-field`、
 //            リポジトリの並びは設定の `.wt-table.settings-table`
 //   保存   … 回答の下の `.message-action` と、`.more-menu` の選択肢
-//   ホーム … プロジェクトを選んでいるときの空状態。見出し → 1 行 → `.execution-card` の「進行中」「指示」「ナレッジ」
+//   ホーム … プロジェクトを選んでいるときの空状態。見出し → 1 行 → `.execution-card` の「会話」「指示」「ナレッジ」
 //            （「概要」の手動実行と同じカード）。ナレッジの一覧はホームを開いたときだけ読む。
-//            「進行中」は受信箱（要対応・未読）と応答中の印を、このプロジェクトの会話で絞っただけ（状態を持たない）
+//            「会話」は受信箱（要対応・未読）と応答中の印を、このプロジェクトの会話で絞っただけ（状態を持たない）
 // renderer.js の state / selectRepo / renderRepos / notice を使う（読み込み順で後ろに来るので呼ぶ時に引く）。
 (function initProjects() {
   const $ = (id) => document.getElementById(id);
@@ -20,7 +20,7 @@
     ['project', 'note', 'メモとして保存'],
     ['project', 'decision', '決めたこととして保存'],
     ['project', 'rule', '守ることに追記'],
-    ['project', 'preference', '進め方の好みに追記'],
+    ['project', 'preference', '進め方として保存'],
     ['shared', 'note', '共通のメモとして保存'],
   ];
 
@@ -187,8 +187,8 @@
     if (added.written.length) await afterAdd(added);
   }
 
-  // 「進行中」: このプロジェクトの会話を あなた待ち → 見てほしい → 作業中 の順に。何も無ければ出さない
-  const PROGRESS = [['action', 'あなた待ち'], ['unread', '見てほしい'], ['running', '作業中']];
+  // 「会話」: このプロジェクトの会話を 確認待ち → 未読 → 応答中 の順に（言葉は受信箱と会話一覧のもの）。何も無ければ出さない
+  const PROGRESS = [['action', '確認待ち'], ['unread', '未読'], ['running', '応答中']];
   const PROGRESS_MAX = 6;
   function progressCard() {
     const sessions = new Map((state.sessions || []).filter((s) => s.kind === 'conversation' && s.project === P.current.key).map((s) => [s.id, s]));
@@ -208,7 +208,7 @@
     if (!rows.length) return null;
     const card = el('section', 'execution-card');
     card.id = 'project-progress';
-    card.append(cardHead('進行中', ''));
+    card.append(cardHead('会話', ''));
     const list = el('ul', 'list project-files');
     for (const row of rows.slice(0, PROGRESS_MAX)) {
       const li = el('li', `row-item${row.queue === 'action' ? ' attention' : row.queue === 'running' ? ' running' : ''}`);
@@ -226,7 +226,7 @@
     return card;
   }
 
-  // 受信箱や応答中が変わったら、ホームの「進行中」だけを描き直す（入力欄やほかのカードは触らない）
+  // 受信箱や応答中が変わったら、ホームの「会話」だけを描き直す（入力欄やほかのカードは触らない）
   function refreshProgress() {
     if (!P.current || state.area !== 'home' || state.current) return;
     const cards = document.querySelector('.project-home');
