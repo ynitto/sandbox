@@ -982,10 +982,11 @@ def _sm_require_next_state_contract(script: str, *, cwd: str, log_file: str) -> 
         "  再配布: `python install.py --agent <エージェント> --all-skills`")
 
 
-# 遷移条件の判断で「決めない」へ倒す確度の下限。0 なら棄権しない（judge の答えを
-# そのまま使う）。gemma4:e4b で確度と正答の関係を測ってから既定を決める
-# （設計 2026-09-19 §6）。上げると、届かない条件は制御応答（生成経路）で判定し直す。
-_SM_JUDGE_MIN_CONFIDENCE = 0.0
+# 遷移条件の判断で「決めない」へ倒す確度の下限。届かない条件は制御応答（生成経路）で
+# 判定し直す。gemma4:e4b の 66 セル較正（2026-09-25、TR1〜TR11 × 3）で正答 45 は確度
+# 0.998 以上、誤答 3（TR4）は 0.635——0.7〜0.9 のどこでも誤答だけが落ちるので余白を取って
+# 0.8（測定 2026-09-20 §21）。較正 policy の transition とは max で合成される。
+_SM_JUDGE_MIN_CONFIDENCE = 0.8
 
 
 def _sm_judge_model(agent: "dict | None") -> "str | None":

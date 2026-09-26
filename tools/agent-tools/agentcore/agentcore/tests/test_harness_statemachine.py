@@ -1302,8 +1302,8 @@ class NextStateJudgeTests(unittest.TestCase):
 
     def test_other_means_no_outcome_matched(self):
         with mock.patch.object(sm.judge, "evaluate",
-                               return_value=self._choice("other", **{"0": 0.1, "1": 0.1,
-                                                                     "2": 0.1, "other": 0.7})):
+                               return_value=self._choice("other", **{"0": 0.05, "1": 0.05,
+                                                                     "2": 0.05, "other": 0.85})):
             evals = sm._sm_judge_conditions(self.OUTCOMES, output="???",
                                             agent=self._local_agent(), log_file=self.log_file)
         self.assertEqual(evals, {"0": False, "1": False, "2": False})
@@ -1335,6 +1335,17 @@ class NextStateJudgeTests(unittest.TestCase):
         fallback = [e for e in self._events() if e["event"] == "condition_judge_fallback"]
         self.assertEqual(len(fallback), 1)
         self.assertIn("ollama に接続できません", fallback[0]["reason"])
+
+    def test_default_floor_abstains_below_0_8(self):
+        """定数は較正で決めた 0.8。届かない確度（TR4 の誤答は 0.635）は生成経路へ倒れる。"""
+        self.assertEqual(sm._SM_JUDGE_MIN_CONFIDENCE, 0.8)
+        low = self._answers(**{"1": True, "2": False})
+        low["answers"]["1"]["confidence"] = 0.635
+        with mock.patch.object(sm.judge, "evaluate", return_value=low):
+            evals = sm._sm_judge_conditions(self.PENDING, output="x", agent=self._local_agent(),
+                                            log_file=self.log_file)
+        self.assertEqual(evals, {})
+        self.assertEqual(self._events()[-1]["abstained"], ["1"])
 
     def test_low_confidence_abstains_to_the_control_response_path(self):
         with mock.patch.object(sm.judge, "evaluate",
