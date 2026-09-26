@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "created_at": "20260925T142952277183Z",
+  "revision": "7bff9cbc0dab0fe2c562bc1a7a4708ca30382597",
+  "arguments": {
+    "model": "gemma4:e4b",
+    "repeat": 3,
+    "cases": "F1,J2,CL1,E1,E2,E3,E4,E5,E6,RO1,RO2,RO3,FL2,FL3,FL4,FL5,FL6,FL7,FL8,FL9,FL10,RO4,RO5,RO6,RO7,RO8,RO9,RO10,RO11,AS1,AS3,AS4,AS5,AS6,AS7,AS8,AS9,AS10,AS11,AS12,AS13,CW1,CW2,TR3,TR1,TR2,CT1,CT2,TR4,TR5,TR6,TR7,TR8,TR9,TR10,TR11,CT3,CT4,CT5,CT6,CT7,CT8,CW3,CW4,CW5,CW6",
+    "calibration": true,
+    "fake_run": false,
+    "replay": null,
+    "output_dir": "tools/agent-tools/eval/results/archive/20260925-gemma4-e4b-shape-calibration",
+    "samples": 1,
+    "rotations": null,
+    "min_confidence": 0.0
+  },
+  "state": "completed",
+  "dirty": false
+}

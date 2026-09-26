@@ -132,6 +132,21 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(report["methods"][0]["unique_cases"], 1)
         self.assertEqual(report["methods"][0]["thresholds"][0]["status"], "insufficient_data")
 
+    def test_consumers_split_by_cell_prefix_and_expose_wrong_confidences(self):
+        report = self.report([calibration_row("TR4", .95, False), calibration_row("TR5", .7),
+                              calibration_row("FL2", .9), calibration_row("F1", .6),
+                              calibration_row("RO4", .9, method="text")])
+        consumers = report["consumers"]
+        self.assertEqual(set(consumers), {"transition", "filter"})  # text は除く
+        self.assertEqual(consumers["transition"]["wrong_confidences"], [.95])
+        self.assertEqual(consumers["transition"]["min_right_confidence"], .7)
+        self.assertEqual(consumers["filter"]["unique_cases"], 2)
+        self.assertEqual(consumers["filter"]["thresholds"][-1]["accepted_cases"], 1)  # 0.9
+
+    def test_default_cells_reach_minimum_unique_cases(self):
+        self.assertGreaterEqual(len(readout_eval.CELLS), readout_eval.MIN_UNIQUE_CASES)
+        self.assertFalse(set(readout_eval.CELLS) & set(readout_eval.VARIANTS))
+
     def test_failure_is_not_wrong_and_missing_usage_is_explicit(self):
         failed = calibration_row("fail")
         failed.update(status="transport_failure", error="offline")

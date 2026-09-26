@@ -390,7 +390,7 @@ def _assess_cell(case: dict, *, cid: str = ""):
     """
     project_eval = importlib.import_module("project_eval")
     ap = project_eval.ap
-    task = getattr(project_eval, _ASSESS_TASKS[cid])()
+    task = case["make"]() if "make" in case else getattr(project_eval, _ASSESS_TASKS[cid])()
     questions = ap._assess_judge_questions()
 
     def to_check(answers):
@@ -410,7 +410,9 @@ def _assess_cell(case: dict, *, cid: str = ""):
 
 def _contract_cell(case: dict):
     """契約の語。問いは本番（`_sm_contract_by_judge`）と同じ形で、語は宣言（`output_validator`）
-    から取る。採否も本番と同じ——選んだ語が宣言に無いか確度が下限に届かなければ補わない。"""
+    から取る。選んだ語が宣言に無ければ補わない。本番の確度の下限
+    （`_SM_CONTRACT_JUDGE_MIN_CONFIDENCE`）はここで掛けない——掛けると oracle の総当たり
+    （確度を持たない答え）がどの語も通さず測れない。下限は report の掃引が同じ式で掛ける。"""
     sm = importlib.import_module("agentcore.harness.statemachine")
     prefixes = sm._sm_validator_prefixes(case["rule"])
     questions = {"contract": {
@@ -422,10 +424,7 @@ def _contract_cell(case: dict):
     def to_check(answers):
         answer = answers["contract"]
         picked = str(answer.get("choice") or "")
-        if picked not in prefixes:
-            return ""
-        return picked if float(answer.get("confidence") or 0.0) >= \
-            sm._SM_CONTRACT_JUDGE_MIN_CONFIDENCE else ""
+        return picked if picked in prefixes else ""
 
     return case["output"], questions, to_check
 
@@ -459,7 +458,8 @@ def _route_cell(case: dict):
         choice = str(answers["workspace"].get("choice") or "")
         return json.dumps({"workspace": "" if choice == judge.OTHER_KEY else choice})
 
-    return ap._route_judge_state(case["task"]), questions, to_check
+    task = case.get("task") or project_eval.task(case["title"], case["acceptance"])
+    return ap._route_judge_state(task), questions, to_check
 
 
 def _rt_cell(case: dict):
@@ -487,6 +487,8 @@ def _rt_cell(case: dict):
 # `E3+stages` のような**変種**は、同じケース（入力と正解は 1 つのまま）を別の問いの形で
 # 引く。問いの立て方を変えたときに、どちらが当たるかを同じ台帳の上で比べるため。
 VARIANT_SEP = "+"
+import shape_cells  # noqa: E402
+import statemachine_cells  # noqa: E402
 CELLS = {
     "F1": ("judge_eval", _filter_cell),
     "J2": ("judge_eval", _judge_cell),
@@ -501,6 +503,18 @@ CELLS = {
     "RO2": ("project_eval", _route_cell),
     "RO3": ("project_eval", _route_cell),
 }
+# 本番の問いの形ごとの標本（2026-09-25）。用途ごとに 1〜7 セルでは report が常に
+# insufficient_data なので、既定の calibration 集合へ入れる。どれも正解が checker の
+# 総当たりで一意に決まる（AS2 と判定ステート JS は決まらない／Python 3.10 以上が要るので外す）。
+CELLS.update({cid: ("shape_cells", _filter_cell) for cid in shape_cells.CASES if cid.startswith("FL")})
+CELLS.update({cid: ("shape_cells", _route_cell) for cid in shape_cells.CASES if cid.startswith("RO")})
+CELLS.update({cid: ("project_eval", functools.partial(_assess_cell, cid=cid))
+              for cid in ("AS1", "AS3", "AS4", "AS5", "AS6", "AS7", "AS8")})
+CELLS.update({cid: ("shape_cells", functools.partial(_assess_cell, cid=cid))
+              for cid in shape_cells.CASES if cid.startswith("AS")})
+CELLS.update({cid: ("statemachine_cells", {"TR": _transition_cell, "CT": _triage_cell,
+                                           "CW": _contract_cell}[cid[:2]])
+              for cid in statemachine_cells.CASES if cid[:2] in ("TR", "CT", "CW")})
 
 # 要求の段を問いの側へ出した 2 つの形（同じ E1〜E6 を別の問いで引く）。`+stages` は段を
 # 選択肢に並べた 1 問、`+checklist` は段ごとの boolean。どちらも**旧モード専用**——
@@ -520,27 +534,13 @@ VARIANTS = {f"E{i}{VARIANT_SEP}{name}": ("judge_eval", build)
                 ("checklist_closed",
                  functools.partial(_evaluator_checklist_cell, closed=True)))
             for i in range(1, 7)}
-# ステートマシンの 2 面。既定は本番の問い、変種は指させる／札を貼らせる形。
+# ステートマシンの変種（指させる／札を貼らせる形）と、正解が一意に決まらない AS2・JS（既定集合の外）。
 VARIANTS.update({
-    "AS1": ("project_eval", functools.partial(_assess_cell, cid="AS1")),
     "AS2": ("project_eval", functools.partial(_assess_cell, cid="AS2")),
-    "AS3": ("project_eval", functools.partial(_assess_cell, cid="AS3")),
-    "AS4": ("project_eval", functools.partial(_assess_cell, cid="AS4")),
-    "AS5": ("project_eval", functools.partial(_assess_cell, cid="AS5")),
-    "AS6": ("project_eval", functools.partial(_assess_cell, cid="AS6")),
-    "AS7": ("project_eval", functools.partial(_assess_cell, cid="AS7")),
-    "AS8": ("project_eval", functools.partial(_assess_cell, cid="AS8")),
-    "CW1": ("statemachine_cells", _contract_cell),
-    "CW2": ("statemachine_cells", _contract_cell),
     "JS1": ("statemachine_cells", _state_judge_cell),
     "JS2": ("statemachine_cells", _state_judge_cell),
-    "TR1": ("statemachine_cells", _transition_cell),
-    "TR3": ("statemachine_cells", _transition_cell),
     f"TR3{VARIANT_SEP}locate": ("statemachine_cells",
                                 functools.partial(_transition_cell, locate=True)),
-    "TR2": ("statemachine_cells", _transition_cell),
-    "CT1": ("statemachine_cells", _triage_cell),
-    "CT2": ("statemachine_cells", _triage_cell),
     f"TR1{VARIANT_SEP}locate": ("statemachine_cells",
                                 functools.partial(_transition_cell, locate=True)),
     f"TR2{VARIANT_SEP}locate": ("statemachine_cells",
@@ -750,6 +750,33 @@ def _sweep(rows, thresholds):
     return out
 
 
+# セル id の接頭辞 → 本番で確度の下限を持つ読み手。report の `consumers` はこの単位で掃引する
+# （下限を決めるのは読み手ごと。method の単位で混ぜた数字からは決められない）。
+CONSUMERS = {"F": "filter", "FL": "filter", "RO": "route", "AS": "assess", "TR": "transition",
+             "CT": "triage", "CW": "contract", "E": "evaluator", "J": "judge", "CL": "classify",
+             "RT": "route_request", "JS": "judge_state"}
+
+
+def consumer_of(cid: str) -> str:
+    return CONSUMERS.get(re.match(r"[A-Z]*", cid).group(0), "other")
+
+
+def _consumers(points, thresholds):
+    """読み手ごとの問い単位の掃引と、誤答の確度（下限で切れるかを直に見る）。text は除く。"""
+    out = {}
+    for name in sorted({consumer_of(p["case"]) for p in points}):
+        mine = [p for p in points if consumer_of(p["case"]) == name]
+        wrong = sorted(p["answer"]["confidence"] for p in mine if not p["ok"])
+        right = [p["answer"]["confidence"] for p in mine if p["ok"]]
+        out[name] = {"questions": len(mine), "unique_cases": len({p["case"] for p in mine}),
+                     "accuracy": _rate(sum(p["ok"] for p in mine), len(mine)),
+                     "wrong_confidences": wrong,
+                     "wrong_case_ids": sorted({p["id"] for p in mine if not p["ok"]}),
+                     "min_right_confidence": min(right) if right else None,
+                     "thresholds": _sweep(mine, thresholds)}
+    return out
+
+
 def calibration_report(rows, *, model, min_confidence=0.0, thresholds=THRESHOLDS):
     """Pure offline aggregation of versioned real/fake ledger rows."""
     if not 0 <= min_confidence <= 1 or any(not 0 <= t <= 1 for t in thresholds):
@@ -772,6 +799,7 @@ def calibration_report(rows, *, model, min_confidence=0.0, thresholds=THRESHOLDS
                     or abs(sum(probs.values()) - 1) > .002):
                 raise ValueError("invalid calibration distribution")
     groups = []
+    scored = []
     for method in ("logprobs", "vote", "text"):
         points = []
         for row in successful:
@@ -782,6 +810,7 @@ def calibration_report(rows, *, model, min_confidence=0.0, thresholds=THRESHOLDS
                                    "ok": row["question_ok"][name],
                                    "expected": row["expected"][name]})
         accepted = [r for r in points if _accepted(r, min_confidence)]
+        scored += [r for r in points if method != "text"]
         calibrated = [r for r in points if method != "text" and
                       r["answer"]["type"] in ("boolean", "choice", "score")]
         buckets = []
@@ -839,6 +868,7 @@ def calibration_report(rows, *, model, min_confidence=0.0, thresholds=THRESHOLDS
             "transport_failures": sum(r["status"] == "transport_failure" for r in rows),
             "response_failures": sum(r["status"] == "response_failure" for r in rows),
             "methods": groups, "cell_gates": cell_groups,
+            "consumers": _consumers(scored, thresholds),
             "latency_seconds": {"p50": percentile([r["wall"] for r in rows], .5),
                                 "p90": percentile([r["wall"] for r in rows], .9)},
             "usage": {key: {"observed_total": sum(r["usage"][key] for r in rows if r["usage"].get(key) is not None),
