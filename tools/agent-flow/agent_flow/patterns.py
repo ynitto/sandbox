@@ -547,10 +547,55 @@ def split_policy_directive(policy: "str | None") -> str:
 _AUTO_FALLBACK_GRANULARITY = "finest"
 
 
-def fallback_granularity(level: "str | None") -> str:
-    """flow-planner を経ない planner に渡す粒度。auto/未指定は旧既定（finest）へ解決する。"""
+def fallback_granularity(level: "str | None", size: "str | None" = None) -> str:
+    """flow-planner を経ない planner に渡す粒度。auto/未指定は旧既定（finest）へ解決する。
+    規模の目安（size）が小さいときは、その目安に収まる粒度へ解決する——finest の指示は
+    「細かく割れ」なので、small の目安と矛盾して上限を押し広げる。"""
     lv = (level or "auto").lower()
-    return lv if lv in GRANULARITY_SCOPE_DIRECTIVES and lv != "auto" else _AUTO_FALLBACK_GRANULARITY
+    if lv in GRANULARITY_SCOPE_DIRECTIVES and lv != "auto":
+        return lv
+    if not size:
+        return _AUTO_FALLBACK_GRANULARITY
+    return _SIZE_FALLBACK_GRANULARITY.get(resolve_size(size), _AUTO_FALLBACK_GRANULARITY)
+
+
+# --------------------------------------------------------------------------
+# 規模の目安（size）— Claude Code の workflowSizeGuideline と同じ目盛り。
+# 計画が置く工程（ノード）数の目安で、上限の強制ではない（本家も advisory）。
+# 既定 small: 1 つの担当が 1 回で終えられる依頼を細切れにしない。ワークフローにする意味は
+# 数ではなく「独立した検証」「多数の対象への展開」「複数案の比較」「完了までの反復」にある。
+# --------------------------------------------------------------------------
+SIZES = ("small", "medium", "large", "unrestricted")
+_DEFAULT_SIZE = "small"
+# 工程数の目安（未満）。unrestricted は目安なし。
+SIZE_NODE_LIMITS = {"small": 5, "medium": 10, "large": 50}
+_SIZE_FALLBACK_GRANULARITY = {"small": "coarse", "medium": "fine"}
+SIZE_LABELS = {"small": "5 工程未満", "medium": "10 工程未満", "large": "50 工程未満"}
+
+
+def resolve_size(size: "str | None") -> str:
+    """規模の目安を語彙へ解決する。空・未知値は既定（small）。"""
+    value = str(size or "").strip().lower()
+    return value if value in SIZES else _DEFAULT_SIZE
+
+
+def size_node_limit(size: "str | None") -> "int | None":
+    """工程数の目安（この数未満）。unrestricted は None。"""
+    return SIZE_NODE_LIMITS.get(resolve_size(size))
+
+
+def size_directive(size: "str | None") -> str:
+    """planner へ渡す規模の指示。unrestricted は空（従来どおり planner が決める）。"""
+    limit = size_node_limit(size)
+    if limit is None:
+        return ""
+    return (
+        f"規模の目安: 工程（ノード）は全部で {limit} 個未満にすること。"
+        "1 つの担当が 1 回で終えられる依頼は、作業 1 ノードとそれを別の担当が確かめる verify 1 ノードに"
+        "とどめ、読む・直す・確かめるを別ノードへ割らない。"
+        "ノードを分けるのは、独立した検証を挟むとき・列挙できる多数の対象へ同じ手順を当てるとき"
+        "（map-reduce）・複数案を比べるとき・完了条件を満たすまで反復するときだけにする。"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1099,7 +1144,7 @@ def _record_rule_agreement(strategy: dict, request: str, granularity: str) -> di
 
 
 def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="auto",
-                        context: str = "", tier="", policy="behavior"):
+                        context: str = "", tier="", policy="behavior", size=None):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効
     （tier=basic では常時有効へ倒す）。
@@ -1121,6 +1166,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
     review_note = ("統合（synthesize/reduce）を伴うパターンでは、集約の前に verify ノードを 1 つ挟み、"
                    "事前チェック・敵対的レビューを行ってください。" if review is not False else "")
     gran_note = granularity_directive(granularity)
+    size_note = size_directive(size)
     split_note = split_policy_directive(policy)
     tier_note = tier_planner_directive(tier)
     per_task_note = per_task_rule_directive()
@@ -1131,6 +1177,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         "近いものは必ず上記の正規名へ読み替えてください（例: 'panel of verifiers'→adversarial-verification）。\n"
         + (tier_note + "\n" if tier_note else "")
         + (gran_note + "\n" if gran_note else "")
+        + (size_note + "\n" if size_note else "")
         + (split_note + "\n" if split_note else "")
         + (per_task_note + "\n" if per_task_note else "")
         + f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
@@ -1196,6 +1243,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
             "parallelism": maybe_scale_parallelism(request, int(data.get("parallelism", 2) or 2), granularity),
             "review": tier_review_decision(review, patterns, tier),
             "reason": str(data.get("reason", "")),
+            "size": resolve_size(size),
         }
         if tier:
             strategy["tier"] = str(tier)
@@ -1225,6 +1273,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         # パターンは「要求の分析結果」ではない。そう読めるよう reason にも残す。
         log("planner", f"エージェント planner が計画を返しませんでした → stub へ縮退: {str(e)[:200]}")
         strategy, tasks = plan_strategy_stub(request, review, granularity, tier)
+        strategy["size"] = resolve_size(size)
         strategy["reason"] = f"[agent planner 失敗: {str(e)[:120]}] {strategy.get('reason', '')}".strip()
         return strategy, tasks
 
@@ -1289,7 +1338,7 @@ def _skill_env() -> dict:
 
 
 def _planner_fallback(request: str, model: "str | None", review, granularity: "str | None",
-                      context: str, why: str, tier="", policy="behavior"):
+                      context: str, why: str, tier="", policy="behavior", size=None):
     """計画スキルを使えなかったときの縮退。**必ず記録を残す**。
 
     以前はここが黙って落ちていたため、スキルが一度も起動していないのに「計画できた」ように
@@ -1297,8 +1346,8 @@ def _planner_fallback(request: str, model: "str | None", review, granularity: "s
     選び続けても気づけない）。ログと strategy.reason の両方へ理由を残す。"""
     log("planner", f"flow-planner を使えませんでした → エージェント planner へ縮退: {why[:200]}")
     strategy, tasks = plan_strategy_agent(request, model, review,
-                                          fallback_granularity(granularity), context, tier,
-                                          split_policy(policy))
+                                          fallback_granularity(granularity, size), context, tier,
+                                          split_policy(policy), size)
     strategy["reason"] = f"[flow-planner 不使用: {why[:120]}] {strategy.get('reason', '')}".strip()
     return strategy, tasks
 
@@ -1315,7 +1364,7 @@ def _skill_flag_supported(script: str, flag: str) -> bool:
 
 
 def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto",
-                               context: str = "", tier="", policy="behavior"):
+                               context: str = "", tier="", policy="behavior", size=None):
     """flow-planner スキルの3段パイプラインを呼び出す。
     スキルが見つからない / 失敗した場合は plan_strategy_agent にフォールバック。
     granularity はスキルへ `--granularity` で渡す（auto=complexity 導出 / 明示は優先）。
@@ -1330,7 +1379,7 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         # flow-planner スキル未インストール → エージェント planner にフォールバック
         return _planner_fallback(request, model, review, granularity, context,
                                  f"{_PLANNER_SKILL or 'flow-planner'} スキルが見つかりません",
-                                 tier, policy)
+                                 tier, policy, size)
     # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
     # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
     # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
@@ -1339,6 +1388,9 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
            "--agent-cli", cli]
     if tier and _skill_flag_supported(script, "--tier"):
         cmd += ["--tier", str(tier)]
+    # 規模の目安も版ずれ防御つきで渡す（旧版スキルには渡さず従来どおり動く）。
+    if _skill_flag_supported(script, "--size"):
+        cmd += ["--size", resolve_size(size)]
     # 分割の単位は**解決済みのテキスト**で渡す（値名ではない）。文面の正典は手法カタログ
     # （split-policy-<policy>）なので、エンジンが引いてから渡せば対象リポジトリの
     # .agents/methods/ による差し替えもこの経路へ届く——スキルに複製を置くとそこだけ古くなる。
@@ -1382,13 +1434,14 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
                       else strategy["review"],
             "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {resolved}）",
             "granularity": resolved,
+            "size": resolve_size(size),
         }
         if tier:
             final_strategy["tier"] = str(strategy.get("tier") or tier)
         # ルール側の入力は `resolved`（LLM 由来）ではなく呼び出し引数の granularity。
         return _record_rule_agreement(final_strategy, request, granularity), tasks
     except Exception as e:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
-        return _planner_fallback(request, model, review, granularity, context, str(e), tier, policy)
+        return _planner_fallback(request, model, review, granularity, context, str(e), tier, policy, size)
 
 
 # --------------------------------------------------------------------------

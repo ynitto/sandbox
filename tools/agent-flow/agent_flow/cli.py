@@ -38,6 +38,10 @@ def _add_planning_args(sp) -> None:
                       choices=["auto", "coarse", "fine", "finest"],
                       help="タスク分解の細かさ（設定 granularity と同義）。auto=complexityから導出（既定）/ "
                            "coarse|fine|finest=明示優先。細かいほど小さなタスクに多く分解する")
+    plan.add_argument("--size", default=None,
+                      choices=["small", "medium", "large", "unrestricted"],
+                      help="規模の目安（設定 size と同義）。small=5 工程未満（既定）/ medium=10 未満 / "
+                           "large=50 未満 / unrestricted=目安なし。上限ではなく planner への目安")
     plan.add_argument("--review", dest="review", action="store_const", const=True, default=None,
                       help="統合（synthesize/reduce）の前に検証 gate を必ず挟む"
                            "（設定 review と同義。既定: 集約パターンで自動）")

@@ -726,6 +726,11 @@
           <label class="setting-field"><span><strong>既定の権限</strong></span><select id="default-permission-mode"><option value="confirm">確認して実行</option><option value="auto">自動承認</option><option value="ask">読み取り専用</option></select></label>
           <label class="setting-field"><span><strong>同時実行数</strong><small>上限に達した場合は、処理の終了後に送信してください</small></span><input id="max-concurrent" type="number" min="1" max="8" step="1"></label>
           </div>
+          <div class="settings-group" id="flow-settings"><div class="settings-group-head"><span><strong>ワークフロー</strong></span><button type="button" id="flow-settings-open" class="small quiet">ファイルを開く</button></div>
+          <label class="setting-field"><span><strong>規模</strong></span><select id="flow-size"><option value="small">小さく（5 工程まで）</option><option value="medium">中くらい（10 工程まで）</option><option value="large">大きく（50 工程まで）</option><option value="unrestricted">制限しない</option></select></label>
+          <label class="setting-check"><input type="checkbox" id="flow-plan-gate"><span><strong>実行前に計画を確認する</strong></span></label>
+          <label class="setting-field"><span><strong>工程の同時実行数</strong></span><input id="flow-workers" type="number" min="1" max="16" step="1"></label>
+          </div>
         </section>
         <section data-settings-panel="share" class="settings-list" role="tabpanel" hidden>
           <label class="setting-check"><input type="checkbox" id="share-enabled"><span><strong>共有を使う</strong><small>同じLANの参加者に依頼内容を公開して作業を頼めます</small></span></label>

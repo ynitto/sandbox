@@ -191,14 +191,14 @@ BUILD_PROMPT = """\
 テンプレート: {composite_template}
 検証gate: {review}
 
-{enumeration_note}{tier_note}{split_note}
+{enumeration_note}{tier_note}{split_note}{size_note}
 ## 粒度（厳守）
 
 目標粒度: {granularity_target}
 成果ノード（kind が work/generate/map）の数: {work_lo}–{work_hi} 個（上限16）{steps_hint}
 各成果ノードのスコープ上限:
 - 1 モジュール相当（または明示された単一結合点）
-- 想定変更は約 30 行以内
+- {scope_rule}
 - goal 先頭に必ず次の2行を付ける:
   [scope] 触ってよいパスまたは記号
   [out_of_scope] このノードでやらないこと
@@ -780,9 +780,48 @@ def tier_build_note(tier: str | None) -> str:
     return TIER_BUILD_NOTES.get(str(tier or ""), "")
 
 
-def work_node_range(target: str) -> tuple[int, int]:
+def work_node_range(target: str, size: str = "", explicit: bool = True) -> tuple[int, int]:
+    """成果ノード数のレンジ。size（規模の目安）があれば上限をその中へ収める。
+
+    explicit=False（granularity auto）で size があるときは下限を 1 にする——
+    1 つの担当で終わる依頼まで下限を満たすために割らせない（下限つきの割り当てが
+    細切れの原因だった）。明示の粒度は人の意思なので下限を残す。"""
     lo, hi = WORK_NODE_RANGES.get(target, WORK_NODE_RANGES["fine"])
-    return lo, min(hi, 16)
+    hi = min(hi, 16)
+    limit = SIZE_NODE_LIMITS.get(size or "")
+    if limit:
+        # 検証・統合のノードを残すぶん 2 つ引く（small なら成果ノード 3 まで）
+        hi = min(hi, max(1, limit - 2))
+        if not explicit:
+            lo = 1
+    return min(lo, hi), hi
+
+
+# 規模の目安（agent-flow の size と同じ語彙・Claude Code の workflowSizeGuideline と同じ目盛り）。
+# 工程（ノード）の総数がこの数未満。空・unrestricted は目安なし＝従来どおり。
+SIZE_NODE_LIMITS = {"small": 5, "medium": 10, "large": 50}
+
+
+def size_build_note(size: str, explicit: bool) -> str:
+    """Phase 3 へ差し込む規模の指示（目安なしは空＝従来どおり）。"""
+    limit = SIZE_NODE_LIMITS.get(size or "")
+    if not limit:
+        return ""
+    note = (f"\n## 規模（厳守）\n\n"
+            f"ノードは全部で {limit} 個未満にする（verify / synthesize 等も数える）。\n"
+            "- 1 つの担当が 1 回で終えられる依頼は、作業 1 ノードとそれを別の担当が確かめる verify 1 ノードにとどめる。\n"
+            "- ノードを分けるのは、独立した検証を挟むとき・列挙できる多数の対象へ同じ手順を当てるとき"
+            "（map-reduce）・複数案を比べるとき・完了条件を満たすまで反復するときだけにする。\n")
+    if not explicit:
+        note += "- 読む・特定する・直す・確かめるは 1 ノードの中の手順であり、別ノードへ割らない。\n"
+    return note
+
+
+def scope_rule(size: str, explicit: bool, tier: str = "") -> str:
+    """成果ノード 1 つのスコープ上限の文言。規模の目安があり粒度が auto のときは行数で縛らない。"""
+    if SIZE_NODE_LIMITS.get(size or "") and not explicit and str(tier or "") != BASIC_TIER:
+        return "1 つの担当が 1 回で終えられる範囲（行数で割らない）"
+    return "想定変更は約 30 行以内"
 
 
 def has_scope(goal: str) -> bool:
@@ -972,7 +1011,7 @@ def strip_static_split_successors(tasks: list[dict]) -> list[dict]:
 
 
 def gate_tasks(tasks: list[dict], target: str, require_split: bool = False,
-               context_text: str = "") -> list[str]:
+               context_text: str = "", size: str = "", explicit: bool = True) -> list[str]:
     """決定的ゲート。不合格理由のリスト（空なら合格）。
 
     work 系が無いグラフ（split のみ / classify のみ等の実行時展開）は個数・scope を検査しない。
@@ -1071,6 +1110,11 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False,
                               "——要求が名指ししていない成果物を宣言しない"
                               "（宣言した分だけ手順が増える）")
 
+    limit = SIZE_NODE_LIMITS.get(size or "")
+    total = len([t for t in tasks if isinstance(t, dict)])
+    if limit and total >= limit:
+        issues.append(f"ノード数 {total} が規模の目安（{limit} 個未満）を超えている"
+                      "——1 つの担当で終わる作業を割らず、検証・展開・比較・反復に要る分だけにすること")
     work = [t for t in tasks if isinstance(t, dict) and t.get("kind") in WORK_KINDS]
     if not work:
         return issues
@@ -1086,7 +1130,7 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False,
                 issues.append(f"{path} を {len(ids)} ノードが触る（{', '.join(ids[:3])}）"
                               "——同じファイルの作業は 1 ノードにまとめること"
                               "（読む・特定する・直すは 1 ノードの中の手順である）")
-    lo, hi = work_node_range(target)
+    lo, hi = work_node_range(target, size, explicit)
     n = len(work)
     if n < lo or n > hi:
         issues.append(f"work系ノード数 {n} がレンジ [{lo},{hi}] 外（粒度 {target}）")
@@ -1106,7 +1150,8 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False,
 
 def phase3_build(request: str, analysis: dict, strategy: dict,
                  model: str | None, granularity_target: str, context: str = "",
-                 tier: str = "", split_directive: str = "") -> list[dict]:
+                 tier: str = "", split_directive: str = "", size: str = "",
+                 explicit: bool = True) -> list[dict]:
     """Phase 3: グラフ生成。ゲート不合格なら指示を強めて最大1回再生成。
     tier=basic では basic ワーカー向けの分解指示（tier_build_note）を差し込む。
 
@@ -1118,7 +1163,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
     subtasks = "\n".join(
         f"- {s}" for s in analysis.get("subtasks", [])
     )
-    lo, hi = work_node_range(granularity_target)
+    lo, hi = work_node_range(granularity_target, size, explicit)
     # Phase 1 の最小ステップ見積り。**レンジは上書きしない**（レンジは granularity_target が
     # 決めるという設計の約束を崩さない）。レンジ内のどこを狙うかの手掛かりとしてだけ渡す。
     steps = normalize_estimated_steps(analysis.get("estimated_steps"))
@@ -1136,6 +1181,8 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
             enumeration_note=enumeration_note(analysis, "build"),
             tier_note=tier_build_note(tier),
             split_note=(f"{split_directive}\n\n" if split_directive else ""),
+            size_note=size_build_note(size, explicit),
+            scope_rule=scope_rule(size, explicit, tier),
             granularity_target=granularity_target,
             work_lo=lo,
             work_hi=hi,
@@ -1163,7 +1210,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
     need_split = (analysis.get("enumeration_decision") or {}).get("mode") == "force"
     tasks = _build()
     issues = gate_tasks(tasks, granularity_target, require_split=need_split,
-                        context_text=f"{request}\n{subtasks}")
+                        context_text=f"{request}\n{subtasks}", size=size, explicit=explicit)
     if issues:
         retry_note = (
             "直前のグラフは粒度ゲート不合格。次を必ず守って作り直すこと:\n- "
@@ -1264,7 +1311,7 @@ def resolve_enumeration(analysis: dict, probe_root: str = ".") -> dict:
 def plan(request: str, model: str | None = None, review="auto",
          granularity: str = "auto", probe_root: str = ".",
          context: str = "", tier: str = "",
-         split_directive: str = "") -> tuple[dict, list[dict]]:
+         split_directive: str = "", size: str = "") -> tuple[dict, list[dict]]:
     """3段パイプラインを実行し (strategy, tasks) を返す。
 
     `context`（案 H・オプトイン）: agent-flow が run の meta へ固定したプロジェクト文脈
@@ -1282,8 +1329,10 @@ def plan(request: str, model: str | None = None, review="auto",
     decision = resolve_enumeration(analysis, probe_root)
 
     strategy = phase2_select(request, analysis, catalog, model, review, tier)
+    size = size if size in SIZE_NODE_LIMITS else ""
+    explicit = (granularity or "auto").lower() in WORK_NODE_RANGES
     tasks = phase3_build(request, analysis, strategy, model, target, context, tier,
-                         split_directive)
+                         split_directive, size, explicit)
     normalized = normalize_tasks(tasks)
 
     final_strategy = {
@@ -1299,6 +1348,8 @@ def plan(request: str, model: str | None = None, review="auto",
     }
     if tier:
         final_strategy["tier"] = str(tier)
+    if size:
+        final_strategy["size"] = size
 
     return final_strategy, normalized
 
@@ -1336,6 +1387,11 @@ def main():
                         help="実行ティア（agent-control の workloads.flow.tier。agent-flow が渡す）。"
                              "basic なら auto 粒度を finest へ倒し、Phase 3 へ basic 向けの分解指示を"
                              "足し、review=auto を有効へ倒す。空なら従来どおり")
+    parser.add_argument("--size", default="",
+                        choices=["", "small", "medium", "large", "unrestricted"],
+                        help="規模の目安（agent-flow の size と同じ語彙）。small=5 工程未満 / medium=10 未満 / "
+                             "large=50 未満 / unrestricted・空=目安なし（従来どおり）。auto 粒度では"
+                             "成果ノードの下限を 1 にし、行数でのスコープ上限を外す")
     args = parser.parse_args()
 
     global AGENT_CLI
@@ -1350,7 +1406,8 @@ def main():
     try:
         strategy, tasks = plan(args.request, args.model, review, args.granularity,
                                args.probe_root, args.context, args.tier,
-                               args.split_directive)
+                               args.split_directive,
+                               **({"size": args.size} if args.size else {}))
         result = {"strategy": strategy, "tasks": tasks}
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except Exception as e:

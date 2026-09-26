@@ -11,9 +11,12 @@ function withBus(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'smk-agent-flow-'));
   const previousBus = process.env.AGENT_APP_FLOW_BUS;
   const previousLogs = process.env.AGENT_APP_FLOW_LOGS;
+  const previousHome = process.env.AGENT_APP_FLOW_HOME;
   process.env.AGENT_APP_FLOW_BUS = path.join(base, 'bus');
   process.env.AGENT_APP_FLOW_LOGS = path.join(base, 'logs');
+  process.env.AGENT_APP_FLOW_HOME = path.join(base, 'home');
   t.after(() => {
+    if (previousHome == null) delete process.env.AGENT_APP_FLOW_HOME; else process.env.AGENT_APP_FLOW_HOME = previousHome;
     if (previousBus == null) delete process.env.AGENT_APP_FLOW_BUS; else process.env.AGENT_APP_FLOW_BUS = previousBus;
     if (previousLogs == null) delete process.env.AGENT_APP_FLOW_LOGS; else process.env.AGENT_APP_FLOW_LOGS = previousLogs;
   });
@@ -166,4 +169,68 @@ test('inbox を持たない実行は、ホスト表記の workspace.local でも
     workspace: { local: root },
   });
   assert.strictEqual(agentFlow.readRun(root, legacy, hostRoot).runId, legacy);
+});
+
+test('定義なしの実行は、規模の目安と計画の確認を inbox で渡す', async (t) => {
+  const env = withBus(t);
+  const calls = [];
+  const deps = {
+    root: '/repo',
+    getContext: async () => ({ agents: ['codex'], defaults: {}, workspace: { ok: false }, tools: { agentFlow: { ok: true } } }),
+    startDetached: async (...args) => { calls.push(args); return { pid: 1 }; },
+  };
+  const auto = await agentFlow.start({ source: { type: 'auto' }, request: '直す', agent: 'codex', readonly: true, size: 'medium', planGate: true }, deps);
+  const inbox = JSON.parse(fs.readFileSync(path.join(env.bus, 'inbox', `${auto.runId}.json`), 'utf8'));
+  assert.strictEqual(inbox.size, 'medium');
+  assert.strictEqual(inbox.plan_gate, true);
+  assert.strictEqual(inbox.plan, undefined);
+  // 定義があるときは工程が決まっているので渡さない。未知の規模も渡さない
+  const fixed = await agentFlow.start({ source: { type: 'draft', workflow: draft() }, request: '直す', parameters: { target: 'x' }, agent: 'codex', readonly: true, size: 'large', planGate: true }, deps);
+  const fixedInbox = JSON.parse(fs.readFileSync(path.join(env.bus, 'inbox', `${fixed.runId}.json`), 'utf8'));
+  assert.strictEqual(fixedInbox.size, undefined);
+  assert.strictEqual(fixedInbox.plan_gate, undefined);
+  const odd = await agentFlow.start({ source: { type: 'auto' }, request: '直す', agent: 'codex', readonly: true, size: 'huge' }, deps);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(env.bus, 'inbox', `${odd.runId}.json`), 'utf8')).size, undefined);
+  assert.ok(!calls[0][1].includes('--config'));
+});
+
+test('ホームの agent-flow.yaml を調整しているときは、その 1 枚を名指しして起動する', async (t) => {
+  const env = withBus(t);
+  const file = path.join(env.base, 'home', '.agents', 'agent-flow.yaml');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'size: medium\n');
+  const calls = [];
+  await agentFlow.start({ source: { type: 'auto' }, request: '直す', agent: 'codex', readonly: true }, {
+    root: path.join(env.base, 'repo'),
+    getContext: async () => ({ agents: ['codex'], defaults: {}, workspace: { ok: false }, tools: { agentFlow: { ok: true } } }),
+    startDetached: async (...args) => { calls.push(args); return { pid: 1 }; },
+    hostPath: (value) => `host:${value}`,
+  });
+  const args = calls[0][1];
+  assert.strictEqual(args[args.indexOf('--config') + 1], `host:${file}`);
+  assert.ok(args.indexOf('--config') < args.indexOf('run'));
+});
+
+test('実行した工程をワークフローの下書きにする（差し込まれた工程は落として依存をつなぐ）', (t) => {
+  const { bus } = withBus(t);
+  const root = '/repo';
+  const runId = 'app-plan';
+  write(path.join(bus, 'inbox', `${runId}.json`), { id: runId, title: 'README を直す', request: 'README を直す', submitter: 'agent-app', submitted_at: new Date().toISOString(), submitter_context: { root } });
+  write(path.join(bus, 'runs', runId, 'meta.json'), { status: 'done', created_at: new Date().toISOString() });
+  write(path.join(bus, 'runs', runId, 'graph.json'), { nodes: {
+    'plan-gate': { id: 'plan-gate', kind: 'human', goal: '計画の確認', deps: [] },
+    'base-sync-1': { id: 'base-sync-1', kind: 'base-sync', goal: '同期', deps: ['plan-gate'] },
+    t1: { id: 't1', kind: 'work', goal: '[scope] README.md\n[out_of_scope] なし\nREADME の誤記を直す', deps: ['base-sync-1'] },
+    v: { id: 'v', kind: 'verify', goal: '直したことを確かめる', deps: ['t1'] },
+    'v-m1': { id: 'v-m1', kind: 'map', goal: '展開', deps: ['v'], dynamic: true },
+  } });
+  const workflow = agentFlow.planDraft(root, runId);
+  assert.deepStrictEqual(workflow.nodes.map((node) => node.id), ['t1', 'v']);
+  assert.deepStrictEqual(workflow.nodes[0].deps, []);
+  assert.deepStrictEqual(workflow.nodes[1].deps, ['t1']);
+  assert.strictEqual(workflow.nodes[0].label, 'README の誤記を直す');
+  assert.strictEqual(workflow.name, 'README を直す');
+  assert.strictEqual(workflow.defaultRequest, 'README を直す');
+  const checked = require('../src/main/automation/flow-model').preview(workflow, workflow.defaultRequest, {});
+  assert.ok(checked.ok, JSON.stringify(checked.issues));
 });

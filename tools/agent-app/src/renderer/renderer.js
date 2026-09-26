@@ -330,9 +330,27 @@ function workflowState(workflow) {
   return run ? (labels[run.state] || run.state || '実行中') : workflow.valid === false ? '要修正' : '未実行';
 }
 
+// 定義なしで依頼から工程を決めて動かす入口。ワークフロー画面へ渡す選択値（ワークフローの id に @ は無い）
+const AUTO_WORKFLOW = '@auto';
+
+function autoWorkflowItem() {
+  const run = state.workflowRuns.find((item) => !item.workflowId && !item.input?.workflowId);
+  const labels = { launching: '起動中', planning: '計画中', executing: '実行中', waiting: '要確認', stalled: '要確認', done: '完了', failed: '失敗', cancelled: '停止済み' };
+  const status = run ? (labels[run.state] || run.state || '実行中') : '未実行';
+  const li = el('li', `row-item${state.selectedWorkflow === AUTO_WORKFLOW ? ' active' : ''}${status === '要確認' ? ' attention' : ''}`);
+  const pick = el('button', 'list-pick');
+  const body = el('span', 'grow');
+  body.append(el('div', '', '依頼から実行'), el('div', 'sub', status));
+  pick.append(body);
+  pick.onclick = () => selectAreaItem('workflows', AUTO_WORKFLOW);
+  li.append(pick);
+  return li;
+}
+
 function renderWorkflowItems() {
   const ul = $('workflows');
   ul.replaceChildren();
+  if (state.repo && !state.areaError) ul.append(autoWorkflowItem());
   for (const workflow of state.workflows) {
     const status = workflowState(workflow);
     const li = el('li', `row-item${workflow.id === state.selectedWorkflow ? ' active' : ''}${status === '要確認' ? ' attention' : ''}`);
@@ -345,7 +363,7 @@ function renderWorkflowItems() {
     li.append(pick);
     ul.append(li);
   }
-  if (!state.workflows.length) ul.append(el('li', 'empty', state.areaError || (state.repo ? 'ワークフロー未作成' : '')));
+  if (!state.workflows.length && (state.areaError || !state.repo)) ul.append(el('li', 'empty', state.areaError || ''));
 }
 
 // ---- ホーム ----
@@ -905,7 +923,7 @@ async function loadWorkflowItems(repo) {
     state.workflows = [...drafts, ...ready];
     state.workflowRuns = runs || [];
     const remembered = (state.config.lastWorkflow || {})[repo] || state.selectedWorkflow;
-    state.selectedWorkflow = state.workflows.some((item) => item.id === remembered) ? remembered : (state.workflows[0]?.id || '');
+    state.selectedWorkflow = remembered === AUTO_WORKFLOW || state.workflows.some((item) => item.id === remembered) ? remembered : (state.workflows[0]?.id || AUTO_WORKFLOW);
   } catch (err) {
     state.areaError = (err && err.message) || String(err);
     state.workflows = [];
@@ -1318,6 +1336,26 @@ function fillJudgeSetting(value) {
   $('judge-model').value = value.model || '';
   $('judge-keep-alive').value = value.keepMinutes === '' || value.keepMinutes == null ? '' : String(value.keepMinutes);
   renderJudgeSetting();
+}
+
+// 設定 > 実行 > ワークフロー: agent-flow が読む設定ファイル（選択中のリポジトリの設定、無ければ
+// ホームの設定）の 3 項目だけを出す。読めなければ欄ごと隠す。保存は変えたときだけ書きに行く。
+async function loadFlowSettings() {
+  state.flowSettings = null;
+  $('flow-settings').hidden = true;
+  try { state.flowSettings = await api.automation.flowSettingsRead(state.repo || ''); } catch { return; }
+  const values = state.flowSettings.values;
+  $('flow-size').value = values.size;
+  $('flow-plan-gate').checked = !!values.plan_gate;
+  $('flow-workers').value = values.workers;
+  $('flow-settings').hidden = false;
+}
+
+function flowSettingsPatch() {
+  if (!state.flowSettings) return null;
+  const next = { size: $('flow-size').value, plan_gate: $('flow-plan-gate').checked, workers: Number($('flow-workers').value) };
+  const prev = state.flowSettings.values;
+  return Object.keys(next).some((key) => next[key] !== prev[key]) ? next : null;
 }
 
 async function loadJudgeSetting() {
@@ -2154,7 +2192,7 @@ function renderHomePortal(start) {
         await showArea(area);
         if (area === 'conversation') { newDraft(); $('prompt').focus(); }
         if (area === 'tasks' && !state.selectedTask && state.tasks.length) await selectAreaItem(area, taskId(state.tasks[0]));
-        if (area === 'workflows' && !state.selectedWorkflow && state.workflows.length) await selectAreaItem(area, state.workflows[0].id);
+        if (area === 'workflows' && !state.selectedWorkflow) await selectAreaItem(area, state.workflows[0]?.id || AUTO_WORKFLOW);
       } catch (err) { notice(err.message, 'error'); }
     };
     actions.append(button);
@@ -2895,6 +2933,7 @@ async function openSettings(initialTab = 'app') {
   renderSettingsRestrictions();
   // agent-herd に聞くので待たない。届いたら行だけ直す。
   const judgeLoaded = loadJudgeSetting();
+  const flowLoaded = loadFlowSettings();
   $('default-permission-mode').value = execution.defaultReadonly ? 'ask'
     : (execution.defaultAutoApprove ? 'auto' : 'confirm');
   $('max-concurrent').value = execution.maxConcurrent;
@@ -2927,7 +2966,7 @@ async function openSettings(initialTab = 'app') {
   selectSettingsTab(initialTab);
   setSidebar(false);
   $('app-settings').showModal();
-  await judgeLoaded;
+  await Promise.all([judgeLoaded, flowLoaded]);
 }
 
 async function saveSettings() {
@@ -2953,6 +2992,8 @@ async function saveSettings() {
         fillJudgeSetting(state.judge.value);
       }
     }
+    const flowPatch = flowSettingsPatch();
+    if (flowPatch) state.flowSettings = await api.automation.flowSettingsSave(state.repo || '', flowPatch);
     state.settingsSkills = [...state.config.instructions.skills];
     state.settingsActions = state.config.instructions.startupActions.map((action) => ({ ...action }));
     state.settingsQuick = (state.config.instructions.quickRequests || []).map((item) => ({ ...item }));
@@ -3382,6 +3423,12 @@ async function init() {
   $('settings-open').onclick = () => openSettings().catch((error) => notice(error.message, 'error'));
   $('settings-close').onclick = () => $('app-settings').close();
   $('settings-save').onclick = saveSettings;
+  $('flow-settings-open').onclick = async () => {
+    try { await api.automation.flowSettingsOpen(state.repo || ''); } catch (error) {
+      $('settings-error').textContent = `設定ファイルを開けません: ${error.message}`;
+      $('settings-error').hidden = false;
+    }
+  };
   Storage.init();
   Audit.init({
     getConfig: () => state.config,

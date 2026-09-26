@@ -2,7 +2,7 @@
 name: flow-planner
 description: agent-flow の orchestrator 向けに、要求を分析して 7 パターン＋複合パターンから最適な戦略を選び、実行可能なタスクグラフを生成します。agent-flow を `--planner flow-planner` で動かす場合に使用してください。
 metadata:
-  version: 1.0.1
+  version: 1.1.0
   tier: experimental
   category: planning
   tags:
@@ -283,6 +283,11 @@ Decision Matrix（`data_flow` / `quality_focus` / `complexity` のスコアリ�
 | simple | coarse | 1–3 |
 | moderate | fine | 3–8 |
 | complex | finest | 6–12（上限16） |
+
+`--size small|medium|large`（規模の目安。agent-flow が渡す）があるときは、ノード総数を
+5 / 10 / 50 未満に収め、成果ノードの上限を「目安 − 2」へ下げる。粒度が auto なら下限を 1 にし、
+「約 30 行」の上限を外して「1 つの担当が 1 回で終えられる範囲」とする（明示の粒度と
+`--tier basic` では従来どおり）。未指定・`unrestricted` なら従来どおり。
 
 `--granularity coarse|fine|finest` の明示指定が優先。Phase 3 後に決定的ゲート（個数・scope・重複）で
 不合格なら最大1回再生成する。verify コマンドの有無は検査しない。
