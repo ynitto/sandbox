@@ -2726,7 +2726,8 @@ async function navigateEmbedded(payload) {
     if (token !== navigationToken) return;
     if (payload.selected) await flowFeature.select(payload.selected);
     if (token !== navigationToken) return;
-    if (payload.action === 'new') flowFeature.create();
+    if (payload.flowAuto) flowFeature.prefillAuto(payload.flowAuto);
+    else if (payload.action === 'new') flowFeature.create();
     else render();
     return;
   }

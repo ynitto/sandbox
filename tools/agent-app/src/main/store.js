@@ -487,6 +487,17 @@ function appendMessage(userData, id, message) {
   return writeSession(userData, sess);
 }
 
+// 保存済みの応答（at で名指し）の実行情報に 1 件足す。会話を起こしてから届いた判定（定型化・
+// 分担の形）が、応答の保存より遅れたときに使う。見つからなければ何もしない。
+function addInformation(userData, id, at, item) {
+  const sess = readSession(userData, id);
+  const message = sess.messages.find((m) => m.at === at && m.role === 'assistant');
+  if (!message || !item) return null;
+  const parts = message.parts && typeof message.parts === 'object' ? message.parts : {};
+  message.parts = { ...parts, information: [...(Array.isArray(parts.information) ? parts.information : []), item] };
+  return writeSession(userData, sess);
+}
+
 function touchTerminalSession(userData, id, patch = {}, now = new Date()) {
   const sess = readSession(userData, id);
   const at = now instanceof Date ? now : new Date(now);
@@ -546,7 +557,7 @@ function removeSession(userData, id) {
   return true;
 }
 
-module.exports = {
+module.exports = { addInformation,
   DEFAULTS, loadConfig, takeConfigProblem, saveConfig, addRepo, removeRepo, isRegistered,
   createSession, replaceEditingSession, readSession, listSessions, recentSessions, listForks, findTaskSession, findWorkflowSession, updateSession, appendMessage, removeSession,
   normalizeSession, cliEntry, setCliEntry, sessionsDir, readAllSessions,

@@ -299,6 +299,8 @@ async function runHeadless(id, turn, send) {
     });
     const parts = collector.parts();
     parts.thinking.push(...structured.thinking);
+    // 会話を起こしてから届いた判定の行（定型化・分担の形）も、この応答の実行情報に残す
+    if (turn.late) parts.information.push(...turn.late.items);
     const message = {
       role: 'assistant', cli, family, model, policy, tier,
       text: answer || (stopped ? '（停止した）' : `（応答なし。終了コード ${code}）`),
@@ -309,6 +311,7 @@ async function runHeadless(id, turn, send) {
     };
     try {
       const saved = store.appendMessage(ud, id, message);
+      if (turn.late) turn.late.savedAt = saved.messages[saved.messages.length - 1].at;
       // セッション ID が分かる CLI は、ここまでのやり取りをその CLI が見たものとして覚える
       if (sid) store.setCliEntry(ud, id, cli, { id: sid, seen: saved.messages.length });
     } catch (err) { message.error = `${message.error}\n保存できません: ${err.message}`.trim(); }
@@ -631,10 +634,12 @@ async function runTmux(id, turn, send) {
       information: [
         ...(turn.setupInformation || []),
         { type: 'status', title: `${cli} の対話セッション`, status: message.error ? 'error' : 'success', detail: '' },
+        ...(turn.late ? turn.late.items : []),
       ],
     };
     try {
       const saved = store.appendMessage(ud, id, message);
+      if (turn.late) turn.late.savedAt = saved.messages[saved.messages.length - 1].at;
       conv.seen = saved.messages.length;
       store.setCliEntry(ud, id, cli, { seen: saved.messages.length });
     } catch (err) { message.error = `${message.error}\n保存できません: ${err.message}`.trim(); }
@@ -696,7 +701,15 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   // 振り分けない。決めなければ従来どおり（会話で実行、スキルは文字列の一致）。
   const askedReadonly = requested.readonly;
   let routed = null;
-  let teamLine = null;
+  // 会話を起こしてから訊く急がない問い（定型化・分担の形）の答えを、このターンの実行情報へ届ける口。
+  // 応答の保存前なら保存に含め、保存後なら保存済みの応答へ足して画面に読み直させる。
+  const late = { items: [], savedAt: '', ask: null, feed: null };
+  late.deliver = (item) => {
+    if (!item) return;
+    if (!late.savedAt) { late.items.push(item); send('turn:info', { id, item }); return; }
+    try { store.addInformation(ud, id, late.savedAt, item); } catch { return; }
+    send('session:updated', { id });
+  };
   const routingSkip = sess.kind !== 'conversation' ? 'kind'
     : requestRouting.skipReason({ text: requested.text, mode: p.routing, skillMode, quickRequests: cfg.instructions.quickRequests });
   if (!routingSkip) {
@@ -710,26 +723,49 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
       flows: safe(() => flowStore.list(repo)).filter((f) => f.valid !== false).map((f) => ({ id: f.id, name: f.name, description: f.description })),
       skills: skills.catalog(repo).filter((skill) => names.includes(skill.name)),
     });
+    const routeCapture = (name, args, opts) => runner.capture(name, args, { ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined });
+    const routeWith = (ask, signal, suffix = '') => requestRouting.route({
+      text: requested.text, candidates: cands, cwd: dirs.fsDir, signal, ask,
+      file: path.join(ud, 'routing', `${id}${suffix}.json`), toHostPath: process.platform === 'win32' ? host.toWslPath : undefined,
+      capture: routeCapture,
+    });
     const controller = new AbortController();
     selecting.set(id, controller);
     const routeStartedAt = Date.now();
+    let legacy = false;
     try {
-      routed = await requestRouting.route({
-        text: requested.text, candidates: cands, cwd: dirs.fsDir, signal: controller.signal,
-        file: path.join(ud, 'routing', `${id}.json`), toHostPath: process.platform === 'win32' ? host.toWslPath : undefined,
-        capture: (name, args, opts) => runner.capture(name, args, { ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined }),
-      });
+      // 送る前は扱い・流用先・スキルだけ。--ask を知らない古い agent-herd なら従来どおり全部を 1 回で訊く
+      routed = await routeWith(requestRouting.ASK_FIRST, controller.signal);
+      if (routed.argsRejected && !controller.signal.aborted) { legacy = true; routed = await routeWith(null, controller.signal); }
     } finally { selecting.delete(id); }
     if (controller.signal.aborted) throw new Error('振り分けを停止しました');
+    const seconds = (Date.now() - routeStartedAt) / 1000;
     // 複数の AI 向きの形は、ワークフロー（agent-flow）が使えるときだけ案内する（行き先の無い案内を出さない）。
     // 形が返るのは稀なので、確かめる起動もそのときだけ。
-    if (requestRouting.teamInformation(routed)) {
-      const flowCapture = (name, args, opts) => runner.capture(name, args, { ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined });
-      const ready = await agentFlow.patterns(flowCapture, repo).then((found) => !!(found && found.ok)).catch(() => false);
-      if (ready) teamLine = requestRouting.teamInformation(routed);
+    const teamLine = async (result) => {
+      const line = requestRouting.teamInformation(result, { request: requested.text });
+      if (!line) return null;
+      const ready = await agentFlow.patterns(routeCapture, repo).then((found) => !!(found && found.ok)).catch(() => false);
+      return ready ? line : null;
+    };
+    const laterLines = async (result) => [
+      result.routine && result.routine.value ? requestRouting.routineInformation() : null,
+      await teamLine(result),
+    ].filter(Boolean);
+    if (legacy || !routed.decided || routed.hold) {
+      // 判定 1 回に付き観測行 1 行（hold の真偽・決めたかによらず）。実会話の確度分布はここに溜まる。
+      audit.feedRouting(ud, { sessionId: id, routed, seconds });
+      if (legacy && routed.decided && !routed.hold) late.items.push(...await laterLines(routed));
+    } else {
+      // 急がない問いは、会話を起こしたあとで訊く（下の late.ask を起動の直後に呼ぶ）。観測行はその答えも入れて 1 行
+      late.ask = async () => {
+        let later = await routeWith(requestRouting.ASK_LATER, undefined, '-later');
+        if (later.argsRejected) later = await routeWith(['routine'], undefined, '-later');
+        const merged = { ...routed, routine: later.decided ? later.routine : null, team: later.decided ? later.team : null };
+        audit.feedRouting(ud, { sessionId: id, routed: merged, seconds });
+        for (const item of await laterLines(merged)) late.deliver(item);
+      };
     }
-    // 判定 1 回に付き観測行 1 行（hold の真偽・決めたかによらず）。実会話の確度分布はここに溜まる。
-    audit.feedRouting(ud, { sessionId: id, routed, seconds: (Date.now() - routeStartedAt) / 1000 });
     preparing(`振り分け完了\n${requestRouting.information(routed).title}`);
     if (routed.hold) {
       // 会話は送らない。案内を 1 枚残して、開く / そのまま会話で実行 は人が選ぶ。
@@ -808,8 +844,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
         ? `読み取り専用を保証できる ${answerSwap.to} で答えます`
         : '読み取り専用を保証できる CLI が無いので、通常の権限で実行します',
       detail: `${answerSwap.from} の readonly は best-effort（宣言を無視しても止まらない）` }] : []),
-    ...(routed && routed.routine && routed.routine.value ? [requestRouting.routineInformation()] : []),
-    ...(teamLine ? [teamLine] : []),
+    ...late.items.splice(0),
     ...familyInfo, ...(chosen ? [modelSelection.information(chosen)] : []),
   ];
   let setupWarning = '';
@@ -867,7 +902,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
     project: projectBlock,
   }));
   const bare = compose(attached.prompt);
-  const turn = { ...base, resumeContext, prompt, bare, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release };
+  const turn = { ...base, resumeContext, prompt, bare, atts: attached.atts, files: attached.files, spec, setupInformation, setupWarning, setupSkills, selectedSkills, release, late };
   // 次のターンの既定として覚える（画面はこれを出す）。`herd` は写した先ではなく要求した
   // 名前のまま残す——次のターンは添付の有無でまた選び直す
   store.updateSession(ud, id, {
@@ -879,12 +914,17 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   // 起動先が決まったことを画面へ知らせる。tmux なら、開始スキルや依頼の送信を待たずに端末を
   // 出せる——待ちは変わらないが、待っている間に何が起きているかが見える。
   send('turn:transport', { id, transport, cli: base.cli, model: base.model });
+  let started;
   if (transport === 'headless') {
     // ヘッドレスの CLI へ移るなら、動いていた tmux の CLI は止める（同時に 2 つは持たない）
     if (conversations.has(id) || sess.live) await closeConversation(id);
-    return runHeadless(id, turn, send);
+    started = await runHeadless(id, turn, send);
+  } else {
+    started = await runTmux(id, turn, send);
   }
-  return runTmux(id, turn, send);
+  // 会話を起こしたので、急がない問い（定型化・分担の形）をここで訊く。待たない（答えは late が届ける）
+  if (late.ask) late.ask().catch(() => { /* 判定が使えなくても会話は進む */ });
+  return started;
 }
 
 async function guardedRunTurn(id, p, send, { resumeContext } = {}) {

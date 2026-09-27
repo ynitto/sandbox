@@ -440,7 +440,7 @@ test('tmux の起動は 3 つの画面とも同じ遷移で、起動先が決ま
   const ipc = read('main/ipc.js');
   assert.match(ipc, /send\('turn:transport', \{ id, transport/, 'main は起動先が決まった時点で合図を出す');
   const decided = ipc.indexOf("send('turn:transport'");
-  assert.ok(decided > 0 && decided < ipc.indexOf('return runTmux(id, turn, send)'),
+  assert.ok(decided > 0 && decided < ipc.indexOf('started = await runTmux(id, turn, send)'),
     '合図は tmux を起こす前に出す（開始スキルの完了を待たない）');
   assert.match(read('preload.js'), /onTurnTransport: on\('turn:transport'\)/);
 
