@@ -518,6 +518,14 @@ test('分担の形は、置き場ごとの既存の選択肢の部品（.seg）�
       assert.ok(!source.includes(label), `${name} に形の言葉を直書きしない（shared/flowShapes から出す）: ${label}`);
     }
   }
-  assert.strictEqual((css.match(/^\.seg\b/gm) || []).length, 4, '明るい DOM の .seg を作り直さない');
+  // 選択肢の切り替えは、親画面とワークベンチで同じ形（つなげる・両端だけ角丸・選んだものを前へ）
+  for (const [name, sheet] of [['styles.css', css], ['automation/styles.css', workbenchCss]]) {
+    assert.match(sheet, /^\.seg \{ display: inline-flex;/m, `${name}: .seg はつなげた並び`);
+    assert.match(sheet, /^\.seg button \{ margin-left: -1px; border-radius: 0;/m, `${name}: ボタンはつなげる`);
+    assert.match(sheet, /^\.seg button:first-child \{ margin-left: 0; border-radius: 7px 0 0 7px; \}/m, `${name}: 左端だけ角丸`);
+    assert.match(sheet, /^\.seg button:last-child \{ border-radius: 0 7px 7px 0; \}/m, `${name}: 右端だけ角丸`);
+    assert.match(sheet, /^\.seg button\.(?:on|is-on) \{ position: relative; z-index: 1;/m, `${name}: 選んだものを前へ`);
+  }
+  assert.ok(!/border-radius: 999px/.test((workbenchCss.match(/^\.seg[^{]*\{[^}]*\}$/gm) || []).join('\n')), '丸い選択肢の見た目を残さない');
   assert.ok(!/^\.flow-shape\b|#flow-teach-shape/m.test(css + workbenchCss), '形の並びに私物の見た目を足さない');
 });
