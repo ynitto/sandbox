@@ -76,6 +76,46 @@ def _print_inert_keys(cfg: dict) -> None:
         print(f"  {key}: {INERT_KEYS[key]}")
 
 
+def _has_token_limit(cfg: dict) -> bool:
+    """トークン上限が 1 つでも立っているか（期間合計・配分の max_tokens・管理面の computed）。"""
+    def positive(v) -> bool:
+        try:
+            return float(v or 0) > 0
+        except (TypeError, ValueError):
+            return False
+    if positive(cfg.get("tokens")):
+        return True
+    alloc = ((cfg.get("allocation") or {}).get("workloads") or {})
+    computed = ((cfg.get("computed") or {}).get("workloads") or {})
+    return (any(positive(w.get("max_tokens")) for w in alloc.values() if isinstance(w, dict))
+            or any(positive(w.get("tokens")) for w in computed.values() if isinstance(w, dict)))
+
+
+def _print_uncounted_token_limit(bdir: str) -> None:
+    """上限を書いたのに数えられていないノードを 1 行で知らせる。
+
+    台帳の行はトークンの実測が無ければ「秒 × rates」で数える（agentcore.nodebudget.row_tokens）。
+    rates も実測行も無いと消費は 0 のままで、上限は**黙って効かない**。3 つがそろったとき
+    だけ出す——上限が全部 0 の新品ノードは正常なので黙る。重大度は警告で、exit code は
+    変えない。期間の解決と台帳の走査は nodebudget を import して使い、ここへ写さない
+    （写すと _period_prefix を直したときにこの検査だけ古くなる）。
+    """
+    from agentcore import nodebudget
+    cfg = nodebudget.read_config(bdir)
+    if not _has_token_limit(cfg):
+        return
+    rates = cfg.get("rates") or {}
+    if rates.get("default_tokens_per_second") or rates.get("per_cli"):
+        return
+    period = str(cfg.get("period") or "day")
+    for rec in nodebudget.iter_ledger_records(bdir, period):
+        if rec.get("tokens_in") is not None or rec.get("tokens_out") is not None:
+            return
+    print("警告: node-budget: 上限は設定されていますが、レート（rates）が無く台帳にトークンの"
+          "実測行もないため、トークン上限は数えられていません"
+          "（agent-audit calibrate か rates.default_tokens_per_second が要ります）。")
+
+
 def cmd_doctor(args) -> int:
     store = Store(resolve_audit_dir(args))
     print(f"audit ディレクトリ: {home_relative(store.root)}"
@@ -88,6 +128,7 @@ def cmd_doctor(args) -> int:
     print(f"node-budget: {home_relative(bdir)}"
           f"（台帳 {n_ledger} ファイル）" if n_ledger else
           f"node-budget: {home_relative(bdir)}（台帳なし — エンジン未使用なら正常）")
+    _print_uncounted_token_limit(bdir)
 
     # 追加の台帳（agent-app の audit-feed など）。到達可否と行数の目安を出す。
     for d in ledger_dirs(args)[1:]:
