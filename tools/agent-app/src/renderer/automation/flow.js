@@ -364,7 +364,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const canRun = !!view.context?.tools?.agentFlow?.ok && !!agents && !view.starting
       && !view.issues.some((item) => item.level === 'error');
 
-    const overview = `${view.issues.length ? `<div>${issueHtml()}</div>` : ''}<section class="execution-card flow-overview"><div class="execution-card-head"><h3>実行</h3><span class="status ${running ? 'active' : ''}">${running ? '実行中' : '待機中'}</span></div>${contextWarning}<div class="field"><label>依頼内容</label><textarea rows="4" data-flow-request placeholder="依頼内容を入力">${e(view.request)}</textarea></div>${params ? `<div class="run-inputs"><h3>実行時の入力</h3><div class="run-input-grid">${params}</div></div>` : ''}${runToolbarHtml('', 'data-flow-start', canRun)}</section>${window.Publish.cardHtml(root(), 'workflow', workflow.id)}`;
+    const overview = `${view.issues.length ? `<div>${issueHtml()}</div>` : ''}<section class="execution-card flow-overview"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${running ? 'active' : ''}">${running ? '実行中' : '待機中'}</span></div>${contextWarning}<div class="field"><label>依頼内容</label><textarea rows="4" data-flow-request placeholder="依頼内容を入力">${e(view.request)}</textarea></div>${params ? `<div class="run-inputs"><h3>実行時の入力</h3><div class="run-input-grid">${params}</div></div>` : ''}${runToolbarHtml('', 'data-flow-start', canRun)}</section>${window.Publish.cardHtml(root(), 'workflow', workflow.id)}`;
     return detailShellHtml(workflow, view.detailTab, view.detailTab === 'history' ? workflowHistoryHtml() : overview);
   }
 

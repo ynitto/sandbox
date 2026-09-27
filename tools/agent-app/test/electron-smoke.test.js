@@ -225,13 +225,13 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.strictEqual(await win.locator('#conversation-start').isVisible(), true);
     assert.strictEqual(await win.locator('#composer .composer-shell').isVisible(), true, '入力欄は会話画面のもの');
     assert.strictEqual(await win.locator('#session-new').isVisible(), false, 'ホームに ＋ は出さない（入口だけ）');
-    assert.strictEqual(await win.locator('#area-list-title').textContent(), '最近の依頼');
+    assert.strictEqual(await win.locator('#area-list-title').textContent(), '最近の作業');
     // 一覧は `session:recent`（会話・タスク・ワークフローの会話を、登録した全フォルダで横断）。
     // 定義を置いただけの項目は依頼ではないので出ない。
     await win.waitForFunction(() => /会話/.test(document.getElementById('home-items').textContent), null, { timeout: 20000 });
     const homeText = await win.locator('#home-items').textContent();
     for (const name of ['画面を確認して', '型定義 User に role を追加してください。'])
-      assert.ok(homeText.includes(name), `最近の依頼に ${name} が無い: ${homeText}`);
+      assert.ok(homeText.includes(name), `最近の作業に ${name} が無い: ${homeText}`);
     assert.match(homeText, new RegExp(`会話 · ${path.basename(otherRepo)}`), '別のフォルダの依頼も横断して出す');
     assert.strictEqual(await win.locator('#home-items .list-pick').count(), (await win.locator('#home-items .row-item').count()), '行は会話一覧と同じ形');
     if (process.env.AGENT_APP_HOME_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_HOME_SCREENSHOT });
@@ -473,13 +473,11 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     // 公開（リポジトリへ push）と、LAN の「共有」は別の言葉で呼ぶ。
     await win.click('[data-settings-tab="skills"]');
     await win.waitForFunction(() => document.getElementById('skills-list').textContent.length > 0);
-    assert.match(await win.textContent('#skills-list'), /読み込んでいます|見つかりません|未公開|公開/);
-    assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), false,
-      '公開先が空なら main へ直接の行は出さない');
-    assert.equal(await win.locator('#audit-share-repo').isVisible(), true);
-    await win.fill('#audit-share-repo', 'git@example:team/skills.git');
-    assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), true,
-      '公開先を入れたら出す');
+    assert.match(await win.textContent('#skills-list'), /読み込んでいます|見つかりません|未公開|公開|バージョン未設定|v[0-9]/);
+    // スキルの置き場は「共通スキル管理リポジトリ」で選ぶ。旧来の公開設定（公開先・main へ直接）は出さない
+    assert.equal(await win.locator('#skill-repository-path').isVisible(), true);
+    assert.strictEqual(await win.locator('#skills-publish-settings').isVisible(), false, '公開設定の群は出さない');
+    assert.strictEqual(await win.locator('#audit-push-main-row').isVisible(), false);
     const skillsPanel = await win.textContent('[data-settings-panel="skills"]');
     assert.ok(!/共有/.test(skillsPanel), 'リポジトリへ出すことを「共有」と呼ばない');
     if (process.env.AGENT_APP_SKILLS_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SKILLS_SCREENSHOT });
@@ -515,7 +513,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await win.click('#chat-title', { position: { x: 4, y: 4 } });
     }
 
-    // 共有に依頼: 実行設定は依頼先・エージェント・優先度だけ。依頼先は「どれでも」（ブロードキャスト）が既定で、
+    // 共有に依頼: 実行設定は依頼先・エージェント・優先度だけ。依頼先もエージェントも「どれでも」が既定で、
     // 見つかっている仲間（pc-b）を名指しできる
     await win.locator('#input-mode-share:not([hidden])').waitFor({ timeout: 20000 });
     await win.click('#input-mode-share');
@@ -524,9 +522,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.waitForFunction(() => [...document.getElementById('share-target').options].some((o) => o.value === 'pc-b'), null, { timeout: 20000 });
     assert.strictEqual(await win.locator('#share-target').inputValue(), '', '既定はどれでも');
     assert.strictEqual(await win.locator('#policy-field').isVisible(), false, '共有では起動方針を出さない');
-    assert.match(await win.locator('#run-settings-summary').textContent(), /^codex · 優先度 通常$/);
+    assert.match(await win.locator('#run-settings-summary').textContent(), /^どれでも · 優先度 通常$/);
     await win.selectOption('#share-target', 'pc-b');
-    assert.match(await win.locator('#run-settings-summary').textContent(), /^codex · pc-b 宛て · 優先度 通常$/);
+    assert.match(await win.locator('#run-settings-summary').textContent(), /^どれでも · pc-b 宛て · 優先度 通常$/);
     if (process.env.AGENT_APP_SHARE_TARGET_SCREENSHOT) await win.screenshot({ path: process.env.AGENT_APP_SHARE_TARGET_SCREENSHOT });
     await win.click('#chat-title', { position: { x: 4, y: 4 } });
     await win.click('#input-mode-message');
@@ -643,8 +641,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     const toolbarActions = await workspace.locator('.embedded-editor-toolbar .bar-right').boundingBox();
     assert.ok(toolbar && toolbarActions && toolbarActions.x + toolbarActions.width <= toolbar.x + toolbar.width + 1,
       `editor actions should stay within the toolbar: ${JSON.stringify({ toolbar, toolbarActions })}`);
-    assert.ok(toolbarTitle && toolbarActions && toolbarTitle.y + toolbarTitle.height <= toolbarActions.y + 1,
-      `editor title and actions should use separate rows: ${JSON.stringify({ toolbarTitle, toolbarActions })}`);
+    // 見出しと操作は 1 行に並べ（左に名前、右に操作）、重ならない
+    assert.ok(toolbarTitle && toolbarActions && toolbarTitle.x + toolbarTitle.width <= toolbarActions.x + 1,
+      `editor title and actions should not overlap: ${JSON.stringify({ toolbarTitle, toolbarActions })}`);
     // 選択した工程から「編集」へ移り、対象を引き継いだ AI との会話（tmux の端末ミラー）が出る。
     // .execution-card で、中身は親の slot に載る。タブは概要 / 手順 / 履歴のまま。
     await workspace.locator('[data-step="0"]').click();
@@ -772,8 +771,10 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#workflows .list-pick').first().waitFor({ timeout: 20000 });
     assert.match(await win.locator('#workflows').textContent(), /並列レビュー/);
     await win.locator('#flow-teach-create').waitFor();
-    await win.locator('#workflows .list-pick').first().click();
-    await workspace.locator('.flow-overview').waitFor({ timeout: 20000 });
+    // 一覧の先頭は「依頼から実行」（定義なしで動かす入口）。保存済みのワークフローは名前で選ぶ
+    assert.match(await win.locator('#workflows .list-pick').first().textContent(), /依頼から実行/);
+    await win.locator('#workflows .list-pick', { hasText: '並列レビュー' }).click();
+    await workspace.locator('.flow-overview:not(.flow-auto)').waitFor({ timeout: 20000 });
     // 概要はタスクと同じ「手動実行」のカードだけ。工程は手順タブで見る。
     assert.equal(await workspace.locator('.flow-overview h3').textContent(), '手動実行');
     assert.equal(await workspace.locator('.flow-overview .status').textContent(), '待機中');
@@ -888,6 +889,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.locator('#flow-teach-create-error').textContent(), /入力してください/);
     await win.locator('#flow-teach-purpose').fill('変更依頼を調査し、並列に実装して品質を確認したい');
     await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
+    // 既定は自動選択（エージェントの欄は出さない）。手動指定に切り替えると出る（会話・タスクと同じ部品）
+    assert.strictEqual(await win.locator('#flow-teach-agent').isVisible(), false);
+    await win.locator('#flow-teach-launch [data-execution-mode]').selectOption('manual');
     assert.strictEqual(await win.locator('#flow-teach-agent').isVisible(), true);
     // モデルは候補選択と直接入力を一つの入力欄で扱う。
     assert.strictEqual(await win.locator('#flow-teach-launch [data-execution-model]').isVisible(), true);
@@ -911,7 +915,7 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.locator('#flow-teach-permission').selectOption('auto');
     await workspace.locator('.teaching-create h2').click();
     await win.locator('#flow-teach-start').click();
-    await workspace.locator('.execution-title').filter({ hasText: '変更依頼を調査し' }).waitFor();
+    await workspace.locator('.teaching-head').filter({ hasText: '変更依頼を調査し' }).waitFor();
     const creationOptions = await win.evaluate(() => window.flowCreateOptions);
     assert.strictEqual(creationOptions.model, 'workflow-test-model');
     assert.strictEqual(creationOptions.autoApprove, true);

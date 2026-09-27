@@ -419,7 +419,7 @@ function listSessions(userData, repo, { kind = 'conversation', project = '' } = 
   return out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
-// 最近の依頼は種類・選択中の作業先に依存しない。開ける登録先だけを対象にする。
+// 最近の作業は種類・選択中の作業先に依存しない。開ける登録先だけを対象にする。
 function recentSessions(userData, repos, limit = 20, { project = '' } = {}) {
   const allowed = new Set(repos || []);
   return listSessions(userData, '', { kind: '', project })

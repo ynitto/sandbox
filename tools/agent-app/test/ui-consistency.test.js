@@ -405,7 +405,7 @@ test('ホームは会話画面の面（空状態と入力欄）と一覧の行�
   assert.match(menu, /id="area-home">[\s\S]*?<span>ホーム<\/span>/);
   assert.ok(menu.indexOf('id="area-home"') < menu.indexOf('id="area-inbox"'), 'ホームは主要メニューの先頭');
   assert.match(html, /<ul id="home-items" class="list grow" hidden><\/ul>/);
-  assert.match(navigation, /home: \{ label: 'ホーム', listLabel: '最近の依頼', createLabel: '新しい会話', listId: 'home-items' \}/);
+  assert.match(navigation, /home: \{ label: 'ホーム', listLabel: '最近の作業', createLabel: '新しい会話', listId: 'home-items' \}/);
   assert.match(renderer, /\$\('session-new'\)\.hidden = \['share', 'inbox', 'home'\]\.includes\(state\.area\)/);
   // 2. 面は会話画面そのもの（#main の空状態と #composer）。ホーム専用の面・入力欄・見出し帯を作らない
   assert.ok(!html.includes('id="home-area"') && !html.includes('id="home-prompt"') && !html.includes('id="home-head"'), 'ホーム専用の面や入力欄を作らない');
