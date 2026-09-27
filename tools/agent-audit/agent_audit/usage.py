@@ -454,6 +454,12 @@ def measured_clis() -> "set[str]":
     return out
 
 
+# agent-app から使う較正器はこれ 1 本。agent-app は自前を持たず、監査の連鎖（tools/agent-app/src/main/audit.js の
+# STEPS）でここを `--write` 付きで呼ぶ。agent-dashboard の calibrateRates（budget.js・廃止予定）は
+# session_log.usage による除外を持たないので、両方を運用すると実測が入る CLI の鍵が書かれては
+# ここで pop される。鍵の粒度も違う（ここは cli:model と cli の両方、あちらは model があれば
+# cli:model だけ）。どちらを正典にするかは未決で、どちらも直していない。
+# 期待値は schemas/node-budget-rates.golden.json（tests/test_calibrate_golden.py）。
 def cmd_calibrate(args) -> int:
     store = Store(resolve_audit_dir(args))
     # 実測が入る CLI は較正の対象から外す。推定（保持秒 × rate）と実測は同じ実行を
