@@ -212,3 +212,14 @@ README では「マルチエージェント」も使わず、「複数の AI で
 - [AI Agent Orchestration Tools for Coding（Tembo）](https://www.tembo.io/blog/ai-agent-orchestration-tools)
 - 関連する既存の設計: `docs/designs/agent-app-design.md` §3.4・ADR-7、`2026-09-05-agent-app-task-workflow-navigation-design.md`、
   `2026-09-13-agent-app-reuse-design.md`、`docs/specs/agent-flow-spec.md` §1.3
+
+## 追補（0.43.0）: 積み残しの対応
+
+- 振り分けの `routine` / `team` は会話を起こしてから訊く（送る前は `--ask handling,task,flow,skills`）。応答の保存前に
+  届けばその応答の実行情報に、保存後なら保存済みの応答に足して画面へ読み直させる（`session:updated`）。
+- 4.4 の [ワークフローで実行] を実行情報の行に付けた（部品は生ログの「端末を操作」と同じ `button.small`）。依頼から実行を
+  本文と形入りで開くだけで、実行はしない。
+- 依頼から実行で形を選んだときは、効かない「規模」を実行設定の要約・選択肢・依頼から外す。
+- 実機のスモークテストを今の画面に合わせて通した。途中で見つけたタスク編集の見出しの跳ね（端末を起こすと 135px 上がる）と、
+  ワークフロー概要の見出し（タスクと同じ「手動実行」へ）を直した。
+
