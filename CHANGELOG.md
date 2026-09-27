@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app・agent-herd: 複数の AI 向きの依頼に形を添える（agent-app 0.41.0）
+
+- **agent-herd `route` に問い `team` を足した。** 複数の AI に分けると 1 つの AI より明らかに良くなるなら、その形
+  （`verify` 別の AI に確かめさせる / `compare` 案を並べて選ぶ / `split` 分けてまとめる）を返す。ほとんどの依頼は
+  other（1 つで足りる）で、そのときは null。読み取り専用の依頼では訊かない。既定で訊く問いに入るので、古い
+  agent-app でも引数は変わらない
+- **agent-app: 会話で実行する依頼に形が返ったら、実行情報に「別の目で確かめると良い依頼です。ワークフロー →
+  依頼から実行」の 1 行を添える。** 送信は止めない。ワークフロー（agent-flow）が使えないときは出さない
+- 振り分けの監査行（`routing_decision`）に `team` を足した。形を返した割合を後で確かめるため
+- 確度の下限は既存の `route.min_confidence` のまま。実会話の標本での確かめはまだ
+
 ### agent-app: ワークフローの実行結果に「分担と確認」を出す（0.40.0）
 
 - **実行が終わったワークフローの詳細に「分担と確認」カードを足した。** 役割（作る・比べる・確かめる・まとめる・

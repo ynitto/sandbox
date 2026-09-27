@@ -13,6 +13,8 @@ const LIMITS = { tasks: 8, flows: 8, skills: 6 };
 const TIMEOUT_MS = 30000;
 const STAGES = new Set(['jev', 'judge']);
 const HANDLINGS = new Set(['answer', 'converse', 'task', 'flow']);
+// 複数の AI に分ける形（agent-herd route の team）。1 つの AI で足りる依頼には返らない。
+const TEAMS = new Set(['verify', 'compare', 'split']);
 // 先頭のスラッシュ行（`/sm name` など）。起動形は slashroute が決めるので振り分けない。
 const SLASH_LINE = /^\/[a-z0-9][a-z0-9._-]*(?:[ \t]|$)/;
 
@@ -51,7 +53,7 @@ function candidates({ text = '', tasks = [], flows = [], skills = [], repo = '',
   };
 }
 
-const EMPTY = { decided: false, stage: null, handling: null, task: null, flow: null, target: null, skills: null, routine: null, hold: false };
+const EMPTY = { decided: false, stage: null, handling: null, task: null, flow: null, target: null, skills: null, routine: null, team: null, hold: false };
 
 function validate(value, cands) {
   if (!value || typeof value !== 'object' || !STAGES.has(value.stage)) return { ...EMPTY, reason: 'invalid' };
@@ -69,8 +71,9 @@ function validate(value, cands) {
     .map((item) => ({ name: item.name, probability: number(item.probability) || 0 }));
   const routine = value.routine && typeof value.routine.value === 'boolean'
     ? { value: value.routine.value, probability: number(value.routine.probability) } : null;
+  const team = value.team && TEAMS.has(value.team.choice) ? { choice: value.team.choice, confidence: number(value.team.confidence) } : null;
   const target = handling && handling.choice === 'task' ? task : handling && handling.choice === 'flow' ? flow : null;
-  return { decided: true, stage: value.stage, handling, task, flow, target, skills, routine, hold: !!(value.hold && target), reason: '' };
+  return { decided: true, stage: value.stage, handling, task, flow, target, skills, routine, team, hold: !!(value.hold && target), reason: '' };
 }
 
 // agent-herd route を起こす。候補はファイルで渡す（説明文に引用符や改行があっても argv の
@@ -179,6 +182,20 @@ function routineInformation() {
   return { type: 'status', title: '繰り返せる依頼です。••• → この作業を定型化', status: 'success' };
 }
 
+// 複数の AI に分けると良くなる依頼への 1 行。送信は止めない（流用と違って確度が低く、会話でも
+// 進められる）。形の言葉は README「タスクとワークフローの使い分け」と同じ。
+const TEAM_WORDS = { verify: '別の目で確かめる', compare: '並べて比べる', split: '分けて広く進める' };
+
+function teamInformation(result) {
+  const team = result && result.team;
+  const handling = result && result.handling;
+  if (!team || !TEAM_WORDS[team.choice]) return null;
+  // 答えるだけ・流用を勧めた依頼には重ねない（行き先がもう決まっている）
+  if (handling && handling.choice !== 'converse') return null;
+  const confidence = team.confidence != null ? ` ${team.confidence.toFixed(2)}` : '';
+  return { type: 'status', title: `${TEAM_WORDS[team.choice]}と良い依頼です。ワークフロー → 依頼から実行`, status: 'success', detail: `複数の AI で分担する形${confidence}` };
+}
+
 // 会話を止めたときに会話へ残す案内（役割 routing）。本文と添付は入力欄に残るので、案内が持つのは
 // 開く先と、そのまま会話で実行するときの本文だけ。
 function heldMessage(result, { text = '', attachments = [], inputs = {} } = {}) {
@@ -196,4 +213,4 @@ function heldMessage(result, { text = '', attachments = [], inputs = {} } = {}) 
   };
 }
 
-module.exports = { LIMITS, TIMEOUT_MS, skipReason, candidates, validate, route, information, routineInformation, heldMessage, dateWord, extractionPrompt, extractInputs, inputsLine };
+module.exports = { LIMITS, TIMEOUT_MS, skipReason, candidates, validate, route, information, routineInformation, teamInformation, heldMessage, dateWord, extractionPrompt, extractInputs, inputsLine };

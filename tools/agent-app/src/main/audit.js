@@ -257,6 +257,7 @@ function feedRouting(userData, { sessionId = '', routed = null, seconds = 0 } = 
       target_id: routed.target ? String(routed.target.id || '') : '',
       skills: Array.isArray(routed.skills) ? routed.skills.length : 0,
       routine: routed.routine && typeof routed.routine.value === 'boolean' ? routed.routine.value : null,
+      team: routed.team && routed.team.choice ? String(routed.team.choice) : null,
     },
   }, options);
 }

@@ -696,6 +696,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
   // 振り分けない。決めなければ従来どおり（会話で実行、スキルは文字列の一致）。
   const askedReadonly = requested.readonly;
   let routed = null;
+  let teamLine = null;
   const routingSkip = sess.kind !== 'conversation' ? 'kind'
     : requestRouting.skipReason({ text: requested.text, mode: p.routing, skillMode, quickRequests: cfg.instructions.quickRequests });
   if (!routingSkip) {
@@ -720,6 +721,13 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
       });
     } finally { selecting.delete(id); }
     if (controller.signal.aborted) throw new Error('振り分けを停止しました');
+    // 複数の AI 向きの形は、ワークフロー（agent-flow）が使えるときだけ案内する（行き先の無い案内を出さない）。
+    // 形が返るのは稀なので、確かめる起動もそのときだけ。
+    if (requestRouting.teamInformation(routed)) {
+      const flowCapture = (name, args, opts) => runner.capture(name, args, { ...opts, spawnSpec: makeTaskCommandSpawnSpec(userData)(name) || undefined });
+      const ready = await agentFlow.patterns(flowCapture, repo).then((found) => !!(found && found.ok)).catch(() => false);
+      if (ready) teamLine = requestRouting.teamInformation(routed);
+    }
     // 判定 1 回に付き観測行 1 行（hold の真偽・決めたかによらず）。実会話の確度分布はここに溜まる。
     audit.feedRouting(ud, { sessionId: id, routed, seconds: (Date.now() - routeStartedAt) / 1000 });
     preparing(`振り分け完了\n${requestRouting.information(routed).title}`);
@@ -801,6 +809,7 @@ async function runTurn(id, p, send, { config = null, release = () => {}, resumeC
         : '読み取り専用を保証できる CLI が無いので、通常の権限で実行します',
       detail: `${answerSwap.from} の readonly は best-effort（宣言を無視しても止まらない）` }] : []),
     ...(routed && routed.routine && routed.routine.value ? [requestRouting.routineInformation()] : []),
+    ...(teamLine ? [teamLine] : []),
     ...familyInfo, ...(chosen ? [modelSelection.information(chosen)] : []),
   ];
   let setupWarning = '';
