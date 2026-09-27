@@ -241,7 +241,7 @@ echo '前月分の日報をまとめて' | agent-herd route --candidates candida
 
 `hold` が真なら「会話を送らずにそのタスクを開く」を勧めてよい（`handling` と流用先の確度が
 どちらも `route.hold_min_confidence`、既定 0.75 以上）。`skills` は添えると質が上がると
-判定したスキル、`routine` は定型化を勧める形かどうか（§5.8）。
+判定したスキル、`routine` は定型化を勧める形かどうか、`team` は複数の AI に分けると明らかに良くなる形（§5.8）。
 
 ### スキルを読み込む
 
@@ -742,7 +742,7 @@ agent-amigos（ロールのターンごと）が配線済み。決定には `sel
 
 ```text
 agent-herd route --candidates (JSON | PATH) [--min-confidence 0-1] [--hold-min-confidence 0-1]
-                 [--stages jev,judge] [--ask handling,task,flow,skills,routine] [--json]
+                 [--stages jev,judge] [--ask handling,task,flow,skills,routine,team] [--json]
 ```
 
 stdin の依頼文を読み、モデルに送る前に「どう扱うか」を決める。候補は呼び出し側が
@@ -759,11 +759,14 @@ stdin の依頼文を読み、モデルに送る前に「どう扱うか」を�
 | `task` / `flow` | choice | 流用するならどれか。候補 + other。候補が 1 件なら「それと同じ作業か」の boolean で訊き、yes をその候補に写す |
 | `skill:<name>` | boolean | そのスキルを添えると質が上がるか。候補ごとに 1 問 |
 | `routine` | boolean | 入力だけ替えて繰り返す形か |
+| `team` | choice | 複数の AI に分けると 1 つの AI より明らかに良くなるなら、どの形か: `verify`（別の AI に確かめさせ、通るまで作り直す）/ `compare`（複数の案を出させて基準で選ぶ）/ `split`（1 つの AI に入りきらない量を分けてまとめる）/ other（1 つの AI で足りる。ほとんどの依頼はこれ）。`readonly` の依頼では訊かない |
 
 `--ask` は訊く問いの絞り込み（既定は全部。`skills` は候補ごとの `skill:<name>` をまとめて指す）。
 問いは 1 問ごとに別のプロンプトで訊くので、**絞っても残った問いの文は変わらず、答えも変わらない**。
 急がない問いを後回しにして最初の答えを早く返すための口で、agent-app は起動前に `handling` /
-`task` / `flow` / `skills` を訊き、定型化の提案（`routine`）だけ会話を起こしてから訊く。
+`task` / `flow` / `skills` を訊き、定型化の提案（`routine`）と分担の形（`team`）は会話を起こしてから訊く。
+`--ask` や `team` を知らない古い版が引数の誤り（終了コード 2）で返したら、agent-app は問いを減らして訊き直す
+（送る前の問いは絞らずに 1 回、後の問いは `routine` だけ）。
 訊く問いが残らない組み合わせ（読み取り専用の依頼で `handling` だけ、など）は終了コード 2。
 
 判断の順は `select`（§5.7）と同じ `jev` → `judge` で、段の試行は同じ実装を使う。
@@ -772,10 +775,11 @@ stdin の依頼文を読み、モデルに送る前に「どう扱うか」を�
 （`method` が `text`）は決めたことにしない。`judge` は `judge.model` が `off` でなければ使う
 （`auto` は既定モデル。実行の定義が無いので「ローカル候補があるとき」の門は持たない）。
 
-stdout は `{"handling", "task", "flow", "skills", "routine", "hold", "stage", "abstained",
+stdout は `{"handling", "task", "flow", "skills", "routine", "team", "hold", "stage", "abstained",
 "reason"}` の 1 行。`handling` / `task` / `flow` は `{choice, confidence, probabilities}` か
 null、`skills` は yes の確率が下限以上のものを確率順に `[{name, probability}]`、`routine` は
-`{value, probability, confidence}` か null。`hold` は「会話を送らずに流用を勧めてよい」で、
+`{value, probability, confidence}` か null、`team` は `{choice, confidence}` か null（other＝1 つの AI で足りる、
+も null。other は決めた答えなので `abstained` には入れない）。`hold` は「会話を送らずに流用を勧めてよい」で、
 `handling` が task / flow を指し、その確度と流用先の確度がどちらも `route.hold_min_confidence`
 （省略時 0.75）以上のときだけ真。`abstained` は確度が足りず決めていない問い（決めた上での
 other / no は入れない）。`--json` は状態・問いの名前・各段の記録（`attempts`）・使用量も出す。

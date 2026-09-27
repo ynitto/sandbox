@@ -405,7 +405,7 @@ test('ホームは会話画面の面（空状態と入力欄）と一覧の行�
   assert.match(menu, /id="area-home">[\s\S]*?<span>ホーム<\/span>/);
   assert.ok(menu.indexOf('id="area-home"') < menu.indexOf('id="area-inbox"'), 'ホームは主要メニューの先頭');
   assert.match(html, /<ul id="home-items" class="list grow" hidden><\/ul>/);
-  assert.match(navigation, /home: \{ label: 'ホーム', listLabel: '最近の依頼', createLabel: '新しい会話', listId: 'home-items' \}/);
+  assert.match(navigation, /home: \{ label: 'ホーム', listLabel: '最近の作業', createLabel: '新しい会話', listId: 'home-items' \}/);
   assert.match(renderer, /\$\('session-new'\)\.hidden = \['share', 'inbox', 'home'\]\.includes\(state\.area\)/);
   // 2. 面は会話画面そのもの（#main の空状態と #composer）。ホーム専用の面・入力欄・見出し帯を作らない
   assert.ok(!html.includes('id="home-area"') && !html.includes('id="home-prompt"') && !html.includes('id="home-head"'), 'ホーム専用の面や入力欄を作らない');
@@ -440,7 +440,7 @@ test('tmux の起動は 3 つの画面とも同じ遷移で、起動先が決ま
   const ipc = read('main/ipc.js');
   assert.match(ipc, /send\('turn:transport', \{ id, transport/, 'main は起動先が決まった時点で合図を出す');
   const decided = ipc.indexOf("send('turn:transport'");
-  assert.ok(decided > 0 && decided < ipc.indexOf('return runTmux(id, turn, send)'),
+  assert.ok(decided > 0 && decided < ipc.indexOf('started = await runTmux(id, turn, send)'),
     '合図は tmux を起こす前に出す（開始スキルの完了を待たない）');
   assert.match(read('preload.js'), /onTurnTransport: on\('turn:transport'\)/);
 
@@ -487,4 +487,45 @@ test('プロジェクトは既存の器で組む（選択欄・ダイアログ�
   // 足した CSS に直値の色を足さない
   const added = css.split('\n').filter((line) => /project|message-actions \.more-menu/.test(line)).join('\n');
   assert.ok(!/:[^;{}]*#[0-9a-f]{3,8}\b/i.test(added), '直値の色を足さない');
+});
+
+test('分担と確認は実行詳細のカードと実行履歴の行で組み、数えるのは main に置く', () => {
+  const flow = read('renderer/automation/flow.js');
+  const css = read('renderer/automation/styles.css');
+  const body = flow.slice(flow.indexOf('function teamworkHtml'), flow.indexOf('function runHtml'));
+  assert.match(body, /class="execution-card flow-teamwork"><div class="execution-card-head"><div><h3>分担と確認<\/h3><p>/, '見出しと 1 行の説明は execution-card-head の形');
+  assert.match(body, /<ul class="run-history">/, '行は実行履歴と同じ部品');
+  assert.ok(!/class="primary"|<button/.test(body), '結果のカードに操作を足さない');
+  assert.ok(!/verify\s*=|decided_by|\.status === 'failed'/.test(body), '確認の合否や採否を renderer で判定しない（main の teamwork を描くだけ）');
+  const rules = css.match(/^\.flow-teamwork[^{]*\{[^}]*\}$/gm) || [];
+  assert.strictEqual(rules.length, 1, '分担と確認に足す規則は列幅の 1 つだけ');
+  assert.ok(!/#[0-9a-f]{3,8}\b/i.test(rules.join('\n')), '直値の色を足さない');
+});
+
+test('分担の形は、置き場ごとの既存の選択肢の部品（.seg）と同じ言葉（shared/flowShapes）で組む', () => {
+  const html = read('renderer/index.html');
+  const flow = read('renderer/automation/flow.js');
+  const teaching = read('renderer/flowTeaching.js');
+  const css = read('renderer/styles.css');
+  const workbenchCss = read('renderer/automation/styles.css');
+  // 作成画面は明るい DOM: ファイルビュアーの切り替えと同じ .seg + button.small + .on
+  assert.match(html, /<div id="flow-teach-shape" class="seg" role="group"/);
+  assert.match(teaching, /'small on' : 'small'/);
+  // 依頼から実行はワークベンチ（Shadow DOM）: 実行方法の選択と同じ .seg + .is-on
+  assert.match(flow, /<div class="seg flow-shape" role="group" aria-label="分担の形">/);
+  for (const [name, source] of [['index.html', html], ['flow.js', flow], ['flowTeaching.js', teaching]]) {
+    for (const label of ['別の目で確かめる', '並べて比べる', '分けて広く進める']) {
+      assert.ok(!source.includes(label), `${name} に形の言葉を直書きしない（shared/flowShapes から出す）: ${label}`);
+    }
+  }
+  // 選択肢の切り替えは、親画面とワークベンチで同じ形（つなげる・両端だけ角丸・選んだものを前へ）
+  for (const [name, sheet] of [['styles.css', css], ['automation/styles.css', workbenchCss]]) {
+    assert.match(sheet, /^\.seg \{ display: inline-flex;/m, `${name}: .seg はつなげた並び`);
+    assert.match(sheet, /^\.seg button \{ margin-left: -1px; border-radius: 0;/m, `${name}: ボタンはつなげる`);
+    assert.match(sheet, /^\.seg button:first-child \{ margin-left: 0; border-radius: 7px 0 0 7px; \}/m, `${name}: 左端だけ角丸`);
+    assert.match(sheet, /^\.seg button:last-child \{ border-radius: 0 7px 7px 0; \}/m, `${name}: 右端だけ角丸`);
+    assert.match(sheet, /^\.seg button\.(?:on|is-on) \{ position: relative; z-index: 1;/m, `${name}: 選んだものを前へ`);
+  }
+  assert.ok(!/border-radius: 999px/.test((workbenchCss.match(/^\.seg[^{]*\{[^}]*\}$/gm) || []).join('\n')), '丸い選択肢の見た目を残さない');
+  assert.ok(!/^\.flow-shape\b|#flow-teach-shape/m.test(css + workbenchCss), '形の並びに私物の見た目を足さない');
 });

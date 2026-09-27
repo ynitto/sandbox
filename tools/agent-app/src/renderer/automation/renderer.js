@@ -1769,7 +1769,8 @@ function extendHtml(step) {
 function stepBodyHtml(spec, index) {
   const step = spec.steps[index];
   const kind = kindOf(step.kind);
-  const seg = state.catalog.kinds.map((k) => `<button type="button" data-kind="${esc(k.id)}" class="${k.id === step.kind ? 'is-on' : ''}" title="${esc(k.description)}"><span class="dot k-${esc(k.id)}"></span>${esc(k.label)}</button>`).join('');
+  // 切り替えは 1 行に収める（つなげた .seg は折り返すと形が崩れる）ので短い呼び名を出し、正式な名前は title に残す
+  const seg = state.catalog.kinds.map((k) => `<button type="button" data-kind="${esc(k.id)}" class="${k.id === step.kind ? 'is-on' : ''}" title="${esc(k.label)}：${esc(k.description)}" aria-label="${esc(k.label)}"><span class="dot k-${esc(k.id)}"></span>${esc(k.short || k.label)}</button>`).join('');
   const target = kind.target ? `<div class="field"><label>${esc(kind.target.label)}${kind.target.required ? '' : '（任意）'}</label><input data-field="target" class="mono" value="${esc(step.target)}" placeholder="${esc(kind.target.placeholder || '')}"></div>` : '';
   const recorded = step.recorded && step.recorded.length ? `<div class="field"><label>記録した操作（${step.recorded.length} 件）</label>
     <ol class="rec-list">${step.recorded.map((op) => `<li>${esc(op.op)} ${esc(op.label || op.target)}${op.value ? ` ${esc(op.value)}` : ''}${op.op === 'extract' ? ` → <span class="mono">${esc(op.key || 'text')}</span>` : ''}${op.example ? ` <span class="muted">(例: ${esc(op.example)})</span>` : ''}</li>`).join('')}</ol>
@@ -2726,7 +2727,8 @@ async function navigateEmbedded(payload) {
     if (token !== navigationToken) return;
     if (payload.selected) await flowFeature.select(payload.selected);
     if (token !== navigationToken) return;
-    if (payload.action === 'new') flowFeature.create();
+    if (payload.flowAuto) flowFeature.prefillAuto(payload.flowAuto);
+    else if (payload.action === 'new') flowFeature.create();
     else render();
     return;
   }

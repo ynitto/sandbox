@@ -1,5 +1,7 @@
 'use strict';
 
+const flowShapes = require('../../shared/flowShapes');
+
 const SECRET_NAME = /password|passwd|token|secret|api.?key|パスワード|暗証/i;
 const SECRET_VALUE = /\b(password|passwd|token|secret|api[_-]?key)\s*[:=]\s*([^\s,;]+)/gi;
 
@@ -42,10 +44,12 @@ function normalizeUnderstanding(value = {}) {
   });
 }
 
-function createSession({ workflowId = '', title = '', purpose = '', sessionId = '' } = {}) {
+function createSession({ workflowId = '', title = '', purpose = '', sessionId = '', shape = '' } = {}) {
   const normalizedPurpose = text(purpose);
   return {
     version: VERSION, workflowId: text(workflowId, 120), title: text(title, 300), status: 'draft',
+    // 作成画面で選んだ分担の形（''＝おまかせ）。最初の依頼に 1 行足すためだけに持つ
+    shape: flowShapes.normalize(shape),
     // AI と作る会話（agent-app の会話 ID）。タスクの下書き（automation/teaching.js）と同じ持ち方
     sessionId: /^[0-9a-f-]{36}$/.test(String(sessionId || '')) ? String(sessionId) : '',
     messages: normalizedPurpose ? [{ role: 'user', text: normalizedPurpose }] : [],

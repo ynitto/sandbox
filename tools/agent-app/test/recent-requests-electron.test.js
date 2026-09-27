@@ -8,7 +8,7 @@ function playwright() {
   try { return require(path.join(path.dirname(path.dirname(process.execPath)), 'lib/node_modules/@playwright/cli/node_modules/playwright-core')); } catch { return null; }
 }
 
-test('最近の依頼: 別リポジトリの全種類を表示し会話を開く', async t => {
+test('最近の作業: 別リポジトリの全種類を表示し会話を開く', async t => {
   const pw = playwright();
   if (!pw?._electron) return t.skip('Electron unavailable');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recent-sidebar-'));
@@ -28,7 +28,7 @@ test('最近の依頼: 別リポジトリの全種類を表示し会話を開く
     const win = await app.firstWindow();
     await win.waitForFunction(() => typeof document.getElementById('settings-open')?.onclick === 'function');
     await win.waitForFunction(() => document.querySelectorAll('#home-items .list-pick').length === 3);
-    assert.equal(await win.textContent('#area-list-title'), '最近の依頼');
+    assert.equal(await win.textContent('#area-list-title'), '最近の作業');
     assert.deepEqual(await win.locator('#home-items .sub').allTextContents(), ['タスク · repo-b', 'ワークフロー · repo-b', '会話 · repo-b']);
     assert.equal(await win.inputValue('#repo-select'), a);
     assert.equal(await win.locator('aside #usage-open').count(), 0);
@@ -53,7 +53,9 @@ test('最近の依頼: 別リポジトリの全種類を表示し会話を開く
     await win.selectOption('#repo-select', b);
     await win.waitForFunction(() => document.querySelectorAll('#sessions .list-pick').length === 1);
     assert.equal(await win.locator('#usage-open').isVisible(), false);
-    for (const id of ['chat-views', 'changes-toggle', 'chat-more']) assert.equal(await win.locator('#' + id).isVisible(), true);
+    for (const id of ['chat-views', 'chat-more']) assert.equal(await win.locator('#' + id).isVisible(), true);
+    // 「変更を確認」は会話を選んでいるときだけ（リポジトリを切り替えると選択が外れる）
+    assert.equal(await win.locator('#changes-toggle').isVisible(), false);
     for (const [area, label] of [['tasks', 'タスク'], ['workflows', 'ワークフロー']]) {
       await win.evaluate(async area => { await showArea(area); }, area);
       assert.equal(await win.textContent('#area-list-title'), label);
@@ -65,7 +67,7 @@ test('最近の依頼: 別リポジトリの全種類を表示し会話を開く
     assert.equal(await win.locator('#chat').isVisible(), true);
     assert.equal(await win.locator('#files').isVisible(), false);
 
-    assert.equal(await win.textContent('#area-list-title'), '最近の依頼');
+    assert.equal(await win.textContent('#area-list-title'), '最近の作業');
     assert.equal(await win.locator('#home-items').isVisible(), true);
     assert.equal(await win.locator('#home-items .list-pick').count(), 3);
   } finally { await app.close(); fs.rmSync(dir, { recursive: true, force: true }); }

@@ -12,6 +12,8 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     request: '', parameters: {}, readonly: false, agent: '', model: '', allocation: '', starting: false,
     // 依頼から実行（定義なし）。工程は agent-flow の planner が依頼から決める。
     auto: false, size: 'small', planGate: true,
+    // 分担の形（shared/flowShapes の id。''＝おまかせで planner が決める）。選ぶと agent-flow の標準パターンを名指しする
+    shape: '',
   };
   let previewTimer = null;
   let runTimer = null;
@@ -295,7 +297,9 @@ window.createFlowFeature = function createFlowFeature(ctx) {
 
   function runSettingsLabel() {
     const base = [view.allocation === 'auto' ? '自動選択' : view.agent || 'エージェント未設定', view.allocation === 'auto' ? '依頼内容から選択' : view.model || '既定のモデル', view.readonly ? '読み取り専用' : '自動承認'];
-    if (view.auto && !view.selectedRun) base.push(SIZE_LABELS[view.size] || SIZE_LABELS.small, ...(view.planGate ? ['計画を確認'] : []));
+    // 形を選ぶと工程の骨組みは形で決まり、規模の目安は効かない。効かない設定は要約にも出さない
+    const shaped = !!window.FlowShapes?.find(view.shape);
+    if (view.auto && !view.selectedRun) base.push(...(shaped ? [] : [SIZE_LABELS[view.size] || SIZE_LABELS.small]), ...(view.planGate ? ['計画を確認'] : []));
     return base.join(' · ');
   }
 
@@ -305,14 +309,22 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     return `<div class="run-toolbar"><details class="run-settings flow-run-settings"><summary aria-label="実行設定"><span data-flow-settings-summary title="${e(runSettingsLabel())}">${e(runSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">実行設定</div><label>エージェント<select data-flow-agent ${agents ? '' : 'disabled'}>${agents || '<option>利用できるAIがありません</option>'}</select></label><label>モデル<input id="flow-run-model" data-flow-model value="${e(view.model)}" placeholder="既定のモデル"></label><label>権限<select data-flow-permission disabled><option selected>自動承認</option></select></label><label>実行方法<select data-flow-readonly ${view.context && !view.context.workspace.ok ? 'disabled' : ''}><option value="write" ${view.readonly ? '' : 'selected'}>成果を書き込む</option><option value="readonly" ${view.readonly ? 'selected' : ''}>読み取り専用</option></select></label>${extra}${view.context && !view.context.workspace.ok ? `<p class="sub">${e(view.context.workspace.reason)}。読み取り専用で実行できます。</p>` : ''}</div></details><span class="run-toolbar-spacer"></span><button type="button" class="primary" ${startAttr} ${canRun ? '' : 'disabled'}>${view.starting ? '開始中…' : '実行'}</button></div>`;
   }
 
+  // 分担の形の選択肢（依頼から実行）。言葉と対応するパターンは shared/flowShapes だけが持つ。
+  function shapeHtml() {
+    const shapes = window.FlowShapes;
+    if (!shapes) return '';
+    const buttons = [...shapes.SHAPES, shapes.AUTO].map((shape) => `<button type="button" class="${shape.id === view.shape ? 'is-on' : ''}" aria-pressed="${shape.id === view.shape}" title="${e(shape.title)}" data-flow-shape="${e(shape.id)}">${e(shape.label)}</button>`).join('');
+    return `<div class="seg flow-shape" role="group" aria-label="分担の形">${buttons}</div>`;
+  }
+
   function autoHtml() {
     const contextWarning = !view.context?.tools?.agentFlow?.ok
       ? `<p class="run-result warn">${e(view.context?.tools?.agentFlow?.summary || '実行環境を確認してください')}</p>` : '';
     const running = autoRuns().some((run) => !run.terminal);
     const canRun = !!view.context?.tools?.agentFlow?.ok && !!(view.context?.agents || ctx.agents()).length && !view.starting;
     const sizes = Object.entries(SIZE_OPTIONS).map(([value, label]) => `<option value="${value}" ${value === view.size ? 'selected' : ''}>${label}</option>`).join('');
-    const extra = `<label>規模<select data-flow-size>${sizes}</select></label><label>計画<select data-flow-plan-gate><option value="confirm" ${view.planGate ? 'selected' : ''}>実行前に確認する</option><option value="skip" ${view.planGate ? '' : 'selected'}>確認せずに実行する</option></select></label>`;
-    return `<section class="execution-card flow-overview flow-auto"><div class="execution-card-head"><div><h3>依頼から実行</h3><p>工程は依頼から決めます</p></div><span class="status ${running ? 'active' : ''}">${running ? '実行中' : '待機中'}</span></div>${contextWarning}<textarea rows="4" data-flow-request aria-label="依頼内容" placeholder="依頼内容を入力">${e(view.request)}</textarea>${runToolbarHtml(extra, 'data-flow-auto-start', canRun)}</section>${workflowHistoryHtml(autoRuns())}`;
+    const extra = `${window.FlowShapes?.find(view.shape) ? '' : `<label>規模<select data-flow-size>${sizes}</select></label>`}<label>計画<select data-flow-plan-gate><option value="confirm" ${view.planGate ? 'selected' : ''}>実行前に確認する</option><option value="skip" ${view.planGate ? '' : 'selected'}>確認せずに実行する</option></select></label>`;
+    return `<section class="execution-card flow-overview flow-auto"><div class="execution-card-head"><div><h3>依頼から実行</h3><p>工程は依頼から決めます</p></div><span class="status ${running ? 'active' : ''}">${running ? '実行中' : '待機中'}</span></div>${contextWarning}${shapeHtml()}<textarea rows="4" data-flow-request aria-label="依頼内容" placeholder="${e(window.FlowShapes?.find(view.shape)?.example || '依頼内容を入力')}">${e(view.request)}</textarea>${runToolbarHtml(extra, 'data-flow-auto-start', canRun)}</section>${workflowHistoryHtml(autoRuns())}`;
   }
 
   // 定義なし（依頼から実行）で動かした実行。保存済みワークフローに紐づかないもの。
@@ -352,7 +364,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const canRun = !!view.context?.tools?.agentFlow?.ok && !!agents && !view.starting
       && !view.issues.some((item) => item.level === 'error');
 
-    const overview = `${view.issues.length ? `<div>${issueHtml()}</div>` : ''}<section class="execution-card flow-overview"><div class="execution-card-head"><h3>実行</h3><span class="status ${running ? 'active' : ''}">${running ? '実行中' : '待機中'}</span></div>${contextWarning}<div class="field"><label>依頼内容</label><textarea rows="4" data-flow-request placeholder="依頼内容を入力">${e(view.request)}</textarea></div>${params ? `<div class="run-inputs"><h3>実行時の入力</h3><div class="run-input-grid">${params}</div></div>` : ''}${runToolbarHtml('', 'data-flow-start', canRun)}</section>${window.Publish.cardHtml(root(), 'workflow', workflow.id)}`;
+    const overview = `${view.issues.length ? `<div>${issueHtml()}</div>` : ''}<section class="execution-card flow-overview"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${running ? 'active' : ''}">${running ? '実行中' : '待機中'}</span></div>${contextWarning}<div class="field"><label>依頼内容</label><textarea rows="4" data-flow-request placeholder="依頼内容を入力">${e(view.request)}</textarea></div>${params ? `<div class="run-inputs"><h3>実行時の入力</h3><div class="run-input-grid">${params}</div></div>` : ''}${runToolbarHtml('', 'data-flow-start', canRun)}</section>${window.Publish.cardHtml(root(), 'workflow', workflow.id)}`;
     return detailShellHtml(workflow, view.detailTab, view.detailTab === 'history' ? workflowHistoryHtml() : overview);
   }
 
@@ -361,6 +373,27 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     if (interaction.mode === 'approval') return `<div class="field"><label>コメント（任意）</label><textarea rows="2" data-flow-answer-comment="${e(interaction.interactionId)}"></textarea></div><div class="row"><button type="button" class="primary" data-flow-answer="${e(interaction.interactionId)}" data-decision="approved">承認する</button><button type="button" class="danger" data-flow-answer="${e(interaction.interactionId)}" data-decision="rejected">却下する</button></div>`;
     if (interaction.mode === 'choice') return `<div class="field"><label>回答</label><select data-flow-answer-value="${e(interaction.interactionId)}">${interaction.options.map((option) => `<option value="${e(option)}">${e(option)}</option>`).join('')}</select></div><button type="button" class="primary" data-flow-answer="${e(interaction.interactionId)}">回答する</button>`;
     return `<div class="field"><label>回答</label><textarea rows="3" data-flow-answer-value="${e(interaction.interactionId)}"></textarea></div><button type="button" class="primary" data-flow-answer="${e(interaction.interactionId)}">回答する</button>`;
+  }
+
+  // 分担と確認: 複数の AI にした見返りを、担当と確認の事実だけで見せる（数えるのは main 側）。
+  const ROLE_LABELS = { route: '振り分ける', make: '作る', compare: '比べる', check: '確かめる', person: '人の確認', merge: 'まとめる' };
+  function teamworkHtml(run) {
+    const tw = run.terminal ? run.teamwork : null;
+    if (!tw || !tw.roles.length) return '';
+    const checks = tw.roles.filter((row) => row.role === 'check' || row.role === 'person');
+    const last = checks.flatMap((row) => row.verdicts).slice(-1)[0];
+    const verdict = tw.verification === 'passed' || tw.verification === 'failed' ? tw.verification : last === 'pass' ? 'passed' : last === 'fail' ? 'failed' : '';
+    const lead = tw.agents ? `${tw.agents} つの AI で進め、` : '分担して進め、';
+    const tail = !checks.length ? '別の担当による確認はありませんでした' : tw.reworks ? `確認で ${tw.reworks} 回作り直しました` : '確認で作り直しはありませんでした';
+    const rows = tw.roles.map((row) => {
+      const words = row.role === 'person' ? { pass: '承認', fail: '差し戻し' } : { pass: '合格', fail: '不合格' };
+      const count = row.verdicts.length === 1 ? `1 回で${words[row.verdicts[0]]}` : row.verdicts.length ? row.verdicts.map((v) => words[v]).join(' → ') : `${row.attempts} 回`;
+      const who = row.agents.length ? row.agents.join('、') : row.role === 'person' ? '人' : '—';
+      return `<li><strong>${e(ROLE_LABELS[row.role] || row.role)}</strong><div><span>${e(who)}</span></div><small>${e(count)}</small></li>`;
+    }).join('');
+    const choices = tw.choices.map((c) => `<li><strong>選んだ結果</strong><div><span>候補 ${c.candidates} 件 → 採用 ${c.kept} 件</span></div><small>${c.undecided ? '決めきれず停止' : c.decidedBy === 'machine' ? '基準で決定' : c.decidedBy === 'judge' ? '判定 AI で決定' : 'AI が選択'}</small></li>`).join('');
+    const status = verdict ? `<span class="status ${verdict === 'passed' ? 'ok' : 'ng'}">${verdict === 'passed' ? '合格' : '不合格'}</span>` : '';
+    return `<section class="execution-card flow-teamwork"><div class="execution-card-head"><div><h3>分担と確認</h3><p>${e(lead + tail)}</p></div>${status}</div><ul class="run-history">${rows}${choices}</ul></section>`;
   }
 
   function runHtml() {
@@ -375,7 +408,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const log = `<section class="execution-card"><div class="execution-card-head"><h3>実行ログ</h3></div><pre class="log flow-log">${e(view.log?.tail || '実行すると、ここに進行状況が表示されます。')}</pre></section>`;
     const trialCheck = view.trialTeaching && view.trialTeaching.runId === run.runId && run.terminal
       ? `<section class="execution-card"><h3>この結果は期待どおりですか？</h3><p>成果を確認して回答してください。</p><div class="row">${run.state === 'done' ? '<button type="button" class="primary" data-flow-teaching-trial-result="passed">期待どおり</button>' : ''}<button type="button" class="danger" data-flow-teaching-trial-result="failed">修正が必要</button></div></section>` : '';
-    return `<header class="execution-title"><div><span class="eyebrow">${view.trialTeaching?.runId === run.runId ? 'テスト実行' : '実行状況'}</span><h2>${e(run.title)}</h2><p>${e(ctx.dateLabel(run.createdAt))} · ${run.readonly ? '読み取り専用' : '成果を書き込み'}</p></div><button type="button" class="ghost" data-flow-back-run>ワークフローへ戻る</button></header>${run.failure ? `<p class="run-result ng">${e(run.failure.message)}</p>` : ''}<section class="execution-card"><div class="execution-card-head"><div><h3>${e(stateLabel(run.state))}</h3><p>${run.progress.total ? `${run.progress.done} 完了${run.progress.failed ? ` · ${run.progress.failed} 失敗` : ''} / ${run.progress.total} 工程` : '工程を準備しています'}</p></div><span class="status ${statusClass(run.state)}">${e(stateLabel(run.state))}</span></div><div class="flow-progress"><span style="width:${pct}%"></span></div><p class="flow-request">${e(run.request)}</p><div class="row">${!run.terminal ? '<button type="button" class="danger" data-flow-cancel>停止</button>' : ''}<button type="button" data-flow-result>成果を取得</button><button type="button" data-flow-log>ログを見る</button><button type="button" data-flow-rerun>同じ内容で再実行</button>${run.state === 'done' && !run.workflowId && !run.input?.workflowId && !(view.trialTeaching && view.trialTeaching.runId === run.runId) ? '<button type="button" data-flow-save-run>ワークフローとして保存</button>' : ''}${run.terminal ? '<button type="button" class="danger ghost" data-flow-delete-run>履歴を削除</button>' : ''}</div></section>${trialCheck}${interactions}<section class="execution-card"><div class="execution-card-head"><div><h3>工程の進み具合</h3><p>工程ごとの担当と成果</p></div></div><ol class="flow-run-nodes">${nodes || '<li class="muted">計画を作成しています。</li>'}</ol></section>${delivery}${result}${log}`;
+    return `<header class="execution-title"><div><span class="eyebrow">${view.trialTeaching?.runId === run.runId ? 'テスト実行' : '実行状況'}</span><h2>${e(run.title)}</h2><p>${e(ctx.dateLabel(run.createdAt))} · ${run.readonly ? '読み取り専用' : '成果を書き込み'}</p></div><button type="button" class="ghost" data-flow-back-run>ワークフローへ戻る</button></header>${run.failure ? `<p class="run-result ng">${e(run.failure.message)}</p>` : ''}<section class="execution-card"><div class="execution-card-head"><div><h3>${e(stateLabel(run.state))}</h3><p>${run.progress.total ? `${run.progress.done} 完了${run.progress.failed ? ` · ${run.progress.failed} 失敗` : ''} / ${run.progress.total} 工程` : '工程を準備しています'}</p></div><span class="status ${statusClass(run.state)}">${e(stateLabel(run.state))}</span></div><div class="flow-progress"><span style="width:${pct}%"></span></div><p class="flow-request">${e(run.request)}</p><div class="row">${!run.terminal ? '<button type="button" class="danger" data-flow-cancel>停止</button>' : ''}<button type="button" data-flow-result>成果を取得</button><button type="button" data-flow-log>ログを見る</button><button type="button" data-flow-rerun>同じ内容で再実行</button>${run.state === 'done' && !run.workflowId && !run.input?.workflowId && !(view.trialTeaching && view.trialTeaching.runId === run.runId) ? '<button type="button" data-flow-save-run>ワークフローとして保存</button>' : ''}${run.terminal ? '<button type="button" class="danger ghost" data-flow-delete-run>履歴を削除</button>' : ''}</div></section>${trialCheck}${interactions}${teamworkHtml(run)}<section class="execution-card"><div class="execution-card-head"><div><h3>工程の進み具合</h3><p>工程ごとの担当と成果</p></div></div><ol class="flow-run-nodes">${nodes || '<li class="muted">計画を作成しています。</li>'}</ol></section>${delivery}${result}${log}`;
   }
 
   let announced = false;
@@ -476,6 +509,13 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     ctx.refresh();
   }
 
+  // 会話の振り分けが添えた「ワークフローで実行」: 依頼から実行に本文と形を入れて開く（実行は人が押す）
+  function prefillAuto({ request = '', shape = '' } = {}) {
+    view.request = String(request || '');
+    view.shape = window.FlowShapes ? window.FlowShapes.normalize(shape) : '';
+    selectAuto();
+  }
+
   async function selectFlow(id) {
     view.auto = false;
     view.selected = id;
@@ -528,10 +568,12 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     view.starting = true;
     ctx.refresh();
     const started = await ctx.guard('実行開始', () => ctx.bridge.runStart({
-      root: root(), source: { type: 'auto' }, request: view.request, parameters: {},
+      // 形を選んだら、その形の標準パターンを名指しする（planner は形を決めず、依頼の中身だけを埋める）
+      root: root(), source: window.FlowShapes?.find(view.shape) ? { type: 'pattern', pattern: window.FlowShapes.find(view.shape).pattern } : { type: 'auto' },
+      request: view.request, parameters: {},
       readonly: view.readonly, autoApprove: true, agent: view.agent, model: view.model,
       policy: view.allocation === 'auto' ? 'recommended' : 'direct', allocation: view.allocation,
-      size: view.size, planGate: view.planGate,
+      ...(window.FlowShapes?.find(view.shape) ? {} : { size: view.size }), planGate: view.planGate,
     }));
     view.starting = false;
     if (!started) { ctx.refresh(); return; }
@@ -607,10 +649,10 @@ window.createFlowFeature = function createFlowFeature(ctx) {
   }
 
   // ワークフローを作成: 会話（tmux）を用意し、その最初のターンで AI に目的を渡す。
-  async function createTeaching({ purpose: input, saveName = '', options }) {
+  async function createTeaching({ purpose: input, saveName = '', shape = '', options }) {
     const purpose = input.trim();
     if (!purpose) { ctx.toast('実現したいことを入力してください', true); return; }
-    const workflowId = await ctx.guard('ワークフローの作成', () => ctx.teachCreate({ root: root(), purpose, saveName, options }));
+    const workflowId = await ctx.guard('ワークフローの作成', () => ctx.teachCreate({ root: root(), purpose, saveName, shape, options }));
     if (!workflowId) return;
     view.teachings = (await ctx.guard('教示中のワークフロー', () => ctx.bridge.teachingList(root()))) || view.teachings;
     view.creatingTeaching = false;
@@ -699,6 +741,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     for (const button of main.querySelectorAll('[data-flow-new]')) button.addEventListener('click', create);
     main.querySelector('[data-flow-auto]')?.addEventListener('click', selectAuto);
     main.querySelector('[data-flow-auto-start]')?.addEventListener('click', startAutoRun);
+    for (const button of main.querySelectorAll('[data-flow-shape]')) button.addEventListener('click', () => { view.shape = button.dataset.flowShape; ctx.refresh(); });
     main.querySelector('[data-flow-save-run]')?.addEventListener('click', saveRunAsWorkflow);
     main.querySelector('[data-flow-size]')?.addEventListener('change', (event) => { view.size = event.target.value; const summary = main.querySelector('[data-flow-settings-summary]'); if (summary) { summary.textContent = runSettingsLabel(); summary.title = runSettingsLabel(); } });
     main.querySelector('[data-flow-plan-gate]')?.addEventListener('change', (event) => { view.planGate = event.target.value === 'confirm'; const summary = main.querySelector('[data-flow-settings-summary]'); if (summary) { summary.textContent = runSettingsLabel(); summary.title = runSettingsLabel(); } });
@@ -850,6 +893,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
       const input = view.run.input;
       if (!input.workflowId) {
         view.request = input.request;
+        view.shape = (window.FlowShapes?.SHAPES.find((shape) => shape.pattern === input.pattern) || {}).id || '';
         view.readonly = input.readonly;
         view.allocation = '';
         view.agent = input.agent || view.agent;
@@ -935,5 +979,5 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     if (active()) ctx.refresh();
   }
 
-  return { activate, rootChanged, html, bind, select, create, onAiProgress, onAiResult, reloadTeaching, isEditing, viewKey };
+  return { activate, rootChanged, html, bind, select, create, prefillAuto, onAiProgress, onAiResult, reloadTeaching, isEditing, viewKey };
 };

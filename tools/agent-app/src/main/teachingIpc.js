@@ -181,7 +181,7 @@ function create(deps) {
     try { flowStore.read(repo, id); } catch { existing = false; }
     if (!existing && !sidecar.title) {
       if (!purpose) throw new Error('教えたいワークフローを入力してください');
-      sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose }));
+      sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose, shape: p.shape }));
     }
     let summary = store.findWorkflowSession(ud, repo, id);
     const selected = p.policy ? settings.resolve(cfg, p) : null;
@@ -222,7 +222,7 @@ function create(deps) {
     const busy = deps.busy(session.id);
     let started = false;
     if (!busy) {
-      const common = { id, purpose: sidecar.understanding.purpose || purpose, existing };
+      const common = { id, purpose: sidecar.understanding.purpose || purpose, existing, shape: sidecar.shape };
       const prompt = session.messages.length
         ? flowTeachingPrompt.resumePrompt({ ...common, context: p.context })
         : flowTeachingPrompt.prompt(common);

@@ -109,6 +109,7 @@ test('振り分けは消費でない観測行として 1 行だけ出る（hold 
   audit.feedRouting(ud, { sessionId: 's1', seconds: 5.04, routed: {
     decided: true, handling: { choice: 'task', confidence: 0.91 }, hold: true,
     target: { kind: 'task', id: 'daily-report', name: '日報' }, skills: [{ name: 'api-designer' }], routine: { value: true },
+    team: { choice: 'verify', confidence: 0.7 },
   } }, { now: NOW, node: 'pc' });
   // 決めなかった回も残す（棄権の割合を数えたい）
   audit.feedRouting(ud, { sessionId: 's2', seconds: 4.2, routed: { decided: false, handling: null, hold: false, target: null, skills: [], routine: null } },
@@ -122,9 +123,10 @@ test('振り分けは消費でない観測行として 1 行だけ出る（hold 
   assert.equal(rows[0].tokens_in, null, 'クラウド枠の消費に混ぜない');
   assert.deepEqual(rows[0].routing, {
     decided: true, choice: 'task', confidence: 0.91, hold: true,
-    target_kind: 'task', target_id: 'daily-report', skills: 1, routine: true,
+    target_kind: 'task', target_id: 'daily-report', skills: 1, routine: true, team: 'verify',
   });
   assert.equal(rows[1].routing.decided, false);
+  assert.equal(rows[1].routing.team, null, '形を返さなかった回（1 つの AI で足りる・旧版）は null');
   assert.equal(rows[1].routing.choice, '');
   assert.equal(rows[1].routing.confidence, null);
   // 依頼文は載せない

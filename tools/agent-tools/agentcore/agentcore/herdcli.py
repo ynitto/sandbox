@@ -786,13 +786,15 @@ ROUTE_HELP = f"""使い方: {PROG} route --candidates <JSON|パス> [--min-confi
   --min-confidence <数>      答えを採る確度の下限（既定は設定 route.min_confidence、無ければ select と同じ 0.6）
   --hold-min-confidence <数> 会話を止めて流用を勧める（hold）確度の下限（既定は設定 route.hold_min_confidence、無ければ 0.75）
   --stages <段,…>            使う段を絞る（既定 jev,judge）
-  --ask <問い,…>             訊く問いを絞る（handling, task, flow, skills, routine。既定は全部）。
+  --ask <問い,…>             訊く問いを絞る（handling, task, flow, skills, routine, team。既定は全部）。
                             問いは 1 問ごとに別のプロンプトなので、絞っても残った問いの答えは
                             変わらない——急がない問いを後回しにするために使う
   --json                     結果の全体（状態・問い・各段の記録・使用量）を出す
 
   stdout は 1 行の JSON: handling / task / flow（各 {{choice, confidence}} か null）、
-  skills（[{{name, probability}}]）、routine（{{value, probability}} か null）、hold、stage、abstained。
+  skills（[{{name, probability}}]）、routine（{{value, probability}} か null）、
+  team（{{choice: verify|compare|split, confidence}} か null。null は 1 つの AI で足りる／決めず）、
+  hold、stage、abstained。
   stderr に @agent-usage。終了コード: 0 = 扱いを決めた、1 = 決めず（か失敗）、2 = 引数の誤り"""
 
 
@@ -885,7 +887,7 @@ def cmd_route(argv, *, err=None, out=None, stdin=None, jev_request=None,
         print(json.dumps(result, ensure_ascii=False), file=out)
     else:
         print(json.dumps({key: result[key] for key in
-                          ("handling", "task", "flow", "skills", "routine", "hold", "stage",
+                          ("handling", "task", "flow", "skills", "routine", "team", "hold", "stage",
                            "abstained", "reason")}, ensure_ascii=False), file=out)
     return 0 if result["stage"] else 1
 

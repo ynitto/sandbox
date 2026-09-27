@@ -1751,6 +1751,26 @@ function informationText(item) {
   return item.title || item.text || '';
 }
 
+// 実行情報の行が持つ行き先（振り分けが添えた「ワークフローで実行」）。押すと依頼から実行に本文と形を
+// 入れて開くだけで、実行はしない（実行のボタンは人が押す）。部品は生ログの「端末を操作」と同じ button.small。
+function informationAction(item) {
+  const action = item && item.action;
+  if (!action || action.kind !== 'workflow-auto' || !action.request) return null;
+  const link = el('div', 'link');
+  const button = el('button', 'small', action.label || 'ワークフローで実行');
+  button.type = 'button';
+  button.title = 'ワークフローの「依頼から実行」に、この依頼と分担の形を入れて開く';
+  button.onclick = () => openWorkflowAuto(action).catch((err) => notice(err.message, 'error'));
+  link.append(button);
+  return link;
+}
+
+async function openWorkflowAuto({ request, shape }) {
+  await showArea('workflows');
+  await selectAreaItem('workflows', AUTO_WORKFLOW);
+  await $('automation-workbench').navigate({ ...frameMessage(), flowAuto: { request: String(request || ''), shape: String(shape || '') } });
+}
+
 function responseDisclosure(kind, title, items, { open = false, running = false, raw = null } = {}) {
   const values = Array.isArray(items) ? items.filter(Boolean) : [];
   if (!values.length && !running && !raw) return null;
@@ -1769,6 +1789,8 @@ function responseDisclosure(kind, title, items, { open = false, running = false,
     const content = el('div', 'response-item-body');
     content.append(el('div', 'response-item-title', kind === 'information' ? informationText(item) : (item.text || item.title || '')));
     if (item.detail) content.append(el('pre', 'response-detail', item.detail));
+    const action = informationAction(item);
+    if (action) content.append(action);
     row.append(content);
     body.append(row);
   }
@@ -3497,6 +3519,10 @@ async function init() {
     state.logs.set(id, lines);
     const node = state.current?.id === id ? document.querySelector('#execution-information-body .log') : null;
     if (node) { node.append(logLine({ kind, text })); node.scrollTop = node.scrollHeight; }
+  });
+  api.onSessionUpdated(async ({ id }) => {
+    if (!state.current || state.current.id !== id || state.running.has(id)) return;
+    try { state.current = await api.readSession(id); renderMessages(); } catch { /* 次の読み直しで揃う */ }
   });
   api.onTurnDone((p) => { TaskTeaching.onTurnDone(p); FlowTeaching.onTurnDone(p); return onTurnDone(p).finally(refreshAttention); });
   api.automation.onRunExit(() => { refreshAttention(); });

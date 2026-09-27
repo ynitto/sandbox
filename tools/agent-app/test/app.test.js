@@ -260,7 +260,7 @@ test('旧領域を三領域へ移行し、各領域の表示名を返す', () =>
   assert.strictEqual(navigation.normalizeArea('unknown'), 'conversation');
   assert.strictEqual(navigation.normalizeArea('home'), 'home');
   assert.deepStrictEqual(navigation.areaInfo('tasks'), { label: 'タスク', createLabel: '新しいタスク', listId: 'tasks' });
-  assert.deepStrictEqual(navigation.areaInfo('home'), { label: 'ホーム', listLabel: '最近の依頼', createLabel: '新しい会話', listId: 'home-items' });
+  assert.deepStrictEqual(navigation.areaInfo('home'), { label: 'ホーム', listLabel: '最近の作業', createLabel: '新しい会話', listId: 'home-items' });
 });
 
 test('実行状態を取得できない場合も保存済み定義をタスク一覧へ出す', () => {

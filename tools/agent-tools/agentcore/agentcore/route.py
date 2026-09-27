@@ -11,6 +11,7 @@ agent-app の入力欄（会話画面）に入った依頼 1 件について、*
 | `task` / `flow` | choice | 流用するならどれか（候補 + other）。候補が無ければ組まない |
 | `skill:<name>` | boolean | そのスキルを添えると依頼の質が上がるか（候補ごとに 1 問） |
 | `routine` | boolean | 日付や対象などの入力だけ替えて今後も繰り返す形か（定型化の提案） |
+| `team` | choice | 複数の AI に分けると明らかに良くなるなら、どの形か: `verify`（別の AI に確かめさせる）/ `compare`（複数の案を出させて基準で選ぶ）/ `split`（1 つの AI に入りきらない量を分けてまとめる）/ other（1 つの AI で足りる）。読み取り専用なら訊かない |
 
 判断の順は `select`（`modelselect`）と同じ jev → judge で、段の試行は `modelselect.ask_stages`
 を共有する。**決定的な 3 段目は持たない。** 決めなければ従来の動き（会話で実行、スキルは
@@ -34,10 +35,11 @@ QUESTION_HANDLING = "handling"
 QUESTION_TASK = "task"
 QUESTION_FLOW = "flow"
 QUESTION_ROUTINE = "routine"
+QUESTION_TEAM = "team"
 SKILL_PREFIX = "skill:"
 
 # `ask` で名指しできる問いの群。`skills` は候補ごとの `skill:<name>` をまとめて指す。
-ASK_NAMES = (QUESTION_HANDLING, QUESTION_TASK, QUESTION_FLOW, "skills", QUESTION_ROUTINE)
+ASK_NAMES = (QUESTION_HANDLING, QUESTION_TASK, QUESTION_FLOW, "skills", QUESTION_ROUTINE, QUESTION_TEAM)
 
 HANDLING_ANSWER = "answer"
 HANDLING_CONVERSE = "converse"
@@ -51,6 +53,21 @@ HANDLINGS = {
     HANDLING_FLOW: "One of the listed workflows does the same work; rerun it with new inputs.",
 }
 HANDLING_OTHER = "None of these fits, or it cannot be told from the request."
+
+# 複数の AI に分ける形（agent-app の「別の目で確かめる / 並べて比べる / 分けて広く進める」）。
+# ほとんどの依頼は 1 つの AI で足りるので、other を「足りる」にして既定の答えにする。
+TEAM_VERIFY = "verify"
+TEAM_COMPARE = "compare"
+TEAM_SPLIT = "split"
+TEAMS = {
+    TEAM_VERIFY: "The result must be checked by a second, independent assistant, and redone "
+                 "until the check passes (a fix whose review matters, a spec-vs-code audit).",
+    TEAM_COMPARE: "Several alternative answers should be produced and the best picked by stated "
+                  "criteria (design options, naming, a risky fix tried several ways).",
+    TEAM_SPLIT: "The work is too large for one assistant's context and splits into independent "
+                "parts that are merged at the end (many files, many issues, many repositories).",
+}
+TEAM_OTHER = "One assistant working alone is enough (true for most requests)."
 
 # choice のラベルは A〜Z。other の分を 1 つ空ける。
 MAX_CHOICES = judge.MAX_OPTIONS - 1
@@ -178,6 +195,12 @@ def build_questions(candidates: dict, *, ask=None) -> dict:
             "type": "boolean",
             "instructions": f"Would attaching the skill '{_describe(skill)}' clearly raise "
                             "the quality of the result for this request?"}
+    if QUESTION_TEAM in wanted and not candidates["context"]["readonly"]:
+        questions[QUESTION_TEAM] = {
+            "type": "choice",
+            "instructions": "Would splitting this request across several assistants clearly beat "
+                            "one assistant doing it alone? If so, in which shape?",
+            "criteria": dict(TEAMS), "other": TEAM_OTHER}
     if QUESTION_ROUTINE in wanted:
         questions[QUESTION_ROUTINE] = {
             "type": "boolean",
@@ -242,7 +265,7 @@ def shape(answers: dict, questions: dict, *, threshold: float, hold_threshold: f
     `abstained` は確度が足りず決めていない問い（「どれでもない」「no」は入れない）。"""
     abstained: "list[str]" = []
     out: dict = {"handling": None, "task": None, "flow": None, "skills": [], "routine": None,
-                 "hold": False, "abstained": abstained, "decided": False, "outcome": ""}
+                 "team": None, "hold": False, "abstained": abstained, "decided": False, "outcome": ""}
 
     def note(name: str, why: str) -> None:
         if why in ABSTAIN_REASONS:
@@ -269,6 +292,11 @@ def shape(answers: dict, questions: dict, *, threshold: float, hold_threshold: f
     if QUESTION_ROUTINE in questions:
         out["routine"], why = _boolean(answers.get(QUESTION_ROUTINE), threshold)
         note(QUESTION_ROUTINE, why)
+    if QUESTION_TEAM in questions:
+        # 「1 つで足りる」（other）は決めた上の答えなので棄権ではない。team は None のまま。
+        picked, why = _choice(answers.get(QUESTION_TEAM), threshold)
+        out["team"] = {"choice": picked["choice"], "confidence": picked["confidence"]} if picked else None
+        note(QUESTION_TEAM, why)
     handling = out["handling"]
     if handling and handling["choice"] in (HANDLING_TASK, HANDLING_FLOW):
         target = out[handling["choice"]]
@@ -309,7 +337,7 @@ def route(prompt: str, candidates, *, min_confidence: "float | None" = None,
     戻り値:
     {"handling": {"choice", "confidence", "probabilities"} | None, "task": 同 | None,
      "flow": 同 | None, "skills": [{"name", "probability"}], "routine": {"value", "probability"} | None,
-     "hold": bool, "stage": jev|judge|None, "abstained": [問いの名前], "attempts": [...],
+     "team": {"choice": verify|compare|split, "confidence"} | None, "hold": bool, "stage": jev|judge|None, "abstained": [問いの名前], "attempts": [...],
      "usage": {"tokens_in", "tokens_out"}, "state": 状態, "questions": [問いの名前]}
 
     `stage` が None なら決めていない（呼び出し側は従来の動きへ倒す）。
@@ -328,7 +356,7 @@ def route(prompt: str, candidates, *, min_confidence: "float | None" = None,
     usage = {"tokens_in": 0, "tokens_out": 0}
     attempts: "list[dict]" = []
     result = {"handling": None, "task": None, "flow": None, "skills": [], "routine": None,
-              "hold": False, "stage": None, "abstained": [], "reason": "",
+              "team": None, "hold": False, "stage": None, "abstained": [], "reason": "",
               "attempts": attempts, "usage": usage, "state": state,
               "questions": list(questions)}
     model = judge_model or judge_model_setting()

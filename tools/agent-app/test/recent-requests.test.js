@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const store = require('../src/main/store');
 
-test('最近の依頼は種類とリポジトリを横断し、更新順で上限まで返す', t => {
+test('最近の作業は種類とリポジトリを横断し、更新順で上限まで返す', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recent-requests-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   function add(repo, kind, day, extra = {}) {
