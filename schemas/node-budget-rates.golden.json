@@ -1,0 +1,83 @@
+{
+  "$comment": [
+    "node-budget のトークン推定（rate / row_tokens）と rates 較正の共有フィクスチャ。",
+    "読むのは 3 か所: agentcore/tests/test_nodebudget_golden.py（rate / row_tokens）、",
+    "agent-audit/tests/test_calibrate_golden.py（calibrate）、agent-app/test/budget-rate-golden.test.js（台帳の書き手）。",
+    "置き場は schemas/ 直下。どのツールの持ち物でもない契約のそばに置く慣習（methods-source-hash.golden.json と同じ）で、",
+    "2 か所に置くと片方だけ直るので 1 つを共有する。期待値は今の挙動の記録で、正しさの主張ではない。"
+  ],
+  "configs": {
+    "new_node": { "version": 2, "tokens": 100000, "period": "day" },
+    "rated": {
+      "version": 2,
+      "tokens": 100000,
+      "period": "day",
+      "rates": {
+        "default_tokens_per_second": 120,
+        "per_cli": { "aider:gemma4:e4b": 100, "aider": 80, "kiro": 0 }
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "実測行はレートによらず tokens_in + tokens_out",
+      "row": { "agent_cli": "ollama", "model": "gemma4:e4b", "seconds": 30, "tokens_in": 3534, "tokens_out": 397 },
+      "expected": { "new_node": { "rate": 0, "row_tokens": 3931 }, "rated": { "rate": 120, "row_tokens": 3931 } }
+    },
+    {
+      "name": "片方だけの実測も実測として数える",
+      "row": { "agent_cli": "claude", "model": "", "seconds": 60, "tokens_in": 500 },
+      "expected": { "new_node": { "rate": 0, "row_tokens": 500 }, "rated": { "rate": 120, "row_tokens": 500 } }
+    },
+    {
+      "name": "未報告のクラウド CLI は 秒 × default。新品ノードでは 0",
+      "row": { "agent_cli": "claude", "model": "", "seconds": 600 },
+      "expected": { "new_node": { "rate": 0, "row_tokens": 0 }, "rated": { "rate": 120, "row_tokens": 72000 } }
+    },
+    {
+      "name": "cli:model の鍵が先",
+      "row": { "agent_cli": "aider", "model": "gemma4:e4b", "seconds": 30 },
+      "expected": { "new_node": { "rate": 0, "row_tokens": 0 }, "rated": { "rate": 100, "row_tokens": 3000 } }
+    },
+    {
+      "name": "cli:model が無ければ cli の鍵",
+      "row": { "agent_cli": "aider", "model": "qwen3:8b", "seconds": 30 },
+      "expected": { "new_node": { "rate": 0, "row_tokens": 0 }, "rated": { "rate": 80, "row_tokens": 2400 } }
+    },
+    {
+      "name": "per_cli の 0 は未設定と同じで default へ落ちる",
+      "row": { "agent_cli": "kiro", "model": "", "seconds": 10 },
+      "expected": { "new_node": { "rate": 0, "row_tokens": 0 }, "rated": { "rate": 120, "row_tokens": 1200 } }
+    },
+    {
+      "name": "観測行（seconds 0・トークン無し）は数えない",
+      "row": { "agent_cli": "claude", "model": "", "seconds": 0, "event": "usage_switch" },
+      "expected": { "new_node": { "rate": 0, "row_tokens": 0 }, "rated": { "rate": 120, "row_tokens": 0 } }
+    },
+    {
+      "name": "トークンが明示の null なら未報告（秒 × レート）",
+      "row": { "agent_cli": "codex", "model": "", "seconds": 60, "tokens_in": null, "tokens_out": null },
+      "expected": { "new_node": { "rate": 0, "row_tokens": 0 }, "rated": { "rate": 120, "row_tokens": 7200 } },
+      "agent_app_writes": {
+        "$comment": "agent-app の audit.row() は明示の null を 0 に変えて書く（Number(null) === 0）。書いた行は実測 0 と読まれ、秒 × レートの推定が外れる。直さずに記録だけする。",
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "expected": { "new_node": { "row_tokens": 0 }, "rated": { "row_tokens": 0 } }
+      }
+    }
+  ],
+  "calibration": {
+    "$comment": "agent-app は自前の較正器を持たず、監査の連鎖で agent-audit calibrate --write を呼ぶ。実測（session_log.usage: true）の CLI は per_cli から外し、既にある鍵は pop する。鍵は cli:model と cli の両方を書く。default_tokens_per_second は書かない。",
+    "measured_clis": ["claude", "codex", "ollama"],
+    "prior_per_cli": { "ollama:gemma4:e4b": 100 },
+    "rows": [
+      { "agent_cli": "ollama", "model": "gemma4:e4b", "seconds": 30, "tokens_in": 2700, "tokens_out": 300 },
+      { "agent_cli": "aider", "model": "gemma4:e4b", "seconds": 30, "tokens_in": 2700, "tokens_out": 300 }
+    ],
+    "expected": {
+      "proposed": { "aider": 100, "aider:gemma4:e4b": 100, "ollama": 100, "ollama:gemma4:e4b": 100 },
+      "per_cli": { "aider": 100, "aider:gemma4:e4b": 100 },
+      "default_tokens_per_second": null
+    }
+  }
+}
