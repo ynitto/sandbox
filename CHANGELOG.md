@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: ワークフローで分担の形を選ぶ（0.42.0）
+
+- **「依頼から実行」と「新しいワークフロー」の作成画面に、分担の形（別の目で確かめる / 並べて比べる / 分けて広く
+  進める / おまかせ）を足した。** 既定はおまかせで、これまでと同じ動き
+- 依頼から実行で形を選ぶと、agent-flow の標準パターン（adversarial-verification / tournament /
+  fan-out-and-synthesize）を名指しして実行する。「同じ内容で再実行」は形も戻す
+- 作成画面で形を選ぶと、AI への最初の依頼の末尾に、その形で工程を組む指示を 1 行足す（定義に残る項目だけで
+  書けるように、工程ごとの AI 指定や判定の宣言は求めない）
+- 形の言葉・例文・パターン・指示は `src/shared/flowShapes.js` の 1 か所に置いた
+
 ### agent-app・agent-herd: 複数の AI 向きの依頼に形を添える（agent-app 0.41.0）
 
 - **agent-herd `route` に問い `team` を足した。** 複数の AI に分けると 1 つの AI より明らかに良くなるなら、その形

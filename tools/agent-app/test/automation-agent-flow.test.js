@@ -292,3 +292,25 @@ test('分担と確認: 判定の無い確認の出力は不合格として数え
   assert.deepStrictEqual(tw.roles, [{ role: 'check', agents: [], attempts: 1, verdicts: ['fail'] }]);
   assert.strictEqual(tw.reworks, 0);
 });
+
+test('依頼から実行で選んだ分担の形は、agent-flow の標準パターンとして inbox に名指しする', async (t) => {
+  const env = withBus(t);
+  const shapes = require('../src/shared/flowShapes');
+  const deps = {
+    root: '/repo',
+    getContext: async () => ({ agents: ['codex'], defaults: {}, workspace: { ok: false }, tools: { agentFlow: { ok: true } } }),
+    startDetached: async () => ({ pid: 1 }),
+  };
+  const verify = shapes.find('verify');
+  const started = await agentFlow.start({ source: { type: 'pattern', pattern: verify.pattern }, request: '不具合を直して確かめる', agent: 'codex', readonly: true, size: 'small', planGate: true }, deps);
+  const inbox = JSON.parse(fs.readFileSync(path.join(env.bus, 'inbox', `${started.runId}.json`), 'utf8'));
+  assert.strictEqual(inbox.pattern, 'adversarial-verification');
+  assert.strictEqual(inbox.plan, undefined, '定義（plan）とは同時に渡さない（agent-flow が拒む組み合わせ）');
+  assert.strictEqual(inbox.submitter_context.source, 'pattern');
+  // 再実行で形を戻せるよう、読み出しにも残る
+  assert.strictEqual(agentFlow.readRun('/repo', started.runId).input.pattern, 'adversarial-verification');
+
+  const auto = await agentFlow.start({ source: { type: 'auto' }, request: 'おまかせ', agent: 'codex', readonly: true }, deps);
+  const autoInbox = JSON.parse(fs.readFileSync(path.join(env.bus, 'inbox', `${auto.runId}.json`), 'utf8'));
+  assert.strictEqual(autoInbox.pattern, undefined, 'おまかせは名指ししない（planner が決める）');
+});

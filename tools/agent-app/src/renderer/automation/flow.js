@@ -12,6 +12,8 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     request: '', parameters: {}, readonly: false, agent: '', model: '', allocation: '', starting: false,
     // 依頼から実行（定義なし）。工程は agent-flow の planner が依頼から決める。
     auto: false, size: 'small', planGate: true,
+    // 分担の形（shared/flowShapes の id。''＝おまかせで planner が決める）。選ぶと agent-flow の標準パターンを名指しする
+    shape: '',
   };
   let previewTimer = null;
   let runTimer = null;
@@ -305,6 +307,14 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     return `<div class="run-toolbar"><details class="run-settings flow-run-settings"><summary aria-label="実行設定"><span data-flow-settings-summary title="${e(runSettingsLabel())}">${e(runSettingsLabel())}</span></summary><div class="settings-popover"><div class="popover-head">実行設定</div><label>エージェント<select data-flow-agent ${agents ? '' : 'disabled'}>${agents || '<option>利用できるAIがありません</option>'}</select></label><label>モデル<input id="flow-run-model" data-flow-model value="${e(view.model)}" placeholder="既定のモデル"></label><label>権限<select data-flow-permission disabled><option selected>自動承認</option></select></label><label>実行方法<select data-flow-readonly ${view.context && !view.context.workspace.ok ? 'disabled' : ''}><option value="write" ${view.readonly ? '' : 'selected'}>成果を書き込む</option><option value="readonly" ${view.readonly ? 'selected' : ''}>読み取り専用</option></select></label>${extra}${view.context && !view.context.workspace.ok ? `<p class="sub">${e(view.context.workspace.reason)}。読み取り専用で実行できます。</p>` : ''}</div></details><span class="run-toolbar-spacer"></span><button type="button" class="primary" ${startAttr} ${canRun ? '' : 'disabled'}>${view.starting ? '開始中…' : '実行'}</button></div>`;
   }
 
+  // 分担の形の選択肢（依頼から実行）。言葉と対応するパターンは shared/flowShapes だけが持つ。
+  function shapeHtml() {
+    const shapes = window.FlowShapes;
+    if (!shapes) return '';
+    const buttons = [...shapes.SHAPES, shapes.AUTO].map((shape) => `<button type="button" class="${shape.id === view.shape ? 'is-on' : ''}" aria-pressed="${shape.id === view.shape}" title="${e(shape.title)}" data-flow-shape="${e(shape.id)}">${e(shape.label)}</button>`).join('');
+    return `<div class="seg flow-shape" role="group" aria-label="分担の形">${buttons}</div>`;
+  }
+
   function autoHtml() {
     const contextWarning = !view.context?.tools?.agentFlow?.ok
       ? `<p class="run-result warn">${e(view.context?.tools?.agentFlow?.summary || '実行環境を確認してください')}</p>` : '';
@@ -312,7 +322,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const canRun = !!view.context?.tools?.agentFlow?.ok && !!(view.context?.agents || ctx.agents()).length && !view.starting;
     const sizes = Object.entries(SIZE_OPTIONS).map(([value, label]) => `<option value="${value}" ${value === view.size ? 'selected' : ''}>${label}</option>`).join('');
     const extra = `<label>規模<select data-flow-size>${sizes}</select></label><label>計画<select data-flow-plan-gate><option value="confirm" ${view.planGate ? 'selected' : ''}>実行前に確認する</option><option value="skip" ${view.planGate ? '' : 'selected'}>確認せずに実行する</option></select></label>`;
-    return `<section class="execution-card flow-overview flow-auto"><div class="execution-card-head"><div><h3>依頼から実行</h3><p>工程は依頼から決めます</p></div><span class="status ${running ? 'active' : ''}">${running ? '実行中' : '待機中'}</span></div>${contextWarning}<textarea rows="4" data-flow-request aria-label="依頼内容" placeholder="依頼内容を入力">${e(view.request)}</textarea>${runToolbarHtml(extra, 'data-flow-auto-start', canRun)}</section>${workflowHistoryHtml(autoRuns())}`;
+    return `<section class="execution-card flow-overview flow-auto"><div class="execution-card-head"><div><h3>依頼から実行</h3><p>工程は依頼から決めます</p></div><span class="status ${running ? 'active' : ''}">${running ? '実行中' : '待機中'}</span></div>${contextWarning}${shapeHtml()}<textarea rows="4" data-flow-request aria-label="依頼内容" placeholder="${e(window.FlowShapes?.find(view.shape)?.example || '依頼内容を入力')}">${e(view.request)}</textarea>${runToolbarHtml(extra, 'data-flow-auto-start', canRun)}</section>${workflowHistoryHtml(autoRuns())}`;
   }
 
   // 定義なし（依頼から実行）で動かした実行。保存済みワークフローに紐づかないもの。
@@ -549,7 +559,9 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     view.starting = true;
     ctx.refresh();
     const started = await ctx.guard('実行開始', () => ctx.bridge.runStart({
-      root: root(), source: { type: 'auto' }, request: view.request, parameters: {},
+      // 形を選んだら、その形の標準パターンを名指しする（planner は形を決めず、依頼の中身だけを埋める）
+      root: root(), source: window.FlowShapes?.find(view.shape) ? { type: 'pattern', pattern: window.FlowShapes.find(view.shape).pattern } : { type: 'auto' },
+      request: view.request, parameters: {},
       readonly: view.readonly, autoApprove: true, agent: view.agent, model: view.model,
       policy: view.allocation === 'auto' ? 'recommended' : 'direct', allocation: view.allocation,
       size: view.size, planGate: view.planGate,
@@ -628,10 +640,10 @@ window.createFlowFeature = function createFlowFeature(ctx) {
   }
 
   // ワークフローを作成: 会話（tmux）を用意し、その最初のターンで AI に目的を渡す。
-  async function createTeaching({ purpose: input, saveName = '', options }) {
+  async function createTeaching({ purpose: input, saveName = '', shape = '', options }) {
     const purpose = input.trim();
     if (!purpose) { ctx.toast('実現したいことを入力してください', true); return; }
-    const workflowId = await ctx.guard('ワークフローの作成', () => ctx.teachCreate({ root: root(), purpose, saveName, options }));
+    const workflowId = await ctx.guard('ワークフローの作成', () => ctx.teachCreate({ root: root(), purpose, saveName, shape, options }));
     if (!workflowId) return;
     view.teachings = (await ctx.guard('教示中のワークフロー', () => ctx.bridge.teachingList(root()))) || view.teachings;
     view.creatingTeaching = false;
@@ -720,6 +732,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     for (const button of main.querySelectorAll('[data-flow-new]')) button.addEventListener('click', create);
     main.querySelector('[data-flow-auto]')?.addEventListener('click', selectAuto);
     main.querySelector('[data-flow-auto-start]')?.addEventListener('click', startAutoRun);
+    for (const button of main.querySelectorAll('[data-flow-shape]')) button.addEventListener('click', () => { view.shape = button.dataset.flowShape; ctx.refresh(); });
     main.querySelector('[data-flow-save-run]')?.addEventListener('click', saveRunAsWorkflow);
     main.querySelector('[data-flow-size]')?.addEventListener('change', (event) => { view.size = event.target.value; const summary = main.querySelector('[data-flow-settings-summary]'); if (summary) { summary.textContent = runSettingsLabel(); summary.title = runSettingsLabel(); } });
     main.querySelector('[data-flow-plan-gate]')?.addEventListener('change', (event) => { view.planGate = event.target.value === 'confirm'; const summary = main.querySelector('[data-flow-settings-summary]'); if (summary) { summary.textContent = runSettingsLabel(); summary.title = runSettingsLabel(); } });
@@ -871,6 +884,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
       const input = view.run.input;
       if (!input.workflowId) {
         view.request = input.request;
+        view.shape = (window.FlowShapes?.SHAPES.find((shape) => shape.pattern === input.pattern) || {}).id || '';
         view.readonly = input.readonly;
         view.allocation = '';
         view.agent = input.agent || view.agent;

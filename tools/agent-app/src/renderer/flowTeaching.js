@@ -15,6 +15,7 @@
 
   const state = {
     deps: null, visible: false, creating: false, card: false, onCreate: null, repo: '', workflowId: '', existing: false, context: '',
+    shape: '', // 作成画面で選んだ分担の形（''＝おまかせ。shared/flowShapes）
     session: null, availableSession: null, phase: null, running: false, pending: false, shareWait: false,
     token: 0, input: null, autoStart: null, preparing: '',
   };
@@ -284,6 +285,27 @@
     }
   }
 
+  // 分担の形の選択（作成画面）。選択肢と言葉は shared/flowShapes だけが持つ。
+  const PURPOSE_PLACEHOLDER = '例: 変更依頼を調査し、並列に実装して、品質を確認したい';
+  function renderShape() {
+    const shapes = window.FlowShapes;
+    const box = $('flow-teach-shape');
+    if (!shapes || !box) return;
+    const options = [...shapes.SHAPES, shapes.AUTO];
+    box.replaceChildren(...options.map((shape) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = shape.label;
+      button.title = shape.title;
+      button.dataset.shape = shape.id;
+      button.className = shape.id === state.shape ? 'small on' : 'small';
+      button.setAttribute('aria-pressed', String(shape.id === state.shape));
+      button.onclick = () => { state.shape = shape.id; renderShape(); };
+      return button;
+    }));
+    $('flow-teach-purpose').placeholder = shapes.find(state.shape)?.example || PURPOSE_PLACEHOLDER;
+  }
+
   async function submitCreate() {
     if (state.pending) return;
     const purpose = $('flow-teach-purpose').value.trim();
@@ -297,7 +319,7 @@
     state.pending = true;
     renderShell();
     try {
-      await state.onCreate({ purpose, saveName: $('flow-teach-save-name').value.trim(), options: state.deps.executionOptions(readExecutionInputs()) });
+      await state.onCreate({ purpose, saveName: $('flow-teach-save-name').value.trim(), shape: state.shape, options: state.deps.executionOptions(readExecutionInputs()) });
     } catch (err) {
       errorNode.textContent = err.message;
       errorNode.hidden = false;
@@ -338,6 +360,8 @@
       $('flow-teach-purpose').value = '';
       $('flow-teach-save-name').value = '';
       $('flow-teach-create-error').hidden = true;
+      state.shape = '';
+      renderShape();
     }
     const next = { root: detail.root, workflowId: detail.workflowId, creating: !!detail.creating, existing: !!detail.existing };
     const changed = !wasVisible || !sameView(next, previous);
@@ -359,9 +383,9 @@
   }
 
   // 新しいワークフロー: 目的を書いて AI と作り始める（ワークベンチの「AIに相談する」から）。
-  async function create({ root, purpose, saveName = '', options = null }) {
+  async function create({ root, purpose, saveName = '', shape = '', options = null }) {
     const chosen = options || state.deps.executionOptions({});
-    const view = await api.automation.flowTeachPrepare({ repo: root, purpose, workflowId: saveName, ...chosen });
+    const view = await api.automation.flowTeachPrepare({ repo: root, purpose, workflowId: saveName, shape, ...chosen });
     state.autoStart = { repo: root, workflowId: view.workflowId, options: chosen };
     return view.workflowId;
   }
@@ -422,6 +446,7 @@
     $('flow-teach-manual').onclick = () => state.onManual?.();
     $('flow-teach-start').onclick = () => state.creating ? submitCreate() : start();
     $('flow-teach-purpose').oninput = () => { $('flow-teach-create-error').hidden = true; };
+    renderShape();
     $('flow-teach-send').onclick = () => send();
     $('flow-teach-stop').onclick = () => (state.session || state.availableSession) && api.stop((state.session || state.availableSession).id).catch((err) => error(err.message));
     $('flow-teach-restart').onclick = () => restart();

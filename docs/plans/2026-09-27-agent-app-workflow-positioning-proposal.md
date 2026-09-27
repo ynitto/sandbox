@@ -179,7 +179,7 @@ README では「マルチエージェント」も使わず、「複数の AI で
 | 段 | 中身 | 画面の変更 | 版 |
 |---|---|---|---|
 | 1（済・0.39.1） | README に「タスクとワークフローの使い分け」を足す。定型化の判定（`automation/routine.js`）・作成依頼（`shared/reuse.js`）・種類の横の 1 行をそろえる（4.5） | なし（文言だけ） | patch |
-| 2 | 作成画面と「依頼から実行」に形の選択（4.1 / 4.2）。依頼文への 1 行追加 | あり（要スクリーンショット確認） | minor |
+| 2（済・0.42.0） | 作成画面と「依頼から実行」に形の選択（4.1 / 4.2）。言葉・例文・対応パターン・AI への 1 行は `shared/flowShapes.js` の 1 か所。依頼から実行は agent-flow の標準パターン（verify→adversarial-verification / compare→tournament / split→fan-out-and-synthesize）を inbox の `pattern` で名指しし、作成は下書き（sidecar）の `shape` を最初の依頼の末尾に 1 行足す。部品は置き場ごとの既存の `.seg`（明るい DOM は `button.small` + `.on`、ワークベンチは `.is-on`）。4.1 の見出しは「どう分担させますか」ではなく隣の欄と同じ「分担の形」、保存名の位置は変えていない | あり | minor |
 | 3（済・0.40.0） | 実行結果の「分担と確認」カード（4.3）。数えるのは main（`automation/agent-flow.js` の `teamworkOf`）、描くのは `flow.js`。行は `.run-history`、「候補を見る」ボタンは付けず、各工程の成果は既存の「工程の進み具合」で見る | あり | minor |
 | 4（済・0.41.0） | ホームの振り分けで形を提案（4.4）。`agent-herd route` に問い `team`（verify / compare / split / other＝1 つで足りる）を足し、会話で実行する依頼で agent-flow が使えるときだけ実行情報に 1 行。4.4 の [ワークフローで実行] ボタンは付けず文言で行き先を示す（実行情報の行は操作を持たない）。確度の下限は既存の `route.min_confidence` をそのまま使い、**判定の標本の取り直しは未実施**（ローカルの判定モデルを動かせる環境で、監査行の `routing.team` を集めて確かめる） | あり | minor |
 

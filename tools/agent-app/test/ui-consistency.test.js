@@ -501,3 +501,23 @@ test('分担と確認は実行詳細のカードと実行履歴の行で組み�
   assert.strictEqual(rules.length, 1, '分担と確認に足す規則は列幅の 1 つだけ');
   assert.ok(!/#[0-9a-f]{3,8}\b/i.test(rules.join('\n')), '直値の色を足さない');
 });
+
+test('分担の形は、置き場ごとの既存の選択肢の部品（.seg）と同じ言葉（shared/flowShapes）で組む', () => {
+  const html = read('renderer/index.html');
+  const flow = read('renderer/automation/flow.js');
+  const teaching = read('renderer/flowTeaching.js');
+  const css = read('renderer/styles.css');
+  const workbenchCss = read('renderer/automation/styles.css');
+  // 作成画面は明るい DOM: ファイルビュアーの切り替えと同じ .seg + button.small + .on
+  assert.match(html, /<div id="flow-teach-shape" class="seg" role="group"/);
+  assert.match(teaching, /'small on' : 'small'/);
+  // 依頼から実行はワークベンチ（Shadow DOM）: 実行方法の選択と同じ .seg + .is-on
+  assert.match(flow, /<div class="seg flow-shape" role="group" aria-label="分担の形">/);
+  for (const [name, source] of [['index.html', html], ['flow.js', flow], ['flowTeaching.js', teaching]]) {
+    for (const label of ['別の目で確かめる', '並べて比べる', '分けて広く進める']) {
+      assert.ok(!source.includes(label), `${name} に形の言葉を直書きしない（shared/flowShapes から出す）: ${label}`);
+    }
+  }
+  assert.strictEqual((css.match(/^\.seg\b/gm) || []).length, 4, '明るい DOM の .seg を作り直さない');
+  assert.ok(!/^\.flow-shape\b|#flow-teach-shape/m.test(css + workbenchCss), '形の並びに私物の見た目を足さない');
+});
