@@ -8,6 +8,7 @@
 //   テスト   … 画面の「テスト」。実行は利用者が押す（AI は実行しない）
 
 const flowModel = require('./flow-model');
+const flowShapes = require('../../shared/flowShapes');
 
 function text(value, max = 6000) { return String(value || '').trim().slice(0, max); }
 
@@ -19,7 +20,9 @@ function kindLines() {
 //   id       … 保存名（.agents/workflows/<id>.json）
 //   purpose  … 利用者が書いた目的（新規のとき）
 //   existing … 既にある定義を変える会話か
-function prompt({ id, purpose = '', existing = false } = {}) {
+//   shape    … 作成画面で選んだ分担の形（shared/flowShapes の id。'' はおまかせで何も足さない）
+function prompt({ id, purpose = '', existing = false, shape = '' } = {}) {
+  const chosen = existing ? null : flowShapes.find(shape);
   const name = String(id || '').trim();
   const file = `.agents/workflows/${name}.json`;
   return [
@@ -45,6 +48,7 @@ function prompt({ id, purpose = '', existing = false } = {}) {
     '   （テストは利用者が画面の「テスト」で行います）。',
     '',
     ...(existing ? [] : ['利用者の目的:', text(purpose) || '（未記入。まず何をさせたいかを聞いてください）']),
+    ...(chosen ? ['', chosen.instruction] : []),
   ].join('\n');
 }
 

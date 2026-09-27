@@ -41,7 +41,7 @@
     const instructions = {
       skill: 'スキルを作成してください。保存先の既存のスキル配置規約に従い、規約がなければ .agents/skills/<name>/SKILL.md に保存してください。skill-creator が利用可能なら参照してください。name と具体的な発動条件を示す description を frontmatter に書き、本文に判断基準・手順・確認方法を記載してください。単発の入力や機密情報を固定しないでください。',
       task: '再実行できるタスクを作成してください。statemachine-use と既存のタスク定義・スキーマを参照し、.statemachine/<name>/ に保存してください。可変入力、手順、分岐、完了条件を明確にしてください。',
-      workflow: '複数担当のワークフローを作成してください。agent-flow と既存のワークフロー定義・スキーマを参照し、.agents/workflows/<name>.json に保存してください。各担当の役割、依存関係、受け渡す成果物、独立レビューや統合の条件を明確にしてください。',
+      workflow: '複数担当のワークフローを作成してください。agent-flow と既存のワークフロー定義・スキーマを参照し、.agents/workflows/<name>.json に保存してください。別の目で確かめる（作る担当と別のAIの確認担当、通らなければ作り直す）・並べて比べる（複数の案と選ぶ基準）・分けて広く進める（分け方とまとめ方）のどの形かを決め、各担当の役割、依存関係、受け渡す成果物、確認や統合の条件を明確にしてください。',
     };
     if (!Object.hasOwn(instructions, kind) || !purpose?.trim() || purpose.length > 30000 || !repo) throw new Error('種類・保存先・作成する内容を確認してください');
     return `${instructions[kind]}

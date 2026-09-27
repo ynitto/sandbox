@@ -126,7 +126,7 @@ test('workflow steps test action opens the saved workflow run settings', async (
   });
   await run.handlers.click();
   assert.match(feature.html(), /class="execution-card flow-overview"/);
-  assert.match(feature.html(), /<h3>実行<\/h3>/);
+  assert.match(feature.html(), /<h3>手動実行<\/h3>/);
   assert.doesNotMatch(feature.html(), /flow-node-summary|固定工程/);
   assert.match(feature.html(), /data-flow-start/);
 });

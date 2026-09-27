@@ -206,6 +206,8 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .run-history li > div { min-width: 0; display: grid; }
 .run-history small { color: var(--muted); overflow-wrap: anywhere; }
 .run-history p { margin: 2px 0 0; color: var(--ng); font-size: 12px; overflow-wrap: anywhere; }
+/* 分担と確認: 役割の列をそろえる（行の部品は実行履歴と同じ） */
+.flow-teamwork .run-history li { grid-template-columns: 6.5em minmax(0, 1fr) auto; align-items: baseline; }
 .history-log { min-width: 0; border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }
 .history-log pre { max-height: 320px; overflow: auto; font-family: var(--mono); }
 
@@ -313,9 +315,15 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .field > label { font-size: 12.5px; color: var(--muted); font-weight: 600; }
 .field small { color: var(--muted); font-size: 12px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.seg { display: flex; gap: 4px; flex-wrap: wrap; }
-.seg button { border-radius: 999px; min-height: 30px; padding: 3px 12px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
-.seg button.is-on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* 選択肢の切り替え。親画面（styles.css）の .seg と同じ形: ボタンをつなげ、両端だけ角を丸め、選んだものを青にする */
+.seg { display: inline-flex; }
+/* 入力欄の中の切り替えは欄の幅に合わせて均等に並べる（折り返すとつなげた形が崩れるため、詰めて 1 行に収める） */
+.field > .seg { display: flex; }
+.field > .seg button { flex: 1 1 auto; justify-content: center; padding-inline: 6px; white-space: nowrap; }
+.seg button { margin-left: -1px; border-radius: 0; min-height: 32px; padding: 4px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+.seg button:first-child { margin-left: 0; border-radius: 7px 0 0 7px; }
+.seg button:last-child { border-radius: 0 7px 7px 0; }
+.seg button.is-on { position: relative; z-index: 1; border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .seg .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .section-title { font-size: 12.5px; color: var(--muted); font-weight: 650; text-transform: none; margin-top: 4px; }
 .branch-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) 32px; grid-template-areas: "if when remove" ". value remove" "then to remove"; gap: 6px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }

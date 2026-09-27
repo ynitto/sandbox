@@ -64,6 +64,7 @@ Q_FLOW = "workflow 'リリース前点検"
 Q_SKILL_API = "skill 'api-designer"
 Q_SKILL_CHECK = "skill 'self-checking"
 Q_ROUTINE = "recurring shape"
+Q_TEAM = "splitting this request across several assistants"
 
 # handling の選択肢は answer / converse / task / flow / other の順（A〜E）
 TASK_ROUTE = {
@@ -73,6 +74,8 @@ TASK_ROUTE = {
     Q_SKILL_API: {"A": 0.71, "B": 0.29},
     Q_SKILL_CHECK: {"B": 0.8, "A": 0.2},
     Q_ROUTINE: {"A": 0.66, "B": 0.34},
+    # team の選択肢は verify / compare / split / other の順（A〜D）。既定は「1 つで足りる」
+    Q_TEAM: {"D": 0.8, "A": 0.1, "B": 0.05, "C": 0.05},
 }
 
 
@@ -91,7 +94,7 @@ class QuestionShapeTests(IsolatedHome):
     def test_questions_follow_the_candidates(self):
         questions = route.build_questions(route.normalize_candidates(CANDIDATES))
         self.assertEqual(list(questions), ["handling", "task", "flow", "skill:api-designer",
-                                           "skill:self-checking", "routine"])
+                                           "skill:self-checking", "team", "routine"])
         self.assertEqual(list(questions["handling"]["criteria"]), ["answer", "converse", "task", "flow"])
         self.assertTrue(questions["handling"]["other"])
         self.assertEqual(questions["skill:api-designer"]["type"], "boolean")
@@ -102,14 +105,14 @@ class QuestionShapeTests(IsolatedHome):
 
     def test_no_tasks_drops_the_task_question_and_option(self):
         questions = route.build_questions(route.normalize_candidates({"skills": []}))
-        self.assertEqual(list(questions), ["handling", "routine"])
+        self.assertEqual(list(questions), ["handling", "team", "routine"])
         self.assertEqual(list(questions["handling"]["criteria"]), ["answer", "converse"])
 
     def test_ask_narrows_the_questions_without_changing_them(self):
         cands = route.normalize_candidates(CANDIDATES)
         every = route.build_questions(cands)
         narrowed = route.build_questions(cands, ask=("handling", "task", "flow", "skills"))
-        self.assertEqual(list(narrowed), [n for n in every if n != route.QUESTION_ROUTINE])
+        self.assertEqual(list(narrowed), [n for n in every if n not in (route.QUESTION_ROUTINE, route.QUESTION_TEAM)])
         for name, question in narrowed.items():
             self.assertEqual(question, every[name], "残った問いは 1 文字も変わらない")
         only = route.build_questions(cands, ask=("routine",))
@@ -208,7 +211,7 @@ class StageTests(IsolatedHome):
         def jev(body):
             calls.append(body)
             self.assertEqual(list(body["questions"]), ["handling", "task", "flow", "skill:api-designer",
-                                                       "skill:self-checking", "routine"])
+                                                       "skill:self-checking", "team", "routine"])
             self.assertEqual(body["questions"]["skill:api-designer"], {
                 "type": "boolean", "instructions": body["questions"]["skill:api-designer"]["instructions"]})
             self.assertIn("none", body["questions"]["handling"]["criteria"])
@@ -221,6 +224,7 @@ class StageTests(IsolatedHome):
                 "skill:api-designer": {"type": "boolean", "value": True, "probability": 0.7},
                 "skill:self-checking": {"type": "boolean", "value": False, "probability": 0.2},
                 "routine": {"type": "boolean", "value": False, "probability": 0.3},
+                "team": {"type": "choice", "choice": "none", "confidence": 0.85, "probabilities": {"none": 0.85}},
             }}
 
         result = route.route("この関数は何をする？", CANDIDATES, jev_setting_override=self.JEV,
@@ -265,6 +269,30 @@ class StageTests(IsolatedHome):
         self.assertTrue(result["routine"]["value"])
         self.assertEqual(result["stage"], modelselect.STAGE_JUDGE)
         self.assertIsNone(result["handling"], "handling は訊いていない")
+
+    def test_team_names_the_shape_only_when_several_assistants_clearly_help(self):
+        converse = {Q_HANDLING: {"B": 0.85, "A": 0.05, "C": 0.05, "D": 0.03, "E": 0.02}}
+        verify = dict(TASK_ROUTE, **converse, **{Q_TEAM: {"A": 0.78, "D": 0.12, "B": 0.05, "C": 0.05}})
+        result = route.route("認証の不具合を直して、別の AI にレビューさせて", CANDIDATES,
+                             judge_model="m", judge_request=_judge_by_question(verify))
+        self.assertEqual(result["handling"]["choice"], "converse")
+        self.assertEqual(result["team"], {"choice": "verify", "confidence": 0.78})
+
+        alone = route.route("x", CANDIDATES, judge_model="m", judge_request=_judge_by_question(TASK_ROUTE))
+        self.assertIsNone(alone["team"], "1 つで足りる（other）は形を出さない")
+        self.assertNotIn("team", alone["abstained"], "足りると決めたのは棄権ではない")
+
+        unsure = dict(TASK_ROUTE, **{Q_TEAM: {"C": 0.4, "D": 0.35, "A": 0.15, "B": 0.1}})
+        low = route.route("x", CANDIDATES, judge_model="m", judge_request=_judge_by_question(unsure))
+        self.assertIsNone(low["team"])
+        self.assertIn("team", low["abstained"], "確度が足りなければ決めない")
+
+    def test_team_is_not_asked_for_readonly_requests(self):
+        questions = route.build_questions(route.normalize_candidates(dict(CANDIDATES, context={"readonly": True})))
+        self.assertNotIn(route.QUESTION_TEAM, questions, "読むだけの依頼は分ける話にならない")
+        only = route.build_questions(route.normalize_candidates(CANDIDATES), ask=("team",))
+        self.assertEqual(list(only), [route.QUESTION_TEAM])
+        self.assertEqual(list(only["team"]["criteria"]), ["verify", "compare", "split"])
 
     def test_thresholds_come_from_the_config_file(self):
         herdconfig.set_value("route.min_confidence", 0.9)

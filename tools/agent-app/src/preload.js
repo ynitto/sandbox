@@ -233,6 +233,8 @@ contextBridge.exposeInMainWorld('api', {
   onTurnInfo: on('turn:info'),
   onTurnLine: on('turn:line'),
   onTurnDone: on('turn:done'),
+  // 保存済みの応答に後から実行情報が足された（会話を起こしてから届いた判定）
+  onSessionUpdated: on('session:updated'),
   onTermScreen: on('term:screen'),
   onTurnTransport: on('turn:transport'),
   onTermPhase: on('term:phase'),

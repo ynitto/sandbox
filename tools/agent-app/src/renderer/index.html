@@ -473,6 +473,8 @@
             <section id="flow-teach-launch" class="teaching-create-form" hidden>
               <div id="flow-teach-create" class="teaching-create-fields" hidden>
                 <label class="task-save-name" for="flow-teach-save-name"><strong>保存名</strong><input id="flow-teach-save-name" placeholder="未指定なら自動で決定" size="28"></label>
+                <label class="task-create-label" id="flow-teach-shape-label"><strong>分担の形</strong></label>
+                <div id="flow-teach-shape" class="seg" role="group" aria-labelledby="flow-teach-shape-label"></div>
                 <label class="task-create-label" for="flow-teach-purpose"><strong>実現したいこと</strong></label>
                 <textarea id="flow-teach-purpose" rows="6" placeholder="例: 変更依頼を調査し、並列に実装して、品質を確認したい"></textarea>
               </div>
@@ -842,7 +844,7 @@
     <div class="dlg-body">
     <p id="routine-status" class="sub"></p>
     <label class="setting-field"><span>種類</span><select id="routine-kind"><option value="skill">スキル</option><option value="task">タスク</option><option value="workflow">ワークフロー</option></select></label>
-    <p class="sub">スキル: 知識・判断を再利用 ／ タスク: 1つの仕事を完了 ／ ワークフロー: 複数担当を連携</p>
+    <p class="sub">スキル: 知識・判断を再利用 ／ タスク: 手順を覚えて 1 つの AI が進める ／ ワークフロー: 役割を分けて別の AI が確かめる・比べる・分けて進める</p>
     <label class="setting-field"><span>保存先</span><select id="routine-repo"></select></label>
     <button type="button" id="routine-add-repo" class="small">フォルダを追加</button>
     <div class="teaching-create-form"><label class="task-create-label" for="routine-purpose">作成する内容</label><textarea id="routine-purpose" rows="12"></textarea></div>
@@ -917,6 +919,7 @@
   <script src="../shared/projectPath.js"></script>
   <script src="../shared/projectImportBundle.js"></script>
   <script src="../shared/reuse.js"></script>
+  <script src="../shared/flowShapes.js"></script>
   <script src="../shared/allocation.js"></script>
   <script src="../shared/usagePresentation.js"></script>
   <script src="inputMode.js"></script>

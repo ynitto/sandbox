@@ -177,3 +177,43 @@ test('案内は写した入力値を持ち、実行情報に 1 行出す', async
   assert.equal(held.message.parts.information[1].title, '入力：period=前月 · target=sandbox');
   assert.equal(routing.heldMessage(result, { text }).message.parts.information.length, 1, '入力が無ければ行を足さない');
 });
+
+test('複数の AI 向きの形は、会話で実行する依頼にだけ 1 行添える（送信は止めない）', async () => {
+  const run = (answer) => routing.route({ text, candidates: cands, file: tmpFile(), capture: fakeCapture({ ok: true, status: 0, stdout: JSON.stringify({ stage: 'judge', skills: [], ...answer }) }) });
+  const verify = await run({ handling: { choice: 'converse', confidence: 0.8 }, team: { choice: 'verify', confidence: 0.72 } });
+  assert.deepEqual(verify.team, { choice: 'verify', confidence: 0.72 });
+  assert.equal(verify.hold, false, '形の提案では会話を止めない');
+  assert.deepEqual(routing.teamInformation(verify), { type: 'status', status: 'success',
+    title: '別の目で確かめると良い依頼です', detail: '複数の AI で分担する形 0.72' }, '行き先の依頼文が無ければボタンは持たない');
+  assert.deepEqual(routing.teamInformation(verify, { request: '直して確かめて' }).action,
+    { kind: 'workflow-auto', label: 'ワークフローで実行', request: '直して確かめて', shape: 'verify' }, '依頼から実行に本文と形を入れて開く');
+  const compare = await run({ handling: { choice: 'converse', confidence: 0.8 }, team: { choice: 'compare', confidence: 0.7 } });
+  assert.match(routing.teamInformation(compare).title, /^並べて比べる/);
+  const split = await run({ handling: null, team: { choice: 'split', confidence: 0.7 } });
+  assert.match(routing.teamInformation(split).title, /^分けて広く進める/);
+
+  const answerOnly = await run({ handling: { choice: 'answer', confidence: 0.9 }, team: { choice: 'verify', confidence: 0.9 } });
+  assert.equal(routing.teamInformation(answerOnly), null, '答えるだけの依頼には重ねない');
+  const unknown = await run({ handling: { choice: 'converse', confidence: 0.8 }, team: { choice: 'swarm', confidence: 0.9 } });
+  assert.equal(unknown.team, null, '知らない形は捨てる');
+  const older = await run({ handling: { choice: 'converse', confidence: 0.8 } });
+  assert.equal(older.team, null, 'team を返さない旧版の agent-herd でも動く');
+  assert.equal(routing.teamInformation(older), null);
+  assert.equal(routing.teamInformation({ decided: false, team: null }), null);
+});
+
+test('急がない問いは --ask で分けて訊く。古い agent-herd が引数を拒んだら argsRejected で知らせる', async () => {
+  const seen = {};
+  const first = await routing.route({ text, candidates: cands, file: tmpFile(), ask: routing.ASK_FIRST,
+    capture: fakeCapture({ ok: true, status: 0, stdout: JSON.stringify({ handling: { choice: 'converse', confidence: 0.8 }, stage: 'judge', skills: [] }) }, seen) });
+  assert.deepEqual(seen.args.slice(-2), ['--ask', 'handling,task,flow,skills'], '送る前は扱い・流用先・スキルだけ');
+  assert.equal(first.decided, true);
+  assert.deepEqual(routing.ASK_LATER, ['routine', 'team'], '定型化と分担の形は会話を起こしてから');
+  const old = await routing.route({ text, candidates: cands, file: tmpFile(), ask: routing.ASK_LATER,
+    capture: fakeCapture({ ok: false, status: 2, stdout: '', stderr: '訊けない問いです: team' }) });
+  assert.equal(old.decided, false);
+  assert.equal(old.argsRejected, true, '呼び出し側が問いを減らして訊き直せる');
+  const noAsk = await routing.route({ text, candidates: cands, file: tmpFile(),
+    capture: fakeCapture({ ok: false, status: 2, stdout: '' }) });
+  assert.equal(noAsk.argsRejected, undefined, 'ask を渡していなければ従来どおり（使えない扱い）');
+});

@@ -91,6 +91,8 @@ svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; s
 .seg button { margin-left: -1px; border-radius: 0; }
 .seg button:first-child { margin-left: 0; border-radius: 7px 0 0 7px; }
 .seg button:last-child { border-radius: 0 7px 7px 0; }
+/* 選んだものの枠が隣のボタンに隠れないよう前に出す（ワークベンチの .seg と同じ） */
+.seg button.on { position: relative; z-index: 1; }
 .icon-button { width: 42px; height: 42px; padding: 9px; align-items: center; justify-content: center; }
 
 /* ---- アプリケーションシェル ---- */
