@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: タスクとワークフローの使い分けを言葉で示す（0.39.1）
+
+- **README に「タスクとワークフローの使い分け」を足した。** タスクは手順を覚え、ワークフローは役割を分ける。
+  ワークフローで得をする形を「別の目で確かめる」「並べて比べる」「分けて広く進める」の 3 つに名付けた
+- 「この作業を定型化」の判定と作成依頼を同じ言葉にそろえた。工程が多いだけの仕事はタスクに寄せ、
+  ワークフローを勧めるときは 3 つの形のどれに当たるかを理由に書く。種類の横の 1 行も同じ言葉にした
+- 背景と今後の段取りは `docs/plans/2026-09-27-agent-app-workflow-positioning-proposal.md`
+
 ### agent-app・agent-flow: ワークフローを定義なしで動かし、規模の目安で分けすぎを抑える（agent-app 0.39.0）
 
 - **agent-flow に規模の目安（`size`）を足した。** small（5 工程未満・既定）/ medium（10 未満）/ large（50 未満）/
