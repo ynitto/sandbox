@@ -488,3 +488,16 @@ test('プロジェクトは既存の器で組む（選択欄・ダイアログ�
   const added = css.split('\n').filter((line) => /project|message-actions \.more-menu/.test(line)).join('\n');
   assert.ok(!/:[^;{}]*#[0-9a-f]{3,8}\b/i.test(added), '直値の色を足さない');
 });
+
+test('分担と確認は実行詳細のカードと実行履歴の行で組み、数えるのは main に置く', () => {
+  const flow = read('renderer/automation/flow.js');
+  const css = read('renderer/automation/styles.css');
+  const body = flow.slice(flow.indexOf('function teamworkHtml'), flow.indexOf('function runHtml'));
+  assert.match(body, /class="execution-card flow-teamwork"><div class="execution-card-head"><div><h3>分担と確認<\/h3><p>/, '見出しと 1 行の説明は execution-card-head の形');
+  assert.match(body, /<ul class="run-history">/, '行は実行履歴と同じ部品');
+  assert.ok(!/class="primary"|<button/.test(body), '結果のカードに操作を足さない');
+  assert.ok(!/verify\s*=|decided_by|\.status === 'failed'/.test(body), '確認の合否や採否を renderer で判定しない（main の teamwork を描くだけ）');
+  const rules = css.match(/^\.flow-teamwork[^{]*\{[^}]*\}$/gm) || [];
+  assert.strictEqual(rules.length, 1, '分担と確認に足す規則は列幅の 1 つだけ');
+  assert.ok(!/#[0-9a-f]{3,8}\b/i.test(rules.join('\n')), '直値の色を足さない');
+});

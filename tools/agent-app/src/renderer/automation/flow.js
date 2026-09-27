@@ -363,6 +363,27 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     return `<div class="field"><label>回答</label><textarea rows="3" data-flow-answer-value="${e(interaction.interactionId)}"></textarea></div><button type="button" class="primary" data-flow-answer="${e(interaction.interactionId)}">回答する</button>`;
   }
 
+  // 分担と確認: 複数の AI にした見返りを、担当と確認の事実だけで見せる（数えるのは main 側）。
+  const ROLE_LABELS = { route: '振り分ける', make: '作る', compare: '比べる', check: '確かめる', person: '人の確認', merge: 'まとめる' };
+  function teamworkHtml(run) {
+    const tw = run.terminal ? run.teamwork : null;
+    if (!tw || !tw.roles.length) return '';
+    const checks = tw.roles.filter((row) => row.role === 'check' || row.role === 'person');
+    const last = checks.flatMap((row) => row.verdicts).slice(-1)[0];
+    const verdict = tw.verification === 'passed' || tw.verification === 'failed' ? tw.verification : last === 'pass' ? 'passed' : last === 'fail' ? 'failed' : '';
+    const lead = tw.agents ? `${tw.agents} つの AI で進め、` : '分担して進め、';
+    const tail = !checks.length ? '別の担当による確認はありませんでした' : tw.reworks ? `確認で ${tw.reworks} 回作り直しました` : '確認で作り直しはありませんでした';
+    const rows = tw.roles.map((row) => {
+      const words = row.role === 'person' ? { pass: '承認', fail: '差し戻し' } : { pass: '合格', fail: '不合格' };
+      const count = row.verdicts.length === 1 ? `1 回で${words[row.verdicts[0]]}` : row.verdicts.length ? row.verdicts.map((v) => words[v]).join(' → ') : `${row.attempts} 回`;
+      const who = row.agents.length ? row.agents.join('、') : row.role === 'person' ? '人' : '—';
+      return `<li><strong>${e(ROLE_LABELS[row.role] || row.role)}</strong><div><span>${e(who)}</span></div><small>${e(count)}</small></li>`;
+    }).join('');
+    const choices = tw.choices.map((c) => `<li><strong>選んだ結果</strong><div><span>候補 ${c.candidates} 件 → 採用 ${c.kept} 件</span></div><small>${c.undecided ? '決めきれず停止' : c.decidedBy === 'machine' ? '基準で決定' : c.decidedBy === 'judge' ? '判定 AI で決定' : 'AI が選択'}</small></li>`).join('');
+    const status = verdict ? `<span class="status ${verdict === 'passed' ? 'ok' : 'ng'}">${verdict === 'passed' ? '合格' : '不合格'}</span>` : '';
+    return `<section class="execution-card flow-teamwork"><div class="execution-card-head"><div><h3>分担と確認</h3><p>${e(lead + tail)}</p></div>${status}</div><ul class="run-history">${rows}${choices}</ul></section>`;
+  }
+
   function runHtml() {
     const run = view.run;
     if (!run) return '<div class="blank compact"><p>実行状況を読み込んでいます…</p></div>';
@@ -375,7 +396,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const log = `<section class="execution-card"><div class="execution-card-head"><h3>実行ログ</h3></div><pre class="log flow-log">${e(view.log?.tail || '実行すると、ここに進行状況が表示されます。')}</pre></section>`;
     const trialCheck = view.trialTeaching && view.trialTeaching.runId === run.runId && run.terminal
       ? `<section class="execution-card"><h3>この結果は期待どおりですか？</h3><p>成果を確認して回答してください。</p><div class="row">${run.state === 'done' ? '<button type="button" class="primary" data-flow-teaching-trial-result="passed">期待どおり</button>' : ''}<button type="button" class="danger" data-flow-teaching-trial-result="failed">修正が必要</button></div></section>` : '';
-    return `<header class="execution-title"><div><span class="eyebrow">${view.trialTeaching?.runId === run.runId ? 'テスト実行' : '実行状況'}</span><h2>${e(run.title)}</h2><p>${e(ctx.dateLabel(run.createdAt))} · ${run.readonly ? '読み取り専用' : '成果を書き込み'}</p></div><button type="button" class="ghost" data-flow-back-run>ワークフローへ戻る</button></header>${run.failure ? `<p class="run-result ng">${e(run.failure.message)}</p>` : ''}<section class="execution-card"><div class="execution-card-head"><div><h3>${e(stateLabel(run.state))}</h3><p>${run.progress.total ? `${run.progress.done} 完了${run.progress.failed ? ` · ${run.progress.failed} 失敗` : ''} / ${run.progress.total} 工程` : '工程を準備しています'}</p></div><span class="status ${statusClass(run.state)}">${e(stateLabel(run.state))}</span></div><div class="flow-progress"><span style="width:${pct}%"></span></div><p class="flow-request">${e(run.request)}</p><div class="row">${!run.terminal ? '<button type="button" class="danger" data-flow-cancel>停止</button>' : ''}<button type="button" data-flow-result>成果を取得</button><button type="button" data-flow-log>ログを見る</button><button type="button" data-flow-rerun>同じ内容で再実行</button>${run.state === 'done' && !run.workflowId && !run.input?.workflowId && !(view.trialTeaching && view.trialTeaching.runId === run.runId) ? '<button type="button" data-flow-save-run>ワークフローとして保存</button>' : ''}${run.terminal ? '<button type="button" class="danger ghost" data-flow-delete-run>履歴を削除</button>' : ''}</div></section>${trialCheck}${interactions}<section class="execution-card"><div class="execution-card-head"><div><h3>工程の進み具合</h3><p>工程ごとの担当と成果</p></div></div><ol class="flow-run-nodes">${nodes || '<li class="muted">計画を作成しています。</li>'}</ol></section>${delivery}${result}${log}`;
+    return `<header class="execution-title"><div><span class="eyebrow">${view.trialTeaching?.runId === run.runId ? 'テスト実行' : '実行状況'}</span><h2>${e(run.title)}</h2><p>${e(ctx.dateLabel(run.createdAt))} · ${run.readonly ? '読み取り専用' : '成果を書き込み'}</p></div><button type="button" class="ghost" data-flow-back-run>ワークフローへ戻る</button></header>${run.failure ? `<p class="run-result ng">${e(run.failure.message)}</p>` : ''}<section class="execution-card"><div class="execution-card-head"><div><h3>${e(stateLabel(run.state))}</h3><p>${run.progress.total ? `${run.progress.done} 完了${run.progress.failed ? ` · ${run.progress.failed} 失敗` : ''} / ${run.progress.total} 工程` : '工程を準備しています'}</p></div><span class="status ${statusClass(run.state)}">${e(stateLabel(run.state))}</span></div><div class="flow-progress"><span style="width:${pct}%"></span></div><p class="flow-request">${e(run.request)}</p><div class="row">${!run.terminal ? '<button type="button" class="danger" data-flow-cancel>停止</button>' : ''}<button type="button" data-flow-result>成果を取得</button><button type="button" data-flow-log>ログを見る</button><button type="button" data-flow-rerun>同じ内容で再実行</button>${run.state === 'done' && !run.workflowId && !run.input?.workflowId && !(view.trialTeaching && view.trialTeaching.runId === run.runId) ? '<button type="button" data-flow-save-run>ワークフローとして保存</button>' : ''}${run.terminal ? '<button type="button" class="danger ghost" data-flow-delete-run>履歴を削除</button>' : ''}</div></section>${trialCheck}${interactions}${teamworkHtml(run)}<section class="execution-card"><div class="execution-card-head"><div><h3>工程の進み具合</h3><p>工程ごとの担当と成果</p></div></div><ol class="flow-run-nodes">${nodes || '<li class="muted">計画を作成しています。</li>'}</ol></section>${delivery}${result}${log}`;
   }
 
   let announced = false;

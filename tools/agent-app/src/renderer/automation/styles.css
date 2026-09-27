@@ -206,6 +206,8 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .run-history li > div { min-width: 0; display: grid; }
 .run-history small { color: var(--muted); overflow-wrap: anywhere; }
 .run-history p { margin: 2px 0 0; color: var(--ng); font-size: 12px; overflow-wrap: anywhere; }
+/* 分担と確認: 役割の列をそろえる（行の部品は実行履歴と同じ） */
+.flow-teamwork .run-history li { grid-template-columns: 6.5em minmax(0, 1fr) auto; align-items: baseline; }
 .history-log { min-width: 0; border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }
 .history-log pre { max-height: 320px; overflow: auto; font-family: var(--mono); }
 

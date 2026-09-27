@@ -360,6 +360,92 @@ function deliveryOf(nodes, finalJson) {
   };
 }
 
+// 「分担と確認」: 誰が何を担当し、別の担当の確認が何を落としたかを、agent-flow が書いた事実だけで数える。
+// results/ には差し戻しで置き換えられた工程の結果も残るので、試行の回数と確認の合否の並びがそのまま取れる。
+const ROLE_OF = {
+  work: 'make', generate: 'make', map: 'make', extract: 'make', retrieve: 'make', split: 'make',
+  verify: 'check', judge: 'compare', filter: 'compare', synthesize: 'merge', reduce: 'merge',
+  classify: 'route', human: 'person',
+};
+const ROLE_ORDER = ['route', 'make', 'compare', 'check', 'person', 'merge'];
+
+// 確認の合否は agent-flow の `_normalize_verify` と同じ順に読む（data.ok → 本文の verify=pass/fail）。
+// どちらも無い曖昧な出力は不合格——エンジンが完了条件で同じ扱いをする。
+function verdictOf(kind, rec) {
+  const data = rec.data && typeof rec.data === 'object' ? rec.data : {};
+  if (kind === 'human') return rec.status === 'failed' || data.outcome === 'rejected' ? 'fail' : 'pass';
+  if (rec.status === 'failed' || data.ok === false) return 'fail';
+  if (data.ok === true) return 'pass';
+  const output = String(rec.output || '');
+  if (/verify\s*=\s*pass/i.test(output)) return 'pass';
+  return 'fail';
+}
+
+function reworksOf(runDir) {
+  let count = 0;
+  const dir = path.join(runDir, 'events');
+  for (const name of safeList(dir)) {
+    if (!name.endsWith('.jsonl')) continue;
+    let text = '';
+    try { text = fs.readFileSync(path.join(dir, name), 'utf8'); } catch { continue; }
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      let event;
+      try { event = JSON.parse(line); } catch { continue; }
+      if (event.kind === 'verify-fix') count += 1;
+      else if (event.kind === 'replan' && event.changes && Array.isArray(event.changes.replaced) && event.changes.replaced.length) count += 1;
+    }
+  }
+  return count;
+}
+
+function teamworkOf(runDir, graph, nodes, final) {
+  const specs = graph && graph.nodes && typeof graph.nodes === 'object' ? graph.nodes : {};
+  const records = [];
+  for (const name of safeList(path.join(runDir, 'results'))) {
+    if (!name.endsWith('.json')) continue;
+    const rec = readJson(path.join(runDir, 'results', name));
+    if (!rec || typeof rec !== 'object') continue;
+    const id = String(rec.id || name.slice(0, -5));
+    const kind = String(rec.kind || (specs[id] && specs[id].kind) || '');
+    if (!ROLE_OF[kind]) continue;
+    records.push({ id, kind, rec });
+  }
+  if (!records.length) return null;
+  records.sort((a, b) => String(a.rec.finished_at || '').localeCompare(String(b.rec.finished_at || '')));
+  const roles = new Map();
+  const everyAgent = new Set();
+  for (const { kind, rec } of records) {
+    const role = ROLE_OF[kind];
+    if (!roles.has(role)) roles.set(role, { role, agents: [], attempts: 0, verdicts: [] });
+    const row = roles.get(role);
+    row.attempts += 1;
+    if (role === 'check' || role === 'person') row.verdicts.push(verdictOf(kind, rec));
+    if (rec.agent_cli) {
+      const label = rec.model ? `${rec.agent_cli} / ${rec.model}` : String(rec.agent_cli);
+      if (!row.agents.includes(label)) row.agents.push(label);
+      everyAgent.add(String(rec.agent_cli));
+    }
+  }
+  const choices = nodes.filter((node) => (node.kind === 'judge' || node.kind === 'filter') && node.data && typeof node.data === 'object')
+    .map((node) => {
+      const data = node.data;
+      const kept = node.kind === 'judge' ? (data.winner != null && data.winner !== '' ? 1 : 0) : (Array.isArray(data.kept) ? data.kept.length : 0);
+      return {
+        nodeId: node.id, kind: node.kind, candidates: node.deps.length, kept,
+        decidedBy: ['machine', 'judge'].includes(data.decided_by) ? data.decided_by : 'model',
+        undecided: Array.isArray(data.undecided) ? data.undecided.length : 0,
+      };
+    });
+  return {
+    roles: ROLE_ORDER.filter((role) => roles.has(role)).map((role) => roles.get(role)),
+    agents: everyAgent.size,
+    reworks: reworksOf(runDir),
+    choices,
+    verification: final && final.verification && typeof final.verification.state === 'string' ? final.verification.state : null,
+  };
+}
+
 function inputOf(inbox) {
   const ctx = inbox && inbox.submitter_context ? inbox.submitter_context : {};
   return {
@@ -387,7 +473,7 @@ function readRun(root, id, hostRoot = '') {
       input: inputOf(inbox), workspace: inbox ? inbox.workspace || null : null,
       failure: state === 'launch-failed' ? { kind: 'agent', message: '起動を確認できません。ログを確認してください', detail: '' } : null,
       alive: null, phase: null, strategy: null, nodes: [], interactions: [], final: null, delivery: null,
-      log: { path: files.log },
+      log: { path: files.log }, teamwork: null,
     };
   }
   const graph = readJson(path.join(files.run, 'graph.json')) || {};
@@ -452,6 +538,7 @@ function readRun(root, id, hostRoot = '') {
     failure: failureOf(meta, state), alive: terminal ? null : alive(meta, nowSeconds), phase: meta.phase || null,
     strategy: graph.strategy && typeof graph.strategy === 'object' ? graph.strategy : null,
     nodes, interactions, final, delivery: deliveryOf(nodes, finalJson), log: { path: files.log },
+    teamwork: terminal ? teamworkOf(files.run, graph, nodes, final) : null,
   };
 }
 

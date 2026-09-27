@@ -234,3 +234,61 @@ test('実行した工程をワークフローの下書きにする（差し込�
   const checked = require('../src/main/automation/flow-model').preview(workflow, workflow.defaultRequest, {});
   assert.ok(checked.ok, JSON.stringify(checked.issues));
 });
+
+test('分担と確認: 置き換えられた工程も数え、確認の合否の並び・作り直し・候補の採否を返す', (t) => {
+  const { bus } = withBus(t);
+  const root = '/repo';
+  const runId = 'app-teamwork';
+  const now = new Date().toISOString();
+  write(path.join(bus, 'inbox', `${runId}.json`), { id: runId, request: '直して確かめる', submitter: 'agent-app', submitted_at: now, submitter_context: { root } });
+  const run = path.join(bus, 'runs', runId);
+  write(path.join(run, 'meta.json'), { status: 'running', phase: 'executing', request: '依頼', created_at: now, updated_at: now, orch_lease_until: Date.now() / 1000 + 60 });
+  // 差し戻しで build / check は build-r1 / check-r1 に置き換わっている（旧ノードはグラフから消え、結果だけが残る）
+  write(path.join(run, 'graph.json'), { nodes: {
+    a: { goal: '案 A', kind: 'generate', deps: [] }, b: { goal: '案 B', kind: 'generate', deps: [] },
+    pick: { goal: '選ぶ', kind: 'judge', deps: ['a', 'b'] },
+    'build-r1': { goal: '作る', kind: 'work', deps: ['pick'] }, 'check-r1': { goal: '確かめる', kind: 'verify', deps: ['build-r1'] },
+  } });
+  const result = (id, kind, extra) => write(path.join(run, 'results', `${id}.json`), { id, kind, status: 'done', output: '', ...extra });
+  result('a', 'generate', { agent_cli: 'herd', finished_at: '2026-09-27T00:00:01Z' });
+  result('b', 'generate', { agent_cli: 'herd', finished_at: '2026-09-27T00:00:02Z' });
+  result('pick', 'judge', { agent_cli: 'herd', finished_at: '2026-09-27T00:00:03Z', data: { winner: 'a', decided_by: 'machine', kept: ['a'] } });
+  result('build', 'work', { agent_cli: 'codex', model: 'm1', finished_at: '2026-09-27T00:00:04Z' });
+  result('check', 'verify', { agent_cli: 'claude', finished_at: '2026-09-27T00:00:05Z', data: { ok: false } });
+  result('build-r1', 'work', { agent_cli: 'codex', model: 'm1', finished_at: '2026-09-27T00:00:06Z' });
+  result('check-r1', 'verify', { agent_cli: 'claude', finished_at: '2026-09-27T00:00:07Z', output: 'verify=pass' });
+  fs.mkdirSync(path.join(run, 'events'), { recursive: true });
+  fs.writeFileSync(path.join(run, 'events', 'orch.jsonl'), [
+    { kind: 'evaluate', decision: 'replan' },
+    { kind: 'replan', changes: { replaced: [{ old: 'build', next: 'build-r1' }, { old: 'check', next: 'check-r1' }] } },
+    { kind: 'replan', changes: { replaced: [] } },
+  ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+
+  assert.strictEqual(agentFlow.readRun(root, runId).teamwork, null, '実行中は数えない');
+
+  write(path.join(run, 'meta.json'), { status: 'done', request: '依頼', created_at: now, updated_at: now });
+  write(path.join(run, 'final.json'), { finished_at: now, verification: { state: 'passed' } });
+  const tw = agentFlow.readRun(root, runId).teamwork;
+  assert.deepStrictEqual(tw.roles.map((row) => row.role), ['make', 'compare', 'check']);
+  assert.deepStrictEqual(tw.roles[0], { role: 'make', agents: ['herd', 'codex / m1'], attempts: 4, verdicts: [] });
+  assert.deepStrictEqual(tw.roles[2].verdicts, ['fail', 'pass']);
+  assert.deepStrictEqual(tw.roles[2].agents, ['claude']);
+  assert.strictEqual(tw.agents, 3);
+  assert.strictEqual(tw.reworks, 1, '置き換えの無い再計画は作り直しに数えない');
+  assert.deepStrictEqual(tw.choices, [{ nodeId: 'pick', kind: 'judge', candidates: 2, kept: 1, decidedBy: 'machine', undecided: 0 }]);
+  assert.strictEqual(tw.verification, 'passed');
+});
+
+test('分担と確認: 判定の無い確認の出力は不合格として数える（エンジンの完了条件と同じ）', (t) => {
+  const { bus } = withBus(t);
+  const runId = 'app-teamwork-ambiguous';
+  const now = new Date().toISOString();
+  write(path.join(bus, 'inbox', `${runId}.json`), { id: runId, request: '依頼', submitter: 'agent-app', submitted_at: now, submitter_context: { root: '/repo' } });
+  const run = path.join(bus, 'runs', runId);
+  write(path.join(run, 'meta.json'), { status: 'failed', request: '依頼', created_at: now, updated_at: now });
+  write(path.join(run, 'graph.json'), { nodes: { v: { goal: '確かめる', kind: 'verify', deps: [] } } });
+  write(path.join(run, 'results', 'v.json'), { id: 'v', status: 'done', output: 'よさそうです' });
+  const tw = agentFlow.readRun('/repo', runId).teamwork;
+  assert.deepStrictEqual(tw.roles, [{ role: 'check', agents: [], attempts: 1, verdicts: ['fail'] }]);
+  assert.strictEqual(tw.reworks, 0);
+});

@@ -64,11 +64,24 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     status: 'done', created_at: '2026-09-06T01:00:00Z', updated_at: '2026-09-06T01:01:00Z', request: '過去の変更を確認する',
   }));
   fs.writeFileSync(path.join(flowRun, 'graph.json'), JSON.stringify({
-    nodes: { review: { id: 'review', kind: 'work', goal: '過去の変更を確認する', deps: [] } },
+    nodes: {
+      review: { id: 'review', kind: 'work', goal: '過去の変更を確認する', deps: [] },
+      'check-r1': { id: 'check-r1', kind: 'verify', goal: '別の AI が確かめる', deps: ['review'] },
+    },
   }));
   fs.writeFileSync(path.join(flowRun, 'results', 'review.json'), JSON.stringify({
-    status: 'done', output: '確認済み', finished_at: '2026-09-06T01:01:00Z',
+    status: 'done', kind: 'work', agent_cli: 'codex', model: 'gpt-test', output: '確認済み', finished_at: '2026-09-06T01:00:30Z',
   }));
+  // 分担と確認: 1 回目の確認は不合格で置き換えられ（結果だけが残る）、2 回目で合格
+  fs.writeFileSync(path.join(flowRun, 'results', 'check.json'), JSON.stringify({
+    id: 'check', status: 'done', kind: 'verify', agent_cli: 'claude', output: 'verify=fail', data: { ok: false }, finished_at: '2026-09-06T01:00:40Z',
+  }));
+  fs.writeFileSync(path.join(flowRun, 'results', 'check-r1.json'), JSON.stringify({
+    id: 'check-r1', status: 'done', kind: 'verify', agent_cli: 'claude', output: 'verify=pass', data: { ok: true }, finished_at: '2026-09-06T01:01:00Z',
+  }));
+  fs.mkdirSync(path.join(flowRun, 'events'), { recursive: true });
+  fs.writeFileSync(path.join(flowRun, 'events', 'orch.jsonl'), `${JSON.stringify({ kind: 'replan', changes: { replaced: [{ old: 'check', next: 'check-r1' }] } })}\n`);
+  fs.writeFileSync(path.join(flowRun, 'final.json'), JSON.stringify({ finished_at: '2026-09-06T01:01:00Z', verification: { state: 'passed' } }));
   process.env.AGENT_APP_FLOW_BUS = flowBus;
   // 別のリポジトリへの分岐を実機で通すための 2 つ目のリポジトリ
   const otherRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-shared-lib-'));
@@ -793,6 +806,16 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await workspace.locator('.flow-history').textContent(), /完了.*以前の並列レビュー/s);
     await workspace.locator('.flow-history [data-flow-run]').click();
     await workspace.locator('.flow-run-nodes').waitFor();
+    // 分担と確認: 担当と確認の合否の並びを、見出し 1 つのカードで出す
+    const teamwork = workspace.locator('.flow-teamwork');
+    await teamwork.waitFor();
+    assert.match(await teamwork.textContent(), /2 つの AI で進め、確認で 1 回作り直しました/);
+    assert.match(await teamwork.textContent(), /確かめる.*claude.*不合格 → 合格/s);
+    assert.match(await teamwork.locator('.status').textContent(), /合格/);
+    if (process.env.AGENT_APP_FLOW_RUN_SCREENSHOT) {
+      await teamwork.scrollIntoViewIfNeeded();
+      await win.screenshot({ path: process.env.AGENT_APP_FLOW_RUN_SCREENSHOT });
+    }
     assert.match(await workspace.locator('.execution-title').textContent(), /以前の並列レビュー/);
     await workspace.locator('[data-flow-back-run]').click();
     assert.equal(await workspace.locator('[data-flow-edit], [data-flow-change-consult]').count(), 0, '概要に重複した編集ボタンを置かない');
