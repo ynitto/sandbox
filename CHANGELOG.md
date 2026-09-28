@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-audit・agent-app: ノード予算のトークン上限が数えられていないことを doctor で知らせる（agent-app 0.44.1）
+
+- **`agent-audit doctor` が、トークン上限を設定しているのに数えられていないノードを警告する。** 上限はあるが
+  レート（rates）が無く、台帳にトークンの実測行も無いときだけ出す。終了コードは変えない
+- トークンの推定と rates の較正の今の値を、共有の見本（`schemas/node-budget-rates.golden.json`）でテストに固定した。
+  agent-app の動きは変えていない
+
 ### agent-app: 選択肢の切り替えを 1 つの形にそろえる（0.44.0）
 
 - **選択肢の切り替え（`.seg`）を、親画面とタスク・ワークフローの画面で同じ形にした。** ボタンをつなげ、両端だけ角を

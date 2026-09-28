@@ -38,6 +38,8 @@ const STATUSES = ['done', 'failed', 'cancelled', 'escalate'];
 const STEPS = [
   { key: 'collect', args: ['collect'], allow: [0], label: '収集' },
   { key: 'qualify', args: ['qualify', '--apply'], allow: [0], label: '適格性' },
+  // 較正は agent-audit の cmd_calibrate（agent_audit/usage.py）が唯一の実装で、app は rates を計算しない。
+  // 実測が入る CLI の鍵を外す規則と鍵の粒度はそちらの注記と schemas/node-budget-rates.golden.json を見る。
   { key: 'calibrate', args: ['calibrate', '--write'], allow: [0], label: '較正' },
   { key: 'extract', args: ['extract'], allow: [0, 1], label: '抽出' },
   { key: 'distill', args: ['distill', '--review'], allow: [0, 1], label: '蒸留' },
