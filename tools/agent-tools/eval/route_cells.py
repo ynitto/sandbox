@@ -13,6 +13,7 @@
 | RT2 | `task` choice 1 問（候補 8 + other） | 流用するタスクの id。流用しない依頼は other |
 | RT3 | `skill:<name>` boolean × 6 | 添えるスキルの集合 |
 | RT4 | `routine` boolean 1 問 | 入力だけ替えて繰り返す形か |
+| RT5 | `team` choice 1 問 | verify / compare / split / other |
 
 `hold_sweep` は RT1 と RT2 の台帳を依頼ごとに突き合わせ、hold 下限（`route.hold_min_confidence`）
 ごとに「会話を止めた件数」と「止めて正しかった率」を出す。設計 §6 の 2 がこれで、`route` の
@@ -35,8 +36,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agentcore"))
 from agentcore import judge  # noqa: E402
 
 CORPUS_PATH = Path(__file__).resolve().parent / "data" / "route" / "corpus.json"
-FAMILIES = ("RT1", "RT2", "RT3", "RT4")
-KINDS = {"RT1": "handling", "RT2": "task", "RT3": "skills", "RT4": "routine"}
+TEAM_PATH = Path(__file__).resolve().parent / "data" / "evolution" / "team-held-out-v1.json"
+FAMILIES = ("RT1", "RT2", "RT3", "RT4", "RT5")
+KINDS = {"RT1": "handling", "RT2": "task", "RT3": "skills", "RT4": "routine", "RT5": "team"}
 HOLD_THRESHOLDS = (0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9)
 
 
@@ -67,14 +69,37 @@ def _cases(corpus: dict) -> dict:
                     "RT2": case.get("task") or judge.OTHER_KEY,
                     "RT3": sorted(case.get("skills") or []),
                     "RT4": "yes" if case.get("routine") else "no"}
-        for family in FAMILIES:
+        for family in ("RT1", "RT2", "RT3", "RT4"):
             out[f"{family}-{case['id']}"] = dict(base, kind=KINDS[family], expected=expected[family],
                                                  check=_check_eq(expected[family]))
     return out
 
 
+def load_team_corpus(path: Path = TEAM_PATH) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("partition") != "held-out":
+        raise ValueError("team qualification は held-out fixture だけを実行します")
+    ids = [case["id"] for case in data["cases"]]
+    if len(ids) != len(set(ids)):
+        raise ValueError("team corpus の id が重複しています")
+    for case in data["cases"]:
+        if case.get("label") not in ("verify", "compare", "split", judge.OTHER_KEY):
+            raise ValueError(f"{case['id']}: team label が不正です")
+        if case.get("readonly"):
+            raise ValueError(f"{case['id']}: readonly は team の評価対象にできません")
+    return data
+
+
 CORPUS = load_corpus()
 CASES = _cases(CORPUS)
+TEAM_CORPUS = load_team_corpus()
+for _case in TEAM_CORPUS["cases"]:
+    _expected = _case["label"]
+    CASES[f"RT5-{_case['id']}"] = {
+        "id": _case["id"], "request": _case["request"], "candidates": {"context": {"readonly": False}},
+        "kind": "team", "expected": _expected, "partition": "held-out", "tags": _case.get("tags", []),
+        "check": _check_eq(_expected), "gold": {"team": _expected},
+    }
 
 
 def cell_ids(family: str) -> "list[str]":

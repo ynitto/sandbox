@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "suite": "routing.team.held-out.v1",
+  "partition": "held-out",
+  "minimum_per_class": 3,
+  "note": "Labels are human-authored deterministic oracles. These cases must not be used to tune the team question.",
+  "cases": [
+    {"id":"team-ho-v01","request":"決済処理を実装し、別担当が仕様とコードを突き合わせてレビューして","label":"verify","tags":["independent-review"]},
+    {"id":"team-ho-v02","request":"移行を実施して、旧クライアントとの後方互換性を独立に検証して","label":"verify","tags":["compatibility"]},
+    {"id":"team-ho-v03","request":"権限修正を入れた後、別の目でセキュリティ要件を満たすか確かめて","label":"verify","tags":["security"]},
+    {"id":"team-ho-v04","request":"API実装と、仕様書どおりかを確認する担当を分けて","label":"verify","tags":["spec-code"]},
+    {"id":"team-ho-c01","request":"キャッシュ方式を3案出し、速度・複雑さ・運用費で比較して選んで","label":"compare","tags":["design"]},
+    {"id":"team-ho-c02","request":"新しいコマンド名の候補を複数考え、分かりやすさを基準に決めて","label":"compare","tags":["naming"]},
+    {"id":"team-ho-c03","request":"この危険な競合修正を複数の方針で試し、テスト結果から最善を選んで","label":"compare","tags":["risky-fix"]},
+    {"id":"team-ho-c04","request":"認証設計を別々に提案し、脅威モデルと保守性で比較して","label":"compare","tags":["security-design"]},
+    {"id":"team-ho-s01","request":"120個の独立した設定ファイルを調べ、問題をまとめて","label":"split","tags":["many-files"]},
+    {"id":"team-ho-s02","request":"未整理の200 issueを分類し、カテゴリごとの傾向を統合して","label":"split","tags":["many-issues"]},
+    {"id":"team-ho-s03","request":"5つのrepoをそれぞれ調査し、依存更新の影響を最後にまとめて","label":"split","tags":["many-repositories"]},
+    {"id":"team-ho-s04","request":"互いに独立した30サービスのログを並行調査して全体像を報告して","label":"split","tags":["many-services"]},
+    {"id":"team-ho-o01","request":"この短い関数の目的を二文で説明して","label":"other","tags":["small-explanation"]},
+    {"id":"team-ho-o02","request":"READMEの誤字を一か所直して","label":"other","tags":["simple-docs"]},
+    {"id":"team-ho-o03","request":"この一つのモジュールを読み、順番にリファクタしてテストして","label":"other","tags":["single-context"]},
+    {"id":"team-ho-o04","request":"設定値 timeout の意味を教えて","label":"other","tags":["simple-question"]}
+  ],
+  "readonly_contract": [
+    {"id":"team-ro-01","request":"このPRの変更点を読むだけで説明して","expected":"not_asked"},
+    {"id":"team-ro-02","request":"この設定の意味は何？変更しないで","expected":"not_asked"}
+  ]
+}

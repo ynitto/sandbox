@@ -115,6 +115,17 @@ python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <name>     # �
 
 ### Step 3. ユーザーに確認してアクションを実行する
 
+refine 前後に同じheld-out behaviorを実行したqualification JSONがある場合は、共通の
+checkpoint comparatorをadvisoryとして併記する。previousは「直前にacceptedだったcheckpoint」に限る。
+
+```bash
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <skill-name> \
+  --checkpoint-previous previous.json --checkpoint-current current.json
+```
+
+出力は `IMPROVED / RETAINED / REGRESSION / MIXED / INSUFFICIENT_DATA` のいずれかで、
+regression case IDも表示する。このadvisoryはMVPでは既存のpromote/refine判定を変更もblockもしない。
+
 **昇格推奨がある場合:**
 
 ```

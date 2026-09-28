@@ -464,7 +464,7 @@ def _route_cell(case: dict):
 
 def _rt_cell(case: dict):
     """route（依頼の振り分け）: 本番の状態と問い（`agentcore.route.build_state` / `build_questions`）を
-    そのまま組み、セルの種類（handling / task / skills / routine）の問いだけを引く。
+    そのまま組み、セルの種類（handling / task / skills / routine / team）の問いだけを引く。
     候補と正解は `route_cells`（corpus.json）にあり、ここは問いの切り出しだけ。"""
     from agentcore import route
     cands = route.normalize_candidates(case["candidates"])
@@ -479,6 +479,8 @@ def _rt_cell(case: dict):
         picked = {k: v for k, v in questions.items() if k.startswith(route.SKILL_PREFIX)}
         return (state, picked,
                 lambda a: sorted(k[len(route.SKILL_PREFIX):] for k, ans in a.items() if ans.get("value")))
+    if kind == "team":
+        return state, {"team": questions["team"]}, lambda a: str(a["team"]["choice"])
     return state, {"routine": questions["routine"]}, lambda a: "yes" if a["routine"].get("value") else "no"
 
 
@@ -962,6 +964,16 @@ def calibration_main(args):
                 "arguments": vars(args), "state": "running",
                 "dirty": bool(subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
                                               capture_output=True, text=True).stdout.strip())}
+    if cids and all(cid.startswith("RT5-") for cid in cids):
+        try:
+            result_ref = str(output.resolve().relative_to(REPO.resolve()))
+        except ValueError:
+            result_ref = str(output.resolve())
+        manifest["checkpoint_identity"] = {
+            "artifact_kind": "routing-question", "artifact_id": "team",
+            "checkpoint": revision, "eval_suite": route_cells.TEAM_CORPUS["suite"],
+            "result_ref": result_ref,
+        }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (output / "command.txt").write_text(shlex.join([sys.executable, *sys.argv]) + "\n")
     if not args.replay:

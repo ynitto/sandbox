@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "suite": "routing.team.tuning.v1",
+  "partition": "tuning",
+  "note": "Prompt-design examples only. Never include these IDs in held-out qualification results.",
+  "cases": [
+    {"id":"team-tune-v1","request":"実装と独立レビューを分けると価値がある","label":"verify"},
+    {"id":"team-tune-c1","request":"複数設計案を出してcriteriaで選ぶ","label":"compare"},
+    {"id":"team-tune-s1","request":"多数fileを独立調査して統合する","label":"split"},
+    {"id":"team-tune-o1","request":"小さい説明だけして","label":"other"}
+  ]
+}

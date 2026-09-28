@@ -1,4 +1,4 @@
-"""route の較正セル（route_cells / readout_eval の RT1〜RT4）の決定的な部分。
+"""route の較正セル（route_cells / readout_eval の RT1〜RT5）の決定的な部分。
 
 ollama も LLM も呼ばない。押さえるのは 3 つ: 標本の形（id の一意・正解の整合）、oracle が
 各セルで 1 つに決まること（fake run が通る）、hold の掃引の数え方。
@@ -6,7 +6,10 @@ ollama も LLM も呼ばない。押さえるのは 3 つ: 標本の形（id の
 from __future__ import annotations
 
 import os
+import json
 import sys
+import tempfile
+from pathlib import Path
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -16,11 +19,13 @@ import route_cells  # noqa: E402
 
 
 class CorpusTests(unittest.TestCase):
-    def test_corpus_has_40_cases_and_4_families(self):
+    def test_corpus_and_families(self):
         self.assertEqual(len(route_cells.CORPUS["cases"]), 40)
-        for family in route_cells.FAMILIES:
+        for family in ("RT1", "RT2", "RT3", "RT4"):
             self.assertEqual(len(route_cells.cell_ids(family)), 40)
             self.assertIn(family, readout_eval.FAMILIES)
+        self.assertEqual(len(route_cells.cell_ids("RT5")), 16)
+        self.assertIn("RT5", readout_eval.FAMILIES)
         self.assertIn("RT1-n25", readout_eval.ALL_CELLS)
         self.assertNotIn("RT1-n25", readout_eval.CELLS, "既定の calibration 集合には載せない")
 
@@ -30,6 +35,8 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(route_cells.CASES["RT2-n01"]["expected"], "other", "流用しない依頼の task は other")
         self.assertEqual(route_cells.CASES["RT3-n13"]["expected"], ["api-designer"])
         self.assertEqual(route_cells.CASES["RT4-n26"]["expected"], "yes")
+        self.assertEqual(route_cells.CASES["RT5-team-ho-v01"]["expected"], "verify")
+        self.assertEqual(route_cells.TEAM_CORPUS["partition"], "held-out")
 
     def test_fake_run_passes_every_family(self):
         for cid in ("RT1-n01", "RT1-n25", "RT2-n25", "RT2-n13", "RT3-n13", "RT3-n15", "RT4-n25", "RT4-n40"):
@@ -40,6 +47,24 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(list(handling["answers"]), ["handling"], "RT1 は handling だけを引く")
         skills = readout_eval.calibration_run_one("RT3-n13", 1, "fake", fake=True)
         self.assertEqual(len(skills["answers"]), 6, "RT3 はスキル 6 件の boolean")
+        team = readout_eval.calibration_run_one("RT5-team-ho-c01", 1, "fake", fake=True)
+        self.assertEqual(list(team["answers"]), ["team"])
+
+    def test_readonly_contract_does_not_build_team_question(self):
+        from agentcore import route
+        for case in route_cells.TEAM_CORPUS["readonly_contract"]:
+            questions = route.build_questions(route.normalize_candidates({"context": {"readonly": True}}))
+            self.assertNotIn("team", questions, case["id"])
+
+    def test_rt5_manifest_has_checkpoint_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = type("Args", (), {"fake_run": True, "replay": None, "repeat": 1, "samples": 1,
+                "min_confidence": .6, "cases": "RT5", "output_dir": os.path.join(tmp, "run"),
+                "model": "fake", "rotations": None})()
+            self.assertEqual(readout_eval.calibration_main(args), 0)
+            manifest = json.loads((Path(tmp) / "run" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["checkpoint_identity"]["artifact_id"], "team")
+            self.assertEqual(len(manifest["checkpoint_identity"]["checkpoint"]), 40)
 
 
 class HoldSweepTests(unittest.TestCase):
