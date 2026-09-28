@@ -1,6 +1,6 @@
 #!/bin/sh
 # install-laya.sh — macOS / Linux 用の入口。Python 3.10 以上を探して install_laya.py へ渡す。
-#   sh tools/agent-tools/laya/install-laya.sh [--port 8000] [--dry-run] …
+#   sh tools/laya/install-laya.sh [--port 8000] [--dry-run] …
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 for py in "${PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3 python; do

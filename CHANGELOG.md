@@ -14,12 +14,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 日本語の依頼を読めるよう、モデルは多言語版（`multilingual`）に固定し、1 問に読むトークン数を 2048 に広げた。
   laya の自動振り分けに任せると、英語の方針や候補の説明に引かれて日本語の依頼が英語用のモデルへ流れる
 - laya の真偽の問い（`noul`）と較正済みの確度（`answer_confidence`）を読む。つながらないときは従来どおり judge へ進む
-- **laya の導入スクリプトを足した（Windows / macOS / Linux）。** `tools/agent-tools/laya/install-laya.sh` / `install-laya.ps1` が
+- **laya の導入スクリプトを足した（Windows / macOS / Linux）。** `tools/laya/install-laya.sh` / `install-laya.ps1` が
   CPU 版の PyTorch・laya・多言語版のモデルだけを `~/.agents/laya` に入れ、日本語の問いで動作を確かめる。GPU 版や
   サーバ用の追加部品は入れない。入った部品のライセンスを一覧にし、コピーレフトが紛れていたら止まる
 - **Hugging Face へつながらない PC でも入れられる。** つながる PC で `--export-model` でモデルを zip にまとめ、
   つながらない PC で `--model-from` から入れる（社内ミラーは `--hf-endpoint`、部品の wheel は `--find-links`）。
   起動したサーバは手元のモデルだけを読み、Hugging Face へつながない
+- 導入スクリプトは `tools/laya/` に置いた。使い方・ミラー・ONNX Runtime と INT8 で軽くする選択肢は `tools/laya/README.md`
 
 ### agent-audit・agent-app: ノード予算のトークン上限が数えられていないことを doctor で知らせる（agent-app 0.44.1）
 

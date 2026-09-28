@@ -1,5 +1,5 @@
 # install-laya.ps1 — Windows 用の入口。Python 3.10 以上を探して install_laya.py へ渡す。
-#   powershell -ExecutionPolicy Bypass -File tools\agent-tools\laya\install-laya.ps1 [--port 8000] [--dry-run] ...
+#   powershell -ExecutionPolicy Bypass -File tools\laya\install-laya.ps1 [--port 8000] [--dry-run] ...
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script = Join-Path $here 'install_laya.py'

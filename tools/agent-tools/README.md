@@ -415,47 +415,7 @@ API キーは表示で伏せる。
 [laya](https://huggingface.co/convaiinnovations/laya)（Convai Innovations）を手元で使える。
 GPU は要らず CPU だけで動き、日本語の依頼も読める（多言語版のモデルを使う）。
 
-導入スクリプトが、専用の仮想環境・CPU 版の PyTorch・laya・多言語版のモデル（約 650 MB）を
-`~/.agents/laya` にまとめて入れ、日本語の問いを 1 つ解いて確かめ、第 1 段を laya に向ける。
-要るのは Python 3.10 以上だけ（Windows / macOS / Linux）。
-
-```bash
-# macOS / Linux
-sh tools/agent-tools/laya/install-laya.sh
-~/.agents/laya/laya-serve.sh            # 起動（この PC からだけ受け付ける）
-```
-
-```powershell
-# Windows
-powershell -ExecutionPolicy Bypass -File tools\agent-tools\laya\install-laya.ps1
-& "$env:USERPROFILE\.agents\laya\laya-serve.cmd"   # 起動
-```
-
-- GPU 版の PyTorch（数 GB）は落とさない。容量は PyTorch と部品で数百 MB、モデルで約 650 MB。
-  消すときは `~/.agents/laya` を消すだけ。
-- 入った部品のライセンスを一覧にして `~/.agents/laya/licenses.json` に残す。GPL などの
-  コピーレフトが紛れていたら止まる。laya 本体とモデルは Apache-2.0。PyTorch・NumPy などは
-  BSD 系、certifi・tqdm は MPL-2.0（改変しなければ義務なし）で、これらは laya を動かすのに欠かせない。
-- サーバは laya 付属のものではなく標準ライブラリだけの小さなもの（`laya_server.py`）を使い、
-  いつも CPU・多言語版で答える。
-- agent-herd を WSL で使っているなら、導入も WSL の中で行う（agent-herd と同じ側に置く）。
-- 起動したサーバは手元のモデル（`~/.agents/laya/models/multilingual`）だけを読み、Hugging Face へは
-  つながない。導入の最後の確認も、つながない状態で行う。
-- Hugging Face へつながらない PC には、モデルを持ち込んで入れる:
-
-  ```bash
-  # つながる PC で（導入を済ませてから）モデルを 1 つの zip にまとめる（約 650 MB）
-  python tools/agent-tools/laya/install_laya.py --export-model laya-multilingual.zip
-  # つながらない PC で、その zip から入れる
-  python tools/agent-tools/laya/install_laya.py --model-from laya-multilingual.zip
-  ```
-
-  zip の代わりに、Hugging Face の `convaiinnovations/laya` の `multilingual` フォルダ
-  （`rl_agent_config.json`・`model.safetensors`・`tokenizer/`・`encoder/`）をブラウザで落として
-  `--model-from <フォルダ>` を渡してもよい。社内ミラーがあるなら `--hf-endpoint <URL>` で
-  そこから落とす。PyPI にもつながらないなら、部品の wheel を置いたフォルダを `--find-links` で渡す。
-- `--dry-run` で何をするかだけ見られる。`--port` で待ち受けを変えると接続先の設定も合わせる。
-  社内ミラーから入れるときは `--torch-index-url`。
+導入と起動は [tools/laya](../laya/README.md) を参照（Windows / macOS / Linux、Hugging Face へつながらない PC も可）。
 
 接続先は既定で `http://127.0.0.1:8000/v1/systemone`、モデルは `multilingual`。別の PC で
 立てたときは `select.jev.endpoint` を、サーバに `LAYA_API_KEY` を付けたときは

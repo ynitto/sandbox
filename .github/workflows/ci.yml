@@ -55,7 +55,9 @@ jobs:
             suites: >-
               tools/agent-tools/agentcore/tests
               tools/agent-tools/agentcore/agentcore/tests
-              tools/agent-tools/laya
+          # laya の導入スクリプトと CPU サーバ（実物の laya・PyTorch は入れず、偽の Router で押さえる）。
+          - package: laya
+            suites: tools/laya
           # winauto は Windows 専用ツールだが、ロック・doctor・WSL ラッパーの
           # 引数変換は Windows 非依存なので Linux ランナーで回せる。
           - package: winauto
