@@ -529,3 +529,117 @@ class JudgeOtherMappingTests(IsolatedHome):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _laya_response(choice: str, probs: dict, *, entropy_confidence: float,
+                   answer_confidence: float) -> dict:
+    """laya-serve の `/v1/systemone` の応答（laya 0.3 の `Router.predict` と同じ形）。"""
+    return {"model": "multilingual",
+            "answers": {"candidate": {"type": "choice", "choice": choice, "probabilities": probs,
+                                      "confidence": entropy_confidence,
+                                      "answer_confidence": answer_confidence,
+                                      "action": {"act_probability": 0.9}}},
+            "usage": {"input_tokens": 512, "output_tokens": 0},
+            "routing": {"model": "multilingual", "reason": "explicit"}}
+
+
+class LayaBackendTests(IsolatedHome):
+    """`select.jev.backend: laya` —— 第 1 段を手元の laya-serve（CPU・日本語）へ向ける。"""
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop(modelselect.LAYA_API_KEY_ENV, None)
+
+    def test_laya_backend_needs_no_key_and_defaults_to_local_multilingual(self):
+        herdconfig.set_value("select.jev.backend", "laya")
+        with mock.patch.dict(os.environ, {modelselect.JEV_API_KEY_ENV: "typesafe-key"}):
+            setting = modelselect.jev_setting()
+        self.assertTrue(setting["enabled"])
+        self.assertEqual(setting["backend"], "laya")
+        self.assertEqual(setting["endpoint"], modelselect.LAYA_DEFAULT_ENDPOINT)
+        self.assertEqual(setting["model"], "multilingual")
+        self.assertNotIn("api_key", setting, "本家 Jev のキーを laya へ送らない")
+        with mock.patch.dict(os.environ, {modelselect.LAYA_API_KEY_ENV: "laya-key"}):
+            self.assertEqual(modelselect.jev_setting()["api_key"], "laya-key")
+        herdconfig.set_value("select.jev.api_key", "off")
+        self.assertFalse(modelselect.jev_setting()["enabled"], "off は laya でも止める")
+
+    def test_backend_value_is_validated_and_unset_returns_to_typesafe(self):
+        with self.assertRaises(herdconfig.ConfigError):
+            herdconfig.set_value("select.jev.backend", "ollama")
+        herdconfig.set_value("select.jev.backend", "LAYA")
+        self.assertEqual(herdconfig.select_setting()["jev"]["backend"], "laya")
+        herdconfig.unset_value("select.jev.backend")
+        setting = modelselect.jev_setting()
+        self.assertEqual(setting["backend"], "typesafe")
+        self.assertFalse(setting["enabled"])
+
+    def test_japanese_prompt_goes_to_laya_and_the_calibrated_confidence_decides(self):
+        seen = []
+
+        def laya(body):
+            seen.append(body)
+            # choice の `confidence` は正規化エントロピーで下限 0.6 に届かないが、較正済みの
+            # answer_confidence は届く——こちらで決める。
+            return _laya_response("ollama/gemma4:e4b", {"claude/sonnet": 0.1, "ollama/gemma4:e4b": 0.85,
+                                                        "none": 0.05},
+                                  entropy_confidence=0.45, answer_confidence=0.85)
+
+        herdconfig.set_value("select.jev.backend", "laya")
+        prompt = "README の誤字を直して、日本語の言い回しを整えてください。"
+        result = modelselect.select(prompt, [CLAUDE, OLLAMA], purpose="worker", quotas={},
+                                    jev_request=laya, judge_request=lambda b: self.fail("judge called"))
+        self.assertEqual(result["stage"], "jev")
+        self.assertEqual(result["selected"], OLLAMA)
+        self.assertEqual(result["confidence"], 0.85)
+        body = seen[0]
+        self.assertEqual(body["model"], "multilingual")
+        self.assertEqual(body["max_len"], modelselect.LAYA_MAX_LEN)
+        self.assertIn("日本語の言い回し", json.dumps(body, ensure_ascii=False))
+
+    def test_post_sends_utf8_json_without_authorization_when_keyless(self):
+        import http.server
+        import threading
+
+        received = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                length = int(self.headers["Content-Length"])
+                received["auth"] = self.headers.get("Authorization")
+                received["body"] = json.loads(self.rfile.read(length).decode("utf-8"))
+                data = json.dumps(_laya_response("claude/sonnet", {"claude/sonnet": 1.0},
+                                                 entropy_confidence=1.0, answer_confidence=1.0)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        setting = {"enabled": True, "backend": "laya", "model": "multilingual",
+                   "endpoint": f"http://127.0.0.1:{server.server_port}/v1/systemone"}
+        question = modelselect.build_question([modelselect.describe_candidate(CLAUDE),
+                                               modelselect.describe_candidate(OLLAMA)])
+        answers = modelselect.ask_jev({"request": {"excerpt": "日本語の依頼"}}, {"candidate": question},
+                                      setting=setting)
+        self.assertIsNone(received["auth"])
+        self.assertEqual(received["body"]["state"]["request"]["excerpt"], "日本語の依頼")
+        self.assertEqual(answers["candidate"]["choice"], "claude/sonnet")
+        self.assertEqual(answers["candidate"]["backend"], "laya")
+
+    def test_unreachable_laya_falls_through_to_judge(self):
+        herdconfig.set_value("select.jev.backend", "laya")
+        herdconfig.set_value("select.jev.endpoint", "http://127.0.0.1:9/v1/systemone")
+        result = modelselect.select("x", [CLAUDE, OLLAMA], quotas={}, judge_model="gemma4:e4b",
+                                    judge_request=_judge_prefers("ollama"))
+        self.assertEqual(result["attempts"][0]["stage"], "jev")
+        self.assertEqual(result["attempts"][0]["outcome"], "error")
+        self.assertIn("laya", result["attempts"][0]["detail"])
+        self.assertEqual(result["stage"], "judge")

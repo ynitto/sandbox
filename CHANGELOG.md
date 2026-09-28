@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 選択・振り分けの第 1 段に laya を使えるようにする
+
+- **`select.jev.backend: laya` で、本家 Jev の代わりに Jev 互換のオープンモデル laya（Convai Innovations）へ訊く。**
+  手元の `laya-serve` へ送り、API キーは要らない。GPU の無い PC でも CPU だけで動く
+- 日本語の依頼を読めるよう、モデルは多言語版（`multilingual`）に固定し、1 問に読むトークン数を 2048 に広げた。
+  laya の自動振り分けに任せると、英語の方針や候補の説明に引かれて日本語の依頼が英語用のモデルへ流れる
+- laya の真偽の問い（`noul`）と較正済みの確度（`answer_confidence`）を読む。つながらないときは従来どおり judge へ進む
+
 ### agent-audit・agent-app: ノード予算のトークン上限が数えられていないことを doctor で知らせる（agent-app 0.44.1）
 
 - **`agent-audit doctor` が、トークン上限を設定しているのに数えられていないノードを警告する。** 上限はあるが

@@ -15,7 +15,7 @@ prompt そのものを材料にして**行う口で、根拠は 3 つ:
 
 | 段 | 何で決めるか | 使う条件 |
 |---|---|---|
-| 1 `jev` | 本家 Jev（TypeSafe AI の System One API）。状態 + choice 1 問 | API キーが設定にある（`select.jev.api_key` か環境変数 `TYPESAFE_API_KEY`） |
+| 1 `jev` | 本家 Jev（TypeSafe AI の System One API）か、同じ API を話す laya（`select.jev.backend: laya`）。状態 + choice 1 問 | 本家は API キーが設定にある（`select.jev.api_key` か環境変数 `TYPESAFE_API_KEY`）。laya は backend を laya にしたとき |
 | 2 `judge` | agent-herd judge（LAN の ollama で 1 トークン目の分布を読む） | `judge.model` が `off` でなく、指名があるか候補にローカル定義がある |
 | 3 `audit` | agent-audit の格付けによる決定的な順位（PASS 率 → 平均消費 → policy の rank → relative_cost） | いつでも（最後の砦。LLM を呼ばない） |
 
@@ -70,6 +70,19 @@ JEV_DEFAULT_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 JEV_DEFAULT_MODEL = "jev-latest"
 JEV_API_KEY_ENV = "TYPESAFE_API_KEY"
 JEV_TIMEOUT_SEC = 30.0
+
+# laya（Convai Innovations の Jev 互換オープンモデル）を `laya-serve` で手元に立てたときの既定。
+# CPU だけの PC でも動く（1 問数百 ms〜数秒）。モデルは multilingual（mmBERT。日本語を読める）に
+# 固定する——状態には英語の方針や候補の説明が混ざるので、laya の自動振り分けに任せると
+# 日本語の依頼が英語用のチェックポイントへ流れることがある。
+LAYA_DEFAULT_ENDPOINT = "http://127.0.0.1:8000/v1/systemone"
+LAYA_DEFAULT_MODEL = "multilingual"
+LAYA_API_KEY_ENV = "LAYA_API_KEY"
+# CPU では初回にチェックポイントを読み込む分（十数秒）が乗る。
+LAYA_TIMEOUT_SEC = 60.0
+# 1 問に読ませるトークン数の上限。multilingual の既定（1024）では日本語の抜粋（1 文字 ≒ 1 トークン）と
+# 候補の説明が収まらない。laya-serve の上限（LAYA_MAX_TOKEN_BUDGET、既定 8192）の内側。
+LAYA_MAX_LEN = 2048
 
 POLICY_LINE = ("Prefer the cheapest candidate whose capability, context window and remaining "
                "quota suffice for this task. Reserve costly cloud models for work that needs "
@@ -393,54 +406,76 @@ def build_question(fit: "list[dict]") -> dict:
 # 段 1: 本家 Jev
 # ---------------------------------------------------------------------------
 def jev_setting() -> dict:
-    """設定ファイル `select.jev` と環境変数から Jev の接続情報を 1 つに。"""
+    """設定ファイル `select.jev` と環境変数から Jev の接続情報を 1 つに。
+
+    `backend: laya` なら接続先は手元の laya-serve で、API キーは要らない（laya-serve に
+    LAYA_API_KEY を付けたときだけ、設定の api_key か同名の環境変数を送る）。"""
     current = herdconfig.select_setting()
     jev = dict(current.get("jev") or {})
-    if not jev.get("api_key"):
-        env_key = os.environ.get(JEV_API_KEY_ENV, "").strip()
+    laya = jev.get("backend") == herdconfig.JEV_BACKEND_LAYA
+    jev["backend"] = herdconfig.JEV_BACKEND_LAYA if laya else herdconfig.JEV_BACKEND_TYPESAFE
+    if not jev.get("api_key") and not jev.get("off"):
+        env_key = os.environ.get(LAYA_API_KEY_ENV if laya else JEV_API_KEY_ENV, "").strip()
         if env_key:
             jev["api_key"] = env_key
             jev["source"] = "env"
-    jev.setdefault("endpoint", JEV_DEFAULT_ENDPOINT)
-    jev.setdefault("model", JEV_DEFAULT_MODEL)
-    jev["enabled"] = bool(jev.get("api_key")) and not jev.get("off")
+    jev.setdefault("endpoint", LAYA_DEFAULT_ENDPOINT if laya else JEV_DEFAULT_ENDPOINT)
+    jev.setdefault("model", LAYA_DEFAULT_MODEL if laya else JEV_DEFAULT_MODEL)
+    jev["enabled"] = (laya or bool(jev.get("api_key"))) and not jev.get("off")
     return jev
 
 
-def jev_payload(state: dict, questions: dict, *, model: str) -> dict:
+def _is_laya(setting: "dict | None") -> bool:
+    return bool(setting) and setting.get("backend") == herdconfig.JEV_BACKEND_LAYA
+
+
+def _backend_label(setting: "dict | None") -> str:
+    return "laya" if _is_laya(setting) else "Jev"
+
+
+def jev_payload(state: dict, questions: dict, *, model: str, backend: str = "") -> dict:
     """Jev の `/v1/systemone` の body。問いは名前 → {type, instructions, criteria?, other?}
-    （`judge` と同じ形）。`other` は Jev には無いので選択肢 `none` として並べる。"""
+    （`judge` と同じ形）。`other` は Jev には無いので選択肢 `none` として並べる。
+
+    laya は真偽の問いを `noul` と綴り、1 問に読むトークン数（`max_len`）を指定できる。"""
+    laya = backend == herdconfig.JEV_BACKEND_LAYA
     body: dict = {}
     for name, question in questions.items():
         kind = str(question.get("type") or "choice")
-        item: dict = {"type": kind, "instructions": question["instructions"]}
+        item: dict = {"type": "noul" if laya and kind == "boolean" else kind,
+                      "instructions": question["instructions"]}
         if kind != "boolean":
             criteria = dict(question["criteria"])
             if question.get("other"):
                 criteria[OTHER_KEY] = str(question["other"])
             item["criteria"] = criteria
         body[str(name)] = item
-    return {"model": model, "state": state, "questions": body}
+    payload = {"model": model, "state": state, "questions": body}
+    if laya:
+        payload["max_len"] = LAYA_MAX_LEN
+    return payload
 
 
-def post_jev(payload: dict, *, endpoint: str, api_key: str,
-             timeout: float = JEV_TIMEOUT_SEC) -> dict:
+def post_jev(payload: dict, *, endpoint: str, api_key: str = "",
+             timeout: float = JEV_TIMEOUT_SEC, label: str = "Jev") -> dict:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(
         endpoint, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST")
+        headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as res:
             data = json.load(res)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
-        raise SelectError(f"Jev API error ({exc.code}): {detail}") from exc
+        raise SelectError(f"{label} API error ({exc.code}): {detail}") from exc
     except urllib.error.URLError as exc:
-        raise SelectError(f"Jev に接続できません: {exc.reason}") from exc
+        raise SelectError(f"{label} に接続できません: {exc.reason}") from exc
     except (TimeoutError, ValueError) as exc:
-        raise SelectError(f"Jev の応答を読めません: {exc}") from exc
+        raise SelectError(f"{label} の応答を読めません: {exc}") from exc
     if not isinstance(data, dict):
-        raise SelectError("Jev がオブジェクト以外を返しました")
+        raise SelectError(f"{label} がオブジェクト以外を返しました")
     return data
 
 
@@ -450,22 +485,32 @@ def _jev_usage(data: dict) -> dict:
             "tokens_out": int(usage.get("output_tokens") or 0)}
 
 
-def read_jev_answer(data: dict, question: dict, *, name: str = QUESTION_NAME) -> dict:
+def read_jev_answer(data: dict, question: dict, *, name: str = QUESTION_NAME,
+                    label: str = "Jev") -> dict:
     """Jev の応答の問い 1 つを judge と同じ形（choice / probabilities / confidence / method）へ。
-    boolean は `value` / `probability`（yes の確率）で、judge の答えと同じ鍵。"""
+    boolean は `value` / `probability`（yes の確率）で、judge の答えと同じ鍵。
+
+    laya の答えも同じ口で読む: 真偽は `noul`（yes の確率）、確度は較正済みの
+    `answer_confidence` を `confidence`（choice では正規化エントロピー）より先に採る。
+    `routing.model` に実際に答えたチェックポイントが載る。"""
     answers = data.get("answers")
     answer = answers.get(name) if isinstance(answers, dict) else None
     if not isinstance(answer, dict):
-        raise SelectError(f"Jev の応答に問い {name!r} の答えがありません")
+        raise SelectError(f"{label} の応答に問い {name!r} の答えがありません")
     probs = answer.get("probabilities")
     probs = {str(k): float(v) for k, v in probs.items()} if isinstance(probs, dict) else {}
-    confidence = answer.get("confidence")
-    common = {"coverage": 1.0, "method": "jev", "model": data.get("model"),
+    confidence = answer.get("answer_confidence", answer.get("confidence"))
+    routing = data.get("routing") if isinstance(data.get("routing"), dict) else {}
+    common = {"coverage": 1.0, "method": "jev", "model": data.get("model") or routing.get("model"),
               "usage": _jev_usage(data)}
     if str(question.get("type") or "choice") == "boolean":
         value = answer.get("value")
+        if value is None and isinstance(answer.get("noul"), (int, float)) \
+                and not isinstance(answer.get("noul"), bool):
+            answer = {**answer, "probability": float(answer["noul"])}
+            value = answer["probability"] >= 0.5
         if not isinstance(value, bool):
-            raise SelectError(f"Jev の問い {name!r} の答えが真偽ではありません")
+            raise SelectError(f"{label} の問い {name!r} の答えが真偽ではありません")
         probability = answer.get("probability")
         try:
             probability = float(probability) if probability is not None \
@@ -486,7 +531,7 @@ def read_jev_answer(data: dict, question: dict, *, name: str = QUESTION_NAME) ->
     choice = str(choice or "")
     known = set(question["criteria"]) | ({OTHER_KEY} if question.get("other") else set())
     if choice not in known:
-        raise SelectError(f"Jev の答え {choice!r} は選択肢にありません")
+        raise SelectError(f"{label} の答え {choice!r} は選択肢にありません")
     try:
         confidence = float(confidence) if confidence is not None else probs.get(choice, 0.0)
     except (TypeError, ValueError):
@@ -502,12 +547,21 @@ def ask_jev(state: dict, questions: dict, *, setting: "dict | None" = None,
     setting = setting if setting is not None else jev_setting()
     if not setting.get("enabled"):
         raise SelectError("Jev の API キーが設定にありません")
-    payload = jev_payload(state, questions, model=str(setting.get("model") or JEV_DEFAULT_MODEL))
-    send = request or (lambda body: post_jev(body, endpoint=str(setting["endpoint"]),
-                                             api_key=str(setting["api_key"])))
+    laya = _is_laya(setting)
+    label = _backend_label(setting)
+    default_model = LAYA_DEFAULT_MODEL if laya else JEV_DEFAULT_MODEL
+    payload = jev_payload(state, questions, model=str(setting.get("model") or default_model),
+                          backend=str(setting.get("backend") or ""))
+    send = request or (lambda body: post_jev(
+        body, endpoint=str(setting.get("endpoint") or (LAYA_DEFAULT_ENDPOINT if laya else JEV_DEFAULT_ENDPOINT)),
+        api_key=str(setting.get("api_key") or ""),
+        timeout=LAYA_TIMEOUT_SEC if laya else JEV_TIMEOUT_SEC, label=label))
     data = send(payload)
-    answers = {name: read_jev_answer(data, question, name=str(name))
+    answers = {name: read_jev_answer(data, question, name=str(name), label=label)
                for name, question in questions.items()}
+    if laya:
+        for answer in answers.values():
+            answer["backend"] = herdconfig.JEV_BACKEND_LAYA
     for index, answer in enumerate(answers.values()):
         if index:
             answer["usage"] = {"tokens_in": 0, "tokens_out": 0}
