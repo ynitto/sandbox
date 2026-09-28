@@ -13,6 +13,7 @@ laya 付属の `laya-serve` と同じ口（POST /v1/systemone・GET /health・�
 使い方:
   python laya_server.py [--host 127.0.0.1] [--port 8000] [--model multilingual] [--threads N]
   python laya_server.py --selftest      # 日本語の問いを 1 つ解いて結果を出す（導入の確認）
+  python laya_server.py --model-dir <フォルダ>   # 手元のモデルだけで動かす（Hugging Face へつながない）
 
 環境変数: LAYA_API_KEY（付けると Authorization: Bearer が要る）。
 """
@@ -50,14 +51,39 @@ def force_cpu() -> None:
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
-def build_router(model: str, threads: "int | None" = None):
-    """CPU の Router を組み、使うモデルを先に読み込む。"""
+MODEL_FILES = ("rl_agent_config.json", "model.safetensors", "tokenizer", "encoder")
+
+
+def check_model_dir(path: str) -> None:
+    """手元のモデルのフォルダに laya のチェックポイント一式があるか。"""
+    missing = [name for name in MODEL_FILES if not os.path.exists(os.path.join(path, name))]
+    if missing:
+        raise SystemExit(f"モデルのフォルダ {path} に {', '.join(missing)} がありません")
+
+
+def go_offline() -> None:
+    """Hugging Face へ一切つながない（手元のモデルだけで動かす）。"""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
+
+def build_router(model: str, threads: "int | None" = None, model_dir: "str | None" = None):
+    """CPU の Router を組み、使うモデルを先に読み込む。
+
+    `model_dir` を渡すとそのフォルダから読み、Hugging Face へはつながない。"""
     force_cpu()
+    if model_dir:
+        check_model_dir(model_dir)
+        go_offline()
     if threads:
         import torch
         torch.set_num_threads(int(threads))
     from laya import Router
-    router = Router(device="cpu", max_loaded=1)
+    options = {"device": "cpu", "max_loaded": 1}
+    if model_dir:
+        options["models"] = {model: (os.path.abspath(model_dir), None)}
+    router = Router(**options)
     router.preload([model])
     return router
 
@@ -65,15 +91,17 @@ def build_router(model: str, threads: "int | None" = None):
 class Predictor:
     """Router への窓口。推論は 1 本ずつ通す。"""
 
-    def __init__(self, router, model: str):
+    def __init__(self, router, model: str, *, offline: bool = False):
         self.router = router
         self.model = model
+        # 手元のモデルだけで動かしているときは、それ以外のモデルを指名されても落としに行かない。
+        self.allowed = (model,) if offline else KNOWN_MODELS
         self.lock = threading.Lock()
         self.started = time.time()
 
     def resolve_model(self, requested) -> str:
         name = str(requested or "").strip().lower()
-        return name if name in KNOWN_MODELS else self.model
+        return name if name in self.allowed else self.model
 
     def predict(self, body: dict) -> dict:
         state = body.get("state")
@@ -100,7 +128,7 @@ class Predictor:
                 raise BadRequest(422, str(exc)[:500]) from exc
 
     def health(self) -> dict:
-        return {"status": "ok", "model": self.model, "device": "cpu",
+        return {"status": "ok", "model": self.model, "device": "cpu", "offline": self.allowed != KNOWN_MODELS,
                 "loaded": list(getattr(self.router, "loaded", []) or []),
                 "uptime_sec": round(time.time() - self.started, 1)}
 
@@ -202,16 +230,18 @@ def main(argv=None) -> int:
     parser.add_argument("--model", default=os.environ.get("LAYA_MODEL", DEFAULT_MODEL), choices=KNOWN_MODELS)
     parser.add_argument("--threads", type=int, default=int(os.environ.get("LAYA_THREADS") or 0) or None,
                         help="推論に使う CPU スレッド数（物理コア数以下。省略時は torch の既定）")
+    parser.add_argument("--model-dir", default=os.environ.get("LAYA_MODEL_DIR") or None,
+                        help="手元のモデルのフォルダ（Hugging Face へつながずに動かす）")
     parser.add_argument("--selftest", action="store_true", help="日本語の問いを 1 つ解いて終わる")
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):  # Windows の古いコンソールでも日本語で落ちない
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
 
-    router = build_router(args.model, args.threads)
+    router = build_router(args.model, args.threads, args.model_dir)
     if args.selftest:
         return selftest(router, args.model)
-    predictor = Predictor(router, args.model)
+    predictor = Predictor(router, args.model, offline=bool(args.model_dir))
     server = make_server(predictor, args.host, args.port, os.environ.get("LAYA_API_KEY") or None)
     print(f"[laya] http://{args.host}:{args.port}/v1/systemone（CPU・{args.model}）", file=sys.stderr)
     try:

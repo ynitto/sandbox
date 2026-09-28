@@ -15,6 +15,7 @@ import types
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -168,7 +169,7 @@ class InstallerTests(unittest.TestCase):
         name, text = install_laya.launcher_text(home, 8000, "Darwin")
         self.assertEqual(name, "laya-serve.sh")
         self.assertTrue(text.startswith("#!/bin/sh\n"))
-        self.assertIn('HF_HOME="' + str(home / "hf"), text)
+        self.assertIn('--model-dir "' + str(home / "models" / "multilingual") + '"', text)
 
     def test_default_home_follows_the_agents_home(self):
         with mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": "/x/agents"}):
@@ -221,8 +222,8 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertFalse(home.exists())
             text = out.getvalue()
-            self.assertIn("multilingual/*", text)
-            self.assertIn("--selftest", text)
+            self.assertIn("multilingual/model.safetensors", text)
+            self.assertIn("--selftest --model-dir", text)
 
     def test_configure_points_agent_herd_at_laya(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,6 +235,103 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(ran, [["/bin/agent-herd", "config", "set", "select.jev.backend", "laya"],
                                ["/bin/agent-herd", "config", "set", "select.jev.endpoint",
                                 "http://127.0.0.1:8123/v1/systemone"]])
+
+
+
+def _fake_checkpoint(root: Path) -> Path:
+    for name in install_laya.MODEL_FILES:
+        if "." in name:
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text("{}" if name.endswith(".json") else "weights", encoding="utf-8")
+        else:
+            (root / name).mkdir(parents=True, exist_ok=True)
+            (root / name / "config.json").write_text("{}", encoding="utf-8")
+    return root
+
+
+class OfflineTests(unittest.TestCase):
+    """Hugging Face へつながらない PC: 持ち込んだモデルで入れ、つながずに動かす。"""
+
+    def test_export_then_import_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            online = tmp / "online"
+            _fake_checkpoint(install_laya.model_path(online))
+            (install_laya.model_path(online) / ".cache").mkdir()
+            (install_laya.model_path(online) / ".cache" / "lock").write_text("x")
+            bundle = install_laya.export_model(install_laya.model_path(online), tmp / "laya.zip")
+            names = zipfile.ZipFile(bundle).namelist()
+            self.assertIn("multilingual/model.safetensors", names)
+            self.assertIn("multilingual/tokenizer/config.json", names)
+            self.assertFalse(any(".cache" in n for n in names))
+
+            offline = tmp / "offline"
+            offline.mkdir()
+            inst = install_laya.Installer(offline, model_from=bundle, out=io.StringIO())
+            ran = []
+            with mock.patch.object(install_laya.subprocess, "run", side_effect=lambda cmd, **kw: ran.append(cmd)):
+                inst.place_model()
+            self.assertEqual(install_laya.missing_model_files(install_laya.model_path(offline)), [])
+            self.assertEqual(len(ran), 1, "落とさずに自己テストだけ回す")
+            self.assertIn("--model-dir", ran[0])
+
+    def test_model_folder_is_found_at_common_depths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            _fake_checkpoint(tmp / "download" / "laya" / "multilingual")
+            self.assertEqual(install_laya.find_model_dir(tmp / "download"),
+                             tmp / "download" / "laya" / "multilingual")
+            self.assertEqual(install_laya.find_model_dir(tmp / "download" / "laya"),
+                             tmp / "download" / "laya" / "multilingual")
+            (tmp / "empty").mkdir()
+            self.assertIsNone(install_laya.find_model_dir(tmp / "empty"))
+
+    def test_incomplete_or_unsafe_bundles_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "home").mkdir()
+            partial = tmp / "partial"
+            _fake_checkpoint(partial)
+            (partial / "model.safetensors").unlink()
+            with self.assertRaises(SystemExit):
+                install_laya.Installer(tmp / "home", model_from=partial, out=io.StringIO())._copy_model_from(partial)
+            evil = tmp / "evil.zip"
+            with zipfile.ZipFile(evil, "w") as zf:
+                zf.writestr("../../escape.txt", "x")
+            with self.assertRaises(SystemExit) as ctx:
+                install_laya.Installer(tmp / "home", out=io.StringIO())._copy_model_from(evil)
+            self.assertIn("不正なパス", str(ctx.exception))
+            self.assertFalse((tmp / "escape.txt").exists())
+
+    def test_mirror_and_wheel_folder(self):
+        inst = install_laya.Installer(Path("/h"), hf_endpoint="https://mirror.example", out=io.StringIO())
+        self.assertEqual(inst.model_env["HF_ENDPOINT"], "https://mirror.example")
+        cmds = install_laya.pip_commands(Path("/v/python"), system="Linux", find_links="/wheels")
+        self.assertTrue(all("--no-index" in c and "/wheels" in c for c in cmds))
+        self.assertFalse(any(install_laya.TORCH_CPU_INDEX in c for c in cmds))
+
+    def test_server_with_a_model_dir_never_goes_online(self):
+        built = {}
+
+        class Router:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+            def preload(self, names):
+                built["preload"] = names
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = _fake_checkpoint(Path(tmp) / "multilingual")
+            with mock.patch.dict(sys.modules, {"laya": types.SimpleNamespace(Router=Router)}), \
+                    mock.patch.dict(os.environ, {}, clear=False):
+                laya_server.build_router("multilingual", model_dir=str(model_dir))
+                self.assertEqual(os.environ["HF_HUB_OFFLINE"], "1")
+                self.assertEqual(os.environ["TRANSFORMERS_OFFLINE"], "1")
+            self.assertEqual(built["models"], {"multilingual": (str(model_dir.resolve()), None)})
+            with self.assertRaises(SystemExit):
+                laya_server.build_router("multilingual", model_dir=str(Path(tmp) / "nope"))
+        predictor = laya_server.Predictor(FakeRouter(), "multilingual", offline=True)
+        self.assertEqual(predictor.resolve_model("english"), "multilingual", "手元に無いモデルは取りに行かない")
 
 
 if __name__ == "__main__":

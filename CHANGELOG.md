@@ -17,6 +17,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **laya の導入スクリプトを足した（Windows / macOS / Linux）。** `tools/agent-tools/laya/install-laya.sh` / `install-laya.ps1` が
   CPU 版の PyTorch・laya・多言語版のモデルだけを `~/.agents/laya` に入れ、日本語の問いで動作を確かめる。GPU 版や
   サーバ用の追加部品は入れない。入った部品のライセンスを一覧にし、コピーレフトが紛れていたら止まる
+- **Hugging Face へつながらない PC でも入れられる。** つながる PC で `--export-model` でモデルを zip にまとめ、
+  つながらない PC で `--model-from` から入れる（社内ミラーは `--hf-endpoint`、部品の wheel は `--find-links`）。
+  起動したサーバは手元のモデルだけを読み、Hugging Face へつながない
 
 ### agent-audit・agent-app: ノード予算のトークン上限が数えられていないことを doctor で知らせる（agent-app 0.44.1）
 

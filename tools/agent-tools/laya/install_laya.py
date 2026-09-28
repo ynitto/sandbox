@@ -8,13 +8,20 @@
 3. laya 本体と、推論に要る部品だけを入れる（laya のサーバ用の追加部品 fastapi / uvicorn は入れず、
    標準ライブラリだけのサーバ `laya_server.py` を置く）
 4. 入った部品のライセンスを一覧にし、コピーレフト（GPL / LGPL / AGPL）が紛れていたら止まる
-5. 多言語版のモデル（日本語を読める。約 650 MB）だけを落とし、日本語の問いを 1 つ解いて確かめる
+5. 多言語版のモデル（日本語を読める。約 650 MB）だけを `models/multilingual` に置き、
+   Hugging Face へつながない状態で日本語の問いを 1 つ解いて確かめる
 6. 起動用のスクリプトを置き、agent-herd があれば選択・振り分けの第 1 段を laya に向ける
 
 使い方:
   python install_laya.py                 # 既定の場所へ入れる
   python install_laya.py --dry-run       # 何をするかだけ出す
   python install_laya.py --home <dir> --port 8000 --no-configure
+
+Hugging Face へつながらない PC:
+  python install_laya.py --export-model laya-multilingual.zip   # つながる PC で。入れたモデルを 1 つにまとめる
+  python install_laya.py --model-from laya-multilingual.zip     # つながらない PC で。zip かフォルダから入れる
+  python install_laya.py --hf-endpoint https://<社内ミラー>      # ミラー（HF_ENDPOINT）から落とす
+  python install_laya.py --find-links <wheel のフォルダ>          # PyPI にもつながらないなら、部品もフォルダから
 
 標準ライブラリだけで動く（Python 3.10 以上）。
 """
@@ -28,7 +35,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import venv
+import zipfile
 from pathlib import Path
 
 LAYA_VERSION = "0.3.21"
@@ -40,6 +49,8 @@ RUNTIME_PACKAGES = ("transformers>=4.48.0,<5", "safetensors>=0.4.0", "huggingfac
                     "numpy>=1.20.0")
 MIN_PYTHON = (3, 10)
 DEFAULT_PORT = 8000
+# laya のチェックポイント 1 つを成すもの（これだけで動く。土台のモデルを取りに行かない）。
+MODEL_FILES = ("rl_agent_config.json", "model.safetensors", "tokenizer", "encoder")
 HERE = Path(__file__).resolve().parent
 SERVER_SCRIPT = HERE / "laya_server.py"
 
@@ -76,8 +87,14 @@ def torch_index(system: "str | None" = None, override: "str | None" = None) -> "
 
 
 def pip_commands(python: Path, *, system: "str | None" = None,
-                 torch_index_url: "str | None" = None) -> "list[list[str]]":
+                 torch_index_url: "str | None" = None,
+                 find_links: "str | None" = None) -> "list[list[str]]":
     base = [str(python), "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check"]
+    if find_links:
+        # 手元の wheel だけから入れる（ネットワークへ出ない）。pip 自身の更新もしない。
+        base = base + ["--no-index", "--find-links", str(find_links)]
+        return [base + ["torch>=2.2"], base + list(RUNTIME_PACKAGES),
+                base + ["--no-deps", f"laya=={LAYA_VERSION}"]]
     index = torch_index(system, torch_index_url)
     torch_cmd = base + ["torch>=2.2"] + (["--index-url", index] if index else [])
     return [
@@ -86,6 +103,35 @@ def pip_commands(python: Path, *, system: "str | None" = None,
         base + list(RUNTIME_PACKAGES),
         base + ["--no-deps", f"laya=={LAYA_VERSION}"],
     ]
+
+
+def missing_model_files(path: Path) -> "list[str]":
+    return [name for name in MODEL_FILES if not (path / name).exists()]
+
+
+def find_model_dir(root: Path) -> "Path | None":
+    """チェックポイント一式のあるフォルダを探す（root 自身、`multilingual/`、1〜3 段下の順）。"""
+    for candidate in (root, root / MODEL):
+        if candidate.is_dir() and not missing_model_files(candidate):
+            return candidate
+    for config in sorted(root.glob("**/rl_agent_config.json"), key=lambda p: len(p.parts)):
+        if len(config.relative_to(root).parts) <= 4 and not missing_model_files(config.parent):
+            return config.parent
+    return None
+
+
+def export_model(model_dir: Path, target: Path) -> Path:
+    """モデルのフォルダを `multilingual/…` の形で zip にする（保存のみ。重みは縮まない）。"""
+    missing = missing_model_files(model_dir)
+    if missing:
+        raise SystemExit(f"{model_dir} にモデルがありません（{', '.join(missing)}）。先に導入してください")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as zf:
+        for path in sorted(model_dir.rglob("*")):
+            rel = path.relative_to(model_dir)
+            if path.is_file() and ".cache" not in rel.parts:
+                zf.write(path, Path(MODEL) / rel)
+    return target
 
 
 def _has(low: str, words, *, whole: bool = False) -> bool:
@@ -175,28 +221,36 @@ def dir_size(path: Path) -> int:
     return total
 
 
+def model_path(home: Path) -> Path:
+    return home / "models" / MODEL
+
+
 def launcher_text(home: Path, port: int, system: "str | None" = None) -> "tuple[str, str]":
-    """起動スクリプトの (ファイル名, 中身)。"""
+    """起動スクリプトの (ファイル名, 中身)。モデルは手元のフォルダから読み、Hugging Face へつながない。"""
     system = system or platform.system()
     python = venv_python(home, system)
     server = home / "laya_server.py"
+    models = model_path(home)
     if system == "Windows":
         return ("laya-serve.cmd",
                 "@echo off\r\n"
-                f'set "HF_HOME={home / "hf"}"\r\n'
-                f'"{python}" "{server}" --port {port} %*\r\n')
+                f'"{python}" "{server}" --port {port} --model-dir "{models}" %*\r\n')
     return ("laya-serve.sh",
             "#!/bin/sh\n"
-            f'export HF_HOME="{home / "hf"}"\n'
-            f'exec "{python}" "{server}" --port {port} "$@"\n')
+            f'exec "{python}" "{server}" --port {port} --model-dir "{models}" "$@"\n')
 
 
 class Installer:
     def __init__(self, home: Path, *, port: int = DEFAULT_PORT, torch_index_url: "str | None" = None,
-                 configure: bool = True, dry_run: bool = False, out=None):
+                 configure: bool = True, dry_run: bool = False, out=None,
+                 model_from: "Path | None" = None, hf_endpoint: "str | None" = None,
+                 find_links: "str | None" = None):
         self.home = home
         self.port = port
         self.torch_index_url = torch_index_url
+        self.model_from = model_from
+        self.hf_endpoint = hf_endpoint
+        self.find_links = find_links
         self.configure = configure
         self.dry_run = dry_run
         self.out = out or sys.stdout
@@ -218,9 +272,12 @@ class Installer:
 
     @property
     def model_env(self) -> dict:
-        # モデルの置き場も laya のフォルダの中へ（利用者の Hugging Face の共有キャッシュを汚さない）。
-        return {"HF_HOME": str(self.home / "hf"), "HF_HUB_DISABLE_TELEMETRY": "1",
-                "CUDA_VISIBLE_DEVICES": ""}
+        # 落とすときの一時置き場も laya のフォルダの中へ（利用者の Hugging Face の共有キャッシュを汚さない）。
+        env = {"HF_HOME": str(self.home / "hf"), "HF_HUB_DISABLE_TELEMETRY": "1",
+               "CUDA_VISIBLE_DEVICES": ""}
+        if self.hf_endpoint:
+            env["HF_ENDPOINT"] = self.hf_endpoint
+        return env
 
     def create_venv(self) -> None:
         self.say(f"[1/6] 仮想環境を作ります: {self.home / 'venv'}")
@@ -230,10 +287,10 @@ class Installer:
         venv.EnvBuilder(with_pip=True, clear=False).create(self.home / "venv")
 
     def install_packages(self) -> None:
-        index = torch_index(override=self.torch_index_url)
-        self.say(f"[2/6] CPU 版の PyTorch と laya {LAYA_VERSION} を入れます"
-                 f"（PyTorch の配布元: {index or 'PyPI'}）")
-        for cmd in pip_commands(self.python, torch_index_url=self.torch_index_url):
+        index = self.find_links or torch_index(override=self.torch_index_url) or "PyPI"
+        self.say(f"[2/6] CPU 版の PyTorch と laya {LAYA_VERSION} を入れます（PyTorch の配布元: {index}）")
+        for cmd in pip_commands(self.python, torch_index_url=self.torch_index_url,
+                                find_links=self.find_links):
             self.run(cmd)
 
     def check_licenses(self) -> dict:
@@ -271,12 +328,50 @@ class Installer:
         if platform.system() != "Windows":
             launcher.chmod(0o755)
 
-    def download_and_selftest(self) -> None:
-        self.say(f"[5/6] 多言語版のモデル（約 650 MB）だけを落とし、日本語の問いを 1 つ解きます")
-        fetch = ("from huggingface_hub import snapshot_download; "
-                 f"snapshot_download({LAYA_REPO!r}, allow_patterns=['{MODEL}/*'])")
-        self.run([str(self.python), "-c", fetch], env=self.model_env)
-        self.run([str(self.python), str(self.home / "laya_server.py"), "--selftest"], env=self.model_env)
+    def place_model(self) -> None:
+        target = model_path(self.home)
+        if self.model_from:
+            self.say(f"[5/6] 多言語版のモデルを {self.model_from} から {target} へ入れます")
+            if not self.dry_run:
+                self._copy_model_from(Path(self.model_from))
+        elif not self.dry_run and not missing_model_files(target):
+            self.say(f"[5/6] 多言語版のモデルは入っています: {target}")
+        else:
+            where = self.hf_endpoint or "Hugging Face"
+            self.say(f"[5/6] 多言語版のモデル（約 650 MB）だけを {where} から {target} へ落とします")
+            patterns = [f"{MODEL}/{name}" if "." in name else f"{MODEL}/{name}/*" for name in MODEL_FILES]
+            fetch = ("from huggingface_hub import snapshot_download; "
+                     f"snapshot_download({LAYA_REPO!r}, allow_patterns={patterns!r}, "
+                     f"local_dir={str(self.home / 'models')!r})")
+            self.run([str(self.python), "-c", fetch], env=self.model_env)
+            if not self.dry_run:  # 落とすときの管理用ファイルは要らない
+                shutil.rmtree(self.home / "models" / ".cache", ignore_errors=True)
+                shutil.rmtree(self.home / "hf", ignore_errors=True)
+        self.say("  Hugging Face へつながない状態で、日本語の問いを 1 つ解きます")
+        self.run([str(self.python), str(self.home / "laya_server.py"), "--selftest",
+                  "--model-dir", str(target)], env={"CUDA_VISIBLE_DEVICES": ""})
+
+    def _copy_model_from(self, source: Path) -> None:
+        target = model_path(self.home)
+        if not source.exists():
+            raise SystemExit(f"モデルの持ち込み元がありません: {source}")
+        with tempfile.TemporaryDirectory(dir=self.home) as tmp:
+            root = source
+            if source.is_file():
+                if not zipfile.is_zipfile(source):
+                    raise SystemExit(f"zip ではありません: {source}")
+                with zipfile.ZipFile(source) as zf:
+                    for member in zf.namelist():  # zip の外へ書き出させない
+                        if not (Path(tmp) / member).resolve().is_relative_to(Path(tmp).resolve()):
+                            raise SystemExit(f"zip の中に不正なパスがあります: {member}")
+                    zf.extractall(tmp)
+                root = Path(tmp)
+            found = find_model_dir(root)
+            if found is None:
+                raise SystemExit(f"{source} に laya のモデル一式（{', '.join(MODEL_FILES)}）が見つかりません")
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(found, target, ignore=shutil.ignore_patterns(".cache"))
 
     def configure_herd(self) -> None:
         self.say("[6/6] agent-herd の第 1 段を laya に向けます")
@@ -300,7 +395,7 @@ class Installer:
         self.install_packages()
         self.check_licenses()
         self.install_server()
-        self.download_and_selftest()
+        self.place_model()
         self.configure_herd()
         name, _ = launcher_text(self.home, self.port)
         if not self.dry_run:
@@ -318,14 +413,30 @@ def main(argv=None) -> int:
                         help="PyTorch の配布元を差し替える（社内ミラーなど）")
     parser.add_argument("--no-configure", action="store_true", help="agent-herd の設定を書き換えない")
     parser.add_argument("--dry-run", action="store_true", help="何をするかだけ出す")
+    offline = parser.add_argument_group("Hugging Face へつながらない PC")
+    offline.add_argument("--model-from", type=Path, default=None,
+                         help="モデルを zip かフォルダから入れる（--export-model で作ったもの、"
+                              "または Hugging Face の multilingual フォルダを手で落としたもの）")
+    offline.add_argument("--hf-endpoint", default=os.environ.get("HF_ENDPOINT") or None,
+                         help="Hugging Face の代わりに落とす先（社内ミラーなど）")
+    offline.add_argument("--find-links", default=None,
+                         help="PyPI にもつながらないとき、部品の wheel を置いたフォルダ")
+    offline.add_argument("--export-model", type=Path, default=None, metavar="ZIP",
+                         help="入れ終えたモデルを zip にまとめて終わる（つながる PC で作り、持ち込む）")
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):  # Windows の古いコンソールでも日本語で落ちない
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
     home = (args.home or default_home()).expanduser().resolve()
+    if args.export_model:
+        target = export_model(model_path(home), args.export_model.expanduser().resolve())
+        print(f"書き出しました: {target}（{target.stat().st_size / 1024 / 1024:.0f} MB）")
+        return 0
     try:
         return Installer(home, port=args.port, torch_index_url=args.torch_index_url,
-                         configure=not args.no_configure, dry_run=args.dry_run).install()
+                         configure=not args.no_configure, dry_run=args.dry_run,
+                         model_from=args.model_from, hf_endpoint=args.hf_endpoint,
+                         find_links=args.find_links).install()
     except subprocess.CalledProcessError as exc:
         print(f"失敗しました（終了コード {exc.returncode}）: {' '.join(map(str, exc.cmd))[:300]}", file=sys.stderr)
         return 1

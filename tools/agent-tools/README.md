@@ -439,6 +439,21 @@ powershell -ExecutionPolicy Bypass -File tools\agent-tools\laya\install-laya.ps1
 - サーバは laya 付属のものではなく標準ライブラリだけの小さなもの（`laya_server.py`）を使い、
   いつも CPU・多言語版で答える。
 - agent-herd を WSL で使っているなら、導入も WSL の中で行う（agent-herd と同じ側に置く）。
+- 起動したサーバは手元のモデル（`~/.agents/laya/models/multilingual`）だけを読み、Hugging Face へは
+  つながない。導入の最後の確認も、つながない状態で行う。
+- Hugging Face へつながらない PC には、モデルを持ち込んで入れる:
+
+  ```bash
+  # つながる PC で（導入を済ませてから）モデルを 1 つの zip にまとめる（約 650 MB）
+  python tools/agent-tools/laya/install_laya.py --export-model laya-multilingual.zip
+  # つながらない PC で、その zip から入れる
+  python tools/agent-tools/laya/install_laya.py --model-from laya-multilingual.zip
+  ```
+
+  zip の代わりに、Hugging Face の `convaiinnovations/laya` の `multilingual` フォルダ
+  （`rl_agent_config.json`・`model.safetensors`・`tokenizer/`・`encoder/`）をブラウザで落として
+  `--model-from <フォルダ>` を渡してもよい。社内ミラーがあるなら `--hf-endpoint <URL>` で
+  そこから落とす。PyPI にもつながらないなら、部品の wheel を置いたフォルダを `--find-links` で渡す。
 - `--dry-run` で何をするかだけ見られる。`--port` で待ち受けを変えると接続先の設定も合わせる。
   社内ミラーから入れるときは `--torch-index-url`。
 
