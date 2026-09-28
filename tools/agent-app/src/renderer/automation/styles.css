@@ -157,12 +157,15 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .run-parameter-row > label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .run-parameter-row > label small { margin-left: 4px; color: var(--muted); font-size: 11px; font-weight: 400; }
 .run-parameter-control { min-width: 0; display: flex; gap: 8px; }
-.run-parameter-control input { min-width: 0; flex: 1; }
-.run-parameter-control select { flex: none; width: 124px; }
-.run-parameter-control input[aria-invalid="true"] { border-color: var(--ng); }
+.run-parameter-control input, .run-parameter-control textarea, .run-parameter-control select[data-confirm-param] { min-width: 0; flex: 1; }
+.run-parameter-control textarea { resize: vertical; line-height: 1.5; }
+.run-parameter-row.multiline { align-items: start; }
+.run-parameter-row.multiline > label { padding-top: 6px; }
+.run-parameter-control select[data-parameter-date] { flex: none; width: 124px; }
+.run-parameter-control [aria-invalid="true"] { border-color: var(--ng); }
 @media (max-width: 520px) {
   .run-parameter-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-  .run-parameter-control select { width: 104px; }
+  .run-parameter-control select[data-parameter-date] { width: 104px; }
 }
 .run-terminal-help { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .manual-run { min-width: 0; display: grid; gap: 8px; margin-bottom: 14px; }

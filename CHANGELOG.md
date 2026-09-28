@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### statemachine-use・agent-app: 実行する人が入れる値を `inputs:` で宣言する（statemachine-use 2.3.0・agent-app 0.45.0）
+
+- **workflow.yaml のトップレベルに `inputs:` を書けるようにした。** 値ごとに `label`（画面に出す名前）・
+  `required`（既定 true。`false` で任意）・`default`・`type`（`text` / `multiline` / `number` / `date` /
+  `month` / `email` / `url` / `choice`）・`options`・`description` を書く。書式は `references/schema.md`「入力の宣言」
+- エンジンは実行前に宣言で検査する。必須が空で既定値も無ければ始めずに止まる。任意の空は `{{キー}}` を空文字にする
+- 綴り違いの項目・知らない `type`・選択肢に無い `default`・実行時の予約語（`last_output` など）の宣言は検証エラーにした
+- `next_state.py {名前} --inputs --context '{…}'` が宣言・当てた値・欠けた必須を返す（欠けがあれば終了コード 4）。
+  会話で回すときは欠けた必須を利用者に訊いてから始める
+- agentcore のハーネスと agent-loop も同じ宣言を読む（既定値・任意の空・必須の欠けで止まる）
+- **agent-app の実行条件のダイアログが宣言どおりに出る。** 項目名は `label`、必須／任意は `required`、
+  `choice` は選択、`multiline` は複数行の欄。必須の空だけで実行を止める。宣言の無い定義は従来どおり
+- agent-app で定義を編集して保存しても `inputs:` は原文のまま残る
+
 ### agent-herd: 選択・振り分けの第 1 段に laya を使えるようにする
 
 - **`select.jev.backend: laya` で、本家 Jev の代わりに Jev 互換のオープンモデル laya（Convai Innovations）へ訊く。**

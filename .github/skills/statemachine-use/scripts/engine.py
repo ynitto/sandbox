@@ -78,6 +78,10 @@ class WorkflowDefinition:
     initial_context: dict[str, Any] = field(default_factory=dict)
     config: MachineConfig = field(default_factory=MachineConfig)
     description: str = ""
+    # 利用者が入れる値の宣言（`inputs:`）。宣言順を保つ。壊れた宣言は inputs_errors に貯め、
+    # validate_workflow がほかのエラーと一緒に報告する。
+    inputs: list[dict] = field(default_factory=list)
+    inputs_errors: list[str] = field(default_factory=list)
 
 
 # ─────────────────────────────────────────────
@@ -247,6 +251,117 @@ def run_check(check: dict, *, cwd: "str | Path | None" = None) -> dict:
 #  YAML パーサー
 # ─────────────────────────────────────────────
 
+# ─────────────────────────────────────────────
+#  入力の宣言（inputs）
+# ─────────────────────────────────────────────
+#
+#  「実行する人が入れる値」を workflow.yaml の先頭で宣言する口。テンプレートの `{{key}}` を
+#  拾って推し量る代わりに、名前・必須か任意か・既定値・入力の種類をここに書く。
+#  agent-app はこの宣言どおりに入力ダイアログを出し、エンジンは実行前に同じ宣言で検査する
+#  （画面が通した値をエンジンが断る、のずれを作らない）。
+
+INPUT_TYPES = ("text", "multiline", "number", "date", "month", "email", "url", "choice")
+INPUT_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+# 実行時にエンジンが入れる値。人が入れる値として宣言させない（`input` は入力本文なので許す）。
+RUNTIME_KEYS = frozenset({"today", "now", "history", "step_count", "last_output",
+                          "current_state", "context", "check_status", "check_ok", "check_output"})
+_INPUT_FIELDS = frozenset({"label", "description", "required", "default", "type", "options"})
+
+
+def _scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def normalize_inputs(raw: Any) -> "tuple[list[dict], list[str]]":
+    """`inputs:` の宣言を正規化する。(宣言の列, エラーの列) を返す。
+
+    各要素は {key, label, description, required, default, type, options}。
+    default が無いときは None、options は type: choice のときだけ中身を持つ。
+    """
+    if raw is None:
+        return [], []
+    if not isinstance(raw, dict):
+        return [], ["inputs はキー → 宣言のマップで書いてください"]
+    items: list[dict] = []
+    errors: list[str] = []
+    for key, spec in raw.items():
+        key = str(key)
+        where = f"inputs.{key}"
+        if not INPUT_KEY_RE.match(key):
+            errors.append(f"{where}: キーは英字か _ で始まる英数字・_・- で書いてください")
+            continue
+        if key in RUNTIME_KEYS:
+            errors.append(f"{where}: '{key}' は実行時にエンジンが入れる値なので宣言できません")
+            continue
+        if spec is None:
+            spec = {}
+        if not isinstance(spec, dict):
+            errors.append(f"{where}: 宣言はマップで書いてください（label / required / default / type など）")
+            continue
+        unknown = sorted(set(map(str, spec)) - _INPUT_FIELDS)
+        if unknown:
+            errors.append(f"{where}: 知らない項目があります: {', '.join(unknown)}")
+        kind = str(spec.get("type", "text")).strip() or "text"
+        if kind not in INPUT_TYPES:
+            errors.append(f"{where}.type が不正です: '{kind}'（{' | '.join(INPUT_TYPES)}）")
+            kind = "text"
+        required = spec.get("required", True)
+        if not isinstance(required, bool):
+            errors.append(f"{where}.required は true か false で書いてください")
+            required = True
+        default = spec.get("default")
+        if not _scalar(default):
+            errors.append(f"{where}.default は文字列・数値・真偽値で書いてください")
+            default = None
+        default = None if default is None else str(default)
+        options: list[str] = []
+        raw_options = spec.get("options")
+        if kind == "choice":
+            if not isinstance(raw_options, list) or not raw_options or not all(_scalar(o) and o is not None for o in raw_options):
+                errors.append(f"{where}.options に選択肢を 1 つ以上並べてください（type: choice）")
+            else:
+                options = [str(o) for o in raw_options]
+                if default not in (None, "") and default not in options:
+                    errors.append(f"{where}.default '{default}' が options にありません")
+        elif raw_options is not None:
+            errors.append(f"{where}.options は type: choice のときだけ書けます")
+        items.append({
+            "key": key,
+            "label": str(spec.get("label") or key).strip() or key,
+            "description": str(spec.get("description") or "").strip(),
+            "required": required,
+            "default": default,
+            "type": kind,
+            "options": options,
+        })
+    return items, errors
+
+
+def resolve_inputs(inputs: "list[dict]", supplied: "dict[str, Any] | None",
+                   input_text: str = "") -> "tuple[dict[str, str], list[str]]":
+    """宣言と渡された値から、context へ入れる値と未入力の必須キーを返す。
+
+    空の値は「入れていない」とみなし、既定値があれば既定値、任意なら空文字にする
+    （任意の値を省いたときに `{{key}}` が素のまま課題文へ残らないようにする）。
+    `input` を宣言したときは入力本文（--input）をその値として見る。
+    """
+    given = dict(supplied or {})
+    if input_text:
+        given.setdefault("input", input_text)
+    values: dict[str, str] = {}
+    missing: list[str] = []
+    for item in inputs:
+        key = item["key"]
+        raw = given.get(key)
+        value = "" if raw is None else str(raw).strip()
+        if not value and item["default"] not in (None, ""):
+            value = item["default"]
+        if not value and item["required"]:
+            missing.append(key)
+        values[key] = value
+    return values, missing
+
+
 def resolve_workflow_path(path_or_name: str | Path) -> Path:
     """名前またはパスから workflow.yaml を解決する。"""
     p = Path(path_or_name)
@@ -377,6 +492,8 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
     transitions.sort(key=lambda t: t.priority)
 
     # 設定
+    inputs, inputs_errors = normalize_inputs(data.get("inputs"))
+
     cfg_raw = data.get("config", {})
     config = MachineConfig(
         max_steps=cfg_raw.get("max_steps", 50),
@@ -393,12 +510,14 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
         transitions=transitions,
         initial_context=data.get("context", {}),
         config=config,
+        inputs=inputs,
+        inputs_errors=inputs_errors,
     )
 
 
 def validate_workflow(wf: WorkflowDefinition) -> list[str]:
     """バリデーションエラーのリストを返す（空リスト = 正常）。"""
-    errors = []
+    errors = list(wf.inputs_errors)
     if wf.initial_state not in wf.states:
         errors.append(f"initial_state '{wf.initial_state}' が states に存在しません")
     for t in wf.transitions:
@@ -619,12 +738,25 @@ class StateMachineEngine:
                 error="バリデーション失敗:\n" + "\n".join(errors),
             )
 
+        # 宣言した入力を実行前に確かめる。必須が欠けたまま走らせると、`{{key}}` が素のまま
+        # 課題文に残り、モデルが値を推測して進んでしまう。
+        declared, missing = resolve_inputs(workflow.inputs, context, input_text)
+        if missing:
+            labels = [f"{item['label']}（{item['key']}）" if item["label"] != item["key"] else item["key"]
+                      for item in workflow.inputs if item["key"] in missing]
+            return ExecutionResult(
+                success=False, final_state="", output="", context={}, steps=[],
+                error="入力してください: " + "、".join(labels),
+            )
+        if "input" in declared:
+            input_text = declared.pop("input")
+
         # 組み込み変数。モデルに「今日」を推測させると学習時点の日付を書くので実行時の値を渡す。
         # workflow の context や呼び出し側の指定が上書きできる位置に置く。
         started = datetime.now().astimezone()
         ctx = {"today": started.strftime("%Y-%m-%d"),
                "now": started.isoformat(timespec="seconds"),
-               **workflow.initial_context, **(context or {})}
+               **workflow.initial_context, **(context or {}), **declared}
         ctx["input"] = input_text
         ctx["history"] = {}
         ctx["step_count"] = 0

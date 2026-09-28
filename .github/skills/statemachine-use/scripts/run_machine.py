@@ -434,6 +434,13 @@ async def main() -> None:
 
 
 def _print_workflow_summary(workflow) -> None:
+    if workflow.inputs:
+        print("\n入力:")
+        for item in workflow.inputs:
+            mark = "必須" if item["required"] else "任意"
+            extra = f" 既定値={item['default']}" if item["default"] not in (None, "") else ""
+            options = f" [{' | '.join(item['options'])}]" if item["options"] else ""
+            print(f"  {item['key']}: {item['label']}（{mark}・{item['type']}）{options}{extra}")
     print("\nワークフロー構造:")
     for state_id, state in workflow.states.items():
         marker = "◉" if state_id == workflow.initial_state else ("□" if state.terminal else "○")

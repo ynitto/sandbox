@@ -1,10 +1,20 @@
 # ドキュメントレビューループ サンプル
-# デモ内容: ループ処理、リトライロジック、コンテキスト蓄積、ワイルドカードトランジション
-# 使い方: python scripts/run_machine.py examples/doc_review_loop.yaml --input "$(cat my_doc.txt)"
+# デモ内容: 入力の宣言、ループ処理、リトライロジック、コンテキスト蓄積、ワイルドカードトランジション
+# 使い方: python scripts/run_machine.py examples/doc_review_loop.yaml --input "$(cat my_doc.txt)" --context audience=新人
 
 name: "ドキュメントレビューループ"
 description: "最大3回の修正サイクルで反復的にドキュメントをレビューする"
 initial_state: review
+
+# 実行する人が入れる値。agent-app はこの順・この名前で入力ダイアログを出す。
+inputs:
+  input:
+    label: レビューする文書
+    type: multiline
+  audience:
+    label: 想定する読み手
+    required: false
+    default: 社内の開発者
 
 context:
   revision_count: 0
@@ -23,6 +33,7 @@ states:
       {{input}}
       ---
       
+      想定する読み手: {{audience}}
       現在の修正回数: {{revision_count}} / {{max_revisions}} 回
       前回のフィードバック（あれば）: {{history.provide_feedback}}
       

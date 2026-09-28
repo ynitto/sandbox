@@ -109,6 +109,9 @@ def _repository_schedule_item(root: Path, config_path: Path, index: int,
 
 
 def _repository_parameter_names(data: dict[str, Any], file_texts: list[str] | None = None) -> list[str]:
+    # 入力を `inputs:` で宣言した定義は宣言が正典（宣言順）。テンプレートからは推し量らない。
+    if isinstance(data.get("inputs"), dict):
+        return [str(key) for key in data["inputs"]]
     context = data.get("context") if isinstance(data.get("context"), dict) else {}
     required = {str(key) for key, value in context.items()
                 if value is None or str(value).strip() == ""}

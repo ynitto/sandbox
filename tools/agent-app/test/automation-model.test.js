@@ -126,6 +126,11 @@ test('読み戻し: 文章の条件も無条件もそのまま画面の行にな
   const text = `
 name: レビュー
 initial_state: analyze
+inputs:
+  target:
+    label: 対象
+  depth:
+    required: false
 context:
   retry_count: 0
 config:
@@ -193,6 +198,8 @@ transitions:
   assert.strictEqual(workflow.states.fix.write, 'src/x.py');
   assert.ok(workflow.states.error && workflow.states.error.terminal);
   assert.deepStrictEqual(workflow.context, { retry_count: 0 });
+  assert.deepStrictEqual(workflow.inputs, { target: { label: '対象' }, depth: { required: false } }, '入力の宣言は原文のまま持ち回る');
+  assert.deepStrictEqual(spec.parameters, ['target', 'depth'], '宣言があれば本文から推し量らない');
   assert.strictEqual(workflow.config.verbose, true);
   assert.deepStrictEqual(model.validateWorkflow(workflow, files), []);
 });
