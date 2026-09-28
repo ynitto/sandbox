@@ -22,6 +22,10 @@ select:
     api_key: sk-…          # 本家 Jev（TypeSafe AI）の API キー。無ければ環境変数 TYPESAFE_API_KEY
     endpoint: https://…    # 省略時は https://api.typesafe.ai/v1/systemone（ゲートウェイ経由なら差し替え）
     model: jev-latest      # 省略時は jev-latest
+    # backend: laya        # 同じ /v1/systemone を話すオープンモデル laya（Convai Innovations）を
+    #                      # 手元の CPU で使う。既定の接続先は http://127.0.0.1:8000/v1/systemone、
+    #                      # モデルは日本語を読める multilingual。API キーは要らない（laya-serve に
+    #                      # LAYA_API_KEY を付けたときだけ api_key か環境変数 LAYA_API_KEY）
   min_confidence: 0.6      # jev / judge の答えを採る確度の下限（0〜1）
 ```
 
@@ -60,7 +64,11 @@ JUDGE_AUTO = "auto"
 JUDGE_OFF = "off"
 # 設定の項目名（`agent-herd config set` が受け付ける鍵）。増やすならここと `describe()`。
 SELECT_KEYS = ("select.jev.api_key", "select.jev.endpoint", "select.jev.model",
-               "select.min_confidence")
+               "select.jev.backend", "select.min_confidence")
+# select.jev.backend の語彙。typesafe（本家 Jev。既定）と laya（Jev 互換のオープンモデルを手元で）。
+JEV_BACKEND_TYPESAFE = "typesafe"
+JEV_BACKEND_LAYA = "laya"
+JEV_BACKENDS = (JEV_BACKEND_TYPESAFE, JEV_BACKEND_LAYA)
 # `route`（依頼の振り分け。`agentcore.route`）の確度の下限。min_confidence を省くと select と同じ値。
 ROUTE_KEYS = ("route.min_confidence", "route.hold_min_confidence")
 KNOWN_KEYS = ("judge.model", "judge.calibration", "judge.rotations", "judge.keep_alive",
@@ -271,7 +279,7 @@ def calibration_setting():
 
 
 def select_setting() -> dict:
-    """`select` の設定を 1 つの dict で: {"jev": {"api_key", "endpoint", "model", "source", "off"},
+    """`select` の設定を 1 つの dict で: {"jev": {"api_key", "endpoint", "model", "backend", "source", "off"},
     "min_confidence": float|None, "error": str|None}。壊れたファイルは「設定なし」に倒して理由を残す。"""
     try:
         data = load()
@@ -292,6 +300,9 @@ def select_setting() -> dict:
         text = str(jev_raw.get(name) or "").strip()
         if text:
             jev[name] = text
+    backend = str(jev_raw.get("backend") or "").strip().lower()
+    if backend in JEV_BACKENDS:
+        jev["backend"] = backend
     raw_conf = section.get("min_confidence")
     min_conf = None
     if isinstance(raw_conf, (int, float)) and not isinstance(raw_conf, bool) \
@@ -334,6 +345,10 @@ def _normalize_select_value(key: str, value):
     text = str(value if value is not None else "").strip()
     if not text:
         raise ConfigError(f"{key} の値が空です（消すなら unset）")
+    if key == "select.jev.backend":
+        text = text.lower()
+        if text not in JEV_BACKENDS:
+            raise ConfigError(f"{key} は {' / '.join(JEV_BACKENDS)} のどれかです")
     return text
 
 

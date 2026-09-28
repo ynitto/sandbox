@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-herd: 選択・振り分けの第 1 段に laya を使えるようにする
+
+- **`select.jev.backend: laya` で、本家 Jev の代わりに Jev 互換のオープンモデル laya（Convai Innovations）へ訊く。**
+  手元の `laya-serve` へ送り、API キーは要らない。GPU の無い PC でも CPU だけで動く
+- 日本語の依頼を読めるよう、モデルは多言語版（`multilingual`）に固定し、1 問に読むトークン数を 2048 に広げた。
+  laya の自動振り分けに任せると、英語の方針や候補の説明に引かれて日本語の依頼が英語用のモデルへ流れる
+- laya の真偽の問い（`noul`）と較正済みの確度（`answer_confidence`）を読む。つながらないときは従来どおり judge へ進む
+- **laya の導入スクリプトを足した（Windows / macOS / Linux）。** `tools/laya/install-laya.sh` / `install-laya.ps1` が
+  CPU 版の PyTorch・laya・多言語版のモデルだけを `~/.agents/laya` に入れ、日本語の問いで動作を確かめる。GPU 版や
+  サーバ用の追加部品は入れない。入った部品のライセンスを一覧にし、コピーレフトが紛れていたら止まる
+- **Hugging Face へつながらない PC でも入れられる。** つながる PC で `--export-model` でモデルを zip にまとめ、
+  つながらない PC で `--model-from` から入れる（社内ミラーは `--hf-endpoint`、部品の wheel は `--find-links`）。
+  起動したサーバは手元のモデルだけを読み、Hugging Face へつながない
+- 導入スクリプトは `tools/laya/` に置いた。使い方・ミラー・ONNX Runtime と INT8 で軽くする選択肢は `tools/laya/README.md`
+
 ### agent-audit・agent-app: ノード予算のトークン上限が数えられていないことを doctor で知らせる（agent-app 0.44.1）
 
 - **`agent-audit doctor` が、トークン上限を設定しているのに数えられていないノードを警告する。** 上限はあるが

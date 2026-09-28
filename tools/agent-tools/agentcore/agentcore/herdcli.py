@@ -919,6 +919,10 @@ CONFIG_HELP = f"""使い方: {PROG} config [--json] [--check judge]
                            （無ければ環境変数 TYPESAFE_API_KEY。off で使わない）
     select.jev.endpoint    Jev の URL（省略時 https://api.typesafe.ai/v1/systemone）
     select.jev.model       Jev のモデル（省略時 jev-latest）
+    select.jev.backend     第 1 段の相手。typesafe（本家 Jev。既定）/ laya（Jev 互換のオープンモデル。
+                           手元の laya-serve へ。CPU だけで動き、日本語は multilingual で読む。
+                           接続先の既定 http://127.0.0.1:8000/v1/systemone、モデルの既定 multilingual、
+                           API キー不要）
     select.min_confidence  jev / judge の答えを採る確度の下限（0〜1。省略時 0.6）
 
     route.min_confidence       `route`（依頼の振り分け）で答えを採る確度の下限（省略時 select.min_confidence）

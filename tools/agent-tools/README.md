@@ -407,9 +407,23 @@ ollama へ回し、判定にクラウドのトークンを使わない。`off` �
 省略すると Ollama の既定 5 分で、それを過ぎると次の判定がモデルの読み込みを待つ
 （gemma4:e4b の実測で 6.24 秒）。残す間はモデルがメモリを占めるので、機械の空きと相談して決める。
 `select.*`（`select.jev.api_key` / `select.jev.endpoint` / `select.jev.model` /
-`select.min_confidence`）は `agent-herd select`——依頼文を見て、候補のどのエージェント・
+`select.jev.backend` / `select.min_confidence`）は `agent-herd select`——依頼文を見て、候補のどのエージェント・
 モデルに任せるかを本家 Jev → judge → agent-audit の格付けの順で決める口——の設定。
-API キーは表示で伏せる。`route.*`（`route.min_confidence` / `route.hold_min_confidence`）は
+API キーは表示で伏せる。
+
+第 1 段は本家 Jev の代わりに、同じ API を話すオープンモデル
+[laya](https://huggingface.co/convaiinnovations/laya)（Convai Innovations）を手元で使える。
+GPU は要らず CPU だけで動き、日本語の依頼も読める（多言語版のモデルを使う）。
+
+導入と起動は [tools/laya](../laya/README.md) を参照（Windows / macOS / Linux、Hugging Face へつながらない PC も可）。
+
+接続先は既定で `http://127.0.0.1:8000/v1/systemone`、モデルは `multilingual`。別の PC で
+立てたときは `select.jev.endpoint` を、サーバに `LAYA_API_KEY` を付けたときは
+`select.jev.api_key`（か同名の環境変数）を設定する。CPU では 1 問に数百ミリ秒〜数秒かかり、
+起動にはモデルの読み込みで十数秒かかる。つながらないときは次の段（judge）へ進む。
+`agent-herd config unset select.jev.backend` で本家 Jev に戻る。
+
+`route.*`（`route.min_confidence` / `route.hold_min_confidence`）は
 `agent-herd route`——依頼の扱いを決める口——の確度の下限。
 `route` は `--ask` で訊く問いを絞れる（`handling` / `task` / `flow` / `skills` / `routine`）。
 問いは 1 問ごとに別のプロンプトなので、絞っても残った問いの答えは変わらない——急がない問いを

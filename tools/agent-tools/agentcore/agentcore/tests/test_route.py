@@ -376,3 +376,36 @@ class RouteCommandTests(IsolatedHome):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LayaStageTests(IsolatedHome):
+    """laya は真偽の問いを `noul` と綴り、答えも `noul`（yes の確率）で返す。"""
+    LAYA = {"enabled": True, "backend": "laya", "endpoint": "http://laya", "model": "multilingual"}
+
+    def test_boolean_questions_are_sent_and_read_as_noul(self):
+        def laya(body):
+            self.assertEqual(body["model"], "multilingual")
+            self.assertEqual(body["questions"]["flow"]["type"], "noul")
+            self.assertEqual(body["questions"]["skill:api-designer"]["type"], "noul")
+            self.assertEqual(body["questions"]["handling"]["type"], "choice")
+            return {"model": "multilingual", "usage": {"input_tokens": 300, "output_tokens": 0},
+                    "routing": {"model": "multilingual"}, "answers": {
+                "handling": {"type": "choice", "choice": "answer", "confidence": 0.5,
+                             "answer_confidence": 0.9, "probabilities": {"answer": 0.9, "converse": 0.1}},
+                "task": {"type": "choice", "choice": "none", "confidence": 0.8,
+                         "answer_confidence": 0.8, "probabilities": {"none": 0.8}},
+                "flow": {"type": "noul", "noul": 0.1, "confidence": 0.9, "answer_confidence": 0.9},
+                "skill:api-designer": {"type": "noul", "noul": 0.7, "confidence": 0.7, "answer_confidence": 0.7},
+                "skill:self-checking": {"type": "noul", "noul": 0.2, "confidence": 0.8, "answer_confidence": 0.8},
+                "routine": {"type": "noul", "noul": 0.3, "confidence": 0.7, "answer_confidence": 0.7},
+                "team": {"type": "choice", "choice": "none", "confidence": 0.85,
+                         "answer_confidence": 0.85, "probabilities": {"none": 0.85}},
+            }}
+
+        result = route.route("この関数は何をする？", CANDIDATES, jev_setting_override=self.LAYA,
+                             jev_request=laya, judge_request=lambda p: self.fail("laya で決まる"))
+        self.assertEqual(result["stage"], "jev")
+        self.assertEqual(result["handling"]["choice"], "answer")
+        self.assertIsNone(result["flow"])
+        self.assertEqual(result["skills"], [{"name": "api-designer", "probability": 0.7}])
+        self.assertEqual(result["routine"], {"value": False, "probability": 0.3, "confidence": 0.7})
