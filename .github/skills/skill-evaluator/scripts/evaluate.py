@@ -13,6 +13,7 @@
     python evaluate.py --auto-collect           # 評価前にメトリクスを自動集計
 """
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -26,6 +27,22 @@ _REG_SCRIPTS = os.path.join(_SKILL_HOME, "git-skill-manager", "scripts")
 if _REG_SCRIPTS not in sys.path:
     sys.path.insert(0, _REG_SCRIPTS)
 from registry import _registry_path
+
+
+def compare_skill_checkpoints(previous_path: str, current_path: str) -> dict:
+    """共通のpure comparatorを使うadvisory。recommendation/promotionは変更しない。"""
+    repo = os.path.abspath(os.path.join(_HERE, "..", "..", "..", ".."))
+    module_path = os.path.join(repo, "tools", "agent-tools", "eval", "evolution.py")
+    spec = importlib.util.spec_from_file_location("agent_evolution", module_path)
+    if not spec or not spec.loader:
+        raise RuntimeError("evolution comparator を読み込めません")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with open(previous_path, encoding="utf-8") as f:
+        previous = json.load(f)
+    with open(current_path, encoding="utf-8") as f:
+        current = json.load(f)
+    return module.compare(previous, current)
 
 
 def load_registry() -> dict | None:
@@ -366,9 +383,19 @@ def main():
         action="store_true",
         help="評価前に metrics_collector.py を実行してメトリクスを最新化する",
     )
+    parser.add_argument("--checkpoint-previous", help="previous accepted Skill qualification JSON")
+    parser.add_argument("--checkpoint-current", help="current Skill qualification JSON")
     args = parser.parse_args()
 
     run_evaluation(args.skill, args.type, auto_collect=args.auto_collect)
+    if bool(args.checkpoint_previous) != bool(args.checkpoint_current):
+        parser.error("checkpoint comparisonにはpreviousとcurrentの両方が必要です")
+    if args.checkpoint_previous:
+        advisory = compare_skill_checkpoints(args.checkpoint_previous, args.checkpoint_current)
+        print(f"Skill checkpoint advisory: {advisory['status']}")
+        regressions = advisory.get("retention", {}).get("regression_case_ids", [])
+        if regressions:
+            print("  regression cases: " + ", ".join(regressions))
 
 
 if __name__ == "__main__":

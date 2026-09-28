@@ -10,6 +10,10 @@
 - `<run>/coverage/coverage.json`: 呼び出し面ごとの測定有無（未測定も隠さない）
 - `archive/`: 結論の根拠としてリポジトリに保存した過去の台帳
 
+Persistent artifactのqualificationをarchiveする場合は、manifestに`artifact_kind` / `artifact_id` /
+immutable checkpoint / eval suite / result refを残す。`RT5` runは`checkpoint_identity`を自動で加える。
+異なるmodel/tool条件のrunをartifact checkpoint比較へ混ぜない。
+
 比較時はモデル以外の manifest 条件を揃える。ハーネス調整では逆にモデルを固定し、変更する
 条件を 1 つにする。
 

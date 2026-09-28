@@ -2540,3 +2540,9 @@ Agent Appの`evaluation.strategy`は`legacy`（既定）、`evidence-shadow`（�
 `tools/agent-tools/eval/model_selection_eval.py` で、同一prompt/candidateの既知outcomeを使い、selector / audit / 最安 / 高格付け / fixture oracleを比較する。PASSは既存verification receipt正典、completionは固定checkpointの達成率（eval専用）。stage・confidence・horizon別集計と0.5〜0.9のthreshold sweepをJSONへ保存する。runtime・本番config・既定0.6は変更しない。
 
 `--selfcheck` はfake応答とoutcomeだけで検証し、`--real-run` は明示した課題を複数の既存Agent CLIで隔離実行してreceiptを収集する。付属9課題のoutcomeは合成値であり実測ではない。詳細は[評価仕様とreal-run手順](MODEL_SELECTION.md)を参照。
+# Evolution Path Qualification
+
+Persistent artifactの変更経路は、新しいrunnerを作らず既存ledgerを
+[`evolution.py`](evolution.py)で比較する。`routing.team`のheld-out suiteは既存readout evaluatorの
+`RT5`で実行する。checkpoint identity、fixture分離、retention/generalization/adaptationの契約は
+[`docs/spec/evolution-path-qualification.md`](../../../docs/spec/evolution-path-qualification.md)を参照。
