@@ -415,20 +415,37 @@ API キーは表示で伏せる。
 [laya](https://huggingface.co/convaiinnovations/laya)（Convai Innovations）を手元で使える。
 GPU は要らず CPU だけで動き、日本語の依頼も読める（多言語版のモデルを使う）。
 
+導入スクリプトが、専用の仮想環境・CPU 版の PyTorch・laya・多言語版のモデル（約 650 MB）を
+`~/.agents/laya` にまとめて入れ、日本語の問いを 1 つ解いて確かめ、第 1 段を laya に向ける。
+要るのは Python 3.10 以上だけ（Windows / macOS / Linux）。
+
 ```bash
-# CPU 版の PyTorch と laya のサーバを入れる（GPU 版の PyTorch は要らない）
-pip install --index-url https://download.pytorch.org/whl/cpu torch
-pip install "laya[serve]"
-# 多言語版だけを CPU で読み込み、この PC からだけ受け付ける
-LAYA_DEVICE=cpu LAYA_MODELS=multilingual LAYA_MAX_LOADED=1 LAYA_HOST=127.0.0.1 laya-serve
-# 第 1 段を laya に向ける（API キーは不要）
-agent-herd config set select.jev.backend laya
+# macOS / Linux
+sh tools/agent-tools/laya/install-laya.sh
+~/.agents/laya/laya-serve.sh            # 起動（この PC からだけ受け付ける）
 ```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File tools\agent-tools\laya\install-laya.ps1
+& "$env:USERPROFILE\.agents\laya\laya-serve.cmd"   # 起動
+```
+
+- GPU 版の PyTorch（数 GB）は落とさない。容量は PyTorch と部品で数百 MB、モデルで約 650 MB。
+  消すときは `~/.agents/laya` を消すだけ。
+- 入った部品のライセンスを一覧にして `~/.agents/laya/licenses.json` に残す。GPL などの
+  コピーレフトが紛れていたら止まる。laya 本体とモデルは Apache-2.0。PyTorch・NumPy などは
+  BSD 系、certifi・tqdm は MPL-2.0（改変しなければ義務なし）で、これらは laya を動かすのに欠かせない。
+- サーバは laya 付属のものではなく標準ライブラリだけの小さなもの（`laya_server.py`）を使い、
+  いつも CPU・多言語版で答える。
+- agent-herd を WSL で使っているなら、導入も WSL の中で行う（agent-herd と同じ側に置く）。
+- `--dry-run` で何をするかだけ見られる。`--port` で待ち受けを変えると接続先の設定も合わせる。
+  社内ミラーから入れるときは `--torch-index-url`。
 
 接続先は既定で `http://127.0.0.1:8000/v1/systemone`、モデルは `multilingual`。別の PC で
 立てたときは `select.jev.endpoint` を、サーバに `LAYA_API_KEY` を付けたときは
 `select.jev.api_key`（か同名の環境変数）を設定する。CPU では 1 問に数百ミリ秒〜数秒かかり、
-起動直後の 1 問目はモデルの読み込みを待つ。つながらないときは次の段（judge）へ進む。
+起動にはモデルの読み込みで十数秒かかる。つながらないときは次の段（judge）へ進む。
 `agent-herd config unset select.jev.backend` で本家 Jev に戻る。
 
 `route.*`（`route.min_confidence` / `route.hold_min_confidence`）は
