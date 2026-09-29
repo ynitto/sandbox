@@ -2055,6 +2055,29 @@ async function openSessionInRepo(repo, id, options = {}) {
   await openSession(id, options);
 }
 
+// 通知を押したとき: 会話を読んで、その会話が属する画面（領域・リポジトリ・プロジェクト）で開く。
+// タスク・ワークフローを AI と作る会話は、会話の画面ではなくその項目の「AIと作る」画面で開く。
+async function openNotifiedSession(id) {
+  const sess = await api.readSession(id);
+  const dest = AgentNavigation.sessionDestination(sess);
+  if (dest.area === 'conversation') {
+    // プロジェクトの画面にいるなら、会話が入っているプロジェクトへ選び直す（一覧はプロジェクトで絞られる）
+    if (state.area === 'projects' && sess.project && sess.project !== state.config.lastProject) await Projects.choose(sess.project);
+    await openSessionInRepo(sess.repo, id);
+    return;
+  }
+  if (sess.repo && sess.repo !== state.repo) {
+    if (!state.config.repos.includes(sess.repo)) throw new Error('登録していないフォルダです');
+    await selectRepo(sess.repo);
+    renderRepos();
+  }
+  const key = dest.area === 'tasks' ? 'lastTask' : 'lastWorkflow';
+  if (dest.area === 'tasks') state.selectedTask = dest.selected;
+  else state.selectedWorkflow = dest.selected;
+  state.config = await api.saveConfig({ [key]: { ...(state.config[key] || {}), [state.repo]: dest.selected } });
+  await showArea(dest.area, { action: 'teach' });
+}
+
 async function inspectRoutine() {
   const source = state.routine;
   if (!source || source.busy) return;
@@ -3548,10 +3571,7 @@ async function init() {
   // OS の通知を押したとき（main が前面に戻してから知らせる）
   api.onNotifyOpen((p) => {
     if (!p || !p.id) return;
-    // 別のリポジトリの会話でも開けるように、まず会話を読んで置き場を確かめる
-    api.readSession(p.id)
-      .then((sess) => openSessionInRepo(sess.repo, p.id))
-      .catch((err) => notice(err.message, 'error'));
+    openNotifiedSession(p.id).catch((err) => notice(err.message, 'error'));
   });
   // 起動先が tmux に決まった合図。依頼が CLI に届くのを待たずに端末ミラーを出す——
   // 自動選択では会話を作る時点で起動先が決まっておらず、ここまで端末を出せない。

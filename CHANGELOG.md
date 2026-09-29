@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: 通知を押したとき、その会話の画面で開く（agent-app 0.45.1）
+
+- **タスク・ワークフローを AI と作る会話の通知を押すと、サイドバーの「タスク」「ワークフロー」の該当項目で開く。**
+  これまでは端末は正しく開くものの、サイドバーが常に「会話」になり、見出しも会話の画面のものになっていた
+- プロジェクトの画面で別のプロジェクトの会話の通知を押したときは、そのプロジェクトへ選び直してから開く
+
 ### statemachine-use・agent-app: 実行する人が入れる値を `inputs:` で宣言する（statemachine-use 2.3.0・agent-app 0.45.0）
 
 - **workflow.yaml のトップレベルに `inputs:` を書けるようにした。** 値ごとに `label`（画面に出す名前）・

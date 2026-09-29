@@ -277,6 +277,17 @@ test('実行状態を取得できない場合も保存済み定義をタスク�
   assert.deepStrictEqual(taskItems({ machines: 'invalid' }, null), []);
 });
 
+test('通知から開く会話は、その会話が属する領域の画面で開く', () => {
+  const { sessionDestination } = require('../src/renderer/navigation');
+  assert.deepStrictEqual(sessionDestination({ kind: 'task', task: { machine: 'release-check' } }), { area: 'tasks', selected: 'machine:release-check' });
+  assert.deepStrictEqual(sessionDestination({ kind: 'workflow', workflow: { id: 'weekly' } }), { area: 'workflows', selected: 'weekly' });
+  assert.deepStrictEqual(sessionDestination({ kind: 'conversation', project: 'p' }), { area: 'conversation', selected: '' });
+  assert.deepStrictEqual(sessionDestination({ kind: 'task', task: null }), { area: 'conversation', selected: '' });
+  assert.deepStrictEqual(sessionDestination(null), { area: 'conversation', selected: '' });
+  const renderer = fs.readFileSync(path.join(__dirname, '../src/renderer/renderer.js'), 'utf8');
+  assert.match(renderer, /api\.onNotifyOpen\([\s\S]*?openNotifiedSession\(p\.id\)/, '通知は属する画面を選んでから会話を開く');
+});
+
 test('ナビゲーション契約はブラウザでは window へ公開する', () => {
   const modulePath = require.resolve('../src/renderer/navigation');
   const originalWindow = global.window;
