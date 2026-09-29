@@ -1,4 +1,4 @@
-"""pair-align の結合テスト。実装・設計書の 2 リポジトリを一時フォルダに作り、下請けスクリプトを通す。
+"""concord の結合テスト。実装・設計書の 2 リポジトリを一時フォルダに作り、下請けスクリプトを通す。
 
 LLM は呼ばない。アクションがやる判断（計画を書く・変える）は、テストが代わりにファイルを書いて進める。
 graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動更新の有無）を記録する。
@@ -126,7 +126,7 @@ def commit(repo: Path, files: dict[str, str], message: str) -> None:
     git(repo, "commit", "-q", "-m", message)
 
 
-class PairAlignTest(unittest.TestCase):
+class ConcordTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -141,14 +141,14 @@ class PairAlignTest(unittest.TestCase):
         install.install(self.design, "design", "../impl")
         for repo in (self.impl, self.design):
             git(repo, "add", "-A")
-            git(repo, "commit", "-q", "-m", "add pair align")
+            git(repo, "commit", "-q", "-m", "add concord")
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
         self.log = self.tmp / "graphify.log"
 
     def run_pa(self, repo: Path, *args: str) -> subprocess.CompletedProcess:
         env = {**os.environ, **GIT_ENV, "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin"}
-        return subprocess.run([sys.executable, ".statemachine/pair_align/pair_align.py", *args],
+        return subprocess.run([sys.executable, ".statemachine/concord/concord.py", *args],
                               cwd=repo, capture_output=True, text=True, env=env)
 
     def use_graphify_stub(self) -> None:
@@ -160,11 +160,11 @@ class PairAlignTest(unittest.TestCase):
         return self.log.read_text(encoding="utf-8").splitlines() if self.log.is_file() else []
 
     def write_plan(self, text: str) -> None:
-        (self.impl / ".pair-align").mkdir(exist_ok=True)
-        (self.impl / ".pair-align/plan.md").write_text(text, encoding="utf-8")
+        (self.impl / ".concord").mkdir(exist_ok=True)
+        (self.impl / ".concord/plan.md").write_text(text, encoding="utf-8")
 
     def set_check(self, repo: Path, command: list[str]) -> None:
-        path = repo / ".statemachine/pair_align/pair.json"
+        path = repo / ".statemachine/concord/concord.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
         cfg["check"] = command
         path.write_text(json.dumps(cfg), encoding="utf-8")
@@ -175,19 +175,19 @@ class PairAlignTest(unittest.TestCase):
         r = self.run_pa(self.impl, "explore", "--term", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("FOUND 1 files (graphify: not-installed)", r.stdout)
-        report = (self.impl / ".pair-align/explore.md").read_text(encoding="utf-8")
+        report = (self.impl / ".concord/explore.md").read_text(encoding="utf-8")
         self.assertIn("docs/api.md:3:## hello", report)
-        self.assertTrue((self.impl / ".pair-align/before.json").is_file())
+        self.assertTrue((self.impl / ".concord/before.json").is_file())
         self.assertEqual(self.run_pa(self.impl, "explore").returncode, 2)  # 語が無い
 
     def test_graph_is_rebuilt_only_when_the_repo_changes(self) -> None:
         self.use_graphify_stub()
         r = self.run_pa(self.impl, "explore", "--term", "hello")
         self.assertIn("graphify: updated", r.stdout)
-        self.assertIn("- docs/api.md", (self.impl / ".pair-align/explore.md").read_text(encoding="utf-8"))
+        self.assertIn("- docs/api.md", (self.impl / ".concord/explore.md").read_text(encoding="utf-8"))
         first = self.calls()
         self.assertEqual(first[0], f"{self.design} update . --force")   # 参照先の中で作り、
-        self.assertTrue((self.impl / ".pair-align/graph/pair/graph.json").is_file())  # 自分の側に置く
+        self.assertTrue((self.impl / ".concord/graph/ref/graph.json").is_file())  # 自分の側に置く
         self.assertFalse((self.design / "graphify-out").exists())
         self.assertIn("query hello --graph", first[1])
 
@@ -209,13 +209,13 @@ class PairAlignTest(unittest.TestCase):
         self.assertIn("FOUND 2 files (graphify: updated)", r.stdout)
         self.assertEqual(self.calls()[0], f"{self.impl} update . --force")
         self.assertIn("affected hello --graph", self.calls()[1])
-        report = (self.impl / ".pair-align/impact.md").read_text(encoding="utf-8")
+        report = (self.impl / ".concord/impact.md").read_text(encoding="utf-8")
         self.assertIn("- src/use.py:3:hello()", report)
         self.assertIn("## 候補のファイル\n\n- src/use.py\n- src/app.py", report)
 
     def test_graphify_off(self) -> None:
         self.use_graphify_stub()
-        path = self.impl / ".statemachine/pair_align/pair.json"
+        path = self.impl / ".statemachine/concord/concord.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
         cfg["graphify"] = "off"
         path.write_text(json.dumps(cfg), encoding="utf-8")
@@ -226,7 +226,7 @@ class PairAlignTest(unittest.TestCase):
 
     def test_verify_plan_accepts_aligned_and_drift_plans(self) -> None:
         self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)  # まだ無い
-        tpl = (self.impl / ".statemachine/pair_align/templates/plan.md").read_text(encoding="utf-8")
+        tpl = (self.impl / ".statemachine/concord/templates/plan.md").read_text(encoding="utf-8")
         self.write_plan(tpl)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
@@ -269,7 +269,7 @@ class PairAlignTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("own=changed pair=same", r.stdout)
+        self.assertIn("own=changed ref=same", r.stdout)
 
         # 変更案が「なし」なのに参照先を変えたら落とす。
         (self.design / "docs/api.md").write_text("勝手に変えた\n", encoding="utf-8")
@@ -286,7 +286,7 @@ class PairAlignTest(unittest.TestCase):
         self.assertIn("参照先のリポジトリが変わっていません", r.stderr)
 
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
-        # 各リポジトリの検査は、それぞれの pair.json の check。
+        # 各リポジトリの検査は、それぞれの concord.json の check。
         self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('return 2' not in open('src/app.py').read())"])
         self.set_check(self.design, [sys.executable, "-c", "import sys; sys.exit('3 を返す' not in open('docs/api.md').read())"])
         r = self.run_pa(self.impl, "verify-apply")
@@ -297,7 +297,7 @@ class PairAlignTest(unittest.TestCase):
         self.set_check(self.design, [sys.executable, "-c", "import sys; sys.exit('2 を返す' not in open('docs/api.md').read())"])
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("own=changed pair=changed", r.stdout)
+        self.assertIn("own=changed ref=changed", r.stdout)
 
     # ------------------------------------------------------------ 影響範囲を測る
 
@@ -305,7 +305,7 @@ class PairAlignTest(unittest.TestCase):
         commit(self.impl, {"src/use.py": "from app import hello\n\nprint(hello())\n",
                            "src/other.py": "def helloWorld():\n    return 0\n"}, "caller")
 
-    def test_verify_plan_measures_impact_of_pair_change(self) -> None:
+    def test_verify_plan_measures_impact_of_ref_change(self) -> None:
         self.add_caller()
         self.write_plan(PLAN_DRIFT)
         r = self.run_pa(self.impl, "verify-plan")
@@ -313,7 +313,7 @@ class PairAlignTest(unittest.TestCase):
         self.assertIn("計画の影響範囲に無いファイル", r.stderr)
         self.assertIn("src/use.py", r.stderr)
         self.assertNotIn("src/other.py", r.stderr)  # 語単位で引くので helloWorld は拾わない
-        report = (self.impl / ".pair-align/impact.md").read_text(encoding="utf-8")
+        report = (self.impl / ".concord/impact.md").read_text(encoding="utf-8")
         self.assertIn("- src/use.py", report)
 
         self.write_plan(PLAN_DRIFT.replace("- src/app.py — hello の戻り値",
@@ -322,15 +322,15 @@ class PairAlignTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("影響範囲を測った: 2 files", r.stdout)
 
-    def test_verify_plan_does_not_measure_without_pair_change(self) -> None:
+    def test_verify_plan_does_not_measure_without_ref_change(self) -> None:
         self.add_caller()
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "OK plan")
-        self.assertFalse((self.impl / ".pair-align/impact.md").exists())
+        self.assertFalse((self.impl / ".concord/impact.md").exists())
 
-    def test_verify_apply_remeasures_from_the_actual_pair_change(self) -> None:
+    def test_verify_apply_remeasures_from_the_actual_ref_change(self) -> None:
         self.add_caller()
         commit(self.impl, {"src/bye.py": "def goodbye_world():\n    return 3\n"}, "bye")
         plan = PLAN_DRIFT.replace("- src/app.py — hello の戻り値",
@@ -347,7 +347,7 @@ class PairAlignTest(unittest.TestCase):
         self.assertIn("src/use.py", r.stderr)   # 影響範囲に挙げたが直していない
         self.assertIn("src/bye.py", r.stderr)   # 計画に無かった変更の影響
         self.assertNotIn("src/app.py,", r.stderr)
-        self.assertTrue((self.impl / ".pair-align/impact-after.md").is_file())
+        self.assertTrue((self.impl / ".concord/impact-after.md").is_file())
 
         (self.impl / "src/use.py").write_text("from app import hello\n\nprint('v', hello())\n", encoding="utf-8")
         self.write_plan(plan + "- src/bye.py — 変更不要: 名前だけ同じ別物\n")
@@ -361,23 +361,23 @@ class PairAlignTest(unittest.TestCase):
 
     # ------------------------------------------------------------ 設定・設置・定義
 
-    def test_missing_pair_is_reported(self) -> None:
-        cfg = self.impl / ".statemachine/pair_align/pair.json"
-        cfg.write_text(json.dumps({"side": "impl", "pair_path": "../nowhere"}), encoding="utf-8")
+    def test_missing_ref_is_reported(self) -> None:
+        cfg = self.impl / ".statemachine/concord/concord.json"
+        cfg.write_text(json.dumps({"side": "impl", "ref_path": "../nowhere"}), encoding="utf-8")
         r = self.run_pa(self.impl, "explore", "--term", "x")
         self.assertEqual(r.returncode, 2)
-        self.assertIn("pair_path", r.stderr)
+        self.assertIn("ref_path", r.stderr)
 
     def test_install_is_idempotent_and_replaces_old_files(self) -> None:
-        stale = self.impl / ".statemachine/pair_align/actions/old.md"
+        stale = self.impl / ".statemachine/concord/actions/old.md"
         stale.write_text("old", encoding="utf-8")
         install.install(self.impl, None, None)
         self.assertFalse(stale.exists())
-        cfg = json.loads((self.impl / ".statemachine/pair_align/pair.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg, {"graphify": "auto", "side": "impl", "pair_path": "../design"})
-        self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".pair-align/"), 1)
+        cfg = json.loads((self.impl / ".statemachine/concord/concord.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg, {"graphify": "auto", "side": "impl", "ref_path": "../design"})
+        self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".concord/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
-                         [".statemachine/pair_align/"])
+                         [".statemachine/concord/"])
         fresh = self.tmp / "fresh"
         fresh.mkdir()
         git(fresh, "init", "-q")

@@ -1,13 +1,13 @@
-# pair-align
+# concord
 
 **実装のリポジトリと設計書のリポジトリを、互いに参照しながら変えていくためのステートマシン。**
 やりたいことを伝えると、参照先のリポジトリを探して自分の変更を練り、確認を取ってから変える。
 参照先の前提・制約とずれていれば、参照先の変更案とその影響範囲も見せ、了承されれば両方を変える。
 
-> 設計: [`docs/designs/pair-align-design.md`](../../docs/designs/pair-align-design.md)
+> 設計: [`docs/designs/concord-design.md`](../../docs/designs/concord-design.md)
 
 - 同じ定義を**両方のリポジトリに置く**。実装側で動かせば参照先は設計書、設計書側で動かせば参照先は実装
-- 実行は statemachine-use スキル（「pair_align のステートマシンを実行して」）。依存は python3 と git
+- 実行は statemachine-use スキル（「concord のステートマシンを実行して」）。依存は python3 と git
 - 参照先を探すとき、[graphify](https://pypi.org/project/graphifyy/) があれば知識グラフを使う。
   グラフはリポジトリが変わるたびに自動で作り直す。無ければ文字列検索だけで動く
 
@@ -15,32 +15,32 @@
 
 ```bash
 # 実装のリポジトリへ（参照先 = 設計書）
-python3 tools/pair-align/install.py ~/work/my-app --side impl --pair ../my-app-docs
+python3 tools/concord/install.py ~/work/my-app --side impl --ref ../my-app-docs
 # 設計書のリポジトリへ（参照先 = 実装）
-python3 tools/pair-align/install.py ~/work/my-app-docs --side design --pair ../my-app
+python3 tools/concord/install.py ~/work/my-app-docs --side design --ref ../my-app
 ```
 
-`<リポジトリ>/.statemachine/pair_align/` に定義が入り、`pair.json` に設定が書かれる。
-手で置くなら `machine/` の中身をそのフォルダへ写し、`pair.json` を直せばよい。
+`<リポジトリ>/.statemachine/concord/` に定義が入り、`concord.json` に設定が書かれる。
+手で置くなら `machine/` の中身をそのフォルダへ写し、`concord.json` を直せばよい。
 
 ```json
-{ "side": "impl", "pair_path": "../my-app-docs", "graphify": "auto" }
+{ "side": "impl", "ref_path": "../my-app-docs", "graphify": "auto" }
 ```
 
 | 項目 | 値 |
 |---|---|
 | `side` | このリポジトリの側。`impl`（実装）か `design`（設計書） |
-| `pair_path` | 参照先のリポジトリのパス。相対パスはこのリポジトリのルートから。**置き場所が変わったらここを手で直す** |
+| `ref_path` | 参照先のリポジトリのパス。相対パスはこのリポジトリのルートから。**置き場所が変わったらここを手で直す** |
 | `graphify` | `auto`（あれば使う）か `off` |
-| `check` | 任意。変えたあとに実行する検査コマンドの配列（例: `["python3", "-m", "pytest", "-q"]`）。参照先も変えたときは、参照先の `pair.json` の `check` も実行する |
+| `check` | 任意。変えたあとに実行する検査コマンドの配列（例: `["python3", "-m", "pytest", "-q"]`）。参照先も変えたときは、参照先の `concord.json` の `check` も実行する |
 
-計画・探した結果・graphify のグラフは `<リポジトリ>/.pair-align/` に置く（インストーラーが `.gitignore` に足す）。
+計画・探した結果・graphify のグラフは `<リポジトリ>/.concord/` に置く（インストーラーが `.gitignore` に足す）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
-もう一度 `install.py` を実行すると定義とスクリプトが入れ替わり、`pair.json` はそのまま残る。
+もう一度 `install.py` を実行すると定義とスクリプトが入れ替わり、`concord.json` はそのまま残る。
 
 ## 使い方
 
-エージェントに「pair_align のステートマシンを実行して」と頼み、やりたいことを伝える。
+エージェントに「concord のステートマシンを実行して」と頼み、やりたいことを伝える。
 
 ```
 plan ─→ confirm ─┬─ OK ─→ apply ─→ done
@@ -63,7 +63,7 @@ plan ─→ confirm ─┬─ OK ─→ apply ─→ done
 | 制約 | 参照先が「こうしなければならない / してはならない」と課している条件 |
 | その他 | それ以外の関係する記述（決まっていないこと・任されていること・補足） |
 
-計画は `.pair-align/plan.md` に書かれ、書いたあとにスクリプトが形を検査する。
+計画は `.concord/plan.md` に書かれ、書いたあとにスクリプトが形を検査する。
 
 - 前提・制約・その他・ずれの各項目に、参照先に実在するファイルのパスが根拠として付いているか
 - ずれがあるときは参照先の変更案と影響範囲があり、影響範囲に自分のリポジトリに実在するパスがあるか
@@ -83,7 +83,7 @@ plan ─→ confirm ─┬─ OK ─→ apply ─→ done
 | 変えたあと | 参照先の**実際の変更**（差分の定義・見出し・`…`）と、計画の名前 | 測ったファイルを直したか、計画で「変更不要」としたか |
 
 変えたあとに測り直すのは、参照先を計画より広く変えた場合にもその影響を取りこぼさないため。
-測った結果は `.pair-align/impact.md`（確認の前）と `.pair-align/impact-after.md`（変えたあと）に残る。
+測った結果は `.concord/impact.md`（確認の前）と `.concord/impact-after.md`（変えたあと）に残る。
 
 確認は会話の中で待つ。会話で動かすことを前提にしており、人の返事を受け取れない無人の実行ではここで止まる。
 
@@ -91,7 +91,7 @@ plan ─→ confirm ─┬─ OK ─→ apply ─→ done
 
 graphify が入っていれば、探すたびにリポジトリの今の中身（HEAD と作業中の変更）を控えた印と比べ、
 変わっていれば `graphify update` でグラフを作り直してから引く。変わっていなければ前のグラフをそのまま使う。
-グラフは自分の `.pair-align/graph/` に書くので、参照先には何も書かない。
+グラフは自分の `.concord/graph/` に書くので、参照先には何も書かない。
 
 - 参照先は `graphify query` で関係するノード（見出し・関数・呼び出し元）をたどる
 - 自分のリポジトリの影響範囲は `graphify affected` で、変わる名前に依存しているところをたどる（計画の検査と変えたあとの検査が自動で呼ぶ）
@@ -100,8 +100,8 @@ graphify が入っていれば、探すたびにリポジトリの今の中身�
 手で呼ぶこともできる（リポジトリのルートで実行する）。
 
 ```bash
-python3 .statemachine/pair_align/pair_align.py explore --term 語   # 参照先を探す
-python3 .statemachine/pair_align/pair_align.py impact --term 語    # 自分のリポジトリの影響範囲を探す
+python3 .statemachine/concord/concord.py explore --term 語   # 参照先を探す
+python3 .statemachine/concord/concord.py impact --term 語    # 自分のリポジトリの影響範囲を探す
 ```
 
 graphify の導入はこのリポジトリの `install.py`（外部ツールのセットアップ）でも入る。
@@ -109,5 +109,5 @@ graphify の導入はこのリポジトリの `install.py`（外部ツールの�
 ## テスト
 
 ```bash
-python -m unittest discover -s tools/pair-align/tests
+python -m unittest discover -s tools/concord/tests
 ```

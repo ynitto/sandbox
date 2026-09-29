@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""pair_align — 参照先のリポジトリ（実装⇔設計書）を読んで、自分の変更を練るステートマシンの下請け。
+"""concord — 参照先のリポジトリ（実装⇔設計書）を読んで、自分の変更を練るステートマシンの下請け。
 
 ステートマシン（同じフォルダの workflow.yaml）のうち、機械で決まる仕事だけをここに置く。
 判断（参照先の前提・制約・その他、ずれ、変更案、影響範囲）はアクションの側でモデルが行う。
 
     explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
-    verify-plan         計画（.pair-align/plan.md）が決まった形か、根拠のパスが実在するかを検査する。
+    verify-plan         計画（.concord/plan.md）が決まった形か、根拠のパスが実在するかを検査する。
                         参照先の変更案があれば、それを自分に適用したときの影響範囲を測り、計画の影響範囲が
                         測ったファイルをすべて挙げているかも検査する
     verify-apply        計画どおりに変えたか（参照先を変えてよいのは変更案があるときだけ）と、検査コマンドを確かめる。
                         参照先を変えたら、実際の変更から影響範囲を測り直し、測ったファイルを直したか
                         「変更不要」としたかを検査する
 
-置き場所は `<リポジトリ>/.statemachine/pair_align/`。設定は同じフォルダの pair.json、
-作業ファイルと graphify のグラフは `<リポジトリ>/.pair-align/` に置く。依存は python3 と git のみ
+置き場所は `<リポジトリ>/.statemachine/concord/`。設定は同じフォルダの concord.json、
+作業ファイルと graphify のグラフは `<リポジトリ>/.concord/` に置く。依存は python3 と git のみ
 （graphify は任意）。
 
 graphify のグラフは、リポジトリの HEAD と作業中の変更から作る「印」を控えておき、
 explore / impact のたびに印が変わっていれば `graphify update` で作り直す（自動更新）。
-グラフは参照先の中ではなく自分の `.pair-align/graph/` に書く（探すだけで参照先に何も書かない）。
+グラフは参照先の中ではなく自分の `.concord/graph/` に書く（探すだけで参照先に何も書かない）。
 """
 
 from __future__ import annotations
@@ -35,9 +35,9 @@ import sys
 from pathlib import Path
 
 MACHINE_DIR = Path(__file__).resolve().parent
-MACHINE_REL = ".statemachine/pair_align"
-CONFIG_NAME = "pair.json"
-DATA_DIRNAME = ".pair-align"
+MACHINE_REL = ".statemachine/concord"
+CONFIG_NAME = "concord.json"
+DATA_DIRNAME = ".concord"
 SIDES = {"impl": "実装", "design": "設計書"}
 
 PLAN_HEADINGS = (
@@ -80,7 +80,7 @@ _DIFF_TERMS = (
 _WORDLIKE = re.compile(r"^[A-Za-z0-9_$]+$")
 
 
-class PairAlignError(Exception):
+class ConcordError(Exception):
     """利用者が直せる設定・状態の誤り（終了コード 2）。"""
 
 
@@ -100,19 +100,19 @@ def run(argv: list[str], cwd: Path, timeout: int, env: dict | None = None) -> tu
 def load_config(machine_dir: Path) -> dict:
     path = machine_dir / CONFIG_NAME
     if not path.is_file():
-        raise PairAlignError(f"設定がありません: {path}\n"
-                             '  例: {"side": "impl", "pair_path": "../my-design"}')
+        raise ConcordError(f"設定がありません: {path}\n"
+                             '  例: {"side": "impl", "ref_path": "../my-design"}')
     config = json.loads(path.read_text(encoding="utf-8"))
     if config.get("side") not in SIDES:
-        raise PairAlignError(f"{path} の side は impl か design です（今: {config.get('side')!r}）")
-    if not config.get("pair_path"):
-        raise PairAlignError(f"{path} の pair_path が空です（参照先のリポジトリのパスを書いてください）")
+        raise ConcordError(f"{path} の side は impl か design です（今: {config.get('side')!r}）")
+    if not config.get("ref_path"):
+        raise ConcordError(f"{path} の ref_path が空です（参照先のリポジトリのパスを書いてください）")
     config.setdefault("graphify", "auto")
     if config["graphify"] not in ("auto", "off"):
-        raise PairAlignError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
+        raise ConcordError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
     check = config.get("check")
     if check is not None and not (isinstance(check, list) and check and all(isinstance(a, str) for a in check)):
-        raise PairAlignError(f'{path} の check はコマンドの配列です（例: ["python3", "-m", "pytest", "-q"]）')
+        raise ConcordError(f'{path} の check はコマンドの配列です（例: ["python3", "-m", "pytest", "-q"]）')
     return config
 
 
@@ -121,23 +121,23 @@ class Ctx:
         self.root = root
         self.config = load_config(MACHINE_DIR)
         self.side = self.config["side"]
-        self.pair_side = "design" if self.side == "impl" else "impl"
-        pair = Path(os.path.expanduser(self.config["pair_path"]))
-        self.pair = (pair if pair.is_absolute() else root / pair).resolve()
+        self.ref_side = "design" if self.side == "impl" else "impl"
+        ref = Path(os.path.expanduser(self.config["ref_path"]))
+        self.ref = (ref if ref.is_absolute() else root / ref).resolve()
         self.data = root / DATA_DIRNAME
         self.plan = self.data / "plan.md"
-        if not self.pair.is_dir() or run(["git", "rev-parse", "--show-toplevel"], self.pair, GIT_TIMEOUT)[0]:
-            raise PairAlignError(f"参照先の git リポジトリが見つかりません: {self.pair}\n"
-                                 f"  {MACHINE_DIR / CONFIG_NAME} の pair_path を直してください")
+        if not self.ref.is_dir() or run(["git", "rev-parse", "--show-toplevel"], self.ref, GIT_TIMEOUT)[0]:
+            raise ConcordError(f"参照先の git リポジトリが見つかりません: {self.ref}\n"
+                                 f"  {MACHINE_DIR / CONFIG_NAME} の ref_path を直してください")
 
     def repo(self, which: str) -> Path:
-        return self.pair if which == "pair" else self.root
+        return self.ref if which == "ref" else self.root
 
 
 def repo_root(start: Path) -> Path:
     rc, out = run(["git", "rev-parse", "--show-toplevel"], start, GIT_TIMEOUT)
     if rc != 0:
-        raise PairAlignError(f"git リポジトリではありません: {start}")
+        raise ConcordError(f"git リポジトリではありません: {start}")
     return Path(out.strip())
 
 
@@ -256,7 +256,7 @@ def terms_of(args: argparse.Namespace) -> list[str]:
         if t and t not in terms:
             terms.append(t)
     if not terms:
-        raise PairAlignError("検索語を --term で渡してください")
+        raise ConcordError("検索語を --term で渡してください")
     return terms[:MAX_TERMS]
 
 
@@ -274,12 +274,12 @@ def write_report(ctx: Ctx, name: str, title: str, repo: Path, terms: list[str], 
 
 def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
     terms = terms_of(args)
-    body, files, note = search(ctx, "pair", terms, "query")
-    path = write_report(ctx, "explore.md", f"参照先（{SIDES[ctx.pair_side]}）で関係する箇所",
-                        ctx.pair, terms, note, body, files)
+    body, files, note = search(ctx, "ref", terms, "query")
+    path = write_report(ctx, "explore.md", f"参照先（{SIDES[ctx.ref_side]}）で関係する箇所",
+                        ctx.ref, terms, note, body, files)
     # verify-apply が「どちらを変えたか」を測るための印。計画を練る間は何も変えないので、探すたびに取り直してよい。
     (ctx.data / "before.json").write_text(json.dumps(
-        {"own": stamp(ctx.root), "pair": stamp(ctx.pair), "own_head": head(ctx.root),
+        {"own": stamp(ctx.root), "ref": stamp(ctx.ref), "own_head": head(ctx.root),
          "own_files": dirty_files(ctx.root)}, indent=2) + "\n", encoding="utf-8")
     print(f"FOUND {len(files)} files (graphify: {note})")
     print(f"  詳細: {path.relative_to(ctx.root)}")
@@ -395,7 +395,7 @@ def cited(line: str, repo: Path) -> list[str]:
     return paths
 
 
-def verify_plan_text(text: str, root: Path, pair: Path) -> list[str]:
+def verify_plan_text(text: str, root: Path, ref: Path) -> list[str]:
     problems, bodies = sections(text, PLAN_HEADINGS)
     if problems:
         return problems
@@ -406,22 +406,22 @@ def verify_plan_text(text: str, root: Path, pair: Path) -> list[str]:
         if not listed:
             problems.append(f"{heading} は箇条書きにしてください（無ければ「なし」）")
         for item in listed:
-            if not cited(item, pair):
+            if not cited(item, ref):
                 problems.append(f"{heading} の項目に、参照先に実在する根拠のパスがありません: {item[:80]}")
     drift = not is_none(bodies["## ずれ"])
-    pair_change = not is_none(bodies["## 参照先の変更案"])
+    ref_change = not is_none(bodies["## 参照先の変更案"])
     impact = not is_none(bodies["## 影響範囲"])
-    if drift and not pair_change:
+    if drift and not ref_change:
         problems.append("ずれがあるのに、参照先の変更案が「なし」です（ずれを残すなら、ずれではなくその他に書く）")
-    if not drift and pair_change:
+    if not drift and ref_change:
         problems.append("ずれが「なし」なのに、参照先の変更案があります")
-    if pair_change and not impact:
+    if ref_change and not impact:
         problems.append("参照先の変更案があるのに、影響範囲が「なし」です")
     if impact:
         for item in items(bodies["## 影響範囲"]) or [bodies["## 影響範囲"]]:
             if not cited(item, root):
                 problems.append(f"影響範囲の項目に、自分のリポジトリに実在するパスがありません: {item[:80]}")
-    if pair_change and not terms_from_plan(bodies):
+    if ref_change and not terms_from_plan(bodies):
         problems.append("参照先の変更案で変わる名前（関数・API・用語・見出し）を `…` で囲んでください"
                         "（影響範囲を測る語になります）")
     return problems
@@ -432,7 +432,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         print(f"計画がありません: {DATA_DIRNAME}/plan.md", file=sys.stderr)
         return 1
     text = ctx.plan.read_text(encoding="utf-8")
-    problems = verify_plan_text(text, ctx.root, ctx.pair)
+    problems = verify_plan_text(text, ctx.root, ctx.ref)
     measured: list[str] = []
     if not problems:
         _, bodies = sections(text, PLAN_HEADINGS)
@@ -474,21 +474,21 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
     before = json.loads(before_file.read_text(encoding="utf-8"))
     own_changed = stamp(ctx.root) != before["own"]
-    pair_changed = stamp(ctx.pair) != before["pair"]
+    ref_changed = stamp(ctx.ref) != before["ref"]
     want_own = not is_none(bodies.get("## 自分の変更案", "なし"))
-    want_pair = not is_none(bodies.get("## 参照先の変更案", "なし"))
+    want_ref = not is_none(bodies.get("## 参照先の変更案", "なし"))
 
     problems = []
     if want_own and not own_changed:
         problems.append("自分の変更案があるのに、自分のリポジトリが変わっていません")
-    if want_pair and not pair_changed:
+    if want_ref and not ref_changed:
         problems.append("参照先の変更案があるのに、参照先のリポジトリが変わっていません")
-    if not want_pair and pair_changed:
+    if not want_ref and ref_changed:
         problems.append("参照先の変更案は「なし」なのに、参照先のリポジトリが変わっています（戻してください）")
     measured: list[str] = []
-    if pair_changed:
+    if ref_changed:
         # 参照先を実際に変えたあとの影響範囲を測り直す。測ったファイルは、直したか「変更不要」と書いたかのどちらか。
-        measured = measure(ctx, unique(terms_from_diff(ctx.pair) + terms_from_plan(bodies)), "impact-after.md",
+        measured = measure(ctx, unique(terms_from_diff(ctx.ref) + terms_from_plan(bodies)), "impact-after.md",
                            f"参照先の変更後に、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）")
         touched = changed_since(ctx.root, before.get("own_head", ""), before.get("own_files", {}))
         waived = listed_paths(bodies.get("## 影響範囲", ""), ctx.root, only_no_change=True)
@@ -499,24 +499,24 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                 f"「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(untouched)
                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）")
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
-    if pair_changed:
-        # 参照先の検査は、参照先に置いた同じマシンの設定（pair.json の check）を使う。
-        pair_machine = ctx.pair / MACHINE_REL
-        if (pair_machine / CONFIG_NAME).is_file():
-            problems += run_check(ctx.pair, load_config(pair_machine).get("check"), SIDES[ctx.pair_side])
+    if ref_changed:
+        # 参照先の検査は、参照先に置いた同じマシンの設定（concord.json の check）を使う。
+        ref_machine = ctx.ref / MACHINE_REL
+        if (ref_machine / CONFIG_NAME).is_file():
+            problems += run_check(ctx.ref, load_config(ref_machine).get("check"), SIDES[ctx.ref_side])
     for p in problems:
         print(p, file=sys.stderr)
     if problems:
         return 1
-    print(f"OK own={'changed' if own_changed else 'same'} pair={'changed' if pair_changed else 'same'}"
-          + (f" impact={len(measured)} files（{DATA_DIRNAME}/impact-after.md）" if pair_changed else ""))
+    print(f"OK own={'changed' if own_changed else 'same'} ref={'changed' if ref_changed else 'same'}"
+          + (f" impact={len(measured)} files（{DATA_DIRNAME}/impact-after.md）" if ref_changed else ""))
     return 0
 
 
 # ---------------------------------------------------------------- 入口
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pair_align.py", description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser(prog="concord.py", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, help_ in (("explore", "参照先を探す"), ("impact", "自分のリポジトリで影響を受ける箇所を探す")):
         s = sub.add_parser(name, help=help_)
@@ -534,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return COMMANDS[args.cmd](Ctx(repo_root(Path.cwd())), args)
-    except PairAlignError as exc:
+    except ConcordError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
 

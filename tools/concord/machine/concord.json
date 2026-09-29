@@ -1,5 +1,5 @@
 {
   "side": "impl",
-  "pair_path": "../design",
+  "ref_path": "../design",
   "graphify": "auto"
 }

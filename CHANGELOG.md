@@ -7,22 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### pair-align: 参照先（実装⇔設計書）を読んで自分の変更を練り、確認してから変えるステートマシン
+### concord: 参照先（実装⇔設計書）を読んで自分の変更を練り、確認してから変えるステートマシン
 
 - **やりたいことを伝えると、参照先のリポジトリを探して自分の変更を練り、確認を取ってから変える。** 同じ定義を
-  実装と設計書の両方の `.statemachine/pair_align/` に置き、`pair.json` にどちらの側か（`impl` / `design`）と
-  参照先のパスを書く。`tools/pair-align/install.py` が置いて設定する
+  実装と設計書の両方の `.statemachine/concord/` に置き、`concord.json` にどちらの側か（`impl` / `design`）と
+  参照先のパスを書く。`tools/concord/install.py` が置いて設定する
 - 参照先の記述を前提・制約・その他に分け、自分の現状とのずれを挙げる。ずれがあれば、参照先の変更案と、
   それを自分のリポジトリに適用したときの影響範囲も見せる。了承されれば両方を変え、指摘があれば練り直す
 - 計画の各項目には根拠のパスを付け、実在しないパス・ずれと変更案の食い違いは検査で落とす。変えたあとは、
-  計画どおりの側だけが変わったかと、各リポジトリの `pair.json` の `check` を確かめる。コミットはしない
+  計画どおりの側だけが変わったかと、各リポジトリの `concord.json` の `check` を確かめる。コミットはしない
 - **参照先を変えるときの自分への影響範囲は、スクリプトが測る。** 確認の前に、参照先の変更案で変わる名前から
   影響を受けるファイルを測り、計画の影響範囲がそれを漏れなく挙げるまで通さない。変えたあとは参照先の実際の変更から
   測り直し、測ったファイルを直したか「変更不要」としたかを確かめる
 - 探索は graphify があれば使う（参照先は `query`、自分の影響範囲は `affected`）。リポジトリが変わっていれば
-  探す前にグラフを作り直す。グラフは自分の `.pair-align/graph/` に置き、参照先には何も書かない。
+  探す前にグラフを作り直す。グラフは自分の `.concord/graph/` に置き、参照先には何も書かない。
   graphify が無ければ文字列検索だけで動く
-- 設計は `docs/designs/pair-align-design.md`、使い方は `tools/pair-align/README.md`
+- 設計は `docs/designs/concord-design.md`、使い方は `tools/concord/README.md`
 
 ### statemachine-use・agent-app: 実行する人が入れる値を `inputs:` で宣言する（statemachine-use 2.3.0・agent-app 0.45.0）
 

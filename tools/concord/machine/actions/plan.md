@@ -3,17 +3,17 @@
 **やりたいこと:** {{request}}
 **前回の確認での答え（NG と指摘があれば、それを踏まえて練り直す）:** {{answer}}
 
-`.statemachine/pair_align/pair.json` の `side` がこの側（impl = 実装 / design = 設計書）、`pair_path` が参照先です。
+`.statemachine/concord/concord.json` の `side` がこの側（impl = 実装 / design = 設計書）、`ref_path` が参照先です。
 参照先は実装なら設計書、設計書なら実装です。この段では**どちらのリポジトリも変更しないでください**。
 
 1. **参照先を探す。** やりたいことに関係する語（機能名・API や画面の名前・用語・見出し）を 3〜8 個選んで実行します。
    graphify があれば、グラフが古いときは自動で作り直してから引きます。
 
    ```bash
-   python3 .statemachine/pair_align/pair_align.py explore --term "語1" --term "語2"
+   python3 .statemachine/concord/concord.py explore --term "語1" --term "語2"
    ```
 
-   `.pair-align/explore.md` の候補を参照先で開き、関係する箇所の前後だけを読んでください。
+   `.concord/explore.md` の候補を参照先で開き、関係する箇所の前後だけを読んでください。
 2. **参照先を 3 つに分ける。** 参照先がやりたいことについて述べていることを、前提・制約・その他に分けます。
    - 前提: 参照先が「すでにそうなっている」と定めている事実・決定・振る舞い・用語
    - 制約: 参照先が「こうしなければならない / してはならない」と課している条件
@@ -25,14 +25,14 @@
    - ずれがあれば、参照先の変更案（ずれを解消するために参照先をどう変えるか）を書きます。
      変わる名前（関数・API・用語・見出し）は `…` で囲んでください。
    - 参照先の変更案を自分のリポジトリに適用したときの**影響範囲はハーネスが測ります**。
-     計画を書いたら次を実行し、測ったファイル（`.pair-align/impact.md` の候補）を影響範囲にすべて挙げてください。
+     計画を書いたら次を実行し、測ったファイル（`.concord/impact.md` の候補）を影響範囲にすべて挙げてください。
      直すものは直し方を、直さなくてよいものは「変更不要: 理由」を書きます。
 
      ```bash
-     python3 .statemachine/pair_align/pair_align.py verify-plan
+     python3 .statemachine/concord/concord.py verify-plan
      ```
 
-5. `.statemachine/pair_align/templates/plan.md` をひな形に `.pair-align/plan.md` を書いてください。
+5. `.statemachine/concord/templates/plan.md` をひな形に `.concord/plan.md` を書いてください。
    見出しは名前も順番も変えず、コメントは本文に置き換えます。
    - 前提・制約・その他・ずれの各項目は箇条書きにし、末尾に参照先のリポジトリからの相対パスを根拠として書く
    - 影響範囲の各項目には、自分のリポジトリの相対パスを書く（測ったファイルが漏れていると検査で落ちる）

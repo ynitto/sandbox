@@ -66,10 +66,10 @@ jobs:
           # 見立てた end-to-end テストを含む。ネットワークには出ない）。
           - package: gitlab-repo-sync
             suites: tools/gitlab-repo-sync/tests
-          # pair-align。実装・設計書の 2 リポジトリを一時フォルダに作って下請けスクリプトを通す（LLM・graphify は呼ばない）。
+          # concord。実装・設計書の 2 リポジトリを一時フォルダに作って下請けスクリプトを通す（LLM・graphify は呼ばない）。
           # 定義の検証に statemachine-use の run_machine.py（PyYAML）を使う。
-          - package: pair-align
-            suites: tools/pair-align/tests
+          - package: concord
+            suites: tools/concord/tests
           # agent-loop。tmux も kiro-cli も差し替えたうえで、設定解釈と送信順だけを見る
           # （実プロセスは起こさない）。
           - package: agent-loop
