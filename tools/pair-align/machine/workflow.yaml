@@ -1,0 +1,128 @@
+# pair_align — 実装と設計書を交互に揃えるステートマシン
+#
+# 同じ定義を実装のリポジトリと設計書のリポジトリの両方の `.statemachine/pair_align/` に置く。
+# どちらの側かと相手のパスは同じフォルダの pair.json に書く（相手のパスは手で直す）。
+#
+# 流れ:
+#   collect ─┬─ 相手からの依頼が残っている ─→ inbound_pending（先にそれを反映する）
+#            ├─ 伝える変更が無い ────────────→ no_changes
+#            └─ 変更がある ─→ assess ─┬─ 反映不要 ─→ record_skip ─→ skipped
+#                                      └─ 反映が要る ─→ locate ─→ compose ─→ record ─→ done
+#
+# 決定的な仕事（差分の収集・相手側の検索・依頼文の検査・控え）は pair_align.py が行い、
+# 判断（要るか・どこへ・どう頼むか）だけをアクションが行う。依頼文の形は check が測る。
+
+name: "pair align"
+description: "自分のリポジトリの変更から、ペアのリポジトリ（実装⇔設計書）を揃えるための依頼文を作る"
+initial_state: collect
+
+inputs:
+  since:
+    label: この版からの変更を見る
+    required: false
+    description: 空なら前回の続きから（初回は直前の 1 コミット）
+
+config:
+  max_steps: 20
+  on_no_transition: error
+
+states:
+  collect:
+    description: "受け取った依頼の残りと自分の変更を集める"
+    action_file: actions/collect.md
+    output_key: collected
+    output_validator: "startswith:INBOUND_PENDING,NO_CHANGES,CHANGES"
+    max_retries: 1
+
+  inbound_pending:
+    description: "相手からの依頼が残っている"
+    action_file: actions/inbound_pending.md
+    terminal: true
+
+  no_changes:
+    description: "伝える変更が無い"
+    action_file: actions/no_changes.md
+    terminal: true
+
+  assess:
+    description: "ペアへの反映が要るかを決める"
+    action_file: actions/assess.md
+    output_key: assessment
+    output_validator: "startswith:NEEDED,NOT_NEEDED"
+    max_retries: 1
+
+  record_skip:
+    description: "依頼を出さずに基準点を進める"
+    action_file: actions/record_skip.md
+    output_validator: "startswith:SKIPPED"
+    max_retries: 1
+
+  skipped:
+    description: "反映は不要だった"
+    action_file: actions/skipped.md
+    terminal: true
+
+  locate:
+    description: "ペアのリポジトリで反映先を探す"
+    action_file: actions/locate.md
+    output_key: locations
+    output_validator: "startswith:FOUND,NEW"
+    max_retries: 1
+
+  compose:
+    description: "ペアへの依頼文を書く"
+    action_file: actions/compose.md
+    write: .pair-align/work/prompt.md
+    output_validator: "startswith:OK,FAILED"
+    check: "python3 .statemachine/pair_align/pair_align.py verify-prompt"
+    check_retries: 2
+    check_on_exhausted: escalate
+
+  record:
+    description: "依頼文を送り箱へ移す"
+    action_file: actions/record.md
+    output_key: recorded
+    output_validator: "startswith:RECORDED"
+    max_retries: 1
+
+  done:
+    description: "依頼文ができた"
+    action_file: actions/done.md
+    terminal: true
+
+transitions:
+  - from: collect
+    to: inbound_pending
+    condition_rule: "startswith:collected:INBOUND_PENDING"
+    priority: 1
+  - from: collect
+    to: no_changes
+    condition_rule: "startswith:collected:NO_CHANGES"
+    priority: 2
+  - from: collect
+    to: assess
+    condition_rule: "startswith:collected:CHANGES"
+    priority: 3
+
+  - from: assess
+    to: locate
+    condition_rule: "startswith:assessment:NEEDED"
+    priority: 1
+  - from: assess
+    to: record_skip
+    condition_rule: "startswith:assessment:NOT_NEEDED"
+    priority: 2
+
+  - from: record_skip
+    to: skipped
+
+  - from: locate
+    to: compose
+
+  - from: compose
+    to: record
+    condition_rule: "equals:check_ok:true"
+    priority: 1
+
+  - from: record
+    to: done

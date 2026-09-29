@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### pair-align: 実装と設計書の 2 リポジトリを交互に揃えるステートマシン
+
+- **片方のリポジトリを変更したら、もう片方を揃えるための依頼文を作る。** 同じ定義を実装と設計書の両方の
+  `.statemachine/pair_align/` に置き、`pair.json` にどちらの側か（`impl` / `design`）と相手のパスを書く。
+  `tools/pair-align/install.py` が置いて設定する
+- 前回からのコミットを集め、反映が要るかを判断し、相手のリポジトリで反映先を探し、決まった形の依頼文を
+  `.pair-align/outbox/<ID>.md` に書く。依頼文の形はスクリプトが検査し、通らなければ書き直す
+- 反映コミットに `Pair-Align: <ID>` の行を付けると、そのコミットは相手への依頼として戻らない。
+  相手からの依頼が残っているうちは自分の変更を送らない（反映不要なら `ack`）
+- 相手側の検索は、graphify の知識グラフがあれば `graphify query` でたどり、文字列検索と並べて候補を絞る。
+  無ければ文字列検索だけで動く。マシン自身は `.graphifyignore` で索引から外す
+- 設計は `docs/designs/pair-align-design.md`、使い方は `tools/pair-align/README.md`
+
 ### statemachine-use・agent-app: 実行する人が入れる値を `inputs:` で宣言する（statemachine-use 2.3.0・agent-app 0.45.0）
 
 - **workflow.yaml のトップレベルに `inputs:` を書けるようにした。** 値ごとに `label`（画面に出す名前）・
