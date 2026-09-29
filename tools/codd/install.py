@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""concord のステートマシンをリポジトリへ置く。
+"""codd のステートマシンをリポジトリへ置く。
 
-    python3 tools/concord/install.py <実装のリポジトリ> --side impl --ref ../my-design
-    python3 tools/concord/install.py <設計書のリポジトリ> --side design --ref ../my-impl
+    python3 tools/codd/install.py <実装のリポジトリ> --side impl --ref ../my-design
+    python3 tools/codd/install.py <設計書のリポジトリ> --side design --ref ../my-impl
 
-`<リポジトリ>/.statemachine/concord/` に machine/ の中身を写し、concord.json を書く。
-既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、concord.json は --side / --ref を渡したときだけ書き換える。
-`.concord/`（計画・探した結果・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
-このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/concord/` を足す。
+`<リポジトリ>/.statemachine/codd/` に machine/ の中身を写し、codd.json を書く。
+既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は --side / --ref を渡したときだけ書き換える。
+`.codd/`（計画・探した結果・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
+このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
 """
 
 from __future__ import annotations
@@ -19,32 +19,32 @@ import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parent / "machine"
-DEST_REL = Path(".statemachine") / "concord"
-IGNORE_LINE = ".concord/"
+DEST_REL = Path(".statemachine") / "codd"
+IGNORE_LINE = ".codd/"
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
-GRAPHIFY_IGNORE_LINE = ".statemachine/concord/"
+GRAPHIFY_IGNORE_LINE = ".statemachine/codd/"
 
 
 def install(target: Path, side: str | None, ref: str | None, gitignore: bool = True) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
     dest = target / DEST_REL
-    config_file = dest / "concord.json"
+    config_file = dest / "codd.json"
     config = json.loads(config_file.read_text(encoding="utf-8")) if config_file.is_file() else None
     if config is None and (side is None or ref is None):
         raise SystemExit("初めて置くときは --side と --ref を指定してください")
 
     dest.mkdir(parents=True, exist_ok=True)
-    # 古い版のファイルを残さない（concord.json だけは利用者の設定なので残す）。
+    # 古い版のファイルを残さない（codd.json だけは利用者の設定なので残す）。
     for item in dest.iterdir():
-        if item.name == "concord.json":
+        if item.name == "codd.json":
             continue
         if item.is_dir():
             shutil.rmtree(item)
         else:
             item.unlink()
     for item in SRC.iterdir():
-        if item.name in ("concord.json", "__pycache__"):
+        if item.name in ("codd.json", "__pycache__"):
             continue
         target_item = dest / item.name
         if item.is_dir():
@@ -77,14 +77,14 @@ def append_line(path: Path, line: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="concord のステートマシンをリポジトリへ置く")
+    p = argparse.ArgumentParser(description="codd のステートマシンをリポジトリへ置く")
     p.add_argument("target", help="置き先のリポジトリ")
     p.add_argument("--side", choices=["impl", "design"], help="このリポジトリの側（impl = 実装 / design = 設計書）")
     p.add_argument("--ref", help="参照先のリポジトリのパス（置き先からの相対でも絶対でもよい）")
-    p.add_argument("--no-gitignore", action="store_true", help=".gitignore に .concord/ を足さない")
+    p.add_argument("--no-gitignore", action="store_true", help=".gitignore に .codd/ を足さない")
     args = p.parse_args(argv)
     dest = install(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore)
-    config = json.loads((dest / "concord.json").read_text(encoding="utf-8"))
+    config = json.loads((dest / "codd.json").read_text(encoding="utf-8"))
     print(f"置きました: {dest}")
     print(f"  この側: {config['side']}  参照先: {config['ref_path']}")
     return 0

@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""concord — 参照先のリポジトリ（実装⇔設計書）を読んで、自分の変更を練るステートマシンの下請け。
+"""codd — 参照先のリポジトリ（実装⇔設計書）を読んで、自分の変更を練るステートマシンの下請け。
 
 ステートマシン（同じフォルダの workflow.yaml）のうち、機械で決まる仕事だけをここに置く。
 判断（参照先の前提・制約・その他、ずれ、変更案、影響範囲）はアクションの側でモデルが行う。
 
     explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
-    verify-plan         計画（.concord/plan.md）が決まった形か、根拠のパスが実在するかを検査する。
+    verify-plan         計画（.codd/plan.md）が決まった形か、根拠のパスが実在するかを検査する。
                         参照先の変更案があれば、それを自分に適用したときの影響範囲を測り、計画の影響範囲が
                         測ったファイルをすべて挙げているかも検査する
     verify-apply        計画どおりに変えたか（参照先を変えてよいのは変更案があるときだけ）と、検査コマンドを確かめる。
                         参照先を変えたら、実際の変更から影響範囲を測り直し、測ったファイルを直したか
                         「変更不要」としたかを検査する
 
-置き場所は `<リポジトリ>/.statemachine/concord/`。設定は同じフォルダの concord.json、
-作業ファイルと graphify のグラフは `<リポジトリ>/.concord/` に置く。依存は python3 と git のみ
+置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
+作業ファイルと graphify のグラフは `<リポジトリ>/.codd/` に置く。依存は python3 と git のみ
 （graphify は任意）。
 
 graphify のグラフは、リポジトリの HEAD と作業中の変更から作る「印」を控えておき、
 explore / impact のたびに印が変わっていれば `graphify update` で作り直す（自動更新）。
-グラフは参照先の中ではなく自分の `.concord/graph/` に書く（探すだけで参照先に何も書かない）。
+グラフは参照先の中ではなく自分の `.codd/graph/` に書く（探すだけで参照先に何も書かない）。
 """
 
 from __future__ import annotations
@@ -35,9 +35,9 @@ import sys
 from pathlib import Path
 
 MACHINE_DIR = Path(__file__).resolve().parent
-MACHINE_REL = ".statemachine/concord"
-CONFIG_NAME = "concord.json"
-DATA_DIRNAME = ".concord"
+MACHINE_REL = ".statemachine/codd"
+CONFIG_NAME = "codd.json"
+DATA_DIRNAME = ".codd"
 SIDES = {"impl": "実装", "design": "設計書"}
 
 PLAN_HEADINGS = (
@@ -80,7 +80,7 @@ _DIFF_TERMS = (
 _WORDLIKE = re.compile(r"^[A-Za-z0-9_$]+$")
 
 
-class ConcordError(Exception):
+class CoddError(Exception):
     """利用者が直せる設定・状態の誤り（終了コード 2）。"""
 
 
@@ -100,19 +100,19 @@ def run(argv: list[str], cwd: Path, timeout: int, env: dict | None = None) -> tu
 def load_config(machine_dir: Path) -> dict:
     path = machine_dir / CONFIG_NAME
     if not path.is_file():
-        raise ConcordError(f"設定がありません: {path}\n"
+        raise CoddError(f"設定がありません: {path}\n"
                              '  例: {"side": "impl", "ref_path": "../my-design"}')
     config = json.loads(path.read_text(encoding="utf-8"))
     if config.get("side") not in SIDES:
-        raise ConcordError(f"{path} の side は impl か design です（今: {config.get('side')!r}）")
+        raise CoddError(f"{path} の side は impl か design です（今: {config.get('side')!r}）")
     if not config.get("ref_path"):
-        raise ConcordError(f"{path} の ref_path が空です（参照先のリポジトリのパスを書いてください）")
+        raise CoddError(f"{path} の ref_path が空です（参照先のリポジトリのパスを書いてください）")
     config.setdefault("graphify", "auto")
     if config["graphify"] not in ("auto", "off"):
-        raise ConcordError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
+        raise CoddError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
     check = config.get("check")
     if check is not None and not (isinstance(check, list) and check and all(isinstance(a, str) for a in check)):
-        raise ConcordError(f'{path} の check はコマンドの配列です（例: ["python3", "-m", "pytest", "-q"]）')
+        raise CoddError(f'{path} の check はコマンドの配列です（例: ["python3", "-m", "pytest", "-q"]）')
     return config
 
 
@@ -127,7 +127,7 @@ class Ctx:
         self.data = root / DATA_DIRNAME
         self.plan = self.data / "plan.md"
         if not self.ref.is_dir() or run(["git", "rev-parse", "--show-toplevel"], self.ref, GIT_TIMEOUT)[0]:
-            raise ConcordError(f"参照先の git リポジトリが見つかりません: {self.ref}\n"
+            raise CoddError(f"参照先の git リポジトリが見つかりません: {self.ref}\n"
                                  f"  {MACHINE_DIR / CONFIG_NAME} の ref_path を直してください")
 
     def repo(self, which: str) -> Path:
@@ -137,7 +137,7 @@ class Ctx:
 def repo_root(start: Path) -> Path:
     rc, out = run(["git", "rev-parse", "--show-toplevel"], start, GIT_TIMEOUT)
     if rc != 0:
-        raise ConcordError(f"git リポジトリではありません: {start}")
+        raise CoddError(f"git リポジトリではありません: {start}")
     return Path(out.strip())
 
 
@@ -256,7 +256,7 @@ def terms_of(args: argparse.Namespace) -> list[str]:
         if t and t not in terms:
             terms.append(t)
     if not terms:
-        raise ConcordError("検索語を --term で渡してください")
+        raise CoddError("検索語を --term で渡してください")
     return terms[:MAX_TERMS]
 
 
@@ -500,7 +500,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）")
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
     if ref_changed:
-        # 参照先の検査は、参照先に置いた同じマシンの設定（concord.json の check）を使う。
+        # 参照先の検査は、参照先に置いた同じマシンの設定（codd.json の check）を使う。
         ref_machine = ctx.ref / MACHINE_REL
         if (ref_machine / CONFIG_NAME).is_file():
             problems += run_check(ctx.ref, load_config(ref_machine).get("check"), SIDES[ctx.ref_side])
@@ -516,7 +516,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- 入口
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="concord.py", description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser(prog="codd.py", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, help_ in (("explore", "参照先を探す"), ("impact", "自分のリポジトリで影響を受ける箇所を探す")):
         s = sub.add_parser(name, help=help_)
@@ -534,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return COMMANDS[args.cmd](Ctx(repo_root(Path.cwd())), args)
-    except ConcordError as exc:
+    except CoddError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
 

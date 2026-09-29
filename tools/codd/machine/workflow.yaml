@@ -1,7 +1,7 @@
-# concord — 参照先（実装⇔設計書）を読んで、自分の変更を練り、確認してから両方を変える
+# codd — 参照先（実装⇔設計書）を読んで、自分の変更を練り、確認してから両方を変える
 #
-# 同じ定義を実装のリポジトリと設計書のリポジトリの両方の `.statemachine/concord/` に置く。
-# どちらの側かと参照先のパスは同じフォルダの concord.json に書く（参照先のパスは手で直す）。
+# 同じ定義を実装のリポジトリと設計書のリポジトリの両方の `.statemachine/codd/` に置く。
+# どちらの側かと参照先のパスは同じフォルダの codd.json に書く（参照先のパスは手で直す）。
 #
 #   plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: verify-apply]→ done
 #     ↑                                  └─ NG ─┐
@@ -14,9 +14,9 @@
 # apply   自分を変える。参照先の変更案があれば参照先も変える。verify-apply が参照先の実際の変更から
 #         影響範囲を測り直し、測ったファイルを直したか「変更不要」としたかを確かめる
 #
-# 決定的な仕事（探す・グラフの更新・計画の形と根拠の検査・どちらを変えたかの検査）は concord.py が行う。
+# 決定的な仕事（探す・グラフの更新・計画の形と根拠の検査・どちらを変えたかの検査）は codd.py が行う。
 
-name: "concord"
+name: "codd"
 description: "参照先のリポジトリ（実装⇔設計書）を読んで自分の変更を練り、利用者の確認を経て、必要なら参照先も変える"
 initial_state: plan
 
@@ -36,9 +36,9 @@ states:
   plan:
     description: "参照先を読み、変更を練る"
     action_file: actions/plan.md
-    write: .concord/plan.md
+    write: .codd/plan.md
     output_validator: "startswith:OK,FAILED"
-    check: "python3 .statemachine/concord/concord.py verify-plan"
+    check: "python3 .statemachine/codd/codd.py verify-plan"
     check_retries: 2
     check_on_exhausted: escalate
 
@@ -53,7 +53,7 @@ states:
     description: "計画どおりに変える"
     action_file: actions/apply.md
     output_validator: "startswith:OK,FAILED"
-    check: "python3 .statemachine/concord/concord.py verify-apply"
+    check: "python3 .statemachine/codd/codd.py verify-apply"
     check_retries: 2
     check_on_exhausted: escalate
 
