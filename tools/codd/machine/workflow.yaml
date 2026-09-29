@@ -1,7 +1,7 @@
 # codd — 参照先（実装⇔設計書）を読んで、自分の変更を練り、確認してから両方を変える
 #
 # 同じ定義を実装のリポジトリと設計書のリポジトリの両方の `.statemachine/codd/` に置く。
-# どちらの側かと参照先のパスは同じフォルダの codd.json に書く（参照先のパスは手で直す）。
+# どちらの側か・参照先（いくつでも）・使うスキルは同じフォルダの codd.json に書く（参照先のパスは手で直す）。
 #
 #   plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: verify-apply]→ done
 #     ↑                                  └─ NG ─┐

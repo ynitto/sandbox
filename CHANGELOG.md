@@ -22,6 +22,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 探索は graphify があれば使う（参照先は `query`、自分の影響範囲は `affected`）。リポジトリが変わっていれば
   探す前にグラフを作り直す。グラフは自分の `.codd/graph/` に置き、参照先には何も書かない。
   graphify が無ければ文字列検索だけで動く
+- **参照先はいくつでも持てる。** `codd.json` の `refs` に名前とパスを並べる（`install.py --ref 名前=パス` を繰り返す）。
+  すべての参照先を探し、計画の根拠と参照先の変更案は `名前:パス` で書く。変えたあとは、変更案に挙げた参照先だけが
+  変わったかを参照先ごとに確かめる
+- **使うスキルを設定できる。** `codd.json` の `skills.plan`（計画を練るとき）と `skills.apply`（このリポジトリを変えるとき）。
+  参照先を変えるときはその参照先のスキルを使う。`codd.py show` で確かめられる
 - 設計は `docs/designs/codd-design.md`、使い方は `tools/codd/README.md`
 
 ### statemachine-use・agent-app: 実行する人が入れる値を `inputs:` で宣言する（statemachine-use 2.3.0・agent-app 0.45.0）

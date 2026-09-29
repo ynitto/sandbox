@@ -1,5 +1,11 @@
 {
   "side": "impl",
-  "ref_path": "../design",
+  "refs": [
+    {"name": "docs", "path": "../design"}
+  ],
+  "skills": {
+    "plan": [],
+    "apply": []
+  },
   "graphify": "auto"
 }

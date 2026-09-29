@@ -137,8 +137,8 @@ class CoddTest(unittest.TestCase):
             git(repo, "init", "-q", "-b", "main")
         commit(self.impl, {"src/app.py": "def hello():\n    return 1\n"}, "init")
         commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
-        install.install(self.impl, "impl", "../design")
-        install.install(self.design, "design", "../impl")
+        install.install(self.impl, "impl", ["../design"])
+        install.install(self.design, "design", ["../impl"])
         for repo in (self.impl, self.design):
             git(repo, "add", "-A")
             git(repo, "commit", "-q", "-m", "add codd")
@@ -187,7 +187,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- docs/api.md", (self.impl / ".codd/explore.md").read_text(encoding="utf-8"))
         first = self.calls()
         self.assertEqual(first[0], f"{self.design} update . --force")   # 参照先の中で作り、
-        self.assertTrue((self.impl / ".codd/graph/ref/graph.json").is_file())  # 自分の側に置く
+        self.assertTrue((self.impl / ".codd/graph/ref-design/graph.json").is_file())  # 自分の側に置く
         self.assertFalse((self.design / "graphify-out").exists())
         self.assertIn("query hello --graph", first[1])
 
@@ -269,13 +269,13 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("own=changed ref=same", r.stdout)
+        self.assertIn("own=changed refs=none", r.stdout)
 
         # 変更案が「なし」なのに参照先を変えたら落とす。
         (self.design / "docs/api.md").write_text("勝手に変えた\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("参照先のリポジトリが変わっています", r.stderr)
+        self.assertIn("参照先の変更案に design は無いのに、design が変わっています", r.stderr)
 
     def test_verify_apply_both_and_runs_each_check(self) -> None:
         self.run_pa(self.impl, "explore", "--term", "hello")
@@ -283,7 +283,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("参照先のリポジトリが変わっていません", r.stderr)
+        self.assertIn("design を変えるはずなのに、design が変わっていません", r.stderr)
 
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
         # 各リポジトリの検査は、それぞれの codd.json の check。
@@ -291,13 +291,13 @@ class CoddTest(unittest.TestCase):
         self.set_check(self.design, [sys.executable, "-c", "import sys; sys.exit('3 を返す' not in open('docs/api.md').read())"])
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("設計書の検査が失敗しました", r.stderr)
+        self.assertIn("design（設計書）の検査が失敗しました", r.stderr)
         self.assertNotIn("実装の検査が失敗しました", r.stderr)
 
         self.set_check(self.design, [sys.executable, "-c", "import sys; sys.exit('2 を返す' not in open('docs/api.md').read())"])
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("own=changed ref=changed", r.stdout)
+        self.assertIn("own=changed refs=design", r.stdout)
 
     # ------------------------------------------------------------ 影響範囲を測る
 
@@ -366,7 +366,7 @@ class CoddTest(unittest.TestCase):
         cfg.write_text(json.dumps({"side": "impl", "ref_path": "../nowhere"}), encoding="utf-8")
         r = self.run_pa(self.impl, "explore", "--term", "x")
         self.assertEqual(r.returncode, 2)
-        self.assertIn("ref_path", r.stderr)
+        self.assertIn("refs を直してください", r.stderr)
 
     def test_install_is_idempotent_and_replaces_old_files(self) -> None:
         stale = self.impl / ".statemachine/codd/actions/old.md"
@@ -374,7 +374,8 @@ class CoddTest(unittest.TestCase):
         install.install(self.impl, None, None)
         self.assertFalse(stale.exists())
         cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg, {"graphify": "auto", "side": "impl", "ref_path": "../design"})
+        self.assertEqual(cfg, {"side": "impl", "refs": [{"path": "../design"}],
+                               "skills": {"plan": [], "apply": []}, "graphify": "auto"})
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
                          [".statemachine/codd/"])
@@ -382,7 +383,119 @@ class CoddTest(unittest.TestCase):
         fresh.mkdir()
         git(fresh, "init", "-q")
         with self.assertRaises(SystemExit):
-            install.install(fresh, "impl", None)
+            install.install(fresh, "impl", [])
+
+    # ------------------------------------------------------------ 参照先が複数
+
+    def add_second_ref(self) -> Path:
+        api = self.tmp / "api"
+        api.mkdir()
+        git(api, "init", "-q", "-b", "main")
+        commit(api, {"docs/api.md": "# API\n\n## hello\n\nHTTP でも hello を返す。\n",
+                     "spec/hello.md": "# hello\n"}, "init")
+        install.install(api, "design", ["../impl"])
+        self.set_check(api, [sys.executable, "-c", "print('api ok')"])
+        install.install(self.impl, None, ["design=../design", "api=../api"])
+        return api
+
+    def test_explore_searches_every_ref(self) -> None:
+        self.add_second_ref()
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("FOUND 3 files (graphify: design=not-installed, api=not-installed)", r.stdout)
+        report = (self.impl / ".codd/explore.md").read_text(encoding="utf-8")
+        for line in ("- design:docs/api.md", "- api:docs/api.md", "- api:spec/hello.md"):
+            self.assertIn(line, report)
+        r = self.run_pa(self.impl, "explore", "--term", "hello", "--ref", "api")
+        self.assertIn("FOUND 2 files (graphify: api=not-installed)", r.stdout)
+        self.assertEqual(self.run_pa(self.impl, "explore", "--term", "x", "--ref", "nope").returncode, 2)
+
+    def test_citations_name_the_ref_when_ambiguous(self) -> None:
+        self.add_second_ref()
+        # docs/api.md は両方の参照先にあるので、名前なしでは決まらない。
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("`名前:パス` で書いてください", r.stderr)
+        self.write_plan(PLAN_ALIGNED.replace("docs/api.md#hello", "design:docs/api.md#hello")
+                        .replace("docs/api.md:3", "api:docs/api.md:3"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # spec/hello.md は api にしか無いので、名前なしでよい。
+        self.write_plan(PLAN_ALIGNED.replace("docs/api.md#hello", "spec/hello.md")
+                        .replace("docs/api.md:3", "design:docs/api.md:3"))
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 0)
+
+    def test_verify_apply_checks_each_ref_against_the_plan(self) -> None:
+        api = self.add_second_ref()
+        plan = (PLAN_DRIFT.replace("（根拠: docs/api.md）", "（根拠: design:docs/api.md）")
+                .replace("docs/api.md:3", "design:docs/api.md:3")
+                .replace("- docs/api.md — `hello`", "- api:docs/api.md — `hello`"))
+        self.write_plan(plan)
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 0)
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        # 計画は api を変える。design を変えてしまい、api を変えていない。
+        (self.design / "docs/api.md").write_text("勝手に変えた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("api を変えるはずなのに、api が変わっていません", r.stderr)
+        self.assertIn("参照先の変更案に design は無いのに、design が変わっています", r.stderr)
+
+        git(self.design, "checkout", "--", ".")
+        (api / "docs/api.md").write_text("# API\n\n## hello\n\nHTTP でも 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("refs=api", r.stdout)
+
+    def test_ref_change_to_a_new_file_is_allowed(self) -> None:
+        plan = PLAN_DRIFT.replace("- docs/api.md — `hello`", "- docs/hello.md — 新しく書く。`hello`")
+        self.write_plan(plan)
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 0)
+
+    def test_legacy_ref_path_config_still_works(self) -> None:
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        cfg.write_text(json.dumps({"side": "impl", "ref_path": "../design"}), encoding="utf-8")
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
+        self.assertIn("FOUND 1 files", r.stdout)
+
+    # ------------------------------------------------------------ 使うスキル
+
+    def test_show_lists_skills_for_each_phase(self) -> None:
+        cfg_path = self.impl / ".statemachine/codd/codd.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["skills"] = {"plan": ["domain-modeler"], "apply": ["tdd", "plugin:refactor"]}
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        design_cfg = self.design / ".statemachine/codd/codd.json"
+        dcfg = json.loads(design_cfg.read_text(encoding="utf-8"))
+        dcfg["skills"] = {"apply": ["doc-writer"]}
+        design_cfg.write_text(json.dumps(dcfg), encoding="utf-8")
+
+        r = self.run_pa(self.impl, "show")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("- design: 設計書", r.stdout)
+        self.assertIn("使うスキル（計画を練るとき）:\n  - 自分: `domain-modeler` スキル", r.stdout)
+        self.assertIn("  - 自分: `tdd` スキル、`plugin:refactor` スキル", r.stdout)
+        # 参照先を変えるときは、参照先に置いた codd.json の skills.apply。
+        self.assertIn("  - design を変えるとき: `doc-writer` スキル", r.stdout)
+
+        # codd.json の refs に skills を書けば、そちらが勝つ（参照先に codd が無いときにも使える）。
+        cfg["refs"] = [{"name": "design", "path": "../design", "skills": ["spec-editor"]}]
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        r = self.run_pa(self.impl, "show", "--phase", "apply")
+        self.assertIn("  - design を変えるとき: `spec-editor` スキル", r.stdout)
+        self.assertNotIn("計画を練るとき", r.stdout)
+
+    def test_bad_skills_config_is_reported(self) -> None:
+        cfg_path = self.impl / ".statemachine/codd/codd.json"
+        for skills in ({"plan": "tdd"}, {"review": []}, {"apply": ["bad name"]}):
+            with self.subTest(skills=skills):
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                cfg["skills"] = skills
+                cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+                r = self.run_pa(self.impl, "show")
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("skills", r.stderr)
 
     def test_workflow_passes_engine_validation(self) -> None:
         try:

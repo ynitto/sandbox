@@ -9,7 +9,9 @@
 > 名前の近い [codd-gate](../codd-gate/README.md) は、1 つのリポジトリの中で文書・コード・テストの食い違いを
 > 受け入れ前に止める検査ツール。codd はリポジトリをまたいで、変える前に参照先を読んで確かめるステートマシンで、別のもの。
 
-- 同じ定義を**両方のリポジトリに置く**。実装側で動かせば参照先は設計書、設計書側で動かせば参照先は実装
+- 同じ定義を**両方のリポジトリに置く**。実装側で動かせば参照先は設計書、設計書側で動かせば参照先は実装。
+  参照先はいくつでも持てる（設計書が API と画面で分かれている、など）
+- 計画を練るとき・変えるときに使うスキルを設定できる
 - 実行は statemachine-use スキル（「codd のステートマシンを実行して」）。依存は python3 と git
 - 参照先を探すとき、[graphify](https://pypi.org/project/graphifyy/) があれば知識グラフを使う。
   グラフはリポジトリが変わるたびに自動で作り直す。無ければ文字列検索だけで動く
@@ -18,22 +20,36 @@
 
 ```bash
 # 実装のリポジトリへ（参照先 = 設計書）
-python3 tools/codd/install.py ~/work/my-app --side impl --ref ../my-app-docs
+python3 tools/codd/install.py ~/work/my-app --side impl --ref docs=../my-app-docs
 # 設計書のリポジトリへ（参照先 = 実装）
-python3 tools/codd/install.py ~/work/my-app-docs --side design --ref ../my-app
+python3 tools/codd/install.py ~/work/my-app-docs --side design --ref app=../my-app
+# 参照先が複数
+python3 tools/codd/install.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
 ```
+
+`--ref` は `名前=パス` か `パス`（名前はフォルダ名になる）。もう一度 `--ref` を渡すと参照先の一覧を入れ替える。
 
 `<リポジトリ>/.statemachine/codd/` に定義が入り、`codd.json` に設定が書かれる。
 手で置くなら `machine/` の中身をそのフォルダへ写し、`codd.json` を直せばよい。
 
 ```json
-{ "side": "impl", "ref_path": "../my-app-docs", "graphify": "auto" }
+{
+  "side": "impl",
+  "refs": [
+    {"name": "api", "path": "../api-docs"},
+    {"name": "ui", "path": "../ui-docs"}
+  ],
+  "skills": {"plan": ["domain-modeler"], "apply": ["tdd"]},
+  "graphify": "auto"
+}
 ```
 
 | 項目 | 値 |
 |---|---|
 | `side` | このリポジトリの側。`impl`（実装）か `design`（設計書） |
-| `ref_path` | 参照先のリポジトリのパス。相対パスはこのリポジトリのルートから。**置き場所が変わったらここを手で直す** |
+| `refs` | 参照先の一覧。`name`（英数字と `_` `.` `-`。省略するとフォルダ名）と `path`（相対パスはこのリポジトリのルートから）。**置き場所が変わったらここを手で直す** |
+| `skills` | 任意。`plan` は計画を練るとき、`apply` はこのリポジトリを変えるときに使うスキルの名前の配列 |
+| `refs[].skills` | 任意。その参照先を変えるときに使うスキル。書かなければ、参照先に置いた `codd.json` の `skills.apply` を使う |
 | `graphify` | `auto`（あれば使う）か `off` |
 | `check` | 任意。変えたあとに実行する検査コマンドの配列（例: `["python3", "-m", "pytest", "-q"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
 
@@ -67,6 +83,8 @@ plan ─→ confirm ─┬─ OK ─→ apply ─→ done
 | その他 | それ以外の関係する記述（決まっていないこと・任されていること・補足） |
 
 計画は `.codd/plan.md` に書かれ、書いたあとにスクリプトが形を検査する。
+参照先が複数あるときは、根拠や参照先の変更案のパスを `名前:パス`（例: `api:hello.md`）で書く。
+どれか 1 つの参照先にしか無いパスなら名前を省いてよい。
 
 - 前提・制約・その他・ずれの各項目に、参照先に実在するファイルのパスが根拠として付いているか
 - ずれがあるときは参照先の変更案と影響範囲があり、影響範囲に自分のリポジトリに実在するパスがあるか
@@ -88,6 +106,18 @@ plan ─→ confirm ─┬─ OK ─→ apply ─→ done
 変えたあとに測り直すのは、参照先を計画より広く変えた場合にもその影響を取りこぼさないため。
 測った結果は `.codd/impact.md`（確認の前）と `.codd/impact-after.md`（変えたあと）に残る。
 
+### 使うスキル
+
+`codd.json` の `skills` に書いたスキルを、計画を練るとき（`plan`）とこのリポジトリを変えるとき（`apply`）に使う。
+参照先を変えるときは、その参照先のスキル（`refs[].skills`、無ければ参照先の `codd.json` の `skills.apply`）を使う。
+たとえば実装を変えるときは `tdd`、設計書を変えるときは文書を書くスキル、のように側ごとに決められる。
+いま何を使うかは次で確かめられる。
+
+```bash
+python3 .statemachine/codd/codd.py show            # 参照先の一覧と、段階ごとに使うスキル
+python3 .statemachine/codd/codd.py show --phase apply
+```
+
 確認は会話の中で待つ。会話で動かすことを前提にしており、人の返事を受け取れない無人の実行ではここで止まる。
 
 ## graphify を使う
@@ -103,7 +133,7 @@ graphify が入っていれば、探すたびにリポジトリの今の中身�
 手で呼ぶこともできる（リポジトリのルートで実行する）。
 
 ```bash
-python3 .statemachine/codd/codd.py explore --term 語   # 参照先を探す
+python3 .statemachine/codd/codd.py explore --term 語   # 参照先を探す（--ref 名前 で絞る）
 python3 .statemachine/codd/codd.py impact --term 語    # 自分のリポジトリの影響範囲を探す
 ```
 
