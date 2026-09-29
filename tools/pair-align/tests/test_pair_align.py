@@ -204,6 +204,203 @@ class PairAlignTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("pair_path", r.stderr)
 
+    # ------------------------------------------------------------ 意図: 読む → 分ける → 合うか
+
+    def begin(self, repo: Path, intent: str | None = None, decision: str | None = None) -> str:
+        args = ["begin"]
+        if intent is not None:
+            f = repo / ".pair-align/work/intent_input.md"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(intent, encoding="utf-8")
+            args += ["--intent-file", str(f)]
+        if decision is not None:
+            args += ["--decision", decision]
+        r = self.run_pa(repo, *args)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def write_reading(self, repo: Path, cite: str = "docs/api.md") -> None:
+        (repo / ".pair-align/work/reading.md").write_text(textwrap.dedent(f"""\
+            # 相手の側を読んだ結果
+
+            hello の戻り値について設計書を読んだ。
+
+            ## 前提
+
+            - hello は整数を返す（根拠: {cite}#hello）
+
+            ## 制約
+
+            - hello は 1 を返さなければならない（根拠: {cite}:3）
+
+            ## 自由
+
+            - なし
+            """), encoding="utf-8")
+
+    def write_question(self, repo: Path) -> None:
+        (repo / ".pair-align/work/question.md").write_text(textwrap.dedent("""\
+            # 確認
+
+            ## 意図
+
+            hello が 2 を返すようにしたい。
+
+            ## ぶつかっている点
+
+            - 制約: hello は 1 を返す（根拠: docs/api.md:3）
+
+            ## 相手を直す場合に頼むこと
+
+            1. hello の戻り値を 2 にする
+
+            ## 波及してこちらで直すこと
+
+            なし
+            """), encoding="utf-8")
+
+    def state(self, repo: Path) -> dict:
+        return json.loads((repo / ".pair-align/state.json").read_text(encoding="utf-8"))
+
+    def test_fit_changes_self_then_propagates(self) -> None:
+        out = self.begin(self.impl, "hello にログを足したい")
+        self.assertTrue(out.startswith("INTENT "), out)
+        self.assertEqual((self.impl / ".pair-align/work/intent.md").read_text(encoding="utf-8"),
+                         "hello にログを足したい")
+        r = self.run_pa(self.impl, "locate", "--term", "hello")
+        self.assertIn("CANDIDATES 1 files", r.stdout)
+
+        self.assertEqual(self.run_pa(self.impl, "verify-reading").returncode, 1)  # まだ無い
+        self.write_reading(self.impl, cite="docs/nowhere.md")
+        r = self.run_pa(self.impl, "verify-reading")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("実在する根拠のパスがありません", r.stderr)
+        self.write_reading(self.impl)
+        self.assertEqual(self.run_pa(self.impl, "verify-reading").returncode, 0)
+
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "self-check").returncode, 0)
+        r = self.run_pa(self.impl, "commit", "-m", "hello にログ")
+        self.assertTrue(r.stdout.startswith("COMMITTED_USER"), r.stdout + r.stderr)
+        self.assertNotIn("Pair-Align:", git(self.impl, "log", "-1", "--format=%B"))
+        self.assertIsNone(self.state(self.impl)["active"])
+        # 利用者の意図のコミットは、ふつうに相手へ伝える候補になる。
+        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("CHANGES 1 commits"))
+
+    def test_self_check_runs_configured_command(self) -> None:
+        cfg_path = self.impl / ".statemachine/pair_align/pair.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["check"] = [sys.executable, "-c", "import sys; sys.exit(open('src/app.py').read().count('return 1') != 1)"]
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.begin(self.impl, "意図")
+        self.assertEqual(self.run_pa(self.impl, "self-check").returncode, 0)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "self-check")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("check が失敗しました", r.stderr)
+
+    def test_misfit_asks_user_then_pair_fixes_and_ripples_back(self) -> None:
+        # 実装側: 意図が設計書の制約とぶつかる → 確認して止まる。
+        sid = self.begin(self.impl, "hello が 2 を返すようにしたい").split()[1]
+        self.write_reading(self.impl)
+        self.assertEqual(self.run_pa(self.impl, "verify-question").returncode, 1)
+        self.write_question(self.impl)
+        self.assertEqual(self.run_pa(self.impl, "verify-question").returncode, 0)
+        self.assertTrue(self.run_pa(self.impl, "pause").stdout.startswith("PAUSED"))
+        self.assertEqual(self.state(self.impl)["active"]["phase"], "confirm")
+
+        out = self.begin(self.impl)  # 答えが無いうちは待つ
+        self.assertTrue(out.startswith("AWAITING_DECISION"), out)
+        self.assertTrue((self.impl / ".pair-align/work/question.md").is_file())
+        self.assertEqual(self.run_pa(self.impl, "begin", "--decision", "たぶん").returncode, 2)
+
+        # 利用者は「相手を直す」を選ぶ → 相手への依頼を作って待つ。
+        out = self.begin(self.impl, decision="相手を直す")
+        self.assertTrue(out.startswith("DECIDED_PAIR"), out)
+        request_id = f"impl-{sid}"
+        self.write_prompt(self.impl, request_id)
+        self.assertEqual(self.run_pa(self.impl, "verify-prompt").returncode, 0)
+        r = self.run_pa(self.impl, "record")
+        self.assertTrue(r.stdout.startswith("RECORDED_REQUEST"), r.stdout + r.stderr)
+        self.assertEqual([w["outbound_id"] for w in self.state(self.impl)["waiting"]], [request_id])
+        self.assertTrue(self.begin(self.impl).startswith("WAITING_PAIR " + request_id))
+
+        # 設計書側: 届いた依頼が意図になる → 読んで・直して・合図つきでコミット。
+        out = self.begin(self.design, "ついでにやりたいこと")
+        self.assertTrue(out.startswith("INBOUND "), out)
+        self.assertIn("片付けたあとでもう一度", out)
+        self.assertIn(f"Pair-Align-Id: {request_id}",
+                      (self.design / ".pair-align/work/intent.md").read_text(encoding="utf-8"))
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.design, "commit", "-m", "hello の戻り値を 2 に")
+        self.assertTrue(r.stdout.startswith("COMMITTED_LINKED"), r.stdout + r.stderr)
+        self.assertIn(f"Pair-Align: {request_id}", git(self.design, "log", "-1", "--format=%B"))
+        self.assertTrue(self.run_pa(self.design, "collect").stdout.startswith("NO_CHANGES"))
+
+        # 実装側: 相手が反映したので、波及として自分を直す。
+        out = self.begin(self.impl)
+        self.assertTrue(out.startswith(f"RIPPLE {sid}"), out)
+        self.assertEqual((self.impl / ".pair-align/work/intent.md").read_text(encoding="utf-8"),
+                         "hello が 2 を返すようにしたい")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "commit", "-m", "hello は 2 を返す")
+        self.assertTrue(r.stdout.startswith("COMMITTED_LINKED"), r.stdout + r.stderr)
+        self.assertIn(f"Pair-Align: {request_id}", git(self.impl, "log", "-1", "--format=%B"))
+        st = self.state(self.impl)
+        self.assertIsNone(st["active"])
+        self.assertEqual(st["waiting"], [])
+        # 波及のコミットも相手への依頼にならない。往復はここで止まる。
+        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("NO_CHANGES"))
+        self.assertTrue(self.begin(self.design).startswith("PROPAGATE"))
+
+    def test_revise_and_abort(self) -> None:
+        self.begin(self.impl, "最初の意図")
+        self.write_reading(self.impl)
+        self.write_question(self.impl)
+        self.run_pa(self.impl, "pause")
+        out = self.begin(self.impl, decision="意図を直す")
+        self.assertTrue(out.startswith("AWAITING_DECISION"), out)
+        self.assertIn("直した意図も入れて", out)
+        out = self.begin(self.impl, "直した意図", decision="意図を直す")
+        self.assertTrue(out.startswith("REVISED"), out)
+        self.assertEqual((self.impl / ".pair-align/work/intent.md").read_text(encoding="utf-8"), "直した意図")
+
+        # 途中で止まっても、次の begin は同じ意図の続きから。
+        self.assertTrue(self.begin(self.impl).startswith("RESUME"))
+        self.write_reading(self.impl)
+        self.write_question(self.impl)
+        self.run_pa(self.impl, "pause")
+        self.assertTrue(self.begin(self.impl, decision="やめる").startswith("ABORTED"))
+        self.assertIsNone(self.state(self.impl)["active"])
+        self.assertTrue(self.begin(self.impl).startswith("PROPAGATE"))
+
+    def test_inbound_without_change_is_closed(self) -> None:
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\n補足だけ。\n"}, "spec note")
+        self.run_pa(self.design, "collect")
+        pid = json.loads((self.design / ".pair-align/work/current.json").read_text(encoding="utf-8"))["id"]
+        self.write_prompt(self.design, pid)
+        self.run_pa(self.design, "record")
+
+        self.assertTrue(self.begin(self.impl).startswith("INBOUND"))
+        r = self.run_pa(self.impl, "commit", "-m", "x")
+        self.assertTrue(r.stdout.startswith("UNCHANGED_LINKED"), r.stdout + r.stderr)
+        self.assertIn(pid, self.state(self.impl)["acked"])
+        self.assertTrue(self.begin(self.impl).startswith("PROPAGATE"))
+
+    def test_abort_on_inbound_closes_it(self) -> None:
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\n3 を返す。\n"}, "spec")
+        self.run_pa(self.design, "collect")
+        pid = json.loads((self.design / ".pair-align/work/current.json").read_text(encoding="utf-8"))["id"]
+        self.write_prompt(self.design, pid)
+        self.run_pa(self.design, "record")
+        self.begin(self.impl)
+        self.write_reading(self.impl)
+        self.write_question(self.impl)
+        self.run_pa(self.impl, "pause")
+        self.assertTrue(self.begin(self.impl, decision="やめる").startswith("ABORTED"))
+        self.assertIn(pid, self.state(self.impl)["acked"])
+        self.assertTrue(self.begin(self.impl).startswith("PROPAGATE"))
+
     # ------------------------------------------------------------ 設置と定義
 
     def test_install_is_idempotent_and_keeps_config(self) -> None:

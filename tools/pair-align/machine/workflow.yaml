@@ -3,30 +3,137 @@
 # 同じ定義を実装のリポジトリと設計書のリポジトリの両方の `.statemachine/pair_align/` に置く。
 # どちらの側かと相手のパスは同じフォルダの pair.json に書く（相手のパスは手で直す）。
 #
-# 流れ:
-#   collect ─┬─ 相手からの依頼が残っている ─→ inbound_pending（先にそれを反映する）
-#            ├─ 伝える変更が無い ────────────→ no_changes
-#            └─ 変更がある ─→ assess ─┬─ 反映不要 ─→ record_skip ─→ skipped
-#                                      └─ 反映が要る ─→ locate ─→ compose ─→ record ─→ done
+# 骨格は「意図 → 相手を読む → 前提・制約・自由に分ける → 意図と合うか」。
 #
-# 決定的な仕事（差分の収集・相手側の検索・依頼文の検査・控え）は pair_align.py が行い、
-# 判断（要るか・どこへ・どう頼むか）だけをアクションが行う。依頼文の形は check が測る。
+#   begin ─┬─ 意図がある（利用者 / 相手から届いた依頼 / 波及）─→ read_pair ─→ judge_fit
+#          │      judge_fit ─┬─ 合う ─→ change_self ─→ commit_self ─┬─ 利用者の意図 ─→ collect …（相手へ伝える）
+#          │                 │                                      └─ 依頼・波及 ──→ applied
+#          │                 └─ 合わない ─→ ask_user ─→ pause ─→ awaiting_decision（利用者の答えを待つ）
+#          ├─ 答え「相手を直す」─→ compose_request ─→ record ─→ waiting_pair（相手の反映待ち）
+#          │     … 相手が反映したら次の実行で「波及」として read_pair へ戻り、こちらを直す
+#          ├─ 答え「意図を直す」─→ read_pair（直した意図で読み直す）
+#          ├─ 答え「やめる」 ─→ aborted
+#          └─ 意図が無い ─→ collect ─┬─ 伝える変更が無い ─→ no_changes
+#                                     └─ 変更がある ─→ assess ─┬─ 不要 ─→ record_skip ─→ skipped
+#                                                               └─ 要る ─→ locate ─→ compose ─→ record ─→ done
+#
+# 決定的な仕事（どこから始めるか・差分の収集・相手側の検索・書いたものの検査・コミットと合図の行・控え）は
+# pair_align.py が行い、判断（分け方・合うか・どう直すか・どう頼むか）だけをアクションが行う。
 
 name: "pair align"
-description: "自分のリポジトリの変更から、ペアのリポジトリ（実装⇔設計書）を揃えるための依頼文を作る"
-initial_state: collect
+description: "相手のリポジトリ（実装⇔設計書）を読んで前提・制約・自由に分け、意図と合えば自分を直し、合わなければ確認して相手を直してもらう"
+initial_state: begin
 
 inputs:
+  intent:
+    label: やりたいこと
+    type: multiline
+    required: false
+    description: 空なら、届いた依頼・波及・コミット済みの変更を順に見る
+  decision:
+    label: 確認への答え
+    type: choice
+    options: [相手を直す, 意図を直す, やめる]
+    required: false
+    description: 前回の実行で確認を求められたときだけ選ぶ
   since:
     label: この版からの変更を見る
     required: false
     description: 空なら前回の続きから（初回は直前の 1 コミット）
 
 config:
-  max_steps: 20
+  max_steps: 40
   on_no_transition: error
 
 states:
+  # ---------------------------------------------------------------- 入口
+  begin:
+    description: "今回の実行が何から始まるかを決める"
+    action_file: actions/begin.md
+    output_key: began
+    output_validator: "startswith:INTENT,INBOUND,RIPPLE,RESUME,REVISED,DECIDED_PAIR,AWAITING_DECISION,ABORTED,WAITING_PAIR,PROPAGATE"
+    max_retries: 1
+
+  # ---------------------------------------------------------------- 読む → 分ける → 合うか
+  read_pair:
+    description: "相手を読み、前提・制約・自由に分ける"
+    action_file: actions/read_pair.md
+    write: .pair-align/work/reading.md
+    output_validator: "startswith:OK,FAILED"
+    check: "python3 .statemachine/pair_align/pair_align.py verify-reading"
+    check_retries: 2
+    check_on_exhausted: escalate
+
+  judge_fit:
+    description: "意図が前提・制約と合うかを決める"
+    action_file: actions/judge_fit.md
+    output_key: fit
+    output_validator: "startswith:FIT,MISFIT"
+    max_retries: 1
+
+  # ---------------------------------------------------------------- 合う → 自分を直す
+  change_self:
+    description: "意図どおりに自分のリポジトリを直す"
+    action_file: actions/change_self.md
+    output_validator: "startswith:OK,FAILED"
+    check: "python3 .statemachine/pair_align/pair_align.py self-check"
+    check_retries: 2
+    check_on_exhausted: escalate
+
+  commit_self:
+    description: "自分への変更をコミットする"
+    action_file: actions/commit_self.md
+    output_key: committed
+    output_validator: "startswith:COMMITTED_USER,COMMITTED_LINKED,UNCHANGED_USER,UNCHANGED_LINKED"
+    max_retries: 1
+
+  applied:
+    description: "届いた依頼・波及を反映した"
+    action_file: actions/applied.md
+    terminal: true
+
+  # ---------------------------------------------------------------- 合わない → 利用者に確認
+  ask_user:
+    description: "ぶつかる点と選べることをまとめる"
+    action_file: actions/ask_user.md
+    write: .pair-align/work/question.md
+    output_validator: "startswith:OK,FAILED"
+    check: "python3 .statemachine/pair_align/pair_align.py verify-question"
+    check_retries: 2
+    check_on_exhausted: escalate
+
+  pause:
+    description: "利用者の答えを待つために控える"
+    action_file: actions/pause.md
+    output_validator: "startswith:PAUSED"
+    max_retries: 1
+
+  awaiting_decision:
+    description: "利用者の答えを待つ"
+    action_file: actions/awaiting_decision.md
+    terminal: true
+
+  aborted:
+    description: "意図を取り下げた"
+    action_file: actions/aborted.md
+    terminal: true
+
+  # ---------------------------------------------------------------- 相手を直してもらう
+  compose_request:
+    description: "相手の前提・制約を直す依頼文を書く"
+    action_file: actions/compose_request.md
+    write: .pair-align/work/prompt.md
+    output_validator: "startswith:OK,FAILED"
+    check: "python3 .statemachine/pair_align/pair_align.py verify-prompt"
+    check_retries: 2
+    check_on_exhausted: escalate
+
+  waiting_pair:
+    description: "相手の反映を待つ"
+    action_file: actions/waiting_pair.md
+    terminal: true
+
+  # ---------------------------------------------------------------- 自分の変更を相手へ伝える
   collect:
     description: "受け取った依頼の残りと自分の変更を集める"
     action_file: actions/collect.md
@@ -35,7 +142,7 @@ states:
     max_retries: 1
 
   inbound_pending:
-    description: "相手からの依頼が残っている"
+    description: "相手からの依頼が届いている"
     action_file: actions/inbound_pending.md
     terminal: true
 
@@ -45,7 +152,7 @@ states:
     terminal: true
 
   assess:
-    description: "ペアへの反映が要るかを決める"
+    description: "相手への反映が要るかを決める"
     action_file: actions/assess.md
     output_key: assessment
     output_validator: "startswith:NEEDED,NOT_NEEDED"
@@ -63,14 +170,14 @@ states:
     terminal: true
 
   locate:
-    description: "ペアのリポジトリで反映先を探す"
+    description: "相手のリポジトリで反映先を探す"
     action_file: actions/locate.md
     output_key: locations
     output_validator: "startswith:FOUND,NEW"
     max_retries: 1
 
   compose:
-    description: "ペアへの依頼文を書く"
+    description: "相手への依頼文を書く"
     action_file: actions/compose.md
     write: .pair-align/work/prompt.md
     output_validator: "startswith:OK,FAILED"
@@ -91,38 +198,39 @@ states:
     terminal: true
 
 transitions:
-  - from: collect
-    to: inbound_pending
-    condition_rule: "startswith:collected:INBOUND_PENDING"
-    priority: 1
-  - from: collect
-    to: no_changes
-    condition_rule: "startswith:collected:NO_CHANGES"
-    priority: 2
-  - from: collect
-    to: assess
-    condition_rule: "startswith:collected:CHANGES"
-    priority: 3
+  # 入口
+  - {from: begin, to: read_pair, condition_rule: "regex:began:^(INTENT|INBOUND|RIPPLE|RESUME|REVISED)", priority: 1}
+  - {from: begin, to: compose_request, condition_rule: "startswith:began:DECIDED_PAIR", priority: 2}
+  - {from: begin, to: awaiting_decision, condition_rule: "startswith:began:AWAITING_DECISION", priority: 3}
+  - {from: begin, to: aborted, condition_rule: "startswith:began:ABORTED", priority: 4}
+  - {from: begin, to: waiting_pair, condition_rule: "startswith:began:WAITING_PAIR", priority: 5}
+  - {from: begin, to: collect, condition_rule: "startswith:began:PROPAGATE", priority: 6}
 
-  - from: assess
-    to: locate
-    condition_rule: "startswith:assessment:NEEDED"
-    priority: 1
-  - from: assess
-    to: record_skip
-    condition_rule: "startswith:assessment:NOT_NEEDED"
-    priority: 2
+  # 読む → 合うか
+  - {from: read_pair, to: judge_fit, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: judge_fit, to: change_self, condition_rule: "startswith:fit:FIT", priority: 1}
+  - {from: judge_fit, to: ask_user, condition_rule: "startswith:fit:MISFIT", priority: 2}
 
-  - from: record_skip
-    to: skipped
+  # 合う → 自分を直す
+  - {from: change_self, to: commit_self, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: commit_self, to: collect, condition_rule: "startswith:committed:COMMITTED_USER", priority: 1}
+  - {from: commit_self, to: applied, condition_rule: "regex:committed:^(COMMITTED_LINKED|UNCHANGED_)", priority: 2}
 
-  - from: locate
-    to: compose
+  # 合わない → 確認
+  - {from: ask_user, to: pause, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: pause, to: awaiting_decision}
 
-  - from: compose
-    to: record
-    condition_rule: "equals:check_ok:true"
-    priority: 1
+  # 相手を直してもらう
+  - {from: compose_request, to: record, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: record, to: waiting_pair, condition_rule: "startswith:recorded:RECORDED_REQUEST", priority: 1}
+  - {from: record, to: done, condition_rule: "startswith:recorded:RECORDED", priority: 2}
 
-  - from: record
-    to: done
+  # 自分の変更を相手へ伝える
+  - {from: collect, to: inbound_pending, condition_rule: "startswith:collected:INBOUND_PENDING", priority: 1}
+  - {from: collect, to: no_changes, condition_rule: "startswith:collected:NO_CHANGES", priority: 2}
+  - {from: collect, to: assess, condition_rule: "startswith:collected:CHANGES", priority: 3}
+  - {from: assess, to: locate, condition_rule: "startswith:assessment:NEEDED", priority: 1}
+  - {from: assess, to: record_skip, condition_rule: "startswith:assessment:NOT_NEEDED", priority: 2}
+  - {from: record_skip, to: skipped}
+  - {from: locate, to: compose}
+  - {from: compose, to: record, condition_rule: "equals:check_ok:true", priority: 1}
