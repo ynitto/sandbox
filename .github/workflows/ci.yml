@@ -190,6 +190,10 @@ jobs:
         run: python tools/ci/check_user_docs.py
       - name: スキルの references/ に切れリンク・孤児・未許可の2ホップ参照が無いこと
         run: python tools/ci/check_skill_references.py
+      # 列挙は install.py の _discover_all_skills / _discover_core_skills に任せ、
+      # README.md のスキル一覧（常時ロード・件数・表・見出しの重複）と突き合わせる。
+      - name: 文書のスキル目録が実体と一致すること
+        run: python tools/ci/check_skill_catalog.py
       # skill-evaluator スキル同梱の検査器を、リポジトリ内のパスを直接叩いて回す
       # （install.py が ~/.agents/ へ配る写しには依存しない）。落ちるのはエラー
       # だけで、description の字数超過などの警告では落ちない設計——警告も落とす
