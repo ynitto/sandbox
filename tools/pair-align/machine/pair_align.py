@@ -6,8 +6,12 @@
 
     explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
-    verify-plan         計画（.pair-align/plan.md）が決まった形か、根拠のパスが実在するかを検査する
-    verify-apply        計画どおりに変えたか（参照先を変えてよいのは変更案があるときだけ）と、検査コマンドを確かめる
+    verify-plan         計画（.pair-align/plan.md）が決まった形か、根拠のパスが実在するかを検査する。
+                        参照先の変更案があれば、それを自分に適用したときの影響範囲を測り、計画の影響範囲が
+                        測ったファイルをすべて挙げているかも検査する
+    verify-apply        計画どおりに変えたか（参照先を変えてよいのは変更案があるときだけ）と、検査コマンドを確かめる。
+                        参照先を変えたら、実際の変更から影響範囲を測り直し、測ったファイルを直したか
+                        「変更不要」としたかを検査する
 
 置き場所は `<リポジトリ>/.statemachine/pair_align/`。設定は同じフォルダの pair.json、
 作業ファイルと graphify のグラフは `<リポジトリ>/.pair-align/` に置く。依存は python3 と git のみ
@@ -60,6 +64,20 @@ CHECK_TIMEOUT = 900
 _GRAPHIFY_SRC = re.compile(r"\bsrc=([^\s\]]+)|(?<![\w=])([^\s\[\]=]+):L\d+")
 _PATHISH = re.compile(r"[\w@.\-]+(?:/[\w@.\-]+)+|[\w@\-]+\.[A-Za-z0-9]{1,8}")
 _NONE_WORDS = ("なし", "無し")
+NO_CHANGE_MARK = "変更不要"
+MAX_MEASURED = 40
+
+# 影響範囲を測る語。計画からは `…` で囲んだ名前、参照先の実際の差分からは定義・見出し・`…` を拾う。
+_BACKTICK = re.compile(r"`([^`\n]{2,60})`")
+_DIFF_TERMS = (
+    re.compile(r"^[+-]\s*(?:async\s+)?def\s+([A-Za-z_]\w{2,})"),
+    re.compile(r"^[+-]\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_]\w{2,})"),
+    re.compile(r"^[+-]\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]{2,})"),
+    re.compile(r"^[+-]\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]{2,})\s*="),
+    re.compile(r"^[+-]\s*(?:pub\s+)?(?:fn|func|interface|type|struct|enum)\s+([A-Za-z_]\w{2,})"),
+    re.compile(r"^[+-]\s*#{1,6}\s+(.{2,60}?)\s*#*\s*$"),
+)
+_WORDLIKE = re.compile(r"^[A-Za-z0-9_$]+$")
 
 
 class PairAlignError(Exception):
@@ -139,6 +157,35 @@ def stamp(repo: Path) -> str:
     return h.hexdigest()
 
 
+def head(repo: Path) -> str:
+    return run(["git", "rev-parse", "HEAD"], repo, GIT_TIMEOUT)[1].strip()
+
+
+def dirty_files(repo: Path) -> dict[str, str]:
+    """作業中の変更・未追跡のファイル → 中身のハッシュ（消えていれば "deleted"）。"""
+    out = run(["git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+               f":(exclude){DATA_DIRNAME}"], repo, GIT_TIMEOUT)[1]
+    files = {}
+    for line in out.splitlines():
+        path = line[3:].split(" -> ")[-1].strip('"')
+        try:
+            files[path] = hashlib.sha256((repo / path).read_bytes()).hexdigest()
+        except OSError:
+            files[path] = "deleted"
+    return files
+
+
+def changed_since(repo: Path, before_head: str, before_files: dict[str, str]) -> set[str]:
+    """控えたときから中身が変わったファイル。"""
+    now = dirty_files(repo)
+    changed = {p for p in set(now) | set(before_files) if now.get(p) != before_files.get(p)}
+    if before_head and head(repo) != before_head:  # 途中でコミットされても取りこぼさない
+        rc, out = run(["git", "diff", "--name-only", before_head, "HEAD"], repo, GIT_TIMEOUT)
+        if rc == 0:
+            changed |= set(out.splitlines())
+    return changed
+
+
 # ---------------------------------------------------------------- 探す（graphify + git grep）
 
 def ensure_graph(ctx: Ctx, which: str) -> tuple[str | None, Path | None, str]:
@@ -191,8 +238,10 @@ def search(ctx: Ctx, which: str, terms: list[str], graph_cmd: str) -> tuple[str,
     lines += ["## 文字列の一致（git grep）", ""]
     for term in terms:
         # --untracked: まだコミットしていない新しいファイルも拾う（.gitignore に載っているものは除く）。
-        rc, out = run(["git", "grep", "--untracked", "-n", "-I", "-i", "-F", "--max-count", "3", "-e", term, "--", ".",
-                       f":(exclude){DATA_DIRNAME}", f":(exclude){MACHINE_REL}"], repo, GIT_TIMEOUT)
+        # 識別子は語単位（-w）で引く。`hello` で `helloWorld` を拾って影響範囲を水増ししない。
+        word = ["-w"] if _WORDLIKE.match(term) else []
+        rc, out = run(["git", "grep", "--untracked", "-n", "-I", "-i", "-F", *word, "--max-count", "3", "-e", term,
+                       "--", ".", f":(exclude){DATA_DIRNAME}", f":(exclude){MACHINE_REL}"], repo, GIT_TIMEOUT)
         hits = out.splitlines()[:GREP_LINES_PER_TERM] if rc == 0 else []
         lines += [f"### {term}", "", *([f"- {h[:200]}" for h in hits] or ["- (該当なし)"]), ""]
         for h in hits:
@@ -230,7 +279,8 @@ def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
                         ctx.pair, terms, note, body, files)
     # verify-apply が「どちらを変えたか」を測るための印。計画を練る間は何も変えないので、探すたびに取り直してよい。
     (ctx.data / "before.json").write_text(json.dumps(
-        {"own": stamp(ctx.root), "pair": stamp(ctx.pair)}, indent=2) + "\n", encoding="utf-8")
+        {"own": stamp(ctx.root), "pair": stamp(ctx.pair), "own_head": head(ctx.root),
+         "own_files": dirty_files(ctx.root)}, indent=2) + "\n", encoding="utf-8")
     print(f"FOUND {len(files)} files (graphify: {note})")
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
@@ -244,6 +294,62 @@ def cmd_impact(ctx: Ctx, args: argparse.Namespace) -> int:
     print(f"FOUND {len(files)} files (graphify: {note})")
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
+
+
+# ---------------------------------------------------------------- 影響範囲を測る
+
+def unique(terms) -> list[str]:
+    out: list[str] = []
+    for t in terms:
+        t = t.strip()
+        if 2 <= len(t) <= 60 and t not in out:
+            out.append(t)
+    return out
+
+
+def terms_from_plan(bodies: dict[str, str]) -> list[str]:
+    return unique(_BACKTICK.findall(bodies.get("## 参照先の変更案", "") + "\n" + bodies.get("## ずれ", "")))
+
+
+def terms_from_diff(repo: Path) -> list[str]:
+    """参照先の実際の変更（作業中の差分と、新しいファイル）から、変わった名前を拾う。"""
+    diff = run(["git", "diff", "HEAD", "--", ".", f":(exclude){DATA_DIRNAME}"], repo, GIT_TIMEOUT)[1]
+    terms = []
+    for line in diff.splitlines():
+        if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
+            continue
+        for pat in _DIFF_TERMS:
+            m = pat.match(line)
+            if m:
+                terms.append(m.group(1))
+        terms += _BACKTICK.findall(line)
+    for name in run(["git", "ls-files", "--others", "--exclude-standard", "--", ".",
+                     f":(exclude){DATA_DIRNAME}"], repo, GIT_TIMEOUT)[1].splitlines():
+        try:
+            text = (repo / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        terms += [m.group(1) for ln in text.splitlines() for pat in _DIFF_TERMS
+                  for m in [pat.match("+" + ln)] if m]
+    return unique(terms)
+
+
+def measure(ctx: Ctx, terms: list[str], name: str, title: str) -> list[str]:
+    """参照先の変更で動く名前から、自分のリポジトリで影響を受けるファイルを測る（graphify affected + git grep）。"""
+    terms = terms[:MAX_TERMS]
+    body, files, note = search(ctx, "own", terms, "affected")
+    files = files[:MAX_MEASURED]
+    write_report(ctx, name, title, ctx.root, terms, note, body, files)
+    return files
+
+
+def listed_paths(body: str, repo: Path, only_no_change: bool = False) -> set[str]:
+    paths: set[str] = set()
+    for item in items(body) or [body]:
+        if only_no_change and NO_CHANGE_MARK not in item:
+            continue
+        paths.update(cited(item, repo))
+    return paths
 
 
 # ---------------------------------------------------------------- 計画の検査
@@ -315,6 +421,9 @@ def verify_plan_text(text: str, root: Path, pair: Path) -> list[str]:
         for item in items(bodies["## 影響範囲"]) or [bodies["## 影響範囲"]]:
             if not cited(item, root):
                 problems.append(f"影響範囲の項目に、自分のリポジトリに実在するパスがありません: {item[:80]}")
+    if pair_change and not terms_from_plan(bodies):
+        problems.append("参照先の変更案で変わる名前（関数・API・用語・見出し）を `…` で囲んでください"
+                        "（影響範囲を測る語になります）")
     return problems
 
 
@@ -322,12 +431,26 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     if not ctx.plan.is_file():
         print(f"計画がありません: {DATA_DIRNAME}/plan.md", file=sys.stderr)
         return 1
-    problems = verify_plan_text(ctx.plan.read_text(encoding="utf-8"), ctx.root, ctx.pair)
+    text = ctx.plan.read_text(encoding="utf-8")
+    problems = verify_plan_text(text, ctx.root, ctx.pair)
+    measured: list[str] = []
+    if not problems:
+        _, bodies = sections(text, PLAN_HEADINGS)
+        if not is_none(bodies["## 参照先の変更案"]):
+            # 参照先の変更案を自分に適用したときの影響範囲を測り、計画がそれを漏れなく挙げているかを見る。
+            measured = measure(ctx, terms_from_plan(bodies), "impact.md",
+                               f"参照先の変更案を自分のリポジトリ（{SIDES[ctx.side]}）に適用したときの影響範囲（測定）")
+            missing = [p for p in measured if p not in listed_paths(bodies["## 影響範囲"], ctx.root)]
+            if missing:
+                problems.append(
+                    "測った影響範囲のうち、計画の影響範囲に無いファイルがあります（直すなら直し方を、"
+                    f"直さなくてよいなら「{NO_CHANGE_MARK}: 理由」を添えて影響範囲に足してください）: "
+                    + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/impact.md）")
     for p in problems:
         print(p, file=sys.stderr)
     if problems:
         return 1
-    print("OK plan")
+    print("OK plan" + (f"（影響範囲を測った: {len(measured)} files、{DATA_DIRNAME}/impact.md）" if measured else ""))
     return 0
 
 
@@ -362,6 +485,19 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         problems.append("参照先の変更案があるのに、参照先のリポジトリが変わっていません")
     if not want_pair and pair_changed:
         problems.append("参照先の変更案は「なし」なのに、参照先のリポジトリが変わっています（戻してください）")
+    measured: list[str] = []
+    if pair_changed:
+        # 参照先を実際に変えたあとの影響範囲を測り直す。測ったファイルは、直したか「変更不要」と書いたかのどちらか。
+        measured = measure(ctx, unique(terms_from_diff(ctx.pair) + terms_from_plan(bodies)), "impact-after.md",
+                           f"参照先の変更後に、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）")
+        touched = changed_since(ctx.root, before.get("own_head", ""), before.get("own_files", {}))
+        waived = listed_paths(bodies.get("## 影響範囲", ""), ctx.root, only_no_change=True)
+        untouched = [p for p in measured if p not in touched and p not in waived]
+        if untouched:
+            problems.append(
+                "参照先の変更で影響を受けるのに、直していないファイルがあります（直すか、計画の影響範囲に"
+                f"「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(untouched)
+                + f"（詳細: {DATA_DIRNAME}/impact-after.md）")
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
     if pair_changed:
         # 参照先の検査は、参照先に置いた同じマシンの設定（pair.json の check）を使う。
@@ -372,7 +508,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         print(p, file=sys.stderr)
     if problems:
         return 1
-    print(f"OK own={'changed' if own_changed else 'same'} pair={'changed' if pair_changed else 'same'}")
+    print(f"OK own={'changed' if own_changed else 'same'} pair={'changed' if pair_changed else 'same'}"
+          + (f" impact={len(measured)} files（{DATA_DIRNAME}/impact-after.md）" if pair_changed else ""))
     return 0
 
 

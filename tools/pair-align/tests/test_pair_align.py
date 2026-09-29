@@ -104,7 +104,7 @@ hello が 2 を返すようにする。
 
 ## 参照先の変更案
 
-- docs/api.md — hello の戻り値を 2 と書き直す
+- docs/api.md — `hello` の戻り値を 2 と書き直す
 
 ## 影響範囲
 
@@ -240,12 +240,13 @@ class PairAlignTest(unittest.TestCase):
         cases = {
             "実在する根拠のパスがありません": PLAN_ALIGNED.replace("docs/api.md#hello", "docs/nowhere.md"),
             "ずれがあるのに、参照先の変更案が「なし」": PLAN_DRIFT.replace(
-                "- docs/api.md — hello の戻り値を 2 と書き直す", "なし"),
+                "- docs/api.md — `hello` の戻り値を 2 と書き直す", "なし"),
             "ずれが「なし」なのに、参照先の変更案があります": PLAN_ALIGNED.replace(
                 "## 参照先の変更案\n\nなし", "## 参照先の変更案\n\n- docs/api.md — 書き直す"),
             "影響範囲が「なし」": PLAN_DRIFT.replace("- src/app.py — hello の戻り値", "なし"),
             "自分のリポジトリに実在するパスがありません": PLAN_DRIFT.replace(
                 "- src/app.py — hello の戻り値", "- src/gone.py — 戻り値"),
+            "`…` で囲んでください": PLAN_DRIFT.replace("`hello`", "hello"),
             "見出しの順番": PLAN_ALIGNED.replace("## 参照先の前提", "## tmp").replace(
                 "## 参照先の制約", "## 参照先の前提").replace("## tmp", "## 参照先の制約"),
         }
@@ -297,6 +298,62 @@ class PairAlignTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed pair=changed", r.stdout)
+
+    # ------------------------------------------------------------ 影響範囲を測る
+
+    def add_caller(self) -> None:
+        commit(self.impl, {"src/use.py": "from app import hello\n\nprint(hello())\n",
+                           "src/other.py": "def helloWorld():\n    return 0\n"}, "caller")
+
+    def test_verify_plan_measures_impact_of_pair_change(self) -> None:
+        self.add_caller()
+        self.write_plan(PLAN_DRIFT)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("計画の影響範囲に無いファイル", r.stderr)
+        self.assertIn("src/use.py", r.stderr)
+        self.assertNotIn("src/other.py", r.stderr)  # 語単位で引くので helloWorld は拾わない
+        report = (self.impl / ".pair-align/impact.md").read_text(encoding="utf-8")
+        self.assertIn("- src/use.py", report)
+
+        self.write_plan(PLAN_DRIFT.replace("- src/app.py — hello の戻り値",
+                                           "- src/app.py — hello の戻り値\n- src/use.py — 変更不要: 表示するだけ"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("影響範囲を測った: 2 files", r.stdout)
+
+    def test_verify_plan_does_not_measure_without_pair_change(self) -> None:
+        self.add_caller()
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "OK plan")
+        self.assertFalse((self.impl / ".pair-align/impact.md").exists())
+
+    def test_verify_apply_remeasures_from_the_actual_pair_change(self) -> None:
+        self.add_caller()
+        commit(self.impl, {"src/bye.py": "def goodbye_world():\n    return 3\n"}, "bye")
+        plan = PLAN_DRIFT.replace("- src/app.py — hello の戻り値",
+                                  "- src/app.py — hello の戻り値\n- src/use.py — 表示を直す")
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        self.write_plan(plan)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        # 参照先は計画に無い見出しまで足した。実際の差分から測るので、その影響も拾う。
+        (self.design / "docs/api.md").write_text(
+            "# API\n\n## hello\n\nhello は 2 を返す。\n\n## goodbye_world\n\n3 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("直していないファイル", r.stderr)
+        self.assertIn("src/use.py", r.stderr)   # 影響範囲に挙げたが直していない
+        self.assertIn("src/bye.py", r.stderr)   # 計画に無かった変更の影響
+        self.assertNotIn("src/app.py,", r.stderr)
+        self.assertTrue((self.impl / ".pair-align/impact-after.md").is_file())
+
+        (self.impl / "src/use.py").write_text("from app import hello\n\nprint('v', hello())\n", encoding="utf-8")
+        self.write_plan(plan + "- src/bye.py — 変更不要: 名前だけ同じ別物\n")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("impact=3 files", r.stdout)
 
     def test_verify_apply_needs_explore_first(self) -> None:
         self.write_plan(PLAN_ALIGNED)
