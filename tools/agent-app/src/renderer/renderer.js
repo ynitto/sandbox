@@ -2078,6 +2078,18 @@ async function openNotifiedSession(id) {
   await showArea(dest.area, { action: 'teach' });
 }
 
+// タスクの実行の通知を押したとき: そのタスクを選び、実行の画面の「履歴」タブで開く。
+async function openNotifiedTaskRun(task) {
+  if (task.repo && task.repo !== state.repo) {
+    if (!state.config.repos.includes(task.repo)) throw new Error('登録していないフォルダです');
+    await selectRepo(task.repo);
+    renderRepos();
+  }
+  state.selectedTask = task.id;
+  state.config = await api.saveConfig({ lastTask: { ...(state.config.lastTask || {}), [state.repo]: task.id } });
+  await showArea('tasks', { action: 'history' });
+}
+
 async function inspectRoutine() {
   const source = state.routine;
   if (!source || source.busy) return;
@@ -3570,8 +3582,8 @@ async function init() {
   });
   // OS の通知を押したとき（main が前面に戻してから知らせる）
   api.onNotifyOpen((p) => {
-    if (!p || !p.id) return;
-    openNotifiedSession(p.id).catch((err) => notice(err.message, 'error'));
+    if (p && p.task) openNotifiedTaskRun(p.task).catch((err) => notice(err.message, 'error'));
+    else if (p && p.id) openNotifiedSession(p.id).catch((err) => notice(err.message, 'error'));
   });
   // 起動先が tmux に決まった合図。依頼が CLI に届くのを待たずに端末ミラーを出す——
   // 自動選択では会話を作る時点で起動先が決まっておらず、ここまで端末を出せない。

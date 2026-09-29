@@ -1262,7 +1262,14 @@ test('前面に無いときの通知は、既に流している合図から出�
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   assert.match(ipc, /channel === 'turn:done'[\s\S]*notifier\.show/);
   assert.match(ipc, /channel === 'term:phase' && payload && payload\.phase === 'attention'/);
-  assert.match(ipc, /onRunExit: \(\{ name, mode, result \}\)/);
+  assert.match(ipc, /onRunExit: \(\{ name, mode, result, root, taskId \}\)/);
+  // 実行の通知はタスクの実行履歴へ、会話の通知は会話（AIと作る会話なら編集の画面）へ
+  assert.match(ipc, /else if \(event\.task\) post\('notify:open', \{ task: event\.task \}\)/);
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  assert.match(renderer, /if \(p && p\.task\) openNotifiedTaskRun\(p\.task\)/);
+  assert.match(renderer, /async function openNotifiedTaskRun[\s\S]*?showArea\('tasks', \{ action: 'history' \}\)/);
+  const workbench = fs.readFileSync(path.join(SRC, 'renderer/automation/renderer.js'), 'utf8');
+  assert.match(workbench, /payload\.action === 'history'[\s\S]*?state\.execution\.detailTab = 'history'/);
   assert.match(ipc, /enabled: \(\) => store\.loadConfig\(userData\(\)\)\.notify\.background !== false/);
   assert.match(preload, /onNotifyOpen: on\('notify:open'\)/);
   assert.match(html, /id="notify-background"[\s\S]*バックグラウンドで通知する/);
