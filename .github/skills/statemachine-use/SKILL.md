@@ -2,7 +2,7 @@
 name: statemachine-use
 description: 「ステートマシンを実行して」「ステートマシンを作成/作って」「YAMLワークフローを動かして」「ワークフローを回して」「エージェントループを起動して」「このYAMLを実行して」などで発動。作成モード（手順を.statemachine/{名前}/に生成）と実行モード（YAMLをLLM駆動で実行）を持つ。
 metadata:
-  version: 2.2.0
+  version: 2.3.0
   tier: experimental
   category: workflow
   tags:
@@ -58,6 +58,11 @@ ls .github/skills/
 9. **1 ステート 1 成果物** — 1 つのステートで作るファイルは 1 つだけにする（`write` に 2 つ以上を宣言した定義は投入前に落ちる）。小さいモデルは成果物を 2 つ同時に渡されると片方を丸ごと落とし、再投入を積んでも同じ落ち方をする（実測: 一括 0/3・1 成果物ずつ 3/3）。実装とテストなら 2 つのステートに割り、それぞれに `check` を付ける
 10. **分類・振り分け・段階の評価だけのステートは `judge:` で書く** — 「N 語のどれかを 1 語で答える」ステート（issue_triage の classify、レビューの結論など）は、アクションを書かず `judge:` に問いと選択肢を書く（`references/schema.md`「判定だけのステート」）。判定 AI があれば生成 0 で終わり、無ければ宣言から作った短いプロンプトで 1 回だけ生成する（`action` を併記すればそれが生成用の文になるが、書かない方が短くて安い）。理由や本文が要るステートには使わない（それは通常のアクション）
 11. **出力の内容で分岐する遷移は `outcome` で書く** — 同じステートから出る候補ごとに「この遷移が成立する結果」の短い名前を `outcome:` に書く（下記）。判定 AI（agent-herd の judge）はそれを選択肢にして「結果はどれか」を **1 問**で選ぶ——候補ごとに YES/NO を訊くより速く安く、2 つの条件が同時に真になる矛盾が構造として消える。judge が無い環境では同じ `outcome` が条件文として LLM に渡るので、定義を書き分けなくてよい
+
+12. **実行する人が入れる値は `inputs:` で宣言する** — アクションに `{{month}}` のような値を書いたら、
+    トップレベルの `inputs:` に同じキーを `label`（画面に出す名前）・`required`（既定 true）・`default`・`type` で書く。
+    定義を読んだだけで何を入れれば動くかが分かり、agent-app はその宣言どおりに入力ダイアログを出す。
+    ループの上限のような人が入れない固定値は `context:` に置く（`references/schema.md`「入力の宣言」）
 
 **`outcome` — 分岐を「条件の列」ではなく「結果の選択肢」として書く**
 
@@ -153,8 +158,20 @@ python .github/skills/statemachine-use/scripts/scaffold.py {名前} \
 ```yaml
 name: "ワークフロー名"
 initial_state: first_state
+inputs:                                # 実行する人が入れる値（アクションの {{キー}} に入る）
+  target:
+    label: 対象                         # 画面に出す名前
+    type: text                         # text | multiline | number | date | month | email | url | choice
+  mode:
+    label: 進め方
+    type: choice
+    options: [quick, full]
+    default: quick                     # 空なら quick
+  note:
+    label: 補足
+    required: false                    # 任意（省略時は必須）
 context:
-  # 初期変数（ループカウンター等）
+  # 人が入れない初期変数（ループカウンター等）
 config:
   max_steps: 30
 
@@ -286,9 +303,16 @@ python .github/skills/statemachine-use/scripts/migrate.py .statemachine --apply 
 # ワークフローの検証
 python .github/skills/statemachine-use/scripts/run_machine.py .statemachine/{名前}/workflow.yaml --dry-run
 
+# 入力の確認（inputs を宣言した定義のみ。依頼文から読み取れた値を --context に入れる）
+python .github/skills/statemachine-use/scripts/next_state.py {名前} --inputs --context '{"target":"…"}'
+
 # 開始ステートの取得
 python .github/skills/statemachine-use/scripts/next_state.py {名前} --initial-state
 ```
+
+`--inputs` の `missing` が空でなければ（終了コード 4）、**値を推測して進めない。** `inputs` の
+`label` で利用者に訊き、揃ってから開始する。以降のアクションの `{{キー}}` には `values` の値を入れる
+（任意で空の値は空文字）。
 
 出力された `state_id` を現在のステートとして実行を開始する。
 

@@ -409,6 +409,7 @@ function normalizeEnds(raw, preserved) {
 function normalizePreserved(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   return {
+    inputs: src.inputs && typeof src.inputs === 'object' && !Array.isArray(src.inputs) ? src.inputs : null,
     context: src.context && typeof src.context === 'object' && !Array.isArray(src.context) ? src.context : {},
     config: src.config && typeof src.config === 'object' && !Array.isArray(src.config) ? src.config : {},
     states: src.states && typeof src.states === 'object' && !Array.isArray(src.states) ? src.states : {},
@@ -418,7 +419,9 @@ function normalizePreserved(raw) {
 }
 
 // 実行時に注入される変数は入力にしない（正典は template-parameters）。
+// 入力を `inputs:` で宣言した定義は宣言が正典（本文から推し量らない）。
 function parameterKeys(spec) {
+  if (spec.preserved.inputs) return Object.keys(spec.preserved.inputs);
   const texts = [spec.purpose, spec.finish, spec.notes];
   for (const step of spec.steps) {
     texts.push(step.title, step.detail, step.target, step.check);
@@ -634,6 +637,7 @@ function buildWorkflow(spec) {
   const doc = { name: spec.name };
   if (spec.purpose) doc.description = spec.purpose;
   doc.initial_state = spec.steps[0].id;
+  if (preserved.inputs) doc.inputs = preserved.inputs;
   if (Object.keys(preserved.context).length) doc.context = preserved.context;
   doc.config = config;
   doc.states = states;
@@ -950,6 +954,7 @@ function decompile({ workflowText, files = {}, makerJson = '' } = {}) {
   const unmanagedTransitions = transitions.filter((t) => !managed.has(t.from) || rawIds.has(t.from));
 
   const preserved = {
+    inputs: workflow.inputs && typeof workflow.inputs === 'object' && !Array.isArray(workflow.inputs) ? workflow.inputs : null,
     context: workflow.context && typeof workflow.context === 'object' ? workflow.context : {},
     config: workflow.config && typeof workflow.config === 'object' ? workflow.config : {},
     states: unmanagedStates,

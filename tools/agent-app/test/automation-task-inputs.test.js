@@ -62,3 +62,38 @@ test('省略した外部アクションと条件も自動探索する', () => {
   fs.writeFileSync(path.join(directory, 'conditions', 'start_to_done.md'), '{{quality}} を満たす');
   assert.deepStrictEqual(inputs.definitionParameters(root, 'auto'), ['quality', 'topic']);
 });
+
+test('inputs を宣言した定義は宣言が正典（順・必須/任意・既定値）', () => {
+  const root = repository('prompts:\n  - name: 月次\n    statemachine: declared\n    input:\n      format: html\n');
+  const directory = path.join(root, '.statemachine', 'declared');
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, 'workflow.yaml'), [
+    'name: 月次',
+    'inputs:',
+    '  month:',
+    '    label: 対象月',
+    '    type: month',
+    '  format:',
+    '    type: choice',
+    '    options: [md, html]',
+    '    default: md',
+    '  note:',
+    '    required: false',
+    '  last_output: {}',
+    'states:',
+    '  write:',
+    '    action: "{{month}} {{format}} {{note}} {{guess}}"',
+    '    terminal: true',
+    'transitions: []',
+  ].join('\n'));
+  assert.deepStrictEqual(inputs.definitionParameters(root, 'declared'), ['month', 'format', 'note']);
+  const task = inputs.enrichSnapshot(root, { tasks: [{ kind: 'statemachine', machine: 'declared' }] }).tasks[0];
+  assert.deepStrictEqual(task.inputs.map((item) => [item.key, item.label, item.required, item.type]), [
+    ['month', '対象月', true, 'month'], ['format', 'format', true, 'choice'], ['note', 'note', false, 'text'],
+  ]);
+  assert.deepStrictEqual(task.parameterDefaults, { format: 'html' }, 'agent-loop の既定入力が宣言の既定値より勝つ');
+  const checked = inputs.requiredInput(task, {});
+  assert.deepStrictEqual(checked.missing, ['month']);
+  assert.strictEqual(checked.values.note, '', '任意の空は空文字で渡す');
+  assert.deepStrictEqual(inputs.requiredInput(task, { month: '2026-09' }).missing, []);
+});

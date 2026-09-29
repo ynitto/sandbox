@@ -251,6 +251,22 @@ class RepositorySnapshotTest(unittest.TestCase):
 
             self.assertEqual(machine["parameters"], ["quality", "topic"])
 
+    def test_declared_inputs_are_the_parameters_in_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            directory = root / ".statemachine" / "declared"
+            directory.mkdir(parents=True)
+            (directory / "workflow.yaml").write_text(
+                "inputs:\n  month:\n    label: 対象月\n  note:\n    required: false\n"
+                "states:\n  start:\n    action: '{{month}} {{note}} {{guess}}'\n  done:\n    terminal: true\n"
+                "transitions:\n  - from: start\n    to: done\n",
+                encoding="utf-8",
+            )
+
+            machine = al.repository_snapshot(root)["machines"][0]
+
+            self.assertEqual(machine["parameters"], ["month", "note"])
+
 
 class RepositoryScheduleTest(unittest.TestCase):
     def test_command_name_and_argv_can_change_without_replacing_advanced_cron(self):

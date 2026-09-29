@@ -11,6 +11,7 @@ condition_rule フィールドがある場合は LLM 評価が不要な条件を
 
 使い方:
   python scripts/next_state.py {名前} --initial-state
+  python scripts/next_state.py {名前} --inputs --context '{"month":"2026-09"}'
   python scripts/next_state.py {名前} --state classify --auto-eval --context '{"last_output":"BUG"}'
   python scripts/next_state.py {名前} --state classify --eval '{"1": false}' --context '{"last_output":"BUG"}'
   python scripts/next_state.py {名前} --state classify --judge-answers "$(agent-herd judge …)" --context '…'
@@ -59,7 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.engine import (
-    load_workflow, render_template, resolve_workflow_path, evaluate_condition_rule,
+    load_workflow, render_template, resolve_inputs, resolve_workflow_path, evaluate_condition_rule,
     validate_workflow,
 )
 from scripts import judge_bridge
@@ -120,6 +121,11 @@ def main() -> None:
         help="initial_state を出力して終了（実行開始時に使用）"
     )
     parser.add_argument(
+        "--inputs", action="store_true",
+        help="宣言した入力（inputs）と、--context の値を当てた結果を JSON で表示して終了。"
+        "必須が欠けていれば missing に並び、終了コード 4"
+    )
+    parser.add_argument(
         "--state", default=None,
         help="現在のステートID（--initial-state 以外では必須）"
     )
@@ -169,6 +175,19 @@ def main() -> None:
     # --initial-state: 開始ステートを返して終了
     if args.initial_state:
         print(wf.initial_state)
+        return
+
+    # --inputs: 実行前に利用者へ訊く値の照会（会話で回すときも、欠けた必須を先に訊ける）
+    if args.inputs:
+        if wf.inputs_errors:
+            print("ERROR: " + "\n".join(wf.inputs_errors), file=sys.stderr)
+            sys.exit(1)
+        supplied = _build_ctx(args.context, "", []) if args.context else {}
+        values, missing = resolve_inputs(wf.inputs, supplied)
+        print(json.dumps({"inputs": wf.inputs, "values": values, "missing": missing},
+                         ensure_ascii=False, indent=2))
+        if missing:
+            sys.exit(4)
         return
 
     if args.state is None:

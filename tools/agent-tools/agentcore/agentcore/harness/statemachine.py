@@ -204,6 +204,22 @@ def _sm_initial_context(workflow: dict, parameters: "dict | None") -> dict:
             _sm_set_nested(declared, key[len("context."):], value)
         else:
             _sm_set_nested(context, key, value)
+    # 利用者が入れる値の宣言（`inputs:`）。空なら既定値、任意なら空文字にし、必須が欠けたら
+    # 始める前に止める。正典は statemachine-use の engine.resolve_inputs（形の検査は
+    # 先に走る run_machine.py --dry-run が済ませている）。
+    inputs = workflow.get("inputs") if isinstance(workflow.get("inputs"), dict) else {}
+    missing = []
+    for key, spec in inputs.items():
+        spec = spec if isinstance(spec, dict) else {}
+        value = str(context.get(key) if context.get(key) is not None else "").strip()
+        default = spec.get("default")
+        if not value and default is not None:
+            value = str(default)
+        if not value and spec.get("required", True) is not False:
+            missing.append(str(spec.get("label") or key))
+        context[str(key)] = value
+    if missing:
+        raise StateMachineHarnessError("入力してください: " + "、".join(missing))
     return context
 
 

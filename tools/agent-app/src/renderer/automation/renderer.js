@@ -1466,7 +1466,8 @@ function scheduleEditorHtml(machine) {
   const timing = draft.kind === 'preserve' ? '<p class="muted small">詳細設定の実行条件を維持します。名前・有効状態・エージェント・モデルは個別に変更できます。</p>' : draft.kind === 'interval'
     ? `<div class="field"><label>間隔（分）</label><input id="schedule-minutes" type="number" min="1" value="${esc(draft.minutes)}"></div>`
     : `<div class="field"><label>時刻</label><input id="schedule-time" type="time" value="${esc(draft.time)}"></div>${draft.kind === 'weekly' ? `<div class="weekday-row">${['日', '月', '火', '水', '木', '金', '土'].map((label, day) => `<label><input type="checkbox" data-schedule-day="${day}" ${draft.days.includes(day) ? 'checked' : ''}>${label}</label>`).join('')}</div>` : ''}`;
-  const inputs = (machine.parameters || []).map((name) => `<div class="field"><label>${esc(name)}</label>${dateInputHtml(name, draft.input[name], 'schedule')}</div>`).join('');
+  const labels = Object.fromEntries((machine.inputs || []).map((item) => [item.key, item.label || item.key]));
+  const inputs = (machine.parameters || []).map((name) => `<div class="field"><label title="${esc(name)}">${esc(labels[name] || name)}</label>${dateInputHtml(name, draft.input[name], 'schedule')}</div>`).join('');
   const commandFields = machine.kind === 'command'
     ? `<div class="field"><label for="schedule-command">コマンド</label><textarea id="schedule-command" rows="3" placeholder="python3 scripts/maintenance.py">${esc(draft.command)}</textarea><small class="muted">1行に1コマンドを入力します。上から順に実行し、失敗時は停止します。空行は無視します。各コマンドは選択したリポジトリで実行します。パイプやリダイレクトは使えません。</small></div><div class="field"><label for="schedule-timeout">各コマンドのタイムアウト（秒）</label><input id="schedule-timeout" type="number" min="1" step="1" value="${esc(draft.timeout)}"></div>` : '';
   const agents = [...new Set([draft.agentCli, ...(state.agents || []).map((agent) => typeof agent === 'string' ? agent : agent.id || agent.cli)].filter(Boolean))];
@@ -2502,8 +2503,8 @@ async function startRun(mode, confirmed = false) {
     if (!confirmed && (machine.parameters || []).length) { openRunInputDialog(machine); return; }
     const supplied = Object.fromEntries(Object.entries(state.run.parameters).filter(([, value]) => String(value || '').trim()));
     const values = { ...defaults, ...supplied };
-    const missing = (machine.parameters || []).filter((name) => !String(values[name] || '').trim());
-    if (missing.length) { toast(`入力してください: ${missing.join('、')}`, true); return; }
+    const missing = runInputFields(machine).filter((field) => field.required && !String(values[field.key] || '').trim());
+    if (missing.length) { toast(`入力してください: ${missing.map((field) => field.label).join('、')}`, true); return; }
     state.run.parameters = values;
     await rememberRunParameters(machine, supplied);
   }
@@ -2540,6 +2541,25 @@ async function startRun(mode, confirmed = false) {
   if (res.warning) appendLog({ kind: 'stderr', line: res.warning });
 }
 
+// 入力ダイアログの項目。定義が `inputs:` で宣言していればそのとおり（名前・必須か任意か・種類・
+// 選択肢）。宣言が無い定義は従来どおり、キーを名前にし、既定値の有無で任意を、キーの綴りで種類を決める。
+function runInputFields(machine) {
+  const defaults = (machine && machine.parameterDefaults) || {};
+  if (machine && Array.isArray(machine.inputs)) {
+    return machine.inputs.map((item) => ({
+      key: String(item.key), label: String(item.label || item.key), description: String(item.description || ''),
+      required: item.required !== false, type: String(item.type || 'text'),
+      options: Array.isArray(item.options) ? item.options.map(String) : [],
+      default: defaults[item.key] != null ? String(defaults[item.key]) : '',
+    }));
+  }
+  return (machine && machine.parameters || []).map((name) => ({
+    key: String(name), label: String(name), description: '',
+    required: !String(defaults[name] || '').trim(), type: parameterFormat(name), options: [],
+    default: defaults[name] != null ? String(defaults[name]) : '',
+  }));
+}
+
 function parameterFormat(name) {
   const key = String(name);
   if (/(^|[_\s-])month$/i.test(key) || /[a-z]Month$/.test(key) || key.includes('年月')) return 'month';
@@ -2550,8 +2570,14 @@ function parameterFormat(name) {
 }
 
 function validParameter(value, format) {
+  if (format === 'multiline') {
+    if (value.length > 4000) return '4000文字以内で入力してください';
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) return '制御文字は入力できません';
+    return '';
+  }
   if (value.length > 400) return '400文字以内で入力してください';
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) return '制御文字は入力できません';
+  if (format === 'number' && value && !/^-?\d+(\.\d+)?$/.test(value)) return '数値を入力してください';
   if (format === 'date' && value) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return '日付は YYYY-MM-DD で入力してください';
     const date = new Date(`${value}T00:00:00Z`);
@@ -2566,22 +2592,37 @@ function validParameter(value, format) {
   return '';
 }
 
+function runInputControl(field, index, raw) {
+  const value = Reuse.resolveDate(raw);
+  const attrs = `id="run-input-${index}" data-confirm-param="${esc(field.key)}" data-format="${esc(field.type)}" data-required="${field.required ? '1' : ''}"`;
+  const hint = field.default ? `既定値: ${Reuse.resolveDate(field.default)}` : field.description;
+  const placeholder = hint ? ` placeholder="${esc(hint)}"` : '';
+  if (field.type === 'choice') {
+    // 既定値がある選択肢は空に戻せない（空なら既定値で実行するので、空の選択肢は意味を持たない）。
+    const blank = field.default ? '' : `<option value="">${field.required ? '選んでください' : ''}</option>`;
+    return `<select ${attrs}>${blank}${field.options.map((option) => `<option value="${esc(option)}" ${(value || field.default) === option ? 'selected' : ''}>${esc(option)}</option>`).join('')}</select>`;
+  }
+  if (field.type === 'multiline') {
+    return `<textarea ${attrs} rows="4" maxlength="4000"${placeholder}>${esc(value)}</textarea>`;
+  }
+  return `<input ${attrs} data-mode="${Reuse.DATE_MODES[raw] ? esc(raw) : ''}" list="run-history-${index}" value="${esc(value)}" maxlength="400" autocomplete="off"${placeholder}>`;
+}
+
 function openRunInputDialog(machine) {
-  const fields = machine.parameters || [];
-  const defaults = machine.parameterDefaults || {};
+  const fields = runInputFields(machine);
   const dlg = dialog('dlg-run', 'パラメータ', 'run-input', `
-    <div class="run-input-grid">${fields.map((name, index) => {
-      const format = parameterFormat(name);
-      const raw = state.run.parameters[name] || '';
-      const value = Reuse.resolveDate(raw);
-      const optional = String(defaults[name] || '').trim();
-      const history = rememberedInputHistory(machine, name);
-      const dateModes = format === 'date' ? ['@date:today', '@date:yesterday'] : format === 'month' ? ['@date:month', '@date:previous-month'] : [];
-      const shortcut = dateModes.length ? `<select data-parameter-date aria-label="${esc(name)}の日付指定"><option value="">日付指定</option>${dateModes.map((mode) => `<option value="${mode}" ${raw === mode ? 'selected' : ''}>${Reuse.DATE_MODES[mode]}</option>`).join('')}</select>` : '';
-      return `<div class="run-parameter-row"><label for="run-input-${index}" title="${esc(name)}">${esc(name)} <small>${optional ? '省略可' : '必須'}</small></label><div class="run-parameter-control"><input id="run-input-${index}" data-confirm-param="${esc(name)}" data-format="${format}" data-mode="${Reuse.DATE_MODES[raw] ? esc(raw) : ''}" list="run-history-${index}" value="${esc(value)}" maxlength="400" autocomplete="off" ${optional ? `placeholder="既定値: ${esc(Reuse.resolveDate(optional))}"` : ''}><datalist id="run-history-${index}">${history.map((item) => `<option value="${esc(item)}"></option>`).join('')}</datalist>${shortcut}</div></div>`;
+    <div class="run-input-grid">${fields.map((field, index) => {
+      const raw = state.run.parameters[field.key] || '';
+      const history = ['choice', 'multiline'].includes(field.type) ? [] : rememberedInputHistory(machine, field.key);
+      const dateModes = field.type === 'date' ? ['@date:today', '@date:yesterday'] : field.type === 'month' ? ['@date:month', '@date:previous-month'] : [];
+      const shortcut = dateModes.length ? `<select data-parameter-date aria-label="${esc(field.label)}の日付指定"><option value="">日付指定</option>${dateModes.map((mode) => `<option value="${mode}" ${raw === mode ? 'selected' : ''}>${Reuse.DATE_MODES[mode]}</option>`).join('')}</select>` : '';
+      const datalist = history.length ? `<datalist id="run-history-${index}">${history.map((item) => `<option value="${esc(item)}"></option>`).join('')}</datalist>` : '';
+      return `<div class="run-parameter-row${field.type === 'multiline' ? ' multiline' : ''}"><label for="run-input-${index}" title="${esc(field.description || field.key)}">${esc(field.label)} <small>${field.required ? '必須' : '任意'}</small></label><div class="run-parameter-control">${runInputControl(field, index, raw)}${datalist}${shortcut}</div></div>`;
     }).join('')}</div>
     <p class="msg err" data-input-error hidden></p>
     <div class="row"><button type="button" class="primary" data-input-run>実行</button></div>`);
+  const labels = Object.fromEntries(fields.map((field) => [field.key, field.label]));
+  const defaults = Object.fromEntries(fields.map((field) => [field.key, field.default]));
   for (const input of dlg.querySelectorAll('[data-confirm-param]')) input.addEventListener('input', () => {
     input.dataset.mode = '';
     input.removeAttribute('aria-invalid');
@@ -2600,10 +2641,10 @@ function openRunInputDialog(machine) {
     for (const input of dlg.querySelectorAll('[data-confirm-param]')) {
       const name = input.dataset.confirmParam;
       const value = input.value.trim();
-      const error = !value && !String(defaults[name] || '').trim() ? '入力してください' : validParameter(value, input.dataset.format);
+      const error = !value && input.dataset.required && !String(defaults[name] || '').trim() ? '入力してください' : validParameter(value, input.dataset.format);
       if (error) input.setAttribute('aria-invalid', 'true');
       else input.removeAttribute('aria-invalid');
-      if (error) errors.push(`${name}: ${error}`);
+      if (error) errors.push(`${labels[name] || name}: ${error}`);
       if (value) supplied[name] = input.dataset.mode || value;
     }
     if (errors.length) {

@@ -5,6 +5,7 @@
 ## 目次
 
 - [トップレベルフィールド](#トップレベルフィールド)
+- [入力の宣言 (inputs)](#入力の宣言-inputs)
 - [ステート定義](#ステート定義)
 - [トランジション定義](#トランジション定義)
 - [ワイルドカードトランジション](#ワイルドカードトランジション)
@@ -19,10 +20,54 @@
 | `name` | 文字列 | はい | ワークフローの表示名 |
 | `description` | 文字列 | いいえ | ワークフローの説明 |
 | `initial_state` | 文字列 | はい | 開始ステートのID |
-| `context` | オブジェクト | いいえ | 初期コンテキストのキーと値のペア |
+| `inputs` | オブジェクト | いいえ | 実行する人が入れる値の宣言（[入力の宣言](#入力の宣言-inputs)） |
+| `context` | オブジェクト | いいえ | 初期コンテキストのキーと値のペア（人が入れない固定値） |
 | `config` | オブジェクト | いいえ | エンジン設定の上書き |
 | `states` | オブジェクト | はい | state_id → ステート定義のマップ |
 | `transitions` | リスト | はい | トランジション定義のリスト |
+
+## 入力の宣言 (inputs)
+
+実行する人が入れる値を、トップレベルの `inputs:` に**名前・必須か任意か・既定値・入力の種類**で書く。
+アクションや条件の `{{キー}}` を拾って推し量るより、定義を読んだだけで「何を入れれば動くか」が分かる。
+agent-app はこの宣言の順・`label` で入力ダイアログを出し、エンジンは実行前に同じ宣言で必須の欠けを断る。
+
+```yaml
+inputs:
+  month:                       # キー。アクションでは {{month}} で使う
+    label: 対象月               # 画面に出す名前（省略時はキー）
+    type: month                # 入力の種類（下表。省略時は text）
+    description: 集計する月     # 入力欄に薄く出す 1 行（任意）
+  format:
+    label: 出力形式
+    type: choice
+    options: [md, html]        # type: choice のときだけ書く
+    default: md                # 空のまま実行したときに使う値
+  note:
+    label: 補足
+    required: false            # 任意。空なら {{note}} は空文字になる
+```
+
+| 項目 | 型 | 既定 | 説明 |
+|---|---|---|---|
+| `label` | 文字列 | キー | 画面に出す名前 |
+| `required` | 真偽値 | `true` | `false` で任意。**書かなければ必須** |
+| `default` | 文字列・数値・真偽値 | — | 空のとき使う値。入力欄には初めから入る |
+| `type` | 文字列 | `text` | `text` / `multiline` / `number` / `date`（YYYY-MM-DD）/ `month`（YYYY-MM）/ `email` / `url` / `choice` |
+| `options` | 配列 | — | `type: choice` の選択肢。`default` は選択肢のどれか |
+| `description` | 文字列 | — | 入力欄に薄く出す 1 行 |
+
+- **必須と任意の決まり**: `required: true`（既定）の値が空で、`default` も無ければ実行前に止まる
+  （`入力してください: 対象月（month）`）。任意の値が空なら `{{キー}}` は空文字になる——素の `{{キー}}` を課題文に残さない。
+- **キー `input`** を宣言すると、入力本文（`--input`、`{{input}}`）の名前と種類を決められる。
+- 実行時にエンジンが入れる値（`today` / `now` / `last_output` / `history` / `step_count` /
+  `current_state` / `context` / `check_*`）は宣言できない。
+- 知らない項目（`requried` のような綴り違い）や、選択肢に無い `default` は検証エラーになる。
+- `context:` は人が入れない固定値（ループの上限など）の置き場。人に訊く値は `inputs:` へ書く。
+  `inputs:` を書いた定義では、agent-app は宣言した値だけを訊く（`{{キー}}` からの推測はしない）。
+- 値の渡し方: `run_machine.py … --context month=2026-09`。会話で回すときは
+  `next_state.py {名前} --inputs --context '{"month":"2026-09"}'` が宣言と欠けた必須（`missing`）を返す
+  （欠けがあれば終了コード 4）。
 
 ## ステート定義
 
@@ -400,6 +445,7 @@ In `action` and `condition` strings, use `{{variable}}` syntax:
 | `{{step_count}}` | Number of completed transitions |
 | `{{history.STATE_ID}}` | Stored output from state STATE_ID |
 | `{{context.KEY}}` | Any custom context variable |
+| `{{KEY}}`（`inputs:` のキー） | [宣言した入力](#入力の宣言-inputs)の値。任意で空なら空文字 |
 | `{{output_key}}` | Any state output stored with `output_key:` |
 | `{{check_status}}` / `{{check_ok}}` / `{{check_output}}` | 直前の[決定的検査](#決定的検査-check)の結果（宣言したステートのみ） |
 

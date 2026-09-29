@@ -239,7 +239,7 @@ test('手動実行の条件はパラメータ画面で確認し、履歴候補�
   assert.match(renderer, /if \(!confirmed && \(machine\.parameters \|\| \[\]\)\.length\) \{ openRunInputDialog\(machine\); return; \}/);
   assert.match(renderer, /rememberedInputHistory\(machine, name\)/);
   assert.match(renderer, /<datalist id="run-history-\$\{index\}"/);
-  assert.match(renderer, /optional \? '省略可' : '必須'/);
+  assert.match(renderer, /field\.required \? '必須' : '任意'/);
   // 明示した値だけを覚え、省略した項目には実行時に既定値を使う。
   assert.match(renderer, /const values = \{ \.\.\.defaults, \.\.\.supplied \};/);
   assert.match(renderer, /await rememberRunParameters\(machine, supplied\)/);
@@ -265,6 +265,39 @@ test('パラメータの明確な形式は送信前に検証する', () => {
   assert.strictEqual(validParameter('hello@', 'email'), 'メールアドレスを確認してください');
   assert.strictEqual(validParameter('file:///tmp/a', 'url'), 'http または https の URL を入力してください');
   assert.strictEqual(validParameter('a'.repeat(401), 'text'), '400文字以内で入力してください');
+  assert.strictEqual(validParameter('a'.repeat(401), 'multiline'), '');
+  assert.strictEqual(validParameter('1行目\n2行目', 'multiline'), '');
+  assert.strictEqual(validParameter('3.5', 'number'), '');
+  assert.strictEqual(validParameter('三', 'number'), '数値を入力してください');
+});
+
+test('入力ダイアログは定義の inputs 宣言どおりに名前・必須/任意・種類を出す', () => {
+  const renderer = read('renderer/automation/renderer.js');
+  const code = renderer.slice(renderer.indexOf('function runInputFields(machine) {'), renderer.indexOf('function openRunInputDialog(machine) {'));
+  const esc = (value) => String(value).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const Reuse = { resolveDate: (value) => value, DATE_MODES: {} };
+  const { runInputFields, runInputControl } = vm.runInNewContext(`${code}\n({ runInputFields, runInputControl })`, { URL, esc, Reuse });
+  const declared = runInputFields({
+    parameters: ['month', 'format', 'note'], parameterDefaults: { format: 'md' },
+    inputs: [
+      { key: 'month', label: '対象月', required: true, type: 'month', options: [] },
+      { key: 'format', label: '出力形式', required: true, type: 'choice', options: ['md', 'html'] },
+      { key: 'note', label: '補足', required: false, type: 'multiline', options: [] },
+    ],
+  });
+  assert.deepStrictEqual(declared.map((field) => [field.label, field.required, field.type, field.default]),
+    [['対象月', true, 'month', ''], ['出力形式', true, 'choice', 'md'], ['補足', false, 'multiline', '']]);
+  const choice = runInputControl(declared[1], 1, '');
+  assert.match(choice, /^<select [^>]*data-confirm-param="format"/);
+  assert.match(choice, /<option value="md" selected>md<\/option>/);
+  assert.doesNotMatch(choice, /<option value="">/, '既定値のある選択肢に空は出さない');
+  assert.match(runInputControl(declared[2], 2, ''), /^<textarea [^>]*data-required=""/);
+  // 宣言の無い定義は従来どおり: キーが名前、既定値があれば任意、綴りで種類
+  const legacy = runInputFields({ parameters: ['startDate', 'owner'], parameterDefaults: { owner: 'me' } });
+  assert.deepStrictEqual(legacy.map((field) => [field.label, field.required, field.type]),
+    [['startDate', true, 'date'], ['owner', false, 'text']]);
+  // 実行前の欠けは必須だけを見る（任意の空では止めない）
+  assert.match(renderer, /runInputFields\(machine\)\.filter\(\(field\) => field\.required && !String\(values\[field\.key\]/);
 });
 
 test('失敗した実行は、ログごと AI の会話へ渡す（送るのは利用者）', () => {

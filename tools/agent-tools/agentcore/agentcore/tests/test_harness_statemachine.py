@@ -1032,6 +1032,18 @@ class RuntimeContextTest(unittest.TestCase):
 
         self.assertEqual(context["today"], "2000-01-01")
 
+    def test_declared_inputs_fill_defaults_and_refuse_missing_required(self):
+        workflow = {"inputs": {
+            "month": {"label": "対象月"},
+            "format": {"default": "md"},
+            "note": {"required": False},
+        }}
+        context = sm._sm_initial_context(workflow, {"month": "2026-09"})
+
+        self.assertEqual((context["month"], context["format"], context["note"]), ("2026-09", "md", ""))
+        with self.assertRaisesRegex(sm.StateMachineHarnessError, "入力してください: 対象月"):
+            sm._sm_initial_context(workflow, {"month": " "})
+
 
 class NextStateContractTest(unittest.TestCase):
     """next_state.py の呼び出しが statemachine-use の現行契約に沿うこと。
