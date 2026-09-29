@@ -1,6 +1,7 @@
-"""pair-align の結合テスト。実装・設計書の 2 リポジトリを一時フォルダに作り、往復を通す。
+"""pair-align の結合テスト。実装・設計書の 2 リポジトリを一時フォルダに作り、下請けスクリプトを通す。
 
-LLM は呼ばない。アクションがやる判断・依頼文の執筆は、テストが代わりにファイルを書いて進める。
+LLM は呼ばない。アクションがやる判断（計画を書く・変える）は、テストが代わりにファイルを書いて進める。
+graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動更新の有無）を記録する。
 """
 
 from __future__ import annotations
@@ -28,6 +29,88 @@ GIT_ENV = {
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
 }
 
+# graphify のスタブ。呼ばれた引数を記録し、update なら $GRAPHIFY_OUT/graph.json を作る。
+GRAPHIFY_STUB = """#!/bin/sh
+echo "$PWD $@" >> "{log}"
+case "$1" in
+  update) mkdir -p "$GRAPHIFY_OUT" && echo '{{}}' > "$GRAPHIFY_OUT/graph.json" ;;
+  query) echo "NODE $2 [src=docs/api.md loc=L3]" ;;
+  affected) echo "Affected nodes for $2"; echo "- use() [calls] src/use.py:L4" ;;
+esac
+"""
+
+PLAN_ALIGNED = """\
+# 変更の計画
+
+## やりたいこと
+
+hello にログを足す。
+
+## 参照先の前提
+
+- hello は整数を返す（根拠: docs/api.md#hello）
+
+## 参照先の制約
+
+- hello は 1 を返す（根拠: docs/api.md:3）
+
+## 参照先のその他
+
+なし
+
+## ずれ
+
+なし
+
+## 自分の変更案
+
+- src/app.py — hello の中でログを出す
+
+## 参照先の変更案
+
+なし
+
+## 影響範囲
+
+なし
+"""
+
+PLAN_DRIFT = """\
+# 変更の計画
+
+## やりたいこと
+
+hello が 2 を返すようにする。
+
+## 参照先の前提
+
+- hello は整数を返す（根拠: docs/api.md）
+
+## 参照先の制約
+
+- hello は 1 を返す（根拠: docs/api.md:3）
+
+## 参照先のその他
+
+- なし
+
+## ずれ
+
+- 制約: hello は 1 を返す（根拠: docs/api.md:3） — やりたいことは 2 を返す（src/app.py）
+
+## 自分の変更案
+
+- src/app.py — hello が 2 を返す
+
+## 参照先の変更案
+
+- docs/api.md — hello の戻り値を 2 と書き直す
+
+## 影響範囲
+
+- src/app.py — hello の戻り値
+"""
+
 
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True,
@@ -38,7 +121,7 @@ def commit(repo: Path, files: dict[str, str], message: str) -> None:
     for rel, body in files.items():
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(textwrap.dedent(body), encoding="utf-8")
+        path.write_text(body, encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", message)
 
@@ -56,361 +139,188 @@ class PairAlignTest(unittest.TestCase):
         commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
         install.install(self.impl, "impl", "../design")
         install.install(self.design, "design", "../impl")
-        # 置いたこと自体（.gitignore とマシン）はコミットしておく。
-        git(self.impl, "add", "-A"); git(self.impl, "commit", "-q", "-m", "add pair align")
-        git(self.design, "add", "-A"); git(self.design, "commit", "-q", "-m", "add pair align")
+        for repo in (self.impl, self.design):
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "add pair align")
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
+        self.log = self.tmp / "graphify.log"
 
-    def run_pa(self, repo: Path, *args: str, path_env: str | None = None) -> subprocess.CompletedProcess:
-        env = {**os.environ, **GIT_ENV}
-        env["PATH"] = path_env if path_env is not None else f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin"
+    def run_pa(self, repo: Path, *args: str) -> subprocess.CompletedProcess:
+        env = {**os.environ, **GIT_ENV, "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin"}
         return subprocess.run([sys.executable, ".statemachine/pair_align/pair_align.py", *args],
                               cwd=repo, capture_output=True, text=True, env=env)
 
-    def write_prompt(self, repo: Path, pid: str) -> None:
-        tpl = (repo / ".statemachine/pair_align/templates/prompt.md").read_text(encoding="utf-8")
-        body = tpl.replace("<ID>", pid).replace("<相手の側（実装 / 設計書）>", "設計書")
-        filled = []
-        for line in body.splitlines():
-            filled.append("- 記入済み" if line.startswith("<!-- TODO") else line)
-        (repo / ".pair-align/work/prompt.md").write_text("\n".join(filled) + "\n", encoding="utf-8")
+    def use_graphify_stub(self) -> None:
+        stub = self.bin / "graphify"
+        stub.write_text(GRAPHIFY_STUB.format(log=self.log), encoding="utf-8")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
 
-    # ------------------------------------------------------------ 往復
+    def calls(self) -> list[str]:
+        return self.log.read_text(encoding="utf-8").splitlines() if self.log.is_file() else []
 
-    def test_round_trip_does_not_bounce_back(self) -> None:
-        commit(self.impl, {"src/app.py": "def hello():\n    return 1\n\ndef goodbye_world():\n    return 2\n"},
-               "add goodbye")
-        r = self.run_pa(self.impl, "collect")
+    def write_plan(self, text: str) -> None:
+        (self.impl / ".pair-align").mkdir(exist_ok=True)
+        (self.impl / ".pair-align/plan.md").write_text(text, encoding="utf-8")
+
+    def set_check(self, repo: Path, command: list[str]) -> None:
+        path = repo / ".statemachine/pair_align/pair.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["check"] = command
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    # ------------------------------------------------------------ 探す
+
+    def test_explore_without_graphify_uses_grep(self) -> None:
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(r.stdout.startswith("CHANGES 1 commits, 1 files"), r.stdout)
-        current = json.loads((self.impl / ".pair-align/work/current.json").read_text(encoding="utf-8"))
-        self.assertIn("goodbye_world", current["terms"])
-        changes = (self.impl / ".pair-align/work/changes.md").read_text(encoding="utf-8")
-        self.assertIn("+def goodbye_world", changes)
-        self.assertNotIn("add pair align", changes)  # 初回は直前の 1 コミットだけ
+        self.assertIn("FOUND 1 files (graphify: not-installed)", r.stdout)
+        report = (self.impl / ".pair-align/explore.md").read_text(encoding="utf-8")
+        self.assertIn("docs/api.md:3:## hello", report)
+        self.assertTrue((self.impl / ".pair-align/before.json").is_file())
+        self.assertEqual(self.run_pa(self.impl, "explore").returncode, 2)  # 語が無い
 
-        pid = current["id"]
-        self.write_prompt(self.impl, pid)
-        self.assertEqual(self.run_pa(self.impl, "verify-prompt").returncode, 0)
-        r = self.run_pa(self.impl, "record")
-        self.assertTrue(r.stdout.startswith("RECORDED .pair-align/outbox/"), r.stdout + r.stderr)
-        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("NO_CHANGES"))
+    def test_graph_is_rebuilt_only_when_the_repo_changes(self) -> None:
+        self.use_graphify_stub()
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
+        self.assertIn("graphify: updated", r.stdout)
+        self.assertIn("- docs/api.md", (self.impl / ".pair-align/explore.md").read_text(encoding="utf-8"))
+        first = self.calls()
+        self.assertEqual(first[0], f"{self.design} update . --force")   # 参照先の中で作り、
+        self.assertTrue((self.impl / ".pair-align/graph/pair/graph.json").is_file())  # 自分の側に置く
+        self.assertFalse((self.design / "graphify-out").exists())
+        self.assertIn("query hello --graph", first[1])
 
-        # 設計書側: まず届いた依頼を片付けるよう求められる。
-        r = self.run_pa(self.design, "collect")
-        self.assertTrue(r.stdout.startswith("INBOUND_PENDING 1"), r.stdout + r.stderr)
-        inbound = (self.design / ".pair-align/work/inbound.md").read_text(encoding="utf-8")
-        self.assertIn(f"Pair-Align-Id: {pid}", inbound)
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
+        self.assertIn("graphify: fresh", r.stdout)
+        self.assertFalse(any(" update " in c for c in self.calls()[len(first):]))
 
-        # 反映コミット（合図の行つき）は、設計書側から実装への依頼にならない。
-        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\n## goodbye_world\n\n2 を返す。\n"},
-               f"docs: goodbye_world を追記\n\nPair-Align: {pid}")
-        r = self.run_pa(self.design, "collect")
-        self.assertTrue(r.stdout.startswith("NO_CHANGES"), r.stdout + r.stderr)
-        self.assertIn("反映として外したコミット: 1 件", r.stdout)
+        # 参照先が変わったら（コミットでも、作業中の変更でも）作り直す。
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\n変えた。\n", encoding="utf-8")
+        self.assertIn("graphify: updated", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
+        commit(self.design, {"docs/new.md": "# new\n"}, "add")
+        self.assertIn("graphify: updated", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
 
-        status = self.run_pa(self.impl, "status").stdout
-        self.assertIn("送って相手が未処理の依頼: 0 件", status)
+    def test_impact_searches_own_repo_with_affected(self) -> None:
+        self.use_graphify_stub()
+        # まだコミットしていない呼び出し元も拾う（graphify の affected と git grep の両方）。
+        (self.impl / "src/use.py").write_text("from app import hello\n\nhello()\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "impact", "--term", "hello")
+        self.assertIn("FOUND 2 files (graphify: updated)", r.stdout)
+        self.assertEqual(self.calls()[0], f"{self.impl} update . --force")
+        self.assertIn("affected hello --graph", self.calls()[1])
+        report = (self.impl / ".pair-align/impact.md").read_text(encoding="utf-8")
+        self.assertIn("- src/use.py:3:hello()", report)
+        self.assertIn("## 候補のファイル\n\n- src/use.py\n- src/app.py", report)
 
-    def test_mixed_commit_after_ack_is_still_sent(self) -> None:
-        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 2 を返す。\n"}, "spec change")
-        r = self.run_pa(self.design, "collect")
-        self.assertTrue(r.stdout.startswith("CHANGES"), r.stdout + r.stderr)
-        pid = json.loads((self.design / ".pair-align/work/current.json").read_text(encoding="utf-8"))["id"]
-        self.assertTrue(pid.startswith("design-"))
-        self.write_prompt(self.design, pid)
-        self.run_pa(self.design, "record")
+    def test_graphify_off(self) -> None:
+        self.use_graphify_stub()
+        path = self.impl / ".statemachine/pair_align/pair.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["graphify"] = "off"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertIn("graphify: off", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
+        self.assertEqual(self.calls(), [])
 
-        # 実装側は反映不要と判断して ack。その後の通常の変更は依頼になる。
-        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("INBOUND_PENDING"))
-        r = self.run_pa(self.impl, "ack", pid)
-        self.assertEqual(r.stdout.strip(), f"ACKED {pid}")
-        self.assertEqual(self.run_pa(self.impl, "ack", "design-unknown").returncode, 2)
-        commit(self.impl, {"src/app.py": "def hello():\n    return 2\n"}, "fix")
-        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("CHANGES 1 commits"))
+    # ------------------------------------------------------------ 計画の検査
 
-    def test_skip_advances_baseline(self) -> None:
-        commit(self.impl, {"src/app.py": "def hello():\n    return 1  # comment\n"}, "comment only")
-        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("CHANGES"))
-        r = self.run_pa(self.impl, "record", "--skip")
-        self.assertTrue(r.stdout.startswith("SKIPPED"), r.stdout + r.stderr)
-        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("NO_CHANGES"))
-        self.assertEqual(list((self.impl / ".pair-align").glob("outbox/*.md")), [])
-
-    def test_since_and_uncommitted(self) -> None:
-        (self.impl / "src/app.py").write_text("def hello():\n    return 9\n", encoding="utf-8")
-        r = self.run_pa(self.impl, "collect", "--since", "HEAD")
-        self.assertTrue(r.stdout.startswith("NO_CHANGES"), r.stdout + r.stderr)
-        self.assertIn("コミットしていない変更", r.stdout)
-        self.assertEqual(self.run_pa(self.impl, "collect", "--since", "nope").returncode, 2)
-
-    # ------------------------------------------------------------ 依頼文の検査
-
-    def test_verify_prompt_rejects_template_and_wrong_id(self) -> None:
-        commit(self.impl, {"src/app.py": "def hello():\n    return 3\n"}, "change")
-        self.run_pa(self.impl, "collect")
-        pid = json.loads((self.impl / ".pair-align/work/current.json").read_text(encoding="utf-8"))["id"]
-        self.assertEqual(self.run_pa(self.impl, "verify-prompt").returncode, 1)  # まだ無い
-
-        tpl = (self.impl / ".statemachine/pair_align/templates/prompt.md").read_text(encoding="utf-8")
-        (self.impl / ".pair-align/work/prompt.md").write_text(tpl.replace("<ID>", pid), encoding="utf-8")
-        r = self.run_pa(self.impl, "verify-prompt")
+    def test_verify_plan_accepts_aligned_and_drift_plans(self) -> None:
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)  # まだ無い
+        tpl = (self.impl / ".statemachine/pair_align/templates/plan.md").read_text(encoding="utf-8")
+        self.write_plan(tpl)
+        r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("見出しの中身が空です", r.stderr)
+        for plan in (PLAN_ALIGNED, PLAN_DRIFT):
+            self.write_plan(plan)
+            r = self.run_pa(self.impl, "verify-plan")
+            self.assertEqual(r.returncode, 0, r.stderr)
 
-        self.write_prompt(self.impl, "impl-0000000000")
-        r = self.run_pa(self.impl, "verify-prompt")
+    def test_verify_plan_rejects_inconsistent_plans(self) -> None:
+        cases = {
+            "実在する根拠のパスがありません": PLAN_ALIGNED.replace("docs/api.md#hello", "docs/nowhere.md"),
+            "ずれがあるのに、参照先の変更案が「なし」": PLAN_DRIFT.replace(
+                "- docs/api.md — hello の戻り値を 2 と書き直す", "なし"),
+            "ずれが「なし」なのに、参照先の変更案があります": PLAN_ALIGNED.replace(
+                "## 参照先の変更案\n\nなし", "## 参照先の変更案\n\n- docs/api.md — 書き直す"),
+            "影響範囲が「なし」": PLAN_DRIFT.replace("- src/app.py — hello の戻り値", "なし"),
+            "自分のリポジトリに実在するパスがありません": PLAN_DRIFT.replace(
+                "- src/app.py — hello の戻り値", "- src/gone.py — 戻り値"),
+            "見出しの順番": PLAN_ALIGNED.replace("## 参照先の前提", "## tmp").replace(
+                "## 参照先の制約", "## 参照先の前提").replace("## tmp", "## 参照先の制約"),
+        }
+        for expected, plan in cases.items():
+            with self.subTest(expected=expected):
+                self.write_plan(plan)
+                r = self.run_pa(self.impl, "verify-plan")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(expected, r.stderr)
+
+    # ------------------------------------------------------------ 変えたあとの検査
+
+    def test_verify_apply_own_only(self) -> None:
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
-        self.assertIn(pid, r.stderr)
-        self.assertEqual(self.run_pa(self.impl, "record").returncode, 2)
+        self.assertIn("自分のリポジトリが変わっていません", r.stderr)
 
-    # ------------------------------------------------------------ 相手側の検索
-
-    def test_locate_uses_graphify_when_graph_exists(self) -> None:
-        stub = self.bin / "graphify"
-        log = self.tmp / "graphify.log"
-        stub.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\necho 'Graph: graphify-out/graph.json'\necho 'NODE hello [src=docs/api.md loc=L3]'\n", encoding="utf-8")
-        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
-        (self.design / "graphify-out").mkdir()
-        (self.design / "graphify-out/graph.json").write_text("{}", encoding="utf-8")
-
-        commit(self.impl, {"src/app.py": "def hello():\n    return 5\n"}, "change")
-        self.run_pa(self.impl, "collect")
-        r = self.run_pa(self.impl, "locate", "--term", "hello", "--refresh")
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("graphify: used", r.stdout)
-        calls = log.read_text(encoding="utf-8")
-        self.assertIn(f"update {self.design}", calls)
-        self.assertIn("query hello --graph", calls)
-        cand = (self.impl / ".pair-align/work/candidates.md").read_text(encoding="utf-8")
-        self.assertIn("NODE hello", cand)
-        self.assertIn("- docs/api.md", cand)
-        self.assertNotIn("- graphify-out/graph.json", cand)
+        self.assertIn("own=changed pair=same", r.stdout)
 
-    def test_locate_falls_back_to_grep(self) -> None:
-        commit(self.impl, {"src/app.py": "def hello():\n    return 5\n"}, "change")
-        self.run_pa(self.impl, "collect")
-        r = self.run_pa(self.impl, "locate", "--term", "hello")
-        self.assertIn("graphify: not-installed", r.stdout)
-        self.assertIn("CANDIDATES 1 files", r.stdout)
-        cand = (self.impl / ".pair-align/work/candidates.md").read_text(encoding="utf-8")
-        self.assertIn("docs/api.md:3:## hello", cand)
+        # 変更案が「なし」なのに参照先を変えたら落とす。
+        (self.design / "docs/api.md").write_text("勝手に変えた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("参照先のリポジトリが変わっています", r.stderr)
+
+    def test_verify_apply_both_and_runs_each_check(self) -> None:
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        self.write_plan(PLAN_DRIFT)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("参照先のリポジトリが変わっていません", r.stderr)
+
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        # 各リポジトリの検査は、それぞれの pair.json の check。
+        self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('return 2' not in open('src/app.py').read())"])
+        self.set_check(self.design, [sys.executable, "-c", "import sys; sys.exit('3 を返す' not in open('docs/api.md').read())"])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("設計書の検査が失敗しました", r.stderr)
+        self.assertNotIn("実装の検査が失敗しました", r.stderr)
+
+        self.set_check(self.design, [sys.executable, "-c", "import sys; sys.exit('2 を返す' not in open('docs/api.md').read())"])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("own=changed pair=changed", r.stdout)
+
+    def test_verify_apply_needs_explore_first(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+
+    # ------------------------------------------------------------ 設定・設置・定義
 
     def test_missing_pair_is_reported(self) -> None:
         cfg = self.impl / ".statemachine/pair_align/pair.json"
         cfg.write_text(json.dumps({"side": "impl", "pair_path": "../nowhere"}), encoding="utf-8")
-        r = self.run_pa(self.impl, "collect")
+        r = self.run_pa(self.impl, "explore", "--term", "x")
         self.assertEqual(r.returncode, 2)
         self.assertIn("pair_path", r.stderr)
 
-    # ------------------------------------------------------------ 意図: 読む → 分ける → 合うか
-
-    def begin(self, repo: Path, intent: str | None = None, decision: str | None = None) -> str:
-        args = ["begin"]
-        if intent is not None:
-            f = repo / ".pair-align/work/intent_input.md"
-            f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text(intent, encoding="utf-8")
-            args += ["--intent-file", str(f)]
-        if decision is not None:
-            args += ["--decision", decision]
-        r = self.run_pa(repo, *args)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        return r.stdout
-
-    def write_reading(self, repo: Path, cite: str = "docs/api.md") -> None:
-        (repo / ".pair-align/work/reading.md").write_text(textwrap.dedent(f"""\
-            # 相手の側を読んだ結果
-
-            hello の戻り値について設計書を読んだ。
-
-            ## 前提
-
-            - hello は整数を返す（根拠: {cite}#hello）
-
-            ## 制約
-
-            - hello は 1 を返さなければならない（根拠: {cite}:3）
-
-            ## 自由
-
-            - なし
-            """), encoding="utf-8")
-
-    def write_question(self, repo: Path) -> None:
-        (repo / ".pair-align/work/question.md").write_text(textwrap.dedent("""\
-            # 確認
-
-            ## 意図
-
-            hello が 2 を返すようにしたい。
-
-            ## ぶつかっている点
-
-            - 制約: hello は 1 を返す（根拠: docs/api.md:3）
-
-            ## 相手を直す場合に頼むこと
-
-            1. hello の戻り値を 2 にする
-
-            ## 波及してこちらで直すこと
-
-            なし
-            """), encoding="utf-8")
-
-    def state(self, repo: Path) -> dict:
-        return json.loads((repo / ".pair-align/state.json").read_text(encoding="utf-8"))
-
-    def test_fit_changes_self_then_propagates(self) -> None:
-        out = self.begin(self.impl, "hello にログを足したい")
-        self.assertTrue(out.startswith("INTENT "), out)
-        self.assertEqual((self.impl / ".pair-align/work/intent.md").read_text(encoding="utf-8"),
-                         "hello にログを足したい")
-        r = self.run_pa(self.impl, "locate", "--term", "hello")
-        self.assertIn("CANDIDATES 1 files", r.stdout)
-
-        self.assertEqual(self.run_pa(self.impl, "verify-reading").returncode, 1)  # まだ無い
-        self.write_reading(self.impl, cite="docs/nowhere.md")
-        r = self.run_pa(self.impl, "verify-reading")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("実在する根拠のパスがありません", r.stderr)
-        self.write_reading(self.impl)
-        self.assertEqual(self.run_pa(self.impl, "verify-reading").returncode, 0)
-
-        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
-        self.assertEqual(self.run_pa(self.impl, "self-check").returncode, 0)
-        r = self.run_pa(self.impl, "commit", "-m", "hello にログ")
-        self.assertTrue(r.stdout.startswith("COMMITTED_USER"), r.stdout + r.stderr)
-        self.assertNotIn("Pair-Align:", git(self.impl, "log", "-1", "--format=%B"))
-        self.assertIsNone(self.state(self.impl)["active"])
-        # 利用者の意図のコミットは、ふつうに相手へ伝える候補になる。
-        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("CHANGES 1 commits"))
-
-    def test_self_check_runs_configured_command(self) -> None:
-        cfg_path = self.impl / ".statemachine/pair_align/pair.json"
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        cfg["check"] = [sys.executable, "-c", "import sys; sys.exit(open('src/app.py').read().count('return 1') != 1)"]
-        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
-        self.begin(self.impl, "意図")
-        self.assertEqual(self.run_pa(self.impl, "self-check").returncode, 0)
-        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        r = self.run_pa(self.impl, "self-check")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("check が失敗しました", r.stderr)
-
-    def test_misfit_asks_user_then_pair_fixes_and_ripples_back(self) -> None:
-        # 実装側: 意図が設計書の制約とぶつかる → 確認して止まる。
-        sid = self.begin(self.impl, "hello が 2 を返すようにしたい").split()[1]
-        self.write_reading(self.impl)
-        self.assertEqual(self.run_pa(self.impl, "verify-question").returncode, 1)
-        self.write_question(self.impl)
-        self.assertEqual(self.run_pa(self.impl, "verify-question").returncode, 0)
-        self.assertTrue(self.run_pa(self.impl, "pause").stdout.startswith("PAUSED"))
-        self.assertEqual(self.state(self.impl)["active"]["phase"], "confirm")
-
-        out = self.begin(self.impl)  # 答えが無いうちは待つ
-        self.assertTrue(out.startswith("AWAITING_DECISION"), out)
-        self.assertTrue((self.impl / ".pair-align/work/question.md").is_file())
-        self.assertEqual(self.run_pa(self.impl, "begin", "--decision", "たぶん").returncode, 2)
-
-        # 利用者は「相手を直す」を選ぶ → 相手への依頼を作って待つ。
-        out = self.begin(self.impl, decision="相手を直す")
-        self.assertTrue(out.startswith("DECIDED_PAIR"), out)
-        request_id = f"impl-{sid}"
-        self.write_prompt(self.impl, request_id)
-        self.assertEqual(self.run_pa(self.impl, "verify-prompt").returncode, 0)
-        r = self.run_pa(self.impl, "record")
-        self.assertTrue(r.stdout.startswith("RECORDED_REQUEST"), r.stdout + r.stderr)
-        self.assertEqual([w["outbound_id"] for w in self.state(self.impl)["waiting"]], [request_id])
-        self.assertTrue(self.begin(self.impl).startswith("WAITING_PAIR " + request_id))
-
-        # 設計書側: 届いた依頼が意図になる → 読んで・直して・合図つきでコミット。
-        out = self.begin(self.design, "ついでにやりたいこと")
-        self.assertTrue(out.startswith("INBOUND "), out)
-        self.assertIn("片付けたあとでもう一度", out)
-        self.assertIn(f"Pair-Align-Id: {request_id}",
-                      (self.design / ".pair-align/work/intent.md").read_text(encoding="utf-8"))
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
-        r = self.run_pa(self.design, "commit", "-m", "hello の戻り値を 2 に")
-        self.assertTrue(r.stdout.startswith("COMMITTED_LINKED"), r.stdout + r.stderr)
-        self.assertIn(f"Pair-Align: {request_id}", git(self.design, "log", "-1", "--format=%B"))
-        self.assertTrue(self.run_pa(self.design, "collect").stdout.startswith("NO_CHANGES"))
-
-        # 実装側: 相手が反映したので、波及として自分を直す。
-        out = self.begin(self.impl)
-        self.assertTrue(out.startswith(f"RIPPLE {sid}"), out)
-        self.assertEqual((self.impl / ".pair-align/work/intent.md").read_text(encoding="utf-8"),
-                         "hello が 2 を返すようにしたい")
-        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        r = self.run_pa(self.impl, "commit", "-m", "hello は 2 を返す")
-        self.assertTrue(r.stdout.startswith("COMMITTED_LINKED"), r.stdout + r.stderr)
-        self.assertIn(f"Pair-Align: {request_id}", git(self.impl, "log", "-1", "--format=%B"))
-        st = self.state(self.impl)
-        self.assertIsNone(st["active"])
-        self.assertEqual(st["waiting"], [])
-        # 波及のコミットも相手への依頼にならない。往復はここで止まる。
-        self.assertTrue(self.run_pa(self.impl, "collect").stdout.startswith("NO_CHANGES"))
-        self.assertTrue(self.begin(self.design).startswith("PROPAGATE"))
-
-    def test_revise_and_abort(self) -> None:
-        self.begin(self.impl, "最初の意図")
-        self.write_reading(self.impl)
-        self.write_question(self.impl)
-        self.run_pa(self.impl, "pause")
-        out = self.begin(self.impl, decision="意図を直す")
-        self.assertTrue(out.startswith("AWAITING_DECISION"), out)
-        self.assertIn("直した意図も入れて", out)
-        out = self.begin(self.impl, "直した意図", decision="意図を直す")
-        self.assertTrue(out.startswith("REVISED"), out)
-        self.assertEqual((self.impl / ".pair-align/work/intent.md").read_text(encoding="utf-8"), "直した意図")
-
-        # 途中で止まっても、次の begin は同じ意図の続きから。
-        self.assertTrue(self.begin(self.impl).startswith("RESUME"))
-        self.write_reading(self.impl)
-        self.write_question(self.impl)
-        self.run_pa(self.impl, "pause")
-        self.assertTrue(self.begin(self.impl, decision="やめる").startswith("ABORTED"))
-        self.assertIsNone(self.state(self.impl)["active"])
-        self.assertTrue(self.begin(self.impl).startswith("PROPAGATE"))
-
-    def test_inbound_without_change_is_closed(self) -> None:
-        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\n補足だけ。\n"}, "spec note")
-        self.run_pa(self.design, "collect")
-        pid = json.loads((self.design / ".pair-align/work/current.json").read_text(encoding="utf-8"))["id"]
-        self.write_prompt(self.design, pid)
-        self.run_pa(self.design, "record")
-
-        self.assertTrue(self.begin(self.impl).startswith("INBOUND"))
-        r = self.run_pa(self.impl, "commit", "-m", "x")
-        self.assertTrue(r.stdout.startswith("UNCHANGED_LINKED"), r.stdout + r.stderr)
-        self.assertIn(pid, self.state(self.impl)["acked"])
-        self.assertTrue(self.begin(self.impl).startswith("PROPAGATE"))
-
-    def test_abort_on_inbound_closes_it(self) -> None:
-        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\n3 を返す。\n"}, "spec")
-        self.run_pa(self.design, "collect")
-        pid = json.loads((self.design / ".pair-align/work/current.json").read_text(encoding="utf-8"))["id"]
-        self.write_prompt(self.design, pid)
-        self.run_pa(self.design, "record")
-        self.begin(self.impl)
-        self.write_reading(self.impl)
-        self.write_question(self.impl)
-        self.run_pa(self.impl, "pause")
-        self.assertTrue(self.begin(self.impl, decision="やめる").startswith("ABORTED"))
-        self.assertIn(pid, self.state(self.impl)["acked"])
-        self.assertTrue(self.begin(self.impl).startswith("PROPAGATE"))
-
-    # ------------------------------------------------------------ 設置と定義
-
-    def test_install_is_idempotent_and_keeps_config(self) -> None:
+    def test_install_is_idempotent_and_replaces_old_files(self) -> None:
+        stale = self.impl / ".statemachine/pair_align/actions/old.md"
+        stale.write_text("old", encoding="utf-8")
         install.install(self.impl, None, None)
+        self.assertFalse(stale.exists())
         cfg = json.loads((self.impl / ".statemachine/pair_align/pair.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg, {"graphify": "auto", "side": "impl", "pair_path": "../design"})
-        ignore = (self.impl / ".gitignore").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(ignore.count(".pair-align/"), 1)
-        gignore = (self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(gignore, [".statemachine/pair_align/"])
+        self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".pair-align/"), 1)
+        self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
+                         [".statemachine/pair_align/"])
         fresh = self.tmp / "fresh"
         fresh.mkdir()
         git(fresh, "init", "-q")

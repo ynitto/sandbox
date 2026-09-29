@@ -5,9 +5,9 @@
     python3 tools/pair-align/install.py <設計書のリポジトリ> --side design --pair ../my-impl
 
 `<リポジトリ>/.statemachine/pair_align/` に machine/ の中身を写し、pair.json を書く。
-既に置いてあれば定義とスクリプトだけを新しくし、pair.json は --side / --pair を渡したときだけ書き換える。
-`.pair-align/`（作業ファイル・送り箱・状態）は .gitignore に足す（--no-gitignore で足さない）。
-マシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/pair_align/` を足す。
+既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、pair.json は --side / --pair を渡したときだけ書き換える。
+`.pair-align/`（計画・探した結果・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
+このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/pair_align/` を足す。
 """
 
 from __future__ import annotations
@@ -35,6 +35,14 @@ def install(target: Path, side: str | None, pair: str | None, gitignore: bool = 
         raise SystemExit("初めて置くときは --side と --pair を指定してください")
 
     dest.mkdir(parents=True, exist_ok=True)
+    # 古い版のファイルを残さない（pair.json だけは利用者の設定なので残す）。
+    for item in dest.iterdir():
+        if item.name == "pair.json":
+            continue
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
     for item in SRC.iterdir():
         if item.name in ("pair.json", "__pycache__"):
             continue
