@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>サンプルストア</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1f2328; }
+  header { background: #24292f; color: #fff; padding: 12px 24px; }
+  main { max-width: 560px; margin: 32px auto; background: #fff; border: 1px solid #dfe3e8; border-radius: 8px; padding: 24px; }
+  label { display: block; margin: 12px 0 4px; }
+  input { width: 100%; box-sizing: border-box; padding: 8px; }
+  button { margin-top: 16px; padding: 8px 16px; }
+  .error { color: #cf222e; }
+  table { width: 100%; border-collapse: collapse; } td, th { border-bottom: 1px solid #dfe3e8; padding: 6px; text-align: left; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header><span id="brand">サンプルストア</span></header>
+<main>
+  <section id="login">
+    <h1>ログイン</h1>
+    <form id="login-form">
+      <label for="email">メールアドレス</label>
+      <input id="email" type="email" autocomplete="username">
+      <label for="password">パスワード</label>
+      <input id="password" type="password" autocomplete="current-password">
+      <p class="error" id="login-error" role="alert" hidden></p>
+      <button type="submit">ログイン</button>
+    </form>
+  </section>
+  <section id="items" hidden>
+    <h1>商品一覧</h1>
+    <p id="welcome"></p>
+    <p class="error" id="load-error" role="alert" hidden>商品を読み込めませんでした <button type="button" id="retry">再試行</button></p>
+    <table><thead><tr><th>商品</th><th>価格</th></tr></thead><tbody id="rows"></tbody></table>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const lang = localStorage.getItem('lang') || 'ja';
+  if (lang === 'en') { document.title = 'Sample Store'; $('brand').textContent = 'Sample Store'; }
+  async function load() {
+    $('load-error').hidden = true;
+    try {
+      const res = await fetch('/api/items');
+      if (!res.ok) throw new Error(res.status);
+      const items = await res.json();
+      $('rows').innerHTML = items.map((i) => `<tr><td>${i.name}</td><td>¥${i.price.toLocaleString('ja-JP')}</td></tr>`).join('');
+    } catch (e) {
+      $('load-error').hidden = false;
+    }
+  }
+  $('retry').addEventListener('click', load);
+  $('login-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const email = $('email').value;
+    if (!email || $('password').value !== 'secret') {
+      $('login-error').textContent = 'メールアドレスかパスワードが違います';
+      $('login-error').hidden = false;
+      return;
+    }
+    $('login').hidden = true;
+    $('items').hidden = false;
+    $('welcome').textContent = `ようこそ、${email} さん`;
+    history.pushState(null, '', '#items');
+    load();
+  });
+</script>
+</body>
+</html>

@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### web-test: 条件からテストケースを作り、スクリーンショット付きで結果を出す Web アプリのテストツール（新規）
+
+- **条件の文章から、エージェントがテストケースファイル（YAML）を書く。** `web-test generate "<条件>" --url <URL> -o <file>`。
+  Kiro CLI（既定）と GitHub Copilot CLI に対応し、ほかの CLI は `--agent-cmd` で渡せる。対象の画面を実際に開いて取った
+  要素の一覧（役割と名前）を依頼に入れるので、画面に無いボタン名を想像で書かれにくい。書式の誤りは検査で見つけ、
+  エラーを添えて直してもらう。チャットで作るときは `web-test prompt` の依頼文を貼る
+- **Playwright でケースを実行し、操作ごとのスクリーンショットと合否・失敗理由のレポートを出す。** `web-test run <file|dir>`。
+  レポートは HTML・Markdown・JSON。ケースごとに新しいブラウザの状態で始め、`localStorage` はアプリより先に入れ、
+  `mocks` で API の応答（500・1 回目だけ失敗・遅延・切断）を差し替えられる
+- **仕様書の画像を決まった名前で撮る。** `web-test capture <file> --out <dir>` が `screenshot` ステップの画像だけを
+  `<dir>/<name>.png` に書き出す。変わる部分は `mask` で塗れる
+- 使い方は `tools/web-test/README.md`、書式は `tools/web-test/src/format-reference.md`
+
 ### agent-app: 通知を押したとき、その会話・実行の画面で開く（agent-app 0.46.0）
 
 - **タスク・ワークフローを AI と作る会話の通知を押すと、サイドバーの「タスク」「ワークフロー」の該当項目で開く。**

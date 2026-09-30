@@ -1,0 +1,20 @@
+{
+  "name": "web-test",
+  "version": "0.1.0",
+  "description": "条件からテストケースファイルを作り（エージェント経由）、Playwright で実行してスクリーンショット付きの結果を出す Web アプリのテストツール",
+  "author": "sandbox",
+  "license": "MIT",
+  "bin": {
+    "web-test": "bin/web-test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/casefile.test.js test/generate.test.js test/runner.test.js"
+  },
+  "dependencies": {
+    "playwright": "^1.56.0",
+    "yaml": "^2.5.0"
+  }
+}
