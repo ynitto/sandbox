@@ -54,7 +54,17 @@
     return drafts.length ? [...base, ...drafts] : base;
   }
 
-  const navigation = { AREAS, normalizeArea, areaInfo, taskItems };
+  // 会話がどの領域の画面に属するか。タスク・ワークフローを AI と作る会話は、その一覧の項目から
+  // 開く画面のもの（会話の一覧には出ない）。selected は一覧で選ぶ項目の id。
+  function sessionDestination(session) {
+    const machine = session && session.kind === 'task' && session.task ? String(session.task.machine || '') : '';
+    if (machine) return { area: 'tasks', selected: `machine:${machine}` };
+    const workflow = session && session.kind === 'workflow' && session.workflow ? String(session.workflow.id || '') : '';
+    if (workflow) return { area: 'workflows', selected: workflow };
+    return { area: 'conversation', selected: '' };
+  }
+
+  const navigation = { AREAS, normalizeArea, areaInfo, taskItems, sessionDestination };
   if (typeof window === 'undefined') module.exports = navigation;
   else window.AgentNavigation = navigation;
 }());

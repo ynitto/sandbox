@@ -2817,6 +2817,18 @@ async function navigateEmbedded(payload) {
     const identity = taskIdentity(selectedTask);
     if (state.execution.selected !== identity) state.execution.detailTab = 'overview';
     state.execution.selected = identity;
+    // 実行の通知から来たときは、結果の載る「履歴」タブで開く（編集中の面は閉じる）
+    if (payload.action === 'history') {
+      cancelAi(state.aiReview);
+      state.execution.editing = false;
+      state.view = 'home';
+      state.current = null;
+      state.homeTab = 'run';
+      state.execution.detailTab = 'history';
+      render();
+      await refreshExecutionSnapshot();
+      return;
+    }
     // 会話の振り分けが依頼から写した実行条件。今回の値として概要に入れる（宣言に無いキーは
     // 描くときに落ちる）。実行は人が押す。
     if (payload.inputs && typeof payload.inputs === 'object' && Object.keys(payload.inputs).length) {

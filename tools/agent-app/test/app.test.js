@@ -277,6 +277,17 @@ test('実行状態を取得できない場合も保存済み定義をタスク�
   assert.deepStrictEqual(taskItems({ machines: 'invalid' }, null), []);
 });
 
+test('通知から開く会話は、その会話が属する領域の画面で開く', () => {
+  const { sessionDestination } = require('../src/renderer/navigation');
+  assert.deepStrictEqual(sessionDestination({ kind: 'task', task: { machine: 'release-check' } }), { area: 'tasks', selected: 'machine:release-check' });
+  assert.deepStrictEqual(sessionDestination({ kind: 'workflow', workflow: { id: 'weekly' } }), { area: 'workflows', selected: 'weekly' });
+  assert.deepStrictEqual(sessionDestination({ kind: 'conversation', project: 'p' }), { area: 'conversation', selected: '' });
+  assert.deepStrictEqual(sessionDestination({ kind: 'task', task: null }), { area: 'conversation', selected: '' });
+  assert.deepStrictEqual(sessionDestination(null), { area: 'conversation', selected: '' });
+  const renderer = fs.readFileSync(path.join(__dirname, '../src/renderer/renderer.js'), 'utf8');
+  assert.match(renderer, /api\.onNotifyOpen\([\s\S]*?openNotifiedSession\(p\.id\)/, '通知は属する画面を選んでから会話を開く');
+});
+
 test('ナビゲーション契約はブラウザでは window へ公開する', () => {
   const modulePath = require.resolve('../src/renderer/navigation');
   const originalWindow = global.window;
@@ -1251,7 +1262,14 @@ test('前面に無いときの通知は、既に流している合図から出�
   const html = fs.readFileSync(path.join(SRC, 'renderer/index.html'), 'utf8');
   assert.match(ipc, /channel === 'turn:done'[\s\S]*notifier\.show/);
   assert.match(ipc, /channel === 'term:phase' && payload && payload\.phase === 'attention'/);
-  assert.match(ipc, /onRunExit: \(\{ name, mode, result \}\)/);
+  assert.match(ipc, /onRunExit: \(\{ name, mode, result, root, taskId \}\)/);
+  // 実行の通知はタスクの実行履歴へ、会話の通知は会話（AIと作る会話なら編集の画面）へ
+  assert.match(ipc, /else if \(event\.task\) post\('notify:open', \{ task: event\.task \}\)/);
+  const renderer = fs.readFileSync(path.join(SRC, 'renderer/renderer.js'), 'utf8');
+  assert.match(renderer, /if \(p && p\.task\) openNotifiedTaskRun\(p\.task\)/);
+  assert.match(renderer, /async function openNotifiedTaskRun[\s\S]*?showArea\('tasks', \{ action: 'history' \}\)/);
+  const workbench = fs.readFileSync(path.join(SRC, 'renderer/automation/renderer.js'), 'utf8');
+  assert.match(workbench, /payload\.action === 'history'[\s\S]*?state\.execution\.detailTab = 'history'/);
   assert.match(ipc, /enabled: \(\) => store\.loadConfig\(userData\(\)\)\.notify\.background !== false/);
   assert.match(preload, /onNotifyOpen: on\('notify:open'\)/);
   assert.match(html, /id="notify-background"[\s\S]*バックグラウンドで通知する/);
