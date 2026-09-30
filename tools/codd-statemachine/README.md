@@ -257,6 +257,17 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --scope src
 関係するものを読み込んで使う。関係しないものは、計画の「使ったスキルと道具」に「使わない: 理由」を 1 行ずつ書く
 （どちらも無いと検査で落ちる。黙って使わずに済ませない）。エージェントに登録されていないスキルでも、`SKILL.md` を読んで
 その手順に従う。置き場所は `skill_dirs` で変えられる。
+
+エージェントが自分でスキルを選ぶのを待たない（kiro-cli などはスキルを自動で選ばないことが多い）。スキルは
+`codd.py skill 名前` で読み込ませ、読み込んだことを `.codd/skills-read.json` に控える。計画の「使ったスキルと道具」や
+`.codd/apply.md` に使ったと書いたスキル（「使わない」と書いたものを除く）を、その段で読み込んでいなければ検査で落ちる。
+名前は `skill_dirs`・`.agents/skills`・`.kiro/skills`・`.github/skills`・`.claude/skills`（リポジトリ、利用者のホーム、
+参照先の順）から探す。
+
+```bash
+python3 .statemachine/codd/codd.py skill tdd                # SKILL.md を出して読み込む
+python3 .statemachine/codd/codd.py skill docs:doc-writer    # 参照先のスキル
+```
 守る決まりは、`CLAUDE.md` などのよくある名前のファイルがあれば自動で挙がり、`rules` と `refs[].rules` で足せる。
 
 設計書のリポジトリにあるコーディングルールのような決まりは、書いても、見つけさせてもよい。

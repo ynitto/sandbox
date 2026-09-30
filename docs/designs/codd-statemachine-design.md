@@ -284,6 +284,11 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
   （名前と説明は SKILL.md の先頭の `name` / `description`。30 まで）。計画の「使ったスキルと道具」に、使った結果か
   「使わない: 理由」が無ければ verify-plan が落とす。関係するかの判断はモデルに任せるが、**全部に目を通したこと**は
   測れるようにする。使うことを強制しないのは、説明だけでは関係するかを決定的に決められないため
+- スキルの読み込み: エージェントのスキル選択（kiro-cli などは自動で選ばないことが多い）に頼らず、`codd.py skill 名前` で
+  `SKILL.md` を出して文脈へ入れる。出したときに名前と時刻を `.codd/skills-read.json` に控え、計画の「使ったスキルと道具」・
+  `.codd/apply.md` で使ったと書いた（「使わない」の行を除く）スキルが控えに無ければ落とす。apply は変える前の印より新しい
+  読み込みだけを認める（計画のときに読んだだけで済ませない）。これで「使った」と書くことと「読んだ」ことを、スクリプトから
+  見える事実で結び付ける。見つからないスキル（エージェントの組み込みなど）は読み込みを求めない
 - カスタムエージェント: `install.py` が kiro-cli（`.kiro/agents/codd.json`）と GitHub Copilot（`.github/agents/codd.agent.md`）
   向けに、変える依頼は必ずこのマシンで進めるエージェントを書く。指示は `agents/codd-agent.md` 1 つから両方へ写す。
   statemachine-use が無い環境でも回せるよう、`workflow.yaml` の読み方（action・check と再投入・condition_rule・答えを待つ

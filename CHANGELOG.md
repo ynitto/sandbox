@@ -101,6 +101,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   参照先を変えるときはその参照先のスキルを使う。`codd.py show` で確かめられる
 - **`.agents/skills/` のスキルを設定なしで使う。** `show` が名前と説明を挙げ、計画を練るときに関係するものを読み込んで使う。
   関係しないものは「使わない: 理由」を書かせ、どちらも無ければ計画の検査で落とす。置き場所は `skill_dirs` で変えられる
+- **スキルを確かに読み込ませる。** `codd.py skill 名前` が `SKILL.md` を出して読み込ませ、そのことを控える。計画や `.codd/apply.md` で
+  使ったと書いたスキルを、その段で読み込んでいなければ検査で落とす（エージェントの自動選択に頼らない）
 - **kiro-cli と GitHub Copilot 向けのカスタムエージェント `codd` を置く。** `install.py` が `.kiro/agents/codd.json` と
   `.github/agents/codd.agent.md` を書き、コードや文書を変える依頼は必ずこのステートマシンで進めさせる（statemachine-use が
   無くても回せる指示を含む。`--agent` で絞り、`--no-agents` で書かない）

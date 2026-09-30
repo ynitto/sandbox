@@ -17,6 +17,7 @@
                         測ったファイルを直したか「変更不要」としたかを検査する。書き足したパスが実在するか、
                         消したファイルを指したままのところが無いかも確かめる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
+    skill 名前…         スキルの SKILL.md を出して読み込む。使うと書いたスキルを読み込んだかを検査が確かめる
     advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
     keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
@@ -49,6 +50,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -420,6 +422,88 @@ def repo_skills(repo: Path, dirs: list[str]) -> list[RepoSkill]:
     return out[:MAX_REPO_SKILLS]
 
 
+# 名前で指定したスキルを探す置き場所（リポジトリと、利用者のホーム）。skill_dirs を先に見る。
+SKILL_SEARCH_DIRS = [".agents/skills", ".kiro/skills", ".github/skills", ".claude/skills"]
+SKILLS_READ = "skills-read.json"
+NOT_USED_MARK = "使わない"
+
+
+def find_skill(ctx: "Ctx", spec: str) -> tuple[str, Path] | None:
+    """`名前` か `参照先の名前:名前` のスキルの SKILL.md。見つからなければ None。"""
+    ref_name, sep, name = spec.partition(":")
+    if sep and ref_name in {r.name for r in ctx.refs}:
+        r = ctx.ref(ref_name)
+        places = [(r.path, [*(r.config or {}).get("skill_dirs", DEFAULT_SKILL_DIRS), *SKILL_SEARCH_DIRS])]
+    else:
+        name = spec
+        places = [(ctx.root, [*ctx.config["skill_dirs"], *SKILL_SEARCH_DIRS]), (Path.home(), SKILL_SEARCH_DIRS),
+                  *((r.path, [*(r.config or {}).get("skill_dirs", DEFAULT_SKILL_DIRS), *SKILL_SEARCH_DIRS])
+                    for r in ctx.refs if r.path != ctx.root)]
+    for base, dirs in places:
+        for d in unique_paths(dirs):
+            direct = base / d / name / "SKILL.md"
+            if direct.is_file():
+                return name, direct
+            for skill in repo_skills(base, [d]):
+                if skill.name == name:
+                    return name, base / skill.path
+    return None
+
+
+def skills_read(ctx: "Ctx") -> dict:
+    path = ctx.data / SKILLS_READ
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def used_skill_names(body: str, candidates: list[str]) -> list[str]:
+    """本文で使ったと書いたスキル（その名前を挙げた行に「使わない」が無いもの）。"""
+    used = []
+    for line in body.splitlines():
+        if NOT_USED_MARK in line:
+            continue
+        used += [n for n in candidates if mentioned(line, n) and n not in used]
+    return used
+
+
+def unread_skills(ctx: "Ctx", names: list[str], since: float = 0.0) -> list[str]:
+    """使うと書いたのに、`codd.py skill` で読み込んでいない（見つかるものだけ確かめる）スキル。"""
+    log = skills_read(ctx)
+    return [n for n in names if find_skill(ctx, n) and log.get(n, {}).get("time", -1.0) < since]
+
+
+def unread_problem(names: list[str], where: str) -> list[str]:
+    if not names:
+        return []
+    return [f"{where}スキルを読み込んでいません（`python3 {MACHINE_REL}/codd.py skill 名前` で SKILL.md を読み込み、"
+            "その手順に従って使ってください。エージェントが自分でスキルを選ぶのを待たない）: "
+            + ", ".join(f"`{n}`" for n in names)]
+
+
+def cmd_skill(ctx: "Ctx", args: argparse.Namespace) -> int:
+    """スキルの SKILL.md を出して読み込ませ、読み込んだことを控える（検査が確かめる）。"""
+    log = skills_read(ctx)
+    missing = []
+    for spec in args.name:
+        found = find_skill(ctx, spec)
+        if not found:
+            missing.append(spec)
+            continue
+        _, path = found
+        print(f"# スキル {spec}（{path}）\n")
+        print(read_text(path) or "")
+        log[spec] = {"path": str(path), "time": time.time()}
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / SKILLS_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if missing:
+        where = ", ".join([*ctx.config["skill_dirs"], *SKILL_SEARCH_DIRS])
+        print(f"スキルが見つかりません: {', '.join(missing)}（探した場所: {where}、とホームの同じ場所）", file=sys.stderr)
+        return 1
+    return 0
+
+
 def skill_lines(skills: list[RepoSkill], prefix: str = "") -> list[str]:
     return [f"  - `{s.name}` — {s.description[:120] or '（説明なし）'}（{prefix}{s.path}）" for s in skills]
 # 決まりらしいマークダウンの目印（パスの語か、最初の見出し）。
@@ -588,6 +672,7 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
             for r in ctx.refs:
                 print(f"  - {r.name} を変えるとき: {skill_words(r.apply_skills)}"
                       + (f"。道具: {tool_words(r.apply_tools)}" if r.apply_tools else ""))
+    print(f"スキルは `python3 {MACHINE_REL}/codd.py skill 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
     print(f"1 回で変えるファイルの上限: {ctx.max_files}（超えるぶんは計画の「今回やらないこと」へ）")
     if len(ctx.refs) > 1:
         print("計画の根拠は `名前:パス` で書く（例: " + f"{ctx.refs[0].name}:docs/api.md）")
@@ -1279,6 +1364,8 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     if missing:
         problems.append("使ったスキルと道具に、リポジトリのスキルを使った結果か「使わない: 理由」を書いてください"
                         "（関係するものは使う）: " + ", ".join(f"`{n}`" for n in missing))
+    used = used_skill_names(bodies["## 使ったスキルと道具"], unique([*ctx.config["skills"]["plan"], *found]))
+    problems += unread_problem(unread_skills(ctx, used), "使ったスキルと道具に挙げた")
     for heading in CITED_IN_REFS:
         if is_none(bodies[heading]):
             continue
@@ -1578,6 +1665,13 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                             + ", ".join(f"`{n}`" for n in names))
         else:
             problems += used_problems(log.read_text(encoding="utf-8"), names, f"{DATA_DIRNAME}/apply.md ")
+    apply_log = ctx.data / "apply.md"
+    if apply_log.is_file():
+        skills = [*ctx.config["skills"]["apply"], *(s for r in changed for s in r.apply_skills),
+                  *(s.name for s in repo_skills(ctx.root, ctx.config["skill_dirs"]))]
+        used = used_skill_names(apply_log.read_text(encoding="utf-8"), unique(skills))
+        since = (ctx.data / "before.json").stat().st_mtime
+        problems += unread_problem(unread_skills(ctx, used, since), f"{DATA_DIRNAME}/apply.md に挙げた")
 
     # 6. 検査コマンド。
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
@@ -1864,6 +1958,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
     sub.add_parser("advise", help="検査で止まった理由と、次の手（勧めと選択肢）を示す")
+    sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
+    sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
     sub.add_parser("keep-changes", help="変えた分を残したまま計画を直す（次の計画の検査で印を取り直さない）")
     sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
     ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
@@ -1874,7 +1970,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
-            "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback}
+            "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
+            "skill": cmd_skill}
 
 
 def main(argv: list[str] | None = None) -> int:

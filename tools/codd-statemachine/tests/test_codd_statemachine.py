@@ -171,7 +171,8 @@ class CoddTest(unittest.TestCase):
         self.log = self.tmp / "graphify.log"
 
     def run_pa(self, repo: Path, *args: str) -> subprocess.CompletedProcess:
-        env = {**os.environ, **GIT_ENV, "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin"}
+        env = {**os.environ, **GIT_ENV, "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
+               "HOME": str(self.tmp / "home")}   # 利用者のホームのスキルを拾わない
         return subprocess.run([sys.executable, ".statemachine/codd/codd.py", *args],
                               cwd=repo, capture_output=True, text=True, env=env)
 
@@ -565,6 +566,26 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED.replace("## 使ったスキルと道具\n\nなし",
                                              "## 使ったスキルと道具\n\n- `tdd-lite` — 使わない: ログを足すだけでテストは変わらない"))
         self.assert_plan_ok()
+        # 使うと書いたスキルは、codd.py skill で読み込んでいなければ落とす（エージェントの自動選択に頼らない）。
+        plan = PLAN_ALIGNED.replace("## 使ったスキルと道具\n\nなし",
+                                    "## 使ったスキルと道具\n\n- `tdd-lite` — 変えるときにテストを先に書く")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("スキルを読み込んでいません", r.stderr)
+        r = self.run_pa(self.impl, "skill", "tdd-lite")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("# tdd-lite", r.stdout)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("- `tdd-lite` — テストを先に書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")   # 計画のときに読んだだけでは、変えるときに読んだことにならない
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(".codd/apply.md に挙げたスキルを読み込んでいません", r.stderr)
+        self.run_pa(self.impl, "skill", "tdd-lite")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.run_pa(self.impl, "skill", "nothing").returncode, 1)
         # 置き場所は skill_dirs で変えられ、[] で使わない。
         path = self.impl / ".statemachine/codd/codd.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
