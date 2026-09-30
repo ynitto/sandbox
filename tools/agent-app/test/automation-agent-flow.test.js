@@ -314,3 +314,82 @@ test('依頼から実行で選んだ分担の形は、agent-flow の標準パタ
   const autoInbox = JSON.parse(fs.readFileSync(path.join(env.bus, 'inbox', `${auto.runId}.json`), 'utf8'));
   assert.strictEqual(autoInbox.pattern, undefined, 'おまかせは名指ししない（planner が決める）');
 });
+
+// 失敗した実行: どの工程で・どの種類の失敗か、後ろの工程は未実行、続きから再実行は同じ run-id で起こす
+function failedRun(bus, logs, runId, root, output, data) {
+  write(path.join(bus, 'inbox', `${runId}.json`), { id: runId, request: '依頼', submitter: 'agent-app', submitted_at: '2026-09-30T09:00:00Z', submitter_context: { root, workflow: 'wf', agent: 'codex', model: 'gpt-test' } });
+  const run = path.join(bus, 'runs', runId);
+  write(path.join(run, 'meta.json'), { status: 'failed', request: '依頼', created_at: '2026-09-30T09:00:00Z', updated_at: '2026-09-30T09:01:00Z', workspace: { local: root } });
+  write(path.join(run, 'graph.json'), { nodes: {
+    make: { goal: '作る', label: '作る工程', kind: 'work', deps: [] },
+    check: { goal: '確かめる', kind: 'verify', deps: ['make'] },
+    report: { goal: 'まとめる', kind: 'synthesize', deps: ['check'] },
+  } });
+  write(path.join(run, 'results', 'make.json'), { status: 'done', output: '作りました', who: 'pc-a/w1' });
+  write(path.join(run, 'results', 'check.json'), { status: 'failed', output, data, who: 'pc-b/w1' });
+  return run;
+}
+
+test('失敗した工程の理由と種類・未実行の工程・履歴の手掛かりを返す', (t) => {
+  const { bus, logs } = withBus(t);
+  const root = '/repo';
+  failedRun(bus, logs, 'app-failed', root, 'verify=fail: CHANGELOG.md がありません\n参照した場所: docs/', { ok: false, error_class: 'content' });
+  const run = agentFlow.readRun(root, 'app-failed');
+  assert.strictEqual(run.state, 'failed');
+  assert.strictEqual(run.nodes[0].label, '作る工程');
+  assert.deepStrictEqual(run.nodes[1].error, { cls: 'content', group: 'content', message: 'CHANGELOG.md がありません' });
+  assert.strictEqual(run.nodes[2].state, 'skipped', '前の工程が失敗して動かなかった工程は未実行（回答待ちではない）');
+  const row = agentFlow.listRuns(root).find((item) => item.runId === 'app-failed');
+  assert.deepStrictEqual(row.failedNode, { id: 'check', label: '', cls: 'content', message: 'CHANGELOG.md がありません' });
+
+  failedRun(bus, logs, 'app-auth', root, '[agent-error:auth] claude 失敗 (rc=1): 認証に失敗しています（再ログインが必要です）\nnot authenticated', {});
+  const auth = agentFlow.readRun(root, 'app-auth').nodes[1].error;
+  assert.deepStrictEqual(auth, { cls: 'auth', group: 'setup', message: '認証に失敗しています（再ログインが必要です）' });
+});
+
+test('続きから再実行は失敗した実行を同じ run-id で起こし、消える前の失敗を控える', async (t) => {
+  const { bus, logs } = withBus(t);
+  const root = '/repo';
+  failedRun(bus, logs, 'app-resume', root, 'verify=fail: 足りません', { error_class: 'content' });
+  const calls = [];
+  const deps = {
+    root,
+    getContext: async () => ({ agents: ['codex'], defaults: {}, workspace: { ok: true }, tools: { agentFlow: { ok: true } } }),
+    startDetached: async (...args) => { calls.push(args); return { pid: 1 }; },
+  };
+  const started = await agentFlow.resume(root, 'app-resume', deps);
+  assert.strictEqual(started.runId, 'app-resume');
+  assert.deepStrictEqual(calls[0][1], ['--bus', bus, '--run-id', 'app-resume', '--agent-cli', 'codex', 'run', '--model', 'gpt-test']);
+  assert.strictEqual(calls[0][2].logFile, path.join(logs, 'app-resume.log'), '同じ実行ログへ書き足す');
+  const attempts = agentFlow.readRun(root, 'app-resume').attempts;
+  assert.strictEqual(attempts.length, 1);
+  assert.deepStrictEqual({ nodeId: attempts[0].nodeId, cls: attempts[0].cls, message: attempts[0].message }, { nodeId: 'check', cls: 'content', message: '足りません' });
+
+  write(path.join(bus, 'runs', 'app-resume', 'meta.json'), { status: 'done', request: '依頼', created_at: '2026-09-30T09:00:00Z', workspace: { local: root } });
+  await assert.rejects(() => agentFlow.resume(root, 'app-resume', deps), /失敗した実行だけ/);
+});
+
+test('工程のセッションログは担当の行を受け持ってから次の工程までと、その工程の出来事で組む', (t) => {
+  const { bus, logs } = withBus(t);
+  const root = '/repo';
+  const run = failedRun(bus, logs, 'app-log', root, 'verify=fail: 足りません', {});
+  fs.mkdirSync(logs, { recursive: true });
+  fs.writeFileSync(path.join(logs, 'app-log.log'), [
+    '[2026-09-30T09:00:01Z] [pc-a/w1] claim 成功: make [work] — 作る',
+    '[2026-09-30T09:00:02Z] [pc-b/w1] claim 成功: check [verify] — 確かめる',
+    '[2026-09-30T09:00:03Z] [pc-b/w1] 検証しています',
+    '  続きの行',
+    '[2026-09-30T09:00:04Z] [pc-a/w1] 作っています',
+    '[2026-09-30T09:00:06Z] [pc-b/w1] claim 成功: report [synthesize] — まとめる',
+    '[2026-09-30T09:00:07Z] [pc-b/w1] まとめています',
+  ].join('\n'));
+  fs.mkdirSync(path.join(run, 'events'), { recursive: true });
+  fs.writeFileSync(path.join(run, 'events', 'pc-b-w1.jsonl'), `${JSON.stringify({ ts: '2026-09-30T09:00:05Z', who: 'pc-b/w1', kind: 'result', node: 'check', status: 'failed' })}\n`);
+  const found = agentFlow.readNodeLog(root, 'app-log', 'check');
+  assert.deepStrictEqual(found.text.split('\n'), [
+    '[2026-09-30T09:00:02Z] [pc-b/w1] claim 成功: check [verify] — 確かめる',
+    '[2026-09-30T09:00:03Z] [pc-b/w1] 検証しています',
+    '  続きの行',
+    '[2026-09-30T09:00:05Z] [pc-b/w1] result status=failed',
+  ]);
+});
