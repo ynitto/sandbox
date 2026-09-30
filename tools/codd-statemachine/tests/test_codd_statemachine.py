@@ -1,4 +1,4 @@
-"""codd の結合テスト。実装・設計書の 2 リポジトリを一時フォルダに作り、下請けスクリプトを通す。
+"""codd-statemachine の結合テスト。実装・設計書の 2 リポジトリを一時フォルダに作り、下請けスクリプトを通す。
 
 LLM は呼ばない。アクションがやる判断（計画を書く・変える）は、テストが代わりにファイルを書いて進める。
 graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動更新の有無）を記録する。
@@ -73,6 +73,10 @@ hello にログを足す。
 ## 影響範囲
 
 なし
+
+## 今回やらないこと
+
+なし
 """
 
 PLAN_DRIFT = """\
@@ -109,6 +113,10 @@ hello が 2 を返すようにする。
 ## 影響範囲
 
 - src/app.py — hello の戻り値
+
+## 今回やらないこと
+
+- `hello` の引数を足す — 別の回に回す
 """
 
 
@@ -163,6 +171,10 @@ class CoddTest(unittest.TestCase):
         (self.impl / ".codd").mkdir(exist_ok=True)
         (self.impl / ".codd/plan.md").write_text(text, encoding="utf-8")
 
+    def assert_plan_ok(self, repo: Path | None = None) -> None:
+        r = self.run_pa(repo or self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def set_check(self, repo: Path, command: list[str]) -> None:
         path = repo / ".statemachine/codd/codd.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -177,7 +189,6 @@ class CoddTest(unittest.TestCase):
         self.assertIn("FOUND 1 files (graphify: not-installed)", r.stdout)
         report = (self.impl / ".codd/explore.md").read_text(encoding="utf-8")
         self.assertIn("docs/api.md:3:## hello", report)
-        self.assertTrue((self.impl / ".codd/before.json").is_file())
         self.assertEqual(self.run_pa(self.impl, "explore").returncode, 2)  # 語が無い
 
     def test_graph_is_rebuilt_only_when_the_repo_changes(self) -> None:
@@ -260,8 +271,8 @@ class CoddTest(unittest.TestCase):
     # ------------------------------------------------------------ 変えたあとの検査
 
     def test_verify_apply_own_only(self) -> None:
-        self.run_pa(self.impl, "explore", "--term", "hello")
         self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("自分のリポジトリが変わっていません", r.stderr)
@@ -278,8 +289,8 @@ class CoddTest(unittest.TestCase):
         self.assertIn("参照先の変更案に design は無いのに、design が変わっています", r.stderr)
 
     def test_verify_apply_both_and_runs_each_check(self) -> None:
-        self.run_pa(self.impl, "explore", "--term", "hello")
         self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
@@ -335,8 +346,8 @@ class CoddTest(unittest.TestCase):
         commit(self.impl, {"src/bye.py": "def goodbye_world():\n    return 3\n"}, "bye")
         plan = PLAN_DRIFT.replace("- src/app.py — hello の戻り値",
                                   "- src/app.py — hello の戻り値\n- src/use.py — 表示を直す")
-        self.run_pa(self.impl, "explore", "--term", "hello")
         self.write_plan(plan)
+        self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         # 参照先は計画に無い見出しまで足した。実際の差分から測るので、その影響も拾う。
         (self.design / "docs/api.md").write_text(
@@ -350,14 +361,18 @@ class CoddTest(unittest.TestCase):
         self.assertTrue((self.impl / ".codd/impact-after.md").is_file())
 
         (self.impl / "src/use.py").write_text("from app import hello\n\nprint('v', hello())\n", encoding="utf-8")
-        self.write_plan(plan + "- src/bye.py — 変更不要: 名前だけ同じ別物\n")
+        self.write_plan(plan.replace("- src/use.py — 表示を直す", "- src/use.py — 表示を直す\n- src/bye.py — 変更不要: 名前だけ同じ別物"))
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("impact=3 files", r.stdout)
 
-    def test_verify_apply_needs_explore_first(self) -> None:
+    def test_verify_apply_needs_a_verified_plan(self) -> None:
         self.write_plan(PLAN_ALIGNED)
-        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("計画を検査したときの印がありません", r.stderr)
+        self.assert_plan_ok()
+        self.assertTrue((self.impl / ".codd/before.json").is_file())
 
     # ------------------------------------------------------------ 設定・設置・定義
 
@@ -496,6 +511,149 @@ class CoddTest(unittest.TestCase):
                 r = self.run_pa(self.impl, "show")
                 self.assertEqual(r.returncode, 2)
                 self.assertIn("skills", r.stderr)
+
+    # ------------------------------------------------------------ 根拠を箇所まで確かめる
+
+    def test_evidence_points_at_real_lines_headings_and_names(self) -> None:
+        cases = {
+            "6 行目はありません": PLAN_ALIGNED.replace("docs/api.md:3", "docs/api.md:6"),
+            "3-9 行目はありません": PLAN_ALIGNED.replace("docs/api.md:3", "docs/api.md:3-9"),
+            "見出し #goodbye がありません": PLAN_ALIGNED.replace("docs/api.md#hello", "docs/api.md#goodbye"),
+            "根拠のファイルに見当たりません: `hello_world`": PLAN_ALIGNED.replace(
+                "- hello は整数を返す", "- `hello_world` は整数を返す"),
+        }
+        for expected, plan in cases.items():
+            with self.subTest(expected=expected):
+                self.write_plan(plan)
+                r = self.run_pa(self.impl, "verify-plan")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(expected, r.stderr)
+        # 書かれている名前・実在する行と見出しなら通る（`hello()` は hello として探す）。
+        self.write_plan(PLAN_ALIGNED.replace("- hello は整数を返す", "- `hello()` は整数を返す")
+                        .replace("docs/api.md:3", "docs/api.md:3-5").replace("#hello", "#HELLO"))
+        self.assert_plan_ok()
+
+    def test_own_change_items_name_own_files(self) -> None:
+        self.write_plan(PLAN_ALIGNED.replace("- src/app.py — hello の中でログを出す", "- ログを出す"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("自分の変更案の項目に、自分のリポジトリのパスがありません", r.stderr)
+        # まだ無いファイル（親のフォルダはある）は書ける。
+        self.write_plan(PLAN_ALIGNED.replace("- src/app.py — hello の中でログを出す",
+                                             "- src/app.py — ログを出す\n- src/log.py — 新しく書く"))
+        self.assert_plan_ok()
+
+    # ------------------------------------------------------------ 1 回で終わる大きさ
+
+    def test_plan_must_fit_in_one_run(self) -> None:
+        path = self.impl / ".statemachine/codd/codd.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["max_files"] = 1
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.write_plan(PLAN_DRIFT)   # src/app.py と design の docs/api.md で 2 つ
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("1 回で変えるファイルが 2 あり、上限 1 を超えています", r.stderr)
+        self.assertIn("## 今回やらないこと", r.stderr)
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.assertIn("1 回で変えるファイルの上限: 1", self.run_pa(self.impl, "show").stdout)
+        tpl = PLAN_ALIGNED.replace("## 今回やらないこと\n\nなし\n", "")
+        self.write_plan(tpl)
+        self.assertIn("見出しがありません: ## 今回やらないこと", self.run_pa(self.impl, "verify-plan").stderr)
+
+    # ------------------------------------------------------------ 計画に無い変更を止める
+
+    def test_verify_apply_rejects_files_outside_the_plan(self) -> None:
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/other.md").write_text("# other\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("計画に無いファイルを変えています", r.stderr)
+        self.assertIn("src/extra.py", r.stderr)
+        self.assertIn("design で参照先の変更案に無いファイルを変えています", r.stderr)
+        self.assertIn("docs/other.md", r.stderr)
+        (self.impl / "src/extra.py").unlink()
+        (self.design / "docs/other.md").unlink()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_files_changed_before_the_plan_are_not_counted(self) -> None:
+        (self.impl / "src/wip.py").write_text("x = 1\n", encoding="utf-8")   # 計画より前からの作業中の変更
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    # ------------------------------------------------------------ 実装と設計書が同じリポジトリ
+
+    def make_mono(self, **kw) -> Path:
+        mono = self.tmp / "mono"
+        mono.mkdir()
+        git(mono, "init", "-q", "-b", "main")
+        commit(mono, {"src/app.py": "def hello():\n    return 1\n",
+                      "docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
+        install.install(mono, "impl", ["docs=."], **kw)
+        return mono
+
+    def test_same_repo_needs_scopes(self) -> None:
+        mono = self.make_mono()
+        r = self.run_pa(mono, "show")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("同じリポジトリです", r.stderr)
+        install.install(mono, None, None, scope=["src"], ref_scopes=["docs=src/docs"])
+        r = self.run_pa(mono, "show")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("scope が重なっています", r.stderr)
+
+    def test_same_repo_with_scopes(self) -> None:
+        mono = self.make_mono(scope=["src"], ref_scopes=["docs=docs"])
+        cfg = json.loads((mono / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["scope"], ["src"])
+        self.assertEqual(cfg["refs"], [{"name": "docs", "path": ".", "scope": ["docs"]}])
+        r = self.run_pa(mono, "show")
+        self.assertIn("- docs: 設計書", r.stdout)
+        self.assertIn("受け持つフォルダ: docs", r.stdout)
+
+        # 参照先を探すのは docs の中だけ（src/app.py の hello は拾わない）。
+        r = self.run_pa(mono, "explore", "--term", "hello")
+        self.assertIn("FOUND 1 files", r.stdout)
+        # 根拠は参照先の scope の中、影響範囲は自分の scope の中だけを認める。
+        plan = PLAN_DRIFT
+        (mono / ".codd").mkdir(exist_ok=True)
+        (mono / ".codd/plan.md").write_text(plan.replace("（根拠: docs/api.md）", "（根拠: src/app.py）"),
+                                            encoding="utf-8")
+        r = self.run_pa(mono, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("参照先に実在する根拠のパスがありません", r.stderr)
+        (mono / ".codd/plan.md").write_text(plan, encoding="utf-8")
+        self.assert_plan_ok(mono)
+
+        # 同じリポジトリの中でも、自分と参照先の変更を scope で分けて測る。
+        (mono / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        r = self.run_pa(mono, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs を変えるはずなのに、docs が変わっていません", r.stderr)
+        (mono / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(mono, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("own=changed refs=docs", r.stdout)
+
+    def test_unknown_config_keys_are_reported(self) -> None:
+        path = self.impl / ".statemachine/codd/codd.json"
+        for patch, word in (({"refz": []}, "refz"), ({"refs": [{"path": "../design", "scopes": ["docs"]}]}, "scopes"),
+                            ({"max_files": 0}, "max_files")):
+            with self.subTest(word=word):
+                cfg = {"side": "impl", "refs": [{"path": "../design"}], **patch}
+                path.write_text(json.dumps(cfg), encoding="utf-8")
+                r = self.run_pa(self.impl, "show")
+                self.assertEqual(r.returncode, 2)
+                self.assertIn(word, r.stderr)
 
     def test_workflow_passes_engine_validation(self) -> None:
         try:

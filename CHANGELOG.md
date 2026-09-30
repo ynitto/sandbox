@@ -7,11 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### codd: 参照先（実装⇔設計書）を読んで自分の変更を練り、確認してから変えるステートマシン
+### codd-statemachine: 実装と設計書の一貫性を保って変えるステートマシン（tools/codd から改名）
 
+- **`tools/codd` を `tools/codd-statemachine` に改名した**（設計は `docs/designs/codd-statemachine-design.md`）。
+  置き先の名前（`.statemachine/codd/`・`codd.json`・`.codd/`）と呼び方（「codd のステートマシンを実行して」）は変えないので、
+  置いてあるものは `install.py` をもう一度実行すれば入れ替わる
+- **根拠を箇所まで確かめる。** 計画の根拠を `パス:行`・`パス:行-行`・`パス#見出し` で書いたときは、その行・見出しが
+  実在するかを検査する。前提・制約・その他で `…` に囲んだ名前は、根拠のファイルに書かれていなければ落とす
+- **計画に無いファイルを変えたら落とす。** 自分は「自分の変更案」と「影響範囲」、参照先は「参照先の変更案」に
+  挙げたファイルだけを変えてよい。自分の変更案の各項目にも自分のパスを求める
+- **1 回の実行を 1 つの会話で終わる大きさに保つ。** 変えるファイルが `max_files`（既定 20）を超える計画は通さない。
+  計画に「今回やらないこと」を足し、収まらないぶんはそこへ回して、終わるときに次にやることとして伝える
+- **実装と設計書が同じリポジトリにあっても使える。** 参照先の `path` を `.` にし、`scope` と `refs[].scope` で
+  それぞれが受け持つフォルダを書く（`install.py --scope … --ref-scope 名前=フォルダ`）。探す・根拠を認める・
+  変わったかを測るのは、それぞれのフォルダの中だけ
+- `codd.json` の知らない項目（綴り違い）は動かす前に止める
+- 変える前の印を、探したとき（explore）ではなく計画の検査が通ったときに取る。探さずに計画を書いても、
+  前の実行の印が残っていても、変えたファイルを正しく数える
 - **やりたいことを伝えると、参照先のリポジトリを探して自分の変更を練り、確認を取ってから変える。** 同じ定義を
   実装と設計書の両方の `.statemachine/codd/` に置き、`codd.json` にどちらの側か（`impl` / `design`）と
-  参照先のパスを書く。`tools/codd/install.py` が置いて設定する
+  参照先のパスを書く。`tools/codd-statemachine/install.py` が置いて設定する
 - 参照先の記述を前提・制約・その他に分け、自分の現状とのずれを挙げる。ずれがあれば、参照先の変更案と、
   それを自分のリポジトリに適用したときの影響範囲も見せる。了承されれば両方を変え、指摘があれば練り直す
 - 計画の各項目には根拠のパスを付け、実在しないパス・ずれと変更案の食い違いは検査で落とす。変えたあとは、
@@ -27,7 +42,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   変わったかを参照先ごとに確かめる
 - **使うスキルを設定できる。** `codd.json` の `skills.plan`（計画を練るとき）と `skills.apply`（このリポジトリを変えるとき）。
   参照先を変えるときはその参照先のスキルを使う。`codd.py show` で確かめられる
-- 設計は `docs/designs/codd-design.md`、使い方は `tools/codd/README.md`
+- 設計は `docs/designs/codd-statemachine-design.md`、使い方は `tools/codd-statemachine/README.md`
 
 ### statemachine-use・agent-app: 実行する人が入れる値を `inputs:` で宣言する（statemachine-use 2.3.0・agent-app 0.45.0）
 

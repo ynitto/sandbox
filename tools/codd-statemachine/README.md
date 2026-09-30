@@ -1,18 +1,25 @@
-# codd
+# codd-statemachine
 
-**実装のリポジトリと設計書のリポジトリを、互いに参照しながら変えていくためのステートマシン。**
-やりたいことを伝えると、参照先のリポジトリを探して自分の変更を練り、確認を取ってから変える。
+**実装と設計書（仕様）を食い違わせずに変えていくためのステートマシン。**
+やりたいことを伝えると、参照先（実装なら設計書、設計書なら実装）を探して自分の変更を練り、確認を取ってから変える。
 参照先の前提・制約とずれていれば、参照先の変更案とその影響範囲も見せ、了承されれば両方を変える。
 
-> 設計: [`docs/designs/codd-design.md`](../../docs/designs/codd-design.md)
+> 設計: [`docs/designs/codd-statemachine-design.md`](../../docs/designs/codd-statemachine-design.md)
 >
 > 名前の近い [codd-gate](../codd-gate/README.md) は、1 つのリポジトリの中で文書・コード・テストの食い違いを
-> 受け入れ前に止める検査ツール。codd はリポジトリをまたいで、変える前に参照先を読んで確かめるステートマシンで、別のもの。
+> 受け入れ前に止める検査ツール。codd-statemachine は、変える前に参照先を読んで確かめ、了承を得てから両方を変える
+> ステートマシンで、別のもの。
 
 - 同じ定義を**両方のリポジトリに置く**。実装側で動かせば参照先は設計書、設計書側で動かせば参照先は実装。
-  参照先はいくつでも持てる（設計書が API と画面で分かれている、など）
+  参照先はいくつでも持てる（設計書が API と画面で分かれている、など）。
+  実装と設計書が**同じリポジトリの別フォルダ**にあってもよい（[下記](#同じリポジトリにあるとき)）
+- モデルの申告を信じず、スクリプトが確かめる: 根拠が参照先の実在の箇所を指しているか、
+  変えたのが計画に挙げたファイルだけか、参照先の変更が自分のどこに響くか
+- **1 回の実行は 1 つの会話で終わる大きさに保つ。** 変えるファイルが上限（既定 20）を超える計画は通さず、
+  残りは「今回やらないこと」に回して、終わるときに次にやることとして伝える
 - 計画を練るとき・変えるときに使うスキルを設定できる
-- 実行は statemachine-use スキル（「codd のステートマシンを実行して」）。依存は python3 と git
+- 実行は statemachine-use スキル（「codd のステートマシンを実行して」）。依存は python3 と git だけで、
+  言語やビルドの仕組みを問わない
 - 参照先を探すとき、[graphify](https://pypi.org/project/graphifyy/) があれば知識グラフを使う。
   グラフはリポジトリが変わるたびに自動で作り直す。無ければ文字列検索だけで動く
 
@@ -20,16 +27,17 @@
 
 ```bash
 # 実装のリポジトリへ（参照先 = 設計書）
-python3 tools/codd/install.py ~/work/my-app --side impl --ref docs=../my-app-docs
+python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs
 # 設計書のリポジトリへ（参照先 = 実装）
-python3 tools/codd/install.py ~/work/my-app-docs --side design --ref app=../my-app
+python3 tools/codd-statemachine/install.py ~/work/my-app-docs --side design --ref app=../my-app
 # 参照先が複数
-python3 tools/codd/install.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
+python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
 ```
 
 `--ref` は `名前=パス` か `パス`（名前はフォルダ名になる）。もう一度 `--ref` を渡すと参照先の一覧を入れ替える。
 
-`<リポジトリ>/.statemachine/codd/` に定義が入り、`codd.json` に設定が書かれる。
+`<リポジトリ>/.statemachine/codd/` に定義が入り、`codd.json` に設定が書かれる（置き先の名前は `codd` のまま。
+「codd のステートマシンを実行して」で呼べ、前の版で置いたものもそのまま入れ替えられる）。
 手で置くなら `machine/` の中身をそのフォルダへ写し、`codd.json` を直せばよい。
 
 ```json
@@ -40,7 +48,8 @@ python3 tools/codd/install.py ~/work/my-app --side impl --ref api=../api-docs --
     {"name": "ui", "path": "../ui-docs"}
   ],
   "skills": {"plan": ["domain-modeler"], "apply": ["tdd"]},
-  "graphify": "auto"
+  "graphify": "auto",
+  "max_files": 20
 }
 ```
 
@@ -52,6 +61,11 @@ python3 tools/codd/install.py ~/work/my-app --side impl --ref api=../api-docs --
 | `refs[].skills` | 任意。その参照先を変えるときに使うスキル。書かなければ、参照先に置いた `codd.json` の `skills.apply` を使う |
 | `graphify` | `auto`（あれば使う）か `off` |
 | `check` | 任意。変えたあとに実行する検査コマンドの配列（例: `["python3", "-m", "pytest", "-q"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
+| `scope` | 任意。このリポジトリのうち自分が受け持つフォルダの配列（例: `["src", "tests"]`）。書かなければ全体 |
+| `refs[].scope` | 任意。その参照先のうち読む・変えるフォルダの配列。書かなければ全体 |
+| `max_files` | 任意。1 回で変えるファイルの上限（既定 20）。自分の変更案・参照先の変更案・「変更不要」でない影響範囲のファイルを数える |
+
+知らない項目（綴り違いなど）があると、動かす前に止まる。
 
 計画・探した結果・graphify のグラフは `<リポジトリ>/.codd/` に置く（インストーラーが `.gitignore` に足す）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
@@ -82,16 +96,44 @@ plan ─→ confirm ─┬─ OK ─→ apply ─→ done
 | 制約 | 参照先が「こうしなければならない / してはならない」と課している条件 |
 | その他 | それ以外の関係する記述（決まっていないこと・任されていること・補足） |
 
-計画は `.codd/plan.md` に書かれ、書いたあとにスクリプトが形を検査する。
+計画は `.codd/plan.md` に書かれ、書いたあとにスクリプトが検査する（[下記](#計画の検査で確かめること)）。
 参照先が複数あるときは、根拠や参照先の変更案のパスを `名前:パス`（例: `api:hello.md`）で書く。
 どれか 1 つの参照先にしか無いパスなら名前を省いてよい。
+計画の最後の「今回やらないこと」は、この回では扱わないもの。終わるときに次にやることとして伝える。
 
-- 前提・制約・その他・ずれの各項目に、参照先に実在するファイルのパスが根拠として付いているか
+### 同じリポジトリにあるとき
+
+実装と設計書が同じリポジトリ（例: `src/` と `docs/`）にあるときは、参照先の `path` を `.` にし、
+自分と参照先がそれぞれ受け持つフォルダを `scope` に書く。探す・根拠を認める・変わったかを測るのは、
+それぞれのフォルダの中だけになる。フォルダが重なっている・書いていないときは動かす前に止まる。
+
+```bash
+python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --scope src --scope tests \
+    --ref docs=. --ref-scope docs=docs
+```
+
+```json
+{"side": "impl", "scope": ["src", "tests"], "refs": [{"name": "docs", "path": ".", "scope": ["docs"]}]}
+```
+
+### 計画の検査で確かめること
+
+- 前提・制約・その他・ずれの各項目に、参照先に実在するファイルのパスが根拠として付いているか。
+  `パス:行`・`パス:行-行`・`パス#見出し` で箇所まで指したときは、その行や見出しが実在するか
+- 前提・制約・その他で `…` に囲んだ名前が、根拠のファイルに書かれているか（読んでいないことを書かせない）
+- 自分の変更案の各項目に、自分のリポジトリのパス（まだ無い新しいファイルでもよい）があるか
 - ずれがあるときは参照先の変更案と影響範囲があり、影響範囲に自分のリポジトリに実在するパスがあるか
 - ずれが無いときは参照先の変更案が「なし」か
+- 変えるファイルが `max_files` に収まっているか
 
-変えたあとは、計画どおりの側だけが変わったか（参照先の変更案が「なし」なら参照先は変わっていないか）と、
-`check` の検査コマンドを確かめる。
+### 変えたあとの検査で確かめること
+
+- 自分で変えたのが、計画の「自分の変更案」と「影響範囲」に挙げたファイルだけか
+- 参照先で変えたのが、「参照先の変更案」に挙げた参照先の、挙げたファイルだけか
+- 参照先の実際の変更から測り直した影響範囲を、直したか「変更不要」としたか（下記）
+- `check` の検査コマンド
+
+計画より前から作業中だったファイルは、変えたものに数えない（計画の検査が通ったときの中身と比べる）。
 
 ### 影響範囲を測る
 
@@ -142,5 +184,5 @@ graphify の導入はこのリポジトリの `install.py`（外部ツールの�
 ## テスト
 
 ```bash
-python -m unittest discover -s tools/codd/tests
+python -m unittest discover -s tools/codd-statemachine/tests
 ```
