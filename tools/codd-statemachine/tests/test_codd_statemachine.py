@@ -171,7 +171,8 @@ class CoddTest(unittest.TestCase):
         self.log = self.tmp / "graphify.log"
 
     def run_pa(self, repo: Path, *args: str) -> subprocess.CompletedProcess:
-        env = {**os.environ, **GIT_ENV, "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin"}
+        env = {**os.environ, **GIT_ENV, "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
+               "HOME": str(self.tmp / "home")}   # 利用者のホームのスキルを拾わない
         return subprocess.run([sys.executable, ".statemachine/codd/codd.py", *args],
                               cwd=repo, capture_output=True, text=True, env=env)
 
@@ -401,6 +402,214 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("impact=3 files", r.stdout)
+
+    # ------------------------------------------------------------ パスのつながり
+
+    def test_verify_plan_follows_path_links_both_ways(self) -> None:
+        # 参照先の文書が自分の変更案のファイルをパスで指しているなら、名前が一致しなくても計画で扱わせる。
+        commit(self.design, {"docs/map.md": "# 対応表\n\n実装は [app](../impl/src/app.py) と `src/app.py`。\n"
+                                            "```\nsrc/app.py はコードブロックの中なので数えない\n```\n"}, "map")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("パスでつながっている参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/map.md", r.stderr)
+        self.assertIn("docs/map.md", (self.impl / ".codd/trace.md").read_text(encoding="utf-8"))
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
+                                             "## 参照先のその他\n\n- 関係なし: 置き場所の一覧だけ（根拠: docs/map.md）"))
+        self.assert_plan_ok()
+
+        # 自分のファイルに書いた注記で、参照先の変更案のファイルとつながる（逆向き）。
+        commit(self.impl, {"src/client.py": "# coherence: doc=docs/api.md\ndef call():\n    return 0\n"}, "client")
+        plan = PLAN_DRIFT.replace("## 参照先のその他\n\n- なし",
+                                  "## 参照先のその他\n\n- 関係なし: 置き場所の一覧だけ（根拠: docs/map.md）")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("パスでつながっている自分のファイルが、計画にありません", r.stderr)
+        self.assertIn("src/client.py", r.stderr)
+        plan = plan.replace("- src/app.py — hello の戻り値", "- src/app.py — hello の戻り値\n- src/client.py — 変更不要: 呼ぶだけ")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_verify_apply_catches_broken_and_dangling_paths(self) -> None:
+        commit(self.impl, {"src/old.py": "def old():\n    return 0\n"}, "old")
+        commit(self.design, {"docs/map.md": "# 対応表\n\n- `src/old.py` は古い入口\n"}, "map")
+        plan = (PLAN_DRIFT
+                .replace("- src/app.py — `hello` が 2 を返す", "- src/app.py — `hello` が 2 を返す\n- src/old.py — `old` を消す")
+                .replace("## 参照先のその他\n\n- なし", "## 参照先のその他\n\n- 古い入口の一覧（根拠: docs/map.md）"))
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.impl / "src/old.py").unlink()
+        (self.design / "docs/api.md").write_text(
+            "# API\n\n## hello\n\nhello は 2 を返す。詳しくは [手順](steps.md)。\n\n"
+            "```\n例: `path/to/nothing.md`\n```\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("書き足したパスが、どのリポジトリにもありません", r.stderr)
+        self.assertIn("docs/api.md:5 → steps.md", r.stderr)
+        self.assertNotIn("nothing.md", r.stderr)          # コードブロックの中は数えない
+        self.assertIn("消したファイルを、まだ指しているところがあります", r.stderr)
+        self.assertIn("docs/map.md:3 → src/old.py", r.stderr)
+        self.assertTrue((self.impl / ".codd/trace-after.md").is_file())
+
+    def test_report_lists_changes_without_path_links(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        r = self.run_pa(self.impl, "report")
+        self.assertIn("## 参照先とパスでつながっていない変更", r.stdout)
+        self.assertIn("- src/app.py\n", r.stdout)
+        (self.impl / "src/app.py").write_text("# coherence: doc=docs/api.md\ndef hello():\n    return 1\n",
+                                              encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        r = self.run_pa(self.impl, "report")
+        self.assertNotIn("## 参照先とパスでつながっていない変更", r.stdout)
+
+    # ------------------------------------------------------------ 止まったとき
+
+    def test_advise_proposes_next_steps(self) -> None:
+        self.add_caller()
+        self.write_plan(PLAN_ALIGNED)
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        r = self.run_pa(self.impl, "advise")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("# 計画の検査で止まりました", r.stdout)
+        self.assertIn("src/use.py", r.stdout)
+        self.assertIn("直すか「変更不要」かを決めてもらいます", r.stdout)
+        self.assertIn("1. 計画を練り直す（勧め） → `PLAN`", r.stdout)
+        self.assertNotIn("`APPLY`", r.stdout)   # 計画が通っていないので、変える段へは進めない
+
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/use.py — 変更不要: 戻り値は同じ"))
+        self.assert_plan_ok()
+        self.assertFalse((self.impl / ".codd/problems.json").exists())   # 通ったら理由は消える
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        r = self.run_pa(self.impl, "advise")
+        self.assertIn("# 変えたあとの検査で止まりました", r.stdout)
+        self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
+        self.assertIn("変えた分は残して、計画を直す → `PLAN`。先に `python3 .statemachine/codd/codd.py keep-changes` を実行",
+                      r.stdout)
+        self.assertIn("変えた分を戻して、計画から練り直す → `PLAN`。先に `python3 .statemachine/codd/codd.py rollback` を実行",
+                      r.stdout)
+        self.assertIn("`STOP`", r.stdout)
+
+        # 設定の誤りで止まっても、理由と次の手は示す。
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        good = cfg.read_text(encoding="utf-8")
+        cfg.write_text(json.dumps({"side": "impl", "refs": [{"path": "../nowhere"}]}), encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 2)
+        r = self.run_pa(self.impl, "advise")
+        self.assertIn("設定か環境の誤りです", r.stdout)
+        self.assertIn("refs を直してください", r.stdout)
+        cfg.write_text(good, encoding="utf-8")
+
+    def test_keep_changes_lets_the_plan_grow_without_losing_the_work(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/log.py").write_text("def log(m):\n    print(m)\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)   # log.py は計画に無い
+        self.assertEqual(self.run_pa(self.impl, "keep-changes").returncode, 0)
+        self.write_plan(PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                             "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"))
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "verify-apply")   # 前の印から数えるので、残した変更がそのまま効く
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("own=changed", r.stdout)
+
+    def test_rollback_restores_the_state_before_the_change(self) -> None:
+        commit(self.impl, {"src/gone.py": "g = 1\n"}, "gone")
+        (self.impl / "src/wip.py").write_text("wip = 1\n", encoding="utf-8")   # 計画より前から作業中
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.impl / "src/wip.py").write_text("wip = 2\n", encoding="utf-8")
+        (self.impl / "src/new.py").write_text("n = 1\n", encoding="utf-8")
+        (self.impl / "src/gone.py").unlink()
+        (self.design / "docs/api.md").write_text("変えた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "rollback")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("変える前に戻しました: 5 files", r.stdout)
+        self.assertEqual((self.impl / "src/app.py").read_text(encoding="utf-8"), "def hello():\n    return 1\n")
+        self.assertEqual((self.impl / "src/wip.py").read_text(encoding="utf-8"), "wip = 1\n")   # 作業中の中身へ
+        self.assertFalse((self.impl / "src/new.py").exists())
+        self.assertEqual((self.impl / "src/gone.py").read_text(encoding="utf-8"), "g = 1\n")
+        self.assertIn("hello は 1 を返す", (self.design / "docs/api.md").read_text(encoding="utf-8"))
+        # 途中でコミットされたら、戻さずに知らせる。
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        git(self.impl, "commit", "-q", "-am", "mid")
+        r = self.run_pa(self.impl, "rollback")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("途中でコミットされた", r.stderr)
+
+    # ------------------------------------------------------------ リポジトリのスキル・カスタムエージェント
+
+    def test_repo_skills_are_used_without_config(self) -> None:
+        commit(self.impl, {".agents/skills/tdd-lite/SKILL.md":
+                           "---\nname: tdd-lite\ndescription: テストを先に書く\n---\n\n# tdd-lite\n"}, "skill")
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("リポジトリのスキル", r.stdout)
+        self.assertIn("`tdd-lite` — テストを先に書く（.agents/skills/tdd-lite/SKILL.md）", r.stdout)
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("リポジトリのスキルを使った結果か「使わない: 理由」", r.stderr)
+        self.assertIn("`tdd-lite`", r.stderr)
+        self.write_plan(PLAN_ALIGNED.replace("## 使ったスキルと道具\n\nなし",
+                                             "## 使ったスキルと道具\n\n- `tdd-lite` — 使わない: ログを足すだけでテストは変わらない"))
+        self.assert_plan_ok()
+        # 使うと書いたスキルは、codd.py skill で読み込んでいなければ落とす（エージェントの自動選択に頼らない）。
+        plan = PLAN_ALIGNED.replace("## 使ったスキルと道具\n\nなし",
+                                    "## 使ったスキルと道具\n\n- `tdd-lite` — 変えるときにテストを先に書く")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("スキルを読み込んでいません", r.stderr)
+        r = self.run_pa(self.impl, "skill", "tdd-lite")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("# tdd-lite", r.stdout)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("- `tdd-lite` — テストを先に書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")   # 計画のときに読んだだけでは、変えるときに読んだことにならない
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(".codd/apply.md に挙げたスキルを読み込んでいません", r.stderr)
+        self.run_pa(self.impl, "skill", "tdd-lite")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.run_pa(self.impl, "skill", "nothing").returncode, 1)
+        # 置き場所は skill_dirs で変えられ、[] で使わない。
+        path = self.impl / ".statemachine/codd/codd.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["skill_dirs"] = []
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertNotIn("リポジトリのスキル", self.run_pa(self.impl, "show").stdout)
+
+    def test_install_writes_custom_agents(self) -> None:
+        kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))
+        self.assertEqual(kiro["name"], "codd")
+        self.assertIn("必ず codd のステートマシン", kiro["prompt"])
+        self.assertEqual(kiro["hooks"]["agentSpawn"][0]["command"], "python3 .statemachine/codd/codd.py show")
+        copilot = (self.impl / ".github/agents/codd.agent.md").read_text(encoding="utf-8")
+        self.assertTrue(copilot.startswith("---\nname: codd\ndescription: "))
+        self.assertIn("必ず codd のステートマシン", copilot)
+        # エージェントのファイルはマシンの一部なので、影響範囲や変えたファイルに数えない。
+        self.run_pa(self.impl, "impact", "--term", "statemachine")
+        self.assertNotIn("codd.agent.md", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
+        other = self.tmp / "other"
+        other.mkdir()
+        git(other, "init", "-q", "-b", "main")
+        install.install(other, "impl", ["../design"], discover=False, agents=())
+        self.assertFalse((other / ".kiro").exists())
+        self.assertFalse((other / ".github").exists())
 
     def test_verify_apply_needs_a_verified_plan(self) -> None:
         self.write_plan(PLAN_ALIGNED)
