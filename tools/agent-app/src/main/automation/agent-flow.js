@@ -339,6 +339,21 @@ function failureOf(meta, state) {
   return { kind, message, detail };
 }
 
+// 失敗した工程の理由。agent-flow が工程の結果に残した分類（data.error_class か出力の
+// [agent-error:…] タグ）を、画面が次の操作を選べる 3 つにまとめる:
+//   retry … 一時的（待てば通る） / setup … 認証・環境・上限（人が直すまで同じ失敗） / content … 工程の中身
+const ERROR_GROUP = { transient: 'retry', integration: 'retry', auth: 'setup', env: 'setup', quota: 'setup', control: 'setup' };
+function nodeErrorOf(result) {
+  if (!result || result.status !== 'failed') return null;
+  const output = String(result.output || '');
+  const tag = /\[agent-error:([a-z]+)\]/.exec(output);
+  const cls = String((result.data && typeof result.data === 'object' && result.data.error_class) || (tag && tag[1]) || 'content');
+  const message = output.split('\n')
+    .map((line) => line.replace(/\[[^\]]+\]\s*/g, '').replace(/^verify=fail:?\s*/i, '').replace(/^\S+ 失敗 \(rc=-?\d+\):?\s*/, '').trim())
+    .find(Boolean) || '理由は記録されていません';
+  return { cls, group: ERROR_GROUP[cls] || 'content', message: message.slice(0, 300) };
+}
+
 function deliveryOf(nodes, finalJson) {
   const candidates = [];
   for (const node of nodes) {
@@ -490,24 +505,23 @@ function readRun(root, id, hostRoot = '') {
       : wait && Number(wait.wait_lease_until || 0) >= nowSeconds ? 'parked' : 'pending';
     const interaction = interactionByNode.get(spec.id);
     if (interaction && interaction.state === 'open') state = 'waiting';
+    // 終わった実行で結果の無い工程は、前の工程が止まったので動かなかった（回答待ちではない）
+    if (terminal && !result) state = 'skipped';
     return {
-      id: spec.id, kind: String(spec.kind || 'work'), goal: String(spec.goal || ''),
+      id: spec.id, label: String(spec.label || ''), kind: String(spec.kind || 'work'), goal: String(spec.goal || ''),
       deps: Array.isArray(spec.deps) ? spec.deps.map(String) : [], state,
       who: result ? result.who || null : claim ? claim.who || null : wait ? wait.who || null : null,
       agent: result && (result.agent_cli || result.model) ? { cli: String(result.agent_cli || ''), model: String(result.model || '') } : null,
       startedAt: claim ? claim.claimed_at || null : result ? result.started_at || null : null,
       finishedAt: result ? result.finished_at || null : null,
       output: result && typeof result.output === 'string' ? result.output : null,
+      error: nodeErrorOf(result),
       data: result && result.data !== undefined ? result.data : null,
       artifacts: result && Array.isArray(result.artifacts) ? result.artifacts.map(String) : [],
       interactionId: interaction ? interaction.interactionId : null,
       dynamic: !!spec.dynamic,
     };
   });
-  const byNode = new Map(nodes.map((node) => [node.id, node]));
-  for (const node of nodes) {
-    if (node.state === 'pending' && node.deps.some((dep) => byNode.has(dep) && byNode.get(dep).state !== 'done')) node.state = 'waiting';
-  }
   const progress = {
     done: nodes.filter((node) => node.state === 'done').length,
     failed: nodes.filter((node) => node.state === 'failed').length,
@@ -539,7 +553,14 @@ function readRun(root, id, hostRoot = '') {
     strategy: graph.strategy && typeof graph.strategy === 'object' ? graph.strategy : null,
     nodes, interactions, final, delivery: deliveryOf(nodes, finalJson), log: { path: files.log },
     teamwork: terminal ? teamworkOf(files.run, graph, nodes, final) : null,
+    attempts: attemptsOf(files.id),
   };
+}
+
+// 最初に失敗した工程（履歴で「前回も同じ工程で失敗したか」を見るための手掛かり）
+function failedNodeOf(detail) {
+  const node = detail.nodes.find((item) => item.state === 'failed');
+  return node ? { id: node.id, label: node.label, cls: node.error ? node.error.cls : 'content', message: node.error ? node.error.message : '' } : null;
 }
 
 function listRuns(root, limit = 30, hostRoot = '') {
@@ -554,6 +575,7 @@ function listRuns(root, limit = 30, hostRoot = '') {
         runId: detail.runId, title: detail.title, workflowId: detail.workflowId, state: detail.state,
         terminal: detail.terminal, createdAt: detail.createdAt, updatedAt: detail.updatedAt,
         progress: detail.progress, waiting: detail.waiting, readonly: detail.readonly,
+        request: detail.request, failedNode: failedNodeOf(detail),
       });
     } catch (err) { if (!err || err.code !== 'run-not-found') throw err; }
   }
@@ -640,6 +662,86 @@ function readLog(root, id, bytes = 16 * 1024, hostRoot = '') {
   } catch { return { path: files.log, tail: '', truncated: false, exists: false }; }
 }
 
+// 工程 1 つ分のセッションログ。agent-flow は工程ごとのログを別に残さないので、実行ログから
+// その工程を担当した worker の行（claim してから次の claim まで）を切り出し、工程の出来事
+// （events/*.jsonl の node が一致するもの）と時刻順に並べる。担当が分からないときは工程名を含む行だけ。
+const LOG_LINE = /^\[([^\]]+)\] \[([^\]]+)\] (.*)$/;
+// 失敗した実行を「続きから再実行」する。同じ run-id で agent-flow を起こし直すと、agent-flow が
+// 失敗した工程だけを待機に戻してやり直す（済んだ工程は作り直さない）。やり直すと失敗した工程の
+// 結果は消えるので、画面が「同じ工程で続けて失敗したか」を数えられるよう、消える前の失敗を
+// attempts に控えておく（agent-app 自身の控え。agent-flow は読まない）。
+function attemptsFile(id) {
+  return path.join(logDir(), `${validRunId(id)}.attempts.json`);
+}
+
+function attemptsOf(id) {
+  const list = readJson(attemptsFile(id));
+  return Array.isArray(list) ? list : [];
+}
+
+async function resume(root, id, deps) {
+  const detail = readRun(root, id, deps.hostRoot || '');
+  if (detail.state !== 'failed') throw flowError('run-not-failed', '失敗した実行だけを続きから再実行できます');
+  const ctx = await deps.getContext();
+  if (!ctx.tools.agentFlow.ok) throw flowError('tool-missing', 'agent-flow を起動できません', { detail: ctx.tools.agentFlow.summary });
+  const agent = String(deps.agent || detail.input.agent || ctx.defaults.agent || '');
+  if (!ctx.agents.includes(agent)) throw flowError('agent-unknown', '利用できるAIを選び直してください');
+  const failed = detail.nodes.find((node) => node.state === 'failed');
+  if (failed) {
+    const attempts = attemptsOf(detail.runId);
+    attempts.push({ at: isoSeconds(), nodeId: failed.id, cls: failed.error ? failed.error.cls : 'content', message: failed.error ? failed.error.message : '' });
+    fs.mkdirSync(logDir(), { recursive: true });
+    flowStore.writeAtomic(attemptsFile(detail.runId), attempts);
+  }
+  const hostPath = typeof deps.hostPath === 'function' ? deps.hostPath : (value) => String(value || '');
+  const model = String(deps.model || detail.input.model || '');
+  const args = ['--bus', busDir(), ...configArgs(deps.root || root, hostPath), '--run-id', detail.runId, '--agent-cli', agent, 'run'];
+  if (model) args.push('--model', model);
+  try {
+    await deps.startDetached('agent-flow', args, { cwd: root, logFile: path.join(logDir(), `${detail.runId}.log`) });
+  } catch (err) {
+    throw flowError('launch-failed', 'agent-flow を起動できません', { detail: err.message });
+  }
+  return { runId: detail.runId, state: 'launching' };
+}
+
+function readNodeLog(root, id, nodeId, hostRoot = '') {
+  const detail = readRun(root, id, hostRoot);
+  const node = detail.nodes.find((item) => item.id === String(nodeId || ''));
+  if (!node) throw flowError('node-not-found', '工程が見つかりません');
+  const { files } = requireRun(root, id, hostRoot);
+  const entries = [];
+  const tail = readLog(root, id, 1024 * 1024, hostRoot);
+  let capturing = false;
+  for (const line of String(tail.tail || '').split('\n')) {
+    const m = LOG_LINE.exec(line);
+    if (!m) { if (capturing && line.trim()) entries.push({ ts: '', text: line }); continue; }
+    const [, ts, who, msg] = m;
+    const claim = /claim 成功: (\S+)/.exec(msg);
+    if (node.who && who === node.who) {
+      if (claim) capturing = claim[1] === node.id;
+      if (capturing) entries.push({ ts, text: line });
+    } else if (!node.who && msg.includes(node.id)) entries.push({ ts, text: line });
+  }
+  for (const name of safeList(path.join(files.run, 'events'))) {
+    if (!name.endsWith('.jsonl')) continue;
+    let body = '';
+    try { body = fs.readFileSync(path.join(files.run, 'events', name), 'utf8'); } catch { continue; }
+    for (const raw of body.split('\n')) {
+      let ev = null;
+      try { ev = raw ? JSON.parse(raw) : null; } catch { ev = null; }
+      if (!ev || ev.node !== node.id) continue;
+      const rest = Object.entries(ev).filter(([key]) => !['ts', 'who', 'kind', 'node'].includes(key)).map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`).join(' ');
+      entries.push({ ts: String(ev.ts || ''), text: `[${ev.ts || ''}] [${ev.who || ''}] ${ev.kind || ''}${rest ? ` ${rest}` : ''}` });
+    }
+  }
+  // 時刻の無い行（前の行の続き）は前の行に付いたまま並べる
+  let last = '';
+  const keyed = entries.map((entry, index) => { if (entry.ts) last = entry.ts; return { ...entry, key: entry.ts || last, index }; });
+  keyed.sort((a, b) => a.key.localeCompare(b.key) || a.index - b.index);
+  return { nodeId: node.id, text: keyed.map((entry) => entry.text).join('\n'), truncated: !!tail.truncated };
+}
+
 function deleteRun(root, id, hostRoot = '') {
   const detail = readRun(root, id, hostRoot);
   if (!detail.terminal) throw flowError('run-active', '実行中です。停止してから削除してください');
@@ -703,6 +805,6 @@ function planDraft(root, id, hostRoot = '') {
 
 module.exports = {
   planDraft, TERMINAL, NO_LEASE_GRACE_SECONDS, busDir, logDir, runIdNow, catalog, context, start,
-  listRuns, readRun, cancel, respond, result, readLog, deleteRun, openDelivery,
+  listRuns, readRun, cancel, respond, result, readLog, readNodeLog, resume, deleteRun, openDelivery,
   patterns, alive, claimWinner, interactionsOf, fileRevision, failureOf, deliveryOf,
 };

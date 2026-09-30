@@ -818,6 +818,14 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await win.screenshot({ path: process.env.AGENT_APP_FLOW_RUN_SCREENSHOT });
     }
     assert.match(await workspace.locator('.execution-title').textContent(), /以前の並列レビュー/);
+    // 結果は文章で出し、工程の「詳細」で過程・結果・セッションログをダイアログに出す
+    assert.match(await workspace.locator('.flow-outcome').textContent(), /完了しました/);
+    assert.strictEqual(await workspace.locator('.flow-run-nodes details').count(), 0, '工程の結果を折りたたみに隠さない');
+    await workspace.locator('[data-flow-node="review"]').click();
+    const nodeDialog = workspace.locator('dialog[open]');
+    await nodeDialog.locator('.flow-session-log').waitFor();
+    assert.match(await nodeDialog.textContent(), /過程.*この工程で行うこと.*結果.*確認済み.*セッションログ/s);
+    await nodeDialog.locator('[data-close]').click();
     await workspace.locator('[data-flow-back-run]').click();
     assert.equal(await workspace.locator('[data-flow-edit], [data-flow-change-consult]').count(), 0, '概要に重複した編集ボタンを置かない');
     await workspace.locator('[data-flow-tab="steps"]').click();
