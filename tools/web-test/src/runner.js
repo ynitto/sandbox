@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { ACTION_STEPS, stepKind } = require('./casefile');
+const { planSuite } = require('./plan');
 
 function loadPlaywright() {
   try {
@@ -106,6 +107,7 @@ async function runExpect(page, v, timeout) {
   }
   if (v.text !== undefined) await poll(async () => { const a = await loc.first().innerText(T); return { ok: matchText(a, v.text, false), actual: a }; }, timeout, `${describeTarget(v.target)} の文字が ${JSON.stringify(v.text)} ではありません`);
   if (v.contains !== undefined) await poll(async () => { const a = await loc.first().innerText(T); return { ok: matchText(a, v.contains, true), actual: a }; }, timeout, `${describeTarget(v.target)} に ${JSON.stringify(v.contains)} が含まれません`);
+  if (v.notContains !== undefined) await poll(async () => { const a = await loc.first().innerText(T); return { ok: !matchText(a, v.notContains, true), actual: a }; }, timeout, `${describeTarget(v.target)} に ${JSON.stringify(v.notContains)} が含まれています`);
   if (v.value !== undefined) await poll(async () => { const a = await loc.first().inputValue(T); return { ok: matchText(a, v.value, false), actual: a }; }, timeout, `${describeTarget(v.target)} の値が ${JSON.stringify(v.value)} ではありません`);
   if (v.count !== undefined) await poll(async () => { const a = await loc.count(); return { ok: a === v.count, actual: a }; }, timeout, `${describeTarget(v.target)} の数が ${v.count} ではありません`);
   if (v.enabled !== undefined) await poll(async () => { const a = await loc.first().isEnabled(T); return { ok: a === !!v.enabled, actual: a }; }, timeout, `${describeTarget(v.target)} が${v.enabled ? '押せません' : '押せてしまいます'}`);
@@ -207,27 +209,24 @@ function originOf(u) {
   try { return u ? new URL(u).origin : ''; } catch (_) { return ''; }
 }
 
-async function runCase(browser, suite, c, opts) {
-  const caseDir = path.join(opts.outDir, slug(suite.suite), slug(c.id));
-  const result = { id: c.id, title: c.title, requirement: c.requirement, tags: c.tags, status: 'passed', steps: [], screenshots: [], error: null, durationMs: 0 };
+async function runCase(browser, suite, run, opts) {
+  const caseDir = path.join(opts.outDir, slug(suite.suite), slug(run.variant ? `${run.id}-${run.variant}` : run.id));
+  const result = { id: run.id, variant: run.variant, title: run.title, requirement: run.requirement, tags: run.tags, status: 'passed', steps: [], screenshots: [], error: null, durationMs: 0 };
   const started = Date.now();
-  if (c.skip) {
+  if (run.skip) {
     result.status = 'skipped';
-    result.error = typeof c.skip === 'string' ? c.skip : null;
+    result.error = run.skip === 'skip' ? null : run.skip;
     return result;
   }
-  const setup = suite.setup || {};
+  const st = run.settings;
   const mode = opts.screenshot || suite.screenshot;
-  const locale = c.locale || suite.locale;
-  const timezone = c.timezone || suite.timezone;
-  const colorScheme = c.colorScheme || suite.colorScheme;
-  const headers = { ...(setup.headers || {}), ...(c.headers || {}) };
   const context = await browser.newContext({
-    viewport: c.viewport || suite.viewport,
-    ...(locale ? { locale } : {}),
-    ...(timezone ? { timezoneId: timezone } : {}),
-    ...(colorScheme ? { colorScheme } : {}),
-    ...(Object.keys(headers).length ? { extraHTTPHeaders: headers } : {}),
+    viewport: st.viewport,
+    ...(st.locale ? { locale: st.locale } : {}),
+    ...(st.timezone ? { timezoneId: st.timezone } : {}),
+    ...(st.colorScheme ? { colorScheme: st.colorScheme } : {}),
+    ...(Object.keys(st.headers).length ? { extraHTTPHeaders: st.headers } : {}),
+    ...(st.storageState ? { storageState: st.storageState } : {}),
   });
   const consoleErrors = [];
   let shotNo = 0;
@@ -237,13 +236,15 @@ async function runCase(browser, suite, c, opts) {
     await takeShot(page, file, o);
     const rel = path.relative(opts.outDir, file).split(path.sep).join('/');
     result.screenshots.push({ name, file: rel });
+    // 仕様書用の保存先。variants があるときは名前に variant を添えて上書きし合わないようにする
+    const stable = run.variant ? `${slug(name)}.${slug(run.variant)}` : slug(name);
     if (o.path && opts.captureRoot) {
-      const dest = path.resolve(opts.captureRoot, o.path);
+      const dest = path.resolve(opts.captureRoot, run.variant ? o.path.replace(/(\.png)?$/i, `.${slug(run.variant)}.png`) : o.path);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.copyFileSync(file, dest);
     }
     if (opts.captureDir && o.explicit) {
-      const dest = path.join(opts.captureDir, `${slug(name)}.png`);
+      const dest = path.join(opts.captureDir, `${stable}.png`);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.copyFileSync(file, dest);
       result.captured = (result.captured || []).concat(dest);
@@ -251,18 +252,15 @@ async function runCase(browser, suite, c, opts) {
     return rel;
   };
   try {
-    await installMocks(context, [...(setup.mocks || []), ...(c.mocks || [])]);
-    const local = { ...(setup.localStorage || {}), ...(c.localStorage || {}) };
-    const session = { ...(setup.sessionStorage || {}), ...(c.sessionStorage || {}) };
-    if (Object.keys(local).length || Object.keys(session).length) await context.addInitScript(storageInitScript(local, session, originOf(suite.baseUrl)));
-    const cookies = [...(setup.cookies || []), ...(c.cookies || [])].map((ck) => (ck.url || ck.domain ? ck : { ...ck, url: suite.baseUrl }));
+    await installMocks(context, st.mocks);
+    if (Object.keys(st.localStorage).length || Object.keys(st.sessionStorage).length) await context.addInitScript(storageInitScript(st.localStorage, st.sessionStorage, originOf(st.baseUrl)));
+    const cookies = st.cookies.map((ck) => (ck.url || ck.domain ? ck : { ...ck, url: st.baseUrl }));
     if (cookies.length) await context.addCookies(cookies);
     const page = await context.newPage();
     page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
     page.on('pageerror', (e) => consoleErrors.push(String(e.message || e)));
-    const steps = [...(setup.steps || []).map((s) => ({ ...s, _setup: true })), ...c.steps];
-    const ctx = { baseUrl: suite.baseUrl, timeout: suite.timeout, fileDir: suite.file ? path.dirname(suite.file) : process.cwd() };
-    for (const step of steps) {
+    const ctx = { baseUrl: st.baseUrl, timeout: st.timeout, fileDir: suite.file ? path.dirname(suite.file) : process.cwd() };
+    for (const step of run.steps) {
       const d = describeStep(step);
       const sr = { action: d.text, note: d.note, status: 'passed', screenshot: null, setup: !!step._setup };
       result.steps.push(sr);
@@ -300,7 +298,8 @@ async function runCase(browser, suite, c, opts) {
   return result;
 }
 
-// suites を実行して結果を返す。opts: { outDir, baseUrl, headed, workers, screenshot, captureDir, captureRoot, only, executablePath, onCase }
+// suites を実行して結果を返す。
+// opts: { outDir, baseUrl, env, headed, workers, screenshot, captureDir, captureRoot, only, variants, executablePath, onCase }
 async function runSuites(suites, opts) {
   const pw = loadPlaywright();
   fs.mkdirSync(opts.outDir, { recursive: true });
@@ -313,23 +312,24 @@ async function runSuites(suites, opts) {
     }
     return browsers[name];
   };
-  const report = { startedAt: new Date().toISOString(), suites: [] };
+  const report = { startedAt: new Date().toISOString(), env: opts.env ? opts.env.name : 'local', suites: [] };
   try {
-    for (const s of suites) {
-      const suite = { ...s, baseUrl: opts.baseUrl || s.baseUrl };
+    for (const suite of suites) {
+      const runs = planSuite(suite, { env: opts.env, baseUrl: opts.baseUrl })
+        .filter((r) => !opts.only || opts.only.some((o) => r.id === o || r.id.startsWith(o)))
+        .filter((r) => !opts.variants || !r.variant || opts.variants.includes(r.variant));
       const browser = await getBrowser(suite.browser);
-      const cases = suite.cases.filter((c) => !opts.only || opts.only.some((o) => c.id === o || c.id.startsWith(o)));
-      const results = new Array(cases.length);
+      const results = new Array(runs.length);
       let next = 0;
       const worker = async () => {
-        while (next < cases.length) {
+        while (next < runs.length) {
           const i = next++;
-          results[i] = await runCase(browser, suite, cases[i], opts);
+          results[i] = await runCase(browser, suite, runs[i], opts);
           if (opts.onCase) opts.onCase(suite, results[i]);
         }
       };
-      await Promise.all(Array.from({ length: Math.max(1, Math.min(opts.workers || 1, cases.length)) }, worker));
-      report.suites.push({ suite: suite.suite, file: suite.file, baseUrl: suite.baseUrl, browser: suite.browser, cases: results });
+      await Promise.all(Array.from({ length: Math.max(1, Math.min(opts.workers || 1, runs.length)) }, worker));
+      report.suites.push({ suite: suite.suite, file: suite.file, baseUrl: runs[0] ? runs[0].settings.baseUrl : suite.baseUrl, browser: suite.browser, cases: results });
     }
   } finally {
     for (const b of Object.values(browsers)) await (await b).close().catch(() => {});

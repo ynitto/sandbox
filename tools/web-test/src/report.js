@@ -12,19 +12,34 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+function caseLabel(c) {
+  return c.variant ? `${c.id} [${c.variant}]` : c.id;
+}
+
+// 実行記録（コマンド・版・参照元のコミット）を行の配列にする
+function contextLines(ctx) {
+  if (!ctx) return [];
+  const lines = [`コマンド: ${ctx.command}`, `環境: ${ctx.env ? ctx.env.name : 'local'}${ctx.env && ctx.env.config ? `（${ctx.env.config}）` : ''}`, `Node ${ctx.node} ・ Playwright ${ctx.playwright || '不明'} ・ web-test ${ctx.webTest} ・ ${ctx.os}`];
+  for (const r of ctx.repos || []) lines.push(`${r.roles.join('・')}: ${r.root} @ ${r.sha ? r.sha.slice(0, 12) : '不明'}${r.branch ? ` (${r.branch})` : ''}${r.dirty ? ' ＋未コミットの変更' : ''}`);
+  for (const f of ctx.files || []) lines.push(`ケース: ${f.path} sha256:${f.sha256 ? f.sha256.slice(0, 12) : '不明'}`);
+  return lines;
+}
+
 function toMarkdown(report) {
   const { summary } = report;
   const lines = [`# テスト結果`, '', `- 実行: ${new Date(report.startedAt).toLocaleString('ja-JP')}`, `- 合計 ${summary.total} 件: 合格 ${summary.passed} / 不合格 ${summary.failed} / スキップ ${summary.skipped}`, ''];
+  const ctxLines = contextLines(report.context);
+  if (ctxLines.length) lines.push('<details><summary>実行記録</summary>', '', ...ctxLines.map((l) => `- ${l}`), '', '</details>', '');
   for (const s of report.suites) {
     lines.push(`## ${s.suite}`, '', `対象: ${s.baseUrl || '（未指定）'} ・ ブラウザ: ${s.browser}`, '');
     lines.push('| ID | 結果 | タイトル | 要件 | 失敗理由 |', '|---|---|---|---|---|');
     for (const c of s.cases) {
-      lines.push(`| ${c.id} | ${MARK[c.status]} ${LABEL[c.status]} | ${c.title.replace(/\|/g, '\\|')} | ${c.requirement || ''} | ${(c.error || '').replace(/\|/g, '\\|')} |`);
+      lines.push(`| ${caseLabel(c)} | ${MARK[c.status]} ${LABEL[c.status]} | ${c.title.replace(/\|/g, '\\|')} | ${c.requirement || ''} | ${(c.error || '').replace(/\|/g, '\\|')} |`);
     }
     lines.push('');
     for (const c of s.cases) {
       if (!c.screenshots || !c.screenshots.length) continue;
-      lines.push(`### ${c.id} ${c.title}`, '');
+      lines.push(`### ${caseLabel(c)} ${c.title}`, '');
       for (const sh of c.screenshots) lines.push(`![${sh.name}](${sh.file})`);
       lines.push('');
     }
@@ -46,7 +61,7 @@ function toHtml(report) {
         ? `<details class="console"><summary>ブラウザのコンソールエラー ${c.consoleErrors.length} 件</summary><pre>${esc(c.consoleErrors.join('\n'))}</pre></details>` : '';
       return `
       <details class="case ${c.status}" ${c.status === 'failed' ? 'open' : ''}>
-        <summary><span class="badge ${c.status}">${LABEL[c.status]}</span><b>${esc(c.id)}</b> ${esc(c.title)}${c.requirement ? ` <span class="req">${esc(c.requirement)}</span>` : ''}<span class="dur">${(c.durationMs / 1000).toFixed(1)}s</span></summary>
+        <summary><span class="badge ${c.status}">${LABEL[c.status]}</span><b>${esc(caseLabel(c))}</b> ${esc(c.title)}${c.requirement ? ` <span class="req">${esc(c.requirement)}</span>` : ''}<span class="dur">${(c.durationMs / 1000).toFixed(1)}s</span></summary>
         ${c.error ? `<div class="err">${esc(c.error)}</div>` : ''}
         ${consoleErr}
         <ol class="steps">${steps}</ol>
@@ -75,10 +90,12 @@ h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:24px 0 2px}.sub{color:
 .step-head{display:flex;gap:8px;align-items:baseline}.no{color:var(--sub);min-width:1.5em;text-align:right}
 .step.failed code{color:var(--ng)}.note{color:var(--sub)}
 .step img{display:block;max-width:min(100%,560px);max-height:360px;margin:6px 0 0 2em;border:1px solid var(--line);border-radius:4px}
+.context{margin:0 0 12px;color:var(--sub)}.context ul{margin:6px 0;padding-left:20px;font-size:12px;overflow-wrap:anywhere}
 .console pre{font-size:12px;white-space:pre-wrap}
 </style></head><body><main>
 <h1>テスト結果</h1><p class="sub">${esc(new Date(report.startedAt).toLocaleString('ja-JP'))}</p>
 <div class="summary"><div><b>${summary.total}</b>合計</div><div class="ok"><b>${summary.passed}</b>合格</div><div class="ng"><b>${summary.failed}</b>不合格</div><div><b>${summary.skipped}</b>スキップ</div></div>
+${report.context ? `<details class="context"><summary>実行記録</summary><ul>${contextLines(report.context).map((l) => `<li>${esc(l)}</li>`).join('')}</ul></details>` : ''}
 ${suites}
 </main></body></html>
 `;

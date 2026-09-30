@@ -77,3 +77,23 @@ test('generate --url: 画面の要素一覧を依頼に入れ、作ったケー�
   const run = await cli(['run', out, '--out', path.join(dir, 'res'), ...ep], { cwd: dir });
   assert.strictEqual(run.code, 0, run.err);
 });
+
+test('generate --explore: playwright-cli のブラウザを開いてエージェントに操作させ、終わったら閉じる', async (t) => {
+  const app = await startSampleApp();
+  t.after(app.close);
+  const dir = tmpDir(t);
+  const log = path.join(dir, 'log.txt');
+  process.env.FAKE_AGENT_MODE = 'explore';
+  process.env.FAKE_AGENT_LOG = log;
+  t.after(() => { delete process.env.FAKE_AGENT_MODE; delete process.env.FAKE_AGENT_LOG; });
+  const ep = executablePath() ? ['--executable-path', executablePath()] : [];
+  const r = await cli(['generate', 'ログインして一覧まで', '-o', path.join(dir, 'g.yaml'), '--agent-cmd', FAKE, '--url', app.baseUrl + '/', '--explore', '--no-snapshot', ...ep], { cwd: dir });
+  assert.strictEqual(r.code, 0, r.err);
+  const text = fs.readFileSync(log, 'utf8');
+  assert.match(text, /## 画面を操作して確かめる/);
+  assert.match(text, /SNAPSHOT:[\s\S]*textbox "メールアドレス"/);
+  const session = /-s=(web-test-[\w-]+)/.exec(text)[1];
+  const { execFileSync } = require('child_process');
+  const listed = execFileSync(process.execPath, [require.resolve('@playwright/cli/playwright-cli.js'), 'list'], { cwd: dir, encoding: 'utf8' });
+  assert.ok(!listed.includes(session) || /closed/i.test(listed.split('\n').find((l) => l.includes(session)) || ''), `セッションが閉じていない: ${listed}`);
+});

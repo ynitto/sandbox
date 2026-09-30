@@ -3,7 +3,30 @@
 const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('util');
+const { spawn } = require('child_process');
 const { loadFile, collectFiles } = require('./casefile');
+const { loadEnv } = require('./config');
+const { collect } = require('./context');
+
+// このツールに入っている @playwright/test で、書き出したテストを動かす。
+// 書き出し先が別の場所でも '@playwright/test' を解決できるよう NODE_PATH にこのツールの node_modules を足す。
+function runPlaywrightTest(outDir, extra, { executablePath, captureRoot, io }) {
+  const cli = require.resolve('@playwright/test/cli');
+  const nodeModules = path.resolve(__dirname, '..', 'node_modules');
+  const env = {
+    ...process.env,
+    NODE_PATH: [nodeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
+    WEB_TEST_CAPTURE_ROOT: path.resolve(captureRoot || '.'),
+    ...(executablePath ? { WEB_TEST_EXECUTABLE_PATH: executablePath } : {}),
+  };
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cli, 'test', '--config', path.join(outDir, 'playwright.config.ts'), ...extra], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', (d) => io.out.write(d));
+    child.stderr.on('data', (d) => io.err.write(d));
+    child.on('error', reject);
+    child.on('close', resolve);
+  });
+}
 
 const USAGE = `web-test — 条件からテストケースを作り、Playwright で実行してスクリーンショット付きの結果を出す
 
@@ -16,6 +39,8 @@ const USAGE = `web-test — 条件からテストケースを作り、Playwright
         --update                      -o のファイルを直す・足す（今の内容をエージェントに渡す）
         --no-snapshot                 画面の要素一覧を取らない
         --retries <n>                 書式の誤りを直してもらう回数（既定 1）
+        --explore                     エージェントに playwright-cli で画面を操作・探索させてから書かせる
+                                      （画面をまたぐ条件向け。--url が要る）
         --verbose                     エージェントの出力をそのまま表示する
   web-test run <ファイルかディレクトリ>... [--base-url <url>] [--out <dir>]
       テストケースを実行し、<out>/<日時>/report.html・report.md・results.json とスクリーンショットを書く
@@ -23,15 +48,23 @@ const USAGE = `web-test — 条件からテストケースを作り、Playwright
         --only <ID,...>               指定した ID（前方一致）のケースだけ
         --screenshot step|failure|off ファイルの screenshot 設定を上書き
         --capture-root <dir>          screenshot ステップの path: の起点（既定はカレントディレクトリ）
+        --variant <name,...>          variants のうち指定したものだけ
         --headed                      ブラウザを表示して動かす
+        --source <dir>                仕様・実装の置き場。実行記録にそのコミットを残す（繰り返し可）
   web-test capture <ファイル>... --out <dir> [--base-url <url>]
       仕様書用。screenshot ステップの画像だけを <dir>/<name>.png に書き出す（レポートは作らない）
+  web-test export <ファイルかディレクトリ>... --out <dir>
+      Playwright Test の .spec.ts と playwright.config.ts を書き出す（npx playwright test で動く）
+  web-test pwtest <ファイルかディレクトリ>... [--out <dir>] [-- <playwright test の引数>]
+      書き出してそのまま npx playwright test で動かす（既定の書き出し先 web-test-results/playwright）
   web-test validate <ファイルかディレクトリ>...   書式を検査する
   web-test prompt "<条件>" [--url <url>]           エージェントへ渡す依頼文を表示する（チャットに貼る用）
   web-test snapshot <url>                          画面の要素一覧（アクセシビリティツリー）を表示する
   web-test format                                  テストケースファイルの書式を表示する
 
 共通:
+  --env <name>              web-test.config.yaml の環境（接続先・認証・事前の値）を選ぶ
+  --config <file>           環境の設定ファイル（既定はカレントディレクトリの web-test.config.yaml）
   --executable-path <path>  使う Chromium の実行ファイル（環境変数 WEB_TEST_EXECUTABLE_PATH でも可）
 終了コード: 0 = すべて合格 / 1 = 不合格あり / 2 = 使い方・書式の誤り
 `;
@@ -55,7 +88,14 @@ const OPTIONS = {
   verbose: { type: 'boolean' },
   locale: { type: 'string' },
   'executable-path': { type: 'string' },
+  env: { type: 'string' },
+  config: { type: 'string' },
+  variant: { type: 'string' },
+  source: { type: 'string', multiple: true },
+  explore: { type: 'boolean' },
 };
+
+const list = (v) => (v ? v.split(',').map((x) => x.trim()).filter(Boolean) : null);
 
 function timestamp() {
   const d = new Date();
@@ -97,9 +137,13 @@ function conditionsFrom(values, positionals) {
 async function main(argv, io = { out: process.stdout, err: process.stderr }) {
   const say = (s) => io.out.write(s + '\n');
   const warn = (s) => io.err.write(s + '\n');
+  // `--` の後ろは npx playwright test にそのまま渡す
+  const dd = argv.indexOf('--');
+  const passthrough = dd >= 0 ? argv.slice(dd + 1) : [];
+  const own = dd >= 0 ? argv.slice(0, dd) : argv;
   let parsed;
   try {
-    parsed = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true });
+    parsed = parseArgs({ args: own, options: OPTIONS, allowPositionals: true });
   } catch (e) {
     warn(e.message);
     warn(USAGE);
@@ -149,6 +193,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           snapshot: !values['no-snapshot'],
           retries: values.retries !== undefined ? Number(values.retries) : undefined,
           verbose: values.verbose,
+          explore: values.explore,
           locale: values.locale,
           executablePath,
           log: warn,
@@ -167,18 +212,22 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
         const outDir = isCapture
           ? fs.mkdtempSync(path.join(require('os').tmpdir(), 'web-test-capture-'))
           : path.resolve(values.out || 'web-test-results', timestamp());
+        const env = loadEnv({ configPath: values.config, envName: values.env });
         const report = await runSuites(suites, {
           outDir,
+          env,
+          variants: list(values.variant),
           baseUrl: values['base-url'],
           headed: values.headed,
           workers: values.workers ? Number(values.workers) : 1,
-          only: values.only ? values.only.split(',').map((s) => s.trim()).filter(Boolean) : null,
+          only: list(values.only),
           screenshot: isCapture ? 'failure' : values.screenshot,
           captureRoot: path.resolve(values['capture-root'] || '.'),
           captureDir: isCapture ? path.resolve(values.out) : null,
           executablePath,
-          onCase: (s, c) => warn(`${c.status === 'passed' ? '✓' : c.status === 'skipped' ? '-' : '✗'} ${s.suite} ${c.id} ${c.title}${c.error ? `\n    ${c.error}` : ''}`),
+          onCase: (s, c) => warn(`${c.status === 'passed' ? '✓' : c.status === 'skipped' ? '-' : '✗'} ${s.suite} ${c.variant ? `${c.id} [${c.variant}]` : c.id} ${c.title}${c.error ? `\n    ${c.error}` : ''}`),
         });
+        report.context = collect({ argv, env, files: suites.map((x) => x.file), sources: values.source || [] });
         const { summary } = report;
         if (isCapture) {
           const files = report.suites.flatMap((s) => s.cases.flatMap((c) => c.captured || []));
@@ -198,6 +247,23 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           say(`レポート: ${r.html}`);
         }
         return summary.failed ? 1 : 0;
+      }
+      case 'export':
+      case 'pwtest': {
+        const suites = loadSuites(rest);
+        if (cmd === 'export' && !values.out) throw usageError('書き出し先を --out <ディレクトリ> で指定してください');
+        const env = loadEnv({ configPath: values.config, envName: values.env });
+        const outDir = path.resolve(values.out || path.join('web-test-results', 'playwright'));
+        const { exportSuites } = require('./export');
+        const files = exportSuites(suites, outDir, { env, baseUrl: values['base-url'], screenshot: values.screenshot });
+        if (cmd === 'export') {
+          for (const f of files) say(path.relative(process.cwd(), f) || f);
+          say(`実行: npx playwright test --config ${path.relative(process.cwd(), path.join(outDir, 'playwright.config.ts'))}`);
+          return 0;
+        }
+        const code = await runPlaywrightTest(outDir, passthrough, { executablePath, captureRoot: values['capture-root'], io });
+        say(`レポート: ${path.join(outDir, 'playwright-report', 'index.html')}（npx playwright show-report ${path.relative(process.cwd(), path.join(outDir, 'playwright-report'))}）`);
+        return code === 0 ? 0 : 1;
       }
       default:
         warn(`知らないコマンド: ${cmd}\n`);

@@ -35,6 +35,7 @@ cases:
 
 ケースには `viewport` `locale` `timezone` `colorScheme` `localStorage` `sessionStorage` `cookies`
 `headers` `mocks` を書いてスイートの値を上書き・追加できる。`skip: 理由` でそのケースを飛ばす。
+`envs: [local]` と書いたケースは、その環境で実行するときだけ動く（通信のモックに頼る異常系など）。
 ケースごとに新しいブラウザ（コンテキスト）で始まるので、前のケースの状態は残らない。
 
 ## 対象（target）の書き方
@@ -82,11 +83,27 @@ cases:
 | `{ visible: 対象 }` / `{ hidden: 対象 }` | 見えている / 見えていない |
 | `{ target: 対象, text: 保存しました }` | 文字が一致（空白は 1 つにまとめて比べる。`/正規表現/` も可） |
 | `{ target: 対象, contains: 保存 }` | 文字を含む |
+| `{ target: 対象, notContains: "msg." }` | 文字を含まない（翻訳キーがそのまま出ていないか、など） |
 | `{ target: 対象, value: abc }` | 入力欄の値 |
 | `{ target: 対象, count: 3 }` | 要素の数 |
 | `{ target: 対象, enabled: true }` / `disabled` / `checked` | 状態 |
 | `{ url: /dashboard }` | URL にこの文字列を含む（`/正規表現/` か完全な URL も可） |
 | `{ title: ホーム }` | ページタイトル |
+
+## 言語・画面幅を変えて繰り返す（variants）
+
+`variants` を書くと、すべてのケースをそれぞれの組で 1 回ずつ動かす。ブラウザの言語（`locale`）と
+アプリの言語設定（`localStorage` など）は別々に指定できる。レポートでは `TC-001 [en]` のように組の名前が付く。
+
+```yaml
+variants:
+  - { name: ja, locale: ja-JP, localStorage: { lang: ja } }
+  - { name: en, locale: en-US, localStorage: { lang: en } }
+  - { name: en-narrow, locale: en-US, localStorage: { lang: en }, viewport: { width: 360, height: 640 } }
+```
+
+組に書けるのは `name`（必須）`locale` `timezone` `viewport` `colorScheme` `localStorage` `sessionStorage` `headers`。
+一部の組だけで動かすケースは `variants: [ja]` のように名前を並べる。
 
 ## 通信のモック（mocks）
 
