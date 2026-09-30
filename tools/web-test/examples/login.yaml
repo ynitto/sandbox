@@ -1,0 +1,54 @@
+# サンプルアプリ（node examples/sample-app/server.js）に対するテストケースの例
+suite: サンプルストア ログインと商品一覧
+baseUrl: http://localhost:3000
+viewport: { width: 1024, height: 700 }
+locale: ja-JP
+cases:
+  - id: TC-001
+    title: 正しいパスワードでログインすると商品一覧が出る
+    requirement: REQ-LOGIN-01
+    steps:
+      - goto: /
+      - fill: { target: { label: メールアドレス }, value: user@example.com }
+      - fill: { target: { label: パスワード }, value: secret }
+      - click: { role: button, name: ログイン }
+      - expect: { url: "#items" }
+      - expect: { target: { css: "#welcome" }, text: ようこそ、user@example.com さん }
+      - expect: { target: { css: "#rows tr" }, count: 3 }
+      - screenshot: { name: 商品一覧, fullPage: true }
+
+  - id: TC-002
+    title: パスワードが違うとエラーが出る
+    requirement: REQ-LOGIN-02
+    steps:
+      - goto: /
+      - fill: { target: { label: メールアドレス }, value: user@example.com }
+      - fill: { target: { label: パスワード }, value: wrong }
+      - click: { role: button, name: ログイン }
+      - expect: { target: { role: alert }, text: メールアドレスかパスワードが違います }
+      - expect: { visible: { role: heading, name: ログイン } }
+
+  - id: TC-003
+    title: 商品 API が 500 を返したら再試行で回復する
+    requirement: REQ-ITEMS-03
+    mocks:
+      - { url: "**/api/items", times: 1, status: 500, json: { message: error } }
+    steps:
+      - goto: /
+      - fill: { target: { label: メールアドレス }, value: user@example.com }
+      - fill: { target: { label: パスワード }, value: secret }
+      - click: { role: button, name: ログイン }
+      - expect: { visible: { text: 商品を読み込めませんでした } }
+      - screenshot: 読み込みエラー
+      - click: { role: button, name: 再試行 }
+      - expect: { hidden: { text: 商品を読み込めませんでした } }
+      - expect: { target: { css: "#rows tr" }, count: 3 }
+
+  - id: TC-004
+    title: 言語設定が英語ならタイトルが英語になる
+    localStorage: { lang: en }
+    locale: en-US
+    steps:
+      - goto: /
+      - expect: { title: Sample Store }
+      - screenshot: { name: 英語のヘッダー, target: { css: header } }

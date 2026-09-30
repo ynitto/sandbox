@@ -7,6 +7,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### web-test: 条件からテストケースを作り、スクリーンショット付きで結果を出す Web アプリのテストツール（新規）
+
+- **条件の文章から、エージェントがテストケースファイル（YAML）を書く。** `web-test generate "<条件>" --url <URL> -o <file>`。
+  Kiro CLI（既定）と GitHub Copilot CLI に対応し、ほかの CLI は `--agent-cmd` で渡せる。対象の画面を実際に開いて取った
+  要素の一覧（役割と名前）を依頼に入れるので、画面に無いボタン名を想像で書かれにくい。書式の誤りは検査で見つけ、
+  エラーを添えて直してもらう。チャットで作るときは `web-test prompt` の依頼文を貼る
+- **`--explore` で、エージェントが playwright-cli で画面を操作して確かめながら書く。** web-test がブラウザを開いて
+  セッション名を渡し、終わったら閉じる。ログインの先の画面など、画面をまたぐ条件に使う
+- **Playwright でケースを実行し、操作ごとのスクリーンショットと合否・失敗理由のレポートを出す。** `web-test run <file|dir>`。
+  レポートは HTML・Markdown・JSON。ケースごとに新しいブラウザの状態で始め、`localStorage` はアプリより先に入れ、
+  `mocks` で API の応答（500・1 回目だけ失敗・遅延・切断）を差し替えられる
+- **YAML から Playwright Test の `.spec.ts` を書き出して `npx playwright test` で動かせる。** `web-test export` / `web-test pwtest`。
+  ステップは `test.step`、画像はレポートの添付になり、trace viewer・リトライ・分割実行が使える
+- **`variants` で同じケースを言語・画面幅を変えて繰り返す。** ブラウザの言語とアプリの言語設定を別々に指定できる。
+  文字を含まないことを確かめる `notContains` も足した（翻訳キーがそのまま出ていないか、など）
+- **`web-test.config.yaml` で接続先を環境ごとに切り替える（`--env`）。** 認証の状態・ヘッダー・事前の値を環境ごとに持ち、
+  `${名前}` は環境変数で置き換える。モックを使わない環境では、モックに頼るケースと `envs:` に無いケースを飛ばす
+- **レポートに実行記録を残す。** コマンド・環境・Node と Playwright の版・テストケースファイルのハッシュ・関係するリポジトリの
+  コミット（`--source` で仕様・実装のフォルダを足せる）
+- **仕様書の画像を決まった名前で撮る。** `web-test capture <file> --out <dir>` が `screenshot` ステップの画像だけを
+  `<dir>/<name>.png` に書き出す。変わる部分は `mask` で塗れる
+- **インストーラ。** `install.ps1`（Windows）と `install.sh`（Linux / macOS / WSL）。Node.js が無い・古いときは公式の LTS を
+  利用者のフォルダに入れ、npm パッケージと Chromium を入れて `web-test` コマンドを置く
+- 使い方は `tools/web-test/README.md`、書式は `tools/web-test/src/format-reference.md`
+
 ### agent-app: ワークフローの実行結果を読みやすくし、失敗した工程から続きを実行する（agent-app 0.47.0）
 
 - **実行の詳細は、上のカードで結果を言う。** 失敗したときは「「記載漏れを確かめる」で失敗しました」とその理由の 1 行、
