@@ -17,6 +17,9 @@
                         測ったファイルを直したか「変更不要」としたかを検査する。書き足したパスが実在するか、
                         消したファイルを指したままのところが無いかも確かめる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
+    advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
+    keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
+    rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
 
 置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
 作業ファイルと graphify のグラフは `<リポジトリ>/.codd/` に置く。依存は python3 と git のみ
@@ -1328,17 +1331,41 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
 
 
 def write_baseline(ctx: Ctx) -> None:
-    """変える前の印。verify-apply はここから「どのファイルを変えたか」を測る。確認の直前に取り直す。"""
+    """変える前の印。verify-apply はここから「どのファイルを変えたか」を測る。確認の直前に取り直す。
+
+    作業中だったファイルの中身も `.codd/before/` に控え、`rollback` で変える前へ戻せるようにする。
+    `keep-changes` の印があれば（変えた分を残して計画を直すとき）、前の印をそのまま使う。
+    """
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / "applied.json").unlink(missing_ok=True)
-    (ctx.data / "before.json").write_text(json.dumps({
-        "own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs},
-    }, indent=2) + "\n", encoding="utf-8")
+    keep = ctx.data / KEEP_MARK
+    if keep.is_file() and (ctx.data / "before.json").is_file():
+        keep.unlink()
+        return
+    keep.unlink(missing_ok=True)
+    shutil.rmtree(ctx.data / "before", ignore_errors=True)
+    state = {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
+    for key, side in all_sides(ctx):
+        snap = state["refs"][key] if key else state["own"]
+        for rel, digest in snap["files"].items():
+            if digest != "deleted":
+                dest = backup_dir(ctx, key) / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(side.path / rel, dest)
+    (ctx.data / "before.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+KEEP_MARK = "keep-baseline"
+
+
+def backup_dir(ctx: Ctx, key: str) -> Path:
+    return ctx.data / "before" / ("own" if not key else f"ref-{key}")
 
 
 def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     if not ctx.plan.is_file():
         print(f"計画がありません: {DATA_DIRNAME}/plan.md", file=sys.stderr)
+        record_problems(ctx.data, "plan", [f"計画がありません: {DATA_DIRNAME}/plan.md"])
         return 1
     text = ctx.plan.read_text(encoding="utf-8")
     problems = verify_plan_text(ctx, text)
@@ -1349,6 +1376,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         problems, measured, ref_count = measure_plan(ctx, bodies)
     for p in problems:
         print(p, file=sys.stderr)
+    record_problems(ctx.data, "plan", problems)
     if problems:
         return 1
     write_baseline(ctx)
@@ -1410,6 +1438,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     a = load_applied(ctx)
     if isinstance(a, str):
         print(a, file=sys.stderr)
+        record_problems(ctx.data, "apply", [a])
         return 1
     bodies = a.bodies
     problems = list(a.plan_problems)
@@ -1499,6 +1528,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         problems += run_check(r.path, r.check, f"{r.name}（{r.label}）")
     for p in problems:
         print(p, file=sys.stderr)
+    record_problems(ctx.data, "apply", problems)
     if problems:
         return 1
     # 通ったときの中身を控える。report はこれと今を比べ、通ったあとに変わっていないかを確かめる。
@@ -1601,6 +1631,165 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0 if state == "通った" else 1
 
 
+# ---------------------------------------------------------------- 止まったとき（次の手を示す・やり直す）
+
+PROBLEMS_NAME = "problems.json"
+
+
+def record_problems(data: Path, phase: str, problems: list[str], kind: str | None = None) -> None:
+    """検査で止めた理由を控える（advise が読む）。通ったら消す。"""
+    path = data / PROBLEMS_NAME
+    if not problems:
+        path.unlink(missing_ok=True)
+        return
+    data.mkdir(parents=True, exist_ok=True)
+    items = [{"kind": kind or classify(phase, p), "text": p} for p in problems]
+    path.write_text(json.dumps({"phase": phase, "problems": items}, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+
+
+# 止めた理由の分類。上から順に当てる。（種類, 段, 目印）
+_KINDS = (
+    ("stale", "any", ("計画がありません", "印がありません", "印が古い形")),
+    ("size", "plan", ("上限",)),
+    ("extra", "apply", ("計画に無いファイルを変えています", "変更案に無いファイルを変えています", "が変わっています（戻してください）")),
+    ("undone", "apply", ("まだ変えていません", "が変わっていません")),
+    ("unfixed", "apply", ("直していないファイル", "自分のファイルを、直していません")),
+    ("ref-coverage", "any", ("計画で扱っていません",)),
+    ("impact", "plan", ("計画に無いファイルがあります", "自分のファイルが、計画にありません")),
+    ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
+    ("rules", "any", ("守る決まり", "スキル・道具")),
+    ("check", "apply", ("検査が失敗しました",)),
+)
+
+
+def classify(phase: str, text: str) -> str:
+    for kind, where, marks in _KINDS:
+        if where in ("any", phase) and any(m in text for m in marks):
+            return kind
+    return "form"
+
+
+# 選択肢。（見出し, 先に実行する codd.py のコマンド（無ければ ""）, 止まった段が出す語）
+OPTIONS = {
+    "replan": ("計画を練り直す", "", "PLAN"),
+    "reapply": ("計画はそのままで、変え直す", "", "APPLY"),
+    "keep": ("変えた分は残して、計画を直す", "keep-changes", "PLAN"),
+    "reset": ("変えた分を戻して、計画から練り直す", "rollback", "PLAN"),
+    "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
+}
+
+# 種類ごとの選択肢（最初が勧め）と、利用者に確かめること。最初に挙がった理由の勧めを、全体の勧めにする。
+ADVICE = {
+    "plan": {
+        "stale": (["replan", "stop"], "計画がまだ無いか、読めません。やりたいことをもう一度伝えてもらい、練り直します"),
+        "size": (["replan", "stop"], "1 回で変えるには大きすぎます。今回やることを絞ってもらい、残りは「今回やらないこと」に回します"),
+        "impact": (["replan", "stop"],
+                   "測った影響範囲の一部を計画が扱っていません。挙がったファイルごとに、直すか「変更不要」かを決めてもらいます"),
+        "ref-coverage": (["replan", "stop"],
+                         "変更に関係する参照先のファイルを計画が読んでいません。読んで扱うか、関係が無い理由を確かめます"),
+        "rules": (["replan", "stop"], "決まり・スキル・道具を計画が扱っていません。それらを使って練り直します"),
+        "form": (["replan", "stop"], "計画の形か根拠が決まりどおりではありません。参照先を読み直して練り直します"),
+    },
+    "apply": {
+        "stale": (["reset", "stop"], "変える前の印がありません。計画から練り直します"),
+        "extra": (["reapply", "keep", "reset", "stop"],
+                  "計画に無いファイルを変えました。その変更を戻して変え直すか、計画に足すかを決めてもらいます"),
+        "undone": (["reapply", "keep", "reset", "stop"],
+                   "計画のファイルを変え残しています。変え切るか、計画から外すかを決めてもらいます"),
+        "unfixed": (["reapply", "keep", "reset", "stop"],
+                    "変更の影響を受けるファイルを直していません。直すか、「変更不要」として計画に書くかを決めてもらいます"),
+        "ref-coverage": (["keep", "reapply", "reset", "stop"],
+                         "計画に無い参照先に響く変更をしました。計画に足すか、響かないように変え直すかを決めてもらいます"),
+        "paths": (["reapply", "keep", "stop"], "書いたパスが無いか、消したファイルがまだ指されています。指す先を直します"),
+        "rules": (["reapply", "stop"], "変えるときのスキル・道具の記録がありません。使って記録します"),
+        "check": (["reapply", "reset", "stop"], "検査コマンドが通りません。直して変え直すか、計画から練り直すかを決めてもらいます"),
+        "form": (["reapply", "reset", "stop"], "変えた結果が計画と合いません"),
+        "config": (["reapply", "stop"], "設定か環境の誤りです。利用者に直してもらってから、同じ段をやり直します"),
+    },
+}
+ADVICE["plan"]["config"] = (["replan", "stop"], "設定か環境の誤りです。利用者に直してもらってから、練り直します")
+
+
+def cmd_advise(root: Path) -> int:
+    """止めた理由を読み、何が止めているか・どうしたらいいか（勧めと選択肢）を示す。"""
+    data = root / DATA_DIRNAME
+    path = data / PROBLEMS_NAME
+    if not path.is_file():
+        print("止めている理由は控えられていません（検査は通っています）。続きから進めてください")
+        return 0
+    rec = json.loads(path.read_text(encoding="utf-8"))
+    phase = rec.get("phase", "plan")
+    table = ADVICE.get(phase, ADVICE["plan"])
+    stage = "計画の検査" if phase == "plan" else "変えたあとの検査"
+    lines = [f"# {stage}で止まりました", "", "## 止めている理由", ""]
+    order: list[str] = []
+    asks: list[str] = []
+    for item in rec.get("problems", []):
+        kind = item.get("kind", "form")
+        options, ask = table.get(kind, table["form"])
+        lines.append(f"- {item['text']}")
+        if ask not in asks:
+            asks.append(ask)
+        order += [o for o in options if o not in order]
+    lines += ["", "## 利用者に確かめること", "", *[f"- {a}" for a in asks], "", "## 選択肢（最初が勧め）", ""]
+    for i, key in enumerate(order):
+        title, command, word = OPTIONS[key]
+        run_it = f"。先に `python3 {MACHINE_REL}/codd.py {command}` を実行" if command else ""
+        lines.append(f"{i + 1}. {title}{'（勧め）' if i == 0 else ''} → `{word}`{run_it}")
+    text = "\n".join(lines) + "\n"
+    (data / "advice.md").write_text(text, encoding="utf-8")
+    print(text, end="")
+    return 0
+
+
+def cmd_keep_changes(ctx: Ctx, args: argparse.Namespace) -> int:
+    """次の計画の検査で、変える前の印を取り直さない（変えた分を残したまま計画を直す）。"""
+    if not (ctx.data / "before.json").is_file():
+        print("変える前の印がありません。計画から練り直してください", file=sys.stderr)
+        return 1
+    (ctx.data / KEEP_MARK).write_text("", encoding="utf-8")
+    print("変えた分を残します。次の計画の検査は、前の印から変わったファイルを数えます")
+    return 0
+
+
+def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
+    """計画の検査が通ったとき（変える前）の中身へ戻す。戻すのは、そのあとに変わったファイルだけ。"""
+    before_file = ctx.data / "before.json"
+    if not before_file.is_file():
+        print("変える前の印がありません（戻すものはありません）", file=sys.stderr)
+        return 1
+    before = json.loads(before_file.read_text(encoding="utf-8"))
+    plan: list[tuple[str, Side, str, dict]] = []
+    for key, side in all_sides(ctx):
+        snap = before.get("refs", {}).get(key, {}) if key else before.get("own", {})
+        if snap.get("head") and head(side.path) != snap["head"]:
+            print(f"{key or '自分'} は途中でコミットされたので戻せません（git で戻してください）",
+                  file=sys.stderr)
+            return 1
+        plan += [(key, side, rel, snap) for rel in sorted(changed_since(side, snap))]
+    restored = []
+    for key, side, rel, snap in plan:
+        target = side.path / rel
+        saved = snap.get("files", {}).get(rel)
+        if saved and saved != "deleted":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backup_dir(ctx, key) / rel, target)
+        elif saved != "deleted" and snap.get("head") and run(
+                ["git", "cat-file", "-e", f"{snap['head']}:{rel}"], side.path, GIT_TIMEOUT)[0] == 0:
+            blob = subprocess.run(["git", "show", f"{snap['head']}:{rel}"], cwd=side.path, capture_output=True,
+                                  timeout=GIT_TIMEOUT).stdout
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(blob)
+        elif target.is_file():
+            target.unlink()   # 変えたあとに足したファイル（か、変える前にも消えていたファイル）
+        restored.append(side_label(ctx, key, rel))
+    for name in ("applied.json", KEEP_MARK, PROBLEMS_NAME):
+        (ctx.data / name).unlink(missing_ok=True)
+    print(f"変える前に戻しました: {len(restored)} files" + ("".join(f"\n  - {r}" for r in restored)))
+    return 0
+
+
 # ---------------------------------------------------------------- 入口
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1616,6 +1805,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
+    sub.add_parser("advise", help="検査で止まった理由と、次の手（勧めと選択肢）を示す")
+    sub.add_parser("keep-changes", help="変えた分を残したまま計画を直す（次の計画の検査で印を取り直さない）")
+    sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
     ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
     ru.add_argument("--write", action="store_true", help="候補を codd.json の rules / refs[].rules に書く")
     ru.add_argument("--only", action="append", help="書く候補を絞る（`名前:パス` か `パス`。繰り返し可）")
@@ -1624,15 +1816,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
-            "rules": cmd_rules}
+            "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback}
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return COMMANDS[args.cmd](Ctx(repo_root(Path.cwd())), args)
+        root = repo_root(Path.cwd())
+        if args.cmd == "advise":   # 設定が壊れていても理由と次の手は示す
+            return cmd_advise(root)
+        return COMMANDS[args.cmd](Ctx(root), args)
     except CoddError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
+        if args.cmd in ("verify-plan", "verify-apply"):
+            try:
+                record_problems(repo_root(Path.cwd()) / DATA_DIRNAME, args.cmd.split("-")[1], [str(exc)], "config")
+            except CoddError:
+                pass
         return 2
 
 

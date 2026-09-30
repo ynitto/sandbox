@@ -471,6 +471,84 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "report")
         self.assertNotIn("## 参照先とパスでつながっていない変更", r.stdout)
 
+    # ------------------------------------------------------------ 止まったとき
+
+    def test_advise_proposes_next_steps(self) -> None:
+        self.add_caller()
+        self.write_plan(PLAN_ALIGNED)
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        r = self.run_pa(self.impl, "advise")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("# 計画の検査で止まりました", r.stdout)
+        self.assertIn("src/use.py", r.stdout)
+        self.assertIn("直すか「変更不要」かを決めてもらいます", r.stdout)
+        self.assertIn("1. 計画を練り直す（勧め） → `PLAN`", r.stdout)
+        self.assertNotIn("`APPLY`", r.stdout)   # 計画が通っていないので、変える段へは進めない
+
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/use.py — 変更不要: 戻り値は同じ"))
+        self.assert_plan_ok()
+        self.assertFalse((self.impl / ".codd/problems.json").exists())   # 通ったら理由は消える
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        r = self.run_pa(self.impl, "advise")
+        self.assertIn("# 変えたあとの検査で止まりました", r.stdout)
+        self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
+        self.assertIn("変えた分は残して、計画を直す → `PLAN`。先に `python3 .statemachine/codd/codd.py keep-changes` を実行",
+                      r.stdout)
+        self.assertIn("変えた分を戻して、計画から練り直す → `PLAN`。先に `python3 .statemachine/codd/codd.py rollback` を実行",
+                      r.stdout)
+        self.assertIn("`STOP`", r.stdout)
+
+        # 設定の誤りで止まっても、理由と次の手は示す。
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        good = cfg.read_text(encoding="utf-8")
+        cfg.write_text(json.dumps({"side": "impl", "refs": [{"path": "../nowhere"}]}), encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 2)
+        r = self.run_pa(self.impl, "advise")
+        self.assertIn("設定か環境の誤りです", r.stdout)
+        self.assertIn("refs を直してください", r.stdout)
+        cfg.write_text(good, encoding="utf-8")
+
+    def test_keep_changes_lets_the_plan_grow_without_losing_the_work(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/log.py").write_text("def log(m):\n    print(m)\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)   # log.py は計画に無い
+        self.assertEqual(self.run_pa(self.impl, "keep-changes").returncode, 0)
+        self.write_plan(PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                             "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"))
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "verify-apply")   # 前の印から数えるので、残した変更がそのまま効く
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("own=changed", r.stdout)
+
+    def test_rollback_restores_the_state_before_the_change(self) -> None:
+        commit(self.impl, {"src/gone.py": "g = 1\n"}, "gone")
+        (self.impl / "src/wip.py").write_text("wip = 1\n", encoding="utf-8")   # 計画より前から作業中
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.impl / "src/wip.py").write_text("wip = 2\n", encoding="utf-8")
+        (self.impl / "src/new.py").write_text("n = 1\n", encoding="utf-8")
+        (self.impl / "src/gone.py").unlink()
+        (self.design / "docs/api.md").write_text("変えた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "rollback")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("変える前に戻しました: 5 files", r.stdout)
+        self.assertEqual((self.impl / "src/app.py").read_text(encoding="utf-8"), "def hello():\n    return 1\n")
+        self.assertEqual((self.impl / "src/wip.py").read_text(encoding="utf-8"), "wip = 1\n")   # 作業中の中身へ
+        self.assertFalse((self.impl / "src/new.py").exists())
+        self.assertEqual((self.impl / "src/gone.py").read_text(encoding="utf-8"), "g = 1\n")
+        self.assertIn("hello は 1 を返す", (self.design / "docs/api.md").read_text(encoding="utf-8"))
+        # 途中でコミットされたら、戻さずに知らせる。
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        git(self.impl, "commit", "-q", "-am", "mid")
+        r = self.run_pa(self.impl, "rollback")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("途中でコミットされた", r.stderr)
+
     def test_verify_apply_needs_a_verified_plan(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-apply")

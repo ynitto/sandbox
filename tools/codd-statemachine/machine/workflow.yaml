@@ -9,6 +9,11 @@
 #     ↑                                  └─ NG ─┐
 #     └─────────────────────────────────────────┘（利用者の指摘を受けて練り直す）
 #
+#   plan / apply の検査が、やり直し（check_retries）を使い切っても落ちたら stuck へ:
+#   stuck ─┬─ PLAN  ─→ plan（練り直す。変えた分を残すか戻すかは stuck で決める）
+#          ├─ APPLY ─→ apply（計画はそのままで変え直す）
+#          └─ STOP  ─→ stopped（やめる。結果と、残したもの・戻したものを伝える）
+#
 # plan    参照先を探し（graphify・自動更新）、前提・制約・その他に分け、自分の現状とのずれを見て、
 #         自分の変更案を練る。ずれがあれば参照先の変更案を書く。verify-plan は根拠が参照先の実在の箇所
 #         （パス・行・見出し・名前）を指すか、決まりのファイルと設定されたスキル・道具を計画が扱ったか、
@@ -19,6 +24,9 @@
 #         すべて、それだけを変えたか、使うと決めたスキル・道具を使ったかを確かめ、実際の変更から影響範囲を
 #         測り直し、測ったファイルを直したか「変更不要」としたかを確かめる
 # done    `codd.py report` の出力（ファイルごとの結果・影響範囲・次にやること）をそのまま伝える
+# stuck   `codd.py advise` が止めた理由を分け、次の手（勧めと選択肢）を示す。利用者に選んでもらい、
+#         変えた分を戻す（rollback）か残す（keep-changes）かも、ここで確かめてから進む
+# stopped やめたときの結果（report）を伝える
 #
 # 決定的な仕事（探す・グラフの更新・計画の形と根拠の検査・どちらを変えたかの検査）は codd.py が行う。
 
@@ -33,9 +41,10 @@ inputs:
 
 context:
   answer: ""        # confirm の答え。NG なら指摘ごと plan に渡る（初回は空）
+  choice: ""        # stuck の答え。利用者が選んだ次の手と指示が plan / apply に渡る（止まっていなければ空）
 
 config:
-  max_steps: 30
+  max_steps: 40
   on_no_transition: error
 
 states:
@@ -46,7 +55,7 @@ states:
     output_validator: "startswith:OK,FAILED"
     check: "python3 .statemachine/codd/codd.py verify-plan"
     check_retries: 2
-    check_on_exhausted: escalate
+    check_on_exhausted: continue   # 使い切ったら stuck で利用者に次の手を訊く
 
   confirm:
     description: "計画を利用者に確認する"
@@ -60,16 +69,33 @@ states:
     action_file: actions/apply.md
     output_validator: "startswith:OK,FAILED"
     check: "python3 .statemachine/codd/codd.py verify-apply"
-    check_retries: 2
-    check_on_exhausted: escalate
+    check_retries: 1               # 計画を変えるかどうかは利用者が決めるので、早めに stuck へ
+    check_on_exhausted: continue
+
+  stuck:
+    description: "止まった理由と次の手を示し、利用者に選んでもらう"
+    action_file: actions/stuck.md
+    output_key: choice
+    output_validator: "startswith:PLAN,APPLY,STOP"
+    max_retries: 1
 
   done:
     description: "変えた結果を伝える"
     action_file: actions/done.md
     terminal: true
 
+  stopped:
+    description: "やめたときの結果を伝える"
+    action_file: actions/stopped.md
+    terminal: true
+
 transitions:
   - {from: plan, to: confirm, condition_rule: "equals:check_ok:true", priority: 1}
   - {from: confirm, to: apply, condition_rule: "startswith:answer:OK", priority: 1}
   - {from: confirm, to: plan, condition_rule: "startswith:answer:NG", priority: 2}
+  - {from: plan, to: stuck, condition_rule: "equals:check_ok:false", priority: 2}
   - {from: apply, to: done, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: apply, to: stuck, condition_rule: "equals:check_ok:false", priority: 2}
+  - {from: stuck, to: plan, condition_rule: "startswith:choice:PLAN", priority: 1}
+  - {from: stuck, to: apply, condition_rule: "startswith:choice:APPLY", priority: 2}
+  - {from: stuck, to: stopped, condition_rule: "startswith:choice:STOP", priority: 3}
