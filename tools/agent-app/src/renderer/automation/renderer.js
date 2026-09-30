@@ -1082,6 +1082,7 @@ const flowFeature = window.createFlowFeature({
   toast,
   escape: esc,
   dateLabel,
+  dialog: (title, bodyHtml) => dialog('dlg-run', title, 'work', bodyHtml),
   query: (selector) => workbenchRoot.querySelector(selector),
   activeElement: () => workbenchRoot.activeElement || document.activeElement,
   // 親へ「いまこのワークフローの会話を出している」を伝える。親は自分の端末ミラーを slot に載せる。
@@ -1119,6 +1120,7 @@ const flowFeature = window.createFlowFeature({
     runRespond: (root, runId, interactionId, answer) => automationHost.flowRunRespond(root, runId, interactionId, answer),
     runResult: (root, runId) => automationHost.flowRunResult(root, runId),
     runLog: (root, runId) => automationHost.flowRunLog(root, runId),
+    runNodeLog: (root, runId, nodeId) => automationHost.flowRunNodeLog(root, runId, nodeId),
     runDelete: (root, runId) => automationHost.flowRunDelete(root, runId),
     openDelivery: (root, runId) => automationHost.flowRunOpenDelivery(root, runId),
   },

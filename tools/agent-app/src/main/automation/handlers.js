@@ -375,6 +375,7 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('flow:run:respond', (p) => agentFlow.respond(selectedRoot(p), p.runId, p.interactionId, p.answer, hostRootOf(p)));
   register('flow:run:result', (p) => agentFlow.result(selectedRoot(p), p.runId, runCapture, hostRootOf(p)));
   register('flow:run:log', (p) => agentFlow.readLog(selectedRoot(p), p.runId, p.bytes, hostRootOf(p)));
+  register('flow:run:node-log', (p) => agentFlow.readNodeLog(selectedRoot(p), p.runId, p.nodeId, hostRootOf(p)));
   register('flow:run:delete', (p) => agentFlow.deleteRun(selectedRoot(p), p.runId, hostRootOf(p)));
   register('flow:run:openDelivery', (p) => agentFlow.openDelivery(
     selectedRoot(p), p.runId, options.hooks && options.hooks.openDelivery, hostRootOf(p),

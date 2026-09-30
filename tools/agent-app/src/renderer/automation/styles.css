@@ -268,13 +268,27 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
 .flow-answer-card h3 { font-size: 15px; }
 .flow-run-nodes li { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 11px 0; border-top: 1px solid var(--line); }
 .flow-run-nodes li:first-child { border-top: 0; }
-.flow-run-nodes li > div { min-width: 0; }
+.flow-run-nodes li > div { min-width: 0; display: grid; gap: 2px; }
 .flow-run-nodes p { margin: 2px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .flow-run-nodes small { color: var(--muted); }
 .flow-run-nodes details { margin-top: 7px; }
 .flow-run-nodes summary { color: var(--accent); cursor: pointer; font-size: 12px; }
 .flow-run-nodes pre, .flow-result-text { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; }
 .flow-log { height: 320px; margin: 0; }
+/* 工程の結果は文章で 3 行まで。全文と過程は「詳細」のダイアログ */
+.flow-run-nodes li { grid-template-columns: auto minmax(0, 1fr) auto; }
+.flow-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.flow-outcome .flow-clamp { -webkit-line-clamp: 12; }
+.flow-clamp.is-open { display: block; overflow: visible; }
+/* 「続きを見る」「隠す」は文中のリンクと同じ見た目（枠を持つボタンにしない） */
+.flow-more { justify-self: start; width: fit-content; min-height: 0; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+.flow-more:hover { background: none; text-decoration: underline; }
+.flow-node-detail .flow-clamp { -webkit-line-clamp: 8; }
+.flow-node-detail .flow-session-log { height: 220px; margin: 0; }
+.flow-final-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.flow-node-detail { display: grid; gap: 8px; }
+.flow-node-detail h3 { font-size: 13px; }
+.flow-node-detail .run-history li { grid-template-columns: 11em minmax(0, 1fr); align-items: baseline; }
 
 /* ---------- 編集: 左にフロー、右に選択中の設定 ---------- */
 .editor-shell { display: grid; grid-template-columns: minmax(360px, 1fr) 400px; height: 100%; min-width: 0; overflow: hidden; }

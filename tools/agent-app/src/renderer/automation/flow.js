@@ -158,7 +158,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
       launching: '起動中', 'launch-failed': '起動失敗', planning: '計画中', executing: '実行中',
       evaluating: '評価中', verifying: '検証中', finalizing: '仕上げ中', waiting: '回答待ち',
       stalled: '応答なし', pending: '待機中', claimed: '作業中', parked: '外部確認中',
-      done: '完了', failed: '失敗', cancelled: '停止済み',
+      done: '完了', failed: '失敗', cancelled: '停止済み', skipped: '未実行',
     })[state] || state || '準備中';
   }
 
@@ -166,7 +166,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     if (state === 'done') return 'ok';
     if (['failed', 'launch-failed'].includes(state)) return 'ng';
     if (['waiting', 'stalled'].includes(state)) return 'warn';
-    if (!['cancelled'].includes(state)) return 'active';
+    if (!['cancelled', 'skipped'].includes(state)) return 'active';
     return '';
   }
 
@@ -175,7 +175,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
   }
 
   function workflowHistoryHtml(runs = workflowRuns()) {
-    const rows = runs.map((run) => `<li><span class="status ${statusClass(run.state)}">${e(stateLabel(run.state))}</span><div><strong>${e(run.title || run.runId)}</strong><small>${e(ctx.dateLabel(run.createdAt))} · ${run.progress.done + run.progress.failed}/${run.progress.total || '—'} 工程</small></div><button type="button" class="tiny" data-flow-run="${e(run.runId)}">詳細</button></li>`).join('');
+    const rows = runs.map((run) => `<li><span class="status ${statusClass(run.state)}">${e(stateLabel(run.state))}</span><div><strong>${e(run.title || run.runId)}</strong><small>${e(ctx.dateLabel(run.createdAt))} · ${run.progress.done + run.progress.failed}/${run.progress.total || '—'} 工程</small>${run.failedNode ? `<p>「${e(nodeLabel(run.failedNode))}」で失敗: ${e(run.failedNode.message)}</p>` : ''}</div><button type="button" class="tiny" data-flow-run="${e(run.runId)}">詳細</button></li>`).join('');
     return `<section class="execution-card flow-history"><div class="execution-card-head"><div><h3>実行履歴</h3></div></div>${rows ? `<ul class="run-history flow-run-history">${rows}</ul>` : '<p class="muted small">実行履歴なし</p>'}</section>`;
   }
 
@@ -396,19 +396,142 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     return `<section class="execution-card flow-teamwork"><div class="execution-card-head"><div><h3>分担と確認</h3><p>${e(lead + tail)}</p></div>${status}</div><ul class="run-history">${rows}${choices}</ul></section>`;
   }
 
+  // 工程の呼び名。定義のラベル（差し戻しで増えた `-r1` などは元の工程のもの）を使い、無いときだけ ID。
+  function nodeLabel(node) {
+    if (node.label) return node.label;
+    const defs = view.workflow?.nodes || [];
+    const base = String(node.id).replace(/-r\d+$/, '');
+    return (defs.find((item) => item.id === node.id) || defs.find((item) => item.id === base) || {}).label || node.id;
+  }
+
+  // 同じ依頼元（同じワークフロー、定義なしなら同じ依頼）の直前の実行も、同じ工程・同じ分類で
+  // 失敗していれば数える。再実行しても変わらない失敗を、もう一度押させる前に見せるため。
+  function failureStreak(run, failed) {
+    if (!failed) return 0;
+    const same = (item) => (run.workflowId ? item.workflowId === run.workflowId : !item.workflowId && item.request === run.request);
+    const older = view.runs.filter((item) => item.runId !== run.runId && item.terminal && same(item) && String(item.createdAt) < String(run.createdAt))
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    let streak = 1;
+    for (const item of older) {
+      if (!item.failedNode || item.failedNode.id !== failed.id || item.failedNode.cls !== failed.error?.cls) break;
+      streak += 1;
+    }
+    return streak;
+  }
+
+  // 出力に残る機械向けの印（[agent-error:…]・verify=pass など）は画面に出さない
+  function outputText(node) {
+    return String(node.output || '').split('\n')
+      .map((line) => line.replace(/\[agent-error:[a-z]+\]\s*/g, '').replace(/^verify=(pass|fail):?\s*/i, ''))
+      .join('\n').trim();
+  }
+
+  function finalNodes(run) {
+    const used = new Set(run.nodes.flatMap((node) => node.deps || []));
+    return run.nodes.filter((node) => !used.has(node.id) && node.state === 'done' && node.output);
+  }
+
+  function agentLabel(node) {
+    const agent = node.agent?.cli ? `${node.agent.cli}${node.agent.model ? ` / ${node.agent.model}` : ''}` : '';
+    return [node.who, agent].filter(Boolean).join(' · ');
+  }
+
+  // 工程の詳細（ダイアログ）: 過程（何をする工程で、誰がいつ動かしたか）と結果（出力の全文）
+  function nodeDetailHtml(run, node) {
+    const time = (value) => (value ? ctx.dateLabel(value) : '');
+    const span = node.startedAt && node.finishedAt ? Math.max(0, Math.round((Date.parse(node.finishedAt) - Date.parse(node.startedAt)) / 1000)) : null;
+    const took = span === null ? '' : span < 60 ? `${span} 秒` : `${Math.floor(span / 60)} 分 ${span % 60} 秒`;
+    const deps = (node.deps || []).map((id) => run.nodes.find((item) => item.id === id) || { id }).map((item) => nodeLabel(item)).join('、');
+    // 言葉は手順の編集画面の項目名にそろえる
+    const rows = [
+      ['状態', stateLabel(node.state)],
+      ['この工程で行うこと', node.goal],
+      ['この前に終える工程', deps],
+      ['工程の種類', kind(node.kind)?.label || node.kind],
+      ['工程の保存名', node.id],
+      ['担当', agentLabel(node)],
+      ['時刻', [time(node.startedAt), time(node.finishedAt)].filter(Boolean).join(' → ') + (took ? `（${took}）` : '')],
+    ].filter(([, value]) => value).map(([name, value]) => `<li><strong>${e(name)}</strong><div><span>${e(value)}</span></div></li>`).join('');
+    const output = outputText(node) ? `<p class="flow-final-text flow-clamp">${e(outputText(node))}</p>` : '<p class="muted small">まだ結果はありません</p>';
+    // セッションログは高さを決めた枠の中でスクロールさせる（ダイアログに全部を広げない）
+    return `<section class="flow-node-detail"><h3>過程</h3><ul class="run-history">${rows}</ul></section><section class="flow-node-detail"><h3>結果</h3>${output}</section><section class="flow-node-detail"><h3>セッションログ</h3><pre class="log flow-session-log">読み込んでいます…</pre></section>`;
+  }
+
+  // Teams の「続きを見る」と同じ: 切れているときだけ本文の下に出し、押すとその場で開いて「隠す」に変わる
+  function clampTexts(scope) {
+    for (const text of scope.querySelectorAll('.flow-clamp')) {
+      if (text.nextElementSibling?.classList.contains('flow-more') || text.scrollHeight <= text.clientHeight + 1) continue;
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'flow-more';
+      more.textContent = '続きを見る';
+      more.setAttribute('aria-expanded', 'false');
+      more.addEventListener('click', () => {
+        const open = text.classList.toggle('is-open');
+        more.textContent = open ? '隠す' : '続きを見る';
+        more.setAttribute('aria-expanded', String(open));
+      });
+      text.after(more);
+    }
+  }
+
+  function outcomeHtml(run) {
+    // 依頼は題名から読み取れないとき（長くて切れた・題名を別に付けた）だけ出す
+    const request = run.request && run.request !== run.title ? `<p class="flow-request">${e(run.request)}</p>` : '';
+    const failed = run.nodes.find((node) => node.state === 'failed');
+    const log = '<button type="button" data-flow-log>ログを見る</button>';
+    if (!run.terminal) {
+      const pct = run.progress.total ? Math.round(((run.progress.done + run.progress.failed) / run.progress.total) * 100) : 4;
+      const doing = run.nodes.filter((node) => node.state === 'claimed').map((node) => `「${nodeLabel(node)}」`).join('、');
+      return `<section class="execution-card flow-outcome"><div class="execution-card-head"><div><h3>${e(stateLabel(run.state))}</h3><p>${doing ? `${e(doing)}を進めています` : run.progress.total ? `${run.progress.done} / ${run.progress.total} 工程完了` : '工程を準備しています'}</p></div></div><div class="flow-progress"><span style="width:${pct}%"></span></div>${request}<div class="row"><button type="button" class="danger" data-flow-cancel>停止</button>${log}</div></section>`;
+    }
+    if (run.state === 'done') {
+      const save = !run.workflowId && !run.input?.workflowId && !(view.trialTeaching && view.trialTeaching.runId === run.runId) ? '<button type="button" data-flow-save-run>ワークフローとして保存</button>' : '';
+      // 成果は最後の工程（後ろに続く工程が無いもの）の出力を、そのまま文章で出す
+      const text = finalNodes(run).map(outputText).join('\n\n');
+      return `<section class="execution-card flow-outcome"><div class="execution-card-head"><div><h3>完了しました</h3><p>${run.progress.total} 工程</p></div></div>${request}${text ? `<p class="flow-final-text flow-clamp">${e(text)}</p>` : ''}<div class="row"><button type="button" data-flow-rerun>同じ内容で再実行</button>${save}${log}</div></section>`;
+    }
+    if (run.state === 'cancelled') {
+      return `<section class="execution-card flow-outcome"><div class="execution-card-head"><div><h3>停止しました</h3><p>${e(run.failure?.message || '途中で停止しました')}</p></div></div>${request}<div class="row"><button type="button" data-flow-rerun>同じ内容で再実行</button>${log}</div></section>`;
+    }
+    // 失敗: どの工程で・なぜ、を見出しに出し、次の操作は失敗の種類と繰り返しで選ぶ。
+    const error = failed?.error || null;
+    const streak = failureStreak(run, failed);
+    const repeated = streak >= 2 && error?.group !== 'retry';
+    const title = failed ? `「${nodeLabel(failed)}」で失敗しました` : '失敗しました';
+    const reason = error?.message || run.failure?.message || '実行に失敗しました';
+    const resume = (cls) => `<button type="button" class="${cls}" data-flow-resume>続きから再実行</button>`;
+    const edit = `<button type="button" ${repeated ? 'class="primary"' : ''} data-flow-rerun>依頼を直して実行</button>`;
+    const steps = repeated && run.workflowId ? '<button type="button" data-flow-edit-steps>手順を直す</button>' : '';
+    const actions = error?.group === 'setup' ? `${resume('')}${log}`
+      : repeated ? `${edit}${steps}${resume('ghost')}${log}`
+        : `${resume('primary')}${edit}${log}`;
+    const note = repeated ? `<p class="sub">${streak} 回続けて同じ工程で失敗しています</p>` : '';
+    return `<section class="execution-card flow-outcome is-failed"><div class="execution-card-head"><div><h3>${e(title)}</h3><p>${e(reason)}</p>${note}</div></div>${request}<div class="row">${actions}</div></section>`;
+  }
+
   function runHtml() {
     const run = view.run;
     if (!run) return '<div class="blank compact"><p>実行状況を読み込んでいます…</p></div>';
-    const pct = run.progress.total ? Math.round(((run.progress.done + run.progress.failed) / run.progress.total) * 100) : 4;
     const interactions = run.interactions.filter((item) => ['open', 'answered'].includes(item.state)).map((item) => `<section class="execution-card flow-answer-card"><span class="status warn">回答待ち</span><h3>${e(item.prompt)}</h3>${answerHtml(item)}</section>`).join('');
-    const nodes = run.nodes.map((node) => `<li class="flow-run-node ${e(node.state)}"><span class="status ${statusClass(node.state)}">${e(stateLabel(node.state))}</span><div><strong>${e(node.id)}</strong><p>${e(node.goal)}</p>${node.who ? `<small>${e(node.who)}${node.agent?.cli ? ` · ${e(node.agent.cli)}${node.agent.model ? ` / ${e(node.agent.model)}` : ''}` : ''}</small>` : ''}${node.output ? `<details><summary>成果を見る</summary><pre>${e(node.output)}</pre></details>` : ''}</div></li>`).join('');
+    const shown = new Set(finalNodes(run).map((node) => node.id));
+    const nodes = run.nodes.map((node) => {
+      const who = agentLabel(node) ? `<small>${e(agentLabel(node))}</small>` : '';
+      // 結果は文章で出す。失敗した工程の 1 行目（理由）は結果のカードが出しているので繰り返さない。
+      // 完了した実行の最後の工程は、結果のカードが全文を出しているので繰り返さない。
+      let text = run.state === 'done' && shown.has(node.id) ? '' : outputText(node);
+      if (node.state === 'failed' && node.error) text = text.split('\n').slice(1).join('\n').trim();
+      const output = text ? `<p class="flow-node-output flow-clamp">${e(text)}</p>` : '';
+      return `<li class="flow-run-node ${e(node.state)}"><span class="status ${statusClass(node.state)}">${e(stateLabel(node.state))}</span><div><strong>${e(nodeLabel(node))}</strong>${output}${who}</div><button type="button" class="tiny" data-flow-node="${e(node.id)}">詳細</button></li>`;
+    }).join('');
     const delivery = run.delivery && ['published', 'published-manually'].includes(run.delivery.state)
       ? `<section class="execution-card"><div class="execution-card-head"><div><h3>成果ブランチ</h3><p>${e(run.delivery.branch)}</p></div>${view.context?.capabilities?.openDelivery ? '<button type="button" class="primary" data-flow-open-delivery>作業フォルダで開く</button>' : ''}</div></section>` : '';
-    const result = view.result ? `<section class="execution-card"><div class="execution-card-head"><h3>最終成果</h3><button type="button" class="tiny" data-flow-clear-result>閉じる</button></div><pre class="flow-result-text">${e(JSON.stringify(view.result, null, 2))}</pre></section>` : '';
     const log = `<section class="execution-card"><div class="execution-card-head"><h3>実行ログ</h3></div><pre class="log flow-log">${e(view.log?.tail || '実行すると、ここに進行状況が表示されます。')}</pre></section>`;
     const trialCheck = view.trialTeaching && view.trialTeaching.runId === run.runId && run.terminal
       ? `<section class="execution-card"><h3>この結果は期待どおりですか？</h3><p>成果を確認して回答してください。</p><div class="row">${run.state === 'done' ? '<button type="button" class="primary" data-flow-teaching-trial-result="passed">期待どおり</button>' : ''}<button type="button" class="danger" data-flow-teaching-trial-result="failed">修正が必要</button></div></section>` : '';
-    return `<header class="execution-title"><div><span class="eyebrow">${view.trialTeaching?.runId === run.runId ? 'テスト実行' : '実行状況'}</span><h2>${e(run.title)}</h2><p>${e(ctx.dateLabel(run.createdAt))} · ${run.readonly ? '読み取り専用' : '成果を書き込み'}</p></div><button type="button" class="ghost" data-flow-back-run>ワークフローへ戻る</button></header>${run.failure ? `<p class="run-result ng">${e(run.failure.message)}</p>` : ''}<section class="execution-card"><div class="execution-card-head"><div><h3>${e(stateLabel(run.state))}</h3><p>${run.progress.total ? `${run.progress.done} 完了${run.progress.failed ? ` · ${run.progress.failed} 失敗` : ''} / ${run.progress.total} 工程` : '工程を準備しています'}</p></div><span class="status ${statusClass(run.state)}">${e(stateLabel(run.state))}</span></div><div class="flow-progress"><span style="width:${pct}%"></span></div><p class="flow-request">${e(run.request)}</p><div class="row">${!run.terminal ? '<button type="button" class="danger" data-flow-cancel>停止</button>' : ''}<button type="button" data-flow-result>成果を取得</button><button type="button" data-flow-log>ログを見る</button><button type="button" data-flow-rerun>同じ内容で再実行</button>${run.state === 'done' && !run.workflowId && !run.input?.workflowId && !(view.trialTeaching && view.trialTeaching.runId === run.runId) ? '<button type="button" data-flow-save-run>ワークフローとして保存</button>' : ''}${run.terminal ? '<button type="button" class="danger ghost" data-flow-delete-run>履歴を削除</button>' : ''}</div></section>${trialCheck}${interactions}${teamworkHtml(run)}<section class="execution-card"><div class="execution-card-head"><div><h3>工程の進み具合</h3><p>工程ごとの担当と成果</p></div></div><ol class="flow-run-nodes">${nodes || '<li class="muted">計画を作成しています。</li>'}</ol></section>${delivery}${result}${log}`;
+    const headActions = `<div class="row"><button type="button" class="ghost" data-flow-back-run>ワークフローへ戻る</button>${run.terminal ? '<button type="button" class="danger ghost" data-flow-delete-run>履歴を削除</button>' : ''}</div>`;
+    const counts = run.progress.total ? `${run.progress.done} / ${run.progress.total} 完了` : '工程を準備しています';
+    return `<header class="execution-title"><div><span class="eyebrow">${view.trialTeaching?.runId === run.runId ? 'テスト実行' : '実行状況'}</span><h2>${e(run.title)}</h2><p>${e(ctx.dateLabel(run.createdAt))} · ${run.readonly ? '読み取り専用' : '成果を書き込み'}</p></div>${headActions}</header>${outcomeHtml(run)}${trialCheck}${interactions}<section class="execution-card"><div class="execution-card-head"><div><h3>工程</h3><p>${e(counts)}</p></div></div><ol class="flow-run-nodes">${nodes || '<li class="muted">計画を作成しています。</li>'}</ol></section>${teamworkHtml(run)}${delivery}${log}`;
   }
 
   let announced = false;
@@ -886,9 +1009,7 @@ window.createFlowFeature = function createFlowFeature(ctx) {
       const stopped = await ctx.guard('停止', () => ctx.bridge.runCancel(root(), view.run.runId, '画面から停止'));
       if (stopped) { await loadRun(view.run.runId, false); await loadRuns(false); ctx.refresh(); }
     });
-    main.querySelector('[data-flow-result]')?.addEventListener('click', async () => { view.result = await ctx.guard('成果', () => ctx.bridge.runResult(root(), view.run.runId)); ctx.refresh(); });
     main.querySelector('[data-flow-log]')?.addEventListener('click', () => main.querySelector('.flow-log')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-    main.querySelector('[data-flow-clear-result]')?.addEventListener('click', () => { view.result = null; ctx.refresh(); });
     main.querySelector('[data-flow-rerun]')?.addEventListener('click', () => {
       const input = view.run.input;
       if (!input.workflowId) {
@@ -911,6 +1032,27 @@ window.createFlowFeature = function createFlowFeature(ctx) {
       view.model = input.model || view.model;
       selectFlow(target.id);
     });
+    clampTexts(main);
+    for (const button of main.querySelectorAll('[data-flow-node]')) button.addEventListener('click', async () => {
+      const run = view.run;
+      const node = run?.nodes.find((item) => item.id === button.dataset.flowNode);
+      if (!node) return;
+      const dlg = ctx.dialog(nodeLabel(node), nodeDetailHtml(run, node));
+      clampTexts(dlg);
+      const box = dlg.querySelector('.flow-session-log');
+      const found = await ctx.bridge.runNodeLog(root(), run.runId, node.id).catch((err) => ({ error: err.message }));
+      if (!box || !box.isConnected) return;
+      box.textContent = found?.error ? `読み取れません: ${found.error}` : (found?.text || 'この工程のログはありません');
+      if (node.state === 'failed') box.scrollTop = box.scrollHeight; // 失敗した工程は最後の行（止まった所）から見せる
+    });
+    main.querySelector('[data-flow-edit-steps]')?.addEventListener('click', async () => {
+      const id = view.run.workflowId || view.run.input?.workflowId;
+      view.selectedRun = ''; view.run = null; view.result = null; view.log = null;
+      await selectFlow(id);
+      view.detailTab = 'steps';
+      startEditor(null);
+    });
+    main.querySelector('[data-flow-resume]')?.addEventListener('click', () => ctx.toast('試作: 続きから再実行はまだつながっていません'));
     main.querySelector('[data-flow-delete-run]')?.addEventListener('click', async () => {
       if (!window.confirm('この実行履歴を削除しますか？')) return;
       const deleted = await ctx.guard('履歴の削除', () => ctx.bridge.runDelete(root(), view.run.runId));
