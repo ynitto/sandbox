@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 25 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 26 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 24 件）
+## カテゴリ別索引（全 25 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -30,6 +30,7 @@
 |---|---|
 | [`agent-loop-design.md`](./agent-loop-design.md) | agent-loop の設計正典。イベントフック・Webhook・メッセージング・動的インターバル・CLI 差し替え・`slash`・ステートマシンハーネスと、共通 dispatch gate 上の Phase 1 / Phase 2 実行基盤を扱う。設定キー・契約・制約の一覧は[仕様書](../specs/agent-loop-spec.md)に分離してある。 |
 | [`statemachine-deterministic-check-design.md`](./statemachine-deterministic-check-design.md) | statemachine-use のステートに「ハーネスが実行する検査コマンド」（`check`）を宣言でき、その終了コードを遷移の材料にする設計。`output_validator` が見るのはモデルが書いた第1行の書式だけで偽 done を止められない、という実測（初回 13/13 が同形で壊れ、機械層を全部素通り）への回答。落ちたら同じステートへ再投入し、上限到達は `escalate`（実行レベル昇格のシグナル）として失敗一般と区別する。**fork 先への移植を主目的に、スキル側の契約と 2 段階の移植手順を仕様として書いてある**。 |
+| [`codd-design.md`](./codd-design.md) | 実装と設計書が別リポジトリにあるとき、参照先を読んで前提・制約・その他に分け、自分の現状とのずれを見て変更を練り、利用者の確認を経て変える statemachine-use の定義（plan → confirm → apply の 4 ステート）。ずれがあれば参照先の変更案と自分への影響範囲も示し、了承されれば両方を変える。探索は graphify（リポジトリが変わるたびに自動で作り直す）と文字列検索。 |
 
 ### 3. 実装・運用設計（外部連携・インフラ・実行基盤）
 

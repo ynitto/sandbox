@@ -1,0 +1,69 @@
+# codd — 参照先（実装⇔設計書）を読んで、自分の変更を練り、確認してから両方を変える
+#
+# 同じ定義を実装のリポジトリと設計書のリポジトリの両方の `.statemachine/codd/` に置く。
+# どちらの側か・参照先（いくつでも）・使うスキルは同じフォルダの codd.json に書く（参照先のパスは手で直す）。
+#
+#   plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: verify-apply]→ done
+#     ↑                                  └─ NG ─┐
+#     └─────────────────────────────────────────┘（利用者の指摘を受けて練り直す）
+#
+# plan    参照先を探し（graphify・自動更新）、前提・制約・その他に分け、自分の現状とのずれを見て、
+#         自分の変更案を練る。ずれがあれば参照先の変更案を書く。それを自分に適用したときの影響範囲は
+#         verify-plan が測り（graphify affected + git grep）、計画が測ったファイルを漏れなく挙げるまで通さない
+# confirm 計画と測った影響範囲を利用者に見せて OK / NG を訊く
+# apply   自分を変える。参照先の変更案があれば参照先も変える。verify-apply が参照先の実際の変更から
+#         影響範囲を測り直し、測ったファイルを直したか「変更不要」としたかを確かめる
+#
+# 決定的な仕事（探す・グラフの更新・計画の形と根拠の検査・どちらを変えたかの検査）は codd.py が行う。
+
+name: "codd"
+description: "参照先のリポジトリ（実装⇔設計書）を読んで自分の変更を練り、利用者の確認を経て、必要なら参照先も変える"
+initial_state: plan
+
+inputs:
+  request:
+    label: やりたいこと
+    type: multiline
+
+context:
+  answer: ""        # confirm の答え。NG なら指摘ごと plan に渡る（初回は空）
+
+config:
+  max_steps: 30
+  on_no_transition: error
+
+states:
+  plan:
+    description: "参照先を読み、変更を練る"
+    action_file: actions/plan.md
+    write: .codd/plan.md
+    output_validator: "startswith:OK,FAILED"
+    check: "python3 .statemachine/codd/codd.py verify-plan"
+    check_retries: 2
+    check_on_exhausted: escalate
+
+  confirm:
+    description: "計画を利用者に確認する"
+    action_file: actions/confirm.md
+    output_key: answer
+    output_validator: "startswith:OK,NG"
+    max_retries: 1
+
+  apply:
+    description: "計画どおりに変える"
+    action_file: actions/apply.md
+    output_validator: "startswith:OK,FAILED"
+    check: "python3 .statemachine/codd/codd.py verify-apply"
+    check_retries: 2
+    check_on_exhausted: escalate
+
+  done:
+    description: "変えた結果を伝える"
+    action_file: actions/done.md
+    terminal: true
+
+transitions:
+  - {from: plan, to: confirm, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: confirm, to: apply, condition_rule: "startswith:answer:OK", priority: 1}
+  - {from: confirm, to: plan, condition_rule: "startswith:answer:NG", priority: 2}
+  - {from: apply, to: done, condition_rule: "equals:check_ok:true", priority: 1}
