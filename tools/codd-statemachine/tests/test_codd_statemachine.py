@@ -402,6 +402,75 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("impact=3 files", r.stdout)
 
+    # ------------------------------------------------------------ パスのつながり
+
+    def test_verify_plan_follows_path_links_both_ways(self) -> None:
+        # 参照先の文書が自分の変更案のファイルをパスで指しているなら、名前が一致しなくても計画で扱わせる。
+        commit(self.design, {"docs/map.md": "# 対応表\n\n実装は [app](../impl/src/app.py) と `src/app.py`。\n"
+                                            "```\nsrc/app.py はコードブロックの中なので数えない\n```\n"}, "map")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("パスでつながっている参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/map.md", r.stderr)
+        self.assertIn("docs/map.md", (self.impl / ".codd/trace.md").read_text(encoding="utf-8"))
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
+                                             "## 参照先のその他\n\n- 関係なし: 置き場所の一覧だけ（根拠: docs/map.md）"))
+        self.assert_plan_ok()
+
+        # 自分のファイルに書いた注記で、参照先の変更案のファイルとつながる（逆向き）。
+        commit(self.impl, {"src/client.py": "# coherence: doc=docs/api.md\ndef call():\n    return 0\n"}, "client")
+        plan = PLAN_DRIFT.replace("## 参照先のその他\n\n- なし",
+                                  "## 参照先のその他\n\n- 関係なし: 置き場所の一覧だけ（根拠: docs/map.md）")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("パスでつながっている自分のファイルが、計画にありません", r.stderr)
+        self.assertIn("src/client.py", r.stderr)
+        plan = plan.replace("- src/app.py — hello の戻り値", "- src/app.py — hello の戻り値\n- src/client.py — 変更不要: 呼ぶだけ")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_verify_apply_catches_broken_and_dangling_paths(self) -> None:
+        commit(self.impl, {"src/old.py": "def old():\n    return 0\n"}, "old")
+        commit(self.design, {"docs/map.md": "# 対応表\n\n- `src/old.py` は古い入口\n"}, "map")
+        plan = (PLAN_DRIFT
+                .replace("- src/app.py — `hello` が 2 を返す", "- src/app.py — `hello` が 2 を返す\n- src/old.py — `old` を消す")
+                .replace("## 参照先のその他\n\n- なし", "## 参照先のその他\n\n- 古い入口の一覧（根拠: docs/map.md）"))
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.impl / "src/old.py").unlink()
+        (self.design / "docs/api.md").write_text(
+            "# API\n\n## hello\n\nhello は 2 を返す。詳しくは [手順](steps.md)。\n\n"
+            "```\n例: `path/to/nothing.md`\n```\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("書き足したパスが、どのリポジトリにもありません", r.stderr)
+        self.assertIn("docs/api.md:5 → steps.md", r.stderr)
+        self.assertNotIn("nothing.md", r.stderr)          # コードブロックの中は数えない
+        self.assertIn("消したファイルを、まだ指しているところがあります", r.stderr)
+        self.assertIn("docs/map.md:3 → src/old.py", r.stderr)
+        self.assertTrue((self.impl / ".codd/trace-after.md").is_file())
+
+    def test_report_lists_changes_without_path_links(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        r = self.run_pa(self.impl, "report")
+        self.assertIn("## 参照先とパスでつながっていない変更", r.stdout)
+        self.assertIn("- src/app.py\n", r.stdout)
+        (self.impl / "src/app.py").write_text("# coherence: doc=docs/api.md\ndef hello():\n    return 1\n",
+                                              encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        r = self.run_pa(self.impl, "report")
+        self.assertNotIn("## 参照先とパスでつながっていない変更", r.stdout)
+
     def test_verify_apply_needs_a_verified_plan(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-apply")

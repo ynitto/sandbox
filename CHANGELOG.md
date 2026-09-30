@@ -99,6 +99,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   変わったかを参照先ごとに確かめる
 - **使うスキルを設定できる。** `codd.json` の `skills.plan`（計画を練るとき）と `skills.apply`（このリポジトリを変えるとき）。
   参照先を変えるときはその参照先のスキルを使う。`codd.py show` で確かめられる
+- **パスでつながったファイルも漏らさない（codd-gate から取り込み）。** 注記 `coherence: doc=パス`（`code=`・`test=` も）と、
+  文書の `…` で囲んだパス・リンクを「つながり」として拾う。計画で変えるファイルとつながった相手の側のファイルを、計画が
+  扱っていなければ落とす（名前が一致しなくても拾う）。変えたあとは、足した行のパスが実在するか、消したファイルを指したままの
+  ところが無いかも確かめる。終わりの報告には、参照先とつながっていない変更を挙げる。負債のラチェット・更新日時での古さの判定・
+  複数リポジトリの取り寄せなどは、1 回で終わる考え方に合わないので取り込まない（理由は設計書 §8.1）
 - 設計は `docs/designs/codd-statemachine-design.md`、使い方は `tools/codd-statemachine/README.md`
 
 ### statemachine-use・agent-app: 実行する人が入れる値を `inputs:` で宣言する（statemachine-use 2.3.0・agent-app 0.45.0）

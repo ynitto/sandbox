@@ -14,7 +14,8 @@
                         測ったファイルをすべて挙げているかも検査する。通ったら、変える前の印を控える
     verify-apply        計画どおりに変えたか（変えてよいのは計画に挙げたファイルだけ。参照先も同じ）と、
                         検査コマンドを確かめる。参照先を変えたら、実際の変更から影響範囲を測り直し、
-                        測ったファイルを直したか「変更不要」としたかを検査する
+                        測ったファイルを直したか「変更不要」としたかを検査する。書き足したパスが実在するか、
+                        消したファイルを指したままのところが無いかも確かめる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
 
 置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
@@ -30,6 +31,9 @@
 graphify のグラフは、リポジトリの HEAD と作業中の変更から作る「印」を控えておき、
 explore / impact のたびに印が変わっていれば `graphify update` で作り直す（自動更新）。
 グラフは参照先の中ではなく自分の `.codd/graph/` に書く（探すだけで参照先に何も書かない）。
+
+名前の一致とは別に、ファイル同士がパスで指し合う「つながり」（注記 `coherence: doc=パス`、文書の `…` のパスとリンク。
+codd-gate と同じ書き方）もたどる。計画・変更で動くファイルとつながった相手の側のファイルを、計画が扱っているかを見る。
 """
 
 from __future__ import annotations
@@ -896,6 +900,220 @@ def ref_label(ctx: Ctx, name: str, rel: str) -> str:
     return f"{name}:{rel}" if len(ctx.refs) > 1 else rel
 
 
+# ---------------------------------------------------------------- つながり（ファイルが指すパス）
+
+# ファイルが別のファイルを指す書き方。どのファイルにも書ける注記 `coherence: doc=パス`（code・test も）と、
+# 文書（マークダウンなど）の `…` で囲んだパスと、リンク [文字](パス)。文書のコードブロックと `…` の中の注記は例として拾わない。
+_ANNOT = re.compile(r"coherence:\s*(?:doc|code|test)\s*=\s*([^\s`\"'<>]+)")
+_INLINE_PATH = re.compile(r"`([^`\n]{2,200})`")
+_MD_LINK = re.compile(r"\[[^\]]*\]\(([^)#?\s]+)")
+_FENCE = re.compile(r"^\s*(```|~~~)")
+_NOT_PATH_CHARS = set(" \t|$&;<>\"'*?{}()=,")
+DOC_EXTS = (".md", ".markdown", ".rst", ".adoc", ".txt")
+PATH_EXTS = {
+    *DOC_EXTS, ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".php",
+    ".cs", ".c", ".h", ".cpp", ".hpp", ".swift", ".scala", ".sh", ".ps1", ".sql", ".vue", ".svelte",
+    ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".html", ".css", ".example",
+}
+MAX_TRACE_FILES = 200
+MAX_READ_BYTES = 1_000_000
+
+
+@dataclass
+class Claim:
+    line: int      # 1 始まり
+    token: str     # 書かれたまま（`名前:` は付いたまま）
+    kind: str      # annot / code / link
+
+
+def claims_in(rel: str, text: str) -> list[Claim]:
+    """ファイルが指しているパスを拾う。"""
+    is_doc = rel.lower().endswith(DOC_EXTS)
+    out: list[Claim] = []
+    fenced = False
+    for no, line in enumerate(text.splitlines(), 1):
+        if not is_doc:
+            out += [Claim(no, m.group(1).rstrip(".,;:）)-"), "annot") for m in _ANNOT.finditer(line)]
+            continue
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        # 文書では、`…` の中の注記は書き方の例として扱う（<!-- coherence: … --> のように地の文に書いたものだけ拾う）。
+        out += [Claim(no, m.group(1).rstrip(".,;:）)-"), "annot") for m in _ANNOT.finditer(_INLINE_PATH.sub("", line))]
+        for m in _INLINE_PATH.finditer(line):
+            if "coherence:" not in m.group(1) and pathlike(m.group(1)):
+                out.append(Claim(no, m.group(1).strip(), "code"))
+        out += [Claim(no, m.group(1), "link") for m in _MD_LINK.finditer(line) if pathlike(m.group(1))]
+    return out
+
+
+def pathlike(token: str) -> bool:
+    t = token.strip()
+    t = t[2:] if t.startswith("./") else t
+    if not t or "://" in t or t.startswith(("#", "/", "~", "-")) or t.startswith("mailto:"):
+        return False
+    if any(c in _NOT_PATH_CHARS for c in t):
+        return False
+    bare = re.sub(r"(?::\d+(?:-\d+)?)?(?:#.*)?$", "", t)
+    if "/" in bare:
+        return True
+    return Path(bare.split(":", 1)[-1]).suffix.lower() in PATH_EXTS
+
+
+@dataclass
+class Resolved:
+    exists: bool                                          # どこかの側に実在する
+    hits: set[tuple[str, str]] = field(default_factory=set)   # （側の名前。自分は ""、パス）で、その側の scope の中
+    candidates: list[str] = field(default_factory=list)       # 試したパス
+
+
+def all_sides(ctx: Ctx) -> list[tuple[str, Side]]:
+    return [("", ctx.own), *((r.name, r) for r in ctx.refs)]
+
+
+def resolve(ctx: Ctx, from_side: Side, from_rel: str, claim: Claim) -> Resolved:
+    """指しているパスが、どの側のどのファイルかを決める。書いた側のリポジトリにあればそれを採る。"""
+    token = re.sub(r"(?::\d+(?:-\d+)?)?(?:#.*)?$", "", claim.token.strip())
+    sides = all_sides(ctx)
+    m = re.match(r"^([A-Za-z0-9_.-]+):(.+)$", token)
+    if m and m.group(1) in {r.name for r in ctx.refs}:
+        sides = [(m.group(1), ctx.ref(m.group(1)))]
+        token = m.group(2)
+    token = token[2:] if token.startswith("./") else token
+    cands = [os.path.normpath(os.path.join(os.path.dirname(from_rel), token)).replace("\\", "/")]
+    cands = cands + [token.rstrip("/")] if claim.kind == "link" else [token.rstrip("/"), *cands]
+    cands = unique_paths(c for c in cands if c and c != "." and not c.startswith("../"))
+    out = Resolved(False, candidates=cands)
+    near = [(k, s) for k, s in sides if s.path == from_side.path]
+    far = [(k, s) for k, s in sides if s.path != from_side.path]
+    for group in (near, far):
+        for rel in cands:
+            repos = {s.path for _, s in group if (s.path / rel).exists()}
+            if not repos:
+                continue
+            out.exists = True
+            out.hits |= {(k, rel) for k, s in group if s.path in repos and s.has(rel) and (s.path / rel).is_file()}
+        if out.exists:
+            return out
+    return out
+
+
+def read_text(path: Path) -> str | None:
+    try:
+        if path.stat().st_size > MAX_READ_BYTES:
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def files_mentioning(side: Side, words: list[str]) -> list[str]:
+    """scope の中で、どれかの語（ファイル名）を含むファイル（未追跡も）。"""
+    words = unique(words)
+    if not words:
+        return []
+    args = [a for w in words for a in ("-e", w)]
+    rc, out = run(["git", "grep", "--untracked", "-l", "-I", "-F", *args, *side.pathspec()], side.path, GIT_TIMEOUT)
+    return [ln for ln in out.splitlines() if side.has(ln)][:MAX_TRACE_FILES] if rc == 0 else []
+
+
+def linked(ctx: Ctx, key: str, rels: set[str]) -> set[tuple[str, str]]:
+    """ある側のファイルとつながっている、ほかの側のファイル（どちらが指していてもよい）。"""
+    side = ctx.own if not key else ctx.ref(key)
+    out: set[tuple[str, str]] = set()
+    for rel in sorted(rels):
+        text = read_text(side.path / rel) if (side.path / rel).is_file() else None
+        for claim in claims_in(rel, text or ""):
+            out |= {h for h in resolve(ctx, side, rel, claim).hits if h[0] != key}
+    names = [Path(rel).name for rel in rels if Path(rel).name]
+    for other_key, other in all_sides(ctx):
+        if other_key == key:
+            continue
+        for rel in files_mentioning(other, names):
+            text = read_text(other.path / rel)
+            for claim in claims_in(rel, text or ""):
+                if any(h[0] == key and covered(h[1], rels) for h in resolve(ctx, other, rel, claim).hits):
+                    out.add((other_key, rel))
+                    break
+    return out
+
+
+def side_label(ctx: Ctx, key: str, rel: str) -> str:
+    return rel if not key else ref_label(ctx, key, rel)
+
+
+def write_trace(ctx: Ctx, name: str, title: str, groups: list[tuple[str, list[str]]]) -> None:
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    lines = [f"# {title}", ""]
+    for heading, rows in groups:
+        lines += [f"## {heading}", "", *([f"- {r}" for r in rows] or ["- なし"]), ""]
+    (ctx.data / name).write_text("\n".join(lines), encoding="utf-8")
+
+
+def added_lines(side: Side, rel: str) -> set[int] | None:
+    """作業中に足した行の番号（未追跡のファイルなら None = すべて）。"""
+    rc, out = run(["git", "diff", "HEAD", "-U0", "--", rel], side.path, GIT_TIMEOUT)
+    if rc != 0 or not out.strip():
+        tracked = run(["git", "ls-files", "--error-unmatch", "--", rel], side.path, GIT_TIMEOUT)[0] == 0
+        return set() if tracked else None
+    nums: set[int] = set()
+    for m in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", out, re.MULTILINE):
+        start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+        nums.update(range(start, start + count))
+    return nums
+
+
+def broken_refs(ctx: Ctx, touched: dict[str, set[str]]) -> list[str]:
+    """変えたファイルに書き足したパスのうち、どの側にも無いもの。"""
+    out = []
+    for key, side in all_sides(ctx):
+        for rel in sorted(touched.get(key, set())):
+            text = read_text(side.path / rel) if (side.path / rel).is_file() else None
+            if text is None:
+                continue
+            added = added_lines(side, rel)
+            for claim in claims_in(rel, text):
+                if added is not None and claim.line not in added:
+                    continue
+                if claim.kind == "code" and not intended_path(ctx, claim.token):
+                    continue  # `path/to/x.md` のような例は、実在するフォルダで始まるときだけパスとみなす
+                r = resolve(ctx, side, rel, claim)
+                if r.candidates and not r.exists:
+                    out.append(f"{side_label(ctx, key, rel)}:{claim.line} → {claim.token}")
+    return out
+
+
+def intended_path(ctx: Ctx, token: str) -> bool:
+    token = token.split(":", 1)[-1] if re.match(r"^[A-Za-z0-9_.-]+:[^\d]", token) else token
+    token = token[2:] if token.startswith("./") else token
+    first = token.split("/", 1)[0]
+    return "/" in token and any((s.path / first).is_dir() for _, s in all_sides(ctx))
+
+
+def dangling_refs(ctx: Ctx, touched: dict[str, set[str]]) -> list[str]:
+    """消したファイルを、まだ指しているファイル。"""
+    gone = {(key, rel) for key, side in all_sides(ctx) for rel in touched.get(key, set())
+            if not (side.path / rel).exists()}
+    if not gone:
+        return []
+    names = [Path(rel).name for _, rel in gone]
+    out = []
+    for key, side in all_sides(ctx):
+        for rel in files_mentioning(side, names):
+            text = read_text(side.path / rel)
+            for claim in claims_in(rel, text or ""):
+                r = resolve(ctx, side, rel, claim)
+                if r.exists:
+                    continue
+                prefix = claim.token.split(":", 1)[0] if ":" in claim.token else None
+                for gkey, grel in gone:
+                    if grel in r.candidates and (prefix not in {x.name for x in ctx.refs} or prefix == gkey):
+                        out.append(f"{side_label(ctx, key, rel)}:{claim.line} → {side_label(ctx, gkey, grel)}")
+    return sorted(set(out))
+
+
 # ---------------------------------------------------------------- 計画の検査
 
 def sections(text: str, headings: tuple[str, ...]) -> tuple[list[str], dict[str, str]]:
@@ -1076,7 +1294,37 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str]) -> tuple[list[str], list[str]
                 "自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません（読んで、前提・制約・その他・"
                 "ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
                 + ", ".join(missing_refs) + f"（詳細: {DATA_DIRNAME}/ref-impact.md）")
+    problems += trace_plan(ctx, bodies)
     return problems, measured, len(ref_hits)
+
+
+def trace_plan(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
+    """計画で変えるファイルとつながっている（互いにパスで指している）ほかの側のファイルを、計画が扱っているか。"""
+    problems: list[str] = []
+    own_plan = own_planned(ctx, bodies)
+    planned, _ = planned_refs(ctx, bodies)
+    ref_links = sorted(h for h in linked(ctx, "", own_plan) if h[0]) if own_plan else []
+    cited = cited_anywhere(ctx, bodies)
+    missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited]
+    listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
+              | listed_paths(ctx, bodies.get("## 影響範囲", "")))
+    own_links = sorted({rel for name, rels in planned.items() for k, rel in linked(ctx, name, rels) if not k})
+    missing_own = [p for p in own_links if not covered(p, listed)]
+    write_trace(ctx, "trace.md", "計画で変えるファイルとつながっているファイル（パスで指し合っているもの）", [
+        ("自分の変更案のファイルとつながっている参照先のファイル", [ref_label(ctx, n, r) for n, r in ref_links]),
+        ("参照先の変更案のファイルとつながっている自分のファイル", own_links),
+    ])
+    if missing_refs:
+        problems.append(
+            "自分の変更案のファイルとパスでつながっている参照先のファイルを、計画で扱っていません（読んで、前提・制約・"
+            "その他・ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
+            + ", ".join(missing_refs) + f"（詳細: {DATA_DIRNAME}/trace.md）")
+    if missing_own:
+        problems.append(
+            "参照先の変更案のファイルとパスでつながっている自分のファイルが、計画にありません（変えるなら自分の変更案か"
+            f"影響範囲に直し方を、変えなくてよいなら影響範囲に「{NO_CHANGE_MARK}: 理由」を足してください）: "
+            + ", ".join(missing_own) + f"（詳細: {DATA_DIRNAME}/trace.md）")
+    return problems
 
 
 def write_baseline(ctx: Ctx) -> None:
@@ -1226,7 +1474,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                             "計画を直すか、その名前を変えないでください）: " + ", ".join(missing)
                             + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）")
 
-    # 4. 変えるときに使うと決めたスキル・道具を使ったか（.codd/apply.md に書く）。
+    # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
+    #    消したファイルを指したままのファイルが無いか。
+    problems += trace_apply(ctx, a)
+
+    # 5. 変えるときに使うと決めたスキル・道具を使ったか（.codd/apply.md に書く）。
     names = ctx.config["skills"]["apply"] + ctx.config["tools"]["apply"]
     for r in changed:
         names += r.apply_skills + r.apply_tools
@@ -1240,7 +1492,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         else:
             problems += used_problems(log.read_text(encoding="utf-8"), names, f"{DATA_DIRNAME}/apply.md ")
 
-    # 5. 検査コマンド。
+    # 6. 検査コマンド。
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
     for r in changed:
         # 参照先の検査は、参照先に置いた同じマシンの設定（codd.json の check）を使う。
@@ -1256,6 +1508,39 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     print(f"OK own={'changed' if a.own_touched else 'same'} refs={refs_note}"
           + (f" impact={len(measured)} files（{DATA_DIRNAME}/impact-after.md）" if measured else ""))
     return 0
+
+
+def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
+    problems: list[str] = []
+    touched = {"": a.own_touched, **a.touched}
+    cited = cited_anywhere(ctx, a.bodies)
+    own_now = {p for p in a.own_touched if (ctx.root / p).is_file()}
+    ref_links = sorted(h for h in linked(ctx, "", own_now) if h[0]) if own_now else []
+    missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited and r not in a.touched[n]]
+    waived = listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+    own_links = sorted({rel for name in a.changed for k, rel in linked(ctx, name, a.touched[name]) if not k})
+    missing_own = [p for p in own_links if p not in a.own_touched and not covered(p, waived)]
+    broken = broken_refs(ctx, touched)
+    dangling = dangling_refs(ctx, touched)
+    write_trace(ctx, "trace-after.md", "変えたファイルとつながっているファイルと、パスの誤り", [
+        ("自分の変えたファイルとつながっている参照先のファイル", [ref_label(ctx, n, r) for n, r in ref_links]),
+        ("参照先の変えたファイルとつながっている自分のファイル", own_links),
+        ("書き足したのに、どこにも無いパス", broken),
+        ("消したファイルを、まだ指しているところ", dangling),
+    ])
+    if missing_refs:
+        problems.append("自分の変えたファイルとパスでつながっている参照先のファイルを、計画で扱っていません（利用者に確かめて"
+                        "計画を直してください）: " + ", ".join(missing_refs) + f"（詳細: {DATA_DIRNAME}/trace-after.md）")
+    if missing_own:
+        problems.append("参照先の変えたファイルとパスでつながっている自分のファイルを、直していません（直すか、利用者に確かめて"
+                        f"計画の影響範囲に「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(missing_own)
+                        + f"（詳細: {DATA_DIRNAME}/trace-after.md）")
+    if broken:
+        problems.append("書き足したパスが、どのリポジトリにもありません（綴りを直すか、指す先のファイルを計画どおりに作ってください）: "
+                        + ", ".join(broken))
+    if dangling:
+        problems.append("消したファイルを、まだ指しているところがあります（指している側も直してください）: " + ", ".join(dangling))
+    return problems
 
 
 # ---------------------------------------------------------------- 終わりの報告
@@ -1301,6 +1586,12 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
             mark = "直した" if p in a.own_touched else NO_CHANGE_MARK if p in waived else "未対応" \
                 if not p.startswith("(") else ""
             lines.append(f"- {p}" + (f" — {mark}" if mark else ""))
+    own_now = sorted(p for p in a.own_touched if (ctx.root / p).is_file())
+    lonely = [p for p in own_now if not any(k for k, _ in linked(ctx, "", {p}))]
+    if lonely:
+        lines += ["", "## 参照先とパスでつながっていない変更", "",
+                  *[f"- {p}" for p in lonely],
+                  "", "（つなぐなら、ファイルに `coherence: doc=パス` のように書くか、参照先の文書からパスで指す）"]
     todo = a.bodies.get("## 今回やらないこと", "なし")
     lines += ["", "## 次にやること（今回やらないこと）", "", todo if not is_none(todo) else "- なし", "",
               "どちらのリポジトリもコミットしていない。内容を確かめてから、それぞれでコミットする。", ""]
