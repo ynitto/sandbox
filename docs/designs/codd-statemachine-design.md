@@ -200,9 +200,15 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
 ### 5.7 守る決まり・使うスキルと道具
 
 - 決まりのファイル: 自分と（別のリポジトリの）参照先にある `CLAUDE.md`・`AGENTS.md`・`GEMINI.md`・
-  `.github/copilot-instructions.md`・`CONTRIBUTING.md` と、`codd.json` の `rules`。`show` が挙げ、計画の「守る決まり」に
+  `.github/copilot-instructions.md`・`CONTRIBUTING.md` と、`codd.json` の `rules`・`refs[].rules`（と参照先に置いた
+  `codd.json` の `rules`）。`show` が挙げ、計画の「守る決まり」に
   すべて（参照先のものは `名前:パス`）挙がっていなければ verify-plan が落とす。名前をそろえたのは、多くのプロジェクトで
   エージェント向けの約束がこの名前で置かれているため（プロジェクトごとの設定なしに効く）
+- 決まりの発見: パスか最初の見出しに決まりらしい語（ルール・規約・コーディング・rules・guideline・convention など）を
+  含むマークダウンを候補にする（`rules`）。候補は設定に書くまで検査の対象にしない——語の一致だけでは決まりとは限らず、
+  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `install.py`（置くこと自体が同意。
+  `--no-discover-rules` でやめる）と、確認（confirm）で訊いて `rules --write --only` するとき。
+  あとから増えた候補は `show` に出るので、計画のときに読まれる
 - スキルと道具: `skills.plan`・`tools.plan` は計画の「使ったスキルと道具」に、`skills.apply`・`tools.apply`
   （と変えた参照先の分）は `.codd/apply.md` にすべて挙がっていなければ落とす。`.codd/apply.md` は変える前の印より新しいこと
   （前の回の記録を使い回させない）

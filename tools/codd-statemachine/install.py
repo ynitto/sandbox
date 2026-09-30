@@ -18,6 +18,8 @@
 （--ref を渡すと参照先の一覧を丸ごと入れ替える）。使うスキルは codd.json の skills を手で書く。
 `.codd/`（計画・探した結果・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
 このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
+置いたあと、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules /
+refs[].rules に書く（--no-discover-rules でやめる。あとからは `codd.py rules --write`）。
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,7 +49,7 @@ def ref_name(ref: dict) -> str:
 
 
 def install(target: Path, side: str | None, refs: list[str] | None, gitignore: bool = True,
-            scope: list[str] | None = None, ref_scopes: list[str] | None = None) -> Path:
+            scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
     dest = target / DEST_REL
@@ -96,10 +99,27 @@ def install(target: Path, side: str | None, refs: list[str] | None, gitignore: b
     config.setdefault("graphify", "auto")
     config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    if discover:
+        discover_rules(target, dest)
     if gitignore:
         append_line(target / ".gitignore", IGNORE_LINE)
     append_line(target / ".graphifyignore", GRAPHIFY_IGNORE_LINE)
     return dest
+
+
+def discover_rules(target: Path, dest: Path) -> None:
+    """自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探し、codd.json の rules に書く。"""
+    proc = subprocess.run([sys.executable, str(dest / "codd.py"), "rules", "--write"], cwd=target,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        reason = (proc.stderr.strip().splitlines() or [""])[-1]
+        print("  決まりの候補は探せませんでした（参照先を置いてから `python3 .statemachine/codd/codd.py rules --write`）: "
+              + reason, file=sys.stderr)
+        return
+    if "件を" in proc.stdout:
+        print("  決まりの候補を codd.json の rules に書きました（決まりでないものは手で消してください）:")
+        start = proc.stdout.find("候補:")
+        print("\n".join("  " + ln for ln in proc.stdout[start:].splitlines()[1:] if ln.startswith("  - ")))
 
 
 def append_line(path: Path, line: str) -> None:
@@ -121,10 +141,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scope", action="append", help="自分が受け持つフォルダ（繰り返し可。既定はリポジトリ全体）")
     p.add_argument("--ref-scope", action="append",
                    help="`参照先の名前=フォルダ`。その参照先が受け持つフォルダ（繰り返し可）")
+    p.add_argument("--no-discover-rules", action="store_true",
+                   help="決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules に書くのをやめる")
     p.add_argument("--no-gitignore", action="store_true", help=".gitignore に .codd/ を足さない")
     args = p.parse_args(argv)
     dest = install(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
-                   scope=args.scope, ref_scopes=args.ref_scope)
+                   scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8"))
     print(f"置きました: {dest}")
     refs = config.get("refs") or [{"path": config.get("ref_path")}]

@@ -655,8 +655,11 @@ class CoddTest(unittest.TestCase):
         cfg = json.loads((mono / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg["scope"], ["src"])
         self.assertEqual(cfg["refs"], [{"name": "docs", "path": ".", "scope": ["docs"]}])
+        commit(mono, {"docs/coding-rules.md": "# コーディングルール\n"}, "rules")
         r = self.run_pa(mono, "show")
         self.assertIn("- docs: 設計書", r.stdout)
+        self.assertIn("  - docs:docs/coding-rules.md", r.stdout)   # 参照先の候補として挙がる（自分の分に重ねない）
+        self.assertNotIn("  - docs/coding-rules.md", r.stdout)
         self.assertIn("受け持つフォルダ: docs", r.stdout)
 
         # 参照先を探すのは docs の中だけ（src/app.py の hello は拾わない）。
@@ -793,6 +796,48 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "report")
         self.assertEqual(r.returncode, 1)
         self.assertIn("通ったあとに、さらに変わっている", r.stdout)
+
+    def test_rules_in_the_ref_can_be_configured(self) -> None:
+        commit(self.design, {"docs/coding-rules.md": "# コーディングルール\n\n関数名は動詞で始める。\n"}, "rules")
+        self.set_config(self.impl, refs=[{"name": "design", "path": "../design", "rules": ["docs/coding-rules.md"]}])
+        self.assertIn("  - design:docs/coding-rules.md", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/coding-rules.md", r.stderr)
+        self.write_plan(PLAN_ALIGNED.replace("## 守る決まり\n\nなし",
+                                             "## 守る決まり\n\n- docs/coding-rules.md — `hello` は動詞で始まる"))
+        self.assert_plan_ok()
+
+    def test_rules_are_discovered_and_written(self) -> None:
+        commit(self.design, {"docs/coding-rules.md": "# コーディングルール\n",
+                             "docs/conventions/naming.md": "# 名前\n",
+                             "docs/guide.md": "# コーディング規約\n\n本文\n",
+                             "CHANGELOG.md": "# rules の変更履歴\n"}, "rules")
+        r = self.run_pa(self.impl, "rules")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for rel in ("docs/coding-rules.md", "docs/conventions/naming.md", "docs/guide.md"):
+            self.assertIn(f"  - design:{rel}", r.stdout)
+        self.assertNotIn("docs/api.md", r.stdout)
+        self.assertNotIn("CHANGELOG.md", r.stdout)
+        self.assertIn("決まりの候補（設定に無い", self.run_pa(self.impl, "show").stdout)
+        # 絞って書ける。書いたものは決まりになり、候補からは消える。
+        r = self.run_pa(self.impl, "rules", "--write", "--only", "design:docs/coding-rules.md")
+        self.assertIn("1 件を codd.json に書きました", r.stdout)
+        cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["refs"], [{"path": "../design", "name": "design", "rules": ["docs/coding-rules.md"]}])
+        r = self.run_pa(self.impl, "rules")
+        self.assertIn("守る決まり:\n  - design:docs/coding-rules.md", r.stdout)
+        self.assertNotIn("  - design:docs/coding-rules.md\n  - design:docs/conventions", r.stdout)
+
+    def test_install_discovers_rules(self) -> None:
+        commit(self.design, {"docs/coding-rules.md": "# コーディングルール\n"}, "rules")
+        install.install(self.impl, None, None)
+        cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["refs"][0]["rules"], ["docs/coding-rules.md"])
+        install.install(self.impl, None, None)  # 2 回置いても重ならない
+        cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["refs"][0]["rules"], ["docs/coding-rules.md"])
 
     def test_workflow_passes_engine_validation(self) -> None:
         try:

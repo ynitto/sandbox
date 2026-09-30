@@ -60,6 +60,7 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=.
 | `skills` | 任意。`plan` は計画を練るとき、`apply` はこのリポジトリを変えるときに使うスキルの名前の配列 |
 | `tools` | 任意。`skills` と同じ形で、使う道具（MCP サーバーやコマンド）の名前の配列。例: `{"plan": ["github"]}` |
 | `rules` | 任意。守る決まりのファイルの配列（このリポジトリのルートからの相対）。`CLAUDE.md`・`AGENTS.md`・`GEMINI.md`・`.github/copilot-instructions.md`・`CONTRIBUTING.md` は書かなくても、あれば読む |
+| `refs[].rules` | 任意。その参照先にある、守る決まりのファイルの配列（参照先のルートからの相対。例: 設計書のリポジトリの `docs/coding-rules.md`） |
 | `refs[].skills` | 任意。その参照先を変えるときに使うスキル。書かなければ、参照先に置いた `codd.json` の `skills.apply` を使う |
 | `graphify` | `auto`（あれば使う）か `off` |
 | `check` | 任意。変えたあとに実行する検査コマンドの配列（例: `["python3", "-m", "pytest", "-q"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
@@ -178,7 +179,23 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --scope src
 参照先を変えるときは、その参照先のスキル（`refs[].skills`、無ければ参照先の `codd.json` の `skills.apply`）を使う。
 たとえば実装を変えるときは `tdd`、設計書を変えるときは文書を書くスキル、のように側ごとに決められる。
 `tools` には、同じ形で使う道具（MCP サーバーやコマンド）を書く。
-守る決まりは、`CLAUDE.md` などのよくある名前のファイルがあれば自動で挙がり、`rules` で足せる（参照先のものも挙がる）。
+守る決まりは、`CLAUDE.md` などのよくある名前のファイルがあれば自動で挙がり、`rules` と `refs[].rules` で足せる。
+
+設計書のリポジトリにあるコーディングルールのような決まりは、書いても、見つけさせてもよい。
+
+- **書く:** `refs[].rules` にパスを並べる（`{"name": "docs", "path": "../docs", "rules": ["docs/coding-rules.md"]}`）
+- **見つけさせる:** パスか最初の見出しに「ルール・規約・規則・約束・作法・ガイドライン・コーディング」や
+  rules・guideline・convention・coding・style guide・standard・policy を含むマークダウンを、自分と参照先から探して候補にする。
+  `install.py` は置いたときに候補を `codd.json` に書く（`--no-discover-rules` でやめる）。あとから増えた候補は
+  `show` に「決まりの候補」として出て、計画のときに読まれ、確認のときに設定に書くかを訊かれる。手で書くなら次のとおり
+
+```bash
+python3 .statemachine/codd/codd.py rules                    # 守る決まりと、設定に無い候補
+python3 .statemachine/codd/codd.py rules --write            # 候補をすべて codd.json に書く
+python3 .statemachine/codd/codd.py rules --write --only docs:docs/coding-rules.md
+```
+
+書いたあとで決まりでないとわかったものは、`codd.json` から手で消す。
 いま何を使い、何を守るかは次で確かめられる。
 
 ```bash

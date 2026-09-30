@@ -5,6 +5,7 @@
 判断（参照先の前提・制約・その他、ずれ、変更案、影響範囲）はアクションの側でモデルが行う。
 
     show [--phase P]    この側・参照先の一覧と、守る決まりのファイル、使うスキルと道具（計画を練るとき / 変えるとき）を示す
+    rules [--write]     守る決まりのファイルと、決まりらしいマークダウンの候補を示す。--write で候補を codd.json に書く
     explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）。--ref で絞れる
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
     verify-plan         計画（.codd/plan.md）が決まった形か、根拠が参照先に実在するか（パス・行・見出し・
@@ -52,7 +53,7 @@ SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files"}
-REF_KEYS = {"name", "path", "skills", "scope"}
+REF_KEYS = {"name", "path", "skills", "scope", "rules"}
 DEFAULT_MAX_FILES = 20
 
 # どのプロジェクトでも、あれば読む決まりのファイル（エージェント向けの約束・貢献の手引き）。codd.json の rules で足せる。
@@ -155,6 +156,14 @@ def scope_list(value, where: str) -> list[str]:
     return out
 
 
+def rule_list(value, where: str) -> list[str]:
+    if value is None:
+        return []
+    if not (isinstance(value, list) and all(isinstance(r, str) and r.strip() for r in value)):
+        raise CoddError(f'{where} は決まりのファイルの配列です（例: ["docs/coding-rules.md"]）')
+    return unique_paths(r.strip().replace("\\", "/") for r in value)
+
+
 def load_config(machine_dir: Path) -> dict:
     path = machine_dir / CONFIG_NAME
     if not path.is_file():
@@ -193,6 +202,7 @@ def load_config(machine_dir: Path) -> dict:
         names.add(ref["name"])
         ref["skills"] = skill_list(ref.get("skills"), f"{path} の refs[{i}].skills")
         ref["scope"] = scope_list(ref.get("scope"), f"{path} の refs[{i}].scope")
+        ref["rules"] = rule_list(ref.get("rules"), f"{path} の refs[{i}].rules")
     skills = config.get("skills") or {}
     if not isinstance(skills, dict) or set(skills) - set(PHASES):
         raise CoddError(f"{path} の skills は {{\"plan\": [...], \"apply\": [...]}} の形です")
@@ -201,10 +211,7 @@ def load_config(machine_dir: Path) -> dict:
     if not isinstance(tools, dict) or set(tools) - set(PHASES):
         raise CoddError(f"{path} の tools は {{\"plan\": [...], \"apply\": [...]}} の形です（MCP やコマンドの名前）")
     config["tools"] = {phase: skill_list(tools.get(phase), f"{path} の tools.{phase}") for phase in PHASES}
-    rules = config.get("rules") or []
-    if not (isinstance(rules, list) and all(isinstance(r, str) and r.strip() for r in rules)):
-        raise CoddError(f'{path} の rules は決まりのファイルの配列です（例: ["docs/style.md"]）')
-    config["rules"] = [r.strip().replace("\\", "/") for r in rules]
+    config["rules"] = rule_list(config.get("rules"), f"{path} の rules")
     config["scope"] = scope_list(config.get("scope"), f"{path} の scope")
     config.setdefault("graphify", "auto")
     if config["graphify"] not in ("auto", "off"):
@@ -253,6 +260,7 @@ class Ref(Side):
     config: dict | None = None     # 参照先に置いた同じマシンの設定（あれば）
     label: str = "参照先"
     entry_skills: list[str] = field(default_factory=list)
+    entry_rules: list[str] = field(default_factory=list)   # codd.json の refs[].rules
 
     @property
     def apply_skills(self) -> list[str]:
@@ -293,7 +301,8 @@ class Ctx:
                     label = SIDES[ref_config["side"]]
                 except CoddError:
                     ref_config = None  # 参照先側の設定の誤りは、参照先で直す。ここでは読むだけ
-            self.refs.append(Ref(entry["name"], path, entry["scope"], ref_config, label, entry["skills"]))
+            self.refs.append(Ref(entry["name"], path, entry["scope"], ref_config, label, entry["skills"],
+                                 entry["rules"]))
         self.check_layout()
 
     def check_layout(self) -> None:
@@ -317,14 +326,29 @@ class Ctx:
         for rel in unique_paths([*RULE_FILES, *self.config["rules"]]):
             if (self.root / rel).is_file():
                 out.append(("", rel))
+        own = {rel for _, rel in out}
         for r in self.refs:
-            if r.path == self.root:
-                continue  # 同じリポジトリの決まりは自分の分で読む
-            extra = (r.config or {}).get("rules", [])
-            for rel in unique_paths([*RULE_FILES, *extra]):
-                if (r.path / rel).is_file():
+            same = r.path == self.root  # 同じリポジトリのよくある名前の決まりは、自分の分で読む
+            extra = [*r.entry_rules, *(r.config or {}).get("rules", [])]
+            for rel in unique_paths([*([] if same else RULE_FILES), *extra]):
+                if (r.path / rel).is_file() and not (same and rel in own):
                     out.append((r.name, rel))
         return out
+
+    def rule_candidates(self) -> list[tuple[str, str]]:
+        """決まりらしいのに、まだ設定に無いマークダウン（（参照先の名前か ""、パス））。"""
+        known = set(self.rule_files())
+        out = []
+        # 自分はリポジトリ全体から探す（決まりは scope の外、ルートにあることが多い）。同じリポジトリの参照先の分は除く。
+        same = [r for r in self.refs if r.path == self.root]
+        for name, side in [("", Side("own", self.root, [])), *[(r.name, r) for r in self.refs]]:
+            for rel in discover_rules(side):
+                if not name and any(r.has(rel) and r.scope for r in same):
+                    continue
+                key = (name, rel)
+                if key not in known and ("", rel) not in known and key not in out:
+                    out.append(key)
+        return out[:MAX_RULE_CANDIDATES]
 
     def ref(self, name: str) -> Ref:
         for r in self.refs:
@@ -337,6 +361,36 @@ class Ctx:
         if repo == self.root:
             return "own"
         return "ref-" + next(r.name for r in self.refs if r.path == repo)
+
+
+MAX_RULE_CANDIDATES = 20
+# 決まりらしいマークダウンの目印（パスの語か、最初の見出し）。
+_RULE_WORDS = re.compile(
+    r"(?:^|[^a-z])(rules?|guidelines?|conventions?|coding|style-?guide|standards?|policy|policies|contributing)"
+    r"(?:[^a-z]|$)|規約|ルール|規則|約束|作法|規程|ガイドライン|コーディング")
+_NOT_RULES = re.compile(r"(?:^|/)(changelog|history|license)[^/]*$", re.IGNORECASE)
+
+
+def discover_rules(side: Side) -> list[str]:
+    """scope の中のマークダウンのうち、パスか最初の見出しが決まりらしいもの。"""
+    rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
+                  side.path, GIT_TIMEOUT)
+    found = []
+    for rel in out.splitlines() if rc == 0 else []:
+        if not rel.lower().endswith((".md", ".markdown")) or _NOT_RULES.search(rel) or not side.has(rel):
+            continue
+        hit = _RULE_WORDS.search(rel.lower())
+        if not hit:
+            try:
+                with open(side.path / rel, encoding="utf-8", errors="replace") as f:
+                    head_text = f.read(4000)
+            except OSError:
+                continue
+            m = _HEADING.search(head_text)
+            hit = m and _RULE_WORDS.search(m.group(1).lower())
+        if hit:
+            found.append(rel)
+    return found
 
 
 def unique_paths(paths) -> list[str]:
@@ -429,6 +483,11 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     print("守る決まり（読んで、計画の「守る決まり」に挙げる）:")
     for name, rel in rules or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
+    candidates = ctx.rule_candidates()
+    if candidates:
+        print("決まりの候補（設定に無い。決まりなら `codd.py rules --write` で設定に書く）:")
+        for name, rel in candidates:
+            print(f"  - {name + ':' if name else ''}{rel}")
     phases = [args.phase] if args.phase else list(PHASES)
     for phase in phases:
         print(f"使うスキルと道具（{PHASES[phase]}）:")
@@ -441,6 +500,37 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     print(f"1 回で変えるファイルの上限: {ctx.max_files}（超えるぶんは計画の「今回やらないこと」へ）")
     if len(ctx.refs) > 1:
         print("計画の根拠は `名前:パス` で書く（例: " + f"{ctx.refs[0].name}:docs/api.md）")
+    return 0
+
+
+def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
+    """決まりのファイル（設定済み・よくある名前）と候補を示す。--write で候補を codd.json に書く。"""
+    print("守る決まり:")
+    for name, rel in ctx.rule_files() or [("", "")]:
+        print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
+    candidates = ctx.rule_candidates()
+    if args.only:
+        candidates = [c for c in candidates if (f"{c[0]}:{c[1]}" if c[0] else c[1]) in args.only]
+    print("候補:" if candidates else "候補: なし")
+    for name, rel in candidates:
+        print(f"  - {name + ':' if name else ''}{rel}")
+    if not (args.write and candidates):
+        return 0
+    path = MACHINE_DIR / CONFIG_NAME
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for name, rel in candidates:
+        if not name:
+            raw.setdefault("rules", [])
+            target = raw["rules"]
+        else:
+            entry = next(e for e in raw.get("refs", [])
+                         if e.get("name", Path(str(e["path"]).rstrip("/\\")).name) == name)
+            entry.setdefault("name", name)
+            target = entry.setdefault("rules", [])
+        if rel not in target:
+            target.append(rel)
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"{len(candidates)} 件を {CONFIG_NAME} に書きました（決まりでないものは手で消してください）")
     return 0
 
 
@@ -1201,11 +1291,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
+    ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
+    ru.add_argument("--write", action="store_true", help="候補を codd.json の rules / refs[].rules に書く")
+    ru.add_argument("--only", action="append", help="書く候補を絞る（`名前:パス` か `パス`。繰り返し可）")
     return p
 
 
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
-            "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report}
+            "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
+            "rules": cmd_rules}
 
 
 def main(argv: list[str] | None = None) -> int:
