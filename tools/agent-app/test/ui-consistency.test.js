@@ -529,3 +529,18 @@ test('分担の形は、置き場ごとの既存の選択肢の部品（.seg）�
   assert.ok(!/border-radius: 999px/.test((workbenchCss.match(/^\.seg[^{]*\{[^}]*\}$/gm) || []).join('\n')), '丸い選択肢の見た目を残さない');
   assert.ok(!/^\.flow-shape\b|#flow-teach-shape/m.test(css + workbenchCss), '形の並びに私物の見た目を足さない');
 });
+
+test('実行の詳細は工程の結果を文章で出し、過程と全文は詳細のダイアログに置く', () => {
+  const flow = read('renderer/automation/flow.js');
+  const css = read('renderer/automation/styles.css');
+  const run = flow.slice(flow.indexOf('function runHtml'), flow.indexOf('let announced'));
+  assert.ok(!/<details><summary>成果を見る/.test(run), '工程の結果を折りたたみに隠さない');
+  assert.match(run, /class="tiny" data-flow-node=/, '工程の行の「詳細」は実行履歴の行と同じ小さなボタン');
+  assert.match(flow, /'続きを見る'/, 'はみ出した結果は「続きを見る」で開く');
+  assert.match(flow, /'隠す'/, '開いたら「隠す」に変わる');
+  assert.match(flow, /<h3>過程<\/h3>/, 'ダイアログは過程から');
+  assert.match(flow, /class="log flow-session-log"/, 'セッションログは既存の黒い出力面');
+  assert.match(css, /\.flow-session-log\s*\{[^}]*height:/, 'セッションログは高さを決めた枠でスクロールする');
+  assert.ok(!/stateLabel\(node\.state\)[^;]*回答待ち/.test(run), '動かなかった工程を回答待ちと出さない');
+  assert.ok(!/JSON\.stringify\(view\.result/.test(flow), '成果を JSON のまま出さない');
+});

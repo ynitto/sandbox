@@ -37,7 +37,7 @@ test('AIワークフローは既存のカードと2カラムを使い、編集�
   const flow = read('renderer/automation/flow.js');
   const css = read('renderer/automation/styles.css');
   assert.ok(renderer.includes('window.createFlowFeature('));
-  for (const action of ['data-flow-new', 'data-flow-edit', 'data-flow-start', 'data-flow-answer', 'data-flow-result', 'data-flow-open-delivery']) {
+  for (const action of ['data-flow-new', 'data-flow-edit', 'data-flow-start', 'data-flow-answer', 'data-flow-node', 'data-flow-resume', 'data-flow-open-delivery']) {
     assert.ok(flow.includes(action), action);
   }
   assert.match(flow, /execution-layout flow-layout/);

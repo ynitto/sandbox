@@ -553,6 +553,7 @@ function readRun(root, id, hostRoot = '') {
     strategy: graph.strategy && typeof graph.strategy === 'object' ? graph.strategy : null,
     nodes, interactions, final, delivery: deliveryOf(nodes, finalJson), log: { path: files.log },
     teamwork: terminal ? teamworkOf(files.run, graph, nodes, final) : null,
+    attempts: attemptsOf(files.id),
   };
 }
 
@@ -665,6 +666,45 @@ function readLog(root, id, bytes = 16 * 1024, hostRoot = '') {
 // その工程を担当した worker の行（claim してから次の claim まで）を切り出し、工程の出来事
 // （events/*.jsonl の node が一致するもの）と時刻順に並べる。担当が分からないときは工程名を含む行だけ。
 const LOG_LINE = /^\[([^\]]+)\] \[([^\]]+)\] (.*)$/;
+// 失敗した実行を「続きから再実行」する。同じ run-id で agent-flow を起こし直すと、agent-flow が
+// 失敗した工程だけを待機に戻してやり直す（済んだ工程は作り直さない）。やり直すと失敗した工程の
+// 結果は消えるので、画面が「同じ工程で続けて失敗したか」を数えられるよう、消える前の失敗を
+// attempts に控えておく（agent-app 自身の控え。agent-flow は読まない）。
+function attemptsFile(id) {
+  return path.join(logDir(), `${validRunId(id)}.attempts.json`);
+}
+
+function attemptsOf(id) {
+  const list = readJson(attemptsFile(id));
+  return Array.isArray(list) ? list : [];
+}
+
+async function resume(root, id, deps) {
+  const detail = readRun(root, id, deps.hostRoot || '');
+  if (detail.state !== 'failed') throw flowError('run-not-failed', '失敗した実行だけを続きから再実行できます');
+  const ctx = await deps.getContext();
+  if (!ctx.tools.agentFlow.ok) throw flowError('tool-missing', 'agent-flow を起動できません', { detail: ctx.tools.agentFlow.summary });
+  const agent = String(deps.agent || detail.input.agent || ctx.defaults.agent || '');
+  if (!ctx.agents.includes(agent)) throw flowError('agent-unknown', '利用できるAIを選び直してください');
+  const failed = detail.nodes.find((node) => node.state === 'failed');
+  if (failed) {
+    const attempts = attemptsOf(detail.runId);
+    attempts.push({ at: isoSeconds(), nodeId: failed.id, cls: failed.error ? failed.error.cls : 'content', message: failed.error ? failed.error.message : '' });
+    fs.mkdirSync(logDir(), { recursive: true });
+    flowStore.writeAtomic(attemptsFile(detail.runId), attempts);
+  }
+  const hostPath = typeof deps.hostPath === 'function' ? deps.hostPath : (value) => String(value || '');
+  const model = String(deps.model || detail.input.model || '');
+  const args = ['--bus', busDir(), ...configArgs(deps.root || root, hostPath), '--run-id', detail.runId, '--agent-cli', agent, 'run'];
+  if (model) args.push('--model', model);
+  try {
+    await deps.startDetached('agent-flow', args, { cwd: root, logFile: path.join(logDir(), `${detail.runId}.log`) });
+  } catch (err) {
+    throw flowError('launch-failed', 'agent-flow を起動できません', { detail: err.message });
+  }
+  return { runId: detail.runId, state: 'launching' };
+}
+
 function readNodeLog(root, id, nodeId, hostRoot = '') {
   const detail = readRun(root, id, hostRoot);
   const node = detail.nodes.find((item) => item.id === String(nodeId || ''));
@@ -765,6 +805,6 @@ function planDraft(root, id, hostRoot = '') {
 
 module.exports = {
   planDraft, TERMINAL, NO_LEASE_GRACE_SECONDS, busDir, logDir, runIdNow, catalog, context, start,
-  listRuns, readRun, cancel, respond, result, readLog, readNodeLog, deleteRun, openDelivery,
+  listRuns, readRun, cancel, respond, result, readLog, readNodeLog, resume, deleteRun, openDelivery,
   patterns, alive, claimWinner, interactionsOf, fileRevision, failureOf, deliveryOf,
 };

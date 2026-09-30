@@ -61,6 +61,8 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const logChanged = (view.log?.tail || '') !== (log?.tail || '');
     view.run = detail;
     view.log = log;
+    // 起動に失敗して running に戻らないときに待ち続けない（1 分で諦めて失敗の表示へ戻す）
+    if (view.resuming === runId && (!detail.terminal || Date.now() - view.resumingAt > 60000)) view.resuming = '';
     if ((changed || logChanged) && repaint && active() && safeToRepaint()) ctx.refresh();
     schedulePolling();
   }
@@ -83,7 +85,8 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     clearTimeout(runTimer);
     clearTimeout(listTimer);
     if (!active()) return;
-    if (view.run && !view.run.terminal) runTimer = setTimeout(() => loadRun(view.selectedRun), 2000);
+    // 続きから再実行の直後は、agent-flow が実行を running に戻すまで終わった状態のまま見えるので、それも追う
+    if (view.run && (!view.run.terminal || view.resuming === view.run.runId)) runTimer = setTimeout(() => loadRun(view.selectedRun), 2000);
     if (view.runs.some((item) => !item.terminal)) listTimer = setTimeout(() => loadRuns(), 5000);
   }
 
@@ -375,27 +378,6 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     return `<div class="field"><label>回答</label><textarea rows="3" data-flow-answer-value="${e(interaction.interactionId)}"></textarea></div><button type="button" class="primary" data-flow-answer="${e(interaction.interactionId)}">回答する</button>`;
   }
 
-  // 分担と確認: 複数の AI にした見返りを、担当と確認の事実だけで見せる（数えるのは main 側）。
-  const ROLE_LABELS = { route: '振り分ける', make: '作る', compare: '比べる', check: '確かめる', person: '人の確認', merge: 'まとめる' };
-  function teamworkHtml(run) {
-    const tw = run.terminal ? run.teamwork : null;
-    if (!tw || !tw.roles.length) return '';
-    const checks = tw.roles.filter((row) => row.role === 'check' || row.role === 'person');
-    const last = checks.flatMap((row) => row.verdicts).slice(-1)[0];
-    const verdict = tw.verification === 'passed' || tw.verification === 'failed' ? tw.verification : last === 'pass' ? 'passed' : last === 'fail' ? 'failed' : '';
-    const lead = tw.agents ? `${tw.agents} つの AI で進め、` : '分担して進め、';
-    const tail = !checks.length ? '別の担当による確認はありませんでした' : tw.reworks ? `確認で ${tw.reworks} 回作り直しました` : '確認で作り直しはありませんでした';
-    const rows = tw.roles.map((row) => {
-      const words = row.role === 'person' ? { pass: '承認', fail: '差し戻し' } : { pass: '合格', fail: '不合格' };
-      const count = row.verdicts.length === 1 ? `1 回で${words[row.verdicts[0]]}` : row.verdicts.length ? row.verdicts.map((v) => words[v]).join(' → ') : `${row.attempts} 回`;
-      const who = row.agents.length ? row.agents.join('、') : row.role === 'person' ? '人' : '—';
-      return `<li><strong>${e(ROLE_LABELS[row.role] || row.role)}</strong><div><span>${e(who)}</span></div><small>${e(count)}</small></li>`;
-    }).join('');
-    const choices = tw.choices.map((c) => `<li><strong>選んだ結果</strong><div><span>候補 ${c.candidates} 件 → 採用 ${c.kept} 件</span></div><small>${c.undecided ? '決めきれず停止' : c.decidedBy === 'machine' ? '基準で決定' : c.decidedBy === 'judge' ? '判定 AI で決定' : 'AI が選択'}</small></li>`).join('');
-    const status = verdict ? `<span class="status ${verdict === 'passed' ? 'ok' : 'ng'}">${verdict === 'passed' ? '合格' : '不合格'}</span>` : '';
-    return `<section class="execution-card flow-teamwork"><div class="execution-card-head"><div><h3>分担と確認</h3><p>${e(lead + tail)}</p></div>${status}</div><ul class="run-history">${rows}${choices}</ul></section>`;
-  }
-
   // 工程の呼び名。定義のラベル（差し戻しで増えた `-r1` などは元の工程のもの）を使い、無いときだけ ID。
   function nodeLabel(node) {
     if (node.label) return node.label;
@@ -411,7 +393,12 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const same = (item) => (run.workflowId ? item.workflowId === run.workflowId : !item.workflowId && item.request === run.request);
     const older = view.runs.filter((item) => item.runId !== run.runId && item.terminal && same(item) && String(item.createdAt) < String(run.createdAt))
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    // 同じ実行の中で続きから再実行した分（やり直す前の失敗の控え）を先に数える
     let streak = 1;
+    for (const attempt of [...(run.attempts || [])].reverse()) {
+      if (attempt.nodeId !== failed.id || attempt.cls !== failed.error?.cls) return streak;
+      streak += 1;
+    }
     for (const item of older) {
       if (!item.failedNode || item.failedNode.id !== failed.id || item.failedNode.cls !== failed.error?.cls) break;
       streak += 1;
@@ -494,6 +481,9 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     if (run.state === 'cancelled') {
       return `<section class="execution-card flow-outcome"><div class="execution-card-head"><div><h3>停止しました</h3><p>${e(run.failure?.message || '途中で停止しました')}</p></div></div>${request}<div class="row"><button type="button" data-flow-rerun>同じ内容で再実行</button>${log}</div></section>`;
     }
+    if (view.resuming === run.runId) {
+      return `<section class="execution-card flow-outcome"><div class="execution-card-head"><div><h3>再実行を始めています</h3><p>失敗した工程から続けます</p></div></div>${request}<div class="row"><button type="button" disabled>続きから再実行</button>${log}</div></section>`;
+    }
     // 失敗: どの工程で・なぜ、を見出しに出し、次の操作は失敗の種類と繰り返しで選ぶ。
     const error = failed?.error || null;
     const streak = failureStreak(run, failed);
@@ -508,6 +498,27 @@ window.createFlowFeature = function createFlowFeature(ctx) {
         : `${resume('primary')}${edit}${log}`;
     const note = repeated ? `<p class="sub">${streak} 回続けて同じ工程で失敗しています</p>` : '';
     return `<section class="execution-card flow-outcome is-failed"><div class="execution-card-head"><div><h3>${e(title)}</h3><p>${e(reason)}</p>${note}</div></div>${request}<div class="row">${actions}</div></section>`;
+  }
+
+  // 分担と確認: 複数の AI にした見返りを、担当と確認の事実だけで見せる（数えるのは main 側）。
+  const ROLE_LABELS = { route: '振り分ける', make: '作る', compare: '比べる', check: '確かめる', person: '人の確認', merge: 'まとめる' };
+  function teamworkHtml(run) {
+    const tw = run.terminal ? run.teamwork : null;
+    if (!tw || !tw.roles.length) return '';
+    const checks = tw.roles.filter((row) => row.role === 'check' || row.role === 'person');
+    const last = checks.flatMap((row) => row.verdicts).slice(-1)[0];
+    const verdict = tw.verification === 'passed' || tw.verification === 'failed' ? tw.verification : last === 'pass' ? 'passed' : last === 'fail' ? 'failed' : '';
+    const lead = tw.agents ? `${tw.agents} つの AI で進め、` : '分担して進め、';
+    const tail = !checks.length ? '別の担当による確認はありませんでした' : tw.reworks ? `確認で ${tw.reworks} 回作り直しました` : '確認で作り直しはありませんでした';
+    const rows = tw.roles.map((row) => {
+      const words = row.role === 'person' ? { pass: '承認', fail: '差し戻し' } : { pass: '合格', fail: '不合格' };
+      const count = row.verdicts.length === 1 ? `1 回で${words[row.verdicts[0]]}` : row.verdicts.length ? row.verdicts.map((v) => words[v]).join(' → ') : `${row.attempts} 回`;
+      const who = row.agents.length ? row.agents.join('、') : row.role === 'person' ? '人' : '—';
+      return `<li><strong>${e(ROLE_LABELS[row.role] || row.role)}</strong><div><span>${e(who)}</span></div><small>${e(count)}</small></li>`;
+    }).join('');
+    const choices = tw.choices.map((c) => `<li><strong>選んだ結果</strong><div><span>候補 ${c.candidates} 件 → 採用 ${c.kept} 件</span></div><small>${c.undecided ? '決めきれず停止' : c.decidedBy === 'machine' ? '基準で決定' : c.decidedBy === 'judge' ? '判定 AI で決定' : 'AI が選択'}</small></li>`).join('');
+    const status = verdict ? `<span class="status ${verdict === 'passed' ? 'ok' : 'ng'}">${verdict === 'passed' ? '合格' : '不合格'}</span>` : '';
+    return `<section class="execution-card flow-teamwork"><div class="execution-card-head"><div><h3>分担と確認</h3><p>${e(lead + tail)}</p></div>${status}</div><ul class="run-history">${rows}${choices}</ul></section>`;
   }
 
   function runHtml() {
@@ -1052,7 +1063,17 @@ window.createFlowFeature = function createFlowFeature(ctx) {
       view.detailTab = 'steps';
       startEditor(null);
     });
-    main.querySelector('[data-flow-resume]')?.addEventListener('click', () => ctx.toast('試作: 続きから再実行はまだつながっていません'));
+    main.querySelector('[data-flow-resume]')?.addEventListener('click', async () => {
+      const runId = view.run.runId;
+      const started = await ctx.guard('続きから再実行', () => ctx.bridge.runResume(root(), runId));
+      if (!started) return;
+      view.resuming = runId;
+      view.resumingAt = Date.now();
+      ctx.toast('失敗した工程から再実行します');
+      await loadRun(runId, false);
+      await loadRuns(false);
+      ctx.refresh();
+    });
     main.querySelector('[data-flow-delete-run]')?.addEventListener('click', async () => {
       if (!window.confirm('この実行履歴を削除しますか？')) return;
       const deleted = await ctx.guard('履歴の削除', () => ctx.bridge.runDelete(root(), view.run.runId));

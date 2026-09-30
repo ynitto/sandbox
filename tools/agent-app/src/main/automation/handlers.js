@@ -358,6 +358,15 @@ function registerIpcHandlers(getWindow, options = {}) {
     const agent = requestedAgent ? await resolveAgent(requestedAgent, 'flow', root) : '';
     return agentFlow.start({ ...p, agent, model: selected ? selected.model : p.model }, { root, getContext, startDetached: runStartDetached, hostPath });
   });
+  register('flow:run:resume', async (p) => {
+    const root = selectedRoot(p);
+    const cfg = settings.load(getUserData());
+    const getContext = () => agentFlow.context({ root, capture: runCapture, agentDefinitions, defaults: { agent: cfg.agent, model: cfg.model } });
+    const run = agentFlow.readRun(root, p.runId, hostRootOf(p));
+    const requested = String(run.input.agent || cfg.agent || '');
+    const agent = requested ? await resolveAgent(requested, 'flow', root) : '';
+    return agentFlow.resume(root, p.runId, { root, agent, getContext, startDetached: runStartDetached, hostPath, hostRoot: hostRootOf(p) });
+  });
   register('flow:run:list', (p) => agentFlow.listRuns(selectedRoot(p), p.limit, hostRootOf(p)));
   register('flow:run:plan', (p) => agentFlow.planDraft(selectedRoot(p), p.runId, hostRootOf(p)));
   // 設定画面はリポジトリを選んでいなくても開けるので、root は無くてよい（ホームの設定を使う）。

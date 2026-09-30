@@ -1120,6 +1120,7 @@ const flowFeature = window.createFlowFeature({
     runRespond: (root, runId, interactionId, answer) => automationHost.flowRunRespond(root, runId, interactionId, answer),
     runResult: (root, runId) => automationHost.flowRunResult(root, runId),
     runLog: (root, runId) => automationHost.flowRunLog(root, runId),
+    runResume: (root, runId) => automationHost.flowRunResume(root, runId),
     runNodeLog: (root, runId, nodeId) => automationHost.flowRunNodeLog(root, runId, nodeId),
     runDelete: (root, runId) => automationHost.flowRunDelete(root, runId),
     openDelivery: (root, runId) => automationHost.flowRunOpenDelivery(root, runId),

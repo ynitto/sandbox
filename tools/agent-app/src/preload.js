@@ -197,6 +197,7 @@ contextBridge.exposeInMainWorld('api', {
     flowRunRespond: (root, runId, interactionId, answer) => invoke('automation:flow:run:respond', { root, runId, interactionId, answer }),
     flowRunResult: (root, runId) => invoke('automation:flow:run:result', { root, runId }),
     flowRunLog: (root, runId, bytes) => invoke('automation:flow:run:log', { root, runId, bytes }),
+    flowRunResume: (root, runId) => invoke('automation:flow:run:resume', { root, runId }),
     flowRunNodeLog: (root, runId, nodeId) => invoke('automation:flow:run:node-log', { root, runId, nodeId }),
     flowRunDelete: (root, runId) => invoke('automation:flow:run:delete', { root, runId }),
     flowRunOpenDelivery: (root, runId) => invoke('automation:flow:run:openDelivery', { root, runId }),
