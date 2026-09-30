@@ -839,6 +839,26 @@ class CoddTest(unittest.TestCase):
         cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg["refs"][0]["rules"], ["docs/coding-rules.md"])
 
+    def test_rules_accept_globs(self) -> None:
+        commit(self.design, {"docs/rules/coding.md": "# a\n", "docs/rules/naming/api.md": "# b\n",
+                             "docs/rules/notes.txt": "x\n", "docs/api-rules.md": "# c\n"}, "rules")
+        self.set_config(self.impl, refs=[{"name": "design", "path": "../design",
+                                          "rules": ["docs/rules/**/*.md", "docs/*-rules.md", "docs/gone/*.md"]}])
+        r = self.run_pa(self.impl, "rules")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("守る決まり:\n  - design:docs/rules/coding.md\n  - design:docs/rules/naming/api.md\n"
+                      "  - design:docs/api-rules.md\n", r.stdout)
+        self.assertNotIn("notes.txt", r.stdout)
+        self.assertIn("! design:docs/gone/*.md に当たるファイルがありません", r.stdout)
+        self.assertNotIn("候補:\n  - design:docs/rules", r.stdout)  # glob で当たったものは候補に出さない
+        self.write_plan(PLAN_ALIGNED.replace("## 守る決まり\n\nなし",
+                                             "## 守る決まり\n\n- docs/rules/coding.md — 動詞で始める"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/rules/naming/api.md", r.stderr)
+        self.set_config(self.impl, rules=["../outside.md"])
+        self.assertEqual(self.run_pa(self.impl, "show").returncode, 2)
+
     def test_workflow_passes_engine_validation(self) -> None:
         try:
             import yaml  # noqa: F401

@@ -161,7 +161,11 @@ def rule_list(value, where: str) -> list[str]:
         return []
     if not (isinstance(value, list) and all(isinstance(r, str) and r.strip() for r in value)):
         raise CoddError(f'{where} は決まりのファイルの配列です（例: ["docs/coding-rules.md"]）')
-    return unique_paths(r.strip().replace("\\", "/") for r in value)
+    out = unique_paths(r.strip().replace("\\", "/") for r in value)
+    bad = [r for r in out if r.startswith("/") or ".." in r.split("/")]
+    if bad:
+        raise CoddError(f"{where} にはリポジトリの中のパスか glob を相対で書きます（今: {', '.join(bad)}）")
+    return out
 
 
 def load_config(machine_dir: Path) -> dict:
@@ -323,16 +327,22 @@ class Ctx:
     def rule_files(self) -> list[tuple[str, str]]:
         """守る決まりのファイル（（参照先の名前か ""、パス））。自分の分と、別のリポジトリの参照先の分。"""
         out: list[tuple[str, str]] = []
-        for rel in unique_paths([*RULE_FILES, *self.config["rules"]]):
-            if (self.root / rel).is_file():
-                out.append(("", rel))
+        for rel in expand_rules(self.root, [*RULE_FILES, *self.config["rules"]]):
+            out.append(("", rel))
         own = {rel for _, rel in out}
         for r in self.refs:
             same = r.path == self.root  # 同じリポジトリのよくある名前の決まりは、自分の分で読む
             extra = [*r.entry_rules, *(r.config or {}).get("rules", [])]
-            for rel in unique_paths([*([] if same else RULE_FILES), *extra]):
-                if (r.path / rel).is_file() and not (same and rel in own):
+            for rel in expand_rules(r.path, [*([] if same else RULE_FILES), *extra]):
+                if not (same and rel in own):
                     out.append((r.name, rel))
+        return out
+
+    def unmatched_rules(self) -> list[str]:
+        """設定に書いたのに、1 つのファイルにも当たらない決まり（綴り違い・移動に気付けるように）。"""
+        out = [p for p in self.config["rules"] if not expand_rules(self.root, [p])]
+        for r in self.refs:
+            out += [f"{r.name}:{p}" for p in r.entry_rules if not expand_rules(r.path, [p])]
         return out
 
     def rule_candidates(self) -> list[tuple[str, str]]:
@@ -369,6 +379,26 @@ _RULE_WORDS = re.compile(
     r"(?:^|[^a-z])(rules?|guidelines?|conventions?|coding|style-?guide|standards?|policy|policies|contributing)"
     r"(?:[^a-z]|$)|規約|ルール|規則|約束|作法|規程|ガイドライン|コーディング")
 _NOT_RULES = re.compile(r"(?:^|/)(changelog|history|license)[^/]*$", re.IGNORECASE)
+
+
+_GLOB_CHARS = re.compile(r"[*?\[]")
+
+
+def expand_rules(repo: Path, patterns: list[str]) -> list[str]:
+    """決まりのパスを実在するファイルに開く。`*`・`?`・`[...]`・`**` を含むものは glob として
+    （git の :(glob) と同じ意味。`*` はフォルダをまたがず、`**/` はまたぐ）、追跡中と未追跡のファイルから引く。"""
+    out: list[str] = []
+    for pat in unique_paths(patterns):
+        if _GLOB_CHARS.search(pat):
+            # 除外のパス指定を並べると :(glob) が効かなくなる git があるので、作業フォルダとマシンは後から除く。
+            rc, found = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", f":(glob){pat}"],
+                            repo, GIT_TIMEOUT)
+            hits = sorted(ln for ln in found.splitlines() if (repo / ln).is_file()
+                          and not in_scope(ln, [DATA_DIRNAME, MACHINE_REL])) if rc == 0 else []
+        else:
+            hits = [pat] if (repo / pat).is_file() else []
+        out += [h for h in hits if h not in out]
+    return out
 
 
 def discover_rules(side: Side) -> list[str]:
@@ -483,6 +513,8 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     print("守る決まり（読んで、計画の「守る決まり」に挙げる）:")
     for name, rel in rules or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
+    for pat in ctx.unmatched_rules():
+        print(f"  ! {pat} に当たるファイルがありません（{CONFIG_NAME} の rules を確かめてください）")
     candidates = ctx.rule_candidates()
     if candidates:
         print("決まりの候補（設定に無い。決まりなら `codd.py rules --write` で設定に書く）:")
@@ -508,6 +540,8 @@ def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
     print("守る決まり:")
     for name, rel in ctx.rule_files() or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
+    for pat in ctx.unmatched_rules():
+        print(f"  ! {pat} に当たるファイルがありません（{CONFIG_NAME} の rules を確かめてください）")
     candidates = ctx.rule_candidates()
     if args.only:
         candidates = [c for c in candidates if (f"{c[0]}:{c[1]}" if c[0] else c[1]) in args.only]

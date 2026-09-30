@@ -201,7 +201,8 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
 
 - 決まりのファイル: 自分と（別のリポジトリの）参照先にある `CLAUDE.md`・`AGENTS.md`・`GEMINI.md`・
   `.github/copilot-instructions.md`・`CONTRIBUTING.md` と、`codd.json` の `rules`・`refs[].rules`（と参照先に置いた
-  `codd.json` の `rules`）。`show` が挙げ、計画の「守る決まり」に
+  `codd.json` の `rules`）。`rules` は glob も書ける（git の `:(glob)` と同じ意味で、追跡中と未追跡のファイルから引く）。
+  当たらないものは `show` が知らせる（綴り違いやファイルの移動で、決まりが黙って外れないように）。`show` が挙げ、計画の「守る決まり」に
   すべて（参照先のものは `名前:パス`）挙がっていなければ verify-plan が落とす。名前をそろえたのは、多くのプロジェクトで
   エージェント向けの約束がこの名前で置かれているため（プロジェクトごとの設定なしに効く）
 - 決まりの発見: パスか最初の見出しに決まりらしい語（ルール・規約・コーディング・rules・guideline・convention など）を

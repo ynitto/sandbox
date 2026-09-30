@@ -61,6 +61,9 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=.
 | `tools` | 任意。`skills` と同じ形で、使う道具（MCP サーバーやコマンド）の名前の配列。例: `{"plan": ["github"]}` |
 | `rules` | 任意。守る決まりのファイルの配列（このリポジトリのルートからの相対）。`CLAUDE.md`・`AGENTS.md`・`GEMINI.md`・`.github/copilot-instructions.md`・`CONTRIBUTING.md` は書かなくても、あれば読む |
 | `refs[].rules` | 任意。その参照先にある、守る決まりのファイルの配列（参照先のルートからの相対。例: 設計書のリポジトリの `docs/coding-rules.md`） |
+
+`rules` と `refs[].rules` には glob も書ける（例: `docs/rules/**/*.md`）。`*` はフォルダをまたがず、`**/` はまたぐ。
+1 つのファイルにも当たらないものは、`show` と `rules` が知らせる。
 | `refs[].skills` | 任意。その参照先を変えるときに使うスキル。書かなければ、参照先に置いた `codd.json` の `skills.apply` を使う |
 | `graphify` | `auto`（あれば使う）か `off` |
 | `check` | 任意。変えたあとに実行する検査コマンドの配列（例: `["python3", "-m", "pytest", "-q"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
