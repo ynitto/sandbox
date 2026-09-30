@@ -656,7 +656,7 @@ function registerIpcHandlers(getWindow, options = {}) {
         });
         // 埋め込む側（agent-app）が、画面の外に居る利用者へ知らせるための合図。
         if (typeof options.onRunExit === 'function') {
-          options.onRunExit({ name: String(task.name || machine || ''), mode, result });
+          options.onRunExit({ name: String(task.name || machine || ''), mode, result, root, taskId: String(task.id || (machine ? `machine:${machine}` : '')) });
         }
       },
     };

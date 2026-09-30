@@ -1005,7 +1005,10 @@ function registerIpcHandlers(getWindow) {
   const notifier = notify.createNotifier({
     getWindow,
     enabled: () => store.loadConfig(userData()).notify.background !== false,
-    open: (event) => { if (event.id) post('notify:open', { id: event.id }); },
+    open: (event) => {
+      if (event.id) post('notify:open', { id: event.id });
+      else if (event.task) post('notify:open', { task: event.task });
+    },
   });
   // 知らせる合図は、既に renderer へ流している 2 つ（ターンの終わり・phase の変化）から拾う。
   // 通知のためだけの経路は作らない。
@@ -1023,9 +1026,10 @@ function registerIpcHandlers(getWindow) {
     getWindow,
     userData,
     appRoot: automationAppRoot(),
-    onRunExit: ({ name, mode, result }) => {
+    onRunExit: ({ name, mode, result, root, taskId }) => {
       if (mode !== 'run') return;
-      notifier.show({ kind: notify.taskRunKind(result || {}), name });
+      // 実行の通知は、押すとそのタスクの実行履歴を開く（AIと作る会話の通知は編集の画面）
+      notifier.show({ kind: notify.taskRunKind(result || {}), name, task: root && taskId ? { repo: root, id: taskId } : null });
     },
   });
   handle('automation:teach:prepare', (p) => prepareTeachingView(p));
