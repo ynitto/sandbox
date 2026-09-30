@@ -1,0 +1,11 @@
+{
+  "side": "impl",
+  "refs": [
+    {"name": "docs", "path": "../design"}
+  ],
+  "skills": {
+    "plan": [],
+    "apply": []
+  },
+  "graphify": "auto"
+}
