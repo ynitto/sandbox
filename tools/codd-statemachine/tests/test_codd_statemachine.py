@@ -549,6 +549,47 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("途中でコミットされた", r.stderr)
 
+    # ------------------------------------------------------------ リポジトリのスキル・カスタムエージェント
+
+    def test_repo_skills_are_used_without_config(self) -> None:
+        commit(self.impl, {".agents/skills/tdd-lite/SKILL.md":
+                           "---\nname: tdd-lite\ndescription: テストを先に書く\n---\n\n# tdd-lite\n"}, "skill")
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("リポジトリのスキル", r.stdout)
+        self.assertIn("`tdd-lite` — テストを先に書く（.agents/skills/tdd-lite/SKILL.md）", r.stdout)
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("リポジトリのスキルを使った結果か「使わない: 理由」", r.stderr)
+        self.assertIn("`tdd-lite`", r.stderr)
+        self.write_plan(PLAN_ALIGNED.replace("## 使ったスキルと道具\n\nなし",
+                                             "## 使ったスキルと道具\n\n- `tdd-lite` — 使わない: ログを足すだけでテストは変わらない"))
+        self.assert_plan_ok()
+        # 置き場所は skill_dirs で変えられ、[] で使わない。
+        path = self.impl / ".statemachine/codd/codd.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["skill_dirs"] = []
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertNotIn("リポジトリのスキル", self.run_pa(self.impl, "show").stdout)
+
+    def test_install_writes_custom_agents(self) -> None:
+        kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))
+        self.assertEqual(kiro["name"], "codd")
+        self.assertIn("必ず codd のステートマシン", kiro["prompt"])
+        self.assertEqual(kiro["hooks"]["agentSpawn"][0]["command"], "python3 .statemachine/codd/codd.py show")
+        copilot = (self.impl / ".github/agents/codd.agent.md").read_text(encoding="utf-8")
+        self.assertTrue(copilot.startswith("---\nname: codd\ndescription: "))
+        self.assertIn("必ず codd のステートマシン", copilot)
+        # エージェントのファイルはマシンの一部なので、影響範囲や変えたファイルに数えない。
+        self.run_pa(self.impl, "impact", "--term", "statemachine")
+        self.assertNotIn("codd.agent.md", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
+        other = self.tmp / "other"
+        other.mkdir()
+        git(other, "init", "-q", "-b", "main")
+        install.install(other, "impl", ["../design"], discover=False, agents=())
+        self.assertFalse((other / ".kiro").exists())
+        self.assertFalse((other / ".github").exists())
+
     def test_verify_apply_needs_a_verified_plan(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-apply")

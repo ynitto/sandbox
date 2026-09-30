@@ -65,6 +65,7 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=.
 `rules` と `refs[].rules` には glob も書ける（例: `docs/rules/**/*.md`）。`*` はフォルダをまたがず、`**/` はまたぐ。
 1 つのファイルにも当たらないものは、`show` と `rules` が知らせる。
 | `refs[].skills` | 任意。その参照先を変えるときに使うスキル。書かなければ、参照先に置いた `codd.json` の `skills.apply` を使う |
+| `skill_dirs` | 任意。設定しなくても使うスキルの置き場所（既定 `[".agents/skills"]`。`名前/SKILL.md` の形）。`[]` で使わない |
 | `graphify` | `auto`（あれば使う）か `off` |
 | `check` | 任意。変えたあとに実行する検査コマンドの配列（例: `["python3", "-m", "pytest", "-q"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
 | `scope` | 任意。このリポジトリのうち自分が受け持つフォルダの配列（例: `["src", "tests"]`）。書かなければ全体 |
@@ -76,6 +77,20 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=.
 計画・探した結果・graphify のグラフは `<リポジトリ>/.codd/` に置く（インストーラーが `.gitignore` に足す）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
 もう一度 `install.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` はそのまま残る。
+
+### kiro-cli・GitHub Copilot のカスタムエージェント
+
+インストーラーは、コードや文書を変える依頼を**必ずこのステートマシンで進める**カスタムエージェント `codd` も書く。
+
+| 使うもの | 書くファイル | 呼び方 |
+|---|---|---|
+| kiro-cli | `.kiro/agents/codd.json` | `kiro-cli chat --agent codd`（いつも使うなら `kiro-cli settings chat.defaultAgent codd`） |
+| GitHub Copilot | `.github/agents/codd.agent.md` | チャットのエージェント選択で `codd` を選ぶ |
+
+エージェントは、変える依頼を受けたらステートマシンを始め、外でファイルを変えない。読むだけの質問にはそのまま答える。
+statemachine-use スキルが無い環境でも、エージェントの指示だけで `workflow.yaml` を回せる。kiro-cli では始めるたびに
+`codd.py show` を実行して、参照先・守る決まり・使うスキルを読み込む。
+置くたびに書き直す生成物なので、手で直さない。`--agent kiro` で片方だけ、`--no-agents` で書かない。
 
 ## 使い方
 
@@ -237,6 +252,11 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --scope src
 参照先を変えるときは、その参照先のスキル（`refs[].skills`、無ければ参照先の `codd.json` の `skills.apply`）を使う。
 たとえば実装を変えるときは `tdd`、設計書を変えるときは文書を書くスキル、のように側ごとに決められる。
 `tools` には、同じ形で使う道具（MCP サーバーやコマンド）を書く。
+
+リポジトリの `.agents/skills/` に置いたスキルは、設定しなくても使う。`show` が名前と説明を挙げ、計画を練るときに
+関係するものを読み込んで使う。関係しないものは、計画の「使ったスキルと道具」に「使わない: 理由」を 1 行ずつ書く
+（どちらも無いと検査で落ちる。黙って使わずに済ませない）。エージェントに登録されていないスキルでも、`SKILL.md` を読んで
+その手順に従う。置き場所は `skill_dirs` で変えられる。
 守る決まりは、`CLAUDE.md` などのよくある名前のファイルがあれば自動で挙がり、`rules` と `refs[].rules` で足せる。
 
 設計書のリポジトリにあるコーディングルールのような決まりは、書いても、見つけさせてもよい。

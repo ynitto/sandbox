@@ -280,6 +280,15 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
 - スキルと道具: `skills.plan`・`tools.plan` は計画の「使ったスキルと道具」に、`skills.apply`・`tools.apply`
   （と変えた参照先の分）は `.codd/apply.md` にすべて挙がっていなければ落とす。`.codd/apply.md` は変える前の印より新しいこと
   （前の回の記録を使い回させない）
+- リポジトリのスキル: `skill_dirs`（既定 `.agents/skills`）の `名前/SKILL.md` を、設定しなくても `show` が挙げる
+  （名前と説明は SKILL.md の先頭の `name` / `description`。30 まで）。計画の「使ったスキルと道具」に、使った結果か
+  「使わない: 理由」が無ければ verify-plan が落とす。関係するかの判断はモデルに任せるが、**全部に目を通したこと**は
+  測れるようにする。使うことを強制しないのは、説明だけでは関係するかを決定的に決められないため
+- カスタムエージェント: `install.py` が kiro-cli（`.kiro/agents/codd.json`）と GitHub Copilot（`.github/agents/codd.agent.md`）
+  向けに、変える依頼は必ずこのマシンで進めるエージェントを書く。指示は `agents/codd-agent.md` 1 つから両方へ写す。
+  statemachine-use が無い環境でも回せるよう、`workflow.yaml` の読み方（action・check と再投入・condition_rule・答えを待つ
+  ステート）を指示に含める。kiro-cli では `agentSpawn` の hook で `codd.py show` を読み込ませる。エージェントのファイルは
+  マシンの一部として、探す・変わったかを測る対象から外す
 
 ### 5.8 終わりの報告（`report`）
 

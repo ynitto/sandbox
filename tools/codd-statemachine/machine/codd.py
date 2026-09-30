@@ -54,14 +54,21 @@ from pathlib import Path
 
 MACHINE_DIR = Path(__file__).resolve().parent
 MACHINE_REL = ".statemachine/codd"
+# install.py が書くカスタムエージェント。マシンの一部なので、探す・変わったかを測る対象にしない。
+AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md")
 CONFIG_NAME = "codd.json"
 DATA_DIRNAME = ".codd"
+MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES]
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
-CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files"}
+CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files",
+               "skill_dirs"}
 REF_KEYS = {"name", "path", "skills", "scope", "rules"}
 DEFAULT_MAX_FILES = 20
+# 設定しなくても使うスキルの置き場所（リポジトリのルートから）。フォルダごとに `名前/SKILL.md`。
+DEFAULT_SKILL_DIRS = [".agents/skills"]
+MAX_REPO_SKILLS = 30
 
 # どのプロジェクトでも、あれば読む決まりのファイル（エージェント向けの約束・貢献の手引き）。codd.json の rules で足せる。
 RULE_FILES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md", ".github/copilot-instructions.md", "CONTRIBUTING.md")
@@ -223,6 +230,8 @@ def load_config(machine_dir: Path) -> dict:
         raise CoddError(f"{path} の tools は {{\"plan\": [...], \"apply\": [...]}} の形です（MCP やコマンドの名前）")
     config["tools"] = {phase: skill_list(tools.get(phase), f"{path} の tools.{phase}") for phase in PHASES}
     config["rules"] = rule_list(config.get("rules"), f"{path} の rules")
+    skill_dirs = config.get("skill_dirs", DEFAULT_SKILL_DIRS)
+    config["skill_dirs"] = [] if skill_dirs == [] else scope_list(skill_dirs, f"{path} の skill_dirs")
     config["scope"] = scope_list(config.get("scope"), f"{path} の scope")
     config.setdefault("graphify", "auto")
     if config["graphify"] not in ("auto", "off"):
@@ -260,7 +269,7 @@ class Side:
     scope: list[str]
 
     def pathspec(self) -> list[str]:
-        return ["--", *(self.scope or ["."]), f":(exclude){DATA_DIRNAME}", f":(exclude){MACHINE_REL}"]
+        return ["--", *(self.scope or ["."]), *(f":(exclude){p}" for p in MACHINE_OWNED)]
 
     def has(self, rel: str) -> bool:
         return in_scope(rel, self.scope)
@@ -381,6 +390,38 @@ class Ctx:
 
 
 MAX_RULE_CANDIDATES = 20
+_FRONT = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
+
+
+@dataclass
+class RepoSkill:
+    name: str
+    path: str          # SKILL.md のパス（リポジトリのルートから）
+    description: str
+
+
+def repo_skills(repo: Path, dirs: list[str]) -> list[RepoSkill]:
+    """置き場所（.agents/skills など）にあるスキル。設定しなくても、関係するものは使う。"""
+    out: list[RepoSkill] = []
+    for d in dirs:
+        base = repo / d
+        if not base.is_dir():
+            continue
+        for skill_md in sorted(base.glob("*/SKILL.md")):
+            text = read_text(skill_md) or ""
+            front = _FRONT.match(text)
+            meta = front.group(1) if front else ""
+            name = re.search(r"^name:\s*[\"']?([^\"'\n]+?)[\"']?\s*$", meta, re.MULTILINE)
+            desc = re.search(r"^description:\s*[\"']?(.+?)[\"']?\s*$", meta, re.MULTILINE)
+            skill = RepoSkill(name.group(1).strip() if name else skill_md.parent.name,
+                              skill_md.relative_to(repo).as_posix(), desc.group(1).strip() if desc else "")
+            if _SKILL.match(skill.name) and all(x.name != skill.name for x in out):
+                out.append(skill)
+    return out[:MAX_REPO_SKILLS]
+
+
+def skill_lines(skills: list[RepoSkill], prefix: str = "") -> list[str]:
+    return [f"  - `{s.name}` — {s.description[:120] or '（説明なし）'}（{prefix}{s.path}）" for s in skills]
 # 決まりらしいマークダウンの目印（パスの語か、最初の見出し）。
 _RULE_WORDS = re.compile(
     r"(?:^|[^a-z])(rules?|guidelines?|conventions?|coding|style-?guide|standards?|policy|policies|contributing)"
@@ -401,7 +442,7 @@ def expand_rules(repo: Path, patterns: list[str]) -> list[str]:
             rc, found = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", f":(glob){pat}"],
                             repo, GIT_TIMEOUT)
             hits = sorted(ln for ln in found.splitlines() if (repo / ln).is_file()
-                          and not in_scope(ln, [DATA_DIRNAME, MACHINE_REL])) if rc == 0 else []
+                          and not in_scope(ln, MACHINE_OWNED)) if rc == 0 else []
         else:
             hits = [pat] if (repo / pat).is_file() else []
         out += [h for h in hits if h not in out]
@@ -527,6 +568,17 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
         print("決まりの候補（設定に無い。決まりなら `codd.py rules --write` で設定に書く）:")
         for name, rel in candidates:
             print(f"  - {name + ':' if name else ''}{rel}")
+    own_skills = repo_skills(ctx.root, ctx.config["skill_dirs"])
+    if own_skills:
+        print("リポジトリのスキル（設定しなくても使う。関係するものは読み込み、SKILL.md の手順に従う。"
+              "使わないものは計画の「使ったスキルと道具」に「使わない: 理由」を書く）:")
+        print("\n".join(skill_lines(own_skills)))
+    for r in ctx.refs:
+        if r.path != ctx.root:
+            ref_skills = repo_skills(r.path, (r.config or {}).get("skill_dirs", DEFAULT_SKILL_DIRS))
+            if ref_skills:
+                print(f"{r.name} のスキル（{r.name} を変えるときに、関係するものを使う）:")
+                print("\n".join(skill_lines(ref_skills, f"{r.name}:")))
     phases = [args.phase] if args.phase else list(PHASES)
     for phase in phases:
         print(f"使うスキルと道具（{PHASES[phase]}）:")
@@ -1221,6 +1273,12 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     problems += rules_problems(ctx, bodies["## 守る決まり"])
     problems += used_problems(bodies["## 使ったスキルと道具"],
                               ctx.config["skills"]["plan"] + ctx.config["tools"]["plan"], "使ったスキルと道具")
+    configured = set(ctx.config["skills"]["plan"])
+    found = [s.name for s in repo_skills(ctx.root, ctx.config["skill_dirs"]) if s.name not in configured]
+    missing = [n for n in found if not mentioned(bodies["## 使ったスキルと道具"], n)]
+    if missing:
+        problems.append("使ったスキルと道具に、リポジトリのスキルを使った結果か「使わない: 理由」を書いてください"
+                        "（関係するものは使う）: " + ", ".join(f"`{n}`" for n in missing))
     for heading in CITED_IN_REFS:
         if is_none(bodies[heading]):
             continue
@@ -1658,7 +1716,7 @@ _KINDS = (
     ("ref-coverage", "any", ("計画で扱っていません",)),
     ("impact", "plan", ("計画に無いファイルがあります", "自分のファイルが、計画にありません")),
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
-    ("rules", "any", ("守る決まり", "スキル・道具")),
+    ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル")),
     ("check", "apply", ("検査が失敗しました",)),
 )
 

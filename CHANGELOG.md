@@ -99,6 +99,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   変わったかを参照先ごとに確かめる
 - **使うスキルを設定できる。** `codd.json` の `skills.plan`（計画を練るとき）と `skills.apply`（このリポジトリを変えるとき）。
   参照先を変えるときはその参照先のスキルを使う。`codd.py show` で確かめられる
+- **`.agents/skills/` のスキルを設定なしで使う。** `show` が名前と説明を挙げ、計画を練るときに関係するものを読み込んで使う。
+  関係しないものは「使わない: 理由」を書かせ、どちらも無ければ計画の検査で落とす。置き場所は `skill_dirs` で変えられる
+- **kiro-cli と GitHub Copilot 向けのカスタムエージェント `codd` を置く。** `install.py` が `.kiro/agents/codd.json` と
+  `.github/agents/codd.agent.md` を書き、コードや文書を変える依頼は必ずこのステートマシンで進めさせる（statemachine-use が
+  無くても回せる指示を含む。`--agent` で絞り、`--no-agents` で書かない）
 - **止まったら、次の手を提案して確かめる。やり直しもステートマシンの中で扱う。** 検査がやり直しを使い切っても落ちたら、
   実行ごと止めずに stuck へ進む。`codd.py advise` が止めた理由を分け、利用者に確かめること（「変更不要」でよいか、どこまで
   やるか、設定を直せるか）と選択肢（練り直す・変え直す・変えた分を残して計画を直す・変えた分を戻して練り直す・やめる）を

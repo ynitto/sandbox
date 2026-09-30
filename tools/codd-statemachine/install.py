@@ -20,6 +20,8 @@
 このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
 置いたあと、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules /
 refs[].rules に書く（--no-discover-rules でやめる。あとからは `codd.py rules --write`）。
+kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカスタムエージェント `codd` を書く
+（`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
 """
 
 from __future__ import annotations
@@ -34,6 +36,9 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent / "machine"
 DEST_REL = Path(".statemachine") / "codd"
 IGNORE_LINE = ".codd/"
+AGENT_PROMPT = SRC / "agents" / "codd-agent.md"
+AGENT_DESCRIPTION = "実装と設計書の一貫性を保って変える。コードや文書の変更は必ず codd のステートマシンで進める"
+AGENT_KINDS = ("kiro", "copilot")
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
 GRAPHIFY_IGNORE_LINE = ".statemachine/codd/"
 
@@ -49,7 +54,8 @@ def ref_name(ref: dict) -> str:
 
 
 def install(target: Path, side: str | None, refs: list[str] | None, gitignore: bool = True,
-            scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True) -> Path:
+            scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
+            agents: tuple[str, ...] | list[str] = AGENT_KINDS) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
     dest = target / DEST_REL
@@ -99,12 +105,41 @@ def install(target: Path, side: str | None, refs: list[str] | None, gitignore: b
     config.setdefault("graphify", "auto")
     config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    write_agents(target, agents)
     if discover:
         discover_rules(target, dest)
     if gitignore:
         append_line(target / ".gitignore", IGNORE_LINE)
     append_line(target / ".graphifyignore", GRAPHIFY_IGNORE_LINE)
     return dest
+
+
+def write_agents(target: Path, kinds) -> list[Path]:
+    """必ずこのマシンで変えるカスタムエージェントを書く（置くたびに書き直す生成物）。"""
+    prompt = AGENT_PROMPT.read_text(encoding="utf-8")
+    written = []
+    if "kiro" in kinds:
+        path = target / ".kiro" / "agents" / "codd.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        agent = {
+            "name": "codd",
+            "description": AGENT_DESCRIPTION,
+            "prompt": prompt,
+            "tools": ["*"],
+            "includeMcpJson": True,
+            "resources": ["file://.statemachine/codd/workflow.yaml"],
+            # 始めるたびに参照先・守る決まり・使うスキルを読み込ませる。
+            "hooks": {"agentSpawn": [{"command": "python3 .statemachine/codd/codd.py show"}]},
+            "welcomeMessage": "codd: コードや文書の変更は、計画・確認・変更・検査のステートマシンで進めます",
+        }
+        path.write_text(json.dumps(agent, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        written.append(path)
+    if "copilot" in kinds:
+        path = target / ".github" / "agents" / "codd.agent.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\nname: codd\ndescription: {AGENT_DESCRIPTION}\n---\n\n{prompt}", encoding="utf-8")
+        written.append(path)
+    return written
 
 
 def discover_rules(target: Path, dest: Path) -> None:
@@ -144,14 +179,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-discover-rules", action="store_true",
                    help="決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules に書くのをやめる")
     p.add_argument("--no-gitignore", action="store_true", help=".gitignore に .codd/ を足さない")
+    p.add_argument("--agent", action="append", choices=list(AGENT_KINDS),
+                   help="書くカスタムエージェント（繰り返し可。既定は kiro と copilot の両方）")
+    p.add_argument("--no-agents", action="store_true", help="カスタムエージェントを書かない")
     args = p.parse_args(argv)
     dest = install(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
-                   scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules)
+                   scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
+                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS))
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8"))
     print(f"置きました: {dest}")
     refs = config.get("refs") or [{"path": config.get("ref_path")}]
     print(f"  この側: {config['side']}  参照先: " + ", ".join(
         f"{ref_name(r)}={r['path']}" + (f"（{', '.join(r['scope'])}）" if r.get("scope") else "") for r in refs))
+    if not args.no_agents:
+        print("  カスタムエージェント codd: " + "、".join(
+            {"kiro": "kiro-cli chat --agent codd", "copilot": "Copilot のエージェント選択で codd"}[k]
+            for k in (args.agent or AGENT_KINDS)))
     return 0
 
 
