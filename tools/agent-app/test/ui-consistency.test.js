@@ -544,3 +544,21 @@ test('実行の詳細は工程の結果を文章で出し、過程と全文は�
   assert.ok(!/stateLabel\(node\.state\)[^;]*回答待ち/.test(run), '動かなかった工程を回答待ちと出さない');
   assert.ok(!/JSON\.stringify\(view\.result/.test(flow), '成果を JSON のまま出さない');
 });
+
+test('直すまで同じ失敗になる失敗は、main が返す直し方を出し、再実行を主操作にしない', () => {
+  const flow = read('renderer/automation/flow.js');
+  const main = read('main/automation/agent-flow.js');
+  const body = flow.slice(flow.indexOf('function outcomeHtml'), flow.indexOf('function teamworkHtml'));
+  assert.match(body, /error\.remedy/, '直し方は main の値を描く');
+  assert.ok(!/remedy[^;]*\.(?:test|match|exec)\(|(?:message|reason)[^;]*\.(?:test|match)\(/.test(body), 'renderer がエラー文から直し方を推し量らない');
+  assert.match(body, /setup \? `\$\{log\}\$\{resume\('ghost'/, 'setup の操作は ログ → 控えめな再実行 の順で、主ボタンを置かない');
+  assert.match(main, /const SETUP_REMEDY = \{/, '直し方の文言は main が分類と一緒に持つ');
+});
+
+test('工程のセッションログは、始まりが読める範囲より前なら空欄にせず省略を言う（判断は main の headOmitted）', () => {
+  const flow = read('renderer/automation/flow.js');
+  const main = read('main/automation/agent-flow.js');
+  assert.match(flow, /found\?\.headOmitted \? 'ログの前半が省略されています'/, '省略の 1 行は main の値で出す');
+  assert.match(main, /headOmitted/, 'main が省略かどうかを返す');
+  assert.match(main, /const NODE_LOG_SCAN = \d+ \* 1024 \* 1024;/, '遡りには上限がある（ログ全体を載せない）');
+});

@@ -490,14 +490,18 @@ window.createFlowFeature = function createFlowFeature(ctx) {
     const repeated = streak >= 2 && error?.group !== 'retry';
     const title = failed ? `「${nodeLabel(failed)}」で失敗しました` : '失敗しました';
     const reason = error?.message || run.failure?.message || '実行に失敗しました';
-    const resume = (cls) => `<button type="button" class="${cls}" data-flow-resume>続きから再実行</button>`;
+    const resume = (cls, label = '続きから再実行') => `<button type="button" class="${cls}" data-flow-resume>${label}</button>`;
     const edit = `<button type="button" ${repeated ? 'class="primary"' : ''} data-flow-rerun>依頼を直して実行</button>`;
     const steps = repeated && run.workflowId ? '<button type="button" data-flow-edit-steps>手順を直す</button>' : '';
-    const actions = error?.group === 'setup' ? `${resume('')}${log}`
+    // 認証・環境・上限・停止の指示は、直すまで同じ失敗になる。直し方（main が決めた 1 行）を出し、
+    // 再実行は主操作にしない。直したあとに戻ってこられるよう、控えめな「直したので」だけ残す。
+    const setup = error?.group === 'setup';
+    const actions = setup ? `${log}${resume('ghost', '直したので続きから再実行')}`
       : repeated ? `${edit}${steps}${resume('ghost')}${log}`
         : `${resume('primary')}${edit}${log}`;
-    const note = repeated ? `<p class="sub">${streak} 回続けて同じ工程で失敗しています</p>` : '';
-    return `<section class="execution-card flow-outcome is-failed"><div class="execution-card-head"><div><h3>${e(title)}</h3><p>${e(reason)}</p>${note}</div></div>${request}<div class="row">${actions}</div></section>`;
+    const remedy = setup && error.remedy ? `<p class="sub">${e(error.remedy)}</p>` : '';
+    const note = repeated && !setup ? `<p class="sub">${streak} 回続けて同じ工程で失敗しています</p>` : '';
+    return `<section class="execution-card flow-outcome is-failed"><div class="execution-card-head"><div><h3>${e(title)}</h3><p>${e(reason)}</p>${remedy}${note}</div></div>${request}<div class="row">${actions}</div></section>`;
   }
 
   // 分担と確認: 複数の AI にした見返りを、担当と確認の事実だけで見せる（数えるのは main 側）。
@@ -1053,7 +1057,11 @@ window.createFlowFeature = function createFlowFeature(ctx) {
       const box = dlg.querySelector('.flow-session-log');
       const found = await ctx.bridge.runNodeLog(root(), run.runId, node.id).catch((err) => ({ error: err.message }));
       if (!box || !box.isConnected) return;
-      box.textContent = found?.error ? `読み取れません: ${found.error}` : (found?.text || 'この工程のログはありません');
+      // 始まりが読める範囲より前にある工程は、空欄や「ありません」にせず省略されていると言う
+      const omitted = found?.headOmitted ? 'ログの前半が省略されています' : '';
+      box.textContent = found?.error ? `読み取れません: ${found.error}`
+        : found?.text ? (omitted ? `（${omitted}）\n${found.text}` : found.text)
+          : (omitted || 'この工程のログはありません');
       if (node.state === 'failed') box.scrollTop = box.scrollHeight; // 失敗した工程は最後の行（止まった所）から見せる
     });
     main.querySelector('[data-flow-edit-steps]')?.addEventListener('click', async () => {

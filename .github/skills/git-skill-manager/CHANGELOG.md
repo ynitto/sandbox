@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.3 — 2026-10-01
+
+- fix(git-skill-manager): generated/skill-catalog.json を 89 スキルへ生成し直し、CI（`tools/ci/check_generated_skill_catalog.py`）で鮮度を検査するようにした。generate_skill_catalog.py は列挙を install.py と同じ規則に揃え、`__pycache__` や隠しファイルで has_scripts / has_references が変わらないようにした
+
 ## 1.1.0 — 2026-04-03
 
 - fix(git-skill-manager): SKILL.md を450行未満に削減してWARNを解消 (`e24a89e`)

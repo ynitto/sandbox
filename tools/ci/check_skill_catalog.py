@@ -33,6 +33,8 @@ README を読む規則と比較だけ。
   分類は frontmatter に無く、正典が決まっていないため。
 - フェンス付きコードブロック（``` / ~~~）の中の見出しと表。
 - README.md 以外の文書。
+- git-skill-manager の `generated/skill-catalog.json`（機械可読の目録）。そちらの鮮度は
+  `check_generated_skill_catalog.py` が同じ install.py の列挙を使って検査する。
 
 README.md を直すのはこの検査の仕事ではない。どちらに合わせるか（README を直すか、
 frontmatter の tier を変えるか）は設計判断なので、差を見せるところまでにしている。
