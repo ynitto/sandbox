@@ -6,6 +6,7 @@ graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -82,6 +83,10 @@ hello にログを足す。
 
 なし
 
+## テストの変更案
+
+- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）
+
 ## 今回やらないこと
 
 なし
@@ -96,7 +101,7 @@ hello が 2 を返すようにする。
 
 ## 守る決まり
 
-なし
+- docs/api.md — 文書の書式: 今の見出しの並び（hello の節）と書き方を保つ
 
 ## 使ったスキルと道具
 
@@ -129,6 +134,10 @@ hello が 2 を返すようにする。
 ## 影響範囲
 
 - src/app.py — hello の戻り値
+
+## テストの変更案
+
+- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）
 
 ## 今回やらないこと
 
@@ -611,6 +620,32 @@ class CoddTest(unittest.TestCase):
         self.assertFalse((other / ".kiro").exists())
         self.assertFalse((other / ".github").exists())
 
+    def test_install_sets_check_and_picks_up_webui_test(self) -> None:
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
+        # webui-test の設定に check があれば、変えたあとの検査に webui-test check を使う。
+        (self.impl / "webui-test.config.yaml").write_text(
+            "serve: { command: npm start, url: http://localhost:3000 }\ncheck:\n  cases: [tests/e2e]\n"
+            "envs: { local: {} }\n", encoding="utf-8")
+        install.install(self.impl, None, None, discover=False)
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["webui-test", "check"])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("変えたあとに実行するもの", r.stdout)
+        self.assertIn("自分の検査: webui-test check", r.stdout)
+        # 手で書いた検査は上書きしない。--check で書き換え、"" で消す。
+        install.install(self.impl, None, None, discover=False, check="python3 -m pytest -q")
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["python3", "-m", "pytest", "-q"])
+        install.install(self.impl, None, None, discover=False)
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["python3", "-m", "pytest", "-q"])
+        install.install(self.impl, None, None, discover=False, check="")
+        self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
+        # 単体テストは webui-test ではなく codd の test に書く。--test で書き、"" で消す。
+        install.install(self.impl, None, None, discover=False, test="npm test")
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["test"], ["npm", "test"])
+        self.assertIn("自分のテスト: npm test", self.run_pa(self.impl, "show").stdout)
+        install.install(self.impl, None, None, discover=False, test="")
+        self.assertNotIn("test", json.loads(cfg.read_text(encoding="utf-8")))
+
     def test_verify_apply_needs_a_verified_plan(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-apply")
@@ -693,6 +728,7 @@ class CoddTest(unittest.TestCase):
         plan = (PLAN_DRIFT.replace("（根拠: docs/api.md）", "（根拠: design:docs/api.md）")
                 .replace("docs/api.md:3", "design:docs/api.md:3")
                 .replace("- docs/api.md — `hello`", "- api:docs/api.md — `hello`")
+                .replace("- docs/api.md — 文書の書式", "- api:docs/api.md — 文書の書式")
                 .replace("## 参照先のその他\n\n- なし", "## 参照先のその他\n\n- 見出しだけ（根拠: api:spec/hello.md）"))
         self.write_plan(plan)
         self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 0)
@@ -710,6 +746,148 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("refs=api", r.stdout)
+
+    def test_doc_format_is_a_rule_to_keep(self) -> None:
+        # 文書の今の書式（見出しの並び）はコードの決まりと同じ。守る決まりに見本を挙げ、変えたあとも守る。
+        self.write_plan(PLAN_DRIFT.replace("- docs/api.md — 文書の書式: 今の見出しの並び（hello の節）と書き方を保つ", "なし"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変える文書の今の書式を挙げてください", r.stderr)
+        self.assertIn("docs/api.md（見本: design:docs/api.md）", r.stderr)
+        self.assertIn("  - ## hello", (self.impl / ".codd/formats.md").read_text(encoding="utf-8"))
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("文書の書式（見出しの並び）が今の書式から外れています: docs/api.md — ## hello", r.stderr)
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertNotIn("文書の書式", r.stderr)
+        # 見出しを変えると計画に `## 見出し` と書いたなら、その見出しは外れてよい。
+        self.write_plan(PLAN_DRIFT.replace("と書き直す", "と書き直し、`## hello` を `## hello()` にする"))
+        self.assert_plan_ok()
+        (self.design / "docs/api.md").write_text("# API\n\n## hello()\n\nhello は 2 を返す。\n", encoding="utf-8")
+        self.assertNotIn("文書の書式", self.run_pa(self.impl, "verify-apply").stderr)
+
+    def test_new_doc_follows_the_format_of_its_folder(self) -> None:
+        commit(self.design, {
+            "docs/screens/login.md": "# ログイン\n\n## 目的\n\nx\n\n## 画面\n\nx\n\n## 入力\n\nx\n",
+            "docs/screens/home.md": "# ホーム\n\n## 目的\n\nx\n\n## 画面\n\nx\n\n## 操作\n\nx\n",
+            "docs/screens/README.md": "# 画面の一覧\n\n## 一覧\n",
+        }, "screens")
+        plan = PLAN_DRIFT.replace("- docs/api.md — `hello`", "- docs/screens/hello.md — 新しく書く。`hello`")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/screens/hello.md（見本: design:docs/screens/home.md）", r.stderr)
+        formats = (self.impl / ".codd/formats.md").read_text(encoding="utf-8")
+        self.assertIn("  - ## 目的\n  - ## 画面\n", formats)
+        self.assertNotIn("## 一覧", formats)   # 索引の README は見本にしない
+        self.write_plan(plan.replace("## 守る決まり\n\n- docs/api.md", "## 守る決まり\n\n- docs/screens/login.md — 書式\n- docs/api.md"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/screens/hello.md").write_text("# hello\n\n## 画面\n\nx\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("docs/screens/hello.md — ## 目的", r.stderr)
+
+    def write_evidence(self, items: list[dict]) -> None:
+        out = self.impl / "webui-test-results"
+        out.mkdir(exist_ok=True)
+        (out / ".gitignore").write_text("*\n", encoding="utf-8")
+        (out / "evidence.json").write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False), encoding="utf-8")
+
+    def evidence_items(self, load: int, status: str = "passed") -> list[dict]:
+        base = {"file": "tests/login.yaml", "doc": ["design:docs/api.md"]}
+        return [{"id": "login/S-01", "kind": "behavior", "title": "ログイン できる", "status": status, **base},
+                {"id": "login/S-01/load", "kind": "metric", "title": "ログイン（読み込み）", "value": load, "unit": "ms", **base}]
+
+    def test_test_evidence_is_written_into_docs_and_kept_current(self) -> None:
+        # テストで得たもの（振る舞い・時間）を文書の印で写し、今と違えば・目安を超えれば止める。
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n"
+                             "読み込み: <!-- evidence: login/S-01/load max=1000 -->800 ms<!-- /evidence -->\n\n"
+                             "確かめた振る舞い:<!-- evidence: login/* --><!-- /evidence -->\n"}, "marks")
+        self.write_evidence(self.evidence_items(850))
+        r = self.run_pa(self.impl, "evidence")
+        self.assertEqual(r.returncode, 1, r.stdout)       # 一覧の印はまだ空
+        self.assertIn("自分: 2 件", r.stdout)
+        self.assertIn("docs/api.md:9 login/*（書いてある 空 → 今 - ✓ ログイン できる - 850 ms）", r.stdout)
+        self.assertNotIn("login/S-01/load（", r.stdout)    # 2 割までの揺れは同じとみなす
+        r = self.run_pa(self.impl, "evidence", "--write", "design:docs/api.md")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        text = (self.design / "docs/api.md").read_text(encoding="utf-8")
+        self.assertIn("-->\n- ✓ ログイン できる\n- 850 ms\n<!--", text)
+        self.assertIn("-->800 ms<!--", text, "揺れの幅の中なら書き換えない")
+        self.write_evidence(self.evidence_items(1300, "failed"))
+        r = self.run_pa(self.impl, "evidence")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("1300 ms で、目安の 1000 を超えています", r.stdout)
+        self.assertIn("確かめた振る舞いが失敗しています: ログイン できる", r.stdout)
+        self.assertIn("書いてある 800 ms → 今 1300 ms", r.stdout)
+
+    def test_changed_screens_replace_the_images_docs_show(self) -> None:
+        # テストの側は文書を知らない。画面のこれまでの版と同じ画像を文書のリポジトリから sha256 で見つけ、差し替える。
+        old, new, gone = b"PNG-v1 login", b"PNG-v2 login", b"PNG-old menu"
+        sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+        commit(self.design, {"docs/login.md": "# ログイン\n\n![ログイン](images/login.png)\n",
+                             "docs/menu.md": "# メニュー\n\n<img src=\"images/menu.png\">\n"}, "screens")
+        (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
+        (self.design / "docs/images/login.png").write_bytes(old)
+        (self.design / "docs/images/menu.png").write_bytes(gone)
+        git(self.design, "add", "-A")
+        git(self.design, "commit", "-q", "-m", "images")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        screens = self.impl / "webui-test-results/screens"
+        screens.mkdir(parents=True)
+        (screens / "login.png").write_bytes(new)
+        base = {"kind": "image", "file": "tests/login.yaml"}
+        self.write_evidence([
+            {**base, "id": "login/S-01/login", "status": "changed", "path": "webui-test-results/screens/login.png",
+             "sha256": sha(new), "history": [sha(new), sha(old)]},
+            {**base, "id": "menu/S-01/menu", "status": "removed", "sha256": sha(gone), "history": [sha(gone)]},
+        ])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)   # ハーネスの差し替えは「計画に無い変更」に数えない
+        self.assertEqual((self.design / "docs/images/login.png").read_bytes(), new)
+        self.assertIn("テストの画面から: docs/images/login.png ← login/S-01/login（貼っている文書: docs/login.md）", r.stdout)
+        self.assertIn("docs/images/menu.png — テストで撮らなくなった画面です（menu/S-01/menu）。貼っている文書: docs/menu.md",
+                      r.stdout)
+        report = self.run_pa(self.impl, "report")
+        self.assertEqual(report.returncode, 0, report.stdout)
+        self.assertIn("## テストの画面から差し替えた文書の画像", report.stdout)
+        # もう一度検査しても、差し替えた画像は今の画面なので何もしない
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+
+    def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
+        commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
+        commit(self.design, {"docs/perf.md": "# 性能\n\n- <!-- evidence: login/S-01/load -->800 ms<!-- /evidence -->\n"},
+               "perf")
+        self.write_evidence(self.evidence_items(800))
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/login.yaml — `hello` のログも確かめる")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変更が響くテストの結果を写している文書が、計画にありません", r.stderr)
+        self.assertIn("docs/perf.md", r.stderr)
+        evidence = (self.impl / ".codd/evidence.md").read_text(encoding="utf-8")
+        self.assertIn("login/S-01/load — metric: 800 ms", evidence)
+        self.write_plan(plan.replace("## 参照先のその他\n\nなし",
+                                     "## 参照先のその他\n\n- 読み込みの時間を写している（根拠: docs/perf.md）"))
+        self.assert_plan_ok()
+        # 変えたあと、時間が大きく変わったら写し直させ、報告に変化を出す。
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests/login.yaml").write_text("suite: ログイン（ログも）\n", encoding="utf-8")
+        self.write_evidence(self.evidence_items(1600))
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("文書に写したテストの結果が今と違います", r.stderr)
+        self.assertIn("書いてある 800 ms → 今 1600 ms", r.stderr)
+        report = self.run_pa(self.impl, "report").stdout
+        self.assertIn("## テストで得たものの変化（計画のときと比べて）", report)
+        self.assertIn("login/S-01/load — 800 → 1600 ms", report)
 
     def test_ref_change_to_a_new_file_is_allowed(self) -> None:
         plan = PLAN_DRIFT.replace("- docs/api.md — `hello`", "- docs/hello.md — 新しく書く。`hello`")
@@ -829,6 +1007,95 @@ class CoddTest(unittest.TestCase):
         (self.design / "docs/other.md").unlink()
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    # ------------------------------------------------------------ テストもコード・仕様書と同じに扱う
+
+    TESTS_WAIVED = "- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）"
+
+    def with_tests(self, plan: str, body: str) -> str:
+        return plan.replace(self.TESTS_WAIVED, body)
+
+    def test_plan_must_handle_tests_hit_by_the_change(self) -> None:
+        # 名前で響く単体テストと、仕様書をパスで指している e2e のケース（同じ側のコードを指すものも）。
+        commit(self.impl, {
+            "tests/test_app.py": "from src.app import hello\n\ndef test_hello():\n    assert hello() == 1\n",
+            "tests/e2e/hello.yaml": "# coherence: doc=docs/api.md\nsuite: hello\n",
+            "tests/e2e/page.yaml": "# coherence: code=src/app.py\nsuite: page\n",
+        }, "tests")
+        self.write_plan(PLAN_DRIFT)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変更が響くテストのうち、計画に無いファイルがあります", r.stderr)
+        for rel in ("tests/test_app.py", "tests/e2e/hello.yaml", "tests/e2e/page.yaml"):
+            self.assertIn(rel, r.stderr)
+        report = (self.impl / ".codd/tests.md").read_text(encoding="utf-8")
+        self.assertIn("tests/test_app.py — 名前", report)
+        self.assertIn("tests/e2e/hello.yaml — つながり", report)
+        self.write_plan(self.with_tests(PLAN_DRIFT, "\n".join([
+            "- tests/test_app.py — `hello` が 2 を返すことを確かめるように直す",
+            "- tests/e2e/hello.yaml — 2 を確かめるように直す",
+            "- tests/e2e/page.yaml — 変更不要: 戻り値を見ていない",
+        ])))
+        self.assert_plan_ok()
+
+        # 変えたあと: 挙げたテストを変えていなければ落とし、単体テスト（test）も codd が実行する。
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## テストの変更案 のテストをまだ変えていません", r.stderr)
+        self.assertIn("tests/test_app.py", r.stderr)
+        (self.impl / "tests/test_app.py").write_text(
+            "from src.app import hello\n\ndef test_hello():\n    assert hello() == 2\n", encoding="utf-8")
+        (self.impl / "tests/e2e/hello.yaml").write_text("# coherence: doc=docs/api.md\nsuite: hello 2\n",
+                                                        encoding="utf-8")
+        path = self.impl / ".statemachine/codd/codd.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["test"] = [sys.executable, "-c", "print('unit failed'); raise SystemExit(3)"]
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("実装のテストの検査が失敗しました（3）", r.stderr)
+        self.assertIn("unit failed", r.stderr)
+        cfg["test"] = [sys.executable, "-c", "print('unit ok')"]
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        report = self.run_pa(self.impl, "report").stdout
+        self.assertIn("## テスト", report)
+        self.assertIn("tests/test_app.py — 変えた", report)
+        self.assertIn("tests/e2e/page.yaml — 変更不要", report)
+
+    def test_tests_section_cannot_be_none_when_something_changes(self) -> None:
+        self.write_plan(self.with_tests(PLAN_ALIGNED, "なし"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## テストの変更案 が「なし」です", r.stderr)
+
+    def test_apply_catches_tests_hit_by_names_changed_beyond_the_plan(self) -> None:
+        commit(self.impl, {"tests/test_util.py": "from src.app import greet\n"}, "tests")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        # 計画に無い名前（greet）まで足すと、それを使うテストが響く。
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n\n\ndef greet():\n"
+                                              "    return 'hi'\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変更が響くテストのうち、直していないファイルがあります", r.stderr)
+        self.assertIn("tests/test_util.py", r.stderr)
+
+    def test_tests_can_be_turned_off(self) -> None:
+        path = self.impl / ".statemachine/codd/codd.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["tests"] = []
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        # 参照先にも置いてあるので、参照先の tests も空にする。
+        dpath = self.design / ".statemachine/codd/codd.json"
+        dcfg = json.loads(dpath.read_text(encoding="utf-8"))
+        dcfg["tests"] = []
+        dpath.write_text(json.dumps(dcfg), encoding="utf-8")
+        self.write_plan(self.with_tests(PLAN_ALIGNED, "なし"))
+        self.assert_plan_ok()
 
     def test_files_changed_before_the_plan_are_not_counted(self) -> None:
         (self.impl / "src/wip.py").write_text("x = 1\n", encoding="utf-8")   # 計画より前からの作業中の変更

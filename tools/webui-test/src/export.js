@@ -92,6 +92,7 @@ function stepCode(step, T, fileDir, baseUrl) {
       if (v.visible !== undefined) return [`await ${locatorCode(v.visible)}.first().waitFor({ state: 'visible', timeout: ${timeout} });`];
       return [`await ${locatorCode(v)}.first().waitFor({ state: 'visible', timeout: ${timeout} });`];
     case 'expect': return expectCode(v, timeout);
+    case 'measure': return [`// measure: ${typeof v === 'string' ? v : v.name}（時間の測定は webui-test run が行う）`];
     default: return [];
   }
 }
@@ -115,9 +116,9 @@ function specFor(suite, opts = {}) {
   const runs = planSuite(suite, { env, baseUrl });
   const fileDir = suite.file ? path.dirname(suite.file) : process.cwd();
   const lines = [
-    `// web-test export で ${suite.file ? path.basename(suite.file) : 'テストケース'} から作成。元の YAML を直して書き出し直す（このファイルは手で直さない）`,
+    `// webui-test export で ${suite.file ? path.basename(suite.file) : 'テストケース'} から作成。元の YAML を直して書き出し直す（このファイルは手で直さない）`,
     "import { test, expect } from '@playwright/test';",
-    "import { shot, prepare } from './web-test-runtime';",
+    "import { shot, prepare } from './webui-test-runtime';",
     '',
     `test.describe(${q(suite.suite)}, () => {`,
   ];
@@ -170,7 +171,7 @@ function specFor(suite, opts = {}) {
   return lines.join('\n');
 }
 
-const RUNTIME = `// web-test export が書き出す実行時の補助（通信のモック・storage の事前設定・スクリーンショット）
+const RUNTIME = `// webui-test export が書き出す実行時の補助（通信のモック・storage の事前設定・スクリーンショット）
 import fs from 'fs';
 import path from 'path';
 import type { Page, TestInfo, Locator } from '@playwright/test';
@@ -189,7 +190,7 @@ export async function shot(page: Page, testInfo: TestInfo, name: string, o: { fu
   else await page.screenshot({ path: file, fullPage: !!o.fullPage, mask: o.mask });
   await testInfo.attach(name, { path: file, contentType: 'image/png' });
   if (o.copyTo) {
-    const dest = path.resolve(process.env.WEB_TEST_CAPTURE_ROOT || process.cwd(), o.copyTo);
+    const dest = path.resolve(process.env.WEBUI_TEST_CAPTURE_ROOT || process.cwd(), o.copyTo);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(file, dest);
   }
@@ -222,7 +223,7 @@ export async function prepare(page: Page, p: { mocks: Mock[]; localStorage: Reco
     await context.addInitScript(({ L, S, O }) => {
       try {
         if (O && location.origin !== O) return;
-        const mark = '__web_test_seeded__';
+        const mark = '__webui_test_seeded__';
         if (!sessionStorage.getItem(mark)) {
           for (const k in L) localStorage.setItem(k, L[k]);
           for (const k in S) sessionStorage.setItem(k, S[k]);
@@ -237,8 +238,8 @@ export async function prepare(page: Page, p: { mocks: Mock[]; localStorage: Reco
 `;
 
 function configFor(browsers, specs) {
-  const projects = browsers.map((b) => `    { name: ${q(b)}, use: { browserName: ${q(b)}${b === 'chromium' ? ', launchOptions: { executablePath: process.env.WEB_TEST_EXECUTABLE_PATH || undefined }' : ''} }, testMatch: ${JSON.stringify(specs.filter((s) => s.browser === b).map((s) => s.file))} },`);
-  return `// web-test export で作成。npx playwright test --config この ファイル で動かす
+  const projects = browsers.map((b) => `    { name: ${q(b)}, use: { browserName: ${q(b)}${b === 'chromium' ? ', launchOptions: { executablePath: process.env.WEBUI_TEST_EXECUTABLE_PATH || undefined }' : ''} }, testMatch: ${JSON.stringify(specs.filter((s) => s.browser === b).map((s) => s.file))} },`);
+  return `// webui-test export で作成。npx playwright test --config この ファイル で動かす
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
@@ -266,10 +267,10 @@ function exportSuites(suites, outDir, opts = {}) {
     fs.writeFileSync(path.join(outDir, file), specFor(suite, opts));
     specs.push({ file, browser: suite.browser });
   }
-  fs.writeFileSync(path.join(outDir, 'web-test-runtime.ts'), RUNTIME);
+  fs.writeFileSync(path.join(outDir, 'webui-test-runtime.ts'), RUNTIME);
   const browsers = [...new Set(specs.map((s) => s.browser))];
   fs.writeFileSync(path.join(outDir, 'playwright.config.ts'), configFor(browsers, specs));
-  return ['playwright.config.ts', 'web-test-runtime.ts', ...specs.map((s) => s.file)].map((f) => path.join(outDir, f));
+  return ['playwright.config.ts', 'webui-test-runtime.ts', ...specs.map((s) => s.file)].map((f) => path.join(outDir, f));
 }
 
 module.exports = { exportSuites, specFor, locatorCode };

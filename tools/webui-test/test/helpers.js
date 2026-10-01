@@ -3,9 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const { createServer } = require('../examples/sample-app/server');
 
-// 同梱の Chromium が playwright の版と合わない環境では WEB_TEST_EXECUTABLE_PATH で差し替える
+// 同梱の Chromium が playwright の版と合わない環境では WEBUI_TEST_EXECUTABLE_PATH で差し替える
 function executablePath() {
-  return process.env.WEB_TEST_EXECUTABLE_PATH || undefined;
+  return process.env.WEBUI_TEST_EXECUTABLE_PATH || undefined;
 }
 
 async function startSampleApp() {
@@ -16,7 +16,7 @@ async function startSampleApp() {
 }
 
 function tmpDir(t) {
-  const d = fs.mkdtempSync(path.join(require('os').tmpdir(), 'web-test-test-'));
+  const d = fs.mkdtempSync(path.join(require('os').tmpdir(), 'webui-test-test-'));
   t.after(() => fs.rmSync(d, { recursive: true, force: true }));
   return d;
 }

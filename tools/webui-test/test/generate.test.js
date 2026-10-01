@@ -33,9 +33,9 @@ test('generate: エージェントの出力を検査して保存し、baseUrl �
   const r = await cli(['generate', 'ログイン画面が出ること', '-o', out, '--agent-cmd', FAKE, '--base-url', 'http://example.test'], { cwd: dir });
   assert.strictEqual(r.code, 0, r.err);
   const text = fs.readFileSync(out, 'utf8');
-  assert.match(text, /^# web-test generate で作成/);
+  assert.match(text, /^# webui-test generate で作成/);
   assert.match(text, /baseUrl: http:\/\/example.test/);
-  assert.ok(!fs.existsSync(path.join(dir, '.web-test')), '依頼ファイルの置き場を片付ける');
+  assert.ok(!fs.existsSync(path.join(dir, '.webui-test')), '依頼ファイルの置き場を片付ける');
 });
 
 test('generate: 書式の誤りはエラーを添えて頼み直す', async (t) => {
@@ -92,7 +92,7 @@ test('generate --explore: playwright-cli のブラウザを開いてエージェ
   const text = fs.readFileSync(log, 'utf8');
   assert.match(text, /## 画面を操作して確かめる/);
   assert.match(text, /SNAPSHOT:[\s\S]*textbox "メールアドレス"/);
-  const session = /-s=(web-test-[\w-]+)/.exec(text)[1];
+  const session = /-s=(webui-test-[\w-]+)/.exec(text)[1];
   const { execFileSync } = require('child_process');
   const listed = execFileSync(process.execPath, [require.resolve('@playwright/cli/playwright-cli.js'), 'list'], { cwd: dir, encoding: 'utf8' });
   assert.ok(!listed.includes(session) || /closed/i.test(listed.split('\n').find((l) => l.includes(session)) || ''), `セッションが閉じていない: ${listed}`);

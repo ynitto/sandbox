@@ -22,12 +22,18 @@
 refs[].rules に書く（--no-discover-rules でやめる。あとからは `codd.py rules --write`）。
 kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカスタムエージェント `codd` を書く
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
+--check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。渡さず、check もまだ無く、
+置き先に webui-test の設定（`webui-test.config.yaml` に check がある）があれば `webui-test check` を書く
+（ローカルで起動して e2e を動かし、前回と画面が変わったかを、変えるたびに確かめる。変わった画面は文書の画像に差し替える）。
+--test "コマンド" で、変えたあとに実行する単体テストのコマンド（codd.json の test）を書く（"" で消す）。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -41,6 +47,17 @@ AGENT_DESCRIPTION = "実装と設計書の一貫性を保って変える。コ�
 AGENT_KINDS = ("kiro", "copilot")
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
 GRAPHIFY_IGNORE_LINE = ".statemachine/codd/"
+# webui-test（画面のテスト）の設定。check があれば、変えたあとの検査に使う。
+WEBUI_TEST_CONFIGS = ("webui-test.config.yaml", "webui-test.config.yml", "webui-test.config.json")
+WEBUI_TEST_CHECK = ["webui-test", "check"]
+
+
+def webui_test_check(target: Path) -> list[str] | None:
+    for name in WEBUI_TEST_CONFIGS:
+        path = target / name
+        if path.is_file() and re.search(r'^(check:|\s*"check"\s*:)', path.read_text(encoding="utf-8"), re.M):
+            return list(WEBUI_TEST_CHECK)
+    return None
 
 
 def parse_ref(value: str) -> dict:
@@ -55,7 +72,8 @@ def ref_name(ref: dict) -> str:
 
 def install(target: Path, side: str | None, refs: list[str] | None, gitignore: bool = True,
             scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
-            agents: tuple[str, ...] | list[str] = AGENT_KINDS) -> Path:
+            agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | None = None,
+            test: str | None = None) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
     dest = target / DEST_REL
@@ -101,6 +119,20 @@ def install(target: Path, side: str | None, refs: list[str] | None, gitignore: b
         entry.setdefault("scope", [])
         if folder not in entry["scope"]:
             entry["scope"].append(folder)
+    if test is not None:
+        argv = shlex.split(test)
+        if argv:
+            config["test"] = argv
+        else:
+            config.pop("test", None)
+    if check is not None:
+        argv = shlex.split(check)
+        if argv:
+            config["check"] = argv
+        else:
+            config.pop("check", None)
+    elif "check" not in config and webui_test_check(target):
+        config["check"] = webui_test_check(target)
     config.setdefault("skills", {"plan": [], "apply": []})
     config.setdefault("graphify", "auto")
     config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -182,15 +214,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--agent", action="append", choices=list(AGENT_KINDS),
                    help="書くカスタムエージェント（繰り返し可。既定は kiro と copilot の両方）")
     p.add_argument("--no-agents", action="store_true", help="カスタムエージェントを書かない")
+    p.add_argument("--check", metavar="コマンド",
+                   help="変えたあとに実行する検査コマンド（例: \"npm test\"、\"webui-test check\"）。\"\" で消す")
+    p.add_argument("--test", metavar="コマンド",
+                   help="変えたあとに実行する単体テストのコマンド（例: \"npm test\"、\"python -m unittest\"）。\"\" で消す")
     args = p.parse_args(argv)
     dest = install(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
                    scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
-                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS))
+                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8"))
     print(f"置きました: {dest}")
     refs = config.get("refs") or [{"path": config.get("ref_path")}]
     print(f"  この側: {config['side']}  参照先: " + ", ".join(
         f"{ref_name(r)}={r['path']}" + (f"（{', '.join(r['scope'])}）" if r.get("scope") else "") for r in refs))
+    if config.get("test"):
+        print("  変えたあとの単体テスト: " + " ".join(config["test"]))
+    if config.get("check"):
+        print("  変えたあとの検査: " + " ".join(config["check"]))
     if not args.no_agents:
         print("  カスタムエージェント codd: " + "、".join(
             {"kiro": "kiro-cli chat --agent codd", "copilot": "Copilot のエージェント選択で codd"}[k]

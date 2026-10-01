@@ -65,9 +65,24 @@ SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files",
-               "skill_dirs"}
+               "skill_dirs", "test", "tests", "evidence"}
 REF_KEYS = {"name", "path", "skills", "scope", "rules"}
 DEFAULT_MAX_FILES = 20
+# テストのファイル（単体テスト・API テスト・シナリオテスト・e2e のケース。コードもケースの記述も）。
+# コード・仕様書と同じ、整合を取る成果物として扱い、影響を測って計画に挙げさせる。
+# codd.json の tests で変えられ、[] でテストを扱わない。
+DEFAULT_TEST_PATTERNS = [
+    "test/**", "tests/**", "e2e/**", "**/__tests__/**", "**/*.test.*", "**/*.spec.*",
+    "**/test_*.py", "**/*_test.py", "**/*_test.go", "**/*Test.java", "**/*Tests.cs",
+    "**/*.feature", "**/*.robot", "**/*.http", "**/*.postman_collection.json", "**/scenarios/**",
+    "cypress/**", "playwright/**",
+]
+MAX_TEST_FILES = 2000
+# テストで得たもの（確かめた振る舞い・測った時間・撮った画像）を書いたファイル。文書の印（<!-- evidence: id -->）に写し、
+# 今と同じか・目安を超えていないかを確かめる。codd.json の evidence で変えられ、[] で扱わない。
+DEFAULT_EVIDENCE = ["webui-test-results/evidence.json"]
+EVIDENCE_TOLERANCE = 0.2   # 測った値は揺れるので、写した値と 2 割までの違いは同じとみなす
+TESTS_HEADING = "## テストの変更案"
 # 設定しなくても使うスキルの置き場所（リポジトリのルートから）。フォルダごとに `名前/SKILL.md`。
 DEFAULT_SKILL_DIRS = [".agents/skills"]
 MAX_REPO_SKILLS = 30
@@ -86,6 +101,7 @@ PLAN_HEADINGS = (
     "## 自分の変更案",
     "## 参照先の変更案",
     "## 影響範囲",
+    "## テストの変更案",
     "## 今回やらないこと",
 )
 CITED_IN_REFS = ("## 参照先の前提", "## 参照先の制約", "## 参照先のその他", "## ずれ")
@@ -135,6 +151,9 @@ class CoddError(Exception):
 # ---------------------------------------------------------------- 下回り
 
 def run(argv: list[str], cwd: Path, timeout: int, env: dict | None = None) -> tuple[int, str]:
+    if os.name == "nt" and argv:
+        # Windows では npm・webui-test などが .cmd なので、PATHEXT で探してから起動する。
+        argv = [shutil.which(argv[0]) or argv[0], *argv[1:]]
     try:
         proc = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=timeout, env=env)
@@ -182,6 +201,17 @@ def rule_list(value, where: str) -> list[str]:
     if bad:
         raise CoddError(f"{where} にはリポジトリの中のパスか glob を相対で書きます（今: {', '.join(bad)}）")
     return out
+
+
+def is_argv(value) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(a, str) for a in value)
+
+
+def test_commands(value) -> list[tuple[str, list[str]]]:
+    """codd.json の test を（名前, コマンド）の並びに。単体テストも API テストもシナリオテストも同じに動かす。"""
+    if not value:
+        return []
+    return [("", value)] if isinstance(value, list) else list(value.items())
 
 
 def load_config(machine_dir: Path) -> dict:
@@ -238,9 +268,18 @@ def load_config(machine_dir: Path) -> dict:
     config.setdefault("graphify", "auto")
     if config["graphify"] not in ("auto", "off"):
         raise CoddError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
-    check = config.get("check")
-    if check is not None and not (isinstance(check, list) and check and all(isinstance(a, str) for a in check)):
-        raise CoddError(f'{path} の check はコマンドの配列です（例: ["python3", "-m", "pytest", "-q"]）')
+    command = config.get("check")
+    if command is not None and not is_argv(command):
+        raise CoddError(f'{path} の check はコマンドの配列です（例: ["webui-test", "check"]）')
+    test = config.get("test")
+    if test is not None and not (is_argv(test) or (isinstance(test, dict) and test and all(
+            isinstance(k, str) and k and is_argv(v) for k, v in test.items()))):
+        raise CoddError(f'{path} の test はコマンドの配列か、名前ごとのコマンドです'
+                        '（例: ["npm", "test"] / {"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}）')
+    evidence = config.get("evidence", DEFAULT_EVIDENCE)
+    config["evidence"] = [] if evidence == [] else rule_list(evidence, f"{path} の evidence")
+    tests = config.get("tests", DEFAULT_TEST_PATTERNS)
+    config["tests"] = [] if tests == [] else rule_list(tests, f"{path} の tests")
     config.setdefault("max_files", DEFAULT_MAX_FILES)
     if not (isinstance(config["max_files"], int) and not isinstance(config["max_files"], bool)
             and config["max_files"] > 0):
@@ -296,6 +335,18 @@ class Ref(Side):
     @property
     def check(self) -> list[str] | None:
         return (self.config or {}).get("check")
+
+    @property
+    def test(self) -> list[str] | dict | None:
+        return (self.config or {}).get("test")
+
+    @property
+    def evidence_patterns(self) -> list[str]:
+        return (self.config or {}).get("evidence", DEFAULT_EVIDENCE)
+
+    @property
+    def test_patterns(self) -> list[str]:
+        return (self.config or {}).get("tests", DEFAULT_TEST_PATTERNS)
 
 
 class Ctx:
@@ -674,6 +725,24 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
                       + (f"。道具: {tool_words(r.apply_tools)}" if r.apply_tools else ""))
     print(f"スキルは `python3 {MACHINE_REL}/codd.py skill 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
     print(f"1 回で変えるファイルの上限: {ctx.max_files}（超えるぶんは計画の「今回やらないこと」へ）")
+    if tests_enabled(ctx):
+        counts = [f"{'自分' if not k else k} {len(test_files(ctx, k))} files" for k, _ in all_sides(ctx)
+                  if test_patterns(ctx, k)]
+        print(f"テスト（コード・仕様書と同じに扱う。響くものを「テストの変更案」に挙げる）: {'、'.join(counts)}"
+              f"（書き方は {CONFIG_NAME} の tests）")
+    evs = {k: e for k, e in all_evidence(ctx).items() if e.files}
+    if evs:
+        print("テストで得たもの（振る舞い・時間・画像。文書へは `<!-- evidence: id -->` の印で写す。`codd.py evidence` で一覧）: "
+              + "、".join(f"{'自分' if not k else k} {len(e.items)} 件" for k, e in evs.items()))
+    checks = [("自分", ctx.config.get("test"), ctx.config.get("check")),
+              *((r.name, r.test, r.check) for r in ctx.refs)]
+    if any(t or c for _, t, c in checks):
+        print("変えたあとに実行するもの（作り直すファイルがあれば、それも計画に挙げる）:")
+        for who, t, c in checks:
+            for name, argv in test_commands(t):
+                print(f"  - {who}のテスト{f'（{name}）' if name else ''}: {' '.join(argv)}")
+            if c:
+                print(f"  - {who}の検査: {' '.join(c)}")
     if len(ctx.refs) > 1:
         print("計画の根拠は `名前:パス` で書く（例: " + f"{ctx.refs[0].name}:docs/api.md）")
     return 0
@@ -1312,7 +1381,9 @@ def plan_budget(ctx: Ctx, bodies: dict[str, str], planned: dict[str, set[str]]) 
     """1 回で変えるファイルが max_files に収まっているか（1 セッションで終わる大きさに保つ）。"""
     own = listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
     own |= listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
-    total = len(own) + sum(len(p) for p in planned.values())
+    tests = {(k, rel) for k, rel in test_plan(ctx, bodies).change if not (not k and rel in own)
+             and not (k and rel in planned.get(k, set()))}
+    total = len(own) + sum(len(p) for p in planned.values()) + len(tests)
     if total <= ctx.max_files:
         return []
     return [f"1 回で変えるファイルが {total} あり、上限 {ctx.max_files} を超えています。"
@@ -1424,7 +1495,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str]) -> tuple[list[str], list[str]
         measured = measure(ctx, terms, "impact.md",
                            f"計画の変更が自分のリポジトリ（{SIDES[ctx.side]}）に響く範囲（測定）")
         listed = (listed_paths(ctx, bodies["## 自分の変更案"], allow_new=True)
-                  | listed_paths(ctx, bodies["## 影響範囲"]))
+                  | listed_paths(ctx, bodies["## 影響範囲"]) | test_plan(ctx, bodies).paths(""))
         missing = [p for p in measured if not covered(p, listed)]
         if missing:
             problems.append(
@@ -1443,6 +1514,8 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str]) -> tuple[list[str], list[str]
                 "ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
                 + ", ".join(missing_refs) + f"（詳細: {DATA_DIRNAME}/ref-impact.md）")
     problems += trace_plan(ctx, bodies)
+    problems += tests_plan_problems(ctx, bodies, terms)
+    problems += formats_plan_problems(ctx, bodies)
     return problems, measured, len(ref_hits)
 
 
@@ -1455,7 +1528,7 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     cited = cited_anywhere(ctx, bodies)
     missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited]
     listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
-              | listed_paths(ctx, bodies.get("## 影響範囲", "")))
+              | listed_paths(ctx, bodies.get("## 影響範囲", "")) | test_plan(ctx, bodies).paths(""))
     own_links = sorted({rel for name, rels in planned.items() for k, rel in linked(ctx, name, rels) if not k})
     missing_own = [p for p in own_links if not covered(p, listed)]
     write_trace(ctx, "trace.md", "計画で変えるファイルとつながっているファイル（パスで指し合っているもの）", [
@@ -1475,6 +1548,690 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     return problems
 
 
+# ---------------------------------------------------------------- テスト（コード・仕様書と同じに扱う）
+
+def glob_re(pattern: str) -> re.Pattern:
+    """git の :(glob) と同じ意味の正規表現（`*` はフォルダをまたがず、`**/` はまたぐ）。"""
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pattern.startswith("/**", i) and i + 3 == len(pattern):
+            out, i = out + "/.*", i + 3
+        elif pattern.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif pattern[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif pattern[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out)
+
+
+def side_of(ctx: Ctx, key: str) -> Side:
+    return ctx.own if not key else ctx.ref(key)
+
+
+def test_patterns(ctx: Ctx, key: str) -> list[str]:
+    """その側のテストのファイルの書き方。自分は codd.json の tests、参照先は参照先に置いた codd.json の tests。"""
+    return ctx.config["tests"] if not key else ctx.ref(key).test_patterns
+
+
+def is_test(ctx: Ctx, key: str, rel: str) -> bool:
+    return any(glob_re(p).fullmatch(rel) for p in test_patterns(ctx, key))
+
+
+def tests_enabled(ctx: Ctx) -> bool:
+    return any(test_patterns(ctx, key) for key, _ in all_sides(ctx))
+
+
+def test_files(ctx: Ctx, key: str) -> list[str]:
+    side = side_of(ctx, key)
+    if not test_patterns(ctx, key):
+        return []
+    rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
+                  side.path, GIT_TIMEOUT)
+    files = [ln for ln in out.splitlines() if side.has(ln) and is_test(ctx, key, ln)] if rc == 0 else []
+    return files[:MAX_TEST_FILES]
+
+
+def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]]) -> dict[tuple[str, str], str]:
+    """変える名前・変えるファイルが響くテストのファイル（自分と参照先。同じ側でも数える）と、その理由。
+
+    - 名前: 変わる名前（`…`・差分の定義や見出し）がテストのファイルに書かれている
+    - つながり: テストのファイルが変えるファイルをパスで指している（`coherence: code=…`・`doc=…` など）か、その逆
+    """
+    found: dict[tuple[str, str], str] = {}
+    targets = {(k, rel) for k, rels in changed.items() for rel in rels}
+    for key, side in all_sides(ctx):
+        tests = set(test_files(ctx, key))
+        if not tests:
+            continue
+        if terms:
+            _, hits, _ = search(ctx, side, terms[:MAX_TERMS], "affected", use_graph=False)
+            for rel in hits:
+                if rel in tests and (key, rel) not in targets:
+                    found.setdefault((key, rel), "名前")
+        names = [Path(rel).name for _, rel in targets if Path(rel).name]
+        for rel in sorted(tests & set(files_mentioning(side, names))):
+            if (key, rel) in targets:
+                continue
+            for claim in claims_in(rel, read_text(side.path / rel) or ""):
+                if any(covered(h[1], changed.get(h[0], set())) for h in resolve(ctx, side, rel, claim).hits):
+                    found[(key, rel)] = "つながり"
+                    break
+    # 変えるファイルが指しているテスト（仕様書がケースのファイルを挙げている、など）。
+    for k, rels in changed.items():
+        side = side_of(ctx, k)
+        for rel in rels:
+            if not (side.path / rel).is_file():
+                continue
+            for claim in claims_in(rel, read_text(side.path / rel) or ""):
+                for hk, hrel in resolve(ctx, side, rel, claim).hits:
+                    if is_test(ctx, hk, hrel) and (hk, hrel) not in targets:
+                        found[(hk, hrel)] = "つながり"
+    return found
+
+
+@dataclass
+class TestPlan:
+    """計画の「テストの変更案」。（側の名前。自分は ""、パス）で持つ。"""
+    change: set[tuple[str, str]]
+    waived: set[tuple[str, str]]
+    problems: list[str]
+    reason_only: bool      # パスの無い「変更不要: 理由」だけ（響くテストが無いとき）
+
+    def listed(self) -> set[tuple[str, str]]:
+        return self.change | self.waived
+
+    def paths(self, key: str, waived: bool = True) -> set[str]:
+        return {rel for k, rel in (self.listed() if waived else self.change) if k == key}
+
+
+def test_plan(ctx: Ctx, bodies: dict[str, str]) -> TestPlan:
+    body = bodies.get(TESTS_HEADING, "なし")
+    plan = TestPlan(set(), set(), [], False)
+    if is_none(body):
+        return plan
+    listed = items(body)
+    if not listed:
+        plan.problems.append(f"{TESTS_HEADING} は箇条書きにしてください")
+    for item in listed:
+        hits = {("", rel) for rel in cited_own(ctx, item, allow_new=True)}
+        cited = cited_refs(ctx, item, allow_new=True)
+        hits |= cited.found
+        if not hits:
+            if NO_CHANGE_MARK in item:
+                plan.reason_only = True
+                continue
+            hint = "（どの参照先か `名前:パス` で書いてください）" if cited.ambiguous else ""
+            plan.problems.append(f"{TESTS_HEADING} の項目に、テストのファイルのパスがありません{hint}: {item[:80]}")
+            continue
+        (plan.waived if NO_CHANGE_MARK in item else plan.change).update(hits)
+    return plan
+
+
+def plan_changes(ctx: Ctx, bodies: dict[str, str]) -> dict[str, set[str]]:
+    """計画で変えるファイル（自分の変更案・参照先の変更案。テストの変更案は除く）。"""
+    changed = {"": own_planned(ctx, bodies)}
+    for name, rels in planned_refs(ctx, bodies)[0].items():
+        changed.setdefault(name, set()).update(rels)
+    return changed
+
+
+def write_tests_report(ctx: Ctx, name: str, title: str, found: dict[tuple[str, str], str],
+                       tp: TestPlan) -> None:
+    def row(k: str, rel: str, why: str) -> str:
+        state = ("変える" if (k, rel) in tp.change else NO_CHANGE_MARK if (k, rel) in tp.waived else "計画に無い")
+        return f"- {side_label(ctx, k, rel)} — {why}（{state}）"
+    lines = [f"# {title}", "", *([row(k, r, w) for (k, r), w in sorted(found.items())] or ["- なし"]), ""]
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / name).write_text("\n".join(lines), encoding="utf-8")
+
+
+def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str]) -> list[str]:
+    """計画が、変更に響くテストをすべて扱っているか（足す・直す・変更不要）。"""
+    if not tests_enabled(ctx):
+        return []
+    tp = test_plan(ctx, bodies)
+    problems = list(tp.problems)
+    changed = plan_changes(ctx, bodies)
+    if any(changed.values()) and not tp.listed() and not tp.reason_only:
+        problems.append(f"{TESTS_HEADING} が「なし」です。コード・仕様書と同じく、足す・直すテストを挙げてください"
+                        f"（要らないなら `- {NO_CHANGE_MARK}: 理由`）")
+    found = affected_tests(ctx, terms, changed)
+    write_tests_report(ctx, "tests.md", "計画の変更が響くテスト（測定）", found, tp)
+    problems += evidence_plan_problems(ctx, bodies, set(found) | tp.change)
+    own_listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
+                  | listed_paths(ctx, bodies.get("## 影響範囲", "")))
+    missing = [side_label(ctx, k, rel) for (k, rel) in sorted(found) if (k, rel) not in tp.listed()
+               and not (not k and covered(rel, own_listed)) and not (k and covered(rel, changed.get(k, set())))]
+    if missing:
+        problems.append(
+            f"変更が響くテストのうち、計画に無いファイルがあります（{TESTS_HEADING} に、直し方か"
+            f"「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/tests.md）")
+    return problems
+
+
+# ---------------------------------------------------------------- テストで得たもの（evidence）を実装・文書に活かす
+# テストは合否のほかに、確かめた振る舞い・測った時間・前回と比べた画面を残す（evidence.json。webui-test が書く。
+# ほかのテストも同じ形で書ける）。テストの側は文書を知らない。文書への影響を測って直すのはこのマシンの仕事:
+# - 画面: 文書のリポジトリの画像を sha256 で引き、画面のこれまでの版と同じ画像を見つけて今の画面に差し替える
+# - 振る舞い・時間: 文書は値を手で写さず `<!-- evidence: id -->…<!-- /evidence -->` の印で写し、今と同じか
+#   （`codd.py evidence --write` で写し直す）・目安（max=）を超えていないかを確かめる
+
+_EVIDENCE_MARK = re.compile(r"<!--\s*evidence:\s*(?P<id>[^\s>]+)(?P<opts>[^>]*?)-->(?P<body>.*?)<!--\s*/evidence\s*-->",
+                            re.DOTALL)
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+STATUS_MARK = {"passed": "✓", "failed": "✗", "skipped": "－"}
+
+
+@dataclass
+class Evidence:
+    key: str            # 側（自分は ""）
+    root: Path          # 項目のパスの起点
+    items: dict[str, dict]
+    files: list[str]    # 読んだ evidence のファイル（その側のルートから）
+
+
+def evidence_patterns(ctx: Ctx, key: str) -> list[str]:
+    return ctx.config["evidence"] if not key else ctx.ref(key).evidence_patterns
+
+
+def load_evidence(ctx: Ctx, key: str) -> Evidence:
+    side = side_of(ctx, key)
+    ev = Evidence(key, side.path, {}, [])
+    for pattern in evidence_patterns(ctx, key):
+        for path in sorted(side.path.glob(pattern)):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                continue
+            ev.files.append(path.relative_to(side.path).as_posix())
+            # webui-test は設定ファイルのフォルダからの相対で書く。結果の置き場の親がそのフォルダ。
+            root = path.parent.parent if path.parent.name == "webui-test-results" else side.path
+            for item in data["items"]:
+                if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    ev.items[item["id"]] = {**item, "_root": root}
+    return ev
+
+
+def all_evidence(ctx: Ctx) -> dict[str, Evidence]:
+    return {key: load_evidence(ctx, key) for key, _ in all_sides(ctx)}
+
+
+def find_evidence(ctx: Ctx, evs: dict[str, Evidence], doc_key: str, ident: str) -> list[dict]:
+    """印の id に当たる項目。`名前:id` は参照先 名前 から。`…/*` は前方一致で並べる。それ以外は文書の側・自分・参照先の順。"""
+    name, sep, rest = ident.partition(":")
+    order = [doc_key, "", *(r.name for r in ctx.refs)]
+    if sep and name in evs:
+        order, ident = [name], rest
+    elif sep and _NAME.match(name) and not any(ident in e.items for e in evs.values()):
+        ident = rest
+    for key in dict.fromkeys(order):
+        # 画面は印で写さない（文書の画像はハーネスが sha256 で見つけて差し替える。replace_screens）
+        items = {i: v for i, v in evs[key].items.items() if v.get("kind") != "image"}
+        if ident.endswith("*"):
+            hits = [items[i] for i in sorted(items) if i.startswith(ident[:-1])]
+        else:
+            hits = [items[ident]] if ident in items else []
+        if hits:
+            return hits
+    return []
+
+
+def render_item(item: dict, doc_path: Path) -> str:
+    kind = item.get("kind")
+    if kind == "metric":
+        return f"{item.get('value')} {item.get('unit', '')}".strip()
+    if kind == "image":
+        return f"画面 {item.get('status', '')} {item.get('path', '')}".strip()
+    status = item.get("status", "")
+    return f"{STATUS_MARK.get(status, '')} {item.get('title', item['id'])}".strip()
+
+
+def render_mark(ident: str, items: list[dict], doc_path: Path) -> str:
+    if ident.endswith("*"):
+        return "\n" + "\n".join(f"- {render_item(i, doc_path)}" for i in items) + "\n"
+    return render_item(items[0], doc_path)
+
+
+def mark_opts(text: str) -> dict[str, str]:
+    return dict(m.groups() for m in re.finditer(r"(\w+)=([^\s]+)", text))
+
+
+def close_enough(written: str, now: str, tolerance: float) -> bool:
+    """数は tolerance の割合まで違ってよい（測った値の揺れ）。数以外は同じであること。"""
+    if _NUMBER.sub("#", written.strip()) != _NUMBER.sub("#", now.strip()):
+        return False
+    for a, b in zip(_NUMBER.findall(written), _NUMBER.findall(now)):
+        a, b = float(a), float(b)
+        if abs(a - b) > tolerance * max(abs(a), abs(b), 1.0):
+            return False
+    return True
+
+
+@dataclass
+class Mark:
+    key: str
+    rel: str
+    line: int
+    ident: str
+    opts: dict[str, str]
+    span: tuple[int, int]
+    body: str
+
+
+def marked_docs(ctx: Ctx, key: str) -> list[str]:
+    side = side_of(ctx, key)
+    rc, out = run(["git", "grep", "-l", "-I", "--untracked", "-E", r"<!--[[:space:]]*evidence:", *side.pathspec()],
+                  side.path, GIT_TIMEOUT)
+    return [ln for ln in out.splitlines() if side.has(ln) and ln.lower().endswith(DOC_EXTS)] if rc == 0 else []
+
+
+def marks_in(ctx: Ctx, key: str, rel: str) -> list[Mark]:
+    text = read_text(side_of(ctx, key).path / rel) or ""
+    return [Mark(key, rel, text.count("\n", 0, m.start()) + 1, m.group("id"), mark_opts(m.group("opts")),
+                 m.span("body"), m.group("body")) for m in _EVIDENCE_MARK.finditer(text)]
+
+
+def evidence_marks(ctx: Ctx, only: set[tuple[str, str]] | None = None) -> list[Mark]:
+    marks: list[Mark] = []
+    for key, _ in all_sides(ctx):
+        for rel in marked_docs(ctx, key):
+            if only is None or (key, rel) in only:
+                marks += marks_in(ctx, key, rel)
+    return marks
+
+
+def check_marks(ctx: Ctx, evs: dict[str, Evidence], marks: list[Mark]) -> tuple[list[str], list[str]]:
+    """（今と違う印, 目安を超えた・見つからない印）。"""
+    stale: list[str] = []
+    bad: list[str] = []
+    for mk in marks:
+        where = f"{side_label(ctx, mk.key, mk.rel)}:{mk.line} {mk.ident}"
+        items = find_evidence(ctx, evs, mk.key, mk.ident)
+        if not items:
+            bad.append(f"{where} — テストの結果にこの id がありません")
+            continue
+        for item in items:
+            limit = mk.opts.get("max", item.get("max"))
+            if item.get("kind") == "metric" and limit is not None:
+                try:
+                    over = float(item.get("value", 0)) > float(limit)
+                except (TypeError, ValueError):
+                    over = False
+                if over:
+                    amount = f"{item.get('value')} {item.get('unit', '')}".strip()
+                    bad.append(f"{where} — {item.get('title', item['id'])} が {amount} で、目安の {limit} を超えています")
+            if item.get("kind") == "behavior" and item.get("status") == "failed":
+                bad.append(f"{where} — 確かめた振る舞いが失敗しています: {item.get('title', item['id'])}")
+        now = render_mark(mk.ident, items, side_of(ctx, mk.key).path / mk.rel)
+        try:
+            tolerance = float(mk.opts.get("tolerance", EVIDENCE_TOLERANCE))
+        except ValueError:
+            tolerance = EVIDENCE_TOLERANCE
+        if not close_enough(mk.body, now, tolerance):
+            flat = lambda t: " ".join(t.split())[:40]  # noqa: E731
+            stale.append(f"{where}（書いてある {flat(mk.body) or '空'} → 今 {flat(now)}）")
+    return stale, bad
+
+
+def evidence_apply_problems(ctx: Ctx) -> list[str]:
+    marks = evidence_marks(ctx)
+    if not marks:
+        return []
+    evs = all_evidence(ctx)
+    if not any(e.files for e in evs.values()):
+        return ["文書がテストの結果を写していますが、テストで得たもの（evidence）がありません（テストか検査のコマンドが"
+                f"書いているか、{CONFIG_NAME} の evidence を確かめてください）"]
+    stale, bad = check_marks(ctx, evs, marks)
+    problems = []
+    if bad:
+        problems.append("テストで得たものが、文書の求めを満たしていません（実装を直すか、目安を変えるなら利用者に確かめて"
+                        "計画に挙げてから文書を直してください）: " + " / ".join(bad[:8]))
+    if stale:
+        problems.append("文書に写したテストの結果が今と違います（`python3 .statemachine/codd/codd.py evidence --write 文書のパス` で"
+                        "写し直してください。計画に無い文書なら、利用者に確かめて計画に挙げる）: " + " / ".join(stale[:8]))
+    return problems
+
+
+def evidence_plan_problems(ctx: Ctx, bodies: dict[str, str], tests: set[tuple[str, str]]) -> list[str]:
+    """変更が響くテストの結果を写している文書を、計画が扱っているか。関係するテストの結果を .codd/evidence.md に控える。"""
+    marks = evidence_marks(ctx)
+    evs = all_evidence(ctx)
+    if not marks and not any(e.items for e in evs.values()):
+        return []
+    planned = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels}
+    # 変える・響くファイルに関係する、今のテストの結果（確かめた振る舞い・時間・画像）
+    related: list[tuple[str, dict]] = []
+    for key, ev in evs.items():
+        for item in ev.items.values():
+            paths = {str(item.get("file") or ""), *map(str, item.get("doc") or []), *map(str, item.get("code") or [])}
+            hits = {(key, p) for p in paths if p} | {tuple(p.split(":", 1)) for p in paths if ":" in p}
+            if hits & (planned | tests):
+                related.append((key, item))
+    # 響くテストの結果を写している文書
+    hit_docs: dict[tuple[str, str], list[str]] = {}
+    for mk in marks:
+        for item in find_evidence(ctx, evs, mk.key, mk.ident):
+            ev_key = next((k for k, e in evs.items() if item["id"] in e.items and e.items[item["id"]] is item), "")
+            if (ev_key, str(item.get("file") or "")) in tests:
+                hit_docs.setdefault((mk.key, mk.rel), []).append(mk.ident)
+    lines = ["# テストで得たもの（計画に関係するもの）", ""]
+    lines += [f"- {side_label(ctx, k, i['id'])} — {i.get('kind')}: {render_item(i, side_of(ctx, k).path / 'x')}"
+              for k, i in related[:MAX_MEASURED * 2]] or ["- なし"]
+    lines += ["", "## 響くテストの結果を写している文書", ""]
+    lines += [f"- {side_label(ctx, k, rel)} — " + ", ".join(ids) for (k, rel), ids in sorted(hit_docs.items())] or ["- なし"]
+    # 響くテストの画面を貼っている文書の画像（変えたあと、画面が変われば差し替える。知らせるだけ）
+    ev_key_of = {id(item): k for k, e in evs.items() for item in e.items.values()}
+    shown = [h for h in doc_screens(ctx, evs) if (ev_key_of.get(id(h.item), ""), str(h.item.get("file") or "")) in tests]
+    lines += ["", "## 響くテストの画面を貼っている文書の画像（画面が変われば、変えたあとに差し替える）", ""]
+    lines += [f"- {side_label(ctx, h.key, h.rel)} ← {h.item['id']}"
+              + (f"（{', '.join(docs_showing(ctx, h.key, h.rel))}）" if docs_showing(ctx, h.key, h.rel) else "")
+              for h in shown] or ["- なし"]
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / "evidence.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (ctx.data / "evidence-before.json").write_text(json.dumps(
+        {k: {i: {kk: vv for kk, vv in item.items() if kk != "_root"} for i, item in e.items.items()}
+         for k, e in evs.items()}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    own_listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
+                  | listed_paths(ctx, bodies.get("## 影響範囲", "")))
+    cited = cited_anywhere(ctx, bodies) | planned
+    missing = [side_label(ctx, k, rel) for (k, rel) in sorted(hit_docs)
+               if not (covered(rel, own_listed) if not k else (k, rel) in cited)]
+    if missing:
+        return ["変更が響くテストの結果を写している文書が、計画にありません（写し直すなら変えるファイルに、要らなければ"
+                f"「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/evidence.md）"]
+    return []
+
+
+def evidence_changes(ctx: Ctx) -> list[str]:
+    """計画のときと今とで、測った時間が揺れの幅を超えて変わったものと、振る舞いの合否が変わったもの（報告用）。"""
+    before_file = ctx.data / "evidence-before.json"
+    if not before_file.is_file():
+        return []
+    before = json.loads(before_file.read_text(encoding="utf-8"))
+    lines = []
+    for key, ev in all_evidence(ctx).items():
+        old = before.get(key, {})
+        for ident, item in sorted(ev.items.items()):
+            prev = old.get(ident)
+            label = side_label(ctx, key, ident)
+            if prev is None:
+                lines.append(f"- {label} — 新しく得た: {render_item(item, ev.root / 'x')}")
+            elif item.get("kind") == "metric" and not close_enough(str(prev.get("value")), str(item.get("value")),
+                                                                    EVIDENCE_TOLERANCE):
+                lines.append(f"- {label} — {prev.get('value')} → {item.get('value')} {item.get('unit', '')}")
+            elif item.get("kind") == "image" and prev.get("sha256") != item.get("sha256"):
+                lines.append(f"- {label} — 画面が変わった" + (f"（前: {item['previous']}）" if item.get("previous") else ""))
+            elif item.get("kind") == "behavior" and prev.get("status") != item.get("status"):
+                lines.append(f"- {label} — {prev.get('status')} → {item.get('status')}")
+    return lines
+
+
+IMAGE_EXTS = (".png",)
+MAX_IMAGE_FILES = 5000
+REPLACED_FILE = "replaced.json"
+_IMG_LINK = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)|<img\s[^>]*?src\s*=\s*[\"']([^\"']+)[\"']", re.I)
+
+
+def image_index(ctx: Ctx) -> dict[str, list[tuple[str, str]]]:
+    """各側の画像（git が無視していないもの）を sha256 で引けるようにする。"""
+    index: dict[str, list[tuple[str, str]]] = {}
+    for key, side in all_sides(ctx):
+        rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
+                      side.path, GIT_TIMEOUT)
+        files = [ln for ln in out.splitlines() if side.has(ln) and ln.lower().endswith(IMAGE_EXTS)] if rc == 0 else []
+        for rel in files[:MAX_IMAGE_FILES]:
+            try:
+                digest = hashlib.sha256((side.path / rel).read_bytes()).hexdigest()
+            except OSError:
+                continue
+            index.setdefault(digest, []).append((key, rel))
+    return index
+
+
+@dataclass
+class ScreenHit:
+    key: str            # 画像のある側
+    rel: str            # 画像のパス
+    item: dict          # テストの画面
+    state: str          # current（今の画面）/ stale（前の版）/ removed（撮らなくなった画面）
+
+
+def doc_screens(ctx: Ctx, evs: dict[str, Evidence]) -> list[ScreenHit]:
+    """文書のリポジトリにある画像のうち、テストの画面（今か前の版）と同じもの。"""
+    index = image_index(ctx)
+    hits: dict[tuple[str, str], ScreenHit] = {}
+    for ev in evs.values():
+        for item in ev.items.values():
+            if item.get("kind") != "image":
+                continue
+            current = item.get("sha256")
+            for digest in [h for h in item.get("history") or [] if isinstance(h, str)]:
+                for key, rel in index.get(digest, []):
+                    state = "removed" if item.get("status") == "removed" else "current" if digest == current else "stale"
+                    if (key, rel) not in hits or hits[(key, rel)].state == "current":
+                        hits[(key, rel)] = ScreenHit(key, rel, item, state)
+    return [hits[k] for k in sorted(hits)]
+
+
+def docs_showing(ctx: Ctx, key: str, rel: str) -> list[str]:
+    """その画像を貼っている文書（同じ側のマークダウン）。"""
+    side = side_of(ctx, key)
+    target = (side.path / rel).resolve()
+    out = []
+    for doc in files_mentioning(side, [Path(rel).name]):
+        if not doc.lower().endswith(DOC_EXTS):
+            continue
+        text = read_text(side.path / doc) or ""
+        for m in _IMG_LINK.finditer(text):
+            link = (m.group(1) or m.group(2) or "").split("#")[0].split("?")[0]
+            if link and not re.match(r"^[a-z][a-z0-9+.-]*:", link, re.I) and (side.path / doc).parent.joinpath(link).resolve() == target:
+                out.append(doc)
+                break
+    return out
+
+
+def replaced_files(ctx: Ctx) -> dict:
+    file = ctx.data / REPLACED_FILE
+    return json.loads(file.read_text(encoding="utf-8")) if file.is_file() else {"replaced": [], "removed": []}
+
+
+def replace_screens(ctx: Ctx) -> dict:
+    """テストの画面が変わったら、前の版を貼っている文書の画像を今の画面に差し替える（ハーネスがする変更）。
+
+    差し替えた画像は .codd/replaced.json に控え、「計画に無い変更」に数えない。報告で、どの文書に響いたかを伝える。
+    """
+    record = replaced_files(ctx)
+    done = {(r["side"], r["path"]) for r in record["replaced"]}
+    removed = []
+    for hit in doc_screens(ctx, all_evidence(ctx)):
+        entry = {"side": hit.key, "path": hit.rel, "id": hit.item["id"], "docs": docs_showing(ctx, hit.key, hit.rel)}
+        if hit.state == "removed":
+            removed.append(entry)
+            continue
+        if hit.state != "stale":
+            continue
+        src = hit.item["_root"] / str(hit.item.get("path", ""))
+        if not src.is_file():
+            continue
+        shutil.copyfile(src, side_of(ctx, hit.key).path / hit.rel)
+        if (hit.key, hit.rel) not in done:
+            record["replaced"].append(entry)
+            done.add((hit.key, hit.rel))
+    record["removed"] = removed
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / REPLACED_FILE).write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return record
+
+
+def screen_lines(ctx: Ctx, record: dict) -> list[str]:
+    lines = [f"- {side_label(ctx, r['side'], r['path'])} ← {r['id']}"
+             + (f"（貼っている文書: {', '.join(r['docs'])}）" if r["docs"] else "（どの文書も貼っていない）")
+             for r in record["replaced"]]
+    lines += [f"- {side_label(ctx, r['side'], r['path'])} — テストで撮らなくなった画面です（{r['id']}）"
+              + (f"。貼っている文書: {', '.join(r['docs'])}" if r["docs"] else "") for r in record["removed"]]
+    return lines
+
+
+def cmd_evidence(ctx: Ctx, args: argparse.Namespace) -> int:
+    """テストで得たものと、文書の印の様子を示す。--write で印を今の値に写し直す（指定した文書だけ。無ければすべて）。"""
+    evs = all_evidence(ctx)
+    for key, ev in evs.items():
+        if ev.files:
+            print(f"{'自分' if not key else key}: {len(ev.items)} 件（{', '.join(ev.files)}）")
+    if not any(e.files for e in evs.values()):
+        print(f"テストで得たもの（evidence）がありません（{CONFIG_NAME} の evidence: "
+              + ", ".join(ctx.config["evidence"] or ["なし"]) + "）")
+    only = None
+    if args.path:
+        only = set()
+        for p in args.path:
+            name, sep, rel = p.partition(":")
+            only.add((name, rel) if sep and name in {r.name for r in ctx.refs} else ("", p))
+    marks = evidence_marks(ctx, only)
+    if args.write:
+        written = []
+        for (key, rel) in sorted({(m.key, m.rel) for m in marks}):
+            path = side_of(ctx, key).path / rel
+            text = path.read_text(encoding="utf-8")
+
+            def sub(m: re.Match) -> str:
+                items = find_evidence(ctx, evs, key, m.group("id"))
+                if not items:
+                    return m.group(0)
+                now = render_mark(m.group("id"), items, path)
+                tol = float(mark_opts(m.group("opts")).get("tolerance", EVIDENCE_TOLERANCE))
+                if close_enough(m.group("body"), now, tol):
+                    return m.group(0)
+                return m.group(0)[:m.start("body") - m.start()] + now + m.group(0)[m.end("body") - m.start():]
+            new = _EVIDENCE_MARK.sub(sub, text)
+            if new != text:
+                path.write_text(new, encoding="utf-8")
+                written.append(side_label(ctx, key, rel))
+        print("写し直した: " + (", ".join(written) or "なし"))
+        marks = evidence_marks(ctx, only)
+    stale, bad = check_marks(ctx, evs, marks)
+    print(f"文書の印: {len(marks)} 件" + (f"（今と違う {len(stale)}・満たさない {len(bad)}）" if stale or bad else "（すべて今と同じ）"))
+    for line in stale:
+        print(f"  ↻ {line}")
+    for line in bad:
+        print(f"  ✗ {line}")
+    return 1 if stale or bad else 0
+
+
+# ---------------------------------------------------------------- 文書の書式（コードの決まりと同じに扱う）
+# 文書（マークダウン）の今の書式は、コードで言う決まりにあたる。変える文書は今の見出しの並びを、新しく足す文書は
+# 同じフォルダの文書がそろって持つ見出しの並びを、決まりとして守らせる。見出しを変えるなら、計画に `## 見出し` と書く。
+
+FORMAT_EXTS = (".md", ".markdown")
+FORMATS_FILE = "formats.json"
+_DOC_HEADING = re.compile(r"^(#{2,6})\s+(.+?)\s*#*\s*$")
+_NOT_MODELS = {"readme", "index", "_index", "changelog", "history"}
+
+
+def doc_headings(text: str) -> list[str]:
+    """文書の見出し（## 以下。題名の # は文書ごとに違うので見ない）。コードブロックの中は見ない。"""
+    found: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and (m := _DOC_HEADING.match(line)):
+            found.append(f"{m.group(1)} {m.group(2)}")
+    return found
+
+
+def doc_format(ctx: Ctx, key: str, rel: str) -> dict | None:
+    """変える・足す文書が守る書式。{"models": 見本のパス, "headings": 見出しの並び}。決まりが無ければ None。"""
+    if not rel.lower().endswith(FORMAT_EXTS) or is_test(ctx, key, rel):
+        return None
+    side = side_of(ctx, key)
+    path = side.path / rel
+    if path.is_file():
+        headings = doc_headings(read_text(path) or "")
+        return {"models": [rel], "headings": headings} if headings else None
+    if not path.parent.is_dir():
+        return None
+    models = sorted(p for p in path.parent.iterdir() if p.is_file() and p.suffix.lower() in FORMAT_EXTS
+                    and p.stem.lower() not in _NOT_MODELS)
+    if len(models) < 2:
+        return None
+    lists = [doc_headings(read_text(p) or "") for p in models]
+    common = unique(h for h in lists[0] if all(h in other for other in lists[1:]))
+    if not common:
+        return None
+    return {"models": [p.relative_to(side.path).as_posix() for p in models], "headings": common}
+
+
+def format_targets(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str]]:
+    own = own_planned(ctx, bodies) | listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
+    targets = {("", rel) for rel in own}
+    for name, rels in planned_refs(ctx, bodies)[0].items():
+        targets |= {(name, rel) for rel in rels}
+    return sorted(targets)
+
+
+def model_label(ctx: Ctx, key: str, rel: str) -> str:
+    return f"{key}:{rel}" if key else rel
+
+
+def formats_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
+    """変える文書の書式（見本と見出しの並び）を測って控え、計画の「守る決まり」が見本を挙げているかを見る。"""
+    formats = []
+    for key, rel in format_targets(ctx, bodies):
+        fmt = doc_format(ctx, key, rel)
+        if fmt:
+            formats.append({"side": key, "path": rel, **fmt})
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / FORMATS_FILE).write_text(json.dumps(formats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    lines = ["# 変える文書が守る書式（見本と見出しの並び）", ""]
+    for f in formats:
+        lines.append(f"- {side_label(ctx, f['side'], f['path'])}（見本: "
+                     + ", ".join(model_label(ctx, f["side"], m) for m in f["models"]) + "）")
+        lines += [f"  - {h}" for h in f["headings"]]
+    (ctx.data / "formats.md").write_text("\n".join(lines + (["- なし"] if not formats else []) + [""]),
+                                         encoding="utf-8")
+    body = bodies.get("## 守る決まり", "")
+    missing = []
+    for f in formats:
+        names = [model_label(ctx, f["side"], m) for m in f["models"]]
+        if f["side"] and len(ctx.refs) == 1:
+            names += f["models"]
+        if not any(mentioned(body, n) for n in names):
+            missing.append(f"{side_label(ctx, f['side'], f['path'])}（見本: {names[0]}）")
+    if missing:
+        return ["守る決まりに、変える文書の今の書式を挙げてください（文書の書式はコードの決まりと同じ。見本のパスと、"
+                "見出しの並び・表や言い回しをどう守るか）: " + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/formats.md）"]
+    return []
+
+
+def formats_apply_problems(ctx: Ctx, text: str) -> list[str]:
+    """変えた文書が、計画のときに控えた書式（見出しの並び）を守っているか。計画に `## 見出し` と書いたものは除く。"""
+    file = ctx.data / FORMATS_FILE
+    if not file.is_file():
+        return []
+    renamed = set(name_terms(text))
+    problems = []
+    for f in json.loads(file.read_text(encoding="utf-8")):
+        path = side_of(ctx, f["side"]).path / f["path"]
+        if not path.is_file():
+            continue
+        now = iter(doc_headings(read_text(path) or ""))
+        want = [h for h in f["headings"] if h not in renamed]
+        missing = [h for h in want if h not in now]   # 順に探す（並びが違っても無いと数える）
+        if missing:
+            problems.append(f"文書の書式（見出しの並び）が今の書式から外れています: {side_label(ctx, f['side'], f['path'])} — "
+                            + " / ".join(missing[:5]) + f"（見本: {model_label(ctx, f['side'], f['models'][0])}。"
+                            "書式は決まりとして守る。見出しを変えるなら利用者に確かめて、計画に `## 見出し` と書く）")
+    return problems
+
+
 def write_baseline(ctx: Ctx) -> None:
     """変える前の印。verify-apply はここから「どのファイルを変えたか」を測る。確認の直前に取り直す。
 
@@ -1488,6 +2245,7 @@ def write_baseline(ctx: Ctx) -> None:
         keep.unlink()
         return
     keep.unlink(missing_ok=True)
+    (ctx.data / REPLACED_FILE).unlink(missing_ok=True)
     shutil.rmtree(ctx.data / "before", ignore_errors=True)
     state = {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
@@ -1569,8 +2327,11 @@ def load_applied(ctx: Ctx) -> Applied | str:
         return "変える前の印が古い形です（計画の検査からやり直してください）"
     _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
     planned, plan_problems = planned_refs(ctx, bodies)
-    return Applied(bodies, changed_since(ctx.own, before["own"]),
-                   {r.name: changed_since(r, before.get("refs", {}).get(r.name, {})) for r in ctx.refs},
+    # テストの画面から差し替えた画像はハーネスの変更なので、「変えたファイル」に数えない。
+    harness = {(r["side"], r["path"]) for r in replaced_files(ctx)["replaced"]}
+    return Applied(bodies, {p for p in changed_since(ctx.own, before["own"]) if ("", p) not in harness},
+                   {r.name: {p for p in changed_since(r, before.get("refs", {}).get(r.name, {})) if (r.name, p) not in harness}
+                    for r in ctx.refs},
                    planned, plan_problems)
 
 
@@ -1587,8 +2348,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         return 1
     bodies = a.bodies
     problems = list(a.plan_problems)
+    tp = test_plan(ctx, bodies)
+    problems += tp.problems
+    problems += formats_apply_problems(ctx, "\n".join(bodies.values()))
 
-    # 1. 計画のファイルを最後まで変えたか（途中で止まっていないか）。
+    # 1. 計画のファイルを最後まで変えたか（途中で止まっていないか）。テストの変更案のファイルも同じ。
     want_own = own_planned(ctx, bodies)
     if not is_none(bodies.get("## 自分の変更案", "なし")) and not a.own_touched:
         problems.append("自分の変更案があるのに、自分のリポジトリが変わっていません")
@@ -1598,24 +2362,34 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems.append("自分の変更案のファイルをまだ変えていません（最後まで変えてください。変えなくてよくなったなら、"
                             "利用者に確かめて計画を直してください）: " + ", ".join(undone))
 
+    for key in ["", *(r.name for r in ctx.refs)]:
+        touched = a.own_touched if not key else a.touched[key]
+        undone = sorted(side_label(ctx, key, p) for p in tp.paths(key, waived=False)
+                        if not any(covered(t, {p}) for t in touched))
+        if undone:
+            problems.append(f"{TESTS_HEADING} のテストをまだ変えていません（コード・仕様書と同じく最後まで変えてください。"
+                            "変えなくてよくなったなら、利用者に確かめて計画を直してください）: " + ", ".join(undone))
+
     # 2. 計画に無いファイルを変えていないか。
-    own_allowed = want_own | listed_paths(ctx, bodies.get("## 影響範囲", ""), allow_new=True)
+    own_allowed = (want_own | listed_paths(ctx, bodies.get("## 影響範囲", ""), allow_new=True)
+                   | tp.paths("", waived=False))
     extra_own = sorted(p for p in a.own_touched if not covered(p, own_allowed))
     if extra_own:
         problems.append("計画に無いファイルを変えています（戻すか、利用者に確かめて計画の自分の変更案に足してください）: "
                         + ", ".join(extra_own))
     for r in ctx.refs:
         touched = a.touched[r.name]
+        ref_tests = tp.paths(r.name, waived=False)
         if r.name in a.planned and not touched:
             problems.append(f"参照先の変更案で {r.name} を変えるはずなのに、{r.name} が変わっていません")
-        elif r.name not in a.planned and touched:
+        elif r.name not in a.planned and not ref_tests and touched:
             problems.append(f"参照先の変更案に {r.name} は無いのに、{r.name} が変わっています（戻してください）")
         elif touched:
-            extra = sorted(p for p in touched if not covered(p, a.planned[r.name]))
+            extra = sorted(p for p in touched if not covered(p, a.planned.get(r.name, set()) | ref_tests))
             if extra:
                 problems.append(f"{r.name} で参照先の変更案に無いファイルを変えています（戻すか、利用者に確かめて"
                                 "計画の参照先の変更案に足してください）: " + ", ".join(extra))
-            undone = sorted(p for p in a.planned[r.name] if not any(covered(t, {p}) for t in touched))
+            undone = sorted(p for p in a.planned.get(r.name, set()) if not any(covered(t, {p}) for t in touched))
             if undone:
                 problems.append(f"{r.name} で参照先の変更案のファイルをまだ変えていません: " + ", ".join(undone))
 
@@ -1628,7 +2402,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if terms:
         measured = measure(ctx, terms, "impact-after.md",
                            f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）")
-        waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True)
+        waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
         untouched = [p for p in measured if p not in a.own_touched and p not in waived]
         if untouched:
             problems.append(
@@ -1647,6 +2421,19 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems.append("自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません（利用者に確かめて"
                             "計画を直すか、その名前を変えないでください）: " + ", ".join(missing)
                             + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）")
+
+    # 3'. 実際の変更が響くテストを、直したか「変更不要」としたか（同じ側のテストも。名前とつながりで測る）。
+    if tests_enabled(ctx):
+        touched_all = {"": a.own_touched, **a.touched}
+        changed_files = {k: {p for p in v if not is_test(ctx, k, p)} for k, v in touched_all.items()}
+        found = affected_tests(ctx, terms, changed_files)
+        write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp)
+        unfixed = [side_label(ctx, k, rel) for (k, rel) in sorted(found)
+                   if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived]
+        if unfixed:
+            problems.append("変更が響くテストのうち、直していないファイルがあります（直すか、利用者に確かめて計画の"
+                            f"{TESTS_HEADING} に「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(unfixed)
+                            + f"（詳細: {DATA_DIRNAME}/tests-after.md）")
 
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。
@@ -1673,11 +2460,20 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         since = (ctx.data / "before.json").stat().st_mtime
         problems += unread_problem(unread_skills(ctx, used, since), f"{DATA_DIRNAME}/apply.md に挙げた")
 
-    # 6. 検査コマンド。
+    # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。
+    for name, argv in test_commands(ctx.config.get("test")):
+        problems += run_check(ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
     for r in changed:
-        # 参照先の検査は、参照先に置いた同じマシンの設定（codd.json の check）を使う。
+        # 参照先のテストと検査は、参照先に置いた同じマシンの設定（codd.json の test・check）を使う。
+        for name, argv in test_commands(r.test):
+            problems += run_check(r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
         problems += run_check(r.path, r.check, f"{r.name}（{r.label}）")
+    # 7. テストで得たもの。変わった画面を貼っている文書の画像を差し替え、振る舞い・時間を写した印が今と合うかを見る。
+    screens = replace_screens(ctx)
+    for line in screen_lines(ctx, screens):
+        print(f"テストの画面から: {line[2:]}")
+    problems += evidence_apply_problems(ctx)
     for p in problems:
         print(p, file=sys.stderr)
     record_problems(ctx.data, "apply", problems)
@@ -1699,7 +2495,8 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
     own_now = {p for p in a.own_touched if (ctx.root / p).is_file()}
     ref_links = sorted(h for h in linked(ctx, "", own_now) if h[0]) if own_now else []
     missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited and r not in a.touched[n]]
-    waived = listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+    waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+              | {rel for k, rel in test_plan(ctx, a.bodies).waived if not k})
     own_links = sorted({rel for name in a.changed for k, rel in linked(ctx, name, a.touched[name]) if not k})
     missing_own = [p for p in own_links if p not in a.own_touched and not covered(p, waived)]
     broken = broken_refs(ctx, touched)
@@ -1768,6 +2565,29 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
             mark = "直した" if p in a.own_touched else NO_CHANGE_MARK if p in waived else "未対応" \
                 if not p.startswith("(") else ""
             lines.append(f"- {p}" + (f" — {mark}" if mark else ""))
+    tp = test_plan(ctx, a.bodies)
+    tests_after = ctx.data / "tests-after.md"
+    if tp.listed() or tp.reason_only or tests_after.is_file():
+        touched_all = {"": a.own_touched, **a.touched}
+        lines += ["", "## テスト", ""]
+        for k, rel in sorted(tp.listed()):
+            done = any(covered(t, {rel}) for t in touched_all.get(k, set()))
+            mark = NO_CHANGE_MARK if (k, rel) in tp.waived else "変えた" if done else "まだ"
+            lines.append(f"- {side_label(ctx, k, rel)} — {mark}")
+        if tp.reason_only and not tp.listed():
+            lines.append(f"- {NO_CHANGE_MARK}（計画に理由あり）")
+        if tests_after.is_file():
+            extra = [ln for ln in tests_after.read_text(encoding="utf-8").splitlines()
+                     if ln.startswith("- ") and ln.endswith("（計画に無い）")]
+            lines += extra
+    screens = screen_lines(ctx, replaced_files(ctx))
+    if screens:
+        lines += ["", "## テストの画面から差し替えた文書の画像", "", *screens]
+    changes = evidence_changes(ctx)
+    if changes:
+        lines += ["", "## テストで得たものの変化（計画のときと比べて）", "", *changes[:MAX_MEASURED],
+                  "", "（振る舞いや時間を文書に活かすなら `<!-- evidence: id -->…<!-- /evidence -->` で写す。"
+                  "画面は webui-test-results/screens/ の画像を文書に貼れば、以後は差し替える）"]
     own_now = sorted(p for p in a.own_touched if (ctx.root / p).is_file())
     lonely = [p for p in own_now if not any(k for k, _ in linked(ctx, "", {p}))]
     if lonely:
@@ -1962,6 +2782,9 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
     sub.add_parser("keep-changes", help="変えた分を残したまま計画を直す（次の計画の検査で印を取り直さない）")
     sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
+    ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
+    ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")
+    ev.add_argument("--write", action="store_true", help="文書の印を今の値に写し直す")
     ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
     ru.add_argument("--write", action="store_true", help="候補を codd.json の rules / refs[].rules に書く")
     ru.add_argument("--only", action="append", help="書く候補を絞る（`名前:パス` か `パス`。繰り返し可）")
@@ -1971,7 +2794,7 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
             "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
-            "skill": cmd_skill}
+            "skill": cmd_skill, "evidence": cmd_evidence}
 
 
 def main(argv: list[str] | None = None) -> int:

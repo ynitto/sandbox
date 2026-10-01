@@ -69,7 +69,7 @@ test('variants の誤り（名前の重複・無い名前の参照）を挙げ�
 
 test('config: 環境を選び、${VAR} を環境変数で置き換える。足りなければ止める', (t) => {
   const dir = tmpDir(t);
-  fs.writeFileSync(path.join(dir, 'web-test.config.yaml'), 'defaultEnv: local\nenvs:\n  local: { baseUrl: http://localhost:3000 }\n  staging:\n    baseUrl: https://stg.example.com\n    headers: { Authorization: "Bearer ${WT_TOKEN}" }\n    storageState: auth/stg.json\n');
+  fs.writeFileSync(path.join(dir, 'webui-test.config.yaml'), 'defaultEnv: local\nenvs:\n  local: { baseUrl: http://localhost:3000 }\n  staging:\n    baseUrl: https://stg.example.com\n    headers: { Authorization: "Bearer ${WT_TOKEN}" }\n    storageState: auth/stg.json\n');
   assert.strictEqual(loadEnv({ cwd: dir }).settings.baseUrl, 'http://localhost:3000');
   assert.throws(() => loadEnv({ cwd: dir, envName: 'staging' }), /WT_TOKEN が設定されていません/);
   process.env.WT_TOKEN = 'abc';
@@ -78,14 +78,14 @@ test('config: 環境を選び、${VAR} を環境変数で置き換える。足�
   assert.strictEqual(stg.settings.headers.Authorization, 'Bearer abc');
   assert.strictEqual(stg.settings.storageState, path.join(dir, 'auth', 'stg.json'));
   assert.throws(() => loadEnv({ cwd: dir, envName: 'prod' }), /環境「prod」がありません/);
-  assert.deepStrictEqual(loadEnv({ cwd: tmpDir(t) }), { name: 'local', settings: {}, file: null });
+  assert.deepStrictEqual(loadEnv({ cwd: tmpDir(t) }), { name: 'local', settings: {}, file: null, dir: null, serve: null, check: null });
 });
 
 test('run: variants で言語と画面幅を変えて同じケースを回し、実行記録を残す', async (t) => {
   const app = await startSampleApp();
   t.after(app.close);
   const dir = tmpDir(t);
-  fs.writeFileSync(path.join(dir, 'web-test.config.yaml'), `envs:\n  local: { baseUrl: ${app.baseUrl} }\n  staging: { baseUrl: http://127.0.0.1:9, mocks: false }\n`);
+  fs.writeFileSync(path.join(dir, 'webui-test.config.yaml'), `envs:\n  local: { baseUrl: ${app.baseUrl} }\n  staging: { baseUrl: http://127.0.0.1:9, mocks: false }\n`);
   const file = path.join(dir, 'i18n.yaml');
   fs.writeFileSync(file, `suite: 多言語
 screenshot: off
@@ -114,7 +114,7 @@ cases:
   const report = JSON.parse(fs.readFileSync(path.join(out, stamp, 'results.json'), 'utf8'));
   assert.deepStrictEqual(report.suites[0].cases.map((c) => `${c.id}/${c.variant}`), ['I-1/ja', 'I-1/en-narrow', 'I-2/ja', 'I-2/en-narrow']);
   assert.strictEqual(report.context.env.name, 'local');
-  assert.match(report.context.command, /^web-test run /);
+  assert.match(report.context.command, /^webui-test run /);
   assert.strictEqual(report.context.files[0].sha256.length, 64);
   assert.match(fs.readFileSync(path.join(out, stamp, 'report.html'), 'utf8'), /実行記録/);
 

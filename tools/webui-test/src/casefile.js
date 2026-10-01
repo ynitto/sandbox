@@ -8,8 +8,8 @@ const YAML = require('yaml');
 
 // 画面を操作するステップ（screenshot: step のとき、この後に撮る）
 const ACTION_STEPS = ['goto', 'click', 'dblclick', 'fill', 'press', 'select', 'check', 'uncheck', 'hover', 'upload', 'eval', 'reload'];
-// 待つ・確かめる・撮るステップ
-const OTHER_STEPS = ['wait', 'expect', 'screenshot'];
+// 待つ・確かめる・撮る・測るステップ
+const OTHER_STEPS = ['wait', 'expect', 'screenshot', 'measure'];
 const STEP_KINDS = [...ACTION_STEPS, ...OTHER_STEPS];
 // ステップに添えてよい補助キー
 const STEP_EXTRA_KEYS = ['note', 'timeout'];
@@ -45,7 +45,7 @@ function loadFile(file) {
   return { suite, errors: errors.map((e) => `${file}: ${e}`) };
 }
 
-// ディレクトリなら中の *.yaml / *.yml / *.json（web-test-results などは除く）を名前順に集める
+// ディレクトリなら中の *.yaml / *.yml / *.json（webui-test-results などは除く）を名前順に集める
 function collectFiles(inputs) {
   const out = [];
   for (const input of inputs) {
@@ -53,7 +53,7 @@ function collectFiles(inputs) {
     if (stat.isDirectory()) {
       for (const name of fs.readdirSync(input).sort()) {
         const p = path.join(input, name);
-        if (name.startsWith('.') || name === 'node_modules' || name === 'web-test-results' || /^web-test\.config\.(ya?ml|json)$/.test(name)) continue;
+        if (name.startsWith('.') || name === 'node_modules' || name === 'webui-test-results' || /^webui-test\.config\.(ya?ml|json)$/.test(name)) continue;
         if (fs.statSync(p).isDirectory()) out.push(...collectFiles([p]));
         else if (/\.(ya?ml|json)$/i.test(name)) out.push(p);
       }
@@ -175,6 +175,14 @@ function checkStep(step, where, errors) {
         if (!Array.isArray(v.mask)) errors.push(`${w}.mask: 対象の配列で書きます`);
         else v.mask.forEach((m, i) => checkTarget(m, `${w}.mask[${i}]`, errors));
       }
+      break;
+    case 'measure':
+      if (typeof v === 'string' && v) break;
+      if (!isPlainObject(v)) { errors.push(`${w}: 名前（文字列）か { name, steps, max } で書きます`); break; }
+      unknownKeys(v, ['name', 'steps', 'max'], w, errors);
+      if (typeof v.name !== 'string' || !v.name) errors.push(`${w}: name が要ります`);
+      if (v.steps !== undefined && !(Number.isInteger(v.steps) && v.steps > 0)) errors.push(`${w}.steps: 測る直前のステップの数（1 以上の整数）です`);
+      if (v.max !== undefined && !(Number.isFinite(v.max) && v.max > 0)) errors.push(`${w}.max: 目安のミリ秒（正の数）です`);
       break;
     default:
       break;

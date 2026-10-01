@@ -128,8 +128,8 @@ jobs:
         working-directory: tools/agent-dashboard
         run: npm test
 
-  web-test:
-    name: web-test (npm test)
+  webui-test:
+    name: webui-test (npm test)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -138,13 +138,13 @@ jobs:
         with:
           node-version: "22"
       - name: 依存の導入
-        working-directory: tools/web-test
+        working-directory: tools/webui-test
         run: npm install --no-audit --no-fund --ignore-scripts
       - name: Chromium の導入（テストは実際にブラウザで画面を開く）
-        working-directory: tools/web-test
+        working-directory: tools/webui-test
         run: npx playwright install --with-deps chromium
       - name: npm test
-        working-directory: tools/web-test
+        working-directory: tools/webui-test
         run: npm test
 
   agent-app:
