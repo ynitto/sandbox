@@ -416,3 +416,75 @@ test('工程のセッションログは担当の行を受け持ってから次�
     '[2026-09-30T09:00:05Z] [pc-b/w1] result status=failed',
   ]);
 });
+
+// 実行ログが末尾の読み取り幅（1MiB）より長いとき: 担当の claim が幅の手前にあっても、幅の中の続きの行を
+// その工程のものとして返し、始まりが見えていないことを明示する。他の工程・他の担当の行は混ぜない。
+test('工程のセッションログは、受け持ちの行が読み取り幅の手前にあっても続きを返し、前半の省略を明示する', (t) => {
+  const { bus, logs } = withBus(t);
+  const root = '/repo';
+  const run = failedRun(bus, logs, 'app-biglog', root, 'verify=fail: 足りません', {});
+  fs.mkdirSync(logs, { recursive: true });
+  const pad = (i) => `[2026-09-30T09:00:10Z] [pc-a/w1] 作っています ${String(i).padStart(6, '0')} ${'x'.repeat(80)}`;
+  const head = '[2026-09-30T09:00:02Z] [pc-b/w1] claim 成功: check [verify] — 確かめる\n';
+  const padding = `${Array.from({ length: 26000 }, (_v, i) => pad(i)).join('\n')}\n`;
+  const tailLines = [
+    '[2026-09-30T09:00:20Z] [pc-b/w1] 検証の続き（末尾）',
+    '  続きの行',
+    '[2026-09-30T09:00:21Z] [pc-a/w1] 作り終えました',
+    '[2026-09-30T09:00:22Z] [pc-b/w1] claim 成功: report [synthesize] — まとめる',
+    '[2026-09-30T09:00:23Z] [pc-b/w1] まとめています',
+  ].join('\n');
+  const file = path.join(logs, 'app-biglog.log');
+  fs.writeFileSync(file, head + padding + tailLines);
+  assert.ok(fs.statSync(file).size > 2 * 1024 * 1024, '読み取り幅（1MiB）の 2 倍を超え、遡りは塊の境目をまたぐ');
+
+  const found = agentFlow.readNodeLog(root, 'app-biglog', 'check');
+  assert.strictEqual(found.truncated, true);
+  assert.strictEqual(found.headOmitted, true, '始まり（claim の行）は返せないので省略を明示する');
+  assert.deepStrictEqual(found.text.split('\n'), ['[2026-09-30T09:00:20Z] [pc-b/w1] 検証の続き（末尾）', '  続きの行']);
+
+  // 担当 pc-a の工程: 受け持ちの行は読み切れない（遡っても claim が無い）。空欄にせず省略を明示し、他の担当の行は混ぜない
+  const make = agentFlow.readNodeLog(root, 'app-biglog', 'make');
+  assert.strictEqual(make.headOmitted, true);
+  assert.ok(!/pc-b\/w1/.test(make.text), make.text.slice(0, 200));
+});
+
+test('工程のセッションログは、幅の中で受け持ちが始まる工程を省略扱いにせず、手前の工程の行を混ぜない', (t) => {
+  const { bus, logs } = withBus(t);
+  const root = '/repo';
+  failedRun(bus, logs, 'app-biglog2', root, 'verify=fail: 足りません', {});
+  fs.mkdirSync(logs, { recursive: true });
+  const padding = `${Array.from({ length: 13000 }, (_v, i) => `[2026-09-30T09:00:01Z] [pc-b/w1] 前の工程の行 ${i} ${'y'.repeat(80)}`).join('\n')}\n`;
+  fs.writeFileSync(path.join(logs, 'app-biglog2.log'), '[2026-09-30T09:00:00Z] [pc-b/w1] claim 成功: make [work] — 作る\n' + padding + [
+    '[2026-09-30T09:00:30Z] [pc-b/w1] claim 成功: check [verify] — 確かめる',
+    '[2026-09-30T09:00:31Z] [pc-b/w1] 検証しています',
+  ].join('\n'));
+  const found = agentFlow.readNodeLog(root, 'app-biglog2', 'check');
+  assert.strictEqual(found.truncated, true);
+  assert.strictEqual(found.headOmitted, false);
+  assert.deepStrictEqual(found.text.split('\n'), [
+    '[2026-09-30T09:00:30Z] [pc-b/w1] claim 成功: check [verify] — 確かめる',
+    '[2026-09-30T09:00:31Z] [pc-b/w1] 検証しています',
+  ]);
+});
+
+test('実行を削除すると、続きから再実行が控えた失敗の履歴も含め、その実行のファイルが残らない', (t) => {
+  const { bus, logs } = withBus(t);
+  const root = '/repo';
+  for (const id of ['app-del', 'app-del-plain']) {
+    failedRun(bus, logs, id, root, 'verify=fail: 足りません', {});
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(path.join(logs, `${id}.log`), '[2026-09-30T09:00:00Z] [pc-a/w1] 作っています\n');
+    fs.mkdirSync(path.join(bus, 'inbox', 'claims', id), { recursive: true });
+    write(path.join(bus, 'inbox', 'cancels', `${id}.json`), { id });
+  }
+  write(path.join(logs, 'app-del.attempts.json'), [{ at: '2026-09-30T09:02:00Z', nodeId: 'check', cls: 'content', message: '足りません' }]);
+  assert.strictEqual(agentFlow.readRun(root, 'app-del').attempts.length, 1);
+
+  assert.deepStrictEqual(agentFlow.deleteRun(root, 'app-del'), { deleted: true });
+  assert.deepStrictEqual(agentFlow.deleteRun(root, 'app-del-plain'), { deleted: true }, '控えが無くてもエラーにしない');
+  const left = [];
+  const walk = (dir) => { for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) { const p = path.join(dir, name); left.push(p); if (fs.statSync(p).isDirectory()) walk(p); } };
+  walk(bus); walk(logs);
+  assert.deepStrictEqual(left.filter((p) => /app-del/.test(path.basename(p))), [], '実行由来のファイル・フォルダが残らない');
+});

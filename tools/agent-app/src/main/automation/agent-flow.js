@@ -714,15 +714,69 @@ async function resume(root, id, deps) {
   return { runId: detail.runId, state: 'launching' };
 }
 
+// 工程のセッションログは実行ログの末尾 NODE_LOG_TAIL だけを読む。末尾の手前で担当が受け持った工程は、
+// 手前を NODE_LOG_CHUNK ずつ遡って最後の「claim 成功」を探して決める（最大 NODE_LOG_SCAN まで。
+// 載せるのは常に 1 塊だけで、ログ全体をメモリに載せない）。
+const NODE_LOG_TAIL = 1024 * 1024;
+const NODE_LOG_CHUNK = 1024 * 1024;
+const NODE_LOG_SCAN = 16 * 1024 * 1024;
+
+// `end` バイトより手前で `who` が最後に受け持った工程。見つからなければ null（遡りの上限に達したか先頭まで無い）。
+function claimBefore(file, end, who, { chunk = NODE_LOG_CHUNK, limit = NODE_LOG_SCAN } = {}) {
+  let fd;
+  try { fd = fs.openSync(file, 'r'); } catch { return null; }
+  try {
+    let carry = Buffer.alloc(0);   // 後ろの塊の先頭にあった、行頭がまだ見えていない断片
+    let pos = end;
+    while (pos > 0 && end - pos < limit) {
+      const start = Math.max(0, pos - chunk, end - limit);
+      const buffer = Buffer.alloc(pos - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      let joined = Buffer.concat([buffer, carry]);
+      // 先頭が行の途中なら、そこは次（さらに手前）の塊と合わせて読む
+      const cut = start > 0 ? joined.indexOf(0x0a) : -1;
+      carry = cut >= 0 ? joined.subarray(0, cut) : start > 0 ? joined : Buffer.alloc(0);
+      if (carry.length > 64 * 1024) carry = Buffer.alloc(0);   // 改行の無い巨大な断片は claim 行ではない
+      if (start > 0) joined = cut >= 0 ? joined.subarray(cut + 1) : Buffer.alloc(0);
+      const lines = joined.toString('utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const m = LOG_LINE.exec(lines[i]);
+        if (!m || m[2] !== who) continue;
+        const claim = /claim 成功: (\S+)/.exec(m[3]);
+        if (claim) return claim[1];
+      }
+      pos = start;
+    }
+    return null;
+  } catch { return null; } finally { fs.closeSync(fd); }
+}
+
 function readNodeLog(root, id, nodeId, hostRoot = '') {
   const detail = readRun(root, id, hostRoot);
   const node = detail.nodes.find((item) => item.id === String(nodeId || ''));
   if (!node) throw flowError('node-not-found', '工程が見つかりません');
   const { files } = requireRun(root, id, hostRoot);
   const entries = [];
-  const tail = readLog(root, id, 1024 * 1024, hostRoot);
+  const tail = readLog(root, id, NODE_LOG_TAIL, hostRoot);
+  let lines = String(tail.tail || '').split('\n');
   let capturing = false;
-  for (const line of String(tail.tail || '').split('\n')) {
+  // 末尾だけ読めたとき: 先頭は行の途中なので落とし、その手前で担当が受け持っていた工程から読み始める。
+  // 手前に始まりがある工程は「ログの前半が省略されています」と返す（空欄で終わらせない）。
+  let headOmitted = false;
+  if (tail.truncated) {
+    lines = lines.slice(1);
+    if (node.who) {
+      const firstClaim = lines.map((line) => LOG_LINE.exec(line)).find((m) => m && m[2] === node.who && /claim 成功: /.test(m[3]));
+      if (!firstClaim || /claim 成功: (\S+)/.exec(firstClaim[3])[1] !== node.id) {
+        const size = (() => { try { return fs.statSync(files.log).size; } catch { return 0; } })();
+        const before = claimBefore(files.log, Math.max(0, size - NODE_LOG_TAIL), node.who);
+        capturing = before === node.id;
+        // 手前で受け持っていた（または手前のどこで受け持ったか読み切れなかった）なら、始まりは見えていない
+        headOmitted = capturing || before === null;
+      }
+    } else headOmitted = true;
+  }
+  for (const line of lines) {
     const m = LOG_LINE.exec(line);
     if (!m) { if (capturing && line.trim()) entries.push({ ts: '', text: line }); continue; }
     const [, ts, who, msg] = m;
@@ -744,11 +798,13 @@ function readNodeLog(root, id, nodeId, hostRoot = '') {
       entries.push({ ts: String(ev.ts || ''), text: `[${ev.ts || ''}] [${ev.who || ''}] ${ev.kind || ''}${rest ? ` ${rest}` : ''}` });
     }
   }
+  // 末尾にこの工程の行が 1 つも無いなら、ログは読める範囲より前にある（終わった工程のログは消えない）
+  if (tail.truncated && !entries.length) headOmitted = true;
   // 時刻の無い行（前の行の続き）は前の行に付いたまま並べる
   let last = '';
   const keyed = entries.map((entry, index) => { if (entry.ts) last = entry.ts; return { ...entry, key: entry.ts || last, index }; });
   keyed.sort((a, b) => a.key.localeCompare(b.key) || a.index - b.index);
-  return { nodeId: node.id, text: keyed.map((entry) => entry.text).join('\n'), truncated: !!tail.truncated };
+  return { nodeId: node.id, text: keyed.map((entry) => entry.text).join('\n'), truncated: !!tail.truncated, headOmitted };
 }
 
 function deleteRun(root, id, hostRoot = '') {
@@ -756,7 +812,8 @@ function deleteRun(root, id, hostRoot = '') {
   if (!detail.terminal) throw flowError('run-active', '実行中です。停止してから削除してください');
   const { files } = requireRun(root, id, hostRoot);
   fs.rmSync(files.run, { recursive: true, force: true });
-  for (const file of [files.inbox, path.join(busDir(), 'inbox', 'cancels', `${files.id}.json`), files.log]) {
+  // 実行ログと、続きから再実行が控えた失敗の履歴（attempts）も、その実行のものなので一緒に消す
+  for (const file of [files.inbox, path.join(busDir(), 'inbox', 'cancels', `${files.id}.json`), files.log, attemptsFile(files.id)]) {
     try { fs.unlinkSync(file); } catch { /* 無ければよい */ }
   }
   fs.rmSync(path.join(busDir(), 'inbox', 'claims', files.id), { recursive: true, force: true });

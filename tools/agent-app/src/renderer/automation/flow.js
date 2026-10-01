@@ -1057,7 +1057,11 @@ window.createFlowFeature = function createFlowFeature(ctx) {
       const box = dlg.querySelector('.flow-session-log');
       const found = await ctx.bridge.runNodeLog(root(), run.runId, node.id).catch((err) => ({ error: err.message }));
       if (!box || !box.isConnected) return;
-      box.textContent = found?.error ? `読み取れません: ${found.error}` : (found?.text || 'この工程のログはありません');
+      // 始まりが読める範囲より前にある工程は、空欄や「ありません」にせず省略されていると言う
+      const omitted = found?.headOmitted ? 'ログの前半が省略されています' : '';
+      box.textContent = found?.error ? `読み取れません: ${found.error}`
+        : found?.text ? (omitted ? `（${omitted}）\n${found.text}` : found.text)
+          : (omitted || 'この工程のログはありません');
       if (node.state === 'failed') box.scrollTop = box.scrollHeight; // 失敗した工程は最後の行（止まった所）から見せる
     });
     main.querySelector('[data-flow-edit-steps]')?.addEventListener('click', async () => {

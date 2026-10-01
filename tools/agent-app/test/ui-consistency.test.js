@@ -554,3 +554,11 @@ test('直すまで同じ失敗になる失敗は、main が返す直し方を出
   assert.match(body, /setup \? `\$\{log\}\$\{resume\('ghost'/, 'setup の操作は ログ → 控えめな再実行 の順で、主ボタンを置かない');
   assert.match(main, /const SETUP_REMEDY = \{/, '直し方の文言は main が分類と一緒に持つ');
 });
+
+test('工程のセッションログは、始まりが読める範囲より前なら空欄にせず省略を言う（判断は main の headOmitted）', () => {
+  const flow = read('renderer/automation/flow.js');
+  const main = read('main/automation/agent-flow.js');
+  assert.match(flow, /found\?\.headOmitted \? 'ログの前半が省略されています'/, '省略の 1 行は main の値で出す');
+  assert.match(main, /headOmitted/, 'main が省略かどうかを返す');
+  assert.match(main, /const NODE_LOG_SCAN = \d+ \* 1024 \* 1024;/, '遡りには上限がある（ログ全体を載せない）');
+});
