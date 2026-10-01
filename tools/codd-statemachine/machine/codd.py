@@ -65,9 +65,20 @@ SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files",
-               "skill_dirs"}
+               "skill_dirs", "test", "tests"}
 REF_KEYS = {"name", "path", "skills", "scope", "rules"}
 DEFAULT_MAX_FILES = 20
+# テストのファイル（単体テスト・API テスト・シナリオテスト・e2e のケース。コードもケースの記述も）。
+# コード・仕様書と同じ、整合を取る成果物として扱い、影響を測って計画に挙げさせる。
+# codd.json の tests で変えられ、[] でテストを扱わない。
+DEFAULT_TEST_PATTERNS = [
+    "test/**", "tests/**", "e2e/**", "**/__tests__/**", "**/*.test.*", "**/*.spec.*",
+    "**/test_*.py", "**/*_test.py", "**/*_test.go", "**/*Test.java", "**/*Tests.cs",
+    "**/*.feature", "**/*.robot", "**/*.http", "**/*.postman_collection.json", "**/scenarios/**",
+    "cypress/**", "playwright/**",
+]
+MAX_TEST_FILES = 2000
+TESTS_HEADING = "## テストの変更案"
 # 設定しなくても使うスキルの置き場所（リポジトリのルートから）。フォルダごとに `名前/SKILL.md`。
 DEFAULT_SKILL_DIRS = [".agents/skills"]
 MAX_REPO_SKILLS = 30
@@ -86,6 +97,7 @@ PLAN_HEADINGS = (
     "## 自分の変更案",
     "## 参照先の変更案",
     "## 影響範囲",
+    "## テストの変更案",
     "## 今回やらないこと",
 )
 CITED_IN_REFS = ("## 参照先の前提", "## 参照先の制約", "## 参照先のその他", "## ずれ")
@@ -187,6 +199,17 @@ def rule_list(value, where: str) -> list[str]:
     return out
 
 
+def is_argv(value) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(a, str) for a in value)
+
+
+def test_commands(value) -> list[tuple[str, list[str]]]:
+    """codd.json の test を（名前, コマンド）の並びに。単体テストも API テストもシナリオテストも同じに動かす。"""
+    if not value:
+        return []
+    return [("", value)] if isinstance(value, list) else list(value.items())
+
+
 def load_config(machine_dir: Path) -> dict:
     path = machine_dir / CONFIG_NAME
     if not path.is_file():
@@ -241,9 +264,16 @@ def load_config(machine_dir: Path) -> dict:
     config.setdefault("graphify", "auto")
     if config["graphify"] not in ("auto", "off"):
         raise CoddError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
-    check = config.get("check")
-    if check is not None and not (isinstance(check, list) and check and all(isinstance(a, str) for a in check)):
-        raise CoddError(f'{path} の check はコマンドの配列です（例: ["python3", "-m", "pytest", "-q"]）')
+    command = config.get("check")
+    if command is not None and not is_argv(command):
+        raise CoddError(f'{path} の check はコマンドの配列です（例: ["webui-test", "check"]）')
+    test = config.get("test")
+    if test is not None and not (is_argv(test) or (isinstance(test, dict) and test and all(
+            isinstance(k, str) and k and is_argv(v) for k, v in test.items()))):
+        raise CoddError(f'{path} の test はコマンドの配列か、名前ごとのコマンドです'
+                        '（例: ["npm", "test"] / {"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}）')
+    tests = config.get("tests", DEFAULT_TEST_PATTERNS)
+    config["tests"] = [] if tests == [] else rule_list(tests, f"{path} の tests")
     config.setdefault("max_files", DEFAULT_MAX_FILES)
     if not (isinstance(config["max_files"], int) and not isinstance(config["max_files"], bool)
             and config["max_files"] > 0):
@@ -299,6 +329,14 @@ class Ref(Side):
     @property
     def check(self) -> list[str] | None:
         return (self.config or {}).get("check")
+
+    @property
+    def test(self) -> list[str] | dict | None:
+        return (self.config or {}).get("test")
+
+    @property
+    def test_patterns(self) -> list[str]:
+        return (self.config or {}).get("tests", DEFAULT_TEST_PATTERNS)
 
 
 class Ctx:
@@ -677,12 +715,20 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
                       + (f"。道具: {tool_words(r.apply_tools)}" if r.apply_tools else ""))
     print(f"スキルは `python3 {MACHINE_REL}/codd.py skill 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
     print(f"1 回で変えるファイルの上限: {ctx.max_files}（超えるぶんは計画の「今回やらないこと」へ）")
-    checks = [("自分", ctx.config.get("check")), *((r.name, r.check) for r in ctx.refs)]
-    if any(c for _, c in checks):
-        print("変えたあとの検査コマンド（作り直すファイルがあれば、それも計画に挙げる）:")
-        for who, c in checks:
+    if tests_enabled(ctx):
+        counts = [f"{'自分' if not k else k} {len(test_files(ctx, k))} files" for k, _ in all_sides(ctx)
+                  if test_patterns(ctx, k)]
+        print(f"テスト（コード・仕様書と同じに扱う。響くものを「テストの変更案」に挙げる）: {'、'.join(counts)}"
+              f"（書き方は {CONFIG_NAME} の tests）")
+    checks = [("自分", ctx.config.get("test"), ctx.config.get("check")),
+              *((r.name, r.test, r.check) for r in ctx.refs)]
+    if any(t or c for _, t, c in checks):
+        print("変えたあとに実行するもの（作り直すファイルがあれば、それも計画に挙げる）:")
+        for who, t, c in checks:
+            for name, argv in test_commands(t):
+                print(f"  - {who}のテスト{f'（{name}）' if name else ''}: {' '.join(argv)}")
             if c:
-                print(f"  - {who}: {' '.join(c)}")
+                print(f"  - {who}の検査: {' '.join(c)}")
     if len(ctx.refs) > 1:
         print("計画の根拠は `名前:パス` で書く（例: " + f"{ctx.refs[0].name}:docs/api.md）")
     return 0
@@ -1321,7 +1367,9 @@ def plan_budget(ctx: Ctx, bodies: dict[str, str], planned: dict[str, set[str]]) 
     """1 回で変えるファイルが max_files に収まっているか（1 セッションで終わる大きさに保つ）。"""
     own = listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
     own |= listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
-    total = len(own) + sum(len(p) for p in planned.values())
+    tests = {(k, rel) for k, rel in test_plan(ctx, bodies).change if not (not k and rel in own)
+             and not (k and rel in planned.get(k, set()))}
+    total = len(own) + sum(len(p) for p in planned.values()) + len(tests)
     if total <= ctx.max_files:
         return []
     return [f"1 回で変えるファイルが {total} あり、上限 {ctx.max_files} を超えています。"
@@ -1433,7 +1481,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str]) -> tuple[list[str], list[str]
         measured = measure(ctx, terms, "impact.md",
                            f"計画の変更が自分のリポジトリ（{SIDES[ctx.side]}）に響く範囲（測定）")
         listed = (listed_paths(ctx, bodies["## 自分の変更案"], allow_new=True)
-                  | listed_paths(ctx, bodies["## 影響範囲"]))
+                  | listed_paths(ctx, bodies["## 影響範囲"]) | test_plan(ctx, bodies).paths(""))
         missing = [p for p in measured if not covered(p, listed)]
         if missing:
             problems.append(
@@ -1452,6 +1500,8 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str]) -> tuple[list[str], list[str]
                 "ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
                 + ", ".join(missing_refs) + f"（詳細: {DATA_DIRNAME}/ref-impact.md）")
     problems += trace_plan(ctx, bodies)
+    problems += tests_plan_problems(ctx, bodies, terms)
+    problems += formats_plan_problems(ctx, bodies)
     return problems, measured, len(ref_hits)
 
 
@@ -1464,7 +1514,7 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     cited = cited_anywhere(ctx, bodies)
     missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited]
     listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
-              | listed_paths(ctx, bodies.get("## 影響範囲", "")))
+              | listed_paths(ctx, bodies.get("## 影響範囲", "")) | test_plan(ctx, bodies).paths(""))
     own_links = sorted({rel for name, rels in planned.items() for k, rel in linked(ctx, name, rels) if not k})
     missing_own = [p for p in own_links if not covered(p, listed)]
     write_trace(ctx, "trace.md", "計画で変えるファイルとつながっているファイル（パスで指し合っているもの）", [
@@ -1481,6 +1531,278 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
             "参照先の変更案のファイルとパスでつながっている自分のファイルが、計画にありません（変えるなら自分の変更案か"
             f"影響範囲に直し方を、変えなくてよいなら影響範囲に「{NO_CHANGE_MARK}: 理由」を足してください）: "
             + ", ".join(missing_own) + f"（詳細: {DATA_DIRNAME}/trace.md）")
+    return problems
+
+
+# ---------------------------------------------------------------- テスト（コード・仕様書と同じに扱う）
+
+def glob_re(pattern: str) -> re.Pattern:
+    """git の :(glob) と同じ意味の正規表現（`*` はフォルダをまたがず、`**/` はまたぐ）。"""
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pattern.startswith("/**", i) and i + 3 == len(pattern):
+            out, i = out + "/.*", i + 3
+        elif pattern.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif pattern[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif pattern[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out)
+
+
+def side_of(ctx: Ctx, key: str) -> Side:
+    return ctx.own if not key else ctx.ref(key)
+
+
+def test_patterns(ctx: Ctx, key: str) -> list[str]:
+    """その側のテストのファイルの書き方。自分は codd.json の tests、参照先は参照先に置いた codd.json の tests。"""
+    return ctx.config["tests"] if not key else ctx.ref(key).test_patterns
+
+
+def is_test(ctx: Ctx, key: str, rel: str) -> bool:
+    return any(glob_re(p).fullmatch(rel) for p in test_patterns(ctx, key))
+
+
+def tests_enabled(ctx: Ctx) -> bool:
+    return any(test_patterns(ctx, key) for key, _ in all_sides(ctx))
+
+
+def test_files(ctx: Ctx, key: str) -> list[str]:
+    side = side_of(ctx, key)
+    if not test_patterns(ctx, key):
+        return []
+    rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
+                  side.path, GIT_TIMEOUT)
+    files = [ln for ln in out.splitlines() if side.has(ln) and is_test(ctx, key, ln)] if rc == 0 else []
+    return files[:MAX_TEST_FILES]
+
+
+def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]]) -> dict[tuple[str, str], str]:
+    """変える名前・変えるファイルが響くテストのファイル（自分と参照先。同じ側でも数える）と、その理由。
+
+    - 名前: 変わる名前（`…`・差分の定義や見出し）がテストのファイルに書かれている
+    - つながり: テストのファイルが変えるファイルをパスで指している（`coherence: code=…`・`doc=…` など）か、その逆
+    """
+    found: dict[tuple[str, str], str] = {}
+    targets = {(k, rel) for k, rels in changed.items() for rel in rels}
+    for key, side in all_sides(ctx):
+        tests = set(test_files(ctx, key))
+        if not tests:
+            continue
+        if terms:
+            _, hits, _ = search(ctx, side, terms[:MAX_TERMS], "affected", use_graph=False)
+            for rel in hits:
+                if rel in tests and (key, rel) not in targets:
+                    found.setdefault((key, rel), "名前")
+        names = [Path(rel).name for _, rel in targets if Path(rel).name]
+        for rel in sorted(tests & set(files_mentioning(side, names))):
+            if (key, rel) in targets:
+                continue
+            for claim in claims_in(rel, read_text(side.path / rel) or ""):
+                if any(covered(h[1], changed.get(h[0], set())) for h in resolve(ctx, side, rel, claim).hits):
+                    found[(key, rel)] = "つながり"
+                    break
+    # 変えるファイルが指しているテスト（仕様書がケースのファイルを挙げている、など）。
+    for k, rels in changed.items():
+        side = side_of(ctx, k)
+        for rel in rels:
+            if not (side.path / rel).is_file():
+                continue
+            for claim in claims_in(rel, read_text(side.path / rel) or ""):
+                for hk, hrel in resolve(ctx, side, rel, claim).hits:
+                    if is_test(ctx, hk, hrel) and (hk, hrel) not in targets:
+                        found[(hk, hrel)] = "つながり"
+    return found
+
+
+@dataclass
+class TestPlan:
+    """計画の「テストの変更案」。（側の名前。自分は ""、パス）で持つ。"""
+    change: set[tuple[str, str]]
+    waived: set[tuple[str, str]]
+    problems: list[str]
+    reason_only: bool      # パスの無い「変更不要: 理由」だけ（響くテストが無いとき）
+
+    def listed(self) -> set[tuple[str, str]]:
+        return self.change | self.waived
+
+    def paths(self, key: str, waived: bool = True) -> set[str]:
+        return {rel for k, rel in (self.listed() if waived else self.change) if k == key}
+
+
+def test_plan(ctx: Ctx, bodies: dict[str, str]) -> TestPlan:
+    body = bodies.get(TESTS_HEADING, "なし")
+    plan = TestPlan(set(), set(), [], False)
+    if is_none(body):
+        return plan
+    listed = items(body)
+    if not listed:
+        plan.problems.append(f"{TESTS_HEADING} は箇条書きにしてください")
+    for item in listed:
+        hits = {("", rel) for rel in cited_own(ctx, item, allow_new=True)}
+        cited = cited_refs(ctx, item, allow_new=True)
+        hits |= cited.found
+        if not hits:
+            if NO_CHANGE_MARK in item:
+                plan.reason_only = True
+                continue
+            hint = "（どの参照先か `名前:パス` で書いてください）" if cited.ambiguous else ""
+            plan.problems.append(f"{TESTS_HEADING} の項目に、テストのファイルのパスがありません{hint}: {item[:80]}")
+            continue
+        (plan.waived if NO_CHANGE_MARK in item else plan.change).update(hits)
+    return plan
+
+
+def plan_changes(ctx: Ctx, bodies: dict[str, str]) -> dict[str, set[str]]:
+    """計画で変えるファイル（自分の変更案・参照先の変更案。テストの変更案は除く）。"""
+    changed = {"": own_planned(ctx, bodies)}
+    for name, rels in planned_refs(ctx, bodies)[0].items():
+        changed.setdefault(name, set()).update(rels)
+    return changed
+
+
+def write_tests_report(ctx: Ctx, name: str, title: str, found: dict[tuple[str, str], str],
+                       tp: TestPlan) -> None:
+    def row(k: str, rel: str, why: str) -> str:
+        state = ("変える" if (k, rel) in tp.change else NO_CHANGE_MARK if (k, rel) in tp.waived else "計画に無い")
+        return f"- {side_label(ctx, k, rel)} — {why}（{state}）"
+    lines = [f"# {title}", "", *([row(k, r, w) for (k, r), w in sorted(found.items())] or ["- なし"]), ""]
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / name).write_text("\n".join(lines), encoding="utf-8")
+
+
+def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str]) -> list[str]:
+    """計画が、変更に響くテストをすべて扱っているか（足す・直す・変更不要）。"""
+    if not tests_enabled(ctx):
+        return []
+    tp = test_plan(ctx, bodies)
+    problems = list(tp.problems)
+    changed = plan_changes(ctx, bodies)
+    if any(changed.values()) and not tp.listed() and not tp.reason_only:
+        problems.append(f"{TESTS_HEADING} が「なし」です。コード・仕様書と同じく、足す・直すテストを挙げてください"
+                        f"（要らないなら `- {NO_CHANGE_MARK}: 理由`）")
+    found = affected_tests(ctx, terms, changed)
+    write_tests_report(ctx, "tests.md", "計画の変更が響くテスト（測定）", found, tp)
+    own_listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
+                  | listed_paths(ctx, bodies.get("## 影響範囲", "")))
+    missing = [side_label(ctx, k, rel) for (k, rel) in sorted(found) if (k, rel) not in tp.listed()
+               and not (not k and covered(rel, own_listed)) and not (k and covered(rel, changed.get(k, set())))]
+    if missing:
+        problems.append(
+            f"変更が響くテストのうち、計画に無いファイルがあります（{TESTS_HEADING} に、直し方か"
+            f"「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/tests.md）")
+    return problems
+
+
+# ---------------------------------------------------------------- 文書の書式（コードの決まりと同じに扱う）
+# 文書（マークダウン）の今の書式は、コードで言う決まりにあたる。変える文書は今の見出しの並びを、新しく足す文書は
+# 同じフォルダの文書がそろって持つ見出しの並びを、決まりとして守らせる。見出しを変えるなら、計画に `## 見出し` と書く。
+
+FORMAT_EXTS = (".md", ".markdown")
+FORMATS_FILE = "formats.json"
+_DOC_HEADING = re.compile(r"^(#{2,6})\s+(.+?)\s*#*\s*$")
+_NOT_MODELS = {"readme", "index", "_index", "changelog", "history"}
+
+
+def doc_headings(text: str) -> list[str]:
+    """文書の見出し（## 以下。題名の # は文書ごとに違うので見ない）。コードブロックの中は見ない。"""
+    found: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and (m := _DOC_HEADING.match(line)):
+            found.append(f"{m.group(1)} {m.group(2)}")
+    return found
+
+
+def doc_format(ctx: Ctx, key: str, rel: str) -> dict | None:
+    """変える・足す文書が守る書式。{"models": 見本のパス, "headings": 見出しの並び}。決まりが無ければ None。"""
+    if not rel.lower().endswith(FORMAT_EXTS) or is_test(ctx, key, rel):
+        return None
+    side = side_of(ctx, key)
+    path = side.path / rel
+    if path.is_file():
+        headings = doc_headings(read_text(path) or "")
+        return {"models": [rel], "headings": headings} if headings else None
+    if not path.parent.is_dir():
+        return None
+    models = sorted(p for p in path.parent.iterdir() if p.is_file() and p.suffix.lower() in FORMAT_EXTS
+                    and p.stem.lower() not in _NOT_MODELS)
+    if len(models) < 2:
+        return None
+    lists = [doc_headings(read_text(p) or "") for p in models]
+    common = unique(h for h in lists[0] if all(h in other for other in lists[1:]))
+    if not common:
+        return None
+    return {"models": [p.relative_to(side.path).as_posix() for p in models], "headings": common}
+
+
+def format_targets(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str]]:
+    own = own_planned(ctx, bodies) | listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
+    targets = {("", rel) for rel in own}
+    for name, rels in planned_refs(ctx, bodies)[0].items():
+        targets |= {(name, rel) for rel in rels}
+    return sorted(targets)
+
+
+def model_label(ctx: Ctx, key: str, rel: str) -> str:
+    return f"{key}:{rel}" if key else rel
+
+
+def formats_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
+    """変える文書の書式（見本と見出しの並び）を測って控え、計画の「守る決まり」が見本を挙げているかを見る。"""
+    formats = []
+    for key, rel in format_targets(ctx, bodies):
+        fmt = doc_format(ctx, key, rel)
+        if fmt:
+            formats.append({"side": key, "path": rel, **fmt})
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / FORMATS_FILE).write_text(json.dumps(formats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    lines = ["# 変える文書が守る書式（見本と見出しの並び）", ""]
+    for f in formats:
+        lines.append(f"- {side_label(ctx, f['side'], f['path'])}（見本: "
+                     + ", ".join(model_label(ctx, f["side"], m) for m in f["models"]) + "）")
+        lines += [f"  - {h}" for h in f["headings"]]
+    (ctx.data / "formats.md").write_text("\n".join(lines + (["- なし"] if not formats else []) + [""]),
+                                         encoding="utf-8")
+    body = bodies.get("## 守る決まり", "")
+    missing = []
+    for f in formats:
+        names = [model_label(ctx, f["side"], m) for m in f["models"]]
+        if f["side"] and len(ctx.refs) == 1:
+            names += f["models"]
+        if not any(mentioned(body, n) for n in names):
+            missing.append(f"{side_label(ctx, f['side'], f['path'])}（見本: {names[0]}）")
+    if missing:
+        return ["守る決まりに、変える文書の今の書式を挙げてください（文書の書式はコードの決まりと同じ。見本のパスと、"
+                "見出しの並び・表や言い回しをどう守るか）: " + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/formats.md）"]
+    return []
+
+
+def formats_apply_problems(ctx: Ctx, text: str) -> list[str]:
+    """変えた文書が、計画のときに控えた書式（見出しの並び）を守っているか。計画に `## 見出し` と書いたものは除く。"""
+    file = ctx.data / FORMATS_FILE
+    if not file.is_file():
+        return []
+    renamed = set(name_terms(text))
+    problems = []
+    for f in json.loads(file.read_text(encoding="utf-8")):
+        path = side_of(ctx, f["side"]).path / f["path"]
+        if not path.is_file():
+            continue
+        now = iter(doc_headings(read_text(path) or ""))
+        want = [h for h in f["headings"] if h not in renamed]
+        missing = [h for h in want if h not in now]   # 順に探す（並びが違っても無いと数える）
+        if missing:
+            problems.append(f"文書の書式（見出しの並び）が今の書式から外れています: {side_label(ctx, f['side'], f['path'])} — "
+                            + " / ".join(missing[:5]) + f"（見本: {model_label(ctx, f['side'], f['models'][0])}。"
+                            "書式は決まりとして守る。見出しを変えるなら利用者に確かめて、計画に `## 見出し` と書く）")
     return problems
 
 
@@ -1596,8 +1918,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         return 1
     bodies = a.bodies
     problems = list(a.plan_problems)
+    tp = test_plan(ctx, bodies)
+    problems += tp.problems
+    problems += formats_apply_problems(ctx, "\n".join(bodies.values()))
 
-    # 1. 計画のファイルを最後まで変えたか（途中で止まっていないか）。
+    # 1. 計画のファイルを最後まで変えたか（途中で止まっていないか）。テストの変更案のファイルも同じ。
     want_own = own_planned(ctx, bodies)
     if not is_none(bodies.get("## 自分の変更案", "なし")) and not a.own_touched:
         problems.append("自分の変更案があるのに、自分のリポジトリが変わっていません")
@@ -1607,24 +1932,34 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems.append("自分の変更案のファイルをまだ変えていません（最後まで変えてください。変えなくてよくなったなら、"
                             "利用者に確かめて計画を直してください）: " + ", ".join(undone))
 
+    for key in ["", *(r.name for r in ctx.refs)]:
+        touched = a.own_touched if not key else a.touched[key]
+        undone = sorted(side_label(ctx, key, p) for p in tp.paths(key, waived=False)
+                        if not any(covered(t, {p}) for t in touched))
+        if undone:
+            problems.append(f"{TESTS_HEADING} のテストをまだ変えていません（コード・仕様書と同じく最後まで変えてください。"
+                            "変えなくてよくなったなら、利用者に確かめて計画を直してください）: " + ", ".join(undone))
+
     # 2. 計画に無いファイルを変えていないか。
-    own_allowed = want_own | listed_paths(ctx, bodies.get("## 影響範囲", ""), allow_new=True)
+    own_allowed = (want_own | listed_paths(ctx, bodies.get("## 影響範囲", ""), allow_new=True)
+                   | tp.paths("", waived=False))
     extra_own = sorted(p for p in a.own_touched if not covered(p, own_allowed))
     if extra_own:
         problems.append("計画に無いファイルを変えています（戻すか、利用者に確かめて計画の自分の変更案に足してください）: "
                         + ", ".join(extra_own))
     for r in ctx.refs:
         touched = a.touched[r.name]
+        ref_tests = tp.paths(r.name, waived=False)
         if r.name in a.planned and not touched:
             problems.append(f"参照先の変更案で {r.name} を変えるはずなのに、{r.name} が変わっていません")
-        elif r.name not in a.planned and touched:
+        elif r.name not in a.planned and not ref_tests and touched:
             problems.append(f"参照先の変更案に {r.name} は無いのに、{r.name} が変わっています（戻してください）")
         elif touched:
-            extra = sorted(p for p in touched if not covered(p, a.planned[r.name]))
+            extra = sorted(p for p in touched if not covered(p, a.planned.get(r.name, set()) | ref_tests))
             if extra:
                 problems.append(f"{r.name} で参照先の変更案に無いファイルを変えています（戻すか、利用者に確かめて"
                                 "計画の参照先の変更案に足してください）: " + ", ".join(extra))
-            undone = sorted(p for p in a.planned[r.name] if not any(covered(t, {p}) for t in touched))
+            undone = sorted(p for p in a.planned.get(r.name, set()) if not any(covered(t, {p}) for t in touched))
             if undone:
                 problems.append(f"{r.name} で参照先の変更案のファイルをまだ変えていません: " + ", ".join(undone))
 
@@ -1637,7 +1972,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if terms:
         measured = measure(ctx, terms, "impact-after.md",
                            f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）")
-        waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True)
+        waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
         untouched = [p for p in measured if p not in a.own_touched and p not in waived]
         if untouched:
             problems.append(
@@ -1656,6 +1991,19 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems.append("自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません（利用者に確かめて"
                             "計画を直すか、その名前を変えないでください）: " + ", ".join(missing)
                             + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）")
+
+    # 3'. 実際の変更が響くテストを、直したか「変更不要」としたか（同じ側のテストも。名前とつながりで測る）。
+    if tests_enabled(ctx):
+        touched_all = {"": a.own_touched, **a.touched}
+        changed_files = {k: {p for p in v if not is_test(ctx, k, p)} for k, v in touched_all.items()}
+        found = affected_tests(ctx, terms, changed_files)
+        write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp)
+        unfixed = [side_label(ctx, k, rel) for (k, rel) in sorted(found)
+                   if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived]
+        if unfixed:
+            problems.append("変更が響くテストのうち、直していないファイルがあります（直すか、利用者に確かめて計画の"
+                            f"{TESTS_HEADING} に「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(unfixed)
+                            + f"（詳細: {DATA_DIRNAME}/tests-after.md）")
 
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。
@@ -1682,10 +2030,14 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         since = (ctx.data / "before.json").stat().st_mtime
         problems += unread_problem(unread_skills(ctx, used, since), f"{DATA_DIRNAME}/apply.md に挙げた")
 
-    # 6. 検査コマンド。
+    # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。
+    for name, argv in test_commands(ctx.config.get("test")):
+        problems += run_check(ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
     for r in changed:
-        # 参照先の検査は、参照先に置いた同じマシンの設定（codd.json の check）を使う。
+        # 参照先のテストと検査は、参照先に置いた同じマシンの設定（codd.json の test・check）を使う。
+        for name, argv in test_commands(r.test):
+            problems += run_check(r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
         problems += run_check(r.path, r.check, f"{r.name}（{r.label}）")
     for p in problems:
         print(p, file=sys.stderr)
@@ -1708,7 +2060,8 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
     own_now = {p for p in a.own_touched if (ctx.root / p).is_file()}
     ref_links = sorted(h for h in linked(ctx, "", own_now) if h[0]) if own_now else []
     missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited and r not in a.touched[n]]
-    waived = listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+    waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+              | {rel for k, rel in test_plan(ctx, a.bodies).waived if not k})
     own_links = sorted({rel for name in a.changed for k, rel in linked(ctx, name, a.touched[name]) if not k})
     missing_own = [p for p in own_links if p not in a.own_touched and not covered(p, waived)]
     broken = broken_refs(ctx, touched)
@@ -1777,6 +2130,21 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
             mark = "直した" if p in a.own_touched else NO_CHANGE_MARK if p in waived else "未対応" \
                 if not p.startswith("(") else ""
             lines.append(f"- {p}" + (f" — {mark}" if mark else ""))
+    tp = test_plan(ctx, a.bodies)
+    tests_after = ctx.data / "tests-after.md"
+    if tp.listed() or tp.reason_only or tests_after.is_file():
+        touched_all = {"": a.own_touched, **a.touched}
+        lines += ["", "## テスト", ""]
+        for k, rel in sorted(tp.listed()):
+            done = any(covered(t, {rel}) for t in touched_all.get(k, set()))
+            mark = NO_CHANGE_MARK if (k, rel) in tp.waived else "変えた" if done else "まだ"
+            lines.append(f"- {side_label(ctx, k, rel)} — {mark}")
+        if tp.reason_only and not tp.listed():
+            lines.append(f"- {NO_CHANGE_MARK}（計画に理由あり）")
+        if tests_after.is_file():
+            extra = [ln for ln in tests_after.read_text(encoding="utf-8").splitlines()
+                     if ln.startswith("- ") and ln.endswith("（計画に無い）")]
+            lines += extra
     own_now = sorted(p for p in a.own_touched if (ctx.root / p).is_file())
     lonely = [p for p in own_now if not any(k for k, _ in linked(ctx, "", {p}))]
     if lonely:

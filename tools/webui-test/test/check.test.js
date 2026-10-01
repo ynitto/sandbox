@@ -25,15 +25,14 @@ function write(file, text) {
   fs.writeFileSync(file, text);
 }
 
-// サンプルアプリを写した小さなプロジェクト。webui-test.config.yaml に起動・単体テスト・e2e・仕様書を書く
-async function project(t, { unit = 'node -e "process.exit(0)"' } = {}) {
+// サンプルアプリを写した小さなプロジェクト。webui-test.config.yaml に起動・e2e・仕様書を書く
+async function project(t) {
   const dir = tmpDir(t);
   fs.cpSync(SAMPLE, path.join(dir, 'app'), { recursive: true });
   const port = await freePort();
   write(path.join(dir, 'webui-test.config.yaml'), [
     `serve: { command: "node app/server.js ${port}", url: "http://127.0.0.1:${port}/" }`,
     'check:',
-    `  unit: ${JSON.stringify(unit)}`,
     '  cases: [tests]',
     '  docs: [docs]',
     'envs:',
@@ -68,8 +67,8 @@ test('config: serve と check を読み、パスは設定ファイルから。�
   assert.strictEqual(env.check.maxDiffRatio, 0, '既定は 1 画素でも違えば落とす（色の近さの許容はある）');
   const stg = loadEnv({ cwd: dir, envName: 'staging' });
   assert.strictEqual(stg.serve, null, '検証環境を動かすときにローカルを起動しない');
-  write(path.join(dir, 'webui-test.config.yaml'), 'serve: { url: http://x }\ncheck: { unti: npm test }\nenvs: { local: {} }\n');
-  assert.throws(() => loadEnv({ cwd: dir }), (e) => /serve\.command/.test(e.message) && /知らないキー「unti」/.test(e.message));
+  write(path.join(dir, 'webui-test.config.yaml'), 'serve: { url: http://x }\ncheck: { unit: npm test }\nenvs: { local: {} }\n');
+  assert.throws(() => loadEnv({ cwd: dir }), (e) => /serve\.command/.test(e.message) && /知らないキー「unit」/.test(e.message));
 });
 
 test('serve: 応答するまで待って起動し、止める。起動済みならそのまま使う。終わってしまえば理由を出す', async (t) => {
@@ -99,13 +98,13 @@ test('scanDocs: 仕様書が貼っている画像を拾い、無い先を見つ�
   assert.deepStrictEqual(r.links.map((l) => [l.target, l.exists]), [['../a.png', true], ['gone.png', false]]);
 });
 
-test('check: 単体テスト → 起動して e2e → 仕様書の画像。無い画像は撮り直すまで落とし、画面が変われば落とす', async (t) => {
+test('check: 起動して e2e → 仕様書の画像。無い画像は撮り直すまで落とし、画面が変われば落とす', async (t) => {
   const { dir } = await project(t);
   const image = path.join(dir, 'docs', 'images', 'login.png');
 
   let r = await cli(['check', ...ep()], { cwd: dir });
   assert.strictEqual(r.code, 1, r.out);
-  assert.match(r.out, /単体テスト: 通過/);
+  assert.doesNotMatch(r.out, /単体テスト/, '単体テストは codd-statemachine など呼び出し側が動かす');
   assert.match(r.out, /e2e: 1 件中 合格 1/);
   assert.match(r.out, /仕様書の画像: 1 枚中 1 枚が今の画面と違う[\s\S]*docs\/images\/login.png — まだ無い/);
   assert.match(r.out, /仕様書の画像のリンク: 1 文書中 1 件の先がない[\s\S]*docs\/login.md:3 → images\/login.png/);
@@ -138,14 +137,12 @@ test('check: 単体テスト → 起動して e2e → 仕様書の画像。無�
   assert.ok(doc.diff, '差分の画像を残す');
 });
 
-test('check: 単体テストかケースが落ちれば落とす。ケースが無ければ使い方の誤り', async (t) => {
-  const { dir } = await project(t, { unit: 'node -e "console.log(\'unit failed\'); process.exit(4)"' });
-  write(path.join(dir, 'docs', 'images', 'login.png'), 'x');
-  let r = await cli(['check', '--no-unit', ...ep()], { cwd: dir });
-  assert.doesNotMatch(r.out, /単体テスト/);
-  r = await cli(['check', ...ep()], { cwd: dir });
-  assert.strictEqual(r.code, 1);
-  assert.match(r.out, /unit failed[\s\S]*単体テスト: 失敗（終了コード 4/);
+test('check: ケースが落ちれば落とす。ケースが無ければ使い方の誤り', async (t) => {
+  const { dir } = await project(t);
+  write(path.join(dir, 'tests', 'login.yaml'), fs.readFileSync(path.join(dir, 'tests', 'login.yaml'), 'utf8').replace('name: ログイン }', 'name: 無い見出し }'));
+  let r = await cli(['check', ...ep()], { cwd: dir });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.out, /e2e: 1 件中 合格 0 \/ 不合格 1/);
   const empty = tmpDir(t);
   write(path.join(empty, 'webui-test.config.yaml'), 'envs: { local: {} }\n');
   r = await cli(['check'], { cwd: empty });

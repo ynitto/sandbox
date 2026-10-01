@@ -62,9 +62,8 @@ const USAGE = `webui-test — 条件からテストケースを作り、Playwrig
       書き出してそのまま npx playwright test で動かす（既定の書き出し先 webui-test-results/playwright）
   webui-test check [<ファイルかディレクトリ>...] [--update]
       実装・テスト・仕様書の画像の整合を確かめる（webui-test.config.yaml の check と serve を使う）。
-      単体テスト → アプリをローカルで起動して e2e → 仕様書の画像が今の画面と同じか → 仕様書の画像のリンク
+      アプリをローカルで起動して e2e → 仕様書の画像が今の画面と同じか → 仕様書の画像のリンク
         --update                      違っていた仕様書の画像を撮り直す
-        --no-unit                     単体テストを飛ばす
   webui-test validate <ファイルかディレクトリ>...   書式を検査する
   webui-test prompt "<条件>" [--url <url>]           エージェントへ渡す依頼文を表示する（チャットに貼る用）
   webui-test snapshot <url>                          画面の要素一覧（アクセシビリティツリー）を表示する
@@ -103,7 +102,6 @@ const OPTIONS = {
   explore: { type: 'boolean' },
   doc: { type: 'string', multiple: true },
   code: { type: 'string', multiple: true },
-  'no-unit': { type: 'boolean' },
 };
 
 const list = (v) => (v ? v.split(',').map((x) => x.trim()).filter(Boolean) : null);
@@ -278,7 +276,6 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           env,
           cases: rest,
           update: values.update,
-          noUnit: values['no-unit'],
           outDir,
           workers: values.workers ? Number(values.workers) : 1,
           executablePath,

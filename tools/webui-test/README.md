@@ -10,7 +10,7 @@ Web アプリのテストを、条件の文章からテストケースファイ�
   レポート（HTML / Markdown / JSON）を出す。同じケースを Playwright Test の `.spec.ts` に書き出して
   `npx playwright test` で動かすこともできる
 - **撮る**: 仕様書に貼る画面の画像を、同じ書式で決まった名前のファイルに書き出す
-- **そろえる**: `webui-test check` が、単体テスト・アプリをローカルで起動しての e2e・仕様書の画像が今の画面と同じか・
+- **そろえる**: `webui-test check` が、アプリをローカルで起動しての e2e・仕様書の画像が今の画面と同じか・
   仕様書の画像のリンクを 1 回で確かめる。[codd-statemachine](../codd-statemachine/README.md) の検査に入れると、
   実装・テスト・仕様書を変えるたびにずれを止める
 
@@ -131,7 +131,6 @@ serve:                                   # テストの前にローカルで起�
   url: http://localhost:3000             # 応答するまで待つ。すでに応答していれば起動しない
 captureRoot: .                           # screenshot の path: の起点（既定はこのファイルのフォルダ）
 check:
-  unit: npm test                         # 単体テスト（任意）
   cases: [tests/e2e]                     # e2e のケース
   docs: [docs]                           # 画像を貼っている仕様書のフォルダ（任意）
 envs:
@@ -143,13 +142,12 @@ webui-test check            # ずれがあれば終了コード 1
 webui-test check --update   # 画面の変更が意図どおりなら、仕様書の画像を撮り直す
 ```
 
-1. 単体テスト（`check.unit`）を動かす
-2. アプリを起動して、e2e のケースを動かす（レポートは `webui-test-results/check-<日時>/`）
-3. `screenshot` ステップの `path:` にある仕様書の画像と、いま撮った画面を比べる。違えば落とし、差分の画像をレポートに残す。
+1. アプリを起動して、e2e のケースを動かす（レポートは `webui-test-results/check-<日時>/`）
+2. `screenshot` ステップの `path:` にある仕様書の画像と、いま撮った画面を比べる。違えば落とし、差分の画像をレポートに残す。
    画像は書き換えない（`--update` のときだけ撮り直す）
-4. `check.docs` のマークダウンが貼っている画像が実在するかを確かめる。撮っているのにどの仕様書も貼っていない画像は知らせるだけ
+3. `check.docs` のマークダウンが貼っている画像が実在するかを確かめる。撮っているのにどの仕様書も貼っていない画像は知らせるだけ
 
-結果は出力の最後にまとめる。画像は 1 画素でも違えば落とす（色の近さは許容する）。PC ごとの描画の差で揺れるときは
+単体テストは動かさない（codd-statemachine と組むときは、その `test` に書く）。結果は出力の最後にまとめる。画像は 1 画素でも違えば落とす（色の近さは許容する）。PC ごとの描画の差で揺れるときは
 `check.maxDiffRatio: 0.001` のように違ってよい割合を書く。
 
 `serve` は `run`・`capture`・`pwtest` でも使う。接続先（`baseUrl`）が `serve` の URL と違う環境（検証環境など）では起動しない。
@@ -158,10 +156,12 @@ webui-test check --update   # 画面の変更が意図どおりなら、仕様�
 ### codd-statemachine と組む
 
 [codd-statemachine](../codd-statemachine/README.md) は、実装と仕様書を突き合わせて計画を立て、確認してから両方を変える。
-その「変えたあとの検査」に `webui-test check` を入れると、変えるたびに単体テスト・e2e・仕様書の画像を確かめる。
+その「変えたあとの検査」に `webui-test check` を入れると、変えるたびに e2e と仕様書の画像を確かめる。
+単体テスト・API テスト・シナリオテストは codd-statemachine の `test` に書く（codd-statemachine が動かす）。
 
 ```bash
-python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs --check "webui-test check"
+python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs \
+  --test "npm test" --check "webui-test check"
 ```
 
 - ケースファイルの先頭に、確かめている仕様書と実装を書く。仕様書を変える計画はこのケースファイルも扱わないと通らない

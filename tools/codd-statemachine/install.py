@@ -24,7 +24,8 @@ kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカス�
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
 --check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。渡さず、check もまだ無く、
 置き先に webui-test の設定（`webui-test.config.yaml` に check がある）があれば `webui-test check` を書く
-（単体テスト・ローカルで起動しての e2e・仕様書の画像の整合を、変えるたびに確かめる）。
+（ローカルで起動しての e2e と仕様書の画像の整合を、変えるたびに確かめる）。
+--test "コマンド" で、変えたあとに実行する単体テストのコマンド（codd.json の test）を書く（"" で消す）。
 """
 
 from __future__ import annotations
@@ -71,7 +72,8 @@ def ref_name(ref: dict) -> str:
 
 def install(target: Path, side: str | None, refs: list[str] | None, gitignore: bool = True,
             scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
-            agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | None = None) -> Path:
+            agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | None = None,
+            test: str | None = None) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
     dest = target / DEST_REL
@@ -117,6 +119,12 @@ def install(target: Path, side: str | None, refs: list[str] | None, gitignore: b
         entry.setdefault("scope", [])
         if folder not in entry["scope"]:
             entry["scope"].append(folder)
+    if test is not None:
+        argv = shlex.split(test)
+        if argv:
+            config["test"] = argv
+        else:
+            config.pop("test", None)
     if check is not None:
         argv = shlex.split(check)
         if argv:
@@ -208,15 +216,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-agents", action="store_true", help="カスタムエージェントを書かない")
     p.add_argument("--check", metavar="コマンド",
                    help="変えたあとに実行する検査コマンド（例: \"npm test\"、\"webui-test check\"）。\"\" で消す")
+    p.add_argument("--test", metavar="コマンド",
+                   help="変えたあとに実行する単体テストのコマンド（例: \"npm test\"、\"python -m unittest\"）。\"\" で消す")
     args = p.parse_args(argv)
     dest = install(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
                    scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
-                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check)
+                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8"))
     print(f"置きました: {dest}")
     refs = config.get("refs") or [{"path": config.get("ref_path")}]
     print(f"  この側: {config['side']}  参照先: " + ", ".join(
         f"{ref_name(r)}={r['path']}" + (f"（{', '.join(r['scope'])}）" if r.get("scope") else "") for r in refs))
+    if config.get("test"):
+        print("  変えたあとの単体テスト: " + " ".join(config["test"]))
     if config.get("check"):
         print("  変えたあとの検査: " + " ".join(config["check"]))
     if not args.no_agents:

@@ -2,32 +2,20 @@
 // webui-test check — 実装・テスト・仕様書の画像が食い違っていないかを 1 回で確かめる。
 // codd-statemachine などの「変えたあとの検査コマンド」から呼ぶ想定。終了コード 0 = 整合 / 1 = ずれあり。
 //
-//   1. 単体テスト（check.unit のコマンド）
-//   2. アプリをローカルで起動して（serve）、e2e のケース（check.cases）を動かす
-//   3. 仕様書の画像（screenshot ステップの path:）が今の画面と同じか。--update で撮り直す
-//   4. 仕様書（check.docs のマークダウン）が貼っている画像が実在するか。撮っている画像を貼っていない仕様書は知らせるだけ
+//   1. アプリをローカルで起動して（serve）、e2e のケース（check.cases）を動かす
+//   2. 仕様書の画像（screenshot ステップの path:）が今の画面と同じか。--update で撮り直す
+//   3. 仕様書（check.docs のマークダウン）が貼っている画像が実在するか。撮っている画像を貼っていない仕様書は知らせるだけ
+//
+// 単体テストは扱わない（codd-statemachine の test など、呼び出し側が動かす）。
 //
 // 出力の最後の数行に結果をまとめる（呼び出し側が出力の末尾だけを見せても分かるように）。
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const { withServer } = require('./serve');
 const { scanDocs } = require('./docimages');
 
 const MAX_LIST = 5;
-
-function runUnit(unit, cwd, io) {
-  return new Promise((resolve) => {
-    const child = typeof unit === 'string'
-      ? spawn(unit, { cwd, shell: true, stdio: ['ignore', 'pipe', 'pipe'] })
-      : spawn(unit[0], unit.slice(1), { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });
-    child.stdout.on('data', (d) => io.out.write(d));
-    child.stderr.on('data', (d) => io.out.write(d));
-    child.on('error', (e) => { io.out.write(`実行できません: ${e.message}\n`); resolve(127); });
-    child.on('close', (code) => resolve(code === null ? 1 : code));
-  });
-}
 
 const rel = (p) => {
   const r = path.relative(process.cwd(), p);
@@ -40,11 +28,11 @@ function listed(items, fmt) {
   return lines;
 }
 
-// opts: { env, cases, update, noUnit, outDir, executablePath, workers, loadSuites, timestamp, io, argv }
+// opts: { env, cases, update, outDir, executablePath, workers, loadSuites, timestamp, io, argv }
 async function check(opts) {
   const { env, io } = opts;
   const say = (s) => io.out.write(s + '\n');
-  const conf = env.check || { unit: null, cases: [], docs: [], maxDiffRatio: 0 };
+  const conf = env.check || { cases: [], docs: [], maxDiffRatio: 0 };
   const baseDir = env.dir || process.cwd();
   const caseInputs = opts.cases.length ? opts.cases : conf.cases;
   if (!caseInputs.length) {
@@ -56,16 +44,7 @@ async function check(opts) {
   const summary = [];
   let ok = true;
 
-  // 1. 単体テスト
-  if (conf.unit && !opts.noUnit) {
-    const label = Array.isArray(conf.unit) ? conf.unit.join(' ') : conf.unit;
-    say(`== 単体テスト: ${label}`);
-    const code = await runUnit(conf.unit, baseDir, io);
-    if (code === 0) summary.push(`単体テスト: 通過（${label}）`);
-    else { ok = false; summary.push(`単体テスト: 失敗（終了コード ${code}。${label}）`); }
-  }
-
-  // 2. e2e（ローカルで起動して動かす）と 3. 仕様書の画像
+  // 1. e2e（ローカルで起動して動かす）と 2. 仕様書の画像
   say(`== e2e: ${suites.length} ファイル（環境 ${env.name}${env.serve ? `、${env.serve.command} で起動` : ''}）`);
   const { runSuites } = require('./runner');
   const { writeReport } = require('./report');
@@ -116,7 +95,7 @@ async function check(opts) {
       }
     }
 
-    // 4. 仕様書が貼っている画像
+    // 3. 仕様書が貼っている画像
     if (conf.docs.length) {
       const scan = scanDocs(conf.docs);
       const broken = scan.links.filter((l) => !l.exists);

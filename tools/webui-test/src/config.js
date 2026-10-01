@@ -5,7 +5,7 @@
 //   defaultEnv: local
 //   serve: { command: npm start, url: http://localhost:3000 }   # ローカルで起動してから動かす（任意）
 //   captureRoot: ../my-app-docs                                 # screenshot の path: の起点（任意）
-//   check: { unit: npm test, cases: [tests/e2e], docs: [../my-app-docs/docs] }   # webui-test check（任意）
+//   check: { cases: [tests/e2e], docs: [../my-app-docs/docs] }   # webui-test check（任意）
 //   envs:
 //     local:   { baseUrl: http://localhost:3000 }
 //     staging: { baseUrl: https://stg.example.com, mocks: false, storageState: auth/staging.json,
@@ -22,7 +22,7 @@ const CONFIG_NAMES = ['webui-test.config.yaml', 'webui-test.config.yml', 'webui-
 const TOP_KEYS = ['defaultEnv', 'envs', 'serve', 'captureRoot', 'check'];
 const ENV_KEYS = ['baseUrl', 'localStorage', 'sessionStorage', 'cookies', 'headers', 'storageState', 'mocks', 'locale', 'timezone', 'serve'];
 const SERVE_KEYS = ['command', 'url', 'cwd', 'env', 'timeout'];
-const CHECK_KEYS = ['unit', 'cases', 'docs', 'env', 'maxDiffRatio'];
+const CHECK_KEYS = ['cases', 'docs', 'env', 'maxDiffRatio'];
 
 function expandVars(value, where, errors) {
   if (typeof value === 'string') {
@@ -74,12 +74,8 @@ function normalizeServe(raw, where, dir, baseUrl, errors) {
 
 function normalizeCheck(raw, dir, errors) {
   if (raw === undefined) return null;
-  if (!isPlainObject(raw)) { errors.push('check: { unit, cases, docs } を書きます'); return null; }
+  if (!isPlainObject(raw)) { errors.push('check: { cases, docs } を書きます'); return null; }
   unknownKeys(raw, CHECK_KEYS, 'check', errors);
-  const unit = raw.unit === undefined ? null : raw.unit;
-  if (unit !== null && !(typeof unit === 'string' || (Array.isArray(unit) && unit.length && unit.every((a) => typeof a === 'string')))) {
-    errors.push('check.unit: 単体テストのコマンドを文字列か配列で書きます（例: npm test）');
-  }
   const cases = strList(raw.cases);
   const docs = strList(raw.docs);
   for (const [k, v] of [['cases', cases], ['docs', docs]]) if (!v.every((x) => typeof x === 'string')) errors.push(`check.${k}: パスの配列を書きます`);
@@ -87,7 +83,6 @@ function normalizeCheck(raw, dir, errors) {
     errors.push('check.maxDiffRatio: 違ってよい画素の割合を 0 以上 1 未満で書きます（既定 0。例: 0.001）');
   }
   return {
-    unit,
     cases: cases.map((c) => path.resolve(dir, String(c))),
     docs: docs.map((d) => path.resolve(dir, String(d))),
     env: raw.env,
