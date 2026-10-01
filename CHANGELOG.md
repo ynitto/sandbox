@@ -7,21 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### webui-test: web-test から改名し、実装・テスト・仕様書の画像の整合を確かめる（webui-test 0.2.0）
+### webui-test: web-test から改名し、前回と画面が変わったかを確かめる（webui-test 0.2.0）
 
 - **名前を web-test から webui-test に変えた。** フォルダは `tools/webui-test`、コマンドは `webui-test`、設定は
   `webui-test.config.yaml`、結果は `webui-test-results/`、環境変数は `WEBUI_TEST_*`
-- **`webui-test check` で、実装・テスト・仕様書の画像を 1 回で確かめる。** アプリを
-  ローカルで起動しての e2e（`check.cases`）→ `screenshot` の `path:` にある仕様書の画像が今の画面と同じか →
-  仕様書（`check.docs`）が貼っている画像が実在するか。ずれがあれば終了コード 1、結果は出力の最後にまとめる。
-  画像は書き換えず、`--update` で撮り直す。違うときは差分の画像をレポートに残す。単体テストは扱わない
-  （codd-statemachine の `test` が動かす）
+- **`webui-test check` で、アプリをローカルで起動して e2e を動かし、前回と画面が変わったかを確かめる。** 仕様書には依存しない。
+  `screenshot` ステップの画面をまずバイト列、違えば画素で前回と比べ（同じ・変わった・新しい・なくなった）、変わっても落とさない。
+  前回の画像と差分の画像を残す。落ちたケースがあれば終了コード 1、結果は出力の最後にまとめる。単体テストは扱わない
+- **合否のほかに得たものを `evidence.json` に残す。** 確かめた振る舞い・ページの読み込み時間・`measure` ステップの時間・
+  画面（これまでの版の sha256 つき）を `webui-test-results/evidence.json` に書く。`measure` は `max` の目安を超えたら落とす
 - **`serve` でアプリをローカルで起動してから動かす。** URL が応答するまで待ち、終わったら止める。すでに応答していれば
   そのまま使う。`run`・`capture`・`pwtest` でも使い、接続先が違う環境（検証環境など）では起動しない
-- **合否のほかに得たものを `evidence.json` に残す。** 確かめた振る舞い・ページの読み込み時間・撮った画像を、
-  `run` と `check` が `webui-test-results/evidence.json` に書く。`measure` ステップで直前のステップの時間を測り、`max` の目安を
-  超えたら落とす。レポートにも測った時間を出す
-- **`generate --doc` / `--code`。** 仕様書の中身を依頼に入れ、ケースファイルに `# coherence: doc=…` / `code=…` の注記を書く
 - 結果の置き場（`webui-test-results/`）に「すべて無視」の `.gitignore` を置き、リポジトリの変更に数えさせない
 - 画像は動きとカーソルの点滅を止めて撮る
 
@@ -36,14 +32,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **文書の今の書式を、コードで言う決まりとして守らせる。** 変える文書は今の見出しの並びを、新しく足す文書は同じフォルダの
   文書がそろって持つ見出しの並びを見本とし（`.codd/formats.md`）、計画の「守る決まり」に見本と守り方が無ければ通さない。
   変えたあとに見出しの並びが外れていれば止める（見出しを変えるなら計画に `## 見出し` と書く）
-- **テストで得たもの（確かめた振る舞い・測った時間・撮った画像）を実装と文書に返す。** `evidence`（既定
-  `webui-test-results/evidence.json`）を読み、文書の印 `<!-- evidence: id max=… -->…<!-- /evidence -->` が今の結果と合うか、
-  目安を満たすかを変えたあとに確かめる。`codd.py evidence --write` で写し直す。計画のときは関係する結果を `.codd/evidence.md` に出し、
-  響くテストの結果を写している文書を計画に挙げさせる。終わりの報告に、時間や合否の変化を出す
+- **テストで得たもの（確かめた振る舞い・測った時間・画面）を実装と文書に返す。** `evidence`（既定
+  `webui-test-results/evidence.json`）を読む。変わった画面は、文書のリポジトリの画像を sha256 で引いて前の版を貼っている画像を
+  見つけ、変えたあとの検査で差し替えて、どの文書に響いたかを報告する。振る舞いと時間は、文書の印
+  `<!-- evidence: id max=… -->…<!-- /evidence -->` が今の結果と合うか、目安を満たすかを確かめ、`codd.py evidence --write` で
+  写し直す。計画のときは関係する結果と響く画面を `.codd/evidence.md` に出す
 - **`install.py --check "コマンド"` で、変えたあとの検査コマンドを書ける。** 置き先に `webui-test.config.yaml`（`check` あり）
   があり、検査が未設定なら `webui-test check` を書く
-- `show` が変えたあとの検査コマンドを示し、計画を練るときに、検査で作り直すファイル（仕様書の画像など）も計画に挙げさせる。
-  変えるときは、挙げた画像を `webui-test check --update` で撮り直させる
+- `show` が変えたあとの検査コマンドを示し、計画を練るときに、検査で作り直すファイルも計画に挙げさせる
 - Windows で `webui-test`・`npm` などの `.cmd` を検査コマンドにしても起動できるようにした
 
 ### webui-test: 条件からテストケースを作り、スクリーンショット付きで結果を出す Web アプリのテストツール（新規）

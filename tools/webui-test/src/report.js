@@ -12,12 +12,6 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-const DOC_LABEL = { same: '今の画面と同じ', changed: '今の画面と違う', missing: 'まだ無い', created: '新しく置いた', updated: '撮り直した' };
-
-function docImageLine(i) {
-  return `${i.path} — ${DOC_LABEL[i.status] || i.status}${i.message ? `（${i.message}）` : ''}`;
-}
-
 function metricsLine(c) {
   return (c.metrics || []).filter((m) => m.name !== 'time').map((m) => `${m.label || m.name} ${m.value}${m.unit}${m.max ? `（目安 ${m.max}${m.unit}）` : ''}`).join(' / ');
 }
@@ -47,8 +41,6 @@ function toMarkdown(report) {
       lines.push(`| ${caseLabel(c)} | ${MARK[c.status]} ${LABEL[c.status]} | ${c.title.replace(/\|/g, '\\|')} | ${c.requirement || ''} | ${(c.error || '').replace(/\|/g, '\\|')} |`);
     }
     lines.push('');
-    const images = s.cases.flatMap((c) => c.docImages || []);
-    if (images.length) lines.push('仕様書の画像:', '', ...images.map((i) => `- ${docImageLine(i)}${i.diff ? ` [差分](${i.diff})` : ''}`), '');
     const measured = s.cases.filter((c) => metricsLine(c));
     if (measured.length) lines.push('測定:', '', ...measured.map((c) => `- ${caseLabel(c)}: ${metricsLine(c)}`), '');
     for (const c of s.cases) {
@@ -79,7 +71,6 @@ function toHtml(report) {
         ${c.error ? `<div class="err">${esc(c.error)}</div>` : ''}
         ${metricsLine(c) ? `<p class="sub">測定: ${esc(metricsLine(c))}</p>` : ''}
         ${consoleErr}
-        ${(c.docImages || []).length ? `<ul class="docimg">${c.docImages.map((i) => `<li class="${i.status}">仕様書の画像 ${esc(docImageLine(i))}${i.diff ? ` <a href="${esc(i.diff)}" target="_blank">差分</a>` : ''}</li>`).join('')}</ul>` : ''}
         <ol class="steps">${steps}</ol>
       </details>`;
     }).join('');
@@ -107,7 +98,6 @@ h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:24px 0 2px}.sub{color:
 .step.failed code{color:var(--ng)}.note{color:var(--sub)}
 .step img{display:block;max-width:min(100%,560px);max-height:360px;margin:6px 0 0 2em;border:1px solid var(--line);border-radius:4px}
 .context{margin:0 0 12px;color:var(--sub)}.context ul{margin:6px 0;padding-left:20px;font-size:12px;overflow-wrap:anywhere}
-.docimg{margin:0 0 8px;padding-left:20px;color:var(--sub)}.docimg .changed,.docimg .missing{color:var(--ng)}
 .console pre{font-size:12px;white-space:pre-wrap}
 </style></head><body><main>
 <h1>テスト結果</h1><p class="sub">${esc(new Date(report.startedAt).toLocaleString('ja-JP'))}</p>

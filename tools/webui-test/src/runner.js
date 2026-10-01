@@ -6,7 +6,6 @@ const fs = require('fs');
 const path = require('path');
 const { ACTION_STEPS, stepKind } = require('./casefile');
 const { planSuite } = require('./plan');
-const { compareImages } = require('./docimages');
 
 function loadPlaywright() {
   try {
@@ -239,35 +238,13 @@ async function runCase(browser, suite, run, opts) {
     const file = path.join(caseDir, `${String(shotNo).padStart(2, '0')}-${slug(name)}.png`);
     await takeShot(page, file, o);
     const rel = path.relative(opts.outDir, file).split(path.sep).join('/');
-    result.screenshots.push({ name, file: rel });
+    result.screenshots.push({ name, file: rel, ...(o.explicit ? { explicit: true } : {}) });
     // 仕様書用の保存先。variants があるときは名前に variant を添えて上書きし合わないようにする
     const stable = run.variant ? `${slug(name)}.${slug(run.variant)}` : slug(name);
-    if (o.path && opts.captureRoot && opts.docImages !== 'off') {
+    if (o.path && opts.captureRoot) {
       const dest = path.resolve(opts.captureRoot, run.variant ? o.path.replace(/(\.png)?$/i, `.${slug(run.variant)}.png`) : o.path);
-      const entry = { name, path: dest, actual: rel };
-      if (opts.docImages === 'compare') {
-        // 仕様書の画像は書き換えず、今の画面と同じかだけを見る（webui-test check）
-        if (!fs.existsSync(dest)) entry.status = 'missing';
-        else {
-          const c = compareImages(fs.readFileSync(file), fs.readFileSync(dest), { maxDiffRatio: opts.maxDiffRatio });
-          entry.status = c.same ? 'same' : 'changed';
-          if (!c.same) {
-            entry.ratio = c.ratio;
-            entry.message = c.message;
-            if (c.diff) {
-              const diffFile = file.replace(/\.png$/, '.diff.png');
-              fs.writeFileSync(diffFile, c.diff);
-              entry.diff = path.relative(opts.outDir, diffFile).split(path.sep).join('/');
-            }
-          }
-        }
-      } else {
-        const prev = fs.existsSync(dest) ? fs.readFileSync(dest) : null;
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.copyFileSync(file, dest);
-        entry.status = !prev ? 'created' : compareImages(fs.readFileSync(file), prev, { maxDiffRatio: opts.maxDiffRatio }).same ? 'same' : 'updated';
-      }
-      result.docImages = (result.docImages || []).concat(entry);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(file, dest);
     }
     if (opts.captureDir && o.explicit) {
       const dest = path.join(opts.captureDir, `${stable}.png`);
@@ -294,7 +271,7 @@ async function runCase(browser, suite, run, opts) {
       try {
         await runStep(page, step, ctx);
         if (d.kind === 'goto' || d.kind === 'reload') {
-          // ページの読み込みにかかった時間（Navigation Timing）。evidence に残し、仕様書や目安と突き合わせられるようにする
+          // ページの読み込みにかかった時間（Navigation Timing）。check が evidence に残す
           const ms = await page.evaluate(() => {
             const n = performance.getEntriesByType('navigation')[0];
             return n && n.loadEventEnd > 0 ? Math.round(n.loadEventEnd - n.startTime) : null;
@@ -344,8 +321,7 @@ async function runCase(browser, suite, run, opts) {
 }
 
 // suites を実行して結果を返す。
-// opts: { outDir, baseUrl, env, headed, workers, screenshot, captureDir, captureRoot, docImages, maxDiffRatio, only, variants, executablePath, onCase }
-// docImages: copy（既定。path: へ写す）/ compare（写さずに今の画面と比べる）/ off
+// opts: { outDir, baseUrl, env, headed, workers, screenshot, captureDir, captureRoot, only, variants, executablePath, onCase }
 async function runSuites(suites, opts) {
   const pw = loadPlaywright();
   fs.mkdirSync(opts.outDir, { recursive: true });

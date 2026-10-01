@@ -122,17 +122,6 @@ mocks:
 
 ## 仕様書用のスクリーンショット
 
-`screenshot` ステップに `path:` を書くと、実行時にその場所へも保存する（パスは `--capture-root`、設定ファイルの
-`captureRoot`、どちらも無ければカレントディレクトリからの相対）。`webui-test check` は保存せずに、その画像が
-今の画面と同じかを確かめる。`webui-test capture` はレポートを作らず、`screenshot` ステップの画像だけを
+`screenshot` ステップに `path:` を書くと、実行時にその場所へも保存する（パスは `--capture-root`、既定は
+カレントディレクトリからの相対）。`webui-test capture` はレポートを作らず、`screenshot` ステップの画像だけを
 `<出力先>/<name>.png` に書き出す。
-
-## 仕様書・実装とのつながり
-
-ファイルの先頭にコメントで、確かめている仕様書（`doc=`）と実装（`code=`）を書いておく。1 行に 1 つ。
-
-```yaml
-# coherence: doc=docs/specs/login.md
-# coherence: code=src/pages/login.tsx
-suite: ログイン画面
-```

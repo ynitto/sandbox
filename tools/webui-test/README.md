@@ -10,9 +10,9 @@ Web アプリのテストを、条件の文章からテストケースファイ�
   レポート（HTML / Markdown / JSON）を出す。同じケースを Playwright Test の `.spec.ts` に書き出して
   `npx playwright test` で動かすこともできる
 - **撮る**: 仕様書に貼る画面の画像を、同じ書式で決まった名前のファイルに書き出す
-- **そろえる**: `webui-test check` が、アプリをローカルで起動しての e2e・仕様書の画像が今の画面と同じか・
-  仕様書の画像のリンクを 1 回で確かめる。[codd-statemachine](../codd-statemachine/README.md) の検査に入れると、
-  実装・テスト・仕様書を変えるたびにずれを止める
+- **確かめる**: `webui-test check` が、アプリをローカルで起動して e2e を動かし、前回と画面が変わったかを軽く確かめる。
+  結果（振る舞い・時間・画面）は `evidence.json` に書き、[codd-statemachine](../codd-statemachine/README.md) が
+  文書への影響を測って画像を差し替える
 
 ## 入れる
 
@@ -51,8 +51,6 @@ webui-test generate "ログイン画面。正しいパスワードで商品一�
   操作して（ログインして次の画面へ進むなど）要素を確かめながら書く。画面をまたぐ条件のときに使う。
   エージェントにはシェルのコマンド実行を許す起動形になる
 - 条件が長いときは `-f conditions.md` でファイルから読む
-- 仕様書があるときは `--doc docs/login.md` で渡す。中身を依頼に入れ、ケースファイルの先頭に
-  `# coherence: doc=docs/login.md` と書く（実装は `--code src/login.tsx`）。この書き方は codd-statemachine がたどる
 - 今あるファイルを直す・ケースを足すときは `--update`
 - チャット画面のエージェント（GitHub Copilot のチャットなど）で作るときは、`webui-test prompt "<条件>" --url <URL>` が
   出す依頼文を貼り、返ってきた YAML を保存して `webui-test validate` で確かめる
@@ -121,66 +119,50 @@ webui-test capture docs/screens.yaml --out docs/images      # docs/images/login-
 組の名前が付く。`path:` を書けば `run` のときにもその場所へ写す。
 時刻など毎回変わる部分は `mask` で塗るか、`eval` で固定の文字に置き換えてから撮る。
 
-## 実装・テスト・仕様書をそろえる（check）
+## 前回と画面が変わったかを確かめる（check）
 
-`webui-test.config.yaml` に、アプリの起動のしかたと、確かめるものを書く。
+`webui-test.config.yaml` に、アプリの起動のしかたと、動かすケースを書く。
 
 ```yaml
 serve:                                   # テストの前にローカルで起動し、終わったら止める
   command: npm start
   url: http://localhost:3000             # 応答するまで待つ。すでに応答していれば起動しない
-captureRoot: .                           # screenshot の path: の起点（既定はこのファイルのフォルダ）
 check:
   cases: [tests/e2e]                     # e2e のケース
-  docs: [docs]                           # 画像を貼っている仕様書のフォルダ（任意）
 envs:
   local: {}
 ```
 
 ```bash
-webui-test check            # ずれがあれば終了コード 1
-webui-test check --update   # 画面の変更が意図どおりなら、仕様書の画像を撮り直す
+webui-test check            # 落ちたケースがあれば終了コード 1
 ```
 
 1. アプリを起動して、e2e のケースを動かす（レポートは `webui-test-results/check-<日時>/`）
-2. `screenshot` ステップの `path:` にある仕様書の画像と、いま撮った画面を比べる。違えば落とし、差分の画像をレポートに残す。
-   画像は書き換えない（`--update` のときだけ撮り直す）
-3. `check.docs` のマークダウンが貼っている画像が実在するかを確かめる。撮っているのにどの仕様書も貼っていない画像は知らせるだけ
+2. `screenshot` ステップの画面を、前回の `check` の画面と比べる。まずファイルのバイト列で比べ、違うときだけ画素で比べる
+   （色の近さは許容する）。画面が変わってもケースは落とさない。前回の画像と差分の画像を結果の置き場に残す
+3. 確かめた振る舞い・ページの読み込み時間・`measure` で測った時間・画面（前回と同じ・変わった・新しい・なくなった）を
+   `webui-test-results/evidence.json` に書く
 
-単体テストは動かさない（codd-statemachine と組むときは、その `test` に書く）。
-
-合否のほかに得たもの（確かめた振る舞い・ページの読み込み時間・`measure` で測った時間・撮った画像）を
-`webui-test-results/evidence.json` に残す（`run` も同じ。今回動かしたケースファイルの分だけ入れ替える）。
-codd-statemachine はこれを読み、仕様書に写した値が今と同じか・目安を超えていないかを確かめる。
+仕様書は読まない。単体テストも動かさない。結果は出力の最後にまとめる。
+前回の画面は `webui-test-results/screens/` に置き、画面ごとにこれまでの版の sha256 も持つ（受け取る側が、文書に
+貼られた古い画像を見分けられるように）。同じ画面とみなしたときは前回の画像をそのまま残すので、ファイルも sha256 も変わらない。
+PC ごとの描画の差で揺れるときは `check.maxDiffRatio: 0.001` のように違ってよい割合を書く。
 時間に目安を付けるなら、ケースに `- measure: { name: 検索, steps: 2, max: 1500 }` と書く（直前 2 ステップの時間。超えたら落ちる）。
-結果は出力の最後にまとめる。画像は 1 画素でも違えば落とす（色の近さは許容する）。PC ごとの描画の差で揺れるときは
-`check.maxDiffRatio: 0.001` のように違ってよい割合を書く。
 
 `serve` は `run`・`capture`・`pwtest` でも使う。接続先（`baseUrl`）が `serve` の URL と違う環境（検証環境など）では起動しない。
 環境ごとに変えるときは `envs.<名前>.serve` に書く（`false` で起動しない）。
 
 ### codd-statemachine と組む
 
-[codd-statemachine](../codd-statemachine/README.md) は、実装と仕様書を突き合わせて計画を立て、確認してから両方を変える。
-その「変えたあとの検査」に `webui-test check` を入れると、変えるたびに e2e と仕様書の画像を確かめる。
+[codd-statemachine](../codd-statemachine/README.md) の「変えたあとの検査」に `webui-test check` を入れると、変えるたびに
+e2e を動かし、その結果（`evidence.json`）を codd-statemachine が受け取る。codd-statemachine は、変わった画面を貼っている
+文書を探して画像を差し替え、どの文書に響いたかを報告する。
 単体テスト・API テスト・シナリオテストは codd-statemachine の `test` に書く（codd-statemachine が動かす）。
 
 ```bash
 python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs \
   --test "npm test" --check "webui-test check"
 ```
-
-- ケースファイルの先頭に、確かめている仕様書と実装を書く。仕様書を変える計画はこのケースファイルも扱わないと通らない
-
-  ```yaml
-  # coherence: doc=docs:docs/specs/login.md
-  # coherence: code=src/pages/login.tsx
-  suite: ログイン画面
-  ```
-
-  仕様書が別のリポジトリにあるときは `参照先の名前:パス`（codd-statemachine の `refs` の名前）で書く
-- 仕様書の画像が別のリポジトリにあるときは、`captureRoot` をそのリポジトリにして `path:` を書く
-- 画面を変えたら、撮り直す画像も計画に挙げ、変えたあとに `webui-test check --update` で撮り直す
 
 ## 環境を切り替える（ローカル・検証環境）
 

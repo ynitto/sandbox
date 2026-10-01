@@ -42,8 +42,6 @@ const USAGE = `webui-test — 条件からテストケースを作り、Playwrig
         --retries <n>                 書式の誤りを直してもらう回数（既定 1）
         --explore                     エージェントに playwright-cli で画面を操作・探索させてから書かせる
                                       （画面をまたぐ条件向け。--url が要る）
-        --doc <file>                  仕様書。中身を依頼に入れ、ケースファイルに「coherence: doc=」の注記を書く（繰り返し可）
-        --code <file>                 対象の実装。ケースファイルに「coherence: code=」の注記を書く（繰り返し可）
         --verbose                     エージェントの出力をそのまま表示する
   webui-test run <ファイルかディレクトリ>... [--base-url <url>] [--out <dir>]
       テストケースを実行し、<out>/<日時>/report.html・report.md・results.json とスクリーンショットを書く
@@ -60,10 +58,9 @@ const USAGE = `webui-test — 条件からテストケースを作り、Playwrig
       Playwright Test の .spec.ts と playwright.config.ts を書き出す（npx playwright test で動く）
   webui-test pwtest <ファイルかディレクトリ>... [--out <dir>] [-- <playwright test の引数>]
       書き出してそのまま npx playwright test で動かす（既定の書き出し先 webui-test-results/playwright）
-  webui-test check [<ファイルかディレクトリ>...] [--update]
-      実装・テスト・仕様書の画像の整合を確かめる（webui-test.config.yaml の check と serve を使う）。
-      アプリをローカルで起動して e2e → 仕様書の画像が今の画面と同じか → 仕様書の画像のリンク
-        --update                      違っていた仕様書の画像を撮り直す
+  webui-test check [<ファイルかディレクトリ>...]
+      アプリをローカルで起動して e2e を動かし、スクリーンショットを前回の画面と比べる
+      （webui-test.config.yaml の check と serve を使う）。振る舞い・時間・画面を webui-test-results/evidence.json に書く
   webui-test validate <ファイルかディレクトリ>...   書式を検査する
   webui-test prompt "<条件>" [--url <url>]           エージェントへ渡す依頼文を表示する（チャットに貼る用）
   webui-test snapshot <url>                          画面の要素一覧（アクセシビリティツリー）を表示する
@@ -100,8 +97,6 @@ const OPTIONS = {
   variant: { type: 'string' },
   source: { type: 'string', multiple: true },
   explore: { type: 'boolean' },
-  doc: { type: 'string', multiple: true },
-  code: { type: 'string', multiple: true },
 };
 
 const list = (v) => (v ? v.split(',').map((x) => x.trim()).filter(Boolean) : null);
@@ -213,8 +208,6 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           retries: values.retries !== undefined ? Number(values.retries) : undefined,
           verbose: values.verbose,
           explore: values.explore,
-          docs: values.doc || [],
-          code: values.code || [],
           locale: values.locale,
           executablePath,
           log: warn,
@@ -243,7 +236,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           workers: values.workers ? Number(values.workers) : 1,
           only: list(values.only),
           screenshot: isCapture ? 'failure' : values.screenshot,
-          captureRoot: values['capture-root'] ? path.resolve(values['capture-root']) : env.captureRoot || path.resolve('.'),
+          captureRoot: path.resolve(values['capture-root'] || '.'),
           captureDir: isCapture ? path.resolve(values.out) : null,
           executablePath,
           onCase: (s, c) => warn(`${c.status === 'passed' ? '✓' : c.status === 'skipped' ? '-' : '✗'} ${s.suite} ${c.variant ? `${c.id} [${c.variant}]` : c.id} ${c.title}${c.error ? `\n    ${c.error}` : ''}`),
@@ -264,7 +257,6 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
         } else {
           const { writeReport } = require('./report');
           const r = writeReport(report, outDir);
-          require('./evidence').writeEvidence(report, { outDir, latestDir: values.out ? null : resultsBase(env.dir), root: env.dir || process.cwd() });
           say(`合計 ${summary.total}: 合格 ${summary.passed} / 不合格 ${summary.failed} / スキップ ${summary.skipped}`);
           say(`レポート: ${r.html}`);
         }
@@ -276,8 +268,8 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
         return await require('./check').check({
           env,
           cases: rest,
-          update: values.update,
           outDir,
+          latestDir: resultsBase(env.dir),
           workers: values.workers ? Number(values.workers) : 1,
           executablePath,
           loadSuites,
@@ -298,7 +290,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           say(`実行: npx playwright test --config ${path.relative(process.cwd(), path.join(outDir, 'playwright.config.ts'))}`);
           return 0;
         }
-        const captureRoot = values['capture-root'] || env.captureRoot || '.';
+        const captureRoot = values['capture-root'] || '.';
         const code = await withServer(env.serve, () => runPlaywrightTest(outDir, passthrough, { executablePath, captureRoot, io }), { log: warn });
         say(`レポート: ${path.join(outDir, 'playwright-report', 'index.html')}（npx playwright show-report ${path.relative(process.cwd(), path.join(outDir, 'playwright-report'))}）`);
         return code === 0 ? 0 : 1;

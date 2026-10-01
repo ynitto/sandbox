@@ -1715,9 +1715,11 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str]) -> l
 
 
 # ---------------------------------------------------------------- テストで得たもの（evidence）を実装・文書に活かす
-# テストは合否のほかに、確かめた振る舞い・測った時間・撮った画像を残す（evidence.json。webui-test が書く。ほかの
-# テストも同じ形で書ける）。文書は値を手で写さず `<!-- evidence: id -->…<!-- /evidence -->` の印で写し、
-# ハーネスが今と同じか（`codd.py evidence --write` で写し直す）・目安（max=）を超えていないかを確かめる。
+# テストは合否のほかに、確かめた振る舞い・測った時間・前回と比べた画面を残す（evidence.json。webui-test が書く。
+# ほかのテストも同じ形で書ける）。テストの側は文書を知らない。文書への影響を測って直すのはこのマシンの仕事:
+# - 画面: 文書のリポジトリの画像を sha256 で引き、画面のこれまでの版と同じ画像を見つけて今の画面に差し替える
+# - 振る舞い・時間: 文書は値を手で写さず `<!-- evidence: id -->…<!-- /evidence -->` の印で写し、今と同じか
+#   （`codd.py evidence --write` で写し直す）・目安（max=）を超えていないかを確かめる
 
 _EVIDENCE_MARK = re.compile(r"<!--\s*evidence:\s*(?P<id>[^\s>]+)(?P<opts>[^>]*?)-->(?P<body>.*?)<!--\s*/evidence\s*-->",
                             re.DOTALL)
@@ -1770,7 +1772,8 @@ def find_evidence(ctx: Ctx, evs: dict[str, Evidence], doc_key: str, ident: str) 
     elif sep and _NAME.match(name) and not any(ident in e.items for e in evs.values()):
         ident = rest
     for key in dict.fromkeys(order):
-        items = evs[key].items
+        # 画面は印で写さない（文書の画像はハーネスが sha256 で見つけて差し替える。replace_screens）
+        items = {i: v for i, v in evs[key].items.items() if v.get("kind") != "image"}
         if ident.endswith("*"):
             hits = [items[i] for i in sorted(items) if i.startswith(ident[:-1])]
         else:
@@ -1785,8 +1788,7 @@ def render_item(item: dict, doc_path: Path) -> str:
     if kind == "metric":
         return f"{item.get('value')} {item.get('unit', '')}".strip()
     if kind == "image":
-        target = os.path.relpath(item["_root"] / str(item.get("path", "")), doc_path.parent).replace(os.sep, "/")
-        return f"![{item.get('title', item['id'])}]({target})"
+        return f"画面 {item.get('status', '')} {item.get('path', '')}".strip()
     status = item.get("status", "")
     return f"{STATUS_MARK.get(status, '')} {item.get('title', item['id'])}".strip()
 
@@ -1924,6 +1926,13 @@ def evidence_plan_problems(ctx: Ctx, bodies: dict[str, str], tests: set[tuple[st
               for k, i in related[:MAX_MEASURED * 2]] or ["- なし"]
     lines += ["", "## 響くテストの結果を写している文書", ""]
     lines += [f"- {side_label(ctx, k, rel)} — " + ", ".join(ids) for (k, rel), ids in sorted(hit_docs.items())] or ["- なし"]
+    # 響くテストの画面を貼っている文書の画像（変えたあと、画面が変われば差し替える。知らせるだけ）
+    ev_key_of = {id(item): k for k, e in evs.items() for item in e.items.values()}
+    shown = [h for h in doc_screens(ctx, evs) if (ev_key_of.get(id(h.item), ""), str(h.item.get("file") or "")) in tests]
+    lines += ["", "## 響くテストの画面を貼っている文書の画像（画面が変われば、変えたあとに差し替える）", ""]
+    lines += [f"- {side_label(ctx, h.key, h.rel)} ← {h.item['id']}"
+              + (f"（{', '.join(docs_showing(ctx, h.key, h.rel))}）" if docs_showing(ctx, h.key, h.rel) else "")
+              for h in shown] or ["- なし"]
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / "evidence.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (ctx.data / "evidence-before.json").write_text(json.dumps(
@@ -1953,13 +1962,120 @@ def evidence_changes(ctx: Ctx) -> list[str]:
             prev = old.get(ident)
             label = side_label(ctx, key, ident)
             if prev is None:
-                if item.get("kind") != "image":
-                    lines.append(f"- {label} — 新しく得た: {render_item(item, ev.root / 'x')}")
+                lines.append(f"- {label} — 新しく得た: {render_item(item, ev.root / 'x')}")
             elif item.get("kind") == "metric" and not close_enough(str(prev.get("value")), str(item.get("value")),
                                                                     EVIDENCE_TOLERANCE):
                 lines.append(f"- {label} — {prev.get('value')} → {item.get('value')} {item.get('unit', '')}")
+            elif item.get("kind") == "image" and prev.get("sha256") != item.get("sha256"):
+                lines.append(f"- {label} — 画面が変わった" + (f"（前: {item['previous']}）" if item.get("previous") else ""))
             elif item.get("kind") == "behavior" and prev.get("status") != item.get("status"):
                 lines.append(f"- {label} — {prev.get('status')} → {item.get('status')}")
+    return lines
+
+
+IMAGE_EXTS = (".png",)
+MAX_IMAGE_FILES = 5000
+REPLACED_FILE = "replaced.json"
+_IMG_LINK = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)|<img\s[^>]*?src\s*=\s*[\"']([^\"']+)[\"']", re.I)
+
+
+def image_index(ctx: Ctx) -> dict[str, list[tuple[str, str]]]:
+    """各側の画像（git が無視していないもの）を sha256 で引けるようにする。"""
+    index: dict[str, list[tuple[str, str]]] = {}
+    for key, side in all_sides(ctx):
+        rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
+                      side.path, GIT_TIMEOUT)
+        files = [ln for ln in out.splitlines() if side.has(ln) and ln.lower().endswith(IMAGE_EXTS)] if rc == 0 else []
+        for rel in files[:MAX_IMAGE_FILES]:
+            try:
+                digest = hashlib.sha256((side.path / rel).read_bytes()).hexdigest()
+            except OSError:
+                continue
+            index.setdefault(digest, []).append((key, rel))
+    return index
+
+
+@dataclass
+class ScreenHit:
+    key: str            # 画像のある側
+    rel: str            # 画像のパス
+    item: dict          # テストの画面
+    state: str          # current（今の画面）/ stale（前の版）/ removed（撮らなくなった画面）
+
+
+def doc_screens(ctx: Ctx, evs: dict[str, Evidence]) -> list[ScreenHit]:
+    """文書のリポジトリにある画像のうち、テストの画面（今か前の版）と同じもの。"""
+    index = image_index(ctx)
+    hits: dict[tuple[str, str], ScreenHit] = {}
+    for ev in evs.values():
+        for item in ev.items.values():
+            if item.get("kind") != "image":
+                continue
+            current = item.get("sha256")
+            for digest in [h for h in item.get("history") or [] if isinstance(h, str)]:
+                for key, rel in index.get(digest, []):
+                    state = "removed" if item.get("status") == "removed" else "current" if digest == current else "stale"
+                    if (key, rel) not in hits or hits[(key, rel)].state == "current":
+                        hits[(key, rel)] = ScreenHit(key, rel, item, state)
+    return [hits[k] for k in sorted(hits)]
+
+
+def docs_showing(ctx: Ctx, key: str, rel: str) -> list[str]:
+    """その画像を貼っている文書（同じ側のマークダウン）。"""
+    side = side_of(ctx, key)
+    target = (side.path / rel).resolve()
+    out = []
+    for doc in files_mentioning(side, [Path(rel).name]):
+        if not doc.lower().endswith(DOC_EXTS):
+            continue
+        text = read_text(side.path / doc) or ""
+        for m in _IMG_LINK.finditer(text):
+            link = (m.group(1) or m.group(2) or "").split("#")[0].split("?")[0]
+            if link and not re.match(r"^[a-z][a-z0-9+.-]*:", link, re.I) and (side.path / doc).parent.joinpath(link).resolve() == target:
+                out.append(doc)
+                break
+    return out
+
+
+def replaced_files(ctx: Ctx) -> dict:
+    file = ctx.data / REPLACED_FILE
+    return json.loads(file.read_text(encoding="utf-8")) if file.is_file() else {"replaced": [], "removed": []}
+
+
+def replace_screens(ctx: Ctx) -> dict:
+    """テストの画面が変わったら、前の版を貼っている文書の画像を今の画面に差し替える（ハーネスがする変更）。
+
+    差し替えた画像は .codd/replaced.json に控え、「計画に無い変更」に数えない。報告で、どの文書に響いたかを伝える。
+    """
+    record = replaced_files(ctx)
+    done = {(r["side"], r["path"]) for r in record["replaced"]}
+    removed = []
+    for hit in doc_screens(ctx, all_evidence(ctx)):
+        entry = {"side": hit.key, "path": hit.rel, "id": hit.item["id"], "docs": docs_showing(ctx, hit.key, hit.rel)}
+        if hit.state == "removed":
+            removed.append(entry)
+            continue
+        if hit.state != "stale":
+            continue
+        src = hit.item["_root"] / str(hit.item.get("path", ""))
+        if not src.is_file():
+            continue
+        shutil.copyfile(src, side_of(ctx, hit.key).path / hit.rel)
+        if (hit.key, hit.rel) not in done:
+            record["replaced"].append(entry)
+            done.add((hit.key, hit.rel))
+    record["removed"] = removed
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / REPLACED_FILE).write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return record
+
+
+def screen_lines(ctx: Ctx, record: dict) -> list[str]:
+    lines = [f"- {side_label(ctx, r['side'], r['path'])} ← {r['id']}"
+             + (f"（貼っている文書: {', '.join(r['docs'])}）" if r["docs"] else "（どの文書も貼っていない）")
+             for r in record["replaced"]]
+    lines += [f"- {side_label(ctx, r['side'], r['path'])} — テストで撮らなくなった画面です（{r['id']}）"
+              + (f"。貼っている文書: {', '.join(r['docs'])}" if r["docs"] else "") for r in record["removed"]]
     return lines
 
 
@@ -2129,6 +2245,7 @@ def write_baseline(ctx: Ctx) -> None:
         keep.unlink()
         return
     keep.unlink(missing_ok=True)
+    (ctx.data / REPLACED_FILE).unlink(missing_ok=True)
     shutil.rmtree(ctx.data / "before", ignore_errors=True)
     state = {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
@@ -2210,8 +2327,11 @@ def load_applied(ctx: Ctx) -> Applied | str:
         return "変える前の印が古い形です（計画の検査からやり直してください）"
     _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
     planned, plan_problems = planned_refs(ctx, bodies)
-    return Applied(bodies, changed_since(ctx.own, before["own"]),
-                   {r.name: changed_since(r, before.get("refs", {}).get(r.name, {})) for r in ctx.refs},
+    # テストの画面から差し替えた画像はハーネスの変更なので、「変えたファイル」に数えない。
+    harness = {(r["side"], r["path"]) for r in replaced_files(ctx)["replaced"]}
+    return Applied(bodies, {p for p in changed_since(ctx.own, before["own"]) if ("", p) not in harness},
+                   {r.name: {p for p in changed_since(r, before.get("refs", {}).get(r.name, {})) if (r.name, p) not in harness}
+                    for r in ctx.refs},
                    planned, plan_problems)
 
 
@@ -2349,7 +2469,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         for name, argv in test_commands(r.test):
             problems += run_check(r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
         problems += run_check(r.path, r.check, f"{r.name}（{r.label}）")
-    # 7. テストで得たもの（振る舞い・時間・画像）を写した文書が、今の結果と合っているか・目安を満たすか。
+    # 7. テストで得たもの。変わった画面を貼っている文書の画像を差し替え、振る舞い・時間を写した印が今と合うかを見る。
+    screens = replace_screens(ctx)
+    for line in screen_lines(ctx, screens):
+        print(f"テストの画面から: {line[2:]}")
     problems += evidence_apply_problems(ctx)
     for p in problems:
         print(p, file=sys.stderr)
@@ -2457,10 +2580,14 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
             extra = [ln for ln in tests_after.read_text(encoding="utf-8").splitlines()
                      if ln.startswith("- ") and ln.endswith("（計画に無い）")]
             lines += extra
+    screens = screen_lines(ctx, replaced_files(ctx))
+    if screens:
+        lines += ["", "## テストの画面から差し替えた文書の画像", "", *screens]
     changes = evidence_changes(ctx)
     if changes:
         lines += ["", "## テストで得たものの変化（計画のときと比べて）", "", *changes[:MAX_MEASURED],
-                  "", "（実装や文書に活かすなら、文書に `<!-- evidence: id -->…<!-- /evidence -->` で写す）"]
+                  "", "（振る舞いや時間を文書に活かすなら `<!-- evidence: id -->…<!-- /evidence -->` で写す。"
+                  "画面は webui-test-results/screens/ の画像を文書に貼れば、以後は差し替える）"]
     own_now = sorted(p for p in a.own_touched if (ctx.root / p).is_file())
     lonely = [p for p in own_now if not any(k for k, _ in linked(ctx, "", {p}))]
     if lonely:

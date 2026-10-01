@@ -6,8 +6,6 @@ const net = require('net');
 const path = require('path');
 const { loadEnv } = require('../src/config');
 const { startServer, reachable } = require('../src/serve');
-const { scanDocs } = require('../src/docimages');
-const { buildPrompt, traceLines } = require('../src/generate');
 const { cli, tmpDir, executablePath } = require('./helpers');
 
 const ep = () => (executablePath() ? ['--executable-path', executablePath()] : []);
@@ -25,7 +23,7 @@ function write(file, text) {
   fs.writeFileSync(file, text);
 }
 
-// サンプルアプリを写した小さなプロジェクト。webui-test.config.yaml に起動・e2e・仕様書を書く
+// サンプルアプリを写した小さなプロジェクト。webui-test.config.yaml に起動と e2e を書く（仕様書は持たない）
 async function project(t) {
   const dir = tmpDir(t);
   fs.cpSync(SAMPLE, path.join(dir, 'app'), { recursive: true });
@@ -34,14 +32,12 @@ async function project(t) {
     `serve: { command: "node app/server.js ${port}", url: "http://127.0.0.1:${port}/" }`,
     'check:',
     '  cases: [tests]',
-    '  docs: [docs]',
     'envs:',
     '  local: {}',
     '  staging: { baseUrl: "https://stg.example.test" }',
     '',
   ].join('\n'));
   write(path.join(dir, 'tests', 'login.yaml'), [
-    '# coherence: doc=docs/login.md',
     'suite: ログイン画面',
     'cases:',
     '  - id: S-01',
@@ -50,10 +46,9 @@ async function project(t) {
     '      - goto: /',
     '      - expect: { visible: { role: heading, name: ログイン } }',
     '      - measure: { name: 表示, steps: 2, max: 60000 }',
-    '      - screenshot: { name: login, path: docs/images/login.png, target: { css: "#login" } }',
+    '      - screenshot: { name: login, target: { css: "#login" } }',
     '',
   ].join('\n'));
-  write(path.join(dir, 'docs', 'login.md'), '# ログイン\n\n![ログイン画面](images/login.png)\n');
   return { dir, port };
 }
 
@@ -86,65 +81,53 @@ test('serve: 応答するまで待って起動し、止める。起動済みな�
   await assert.rejects(startServer({ ...serve, command: 'node -e "console.log(\'boom\'); process.exit(3)"' }), /起動のコマンドが終わってしまいました（3）[\s\S]*boom/);
 });
 
-test('scanDocs: 仕様書が貼っている画像を拾い、無い先を見つける（コードブロックと外部 URL は見ない）', (t) => {
-  const dir = tmpDir(t);
-  write(path.join(dir, 'a.png'), 'x');
-  write(path.join(dir, 'docs', 'spec.md'), [
-    '![ある](../a.png) <img src="gone.png">',
-    '```', '![例](nothing.png)', '```',
-    '![外](https://example.test/x.png) `![例](inline.png)`',
-  ].join('\n'));
-  const r = scanDocs([path.join(dir, 'docs')]);
-  assert.strictEqual(r.docs, 1);
-  assert.deepStrictEqual(r.links.map((l) => [l.target, l.exists]), [['../a.png', true], ['gone.png', false]]);
-});
-
-test('check: 起動して e2e → 仕様書の画像。無い画像は撮り直すまで落とし、画面が変われば落とす', async (t) => {
+test('check: 起動して e2e → 前回の画面と比べる。変わっても落とさず、何が変わったかを evidence で渡す', async (t) => {
   const { dir } = await project(t);
-  const image = path.join(dir, 'docs', 'images', 'login.png');
+  const evidence = () => Object.fromEntries(JSON.parse(fs.readFileSync(path.join(dir, 'webui-test-results', 'evidence.json'), 'utf8')).items.map((i) => [i.id, i]));
 
   let r = await cli(['check', ...ep()], { cwd: dir });
-  assert.strictEqual(r.code, 1, r.out);
-  assert.doesNotMatch(r.out, /単体テスト/, '単体テストは codd-statemachine など呼び出し側が動かす');
+  assert.strictEqual(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /単体テスト|仕様書/, '単体テストも仕様書も扱わない');
   assert.match(r.out, /e2e: 1 件中 合格 1/);
-  assert.match(r.out, /仕様書の画像: 1 枚中 1 枚が今の画面と違う[\s\S]*docs\/images\/login.png — まだ無い/);
-  assert.match(r.out, /仕様書の画像のリンク: 1 文書中 1 件の先がない[\s\S]*docs\/login.md:3 → images\/login.png/);
-  assert.ok(!fs.existsSync(image), 'check は仕様書の画像を書き換えない');
+  assert.match(r.out, /画面: 1 枚（前回と同じ 0・変わった 0・新しい 1・なくなった 0）/);
   assert.strictEqual(r.err, '', '結果は標準出力の最後にまとめる');
   assert.strictEqual(fs.readFileSync(path.join(dir, 'webui-test-results', '.gitignore'), 'utf8').split('\n').slice(-2)[0], '*',
     '結果の置き場はリポジトリの変更に数えさせない');
-  // 合否のほかに得たもの（振る舞い・時間・画像）を evidence.json に残す
-  assert.match(r.out, /テストで得たもの（振る舞い・時間・画像）: webui-test-results\/evidence.json/);
-  const ev = JSON.parse(fs.readFileSync(path.join(dir, 'webui-test-results', 'evidence.json'), 'utf8'));
-  const byId = Object.fromEntries(ev.items.map((i) => [i.id, i]));
-  assert.deepStrictEqual([byId['login/S-01'].kind, byId['login/S-01'].status, byId['login/S-01'].file, byId['login/S-01'].doc],
-    ['behavior', 'passed', 'tests/login.yaml', ['docs/login.md']]);
-  assert.strictEqual(byId['login/S-01/表示'].unit, 'ms');
-  assert.ok(byId['login/S-01/load'].value > 0, 'ページの読み込み時間');
-  assert.strictEqual(byId['login/S-01/login'].path, 'docs/images/login.png', '仕様書の画像はその置き場を指す');
-
-  r = await cli(['check', '--update', ...ep()], { cwd: dir });
-  assert.strictEqual(r.code, 0, r.out);
-  assert.match(r.out, /1 枚中 1 枚を撮り直した[\s\S]*login.png（新規）/);
-  assert.ok(fs.existsSync(image));
+  assert.match(r.out, /テストで得たもの（振る舞い・時間・画面）: webui-test-results\/evidence.json/);
+  let ev = evidence();
+  assert.deepStrictEqual([ev['login/S-01'].kind, ev['login/S-01'].status, ev['login/S-01'].file], ['behavior', 'passed', 'tests/login.yaml']);
+  assert.strictEqual(ev['login/S-01/表示'].unit, 'ms');
+  assert.ok(ev['login/S-01/load'].value > 0, 'ページの読み込み時間');
+  const first = ev['login/S-01/login'];
+  assert.deepStrictEqual([first.kind, first.status, first.history.length], ['image', 'new', 1]);
+  assert.match(first.path, /^webui-test-results\/screens\/login\/S-01\/login\.png$/);
+  assert.ok(fs.existsSync(path.join(dir, first.path)));
 
   r = await cli(['check', ...ep()], { cwd: dir });
-  assert.strictEqual(r.code, 0, r.out);
-  assert.match(r.out, /== webui-test check: 整合している/);
-  assert.match(r.out, /仕様書の画像: 1 枚とも今の画面と同じ/);
-  assert.match(r.out, /1 文書、1 件とも実在する/);
+  assert.match(r.out, /前回と同じ 1・変わった 0/);
+  ev = evidence();
+  assert.strictEqual(ev['login/S-01/login'].status, 'same');
+  assert.strictEqual(ev['login/S-01/login'].sha256, first.sha256, '同じ画面なら同じファイルのまま');
 
-  // 実装を変える（ボタンの文言）。ケースは通るが、仕様書の画像が古くなる
+  // 実装を変える（ボタンの文言）。ケースは通り、画面が変わったことを渡す
   const html = path.join(dir, 'app', 'index.html');
   fs.writeFileSync(html, fs.readFileSync(html, 'utf8').replace('<button type="submit">ログイン</button>', '<button type="submit">ログインする（新しい文言）</button>'));
   r = await cli(['check', ...ep()], { cwd: dir });
-  assert.strictEqual(r.code, 1, r.out);
-  assert.match(r.out, /e2e: 1 件中 合格 1/);
-  assert.match(r.out, /login.png — \d+ 画素が違います[\s\S]*--update/);
-  const results = JSON.parse(fs.readFileSync(path.join(dir, r.out.match(/レポート: (\S+)report\.html/)[1], 'results.json'), 'utf8'));
-  const doc = results.suites[0].cases[0].docImages[0];
-  assert.strictEqual(doc.status, 'changed');
-  assert.ok(doc.diff, '差分の画像を残す');
+  assert.strictEqual(r.code, 0, r.out);
+  assert.match(r.out, /変わった 1/);
+  assert.match(r.out, /↻ login\/S-01\/login — \d+ 画素が違います/);
+  const changed = evidence()['login/S-01/login'];
+  assert.strictEqual(changed.status, 'changed');
+  assert.notStrictEqual(changed.sha256, first.sha256);
+  assert.deepStrictEqual(changed.history, [changed.sha256, first.sha256], 'これまでの版を渡す（受け取る側が古い画像を見分ける）');
+  assert.ok(fs.existsSync(path.join(dir, changed.previous)) && fs.existsSync(path.join(dir, changed.diff)), '前の画像と差分を残す');
+
+  // 撮らなくなった画面
+  const yaml = path.join(dir, 'tests', 'login.yaml');
+  fs.writeFileSync(yaml, fs.readFileSync(yaml, 'utf8').replace(/ +- screenshot:.*\n/, ''));
+  r = await cli(['check', ...ep()], { cwd: dir });
+  assert.match(r.out, /なくなった 1/);
+  assert.strictEqual(evidence()['login/S-01/login'].status, 'removed');
 });
 
 test('check: ケースが落ちれば落とす。測った時間が目安を超えても落とす。ケースが無ければ使い方の誤り', async (t) => {
@@ -153,8 +136,7 @@ test('check: ケースが落ちれば落とす。測った時間が目安を超�
   fs.writeFileSync(yaml, fs.readFileSync(yaml, 'utf8').replace('max: 60000', 'max: 0.001'));
   let r = await cli(['check', ...ep()], { cwd: dir });
   assert.match(r.out, /「表示」が \d+ms かかり、目安の 0.001ms を超えました/);
-  fs.writeFileSync(yaml, fs.readFileSync(yaml, 'utf8').replace('max: 0.001', 'max: 60000'));
-  write(path.join(dir, 'tests', 'login.yaml'), fs.readFileSync(path.join(dir, 'tests', 'login.yaml'), 'utf8').replace('name: ログイン }', 'name: 無い見出し }'));
+  fs.writeFileSync(yaml, fs.readFileSync(yaml, 'utf8').replace('max: 0.001', 'max: 60000').replace('name: ログイン }', 'name: 無い見出し }'));
   r = await cli(['check', ...ep()], { cwd: dir });
   assert.strictEqual(r.code, 1, r.out);
   assert.match(r.out, /e2e: 1 件中 合格 0 \/ 不合格 1/);
@@ -163,11 +145,4 @@ test('check: ケースが落ちれば落とす。測った時間が目安を超�
   r = await cli(['check'], { cwd: empty });
   assert.strictEqual(r.code, 2);
   assert.match(r.err, /動かすテストケースがありません/);
-});
-
-test('generate --doc / --code: 仕様書を依頼に入れ、つながりの注記を書く（--update で今の注記も残す）', () => {
-  const p = buildPrompt({ conditions: 'c', docs: [{ name: 'docs/login.md', text: '# ログイン\nボタンは「ログイン」' }] });
-  assert.match(p, /## 仕様書: docs\/login.md[\s\S]*ボタンは「ログイン」/);
-  assert.deepStrictEqual(traceLines({ docs: ['docs/login.md'], code: ['src/login.tsx'] }, '# coherence: doc=docs/login.md\n# coherence: test=x.yaml\n'),
-    ['# coherence: doc=docs/login.md', '# coherence: test=x.yaml', '# coherence: code=src/login.tsx']);
 });

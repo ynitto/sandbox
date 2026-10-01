@@ -24,7 +24,7 @@ kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカス�
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
 --check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。渡さず、check もまだ無く、
 置き先に webui-test の設定（`webui-test.config.yaml` に check がある）があれば `webui-test check` を書く
-（ローカルで起動しての e2e と仕様書の画像の整合を、変えるたびに確かめる）。
+（ローカルで起動して e2e を動かし、前回と画面が変わったかを、変えるたびに確かめる。変わった画面は文書の画像に差し替える）。
 --test "コマンド" で、変えたあとに実行する単体テストのコマンド（codd.json の test）を書く（"" で消す）。
 """
 
@@ -47,7 +47,7 @@ AGENT_DESCRIPTION = "実装と設計書の一貫性を保って変える。コ�
 AGENT_KINDS = ("kiro", "copilot")
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
 GRAPHIFY_IGNORE_LINE = ".statemachine/codd/"
-# webui-test（画面のテストと仕様書の画像の整合）の設定。check があれば、変えたあとの検査に使う。
+# webui-test（画面のテスト）の設定。check があれば、変えたあとの検査に使う。
 WEBUI_TEST_CONFIGS = ("webui-test.config.yaml", "webui-test.config.yml", "webui-test.config.json")
 WEBUI_TEST_CHECK = ["webui-test", "check"]
 

@@ -6,6 +6,7 @@ graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -824,6 +825,41 @@ class CoddTest(unittest.TestCase):
         self.assertIn("1300 ms で、目安の 1000 を超えています", r.stdout)
         self.assertIn("確かめた振る舞いが失敗しています: ログイン できる", r.stdout)
         self.assertIn("書いてある 800 ms → 今 1300 ms", r.stdout)
+
+    def test_changed_screens_replace_the_images_docs_show(self) -> None:
+        # テストの側は文書を知らない。画面のこれまでの版と同じ画像を文書のリポジトリから sha256 で見つけ、差し替える。
+        old, new, gone = b"PNG-v1 login", b"PNG-v2 login", b"PNG-old menu"
+        sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+        commit(self.design, {"docs/login.md": "# ログイン\n\n![ログイン](images/login.png)\n",
+                             "docs/menu.md": "# メニュー\n\n<img src=\"images/menu.png\">\n"}, "screens")
+        (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
+        (self.design / "docs/images/login.png").write_bytes(old)
+        (self.design / "docs/images/menu.png").write_bytes(gone)
+        git(self.design, "add", "-A")
+        git(self.design, "commit", "-q", "-m", "images")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        screens = self.impl / "webui-test-results/screens"
+        screens.mkdir(parents=True)
+        (screens / "login.png").write_bytes(new)
+        base = {"kind": "image", "file": "tests/login.yaml"}
+        self.write_evidence([
+            {**base, "id": "login/S-01/login", "status": "changed", "path": "webui-test-results/screens/login.png",
+             "sha256": sha(new), "history": [sha(new), sha(old)]},
+            {**base, "id": "menu/S-01/menu", "status": "removed", "sha256": sha(gone), "history": [sha(gone)]},
+        ])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)   # ハーネスの差し替えは「計画に無い変更」に数えない
+        self.assertEqual((self.design / "docs/images/login.png").read_bytes(), new)
+        self.assertIn("テストの画面から: docs/images/login.png ← login/S-01/login（貼っている文書: docs/login.md）", r.stdout)
+        self.assertIn("docs/images/menu.png — テストで撮らなくなった画面です（menu/S-01/menu）。貼っている文書: docs/menu.md",
+                      r.stdout)
+        report = self.run_pa(self.impl, "report")
+        self.assertEqual(report.returncode, 0, report.stdout)
+        self.assertIn("## テストの画面から差し替えた文書の画像", report.stdout)
+        # もう一度検査しても、差し替えた画像は今の画面なので何もしない
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
 
     def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
         commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")

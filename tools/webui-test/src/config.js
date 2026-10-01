@@ -4,8 +4,7 @@
 //
 //   defaultEnv: local
 //   serve: { command: npm start, url: http://localhost:3000 }   # ローカルで起動してから動かす（任意）
-//   captureRoot: ../my-app-docs                                 # screenshot の path: の起点（任意）
-//   check: { cases: [tests/e2e], docs: [../my-app-docs/docs] }   # webui-test check（任意）
+//   check: { cases: [tests/e2e] }                               # webui-test check（任意）
 //   envs:
 //     local:   { baseUrl: http://localhost:3000 }
 //     staging: { baseUrl: https://stg.example.com, mocks: false, storageState: auth/staging.json,
@@ -19,10 +18,10 @@ const YAML = require('yaml');
 const { isPlainObject } = require('./casefile');
 
 const CONFIG_NAMES = ['webui-test.config.yaml', 'webui-test.config.yml', 'webui-test.config.json'];
-const TOP_KEYS = ['defaultEnv', 'envs', 'serve', 'captureRoot', 'check'];
+const TOP_KEYS = ['defaultEnv', 'envs', 'serve', 'check'];
 const ENV_KEYS = ['baseUrl', 'localStorage', 'sessionStorage', 'cookies', 'headers', 'storageState', 'mocks', 'locale', 'timezone', 'serve'];
 const SERVE_KEYS = ['command', 'url', 'cwd', 'env', 'timeout'];
-const CHECK_KEYS = ['cases', 'docs', 'env', 'maxDiffRatio'];
+const CHECK_KEYS = ['cases', 'env', 'maxDiffRatio'];
 
 function expandVars(value, where, errors) {
   if (typeof value === 'string') {
@@ -74,29 +73,27 @@ function normalizeServe(raw, where, dir, baseUrl, errors) {
 
 function normalizeCheck(raw, dir, errors) {
   if (raw === undefined) return null;
-  if (!isPlainObject(raw)) { errors.push('check: { cases, docs } を書きます'); return null; }
+  if (!isPlainObject(raw)) { errors.push('check: { cases } を書きます'); return null; }
   unknownKeys(raw, CHECK_KEYS, 'check', errors);
   const cases = strList(raw.cases);
-  const docs = strList(raw.docs);
-  for (const [k, v] of [['cases', cases], ['docs', docs]]) if (!v.every((x) => typeof x === 'string')) errors.push(`check.${k}: パスの配列を書きます`);
+  if (!cases.every((x) => typeof x === 'string')) errors.push('check.cases: パスの配列を書きます');
   if (raw.maxDiffRatio !== undefined && !(typeof raw.maxDiffRatio === 'number' && raw.maxDiffRatio >= 0 && raw.maxDiffRatio < 1)) {
-    errors.push('check.maxDiffRatio: 違ってよい画素の割合を 0 以上 1 未満で書きます（既定 0。例: 0.001）');
+    errors.push('check.maxDiffRatio: 前回の画面と違ってよい画素の割合を 0 以上 1 未満で書きます（既定 0。例: 0.001）');
   }
   return {
     cases: cases.map((c) => path.resolve(dir, String(c))),
-    docs: docs.map((d) => path.resolve(dir, String(d))),
     env: raw.env,
     maxDiffRatio: raw.maxDiffRatio === undefined ? 0 : raw.maxDiffRatio,
   };
 }
 
 // 環境を 1 つ選んで返す。設定ファイルが無ければ既定の local（何も上書きしない）。
-// 戻り値: { name, settings, file, dir, serve, captureRoot, check }
+// 戻り値: { name, settings, file, dir, serve, check }
 function loadEnv({ configPath, envName, cwd } = {}) {
   const file = findConfig(configPath, cwd);
   if (!file) {
     if (configPath) throw new Error(`設定ファイルがありません: ${configPath}`);
-    return { name: envName || 'local', settings: {}, file: null, dir: null, serve: null, captureRoot: null, check: null };
+    return { name: envName || 'local', settings: {}, file: null, dir: null, serve: null, check: null };
   }
   const text = fs.readFileSync(file, 'utf8');
   const data = file.endsWith('.json') ? JSON.parse(text) : YAML.parse(text);
@@ -104,7 +101,7 @@ function loadEnv({ configPath, envName, cwd } = {}) {
   const dir = path.dirname(file);
   const errors = [];
   unknownKeys(data, TOP_KEYS, file, errors);
-  const top = expandVars({ serve: data.serve, captureRoot: data.captureRoot, check: data.check }, file, errors);
+  const top = expandVars({ serve: data.serve, check: data.check }, file, errors);
   const check = normalizeCheck(top.check, dir, errors);
   const name = envName || (check && check.env) || data.defaultEnv || Object.keys(data.envs)[0];
   const raw = data.envs[name];
@@ -121,7 +118,7 @@ function loadEnv({ configPath, envName, cwd } = {}) {
   if (serve && !own && settings.baseUrl && originOf(settings.baseUrl) !== originOf(serve.url)) serve = null;
   if (serve && !settings.baseUrl) settings.baseUrl = serve.url;
   if (errors.length) throw new Error(errors.join('\n'));
-  return { name, settings, file, dir, serve, captureRoot: top.captureRoot ? path.resolve(dir, top.captureRoot) : null, check };
+  return { name, settings, file, dir, serve, check };
 }
 
 module.exports = { loadEnv, findConfig, expandVars, CONFIG_NAMES };

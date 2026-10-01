@@ -55,7 +55,7 @@ function agentCommand(opts) {
   return opts.explore ? a.explore : a.command;
 }
 
-function buildPrompt({ conditions, url, pageInfo, existing, baseUrl, feedback, explore, docs = [] }) {
+function buildPrompt({ conditions, url, pageInfo, existing, baseUrl, feedback, explore }) {
   const parts = [
     'あなたは Web アプリのテスト設計者です。下の「条件」を満たすテストケースファイルを作ってください。',
     '',
@@ -72,9 +72,6 @@ function buildPrompt({ conditions, url, pageInfo, existing, baseUrl, feedback, e
     '## 条件',
     conditions.trim(),
   ];
-  for (const d of docs) {
-    parts.push('', `## 仕様書: ${d.name}`, '条件の根拠。画面の文言・項目・振る舞いはこの記述に合わせ、ケースの title か note にどの記述を確かめるかを書く。', '````markdown', d.text.trim(), '````');
-  }
   if (baseUrl || url) parts.push('', '## 対象', `- baseUrl: ${baseUrl || new URL(url).origin}`, ...(url ? [`- 最初に開くページ: ${url}`] : []));
   if (pageInfo) {
     parts.push('', '## 画面の要素一覧（実際にページを開いて取ったアクセシビリティツリー）', `タイトル: ${pageInfo.title}`, `URL: ${pageInfo.url}`, '```yaml', pageInfo.aria, '```');
@@ -206,23 +203,8 @@ async function openExploreSession(url, workDir, opts) {
 }
 
 // 条件からテストケースファイルを作って outFile に保存する。戻り値 { file, cases, attempts }
-// ケースファイルの先頭に書く、仕様書・実装とのつながりの注記（codd-statemachine がたどる書き方）。
-// --update のときは今のファイルにある注記も残す。
-function traceLines(opts, existing) {
-  const own = [
-    ...(opts.docs || []).map((d) => `coherence: doc=${d.split(path.sep).join('/')}`),
-    ...(opts.code || []).map((c) => `coherence: code=${c.split(path.sep).join('/')}`),
-  ];
-  const kept = existing ? [...existing.matchAll(/^#\s*(coherence:\s*(?:doc|code|test)\s*=\s*\S+)\s*$/gm)].map((m) => m[1].replace(/\s+/g, ' ').replace(/=\s+/, '=')) : [];
-  return [...new Set([...kept, ...own])].map((l) => `# ${l}`);
-}
-
 async function generate(opts) {
   const argv = agentCommand(opts);
-  const docs = (opts.docs || []).map((d) => {
-    if (!fs.existsSync(d)) throw new Error(`仕様書がありません: ${d}`);
-    return { name: d, text: fs.readFileSync(d, 'utf8') };
-  });
   const existing = opts.outFile && opts.update && fs.existsSync(opts.outFile) ? fs.readFileSync(opts.outFile, 'utf8') : null;
   const pageInfo = opts.url && opts.snapshot !== false ? await snapshotPage(opts.url, opts) : null;
   // 依頼ファイルは作業ディレクトリの下に置く（Copilot CLI は既定で作業ディレクトリの外を読まない）
@@ -239,7 +221,7 @@ async function generate(opts) {
       opts = { ...opts, exploreEnv: { WEBUI_TEST_PLAYWRIGHT_CLI: explore.command } };
     }
     for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
-      const prompt = buildPrompt({ conditions: opts.conditions, url: opts.url, baseUrl: opts.baseUrl, pageInfo, existing, feedback, explore, docs });
+      const prompt = buildPrompt({ conditions: opts.conditions, url: opts.url, baseUrl: opts.baseUrl, pageInfo, existing, feedback, explore });
       const promptFile = path.join(workDir, `request-${attempt}.md`);
       fs.writeFileSync(promptFile, prompt);
       if (opts.log) opts.log(`エージェントに依頼しています（${attempt} 回目）: ${argv[0]}`);
@@ -259,11 +241,7 @@ async function generate(opts) {
         got.data = { suite: got.data.suite, baseUrl: opts.baseUrl || new URL(opts.url).origin, ...got.data };
         got.text = YAML.stringify(got.data, { lineWidth: 0 });
       }
-      const header = [
-        `# webui-test generate で作成（${new Date().toISOString()}）`,
-        `# 条件: ${opts.conditions.trim().split('\n').join('\n#       ')}`,
-        ...traceLines(opts, existing),
-      ].join('\n') + '\n';
+      const header = `# webui-test generate で作成（${new Date().toISOString()}）\n# 条件: ${opts.conditions.trim().split('\n').join('\n#       ')}\n`;
       fs.mkdirSync(path.dirname(path.resolve(opts.outFile)), { recursive: true });
       fs.writeFileSync(opts.outFile, header + got.text);
       return { file: opts.outFile, cases: got.data.cases.length, attempts: attempt };
@@ -276,4 +254,4 @@ async function generate(opts) {
   }
 }
 
-module.exports = { generate, traceLines, findPlaywrightCli, buildPrompt, extractYaml, snapshotPage, splitCommand, agentCommand, FORMAT_REFERENCE, AGENTS };
+module.exports = { generate, findPlaywrightCli, buildPrompt, extractYaml, snapshotPage, splitCommand, agentCommand, FORMAT_REFERENCE, AGENTS };
