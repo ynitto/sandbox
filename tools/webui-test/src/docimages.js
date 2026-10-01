@@ -5,38 +5,28 @@
 const fs = require('fs');
 const path = require('path');
 
-let comparator;
-function getComparator() {
-  if (comparator === undefined) {
-    // @playwright/test の toHaveScreenshot と同じ比べ方（色の近さの許容つき）を使う。
-    try { comparator = require('playwright-core/lib/utils').getComparator('image/png'); } catch (_) { comparator = null; }
-  }
-  return comparator;
-}
+// 画素の比べ方は Playwright の toHaveScreenshot と同じ pixelmatch（色の近さの許容 0.2）。
+const { PNG } = require('pngjs');
+const pixelmatch = require('pixelmatch');
 
-function pngSize(buf) {
-  return buf.length > 24 && buf.toString('ascii', 1, 4) === 'PNG' ? { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) } : null;
+function readPng(buf) {
+  try { return PNG.sync.read(buf); } catch (_) { return null; }
 }
 
 // 戻り値: { same, ratio, message, diff }。ratio は違う画素の割合（大きさが違うときは 1）、message は日本語の 1 行。
 function compareImages(actual, expected, { maxDiffRatio = 0 } = {}) {
   if (actual.equals(expected)) return { same: true, ratio: 0 };
-  const a = pngSize(actual);
-  const e = pngSize(expected);
+  const a = readPng(actual);
+  const e = readPng(expected);
   if (!a || !e) return { same: false, ratio: 1, message: 'PNG として読めません' };
   if (a.width !== e.width || a.height !== e.height) {
-    const cmp = getComparator();
-    const r = cmp ? cmp(actual, expected, {}) : null;
-    return { same: false, ratio: 1, message: `大きさが違います（${e.width}×${e.height} → ${a.width}×${a.height}）`, diff: r && r.diff };
+    return { same: false, ratio: 1, message: `大きさが違います（${e.width}×${e.height} → ${a.width}×${a.height}）` };
   }
-  const cmp = getComparator();
-  if (!cmp) return { same: false, ratio: 1, message: '中身が違います' };
-  const r = cmp(actual, expected, { maxDiffPixelRatio: maxDiffRatio, threshold: 0.2 });
-  if (!r) return { same: true, ratio: 0 };
-  const m = /(\d+) pixels/.exec(r.errorMessage || '');
-  const count = m ? Number(m[1]) : e.width * e.height;
+  const diff = new PNG({ width: e.width, height: e.height });
+  const count = pixelmatch(e.data, a.data, diff.data, e.width, e.height, { threshold: 0.2 });
   const ratio = count / (e.width * e.height);
-  return { same: false, ratio, message: `${count} 画素が違います（${(ratio * 100).toFixed(1)}%）`, diff: r.diff || null };
+  if (count <= Math.floor(e.width * e.height * maxDiffRatio)) return { same: true, ratio };
+  return { same: false, ratio, message: `${count} 画素が違います（${(ratio * 100).toFixed(1)}%）`, diff: PNG.sync.write(diff) };
 }
 
 const MD_EXTS = ['.md', '.markdown', '.mdx'];

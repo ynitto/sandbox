@@ -29,7 +29,7 @@ tools/webui-test/install.sh --check
 ```
 
 足りないものだけを入れる。Node.js 18 以上が無ければ公式の LTS を利用者のフォルダに入れ（管理者権限は要らない）、
-npm パッケージ（playwright・@playwright/test・@playwright/cli・yaml）と Playwright の Chromium を入れて、
+npm パッケージ（playwright・@playwright/test・@playwright/cli・yaml・画像を比べる pngjs と pixelmatch）と Playwright の Chromium を入れて、
 `webui-test` コマンドを置く（Windows は `%LOCALAPPDATA%\webui-test\bin`、ほかは `~/.local/bin`）。
 `-Check` / `--check` は入れたあとに同梱のサンプルでテストを 1 回動かす。
 Linux でブラウザが OS のライブラリ不足で起動しないときは `install.sh --with-deps`（sudo を使う）。
