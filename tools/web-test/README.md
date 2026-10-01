@@ -47,12 +47,60 @@ web-test generate "ログイン画面。正しいパスワードで商品一覧�
 - `--explore` を付けると、web-test が playwright-cli でブラウザを開いておき、エージェントがそのブラウザを
   操作して（ログインして次の画面へ進むなど）要素を確かめながら書く。画面をまたぐ条件のときに使う。
   エージェントにはシェルのコマンド実行を許す起動形になる
+- `--explore` に `--probe-before-act` を足すと、エージェントは状態を変える操作（クリック・入力・選択・チェック・
+  Enter での送信）の前に、対象が 1 つだけ・見えている・押せることを確かめてからでないと操作できなくなる
+  （下の「操作の前に対象を確かめる」）。付けなければ `--explore` は今までどおり
 - 条件が長いときは `-f conditions.md` でファイルから読む
 - 今あるファイルを直す・ケースを足すときは `--update`
 - チャット画面のエージェント（GitHub Copilot のチャットなど）で作るときは、`web-test prompt "<条件>" --url <URL>` が
   出す依頼文を貼り、返ってきた YAML を保存して `web-test validate` で確かめる
 
 作ったファイルは人が読んで直せる。書式は `web-test format` か [src/format-reference.md](src/format-reference.md)。
+
+#### 操作の前に対象を確かめる（`--probe-before-act`）
+
+```bash
+web-test generate -f conditions.md --url http://localhost:3000/editor.html -o tests/editor.yaml \
+  --explore --probe-before-act
+```
+
+エージェントには playwright-cli の代わりに `web-test browse` を渡す。読むだけのコマンド（`snapshot` `find` `screenshot`
+など）と画面遷移（`goto` `go-back` `reload`）はそのまま通し、状態を変える操作は次の手順を踏ませる。
+
+```bash
+<コマンド> probe --role button --name "保存"     # 対象を確かめる（--label / --text / --placeholder / --test-id / --css / --exact / --nth）
+<コマンド> click --probe probe-0003               # ready だった確認の ID を付けて操作する
+<コマンド> fill --probe probe-0004 "文字"          # select / check / uncheck / press Enter も同じ
+<コマンド> observe "保存すると「保存しました」と出る"   # テストに書く観察を残す
+```
+
+`probe` は次の形で答える。`ready` が `true` なのは、一致が 1 つ・見えている・押せるときだけ。
+
+```json
+{ "type": "probe", "probeId": "probe-0003", "target": { "role": "button", "name": "保存" },
+  "url": "http://localhost:3000/editor.html", "matches": 1, "visible": true, "enabled": true,
+  "bbox": { "x": 902, "y": 12, "width": 59, "height": 34 }, "ready": true,
+  "screenshot": "evidence/probe-0003.png", "fingerprint": "sha256:…" }
+```
+
+依頼文だけに頼らず、`web-test browse` が次の操作を断る（断った理由は JSON の `reason` に出る）。
+
+| 断る操作 | `reason` |
+|---|---|
+| 確認の ID が無い（snapshot の ref や直のセレクタでの操作） | `missingProbe` |
+| 確認のあとに別の操作か画面遷移をした | `stale` |
+| 確認のあとにアプリが要素を作り直した | `stale` |
+| 確認のあとに対象の位置や属性が変わった | `changed` |
+| 一致が 2 つ以上・無い・隠れている・押せない対象 | `ambiguous` / `missing` / `notReady` |
+| `--fingerprint` が確認の指紋と違う | `fingerprintMismatch` |
+
+確かめた記録は `web-test-results/explore-<日時>/`（`--evidence-dir` で変えられる）に残る。
+
+- `explore-evidence.jsonl`: 確かめた対象・行った操作（断ったものも）・エージェントが残した観察だけを 1 行ずつ
+- `evidence/probe-0003.png`: 確かめた要素の画像
+
+入力した文字（パスワードを含む）・ページの HTML・依頼文・通信の中身は残さない。URL はクエリとハッシュを落として残す。
+ただし、エージェントがシェルから playwright-cli を直に呼ぶことまでは止められない。
 
 ### 2. 実行する
 
@@ -148,6 +196,18 @@ web-test run tests/ --env staging
 node examples/sample-app/server.js 3000 &
 web-test run examples/login.yaml
 web-test pwtest examples/login.yaml
+```
+
+`examples/sample-app/editor.html` は、操作の前の確認を試すための画面。同じ名前の「保存」が 2 つあり（片方は隠れている）、
+「公開」は印を付けるまで押せず、言語（`localStorage` の `lang`）と画面幅で表示が変わり、保存すると編集欄を作り直す。
+`examples/editor.yaml` はそのテストケース（`variants` で日本語・英語・狭い画面を回す）。
+
+`--probe-before-act` の有無で作り比べるときは `scripts/compare-explore.js` を使う。同じ条件で両方を作り、
+作ったケースをすぐ 1 回動かして、書式の検査・初回の合否・頼み直しの回数・対象の取り違え・断った操作・
+ケースあたりの確認回数・時間を `comparison.md` / `comparison.json` に残す（トークン数は取れないので「不明」と書く）。
+
+```bash
+node scripts/compare-explore.js --url http://localhost:3000/editor.html -f conditions.md --runs 3 --out compare-out
 ```
 
 ## ほかの Playwright の道具と組み合わせる

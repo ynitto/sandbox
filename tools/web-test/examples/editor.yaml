@@ -1,0 +1,54 @@
+# 確認用の画面（examples/sample-app/editor.html）のテストケース。--probe-before-act の試験・比較にも使う。
+# 「保存」は広い画面ではツールバー、狭い画面ではメニューの中にあり、もう一方は隠れている。
+suite: メモの編集
+baseUrl: http://localhost:3000
+viewport: { width: 1024, height: 700 }
+variants:
+  - { name: ja, locale: ja-JP, localStorage: { lang: ja } }
+  - { name: en, locale: en-US, localStorage: { lang: en } }
+  - { name: ja-mobile, locale: ja-JP, localStorage: { lang: ja }, viewport: { width: 360, height: 640 } }
+cases:
+  - id: TC-001
+    title: ツールバーの保存で「保存しました」と出る
+    variants: [ja]
+    steps:
+      - goto: /editor.html
+      - click: { role: button, name: 保存 }
+      - expect: { target: { role: status }, text: 保存しました }
+      - screenshot: 保存後
+
+  - id: TC-002
+    title: 英語の画面では Save で Saved と出る
+    variants: [en]
+    steps:
+      - goto: /editor.html
+      - click: { role: button, name: Save }
+      - expect: { target: { role: status }, text: Saved }
+
+  - id: TC-003
+    title: 狭い画面ではメニューから保存する
+    variants: [ja-mobile]
+    steps:
+      - goto: /editor.html
+      - expect: { hidden: { css: .toolbar } }
+      - click: { role: button, name: メニュー }
+      - click: { role: button, name: 保存 }
+      - expect: { target: { role: status }, text: 保存しました }
+      - screenshot: メニューから保存
+
+  - id: TC-004
+    title: 確認に印を付けるまで公開は押せない
+    variants: [ja, ja-mobile]
+    steps:
+      - goto: /editor.html
+      - expect: { target: { role: button, name: 公開 }, disabled: true }
+      - check: { label: 内容を確認しました }
+      - click: { role: button, name: 公開 }
+      - expect: { target: { role: status }, text: 公開しました }
+
+  - id: TC-005
+    title: 文字「保存」は隠れたものも含めて 2 つに一致する（文字で指すと 1 つに決まらない）
+    variants: [ja]
+    steps:
+      - goto: /editor.html
+      - expect: { target: { text: 保存, exact: true }, count: 2 }
