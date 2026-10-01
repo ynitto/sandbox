@@ -217,6 +217,10 @@ jobs:
       # README.md のスキル一覧（常時ロード・件数・表・見出しの重複）と突き合わせる。
       - name: 文書のスキル目録が実体と一致すること
         run: python tools/ci/check_skill_catalog.py
+      # git-skill-manager の generated/skill-catalog.json を、install.py の列挙で
+      # 生成し直した結果と突き合わせる。古ければ --write で生成し直してコミットする。
+      - name: 生成済みスキルカタログが実体と一致すること
+        run: python tools/ci/check_generated_skill_catalog.py
       # skill-evaluator スキル同梱の検査器を、リポジトリ内のパスを直接叩いて回す
       # （install.py が ~/.agents/ へ配る写しには依存しない）。落ちるのはエラー
       # だけで、description の字数超過などの警告では落ちない設計——警告も落とす
