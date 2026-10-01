@@ -1626,11 +1626,44 @@ def _tl_statemachine_args(args: argparse.Namespace, spec: str, work_dir: Path):
         else:
             raise ToolLoopError(f"/sm は {token} を受け取りません（--param k=v だけです）")
     candidate = Path(name) if os.path.isabs(name) else (work_dir / name)
-    workflow = str(candidate) if candidate.is_file() else None
+    workflow = str(candidate) if _tl_is_existing_file(candidate) else None
     return argparse.Namespace(
         workflow=workflow, entry=(None if workflow else name), config=None,
         param=params, input=None, dir=str(work_dir),
         agent_cli=getattr(args, "agent_cli", None), model=getattr(args, "model", None))
+
+
+def _tl_is_existing_file(candidate: Path) -> bool:
+    """パスとして実在するファイルか。**パスとして見られない文字列は「ファイルではない」。**
+
+    数 KB の自然言語プロンプトや `/sm` の長い引数をそのまま stat すると、Linux は
+    ENAMETOOLONG、Windows は「ファイル名が正しくない」の OSError を投げ、NUL を含めば
+    ValueError になる。どれも「そういう名前のファイルは無い」と同じ意味なので False に
+    揃える（herdcli の `_json_source` と同じ判断）。
+    """
+    try:
+        return candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _tl_prompt_source(text: str, work_dir: Path) -> str:
+    """プロンプト引数 → 本文。実在するファイルならその中身、そうでなければ受け取った文字列。
+
+    相対パスは作業フォルダから見る。**実在するファイルの読み込み失敗は本文扱いに
+    落とさない**——「このファイルを読ませたつもり」がファイル名 1 語の依頼に化けて
+    走るほうが、止まるより害が大きいので `ToolLoopError` にする。
+    """
+    stripped = text.strip()
+    if not stripped:
+        return text
+    candidate = Path(stripped) if os.path.isabs(stripped) else (work_dir / stripped)
+    if not _tl_is_existing_file(candidate):
+        return text
+    try:
+        return candidate.read_text(encoding="utf-8").rstrip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ToolLoopError(f"プロンプトファイルを読めません: {candidate}: {exc}") from exc
 
 
 def _tl_deliverable_slots(goal: str, deliverables: "list[str]") -> "list[str]":
@@ -1670,11 +1703,11 @@ def cmd_run(args: argparse.Namespace, cwd: Path) -> None:
     # strip すると逃げ道が塞がる。
     goal = " ".join(getattr(args, "prompt", None) or []).rstrip()
     # send と同じ流儀: 実在するファイルパスを渡したらその中身を本文にする。
-    stripped = goal.strip()
-    candidate = ((work_dir / stripped) if stripped and not os.path.isabs(stripped)
-                 else Path(stripped or "."))
-    if stripped and candidate.is_file():
-        goal = candidate.read_text(encoding="utf-8").rstrip()
+    try:
+        goal = _tl_prompt_source(goal, work_dir)
+    except ToolLoopError as exc:
+        print(f"[agent-loop] ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
     if not goal.strip():
         print("[agent-loop] ERROR: プロンプトが空です。", file=sys.stderr)
         sys.exit(2)
