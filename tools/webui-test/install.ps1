@@ -1,14 +1,14 @@
-﻿# web-test のインストーラ（Windows）。PowerShell で実行する:
+﻿# webui-test のインストーラ（Windows）。PowerShell で実行する:
 #
-#   powershell -ExecutionPolicy Bypass -File tools\web-test\install.ps1
-#   powershell -ExecutionPolicy Bypass -File tools\web-test\install.ps1 -Check        # 入れたあとサンプルで確かめる
-#   powershell -ExecutionPolicy Bypass -File tools\web-test\install.ps1 -SkipBrowser  # ブラウザを入れない
+#   powershell -ExecutionPolicy Bypass -File tools\webui-test\install.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\webui-test\install.ps1 -Check        # 入れたあとサンプルで確かめる
+#   powershell -ExecutionPolicy Bypass -File tools\webui-test\install.ps1 -SkipBrowser  # ブラウザを入れない
 #
 # 入れるもの（すでにあれば使う）:
-#   - Node.js 18 以上。無い・古いときは公式の LTS の zip を %LOCALAPPDATA%\web-test\node に展開する（管理者権限は不要）
+#   - Node.js 18 以上。無い・古いときは公式の LTS の zip を %LOCALAPPDATA%\webui-test\node に展開する（管理者権限は不要）
 #   - npm パッケージ（playwright・@playwright/test・@playwright/cli・yaml）… このフォルダの node_modules
 #   - Playwright の Chromium
-#   - web-test コマンド … %LOCALAPPDATA%\web-test\bin\web-test.cmd（ユーザーの PATH に足す）
+#   - webui-test コマンド … %LOCALAPPDATA%\webui-test\bin\webui-test.cmd（ユーザーの PATH に足す）
 # WSL の中で使うときは、WSL で install.sh を実行する。
 param(
   [switch]$Check,
@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $ToolDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$DataDir = if ($env:WEB_TEST_HOME) { $env:WEB_TEST_HOME } else { Join-Path $env:LOCALAPPDATA 'web-test' }
+$DataDir = if ($env:WEBUI_TEST_HOME) { $env:WEBUI_TEST_HOME } else { Join-Path $env:LOCALAPPDATA 'webui-test' }
 $BinDir = Join-Path $DataDir 'bin'
 
 function Say($m) { Write-Host "==> $m" }
@@ -36,7 +36,7 @@ function Test-Node($exe) {
 function Install-Node {
   $arch = if ([Environment]::Is64BitOperatingSystem) { if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' } } else { 'x86' }
   $dist = "https://nodejs.org/dist/latest-v$NodeMajor.x"
-  $tmp = Join-Path ([IO.Path]::GetTempPath()) ("web-test-" + [Guid]::NewGuid())
+  $tmp = Join-Path ([IO.Path]::GetTempPath()) ("webui-test-" + [Guid]::NewGuid())
   New-Item -ItemType Directory -Path $tmp | Out-Null
   try {
     $sums = (Invoke-WebRequest -UseBasicParsing "$dist/SHASUMS256.txt").Content -split "`n"
@@ -90,9 +90,9 @@ try {
   }
 } finally { Pop-Location }
 
-# 4. web-test コマンド
+# 4. webui-test コマンド
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-$cmd = Join-Path $BinDir 'web-test.cmd'
+$cmd = Join-Path $BinDir 'webui-test.cmd'
 # .cmd はコンソールのコードページで読まれる。ユーザー名などに日本語が入っても壊れないよう、
 # 既知のフォルダは環境変数に置き換え、残りは OEM コードページで書く。
 function To-CmdPath($p) {
@@ -103,9 +103,9 @@ function To-CmdPath($p) {
   return $p
 }
 $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
-$body = "@echo off`r`nrem written by install.ps1`r`n`"$(To-CmdPath $Node)`" `"$(To-CmdPath (Join-Path $ToolDir 'bin\web-test.js'))`" %*`r`n"
+$body = "@echo off`r`nrem written by install.ps1`r`n`"$(To-CmdPath $Node)`" `"$(To-CmdPath (Join-Path $ToolDir 'bin\webui-test.js'))`" %*`r`n"
 [IO.File]::WriteAllText($cmd, $body, $oem)
-Say "web-test コマンドを置きました: $cmd"
+Say "webui-test コマンドを置きました: $cmd"
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (-not (($userPath -split ';') -contains $BinDir)) {
   [Environment]::SetEnvironmentVariable('Path', (@($userPath, $BinDir) | Where-Object { $_ }) -join ';', 'User')
@@ -115,7 +115,7 @@ $env:Path = "$BinDir;$env:Path"
 
 # 5. エージェント CLI（テストケースを作るときに使う）
 foreach ($c in @('kiro-cli', 'copilot')) {
-  if (Get-Command $c -ErrorAction SilentlyContinue) { Say "${c}: あり" } else { Warn "$c が見つかりません（web-test generate で使うときに入れてください）" }
+  if (Get-Command $c -ErrorAction SilentlyContinue) { Say "${c}: あり" } else { Warn "$c が見つかりません（webui-test generate で使うときに入れてください）" }
 }
 
 # 6. 確かめる
@@ -130,4 +130,4 @@ if ($Check) {
     if ($LASTEXITCODE -ne 0) { throw 'サンプルのテストが通りませんでした' }
   } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
 }
-Say 'できました。使い方: web-test --help'
+Say 'できました。使い方: webui-test --help'

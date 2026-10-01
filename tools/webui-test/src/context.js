@@ -59,12 +59,12 @@ function collect({ argv, env, files, sources = [] }) {
   // 仕様・実装の置き場（--source で渡す）。別のフォルダ・別のリポジトリでもよい
   for (const s of sources) addRepo(path.resolve(s), '参照元');
   return {
-    command: ['web-test', ...argv].join(' '),
+    command: ['webui-test', ...argv].join(' '),
     cwd: process.cwd(),
     env: env ? { name: env.name, config: env.file, baseUrl: env.settings && env.settings.baseUrl } : null,
     node: process.version,
     playwright: packageVersion('playwright'),
-    webTest: require('../package.json').version,
+    webuiTest: require('../package.json').version,
     os: `${os.platform()} ${os.release()} ${os.arch()}`,
     host: os.hostname(),
     files: files.map((f) => ({ path: path.relative(process.cwd(), f) || f, sha256: sha256(f) })),

@@ -11,7 +11,7 @@ function loadPlaywright() {
   try {
     return require('playwright');
   } catch (e) {
-    throw new Error('playwright が見つかりません。tools/web-test で `npm install` と `npx playwright install chromium` を実行してください');
+    throw new Error('playwright が見つかりません。tools/webui-test で `npm install` と `npx playwright install chromium` を実行してください');
   }
 }
 
@@ -62,6 +62,7 @@ function describeStep(step) {
     case 'wait': detail = typeof v === 'number' ? `${v}ms` : v && (v.url || v.load || v.visible || v.hidden) ? JSON.stringify(v) : describeTarget(v); break;
     case 'expect': detail = JSON.stringify(v); break;
     case 'screenshot': detail = typeof v === 'string' ? v : v.name; break;
+    case 'measure': detail = typeof v === 'string' ? v : `${v.name}${v.steps ? `（直前 ${v.steps} ステップ）` : ''}${v.max ? ` ≦ ${v.max}ms` : ''}`; break;
     default: detail = describeTarget(v);
   }
   return { kind, text: `${kind}${detail ? ' ' + detail : ''}`, note: step.note || '' };
@@ -159,7 +160,7 @@ async function runStep(page, step, ctx) {
       else await toLocator(page, v).first().waitFor({ state: 'visible', timeout });
       break;
     case 'expect': await runExpect(page, v, timeout); break;
-    case 'screenshot': break; // 撮影は呼び出し側
+    case 'screenshot': case 'measure': break; // 撮影と測定は呼び出し側
     default: throw new Error(`知らないステップ: ${kind}`);
   }
 }
@@ -167,8 +168,10 @@ async function runStep(page, step, ctx) {
 async function takeShot(page, file, opts = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const mask = (opts.mask || []).map((m) => toLocator(page, m));
-  if (opts.target !== undefined) await toLocator(page, opts.target).first().screenshot({ path: file, mask });
-  else await page.screenshot({ path: file, fullPage: !!opts.fullPage, mask });
+  // 動きと点滅するカーソルを止めて撮る（同じ画面なら同じ画像になるように）
+  const common = { path: file, mask, animations: 'disabled', caret: 'hide' };
+  if (opts.target !== undefined) await toLocator(page, opts.target).first().screenshot(common);
+  else await page.screenshot({ ...common, fullPage: !!opts.fullPage });
 }
 
 async function installMocks(context, mocks) {
@@ -199,7 +202,7 @@ function storageInitScript(local, session, origin) {
   const toStr = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]));
   return {
     content: `(() => { const L = ${JSON.stringify(toStr(local))}; const S = ${JSON.stringify(toStr(session))}; const O = ${JSON.stringify(origin || '')};
-      try { if (O && location.origin !== O) return; const mark = '__web_test_seeded__';
+      try { if (O && location.origin !== O) return; const mark = '__webui_test_seeded__';
         if (!sessionStorage.getItem(mark)) { for (const k in L) localStorage.setItem(k, L[k]); for (const k in S) sessionStorage.setItem(k, S[k]); sessionStorage.setItem(mark, '1'); }
       } catch (e) {} })();`,
   };
@@ -211,7 +214,7 @@ function originOf(u) {
 
 async function runCase(browser, suite, run, opts) {
   const caseDir = path.join(opts.outDir, slug(suite.suite), slug(run.variant ? `${run.id}-${run.variant}` : run.id));
-  const result = { id: run.id, variant: run.variant, title: run.title, requirement: run.requirement, tags: run.tags, status: 'passed', steps: [], screenshots: [], error: null, durationMs: 0 };
+  const result = { id: run.id, variant: run.variant, title: run.title, requirement: run.requirement, tags: run.tags, status: 'passed', steps: [], screenshots: [], metrics: [], error: null, durationMs: 0 };
   const started = Date.now();
   if (run.skip) {
     result.status = 'skipped';
@@ -235,7 +238,7 @@ async function runCase(browser, suite, run, opts) {
     const file = path.join(caseDir, `${String(shotNo).padStart(2, '0')}-${slug(name)}.png`);
     await takeShot(page, file, o);
     const rel = path.relative(opts.outDir, file).split(path.sep).join('/');
-    result.screenshots.push({ name, file: rel });
+    result.screenshots.push({ name, file: rel, ...(o.explicit ? { explicit: true } : {}) });
     // 仕様書用の保存先。variants があるときは名前に variant を添えて上書きし合わないようにする
     const stable = run.variant ? `${slug(name)}.${slug(run.variant)}` : slug(name);
     if (o.path && opts.captureRoot) {
@@ -267,7 +270,25 @@ async function runCase(browser, suite, run, opts) {
       const t0 = Date.now();
       try {
         await runStep(page, step, ctx);
-        if (d.kind === 'screenshot') {
+        if (d.kind === 'goto' || d.kind === 'reload') {
+          // ページの読み込みにかかった時間（Navigation Timing）。check が evidence に残す
+          const ms = await page.evaluate(() => {
+            const n = performance.getEntriesByType('navigation')[0];
+            return n && n.loadEventEnd > 0 ? Math.round(n.loadEventEnd - n.startTime) : null;
+          }).catch(() => null);
+          if (ms !== null) {
+            const loads = result.metrics.filter((m) => m.label === 'ページの読み込み').length;
+            result.metrics.push({ name: loads ? `load-${loads + 1}` : 'load', label: 'ページの読み込み', value: ms, unit: 'ms' });
+          }
+        }
+        if (d.kind === 'measure') {
+          const v = typeof step.measure === 'string' ? { name: step.measure } : step.measure;
+          const prev = result.steps.slice(0, -1).filter((x) => !x.measure).slice(-(v.steps || 1));
+          const value = prev.reduce((sum, x) => sum + (x.durationMs || 0), 0);
+          sr.measure = true;
+          result.metrics.push({ name: v.name, value, unit: 'ms', ...(v.max ? { max: v.max } : {}) });
+          if (v.max && value > v.max) throw new Error(`「${v.name}」が ${value}ms かかり、目安の ${v.max}ms を超えました`);
+        } else if (d.kind === 'screenshot') {
           const v = step.screenshot;
           const o = typeof v === 'string' ? { name: v } : v;
           sr.screenshot = await shoot(page, o.name, { ...o, explicit: true });
@@ -295,6 +316,7 @@ async function runCase(browser, suite, run, opts) {
   }
   result.consoleErrors = consoleErrors;
   result.durationMs = Date.now() - started;
+  result.metrics.push({ name: 'time', label: 'ケース全体', value: result.durationMs, unit: 'ms' });
   return result;
 }
 

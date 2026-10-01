@@ -270,7 +270,9 @@ class LedgerOutcomeTests(AuditTestCase):
 
     def test_stats_reports_app_feed_without_run_records(self):
         st = self.make_store()
-        st.append_record({"id": "l1", "_epoch": NOW.timestamp(), "ts": "2026-09-16T05:00:00Z",
+        # 集計は今日から期間を決めるので、記録も今の時刻で書く（固定の日付だと月が変わると外れる）。
+        now = dt.datetime.now(dt.timezone.utc)
+        st.append_record({"id": "l1", "_epoch": now.timestamp(), "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                           "kind": "ledger", "tool": "agent-app", "workload": "chat",
                           "status": "done"})
         got = stats.aggregate_stats(st, "month")

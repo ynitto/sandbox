@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# web-test のインストーラ（Linux / macOS / WSL）。
+# webui-test のインストーラ（Linux / macOS / WSL）。
 #
-#   ./install.sh                 足りないものを入れて web-test コマンドを使えるようにする
+#   ./install.sh                 足りないものを入れて webui-test コマンドを使えるようにする
 #   ./install.sh --with-deps     Chromium が必要とする OS のライブラリも入れる（sudo を使う）
 #   ./install.sh --skip-browser  ブラウザを入れない（社内ミラーから別に入れるときなど）
 #   ./install.sh --check         入れたあと、同梱のサンプルでテストを 1 回動かして確かめる
 #
 # 入れるもの（すでにあれば使う）:
-#   - Node.js 18 以上。無い・古いときは公式の LTS を ~/.local/share/web-test/node に入れる（sudo 不要）
+#   - Node.js 18 以上。無い・古いときは公式の LTS を ~/.local/share/webui-test/node に入れる（sudo 不要）
 #   - npm パッケージ（playwright・@playwright/test・@playwright/cli・yaml）… このフォルダの node_modules
 #   - Playwright の Chromium
-#   - web-test コマンド … ~/.local/bin/web-test（PREFIX で変えられる）
+#   - webui-test コマンド … ~/.local/bin/webui-test（PREFIX で変えられる）
 set -euo pipefail
 
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="${WEB_TEST_HOME:-$HOME/.local/share/web-test}"
+DATA_DIR="${WEBUI_TEST_HOME:-$HOME/.local/share/webui-test}"
 BIN_DIR="${PREFIX:-$HOME/.local}/bin"
-NODE_MAJOR="${WEB_TEST_NODE_MAJOR:-22}"
+NODE_MAJOR="${WEBUI_TEST_NODE_MAJOR:-22}"
 WITH_DEPS=0
 SKIP_BROWSER=0
 CHECK=0
@@ -111,15 +111,15 @@ else
   fi
 fi
 
-# 4. web-test コマンド
+# 4. webui-test コマンド
 mkdir -p "$BIN_DIR"
-cat > "$BIN_DIR/web-test" <<EOF
+cat > "$BIN_DIR/webui-test" <<EOF
 #!/usr/bin/env bash
-# install.sh が作成。web-test 本体は $TOOL_DIR
-exec "$NODE" "$TOOL_DIR/bin/web-test.js" "\$@"
+# install.sh が作成。webui-test 本体は $TOOL_DIR
+exec "$NODE" "$TOOL_DIR/bin/webui-test.js" "\$@"
 EOF
-chmod +x "$BIN_DIR/web-test"
-say "web-test コマンドを置きました: $BIN_DIR/web-test"
+chmod +x "$BIN_DIR/webui-test"
+say "webui-test コマンドを置きました: $BIN_DIR/webui-test"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) warn "$BIN_DIR が PATH にありません。~/.bashrc などに次を足してください: export PATH=\"$BIN_DIR:\$PATH\"" ;;
@@ -127,11 +127,11 @@ esac
 
 # 5. エージェント CLI（テストケースを作るときに使う。入れ方は各製品の案内に従う）
 for cli in kiro-cli copilot; do
-  if command -v "$cli" >/dev/null 2>&1; then say "$cli: あり"; else warn "$cli が見つかりません（web-test generate で使うときに入れてください）"; fi
+  if command -v "$cli" >/dev/null 2>&1; then say "$cli: あり"; else warn "$cli が見つかりません（webui-test generate で使うときに入れてください）"; fi
 done
 
 # 6. 確かめる
-"$BIN_DIR/web-test" --help >/dev/null
+"$BIN_DIR/webui-test" --help >/dev/null
 if [ "$CHECK" = 1 ]; then
   say "同梱のサンプルでテストを動かします"
   port=38917
@@ -139,6 +139,6 @@ if [ "$CHECK" = 1 ]; then
   server=$!
   trap 'kill $server 2>/dev/null || true' EXIT
   sleep 1
-  "$BIN_DIR/web-test" run "$TOOL_DIR/examples/login.yaml" --base-url "http://localhost:$port" --out "$DATA_DIR/check-results"
+  "$BIN_DIR/webui-test" run "$TOOL_DIR/examples/login.yaml" --base-url "http://localhost:$port" --out "$DATA_DIR/check-results"
 fi
-say "できました。使い方: web-test --help"
+say "できました。使い方: webui-test --help"

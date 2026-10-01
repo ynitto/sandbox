@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const { loadFile, collectFiles } = require('./casefile');
 const { loadEnv } = require('./config');
 const { collect } = require('./context');
+const { withServer } = require('./serve');
 
 // このツールに入っている @playwright/test で、書き出したテストを動かす。
 // 書き出し先が別の場所でも '@playwright/test' を解決できるよう NODE_PATH にこのツールの node_modules を足す。
@@ -16,8 +17,8 @@ function runPlaywrightTest(outDir, extra, { executablePath, captureRoot, io }) {
   const env = {
     ...process.env,
     NODE_PATH: [nodeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
-    WEB_TEST_CAPTURE_ROOT: path.resolve(captureRoot || '.'),
-    ...(executablePath ? { WEB_TEST_EXECUTABLE_PATH: executablePath } : {}),
+    WEBUI_TEST_CAPTURE_ROOT: path.resolve(captureRoot || '.'),
+    ...(executablePath ? { WEBUI_TEST_EXECUTABLE_PATH: executablePath } : {}),
   };
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, 'test', '--config', path.join(outDir, 'playwright.config.ts'), ...extra], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -28,10 +29,10 @@ function runPlaywrightTest(outDir, extra, { executablePath, captureRoot, io }) {
   });
 }
 
-const USAGE = `web-test — 条件からテストケースを作り、Playwright で実行してスクリーンショット付きの結果を出す
+const USAGE = `webui-test — 条件からテストケースを作り、Playwright で実行してスクリーンショット付きの結果を出す
 
 使い方:
-  web-test generate "<条件>" -o tests/login.yaml [--agent kiro|copilot] [--url <最初に開くURL>]
+  webui-test generate "<条件>" -o tests/login.yaml [--agent kiro|copilot] [--url <最初に開くURL>]
       エージェントに条件を渡してテストケースファイルを作る。--url を渡すと、その画面の要素一覧も渡す
         -f, --conditions-file <file>  条件をファイルから読む
         --agent-cmd "<コマンド>"       kiro / copilot 以外の CLI（依頼ファイルを読む指示を最後の引数で渡す）
@@ -42,7 +43,7 @@ const USAGE = `web-test — 条件からテストケースを作り、Playwright
         --explore                     エージェントに playwright-cli で画面を操作・探索させてから書かせる
                                       （画面をまたぐ条件向け。--url が要る）
         --verbose                     エージェントの出力をそのまま表示する
-  web-test run <ファイルかディレクトリ>... [--base-url <url>] [--out <dir>]
+  webui-test run <ファイルかディレクトリ>... [--base-url <url>] [--out <dir>]
       テストケースを実行し、<out>/<日時>/report.html・report.md・results.json とスクリーンショットを書く
         --workers <n>                 同時に動かすケース数（既定 1）
         --only <ID,...>               指定した ID（前方一致）のケースだけ
@@ -51,21 +52,24 @@ const USAGE = `web-test — 条件からテストケースを作り、Playwright
         --variant <name,...>          variants のうち指定したものだけ
         --headed                      ブラウザを表示して動かす
         --source <dir>                仕様・実装の置き場。実行記録にそのコミットを残す（繰り返し可）
-  web-test capture <ファイル>... --out <dir> [--base-url <url>]
+  webui-test capture <ファイル>... --out <dir> [--base-url <url>]
       仕様書用。screenshot ステップの画像だけを <dir>/<name>.png に書き出す（レポートは作らない）
-  web-test export <ファイルかディレクトリ>... --out <dir>
+  webui-test export <ファイルかディレクトリ>... --out <dir>
       Playwright Test の .spec.ts と playwright.config.ts を書き出す（npx playwright test で動く）
-  web-test pwtest <ファイルかディレクトリ>... [--out <dir>] [-- <playwright test の引数>]
-      書き出してそのまま npx playwright test で動かす（既定の書き出し先 web-test-results/playwright）
-  web-test validate <ファイルかディレクトリ>...   書式を検査する
-  web-test prompt "<条件>" [--url <url>]           エージェントへ渡す依頼文を表示する（チャットに貼る用）
-  web-test snapshot <url>                          画面の要素一覧（アクセシビリティツリー）を表示する
-  web-test format                                  テストケースファイルの書式を表示する
+  webui-test pwtest <ファイルかディレクトリ>... [--out <dir>] [-- <playwright test の引数>]
+      書き出してそのまま npx playwright test で動かす（既定の書き出し先 webui-test-results/playwright）
+  webui-test check [<ファイルかディレクトリ>...]
+      アプリをローカルで起動して e2e を動かし、スクリーンショットを前回の画面と比べる
+      （webui-test.config.yaml の check と serve を使う）。振る舞い・時間・画面を webui-test-results/evidence.json に書く
+  webui-test validate <ファイルかディレクトリ>...   書式を検査する
+  webui-test prompt "<条件>" [--url <url>]           エージェントへ渡す依頼文を表示する（チャットに貼る用）
+  webui-test snapshot <url>                          画面の要素一覧（アクセシビリティツリー）を表示する
+  webui-test format                                  テストケースファイルの書式を表示する
 
 共通:
-  --env <name>              web-test.config.yaml の環境（接続先・認証・事前の値）を選ぶ
-  --config <file>           環境の設定ファイル（既定はカレントディレクトリの web-test.config.yaml）
-  --executable-path <path>  使う Chromium の実行ファイル（環境変数 WEB_TEST_EXECUTABLE_PATH でも可）
+  --env <name>              webui-test.config.yaml の環境（接続先・認証・事前の値）を選ぶ
+  --config <file>           環境の設定ファイル（既定はカレントディレクトリの webui-test.config.yaml）
+  --executable-path <path>  使う Chromium の実行ファイル（環境変数 WEBUI_TEST_EXECUTABLE_PATH でも可）
 終了コード: 0 = すべて合格 / 1 = 不合格あり / 2 = 使い方・書式の誤り
 `;
 
@@ -101,6 +105,16 @@ function timestamp() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// 既定の結果の置き場。中に「すべて無視」の .gitignore を置き、リポジトリの変更に数えさせない
+// （codd-statemachine の「計画に無いファイルを変えていないか」の検査を、結果のファイルで落とさない）。
+function resultsBase(dir) {
+  const base = path.resolve(dir || '.', 'webui-test-results');
+  fs.mkdirSync(base, { recursive: true });
+  const ignore = path.join(base, '.gitignore');
+  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, '# webui-test の実行結果（コミットしない）\n*\n');
+  return base;
 }
 
 function loadSuites(inputs, log) {
@@ -151,7 +165,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
   }
   const { values, positionals } = parsed;
   const [cmd, ...rest] = positionals;
-  const executablePath = values['executable-path'] || process.env.WEB_TEST_EXECUTABLE_PATH || undefined;
+  const executablePath = values['executable-path'] || process.env.WEBUI_TEST_EXECUTABLE_PATH || undefined;
   if (!cmd || values.help || cmd === 'help') {
     say(USAGE);
     return cmd || values.help ? 0 : 2;
@@ -199,7 +213,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           log: warn,
         });
         say(`作成しました: ${r.file}（${r.cases} ケース）`);
-        say(`実行: web-test run ${r.file}`);
+        say(`実行: webui-test run ${r.file}`);
         return 0;
       }
       case 'run':
@@ -210,10 +224,10 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
         if (isCapture && !values.out) throw usageError('画像の書き出し先を --out <ディレクトリ> で指定してください');
         if (values.screenshot && !['step', 'failure', 'off'].includes(values.screenshot)) throw usageError('--screenshot は step / failure / off のどれかです');
         const outDir = isCapture
-          ? fs.mkdtempSync(path.join(require('os').tmpdir(), 'web-test-capture-'))
-          : path.resolve(values.out || 'web-test-results', timestamp());
+          ? fs.mkdtempSync(path.join(require('os').tmpdir(), 'webui-test-capture-'))
+          : path.join(values.out ? path.resolve(values.out) : resultsBase(), timestamp());
         const env = loadEnv({ configPath: values.config, envName: values.env });
-        const report = await runSuites(suites, {
+        const report = await withServer(env.serve, () => runSuites(suites, {
           outDir,
           env,
           variants: list(values.variant),
@@ -226,7 +240,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           captureDir: isCapture ? path.resolve(values.out) : null,
           executablePath,
           onCase: (s, c) => warn(`${c.status === 'passed' ? '✓' : c.status === 'skipped' ? '-' : '✗'} ${s.suite} ${c.variant ? `${c.id} [${c.variant}]` : c.id} ${c.title}${c.error ? `\n    ${c.error}` : ''}`),
-        });
+        }), { log: warn });
         report.context = collect({ argv, env, files: suites.map((x) => x.file), sources: values.source || [] });
         const { summary } = report;
         if (isCapture) {
@@ -248,12 +262,27 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
         }
         return summary.failed ? 1 : 0;
       }
+      case 'check': {
+        const env = loadEnv({ configPath: values.config, envName: values.env });
+        const outDir = path.join(values.out ? path.resolve(values.out) : resultsBase(env.dir), `check-${timestamp()}`);
+        return await require('./check').check({
+          env,
+          cases: rest,
+          outDir,
+          latestDir: resultsBase(env.dir),
+          workers: values.workers ? Number(values.workers) : 1,
+          executablePath,
+          loadSuites,
+          argv,
+          io,
+        });
+      }
       case 'export':
       case 'pwtest': {
         const suites = loadSuites(rest);
         if (cmd === 'export' && !values.out) throw usageError('書き出し先を --out <ディレクトリ> で指定してください');
         const env = loadEnv({ configPath: values.config, envName: values.env });
-        const outDir = path.resolve(values.out || path.join('web-test-results', 'playwright'));
+        const outDir = values.out ? path.resolve(values.out) : path.join(resultsBase(), 'playwright');
         const { exportSuites } = require('./export');
         const files = exportSuites(suites, outDir, { env, baseUrl: values['base-url'], screenshot: values.screenshot });
         if (cmd === 'export') {
@@ -261,7 +290,8 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           say(`実行: npx playwright test --config ${path.relative(process.cwd(), path.join(outDir, 'playwright.config.ts'))}`);
           return 0;
         }
-        const code = await runPlaywrightTest(outDir, passthrough, { executablePath, captureRoot: values['capture-root'], io });
+        const captureRoot = values['capture-root'] || '.';
+        const code = await withServer(env.serve, () => runPlaywrightTest(outDir, passthrough, { executablePath, captureRoot, io }), { log: warn });
         say(`レポート: ${path.join(outDir, 'playwright-report', 'index.html')}（npx playwright show-report ${path.relative(process.cwd(), path.join(outDir, 'playwright-report'))}）`);
         return code === 0 ? 0 : 1;
       }
