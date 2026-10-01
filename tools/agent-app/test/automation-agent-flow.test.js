@@ -337,14 +337,37 @@ test('失敗した工程の理由と種類・未実行の工程・履歴の手�
   const run = agentFlow.readRun(root, 'app-failed');
   assert.strictEqual(run.state, 'failed');
   assert.strictEqual(run.nodes[0].label, '作る工程');
-  assert.deepStrictEqual(run.nodes[1].error, { cls: 'content', group: 'content', message: 'CHANGELOG.md がありません' });
+  assert.deepStrictEqual(run.nodes[1].error, { cls: 'content', group: 'content', message: 'CHANGELOG.md がありません', remedy: '' });
   assert.strictEqual(run.nodes[2].state, 'skipped', '前の工程が失敗して動かなかった工程は未実行（回答待ちではない）');
   const row = agentFlow.listRuns(root).find((item) => item.runId === 'app-failed');
   assert.deepStrictEqual(row.failedNode, { id: 'check', label: '', cls: 'content', message: 'CHANGELOG.md がありません' });
 
   failedRun(bus, logs, 'app-auth', root, '[agent-error:auth] claude 失敗 (rc=1): 認証に失敗しています（再ログインが必要です）\nnot authenticated', {});
   const auth = agentFlow.readRun(root, 'app-auth').nodes[1].error;
-  assert.deepStrictEqual(auth, { cls: 'auth', group: 'setup', message: '認証に失敗しています（再ログインが必要です）' });
+  assert.deepStrictEqual(auth, { cls: 'auth', group: 'setup', message: '認証に失敗しています（再ログインが必要です）', remedy: 'AI にログインし直してから再実行してください' });
+});
+
+// 直すまで同じ失敗になるもの（setup）は、直し方の 1 行を main が分類と一緒に返す。画面はエラー文から推し量らない。
+test('認証・環境・上限・停止の指示の失敗には、直し方の 1 行が付く（一時的な失敗・中身の失敗には付かない）', (t) => {
+  const { bus, logs } = withBus(t);
+  const root = '/repo';
+  const cases = {
+    auth: 'ログインし直して', env: '接続先に届くか', quota: 'レート制限', control: '止める指示',
+    transient: '', integration: '', content: '',
+  };
+  for (const [cls, hint] of Object.entries(cases)) {
+    failedRun(bus, logs, `app-${cls}`, root, `[agent-error:${cls}] 失敗しました`, { error_class: cls });
+    const error = agentFlow.readRun(root, `app-${cls}`).nodes[1].error;
+    assert.strictEqual(error.cls, cls);
+    if (hint) {
+      assert.strictEqual(error.group, 'setup', cls);
+      assert.ok(error.remedy.includes(hint), `${cls}: ${error.remedy}`);
+      assert.ok(!/agent-error|error_class|control\b/.test(error.remedy), `${cls}: 内部の綴りを出さない`);
+    } else {
+      assert.notStrictEqual(error.group, 'setup', cls);
+      assert.strictEqual(error.remedy, '', cls);
+    }
+  }
 });
 
 test('続きから再実行は失敗した実行を同じ run-id で起こし、消える前の失敗を控える', async (t) => {

@@ -343,6 +343,14 @@ function failureOf(meta, state) {
 // [agent-error:…] タグ）を、画面が次の操作を選べる 3 つにまとめる:
 //   retry … 一時的（待てば通る） / setup … 認証・環境・上限（人が直すまで同じ失敗） / content … 工程の中身
 const ERROR_GROUP = { transient: 'retry', integration: 'retry', auth: 'setup', env: 'setup', quota: 'setup', control: 'setup' };
+// setup の失敗は、同じ操作を繰り返しても同じ失敗になる。画面は再実行を勧めず、利用者が次に直すものを 1 行で出す。
+// 文言は renderer がエラー文から推し量らないよう、分類と一緒にここで決める（理由の 1 行と重ねないよう、直す操作だけを書く）。
+const SETUP_REMEDY = {
+  auth: 'AI にログインし直してから再実行してください',
+  env: '必要なコマンドが入っているか、接続先に届くかを確かめてから再実行してください',
+  quota: '利用上限・レート制限を見直すか、解除されてから再実行してください',
+  control: '実行を止める指示（一時停止・停止）を解除してから再実行してください',
+};
 function nodeErrorOf(result) {
   if (!result || result.status !== 'failed') return null;
   const output = String(result.output || '');
@@ -351,7 +359,8 @@ function nodeErrorOf(result) {
   const message = output.split('\n')
     .map((line) => line.replace(/\[[^\]]+\]\s*/g, '').replace(/^verify=fail:?\s*/i, '').replace(/^\S+ 失敗 \(rc=-?\d+\):?\s*/, '').trim())
     .find(Boolean) || '理由は記録されていません';
-  return { cls, group: ERROR_GROUP[cls] || 'content', message: message.slice(0, 300) };
+  const group = ERROR_GROUP[cls] || 'content';
+  return { cls, group, message: message.slice(0, 300), remedy: group === 'setup' ? SETUP_REMEDY[cls] : '' };
 }
 
 function deliveryOf(nodes, finalJson) {
