@@ -300,6 +300,28 @@ python3 .statemachine/codd/codd.py show --phase apply
 
 確認は会話の中で待つ。会話で動かすことを前提にしており、人の返事を受け取れない無人の実行ではここで止まる。
 
+## 画面のあるアプリ（webui-test と組む）
+
+実装・テスト・設計書をそろえるには、動かして確かめる検査も要る。画面のあるアプリでは
+[webui-test](../webui-test/README.md) の `webui-test check` を `check` にすると、変えるたびに次を確かめる。
+
+- 単体テスト
+- アプリをローカルで起動しての e2e テスト
+- 仕様書に貼った画面の画像が、今の画面と同じか
+- 仕様書が貼っている画像が実在するか
+
+```bash
+python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs --check "webui-test check"
+```
+
+置き先に `webui-test.config.yaml`（`check` を書いたもの）があれば、`--check` を渡さなくても `webui-test check` を書く。
+ほかの検査は `--check "npm test"` のように渡す（`codd.json` の `check` を直してもよい）。
+
+- e2e のケースファイルの先頭に `# coherence: doc=docs:docs/login.md` のように仕様書を書いておくと、仕様書を変える計画は
+  ケースファイルも扱わないと通らない（[パスのつながり](#パスのつながり)）
+- 画面が変わる変更では、撮り直す仕様書の画像も計画に挙げる。変えたあと `webui-test check --update` で撮り直す。
+  挙げ忘れたときは、変えたあとの検査で止まり、計画を直すかを訊かれる
+
 ## graphify を使う
 
 graphify が入っていれば、探すたびにリポジトリの今の中身（HEAD と作業中の変更）を控えた印と比べ、

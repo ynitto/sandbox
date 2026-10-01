@@ -611,6 +611,26 @@ class CoddTest(unittest.TestCase):
         self.assertFalse((other / ".kiro").exists())
         self.assertFalse((other / ".github").exists())
 
+    def test_install_sets_check_and_picks_up_webui_test(self) -> None:
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
+        # webui-test の設定に check があれば、変えたあとの検査に webui-test check を使う。
+        (self.impl / "webui-test.config.yaml").write_text(
+            "serve: { command: npm start, url: http://localhost:3000 }\ncheck:\n  unit: npm test\n  cases: [tests/e2e]\n"
+            "envs: { local: {} }\n", encoding="utf-8")
+        install.install(self.impl, None, None, discover=False)
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["webui-test", "check"])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("変えたあとの検査コマンド", r.stdout)
+        self.assertIn("自分: webui-test check", r.stdout)
+        # 手で書いた検査は上書きしない。--check で書き換え、"" で消す。
+        install.install(self.impl, None, None, discover=False, check="python3 -m pytest -q")
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["python3", "-m", "pytest", "-q"])
+        install.install(self.impl, None, None, discover=False)
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["python3", "-m", "pytest", "-q"])
+        install.install(self.impl, None, None, discover=False, check="")
+        self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
+
     def test_verify_apply_needs_a_verified_plan(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-apply")

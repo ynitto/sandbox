@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 'use strict';
-// テスト用のエージェント CLI の代役。依頼ファイル（WEB_TEST_PROMPT_FILE）を読み、
+// テスト用のエージェント CLI の代役。依頼ファイル（WEBUI_TEST_PROMPT_FILE）を読み、
 // FAKE_AGENT_MODE に応じた YAML を返す。依頼の写しを FAKE_AGENT_LOG に追記する。
 const fs = require('fs');
-const prompt = fs.readFileSync(process.env.WEB_TEST_PROMPT_FILE, 'utf8');
+const prompt = fs.readFileSync(process.env.WEBUI_TEST_PROMPT_FILE, 'utf8');
 if (process.env.FAKE_AGENT_LOG) fs.appendFileSync(process.env.FAKE_AGENT_LOG, prompt + '\n=====\n');
 const good = `suite: 生成したスイート
 cases:
@@ -24,7 +24,7 @@ cases:
 // explore: 渡された playwright-cli で画面を見て、見えた要素名を記録する（本物のエージェントの代わり）
 if (process.env.FAKE_AGENT_MODE === 'explore') {
   const { execSync } = require('child_process');
-  const cmd = process.env.WEB_TEST_PLAYWRIGHT_CLI;
+  const cmd = process.env.WEBUI_TEST_PLAYWRIGHT_CLI;
   if (!cmd || !prompt.includes(cmd)) { process.stderr.write('explore の指示がありません'); process.exit(3); }
   const snap = execSync(`${cmd} snapshot`, { encoding: 'utf8' });
   if (process.env.FAKE_AGENT_LOG) fs.appendFileSync(process.env.FAKE_AGENT_LOG, `SNAPSHOT:\n${snap}\n=====\n`);

@@ -135,6 +135,9 @@ class CoddError(Exception):
 # ---------------------------------------------------------------- 下回り
 
 def run(argv: list[str], cwd: Path, timeout: int, env: dict | None = None) -> tuple[int, str]:
+    if os.name == "nt" and argv:
+        # Windows では npm・webui-test などが .cmd なので、PATHEXT で探してから起動する。
+        argv = [shutil.which(argv[0]) or argv[0], *argv[1:]]
     try:
         proc = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=timeout, env=env)
@@ -674,6 +677,12 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
                       + (f"。道具: {tool_words(r.apply_tools)}" if r.apply_tools else ""))
     print(f"スキルは `python3 {MACHINE_REL}/codd.py skill 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
     print(f"1 回で変えるファイルの上限: {ctx.max_files}（超えるぶんは計画の「今回やらないこと」へ）")
+    checks = [("自分", ctx.config.get("check")), *((r.name, r.check) for r in ctx.refs)]
+    if any(c for _, c in checks):
+        print("変えたあとの検査コマンド（作り直すファイルがあれば、それも計画に挙げる）:")
+        for who, c in checks:
+            if c:
+                print(f"  - {who}: {' '.join(c)}")
     if len(ctx.refs) > 1:
         print("計画の根拠は `名前:パス` で書く（例: " + f"{ctx.refs[0].name}:docs/api.md）")
     return 0

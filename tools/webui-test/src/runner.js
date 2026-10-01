@@ -6,12 +6,13 @@ const fs = require('fs');
 const path = require('path');
 const { ACTION_STEPS, stepKind } = require('./casefile');
 const { planSuite } = require('./plan');
+const { compareImages } = require('./docimages');
 
 function loadPlaywright() {
   try {
     return require('playwright');
   } catch (e) {
-    throw new Error('playwright が見つかりません。tools/web-test で `npm install` と `npx playwright install chromium` を実行してください');
+    throw new Error('playwright が見つかりません。tools/webui-test で `npm install` と `npx playwright install chromium` を実行してください');
   }
 }
 
@@ -167,8 +168,10 @@ async function runStep(page, step, ctx) {
 async function takeShot(page, file, opts = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const mask = (opts.mask || []).map((m) => toLocator(page, m));
-  if (opts.target !== undefined) await toLocator(page, opts.target).first().screenshot({ path: file, mask });
-  else await page.screenshot({ path: file, fullPage: !!opts.fullPage, mask });
+  // 動きと点滅するカーソルを止めて撮る（同じ画面なら同じ画像になるように）
+  const common = { path: file, mask, animations: 'disabled', caret: 'hide' };
+  if (opts.target !== undefined) await toLocator(page, opts.target).first().screenshot(common);
+  else await page.screenshot({ ...common, fullPage: !!opts.fullPage });
 }
 
 async function installMocks(context, mocks) {
@@ -199,7 +202,7 @@ function storageInitScript(local, session, origin) {
   const toStr = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]));
   return {
     content: `(() => { const L = ${JSON.stringify(toStr(local))}; const S = ${JSON.stringify(toStr(session))}; const O = ${JSON.stringify(origin || '')};
-      try { if (O && location.origin !== O) return; const mark = '__web_test_seeded__';
+      try { if (O && location.origin !== O) return; const mark = '__webui_test_seeded__';
         if (!sessionStorage.getItem(mark)) { for (const k in L) localStorage.setItem(k, L[k]); for (const k in S) sessionStorage.setItem(k, S[k]); sessionStorage.setItem(mark, '1'); }
       } catch (e) {} })();`,
   };
@@ -238,10 +241,32 @@ async function runCase(browser, suite, run, opts) {
     result.screenshots.push({ name, file: rel });
     // 仕様書用の保存先。variants があるときは名前に variant を添えて上書きし合わないようにする
     const stable = run.variant ? `${slug(name)}.${slug(run.variant)}` : slug(name);
-    if (o.path && opts.captureRoot) {
+    if (o.path && opts.captureRoot && opts.docImages !== 'off') {
       const dest = path.resolve(opts.captureRoot, run.variant ? o.path.replace(/(\.png)?$/i, `.${slug(run.variant)}.png`) : o.path);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.copyFileSync(file, dest);
+      const entry = { name, path: dest, actual: rel };
+      if (opts.docImages === 'compare') {
+        // 仕様書の画像は書き換えず、今の画面と同じかだけを見る（webui-test check）
+        if (!fs.existsSync(dest)) entry.status = 'missing';
+        else {
+          const c = compareImages(fs.readFileSync(file), fs.readFileSync(dest), { maxDiffRatio: opts.maxDiffRatio });
+          entry.status = c.same ? 'same' : 'changed';
+          if (!c.same) {
+            entry.ratio = c.ratio;
+            entry.message = c.message;
+            if (c.diff) {
+              const diffFile = file.replace(/\.png$/, '.diff.png');
+              fs.writeFileSync(diffFile, c.diff);
+              entry.diff = path.relative(opts.outDir, diffFile).split(path.sep).join('/');
+            }
+          }
+        }
+      } else {
+        const prev = fs.existsSync(dest) ? fs.readFileSync(dest) : null;
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(file, dest);
+        entry.status = !prev ? 'created' : compareImages(fs.readFileSync(file), prev, { maxDiffRatio: opts.maxDiffRatio }).same ? 'same' : 'updated';
+      }
+      result.docImages = (result.docImages || []).concat(entry);
     }
     if (opts.captureDir && o.explicit) {
       const dest = path.join(opts.captureDir, `${stable}.png`);
@@ -299,7 +324,8 @@ async function runCase(browser, suite, run, opts) {
 }
 
 // suites を実行して結果を返す。
-// opts: { outDir, baseUrl, env, headed, workers, screenshot, captureDir, captureRoot, only, variants, executablePath, onCase }
+// opts: { outDir, baseUrl, env, headed, workers, screenshot, captureDir, captureRoot, docImages, maxDiffRatio, only, variants, executablePath, onCase }
+// docImages: copy（既定。path: へ写す）/ compare（写さずに今の画面と比べる）/ off
 async function runSuites(suites, opts) {
   const pw = loadPlaywright();
   fs.mkdirSync(opts.outDir, { recursive: true });

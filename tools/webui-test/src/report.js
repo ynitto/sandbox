@@ -12,6 +12,12 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+const DOC_LABEL = { same: '今の画面と同じ', changed: '今の画面と違う', missing: 'まだ無い', created: '新しく置いた', updated: '撮り直した' };
+
+function docImageLine(i) {
+  return `${i.path} — ${DOC_LABEL[i.status] || i.status}${i.message ? `（${i.message}）` : ''}`;
+}
+
 function caseLabel(c) {
   return c.variant ? `${c.id} [${c.variant}]` : c.id;
 }
@@ -19,7 +25,7 @@ function caseLabel(c) {
 // 実行記録（コマンド・版・参照元のコミット）を行の配列にする
 function contextLines(ctx) {
   if (!ctx) return [];
-  const lines = [`コマンド: ${ctx.command}`, `環境: ${ctx.env ? ctx.env.name : 'local'}${ctx.env && ctx.env.config ? `（${ctx.env.config}）` : ''}`, `Node ${ctx.node} ・ Playwright ${ctx.playwright || '不明'} ・ web-test ${ctx.webTest} ・ ${ctx.os}`];
+  const lines = [`コマンド: ${ctx.command}`, `環境: ${ctx.env ? ctx.env.name : 'local'}${ctx.env && ctx.env.config ? `（${ctx.env.config}）` : ''}`, `Node ${ctx.node} ・ Playwright ${ctx.playwright || '不明'} ・ webui-test ${ctx.webuiTest} ・ ${ctx.os}`];
   for (const r of ctx.repos || []) lines.push(`${r.roles.join('・')}: ${r.root} @ ${r.sha ? r.sha.slice(0, 12) : '不明'}${r.branch ? ` (${r.branch})` : ''}${r.dirty ? ' ＋未コミットの変更' : ''}`);
   for (const f of ctx.files || []) lines.push(`ケース: ${f.path} sha256:${f.sha256 ? f.sha256.slice(0, 12) : '不明'}`);
   return lines;
@@ -37,6 +43,8 @@ function toMarkdown(report) {
       lines.push(`| ${caseLabel(c)} | ${MARK[c.status]} ${LABEL[c.status]} | ${c.title.replace(/\|/g, '\\|')} | ${c.requirement || ''} | ${(c.error || '').replace(/\|/g, '\\|')} |`);
     }
     lines.push('');
+    const images = s.cases.flatMap((c) => c.docImages || []);
+    if (images.length) lines.push('仕様書の画像:', '', ...images.map((i) => `- ${docImageLine(i)}${i.diff ? ` [差分](${i.diff})` : ''}`), '');
     for (const c of s.cases) {
       if (!c.screenshots || !c.screenshots.length) continue;
       lines.push(`### ${caseLabel(c)} ${c.title}`, '');
@@ -64,6 +72,7 @@ function toHtml(report) {
         <summary><span class="badge ${c.status}">${LABEL[c.status]}</span><b>${esc(caseLabel(c))}</b> ${esc(c.title)}${c.requirement ? ` <span class="req">${esc(c.requirement)}</span>` : ''}<span class="dur">${(c.durationMs / 1000).toFixed(1)}s</span></summary>
         ${c.error ? `<div class="err">${esc(c.error)}</div>` : ''}
         ${consoleErr}
+        ${(c.docImages || []).length ? `<ul class="docimg">${c.docImages.map((i) => `<li class="${i.status}">仕様書の画像 ${esc(docImageLine(i))}${i.diff ? ` <a href="${esc(i.diff)}" target="_blank">差分</a>` : ''}</li>`).join('')}</ul>` : ''}
         <ol class="steps">${steps}</ol>
       </details>`;
     }).join('');
@@ -91,6 +100,7 @@ h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:24px 0 2px}.sub{color:
 .step.failed code{color:var(--ng)}.note{color:var(--sub)}
 .step img{display:block;max-width:min(100%,560px);max-height:360px;margin:6px 0 0 2em;border:1px solid var(--line);border-radius:4px}
 .context{margin:0 0 12px;color:var(--sub)}.context ul{margin:6px 0;padding-left:20px;font-size:12px;overflow-wrap:anywhere}
+.docimg{margin:0 0 8px;padding-left:20px;color:var(--sub)}.docimg .changed,.docimg .missing{color:var(--ng)}
 .console pre{font-size:12px;white-space:pre-wrap}
 </style></head><body><main>
 <h1>テスト結果</h1><p class="sub">${esc(new Date(report.startedAt).toLocaleString('ja-JP'))}</p>

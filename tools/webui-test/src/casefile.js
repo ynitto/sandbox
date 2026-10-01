@@ -45,7 +45,7 @@ function loadFile(file) {
   return { suite, errors: errors.map((e) => `${file}: ${e}`) };
 }
 
-// ディレクトリなら中の *.yaml / *.yml / *.json（web-test-results などは除く）を名前順に集める
+// ディレクトリなら中の *.yaml / *.yml / *.json（webui-test-results などは除く）を名前順に集める
 function collectFiles(inputs) {
   const out = [];
   for (const input of inputs) {
@@ -53,7 +53,7 @@ function collectFiles(inputs) {
     if (stat.isDirectory()) {
       for (const name of fs.readdirSync(input).sort()) {
         const p = path.join(input, name);
-        if (name.startsWith('.') || name === 'node_modules' || name === 'web-test-results' || /^web-test\.config\.(ya?ml|json)$/.test(name)) continue;
+        if (name.startsWith('.') || name === 'node_modules' || name === 'webui-test-results' || /^webui-test\.config\.(ya?ml|json)$/.test(name)) continue;
         if (fs.statSync(p).isDirectory()) out.push(...collectFiles([p]));
         else if (/\.(ya?ml|json)$/i.test(name)) out.push(p);
       }

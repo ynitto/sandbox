@@ -1,17 +1,17 @@
 {
-  "name": "web-test",
-  "version": "0.1.0",
+  "name": "webui-test",
+  "version": "0.2.0",
   "description": "条件からテストケースファイルを作り（エージェント経由）、Playwright で実行してスクリーンショット付きの結果を出す Web アプリのテストツール",
   "author": "sandbox",
   "license": "MIT",
   "bin": {
-    "web-test": "bin/web-test.js"
+    "webui-test": "bin/webui-test.js"
   },
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/casefile.test.js test/generate.test.js test/runner.test.js test/variants-env.test.js test/export.test.js test/install.test.js"
+    "test": "node --test test/casefile.test.js test/generate.test.js test/runner.test.js test/variants-env.test.js test/export.test.js test/install.test.js test/check.test.js"
   },
   "dependencies": {
     "@playwright/test": "^1.56.0",
