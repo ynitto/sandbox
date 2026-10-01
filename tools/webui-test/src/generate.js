@@ -8,6 +8,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const YAML = require('yaml');
 const { normalize } = require('./casefile');
+const { initState, loadState } = require('./probe');
 
 const FORMAT_REFERENCE = fs.readFileSync(path.join(__dirname, 'format-reference.md'), 'utf8');
 
@@ -85,6 +86,17 @@ function buildPrompt({ conditions, url, pageInfo, existing, baseUrl, feedback, e
       '- 条件に出てくる画面まで実際に進み、各画面で snapshot を取ってから、そこで見た役割と名前でケースを書く。ref（e12 など）は YAML に書かない。',
       '- 削除・購入・送信など、取り消せない操作は条件で求められていない限り実行しない。',
       '- ブラウザは閉じなくてよい（webui-test が閉じる）。');
+    if (explore.probe) {
+      parts.push('', '## 状態を変える操作の前に確かめる',
+        'クリック・入力・選択・チェック・Enter での送信は、直前に対象を確かめてから行う。確かめていない操作はこのコマンドが断る。',
+        `- 確かめる: \`${explore.command} probe --role button --name "保存"\`（ほかに --label / --text / --placeholder / --test-id / --exact）`,
+        '  - 返ってきた JSON の ready が true（一致が 1 つ・見えている・押せる）のときだけ、その probeId で操作する',
+        '  - matches が 2 以上なら役割・名前・exact で 1 つに絞り直す。見えない・押せない対象は操作しない',
+        `- 操作する: \`${explore.command} click --probe probe-0001\` / \`fill --probe probe-0002 "文字"\` / \`select --probe probe-0003 値\` / \`check --probe probe-0004\` / \`press Enter --probe probe-0005\``,
+        '- 1 回操作するか画面を移ると、それまでの probe は使えない。次の操作の直前にもう一度 probe する',
+        `- テストで確かめたいことに気づいたら残す: \`${explore.command} observe "保存すると「保存しました」と出る"\``,
+        '- YAML の対象には、ready になった probe と同じ指定（role と name など）を書く。');
+    }
   }
   if (existing) parts.push('', '## 今あるテストケースファイル（これを直す・足す）', '```yaml', existing.trim(), '```');
   if (feedback) parts.push('', '## 前回の出力の問題（直して出し直してください）', feedback);
@@ -214,10 +226,21 @@ async function generate(opts) {
   const retries = opts.retries ?? 1;
   let feedback = null;
   let explore = null;
+  let probe = null;
+  const probeResult = () => (probe ? { evidenceDir: probe.evidenceDir, evidenceFile: path.join(probe.evidenceDir, 'explore-evidence.jsonl'), stats: loadState(probe.state).stats } : undefined);
   try {
+    if (opts.probeBeforeAct && !opts.explore) throw new Error('--probe-before-act は --explore と一緒に使います');
     if (opts.explore) {
       if (!opts.url) throw new Error('--explore には --url（最初に開くページ）が要ります');
       explore = await openExploreSession(opts.url, workDir, opts);
+      if (opts.probeBeforeAct) {
+        // エージェントには playwright-cli の代わりに見張り役（webui-test browse）を渡す
+        probe = { state: path.join(workDir, 'probe-state.json'), evidenceDir: opts.evidenceDir || path.resolve(opts.cwd || process.cwd(), 'webui-test-results', `explore-${Date.now().toString(36)}`) };
+        initState(probe.state);
+        fs.mkdirSync(probe.evidenceDir, { recursive: true });
+        const guard = [process.execPath, path.join(__dirname, '..', 'bin', 'webui-test.js'), 'browse', `--session=${explore.session}`, `--state=${probe.state}`, `--evidence=${probe.evidenceDir}`];
+        explore = { ...explore, command: guard.map(quoteArg).join(' '), probe: true };
+      }
       opts = { ...opts, exploreEnv: { WEBUI_TEST_PLAYWRIGHT_CLI: explore.command } };
     }
     for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
@@ -244,9 +267,12 @@ async function generate(opts) {
       const header = `# webui-test generate で作成（${new Date().toISOString()}）\n# 条件: ${opts.conditions.trim().split('\n').join('\n#       ')}\n`;
       fs.mkdirSync(path.dirname(path.resolve(opts.outFile)), { recursive: true });
       fs.writeFileSync(opts.outFile, header + got.text);
-      return { file: opts.outFile, cases: got.data.cases.length, attempts: attempt };
+      return { file: opts.outFile, cases: got.data.cases.length, attempts: attempt, probe: probeResult() };
     }
-    throw new Error(`エージェントの出力が書式に合いませんでした:\n${feedback}`);
+    const err = new Error(`エージェントの出力が書式に合いませんでした:\n${feedback}`);
+    err.attempts = retries + 1;
+    err.probe = probeResult();
+    throw err;
   } finally {
     if (explore) await explore.close();
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -254,4 +280,4 @@ async function generate(opts) {
   }
 }
 
-module.exports = { generate, findPlaywrightCli, buildPrompt, extractYaml, snapshotPage, splitCommand, agentCommand, FORMAT_REFERENCE, AGENTS };
+module.exports = { generate, findPlaywrightCli, openExploreSession, buildPrompt, extractYaml, snapshotPage, splitCommand, agentCommand, FORMAT_REFERENCE, AGENTS };

@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### webui-test: 探索で状態を変える操作の前に対象を確かめる `--probe-before-act`（webui-test 0.3.0）
+
+- **`generate --explore --probe-before-act` で、エージェントは対象を確かめてからでないと操作できない。** クリック・入力・選択・
+  チェック・Enter での送信の前に `probe` で「一致が 1 つ・見えている・押せる」を確かめ、その ID を付けて操作する。
+  確かめていない操作・古い確認（そのあとに操作や画面遷移をした、アプリが要素を作り直した、位置や属性が変わった）・
+  1 つに決まらない／隠れた／押せない対象への操作は、依頼文に頼らず `webui-test browse` が断る。付けなければ `--explore` は今までどおり
+- **確かめた記録を残す。** `webui-test-results/explore-<日時>/explore-evidence.jsonl` に、確かめた対象・行った操作・
+  エージェントが残した観察だけを書き、要素の画像を `evidence/` に置く。入力した文字・HTML・依頼文・通信は残さない
+- **確認用の画面とケースを足した。** `examples/sample-app/editor.html`（同じ名前のボタンが 2 つ・押せない→押せる・言語・
+  画面幅・作り直し）と `examples/editor.yaml`（`variants` で日本語・英語・狭い画面）
+- **`scripts/compare-explore.js` で、`--probe-before-act` の有無を同じ条件で作り比べる。** 書式の検査・初回の合否・
+  頼み直し・対象の取り違え・断った操作・確認回数・時間を残す。トークン数は取れないので「不明」と書く
+- 設計は `docs/designs/webui-test-probe-before-act-design.md`
+
 ### webui-test: web-test から改名し、前回と画面が変わったかを確かめる（webui-test 0.2.0）
 
 - **名前を web-test から webui-test に変えた。** フォルダは `tools/webui-test`、コマンドは `webui-test`、設定は

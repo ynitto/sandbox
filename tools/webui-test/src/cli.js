@@ -42,6 +42,9 @@ const USAGE = `webui-test — 条件からテストケースを作り、Playwrig
         --retries <n>                 書式の誤りを直してもらう回数（既定 1）
         --explore                     エージェントに playwright-cli で画面を操作・探索させてから書かせる
                                       （画面をまたぐ条件向け。--url が要る）
+        --probe-before-act            --explore で、状態を変える操作の前に対象が 1 つだけ・見えている・押せることを
+                                      確かめさせ、確かめていない操作は断る。確かめた記録を残す
+        --evidence-dir <dir>          その記録の置き場（既定 webui-test-results/explore-<日時>）
         --verbose                     エージェントの出力をそのまま表示する
   webui-test run <ファイルかディレクトリ>... [--base-url <url>] [--out <dir>]
       テストケースを実行し、<out>/<日時>/report.html・report.md・results.json とスクリーンショットを書く
@@ -97,6 +100,8 @@ const OPTIONS = {
   variant: { type: 'string' },
   source: { type: 'string', multiple: true },
   explore: { type: 'boolean' },
+  'probe-before-act': { type: 'boolean' },
+  'evidence-dir': { type: 'string' },
 };
 
 const list = (v) => (v ? v.split(',').map((x) => x.trim()).filter(Boolean) : null);
@@ -151,6 +156,8 @@ function conditionsFrom(values, positionals) {
 async function main(argv, io = { out: process.stdout, err: process.stderr }) {
   const say = (s) => io.out.write(s + '\n');
   const warn = (s) => io.err.write(s + '\n');
+  // エージェントが --probe-before-act で使う playwright-cli の見張り役。引数は playwright-cli の形のまま受ける
+  if (argv[0] === 'browse') return require('./probe').browseMain(argv.slice(1), io);
   // `--` の後ろは npx playwright test にそのまま渡す
   const dd = argv.indexOf('--');
   const passthrough = dd >= 0 ? argv.slice(dd + 1) : [];
@@ -195,6 +202,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
       }
       case 'generate': {
         if (!values.out) throw usageError('保存先を -o <ファイル> で指定してください');
+        if (values['probe-before-act'] && !values.explore) throw usageError('--probe-before-act は --explore と一緒に使います');
         const { generate } = require('./generate');
         const r = await generate({
           conditions: conditionsFrom(values, rest),
@@ -208,11 +216,18 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
           retries: values.retries !== undefined ? Number(values.retries) : undefined,
           verbose: values.verbose,
           explore: values.explore,
+          probeBeforeAct: values['probe-before-act'],
+          evidenceDir: values['probe-before-act'] ? path.resolve(values['evidence-dir'] || path.join('webui-test-results', `explore-${timestamp()}`)) : undefined,
           locale: values.locale,
           executablePath,
           log: warn,
         });
         say(`作成しました: ${r.file}（${r.cases} ケース）`);
+        if (r.probe) {
+          const st = r.probe.stats;
+          const rejected = Object.values(st.rejected).reduce((a, b) => a + b, 0);
+          say(`確かめた記録: ${path.relative(process.cwd(), r.probe.evidenceFile) || r.probe.evidenceFile}（確認 ${st.probes} 回・操作 ${st.actions} 回・断った操作 ${rejected} 回）`);
+        }
         say(`実行: webui-test run ${r.file}`);
         return 0;
       }
