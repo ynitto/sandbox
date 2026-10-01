@@ -7,44 +7,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### web-test: 探索で状態を変える操作の前に対象を確かめる `--probe-before-act`（web-test 0.2.0）
+### webui-test: 探索で状態を変える操作の前に対象を確かめる `--probe-before-act`（webui-test 0.3.0）
 
 - **`generate --explore --probe-before-act` で、エージェントは対象を確かめてからでないと操作できない。** クリック・入力・選択・
   チェック・Enter での送信の前に `probe` で「一致が 1 つ・見えている・押せる」を確かめ、その ID を付けて操作する。
   確かめていない操作・古い確認（そのあとに操作や画面遷移をした、アプリが要素を作り直した、位置や属性が変わった）・
-  1 つに決まらない／隠れた／押せない対象への操作は、依頼文に頼らず `web-test browse` が断る。付けなければ `--explore` は今までどおり
-- **確かめた記録を残す。** `web-test-results/explore-<日時>/explore-evidence.jsonl` に、確かめた対象・行った操作・
+  1 つに決まらない／隠れた／押せない対象への操作は、依頼文に頼らず `webui-test browse` が断る。付けなければ `--explore` は今までどおり
+- **確かめた記録を残す。** `webui-test-results/explore-<日時>/explore-evidence.jsonl` に、確かめた対象・行った操作・
   エージェントが残した観察だけを書き、要素の画像を `evidence/` に置く。入力した文字・HTML・依頼文・通信は残さない
 - **確認用の画面とケースを足した。** `examples/sample-app/editor.html`（同じ名前のボタンが 2 つ・押せない→押せる・言語・
   画面幅・作り直し）と `examples/editor.yaml`（`variants` で日本語・英語・狭い画面）
 - **`scripts/compare-explore.js` で、`--probe-before-act` の有無を同じ条件で作り比べる。** 書式の検査・初回の合否・
   頼み直し・対象の取り違え・断った操作・確認回数・時間を残す。トークン数は取れないので「不明」と書く
-- 設計は `docs/designs/web-test-probe-before-act-design.md`
+- 設計は `docs/designs/webui-test-probe-before-act-design.md`
 
-### web-test: 条件からテストケースを作り、スクリーンショット付きで結果を出す Web アプリのテストツール（新規）
+### webui-test: web-test から改名し、前回と画面が変わったかを確かめる（webui-test 0.2.0）
 
-- **条件の文章から、エージェントがテストケースファイル（YAML）を書く。** `web-test generate "<条件>" --url <URL> -o <file>`。
+- **名前を web-test から webui-test に変えた。** フォルダは `tools/webui-test`、コマンドは `webui-test`、設定は
+  `webui-test.config.yaml`、結果は `webui-test-results/`、環境変数は `WEBUI_TEST_*`
+- **`webui-test check` で、アプリをローカルで起動して e2e を動かし、前回と画面が変わったかを確かめる。** 仕様書には依存しない。
+  `screenshot` ステップの画面をまずバイト列、違えば画素で前回と比べ（同じ・変わった・新しい・なくなった）、変わっても落とさない。
+  前回の画像と差分の画像を残す。落ちたケースがあれば終了コード 1、結果は出力の最後にまとめる。単体テストは扱わない
+- **合否のほかに得たものを `evidence.json` に残す。** 確かめた振る舞い・ページの読み込み時間・`measure` ステップの時間・
+  画面（これまでの版の sha256 つき）を `webui-test-results/evidence.json` に書く。`measure` は `max` の目安を超えたら落とす
+- **`serve` でアプリをローカルで起動してから動かす。** URL が応答するまで待ち、終わったら止める。すでに応答していれば
+  そのまま使う。`run`・`capture`・`pwtest` でも使い、接続先が違う環境（検証環境など）では起動しない
+- 結果の置き場（`webui-test-results/`）に「すべて無視」の `.gitignore` を置き、リポジトリの変更に数えさせない
+- 画像は動きとカーソルの点滅を止めて撮る
+
+### codd-statemachine: テストと文書の書式を、コード・仕様書と同じ整合の成果物として扱う
+
+- **計画に「テストの変更案」を足した。** 単体テスト・API テスト・シナリオテスト・e2e のケースを、コード・仕様書と同じく
+  足す・直すものとして挙げる。変える名前が書かれているテストと、変えるファイルとパスでつながっているテスト
+  （`coherence: code=…`・`doc=…`）を自分と参照先の両方で測り（`.codd/tests.md`）、計画に無ければ通さない。
+  変えたあとも実際の変更から測り直し、直していないテストがあれば止める。テストのファイルの書き方は `codd.json` の `tests`
+- **`codd.json` の `test` に書いたテストを、変えたあとに動かす。** 1 つならコマンドの配列、単体・API・シナリオなど
+  いくつもあるときは名前ごとのコマンド。参照先を変えたときは、参照先の `test` も動かす。`install.py --test "コマンド"`
+- **文書の今の書式を、コードで言う決まりとして守らせる。** 変える文書は今の見出しの並びを、新しく足す文書は同じフォルダの
+  文書がそろって持つ見出しの並びを見本とし（`.codd/formats.md`）、計画の「守る決まり」に見本と守り方が無ければ通さない。
+  変えたあとに見出しの並びが外れていれば止める（見出しを変えるなら計画に `## 見出し` と書く）
+- **テストで得たもの（確かめた振る舞い・測った時間・画面）を実装と文書に返す。** `evidence`（既定
+  `webui-test-results/evidence.json`）を読む。変わった画面は、文書のリポジトリの画像を sha256 で引いて前の版を貼っている画像を
+  見つけ、変えたあとの検査で差し替えて、どの文書に響いたかを報告する。振る舞いと時間は、文書の印
+  `<!-- evidence: id max=… -->…<!-- /evidence -->` が今の結果と合うか、目安を満たすかを確かめ、`codd.py evidence --write` で
+  写し直す。計画のときは関係する結果と響く画面を `.codd/evidence.md` に出す
+- **`install.py --check "コマンド"` で、変えたあとの検査コマンドを書ける。** 置き先に `webui-test.config.yaml`（`check` あり）
+  があり、検査が未設定なら `webui-test check` を書く
+- `show` が変えたあとの検査コマンドを示し、計画を練るときに、検査で作り直すファイルも計画に挙げさせる
+- Windows で `webui-test`・`npm` などの `.cmd` を検査コマンドにしても起動できるようにした
+
+### webui-test: 条件からテストケースを作り、スクリーンショット付きで結果を出す Web アプリのテストツール（新規）
+
+- **条件の文章から、エージェントがテストケースファイル（YAML）を書く。** `webui-test generate "<条件>" --url <URL> -o <file>`。
   Kiro CLI（既定）と GitHub Copilot CLI に対応し、ほかの CLI は `--agent-cmd` で渡せる。対象の画面を実際に開いて取った
   要素の一覧（役割と名前）を依頼に入れるので、画面に無いボタン名を想像で書かれにくい。書式の誤りは検査で見つけ、
-  エラーを添えて直してもらう。チャットで作るときは `web-test prompt` の依頼文を貼る
-- **`--explore` で、エージェントが playwright-cli で画面を操作して確かめながら書く。** web-test がブラウザを開いて
+  エラーを添えて直してもらう。チャットで作るときは `webui-test prompt` の依頼文を貼る
+- **`--explore` で、エージェントが playwright-cli で画面を操作して確かめながら書く。** webui-test がブラウザを開いて
   セッション名を渡し、終わったら閉じる。ログインの先の画面など、画面をまたぐ条件に使う
-- **Playwright でケースを実行し、操作ごとのスクリーンショットと合否・失敗理由のレポートを出す。** `web-test run <file|dir>`。
+- **Playwright でケースを実行し、操作ごとのスクリーンショットと合否・失敗理由のレポートを出す。** `webui-test run <file|dir>`。
   レポートは HTML・Markdown・JSON。ケースごとに新しいブラウザの状態で始め、`localStorage` はアプリより先に入れ、
   `mocks` で API の応答（500・1 回目だけ失敗・遅延・切断）を差し替えられる
-- **YAML から Playwright Test の `.spec.ts` を書き出して `npx playwright test` で動かせる。** `web-test export` / `web-test pwtest`。
+- **YAML から Playwright Test の `.spec.ts` を書き出して `npx playwright test` で動かせる。** `webui-test export` / `webui-test pwtest`。
   ステップは `test.step`、画像はレポートの添付になり、trace viewer・リトライ・分割実行が使える
 - **`variants` で同じケースを言語・画面幅を変えて繰り返す。** ブラウザの言語とアプリの言語設定を別々に指定できる。
   文字を含まないことを確かめる `notContains` も足した（翻訳キーがそのまま出ていないか、など）
-- **`web-test.config.yaml` で接続先を環境ごとに切り替える（`--env`）。** 認証の状態・ヘッダー・事前の値を環境ごとに持ち、
+- **`webui-test.config.yaml` で接続先を環境ごとに切り替える（`--env`）。** 認証の状態・ヘッダー・事前の値を環境ごとに持ち、
   `${名前}` は環境変数で置き換える。モックを使わない環境では、モックに頼るケースと `envs:` に無いケースを飛ばす
 - **レポートに実行記録を残す。** コマンド・環境・Node と Playwright の版・テストケースファイルのハッシュ・関係するリポジトリの
   コミット（`--source` で仕様・実装のフォルダを足せる）
-- **仕様書の画像を決まった名前で撮る。** `web-test capture <file> --out <dir>` が `screenshot` ステップの画像だけを
+- **仕様書の画像を決まった名前で撮る。** `webui-test capture <file> --out <dir>` が `screenshot` ステップの画像だけを
   `<dir>/<name>.png` に書き出す。変わる部分は `mask` で塗れる
 - **インストーラ。** `install.ps1`（Windows）と `install.sh`（Linux / macOS / WSL）。Node.js が無い・古いときは公式の LTS を
-  利用者のフォルダに入れ、npm パッケージと Chromium を入れて `web-test` コマンドを置く
-- 使い方は `tools/web-test/README.md`、書式は `tools/web-test/src/format-reference.md`
+  利用者のフォルダに入れ、npm パッケージと Chromium を入れて `webui-test` コマンドを置く
+- 使い方は `tools/webui-test/README.md`、書式は `tools/webui-test/src/format-reference.md`
 
 ### agent-app: ワークフローの実行結果を読みやすくし、失敗した工程から続きを実行する（agent-app 0.47.0）
 
