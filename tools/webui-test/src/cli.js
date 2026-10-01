@@ -264,6 +264,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
         } else {
           const { writeReport } = require('./report');
           const r = writeReport(report, outDir);
+          require('./evidence').writeEvidence(report, { outDir, latestDir: values.out ? null : resultsBase(env.dir), root: env.dir || process.cwd() });
           say(`合計 ${summary.total}: 合格 ${summary.passed} / 不合格 ${summary.failed} / スキップ ${summary.skipped}`);
           say(`レポート: ${r.html}`);
         }

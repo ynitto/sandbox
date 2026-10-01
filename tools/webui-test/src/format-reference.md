@@ -73,6 +73,7 @@ cases:
 | `expect` | 下の表 |
 | `screenshot` | `- screenshot: 入力後` / `- screenshot: { name: 一覧, fullPage: true, target: { css: main }, mask: [{ css: .clock }], path: docs/img/list.png }` |
 | `eval` | `- eval: "document.querySelector('.clock').textContent = '12:00'"`（ページ内で JS を実行） |
+| `measure` | `- measure: 検索` / `- measure: { name: 検索, steps: 2, max: 1500 }`（直前の `steps` ステップにかかった時間を測る。`max` ミリ秒を超えたら失敗） |
 
 ### expect（確かめる）
 

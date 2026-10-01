@@ -69,12 +69,14 @@ async function check(opts) {
   if (report) {
     report.context = collect({ argv: opts.argv, env, files: suites.map((x) => x.file), sources: [] });
     const r = writeReport(report, opts.outDir);
+    const evidence = require('./evidence').writeEvidence(report, { outDir: opts.outDir, latestDir: path.dirname(opts.outDir), root: baseDir });
     const s = report.summary;
     const cases = report.suites.flatMap((x) => x.cases.map((c) => ({ ...c, suite: x.suite })));
     const failed = cases.filter((c) => c.status === 'failed');
     if (failed.length) ok = false;
     summary.push(`e2e: ${s.total} 件中 合格 ${s.passed} / 不合格 ${s.failed} / スキップ ${s.skipped}（レポート: ${rel(r.html)}）`);
     summary.push(...listed(failed, (c) => `${c.suite} ${c.variant ? `${c.id} [${c.variant}]` : c.id}: ${c.error || '失敗'}`));
+    summary.push(`テストで得たもの（振る舞い・時間・画像）: ${rel(evidence)}`);
 
     const images = cases.flatMap((c) => c.docImages || []);
     if (images.length) {

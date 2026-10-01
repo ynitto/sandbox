@@ -18,6 +18,10 @@ function docImageLine(i) {
   return `${i.path} — ${DOC_LABEL[i.status] || i.status}${i.message ? `（${i.message}）` : ''}`;
 }
 
+function metricsLine(c) {
+  return (c.metrics || []).filter((m) => m.name !== 'time').map((m) => `${m.label || m.name} ${m.value}${m.unit}${m.max ? `（目安 ${m.max}${m.unit}）` : ''}`).join(' / ');
+}
+
 function caseLabel(c) {
   return c.variant ? `${c.id} [${c.variant}]` : c.id;
 }
@@ -45,6 +49,8 @@ function toMarkdown(report) {
     lines.push('');
     const images = s.cases.flatMap((c) => c.docImages || []);
     if (images.length) lines.push('仕様書の画像:', '', ...images.map((i) => `- ${docImageLine(i)}${i.diff ? ` [差分](${i.diff})` : ''}`), '');
+    const measured = s.cases.filter((c) => metricsLine(c));
+    if (measured.length) lines.push('測定:', '', ...measured.map((c) => `- ${caseLabel(c)}: ${metricsLine(c)}`), '');
     for (const c of s.cases) {
       if (!c.screenshots || !c.screenshots.length) continue;
       lines.push(`### ${caseLabel(c)} ${c.title}`, '');
@@ -71,6 +77,7 @@ function toHtml(report) {
       <details class="case ${c.status}" ${c.status === 'failed' ? 'open' : ''}>
         <summary><span class="badge ${c.status}">${LABEL[c.status]}</span><b>${esc(caseLabel(c))}</b> ${esc(c.title)}${c.requirement ? ` <span class="req">${esc(c.requirement)}</span>` : ''}<span class="dur">${(c.durationMs / 1000).toFixed(1)}s</span></summary>
         ${c.error ? `<div class="err">${esc(c.error)}</div>` : ''}
+        ${metricsLine(c) ? `<p class="sub">測定: ${esc(metricsLine(c))}</p>` : ''}
         ${consoleErr}
         ${(c.docImages || []).length ? `<ul class="docimg">${c.docImages.map((i) => `<li class="${i.status}">仕様書の画像 ${esc(docImageLine(i))}${i.diff ? ` <a href="${esc(i.diff)}" target="_blank">差分</a>` : ''}</li>`).join('')}</ul>` : ''}
         <ol class="steps">${steps}</ol>

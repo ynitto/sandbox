@@ -49,6 +49,7 @@ async function project(t) {
     '    steps:',
     '      - goto: /',
     '      - expect: { visible: { role: heading, name: ログイン } }',
+    '      - measure: { name: 表示, steps: 2, max: 60000 }',
     '      - screenshot: { name: login, path: docs/images/login.png, target: { css: "#login" } }',
     '',
   ].join('\n'));
@@ -112,6 +113,15 @@ test('check: 起動して e2e → 仕様書の画像。無い画像は撮り直�
   assert.strictEqual(r.err, '', '結果は標準出力の最後にまとめる');
   assert.strictEqual(fs.readFileSync(path.join(dir, 'webui-test-results', '.gitignore'), 'utf8').split('\n').slice(-2)[0], '*',
     '結果の置き場はリポジトリの変更に数えさせない');
+  // 合否のほかに得たもの（振る舞い・時間・画像）を evidence.json に残す
+  assert.match(r.out, /テストで得たもの（振る舞い・時間・画像）: webui-test-results\/evidence.json/);
+  const ev = JSON.parse(fs.readFileSync(path.join(dir, 'webui-test-results', 'evidence.json'), 'utf8'));
+  const byId = Object.fromEntries(ev.items.map((i) => [i.id, i]));
+  assert.deepStrictEqual([byId['login/S-01'].kind, byId['login/S-01'].status, byId['login/S-01'].file, byId['login/S-01'].doc],
+    ['behavior', 'passed', 'tests/login.yaml', ['docs/login.md']]);
+  assert.strictEqual(byId['login/S-01/表示'].unit, 'ms');
+  assert.ok(byId['login/S-01/load'].value > 0, 'ページの読み込み時間');
+  assert.strictEqual(byId['login/S-01/login'].path, 'docs/images/login.png', '仕様書の画像はその置き場を指す');
 
   r = await cli(['check', '--update', ...ep()], { cwd: dir });
   assert.strictEqual(r.code, 0, r.out);
@@ -137,10 +147,15 @@ test('check: 起動して e2e → 仕様書の画像。無い画像は撮り直�
   assert.ok(doc.diff, '差分の画像を残す');
 });
 
-test('check: ケースが落ちれば落とす。ケースが無ければ使い方の誤り', async (t) => {
+test('check: ケースが落ちれば落とす。測った時間が目安を超えても落とす。ケースが無ければ使い方の誤り', async (t) => {
   const { dir } = await project(t);
-  write(path.join(dir, 'tests', 'login.yaml'), fs.readFileSync(path.join(dir, 'tests', 'login.yaml'), 'utf8').replace('name: ログイン }', 'name: 無い見出し }'));
+  const yaml = path.join(dir, 'tests', 'login.yaml');
+  fs.writeFileSync(yaml, fs.readFileSync(yaml, 'utf8').replace('max: 60000', 'max: 0.001'));
   let r = await cli(['check', ...ep()], { cwd: dir });
+  assert.match(r.out, /「表示」が \d+ms かかり、目安の 0.001ms を超えました/);
+  fs.writeFileSync(yaml, fs.readFileSync(yaml, 'utf8').replace('max: 0.001', 'max: 60000'));
+  write(path.join(dir, 'tests', 'login.yaml'), fs.readFileSync(path.join(dir, 'tests', 'login.yaml'), 'utf8').replace('name: ログイン }', 'name: 無い見出し }'));
+  r = await cli(['check', ...ep()], { cwd: dir });
   assert.strictEqual(r.code, 1, r.out);
   assert.match(r.out, /e2e: 1 件中 合格 0 \/ 不合格 1/);
   const empty = tmpDir(t);

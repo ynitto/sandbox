@@ -69,6 +69,7 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=.
 | `graphify` | `auto`（あれば使う）か `off` |
 | `test` | 任意。変えたあとに動かすテストのコマンド。1 つなら配列（例: `["npm", "test"]`）、単体・API・シナリオなどいくつもあるなら名前ごと（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
 | `tests` | 任意。テストのファイルの書き方（glob の配列）。既定は `test/**`・`tests/**`・`e2e/**`・`**/*.test.*`・`**/*.spec.*`・`**/test_*.py`・`**/*.feature`・`**/*.http`・`**/scenarios/**` など。`[]` でテストを扱わない |
+| `evidence` | 任意。テストで得たもの（振る舞い・時間・画像）を書いたファイル（glob の配列）。既定 `["webui-test-results/evidence.json"]`。`[]` で扱わない |
 | `check` | 任意。テストのあとに実行する検査コマンドの配列（例: `["webui-test", "check"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
 | `scope` | 任意。このリポジトリのうち自分が受け持つフォルダの配列（例: `["src", "tests"]`）。書かなければ全体 |
 | `refs[].scope` | 任意。その参照先のうち読む・変えるフォルダの配列。書かなければ全体 |
@@ -180,6 +181,7 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --scope src
 | 過程 | 決まりを守ったか | 決まりのファイル（`CLAUDE.md` など）と、変える文書の今の書式（見本）を、計画の「守る決まり」にすべて挙げたか |
 | 過程 | 決めたスキル・道具を使ったか | `skills`・`tools` に書いたものを、計画の「使ったスキルと道具」と `.codd/apply.md` にすべて挙げたか |
 | 出力 | 計画どおりに、最後まで変えたか | 計画に挙げたファイル（テストも）をすべて、それだけを変えたか。実際の差分から影響範囲と響くテストを測り直す。`test` のテストと `check` の検査コマンド |
+| 出力 | テストで得たものを文書に正しく写したか | 文書の印（`<!-- evidence: id -->`）が今のテストの結果と合うか、目安（`max=`）を満たすか、写した振る舞いが通っているか |
 | 出力 | 文書の書式を守ったか | 変えた文書が、計画のときの見出しの並び（新しい文書は同じフォルダの文書の見出しの並び）を保っているか |
 | 出力 | 指す先が壊れていないか | 書き足したパスが実在するか、消したファイルを指したままのところが無いか |
 | 出力 | 結果を正しく伝えたか | 終わりの報告を `codd.py report` が作る（モデルがまとめ直さない） |
@@ -270,6 +272,40 @@ API テスト・シナリオテストも、画面の e2e のケースも同列�
 python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
 ```
 
+### テストで得たものを実装と文書に活かす
+
+テストは合否のほかに、確かめた振る舞い・測った時間・撮った画像を残す。これを `evidence` のファイル
+（[webui-test](../webui-test/README.md) は `webui-test-results/evidence.json` に書く）から読み、実装と文書に返す。
+
+文書には値を手で書かず、印で写す。
+
+```markdown
+ログイン画面の読み込み: <!-- evidence: login/S-01/load max=1000 -->812 ms<!-- /evidence -->
+
+確かめた振る舞い:<!-- evidence: login/* -->
+- ✓ ログイン画面 正しい ID でログインできる
+<!-- /evidence -->
+```
+
+- `id` はテストの結果の項目（`codd.py evidence` で一覧）。`…/*` で前方一致の一覧になる。別のリポジトリのテストは `名前:id`
+- 測った値（時間）は 2 割までの揺れを同じとみなす（`tolerance=0.1` で変えられる）。`max=` は目安で、超えたら落とす
+- 振る舞いは ✓（通った）・✗（落ちた）、画像はマークダウンの画像として写す
+
+| いつ | 何をするか |
+|---|---|
+| 計画を練るとき | 計画に関係するテストの結果を `.codd/evidence.md` に出す（仕様書の根拠や実装の目安に使う）。響くテストの結果を写している文書が計画に無ければ落とす |
+| 変えるとき | テストを動かしてから `codd.py evidence --write 文書のパス` で写し直す |
+| 変えたあと | 印が今の結果と合うか、目安を満たすか、写した振る舞いが通っているかを確かめる |
+| 終わりの報告 | 計画のときと比べて、揺れの幅を超えて変わった時間と、合否が変わった振る舞いを挙げる |
+
+```bash
+python3 .statemachine/codd/codd.py evidence                       # テストで得たものと、文書の印の様子
+python3 .statemachine/codd/codd.py evidence --write docs:docs/perf.md
+```
+
+webui-test 以外のテストも、同じ形のファイルを書けば使える（`{"version": 1, "items": [{"id", "kind": "behavior"|"metric"|"image",
+"title", "status", "value", "unit", "path", "file"}]}`。`file` はそのテストのファイル。パスはリポジトリのルートからの相対）。
+
 ### 文書の書式を決まりとして守る
 
 文書の今の書式は、コードで言う決まりにあたる。変える文書は今の見出しの並び・表の形・言い回しを、新しく足す文書は
@@ -342,6 +378,8 @@ python3 .statemachine/codd/codd.py show --phase apply
 - アプリをローカルで起動しての e2e テスト
 - 仕様書に貼った画面の画像が、今の画面と同じか
 - 仕様書が貼っている画像が実在するか
+- 確かめた振る舞い・ページの読み込み時間・`measure` で測った時間・撮った画像を `webui-test-results/evidence.json` に残す
+  （[テストで得たものを実装と文書に活かす](#テストで得たものを実装と文書に活かす)）
 
 単体テスト・API テストなどは webui-test ではなく `test` に書く（[テストもコード・仕様書と同じに扱う](#テストもコード仕様書と同じに扱う)）。
 

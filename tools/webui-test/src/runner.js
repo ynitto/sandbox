@@ -63,6 +63,7 @@ function describeStep(step) {
     case 'wait': detail = typeof v === 'number' ? `${v}ms` : v && (v.url || v.load || v.visible || v.hidden) ? JSON.stringify(v) : describeTarget(v); break;
     case 'expect': detail = JSON.stringify(v); break;
     case 'screenshot': detail = typeof v === 'string' ? v : v.name; break;
+    case 'measure': detail = typeof v === 'string' ? v : `${v.name}${v.steps ? `（直前 ${v.steps} ステップ）` : ''}${v.max ? ` ≦ ${v.max}ms` : ''}`; break;
     default: detail = describeTarget(v);
   }
   return { kind, text: `${kind}${detail ? ' ' + detail : ''}`, note: step.note || '' };
@@ -160,7 +161,7 @@ async function runStep(page, step, ctx) {
       else await toLocator(page, v).first().waitFor({ state: 'visible', timeout });
       break;
     case 'expect': await runExpect(page, v, timeout); break;
-    case 'screenshot': break; // 撮影は呼び出し側
+    case 'screenshot': case 'measure': break; // 撮影と測定は呼び出し側
     default: throw new Error(`知らないステップ: ${kind}`);
   }
 }
@@ -214,7 +215,7 @@ function originOf(u) {
 
 async function runCase(browser, suite, run, opts) {
   const caseDir = path.join(opts.outDir, slug(suite.suite), slug(run.variant ? `${run.id}-${run.variant}` : run.id));
-  const result = { id: run.id, variant: run.variant, title: run.title, requirement: run.requirement, tags: run.tags, status: 'passed', steps: [], screenshots: [], error: null, durationMs: 0 };
+  const result = { id: run.id, variant: run.variant, title: run.title, requirement: run.requirement, tags: run.tags, status: 'passed', steps: [], screenshots: [], metrics: [], error: null, durationMs: 0 };
   const started = Date.now();
   if (run.skip) {
     result.status = 'skipped';
@@ -292,7 +293,25 @@ async function runCase(browser, suite, run, opts) {
       const t0 = Date.now();
       try {
         await runStep(page, step, ctx);
-        if (d.kind === 'screenshot') {
+        if (d.kind === 'goto' || d.kind === 'reload') {
+          // ページの読み込みにかかった時間（Navigation Timing）。evidence に残し、仕様書や目安と突き合わせられるようにする
+          const ms = await page.evaluate(() => {
+            const n = performance.getEntriesByType('navigation')[0];
+            return n && n.loadEventEnd > 0 ? Math.round(n.loadEventEnd - n.startTime) : null;
+          }).catch(() => null);
+          if (ms !== null) {
+            const loads = result.metrics.filter((m) => m.label === 'ページの読み込み').length;
+            result.metrics.push({ name: loads ? `load-${loads + 1}` : 'load', label: 'ページの読み込み', value: ms, unit: 'ms' });
+          }
+        }
+        if (d.kind === 'measure') {
+          const v = typeof step.measure === 'string' ? { name: step.measure } : step.measure;
+          const prev = result.steps.slice(0, -1).filter((x) => !x.measure).slice(-(v.steps || 1));
+          const value = prev.reduce((sum, x) => sum + (x.durationMs || 0), 0);
+          sr.measure = true;
+          result.metrics.push({ name: v.name, value, unit: 'ms', ...(v.max ? { max: v.max } : {}) });
+          if (v.max && value > v.max) throw new Error(`「${v.name}」が ${value}ms かかり、目安の ${v.max}ms を超えました`);
+        } else if (d.kind === 'screenshot') {
           const v = step.screenshot;
           const o = typeof v === 'string' ? { name: v } : v;
           sr.screenshot = await shoot(page, o.name, { ...o, explicit: true });
@@ -320,6 +339,7 @@ async function runCase(browser, suite, run, opts) {
   }
   result.consoleErrors = consoleErrors;
   result.durationMs = Date.now() - started;
+  result.metrics.push({ name: 'time', label: 'ケース全体', value: result.durationMs, unit: 'ms' });
   return result;
 }
 

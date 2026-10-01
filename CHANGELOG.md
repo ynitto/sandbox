@@ -18,6 +18,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （codd-statemachine の `test` が動かす）
 - **`serve` でアプリをローカルで起動してから動かす。** URL が応答するまで待ち、終わったら止める。すでに応答していれば
   そのまま使う。`run`・`capture`・`pwtest` でも使い、接続先が違う環境（検証環境など）では起動しない
+- **合否のほかに得たものを `evidence.json` に残す。** 確かめた振る舞い・ページの読み込み時間・撮った画像を、
+  `run` と `check` が `webui-test-results/evidence.json` に書く。`measure` ステップで直前のステップの時間を測り、`max` の目安を
+  超えたら落とす。レポートにも測った時間を出す
 - **`generate --doc` / `--code`。** 仕様書の中身を依頼に入れ、ケースファイルに `# coherence: doc=…` / `code=…` の注記を書く
 - 結果の置き場（`webui-test-results/`）に「すべて無視」の `.gitignore` を置き、リポジトリの変更に数えさせない
 - 画像は動きとカーソルの点滅を止めて撮る
@@ -33,6 +36,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **文書の今の書式を、コードで言う決まりとして守らせる。** 変える文書は今の見出しの並びを、新しく足す文書は同じフォルダの
   文書がそろって持つ見出しの並びを見本とし（`.codd/formats.md`）、計画の「守る決まり」に見本と守り方が無ければ通さない。
   変えたあとに見出しの並びが外れていれば止める（見出しを変えるなら計画に `## 見出し` と書く）
+- **テストで得たもの（確かめた振る舞い・測った時間・撮った画像）を実装と文書に返す。** `evidence`（既定
+  `webui-test-results/evidence.json`）を読み、文書の印 `<!-- evidence: id max=… -->…<!-- /evidence -->` が今の結果と合うか、
+  目安を満たすかを変えたあとに確かめる。`codd.py evidence --write` で写し直す。計画のときは関係する結果を `.codd/evidence.md` に出し、
+  響くテストの結果を写している文書を計画に挙げさせる。終わりの報告に、時間や合否の変化を出す
 - **`install.py --check "コマンド"` で、変えたあとの検査コマンドを書ける。** 置き先に `webui-test.config.yaml`（`check` あり）
   があり、検査が未設定なら `webui-test check` を書く
 - `show` が変えたあとの検査コマンドを示し、計画を練るときに、検査で作り直すファイル（仕様書の画像など）も計画に挙げさせる。

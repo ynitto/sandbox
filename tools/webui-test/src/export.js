@@ -92,6 +92,7 @@ function stepCode(step, T, fileDir, baseUrl) {
       if (v.visible !== undefined) return [`await ${locatorCode(v.visible)}.first().waitFor({ state: 'visible', timeout: ${timeout} });`];
       return [`await ${locatorCode(v)}.first().waitFor({ state: 'visible', timeout: ${timeout} });`];
     case 'expect': return expectCode(v, timeout);
+    case 'measure': return [`// measure: ${typeof v === 'string' ? v : v.name}（時間の測定は webui-test run が行う）`];
     default: return [];
   }
 }

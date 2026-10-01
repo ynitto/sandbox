@@ -791,6 +791,68 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertIn("docs/screens/hello.md — ## 目的", r.stderr)
 
+    def write_evidence(self, items: list[dict]) -> None:
+        out = self.impl / "webui-test-results"
+        out.mkdir(exist_ok=True)
+        (out / ".gitignore").write_text("*\n", encoding="utf-8")
+        (out / "evidence.json").write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False), encoding="utf-8")
+
+    def evidence_items(self, load: int, status: str = "passed") -> list[dict]:
+        base = {"file": "tests/login.yaml", "doc": ["design:docs/api.md"]}
+        return [{"id": "login/S-01", "kind": "behavior", "title": "ログイン できる", "status": status, **base},
+                {"id": "login/S-01/load", "kind": "metric", "title": "ログイン（読み込み）", "value": load, "unit": "ms", **base}]
+
+    def test_test_evidence_is_written_into_docs_and_kept_current(self) -> None:
+        # テストで得たもの（振る舞い・時間）を文書の印で写し、今と違えば・目安を超えれば止める。
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n"
+                             "読み込み: <!-- evidence: login/S-01/load max=1000 -->800 ms<!-- /evidence -->\n\n"
+                             "確かめた振る舞い:<!-- evidence: login/* --><!-- /evidence -->\n"}, "marks")
+        self.write_evidence(self.evidence_items(850))
+        r = self.run_pa(self.impl, "evidence")
+        self.assertEqual(r.returncode, 1, r.stdout)       # 一覧の印はまだ空
+        self.assertIn("自分: 2 件", r.stdout)
+        self.assertIn("docs/api.md:9 login/*（書いてある 空 → 今 - ✓ ログイン できる - 850 ms）", r.stdout)
+        self.assertNotIn("login/S-01/load（", r.stdout)    # 2 割までの揺れは同じとみなす
+        r = self.run_pa(self.impl, "evidence", "--write", "design:docs/api.md")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        text = (self.design / "docs/api.md").read_text(encoding="utf-8")
+        self.assertIn("-->\n- ✓ ログイン できる\n- 850 ms\n<!--", text)
+        self.assertIn("-->800 ms<!--", text, "揺れの幅の中なら書き換えない")
+        self.write_evidence(self.evidence_items(1300, "failed"))
+        r = self.run_pa(self.impl, "evidence")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("1300 ms で、目安の 1000 を超えています", r.stdout)
+        self.assertIn("確かめた振る舞いが失敗しています: ログイン できる", r.stdout)
+        self.assertIn("書いてある 800 ms → 今 1300 ms", r.stdout)
+
+    def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
+        commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
+        commit(self.design, {"docs/perf.md": "# 性能\n\n- <!-- evidence: login/S-01/load -->800 ms<!-- /evidence -->\n"},
+               "perf")
+        self.write_evidence(self.evidence_items(800))
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/login.yaml — `hello` のログも確かめる")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変更が響くテストの結果を写している文書が、計画にありません", r.stderr)
+        self.assertIn("docs/perf.md", r.stderr)
+        evidence = (self.impl / ".codd/evidence.md").read_text(encoding="utf-8")
+        self.assertIn("login/S-01/load — metric: 800 ms", evidence)
+        self.write_plan(plan.replace("## 参照先のその他\n\nなし",
+                                     "## 参照先のその他\n\n- 読み込みの時間を写している（根拠: docs/perf.md）"))
+        self.assert_plan_ok()
+        # 変えたあと、時間が大きく変わったら写し直させ、報告に変化を出す。
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests/login.yaml").write_text("suite: ログイン（ログも）\n", encoding="utf-8")
+        self.write_evidence(self.evidence_items(1600))
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("文書に写したテストの結果が今と違います", r.stderr)
+        self.assertIn("書いてある 800 ms → 今 1600 ms", r.stderr)
+        report = self.run_pa(self.impl, "report").stdout
+        self.assertIn("## テストで得たものの変化（計画のときと比べて）", report)
+        self.assertIn("login/S-01/load — 800 → 1600 ms", report)
+
     def test_ref_change_to_a_new_file_is_allowed(self) -> None:
         plan = PLAN_DRIFT.replace("- docs/api.md — `hello`", "- docs/hello.md — 新しく書く。`hello`")
         self.write_plan(plan)
