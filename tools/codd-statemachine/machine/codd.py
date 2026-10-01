@@ -18,6 +18,7 @@
                         消したファイルを指したままのところが無いかも確かめる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
     skill 名前…         スキルの SKILL.md を出して読み込む。使うと書いたスキルを読み込んだかを検査が確かめる
+    rule [--all|パス…]  守る決まりのファイルを出して読み込む。計画の検査は、すべて読み込んだか（中身が変わっていれば読み直したか）を確かめる
     advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
     keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
@@ -693,7 +694,7 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     for r in ctx.refs:
         print(f"  - {r.name}: {r.label}  {r.path}{scope_words(r)}")
     rules = ctx.rule_files()
-    print("守る決まり（読んで、計画の「守る決まり」に挙げる）:")
+    print(f"守る決まり（`python3 {MACHINE_REL}/codd.py rule --all` で読み込み、計画の「守る決まり」に挙げる）:")
     for name, rel in rules or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
     for pat in ctx.unmatched_rules():
@@ -876,9 +877,108 @@ def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
         files += [f"{r.name}:{p}" if many else p for p in found]
         notes.append(f"{r.name}={note}" if many else note)
     path = write_report(ctx, "explore.md", "参照先で関係する箇所", terms, parts, files)
+    # 文字列の一致で見つかったファイルを控える（graphify は関係の近いものまで広く拾うので、検査には使わない）。
+    # 計画の検査は、探したこと（参照先ごと）と、ここに控えたファイルを計画が扱ったかを確かめる。
+    log = explore_log(ctx)
+    for r in targets:
+        _, hits, _ = search(ctx, r, terms, "query", use_graph=False)
+        entry = log.setdefault(r.name, {"terms": [], "files": []})
+        entry["terms"] = unique([*entry["terms"], *terms])
+        entry["files"] = unique_paths([*entry["files"], *hits[:MAX_MEASURED]])
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / EXPLORE_LOG).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"FOUND {len(files)} files (graphify: {', '.join(notes)})")
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
+
+
+EXPLORE_LOG = "explore.json"
+RULES_READ = "rules-read.json"
+
+
+def explore_log(ctx: Ctx) -> dict:
+    path = ctx.data / EXPLORE_LOG
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def explore_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
+    """参照先を探したか（参照先ごと）と、探して見つかったファイルを計画が扱ったか。"""
+    log = explore_log(ctx)
+    unexplored = [r.name for r in ctx.refs if r.name not in log]
+    if unexplored:
+        return [f"参照先を探していません: {', '.join(unexplored)}（`python3 {MACHINE_REL}/codd.py explore --term 語` で、"
+                "やりたいことに関係する語から探し、見つかったファイルを読んでください）"]
+    cited = cited_anywhere(ctx, bodies)
+    missing = [ref_label(ctx, name, rel) for name, entry in log.items() if name in {r.name for r in ctx.refs}
+               for rel in entry.get("files", []) if (name, rel) not in cited and ctx.ref(name).has(rel)
+               and (ctx.ref(name).path / rel).is_file()]
+    if not missing:
+        return []
+    return ["探して見つかった参照先のファイルを、計画で扱っていません（読んで、前提・制約・その他・ずれの根拠か参照先の"
+            "変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
+            + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/explore.md）"]
+
+
+def rule_digest(ctx: Ctx, name: str, rel: str) -> str:
+    repo = ctx.ref(name).path if name else ctx.root
+    try:
+        return hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def cmd_rule(ctx: Ctx, args: argparse.Namespace) -> int:
+    """守る決まりのファイルを出して読み込ませ、読み込んだことを控える（計画の検査が確かめる）。"""
+    rules = ctx.rule_files()
+    labels = {(f"{n}:{r}" if n else r): (n, r) for n, r in rules}
+    wanted = list(labels) if args.all or not args.path else args.path
+    unknown = [w for w in wanted if w not in labels and not any(r == w for _, r in rules)]
+    log = rules_read(ctx)
+    for want in wanted:
+        if want in unknown:
+            continue
+        name, rel = labels.get(want) or next((n, r) for n, r in rules if r == want)
+        label = f"{name}:{rel}" if name else rel
+        repo = ctx.ref(name).path if name else ctx.root
+        print(f"# 守る決まり {label}\n")
+        print(read_text(repo / rel) or "（読めませんでした）")
+        log[label] = rule_digest(ctx, name, rel)
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / RULES_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if not rules:
+        print("守る決まりのファイルはありません")
+    if unknown:
+        print(f"守る決まりにありません: {', '.join(unknown)}（`codd.py show` の一覧から選んでください）", file=sys.stderr)
+        return 1
+    return 0
+
+
+def rules_read(ctx: Ctx) -> dict:
+    path = ctx.data / RULES_READ
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def unread_rules(ctx: Ctx) -> list[str]:
+    """読み込んでいない（か、読み込んだあとに中身が変わった）決まりのファイル。"""
+    log = rules_read(ctx)
+    out = []
+    for name, rel in ctx.rule_files():
+        label = f"{name}:{rel}" if name else rel
+        if log.get(label) != rule_digest(ctx, name, rel):
+            out.append(label)
+    return out
+
+
+def clear_reading_logs(ctx: Ctx) -> None:
+    """1 回の実行の終わりに、探した・読んだ記録を消す（次の回で使い回させない）。"""
+    for name in (EXPLORE_LOG, RULES_READ, SKILLS_READ):
+        (ctx.data / name).unlink(missing_ok=True)
 
 
 def cmd_impact(ctx: Ctx, args: argparse.Namespace) -> int:
@@ -1411,6 +1511,10 @@ def rules_problems(ctx: Ctx, body: str) -> list[str]:
     if is_none(body) or missing:
         return ["守る決まりに、決まりのファイルを読んで挙げてください（このやりたいことに効く決まりと、どう守るか）: "
                 + ", ".join(missing or [f"{n}:{r}" if n else r for n, r in rules])]
+    unread = unread_rules(ctx)
+    if unread:
+        return [f"守る決まりのファイルを読み込んでいません（`python3 {MACHINE_REL}/codd.py rule --all` で読み込んでから、"
+                "効く決まりを書いてください。読み込んだあとに変わったものも読み直す）: " + ", ".join(unread)]
     return []
 
 
@@ -1513,6 +1617,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str]) -> tuple[list[str], list[str]
                 "自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません（読んで、前提・制約・その他・"
                 "ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
                 + ", ".join(missing_refs) + f"（詳細: {DATA_DIRNAME}/ref-impact.md）")
+    problems += explore_problems(ctx, bodies)
     problems += trace_plan(ctx, bodies)
     problems += tests_plan_problems(ctx, bodies, terms)
     problems += formats_plan_problems(ctx, bodies)
@@ -2600,6 +2705,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / "report.md").write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines))
+    clear_reading_logs(ctx)   # 報告で 1 回の実行が終わる。探した・読んだ記録は次の回に持ち越さない
     return 0 if state == "通った" else 1
 
 
@@ -2778,6 +2884,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
     sub.add_parser("advise", help="検査で止まった理由と、次の手（勧めと選択肢）を示す")
+    ru2 = sub.add_parser("rule", help="守る決まりのファイルを出して読み込む（読み込んだことを控え、計画の検査が確かめる）")
+    ru2.add_argument("path", nargs="*", help="決まりのファイル（`show` の一覧の書き方。参照先のものは `名前:パス`）")
+    ru2.add_argument("--all", action="store_true", help="守る決まりのファイルをすべて読み込む")
     sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
     sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
     sub.add_parser("keep-changes", help="変えた分を残したまま計画を直す（次の計画の検査で印を取り直さない）")
@@ -2794,7 +2903,7 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
             "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
-            "skill": cmd_skill, "evidence": cmd_evidence}
+            "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule}
 
 
 def main(argv: list[str] | None = None) -> int:
