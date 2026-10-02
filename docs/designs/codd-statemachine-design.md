@@ -372,7 +372,7 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
   前の回の記録で読んだことにさせない
 - 決まりの発見: パスか最初の見出しに決まりらしい語（ルール・規約・コーディング・rules・guideline・convention など）を
   含むマークダウンを候補にする（`rules`）。候補は設定に書くまで検査の対象にしない——語の一致だけでは決まりとは限らず、
-  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `install.py` で初めて置くとき（置くこと自体が同意。
+  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `codd-init` で初めて置くとき（置くこと自体が同意。
   `--no-discover-rules` でやめる。既にある `codd.json` は利用者の設定なので、置き直しでは探し直さない）と、確認（confirm）で訊いて `rules --write --only` するとき。
   あとから増えた候補は `show` に出るので、計画のときに読まれる。
   拾いすぎると計画の段で毎回その全文を読み込ませ、文脈を圧迫する。そのため自分の分は `scope` の中とその上のフォルダ
@@ -394,7 +394,11 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
   `.codd/apply.md` で使ったと書いた（「使わない」の行を除く）スキルが控えに無ければ落とす。apply は変える前の印より新しい
   読み込みだけを認める（計画のときに読んだだけで済ませない）。これで「使った」と書くことと「読んだ」ことを、スクリプトから
   見える事実で結び付ける。見つからないスキル（エージェントの組み込みなど）は読み込みを求めない
-- カスタムエージェント: `install.py` が kiro-cli（`.kiro/agents/codd.json`）と GitHub Copilot（`.github/agents/codd.agent.md`）
+- 導入の 2 段: `install.py` は端末に入れる（本体を `~/.statemachine/codd-statemachine/` に写し、`codd-init` を
+  `~/.local/bin/` に置く）。`codd-init`（`init.py`）はリポジトリを初期設定する（本体を `.statemachine/codd/` に写し、
+  `codd.json`・カスタムエージェント・`.gitignore` を書く）。本体はリポジトリにも写す——リポジトリだけで動き、
+  端末に入れていない人も使えるように。版を上げるのは端末で 1 回、各リポジトリへは `codd-init` の再実行で届ける
+- カスタムエージェント: `codd-init` が kiro-cli（`.kiro/agents/codd.json`）と GitHub Copilot（`.github/agents/codd.agent.md`）
   向けに、変える依頼は必ずこのマシンで進めるエージェントを書く。指示は `agents/codd-agent.md` 1 つから両方へ写す。
   statemachine-use が無い環境でも回せるよう、`workflow.yaml` の読み方（action・check と再投入・condition_rule・答えを待つ
   ステート）を指示に含める。kiro-cli では `agentSpawn` の hook で `codd.py show` を読み込ませる。エージェントのファイルは
@@ -421,7 +425,7 @@ done は `codd.py report` の出力をそのまま伝える。計画のファイ
 - 結果の置き場は git に無視させているので、evidence や前回の画面を書いても変更に数えない
 - 単体テストは webui-test に持たせない。テストを動かすのはこのマシンの `test`（§4.2）
 - e2e のケースファイルに `# coherence: doc=…` を書けば §4.1 のつながりとしてたどる（任意。webui-test はこの注記を読まない）
-- `install.py` は、初めて置くときに `webui-test.config.yaml`（`check` あり）があれば `["webui-test", "check"]` を書く。
+- `codd-init` は、初めて置くときに `webui-test.config.yaml`（`check` あり）があれば `["webui-test", "check"]` を書く。
   既にある `codd.json` は渡された項目しか書き換えない（利用者が手で整えた設定を置き直しで崩さない）。
   任意のコマンドは `--check` で書ける
 - Windows では `webui-test`・`npm` が `.cmd` なので、`run` は実行ファイルを PATHEXT で探してから起動する

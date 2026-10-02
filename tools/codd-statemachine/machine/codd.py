@@ -62,7 +62,7 @@ from pathlib import Path
 
 MACHINE_DIR = Path(__file__).resolve().parent
 MACHINE_REL = ".statemachine/codd"
-# install.py が書くカスタムエージェント。マシンの一部なので、探す・変わったかを測る対象にしない。
+# codd-init（init.py）が書くカスタムエージェント。マシンの一部なので、探す・変わったかを測る対象にしない。
 AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md")
 CONFIG_NAME = "codd.json"
 DATA_DIRNAME = ".codd"

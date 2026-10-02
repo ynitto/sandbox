@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-statemachine: 端末への導入とリポジトリの初期設定を別のコマンドにする
+
+- **`install.py` は端末に入れる。** 本体を `~/.statemachine/codd-statemachine/` に写し、初期設定のコマンド `codd-init` を
+  `~/.local/bin/` に置く（Windows は `codd-init.cmd`。`--dest`・`--bin-dir` で変えられる）。リポジトリには何も置かない
+- **`codd-init <リポジトリ> --side … --ref …` でリポジトリを初期設定する。** 本体を `.statemachine/codd/` に写し、
+  `codd.json`・カスタムエージェント・`.gitignore` を書く（今までの `install.py <リポジトリ> …` と同じ）。新しい版を端末に
+  入れたら、各リポジトリで `codd-init <リポジトリ>` をもう一度実行すると本体が入れ替わる
+- 前の使い方（`install.py <リポジトリ> …`）でも、端末に入れたうえで初期設定まで行う
+
 ### codd-statemachine: 計画を docs/.plan/ に判断の記録として残す
 
 - **計画は `docs/.plan/current.md` に書く。** 利用者はこのファイルを開いて確かめ、同じ回の練り直しではこれを直す
