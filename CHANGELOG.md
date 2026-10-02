@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### webui-test: Python から入れる `install.py`（webui-test 0.3.1）
+
+- **`python tools/webui-test/install.py` で入れられる。** Windows は install.ps1、ほかは install.sh を呼ぶ。
+  install.ps1 を `python` に渡して `SyntaxError: invalid syntax`（14 行目）になっていた
+- codd-statemachine の `install.py` が出す webui-test の入れ方も、この入口に揃えた
+
 ### codd-statemachine: 端末への導入とリポジトリへの設置を別のコマンドにする
 
 - **`install.py` は外部のミドルウェアを端末に入れる。** graphify を uv・pipx・pip のどれかで入れ（`--upgrade` で最新に）、

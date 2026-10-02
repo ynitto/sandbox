@@ -28,6 +28,9 @@ Linux / macOS / WSL:
 tools/webui-test/install.sh --check
 ```
 
+Python からなら OS を問わず `python tools/webui-test/install.py --check`（Windows は install.ps1、ほかは install.sh を呼ぶ）。
+install.ps1 を `python` に渡すと PowerShell の書き方を読めずに `SyntaxError` になる。
+
 足りないものだけを入れる。Node.js 18 以上が無ければ公式の LTS を利用者のフォルダに入れ（管理者権限は要らない）、
 npm パッケージ（playwright・@playwright/test・@playwright/cli・yaml・画像を比べる pngjs と pixelmatch）と Playwright の Chromium を入れて、
 `webui-test` コマンドを置く（Windows は `%LOCALAPPDATA%\webui-test\bin`、ほかは `~/.local/bin`）。
