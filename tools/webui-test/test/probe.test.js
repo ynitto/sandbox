@@ -34,6 +34,12 @@ test('probe: 確かめが要る操作・読むだけ・画面遷移・それ以�
   for (const c of ['goto', 'go-back', 'reload']) assert.strictEqual(classify(c), 'navigation', c);
   for (const c of ['open', 'close', 'kill-all']) assert.strictEqual(classify(c), 'lifecycle', c);
   assert.strictEqual(classify('eval'), 'other');
+  // ページを直に操作しうるが見張らないもの（通して unguarded に数える）。門を広げるかは unguarded の数を見て決める
+  for (const c of ['type', 'drag', 'drop', 'hover', 'upload', 'run-code', 'keydown', 'keyup', 'mousedown', 'mouseup', 'mousewheel', 'dialog-accept', 'dialog-dismiss']) {
+    assert.strictEqual(classify(c, ['x']), 'other', c);
+  }
+  assert.strictEqual(classify('press', ['Control+Enter']), 'other');
+  assert.strictEqual(classify('press', ['Meta+Enter']), 'other');
   assert.strictEqual(classify('probe'), 'probe');
 });
 
@@ -93,6 +99,20 @@ test('probe: --probe-before-act のときだけ依頼文に確かめ方が入る
   assert.match(probed, /guard click --probe probe-0001/);
 });
 
+test('probe: --probe-before-act の依頼文は「操作する:」を 1 行だけにし、ref での操作を案内しない', () => {
+  const lines = (p) => p.split('\n');
+  const probed = buildPrompt({ conditions: 'c', url: 'http://h/', explore: { command: 'guard', probe: true } });
+  assert.deepStrictEqual(lines(probed).filter((l) => l.startsWith('- 操作する:')), ['- 操作する: `guard click --probe probe-0001` / `fill --probe probe-0002 "文字"` / `select --probe probe-0003 値` / `check --probe probe-0004` / `press Enter --probe probe-0005`']);
+  assert.doesNotMatch(probed, /click e12/);
+  assert.match(probed, /guard goto <URL>/);
+  assert.match(probed, /go-back/);
+  assert.strictEqual(lines(probed).filter((l) => /ref/.test(l) && /YAML/.test(l)).length, 1, 'ref を YAML に書かない、は 1 度だけ言う');
+  // probe なしは今までどおり
+  const plain = buildPrompt({ conditions: 'c', url: 'http://h/', explore: { command: 'pwcli -s=x' } });
+  assert.deepStrictEqual(lines(plain).filter((l) => l.startsWith('- 操作する:')), ['- 操作する: `pwcli -s=x click e12` / `fill e8 "文字"` / `press Enter` / `goto <URL>` / `go-back`']);
+  assert.match(plain, /ref（e12 など）は YAML に書かない。/);
+});
+
 test('browse: 確かめたあとに位置が変わった対象は操作せず、ref での直の操作・ブラウザの開け閉めも断る', async (t) => {
   const dir = tmpDir(t);
   const state = path.join(dir, 'state.json');
@@ -134,11 +154,31 @@ test('browse: 確かめたあとに位置が変わった対象は操作せず、
   assert.deepStrictEqual(recs.map((r) => `${r.type}:${r.status || ''}`), ['probe:', 'action:rejected', 'action:rejected', 'action:rejected', 'action:done', 'action:rejected']);
 });
 
+test('browse: 確かめずに通した操作は、コマンド名と成否だけを記録に 1 行ずつ残す（引数は残さない）', async (t) => {
+  const dir = tmpDir(t);
+  const state = path.join(dir, 'state.json');
+  const ev = path.join(dir, 'ev');
+  initState(state);
+  const run = async (...args) => { const c = capture(); return browseMain([`--session=s`, `--state=${state}`, `--evidence=${ev}`, ...args], c.io, { bin: FAKE_PWCLI }); };
+
+  assert.strictEqual(await run('eval', 'document.querySelector("button").click()'), 0);
+  assert.strictEqual(await run('hover', '--role', 'button', '--name', '保存'), 0);
+  assert.strictEqual(loadState(state).stats.unguarded, 2);
+  const recs = readEvidence(ev);
+  assert.deepStrictEqual(recs.map((r) => ({ type: r.type, command: r.command, status: r.status })), [
+    { type: 'unguarded', command: 'eval', status: 'done' },
+    { type: 'unguarded', command: 'hover', status: 'done' },
+  ]);
+  for (const r of recs) assert.deepStrictEqual(Object.keys(r).sort(), ['at', 'command', 'status', 'type']);
+  const raw = fs.readFileSync(path.join(ev, 'explore-evidence.jsonl'), 'utf8');
+  assert.doesNotMatch(raw, /querySelector|保存|--role|button/);
+});
+
 test('compare: 使用量は不明のまま 0 にせず、baseline に無い数字は「対象外」と書く', () => {
   const rows = [
     { mode: 'baseline', validationPass: true, firstRunPass: false, retries: 0, ambiguousTargets: 1, missingOrNotReadyTargets: 0, probe: null, generateMs: 10 },
     { mode: 'candidate', validationPass: true, firstRunPass: true, retries: 0, ambiguousTargets: 0, missingOrNotReadyTargets: 0, generateMs: 20,
-      probe: { probes: 3, probesPerCase: 3, ambiguousProbes: 1, missingProbes: 0, hiddenOrDisabledProbes: 0, staleRejections: 0, missingProbeRejections: 0 } },
+      probe: { probes: 3, probesPerCase: 3, ambiguousProbes: 1, missingProbes: 0, hiddenOrDisabledProbes: 0, staleRejections: 0, missingProbeRejections: 0, unguarded: 7 } },
   ];
   const s = aggregate(rows);
   assert.strictEqual(s.baseline.usage, null);
@@ -146,6 +186,10 @@ test('compare: 使用量は不明のまま 0 にせず、baseline に無い数�
   const md = toMarkdown({ url: 'u', agent: 'a', runs: 1, summary: s });
   assert.match(md, /使用量（トークン） \| 不明 \| 不明 \|/);
   assert.match(md, /古い確認で断った操作 \| 対象外 \| 0 \|/);
+  assert.strictEqual(s.baseline.unguardedCommands, 'n/a');
+  assert.strictEqual(s.candidate.unguardedCommands, 7);
+  assert.match(md, /見張らずに通した操作 \| 対象外 \| 7 \|/);
+  assert.match(md, /確認なしで断った操作 \| 対象外 \| 0 \|\n\| 見張らずに通した操作 /, '確認なしで断った操作のすぐ下に出す');
 });
 
 // ---- 手元のブラウザで確かめる（外のサイトには行かない） ----
