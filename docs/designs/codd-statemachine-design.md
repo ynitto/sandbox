@@ -365,8 +365,8 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
   前の回の記録で読んだことにさせない
 - 決まりの発見: パスか最初の見出しに決まりらしい語（ルール・規約・コーディング・rules・guideline・convention など）を
   含むマークダウンを候補にする（`rules`）。候補は設定に書くまで検査の対象にしない——語の一致だけでは決まりとは限らず、
-  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `install.py`（置くこと自体が同意。
-  `--no-discover-rules` でやめる）と、確認（confirm）で訊いて `rules --write --only` するとき。
+  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `install.py` で初めて置くとき（置くこと自体が同意。
+  `--no-discover-rules` でやめる。既にある `codd.json` は利用者の設定なので、置き直しでは探し直さない）と、確認（confirm）で訊いて `rules --write --only` するとき。
   あとから増えた候補は `show` に出るので、計画のときに読まれる
 - スキルと道具: `skills.plan`・`tools.plan` は計画の「使ったスキルと道具」に、`skills.apply`・`tools.apply`
   （と変えた参照先の分）は `.codd/apply.md` にすべて挙がっていなければ落とす。`.codd/apply.md` は変える前の印より新しいこと
@@ -407,7 +407,8 @@ done は `codd.py report` の出力をそのまま伝える。計画のファイ
 - 結果の置き場は git に無視させているので、evidence や前回の画面を書いても変更に数えない
 - 単体テストは webui-test に持たせない。テストを動かすのはこのマシンの `test`（§4.2）
 - e2e のケースファイルに `# coherence: doc=…` を書けば §4.1 のつながりとしてたどる（任意。webui-test はこの注記を読まない）
-- `install.py` は、置き先に `webui-test.config.yaml`（`check` あり）があり `check` が未設定なら `["webui-test", "check"]` を書く。
+- `install.py` は、初めて置くときに `webui-test.config.yaml`（`check` あり）があれば `["webui-test", "check"]` を書く。
+  既にある `codd.json` は渡された項目しか書き換えない（利用者が手で整えた設定を置き直しで崩さない）。
   任意のコマンドは `--check` で書ける
 - Windows では `webui-test`・`npm` が `.cmd` なので、`run` は実行ファイルを PATHEXT で探してから起動する
 

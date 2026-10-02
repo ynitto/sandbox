@@ -632,12 +632,21 @@ class CoddTest(unittest.TestCase):
     def test_install_sets_check_and_picks_up_webui_test(self) -> None:
         cfg = self.impl / ".statemachine/codd/codd.json"
         self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
-        # webui-test の設定に check があれば、変えたあとの検査に webui-test check を使う。
-        (self.impl / "webui-test.config.yaml").write_text(
-            "serve: { command: npm start, url: http://localhost:3000 }\ncheck:\n  cases: [tests/e2e]\n"
-            "envs: { local: {} }\n", encoding="utf-8")
+        webui = ("serve: { command: npm start, url: http://localhost:3000 }\ncheck:\n  cases: [tests/e2e]\n"
+                 "envs: { local: {} }\n")
+        # 既にある codd.json には、あとから置いた webui-test の設定を勝手に書き足さない。
+        (self.impl / "webui-test.config.yaml").write_text(webui, encoding="utf-8")
         install.install(self.impl, None, None, discover=False)
-        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["webui-test", "check"])
+        self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
+        # 初めて置くとき、webui-test の設定に check があれば、変えたあとの検査に webui-test check を使う。
+        app = self.tmp / "app"
+        app.mkdir()
+        git(app, "init", "-q", "-b", "main")
+        (app / "webui-test.config.yaml").write_text(webui, encoding="utf-8")
+        install.install(app, "impl", ["../design"], discover=False)
+        self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["check"],
+                         ["webui-test", "check"])
+        install.install(self.impl, None, None, discover=False, check="webui-test check")
         r = self.run_pa(self.impl, "show")
         self.assertIn("変えたあとに実行するもの", r.stdout)
         self.assertIn("自分の検査: webui-test check", r.stdout)
@@ -680,6 +689,19 @@ class CoddTest(unittest.TestCase):
         cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg, {"side": "impl", "refs": [{"path": "../design"}],
                                "skills": {"plan": [], "apply": []}, "graphify": "auto"})
+        # 既にある codd.json は、手で書いた形のまま残す（並べ直し・書き足しもしない）。
+        path = self.impl / ".statemachine/codd/codd.json"
+        hand = ('{"side": "impl", "refs": [{"name": "design", "path": "../design", "rules": ["docs/r.md"],'
+                ' "scope": ["docs"]}],\n "skills": {"plan": [], "apply": []}, "graphify": "auto"}\n')
+        path.write_text(hand, encoding="utf-8")
+        install.install(self.impl, None, None)
+        self.assertEqual(path.read_text(encoding="utf-8"), hand)
+        install.install(self.impl, "impl", ["../design"])  # 同じ値を渡しても書き直さない
+        self.assertEqual(path.read_text(encoding="utf-8"), hand)
+        # --ref で参照先を入れ替えても、同じ名前の参照先に手で書いた rules・scope は残す。
+        install.install(self.impl, None, ["design=../design-v2"])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"],
+                         [{"name": "design", "path": "../design-v2", "rules": ["docs/r.md"], "scope": ["docs"]}])
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
                          [".statemachine/codd/"])
@@ -1361,12 +1383,18 @@ class CoddTest(unittest.TestCase):
 
     def test_install_discovers_rules(self) -> None:
         commit(self.design, {"docs/coding-rules.md": "# コーディングルール\n"}, "rules")
-        install.install(self.impl, None, None)
-        cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg["refs"][0]["rules"], ["docs/coding-rules.md"])
-        install.install(self.impl, None, None)  # 2 回置いても重ならない
-        cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg["refs"][0]["rules"], ["docs/coding-rules.md"])
+        app = self.tmp / "app"
+        app.mkdir()
+        git(app, "init", "-q", "-b", "main")
+        install.install(app, "impl", ["../design"])
+        path = app / ".statemachine/codd/codd.json"
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["rules"], ["docs/coding-rules.md"])
+        # 既にある codd.json には探し直して書き足さない（手で消した決まりが戻らない）。
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["refs"][0]["rules"] = []
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        install.install(app, None, None)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["rules"], [])
 
     def test_rules_accept_globs(self) -> None:
         commit(self.design, {"docs/rules/coding.md": "# a\n", "docs/rules/naming/api.md": "# b\n",

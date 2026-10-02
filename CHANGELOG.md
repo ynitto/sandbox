@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-statemachine: 置き直しても codd.json を上書きしない
+
+- **既にある `codd.json` は、`install.py` をもう一度実行してもそのまま残す。** 並べ直し・項目の書き足し・決まりの探し直し・
+  webui-test の検査の書き足しをしない。`--side` / `--ref` / `--scope` / `--ref-scope` / `--check` / `--test` を渡したときだけ、
+  その項目を書き換える。`--ref` で参照先を入れ替えても、同じ名前の参照先に手で書いた `rules`・`scope` などは残す
+
 ### webui-test: 探索で状態を変える操作の前に対象を確かめる `--probe-before-act`（webui-test 0.3.0）
 
 - **`generate --explore --probe-before-act` で、エージェントは対象を確かめてからでないと操作できない。** クリック・入力・選択・
