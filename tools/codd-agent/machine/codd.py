@@ -8,7 +8,7 @@
     rules [--write]     守る決まりのファイルと、決まりらしいマークダウンの候補を示す。--write で候補を codd.json に書く
     explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）。--ref で絞れる
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
-    verify-plan         計画（docs/.plan/current.md）が決まった形か、根拠が参照先に実在するか（パス・行・見出し・
+    verify-plan         計画（docs/.plans/日時-名前.md）が決まった形か、根拠が参照先に実在するか（パス・行・見出し・
                         `…` で囲んだ名前）、1 回で扱う範囲（max_files）に収まるかを検査する。
                         参照先の変更案があれば、それを自分に適用したときの影響範囲を測り、計画の影響範囲が
                         測ったファイルをすべて挙げているかも検査する。通ったら、変える前の印を控える
@@ -16,8 +16,9 @@
                         検査コマンドを確かめる。参照先を変えたら、実際の変更から影響範囲を測り直し、
                         測ったファイルを直したか「変更不要」としたかを検査する。書き足したパスが実在するか、
                         消したファイルを指したままのところが無いかも確かめる
-    draft [--new]       計画のひな形を docs/.plan/current.md に置く（あれば残す）。見出しごとに書き込ませ、全文を一度に書かせない
-    record              1 回の終わりに、計画へ確認の答えと結果（report）を書き足して docs/.plan/日付-名前.md に移す
+    draft --name 名前   計画のひな形を docs/.plans/日時-名前.md に置く（名前は英語の短い名前。進めている計画があれば残す）。
+                        見出しごとに書き込ませ、全文を一度に書かせない
+    record              1 回の終わりに、計画へ確認の答えと結果（report）を書き足して記録として残す（要らない情報は除く）
     decide 答え         確認・相談での利用者の答え（OK / NG / PLAN / APPLY / STOP）と指摘を控える。終わりの報告で計画の記録に書く
     summary             計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
@@ -27,6 +28,8 @@
     advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
     keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
+    lint [--since 日]  本流とは別の点検。リポジトリ全体の食い違い（壊れたパス・文書の書式・写したテストの結果・
+                        テスト・codd を通らなかった変更）を探し、本流に渡す「やりたいこと」の 1 行にする。何も直さない
 
 置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
 作業ファイルと graphify のグラフは `<リポジトリ>/.codd/` に置く。依存は python3 と git のみ
@@ -66,11 +69,14 @@ MACHINE_REL = ".statemachine/codd"
 AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md")
 CONFIG_NAME = "codd.json"
 DATA_DIRNAME = ".codd"
-# 計画の置き場所（自分のリポジトリ）。1 回の実行の計画は current.md に書き、利用者はこれを読んで確かめる。
-# 終わりの報告で、確認の答えと結果を書き足して日付付きの名前に移し、判断の記録として残す（コミットしてよい）。
-PLAN_DIR = "docs/.plan"
-PLAN_CURRENT = f"{PLAN_DIR}/current.md"
-MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR]
+# 計画の置き場所（自分のリポジトリ）。1 回の実行の計画は、始めるときに一意な名前（日時と英語の短い名前）で置き、
+# 利用者はこれを読んで確かめる。終わりに確認の答えと結果を書き足して、判断の記録としてそのまま残す（コミットしてよい）。
+# 結果の見出しが無い計画が、いま進めている回の計画。
+PLAN_DIR = "docs/.plans"
+OLD_PLAN_DIR = "docs/.plan"      # 前の版の置き場所（記録を読むだけ）
+RESULT_HEADING = "## 結果"
+MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR, OLD_PLAN_DIR]
+_PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
@@ -184,6 +190,34 @@ def run(argv: list[str], cwd: Path, timeout: int, env: dict | None = None) -> tu
     if is_git and proc.returncode == 0:
         return 0, proc.stdout or ""
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def git_grep(side: "Side", args: list[str]) -> list[str]:
+    """git grep を scope の中で引き、一致した行（-l ならファイル）を返す。終了コード 1 だけが「該当なし」。
+
+    それ以外の失敗（古い git が知らないオプション（129）、壊れたリポジトリ、時間切れ）を「該当なし」と
+    取り違えると、影響範囲やテストを黙って取りこぼすので止める。
+    """
+    rc, out = run(["git", "grep", *args, *side.pathspec()], side.path, GIT_TIMEOUT)
+    if rc == 1:
+        return []
+    if rc != 0:
+        raise CoddError(f"{side.path} で git grep が失敗しました（終了コード {rc}）: {out.strip()[:300]}")
+    return [ln for ln in out.splitlines() if side.has(ln.split(":", 1)[0])]
+
+
+GREP_PER_FILE = 3   # 1 つの語で 1 ファイルから拾う行の上限（git の --max-count は 2.38 より前に無いので、ここで絞る）
+
+
+def per_file(lines: list[str], limit: int = GREP_PER_FILE) -> list[str]:
+    counts: dict[str, int] = {}
+    out = []
+    for ln in lines:
+        rel = ln.split(":", 1)[0]
+        counts[rel] = counts.get(rel, 0) + 1
+        if counts[rel] <= limit:
+            out.append(ln)
+    return out
 
 
 def skill_list(value, where: str) -> list[str]:
@@ -378,6 +412,21 @@ class Ref(Side):
         return (self.config or {}).get("tests", DEFAULT_TEST_PATTERNS)
 
 
+def active_plan(root: Path) -> Path | None:
+    """いま進めている回の計画（結果の見出しがまだ無いもの。2 つ以上あれば新しいほう）。"""
+    folder = root / PLAN_DIR
+    open_plans = [p for p in sorted(folder.glob("*.md")) if RESULT_HEADING not in
+                  (read_text(p) or "").splitlines()] if folder.is_dir() else []
+    return open_plans[-1] if open_plans else None
+
+
+def plan_rel(ctx: "Ctx") -> str:
+    return ctx.plan.relative_to(ctx.root).as_posix()
+
+
+NO_PLAN = f"計画がありません（`python3 {MACHINE_REL}/codd.py draft --name 英語の短い名前` でひな形を置く）"
+
+
 class Ctx:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -385,7 +434,7 @@ class Ctx:
         self.side = self.config["side"]
         self.own = Side("own", root, self.config["scope"])
         self.data = root / DATA_DIRNAME
-        self.plan = root / PLAN_CURRENT
+        self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
         self.max_files = self.config["max_files"]
         self.refs: list[Ref] = []
         for entry in self.config["refs"]:
@@ -765,7 +814,7 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     own_skills = repo_skills(ctx.root, ctx.config["skill_dirs"])
     if own_skills:
         print("リポジトリのスキル（設定しなくても使う。関係するものは読み込み、SKILL.md の手順に従う。"
-              "使わないものは計画の「使ったスキルと道具」に「使わない: 理由」を書く）:")
+              "計画の「使ったスキルと道具」には使ったものだけを書く）:")
         print("\n".join(skill_lines(own_skills)))
     for r in ctx.refs:
         if r.path != ctx.root:
@@ -898,9 +947,7 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
         # --untracked: まだコミットしていない新しいファイルも拾う（.gitignore に載っているものは除く）。
         # 識別子は語単位（-w）で引く。`hello` で `helloWorld` を拾って影響範囲を水増ししない。
         word = ["-w"] if _WORDLIKE.match(term) else []
-        rc, out = run(["git", "grep", "--untracked", "-n", "-I", "-i", "-F", *word, "--max-count", "3", "-e", term,
-                       *side.pathspec()], repo, GIT_TIMEOUT)
-        hits = [h for h in out.splitlines() if side.has(h.split(":", 1)[0])][:GREP_LINES_PER_TERM] if rc == 0 else []
+        hits = per_file(git_grep(side, ["--untracked", "-n", "-I", "-i", "-F", *word, "-e", term]))[:GREP_LINES_PER_TERM]
         lines += [f"#### {term}", "", *([f"- {h[:200]}" for h in hits] or ["- (該当なし)"]), ""]
         for h in hits:
             rel, _, rest = h.partition(":")
@@ -1309,6 +1356,7 @@ def ref_label(ctx: Ctx, name: str, rel: str) -> str:
 # 文書（マークダウンなど）の `…` で囲んだパスと、リンク [文字](パス)。文書のコードブロックと `…` の中の注記は例として拾わない。
 _ANNOT = re.compile(r"coherence:\s*(?:doc|code|test)\s*=\s*([^\s`\"'<>]+)")
 _INLINE_PATH = re.compile(r"`([^`\n]{2,200})`")
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
 _MD_LINK = re.compile(r"\[[^\]]*\]\(([^)#?\s]+)")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _NOT_PATH_CHARS = set(" \t|$&;<>\"'*?{}()=,")
@@ -1348,7 +1396,8 @@ def claims_in(rel: str, text: str) -> list[Claim]:
         for m in _INLINE_PATH.finditer(line):
             if "coherence:" not in m.group(1) and pathlike(m.group(1)):
                 out.append(Claim(no, m.group(1).strip(), "code"))
-        out += [Claim(no, m.group(1), "link") for m in _MD_LINK.finditer(line) if pathlike(m.group(1))]
+        out += [Claim(no, m.group(1), "link") for m in _MD_LINK.finditer(_INLINE_CODE.sub("", line))
+                if pathlike(m.group(1))]   # `[説明](パス)` のように `…` の中のリンクは書き方の例
     return out
 
 
@@ -1418,8 +1467,7 @@ def files_mentioning(side: Side, words: list[str]) -> list[str]:
     if not words:
         return []
     args = [a for w in words for a in ("-e", w)]
-    rc, out = run(["git", "grep", "--untracked", "-l", "-I", "-F", *args, *side.pathspec()], side.path, GIT_TIMEOUT)
-    return [ln for ln in out.splitlines() if side.has(ln)][:MAX_TRACE_FILES] if rc == 0 else []
+    return git_grep(side, ["--untracked", "-l", "-I", "-F", *args])[:MAX_TRACE_FILES]
 
 
 def linked(ctx: Ctx, key: str, rels: set[str]) -> set[tuple[str, str]]:
@@ -1628,11 +1676,8 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     problems += used_problems(bodies["## 使ったスキルと道具"],
                               ctx.config["skills"]["plan"] + ctx.config["tools"]["plan"], "使ったスキルと道具")
     configured = set(ctx.config["skills"]["plan"])
+    # リポジトリのスキルは、使ったものだけを書く（使わないものを 1 つずつ断らせない。記録に要らない）。
     found = [s.name for s in repo_skills(ctx.root, ctx.config["skill_dirs"]) if s.name not in configured]
-    missing = [n for n in found if not mentioned(bodies["## 使ったスキルと道具"], n)]
-    if missing:
-        problems.append("使ったスキルと道具に、リポジトリのスキルを使った結果か「使わない: 理由」を書いてください"
-                        "（関係するものは使う）: " + ", ".join(f"`{n}`" for n in missing))
     used = used_skill_names(bodies["## 使ったスキルと道具"], unique([*ctx.config["skills"]["plan"], *found]))
     problems += unread_problem(unread_skills(ctx, used), "使ったスキルと道具に挙げた")
     for heading in CITED_IN_REFS:
@@ -2091,15 +2136,32 @@ class Mark:
 
 def marked_docs(ctx: Ctx, key: str) -> list[str]:
     side = side_of(ctx, key)
-    rc, out = run(["git", "grep", "-l", "-I", "--untracked", "-E", r"<!--[[:space:]]*evidence:", *side.pathspec()],
-                  side.path, GIT_TIMEOUT)
-    return [ln for ln in out.splitlines() if side.has(ln) and ln.lower().endswith(DOC_EXTS)] if rc == 0 else []
+    return [ln for ln in git_grep(side, ["-l", "-I", "--untracked", "-E", r"<!--[[:space:]]*evidence:"])
+            if ln.lower().endswith(DOC_EXTS)]
+
+
+def mask_examples(text: str) -> str:
+    """コードブロックと `…` の中を、同じ長さの空白に置き換える（記入例の印を拾わず、位置は保つ）。"""
+    out, fenced = [], False
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if _FENCE.match(line) or fenced:
+            fenced = fenced != bool(_FENCE.match(line))
+            out.append(" " * len(body) + line[len(body):])
+        else:
+            out.append(_INLINE_CODE.sub(lambda m: " " * len(m.group(0)), body) + line[len(body):])
+    return "".join(out)
+
+
+def real_marks(text: str) -> list[re.Match]:
+    """文書の中の、記入例ではない証跡の印（位置は元の文書と同じ。中身は元の文書から切り出す）。"""
+    return list(_EVIDENCE_MARK.finditer(mask_examples(text)))
 
 
 def marks_in(ctx: Ctx, key: str, rel: str) -> list[Mark]:
     text = read_text(side_of(ctx, key).path / rel) or ""
     return [Mark(key, rel, text.count("\n", 0, m.start()) + 1, m.group("id"), mark_opts(m.group("opts")),
-                 m.span("body"), m.group("body")) for m in _EVIDENCE_MARK.finditer(text)]
+                 m.span("body"), text[m.start("body"):m.end("body")]) for m in real_marks(text)]
 
 
 def evidence_marks(ctx: Ctx, only: set[tuple[str, str]] | None = None) -> list[Mark]:
@@ -2365,16 +2427,18 @@ def cmd_evidence(ctx: Ctx, args: argparse.Namespace) -> int:
             path = side_of(ctx, key).path / rel
             text = path.read_text(encoding="utf-8")
 
-            def sub(m: re.Match) -> str:
+            new, pos = [], 0
+            for m in real_marks(text):   # コードブロックと `…` の中の記入例は書き戻さない
                 items = find_evidence(ctx, evs, key, m.group("id"))
+                body = text[m.start("body"):m.end("body")]
                 if not items:
-                    return m.group(0)
+                    continue
                 now = render_mark(m.group("id"), items, path)
                 tol = float(mark_opts(m.group("opts")).get("tolerance", EVIDENCE_TOLERANCE))
-                if close_enough(m.group("body"), now, tol):
-                    return m.group(0)
-                return m.group(0)[:m.start("body") - m.start()] + now + m.group(0)[m.end("body") - m.start():]
-            new = _EVIDENCE_MARK.sub(sub, text)
+                if not close_enough(body, now, tol):
+                    new += [text[pos:m.start("body")], now]
+                    pos = m.end("body")
+            new = "".join(new) + text[pos:]
             if new != text:
                 path.write_text(new, encoding="utf-8")
                 written.append(side_label(ctx, key, rel))
@@ -2521,6 +2585,20 @@ def write_baseline(ctx: Ctx) -> None:
 
 
 KEEP_MARK = "keep-baseline"
+PASSED_PLAN = "passed-plan"   # 計画の検査を通り、確認で直す・やめるとされていない計画の印
+
+
+def plan_digest(ctx: Ctx) -> str:
+    return hashlib.sha256(ctx.plan.read_bytes()).hexdigest()
+
+
+def plan_unconfirmed(ctx: Ctx) -> list[str]:
+    """変えてよいのは、計画の検査を通って、確認で退けられていない計画だけ（止まったところから飛ばして来ても通さない）。"""
+    mark = ctx.data / PASSED_PLAN
+    if mark.is_file() and mark.read_text(encoding="utf-8") == plan_digest(ctx):
+        return []
+    return ["計画が、検査を通って利用者が確かめたものではありません（計画を直したか、確認で退けられたか、"
+            "計画の検査で止まったままです。計画を練り直し、検査と確認を通してから変えてください）"]
 
 
 def backup_dir(ctx: Ctx, key: str) -> Path:
@@ -2555,7 +2633,7 @@ def print_problems(ctx: Ctx, phase: str, problems: list[str]) -> None:
 
 def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     if not ctx.plan.is_file():
-        print_problems(ctx, "plan", [f"計画がありません: {PLAN_CURRENT}（`codd.py draft` でひな形を置く）"])
+        print_problems(ctx, "plan", [NO_PLAN])
         return 1
     text = ctx.plan.read_text(encoding="utf-8")
     _, bodies = sections(text, PLAN_HEADINGS)
@@ -2574,8 +2652,10 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         problems += measured_problems
     print_problems(ctx, "plan", problems)
     if problems:
+        (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
         return 1
     write_baseline(ctx)
+    (ctx.data / PASSED_PLAN).write_text(plan_digest(ctx), encoding="utf-8")
     notes = []
     if measured:
         notes.append(f"影響範囲を測った: {len(measured)} files、{DATA_DIRNAME}/impact.md")
@@ -2639,7 +2719,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         print_problems(ctx, "apply", [a])
         return 1
     bodies = a.bodies
-    problems = list(a.plan_problems)
+    problems = plan_unconfirmed(ctx) + list(a.plan_problems)
     tp = test_plan(ctx, bodies)
     problems += tp.problems
     problems += formats_apply_problems(ctx, "\n".join(bodies.values()))
@@ -2915,6 +2995,7 @@ def record_problems(data: Path, phase: str, problems: list[str], kind: str | Non
 # 止めた理由の分類。上から順に当てる。（種類, 段, 目印）
 _KINDS = (
     ("stale", "any", ("計画がありません", "印がありません", "印が古い形")),
+    ("unconfirmed", "apply", ("利用者が確かめたものではありません",)),
     ("pending", "plan", (f"「{PENDING_MARK}」",)),
     ("size", "plan", ("上限",)),
     ("extra", "apply", ("計画に無いファイルを変えています", "変更案に無いファイルを変えています", "が変わっています（戻してください）")),
@@ -2956,6 +3037,8 @@ ADVICE = {
     },
     "apply": {
         "stale": (["reset", "stop"], "変える前の印がありません。計画から練り直します"),
+        "unconfirmed": (["keep", "reset", "stop"],
+                        "確かめていない計画で変えました。変えた分を残すか戻すかを決めてもらい、計画の検査と確認からやり直します"),
         "extra": (["reapply", "keep", "reset", "stop"],
                   "計画に無いファイルを変えました。その変更を戻して変え直すか、計画に足すかを決めてもらいます"),
         "undone": (["reapply", "keep", "reset", "stop"],
@@ -3064,14 +3147,24 @@ SUMMARY_WIDTH = 120
 
 
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
-    """ひな形を docs/.plan/current.md に置く（あれば残す）。見出しごとにコメントを本文へ置き換えて書いていく。"""
+    """ひな形を docs/.plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
     if ctx.plan.is_file() and not args.new:
-        print(f"計画はもうあります: {ctx.plan.relative_to(ctx.root).as_posix()}（直す見出しだけを書き換える。"
-              "最初から書き直すときは --new）")
+        print(f"計画はもうあります: {plan_rel(ctx)}（直す見出しだけを書き換える。最初から書き直すときは --new）")
         return 0
-    ctx.plan.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", ctx.plan)
-    print(f"ひな形を置きました: {ctx.plan.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
+    name = (args.name or "").strip().lower()
+    if not _PLAN_NAME.match(name) or len(name) > 40:
+        print("計画の名前を、英語の短い名前で渡してください（小文字・数字・ハイフン。40 文字まで。"
+              "例: `--name hello-returns-two`）", file=sys.stderr)
+        return 2
+    if ctx.plan.is_file():
+        ctx.plan.unlink()   # --new: 進めていた計画を捨てて書き直す
+    base = f"{time.strftime('%Y-%m-%d-%H%M')}-{name}"
+    dest, n = ctx.root / PLAN_DIR / f"{base}.md", 2
+    while dest.exists():
+        dest, n = ctx.root / PLAN_DIR / f"{base}-{n}.md", n + 1
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
+    print(f"ひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
     return 0
 
 
@@ -3082,7 +3175,7 @@ def _clip(line: str) -> str:
 def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
     """計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる。"""
     if not ctx.plan.is_file():
-        print(f"計画がありません: {ctx.plan.relative_to(ctx.root).as_posix()}", file=sys.stderr)
+        print(NO_PLAN, file=sys.stderr)
         return 1
     _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
     rel = ctx.plan.relative_to(ctx.root).as_posix()
@@ -3129,24 +3222,19 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": args.answer, "note": args.note.strip()})
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if args.answer in ("NG", "STOP"):
+        (ctx.data / PASSED_PLAN).unlink(missing_ok=True)   # 退けた計画では変えさせない
     print(f"控えました: {args.answer}（{DECISIONS[args.answer]}）")
     return 0
 
 
-def plan_slug(bodies: dict[str, str]) -> str:
-    """やりたいことの最初の行から、ファイル名に使える短い名前を作る。"""
-    first = next((ln.strip() for ln in bodies.get("## やりたいこと", "").splitlines() if ln.strip()), "")
-    slug = re.sub(r"[^\w]+", "-", re.sub(r"^[-*]\s*", "", first)).strip("-_")
-    return slug[:40].rstrip("-_") or "plan"
-
-
 def record_problems_of(ctx: Ctx) -> list[str]:
-    """終わった回の計画の記録（コミット済み）を書き換えていないか。練り直しで直してよいのは current.md だけ。"""
+    """終わった回の計画の記録（コミット済み）を書き換えていないか。練り直しで直してよいのは、いま進めている計画だけ。"""
     rc, out = run(["git", "-c", "core.quotepath=false", "status", "--porcelain", "--", PLAN_DIR], ctx.root, GIT_TIMEOUT)
     changed = [ln[3:] for ln in out.splitlines() if rc == 0 and ln[:2].strip() and not ln.startswith("??")
-               and ln[3:] != PLAN_CURRENT]
+               and ln[3:] != plan_rel(ctx)]
     return ["終わった回の計画の記録を書き換えています（判断の記録なので変えない。直すのは "
-            f"{PLAN_CURRENT} だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else []
+            f"いま進めている計画だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else []
 
 
 def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
@@ -3159,32 +3247,208 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
     record = finalize_plan(ctx, result)
     if not record:
-        print(f"記録する計画がありません: {PLAN_CURRENT}", file=sys.stderr)
+        print(NO_PLAN, file=sys.stderr)
         return 1
     print(f"計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
     return 0
 
 
+# 記録に残さない行: 使わなかったスキル・関係の無かったファイルの判断と、書き換え忘れたひな形の説明。
+_NOT_RECORDED = re.compile(r"^-\s*(?:`[^`]+`\s*—\s*)?使わない[:：]|^-\s*関係なし[:：]|^<!--.*-->$")
+
+
+def prune_plan(text: str) -> str:
+    """記録に要らないもの（使わなかったスキル・関係なしとしたファイル・中身が「なし」の見出し）を除く。"""
+    out: list[str] = []
+    head: list[str] = []      # 見出しと、その下に残す行
+    skip = False
+    def flush() -> None:
+        body = [ln for ln in head[1:] if ln.strip()]
+        if head and (not head[0].startswith("## ") or (body and not is_none("\n".join(body)))):
+            out.extend(head)
+    for line in text.splitlines():
+        if line.startswith("#"):
+            flush()
+            head, skip = [line], False
+            continue
+        if _NOT_RECORDED.match(line.strip()) and not line.startswith(" "):
+            skip = True
+            continue
+        if skip and line.startswith((" ", "\t")) and line.strip():
+            continue      # 除いた項目の続きの行
+        skip = False
+        head.append(line)
+    flush()
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
 def finalize_plan(ctx: Ctx, result: list[str]) -> str | None:
-    """1 回の実行の計画を、確認の答えと結果を書き足して日付付きの名前に移す（判断の記録）。"""
+    """1 回の実行の計画に、確認の答えと結果を書き足して、判断の記録としてそのまま残す。要らない情報は除く。"""
     if not ctx.plan.is_file():
         return None
-    text = ctx.plan.read_text(encoding="utf-8").rstrip()
-    _, bodies = sections(text, PLAN_HEADINGS)
     decisions = load_decisions(ctx)
-    lines = [text, "", "## 確認と判断", ""]
+    lines = [prune_plan(ctx.plan.read_text(encoding="utf-8")), "", "## 確認と判断", ""]
     lines += [f"- {d['at']} {d['answer']}（{DECISIONS.get(d['answer'], '')}）" + (f": {d['note']}" if d["note"] else "")
               for d in decisions] or ["- 記録なし"]
-    lines += ["", "## 結果", "", *[("#" + ln if ln.startswith("## ") else ln) for ln in result], ""]
-    base = f"{time.strftime('%Y-%m-%d-%H%M')}-{plan_slug(bodies)}"
-    dest = ctx.plan.parent / f"{base}.md"
-    n = 2
-    while dest.exists():
-        dest, n = ctx.plan.parent / f"{base}-{n}.md", n + 1
-    dest.write_text("\n".join(lines), encoding="utf-8")
-    ctx.plan.unlink()
+    lines += ["", RESULT_HEADING, "", *[("#" + ln if ln.startswith("## ") else ln) for ln in result], ""]
+    ctx.plan.write_text("\n".join(lines), encoding="utf-8")
     (ctx.data / DECISIONS_NAME).unlink(missing_ok=True)
-    return dest.relative_to(ctx.root).as_posix()
+    return plan_rel(ctx)
+
+
+# ---------------------------------------------------------------- 点検（本流とは別。読むだけ）
+#
+# 本流は依頼が触れた範囲しか見ないので、codd を通らずに入った変更や、もとからある食い違いは残る。
+# 点検はリポジトリ全体に本流と同じ部品を当て、見つけたものを本流に渡す「やりたいこと」の 1 行にする。
+# 直すのは本流（変える道を 1 本に保つ）。書くのは作業フォルダの .codd/lint.md だけ。
+
+LINT_SINCE = "30 days ago"
+
+
+def tracked(side: Side) -> list[str]:
+    rc, out = run(["git", "-c", "core.quotepath=false", "ls-files", *side.pathspec()], side.path, GIT_TIMEOUT)
+    return [ln for ln in out.splitlines() if side.has(ln)] if rc == 0 else []
+
+
+def lint_paths(ctx: Ctx) -> list[tuple[str, str]]:
+    """文書のリンクと注記（coherence:）が指すパスのうち、どの側にも無いもの。（見つけたこと, やりたいこと）"""
+    out = []
+    for key, side in all_sides(ctx):
+        files = {rel for rel in tracked(side) if rel.lower().endswith(DOC_EXTS)}
+        files |= set(git_grep(side, ["-l", "-I", "-F", "coherence:"]))
+        for rel in sorted(files):
+            for claim in claims_in(rel, read_text(side.path / rel) or ""):
+                if claim.kind == "code" or not pathlike(claim.token) or "\\" in claim.token:
+                    continue   # `…` のパスは、別のリポジトリのファイルや書き方の例が多い。全体ではリンクと注記だけを見る
+                r = resolve(ctx, side, rel, claim)
+                if r.candidates and not r.exists:
+                    where = f"{side_label(ctx, key, rel)}:{claim.line}"
+                    out.append((f"{where} → {claim.token}",
+                                f"`{where}` が指す `{claim.token}` が無いので、指す先を今のファイルに合わせたい"))
+    return out
+
+
+def lint_formats(ctx: Ctx) -> list[tuple[str, str]]:
+    """同じフォルダのほかの文書がみな持つ見出しを、欠いている文書（ほかに 2 つ以上あるときだけ）。"""
+    out = []
+    for key, side in all_sides(ctx):
+        folders: dict[str, list[str]] = {}
+        for rel in tracked(side):
+            if rel.lower().endswith(FORMAT_EXTS) and not is_test(ctx, key, rel) \
+                    and Path(rel).stem.lower() not in _NOT_MODELS:
+                folders.setdefault(str(Path(rel).parent), []).append(rel)
+        for rels in folders.values():
+            if len(rels) < 3:
+                continue
+            heads = {rel: doc_headings(read_text(side.path / rel) or "") for rel in rels}
+            for rel in rels:
+                others = [heads[o] for o in rels if o != rel]
+                common = [h for h in others[0] if all(h in o for o in others[1:])]
+                missing = [h for h in common if h not in heads[rel]]
+                if missing:
+                    label = side_label(ctx, key, rel)
+                    shown = " / ".join(h.lstrip("# ") for h in missing[:5])
+                    out.append((f"{label} — 欠けている見出し: {shown}",
+                                f"`{label}` の見出しを、同じフォルダの文書の書式（{shown}）に合わせたい"))
+    return out
+
+
+def lint_evidence(ctx: Ctx, tested: bool) -> list[tuple[str, str]]:
+    marks = evidence_marks(ctx)
+    if not marks:
+        return []
+    evs = all_evidence(ctx)
+    if not any(e.files for e in evs.values()):
+        if not tested:
+            return []   # テストを動かしていなければ、結果が無いのは当たり前（結果はふつうコミットしない）
+        return [("文書がテストの結果を写していますが、テストで得たもの（evidence）がありません",
+                 "テストを動かして、文書に写したテストの結果を確かめたい")]
+    stale, bad = check_marks(ctx, evs, marks)
+    return ([(b, f"{b.split(' — ')[0]} の求めを満たすよう、実装か文書を直したい") for b in bad]
+            + [(st, f"{st.split('（')[0]} に写したテストの結果を、今の値に写し直したい") for st in stale])
+
+
+def lint_tests(ctx: Ctx) -> list[tuple[str, str]]:
+    """両側のテスト（設定の test）を動かす。検査（check）はファイルを作り直すことがあるので動かさない。"""
+    out = []
+    sides = [("自分", ctx.root, ctx.config.get("test")), *((r.name, r.path, r.test) for r in ctx.refs)]
+    for who, repo, test in sides:
+        for name, argv in test_commands(test):
+            before = run(["git", "status", "--porcelain"], repo, GIT_TIMEOUT)[1]
+            label = f"{who}のテスト{f'（{name}）' if name else ''}"
+            for p in run_check(repo, argv, label):
+                out.append((p, f"{label}（{' '.join(argv)}）が落ちているので直したい"))
+            if run(["git", "status", "--porcelain"], repo, GIT_TIMEOUT)[1] != before:
+                out.append((f"{label}を動かしたら、作業中のファイルが変わりました（点検は直さないので、確かめてください）",
+                            f"{label}が書き換えるファイルを、コミットするものか .gitignore に入れるものかに分けたい"))
+    return out
+
+
+def plan_records(ctx: Ctx) -> str:
+    """どの側のリポジトリにもある、終わった回の計画の記録（codd を通った変更の手がかり）。"""
+    text = []
+    for repo in unique_paths(str(s.path) for _, s in all_sides(ctx)):
+        for folder in (Path(repo) / PLAN_DIR, Path(repo) / OLD_PLAN_DIR):
+            text += [read_text(p) or "" for p in sorted(folder.glob("*.md"))] if folder.is_dir() else []
+    return "\n".join(text)
+
+
+def lint_bypassed(ctx: Ctx, since: str) -> list[tuple[str, str]]:
+    """codd を置いたあと、期間のうちにコミットされた変更で、計画の記録に出てこないファイル（codd を通らずに入った変更）。"""
+    records = plan_records(ctx)
+    out = []
+    for key, side in all_sides(ctx):
+        # codd を置いたコミットより前は、codd を通りようがないので数えない。
+        placed = run(["git", "log", "--format=%H", "--diff-filter=A", "--", f"{MACHINE_REL}/{CONFIG_NAME}"],
+                     side.path, GIT_TIMEOUT)[1].split()
+        rng = [f"{placed[-1]}..HEAD"] if placed else []
+        rc, log = run(["git", "-c", "core.quotepath=false", "log", *rng, f"--since={since}", "--no-merges",
+                       "--date=short", "--format=%x00%h %ad", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
+        seen: set[str] = set()
+        for chunk in (log.split("\0") if rc == 0 else []):
+            first, *names = chunk.strip().splitlines() or [""]
+            labels = []
+            for rel in names:
+                rel = rel.strip()
+                if not rel or rel in seen or not side.has(rel) or rel in records:
+                    continue
+                seen.add(rel)   # 新しいコミットから見るので、同じファイルは最後に変えたコミットで挙げる
+                labels.append(side_label(ctx, key, rel))
+                gone = "（いまは無い）" if not (side.path / rel).exists() else ""
+                out.append((f"{labels[-1]}{gone} — {first}", ""))
+            if labels:   # やりたいことはコミットごとに 1 行
+                shown = ", ".join(f"`{x}`" for x in labels[:5]) + (f" ほか {len(labels) - 5} 件" if len(labels) > 5 else "")
+                out[-1] = (out[-1][0], f"codd を通らずに入った変更（{first}: {shown}）に合わせて、"
+                                       "コード・文書・テストの食い違いを確かめたい")
+    return out
+
+
+LINT_SECTIONS = (("壊れたパス", "paths"), ("文書の書式", "formats"), ("テストの結果を写した文書", "evidence"),
+                  ("テスト", "tests"), ("codd を通らなかった変更", "bypassed"))
+LINT_SHOWN = 30
+
+
+def cmd_lint(ctx: Ctx, args: argparse.Namespace) -> int:
+    found = {"paths": lint_paths(ctx), "formats": lint_formats(ctx),
+             "tests": [] if args.no_test else lint_tests(ctx)}
+    found["evidence"] = lint_evidence(ctx, not args.no_test)     # テストのあとに見る（テストが evidence を書き直す）
+    found["bypassed"] = lint_bypassed(ctx, args.since)
+    lines = [f"# 点検の結果（{time.strftime('%Y-%m-%d %H:%M')}。変更は {args.since} から）", ""]
+    for title, key in LINT_SECTIONS:
+        if key == "tests" and args.no_test:
+            continue
+        lines += [f"## {title}", "", *([f"- {f}" for f, _ in found[key]] or ["- なし"]), ""]
+    asks = list(dict.fromkeys(a for key in found for _, a in found[key] if a))
+    lines += ["## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / "lint.md").write_text("\n".join(lines), encoding="utf-8")
+    counts = "、".join(f"{t} {len(found[k])}" for t, k in LINT_SECTIONS if not (k == "tests" and args.no_test))
+    print(f"{'NG' if asks else 'OK'} 点検: {counts}（全文: {DATA_DIRNAME}/lint.md）")
+    for a in asks[:LINT_SHOWN]:
+        print(f"- {a}")
+    if len(asks) > LINT_SHOWN:
+        print(f"- ほか {len(asks) - LINT_SHOWN} 件（{DATA_DIRNAME}/lint.md）")
+    return 1 if asks else 0
 
 
 # ---------------------------------------------------------------- 入口
@@ -3202,10 +3466,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
-    dr = sub.add_parser("draft", help="計画のひな形を docs/.plan/current.md に置く（あれば残す）")
-    dr.add_argument("--new", action="store_true", help="今の計画を捨ててひな形から書き直す")
+    dr = sub.add_parser("draft", help="計画のひな形を docs/.plans/日時-名前.md に置く（進めている計画があれば残す）")
+    dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
+    dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
-    sub.add_parser("record", help="計画を、確認の答えと結果を書き足して docs/.plan/ に日付付きで残す（終わりに呼ぶ）")
+    sub.add_parser("record", help="計画に確認の答えと結果を書き足し、判断の記録として残す（終わりに呼ぶ）")
     de = sub.add_parser("decide", help="確認・相談での利用者の答えを控える（終わりの報告で計画の記録に書く）")
     de.add_argument("answer", choices=list(DECISIONS), help="OK / NG（確認）か PLAN / APPLY / STOP（止まったときの相談）")
     de.add_argument("--note", default="", help="利用者の指摘や指示（そのまま）")
@@ -3221,6 +3486,9 @@ def build_parser() -> argparse.ArgumentParser:
     ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
     ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")
     ev.add_argument("--write", action="store_true", help="文書の印を今の値に写し直す")
+    au = sub.add_parser("lint", help="本流とは別の点検。リポジトリ全体の食い違いを探し、本流に渡すやりたいことにする（直さない）")
+    au.add_argument("--since", default=LINT_SINCE, help=f"codd を通らなかった変更を探す期間の始め（git の日付。既定 {LINT_SINCE!r}）")
+    au.add_argument("--no-test", action="store_true", help="テスト（設定の test）を動かさない")
     ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
     ru.add_argument("--write", action="store_true", help="候補を codd.json の rules / refs[].rules に書く")
     ru.add_argument("--only", action="append", help="書く候補を絞る（`名前:パス` か `パス`。繰り返し可）")
@@ -3231,7 +3499,8 @@ COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
             "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
             "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule,
-            "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record}
+            "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record,
+            "lint": cmd_lint}
 
 
 def main(argv: list[str] | None = None) -> int:

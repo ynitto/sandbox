@@ -20,7 +20,7 @@
 既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は上書きしない。--side / --ref / --scope /
 --ref-scope / --check / --test を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
 参照先に手で書いた rules・scope などは残す）。使うスキルは codd.json の skills を手で書く。
-`.codd/`（計画・探した結果・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
+`.codd/`（探した結果・検査の記録・変える前の写し・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
 このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
 初めて置いたときは、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules /
 refs[].rules に書く（--no-discover-rules でやめる。あとからは `codd.py rules --write`）。
