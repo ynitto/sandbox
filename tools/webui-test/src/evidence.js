@@ -1,6 +1,6 @@
 'use strict';
 // テストで得たもの（合否のほかに、確かめた振る舞い・測った時間・前回と比べた画面）を evidence.json に書き出す。
-// 仕様書には依存しない。codd-statemachine などがこれを読み、文書への影響を測って差し替える。
+// 仕様書には依存しない。codd-agent などがこれを読み、文書への影響を測って差し替える。
 //
 //   { "version": 1, "source": "webui-test", "generatedAt": "…", "items": [
 //     { "id": "login/S-01", "kind": "behavior", "title": "ログイン画面 正しい ID でログインできる", "status": "passed",
@@ -9,7 +9,8 @@
 //     { "id": "login/S-01/ログイン画面", "kind": "image", "status": "changed", "path": "webui-test-results/screens/…png",
 //       "sha256": "…", "history": ["今の sha256", "前の sha256", …], "previous": "…png", … } ] }
 //
-// id は「ケースファイルの名前（拡張子なし）/ケースの ID[組]/名前」。パスは設定ファイルのフォルダ（root）からの相対。
+// id は「ケースファイルの名前（拡張子なし）/ケースの ID[組]/名前」。パスは設定ファイルのフォルダからの相対で、
+// そのフォルダを `root`（この evidence.json のフォルダからの相対）に書く。読む側はテストの道具を知らなくてよい。
 
 const fs = require('fs');
 const path = require('path');
@@ -46,16 +47,19 @@ function buildEvidence(report, screens, { root }) {
 // 実行ごとの evidence.json と、最新をまとめた <置き場>/evidence.json を書く。最新は今回動かしたケースファイルの分だけ入れ替える。
 function writeEvidence(report, screens, { outDir, latestDir, root }) {
   const items = buildEvidence(report, screens, { root });
-  const doc = (list) => JSON.stringify({ version: 1, source: 'webui-test', generatedAt: report.finishedAt || new Date().toISOString(), items: list }, null, 2) + '\n';
+  const doc = (list, dir) => JSON.stringify({
+    version: 1, source: 'webui-test', generatedAt: report.finishedAt || new Date().toISOString(),
+    root: posix(path.relative(dir, root)) || '.', items: list,
+  }, null, 2) + '\n';
   fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(path.join(outDir, 'evidence.json'), doc(items));
+  fs.writeFileSync(path.join(outDir, 'evidence.json'), doc(items, outDir));
   const latest = path.join(latestDir, 'evidence.json');
   let prev = [];
   try { prev = JSON.parse(fs.readFileSync(latest, 'utf8')).items || []; } catch (_) { /* 初めて */ }
   const ran = new Set(items.map((i) => i.file));
   const merged = [...prev.filter((i) => !ran.has(i.file)), ...items];
   fs.mkdirSync(latestDir, { recursive: true });
-  fs.writeFileSync(latest, doc(merged));
+  fs.writeFileSync(latest, doc(merged, latestDir));
   return latest;
 }
 

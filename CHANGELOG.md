@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-statemachine を codd-agent に改名し、目的とのずれを直す（webui-test 0.3.2）
+
+- **`tools/codd-statemachine` を `tools/codd-agent` に改名した。** 使い方は `python3 tools/codd-agent/install.py`・
+  `python3 tools/codd-agent/init.py …`。リポジトリに置く場所（`.statemachine/codd/`）・`codd.json`・`.codd/`・
+  エージェントの名前 `codd`・「codd のステートマシンを実行して」はそのままなので、置き直さなくても動く
+- 汎用のはずの codd が、evidence.json の置き場が `webui-test-results/` という名前のときだけ起点を変える特別扱いを
+  持っていた。evidence.json に起点（`root`。そのファイルのフォルダからの相対）を書く約束にし、特別扱いを外した。
+  webui-test は `root` を書く
+- 計画の検査で、測ったファイルを「未判断」として書き足すようにしたあとに残っていた、使われない分岐と指摘の文言を消した
+- 設計書: ステートの数（4 ではなく、止まったときの stuck・stopped を含めて 6）、「未判断」の書き足し、evidence の `root` を
+  合わせた。README: 設定の表が途中で切れていたのを直した
+
 ### codd-statemachine: 検査を 1 回で出し切り、測ったファイルを計画に書き足す（取りこぼしと打ち切りも直す）
 
 - **測ったのに計画に無いファイルを、計画の見出しに「未判断」の行として書き足す。** 影響範囲・響くテスト・探して

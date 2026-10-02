@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""codd-statemachine が使う外部のミドルウェアを端末に入れる（端末ごとに 1 回と、更新するとき）。
+"""codd-agent が使う外部のミドルウェアを端末に入れる（端末ごとに 1 回と、更新するとき）。
 
-    python3 tools/codd-statemachine/install.py              # 足りないものを入れる
-    python3 tools/codd-statemachine/install.py --upgrade    # 入っているものも最新にする
+    python3 tools/codd-agent/install.py              # 足りないものを入れる
+    python3 tools/codd-agent/install.py --upgrade    # 入っているものも最新にする
 
 入れるもの:
   graphify   参照先を探すときの知識グラフ（任意。無ければ文字列検索だけで動く）。uv → pipx → pip の順で入れる
@@ -13,7 +13,7 @@
 
 codd そのものは端末に入れない。リポジトリごとに `init.py` で置く（リポジトリだけで動くように）。
 
-    python3 tools/codd-statemachine/init.py <リポジトリ> --side impl --ref docs=../my-design
+    python3 tools/codd-agent/init.py <リポジトリ> --side impl --ref docs=../my-design
 
 以前の使い方（`install.py <リポジトリ> --side … --ref …`）で呼ばれたときは、そのまま init.py に渡す。
 """
@@ -83,7 +83,7 @@ def install_middleware(upgrade: bool = False) -> int:
     for name, probe, how in CHECK_ONLY:
         found = shutil.which(probe[0])
         print(f"✓ {name}: {found}" if found else f"- {name}: ありません。{how}")
-    print("codd はリポジトリごとに置きます: python3 tools/codd-statemachine/init.py <リポジトリ> --side … --ref …")
+    print("codd はリポジトリごとに置きます: python3 tools/codd-agent/init.py <リポジトリ> --side … --ref …")
     return 1 if failed else 0
 
 
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.path.insert(0, str(HERE))
         import init as repo_init
         return repo_init.main(argv)
-    p = argparse.ArgumentParser(description="codd-statemachine が使う外部のミドルウェア（graphify など）を端末に入れる")
+    p = argparse.ArgumentParser(description="codd-agent が使う外部のミドルウェア（graphify など）を端末に入れる")
     p.add_argument("--upgrade", action="store_true", help="入っているものも最新にする")
     args = p.parse_args(argv)
     return install_middleware(args.upgrade)

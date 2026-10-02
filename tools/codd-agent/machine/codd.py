@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""codd-statemachine — 参照先（実装⇔設計書。いくつでも）を読んで、自分の変更を練るステートマシンの下請け。
+"""codd-agent — 参照先（実装⇔設計書。いくつでも）を読んで、自分の変更を練るステートマシンの下請け。
 
 ステートマシン（同じフォルダの workflow.yaml）のうち、機械で決まる仕事だけをここに置く。
 判断（参照先の前提・制約・その他、ずれ、変更案、影響範囲）はアクションの側でモデルが行う。
@@ -989,11 +989,8 @@ def explore_log(ctx: Ctx) -> dict:
         return {}
 
 
-def explore_problems(ctx: Ctx, bodies: dict[str, str], pending: "Pending | None" = None) -> list[str]:
-    """参照先を探したか（参照先ごと）と、探して見つかったファイルを計画が扱ったか。
-
-    pending を渡すと、扱っていないファイルを問題にせず、一致した行を添えて「未判断」として書き足させる。
-    """
+def explore_problems(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> list[str]:
+    """参照先を探したか（参照先ごと）。探して見つかったのに計画に無いファイルは、一致した行を添えて pending へ。"""
     log = explore_log(ctx)
     unexplored = [r.name for r in ctx.refs if r.name not in log]
     if unexplored:
@@ -1004,17 +1001,9 @@ def explore_problems(ctx: Ctx, bodies: dict[str, str], pending: "Pending | None"
                if name in {r.name for r in ctx.refs}
                for rel in entry.get("files", []) if (name, rel) not in cited and ctx.ref(name).has(rel)
                and (ctx.ref(name).path / rel).is_file()]
-    if not missing:
-        return []
-    if pending is not None:
-        for name, rel, line in missing:
-            pending.ref(ctx, name, rel, "探して見つかった", line, log[name].get("terms", []))
-        return []
-    missing = [ref_label(ctx, name, rel) for name, rel, _ in missing]
-    return ["探して見つかった参照先のファイルを、計画で扱っていません（explore.md の一致した行で判断し、関係するものは"
-            "その前後だけを読んで、前提・制約・その他・ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、"
-            "その他に `- 関係なし: パス:行, パス:行 — 理由` とまとめて）: "
-            + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/explore.md）"]
+    for name, rel, line in missing:
+        pending.ref(ctx, name, rel, "探して見つかった", line, log[name].get("terms", []))
+    return []
 
 
 def rule_digest(ctx: Ctx, name: str, rel: str) -> str:
@@ -1762,10 +1751,10 @@ def pending_problem(found: list[tuple[str, str]], added: int = 0) -> list[str]:
                                for _, it in found))]
 
 
-def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending | None = None) -> tuple[list[str], list[str], int]:
-    """計画の名前から影響を測り、計画が漏れなく扱っているかを見る。（問題, 自分で測ったファイル, 参照先で測った数）
+def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[list[str], list[str], int]:
+    """計画の名前から影響を測る。（問題, 自分で測ったファイル, 参照先で測った数）
 
-    pending を渡すと、扱っていないファイルを問題にせず、そこへ集める（検査が計画に書き足す）。
+    測ったのに計画に無いファイルは問題にせず pending へ集める（検査が計画に「未判断」として書き足す）。
     """
     problems: list[str] = []
     own_terms = own_terms_from_plan(bodies)
@@ -1777,15 +1766,9 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending | None = Non
                            f"計画の変更が自分のリポジトリ（{SIDES[ctx.side]}）に響く範囲（測定）")
         listed = (listed_paths(ctx, bodies["## 自分の変更案"], allow_new=True)
                   | listed_paths(ctx, bodies["## 影響範囲"]) | test_plan(ctx, bodies).paths(""))
-        missing = [p for p in measured if not covered(p, listed)]
-        if missing and pending is not None:
-            for p in missing:
+        for p in measured:
+            if not covered(p, listed):
                 pending.own(ctx, p, "変わる名前が出てくる")
-        elif missing:
-            problems.append(
-                "測った影響範囲のうち、計画に無いファイルがあります（変えるなら自分の変更案か影響範囲に直し方を、"
-                f"変えなくてよいなら影響範囲に「{NO_CHANGE_MARK}: 理由」を足してください）: "
-                + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/impact.md）")
     ref_hits: set[tuple[str, str]] = set()
     if own_terms:
         # 自分の変更で動く名前に触れている参照先のファイルを、計画が読んで扱っているか（逆向きの漏れ）。
@@ -1793,17 +1776,9 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending | None = Non
         ref_hits = measure_refs(ctx, own_terms, "ref-impact.md", "自分の変更で動く名前に触れている参照先のファイル（測定）",
                                 ref_lines)
         cited = cited_anywhere(ctx, bodies)
-        if pending is not None:
-            for n, r in sorted(ref_hits):
-                if (n, r) not in cited:
-                    pending.ref(ctx, n, r, "自分の変更で変わる名前が出てくる", ref_lines.get(n, {}).get(r), own_terms)
-        missing_refs = [] if pending is not None else sorted(ref_label(ctx, n, r) for n, r in ref_hits
-                                                             if (n, r) not in cited)
-        if missing_refs:
-            problems.append(
-                "自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません（読んで、前提・制約・その他・"
-                "ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
-                + ", ".join(missing_refs) + f"（詳細: {DATA_DIRNAME}/ref-impact.md）")
+        for n, r in sorted(ref_hits):
+            if (n, r) not in cited:
+                pending.ref(ctx, n, r, "自分の変更で変わる名前が出てくる", ref_lines.get(n, {}).get(r), own_terms)
     problems += explore_problems(ctx, bodies, pending)
     problems += trace_plan(ctx, bodies, pending)
     problems += tests_plan_problems(ctx, bodies, terms, pending)
@@ -1811,14 +1786,12 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending | None = Non
     return problems, measured, len(ref_hits)
 
 
-def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending | None = None) -> list[str]:
-    """計画で変えるファイルとつながっている（互いにパスで指している）ほかの側のファイルを、計画が扱っているか。"""
-    problems: list[str] = []
+def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> list[str]:
+    """計画で変えるファイルとつながっている（互いにパスで指している）ほかの側のファイルのうち、計画に無いものを pending へ。"""
     own_plan = own_planned(ctx, bodies)
     planned, _ = planned_refs(ctx, bodies)
     ref_links = sorted(h for h in linked(ctx, "", own_plan) if h[0]) if own_plan else []
     cited = cited_anywhere(ctx, bodies)
-    missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited]
     listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
               | listed_paths(ctx, bodies.get("## 影響範囲", "")) | test_plan(ctx, bodies).paths(""))
     own_links = sorted({rel for name, rels in planned.items() for k, rel in linked(ctx, name, rels) if not k})
@@ -1827,24 +1800,12 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending | None = None)
         ("自分の変更案のファイルとつながっている参照先のファイル", [ref_label(ctx, n, r) for n, r in ref_links]),
         ("参照先の変更案のファイルとつながっている自分のファイル", own_links),
     ])
-    if pending is not None:
-        for n, r in ref_links:
-            if (n, r) not in cited:
-                pending.ref(ctx, n, r, "自分の変更案のファイルとパスでつながっている")
-        for p in missing_own:
-            pending.own(ctx, p, "参照先の変更案のファイルとパスでつながっている")
-        return problems
-    if missing_refs:
-        problems.append(
-            "自分の変更案のファイルとパスでつながっている参照先のファイルを、計画で扱っていません（読んで、前提・制約・"
-            "その他・ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
-            + ", ".join(missing_refs) + f"（詳細: {DATA_DIRNAME}/trace.md）")
-    if missing_own:
-        problems.append(
-            "参照先の変更案のファイルとパスでつながっている自分のファイルが、計画にありません（変えるなら自分の変更案か"
-            f"影響範囲に直し方を、変えなくてよいなら影響範囲に「{NO_CHANGE_MARK}: 理由」を足してください）: "
-            + ", ".join(missing_own) + f"（詳細: {DATA_DIRNAME}/trace.md）")
-    return problems
+    for n, r in ref_links:
+        if (n, r) not in cited:
+            pending.ref(ctx, n, r, "自分の変更案のファイルとパスでつながっている")
+    for p in missing_own:
+        pending.own(ctx, p, "参照先の変更案のファイルとパスでつながっている")
+    return []
 
 
 # ---------------------------------------------------------------- テスト（コード・仕様書と同じに扱う）
@@ -1990,8 +1951,7 @@ def write_tests_report(ctx: Ctx, name: str, title: str, found: dict[tuple[str, s
     (ctx.data / name).write_text("\n".join(lines), encoding="utf-8")
 
 
-def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str],
-                        pending: Pending | None = None) -> list[str]:
+def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pending: Pending) -> list[str]:
     """計画が、変更に響くテストをすべて扱っているか（足す・直す・変更不要）。"""
     if not tests_enabled(ctx):
         return []
@@ -2008,19 +1968,14 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str],
                   | listed_paths(ctx, bodies.get("## 影響範囲", "")))
     missing_keys = [(k, rel) for (k, rel) in sorted(found) if (k, rel) not in tp.listed()
                     and not (not k and covered(rel, own_listed)) and not (k and covered(rel, changed.get(k, set())))]
-    if missing_keys and pending is not None:
-        why = {"名前": "変わる名前が出てくる", "つながり": "変えるファイルとパスでつながっている"}
-        for k, rel in missing_keys:
-            pending.add(TESTS_HEADING, (k, rel),
-                        f"- {side_label(ctx, k, rel)} — {PENDING_MARK}（{why.get(found[(k, rel)], found[(k, rel)])}）")
-        # 響くテストを書き足せば、「なし」の指摘は書き足した項目の判断に置き換わる
-        return [p for p in problems if "が「なし」です" not in p]
-    missing = [side_label(ctx, k, rel) for k, rel in missing_keys]
-    if missing:
-        problems.append(
-            f"変更が響くテストのうち、計画に無いファイルがあります（{TESTS_HEADING} に、直し方か"
-            f"「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/tests.md）")
-    return problems
+    if not missing_keys:
+        return problems
+    why = {"名前": "変わる名前が出てくる", "つながり": "変えるファイルとパスでつながっている"}
+    for k, rel in missing_keys:
+        pending.add(TESTS_HEADING, (k, rel),
+                    f"- {side_label(ctx, k, rel)} — {PENDING_MARK}（{why.get(found[(k, rel)], found[(k, rel)])}）")
+    # 響くテストを書き足せば、「なし」の指摘は書き足した項目の判断に置き換わる
+    return [p for p in problems if "が「なし」です" not in p]
 
 
 # ---------------------------------------------------------------- テストで得たもの（evidence）を実装・文書に活かす
@@ -2060,8 +2015,8 @@ def load_evidence(ctx: Ctx, key: str) -> Evidence:
             if not isinstance(data, dict) or not isinstance(data.get("items"), list):
                 continue
             ev.files.append(path.relative_to(side.path).as_posix())
-            # webui-test は設定ファイルのフォルダからの相対で書く。結果の置き場の親がそのフォルダ。
-            root = path.parent.parent if path.parent.name == "webui-test-results" else side.path
+            # 項目のパスの起点は、evidence.json の `root`（そのファイルのフォルダからの相対）。無ければその側のルート。
+            root = (path.parent / data["root"]).resolve() if isinstance(data.get("root"), str) else side.path
             for item in data["items"]:
                 if isinstance(item, dict) and isinstance(item.get("id"), str):
                     ev.items[item["id"]] = {**item, "_root": root}
@@ -2490,8 +2445,8 @@ def model_label(ctx: Ctx, key: str, rel: str) -> str:
     return f"{key}:{rel}" if key else rel
 
 
-def formats_plan_problems(ctx: Ctx, bodies: dict[str, str], pending: Pending | None = None) -> list[str]:
-    """変える文書の書式（見本と見出しの並び）を測って控え、計画の「守る決まり」が見本を挙げているかを見る。"""
+def formats_plan_problems(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> list[str]:
+    """変える文書の書式（見本と見出しの並び）を測って控え、「守る決まり」に無い見本を見出しの並びを添えて pending へ。"""
     formats = []
     for key, rel in format_targets(ctx, bodies):
         fmt = doc_format(ctx, key, rel)
@@ -2507,21 +2462,14 @@ def formats_plan_problems(ctx: Ctx, bodies: dict[str, str], pending: Pending | N
     (ctx.data / "formats.md").write_text("\n".join(lines + (["- なし"] if not formats else []) + [""]),
                                          encoding="utf-8")
     body = bodies.get("## 守る決まり", "")
-    missing = []
     for f in formats:
         names = [model_label(ctx, f["side"], m) for m in f["models"]]
         if f["side"] and len(ctx.refs) == 1:
             names += f["models"]
         if not any(mentioned(body, n) for n in names):
-            if pending is not None:
-                heads = " / ".join(h.lstrip("# ") for h in f["headings"][:6]) + (" …" if len(f["headings"]) > 6 else "")
-                pending.add("## 守る決まり", ("format", f["side"], f["path"]), f"- {names[0]} — {PENDING_MARK}: "
-                            f"{side_label(ctx, f['side'], f['path'])} の書式の見本（見出し: {heads or 'なし'}）")
-                continue
-            missing.append(f"{side_label(ctx, f['side'], f['path'])}（見本: {names[0]}）")
-    if missing:
-        return ["守る決まりに、変える文書の今の書式を挙げてください（文書の書式はコードの決まりと同じ。見本のパスと、"
-                "見出しの並び・表や言い回しをどう守るか）: " + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/formats.md）"]
+            heads = " / ".join(h.lstrip("# ") for h in f["headings"][:6]) + (" …" if len(f["headings"]) > 6 else "")
+            pending.add("## 守る決まり", ("format", f["side"], f["path"]), f"- {names[0]} — {PENDING_MARK}: "
+                        f"{side_label(ctx, f['side'], f['path'])} の書式の見本（見出し: {heads or 'なし'}）")
     return []
 
 
@@ -2973,7 +2921,6 @@ _KINDS = (
     ("undone", "apply", ("まだ変えていません", "が変わっていません")),
     ("unfixed", "apply", ("直していないファイル", "自分のファイルを、直していません")),
     ("ref-coverage", "any", ("計画で扱っていません",)),
-    ("impact", "plan", ("計画に無いファイルがあります", "自分のファイルが、計画にありません")),
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
     ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル")),
     ("check", "apply", ("検査が失敗しました",)),
@@ -3001,10 +2948,6 @@ ADVICE = {
     "plan": {
         "stale": (["replan", "stop"], "計画がまだ無いか、読めません。やりたいことをもう一度伝えてもらい、練り直します"),
         "size": (["replan", "stop"], "1 回で変えるには大きすぎます。今回やることを絞ってもらい、残りは「今回やらないこと」に回します"),
-        "impact": (["replan", "stop"],
-                   "測った影響範囲の一部を計画が扱っていません。挙がったファイルごとに、直すか「変更不要」かを決めてもらいます"),
-        "ref-coverage": (["replan", "stop"],
-                         "変更に関係する参照先のファイルを計画が読んでいません。読んで扱うか、関係が無い理由を確かめます"),
         "pending": (["replan", "stop"],
                     f"測ったファイルのうち、計画が「{PENDING_MARK}」のままのものがあります。ファイルごとに、直すか"
                     "「変更不要」か関係が無いかを決めてもらいます"),
