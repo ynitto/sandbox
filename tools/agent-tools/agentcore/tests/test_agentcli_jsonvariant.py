@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,33 @@ def _write_cli(d: Path, name: str, **extra) -> None:
     spec = {"name": name, "command": [f"{name}-bin"], "prompt_via": "stdin"}
     spec.update(extra)
     (d / f"{name}.json").write_text(json.dumps(spec), encoding="utf-8")
+
+
+class CacheScopeTests(unittest.TestCase):
+    """project_dir 省略時の cwd も定義キャッシュのスコープに含める。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.old_cwd = os.getcwd()
+        agentcli.clear_cache()
+
+    def tearDown(self):
+        os.chdir(self.old_cwd)
+        agentcli.clear_cache()
+        self._tmp.cleanup()
+
+    def test_chdir_does_not_reuse_previous_projects_definition(self):
+        first, second = self.root / "first", self.root / "second"
+        for directory, binary in ((first, "first-bin"), (second, "second-bin")):
+            agents = directory / "agents"
+            agents.mkdir(parents=True)
+            _write_cli(agents, "toy", command=[binary])
+
+        os.chdir(first)
+        self.assertEqual(agentcli.load_cli("toy")["command"], ["first-bin"])
+        os.chdir(second)
+        self.assertEqual(agentcli.load_cli("toy")["command"], ["second-bin"])
 
 
 class ResolveVariantTests(unittest.TestCase):
