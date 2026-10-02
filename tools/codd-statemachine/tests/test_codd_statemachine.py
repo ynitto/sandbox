@@ -1195,6 +1195,18 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("scope が重なっています", r.stderr)
 
+    def test_own_rules_are_found_only_near_the_scope(self) -> None:
+        # 同じリポジトリのほかの道具の決まりは拾わない（自分の scope の中と、その上のフォルダだけ）。
+        mono = self.make_mono(scope=["tools/app"], ref_scopes=["docs=docs"])
+        commit(mono, {"CONTRIBUTING.md": "# 手引き\n", "tools/coding-rules.md": "# 共通の規約\n",
+                      "tools/app/style-guide.md": "# 書き方\n", "tools/other/rules.md": "# 別の道具の決まり\n"},
+               "rules")
+        r = self.run_pa(mono, "rules")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for rel in ("CONTRIBUTING.md", "tools/coding-rules.md", "tools/app/style-guide.md"):
+            self.assertIn(rel, r.stdout)
+        self.assertNotIn("tools/other/rules.md", r.stdout)
+
     def test_same_repo_with_scopes(self) -> None:
         mono = self.make_mono(scope=["src"], ref_scopes=["docs=docs"])
         cfg = json.loads((mono / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
@@ -1284,6 +1296,11 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("# 守る決まり CLAUDE.md", r.stdout)
         self.assertIn("テストを通す。", r.stdout)
+        # 練り直しで呼び直しても、読み込み済みで変わっていないものは出し直さない（--again で出す）。
+        r = self.run_pa(self.impl, "rule", "--all")
+        self.assertIn("CLAUDE.md（この回で読み込み済み・変わっていない", r.stdout)
+        self.assertNotIn("テストを通す。", r.stdout)
+        self.assertIn("テストを通す。", self.run_pa(self.impl, "rule", "--all", "--again").stdout)
         self.assert_plan_ok()
         # 読み込んだあとに決まりが変わったら、読み直させる。
         (self.impl / "CLAUDE.md").write_text("# 約束\n\n型を付ける。\n", encoding="utf-8")
@@ -1315,6 +1332,22 @@ class CoddTest(unittest.TestCase):
         self.run_pa(self.impl, "report")
         self.assertFalse((self.impl / ".codd/explore.json").exists())
         self.assertFalse((self.impl / ".codd/rules-read.json").exists())
+
+    def test_unrelated_found_files_can_be_waived_in_one_line(self) -> None:
+        # 見つかったファイルは一致した行で判断し、関係しないものは 1 行にまとめて扱える（全文を読ませない）。
+        commit(self.design, {"docs/a.md": "# A\n\nhello の綴りの話。\n", "docs/b.md": "# B\n\nhello world の例。\n"},
+               "more")
+        self.write_plan(PLAN_ALIGNED.replace(
+            "## 参照先のその他\n\nなし",
+            "## 参照先のその他\n\n- 関係なし: docs/a.md:3, docs/b.md:3 — 綴りと例の話で、hello の振る舞いには触れない"),
+            read=False)
+        self.read_up(self.impl, "hello")
+        self.assert_plan_ok()
+        plan = (self.impl / ".codd/plan.md").read_text(encoding="utf-8")
+        (self.impl / ".codd/plan.md").write_text(plan.replace(", docs/b.md:3", ""), encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/b.md", r.stderr)
 
     def test_plan_and_apply_must_use_configured_skills_and_tools(self) -> None:
         self.set_config(self.impl, skills={"plan": ["domain-modeler"], "apply": ["tdd"]},
@@ -1402,13 +1435,20 @@ class CoddTest(unittest.TestCase):
         commit(self.design, {"docs/coding-rules.md": "# コーディングルール\n",
                              "docs/conventions/naming.md": "# 名前\n",
                              "docs/guide.md": "# コーディング規約\n\n本文\n",
-                             "CHANGELOG.md": "# rules の変更履歴\n"}, "rules")
+                             "CHANGELOG.md": "# rules の変更履歴\n",
+                             # スキルの中の決まり（そのスキルを使うときに読むもの）は候補にしない。
+                             ".agents/skills/react/SKILL.md": "---\nname: react\n---\n# React のルール\n",
+                             ".agents/skills/react/rules/naming.md": "# 名前のルール\n",
+                             # 日付で始まる計画や記録は、語が当たっても決まりではない。
+                             "docs/plans/2026-08-15-execution-policy-design.md": "# 実行ポリシー\n"}, "rules")
         r = self.run_pa(self.impl, "rules")
         self.assertEqual(r.returncode, 0, r.stderr)
         for rel in ("docs/coding-rules.md", "docs/conventions/naming.md", "docs/guide.md"):
             self.assertIn(f"  - design:{rel}", r.stdout)
         self.assertNotIn("docs/api.md", r.stdout)
         self.assertNotIn("CHANGELOG.md", r.stdout)
+        self.assertNotIn(".agents/skills", r.stdout)
+        self.assertNotIn("execution-policy", r.stdout)
         self.assertIn("決まりの候補（設定に無い", self.run_pa(self.impl, "show").stdout)
         # 絞って書ける。書いたものは決まりになり、候補からは消える。
         r = self.run_pa(self.impl, "rules", "--write", "--only", "design:docs/coding-rules.md")

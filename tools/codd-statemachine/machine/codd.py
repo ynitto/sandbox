@@ -20,7 +20,8 @@
     summary             計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
     skill 名前…         スキルの SKILL.md を出して読み込む。使うと書いたスキルを読み込んだかを検査が確かめる
-    rule [--all|パス…]  守る決まりのファイルを出して読み込む。計画の検査は、すべて読み込んだか（中身が変わっていれば読み直したか）を確かめる
+    rule [--all|パス…]  守る決まりのファイルを出して読み込む。計画の検査は、すべて読み込んだか（中身が変わっていれば読み直したか）を確かめる。
+                        この回で読み込み済みで変わっていないものは出し直さない（--again で出す）
     advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
     keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
@@ -424,7 +425,7 @@ class Ctx:
         # 自分はリポジトリ全体から探す（決まりは scope の外、ルートにあることが多い）。同じリポジトリの参照先の分は除く。
         same = [r for r in self.refs if r.path == self.root]
         for name, side in [("", Side("own", self.root, [])), *[(r.name, r) for r in self.refs]]:
-            for rel in discover_rules(side):
+            for rel in discover_rules(side, near=self.own.scope if not name else None):
                 if not name and any(r.has(rel) and r.scope for r in same):
                     continue
                 key = (name, rel)
@@ -568,6 +569,7 @@ _NOT_RULES = re.compile(r"(?:^|/)(changelog|history|license)[^/]*$", re.IGNORECA
 
 
 _GLOB_CHARS = re.compile(r"[*?\[]")
+_DATED = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
 def expand_rules(repo: Path, patterns: list[str]) -> list[str]:
@@ -587,13 +589,27 @@ def expand_rules(repo: Path, patterns: list[str]) -> list[str]:
     return out
 
 
-def discover_rules(side: Side) -> list[str]:
-    """scope の中のマークダウンのうち、パスか最初の見出しが決まりらしいもの。"""
+def discover_rules(side: Side, near: list[str] | None = None) -> list[str]:
+    """scope の中のマークダウンのうち、パスか最初の見出しが決まりらしいもの。
+    near（自分の scope）を渡すと、その中と、その上のフォルダ（ルートを含む）にあるものだけにする。
+    同じリポジトリのほかの道具の決まりまで拾わない。"""
     rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
                   side.path, GIT_TIMEOUT)
     found = []
-    for rel in out.splitlines() if rc == 0 else []:
+    files = out.splitlines() if rc == 0 else []
+    # スキルの中のマークダウン（SKILL.md と、その下の rules/ や references/）は、そのスキルを使うときに読むもので、
+    # このリポジトリの決まりではない。候補にすると、関係の無い決まりを毎回すべて読み込ませることになる。
+    skill_dirs = {rel.rsplit("/", 1)[0] if "/" in rel else "" for rel in files if rel.rsplit("/", 1)[-1] == "SKILL.md"}
+    for rel in files:
         if not rel.lower().endswith((".md", ".markdown")) or _NOT_RULES.search(rel) or not side.has(rel):
+            continue
+        if any(d == "" or rel.startswith(d + "/") for d in skill_dirs):
+            continue
+        # 日付で始まるファイル（2026-08-15-…-policy-design.md など）は計画や記録で、決まりではない。
+        if _DATED.match(rel.rsplit("/", 1)[-1]):
+            continue
+        folder = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        if near and not any(in_scope(rel, [f]) or not folder or (f + "/").startswith(folder + "/") for f in near):
             continue
         hit = _RULE_WORDS.search(rel.lower())
         if not hit:
@@ -912,15 +928,16 @@ def explore_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     unexplored = [r.name for r in ctx.refs if r.name not in log]
     if unexplored:
         return [f"参照先を探していません: {', '.join(unexplored)}（`python3 {MACHINE_REL}/codd.py explore --term 語` で、"
-                "やりたいことに関係する語から探し、見つかったファイルを読んでください）"]
+                "やりたいことに関係する語から探し、一致した行で見つかったファイルを扱ってください）"]
     cited = cited_anywhere(ctx, bodies)
     missing = [ref_label(ctx, name, rel) for name, entry in log.items() if name in {r.name for r in ctx.refs}
                for rel in entry.get("files", []) if (name, rel) not in cited and ctx.ref(name).has(rel)
                and (ctx.ref(name).path / rel).is_file()]
     if not missing:
         return []
-    return ["探して見つかった参照先のファイルを、計画で扱っていません（読んで、前提・制約・その他・ずれの根拠か参照先の"
-            "変更案に挙げてください。関係が無ければ、その他に「関係なし: 理由」と根拠付きで）: "
+    return ["探して見つかった参照先のファイルを、計画で扱っていません（explore.md の一致した行で判断し、関係するものは"
+            "その前後だけを読んで、前提・制約・その他・ずれの根拠か参照先の変更案に挙げてください。関係が無ければ、"
+            "その他に `- 関係なし: パス:行, パス:行 — 理由` とまとめて）: "
             + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/explore.md）"]
 
 
@@ -945,6 +962,10 @@ def cmd_rule(ctx: Ctx, args: argparse.Namespace) -> int:
         name, rel = labels.get(want) or next((n, r) for n, r in rules if r == want)
         label = f"{name}:{rel}" if name else rel
         repo = ctx.ref(name).path if name else ctx.root
+        # 練り直しで何度も呼ばれるので、この回で読み込み済みで中身も変わっていないものは出し直さない。
+        if not args.again and log.get(label) == rule_digest(ctx, name, rel):
+            print(f"# 守る決まり {label}（この回で読み込み済み・変わっていない。出し直すときは --again）\n")
+            continue
         print(f"# 守る決まり {label}\n")
         print(read_text(repo / rel) or "（読めませんでした）")
         log[label] = rule_digest(ctx, name, rel)
@@ -2950,6 +2971,7 @@ def build_parser() -> argparse.ArgumentParser:
     ru2 = sub.add_parser("rule", help="守る決まりのファイルを出して読み込む（読み込んだことを控え、計画の検査が確かめる）")
     ru2.add_argument("path", nargs="*", help="決まりのファイル（`show` の一覧の書き方。参照先のものは `名前:パス`）")
     ru2.add_argument("--all", action="store_true", help="守る決まりのファイルをすべて読み込む")
+    ru2.add_argument("--again", action="store_true", help="この回で読み込み済みのものも出し直す")
     sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
     sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
     sub.add_parser("keep-changes", help="変えた分を残したまま計画を直す（次の計画の検査で印を取り直さない）")

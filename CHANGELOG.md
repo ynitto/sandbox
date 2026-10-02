@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-statemachine: 計画の段で読む量を減らす
+
+- **決まりの候補を拾いすぎない。** 自分の分は `scope` の中とその上のフォルダ（ルートを含む）だけを探し、スキルの中のファイル
+  （`SKILL.md` のあるフォルダの下）と、日付で始まるファイル（計画や記録）は候補にしない。このリポジトリで
+  `tools/webui-test` を受け持つと、`rule --all` が読み込ませる量は 153KB から 5KB になった
+- **決まりを出し直さない。** `rule --all` は、この回で読み込み済みで中身も変わっていないものを 1 行で済ませる
+  （練り直しのたびに全文を読み込まない。`--again` で出す）
+- **見つかったファイルを全文読ませない。** `.codd/explore.md` の一致した行で判断し、関係するものだけ前後を読む。
+  関係しないものは `- 関係なし: パス:行, パス:行 — 理由` と 1 行にまとめてよい
+- **計画の指示文とひな形を短くした。** 同じ説明が両方にあったのを、ひな形はコメント 1 行ずつにした（合わせて 15KB → 8.6KB）
+- 既に置いてある `codd.json` の `rules` は書き換えない。拾いすぎた決まりは手で消すか、消してから
+  `python3 .statemachine/codd/codd.py rules` で候補を見直す
+
 ### codd-statemachine: Copilot で「the response hit the length limit」で止まらないようにする
 
 - **計画は、ひな形を置いて見出しごとに書く。** `codd.py draft` が `.codd/plan.md` にひな形を置き（あれば残す。`--new` で
