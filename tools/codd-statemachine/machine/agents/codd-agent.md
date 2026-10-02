@@ -25,8 +25,9 @@ python3 .statemachine/codd/codd.py show
 1. `workflow.yaml` を読む。依頼を `request` に、`context:` の値を初期値にする。`initial_state` から始める
 2. ステートごとに `action_file` を読み、`{{名前}}` を今の値に置き換えて、その指示どおりに実行する。
    出力の第 1 行は `output_validator` の語で始める。`output_key` があれば、出力をその名前で控える
-3. `check` があれば、アクションのあとにそのコマンドを実行する。終了コード 0 なら `check_ok` は `true`。
-   落ちたら、出力を踏まえて同じステートを `check_retries` 回までやり直し、使い切ったら `check_ok` を `false` にして次へ。
+3. `check` があれば、アクションのあとにそのコマンド（`command` に `args` を続けたもの）を実行する。終了コード 0 なら
+   `check_ok` は `true`。落ちたら、出力の指摘だけを直して（最初からやり直さない）`check_retries` 回まで検査し直し、
+   使い切ったら `check_ok` を `false` にして次へ。
    `check_output` は検査の出力の最初の行
 4. `transitions` のうち今のステートから出るものを `priority` の小さい順に見て、最初に合う `condition_rule` の先へ進む
    （`equals:名前:値` は一致、`startswith:名前:値` は前方一致）
