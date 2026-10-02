@@ -251,7 +251,7 @@ webui-test pwtest examples/login.yaml
 `examples/editor.yaml` はそのテストケース（`variants` で日本語・英語・狭い画面を回す）。
 
 `--probe-before-act` の有無で作り比べるときは `scripts/compare-explore.js` を使う。同じ条件で両方を作り、
-作ったケースをすぐ 1 回動かして、書式の検査・初回の合否・頼み直しの回数・対象の取り違え・断った操作・
+作ったケースをすぐ 1 回動かして、書式の検査・初回の合否・頼み直しの回数・対象の取り違え・断った操作・見張らずに通した操作・
 ケースあたりの確認回数・時間を `comparison.md` / `comparison.json` に残す（トークン数は取れないので「不明」と書く）。
 
 ```bash
