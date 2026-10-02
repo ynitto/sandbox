@@ -378,6 +378,10 @@ python3 .statemachine/codd/codd.py show --phase apply
 
 ### 終わりの報告
 
+確認（confirm）では、計画の全文ではなく `codd.py summary` の要約（やりたいこと・ずれ・変えるファイル・テスト・
+今回やらないこと）を見せ、全文は `.codd/plan.md` を開いて読む。計画は `codd.py draft` で置いたひな形に見出しごとに書く。
+GitHub Copilot などは 1 回の応答の長さに上限があり、長い計画を一度に書いたり貼ったりすると
+「the response hit the length limit」で止まるため。
 終わるとき（done）は `codd.py report` の出力をそのまま伝える。計画のファイルごとに変えたか、変えたあとに測った
 影響範囲（直した・変更不要）、次にやること（「今回やらないこと」）が出る。変えたあとの検査を通ったあとにさらに変わって
 いれば、終了コード 1 でそう伝える。参照先とパスでつながっていない自分の変更があれば、それも挙げる。同じ内容は `.codd/report.md` に残る。

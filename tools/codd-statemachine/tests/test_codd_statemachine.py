@@ -611,6 +611,41 @@ class CoddTest(unittest.TestCase):
         path.write_text(json.dumps(cfg), encoding="utf-8")
         self.assertNotIn("リポジトリのスキル", self.run_pa(self.impl, "show").stdout)
 
+    def test_draft_places_template_and_keeps_existing_plan(self) -> None:
+        # 計画は一度に全文を書かせず、ひな形を置いて見出しごとに書かせる（応答の長さの上限で止まらないように）。
+        r = self.run_pa(self.impl, "draft")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        plan = self.impl / ".codd/plan.md"
+        template = (self.impl / ".statemachine/codd/templates/plan.md").read_text(encoding="utf-8")
+        self.assertEqual(plan.read_text(encoding="utf-8"), template)
+        # 書きかけのままでは計画の検査を通らない（コメントだけの見出しは空として落ちる）。
+        self.read_up(self.impl)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("見出しの中身が空です", r.stdout + r.stderr)
+        plan.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.assertIn("計画はもうあります", self.run_pa(self.impl, "draft").stdout)
+        self.assertEqual(plan.read_text(encoding="utf-8"), PLAN_ALIGNED)
+        self.run_pa(self.impl, "draft", "--new")
+        self.assertEqual(plan.read_text(encoding="utf-8"), template)
+
+    def test_summary_is_short_and_points_to_the_plan(self) -> None:
+        self.assertEqual(self.run_pa(self.impl, "summary").returncode, 1)
+        many = "\n".join(f"- src/m{i}.py — {'長い説明' * 40}" for i in range(20))
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", f"## 影響範囲\n\n{many}"), read=False)
+        r = self.run_pa(self.impl, "summary")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout
+        self.assertIn("全文: .codd/plan.md", out)
+        self.assertIn("## やりたいこと\n\nhello にログを足す。", out)
+        self.assertIn("## 自分の変更案", out)
+        self.assertIn("- ほか 8 件（.codd/plan.md）", out)
+        self.assertNotIn("src/m12.py", out)
+        self.assertTrue(all(len(ln) <= 120 for ln in out.splitlines()))
+        # 根拠の見出しは件数だけ（全文は貼らない）。
+        self.assertIn("根拠: 守る決まり", out)
+        self.assertNotIn("## 参照先の前提", out)
+
     def test_install_writes_custom_agents(self) -> None:
         kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))
         self.assertEqual(kiro["name"], "codd")
@@ -619,6 +654,9 @@ class CoddTest(unittest.TestCase):
         copilot = (self.impl / ".github/agents/codd.agent.md").read_text(encoding="utf-8")
         self.assertTrue(copilot.startswith("---\nname: codd\ndescription: "))
         self.assertIn("必ず codd のステートマシン", copilot)
+        # 応答の長さに上限があるエージェントでも止まらないよう、全文を貼らず分けて書くことを指示する。
+        self.assertIn("the response hit the length limit", copilot)
+        self.assertIn("codd.py summary", copilot)
         # エージェントのファイルはマシンの一部なので、影響範囲や変えたファイルに数えない。
         self.run_pa(self.impl, "impact", "--term", "statemachine")
         self.assertNotIn("codd.agent.md", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
