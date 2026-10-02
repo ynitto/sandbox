@@ -11,6 +11,8 @@ python3 .statemachine/codd/codd.py show
 ```
 
 参照先（設計書・実装）、守る決まり、使うスキルと道具、1 回で変えるファイルの上限が出ます。
+守る決まりは `python3 .statemachine/codd/codd.py rule --all` で、参照先は `codd.py explore --term 語` で必ず読みます
+（どちらも、ステートマシンの計画の検査が、読んだ記録を確かめます）。
 **スキルは自分で選ばず、ステートマシンの指示で読み込みます。** 挙がったスキル（設定したものと、`.agents/skills/` などに
 置かれたもの）は、`python3 .statemachine/codd/codd.py skill 名前` で `SKILL.md` を読み込み、その手順に従ってください。
 エージェントに登録されていないスキルでも同じです。使ったと書いたスキルを読み込んでいないと、検査で落ちます。

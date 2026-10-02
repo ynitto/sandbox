@@ -193,9 +193,18 @@ class CoddTest(unittest.TestCase):
     def calls(self) -> list[str]:
         return self.log.read_text(encoding="utf-8").splitlines() if self.log.is_file() else []
 
-    def write_plan(self, text: str) -> None:
+    def write_plan(self, text: str, read: bool = True) -> None:
         (self.impl / ".codd").mkdir(exist_ok=True)
         (self.impl / ".codd/plan.md").write_text(text, encoding="utf-8")
+        if read:
+            self.read_up(self.impl)
+
+    def read_up(self, repo: Path, *terms: str) -> None:
+        """計画の前にアクションがすること: 参照先を探し、守る決まりを読み込む。"""
+        args = [a for t in (terms or ("hello",)) for a in ("--term", t)]
+        r = self.run_pa(repo, "explore", *args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.run_pa(repo, "rule", "--all")
 
     def assert_plan_ok(self, repo: Path | None = None) -> None:
         r = self.run_pa(repo or self.impl, "verify-plan")
@@ -1202,6 +1211,50 @@ class CoddTest(unittest.TestCase):
                                              "## 守る決まり\n\n- CLAUDE.md — テストを通す\n- docs/style.md — 敬体\n"
                                              "- design:CLAUDE.md — 用語をそろえる"))
         self.assert_plan_ok()
+
+    def test_rule_files_must_be_read_through_the_machine(self) -> None:
+        commit(self.impl, {"CLAUDE.md": "# 約束\n\nテストを通す。\n"}, "rules")
+        plan = PLAN_ALIGNED.replace("## 守る決まり\n\nなし", "## 守る決まり\n\n- CLAUDE.md — テストを通す")
+        self.write_plan(plan, read=False)
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        r = self.run_pa(self.impl, "verify-plan")   # 挙げただけで、読み込んでいない
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("守る決まりのファイルを読み込んでいません", r.stderr)
+        r = self.run_pa(self.impl, "rule", "--all")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("# 守る決まり CLAUDE.md", r.stdout)
+        self.assertIn("テストを通す。", r.stdout)
+        self.assert_plan_ok()
+        # 読み込んだあとに決まりが変わったら、読み直させる。
+        (self.impl / "CLAUDE.md").write_text("# 約束\n\n型を付ける。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("読み直す）: CLAUDE.md", r.stderr)
+        self.assertEqual(self.run_pa(self.impl, "rule", "nothing.md").returncode, 1)
+
+    def test_plan_needs_exploring_and_handling_what_was_found(self) -> None:
+        commit(self.design, {"docs/guide.md": "# 使い方\n\nログは標準出力に出す。\n"}, "guide")
+        self.write_plan(PLAN_ALIGNED, read=False)
+        self.run_pa(self.impl, "rule", "--all")
+        r = self.run_pa(self.impl, "verify-plan")   # 探さずに「なし」で済ませる計画は通さない
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("参照先を探していません: design", r.stderr)
+        self.run_pa(self.impl, "explore", "--term", "hello", "--term", "ログ")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("探して見つかった参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/guide.md", r.stderr)
+        self.assertNotIn("docs/api.md,", r.stderr)   # 根拠に挙げたものは扱った
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
+                                             "## 参照先のその他\n\n- ログは標準出力に出す（根拠: docs/guide.md）"),
+                        read=False)
+        self.assert_plan_ok()
+        # 終わりの報告で、探した・読んだ記録は消える（次の回に持ち越さない）。
+        (self.impl / "src/app.py").write_text("def hello():\n    print('log')\n    return 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.run_pa(self.impl, "report")
+        self.assertFalse((self.impl / ".codd/explore.json").exists())
+        self.assertFalse((self.impl / ".codd/rules-read.json").exists())
 
     def test_plan_and_apply_must_use_configured_skills_and_tools(self) -> None:
         self.set_config(self.impl, skills={"plan": ["domain-modeler"], "apply": ["tdd"]},
