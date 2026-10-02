@@ -23,6 +23,7 @@ TOOL = HERE.parent
 REPO = TOOL.parent.parent
 sys.path.insert(0, str(TOOL))
 
+import init  # noqa: E402
 import install  # noqa: E402
 
 GIT_ENV = {
@@ -39,6 +40,8 @@ case "$1" in
   affected) echo "Affected nodes for $2"; echo "- use() [calls] src/use.py:L4" ;;
 esac
 """
+
+PLAN = "docs/.plan/current.md"
 
 PLAN_ALIGNED = """\
 # 変更の計画
@@ -170,8 +173,8 @@ class CoddTest(unittest.TestCase):
             git(repo, "init", "-q", "-b", "main")
         commit(self.impl, {"src/app.py": "def hello():\n    return 1\n"}, "init")
         commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
-        install.install(self.impl, "impl", ["../design"])
-        install.install(self.design, "design", ["../impl"])
+        init.init_repo(self.impl, "impl", ["../design"])
+        init.init_repo(self.design, "design", ["../impl"])
         for repo in (self.impl, self.design):
             git(repo, "add", "-A")
             git(repo, "commit", "-q", "-m", "add codd")
@@ -194,8 +197,8 @@ class CoddTest(unittest.TestCase):
         return self.log.read_text(encoding="utf-8").splitlines() if self.log.is_file() else []
 
     def write_plan(self, text: str, read: bool = True) -> None:
-        (self.impl / ".codd").mkdir(exist_ok=True)
-        (self.impl / ".codd/plan.md").write_text(text, encoding="utf-8")
+        (self.impl / "docs/.plan").mkdir(parents=True, exist_ok=True)
+        (self.impl / PLAN).write_text(text, encoding="utf-8")
         if read:
             self.read_up(self.impl)
 
@@ -615,7 +618,7 @@ class CoddTest(unittest.TestCase):
         # 計画は一度に全文を書かせず、ひな形を置いて見出しごとに書かせる（応答の長さの上限で止まらないように）。
         r = self.run_pa(self.impl, "draft")
         self.assertEqual(r.returncode, 0, r.stderr)
-        plan = self.impl / ".codd/plan.md"
+        plan = self.impl / PLAN
         template = (self.impl / ".statemachine/codd/templates/plan.md").read_text(encoding="utf-8")
         self.assertEqual(plan.read_text(encoding="utf-8"), template)
         # 書きかけのままでは計画の検査を通らない（コメントだけの見出しは空として落ちる）。
@@ -636,15 +639,49 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "summary")
         self.assertEqual(r.returncode, 0, r.stderr)
         out = r.stdout
-        self.assertIn("全文: .codd/plan.md", out)
+        self.assertIn("全文: docs/.plan/current.md", out)
         self.assertIn("## やりたいこと\n\nhello にログを足す。", out)
         self.assertIn("## 自分の変更案", out)
-        self.assertIn("- ほか 8 件（.codd/plan.md）", out)
+        self.assertIn("- ほか 8 件（docs/.plan/current.md）", out)
         self.assertNotIn("src/m12.py", out)
         self.assertTrue(all(len(ln) <= 120 for ln in out.splitlines()))
         # 根拠の見出しは件数だけ（全文は貼らない）。
         self.assertIn("根拠: 守る決まり", out)
         self.assertNotIn("## 参照先の前提", out)
+
+    @unittest.skipIf(os.name == "nt", "偽の uv を sh で作る")
+    def test_install_puts_middleware_on_the_terminal_and_init_places_codd(self) -> None:
+        # install.py は外部のミドルウェア（graphify など）を端末に入れる。codd はリポジトリに init.py で置く。
+        bin_dir = self.tmp / "tools-bin"
+        bin_dir.mkdir()
+        uv_log = self.tmp / "uv.log"
+        uv = bin_dir / "uv"
+        uv.write_text(f'#!/bin/sh\necho "$@" >> {uv_log}\n'
+                      f'printf \'#!/bin/sh\\necho "graphify 1.0"\\n\' > {bin_dir}/graphify\n'
+                      f'chmod +x {bin_dir}/graphify\n', encoding="utf-8")
+        uv.chmod(0o755)
+        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin", "HOME": str(self.tmp / "home")}
+        run = lambda *a: subprocess.run([sys.executable, str(TOOL / "install.py"), *a], capture_output=True,
+                                        text=True, env=env)
+        r = run()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
+        self.assertIn("✓ graphify: graphify 1.0", r.stdout)
+        self.assertIn("✓ git:", r.stdout)
+        self.assertIn("- webui-test: ありません", r.stdout)
+        r = run()   # 入っていれば入れ直さない
+        self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
+        run("--upgrade")
+        self.assertEqual(uv_log.read_text(encoding="utf-8").split()[-3:], ["tool", "upgrade", "graphifyy"])
+        # 端末に入れても、リポジトリには何も置かない。
+        app = self.tmp / "app"
+        app.mkdir()
+        git(app, "init", "-q", "-b", "main")
+        self.assertFalse((app / ".statemachine").exists())
+        # 以前の使い方（install.py にリポジトリを渡す）は init.py に渡す。
+        rc = install.main([str(app), "--side", "impl", "--ref", "../design", "--no-agents", "--no-discover-rules"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["side"], "impl")
 
     def test_install_writes_custom_agents(self) -> None:
         kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))
@@ -663,7 +700,7 @@ class CoddTest(unittest.TestCase):
         other = self.tmp / "other"
         other.mkdir()
         git(other, "init", "-q", "-b", "main")
-        install.install(other, "impl", ["../design"], discover=False, agents=())
+        init.init_repo(other, "impl", ["../design"], discover=False, agents=())
         self.assertFalse((other / ".kiro").exists())
         self.assertFalse((other / ".github").exists())
 
@@ -674,32 +711,32 @@ class CoddTest(unittest.TestCase):
                  "envs: { local: {} }\n")
         # 既にある codd.json には、あとから置いた webui-test の設定を勝手に書き足さない。
         (self.impl / "webui-test.config.yaml").write_text(webui, encoding="utf-8")
-        install.install(self.impl, None, None, discover=False)
+        init.init_repo(self.impl, None, None, discover=False)
         self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
         # 初めて置くとき、webui-test の設定に check があれば、変えたあとの検査に webui-test check を使う。
         app = self.tmp / "app"
         app.mkdir()
         git(app, "init", "-q", "-b", "main")
         (app / "webui-test.config.yaml").write_text(webui, encoding="utf-8")
-        install.install(app, "impl", ["../design"], discover=False)
+        init.init_repo(app, "impl", ["../design"], discover=False)
         self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["check"],
                          ["webui-test", "check"])
-        install.install(self.impl, None, None, discover=False, check="webui-test check")
+        init.init_repo(self.impl, None, None, discover=False, check="webui-test check")
         r = self.run_pa(self.impl, "show")
         self.assertIn("変えたあとに実行するもの", r.stdout)
         self.assertIn("自分の検査: webui-test check", r.stdout)
         # 手で書いた検査は上書きしない。--check で書き換え、"" で消す。
-        install.install(self.impl, None, None, discover=False, check="python3 -m pytest -q")
+        init.init_repo(self.impl, None, None, discover=False, check="python3 -m pytest -q")
         self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["python3", "-m", "pytest", "-q"])
-        install.install(self.impl, None, None, discover=False)
+        init.init_repo(self.impl, None, None, discover=False)
         self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["python3", "-m", "pytest", "-q"])
-        install.install(self.impl, None, None, discover=False, check="")
+        init.init_repo(self.impl, None, None, discover=False, check="")
         self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
         # 単体テストは webui-test ではなく codd の test に書く。--test で書き、"" で消す。
-        install.install(self.impl, None, None, discover=False, test="npm test")
+        init.init_repo(self.impl, None, None, discover=False, test="npm test")
         self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["test"], ["npm", "test"])
         self.assertIn("自分のテスト: npm test", self.run_pa(self.impl, "show").stdout)
-        install.install(self.impl, None, None, discover=False, test="")
+        init.init_repo(self.impl, None, None, discover=False, test="")
         self.assertNotIn("test", json.loads(cfg.read_text(encoding="utf-8")))
 
     def test_verify_apply_needs_a_verified_plan(self) -> None:
@@ -722,7 +759,7 @@ class CoddTest(unittest.TestCase):
     def test_install_is_idempotent_and_replaces_old_files(self) -> None:
         stale = self.impl / ".statemachine/codd/actions/old.md"
         stale.write_text("old", encoding="utf-8")
-        install.install(self.impl, None, None)
+        init.init_repo(self.impl, None, None)
         self.assertFalse(stale.exists())
         cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg, {"side": "impl", "refs": [{"path": "../design"}],
@@ -732,12 +769,12 @@ class CoddTest(unittest.TestCase):
         hand = ('{"side": "impl", "refs": [{"name": "design", "path": "../design", "rules": ["docs/r.md"],'
                 ' "scope": ["docs"]}],\n "skills": {"plan": [], "apply": []}, "graphify": "auto"}\n')
         path.write_text(hand, encoding="utf-8")
-        install.install(self.impl, None, None)
+        init.init_repo(self.impl, None, None)
         self.assertEqual(path.read_text(encoding="utf-8"), hand)
-        install.install(self.impl, "impl", ["../design"])  # 同じ値を渡しても書き直さない
+        init.init_repo(self.impl, "impl", ["../design"])  # 同じ値を渡しても書き直さない
         self.assertEqual(path.read_text(encoding="utf-8"), hand)
         # --ref で参照先を入れ替えても、同じ名前の参照先に手で書いた rules・scope は残す。
-        install.install(self.impl, None, ["design=../design-v2"])
+        init.init_repo(self.impl, None, ["design=../design-v2"])
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"],
                          [{"name": "design", "path": "../design-v2", "rules": ["docs/r.md"], "scope": ["docs"]}])
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
@@ -747,7 +784,7 @@ class CoddTest(unittest.TestCase):
         fresh.mkdir()
         git(fresh, "init", "-q")
         with self.assertRaises(SystemExit):
-            install.install(fresh, "impl", [])
+            init.init_repo(fresh, "impl", [])
 
     # ------------------------------------------------------------ 参照先が複数
 
@@ -757,9 +794,9 @@ class CoddTest(unittest.TestCase):
         git(api, "init", "-q", "-b", "main")
         commit(api, {"docs/api.md": "# API\n\n## hello\n\nHTTP でも hello を返す。\n",
                      "spec/hello.md": "# hello\n"}, "init")
-        install.install(api, "design", ["../impl"])
+        init.init_repo(api, "design", ["../impl"])
         self.set_check(api, [sys.executable, "-c", "print('api ok')"])
-        install.install(self.impl, None, ["design=../design", "api=../api"])
+        init.init_repo(self.impl, None, ["design=../design", "api=../api"])
         return api
 
     def test_explore_searches_every_ref(self) -> None:
@@ -1182,7 +1219,7 @@ class CoddTest(unittest.TestCase):
         git(mono, "init", "-q", "-b", "main")
         commit(mono, {"src/app.py": "def hello():\n    return 1\n",
                       "docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
-        install.install(mono, "impl", ["docs=."], **kw)
+        init.init_repo(mono, "impl", ["docs=."], **kw)
         return mono
 
     def test_same_repo_needs_scopes(self) -> None:
@@ -1190,10 +1227,22 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(mono, "show")
         self.assertEqual(r.returncode, 2)
         self.assertIn("同じリポジトリです", r.stderr)
-        install.install(mono, None, None, scope=["src"], ref_scopes=["docs=src/docs"])
+        init.init_repo(mono, None, None, scope=["src"], ref_scopes=["docs=src/docs"])
         r = self.run_pa(mono, "show")
         self.assertEqual(r.returncode, 2)
         self.assertIn("scope が重なっています", r.stderr)
+
+    def test_own_rules_are_found_only_near_the_scope(self) -> None:
+        # 同じリポジトリのほかの道具の決まりは拾わない（自分の scope の中と、その上のフォルダだけ）。
+        mono = self.make_mono(scope=["tools/app"], ref_scopes=["docs=docs"])
+        commit(mono, {"CONTRIBUTING.md": "# 手引き\n", "tools/coding-rules.md": "# 共通の規約\n",
+                      "tools/app/style-guide.md": "# 書き方\n", "tools/other/rules.md": "# 別の道具の決まり\n"},
+               "rules")
+        r = self.run_pa(mono, "rules")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for rel in ("CONTRIBUTING.md", "tools/coding-rules.md", "tools/app/style-guide.md"):
+            self.assertIn(rel, r.stdout)
+        self.assertNotIn("tools/other/rules.md", r.stdout)
 
     def test_same_repo_with_scopes(self) -> None:
         mono = self.make_mono(scope=["src"], ref_scopes=["docs=docs"])
@@ -1212,13 +1261,13 @@ class CoddTest(unittest.TestCase):
         self.assertIn("FOUND 1 files", r.stdout)
         # 根拠は参照先の scope の中、影響範囲は自分の scope の中だけを認める。
         plan = PLAN_DRIFT
-        (mono / ".codd").mkdir(exist_ok=True)
-        (mono / ".codd/plan.md").write_text(plan.replace("（根拠: docs/api.md）", "（根拠: src/app.py）"),
+        (mono / "docs/.plan").mkdir(parents=True, exist_ok=True)
+        (mono / PLAN).write_text(plan.replace("（根拠: docs/api.md）", "（根拠: src/app.py）"),
                                             encoding="utf-8")
         r = self.run_pa(mono, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("参照先に実在する根拠のパスがありません", r.stderr)
-        (mono / ".codd/plan.md").write_text(plan, encoding="utf-8")
+        (mono / PLAN).write_text(plan, encoding="utf-8")
         self.assert_plan_ok(mono)
 
         # 同じリポジトリの中でも、自分と参照先の変更を scope で分けて測る。
@@ -1284,6 +1333,11 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("# 守る決まり CLAUDE.md", r.stdout)
         self.assertIn("テストを通す。", r.stdout)
+        # 練り直しで呼び直しても、読み込み済みで変わっていないものは出し直さない（--again で出す）。
+        r = self.run_pa(self.impl, "rule", "--all")
+        self.assertIn("CLAUDE.md（この回で読み込み済み・変わっていない", r.stdout)
+        self.assertNotIn("テストを通す。", r.stdout)
+        self.assertIn("テストを通す。", self.run_pa(self.impl, "rule", "--all", "--again").stdout)
         self.assert_plan_ok()
         # 読み込んだあとに決まりが変わったら、読み直させる。
         (self.impl / "CLAUDE.md").write_text("# 約束\n\n型を付ける。\n", encoding="utf-8")
@@ -1315,6 +1369,22 @@ class CoddTest(unittest.TestCase):
         self.run_pa(self.impl, "report")
         self.assertFalse((self.impl / ".codd/explore.json").exists())
         self.assertFalse((self.impl / ".codd/rules-read.json").exists())
+
+    def test_unrelated_found_files_can_be_waived_in_one_line(self) -> None:
+        # 見つかったファイルは一致した行で判断し、関係しないものは 1 行にまとめて扱える（全文を読ませない）。
+        commit(self.design, {"docs/a.md": "# A\n\nhello の綴りの話。\n", "docs/b.md": "# B\n\nhello world の例。\n"},
+               "more")
+        self.write_plan(PLAN_ALIGNED.replace(
+            "## 参照先のその他\n\nなし",
+            "## 参照先のその他\n\n- 関係なし: docs/a.md:3, docs/b.md:3 — 綴りと例の話で、hello の振る舞いには触れない"),
+            read=False)
+        self.read_up(self.impl, "hello")
+        self.assert_plan_ok()
+        plan = (self.impl / PLAN).read_text(encoding="utf-8")
+        (self.impl / PLAN).write_text(plan.replace(", docs/b.md:3", ""), encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/b.md", r.stderr)
 
     def test_plan_and_apply_must_use_configured_skills_and_tools(self) -> None:
         self.set_config(self.impl, skills={"plan": ["domain-modeler"], "apply": ["tdd"]},
@@ -1366,6 +1436,50 @@ class CoddTest(unittest.TestCase):
         self.assertIn("直していないファイル", r.stderr)
         self.assertIn("src/greet_user.py", r.stderr)
 
+    def test_plan_is_kept_as_a_decision_record(self) -> None:
+        # 計画は docs/.plan/current.md に書き、終わりに確認の答えと結果を書き足して日付付きの名前で残す。
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "NG", "--note", "戻り値の説明も直して")
+        self.assert_plan_ok()   # 同じ回の練り直しでは current.md を直す
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        # 計画のフォルダは変えたファイルに数えない（記録のために置くもの）。
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertEqual(self.run_pa(self.impl, "report").returncode, 0)
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.impl / PLAN).exists())
+        records = list((self.impl / "docs/.plan").glob("*.md"))
+        self.assertEqual(len(records), 1)
+        self.assertRegex(records[0].name, r"^\d{4}-\d{2}-\d{2}-\d{4}-.+\.md$")
+        self.assertIn(f"計画の記録: docs/.plan/{records[0].name}", r.stdout)
+        text = records[0].read_text(encoding="utf-8")
+        self.assertIn("## 自分の変更案", text)
+        self.assertRegex(text, r"## 確認と判断\n\n- [-0-9: ]+ NG（計画を直す）: 戻り値の説明も直して\n- [-0-9: ]+ OK（計画で進める）")
+        self.assertIn("## 結果\n\n- 変えたあとの検査: 通った", text)
+        self.assertIn("### 自分（実装）", text)
+        self.assertFalse((self.impl / ".codd/decisions.json").exists())
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 1)   # 記録は 1 回だけ
+        # 終わった回の記録は書き換えさせない（次の回の検査で落とす）。
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "change")
+        records[0].write_text(text.replace("通った", "通らなかった"), encoding="utf-8")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("終わった回の計画の記録を書き換えています", r.stderr)
+
+    def test_record_when_stopped_before_changing(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.run_pa(self.impl, "decide", "STOP", "--note", "今回はやめる")
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = next((self.impl / "docs/.plan").glob("*.md")).read_text(encoding="utf-8")
+        self.assertIn("STOP（やめる）: 今回はやめる", text)
+        self.assertIn("## 結果\n\n- 変えていない", text)
+
     def test_report_summarises_the_result(self) -> None:
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
@@ -1402,13 +1516,20 @@ class CoddTest(unittest.TestCase):
         commit(self.design, {"docs/coding-rules.md": "# コーディングルール\n",
                              "docs/conventions/naming.md": "# 名前\n",
                              "docs/guide.md": "# コーディング規約\n\n本文\n",
-                             "CHANGELOG.md": "# rules の変更履歴\n"}, "rules")
+                             "CHANGELOG.md": "# rules の変更履歴\n",
+                             # スキルの中の決まり（そのスキルを使うときに読むもの）は候補にしない。
+                             ".agents/skills/react/SKILL.md": "---\nname: react\n---\n# React のルール\n",
+                             ".agents/skills/react/rules/naming.md": "# 名前のルール\n",
+                             # 日付で始まる計画や記録は、語が当たっても決まりではない。
+                             "docs/plans/2026-08-15-execution-policy-design.md": "# 実行ポリシー\n"}, "rules")
         r = self.run_pa(self.impl, "rules")
         self.assertEqual(r.returncode, 0, r.stderr)
         for rel in ("docs/coding-rules.md", "docs/conventions/naming.md", "docs/guide.md"):
             self.assertIn(f"  - design:{rel}", r.stdout)
         self.assertNotIn("docs/api.md", r.stdout)
         self.assertNotIn("CHANGELOG.md", r.stdout)
+        self.assertNotIn(".agents/skills", r.stdout)
+        self.assertNotIn("execution-policy", r.stdout)
         self.assertIn("決まりの候補（設定に無い", self.run_pa(self.impl, "show").stdout)
         # 絞って書ける。書いたものは決まりになり、候補からは消える。
         r = self.run_pa(self.impl, "rules", "--write", "--only", "design:docs/coding-rules.md")
@@ -1424,14 +1545,14 @@ class CoddTest(unittest.TestCase):
         app = self.tmp / "app"
         app.mkdir()
         git(app, "init", "-q", "-b", "main")
-        install.install(app, "impl", ["../design"])
+        init.init_repo(app, "impl", ["../design"])
         path = app / ".statemachine/codd/codd.json"
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["rules"], ["docs/coding-rules.md"])
         # 既にある codd.json には探し直して書き足さない（手で消した決まりが戻らない）。
         cfg = json.loads(path.read_text(encoding="utf-8"))
         cfg["refs"][0]["rules"] = []
         path.write_text(json.dumps(cfg), encoding="utf-8")
-        install.install(app, None, None)
+        init.init_repo(app, None, None)
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["rules"], [])
 
     def test_rules_accept_globs(self) -> None:

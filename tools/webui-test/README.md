@@ -209,7 +209,7 @@ e2e を動かし、その結果（`evidence.json`）を codd-statemachine が受
 単体テスト・API テスト・シナリオテストは codd-statemachine の `test` に書く（codd-statemachine が動かす）。
 
 ```bash
-python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs \
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
   --test "npm test" --check "webui-test check"
 ```
 

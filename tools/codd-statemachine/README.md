@@ -25,14 +25,27 @@
 
 ## 置き方
 
+置き方は 2 つに分かれる。
+
+**1. 外部のミドルウェアを端末に入れる（端末ごとに 1 回）。** graphify（任意。参照先を探すときの知識グラフ）を
+uv・pipx・pip のどれかで入れ、git と webui-test（任意）があるかを確かめる。`--upgrade` で最新にする。
+
+```bash
+python3 tools/codd-statemachine/install.py
+```
+
+**2. codd をリポジトリに置く（リポジトリごとに 1 回）。** `.statemachine/codd/` に定義を写し、`codd.json` を書く。
+
 ```bash
 # 実装のリポジトリへ（参照先 = 設計書）
-python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs
 # 設計書のリポジトリへ（参照先 = 実装）
-python3 tools/codd-statemachine/install.py ~/work/my-app-docs --side design --ref app=../my-app
+python3 tools/codd-statemachine/init.py ~/work/my-app-docs --side design --ref app=../my-app
 # 参照先が複数
-python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
 ```
+
+前の使い方（`install.py <リポジトリ> --side … --ref …`）で呼ぶと、そのまま `init.py` に渡す。
 
 `--ref` は `名前=パス` か `パス`（名前はフォルダ名になる）。もう一度 `--ref` を渡すと参照先の一覧を入れ替える。
 
@@ -77,9 +90,9 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=.
 
 知らない項目（綴り違いなど）があると、動かす前に止まる。
 
-計画・探した結果・graphify のグラフは `<リポジトリ>/.codd/` に置く（インストーラーが `.gitignore` に足す）。
+探した結果・graphify のグラフなどの作業ファイルは `<リポジトリ>/.codd/` に置く（インストーラーが `.gitignore` に足す）。計画は `docs/.plan/` に置く（上記）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
-もう一度 `install.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` は上書きせずそのまま残る。
+もう一度 `init.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` は上書きせずそのまま残る。
 `--side` / `--ref` / `--scope` / `--ref-scope` / `--check` / `--test` を渡したときだけ、その項目を書き換える
 （`--ref` で入れ替えても、同じ名前の参照先に手で書いた `rules`・`scope` などは残す）。
 
@@ -127,7 +140,11 @@ stuck ─┬─ 練り直す ─→ plan（変えた分は残すか戻すかを�
 | 制約 | 参照先が「こうしなければならない / してはならない」と課している条件 |
 | その他 | それ以外の関係する記述（決まっていないこと・任されていること・補足） |
 
-計画は `.codd/plan.md` に書かれ、書いたあとにスクリプトが検査する（[下記](#計画の検査で確かめること)）。
+計画は `docs/.plan/current.md` に書かれ、書いたあとにスクリプトが検査する（[下記](#計画の検査で確かめること)）。
+確認ではこのファイルを開いて読む。同じ回の練り直しでは、このファイルを直す。
+終わると（done・stopped）、確認の答え・止まったときの答えと結果を書き足して `docs/.plan/日付-名前.md` に移し、
+判断の記録として残す（コミットしてよい）。終わった回の記録を書き換えると、次の回の検査で落ちる。
+`docs/.plan/` は変えたファイルや探す対象に数えない。
 参照先が複数あるときは、根拠や参照先の変更案のパスを `名前:パス`（例: `api:hello.md`）で書く。
 どれか 1 つの参照先にしか無いパスなら名前を省いてよい。
 計画の最後の「今回やらないこと」は、この回では扱わないもの。終わるときに次にやることとして伝える。
@@ -164,7 +181,7 @@ python3 .statemachine/codd/codd.py keep-changes    # 変えた分を残したま
 それぞれのフォルダの中だけになる。フォルダが重なっている・書いていないときは動かす前に止まる。
 
 ```bash
-python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --scope src --scope tests \
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --scope src --scope tests \
     --ref docs=. --ref-scope docs=docs
 ```
 
@@ -198,9 +215,12 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --scope src
   `パス:行`・`パス:行-行`・`パス#見出し` で箇所まで指したときは、その行や見出しが実在するか
 - 前提・制約・その他で `…` に囲んだ名前が、根拠のファイルに書かれているか（読んでいないことを書かせない）
 - 決まりのファイルをすべて「守る決まり」に、設定したスキル・道具をすべて「使ったスキルと道具」に挙げたか
-- 決まりのファイルを `codd.py rule --all` で読み込んだか（パスを挙げるだけでは通らない。読み込んだあとに中身が変わったものは読み直す）
+- 決まりのファイルを `codd.py rule --all` で読み込んだか（パスを挙げるだけでは通らない。読み込んだあとに中身が変わったものは読み直す。
+  練り直しで呼び直しても、この回で読み込み済みで変わっていないものは出し直さない）
 - 参照先をすべて `codd.py explore` で探したか。文字列の一致で見つかったファイルを、根拠か参照先の変更案、または
-  その他の「関係なし: 理由」として計画がすべて扱ったか（前提・制約・その他・ずれを全部「なし」にして読まずに済ませない）
+  その他の「関係なし: 理由」として計画がすべて扱ったか（前提・制約・その他・ずれを全部「なし」にして読まずに済ませない）。
+  見つかったファイルは `.codd/explore.md` の一致した行で判断し、関係するものだけ前後を読む（全文は読まない）。
+  関係しないものは `- 関係なし: パス:行, パス:行 — 理由` と 1 行にまとめてよい
 - 探した・読んだ記録（`.codd/explore.json`・`rules-read.json`・`skills-read.json`）は、終わりの報告（`report`）で消える。次の回に持ち越さない
 - 自分の変更案の各項目に、自分のリポジトリのパス（まだ無い新しいファイルでもよい）と、変わる名前（`…`）があるか
 - 計画の名前で測った自分の影響範囲を、自分の変更案か影響範囲にすべて挙げたか
@@ -276,7 +296,7 @@ API テスト・シナリオテストも、画面の e2e のケースも同列�
 どのファイルがテストかは `tests` の書き方で決まる。参照先のテストは、参照先に置いた `codd.json` の `tests` と `test` を使う。
 
 ```bash
-python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
 ```
 
 ### テストで得たものを実装と文書に活かす
@@ -359,7 +379,9 @@ python3 .statemachine/codd/codd.py skill docs:doc-writer    # 参照先のスキ
 - **書く:** `refs[].rules` にパスを並べる（`{"name": "docs", "path": "../docs", "rules": ["docs/coding-rules.md"]}`）
 - **見つけさせる:** パスか最初の見出しに「ルール・規約・規則・約束・作法・ガイドライン・コーディング」や
   rules・guideline・convention・coding・style guide・standard・policy を含むマークダウンを、自分と参照先から探して候補にする。
-  `install.py` は初めて置いたときに候補を `codd.json` に書く（`--no-discover-rules` でやめる）。あとから増えた候補は
+  自分の分は `scope` の中と、その上のフォルダ（ルートを含む）だけを探す。スキルの中のファイル（`SKILL.md` のあるフォルダの下）と、
+  日付で始まるファイル（計画や記録）は候補にしない。
+  `init.py` は初めて置いたときに候補を `codd.json` に書く（`--no-discover-rules` でやめる）。あとから増えた候補は
   `show` に「決まりの候補」として出て、計画のときに読まれ、確認のときに設定に書くかを訊かれる。手で書くなら次のとおり
 
 ```bash
@@ -379,7 +401,7 @@ python3 .statemachine/codd/codd.py show --phase apply
 ### 終わりの報告
 
 確認（confirm）では、計画の全文ではなく `codd.py summary` の要約（やりたいこと・ずれ・変えるファイル・テスト・
-今回やらないこと）を見せ、全文は `.codd/plan.md` を開いて読む。計画は `codd.py draft` で置いたひな形に見出しごとに書く。
+今回やらないこと）を見せ、全文は `docs/.plan/current.md` を開いて読む。計画は `codd.py draft` で置いたひな形に見出しごとに書く。
 GitHub Copilot などは 1 回の応答の長さに上限があり、長い計画を一度に書いたり貼ったりすると
 「the response hit the length limit」で止まるため。
 終わるとき（done）は `codd.py report` の出力をそのまま伝える。計画のファイルごとに変えたか、変えたあとに測った
@@ -403,7 +425,7 @@ GitHub Copilot などは 1 回の応答の長さに上限があり、長い計�
 単体テスト・API テストなどは webui-test ではなく `test` に書く（[テストもコード・仕様書と同じに扱う](#テストもコード仕様書と同じに扱う)）。
 
 ```bash
-python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref docs=../my-app-docs \
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
   --test "npm test" --check "webui-test check"
 ```
 
@@ -430,7 +452,7 @@ python3 .statemachine/codd/codd.py explore --term 語   # 参照先を探す（-
 python3 .statemachine/codd/codd.py impact --term 語    # 自分のリポジトリの影響範囲を探す
 ```
 
-graphify の導入はこのリポジトリの `install.py`（外部ツールのセットアップ）でも入る。
+graphify は `tools/codd-statemachine/install.py` で入る（このリポジトリのルートの `install.py` の外部ツールのセットアップでも入る）。
 
 ## テスト
 

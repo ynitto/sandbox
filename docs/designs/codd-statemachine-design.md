@@ -73,12 +73,12 @@ plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: ver
 
 | ステート | すること | 成果物 | 成否の測り方 |
 |---|---|---|---|
-| plan | 参照先を探し（`explore`）、前提・制約・その他に分け、自分の現状とのずれを見て、自分の変更案を練る。ずれがあれば参照先の変更案と影響範囲を書く。どちらのリポジトリも変えない | `.codd/plan.md`（`write:`） | `check: verify-plan`（影響範囲の測定を含む） |
+| plan | 参照先を探し（`explore`）、前提・制約・その他に分け、自分の現状とのずれを見て、自分の変更案を練る。ずれがあれば参照先の変更案と影響範囲を書く。どちらのリポジトリも変えない | `docs/.plan/current.md`（`write:`） | `check: verify-plan`（影響範囲の測定を含む） |
 | confirm | 計画の要約（`summary`）と測った影響範囲を見せ、利用者の答えを待つ。全文は貼らずパスを示す | 答え（`OK` / `NG` と指摘） | `output_validator` |
 | apply | 自分の変更案を適用し、参照先の変更案があれば参照先にも適用する。コミットはしない | 両リポジトリの作業中の変更 | `check: verify-apply`（影響範囲の測り直しを含む） |
-| done | 変えたファイルを伝える | — | 終端 |
+| done | 変えたファイルを伝え（`report`）、計画を判断の記録として残す（`record`） | `docs/.plan/日付-名前.md` | 終端 |
 | stuck | `advise` が示す止めた理由・確かめること・選択肢を見せ、利用者の答えを待つ。選ばれたら `rollback` / `keep-changes` を実行する | 答え（`PLAN` / `APPLY` / `STOP` と指示） | `output_validator` |
-| stopped | やめたときの結果（`report`）と、残したか戻したかを伝える | — | 終端 |
+| stopped | やめたときの結果（`report`）と、残したか戻したかを伝え、計画を記録として残す（`record`） | `docs/.plan/日付-名前.md` | 終端 |
 
 NG は plan へ戻り、次の plan は `{{answer}}`（confirm の答え。NG と利用者の指摘）を踏まえて練り直す。`answer` は `context:` で空に初期化してあり、初回は空になる。
 分岐は `condition_rule`（`check_ok` と confirm の第 1 行）だけで決まり、LLM の YES/NO 評価は使わない。
@@ -279,9 +279,11 @@ confirm は、計画を見せて利用者の答えを待つアクションであ
 | `impact --term 語…` | 自分のリポジトリを graphify `affected` と `git grep` で引く（手で調べる用。検査は §4 の測定を自分で呼ぶ） |
 | `verify-plan` | 計画の形と根拠の検査（§6）と、影響範囲の測定（§4）。通ったら、自分とすべての参照先の変える前の印（HEAD と作業中ファイルの中身のハッシュ）を `.codd/before.json` に控える |
 | `verify-apply` | 変えたあとの検査（§7）と、影響範囲の測り直し（§4） |
-| `draft [--new]` | 計画のひな形を `.codd/plan.md` に置く（あれば残す）。モデルは見出しごとにコメントを本文へ置き換える |
+| `draft [--new]` | 計画のひな形を `docs/.plan/current.md` に置く（あれば残す）。モデルは見出しごとにコメントを本文へ置き換える |
 | `summary` | 計画の要約（やりたいこと・根拠の件数・ずれ・変えるファイル・テスト・今回やらないこと。見出しごとに 12 項目・1 行 120 字まで） |
 | `report` | 終わりの報告（§5.8） |
+| `decide 答え [--note 文]` | 確認（`OK` / `NG`）と止まったとき（`PLAN` / `APPLY` / `STOP`）の利用者の答えを `.codd/decisions.json` に控える。計画の本文は練り直しで書き換わるので、答えは別に持つ |
+| `record` | 1 回の終わりに、`current.md` へ「確認と判断」（控えた答え）と「結果」（`report` の出力）を書き足し、`docs/.plan/日付-名前.md` に移す（名前はやりたいことの最初の行から）。`docs/.plan/` は判断の記録として利用者のリポジトリに残す。マシンの持ち物と同じく、変えたファイル・探す対象に数えない。コミット済みの記録を書き換えていれば、計画と変えたあとの検査で落とす |
 
 ### 5.1 graphify の自動更新
 
@@ -370,9 +372,16 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
   前の回の記録で読んだことにさせない
 - 決まりの発見: パスか最初の見出しに決まりらしい語（ルール・規約・コーディング・rules・guideline・convention など）を
   含むマークダウンを候補にする（`rules`）。候補は設定に書くまで検査の対象にしない——語の一致だけでは決まりとは限らず、
-  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `install.py` で初めて置くとき（置くこと自体が同意。
+  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `init.py` で初めて置くとき（置くこと自体が同意。
   `--no-discover-rules` でやめる。既にある `codd.json` は利用者の設定なので、置き直しでは探し直さない）と、確認（confirm）で訊いて `rules --write --only` するとき。
-  あとから増えた候補は `show` に出るので、計画のときに読まれる
+  あとから増えた候補は `show` に出るので、計画のときに読まれる。
+  拾いすぎると計画の段で毎回その全文を読み込ませ、文脈を圧迫する。そのため自分の分は `scope` の中とその上のフォルダ
+  （ルートを含む）だけを探し（同じリポジトリのほかの道具の決まりを拾わない）、スキルの中（`SKILL.md` のあるフォルダの下。
+  そのスキルを使うときに読むもの）と、日付で始まるファイル（計画や記録）は候補にしない
+- 読む量: `rule --all` は、この回で読み込み済みで中身も変わっていないものを出し直さない（練り直しのたびに全文を
+  読み込ませない。`--again` で出す）。探して見つかったファイルは `explore.md` の一致した行で判断させ、関係するものだけ
+  前後を読ませる（全文は読ませない）。関係しないものは「関係なし」を 1 行にまとめてよい。計画のひな形のコメントは
+  1 行ずつにし、詳しい書き方はアクションの側にだけ書く（同じ説明を 2 度読ませない）
 - スキルと道具: `skills.plan`・`tools.plan` は計画の「使ったスキルと道具」に、`skills.apply`・`tools.apply`
   （と変えた参照先の分）は `.codd/apply.md` にすべて挙がっていなければ落とす。`.codd/apply.md` は変える前の印より新しいこと
   （前の回の記録を使い回させない）
@@ -385,7 +394,10 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
   `.codd/apply.md` で使ったと書いた（「使わない」の行を除く）スキルが控えに無ければ落とす。apply は変える前の印より新しい
   読み込みだけを認める（計画のときに読んだだけで済ませない）。これで「使った」と書くことと「読んだ」ことを、スクリプトから
   見える事実で結び付ける。見つからないスキル（エージェントの組み込みなど）は読み込みを求めない
-- カスタムエージェント: `install.py` が kiro-cli（`.kiro/agents/codd.json`）と GitHub Copilot（`.github/agents/codd.agent.md`）
+- 導入の 2 つ: `install.py` は codd が使う外部のミドルウェアを端末に入れる（graphify を uv・pipx・pip で。
+  git・webui-test は有無を確かめるだけ）。codd そのものは端末に入れず、`init.py` がリポジトリの `.statemachine/codd/` に
+  写して `codd.json`・カスタムエージェント・`.gitignore` を書く（リポジトリだけで動き、版もリポジトリごとに決まる）
+- カスタムエージェント: `init.py` が kiro-cli（`.kiro/agents/codd.json`）と GitHub Copilot（`.github/agents/codd.agent.md`）
   向けに、変える依頼は必ずこのマシンで進めるエージェントを書く。指示は `agents/codd-agent.md` 1 つから両方へ写す。
   statemachine-use が無い環境でも回せるよう、`workflow.yaml` の読み方（action・check と再投入・condition_rule・答えを待つ
   ステート）を指示に含める。kiro-cli では `agentSpawn` の hook で `codd.py show` を読み込ませる。エージェントのファイルは
@@ -412,7 +424,7 @@ done は `codd.py report` の出力をそのまま伝える。計画のファイ
 - 結果の置き場は git に無視させているので、evidence や前回の画面を書いても変更に数えない
 - 単体テストは webui-test に持たせない。テストを動かすのはこのマシンの `test`（§4.2）
 - e2e のケースファイルに `# coherence: doc=…` を書けば §4.1 のつながりとしてたどる（任意。webui-test はこの注記を読まない）
-- `install.py` は、初めて置くときに `webui-test.config.yaml`（`check` あり）があれば `["webui-test", "check"]` を書く。
+- `init.py` は、初めて置くときに `webui-test.config.yaml`（`check` あり）があれば `["webui-test", "check"]` を書く。
   既にある `codd.json` は渡された項目しか書き換えない（利用者が手で整えた設定を置き直しで崩さない）。
   任意のコマンドは `--check` で書ける
 - Windows では `webui-test`・`npm` が `.cmd` なので、`run` は実行ファイルを PATHEXT で探してから起動する
