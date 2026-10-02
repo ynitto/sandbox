@@ -611,6 +611,41 @@ class CoddTest(unittest.TestCase):
         path.write_text(json.dumps(cfg), encoding="utf-8")
         self.assertNotIn("リポジトリのスキル", self.run_pa(self.impl, "show").stdout)
 
+    def test_draft_places_template_and_keeps_existing_plan(self) -> None:
+        # 計画は一度に全文を書かせず、ひな形を置いて見出しごとに書かせる（応答の長さの上限で止まらないように）。
+        r = self.run_pa(self.impl, "draft")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        plan = self.impl / ".codd/plan.md"
+        template = (self.impl / ".statemachine/codd/templates/plan.md").read_text(encoding="utf-8")
+        self.assertEqual(plan.read_text(encoding="utf-8"), template)
+        # 書きかけのままでは計画の検査を通らない（コメントだけの見出しは空として落ちる）。
+        self.read_up(self.impl)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("見出しの中身が空です", r.stdout + r.stderr)
+        plan.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.assertIn("計画はもうあります", self.run_pa(self.impl, "draft").stdout)
+        self.assertEqual(plan.read_text(encoding="utf-8"), PLAN_ALIGNED)
+        self.run_pa(self.impl, "draft", "--new")
+        self.assertEqual(plan.read_text(encoding="utf-8"), template)
+
+    def test_summary_is_short_and_points_to_the_plan(self) -> None:
+        self.assertEqual(self.run_pa(self.impl, "summary").returncode, 1)
+        many = "\n".join(f"- src/m{i}.py — {'長い説明' * 40}" for i in range(20))
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", f"## 影響範囲\n\n{many}"), read=False)
+        r = self.run_pa(self.impl, "summary")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout
+        self.assertIn("全文: .codd/plan.md", out)
+        self.assertIn("## やりたいこと\n\nhello にログを足す。", out)
+        self.assertIn("## 自分の変更案", out)
+        self.assertIn("- ほか 8 件（.codd/plan.md）", out)
+        self.assertNotIn("src/m12.py", out)
+        self.assertTrue(all(len(ln) <= 120 for ln in out.splitlines()))
+        # 根拠の見出しは件数だけ（全文は貼らない）。
+        self.assertIn("根拠: 守る決まり", out)
+        self.assertNotIn("## 参照先の前提", out)
+
     def test_install_writes_custom_agents(self) -> None:
         kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))
         self.assertEqual(kiro["name"], "codd")
@@ -619,6 +654,9 @@ class CoddTest(unittest.TestCase):
         copilot = (self.impl / ".github/agents/codd.agent.md").read_text(encoding="utf-8")
         self.assertTrue(copilot.startswith("---\nname: codd\ndescription: "))
         self.assertIn("必ず codd のステートマシン", copilot)
+        # 応答の長さに上限があるエージェントでも止まらないよう、全文を貼らず分けて書くことを指示する。
+        self.assertIn("the response hit the length limit", copilot)
+        self.assertIn("codd.py summary", copilot)
         # エージェントのファイルはマシンの一部なので、影響範囲や変えたファイルに数えない。
         self.run_pa(self.impl, "impact", "--term", "statemachine")
         self.assertNotIn("codd.agent.md", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
@@ -632,12 +670,21 @@ class CoddTest(unittest.TestCase):
     def test_install_sets_check_and_picks_up_webui_test(self) -> None:
         cfg = self.impl / ".statemachine/codd/codd.json"
         self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
-        # webui-test の設定に check があれば、変えたあとの検査に webui-test check を使う。
-        (self.impl / "webui-test.config.yaml").write_text(
-            "serve: { command: npm start, url: http://localhost:3000 }\ncheck:\n  cases: [tests/e2e]\n"
-            "envs: { local: {} }\n", encoding="utf-8")
+        webui = ("serve: { command: npm start, url: http://localhost:3000 }\ncheck:\n  cases: [tests/e2e]\n"
+                 "envs: { local: {} }\n")
+        # 既にある codd.json には、あとから置いた webui-test の設定を勝手に書き足さない。
+        (self.impl / "webui-test.config.yaml").write_text(webui, encoding="utf-8")
         install.install(self.impl, None, None, discover=False)
-        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["webui-test", "check"])
+        self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
+        # 初めて置くとき、webui-test の設定に check があれば、変えたあとの検査に webui-test check を使う。
+        app = self.tmp / "app"
+        app.mkdir()
+        git(app, "init", "-q", "-b", "main")
+        (app / "webui-test.config.yaml").write_text(webui, encoding="utf-8")
+        install.install(app, "impl", ["../design"], discover=False)
+        self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["check"],
+                         ["webui-test", "check"])
+        install.install(self.impl, None, None, discover=False, check="webui-test check")
         r = self.run_pa(self.impl, "show")
         self.assertIn("変えたあとに実行するもの", r.stdout)
         self.assertIn("自分の検査: webui-test check", r.stdout)
@@ -680,6 +727,19 @@ class CoddTest(unittest.TestCase):
         cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg, {"side": "impl", "refs": [{"path": "../design"}],
                                "skills": {"plan": [], "apply": []}, "graphify": "auto"})
+        # 既にある codd.json は、手で書いた形のまま残す（並べ直し・書き足しもしない）。
+        path = self.impl / ".statemachine/codd/codd.json"
+        hand = ('{"side": "impl", "refs": [{"name": "design", "path": "../design", "rules": ["docs/r.md"],'
+                ' "scope": ["docs"]}],\n "skills": {"plan": [], "apply": []}, "graphify": "auto"}\n')
+        path.write_text(hand, encoding="utf-8")
+        install.install(self.impl, None, None)
+        self.assertEqual(path.read_text(encoding="utf-8"), hand)
+        install.install(self.impl, "impl", ["../design"])  # 同じ値を渡しても書き直さない
+        self.assertEqual(path.read_text(encoding="utf-8"), hand)
+        # --ref で参照先を入れ替えても、同じ名前の参照先に手で書いた rules・scope は残す。
+        install.install(self.impl, None, ["design=../design-v2"])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"],
+                         [{"name": "design", "path": "../design-v2", "rules": ["docs/r.md"], "scope": ["docs"]}])
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
                          [".statemachine/codd/"])
@@ -1361,12 +1421,18 @@ class CoddTest(unittest.TestCase):
 
     def test_install_discovers_rules(self) -> None:
         commit(self.design, {"docs/coding-rules.md": "# コーディングルール\n"}, "rules")
-        install.install(self.impl, None, None)
-        cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg["refs"][0]["rules"], ["docs/coding-rules.md"])
-        install.install(self.impl, None, None)  # 2 回置いても重ならない
-        cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg["refs"][0]["rules"], ["docs/coding-rules.md"])
+        app = self.tmp / "app"
+        app.mkdir()
+        git(app, "init", "-q", "-b", "main")
+        install.install(app, "impl", ["../design"])
+        path = app / ".statemachine/codd/codd.json"
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["rules"], ["docs/coding-rules.md"])
+        # 既にある codd.json には探し直して書き足さない（手で消した決まりが戻らない）。
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["refs"][0]["rules"] = []
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        install.install(app, None, None)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["rules"], [])
 
     def test_rules_accept_globs(self) -> None:
         commit(self.design, {"docs/rules/coding.md": "# a\n", "docs/rules/naming/api.md": "# b\n",

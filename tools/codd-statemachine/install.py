@@ -14,15 +14,16 @@
 同じリポジトリを参照先にするときは両方が要る。
 
 `<リポジトリ>/.statemachine/codd/` に machine/ の中身を写し、codd.json を書く。
-既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は --side / --ref を渡したときだけ書き換える
-（--ref を渡すと参照先の一覧を丸ごと入れ替える）。使うスキルは codd.json の skills を手で書く。
+既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は上書きしない。--side / --ref / --scope /
+--ref-scope / --check / --test を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
+参照先に手で書いた rules・scope などは残す）。使うスキルは codd.json の skills を手で書く。
 `.codd/`（計画・探した結果・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
 このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
-置いたあと、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules /
+初めて置いたときは、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules /
 refs[].rules に書く（--no-discover-rules でやめる。あとからは `codd.py rules --write`）。
 kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカスタムエージェント `codd` を書く
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
---check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。渡さず、check もまだ無く、
+--check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。初めて置くときに渡さず、
 置き先に webui-test の設定（`webui-test.config.yaml` に check がある）があれば `webui-test check` を書く
 （ローカルで起動して e2e を動かし、前回と画面が変わったかを、変えるたびに確かめる。変わった画面は文書の画像に差し替える）。
 --test "コマンド" で、変えたあとに実行する単体テストのコマンド（codd.json の test）を書く（"" で消す）。
@@ -31,6 +32,7 @@ kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカス�
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import shlex
@@ -79,6 +81,8 @@ def install(target: Path, side: str | None, refs: list[str] | None, gitignore: b
     dest = target / DEST_REL
     config_file = dest / "codd.json"
     config = json.loads(config_file.read_text(encoding="utf-8")) if config_file.is_file() else None
+    existed = config is not None
+    original = copy.deepcopy(config)
     if config is None and (side is None or not refs):
         raise SystemExit("初めて置くときは --side と --ref を指定してください")
 
@@ -105,7 +109,9 @@ def install(target: Path, side: str | None, refs: list[str] | None, gitignore: b
         config["side"] = side
     if refs:
         config.pop("ref_path", None)  # 参照先が 1 つだった頃の書き方は refs に置き換える
-        config["refs"] = [parse_ref(r) for r in refs]
+        # 同じ名前の参照先に手で書いた rules・scope・skills などは残し、名前とパスだけ入れ替える。
+        old = {ref_name(r): r for r in config.get("refs", [])}
+        config["refs"] = [{**old.get(ref_name(new), {}), **new} for new in map(parse_ref, refs)]
     if scope:
         config["scope"] = list(scope)
     for value in ref_scopes or []:
@@ -131,14 +137,19 @@ def install(target: Path, side: str | None, refs: list[str] | None, gitignore: b
             config["check"] = argv
         else:
             config.pop("check", None)
-    elif "check" not in config and webui_test_check(target):
+    elif not existed and webui_test_check(target):
         config["check"] = webui_test_check(target)
-    config.setdefault("skills", {"plan": [], "apply": []})
-    config.setdefault("graphify", "auto")
-    config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if not existed:
+        config.setdefault("skills", {"plan": [], "apply": []})
+        config.setdefault("graphify", "auto")
+    # 既にある codd.json は利用者の設定なので、渡された項目が値を変えたときだけ書き直す。
+    if config != original:
+        config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    else:
+        print("  codd.json は既にあるので書き換えていません（変えるときは手で直すか、--side などで項目を渡す）")
 
     write_agents(target, agents)
-    if discover:
+    if discover and not existed:
         discover_rules(target, dest)
     if gitignore:
         append_line(target / ".gitignore", IGNORE_LINE)

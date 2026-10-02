@@ -74,7 +74,7 @@ plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: ver
 | ステート | すること | 成果物 | 成否の測り方 |
 |---|---|---|---|
 | plan | 参照先を探し（`explore`）、前提・制約・その他に分け、自分の現状とのずれを見て、自分の変更案を練る。ずれがあれば参照先の変更案と影響範囲を書く。どちらのリポジトリも変えない | `.codd/plan.md`（`write:`） | `check: verify-plan`（影響範囲の測定を含む） |
-| confirm | 計画と測った影響範囲を見せ、利用者の答えを待つ | 答え（`OK` / `NG` と指摘） | `output_validator` |
+| confirm | 計画の要約（`summary`）と測った影響範囲を見せ、利用者の答えを待つ。全文は貼らずパスを示す | 答え（`OK` / `NG` と指摘） | `output_validator` |
 | apply | 自分の変更案を適用し、参照先の変更案があれば参照先にも適用する。コミットはしない | 両リポジトリの作業中の変更 | `check: verify-apply`（影響範囲の測り直しを含む） |
 | done | 変えたファイルを伝える | — | 終端 |
 | stuck | `advise` が示す止めた理由・確かめること・選択肢を見せ、利用者の答えを待つ。選ばれたら `rollback` / `keep-changes` を実行する | 答え（`PLAN` / `APPLY` / `STOP` と指示） | `output_validator` |
@@ -279,6 +279,8 @@ confirm は、計画を見せて利用者の答えを待つアクションであ
 | `impact --term 語…` | 自分のリポジトリを graphify `affected` と `git grep` で引く（手で調べる用。検査は §4 の測定を自分で呼ぶ） |
 | `verify-plan` | 計画の形と根拠の検査（§6）と、影響範囲の測定（§4）。通ったら、自分とすべての参照先の変える前の印（HEAD と作業中ファイルの中身のハッシュ）を `.codd/before.json` に控える |
 | `verify-apply` | 変えたあとの検査（§7）と、影響範囲の測り直し（§4） |
+| `draft [--new]` | 計画のひな形を `.codd/plan.md` に置く（あれば残す）。モデルは見出しごとにコメントを本文へ置き換える |
+| `summary` | 計画の要約（やりたいこと・根拠の件数・ずれ・変えるファイル・テスト・今回やらないこと。見出しごとに 12 項目・1 行 120 字まで） |
 | `report` | 終わりの報告（§5.8） |
 
 ### 5.1 graphify の自動更新
@@ -361,12 +363,15 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
   参照先ごとに `.codd/explore.json` へ足していく。verify-plan は、探していない参照先があるか、控えたファイルが計画の
   根拠・参照先の変更案（「関係なし: 理由」を含む）に無ければ落とす。前提・制約・その他・ずれを全部「なし」と書いて
   参照先を読まずに通す道を、これで塞ぐ。探す語はモデルが選ぶが、自分の変更案の名前は別に `measure_refs` が必ず引く（§4）
+- 応答の長さ: GitHub Copilot などは 1 回の応答の長さに上限があり、超えると「the response hit the length limit」で止まる。
+  計画は日本語で長くなりやすいので、全文を一度に書かせない（`draft` でひな形を置き、見出しごとに書かせる）・
+  確認で全文を貼らせない（`summary` の要約とパスを見せる）。練り直しでは直す見出しだけを書き換えさせる
 - 記録の寿命: 探した・読んだ記録（explore・rules-read・skills-read）は `report` で消す。1 回の実行の中だけで有効にし、
   前の回の記録で読んだことにさせない
 - 決まりの発見: パスか最初の見出しに決まりらしい語（ルール・規約・コーディング・rules・guideline・convention など）を
   含むマークダウンを候補にする（`rules`）。候補は設定に書くまで検査の対象にしない——語の一致だけでは決まりとは限らず、
-  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `install.py`（置くこと自体が同意。
-  `--no-discover-rules` でやめる）と、確認（confirm）で訊いて `rules --write --only` するとき。
+  誤って挙げると毎回その読み込みを強いるため。書くのは利用者の同意があるとき: `install.py` で初めて置くとき（置くこと自体が同意。
+  `--no-discover-rules` でやめる。既にある `codd.json` は利用者の設定なので、置き直しでは探し直さない）と、確認（confirm）で訊いて `rules --write --only` するとき。
   あとから増えた候補は `show` に出るので、計画のときに読まれる
 - スキルと道具: `skills.plan`・`tools.plan` は計画の「使ったスキルと道具」に、`skills.apply`・`tools.apply`
   （と変えた参照先の分）は `.codd/apply.md` にすべて挙がっていなければ落とす。`.codd/apply.md` は変える前の印より新しいこと
@@ -407,7 +412,8 @@ done は `codd.py report` の出力をそのまま伝える。計画のファイ
 - 結果の置き場は git に無視させているので、evidence や前回の画面を書いても変更に数えない
 - 単体テストは webui-test に持たせない。テストを動かすのはこのマシンの `test`（§4.2）
 - e2e のケースファイルに `# coherence: doc=…` を書けば §4.1 のつながりとしてたどる（任意。webui-test はこの注記を読まない）
-- `install.py` は、置き先に `webui-test.config.yaml`（`check` あり）があり `check` が未設定なら `["webui-test", "check"]` を書く。
+- `install.py` は、初めて置くときに `webui-test.config.yaml`（`check` あり）があれば `["webui-test", "check"]` を書く。
+  既にある `codd.json` は渡された項目しか書き換えない（利用者が手で整えた設定を置き直しで崩さない）。
   任意のコマンドは `--check` で書ける
 - Windows では `webui-test`・`npm` が `.cmd` なので、`run` は実行ファイルを PATHEXT で探してから起動する
 

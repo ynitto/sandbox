@@ -16,6 +16,8 @@
                         検査コマンドを確かめる。参照先を変えたら、実際の変更から影響範囲を測り直し、
                         測ったファイルを直したか「変更不要」としたかを検査する。書き足したパスが実在するか、
                         消したファイルを指したままのところが無いかも確かめる
+    draft [--new]       計画のひな形を .codd/plan.md に置く（あれば残す）。見出しごとに書き込ませ、全文を一度に書かせない
+    summary             計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
     skill 名前…         スキルの SKILL.md を出して読み込む。使うと書いたスキルを読み込んだかを検査が確かめる
     rule [--all|パス…]  守る決まりのファイルを出して読み込む。計画の検査は、すべて読み込んだか（中身が変わっていれば読み直したか）を確かめる
@@ -2868,6 +2870,64 @@ def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- 計画を少しずつ書く・短く見せる
+#
+# Copilot などは 1 回の応答の長さに上限があり、計画を一度に全文書く・全文を貼ると
+# 「the response hit the length limit」で止まる。ひな形を置いて見出しごとに書かせ、確認では要約だけを見せる。
+
+SUMMARY_SECTIONS = ("## ずれ", "## 自分の変更案", "## 参照先の変更案", "## 影響範囲", "## テストの変更案", "## 今回やらないこと")
+SUMMARY_ITEMS = 12
+SUMMARY_WIDTH = 120
+
+
+def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
+    """ひな形を .codd/plan.md に置く（あれば残す）。見出しごとにコメントを本文へ置き換えて書いていく。"""
+    if ctx.plan.is_file() and not args.new:
+        print(f"計画はもうあります: {ctx.plan.relative_to(ctx.root).as_posix()}（直す見出しだけを書き換える。"
+              "最初から書き直すときは --new）")
+        return 0
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", ctx.plan)
+    print(f"ひな形を置きました: {ctx.plan.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
+    return 0
+
+
+def _clip(line: str) -> str:
+    return line if len(line) <= SUMMARY_WIDTH else line[:SUMMARY_WIDTH - 1] + "…"
+
+
+def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
+    """計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる。"""
+    if not ctx.plan.is_file():
+        print(f"計画がありません: {ctx.plan.relative_to(ctx.root).as_posix()}", file=sys.stderr)
+        return 1
+    _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
+    rel = ctx.plan.relative_to(ctx.root).as_posix()
+    lines = ["# 計画の要約", "", f"全文: {rel}", ""]
+    want = [ln.strip() for ln in bodies.get("## やりたいこと", "").splitlines() if ln.strip()]
+    lines += ["## やりたいこと", "", *([_clip(ln) for ln in want[:3]] or ["（未記入）"])]
+    counted = [h for h in ("## 守る決まり", "## 使ったスキルと道具", "## 参照先の前提", "## 参照先の制約", "## 参照先のその他")
+               if h in bodies]
+    if counted:
+        lines += ["", "根拠: " + "・".join(
+            f"{h[3:]} {0 if is_none(bodies[h]) else sum(1 for ln in bodies[h].splitlines() if re.match(r'^[-*] ', ln))} 件"
+            for h in counted)]
+    for heading in SUMMARY_SECTIONS:
+        body = bodies.get(heading)
+        if body is None:
+            continue
+        items = [ln.strip() for ln in body.splitlines() if re.match(r"^[-*] ", ln.strip())]
+        lines += ["", heading, ""]
+        if is_none(body) or not items:
+            lines.append("- なし" if is_none(body) or not body else _clip(body.splitlines()[0]))
+            continue
+        lines += [_clip(ln) for ln in items[:SUMMARY_ITEMS]]
+        if len(items) > SUMMARY_ITEMS:
+            lines.append(f"- ほか {len(items) - SUMMARY_ITEMS} 件（{rel}）")
+    print("\n".join(lines))
+    return 0
+
+
 # ---------------------------------------------------------------- 入口
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2883,6 +2943,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
+    dr = sub.add_parser("draft", help="計画のひな形を .codd/plan.md に置く（あれば残す）")
+    dr.add_argument("--new", action="store_true", help="今の計画を捨ててひな形から書き直す")
+    sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
     sub.add_parser("advise", help="検査で止まった理由と、次の手（勧めと選択肢）を示す")
     ru2 = sub.add_parser("rule", help="守る決まりのファイルを出して読み込む（読み込んだことを控え、計画の検査が確かめる）")
     ru2.add_argument("path", nargs="*", help="決まりのファイル（`show` の一覧の書き方。参照先のものは `名前:パス`）")
@@ -2903,7 +2966,8 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
             "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
-            "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule}
+            "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule,
+            "draft": cmd_draft, "summary": cmd_summary}
 
 
 def main(argv: list[str] | None = None) -> int:

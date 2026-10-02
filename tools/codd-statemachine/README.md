@@ -79,7 +79,9 @@ python3 tools/codd-statemachine/install.py ~/work/my-app --side impl --ref api=.
 
 計画・探した結果・graphify のグラフは `<リポジトリ>/.codd/` に置く（インストーラーが `.gitignore` に足す）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
-もう一度 `install.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` はそのまま残る。
+もう一度 `install.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` は上書きせずそのまま残る。
+`--side` / `--ref` / `--scope` / `--ref-scope` / `--check` / `--test` を渡したときだけ、その項目を書き換える
+（`--ref` で入れ替えても、同じ名前の参照先に手で書いた `rules`・`scope` などは残す）。
 
 ### kiro-cli・GitHub Copilot のカスタムエージェント
 
@@ -357,7 +359,7 @@ python3 .statemachine/codd/codd.py skill docs:doc-writer    # 参照先のスキ
 - **書く:** `refs[].rules` にパスを並べる（`{"name": "docs", "path": "../docs", "rules": ["docs/coding-rules.md"]}`）
 - **見つけさせる:** パスか最初の見出しに「ルール・規約・規則・約束・作法・ガイドライン・コーディング」や
   rules・guideline・convention・coding・style guide・standard・policy を含むマークダウンを、自分と参照先から探して候補にする。
-  `install.py` は置いたときに候補を `codd.json` に書く（`--no-discover-rules` でやめる）。あとから増えた候補は
+  `install.py` は初めて置いたときに候補を `codd.json` に書く（`--no-discover-rules` でやめる）。あとから増えた候補は
   `show` に「決まりの候補」として出て、計画のときに読まれ、確認のときに設定に書くかを訊かれる。手で書くなら次のとおり
 
 ```bash
@@ -376,6 +378,10 @@ python3 .statemachine/codd/codd.py show --phase apply
 
 ### 終わりの報告
 
+確認（confirm）では、計画の全文ではなく `codd.py summary` の要約（やりたいこと・ずれ・変えるファイル・テスト・
+今回やらないこと）を見せ、全文は `.codd/plan.md` を開いて読む。計画は `codd.py draft` で置いたひな形に見出しごとに書く。
+GitHub Copilot などは 1 回の応答の長さに上限があり、長い計画を一度に書いたり貼ったりすると
+「the response hit the length limit」で止まるため。
 終わるとき（done）は `codd.py report` の出力をそのまま伝える。計画のファイルごとに変えたか、変えたあとに測った
 影響範囲（直した・変更不要）、次にやること（「今回やらないこと」）が出る。変えたあとの検査を通ったあとにさらに変わって
 いれば、終了コード 1 でそう伝える。参照先とパスでつながっていない自分の変更があれば、それも挙げる。同じ内容は `.codd/report.md` に残る。
