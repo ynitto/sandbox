@@ -11,7 +11,7 @@ Web アプリのテストを、条件の文章からテストケースファイ�
   `npx playwright test` で動かすこともできる
 - **撮る**: 仕様書に貼る画面の画像を、同じ書式で決まった名前のファイルに書き出す
 - **確かめる**: `webui-test check` が、アプリをローカルで起動して e2e を動かし、前回と画面が変わったかを軽く確かめる。
-  結果（振る舞い・時間・画面）は `evidence.json` に書き、[codd-statemachine](../codd-statemachine/README.md) が
+  結果（振る舞い・時間・画面）は `evidence.json` に書き、[codd-agent](../codd-agent/README.md) が
   文書への影響を測って画像を差し替える
 
 ## 入れる
@@ -204,15 +204,15 @@ PC ごとの描画の差で揺れるときは `check.maxDiffRatio: 0.001` のよ
 `serve` は `run`・`capture`・`pwtest` でも使う。接続先（`baseUrl`）が `serve` の URL と違う環境（検証環境など）では起動しない。
 環境ごとに変えるときは `envs.<名前>.serve` に書く（`false` で起動しない）。
 
-### codd-statemachine と組む
+### codd-agent と組む
 
-[codd-statemachine](../codd-statemachine/README.md) の「変えたあとの検査」に `webui-test check` を入れると、変えるたびに
-e2e を動かし、その結果（`evidence.json`）を codd-statemachine が受け取る。codd-statemachine は、変わった画面を貼っている
+[codd-agent](../codd-agent/README.md) の「変えたあとの検査」に `webui-test check` を入れると、変えるたびに
+e2e を動かし、その結果（`evidence.json`）を codd-agent が受け取る。codd-agent は、変わった画面を貼っている
 文書を探して画像を差し替え、どの文書に響いたかを報告する。
-単体テスト・API テスト・シナリオテストは codd-statemachine の `test` に書く（codd-statemachine が動かす）。
+単体テスト・API テスト・シナリオテストは codd-agent の `test` に書く（codd-agent が動かす）。
 
 ```bash
-python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
+python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
   --test "npm test" --check "webui-test check"
 ```
 

@@ -1,13 +1,13 @@
-# codd-statemachine
+# codd-agent
 
 **実装と設計書（仕様）を食い違わせずに変えていくためのステートマシン。**
 やりたいことを伝えると、参照先（実装なら設計書、設計書なら実装）を探して自分の変更を練り、確認を取ってから変える。
 参照先の前提・制約とずれていれば、参照先の変更案とその影響範囲も見せ、了承されれば両方を変える。
 
-> 設計: [`docs/designs/codd-statemachine-design.md`](../../docs/designs/codd-statemachine-design.md)
+> 設計: [`docs/designs/codd-agent-design.md`](../../docs/designs/codd-agent-design.md)
 >
 > 名前の近い [codd-gate](../codd-gate/README.md) は、1 つのリポジトリの中で文書・コード・テストの食い違いを
-> 受け入れ前に止める検査ツール。codd-statemachine は、変える前に参照先を読んで確かめ、了承を得てから両方を変える
+> 受け入れ前に止める検査ツール。codd-agent は、変える前に参照先を読んで確かめ、了承を得てから両方を変える
 > ステートマシンで、別のもの。
 
 - 同じ定義を**両方のリポジトリに置く**。実装側で動かせば参照先は設計書、設計書側で動かせば参照先は実装。
@@ -31,18 +31,18 @@
 uv・pipx・pip のどれかで入れ、git と webui-test（任意）があるかを確かめる。`--upgrade` で最新にする。
 
 ```bash
-python3 tools/codd-statemachine/install.py
+python3 tools/codd-agent/install.py
 ```
 
 **2. codd をリポジトリに置く（リポジトリごとに 1 回）。** `.statemachine/codd/` に定義を写し、`codd.json` を書く。
 
 ```bash
 # 実装のリポジトリへ（参照先 = 設計書）
-python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs
+python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs
 # 設計書のリポジトリへ（参照先 = 実装）
-python3 tools/codd-statemachine/init.py ~/work/my-app-docs --side design --ref app=../my-app
+python3 tools/codd-agent/init.py ~/work/my-app-docs --side design --ref app=../my-app
 # 参照先が複数
-python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
+python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
 ```
 
 前の使い方（`install.py <リポジトリ> --side … --ref …`）で呼ぶと、そのまま `init.py` に渡す。
@@ -74,9 +74,6 @@ python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref api=../a
 | `tools` | 任意。`skills` と同じ形で、使う道具（MCP サーバーやコマンド）の名前の配列。例: `{"plan": ["github"]}` |
 | `rules` | 任意。守る決まりのファイルの配列（このリポジトリのルートからの相対）。`CLAUDE.md`・`AGENTS.md`・`GEMINI.md`・`.github/copilot-instructions.md`・`CONTRIBUTING.md` は書かなくても、あれば読む |
 | `refs[].rules` | 任意。その参照先にある、守る決まりのファイルの配列（参照先のルートからの相対。例: 設計書のリポジトリの `docs/coding-rules.md`） |
-
-`rules` と `refs[].rules` には glob も書ける（例: `docs/rules/**/*.md`）。`*` はフォルダをまたがず、`**/` はまたぐ。
-1 つのファイルにも当たらないものは、`show` と `rules` が知らせる。
 | `refs[].skills` | 任意。その参照先を変えるときに使うスキル。書かなければ、参照先に置いた `codd.json` の `skills.apply` を使う |
 | `skill_dirs` | 任意。設定しなくても使うスキルの置き場所（既定 `[".agents/skills"]`。`名前/SKILL.md` の形）。`[]` で使わない |
 | `graphify` | `auto`（あれば使う）か `off` |
@@ -88,9 +85,12 @@ python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref api=../a
 | `refs[].scope` | 任意。その参照先のうち読む・変えるフォルダの配列。書かなければ全体 |
 | `max_files` | 任意。1 回で変えるファイルの上限（既定 20）。自分の変更案・参照先の変更案・「変更不要」でない影響範囲のファイルを数える |
 
+`rules` と `refs[].rules` には glob も書ける（例: `docs/rules/**/*.md`）。`*` はフォルダをまたがず、`**/` はまたぐ。
+1 つのファイルにも当たらないものは、`show` と `rules` が知らせる。
+
 知らない項目（綴り違いなど）があると、動かす前に止まる。
 
-探した結果・graphify のグラフなどの作業ファイルは `<リポジトリ>/.codd/` に置く（インストーラーが `.gitignore` に足す）。計画は `docs/.plan/` に置く（上記）。
+探した結果・graphify のグラフなどの作業ファイルは `<リポジトリ>/.codd/` に置く（`init.py` が `.gitignore` に足す）。計画は `docs/.plan/` に置く（[下記](#使い方)）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
 もう一度 `init.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` は上書きせずそのまま残る。
 `--side` / `--ref` / `--scope` / `--ref-scope` / `--check` / `--test` を渡したときだけ、その項目を書き換える
@@ -98,7 +98,7 @@ python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref api=../a
 
 ### kiro-cli・GitHub Copilot のカスタムエージェント
 
-インストーラーは、コードや文書を変える依頼を**必ずこのステートマシンで進める**カスタムエージェント `codd` も書く。
+`init.py` は、コードや文書を変える依頼を**必ずこのステートマシンで進める**カスタムエージェント `codd` も書く。
 
 | 使うもの | 書くファイル | 呼び方 |
 |---|---|---|
@@ -181,7 +181,7 @@ python3 .statemachine/codd/codd.py keep-changes    # 変えた分を残したま
 それぞれのフォルダの中だけになる。フォルダが重なっている・書いていないときは動かす前に止まる。
 
 ```bash
-python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --scope src --scope tests \
+python3 tools/codd-agent/init.py ~/work/my-app --side impl --scope src --scope tests \
     --ref docs=. --ref-scope docs=docs
 ```
 
@@ -304,7 +304,7 @@ API テスト・シナリオテストも、画面の e2e のケースも同列�
 どのファイルがテストかは `tests` の書き方で決まる。参照先のテストは、参照先に置いた `codd.json` の `tests` と `test` を使う。
 
 ```bash
-python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
+python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
 ```
 
 ### テストで得たものを実装と文書に活かす
@@ -433,7 +433,7 @@ GitHub Copilot などは 1 回の応答の長さに上限があり、長い計�
 単体テスト・API テストなどは webui-test ではなく `test` に書く（[テストもコード・仕様書と同じに扱う](#テストもコード仕様書と同じに扱う)）。
 
 ```bash
-python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
+python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
   --test "npm test" --check "webui-test check"
 ```
 
@@ -460,10 +460,10 @@ python3 .statemachine/codd/codd.py explore --term 語   # 参照先を探す（-
 python3 .statemachine/codd/codd.py impact --term 語    # 自分のリポジトリの影響範囲を探す
 ```
 
-graphify は `tools/codd-statemachine/install.py` で入る（このリポジトリのルートの `install.py` の外部ツールのセットアップでも入る）。
+graphify は `tools/codd-agent/install.py` で入る（このリポジトリのルートの `install.py` の外部ツールのセットアップでも入る）。
 
 ## テスト
 
 ```bash
-python -m unittest discover -s tools/codd-statemachine/tests
+python -m unittest discover -s tools/codd-agent/tests
 ```

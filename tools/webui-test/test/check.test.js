@@ -102,6 +102,8 @@ test('check: 起動して e2e → 前回の画面と比べる。変わっても�
   assert.deepStrictEqual([first.kind, first.status, first.history.length], ['image', 'new', 1]);
   assert.match(first.path, /^webui-test-results\/screens\/login\/S-01\/login\.png$/);
   assert.ok(fs.existsSync(path.join(dir, first.path)));
+  const root = JSON.parse(fs.readFileSync(path.join(dir, 'webui-test-results', 'evidence.json'), 'utf8')).root;
+  assert.ok(fs.existsSync(path.join(dir, 'webui-test-results', root, first.path)), 'パスの起点を root で渡す（読む側は置き場を知らなくてよい）');
 
   r = await cli(['check', ...ep()], { cwd: dir });
   assert.match(r.out, /前回と同じ 1・変わった 0/);

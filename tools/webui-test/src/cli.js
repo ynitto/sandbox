@@ -113,7 +113,7 @@ function timestamp() {
 }
 
 // 既定の結果の置き場。中に「すべて無視」の .gitignore を置き、リポジトリの変更に数えさせない
-// （codd-statemachine の「計画に無いファイルを変えていないか」の検査を、結果のファイルで落とさない）。
+// （codd-agent の「計画に無いファイルを変えていないか」の検査を、結果のファイルで落とさない）。
 function resultsBase(dir) {
   const base = path.resolve(dir || '.', 'webui-test-results');
   fs.mkdirSync(base, { recursive: true });

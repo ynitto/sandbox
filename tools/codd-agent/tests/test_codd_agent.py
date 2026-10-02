@@ -1,4 +1,4 @@
-"""codd-statemachine の結合テスト。実装・設計書の 2 リポジトリを一時フォルダに作り、下請けスクリプトを通す。
+"""codd-agent の結合テスト。実装・設計書の 2 リポジトリを一時フォルダに作り、下請けスクリプトを通す。
 
 LLM は呼ばない。アクションがやる判断（計画を書く・変える）は、テストが代わりにファイルを書いて進める。
 graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動更新の有無）を記録する。
@@ -923,7 +923,7 @@ class CoddTest(unittest.TestCase):
         out = self.impl / "webui-test-results"
         out.mkdir(exist_ok=True)
         (out / ".gitignore").write_text("*\n", encoding="utf-8")
-        (out / "evidence.json").write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False), encoding="utf-8")
+        (out / "evidence.json").write_text(json.dumps({"version": 1, "root": "..", "items": items}, ensure_ascii=False), encoding="utf-8")
 
     def evidence_items(self, load: int, status: str = "passed") -> list[dict]:
         base = {"file": "tests/login.yaml", "doc": ["design:docs/api.md"]}
