@@ -188,6 +188,34 @@ def run(argv: list[str], cwd: Path, timeout: int, env: dict | None = None) -> tu
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+def git_grep(side: "Side", args: list[str]) -> list[str]:
+    """git grep を scope の中で引き、一致した行（-l ならファイル）を返す。終了コード 1 だけが「該当なし」。
+
+    それ以外の失敗（古い git が知らないオプション（129）、壊れたリポジトリ、時間切れ）を「該当なし」と
+    取り違えると、影響範囲やテストを黙って取りこぼすので止める。
+    """
+    rc, out = run(["git", "grep", *args, *side.pathspec()], side.path, GIT_TIMEOUT)
+    if rc == 1:
+        return []
+    if rc != 0:
+        raise CoddError(f"{side.path} で git grep が失敗しました（終了コード {rc}）: {out.strip()[:300]}")
+    return [ln for ln in out.splitlines() if side.has(ln.split(":", 1)[0])]
+
+
+GREP_PER_FILE = 3   # 1 つの語で 1 ファイルから拾う行の上限（git の --max-count は 2.38 より前に無いので、ここで絞る）
+
+
+def per_file(lines: list[str], limit: int = GREP_PER_FILE) -> list[str]:
+    counts: dict[str, int] = {}
+    out = []
+    for ln in lines:
+        rel = ln.split(":", 1)[0]
+        counts[rel] = counts.get(rel, 0) + 1
+        if counts[rel] <= limit:
+            out.append(ln)
+    return out
+
+
 def skill_list(value, where: str) -> list[str]:
     if value is None:
         return []
@@ -900,9 +928,7 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
         # --untracked: まだコミットしていない新しいファイルも拾う（.gitignore に載っているものは除く）。
         # 識別子は語単位（-w）で引く。`hello` で `helloWorld` を拾って影響範囲を水増ししない。
         word = ["-w"] if _WORDLIKE.match(term) else []
-        rc, out = run(["git", "grep", "--untracked", "-n", "-I", "-i", "-F", *word, "--max-count", "3", "-e", term,
-                       *side.pathspec()], repo, GIT_TIMEOUT)
-        hits = [h for h in out.splitlines() if side.has(h.split(":", 1)[0])][:GREP_LINES_PER_TERM] if rc == 0 else []
+        hits = per_file(git_grep(side, ["--untracked", "-n", "-I", "-i", "-F", *word, "-e", term]))[:GREP_LINES_PER_TERM]
         lines += [f"#### {term}", "", *([f"- {h[:200]}" for h in hits] or ["- (該当なし)"]), ""]
         for h in hits:
             rel, _, rest = h.partition(":")
@@ -1422,8 +1448,7 @@ def files_mentioning(side: Side, words: list[str]) -> list[str]:
     if not words:
         return []
     args = [a for w in words for a in ("-e", w)]
-    rc, out = run(["git", "grep", "--untracked", "-l", "-I", "-F", *args, *side.pathspec()], side.path, GIT_TIMEOUT)
-    return [ln for ln in out.splitlines() if side.has(ln)][:MAX_TRACE_FILES] if rc == 0 else []
+    return git_grep(side, ["--untracked", "-l", "-I", "-F", *args])[:MAX_TRACE_FILES]
 
 
 def linked(ctx: Ctx, key: str, rels: set[str]) -> set[tuple[str, str]]:
@@ -2095,9 +2120,8 @@ class Mark:
 
 def marked_docs(ctx: Ctx, key: str) -> list[str]:
     side = side_of(ctx, key)
-    rc, out = run(["git", "grep", "-l", "-I", "--untracked", "-E", r"<!--[[:space:]]*evidence:", *side.pathspec()],
-                  side.path, GIT_TIMEOUT)
-    return [ln for ln in out.splitlines() if side.has(ln) and ln.lower().endswith(DOC_EXTS)] if rc == 0 else []
+    return [ln for ln in git_grep(side, ["-l", "-I", "--untracked", "-E", r"<!--[[:space:]]*evidence:"])
+            if ln.lower().endswith(DOC_EXTS)]
 
 
 def fenced_lines(text: str) -> set[int]:
@@ -3243,9 +3267,8 @@ def lint_paths(ctx: Ctx) -> list[tuple[str, str]]:
     """文書のリンクと注記（coherence:）が指すパスのうち、どの側にも無いもの。（見つけたこと, やりたいこと）"""
     out = []
     for key, side in all_sides(ctx):
-        rc, annotated = run(["git", "grep", "-l", "-I", "-F", "coherence:", *side.pathspec()], side.path, GIT_TIMEOUT)
         files = {rel for rel in tracked(side) if rel.lower().endswith(DOC_EXTS)}
-        files |= {ln for ln in annotated.splitlines() if side.has(ln)} if rc == 0 else set()
+        files |= set(git_grep(side, ["-l", "-I", "-F", "coherence:"]))
         for rel in sorted(files):
             for claim in claims_in(rel, read_text(side.path / rel) or ""):
                 if claim.kind == "code" or not pathlike(claim.token) or "\\" in claim.token:

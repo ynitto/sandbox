@@ -230,6 +230,24 @@ class CoddTest(unittest.TestCase):
         self.assertIn("docs/api.md:3:## hello", report)
         self.assertEqual(self.run_pa(self.impl, "explore").returncode, 2)  # 語が無い
 
+    def test_explore_keeps_three_lines_per_file_without_git_max_count(self) -> None:
+        commit(self.design, {"docs/many.md": "".join(f"hello {i}\n" for i in range(6))}, "many")
+        self.assertEqual(self.run_pa(self.impl, "explore", "--term", "hello").returncode, 0)
+        report = (self.impl / ".codd/explore.md").read_text(encoding="utf-8")
+        self.assertEqual(report.count("docs/many.md:"), 3)   # 1 ファイル 3 行までは保つ
+
+    def test_a_failing_git_grep_is_not_taken_as_no_match(self) -> None:
+        # 古い git が知らないオプションを渡したときのように、git grep が 1 以外で落ちたら「該当なし」にしない。
+        shim = self.bin / "git"
+        shim.write_text('#!/bin/sh\nfor a in "$@"; do [ "$a" = grep ] && { echo "error: unknown option" >&2; exit 129; }; done\n'
+                        f'exec {shutil.which("git")} "$@"\n', encoding="utf-8")
+        shim.chmod(0o755)
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("git grep が失敗しました（終了コード 129）", r.stderr)
+        self.assertNotIn("該当なし", (self.impl / ".codd/explore.md").read_text(encoding="utf-8")
+                         if (self.impl / ".codd/explore.md").is_file() else "")
+
     def test_graph_is_rebuilt_only_when_the_repo_changes(self) -> None:
         self.use_graphify_stub()
         r = self.run_pa(self.impl, "explore", "--term", "hello")
