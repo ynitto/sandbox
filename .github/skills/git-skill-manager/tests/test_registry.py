@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import registry as reg_mod
+import generate_skill_catalog as catalog_mod
 
 
 # ---------------------------------------------------------------------------
@@ -244,3 +245,28 @@ class TestLoadSaveRegistry:
         assert reg["version"] == 9
         assert reg["installed_skills"] == []
         assert reg["sync_policy"]["auto_resolve_conflicts"] is True
+
+
+# ---------------------------------------------------------------------------
+# generate_skill_catalog frontmatter
+# ---------------------------------------------------------------------------
+
+class TestGenerateCatalogFrontmatter:
+    def test_quoted_scalars_are_values_not_literal_quote_characters(self, tmp_path):
+        skill = tmp_path / "quoted"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            '---\n'
+            'name: quoted\n'
+            'description: "quoted description"\n'
+            'metadata:\n'
+            '  version: "2.0.0"\n'
+            "  tier: 'stable'\n"
+            '  category: test\n'
+            '---\n# quoted\n',
+            encoding="utf-8",
+        )
+        entry = catalog_mod.build_skill_entry(str(skill), "quoted")
+        assert entry["description"] == "quoted description"
+        assert entry["version"] == "2.0.0"
+        assert entry["tier"] == "stable"
