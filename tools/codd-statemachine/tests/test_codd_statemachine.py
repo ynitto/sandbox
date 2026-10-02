@@ -649,34 +649,39 @@ class CoddTest(unittest.TestCase):
         self.assertIn("根拠: 守る決まり", out)
         self.assertNotIn("## 参照先の前提", out)
 
-    def test_install_puts_the_machine_on_the_terminal_and_init_sets_up_a_repo(self) -> None:
-        # 端末への導入（install.py）と、リポジトリの初期設定（codd-init）は別のコマンド。
-        dest, bin_dir = self.tmp / "home/.statemachine/codd-statemachine", self.tmp / "home/.local/bin"
-        install.main(["--dest", str(dest), "--bin-dir", str(bin_dir)])
-        self.assertTrue((dest / "machine/codd.py").is_file())
-        self.assertTrue((dest / "init.py").is_file())
-        self.assertFalse((dest / "machine/__pycache__").exists())
-        launcher = bin_dir / ("codd-init.cmd" if os.name == "nt" else "codd-init")
-        self.assertIn(str(dest / "init.py"), launcher.read_text(encoding="utf-8"))
-        # 端末に入れただけでは、どのリポジトリにも何も置かない。
+    @unittest.skipIf(os.name == "nt", "偽の uv を sh で作る")
+    def test_install_puts_middleware_on_the_terminal_and_init_places_codd(self) -> None:
+        # install.py は外部のミドルウェア（graphify など）を端末に入れる。codd はリポジトリに init.py で置く。
+        bin_dir = self.tmp / "tools-bin"
+        bin_dir.mkdir()
+        uv_log = self.tmp / "uv.log"
+        uv = bin_dir / "uv"
+        uv.write_text(f'#!/bin/sh\necho "$@" >> {uv_log}\n'
+                      f'printf \'#!/bin/sh\\necho "graphify 1.0"\\n\' > {bin_dir}/graphify\n'
+                      f'chmod +x {bin_dir}/graphify\n', encoding="utf-8")
+        uv.chmod(0o755)
+        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin", "HOME": str(self.tmp / "home")}
+        run = lambda *a: subprocess.run([sys.executable, str(TOOL / "install.py"), *a], capture_output=True,
+                                        text=True, env=env)
+        r = run()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
+        self.assertIn("✓ graphify: graphify 1.0", r.stdout)
+        self.assertIn("✓ git:", r.stdout)
+        self.assertIn("- webui-test: ありません", r.stdout)
+        r = run()   # 入っていれば入れ直さない
+        self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
+        run("--upgrade")
+        self.assertEqual(uv_log.read_text(encoding="utf-8").split()[-3:], ["tool", "upgrade", "graphifyy"])
+        # 端末に入れても、リポジトリには何も置かない。
         app = self.tmp / "app"
         app.mkdir()
         git(app, "init", "-q", "-b", "main")
         self.assertFalse((app / ".statemachine").exists())
-        # codd-init でリポジトリを初期設定する（端末に置いた本体を写す）。
-        r = subprocess.run([str(launcher), str(app), "--side", "impl", "--ref", "../design", "--no-agents",
-                            "--no-discover-rules"], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue((app / ".statemachine/codd/codd.py").is_file())
-        self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["side"], "impl")
-        # 以前の使い方（install.py にリポジトリを渡す）では、端末に入れたうえで初期設定もする。
-        old = self.tmp / "old"
-        old.mkdir()
-        git(old, "init", "-q", "-b", "main")
-        rc = install.main(["--dest", str(dest), "--bin-dir", str(bin_dir), str(old), "--side", "design",
-                           "--ref", "../impl", "--no-agents", "--no-discover-rules"])
+        # 以前の使い方（install.py にリポジトリを渡す）は init.py に渡す。
+        rc = install.main([str(app), "--side", "impl", "--ref", "../design", "--no-agents", "--no-discover-rules"])
         self.assertEqual(rc, 0)
-        self.assertTrue((old / ".statemachine/codd/codd.json").is_file())
+        self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["side"], "impl")
 
     def test_install_writes_custom_agents(self) -> None:
         kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))

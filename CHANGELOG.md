@@ -7,14 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### codd-statemachine: 端末への導入とリポジトリの初期設定を別のコマンドにする
+### codd-statemachine: 端末への導入とリポジトリへの設置を別のコマンドにする
 
-- **`install.py` は端末に入れる。** 本体を `~/.statemachine/codd-statemachine/` に写し、初期設定のコマンド `codd-init` を
-  `~/.local/bin/` に置く（Windows は `codd-init.cmd`。`--dest`・`--bin-dir` で変えられる）。リポジトリには何も置かない
-- **`codd-init <リポジトリ> --side … --ref …` でリポジトリを初期設定する。** 本体を `.statemachine/codd/` に写し、
-  `codd.json`・カスタムエージェント・`.gitignore` を書く（今までの `install.py <リポジトリ> …` と同じ）。新しい版を端末に
-  入れたら、各リポジトリで `codd-init <リポジトリ>` をもう一度実行すると本体が入れ替わる
-- 前の使い方（`install.py <リポジトリ> …`）でも、端末に入れたうえで初期設定まで行う
+- **`install.py` は外部のミドルウェアを端末に入れる。** graphify を uv・pipx・pip のどれかで入れ（`--upgrade` で最新に）、
+  git と webui-test があるかを確かめる。リポジトリには何も置かない
+- **`init.py <リポジトリ> --side … --ref …` で codd をリポジトリに置く。** 今までの `install.py <リポジトリ> …` と同じ
+  （`.statemachine/codd/` に定義を写し、`codd.json`・カスタムエージェント・`.gitignore` を書く）
+- 前の使い方（`install.py <リポジトリ> …`）で呼ぶと、そのまま `init.py` に渡す
 
 ### codd-statemachine: 計画を docs/.plan/ に判断の記録として残す
 

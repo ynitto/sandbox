@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """リポジトリに codd-statemachine を置いて初期設定する（置き先の名前は `.statemachine/codd/`）。
 
-端末への導入（`install.py`）のあとは `codd-init` で呼べる。リポジトリごとに 1 回（と、本体を更新したとき）実行する。
+リポジトリごとに 1 回（と、新しい版を置き直すとき）実行する。graphify などの外部のミドルウェアを端末に入れるのは
+`install.py` の仕事（端末ごとに 1 回）。
 
-    codd-init <実装のリポジトリ> --side impl --ref docs=../my-design
-    codd-init <設計書のリポジトリ> --side design --ref ../my-impl
-    codd-init <実装のリポジトリ> --side impl --ref api=../api-docs --ref ui=../ui-docs
+    python3 tools/codd-statemachine/init.py <実装のリポジトリ> --side impl --ref docs=../my-design
+    python3 tools/codd-statemachine/init.py <設計書のリポジトリ> --side design --ref ../my-impl
+    python3 tools/codd-statemachine/init.py <実装のリポジトリ> --side impl --ref api=../api-docs --ref ui=../ui-docs
 
     # 実装と設計書が同じリポジトリ（src/ と docs/）にあるとき
-    codd-init <リポジトリ> --side impl --scope src --scope tests \\
+    python3 tools/codd-statemachine/init.py <リポジトリ> --side impl --scope src --scope tests \\
         --ref docs=. --ref-scope docs=docs
 
 --ref は `名前=パス` か `パス`（名前はフォルダ名）。いくつでも渡せる。
@@ -213,7 +214,7 @@ def append_line(path: Path, line: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="codd-init", description="リポジトリに codd-statemachine を置いて初期設定する")
+    p = argparse.ArgumentParser(description="リポジトリに codd-statemachine を置いて初期設定する")
     p.add_argument("target", help="置き先のリポジトリ")
     p.add_argument("--side", choices=["impl", "design"], help="このリポジトリの側（impl = 実装 / design = 設計書）")
     p.add_argument("--ref", action="append",

@@ -1,83 +1,104 @@
 #!/usr/bin/env python3
-"""codd-statemachine を端末に入れる（端末ごとに 1 回と、新しい版を入れるとき）。
+"""codd-statemachine が使う外部のミドルウェアを端末に入れる（端末ごとに 1 回と、更新するとき）。
 
-    python3 tools/codd-statemachine/install.py
+    python3 tools/codd-statemachine/install.py              # 足りないものを入れる
+    python3 tools/codd-statemachine/install.py --upgrade    # 入っているものも最新にする
 
-本体（machine/ と init.py）をホームの `~/.statemachine/codd-statemachine/` に写し、リポジトリの初期設定をする
-`codd-init` コマンドを `~/.local/bin/` に置く（Windows では `codd-init.cmd`）。どちらも --dest / --bin-dir で変えられる。
-入れたあと、リポジトリごとに次を実行する（初期設定。本体をリポジトリの `.statemachine/codd/` に写し、codd.json を書く）。
+入れるもの:
+  graphify   参照先を探すときの知識グラフ（任意。無ければ文字列検索だけで動く）。uv → pipx → pip の順で入れる
 
-    codd-init <リポジトリ> --side impl --ref docs=../my-design
+確かめるだけのもの（入れ方は表示する）:
+  git        必須
+  webui-test 画面のテストを変えたあとの検査に使うとき（`tools/webui-test/install.sh`）
 
-新しい版を入れたら、各リポジトリで `codd-init <リポジトリ>` をもう一度実行すると本体が入れ替わる（codd.json は残る）。
-graphify はこのリポジトリのルートの install.py（外部ツールのセットアップ）で入る。
+codd そのものは端末に入れない。リポジトリごとに `init.py` で置く（リポジトリだけで動くように）。
 
-以前の使い方（`install.py <リポジトリ> --side … --ref …`）で呼ばれたときは、端末に入れたうえで、そのまま初期設定もする。
+    python3 tools/codd-statemachine/init.py <リポジトリ> --side impl --ref docs=../my-design
+
+以前の使い方（`install.py <リポジトリ> --side … --ref …`）で呼ばれたときは、そのまま init.py に渡す。
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
-import stat
+import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_DEST = Path.home() / ".statemachine" / "codd-statemachine"
-DEFAULT_BIN = Path.home() / ".local" / "bin"
-PARTS = ("machine", "init.py")
+TIMEOUT = 600
+
+# (名前, 入っているかを見るコマンド, 入れるコマンドの候補, 最新にするコマンドの候補)
+GRAPHIFY = ("graphify", ["graphify", "--version"],
+            [["uv", "tool", "install", "graphifyy"], ["pipx", "install", "graphifyy"],
+             [sys.executable, "-m", "pip", "install", "--user", "graphifyy"]],
+            [["uv", "tool", "upgrade", "graphifyy"], ["pipx", "upgrade", "graphifyy"],
+             [sys.executable, "-m", "pip", "install", "--user", "-U", "graphifyy"]])
+CHECK_ONLY = (("git", ["git"], "https://git-scm.com/downloads から入れる（必須）"),
+              ("webui-test", ["webui-test"],
+               "画面のテストを検査に使うなら tools/webui-test/install.sh（Windows は install.ps1）で入れる（任意）"))
 
 
-def install(dest: Path = DEFAULT_DEST, bin_dir: Path = DEFAULT_BIN) -> Path:
-    """本体をホームへ写し、codd-init を置く。返すのは置いた codd-init のパス。"""
-    if dest.resolve() != HERE:
-        dest.mkdir(parents=True, exist_ok=True)
-        for name in PARTS:   # 古い版のファイルを残さない
-            target = dest / name
-            if target.is_dir():
-                shutil.rmtree(target)
-            elif target.exists():
-                target.unlink()
-        shutil.copytree(HERE / "machine", dest / "machine", ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copyfile(HERE / "init.py", dest / "init.py")
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    init = dest / "init.py"
-    if os.name == "nt":
-        launcher = bin_dir / "codd-init.cmd"
-        launcher.write_text(f'@"{sys.executable}" "{init}" %*\r\n', encoding="utf-8")
+def version(cmd: list[str]) -> str | None:
+    exe = shutil.which(cmd[0])
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (r.stdout.strip() or r.stderr.strip() or "入っている").splitlines()[0] if r.returncode == 0 else None
+
+
+def run_first(candidates: list[list[str]]) -> str | None:
+    """使える道具で順に試し、最初に通ったものの名前を返す。"""
+    for cmd in candidates:
+        exe = shutil.which(cmd[0])
+        if not exe:
+            continue
+        print(f"  {' '.join(cmd)}")
+        try:
+            r = subprocess.run([exe, *cmd[1:]], timeout=TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0:
+            return Path(cmd[0]).name
+    return None
+
+
+def install_middleware(upgrade: bool = False) -> int:
+    name, probe, installs, upgrades = GRAPHIFY
+    current = version(probe)
+    failed = 0
+    if current and not upgrade:
+        print(f"✓ {name}: {current}")
     else:
-        launcher = bin_dir / "codd-init"
-        launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{init}" "$@"\n', encoding="utf-8")
-        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return launcher
-
-
-def on_path(folder: Path) -> bool:
-    return any(Path(p).expanduser().resolve() == folder.resolve()
-               for p in os.environ.get("PATH", "").split(os.pathsep) if p)
+        print(f"{name} を{'最新にします' if current else '入れます'}")
+        if run_first(upgrades if current else installs):
+            print(f"✓ {name}: {version(probe) or '入れた（PATH を確かめてください）'}")
+        else:
+            failed += 1
+            print(f"✗ {name} を入れられませんでした（uv・pipx・pip のどれかが要ります）。無くても文字列検索だけで動きます")
+    for name, probe, how in CHECK_ONLY:
+        found = shutil.which(probe[0])
+        print(f"✓ {name}: {found}" if found else f"- {name}: ありません。{how}")
+    print("codd はリポジトリごとに置きます: python3 tools/codd-statemachine/init.py <リポジトリ> --side … --ref …")
+    return 1 if failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    p = argparse.ArgumentParser(description="codd-statemachine を端末に入れる（リポジトリの初期設定は codd-init）",
-                                allow_abbrev=False)
-    p.add_argument("--dest", type=Path, default=DEFAULT_DEST, help=f"本体を置くフォルダ（既定 {DEFAULT_DEST}）")
-    p.add_argument("--bin-dir", type=Path, default=DEFAULT_BIN, help=f"codd-init を置くフォルダ（既定 {DEFAULT_BIN}）")
-    args, rest = p.parse_known_args(argv)
-    launcher = install(args.dest.expanduser(), args.bin_dir.expanduser())
-    print(f"端末に入れました: {args.dest}")
-    print(f"  リポジトリの初期設定: {launcher.name} <リポジトリ> --side impl --ref docs=../my-design")
-    if not on_path(args.bin_dir.expanduser()):
-        print(f"  {args.bin_dir} が PATH にありません。PATH に足すか、{launcher} をそのまま呼んでください")
-    if rest:
-        # 以前の使い方（リポジトリを渡す）。初期設定も続けて行う。
-        print("リポジトリの初期設定は codd-init に分けました。今回は続けて初期設定もします。")
-        sys.path.insert(0, str(args.dest.expanduser()))
+    if any(not a.startswith("-") for a in argv) or any(a.startswith(("--side", "--ref")) for a in argv):
+        # 以前の使い方（リポジトリを渡す）。リポジトリへ置くのは init.py の仕事。
+        print("リポジトリへ置くのは init.py に分けました（install.py は外部のミドルウェアを入れます）。init.py に渡します。")
+        sys.path.insert(0, str(HERE))
         import init as repo_init
-        return repo_init.main(rest)
-    return 0
+        return repo_init.main(argv)
+    p = argparse.ArgumentParser(description="codd-statemachine が使う外部のミドルウェア（graphify など）を端末に入れる")
+    p.add_argument("--upgrade", action="store_true", help="入っているものも最新にする")
+    args = p.parse_args(argv)
+    return install_middleware(args.upgrade)
 
 
 if __name__ == "__main__":

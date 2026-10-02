@@ -25,28 +25,27 @@
 
 ## 置き方
 
-置き方は 2 段に分かれる。端末への導入は端末ごとに 1 回、初期設定はリポジトリごとに 1 回する。
+置き方は 2 つに分かれる。
 
-**1. 端末に入れる。** 本体を `~/.statemachine/codd-statemachine/` に写し、初期設定のコマンド `codd-init` を
-`~/.local/bin/` に置く（Windows は `codd-init.cmd`。`--dest`・`--bin-dir` で変えられる）。新しい版を入れるときも同じ。
+**1. 外部のミドルウェアを端末に入れる（端末ごとに 1 回）。** graphify（任意。参照先を探すときの知識グラフ）を
+uv・pipx・pip のどれかで入れ、git と webui-test（任意）があるかを確かめる。`--upgrade` で最新にする。
 
 ```bash
 python3 tools/codd-statemachine/install.py
 ```
 
-**2. リポジトリを初期設定する。** 本体をリポジトリの `.statemachine/codd/` に写し、`codd.json` を書く。
+**2. codd をリポジトリに置く（リポジトリごとに 1 回）。** `.statemachine/codd/` に定義を写し、`codd.json` を書く。
 
 ```bash
 # 実装のリポジトリへ（参照先 = 設計書）
-codd-init ~/work/my-app --side impl --ref docs=../my-app-docs
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs
 # 設計書のリポジトリへ（参照先 = 実装）
-codd-init ~/work/my-app-docs --side design --ref app=../my-app
+python3 tools/codd-statemachine/init.py ~/work/my-app-docs --side design --ref app=../my-app
 # 参照先が複数
-codd-init ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
 ```
 
-新しい版を端末に入れたら、各リポジトリで `codd-init <リポジトリ>` をもう一度実行すると本体が入れ替わる（`codd.json` は残る）。
-前の使い方（`install.py <リポジトリ> --side … --ref …`）でも、端末に入れたうえで初期設定まで行う。
+前の使い方（`install.py <リポジトリ> --side … --ref …`）で呼ぶと、そのまま `init.py` に渡す。
 
 `--ref` は `名前=パス` か `パス`（名前はフォルダ名になる）。もう一度 `--ref` を渡すと参照先の一覧を入れ替える。
 
@@ -93,7 +92,7 @@ codd-init ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
 
 探した結果・graphify のグラフなどの作業ファイルは `<リポジトリ>/.codd/` に置く（インストーラーが `.gitignore` に足す）。計画は `docs/.plan/` に置く（上記）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
-もう一度 `codd-init` を実行すると定義とスクリプトが入れ替わり、`codd.json` は上書きせずそのまま残る。
+もう一度 `init.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` は上書きせずそのまま残る。
 `--side` / `--ref` / `--scope` / `--ref-scope` / `--check` / `--test` を渡したときだけ、その項目を書き換える
 （`--ref` で入れ替えても、同じ名前の参照先に手で書いた `rules`・`scope` などは残す）。
 
@@ -182,7 +181,7 @@ python3 .statemachine/codd/codd.py keep-changes    # 変えた分を残したま
 それぞれのフォルダの中だけになる。フォルダが重なっている・書いていないときは動かす前に止まる。
 
 ```bash
-codd-init ~/work/my-app --side impl --scope src --scope tests \
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --scope src --scope tests \
     --ref docs=. --ref-scope docs=docs
 ```
 
@@ -297,7 +296,7 @@ API テスト・シナリオテストも、画面の e2e のケースも同列�
 どのファイルがテストかは `tests` の書き方で決まる。参照先のテストは、参照先に置いた `codd.json` の `tests` と `test` を使う。
 
 ```bash
-codd-init ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
 ```
 
 ### テストで得たものを実装と文書に活かす
@@ -382,7 +381,7 @@ python3 .statemachine/codd/codd.py skill docs:doc-writer    # 参照先のスキ
   rules・guideline・convention・coding・style guide・standard・policy を含むマークダウンを、自分と参照先から探して候補にする。
   自分の分は `scope` の中と、その上のフォルダ（ルートを含む）だけを探す。スキルの中のファイル（`SKILL.md` のあるフォルダの下）と、
   日付で始まるファイル（計画や記録）は候補にしない。
-  `codd-init` は初めて置いたときに候補を `codd.json` に書く（`--no-discover-rules` でやめる）。あとから増えた候補は
+  `init.py` は初めて置いたときに候補を `codd.json` に書く（`--no-discover-rules` でやめる）。あとから増えた候補は
   `show` に「決まりの候補」として出て、計画のときに読まれ、確認のときに設定に書くかを訊かれる。手で書くなら次のとおり
 
 ```bash
@@ -426,7 +425,7 @@ GitHub Copilot などは 1 回の応答の長さに上限があり、長い計�
 単体テスト・API テストなどは webui-test ではなく `test` に書く（[テストもコード・仕様書と同じに扱う](#テストもコード仕様書と同じに扱う)）。
 
 ```bash
-codd-init ~/work/my-app --side impl --ref docs=../my-app-docs \
+python3 tools/codd-statemachine/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
   --test "npm test" --check "webui-test check"
 ```
 
@@ -453,7 +452,7 @@ python3 .statemachine/codd/codd.py explore --term 語   # 参照先を探す（-
 python3 .statemachine/codd/codd.py impact --term 語    # 自分のリポジトリの影響範囲を探す
 ```
 
-graphify の導入はこのリポジトリの `install.py`（外部ツールのセットアップ）でも入る。
+graphify は `tools/codd-statemachine/install.py` で入る（このリポジトリのルートの `install.py` の外部ツールのセットアップでも入る）。
 
 ## テスト
 
