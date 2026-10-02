@@ -59,7 +59,6 @@ states:
   plan:
     description: "参照先を読み、変更を練る"
     action_file: actions/plan.md
-    write: docs/.plan/current.md
     output_validator: "startswith:OK,FAILED"
     # 時間を明示する（既定の 120 秒では、グラフの作り直しで切られて「落ちた」扱いになる）
     check: {command: python3, args: [.statemachine/codd/codd.py, verify-plan], timeout_sec: 1800}

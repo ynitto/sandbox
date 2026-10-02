@@ -41,9 +41,10 @@ python3 .statemachine/codd/codd.py show
 - 検査（`codd.py verify-plan` / `verify-apply`）の結果を自分で覆さない。落ちたら、指摘を直すか、`stuck` で利用者に訊く
 - 終わりの報告は `codd.py report` の出力をそのまま使う。自分の記憶でまとめ直さない
 - コミットしない（利用者が内容を確かめてからコミットする）
-- 計画は `docs/.plan/current.md` に書き、利用者はそれを読んで確かめる。同じ回の練り直しではこれを直す。
-  終わりに `codd.py record` が `docs/.plan/日付-名前.md` へ判断の記録として移す。終わった回の記録は書き換えない
+- 計画は `codd.py draft --name 英語の短い名前` で置いた `docs/.plans/日時-名前.md` に書き、利用者はそれを読んで確かめる。
+  同じ回の練り直しではこれを直す。終わりに `codd.py record` が確認の答えと結果を書き足して判断の記録にする。
+  終わった回の記録は書き換えない
 - **1 回の応答を短くする。** 応答の長さに上限があるエージェント（GitHub Copilot など）では、長く書くと
   「the response hit the length limit」で止まります。ファイルの全文やコマンドの長い出力を応答に貼らず、パスを示します。
-  計画は `codd.py draft` でひな形を置いて見出しごとに書き、確認では `codd.py summary` の要約を見せます。
+  計画は `codd.py draft --name 英語の短い名前` でひな形を置いて見出しごとに書き、確認では `codd.py summary` の要約を見せます。
   既にあるファイルは変える箇所だけを置き換え、大きいファイルを足すときは関数や見出しごとに分けて書きます

@@ -42,7 +42,7 @@ case "$1" in
 esac
 """
 
-PLAN = "docs/.plan/current.md"
+PLAN = "docs/.plans/2026-10-01-0000-test.md"
 
 PLAN_ALIGNED = """\
 # 変更の計画
@@ -198,7 +198,7 @@ class CoddTest(unittest.TestCase):
         return self.log.read_text(encoding="utf-8").splitlines() if self.log.is_file() else []
 
     def write_plan(self, text: str, read: bool = True) -> None:
-        (self.impl / "docs/.plan").mkdir(parents=True, exist_ok=True)
+        (self.impl / "docs/.plans").mkdir(parents=True, exist_ok=True)
         (self.impl / PLAN).write_text(text, encoding="utf-8")
         if read:
             self.read_up(self.impl)
@@ -634,13 +634,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("リポジトリのスキル", r.stdout)
         self.assertIn("`tdd-lite` — テストを先に書く（.agents/skills/tdd-lite/SKILL.md）", r.stdout)
         self.write_plan(PLAN_ALIGNED)
-        r = self.run_pa(self.impl, "verify-plan")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("リポジトリのスキルを使った結果か「使わない: 理由」", r.stderr)
-        self.assertIn("`tdd-lite`", r.stderr)
-        self.write_plan(PLAN_ALIGNED.replace("## 使ったスキルと道具\n\nなし",
-                                             "## 使ったスキルと道具\n\n- `tdd-lite` — 使わない: ログを足すだけでテストは変わらない"))
-        self.assert_plan_ok()
+        self.assert_plan_ok()   # 使わないリポジトリのスキルを、1 つずつ断らせない
         # 使うと書いたスキルは、codd.py skill で読み込んでいなければ落とす（エージェントの自動選択に頼らない）。
         plan = PLAN_ALIGNED.replace("## 使ったスキルと道具\n\nなし",
                                     "## 使ったスキルと道具\n\n- `tdd-lite` — 変えるときにテストを先に書く")
@@ -670,9 +664,17 @@ class CoddTest(unittest.TestCase):
 
     def test_draft_places_template_and_keeps_existing_plan(self) -> None:
         # 計画は一度に全文を書かせず、ひな形を置いて見出しごとに書かせる（応答の長さの上限で止まらないように）。
+        # 名前は日時と英語の短い名前で一意にする。
         r = self.run_pa(self.impl, "draft")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("英語の短い名前", r.stderr)
+        self.assertEqual(self.run_pa(self.impl, "draft", "--name", "ログを足す").returncode, 2)
+        r = self.run_pa(self.impl, "draft", "--name", "add-hello-log")
         self.assertEqual(r.returncode, 0, r.stderr)
-        plan = self.impl / PLAN
+        plans = list((self.impl / "docs/.plans").glob("*.md"))
+        self.assertEqual(len(plans), 1)
+        plan = plans[0]
+        self.assertRegex(plan.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-add-hello-log\.md$")
         template = (self.impl / ".statemachine/codd/templates/plan.md").read_text(encoding="utf-8")
         self.assertEqual(plan.read_text(encoding="utf-8"), template)
         # 書きかけのままでは計画の検査を通らない（コメントだけの見出しは空として落ちる）。
@@ -681,10 +683,12 @@ class CoddTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("見出しの中身が空です", r.stdout + r.stderr)
         plan.write_text(PLAN_ALIGNED, encoding="utf-8")
-        self.assertIn("計画はもうあります", self.run_pa(self.impl, "draft").stdout)
+        self.assertIn("計画はもうあります", self.run_pa(self.impl, "draft", "--name", "other").stdout)
         self.assertEqual(plan.read_text(encoding="utf-8"), PLAN_ALIGNED)
-        self.run_pa(self.impl, "draft", "--new")
-        self.assertEqual(plan.read_text(encoding="utf-8"), template)
+        self.run_pa(self.impl, "draft", "--new", "--name", "add-hello-log")
+        plans = list((self.impl / "docs/.plans").glob("*.md"))
+        self.assertEqual(len(plans), 1)    # 進めていた計画は捨てて置き直す（同じ時刻なら -2 が付く）
+        self.assertEqual(plans[0].read_text(encoding="utf-8"), template)
 
     def test_summary_is_short_and_points_to_the_plan(self) -> None:
         self.assertEqual(self.run_pa(self.impl, "summary").returncode, 1)
@@ -693,10 +697,10 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "summary")
         self.assertEqual(r.returncode, 0, r.stderr)
         out = r.stdout
-        self.assertIn("全文: docs/.plan/current.md", out)
+        self.assertIn(f"全文: {PLAN}", out)
         self.assertIn("## やりたいこと\n\nhello にログを足す。", out)
         self.assertIn("## 自分の変更案", out)
-        self.assertIn("- ほか 8 件（docs/.plan/current.md）", out)
+        self.assertIn(f"- ほか 8 件（{PLAN}）", out)
         self.assertNotIn("src/m12.py", out)
         self.assertTrue(all(len(ln) <= 120 for ln in out.splitlines()))
         # 根拠の見出しは件数だけ（全文は貼らない）。
@@ -1346,7 +1350,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("FOUND 1 files", r.stdout)
         # 根拠は参照先の scope の中、影響範囲は自分の scope の中だけを認める。
         plan = PLAN_DRIFT
-        (mono / "docs/.plan").mkdir(parents=True, exist_ok=True)
+        (mono / "docs/.plans").mkdir(parents=True, exist_ok=True)
         (mono / PLAN).write_text(plan.replace("（根拠: docs/api.md）", "（根拠: src/app.py）"),
                                             encoding="utf-8")
         r = self.run_pa(mono, "verify-plan")
@@ -1522,26 +1526,37 @@ class CoddTest(unittest.TestCase):
         self.assertIn("src/greet_user.py", r.stderr)
 
     def test_plan_is_kept_as_a_decision_record(self) -> None:
-        # 計画は docs/.plan/current.md に書き、終わりに確認の答えと結果を書き足して日付付きの名前で残す。
+        # 計画は docs/.plans/日時-名前.md に書き、終わりに確認の答えと結果を書き足して、その名前のまま残す。
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
         self.run_pa(self.impl, "decide", "NG", "--note", "戻り値の説明も直して")
-        self.assert_plan_ok()   # 同じ回の練り直しでは current.md を直す
+        self.assert_plan_ok()   # 同じ回の練り直しでは同じ計画を直す
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
         # 計画のフォルダは変えたファイルに数えない（記録のために置くもの）。
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
         self.assertEqual(self.run_pa(self.impl, "report").returncode, 0)
+        # 記録に要らないもの（使わなかったスキル・関係なしとしたファイル・中身が「なし」の見出し）は残さない。
+        plan = self.impl / PLAN
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "## 使ったスキルと道具\n\nなし",
+            "## 使ったスキルと道具\n\n- `tdd-lite` — 使わない: テストは無い\n- `grep` — 呼び出し元を探した").replace(
+            "## 参照先のその他\n\n- なし", "## 参照先のその他\n\n- 関係なし: docs/api.md:1 — 題名だけ\n  続きの説明"),
+            encoding="utf-8")
         r = self.run_pa(self.impl, "record")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertFalse((self.impl / PLAN).exists())
-        records = list((self.impl / "docs/.plan").glob("*.md"))
-        self.assertEqual(len(records), 1)
-        self.assertRegex(records[0].name, r"^\d{4}-\d{2}-\d{2}-\d{4}-.+\.md$")
-        self.assertIn(f"計画の記録: docs/.plan/{records[0].name}", r.stdout)
-        text = records[0].read_text(encoding="utf-8")
+        records = list((self.impl / "docs/.plans").glob("*.md"))
+        self.assertEqual(records, [plan])     # 置いたときの名前のまま残す
+        self.assertIn(f"計画の記録: {PLAN}", r.stdout)
+        text = plan.read_text(encoding="utf-8")
         self.assertIn("## 自分の変更案", text)
+        self.assertIn("- `grep` — 呼び出し元を探した", text)
+        self.assertNotIn("使わない", text)
+        self.assertNotIn("関係なし", text)
+        self.assertNotIn("続きの説明", text)
+        self.assertNotIn("## 参照先のその他", text)          # 中身が無くなった見出しは消す
+        self.assertNotIn("<!--", text)
         self.assertRegex(text, r"## 確認と判断\n\n- [-0-9: ]+ NG（計画を直す）: 戻り値の説明も直して\n- [-0-9: ]+ OK（計画で進める）")
         self.assertIn("## 結果\n\n- 変えたあとの検査: 通った", text)
         self.assertIn("### 自分（実装）", text)
@@ -1550,8 +1565,9 @@ class CoddTest(unittest.TestCase):
         # 終わった回の記録は書き換えさせない（次の回の検査で落とす）。
         git(self.impl, "add", "-A")
         git(self.impl, "commit", "-q", "-m", "change")
-        records[0].write_text(text.replace("通った", "通らなかった"), encoding="utf-8")
-        self.write_plan(PLAN_ALIGNED)
+        plan.write_text(text.replace("通った", "通らなかった"), encoding="utf-8")
+        (self.impl / "docs/.plans/2026-10-02-0000-next.md").write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.read_up(self.impl)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("終わった回の計画の記録を書き換えています", r.stderr)
@@ -1561,7 +1577,7 @@ class CoddTest(unittest.TestCase):
         self.run_pa(self.impl, "decide", "STOP", "--note", "今回はやめる")
         r = self.run_pa(self.impl, "record")
         self.assertEqual(r.returncode, 0, r.stderr)
-        text = next((self.impl / "docs/.plan").glob("*.md")).read_text(encoding="utf-8")
+        text = next((self.impl / "docs/.plans").glob("*.md")).read_text(encoding="utf-8")
         self.assertIn("STOP（やめる）: 今回はやめる", text)
         self.assertIn("## 結果\n\n- 変えていない", text)
 
@@ -1667,18 +1683,18 @@ class CoddTest(unittest.TestCase):
                            "services/api/test_handler.py": "from handler import hello\n"}, "service")
         self.set_config(self.impl, scope=["services"])
         self.assertIn("自分 1 files", self.run_pa(self.impl, "show").stdout)
-        (self.impl / "docs/.plan").mkdir(parents=True, exist_ok=True)
+        (self.impl / "docs/.plans").mkdir(parents=True, exist_ok=True)
         (self.impl / PLAN).write_text("# 下書き\n", encoding="utf-8")
         self.set_config(self.impl, scope=[])
         r = self.run_pa(self.impl, "explore", "--term", "下書き")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertNotIn("docs/.plan", (self.impl / ".codd/explore.md").read_text(encoding="utf-8"))
+        self.assertNotIn("docs/.plans", (self.impl / ".codd/explore.md").read_text(encoding="utf-8"))
 
     def test_graph_is_not_rebuilt_when_only_the_plan_changes(self) -> None:
         # 練り直しで計画を書き直すたびに、グラフを作り直さない（作り直しは長くかかる）。
         self.use_graphify_stub()
         self.assertIn("graphify: updated", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
-        (self.impl / "docs/.plan").mkdir(parents=True, exist_ok=True)
+        (self.impl / "docs/.plans").mkdir(parents=True, exist_ok=True)
         (self.impl / PLAN).write_text("# 計画\n", encoding="utf-8")
         self.set_config(self.design, graphify="auto")
         r = self.run_pa(self.design, "explore", "--term", "hello")   # 設計書の側から自分（impl）を引く
@@ -1738,7 +1754,7 @@ class CoddTest(unittest.TestCase):
         # 点検は何も直さない（書くのは作業フォルダだけ）
         self.assertEqual(before, git(self.impl, "status", "--porcelain") + git(self.design, "status", "--porcelain"))
 
-        commit(self.impl, {"docs/.plan/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n"}, "記録")
+        commit(self.impl, {"docs/.plans/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n\n## 結果\n"}, "記録")
         text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
         self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1])  # 記録に出てくれば通った変更
 

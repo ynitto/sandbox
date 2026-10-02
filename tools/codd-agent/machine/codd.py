@@ -8,7 +8,7 @@
     rules [--write]     守る決まりのファイルと、決まりらしいマークダウンの候補を示す。--write で候補を codd.json に書く
     explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）。--ref で絞れる
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
-    verify-plan         計画（docs/.plan/current.md）が決まった形か、根拠が参照先に実在するか（パス・行・見出し・
+    verify-plan         計画（docs/.plans/日時-名前.md）が決まった形か、根拠が参照先に実在するか（パス・行・見出し・
                         `…` で囲んだ名前）、1 回で扱う範囲（max_files）に収まるかを検査する。
                         参照先の変更案があれば、それを自分に適用したときの影響範囲を測り、計画の影響範囲が
                         測ったファイルをすべて挙げているかも検査する。通ったら、変える前の印を控える
@@ -16,8 +16,9 @@
                         検査コマンドを確かめる。参照先を変えたら、実際の変更から影響範囲を測り直し、
                         測ったファイルを直したか「変更不要」としたかを検査する。書き足したパスが実在するか、
                         消したファイルを指したままのところが無いかも確かめる
-    draft [--new]       計画のひな形を docs/.plan/current.md に置く（あれば残す）。見出しごとに書き込ませ、全文を一度に書かせない
-    record              1 回の終わりに、計画へ確認の答えと結果（report）を書き足して docs/.plan/日付-名前.md に移す
+    draft --name 名前   計画のひな形を docs/.plans/日時-名前.md に置く（名前は英語の短い名前。進めている計画があれば残す）。
+                        見出しごとに書き込ませ、全文を一度に書かせない
+    record              1 回の終わりに、計画へ確認の答えと結果（report）を書き足して記録として残す（要らない情報は除く）
     decide 答え         確認・相談での利用者の答え（OK / NG / PLAN / APPLY / STOP）と指摘を控える。終わりの報告で計画の記録に書く
     summary             計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
@@ -68,11 +69,14 @@ MACHINE_REL = ".statemachine/codd"
 AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md")
 CONFIG_NAME = "codd.json"
 DATA_DIRNAME = ".codd"
-# 計画の置き場所（自分のリポジトリ）。1 回の実行の計画は current.md に書き、利用者はこれを読んで確かめる。
-# 終わりの報告で、確認の答えと結果を書き足して日付付きの名前に移し、判断の記録として残す（コミットしてよい）。
-PLAN_DIR = "docs/.plan"
-PLAN_CURRENT = f"{PLAN_DIR}/current.md"
-MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR]
+# 計画の置き場所（自分のリポジトリ）。1 回の実行の計画は、始めるときに一意な名前（日時と英語の短い名前）で置き、
+# 利用者はこれを読んで確かめる。終わりに確認の答えと結果を書き足して、判断の記録としてそのまま残す（コミットしてよい）。
+# 結果の見出しが無い計画が、いま進めている回の計画。
+PLAN_DIR = "docs/.plans"
+OLD_PLAN_DIR = "docs/.plan"      # 前の版の置き場所（記録を読むだけ）
+RESULT_HEADING = "## 結果"
+MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR, OLD_PLAN_DIR]
+_PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
@@ -408,6 +412,21 @@ class Ref(Side):
         return (self.config or {}).get("tests", DEFAULT_TEST_PATTERNS)
 
 
+def active_plan(root: Path) -> Path | None:
+    """いま進めている回の計画（結果の見出しがまだ無いもの。2 つ以上あれば新しいほう）。"""
+    folder = root / PLAN_DIR
+    open_plans = [p for p in sorted(folder.glob("*.md")) if RESULT_HEADING not in
+                  (read_text(p) or "").splitlines()] if folder.is_dir() else []
+    return open_plans[-1] if open_plans else None
+
+
+def plan_rel(ctx: "Ctx") -> str:
+    return ctx.plan.relative_to(ctx.root).as_posix()
+
+
+NO_PLAN = f"計画がありません（`python3 {MACHINE_REL}/codd.py draft --name 英語の短い名前` でひな形を置く）"
+
+
 class Ctx:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -415,7 +434,7 @@ class Ctx:
         self.side = self.config["side"]
         self.own = Side("own", root, self.config["scope"])
         self.data = root / DATA_DIRNAME
-        self.plan = root / PLAN_CURRENT
+        self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
         self.max_files = self.config["max_files"]
         self.refs: list[Ref] = []
         for entry in self.config["refs"]:
@@ -795,7 +814,7 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     own_skills = repo_skills(ctx.root, ctx.config["skill_dirs"])
     if own_skills:
         print("リポジトリのスキル（設定しなくても使う。関係するものは読み込み、SKILL.md の手順に従う。"
-              "使わないものは計画の「使ったスキルと道具」に「使わない: 理由」を書く）:")
+              "計画の「使ったスキルと道具」には使ったものだけを書く）:")
         print("\n".join(skill_lines(own_skills)))
     for r in ctx.refs:
         if r.path != ctx.root:
@@ -1657,11 +1676,8 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     problems += used_problems(bodies["## 使ったスキルと道具"],
                               ctx.config["skills"]["plan"] + ctx.config["tools"]["plan"], "使ったスキルと道具")
     configured = set(ctx.config["skills"]["plan"])
+    # リポジトリのスキルは、使ったものだけを書く（使わないものを 1 つずつ断らせない。記録に要らない）。
     found = [s.name for s in repo_skills(ctx.root, ctx.config["skill_dirs"]) if s.name not in configured]
-    missing = [n for n in found if not mentioned(bodies["## 使ったスキルと道具"], n)]
-    if missing:
-        problems.append("使ったスキルと道具に、リポジトリのスキルを使った結果か「使わない: 理由」を書いてください"
-                        "（関係するものは使う）: " + ", ".join(f"`{n}`" for n in missing))
     used = used_skill_names(bodies["## 使ったスキルと道具"], unique([*ctx.config["skills"]["plan"], *found]))
     problems += unread_problem(unread_skills(ctx, used), "使ったスキルと道具に挙げた")
     for heading in CITED_IN_REFS:
@@ -2617,7 +2633,7 @@ def print_problems(ctx: Ctx, phase: str, problems: list[str]) -> None:
 
 def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     if not ctx.plan.is_file():
-        print_problems(ctx, "plan", [f"計画がありません: {PLAN_CURRENT}（`codd.py draft` でひな形を置く）"])
+        print_problems(ctx, "plan", [NO_PLAN])
         return 1
     text = ctx.plan.read_text(encoding="utf-8")
     _, bodies = sections(text, PLAN_HEADINGS)
@@ -3131,14 +3147,24 @@ SUMMARY_WIDTH = 120
 
 
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
-    """ひな形を docs/.plan/current.md に置く（あれば残す）。見出しごとにコメントを本文へ置き換えて書いていく。"""
+    """ひな形を docs/.plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
     if ctx.plan.is_file() and not args.new:
-        print(f"計画はもうあります: {ctx.plan.relative_to(ctx.root).as_posix()}（直す見出しだけを書き換える。"
-              "最初から書き直すときは --new）")
+        print(f"計画はもうあります: {plan_rel(ctx)}（直す見出しだけを書き換える。最初から書き直すときは --new）")
         return 0
-    ctx.plan.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", ctx.plan)
-    print(f"ひな形を置きました: {ctx.plan.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
+    name = (args.name or "").strip().lower()
+    if not _PLAN_NAME.match(name) or len(name) > 40:
+        print("計画の名前を、英語の短い名前で渡してください（小文字・数字・ハイフン。40 文字まで。"
+              "例: `--name hello-returns-two`）", file=sys.stderr)
+        return 2
+    if ctx.plan.is_file():
+        ctx.plan.unlink()   # --new: 進めていた計画を捨てて書き直す
+    base = f"{time.strftime('%Y-%m-%d-%H%M')}-{name}"
+    dest, n = ctx.root / PLAN_DIR / f"{base}.md", 2
+    while dest.exists():
+        dest, n = ctx.root / PLAN_DIR / f"{base}-{n}.md", n + 1
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
+    print(f"ひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
     return 0
 
 
@@ -3149,7 +3175,7 @@ def _clip(line: str) -> str:
 def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
     """計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる。"""
     if not ctx.plan.is_file():
-        print(f"計画がありません: {ctx.plan.relative_to(ctx.root).as_posix()}", file=sys.stderr)
+        print(NO_PLAN, file=sys.stderr)
         return 1
     _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
     rel = ctx.plan.relative_to(ctx.root).as_posix()
@@ -3202,20 +3228,13 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
-def plan_slug(bodies: dict[str, str]) -> str:
-    """やりたいことの最初の行から、ファイル名に使える短い名前を作る。"""
-    first = next((ln.strip() for ln in bodies.get("## やりたいこと", "").splitlines() if ln.strip()), "")
-    slug = re.sub(r"[^\w]+", "-", re.sub(r"^[-*]\s*", "", first)).strip("-_")
-    return slug[:40].rstrip("-_") or "plan"
-
-
 def record_problems_of(ctx: Ctx) -> list[str]:
-    """終わった回の計画の記録（コミット済み）を書き換えていないか。練り直しで直してよいのは current.md だけ。"""
+    """終わった回の計画の記録（コミット済み）を書き換えていないか。練り直しで直してよいのは、いま進めている計画だけ。"""
     rc, out = run(["git", "-c", "core.quotepath=false", "status", "--porcelain", "--", PLAN_DIR], ctx.root, GIT_TIMEOUT)
     changed = [ln[3:] for ln in out.splitlines() if rc == 0 and ln[:2].strip() and not ln.startswith("??")
-               and ln[3:] != PLAN_CURRENT]
+               and ln[3:] != plan_rel(ctx)]
     return ["終わった回の計画の記録を書き換えています（判断の記録なので変えない。直すのは "
-            f"{PLAN_CURRENT} だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else []
+            f"いま進めている計画だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else []
 
 
 def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
@@ -3228,32 +3247,53 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
     record = finalize_plan(ctx, result)
     if not record:
-        print(f"記録する計画がありません: {PLAN_CURRENT}", file=sys.stderr)
+        print(NO_PLAN, file=sys.stderr)
         return 1
     print(f"計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
     return 0
 
 
+# 記録に残さない行: 使わなかったスキル・関係の無かったファイルの判断と、書き換え忘れたひな形の説明。
+_NOT_RECORDED = re.compile(r"^-\s*(?:`[^`]+`\s*—\s*)?使わない[:：]|^-\s*関係なし[:：]|^<!--.*-->$")
+
+
+def prune_plan(text: str) -> str:
+    """記録に要らないもの（使わなかったスキル・関係なしとしたファイル・中身が「なし」の見出し）を除く。"""
+    out: list[str] = []
+    head: list[str] = []      # 見出しと、その下に残す行
+    skip = False
+    def flush() -> None:
+        body = [ln for ln in head[1:] if ln.strip()]
+        if head and (not head[0].startswith("## ") or (body and not is_none("\n".join(body)))):
+            out.extend(head)
+    for line in text.splitlines():
+        if line.startswith("#"):
+            flush()
+            head, skip = [line], False
+            continue
+        if _NOT_RECORDED.match(line.strip()) and not line.startswith(" "):
+            skip = True
+            continue
+        if skip and line.startswith((" ", "\t")) and line.strip():
+            continue      # 除いた項目の続きの行
+        skip = False
+        head.append(line)
+    flush()
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
 def finalize_plan(ctx: Ctx, result: list[str]) -> str | None:
-    """1 回の実行の計画を、確認の答えと結果を書き足して日付付きの名前に移す（判断の記録）。"""
+    """1 回の実行の計画に、確認の答えと結果を書き足して、判断の記録としてそのまま残す。要らない情報は除く。"""
     if not ctx.plan.is_file():
         return None
-    text = ctx.plan.read_text(encoding="utf-8").rstrip()
-    _, bodies = sections(text, PLAN_HEADINGS)
     decisions = load_decisions(ctx)
-    lines = [text, "", "## 確認と判断", ""]
+    lines = [prune_plan(ctx.plan.read_text(encoding="utf-8")), "", "## 確認と判断", ""]
     lines += [f"- {d['at']} {d['answer']}（{DECISIONS.get(d['answer'], '')}）" + (f": {d['note']}" if d["note"] else "")
               for d in decisions] or ["- 記録なし"]
-    lines += ["", "## 結果", "", *[("#" + ln if ln.startswith("## ") else ln) for ln in result], ""]
-    base = f"{time.strftime('%Y-%m-%d-%H%M')}-{plan_slug(bodies)}"
-    dest = ctx.plan.parent / f"{base}.md"
-    n = 2
-    while dest.exists():
-        dest, n = ctx.plan.parent / f"{base}-{n}.md", n + 1
-    dest.write_text("\n".join(lines), encoding="utf-8")
-    ctx.plan.unlink()
+    lines += ["", RESULT_HEADING, "", *[("#" + ln if ln.startswith("## ") else ln) for ln in result], ""]
+    ctx.plan.write_text("\n".join(lines), encoding="utf-8")
     (ctx.data / DECISIONS_NAME).unlink(missing_ok=True)
-    return dest.relative_to(ctx.root).as_posix()
+    return plan_rel(ctx)
 
 
 # ---------------------------------------------------------------- 点検（本流とは別。読むだけ）
@@ -3348,9 +3388,8 @@ def plan_records(ctx: Ctx) -> str:
     """どの側のリポジトリにもある、終わった回の計画の記録（codd を通った変更の手がかり）。"""
     text = []
     for repo in unique_paths(str(s.path) for _, s in all_sides(ctx)):
-        folder = Path(repo) / PLAN_DIR
-        if folder.is_dir():
-            text += [read_text(p) or "" for p in sorted(folder.glob("*.md")) if p.name != Path(PLAN_CURRENT).name]
+        for folder in (Path(repo) / PLAN_DIR, Path(repo) / OLD_PLAN_DIR):
+            text += [read_text(p) or "" for p in sorted(folder.glob("*.md"))] if folder.is_dir() else []
     return "\n".join(text)
 
 
@@ -3427,10 +3466,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
-    dr = sub.add_parser("draft", help="計画のひな形を docs/.plan/current.md に置く（あれば残す）")
-    dr.add_argument("--new", action="store_true", help="今の計画を捨ててひな形から書き直す")
+    dr = sub.add_parser("draft", help="計画のひな形を docs/.plans/日時-名前.md に置く（進めている計画があれば残す）")
+    dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
+    dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
-    sub.add_parser("record", help="計画を、確認の答えと結果を書き足して docs/.plan/ に日付付きで残す（終わりに呼ぶ）")
+    sub.add_parser("record", help="計画に確認の答えと結果を書き足し、判断の記録として残す（終わりに呼ぶ）")
     de = sub.add_parser("decide", help="確認・相談での利用者の答えを控える（終わりの報告で計画の記録に書く）")
     de.add_argument("answer", choices=list(DECISIONS), help="OK / NG（確認）か PLAN / APPLY / STOP（止まったときの相談）")
     de.add_argument("--note", default="", help="利用者の指摘や指示（そのまま）")
