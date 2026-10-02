@@ -374,8 +374,9 @@ def cmd_status(args) -> int:
 
 
 def cmd_collect(args) -> int:
-    bus, _node = _resolve(args)
-    mp, _mission_doc, _roles = _mission(bus, args.mission)
+    bus, node = _resolve(args)
+    mp, mission_doc, _roles = _mission(bus, args.mission)
+    _require_owner(mission_doc, node)
     manifest = read_json(mp.manifest())
     if not manifest:
         raise SystemExit("[agent-amigos] deliverable がまだありません（統合前です）")
