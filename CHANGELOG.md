@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-statemachine: 計画を docs/.plan/ に判断の記録として残す
+
+- **計画は `docs/.plan/current.md` に書く。** 利用者はこのファイルを開いて確かめ、同じ回の練り直しではこれを直す
+  （今までの `.codd/plan.md` から移した）
+- **確認と止まったときの答えを控える。** `codd.py decide OK` / `NG --note "指摘"` / `PLAN` / `APPLY` / `STOP`
+- **終わりに記録として残す。** `codd.py record` が、計画に「確認と判断」と「結果」（`report` の出力）を書き足し、
+  `docs/.plan/日付-名前.md` に移す。done でも stopped でも残す。コミットしてよい
+- **終わった回の記録は書き換えない。** コミット済みの記録を変えていると、計画と変えたあとの検査で落とす。
+  `docs/.plan/` は変えたファイルや探す対象に数えない
+
 ### codd-statemachine: 計画の段で読む量を減らす
 
 - **決まりの候補を拾いすぎない。** 自分の分は `scope` の中とその上のフォルダ（ルートを含む）だけを探し、スキルの中のファイル

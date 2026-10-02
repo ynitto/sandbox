@@ -57,7 +57,7 @@ states:
   plan:
     description: "参照先を読み、変更を練る"
     action_file: actions/plan.md
-    write: .codd/plan.md
+    write: docs/.plan/current.md
     output_validator: "startswith:OK,FAILED"
     check: "python3 .statemachine/codd/codd.py verify-plan"
     check_retries: 2

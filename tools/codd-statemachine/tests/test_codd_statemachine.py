@@ -40,6 +40,8 @@ case "$1" in
 esac
 """
 
+PLAN = "docs/.plan/current.md"
+
 PLAN_ALIGNED = """\
 # 変更の計画
 
@@ -194,8 +196,8 @@ class CoddTest(unittest.TestCase):
         return self.log.read_text(encoding="utf-8").splitlines() if self.log.is_file() else []
 
     def write_plan(self, text: str, read: bool = True) -> None:
-        (self.impl / ".codd").mkdir(exist_ok=True)
-        (self.impl / ".codd/plan.md").write_text(text, encoding="utf-8")
+        (self.impl / "docs/.plan").mkdir(parents=True, exist_ok=True)
+        (self.impl / PLAN).write_text(text, encoding="utf-8")
         if read:
             self.read_up(self.impl)
 
@@ -615,7 +617,7 @@ class CoddTest(unittest.TestCase):
         # 計画は一度に全文を書かせず、ひな形を置いて見出しごとに書かせる（応答の長さの上限で止まらないように）。
         r = self.run_pa(self.impl, "draft")
         self.assertEqual(r.returncode, 0, r.stderr)
-        plan = self.impl / ".codd/plan.md"
+        plan = self.impl / PLAN
         template = (self.impl / ".statemachine/codd/templates/plan.md").read_text(encoding="utf-8")
         self.assertEqual(plan.read_text(encoding="utf-8"), template)
         # 書きかけのままでは計画の検査を通らない（コメントだけの見出しは空として落ちる）。
@@ -636,10 +638,10 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "summary")
         self.assertEqual(r.returncode, 0, r.stderr)
         out = r.stdout
-        self.assertIn("全文: .codd/plan.md", out)
+        self.assertIn("全文: docs/.plan/current.md", out)
         self.assertIn("## やりたいこと\n\nhello にログを足す。", out)
         self.assertIn("## 自分の変更案", out)
-        self.assertIn("- ほか 8 件（.codd/plan.md）", out)
+        self.assertIn("- ほか 8 件（docs/.plan/current.md）", out)
         self.assertNotIn("src/m12.py", out)
         self.assertTrue(all(len(ln) <= 120 for ln in out.splitlines()))
         # 根拠の見出しは件数だけ（全文は貼らない）。
@@ -1224,13 +1226,13 @@ class CoddTest(unittest.TestCase):
         self.assertIn("FOUND 1 files", r.stdout)
         # 根拠は参照先の scope の中、影響範囲は自分の scope の中だけを認める。
         plan = PLAN_DRIFT
-        (mono / ".codd").mkdir(exist_ok=True)
-        (mono / ".codd/plan.md").write_text(plan.replace("（根拠: docs/api.md）", "（根拠: src/app.py）"),
+        (mono / "docs/.plan").mkdir(parents=True, exist_ok=True)
+        (mono / PLAN).write_text(plan.replace("（根拠: docs/api.md）", "（根拠: src/app.py）"),
                                             encoding="utf-8")
         r = self.run_pa(mono, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("参照先に実在する根拠のパスがありません", r.stderr)
-        (mono / ".codd/plan.md").write_text(plan, encoding="utf-8")
+        (mono / PLAN).write_text(plan, encoding="utf-8")
         self.assert_plan_ok(mono)
 
         # 同じリポジトリの中でも、自分と参照先の変更を scope で分けて測る。
@@ -1343,8 +1345,8 @@ class CoddTest(unittest.TestCase):
             read=False)
         self.read_up(self.impl, "hello")
         self.assert_plan_ok()
-        plan = (self.impl / ".codd/plan.md").read_text(encoding="utf-8")
-        (self.impl / ".codd/plan.md").write_text(plan.replace(", docs/b.md:3", ""), encoding="utf-8")
+        plan = (self.impl / PLAN).read_text(encoding="utf-8")
+        (self.impl / PLAN).write_text(plan.replace(", docs/b.md:3", ""), encoding="utf-8")
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("docs/b.md", r.stderr)
@@ -1398,6 +1400,50 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("直していないファイル", r.stderr)
         self.assertIn("src/greet_user.py", r.stderr)
+
+    def test_plan_is_kept_as_a_decision_record(self) -> None:
+        # 計画は docs/.plan/current.md に書き、終わりに確認の答えと結果を書き足して日付付きの名前で残す。
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "NG", "--note", "戻り値の説明も直して")
+        self.assert_plan_ok()   # 同じ回の練り直しでは current.md を直す
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        # 計画のフォルダは変えたファイルに数えない（記録のために置くもの）。
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertEqual(self.run_pa(self.impl, "report").returncode, 0)
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.impl / PLAN).exists())
+        records = list((self.impl / "docs/.plan").glob("*.md"))
+        self.assertEqual(len(records), 1)
+        self.assertRegex(records[0].name, r"^\d{4}-\d{2}-\d{2}-\d{4}-.+\.md$")
+        self.assertIn(f"計画の記録: docs/.plan/{records[0].name}", r.stdout)
+        text = records[0].read_text(encoding="utf-8")
+        self.assertIn("## 自分の変更案", text)
+        self.assertRegex(text, r"## 確認と判断\n\n- [-0-9: ]+ NG（計画を直す）: 戻り値の説明も直して\n- [-0-9: ]+ OK（計画で進める）")
+        self.assertIn("## 結果\n\n- 変えたあとの検査: 通った", text)
+        self.assertIn("### 自分（実装）", text)
+        self.assertFalse((self.impl / ".codd/decisions.json").exists())
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 1)   # 記録は 1 回だけ
+        # 終わった回の記録は書き換えさせない（次の回の検査で落とす）。
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "change")
+        records[0].write_text(text.replace("通った", "通らなかった"), encoding="utf-8")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("終わった回の計画の記録を書き換えています", r.stderr)
+
+    def test_record_when_stopped_before_changing(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.run_pa(self.impl, "decide", "STOP", "--note", "今回はやめる")
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = next((self.impl / "docs/.plan").glob("*.md")).read_text(encoding="utf-8")
+        self.assertIn("STOP（やめる）: 今回はやめる", text)
+        self.assertIn("## 結果\n\n- 変えていない", text)
 
     def test_report_summarises_the_result(self) -> None:
         self.write_plan(PLAN_DRIFT)
