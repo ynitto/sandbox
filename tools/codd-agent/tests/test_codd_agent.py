@@ -434,10 +434,28 @@ class CoddTest(unittest.TestCase):
         self.assertTrue((self.impl / ".codd/impact-after.md").is_file())
 
         (self.impl / "src/use.py").write_text("from app import hello\n\nprint('v', hello())\n", encoding="utf-8")
+        # 「変更不要」とするのは計画を直すこと。変えた分を残して、計画の検査を通し直してから確かめる。
         self.write_plan(plan.replace("- src/use.py — 表示を直す", "- src/use.py — 表示を直す\n- src/bye.py — 変更不要: 名前だけ同じ別物"))
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("利用者が確かめたものではありません", r.stderr)
+        self.assertIn("keep-changes", self.run_pa(self.impl, "advise").stdout)
+        self.assertEqual(self.run_pa(self.impl, "keep-changes").returncode, 0)
+        self.assert_plan_ok()
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("impact=3 files", r.stdout)
+
+    def test_apply_needs_the_plan_that_passed_and_was_not_rejected(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.assertEqual(self.run_pa(self.impl, "decide", "NG", "--note", "やり直して").returncode, 0)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")   # 止まったところから飛ばして来ても、退けた計画では通さない
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("利用者が確かめたものではありません", r.stderr)
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 0)
+        self.assertNotIn("利用者が確かめたものではありません", self.run_pa(self.impl, "verify-apply").stderr)
 
     # ------------------------------------------------------------ パスのつながり
 
@@ -1653,6 +1671,12 @@ class CoddTest(unittest.TestCase):
         found = dict(re.findall(r"args: \[\.statemachine/codd/codd\.py, (verify-\w+)\], timeout_sec: (\d+)", text))
         self.assertGreaterEqual(int(found["verify-plan"]), 900)
         self.assertGreaterEqual(int(found["verify-apply"]), 1800)
+
+    def test_workflow_lets_the_user_stop_wherever_it_asks(self) -> None:
+        # 利用者に訊く段（計画の確認・止まったときの相談）では、どちらでもやめられる。
+        text = (TOOL / "machine/workflow.yaml").read_text(encoding="utf-8")
+        self.assertIn('{from: confirm, to: stopped, condition_rule: "startswith:answer:STOP"', text)
+        self.assertIn('{from: stuck, to: stopped, condition_rule: "startswith:choice:STOP"', text)
 
     def test_workflow_passes_engine_validation(self) -> None:
         try:

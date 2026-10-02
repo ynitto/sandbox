@@ -63,8 +63,9 @@ codd-agent は、片方を変える前に**参照先を読み、自分の現状�
 
 ```
 plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: verify-apply]→ done
-  ↑  │                               └─ NG ─┐         │
-  └──┼──────────────────────────────────────┘         │
+  ↑  │                               ├─ NG ─┐         │
+  └──┼───────────────────────────────┼──────┘         │
+     │                               └─ STOP → stopped（何も変えずにやめる）
      │ 検査がやり直しを使い切っても落ちる                  │
      └──────────────→ stuck ←─────────────────────────┘
                         ├─ PLAN  → plan（練り直す。変えた分は keep-changes で残すか rollback で戻す）
@@ -75,7 +76,7 @@ plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: ver
 | ステート | すること | 成果物 | 成否の測り方 |
 |---|---|---|---|
 | plan | 参照先を探し（`explore`）、前提・制約・その他に分け、自分の現状とのずれを見て、自分の変更案を練る。ずれがあれば参照先の変更案と影響範囲を書く。どちらのリポジトリも変えない | `docs/.plan/current.md`（`write:`） | `check: verify-plan`（影響範囲の測定を含む） |
-| confirm | 計画の要約（`summary`）と測った影響範囲を見せ、利用者の答えを待つ。全文は貼らずパスを示す | 答え（`OK` / `NG` と指摘） | `output_validator` |
+| confirm | 計画の要約（`summary`）と測った影響範囲を見せ、利用者の答えを待つ。全文は貼らずパスを示す | 答え（`OK` / `NG` と指摘 / `STOP`） | `output_validator` |
 | apply | 自分の変更案を適用し、参照先の変更案があれば参照先にも適用する。コミットはしない | 両リポジトリの作業中の変更 | `check: verify-apply`（影響範囲の測り直しを含む） |
 | done | 変えたファイルを伝え（`report`）、計画を判断の記録として残す（`record`） | `docs/.plan/日付-名前.md` | 終端 |
 | stuck | `advise` が示す止めた理由・確かめること・選択肢を見せ、利用者の答えを待つ。選ばれたら `rollback` / `keep-changes` を実行する | 答え（`PLAN` / `APPLY` / `STOP` と指示） | `output_validator` |
@@ -83,6 +84,14 @@ plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: ver
 
 NG は plan へ戻り、次の plan は `{{answer}}`（confirm の答え。NG と利用者の指摘）を踏まえて練り直す。`answer` は `context:` で空に初期化してあり、初回は空になる。
 分岐は `condition_rule`（`check_ok` と confirm の第 1 行）だけで決まり、LLM の YES/NO 評価は使わない。
+利用者に訊く段（confirm と stuck）は、どちらからでも stopped へ進める。確認でやめたいのに NG しか無いと、
+要らない練り直しが始まるため。
+
+変えてよいのは「verify-plan を通り、confirm で退けられていない計画」だけにする。verify-plan が通ると計画の
+ハッシュを `.codd/passed-plan` に控え、verify-plan が落ちる・`decide NG` / `decide STOP` で消す。verify-apply は
+今の計画がこれと一致することを確かめる。ステートマシンの遷移だけでは、計画の検査で止まった stuck から `APPLY` を
+選ぶ道や、apply が計画を書き換えて「変更不要」を足す道を塞げないため（一貫性の判断を利用者が確かめた計画に限る）。
+apply の途中で計画を直すときは、`keep-changes` → plan → verify-plan → confirm を通る。
 
 ### 2.1 止まったら、次の手を提案して確かめる
 
@@ -94,7 +103,7 @@ NG は plan へ戻り、次の plan は `{{answer}}`（confirm の答え。NG �
 
 - 止めた理由は、検査が落ちるたびに `.codd/problems.json` へ段（plan / apply）と一緒に控える（通れば消す）。
   設定の誤り（終了コード 2）も控える
-- `advise` が理由を種類に分け（計画に無い変更・変え残し・影響の直し忘れ・参照先の扱い漏れ・壊れたパス・
+- `advise` が理由を種類に分け（確かめていない計画で変えた・計画に無い変更・変え残し・影響の直し忘れ・参照先の扱い漏れ・壊れたパス・
   スキルと道具・検査コマンド・大きすぎ・根拠と形・設定）、種類ごとに**利用者に確かめること**と**選択肢**を決定的に出す。
   最初に挙がった理由の勧めを全体の勧めにする。モデルが勧めを作らないので、同じ止まり方には同じ提案が出る
 - 選択肢は 5 つで、段ごとに出せるものが違う（計画が通っていなければ「変え直す」は出さない）

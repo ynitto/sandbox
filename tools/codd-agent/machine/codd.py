@@ -2521,6 +2521,20 @@ def write_baseline(ctx: Ctx) -> None:
 
 
 KEEP_MARK = "keep-baseline"
+PASSED_PLAN = "passed-plan"   # 計画の検査を通り、確認で直す・やめるとされていない計画の印
+
+
+def plan_digest(ctx: Ctx) -> str:
+    return hashlib.sha256(ctx.plan.read_bytes()).hexdigest()
+
+
+def plan_unconfirmed(ctx: Ctx) -> list[str]:
+    """変えてよいのは、計画の検査を通って、確認で退けられていない計画だけ（止まったところから飛ばして来ても通さない）。"""
+    mark = ctx.data / PASSED_PLAN
+    if mark.is_file() and mark.read_text(encoding="utf-8") == plan_digest(ctx):
+        return []
+    return ["計画が、検査を通って利用者が確かめたものではありません（計画を直したか、確認で退けられたか、"
+            "計画の検査で止まったままです。計画を練り直し、検査と確認を通してから変えてください）"]
 
 
 def backup_dir(ctx: Ctx, key: str) -> Path:
@@ -2574,8 +2588,10 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         problems += measured_problems
     print_problems(ctx, "plan", problems)
     if problems:
+        (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
         return 1
     write_baseline(ctx)
+    (ctx.data / PASSED_PLAN).write_text(plan_digest(ctx), encoding="utf-8")
     notes = []
     if measured:
         notes.append(f"影響範囲を測った: {len(measured)} files、{DATA_DIRNAME}/impact.md")
@@ -2639,7 +2655,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         print_problems(ctx, "apply", [a])
         return 1
     bodies = a.bodies
-    problems = list(a.plan_problems)
+    problems = plan_unconfirmed(ctx) + list(a.plan_problems)
     tp = test_plan(ctx, bodies)
     problems += tp.problems
     problems += formats_apply_problems(ctx, "\n".join(bodies.values()))
@@ -2915,6 +2931,7 @@ def record_problems(data: Path, phase: str, problems: list[str], kind: str | Non
 # 止めた理由の分類。上から順に当てる。（種類, 段, 目印）
 _KINDS = (
     ("stale", "any", ("計画がありません", "印がありません", "印が古い形")),
+    ("unconfirmed", "apply", ("利用者が確かめたものではありません",)),
     ("pending", "plan", (f"「{PENDING_MARK}」",)),
     ("size", "plan", ("上限",)),
     ("extra", "apply", ("計画に無いファイルを変えています", "変更案に無いファイルを変えています", "が変わっています（戻してください）")),
@@ -2956,6 +2973,8 @@ ADVICE = {
     },
     "apply": {
         "stale": (["reset", "stop"], "変える前の印がありません。計画から練り直します"),
+        "unconfirmed": (["keep", "reset", "stop"],
+                        "確かめていない計画で変えました。変えた分を残すか戻すかを決めてもらい、計画の検査と確認からやり直します"),
         "extra": (["reapply", "keep", "reset", "stop"],
                   "計画に無いファイルを変えました。その変更を戻して変え直すか、計画に足すかを決めてもらいます"),
         "undone": (["reapply", "keep", "reset", "stop"],
@@ -3129,6 +3148,8 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": args.answer, "note": args.note.strip()})
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if args.answer in ("NG", "STOP"):
+        (ctx.data / PASSED_PLAN).unlink(missing_ok=True)   # 退けた計画では変えさせない
     print(f"控えました: {args.answer}（{DECISIONS[args.answer]}）")
     return 0
 

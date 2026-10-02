@@ -19,9 +19,11 @@ python3 .statemachine/codd/codd.py summary
 ```bash
 python3 .statemachine/codd/codd.py decide OK
 python3 .statemachine/codd/codd.py decide NG --note "利用者の指摘"
+python3 .statemachine/codd/codd.py decide STOP --note "利用者の答え"
 ```
 
 - 進めてよい → `OK`
-- 直してほしい・やめたい → `NG`。利用者の指摘をそのまま続けて書く（次の計画で踏まえる）
+- 直してほしい → `NG`。利用者の指摘をそのまま続けて書く（次の計画で踏まえる）
+- やめたい → `STOP`（まだ何も変えていないので、そのままやめる）
 
-**出力形式:** 第 1 行に `OK` か `NG` の一語だけ。NG なら第 2 行以降に利用者の指摘。
+**出力形式:** 第 1 行に `OK`・`NG`・`STOP` の一語だけ。NG なら第 2 行以降に利用者の指摘。

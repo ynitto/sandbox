@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 計画の確認でやめられるようにし、確かめていない計画では変えさせない
+
+- 計画の確認で「やめる」を選べるようにした。これまでは NG しか無く、やめたくても練り直しが始まっていた
+- 変えたあとの検査が、計画が「検査を通り、確認で退けられていないもの」と同じかを確かめる。止まったところから
+  計画を通さずに「変え直す」へ進む道や、変える段で計画に「変更不要」を書き足す道で、利用者が確かめていない計画の
+  まま終わることがあった
+- README: エージェント `codd` にやりたいことを伝えるだけで動くと書き、「codd のステートマシンを実行して」は
+  カスタムエージェントを使わないときの手段にした
+
 ### codd-statemachine を codd-agent に改名し、目的とのずれを直す（webui-test 0.3.2）
 
 - **`tools/codd-statemachine` を `tools/codd-agent` に改名した。** 使い方は `python3 tools/codd-agent/install.py`・
