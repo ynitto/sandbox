@@ -6,7 +6,7 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # バス内の run（gc が掃除する）とは別に、agent-flow は「バス外の一時ファイル」を
 # 残す。これらは削除処理が無く溜まり続けるため、daemon ループから定期掃除する。
-#   A) $TMPDIR/agent-flow-locks/*.lock        … claim/daemon の排他ロック
+#   A) $TMPDIR/agentcore-claim-locks/*.lock    … agentcore claim の排他ロック
 #   B) <path>.tmp.<pid>[.<unique>]            … write_json_atomic の中間ファイル（crash 残骸）
 #      agentcore は並行書き込み衝突を避けるため `<pid>.<unique>` 接尾辞を付ける。
 #      旧形（`<pid>` だけ）も残骸として残るので両方拾う。
@@ -15,7 +15,7 @@ _TMP_SUFFIX_RE = re.compile(r"\.tmp\.(\d+)(?:\.[^.]+)?$")
 
 
 def _locks_root() -> str:
-    return os.path.join(tempfile.gettempdir(), "agent-flow-locks")
+    return os.path.join(tempfile.gettempdir(), "agentcore-claim-locks")
 
 
 def _pid_alive(pid: int) -> bool:
@@ -43,7 +43,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def sweep_lock_files(min_age_sec: float = 3600.0) -> int:
-    """$TMPDIR/agent-flow-locks/ の使われていない .lock を削除し、削除数を返す。
+    """$TMPDIR/agentcore-claim-locks/ の使われていない .lock を削除し、削除数を返す。
     保持中のロックを消すと排他が壊れるため、(1) 十分古い（min_age_sec 以上アイドル）
     かつ (2) flock を非ブロッキングで取得できた（＝誰も保持していない）ものに限る。"""
     d = _locks_root()
