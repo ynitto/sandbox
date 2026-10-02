@@ -59,7 +59,8 @@ states:
     action_file: actions/plan.md
     write: docs/.plan/current.md
     output_validator: "startswith:OK,FAILED"
-    check: "python3 .statemachine/codd/codd.py verify-plan"
+    # 時間を明示する（既定の 120 秒では、グラフの作り直しで切られて「落ちた」扱いになる）
+    check: {command: python3, args: [.statemachine/codd/codd.py, verify-plan], timeout_sec: 1800}
     check_retries: 2
     check_on_exhausted: continue   # 使い切ったら stuck で利用者に次の手を訊く
 
@@ -74,7 +75,8 @@ states:
     description: "計画どおりに変える"
     action_file: actions/apply.md
     output_validator: "startswith:OK,FAILED"
-    check: "python3 .statemachine/codd/codd.py verify-apply"
+    # テストと変えたあとの検査（設定の test・check）を動かすので長めに取る
+    check: {command: python3, args: [.statemachine/codd/codd.py, verify-apply], timeout_sec: 3600}
     check_retries: 1               # 計画を変えるかどうかは利用者が決めるので、早めに stuck へ
     check_on_exhausted: continue
 
