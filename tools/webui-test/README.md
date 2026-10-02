@@ -99,7 +99,8 @@ webui-test generate -f conditions.md --url http://localhost:3000/editor.html -o 
 
 確かめた記録は `webui-test-results/explore-<日時>/`（`--evidence-dir` で変えられる）に残る。
 
-- `explore-evidence.jsonl`: 確かめた対象・行った操作（断ったものも）・エージェントが残した観察だけを 1 行ずつ
+- `explore-evidence.jsonl`: 確かめた対象・行った操作（断ったものも）・エージェントが残した観察だけを 1 行ずつ。
+  確かめずに通した操作（eval・type・hover など）と画面遷移は、コマンド名と成否だけを残す
 - `evidence/probe-0003.png`: 確かめた要素の画像
 
 入力した文字（パスワードを含む）・ページの HTML・依頼文・通信の中身は残さない。URL はクエリとハッシュを落として残す。
