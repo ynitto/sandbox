@@ -422,6 +422,49 @@ GitHub Copilot などは 1 回の応答の長さに上限があり、長い計�
 
 確認は会話の中で待つ。会話で動かすことを前提にしており、人の返事を受け取れない無人の実行ではここで止まる。
 
+## 定期的に点検する（本流とは別）
+
+本流は、依頼が触れた範囲しか見ない。codd を通らずに入った変更や、もとからある食い違いは残る。
+`audit` はリポジトリ全体を読むだけで点検し、見つけたものを本流に渡す「やりたいこと」の 1 行にする。**何も直さない。**
+直すときは、その 1 行をいつもどおりエージェント `codd` に伝える。
+
+```bash
+python3 .statemachine/codd/codd.py audit                       # 見つかれば終了コード 1
+python3 .statemachine/codd/codd.py audit --since "8 days ago"  # 週に 1 回なら、前の回と少し重ねる
+python3 .statemachine/codd/codd.py audit --no-test             # テストを動かさない
+```
+
+| 見るもの | 見つけるもの |
+|---|---|
+| 壊れたパス | 文書のリンクと注記（`coherence: doc=…`）が指すのに、どこにも無いファイル |
+| 文書の書式 | 同じフォルダのほかの文書（2 つ以上）がみな持つ見出しを、欠いている文書 |
+| テストの結果を写した文書 | 文書の印が今のテストの結果と違う・目安（`max=`）を超えた・写した振る舞いが落ちている |
+| テスト | 両側の設定の `test` が落ちる（`check` はファイルを作り直すことがあるので動かさない） |
+| codd を通らなかった変更 | codd を置いたあと、期間（既定は 30 日）のうちのコミットで、計画の記録（`docs/.plan/`）に出てこないファイル。やりたいことはコミットごとに 1 行 |
+
+結果は `.codd/audit.md` に残る。`…` の中のパスや、コードブロックの中のリンク・印は書き方の例として見ない。
+
+**CI で週に 1 回動かす例**（GitHub Actions。見つかったら Issue を立てる）:
+
+```yaml
+on:
+  schedule: [{cron: "0 0 * * 1"}]
+  workflow_dispatch:
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions: {contents: read, issues: write}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}            # 「codd を通らなかった変更」は git の履歴から探す
+      - run: python3 .statemachine/codd/codd.py audit --since "8 days ago" || echo found=1 >> "$GITHUB_ENV"
+      - if: env.found == '1'
+        run: gh issue create --title "codd の点検で食い違いが見つかりました" --body-file .codd/audit.md
+        env: {GH_TOKEN: "${{ github.token }}"}
+```
+
+参照先が別のリポジトリなら、同じジョブでそれも `codd.json` の `refs` のパスへチェックアウトする。
+
 ## 画面のあるアプリ（webui-test と組む）
 
 実装・テスト・設計書をそろえるには、動かして確かめる検査も要る。画面のあるアプリでは

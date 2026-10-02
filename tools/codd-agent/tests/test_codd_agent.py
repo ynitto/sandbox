@@ -1665,6 +1665,51 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- src/use.py — 未判断", plan)
         self.assertIn("- 未判断: docs/n0.md:3", plan)
 
+    # ------------------------------------------------------------ 点検（本流とは別）
+
+    def test_audit_finds_what_the_main_flow_cannot_see(self) -> None:
+        r = self.run_pa(self.impl, "audit", "--no-test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)   # 置いたあとに何も変わっていない
+        self.assertTrue(r.stdout.startswith("OK 点検"))
+
+        commit(self.impl, {"src/app.py": "def hello():\n    return 3\n"}, "codd を通さずに変えた")
+        commit(self.design, {
+            "docs/guide.md": "# 使い方\n\n[呼ぶもの](../src/old.py)\n\n書き方: `[説明](../src/none.py)`\n\n"
+                             "```\n<!-- evidence: x -->1<!-- /evidence -->\n```\n",
+            "docs/specs/a.md": "# A\n\n## 目的\n\n## 振る舞い\n",
+            "docs/specs/b.md": "# B\n\n## 目的\n\n## 振る舞い\n",
+            "docs/specs/c.md": "# C\n\n## 目的\n",
+        }, "設計書を足した")
+        before = git(self.impl, "status", "--porcelain") + git(self.design, "status", "--porcelain")
+        r = self.run_pa(self.impl, "audit", "--no-test")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        text = (self.impl / ".codd/audit.md").read_text(encoding="utf-8")
+        self.assertIn("docs/guide.md:3 → ../src/old.py", text)                # 壊れたパス
+        self.assertNotIn("none.py", text)                                     # `…` の中のリンクは書き方の例
+        self.assertIn("## テストの結果を写した文書\n\n- なし", text)            # コードブロックの中の印も例
+        self.assertIn("docs/specs/c.md — 欠けている見出し: 振る舞い", text)  # 書式
+        self.assertNotIn("docs/specs/a.md —", text.split("## 文書の書式")[1].split("##")[0])
+        self.assertIn("src/app.py", text.split("## codd を通らなかった変更")[1])   # 記録の無い変更
+        self.assertIn("## 本流に渡すやりたいこと", text)
+        self.assertIn("codd を通らずに入った変更", r.stdout)
+        self.assertEqual(r.stdout.count("codd を通らずに入った変更"), 2)   # コミットごとに 1 行
+        # 点検は何も直さない（書くのは作業フォルダだけ）
+        self.assertEqual(before, git(self.impl, "status", "--porcelain") + git(self.design, "status", "--porcelain"))
+
+        commit(self.impl, {"docs/.plan/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n"}, "記録")
+        text = (self.run_pa(self.impl, "audit", "--no-test"), (self.impl / ".codd/audit.md").read_text(encoding="utf-8"))[1]
+        self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1])  # 記録に出てくれば通った変更
+
+    def test_audit_runs_the_tests_of_both_sides(self) -> None:
+        config = self.impl / ".statemachine/codd/codd.json"
+        data = json.loads(config.read_text(encoding="utf-8"))
+        data["test"] = [sys.executable, "-c", "import sys; print('boom'); sys.exit(3)"]
+        config.write_text(json.dumps(data), encoding="utf-8")
+        r = self.run_pa(self.impl, "audit")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("自分のテスト", r.stdout)
+        self.assertIn("boom", (self.impl / ".codd/audit.md").read_text(encoding="utf-8"))
+
     def test_workflow_gives_checks_enough_time(self) -> None:
         # 実行ハーネスの既定（120 秒）では、グラフの作り直しやテストで切られて「落ちた」扱いになる。
         text = (TOOL / "machine/workflow.yaml").read_text(encoding="utf-8")

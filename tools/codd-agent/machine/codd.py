@@ -27,6 +27,8 @@
     advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
     keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
+    audit [--since 日]  本流とは別の点検。リポジトリ全体の食い違い（壊れたパス・文書の書式・写したテストの結果・
+                        テスト・codd を通らなかった変更）を探し、本流に渡す「やりたいこと」の 1 行にする。何も直さない
 
 置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
 作業ファイルと graphify のグラフは `<リポジトリ>/.codd/` に置く。依存は python3 と git のみ
@@ -1309,6 +1311,7 @@ def ref_label(ctx: Ctx, name: str, rel: str) -> str:
 # 文書（マークダウンなど）の `…` で囲んだパスと、リンク [文字](パス)。文書のコードブロックと `…` の中の注記は例として拾わない。
 _ANNOT = re.compile(r"coherence:\s*(?:doc|code|test)\s*=\s*([^\s`\"'<>]+)")
 _INLINE_PATH = re.compile(r"`([^`\n]{2,200})`")
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
 _MD_LINK = re.compile(r"\[[^\]]*\]\(([^)#?\s]+)")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _NOT_PATH_CHARS = set(" \t|$&;<>\"'*?{}()=,")
@@ -1348,7 +1351,8 @@ def claims_in(rel: str, text: str) -> list[Claim]:
         for m in _INLINE_PATH.finditer(line):
             if "coherence:" not in m.group(1) and pathlike(m.group(1)):
                 out.append(Claim(no, m.group(1).strip(), "code"))
-        out += [Claim(no, m.group(1), "link") for m in _MD_LINK.finditer(line) if pathlike(m.group(1))]
+        out += [Claim(no, m.group(1), "link") for m in _MD_LINK.finditer(_INLINE_CODE.sub("", line))
+                if pathlike(m.group(1))]   # `[説明](パス)` のように `…` の中のリンクは書き方の例
     return out
 
 
@@ -2096,10 +2100,23 @@ def marked_docs(ctx: Ctx, key: str) -> list[str]:
     return [ln for ln in out.splitlines() if side.has(ln) and ln.lower().endswith(DOC_EXTS)] if rc == 0 else []
 
 
+def fenced_lines(text: str) -> set[int]:
+    """コードブロックの中の行（1 始まり）。そこにある印や見出しは書き方の例。"""
+    out, fenced = set(), False
+    for no, line in enumerate(text.splitlines(), 1):
+        if _FENCE.match(line):
+            fenced = not fenced
+        elif fenced:
+            out.add(no)
+    return out
+
+
 def marks_in(ctx: Ctx, key: str, rel: str) -> list[Mark]:
     text = read_text(side_of(ctx, key).path / rel) or ""
-    return [Mark(key, rel, text.count("\n", 0, m.start()) + 1, m.group("id"), mark_opts(m.group("opts")),
-                 m.span("body"), m.group("body")) for m in _EVIDENCE_MARK.finditer(text)]
+    examples = fenced_lines(text)
+    return [Mark(key, rel, line, m.group("id"), mark_opts(m.group("opts")), m.span("body"), m.group("body"))
+            for m in _EVIDENCE_MARK.finditer(text)
+            if (line := text.count("\n", 0, m.start()) + 1) not in examples and text[m.start() - 1:m.start()] != "`"]
 
 
 def evidence_marks(ctx: Ctx, only: set[tuple[str, str]] | None = None) -> list[Mark]:
@@ -3208,6 +3225,163 @@ def finalize_plan(ctx: Ctx, result: list[str]) -> str | None:
     return dest.relative_to(ctx.root).as_posix()
 
 
+# ---------------------------------------------------------------- 点検（本流とは別。読むだけ）
+#
+# 本流は依頼が触れた範囲しか見ないので、codd を通らずに入った変更や、もとからある食い違いは残る。
+# 点検はリポジトリ全体に本流と同じ部品を当て、見つけたものを本流に渡す「やりたいこと」の 1 行にする。
+# 直すのは本流（変える道を 1 本に保つ）。書くのは作業フォルダの .codd/audit.md だけ。
+
+AUDIT_SINCE = "30 days ago"
+
+
+def tracked(side: Side) -> list[str]:
+    rc, out = run(["git", "-c", "core.quotepath=false", "ls-files", *side.pathspec()], side.path, GIT_TIMEOUT)
+    return [ln for ln in out.splitlines() if side.has(ln)] if rc == 0 else []
+
+
+def audit_paths(ctx: Ctx) -> list[tuple[str, str]]:
+    """文書のリンクと注記（coherence:）が指すパスのうち、どの側にも無いもの。（見つけたこと, やりたいこと）"""
+    out = []
+    for key, side in all_sides(ctx):
+        rc, annotated = run(["git", "grep", "-l", "-I", "-F", "coherence:", *side.pathspec()], side.path, GIT_TIMEOUT)
+        files = {rel for rel in tracked(side) if rel.lower().endswith(DOC_EXTS)}
+        files |= {ln for ln in annotated.splitlines() if side.has(ln)} if rc == 0 else set()
+        for rel in sorted(files):
+            for claim in claims_in(rel, read_text(side.path / rel) or ""):
+                if claim.kind == "code" or not pathlike(claim.token) or "\\" in claim.token:
+                    continue   # `…` のパスは、別のリポジトリのファイルや書き方の例が多い。全体ではリンクと注記だけを見る
+                r = resolve(ctx, side, rel, claim)
+                if r.candidates and not r.exists:
+                    where = f"{side_label(ctx, key, rel)}:{claim.line}"
+                    out.append((f"{where} → {claim.token}",
+                                f"`{where}` が指す `{claim.token}` が無いので、指す先を今のファイルに合わせたい"))
+    return out
+
+
+def audit_formats(ctx: Ctx) -> list[tuple[str, str]]:
+    """同じフォルダのほかの文書がみな持つ見出しを、欠いている文書（ほかに 2 つ以上あるときだけ）。"""
+    out = []
+    for key, side in all_sides(ctx):
+        folders: dict[str, list[str]] = {}
+        for rel in tracked(side):
+            if rel.lower().endswith(FORMAT_EXTS) and not is_test(ctx, key, rel) \
+                    and Path(rel).stem.lower() not in _NOT_MODELS:
+                folders.setdefault(str(Path(rel).parent), []).append(rel)
+        for rels in folders.values():
+            if len(rels) < 3:
+                continue
+            heads = {rel: doc_headings(read_text(side.path / rel) or "") for rel in rels}
+            for rel in rels:
+                others = [heads[o] for o in rels if o != rel]
+                common = [h for h in others[0] if all(h in o for o in others[1:])]
+                missing = [h for h in common if h not in heads[rel]]
+                if missing:
+                    label = side_label(ctx, key, rel)
+                    shown = " / ".join(h.lstrip("# ") for h in missing[:5])
+                    out.append((f"{label} — 欠けている見出し: {shown}",
+                                f"`{label}` の見出しを、同じフォルダの文書の書式（{shown}）に合わせたい"))
+    return out
+
+
+def audit_evidence(ctx: Ctx, tested: bool) -> list[tuple[str, str]]:
+    marks = evidence_marks(ctx)
+    if not marks:
+        return []
+    evs = all_evidence(ctx)
+    if not any(e.files for e in evs.values()):
+        if not tested:
+            return []   # テストを動かしていなければ、結果が無いのは当たり前（結果はふつうコミットしない）
+        return [("文書がテストの結果を写していますが、テストで得たもの（evidence）がありません",
+                 "テストを動かして、文書に写したテストの結果を確かめたい")]
+    stale, bad = check_marks(ctx, evs, marks)
+    return ([(b, f"{b.split(' — ')[0]} の求めを満たすよう、実装か文書を直したい") for b in bad]
+            + [(st, f"{st.split('（')[0]} に写したテストの結果を、今の値に写し直したい") for st in stale])
+
+
+def audit_tests(ctx: Ctx) -> list[tuple[str, str]]:
+    """両側のテスト（設定の test）を動かす。検査（check）はファイルを作り直すことがあるので動かさない。"""
+    out = []
+    sides = [("自分", ctx.root, ctx.config.get("test")), *((r.name, r.path, r.test) for r in ctx.refs)]
+    for who, repo, test in sides:
+        for name, argv in test_commands(test):
+            before = run(["git", "status", "--porcelain"], repo, GIT_TIMEOUT)[1]
+            label = f"{who}のテスト{f'（{name}）' if name else ''}"
+            for p in run_check(repo, argv, label):
+                out.append((p, f"{label}（{' '.join(argv)}）が落ちているので直したい"))
+            if run(["git", "status", "--porcelain"], repo, GIT_TIMEOUT)[1] != before:
+                out.append((f"{label}を動かしたら、作業中のファイルが変わりました（点検は直さないので、確かめてください）",
+                            f"{label}が書き換えるファイルを、コミットするものか .gitignore に入れるものかに分けたい"))
+    return out
+
+
+def plan_records(ctx: Ctx) -> str:
+    """どの側のリポジトリにもある、終わった回の計画の記録（codd を通った変更の手がかり）。"""
+    text = []
+    for repo in unique_paths(str(s.path) for _, s in all_sides(ctx)):
+        folder = Path(repo) / PLAN_DIR
+        if folder.is_dir():
+            text += [read_text(p) or "" for p in sorted(folder.glob("*.md")) if p.name != Path(PLAN_CURRENT).name]
+    return "\n".join(text)
+
+
+def audit_bypassed(ctx: Ctx, since: str) -> list[tuple[str, str]]:
+    """codd を置いたあと、期間のうちにコミットされた変更で、計画の記録に出てこないファイル（codd を通らずに入った変更）。"""
+    records = plan_records(ctx)
+    out = []
+    for key, side in all_sides(ctx):
+        # codd を置いたコミットより前は、codd を通りようがないので数えない。
+        placed = run(["git", "log", "--format=%H", "--diff-filter=A", "--", f"{MACHINE_REL}/{CONFIG_NAME}"],
+                     side.path, GIT_TIMEOUT)[1].split()
+        rng = [f"{placed[-1]}..HEAD"] if placed else []
+        rc, log = run(["git", "-c", "core.quotepath=false", "log", *rng, f"--since={since}", "--no-merges",
+                       "--date=short", "--format=%x00%h %ad", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
+        seen: set[str] = set()
+        for chunk in (log.split("\0") if rc == 0 else []):
+            first, *names = chunk.strip().splitlines() or [""]
+            labels = []
+            for rel in names:
+                rel = rel.strip()
+                if not rel or rel in seen or not side.has(rel) or rel in records:
+                    continue
+                seen.add(rel)   # 新しいコミットから見るので、同じファイルは最後に変えたコミットで挙げる
+                labels.append(side_label(ctx, key, rel))
+                gone = "（いまは無い）" if not (side.path / rel).exists() else ""
+                out.append((f"{labels[-1]}{gone} — {first}", ""))
+            if labels:   # やりたいことはコミットごとに 1 行
+                shown = ", ".join(f"`{x}`" for x in labels[:5]) + (f" ほか {len(labels) - 5} 件" if len(labels) > 5 else "")
+                out[-1] = (out[-1][0], f"codd を通らずに入った変更（{first}: {shown}）に合わせて、"
+                                       "コード・文書・テストの食い違いを確かめたい")
+    return out
+
+
+AUDIT_SECTIONS = (("壊れたパス", "paths"), ("文書の書式", "formats"), ("テストの結果を写した文書", "evidence"),
+                  ("テスト", "tests"), ("codd を通らなかった変更", "bypassed"))
+AUDIT_SHOWN = 30
+
+
+def cmd_audit(ctx: Ctx, args: argparse.Namespace) -> int:
+    found = {"paths": audit_paths(ctx), "formats": audit_formats(ctx),
+             "tests": [] if args.no_test else audit_tests(ctx)}
+    found["evidence"] = audit_evidence(ctx, not args.no_test)     # テストのあとに見る（テストが evidence を書き直す）
+    found["bypassed"] = audit_bypassed(ctx, args.since)
+    lines = [f"# 点検の結果（{time.strftime('%Y-%m-%d %H:%M')}。変更は {args.since} から）", ""]
+    for title, key in AUDIT_SECTIONS:
+        if key == "tests" and args.no_test:
+            continue
+        lines += [f"## {title}", "", *([f"- {f}" for f, _ in found[key]] or ["- なし"]), ""]
+    asks = list(dict.fromkeys(a for key in found for _, a in found[key] if a))
+    lines += ["## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / "audit.md").write_text("\n".join(lines), encoding="utf-8")
+    counts = "、".join(f"{t} {len(found[k])}" for t, k in AUDIT_SECTIONS if not (k == "tests" and args.no_test))
+    print(f"{'NG' if asks else 'OK'} 点検: {counts}（全文: {DATA_DIRNAME}/audit.md）")
+    for a in asks[:AUDIT_SHOWN]:
+        print(f"- {a}")
+    if len(asks) > AUDIT_SHOWN:
+        print(f"- ほか {len(asks) - AUDIT_SHOWN} 件（{DATA_DIRNAME}/audit.md）")
+    return 1 if asks else 0
+
+
 # ---------------------------------------------------------------- 入口
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3242,6 +3416,9 @@ def build_parser() -> argparse.ArgumentParser:
     ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
     ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")
     ev.add_argument("--write", action="store_true", help="文書の印を今の値に写し直す")
+    au = sub.add_parser("audit", help="本流とは別の点検。リポジトリ全体の食い違いを探し、本流に渡すやりたいことにする（直さない）")
+    au.add_argument("--since", default=AUDIT_SINCE, help=f"codd を通らなかった変更を探す期間の始め（git の日付。既定 {AUDIT_SINCE!r}）")
+    au.add_argument("--no-test", action="store_true", help="テスト（設定の test）を動かさない")
     ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
     ru.add_argument("--write", action="store_true", help="候補を codd.json の rules / refs[].rules に書く")
     ru.add_argument("--only", action="append", help="書く候補を絞る（`名前:パス` か `パス`。繰り返し可）")
@@ -3252,7 +3429,8 @@ COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
             "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
             "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule,
-            "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record}
+            "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record,
+            "audit": cmd_audit}
 
 
 def main(argv: list[str] | None = None) -> int:
