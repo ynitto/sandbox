@@ -14,11 +14,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   確かめていない操作・古い確認（そのあとに操作や画面遷移をした、アプリが要素を作り直した、位置や属性が変わった）・
   1 つに決まらない／隠れた／押せない対象への操作は、依頼文に頼らず `webui-test browse` が断る。付けなければ `--explore` は今までどおり
 - **確かめた記録を残す。** `webui-test-results/explore-<日時>/explore-evidence.jsonl` に、確かめた対象・行った操作・
-  エージェントが残した観察だけを書き、要素の画像を `evidence/` に置く。入力した文字・HTML・依頼文・通信は残さない
+  エージェントが残した観察を書き、要素の画像を `evidence/` に置く。確かめずに通した操作と画面遷移は、コマンド名と成否だけを
+  1 行ずつ残す。入力した文字・HTML・依頼文・通信は残さない
 - **確認用の画面とケースを足した。** `examples/sample-app/editor.html`（同じ名前のボタンが 2 つ・押せない→押せる・言語・
   画面幅・作り直し）と `examples/editor.yaml`（`variants` で日本語・英語・狭い画面）
 - **`scripts/compare-explore.js` で、`--probe-before-act` の有無を同じ条件で作り比べる。** 書式の検査・初回の合否・
-  頼み直し・対象の取り違え・断った操作・確認回数・時間を残す。トークン数は取れないので「不明」と書く
+  頼み直し・対象の取り違え・断った操作・見張らずに通した操作（確認を求めずに渡した eval・type・hover など）・確認回数・時間を残す。
+  トークン数は取れないので「不明」と書く
 - 設計は `docs/designs/webui-test-probe-before-act-design.md`
 
 ### webui-test: web-test から改名し、前回と画面が変わったかを確かめる（webui-test 0.2.0）

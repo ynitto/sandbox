@@ -99,7 +99,8 @@ webui-test generate -f conditions.md --url http://localhost:3000/editor.html -o 
 
 確かめた記録は `webui-test-results/explore-<日時>/`（`--evidence-dir` で変えられる）に残る。
 
-- `explore-evidence.jsonl`: 確かめた対象・行った操作（断ったものも）・エージェントが残した観察だけを 1 行ずつ
+- `explore-evidence.jsonl`: 確かめた対象・行った操作（断ったものも）・エージェントが残した観察だけを 1 行ずつ。
+  確かめずに通した操作（eval・type・hover など）と画面遷移は、コマンド名と成否だけを残す
 - `evidence/probe-0003.png`: 確かめた要素の画像
 
 入力した文字（パスワードを含む）・ページの HTML・依頼文・通信の中身は残さない。URL はクエリとハッシュを落として残す。
@@ -251,7 +252,7 @@ webui-test pwtest examples/login.yaml
 `examples/editor.yaml` はそのテストケース（`variants` で日本語・英語・狭い画面を回す）。
 
 `--probe-before-act` の有無で作り比べるときは `scripts/compare-explore.js` を使う。同じ条件で両方を作り、
-作ったケースをすぐ 1 回動かして、書式の検査・初回の合否・頼み直しの回数・対象の取り違え・断った操作・
+作ったケースをすぐ 1 回動かして、書式の検査・初回の合否・頼み直しの回数・対象の取り違え・断った操作・見張らずに通した操作・
 ケースあたりの確認回数・時間を `comparison.md` / `comparison.json` に残す（トークン数は取れないので「不明」と書く）。
 
 ```bash

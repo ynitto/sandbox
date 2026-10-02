@@ -87,6 +87,7 @@ function aggregate(rows) {
       missingOrNotReadyTargetsAtProbe: m === 'candidate' ? sum(xs, (r) => r.probe && r.probe.missingProbes + r.probe.hiddenOrDisabledProbes) : NA,
       staleRejections: m === 'candidate' ? sum(xs, (r) => r.probe && r.probe.staleRejections) : NA,
       missingProbeRejections: m === 'candidate' ? sum(xs, (r) => r.probe && r.probe.missingProbeRejections) : NA,
+      unguardedCommands: m === 'candidate' ? sum(xs, (r) => r.probe && r.probe.unguarded) : NA,
       probesPerCase: m === 'candidate' ? avg(xs, (r) => r.probe && r.probe.probesPerCase) : NA,
       generateMsAvg: avg(xs, (r) => r.generateMs),
       usage: null,
@@ -101,14 +102,15 @@ function toMarkdown(result) {
     ['書式の検査に合格', 'validationPass'], ['作ったケースが 1 回目で合格', 'firstRunPass'], ['頼み直しの回数（合計）', 'retries'],
     ['実行で 1 つに決まらなかった対象', 'ambiguousTargetsAtRun'], ['実行で見つからない・操作できなかった対象', 'missingOrNotReadyTargetsAtRun'],
     ['確認で 1 つに決まらなかった対象', 'ambiguousTargetsAtProbe'], ['確認で見つからない・隠れている・押せなかった対象', 'missingOrNotReadyTargetsAtProbe'],
-    ['古い確認で断った操作', 'staleRejections'], ['確認なしで断った操作', 'missingProbeRejections'], ['ケースあたりの確認回数', 'probesPerCase'], ['作成にかかった時間の平均（ms）', 'generateMsAvg'], ['使用量（トークン）', 'usage'],
+    ['古い確認で断った操作', 'staleRejections'], ['確認なしで断った操作', 'missingProbeRejections'], ['見張らずに通した操作', 'unguardedCommands'], ['ケースあたりの確認回数', 'probesPerCase'], ['作成にかかった時間の平均（ms）', 'generateMsAvg'], ['使用量（トークン）', 'usage'],
   ];
   return [
     '# generate --explore の比較', '',
     `- 条件: ${result.conditionsFile || '（引数）'}`, `- URL: ${result.url}`, `- エージェント: ${result.agent}`, `- 回数: 各 ${result.runs} 回`, '',
     '| 項目 | baseline（--explore） | candidate（--probe-before-act） |', '|---|---|---|',
     ...rows.map(([label, k]) => `| ${label} | ${v(a.baseline[k])} | ${v(a.candidate[k])} |`), '',
-    '使用量は今の作成の経路では取れないため「不明」としている（0 ではない）。「対象外」は baseline に確認の仕組みが無いことを表す。', '',
+    '使用量は今の作成の経路では取れないため「不明」としている（0 ではない）。「対象外」は baseline に確認の仕組みが無いことを表す。',
+    '「見張らずに通した操作」は、確認を求めずにそのまま渡した操作（eval・type・hover・修飾キー付きの press など。画面遷移は含めない）の数で、確認を回り道した操作がどれだけあったかの目安になる。', '',
   ].join('\n');
 }
 

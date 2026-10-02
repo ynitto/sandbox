@@ -9,7 +9,8 @@
 //   - 1 つに決まらない・見えない・押せない対象への probe
 // 読むだけのコマンド（snapshot / find / screenshot など）はそのまま playwright-cli に渡す。
 //
-// 記録（explore-evidence.jsonl）に残すのは、確かめた対象・行った操作・エージェントがはっきり残した観察だけ。
+// 記録（explore-evidence.jsonl）に残すのは、確かめた対象・行った操作・エージェントがはっきり残した観察と、
+// 確かめずに通した操作・画面遷移のコマンド名だけ。
 // DOM 全体・依頼文・通信の中身・入力した値は残さない（URL もクエリとハッシュを落とす）。
 
 const fs = require('fs');
@@ -319,6 +320,9 @@ async function browseMain(argv, io = { out: process.stdout, err: process.stderr 
     state.generation += 1;
     if (kind === 'navigation') state.stats.navigations += 1;
     else state.stats.unguarded += 1;
+    // 通した操作もコマンド名と終わり方だけ 1 行残す（引数・URL は入力した値を含みうるので残さない）。
+    // 画面遷移は設計どおりに通す操作で、確認の回り道ではないので、unguarded と数えを混ぜないよう別の type にする
+    appendEvidence(o.evidence, { type: kind === 'navigation' ? 'navigation' : 'unguarded', command: o.cmd, status: r.code === 0 ? 'done' : 'failed' });
     return done(r.code);
   }
 
