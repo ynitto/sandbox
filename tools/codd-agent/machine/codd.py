@@ -27,7 +27,7 @@
     advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
     keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
-    audit [--since 日]  本流とは別の点検。リポジトリ全体の食い違い（壊れたパス・文書の書式・写したテストの結果・
+    lint [--since 日]  本流とは別の点検。リポジトリ全体の食い違い（壊れたパス・文書の書式・写したテストの結果・
                         テスト・codd を通らなかった変更）を探し、本流に渡す「やりたいこと」の 1 行にする。何も直さない
 
 置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
@@ -3229,9 +3229,9 @@ def finalize_plan(ctx: Ctx, result: list[str]) -> str | None:
 #
 # 本流は依頼が触れた範囲しか見ないので、codd を通らずに入った変更や、もとからある食い違いは残る。
 # 点検はリポジトリ全体に本流と同じ部品を当て、見つけたものを本流に渡す「やりたいこと」の 1 行にする。
-# 直すのは本流（変える道を 1 本に保つ）。書くのは作業フォルダの .codd/audit.md だけ。
+# 直すのは本流（変える道を 1 本に保つ）。書くのは作業フォルダの .codd/lint.md だけ。
 
-AUDIT_SINCE = "30 days ago"
+LINT_SINCE = "30 days ago"
 
 
 def tracked(side: Side) -> list[str]:
@@ -3239,7 +3239,7 @@ def tracked(side: Side) -> list[str]:
     return [ln for ln in out.splitlines() if side.has(ln)] if rc == 0 else []
 
 
-def audit_paths(ctx: Ctx) -> list[tuple[str, str]]:
+def lint_paths(ctx: Ctx) -> list[tuple[str, str]]:
     """文書のリンクと注記（coherence:）が指すパスのうち、どの側にも無いもの。（見つけたこと, やりたいこと）"""
     out = []
     for key, side in all_sides(ctx):
@@ -3258,7 +3258,7 @@ def audit_paths(ctx: Ctx) -> list[tuple[str, str]]:
     return out
 
 
-def audit_formats(ctx: Ctx) -> list[tuple[str, str]]:
+def lint_formats(ctx: Ctx) -> list[tuple[str, str]]:
     """同じフォルダのほかの文書がみな持つ見出しを、欠いている文書（ほかに 2 つ以上あるときだけ）。"""
     out = []
     for key, side in all_sides(ctx):
@@ -3283,7 +3283,7 @@ def audit_formats(ctx: Ctx) -> list[tuple[str, str]]:
     return out
 
 
-def audit_evidence(ctx: Ctx, tested: bool) -> list[tuple[str, str]]:
+def lint_evidence(ctx: Ctx, tested: bool) -> list[tuple[str, str]]:
     marks = evidence_marks(ctx)
     if not marks:
         return []
@@ -3298,7 +3298,7 @@ def audit_evidence(ctx: Ctx, tested: bool) -> list[tuple[str, str]]:
             + [(st, f"{st.split('（')[0]} に写したテストの結果を、今の値に写し直したい") for st in stale])
 
 
-def audit_tests(ctx: Ctx) -> list[tuple[str, str]]:
+def lint_tests(ctx: Ctx) -> list[tuple[str, str]]:
     """両側のテスト（設定の test）を動かす。検査（check）はファイルを作り直すことがあるので動かさない。"""
     out = []
     sides = [("自分", ctx.root, ctx.config.get("test")), *((r.name, r.path, r.test) for r in ctx.refs)]
@@ -3324,7 +3324,7 @@ def plan_records(ctx: Ctx) -> str:
     return "\n".join(text)
 
 
-def audit_bypassed(ctx: Ctx, since: str) -> list[tuple[str, str]]:
+def lint_bypassed(ctx: Ctx, since: str) -> list[tuple[str, str]]:
     """codd を置いたあと、期間のうちにコミットされた変更で、計画の記録に出てこないファイル（codd を通らずに入った変更）。"""
     records = plan_records(ctx)
     out = []
@@ -3354,31 +3354,31 @@ def audit_bypassed(ctx: Ctx, since: str) -> list[tuple[str, str]]:
     return out
 
 
-AUDIT_SECTIONS = (("壊れたパス", "paths"), ("文書の書式", "formats"), ("テストの結果を写した文書", "evidence"),
+LINT_SECTIONS = (("壊れたパス", "paths"), ("文書の書式", "formats"), ("テストの結果を写した文書", "evidence"),
                   ("テスト", "tests"), ("codd を通らなかった変更", "bypassed"))
-AUDIT_SHOWN = 30
+LINT_SHOWN = 30
 
 
-def cmd_audit(ctx: Ctx, args: argparse.Namespace) -> int:
-    found = {"paths": audit_paths(ctx), "formats": audit_formats(ctx),
-             "tests": [] if args.no_test else audit_tests(ctx)}
-    found["evidence"] = audit_evidence(ctx, not args.no_test)     # テストのあとに見る（テストが evidence を書き直す）
-    found["bypassed"] = audit_bypassed(ctx, args.since)
+def cmd_lint(ctx: Ctx, args: argparse.Namespace) -> int:
+    found = {"paths": lint_paths(ctx), "formats": lint_formats(ctx),
+             "tests": [] if args.no_test else lint_tests(ctx)}
+    found["evidence"] = lint_evidence(ctx, not args.no_test)     # テストのあとに見る（テストが evidence を書き直す）
+    found["bypassed"] = lint_bypassed(ctx, args.since)
     lines = [f"# 点検の結果（{time.strftime('%Y-%m-%d %H:%M')}。変更は {args.since} から）", ""]
-    for title, key in AUDIT_SECTIONS:
+    for title, key in LINT_SECTIONS:
         if key == "tests" and args.no_test:
             continue
         lines += [f"## {title}", "", *([f"- {f}" for f, _ in found[key]] or ["- なし"]), ""]
     asks = list(dict.fromkeys(a for key in found for _, a in found[key] if a))
     lines += ["## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / "audit.md").write_text("\n".join(lines), encoding="utf-8")
-    counts = "、".join(f"{t} {len(found[k])}" for t, k in AUDIT_SECTIONS if not (k == "tests" and args.no_test))
-    print(f"{'NG' if asks else 'OK'} 点検: {counts}（全文: {DATA_DIRNAME}/audit.md）")
-    for a in asks[:AUDIT_SHOWN]:
+    (ctx.data / "lint.md").write_text("\n".join(lines), encoding="utf-8")
+    counts = "、".join(f"{t} {len(found[k])}" for t, k in LINT_SECTIONS if not (k == "tests" and args.no_test))
+    print(f"{'NG' if asks else 'OK'} 点検: {counts}（全文: {DATA_DIRNAME}/lint.md）")
+    for a in asks[:LINT_SHOWN]:
         print(f"- {a}")
-    if len(asks) > AUDIT_SHOWN:
-        print(f"- ほか {len(asks) - AUDIT_SHOWN} 件（{DATA_DIRNAME}/audit.md）")
+    if len(asks) > LINT_SHOWN:
+        print(f"- ほか {len(asks) - LINT_SHOWN} 件（{DATA_DIRNAME}/lint.md）")
     return 1 if asks else 0
 
 
@@ -3416,8 +3416,8 @@ def build_parser() -> argparse.ArgumentParser:
     ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
     ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")
     ev.add_argument("--write", action="store_true", help="文書の印を今の値に写し直す")
-    au = sub.add_parser("audit", help="本流とは別の点検。リポジトリ全体の食い違いを探し、本流に渡すやりたいことにする（直さない）")
-    au.add_argument("--since", default=AUDIT_SINCE, help=f"codd を通らなかった変更を探す期間の始め（git の日付。既定 {AUDIT_SINCE!r}）")
+    au = sub.add_parser("lint", help="本流とは別の点検。リポジトリ全体の食い違いを探し、本流に渡すやりたいことにする（直さない）")
+    au.add_argument("--since", default=LINT_SINCE, help=f"codd を通らなかった変更を探す期間の始め（git の日付。既定 {LINT_SINCE!r}）")
     au.add_argument("--no-test", action="store_true", help="テスト（設定の test）を動かさない")
     ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
     ru.add_argument("--write", action="store_true", help="候補を codd.json の rules / refs[].rules に書く")
@@ -3430,7 +3430,7 @@ COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
             "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule,
             "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record,
-            "audit": cmd_audit}
+            "lint": cmd_lint}
 
 
 def main(argv: list[str] | None = None) -> int:

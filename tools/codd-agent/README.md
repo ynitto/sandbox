@@ -425,13 +425,13 @@ GitHub Copilot などは 1 回の応答の長さに上限があり、長い計�
 ## 定期的に点検する（本流とは別）
 
 本流は、依頼が触れた範囲しか見ない。codd を通らずに入った変更や、もとからある食い違いは残る。
-`audit` はリポジトリ全体を読むだけで点検し、見つけたものを本流に渡す「やりたいこと」の 1 行にする。**何も直さない。**
+`lint` はリポジトリ全体を読むだけで点検し、見つけたものを本流に渡す「やりたいこと」の 1 行にする。**何も直さない。**
 直すときは、その 1 行をいつもどおりエージェント `codd` に伝える。
 
 ```bash
-python3 .statemachine/codd/codd.py audit                       # 見つかれば終了コード 1
-python3 .statemachine/codd/codd.py audit --since "8 days ago"  # 週に 1 回なら、前の回と少し重ねる
-python3 .statemachine/codd/codd.py audit --no-test             # テストを動かさない
+python3 .statemachine/codd/codd.py lint                       # 見つかれば終了コード 1
+python3 .statemachine/codd/codd.py lint --since "8 days ago"  # 週に 1 回なら、前の回と少し重ねる
+python3 .statemachine/codd/codd.py lint --no-test             # テストを動かさない
 ```
 
 | 見るもの | 見つけるもの |
@@ -442,7 +442,7 @@ python3 .statemachine/codd/codd.py audit --no-test             # テストを動
 | テスト | 両側の設定の `test` が落ちる（`check` はファイルを作り直すことがあるので動かさない） |
 | codd を通らなかった変更 | codd を置いたあと、期間（既定は 30 日）のうちのコミットで、計画の記録（`docs/.plan/`）に出てこないファイル。やりたいことはコミットごとに 1 行 |
 
-結果は `.codd/audit.md` に残る。`…` の中のパスや、コードブロックの中のリンク・印は書き方の例として見ない。
+結果は `.codd/lint.md` に残る。`…` の中のパスや、コードブロックの中のリンク・印は書き方の例として見ない。
 
 **CI で週に 1 回動かす例**（GitHub Actions。見つかったら Issue を立てる）:
 
@@ -451,15 +451,15 @@ on:
   schedule: [{cron: "0 0 * * 1"}]
   workflow_dispatch:
 jobs:
-  audit:
+  lint:
     runs-on: ubuntu-latest
     permissions: {contents: read, issues: write}
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}            # 「codd を通らなかった変更」は git の履歴から探す
-      - run: python3 .statemachine/codd/codd.py audit --since "8 days ago" || echo found=1 >> "$GITHUB_ENV"
+      - run: python3 .statemachine/codd/codd.py lint --since "8 days ago" || echo found=1 >> "$GITHUB_ENV"
       - if: env.found == '1'
-        run: gh issue create --title "codd の点検で食い違いが見つかりました" --body-file .codd/audit.md
+        run: gh issue create --title "codd の点検で食い違いが見つかりました" --body-file .codd/lint.md
         env: {GH_TOKEN: "${{ github.token }}"}
 ```
 

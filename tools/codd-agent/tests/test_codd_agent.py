@@ -1667,8 +1667,8 @@ class CoddTest(unittest.TestCase):
 
     # ------------------------------------------------------------ 点検（本流とは別）
 
-    def test_audit_finds_what_the_main_flow_cannot_see(self) -> None:
-        r = self.run_pa(self.impl, "audit", "--no-test")
+    def test_lint_finds_what_the_main_flow_cannot_see(self) -> None:
+        r = self.run_pa(self.impl, "lint", "--no-test")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)   # 置いたあとに何も変わっていない
         self.assertTrue(r.stdout.startswith("OK 点検"))
 
@@ -1681,9 +1681,9 @@ class CoddTest(unittest.TestCase):
             "docs/specs/c.md": "# C\n\n## 目的\n",
         }, "設計書を足した")
         before = git(self.impl, "status", "--porcelain") + git(self.design, "status", "--porcelain")
-        r = self.run_pa(self.impl, "audit", "--no-test")
+        r = self.run_pa(self.impl, "lint", "--no-test")
         self.assertEqual(r.returncode, 1, r.stderr)
-        text = (self.impl / ".codd/audit.md").read_text(encoding="utf-8")
+        text = (self.impl / ".codd/lint.md").read_text(encoding="utf-8")
         self.assertIn("docs/guide.md:3 → ../src/old.py", text)                # 壊れたパス
         self.assertNotIn("none.py", text)                                     # `…` の中のリンクは書き方の例
         self.assertIn("## テストの結果を写した文書\n\n- なし", text)            # コードブロックの中の印も例
@@ -1697,18 +1697,18 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(before, git(self.impl, "status", "--porcelain") + git(self.design, "status", "--porcelain"))
 
         commit(self.impl, {"docs/.plan/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n"}, "記録")
-        text = (self.run_pa(self.impl, "audit", "--no-test"), (self.impl / ".codd/audit.md").read_text(encoding="utf-8"))[1]
+        text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
         self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1])  # 記録に出てくれば通った変更
 
-    def test_audit_runs_the_tests_of_both_sides(self) -> None:
+    def test_lint_runs_the_tests_of_both_sides(self) -> None:
         config = self.impl / ".statemachine/codd/codd.json"
         data = json.loads(config.read_text(encoding="utf-8"))
         data["test"] = [sys.executable, "-c", "import sys; print('boom'); sys.exit(3)"]
         config.write_text(json.dumps(data), encoding="utf-8")
-        r = self.run_pa(self.impl, "audit")
+        r = self.run_pa(self.impl, "lint")
         self.assertEqual(r.returncode, 1)
         self.assertIn("自分のテスト", r.stdout)
-        self.assertIn("boom", (self.impl / ".codd/audit.md").read_text(encoding="utf-8"))
+        self.assertIn("boom", (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))
 
     def test_workflow_gives_checks_enough_time(self) -> None:
         # 実行ハーネスの既定（120 秒）では、グラフの作り直しやテストで切られて「落ちた」扱いになる。
