@@ -2124,23 +2124,28 @@ def marked_docs(ctx: Ctx, key: str) -> list[str]:
             if ln.lower().endswith(DOC_EXTS)]
 
 
-def fenced_lines(text: str) -> set[int]:
-    """コードブロックの中の行（1 始まり）。そこにある印や見出しは書き方の例。"""
-    out, fenced = set(), False
-    for no, line in enumerate(text.splitlines(), 1):
-        if _FENCE.match(line):
-            fenced = not fenced
-        elif fenced:
-            out.add(no)
-    return out
+def mask_examples(text: str) -> str:
+    """コードブロックと `…` の中を、同じ長さの空白に置き換える（記入例の印を拾わず、位置は保つ）。"""
+    out, fenced = [], False
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if _FENCE.match(line) or fenced:
+            fenced = fenced != bool(_FENCE.match(line))
+            out.append(" " * len(body) + line[len(body):])
+        else:
+            out.append(_INLINE_CODE.sub(lambda m: " " * len(m.group(0)), body) + line[len(body):])
+    return "".join(out)
+
+
+def real_marks(text: str) -> list[re.Match]:
+    """文書の中の、記入例ではない証跡の印（位置は元の文書と同じ。中身は元の文書から切り出す）。"""
+    return list(_EVIDENCE_MARK.finditer(mask_examples(text)))
 
 
 def marks_in(ctx: Ctx, key: str, rel: str) -> list[Mark]:
     text = read_text(side_of(ctx, key).path / rel) or ""
-    examples = fenced_lines(text)
-    return [Mark(key, rel, line, m.group("id"), mark_opts(m.group("opts")), m.span("body"), m.group("body"))
-            for m in _EVIDENCE_MARK.finditer(text)
-            if (line := text.count("\n", 0, m.start()) + 1) not in examples and text[m.start() - 1:m.start()] != "`"]
+    return [Mark(key, rel, text.count("\n", 0, m.start()) + 1, m.group("id"), mark_opts(m.group("opts")),
+                 m.span("body"), text[m.start("body"):m.end("body")]) for m in real_marks(text)]
 
 
 def evidence_marks(ctx: Ctx, only: set[tuple[str, str]] | None = None) -> list[Mark]:
@@ -2406,16 +2411,18 @@ def cmd_evidence(ctx: Ctx, args: argparse.Namespace) -> int:
             path = side_of(ctx, key).path / rel
             text = path.read_text(encoding="utf-8")
 
-            def sub(m: re.Match) -> str:
+            new, pos = [], 0
+            for m in real_marks(text):   # コードブロックと `…` の中の記入例は書き戻さない
                 items = find_evidence(ctx, evs, key, m.group("id"))
+                body = text[m.start("body"):m.end("body")]
                 if not items:
-                    return m.group(0)
+                    continue
                 now = render_mark(m.group("id"), items, path)
                 tol = float(mark_opts(m.group("opts")).get("tolerance", EVIDENCE_TOLERANCE))
-                if close_enough(m.group("body"), now, tol):
-                    return m.group(0)
-                return m.group(0)[:m.start("body") - m.start()] + now + m.group(0)[m.end("body") - m.start():]
-            new = _EVIDENCE_MARK.sub(sub, text)
+                if not close_enough(body, now, tol):
+                    new += [text[pos:m.start("body")], now]
+                    pos = m.end("body")
+            new = "".join(new) + text[pos:]
             if new != text:
                 path.write_text(new, encoding="utf-8")
                 written.append(side_label(ctx, key, rel))

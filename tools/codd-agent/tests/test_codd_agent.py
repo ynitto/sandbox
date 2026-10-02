@@ -989,6 +989,30 @@ class CoddTest(unittest.TestCase):
         self.assertIn("確かめた振る舞いが失敗しています: ログイン できる", r.stdout)
         self.assertIn("書いてある 800 ms → 今 1300 ms", r.stdout)
 
+    def test_evidence_examples_in_code_fences_are_not_real_marks(self) -> None:
+        # 書き方の例（コードブロック・`…` の中の印）は、一覧・検査・書き戻しのどれにも数えない。
+        example = ("```markdown\n"
+                   "読み込み: <!-- evidence: login/S-01/load max=10 -->999 ms<!-- /evidence -->\n"
+                   "無い id: <!-- evidence: nothing/here -->例<!-- /evidence -->\n"
+                   "閉じ忘れの例: <!-- evidence: login/S-01/load -->\n"
+                   "```\n")
+        inline = "書き方: `<!-- evidence: inline/only -->値<!-- /evidence -->`\n"
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\n" + example + inline +
+                             "\n読み込み: <!-- evidence: login/S-01/load -->1 ms<!-- /evidence -->\n"}, "marks")
+        self.write_evidence(self.evidence_items(850))
+        r = self.run_pa(self.impl, "evidence")
+        self.assertIn("文書の印: 1 件", r.stdout)                    # 一覧: 本物の 1 つだけ
+        self.assertNotIn("nothing/here", r.stdout)                   # 検査: 例の知らない id で落とさない
+        self.assertNotIn("inline/only", r.stdout)
+        self.assertNotIn("目安の 10 を超えています", r.stdout)       # 例の目安で落とさない
+        self.assertIn("docs/api.md:12 login/S-01/load（書いてある 1 ms → 今 850 ms）", r.stdout)
+        r = self.run_pa(self.impl, "evidence", "--write")
+        self.assertIn("写し直した: docs/api.md", r.stdout)
+        text = (self.design / "docs/api.md").read_text(encoding="utf-8")
+        self.assertIn(example + inline, text)                        # 書き戻し: 例はそのまま
+        self.assertIn("\n読み込み: <!-- evidence: login/S-01/load -->850 ms<!-- /evidence -->\n", text)
+        self.assertEqual(self.run_pa(self.impl, "evidence").returncode, 0)
+
     def test_changed_screens_replace_the_images_docs_show(self) -> None:
         # テストの側は文書を知らない。画面のこれまでの版と同じ画像を文書のリポジトリから sha256 で見つけ、差し替える。
         old, new, gone = b"PNG-v1 login", b"PNG-v2 login", b"PNG-old menu"
