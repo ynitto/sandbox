@@ -1,0 +1,56 @@
+# codd-drift — 意味のずれを見つける（codd-agent のサンプル。本流とは別。読むだけ）
+#
+# `codd.py lint` は名前やパスの食い違いを機械で探す。名前は合っているのに中身がずれている
+# （コードは 2 を返すのに設計書は 1 と書く、順番や条件が違う）は、読んで比べないと分からない。
+# このワークフローは、codd を通らずに入った変更から比べる組（コードの箇所 ⇔ 文書の箇所）を集め、
+# モデルが読んで判断し、ずれを本流に渡す「やりたいこと」の 1 行にする。何も直さない。
+#
+#   collect ─[check: 候補の形]─┬─ 候補あり ─→ judge ─[check: 判断の形]─→ report
+#                              └─ 候補なし ─────────────────────────────→ report
+#
+# 置き方: codd-agent を置いたリポジトリの `.statemachine/codd-drift/` にこのフォルダを写す。
+# agent-app の定期実行や、statemachine-use スキルのあるエージェントから動かす（人の確認は待たない）。
+
+name: "codd-drift"
+description: "codd を通らずに入った変更から、コードと文書の意味のずれを探し、本流に渡すやりたいことにする（直さない）"
+initial_state: collect
+
+inputs:
+  since:
+    label: いつからの変更を見るか
+    default: "30 days ago"
+    description: "git の日付（例: 8 days ago、2026-09-01）"
+
+config:
+  max_steps: 10
+  on_no_transition: error
+
+states:
+  collect:
+    description: "比べる組（コードの箇所 ⇔ 文書の箇所）を集める"
+    action_file: actions/collect.md
+    output_key: found
+    output_validator: "startswith:OK,NONE"
+    check: {command: python3, args: [.statemachine/codd-drift/check_drift.py, candidates], timeout_sec: 120}
+    check_retries: 1
+    check_on_exhausted: continue
+
+  judge:
+    description: "組ごとに両方を読み、ずれているかを判断する"
+    action_file: actions/judge.md
+    output_validator: "startswith:OK"
+    check: {command: python3, args: [.statemachine/codd-drift/check_drift.py, judged], timeout_sec: 120}
+    check_retries: 1
+    check_on_exhausted: continue
+
+  report:
+    description: "見つけたずれと、本流に渡すやりたいことを伝える"
+    action_file: actions/report.md
+    terminal: true
+
+transitions:
+  - {from: collect, to: judge, condition_rule: "equals:check_ok:true;startswith:found:OK", priority: 1}
+  - {from: collect, to: report, condition_rule: "equals:check_ok:true;startswith:found:NONE", priority: 2}
+  - {from: collect, to: report, condition_rule: "equals:check_ok:false", priority: 3}
+  - {from: judge, to: report, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: judge, to: report, condition_rule: "equals:check_ok:false", priority: 2}

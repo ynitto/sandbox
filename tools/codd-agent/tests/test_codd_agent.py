@@ -1741,6 +1741,55 @@ class CoddTest(unittest.TestCase):
         self.assertIn('{from: confirm, to: stopped, condition_rule: "startswith:answer:STOP"', text)
         self.assertIn('{from: stuck, to: stopped, condition_rule: "startswith:choice:STOP"', text)
 
+    # ------------------------------------------------------------ 意味のずれのサンプル（samples/drift）
+
+    def drift(self, mode: str) -> subprocess.CompletedProcess:
+        dest = self.impl / ".statemachine/codd-drift"
+        if not dest.is_dir():
+            shutil.copytree(TOOL / "samples/drift", dest)
+        return subprocess.run([sys.executable, ".statemachine/codd-drift/check_drift.py", mode], cwd=self.impl,
+                              capture_output=True, text=True, env={**os.environ, **GIT_ENV})
+
+    def test_drift_sample_checks_the_shape_of_what_the_model_wrote(self) -> None:
+        data = self.impl / ".codd"
+        data.mkdir(exist_ok=True)
+        (data / "drift-candidates.md").write_text("なし\n", encoding="utf-8")
+        self.assertEqual(self.drift("candidates").returncode, 0)
+        self.assertIn("比べる組はありませんでした", self.drift("report").stdout)
+
+        (data / "drift-candidates.md").write_text(
+            "- src/app.py:2 ⇔ design:docs/api.md:5 — hello の戻り値\n"
+            "- src/app.py:9 ⇔ design:docs/none.md:1 — 無い\n", encoding="utf-8")
+        r = self.drift("candidates")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/app.py:9 — 2 行までのファイルです", r.stderr)   # 指す行が実在するか
+        self.assertIn("design:docs/none.md:1 — ファイルがありません", r.stderr)
+
+        (data / "drift-candidates.md").write_text("- src/app.py:2 ⇔ design:docs/api.md:5 — hello の戻り値\n",
+                                                  encoding="utf-8")
+        self.assertEqual(self.drift("candidates").returncode, 0, self.drift("candidates").stderr)
+        (data / "drift.md").write_text("- ずれ: src/app.py:2 ⇔ design:docs/api.md:5 — 実装は 1、設計書も 1\n",
+                                       encoding="utf-8")
+        r = self.drift("judged")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("やりたいこと", r.stderr)            # ずれには本流に渡す 1 行を添える
+        (data / "drift.md").write_text("- ずれ: src/app.py:2 ⇔ design:docs/api.md:5 — 値が違う\n"
+                                       "  - やりたいこと: hello の戻り値を合わせたい\n", encoding="utf-8")
+        self.assertEqual(self.drift("judged").returncode, 0)
+        out = self.drift("report").stdout
+        self.assertIn("ずれ 1、合っている 0、判断できない 0", out)
+        self.assertIn("  - やりたいこと: hello の戻り値を合わせたい", out)
+
+    def test_drift_sample_passes_engine_validation(self) -> None:
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML がありません")
+        runner = REPO / ".github/skills/statemachine-use/scripts/run_machine.py"
+        r = subprocess.run([sys.executable, str(runner), str(TOOL / "samples/drift/workflow.yaml"), "--dry-run"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_workflow_passes_engine_validation(self) -> None:
         try:
             import yaml  # noqa: F401
