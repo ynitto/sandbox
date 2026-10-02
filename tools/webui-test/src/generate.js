@@ -81,9 +81,13 @@ function buildPrompt({ conditions, url, pageInfo, existing, baseUrl, feedback, e
     parts.push('', '## 画面を操作して確かめる（playwright-cli）',
       `ブラウザは開いてあり、最初のページを表示しています。次のコマンドをシェルで実行して画面を操作できます（先頭は毎回このとおりに書く）: \`${explore.command}\``,
       `- 画面の要素を見る: \`${explore.command} snapshot\`（出力の [ref=e12] が要素の番号）`,
-      `- 操作する: \`${explore.command} click e12\` / \`fill e8 "文字"\` / \`press Enter\` / \`goto <URL>\` / \`go-back\``,
+      // probe のときは ref での操作を案内しない（下の確かめ方と食い違う）。画面の移り方だけ残し、ref は読むためだけと 1 行で言う
+      ...(explore.probe
+        ? [`- 画面を移る: \`${explore.command} goto <URL>\` / \`go-back\``,
+          '- snapshot の ref（e12 など）は画面を読むためだけに使い、操作にも YAML にも書かない。']
+        : [`- 操作する: \`${explore.command} click e12\` / \`fill e8 "文字"\` / \`press Enter\` / \`goto <URL>\` / \`go-back\``]),
       `- 文字を探す: \`${explore.command} find "保存"\``,
-      '- 条件に出てくる画面まで実際に進み、各画面で snapshot を取ってから、そこで見た役割と名前でケースを書く。ref（e12 など）は YAML に書かない。',
+      `- 条件に出てくる画面まで実際に進み、各画面で snapshot を取ってから、そこで見た役割と名前でケースを書く。${explore.probe ? '' : 'ref（e12 など）は YAML に書かない。'}`,
       '- 削除・購入・送信など、取り消せない操作は条件で求められていない限り実行しない。',
       '- ブラウザは閉じなくてよい（webui-test が閉じる）。');
     if (explore.probe) {
