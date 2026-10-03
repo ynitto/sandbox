@@ -24,8 +24,11 @@ async function hostAvailability(distro, commands, { shellFor = host.shellFor } =
   const r = await sh.run(script, { timeoutMs: 20000 });
   const map = new Map();
   if (r.ok) for (const line of r.output.split('\n')) { const m = line.match(/^([^=]+)=(.*)$/); if (m) map.set(m[1], m[2].trim()); }
-  availCache.set(key, { at: Date.now(), map });
-  return r.ok ? map : null;
+  // 失敗時も「ホストに聞けなかった」という null をそのままキャッシュする。
+  // 空 Map を保存すると、2回目だけ「全 CLI が利用不可」に意味が変わってしまう。
+  const value = r.ok ? map : null;
+  availCache.set(key, { at: Date.now(), map: value });
+  return value;
 }
 
 // 一覧の最後に仮想の `herd`（一族が 1 つでもあれば）を足す。画面の直接指定・設定の tier・

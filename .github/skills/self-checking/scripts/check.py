@@ -74,6 +74,28 @@ def detect_artifact_type(path: str) -> dict:
 # チェック関数
 # ---------------------------------------------------------------------------
 
+def _is_test_file(path: str | Path) -> bool:
+    """一般的なテスト配置・ファイル名だけをテストとして扱う。
+
+    部分文字列だけで判定すると contest.py / latest.py / specification.py のような
+    通常コードまでテスト扱いになり、test_presence 自体が消えることがある。
+    """
+    p = Path(path)
+    parts = [part.lower() for part in p.parts]
+    if any(part in {"test", "tests", "__tests__"} for part in parts[:-1]):
+        return True
+
+    name = p.name.lower()
+    stem = p.stem.lower()
+    return (
+        stem in {"test", "tests", "spec"}
+        or stem.startswith(("test_", "spec_"))
+        or stem.endswith(("_test", "_spec"))
+        or ".test." in name
+        or ".spec." in name
+    )
+
+
 def check_code(files: list[str], criteria: str) -> dict:
     """コード成果物の自動チェック。"""
     checks: dict[str, dict] = {}
@@ -91,13 +113,7 @@ def check_code(files: list[str], criteria: str) -> dict:
         total_lines += len(lines)
 
         # テストファイル判定
-        name = p.name.lower()
-        if (
-            "test" in name
-            or "spec" in name
-            or name.startswith("test_")
-            or name.endswith("_test.py")
-        ):
+        if _is_test_file(p):
             has_test_file = True
 
         # Python 構文チェック
@@ -120,10 +136,7 @@ def check_code(files: list[str], criteria: str) -> dict:
     }
 
     # テストファイル存在チェック（コードファイルが1件以上の場合のみ）
-    non_test_files = [
-        f for f in files
-        if not any(k in Path(f).name.lower() for k in ("test", "spec"))
-    ]
+    non_test_files = [f for f in files if not _is_test_file(f)]
     if non_test_files:
         checks["test_presence"] = {
             "passed": has_test_file,

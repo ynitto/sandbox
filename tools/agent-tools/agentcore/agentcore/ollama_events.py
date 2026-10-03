@@ -197,10 +197,16 @@ def read_status(path: "str | Path | None" = None, now: "float | None" = None) ->
     """
     now = time.time() if now is None else now
     target = Path(path).expanduser() if path else latest_log_path()
-    if target is None or not Path(target).is_file():
-        return {"state": "unknown", "alive": False, "log": str(target) if target else ""}
+    if target is None:
+        return {"state": "unknown", "alive": False, "log": ""}
+    try:
+        exists = target.is_file()
+    except (OSError, ValueError):
+        exists = False
+    if not exists:
+        return {"state": "unknown", "alive": False, "log": str(target)}
 
-    events = _tail_events(Path(target))
+    events = _tail_events(target)
     if not events:
         return {"state": "unknown", "alive": False, "log": str(target)}
 
