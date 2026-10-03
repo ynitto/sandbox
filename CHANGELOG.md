@@ -35,6 +35,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - README: エージェント `codd` にやりたいことを伝えるだけで動くと書き、「codd のステートマシンを実行して」は
   カスタムエージェントを使わないときの手段にした
 
+### webui-test: インストーラは Node.js を入れず、グローバルに入れて `webui-test` コマンドにする（webui-test 0.4.0）
+
+- Node.js は 18 以上があるかを確かめるだけにした。無い・古いときは入れずにエラーで止まる（以前は公式の LTS を利用者のフォルダに入れていた）
+- 依存を入れたあと `npm install -g` で入れる。`webui-test` コマンドは npm のグローバルの置き場に作られ、自前のラッパーと PATH の書き換えはやめた
+
 ### codd-statemachine を codd-agent に改名し、目的とのずれを直す（webui-test 0.3.2）
 
 - **`tools/codd-statemachine` を `tools/codd-agent` に改名した。** 使い方は `python3 tools/codd-agent/install.py`・
