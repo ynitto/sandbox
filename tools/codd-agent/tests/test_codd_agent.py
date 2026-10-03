@@ -1103,6 +1103,18 @@ class CoddTest(unittest.TestCase):
         self.assertIn("## テストで得たものの変化（計画のときと比べて）", report)
         self.assertIn("login/S-01/load — 800 → 1600 ms", report)
 
+    def test_stale_marks_in_unrelated_docs_do_not_block_apply(self) -> None:
+        # 計画に無い文書にもとからある古い印は、直すと計画に無いファイルを変えることになるので、ここでは止めない（lint が拾う）。
+        commit(self.design, {"docs/other.md": "# other\n\n<!-- evidence: login/S-01/load -->100 ms<!-- /evidence -->\n"},
+               "marks")
+        self.write_evidence(self.evidence_items(850))
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1 # changed\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("docs/other.md", self.run_pa(self.impl, "lint", "--no-test").stdout)
+
     def test_ref_change_to_a_new_file_is_allowed(self) -> None:
         plan = PLAN_DRIFT.replace("- docs/api.md — `hello`", "- docs/hello.md — 新しく書く。`hello`")
         self.write_plan(plan)
@@ -1723,6 +1735,26 @@ class CoddTest(unittest.TestCase):
         self.assertIn("直していないファイル", r.stderr)
         self.assertIn("src/greet_user.py", r.stderr)
 
+    def test_unchanged_quoted_words_on_edited_lines_are_not_measured(self) -> None:
+        # 直した行に元からある `…` は変わった名前ではない。拾うと、無関係なファイルを「直していない」として必ず落とす。
+        commit(self.impl, {"docs/use.md": "# use\n\nrun `make build` then `hello`.\n",
+                           "src/other.py": "# make build\n", "src/renamed.py": "# old-flag\n"}, "docs")
+        self.write_plan(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す",
+            "- src/app.py — `hello` の中でログを出す\n- docs/use.md — `hello` の説明を足す"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('x')\n    return 1\n", encoding="utf-8")
+        (self.impl / "docs/use.md").write_text("# use\n\nrun `make build` then `hello` (logs).\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 足した・消した `…` は今までどおり測る。
+        (self.impl / "docs/use.md").write_text("# use\n\nrun `make build` then `hello` with `old-flag`.\n",
+                                               encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/renamed.py", r.stderr)
+        self.assertNotIn("src/other.py", r.stderr)
+
     def test_plan_compacts_waivers_without_losing_verification(self) -> None:
         commit(self.impl, {"src/a.py": "hello()\n", "src/b.py": "hello()\n",
                            "tests/test_a.py": "hello()\n", "tests/test_b.py": "hello()\n"}, "callers")
@@ -1752,6 +1784,22 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("tests/test_a.py", r.stdout)
         self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
         self.assertNotIn("変更不要", (self.impl / PLAN).read_text())
+
+    def test_replanning_keeps_waivers_hidden_from_the_plan(self) -> None:
+        # 通ったときに計画から省いた変更不要の判断は、確認で NG になって計画を直しても失わない
+        # （失うと、判断済みのファイルがまた未判断になり、テストの変更案が「なし」で必ず落ちる）。
+        commit(self.impl, {"src/a.py": "hello()\n"}, "callers")
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/a.py — 変更不要: 契約は同じ"))
+        self.assert_plan_ok()
+        self.assertNotIn("変更不要", (self.impl / PLAN).read_text())
+        self.run_pa(self.impl, "decide", "NG", "--note", "info で出して")
+        plan = self.impl / PLAN
+        plan.write_text(plan.read_text().replace("hello にログを足す。", "hello にログを info で足す。"))
+        self.assert_plan_ok()
+        saved = json.loads((self.impl / ".codd/plan-check.json").read_text())["text"]
+        self.assertIn("- src/a.py — 変更不要: 契約は同じ", saved)
+        self.assertIn("- 変更不要: このリポジトリにテストはまだ無い", saved)
+        self.assertIn("info で足す", saved)
 
     def test_plan_keeps_distinct_waiver_reasons(self) -> None:
         commit(self.impl, {"src/a.py": "hello()\n", "src/b.py": "hello()\n"}, "callers")
