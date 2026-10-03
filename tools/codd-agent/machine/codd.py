@@ -1146,7 +1146,7 @@ def unread_rules(ctx: Ctx) -> list[str]:
 
 def clear_reading_logs(ctx: Ctx) -> None:
     """1 回の実行の終わりに、探した・読んだ記録を消す（次の回で使い回させない）。"""
-    for name in (EXPLORE_LOG, RULES_READ, SKILLS_READ):
+    for name in (EXPLORE_LOG, RULES_READ, SKILLS_READ, AUTO_NAME):
         (ctx.data / name).unlink(missing_ok=True)
 
 
@@ -3141,6 +3141,7 @@ def record_problems(data: Path, phase: str, problems: list[str], kind: str | Non
     path = data / PROBLEMS_NAME
     if not problems:
         path.unlink(missing_ok=True)
+        (data / AUTO_NAME).unlink(missing_ok=True)   # 通ったら、人に訊かずに進めた回数も数え直す
         return
     data.mkdir(parents=True, exist_ok=True)
     items = [{"kind": kind or classify(phase, p), "text": p} for p in problems]
@@ -3213,6 +3214,36 @@ ADVICE = {
 ADVICE["plan"]["config"] = (["replan", "stop"], "設定か環境の誤りです。利用者に直してもらってから、練り直します")
 
 
+# 人の判断が要らない理由（エージェントが自分で直せる。テストや検査の失敗・変え残し・パスの誤り・記録の漏れ・計画の形）。
+# これだけで止まったときは、利用者に訊かずに同じ段をやり直す。計画を変える・範囲を絞る・戻すなどの判断が要るものは訊く。
+AUTO_KINDS = {"plan": {"pending", "rules", "form"}, "apply": {"check", "undone", "paths", "rules", "form"}}
+AUTO_NAME = "auto.json"
+MAX_AUTO = 2     # 同じ段で人に訊かずに進める回数。直らない失敗をいつまでも回さない
+
+
+def auto_step(data: Path, phase: str, kinds: set[str]) -> str | None:
+    """人の判断が要らない理由だけなら、利用者に訊かずに進める語（PLAN・APPLY）。上限を超えたら None。"""
+    if not kinds or not kinds <= AUTO_KINDS.get(phase, set()):
+        return None
+    try:
+        count = json.loads((data / AUTO_NAME).read_text(encoding="utf-8")).get(phase, 0)
+    except (OSError, ValueError, AttributeError):
+        count = 0
+    if count >= MAX_AUTO:
+        return None
+    (data / AUTO_NAME).write_text(json.dumps({phase: count + 1}) + "\n", encoding="utf-8")
+    word = "PLAN" if phase == "plan" else "APPLY"
+    log = []
+    try:
+        log = json.loads((data / DECISIONS_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": word,
+                "note": f"人の判断が要らない指摘なので、訊かずにやり直した（{count + 1}/{MAX_AUTO} 回目）"})
+    (data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return word
+
+
 def cmd_advise(root: Path) -> int:
     """止めた理由を読み、何が止めているか・どうしたらいいか（勧めと選択肢）を示す。"""
     data = root / DATA_DIRNAME
@@ -3234,6 +3265,15 @@ def cmd_advise(root: Path) -> int:
         if ask not in asks:
             asks.append(ask)
         order += [o for o in options if o not in order]
+    word = auto_step(data, phase, {item.get("kind", "form") for item in rec.get("problems", [])})
+    if word:
+        lines += ["", "## 利用者に訊かずに進める", "",
+                  f"人の判断が要らない指摘だけです。利用者に訊かず、答えを待たずに `{word}` で同じ段をやり直してください"
+                  "（指摘を直す。控えは済んでいるので decide は要らない）"]
+        text = "\n".join(lines) + "\n"
+        (data / "advice.md").write_text(text, encoding="utf-8")
+        print(f"AUTO {word}\n\n" + text, end="")
+        return 0
     lines += ["", "## 利用者に確かめること", "", *[f"- {a}" for a in asks], "", "## 選択肢（最初が勧め）", ""]
     for i, key in enumerate(order):
         title, command, word = OPTIONS[key]

@@ -10,7 +10,8 @@
 #     └──────────────────────────────────┼──────┘（利用者の指摘を受けて練り直す）
 #                                        └─ STOP ─→ stopped（何も変えずにやめる）
 #
-#   plan / apply の検査が、やり直し（check_retries）を使い切っても落ちたら stuck へ:
+#   plan の検査がやり直し（check_retries）を使い切っても落ちたら、apply の検査が落ちたら、stuck へ。
+#   テストの失敗など人の判断が要らない理由だけなら、stuck は訊かずに同じ段へ戻す（段ごとに 2 回まで）:
 #   stuck ─┬─ PLAN  ─→ plan（練り直す。変えた分を残すか戻すかは stuck で決める）
 #          ├─ APPLY ─→ apply（計画はそのままで変え直す）
 #          └─ STOP  ─→ stopped（やめる。結果と、残したもの・戻したものを伝える）
@@ -78,7 +79,8 @@ states:
     output_validator: "startswith:OK,FAILED"
     # テストと変えたあとの検査（設定の test・check）を動かすので長めに取る
     check: {command: python3, args: [.statemachine/codd/codd.py, verify-apply], timeout_sec: 3600}
-    check_retries: 1               # 計画を変えるかどうかは利用者が決めるので、早めに stuck へ
+    check_retries: 0               # すぐ stuck へ。人の判断が要らない理由だけなら stuck が訊かずに戻す（advise の AUTO）。
+                                   # ここで再投入すると、人の判断が要る失敗でもテストからやり直して 1 回ぶん無駄にする
     check_on_exhausted: continue
 
   stuck:

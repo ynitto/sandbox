@@ -9,8 +9,6 @@ python3 .statemachine/codd/codd.py summary
 ```
 
 ずれがあるときは、参照先も変えることと、ハーネスが測った影響範囲（`.codd/impact.md` の「候補のファイル」）を添えます。
-計画の「守る決まり」に、`codd.py show` の「決まりの候補」から挙げたものがあれば、次からも決まりとして設定に書くかを
-あわせて訊きます。書いてよいと言われたら `python3 .statemachine/codd/codd.py rules --write --only 名前:パス` で書きます。
 
 **利用者が答えるまで待ってください。答えを推測したり、先へ進んだりしないでください。**
 

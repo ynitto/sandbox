@@ -33,12 +33,14 @@ python3 .statemachine/codd/codd.py show
    `check_output` は検査の出力の最初の行
 4. `transitions` のうち今のステートから出るものを `priority` の小さい順に見て、最初に合う `condition_rule` の先へ進む
    （`equals:名前:値` は一致、`startswith:名前:値` は前方一致）
-5. `confirm`（計画の確認）と `stuck`（止まったときの相談）では、利用者に見せて**答えを待ちます**。推測して先へ進まない
+5. `confirm`（計画の確認）と `stuck`（止まったときの相談）では、利用者に見せて**答えを待ちます**。推測して先へ進まない。
+   ただし `stuck` で `codd.py advise` の第 1 行が `AUTO PLAN` / `AUTO APPLY` なら、人の判断が要らない理由だけなので、
+   訊かずにその語で進めます
 6. `terminal: true` のステートを実行したら終わり
 
 ## 守ること
 
-- 検査（`codd.py verify-plan` / `verify-apply`）の結果を自分で覆さない。落ちたら、指摘を直すか、`stuck` で利用者に訊く
+- 検査（`codd.py verify-plan` / `verify-apply`）の結果を自分で覆さない。落ちたら、指摘を直すか、`stuck` へ進む
 - 終わりの報告は `codd.py report` の出力をそのまま使う。自分の記憶でまとめ直さない
 - コミットしない（利用者が内容を確かめてからコミットする）
 - 計画は `codd.py draft --name 英語の短い名前` で置いた `.plans/日時-名前.md` に書き、利用者はそれを読んで確かめる。
