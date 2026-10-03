@@ -15,11 +15,13 @@
 --ref は `名前=パス` か `パス`（名前はフォルダ名）。いくつでも渡せる。
 --scope は自分が受け持つフォルダ、--ref-scope は `参照先の名前=フォルダ` で参照先が受け持つフォルダ（どちらも繰り返し可）。
 同じリポジトリを参照先にするときは両方が要る。
+--exclude は自分の除外パターン、--ref-exclude は `参照先の名前=除外パターン`（どちらも繰り返し可）。
+渡した側の一覧を入れ替え、--exclude "" / --ref-exclude 名前= で空にする。
 
 `<リポジトリ>/.statemachine/codd/` に machine/ の中身を写し、codd.json を書く。
 既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は上書きしない。--side / --ref / --scope /
---ref-scope / --check / --test を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
-参照先に手で書いた rules・scope などは残す）。使うスキルは codd.json の skills を手で書く。
+--ref-scope / --exclude / --ref-exclude / --check / --test を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
+参照先に手で書いた rules・scope・exclude などは残す）。使うスキルは codd.json の skills を手で書く。
 `.codd/`（探した結果・検査の記録・変える前の写し・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
 このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
 初めて置いたときは、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules /
@@ -78,7 +80,8 @@ def ref_name(ref: dict) -> str:
 def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore: bool = True,
             scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
             agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | None = None,
-            test: str | None = None) -> Path:
+            test: str | None = None, exclude: list[str] | None = None,
+            ref_excludes: list[str] | None = None) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
     dest = target / DEST_REL
@@ -128,6 +131,20 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
         entry.setdefault("scope", [])
         if folder not in entry["scope"]:
             entry["scope"].append(folder)
+    if exclude is not None:
+        config["exclude"] = [p for p in exclude if p]
+    grouped: dict[str, list[str]] = {}
+    for value in ref_excludes or []:
+        name, sep, pattern = value.partition("=")
+        entry = next((r for r in config.get("refs", []) if ref_name(r) == name), None)
+        if not sep or entry is None:
+            raise SystemExit(f"--ref-exclude は `参照先の名前=除外パターン` です（今: {value!r}）")
+        patterns = grouped.setdefault(name, [])
+        if pattern and pattern not in patterns:
+            patterns.append(pattern)
+    for name, patterns in grouped.items():
+        entry = next(r for r in config["refs"] if ref_name(r) == name)
+        entry["exclude"] = patterns
     if test is not None:
         argv = shlex.split(test)
         if argv:
@@ -222,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scope", action="append", help="自分が受け持つフォルダ（繰り返し可。既定はリポジトリ全体）")
     p.add_argument("--ref-scope", action="append",
                    help="`参照先の名前=フォルダ`。その参照先が受け持つフォルダ（繰り返し可）")
+    p.add_argument("--exclude", action="append",
+                   help='自分の除外パターン（繰り返し可。一覧を入れ替える。"" で消す）')
+    p.add_argument("--ref-exclude", action="append",
+                   help='`参照先の名前=除外パターン`（繰り返し可。その参照先の一覧を入れ替える。名前= で消す）')
     p.add_argument("--no-discover-rules", action="store_true",
                    help="決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules に書くのをやめる")
     p.add_argument("--no-gitignore", action="store_true", help=".gitignore に .codd/ を足さない")
@@ -235,7 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     dest = init_repo(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
                    scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
-                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test)
+                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test,
+                   exclude=args.exclude, ref_excludes=args.ref_exclude)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8"))
     print(f"置きました: {dest}")
     refs = config.get("refs") or [{"path": config.get("ref_path")}]

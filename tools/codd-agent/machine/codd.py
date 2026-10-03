@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import fnmatch
 import json
 import os
 import re
@@ -81,8 +82,8 @@ SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files",
-               "skill_dirs", "test", "tests", "evidence"}
-REF_KEYS = {"name", "path", "skills", "scope", "rules"}
+               "skill_dirs", "test", "tests", "evidence", "exclude"}
+REF_KEYS = {"name", "path", "skills", "scope", "rules", "exclude"}
 DEFAULT_MAX_FILES = 20
 # テストのファイル（単体テスト・API テスト・シナリオテスト・e2e のケース。コードもケースの記述も）。
 # コード・仕様書と同じ、整合を取る成果物として扱い、影響を測って計画に挙げさせる。
@@ -259,6 +260,20 @@ def rule_list(value, where: str) -> list[str]:
     return out
 
 
+def exclude_list(value, where: str) -> list[str]:
+    """除外するパス・glob。省略か [] なら追加の除外なし。"""
+    if value is None:
+        return []
+    if not (isinstance(value, list) and all(isinstance(p, str) and p.strip() for p in value)):
+        raise CoddError(f'{where} は除外パターンの配列です（例: ["**/*.config.*", ".github/"]）')
+    out = unique_paths(p.strip().replace("\\", "/") for p in value)
+    bad = [p for p in out if p.startswith(("/", "~", "!")) or re.match(r"^[A-Za-z]:", p)
+           or ".." in p.split("/") or p.rstrip("/") in ("", ".")]
+    if bad:
+        raise CoddError(f"{where} にはリポジトリの中のパスか glob を相対で書きます（今: {', '.join(bad)}）")
+    return out
+
+
 def is_argv(value) -> bool:
     return isinstance(value, list) and bool(value) and all(isinstance(a, str) for a in value)
 
@@ -308,6 +323,7 @@ def load_config(machine_dir: Path) -> dict:
         names.add(ref["name"])
         ref["skills"] = skill_list(ref.get("skills"), f"{path} の refs[{i}].skills")
         ref["scope"] = scope_list(ref.get("scope"), f"{path} の refs[{i}].scope")
+        ref["exclude"] = exclude_list(ref.get("exclude"), f"{path} の refs[{i}].exclude")
         ref["rules"] = rule_list(ref.get("rules"), f"{path} の refs[{i}].rules")
     skills = config.get("skills") or {}
     if not isinstance(skills, dict) or set(skills) - set(PHASES):
@@ -321,6 +337,7 @@ def load_config(machine_dir: Path) -> dict:
     skill_dirs = config.get("skill_dirs", DEFAULT_SKILL_DIRS)
     config["skill_dirs"] = [] if skill_dirs == [] else scope_list(skill_dirs, f"{path} の skill_dirs")
     config["scope"] = scope_list(config.get("scope"), f"{path} の scope")
+    config["exclude"] = exclude_list(config.get("exclude"), f"{path} の exclude")
     config.setdefault("graphify", "auto")
     if config["graphify"] not in ("auto", "off"):
         raise CoddError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
@@ -365,18 +382,29 @@ def overlaps(a: list[str], b: list[str]) -> bool:
 
 @dataclass
 class Side:
-    """探す・変わったかを測る単位。リポジトリと、その中で受け持つフォルダ（scope。空なら全体）。"""
+    """探す・変わったかを測る単位。リポジトリと、その中で受け持つフォルダ（scope。空なら全体）から exclude を除く。"""
     name: str
     path: Path
     scope: list[str]
+    exclude: list[str] = field(default_factory=list)
 
     def pathspec(self) -> list[str]:
         # マシンのファイルは :(exclude) で外さず、出力を has() で外す。git 2.43 などでは、scope の最初のフォルダ名が
         # 除外する名前（.codd）より長いと ls-files が何も返さなくなり、テストや画像を黙って取りこぼすため。
         return ["--", *(self.scope or ["."])]
 
+    def excluded(self, rel: str) -> bool:
+        for pattern in self.exclude:
+            if pattern.endswith("/"):
+                pattern += "**"
+            if glob_re(pattern).fullmatch(rel):
+                return True
+            if not _GLOB_CHARS.search(pattern) and rel.startswith(pattern + "/"):
+                return True
+        return False
+
     def has(self, rel: str) -> bool:
-        return in_scope(rel, self.scope) and not machine_owned(rel)
+        return in_scope(rel, self.scope) and not machine_owned(rel) and not self.excluded(rel)
 
 
 @dataclass
@@ -432,7 +460,7 @@ class Ctx:
         self.root = root
         self.config = load_config(MACHINE_DIR)
         self.side = self.config["side"]
-        self.own = Side("own", root, self.config["scope"])
+        self.own = Side("own", root, self.config["scope"], exclude=self.config["exclude"])
         self.data = root / DATA_DIRNAME
         self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
         self.max_files = self.config["max_files"]
@@ -452,8 +480,9 @@ class Ctx:
                     label = SIDES[ref_config["side"]]
                 except CoddError:
                     ref_config = None  # 参照先側の設定の誤りは、参照先で直す。ここでは読むだけ
-            self.refs.append(Ref(entry["name"], path, entry["scope"], ref_config, label, entry["skills"],
-                                 entry["rules"]))
+            self.refs.append(Ref(entry["name"], path, entry["scope"], exclude=entry["exclude"],
+                                 config=ref_config, label=label, entry_skills=entry["skills"],
+                                 entry_rules=entry["rules"]))
         self.check_layout()
 
     def check_layout(self) -> None:
@@ -498,7 +527,7 @@ class Ctx:
         out = []
         # 自分はリポジトリ全体から探す（決まりは scope の外、ルートにあることが多い）。同じリポジトリの参照先の分は除く。
         same = [r for r in self.refs if r.path == self.root]
-        for name, side in [("", Side("own", self.root, [])), *[(r.name, r) for r in self.refs]]:
+        for name, side in [("", Side("own", self.root, [])), *[(r.name, Side(r.name, r.path, r.scope)) for r in self.refs]]:
             for rel in discover_rules(side, near=self.own.scope if not name else None):
                 if not name and any(r.has(rel) and r.scope for r in same):
                     continue
@@ -792,7 +821,9 @@ def tool_words(names: list[str]) -> str:
 
 
 def scope_words(side: Side) -> str:
-    return f"（受け持つフォルダ: {', '.join(side.scope)}）" if side.scope else ""
+    parts = ([f"受け持つフォルダ: {', '.join(side.scope)}"] if side.scope else [])
+    parts += [f"除外: {', '.join(side.exclude)}"] if side.exclude else []
+    return "（" + "。".join(parts) + "）" if parts else ""
 
 
 def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
@@ -937,7 +968,8 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
             if graph_cmd == "query":
                 argv += ["--budget", str(GRAPHIFY_BUDGET)]
             _, out = run(argv, repo, GRAPHIFY_TIMEOUT)
-            out = "\n".join(ln for ln in out.splitlines() if not ln.startswith("[graphify] note"))
+            out = "\n".join(ln for ln in out.splitlines() if not ln.startswith("[graphify] note")
+                            and all(side.has(m.group(1) or m.group(2)) for m in _GRAPHIFY_SRC.finditer(ln)))
             lines += [f"#### {term}", "", "```", out.strip() or "(該当なし)", "```", ""]
             for m in _GRAPHIFY_SRC.finditer(out):
                 add_file(m.group(1) or m.group(2))
@@ -995,8 +1027,9 @@ def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
         hits = [p for p in found if p in grep_hits][:MAX_MEASURED]
         entry = log.setdefault(r.name, {"terms": [], "files": []})
         entry["terms"] = unique([*entry["terms"], *terms])
-        entry["files"] = unique_paths([*entry["files"], *hits])
-        entry["lines"] = {**entry.get("lines", {}), **{p: grep_hits[p] for p in hits}}
+        entry["files"] = [p for p in unique_paths([*entry["files"], *hits]) if r.has(p)]
+        all_lines = {**entry.get("lines", {}), **{p: grep_hits[p] for p in hits}}
+        entry["lines"] = {p: line for p, line in all_lines.items() if p in entry["files"]}
     path = write_report(ctx, "explore.md", "参照先で関係する箇所", terms, parts, files)
     # 一致した行をそのまま出す（関係はこの行で判断し、関係しそうなものだけ前後を開く）。
     shown = 0
@@ -1869,6 +1902,19 @@ def glob_re(pattern: str) -> re.Pattern:
             out, i = out + "[^/]*", i + 1
         elif pattern[i] == "?":
             out, i = out + "[^/]", i + 1
+        elif pattern[i] == "[":
+            end = i + 1
+            if end < len(pattern) and pattern[end] in "!^":
+                end += 1
+            if end < len(pattern) and pattern[end] == "]":
+                end += 1
+            end = pattern.find("]", end)
+            if end == -1:
+                out, i = out + r"\[", i + 1
+            else:
+                # fnmatch の文字クラスを再利用し、フォルダ区切りには一致させない。
+                cls = fnmatch.translate(pattern[i:end + 1])[4:-3]
+                out, i = out + "(?!/)" + cls, end + 1
         else:
             out, i = out + re.escape(pattern[i]), i + 1
     return re.compile(out)

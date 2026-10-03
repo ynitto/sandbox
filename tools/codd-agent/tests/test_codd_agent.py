@@ -1369,6 +1369,129 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed refs=docs", r.stdout)
 
+    def test_exclude_filters_each_side_within_scope(self) -> None:
+        commit(self.impl, {"src/settings.json": "hello", "src/config/local.yaml": "hello",
+                           "src/nested/settings.json": "hello", "src/keep.py": "hello"}, "settings")
+        commit(self.design, {"docs/settings.json": "hello", "docs/config/local.yaml": "hello"}, "settings")
+        # 設定を変える前に記録された検索結果も、その後の表示に残さない。
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        self.set_config(self.impl, scope=["src"], exclude=["src/*.json", "src/config/"],
+                        refs=[{"name": "design", "path": "../design", "scope": ["docs"],
+                               "exclude": ["**/*.json", "docs/config"]}])
+        r = self.run_pa(self.impl, "impact", "--term", "hello")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        report = (self.impl / ".codd/impact.md").read_text()
+        self.assertNotIn("src/settings.json", report)
+        self.assertNotIn("src/config/local.yaml", report)
+        self.assertIn("src/nested/settings.json", report)  # * はフォルダをまたがない
+        self.assertIn("src/keep.py", report)
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("FOUND 1 files", r.stdout)
+        self.assertNotIn("settings.json", r.stdout)
+        self.assertNotIn("settings.json", (self.impl / ".codd/explore.md").read_text())
+        self.assertIn("除外: src/*.json, src/config/", self.run_pa(self.impl, "show").stdout)
+
+    def test_exclude_ignores_tracked_deleted_and_untracked_changes(self) -> None:
+        commit(self.impl, {"src/settings.json": "hello"}, "settings")
+        commit(self.design, {"docs/settings.json": "hello"}, "settings")
+        self.set_config(self.impl, exclude=["**/*.json"],
+                        refs=[{"name": "design", "path": "../design", "exclude": ["**/*.json"]}])
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/settings.json").unlink()
+        (self.impl / "src/new.json").write_text("hello")
+        (self.design / "docs/settings.json").write_text("changed hello")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1 # changed\n")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("own=changed refs=none", r.stdout)
+        # 途中でコミットした場合の変更一覧にも適用する。
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "apply")
+        git(self.design, "add", "-A")
+        git(self.design, "commit", "-q", "-m", "settings")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_excluded_files_cannot_be_planned_or_cited(self) -> None:
+        self.set_config(self.impl, exclude=["src/app.py"])
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("自分の変更案の項目に", r.stderr)
+        self.set_config(self.impl, exclude=[],
+                        refs=[{"name": "design", "path": "../design", "exclude": ["docs/api.md"]}])
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("根拠のパスがありません", r.stderr)
+
+    def test_exclude_filters_graphify_output_and_test_files(self) -> None:
+        self.use_graphify_stub()
+        commit(self.impl, {"src/use.py": "hello", "tests/config.test.py": "hello",
+                           "tests/app.test.py": "hello"}, "tests")
+        self.set_config(self.impl, exclude=["src/use.py", "**/config.test.py"],
+                        refs=[{"name": "design", "path": "../design", "exclude": ["docs/api.md"]}])
+        self.assertIn("自分 1 files", self.run_pa(self.impl, "show").stdout)
+        self.run_pa(self.impl, "impact", "--term", "hello")
+        self.assertNotIn("src/use.py:L4", (self.impl / ".codd/impact.md").read_text())
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
+        self.assertIn("FOUND 0 files", r.stdout)
+        self.assertNotIn("src=docs/api.md", (self.impl / ".codd/explore.md").read_text())
+
+    def test_exclude_does_not_hide_rules(self) -> None:
+        commit(self.impl, {"AGENTS.md": "# Rules\n", "docs/coding-rules.md": "# Rules\n"}, "rules")
+        commit(self.design, {"AGENTS.md": "# Rules\n", "docs/design-rules.md": "# Rules\n"}, "rules")
+        self.set_config(self.impl, exclude=["**/*.md"], rules=["docs/coding-rules.md"],
+                        refs=[{"name": "design", "path": "../design", "exclude": ["**/*.md"]}])
+        r = self.run_pa(self.impl, "rule", "--all")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("# 守る決まり AGENTS.md", r.stdout)
+        self.assertIn("# 守る決まり design:AGENTS.md", r.stdout)
+        self.assertIn("# 守る決まり docs/coding-rules.md", r.stdout)
+        self.assertIn("design:docs/design-rules.md", self.run_pa(self.impl, "rules").stdout)
+
+    def test_exclude_globs_match_root_nested_and_character_classes(self) -> None:
+        files = {p: "hello" for p in ("settings.json", "src/settings.json", "src/config1.yaml",
+                                      "src/configA.yaml", "src/x.ini", "src/xx.ini")}
+        commit(self.impl, files, "settings")
+        self.set_config(self.impl, exclude=["**/*.json", "src/config[0-9].yaml", "**/?.ini"])
+        r = self.run_pa(self.impl, "impact", "--term", "hello")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        report = (self.impl / ".codd/impact.md").read_text()
+        for p in ("settings.json", "src/settings.json", "src/config1.yaml", "src/x.ini"):
+            self.assertNotIn("- " + p, report)
+        self.assertIn("- src/configA.yaml", report)
+        self.assertIn("- src/xx.ini", report)
+
+    def test_exclude_validation(self) -> None:
+        for value in ("*.json", [1], [""], ["../secret"], ["/tmp/config"], ["C:/config"], ["!keep.py"]):
+            for ref in (False, True):
+                with self.subTest(value=value, ref=ref):
+                    self.set_config(self.impl, exclude=[] if ref else value,
+                                    refs=[{"name": "design", "path": "../design", **({"exclude": value} if ref else {})}])
+                    r = self.run_pa(self.impl, "show")
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertIn("exclude", r.stderr)
+
+    def test_init_exclude_options_replace_clear_and_preserve(self) -> None:
+        r = subprocess.run([sys.executable, str(TOOL / "init.py"), str(self.impl),
+                            "--exclude", "**/*.json", "--exclude", ".github/",
+                            "--ref-exclude", "design=**/*.yaml", "--ref-exclude", "design=docs/config/"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        path = self.impl / ".statemachine/codd/codd.json"
+        cfg = json.loads(path.read_text())
+        self.assertEqual(cfg["exclude"], ["**/*.json", ".github/"])
+        self.assertEqual(cfg["refs"][0]["exclude"], ["**/*.yaml", "docs/config/"])
+        init.init_repo(self.impl, None, ["design=../design"])
+        self.assertEqual(json.loads(path.read_text())["refs"][0]["exclude"], cfg["refs"][0]["exclude"])
+        init.init_repo(self.impl, None, None, exclude=[""], ref_excludes=["design="])
+        cfg = json.loads(path.read_text())
+        self.assertEqual(cfg["exclude"], [])
+        self.assertEqual(cfg["refs"][0]["exclude"], [])
+
     def test_unknown_config_keys_are_reported(self) -> None:
         path = self.impl / ".statemachine/codd/codd.json"
         for patch, word in (({"refz": []}, "refz"), ({"refs": [{"path": "../design", "scopes": ["docs"]}]}, "scopes"),

@@ -83,6 +83,8 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs
 | `check` | 任意。テストのあとに実行する検査コマンドの配列（例: `["webui-test", "check"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
 | `scope` | 任意。このリポジトリのうち自分が受け持つフォルダの配列（例: `["src", "tests"]`）。書かなければ全体 |
 | `refs[].scope` | 任意。その参照先のうち読む・変えるフォルダの配列。書かなければ全体 |
+| `exclude` | 任意。自分側で対象から除くパス・glob の配列。ルートからの相対。省略・`[]` は追加の除外なし |
+| `refs[].exclude` | 任意。その参照先で対象から除くパス・glob の配列。参照先のルートからの相対。参照先自身の `exclude` は継承せず、この項目で指定する |
 | `max_files` | 任意。1 回で変えるファイルの上限（既定 20）。自分の変更案・参照先の変更案・「変更不要」でない影響範囲のファイルを数える |
 
 `rules` と `refs[].rules` には glob も書ける（例: `docs/rules/**/*.md`）。`*` はフォルダをまたがず、`**/` はまたぐ。
@@ -93,8 +95,8 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs
 探した結果・graphify のグラフなどの作業ファイルは `<リポジトリ>/.codd/` に置く（`init.py` が `.gitignore` に足す）。計画は `docs/.plans/` に置く（[下記](#使い方)）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
 もう一度 `init.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` は上書きせずそのまま残る。
-`--side` / `--ref` / `--scope` / `--ref-scope` / `--check` / `--test` を渡したときだけ、その項目を書き換える
-（`--ref` で入れ替えても、同じ名前の参照先に手で書いた `rules`・`scope` などは残す）。
+`--side` / `--ref` / `--scope` / `--ref-scope` / `--exclude` / `--ref-exclude` / `--check` / `--test` を渡したときだけ、その項目を書き換える
+（`--ref` で入れ替えても、同じ名前の参照先に手で書いた `rules`・`scope`・`exclude` などは残す）。
 
 ### kiro-cli・GitHub Copilot のカスタムエージェント
 
@@ -193,6 +195,48 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --scope src --scope t
 ```json
 {"side": "impl", "scope": ["src", "tests"], "refs": [{"name": "docs", "path": ".", "scope": ["docs"]}]}
 ```
+
+### 設定ファイルなどを対象から除く
+
+codd 自身の生成物以外の設定ファイルは、自動では除外しない。`scope` は対象フォルダを限定するだけなので、
+その中に混在する設定を除くには、自分側の `exclude` と参照先ごとの `refs[].exclude` を指定する。
+「実装・テスト・ドキュメントだけ」をファイルの種類から自動選別する機能はない。
+
+```json
+{
+  "side": "impl",
+  "scope": ["src", "tests"],
+  "exclude": ["**/*.config.*", "src/settings.json", "tests/fixtures/config/"],
+  "refs": [{
+    "name": "docs",
+    "path": "../my-app-docs",
+    "scope": ["docs"],
+    "exclude": ["docs/settings/", "**/*.config.*"]
+  }]
+}
+```
+
+パターンはそれぞれのリポジトリのルートからの相対で、`*`・`?`・`[...]` はフォルダをまたがず、
+`**/` は 0 階層以上をまたぐ。例: `*.json` はルート直下、`**/*.json` は全階層の JSON に一致する。
+フォルダのパス（`docs/settings` または `docs/settings/`）は中のファイルも除く。
+絶対パス・`..`・`!` による再包含は使えない。`scope` と重なれば除外を優先する。
+
+除外したファイルは、検索（graphify の候補も）・影響範囲・パスのつながり・テストファイルの選別・点検・変更検出の
+対象に数えず、計画の変更案や根拠にも使えない。graphify の索引は従来どおりリポジトリ全体で作り、検索結果を絞る。
+`AGENTS.md` などのよくある決まりと `rules` / `refs[].rules` に指定した決まりは、除外しても読み込む。
+決まりの候補探しも除外の対象にしない。設定した `test` / `check` のコマンドの実行範囲は変わらない。
+
+初期化コマンドからも指定できる（glob はシェルが展開しないよう引用符で囲む）。
+
+```bash
+python3 tools/codd-agent/init.py ~/work/my-app \
+    --exclude '**/*.config.*' --exclude 'src/settings.json' \
+    --ref-exclude 'docs=docs/settings/' --ref-exclude 'docs=**/*.config.*'
+```
+
+`--exclude` は自分の一覧、`--ref-exclude` は指定した参照先の一覧を、その呼び出しで渡したパターンに入れ替える。
+渡さなかった側の設定はそのまま残す。`--exclude ""` / `--ref-exclude 'docs='` でそれぞれ空にできる。
+`codd.py show` に現在の除外パターンを表示する。
 
 ### 何を確かめるか
 
@@ -516,6 +560,49 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-
 
 - e2e のケースファイルに `# coherence: doc=docs:docs/login.md` のように仕様書を書いておくと、仕様書を変える計画は
   ケースファイルも扱わないと通らない（[パスのつながり](#パスのつながり)。任意。webui-test はこの注記を読まない）
+
+### 設計書側から画像を作る
+
+設計書側の `check` に撮影コマンドを設定すると、design 側からも画像を作れる。
+実装側が `~/work/my-app`、設計書側が `~/work/my-app-docs` にある例:
+
+```bash
+webui-test init ~/work/my-app --base-url http://localhost:3000 --serve "npm start"
+python3 tools/codd-agent/init.py ~/work/my-app-docs --side design --ref app=../my-app \
+  --check "webui-test capture docs/screens.yaml --config ../my-app/webui-test.config.yaml --out docs/images"
+```
+
+実装側に設定が既にあれば `webui-test init` は不要。`init` は既存設定を上書きしない。
+設計書側の `docs/screens.yaml` に、撮影する画面への操作と画像名を書く:
+
+```yaml
+suite: 仕様書の画像
+viewport: { width: 1280, height: 800 }
+cases:
+  - id: S-01
+    title: ログイン画面
+    steps:
+      - goto: /login
+      - screenshot: { name: login-form, target: { css: main } }
+```
+
+この例は `docs/images/login-form.png` を作る。`docs/login.md` から
+`![ログイン画面](images/login-form.png)` で参照する。
+初回は撮影YAML・生成画像・画像を貼る文書を計画に挙げ、apply 中に撮影してから文書に貼る。
+計画に画像を挙げた撮り直しも同じ手順で行う。撮影は設計書側のルートで実行する:
+
+```bash
+webui-test capture docs/screens.yaml --config ../my-app/webui-test.config.yaml --out docs/images
+```
+
+`verify-apply` でも同じ `check` を実行するため、撮影に失敗すれば検査は通らない。
+参照先の実装だけを読む場合、その参照先の `check` は実行されないので、設計書側に設定する。
+`capture` は画像を作るコマンドで、画像比較用の `evidence.json` は作らない。
+既存の evidence による画像差し替えは、実装側の `webui-test check` で引き続き使える。
+
+codd-agent は外部コマンドを実行するだけで、撮影YAMLや webui-test のコードは読み込まない。
+webui-test は設計書や codd-agent の設定を読まない。撮影の連携は利用するプロジェクトの設定で行い、
+双方の必須依存は増えない。別の撮影ツールも同じ `check` に設定できる。
 
 ## graphify を使う
 

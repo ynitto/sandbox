@@ -32,6 +32,12 @@ function runPlaywrightTest(outDir, extra, { executablePath, captureRoot, io }) {
 const USAGE = `webui-test — 条件からテストケースを作り、Playwright で実行してスクリーンショット付きの結果を出す
 
 使い方:
+  webui-test init [<dir>] [--base-url <url>] [--serve "<起動コマンド>"] [--cases <path>]
+      webui-test.config.yaml を作る（既存の設定は上書きしない）。ケースは別に作る
+        --config <file>              保存する設定ファイル（<dir> からの相対）
+        --base-url <url>             接続先（既定 http://localhost:3000）
+        --serve "<コマンド>"          起動してから動かすときだけ指定する
+        --cases <path>               check のケース（繰り返し可。既定 tests/e2e。設定ファイルからの相対）
   webui-test generate "<条件>" -o tests/login.yaml [--agent kiro|copilot] [--url <最初に開くURL>]
       エージェントに条件を渡してテストケースファイルを作る。--url を渡すと、その画面の要素一覧も渡す
         -f, --conditions-file <file>  条件をファイルから読む
@@ -77,6 +83,8 @@ const USAGE = `webui-test — 条件からテストケースを作り、Playwrig
 `;
 
 const OPTIONS = {
+  serve: { type: 'string' },
+  cases: { type: 'string', multiple: true },
   help: { type: 'boolean', short: 'h' },
   out: { type: 'string', short: 'o' },
   'base-url': { type: 'string' },
@@ -179,6 +187,18 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
   }
   try {
     switch (cmd) {
+      case 'init': {
+        if (rest.length > 1) throw usageError('init の置き先は 1 つだけ指定してください');
+        const { initConfig } = require('./init');
+        let file;
+        try {
+          file = initConfig({ dir: rest[0], configPath: values.config, baseUrl: values['base-url'],
+            serve: values.serve, cases: values.cases });
+        } catch (e) { throw usageError(e.message); }
+        say(`設定を作りました: ${file}`);
+        say('ケースファイルは generate か手書きで作ってください。');
+        return 0;
+      }
       case 'format': {
         say(require('./generate').FORMAT_REFERENCE);
         return 0;

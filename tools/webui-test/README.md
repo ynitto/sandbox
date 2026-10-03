@@ -43,6 +43,21 @@ Linux でブラウザが OS のライブラリ不足で起動しないときは 
 
 ## 使い方
 
+### 0. 環境の設定を作る
+
+```bash
+webui-test init                         # カレントディレクトリに webui-test.config.yaml を作る
+webui-test init ../my-app --base-url http://localhost:3000 --serve "npm start" --cases tests/e2e
+```
+
+設定は `init` を実行したときに作る。インストールやテスト実行では作らない。
+既定の接続先は `http://localhost:3000`、検査するケースの置き場は `tests/e2e`。
+起動済みのアプリを使うなら `--serve` は不要。ケースファイルは `generate` か手書きで別に作る。
+`--cases` は繰り返して指定でき、パスは生成する設定ファイルからの相対。
+`--config config/webui-test.config.json` のように保存先・形式を変えることもできる
+（保存先は置き先ディレクトリからの相対。起動コマンドの作業ディレクトリも設定ファイルのフォルダ）。
+既存の設定は上書きしない。変更するときは設定ファイルを編集する。
+
 ### 1. テストケースを作る
 
 ```bash
@@ -217,6 +232,10 @@ e2e を動かし、その結果（`evidence.json`）を codd-agent が受け取�
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
   --test "npm test" --check "webui-test check"
 ```
+
+設計書側から画像を作る場合は、[codd-agent の設計書側からの撮影手順](../codd-agent/README.md#設計書側から画像を作る)
+のように、設計書側の `check` に `webui-test capture` を設定する。
+webui-test 単独でも同じコマンドで撮影できる。双方のインストールや実行に、もう一方は必須ではない。
 
 ## 環境を切り替える（ローカル・検証環境）
 
