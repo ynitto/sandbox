@@ -21,7 +21,11 @@ class CliTests(AmigosTestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(self.phase("am-cli"), "reviewing")
         out = os.path.join(self.tmp, "out")
-        rc = cli.main(["collect", "--bus", self.bus.root, "am-cli", "--out", out])
+        with self.assertRaises(SystemExit):
+            cli.main(["collect", "--bus", self.bus.root, "--node-id", "other",
+                      "am-cli", "--out", out + "-other"])
+        rc = cli.main(["collect", "--bus", self.bus.root, "--node-id", "owner-node",
+                       "am-cli", "--out", out])
         self.assertEqual(rc, 0)
         self.assertTrue(os.path.isfile(os.path.join(out, "MANIFEST.json")))
         # 非オーナーは受入できない

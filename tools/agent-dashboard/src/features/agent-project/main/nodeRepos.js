@@ -64,7 +64,7 @@ function looksLikeRemoteUrl(s) {
 
 function normalizeRepoUrl(url) {
   let s = String(url || '').trim().replace(/\/+$/, '');
-  if (s.endsWith('.git')) s = s.slice(0, -4);
+  if (s.toLowerCase().endsWith('.git')) s = s.slice(0, -4);
   if (!s) return '';
   if (!looksLikeRemoteUrl(s)) {
     const expanded = s.replace(/^~(?=$|\/|\\)/, os.homedir());

@@ -69,7 +69,7 @@ def normalize_repo_url(url: str) -> str:
     同一性はこちらでは判定できないし、パスとして絶対化すると壊れる。
     """
     s = str(url or "").strip().rstrip("/")
-    if s.endswith(".git"):
+    if s.lower().endswith(".git"):
         s = s[:-4]
     if not s:
         return ""

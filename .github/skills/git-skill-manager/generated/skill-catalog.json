@@ -327,7 +327,7 @@
     {
       "name": "codd-gate",
       "description": "doc・code・test の一貫性を決定的に検査する codd-gate を運用します。ドキュメントとコードの整合を常に取りたい場合、一貫性ゲートを CI や git hook に入れる場合、ドリフトを backlog へ積む場合に使用してください。単発のドリフト調査レポートなら doc-drift-detector を使います。",
-      "version": "\"1.1.0\"",
+      "version": "1.1.0",
       "tier": "experimental",
       "category": "operations",
       "tags": [
@@ -374,7 +374,7 @@
     {
       "name": "code-to-specs",
       "description": "既存コードから仕様書を逆生成するスキル。「仕様書を作って」「スペックを生成して」「コードから仕様を起こして」「実装から仕様書を書いて」「リバースエンジニアリングして仕様書を作って」「既存システムの仕様をまとめて」などで発動する。レガシーコードや既存実装から、保守担当者・顧客・SME向けの信頼性の高い仕様書を生成する。",
-      "version": "\"1.1.0\"",
+      "version": "1.1.0",
       "tier": "experimental",
       "category": "documentation",
       "tags": [
@@ -459,7 +459,7 @@
     {
       "name": "council-system",
       "description": "3つの異なる性格のサブエージェント（論理派・感情派・批判派）を並列起動し、スタンス表明→クロスレビュー→合議で進め方を決定するスキル。「合議で決めて」「3つの視点で」「多角的に検討して」「意思決定を助けて」で発動。",
-      "version": "\"2.0.0\"",
+      "version": "2.0.0",
       "tier": "unknown",
       "category": "unknown",
       "tags": [],
@@ -560,7 +560,7 @@
     },
     {
       "name": "doc-coauthoring",
-      "description": "\"[ユーザーとの対話必須] 仕様書・提案書・設計ドキュメント・RFC・ADR などをユーザーと共同執筆するワークフロースキル。「仕様書を作って」「提案書を書いて」「設計ドキュメントを作成して」「PRDを書いて」「RFCを書いて」「ADRを書いて」などで発動する。\"",
+      "description": "[ユーザーとの対話必須] 仕様書・提案書・設計ドキュメント・RFC・ADR などをユーザーと共同執筆するワークフロースキル。「仕様書を作って」「提案書を書いて」「設計ドキュメントを作成して」「PRDを書いて」「RFCを書いて」「ADRを書いて」などで発動する。",
       "version": "1.1.0",
       "tier": "experimental",
       "category": "research",
@@ -585,7 +585,7 @@
     {
       "name": "doc-drift-detector",
       "description": "既存ドキュメント（仕様書・README・ランブック・ADR・OpenAPI）とコードベースの乖離（ドリフト）を検出し、根拠付きレポートを出します。仕様書とコードのズレやドキュメントの鮮度を確認したい場合に使用してください。新規ドキュメントの作成は technical-writer / code-to-specs を使います。",
-      "version": "\"1.0.0\"",
+      "version": "1.0.0",
       "tier": "experimental",
       "category": "documentation",
       "tags": [
@@ -637,7 +637,7 @@
     },
     {
       "name": "empirical-prompt-tuning",
-      "description": "\"プロンプト・スキル・スラッシュコマンドを反復的に改善する実証的チューニングスキル。「プロンプトを改善して」「スキルを最適化して」「指示が曖昧と言われた」「エージェントが意図と違う動きをする」などで発動する。偏りのない新しいサブエージェントで実行・評価し、指標が収束するまで反復する。\"",
+      "description": "プロンプト・スキル・スラッシュコマンドを反復的に改善する実証的チューニングスキル。「プロンプトを改善して」「スキルを最適化して」「指示が曖昧と言われた」「エージェントが意図と違う動きをする」などで発動する。偏りのない新しいサブエージェントで実行・評価し、指標が収束するまで反復する。",
       "version": "1.0.0",
       "tier": "stable",
       "category": "meta",
@@ -1081,8 +1081,8 @@
     },
     {
       "name": "obsidian-use",
-      "description": "\"「Obsidianのノートを作って」「ウィキリンクを追加して」「.baseファイルでフィルターを設定して」「マインドマップやキャンバスを作って」「ボルトをCLIで操作して」「このURLを読んで」「WordファイルやPDFをMarkdownに変換して」など、Obsidianの作成・編集・CLI操作・Web抽出・Officeファイル変換で発動する。\"",
-      "version": "\"1.0.0\"",
+      "description": "「Obsidianのノートを作って」「ウィキリンクを追加して」「.baseファイルでフィルターを設定して」「マインドマップやキャンバスを作って」「ボルトをCLIで操作して」「このURLを読んで」「WordファイルやPDFをMarkdownに変換して」など、Obsidianの作成・編集・CLI操作・Web抽出・Officeファイル変換で発動する。",
+      "version": "1.0.0",
       "tier": "domain",
       "category": "knowledge-management",
       "tags": [
@@ -1399,7 +1399,7 @@
     },
     {
       "name": "self-checking",
-      "description": "\"成果物（コード・調査・ドキュメント）をルーブリックと自動チェックで定量評価し、PASSになるまで改善を繰り返すスキル。「自己評価して」「品質チェックして」「成果物をレビューして」「改善ループ回して」などで発動。scrum-master・skill-mentor からも自動起動される。\"",
+      "description": "成果物（コード・調査・ドキュメント）をルーブリックと自動チェックで定量評価し、PASSになるまで改善を繰り返すスキル。「自己評価して」「品質チェックして」「成果物をレビューして」「改善ループ回して」などで発動。scrum-master・skill-mentor からも自動起動される。",
       "version": "1.1.0",
       "tier": "stable",
       "category": "evaluation",
@@ -1470,7 +1470,7 @@
     },
     {
       "name": "skill-creator",
-      "description": "\"スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。\"",
+      "description": "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。",
       "version": "4.0.3",
       "tier": "core",
       "category": "meta",
@@ -1609,8 +1609,8 @@
     },
     {
       "name": "spec-value-finder",
-      "description": "\"元仕様書(Excel/Word/PowerPoint/PDF/Markdown/txt)から記入すべき値を探すスキル。人が用意した仕様書をファイル名の部分一致で特定し、マッピング情報をもとに値を探して出典・確信度付きで記入シートに落とし込む。「仕様書に書く値を探して」「元仕様書から値を落とし込んで」「設定値を仕様書から拾って」「記入シートを埋めて」などで発動。サーバ・GPU不要。\"",
-      "version": "\"1.2.0\"",
+      "description": "元仕様書(Excel/Word/PowerPoint/PDF/Markdown/txt)から記入すべき値を探すスキル。人が用意した仕様書をファイル名の部分一致で特定し、マッピング情報をもとに値を探して出典・確信度付きで記入シートに落とし込む。「仕様書に書く値を探して」「元仕様書から値を落とし込んで」「設定値を仕様書から拾って」「記入シートを埋めて」などで発動。サーバ・GPU不要。",
+      "version": "1.2.0",
       "tier": "experimental",
       "category": "documentation",
       "tags": [
@@ -1706,7 +1706,7 @@
     {
       "name": "table-spec-extractor",
       "description": "【非推奨】spec-value-finder を使用してください。Excel/PDF の仕様書テーブルを Table Transformer でAST 化し、Neo4j グラフへ保存・GraphRAG 検索します。既存の Neo4j 資産を読む場合にだけ使用してください。",
-      "version": "\"2.4.0\"",
+      "version": "2.4.0",
       "tier": "deprecated",
       "category": "integration",
       "tags": [
@@ -1758,8 +1758,8 @@
     },
     {
       "name": "tech-harvester",
-      "description": "\"RSSフィードを取得して要約をMarkdownにまとめるスキル。「ニュースを取得して」「テックブログをまとめて」「ダイジェストを作って」などで発動。フィード・キーワードの自律進化も対応：「フィードを最適化して」「トレンドを分析して」「新しいフィードを探して」なども発動トリガー。\"",
-      "version": "\"2.0.0\"",
+      "description": "RSSフィードを取得して要約をMarkdownにまとめるスキル。「ニュースを取得して」「テックブログをまとめて」「ダイジェストを作って」などで発動。フィード・キーワードの自律進化も対応：「フィードを最適化して」「トレンドを分析して」「新しいフィードを探して」なども発動トリガー。",
+      "version": "2.0.0",
       "tier": "unknown",
       "category": "productivity",
       "tags": [
@@ -1921,7 +1921,7 @@
     },
     {
       "name": "wisdom-sonnet-4-6",
-      "description": "\"Kiro CLIのSonnet 4.6で実装・設計・リファクタ・原因不明バグ・調査・レビューの品質を最大化する検証駆動プロトコル。Opus 4.6〜Opus 5／Fable 5級の思考をプロセスで疑似再現する。単一コンテキストで完結でき、サブエージェントは任意。「wisdomで」「じっくり考えて」「深く考えて」「Opus級で」「Fable級で」「品質最優先で」「本気で」でも発動する。\"",
+      "description": "Kiro CLIのSonnet 4.6で実装・設計・リファクタ・原因不明バグ・調査・レビューの品質を最大化する検証駆動プロトコル。Opus 4.6〜Opus 5／Fable 5級の思考をプロセスで疑似再現する。単一コンテキストで完結でき、サブエージェントは任意。「wisdomで」「じっくり考えて」「深く考えて」「Opus級で」「Fable級で」「品質最優先で」「本気で」でも発動する。",
       "version": "4.0.0",
       "tier": "experimental",
       "category": "guidelines",

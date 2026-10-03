@@ -537,10 +537,13 @@ def load_cli(name: str, project_dir=None, *, use_cache: bool = True) -> dict:
     key = str(name or "").strip().lower()
     if not key or not re.fullmatch(r"[\w.-]+", key):
         raise AgentCliError(f"agent_cli の名前が不正です: {name!r}")
-    cache_key = f"{key}\0{project_dir or ''}"
+    dirs = plugin_dirs(project_dir)
+    # project_dir=None の探索先には cwd/agents が入るため、引数だけではキャッシュを分離できない。
+    # 実際の探索ディレクトリ列を絶対パス化してキーにし、chdir や探索先環境変数の変更で
+    # 別プロジェクトの定義を返さないようにする。
+    cache_key = key + "\0" + "\0".join(str(d.absolute()) for d in dirs)
     if use_cache and cache_key in _CACHE:
         return _CACHE[cache_key]
-    dirs = plugin_dirs(project_dir)
     for d in dirs:
         p = d / f"{key}.json"
         try:

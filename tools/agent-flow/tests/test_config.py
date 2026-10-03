@@ -170,6 +170,7 @@ class ProtocolTests(unittest.TestCase):
         lp = kf.protocol._lock_path(self.bus._claim_dir("t1"))
         self.assertNotIn(self.tmp, lp)
         self.assertIn("agentcore-claim-locks", lp)
+        self.assertEqual(os.path.dirname(lp), kf._locks_root(), "cleanup も実際の claim lock 置き場を見る")
 
     def test_all_terminal(self):
         self._add_task("t1")

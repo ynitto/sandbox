@@ -28,6 +28,19 @@ import re
 import sys
 
 
+def _unquote_scalar(value: str) -> str:
+    """簡易 YAML パーサでも、通常の引用付き scalar は値だけを返す。
+
+    SKILL.md では description や metadata.version を引用してよい。引用符まで値に含めると
+    generated/skill-catalog.json に \\"1.2.3\\" のような偽の値が残るため、両端が同じ
+    一重/二重引用符のときだけ 1 組を外す。YAML 全体を再実装する意図はない。
+    """
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
 def parse_frontmatter(content: str) -> tuple[dict, str]:
     """YAML フロントマターを簡易パースする（PyYAML 不要）。"""
     if not content.startswith("---"):
@@ -66,7 +79,7 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
             key = key.strip()
             val = val.strip()
             if val:
-                result[key] = val
+                result[key] = _unquote_scalar(val)
             else:
                 result[key] = {}
                 current_parent = key
@@ -85,7 +98,7 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
                         ]
                         result[current_parent][key] = items
                     else:
-                        result[current_parent][key] = val
+                        result[current_parent][key] = _unquote_scalar(val)
                 else:
                     # 値なし → ブロックリストの開始の可能性
                     result[current_parent][key] = []

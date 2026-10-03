@@ -26,6 +26,7 @@ NORMALIZE_GOLDEN = [
     ("https://h/a/b.git", "https://h/a/b"),
     ("https://h/a/b/", "https://h/a/b"),
     ("https://Example.com/A/B.git", "https://example.com/a/b"),
+    ("https://Example.com/A/B.GIT", "https://example.com/a/b"),
     ("git@h:t/app.git", "git@h:t/app"),
     ("git@H:T/App", "git@h:t/app"),
     ("h:t/app.git", "h:t/app"),
