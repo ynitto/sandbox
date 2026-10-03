@@ -553,6 +553,8 @@ class CoddTest(unittest.TestCase):
         self.add_caller()
         self.write_plan(PLAN_ALIGNED)
         self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        for _ in range(2):   # 未判断だけなら、まず訊かずに練り直す（2 回まで）
+            self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO PLAN\n"))
         r = self.run_pa(self.impl, "advise")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("# 計画の検査で止まりました", r.stdout)
@@ -585,6 +587,29 @@ class CoddTest(unittest.TestCase):
         self.assertIn("設定か環境の誤りです", r.stdout)
         self.assertIn("refs を直してください", r.stdout)
         cfg.write_text(good, encoding="utf-8")
+
+    def test_failures_needing_no_human_retry_without_asking(self) -> None:
+        # テストが落ちただけなら、利用者に訊かずに変え直す（同じ段で 2 回まで）。人の判断が要るものが混じれば訊く。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('テストが落ちた')"])
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        for n in (1, 2):
+            self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+            r = self.run_pa(self.impl, "advise")
+            self.assertTrue(r.stdout.startswith("AUTO APPLY\n"), r.stdout)
+            self.assertIn(f"{n}/2 回目", (self.impl / ".codd/decisions.json").read_text(encoding="utf-8"))
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        r = self.run_pa(self.impl, "advise")
+        self.assertNotIn("AUTO", r.stdout)                  # 上限を超えたら訊く
+        self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
+        # 通れば数え直す。計画に無い変更が混じれば最初から訊く。
+        self.set_check(self.impl, [sys.executable, "-c", "pass"])
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0, self.run_pa(self.impl, "verify-apply").stderr)
+        self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('テストが落ちた')"])
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
 
     def test_keep_changes_lets_the_plan_grow_without_losing_the_work(self) -> None:
         self.write_plan(PLAN_ALIGNED)
