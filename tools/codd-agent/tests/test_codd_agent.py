@@ -1284,6 +1284,58 @@ class CoddTest(unittest.TestCase):
         self.assertIn("tests/test_app.py — 変えた", report)
         self.assertNotIn("tests/e2e/page.yaml — 変更不要", report)
 
+    def test_test_plan_does_not_treat_search_paths_as_changes(self) -> None:
+        commit(self.impl, {"tests/test_app.py": "hello()\n",
+                           "tests/search_input.txt": "fixture\n",
+                           "tests/search_output.txt": "result\n"}, "tests")
+        self.set_config(self.impl, max_files=2)
+        body = ("- `tests/test_app.py` — `hello` のログを確かめる。検索は "
+                "`rg -n needle tests/search_input.txt > tests/search_output.txt`\n"
+                "- 検索: `rg -n needle tests/search_input.txt > tests/search_output.txt`\n"
+                "- `git grep needle -- tests/search_input.txt`\n"
+                "- 変更不要: 参照先のテストは無い。検索は `rg needle design:docs/api.md`\n"
+                "\n```sh\nrg needle tests/search_input.txt > tests/search_output.txt\n"
+                "- tests/search_output.txt\n```\n")
+        self.write_plan(self.with_tests(PLAN_ALIGNED, body))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n")
+        (self.impl / "tests/test_app.py").write_text("hello() # check log\n")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        report = self.run_pa(self.impl, "report").stdout
+        self.assertNotIn("search_input.txt", report)
+        self.assertNotIn("search_output.txt", report)
+        self.assertNotIn("docs/api.md — まだ", report)
+        self.assertIn("tests/test_app.py — 変えた", report)
+
+    def test_test_plan_preserves_explicit_multiple_and_reference_targets(self) -> None:
+        commit(self.impl, {"tests/test_a.py": "fixture\n", "tests/test_b.py": "fixture\n"}, "tests")
+        commit(self.design, {"tests/test_ref.py": "fixture\n"}, "tests")
+        self.write_plan(self.with_tests(PLAN_ALIGNED,
+                        "- `tests/test_a.py`, tests/test_b.py, design:tests/test_ref.py — ケースを足す"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1 # changed\n")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        for rel in ("tests/test_a.py", "tests/test_b.py", "tests/test_ref.py"):
+            self.assertIn(rel, r.stderr)
+
+    def test_test_plan_requires_a_reason_after_unchanged(self) -> None:
+        commit(self.impl, {"tests/test_app.py": "fixture\n"}, "tests")
+        for body in ("- 変更不要", "- 変更不要:", "- 変更不要：   ",
+                     "- tests/test_app.py — 変更不要", "- tests/test_app.py — 変更不要: 。",
+                     "- 変更不要: `rg hello src/app.py > tests/search_output.txt`"):
+            with self.subTest(body=body):
+                self.write_plan(self.with_tests(PLAN_ALIGNED, body))
+                r = self.run_pa(self.impl, "verify-plan")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("変更不要の後に理由がありません", r.stderr)
+        # テストの自動測定を切っても、理由の欠けた判断は通さない。
+        self.set_config(self.impl, tests=[])
+        self.set_config(self.design, tests=[])
+        self.write_plan(self.with_tests(PLAN_ALIGNED, "- 変更不要:"))
+        self.assertIn("変更不要の後に理由がありません", self.run_pa(self.impl, "verify-plan").stderr)
+
     def test_tests_section_cannot_be_none_when_something_changes(self) -> None:
         self.write_plan(self.with_tests(PLAN_ALIGNED, "なし"))
         r = self.run_pa(self.impl, "verify-plan")

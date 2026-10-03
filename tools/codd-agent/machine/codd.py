@@ -1705,6 +1705,7 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     problems, bodies = sections(text, PLAN_HEADINGS)
     if problems:
         return problems
+    problems += test_plan(ctx, bodies).problems
     problems += rules_problems(ctx, bodies["## 守る決まり"])
     problems += used_problems(bodies["## 使ったスキルと道具"],
                               ctx.config["skills"]["plan"] + ctx.config["tools"]["plan"], "使ったスキルと道具")
@@ -2000,27 +2001,56 @@ class TestPlan:
         return {rel for k, rel in (self.listed() if waived else self.change) if k == key}
 
 
+def test_item_targets(item: str) -> str:
+    """項目の先頭に明示した対象だけ。説明や検索コマンドの入出力パスは拾わない。"""
+    prefix = item.split("—", 1)[0].strip()
+    # インラインコードがコマンドなら全体を除く（パス単独の `…` は残す）。
+    prefix = re.sub(r"`[^`]*\s[^`]*`", "", prefix)
+    targets = []
+    rest = prefix
+    while rest:
+        rest = rest.lstrip(" `,、")
+        match = _CITE.match(rest)
+        if not match:
+            break
+        targets.append(match.group())
+        rest = rest[match.end():]
+    return ", ".join(targets)
+
+
 def test_plan(ctx: Ctx, bodies: dict[str, str]) -> TestPlan:
     body = bodies.get(TESTS_HEADING, "なし")
     plan = TestPlan(set(), set(), [], False)
     if is_none(body):
         return plan
+    body = re.sub(r"(?ms)^\s*(`{3,}|~{3,})[^\n]*\n.*?^\s*\1[^\n]*$", "", body)
     listed = items(body)
     if not listed:
         plan.problems.append(f"{TESTS_HEADING} は箇条書きにしてください")
     for item in listed:
-        hits = {("", rel) for rel in cited_own(ctx, item, allow_new=True)}
-        cited = cited_refs(ctx, item, allow_new=True)
+        # 理由はコマンドの文字列で代用させない。
+        plain = re.sub(r"`[^`]*\s[^`]*`", "", item)
+        waived = NO_CHANGE_MARK in plain
+        if waived:
+            reason = plain.split(NO_CHANGE_MARK, 1)[1].strip(" :：—-（）()。．`\t")
+            if not reason:
+                plan.problems.append(f"{TESTS_HEADING} の変更不要の後に理由がありません: {item[:80]}")
+                continue
+        targets = test_item_targets(item)
+        hits = {("", rel) for rel in cited_own(ctx, targets, allow_new=True)}
+        cited = cited_refs(ctx, targets, allow_new=True)
         hits |= cited.found
         if not hits:
-            if NO_CHANGE_MARK in item:
+            if waived:
                 plan.reason_only = True
                 continue
+            if re.match(r"^(?:検索(?:コマンド|結果)?[：: ]|`?(?:rg|grep|find|git\s+grep)\s)", item):
+                continue  # 検索の記録は補足。テストの変更案の代わりにはならない。
             hint = "（どの参照先か `名前:パス` で書いてください）" if cited.ambiguous else ""
             plan.problems.append(f"{TESTS_HEADING} の項目に、テストのファイルのパスがありません{hint}: {item[:80]}")
             continue
         # 「未判断」は扱った（漏れではない）が、まだ変えると決めていない
-        (plan.waived if NO_CHANGE_MARK in item or PENDING_MARK in item else plan.change).update(hits)
+        (plan.waived if waived or PENDING_MARK in item else plan.change).update(hits)
     return plan
 
 
@@ -2047,7 +2077,7 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
     if not tests_enabled(ctx):
         return []
     tp = test_plan(ctx, bodies)
-    problems = list(tp.problems)
+    problems: list[str] = []
     changed = plan_changes(ctx, bodies)
     if any(changed.values()) and not tp.listed() and not tp.reason_only:
         problems.append(f"{TESTS_HEADING} が「なし」です。コード・仕様書と同じく、足す・直すテストを挙げてください"
