@@ -61,6 +61,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1307,6 +1308,7 @@ def terms_from_diff(side: Side) -> list[str]:
     repo = side.path
     diff = diff_without(run(["git", "diff", "HEAD", *side.pathspec()], repo, GIT_TIMEOUT)[1], lambda p: not side.has(p))
     terms = []
+    quoted: dict[str, Counter] = {"+": Counter(), "-": Counter()}
     for line in diff.splitlines():
         if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
             continue
@@ -1314,7 +1316,9 @@ def terms_from_diff(side: Side) -> list[str]:
             m = pat.match(line)
             if m:
                 terms.append(m.group(1))
-        terms += _BACKTICK.findall(line)
+        quoted[line[0]].update(_BACKTICK.findall(line))
+    # 直した行に元からある `…` は変わった名前ではない（足した・消した側で数が違うものだけ拾う）。
+    terms += [t for t in quoted["+"] | quoted["-"] if quoted["+"][t] != quoted["-"][t]]
     for name in run(["git", "ls-files", "--others", "--exclude-standard", *side.pathspec()],
                     repo, GIT_TIMEOUT)[1].splitlines():
         if not side.has(name):
@@ -2282,11 +2286,19 @@ def check_marks(ctx: Ctx, evs: dict[str, Evidence], marks: list[Mark]) -> tuple[
     return stale, bad
 
 
-def evidence_apply_problems(ctx: Ctx) -> list[str]:
-    marks = evidence_marks(ctx)
+def evidence_apply_problems(ctx: Ctx, docs: set[tuple[str, str]], tests: set[tuple[str, str]]) -> list[str]:
+    """変えた・変える文書の印と、この変更が響くテストの結果を写した印だけを確かめる。
+
+    ほかの文書にもとからある古い印は、直すと計画に無いファイルを変えることになり、どうやっても通らない（lint が拾う）。
+    """
+    evs = all_evidence(ctx)
+    key_of = {id(item): k for k, e in evs.items() for item in e.items.values()}
+    marks = [mk for mk in evidence_marks(ctx)
+             if (mk.key, mk.rel) in docs
+             or any((key_of.get(id(item), ""), str(item.get("file") or "")) in tests
+                    for item in find_evidence(ctx, evs, mk.key, mk.ident))]
     if not marks:
         return []
-    evs = all_evidence(ctx)
     if not any(e.files for e in evs.values()):
         return ["文書がテストの結果を写していますが、テストで得たもの（evidence）がありません（テストか検査のコマンドが"
                 f"書いているか、{CONFIG_NAME} の evidence を確かめてください）"]
@@ -2683,6 +2695,33 @@ def plan_text_for_checks(ctx: Ctx) -> str:
     return text
 
 
+def restore_hidden(ctx: Ctx, text: str) -> str:
+    """練り直しで計画を直したとき、通ったときに計画から省いた変更不要の判断を戻す。
+
+    戻さないと、判断済みのファイルがまた「未判断」として書き足され、テストの変更案が「なし」で落ち、毎回やり直しになる。
+    """
+    try:
+        saved = json.loads((ctx.data / PLAN_CHECK_TEXT).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return text
+    if not isinstance(saved, dict) or saved.get("path") != plan_rel(ctx) or not isinstance(saved.get("text"), str):
+        return text
+    _, old = sections(saved["text"], PLAN_HEADINGS)
+    _, now = sections(text, PLAN_HEADINGS)
+    back = Pending()
+    for heading in ("## 影響範囲", TESTS_HEADING):
+        if heading not in now:
+            continue
+        for item in items(old.get(heading, "")):
+            if NO_CHANGE_MARK not in item:
+                continue
+            paths = re.findall(r"[\w@.\-]+(?:/[\w@.\-]+)+|[\w@\-]+\.[A-Za-z0-9]{1,8}", item.split("—", 1)[0])
+            kept = any(p in text for p in paths) if paths else not is_none(now[heading])
+            if not kept and f"- {item}" not in text:
+                back.add(heading, (heading, item), f"- {item}")
+    return add_pending(text, back) if back.count() else text
+
+
 def approved_plan_digest(ctx: Ctx) -> str:
     # 非表示の判断も、承認後に書き換えられていないか確かめる。
     payload = plan_rel(ctx) + "\n" + plan_digest(ctx) + "\n" + plan_text_for_checks(ctx)
@@ -2733,6 +2772,10 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         print_problems(ctx, "plan", [NO_PLAN])
         return 1
     text = plan_text_for_checks(ctx)
+    restored = restore_hidden(ctx, text) if text == ctx.plan.read_text(encoding="utf-8") else text
+    if restored != text:
+        ctx.plan.write_text(restored, encoding="utf-8")
+        text = restored
     _, bodies = sections(text, PLAN_HEADINGS)
     problems = verify_plan_text(ctx, text) + record_problems_of(ctx)
     measured: list[str] = []
@@ -2896,10 +2939,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                             + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）")
 
     # 3'. 実際の変更が響くテストを、直したか「変更不要」としたか（同じ側のテストも。名前とつながりで測る）。
+    affected: dict[tuple[str, str], str] = {}
     if tests_enabled(ctx):
         touched_all = {"": a.own_touched, **a.touched}
         changed_files = {k: {p for p in v if not is_test(ctx, k, p)} for k, v in touched_all.items()}
-        found = affected_tests(ctx, terms, changed_files)
+        found = affected = affected_tests(ctx, terms, changed_files)
         write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp)
         unfixed = [side_label(ctx, k, rel) for (k, rel) in sorted(found)
                    if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived]
@@ -2946,7 +2990,12 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     screens = replace_screens(ctx)
     for line in screen_lines(ctx, screens):
         print(f"テストの画面から: {line[2:]}")
-    problems += evidence_apply_problems(ctx)
+    touched_all = {"": a.own_touched, **a.touched}
+    docs = {(k, rel) for k, rels in touched_all.items() for rel in rels}
+    docs |= {("", rel) for rel in own_allowed} | {(k, rel) for k, rels in a.planned.items() for rel in rels}
+    tests = (tp.listed() | set(affected)
+             | {(k, rel) for k, rels in touched_all.items() for rel in rels if is_test(ctx, k, rel)})
+    problems += evidence_apply_problems(ctx, docs, tests)
     print_problems(ctx, "apply", problems)
     if problems:
         return 1
