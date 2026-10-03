@@ -168,6 +168,11 @@ class TestReadStatus(unittest.TestCase):
             broken.write_text("これは JSON ではない\n", encoding="utf-8")
             self.assertEqual(ollama_events.read_status(broken)["state"], "unknown")
 
+    def test_overlong_log_path_is_unknown_instead_of_crashing(self):
+        status = ollama_events.read_status("x" * 5000)
+        self.assertEqual(status["state"], "unknown")
+        self.assertFalse(status["alive"])
+
 
 class TestFollowEvents(unittest.TestCase):
     def test_reads_to_terminal_event_and_stops(self):
