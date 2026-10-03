@@ -8,7 +8,7 @@
     rules [--write]     守る決まりのファイルと、決まりらしいマークダウンの候補を示す。--write で候補を codd.json に書く
     explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）。--ref で絞れる
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
-    verify-plan         計画（docs/.plans/日時-名前.md）が決まった形か、根拠が参照先に実在するか（パス・行・見出し・
+    verify-plan         計画（.plans/日時-名前.md）が決まった形か、根拠が参照先に実在するか（パス・行・見出し・
                         `…` で囲んだ名前）、1 回で扱う範囲（max_files）に収まるかを検査する。
                         参照先の変更案があれば、それを自分に適用したときの影響範囲を測り、計画の影響範囲が
                         測ったファイルをすべて挙げているかも検査する。通ったら、変える前の印を控える
@@ -16,7 +16,7 @@
                         検査コマンドを確かめる。参照先を変えたら、実際の変更から影響範囲を測り直し、
                         測ったファイルを直したか「変更不要」としたかを検査する。書き足したパスが実在するか、
                         消したファイルを指したままのところが無いかも確かめる
-    draft --name 名前   計画のひな形を docs/.plans/日時-名前.md に置く（名前は英語の短い名前。進めている計画があれば残す）。
+    draft --name 名前   計画のひな形を .plans/日時-名前.md に置く（名前は英語の短い名前。進めている計画があれば残す）。
                         見出しごとに書き込ませ、全文を一度に書かせない
     record              1 回の終わりに、計画へ確認の答えと結果（report）を書き足して記録として残す（要らない情報は除く）
     decide 答え         確認・相談での利用者の答え（OK / NG / PLAN / APPLY / STOP）と指摘を控える。終わりの報告で計画の記録に書く
@@ -73,10 +73,10 @@ DATA_DIRNAME = ".codd"
 # 計画の置き場所（自分のリポジトリ）。1 回の実行の計画は、始めるときに一意な名前（日時と英語の短い名前）で置き、
 # 利用者はこれを読んで確かめる。終わりに確認の答えと結果を書き足して、判断の記録としてそのまま残す（コミットしてよい）。
 # 結果の見出しが無い計画が、いま進めている回の計画。
-PLAN_DIR = "docs/.plans"
-OLD_PLAN_DIR = "docs/.plan"      # 前の版の置き場所（記録を読むだけ）
+PLAN_DIR = ".plans"
+LEGACY_PLAN_DIRS = ("docs/.plans", "docs/.plan")
 RESULT_HEADING = "## 結果"
-MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR, OLD_PLAN_DIR]
+MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR, *LEGACY_PLAN_DIRS]
 _PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
@@ -2638,10 +2638,31 @@ def plan_digest(ctx: Ctx) -> str:
     return hashlib.sha256(ctx.plan.read_bytes()).hexdigest()
 
 
+PLAN_CHECK_TEXT = "plan-check.json"
+
+
+def plan_text_for_checks(ctx: Ctx) -> str:
+    """利用者向けの計画から省いた変更不要の判断は、同じ計画の検査だけで使う。"""
+    text = ctx.plan.read_text(encoding="utf-8")
+    try:
+        saved = json.loads((ctx.data / PLAN_CHECK_TEXT).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return text
+    if isinstance(saved, dict) and saved.get("digest") == plan_digest(ctx) and saved.get("path") == plan_rel(ctx) and isinstance(saved.get("text"), str):
+        return saved["text"]
+    return text
+
+
+def approved_plan_digest(ctx: Ctx) -> str:
+    # 非表示の判断も、承認後に書き換えられていないか確かめる。
+    payload = plan_rel(ctx) + "\n" + plan_digest(ctx) + "\n" + plan_text_for_checks(ctx)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def plan_unconfirmed(ctx: Ctx) -> list[str]:
     """変えてよいのは、計画の検査を通って、確認で退けられていない計画だけ（止まったところから飛ばして来ても通さない）。"""
     mark = ctx.data / PASSED_PLAN
-    if mark.is_file() and mark.read_text(encoding="utf-8") == plan_digest(ctx):
+    if mark.is_file() and mark.read_text(encoding="utf-8") == approved_plan_digest(ctx):
         return []
     return ["計画が、検査を通って利用者が確かめたものではありません（計画を直したか、確認で退けられたか、"
             "計画の検査で止まったままです。計画を練り直し、検査と確認を通してから変えてください）"]
@@ -2681,7 +2702,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     if not ctx.plan.is_file():
         print_problems(ctx, "plan", [NO_PLAN])
         return 1
-    text = ctx.plan.read_text(encoding="utf-8")
+    text = plan_text_for_checks(ctx)
     _, bodies = sections(text, PLAN_HEADINGS)
     problems = verify_plan_text(ctx, text) + record_problems_of(ctx)
     measured: list[str] = []
@@ -2700,8 +2721,11 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     if problems:
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
         return 1
+    ctx.plan.write_text(compact_plan(text), encoding="utf-8")
+    (ctx.data / PLAN_CHECK_TEXT).write_text(json.dumps(
+        {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     write_baseline(ctx)
-    (ctx.data / PASSED_PLAN).write_text(plan_digest(ctx), encoding="utf-8")
+    (ctx.data / PASSED_PLAN).write_text(approved_plan_digest(ctx), encoding="utf-8")
     notes = []
     if measured:
         notes.append(f"影響範囲を測った: {len(measured)} files、{DATA_DIRNAME}/impact.md")
@@ -2744,7 +2768,7 @@ def load_applied(ctx: Ctx) -> Applied | str:
     before = json.loads(before_file.read_text(encoding="utf-8"))
     if not isinstance(before.get("own"), dict):
         return "変える前の印が古い形です（計画の検査からやり直してください）"
-    _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
+    _, bodies = sections(plan_text_for_checks(ctx), PLAN_HEADINGS)
     planned, plan_problems = planned_refs(ctx, bodies)
     # テストの画面から差し替えた画像はハーネスの変更なので、「変えたファイル」に数えない。
     harness = {(r["side"], r["path"]) for r in replaced_files(ctx)["replaced"]}
@@ -2972,31 +2996,38 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         if r.name in a.planned or a.touched[r.name]:
             lines += ["", f"## {r.name}（{r.label}）  {r.path}", ""]
             lines += rows(a.planned.get(r.name, set()), a.touched[r.name])
+    tp = test_plan(ctx, a.bodies)
     after = ctx.data / "impact-after.md"
     if after.is_file():
         text = after.read_text(encoding="utf-8")
         measured = [ln[2:] for ln in text.split("## 候補のファイル", 1)[-1].splitlines() if ln.startswith("- ")]
-        waived = listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+        waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+                  | {rel for key, rel in tp.waived if not key})
+        impact_start = len(lines)
         lines += ["", "## 変えたあとに測った影響範囲", ""]
         for p in measured:
             mark = "直した" if p in a.own_touched else NO_CHANGE_MARK if p in waived else "未対応" \
                 if not p.startswith("(") else ""
-            lines.append(f"- {p}" + (f" — {mark}" if mark else ""))
-    tp = test_plan(ctx, a.bodies)
+            if mark != NO_CHANGE_MARK:
+                lines.append(f"- {p}" + (f" — {mark}" if mark else ""))
+        if len(lines) == impact_start + 3:
+            del lines[impact_start:]
     tests_after = ctx.data / "tests-after.md"
     if tp.listed() or tp.reason_only or tests_after.is_file():
         touched_all = {"": a.own_touched, **a.touched}
+        tests_start = len(lines)
         lines += ["", "## テスト", ""]
         for k, rel in sorted(tp.listed()):
             done = any(covered(t, {rel}) for t in touched_all.get(k, set()))
             mark = NO_CHANGE_MARK if (k, rel) in tp.waived else "変えた" if done else "まだ"
-            lines.append(f"- {side_label(ctx, k, rel)} — {mark}")
-        if tp.reason_only and not tp.listed():
-            lines.append(f"- {NO_CHANGE_MARK}（計画に理由あり）")
+            if mark != NO_CHANGE_MARK:
+                lines.append(f"- {side_label(ctx, k, rel)} — {mark}")
         if tests_after.is_file():
             extra = [ln for ln in tests_after.read_text(encoding="utf-8").splitlines()
                      if ln.startswith("- ") and ln.endswith("（計画に無い）")]
             lines += extra
+        if len(lines) == tests_start + 3:
+            del lines[tests_start:]
     screens = screen_lines(ctx, replaced_files(ctx))
     if screens:
         lines += ["", "## テストの画面から差し替えた文書の画像", "", *screens]
@@ -3193,7 +3224,7 @@ SUMMARY_WIDTH = 120
 
 
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
-    """ひな形を docs/.plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
+    """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
     if ctx.plan.is_file() and not args.new:
         print(f"計画はもうあります: {plan_rel(ctx)}（直す見出しだけを書き換える。最初から書き直すときは --new）")
         return 0
@@ -3223,20 +3254,20 @@ def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
     if not ctx.plan.is_file():
         print(NO_PLAN, file=sys.stderr)
         return 1
-    _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
+    _, bodies = sections(compact_plan(ctx.plan.read_text(encoding="utf-8")), PLAN_HEADINGS)
     rel = ctx.plan.relative_to(ctx.root).as_posix()
     lines = ["# 計画の要約", "", f"全文: {rel}", ""]
     want = [ln.strip() for ln in bodies.get("## やりたいこと", "").splitlines() if ln.strip()]
     lines += ["## やりたいこと", "", *([_clip(ln) for ln in want[:3]] or ["（未記入）"])]
     counted = [h for h in ("## 守る決まり", "## 使ったスキルと道具", "## 参照先の前提", "## 参照先の制約", "## 参照先のその他")
-               if h in bodies]
+               if h in bodies and not is_none(bodies[h])]
     if counted:
         lines += ["", "根拠: " + "・".join(
             f"{h[3:]} {0 if is_none(bodies[h]) else sum(1 for ln in bodies[h].splitlines() if re.match(r'^[-*] ', ln))} 件"
             for h in counted)]
     for heading in SUMMARY_SECTIONS:
         body = bodies.get(heading)
-        if body is None:
+        if body is None or is_none(body):
             continue
         items = [ln.strip() for ln in body.splitlines() if re.match(r"^[-*] ", ln.strip())]
         lines += ["", heading, ""]
@@ -3303,6 +3334,29 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
 _NOT_RECORDED = re.compile(r"^-\s*(?:`[^`]+`\s*—\s*)?使わない[:：]|^-\s*関係なし[:：]|^<!--.*-->$")
 
 
+def compact_plan(text: str) -> str:
+    """説明コメントと変更不要の項目を利用者向けの計画から除く。"""
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    out: list[str] = []
+    heading, skip = "", False
+    for line in text.splitlines():
+        if line.startswith("#"):
+            heading, skip = line, False
+        if heading in ("## 影響範囲", TESTS_HEADING) and re.match(r"^[-*]\s", line.strip()):
+            skip = NO_CHANGE_MARK in line
+        elif skip and line.strip() and not line.startswith((" ", "\t")):
+            skip = False
+        if not skip:
+            out.append(line)
+    text = "\n".join(out)
+    # 既存の検査形式を保つ。省略した判断は内部の plan-check.json で補う。
+    _, bodies = sections(text, PLAN_HEADINGS)
+    for head, body in bodies.items():
+        if not body:
+            text = re.sub(rf"^{re.escape(head)}[ \t]*$", head + "\n\nなし", text, flags=re.MULTILINE)
+    return re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
+
+
 def prune_plan(text: str) -> str:
     """記録に要らないもの（使わなかったスキル・関係なしとしたファイル・中身が「なし」の見出し）を除く。"""
     out: list[str] = []
@@ -3333,7 +3387,7 @@ def finalize_plan(ctx: Ctx, result: list[str]) -> str | None:
     if not ctx.plan.is_file():
         return None
     decisions = load_decisions(ctx)
-    lines = [prune_plan(ctx.plan.read_text(encoding="utf-8")), "", "## 確認と判断", ""]
+    lines = [prune_plan(compact_plan(ctx.plan.read_text(encoding="utf-8"))), "", "## 確認と判断", ""]
     lines += [f"- {d['at']} {d['answer']}（{DECISIONS.get(d['answer'], '')}）" + (f": {d['note']}" if d["note"] else "")
               for d in decisions] or ["- 記録なし"]
     lines += ["", RESULT_HEADING, "", *[("#" + ln if ln.startswith("## ") else ln) for ln in result], ""]
@@ -3434,7 +3488,7 @@ def plan_records(ctx: Ctx) -> str:
     """どの側のリポジトリにもある、終わった回の計画の記録（codd を通った変更の手がかり）。"""
     text = []
     for repo in unique_paths(str(s.path) for _, s in all_sides(ctx)):
-        for folder in (Path(repo) / PLAN_DIR, Path(repo) / OLD_PLAN_DIR):
+        for folder in (Path(repo) / PLAN_DIR,):
             text += [read_text(p) or "" for p in sorted(folder.glob("*.md"))] if folder.is_dir() else []
     return "\n".join(text)
 
@@ -3512,7 +3566,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
-    dr = sub.add_parser("draft", help="計画のひな形を docs/.plans/日時-名前.md に置く（進めている計画があれば残す）")
+    dr = sub.add_parser("draft", help="計画のひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）")
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")

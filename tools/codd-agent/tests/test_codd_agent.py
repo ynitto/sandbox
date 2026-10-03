@@ -42,7 +42,7 @@ case "$1" in
 esac
 """
 
-PLAN = "docs/.plans/2026-10-01-0000-test.md"
+PLAN = ".plans/2026-10-01-0000-test.md"
 
 PLAN_ALIGNED = """\
 # 変更の計画
@@ -198,7 +198,7 @@ class CoddTest(unittest.TestCase):
         return self.log.read_text(encoding="utf-8").splitlines() if self.log.is_file() else []
 
     def write_plan(self, text: str, read: bool = True) -> None:
-        (self.impl / "docs/.plans").mkdir(parents=True, exist_ok=True)
+        (self.impl / ".plans").mkdir(parents=True, exist_ok=True)
         (self.impl / PLAN).write_text(text, encoding="utf-8")
         if read:
             self.read_up(self.impl)
@@ -671,7 +671,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "draft", "--name", "ログを足す").returncode, 2)
         r = self.run_pa(self.impl, "draft", "--name", "add-hello-log")
         self.assertEqual(r.returncode, 0, r.stderr)
-        plans = list((self.impl / "docs/.plans").glob("*.md"))
+        plans = list((self.impl / ".plans").glob("*.md"))
         self.assertEqual(len(plans), 1)
         plan = plans[0]
         self.assertRegex(plan.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-add-hello-log\.md$")
@@ -686,7 +686,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("計画はもうあります", self.run_pa(self.impl, "draft", "--name", "other").stdout)
         self.assertEqual(plan.read_text(encoding="utf-8"), PLAN_ALIGNED)
         self.run_pa(self.impl, "draft", "--new", "--name", "add-hello-log")
-        plans = list((self.impl / "docs/.plans").glob("*.md"))
+        plans = list((self.impl / ".plans").glob("*.md"))
         self.assertEqual(len(plans), 1)    # 進めていた計画は捨てて置き直す（同じ時刻なら -2 が付く）
         self.assertEqual(plans[0].read_text(encoding="utf-8"), template)
 
@@ -704,7 +704,8 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("src/m12.py", out)
         self.assertTrue(all(len(ln) <= 120 for ln in out.splitlines()))
         # 根拠の見出しは件数だけ（全文は貼らない）。
-        self.assertIn("根拠: 守る決まり", out)
+        self.assertIn("根拠: 参照先の前提", out)
+        self.assertNotIn("変更不要", out)
         self.assertNotIn("## 参照先の前提", out)
 
     @unittest.skipIf(os.name == "nt", "偽の uv を sh で作る")
@@ -1281,7 +1282,7 @@ class CoddTest(unittest.TestCase):
         report = self.run_pa(self.impl, "report").stdout
         self.assertIn("## テスト", report)
         self.assertIn("tests/test_app.py — 変えた", report)
-        self.assertIn("tests/e2e/page.yaml — 変更不要", report)
+        self.assertNotIn("tests/e2e/page.yaml — 変更不要", report)
 
     def test_tests_section_cannot_be_none_when_something_changes(self) -> None:
         self.write_plan(self.with_tests(PLAN_ALIGNED, "なし"))
@@ -1372,7 +1373,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("FOUND 1 files", r.stdout)
         # 根拠は参照先の scope の中、影響範囲は自分の scope の中だけを認める。
         plan = PLAN_DRIFT
-        (mono / "docs/.plans").mkdir(parents=True, exist_ok=True)
+        (mono / ".plans").mkdir(parents=True, exist_ok=True)
         (mono / PLAN).write_text(plan.replace("（根拠: docs/api.md）", "（根拠: src/app.py）"),
                                             encoding="utf-8")
         r = self.run_pa(mono, "verify-plan")
@@ -1670,8 +1671,78 @@ class CoddTest(unittest.TestCase):
         self.assertIn("直していないファイル", r.stderr)
         self.assertIn("src/greet_user.py", r.stderr)
 
+    def test_plan_compacts_waivers_without_losing_verification(self) -> None:
+        commit(self.impl, {"src/a.py": "hello()\n", "src/b.py": "hello()\n",
+                           "tests/test_a.py": "hello()\n", "tests/test_b.py": "hello()\n"}, "callers")
+        self.set_config(self.impl, max_files=1)
+        plan = PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
+                                   "## 影響範囲\n\n- src/a.py — 変更不要: 契約は同じ\n"
+                                   "- src/b.py — 変更不要: 契約は同じ")
+        plan = plan.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                            "- tests/test_a.py — 変更不要: 期待値は同じ\n"
+                            "- tests/test_b.py — 変更不要: 期待値は同じ")
+        self.write_plan("<!-- 説明 -->\n" + plan)
+        self.assert_plan_ok()
+        compact = (self.impl / PLAN).read_text()
+        self.assertNotIn("<!--", compact)
+        self.assertNotIn("変更不要", compact)
+        self.assertNotIn("src/a.py", compact)
+        self.assertNotIn("tests/test_a.py", compact)
+        self.assert_plan_ok()  # 繰り返し検査しても形が変わらない
+        self.assertEqual((self.impl / PLAN).read_text(), compact)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1 # changed\n")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_pa(self.impl, "report")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("変更不要", r.stdout)
+        self.assertNotIn("src/a.py", r.stdout)
+        self.assertNotIn("tests/test_a.py", r.stdout)
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        self.assertNotIn("変更不要", (self.impl / PLAN).read_text())
+
+    def test_plan_keeps_distinct_waiver_reasons(self) -> None:
+        commit(self.impl, {"src/a.py": "hello()\n", "src/b.py": "hello()\n"}, "callers")
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
+                       "## 影響範囲\n\n- src/a.py — 変更不要: 契約は同じ\n"
+                       "- src/b.py — 変更不要: 表示だけ"))
+        self.assert_plan_ok()
+        text = (self.impl / PLAN).read_text()
+        self.assertNotIn("変更不要", text)
+        saved = json.loads((self.impl / ".codd/plan-check.json").read_text())["text"]
+        self.assertIn("- src/a.py — 変更不要: 契約は同じ", saved)
+        self.assertIn("- src/b.py — 変更不要: 表示だけ", saved)
+        self.assert_plan_ok()
+
+    def test_hidden_plan_judgments_cannot_change_after_approval(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        saved = self.impl / ".codd/plan-check.json"
+        value = json.loads(saved.read_text())
+        value["text"] = value["text"].replace("このリポジトリにテストはまだ無い", "理由を書き換えた")
+        saved.write_text(json.dumps(value))
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1 # changed\n")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("利用者が確かめたものではありません", r.stderr)
+
+    def test_legacy_plan_records_are_excluded_and_not_read(self) -> None:
+        commit(self.impl, {"src/app.py": "def hello():\n    return 1 # hello\n"}, "outside codd")
+        for folder in ("docs/.plans", "docs/.plan"):
+            old = folder + "/2026-10-01-0000-old.md"
+            commit(self.impl, {old: "# hello\n\n- src/app.py\n\n## 結果\n"}, "old record")
+        r = self.run_pa(self.impl, "lint", "--no-test")
+        self.assertIn("codd を通らずに入った変更（", r.stdout)
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.run_pa(self.design, "explore", "--term", "hello")
+        self.assertNotIn("docs/.plan", (self.design / ".codd/explore.md").read_text())
+        (self.impl / "docs/.plans/2026-10-01-0000-old.md").write_text("changed")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_plan_is_kept_as_a_decision_record(self) -> None:
-        # 計画は docs/.plans/日時-名前.md に書き、終わりに確認の答えと結果を書き足して、その名前のまま残す。
+        # 計画は .plans/日時-名前.md に書き、終わりに確認の答えと結果を書き足して、その名前のまま残す。
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
         self.run_pa(self.impl, "decide", "NG", "--note", "戻り値の説明も直して")
@@ -1691,7 +1762,7 @@ class CoddTest(unittest.TestCase):
             encoding="utf-8")
         r = self.run_pa(self.impl, "record")
         self.assertEqual(r.returncode, 0, r.stderr)
-        records = list((self.impl / "docs/.plans").glob("*.md"))
+        records = list((self.impl / ".plans").glob("*.md"))
         self.assertEqual(records, [plan])     # 置いたときの名前のまま残す
         self.assertIn(f"計画の記録: {PLAN}", r.stdout)
         text = plan.read_text(encoding="utf-8")
@@ -1711,7 +1782,7 @@ class CoddTest(unittest.TestCase):
         git(self.impl, "add", "-A")
         git(self.impl, "commit", "-q", "-m", "change")
         plan.write_text(text.replace("通った", "通らなかった"), encoding="utf-8")
-        (self.impl / "docs/.plans/2026-10-02-0000-next.md").write_text(PLAN_ALIGNED, encoding="utf-8")
+        (self.impl / ".plans/2026-10-02-0000-next.md").write_text(PLAN_ALIGNED, encoding="utf-8")
         self.read_up(self.impl)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
@@ -1722,7 +1793,7 @@ class CoddTest(unittest.TestCase):
         self.run_pa(self.impl, "decide", "STOP", "--note", "今回はやめる")
         r = self.run_pa(self.impl, "record")
         self.assertEqual(r.returncode, 0, r.stderr)
-        text = next((self.impl / "docs/.plans").glob("*.md")).read_text(encoding="utf-8")
+        text = next((self.impl / ".plans").glob("*.md")).read_text(encoding="utf-8")
         self.assertIn("STOP（やめる）: 今回はやめる", text)
         self.assertIn("## 結果\n\n- 変えていない", text)
 
@@ -1828,18 +1899,18 @@ class CoddTest(unittest.TestCase):
                            "services/api/test_handler.py": "from handler import hello\n"}, "service")
         self.set_config(self.impl, scope=["services"])
         self.assertIn("自分 1 files", self.run_pa(self.impl, "show").stdout)
-        (self.impl / "docs/.plans").mkdir(parents=True, exist_ok=True)
+        (self.impl / ".plans").mkdir(parents=True, exist_ok=True)
         (self.impl / PLAN).write_text("# 下書き\n", encoding="utf-8")
         self.set_config(self.impl, scope=[])
         r = self.run_pa(self.impl, "explore", "--term", "下書き")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertNotIn("docs/.plans", (self.impl / ".codd/explore.md").read_text(encoding="utf-8"))
+        self.assertNotIn(".plans", (self.impl / ".codd/explore.md").read_text(encoding="utf-8"))
 
     def test_graph_is_not_rebuilt_when_only_the_plan_changes(self) -> None:
         # 練り直しで計画を書き直すたびに、グラフを作り直さない（作り直しは長くかかる）。
         self.use_graphify_stub()
         self.assertIn("graphify: updated", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
-        (self.impl / "docs/.plans").mkdir(parents=True, exist_ok=True)
+        (self.impl / ".plans").mkdir(parents=True, exist_ok=True)
         (self.impl / PLAN).write_text("# 計画\n", encoding="utf-8")
         self.set_config(self.design, graphify="auto")
         r = self.run_pa(self.design, "explore", "--term", "hello")   # 設計書の側から自分（impl）を引く
@@ -1899,7 +1970,7 @@ class CoddTest(unittest.TestCase):
         # 点検は何も直さない（書くのは作業フォルダだけ）
         self.assertEqual(before, git(self.impl, "status", "--porcelain") + git(self.design, "status", "--porcelain"))
 
-        commit(self.impl, {"docs/.plans/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n\n## 結果\n"}, "記録")
+        commit(self.impl, {".plans/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n\n## 結果\n"}, "記録")
         text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
         self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1])  # 記録に出てくれば通った変更
 

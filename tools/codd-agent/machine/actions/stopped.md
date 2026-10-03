@@ -12,7 +12,7 @@ python3 .statemachine/codd/codd.py report
 python3 .statemachine/codd/codd.py record
 ```
 
-`record` は、やめたことも含めて計画（`docs/.plans/日時-名前.md`）を判断の記録として残します。出てきたパスも伝えます。
+`record` は、やめたことも含めて計画（`.plans/日時-名前.md`）を判断の記録として残します。出てきたパスも伝えます。
 
 - 計画の確認でやめたときは、まだ何も変えていないと書く。止まったところでやめたときは、変えた分を残したか、
   戻したか（`rollback` を実行したか）をはっきり書く
