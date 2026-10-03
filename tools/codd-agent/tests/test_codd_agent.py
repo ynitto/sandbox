@@ -726,7 +726,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
         self.assertIn("✓ graphify: graphify 1.0", r.stdout)
         self.assertIn("✓ git:", r.stdout)
-        self.assertIn("- webui-test: ありません", r.stdout)
+        self.assertNotIn("webui-test", r.stdout)
         r = run()   # 入っていれば入れ直さない
         self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
         run("--upgrade")
@@ -762,7 +762,7 @@ class CoddTest(unittest.TestCase):
         self.assertFalse((other / ".kiro").exists())
         self.assertFalse((other / ".github").exists())
 
-    def test_install_sets_check_and_picks_up_webui_test(self) -> None:
+    def test_init_uses_only_explicit_check(self) -> None:
         cfg = self.impl / ".statemachine/codd/codd.json"
         self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
         webui = ("serve: { command: npm start, url: http://localhost:3000 }\ncheck:\n  cases: [tests/e2e]\n"
@@ -771,14 +771,13 @@ class CoddTest(unittest.TestCase):
         (self.impl / "webui-test.config.yaml").write_text(webui, encoding="utf-8")
         init.init_repo(self.impl, None, None, discover=False)
         self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
-        # 初めて置くとき、webui-test の設定に check があれば、変えたあとの検査に webui-test check を使う。
+        # 初めて置くときも、ほかの道具の設定からコマンドを推測しない。
         app = self.tmp / "app"
         app.mkdir()
         git(app, "init", "-q", "-b", "main")
         (app / "webui-test.config.yaml").write_text(webui, encoding="utf-8")
         init.init_repo(app, "impl", ["../design"], discover=False)
-        self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["check"],
-                         ["webui-test", "check"])
+        self.assertNotIn("check", json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8")))
         init.init_repo(self.impl, None, None, discover=False, check="webui-test check")
         r = self.run_pa(self.impl, "show")
         self.assertIn("変えたあとに実行するもの", r.stdout)
@@ -960,10 +959,32 @@ class CoddTest(unittest.TestCase):
         self.assertIn("docs/screens/hello.md — ## 目的", r.stderr)
 
     def write_evidence(self, items: list[dict]) -> None:
-        out = self.impl / "webui-test-results"
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        config = json.loads(cfg.read_text(encoding="utf-8"))
+        config["evidence"] = ["results/ui-evidence.json"]
+        cfg.write_text(json.dumps(config), encoding="utf-8")
+        out = self.impl / "results"
         out.mkdir(exist_ok=True)
         (out / ".gitignore").write_text("*\n", encoding="utf-8")
-        (out / "evidence.json").write_text(json.dumps({"version": 1, "root": "..", "items": items}, ensure_ascii=False), encoding="utf-8")
+        (out / "ui-evidence.json").write_text(json.dumps({"version": 1, "root": "..", "items": items}, ensure_ascii=False), encoding="utf-8")
+
+    def test_evidence_requires_explicit_paths_and_preserves_settings(self) -> None:
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        out = self.impl / "results"
+        out.mkdir()
+        (out / "ui-evidence.json").write_text(json.dumps({"items": self.evidence_items(850)}), encoding="utf-8")
+        # ファイルがあっても、パスを指定するまで読み込まない。
+        self.assertIn("evidence）がありません", self.run_pa(self.impl, "evidence").stdout)
+        r = subprocess.run([sys.executable, str(TOOL / "init.py"), str(self.impl), "--no-discover-rules",
+                            "--no-agents", "--evidence", "results/ui-evidence.json", "--evidence", "other/*.json"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("自分: 2 件（results/ui-evidence.json）", self.run_pa(self.impl, "evidence").stdout)
+        init.init_repo(self.impl, None, None, discover=False)
+        self.assertEqual(json.loads(cfg.read_text())["evidence"], ["results/ui-evidence.json", "other/*.json"])
+        init.init_repo(self.impl, None, None, discover=False, evidence=[""])
+        self.assertEqual(json.loads(cfg.read_text())["evidence"], [])
+        self.assertIn("evidence）がありません", self.run_pa(self.impl, "evidence").stdout)
 
     def evidence_items(self, load: int, status: str = "passed") -> list[dict]:
         base = {"file": "tests/login.yaml", "doc": ["design:docs/api.md"]}
@@ -1031,12 +1052,13 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
-        screens = self.impl / "webui-test-results/screens"
+        screens = self.impl / "results/screens"
         screens.mkdir(parents=True)
+        (screens.parent / ".gitignore").write_text("*\n", encoding="utf-8")
         (screens / "login.png").write_bytes(new)
         base = {"kind": "image", "file": "tests/login.yaml"}
         self.write_evidence([
-            {**base, "id": "login/S-01/login", "status": "changed", "path": "webui-test-results/screens/login.png",
+            {**base, "id": "login/S-01/login", "status": "changed", "path": "results/screens/login.png",
              "sha256": sha(new), "history": [sha(new), sha(old)]},
             {**base, "id": "menu/S-01/menu", "status": "removed", "sha256": sha(gone), "history": [sha(gone)]},
         ])

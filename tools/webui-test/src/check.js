@@ -4,7 +4,7 @@
 //
 //   1. アプリをローカルで起動して（serve）、e2e のケース（check.cases）を動かす
 //   2. スクリーンショットを前回の画面と比べる（軽く: バイト列、違えば画素）。変わっても落とさない
-//   3. 振る舞い・時間・画面を webui-test-results/evidence.json に書く
+//   3. 振る舞い・時間・画面を設定の evidence（既定 results/webui-test-evidence.json）に書く
 //
 // 仕様書には依存しない。文書への影響を測って画像を差し替えるのは、evidence を受け取る側（codd-agent）。
 // 単体テストも扱わない（codd-agent の test など、呼び出し側が動かす）。
@@ -86,7 +86,7 @@ async function check(opts) {
     }
 
     // 3. テストで得たもの（振る舞い・時間・画面）
-    const evidence = writeEvidence(report, screens, { outDir: opts.outDir, latestDir, root: baseDir });
+    const evidence = writeEvidence(report, screens, { outDir: opts.outDir, evidenceFile: env.evidence, root: baseDir });
     summary.push(`テストで得たもの（振る舞い・時間・画面）: ${rel(evidence)}`);
   }
 

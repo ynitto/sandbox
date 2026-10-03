@@ -97,7 +97,7 @@ DEFAULT_TEST_PATTERNS = [
 MAX_TEST_FILES = 2000
 # テストで得たもの（確かめた振る舞い・測った時間・撮った画像）を書いたファイル。文書の印（<!-- evidence: id -->）に写し、
 # 今と同じか・目安を超えていないかを確かめる。codd.json の evidence で変えられ、[] で扱わない。
-DEFAULT_EVIDENCE = ["webui-test-results/evidence.json"]
+DEFAULT_EVIDENCE = []
 EVIDENCE_TOLERANCE = 0.2   # 測った値は揺れるので、写した値と 2 割までの違いは同じとみなす
 TESTS_HEADING = "## テストの変更案"
 # 設定しなくても使うスキルの置き場所（リポジトリのルートから）。フォルダごとに `名前/SKILL.md`。
@@ -179,7 +179,7 @@ def run(argv: list[str], cwd: Path, timeout: int, env: dict | None = None) -> tu
     if is_git:
         argv = ["git", "-c", "core.quotepath=false", *argv[1:]]
     if os.name == "nt" and argv:
-        # Windows では npm・webui-test などが .cmd なので、PATHEXT で探してから起動する。
+        # Windows では外部コマンドが .cmd なので、PATHEXT で探してから起動する。
         argv = [shutil.which(argv[0]) or argv[0], *argv[1:]]
     try:
         proc = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
@@ -343,7 +343,7 @@ def load_config(machine_dir: Path) -> dict:
         raise CoddError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
     command = config.get("check")
     if command is not None and not is_argv(command):
-        raise CoddError(f'{path} の check はコマンドの配列です（例: ["webui-test", "check"]）')
+        raise CoddError(f'{path} の check はコマンドの配列です（例: ["npm", "test"]）')
     test = config.get("test")
     if test is not None and not (is_argv(test) or (isinstance(test, dict) and test and all(
             isinstance(k, str) and k and is_argv(v) for k, v in test.items()))):
@@ -2070,8 +2070,8 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
 
 
 # ---------------------------------------------------------------- テストで得たもの（evidence）を実装・文書に活かす
-# テストは合否のほかに、確かめた振る舞い・測った時間・前回と比べた画面を残す（evidence.json。webui-test が書く。
-# ほかのテストも同じ形で書ける）。テストの側は文書を知らない。文書への影響を測って直すのはこのマシンの仕事:
+# テストは合否のほかに、確かめた振る舞い・測った時間・前回と比べた画面を残す（evidence JSON。
+# 実行する道具が共通の形で書く）。テストの側は文書を知らない。文書への影響を測って直すのはこのマシンの仕事:
 # - 画面: 文書のリポジトリの画像を sha256 で引き、画面のこれまでの版と同じ画像を見つけて今の画面に差し替える
 # - 振る舞い・時間: 文書は値を手で写さず `<!-- evidence: id -->…<!-- /evidence -->` の印で写し、今と同じか
 #   （`codd.py evidence --write` で写し直す）・目安（max=）を超えていないかを確かめる
@@ -3004,7 +3004,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     if changes:
         lines += ["", "## テストで得たものの変化（計画のときと比べて）", "", *changes[:MAX_MEASURED],
                   "", "（振る舞いや時間を文書に活かすなら `<!-- evidence: id -->…<!-- /evidence -->` で写す。"
-                  "画面は webui-test-results/screens/ の画像を文書に貼れば、以後は差し替える）"]
+                  "画面は結果の画像を文書に貼れば、以後は差し替える）"]
     own_now = sorted(p for p in a.own_touched if (ctx.root / p).is_file())
     lonely = [p for p in own_now if not any(k for k, _ in linked(ctx, "", {p}))]
     if lonely:

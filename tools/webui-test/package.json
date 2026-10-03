@@ -11,7 +11,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/casefile.test.js test/generate.test.js test/runner.test.js test/variants-env.test.js test/export.test.js test/install.test.js test/check.test.js test/probe.test.js test/init.test.js"
+    "test": "node --test test/casefile.test.js test/generate.test.js test/runner.test.js test/variants-env.test.js test/export.test.js test/install.test.js test/check.test.js test/probe.test.js test/init.test.js test/evidence.test.js"
   },
   "dependencies": {
     "@playwright/test": "^1.56.0",

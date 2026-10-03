@@ -78,7 +78,9 @@ test('config: 環境を選び、${VAR} を環境変数で置き換える。足�
   assert.strictEqual(stg.settings.headers.Authorization, 'Bearer abc');
   assert.strictEqual(stg.settings.storageState, path.join(dir, 'auth', 'stg.json'));
   assert.throws(() => loadEnv({ cwd: dir, envName: 'prod' }), /環境「prod」がありません/);
-  assert.deepStrictEqual(loadEnv({ cwd: tmpDir(t) }), { name: 'local', settings: {}, file: null, dir: null, serve: null, check: null });
+  const empty = tmpDir(t);
+  assert.deepStrictEqual(loadEnv({ cwd: empty }), { name: 'local', settings: {}, file: null, dir: null, serve: null, check: null,
+    evidence: path.join(empty, 'results/webui-test-evidence.json') });
 });
 
 test('run: variants で言語と画面幅を変えて同じケースを回し、実行記録を残す', async (t) => {

@@ -83,7 +83,7 @@ test('serve: 応答するまで待って起動し、止める。起動済みな�
 
 test('check: 起動して e2e → 前回の画面と比べる。変わっても落とさず、何が変わったかを evidence で渡す', async (t) => {
   const { dir } = await project(t);
-  const evidence = () => Object.fromEntries(JSON.parse(fs.readFileSync(path.join(dir, 'webui-test-results', 'evidence.json'), 'utf8')).items.map((i) => [i.id, i]));
+  const evidence = () => Object.fromEntries(JSON.parse(fs.readFileSync(path.join(dir, 'results', 'webui-test-evidence.json'), 'utf8')).items.map((i) => [i.id, i]));
 
   let r = await cli(['check', ...ep()], { cwd: dir });
   assert.strictEqual(r.code, 0, r.out);
@@ -93,7 +93,7 @@ test('check: 起動して e2e → 前回の画面と比べる。変わっても�
   assert.strictEqual(r.err, '', '結果は標準出力の最後にまとめる');
   assert.strictEqual(fs.readFileSync(path.join(dir, 'webui-test-results', '.gitignore'), 'utf8').split('\n').slice(-2)[0], '*',
     '結果の置き場はリポジトリの変更に数えさせない');
-  assert.match(r.out, /テストで得たもの（振る舞い・時間・画面）: webui-test-results\/evidence.json/);
+  assert.match(r.out, /テストで得たもの（振る舞い・時間・画面）: results\/webui-test-evidence.json/);
   let ev = evidence();
   assert.deepStrictEqual([ev['login/S-01'].kind, ev['login/S-01'].status, ev['login/S-01'].file], ['behavior', 'passed', 'tests/login.yaml']);
   assert.strictEqual(ev['login/S-01/表示'].unit, 'ms');
@@ -102,8 +102,8 @@ test('check: 起動して e2e → 前回の画面と比べる。変わっても�
   assert.deepStrictEqual([first.kind, first.status, first.history.length], ['image', 'new', 1]);
   assert.match(first.path, /^webui-test-results\/screens\/login\/S-01\/login\.png$/);
   assert.ok(fs.existsSync(path.join(dir, first.path)));
-  const root = JSON.parse(fs.readFileSync(path.join(dir, 'webui-test-results', 'evidence.json'), 'utf8')).root;
-  assert.ok(fs.existsSync(path.join(dir, 'webui-test-results', root, first.path)), 'パスの起点を root で渡す（読む側は置き場を知らなくてよい）');
+  const root = JSON.parse(fs.readFileSync(path.join(dir, 'results', 'webui-test-evidence.json'), 'utf8')).root;
+  assert.ok(fs.existsSync(path.join(dir, 'results', root, first.path)), 'パスの起点を root で渡す（読む側は置き場を知らなくてよい）');
 
   r = await cli(['check', ...ep()], { cwd: dir });
   assert.match(r.out, /前回と同じ 1・変わった 0/);
@@ -130,6 +130,17 @@ test('check: 起動して e2e → 前回の画面と比べる。変わっても�
   r = await cli(['check', ...ep()], { cwd: dir });
   assert.match(r.out, /なくなった 1/);
   assert.strictEqual(evidence()['login/S-01/login'].status, 'removed');
+
+  // 設定だけで最新結果の出力先を変える。--out は実行レポートの置き先。
+  const config = path.join(dir, 'webui-test.config.yaml');
+  fs.appendFileSync(config, 'evidence: artifacts/custom-evidence.json\n');
+  r = await cli(['check', '--out', path.join(dir, 'reports'), ...ep()], { cwd: dir });
+  assert.strictEqual(r.code, 0, r.err);
+  assert.match(r.out, /artifacts\/custom-evidence.json/);
+  const custom = JSON.parse(fs.readFileSync(path.join(dir, 'artifacts/custom-evidence.json'), 'utf8'));
+  assert.strictEqual(custom.root, '..');
+  assert.ok(custom.items.some((i) => i.id === 'login/S-01'));
+  assert.strictEqual(fs.existsSync(path.join(dir, 'webui-test-results/evidence.json')), false);
 });
 
 test('check: ケースが落ちれば落とす。測った時間が目安を超えても落とす。ケースが無ければ使い方の誤り', async (t) => {

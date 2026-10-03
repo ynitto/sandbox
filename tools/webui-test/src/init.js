@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const YAML = require('yaml');
-const { findConfig } = require('./config');
+const { findConfig, DEFAULT_EVIDENCE } = require('./config');
 
 // 設定だけを作る。アプリやケースの内容、ほかの道具の設定は推測しない。
 function initConfig({ dir = '.', configPath, baseUrl = 'http://localhost:3000', serve, cases = ['tests/e2e'] } = {}) {
@@ -18,6 +18,7 @@ function initConfig({ dir = '.', configPath, baseUrl = 'http://localhost:3000', 
   if (existing) throw new Error(`設定は既にあります（上書きしません）: ${existing}`);
   const data = {
     defaultEnv: 'local',
+    evidence: DEFAULT_EVIDENCE,
     ...(serve === undefined ? {} : { serve: { command: serve, url: baseUrl } }),
     check: { cases },
     envs: { local: { baseUrl } },

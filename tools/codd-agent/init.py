@@ -20,7 +20,7 @@
 
 `<リポジトリ>/.statemachine/codd/` に machine/ の中身を写し、codd.json を書く。
 既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は上書きしない。--side / --ref / --scope /
---ref-scope / --exclude / --ref-exclude / --check / --test を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
+--ref-scope / --exclude / --ref-exclude / --check / --test / --evidence を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
 参照先に手で書いた rules・scope・exclude などは残す）。使うスキルは codd.json の skills を手で書く。
 `.codd/`（探した結果・検査の記録・変える前の写し・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
 このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
@@ -28,9 +28,8 @@
 refs[].rules に書く（--no-discover-rules でやめる。あとからは `codd.py rules --write`）。
 kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカスタムエージェント `codd` を書く
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
---check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。初めて置くときに渡さず、
-置き先に webui-test の設定（`webui-test.config.yaml` に check がある）があれば `webui-test check` を書く
-（ローカルで起動して e2e を動かし、前回と画面が変わったかを、変えるたびに確かめる。変わった画面は文書の画像に差し替える）。
+--check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。
+--evidence "パス" で結果ファイルの一覧を指定する（繰り返し可。"" で扱わない）。検査ツールの設定は自動検出しない。
 --test "コマンド" で、変えたあとに実行する単体テストのコマンド（codd.json の test）を書く（"" で消す）。
 """
 
@@ -54,17 +53,6 @@ AGENT_DESCRIPTION = "実装と設計書の一貫性を保って変える。コ�
 AGENT_KINDS = ("kiro", "copilot")
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
 GRAPHIFY_IGNORE_LINE = ".statemachine/codd/"
-# webui-test（画面のテスト）の設定。check があれば、変えたあとの検査に使う。
-WEBUI_TEST_CONFIGS = ("webui-test.config.yaml", "webui-test.config.yml", "webui-test.config.json")
-WEBUI_TEST_CHECK = ["webui-test", "check"]
-
-
-def webui_test_check(target: Path) -> list[str] | None:
-    for name in WEBUI_TEST_CONFIGS:
-        path = target / name
-        if path.is_file() and re.search(r'^(check:|\s*"check"\s*:)', path.read_text(encoding="utf-8"), re.M):
-            return list(WEBUI_TEST_CHECK)
-    return None
 
 
 def parse_ref(value: str) -> dict:
@@ -81,7 +69,7 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
             scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
             agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | None = None,
             test: str | None = None, exclude: list[str] | None = None,
-            ref_excludes: list[str] | None = None) -> Path:
+            ref_excludes: list[str] | None = None, evidence: list[str] | None = None) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
     dest = target / DEST_REL
@@ -157,8 +145,8 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
             config["check"] = argv
         else:
             config.pop("check", None)
-    elif not existed and webui_test_check(target):
-        config["check"] = webui_test_check(target)
+    if evidence is not None:
+        config["evidence"] = [p for p in evidence if p]
     if not existed:
         config.setdefault("skills", {"plan": [], "apply": []})
         config.setdefault("graphify", "auto")
@@ -250,14 +238,16 @@ def main(argv: list[str] | None = None) -> int:
                    help="書くカスタムエージェント（繰り返し可。既定は kiro と copilot の両方）")
     p.add_argument("--no-agents", action="store_true", help="カスタムエージェントを書かない")
     p.add_argument("--check", metavar="コマンド",
-                   help="変えたあとに実行する検査コマンド（例: \"npm test\"、\"webui-test check\"）。\"\" で消す")
+                   help="変えたあとに実行する検査コマンド（例: \"npm test\"）。\"\" で消す")
+    p.add_argument("--evidence", action="append", metavar="パス",
+                   help='結果ファイルのパス・glob（繰り返し可。一覧を入れ替える。既定は扱わない。"" で消す）')
     p.add_argument("--test", metavar="コマンド",
                    help="変えたあとに実行する単体テストのコマンド（例: \"npm test\"、\"python -m unittest\"）。\"\" で消す")
     args = p.parse_args(argv)
     dest = init_repo(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
                    scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
                    agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test,
-                   exclude=args.exclude, ref_excludes=args.ref_exclude)
+                   exclude=args.exclude, ref_excludes=args.ref_exclude, evidence=args.evidence)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8"))
     print(f"置きました: {dest}")
     refs = config.get("refs") or [{"path": config.get("ref_path")}]

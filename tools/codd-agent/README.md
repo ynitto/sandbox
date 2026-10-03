@@ -28,7 +28,7 @@
 置き方は 2 つに分かれる。
 
 **1. 外部のミドルウェアを端末に入れる（端末ごとに 1 回）。** graphify（任意。参照先を探すときの知識グラフ）を
-uv・pipx・pip のどれかで入れ、git と webui-test（任意）があるかを確かめる。`--upgrade` で最新にする。
+uv・pipx・pip のどれかで入れ、git があるかを確かめる。`--upgrade` で最新にする。
 
 ```bash
 python3 tools/codd-agent/install.py
@@ -79,7 +79,7 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs
 | `graphify` | `auto`（あれば使う）か `off` |
 | `test` | 任意。変えたあとに動かすテストのコマンド。1 つなら配列（例: `["npm", "test"]`）、単体・API・シナリオなどいくつもあるなら名前ごと（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
 | `tests` | 任意。テストのファイルの書き方（glob の配列）。既定は `test/**`・`tests/**`・`e2e/**`・`**/*.test.*`・`**/*.spec.*`・`**/test_*.py`・`**/*.feature`・`**/*.http`・`**/scenarios/**` など。`[]` でテストを扱わない |
-| `evidence` | 任意。テストで得たもの（振る舞い・時間・画面）を書いたファイル（glob の配列）。既定 `["webui-test-results/evidence.json"]`。`[]` で扱わない |
+| `evidence` | 任意。テストで得たもの（振る舞い・時間・画面）を書いたファイル（glob の配列）。既定 `[]`（扱わない）。使う結果ファイルのパスを明示する |
 | `check` | 任意。テストのあとに実行する検査コマンドの配列（例: `["webui-test", "check"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
 | `scope` | 任意。このリポジトリのうち自分が受け持つフォルダの配列（例: `["src", "tests"]`）。書かなければ全体 |
 | `refs[].scope` | 任意。その参照先のうち読む・変えるフォルダの配列。書かなければ全体 |
@@ -95,7 +95,7 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs
 探した結果・graphify のグラフなどの作業ファイルは `<リポジトリ>/.codd/` に置く（`init.py` が `.gitignore` に足す）。計画は `docs/.plans/` に置く（[下記](#使い方)）。
 このマシン自身が graphify の索引に入らないよう、`.graphifyignore` にも 1 行足す。
 もう一度 `init.py` を実行すると定義とスクリプトが入れ替わり、`codd.json` は上書きせずそのまま残る。
-`--side` / `--ref` / `--scope` / `--ref-scope` / `--exclude` / `--ref-exclude` / `--check` / `--test` を渡したときだけ、その項目を書き換える
+`--side` / `--ref` / `--scope` / `--ref-scope` / `--exclude` / `--ref-exclude` / `--check` / `--test` / `--evidence` を渡したときだけ、その項目を書き換える
 （`--ref` で入れ替えても、同じ名前の参照先に手で書いた `rules`・`scope`・`exclude` などは残す）。
 
 ### kiro-cli・GitHub Copilot のカスタムエージェント
@@ -359,13 +359,13 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-
 ### テストで得たものを実装と文書に活かす
 
 テストは合否のほかに、確かめた振る舞い・測った時間・前回と比べた画面を残す。これを `evidence` のファイル
-（[webui-test](../webui-test/README.md) は `webui-test-results/evidence.json` に書く）から読み、実装と文書に返す。
+（[webui-test](../webui-test/README.md) は `results/webui-test-evidence.json` に書く）から読み、実装と文書に返す。
 テストの側は文書を知らない。文書への影響を測って直すのはこのマシンである。
 
 **画面**: 文書のリポジトリにある画像（`.png`）を sha256 で引き、テストの画面のこれまでの版と同じ画像を見つける。
 前の版と同じ画像は、変えたあとの検査で今の画面に差し替え、どの文書が貼っているかを報告する。差し替えはハーネスの変更なので、
 計画に挙げなくてよく、「計画に無い変更」にも数えない。テストで撮らなくなった画面を貼っている画像は知らせる。
-文書に画面を貼るときは、`webui-test-results/screens/` の画像をそのまま写す（以後、画面が変われば差し替わる）。
+文書に画面を貼るときは、結果ファイルの画像のパス（`items[].path`）にある画像をそのまま写す（以後、画面が変われば差し替わる）。
 
 **振る舞い・時間**: 文書には値を手で書かず、印で写す。
 
@@ -543,7 +543,7 @@ statemachine-use スキルのあるエージェントに「codd-drift を実行�
 
 - アプリをローカルで起動しての e2e テスト
 - 前回と画面が変わったか（webui-test は仕様書を読まない）
-- 確かめた振る舞い・ページの読み込み時間・`measure` で測った時間・画面を `webui-test-results/evidence.json` に残す
+- 確かめた振る舞い・ページの読み込み時間・`measure` で測った時間・画面を `results/webui-test-evidence.json` に残す
 
 このマシンがそれを受け取り、変わった画面を貼っている文書の画像を差し替える
 （[テストで得たものを実装と文書に活かす](#テストで得たものを実装と文書に活かす)）。
@@ -552,11 +552,14 @@ statemachine-use スキルのあるエージェントに「codd-drift を実行�
 
 ```bash
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
-  --test "npm test" --check "webui-test check"
+  --test "npm test" --check "webui-test check" --evidence "results/webui-test-evidence.json"
 ```
 
-置き先に `webui-test.config.yaml`（`check` を書いたもの）があれば、`--check` を渡さなくても `webui-test check` を書く。
-ほかの検査は `--check "コマンド"` のように渡す（`codd.json` の `check` を直してもよい）。
+`check` と `evidence` は明示して設定する。ほかの道具の設定ファイル・出力先は自動検出しない。
+`--evidence` は繰り返して指定でき、パス・glob は対象リポジトリのルートからの相対。
+渡した一覧で置き換え、`--evidence ""` で結果を扱わなくする。既存の明示設定は更新しても保持する。
+webui-test の保存先を変更したら、利用するプロジェクトで codd-agent の `evidence` も合わせる。
+以前の自動検出で保存された `check` は保持するので、不要なら `--check ""` で消す。
 
 - e2e のケースファイルに `# coherence: doc=docs:docs/login.md` のように仕様書を書いておくと、仕様書を変える計画は
   ケースファイルも扱わないと通らない（[パスのつながり](#パスのつながり)。任意。webui-test はこの注記を読まない）
@@ -597,7 +600,7 @@ webui-test capture docs/screens.yaml --config ../my-app/webui-test.config.yaml -
 
 `verify-apply` でも同じ `check` を実行するため、撮影に失敗すれば検査は通らない。
 参照先の実装だけを読む場合、その参照先の `check` は実行されないので、設計書側に設定する。
-`capture` は画像を作るコマンドで、画像比較用の `evidence.json` は作らない。
+`capture` は画像を作るコマンドで、画像比較用の結果ファイルは作らない。
 既存の evidence による画像差し替えは、実装側の `webui-test check` で引き続き使える。
 
 codd-agent は外部コマンドを実行するだけで、撮影YAMLや webui-test のコードは読み込まない。

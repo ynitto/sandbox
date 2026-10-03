@@ -198,6 +198,7 @@ serve:                                   # テストの前にローカルで起�
   url: http://localhost:3000             # 応答するまで待つ。すでに応答していれば起動しない
 check:
   cases: [tests/e2e]                     # e2e のケース
+evidence: results/webui-test-evidence.json # 最新の結果（省略時もこのパス）
 envs:
   local: {}
 ```
@@ -210,7 +211,16 @@ webui-test check            # 落ちたケースがあれば終了コード 1
 2. `screenshot` ステップの画面を、前回の `check` の画面と比べる。まずファイルのバイト列で比べ、違うときだけ画素で比べる
    （色の近さは許容する）。画面が変わってもケースは落とさない。前回の画像と差分の画像を結果の置き場に残す
 3. 確かめた振る舞い・ページの読み込み時間・`measure` で測った時間・画面（前回と同じ・変わった・新しい・なくなった）を
-   `webui-test-results/evidence.json` に書く
+   `results/webui-test-evidence.json` に書く
+
+最新の結果の保存先は設定の `evidence` で変更できる。設定ファイルのフォルダからの相対パス
+（絶対パスも可）で、設定がない場合はカレントディレクトリからの相対。
+例えば `evidence: artifacts/ui-evidence.json` と書く。
+`--out` は実行ごとのレポートの保存先で、最新の結果の保存先は変えない。
+実行ごとの `evidence.json` もレポートのフォルダに残す。
+既定の結果ファイルは Git の対象から除く。保存先を変える場合は必要に応じて `.gitignore` に追加する。
+結果を読む道具の設定も合わせる（codd-agent は `codd.json` の `evidence` に
+`["artifacts/ui-evidence.json"]` を指定）。webui-test は読む側の設定を変更しない。
 
 仕様書は読まない。単体テストも動かさない。結果は出力の最後にまとめる。
 前回の画面は `webui-test-results/screens/` に置き、画面ごとにこれまでの版の sha256 も持つ（受け取る側が、文書に
@@ -224,13 +234,13 @@ PC ごとの描画の差で揺れるときは `check.maxDiffRatio: 0.001` のよ
 ### codd-agent と組む
 
 [codd-agent](../codd-agent/README.md) の「変えたあとの検査」に `webui-test check` を入れると、変えるたびに
-e2e を動かし、その結果（`evidence.json`）を codd-agent が受け取る。codd-agent は、変わった画面を貼っている
+e2e を動かし、明示した `--evidence` の結果を codd-agent が受け取る。codd-agent は、変わった画面を貼っている
 文書を探して画像を差し替え、どの文書に響いたかを報告する。
 単体テスト・API テスト・シナリオテストは codd-agent の `test` に書く（codd-agent が動かす）。
 
 ```bash
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs \
-  --test "npm test" --check "webui-test check"
+  --test "npm test" --check "webui-test check" --evidence "results/webui-test-evidence.json"
 ```
 
 設計書側から画像を作る場合は、[codd-agent の設計書側からの撮影手順](../codd-agent/README.md#設計書側から画像を作る)

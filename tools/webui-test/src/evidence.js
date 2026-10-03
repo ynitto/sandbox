@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const { caseKey } = require('./screens');
+const { DEFAULT_EVIDENCE } = require('./config');
 
 const posix = (p) => p.split(path.sep).join('/');
 
@@ -44,8 +45,8 @@ function buildEvidence(report, screens, { root }) {
   return items;
 }
 
-// 実行ごとの evidence.json と、最新をまとめた <置き場>/evidence.json を書く。最新は今回動かしたケースファイルの分だけ入れ替える。
-function writeEvidence(report, screens, { outDir, latestDir, root }) {
+// 実行ごとの evidence.json と、指定された最新の結果ファイルを書く。最新は今回動かしたケースファイルの分だけ入れ替える。
+function writeEvidence(report, screens, { outDir, root, evidenceFile = path.resolve(root, DEFAULT_EVIDENCE) }) {
   const items = buildEvidence(report, screens, { root });
   const doc = (list, dir) => JSON.stringify({
     version: 1, source: 'webui-test', generatedAt: report.finishedAt || new Date().toISOString(),
@@ -53,12 +54,20 @@ function writeEvidence(report, screens, { outDir, latestDir, root }) {
   }, null, 2) + '\n';
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'evidence.json'), doc(items, outDir));
-  const latest = path.join(latestDir, 'evidence.json');
+  const latest = evidenceFile;
+  const latestDir = path.dirname(latest);
   let prev = [];
   try { prev = JSON.parse(fs.readFileSync(latest, 'utf8')).items || []; } catch (_) { /* 初めて */ }
   const ran = new Set(items.map((i) => i.file));
   const merged = [...prev.filter((i) => !ran.has(i.file)), ...items];
   fs.mkdirSync(latestDir, { recursive: true });
+  // 既定の共有 results/ は、ほかの道具の結果まで無視しない。
+  if (latest === path.resolve(root, DEFAULT_EVIDENCE)) {
+    const ignore = path.join(latestDir, '.gitignore');
+    const before = fs.existsSync(ignore) ? fs.readFileSync(ignore, 'utf8') : '';
+    const entries = ['/webui-test-evidence.json', '/.gitignore'].filter((line) => !before.split(/\r?\n/).includes(line));
+    if (entries.length) fs.appendFileSync(ignore, (before && !before.endsWith('\n') ? '\n' : '') + entries.join('\n') + '\n');
+  }
   fs.writeFileSync(latest, doc(merged, latestDir));
   return latest;
 }

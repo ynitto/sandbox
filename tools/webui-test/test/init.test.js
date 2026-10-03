@@ -13,6 +13,7 @@ test('init: 既定の設定を作り、既存の設定とケースには触れ�
   const env = loadEnv({ cwd: dir });
   assert.equal(env.settings.baseUrl, 'http://localhost:3000');
   assert.equal(env.serve, null);
+  assert.equal(env.evidence, path.join(dir, 'results/webui-test-evidence.json'));
   assert.deepEqual(env.check.cases, [path.join(dir, 'tests/e2e')]);
   assert.equal(fs.existsSync(path.join(dir, 'tests')), false);
   const file = env.file;
@@ -63,4 +64,5 @@ test('init → capture: 設計書側から実装側の設定を読み、文書�
   const image = fs.readFileSync(path.join(design, 'docs/images/login-form.png'));
   assert.equal(image.subarray(1, 4).toString(), 'PNG');
   assert.equal(fs.existsSync(path.join(design, 'webui-test-results/evidence.json')), false);
+  assert.equal(fs.existsSync(path.join(design, 'results/webui-test-evidence.json')), false);
 });

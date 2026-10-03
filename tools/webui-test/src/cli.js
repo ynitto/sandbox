@@ -69,7 +69,7 @@ const USAGE = `webui-test — 条件からテストケースを作り、Playwrig
       書き出してそのまま npx playwright test で動かす（既定の書き出し先 webui-test-results/playwright）
   webui-test check [<ファイルかディレクトリ>...]
       アプリをローカルで起動して e2e を動かし、スクリーンショットを前回の画面と比べる
-      （webui-test.config.yaml の check と serve を使う）。振る舞い・時間・画面を webui-test-results/evidence.json に書く
+      （webui-test.config.yaml の check と serve を使う）。振る舞い・時間・画面を results/webui-test-evidence.json に書く
   webui-test validate <ファイルかディレクトリ>...   書式を検査する
   webui-test prompt "<条件>" [--url <url>]           エージェントへ渡す依頼文を表示する（チャットに貼る用）
   webui-test snapshot <url>                          画面の要素一覧（アクセシビリティツリー）を表示する

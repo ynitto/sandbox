@@ -415,7 +415,7 @@ graphify の有無にかかわらず `git grep --untracked -F -i` を並べる�
   読み込みだけを認める（計画のときに読んだだけで済ませない）。これで「使った」と書くことと「読んだ」ことを、スクリプトから
   見える事実で結び付ける。見つからないスキル（エージェントの組み込みなど）は読み込みを求めない
 - 導入の 2 つ: `install.py` は codd が使う外部のミドルウェアを端末に入れる（graphify を uv・pipx・pip で。
-  git・webui-test は有無を確かめるだけ）。codd そのものは端末に入れず、`init.py` がリポジトリの `.statemachine/codd/` に
+  git は有無を確かめるだけ）。codd そのものは端末に入れず、`init.py` がリポジトリの `.statemachine/codd/` に
   写して `codd.json`・カスタムエージェント・`.gitignore` を書く（リポジトリだけで動き、版もリポジトリごとに決まる）
 - カスタムエージェント: `init.py` が kiro-cli（`.kiro/agents/codd.json`）と GitHub Copilot（`.github/agents/codd.agent.md`）
   向けに、変える依頼は必ずこのマシンで進めるエージェントを書く。指示は `agents/codd-agent.md` 1 つから両方へ写す。
@@ -460,14 +460,15 @@ done は `codd.py report` の出力をそのまま伝える。計画のファイ
 `tools/webui-test` の `webui-test check` をそのコマンドにする。
 
 - 責務を分ける。webui-test は**仕様書に依存しない**: アプリをローカルで起動して（`serve`）e2e のケースを動かし、`screenshot`
-  ステップの画面を前回の `check` と比べ（まずバイト列、違えば画素）、結果を `webui-test-results/evidence.json` に書くだけ。
+  ステップの画面を前回の `check` と比べ（まずバイト列、違えば画素）、結果を `results/webui-test-evidence.json` に書くだけ。
   画面が変わってもケースは落とさない（変わったかどうかは情報で、良し悪しは文書と突き合わせる側が決める）。
   文書への影響を測って画像を差し替えるのはこのマシン（§4.3）
 - `run_check` は出力の末尾 20 行しか見せないので、webui-test は結果を最後にまとめて出す
 - 結果の置き場は git に無視させているので、evidence や前回の画面を書いても変更に数えない
 - 単体テストは webui-test に持たせない。テストを動かすのはこのマシンの `test`（§4.2）
 - e2e のケースファイルに `# coherence: doc=…` を書けば §4.1 のつながりとしてたどる（任意。webui-test はこの注記を読まない）
-- `init.py` は、初めて置くときに `webui-test.config.yaml`（`check` あり）があれば `["webui-test", "check"]` を書く。
+- codd-agent の既定 evidence は `[]`。`init.py --check` と `--evidence` で利用者がコマンドと結果ファイルを指定する。
+  webui-test の設定・出力先は自動検出せず、インストーラも webui-test の有無を確認しない。
   既にある `codd.json` は渡された項目しか書き換えない（利用者が手で整えた設定を置き直しで崩さない）。
   任意のコマンドは `--check` で書ける
 - Windows では `webui-test`・`npm` が `.cmd` なので、`run` は実行ファイルを PATHEXT で探してから起動する

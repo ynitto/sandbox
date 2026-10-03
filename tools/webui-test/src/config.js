@@ -3,6 +3,7 @@
 // 事前に入れる値を書き、--env で切り替える。値の ${名前} は環境変数で置き換える（秘密をファイルに書かない）。
 //
 //   defaultEnv: local
+//   evidence: results/webui-test-evidence.json                 # 最新の結果（省略時もこのパス）
 //   serve: { command: npm start, url: http://localhost:3000 }   # ローカルで起動してから動かす（任意）
 //   check: { cases: [tests/e2e] }                               # webui-test check（任意）
 //   envs:
@@ -18,7 +19,8 @@ const YAML = require('yaml');
 const { isPlainObject } = require('./casefile');
 
 const CONFIG_NAMES = ['webui-test.config.yaml', 'webui-test.config.yml', 'webui-test.config.json'];
-const TOP_KEYS = ['defaultEnv', 'envs', 'serve', 'check'];
+const TOP_KEYS = ['defaultEnv', 'envs', 'serve', 'check', 'evidence'];
+const DEFAULT_EVIDENCE = 'results/webui-test-evidence.json';
 const ENV_KEYS = ['baseUrl', 'localStorage', 'sessionStorage', 'cookies', 'headers', 'storageState', 'mocks', 'locale', 'timezone', 'serve'];
 const SERVE_KEYS = ['command', 'url', 'cwd', 'env', 'timeout'];
 const CHECK_KEYS = ['cases', 'env', 'maxDiffRatio'];
@@ -88,12 +90,13 @@ function normalizeCheck(raw, dir, errors) {
 }
 
 // 環境を 1 つ選んで返す。設定ファイルが無ければ既定の local（何も上書きしない）。
-// 戻り値: { name, settings, file, dir, serve, check }
+// 戻り値: { name, settings, file, dir, serve, check, evidence }
 function loadEnv({ configPath, envName, cwd } = {}) {
   const file = findConfig(configPath, cwd);
   if (!file) {
     if (configPath) throw new Error(`設定ファイルがありません: ${configPath}`);
-    return { name: envName || 'local', settings: {}, file: null, dir: null, serve: null, check: null };
+    return { name: envName || 'local', settings: {}, file: null, dir: null, serve: null, check: null,
+      evidence: path.resolve(cwd || process.cwd(), DEFAULT_EVIDENCE) };
   }
   const text = fs.readFileSync(file, 'utf8');
   const data = file.endsWith('.json') ? JSON.parse(text) : YAML.parse(text);
@@ -101,7 +104,10 @@ function loadEnv({ configPath, envName, cwd } = {}) {
   const dir = path.dirname(file);
   const errors = [];
   unknownKeys(data, TOP_KEYS, file, errors);
-  const top = expandVars({ serve: data.serve, check: data.check }, file, errors);
+  const top = expandVars({ serve: data.serve, check: data.check, evidence: data.evidence }, file, errors);
+  if (top.evidence !== undefined && (typeof top.evidence !== 'string' || !top.evidence.trim())) {
+    errors.push('evidence: 結果を書き出すファイルのパスを書きます');
+  }
   const check = normalizeCheck(top.check, dir, errors);
   const name = envName || (check && check.env) || data.defaultEnv || Object.keys(data.envs)[0];
   const raw = data.envs[name];
@@ -118,7 +124,7 @@ function loadEnv({ configPath, envName, cwd } = {}) {
   if (serve && !own && settings.baseUrl && originOf(settings.baseUrl) !== originOf(serve.url)) serve = null;
   if (serve && !settings.baseUrl) settings.baseUrl = serve.url;
   if (errors.length) throw new Error(errors.join('\n'));
-  return { name, settings, file, dir, serve, check };
+  return { name, settings, file, dir, serve, check, evidence: path.resolve(dir, top.evidence || DEFAULT_EVIDENCE) };
 }
 
-module.exports = { loadEnv, findConfig, expandVars, CONFIG_NAMES };
+module.exports = { loadEnv, findConfig, expandVars, CONFIG_NAMES, DEFAULT_EVIDENCE };

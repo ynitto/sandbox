@@ -9,7 +9,6 @@
 
 確かめるだけのもの（入れ方は表示する）:
   git        必須
-  webui-test 画面のテストを変えたあとの検査に使うとき（`tools/webui-test/install.py`）
 
 codd そのものは端末に入れない。リポジトリごとに `init.py` で置く（リポジトリだけで動くように）。
 
@@ -35,9 +34,7 @@ GRAPHIFY = ("graphify", ["graphify", "--version"],
              [sys.executable, "-m", "pip", "install", "--user", "graphifyy"]],
             [["uv", "tool", "upgrade", "graphifyy"], ["pipx", "upgrade", "graphifyy"],
              [sys.executable, "-m", "pip", "install", "--user", "-U", "graphifyy"]])
-CHECK_ONLY = (("git", ["git"], "https://git-scm.com/downloads から入れる（必須）"),
-              ("webui-test", ["webui-test"],
-               "画面のテストを検査に使うなら python3 tools/webui-test/install.py で入れる（任意）"))
+CHECK_ONLY = (("git", ["git"], "https://git-scm.com/downloads から入れる（必須）"),)
 
 
 def version(cmd: list[str]) -> str | None:
