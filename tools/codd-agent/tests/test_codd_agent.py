@@ -17,6 +17,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -768,15 +769,15 @@ class CoddTest(unittest.TestCase):
         env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin", "HOME": str(self.tmp / "home")}
         run = lambda *a: subprocess.run([sys.executable, str(TOOL / "install.py"), *a], capture_output=True,
                                         text=True, env=env)
-        r = run()
+        r = run("--no-skills")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
         self.assertIn("✓ graphify: graphify 1.0", r.stdout)
         self.assertIn("✓ git:", r.stdout)
         self.assertNotIn("webui-test", r.stdout)
-        r = run()   # 入っていれば入れ直さない
+        r = run("--no-skills")   # 入っていれば入れ直さない
         self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
-        run("--upgrade")
+        run("--upgrade", "--no-skills")
         self.assertEqual(uv_log.read_text(encoding="utf-8").split()[-3:], ["tool", "upgrade", "graphifyy"])
         # 端末に入れても、リポジトリには何も置かない。
         app = self.tmp / "app"
@@ -787,6 +788,47 @@ class CoddTest(unittest.TestCase):
         rc = install.main([str(app), "--side", "impl", "--ref", "../design", "--no-agents", "--no-discover-rules"])
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["side"], "impl")
+
+    def test_middleware_installs_external_skills_for_both_ides_without_agent_cli(self) -> None:
+        external = mock.Mock()
+        external.setup_caveman.return_value = True
+        with mock.patch.object(install, "load_external_installer", return_value=external), \
+             mock.patch.object(install, "version", return_value="graphify 1.0"), \
+             mock.patch.object(install.shutil, "which", side_effect=lambda name: f"/tools/{name}" if name in ("graphify", "git") else None), \
+             mock.patch.object(install.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertEqual(install.main([]), 0)
+        self.assertEqual(external.setup_caveman.call_args_list,
+                         [mock.call("kiro", force=False), mock.call("copilot", force=False)])
+        self.assertEqual(run.call_args_list,
+                         [mock.call(["/tools/graphify", "install", "--platform", agent], timeout=install.TIMEOUT)
+                          for agent in ("kiro", "copilot")])
+
+    def test_middleware_agent_option_and_upgrade_do_not_delegate_to_repo_init(self) -> None:
+        with mock.patch.object(install, "install_middleware", return_value=0) as middleware:
+            self.assertEqual(install.main(["--agent", "kiro", "--upgrade"]), 0)
+            middleware.assert_called_once_with(True, agents=["kiro"], skills=True)
+        with mock.patch.object(install, "install_middleware", return_value=0) as middleware:
+            self.assertEqual(install.main(["--no-skills"]), 0)
+            middleware.assert_called_once_with(False, agents=install.AGENT_KINDS, skills=False)
+
+    def test_middleware_reports_failed_skill_registration_and_still_installs_other_skills(self) -> None:
+        external = mock.Mock()
+        external.setup_caveman.return_value = True
+        with mock.patch.object(install, "load_external_installer", return_value=external), \
+             mock.patch.object(install, "version", return_value="graphify 1.0"), \
+             mock.patch.object(install, "run_first", return_value="uv"), \
+             mock.patch.object(install.shutil, "which", return_value="/tools/graphify"), \
+             mock.patch.object(install.subprocess, "run", side_effect=[subprocess.TimeoutExpired("graphify", 600),
+                                                                      mock.Mock(returncode=0)]) as run:
+            self.assertEqual(install.install_middleware(upgrade=True, agents=("kiro", "copilot")), 1)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(external.setup_caveman.call_args_list,
+                         [mock.call("kiro", force=True), mock.call("copilot", force=True)])
+
+    def test_middleware_loads_shared_remote_installer(self) -> None:
+        external = install.load_external_installer()
+        self.assertEqual(Path(external.__file__).resolve(), REPO / "install.py")
+        self.assertTrue(callable(external.setup_caveman))
 
     def test_install_writes_custom_agents(self) -> None:
         kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))

@@ -28,10 +28,16 @@
 置き方は 2 つに分かれる。
 
 **1. 外部のミドルウェアを端末に入れる（端末ごとに 1 回）。** graphify（任意。参照先を探すときの知識グラフ）を
-uv・pipx・pip のどれかで入れ、git があるかを確かめる。`--upgrade` で最新にする。
+uv・pipx・pip のどれかで入れ、git があるかを確かめる。caveman・graphify の外部スキルも Kiro・Copilot の
+ユーザー領域へ配置する（既定は両方、エージェント CLI は不要）。`--upgrade` で最新にする。
 
 ```bash
 python3 tools/codd-agent/install.py
+# 片方だけ導入する
+python3 tools/codd-agent/install.py --agent kiro
+python3 tools/codd-agent/install.py --agent copilot
+# スキルを配置せず、graphify 本体だけ導入する
+python3 tools/codd-agent/install.py --no-skills
 ```
 
 **2. codd をリポジトリに置く（リポジトリごとに 1 回）。** `.statemachine/codd/` に定義を写し、`codd.json` を書く。
@@ -116,8 +122,8 @@ statemachine-use スキルが無い環境でも、エージェントの指示だ
 codd-agent には内包せず、`init.py` でもコピーしない。この配布リポジトリのルートで実行する。
 
 ```bash
-python3 install.py --agent kiro
-python3 install.py --agent copilot
+python3 tools/codd-agent/install.py --agent kiro
+python3 tools/codd-agent/install.py --agent copilot
 ```
 
 Kiro / Copilot の CLI が無い、IDE だけの環境でも導入できる。外部配布元へのネットワーク接続が必要。

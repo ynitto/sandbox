@@ -3,9 +3,12 @@
 
     python3 tools/codd-agent/install.py              # 足りないものを入れる
     python3 tools/codd-agent/install.py --upgrade    # 入っているものも最新にする
+    python3 tools/codd-agent/install.py --agent kiro # Kiro IDE / CLI 向けのスキルだけ配置
 
 入れるもの:
   graphify   参照先を探すときの知識グラフ（任意。無ければ文字列検索だけで動く）。uv → pipx → pip の順で入れる
+  caveman / graphify の外部スキル   既定は Kiro・Copilot の両方。エージェント CLI は不要。
+      caveman は公式 GitHub、graphify は公式パッケージから配置する。スキルは内包しない。
 
 確かめるだけのもの（入れ方は表示する）:
   git        必須
@@ -20,6 +23,7 @@ codd そのものは端末に入れない。リポジトリごとに `init.py` �
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -27,6 +31,18 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TIMEOUT = 600
+AGENT_KINDS = ("kiro", "copilot")
+
+
+def load_external_installer():
+    """配布元から取得する処理をルートのインストーラーと共有する。"""
+    path = HERE.parent.parent / "install.py"
+    spec = importlib.util.spec_from_file_location("codd_external_installer", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"外部スキルのインストーラーを読み込めません: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 # (名前, 入っているかを見るコマンド, 入れるコマンドの候補, 最新にするコマンドの候補)
 GRAPHIFY = ("graphify", ["graphify", "--version"],
@@ -64,7 +80,7 @@ def run_first(candidates: list[list[str]]) -> str | None:
     return None
 
 
-def install_middleware(upgrade: bool = False) -> int:
+def install_middleware(upgrade: bool = False, agents=AGENT_KINDS, skills: bool = True) -> int:
     name, probe, installs, upgrades = GRAPHIFY
     current = version(probe)
     failed = 0
@@ -77,6 +93,27 @@ def install_middleware(upgrade: bool = False) -> int:
         else:
             failed += 1
             print(f"✗ {name} を入れられませんでした（uv・pipx・pip のどれかが要ります）。無くても文字列検索だけで動きます")
+    if skills:
+        external = load_external_installer()
+        exe = shutil.which("graphify")
+        for agent in dict.fromkeys(agents):
+            if not external.setup_caveman(agent, force=upgrade):
+                failed += 1
+            if not exe:
+                print(f"✗ {agent} 向け graphify スキルを登録できません（graphify 本体がありません）")
+                failed += 1
+                continue
+            try:
+                result = subprocess.run([exe, "install", "--platform", agent], timeout=TIMEOUT)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                print(f"✗ {agent} 向け graphify スキルの登録に失敗しました: {exc}")
+                failed += 1
+                continue
+            if result.returncode:
+                print(f"✗ {agent} 向け graphify スキルの登録に失敗しました（{result.returncode}）")
+                failed += 1
+            else:
+                print(f"✓ {agent} 向け graphify スキルを登録しました")
     for name, probe, how in CHECK_ONLY:
         found = shutil.which(probe[0])
         print(f"✓ {name}: {found}" if found else f"- {name}: ありません。{how}")
@@ -86,16 +123,19 @@ def install_middleware(upgrade: bool = False) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if any(not a.startswith("-") for a in argv) or any(a.startswith(("--side", "--ref")) for a in argv):
+    p = argparse.ArgumentParser(description="codd-agent の graphify 本体と caveman・graphify 外部スキルを導入する")
+    p.add_argument("--upgrade", action="store_true", help="入っているものも最新にする")
+    p.add_argument("--agent", action="append", choices=AGENT_KINDS,
+                   help="スキルの導入先（繰り返し可。既定は Kiro と Copilot の両方。CLI 不要）")
+    p.add_argument("--no-skills", action="store_true", help="外部スキルを配置せず、graphify 本体だけ導入する")
+    args, legacy = p.parse_known_args(argv)
+    if legacy:
         # 以前の使い方（リポジトリを渡す）。リポジトリへ置くのは init.py の仕事。
         print("リポジトリへ置くのは init.py に分けました（install.py は外部のミドルウェアを入れます）。init.py に渡します。")
         sys.path.insert(0, str(HERE))
         import init as repo_init
         return repo_init.main(argv)
-    p = argparse.ArgumentParser(description="codd-agent が使う外部のミドルウェア（graphify など）を端末に入れる")
-    p.add_argument("--upgrade", action="store_true", help="入っているものも最新にする")
-    args = p.parse_args(argv)
-    return install_middleware(args.upgrade)
+    return install_middleware(args.upgrade, agents=args.agent or AGENT_KINDS, skills=not args.no_skills)
 
 
 if __name__ == "__main__":
