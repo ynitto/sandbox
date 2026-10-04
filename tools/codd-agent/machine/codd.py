@@ -1334,6 +1334,91 @@ def terms_from_diff(side: Side) -> list[str]:
     return unique(terms)
 
 
+def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
+    """作業中の差分（新しいファイルも）を、ファイルごとの（足した行, 消した行）に分ける。"""
+    diff = run(["git", "diff", "HEAD", *side.pathspec()], side.path, GIT_TIMEOUT)[1]
+    out: dict[str, tuple[list[str], list[str]]] = {}
+    cur, header = None, False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            cur, header = None, True
+        elif header and line.startswith("+++ "):
+            path = line[4:]
+            cur = path[2:] if path.startswith("b/") and side.has(path[2:]) else None
+        elif line.startswith("@@"):
+            header = False
+        elif not header and cur and line[:1] in "+-":
+            out.setdefault(cur, ([], []))[0 if line[0] == "+" else 1].append(line[1:])
+    for name in run(["git", "ls-files", "--others", "--exclude-standard", *side.pathspec()],
+                    side.path, GIT_TIMEOUT)[1].splitlines():
+        if side.has(name):
+            try:
+                out[name] = ((side.path / name).read_text(encoding="utf-8").splitlines(), [])
+            except (OSError, UnicodeDecodeError):
+                continue
+    return out
+
+
+# 文字列の値（画面の文言・URL・メッセージ）。e2e のケースはコードの名前ではなく、こうした文字列で書かれる。
+_LITERAL = re.compile(r"""(["'`])((?:(?!\1)[^\\\n]){3,60})\1""")
+_LETTER = re.compile(r"[^\W\d_]")
+
+
+def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
+    """コードの変更で足した・消した文字列（テスト・文書のファイルは除く）。"""
+    counts: dict[str, Counter] = {"+": Counter(), "-": Counter()}
+    for rel, (plus, minus) in diff_by_file(side).items():
+        if is_test(ctx, key, rel) or rel.lower().endswith(DOC_EXTS):
+            continue
+        for mark, lines in (("+", plus), ("-", minus)):
+            counts[mark].update(m.group(2).strip() for ln in lines for m in _LITERAL.finditer(ln))
+    return unique(t for t in counts["+"] | counts["-"]
+                  if counts["+"][t] != counts["-"][t] and _LETTER.search(t) and "${" not in t)
+
+
+# 新しく足した名前（テストで確かめるもの）。コードは定義（export しない const・let・var は中の値なので除く）、文書は見出し。
+_NEW_CODE_NAMES = (*_DIFF_TERMS[:3], re.compile(r"^[+-]\s*export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]{2,})\s*="),
+                   _DIFF_TERMS[4])
+_NEW_DOC_NAMES = (_DIFF_TERMS[5],)
+
+
+def grep_word(term: str) -> list[str]:
+    return ["-w"] if _WORDLIKE.match(term) else []
+
+
+def existed_at_head(side: Side, term: str) -> bool:
+    rc, out = run(["git", "grep", "-l", "-I", "-F", *grep_word(term), "-e", term, "HEAD", *side.pathspec()],
+                  side.path, GIT_TIMEOUT)
+    return rc == 0 and any(side.has(ln.split(":", 1)[1]) for ln in out.splitlines() if ":" in ln)
+
+
+def added_names(ctx: Ctx, key: str, side: Side) -> dict[str, str]:
+    """この回の変更で新しく足した名前（関数・型・文書の見出し）と、そのファイル。前からある名前は除く。"""
+    names: dict[str, str] = {}
+    for rel, (plus, minus) in diff_by_file(side).items():
+        if is_test(ctx, key, rel):
+            continue
+        pats = _NEW_DOC_NAMES if rel.lower().endswith(DOC_EXTS) else _NEW_CODE_NAMES
+
+        def grab(lines: list[str]) -> set[str]:
+            return {m.group(1).strip() for ln in lines for pat in pats for m in [pat.match("+" + ln)] if m}
+        for name in sorted(grab(plus) - grab(minus)):
+            if not name.startswith("_"):
+                names.setdefault(name, rel)
+    # 別の側に前からある名前（実装済みの関数を仕様書に書き足した、など）も新しい振る舞いではない。
+    return {n: rel for n, rel in names.items() if not any(existed_at_head(s, n) for _, s in all_sides(ctx))}
+
+
+def tested_anywhere(ctx: Ctx, term: str) -> bool:
+    """どこかの側のテストのファイルに、その名前が書かれているか。"""
+    for key, side in all_sides(ctx):
+        if test_patterns(ctx, key) and any(
+                is_test(ctx, key, rel)
+                for rel in git_grep(side, ["--untracked", "-l", "-I", "-F", *grep_word(term), "-e", term])):
+            return True
+    return False
+
+
 def measure(ctx: Ctx, terms: list[str], name: str, title: str) -> list[str]:
     """変わる名前から、自分のリポジトリで影響を受けるファイルを測る（graphify affected + git grep）。"""
     terms = terms[:MAX_TERMS]
@@ -1382,7 +1467,7 @@ def cited_anywhere(ctx: Ctx, bodies: dict[str, str]) -> set[tuple[str, str]]:
     for heading in (*CITED_IN_REFS, "## 参照先の変更案"):
         for item in items(bodies.get(heading, "")):
             found |= cited_refs(ctx, item, allow_new=True).found
-    return found
+    return found | {(k, rel) for k, rel in test_plan(ctx, bodies).listed() if k}
 
 
 def ref_label(ctx: Ctx, name: str, rel: str) -> str:
@@ -1794,6 +1879,10 @@ class Pending:
         # 一致した行を添える。たいていはこの行だけで関係を判断でき、ファイルを開かずに済む
         # （` は外す。計画の検査が、添えた行の中の名前やパスを根拠として読まないように）
         seen = f" 「{snippet(ctx.ref(name).path / rel, line, terms or [], 60).replace('`', '')}」" if line else ""
+        if tests_enabled(ctx) and is_test(ctx, name, rel):
+            # 参照先のテストも、根拠ではなくテストの変更案で判断する（足す・直す・変更不要）
+            self.add(TESTS_HEADING, (name, rel), f"- {ref_label(ctx, name, rel)} — {PENDING_MARK}（{why}）{seen}")
+            return
         self.add("## 参照先のその他", (name, rel),
                  f"- {PENDING_MARK}: {ref_label(ctx, name, rel)}{f':{line}' if line else ''}（{why}）{seen}")
 
@@ -1954,14 +2043,40 @@ def test_files(ctx: Ctx, key: str) -> list[str]:
     return files[:MAX_TEST_FILES]
 
 
-def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]]) -> dict[tuple[str, str], str]:
+# テストのファイル名から外す印（test_app.py・app_test.go・LoginTest.java・login.spec.ts → app・login）。
+_TEST_STEM_MARKS = (re.compile(r"^tests?[_-]", re.I),
+                    re.compile(r"(?:[_-](?:tests?|spec|e2e)|(?<=[a-z0-9])(?:Tests?|Spec))$"))
+# ファイル名だけでは何のテストか決まらない名前。
+GENERIC_STEMS = {"index", "main", "__init__", "init", "mod", "lib", "util", "utils", "common", "types", "config",
+                 "conftest", "setup", "readme", "helpers", "fixtures"}
+MAX_TEXTS = 12
+
+
+def file_stem(rel: str, test: bool = False) -> str:
+    """ファイル名の語幹（拡張子と、テストなら test・spec の印を外して小文字に）。"""
+    stem = Path(rel).name.split(".", 1)[0]
+    if test:
+        for mark in _TEST_STEM_MARKS:
+            stem = mark.sub("", stem)
+    stem = stem.lower()
+    return "" if len(stem) < 3 or stem in GENERIC_STEMS else stem
+
+
+def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
+                   texts: list[str] | None = None) -> dict[tuple[str, str], str]:
     """変える名前・変えるファイルが響くテストのファイル（自分と参照先。同じ側でも数える）と、その理由。
 
     - 名前: 変わる名前（`…`・差分の定義や見出し）がテストのファイルに書かれている
+    - 文字列: 変えた文字列（画面の文言・URL など。差分の引用符の中）がテストのファイルに書かれている
+    - ファイル名: テストのファイル名が、変えるファイルと同じ語幹を持つ（app.py と test_app.py、Login.tsx と login.yaml）
     - つながり: テストのファイルが変えるファイルをパスで指している（`coherence: code=…`・`doc=…` など）か、その逆
+
+    e2e のケースは画面の文言や URL で書かれ、コードの名前が出てこないことが多い。文字列とファイル名は、
+    テストの道具の書き方を知らずに e2e のケースを拾うための手がかり。
     """
     found: dict[tuple[str, str], str] = {}
     targets = {(k, rel) for k, rels in changed.items() for rel in rels}
+    stems = {file_stem(rel) for k, rel in targets if not is_test(ctx, k, rel)} - {""}
     for key, side in all_sides(ctx):
         tests = set(test_files(ctx, key))
         if not tests:
@@ -1971,6 +2086,14 @@ def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]]) -> 
             for rel in hits:
                 if rel in tests and (key, rel) not in targets:
                     found.setdefault((key, rel), "名前")
+        if texts:
+            args = [a for t in texts[:MAX_TEXTS] for a in ("-e", t)]
+            for rel in git_grep(side, ["--untracked", "-l", "-I", "-F", *args]):
+                if rel in tests and (key, rel) not in targets:
+                    found.setdefault((key, rel), "文字列")
+        for rel in sorted(tests):
+            if (key, rel) not in targets and file_stem(rel, test=True) in stems:
+                found.setdefault((key, rel), "ファイル名")
         names = [Path(rel).name for _, rel in targets if Path(rel).name]
         for rel in sorted(tests & set(files_mentioning(side, names))):
             if (key, rel) in targets:
@@ -2068,6 +2191,30 @@ def plan_changes(ctx: Ctx, bodies: dict[str, str]) -> dict[str, set[str]]:
     return changed
 
 
+def untested_names(ctx: Ctx, bodies: dict[str, str], touched_all: dict[str, set[str]]) -> list[str]:
+    """この回で新しく足した名前（関数・型・文書の見出し）のうち、どのテストにも出てこず、計画も扱っていないもの。
+
+    文書の見出しは、この回に変えたテストがその文書をパスで指していれば確かめたとみなす（e2e のケースの注記など）。
+    """
+    plan_body = bodies.get(TESTS_HEADING, "")
+    touched_tests = [(k, rel) for k, rels in touched_all.items() for rel in rels
+                     if is_test(ctx, k, rel) and (side_of(ctx, k).path / rel).is_file()]
+    out = []
+    for key, side in all_sides(ctx):
+        if not touched_all.get(key):
+            continue
+        for name, rel in added_names(ctx, key, side).items():
+            if name in plan_body or tested_anywhere(ctx, name):
+                continue
+            if rel.lower().endswith(DOC_EXTS) and any(
+                    (key, rel) in resolve(ctx, side_of(ctx, k), t, claim).hits
+                    for k, t in touched_tests
+                    for claim in claims_in(t, read_text(side_of(ctx, k).path / t) or "")):
+                continue
+            out.append(f"`{name}`（{side_label(ctx, key, rel)}）")
+    return out
+
+
 def write_tests_report(ctx: Ctx, name: str, title: str, found: dict[tuple[str, str], str],
                        tp: TestPlan) -> None:
     def row(k: str, rel: str, why: str) -> str:
@@ -2076,6 +2223,23 @@ def write_tests_report(ctx: Ctx, name: str, title: str, found: dict[tuple[str, s
     lines = [f"# {title}", "", *([row(k, r, w) for (k, r), w in sorted(found.items())] or ["- なし"]), ""]
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / name).write_text("\n".join(lines), encoding="utf-8")
+
+
+def new_names_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
+    """変更案で新しく足す名前（どの側にもまだ無い `…`）を、テストの変更案が扱っているか。
+
+    今あるテストに当たらない新しい振る舞いは、測っても響くテストが見つからない。足すテストを計画させる。
+    """
+    names = name_terms(bodies.get("## 自分の変更案", "") + "\n" + bodies.get("## 参照先の変更案", ""))
+    body = bodies.get(TESTS_HEADING, "")
+    new = [n for n in names if n not in body
+           and not any(git_grep(side, ["--untracked", "-l", "-I", "-i", "-F", *grep_word(n), "-e", n])
+                       for _, side in all_sides(ctx))]
+    if not new:
+        return []
+    return [f"新しく足す {'、'.join(f'`{n}`' for n in new)} を確かめるテストが {TESTS_HEADING} にありません。"
+            "足すテストのパスと確かめることを、名前を添えて書いてください（要らないなら "
+            f"`- `名前` — {NO_CHANGE_MARK}: 理由`）"]
 
 
 def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pending: Pending) -> list[str]:
@@ -2090,6 +2254,7 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
                         f"（要らないなら `- {NO_CHANGE_MARK}: 理由`）")
     found = affected_tests(ctx, terms, changed)
     write_tests_report(ctx, "tests.md", "計画の変更が響くテスト（測定）", found, tp)
+    problems += new_names_plan_problems(ctx, bodies)
     problems += evidence_plan_problems(ctx, bodies, set(found) | tp.change)
     own_listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
                   | listed_paths(ctx, bodies.get("## 影響範囲", "")))
@@ -2097,7 +2262,8 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
                     and not (not k and covered(rel, own_listed)) and not (k and covered(rel, changed.get(k, set())))]
     if not missing_keys:
         return problems
-    why = {"名前": "変わる名前が出てくる", "つながり": "変えるファイルとパスでつながっている"}
+    why = {"名前": "変わる名前が出てくる", "ファイル名": "変えるファイルと名前が対になっている",
+           "つながり": "変えるファイルとパスでつながっている"}
     for k, rel in missing_keys:
         pending.add(TESTS_HEADING, (k, rel),
                     f"- {side_label(ctx, k, rel)} — {PENDING_MARK}（{why.get(found[(k, rel)], found[(k, rel)])}）")
@@ -2945,7 +3111,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if tests_enabled(ctx):
         touched_all = {"": a.own_touched, **a.touched}
         changed_files = {k: {p for p in v if not is_test(ctx, k, p)} for k, v in touched_all.items()}
-        found = affected = affected_tests(ctx, terms, changed_files)
+        texts = unique(t for key, side in all_sides(ctx) if touched_all.get(key)
+                       for t in literals_from_diff(ctx, key, side))
+        found = affected = affected_tests(ctx, terms, changed_files, texts)
         write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp)
         unfixed = [side_label(ctx, k, rel) for (k, rel) in sorted(found)
                    if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived]
@@ -2953,6 +3121,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems.append("変更が響くテストのうち、直していないファイルがあります（直すか、利用者に確かめて計画の"
                             f"{TESTS_HEADING} に「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(unfixed)
                             + f"（詳細: {DATA_DIRNAME}/tests-after.md）")
+        untested = untested_names(ctx, bodies, touched_all)
+        if untested:
+            problems.append("新しく足した名前を確かめるテストがありません（テストを足すか、利用者に確かめて計画の"
+                            f"{TESTS_HEADING} に「- `名前` — {NO_CHANGE_MARK}: 理由」を書いてください）: "
+                            + ", ".join(untested))
 
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。

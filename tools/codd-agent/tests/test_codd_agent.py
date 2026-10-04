@@ -631,8 +631,9 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/log.py").write_text("def log(m):\n    print(m)\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)   # log.py は計画に無い
         self.assertEqual(self.run_pa(self.impl, "keep-changes").returncode, 0)
-        self.write_plan(PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
-                                             "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"))
+        self.write_plan(self.with_tests(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"),
+            "- `log` — 変更不要: print を包むだけ"))
         self.assert_plan_ok()
         r = self.run_pa(self.impl, "verify-apply")   # 前の印から数えるので、残した変更がそのまま効く
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1514,6 +1515,101 @@ class CoddTest(unittest.TestCase):
         self.assertIn("変更が響くテストのうち、直していないファイルがあります", r.stderr)
         self.assertIn("tests/test_util.py", r.stderr)
 
+    def test_spec_change_from_the_design_side_reaches_impl_tests(self) -> None:
+        # 仕様書の側から始めても、実装の側の単体テストと e2e のケースを最初の検査から「テストの変更案」で扱わせる。
+        commit(self.impl, {
+            "tests/test_app.py": "from src.app import hello\n\ndef test_hello():\n    assert hello() == 1\n",
+            "tests/e2e/hello.yaml": "# coherence: doc=docs/api.md\nsuite: hello\n",
+        }, "tests")
+        plan = (PLAN_ALIGNED.replace("hello にログを足す。", "hello の説明に補足を足す。")
+                .replace("（根拠: docs/api.md#hello）", "（根拠: src/app.py）")
+                .replace("（根拠: docs/api.md:3）", "（根拠: src/app.py:2）")
+                .replace("## 守る決まり\n\nなし", "## 守る決まり\n\n- docs/api.md — 文書の書式: 今の見出しの並びを保つ")
+                .replace("- src/app.py — `hello` の中でログを出す", "- docs/api.md — `hello` の説明に補足を足す"))
+        (self.design / ".plans").mkdir(parents=True, exist_ok=True)
+        (self.design / PLAN).write_text(plan, encoding="utf-8")
+        self.read_up(self.design)
+        r = self.run_pa(self.design, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        text = (self.design / PLAN).read_text(encoding="utf-8")
+        tests_part = text.split("## テストの変更案", 1)[1].split("\n## ", 1)[0]
+        others = text.split("## 参照先のその他", 1)[1].split("\n## ", 1)[0]
+        for rel in ("tests/test_app.py", "tests/e2e/hello.yaml"):
+            self.assertIn(f"- {rel} — 未判断", tests_part)
+            self.assertNotIn(rel, others)   # 根拠の見出しで「関係なし」と片付けさせない
+        (self.design / PLAN).write_text(self.with_tests(plan, "\n".join([
+            "- tests/test_app.py — 変更不要: 戻り値は変わらない",
+            "- tests/e2e/hello.yaml — 補足の文言を確かめるように直す",
+        ])), encoding="utf-8")
+        self.assert_plan_ok(self.design)
+
+        # 変えたあと: 実装の側のテストも直させ、実装の側の test を codd が動かす。
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 1 を返す。いつも同じ値。\n",
+                                                 encoding="utf-8")
+        r = self.run_pa(self.design, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("tests/e2e/hello.yaml", r.stderr)
+        (self.impl / "tests/e2e/hello.yaml").write_text("# coherence: doc=docs/api.md\nsuite: hello always\n",
+                                                        encoding="utf-8")
+        self.set_config(self.impl, test=[sys.executable, "-c", "print('impl unit failed'); raise SystemExit(4)"])
+        r = self.run_pa(self.design, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("impl unit failed", r.stderr)
+        self.set_config(self.impl, test=[sys.executable, "-c", "print('ok')"])
+        r = self.run_pa(self.design, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_new_names_need_tests(self) -> None:
+        # 今あるテストに当たらない新しい名前は、足すテストを計画させ、変えたあとも確かめる。
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す", "- src/app.py — `greet` を足す")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("新しく足す `greet` を確かめるテストが ## テストの変更案 にありません", r.stderr)
+        self.write_plan(self.with_tests(plan, "- src/test_greet.py — `greet` が挨拶を返すことを確かめるケースを足す"))
+        self.assert_plan_ok()
+        self.write_plan(self.with_tests(plan, "- `greet` — 変更不要: 試しに足すだけで、どこからも呼ばない"))
+        self.assert_plan_ok()
+
+        # 計画に無い新しい関数まで足すと、確かめるテストが無いので落とす。
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1\n\n\ndef greet():\n    return 'hi'\n\n\n"
+                                              "def welcome():\n    return 'welcome'\n\n\ndef _inner():\n"
+                                              "    return 0\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("新しく足した名前を確かめるテストがありません", r.stderr)
+        self.assertIn("`welcome`（src/app.py）", r.stderr)
+        self.assertNotIn("`greet`（", r.stderr)    # 計画が扱っている
+        self.assertNotIn("`_inner`", r.stderr)     # 内側の名前は除く
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1\n\n\ndef greet():\n    return 'hi'\n",
+                                              encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_e2e_cases_are_found_by_file_name_and_text(self) -> None:
+        # e2e のケースはコードの名前ではなく、画面の文言や URL で書かれる。ファイル名と文字列で拾う。
+        commit(self.impl, {
+            "src/page.js": "export function renderHello() {\n  return '<h1>Hello page</h1>'\n}\n",
+            "tests/e2e/page.yaml": "suite: page\nsteps:\n  - goto: /hello\n",
+            "tests/e2e/top.yaml": "suite: top\nsteps:\n  - expect: <h1>Hello page</h1>\n",
+        }, "page")
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す", "- src/page.js — `renderHello` の見出しを変える")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        report = (self.impl / ".codd/tests.md").read_text(encoding="utf-8")
+        self.assertIn("tests/e2e/page.yaml — ファイル名", report)
+        self.assertNotIn("top.yaml", report)       # 計画の段階では文言が分からない
+        self.write_plan(self.with_tests(plan, "- tests/e2e/page.yaml — 変更不要: 見出しを見ていない"))
+        self.assert_plan_ok()
+        (self.impl / "src/page.js").write_text(
+            "export function renderHello() {\n  return '<h1>Welcome page</h1>'\n}\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("tests/e2e/top.yaml", r.stderr)
+        report = (self.impl / ".codd/tests-after.md").read_text(encoding="utf-8")
+        self.assertIn("tests/e2e/top.yaml — 文字列", report)
+
     def test_tests_can_be_turned_off(self) -> None:
         path = self.impl / ".statemachine/codd/codd.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -1859,8 +1955,10 @@ class CoddTest(unittest.TestCase):
     # ------------------------------------------------------------ 最後までやり切る
 
     def test_verify_apply_needs_every_planned_file(self) -> None:
-        self.write_plan(PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
-                                             "- src/app.py — `hello` の中でログを出す\n- src/log.py — `hello` から使うログを新しく書く"))
+        self.write_plan(self.with_tests(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す",
+            "- src/app.py — `hello` の中でログを出す\n- src/log.py — `hello` から使うログを新しく書く"),
+            "- `log` — 変更不要: print を包むだけ"))
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
