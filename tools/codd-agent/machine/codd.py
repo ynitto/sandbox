@@ -963,12 +963,14 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
             files.append(path)
 
     if exe and graph:
+        # 検索時の manifest なども、更新時と同じグラフの保存先に揃える。
+        env = {**os.environ, "GRAPHIFY_OUT": str(graph.parent)}
         lines += [f"### graphify {graph_cmd}", ""]
         for term in terms:
             argv = [exe, graph_cmd, term, "--graph", str(graph)]
             if graph_cmd == "query":
                 argv += ["--budget", str(GRAPHIFY_BUDGET)]
-            _, out = run(argv, repo, GRAPHIFY_TIMEOUT)
+            _, out = run(argv, repo, GRAPHIFY_TIMEOUT, env)
             out = "\n".join(ln for ln in out.splitlines() if not ln.startswith("[graphify] note")
                             and all(side.has(m.group(1) or m.group(2)) for m in _GRAPHIFY_SRC.finditer(ln)))
             lines += [f"#### {term}", "", "```", out.strip() or "(該当なし)", "```", ""]

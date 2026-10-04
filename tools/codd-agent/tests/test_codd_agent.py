@@ -32,11 +32,14 @@ GIT_ENV = {
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
 }
 
-# graphify のスタブ。呼ばれた引数を記録し、update なら $GRAPHIFY_OUT/graph.json を作る。
+# graphify のスタブ。引数を記録し、更新・検索の作業ファイルを出力先に作る。
 GRAPHIFY_STUB = """#!/bin/sh
 echo "$PWD $@" >> "{log}"
+out_dir="${{GRAPHIFY_OUT:-graphify-out}}"
+mkdir -p "$out_dir"
+echo "$1" > "$out_dir/manifest.json"
 case "$1" in
-  update) mkdir -p "$GRAPHIFY_OUT" && echo '{{}}' > "$GRAPHIFY_OUT/graph.json" ;;
+  update) echo '{{}}' > "$out_dir/graph.json" ;;
   query) echo "NODE $2 [src=docs/api.md loc=L3]" ;;
   affected) echo "Affected nodes for $2"; echo "- use() [calls] src/use.py:L4" ;;
 esac
@@ -258,10 +261,14 @@ class CoddTest(unittest.TestCase):
         self.assertTrue((self.impl / ".codd/graph/ref-design/graph.json").is_file())  # 自分の側に置く
         self.assertFalse((self.design / "graphify-out").exists())
         self.assertIn("query hello --graph", first[1])
+        manifest = self.impl / ".codd/graph/ref-design/manifest.json"
+        self.assertEqual(manifest.read_text(encoding="utf-8").strip(), "query")
 
         r = self.run_pa(self.impl, "explore", "--term", "hello")
         self.assertIn("graphify: fresh", r.stdout)
         self.assertFalse(any(" update " in c for c in self.calls()[len(first):]))
+        self.assertFalse((self.design / "graphify-out").exists())
+        self.assertEqual(manifest.read_text(encoding="utf-8").strip(), "query")
 
         # 参照先が変わったら（コミットでも、作業中の変更でも）作り直す。
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\n変えた。\n", encoding="utf-8")
@@ -277,6 +284,9 @@ class CoddTest(unittest.TestCase):
         self.assertIn("FOUND 2 files (graphify: updated)", r.stdout)
         self.assertEqual(self.calls()[0], f"{self.impl} update . --force")
         self.assertIn("affected hello --graph", self.calls()[1])
+        self.assertEqual((self.impl / ".codd/graph/own/manifest.json").read_text(encoding="utf-8").strip(),
+                         "affected")
+        self.assertFalse((self.impl / "graphify-out").exists())
         report = (self.impl / ".codd/impact.md").read_text(encoding="utf-8")
         self.assertIn("- src/use.py:3:hello()", report)
         self.assertIn("## 候補のファイル\n\n- src/use.py\n- src/app.py", report)
