@@ -15,7 +15,10 @@
     verify-apply        計画どおりに変えたか（変えてよいのは計画に挙げたファイルだけ。参照先も同じ）と、
                         検査コマンドを確かめる。参照先を変えたら、実際の変更から影響範囲を測り直し、
                         測ったファイルを直したか「変更不要」としたかを検査する。書き足したパスが実在するか、
-                        消したファイルを指したままのところが無いかも確かめる
+                        消したファイルを指したままのところが無いかも確かめる。
+                        段に分けて変えているときは、途中の段ではその段までのファイルを変え終えたかだけを確かめ、
+                        第 1 行を MORE にして次の段へ進める（全体の検査とテストは最後の段で）
+    batch               段に分けて変えるとき、今の段で変えるファイルを示す
     draft --name 名前   計画のひな形を .plans/日時-名前.md に置く（名前は英語の短い名前。進めている計画があれば残す）。
                         見出しごとに書き込ませ、全文を一度に書かせない
     record              1 回の終わりに、計画へ確認の答えと結果（report）を書き足して記録として残す（要らない情報は除く）
@@ -82,10 +85,15 @@ _PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
-CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files",
+CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files", "batch_files",
                "skill_dirs", "test", "tests", "evidence", "exclude"}
 REF_KEYS = {"name", "path", "skills", "scope", "rules", "exclude"}
-DEFAULT_MAX_FILES = 20
+# 1 回の計画で変えるファイルの上限と、1 つの段（apply を分けた 1 回ぶん）で変えるファイルの数。
+# 計画は影響範囲・テストまで漏れなく挙げるので大きくなりやすい。上限は緩め、変えるときは段に分けて、
+# 段ごとに挙げたファイルを変え終えたかを確かめてから次へ進む（変え残しをその段のうちに見つける）。
+DEFAULT_MAX_FILES = 60
+DEFAULT_BATCH_FILES = 10
+BATCHES_NAME = "batches.json"
 # テストのファイル（単体テスト・API テスト・シナリオテスト・e2e のケース。コードもケースの記述も）。
 # コード・仕様書と同じ、整合を取る成果物として扱い、影響を測って計画に挙げさせる。
 # codd.json の tests で変えられ、[] でテストを扱わない。
@@ -358,6 +366,10 @@ def load_config(machine_dir: Path) -> dict:
     if not (isinstance(config["max_files"], int) and not isinstance(config["max_files"], bool)
             and config["max_files"] > 0):
         raise CoddError(f"{path} の max_files は 1 以上の整数です（今: {config['max_files']!r}）")
+    config.setdefault("batch_files", DEFAULT_BATCH_FILES)
+    if not (isinstance(config["batch_files"], int) and not isinstance(config["batch_files"], bool)
+            and config["batch_files"] > 0):
+        raise CoddError(f"{path} の batch_files は 1 以上の整数です（今: {config['batch_files']!r}）")
     return config
 
 
@@ -465,6 +477,7 @@ class Ctx:
         self.data = root / DATA_DIRNAME
         self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
         self.max_files = self.config["max_files"]
+        self.batch_files = self.config["batch_files"]
         self.refs: list[Ref] = []
         for entry in self.config["refs"]:
             path = Path(os.path.expanduser(entry["path"]))
@@ -864,7 +877,8 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
                 print(f"  - {r.name} を変えるとき: {skill_words(r.apply_skills)}"
                       + (f"。道具: {tool_words(r.apply_tools)}" if r.apply_tools else ""))
     print(f"スキルは `python3 {MACHINE_REL}/codd.py skill 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
-    print(f"1 回で変えるファイルの上限: {ctx.max_files}（超えるぶんは計画の「今回やらないこと」へ）")
+    print(f"1 回で変えるファイルの上限: {ctx.max_files}（超えるぶんは計画の「今回やらないこと」へ）。"
+          f"変えるときは {ctx.batch_files} ファイルずつの段に分ける")
     if tests_enabled(ctx):
         counts = [f"{'自分' if not k else k} {len(test_files(ctx, k))} files" for k, _ in all_sides(ctx)
                   if test_patterns(ctx, k)]
@@ -1743,13 +1757,30 @@ def planned_refs(ctx: Ctx, bodies: dict[str, str]) -> tuple[dict[str, set[str]],
     return planned, problems
 
 
+def files_to_change(ctx: Ctx, bodies: dict[str, str], planned: dict[str, set[str]]) -> list[tuple[str, str]]:
+    """計画で変えるファイル（側の名前。自分は ""、パス）。変える順（自分の変更案・参照先の変更案・影響範囲・テスト）に、
+    同じ見出しの中はパスの順（同じフォルダが続く）に並べる。「変更不要」は数えない。"""
+    out: list[tuple[str, str]] = []
+
+    def add(group) -> None:
+        for key in sorted(group, key=lambda kr: (kr[0], kr[1])):
+            if key not in out:
+                out.append(key)
+    add({("", rel) for rel in listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)})
+    add({(k, rel) for k, rels in planned.items() for rel in rels})
+    add({("", rel) for rel in listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)})
+    add(test_plan(ctx, bodies).change)
+    return out
+
+
+def plan_batches(ctx: Ctx, bodies: dict[str, str]) -> list[list[tuple[str, str]]]:
+    files = files_to_change(ctx, bodies, planned_refs(ctx, bodies)[0])
+    return [files[i:i + ctx.batch_files] for i in range(0, len(files), ctx.batch_files)]
+
+
 def plan_budget(ctx: Ctx, bodies: dict[str, str], planned: dict[str, set[str]]) -> list[str]:
     """1 回で変えるファイルが max_files に収まっているか（1 セッションで終わる大きさに保つ）。"""
-    own = listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
-    own |= listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
-    tests = {(k, rel) for k, rel in test_plan(ctx, bodies).change if not (not k and rel in own)
-             and not (k and rel in planned.get(k, set()))}
-    total = len(own) + sum(len(p) for p in planned.values()) + len(tests)
+    total = len(files_to_change(ctx, bodies, planned))
     if total <= ctx.max_files:
         return []
     return [f"1 回で変えるファイルが {total} あり、上限 {ctx.max_files} を超えています。"
@@ -2966,12 +2997,18 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     (ctx.data / PLAN_CHECK_TEXT).write_text(json.dumps(
         {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     write_baseline(ctx)
+    batches = plan_batches(ctx, bodies)
+    (ctx.data / BATCHES_NAME).write_text(json.dumps(
+        {"batches": [[list(f) for f in b] for b in batches], "done": 0}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8")
     (ctx.data / PASSED_PLAN).write_text(approved_plan_digest(ctx), encoding="utf-8")
     notes = []
     if measured:
         notes.append(f"影響範囲を測った: {len(measured)} files、{DATA_DIRNAME}/impact.md")
     if ref_count:
         notes.append(f"参照先で触れている: {ref_count} files、{DATA_DIRNAME}/ref-impact.md")
+    if len(batches) > 1:
+        notes.append(f"変えるときは {len(batches)} 段に分ける")
     print("OK plan" + (f"（{'／'.join(notes)}）" if notes else ""))
     return 0
 
@@ -3024,11 +3061,80 @@ def own_planned(ctx: Ctx, bodies: dict[str, str]) -> set[str]:
     return set() if is_none(body) else listed_paths(ctx, body, allow_new=True)
 
 
+def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
+    path = ctx.data / BATCHES_NAME
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except json.JSONDecodeError:
+        rec = {}
+    batches = [[(str(k), str(rel)) for k, rel in b] for b in rec.get("batches", [])]
+    return batches, int(rec.get("done", 0))
+
+
+def batch_undone(ctx: Ctx, a: "Applied", batch: list[tuple[str, str]]) -> list[str]:
+    touched = {"": a.own_touched, **a.touched}
+    return [side_label(ctx, k, rel) for k, rel in batch
+            if not any(covered(t, {rel}) for t in touched.get(k, set()))]
+
+
+def batch_step(ctx: Ctx, a: "Applied") -> int | None:
+    """段に分けて変えているときの、途中の段の検査。最後の段（か、全部を変え終えたとき）は None を返し、全体を検査する。
+
+    途中の段では、今の段までに挙げたファイルをすべて変えたかだけを確かめる（テストと検査コマンドは最後にまとめて動かす）。
+    通れば次の段へ進め、出力の第 1 行を `MORE` にする（ステートマシンは apply へ戻る）。
+    """
+    batches, done = load_batches(ctx)
+    if len(batches) <= 1 or plan_unconfirmed(ctx):
+        return None
+    left = [i for i, b in enumerate(batches) if batch_undone(ctx, a, b)]
+    if not left:
+        return None         # すべての段を変え終えた
+    first = left[0]
+    if first <= done:
+        if done >= len(batches) - 1:
+            return None     # 最後の段。全体の検査が変え残しも含めて出す
+        print_problems(ctx, "apply", [
+            f"段 {first + 1}/{len(batches)} のファイルをまだ変えていません（この段で挙げたファイルを変え終えてから"
+            f"次の段へ進みます）: " + ", ".join(batch_undone(ctx, a, batches[first]))])
+        return 1
+    (ctx.data / BATCHES_NAME).write_text(json.dumps(
+        {"batches": [[list(f) for f in b] for b in batches], "done": first}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8")
+    print_problems(ctx, "apply", [])
+    print(f"MORE 段 {first}/{len(batches)} まで変えました。次は段 {first + 1}/{len(batches)}"
+          f"（`python3 {MACHINE_REL}/codd.py batch` で、その段で変えるファイルを確かめる）")
+    return 0
+
+
+def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
+    """今の段で変えるファイルを示す（apply が段ごとに読む）。"""
+    batches, done = load_batches(ctx)
+    if len(batches) <= 1:
+        print("段に分けていません。計画に挙げたファイルをすべて変えてください")
+        return 0
+    cur = min(done, len(batches) - 1)
+    print(f"# 段 {cur + 1}/{len(batches)}" + ("（最後の段。変えたあと、全体の検査とテストが動く）"
+                                              if cur == len(batches) - 1 else ""))
+    print("")
+    print("この段で変えるファイル（計画の該当する項目のとおりに変える）:")
+    for k, rel in batches[cur]:
+        print(f"- {side_label(ctx, k, rel)}")
+    if cur:
+        print(f"\n段 1〜{cur} は変え終えています（戻って変え直さない。直す必要に気づいたら、この段のファイルと一緒に直してよい）。")
+    rest = [side_label(ctx, k, rel) for b in batches[cur + 1:] for k, rel in b]
+    if rest:
+        print(f"このあとの段で変えるもの（{len(rest)} files）は、まだ変えない。")
+    return 0
+
+
 def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     a = load_applied(ctx)
     if isinstance(a, str):
         print_problems(ctx, "apply", [a])
         return 1
+    step = batch_step(ctx, a)
+    if step is not None:
+        return step
     bodies = a.bodies
     problems = plan_unconfirmed(ctx) + list(a.plan_problems)
     tp = test_plan(ctx, bodies)
@@ -3859,6 +3965,7 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--term", action="append", help="検索語（繰り返し可）")
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
+    sub.add_parser("batch", help="段に分けて変えるとき、今の段で変えるファイルを示す")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
     dr = sub.add_parser("draft", help="計画のひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）")
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
@@ -3890,7 +3997,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
-            "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "report": cmd_report,
+            "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "batch": cmd_batch, "report": cmd_report,
             "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
             "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule,
             "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record,

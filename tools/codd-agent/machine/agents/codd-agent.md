@@ -44,7 +44,8 @@ caveman が無い間も短い応答で進め、スキルを読んだとは書き
    使い切ったら `check_ok` を `false` にして次へ。
    `check_output` は検査の出力の最初の行
 4. `transitions` のうち今のステートから出るものを `priority` の小さい順に見て、最初に合う `condition_rule` の先へ進む
-   （`equals:名前:値` は一致、`startswith:名前:値` は前方一致）
+   （`equals:名前:値` は一致、`startswith:名前:値` は前方一致、`;` で区切ったものはすべて合うこと）。
+   apply の検査が `MORE` を返したら、apply へ戻って次の段を変える
 5. `confirm`（計画の確認）と `stuck`（止まったときの相談）では、利用者に見せて**答えを待ちます**。推測して先へ進まない。
    ただし `stuck` で `codd.py advise` の第 1 行が `AUTO PLAN` / `AUTO APPLY` なら、人の判断が要らない理由だけなので、
    訊かずにその語で進めます

@@ -1365,6 +1365,47 @@ class CoddTest(unittest.TestCase):
 
     # ------------------------------------------------------------ 計画に無い変更を止める
 
+    def test_apply_is_split_into_batches(self) -> None:
+        # 変えるファイルが多い計画は段に分けて変え、段ごとに変え残しを止める。全体の検査は最後の段で。
+        self.set_config(self.impl, batch_files=1)
+        self.write_plan(self.with_tests(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"),
+            "- `log` — 変更不要: print を包むだけ"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("2 段に分ける", r.stdout)
+        out = self.run_pa(self.impl, "batch").stdout
+        self.assertIn("段 1/2", out)
+        self.assertIn("- src/app.py", out)
+        self.assertNotIn("- src/log.py", out)
+
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("段 1/2 のファイルをまだ変えていません", r.stderr)
+        self.assertIn("AUTO APPLY", self.run_pa(self.impl, "advise").stdout)   # 変え残しは訊かずにやり直す
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("MORE "), r.stdout)
+        self.assertEqual(r.stderr, "")       # 第 1 行（stderr を優先して読まれる）を MORE にする
+        out = self.run_pa(self.impl, "batch").stdout
+        self.assertIn("段 2/2（最後の段", out)
+        self.assertIn("- src/log.py", out)
+
+        # 最後の段は全体を検査する。
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("自分の変更案のファイルをまだ変えていません", r.stderr)
+        (self.impl / "src/log.py").write_text("def log(m):\n    print(m)\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("OK "), r.stdout)
+
+    def test_workflow_returns_to_apply_for_the_next_batch(self) -> None:
+        text = (TOOL / "machine/workflow.yaml").read_text(encoding="utf-8")
+        self.assertIn('{from: apply, to: apply, condition_rule: "equals:check_ok:true;startswith:check_output:MORE", '
+                      'priority: 1}', text)
+
     def test_verify_apply_rejects_files_outside_the_plan(self) -> None:
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
