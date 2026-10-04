@@ -358,8 +358,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="スキルdescriptionのトリガー評価"
     )
-    parser.add_argument("--skill-path", required=True,
-                        help="スキルディレクトリのパス")
+    parser.add_argument("--skill-path", required=False, default=None,
+                        help="スキルディレクトリのパス（--check-env 以外では必須）")
     parser.add_argument("--eval-set", default=None,
                         help="eval set JSON ファイルのパス")
     parser.add_argument("--query", default=None,
@@ -394,6 +394,8 @@ def main() -> None:
             print("エージェント駆動評価を使ってください。")
         return
 
+    if not args.skill_path:
+        parser.error("--skill-path を指定してください")
     skill_path = Path(args.skill_path)
     if not (skill_path / "SKILL.md").exists():
         print(f"エラー: SKILL.md が見つかりません: {skill_path}", file=sys.stderr)
