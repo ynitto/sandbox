@@ -17,7 +17,10 @@ python3 .statemachine/codd/codd.py skill caveman
 python3 .statemachine/codd/codd.py show
 ```
 
-`graphify` スキルも同梱されています。グラフの作成・更新・調査を直接頼まれた場合は
+`caveman` と `graphify` は外部スキルです。無ければ、ルートの `install.py --agent kiro` または
+`install.py --agent copilot` で導入するよう伝えます（このスキル配布リポジトリのルートで実行）。
+caveman が無い間も短い応答で進め、スキルを読んだとは書きません。
+グラフの作成・更新・調査を直接頼まれた場合は
 `python3 .statemachine/codd/codd.py skill graphify` で読み、必要な参照ファイルは表示されたスキルのフォルダから読みます。
 通常の `explore` / 影響測定のグラフ更新は codd.py に任せ、スキルの全パイプラインを毎回重ねて実行しません。
 

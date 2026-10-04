@@ -17,7 +17,6 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -663,6 +662,17 @@ class CoddTest(unittest.TestCase):
 
     # ------------------------------------------------------------ リポジトリのスキル・カスタムエージェント
 
+    def test_external_home_skills_are_read_without_agent_cli(self) -> None:
+        for folder, name in ((".kiro/skills", "graphify"), (".copilot/skills", "caveman")):
+            path = self.tmp / "home" / folder / name / "SKILL.md"
+            path.parent.mkdir(parents=True)
+            path.write_text(f"---\nname: {name}\ndescription: external skill\n---\nExternal content\n", encoding="utf-8")
+            r = self.run_pa(self.impl, "skill", name)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("External content", r.stdout)
+            log = json.loads((self.impl / ".codd/skills-read.json").read_text(encoding="utf-8"))
+            self.assertEqual(Path(log[name]["path"]), path)
+
     def test_repo_skills_are_used_without_config(self) -> None:
         commit(self.impl, {".agents/skills/tdd-lite/SKILL.md":
                            "---\nname: tdd-lite\ndescription: テストを先に書く\n---\n\n# tdd-lite\n"}, "skill")
@@ -781,6 +791,10 @@ class CoddTest(unittest.TestCase):
     def test_install_writes_custom_agents(self) -> None:
         kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))
         self.assertEqual(kiro["name"], "codd")
+        self.assertIn("skill://~/.kiro/skills/caveman/SKILL.md", kiro["resources"])
+        self.assertFalse((self.impl / ".statemachine/codd/skills").exists())
+        self.assertFalse((self.impl / ".kiro/skills").exists())
+        self.assertFalse((self.impl / ".github/skills").exists())
         self.assertIn("必ず codd のステートマシン", kiro["prompt"])
         self.assertEqual(kiro["hooks"]["agentSpawn"][0]["command"], "python3 .statemachine/codd/codd.py show")
         copilot = (self.impl / ".github/agents/codd.agent.md").read_text(encoding="utf-8")
@@ -798,55 +812,6 @@ class CoddTest(unittest.TestCase):
         init.init_repo(other, "impl", ["../design"], discover=False, agents=())
         self.assertFalse((other / ".kiro").exists())
         self.assertFalse((other / ".github").exists())
-
-    def test_init_bundles_skills_without_cli_or_network(self) -> None:
-        for kinds in (("kiro", "copilot"), ("kiro",), ("copilot",), ()):
-            with self.subTest(kinds=kinds):
-                target = self.tmp / ("offline-" + "-".join(kinds))
-                target.mkdir()
-                git(target, "init", "-q", "-b", "main")
-                with mock.patch.object(init.subprocess, "run", side_effect=AssertionError("外部コマンド不要")), \
-                     mock.patch.object(init.shutil, "which", side_effect=AssertionError("CLI 検出不要")):
-                    init.init_repo(target, "impl", ["../design"], discover=False, agents=kinds)
-                for kind, folder in init.AGENT_SKILL_DIRS.items():
-                    for name in init.BUNDLED_SKILLS:
-                        skill = target / folder / name
-                        if kind not in kinds:
-                            self.assertFalse(skill.exists())
-                            continue
-                        source = init.SRC / "skills" / name
-                        for file in source.rglob("*"):
-                            if file.is_file():
-                                self.assertEqual((skill / file.relative_to(source)).read_bytes(), file.read_bytes())
-                if "kiro" in kinds:
-                    agent = json.loads((target / ".kiro/agents/codd.json").read_text(encoding="utf-8"))
-                    self.assertIn("skill://.kiro/skills/graphify/SKILL.md", agent["resources"])
-                    self.assertIn("codd.py skill caveman", agent["prompt"])
-                if "copilot" in kinds:
-                    self.assertIn("codd.py skill caveman",
-                                  (target / ".github/agents/codd.agent.md").read_text(encoding="utf-8"))
-
-    def test_init_preserves_existing_native_skills(self) -> None:
-        paths = [self.impl / folder / name / "SKILL.md"
-                 for folder in init.AGENT_SKILL_DIRS.values() for name in init.BUNDLED_SKILLS]
-        for path in paths:
-            path.write_text("# 利用者のスキル\n", encoding="utf-8")
-        config = (self.impl / ".statemachine/codd/codd.json").read_bytes()
-        init.init_repo(self.impl, None, None, discover=False)
-        self.assertEqual((self.impl / ".statemachine/codd/codd.json").read_bytes(), config)
-        for path in paths:
-            self.assertEqual(path.read_text(encoding="utf-8"), "# 利用者のスキル\n")
-
-    def test_skill_falls_back_to_bundled_copy_without_native_skills(self) -> None:
-        for repo in (self.impl, self.design):
-            for folder in init.AGENT_SKILL_DIRS.values():
-                shutil.rmtree(repo / folder)
-        for name in init.BUNDLED_SKILLS:
-            r = self.run_pa(self.impl, "skill", name)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn(f".statemachine/codd/skills/{name}/SKILL.md", r.stdout)
-            log = json.loads((self.impl / ".codd/skills-read.json").read_text(encoding="utf-8"))
-            self.assertIn(name, log)
 
     def test_init_uses_only_explicit_check(self) -> None:
         cfg = self.impl / ".statemachine/codd/codd.json"
@@ -922,8 +887,7 @@ class CoddTest(unittest.TestCase):
                          [{"name": "design", "path": "../design-v2", "rules": ["docs/r.md"], "scope": ["docs"]}])
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
-                         [".statemachine/codd/", ".kiro/skills/caveman/", ".kiro/skills/graphify/",
-                          ".github/skills/caveman/", ".github/skills/graphify/"])
+                         [".statemachine/codd/"])
         fresh = self.tmp / "fresh"
         fresh.mkdir()
         git(fresh, "init", "-q")

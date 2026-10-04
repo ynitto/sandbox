@@ -112,16 +112,24 @@ statemachine-use スキルが無い環境でも、エージェントの指示だ
 `codd.py show` を実行して、参照先・守る決まり・使うスキルを読み込む。
 置くたびに書き直す生成物なので、手で直さない。`--agent kiro` で片方だけ、`--no-agents` で書かない。
 
-`init.py` は `caveman` と `graphify` のスキルも同梱ファイルから配置する。Kiro / Copilot の CLI や
-ネットワーク、ホームのスキルは不要。既定は両方、`--agent` で選んだ側だけ、`--no-agents` では配置しない。
+`caveman` と `graphify` は外部スキルとして、配布元からユーザー領域へインストールする。
+codd-agent には内包せず、`init.py` でもコピーしない。この配布リポジトリのルートで実行する。
+
+```bash
+python3 install.py --agent kiro
+python3 install.py --agent copilot
+```
+
+Kiro / Copilot の CLI が無い、IDE だけの環境でも導入できる。外部配布元へのネットワーク接続が必要。
+caveman は公式 GitHub から取得し、graphify は公式 Python パッケージを入れて、そのスキル登録を使う。
 
 | 対象 | スキルの保存先 |
 |---|---|
-| Kiro IDE / CLI | `.kiro/skills/caveman/`、`.kiro/skills/graphify/` |
-| GitHub Copilot IDE / CLI | `.github/skills/caveman/`、`.github/skills/graphify/` |
+| Kiro IDE / CLI | `~/.kiro/skills/caveman/`、`~/.kiro/skills/graphify/` |
+| VS Code Copilot / CLI | `~/.copilot/skills/caveman/`、`~/.copilot/skills/graphify/` |
 
-graphify の `references/` もコピーする。既に同名のスキルがあれば上書きしない。
-マシン内の `.statemachine/codd/skills/` は再配置時に更新され、通常の置き場所にスキルが無いときの読み込み先にもなる。
+既存の caveman スキルは維持し、`--force-external` で配布元から取り直す。
+graphify の `references/` も公式の登録処理が配置する。
 codd は開始時に `codd.py skill caveman` を読み、full で短く応答する。利用者が解除したら従う。
 コード・計画書の書式と、確認に必要な情報・検査結果は保つ。graphify スキルはグラフの作成・更新・調査を直接頼まれたときに
 `codd.py skill graphify` で読む。通常の `explore` / 影響測定では codd.py の自動更新を使う。
@@ -450,7 +458,7 @@ webui-test 以外のテストも、同じ形のファイルを書けば使える
 エージェントが自分でスキルを選ぶのを待たない（kiro-cli などはスキルを自動で選ばないことが多い）。スキルは
 `codd.py skill 名前` で読み込ませ、読み込んだことを `.codd/skills-read.json` に控える。計画の「使ったスキルと道具」や
 `.codd/apply.md` に使ったと書いたスキル（「使わない」と書いたものを除く）を、その段で読み込んでいなければ検査で落ちる。
-名前は `skill_dirs`・`.agents/skills`・`.kiro/skills`・`.github/skills`・`.claude/skills`（リポジトリ、利用者のホーム、
+名前は `skill_dirs`・`.agents/skills`・`.kiro/skills`・`.github/skills`・`.claude/skills`・`.copilot/skills`（リポジトリ、利用者のホーム、
 参照先の順）から探す。
 
 ```bash

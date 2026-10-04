@@ -34,13 +34,17 @@ git clone 後に実行してコアスキルをユーザー領域にセットア�
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from datetime import datetime
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -1447,23 +1451,8 @@ def _upgrade_graphify_cli() -> bool:
     return False
 
 
-def _copy_bundled_ide_skill(agent_type: str, name: str, force: bool = False) -> bool:
-    """IDE 用のスキルを CLI / npx に依存せずホームへ配置する。"""
-    source = os.path.join(REPO_ROOT, "tools", "codd-agent", "machine", "skills", name)
-    dest = os.path.join(resolve_paths(agent_type)["agent_home"], "skills", name)
-    if os.path.isfile(os.path.join(dest, "SKILL.md")) and not force:
-        print(f"   ✓ スキルは導入済み: {dest}")
-        return True
-    if not os.path.isfile(os.path.join(source, "SKILL.md")):
-        print(f"   ✗ 同梱スキルが見つかりません: {source}")
-        return False
-    shutil.copytree(source, dest, dirs_exist_ok=True)
-    print(f"   ✓ 同梱スキルを配置: {dest}")
-    return True
-
-
 def setup_graphify(agent_type: str, force: bool = False) -> bool:
-    """graphify を --agent 向け platform にインストール／更新する。"""
+    """公式 graphify パッケージからスキルを登録する。Kiro / Copilot の CLI は不要。"""
     platform_name = GRAPHIFY_AGENT_PLATFORMS.get(agent_type)
     if platform_name is None:
         print(
@@ -1472,8 +1461,6 @@ def setup_graphify(agent_type: str, force: bool = False) -> bool:
         )
         return False
 
-    skill_ready = (_copy_bundled_ide_skill(agent_type, "graphify", force)
-                   if agent_type in ("kiro", "copilot") else False)
     current = _cli_version_string(["graphify", "--version"])
     latest = _pypi_latest_version("graphifyy")
     outdated = _version_outdated(current, latest)
@@ -1516,9 +1503,7 @@ def setup_graphify(agent_type: str, force: bool = False) -> bool:
                 print(f"     {err.strip()}")
         if not installed:
             print("   ✗ graphify をインストールできませんでした")
-            if skill_ready:
-                print("   スキルは配置済みです。グラフ生成には graphify 本体を別途入れてください")
-            return skill_ready
+            return False
         current = _cli_version_string(["graphify", "--version"])
     elif need_upgrade:
         if not _upgrade_graphify_cli():
@@ -1550,6 +1535,45 @@ def setup_graphify(agent_type: str, force: bool = False) -> bool:
 
 
 CAVEMAN_REPO = "JuliusBrussee/caveman"
+
+
+def _install_caveman_ide(agent_type: str, force: bool, paths: dict[str, str]) -> bool:
+    """公式配布元から取得し、IDE が読む保存先へ配置する。CLI / npx は不要。"""
+    dest = Path(paths["skill_home"]) / "caveman"
+    if (dest / "SKILL.md").is_file() and not force:
+        print(f"   ✓ caveman は導入済み: {dest}")
+        return True
+    url = f"https://codeload.github.com/{CAVEMAN_REPO}/zip/refs/heads/main"
+    print(f"   caveman を公式配布元から取得: {url}")
+    try:
+        request = urllib_request.Request(url, headers={"User-Agent": "agent-skills-installer"})
+        with urllib_request.urlopen(request, timeout=60) as response:
+            data = response.read()
+        with zipfile.ZipFile(io.BytesIO(data)) as archive, tempfile.TemporaryDirectory() as temp:
+            root = archive.namelist()[0].split("/", 1)[0]
+            prefix = f"{root}/skills/caveman/"
+            staged = Path(temp) / "caveman"
+            for entry in archive.infolist():
+                if not entry.filename.startswith(prefix) or entry.is_dir():
+                    continue
+                rel = entry.filename[len(prefix):]
+                if (not rel or "\\" in rel or Path(rel).drive or PurePosixPath(rel).is_absolute()
+                        or ".." in PurePosixPath(rel).parts):
+                    raise ValueError("スキルのアーカイブに不正なパスがあります")
+                file = staged / rel
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(archive.read(entry))
+            if not (staged / "SKILL.md").is_file():
+                raise ValueError("公式アーカイブに caveman/SKILL.md がありません")
+            license_path = f"{root}/LICENSE"
+            if license_path in archive.namelist():
+                (staged / "LICENSE").write_bytes(archive.read(license_path))
+            shutil.copytree(staged, dest, dirs_exist_ok=True)
+        print(f"   ✓ caveman を配置: {dest}")
+        return True
+    except (OSError, ValueError, IndexError, zipfile.BadZipFile) as exc:
+        print(f"   ✗ caveman の取得・配置に失敗しました: {exc}")
+        return False
 
 # install.py --agent → caveman 公式 --only / skills -a プロファイル
 # skills 系は必ず -g（ホーム＝グローバル）へ入れる。プロジェクト配下には書かない。
@@ -1664,7 +1688,7 @@ def setup_caveman(agent_type: str, force: bool = False) -> bool:
 
     - claude: 公式インストーラ → ~/.claude（plugin + hooks）
     - codex: ``npx skills add -g`` → ~/.codex/skills/
-    - kiro / copilot: 同梱スキルを ~/.kiro|~/.copilot/skills/ にコピー（CLI / npx 不要）
+    - kiro / copilot: 公式配布元から ~/.kiro|~/.copilot/skills/ に配置（CLI / npx 不要）
     - プロジェクトローカルには書かない（``--with-init`` は使わない）
     - 導入済みならスキップ（``--force-external`` で再実行）
     """
@@ -1673,7 +1697,7 @@ def setup_caveman(agent_type: str, force: bool = False) -> bool:
         return False
 
     if agent_type in ("kiro", "copilot"):
-        return _copy_bundled_ide_skill(agent_type, "caveman", force)
+        return _install_caveman_ide(agent_type, force, resolve_paths(agent_type))
 
     if shutil.which("npx") is None:
         print("   ⚠ npx が見つかりません。caveman のセットアップをスキップします")
