@@ -83,6 +83,20 @@ test('自動選択用に複数行の説明を読む', () => {
 });
 
 
+test('YAML の chomp 指示付き複数行 description も本文として読む', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-block-chomp-'));
+  const skillRoot = path.join(root, 'skills');
+  fs.mkdirSync(path.join(skillRoot, 'planner'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'planner', 'SKILL.md'), '---\ndescription: >-\n  要件を整理する。\n  実装前に使う。\n---\n# Planner\n');
+  let [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.strictEqual(item.description, '要件を整理する。 実装前に使う。');
+
+  fs.writeFileSync(path.join(skillRoot, 'planner', 'SKILL.md'), '---\ndescription: |-\n  仕様を確認する。\n  漏れを探す。\n---\n# Planner\n');
+  [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.strictEqual(item.description, '仕様を確認する。 漏れを探す。');
+});
+
+
 test('未対応の AI を選んでも他の AI 専用のスキルを混ぜない', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-filter-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
