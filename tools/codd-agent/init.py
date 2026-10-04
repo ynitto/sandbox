@@ -28,6 +28,8 @@
 refs[].rules に書く（--no-discover-rules でやめる。あとからは `codd.py rules --write`）。
 kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカスタムエージェント `codd` を書く
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
+同じ対象の skills/ に caveman と graphify（参照ファイル込み）を同梱ファイルから写す。CLI・ネットワークは不要。
+既存の同名スキルは上書きしない。マシン内の skills/ は再配置時に更新する。
 --check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。
 --evidence "パス" で結果ファイルの一覧を指定する（繰り返し可。"" で扱わない）。検査ツールの設定は自動検出しない。
 --test "コマンド" で、変えたあとに実行する単体テストのコマンド（codd.json の test）を書く（"" で消す）。
@@ -51,6 +53,8 @@ IGNORE_LINE = ".codd/"
 AGENT_PROMPT = SRC / "agents" / "codd-agent.md"
 AGENT_DESCRIPTION = "実装と設計書の一貫性を保って変える。コードや文書の変更は必ず codd のステートマシンで進める"
 AGENT_KINDS = ("kiro", "copilot")
+AGENT_SKILL_DIRS = {"kiro": ".kiro/skills", "copilot": ".github/skills"}
+BUNDLED_SKILLS = ("caveman", "graphify")
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
 GRAPHIFY_IGNORE_LINE = ".statemachine/codd/"
 
@@ -162,6 +166,9 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     if gitignore:
         append_line(target / ".gitignore", IGNORE_LINE)
     append_line(target / ".graphifyignore", GRAPHIFY_IGNORE_LINE)
+    for kind in agents:
+        for name in BUNDLED_SKILLS:
+            append_line(target / ".graphifyignore", f"{AGENT_SKILL_DIRS[kind]}/{name}/")
     return dest
 
 
@@ -169,6 +176,13 @@ def write_agents(target: Path, kinds) -> list[Path]:
     """必ずこのマシンで変えるカスタムエージェントを書く（置くたびに書き直す生成物）。"""
     prompt = AGENT_PROMPT.read_text(encoding="utf-8")
     written = []
+    for kind in kinds:
+        for name in BUNDLED_SKILLS:
+            dest = target / AGENT_SKILL_DIRS[kind] / name
+            # 既存のスキルは利用者が入れたものかもしれないので上書きしない。
+            if dest.exists():
+                continue
+            shutil.copytree(SRC / "skills" / name, dest)
     if "kiro" in kinds:
         path = target / ".kiro" / "agents" / "codd.json"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,7 +192,8 @@ def write_agents(target: Path, kinds) -> list[Path]:
             "prompt": prompt,
             "tools": ["*"],
             "includeMcpJson": True,
-            "resources": ["file://.statemachine/codd/workflow.yaml"],
+            "resources": ["file://.statemachine/codd/workflow.yaml",
+                          "skill://.kiro/skills/caveman/SKILL.md", "skill://.kiro/skills/graphify/SKILL.md"],
             # 始めるたびに参照先・守る決まり・使うスキルを読み込ませる。
             "hooks": {"agentSpawn": [{"command": "python3 .statemachine/codd/codd.py show"}]},
             "welcomeMessage": "codd: コードや文書の変更は、計画・確認・変更・検査のステートマシンで進めます",

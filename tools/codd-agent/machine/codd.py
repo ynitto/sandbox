@@ -69,6 +69,8 @@ MACHINE_DIR = Path(__file__).resolve().parent
 MACHINE_REL = ".statemachine/codd"
 # init.py が書くカスタムエージェント。マシンの一部なので、探す・変わったかを測る対象にしない。
 AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md")
+AGENT_SKILL_DIRS = [f"{folder}/{name}" for folder in (".kiro/skills", ".github/skills")
+                    for name in ("caveman", "graphify")]
 CONFIG_NAME = "codd.json"
 DATA_DIRNAME = ".codd"
 # 計画の置き場所（自分のリポジトリ）。1 回の実行の計画は、始めるときに一意な名前（日時と英語の短い名前）で置き、
@@ -77,7 +79,7 @@ DATA_DIRNAME = ".codd"
 PLAN_DIR = ".plans"
 LEGACY_PLAN_DIRS = ("docs/.plans", "docs/.plan")
 RESULT_HEADING = "## 結果"
-MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR, *LEGACY_PLAN_DIRS]
+MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, *AGENT_SKILL_DIRS, PLAN_DIR, *LEGACY_PLAN_DIRS]
 _PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
@@ -606,6 +608,12 @@ def find_skill(ctx: "Ctx", spec: str) -> tuple[str, Path] | None:
             for skill in repo_skills(base, [d]):
                 if skill.name == name:
                     return name, base / skill.path
+    # CLI やホームのスキルが無い IDE でも、マシンに同梱したスキルを読める。
+    # 名前付き参照先のスキルは、その参照先で見つからなければ「無し」とする。
+    if not (sep and ref_name in {r.name for r in ctx.refs}) and name in ("caveman", "graphify"):
+        bundled = MACHINE_DIR / "skills" / name / "SKILL.md"
+        if bundled.is_file():
+            return name, bundled
     return None
 
 

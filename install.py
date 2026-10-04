@@ -1447,6 +1447,21 @@ def _upgrade_graphify_cli() -> bool:
     return False
 
 
+def _copy_bundled_ide_skill(agent_type: str, name: str, force: bool = False) -> bool:
+    """IDE 用のスキルを CLI / npx に依存せずホームへ配置する。"""
+    source = os.path.join(REPO_ROOT, "tools", "codd-agent", "machine", "skills", name)
+    dest = os.path.join(resolve_paths(agent_type)["agent_home"], "skills", name)
+    if os.path.isfile(os.path.join(dest, "SKILL.md")) and not force:
+        print(f"   ✓ スキルは導入済み: {dest}")
+        return True
+    if not os.path.isfile(os.path.join(source, "SKILL.md")):
+        print(f"   ✗ 同梱スキルが見つかりません: {source}")
+        return False
+    shutil.copytree(source, dest, dirs_exist_ok=True)
+    print(f"   ✓ 同梱スキルを配置: {dest}")
+    return True
+
+
 def setup_graphify(agent_type: str, force: bool = False) -> bool:
     """graphify を --agent 向け platform にインストール／更新する。"""
     platform_name = GRAPHIFY_AGENT_PLATFORMS.get(agent_type)
@@ -1457,6 +1472,8 @@ def setup_graphify(agent_type: str, force: bool = False) -> bool:
         )
         return False
 
+    skill_ready = (_copy_bundled_ide_skill(agent_type, "graphify", force)
+                   if agent_type in ("kiro", "copilot") else False)
     current = _cli_version_string(["graphify", "--version"])
     latest = _pypi_latest_version("graphifyy")
     outdated = _version_outdated(current, latest)
@@ -1499,7 +1516,9 @@ def setup_graphify(agent_type: str, force: bool = False) -> bool:
                 print(f"     {err.strip()}")
         if not installed:
             print("   ✗ graphify をインストールできませんでした")
-            return False
+            if skill_ready:
+                print("   スキルは配置済みです。グラフ生成には graphify 本体を別途入れてください")
+            return skill_ready
         current = _cli_version_string(["graphify", "--version"])
     elif need_upgrade:
         if not _upgrade_graphify_cli():
@@ -1644,13 +1663,17 @@ def setup_caveman(agent_type: str, force: bool = False) -> bool:
     """juliusbrussee/caveman を --agent 向けにホーム（グローバル）へインストールする。
 
     - claude: 公式インストーラ → ~/.claude（plugin + hooks）
-    - codex / kiro / copilot: ``npx skills add -g`` → ~/.codex|~/.kiro|~/.copilot/skills/
+    - codex: ``npx skills add -g`` → ~/.codex/skills/
+    - kiro / copilot: 同梱スキルを ~/.kiro|~/.copilot/skills/ にコピー（CLI / npx 不要）
     - プロジェクトローカルには書かない（``--with-init`` は使わない）
     - 導入済みならスキップ（``--force-external`` で再実行）
     """
     if agent_type not in CAVEMAN_AGENT_IDS:
         print(f"   ⚠ caveman はエージェント '{agent_type}' に未対応のためスキップします")
         return False
+
+    if agent_type in ("kiro", "copilot"):
+        return _copy_bundled_ide_skill(agent_type, "caveman", force)
 
     if shutil.which("npx") is None:
         print("   ⚠ npx が見つかりません。caveman のセットアップをスキップします")

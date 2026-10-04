@@ -98,19 +98,34 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs
 `--side` / `--ref` / `--scope` / `--ref-scope` / `--exclude` / `--ref-exclude` / `--check` / `--test` / `--evidence` を渡したときだけ、その項目を書き換える
 （`--ref` で入れ替えても、同じ名前の参照先に手で書いた `rules`・`scope`・`exclude` などは残す）。
 
-### kiro-cli・GitHub Copilot のカスタムエージェント
+### Kiro・GitHub Copilot のカスタムエージェント
 
 `init.py` は、コードや文書を変える依頼を**必ずこのステートマシンで進める**カスタムエージェント `codd` も書く。
 
 | 使うもの | 書くファイル | 呼び方 |
 |---|---|---|
-| kiro-cli | `.kiro/agents/codd.json` | `kiro-cli chat --agent codd`（いつも使うなら `kiro-cli settings chat.defaultAgent codd`） |
+| Kiro IDE / CLI | `.kiro/agents/codd.json` | IDE のエージェント選択で `codd`、CLI は `kiro-cli chat --agent codd` |
 | GitHub Copilot | `.github/agents/codd.agent.md` | チャットのエージェント選択で `codd` を選ぶ |
 
 エージェントは、変える依頼を受けたらステートマシンを始め、外でファイルを変えない。読むだけの質問にはそのまま答える。
 statemachine-use スキルが無い環境でも、エージェントの指示だけで `workflow.yaml` を回せる。kiro-cli では始めるたびに
 `codd.py show` を実行して、参照先・守る決まり・使うスキルを読み込む。
 置くたびに書き直す生成物なので、手で直さない。`--agent kiro` で片方だけ、`--no-agents` で書かない。
+
+`init.py` は `caveman` と `graphify` のスキルも同梱ファイルから配置する。Kiro / Copilot の CLI や
+ネットワーク、ホームのスキルは不要。既定は両方、`--agent` で選んだ側だけ、`--no-agents` では配置しない。
+
+| 対象 | スキルの保存先 |
+|---|---|
+| Kiro IDE / CLI | `.kiro/skills/caveman/`、`.kiro/skills/graphify/` |
+| GitHub Copilot IDE / CLI | `.github/skills/caveman/`、`.github/skills/graphify/` |
+
+graphify の `references/` もコピーする。既に同名のスキルがあれば上書きしない。
+マシン内の `.statemachine/codd/skills/` は再配置時に更新され、通常の置き場所にスキルが無いときの読み込み先にもなる。
+codd は開始時に `codd.py skill caveman` を読み、full で短く応答する。利用者が解除したら従う。
+コード・計画書の書式と、確認に必要な情報・検査結果は保つ。graphify スキルはグラフの作成・更新・調査を直接頼まれたときに
+`codd.py skill graphify` で読む。通常の `explore` / 影響測定では codd.py の自動更新を使う。
+スキルの配置と graphify 本体のインストールは別。本体は従来どおり `install.py` で入れ、無ければ文字列検索で動く。
 
 長いコマンドは完了通知か終了まで待つ機能を優先する。非同期の結果待ちが必要な場合は、最初は30秒、
 継続中なら次から60秒の間隔をあけるよう、エージェントの指示と plan / apply のアクションに指定している。

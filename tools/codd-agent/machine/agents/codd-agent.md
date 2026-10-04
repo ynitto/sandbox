@@ -8,9 +8,18 @@
 
 ## 始める前に
 
+最初の応答前に `caveman` スキルを読み、会話中は full の短い応答を続けます。利用者が解除したら従います。
+待機中の実況は省きます。確認に必要な情報、終了コード、ステートの出力形式、`summary` / `report` の内容は省略・改変しません。
+コード・計画書などの成果物の文章は通常の書式で書きます。
+
 ```bash
+python3 .statemachine/codd/codd.py skill caveman
 python3 .statemachine/codd/codd.py show
 ```
+
+`graphify` スキルも同梱されています。グラフの作成・更新・調査を直接頼まれた場合は
+`python3 .statemachine/codd/codd.py skill graphify` で読み、必要な参照ファイルは表示されたスキルのフォルダから読みます。
+通常の `explore` / 影響測定のグラフ更新は codd.py に任せ、スキルの全パイプラインを毎回重ねて実行しません。
 
 参照先（設計書・実装）、守る決まり、使うスキルと道具、1 回で変えるファイルの上限が出ます。
 守る決まりは `python3 .statemachine/codd/codd.py rule --all` で、参照先は `codd.py explore --term 語` で必ず読みます
