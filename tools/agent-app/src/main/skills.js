@@ -64,7 +64,7 @@ function metadata(name, file, content) {
     }
     description = description.filter(Boolean).join(' ');
   }
-  const tagsBlock = (header.match(/^tags:\s*\n((?:\s+-[^\n]*\n?)*)/m) || [])[1] || '';
+  const tagsBlock = (header.match(/^(?:tags:|\s+tags:)\s*\n((?:\s+-[^\n]*\n?)*)/m) || [])[1] || '';
   const tags = [...tagsBlock.matchAll(/^\s+-\s*(.+)$/gm)].map((match) => match[1].trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
   return { name, description, tags, frontmatter: header, version: readVersion(content), path: file, content };
 }
