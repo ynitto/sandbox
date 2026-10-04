@@ -42,6 +42,16 @@ test('自動選択用にスキルの説明・タグ・本文を読む', () => {
   }]);
 });
 
+test('正規形の metadata.tags を自動選択用タグとして読む', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-meta-tags-'));
+  const skillRoot = path.join(root, 'skills');
+  fs.mkdirSync(path.join(skillRoot, 'reviewer'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'reviewer', 'SKILL.md'), '---\nname: reviewer\ndescription: レビューする\nmetadata:\n  version: 1.0.0\n  tags:\n    - review\n    - quality\n---\n# Reviewer\n');
+  const [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.deepStrictEqual(item.tags, ['review', 'quality']);
+});
+
+
 test('一覧に出す版は frontmatter の version から読む', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-version-'));
   const skillRoot = path.join(root, 'skills');
@@ -80,6 +90,20 @@ test('自動選択用に複数行の説明を読む', () => {
   fs.writeFileSync(path.join(skillRoot, 'ui-designer', 'SKILL.md'), '---\ndescription: |\n  UIとUXを設計する。\n  画面レイアウトも扱う。\n---\n# UI\n');
   const [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
   assert.strictEqual(item.description, 'UIとUXを設計する。 画面レイアウトも扱う。');
+});
+
+
+test('YAML の chomp 指示付き複数行 description も本文として読む', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-block-chomp-'));
+  const skillRoot = path.join(root, 'skills');
+  fs.mkdirSync(path.join(skillRoot, 'planner'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'planner', 'SKILL.md'), '---\ndescription: >-\n  要件を整理する。\n  実装前に使う。\n---\n# Planner\n');
+  let [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.strictEqual(item.description, '要件を整理する。 実装前に使う。');
+
+  fs.writeFileSync(path.join(skillRoot, 'planner', 'SKILL.md'), '---\ndescription: |-\n  仕様を確認する。\n  漏れを探す。\n---\n# Planner\n');
+  [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.strictEqual(item.description, '仕様を確認する。 漏れを探す。');
 });
 
 

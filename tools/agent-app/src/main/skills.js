@@ -55,7 +55,7 @@ function metadata(name, file, content) {
   const descriptionLine = header.match(/^description:\s*([^\n]*)/m);
   const rawDescription = ((descriptionLine || [])[1] || '').trim();
   let description = rawDescription.replace(/^['"]|['"]$/g, '');
-  if (rawDescription === '|' || rawDescription === '>') {
+  if (/^[|>][+-]?$/.test(rawDescription)) {
     const after = header.slice((descriptionLine.index || 0) + descriptionLine[0].length).replace(/^\n/, '');
     description = [];
     for (const line of after.split('\n')) {
@@ -64,7 +64,7 @@ function metadata(name, file, content) {
     }
     description = description.filter(Boolean).join(' ');
   }
-  const tagsBlock = (header.match(/^tags:\s*\n((?:\s+-[^\n]*\n?)*)/m) || [])[1] || '';
+  const tagsBlock = (header.match(/^(?:tags:|\s+tags:)\s*\n((?:\s+-[^\n]*\n?)*)/m) || [])[1] || '';
   const tags = [...tagsBlock.matchAll(/^\s+-\s*(.+)$/gm)].map((match) => match[1].trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
   return { name, description, tags, frontmatter: header, version: readVersion(content), path: file, content };
 }
