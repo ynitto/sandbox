@@ -55,7 +55,7 @@ function metadata(name, file, content) {
   const descriptionLine = header.match(/^description:\s*([^\n]*)/m);
   const rawDescription = ((descriptionLine || [])[1] || '').trim();
   let description = rawDescription.replace(/^['"]|['"]$/g, '');
-  if (rawDescription === '|' || rawDescription === '>') {
+  if (/^[|>][+-]?$/.test(rawDescription)) {
     const after = header.slice((descriptionLine.index || 0) + descriptionLine[0].length).replace(/^\n/, '');
     description = [];
     for (const line of after.split('\n')) {
