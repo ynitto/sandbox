@@ -7,6 +7,7 @@ graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動�
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import os
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import zipfile
 from unittest import mock
 from pathlib import Path
 
@@ -790,14 +792,12 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(json.loads((app / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["side"], "impl")
 
     def test_middleware_installs_external_skills_for_both_ides_without_agent_cli(self) -> None:
-        external = mock.Mock()
-        external.setup_caveman.return_value = True
-        with mock.patch.object(install, "load_external_installer", return_value=external), \
+        with mock.patch.object(install, "setup_caveman", return_value=True) as caveman, \
              mock.patch.object(install, "version", return_value="graphify 1.0"), \
              mock.patch.object(install.shutil, "which", side_effect=lambda name: f"/tools/{name}" if name in ("graphify", "git") else None), \
              mock.patch.object(install.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
             self.assertEqual(install.main([]), 0)
-        self.assertEqual(external.setup_caveman.call_args_list,
+        self.assertEqual(caveman.call_args_list,
                          [mock.call("kiro", force=False), mock.call("copilot", force=False)])
         self.assertEqual(run.call_args_list,
                          [mock.call(["/tools/graphify", "install", "--platform", agent], timeout=install.TIMEOUT)
@@ -812,9 +812,7 @@ class CoddTest(unittest.TestCase):
             middleware.assert_called_once_with(False, agents=install.AGENT_KINDS, skills=False)
 
     def test_middleware_reports_failed_skill_registration_and_still_installs_other_skills(self) -> None:
-        external = mock.Mock()
-        external.setup_caveman.return_value = True
-        with mock.patch.object(install, "load_external_installer", return_value=external), \
+        with mock.patch.object(install, "setup_caveman", return_value=True) as caveman, \
              mock.patch.object(install, "version", return_value="graphify 1.0"), \
              mock.patch.object(install, "run_first", return_value="uv"), \
              mock.patch.object(install.shutil, "which", return_value="/tools/graphify"), \
@@ -822,13 +820,71 @@ class CoddTest(unittest.TestCase):
                                                                       mock.Mock(returncode=0)]) as run:
             self.assertEqual(install.install_middleware(upgrade=True, agents=("kiro", "copilot")), 1)
         self.assertEqual(run.call_count, 2)
-        self.assertEqual(external.setup_caveman.call_args_list,
+        self.assertEqual(caveman.call_args_list,
                          [mock.call("kiro", force=True), mock.call("copilot", force=True)])
 
-    def test_middleware_loads_shared_remote_installer(self) -> None:
-        external = install.load_external_installer()
-        self.assertEqual(Path(external.__file__).resolve(), REPO / "install.py")
-        self.assertTrue(callable(external.setup_caveman))
+    def test_middleware_runs_from_standalone_distribution_without_root_installer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            tool = root / "distribution with spaces/tools/codd-agent"
+            tool.mkdir(parents=True)
+            script = tool / "install.py"
+            shutil.copy2(TOOL / "install.py", script)
+            self.assertFalse((tool.parent.parent / "install.py").exists())
+            archive_data = io.BytesIO()
+            with zipfile.ZipFile(archive_data, "w") as archive:
+                archive.writestr("caveman-main/skills/caveman/SKILL.md", "official skill")
+                archive.writestr("caveman-main/skills/caveman/references/detail.md", "official reference")
+                archive.writestr("caveman-main/LICENSE", "official license")
+            # Run from an unrelated working directory with no installer or agent CLIs.
+            runner = root / "run.py"
+            runner.write_text(textwrap.dedent(f"""\
+                import io, runpy
+                from unittest import mock
+                with mock.patch.dict("os.environ", {{"USERPROFILE": {str(root / 'home')!r}}}), \
+                     mock.patch("shutil.which", side_effect=lambda name: "graphify" if name == "graphify" else None), \
+                     mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout="graphify 1.0", stderr="")), \
+                     mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: io.BytesIO({archive_data.getvalue()!r})):
+                    runpy.run_path({str(script)!r}, run_name="__main__")
+                """), encoding="utf-8")
+            run = subprocess.run([sys.executable, str(runner)], cwd=root, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            for agent in ("kiro", "copilot"):
+                dest = root / f"home/.{agent}/skills/caveman"
+                self.assertEqual((dest / "SKILL.md").read_text(), "official skill")
+                self.assertEqual((dest / "references/detail.md").read_text(), "official reference")
+                self.assertEqual((dest / "LICENSE").read_text(), "official license")
+
+    def test_middleware_caveman_preserves_existing_skill_on_failed_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"USERPROFILE": home}):
+            dest = Path(home) / ".kiro/skills/caveman"
+            dest.mkdir(parents=True)
+            (dest / "SKILL.md").write_text("user skill")
+            with mock.patch.object(install.urllib_request, "urlopen", side_effect=OSError("offline")) as fetch:
+                self.assertTrue(install.setup_caveman("kiro"))
+                fetch.assert_not_called()
+                self.assertFalse(install.setup_caveman("kiro", force=True))
+            self.assertEqual((dest / "SKILL.md").read_text(), "user skill")
+
+    def test_middleware_rejects_invalid_caveman_archive_before_writing(self) -> None:
+        cases = [None, {"skills/caveman/README.md": "missing skill"},
+                 {"skills/caveman/SKILL.md": "skill", "skills/caveman/../../escape": "bad path"}]
+        for files in cases:
+            with self.subTest(files=files), tempfile.TemporaryDirectory() as home:
+                data = io.BytesIO(b"not a zip")
+                if files is not None:
+                    data = io.BytesIO()
+                    with zipfile.ZipFile(data, "w") as archive:
+                        for path, body in files.items():
+                            archive.writestr(f"caveman-main/{path}", body)
+                dest = Path(home) / ".copilot/skills/caveman"
+                dest.mkdir(parents=True)
+                (dest / "SKILL.md").write_text("user skill")
+                with mock.patch.dict(os.environ, {"USERPROFILE": home}), \
+                     mock.patch.object(install.urllib_request, "urlopen", return_value=io.BytesIO(data.getvalue())):
+                    self.assertFalse(install.setup_caveman("copilot", force=True))
+                self.assertEqual((dest / "SKILL.md").read_text(), "user skill")
+                self.assertFalse((Path(home) / ".copilot/escape").exists())
 
     def test_install_writes_custom_agents(self) -> None:
         kiro = json.loads((self.impl / ".kiro/agents/codd.json").read_text(encoding="utf-8"))

@@ -128,6 +128,7 @@ python3 tools/codd-agent/install.py --agent copilot
 
 Kiro / Copilot の CLI が無い、IDE だけの環境でも導入できる。外部配布元へのネットワーク接続が必要。
 caveman は公式 GitHub から取得し、graphify は公式 Python パッケージを入れて、そのスキル登録を使う。
+`tools/codd-agent/install.py` 単体で導入でき、リポジトリ直下の `install.py` は不要。Windows では `USERPROFILE`、その他ではホームディレクトリへ配置する。
 
 | 対象 | スキルの保存先 |
 |---|---|

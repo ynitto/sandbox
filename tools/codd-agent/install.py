@@ -23,26 +23,64 @@ codd そのものは端末に入れない。リポジトリごとに `init.py` �
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import io
+import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+import tempfile
+import zipfile
+from pathlib import Path, PurePosixPath
+from urllib import request as urllib_request
 
 HERE = Path(__file__).resolve().parent
 TIMEOUT = 600
 AGENT_KINDS = ("kiro", "copilot")
 
 
-def load_external_installer():
-    """配布元から取得する処理をルートのインストーラーと共有する。"""
-    path = HERE.parent.parent / "install.py"
-    spec = importlib.util.spec_from_file_location("codd_external_installer", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"外部スキルのインストーラーを読み込めません: {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+CAVEMAN_REPO = "JuliusBrussee/caveman"
+
+
+def setup_caveman(agent_type: str, force: bool = False) -> bool:
+    """公式配布元から取得し、IDE が読む保存先へ配置する。CLI / npx は不要。"""
+    if agent_type not in AGENT_KINDS:
+        raise ValueError(f"未対応の導入先: {agent_type}")
+    home = Path(os.environ.get("USERPROFILE") or Path.home())
+    dest = home / f".{agent_type}" / "skills" / "caveman"
+    if (dest / "SKILL.md").is_file() and not force:
+        print(f"   ✓ caveman は導入済み: {dest}")
+        return True
+    url = f"https://codeload.github.com/{CAVEMAN_REPO}/zip/refs/heads/main"
+    print(f"   caveman を公式配布元から取得: {url}")
+    try:
+        request = urllib_request.Request(url, headers={"User-Agent": "agent-skills-installer"})
+        with urllib_request.urlopen(request, timeout=60) as response:
+            data = response.read()
+        with zipfile.ZipFile(io.BytesIO(data)) as archive, tempfile.TemporaryDirectory() as temp:
+            root = archive.namelist()[0].split("/", 1)[0]
+            prefix = f"{root}/skills/caveman/"
+            staged = Path(temp) / "caveman"
+            for entry in archive.infolist():
+                if not entry.filename.startswith(prefix) or entry.is_dir():
+                    continue
+                rel = entry.filename[len(prefix):]
+                if (not rel or "\\" in rel or Path(rel).drive or PurePosixPath(rel).is_absolute()
+                        or ".." in PurePosixPath(rel).parts):
+                    raise ValueError("スキルのアーカイブに不正なパスがあります")
+                file = staged / rel
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(archive.read(entry))
+            if not (staged / "SKILL.md").is_file():
+                raise ValueError("公式アーカイブに caveman/SKILL.md がありません")
+            license_path = f"{root}/LICENSE"
+            if license_path in archive.namelist():
+                (staged / "LICENSE").write_bytes(archive.read(license_path))
+            shutil.copytree(staged, dest, dirs_exist_ok=True)
+        print(f"   ✓ caveman を配置: {dest}")
+        return True
+    except (OSError, ValueError, IndexError, zipfile.BadZipFile) as exc:
+        print(f"   ✗ caveman の取得・配置に失敗しました: {exc}")
+        return False
 
 # (名前, 入っているかを見るコマンド, 入れるコマンドの候補, 最新にするコマンドの候補)
 GRAPHIFY = ("graphify", ["graphify", "--version"],
@@ -94,10 +132,9 @@ def install_middleware(upgrade: bool = False, agents=AGENT_KINDS, skills: bool =
             failed += 1
             print(f"✗ {name} を入れられませんでした（uv・pipx・pip のどれかが要ります）。無くても文字列検索だけで動きます")
     if skills:
-        external = load_external_installer()
         exe = shutil.which("graphify")
         for agent in dict.fromkeys(agents):
-            if not external.setup_caveman(agent, force=upgrade):
+            if not setup_caveman(agent, force=upgrade):
                 failed += 1
             if not exe:
                 print(f"✗ {agent} 向け graphify スキルを登録できません（graphify 本体がありません）")
