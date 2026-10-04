@@ -259,18 +259,27 @@ def _judge_trigger_heuristic(
     query: str,
     target_skill_name: str,
     all_skills: list[dict],
-) -> bool:
-    """バイグラムスコアでターゲットスキルが最上位かどうかを判定する。"""
-    scores = [
+) -> tuple[bool, int | None]:
+    """バイグラムスコアでターゲットスキルが最上位かどうかを判定する。
+
+    `(triggered, target_rank)` を返す。target_rank は全スキル中のターゲットの
+    順位（1 始まり。スコア 0 のスキルも数える。ターゲットが一覧に無ければ None）。
+    """
+    all_scores = [
         (_score_heuristic(query, s["description"]), s["name"])
         for s in all_skills
     ]
-    scores = [(sc, name) for sc, name in scores if sc > 0]
+    ranked = sorted(all_scores, reverse=True)
+    target_rank = next(
+        (i for i, (_, name) in enumerate(ranked, 1) if name == target_skill_name),
+        None,
+    )
+    scores = [(sc, name) for sc, name in all_scores if sc > 0]
     if not scores:
-        return False
+        return False, target_rank
     scores.sort(reverse=True)
     top_name = scores[0][1]
-    return top_name == target_skill_name
+    return top_name == target_skill_name, target_rank
 
 
 # ---------------------------------------------------------------------------
@@ -315,36 +324,54 @@ def run_eval(
                     if verbose:
                         print(f"警告: {e}", file=sys.stderr)
                     triggered = False
-                _append_result(results, item, triggered, verbose)
+                _append_result(results, item, triggered, None, verbose)
     else:
         # 簡易モード: ヒューリスティクス（逐次処理）
         for item in eval_set:
-            triggered = _judge_trigger_heuristic(item["query"], skill_name, all_skills)
-            _append_result(results, item, triggered, verbose)
+            triggered, target_rank = _judge_trigger_heuristic(
+                item["query"], skill_name, all_skills)
+            _append_result(results, item, triggered, target_rank, verbose)
 
     passed = sum(1 for r in results if r["pass"])
     total = len(results)
+    pos = [r for r in results if r["should_trigger"]]
+    neg = [r for r in results if not r["should_trigger"]]
     return {
         "skill_name": skill_name,
         "mode": "claude-cli" if use_claude_cli else "heuristic",
         "results": results,
-        "summary": {"total": total, "passed": passed, "failed": total - passed},
+        "summary": {
+            "total": total, "passed": passed, "failed": total - passed,
+            # 正例（勝たないと通らない）と負例（遠ざけておけば通る）を分けて読む
+            "positive": {"passed": sum(1 for r in pos if r["pass"]), "total": len(pos)},
+            "negative": {"passed": sum(1 for r in neg if r["pass"]), "total": len(neg)},
+        },
     }
 
 
-def _append_result(results: list, item: dict, triggered: bool, verbose: bool) -> None:
+def _append_result(
+    results: list,
+    item: dict,
+    triggered: bool,
+    target_rank: int | None,
+    verbose: bool,
+) -> None:
     did_pass = triggered == item["should_trigger"]
     results.append({
         "query": item["query"],
         "should_trigger": item["should_trigger"],
         "triggered": triggered,
+        # 全スキル中の自スキルの順位（簡易モードのみ。高精度モードは None）
+        "target_rank": target_rank,
         "pass": did_pass,
     })
     if verbose:
         status = "PASS" if did_pass else "FAIL"
         mark = "✓" if triggered else "✗"
+        rank = (f" rank={target_rank}"
+                if target_rank is not None and not item["should_trigger"] else "")
         print(
-            f"  [{status}] triggered={mark} expected={item['should_trigger']}: "
+            f"  [{status}] triggered={mark} expected={item['should_trigger']}{rank}: "
             f"{item['query'][:60]}",
             file=sys.stderr,
         )
@@ -416,7 +443,7 @@ def main() -> None:
                 args.query, name, description, args.timeout, project_root, args.model
             )
         else:
-            triggered = _judge_trigger_heuristic(args.query, name, all_skills)
+            triggered, _ = _judge_trigger_heuristic(args.query, name, all_skills)
         expected = (args.expected == "true") if args.expected else None
         did_pass = (triggered == expected) if expected is not None else None
         result = {
