@@ -42,6 +42,16 @@ test('自動選択用にスキルの説明・タグ・本文を読む', () => {
   }]);
 });
 
+test('正規形の metadata.tags を自動選択用タグとして読む', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-meta-tags-'));
+  const skillRoot = path.join(root, 'skills');
+  fs.mkdirSync(path.join(skillRoot, 'reviewer'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'reviewer', 'SKILL.md'), '---\nname: reviewer\ndescription: レビューする\nmetadata:\n  version: 1.0.0\n  tags:\n    - review\n    - quality\n---\n# Reviewer\n');
+  const [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.deepStrictEqual(item.tags, ['review', 'quality']);
+});
+
+
 test('一覧に出す版は frontmatter の version から読む', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-version-'));
   const skillRoot = path.join(root, 'skills');
