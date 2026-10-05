@@ -294,6 +294,20 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- src/use.py:3:hello()", report)
         self.assertIn("## 候補のファイル\n\n- src/use.py\n- src/app.py", report)
 
+    def test_searches_are_reused_while_the_repo_is_unchanged(self) -> None:
+        self.use_graphify_stub()
+        r = self.run_pa(self.impl, "impact", "--term", "hello")
+        self.assertIn("graphify: updated", r.stdout)
+        first = len(self.calls())
+        # 計画を直して検査し直すたびに引き直さない（中身と語が同じなら前の結果を使う）。
+        r = self.run_pa(self.impl, "impact", "--term", "hello")
+        self.assertIn("FOUND", r.stdout)
+        self.assertEqual(len(self.calls()), first)
+        (self.impl / "src/use.py").write_text("from app import hello\n\nhello()\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "impact", "--term", "hello")   # 中身が変われば引き直す
+        self.assertIn("src/use.py", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
+        self.assertGreater(len(self.calls()), first)
+
     def test_graphify_off(self) -> None:
         self.use_graphify_stub()
         path = self.impl / ".statemachine/codd/codd.json"
@@ -699,6 +713,22 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- src/other.py — 変更不要（変える段で判断）: 段はもう正しかった", report)
         self.assertIn("- src/notes.txt — 変えた（利用者が認めた: 書き方を残した）", report)
         self.assertIn("- src/third.py — 変えた（変える段で足した: 定数をそろえた）", report)
+
+    def test_tests_wait_until_the_change_itself_is_complete(self) -> None:
+        mark = self.tmp / "checked"
+        self.set_check(self.impl, [sys.executable, "-c", f"open({str(mark)!r}, 'a').write('x')"])
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")   # 変え残しと計画に無い変更
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("上の指摘を直したあとの検査で動かします", r.stdout)
+        self.assertFalse(mark.exists())   # 直せばどのみち動かし直すので、重い検査を先に回さない
+        (self.impl / "src/extra.py").unlink()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(mark.exists())    # 通すときは必ず動かす
 
     def test_rechecking_the_plan_keeps_the_work_already_done(self) -> None:
         self.write_plan(PLAN_ALIGNED)

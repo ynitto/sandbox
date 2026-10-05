@@ -971,7 +971,47 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
     """語ごとに graphify と git grep で引き、（本文, 候補のファイル, graphify の状態）を返す。scope の外は捨てる。
 
     first_lines を渡すと、git grep で一致したファイルごとに最初に一致した行の番号を入れる（文字列の一致だけ）。
+    リポジトリの中身（stamp）と語が前と同じなら、前の結果を使う（計画を直して検査し直すたびに引き直さない）。
     """
+    repo = side.path
+    key = hashlib.sha256(json.dumps(
+        [str(repo), side.scope, side.exclude, terms, graph_cmd, use_graph and ctx.config["graphify"] != "off",
+         use_graph and bool(shutil.which("graphify")), stamp(repo)], ensure_ascii=False).encode()).hexdigest()
+    cache = load_search_cache(ctx)
+    if key in cache:
+        hit = cache[key]
+        if first_lines is not None:
+            first_lines.update(hit["first"])
+        return hit["body"], hit["files"], "fresh" if hit["note"] == "updated" else hit["note"]
+    found_lines: dict[str, int] = {}
+    body, files, note = _search(ctx, side, terms, graph_cmd, use_graph, found_lines)
+    if first_lines is not None:
+        first_lines.update(found_lines)
+    cache[key] = {"body": body, "files": files, "note": note, "first": found_lines}
+    save_search_cache(ctx, cache)
+    return body, files, note
+
+
+SEARCH_CACHE = "search-cache.json"
+MAX_SEARCH_CACHE = 64
+
+
+def load_search_cache(ctx: Ctx) -> dict:
+    try:
+        rec = json.loads((ctx.data / SEARCH_CACHE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def save_search_cache(ctx: Ctx, cache: dict) -> None:
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    keep = dict(list(cache.items())[-MAX_SEARCH_CACHE:])   # 新しいものを残す（dict は足した順）
+    (ctx.data / SEARCH_CACHE).write_text(json.dumps(keep, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
+            use_graph: bool, first_lines: dict[str, int]) -> tuple[str, list[str], str]:
     repo = side.path
     exe, graph, note = ensure_graph(ctx, repo) if use_graph else (None, None, "unused")
     lines: list[str] = []
@@ -1007,7 +1047,7 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
             rel, _, rest = h.partition(":")
             add_file(rel)
             num = rest.split(":", 1)[0]
-            if first_lines is not None and num.isdigit():
+            if num.isdigit():
                 first_lines[rel] = min(first_lines.get(rel, int(num)), int(num))
     return "\n".join(lines), files, note
 
@@ -3567,6 +3607,13 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         since = (ctx.data / "before.json").stat().st_mtime
         problems += unread_problem(unread_skills(ctx, used, since), f"{DATA_DIRNAME}/apply.md に挙げた")
 
+    if problems:
+        # 手前の指摘を直せば中身が変わり、テストはどのみち動かし直す。重いテストと検査コマンドは、
+        # 指摘が無くなってから動かす（通すときは必ず全部動かす）。
+        print_problems(ctx, "apply", problems)
+        print("テストと検査コマンドは、上の指摘を直したあとの検査で動かします")
+        return 1
+
     # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。作り直したファイルを控える。
     pre = {key: dirty_files(side) for key, side in all_sides(ctx)}
     for name, argv in test_commands(ctx.config.get("test")):
@@ -3766,12 +3813,24 @@ _KINDS = (
     ("unfixed", "apply", ("直していないファイル", "自分のファイルを、直していません")),
     ("ref-coverage", "any", ("計画で扱っていません",)),
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
-    ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル", "スキルの手順")),
+    ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル", "スキルの手順", "スキルを読み込んでいません")),
     ("check", "apply", ("検査が失敗しました",)),
+    # 人の判断が要る形の指摘（ずれを直すか残すか・目安や書式を変えてよいか）。下の shape の目印
+    # （が「なし」です など）にも当たるので、先に form として止める。
+    ("form", "any", ("ずれがあるのに", "ずれが「なし」なのに", "文書の求めを満たしていません", "今の書式から外れています")),
+    # 計画の書き方・根拠の書き方・探索の未実行（エージェントが自分で直せる）。目印は指摘の言い回しをそのまま長めに取る
+    # （「が「なし」です」のような短い目印だと、あとで足した判断の要る指摘まで訊かない側に吸うため）。
+    ("shape", "any", ("見出しがありません: ", "見出しの順番がテンプレートと違います", "見出しの中身が空です: ",
+                      "は箇条書きにしてください（無ければ「なし」）", "参照先を探していません: ", "を `…` で囲んでください",
+                      "## テストの変更案 が「なし」です。", "参照先の変更案があるのに、影響範囲が「なし」です",
+                      "のパスがどの参照先か決まりません。", "の項目に、参照先のパスがありません",
+                      "の項目に、参照先に実在する根拠のパスがありません", "の項目の名前が、根拠のファイルに見当たりません",
+                      "の項目に、自分のリポジトリのパスがありません", "の項目に、自分のリポジトリに実在するパスがありません")),
 )
 
 
 def classify(phase: str, text: str) -> str:
+    """指摘の種類。どの目印にも当たらなければ form（訊く側。目印の足し忘れが訊かない側に落ちないように）。"""
     for kind, where, marks in _KINDS:
         if where in ("any", phase) and any(m in text for m in marks):
             return kind
@@ -3797,6 +3856,7 @@ ADVICE = {
                     f"測ったファイルのうち、計画が「{PENDING_MARK}」のままのものがあります。ファイルごとに、直すか"
                     "「変更不要」か関係が無いかを決めてもらいます"),
         "rules": (["replan", "stop"], "決まり・スキル・道具を計画が扱っていません。それらを使って練り直します"),
+        "shape": (["replan", "stop"], "計画の書き方か根拠の書き方が決まりどおりではありません。書き直します"),
         "form": (["replan", "stop"], "計画の形か根拠が決まりどおりではありません。参照先を読み直して練り直します"),
     },
     "apply": {
@@ -3816,6 +3876,7 @@ ADVICE = {
         "paths": (["reapply", "keep", "stop"], "書いたパスが無いか、消したファイルがまだ指されています。指す先を直します"),
         "rules": (["reapply", "stop"], "変えるときのスキル・道具の記録がありません。変えたファイルをスキルの手順で見直し、使って記録します"),
         "check": (["reapply", "reset", "stop"], "検査コマンドが通りません。直して変え直すか、計画から練り直すかを決めてもらいます"),
+        "shape": (["reapply", "stop"], "書き方が決まりどおりではありません。書き直します"),
         "form": (["reapply", "reset", "stop"], "変えた結果が計画と合いません"),
         "config": (["reapply", "stop"], "設定か環境の誤りです。利用者に直してもらってから、同じ段をやり直します"),
     },
@@ -3823,9 +3884,11 @@ ADVICE = {
 ADVICE["plan"]["config"] = (["replan", "stop"], "設定か環境の誤りです。利用者に直してもらってから、練り直します")
 
 
-# 人の判断が要らない理由（エージェントが自分で直せる。テストや検査の失敗・変え残し・パスの誤り・記録の漏れ・計画の形）。
+# 人の判断が要らない理由（エージェントが自分で直せる。テストや検査の失敗・変え残し・パスの誤り・記録の漏れ・計画の書き方）。
 # これだけで止まったときは、利用者に訊かずに同じ段をやり直す。計画を変える・範囲を絞る・戻すなどの判断が要るものは訊く。
-AUTO_KINDS = {"plan": {"pending", "rules", "form"}, "apply": {"check", "undone", "unfixed", "extra", "paths", "rules", "form"}}
+# form（どの目印にも当たらない指摘）は入れない（目印を足し忘れた指摘が、訊かない側に落ちないように）。
+AUTO_KINDS = {"plan": {"pending", "rules", "shape"},
+              "apply": {"check", "undone", "unfixed", "extra", "paths", "rules", "shape"}}
 AUTO_NAME = "auto.json"
 MAX_AUTO = 2     # 同じ段で人に訊かずに進める回数。直らない失敗をいつまでも回さない
 
