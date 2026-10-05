@@ -1463,15 +1463,75 @@ def measure_refs(ctx: Ctx, terms: list[str], name: str, title: str,
     return found
 
 
+# 「変えない」と読める言い回し。変更不要の判断は `変更不要: 理由` の 1 つの書き方に寄せる（計画の検査と変えたあとの
+# 検査が同じ項目を同じに読むため）。ほかの言い回しは計画の検査で書き直させる。
+_NOT_CHANGING = re.compile(r"対応不要|修正不要|変更なし|変更無し|変更しない|直さない|直す必要(?:は)?(?:ない|無い)|"
+                           r"手を(?:付け|入れ)ない|影響(?:は)?(?:なし|無し|ない|無い)|対象外|そのまま(?:で)?(?:よい|良い)")
+_NO_CHANGE_LEAD = re.compile(rf"^[-*]?\s*{NO_CHANGE_MARK}\s*[:：]\s*")
+_COMMAND_CODE = re.compile(r"`[^`]*\s[^`]*`")
+
+
+@dataclass
+class Judgment:
+    """影響範囲・テストの変更案の 1 項目の読み方。計画の検査と変えたあとの検査は、どちらもこれで読む。"""
+    waived: bool        # 変更不要
+    targets: str        # 対象として明示したパス（`, ` 区切り）
+    reason: str         # 変更不要の理由（変更不要でなければ ""）
+
+
+def judgment(item: str) -> Judgment:
+    """項目を読む。書き方は 2 つ: `- パス, パス — 変更不要: 理由` と `- 変更不要: パス, パス — 理由`。
+    対象は項目の先頭（変更不要: の後ろ）に並べたパスだけで、理由の中のパスは対象に数えない。
+    パスの無い `- 変更不要: 理由` は、響くものが無いときの理由だけの項目。"""
+    plain = _COMMAND_CODE.sub("", item)
+    if NO_CHANGE_MARK not in plain:
+        return Judgment(False, test_item_targets(item), "")
+    lead = _NO_CHANGE_LEAD.match(item.strip())
+    if lead:
+        rest = item.strip()[lead.end():]
+        targets = test_item_targets(rest)
+        head, dash, tail = rest.partition("—")
+        if dash and targets:
+            reason = tail
+        else:
+            # 対象の後ろ（無ければ全体）が理由。`変更不要: src/a.py は使わない` は src/a.py と、その理由。
+            reason = _COMMAND_CODE.sub("", rest)
+            for t in targets.split(", ") if targets else []:
+                reason = reason.replace(t, "", 1)
+    else:
+        targets = test_item_targets(item)
+        reason = plain.split(NO_CHANGE_MARK, 1)[1]
+    return Judgment(True, targets, _COMMAND_CODE.sub("", reason).strip(" :：—-、,（）()。．`\t"))
+
+
+def judgment_problems(heading: str, body: str) -> list[str]:
+    """影響範囲・テストの変更案の書き方の誤り（変更不要の理由が無い、ほかの言い回しで変えないと書いた）。"""
+    if is_none(body):
+        return []
+    out = []
+    for item in items(body):
+        if PENDING_MARK in item:
+            continue
+        j = judgment(item)
+        if j.waived and not j.reason:
+            out.append(f"{heading} の変更不要の後に理由がありません: {item[:80]}")
+        elif not j.waived and _NOT_CHANGING.search(_COMMAND_CODE.sub("", item)):
+            out.append(f"{heading} の項目は変えないという判断に読めます。変えないなら `- パス — {NO_CHANGE_MARK}: 理由` と"
+                       f"書いてください（変えたあとの検査は、この書き方だけを変更不要と読みます）: {item[:80]}")
+    return out
+
+
 def listed_paths(ctx: Ctx, body: str, only_no_change: bool = False, skip_no_change: bool = False,
                  allow_new: bool = False) -> set[str]:
     paths: set[str] = set()
     for item in items(body) or [body]:
-        if only_no_change and NO_CHANGE_MARK not in item:
+        j = judgment(item)
+        if only_no_change and not j.waived:
             continue
-        if skip_no_change and (NO_CHANGE_MARK in item or PENDING_MARK in item):
+        if skip_no_change and (j.waived or PENDING_MARK in item):
             continue
-        paths.update(cited_own(ctx, item, allow_new))
+        # 変更不要の項目は、先頭に並べた対象だけ（理由の中のパスまで変更不要にしない）
+        paths.update(cited_own(ctx, j.targets if j.waived else item, allow_new))
     return paths
 
 
@@ -1828,6 +1888,8 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     if problems:
         return problems
     problems += test_plan(ctx, bodies).problems
+    problems += judgment_problems("## 影響範囲", bodies["## 影響範囲"])
+    problems += [p for p in judgment_problems(TESTS_HEADING, bodies[TESTS_HEADING]) if "理由がありません" not in p]
     problems += rules_problems(ctx, bodies["## 守る決まり"])
     problems += used_problems(bodies["## 使ったスキルと道具"],
                               ctx.config["skills"]["plan"] + ctx.config["tools"]["plan"], "使ったスキルと道具")
@@ -2189,14 +2251,12 @@ def test_plan(ctx: Ctx, bodies: dict[str, str]) -> TestPlan:
         plan.problems.append(f"{TESTS_HEADING} は箇条書きにしてください")
     for item in listed:
         # 理由はコマンドの文字列で代用させない。
-        plain = re.sub(r"`[^`]*\s[^`]*`", "", item)
-        waived = NO_CHANGE_MARK in plain
-        if waived:
-            reason = plain.split(NO_CHANGE_MARK, 1)[1].strip(" :：—-（）()。．`\t")
-            if not reason:
-                plan.problems.append(f"{TESTS_HEADING} の変更不要の後に理由がありません: {item[:80]}")
-                continue
-        targets = test_item_targets(item)
+        j = judgment(item)
+        waived = j.waived
+        if waived and not j.reason:
+            plan.problems.append(f"{TESTS_HEADING} の変更不要の後に理由がありません: {item[:80]}")
+            continue
+        targets = j.targets
         hits = {("", rel) for rel in cited_own(ctx, targets, allow_new=True)}
         cited = cited_refs(ctx, targets, allow_new=True)
         hits |= cited.found
@@ -2912,9 +2972,10 @@ def restore_hidden(ctx: Ctx, text: str) -> str:
         if heading not in now:
             continue
         for item in items(old.get(heading, "")):
-            if NO_CHANGE_MARK not in item:
+            j = judgment(item)
+            if not j.waived:
                 continue
-            paths = re.findall(r"[\w@.\-]+(?:/[\w@.\-]+)+|[\w@\-]+\.[A-Za-z0-9]{1,8}", item.split("—", 1)[0])
+            paths = [t for t in j.targets.split(", ") if t]
             kept = any(p in text for p in paths) if paths else not is_none(now[heading])
             if not kept and f"- {item}" not in text:
                 back.add(heading, (heading, item), f"- {item}")
@@ -3743,7 +3804,7 @@ def compact_plan(text: str) -> str:
         if line.startswith("#"):
             heading, skip = line, False
         if heading in ("## 影響範囲", TESTS_HEADING) and re.match(r"^[-*]\s", line.strip()):
-            skip = NO_CHANGE_MARK in line
+            skip = judgment(line.strip()).waived
         elif skip and line.strip() and not line.startswith((" ", "\t")):
             skip = False
         if not skip:

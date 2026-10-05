@@ -1538,6 +1538,39 @@ class CoddTest(unittest.TestCase):
         self.write_plan(self.with_tests(PLAN_ALIGNED, "- 変更不要:"))
         self.assertIn("変更不要の後に理由がありません", self.run_pa(self.impl, "verify-plan").stderr)
 
+    def test_no_change_is_read_the_same_before_and_after_changing(self) -> None:
+        # 「変更不要」は計画の検査と変えたあとの検査で同じに読む。書き方は 2 つ（パスが先・変更不要: が先）。
+        self.add_caller()
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\n"}, "tests")
+        base = PLAN_DRIFT.replace("- src/app.py — hello の戻り値", "- src/app.py — hello の戻り値\n{impact}")
+        tests = "- 変更不要: tests/test_app.py — 戻り値を見ていない"
+
+        # ほかの言い回しで「変えない」と書くと、計画の検査で書き直させる（変えたあとの検査は変更不要と読まないため）。
+        self.write_plan(self.with_tests(base.format(impact="- src/use.py — 直さない（表示は変わらない）"), tests))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変えないという判断に読めます", r.stderr)
+        self.write_plan(self.with_tests(base.format(impact="- src/use.py — 変更不要"), tests))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("## 影響範囲 の変更不要の後に理由がありません", r.stderr)
+
+        self.write_plan(self.with_tests(base.format(impact="- 変更不要: src/use.py — 表示は変わらない"), tests))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_paths_in_the_reason_are_not_waived(self) -> None:
+        # 変更不要の対象は先頭に並べたパスだけ。理由に出てくるパスまで変更不要にしない。
+        self.add_caller()
+        commit(self.impl, {"src/other.py": "from app import hello\n\nprint(hello())\n"}, "other")
+        self.write_plan(PLAN_DRIFT.replace("- src/app.py — hello の戻り値",
+                                           "- src/app.py — hello の戻り値\n- src/use.py — 変更不要: src/other.py と同じく表示だけ"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("- src/other.py — 未判断", (self.impl / PLAN).read_text(encoding="utf-8"))
+
     def test_tests_section_cannot_be_none_when_something_changes(self) -> None:
         self.write_plan(self.with_tests(PLAN_ALIGNED, "なし"))
         r = self.run_pa(self.impl, "verify-plan")
