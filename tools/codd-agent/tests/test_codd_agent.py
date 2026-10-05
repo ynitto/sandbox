@@ -618,6 +618,8 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
         (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        for _ in range(2):   # 計画に無い変更は、戻すか申告すれば直せるので、まず訊かずに変え直す（2 回まで）
+            self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
         r = self.run_pa(self.impl, "advise")
         self.assertIn("# 変えたあとの検査で止まりました", r.stdout)
         self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
@@ -651,13 +653,52 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "advise")
         self.assertNotIn("AUTO", r.stdout)                  # 上限を超えたら訊く
         self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
-        # 通れば数え直す。計画に無い変更が混じれば最初から訊く。
+        # 通れば数え直す。計画で挙げていないファイルを足したことが混じれば最初から訊く。
         self.set_check(self.impl, [sys.executable, "-c", "pass"])
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0, self.run_pa(self.impl, "verify-apply").stderr)
         self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('テストが落ちた')"])
         (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("## 計画との違い\n\n- src/extra.py — 追加: 値を分けた\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
         self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
+
+    def test_declared_differences_from_the_plan_need_no_replanning(self) -> None:
+        commit(self.impl, {"src/other.py": "LEVEL = 1\n", "src/third.py": "X = 1\n"}, "more")
+        self.write_plan(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` の中でログを出す\n- src/other.py — ログの段を直す")
+            .replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/third.py — 変更不要: 名前が似ているだけ"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/third.py").write_text("X = 2\n", encoding="utf-8")
+        (self.impl / "src/notes.txt").write_text("ログの書き方\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/other.py", r.stderr)
+        self.assertIn("追加: 理由", r.stderr)
+        # 変え残し・計画に無い変更は、計画を直さずに申告で済む。まずは訊かずに変え直させる。
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        (self.impl / ".codd/apply.md").write_text(
+            "## 計画との違い\n\n- src/other.py — 変更不要: 段はもう正しかった\n"
+            "- src/third.py — 追加: 定数をそろえた\n- src/notes.txt — 追加: 書き方を残した\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        # 計画で挙げたファイル（third.py）は訊かずに認め、挙げていないもの（notes.txt）だけを利用者に確かめる。
+        self.assertIn("計画で挙げていないファイルを足しました", r.stderr)
+        self.assertIn("src/notes.txt — 書き方を残した", r.stderr)
+        self.assertNotIn("src/third.py", r.stderr)
+        self.assertNotIn("src/other.py", r.stderr)
+        r = self.run_pa(self.impl, "advise")
+        self.assertNotIn("AUTO", r.stdout)
+        self.assertIn("1. 足したファイルを認めて続ける（勧め） → `APPLY`。先に `python3 .statemachine/codd/codd.py accept` を実行",
+                      r.stdout)
+        r = self.run_pa(self.impl, "accept")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_pa(self.impl, "verify-apply")   # 計画は書き直さないので、確認からやり直さない
+        self.assertEqual(r.returncode, 0, r.stderr)
+        report = self.run_pa(self.impl, "report").stdout
+        self.assertIn("- src/other.py — 変更不要（変える段で判断）: 段はもう正しかった", report)
+        self.assertIn("- src/notes.txt — 変えた（利用者が認めた: 書き方を残した）", report)
+        self.assertIn("- src/third.py — 変えた（変える段で足した: 定数をそろえた）", report)
 
     def test_rechecking_the_plan_keeps_the_work_already_done(self) -> None:
         self.write_plan(PLAN_ALIGNED)
