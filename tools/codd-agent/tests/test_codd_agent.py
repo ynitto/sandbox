@@ -714,6 +714,29 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- src/notes.txt — 変えた（利用者が認めた: 書き方を残した）", report)
         self.assertIn("- src/third.py — 変えた（変える段で足した: 定数をそろえた）", report)
 
+    def test_same_spelling_names_in_refs_are_declared_unrelated(self) -> None:
+        # 変える段で足した名前が、参照先の関係の無いファイルにも同じ綴りで出てくる。人に訊かず、申告で済ませる。
+        commit(self.design, {"docs/zoom.md": "# ズーム\n\n`is_selectable` でズームできるかを決める。\n"}, "zoom")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text(
+            "def hello():\n    return 1  # log\n\n\ndef is_selectable():\n    return True\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("名前に触れている参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/zoom.md", r.stderr)
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        for line in ("- `is_selectable` — 関係なし: ズームの判定で、候補の選択とは別物",
+                     "- docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物",
+                     "- design:docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物"):
+            with self.subTest(line=line):
+                (self.impl / ".codd/apply.md").write_text(f"## 計画との違い\n\n{line}\n", encoding="utf-8")
+                r = self.run_pa(self.impl, "verify-apply")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                report = self.run_pa(self.impl, "report").stdout
+                self.assertIn("## 変える段で関係なしとした名前・ファイル", report)
+                self.assertIn("関係なし: ズームの判定で、候補の選択とは別物", report)
+
     def test_tests_wait_until_the_change_itself_is_complete(self) -> None:
         mark = self.tmp / "checked"
         self.set_check(self.impl, [sys.executable, "-c", f"open({str(mark)!r}, 'a').write('x')"])

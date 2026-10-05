@@ -3242,7 +3242,8 @@ def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
 
 DEVIATION_HEADING = "## 計画との違い"
 ACCEPTED_NAME = "accepted.json"
-_DEVIATION = re.compile(r"^[-*]\s+`?([^`\s]+)`?\s*[—–-]+\s*(変更不要|追加)\s*[:：]\s*(\S.*)$")
+UNRELATED_MARK = "関係なし"
+_DEVIATION = re.compile(r"^[-*]\s+`?([^`\s]+)`?\s*[—–-]+\s*(変更不要|追加|関係なし)\s*[:：]\s*(\S.*)$")
 
 
 @dataclass
@@ -3253,6 +3254,8 @@ class Deviations:
     """
     no_change: dict[tuple[str | None, str], str]
     added: dict[tuple[str | None, str], str]
+    # 自分の変更で動く名前・それに触れている参照先のファイルのうち、同じ綴りの別物（`名前` か パス → 理由）
+    unrelated: dict[str, str] = field(default_factory=dict)
 
     @staticmethod
     def _get(table: dict, key: str, rel: str) -> str | None:
@@ -3263,6 +3266,9 @@ class Deviations:
 
     def reason_added(self, key: str, rel: str) -> str | None:
         return self._get(self.added, key, rel)
+
+    def unrelated_file(self, key: str, rel: str) -> str | None:
+        return self.unrelated.get(f"{key}:{rel}") or self.unrelated.get(rel)
 
 
 def deviations(ctx: Ctx) -> Deviations:
@@ -3277,6 +3283,9 @@ def deviations(ctx: Ctx) -> Deviations:
         if not m:
             continue
         path, kind, reason = m.groups()
+        if kind == UNRELATED_MARK:
+            out.unrelated[path.strip("/")] = reason.strip()
+            continue
         name, sep, rest = path.partition(":")
         key: str | None = name if sep and name in refs else None
         rel = rest if key else path
@@ -3313,6 +3322,9 @@ def added_problems(ctx: Ctx, dev: Deviations, key: str, extra: list[str]) -> tup
 OUTSIDE_ADDED = "計画で挙げていないファイルを足しました"
 DECLARE_HINT = (f"変える段で必要だと分かったなら、{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
                 "`- パス — 追加: 理由` と書く")
+NAMES_TOUCH_REFS = "自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません"
+UNRELATED_HINT = (f"{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に、名前ごとなら「- `名前` — {UNRELATED_MARK}: 理由」、"
+                  f"ファイルごとなら「- パス — {UNRELATED_MARK}: 理由」と書く")
 UNDONE_HINT = (f"変えなくてよいと分かったなら、{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
                f"`- パス — {NO_CHANGE_MARK}: 理由` と書く")
 
@@ -3547,18 +3559,19 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems.append(
                 f"変更の影響を受けるのに、直していないファイルがあります（直すか、{UNDONE_HINT}）: " + ", ".join(untouched)
                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）")
-    new_own_terms = [t for t in own_diff_terms if t not in own_terms_from_plan(bodies)]
+    new_own_terms = [t for t in own_diff_terms if t not in own_terms_from_plan(bodies) and t not in dev.unrelated]
     if new_own_terms:
         # 計画に無い名前まで自分で変えたなら、それに触れている参照先も扱ったか。
         hits = measure_refs(ctx, new_own_terms, "ref-impact-after.md",
                             "自分の実際の変更で動く名前に触れている参照先のファイル（測定）")
         cited = cited_anywhere(ctx, bodies)
         missing = sorted(ref_label(ctx, n, rel) for n, rel in hits
-                         if (n, rel) not in cited and rel not in a.touched.get(n, set()))
+                         if (n, rel) not in cited and rel not in a.touched.get(n, set())
+                         and not dev.unrelated_file(n, rel))
         if missing:
-            problems.append("自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません（利用者に確かめて"
-                            "計画を直すか、その名前を変えないでください）: " + ", ".join(missing)
-                            + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）")
+            problems.append(f"{NAMES_TOUCH_REFS}（同じ綴りの別物なら、{UNRELATED_HINT}。"
+                            "関係するなら、利用者に確かめて計画を直すか、その名前を変えないでください）: "
+                            + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）")
 
     # 3'. 実際の変更が響くテストを、直したか「変更不要」としたか（同じ側のテストも。名前とつながりで測る）。
     affected: dict[tuple[str, str], str] = {}
@@ -3776,6 +3789,9 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         lines += ["", "## 参照先とパスでつながっていない変更", "",
                   *[f"- {p}" for p in lonely],
                   "", "（つなぐなら、ファイルに `coherence: doc=パス` のように書くか、参照先の文書からパスで指す）"]
+    if dev.unrelated:
+        lines += ["", "## 変える段で関係なしとした名前・ファイル", "",
+                  *[f"- {t} — {UNRELATED_MARK}: {why}" for t, why in sorted(dev.unrelated.items())]]
     todo = a.bodies.get("## 今回やらないこと", "なし")
     lines += ["", "## 次にやること（今回やらないこと）", "", todo if not is_none(todo) else "- なし", "",
               "どちらのリポジトリもコミットしていない。内容を確かめてから、それぞれでコミットする。", ""]
@@ -3814,6 +3830,7 @@ _KINDS = (
     ("extra", "apply", ("計画に無いファイルを変えています", "変更案に無いファイルを変えています", "が変わっています（戻してください）")),
     ("undone", "apply", ("まだ変えていません", "が変わっていません")),
     ("unfixed", "apply", ("直していないファイル", "自分のファイルを、直していません")),
+    ("names", "apply", (NAMES_TOUCH_REFS,)),
     ("ref-coverage", "any", ("計画で扱っていません",)),
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
     ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル", "スキルの手順", "スキルを読み込んでいません")),
@@ -3874,6 +3891,9 @@ ADVICE = {
                    "計画のファイルを変え残しています。変え切るか、計画から外すかを決めてもらいます"),
         "unfixed": (["reapply", "keep", "reset", "stop"],
                     "変更の影響を受けるファイルを直していません。直すか、「変更不要」として計画に書くかを決めてもらいます"),
+        "names": (["reapply", "keep", "reset", "stop"],
+                  "自分の変更で動く名前に、計画に無い参照先のファイルが触れています。同じ綴りの別物かを見て、"
+                  "関係するなら計画に足すか、名前を変え直すかを決めてもらいます"),
         "ref-coverage": (["keep", "reapply", "reset", "stop"],
                          "計画に無い参照先に響く変更をしました。計画に足すか、響かないように変え直すかを決めてもらいます"),
         "paths": (["reapply", "keep", "stop"], "書いたパスが無いか、消したファイルがまだ指されています。指す先を直します"),
@@ -3891,7 +3911,7 @@ ADVICE["plan"]["config"] = (["replan", "stop"], "設定か環境の誤りです�
 # これだけで止まったときは、利用者に訊かずに同じ段をやり直す。計画を変える・範囲を絞る・戻すなどの判断が要るものは訊く。
 # form（どの目印にも当たらない指摘）は入れない（目印を足し忘れた指摘が、訊かない側に落ちないように）。
 AUTO_KINDS = {"plan": {"pending", "rules", "shape"},
-              "apply": {"check", "undone", "unfixed", "extra", "paths", "rules", "shape"}}
+              "apply": {"check", "undone", "unfixed", "extra", "names", "paths", "rules", "shape"}}
 AUTO_NAME = "auto.json"
 MAX_AUTO = 2     # 同じ段で人に訊かずに進める回数。直らない失敗をいつまでも回さない
 
