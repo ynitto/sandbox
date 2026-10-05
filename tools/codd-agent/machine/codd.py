@@ -1230,18 +1230,22 @@ def slug(text: str) -> str:
     return re.sub(r"\s+", "-", text)
 
 
-def evidence_problem(repo: Path, rel: str, m: re.Match) -> str | None:
-    """根拠の `:行` と `#見出し` が、そのファイルで本当に指せるか。指せなければ理由を返す。"""
+def evidence_problem(repo: Path, rel: str, m: re.Match, text: str | None = None) -> str | None:
+    """根拠の `:行` と `#見出し` が、そのファイルで本当に指せるか。指せなければ理由を返す。
+
+    text を渡したら（この回で変えたファイルの、変える前の中身）、それで確かめる。
+    """
     line, end, anchor = m.group("line"), m.group("end"), m.group("anchor")
     if not (line or anchor):
         return None
-    target = repo / rel
-    if not target.is_file():
-        return None
-    try:
-        text = target.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
+    if text is None:
+        target = repo / rel
+        if not target.is_file():
+            return None
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
     if line:
         count = len(text.splitlines())
         last = int(end or line)
@@ -1273,7 +1277,8 @@ def cited_refs(ctx: Ctx, line: str, allow_new: bool = False) -> Cited:
         if not r.has(rel):
             return False
         target = r.path / rel
-        return target.exists() or (allow_new and bool(_NEW_FILE.search(rel)) and target.parent.is_dir())
+        return (target.exists() or baseline_text(ctx, r.name, rel) is not None
+                or (allow_new and bool(_NEW_FILE.search(rel)) and target.parent.is_dir()))
 
     out = Cited()
     names = {r.name for r in ctx.refs}
@@ -1289,7 +1294,7 @@ def cited_refs(ctx: Ctx, line: str, allow_new: bool = False) -> Cited:
                 continue
         if hits:
             out.found.add((hits[0].name, rel))
-            problem = evidence_problem(hits[0].path, rel, m)
+            problem = evidence_problem(hits[0].path, rel, m, baseline_text(ctx, hits[0].name, rel))
             if problem:
                 out.bad.append(problem)
     return out
@@ -1305,7 +1310,8 @@ def cited_own(ctx: Ctx, line: str, allow_new: bool = False) -> list[str]:
         target = ctx.root / rel
         if not ctx.own.has(rel):
             continue
-        if target.exists() or (allow_new and _NEW_FILE.search(rel) and target.parent.is_dir()):
+        if (target.exists() or baseline_text(ctx, "", rel) is not None
+                or (allow_new and _NEW_FILE.search(rel) and target.parent.is_dir())):
             paths.append(rel)
     return paths
 
@@ -1314,6 +1320,10 @@ def unanchored_names(ctx: Ctx, item: str, cited: Cited) -> list[str]:
     """項目で `…` に囲んだ名前のうち、根拠に挙げたどのファイルにも書かれていないもの。"""
     texts = []
     for name, rel in cited.found:
+        before = baseline_text(ctx, name, rel)
+        if before is not None:
+            texts.append(before.lower())
+            continue
         try:
             texts.append((ctx.ref(name).path / rel).read_text(encoding="utf-8", errors="replace").lower())
         except OSError:
@@ -2371,9 +2381,10 @@ def new_names_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     """
     names = name_terms(bodies.get("## 自分の変更案", "") + "\n" + bodies.get("## 参照先の変更案", ""))
     body = bodies.get(TESTS_HEADING, "")
+    # 変えたあとに練り直すときは、この回で消した名前も前からある名前（HEAD にある）として数える。
     new = [n for n in names if n not in body
            and not any(git_grep(side, ["--untracked", "-l", "-I", "-i", "-F", *grep_word(n), "-e", n])
-                       for _, side in all_sides(ctx))]
+                       or existed_at_head(side, n) for _, side in all_sides(ctx))]
     if not new:
         return []
     return [f"新しく足す {'、'.join(f'`{n}`' for n in new)} を確かめるテストが {TESTS_HEADING} にありません。"
@@ -2999,6 +3010,36 @@ def changed_in_this_run(ctx: Ctx) -> bool:
         return False
     return any(changed_since(side, before.get("refs", {}).get(key, {}) if key else before.get("own", {}))
                for key, side in all_sides(ctx))
+
+
+def baseline_text(ctx: Ctx, key: str, rel: str) -> str | None:
+    """この回で変えたファイルなら、変える前（印を取ったとき）の中身。変えていない・無かったなら None。
+
+    変えたあとに止まって練り直すと、計画の根拠（行・見出し・名前）は変える前のファイルを指している。
+    根拠は変える前の中身で確かめる（変えたあとの中身で確かめると、消した名前や詰まった行が見当たらなくなる）。
+    """
+    if not hasattr(ctx, "_baseline"):
+        ctx._baseline = {}
+        try:
+            before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            before = None
+        if isinstance(before, dict) and before.get("plan") == plan_rel(ctx):
+            for k, side in all_sides(ctx):
+                snap = before.get("refs", {}).get(k, {}) if k else before.get("own", {})
+                ctx._baseline[k] = (side, snap, changed_since(side, snap))
+    side, snap, changed = ctx._baseline.get(key, (None, {}, set()))
+    if rel not in changed:
+        return None
+    saved = snap.get("files", {}).get(rel)
+    if saved == "deleted":
+        return None
+    if saved:
+        return read_text(backup_dir(ctx, key) / rel)
+    if not snap.get("head"):
+        return None
+    rc, out = run(["git", "show", f"{snap['head']}:{rel}"], side.path, GIT_TIMEOUT)
+    return out if rc == 0 else None
 
 
 PASSED_PLAN = "passed-plan"   # 計画の検査を通り、確認で直す・やめるとされていない計画の印

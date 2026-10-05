@@ -778,6 +778,27 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertNotIn("計画に無いファイル", r.stderr)   # 前の回の log.py は数えない
 
+    def test_replanning_after_changing_checks_evidence_before_the_change(self) -> None:
+        # 変えたあとに止まって練り直すと、根拠（行・見出し・名前）は変える前のファイルを指している。
+        plan = PLAN_DRIFT.replace("- hello は整数を返す（根拠: docs/api.md）",
+                                  "- `hello` は整数を返す（根拠: docs/api.md:3-5#hello）")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hi():\n    return 2\n", encoding="utf-8")   # hello を消した
+        (self.design / "docs/api.md").write_text("# API\n\nhi は 2 を返す。\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        self.write_plan(plan.replace("と書き直す", "と書き直し、名前を hi にする"))
+        r = self.run_pa(self.impl, "verify-plan")
+        for wrong in ("行目はありません", "見出し #hello がありません", "見当たりません", "実在する根拠のパスがありません",
+                      "新しく足す"):
+            self.assertNotIn(wrong, r.stderr)
+        # 回を終えたあとの計画は、今の中身で確かめる。
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        (self.impl / ".plans/2099-01-01-0000-next.md").write_text(plan, encoding="utf-8")
+        self.read_up(self.impl)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("見当たりません: `hello`", r.stderr)
+
     def test_rollback_restores_the_state_before_the_change(self) -> None:
         commit(self.impl, {"src/gone.py": "g = 1\n"}, "gone")
         (self.impl / "src/wip.py").write_text("wip = 1\n", encoding="utf-8")   # 計画より前から作業中
