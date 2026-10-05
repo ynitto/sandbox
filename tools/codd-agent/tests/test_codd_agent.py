@@ -1445,6 +1445,14 @@ class CoddTest(unittest.TestCase):
                 r = self.run_pa(self.impl, "verify-plan")
                 self.assertEqual(r.returncode, 1)
                 self.assertIn(expected, r.stderr)
+        # 参照先の名前を付けた根拠でも、そのファイルで名前を探す。見当たらなければ探したファイルを示す。
+        self.write_plan(PLAN_ALIGNED.replace("- hello は整数を返す（根拠: docs/api.md#hello）",
+                                             "- `hello_world` は整数を返す（根拠: design:docs/api.md:3）"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("見当たりません: `hello_world`（探したファイル: docs/api.md。", r.stderr)
+        self.write_plan(PLAN_ALIGNED.replace("- hello は整数を返す（根拠: docs/api.md#hello）",
+                                             "- `hello()` は整数を返す（根拠: `design:docs/api.md:3`）"))
+        self.assert_plan_ok()
         # 書かれている名前・実在する行と見出しなら通る（`hello()` は hello として探す）。
         self.write_plan(PLAN_ALIGNED.replace("- hello は整数を返す", "- `hello()` は整数を返す")
                         .replace("docs/api.md:3", "docs/api.md:3-5").replace("#hello", "#HELLO"))
@@ -2351,6 +2359,27 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("終わった回の計画の記録を書き換えています", r.stderr)
+
+    def test_discarding_a_committed_unfinished_plan_is_not_a_record_change(self) -> None:
+        # 途中の計画がコミットされたあとで `draft --new` で書き直しても、終わった回の記録とは見なさない。
+        self.write_plan(PLAN_ALIGNED)
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "wip")
+        r = self.run_pa(self.impl, "draft", "--new", "--name", "retry")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.impl / PLAN).exists())
+        new = next((self.impl / ".plans").glob("*-retry.md"))
+        new.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.read_up(self.impl)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("終わった回の計画の記録", r.stderr)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 捨てた計画を戻してしまっても、記録のときに消す（次の回に、それが進めている計画にならない）。
+        git(self.impl, "checkout", "--", PLAN)
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"捨てた計画を消しました: {PLAN}", r.stdout)
+        self.assertEqual(list((self.impl / ".plans").glob("*.md")), [new])
 
     def test_record_when_stopped_before_changing(self) -> None:
         self.write_plan(PLAN_ALIGNED)

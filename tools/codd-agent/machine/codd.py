@@ -1959,8 +1959,11 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
             if heading in ANCHORED_IN_REFS:
                 missing = unanchored_names(ctx, item, cited)
                 if missing:
+                    searched = ", ".join(sorted(ref_label(ctx, n, rel) for n, rel in cited.found))
                     problems.append(f"{heading} の項目の名前が、根拠のファイルに見当たりません: "
-                                    + ", ".join(f"`{t}`" for t in missing) + f"（{item[:60]}）")
+                                    + ", ".join(f"`{t}`" for t in missing)
+                                    + f"（探したファイル: {searched}。名前はファイルに書かれている綴りのまま書く）"
+                                    + f"（{item[:60]}）")
     drift = not is_none(bodies["## ずれ"])
     ref_change = not is_none(bodies["## 参照先の変更案"])
     impact = not is_none(bodies["## 影響範囲"])
@@ -4104,11 +4107,19 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
+def finished_in_head(ctx: Ctx, rel: str) -> bool:
+    rc, out = run(["git", "show", f"HEAD:{rel}"], ctx.root, GIT_TIMEOUT)
+    return rc == 0 and RESULT_HEADING in out.splitlines()
+
+
 def record_problems_of(ctx: Ctx) -> list[str]:
     """終わった回の計画の記録（コミット済み）を書き換えていないか。練り直しで直してよいのは、いま進めている計画だけ。"""
-    rc, out = run(["git", "-c", "core.quotepath=false", "status", "--porcelain", "--", PLAN_DIR], ctx.root, GIT_TIMEOUT)
-    changed = [ln[3:] for ln in out.splitlines() if rc == 0 and ln[:2].strip() and not ln.startswith("??")
-               and ln[3:] != plan_rel(ctx)]
+    rc, out = run(["git", "status", "--porcelain", "--", PLAN_DIR], ctx.root, GIT_TIMEOUT)
+    changed = [ln[3:].split(" -> ", 1)[0] for ln in out.splitlines()
+               if rc == 0 and ln[:2].strip() and not ln.startswith("??")]
+    # 記録は、コミット済みの版に結果の見出しがあるものだけ。途中の計画をコミットしてから `draft --new` で
+    # 捨てた・書き直したものは、記録ではない。
+    changed = [rel for rel in changed if rel != plan_rel(ctx) and finished_in_head(ctx, rel)]
     return ["終わった回の計画の記録を書き換えています（判断の記録なので変えない。直すのは "
             f"いま進めている計画だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else []
 
@@ -4121,11 +4132,18 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         report.unlink()   # 次の回の記録に、この回の結果を混ぜない
     else:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
+    stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan] if ctx.plan.is_file() else []
     record = finalize_plan(ctx, result)
     if not record:
         print(NO_PLAN, file=sys.stderr)
         return 1
     print(f"計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
+    # この回より前の、結果の見出しが無い計画は `draft --new` で捨てたもの（戻されて残ったもの）。
+    # 残すと次の回にそれが「進めている計画」になるので消す。
+    for p in stale:
+        if p.stem < ctx.plan.stem and RESULT_HEADING not in (read_text(p) or "").splitlines():
+            p.unlink()
+            print(f"捨てた計画を消しました: {p.relative_to(ctx.root).as_posix()}")
     return 0
 
 
