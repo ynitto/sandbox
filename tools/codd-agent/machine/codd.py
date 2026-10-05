@@ -29,7 +29,6 @@
     rule [--all|パス…]  守る決まりのファイルを出して読み込む。計画の検査は、すべて読み込んだか（中身が変わっていれば読み直したか）を確かめる。
                         この回で読み込み済みで変わっていないものは出し直さない（--again で出す）
     advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
-    keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
     lint [--since 日]  本流とは別の点検。リポジトリ全体の食い違い（壊れたパス・文書の書式・写したテストの結果・
                         テスト・codd を通らなかった変更）を探し、本流に渡す「やりたいこと」の 1 行にする。何も直さない
@@ -2919,19 +2918,17 @@ def write_baseline(ctx: Ctx) -> None:
     """変える前の印。verify-apply はここから「どのファイルを変えたか」を測る。確認の直前に取り直す。
 
     作業中だったファイルの中身も `.codd/before/` に控え、`rollback` で変える前へ戻せるようにする。
-    `keep-changes` の印があれば（変えた分を残して計画を直すとき）、前の印をそのまま使う。
+    同じ計画で印のあとに変えたファイルがあれば（変えたあとに止まり、計画を直して検査し直すとき）、前の印をそのまま使う。
+    取り直すと、変え終えたファイルが「まだ変えていない」と数えられる。戻すときは `rollback` で戻してから練り直す。
     """
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / "applied.json").unlink(missing_ok=True)
-    keep = ctx.data / KEEP_MARK
-    if keep.is_file() and (ctx.data / "before.json").is_file():
-        keep.unlink()
+    if changed_in_this_run(ctx):
         return
-    keep.unlink(missing_ok=True)
     (ctx.data / REPLACED_FILE).unlink(missing_ok=True)
     (ctx.data / GENERATED_FILE).unlink(missing_ok=True)
     shutil.rmtree(ctx.data / "before", ignore_errors=True)
-    state = {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
+    state = {"plan": plan_rel(ctx), "own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
         snap = state["refs"][key] if key else state["own"]
         for rel, digest in snap["files"].items():
@@ -2942,7 +2939,18 @@ def write_baseline(ctx: Ctx) -> None:
     (ctx.data / "before.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
 
-KEEP_MARK = "keep-baseline"
+def changed_in_this_run(ctx: Ctx) -> bool:
+    """同じ計画の印があり、そのあとに変えたファイルがあるか（終えた回の計画は結果を書き足して閉じるので、次の回は別の計画になる）。"""
+    try:
+        before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(before, dict) or before.get("plan") != plan_rel(ctx):
+        return False
+    return any(changed_since(side, before.get("refs", {}).get(key, {}) if key else before.get("own", {}))
+               for key, side in all_sides(ctx))
+
+
 PASSED_PLAN = "passed-plan"   # 計画の検査を通り、確認で直す・やめるとされていない計画の印
 
 
@@ -3574,7 +3582,7 @@ def classify(phase: str, text: str) -> str:
 OPTIONS = {
     "replan": ("計画を練り直す", "", "PLAN"),
     "reapply": ("計画はそのままで、変え直す", "", "APPLY"),
-    "keep": ("変えた分は残して、計画を直す", "keep-changes", "PLAN"),
+    "keep": ("変えた分は残して、計画を直す", "", "PLAN"),
     "reset": ("変えた分を戻して、計画から練り直す", "rollback", "PLAN"),
     "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
 }
@@ -3683,16 +3691,6 @@ def cmd_advise(root: Path) -> int:
     return 0
 
 
-def cmd_keep_changes(ctx: Ctx, args: argparse.Namespace) -> int:
-    """次の計画の検査で、変える前の印を取り直さない（変えた分を残したまま計画を直す）。"""
-    if not (ctx.data / "before.json").is_file():
-        print("変える前の印がありません。計画から練り直してください", file=sys.stderr)
-        return 1
-    (ctx.data / KEEP_MARK).write_text("", encoding="utf-8")
-    print("変えた分を残します。次の計画の検査は、前の印から変わったファイルを数えます")
-    return 0
-
-
 def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
     """計画の検査が通ったとき（変える前）の中身へ戻す。戻すのは、そのあとに変わったファイルだけ。"""
     before_file = ctx.data / "before.json"
@@ -3724,7 +3722,7 @@ def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
         elif target.is_file():
             target.unlink()   # 変えたあとに足したファイル（か、変える前にも消えていたファイル）
         restored.append(side_label(ctx, key, rel))
-    for name in ("applied.json", KEEP_MARK, PROBLEMS_NAME):
+    for name in ("applied.json", PROBLEMS_NAME):
         (ctx.data / name).unlink(missing_ok=True)
     print(f"変える前に戻しました: {len(restored)} files" + ("".join(f"\n  - {r}" for r in restored)))
     return 0
@@ -4099,7 +4097,6 @@ def build_parser() -> argparse.ArgumentParser:
     ru2.add_argument("--again", action="store_true", help="この回で読み込み済みのものも出し直す")
     sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
     sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
-    sub.add_parser("keep-changes", help="変えた分を残したまま計画を直す（次の計画の検査で印を取り直さない）")
     sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
     ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
     ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")
@@ -4115,7 +4112,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "batch": cmd_batch, "report": cmd_report,
-            "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
+            "rules": cmd_rules, "rollback": cmd_rollback,
             "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule,
             "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record,
             "lint": cmd_lint}

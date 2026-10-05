@@ -82,7 +82,7 @@ plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: ver
      │                               └─ STOP → stopped（何も変えずにやめる）
      │ 検査がやり直しを使い切っても落ちる                  │
      └──────────────→ stuck ←─────────────────────────┘
-                        ├─ PLAN  → plan（練り直す。変えた分は keep-changes で残すか rollback で戻す）
+                        ├─ PLAN  → plan（練り直す。変えた分は残すか rollback で戻す）
                         ├─ APPLY → apply（計画はそのままで変え直す）
                         └─ STOP  → stopped（やめる。結果を伝える）
 ```
@@ -93,7 +93,7 @@ plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: ver
 | confirm | 計画の要約（`summary`）と測った影響範囲を見せ、利用者の答えを待つ。全文は貼らずパスを示す | 答え（`OK` / `NG` と指摘 / `STOP`） | `output_validator` |
 | apply | 自分の変更案を適用し、参照先の変更案があれば参照先にも適用する。コミットはしない | 両リポジトリの作業中の変更 | `check: verify-apply`（影響範囲の測り直しを含む） |
 | done | 変えたファイルを伝え（`report`）、計画を判断の記録として残す（`record`） | `.plans/日時-名前.md` | 終端 |
-| stuck | `advise` が示す止めた理由・確かめること・選択肢を見せ、利用者の答えを待つ（人の判断が要らない理由だけなら訊かずに戻る）。選ばれたら `rollback` / `keep-changes` を実行する | 答え（`PLAN` / `APPLY` / `STOP` と指示） | `output_validator` |
+| stuck | `advise` が示す止めた理由・確かめること・選択肢を見せ、利用者の答えを待つ（人の判断が要らない理由だけなら訊かずに戻る）。戻すと選ばれたら `rollback` を実行する | 答え（`PLAN` / `APPLY` / `STOP` と指示） | `output_validator` |
 | stopped | やめたときの結果（`report`）と、残したか戻したかを伝え、計画を記録として残す（`record`） | `.plans/日時-名前.md` | 終端 |
 
 NG は plan へ戻り、次の plan は `{{answer}}`（confirm の答え。NG と利用者の指摘）を踏まえて練り直す。`answer` は `context:` で空に初期化してあり、初回は空になる。
@@ -105,7 +105,7 @@ NG は plan へ戻り、次の plan は `{{answer}}`（confirm の答え。NG �
 ハッシュを `.codd/passed-plan` に控え、verify-plan が落ちる・`decide NG` / `decide STOP` で消す。verify-apply は
 今の計画がこれと一致することを確かめる。ステートマシンの遷移だけでは、計画の検査で止まった stuck から `APPLY` を
 選ぶ道や、apply が計画を書き換えて「変更不要」を足す道を塞げないため（一貫性の判断を利用者が確かめた計画に限る）。
-apply の途中で計画を直すときは、`keep-changes` → plan → verify-plan → confirm を通る。
+apply の途中で計画を直すときは、plan → verify-plan → confirm を通る（変えた分は残る。2.1 の「やり直しの仕組み」）。
 
 ### 2.1 止まったら、次の手を提案して確かめる
 
@@ -131,7 +131,7 @@ apply の途中で計画を直すときは、`keep-changes` → plan → verify-
 |---|---|---|
 | 計画を練り直す | — | plan |
 | 計画はそのままで、変え直す | — | apply |
-| 変えた分は残して、計画を直す | `keep-changes`（次の verify-plan が変える前の印を取り直さない） | plan |
+| 変えた分は残して、計画を直す | — | plan |
 | 変えた分を戻して、計画から練り直す | `rollback`（verify-plan が通ったときの中身へ戻す） | plan |
 | ここでやめる（残すか戻すかも訊く） | 戻すなら `rollback` | stopped |
 
@@ -139,8 +139,11 @@ apply の途中で計画を直すときは、`keep-changes` → plan → verify-
 中身を `.codd/before/` に写す。`rollback` は印から変わったファイルだけを、写しか印の HEAD の中身へ戻し、
 印のあとに足したファイルは消す。計画より前から作業中だった変更は、作業中の中身へ戻るので失われない。
 途中でコミットされていたら（HEAD が動いていたら）戻さずに知らせる（git の履歴は触らない）。
-`keep-changes` は、残した変更を次の verify-apply が「変えた」と数え続けるためにある。印を取り直すと、
-残した変更が変える前の状態に含まれてしまい、変え残しとして落ちる。
+verify-plan は、同じ計画の印があり、そのあとに変わったファイルがあれば印を取り直さない（印に計画のパスを控える）。
+取り直すと、変え終えたファイルが変える前の状態に含まれてしまい、変え残しとして落ちる。前の版は `keep-changes` を
+選んだときだけ残していたので、それを選ばずに練り直したときや、練り直しのあとの確認で NG になってもう一度検査したときに
+印が今の中身へ取り直されていた。回を終えると（`record`）計画に結果の見出しが付き、次の回は別の計画になるので、
+印は取り直される。変えた分を捨てて練り直すときは、先に `rollback` で戻す（戻せば変わったファイルが無いので取り直される）。
 
 ### 2.2 確認は会話の中で待つ
 

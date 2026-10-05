@@ -507,8 +507,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("利用者が確かめたものではありません", r.stderr)
-        self.assertIn("keep-changes", self.run_pa(self.impl, "advise").stdout)
-        self.assertEqual(self.run_pa(self.impl, "keep-changes").returncode, 0)
+        self.assertIn("変えた分は残して、計画を直す", self.run_pa(self.impl, "advise").stdout)
         self.assert_plan_ok()
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -622,8 +621,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "advise")
         self.assertIn("# 変えたあとの検査で止まりました", r.stdout)
         self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
-        self.assertIn("変えた分は残して、計画を直す → `PLAN`。先に `python3 .statemachine/codd/codd.py keep-changes` を実行",
-                      r.stdout)
+        self.assertIn("変えた分は残して、計画を直す → `PLAN`\n", r.stdout)
         self.assertIn("変えた分を戻して、計画から練り直す → `PLAN`。先に `python3 .statemachine/codd/codd.py rollback` を実行",
                       r.stdout)
         self.assertIn("`STOP`", r.stdout)
@@ -661,20 +659,30 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
         self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
 
-    def test_keep_changes_lets_the_plan_grow_without_losing_the_work(self) -> None:
+    def test_rechecking_the_plan_keeps_the_work_already_done(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
         (self.impl / "src/log.py").write_text("def log(m):\n    print(m)\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)   # log.py は計画に無い
-        self.assertEqual(self.run_pa(self.impl, "keep-changes").returncode, 0)
         self.write_plan(self.with_tests(PLAN_ALIGNED.replace(
             "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"),
             "- `log` — 変更不要: print を包むだけ"))
-        self.assert_plan_ok()
+        for _ in range(2):   # 検査し直すたびに印を今の中身へ取り直すと、変え終えた app.py が「まだ変えていない」になる
+            self.assert_plan_ok()
         r = self.run_pa(self.impl, "verify-apply")   # 前の印から数えるので、残した変更がそのまま効く
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed", r.stdout)
+
+        # 回を終えたら（計画を記録として閉じたら）、次の回は今の中身から数える。
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        (self.impl / ".plans/2099-01-01-0000-next.md").write_text(
+            PLAN_ALIGNED.replace("`hello` の中でログを出す", "`hello` の戻り値を 3 にする"), encoding="utf-8")
+        self.read_up(self.impl)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 3  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertNotIn("計画に無いファイル", r.stderr)   # 前の回の log.py は数えない
 
     def test_rollback_restores_the_state_before_the_change(self) -> None:
         commit(self.impl, {"src/gone.py": "g = 1\n"}, "gone")

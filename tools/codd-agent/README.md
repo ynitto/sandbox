@@ -251,8 +251,10 @@ stuck ─┬─ 練り直す ─→ plan（変えた分は残すか戻すかを�
 ```bash
 python3 .statemachine/codd/codd.py advise          # 止めている理由・確かめること・選択肢（.codd/advice.md にも残る）
 python3 .statemachine/codd/codd.py rollback        # 変えた分を戻す
-python3 .statemachine/codd/codd.py keep-changes    # 変えた分を残したまま計画を直す
 ```
+
+変えた分を残したまま計画を直すときは、何も実行しなくてよい。同じ計画で変えたファイルがあれば、計画の検査をし直しても
+変える前の印を取り直さず、変え終えたファイルは「変えた」と数え続ける。
 
 ### 同じリポジトリにあるとき
 
