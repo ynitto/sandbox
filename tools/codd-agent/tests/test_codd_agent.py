@@ -718,6 +718,7 @@ class CoddTest(unittest.TestCase):
     def test_same_spelling_names_in_refs_are_declared_unrelated(self) -> None:
         # 変える段で足した名前が、参照先の関係の無いファイルにも同じ綴りで出てくる。人に訊かず、申告で済ませる。
         commit(self.design, {"docs/zoom.md": "# ズーム\n\n`is_selectable` でズームできるかを決める。\n"}, "zoom")
+        commit(self.impl, {"src/zoom.py": "# is_selectable はズームの判定\n"}, "zoom")
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text(
@@ -726,10 +727,15 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("名前に触れている参照先のファイルを、計画で扱っていません", r.stderr)
         self.assertIn("docs/zoom.md", r.stderr)
+        self.assertIn("直していないファイルがあります", r.stderr)    # 自分の側も同じ綴りに当たる
+        self.assertIn("src/zoom.py", r.stderr)
+        self.assertIn("名前ごとに「- `名前` — 関係なし: 理由」", r.stderr)
         self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        own = "\n- src/zoom.py — 変更不要: ズームの判定"
+        # 名前ごとに 1 行書けば、その名前だけで当たったファイル（参照先も自分も）はまとめて済む。
         for line in ("- `is_selectable` — 関係なし: ズームの判定で、候補の選択とは別物",
-                     "- docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物",
-                     "- design:docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物"):
+                     "- docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物" + own,
+                     "- design:docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物" + own):
             with self.subTest(line=line):
                 (self.impl / ".codd/apply.md").write_text(f"## 計画との違い\n\n{line}\n", encoding="utf-8")
                 r = self.run_pa(self.impl, "verify-apply")

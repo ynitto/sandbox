@@ -169,6 +169,8 @@ _DIFF_TERMS = (
     re.compile(r"^[+-]\s*#{1,6}\s+(.{2,60}?)\s*#*\s*$"),
 )
 _WORDLIKE = re.compile(r"^[A-Za-z0-9_$]+$")
+# 字下げした const・let・var（関数の中の変数）。export しないもの。
+_LOCAL_VAR = re.compile(r"^[+-][ \t]+(?:const|let|var)\s")
 _HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
 
@@ -1401,6 +1403,7 @@ def terms_from_diff(side: Side) -> list[str]:
                         lambda p: not side.has(p))
     terms = []
     quoted: dict[str, Counter] = {"+": Counter(), "-": Counter()}
+    local: dict[str, set[str]] = {"+": set(), "-": set()}
     for line in diff.splitlines():
         if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
             continue
@@ -1408,7 +1411,12 @@ def terms_from_diff(side: Side) -> list[str]:
             m = pat.match(line)
             if m:
                 terms.append(m.group(1))
+                if _LOCAL_VAR.match(line):
+                    local[line[0]].add(m.group(1))
         quoted[line[0]].update(_BACKTICK.findall(line))
+    # 関数の中の変数で、名前はそのままに中身だけ変えたもの（`disabled` など）は拾わない。外から指される名前ではなく、
+    # 同じ綴りの別物（ほかの画面の disabled）にばかり当たる。消した・足した変数は拾う。
+    terms = [t for t in terms if not (t in local["+"] and t in local["-"])]
     # 直した行に元からある `…` は変わった名前ではない（足した・消した側で数が違うものだけ拾う）。
     terms += [t for t in quoted["+"] | quoted["-"] if quoted["+"][t] != quoted["-"][t]]
     for name in run(["git", "ls-files", "--others", "--exclude-standard", *side.pathspec()],
@@ -3402,6 +3410,8 @@ DECLARE_HINT = (f"変える段で必要だと分かったなら、{DATA_DIRNAME}
 NAMES_TOUCH_REFS = "自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません"
 UNRELATED_HINT = (f"{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に、名前ごとなら「- `名前` — {UNRELATED_MARK}: 理由」、"
                   f"ファイルごとなら「- パス — {UNRELATED_MARK}: 理由」と書く")
+NAME_HINT = (f"変えた名前が同じ綴りの別物に当たっているだけなら、名前ごとに「- `名前` — {UNRELATED_MARK}: 理由」と書けば、"
+             "その名前だけで当たったファイルはまとめて済む")
 UNDONE_HINT = (f"変えなくてよいと分かったなら、{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
                f"`- パス — {NO_CHANGE_MARK}: 理由` と書く")
 
@@ -3624,8 +3634,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     # 3. 実際の変更から影響を測り直す（自分の変更・参照先の変更の両方。計画より広く変えた分も拾う）。
     changed = [ctx.ref(n) for n in a.changed]
     own_diff_terms = terms_from_diff(ctx.own) if a.own_touched else []
-    terms = unique([t for r in changed for t in terms_from_diff(r)] + own_diff_terms
-                   + terms_from_plan(bodies) + own_terms_from_plan(bodies))
+    plan_terms = terms_from_plan(bodies) + own_terms_from_plan(bodies)
+    # 変える段で「関係なし」とした名前（同じ綴りの別物にばかり当たる）は測らない。計画に書いた名前は計画で判断したので除かない。
+    terms = unique([t for t in [*(t for r in changed for t in terms_from_diff(r)), *own_diff_terms]
+                    if t not in dev.unrelated or t in plan_terms] + plan_terms)
     measured: list[str] = []
     if terms:
         measured = measure(ctx, terms, "impact-after.md",
@@ -3634,7 +3646,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         untouched = [p for p in measured if p not in a.own_touched and p not in waived and not dev.waived("", p)]
         if untouched:
             problems.append(
-                f"変更の影響を受けるのに、直していないファイルがあります（直すか、{UNDONE_HINT}）: " + ", ".join(untouched)
+                f"変更の影響を受けるのに、直していないファイルがあります（直すか、{UNDONE_HINT}。{NAME_HINT}）: "
+                + ", ".join(untouched)
                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）")
     new_own_terms = [t for t in own_diff_terms if t not in own_terms_from_plan(bodies) and t not in dev.unrelated]
     if new_own_terms:
@@ -3662,7 +3675,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         unfixed = [side_label(ctx, k, rel) for (k, rel) in sorted(found)
                    if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived and not dev.waived(k, rel)]
         if unfixed:
-            problems.append(f"変更が響くテストのうち、直していないファイルがあります（直すか、{UNDONE_HINT}）: "
+            problems.append(f"変更が響くテストのうち、直していないファイルがあります（直すか、{UNDONE_HINT}。{NAME_HINT}）: "
                             + ", ".join(unfixed)
                             + f"（詳細: {DATA_DIRNAME}/tests-after.md）")
         untested = untested_names(ctx, bodies, touched_all)
