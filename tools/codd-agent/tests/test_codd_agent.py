@@ -507,8 +507,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("利用者が確かめたものではありません", r.stderr)
-        self.assertIn("keep-changes", self.run_pa(self.impl, "advise").stdout)
-        self.assertEqual(self.run_pa(self.impl, "keep-changes").returncode, 0)
+        self.assertIn("変えた分は残して、計画を直す", self.run_pa(self.impl, "advise").stdout)
         self.assert_plan_ok()
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -619,11 +618,12 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
         (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        for _ in range(2):   # 計画に無い変更は、戻すか申告すれば直せるので、まず訊かずに変え直す（2 回まで）
+            self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
         r = self.run_pa(self.impl, "advise")
         self.assertIn("# 変えたあとの検査で止まりました", r.stdout)
         self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
-        self.assertIn("変えた分は残して、計画を直す → `PLAN`。先に `python3 .statemachine/codd/codd.py keep-changes` を実行",
-                      r.stdout)
+        self.assertIn("変えた分は残して、計画を直す → `PLAN`\n", r.stdout)
         self.assertIn("変えた分を戻して、計画から練り直す → `PLAN`。先に `python3 .statemachine/codd/codd.py rollback` を実行",
                       r.stdout)
         self.assertIn("`STOP`", r.stdout)
@@ -653,28 +653,77 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "advise")
         self.assertNotIn("AUTO", r.stdout)                  # 上限を超えたら訊く
         self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
-        # 通れば数え直す。計画に無い変更が混じれば最初から訊く。
+        # 通れば数え直す。計画で挙げていないファイルを足したことが混じれば最初から訊く。
         self.set_check(self.impl, [sys.executable, "-c", "pass"])
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0, self.run_pa(self.impl, "verify-apply").stderr)
         self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('テストが落ちた')"])
         (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("## 計画との違い\n\n- src/extra.py — 追加: 値を分けた\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
         self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
 
-    def test_keep_changes_lets_the_plan_grow_without_losing_the_work(self) -> None:
+    def test_declared_differences_from_the_plan_need_no_replanning(self) -> None:
+        commit(self.impl, {"src/other.py": "LEVEL = 1\n", "src/third.py": "X = 1\n"}, "more")
+        self.write_plan(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` の中でログを出す\n- src/other.py — ログの段を直す")
+            .replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/third.py — 変更不要: 名前が似ているだけ"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/third.py").write_text("X = 2\n", encoding="utf-8")
+        (self.impl / "src/notes.txt").write_text("ログの書き方\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/other.py", r.stderr)
+        self.assertIn("追加: 理由", r.stderr)
+        # 変え残し・計画に無い変更は、計画を直さずに申告で済む。まずは訊かずに変え直させる。
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        (self.impl / ".codd/apply.md").write_text(
+            "## 計画との違い\n\n- src/other.py — 変更不要: 段はもう正しかった\n"
+            "- src/third.py — 追加: 定数をそろえた\n- src/notes.txt — 追加: 書き方を残した\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        # 計画で挙げたファイル（third.py）は訊かずに認め、挙げていないもの（notes.txt）だけを利用者に確かめる。
+        self.assertIn("計画で挙げていないファイルを足しました", r.stderr)
+        self.assertIn("src/notes.txt — 書き方を残した", r.stderr)
+        self.assertNotIn("src/third.py", r.stderr)
+        self.assertNotIn("src/other.py", r.stderr)
+        r = self.run_pa(self.impl, "advise")
+        self.assertNotIn("AUTO", r.stdout)
+        self.assertIn("1. 足したファイルを認めて続ける（勧め） → `APPLY`。先に `python3 .statemachine/codd/codd.py accept` を実行",
+                      r.stdout)
+        r = self.run_pa(self.impl, "accept")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_pa(self.impl, "verify-apply")   # 計画は書き直さないので、確認からやり直さない
+        self.assertEqual(r.returncode, 0, r.stderr)
+        report = self.run_pa(self.impl, "report").stdout
+        self.assertIn("- src/other.py — 変更不要（変える段で判断）: 段はもう正しかった", report)
+        self.assertIn("- src/notes.txt — 変えた（利用者が認めた: 書き方を残した）", report)
+        self.assertIn("- src/third.py — 変えた（変える段で足した: 定数をそろえた）", report)
+
+    def test_rechecking_the_plan_keeps_the_work_already_done(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
         (self.impl / "src/log.py").write_text("def log(m):\n    print(m)\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)   # log.py は計画に無い
-        self.assertEqual(self.run_pa(self.impl, "keep-changes").returncode, 0)
         self.write_plan(self.with_tests(PLAN_ALIGNED.replace(
             "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"),
             "- `log` — 変更不要: print を包むだけ"))
-        self.assert_plan_ok()
+        for _ in range(2):   # 検査し直すたびに印を今の中身へ取り直すと、変え終えた app.py が「まだ変えていない」になる
+            self.assert_plan_ok()
         r = self.run_pa(self.impl, "verify-apply")   # 前の印から数えるので、残した変更がそのまま効く
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed", r.stdout)
+
+        # 回を終えたら（計画を記録として閉じたら）、次の回は今の中身から数える。
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        (self.impl / ".plans/2099-01-01-0000-next.md").write_text(
+            PLAN_ALIGNED.replace("`hello` の中でログを出す", "`hello` の戻り値を 3 にする"), encoding="utf-8")
+        self.read_up(self.impl)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 3  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertNotIn("計画に無いファイル", r.stderr)   # 前の回の log.py は数えない
 
     def test_rollback_restores_the_state_before_the_change(self) -> None:
         commit(self.impl, {"src/gone.py": "g = 1\n"}, "gone")
@@ -2056,10 +2105,38 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
-        self.assertIn(".codd/apply.md に、変えるときに使ったスキル・道具", r.stderr)
+        self.assertIn("スキルの手順で見直していません", r.stderr)
         (self.impl / ".codd/apply.md").write_text("- 先にテストを書いた\n", encoding="utf-8")
         self.assertIn("`tdd`", self.run_pa(self.impl, "verify-apply").stderr)
+        # 名前だけ書いても通さない。変えたファイルを挙げさせ、手順と差分を並べた資料で見直させる。
         (self.impl / ".codd/apply.md").write_text("- `tdd` — 先にテストを書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("スキルの手順で見直していません", r.stderr)
+        review = (self.impl / ".codd/skill-review.md").read_text(encoding="utf-8")
+        self.assertIn("## `tdd`（自分）", review)
+        self.assertIn("+    print('hi')", review)
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))   # 訊かずに見直させる
+        (self.impl / ".codd/apply.md").write_text("- `tdd` — src/app.py: 先にテストを書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.impl / ".codd/skill-review.md").exists())
+
+    def test_batch_hands_over_the_skills_before_changing(self) -> None:
+        commit(self.impl, {".agents/skills/tdd-lite/SKILL.md":
+                           "---\nname: tdd-lite\ndescription: テストを先に書く\n---\n\n# tdd-lite\n\n先にテストを書く。\n"}, "skill")
+        self.set_config(self.impl, skills={"plan": [], "apply": ["tdd-lite"]})
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "batch")   # 変える前に手順が目に入り、読み込んだと控える
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("## 変えるときに使うスキル", r.stdout)
+        self.assertIn("先にテストを書く。", r.stdout)
+        r = self.run_pa(self.impl, "batch")   # 同じ回で読み込み済みなら、名前だけ
+        self.assertIn("この回で読み込み済み（その手順に従う）: `tdd-lite`", r.stdout)
+        self.assertNotIn("先にテストを書く。", r.stdout)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("- `tdd-lite` — src/app.py: テストを先に書いた\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
 

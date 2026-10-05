@@ -29,8 +29,8 @@
     rule [--all|パス…]  守る決まりのファイルを出して読み込む。計画の検査は、すべて読み込んだか（中身が変わっていれば読み直したか）を確かめる。
                         この回で読み込み済みで変わっていないものは出し直さない（--again で出す）
     advise              検査で止まった理由を分け、利用者に確かめることと次の手（勧めと選択肢）を示す
-    keep-changes        変えた分を残したまま計画を直す（次の計画の検査で、変える前の印を取り直さない）
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
+    accept              変える段で計画に無いファイルを理由付きで足した分を、利用者が認めたと控える（計画は書き直さない）
     lint [--since 日]  本流とは別の点検。リポジトリ全体の食い違い（壊れたパス・文書の書式・写したテストの結果・
                         テスト・codd を通らなかった変更）を探し、本流に渡す「やりたいこと」の 1 行にする。何も直さない
 
@@ -654,11 +654,11 @@ def unread_problem(names: list[str], where: str) -> list[str]:
             + ", ".join(f"`{n}`" for n in names)]
 
 
-def cmd_skill(ctx: "Ctx", args: argparse.Namespace) -> int:
-    """スキルの SKILL.md を出して読み込ませ、読み込んだことを控える（検査が確かめる）。"""
+def load_skills(ctx: "Ctx", specs: list[str]) -> list[str]:
+    """スキルの SKILL.md を出して読み込ませ、読み込んだことを控える（検査が確かめる）。見つからなかったものを返す。"""
     log = skills_read(ctx)
     missing = []
-    for spec in args.name:
+    for spec in specs:
         found = find_skill(ctx, spec)
         if not found:
             missing.append(spec)
@@ -669,6 +669,11 @@ def cmd_skill(ctx: "Ctx", args: argparse.Namespace) -> int:
         log[spec] = {"path": str(path), "time": time.time()}
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / SKILLS_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return missing
+
+
+def cmd_skill(ctx: "Ctx", args: argparse.Namespace) -> int:
+    missing = load_skills(ctx, args.name)
     if missing:
         where = ", ".join([*ctx.config["skill_dirs"], *SKILL_SEARCH_DIRS])
         print(f"スキルが見つかりません: {', '.join(missing)}（探した場所: {where}、とホームの同じ場所）", file=sys.stderr)
@@ -2919,19 +2924,18 @@ def write_baseline(ctx: Ctx) -> None:
     """変える前の印。verify-apply はここから「どのファイルを変えたか」を測る。確認の直前に取り直す。
 
     作業中だったファイルの中身も `.codd/before/` に控え、`rollback` で変える前へ戻せるようにする。
-    `keep-changes` の印があれば（変えた分を残して計画を直すとき）、前の印をそのまま使う。
+    同じ計画で印のあとに変えたファイルがあれば（変えたあとに止まり、計画を直して検査し直すとき）、前の印をそのまま使う。
+    取り直すと、変え終えたファイルが「まだ変えていない」と数えられる。戻すときは `rollback` で戻してから練り直す。
     """
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / "applied.json").unlink(missing_ok=True)
-    keep = ctx.data / KEEP_MARK
-    if keep.is_file() and (ctx.data / "before.json").is_file():
-        keep.unlink()
+    if changed_in_this_run(ctx):
         return
-    keep.unlink(missing_ok=True)
     (ctx.data / REPLACED_FILE).unlink(missing_ok=True)
     (ctx.data / GENERATED_FILE).unlink(missing_ok=True)
+    (ctx.data / ACCEPTED_NAME).unlink(missing_ok=True)
     shutil.rmtree(ctx.data / "before", ignore_errors=True)
-    state = {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
+    state = {"plan": plan_rel(ctx), "own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
         snap = state["refs"][key] if key else state["own"]
         for rel, digest in snap["files"].items():
@@ -2942,7 +2946,18 @@ def write_baseline(ctx: Ctx) -> None:
     (ctx.data / "before.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
 
-KEEP_MARK = "keep-baseline"
+def changed_in_this_run(ctx: Ctx) -> bool:
+    """同じ計画の印があり、そのあとに変えたファイルがあるか（終えた回の計画は結果を書き足して閉じるので、次の回は別の計画になる）。"""
+    try:
+        before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(before, dict) or before.get("plan") != plan_rel(ctx):
+        return False
+    return any(changed_since(side, before.get("refs", {}).get(key, {}) if key else before.get("own", {}))
+               for key, side in all_sides(ctx))
+
+
 PASSED_PLAN = "passed-plan"   # 計画の検査を通り、確認で直す・やめるとされていない計画の印
 
 
@@ -3182,10 +3197,145 @@ def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
     return batches, int(rec.get("done", 0))
 
 
+DEVIATION_HEADING = "## 計画との違い"
+ACCEPTED_NAME = "accepted.json"
+_DEVIATION = re.compile(r"^[-*]\s+`?([^`\s]+)`?\s*[—–-]+\s*(変更不要|追加)\s*[:：]\s*(\S.*)$")
+
+
+@dataclass
+class Deviations:
+    """変える段で計画と違うことをした申告（`.codd/apply.md` の「計画との違い」）。キーは（側の名前か None, パス）。
+
+    側の名前が None のものは、どの側のパスとも突き合わせる（参照先が 1 つのときは `名前:` を付けずに書くため）。
+    """
+    no_change: dict[tuple[str | None, str], str]
+    added: dict[tuple[str | None, str], str]
+
+    @staticmethod
+    def _get(table: dict, key: str, rel: str) -> str | None:
+        return table.get((key, rel)) or table.get((None, rel))
+
+    def waived(self, key: str, rel: str) -> str | None:
+        return self._get(self.no_change, key, rel)
+
+    def reason_added(self, key: str, rel: str) -> str | None:
+        return self._get(self.added, key, rel)
+
+
+def deviations(ctx: Ctx) -> Deviations:
+    out = Deviations({}, {})
+    log, before = ctx.data / "apply.md", ctx.data / "before.json"
+    if not log.is_file() or not before.is_file() or log.stat().st_mtime < before.stat().st_mtime:
+        return out   # 前の回の申告は使い回さない
+    _, bodies = sections(log.read_text(encoding="utf-8"), [DEVIATION_HEADING])
+    refs = {r.name for r in ctx.refs}
+    for line in bodies.get(DEVIATION_HEADING, "").splitlines():
+        m = _DEVIATION.match(line.strip())
+        if not m:
+            continue
+        path, kind, reason = m.groups()
+        name, sep, rest = path.partition(":")
+        key: str | None = name if sep and name in refs else None
+        rel = rest if key else path
+        (out.no_change if kind == NO_CHANGE_MARK else out.added)[(key, rel.strip("/"))] = reason.strip()
+    return out
+
+
+def accepted(ctx: Ctx) -> set[tuple[str, str]]:
+    """利用者が認めた、計画で挙げていないファイルの追加（`codd.py accept`）。"""
+    try:
+        return {(k, rel) for k, rel in json.loads((ctx.data / ACCEPTED_NAME).read_text(encoding="utf-8"))}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def in_plan_text(ctx: Ctx, rel: str) -> bool:
+    """計画のどこかで挙げたファイルか（「変更不要」「関係なし」としたもの・利用者向けに省いたものも含む。確認で見せた範囲）。"""
+    return re.search(rf"(?<![\w/.-]){re.escape(rel)}(?![\w/-])", plan_text_for_checks(ctx)) is not None
+
+
+def added_problems(ctx: Ctx, dev: Deviations, key: str, extra: list[str]) -> tuple[list[str], list[str]]:
+    """計画に無い変更を、申告と範囲で分ける。（申告の無いもの, 計画で挙げていない範囲の外で足したもの）"""
+    ok = accepted(ctx)
+    silent, outside = [], []
+    for rel in extra:
+        reason = dev.reason_added(key, rel)
+        if not reason:
+            silent.append(rel)
+        elif (key, rel) not in ok and not in_plan_text(ctx, rel):
+            outside.append(f"{side_label(ctx, key, rel)} — {reason}")
+    return silent, outside
+
+
+OUTSIDE_ADDED = "計画で挙げていないファイルを足しました"
+DECLARE_HINT = (f"変える段で必要だと分かったなら、{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
+                "`- パス — 追加: 理由` と書く")
+UNDONE_HINT = (f"変えなくてよいと分かったなら、{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
+               f"`- パス — {NO_CHANGE_MARK}: 理由` と書く")
+
+
 def batch_undone(ctx: Ctx, a: "Applied", batch: list[tuple[str, str]]) -> list[str]:
     touched = {"": a.own_touched, **a.touched}
+    dev = deviations(ctx)
     return [side_label(ctx, k, rel) for k, rel in batch
-            if not may_stay_same(rel) and not any(covered(t, {rel}) for t in touched.get(k, set()))]
+            if not may_stay_same(rel) and not dev.waived(k, rel)
+            and not any(covered(t, {rel}) for t in touched.get(k, set()))]
+
+
+SKILL_REVIEW = "skill-review.md"
+MAX_REVIEW_DIFF = 20000
+
+
+def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]:
+    """変えたファイルを挙げて使ったと書いていないスキルについて、手順と差分を並べた見直しの資料を作る。
+
+    使った記録が無いと分かるのは変え終えたあとなので、読み直して記録を足すだけでは手順が変更に効かない。
+    手順と実際の差分を並べ、合わない箇所を直させてから、変えたファイルごとに書かせる。
+    """
+    touched = {"": a.own_touched, **a.touched}
+    lines = log.splitlines()
+    missing: list[tuple[str, str]] = []
+    for key, name in apply_skills(ctx, {k for k, files in touched.items() if files}):
+        rels = touched.get(key, set())
+        said = [ln for ln in lines if mentioned(ln, name) and NOT_USED_MARK not in ln]
+        if not any(rel in ln for ln in said for rel in rels):
+            missing.append((key, name))
+    path = ctx.data / SKILL_REVIEW
+    if not missing:
+        path.unlink(missing_ok=True)
+        return [], set()
+    out = ["# スキルの手順で見直す", "",
+           "変えたファイルを、スキルの手順と並べて見直します。手順に合わない箇所を直してから、"
+           f"スキルごとに {DATA_DIRNAME}/apply.md へ {APPLY_LOG_FORM} で書いてください。", ""]
+    for key, name in missing:
+        side = side_of(ctx, key)
+        rels = sorted(touched.get(key, set()))
+        found = find_skill(ctx, name)
+        out += [f"## `{name}`（{key or '自分'}）", "", "### 手順", ""]
+        out += [(read_text(found[1]) or "").strip() if found else "（SKILL.md が見つかりません。名前どおりの手順で見直す）", ""]
+        out += ["### 変えたファイル", "", *[f"- {side_label(ctx, key, rel)}" for rel in rels], ""]
+        diff = run(["git", "diff", "HEAD", "--", *rels], side.path, GIT_TIMEOUT)[1]
+        new = run(["git", "ls-files", "--others", "--exclude-standard", "--", *rels], side.path, GIT_TIMEOUT)[1].split()
+        if len(diff) > MAX_REVIEW_DIFF:
+            diff = diff[:MAX_REVIEW_DIFF] + "\n…（長いので切った。残りはファイルを開いて見る）\n"
+        out += ["### 差分", "", "```diff", diff.rstrip(), "```", ""]
+        if new:
+            out += ["新しく足したファイル（差分に無いので、開いて見る）: " + ", ".join(new), ""]
+        log_skill_read(ctx, name, found)
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out), encoding="utf-8")
+    return ([f"変えたファイルを、使うと決めたスキルの手順で見直していません（{DATA_DIRNAME}/{SKILL_REVIEW} の手順と差分を"
+             f"見比べて合わない箇所を直し、{DATA_DIRNAME}/apply.md に {APPLY_LOG_FORM} で書いてください）: "
+             + ", ".join(f"`{n}`" for _, n in missing)], {n for _, n in missing})
+
+
+def log_skill_read(ctx: Ctx, name: str, found: tuple[str, Path] | None) -> None:
+    """見直しの資料に手順を載せたスキルは、読み込んだと控える（資料を読めば手順を読んだことになる）。"""
+    if not found:
+        return
+    log = skills_read(ctx)
+    log[name] = {"path": str(found[1]), "time": time.time()}
+    (ctx.data / SKILLS_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def batch_step(ctx: Ctx, a: "Applied") -> int | None:
@@ -3217,11 +3367,40 @@ def batch_step(ctx: Ctx, a: "Applied") -> int | None:
     return 0
 
 
+def apply_skills(ctx: Ctx, keys) -> list[tuple[str, str]]:
+    """変えるときに使うと設定されたスキル（側の名前。自分は ""、スキルの名前）。keys は変える側。"""
+    out = [("", n) for n in ctx.config["skills"]["apply"]] if "" in keys else []
+    out += [(r.name, n) for r in ctx.refs if r.name in keys for n in r.apply_skills]
+    return out
+
+
+APPLY_LOG_FORM = "`- `名前` — 変えたファイル: 何をしたか`"
+
+
+def print_apply_skills(ctx: Ctx, keys) -> None:
+    """変える前に、使うスキルの手順を出して読み込ませる。この回でもう読み込んだものは名前だけを出す。"""
+    names = unique([n for _, n in apply_skills(ctx, keys)])
+    if not names:
+        return
+    log, since = skills_read(ctx), (ctx.data / "before.json").stat().st_mtime if (ctx.data / "before.json").is_file() else 0.0
+    fresh = [n for n in names if log.get(n, {}).get("time", -1.0) < since and find_skill(ctx, n)]
+    print("\n## 変えるときに使うスキル\n")
+    print("次の手順に従って変えてください。変えたら、スキルごとに .codd/apply.md へ "
+          f"{APPLY_LOG_FORM} で書きます（変えたファイルを挙げていないと検査で落ちます）。")
+    done = [n for n in names if n not in fresh]
+    if done:
+        print("この回で読み込み済み（その手順に従う）: " + ", ".join(f"`{n}`" for n in done))
+    if fresh:
+        print("")
+        load_skills(ctx, fresh)
+
+
 def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
-    """今の段で変えるファイルを示す（apply が段ごとに読む）。"""
+    """今の段で変えるファイルと、変えるときに使うスキルの手順を示す（apply が段ごとに読む）。"""
     batches, done = load_batches(ctx)
     if len(batches) <= 1:
         print("段に分けていません。計画に挙げたファイルをすべて変えてください")
+        print_apply_skills(ctx, {k for b in batches for k, _ in b} or {""})
         return 0
     cur = min(done, len(batches) - 1)
     print(f"# 段 {cur + 1}/{len(batches)}" + ("（最後の段。変えたあと、全体の検査とテストが動く）"
@@ -3235,6 +3414,7 @@ def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
     rest = [side_label(ctx, k, rel) for b in batches[cur + 1:] for k, rel in b]
     if rest:
         print(f"このあとの段で変えるもの（{len(rest)} files）は、まだ変えない。")
+    print_apply_skills(ctx, {k for k, _ in batches[cur]})
     return 0
 
 
@@ -3254,31 +3434,36 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     problems += record_problems_of(ctx)
 
     # 1. 計画のファイルを最後まで変えたか（途中で止まっていないか）。テストの変更案のファイルも同じ。
+    #    変える段で「変更不要」と申告したもの（理由付き）は、訊かずに認めて報告に残す。
+    dev = deviations(ctx)
     want_own = own_planned(ctx, bodies)
     only_media = bool(want_own) and all(may_stay_same(p) for p in want_own)
     if not is_none(bodies.get("## 自分の変更案", "なし")) and not a.own_touched and not only_media:
         problems.append("自分の変更案があるのに、自分のリポジトリが変わっていません")
     else:
-        undone = sorted(p for p in want_own if not may_stay_same(p) and not any(covered(t, {p}) for t in a.own_touched))
+        undone = sorted(p for p in want_own if not may_stay_same(p) and not dev.waived("", p)
+                        and not any(covered(t, {p}) for t in a.own_touched))
         if undone:
-            problems.append("自分の変更案のファイルをまだ変えていません（最後まで変えてください。変えなくてよくなったなら、"
-                            "利用者に確かめて計画を直してください）: " + ", ".join(undone))
+            problems.append(f"自分の変更案のファイルをまだ変えていません（最後まで変えてください。{UNDONE_HINT}）: "
+                            + ", ".join(undone))
 
     for key in ["", *(r.name for r in ctx.refs)]:
         touched = a.own_touched if not key else a.touched[key]
         undone = sorted(side_label(ctx, key, p) for p in tp.paths(key, waived=False)
-                        if not any(covered(t, {p}) for t in touched))
+                        if not dev.waived(key, p) and not any(covered(t, {p}) for t in touched))
         if undone:
             problems.append(f"{TESTS_HEADING} のテストをまだ変えていません（コード・仕様書と同じく最後まで変えてください。"
-                            "変えなくてよくなったなら、利用者に確かめて計画を直してください）: " + ", ".join(undone))
+                            f"{UNDONE_HINT}）: " + ", ".join(undone))
 
-    # 2. 計画に無いファイルを変えていないか。
+    # 2. 計画に無いファイルを変えていないか。変える段で「追加」と申告したもの（理由付き）は、計画で挙げた
+    #    （「変更不要」「関係なし」としたものも含む）ファイルなら訊かずに認め、挙げていなければ利用者に 1 問で確かめる。
+    outside: list[str] = []
     own_allowed = (want_own | listed_paths(ctx, bodies.get("## 影響範囲", ""), allow_new=True)
                    | tp.paths("", waived=False))
-    extra_own = sorted(p for p in a.own_touched if not covered(p, own_allowed))
+    extra_own, out_own = added_problems(ctx, dev, "", sorted(p for p in a.own_touched if not covered(p, own_allowed)))
+    outside += out_own
     if extra_own:
-        problems.append("計画に無いファイルを変えています（戻すか、利用者に確かめて計画の自分の変更案に足してください）: "
-                        + ", ".join(extra_own))
+        problems.append(f"計画に無いファイルを変えています（戻すか、{DECLARE_HINT}）: " + ", ".join(extra_own))
     for r in ctx.refs:
         touched = a.touched[r.name]
         ref_tests = tp.paths(r.name, waived=False)
@@ -3288,14 +3473,21 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         elif r.name not in a.planned and not ref_tests and touched:
             problems.append(f"参照先の変更案に {r.name} は無いのに、{r.name} が変わっています（戻してください）")
         elif touched:
-            extra = sorted(p for p in touched if not covered(p, a.planned.get(r.name, set()) | ref_tests))
+            extra, out_ref = added_problems(ctx, dev, r.name, sorted(
+                p for p in touched if not covered(p, a.planned.get(r.name, set()) | ref_tests)))
+            outside += out_ref
             if extra:
-                problems.append(f"{r.name} で参照先の変更案に無いファイルを変えています（戻すか、利用者に確かめて"
-                                "計画の参照先の変更案に足してください）: " + ", ".join(extra))
+                problems.append(f"{r.name} で参照先の変更案に無いファイルを変えています（戻すか、{DECLARE_HINT}）: "
+                                + ", ".join(extra))
             undone = sorted(p for p in a.planned.get(r.name, set())
-                            if not may_stay_same(p) and not any(covered(t, {p}) for t in touched))
+                            if not may_stay_same(p) and not dev.waived(r.name, p)
+                            and not any(covered(t, {p}) for t in touched))
             if undone:
-                problems.append(f"{r.name} で参照先の変更案のファイルをまだ変えていません: " + ", ".join(undone))
+                problems.append(f"{r.name} で参照先の変更案のファイルをまだ変えていません（{UNDONE_HINT}）: "
+                                + ", ".join(undone))
+    if outside:
+        problems.append(f"{OUTSIDE_ADDED}（利用者に確かめます。認めるなら `python3 {MACHINE_REL}/codd.py accept`）: "
+                        + "; ".join(outside))
 
     # 3. 実際の変更から影響を測り直す（自分の変更・参照先の変更の両方。計画より広く変えた分も拾う）。
     changed = [ctx.ref(n) for n in a.changed]
@@ -3307,11 +3499,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         measured = measure(ctx, terms, "impact-after.md",
                            f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）")
         waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
-        untouched = [p for p in measured if p not in a.own_touched and p not in waived]
+        untouched = [p for p in measured if p not in a.own_touched and p not in waived and not dev.waived("", p)]
         if untouched:
             problems.append(
-                "変更の影響を受けるのに、直していないファイルがあります（直すか、利用者に確かめて計画の影響範囲に"
-                f"「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(untouched)
+                f"変更の影響を受けるのに、直していないファイルがあります（直すか、{UNDONE_HINT}）: " + ", ".join(untouched)
                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）")
     new_own_terms = [t for t in own_diff_terms if t not in own_terms_from_plan(bodies)]
     if new_own_terms:
@@ -3336,10 +3527,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         found = affected = affected_tests(ctx, terms, changed_files, texts)
         write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp)
         unfixed = [side_label(ctx, k, rel) for (k, rel) in sorted(found)
-                   if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived]
+                   if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived and not dev.waived(k, rel)]
         if unfixed:
-            problems.append("変更が響くテストのうち、直していないファイルがあります（直すか、利用者に確かめて計画の"
-                            f"{TESTS_HEADING} に「{NO_CHANGE_MARK}: 理由」を書いてください）: " + ", ".join(unfixed)
+            problems.append(f"変更が響くテストのうち、直していないファイルがあります（直すか、{UNDONE_HINT}）: "
+                            + ", ".join(unfixed)
                             + f"（詳細: {DATA_DIRNAME}/tests-after.md）")
         untested = untested_names(ctx, bodies, touched_all)
         if untested:
@@ -3359,11 +3550,15 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if names:
         log = ctx.data / "apply.md"
         fresh = log.is_file() and log.stat().st_mtime >= (ctx.data / "before.json").stat().st_mtime
-        if not fresh:
+        text = log.read_text(encoding="utf-8") if fresh else ""
+        review, reviewed = skill_review(ctx, a, text)
+        rest = [n for n in names if n not in reviewed]   # 見直させるスキルは、見直しの指摘だけを出す
+        if rest and not fresh:
             problems.append(f"{DATA_DIRNAME}/apply.md に、変えるときに使ったスキル・道具と何をしたかを書いてください: "
-                            + ", ".join(f"`{n}`" for n in names))
-        else:
-            problems += used_problems(log.read_text(encoding="utf-8"), names, f"{DATA_DIRNAME}/apply.md ")
+                            + ", ".join(f"`{n}`" for n in rest))
+        elif rest:
+            problems += used_problems(text, rest, f"{DATA_DIRNAME}/apply.md ")
+        problems += review
     apply_log = ctx.data / "apply.md"
     if apply_log.is_file():
         skills = [*ctx.config["skills"]["apply"], *(s for r in changed for s in r.apply_skills),
@@ -3461,18 +3656,30 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     else:
         state = "通ったあとに、さらに変わっている（変えたあとの検査をもう一度通してください）"
 
-    def rows(planned: set[str], touched: set[str]) -> list[str]:
-        out = [f"- {p} — {'変えた' if any(covered(t, {p}) for t in touched) else '撮り直しても同じ' if may_stay_same(p) else 'まだ'}"
-               for p in sorted(planned)]
-        out += [f"- {p} — 変えた（影響範囲）" for p in sorted(touched) if not covered(p, planned)]
+    dev, ok = deviations(ctx), accepted(ctx)
+
+    def rows(key: str, planned: set[str], touched: set[str]) -> list[str]:
+        def mark(p: str) -> str:
+            if any(covered(t, {p}) for t in touched):
+                return "変えた"
+            if dev.waived(key, p):
+                return f"{NO_CHANGE_MARK}（変える段で判断）: {dev.waived(key, p)}"
+            return "撮り直しても同じ" if may_stay_same(p) else "まだ"
+        out = [f"- {p} — {mark(p)}" for p in sorted(planned)]
+        for p in sorted(touched):
+            if covered(p, planned):
+                continue
+            reason = dev.reason_added(key, p)
+            who = "利用者が認めた" if (key, p) in ok else "変える段で足した"
+            out.append(f"- {p} — 変えた（{who}: {reason}）" if reason else f"- {p} — 変えた（影響範囲）")
         return out or ["- なし"]
 
     lines = ["# 結果", "", f"- 変えたあとの検査: {state}", "", f"## 自分（{SIDES[ctx.side]}）  {ctx.root}", ""]
-    lines += rows(own_planned(ctx, a.bodies), a.own_touched)
+    lines += rows("", own_planned(ctx, a.bodies), a.own_touched)
     for r in ctx.refs:
         if r.name in a.planned or a.touched[r.name]:
             lines += ["", f"## {r.name}（{r.label}）  {r.path}", ""]
-            lines += rows(a.planned.get(r.name, set()), a.touched[r.name])
+            lines += rows(r.name, a.planned.get(r.name, set()), a.touched[r.name])
     tp = test_plan(ctx, a.bodies)
     after = ctx.data / "impact-after.md"
     if after.is_file():
@@ -3553,12 +3760,13 @@ _KINDS = (
     ("unconfirmed", "apply", ("利用者が確かめたものではありません",)),
     ("pending", "plan", (f"「{PENDING_MARK}」",)),
     ("size", "plan", ("上限",)),
+    ("outside", "apply", (OUTSIDE_ADDED,)),
     ("extra", "apply", ("計画に無いファイルを変えています", "変更案に無いファイルを変えています", "が変わっています（戻してください）")),
     ("undone", "apply", ("まだ変えていません", "が変わっていません")),
     ("unfixed", "apply", ("直していないファイル", "自分のファイルを、直していません")),
     ("ref-coverage", "any", ("計画で扱っていません",)),
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
-    ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル")),
+    ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル", "スキルの手順")),
     ("check", "apply", ("検査が失敗しました",)),
 )
 
@@ -3574,7 +3782,8 @@ def classify(phase: str, text: str) -> str:
 OPTIONS = {
     "replan": ("計画を練り直す", "", "PLAN"),
     "reapply": ("計画はそのままで、変え直す", "", "APPLY"),
-    "keep": ("変えた分は残して、計画を直す", "keep-changes", "PLAN"),
+    "keep": ("変えた分は残して、計画を直す", "", "PLAN"),
+    "accept": ("足したファイルを認めて続ける", "accept", "APPLY"),
     "reset": ("変えた分を戻して、計画から練り直す", "rollback", "PLAN"),
     "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
 }
@@ -3594,6 +3803,8 @@ ADVICE = {
         "stale": (["reset", "stop"], "変える前の印がありません。計画から練り直します"),
         "unconfirmed": (["keep", "reset", "stop"],
                         "確かめていない計画で変えました。変えた分を残すか戻すかを決めてもらい、計画の検査と確認からやり直します"),
+        "outside": (["accept", "reapply", "keep", "stop"],
+                    "変える段で、計画で挙げていないファイルを理由付きで足しました。理由を見て、認めて続けるか、戻して変え直すかを決めてもらいます"),
         "extra": (["reapply", "keep", "reset", "stop"],
                   "計画に無いファイルを変えました。その変更を戻して変え直すか、計画に足すかを決めてもらいます"),
         "undone": (["reapply", "keep", "reset", "stop"],
@@ -3603,7 +3814,7 @@ ADVICE = {
         "ref-coverage": (["keep", "reapply", "reset", "stop"],
                          "計画に無い参照先に響く変更をしました。計画に足すか、響かないように変え直すかを決めてもらいます"),
         "paths": (["reapply", "keep", "stop"], "書いたパスが無いか、消したファイルがまだ指されています。指す先を直します"),
-        "rules": (["reapply", "stop"], "変えるときのスキル・道具の記録がありません。使って記録します"),
+        "rules": (["reapply", "stop"], "変えるときのスキル・道具の記録がありません。変えたファイルをスキルの手順で見直し、使って記録します"),
         "check": (["reapply", "reset", "stop"], "検査コマンドが通りません。直して変え直すか、計画から練り直すかを決めてもらいます"),
         "form": (["reapply", "reset", "stop"], "変えた結果が計画と合いません"),
         "config": (["reapply", "stop"], "設定か環境の誤りです。利用者に直してもらってから、同じ段をやり直します"),
@@ -3614,7 +3825,7 @@ ADVICE["plan"]["config"] = (["replan", "stop"], "設定か環境の誤りです�
 
 # 人の判断が要らない理由（エージェントが自分で直せる。テストや検査の失敗・変え残し・パスの誤り・記録の漏れ・計画の形）。
 # これだけで止まったときは、利用者に訊かずに同じ段をやり直す。計画を変える・範囲を絞る・戻すなどの判断が要るものは訊く。
-AUTO_KINDS = {"plan": {"pending", "rules", "form"}, "apply": {"check", "undone", "paths", "rules", "form"}}
+AUTO_KINDS = {"plan": {"pending", "rules", "form"}, "apply": {"check", "undone", "unfixed", "extra", "paths", "rules", "form"}}
 AUTO_NAME = "auto.json"
 MAX_AUTO = 2     # 同じ段で人に訊かずに進める回数。直らない失敗をいつまでも回さない
 
@@ -3683,13 +3894,21 @@ def cmd_advise(root: Path) -> int:
     return 0
 
 
-def cmd_keep_changes(ctx: Ctx, args: argparse.Namespace) -> int:
-    """次の計画の検査で、変える前の印を取り直さない（変えた分を残したまま計画を直す）。"""
-    if not (ctx.data / "before.json").is_file():
-        print("変える前の印がありません。計画から練り直してください", file=sys.stderr)
+def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
+    """変える段で、計画で挙げていないファイルを理由付きで足した分を、利用者が認めたと控える（計画は書き直さない）。"""
+    a = load_applied(ctx)
+    if isinstance(a, str):
+        print(a, file=sys.stderr)
         return 1
-    (ctx.data / KEEP_MARK).write_text("", encoding="utf-8")
-    print("変えた分を残します。次の計画の検査は、前の印から変わったファイルを数えます")
+    dev, ok = deviations(ctx), accepted(ctx)
+    new = sorted((k, rel) for k, files in {"": a.own_touched, **a.touched}.items() for rel in files
+                 if dev.reason_added(k, rel) and (k, rel) not in ok and not in_plan_text(ctx, rel))
+    if not new:
+        print("認めるものはありません（計画で挙げていないファイルを、理由付きで足したものがありません）")
+        return 0
+    (ctx.data / ACCEPTED_NAME).write_text(json.dumps(sorted(ok | set(new)), ensure_ascii=False) + "\n", encoding="utf-8")
+    print("足したファイルを認めました（報告と計画の記録に残ります）:"
+          + "".join(f"\n  - {side_label(ctx, k, rel)} — {dev.reason_added(k, rel)}" for k, rel in new))
     return 0
 
 
@@ -3724,7 +3943,7 @@ def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
         elif target.is_file():
             target.unlink()   # 変えたあとに足したファイル（か、変える前にも消えていたファイル）
         restored.append(side_label(ctx, key, rel))
-    for name in ("applied.json", KEEP_MARK, PROBLEMS_NAME):
+    for name in ("applied.json", PROBLEMS_NAME):
         (ctx.data / name).unlink(missing_ok=True)
     print(f"変える前に戻しました: {len(restored)} files" + ("".join(f"\n  - {r}" for r in restored)))
     return 0
@@ -4099,7 +4318,7 @@ def build_parser() -> argparse.ArgumentParser:
     ru2.add_argument("--again", action="store_true", help="この回で読み込み済みのものも出し直す")
     sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
     sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
-    sub.add_parser("keep-changes", help="変えた分を残したまま計画を直す（次の計画の検査で印を取り直さない）")
+    sub.add_parser("accept", help="変える段で計画に無いファイルを理由付きで足した分を、利用者が認めたと控える")
     sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
     ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
     ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")
@@ -4115,7 +4334,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "batch": cmd_batch, "report": cmd_report,
-            "rules": cmd_rules, "keep-changes": cmd_keep_changes, "rollback": cmd_rollback,
+            "rules": cmd_rules, "rollback": cmd_rollback, "accept": cmd_accept,
             "skill": cmd_skill, "evidence": cmd_evidence, "rule": cmd_rule,
             "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record,
             "lint": cmd_lint}
