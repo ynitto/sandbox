@@ -2667,9 +2667,10 @@ def evidence_plan_problems(ctx: Ctx, bodies: dict[str, str], tests: set[tuple[st
               for h in shown] or ["- なし"]
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / "evidence.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    (ctx.data / "evidence-before.json").write_text(json.dumps(
-        {k: {i: {kk: vv for kk, vv in item.items() if kk != "_root"} for i, item in e.items.items()}
-         for k, e in evs.items()}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if not changed_in_this_run(ctx):   # 変えたあとに練り直すときは、変える前に控えたものと比べる
+        (ctx.data / "evidence-before.json").write_text(json.dumps(
+            {k: {i: {kk: vv for kk, vv in item.items() if kk != "_root"} for i, item in e.items.items()}
+             for k, e in evs.items()}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     own_listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
                   | listed_paths(ctx, bodies.get("## 影響範囲", "")))
     cited = cited_anywhere(ctx, bodies) | planned
@@ -2897,16 +2898,24 @@ def doc_format(ctx: Ctx, key: str, rel: str) -> dict | None:
         return None
     side = side_of(ctx, key)
     path = side.path / rel
-    if path.is_file():
-        headings = doc_headings(read_text(path) or "")
+
+    def before(p: Path) -> str | None:
+        """変える前の中身（この回で変えたものは印の中身。この回で足したものは無かったとみなす）。"""
+        r = p.relative_to(side.path).as_posix()
+        return baseline_text(ctx, key, r) if changed_now(ctx, key, r) else read_text(p) if p.is_file() else None
+
+    # 変えたあとに練り直すときも、書式は変える前の中身で測る（変えた見出しを「今の書式」として控え直さない）。
+    text = before(path)
+    if text is not None:
+        headings = doc_headings(text)
         return {"models": [rel], "headings": headings} if headings else None
     if not path.parent.is_dir():
         return None
     models = sorted(p for p in path.parent.iterdir() if p.is_file() and p.suffix.lower() in FORMAT_EXTS
-                    and p.stem.lower() not in _NOT_MODELS)
+                    and p.stem.lower() not in _NOT_MODELS and before(p) is not None)
     if len(models) < 2:
         return None
-    lists = [doc_headings(read_text(p) or "") for p in models]
+    lists = [doc_headings(before(p) or "") for p in models]
     common = unique(h for h in lists[0] if all(h in other for other in lists[1:]))
     if not common:
         return None
@@ -3010,6 +3019,12 @@ def changed_in_this_run(ctx: Ctx) -> bool:
         return False
     return any(changed_since(side, before.get("refs", {}).get(key, {}) if key else before.get("own", {}))
                for key, side in all_sides(ctx))
+
+
+def changed_now(ctx: Ctx, key: str, rel: str) -> bool:
+    """この回（同じ計画の印のあと）で変えた・足した・消したファイルか。"""
+    baseline_text(ctx, key, rel)   # 印を読み込む
+    return rel in ctx._baseline.get(key, (None, {}, set()))[2]
 
 
 def baseline_text(ctx: Ctx, key: str, rel: str) -> str | None:
@@ -3886,7 +3901,13 @@ _KINDS = (
                       "## テストの変更案 が「なし」です。", "参照先の変更案があるのに、影響範囲が「なし」です",
                       "のパスがどの参照先か決まりません。", "の項目に、参照先のパスがありません",
                       "の項目に、参照先に実在する根拠のパスがありません", "の項目の名前が、根拠のファイルに見当たりません",
-                      "の項目に、自分のリポジトリのパスがありません", "の項目に、自分のリポジトリに実在するパスがありません")),
+                      "の項目に、自分のリポジトリのパスがありません", "の項目に、自分のリポジトリに実在するパスがありません",
+                      "## テストの変更案 は箇条書きにしてください", "## テストの変更案 の変更不要の後に理由がありません",
+                      "## テストの変更案 の項目に、テストのファイルのパスがありません",
+                      "を確かめるテストが ## テストの変更案 にありません。",
+                      # 計画に挙げ忘れたもの・戻せば済むもの（計画は確認で利用者が見るので、書き足しは訊かずに任せる）
+                      "変更が響くテストの結果を写している文書が、計画にありません",
+                      "終わった回の計画の記録を書き換えています")),
 )
 
 
@@ -4096,6 +4117,8 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
         print("計画の名前を、英語の短い名前で渡してください（小文字・数字・ハイフン。40 文字まで。"
               "例: `--name hello-returns-two`）", file=sys.stderr)
         return 2
+    # 変えたあとに止まって --new で書き直すときも、この回で変えた分は前の印から数える（捨てるなら rollback で戻す）。
+    keep_baseline = ctx.plan.is_file() and changed_in_this_run(ctx)
     if ctx.plan.is_file():
         ctx.plan.unlink()   # --new: 進めていた計画を捨てて書き直す
     base = f"{time.strftime('%Y-%m-%d-%H%M')}-{name}"
@@ -4104,6 +4127,14 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
         dest, n = ctx.root / PLAN_DIR / f"{base}-{n}.md", n + 1
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
+    if keep_baseline:
+        before_file = ctx.data / "before.json"
+        stat = before_file.stat()
+        state = json.loads(before_file.read_text(encoding="utf-8"))
+        state["plan"] = dest.relative_to(ctx.root).as_posix()
+        before_file.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        os.utime(before_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))   # 変える段の申告・読んだ記録を古くしない
+        print("この回で変えた分は残し、変える前の印から数えます（捨てるなら `rollback` で戻してから練り直す）")
     print(f"ひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
     return 0
 
@@ -4367,7 +4398,9 @@ def plan_records(ctx: Ctx) -> str:
     text = []
     for repo in unique_paths(str(s.path) for _, s in all_sides(ctx)):
         for folder in (Path(repo) / PLAN_DIR,):
-            text += [read_text(p) or "" for p in sorted(folder.glob("*.md"))] if folder.is_dir() else []
+            # 結果の見出しが無い計画（進めている・捨てた計画）は、まだ codd を通っていないので数えない。
+            text += [t for p in sorted(folder.glob("*.md")) if folder.is_dir()
+                     for t in [read_text(p) or ""] if RESULT_HEADING in t.splitlines()]
     return "\n".join(text)
 
 

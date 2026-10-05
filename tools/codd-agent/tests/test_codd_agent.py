@@ -799,6 +799,38 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertIn("見当たりません: `hello`", r.stderr)
 
+    def test_writing_a_new_plan_after_changing_keeps_the_work_already_done(self) -> None:
+        # 変えたあとに止まって `draft --new` で書き直しても、変えた分は前の印から数える。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/log.py").write_text("def log(m):\n    print(m)\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)   # log.py は計画に無い
+        r = self.run_pa(self.impl, "draft", "--new", "--name", "with-log")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("変える前の印から数えます", r.stdout)
+        new = next((self.impl / ".plans").glob("*-with-log.md"))
+        new.write_text(self.with_tests(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"),
+            "- `log` — 変更不要: print を包むだけ"), encoding="utf-8")
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("own=changed", r.stdout)
+
+    def test_replanning_after_changing_keeps_the_format_before_the_change(self) -> None:
+        # 変えたあとに練り直しても、書式は変える前の見出しの並びで控える（変えた見出しを書式として控え直さない）。
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("文書の書式（見出しの並び）が今の書式から外れています", r.stderr)
+        self.write_plan(PLAN_DRIFT.replace("と書き直す", "と書き直す（表も直す）"))
+        self.run_pa(self.impl, "verify-plan")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("文書の書式（見出しの並び）が今の書式から外れています: docs/api.md — ## hello", r.stderr)
+
     def test_rollback_restores_the_state_before_the_change(self) -> None:
         commit(self.impl, {"src/gone.py": "g = 1\n"}, "gone")
         (self.impl / "src/wip.py").write_text("wip = 1\n", encoding="utf-8")   # 計画より前から作業中
@@ -1408,6 +1440,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertIn("文書に写したテストの結果が今と違います", r.stderr)
         self.assertIn("書いてある 800 ms → 今 1600 ms", r.stderr)
+        self.run_pa(self.impl, "verify-plan")   # 練り直しても、比べるのは変える前に控えたもの
         report = self.run_pa(self.impl, "report").stdout
         self.assertIn("## テストで得たものの変化（計画のときと比べて）", report)
         self.assertIn("login/S-01/load — 800 → 1600 ms", report)
@@ -2607,6 +2640,10 @@ class CoddTest(unittest.TestCase):
         # 点検は何も直さない（書くのは作業フォルダだけ）
         self.assertEqual(before, git(self.impl, "status", "--porcelain") + git(self.design, "status", "--porcelain"))
 
+        # 結果の無い計画（進めている・捨てた計画）に出てきても、codd を通った変更とは数えない。
+        commit(self.impl, {".plans/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n"}, "途中の計画")
+        text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
+        self.assertIn("src/app.py", text.split("## codd を通らなかった変更")[1])
         commit(self.impl, {".plans/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n\n## 結果\n"}, "記録")
         text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
         self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1])  # 記録に出てくれば通った変更
