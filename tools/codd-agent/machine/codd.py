@@ -2220,7 +2220,18 @@ def test_files(ctx: Ctx, key: str) -> list[str]:
     rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
                   side.path, GIT_TIMEOUT)
     files = [ln for ln in out.splitlines() if side.has(ln) and is_test(ctx, key, ln)] if rc == 0 else []
+    # テストを動かして出来たもの（__pycache__ の .pyc など）はテストのファイルではない。
+    made = made_by_checks(ctx, key, side) if files else set()
+    files = [f for f in files if f not in made and not is_binary(side.path / f)]
     return files[:MAX_TEST_FILES]
+
+
+def is_binary(path: Path) -> bool:
+    try:
+        with path.open("rb") as fh:
+            return b"\0" in fh.read(8192)
+    except OSError:
+        return False
 
 
 # テストのファイル名から外す印（test_app.py・app_test.go・LoginTest.java・login.spec.ts → app・login）。
@@ -3643,7 +3654,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         measured = measure(ctx, terms, "impact-after.md",
                            f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）")
         waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
-        untouched = [p for p in measured if p not in a.own_touched and p not in waived and not dev.waived("", p)]
+        # 自分の変更案のファイルは、変え残しとして上で挙げる（同じファイルを 2 回挙げない）。
+        untouched = [p for p in measured if p not in a.own_touched and p not in waived and not dev.waived("", p)
+                     and p not in want_own]
         if untouched:
             problems.append(
                 f"変更の影響を受けるのに、直していないファイルがあります（直すか、{UNDONE_HINT}。{NAME_HINT}）: "
@@ -3672,8 +3685,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                        for t in literals_from_diff(ctx, key, side))
         found = affected = affected_tests(ctx, terms, changed_files, texts)
         write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp)
+        # テストの変更案で変えると挙げたテストは、変え残しとして上で挙げる。
         unfixed = [side_label(ctx, k, rel) for (k, rel) in sorted(found)
-                   if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived and not dev.waived(k, rel)]
+                   if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived and not dev.waived(k, rel)
+                   and (k, rel) not in tp.change]
         if unfixed:
             problems.append(f"変更が響くテストのうち、直していないファイルがあります（直すか、{UNDONE_HINT}。{NAME_HINT}）: "
                             + ", ".join(unfixed)
@@ -3784,7 +3799,47 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
                         + ", ".join(broken))
     if dangling:
         problems.append("消したファイルを、まだ指しているところがあります（指している側も直してください）: " + ", ".join(dangling))
+    stale = stale_names(ctx, touched)
+    if stale:
+        problems.append(f"{STALE_NAMES}（書いている側も直すか、名前を残してください。同じ綴りの別物なら、{UNRELATED_HINT}）: "
+                        + ", ".join(stale))
     return problems
+
+
+STALE_NAMES = "消した名前を、まだ書いているところがあります"
+
+
+def removed_names(ctx: Ctx, key: str, side: Side) -> set[str]:
+    """この回で消して、その側のどこにももう無い名前（関数・型・定数・変数・文書の見出し）。"""
+    gone: set[str] = set()
+    for rel, (plus, minus) in diff_by_file(side).items():
+        pats = _NEW_DOC_NAMES if rel.lower().endswith(DOC_EXTS) else _DIFF_TERMS[:5]
+
+        def grab(lines: list[str]) -> set[str]:
+            return {m.group(1).strip() for ln in lines for pat in pats for m in [pat.match("-" + ln)] if m}
+        gone |= {n for n in grab(minus) - grab(plus) if _WORDLIKE.match(n) and len(n) >= 4}
+    return {n for n in gone if not git_grep(side, ["--untracked", "-l", "-I", "-F", "-w", "-e", n])}
+
+
+def stale_names(ctx: Ctx, touched: dict[str, set[str]]) -> list[str]:
+    """この回で消した名前を、ほかの側がまだ書いている箇所（変えたあとのファイルで）。"""
+    dev = deviations(ctx)
+    out = []
+    for key, side in all_sides(ctx):
+        if not touched.get(key):
+            continue
+        for name in sorted(removed_names(ctx, key, side)):
+            if name in dev.unrelated:
+                continue
+            for okey, other in all_sides(ctx):
+                if okey == key:
+                    continue
+                for ln in git_grep(other, ["--untracked", "-n", "-I", "-F", "-w", "-e", name])[:5]:
+                    rel, num = ln.split(":", 2)[:2]
+                    if dev.unrelated_file(okey, rel):
+                        continue
+                    out.append(f"`{name}` — {side_label(ctx, okey, rel)}:{num}")
+    return out
 
 
 # ---------------------------------------------------------------- 終わりの報告
@@ -3922,7 +3977,7 @@ _KINDS = (
     ("unfixed", "apply", ("直していないファイル", "自分のファイルを、直していません")),
     ("names", "apply", (NAMES_TOUCH_REFS,)),
     ("ref-coverage", "any", ("計画で扱っていません",)),
-    ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
+    ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ", STALE_NAMES)),
     ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル", "スキルの手順", "スキルを読み込んでいません")),
     ("check", "apply", ("検査が失敗しました",)),
     # 人の判断が要る形の指摘（ずれを直すか残すか・目安や書式を変えてよいか）。下の shape の目印

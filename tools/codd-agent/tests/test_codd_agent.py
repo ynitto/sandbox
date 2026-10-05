@@ -744,6 +744,28 @@ class CoddTest(unittest.TestCase):
                 self.assertIn("## 変える段で関係なしとした名前・ファイル", report)
                 self.assertIn("関係なし: ズームの判定で、候補の選択とは別物", report)
 
+    def test_names_removed_but_still_written_in_refs_stop_the_apply(self) -> None:
+        # 参照先の文書を直しても、消した名前を書いた行が残っていれば止める（人には訊かない）。
+        commit(self.impl, {"src/app.py": "def hello():\n    return 1\n\n\ndef make_greeting():\n    return 'hi'\n"},
+               "greet")
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n"
+                                            "挨拶は `make_greeting` で作る。\n"}, "greet")
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text(
+            "def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text(
+            "# API\n\n## hello\n\nhello は 2 を返す。\n\n挨拶は `make_greeting` で作る。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("消した名前を、まだ書いているところがあります", r.stderr)
+        self.assertIn("`make_greeting` — docs/api.md:7", r.stderr)
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        (self.design / "docs/api.md").write_text(
+            "# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_committing_midway_still_measures_this_runs_changes(self) -> None:
         # 変える段の途中でコミットしても、この回の変更（変える前の印から）で影響を測る。
         commit(self.design, {"docs/zoom.md": "# ズーム\n\n`is_selectable` でズームできるかを決める。\n"}, "zoom")
@@ -1660,10 +1682,17 @@ class CoddTest(unittest.TestCase):
             "tests/e2e/hello.yaml": "# coherence: doc=docs/api.md\nsuite: hello\n",
             "tests/e2e/page.yaml": "# coherence: code=src/app.py\nsuite: page\n",
         }, "tests")
+        # 手でテストを動かして出来た .pyc（.gitignore が無いと追跡外のファイルとして見える）はテストに数えない。
+        pyc = self.impl / "tests/__pycache__/test_app.cpython-312.pyc"
+        pyc.parent.mkdir()
+        pyc.write_bytes(b"\0\0hello\0")
         self.write_plan(PLAN_DRIFT)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("「未判断」として書き足しました", r.stderr)
+        self.assertNotIn("__pycache__", r.stderr)
+        pyc.unlink()
+        pyc.parent.rmdir()
         plan = (self.impl / PLAN).read_text(encoding="utf-8")
         tests_part = plan.split("## テストの変更案", 1)[1].split("\n## ", 1)[0]
         for rel in ("tests/test_app.py", "tests/e2e/hello.yaml", "tests/e2e/page.yaml"):
@@ -1687,6 +1716,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("## テストの変更案 のテストをまだ変えていません", r.stderr)
         self.assertIn("tests/test_app.py", r.stderr)
+        self.assertNotIn("直していないファイルがあります", r.stderr)   # 同じテストを 2 回挙げない
         (self.impl / "tests/test_app.py").write_text(
             "from src.app import hello\n\ndef test_hello():\n    assert hello() == 2\n", encoding="utf-8")
         (self.impl / "tests/e2e/hello.yaml").write_text("# coherence: doc=docs/api.md\nsuite: hello 2\n",

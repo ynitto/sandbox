@@ -61,6 +61,8 @@ class ClassifyTest(unittest.TestCase):
         # 変えたあとに、名前が参照先の別のファイルに同じ綴りで出てくるだけなら、申告で済むので訊かない。
         text = codd.NAMES_TOUCH_REFS + "（…）: docs/zoom.md"
         self.assertFalse(asks("apply", text))
+        # 消した名前を参照先がまだ書いているのも、直すか申告すれば済む。
+        self.assertFalse(asks("apply", codd.STALE_NAMES + "（…）: `calc_total` — docs/api/orders.md:9"))
         # パスでつながっているファイルの扱い漏れは、これまでどおり訊く。
         self.assertTrue(asks("apply", "自分の変えたファイルとパスでつながっている参照先のファイルを、計画で扱っていません"))
 
