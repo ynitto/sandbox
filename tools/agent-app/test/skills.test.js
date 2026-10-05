@@ -51,6 +51,14 @@ test('正規形の metadata.tags を自動選択用タグとして読む', () =>
   assert.deepStrictEqual(item.tags, ['review', 'quality']);
 });
 
+test('description の本文にある tags: をメタデータと誤認しない', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-tags-in-description-'));
+  const skillRoot = path.join(root, 'skills');
+  fs.mkdirSync(path.join(skillRoot, 'doc-helper'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'doc-helper', 'SKILL.md'), '---\nname: doc-helper\ndescription: |\n  説明内の例:\n  tags:\n    - prose-only\nmetadata:\n  tags:\n    - real-tag\n---\n# Doc\n');
+  const [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.deepStrictEqual(item.tags, ['real-tag']);
+});
 
 test('一覧に出す版は frontmatter の version から読む', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-version-'));
@@ -92,7 +100,6 @@ test('自動選択用に複数行の説明を読む', () => {
   assert.strictEqual(item.description, 'UIとUXを設計する。 画面レイアウトも扱う。');
 });
 
-
 test('YAML の chomp 指示付き複数行 description も本文として読む', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-block-chomp-'));
   const skillRoot = path.join(root, 'skills');
@@ -105,7 +112,6 @@ test('YAML の chomp 指示付き複数行 description も本文として読む'
   [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
   assert.strictEqual(item.description, '仕様を確認する。 漏れを探す。');
 });
-
 
 test('未対応の AI を選んでも他の AI 専用のスキルを混ぜない', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-filter-'));

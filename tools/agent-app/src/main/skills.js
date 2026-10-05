@@ -49,12 +49,53 @@ function sourceRoots(repo = '', agent = '') {
   return roots;
 }
 
+function unquote(value) {
+  return String(value || '').trim().replace(/^['"]|['"]$/g, '');
+}
+
+// frontmatter 全体から「トップレベル tags」または「metadata の直下の tags」だけを読む。
+// description: | の本文などにたまたま "tags:" が書かれていても、メタデータとして拾わない。
+function tagsFromHeader(header) {
+  const lines = String(header || '').split('\n');
+  const readList = (index, indent) => {
+    const values = [];
+    for (let i = index + 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+      const spaces = (line.match(/^\s*/) || [''])[0].length;
+      if (spaces <= indent) break;
+      const item = line.match(/^\s*-\s*(.+)$/);
+      if (!item) break;
+      const value = unquote(item[1]);
+      if (value) values.push(value);
+    }
+    return values;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/^tags:\s*$/.test(lines[i])) return readList(i, 0);
+  }
+
+  const metadata = lines.findIndex((line) => /^metadata:\s*$/.test(line));
+  if (metadata < 0) return [];
+  let childIndent = null;
+  for (let i = metadata + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const spaces = (line.match(/^\s*/) || [''])[0].length;
+    if (spaces === 0) break;
+    if (childIndent == null) childIndent = spaces;
+    if (spaces === childIndent && /^\s+tags:\s*$/.test(line)) return readList(i, spaces);
+  }
+  return [];
+}
+
 function metadata(name, file, content) {
   const front = String(content || '').match(/^---\s*\n([\s\S]*?)\n---(?:\s*\n|$)/);
   const header = front ? front[1] : '';
   const descriptionLine = header.match(/^description:\s*([^\n]*)/m);
   const rawDescription = ((descriptionLine || [])[1] || '').trim();
-  let description = rawDescription.replace(/^['"]|['"]$/g, '');
+  let description = unquote(rawDescription);
   if (/^[|>][+-]?$/.test(rawDescription)) {
     const after = header.slice((descriptionLine.index || 0) + descriptionLine[0].length).replace(/^\n/, '');
     description = [];
@@ -64,8 +105,7 @@ function metadata(name, file, content) {
     }
     description = description.filter(Boolean).join(' ');
   }
-  const tagsBlock = (header.match(/^(?:tags:|\s+tags:)\s*\n((?:\s+-[^\n]*\n?)*)/m) || [])[1] || '';
-  const tags = [...tagsBlock.matchAll(/^\s+-\s*(.+)$/gm)].map((match) => match[1].trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+  const tags = tagsFromHeader(header);
   return { name, description, tags, frontmatter: header, version: readVersion(content), path: file, content };
 }
 
