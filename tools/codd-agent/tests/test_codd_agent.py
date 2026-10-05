@@ -544,6 +544,8 @@ class CoddTest(unittest.TestCase):
         # 参照先の文書が自分の変更案のファイルをパスで指しているなら、名前が一致しなくても計画で扱わせる。
         commit(self.design, {"docs/map.md": "# 対応表\n\n実装は [app](../impl/src/app.py) と `src/app.py`。\n"
                                             "```\nsrc/app.py はコードブロックの中なので数えない\n```\n"}, "map")
+        # 後半で使う。計画を通したあとにコミットすると、この回の変更に数える（途中でコミットしても取りこぼさない）。
+        commit(self.impl, {"src/client.py": "# coherence: doc=docs/api.md\ndef call():\n    return 0\n"}, "client")
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
@@ -557,7 +559,6 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
 
         # 自分のファイルに書いた注記で、参照先の変更案のファイルとつながる（逆向き）。
-        commit(self.impl, {"src/client.py": "# coherence: doc=docs/api.md\ndef call():\n    return 0\n"}, "client")
         plan = PLAN_DRIFT.replace("## 参照先のその他\n\n- なし",
                                   "## 参照先のその他\n\n- 関係なし: 置き場所の一覧だけ（根拠: docs/map.md）")
         self.write_plan(plan)
@@ -717,6 +718,7 @@ class CoddTest(unittest.TestCase):
     def test_same_spelling_names_in_refs_are_declared_unrelated(self) -> None:
         # 変える段で足した名前が、参照先の関係の無いファイルにも同じ綴りで出てくる。人に訊かず、申告で済ませる。
         commit(self.design, {"docs/zoom.md": "# ズーム\n\n`is_selectable` でズームできるかを決める。\n"}, "zoom")
+        commit(self.impl, {"src/zoom.py": "# is_selectable はズームの判定\n"}, "zoom")
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text(
@@ -725,10 +727,15 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("名前に触れている参照先のファイルを、計画で扱っていません", r.stderr)
         self.assertIn("docs/zoom.md", r.stderr)
+        self.assertIn("直していないファイルがあります", r.stderr)    # 自分の側も同じ綴りに当たる
+        self.assertIn("src/zoom.py", r.stderr)
+        self.assertIn("名前ごとに「- `名前` — 関係なし: 理由」", r.stderr)
         self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        own = "\n- src/zoom.py — 変更不要: ズームの判定"
+        # 名前ごとに 1 行書けば、その名前だけで当たったファイル（参照先も自分も）はまとめて済む。
         for line in ("- `is_selectable` — 関係なし: ズームの判定で、候補の選択とは別物",
-                     "- docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物",
-                     "- design:docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物"):
+                     "- docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物" + own,
+                     "- design:docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物" + own):
             with self.subTest(line=line):
                 (self.impl / ".codd/apply.md").write_text(f"## 計画との違い\n\n{line}\n", encoding="utf-8")
                 r = self.run_pa(self.impl, "verify-apply")
@@ -736,6 +743,42 @@ class CoddTest(unittest.TestCase):
                 report = self.run_pa(self.impl, "report").stdout
                 self.assertIn("## 変える段で関係なしとした名前・ファイル", report)
                 self.assertIn("関係なし: ズームの判定で、候補の選択とは別物", report)
+
+    def test_names_removed_but_still_written_in_refs_stop_the_apply(self) -> None:
+        # 参照先の文書を直しても、消した名前を書いた行が残っていれば止める（人には訊かない）。
+        commit(self.impl, {"src/app.py": "def hello():\n    return 1\n\n\ndef make_greeting():\n    return 'hi'\n"},
+               "greet")
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n"
+                                            "挨拶は `make_greeting` で作る。\n"}, "greet")
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text(
+            "def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text(
+            "# API\n\n## hello\n\nhello は 2 を返す。\n\n挨拶は `make_greeting` で作る。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("消した名前を、まだ書いているところがあります", r.stderr)
+        self.assertIn("`make_greeting` — docs/api.md:7", r.stderr)
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        (self.design / "docs/api.md").write_text(
+            "# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_committing_midway_still_measures_this_runs_changes(self) -> None:
+        # 変える段の途中でコミットしても、この回の変更（変える前の印から）で影響を測る。
+        commit(self.design, {"docs/zoom.md": "# ズーム\n\n`is_selectable` でズームできるかを決める。\n"}, "zoom")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text(
+            "def hello():\n    return 1  # log\n\n\ndef is_selectable():\n    return True\n", encoding="utf-8")
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "途中")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("名前に触れている参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/zoom.md", r.stderr)
 
     def test_tests_wait_until_the_change_itself_is_complete(self) -> None:
         mark = self.tmp / "checked"
@@ -798,6 +841,38 @@ class CoddTest(unittest.TestCase):
         self.read_up(self.impl)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertIn("見当たりません: `hello`", r.stderr)
+
+    def test_writing_a_new_plan_after_changing_keeps_the_work_already_done(self) -> None:
+        # 変えたあとに止まって `draft --new` で書き直しても、変えた分は前の印から数える。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/log.py").write_text("def log(m):\n    print(m)\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)   # log.py は計画に無い
+        r = self.run_pa(self.impl, "draft", "--new", "--name", "with-log")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("変える前の印から数えます", r.stdout)
+        new = next((self.impl / ".plans").glob("*-with-log.md"))
+        new.write_text(self.with_tests(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` の中でログを出す\n- src/log.py — `log` を足す"),
+            "- `log` — 変更不要: print を包むだけ"), encoding="utf-8")
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("own=changed", r.stdout)
+
+    def test_replanning_after_changing_keeps_the_format_before_the_change(self) -> None:
+        # 変えたあとに練り直しても、書式は変える前の見出しの並びで控える（変えた見出しを書式として控え直さない）。
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("文書の書式（見出しの並び）が今の書式から外れています", r.stderr)
+        self.write_plan(PLAN_DRIFT.replace("と書き直す", "と書き直す（表も直す）"))
+        self.run_pa(self.impl, "verify-plan")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("文書の書式（見出しの並び）が今の書式から外れています: docs/api.md — ## hello", r.stderr)
 
     def test_rollback_restores_the_state_before_the_change(self) -> None:
         commit(self.impl, {"src/gone.py": "g = 1\n"}, "gone")
@@ -1408,6 +1483,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertIn("文書に写したテストの結果が今と違います", r.stderr)
         self.assertIn("書いてある 800 ms → 今 1600 ms", r.stderr)
+        self.run_pa(self.impl, "verify-plan")   # 練り直しても、比べるのは変える前に控えたもの
         report = self.run_pa(self.impl, "report").stdout
         self.assertIn("## テストで得たものの変化（計画のときと比べて）", report)
         self.assertIn("login/S-01/load — 800 → 1600 ms", report)
@@ -1606,10 +1682,17 @@ class CoddTest(unittest.TestCase):
             "tests/e2e/hello.yaml": "# coherence: doc=docs/api.md\nsuite: hello\n",
             "tests/e2e/page.yaml": "# coherence: code=src/app.py\nsuite: page\n",
         }, "tests")
+        # 手でテストを動かして出来た .pyc（.gitignore が無いと追跡外のファイルとして見える）はテストに数えない。
+        pyc = self.impl / "tests/__pycache__/test_app.cpython-312.pyc"
+        pyc.parent.mkdir()
+        pyc.write_bytes(b"\0\0hello\0")
         self.write_plan(PLAN_DRIFT)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("「未判断」として書き足しました", r.stderr)
+        self.assertNotIn("__pycache__", r.stderr)
+        pyc.unlink()
+        pyc.parent.rmdir()
         plan = (self.impl / PLAN).read_text(encoding="utf-8")
         tests_part = plan.split("## テストの変更案", 1)[1].split("\n## ", 1)[0]
         for rel in ("tests/test_app.py", "tests/e2e/hello.yaml", "tests/e2e/page.yaml"):
@@ -1633,6 +1716,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("## テストの変更案 のテストをまだ変えていません", r.stderr)
         self.assertIn("tests/test_app.py", r.stderr)
+        self.assertNotIn("直していないファイルがあります", r.stderr)   # 同じテストを 2 回挙げない
         (self.impl / "tests/test_app.py").write_text(
             "from src.app import hello\n\ndef test_hello():\n    assert hello() == 2\n", encoding="utf-8")
         (self.impl / "tests/e2e/hello.yaml").write_text("# coherence: doc=docs/api.md\nsuite: hello 2\n",
@@ -2607,6 +2691,10 @@ class CoddTest(unittest.TestCase):
         # 点検は何も直さない（書くのは作業フォルダだけ）
         self.assertEqual(before, git(self.impl, "status", "--porcelain") + git(self.design, "status", "--porcelain"))
 
+        # 結果の無い計画（進めている・捨てた計画）に出てきても、codd を通った変更とは数えない。
+        commit(self.impl, {".plans/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n"}, "途中の計画")
+        text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
+        self.assertIn("src/app.py", text.split("## codd を通らなかった変更")[1])
         commit(self.impl, {".plans/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n\n## 結果\n"}, "記録")
         text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
         self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1])  # 記録に出てくれば通った変更
