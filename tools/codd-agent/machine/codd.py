@@ -653,11 +653,11 @@ def unread_problem(names: list[str], where: str) -> list[str]:
             + ", ".join(f"`{n}`" for n in names)]
 
 
-def cmd_skill(ctx: "Ctx", args: argparse.Namespace) -> int:
-    """スキルの SKILL.md を出して読み込ませ、読み込んだことを控える（検査が確かめる）。"""
+def load_skills(ctx: "Ctx", specs: list[str]) -> list[str]:
+    """スキルの SKILL.md を出して読み込ませ、読み込んだことを控える（検査が確かめる）。見つからなかったものを返す。"""
     log = skills_read(ctx)
     missing = []
-    for spec in args.name:
+    for spec in specs:
         found = find_skill(ctx, spec)
         if not found:
             missing.append(spec)
@@ -668,6 +668,11 @@ def cmd_skill(ctx: "Ctx", args: argparse.Namespace) -> int:
         log[spec] = {"path": str(path), "time": time.time()}
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / SKILLS_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return missing
+
+
+def cmd_skill(ctx: "Ctx", args: argparse.Namespace) -> int:
+    missing = load_skills(ctx, args.name)
     if missing:
         where = ", ".join([*ctx.config["skill_dirs"], *SKILL_SEARCH_DIRS])
         print(f"スキルが見つかりません: {', '.join(missing)}（探した場所: {where}、とホームの同じ場所）", file=sys.stderr)
@@ -3196,6 +3201,62 @@ def batch_undone(ctx: Ctx, a: "Applied", batch: list[tuple[str, str]]) -> list[s
             if not may_stay_same(rel) and not any(covered(t, {rel}) for t in touched.get(k, set()))]
 
 
+SKILL_REVIEW = "skill-review.md"
+MAX_REVIEW_DIFF = 20000
+
+
+def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]:
+    """変えたファイルを挙げて使ったと書いていないスキルについて、手順と差分を並べた見直しの資料を作る。
+
+    使った記録が無いと分かるのは変え終えたあとなので、読み直して記録を足すだけでは手順が変更に効かない。
+    手順と実際の差分を並べ、合わない箇所を直させてから、変えたファイルごとに書かせる。
+    """
+    touched = {"": a.own_touched, **a.touched}
+    lines = log.splitlines()
+    missing: list[tuple[str, str]] = []
+    for key, name in apply_skills(ctx, {k for k, files in touched.items() if files}):
+        rels = touched.get(key, set())
+        said = [ln for ln in lines if mentioned(ln, name) and NOT_USED_MARK not in ln]
+        if not any(rel in ln for ln in said for rel in rels):
+            missing.append((key, name))
+    path = ctx.data / SKILL_REVIEW
+    if not missing:
+        path.unlink(missing_ok=True)
+        return [], set()
+    out = ["# スキルの手順で見直す", "",
+           "変えたファイルを、スキルの手順と並べて見直します。手順に合わない箇所を直してから、"
+           f"スキルごとに {DATA_DIRNAME}/apply.md へ {APPLY_LOG_FORM} で書いてください。", ""]
+    for key, name in missing:
+        side = side_of(ctx, key)
+        rels = sorted(touched.get(key, set()))
+        found = find_skill(ctx, name)
+        out += [f"## `{name}`（{key or '自分'}）", "", "### 手順", ""]
+        out += [(read_text(found[1]) or "").strip() if found else "（SKILL.md が見つかりません。名前どおりの手順で見直す）", ""]
+        out += ["### 変えたファイル", "", *[f"- {side_label(ctx, key, rel)}" for rel in rels], ""]
+        diff = run(["git", "diff", "HEAD", "--", *rels], side.path, GIT_TIMEOUT)[1]
+        new = run(["git", "ls-files", "--others", "--exclude-standard", "--", *rels], side.path, GIT_TIMEOUT)[1].split()
+        if len(diff) > MAX_REVIEW_DIFF:
+            diff = diff[:MAX_REVIEW_DIFF] + "\n…（長いので切った。残りはファイルを開いて見る）\n"
+        out += ["### 差分", "", "```diff", diff.rstrip(), "```", ""]
+        if new:
+            out += ["新しく足したファイル（差分に無いので、開いて見る）: " + ", ".join(new), ""]
+        log_skill_read(ctx, name, found)
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out), encoding="utf-8")
+    return ([f"変えたファイルを、使うと決めたスキルの手順で見直していません（{DATA_DIRNAME}/{SKILL_REVIEW} の手順と差分を"
+             f"見比べて合わない箇所を直し、{DATA_DIRNAME}/apply.md に {APPLY_LOG_FORM} で書いてください）: "
+             + ", ".join(f"`{n}`" for _, n in missing)], {n for _, n in missing})
+
+
+def log_skill_read(ctx: Ctx, name: str, found: tuple[str, Path] | None) -> None:
+    """見直しの資料に手順を載せたスキルは、読み込んだと控える（資料を読めば手順を読んだことになる）。"""
+    if not found:
+        return
+    log = skills_read(ctx)
+    log[name] = {"path": str(found[1]), "time": time.time()}
+    (ctx.data / SKILLS_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def batch_step(ctx: Ctx, a: "Applied") -> int | None:
     """段に分けて変えているときの、途中の段の検査。最後の段（か、全部を変え終えたとき）は None を返し、全体を検査する。
 
@@ -3225,11 +3286,40 @@ def batch_step(ctx: Ctx, a: "Applied") -> int | None:
     return 0
 
 
+def apply_skills(ctx: Ctx, keys) -> list[tuple[str, str]]:
+    """変えるときに使うと設定されたスキル（側の名前。自分は ""、スキルの名前）。keys は変える側。"""
+    out = [("", n) for n in ctx.config["skills"]["apply"]] if "" in keys else []
+    out += [(r.name, n) for r in ctx.refs if r.name in keys for n in r.apply_skills]
+    return out
+
+
+APPLY_LOG_FORM = "`- `名前` — 変えたファイル: 何をしたか`"
+
+
+def print_apply_skills(ctx: Ctx, keys) -> None:
+    """変える前に、使うスキルの手順を出して読み込ませる。この回でもう読み込んだものは名前だけを出す。"""
+    names = unique([n for _, n in apply_skills(ctx, keys)])
+    if not names:
+        return
+    log, since = skills_read(ctx), (ctx.data / "before.json").stat().st_mtime if (ctx.data / "before.json").is_file() else 0.0
+    fresh = [n for n in names if log.get(n, {}).get("time", -1.0) < since and find_skill(ctx, n)]
+    print("\n## 変えるときに使うスキル\n")
+    print("次の手順に従って変えてください。変えたら、スキルごとに .codd/apply.md へ "
+          f"{APPLY_LOG_FORM} で書きます（変えたファイルを挙げていないと検査で落ちます）。")
+    done = [n for n in names if n not in fresh]
+    if done:
+        print("この回で読み込み済み（その手順に従う）: " + ", ".join(f"`{n}`" for n in done))
+    if fresh:
+        print("")
+        load_skills(ctx, fresh)
+
+
 def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
-    """今の段で変えるファイルを示す（apply が段ごとに読む）。"""
+    """今の段で変えるファイルと、変えるときに使うスキルの手順を示す（apply が段ごとに読む）。"""
     batches, done = load_batches(ctx)
     if len(batches) <= 1:
         print("段に分けていません。計画に挙げたファイルをすべて変えてください")
+        print_apply_skills(ctx, {k for b in batches for k, _ in b} or {""})
         return 0
     cur = min(done, len(batches) - 1)
     print(f"# 段 {cur + 1}/{len(batches)}" + ("（最後の段。変えたあと、全体の検査とテストが動く）"
@@ -3243,6 +3333,7 @@ def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
     rest = [side_label(ctx, k, rel) for b in batches[cur + 1:] for k, rel in b]
     if rest:
         print(f"このあとの段で変えるもの（{len(rest)} files）は、まだ変えない。")
+    print_apply_skills(ctx, {k for k, _ in batches[cur]})
     return 0
 
 
@@ -3367,11 +3458,15 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if names:
         log = ctx.data / "apply.md"
         fresh = log.is_file() and log.stat().st_mtime >= (ctx.data / "before.json").stat().st_mtime
-        if not fresh:
+        text = log.read_text(encoding="utf-8") if fresh else ""
+        review, reviewed = skill_review(ctx, a, text)
+        rest = [n for n in names if n not in reviewed]   # 見直させるスキルは、見直しの指摘だけを出す
+        if rest and not fresh:
             problems.append(f"{DATA_DIRNAME}/apply.md に、変えるときに使ったスキル・道具と何をしたかを書いてください: "
-                            + ", ".join(f"`{n}`" for n in names))
-        else:
-            problems += used_problems(log.read_text(encoding="utf-8"), names, f"{DATA_DIRNAME}/apply.md ")
+                            + ", ".join(f"`{n}`" for n in rest))
+        elif rest:
+            problems += used_problems(text, rest, f"{DATA_DIRNAME}/apply.md ")
+        problems += review
     apply_log = ctx.data / "apply.md"
     if apply_log.is_file():
         skills = [*ctx.config["skills"]["apply"], *(s for r in changed for s in r.apply_skills),
@@ -3566,7 +3661,7 @@ _KINDS = (
     ("unfixed", "apply", ("直していないファイル", "自分のファイルを、直していません")),
     ("ref-coverage", "any", ("計画で扱っていません",)),
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
-    ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル")),
+    ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル", "スキルの手順")),
     ("check", "apply", ("検査が失敗しました",)),
 )
 
@@ -3611,7 +3706,7 @@ ADVICE = {
         "ref-coverage": (["keep", "reapply", "reset", "stop"],
                          "計画に無い参照先に響く変更をしました。計画に足すか、響かないように変え直すかを決めてもらいます"),
         "paths": (["reapply", "keep", "stop"], "書いたパスが無いか、消したファイルがまだ指されています。指す先を直します"),
-        "rules": (["reapply", "stop"], "変えるときのスキル・道具の記録がありません。使って記録します"),
+        "rules": (["reapply", "stop"], "変えるときのスキル・道具の記録がありません。変えたファイルをスキルの手順で見直し、使って記録します"),
         "check": (["reapply", "reset", "stop"], "検査コマンドが通りません。直して変え直すか、計画から練り直すかを決めてもらいます"),
         "form": (["reapply", "reset", "stop"], "変えた結果が計画と合いません"),
         "config": (["reapply", "stop"], "設定か環境の誤りです。利用者に直してもらってから、同じ段をやり直します"),

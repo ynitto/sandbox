@@ -2064,10 +2064,38 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
-        self.assertIn(".codd/apply.md に、変えるときに使ったスキル・道具", r.stderr)
+        self.assertIn("スキルの手順で見直していません", r.stderr)
         (self.impl / ".codd/apply.md").write_text("- 先にテストを書いた\n", encoding="utf-8")
         self.assertIn("`tdd`", self.run_pa(self.impl, "verify-apply").stderr)
+        # 名前だけ書いても通さない。変えたファイルを挙げさせ、手順と差分を並べた資料で見直させる。
         (self.impl / ".codd/apply.md").write_text("- `tdd` — 先にテストを書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("スキルの手順で見直していません", r.stderr)
+        review = (self.impl / ".codd/skill-review.md").read_text(encoding="utf-8")
+        self.assertIn("## `tdd`（自分）", review)
+        self.assertIn("+    print('hi')", review)
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))   # 訊かずに見直させる
+        (self.impl / ".codd/apply.md").write_text("- `tdd` — src/app.py: 先にテストを書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.impl / ".codd/skill-review.md").exists())
+
+    def test_batch_hands_over_the_skills_before_changing(self) -> None:
+        commit(self.impl, {".agents/skills/tdd-lite/SKILL.md":
+                           "---\nname: tdd-lite\ndescription: テストを先に書く\n---\n\n# tdd-lite\n\n先にテストを書く。\n"}, "skill")
+        self.set_config(self.impl, skills={"plan": [], "apply": ["tdd-lite"]})
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "batch")   # 変える前に手順が目に入り、読み込んだと控える
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("## 変えるときに使うスキル", r.stdout)
+        self.assertIn("先にテストを書く。", r.stdout)
+        r = self.run_pa(self.impl, "batch")   # 同じ回で読み込み済みなら、名前だけ
+        self.assertIn("この回で読み込み済み（その手順に従う）: `tdd-lite`", r.stdout)
+        self.assertNotIn("先にテストを書く。", r.stdout)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("- `tdd-lite` — src/app.py: テストを先に書いた\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
 

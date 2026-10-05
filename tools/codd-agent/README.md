@@ -512,6 +512,11 @@ webui-test 以外のテストも、同じ形のファイルを書けば使える
 名前は `skill_dirs`・`.agents/skills`・`.kiro/skills`・`.github/skills`・`.claude/skills`・`.copilot/skills`（リポジトリ、利用者のホーム、
 参照先の順）から探す。
 
+変えるときに使うスキル（`skills.apply` と、変える参照先の分）は、`batch` が段の最初にその手順を出して読み込ませる。
+`.codd/apply.md` には `- `名前` — 変えたファイル: 何をしたか` で書く。変えたファイルを挙げていないと、検査は
+スキルの手順と実際の差分を並べた `.codd/skill-review.md` を作って止める。読み直して記録を足すだけでは手順が変更に効かないので、
+見比べて合わない箇所を直してから書く。
+
 ```bash
 python3 .statemachine/codd/codd.py skill tdd                # SKILL.md を出して読み込む
 python3 .statemachine/codd/codd.py skill docs:doc-writer    # 参照先のスキル
