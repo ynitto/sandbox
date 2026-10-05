@@ -1230,18 +1230,22 @@ def slug(text: str) -> str:
     return re.sub(r"\s+", "-", text)
 
 
-def evidence_problem(repo: Path, rel: str, m: re.Match) -> str | None:
-    """根拠の `:行` と `#見出し` が、そのファイルで本当に指せるか。指せなければ理由を返す。"""
+def evidence_problem(repo: Path, rel: str, m: re.Match, text: str | None = None) -> str | None:
+    """根拠の `:行` と `#見出し` が、そのファイルで本当に指せるか。指せなければ理由を返す。
+
+    text を渡したら（この回で変えたファイルの、変える前の中身）、それで確かめる。
+    """
     line, end, anchor = m.group("line"), m.group("end"), m.group("anchor")
     if not (line or anchor):
         return None
-    target = repo / rel
-    if not target.is_file():
-        return None
-    try:
-        text = target.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
+    if text is None:
+        target = repo / rel
+        if not target.is_file():
+            return None
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
     if line:
         count = len(text.splitlines())
         last = int(end or line)
@@ -1273,7 +1277,8 @@ def cited_refs(ctx: Ctx, line: str, allow_new: bool = False) -> Cited:
         if not r.has(rel):
             return False
         target = r.path / rel
-        return target.exists() or (allow_new and bool(_NEW_FILE.search(rel)) and target.parent.is_dir())
+        return (target.exists() or baseline_text(ctx, r.name, rel) is not None
+                or (allow_new and bool(_NEW_FILE.search(rel)) and target.parent.is_dir()))
 
     out = Cited()
     names = {r.name for r in ctx.refs}
@@ -1289,7 +1294,7 @@ def cited_refs(ctx: Ctx, line: str, allow_new: bool = False) -> Cited:
                 continue
         if hits:
             out.found.add((hits[0].name, rel))
-            problem = evidence_problem(hits[0].path, rel, m)
+            problem = evidence_problem(hits[0].path, rel, m, baseline_text(ctx, hits[0].name, rel))
             if problem:
                 out.bad.append(problem)
     return out
@@ -1305,7 +1310,8 @@ def cited_own(ctx: Ctx, line: str, allow_new: bool = False) -> list[str]:
         target = ctx.root / rel
         if not ctx.own.has(rel):
             continue
-        if target.exists() or (allow_new and _NEW_FILE.search(rel) and target.parent.is_dir()):
+        if (target.exists() or baseline_text(ctx, "", rel) is not None
+                or (allow_new and _NEW_FILE.search(rel) and target.parent.is_dir())):
             paths.append(rel)
     return paths
 
@@ -1314,6 +1320,10 @@ def unanchored_names(ctx: Ctx, item: str, cited: Cited) -> list[str]:
     """項目で `…` に囲んだ名前のうち、根拠に挙げたどのファイルにも書かれていないもの。"""
     texts = []
     for name, rel in cited.found:
+        before = baseline_text(ctx, name, rel)
+        if before is not None:
+            texts.append(before.lower())
+            continue
         try:
             texts.append((ctx.ref(name).path / rel).read_text(encoding="utf-8", errors="replace").lower())
         except OSError:
@@ -1959,8 +1969,11 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
             if heading in ANCHORED_IN_REFS:
                 missing = unanchored_names(ctx, item, cited)
                 if missing:
+                    searched = ", ".join(sorted(ref_label(ctx, n, rel) for n, rel in cited.found))
                     problems.append(f"{heading} の項目の名前が、根拠のファイルに見当たりません: "
-                                    + ", ".join(f"`{t}`" for t in missing) + f"（{item[:60]}）")
+                                    + ", ".join(f"`{t}`" for t in missing)
+                                    + f"（探したファイル: {searched}。名前はファイルに書かれている綴りのまま書く）"
+                                    + f"（{item[:60]}）")
     drift = not is_none(bodies["## ずれ"])
     ref_change = not is_none(bodies["## 参照先の変更案"])
     impact = not is_none(bodies["## 影響範囲"])
@@ -2368,9 +2381,10 @@ def new_names_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     """
     names = name_terms(bodies.get("## 自分の変更案", "") + "\n" + bodies.get("## 参照先の変更案", ""))
     body = bodies.get(TESTS_HEADING, "")
+    # 変えたあとに練り直すときは、この回で消した名前も前からある名前（HEAD にある）として数える。
     new = [n for n in names if n not in body
            and not any(git_grep(side, ["--untracked", "-l", "-I", "-i", "-F", *grep_word(n), "-e", n])
-                       for _, side in all_sides(ctx))]
+                       or existed_at_head(side, n) for _, side in all_sides(ctx))]
     if not new:
         return []
     return [f"新しく足す {'、'.join(f'`{n}`' for n in new)} を確かめるテストが {TESTS_HEADING} にありません。"
@@ -2998,6 +3012,36 @@ def changed_in_this_run(ctx: Ctx) -> bool:
                for key, side in all_sides(ctx))
 
 
+def baseline_text(ctx: Ctx, key: str, rel: str) -> str | None:
+    """この回で変えたファイルなら、変える前（印を取ったとき）の中身。変えていない・無かったなら None。
+
+    変えたあとに止まって練り直すと、計画の根拠（行・見出し・名前）は変える前のファイルを指している。
+    根拠は変える前の中身で確かめる（変えたあとの中身で確かめると、消した名前や詰まった行が見当たらなくなる）。
+    """
+    if not hasattr(ctx, "_baseline"):
+        ctx._baseline = {}
+        try:
+            before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            before = None
+        if isinstance(before, dict) and before.get("plan") == plan_rel(ctx):
+            for k, side in all_sides(ctx):
+                snap = before.get("refs", {}).get(k, {}) if k else before.get("own", {})
+                ctx._baseline[k] = (side, snap, changed_since(side, snap))
+    side, snap, changed = ctx._baseline.get(key, (None, {}, set()))
+    if rel not in changed:
+        return None
+    saved = snap.get("files", {}).get(rel)
+    if saved == "deleted":
+        return None
+    if saved:
+        return read_text(backup_dir(ctx, key) / rel)
+    if not snap.get("head"):
+        return None
+    rc, out = run(["git", "show", f"{snap['head']}:{rel}"], side.path, GIT_TIMEOUT)
+    return out if rc == 0 else None
+
+
 PASSED_PLAN = "passed-plan"   # 計画の検査を通り、確認で直す・やめるとされていない計画の印
 
 
@@ -3239,7 +3283,8 @@ def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
 
 DEVIATION_HEADING = "## 計画との違い"
 ACCEPTED_NAME = "accepted.json"
-_DEVIATION = re.compile(r"^[-*]\s+`?([^`\s]+)`?\s*[—–-]+\s*(変更不要|追加)\s*[:：]\s*(\S.*)$")
+UNRELATED_MARK = "関係なし"
+_DEVIATION = re.compile(r"^[-*]\s+`?([^`\s]+)`?\s*[—–-]+\s*(変更不要|追加|関係なし)\s*[:：]\s*(\S.*)$")
 
 
 @dataclass
@@ -3250,6 +3295,8 @@ class Deviations:
     """
     no_change: dict[tuple[str | None, str], str]
     added: dict[tuple[str | None, str], str]
+    # 自分の変更で動く名前・それに触れている参照先のファイルのうち、同じ綴りの別物（`名前` か パス → 理由）
+    unrelated: dict[str, str] = field(default_factory=dict)
 
     @staticmethod
     def _get(table: dict, key: str, rel: str) -> str | None:
@@ -3260,6 +3307,9 @@ class Deviations:
 
     def reason_added(self, key: str, rel: str) -> str | None:
         return self._get(self.added, key, rel)
+
+    def unrelated_file(self, key: str, rel: str) -> str | None:
+        return self.unrelated.get(f"{key}:{rel}") or self.unrelated.get(rel)
 
 
 def deviations(ctx: Ctx) -> Deviations:
@@ -3274,6 +3324,9 @@ def deviations(ctx: Ctx) -> Deviations:
         if not m:
             continue
         path, kind, reason = m.groups()
+        if kind == UNRELATED_MARK:
+            out.unrelated[path.strip("/")] = reason.strip()
+            continue
         name, sep, rest = path.partition(":")
         key: str | None = name if sep and name in refs else None
         rel = rest if key else path
@@ -3310,6 +3363,9 @@ def added_problems(ctx: Ctx, dev: Deviations, key: str, extra: list[str]) -> tup
 OUTSIDE_ADDED = "計画で挙げていないファイルを足しました"
 DECLARE_HINT = (f"変える段で必要だと分かったなら、{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
                 "`- パス — 追加: 理由` と書く")
+NAMES_TOUCH_REFS = "自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません"
+UNRELATED_HINT = (f"{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に、名前ごとなら「- `名前` — {UNRELATED_MARK}: 理由」、"
+                  f"ファイルごとなら「- パス — {UNRELATED_MARK}: 理由」と書く")
 UNDONE_HINT = (f"変えなくてよいと分かったなら、{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
                f"`- パス — {NO_CHANGE_MARK}: 理由` と書く")
 
@@ -3544,18 +3600,19 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems.append(
                 f"変更の影響を受けるのに、直していないファイルがあります（直すか、{UNDONE_HINT}）: " + ", ".join(untouched)
                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）")
-    new_own_terms = [t for t in own_diff_terms if t not in own_terms_from_plan(bodies)]
+    new_own_terms = [t for t in own_diff_terms if t not in own_terms_from_plan(bodies) and t not in dev.unrelated]
     if new_own_terms:
         # 計画に無い名前まで自分で変えたなら、それに触れている参照先も扱ったか。
         hits = measure_refs(ctx, new_own_terms, "ref-impact-after.md",
                             "自分の実際の変更で動く名前に触れている参照先のファイル（測定）")
         cited = cited_anywhere(ctx, bodies)
         missing = sorted(ref_label(ctx, n, rel) for n, rel in hits
-                         if (n, rel) not in cited and rel not in a.touched.get(n, set()))
+                         if (n, rel) not in cited and rel not in a.touched.get(n, set())
+                         and not dev.unrelated_file(n, rel))
         if missing:
-            problems.append("自分の変更で動く名前に触れている参照先のファイルを、計画で扱っていません（利用者に確かめて"
-                            "計画を直すか、その名前を変えないでください）: " + ", ".join(missing)
-                            + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）")
+            problems.append(f"{NAMES_TOUCH_REFS}（同じ綴りの別物なら、{UNRELATED_HINT}。"
+                            "関係するなら、利用者に確かめて計画を直すか、その名前を変えないでください）: "
+                            + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）")
 
     # 3'. 実際の変更が響くテストを、直したか「変更不要」としたか（同じ側のテストも。名前とつながりで測る）。
     affected: dict[tuple[str, str], str] = {}
@@ -3773,6 +3830,9 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         lines += ["", "## 参照先とパスでつながっていない変更", "",
                   *[f"- {p}" for p in lonely],
                   "", "（つなぐなら、ファイルに `coherence: doc=パス` のように書くか、参照先の文書からパスで指す）"]
+    if dev.unrelated:
+        lines += ["", "## 変える段で関係なしとした名前・ファイル", "",
+                  *[f"- {t} — {UNRELATED_MARK}: {why}" for t, why in sorted(dev.unrelated.items())]]
     todo = a.bodies.get("## 今回やらないこと", "なし")
     lines += ["", "## 次にやること（今回やらないこと）", "", todo if not is_none(todo) else "- なし", "",
               "どちらのリポジトリもコミットしていない。内容を確かめてから、それぞれでコミットする。", ""]
@@ -3811,6 +3871,7 @@ _KINDS = (
     ("extra", "apply", ("計画に無いファイルを変えています", "変更案に無いファイルを変えています", "が変わっています（戻してください）")),
     ("undone", "apply", ("まだ変えていません", "が変わっていません")),
     ("unfixed", "apply", ("直していないファイル", "自分のファイルを、直していません")),
+    ("names", "apply", (NAMES_TOUCH_REFS,)),
     ("ref-coverage", "any", ("計画で扱っていません",)),
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ")),
     ("rules", "any", ("守る決まり", "スキル・道具", "リポジトリのスキル", "スキルの手順", "スキルを読み込んでいません")),
@@ -3871,6 +3932,9 @@ ADVICE = {
                    "計画のファイルを変え残しています。変え切るか、計画から外すかを決めてもらいます"),
         "unfixed": (["reapply", "keep", "reset", "stop"],
                     "変更の影響を受けるファイルを直していません。直すか、「変更不要」として計画に書くかを決めてもらいます"),
+        "names": (["reapply", "keep", "reset", "stop"],
+                  "自分の変更で動く名前に、計画に無い参照先のファイルが触れています。同じ綴りの別物かを見て、"
+                  "関係するなら計画に足すか、名前を変え直すかを決めてもらいます"),
         "ref-coverage": (["keep", "reapply", "reset", "stop"],
                          "計画に無い参照先に響く変更をしました。計画に足すか、響かないように変え直すかを決めてもらいます"),
         "paths": (["reapply", "keep", "stop"], "書いたパスが無いか、消したファイルがまだ指されています。指す先を直します"),
@@ -3888,7 +3952,7 @@ ADVICE["plan"]["config"] = (["replan", "stop"], "設定か環境の誤りです�
 # これだけで止まったときは、利用者に訊かずに同じ段をやり直す。計画を変える・範囲を絞る・戻すなどの判断が要るものは訊く。
 # form（どの目印にも当たらない指摘）は入れない（目印を足し忘れた指摘が、訊かない側に落ちないように）。
 AUTO_KINDS = {"plan": {"pending", "rules", "shape"},
-              "apply": {"check", "undone", "unfixed", "extra", "paths", "rules", "shape"}}
+              "apply": {"check", "undone", "unfixed", "extra", "names", "paths", "rules", "shape"}}
 AUTO_NAME = "auto.json"
 MAX_AUTO = 2     # 同じ段で人に訊かずに進める回数。直らない失敗をいつまでも回さない
 
@@ -4104,11 +4168,19 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
+def finished_in_head(ctx: Ctx, rel: str) -> bool:
+    rc, out = run(["git", "show", f"HEAD:{rel}"], ctx.root, GIT_TIMEOUT)
+    return rc == 0 and RESULT_HEADING in out.splitlines()
+
+
 def record_problems_of(ctx: Ctx) -> list[str]:
     """終わった回の計画の記録（コミット済み）を書き換えていないか。練り直しで直してよいのは、いま進めている計画だけ。"""
-    rc, out = run(["git", "-c", "core.quotepath=false", "status", "--porcelain", "--", PLAN_DIR], ctx.root, GIT_TIMEOUT)
-    changed = [ln[3:] for ln in out.splitlines() if rc == 0 and ln[:2].strip() and not ln.startswith("??")
-               and ln[3:] != plan_rel(ctx)]
+    rc, out = run(["git", "status", "--porcelain", "--", PLAN_DIR], ctx.root, GIT_TIMEOUT)
+    changed = [ln[3:].split(" -> ", 1)[0] for ln in out.splitlines()
+               if rc == 0 and ln[:2].strip() and not ln.startswith("??")]
+    # 記録は、コミット済みの版に結果の見出しがあるものだけ。途中の計画をコミットしてから `draft --new` で
+    # 捨てた・書き直したものは、記録ではない。
+    changed = [rel for rel in changed if rel != plan_rel(ctx) and finished_in_head(ctx, rel)]
     return ["終わった回の計画の記録を書き換えています（判断の記録なので変えない。直すのは "
             f"いま進めている計画だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else []
 
@@ -4121,11 +4193,18 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         report.unlink()   # 次の回の記録に、この回の結果を混ぜない
     else:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
+    stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan] if ctx.plan.is_file() else []
     record = finalize_plan(ctx, result)
     if not record:
         print(NO_PLAN, file=sys.stderr)
         return 1
     print(f"計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
+    # この回より前の、結果の見出しが無い計画は `draft --new` で捨てたもの（戻されて残ったもの）。
+    # 残すと次の回にそれが「進めている計画」になるので消す。
+    for p in stale:
+        if p.stem < ctx.plan.stem and RESULT_HEADING not in (read_text(p) or "").splitlines():
+            p.unlink()
+            print(f"捨てた計画を消しました: {p.relative_to(ctx.root).as_posix()}")
     return 0
 
 

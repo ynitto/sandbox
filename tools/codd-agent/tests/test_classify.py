@@ -52,6 +52,13 @@ class ClassifyTest(unittest.TestCase):
                 with self.subTest(phase=phase, text=text):
                     self.assertTrue(asks(phase, text))
 
+    def test_same_spelling_names_are_retried_after_changing(self) -> None:
+        # 変えたあとに、名前が参照先の別のファイルに同じ綴りで出てくるだけなら、申告で済むので訊かない。
+        text = codd.NAMES_TOUCH_REFS + "（…）: docs/zoom.md"
+        self.assertFalse(asks("apply", text))
+        # パスでつながっているファイルの扱い漏れは、これまでどおり訊く。
+        self.assertTrue(asks("apply", "自分の変えたファイルとパスでつながっている参照先のファイルを、計画で扱っていません"))
+
     def test_unknown_wording_is_asked(self) -> None:
         # 目印を足し忘れた指摘は、訊く側に落ちる。書き方の目印に似た言い回しを含んでいても同じ。
         for phase in ("plan", "apply"):

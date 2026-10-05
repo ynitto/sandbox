@@ -714,6 +714,29 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- src/notes.txt — 変えた（利用者が認めた: 書き方を残した）", report)
         self.assertIn("- src/third.py — 変えた（変える段で足した: 定数をそろえた）", report)
 
+    def test_same_spelling_names_in_refs_are_declared_unrelated(self) -> None:
+        # 変える段で足した名前が、参照先の関係の無いファイルにも同じ綴りで出てくる。人に訊かず、申告で済ませる。
+        commit(self.design, {"docs/zoom.md": "# ズーム\n\n`is_selectable` でズームできるかを決める。\n"}, "zoom")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text(
+            "def hello():\n    return 1  # log\n\n\ndef is_selectable():\n    return True\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("名前に触れている参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/zoom.md", r.stderr)
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        for line in ("- `is_selectable` — 関係なし: ズームの判定で、候補の選択とは別物",
+                     "- docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物",
+                     "- design:docs/zoom.md — 関係なし: ズームの判定で、候補の選択とは別物"):
+            with self.subTest(line=line):
+                (self.impl / ".codd/apply.md").write_text(f"## 計画との違い\n\n{line}\n", encoding="utf-8")
+                r = self.run_pa(self.impl, "verify-apply")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                report = self.run_pa(self.impl, "report").stdout
+                self.assertIn("## 変える段で関係なしとした名前・ファイル", report)
+                self.assertIn("関係なし: ズームの判定で、候補の選択とは別物", report)
+
     def test_tests_wait_until_the_change_itself_is_complete(self) -> None:
         mark = self.tmp / "checked"
         self.set_check(self.impl, [sys.executable, "-c", f"open({str(mark)!r}, 'a').write('x')"])
@@ -754,6 +777,27 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 3  # log\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertNotIn("計画に無いファイル", r.stderr)   # 前の回の log.py は数えない
+
+    def test_replanning_after_changing_checks_evidence_before_the_change(self) -> None:
+        # 変えたあとに止まって練り直すと、根拠（行・見出し・名前）は変える前のファイルを指している。
+        plan = PLAN_DRIFT.replace("- hello は整数を返す（根拠: docs/api.md）",
+                                  "- `hello` は整数を返す（根拠: docs/api.md:3-5#hello）")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hi():\n    return 2\n", encoding="utf-8")   # hello を消した
+        (self.design / "docs/api.md").write_text("# API\n\nhi は 2 を返す。\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        self.write_plan(plan.replace("と書き直す", "と書き直し、名前を hi にする"))
+        r = self.run_pa(self.impl, "verify-plan")
+        for wrong in ("行目はありません", "見出し #hello がありません", "見当たりません", "実在する根拠のパスがありません",
+                      "新しく足す"):
+            self.assertNotIn(wrong, r.stderr)
+        # 回を終えたあとの計画は、今の中身で確かめる。
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        (self.impl / ".plans/2099-01-01-0000-next.md").write_text(plan, encoding="utf-8")
+        self.read_up(self.impl)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("見当たりません: `hello`", r.stderr)
 
     def test_rollback_restores_the_state_before_the_change(self) -> None:
         commit(self.impl, {"src/gone.py": "g = 1\n"}, "gone")
@@ -1445,6 +1489,14 @@ class CoddTest(unittest.TestCase):
                 r = self.run_pa(self.impl, "verify-plan")
                 self.assertEqual(r.returncode, 1)
                 self.assertIn(expected, r.stderr)
+        # 参照先の名前を付けた根拠でも、そのファイルで名前を探す。見当たらなければ探したファイルを示す。
+        self.write_plan(PLAN_ALIGNED.replace("- hello は整数を返す（根拠: docs/api.md#hello）",
+                                             "- `hello_world` は整数を返す（根拠: design:docs/api.md:3）"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("見当たりません: `hello_world`（探したファイル: docs/api.md。", r.stderr)
+        self.write_plan(PLAN_ALIGNED.replace("- hello は整数を返す（根拠: docs/api.md#hello）",
+                                             "- `hello()` は整数を返す（根拠: `design:docs/api.md:3`）"))
+        self.assert_plan_ok()
         # 書かれている名前・実在する行と見出しなら通る（`hello()` は hello として探す）。
         self.write_plan(PLAN_ALIGNED.replace("- hello は整数を返す", "- `hello()` は整数を返す")
                         .replace("docs/api.md:3", "docs/api.md:3-5").replace("#hello", "#HELLO"))
@@ -2351,6 +2403,27 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("終わった回の計画の記録を書き換えています", r.stderr)
+
+    def test_discarding_a_committed_unfinished_plan_is_not_a_record_change(self) -> None:
+        # 途中の計画がコミットされたあとで `draft --new` で書き直しても、終わった回の記録とは見なさない。
+        self.write_plan(PLAN_ALIGNED)
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "wip")
+        r = self.run_pa(self.impl, "draft", "--new", "--name", "retry")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.impl / PLAN).exists())
+        new = next((self.impl / ".plans").glob("*-retry.md"))
+        new.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.read_up(self.impl)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("終わった回の計画の記録", r.stderr)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 捨てた計画を戻してしまっても、記録のときに消す（次の回に、それが進めている計画にならない）。
+        git(self.impl, "checkout", "--", PLAN)
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"捨てた計画を消しました: {PLAN}", r.stdout)
+        self.assertEqual(list((self.impl / ".plans").glob("*.md")), [new])
 
     def test_record_when_stopped_before_changing(self) -> None:
         self.write_plan(PLAN_ALIGNED)
