@@ -380,6 +380,43 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed refs=design", r.stdout)
 
+    def test_files_the_checks_regenerate_are_not_changes(self) -> None:
+        # 検査コマンド（画面を撮り直すなど）が作り直したファイルは、エージェントの変更に数えない。
+        # 数えると、検査を通し直すたびに「計画に無いファイル」で止まる。
+        commit(self.design, {"docs/images/hello.png": "old\n"}, "image")
+        shot = ("import pathlib, time; p = pathlib.Path('docs/images'); p.mkdir(parents=True, exist_ok=True); "
+                "(p / 'hello.png').write_text(str(time.time())); (p / 'new.png').write_text(str(time.time()))")
+        self.set_check(self.design, [sys.executable, "-c", shot])
+        self.set_check(self.impl, [sys.executable, "-c", "open('report.txt', 'w').write('ok')"])
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        for _ in range(2):   # 2 回目は、1 回目の検査が作り直したファイルがある
+            r = self.run_pa(self.impl, "verify-apply")
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.impl / "report.txt").is_file())
+
+        # エージェントが同じファイルを手で変えたら、変更に数える。
+        (self.impl / "report.txt").write_text("edited by hand", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("計画に無いファイルを変えています", r.stderr)
+        self.assertIn("report.txt", r.stderr)
+
+    def test_planned_images_may_come_out_the_same(self) -> None:
+        # 撮り直すと計画に挙げた画像が、画面が変わらず同じバイト列のままでも、変え残しとして止めない。
+        commit(self.design, {"docs/images/hello.png": "same\n"}, "image")
+        plan = PLAN_DRIFT.replace("- docs/api.md — `hello` の戻り値を 2 と書き直す",
+                                  "- docs/api.md — `hello` の戻り値を 2 と書き直す\n- docs/images/hello.png — 撮り直す")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("docs/images/hello.png — 撮り直しても同じ", self.run_pa(self.impl, "report").stdout)
+
     # ------------------------------------------------------------ 影響範囲を測る
 
     def add_caller(self) -> None:

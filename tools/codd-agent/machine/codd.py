@@ -2647,8 +2647,18 @@ def evidence_changes(ctx: Ctx) -> list[str]:
 
 
 IMAGE_EXTS = (".png",)
+# 撮り直す画像は、画面が変わっていなければ同じバイト列のまま残る（撮影の道具は同じとみなした画像を書き換えない）。
+# 計画に「撮り直す」と挙げた画像が変わらなくても、変え残しとはみなさない（報告で「撮り直しても同じ」と伝える）。
+MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+
+
+def may_stay_same(rel: str) -> bool:
+    return rel.lower().endswith(MEDIA_EXTS)
 MAX_IMAGE_FILES = 5000
 REPLACED_FILE = "replaced.json"
+# テストと検査コマンド（画面を撮り直す・結果を書くなど）が作り直したファイルと、そのときの中身のハッシュ。
+# 中身がそのままなら「変えたファイル」に数えない（数えると、検査を通し直すたびに「計画に無いファイル」で止まる）。
+GENERATED_FILE = "generated.json"
 _IMG_LINK = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)|<img\s[^>]*?src\s*=\s*[\"']([^\"']+)[\"']", re.I)
 
 
@@ -2919,6 +2929,7 @@ def write_baseline(ctx: Ctx) -> None:
         return
     keep.unlink(missing_ok=True)
     (ctx.data / REPLACED_FILE).unlink(missing_ok=True)
+    (ctx.data / GENERATED_FILE).unlink(missing_ok=True)
     shutil.rmtree(ctx.data / "before", ignore_errors=True)
     state = {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
@@ -3100,6 +3111,43 @@ class Applied:
         return [name for name, files in self.touched.items() if files]
 
 
+def generated_files(ctx: Ctx) -> dict[str, dict[str, str]]:
+    try:
+        rec = json.loads((ctx.data / GENERATED_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def record_generated(ctx: Ctx, pre: dict[str, dict[str, str]]) -> None:
+    """テストと検査コマンドの前（pre）と後を比べ、それが作り直したファイルを控える。
+
+    控えるのは、エージェントが手を付けていなかったファイルだけ（検査の前の中身が、変える前の印か、前に控えた
+    作り直しの中身と同じもの）。エージェントが変えたファイルを検査が上書きしても、エージェントの変更のまま数える。
+    """
+    before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    record = generated_files(ctx)
+    for key, side in all_sides(ctx):
+        base = (before["own"] if not key else before.get("refs", {}).get(key, {})).get("files", {})
+        made = record.setdefault(key, {})
+        now = dirty_files(side)
+        for path in set(now) | set(pre[key]):
+            if now.get(path) == pre[key].get(path):
+                continue
+            if pre[key].get(path) in (base.get(path), made.get(path)):
+                made[path] = now.get(path, "deleted")
+    (ctx.data / GENERATED_FILE).write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def made_by_checks(ctx: Ctx, key: str, side: Side) -> set[str]:
+    """テストと検査コマンドが作り直したまま、中身が変わっていないファイル。"""
+    made = generated_files(ctx).get(key, {})
+    if not made:
+        return set()
+    now = dirty_files(side)
+    return {p for p, h in made.items() if now.get(p, "deleted") == h}
+
+
 def load_applied(ctx: Ctx) -> Applied | str:
     before_file = ctx.data / "before.json"
     if not ctx.plan.is_file() or not before_file.is_file():
@@ -3109,8 +3157,10 @@ def load_applied(ctx: Ctx) -> Applied | str:
         return "変える前の印が古い形です（計画の検査からやり直してください）"
     _, bodies = sections(plan_text_for_checks(ctx), PLAN_HEADINGS)
     planned, plan_problems = planned_refs(ctx, bodies)
-    # テストの画面から差し替えた画像はハーネスの変更なので、「変えたファイル」に数えない。
+    # テストの画面から差し替えた画像と、テスト・検査コマンドが作り直したファイルはハーネスの変更なので、
+    # 「変えたファイル」に数えない。
     harness = {(r["side"], r["path"]) for r in replaced_files(ctx)["replaced"]}
+    harness |= {(k, p) for k, side in all_sides(ctx) for p in made_by_checks(ctx, k, side)}
     return Applied(bodies, {p for p in changed_since(ctx.own, before["own"]) if ("", p) not in harness},
                    {r.name: {p for p in changed_since(r, before.get("refs", {}).get(r.name, {})) if (r.name, p) not in harness}
                     for r in ctx.refs},
@@ -3135,7 +3185,7 @@ def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
 def batch_undone(ctx: Ctx, a: "Applied", batch: list[tuple[str, str]]) -> list[str]:
     touched = {"": a.own_touched, **a.touched}
     return [side_label(ctx, k, rel) for k, rel in batch
-            if not any(covered(t, {rel}) for t in touched.get(k, set()))]
+            if not may_stay_same(rel) and not any(covered(t, {rel}) for t in touched.get(k, set()))]
 
 
 def batch_step(ctx: Ctx, a: "Applied") -> int | None:
@@ -3205,10 +3255,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
 
     # 1. 計画のファイルを最後まで変えたか（途中で止まっていないか）。テストの変更案のファイルも同じ。
     want_own = own_planned(ctx, bodies)
-    if not is_none(bodies.get("## 自分の変更案", "なし")) and not a.own_touched:
+    only_media = bool(want_own) and all(may_stay_same(p) for p in want_own)
+    if not is_none(bodies.get("## 自分の変更案", "なし")) and not a.own_touched and not only_media:
         problems.append("自分の変更案があるのに、自分のリポジトリが変わっていません")
     else:
-        undone = sorted(p for p in want_own if not any(covered(t, {p}) for t in a.own_touched))
+        undone = sorted(p for p in want_own if not may_stay_same(p) and not any(covered(t, {p}) for t in a.own_touched))
         if undone:
             problems.append("自分の変更案のファイルをまだ変えていません（最後まで変えてください。変えなくてよくなったなら、"
                             "利用者に確かめて計画を直してください）: " + ", ".join(undone))
@@ -3231,7 +3282,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     for r in ctx.refs:
         touched = a.touched[r.name]
         ref_tests = tp.paths(r.name, waived=False)
-        if r.name in a.planned and not touched:
+        ref_media_only = all(may_stay_same(p) for p in a.planned.get(r.name, set()))
+        if r.name in a.planned and not touched and not ref_media_only:
             problems.append(f"参照先の変更案で {r.name} を変えるはずなのに、{r.name} が変わっていません")
         elif r.name not in a.planned and not ref_tests and touched:
             problems.append(f"参照先の変更案に {r.name} は無いのに、{r.name} が変わっています（戻してください）")
@@ -3240,7 +3292,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             if extra:
                 problems.append(f"{r.name} で参照先の変更案に無いファイルを変えています（戻すか、利用者に確かめて"
                                 "計画の参照先の変更案に足してください）: " + ", ".join(extra))
-            undone = sorted(p for p in a.planned.get(r.name, set()) if not any(covered(t, {p}) for t in touched))
+            undone = sorted(p for p in a.planned.get(r.name, set())
+                            if not may_stay_same(p) and not any(covered(t, {p}) for t in touched))
             if undone:
                 problems.append(f"{r.name} で参照先の変更案のファイルをまだ変えていません: " + ", ".join(undone))
 
@@ -3319,7 +3372,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         since = (ctx.data / "before.json").stat().st_mtime
         problems += unread_problem(unread_skills(ctx, used, since), f"{DATA_DIRNAME}/apply.md に挙げた")
 
-    # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。
+    # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。作り直したファイルを控える。
+    pre = {key: dirty_files(side) for key, side in all_sides(ctx)}
     for name, argv in test_commands(ctx.config.get("test")):
         problems += run_check(ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
@@ -3328,6 +3382,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         for name, argv in test_commands(r.test):
             problems += run_check(r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
         problems += run_check(r.path, r.check, f"{r.name}（{r.label}）")
+    record_generated(ctx, pre)
     # 7. テストで得たもの。変わった画面を貼っている文書の画像を差し替え、振る舞い・時間を写した印が今と合うかを見る。
     screens = replace_screens(ctx)
     for line in screen_lines(ctx, screens):
@@ -3407,7 +3462,8 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         state = "通ったあとに、さらに変わっている（変えたあとの検査をもう一度通してください）"
 
     def rows(planned: set[str], touched: set[str]) -> list[str]:
-        out = [f"- {p} — {'変えた' if any(covered(t, {p}) for t in touched) else 'まだ'}" for p in sorted(planned)]
+        out = [f"- {p} — {'変えた' if any(covered(t, {p}) for t in touched) else '撮り直しても同じ' if may_stay_same(p) else 'まだ'}"
+               for p in sorted(planned)]
         out += [f"- {p} — 変えた（影響範囲）" for p in sorted(touched) if not covered(p, planned)]
         return out or ["- なし"]
 
