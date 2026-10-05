@@ -53,10 +53,13 @@ class ClassifyTest(unittest.TestCase):
                     self.assertTrue(asks(phase, text))
 
     def test_unknown_wording_is_asked(self) -> None:
-        # 目印を足し忘れた指摘は、訊く側に落ちる。
+        # 目印を足し忘れた指摘は、訊く側に落ちる。書き方の目印に似た言い回しを含んでいても同じ。
         for phase in ("plan", "apply"):
-            with self.subTest(phase=phase):
-                self.assertTrue(asks(phase, "まだどの目印にも当たらない新しい指摘"))
+            for text in ("まだどの目印にも当たらない新しい指摘",
+                         "目安が「なし」です（変えてよいか利用者に確かめてください）",
+                         "## 今回やらないこと の項目に、残す理由のパスがありません"):
+                with self.subTest(phase=phase, text=text):
+                    self.assertTrue(asks(phase, text))
 
 
 if __name__ == "__main__":
