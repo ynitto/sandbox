@@ -971,7 +971,47 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
     """語ごとに graphify と git grep で引き、（本文, 候補のファイル, graphify の状態）を返す。scope の外は捨てる。
 
     first_lines を渡すと、git grep で一致したファイルごとに最初に一致した行の番号を入れる（文字列の一致だけ）。
+    リポジトリの中身（stamp）と語が前と同じなら、前の結果を使う（計画を直して検査し直すたびに引き直さない）。
     """
+    repo = side.path
+    key = hashlib.sha256(json.dumps(
+        [str(repo), side.scope, side.exclude, terms, graph_cmd, use_graph and ctx.config["graphify"] != "off",
+         use_graph and bool(shutil.which("graphify")), stamp(repo)], ensure_ascii=False).encode()).hexdigest()
+    cache = load_search_cache(ctx)
+    if key in cache:
+        hit = cache[key]
+        if first_lines is not None:
+            first_lines.update(hit["first"])
+        return hit["body"], hit["files"], "fresh" if hit["note"] == "updated" else hit["note"]
+    found_lines: dict[str, int] = {}
+    body, files, note = _search(ctx, side, terms, graph_cmd, use_graph, found_lines)
+    if first_lines is not None:
+        first_lines.update(found_lines)
+    cache[key] = {"body": body, "files": files, "note": note, "first": found_lines}
+    save_search_cache(ctx, cache)
+    return body, files, note
+
+
+SEARCH_CACHE = "search-cache.json"
+MAX_SEARCH_CACHE = 64
+
+
+def load_search_cache(ctx: Ctx) -> dict:
+    try:
+        rec = json.loads((ctx.data / SEARCH_CACHE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def save_search_cache(ctx: Ctx, cache: dict) -> None:
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    keep = dict(list(cache.items())[-MAX_SEARCH_CACHE:])   # 新しいものを残す（dict は足した順）
+    (ctx.data / SEARCH_CACHE).write_text(json.dumps(keep, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
+            use_graph: bool, first_lines: dict[str, int]) -> tuple[str, list[str], str]:
     repo = side.path
     exe, graph, note = ensure_graph(ctx, repo) if use_graph else (None, None, "unused")
     lines: list[str] = []
@@ -1007,7 +1047,7 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
             rel, _, rest = h.partition(":")
             add_file(rel)
             num = rest.split(":", 1)[0]
-            if first_lines is not None and num.isdigit():
+            if num.isdigit():
                 first_lines[rel] = min(first_lines.get(rel, int(num)), int(num))
     return "\n".join(lines), files, note
 
@@ -3566,6 +3606,13 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         used = used_skill_names(apply_log.read_text(encoding="utf-8"), unique(skills))
         since = (ctx.data / "before.json").stat().st_mtime
         problems += unread_problem(unread_skills(ctx, used, since), f"{DATA_DIRNAME}/apply.md に挙げた")
+
+    if problems:
+        # 手前の指摘を直せば中身が変わり、テストはどのみち動かし直す。重いテストと検査コマンドは、
+        # 指摘が無くなってから動かす（通すときは必ず全部動かす）。
+        print_problems(ctx, "apply", problems)
+        print("テストと検査コマンドは、上の指摘を直したあとの検査で動かします")
+        return 1
 
     # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。作り直したファイルを控える。
     pre = {key: dirty_files(side) for key, side in all_sides(ctx)}
