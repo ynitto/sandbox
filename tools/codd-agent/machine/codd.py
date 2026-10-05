@@ -419,6 +419,11 @@ class Side:
     def has(self, rel: str) -> bool:
         return in_scope(rel, self.scope) and not machine_owned(rel) and not self.excluded(rel)
 
+    @property
+    def diff_base(self) -> str:
+        """この回の変更を測る起点（ふつうは HEAD。この回の途中でコミットしたら、変える前の印の HEAD）。"""
+        return getattr(self, "base", "HEAD")
+
 
 @dataclass
 class Ref(Side):
@@ -498,6 +503,21 @@ class Ctx:
                                  config=ref_config, label=label, entry_skills=entry["skills"],
                                  entry_rules=entry["rules"]))
         self.check_layout()
+        self.load_bases()
+
+    def load_bases(self) -> None:
+        """この回の変更を測る起点（変える前の印の HEAD）。途中でコミットしても、この回の変更を取りこぼさない。"""
+        try:
+            before = json.loads((self.data / "before.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(before, dict) or before.get("plan") != self.plan.relative_to(self.root).as_posix():
+            return
+        for side in (self.own, *self.refs):
+            snap = before.get("own", {}) if side is self.own else before.get("refs", {}).get(side.name, {})
+            base = snap.get("head") if isinstance(snap, dict) else None
+            if base and base != head(side.path):
+                side.base = base
 
     def check_layout(self) -> None:
         """同じリポジトリを 2 つ以上の側が使うなら、どの側も scope を持ち、互いに重ならないこと。"""
@@ -1377,7 +1397,8 @@ def own_terms_from_plan(bodies: dict[str, str]) -> list[str]:
 def terms_from_diff(side: Side) -> list[str]:
     """実際の変更（作業中の差分と、新しいファイル）から、変わった名前を拾う。"""
     repo = side.path
-    diff = diff_without(run(["git", "diff", "HEAD", *side.pathspec()], repo, GIT_TIMEOUT)[1], lambda p: not side.has(p))
+    diff = diff_without(run(["git", "diff", side.diff_base, *side.pathspec()], repo, GIT_TIMEOUT)[1],
+                        lambda p: not side.has(p))
     terms = []
     quoted: dict[str, Counter] = {"+": Counter(), "-": Counter()}
     for line in diff.splitlines():
@@ -1405,7 +1426,7 @@ def terms_from_diff(side: Side) -> list[str]:
 
 def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
     """作業中の差分（新しいファイルも）を、ファイルごとの（足した行, 消した行）に分ける。"""
-    diff = run(["git", "diff", "HEAD", *side.pathspec()], side.path, GIT_TIMEOUT)[1]
+    diff = run(["git", "diff", side.diff_base, *side.pathspec()], side.path, GIT_TIMEOUT)[1]
     out: dict[str, tuple[list[str], list[str]]] = {}
     cur, header = None, False
     for line in diff.splitlines():
@@ -1456,7 +1477,7 @@ def grep_word(term: str) -> list[str]:
 
 
 def existed_at_head(side: Side, term: str) -> bool:
-    rc, out = run(["git", "grep", "-l", "-I", "-F", *grep_word(term), "-e", term, "HEAD", *side.pathspec()],
+    rc, out = run(["git", "grep", "-l", "-I", "-F", *grep_word(term), "-e", term, side.diff_base, *side.pathspec()],
                   side.path, GIT_TIMEOUT)
     return rc == 0 and any(side.has(ln.split(":", 1)[1]) for ln in out.splitlines() if ":" in ln)
 
@@ -1758,7 +1779,7 @@ def write_trace(ctx: Ctx, name: str, title: str, groups: list[tuple[str, list[st
 
 def added_lines(side: Side, rel: str) -> set[int] | None:
     """作業中に足した行の番号（未追跡のファイルなら None = すべて）。"""
-    rc, out = run(["git", "diff", "HEAD", "-U0", "--", rel], side.path, GIT_TIMEOUT)
+    rc, out = run(["git", "diff", side.diff_base, "-U0", "--", rel], side.path, GIT_TIMEOUT)
     if rc != 0 or not out.strip():
         tracked = run(["git", "ls-files", "--error-unmatch", "--", rel], side.path, GIT_TIMEOUT)[0] == 0
         return set() if tracked else None
@@ -3425,7 +3446,7 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
         out += [f"## `{name}`（{key or '自分'}）", "", "### 手順", ""]
         out += [(read_text(found[1]) or "").strip() if found else "（SKILL.md が見つかりません。名前どおりの手順で見直す）", ""]
         out += ["### 変えたファイル", "", *[f"- {side_label(ctx, key, rel)}" for rel in rels], ""]
-        diff = run(["git", "diff", "HEAD", "--", *rels], side.path, GIT_TIMEOUT)[1]
+        diff = run(["git", "diff", side.diff_base, "--", *rels], side.path, GIT_TIMEOUT)[1]
         new = run(["git", "ls-files", "--others", "--exclude-standard", "--", *rels], side.path, GIT_TIMEOUT)[1].split()
         if len(diff) > MAX_REVIEW_DIFF:
             diff = diff[:MAX_REVIEW_DIFF] + "\n…（長いので切った。残りはファイルを開いて見る）\n"

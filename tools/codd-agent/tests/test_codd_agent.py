@@ -544,6 +544,8 @@ class CoddTest(unittest.TestCase):
         # 参照先の文書が自分の変更案のファイルをパスで指しているなら、名前が一致しなくても計画で扱わせる。
         commit(self.design, {"docs/map.md": "# 対応表\n\n実装は [app](../impl/src/app.py) と `src/app.py`。\n"
                                             "```\nsrc/app.py はコードブロックの中なので数えない\n```\n"}, "map")
+        # 後半で使う。計画を通したあとにコミットすると、この回の変更に数える（途中でコミットしても取りこぼさない）。
+        commit(self.impl, {"src/client.py": "# coherence: doc=docs/api.md\ndef call():\n    return 0\n"}, "client")
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
@@ -557,7 +559,6 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
 
         # 自分のファイルに書いた注記で、参照先の変更案のファイルとつながる（逆向き）。
-        commit(self.impl, {"src/client.py": "# coherence: doc=docs/api.md\ndef call():\n    return 0\n"}, "client")
         plan = PLAN_DRIFT.replace("## 参照先のその他\n\n- なし",
                                   "## 参照先のその他\n\n- 関係なし: 置き場所の一覧だけ（根拠: docs/map.md）")
         self.write_plan(plan)
@@ -736,6 +737,20 @@ class CoddTest(unittest.TestCase):
                 report = self.run_pa(self.impl, "report").stdout
                 self.assertIn("## 変える段で関係なしとした名前・ファイル", report)
                 self.assertIn("関係なし: ズームの判定で、候補の選択とは別物", report)
+
+    def test_committing_midway_still_measures_this_runs_changes(self) -> None:
+        # 変える段の途中でコミットしても、この回の変更（変える前の印から）で影響を測る。
+        commit(self.design, {"docs/zoom.md": "# ズーム\n\n`is_selectable` でズームできるかを決める。\n"}, "zoom")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text(
+            "def hello():\n    return 1  # log\n\n\ndef is_selectable():\n    return True\n", encoding="utf-8")
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "途中")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("名前に触れている参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/zoom.md", r.stderr)
 
     def test_tests_wait_until_the_change_itself_is_complete(self) -> None:
         mark = self.tmp / "checked"
