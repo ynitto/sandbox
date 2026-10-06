@@ -1465,11 +1465,12 @@ def check_definition(template: "str | bytes", definition: dict) -> list[str]:
 # スタンドアローン（固有の render スクリプトを書き出す）
 # ---------------------------------------------------------------------------
 
+# PEP 723 の依存宣言。書き出したスクリプトはこのエンジンの本文も含むので、ここに `# /// script` を行頭のまま書くと、
+# uv がメタデータを 2 つと数えて動かない。行頭にならないよう {pep723} で差し込む。
+PEP723 = "\n".join("#" + line for line in (
+    " /// script", ' requires-python = ">=3.10"', ' dependencies = ["lxml", "openpyxl", "pyyaml"]', " ///"))
 STANDALONE_HEADER = '''#!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["lxml", "openpyxl", "pyyaml"]
-# ///
+{pep723}
 """{title}
 
 xlsx テンプレートへデータを流し込む、固有の render スクリプト（xlsx-report-builder の export で生成）。
@@ -1548,7 +1549,7 @@ def export_script(template: "str | bytes", definition: dict, output: str, embed:
     title = f"{os.path.splitext(template_name or 'template')[0]} の render スクリプト"
     note = ("テンプレートも埋め込み済み（--template で差し替えられる）。" if embed
             else f"テンプレート（{rel}）は、このスクリプトからの相対パスで読む。")
-    header = STANDALONE_HEADER.format(title=title, name=os.path.basename(output), shape=shape, template_note=note)
+    header = STANDALONE_HEADER.format(pep723=PEP723, title=title, name=os.path.basename(output), shape=shape, template_note=note)
     tpl_literal = _wrap_b64(raw) if embed else '""'
     footer = (
         "\n\n# ---------------------------------------------------------------------------\n"

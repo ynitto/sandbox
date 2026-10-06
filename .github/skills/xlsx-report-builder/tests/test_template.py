@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -403,7 +404,9 @@ class StandaloneAndYamlTests(Base):
         with open(script, encoding="utf-8") as fh:
             text = fh.read()
         self.assertNotIn("import xlsx_template", text)
-        self.assertIn("# /// script", text)
+        # `uv run` は PEP 723 のメタデータが 2 つあると動かない（エンジンの本文に行頭の `# /// script` を残さない）
+        pep723 = re.findall(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$", text)
+        self.assertEqual([m[0] for m in pep723], ["script"])
         data = os.path.join(self.dir, "data.yaml")
         import yaml
         with open(data, "w", encoding="utf-8") as f:
