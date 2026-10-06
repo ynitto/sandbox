@@ -84,6 +84,23 @@ class TeamBuildingTests(AmigosTestCase):
         with self.assertRaises(RuntimeError):
             teambuilding.build_team({"title": "no goal"}, "claude")
 
+    def test_build_team_cli_reports_bad_input_without_traceback(self):
+        """CLI の build-team は設計できない入力（goal も design も無い・stub）を
+        トレースバックではなく [agent-amigos] の 1 文で終える（SystemExit）。"""
+        self._stub_agent(json.dumps(self.DESIGN))
+        cases = [
+            (["--agent-cli", "claude"], "goal か design"),
+            (["--goal", "g", "--agent-cli", "stub"], "agent CLI"),
+        ]
+        for extra, needle in cases:
+            with self.subTest(extra=extra):
+                with self.assertRaises(SystemExit) as cm:
+                    cli.main(["build-team", "--bus", self.bus.root,
+                              "--node-id", "owner-node", *extra])
+                self.assertIsInstance(cm.exception.code, str)
+                self.assertTrue(cm.exception.code.startswith("[agent-amigos]"))
+                self.assertIn(needle, cm.exception.code)
+
     def test_build_team_rejects_invalid_design(self):
         from agent_amigos import teambuilding
         bad = {"roles": [{"id": "a", "mission": "x"}, {"id": "a", "mission": "y"}]}  # 重複 id

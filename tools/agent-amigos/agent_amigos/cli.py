@@ -208,8 +208,12 @@ def cmd_build_team(args) -> int:
              "constraints": args.constraints,
              "capabilities": _csv(args.capabilities),
              "agent_cli": ctx.agent_cli}
-    mission_over, roles, meta = teambuilding.build_team(
-        brief, ctx.agent_cli or "", model=args.model, pattern=args.pattern)
+    try:
+        mission_over, roles, meta = teambuilding.build_team(
+            brief, ctx.agent_cli or "", model=args.model, pattern=args.pattern)
+    except RuntimeError as e:
+        # 入力不足・未知のパターン・設計出力の不正は、トレースバックでなく 1 文で知らせる
+        raise SystemExit(f"[agent-amigos] {e}")
 
     # target=agent-flow: 探索木・動的分解は agent-flow へ委譲する（roles は出さない・G4）
     if meta.get("target") == "agent-flow":
