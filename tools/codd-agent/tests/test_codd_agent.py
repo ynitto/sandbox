@@ -1496,6 +1496,18 @@ class CoddTest(unittest.TestCase):
         self.assertIn("## テスト\n\n- tests/test_app.py — 変えた", report)
         self.assertNotIn("- src/app.py — 直した", report)                 # 変更案で変えたファイル自身は影響範囲に出さない
 
+    def test_a_test_moved_to_a_new_path_counts_as_planned(self) -> None:
+        # 「…に移す」と書いたテストの移し先も、自分の変更案と同じく計画に挙げたファイルに数える。
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\nassert hello() == 1\n"}, "test")
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/test_app.py — tests/test_hello.py に移し、`hello` のログも確かめる")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests/test_app.py").rename(self.impl / "tests/test_hello.py")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
         commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
         commit(self.design, {"docs/perf.md": "# 性能\n\n- <!-- evidence: login/S-01/load -->800 ms<!-- /evidence -->\n"},

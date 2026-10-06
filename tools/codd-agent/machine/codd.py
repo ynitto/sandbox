@@ -2819,6 +2819,11 @@ def test_plan(ctx: Ctx, bodies: dict[str, str]) -> TestPlan:
             continue
         # 「未判断」は扱った（漏れではない）が、まだ変えると決めていない
         (plan.waived if waived or PENDING_MARK in item else plan.change).update(hits)
+        if not waived and PENDING_MARK not in item:
+            # 「…に移す」と書いた移し先（この回の起点に無かったパス）も変えるファイルに数える。
+            # 文中の前からあるパス（検索の例など）は数えない
+            plan.change.update(("", rel) for rel in listed_paths(ctx, item, allow_new=True)
+                               if run(["git", "cat-file", "-e", f"{ctx.own.diff_base}:{rel}"], ctx.root, GIT_TIMEOUT)[0] != 0)
     return plan
 
 
