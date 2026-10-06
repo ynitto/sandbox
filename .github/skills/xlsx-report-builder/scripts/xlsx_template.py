@@ -626,7 +626,10 @@ def summarize(definition: dict) -> str:
 # inspect（テンプレートの事実だけを、判断する側（LLM・人）が読める形で出す）
 # ---------------------------------------------------------------------------
 
-PLACEHOLDER_RE = re.compile(r"(〇〇|○○|●●|◯◯|△△|□□|＊＊|\*\*|xxx|サンプル|ダミー|仮|例[:：)）]|sample|dummy|yyyy|\bTBD\b)", re.I)
+# 「仮」は 1 文字だけでは見ない（仮払金・仮受消費税のような、帳票の見出しを仮の値と取り違えないため）
+PLACEHOLDER_RE = re.compile(r"(〇〇|○○|●●|◯◯|△△|□□|＊＊|\*\*|(?<![A-Za-z])x{2,}(?![A-Za-z])|サンプル|ダミー|記入例|"
+                            r"^仮$|[（(]仮[）)]|仮(?:の|入力|置き|名|データ)|例[:：)）]|sample|dummy|example|yyyy|"
+                            r"\b0{4}[-/]0{2}[-/]0{2}\b|\bTBD\b)", re.I)
 NOTE_RE = re.compile(r"^\s*(※|＊|\*|注[:：）)]|備考|Note)")
 
 
@@ -717,7 +720,23 @@ def _runs(rows: list[dict]) -> list[dict]:
     return out
 
 
-def format_facts(facts: dict) -> str:
+FOLD_RUN = 6   # 同じ書式の行がこれより長く続くと、テキストでは先頭 3 行と末尾 1 行だけ見せる
+
+
+def _folded_rows(sh: dict) -> dict[int, int]:
+    """畳む行 → その範囲で畳んだ行数（最初の 1 行にだけ数を付け、残りは 0）。"""
+    out: dict[int, int] = {}
+    for run in sh["same_shape_runs"]:
+        a, b = (int(x) for x in run["rows"].split("-"))
+        if b - a + 1 > FOLD_RUN:
+            # 仮の値・注記の疑いがある行は畳まない（流用のとき、持ち越しを見落とさない）
+            hidden = [r["row"] for r in sh["rows"] if a + 3 <= r["row"] < b and not any("hint" in c for c in r["cells"])]
+            for k, r in enumerate(hidden):
+                out[r] = len(hidden) if k == 0 else 0
+    return out
+
+
+def format_facts(facts: dict, fold: bool = True) -> str:
     L = ["書式の種類（S0〜: 同じ見た目は同じ番号）:"]
     L += [f"  {k} = {v}" for k, v in sorted(facts["style_legend"].items(), key=lambda kv: int(kv[0][1:]))]
     if facts.get("provenance"):
@@ -729,7 +748,12 @@ def format_facts(facts: dict) -> str:
             if sh[key]:
                 L.append(f"  {label}: {' '.join(sh[key])}")
         L.append("  行（値/数式 [書式の種類]）:")
+        folded = _folded_rows(sh) if fold else {}
         for row in sh["rows"]:
+            if row["row"] in folded:
+                if folded[row["row"]]:
+                    L.append(f"         …（同じ書式の行 {folded[row['row']]} 行を省略。--all ですべて出す）")
+                continue
             parts = []
             for c in row["cells"]:
                 body = c["formula"] if "formula" in c else repr(c["value"])
@@ -1699,7 +1723,7 @@ def cmd_inspect(args) -> int:
         json.dump(facts, sys.stdout, ensure_ascii=False, indent=2)
         print()
     else:
-        print(format_facts(facts))
+        print(format_facts(facts, fold=not args.all))
     return 0
 
 
@@ -1768,7 +1792,8 @@ def add_subcommands(sub) -> None:
     c.set_defaults(func=cmd_check)
     i = sub.add_parser("inspect", help="テンプレートの事実（値・数式・書式の種類・結合・仮値の疑い）を、判断用に出す")
     i.add_argument("template", help="テンプレート .xlsx")
-    i.add_argument("--json", action="store_true", help="JSON で出す")
+    i.add_argument("--json", action="store_true", help="JSON で出す（すべての行）")
+    i.add_argument("--all", action="store_true", help="同じ書式が長く続く行も、省略せずにすべて出す")
     i.set_defaults(func=cmd_inspect)
     r = sub.add_parser("render", help="テンプレート + 定義 + データから xlsx を再構成する")
     r.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template）")

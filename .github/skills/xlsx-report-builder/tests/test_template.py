@@ -961,5 +961,30 @@ class UsabilityGuardTests(Base):
             sheet = z.read("xl/worksheets/sheet1.xml").decode()
         self.assertEqual(re.findall(r'<c r="(C\d)"><f t="array" ref="([^"]+)"', sheet), [("C2", "C2"), ("C3", "C3"), ("C4", "C4")])
 
+    def test_placeholder_hint_skips_ledger_labels_and_catches_common_dummies(self):
+        hinted = [v for v in ("仮払金", "仮受消費税", "仮説", "XXL", "山田 太郎", "Taxi") if xt.PLACEHOLDER_RE.search(v)]
+        self.assertEqual(hinted, [])   # 帳票の見出し・実在しそうな値を、仮の値と取り違えない
+        missed = [v for v in ("（仮）", "仮の名前", "XX株式会社", "xxx-xxxx", "Example Corp", "0000-00-00", "記入例", "〇〇様")
+                  if not xt.PLACEHOLDER_RE.search(v)]
+        self.assertEqual(missed, [])
+
+    def test_inspect_text_folds_long_runs_but_keeps_hinted_rows(self):
+        def build(ws):
+            ws.append(["No", "顧客", "金額"])
+            for c in ws[1]:
+                c.font = Font(bold=True)
+            for i in range(1, 201):
+                ws.append([i, "サンプル株式会社" if i == 100 else f"顧客{i}", i * 10])
+                for c in ws[ws.max_row]:
+                    c.border = BOX
+        facts = xt.inspect_template(self.small(build))
+        text = xt.format_facts(facts)
+        self.assertIn("同じ書式の行 195 行を省略", text)   # 2-201 の 200 行のうち、先頭 3 行・末尾 1 行・印の付いた 1 行を残す
+        self.assertIn("サンプル株式会社", text)
+        self.assertIn("C201", text)
+        self.assertNotIn("顧客50'", text)
+        self.assertEqual(len(xt.format_facts(facts, fold=False).splitlines()) - len(text.splitlines()), 194)
+        self.assertEqual(len(facts["sheets"][0]["rows"]), 201)   # JSON（事実そのもの）は畳まない
+
 if __name__ == "__main__":
     unittest.main()
