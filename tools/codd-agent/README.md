@@ -285,6 +285,8 @@ python3 .statemachine/codd/codd.py rollback        # 変えた分を戻す
 実装と設計書が同じリポジトリ（例: `src/` と `docs/`）にあるときは、参照先の `path` を `.` にし、
 自分と参照先がそれぞれ受け持つフォルダを `scope` に書く。探す・根拠を認める・変わったかを測るのは、
 それぞれのフォルダの中だけになる。フォルダが重なっている・書いていないときは動かす前に止まる。
+どの `scope` にも入らないファイル（CI の設定など）に、変わる名前が出てくるときは、計画の検査が「知らせ」として挙げる
+（検査は止めない。環境変数や API の改名なら、一緒に直すかを確かめる）。
 
 ```bash
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --scope src --scope tests \

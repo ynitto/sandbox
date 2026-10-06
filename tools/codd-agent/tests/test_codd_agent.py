@@ -2079,6 +2079,20 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed refs=docs", r.stdout)
 
+    def test_names_outside_every_scope_are_reported_without_stopping(self) -> None:
+        # CI の設定などは、どの scope にも入らない。止めはしないが、改名で黙って壊れないように知らせる。
+        mono = self.make_mono(scope=["src"], ref_scopes=["docs=docs"])
+        commit(mono, {".github/workflows/ci.yml": "env:\n  hello: 1\n"}, "ci")
+        (mono / ".plans").mkdir(parents=True, exist_ok=True)
+        (mono / PLAN).write_text(PLAN_DRIFT, encoding="utf-8")
+        self.run_pa(mono, "rule", "--all")
+        self.run_pa(mono, "explore", "--term", "hello")
+        r = self.run_pa(mono, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("受け持ちのフォルダ（scope）の外にも、変わる名前が出てくるファイルがあります", r.stdout)
+        self.assertIn(".github/workflows/ci.yml", r.stdout)
+        self.assertNotIn("src/app.py", r.stdout.split("知らせ:")[1].splitlines()[0])   # scope の中のものは挙げない
+
     def test_exclude_filters_each_side_within_scope(self) -> None:
         commit(self.impl, {"src/settings.json": "hello", "src/config/local.yaml": "hello",
                            "src/nested/settings.json": "hello", "src/keep.py": "hello"}, "settings")

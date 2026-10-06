@@ -2550,6 +2550,31 @@ def pending_problem(found: list[tuple[str, str]], added: int = 0) -> list[str]:
                                for _, it in found))]
 
 
+MAX_OUTSIDE = 10
+
+
+def outside_scope_hits(ctx: Ctx, terms: list[str]) -> list[str]:
+    """受け持ちのフォルダ（scope）の外で、変わる名前が出てくるファイル（CI の設定・ほかのアプリなど）。
+
+    scope の外は検査しない約束なので止めないが、改名すると黙って壊れることがあるので知らせる。"""
+    sides = [ctx.own, *ctx.refs]
+    out: list[str] = []
+    for repo in unique_paths(str(s.path.resolve()) for s in sides if s.scope):
+        same = [s for s in sides if str(s.path.resolve()) == repo]
+        if any(not s.scope for s in same):
+            continue   # どれかがリポジトリ全体を受け持っている
+        found: set[str] = set()
+        for term in terms[:MAX_TERMS]:
+            rc, lines = run(["git", "grep", "-l", "-I", "-F", *grep_word(term), "-e", term], Path(repo), GIT_TIMEOUT)
+            if rc == 0:
+                found |= set(lines.splitlines())
+        label = "" if repo == str(ctx.root.resolve()) else next(s.name for s in same) + ":"
+        out += [label + rel for rel in sorted(found)
+                if not machine_owned(rel) and not any(in_scope(rel, s.scope) for s in same)
+                and not any(s.excluded(rel) for s in same)]
+    return out
+
+
 def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[list[str], list[str], int]:
     """計画の名前から影響を測る。（問題, 自分で測ったファイル, 参照先で測った数）
 
@@ -2568,6 +2593,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
         for p in measured:
             if not covered(p, listed):
                 pending.own(ctx, p, "変わる名前が出てくる")
+        ctx.__dict__["_outside"] = outside_scope_hits(ctx, terms)
     ref_hits: set[tuple[str, str]] = set()
     if own_terms:
         # 自分の変更で動く名前に触れている参照先のファイルを、計画が読んで扱っているか（逆向きの漏れ）。
@@ -3673,6 +3699,10 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         problems += pending_problem(left + [(h, ln) for h, lns in pending.lines.items() for ln in lns],
                                     pending.count())
         problems += measured_problems
+    outside = ctx.__dict__.get("_outside") or []
+    if outside:
+        print(f"知らせ: 受け持ちのフォルダ（scope）の外にも、変わる名前が出てくるファイルがあります（検査は止めない。"
+              f"改名なら一緒に直すかを確かめる）: {', '.join(outside[:MAX_OUTSIDE])}{' ...' if len(outside) > MAX_OUTSIDE else ''}")
     print_problems(ctx, "plan", problems)
     if problems:
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
