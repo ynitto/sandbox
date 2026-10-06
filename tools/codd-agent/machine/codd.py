@@ -324,6 +324,7 @@ class Guide:
     asks: list = field(default_factory=list)   # 申告で確かめる項目（コマンドで確かめにくいもの）
     origin: str = ""               # どこで決めたか（codd.json か、文書のパス）
     home: Path | None = None       # 決めたリポジトリ（check を動かす場所・文書を読む場所）
+    docs_in: Path | None = None    # 文書を別のリポジトリから読むとき（`参照先の名前:パス`・refs[].guides の参照先の文書）
 
     @property
     def triggered(self) -> bool:
@@ -717,16 +718,53 @@ class Ctx:
                 guides = empty_guides()   # 参照先に codd が無くても、置いた手順の文書は効く
                 fold_guides(guides, front_guides(path, DEFAULT_SKILL_DIRS))
             added = empty_guides()
-            fold_guides(added, [parse_guide(e, f"{CONFIG_NAME} の refs[{entry['name']}].guides[{i}]",
-                                            entry_home(e, path, root), CONFIG_NAME)
-                                for i, e in enumerate(entry["guides"])])
+            entry_guides = []
+            for i, e in enumerate(entry["guides"]):
+                g = parse_guide(e, f"{CONFIG_NAME} の refs[{entry['name']}].guides[{i}]", root, CONFIG_NAME)
+                if g.kind == "doc" and entry_home(e, path, root) == path:
+                    g.docs_in = path
+                entry_guides.append(g)
+            fold_guides(added, entry_guides)
+            # 呼び出し元にしか無い、いつも読む文書は、呼び出し元の決まりとして読む（参照先で探すと見つからない）
+            mine = [g.target for g in entry_guides if g.kind == "doc" and g.docs_in is None and g.target in added["rules"]]
+            added["rules"] = [s for s in added["rules"] if s not in mine]
+            self.config["rules"] = unique([*self.config["rules"], *mine])
             self.refs.append(Ref(entry["name"], path, entry["scope"], exclude=entry["exclude"],
                                  config=ref_config, label=label,
                                  entry_skills=unique([*entry["skills"], *added["skills"]["apply"]]),
                                  entry_rules=unique([*entry["rules"], *added["rules"]]),
                                  guides=guides or {}, entry_triggered=added["triggered"]))
+        self.place_ref_guides()
         self.check_layout()
         self.load_bases()
+
+    def place_ref_guides(self) -> None:
+        """`参照先の名前:パス` と書いた手順の文書を、その参照先のものとして読む（いつも読む決まりは refs[].rules に移す）。"""
+        refs = {r.name: r for r in self.refs}
+
+        def split(spec: str) -> tuple[Ref | None, str]:
+            name, sep, rest = spec.partition(":")
+            return (refs[name], rest) if sep and name in refs else (None, spec)
+
+        for g in [*self.config["triggered"], *self.config["optional"],
+                  *(g for r in self.refs for g in r.entry_triggered)]:
+            r, rest = split(g.target) if g.kind == "doc" else (None, "")
+            if r:
+                g.target, g.docs_in = rest, r.path
+        kept = []
+        for spec in self.config["rules"]:
+            r, rest = split(spec)
+            if r:
+                r.entry_rules = unique([*r.entry_rules, rest])
+            else:
+                kept.append(spec)
+        self.config["rules"] = kept
+        for owner in self.refs:
+            moved = [(split(s), s) for s in owner.entry_rules]
+            owner.entry_rules = [s for (r, _), s in moved if not r]
+            for (r, rest), _ in moved:
+                if r:
+                    r.entry_rules = unique([*r.entry_rules, rest])
 
     def load_bases(self) -> None:
         """この回の変更を測る起点（変える前の印の HEAD）。途中でコミットしても、この回の変更を取りこぼさない。"""
@@ -879,14 +917,22 @@ def used_skill_names(body: str, candidates: list[str]) -> list[str]:
     for line in body.splitlines():
         if NOT_USED_MARK in line:
             continue
-        used += [n for n in candidates if mentioned(line, n) and n not in used]
+        used += [n for n in candidates if mentioned_skill(line, n) and n not in used]
     return used
+
+
+def skill_read_at(ctx: "Ctx", log: dict, name: str) -> float:
+    """スキルを読み込んだ時刻。`名前` と `参照先の名前:名前` のどちらで読み込んでも、同じ SKILL.md なら同じに数える。"""
+    found = find_skill(ctx, name)
+    path = str(found[1]) if found else None
+    times = [v.get("time", -1.0) for k, v in log.items() if isinstance(v, dict) and (k == name or (path and v.get("path") == path))]
+    return max(times, default=-1.0)
 
 
 def unread_skills(ctx: "Ctx", names: list[str], since: float = 0.0) -> list[str]:
     """使うと書いたのに、`codd.py skill` で読み込んでいない（見つかるものだけ確かめる）スキル。"""
     log = skills_read(ctx)
-    return [n for n in names if find_skill(ctx, n) and log.get(n, {}).get("time", -1.0) < since]
+    return [n for n in names if find_skill(ctx, n) and skill_read_at(ctx, log, n) < since]
 
 
 def unread_problem(names: list[str], where: str) -> list[str]:
@@ -2232,6 +2278,11 @@ def mentioned(body: str, name: str) -> bool:
     return re.search(rf"(?<![\w:.-]){re.escape(name)}(?![\w-])", body) is not None
 
 
+def mentioned_skill(body: str, name: str) -> bool:
+    """スキル・道具の名前を挙げたか。参照先のものは `参照先の名前:名前` と書いてもよい。"""
+    return mentioned(body, name) or re.search(rf"(?<![\w:.-])[\w.-]+:{re.escape(name)}(?![\w-])", body) is not None
+
+
 def rules_problems(ctx: Ctx, body: str) -> list[str]:
     """決まりのファイルをすべて読んで挙げたか（見出し「従う手順」）。"""
     rules = ctx.rule_files()
@@ -2256,7 +2307,7 @@ def rules_problems(ctx: Ctx, body: str) -> list[str]:
 
 
 def used_problems(body: str, names: list[str], where: str) -> list[str]:
-    missing = [n for n in names if not mentioned(body, n)]
+    missing = [n for n in names if not mentioned_skill(body, n)]
     if not missing:
         return []
     return [f"{where}に、設定されたスキル・道具を使った結果がありません（使って、何を得たかを書いてください）: "
@@ -3784,7 +3835,7 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
     tools: list[str] = []
     for key, name in apply_skills(ctx, {k for k, files in touched.items() if files}):
         rels = sorted(touched.get(key, set()))
-        said = record_blocks(lines, lambda ln, n=name: mentioned(ln, n))
+        said = record_blocks(lines, lambda ln, n=name: mentioned_skill(ln, n))
         if not any(rel in ln for ln in said for rel in rels):
             found = find_skill(ctx, name)
             missing.append((key, f"`{name}`", (read_text(found[1]) or "") if found else "", rels,
@@ -4059,9 +4110,10 @@ def doc_text(repo: Path, spec: str) -> str | None:
 
 def guide_repo_key(ctx: Ctx, g: Guide, key: str) -> str:
     """手順の文書が置いてある側の名前（自分は ""）。"""
-    if g.home is None or g.home == ctx.root.resolve() or g.home == ctx.root:
+    where = g.docs_in or g.home
+    if where is None or where == ctx.root.resolve() or where == ctx.root:
         return ""
-    return next((r.name for r in ctx.refs if r.path == g.home), key)
+    return next((r.name for r in ctx.refs if r.path == where), key)
 
 
 def guide_docs(ctx: Ctx, g: Guide, key: str) -> list[tuple[str, Path, str]]:
@@ -4076,16 +4128,17 @@ def guide_docs(ctx: Ctx, g: Guide, key: str) -> list[tuple[str, Path, str]]:
 
 
 def guide_names(ctx: Ctx, g: Guide, key: str) -> list[str]:
-    """記録や計画で、その手順を指す書き方（スキル・道具は名前、文書はパス）。"""
+    """記録や計画で、その手順を指す書き方（スキル・道具は名前。参照先のものは `参照先の名前:名前` でもよい。文書はパス）。"""
     if g.kind != "doc":
-        return [g.target]
+        bare = g.target.rpartition(":")[2]
+        return unique([g.target, bare, *([f"{key}:{bare}"] if key else [])])
     return [split_anchor(sp)[0] for _, _, sp in guide_docs(ctx, g, key)]
 
 
 def names_guide(line: str, g: Guide, names: list[str]) -> bool:
     if g.kind == "doc":
         return any(n in line for n in names)
-    return any(mentioned(line, n) for n in names)
+    return any(mentioned_skill(line, n) for n in names)
 
 
 def guide_body(ctx: Ctx, g: Guide, key: str) -> str:
@@ -4146,11 +4199,14 @@ def cmd_guide(ctx: Ctx, args: argparse.Namespace) -> int:
         ref_name, sep, rel = spec.partition(":")
         key = ref_name if sep and ref_name in {r.name for r in ctx.refs} else ""
         rel = rel if key else spec
+        if not key and doc_text(ctx.root, rel) is None:
+            # 自分に無ければ、その文書がある参照先のものとして読む（参照先の名前を付け忘れても読める）
+            key = next((r.name for r in ctx.refs if doc_text(r.path, rel) is not None), "")
         repo = side_of(ctx, key).path
         if doc_text(repo, rel) is None:
             missing.append(spec)
             continue
-        load_docs(ctx, [(spec, repo, rel)])
+        load_docs(ctx, [(f"{key}:{rel}" if key else rel, repo, rel)])
     if missing:
         print(f"手順が見つかりません: {', '.join(missing)}（パス・見出し・スキルの名前を確かめてください）", file=sys.stderr)
         return 1
@@ -4179,7 +4235,7 @@ def print_apply_skills(ctx: Ctx, keys, files=()) -> None:
         return
     since = (ctx.data / "before.json").stat().st_mtime if (ctx.data / "before.json").is_file() else 0.0
     log = skills_read(ctx)
-    fresh = [n for n in names if log.get(n, {}).get("time", -1.0) < since and find_skill(ctx, n)]
+    fresh = [n for n in names if skill_read_at(ctx, log, n) < since and find_skill(ctx, n)]
     fresh_docs = [d for d in docs if d[0] in unread_docs(ctx, [d], since)]
     print("\n## 変えるときに従う手順\n")
     print("次の手順に従って変えてください。変えたら、手順ごとに .codd/apply.md へ "

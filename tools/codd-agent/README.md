@@ -593,7 +593,7 @@ python3 .statemachine/codd/codd.py show --phase apply
 
 | 項目 | 値 |
 |---|---|
-| `use` | `パス.md`（`#見出し` を付けるとその節だけ。glob も書ける）・`skill:名前`・`tool:名前` |
+| `use` | `パス.md`（`#見出し` を付けるとその節だけ。glob も書ける）・`skill:名前`・`tool:名前`。参照先のものは `参照先の名前:パス.md`・`skill:参照先の名前:名前` |
 | `when.phase` | `plan`（計画を練るとき）か `apply`（変えるとき）。書かなければ両方 |
 | `when.files` | 作る・変えるファイルの glob（書き方は `exclude` と同じ）。当たるファイルを作る・変えるときだけ効く |
 | `when.change` | `create` / `update` / `delete` / `rename` の配列。そのファイルの変え方 |
@@ -623,7 +623,8 @@ python3 .statemachine/codd/codd.py show --phase apply
 **どのリポジトリの手順が効くか。** 自分のファイルには自分の `codd.json`、参照先のファイルには参照先に置いた `codd.json` の
 `guides` が効く。手順を持つリポジトリに 1 回書けば、どのリポジトリの codd から変えても同じ手順に従う。呼び出し元は
 `refs[].guides` で足せるが、参照先が決めた手順は外せない。`refs[].guides` の文書は、参照先にあれば参照先から、
-無ければ呼び出し元から読む。
+無ければ呼び出し元から読む。`check` は手順を書いた `codd.json` のリポジトリで動く。計画や `.codd/apply.md` では、
+参照先のスキルを `名前` とも `参照先の名前:名前` とも書ける。
 
 **置くだけで効く手順。** `.agents/guides/*.md` の文書と `.agents/skills/*/SKILL.md` のスキルは、先頭に `codd:` を書くと
 `codd.json` に書かなくても効く（参照先に codd を置いていなくても、参照先に置いた文書は効く）。

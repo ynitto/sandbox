@@ -2479,12 +2479,17 @@ class CoddTest(unittest.TestCase):
     def test_a_caller_guide_for_a_ref_is_read_where_the_document_is(self) -> None:
         # refs[].guides の文書は、参照先にあれば参照先から読む（refs[].rules と同じ）。
         commit(self.design, {"docs/style.md": "# 書き方\n\n表で書く。\n"}, "guide")
+        commit(self.impl, {"docs/mine.md": "# 呼び出し元の約束\n"}, "rule")
+        self.set_config(self.impl, refs=[{"name": "design", "path": "../design", "guides": [{"use": "docs/mine.md"}]}])
+        r = self.run_pa(self.impl, "show")   # 呼び出し元にしか無い文書は、呼び出し元の決まりとして読む
+        self.assertIn("  - docs/mine.md\n", r.stdout)
+        self.assertNotIn("当たるファイルがありません", r.stdout)
         self.set_config(self.impl, refs=[{"name": "design", "path": "../design",
                                           "guides": [{"use": "docs/style.md", "when": {"files": ["docs/*.md"]}}]}])
         self.assertNotIn("読めません", self.run_pa(self.impl, "show").stdout)
         self.write_plan(self.use_guides(PLAN_DRIFT, "- design:docs/style.md — 表で書く"))
         self.assertIn("design:docs/style.md", self.run_pa(self.impl, "verify-plan").stderr)   # 読み込ませる
-        r = self.run_pa(self.impl, "guide", "design:docs/style.md")
+        r = self.run_pa(self.impl, "guide", "docs/style.md")   # 参照先の名前を付け忘れても、ある側から読む
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assert_plan_ok()
 
@@ -2513,6 +2518,47 @@ class CoddTest(unittest.TestCase):
             "- docs/move.md — 名前を変えた:\n  - src/old.py → src/new.py\n"
             "  - [x] 呼び出し元を直した — src/old.py を指すところは無い\n\n"
             "## 計画との違い\n\n- src/new.py — 追加: 名前を変えた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_guides_can_point_into_a_ref_by_its_name(self) -> None:
+        # `参照先の名前:パス`・`skill:参照先の名前:名前` で、ほかのリポジトリの文書・スキルを手順にできる。
+        commit(self.design, {"docs/style.md": "# 書き方\n\n表で書く。\n",
+                             ".agents/skills/api-doc/SKILL.md":
+                             "---\nname: api-doc\ndescription: API の書き方\n---\n\n戻り値を表で書く。\n"}, "guide")
+        self.set_config(self.impl, guides=[{"use": "design:docs/style.md"}])
+        r = self.run_pa(self.impl, "show")    # いつも読む決まりも、参照先の名前で指せる
+        self.assertIn("  - design:docs/style.md\n", r.stdout)
+        self.assertNotIn("当たるファイルがありません", r.stdout)
+        self.set_config(self.impl, guides=[{"use": "design:docs/style.md", "when": {"files": ["src/*.py"]}},
+                                           {"use": "skill:design:api-doc", "when": {"files": ["src/*.py"]}}])
+        self.assertNotIn("読めません", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(self.use_guides(PLAN_ALIGNED, "- design:docs/style.md — 表で書く", "- `design:api-doc` — 表で書く"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("読み込んでいません", r.stderr)
+        self.assertEqual(self.run_pa(self.impl, "guide", "design:docs/style.md", "design:api-doc").returncode, 0)
+        self.assert_plan_ok()
+        self.assertIn("表で書く。", self.run_pa(self.impl, "batch").stdout)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text(
+            "- design:docs/style.md — src/app.py: 表で書いた\n- `design:api-doc` — src/app.py: 表で書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_ref_skill_may_be_named_with_or_without_the_ref(self) -> None:
+        # 参照先のスキルの手順は、`api-doc` とも `design:api-doc` とも書ける。どちらで読み込んでも読み込んだと数える。
+        commit(self.design, {".agents/skills/api-doc/SKILL.md":
+                             "---\nname: api-doc\ndescription: API の書き方\n---\n\n戻り値を表で書く。\n"}, "skill")
+        self.set_config(self.design, guides=[{"use": "skill:api-doc", "when": {"files": ["docs/**/*.md"]}}])
+        self.write_plan(self.use_guides(PLAN_DRIFT, "- `design:api-doc` — 戻り値を表で書く"))
+        self.assertEqual(self.run_pa(self.impl, "guide", "design:api-doc").returncode, 0)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "skill", "design:api-doc")   # 変える段で読み込む（名前の書き方は問わない）
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("- `design:api-doc` — design:docs/api.md: 戻り値を書いた\n",
+                                                  encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
 
