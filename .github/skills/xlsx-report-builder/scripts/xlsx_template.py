@@ -485,6 +485,9 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
                     if cell and cell["formula"] and not _only_inside(cell["formula"], t, c):
                         confirm.append(f"{cell['ref']} の数式が表の外の行を相対参照している。固定するなら $ を付ける")
                         break
+            elif len(samples) == len(t["body"]) and [s["value"] for s in samples] == list(range(1, len(samples) + 1)):
+                spec["key"] = "$index"  # サンプルが 1, 2, 3 … の連番なら、連番の列
+                spec["_sample"] = 1
             else:
                 spec["key"] = _unique_key(spec["header"], letter, cols_def)
                 spec["_sample"] = next((s["value"] for s in samples if s["value"] is not None), None)
@@ -768,9 +771,14 @@ def _excel_serial(value: str) -> float | None:
     return None
 
 
-def set_value(c, value: Any, styles: Styles) -> None:
+ILLEGAL_XML_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+MAX_CELL_TEXT = 32767  # Excel の 1 セルの文字数の上限
+
+
+def set_value(c, value: Any, styles: Styles, replace_formula: bool = False) -> None:
+    """セルの値を置き換える。replace_formula なら、数式もデータの値で置き換える（流し込む欄）。"""
     for child in list(c):
-        if child.tag != q("f"):
+        if child.tag != q("f") or replace_formula:
             c.remove(child)
     c.attrib.pop("t", None)
     if value is None:
@@ -779,9 +787,15 @@ def set_value(c, value: Any, styles: Styles) -> None:
         c.set("t", "b")
         etree.SubElement(c, q("v")).text = "1" if value else "0"
     elif isinstance(value, (int, float)):
+        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+            raise TemplateError(f"{c.get('r')} に入れる数値 {value!r} は Excel に保存できません")
         etree.SubElement(c, q("v")).text = repr(value)
     else:
         text = str(value)
+        if ILLEGAL_XML_RE.search(text):
+            raise TemplateError(f"{c.get('r')} に入れる文字列に、Excel に保存できない制御文字があります: {text[:40]!r}")
+        if len(text) > MAX_CELL_TEXT:
+            raise TemplateError(f"{c.get('r')} に入れる文字列が {len(text)} 文字あり、Excel の上限 {MAX_CELL_TEXT} 文字を超えています")
         serial = _excel_serial(text) if styles.is_date(c.get("s")) else None
         if serial is not None:
             etree.SubElement(c, q("v")).text = repr(serial)
@@ -857,6 +871,7 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
             for p in pattern:
                 if not first <= p <= first + count - block:
                     raise TemplateError(f"pattern の行 {p} がサンプル行 {first}-{first + count - block}（ブロックの先頭になれる範囲）の外です")
+            warnings += _missing_key_warnings(t, block, rows, name)
             tbls.append({"def": t, "first": first, "count": count, "end": first + count - 1, "block": block,
                          "n": max(len(rows), 1) * block, "rows": rows, "pattern": pattern})
         for spec in sd.get("drop_rows") or []:  # 無視する行: 出力から取り除く
@@ -898,6 +913,24 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
                 "残すなら keep、置き換えるなら cells / columns の key、空にするなら clear、行ごと消すなら drop_rows に入れてください")
     pkg.save(output)
     return warnings
+
+
+def _missing_key_warnings(t: dict, block: int, rows: list, sheet: str) -> list[str]:
+    """列の key が、データのどの行にも無い（綴りの違い）と、その列は黙って空欄になる。それを知らせる。"""
+    records = [r for r in rows if isinstance(r, dict)]
+    if not records:
+        return []
+    wanted = [spec["key"] for cols in _column_maps(t, block) for spec in cols.values()
+              if spec.get("key") and spec["key"] != "$index" and not spec.get("formula")
+              and not spec.get("keep") and not spec.get("clear")]
+    present = {k for r in records for k in r}
+    missing = [k for k in dict.fromkeys(wanted) if k not in present]
+    if not missing:
+        return []
+    unused = [k for k in dict.fromkeys(k for r in records for k in r) if k not in wanted]
+    return [f"シート「{sheet}」表 {t.get('id')}: 列の key {', '.join(map(repr, missing))} が、"
+            f"データ {t['key']!r} のどの行にも無いため空欄になります"
+            + (f"（データにあって使われていないキー: {', '.join(map(repr, unused))}）" if unused else "")]
 
 
 def _has_literal(c) -> bool:
@@ -956,7 +989,7 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
                         set_value(c, None, styles)
         for (col, rr), value in fixed_cells.items():
             if rr == r:
-                set_value(_get_or_make_cell(row, col, new_r), value, styles)
+                set_value(_get_or_make_cell(row, col, new_r), value, styles, replace_formula=True)
         for c in row:
             pos = (cell_col(c), r)
             if _has_literal(c) and pos not in keep_set and pos not in fixed_cells:
@@ -1047,7 +1080,7 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                     raise TemplateError(f"{td['key']!r} の要素はオブジェクトである必要があります")
                 if isinstance(value, (dict, list)):
                     raise TemplateError(f"{td['key']}[{rec}].{key} に配列・オブジェクトは入れられません")
-                set_value(c, value, styles)
+                set_value(c, value, styles, replace_formula=True)
             for c in row:
                 if cell_col(c) not in colmaps[j] and _has_literal(c):
                     leftovers.add(f"{get_column_letter(cell_col(c))}{src_r}")
@@ -1580,6 +1613,9 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
     except TemplateError as e:
         print(f"エラー: {e}", file=sys.stderr)
         return 1
+    except FileNotFoundError as e:
+        print(f"エラー: ファイルが見つかりません: {e.filename}", file=sys.stderr)
+        return 1
 
 
 # ---------------------------------------------------------------------------
@@ -1589,6 +1625,9 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
 def cmd_analyze(args) -> int:
     definition = analyze(args.template)
     out = args.output or re.sub(r"\.xlsx?$", "", args.template, flags=re.I) + ".def.json"
+    # template は、定義ファイルのある場所からの相対パスで書く（render・check・export がそこから読む）
+    definition["template"] = os.path.relpath(os.path.abspath(args.template),
+                                             os.path.dirname(os.path.abspath(out))).replace(os.sep, "/")
     dump_structured(definition, out)
     print(summarize(definition))
     print(f"\n定義ファイルの下書きを書きました: {out}")
@@ -1615,9 +1654,18 @@ def cmd_inspect(args) -> int:
 
 
 def _template_arg(args, definition) -> str:
-    template = args.template or definition.get("template")
+    """--template はそのまま、定義の template は定義ファイルのある場所からの相対パスとして読む。"""
+    if args.template:
+        return args.template
+    template = definition.get("template")
     if not template:
         raise TemplateError("--template か定義ファイルの template が必要です")
+    def_path = getattr(args, "definition", None)
+    if os.path.isabs(template) or not def_path or def_path == "-":
+        return template
+    beside = os.path.join(os.path.dirname(os.path.abspath(def_path)), template)
+    if os.path.exists(beside) or not os.path.exists(template):  # 以前の、作業場所からの相対パスも読めるように残す
+        return beside
     return template
 
 
@@ -1695,6 +1743,9 @@ def main() -> int:
         return args.func(args)
     except TemplateError as e:
         print(f"エラー: {e}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as e:
+        print(f"エラー: ファイルが見つかりません: {e.filename}", file=sys.stderr)
         return 1
 
 

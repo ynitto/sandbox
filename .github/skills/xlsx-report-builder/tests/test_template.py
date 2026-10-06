@@ -844,5 +844,68 @@ class ReusedDeliverableTests(Base):
             return [z.read(n).decode() for n in z.namelist() if n.startswith("xl/worksheets/sheet")]
 
 
+class UsabilityGuardTests(Base):
+    """使う側の取り違え（綴り・置き場所・値の種類）を、黙って通さない。"""
+
+    def cli(self, *args, cwd=None):
+        entry = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py"))
+        return subprocess.run([sys.executable, entry, *args], capture_output=True, text=True, cwd=cwd)
+
+    def test_template_is_read_beside_the_definition_from_any_working_directory(self):
+        defn = os.path.join(self.dir, "def.json")
+        self.assertEqual(self.cli("analyze", self.tpl, "-o", defn).returncode, 0)
+        with open(defn, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["template"], "t.xlsx")
+        with open(defn, "w", encoding="utf-8") as f:
+            json.dump(DEF, f, ensure_ascii=False)  # template: "t.xlsx"（定義の隣）
+        data = os.path.join(self.dir, "data.json")
+        with open(data, "w", encoding="utf-8") as f:
+            json.dump(DATA, f, ensure_ascii=False)
+        elsewhere = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        r = self.cli("render", "--def", defn, "--data", data, "-o", os.path.join(self.dir, "o.xlsx"), cwd=elsewhere)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.cli("check", "--def", defn, cwd=elsewhere).returncode, 0)
+
+    def test_missing_file_is_a_message_not_a_traceback(self):
+        r = self.cli("render", "--def", os.path.join(self.dir, "none.json"), "--data", "x", "-o", "y.xlsx")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("見つかりません", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_keys_absent_from_every_row_are_warned(self):
+        data = dict(DATA, items=[{"品名": "a", "qty": 1, "price": 2}])
+        self.render(data)
+        msg = [w for w in self.warnings if "どの行にも無い" in w]
+        self.assertEqual(len(msg), 1)
+        self.assertIn("'name'", msg[0])
+        self.assertIn("'品名'", msg[0])  # データ側の使われていないキーも示す
+        self.render()
+        self.assertFalse([w for w in self.warnings if "どの行にも無い" in w])
+
+    def test_data_replaces_a_formula_when_the_column_or_cell_is_filled(self):
+        d = json.loads(json.dumps(DEF))
+        d["sheets"][0]["tables"][0]["columns"]["E"] = {"key": "amount"}
+        d["sheets"][0]["cells"]["E12"] = "billed"  # 請求額（数式）を、データの値で置き換える
+        data = dict(DATA, billed=12345, items=[dict(i, amount=7) for i in DATA["items"]])
+        ws = load_workbook(self.render(data, d))["請求書"]
+        self.assertEqual([ws[f"E{r}"].value for r in range(8, 13)], [7] * 5)
+        self.assertEqual(ws["E15"].value, 12345)
+        self.assertEqual(ws["E13"].value, "=SUM(E8:E12)")  # 置き換えない数式はそのまま
+
+    def test_values_excel_cannot_store_are_rejected_with_the_cell(self):
+        for bad, word in (("a\x0bb", "制御文字"), (float("nan"), "保存できません"), ("x" * 40000, "上限")):
+            data = dict(DATA, items=[{"name": bad, "qty": 1, "price": 1}])
+            with self.assertRaises(xt.TemplateError) as cm:
+                self.render(data)
+            self.assertIn("B8", str(cm.exception))
+            self.assertIn(word, str(cm.exception))
+
+    def test_running_number_column_is_drafted_as_index(self):
+        cols = xt.analyze(self.tpl)["sheets"][0]["tables"][0]["columns"]
+        self.assertEqual(cols["A"]["key"], "$index")
+        self.assertEqual(cols["C"]["key"], "数量")  # 1, 1 は連番ではない
+
+
 if __name__ == "__main__":
     unittest.main()

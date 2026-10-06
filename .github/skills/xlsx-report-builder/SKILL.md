@@ -2,7 +2,7 @@
 name: xlsx-report-builder
 description: JSON スペックから Excel (.xlsx) 帳票・レポートを新規生成するスキル。既存の .xlsx テンプレートに、罫線・フォント・セル色などの書式を保ったままデータを流し込む（行数が可変の表・数式の複製・合計行のずれに対応）こともできる。「Excelを作って」「エクセルで帳票を作って」「xlsxを生成して」「集計表を作って」「売上レポートをExcelで」「スプレッドシートを出力して」「データをExcelにまとめて」「Excelのテンプレートにデータを流し込んで」「テンプレートの書式を保ったままxlsxを作って」などのリクエストで発動する。複数シート・見出し装飾・数値書式・合計行・条件付き書式・グラフ・フリーズペイン・オートフィルタに対応する。
 metadata:
-  version: 1.1.0
+  version: 1.1.1
   tier: experimental
   category: document
   tags:
@@ -170,7 +170,7 @@ uv run python scripts/xlsx_builder.py analyze path/to/template.xlsx -o def.yaml 
 ### T3: 定義を検査する
 
 ```bash
-uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレートは定義の template から読む。--template で上書き
+uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレートは定義の template（定義ファイルからの相対パス）から読む。--template で上書き
 ```
 
 テンプレートと定義の整合（シート名・行・pattern・列）を確かめ、雛形データで試しに再構成する。`strict: true` なら、決め忘れた値の残りもここで見つかる。来歴の警告も出る。問題があれば、定義を直して、もう一度検査する。
@@ -183,7 +183,7 @@ uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレー�
 uv run python scripts/xlsx_builder.py render --def def.yaml --data data.yaml -o out.xlsx
 ```
 
-テンプレートは定義の `template` から読む。別のパスなら `--template` で上書きする。定義ファイルとデータは、JSON でも YAML（`.yaml` / `.yml`）でもよい。`analyze -o def.yaml` のように、出力の拡張子で形式を選べる。
+テンプレートは定義の `template`（定義ファイルのある場所からの相対パス。`analyze` がそう書く）から読む。別のパスなら `--template` で上書きする。列の key がデータのどの行にも無いと、その列は空欄になり、警告が出る（綴りの違いを疑う）。定義ファイルとデータは、JSON でも YAML（`.yaml` / `.yml`）でもよい。`analyze -o def.yaml` のように、出力の拡張子で形式を選べる。
 
 ### T5: この文書専用の単体スクリプトにする（任意）
 

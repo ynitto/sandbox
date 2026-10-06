@@ -220,6 +220,9 @@ def main() -> int:
         except xlsx_template.TemplateError as e:
             print(f"エラー: {e}", file=sys.stderr)
             return 1
+        except FileNotFoundError as e:
+            print(f"エラー: ファイルが見つかりません: {e.filename}", file=sys.stderr)
+            return 1
 
     if args.command == "example":
         json.dump(EXAMPLE_SPEC, sys.stdout, ensure_ascii=False, indent=2)
