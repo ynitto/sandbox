@@ -1204,8 +1204,7 @@ class CoddTest(unittest.TestCase):
         init.init_repo(self.impl, None, None)
         self.assertFalse(stale.exists())
         cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg, {"side": "impl", "refs": [{"path": "../design"}],
-                               "skills": {"plan": [], "apply": []}, "graphify": "auto"})
+        self.assertEqual(cfg, {"side": "impl", "refs": [{"path": "../design"}], "guides": [], "graphify": "auto"})
         # 既にある codd.json は、手で書いた形のまま残す（並べ直し・書き足しもしない）。
         path = self.impl / ".statemachine/codd/codd.json"
         hand = ('{"side": "impl", "refs": [{"name": "design", "path": "../design", "rules": ["docs/r.md"],'
@@ -1531,11 +1530,11 @@ class CoddTest(unittest.TestCase):
         # 参照先を変えるときは、参照先に置いた codd.json の skills.apply。
         self.assertIn("  - design を変えるとき: `doc-writer` スキル", r.stdout)
 
-        # codd.json の refs に skills を書けば、そちらが勝つ（参照先に codd が無いときにも使える）。
+        # codd.json の refs に skills を書けば、参照先の手順に足す（参照先が決めた手順は外せない）。
         cfg["refs"] = [{"name": "design", "path": "../design", "skills": ["spec-editor"]}]
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         r = self.run_pa(self.impl, "show", "--phase", "apply")
-        self.assertIn("  - design を変えるとき: `spec-editor` スキル", r.stdout)
+        self.assertIn("  - design を変えるとき: `doc-writer` スキル、`spec-editor` スキル", r.stdout)
         self.assertNotIn("計画を練るとき", r.stdout)
 
     def test_bad_skills_config_is_reported(self) -> None:
@@ -1645,10 +1644,14 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("OK "), r.stdout)
 
-    def test_workflow_returns_to_apply_for_the_next_batch(self) -> None:
+    def test_workflow_goes_to_the_short_step_for_the_next_batch(self) -> None:
+        # 2 段目からは短い指示（apply_more）で変え、段ごとに読み直す量を抑える。
         text = (TOOL / "machine/workflow.yaml").read_text(encoding="utf-8")
-        self.assertIn('{from: apply, to: apply, condition_rule: "equals:check_ok:true;startswith:check_output:MORE", '
-                      'priority: 1}', text)
+        more = 'condition_rule: "equals:check_ok:true;startswith:check_output:MORE", priority: 1}'
+        self.assertIn("{from: apply, to: apply_more, " + more, text)
+        self.assertIn("{from: apply_more, to: apply_more, " + more, text)
+        short = (TOOL / "machine/actions/apply-more.md").read_text(encoding="utf-8")
+        self.assertLess(len(short), len((TOOL / "machine/actions/apply.md").read_text(encoding="utf-8")) / 3)
 
     def test_verify_apply_rejects_files_outside_the_plan(self) -> None:
         self.write_plan(PLAN_DRIFT)
@@ -2177,7 +2180,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("守る決まりに、決まりのファイルを読んで挙げてください", r.stderr)
+        self.assertIn("従う手順に、決まりのファイルを読んで挙げてください", r.stderr)
         # 自分にも同じ名前があるので、参照先の決まりは名前付きで挙げる。
         self.write_plan(PLAN_ALIGNED.replace("## 守る決まり\n\nなし",
                                              "## 守る決まり\n\n- CLAUDE.md — テストを通す\n- docs/style.md — 敬体"))
@@ -2296,7 +2299,7 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         r = self.run_pa(self.impl, "batch")   # 変える前に手順が目に入り、読み込んだと控える
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("## 変えるときに使うスキル", r.stdout)
+        self.assertIn("## 変えるときに従う手順", r.stdout)
         self.assertIn("先にテストを書く。", r.stdout)
         r = self.run_pa(self.impl, "batch")   # 同じ回で読み込み済みなら、名前だけ
         self.assertIn("この回で読み込み済み（その手順に従う）: `tdd-lite`", r.stdout)
@@ -2305,6 +2308,268 @@ class CoddTest(unittest.TestCase):
         (self.impl / ".codd/apply.md").write_text("- `tdd-lite` — src/app.py: テストを先に書いた\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def use_guides(self, plan: str, *lines: str) -> str:
+        return plan.replace("## 使ったスキルと道具\n\nなし", "## 使ったスキルと道具\n\n" + "\n".join(lines))
+
+    def test_guides_run_when_a_matching_file_is_changed(self) -> None:
+        # 特定のファイルを作る・変えるときの手順。計画に挙がった時点で読み込ませ、変えたら当たったファイルごとに記録させる。
+        commit(self.impl, {".agents/skills/py-style/SKILL.md":
+                           "---\nname: py-style\ndescription: Python の書き方\n---\n\n型ヒントを付ける。\n"}, "skill")
+        self.set_config(self.impl, guides=[{"use": "skill:py-style", "when": {"files": ["src/**/*.py"]}},
+                                           {"use": "skill:unused", "when": {"files": ["docs/"]}}])
+        self.assertIn("  - src/**/*.py → `py-style`（codd.json）", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ファイルに決められた手順", r.stderr)
+        self.assertIn("`py-style`（src/app.py）", r.stderr)
+        self.assertNotIn("unused", r.stderr)   # 当たらない glob は求めない
+        self.write_plan(self.use_guides(PLAN_ALIGNED, "- `py-style` — 型ヒントを付けると決めた"))
+        r = self.run_pa(self.impl, "verify-plan")   # 挙げるだけでは通さない。読み込ませる
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("スキルを読み込んでいません", r.stderr)
+        self.run_pa(self.impl, "guide", "skill:py-style")
+        self.assert_plan_ok()
+
+        r = self.run_pa(self.impl, "batch")
+        self.assertIn("`py-style` の手順で変えるファイル", r.stdout)
+        self.assertIn("src/app.py", r.stdout)
+        (self.impl / "src/app.py").write_text("def hello() -> int:\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("X: int = 1\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text(
+            "- `py-style` — src/app.py: 型ヒントを付けた\n\n## 計画との違い\n\n- src/extra.py — 追加: 定数を分けた\n",
+            encoding="utf-8")
+        self.run_pa(self.impl, "accept")
+        r = self.run_pa(self.impl, "verify-apply")   # 計画に無く足したファイルにも、手順を効かせる
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("`py-style`", r.stderr)
+        self.assertIn("src/extra.py", (self.impl / ".codd/skill-review.md").read_text(encoding="utf-8"))
+        (self.impl / ".codd/apply.md").write_text(
+            "- `py-style` — src/app.py, src/extra.py: 型ヒントを付けた\n\n## 計画との違い\n\n"
+            "- src/extra.py — 追加: 定数を分けた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_guides_of_a_ref_apply_whichever_repo_calls(self) -> None:
+        # 参照先のファイルの手順は、参照先に置いた codd.json で決める。どのリポジトリから変えても同じ手順が効く。
+        commit(self.design, {".agents/skills/api-doc/SKILL.md":
+                             "---\nname: api-doc\ndescription: API の書き方\n---\n\n戻り値を表で書く。\n"}, "skill")
+        self.set_config(self.design, guides=[{"use": "skill:api-doc", "when": {"files": ["docs/**/*.md"]}}])
+        self.assertIn("  - design:docs/**/*.md → `api-doc`", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(PLAN_DRIFT)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("`api-doc`（docs/api.md）", r.stderr)   # 参照先が 1 つなら名前は省く
+        r = self.run_pa(self.impl, "guide", "api-doc")   # 参照先に置いたスキルも名前で読める
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("戻り値を表で書く。", r.stdout)
+        self.write_plan(self.use_guides(PLAN_DRIFT, "- `api-doc` — 戻り値を表で書く"), read=False)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("`api-doc`", r.stderr)
+        (self.impl / ".codd/apply.md").write_text("- `api-doc` — design:docs/api.md: 戻り値を書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_guide_document_placed_with_front_matter_needs_answers_and_its_check(self) -> None:
+        # 先頭に `codd:` を書いた手順の文書は、置くだけで効く。見出しで節だけを読ませ、確かめることに 1 項目ずつ答えさせ、
+        # 手順の確かめるコマンドも動かす。
+        commit(self.impl, {
+            ".agents/guides/py.md": "---\ncodd:\n  files: [\"src/*.py\"]\n  change: [update]\n"
+                                    "  check: [\"python3\", \"-c\", \"import sys; sys.exit('# log' not in open('src/app.py').read())\"]\n"
+                                    "---\n\n# Python の手順\n\n## 確かめること\n\n- [ ] 戻り値を変えていない\n",
+            "docs/notes.md": "# 書き方\n\n## 節\n\n節の中身\n\n## 別\n\n別の中身\n"}, "guide")
+        self.set_config(self.impl, guides=[{"use": "docs/notes.md#節", "when": {"files": ["src/new_*.py"], "change": ["create"]},
+                                            "asks": ["名前を書いた"]}])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("src/*.py update → .agents/guides/py.md", r.stdout)
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(".agents/guides/py.md（src/app.py）", r.stderr)
+        self.assertNotIn("docs/notes.md", r.stderr)    # 作るファイルだけに効く手順は、変えるファイルには効かない
+        self.write_plan(self.use_guides(PLAN_ALIGNED, "- .agents/guides/py.md — 戻り値を変えない"))
+        self.assertIn("手順の文書を読み込んでいません", self.run_pa(self.impl, "verify-plan").stderr)
+        r = self.run_pa(self.impl, "guide", "docs/notes.md#節")
+        self.assertIn("節の中身", r.stdout)
+        self.assertNotIn("別の中身", r.stdout)          # 見出しで指した節だけ
+        self.assertEqual(self.run_pa(self.impl, "guide", "docs/notes.md#無い").returncode, 1)
+        self.run_pa(self.impl, "guide", ".agents/guides/py.md")
+        self.assert_plan_ok()
+        self.assertIn("- [ ] 戻り値を変えていない", self.run_pa(self.impl, "batch").stdout)
+
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # note\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("- .agents/guides/py.md — src/app.py: 書き直した\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("手順の確かめることに答えていません", r.stderr)
+        (self.impl / ".codd/apply.md").write_text(
+            "- .agents/guides/py.md — src/app.py: 書き直した\n  - [x] 戻り値を変えていない — src/nothing.py\n",
+            encoding="utf-8")
+        self.assertIn("どの側にもありません", self.run_pa(self.impl, "verify-apply").stderr)
+        (self.impl / ".codd/apply.md").write_text(
+            "- .agents/guides/py.md — src/app.py: 書き直した\n  - [x] 戻り値を変えていない — src/app.py\n",
+            encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")      # 申告が通っても、手順の確かめるコマンドで止める
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("手順 .agents/guides/py.md の検査が失敗しました", r.stderr)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_batches_are_split_by_the_guides_that_apply(self) -> None:
+        # 効く手順の組ごとに段を分ける。手順の無いファイルは手順のある段の空きに詰める。
+        files = {f"src/m{i}.sql": "--\n" for i in range(3)}
+        files.update({f"src/p{i}.py": "x = 1\n" for i in range(3)})
+        commit(self.impl, files, "files")
+        self.set_config(self.impl, batch_files=4, guides=[{"use": "tool:sqlfmt", "when": {"files": ["**/*.sql"]}}])
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                    "\n".join(f"- {p} — `hello` の中でログを出す" for p in ["src/app.py", *sorted(files)]))
+        self.write_plan(self.use_guides(plan, "- `sqlfmt` — 整える"))
+        self.assert_plan_ok()
+        batches = json.loads((self.impl / ".codd/batches.json").read_text(encoding="utf-8"))["batches"]
+        self.assertEqual([[rel for _, rel in b] for b in batches],
+                         [["src/m0.sql", "src/m1.sql", "src/m2.sql", "src/app.py"], ["src/p0.py", "src/p1.py", "src/p2.py"]])
+        self.assertIn("`sqlfmt` の手順の段", self.run_pa(self.impl, "batch").stdout)
+
+    def test_an_old_plan_with_two_headings_is_read_as_one(self) -> None:
+        commit(self.impl, {"CLAUDE.md": "# 約束\n"}, "rules")
+        self.write_plan(PLAN_ALIGNED.replace("## 守る決まり\n\nなし", "## 守る決まり\n\n- CLAUDE.md — 短く書く"))
+        self.assert_plan_ok()
+        text = (self.impl / PLAN).read_text(encoding="utf-8")
+        self.assertIn("## 従う手順\n\n- CLAUDE.md — 短く書く", text)
+        self.assertNotIn("## 使ったスキルと道具", text)
+
+    def test_a_caller_can_add_guides_to_a_ref_and_optional_guides_are_not_forced(self) -> None:
+        commit(self.impl, {"docs/how-to-write-api.md": "# API の書き方\n\n- [ ] 例を 1 つ書いた\n"}, "guide")
+        self.set_config(self.impl, guides=[{"use": "skill:lint-helper", "when": {"terms": ["lint"]}},
+                                           {"use": "tool:gh", "must": False}],
+                        refs=[{"name": "design", "path": "../design",
+                               "guides": [{"use": "docs/how-to-write-api.md", "when": {"files": ["docs/*.md"]}}]}])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("  - design:docs/*.md → docs/how-to-write-api.md", r.stdout)
+        self.assertIn("関係すれば使う手順", r.stdout)
+        self.assertIn("（語: lint）", r.stdout)
+        self.write_plan(PLAN_DRIFT)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("docs/how-to-write-api.md（docs/api.md）", r.stderr)   # 呼び出し元が足した手順も効く
+        self.assertNotIn("lint-helper", r.stderr)                            # 強制しない手順は求めない
+        self.assertNotIn("`gh`", r.stderr)
+        self.run_pa(self.impl, "guide", "docs/how-to-write-api.md")
+        self.write_plan(self.use_guides(PLAN_DRIFT, "- docs/how-to-write-api.md — 例を足す"), read=False)
+        self.assert_plan_ok()
+        self.assertIn("- [ ] 例を 1 つ書いた", self.run_pa(self.impl, "batch").stdout)
+
+    def test_guides_that_cannot_be_read_are_not_demanded(self) -> None:
+        # 無い文書・無い見出し・何にも当たらない glob の手順は、読み込めずエージェントには直せない。求めずに show で知らせる。
+        commit(self.impl, {"docs/notes.md": "# 書き方\n"}, "guide")
+        self.set_config(self.impl, guides=[{"use": "docs/missing.md", "when": {"files": ["src/*.py"]}},
+                                           {"use": "docs/notes.md#無い", "when": {"files": ["src/*.py"]}},
+                                           {"use": "docs/rules/*.md", "when": {"files": ["src/*.py"]}}])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("docs/missing.md が読めません", r.stdout)
+        self.assertIn("docs/notes.md#無い が読めません", r.stdout)
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+
+    def test_a_caller_guide_for_a_ref_is_read_where_the_document_is(self) -> None:
+        # refs[].guides の文書は、参照先にあれば参照先から読む（refs[].rules と同じ）。
+        commit(self.design, {"docs/style.md": "# 書き方\n\n表で書く。\n"}, "guide")
+        commit(self.impl, {"docs/mine.md": "# 呼び出し元の約束\n"}, "rule")
+        self.set_config(self.impl, refs=[{"name": "design", "path": "../design", "guides": [{"use": "docs/mine.md"}]}])
+        r = self.run_pa(self.impl, "show")   # 呼び出し元にしか無い文書は、呼び出し元の決まりとして読む
+        self.assertIn("  - docs/mine.md\n", r.stdout)
+        self.assertNotIn("当たるファイルがありません", r.stdout)
+        self.set_config(self.impl, refs=[{"name": "design", "path": "../design",
+                                          "guides": [{"use": "docs/style.md", "when": {"files": ["docs/*.md"]}}]}])
+        self.assertNotIn("読めません", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(self.use_guides(PLAN_DRIFT, "- design:docs/style.md — 表で書く"))
+        self.assertIn("design:docs/style.md", self.run_pa(self.impl, "verify-plan").stderr)   # 読み込ませる
+        r = self.run_pa(self.impl, "guide", "docs/style.md")   # 参照先の名前を付け忘れても、ある側から読む
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_plan_ok()
+
+    def test_a_guide_for_renaming_is_handed_over_before_changing(self) -> None:
+        # 消す・名前を変えるときの手順は、変える前の見込み（あるファイルは「変える」）では当たらない。変える前に
+        # 条件付きで渡し、変えたあとは git に足していない新しいファイルとの名前の変更も見分ける。
+        commit(self.impl, {"src/old.py": "X = 1\n",
+                           "docs/move.md": "# 動かす\n\n- [ ] 呼び出し元を直した\n"}, "guide")
+        self.set_config(self.impl, guides=[{"use": "docs/move.md", "when": {"files": ["src/*.py"], "change": ["rename", "delete"]}}])
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                    "- src/app.py — `hello` の中でログを出す\n- src/old.py — `hello` の中でログを出す")
+        self.write_plan(plan)
+        self.assert_plan_ok()      # 変える見込みのファイルには、名前を変える手順を求めない
+        r = self.run_pa(self.impl, "batch")
+        self.assertIn("docs/move.md の手順は、名前を変える・消すときだけ効く", r.stdout)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/old.py").rename(self.impl / "src/new.py")
+        (self.impl / ".codd/apply.md").write_text("## 計画との違い\n\n- src/new.py — 追加: 名前を変えた\n", encoding="utf-8")
+        self.run_pa(self.impl, "accept")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/move.md", r.stderr)
+        self.assertIn("- src/new.py", (self.impl / ".codd/skill-review.md").read_text(encoding="utf-8"))  # 名前を変えた先も
+        # 手順の行の下に、ファイルと答えを 1 行ずつ書いてよい。消したファイルも根拠に書ける。
+        (self.impl / ".codd/apply.md").write_text(
+            "- docs/move.md — 名前を変えた:\n  - src/old.py → src/new.py\n"
+            "  - [x] 呼び出し元を直した — src/old.py を指すところは無い\n\n"
+            "## 計画との違い\n\n- src/new.py — 追加: 名前を変えた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_guides_can_point_into_a_ref_by_its_name(self) -> None:
+        # `参照先の名前:パス`・`skill:参照先の名前:名前` で、ほかのリポジトリの文書・スキルを手順にできる。
+        commit(self.design, {"docs/style.md": "# 書き方\n\n表で書く。\n",
+                             ".agents/skills/api-doc/SKILL.md":
+                             "---\nname: api-doc\ndescription: API の書き方\n---\n\n戻り値を表で書く。\n"}, "guide")
+        self.set_config(self.impl, guides=[{"use": "design:docs/style.md"}])
+        r = self.run_pa(self.impl, "show")    # いつも読む決まりも、参照先の名前で指せる
+        self.assertIn("  - design:docs/style.md\n", r.stdout)
+        self.assertNotIn("当たるファイルがありません", r.stdout)
+        self.set_config(self.impl, guides=[{"use": "design:docs/style.md", "when": {"files": ["src/*.py"]}},
+                                           {"use": "skill:design:api-doc", "when": {"files": ["src/*.py"]}}])
+        self.assertNotIn("読めません", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(self.use_guides(PLAN_ALIGNED, "- design:docs/style.md — 表で書く", "- `design:api-doc` — 表で書く"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("読み込んでいません", r.stderr)
+        self.assertEqual(self.run_pa(self.impl, "guide", "design:docs/style.md", "design:api-doc").returncode, 0)
+        self.assert_plan_ok()
+        self.assertIn("表で書く。", self.run_pa(self.impl, "batch").stdout)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text(
+            "- design:docs/style.md — src/app.py: 表で書いた\n- `design:api-doc` — src/app.py: 表で書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_ref_skill_may_be_named_with_or_without_the_ref(self) -> None:
+        # 参照先のスキルの手順は、`api-doc` とも `design:api-doc` とも書ける。どちらで読み込んでも読み込んだと数える。
+        commit(self.design, {".agents/skills/api-doc/SKILL.md":
+                             "---\nname: api-doc\ndescription: API の書き方\n---\n\n戻り値を表で書く。\n"}, "skill")
+        self.set_config(self.design, guides=[{"use": "skill:api-doc", "when": {"files": ["docs/**/*.md"]}}])
+        self.write_plan(self.use_guides(PLAN_DRIFT, "- `design:api-doc` — 戻り値を表で書く"))
+        self.assertEqual(self.run_pa(self.impl, "guide", "design:api-doc").returncode, 0)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "skill", "design:api-doc")   # 変える段で読み込む（名前の書き方は問わない）
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("- `design:api-doc` — design:docs/api.md: 戻り値を書いた\n",
+                                                  encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_bad_guides_config_is_reported(self) -> None:
+        for value in ({"use": "x.md"}, [{"use": "../x.md"}], [{"use": "skill:bad name"}], [{"use": "x.md", "when": {"phase": "x"}}],
+                      [{"use": "x.md", "when": {"change": ["move"]}}], [{"use": "tool:gh", "check": ["x"]}], [{"use": "x.md", "y": 1}]):
+            with self.subTest(value=value):
+                self.set_config(self.impl, guides=value)
+                r = self.run_pa(self.impl, "show")
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("guides", r.stderr)
 
     # ------------------------------------------------------------ 最後までやり切る
 
@@ -2456,8 +2721,8 @@ class CoddTest(unittest.TestCase):
         # 記録に要らないもの（使わなかったスキル・関係なしとしたファイル・中身が「なし」の見出し）は残さない。
         plan = self.impl / PLAN
         plan.write_text(plan.read_text(encoding="utf-8").replace(
-            "## 使ったスキルと道具\n\nなし",
-            "## 使ったスキルと道具\n\n- `tdd-lite` — 使わない: テストは無い\n- `grep` — 呼び出し元を探した").replace(
+            "## 従う手順\n\n",
+            "## 従う手順\n\n- `tdd-lite` — 使わない: テストは無い\n- `grep` — 呼び出し元を探した\n").replace(
             "## 参照先のその他\n\n- なし", "## 参照先のその他\n\n- 関係なし: docs/api.md:1 — 題名だけ\n  続きの説明"),
             encoding="utf-8")
         r = self.run_pa(self.impl, "record")
@@ -2573,7 +2838,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "rules", "--write", "--only", "design:docs/coding-rules.md")
         self.assertIn("1 件を codd.json に書きました", r.stdout)
         cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg["refs"], [{"path": "../design", "name": "design", "rules": ["docs/coding-rules.md"]}])
+        self.assertEqual(cfg["refs"], [{"path": "../design", "name": "design", "guides": [{"use": "docs/coding-rules.md"}]}])
         r = self.run_pa(self.impl, "rules")
         self.assertIn("守る決まり:\n  - design:docs/coding-rules.md", r.stdout)
         self.assertNotIn("  - design:docs/coding-rules.md\n  - design:docs/conventions", r.stdout)
@@ -2585,13 +2850,13 @@ class CoddTest(unittest.TestCase):
         git(app, "init", "-q", "-b", "main")
         init.init_repo(app, "impl", ["../design"])
         path = app / ".statemachine/codd/codd.json"
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["rules"], ["docs/coding-rules.md"])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["guides"], [{"use": "docs/coding-rules.md"}])
         # 既にある codd.json には探し直して書き足さない（手で消した決まりが戻らない）。
         cfg = json.loads(path.read_text(encoding="utf-8"))
-        cfg["refs"][0]["rules"] = []
+        cfg["refs"][0]["guides"] = []
         path.write_text(json.dumps(cfg), encoding="utf-8")
         init.init_repo(app, None, None)
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["rules"], [])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"][0]["guides"], [])
 
     def test_rules_accept_globs(self) -> None:
         commit(self.design, {"docs/rules/coding.md": "# a\n", "docs/rules/naming/api.md": "# b\n",

@@ -21,7 +21,7 @@
 `<リポジトリ>/.statemachine/codd/` に machine/ の中身を写し、codd.json を書く。
 既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は上書きしない。--side / --ref / --scope /
 --ref-scope / --exclude / --ref-exclude / --check / --test / --evidence を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
-参照先に手で書いた rules・scope・exclude などは残す）。使うスキルは codd.json の skills を手で書く。
+参照先に手で書いた rules・scope・exclude などは残す）。従う手順（決まり・スキル・道具）は codd.json の guides を手で書く。
 `.codd/`（探した結果・検査の記録・変える前の写し・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
 このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
 初めて置いたときは、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules /
@@ -148,7 +148,7 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     if evidence is not None:
         config["evidence"] = [p for p in evidence if p]
     if not existed:
-        config.setdefault("skills", {"plan": [], "apply": []})
+        config.setdefault("guides", [])
         config.setdefault("graphify", "auto")
     # 既にある codd.json は利用者の設定なので、渡された項目が値を変えたときだけ書き直す。
     if config != original:
@@ -195,7 +195,7 @@ def write_agents(target: Path, kinds) -> list[Path]:
 
 
 def discover_rules(target: Path, dest: Path) -> None:
-    """自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探し、codd.json の rules に書く。"""
+    """自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探し、codd.json の guides に書く。"""
     proc = subprocess.run([sys.executable, str(dest / "codd.py"), "rules", "--write"], cwd=target,
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
@@ -204,7 +204,7 @@ def discover_rules(target: Path, dest: Path) -> None:
               + reason, file=sys.stderr)
         return
     if "件を" in proc.stdout:
-        print("  決まりの候補を codd.json の rules に書きました（決まりでないものは手で消してください）:")
+        print("  決まりの候補を codd.json の guides に書きました（決まりでないものは手で消してください）:")
         start = proc.stdout.find("候補:")
         print("\n".join("  " + ln for ln in proc.stdout[start:].splitlines()[1:] if ln.startswith("  - ")))
 
