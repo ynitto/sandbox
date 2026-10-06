@@ -91,5 +91,33 @@ class LiteralsFromDiffTest(unittest.TestCase):
             texts = codd.literals_from_diff(ctx, "", codd.Side("own", repo, []))
         self.assertEqual(sorted(texts), ["ログイン", "送信"])   # 比較式（x > 2 && y < 2）は文言にしない
 
+    def test_imports_are_not_screen_text(self) -> None:
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "a.txt").write_text("x\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "Reset.tsx").write_text('import { useState } from "react";\nimport { X } from "../components/X";\n'
+                                            'export const Y = () => <button>再設定する</button>;\n', encoding="utf-8")
+            ctx = SimpleNamespace(config={"tests": ["**/*.test.*"]})
+            self.assertEqual(codd.literals_from_diff(ctx, "", codd.Side("own", repo, [])), ["再設定する"])
+
+
+class CopiedHeadingsTest(unittest.TestCase):
+    def test_headings_copied_from_sibling_docs_are_not_changed_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "login.md").write_text("# ログイン画面\n\n## 画面\n\n## 流れ\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "reset.md").write_text("# 再設定画面\n\n## 画面\n\n## 流れ\n", encoding="utf-8")
+            terms = codd.terms_from_diff(codd.Side("own", repo, []))
+        self.assertEqual(terms, ["再設定画面"])   # 書式に合わせた見出し（画面・流れ）は、ありふれた語に当たるだけ
+
 if __name__ == "__main__":
     unittest.main()

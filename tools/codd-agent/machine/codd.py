@@ -1761,6 +1761,7 @@ def terms_from_diff(side: Side) -> list[str]:
     terms = []
     quoted: dict[str, Counter] = {"+": Counter(), "-": Counter()}
     local: dict[str, set[str]] = {"+": set(), "-": set()}
+    heads: dict[str, set[str]] = {"+": set(), "-": set()}   # 足した・消した見出し
     for line in diff.splitlines():
         if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
             continue
@@ -1768,6 +1769,8 @@ def terms_from_diff(side: Side) -> list[str]:
             m = pat.match(line)
             if m:
                 terms.append(m.group(1))
+                if pat is _DIFF_TERMS[5]:
+                    heads[line[0]].add(m.group(1))
                 if _LOCAL_VAR.match(line):
                     local[line[0]].add(m.group(1))
         quoted[line[0]].update(_BACKTICK.findall(line))
@@ -1784,9 +1787,17 @@ def terms_from_diff(side: Side) -> list[str]:
             text = (repo / name).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        terms += [m.group(1) for ln in text.splitlines() for pat in _DIFF_TERMS
-                  for m in [pat.match("+" + ln)] if m]
-    return unique(terms)
+        for ln in text.splitlines():
+            for pat in _DIFF_TERMS:
+                m = pat.match("+" + ln)
+                if m:
+                    terms.append(m.group(1))
+                    if pat is _DIFF_TERMS[5]:
+                        heads["+"].add(m.group(1))
+    # 足しただけの見出しのうち、前からその側にあるもの（同じフォルダの文書の書式に合わせた `## 画面` など）は、
+    # 変わった名前ではない。ありふれた語で、関係の無いファイルにばかり当たる
+    copied = {h for h in heads["+"] - heads["-"] if existed_at_head(side, h)}
+    return unique(t for t in terms if t not in copied)
 
 
 def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
@@ -1820,6 +1831,7 @@ _LETTER = re.compile(r"[^\W\d_]")
 # 画面の部品（JSX・Vue・Svelte・HTML）のタグの間の文言（`<button>サインイン</button>`）。引用符が無いので別に拾う。
 # 画面の文言は「送信」「保存」のように 2 文字のこともある
 MARKUP_EXTS = (".tsx", ".jsx", ".vue", ".svelte", ".html", ".htm")
+_IMPORT_LINE = re.compile(r"^\s*(?:import\b|export\b.*\bfrom\s|.*\brequire\(\s*['\"]|from\s+\S+\s+import\b)")
 _MARKUP_TEXT = re.compile(r">\s*([^<>{}\n]{2,60}?)\s*(?:<|\{|$)")
 
 
@@ -1830,6 +1842,8 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
         if is_test(ctx, key, rel) or rel.lower().endswith(DOC_EXTS):
             continue
         markup = rel.lower().endswith(MARKUP_EXTS)
+        # import の指定（"react"・"../components/X"）は画面の文言ではない
+        plus, minus = ([ln for ln in lines if not _IMPORT_LINE.match(ln)] for lines in (plus, minus))
         for mark, lines in (("+", plus), ("-", minus)):
             counts[mark].update(m.group(2).strip() for ln in lines for m in _LITERAL.finditer(ln))
             if markup:
@@ -2468,6 +2482,9 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
         problems.append("参照先の変更案があるのに、影響範囲が「なし」です")
     if impact:
         for item in items(bodies["## 影響範囲"]) or [bodies["## 影響範囲"]]:
+            j = judgment(item)
+            if j.waived and j.reason and not j.targets:
+                continue   # 足すだけで響くファイルが無いとき（テストの変更案と同じ、理由だけの「変更不要」）。測ったファイルは別に求める
             if not cited_own(ctx, item):
                 problems.append(f"影響範囲の項目に、自分のリポジトリに実在するパスがありません: {item[:80]}")
     if ref_change and not terms_from_plan(bodies):
@@ -3282,6 +3299,14 @@ def doc_screens(ctx: Ctx, evs: dict[str, Evidence]) -> list[ScreenHit]:
                     if (key, rel) not in hits or hits[(key, rel)].state == "current":
                         hits[(key, rel)] = ScreenHit(key, rel, item, state)
     return [hits[k] for k in sorted(hits)]
+
+
+ATTACHMENT_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
+
+
+def attached_to(ctx: Ctx, key: str, rel: str, planned: set[str]) -> bool:
+    """計画に挙げた文書が貼っている画像か（新しい画面の仕様書に足すスクリーンショットなど）。文書の添付として認める。"""
+    return rel.lower().endswith(ATTACHMENT_EXTS) and any(covered(d, planned) for d in docs_showing(ctx, key, rel))
 
 
 def docs_showing(ctx: Ctx, key: str, rel: str) -> list[str]:
@@ -4440,7 +4465,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     outside: list[str] = []
     own_allowed = (want_own | listed_paths(ctx, bodies.get("## 影響範囲", ""), allow_new=True)
                    | tp.paths("", waived=False))
-    extra_own, out_own = added_problems(ctx, dev, "", sorted(p for p in a.own_touched if not covered(p, own_allowed)))
+    extra_own, out_own = added_problems(ctx, dev, "", sorted(p for p in a.own_touched if not covered(p, own_allowed)
+                                                             and not attached_to(ctx, "", p, own_allowed)))
     outside += out_own
     if extra_own:
         problems.append(f"計画に無いファイルを変えています（戻すか、{DECLARE_HINT}）: " + ", ".join(extra_own))
@@ -4453,8 +4479,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         elif r.name not in a.planned and not ref_tests and touched:
             problems.append(f"参照先の変更案に {r.name} は無いのに、{r.name} が変わっています（戻してください）")
         elif touched:
+            allowed = a.planned.get(r.name, set()) | ref_tests
             extra, out_ref = added_problems(ctx, dev, r.name, sorted(
-                p for p in touched if not covered(p, a.planned.get(r.name, set()) | ref_tests)))
+                p for p in touched if not covered(p, allowed) and not attached_to(ctx, r.name, p, allowed)))
             outside += out_ref
             if extra:
                 problems.append(f"{r.name} で参照先の変更案に無いファイルを変えています（戻すか、{DECLARE_HINT}）: "
@@ -4709,6 +4736,9 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         out = [f"- {p} — {mark(p)}" for p in sorted(planned)]
         for p in sorted(touched):
             if covered(p, planned) or (key, p) in test_listed:   # テストの変更案のものは「テスト」の節に出す
+                continue
+            if attached_to(ctx, key, p, planned):
+                out.append(f"- {p} — 変えた（計画の文書に貼った画像）")
                 continue
             reason = dev.reason_added(key, p)
             who = "利用者が認めた" if (key, p) in ok else "変える段で足した"

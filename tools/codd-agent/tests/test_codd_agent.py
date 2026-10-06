@@ -1508,6 +1508,28 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_adding_a_new_doc_with_its_screenshot_needs_no_invented_impact(self) -> None:
+        # 足すだけの変更: 影響範囲は理由だけの「変更不要」でよく、計画の文書に貼った画像は文書の添付として認める。
+        # 前からある見出し（`## hello`）を写しただけなら、変わった名前に数えない。
+        plan = (PLAN_DRIFT
+                .replace("- docs/api.md — `hello` の戻り値を 2 と書き直す",
+                         "- docs/api.md — `hello` の戻り値を 2 と書き直す\n- docs/hello2.md — `hello` の画面の仕様書を足す")
+                .replace("- src/app.py — hello の戻り値", "- 変更不要: 文書を足すだけで、今あるファイルの振る舞いは変わらない")
+                .replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                         "- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）\n"
+                         "- `hello の画面` — 変更不要: 仕様書の題名で、確かめる振る舞いは無い"))
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
+        (self.design / "docs/images/hello2.png").write_bytes(b"PNG hello2")
+        (self.design / "docs/hello2.md").write_text("# hello の画面\n\n## hello\n\n![画面](images/hello2.png)\n",
+                                                   encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("docs/images/hello2.png — 変えた（計画の文書に貼った画像）", self.run_pa(self.impl, "report").stdout)
+
     def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
         commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
         commit(self.design, {"docs/perf.md": "# 性能\n\n- <!-- evidence: login/S-01/load -->800 ms<!-- /evidence -->\n"},
