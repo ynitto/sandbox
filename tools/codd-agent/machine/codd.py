@@ -265,7 +265,7 @@ def rule_list(value, where: str) -> list[str]:
         return []
     if not (isinstance(value, list) and all(isinstance(r, str) and r.strip() for r in value)):
         raise CoddError(f'{where} は決まりのファイルの配列です（例: ["docs/coding-rules.md"]）')
-    out = unique_paths(r.strip().replace("\\", "/") for r in value)
+    out = unique_paths(re.sub(r"^(\./)+", "", r.strip().replace("\\", "/")) for r in value)
     bad = [r for r in out if r.startswith("/") or ".." in r.split("/")]
     if bad:
         raise CoddError(f"{where} にはリポジトリの中のパスか glob を相対で書きます（今: {', '.join(bad)}）")
@@ -278,7 +278,7 @@ def exclude_list(value, where: str) -> list[str]:
         return []
     if not (isinstance(value, list) and all(isinstance(p, str) and p.strip() for p in value)):
         raise CoddError(f'{where} は除外パターンの配列です（例: ["**/*.config.*", ".github/"]）')
-    out = unique_paths(p.strip().replace("\\", "/") for p in value)
+    out = unique_paths(re.sub(r"^(\./)+", "", p.strip().replace("\\", "/")) for p in value)
     bad = [p for p in out if p.startswith(("/", "~", "!")) or re.match(r"^[A-Za-z]:", p)
            or ".." in p.split("/") or p.rstrip("/") in ("", ".")]
     if bad:
@@ -336,10 +336,23 @@ class Guide:
         return self.target if self.kind == "doc" else f"`{self.target}`"
 
 
+def _strip_comment(value: str) -> str:
+    """YAML と同じに、引用符の外の ` #` から後ろを注釈として除く（`files: ["a/*.sql"]  # 説明`）。"""
+    quote = ""
+    for i, ch in enumerate(value):
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or value[i - 1] in " \t"):
+            return value[:i]
+    return value
+
+
 def _parse_scalar(value: str):
-    value = value.strip()
-    if value in ("true", "false"):
-        return value == "true"
+    value = _strip_comment(value).strip()
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
     if value.startswith("["):
         try:
             return json.loads(value)
@@ -351,21 +364,31 @@ def _parse_scalar(value: str):
 def front_codd(text: str) -> dict | None:
     """文書の先頭（--- で囲んだところ）の `codd:` の下に書いた手順の決まり。無ければ None。
 
-    書けるのは 1 段の `キー: 値`（値は文字列・true/false・[a, b] か JSON の配列）だけ。"""
-    front = _FRONT.match(text)
+    書けるのは 1 段の `キー: 値`（値は文字列・true/false・[a, b] か JSON の配列）と、`キー:` の下に
+    `- 値` を並べた配列だけ。"""
+    front = _FRONT.match(text.lstrip("\ufeff"))
     if not front:
         return None
     out = None
+    listing = None   # `キー:` の下に `- 値` を並べている途中のキー
     for line in front.group(1).splitlines():
-        if re.match(r"^codd:\s*$", line):
+        if re.match(r"^codd:\s*(#.*)?$", line):
             out = {}
             continue
         if out is None:
             continue
+        item = re.match(r"^\s+-\s+(.*)$", line)
+        if listing and item:
+            value = _parse_scalar(item.group(1))
+            if value != "":
+                out[listing].append(value)
+            continue
         m = re.match(r"^\s+([a-z_]+):\s*(.*)$", line)
         if m:
-            out[m.group(1)] = _parse_scalar(m.group(2))
-        elif line.strip() and not line.startswith((" ", "\t")):
+            value = _parse_scalar(m.group(2))
+            listing = m.group(1) if value == "" else None
+            out[m.group(1)] = [] if value == "" else value
+        elif line.strip() and not line.lstrip().startswith("#") and not line.startswith((" ", "\t")):
             break
     return out
 
@@ -443,6 +466,11 @@ def front_guides(repo: Path, skill_dirs: list[str]) -> list[Guide]:
             use = "skill:" + (name.group(1).strip() if name else path.parent.name)
         else:
             use = rel
+        for k in ("files", "terms", "asks"):   # 1 つだけなら配列にしなくてよい（`files: db/*.sql`）
+            if isinstance(meta.get(k), str) and meta[k]:
+                # files は Copilot の applyTo と同じに、`,` で区切って並べてもよい（`{ts,tsx}` の中の `,` は区切らない）
+                meta[k] = [p.strip() for p in re.split(r",(?![^{]*\})", meta[k]) if p.strip()] if k == "files" \
+                    else [meta[k]]
         entry = {"use": use, "when": {k: meta[k] for k in WHEN_KEYS if k in meta}}
         entry.update({k: meta[k] for k in ("must", "check", "asks") if k in meta})
         out.append(parse_guide(entry, f"{rel} の codd", repo, rel))
@@ -497,7 +525,7 @@ def load_config(machine_dir: Path) -> dict:
         raise CoddError(f"設定がありません: {path}\n"
                         '  例: {"side": "impl", "refs": [{"name": "docs", "path": "../my-docs"}]}')
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
+        config = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise CoddError(f"{path} が JSON として読めません: {exc}") from exc
     if not isinstance(config, dict):
@@ -980,6 +1008,7 @@ _NOT_RULES = re.compile(r"(?:^|/)(changelog|history|license)[^/]*$", re.IGNORECA
 
 
 _GLOB_CHARS = re.compile(r"[*?\[]")
+_BRACES = re.compile(r"\{[^{}]*,[^{}]*\}")   # `*.{ts,tsx}`
 _DATED = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
@@ -988,12 +1017,13 @@ def expand_rules(repo: Path, patterns: list[str]) -> list[str]:
     （git の :(glob) と同じ意味。`*` はフォルダをまたがず、`**/` はまたぐ）、追跡中と未追跡のファイルから引く。"""
     out: list[str] = []
     for pat in unique_paths(patterns):
-        if _GLOB_CHARS.search(pat):
+        if _GLOB_CHARS.search(pat) or _BRACES.search(pat):
             # 除外のパス指定を並べると :(glob) が効かなくなる git があるので、作業フォルダとマシンは後から除く。
-            rc, found = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", f":(glob){pat}"],
-                            repo, GIT_TIMEOUT)
+            # git の :(glob) は `{a,b}` を知らないので、そのときは全体を引いて glob_re で絞る。
+            spec = [] if _BRACES.search(pat) else ["--", f":(glob){pat}"]
+            rc, found = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *spec], repo, GIT_TIMEOUT)
             hits = sorted(ln for ln in found.splitlines() if (repo / ln).is_file()
-                          and not in_scope(ln, MACHINE_OWNED)) if rc == 0 else []
+                          and not in_scope(ln, MACHINE_OWNED) and (spec or path_matches(pat, ln))) if rc == 0 else []
         else:
             hits = [pat] if (repo / pat).is_file() else []
         out += [h for h in hits if h not in out]
@@ -1243,7 +1273,7 @@ def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
     if not (args.write and candidates):
         return 0
     path = MACHINE_DIR / CONFIG_NAME
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
     for name, rel in candidates:
         if not name:
             target = raw.setdefault("guides", [])
@@ -2035,7 +2065,7 @@ def read_text(path: Path) -> str | None:
     try:
         if path.stat().st_size > MAX_READ_BYTES:
             return None
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")   # Windows のエディタが付ける BOM は読み飛ばす
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -2554,6 +2584,11 @@ def glob_re(pattern: str) -> re.Pattern:
             out, i = out + "[^/]*", i + 1
         elif pattern[i] == "?":
             out, i = out + "[^/]", i + 1
+        elif pattern[i] == "{" and (end := pattern.find("}", i)) > i and "," in pattern[i:end] \
+                and "{" not in pattern[i + 1:end]:
+            # `*.{ts,tsx}`（ほかの道具の glob でよく使う書き方）。入れ子は扱わない
+            alts = [glob_re(part).pattern for part in pattern[i + 1:end].split(",")]
+            out, i = out + "(?:" + "|".join(alts) + ")", end + 1
         elif pattern[i] == "[":
             end = i + 1
             if end < len(pattern) and pattern[end] in "!^":
@@ -4098,14 +4133,16 @@ def doc_text(repo: Path, spec: str) -> str | None:
     if text is None or not anchor:
         return text
     lines = text.splitlines()
-    for i, line in enumerate(lines):
-        m = re.match(r"^(#+)\s+(.*?)\s*#*\s*$", line)
-        if m and m.group(2) == anchor:
-            level = len(m.group(1))
-            end = next((j for j in range(i + 1, len(lines))
-                        if (h := re.match(r"^(#+)\s", lines[j])) and len(h.group(1)) <= level), len(lines))
-            return "\n".join(lines[i:end]).strip() + "\n"
-    return None
+    heads = [(i, m) for i, line in enumerate(lines) if (m := re.match(r"^(#+)\s+(.*?)\s*#*\s*$", line))]
+    # 見出しの文字どおりか、GitHub のリンクのアンカー（`#table-format`。根拠の `パス#見出し` と同じ読み方）
+    hit = next(((i, m) for i, m in heads if m.group(2) == anchor), None) \
+        or next(((i, m) for i, m in heads if slug(m.group(2)) == slug(anchor.replace("-", " "))), None)
+    if hit is None:
+        return None
+    i, level = hit[0], len(hit[1].group(1))
+    end = next((j for j in range(i + 1, len(lines))
+                if (h := re.match(r"^(#+)\s", lines[j])) and len(h.group(1)) <= level), len(lines))
+    return "\n".join(lines[i:end]).strip() + "\n"
 
 
 def guide_repo_key(ctx: Ctx, g: Guide, key: str) -> str:

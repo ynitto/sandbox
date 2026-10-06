@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 手順（guides）のよくある書き方で、手順が黙って効かなくならないようにする
+
+- 先頭の `codd:` を、YAML のふつうの書き方でも読む。`files:` の下に `- 値` を並べた配列、` #` から後ろの注釈、
+  `True`・`FALSE`、1 つだけの `files: db/*.sql`、Copilot の `applyTo` と同じ `,` 区切りを受け付ける
+  （今までは配列で止まるか、注釈が glob に混ざって何にも当たらず、手順が効かなかった）
+- BOM 付きで保存した文書・`codd.json` を読む（Windows のエディタで保存すると、手順が黙って読まれなかった・設定が読めなかった）
+- glob で `{ts,tsx}` を使える。先頭の `./` は無視する（どちらも、何にも当たらず手順が効かなかった）
+- 手順の `パス#見出し` を、GitHub のリンクのアンカー（`#table-format`）でも指せる（根拠の `パス#見出し` と同じ読み方）
+
 ### codd-agent: 従う手順を `guides` 1 つにまとめ、特定のファイルを作る・変えるときの手順を必ず踏ませる
 
 - **`codd.json` の `guides` に、従う手順（マークダウン・スキル・道具）を「何を・いつ・どれだけ確かに」で書けるようにした。**
