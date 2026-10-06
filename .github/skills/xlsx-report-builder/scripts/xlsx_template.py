@@ -179,7 +179,17 @@ class Styles:
 
 
 def _is_date_code(code: str) -> bool:
-    stripped = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.', "", code)
+    # Excel の角括弧は色・条件・ロケール指定にも使われるが、
+    # [h] / [m] / [s]（および繰り返し）は 24 時間を超える経過時間の書式。
+    # それらだけは日付・時刻判定用に残し、他の角括弧指定は無視する。
+    stripped = re.sub(r'"[^"]*"|\\\\.', "", code)
+    stripped = re.sub(
+        r"\\[([hms]+)\\]",
+        lambda m: m.group(1) if len(set(m.group(1).lower())) == 1 else "",
+        stripped,
+        flags=re.I,
+    )
+    stripped = re.sub(r"\\[[^\\]]*\\]", "", stripped)
     return bool(re.search(r"[ymdhs]", stripped, re.I))
 
 
