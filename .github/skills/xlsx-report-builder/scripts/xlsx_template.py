@@ -391,17 +391,27 @@ def analyze(template: str) -> dict:
     }
 
 
-def _grid(root, sst):
+def _serial_to_iso(value) -> str:
+    """日付の書式のセルの数値（Excel の通し番号）を、読める形（2025-01-01・2025-01-01 09:30）にする。"""
+    d = dt.datetime(1899, 12, 30) + dt.timedelta(days=float(value))
+    return d.date().isoformat() if d.time() == dt.time() else d.isoformat(sep=" ", timespec="minutes")
+
+
+def _grid(root, sst, styles: "Styles | None" = None):
     grid: dict[int, dict[int, dict]] = {}
     for row in root.find(q("sheetData")):
         r = int(row.get("r"))
         cols = {}
         for c in row:
             f = c.find(q("f"))
+            value = cell_value(c, sst)
+            if styles is not None and isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and styles.is_date(c.get("s")) and 0 < value < 2958466:
+                value = _serial_to_iso(value)
             cols[cell_col(c)] = {
                 "ref": c.get("r"),
                 "s": c.get("s", "0"),
-                "value": cell_value(c, sst),
+                "value": value,
                 "formula": ("=" + f.text) if f is not None and f.text else None,
             }
         grid[r] = cols
@@ -468,7 +478,7 @@ def _table_info(grid, header_row, body, lo, hi, after, styles) -> dict:
 
 
 def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
-    grid = _grid(root, sst)
+    grid = _grid(root, sst, styles)
     found = _find_tables(grid, styles)
     notes: list[str] = []
     tables = []
@@ -663,7 +673,7 @@ def inspect_template(template: "str | bytes") -> dict:
     for name, part in pkg.sheets():
         root = pkg.xml(part)
         expand_shared_formulas(root)
-        grid = _grid(root, sst)
+        grid = _grid(root, sst, styles)
         rows = []
         for r in sorted(grid):
             cells, blanks = [], []

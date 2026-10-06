@@ -1071,5 +1071,18 @@ class ChecklistTests(Base):
             vml = next(z.read(n).decode() for n in z.namelist() if n.endswith(".vml"))
         self.assertEqual(re.findall(r"<[^>]*Row>(\d+)<", vml), ["5"])   # 図形（吹き出し）の位置も 0 始まりで 5
 
+    def test_inspect_shows_date_cells_as_dates(self):
+        import datetime as dt
+
+        def build(wb):
+            ws = wb.create_sheet("D")
+            ws.append(["実施日", "時刻"])
+            ws.append([dt.date(2025, 1, 2), dt.datetime(2025, 1, 2, 9, 30)])
+            ws["A2"].number_format = "yyyy/mm/dd"
+            ws["B2"].number_format = "yyyy/mm/dd hh:mm"
+        facts = xt.inspect_template(self.checklist(build))
+        cells = {c["ref"]: c["value"] for row in facts["sheets"][1]["rows"] for c in row["cells"]}
+        self.assertEqual((cells["A2"], cells["B2"]), ("2025-01-02", "2025-01-02 09:30"))   # 通し番号（45659）ではなく
+
 if __name__ == "__main__":
     unittest.main()
