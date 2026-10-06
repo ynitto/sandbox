@@ -570,5 +570,141 @@ class MaintainExportedScriptTests(Base):
         self.assertIn("pattern", r.stderr)
 
 
+def make_card_template(path: str) -> None:
+    """1 件が 2 行（明細 + 備考）の「カード」形式。末尾に仮の注意書きとダミー行がある。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "案件"
+    ws["A1"], ws["B1"] = "案件名", "（ここに案件名）"
+    ws["A2"] = "※ 記入例: 下の 2 行は例です"  # 無視したい注意書き
+    for c, h in zip("ABC", ["項目", "金額", "期限"]):
+        ws[f"{c}4"].value, ws[f"{c}4"].font, ws[f"{c}4"].fill = h, Font(bold=True), HEAD_FILL
+    for base, fill in ((5, None), (7, BAND_FILL)):  # 2 件 × 2 行のサンプル（縞模様はレコード単位）
+        ws[f"A{base}"], ws[f"B{base}"], ws[f"C{base}"] = f"例{base}", 100, "2020-01-01"
+        ws[f"A{base + 1}"] = "備考: ここに備考"
+        ws.merge_cells(f"A{base + 1}:C{base + 1}")
+        for r in (base, base + 1):
+            for c in "ABC":
+                ws[f"{c}{r}"].border = BOX
+                if fill:
+                    ws[f"{c}{r}"].fill = fill
+        ws[f"C{base}"].number_format = "yyyy/mm/dd"
+    ws["A9"], ws["B9"] = "合計", "=SUM(B5:B8)"
+    ws["A11"] = "ダミー行（削除対象）"
+    ws["A12"] = "ダミー行（削除対象）"
+    ws["A13"] = "以上"
+    wb.save(path)
+
+
+CARD_DEF = {
+    "version": 1,
+    "sheets": [{
+        "name": "案件",
+        "cells": {"B1": "title"},
+        "clear": ["A2"],
+        "drop_rows": ["11:12"],
+        "tables": [{
+            "id": "cards", "header_row": 4, "first_row": 5, "sample_rows": 4, "block_rows": 2,
+            "pattern": [5, 7], "key": "cards",
+            "block": [
+                {"A": {"key": "name"}, "B": {"key": "amount"}, "C": {"key": "due"}},
+                {"A": {"key": "note"}},
+            ],
+        }],
+    }],
+}
+
+
+class RolesTests(unittest.TestCase):
+    """残す（keep）・流し込む（fill）・繰り返す（repeat / block）・無視する（clear / drop_rows）。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.tpl = os.path.join(self.dir, "card.xlsx")
+        make_card_template(self.tpl)
+        self.data = {"title": "新規案件", "cards": [
+            {"name": f"項目{i}", "amount": 100 * i, "due": f"2026-11-0{i}", "note": f"備考{i}"} for i in range(1, 4)]}
+
+    def render(self, data=None, definition=CARD_DEF):
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(self.tpl, definition, data or self.data, out)
+        return load_workbook(out)["案件"]
+
+    def test_block_repeats_two_rows_per_record(self):
+        ws = self.render()
+        self.assertEqual([ws[f"A{r}"].value for r in range(5, 11)],
+                         ["項目1", "備考1", "項目2", "備考2", "項目3", "備考3"])
+        self.assertEqual([ws[f"B{r}"].value for r in (5, 7, 9)], [100, 200, 300])
+        self.assertIsNone(ws["B6"].value)  # 備考行には金額が無い
+        self.assertEqual(ws["C5"].value.date().isoformat(), "2026-11-01")
+
+    def test_block_style_pattern_and_merges_follow(self):
+        ws = self.render()
+        tpl = load_workbook(self.tpl)["案件"]
+        self.assertEqual(ws["A7"].fill.fgColor.rgb, tpl["A7"].fill.fgColor.rgb)  # レコード単位の縞
+        self.assertEqual(ws["A9"].fill.fgColor.rgb, tpl["A5"].fill.fgColor.rgb)
+        merged = sorted(str(m) for m in ws.merged_cells.ranges)
+        self.assertEqual(merged, ["A10:C10", "A6:C6", "A8:C8"])
+
+    def test_total_follows_and_formula_range_extends(self):
+        ws = self.render()
+        self.assertEqual(ws["A11"].value, "合計")
+        self.assertEqual(ws["B11"].value, "=SUM(B5:B10)")
+
+    def test_ignore_clear_keeps_style_and_drop_rows_removes(self):
+        ws = self.render()
+        self.assertIsNone(ws["A2"].value)  # 注意書きは空に
+        self.assertEqual(ws["A1"].value, "案件名")  # 固定は残る
+        self.assertEqual(ws["B1"].value, "新規案件")
+        values = [c.value for row in ws.iter_rows() for c in row if c.value is not None]
+        self.assertFalse(any("ダミー" in str(v) for v in values))
+        self.assertEqual(ws["A13"].value, "以上")  # 11-12 行の削除と、レコード増(+2 行)で 13 のまま
+        self.assertEqual(ws.max_row, 13)
+
+    def test_block_validation(self):
+        bad = json.loads(json.dumps(CARD_DEF))
+        bad["sheets"][0]["tables"][0]["block"] = bad["sheets"][0]["tables"][0]["block"][:1]
+        with self.assertRaises(xt.TemplateError):
+            self.render(definition=bad)
+        bad = json.loads(json.dumps(CARD_DEF))
+        bad["sheets"][0]["tables"][0]["sample_rows"] = 3
+        with self.assertRaises(xt.TemplateError):
+            xt.validate_definition(self.tpl, bad)
+
+    def test_example_data_covers_block_columns(self):
+        self.assertEqual(sorted(xt.skeleton_data(CARD_DEF)["cards"][0]), ["amount", "due", "name", "note"])
+
+
+class InspectTests(Base):
+    def test_facts_name_style_kinds_hints_and_runs(self):
+        facts = xt.inspect_template(self.tpl)
+        sheet = facts["sheets"][0]
+        cells = {c["ref"]: c for row in sheet["rows"] for c in row["cells"]}
+        self.assertEqual(cells["B3"]["hint"], "仮の値の疑い")
+        self.assertEqual(cells["A18"]["hint"], "注記の疑い")
+        self.assertEqual(cells["E8"]["formula"], "=C8*D8")
+        self.assertEqual(cells["A8"]["style"], cells["C8"]["style"])  # 同じ見た目は同じ種類
+        self.assertNotEqual(cells["A8"]["style"], cells["A9"]["style"])  # 縞は別の種類
+        legend = facts["style_legend"]
+        self.assertIn("罫線", legend[cells["A8"]["style"]])
+        self.assertIn("#,##0", legend[cells["D8"]["style"]])
+        self.assertEqual(sheet["merges"], ["A1:E1"])
+        self.assertEqual(sheet["conditional_formats"], ["E8:E9"])
+        self.assertEqual([t["header_row"] for t in sheet["auto_detected_tables"]], [7, 15])
+        self.assertIn("10-12", [r["rows"] for r in sheet["same_shape_runs"]])
+
+    def test_text_and_cli(self):
+        text = xt.format_facts(xt.inspect_template(self.tpl))
+        self.assertIn("仮の値の疑い", text)
+        self.assertIn("B8: 'サンプル8'", text)
+        script = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
+        r = subprocess.run([sys.executable, script, "inspect", self.tpl], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("書式の種類", r.stdout)
+        j = subprocess.run([sys.executable, script, "inspect", self.tpl, "--json"], capture_output=True, text=True)
+        self.assertEqual(json.loads(j.stdout)["sheets"][0]["name"], "請求書")
+
+
 if __name__ == "__main__":
     unittest.main()

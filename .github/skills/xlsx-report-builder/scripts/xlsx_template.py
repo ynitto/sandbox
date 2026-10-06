@@ -43,6 +43,8 @@ CELL_RE = re.compile(r"^([A-Za-z]{1,3})(\d+)$")
 REF_PART_RE = re.compile(r"^(\$?)([A-Za-z]{1,3})(\$?)(\d+)$")
 TOTAL_WORDS = ("合計", "小計", "総計", "計", "total", "sum", "subtotal")
 TOTAL_FUNCS = re.compile(r"^(SUM|SUBTOTAL|AVERAGE|COUNT|COUNTA|MAX|MIN)\(", re.I)
+BUILTIN_FORMATS = {1: "0", 2: "0.00", 3: "#,##0", 4: "#,##0.00", 9: "0%", 10: "0.00%", 11: "0.00E+00", 12: "# ?/?",
+                   14: "m/d/yyyy", 15: "d-mmm-yy", 20: "h:mm", 21: "h:mm:ss", 22: "m/d/yyyy h:mm", 49: "@"}
 BUILTIN_DATE_IDS = set(range(14, 23)) | set(range(27, 37)) | set(range(45, 48)) | set(range(50, 59))
 
 
@@ -127,6 +129,7 @@ class Styles:
         self.date: dict[int, bool] = {}
         self.code: dict[int, str] = {}
         self.emphasis: dict[int, bool] = {}
+        self.desc: dict[int, str] = {}
         if "xl/styles.xml" not in pkg.data:
             return
         root = pkg.xml("xl/styles.xml")
@@ -142,7 +145,7 @@ class Styles:
         for i, xf in enumerate(xfs):
             fid = int(xf.get("numFmtId", "0"))
             code = custom.get(fid, "")
-            self.code[i] = code or ("General" if fid == 0 else f"builtin:{fid}")
+            self.code[i] = code or ("General" if fid == 0 else BUILTIN_FORMATS.get(fid, f"builtin:{fid}"))
             self.date[i] = fid in BUILTIN_DATE_IDS or bool(code and _is_date_code(code))
             bold = False
             if fonts is not None and int(xf.get("fontId", "0")) < len(fonts):
@@ -152,6 +155,24 @@ class Styles:
                 pf = fills[int(xf.get("fillId", "0"))].find(q("patternFill"))
                 filled = pf is not None and pf.get("patternType") not in (None, "none")
             self.emphasis[i] = bold or filled
+            parts = []
+            if bold:
+                parts.append("太字")
+            if filled:
+                fg = pf.find(q("fgColor")) if pf is not None else None
+                color = (fg.get("rgb") or (f"theme{fg.get('theme')}" if fg.get("theme") else "")) if fg is not None else ""
+                parts.append("塗り" + color[-6:] if color else "塗り")
+            borders = root.find(q("borders"))
+            bid = int(xf.get("borderId", "0"))
+            if borders is not None and bid < len(borders) and any(
+                    side.get("style") for side in borders[bid]):
+                parts.append("罫線")
+            if self.code[i] != "General":
+                parts.append(self.code[i])
+            self.desc[i] = "・".join(parts) or "標準"
+
+    def describe(self, s: str | None) -> str:
+        return self.desc.get(int(s or 0), "標準")
 
     def is_date(self, s: str | None) -> bool:
         return self.date.get(int(s or 0), False)
@@ -171,6 +192,25 @@ def split_ref(ref: str) -> tuple[int, int]:
     if not m:
         raise TemplateError(f"セル参照が不正です: {ref!r}")
     return column_index_from_string(m.group(1).upper()), int(m.group(2))
+
+
+def parse_row_spec(spec: Any) -> tuple[int, int]:
+    """`20` / `"20"` / `"20:22"` / `"20-22"` / `[20, 22]` を (先頭, 末尾) にする。"""
+    if isinstance(spec, (list, tuple)) and len(spec) == 2:
+        a, b = int(spec[0]), int(spec[1])
+    else:
+        parts = re.split(r"[:\-]", str(spec))
+        a, b = int(parts[0]), int(parts[-1])
+    if a < 1 or b < a:
+        raise TemplateError(f"行の指定が不正です: {spec!r}")
+    return a, b
+
+
+def parse_cell_spec(spec: str) -> list[tuple[int, int]]:
+    """`B5` / `B5:D7` を (列, 行) の一覧にする。"""
+    a, _, b = str(spec).partition(":")
+    (c1, r1), (c2, r2) = split_ref(a), split_ref(b or a)
+    return [(c, r) for r in range(min(r1, r2), max(r1, r2) + 1) for c in range(min(c1, c2), max(c1, c2) + 1)]
 
 
 class RowMap:
@@ -574,6 +614,129 @@ def summarize(definition: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# inspect（テンプレートの事実だけを、判断する側（LLM・人）が読める形で出す）
+# ---------------------------------------------------------------------------
+
+PLACEHOLDER_RE = re.compile(r"(〇〇|○○|●●|◯◯|△△|□□|＊＊|\*\*|xxx|サンプル|ダミー|仮|例[:：)）]|sample|dummy|yyyy|\bTBD\b)", re.I)
+NOTE_RE = re.compile(r"^\s*(※|＊|\*|注[:：）)]|備考|Note)")
+
+
+def _style_classes(styles: Styles) -> dict[str, str]:
+    """書式の説明が同じスタイル ID を、同じ種類（S1, S2, ...）にまとめる。"""
+    out: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    for sid in sorted(styles.desc):
+        d = styles.desc[sid]
+        labels.setdefault(d, f"S{len(labels)}")
+        out[str(sid)] = labels[d]
+    return out
+
+
+def inspect_template(template: "str | bytes") -> dict:
+    """判断の材料になる事実（値・数式・書式の種類・結合・仮値の疑い・自動検出の下書き）を集める。"""
+    pkg = Package(template)
+    sst = read_shared_strings(pkg)
+    styles = Styles(pkg)
+    classes = _style_classes(styles)
+    legend = {label: desc for desc, label in {styles.desc[i]: classes[str(i)] for i in styles.desc}.items()}
+    sheets = []
+    for name, part in pkg.sheets():
+        root = pkg.xml(part)
+        expand_shared_formulas(root)
+        grid = _grid(root, sst)
+        rows = []
+        for r in sorted(grid):
+            cells, blanks = [], []
+            for c in sorted(grid[r]):
+                i = grid[r][c]
+                cls = classes.get(i["s"], "S0")
+                if i["value"] is None and not i["formula"]:
+                    blanks.append(c)
+                    continue
+                item = {"ref": i["ref"], "style": cls}
+                if i["formula"]:
+                    item["formula"] = i["formula"]
+                else:
+                    item["value"] = i["value"]
+                    if isinstance(i["value"], str):
+                        if PLACEHOLDER_RE.search(i["value"]):
+                            item["hint"] = "仮の値の疑い"
+                        elif NOTE_RE.match(i["value"]):
+                            item["hint"] = "注記の疑い"
+                cells.append(item)
+            rows.append({"row": r, "cells": cells,
+                         "styled_blank": f"{get_column_letter(min(blanks))}-{get_column_letter(max(blanks))}" if blanks else None,
+                         "shape": [(c, classes.get(grid[r][c]["s"], "S0")) for c in sorted(grid[r])]})
+        draft = _analyze_sheet(pkg, name, part, root, sst, styles)
+        sheets.append({
+            "name": name,
+            "merges": [m.get("ref") for m in root.iter(q("mergeCell"))],
+            "conditional_formats": [c.get("sqref") for c in root.iter(q("conditionalFormatting"))],
+            "validations": [d.get("sqref") for d in root.iter(q("dataValidation"))],
+            "rows": rows,
+            "same_shape_runs": _runs(rows),
+            "auto_detected_tables": [{k: t[k] for k in ("id", "header_row", "first_row", "sample_rows", "pattern")}
+                                     for t in draft["tables"]],
+            "warnings": draft["_notes"],
+        })
+    return {"style_legend": legend, "sheets": sheets}
+
+
+def _runs(rows: list[dict]) -> list[dict]:
+    """列の並びと書式の種類が同じ行が続く範囲（繰り返しの候補）。周期 2〜3 の縞模様も拾う。"""
+    out = []
+    i = 0
+    while i < len(rows):
+        j = i
+        while j + 1 < len(rows) and rows[j + 1]["row"] == rows[j]["row"] + 1 and rows[j + 1]["shape"] == rows[i]["shape"]:
+            j += 1
+        if j > i:
+            out.append({"rows": f"{rows[i]['row']}-{rows[j]['row']}", "period": 1})
+            i = j + 1
+            continue
+        for p in (2, 3):
+            k = i
+            while k + p < len(rows) + 0 and rows[k + p]["row"] == rows[k]["row"] + p and rows[k + p]["shape"] == rows[k]["shape"] \
+                    and all(rows[k + m + 1]["row"] == rows[k + m]["row"] + 1 for m in range(p)):
+                k += 1
+            if k - i >= p:
+                out.append({"rows": f"{rows[i]['row']}-{rows[k + p - 1]['row']}", "period": p})
+                i = k + p
+                break
+        else:
+            i += 1
+    return out
+
+
+def format_facts(facts: dict) -> str:
+    L = ["書式の種類（S0〜: 同じ見た目は同じ番号）:"]
+    L += [f"  {k} = {v}" for k, v in sorted(facts["style_legend"].items(), key=lambda kv: int(kv[0][1:]))]
+    for sh in facts["sheets"]:
+        L.append(f"\n■ シート「{sh['name']}」")
+        for key, label in (("merges", "結合"), ("conditional_formats", "条件付き書式"), ("validations", "入力規則")):
+            if sh[key]:
+                L.append(f"  {label}: {' '.join(sh[key])}")
+        L.append("  行（値/数式 [書式の種類]）:")
+        for row in sh["rows"]:
+            parts = []
+            for c in row["cells"]:
+                body = c["formula"] if "formula" in c else repr(c["value"])
+                parts.append(f"{c['ref']}: {body} [{c['style']}]" + (f" ⚠{c['hint']}" if "hint" in c else ""))
+            if row["styled_blank"]:
+                parts.append(f"（値なし・書式のみ {row['styled_blank']}）")
+            L.append(f"    {row['row']:>3}: " + "  ".join(parts) if parts else f"    {row['row']:>3}: （値なし）")
+        if sh["same_shape_runs"]:
+            L.append("  同じ書式の行が続く範囲（繰り返しの候補）: " + ", ".join(
+                f"{r['rows']}（{r['period']} 行周期）" for r in sh["same_shape_runs"]))
+        for t in sh["auto_detected_tables"]:
+            end = t["first_row"] + t["sample_rows"] - 1
+            L.append(f"  自動検出の下書き: 見出し {t['header_row']} 行 / サンプル {t['first_row']}-{end} 行 / 繰り返し元 {t['pattern']}（確定ではない）")
+        for w in sh["warnings"]:
+            L.append(f"  ! {w}")
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------------------
 # render
 # ---------------------------------------------------------------------------
 
@@ -683,12 +846,19 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
             if not isinstance(rows, list):
                 raise TemplateError(f"{t['key']!r} は配列である必要があります")
             first, count = int(t["first_row"]), int(t["sample_rows"])
+            block = int(t.get("block_rows", 1))
+            if block < 1 or count % block:
+                raise TemplateError(f"sample_rows ({count}) は block_rows ({block}) の倍数にしてください（表 {t['id']}）")
             pattern = [int(p) for p in t.get("pattern") or [first]]
             for p in pattern:
-                if not first <= p < first + count:
-                    raise TemplateError(f"pattern の行 {p} がサンプル行 {first}-{first + count - 1} の外です")
-            tbls.append({"def": t, "first": first, "count": count, "end": first + count - 1,
-                         "n": max(len(rows), 1), "rows": rows, "pattern": pattern})
+                if not first <= p <= first + count - block:
+                    raise TemplateError(f"pattern の行 {p} がサンプル行 {first}-{first + count - block}（ブロックの先頭になれる範囲）の外です")
+            tbls.append({"def": t, "first": first, "count": count, "end": first + count - 1, "block": block,
+                         "n": max(len(rows), 1) * block, "rows": rows, "pattern": pattern})
+        for spec in sd.get("drop_rows") or []:  # 無視する行: 出力から取り除く
+            a, b = parse_row_spec(spec)
+            tbls.append({"def": {}, "first": a, "count": b - a + 1, "end": b, "block": 1, "n": 0,
+                         "rows": [], "pattern": [], "drop": True})
         tbls.sort(key=lambda x: x["first"])
         for a, b in zip(tbls, tbls[1:]):
             if a["end"] >= b["first"]:
@@ -734,6 +904,13 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings) -> 
         except KeyError:
             raise TemplateError(f"データに {key!r} がありません（cells の {ref}）")
 
+    clear_cells: set[tuple[int, int]] = set()
+    for spec in sd.get("clear") or []:  # 無視する値: 書式は残して空にする
+        for col, r in parse_cell_spec(spec):
+            if r in tbl_of:
+                raise TemplateError(f"clear の {spec} は表のサンプル行の中です（列の clear を使う）")
+            clear_cells.add((col, r))
+
     new_rows: list[etree._Element] = []
     pattern_map: dict[int, list[int]] = {}  # 元のサンプル行 → 出力行の一覧（結合セルの複製用）
 
@@ -746,6 +923,11 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings) -> 
             if f.get("ref"):
                 f.set("ref", rw.sqref(f.get("ref")))
         _set_row_number(row, new_r)
+        for (col, rr) in clear_cells:
+            if rr == r:
+                for c in row:
+                    if cell_col(c) == col and c.find(q("f")) is None:
+                        set_value(c, None, styles)
         for (col, rr), value in fixed_cells.items():
             if rr == r:
                 set_value(_get_or_make_cell(row, col, new_r), value, styles)
@@ -778,53 +960,66 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings) -> 
     _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
 
 
-def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings) -> None:
-    td = t["def"]
-    columns = {}
-    for letter, spec in (td.get("columns") or {}).items():
-        columns[column_index_from_string(letter.upper())] = spec
-    new_first = t["first"] + rowmap.shift_before(t["first"])
-    for i in range(t["n"]):
-        src_r = t["pattern"][i % len(t["pattern"])]
-        target_r = new_first + i
-        row = deepcopy(orig[src_r]) if src_r in orig else etree.Element(q("row"), r=str(src_r))
-        pattern_map.setdefault(src_r, []).append(target_r)
-        src_new = src_r + rowmap.shift_before(src_r)
-        offset = target_r - src_new
+def _column_maps(td: dict, block: int) -> list[dict]:
+    """行ごとの列指定 {列番号: spec} のリスト。block_rows=1 なら columns、2 以上なら block（行ごとの columns）。"""
+    def conv(cols):
+        return {column_index_from_string(letter.upper()): spec for letter, spec in (cols or {}).items()}
+    if block == 1:
+        return [conv(td.get("columns"))]
+    rows = td.get("block")
+    if not isinstance(rows, list) or len(rows) != block:
+        raise TemplateError(f"block_rows={block} の表 {td.get('id')} には、行ごとの列指定 block を {block} 個書いてください")
+    return [conv(r) for r in rows]
 
-        def row_fn(rm, idx, last, absolute, r, _off=offset):
-            if absolute:
+
+def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings) -> None:
+    if t.get("drop"):
+        return
+    td, k = t["def"], t["block"]
+    colmaps = _column_maps(td, k)
+    new_first = t["first"] + rowmap.shift_before(t["first"])
+    for rec in range(t["n"] // k):
+        start = t["pattern"][rec % len(t["pattern"])]
+        row_data = t["rows"][rec] if rec < len(t["rows"]) else None
+        for j in range(k):
+            src_r = start + j
+            target_r = new_first + rec * k + j
+            row = deepcopy(orig[src_r]) if src_r in orig else etree.Element(q("row"), r=str(src_r))
+            pattern_map.setdefault(src_r, []).append(target_r)
+            offset = target_r - (src_r + rowmap.shift_before(src_r))
+
+            def row_fn(rm, idx, last, absolute, r, _off=offset):
+                if absolute:
+                    return rm.map(r, last)
+                if r <= t["end"]:
+                    return rm.map(r, False) + _off
                 return rm.map(r, last)
-            if r <= t["end"]:
-                return rm.map(r, False) + _off
-            return rm.map(r, last)
-        for c in row:
-            f = c.find(q("f"))
-            if f is not None and f.text:
-                f.text = rw.formula(f.text, row_fn)
-        _set_row_number(row, target_r)
-        row_data = t["rows"][i] if i < len(t["rows"]) else None
-        for col, spec in columns.items():
-            if spec.get("formula") or spec.get("keep"):
-                continue
-            c = _get_or_make_cell(row, col, target_r)
-            if spec.get("clear") or "key" not in spec:
-                set_value(c, None, styles)
-                continue
-            key = spec["key"]
-            if key == "$index":
-                value = i + 1 if row_data is not None else None
-            elif row_data is None:
-                value = None
-            elif isinstance(row_data, dict):
-                value = row_data.get(key)
-            else:
-                raise TemplateError(f"{td['key']!r} の要素はオブジェクトである必要があります")
-            if isinstance(value, (dict, list)):
-                raise TemplateError(f"{td['key']}[{i}].{key} に配列・オブジェクトは入れられません")
-            set_value(c, value, styles)
-        _strip_cached(row)
-        out_rows.append(row)
+            for c in row:
+                f = c.find(q("f"))
+                if f is not None and f.text:
+                    f.text = rw.formula(f.text, row_fn)
+            _set_row_number(row, target_r)
+            for col, spec in colmaps[j].items():
+                if spec.get("formula") or spec.get("keep"):
+                    continue
+                c = _get_or_make_cell(row, col, target_r)
+                if spec.get("clear") or "key" not in spec:
+                    set_value(c, None, styles)
+                    continue
+                key = spec["key"]
+                if key == "$index":
+                    value = rec + 1 if row_data is not None else None
+                elif row_data is None:
+                    value = None
+                elif isinstance(row_data, dict):
+                    value = row_data.get(key)
+                else:
+                    raise TemplateError(f"{td['key']!r} の要素はオブジェクトである必要があります")
+                if isinstance(value, (dict, list)):
+                    raise TemplateError(f"{td['key']}[{rec}].{key} に配列・オブジェクトは入れられません")
+                set_value(c, value, styles)
+            _strip_cached(row)
+            out_rows.append(row)
 
 
 def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings) -> None:
@@ -1011,7 +1206,8 @@ def skeleton_data(definition: dict) -> dict:
         for key in (sd.get("cells") or {}).values():
             _set_path(out, key, None)
         for t in sd.get("tables", []):
-            row = {c["key"]: None for c in (t.get("columns") or {}).values()
+            colmaps = t["block"] if t.get("block_rows", 1) > 1 and t.get("block") else [t.get("columns")]
+            row = {c["key"]: None for cols in colmaps for c in (cols or {}).values()
                    if c.get("key") and c["key"] != "$index" and not c.get("keep") and not c.get("clear")}
             _set_path(out, t["key"], [row])
     return out
@@ -1027,13 +1223,20 @@ def validate_definition(template: "str | bytes", definition: dict) -> None:
             raise TemplateError(f"テンプレートにシート「{sd['name']}」がありません")
         for ref in (sd.get("cells") or {}):
             split_ref(ref)
+        for spec in sd.get("clear") or []:
+            parse_cell_spec(spec)
+        for spec in sd.get("drop_rows") or []:
+            parse_row_spec(spec)
         for t in sd.get("tables", []):
             first, count = int(t["first_row"]), int(t["sample_rows"])
+            block = int(t.get("block_rows", 1))
+            if block < 1 or count % block:
+                raise TemplateError(f"sample_rows ({count}) は block_rows ({block}) の倍数にしてください（表 {t['id']}）")
             for p in t.get("pattern") or [first]:
-                if not first <= int(p) < first + count:
-                    raise TemplateError(f"pattern の行 {p} がサンプル行 {first}-{first + count - 1} の外です（表 {t['id']}）")
-            for letter in (t.get("columns") or {}):
-                column_index_from_string(letter.upper())
+                if not first <= int(p) <= first + count - block:
+                    raise TemplateError(f"pattern の行 {p} がサンプル行 {first}-{first + count - block} の外です（表 {t['id']}）")
+            for cols in _column_maps(t, block):
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1204,6 +1407,16 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def cmd_inspect(args) -> int:
+    facts = inspect_template(args.template)
+    if args.json:
+        json.dump(facts, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    else:
+        print(format_facts(facts))
+    return 0
+
+
 def _template_arg(args, definition) -> str:
     template = args.template or definition.get("template")
     if not template:
@@ -1254,6 +1467,10 @@ def add_subcommands(sub) -> None:
     a.add_argument("template", help="テンプレート .xlsx")
     a.add_argument("-o", "--output", help="定義ファイルの出力先（.json / .yaml。省略時は <テンプレート>.def.json）")
     a.set_defaults(func=cmd_analyze)
+    i = sub.add_parser("inspect", help="テンプレートの事実（値・数式・書式の種類・結合・仮値の疑い）を、判断用に出す")
+    i.add_argument("template", help="テンプレート .xlsx")
+    i.add_argument("--json", action="store_true", help="JSON で出す")
+    i.set_defaults(func=cmd_inspect)
     r = sub.add_parser("render", help="テンプレート + 定義 + データから xlsx を再構成する")
     r.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template）")
     r.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
