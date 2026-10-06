@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import unittest
 from unittest import mock
 
@@ -82,6 +83,27 @@ class TestResolveLimit(unittest.TestCase):
             ollama_context.resolve_limit("m")
         self.assertEqual(len(calls), 1)
 
+    def test_default_host_cache_follows_ollama_host_changes(self):
+        """既定 host を切り替えたら、前のサーバの文脈長を使い回さない。"""
+        calls = []
+
+        def fake(host, path, body=None):
+            actual = host or os.environ.get("OLLAMA_HOST", "").rstrip("/")
+            calls.append((actual, path))
+            if path != "/api/ps":
+                return None
+            value = 2048 if actual.endswith(":11434") else 4096
+            return {"models": [{"name": "m", "context_length": value}]}
+
+        with mock.patch.object(ollama_context, "_get_json", fake):
+            with mock.patch.dict(os.environ, {"OLLAMA_HOST": "http://127.0.0.1:11434"}, clear=False):
+                self.assertEqual(ollama_context.resolve_limit("m"), (2048, "server"))
+            with mock.patch.dict(os.environ, {"OLLAMA_HOST": "http://127.0.0.1:11435"}, clear=False):
+                self.assertEqual(ollama_context.resolve_limit("m"), (4096, "server"))
+
+        ps_hosts = [host for host, path in calls if path == "/api/ps"]
+        self.assertEqual(ps_hosts, ["http://127.0.0.1:11434", "http://127.0.0.1:11435"])
+
     def test_metadata_failures_never_raise(self):
         """上限が分からないだけで実行は続く（ここで落とすと本末転倒）。"""
         with mock.patch.object(ollama_context.urllib.request, "urlopen",
@@ -101,7 +123,7 @@ class TestContextTracker(unittest.TestCase):
     def test_cache_hit_underreport_is_corrected(self):
         """キャッシュ命中で「新規評価分だけ」返す版でも、使用量は減らない。
 
-        会話は伸びる一方なので、減って見えたら差分報告とみなして積み上げる。
+        会話は伸びる一方なので、減って見えたら差分報告とみなし、積み上げる。
         """
         tracker = ollama_context.ContextTracker(limit=10_000)
         tracker.observe(tokens_in=3000, tokens_out=200)      # 1 ラウンド目: 3200

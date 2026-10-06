@@ -146,14 +146,17 @@ def resolve_limit(model: str, *, options: "dict | None" = None, explicit: int = 
     if num_ctx > 0:
         return num_ctx, "options"
 
-    key = (host, model)
+    # host="" のままをキーにすると、長命プロセスで OLLAMA_HOST を切り替えた後も
+    # 前のサーバで得た上限を再利用してしまう。実際に問い合わせる URL をキーにする。
+    resolved_host = _host(host)
+    key = (resolved_host, model)
     if use_cache and key in _limit_cache:
         return _limit_cache[key]
 
-    value = _from_ps(host, model)
+    value = _from_ps(resolved_host, model)
     source = "server"
     if value <= 0:
-        value = _from_show(host, model)
+        value = _from_show(resolved_host, model)
         source = "model"
     if value <= 0:
         # **失敗はキャッシュしない**。TUI のような長命プロセスで一度取れなかっただけで、
