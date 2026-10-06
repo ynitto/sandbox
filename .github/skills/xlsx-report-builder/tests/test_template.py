@@ -267,6 +267,15 @@ class AnalyzeTests(Base):
         self.assertNotIn("B8", refs)
         self.assertNotIn("E10", refs)  # 数式は候補にしない
 
+    def test_date_code_recognizes_elapsed_time_formats(self):
+        for code in ("[h]:mm", "[hh]:mm:ss", "[m]:ss", "[mm]:ss", "[s]", "[ss]"):
+            with self.subTest(code=code):
+                self.assertTrue(xt._is_date_code(code))
+
+        for code in ("[Red]0.00", "[>=100]0", "[$-409]0.00", '[Blue]0 "hours"'):
+            with self.subTest(code=code):
+                self.assertFalse(xt._is_date_code(code))
+
     def test_cli_roundtrip_with_analyzed_definition(self):
         import xlsx_builder  # noqa: F401  (サブコマンド統合の確認)
         defn = os.path.join(self.dir, "d.json")
