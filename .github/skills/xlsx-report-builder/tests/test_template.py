@@ -910,5 +910,56 @@ class UsabilityGuardTests(Base):
         self.assertEqual(cols["C"]["key"], "数量")  # 1, 1 は連番ではない
 
 
+    def test_numeric_text_becomes_a_number_in_number_formatted_cells(self):
+        data = dict(DATA, items=[{"name": "1,200", "qty": 1, "price": "1,200"}, {"name": "b", "qty": 1, "price": "300"}])
+        ws = load_workbook(self.render(data))["請求書"]
+        self.assertEqual((ws["D8"].value, ws["D9"].value), (1200, 300))   # #,##0 のセルは数値に（SUM が数える）
+        self.assertEqual(ws["B8"].value, "1,200")                          # 標準のセルは文字のまま
+
+    def small(self, build):
+        path = os.path.join(self.dir, "small.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "S"
+        build(ws)
+        wb.save(path)
+        return path
+
+    def test_sample_hyperlinks_do_not_point_new_values_at_the_old_target(self):
+        def build(ws):
+            ws.append(["名前", "URL"])
+            ws.append(["a", "http://old.example"])
+            ws["B2"].hyperlink = "http://old.example"
+            ws["A1"].hyperlink = "http://keep.example"   # データを入れないセルのリンクは残す
+        tpl = self.small(build)
+        d = {"version": 1, "sheets": [{"name": "S", "tables": [{"id": "t", "header_row": 1, "first_row": 2, "sample_rows": 1,
+                                                                 "key": "rows", "columns": {"A": {"key": "n"}, "B": {"key": "u"}}}]}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        warnings = xt.render(tpl, d, {"rows": [{"n": "x", "u": "http://new1"}, {"n": "y", "u": "http://new2"}]}, out)
+        ws = load_workbook(out)["S"]
+        self.assertEqual([ws[c].hyperlink for c in ("B2", "B3")], [None, None])
+        self.assertEqual(ws["A1"].hyperlink.target, "http://keep.example")
+        self.assertTrue(any("ハイパーリンク" in w for w in warnings))
+        with zipfile.ZipFile(out) as z:
+            rels = z.read("xl/worksheets/_rels/sheet1.xml.rels").decode()
+        self.assertNotIn("old.example", rels)    # 元のリンク先を zip に残さない
+
+    def test_array_formula_range_follows_each_copied_row(self):
+        from openpyxl.worksheet.formula import ArrayFormula
+
+        def build(ws):
+            ws.append(["a", "b", "c"])
+            ws.append([1, 2, None])
+            ws["C2"] = ArrayFormula("C2", "=SUM(A2:B2*1)")
+        tpl = self.small(build)
+        d = {"version": 1, "sheets": [{"name": "S", "tables": [{"id": "t", "header_row": 1, "first_row": 2, "sample_rows": 1,
+                                                                 "key": "rows", "columns": {"A": {"key": "a"}, "B": {"key": "b"},
+                                                                                            "C": {"formula": True}}}]}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, d, {"rows": [{"a": 1, "b": 2}, {"a": 3, "b": 4}, {"a": 5, "b": 6}]}, out)
+        with zipfile.ZipFile(out) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        self.assertEqual(re.findall(r'<c r="(C\d)"><f t="array" ref="([^"]+)"', sheet), [("C2", "C2"), ("C3", "C3"), ("C4", "C4")])
+
 if __name__ == "__main__":
     unittest.main()

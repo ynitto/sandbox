@@ -177,6 +177,12 @@ class Styles:
     def is_date(self, s: str | None) -> bool:
         return self.date.get(int(s or 0), False)
 
+    def is_number(self, s: str | None) -> bool:
+        """数値の書式（`#,##0`・`0.0%` など）のセルか。標準・文字列（@）・日付は含めない。"""
+        code = self.code.get(int(s or 0), "General")
+        return code not in ("General", "@") and not code.startswith("builtin:") and not self.is_date(s) \
+            and bool(re.search(r"[0#]", re.sub(r'"[^"]*"', "", code)))
+
 
 def _is_date_code(code: str) -> bool:
     stripped = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.', "", code)
@@ -772,7 +778,8 @@ def _excel_serial(value: str) -> float | None:
 
 
 ILLEGAL_XML_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
-MAX_CELL_TEXT = 32767  # Excel の 1 セルの文字数の上限
+MAX_CELL_TEXT = 32767
+NUMERIC_TEXT_RE = re.compile(r"^[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$")  # Excel の 1 セルの文字数の上限
 
 
 def set_value(c, value: Any, styles: Styles, replace_formula: bool = False) -> None:
@@ -792,6 +799,11 @@ def set_value(c, value: Any, styles: Styles, replace_formula: bool = False) -> N
         etree.SubElement(c, q("v")).text = repr(value)
     else:
         text = str(value)
+        if styles.is_number(c.get("s")) and NUMERIC_TEXT_RE.match(text.strip()):
+            # CSV などから来た `"1,200"` を文字のまま入れると、SUM が数えず合計が黙って狂う
+            number = float(text.strip().replace(",", ""))
+            etree.SubElement(c, q("v")).text = repr(int(number) if number.is_integer() and "." not in text else number)
+            return
         if ILLEGAL_XML_RE.search(text):
             raise TemplateError(f"{c.get('r')} に入れる文字列に、Excel に保存できない制御文字があります: {text[:40]!r}")
         if len(text) > MAX_CELL_TEXT:
@@ -1020,6 +1032,15 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
         sheet_data.remove(child)
     sheet_data.extend(new_rows)
 
+    filled = set(fixed_cells) | clear_cells
+    for t in tables:
+        if t.get("drop"):
+            continue
+        colmaps = _column_maps(t["def"], t["block"])
+        for r in range(t["first"], t["end"] + 1):
+            filled |= {(col, r) for col, spec in colmaps[(r - t["first"]) % t["block"]].items()
+                       if not spec.get("formula") and not spec.get("keep")}
+    _drop_stale_links(pkg, part, root, filled, warnings)
     _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
 
 
@@ -1061,6 +1082,9 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                 f = c.find(q("f"))
                 if f is not None and f.text:
                     f.text = rw.formula(f.text, row_fn)
+                if f is not None and f.get("ref"):  # 配列数式の範囲も、複製先の行へずらす
+                    f.set("ref", re.sub(r"([A-Za-z]+)(\d+)",
+                                        lambda m: f"{m.group(1)}{int(m.group(2)) - src_r + target_r}", f.get("ref")))
             _set_row_number(row, target_r)
             for col, spec in colmaps[j].items():
                 if spec.get("formula") or spec.get("keep"):
@@ -1086,6 +1110,31 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                     leftovers.add(f"{get_column_letter(cell_col(c))}{src_r}")
             _strip_cached(row)
             out_rows.append(row)
+
+
+def _drop_stale_links(pkg, part, root, filled: set, warnings: list) -> None:
+    """データで置き換える・空にするセルのハイパーリンクを取り除く。残すと、新しい値に元の（サンプルの）リンク先が付く。"""
+    links = root.find(q("hyperlinks"))
+    if links is None:
+        return
+    dropped = []
+    for h in list(links):
+        if any(pos in filled for spec in (h.get("ref") or "").split() for pos in parse_cell_spec(spec)):
+            links.remove(h)
+            dropped.append(h.get("ref"))
+    if not dropped:
+        return
+    warnings.append(f"データを入れるセルのハイパーリンク（{', '.join(dropped)}）は、元のリンク先のままになるため取り除きました")
+    if not len(links):
+        root.remove(links)
+    rels_name = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
+    if rels_name in pkg.data:  # どこからも指さなくなったリンク先（元の URL）も残さない
+        used = {v for el in root.iter() for k, v in el.attrib.items() if k == f"{{{NS_R}}}id"}
+        rels = pkg.xml(rels_name)
+        for r in list(rels):
+            if r.get("Type", "").endswith("/hyperlink") and r.get("Id") not in used:
+                rels.remove(r)
+        pkg.put_xml(rels_name, rels)
 
 
 def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings) -> None:
