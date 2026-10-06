@@ -2464,6 +2464,58 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         self.assertIn("- [ ] 例を 1 つ書いた", self.run_pa(self.impl, "batch").stdout)
 
+    def test_guides_that_cannot_be_read_are_not_demanded(self) -> None:
+        # 無い文書・無い見出し・何にも当たらない glob の手順は、読み込めずエージェントには直せない。求めずに show で知らせる。
+        commit(self.impl, {"docs/notes.md": "# 書き方\n"}, "guide")
+        self.set_config(self.impl, guides=[{"use": "docs/missing.md", "when": {"files": ["src/*.py"]}},
+                                           {"use": "docs/notes.md#無い", "when": {"files": ["src/*.py"]}},
+                                           {"use": "docs/rules/*.md", "when": {"files": ["src/*.py"]}}])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("docs/missing.md が読めません", r.stdout)
+        self.assertIn("docs/notes.md#無い が読めません", r.stdout)
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+
+    def test_a_caller_guide_for_a_ref_is_read_where_the_document_is(self) -> None:
+        # refs[].guides の文書は、参照先にあれば参照先から読む（refs[].rules と同じ）。
+        commit(self.design, {"docs/style.md": "# 書き方\n\n表で書く。\n"}, "guide")
+        self.set_config(self.impl, refs=[{"name": "design", "path": "../design",
+                                          "guides": [{"use": "docs/style.md", "when": {"files": ["docs/*.md"]}}]}])
+        self.assertNotIn("読めません", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(self.use_guides(PLAN_DRIFT, "- design:docs/style.md — 表で書く"))
+        self.assertIn("design:docs/style.md", self.run_pa(self.impl, "verify-plan").stderr)   # 読み込ませる
+        r = self.run_pa(self.impl, "guide", "design:docs/style.md")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_plan_ok()
+
+    def test_a_guide_for_renaming_is_handed_over_before_changing(self) -> None:
+        # 消す・名前を変えるときの手順は、変える前の見込み（あるファイルは「変える」）では当たらない。変える前に
+        # 条件付きで渡し、変えたあとは git に足していない新しいファイルとの名前の変更も見分ける。
+        commit(self.impl, {"src/old.py": "X = 1\n",
+                           "docs/move.md": "# 動かす\n\n- [ ] 呼び出し元を直した\n"}, "guide")
+        self.set_config(self.impl, guides=[{"use": "docs/move.md", "when": {"files": ["src/*.py"], "change": ["rename", "delete"]}}])
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                    "- src/app.py — `hello` の中でログを出す\n- src/old.py — `hello` の中でログを出す")
+        self.write_plan(plan)
+        self.assert_plan_ok()      # 変える見込みのファイルには、名前を変える手順を求めない
+        r = self.run_pa(self.impl, "batch")
+        self.assertIn("docs/move.md の手順は、名前を変える・消すときだけ効く", r.stdout)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/old.py").rename(self.impl / "src/new.py")
+        (self.impl / ".codd/apply.md").write_text("## 計画との違い\n\n- src/new.py — 追加: 名前を変えた\n", encoding="utf-8")
+        self.run_pa(self.impl, "accept")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/move.md", r.stderr)
+        self.assertIn("- src/new.py", (self.impl / ".codd/skill-review.md").read_text(encoding="utf-8"))  # 名前を変えた先も
+        # 手順の行の下に、ファイルと答えを 1 行ずつ書いてよい。消したファイルも根拠に書ける。
+        (self.impl / ".codd/apply.md").write_text(
+            "- docs/move.md — 名前を変えた:\n  - src/old.py → src/new.py\n"
+            "  - [x] 呼び出し元を直した — src/old.py を指すところは無い\n\n"
+            "## 計画との違い\n\n- src/new.py — 追加: 名前を変えた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_bad_guides_config_is_reported(self) -> None:
         for value in ({"use": "x.md"}, [{"use": "../x.md"}], [{"use": "skill:bad name"}], [{"use": "x.md", "when": {"phase": "x"}}],
                       [{"use": "x.md", "when": {"change": ["move"]}}], [{"use": "tool:gh", "check": ["x"]}], [{"use": "x.md", "y": 1}]):

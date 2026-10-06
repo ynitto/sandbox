@@ -64,6 +64,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -304,6 +305,7 @@ def test_commands(value) -> list[tuple[str, list[str]]]:
 GUIDE_KEYS = {"use", "when", "must", "check", "asks"}
 WHEN_KEYS = {"phase", "files", "change", "tests", "terms"}
 CHANGES = ("create", "update", "delete", "rename")
+CHANGE_WORDS = {"create": "作る", "update": "変える", "delete": "消す", "rename": "名前を変える"}
 # 手順の文書の置き場所（リポジトリのルートから）。先頭に `codd:` を書いた文書は、置くだけで効く。
 GUIDE_DIRS = [".agents/guides"]
 
@@ -444,6 +446,18 @@ def front_guides(repo: Path, skill_dirs: list[str]) -> list[Guide]:
         entry.update({k: meta[k] for k in ("must", "check", "asks") if k in meta})
         out.append(parse_guide(entry, f"{rel} の codd", repo, rel))
     return out
+
+
+def entry_home(entry: dict, ref: Path, caller: Path) -> Path:
+    """呼び出し元が refs[].guides に書いた文書を読むリポジトリ。参照先にあれば参照先（refs[].rules と同じ）、
+    無くて呼び出し元にあれば呼び出し元（呼び出し元の手順を参照先のファイルに足す）。"""
+    use = entry.get("use", "")
+    if use.partition(":")[0] in ("skill", "tool"):
+        return caller
+    path = use.partition("#")[0]
+    if expand_rules(ref, [path]) or not expand_rules(caller, [path]):
+        return ref
+    return caller
 
 
 def empty_guides() -> dict:
@@ -703,7 +717,8 @@ class Ctx:
                 guides = empty_guides()   # 参照先に codd が無くても、置いた手順の文書は効く
                 fold_guides(guides, front_guides(path, DEFAULT_SKILL_DIRS))
             added = empty_guides()
-            fold_guides(added, [parse_guide(e, f"{CONFIG_NAME} の refs[{entry['name']}].guides[{i}]", root, CONFIG_NAME)
+            fold_guides(added, [parse_guide(e, f"{CONFIG_NAME} の refs[{entry['name']}].guides[{i}]",
+                                            entry_home(e, path, root), CONFIG_NAME)
                                 for i, e in enumerate(entry["guides"])])
             self.refs.append(Ref(entry["name"], path, entry["scope"], exclude=entry["exclude"],
                                  config=ref_config, label=label,
@@ -3769,14 +3784,14 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
     tools: list[str] = []
     for key, name in apply_skills(ctx, {k for k, files in touched.items() if files}):
         rels = sorted(touched.get(key, set()))
-        said = [ln for ln in lines if mentioned(ln, name)]
+        said = record_blocks(lines, lambda ln, n=name: mentioned(ln, n))
         if not any(rel in ln for ln in said for rel in rels):
             found = find_skill(ctx, name)
             missing.append((key, f"`{name}`", (read_text(found[1]) or "") if found else "", rels,
                             lambda n=name, f=found: log_skill_read(ctx, n, f)))
     for key, g, rels in guide_hits(ctx, touched_files(a), "apply", actual=True):
         names = guide_names(ctx, g, key)
-        said = [ln for ln in lines if names_guide(ln, g, names)]
+        said = record_blocks(lines, lambda ln, g=g, names=names: names_guide(ln, g, names))
         done = [rel for rel in rels if any(rel in ln for ln in said)]
         if (len(done) == len(rels)) if each_file(g) else done:
             continue
@@ -3824,6 +3839,23 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
             {label.strip("`") for _, label, _, _, _ in missing})
 
 
+def record_blocks(lines: list[str], hit) -> list[str]:
+    """記録のうち、手順を挙げた行と、その下に字下げして続く行をまとめたもの。
+    変えたファイルや確かめることを、手順の行の下に 1 行ずつ書いても、その手順の記録として読む。"""
+    out = []
+    for i, line in enumerate(lines):
+        if not hit(line):
+            continue
+        indent = len(line) - len(line.lstrip())
+        block = [line]
+        for nxt in lines[i + 1:]:
+            if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                break
+            block.append(nxt)
+        out.append("\n".join(block))
+    return out
+
+
 def mark_docs_read(ctx: Ctx, docs: list[tuple[str, Path, str]]) -> None:
     """見直しの資料に載せた手順の文書は、読み込んだと控える。"""
     log = guides_read(ctx)
@@ -3850,7 +3882,7 @@ def asks_problems(ctx: Ctx, a: "Applied", log: str) -> list[str]:
                 continue
             for token in _ANSWER_PATH.findall(answer.split(item, 1)[-1]):
                 rel = token.split(":", 1)[1] if ":" in token else token
-                if not any((side.path / rel).exists() for _, side in all_sides(ctx)):
+                if not any((side.path / rel).exists() or rel in side_changes(ctx, k) for k, side in all_sides(ctx)):
                     bad_paths.append(f"{g.label}: {item} — {token}")
     problems = []
     if unanswered:
@@ -3931,26 +3963,45 @@ def side_changes(ctx: Ctx, key: str) -> dict[str, str]:
         return cache[key]
     side = side_of(ctx, key)
     out: dict[str, str] = {}
-    for line in run(["git", "diff", "--name-status", "-M", side.diff_base], side.path, GIT_TIMEOUT)[1].splitlines():
+    lines = run(["git", "diff", "--name-status", "-M", side.diff_base], side.path, GIT_TIMEOUT)[1]
+    index = run(["git", "rev-parse", "--path-format=absolute", "--git-path", "index"], side.path, GIT_TIMEOUT)[1].strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        # 新しいファイルはまだ git に足していないので、そのままでは名前を変えたことが分からない。利用者の index は
+        # 触らず、写しの index に今の中身をすべて足して比べる。
+        temp = Path(tmp) / "index"
+        if index and Path(index).is_file():
+            shutil.copyfile(index, temp)
+        env = {**os.environ, "GIT_INDEX_FILE": str(temp)}
+        if run(["git", "add", "-A", "--", "."], side.path, GIT_TIMEOUT, env)[0] == 0:
+            rc, staged = run(["git", "diff", "--cached", "--name-status", "-M", side.diff_base], side.path, GIT_TIMEOUT, env)
+            if rc == 0:
+                lines = staged
+    for line in lines.splitlines():
         parts = line.split("\t")
         code = parts[0][:1]
         kind = {"A": "create", "D": "delete", "R": "rename"}.get(code, "update")
         for rel in parts[1:]:
             out[rel] = kind
     for rel in run(["git", "ls-files", "--others", "--exclude-standard"], side.path, GIT_TIMEOUT)[1].splitlines():
-        out[rel] = "create"
+        out.setdefault(rel, "create")
     cache[key] = out
     return out
 
 
-def change_kind(ctx: Ctx, key: str, rel: str, actual: bool) -> str:
+def change_kinds(ctx: Ctx, key: str, rel: str, actual: bool, possible: bool = False) -> tuple[str, ...]:
+    """ファイルの変え方。変える前は、あれば update、無ければ create と見込む（possible なら、消す・名前を変えるも）。"""
     if actual:
-        return side_changes(ctx, key).get(rel, "update")
-    return "update" if (side_of(ctx, key).path / rel).exists() else "create"
+        return (side_changes(ctx, key).get(rel, "update"),)
+    exists = (side_of(ctx, key).path / rel).exists()
+    if possible:
+        return ("update", "delete", "rename") if exists else ("create", "rename")
+    return ("update",) if exists else ("create",)
 
 
-def guide_hits(ctx: Ctx, files, phase: str, actual: bool = False) -> list[tuple[str, Guide, list[str]]]:
-    """作る・変えるファイルに当たる手順（側の名前、手順、当たったファイル）。actual は実際の変更で測るとき。"""
+def guide_hits(ctx: Ctx, files, phase: str, actual: bool = False,
+               possible: bool = False) -> list[tuple[str, Guide, list[str]]]:
+    """作る・変えるファイルに当たる手順（側の名前、手順、当たったファイル）。actual は実際の変更で測るとき。
+    possible は変える前に、消す・名前を変えるなら当たる手順も含めるとき（変える前に渡しておき、手戻りを防ぐ）。"""
     found: dict[tuple[str, int], tuple[Guide, set[str]]] = {}
     for key, rel in files:
         for g in side_triggered(ctx, key):
@@ -3960,10 +4011,23 @@ def guide_hits(ctx: Ctx, files, phase: str, actual: bool = False) -> list[tuple[
                 continue
             if g.tests is not None and is_test(ctx, key, rel) != g.tests:
                 continue
-            if g.change and change_kind(ctx, key, rel, actual) not in g.change:
+            if g.change and not set(change_kinds(ctx, key, rel, actual, possible)) & set(g.change):
+                continue
+            if not readable(ctx, g, key):
                 continue
             found.setdefault((key, id(g)), (g, set()))[1].add(rel)
     return [(key, g, sorted(rels)) for (key, _), (g, rels) in found.items()]
+
+
+def readable(ctx: Ctx, g: Guide, key: str) -> bool:
+    """手順の中身を読めるか。文書が無い・見出しが無い・glob に当たらない手順は、読み込めず記録も合わないので
+    求めない（求めるとエージェントには直せず、同じ指摘でやり直すだけになる）。`show` が「読めません」と知らせる。"""
+    if g.kind != "doc":
+        return True
+    cache = ctx.__dict__.setdefault("_readable", {})
+    if (key, id(g)) not in cache:
+        cache[(key, id(g))] = any(doc_text(repo, sp) is not None for _, repo, sp in guide_docs(ctx, g, key))
+    return cache[(key, id(g))]
 
 
 def each_file(g: Guide) -> bool:
@@ -4109,7 +4173,9 @@ def print_apply_skills(ctx: Ctx, keys, files=()) -> None:
     hits = guide_hits(ctx, files, "apply")
     names = unique([*(n for _, n in apply_skills(ctx, keys)), *(g.target for _, g, _ in hits if g.kind == "skill")])
     docs = [d for key, g, _ in hits for d in guide_docs(ctx, g, key)]
-    if not names and not hits:
+    sure = {(key, id(g)) for key, g, _ in hits}
+    maybe = [h for h in guide_hits(ctx, files, "apply", possible=True) if (h[0], id(h[1])) not in sure]
+    if not names and not hits and not maybe:
         return
     since = (ctx.data / "before.json").stat().st_mtime if (ctx.data / "before.json").is_file() else 0.0
     log = skills_read(ctx)
@@ -4125,6 +4191,11 @@ def print_apply_skills(ctx: Ctx, keys, files=()) -> None:
             print(f"  - [ ] {item}（変えたら `- [x] 項目 — 根拠` か `- 該当なし: 項目 — 理由` で答える）")
         if g.check:
             print(f"  - 変えたあとに検査が動かす: {' '.join(g.check)}")
+    for key, g, rels in maybe:
+        words = "・".join(CHANGE_WORDS[c] for c in g.change)
+        print(f"- {g.label} の手順は、{words}ときだけ効く（そうするなら `python3 {MACHINE_REL}/codd.py guide "
+              f"{guide_names(ctx, g, key)[0]}` で読み込んで従い、同じように記録する）: "
+              + ", ".join(side_label(ctx, key, rel) for rel in rels))
     done = [n for n in names if n not in fresh] + [d[0] for d in docs if d not in fresh_docs]
     if done:
         print("この回で読み込み済み（その手順に従う）: " + ", ".join(f"`{n}`" for n in unique(done)))
@@ -4572,7 +4643,7 @@ _KINDS = (
     ("ref-coverage", "any", ("計画で扱っていません",)),
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ", STALE_NAMES)),
     ("rules", "any", ("守る決まり", "従う手順", "手順の文書", "確かめることに答えていません", "スキル・道具", "リポジトリのスキル", "スキルの手順", "スキルを読み込んでいません",
-                        "ファイルに決められた手順")),
+                        "ファイルに決められた手順", "決められた道具を使った記録", "確かめることの根拠に書いたパス")),
     ("check", "apply", ("検査が失敗しました",)),
     # 人の判断が要る形の指摘（ずれを直すか残すか・目安や書式を変えてよいか）。下の shape の目印
     # （が「なし」です など）にも当たるので、先に form として止める。
