@@ -839,14 +839,17 @@ class Ctx:
 
     def unmatched_rules(self) -> list[str]:
         """設定に書いたのに、1 つのファイルにも当たらない決まり（綴り違い・移動に気付けるように）。"""
-        out = [p for p in self.config["rules"] if not expand_rules(self.root, [p])]
+        def why(repo: Path, p: str) -> str:   # 文書はあるのに見出しが無いときは、そう伝える（綴り違いに気付けるように）
+            path, anchor = split_anchor(p)
+            return f"（見出し「{anchor}」がありません）" if anchor and expand_rules(repo, [path]) else ""
+        out = [p + why(self.root, p) for p in self.config["rules"] if not expand_rules(self.root, [p])]
         for r in self.refs:
-            out += [f"{r.name}:{p}" for p in r.entry_rules if not expand_rules(r.path, [p])]
+            out += [f"{r.name}:{p}{why(r.path, p)}" for p in r.entry_rules if not expand_rules(r.path, [p])]
         return out
 
     def rule_candidates(self) -> list[tuple[str, str]]:
         """決まりらしいのに、まだ設定に無いマークダウン（（参照先の名前か ""、パス））。"""
-        known = set(self.rule_files())
+        known = {(n, split_anchor(r)[0]) for n, r in self.rule_files()} | set(self.rule_files())
         out = []
         # 自分はリポジトリ全体から探す（決まりは scope の外、ルートにあることが多い）。同じリポジトリの参照先の分は除く。
         same = [r for r in self.refs if r.path == self.root]
@@ -1016,7 +1019,13 @@ def expand_rules(repo: Path, patterns: list[str]) -> list[str]:
     """決まりのパスを実在するファイルに開く。`*`・`?`・`[...]`・`**` を含むものは glob として
     （git の :(glob) と同じ意味。`*` はフォルダをまたがず、`**/` はまたぐ）、追跡中と未追跡のファイルから引く。"""
     out: list[str] = []
-    for pat in unique_paths(patterns):
+    for spec in unique_paths(patterns):
+        # `パス#見出し` は、パスを開いてから見出しを付け直す。見出しの無い文書は当たらない
+        pat, anchor = split_anchor(spec)
+        if anchor:
+            out += [f"{h}#{anchor}" for h in expand_rules(repo, [pat])
+                    if f"{h}#{anchor}" not in out and doc_text(repo, f"{h}#{anchor}") is not None]
+            continue
         if _GLOB_CHARS.search(pat) or _BRACES.search(pat):
             # 除外のパス指定を並べると :(glob) が効かなくなる git があるので、作業フォルダとマシンは後から除く。
             # git の :(glob) は `{a,b}` を知らないので、そのときは全体を引いて glob_re で絞る。
@@ -1190,7 +1199,8 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     for name, rel in rules or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
     for pat in ctx.unmatched_rules():
-        print(f"  ! {pat} に当たるファイルがありません（{CONFIG_NAME} の guides・rules を確かめてください）")
+        print(f"  ! {pat if '（見出し' in pat else pat + ' に当たるファイルがありません'}"
+              f"（{CONFIG_NAME} の guides・rules を確かめてください）")
     candidates = ctx.rule_candidates()
     if candidates:
         print("決まりの候補（設定に無い。決まりなら `codd.py rules --write` で設定に書く）:")
@@ -1263,7 +1273,8 @@ def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
     for name, rel in ctx.rule_files() or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
     for pat in ctx.unmatched_rules():
-        print(f"  ! {pat} に当たるファイルがありません（{CONFIG_NAME} の guides・rules を確かめてください）")
+        print(f"  ! {pat if '（見出し' in pat else pat + ' に当たるファイルがありません'}"
+              f"（{CONFIG_NAME} の guides・rules を確かめてください）")
     candidates = ctx.rule_candidates()
     if args.only:
         candidates = [c for c in candidates if (f"{c[0]}:{c[1]}" if c[0] else c[1]) in args.only]
@@ -1499,6 +1510,8 @@ def explore_problems(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> li
 
 def rule_digest(ctx: Ctx, name: str, rel: str) -> str:
     repo = ctx.ref(name).path if name else ctx.root
+    if "#" in rel:   # 見出しで指した決まりは、その節の中身で比べる
+        return doc_digest(repo, rel) if doc_text(repo, rel) is not None else ""
     try:
         return hashlib.sha256((repo / rel).read_bytes()).hexdigest()
     except OSError:
@@ -1523,7 +1536,7 @@ def cmd_rule(ctx: Ctx, args: argparse.Namespace) -> int:
             print(f"# 守る決まり {label}（この回で読み込み済み・変わっていない。出し直すときは --again）\n")
             continue
         print(f"# 守る決まり {label}\n")
-        print(read_text(repo / rel) or "（読めませんでした）")
+        print(doc_text(repo, rel) or "（読めませんでした）")
         log[label] = rule_digest(ctx, name, rel)
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / RULES_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -2321,9 +2334,10 @@ def rules_problems(ctx: Ctx, body: str) -> list[str]:
     own_rels = {rel for name, rel in rules if not name}
     missing = []
     for name, rel in rules:
-        ok = mentioned(body, f"{name}:{rel}") if name else mentioned(body, rel)
+        path = split_anchor(rel)[0]   # 見出しで指した決まりは、文書のパスを挙げればよい（手順の文書と同じ）
+        ok = any(mentioned(body, f"{name}:{x}") if name else mentioned(body, x) for x in unique([rel, path]))
         if name and not ok and len(ctx.refs) == 1 and rel not in own_rels:
-            ok = mentioned(body, rel)  # 参照先が 1 つで、自分に同じ名前の決まりが無ければ名前を省いてよい
+            ok = any(mentioned(body, x) for x in unique([rel, path]))  # 参照先が 1 つで、自分に同じ名前の決まりが無ければ名前を省いてよい
         if not ok:
             missing.append(f"{name}:{rel}" if name else rel)
     if is_none(body) or missing:
@@ -4230,7 +4244,7 @@ def cmd_guide(ctx: Ctx, args: argparse.Namespace) -> int:
         if sep and kind == "skill":
             missing += load_skills(ctx, [rest])
             continue
-        if "/" not in spec and not spec.endswith(".md"):
+        if "/" not in spec and not split_anchor(spec)[0].endswith(".md"):   # `rules.md#見出し` は文書
             missing += load_skills(ctx, [spec])
             continue
         ref_name, sep, rel = spec.partition(":")

@@ -2218,6 +2218,32 @@ class CoddTest(unittest.TestCase):
         self.assertIn("読み直す）: CLAUDE.md", r.stderr)
         self.assertEqual(self.run_pa(self.impl, "rule", "nothing.md").returncode, 1)
 
+    def test_a_rule_section_named_by_heading_is_read_and_required(self) -> None:
+        # `use: "パス.md#見出し"` のいつも守る手順も、その節を読み込ませ、計画に挙げさせる（黙って効かなくならない）。
+        commit(self.impl, {"docs/rules.md": "# 決まり\n\n## Naming Rules\n\nsnake_case にする。\n\n## 他\n\n関係ない節\n"},
+               "rules")
+        commit(self.design, {"style.md": "# 書き方\n\n## 表\n\n型の列を書く。\n"}, "rules")
+        self.set_config(self.impl, guides=[{"use": "docs/rules.md#naming-rules"}, {"use": "design:style.md#表"},
+                                           {"use": "docs/rules.md#無い節"}])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("  - docs/rules.md#naming-rules\n", r.stdout)
+        self.assertIn("  - design:style.md#表\n", r.stdout)
+        self.assertNotIn("docs/rules.md#naming-rules に当たるファイルがありません", r.stdout)
+        self.assertIn("docs/rules.md#無い節（見出し「無い節」がありません）", r.stdout)
+        plan = PLAN_ALIGNED.replace("## 守る決まり\n\nなし", "## 守る決まり\n\n- docs/rules.md — snake_case\n"
+                                                              "- design:style.md — 型の列")
+        self.write_plan(plan, read=False)
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("読み込んでいません", r.stderr)
+        r = self.run_pa(self.impl, "rule", "--all")
+        self.assertIn("snake_case にする。", r.stdout)
+        self.assertNotIn("関係ない節", r.stdout)        # 見出しで指した節だけ
+        self.assertIn("型の列を書く。", r.stdout)
+        self.assertIn("型の列を書く。", self.run_pa(self.impl, "guide", "design:style.md#表").stdout)
+        self.assert_plan_ok()
+
     def test_plan_needs_exploring_and_handling_what_was_found(self) -> None:
         commit(self.design, {"docs/guide.md": "# 使い方\n\nログは標準出力に出す。\n"}, "guide")
         self.write_plan(PLAN_ALIGNED, read=False)
