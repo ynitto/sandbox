@@ -133,3 +133,21 @@ test('未対応の AI を選んでも他の AI 専用のスキルを混ぜない
   }
   assert.deepEqual(skills.list(repo, ''), ['claude-only', 'codex-only', 'common']);
 });
+
+test('BOM・CRLF の SKILL.md でも説明・タグ・版を読み、段落の空行で説明を切らない', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-crlf-'));
+  const skillRoot = path.join(root, 'skills');
+  fs.mkdirSync(path.join(skillRoot, 'win'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'win', 'SKILL.md'),
+    '﻿---\r\nname: win\r\ndescription: |\r\n  一行目。\r\n\r\n  二行目。\r\ntags:\r\n  - x\r\n  - y\r\nversion: 1.2.0\r\n---\r\n本文\r\n');
+  fs.mkdirSync(path.join(skillRoot, 'unix'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'unix', 'SKILL.md'), '---\ndescription: |\n  一行目。\n\n  二行目。\ntags:\n  - x\n---\n本文\n');
+  const items = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  const win = items.find((i) => i.name === 'win');
+  assert.strictEqual(win.description, '一行目。 二行目。');
+  assert.deepStrictEqual(win.tags, ['x', 'y']);
+  assert.strictEqual(win.version, '1.2.0');
+  const unix = items.find((i) => i.name === 'unix');
+  assert.strictEqual(unix.description, '一行目。 二行目。');
+  assert.deepStrictEqual(unix.tags, ['x']);
+});
