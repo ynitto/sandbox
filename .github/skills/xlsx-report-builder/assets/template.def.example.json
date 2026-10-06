@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "template": "請求書.xlsx",
+  "sheets": [
+    {
+      "name": "請求書",
+      "cells": {"B3": "customer", "B4": "date"},
+      "tables": [
+        {
+          "id": "items",
+          "header_row": 7,
+          "first_row": 8,
+          "sample_rows": 2,
+          "pattern": [8, 9],
+          "key": "items",
+          "columns": {
+            "A": {"key": "$index"},
+            "B": {"key": "name"},
+            "C": {"key": "qty"},
+            "D": {"key": "price"},
+            "E": {"formula": true}
+          }
+        }
+      ]
+    }
+  ]
+}

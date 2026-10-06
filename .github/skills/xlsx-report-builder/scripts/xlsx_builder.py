@@ -6,6 +6,12 @@
     cat spec.json | uv run python scripts/xlsx_builder.py build
     uv run python scripts/xlsx_builder.py example   # サンプル spec を標準出力
 
+既存 xlsx テンプレートへの流し込み（書式・不変部分を保つ）:
+    uv run python scripts/xlsx_builder.py inspect template.xlsx            # 判断用の事実を表示
+    uv run python scripts/xlsx_builder.py analyze template.xlsx -o def.yaml # 定義の下書き
+    uv run python scripts/xlsx_builder.py render --def def.json --data data.yaml -o out.xlsx
+    uv run python scripts/xlsx_builder.py export --def def.json -o render_xxx.py   # 単体で動く専用スクリプト
+
 スペックの詳細は references/spec.md を参照。
 """
 from __future__ import annotations
@@ -15,6 +21,10 @@ import datetime as dt
 import json
 import sys
 from typing import Any
+
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import xlsx_template  # noqa: E402
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
@@ -201,8 +211,15 @@ def main() -> int:
     b = sub.add_parser("build", help="spec から xlsx を生成")
     b.add_argument("--spec", help="スペック JSON ファイル（省略時は stdin）")
     sub.add_parser("example", help="サンプル spec を標準出力に表示")
+    xlsx_template.add_subcommands(sub)  # analyze / render（既存 xlsx テンプレートへの流し込み）
 
     args = parser.parse_args()
+    if args.command in ("analyze", "inspect", "check", "render", "export"):
+        try:
+            return args.func(args)
+        except xlsx_template.TemplateError as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            return 1
 
     if args.command == "example":
         json.dump(EXAMPLE_SPEC, sys.stdout, ensure_ascii=False, indent=2)

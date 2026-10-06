@@ -76,7 +76,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **meeting-minutes** | トランスクリプト・メモから議事録・決定事項・アクションアイテム（担当・期限）を生成する。要件定義・タスク分解への連携を支援する |
 | **commit-pr-writer** | diff・コミット履歴から Conventional Commits 準拠のコミットメッセージ・PR 説明文・CHANGELOG / リリースノート・semver 判定を生成する |
 | **presenter** | JSON スペックから PowerPoint を生成する。ブリーフィング→アウトライン→アートディレクション→スライド構成→レビューの段階的ワークフローで作成する。「スライドを作って」「パワポを作って」などで発動する |
-| **xlsx-report-builder** | JSON スペックから Excel (.xlsx) 帳票を生成する。複数シート・数値書式・合計行・条件付き書式・グラフ・フリーズペイン・オートフィルタに対応（openpyxl） |
+| **xlsx-report-builder** | JSON スペックから Excel (.xlsx) 帳票を生成する。複数シート・数値書式・合計行・条件付き書式・グラフ・フリーズペイン・オートフィルタに対応（openpyxl）。既存の .xlsx テンプレートへ、書式を保ったまま可変行の表を流し込む機能もある |
 | **table-spec-extractor** | 【非推奨】spec-value-finder を使用。Excel/PDF の仕様書テーブルを Table Transformer で AST 化し Neo4j グラフへ保存・GraphRAG 検索するパイプライン（Neo4j・GPU 依存のため後継へ移行） |
 
 ### 要件・計画 — 5
