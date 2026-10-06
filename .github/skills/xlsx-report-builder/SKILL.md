@@ -106,16 +106,30 @@ uv run python scripts/xlsx_builder.py render --def def.json --data data.json -o 
 
 ### T3b: この文書専用の単体スクリプトにする（任意）
 
-同じ帳票を繰り返し作るなら、確定した定義とテンプレートを埋め込んだ、スキル不要の 1 ファイルを書き出せる。
+同じ帳票を繰り返し作るなら、確定した定義を埋め込んだ、スキル不要の 1 ファイルを書き出せる。テンプレートの .xlsx は、既定では別ファイルのまま置く（スクリプトからの相対パスで読む）。
 
 ```bash
 uv run python scripts/xlsx_builder.py export --def def.yaml -o render_invoice.py
 uv run render_invoice.py --data data.yaml -o out.xlsx   # PEP 723 で依存（lxml・openpyxl・pyyaml）を自動で入れる
 ```
 
-- 書き出した `.py` は、スキルのディレクトリが無くても動く。テンプレートは埋め込み済み（`--no-embed` なら相対パスで参照）
-- `--example-data` でデータの雛形、`--extract-template` で埋め込みのテンプレートを取り出せる。`--help` にデータの形が出る
-- 定義を直したら `export` をやり直す。スクリプトを手で書き換えない
+- 書き出した `.py` は、スキルのディレクトリが無くても動く。テンプレートを同じ場所に置いておく
+- 配布を 1 ファイルにしたいときだけ `--embed` を付ける（テンプレートを base64 で埋め込む）
+- `--example-data` でデータの雛形、`--extract-def` で埋め込みの定義を取り出せる。`--help` にデータの形が出る
+
+#### 書き出したスクリプトの改修
+
+スクリプトを手で書き換えない。定義を直して、書き出し直す。
+
+```bash
+python render_invoice.py --extract-def def.yaml            # 1. 埋め込みの定義を取り出す
+#   def.yaml を直す（列の追加・キーの変更・pattern の見直しなど）
+uv run python scripts/xlsx_builder.py export --from-script render_invoice.py --def def.yaml -o render_invoice.py   # 2. 書き出し直す
+```
+
+- 定義を直さずに `--from-script` だけを付けると、定義とテンプレートを引き継いで、最新のエンジンで書き出し直す（エンジンの更新）
+- テンプレートが変わったときは `--template new.xlsx` を付ける。構造が変わったなら、`analyze` からやり直して定義を確定する
+- 書き出し時に定義とテンプレートの整合を検査する。合わなければ書き出さない
 
 ### T4: 検証する
 

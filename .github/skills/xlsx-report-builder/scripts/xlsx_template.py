@@ -1048,11 +1048,12 @@ STANDALONE_HEADER = '''#!/usr/bin/env python3
 """{title}
 
 xlsx テンプレートへデータを流し込む、固有の render スクリプト（xlsx-report-builder の export で生成）。
-このファイル 1 つで動く（スキルは不要）。テンプレートと表構造の定義は埋め込み済み。
+スキルは不要で動く。表構造の定義はこのファイルに埋め込み済み。{template_note}
 
     uv run {name} --data data.yaml -o out.xlsx
     python {name} --data data.json -o out.xlsx        # lxml・openpyxl・pyyaml が必要
     python {name} --example-data > data.yaml          # データの雛形を出す
+    python {name} --extract-def def.yaml              # 埋め込みの定義を取り出す（直したら export --from-script で再生成）
 
 データの形:
 {shape}
@@ -1066,29 +1067,69 @@ def _wrap_b64(raw: bytes) -> str:
     return "(\n" + "\n".join(f"    {line!r}" for line in lines) + "\n)"
 
 
-def export_script(template_path: str, definition: dict, output: str, embed: bool = True) -> None:
-    with open(template_path, "rb") as f:
-        raw = f.read()
+ENGINE_VERSION = 1  # 書き出したスクリプトに入るエンジンの版。export --from-script で最新へ更新できる
+
+
+def read_exported_script(path: str) -> tuple[dict, "bytes | None", str]:
+    """export が書き出したスクリプトから (定義, 埋め込みテンプレート or None, テンプレートの相対パス) を取り出す。
+
+    スクリプトは実行せず、ast で埋め込み部分の定数だけを読む。
+    """
+    import ast
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    found: dict[str, Any] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name == "DEFINITION":
+                call = node.value
+                if isinstance(call, ast.Call) and call.args and isinstance(call.args[0], ast.Constant):
+                    found[name] = json.loads(call.args[0].value)
+            elif name in ("TEMPLATE_B64", "TEMPLATE_PATH") and isinstance(node.value, ast.Constant):
+                found[name] = node.value.value
+    if "DEFINITION" not in found:
+        raise TemplateError(f"{path} は export が書き出したスクリプトではありません（DEFINITION が無い）")
+    b64 = found.get("TEMPLATE_B64") or ""
+    return found["DEFINITION"], (base64.b64decode(b64) if b64 else None), found.get("TEMPLATE_PATH", "")
+
+
+def export_script(template: "str | bytes", definition: dict, output: str, embed: bool = False,
+                  template_name: str | None = None) -> None:
+    """この文書専用の、単体で動く render スクリプトを書き出す。
+
+    template はパス、または（埋め込み専用で）bytes。embed=False ならテンプレートは別ファイルのまま、
+    スクリプトからの相対パスで参照する。
+    """
+    if isinstance(template, (bytes, bytearray)):
+        if not embed:
+            raise TemplateError("テンプレートのパスが無いため、埋め込みでしか書き出せません")
+        raw, rel = bytes(template), template_name or ""
+    else:
+        with open(template, "rb") as f:
+            raw = f.read()
+        rel = os.path.relpath(os.path.abspath(template), os.path.dirname(os.path.abspath(output)))
+        template_name = os.path.basename(template)
     validate_definition(raw, definition)
-    src_path = os.path.abspath(__file__)
-    with open(src_path, encoding="utf-8") as f:
+    with open(os.path.abspath(__file__), encoding="utf-8") as f:
         engine = f.read()
     # エンジン本体（CLI の入口より前）だけを取り込む
     engine = engine.split('\nif __name__ == "__main__":')[0]
     engine = engine.split("\n", 1)[1] if engine.startswith("#!") else engine
-    shape = "\n".join("    " + line for line in
-                       json.dumps(skeleton_data(definition), ensure_ascii=False, indent=2).splitlines())
-    title = f"{os.path.splitext(os.path.basename(template_path))[0]} の render スクリプト"
-    name = os.path.basename(output)
-    header = STANDALONE_HEADER.format(title=title, name=name, shape=shape)
     # docstring を 2 つ持てないため、エンジンの docstring は取り除く
     engine = re.sub(r'^"""[\s\S]*?"""\n', "", engine, count=1)
-    rel = os.path.relpath(os.path.abspath(template_path), os.path.dirname(os.path.abspath(output)))
+    shape = "\n".join("    " + line for line in
+                       json.dumps(skeleton_data(definition), ensure_ascii=False, indent=2).splitlines())
+    title = f"{os.path.splitext(template_name or 'template')[0]} の render スクリプト"
+    note = ("テンプレートも埋め込み済み（--template で差し替えられる）。" if embed
+            else f"テンプレート（{rel}）は、このスクリプトからの相対パスで読む。")
+    header = STANDALONE_HEADER.format(title=title, name=os.path.basename(output), shape=shape, template_note=note)
     tpl_literal = _wrap_b64(raw) if embed else '""'
     footer = (
         "\n\n# ---------------------------------------------------------------------------\n"
-        "# 埋め込み（export が書き出した部分）\n"
+        "# 埋め込み（export が書き出した部分。手で直さず、定義を直して export をやり直す）\n"
         "# ---------------------------------------------------------------------------\n"
+        f"ENGINE_VERSION = {ENGINE_VERSION}\n"
         f"DEFINITION = json.loads({json.dumps(definition, ensure_ascii=False)!r})\n"
         f"TEMPLATE_B64 = {tpl_literal}\n"
         f"TEMPLATE_PATH = {rel!r}  # 埋め込まない場合の、このスクリプトからの相対パス\n"
@@ -1108,8 +1149,13 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
     parser.add_argument("--template", help="埋め込みのテンプレートの代わりに使う .xlsx（定義と構造が同じものに限る）")
     parser.add_argument("--example-data", action="store_true", help="データの雛形（YAML）を標準出力に出す")
     parser.add_argument("--extract-template", metavar="PATH", help="埋め込みのテンプレートを書き出す")
+    parser.add_argument("--extract-def", metavar="PATH", help="埋め込みの定義を書き出す（.json / .yaml）")
     args = parser.parse_args()
     try:
+        if args.extract_def:
+            dump_structured(definition, args.extract_def)
+            print(f"書き出しました: {args.extract_def}")
+            return 0
         if args.example_data:
             print(_yaml().safe_dump(skeleton_data(definition), allow_unicode=True, sort_keys=False, default_flow_style=False), end="")
             return 0
@@ -1120,9 +1166,14 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
         elif template_bytes:
             template = template_bytes
         else:
-            with open(os.path.join(here, template_path), "rb") as f:
+            path = os.path.join(here, template_path)
+            if not os.path.exists(path):
+                raise TemplateError(f"テンプレートが見つかりません: {path}（--template で指定するか、export し直す）")
+            with open(path, "rb") as f:
                 template = f.read()
         if args.extract_template:
+            if not template_bytes and not args.template:
+                raise TemplateError("テンプレートは埋め込まれていません（元の .xlsx を使う）")
             with open(args.extract_template, "wb") as f:
                 f.write(template)
             print(f"書き出しました: {args.extract_template}")
@@ -1171,8 +1222,28 @@ def cmd_render(args) -> int:
 
 
 def cmd_export(args) -> int:
-    definition = load_structured(args.definition)
-    export_script(_template_arg(args, definition), definition, args.output, embed=not args.no_embed)
+    old_def, old_bytes, old_rel = (None, None, "")
+    old_dir = ""
+    if args.from_script:
+        old_def, old_bytes, old_rel = read_exported_script(args.from_script)
+        old_dir = os.path.dirname(os.path.abspath(args.from_script))
+    if args.definition:
+        definition = load_structured(args.definition)
+    elif old_def is not None:
+        definition = old_def
+    else:
+        raise TemplateError("--def か --from-script が必要です")
+    embed = args.embed
+    if args.template or definition.get("template") and not args.from_script:
+        template: "str | bytes" = _template_arg(args, definition)
+    elif old_bytes is not None:  # 以前のスクリプトに埋め込まれたテンプレートを引き継ぐ
+        template, embed = old_bytes, True
+    elif old_rel:
+        template = os.path.normpath(os.path.join(old_dir, old_rel))
+    else:
+        template = _template_arg(args, definition)
+    export_script(template, definition, args.output, embed=embed,
+                  template_name=os.path.basename(old_rel) if isinstance(template, bytes) else None)
     print(f"書き出しました: {args.output}")
     print(f"  使い方: uv run {os.path.basename(args.output)} --data data.yaml -o out.xlsx")
     return 0
@@ -1191,9 +1262,10 @@ def add_subcommands(sub) -> None:
     r.set_defaults(func=cmd_render)
     e = sub.add_parser("export", help="この文書専用の、単体で動く render スクリプトを書き出す")
     e.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template）")
-    e.add_argument("--def", dest="definition", required=True, help="確定した定義ファイル（.json / .yaml）")
+    e.add_argument("--def", dest="definition", help="確定した定義ファイル（.json / .yaml）。--from-script と併用すると、その定義を置き換える")
+    e.add_argument("--from-script", help="以前に export したスクリプト。定義・テンプレートを引き継いで、最新のエンジンで書き出し直す")
     e.add_argument("-o", "--output", required=True, help="書き出す .py")
-    e.add_argument("--no-embed", action="store_true", help="テンプレートを埋め込まず、相対パスで参照する")
+    e.add_argument("--embed", action="store_true", help="テンプレートもスクリプトに埋め込む（既定は別ファイルを相対パスで参照）")
     e.set_defaults(func=cmd_export)
 
 

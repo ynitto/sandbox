@@ -83,8 +83,26 @@ xlsx（zip）の中のシート XML のうち、**可変の表の行だけ**を�
 uv run python scripts/xlsx_builder.py export --def def.yaml -o render_invoice.py
 ```
 
-- 出力は、エンジン・定義・テンプレート（base64）を 1 つにまとめた Python ファイル。スキルのパスに依存しない
+- 出力は、エンジンと定義を 1 つにまとめた Python ファイル。スキルのパスに依存しない
+- **テンプレートは既定では別ファイル**のまま、スクリプトからの相対パスで読む。`--embed` を付けたときだけ base64 で埋め込む
 - 先頭に PEP 723 の依存宣言があり、`uv run render_invoice.py --data data.yaml -o out.xlsx` でそのまま動く。`python` で動かすときは lxml・openpyxl・pyyaml を入れておく
-- 引数: `--data`（json/yaml/`-`）、`-o`、`--template`（埋め込みの代わりに使う、構造が同じ .xlsx）、`--example-data`、`--extract-template PATH`
+- 引数: `--data`（json/yaml/`-`）、`-o`、`--template`（別の .xlsx に差し替える。構造が同じものに限る）、`--example-data`、`--extract-def PATH`、`--extract-template PATH`（埋め込み時のみ）
 - 書き出し時に、テンプレートと定義の整合（シート名・サンプル行・pattern・列）を検査する
-- `--no-embed` を付けると、テンプレートを埋め込まず、スクリプトからの相対パスで参照する
+
+### 改修
+
+書き出したスクリプトは、スキルで直せる。スクリプトを手で書き換えず、定義を直して書き出し直す。
+
+1. `python render_invoice.py --extract-def def.yaml`（スキルからは `export` が `--from-script` で直接読むので、この手順は手で直したいときだけ）
+2. `def.yaml` を直す
+3. `export --from-script render_invoice.py --def def.yaml -o render_invoice.py`
+
+| やりたいこと | コマンド |
+|---|---|
+| 定義を直す | `export --from-script old.py --def def.yaml -o new.py` |
+| エンジンを最新にする | `export --from-script old.py -o new.py`（定義・テンプレートは引き継ぐ） |
+| テンプレートを差し替える | `export --from-script old.py --template new.xlsx -o new.py` |
+
+- `--from-script` は、スクリプトを実行せず、埋め込みの定数だけを読む（`ast`）。export が書き出したものでなければ、エラーにする
+- 埋め込み版のスクリプトからは、埋め込みのテンプレートも引き継ぐ。相対参照版は、新しい出力先からの相対パスに直す
+- 表の構造が変わった（列や表の追加）ときは、`analyze` から定義を作り直す

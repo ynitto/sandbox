@@ -399,7 +399,7 @@ class StandaloneAndYamlTests(Base):
         self.assertEqual(ws["B4"].value.date().isoformat(), "2026-10-05")
 
     def test_exported_script_runs_without_the_skill(self):
-        script = self.export()
+        script = self.export(embed=True)
         with open(script, encoding="utf-8") as fh:
             text = fh.read()
         self.assertNotIn("import xlsx_template", text)
@@ -430,7 +430,7 @@ class StandaloneAndYamlTests(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_example_data_help_and_extract(self):
-        script = self.export()
+        script = self.export(embed=True)
         r = self.run_script(script, "--example-data")
         import yaml
         skeleton = yaml.safe_load(r.stdout)
@@ -443,8 +443,22 @@ class StandaloneAndYamlTests(Base):
         with open(ext, "rb") as a, open(self.tpl, "rb") as b:
             self.assertEqual(a.read(), b.read())
 
+    def test_template_stays_separate_by_default(self):
+        script = self.export()
+        with open(script, encoding="utf-8") as fh:
+            self.assertLess(len(fh.read()), 120_000)  # 既定ではテンプレートを抱え込まない
+        self.assertNotEqual(self.run_script(script, "--extract-template", os.path.join(self.dir, "x.xlsx")).returncode, 0)
+        os.rename(self.tpl, self.tpl + ".bak")
+        data = os.path.join(self.dir, "data.json")
+        with open(data, "w", encoding="utf-8") as f:
+            json.dump(DATA, f, ensure_ascii=False)
+        r = self.run_script(script, "--data", data, "-o", os.path.join(self.dir, "n.xlsx"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("テンプレートが見つかりません", r.stderr)
+        os.rename(self.tpl + ".bak", self.tpl)
+
     def test_no_embed_uses_relative_path_and_template_override(self):
-        script = self.export(embed=False)
+        script = self.export()
         # テンプレート（self.tpl）は out/ の 1 つ上にある。相対パスで引ける
         data = os.path.join(self.dir, "data.json")
         with open(data, "w", encoding="utf-8") as f:
@@ -469,6 +483,91 @@ class StandaloneAndYamlTests(Base):
         self.assertEqual(r.returncode, 1)
         self.assertIn("エラー", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
+
+
+class MaintainExportedScriptTests(Base):
+    """書き出したスクリプトを、スキルで直す（定義の取り出し → 修正 → 再生成）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.script = os.path.join(self.dir, "render.py")
+        xt.export_script(self.tpl, DEF, self.script)
+
+    def cli(self, *args):
+        entry = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
+        return subprocess.run([sys.executable, entry, *args], capture_output=True, text=True)
+
+    def run_script(self, *args):
+        return subprocess.run([sys.executable, self.script, *args], capture_output=True, text=True)
+
+    def test_definition_can_be_read_back_without_executing(self):
+        definition, embedded, rel = xt.read_exported_script(self.script)
+        self.assertEqual(definition, DEF)
+        self.assertIsNone(embedded)
+        self.assertEqual(rel, "t.xlsx")
+
+    def test_extract_def_edit_and_regenerate(self):
+        d = os.path.join(self.dir, "got.yaml")
+        self.assertEqual(self.run_script("--extract-def", d).returncode, 0)
+        edited = xt.load_structured(d)
+        edited["sheets"][0]["cells"]["B3"] = "client.name"  # 欄のキーを変える
+        xt.dump_structured(edited, d)
+        new = os.path.join(self.dir, "render2.py")
+        r = self.cli("export", "--from-script", self.script, "--def", d, "-o", new)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = {**DATA, "client": {"name": "改修後"}}
+        data_path = os.path.join(self.dir, "data.json")
+        with open(data_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        out = os.path.join(self.dir, "o.xlsx")
+        r = subprocess.run([sys.executable, new, "--data", data_path, "-o", out], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(load_workbook(out)["請求書"]["B3"].value, "改修後")
+
+    def test_regenerate_keeps_definition_and_relative_template(self):
+        new = os.path.join(self.dir, "sub", "render3.py")
+        os.makedirs(os.path.dirname(new))
+        r = self.cli("export", "--from-script", self.script, "-o", new)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        definition, embedded, rel = xt.read_exported_script(new)
+        self.assertEqual(definition, DEF)
+        self.assertIsNone(embedded)
+        self.assertEqual(rel, os.path.join("..", "t.xlsx"))
+
+    def test_regenerate_keeps_embedded_template(self):
+        emb = os.path.join(self.dir, "emb.py")
+        xt.export_script(self.tpl, DEF, emb, embed=True)
+        new = os.path.join(self.dir, "emb2.py")
+        self.assertEqual(self.cli("export", "--from-script", emb, "-o", new).returncode, 0)
+        _, embedded, _ = xt.read_exported_script(new)
+        with open(self.tpl, "rb") as f:
+            self.assertEqual(embedded, f.read())
+
+    def test_replace_template_keeps_definition(self):
+        wb = load_workbook(self.tpl)
+        wb["請求書"]["A1"] = "新しい請求書"
+        other = os.path.join(self.dir, "t2.xlsx")
+        wb.save(other)
+        new = os.path.join(self.dir, "render4.py")
+        r = self.cli("export", "--from-script", self.script, "--template", other, "-o", new)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        _, _, rel = xt.read_exported_script(new)
+        self.assertEqual(rel, "t2.xlsx")
+
+    def test_rejects_a_foreign_script_and_a_broken_definition(self):
+        foreign = os.path.join(self.dir, "other.py")
+        with open(foreign, "w", encoding="utf-8") as f:
+            f.write("print('hi')\n")
+        r = self.cli("export", "--from-script", foreign, "-o", os.path.join(self.dir, "z.py"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("export が書き出したスクリプトではありません", r.stderr)
+        bad = json.loads(json.dumps(DEF))
+        bad["sheets"][0]["tables"][0]["pattern"] = [99]
+        d = os.path.join(self.dir, "bad.json")
+        xt.dump_structured(bad, d)
+        r = self.cli("export", "--from-script", self.script, "--def", d, "-o", os.path.join(self.dir, "z.py"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("pattern", r.stderr)
 
 
 if __name__ == "__main__":
