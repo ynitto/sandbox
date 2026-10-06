@@ -353,6 +353,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   利用者のフォルダに入れ、npm パッケージと Chromium を入れて `webui-test` コマンドを置く
 - 使い方は `tools/webui-test/README.md`、書式は `tools/webui-test/src/format-reference.md`
 
+### agent-app: Windows で保存したスキルの説明・タグが空になるのを直す（agent-app 0.48.2）
+
+- **改行が CRLF のスキル（BOM 付きを含む）でも、説明・タグを読む。** これまでは設定 > スキルの説明と、依頼に添える
+  スキルの自動選択のタグが空になっていた
+- 説明を `|` や `>` で複数段落に書いたとき、空行で説明が切れていたのを直した
+
 ### agent-app: ワークフローの実行を消したときの消し残しと、長い実行ログの工程別ログを直す（agent-app 0.48.1）
 
 - **実行履歴を削除すると、「続きから再実行」が控えていた失敗の履歴も一緒に消す。** これまでは残っていた

@@ -91,7 +91,9 @@ function tagsFromHeader(header) {
 }
 
 function metadata(name, file, content) {
-  const front = String(content || '').match(/^---\s*\n([\s\S]*?)\n---(?:\s*\n|$)/);
+  // Windows で書かれた SKILL.md（BOM・CRLF）でも、説明とタグを空にしない。
+  const text = String(content || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const front = text.match(/^---[^\S\n]*\n([\s\S]*?)\n---(?:\s*\n|$)/);
   const header = front ? front[1] : '';
   const descriptionLine = header.match(/^description:\s*([^\n]*)/m);
   const rawDescription = ((descriptionLine || [])[1] || '').trim();
@@ -100,7 +102,8 @@ function metadata(name, file, content) {
     const after = header.slice((descriptionLine.index || 0) + descriptionLine[0].length).replace(/^\n/, '');
     description = [];
     for (const line of after.split('\n')) {
-      if (!/^\s+/.test(line)) break;
+      // ブロックの途中の空行（段落の区切り）で説明を打ち切らない。
+      if (line.trim() && !/^\s+/.test(line)) break;
       description.push(line.trim());
     }
     description = description.filter(Boolean).join(' ');
