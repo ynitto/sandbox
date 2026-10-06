@@ -377,6 +377,13 @@ def analyze(template: str) -> dict:
         root = pkg.xml(part)
         expand_shared_formulas(root)
         sheets_def.append(_analyze_sheet(pkg, name, part, root, sst, styles))
+    # 表のあるシートが 2 つ以上なら、データのキーをシート名にする（同じ items だと、どのシートにも同じ明細が入る）
+    with_tables = [s for s in sheets_def if s["tables"]]
+    if len(with_tables) > 1:
+        for sd in with_tables:
+            base = re.sub(r"[.\s]+", "_", sd["name"]).strip("_") or "sheet"
+            for n, t in enumerate(sd["tables"], start=1):
+                t["key"] = base if len(sd["tables"]) == 1 else f"{base}_{n}"
     return {
         "version": DEF_VERSION,
         "template": posixpath.basename(template),
@@ -576,7 +583,8 @@ def _sheet_warnings(pkg, part, root, tables) -> list[str]:
         if inside(mc.get("ref")):
             r1, r2 = (split_ref(p)[1] for p in (mc.get("ref").split(":") * 2)[:2])
             if r1 != r2:
-                w.append(f"サンプル行内の複数行にまたがる結合セル {mc.get('ref')} は複製できず、取り除かれる")
+                w.append(f"サンプル行内の複数行にまたがる結合セル {mc.get('ref')} は、1 件が複数行（block_rows）で"
+                         "その 1 件の中に収まれば各件に複製される。収まらなければ取り除かれる")
             else:
                 w.append(f"サンプル行内の結合セル {mc.get('ref')} は、各行に複製される")
     for cf in root.iter(q("conditionalFormatting")):
@@ -630,7 +638,7 @@ def summarize(definition: dict) -> str:
 PLACEHOLDER_RE = re.compile(r"(〇〇|○○|●●|◯◯|△△|□□|＊＊|\*\*|(?<![A-Za-z])x{2,}(?![A-Za-z])|サンプル|ダミー|記入例|"
                             r"^仮$|[（(]仮[）)]|仮(?:の|入力|置き|名|データ)|例[:：)）]|sample|dummy|example|yyyy|"
                             r"\b0{4}[-/]0{2}[-/]0{2}\b|\bTBD\b)", re.I)
-NOTE_RE = re.compile(r"^\s*(※|＊|\*|注[:：）)]|備考|Note)")
+NOTE_RE = re.compile(r"^\s*(※|＊|\*|注[:：）)]|備考[:：]|Note[:：])")   # 列の見出しの「備考」は注記ではない
 
 
 def _style_classes(styles: Styles) -> dict[str, str]:
@@ -961,9 +969,10 @@ def _missing_key_warnings(t: dict, block: int, rows: list, sheet: str) -> list[s
               and not spec.get("keep") and not spec.get("clear")]
     present = {k for r in records for k in r}
     missing = [k for k in dict.fromkeys(wanted) if k not in present]
-    if not missing:
-        return []
     unused = [k for k in dict.fromkeys(k for r in records for k in r) if k not in wanted]
+    # 空欄がふつうの列（備考など）もあるので、綴り違いの手がかり（使われていないキー）があるか、どの key も当たらないときだけ
+    if not missing or not unused and len(missing) < len(set(wanted)):
+        return []
     return [f"シート「{sheet}」表 {t.get('id')}: 列の key {', '.join(map(repr, missing))} が、"
             f"データ {t['key']!r} のどの行にも無いため空欄になります"
             + (f"（データにあって使われていないキー: {', '.join(map(repr, unused))}）" if unused else "")]
@@ -1172,9 +1181,10 @@ def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
             t = next((t for t in tables if t["first"] <= r1 <= t["end"] or t["first"] <= r2 <= t["end"]), None)
             mc.remove(m)
             if t and t["first"] <= r1 and r2 <= t["end"]:
-                if r1 == r2:
+                same_block = (r1 - t["first"]) // t["block"] == (r2 - t["first"]) // t["block"]
+                if r1 == r2 or same_block:   # 1 件（ブロック）の中の結合は、その行を複製した先ごとに複製する
                     for target in pattern_map.get(r1, []):
-                        keep.append(f"{get_column_letter(c1)}{target}:{get_column_letter(c2)}{target}")
+                        keep.append(f"{get_column_letter(c1)}{target}:{get_column_letter(c2)}{target + r2 - r1}")
                 else:
                     warnings.append(f"複数行にまたがる結合セル {m.get('ref')} は表のサンプル行内のため取り除きました")
                 continue

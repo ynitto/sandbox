@@ -986,5 +986,65 @@ class UsabilityGuardTests(Base):
         self.assertEqual(len(xt.format_facts(facts, fold=False).splitlines()) - len(text.splitlines()), 194)
         self.assertEqual(len(facts["sheets"][0]["rows"]), 201)   # JSON（事実そのもの）は畳まない
 
+
+class ChecklistTests(Base):
+    """動作確認チェックリスト（AAA パターン・複数タブ・サマリの集計）の形。"""
+
+    def checklist(self, build_tabs):
+        path = os.path.join(self.dir, "checklist.xlsx")
+        wb = Workbook()
+        wb.active.title = "サマリ"
+        build_tabs(wb)
+        wb.save(path)
+        return path
+
+    def test_tables_on_several_tabs_get_separate_data_keys(self):
+        def build(wb):
+            for name in ("ログイン", "検索"):
+                ws = wb.create_sheet(name)
+                ws.append(["ID", "Arrange", "Act", "Assert", "判定"])
+                for c in ws[1]:
+                    c.font = Font(bold=True)
+                for i in (1, 2):
+                    ws.append([f"X-{i}", "準備", "操作", "期待", "未実施"])
+        tables = [t for sd in xt.analyze(self.checklist(build))["sheets"] for t in sd["tables"]]
+        self.assertEqual([t["key"] for t in tables], ["ログイン", "検索"])   # 同じ items だと、どのタブにも同じ明細が入る
+
+    def test_merges_inside_a_multi_row_case_are_copied_for_every_case(self):
+        def build(wb):
+            ws = wb.create_sheet("AAA")
+            ws.append(["ID", "段階", "内容", "判定"])
+            for base in (2, 5):
+                for j, stage in enumerate(("Arrange", "Act", "Assert")):
+                    ws[f"B{base + j}"], ws[f"C{base + j}"] = stage, "記入例"
+                ws[f"A{base}"], ws[f"D{base}"] = "ID", "未実施"
+                for c in "AD":
+                    ws.merge_cells(f"{c}{base}:{c}{base + 2}")
+            ws["A9"], ws["B9"] = "件数", "=COUNTA(A2:A7)"
+        d = {"version": 1, "sheets": [{"name": "AAA", "tables": [{
+            "id": "cases", "header_row": 1, "first_row": 2, "sample_rows": 6, "block_rows": 3, "pattern": [2], "key": "cases",
+            "block": [{"A": {"key": "id"}, "B": {"keep": True}, "C": {"key": "arrange"}, "D": {"key": "result"}},
+                      {"B": {"keep": True}, "C": {"key": "act"}}, {"B": {"keep": True}, "C": {"key": "assert"}}]}]}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        warnings = xt.render(self.checklist(build), d, {"cases": [
+            {"id": f"T-{i}", "arrange": "a", "act": "b", "assert": "c", "result": "OK"} for i in range(1, 4)]}, out)
+        ws = load_workbook(out)["AAA"]
+        self.assertEqual(sorted(str(m) for m in ws.merged_cells.ranges),
+                         ["A2:A4", "A5:A7", "A8:A10", "D2:D4", "D5:D7", "D8:D10"])
+        self.assertFalse([w for w in warnings if "結合" in w])
+        self.assertEqual(ws["B12"].value, "=COUNTA(A2:A10)")
+
+    def test_an_optional_column_left_blank_is_not_warned_but_a_misspelling_is(self):
+        data = dict(DATA, items=[{"name": "a", "qty": 1}])   # price は空欄（綴り違いの手がかりなし）
+        self.render(data)
+        self.assertFalse([w for w in self.warnings if "どの行にも無い" in w])
+        self.render(dict(DATA, items=[{"name": "a", "qty": 1, "prise": 1}]))
+        self.assertTrue([w for w in self.warnings if "'prise'" in w])
+
+    def test_remarks_column_heading_is_not_a_note(self):
+        self.assertIsNone(xt.NOTE_RE.match("備考"))
+        self.assertIsNotNone(xt.NOTE_RE.match("備考：振込手数料はご負担ください"))
+        self.assertIsNotNone(xt.NOTE_RE.match("※ 判定は OK / NG から選ぶ"))
+
 if __name__ == "__main__":
     unittest.main()
