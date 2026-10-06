@@ -8,7 +8,8 @@
 
 既存 xlsx テンプレートへの流し込み（書式・不変部分を保つ）:
     uv run python scripts/xlsx_builder.py analyze template.xlsx -o def.json
-    uv run python scripts/xlsx_builder.py render --def def.json --data data.json -o out.xlsx
+    uv run python scripts/xlsx_builder.py render --def def.json --data data.yaml -o out.xlsx
+    uv run python scripts/xlsx_builder.py export --def def.json -o render_xxx.py   # 単体で動く専用スクリプト
 
 スペックの詳細は references/spec.md を参照。
 """
@@ -212,7 +213,7 @@ def main() -> int:
     xlsx_template.add_subcommands(sub)  # analyze / render（既存 xlsx テンプレートへの流し込み）
 
     args = parser.parse_args()
-    if args.command in ("analyze", "render"):
+    if args.command in ("analyze", "render", "export"):
         try:
             return args.func(args)
         except xlsx_template.TemplateError as e:

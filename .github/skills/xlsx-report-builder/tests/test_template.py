@@ -359,5 +359,117 @@ class RealWorldShapeTests(Base):
         self.assertEqual(ws["B9"].border.left.style, "thin")
 
 
+class StandaloneAndYamlTests(Base):
+    def export(self, **kw):
+        import yaml
+        defn = os.path.join(self.dir, "def.yaml")
+        xt.dump_structured(DEF, defn)
+        script = os.path.join(self.dir, "out", "render_invoice.py")
+        os.makedirs(os.path.dirname(script))
+        xt.export_script(self.tpl, xt.load_structured(defn), script, **kw)
+        return script
+
+    def run_script(self, script, *args, cwd=None):
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        return subprocess.run([sys.executable, script, *args], capture_output=True, text=True, cwd=cwd or self.dir, env=env)
+
+    def sheet_xml(self, path):
+        with zipfile.ZipFile(path) as z:
+            return z.read("xl/worksheets/sheet1.xml")
+
+    def test_yaml_roundtrip_of_definition_and_data(self):
+        import yaml
+        d = os.path.join(self.dir, "d.yaml")
+        xt.dump_structured(DEF, d)
+        self.assertEqual(xt.load_structured(d), DEF)
+        data = os.path.join(self.dir, "data.yml")
+        with open(data, "w", encoding="utf-8") as f:
+            yaml.safe_dump(DATA, f, allow_unicode=True)
+        out = os.path.join(self.dir, "y.xlsx")
+        xt.render(self.tpl, xt.load_structured(d), xt.load_structured(data), out)
+        self.assertEqual(self.sheet_xml(out), self.sheet_xml(self.render(name="j.xlsx")))
+
+    def test_yaml_dates_stay_usable(self):
+        import yaml
+        data = os.path.join(self.dir, "data.yaml")
+        with open(data, "w", encoding="utf-8") as f:
+            f.write("customer: テスト\ndate: 2026-10-05\nrate: 0.1\nitems: []\npayments: []\n")  # 日付は YAML では date 型
+        loaded = xt.load_structured(data)
+        ws = load_workbook(self.render(data=loaded))["請求書"]
+        self.assertEqual(ws["B4"].value.date().isoformat(), "2026-10-05")
+
+    def test_exported_script_runs_without_the_skill(self):
+        script = self.export()
+        with open(script, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertNotIn("import xlsx_template", text)
+        self.assertIn("# /// script", text)
+        data = os.path.join(self.dir, "data.yaml")
+        import yaml
+        with open(data, "w", encoding="utf-8") as f:
+            yaml.safe_dump(DATA, f, allow_unicode=True)
+        out = os.path.join(self.dir, "s.xlsx")
+        os.remove(self.tpl)  # テンプレートが埋め込まれていれば、元ファイルが無くても動く
+        r = self.run_script(script, "--data", data, "-o", out, cwd="/")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ws = load_workbook(out)["請求書"]
+        self.assertEqual(ws["B12"].value, "商品5")
+        self.assertEqual(ws["E13"].value, "=SUM(E8:E12)")
+        self.assertEqual(ws["B9"].border.left.style, "thin")
+
+    def test_exported_script_matches_render_and_accepts_json_and_stdin(self):
+        script = self.export()
+        expected = self.sheet_xml(self.render())
+        data = os.path.join(self.dir, "data.json")
+        with open(data, "w", encoding="utf-8") as f:
+            json.dump(DATA, f, ensure_ascii=False)
+        out = os.path.join(self.dir, "s.xlsx")
+        self.assertEqual(self.run_script(script, "--data", data, "-o", out).returncode, 0)
+        self.assertEqual(self.sheet_xml(out), expected)
+        r = subprocess.run([sys.executable, script, "--data", "-", "-o", out], input=json.dumps(DATA), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_example_data_help_and_extract(self):
+        script = self.export()
+        r = self.run_script(script, "--example-data")
+        import yaml
+        skeleton = yaml.safe_load(r.stdout)
+        self.assertEqual(sorted(skeleton), ["customer", "date", "items", "payments", "rate"])
+        self.assertEqual(sorted(skeleton["items"][0]), ["name", "price", "qty"])
+        h = self.run_script(script, "--help")
+        self.assertIn("customer", h.stdout)
+        ext = os.path.join(self.dir, "ext.xlsx")
+        self.assertEqual(self.run_script(script, "--extract-template", ext).returncode, 0)
+        with open(ext, "rb") as a, open(self.tpl, "rb") as b:
+            self.assertEqual(a.read(), b.read())
+
+    def test_no_embed_uses_relative_path_and_template_override(self):
+        script = self.export(embed=False)
+        # テンプレート（self.tpl）は out/ の 1 つ上にある。相対パスで引ける
+        data = os.path.join(self.dir, "data.json")
+        with open(data, "w", encoding="utf-8") as f:
+            json.dump(DATA, f, ensure_ascii=False)
+        out = os.path.join(self.dir, "n.xlsx")
+        self.assertEqual(self.run_script(script, "--data", data, "-o", out, cwd="/").returncode, 0)
+        r = self.run_script(script, "--data", data, "-o", out, "--template", os.path.join(self.dir, "nope.xlsx"))
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_export_validates_definition(self):
+        bad = json.loads(json.dumps(DEF))
+        bad["sheets"][0]["name"] = "ない"
+        with self.assertRaises(xt.TemplateError):
+            xt.export_script(self.tpl, bad, os.path.join(self.dir, "x.py"))
+
+    def test_bad_data_gives_message_not_traceback(self):
+        script = self.export()
+        data = os.path.join(self.dir, "bad.yaml")
+        with open(data, "w", encoding="utf-8") as f:
+            f.write("items: []\n")
+        r = self.run_script(script, "--data", data, "-o", os.path.join(self.dir, "b.xlsx"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("エラー", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

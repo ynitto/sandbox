@@ -14,7 +14,11 @@ xlsx（zip）の中のシート XML のうち、**可変の表の行だけ**を�
   - 条件付き書式・入力規則・結合セル・オートフィルタ・定義名・Excel テーブル・グラフの範囲・図の位置
 - 数式の結果は保存しない。開いたときに Excel が全再計算する（`fullCalcOnLoad`）
 
-## 定義ファイル（JSON）
+## 入出力の形式
+
+定義ファイルとデータは、JSON と YAML のどちらでも渡せる（拡張子 `.json` / `.yaml` / `.yml` で判別。`--data -` は標準入力で、JSON → YAML の順に試す）。YAML の日付（`2026-10-05`）は日付型で読まれるが、日付書式のセルにはそのまま日付として入る。
+
+## 定義ファイル（JSON / YAML）
 
 ```json
 {
@@ -72,3 +76,15 @@ xlsx（zip）の中のシート XML のうち、**可変の表の行だけ**を�
 - コメント（メモ）は、行がずれても位置が追従しない場合がある
 - 行の「表の見出し」判定は、見出しが太字か塗りつぶしの行を想定する。外れたときは定義ファイルを手で直す
 - グラフの計算キャッシュは更新しない（Excel が開いたときに再描画する）
+
+## 専用スクリプトの書き出し（export）
+
+```bash
+uv run python scripts/xlsx_builder.py export --def def.yaml -o render_invoice.py
+```
+
+- 出力は、エンジン・定義・テンプレート（base64）を 1 つにまとめた Python ファイル。スキルのパスに依存しない
+- 先頭に PEP 723 の依存宣言があり、`uv run render_invoice.py --data data.yaml -o out.xlsx` でそのまま動く。`python` で動かすときは lxml・openpyxl・pyyaml を入れておく
+- 引数: `--data`（json/yaml/`-`）、`-o`、`--template`（埋め込みの代わりに使う、構造が同じ .xlsx）、`--example-data`、`--extract-template PATH`
+- 書き出し時に、テンプレートと定義の整合（シート名・サンプル行・pattern・列）を検査する
+- `--no-embed` を付けると、テンプレートを埋め込まず、スクリプトからの相対パスで参照する

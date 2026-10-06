@@ -13,8 +13,11 @@ openpyxl で読み書きせず、xlsx（zip）内のシート XML の「可変�
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
+import io
 import json
+import os
 import posixpath
 import re
 import sys
@@ -56,8 +59,8 @@ def q(tag: str) -> str:
 # ---------------------------------------------------------------------------
 
 class Package:
-    def __init__(self, path: str):
-        with zipfile.ZipFile(path) as z:
+    def __init__(self, path: "str | bytes"):
+        with zipfile.ZipFile(io.BytesIO(path) if isinstance(path, (bytes, bytearray)) else path) as z:
             self.infos = z.infolist()
             self.data = {i.filename: z.read(i.filename) for i in self.infos}
         self.removed: set[str] = set()
@@ -654,7 +657,7 @@ def _strip_cached(row) -> None:
             c.attrib.pop("t", None) if c.get("t") in ("str", "e", "b", "n") else None
 
 
-def render(template: str, definition: dict, data: dict, output: str) -> list[str]:
+def render(template: "str | bytes", definition: dict, data: dict, output: str) -> list[str]:
     """テンプレートへ流し込んで output に書く。警告メッセージのリストを返す。"""
     if definition.get("version") != DEF_VERSION:
         raise TemplateError(f"定義ファイルの version が未対応です: {definition.get('version')!r}")
@@ -940,47 +943,258 @@ def _fix_workbook(pkg: Package, maps: dict[str, RowMap]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 入出力（JSON / YAML）
+# ---------------------------------------------------------------------------
+
+def _yaml():
+    try:
+        import yaml
+    except ImportError:
+        raise TemplateError("YAML の入出力には PyYAML が必要です（uv add pyyaml / pip install pyyaml）")
+    return yaml
+
+
+def parse_structured(text: str, name: str = "") -> Any:
+    """拡張子が .yaml / .yml なら YAML、.json なら JSON。名前が無い（標準入力）なら JSON → YAML の順に試す。"""
+    lower = name.lower()
+    try:
+        if lower.endswith((".yaml", ".yml")):
+            return _yaml().safe_load(text)
+        if lower.endswith(".json") or not lower:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                if lower:
+                    raise
+                return _yaml().safe_load(text)
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise TemplateError(f"{name or '入力'} を読めません: {e}")
+    except Exception as e:  # yaml.YAMLError
+        if isinstance(e, TemplateError):
+            raise
+        raise TemplateError(f"{name or '入力'} を読めません: {e}")
+
+
+def load_structured(path: str) -> Any:
+    if path == "-":
+        return parse_structured(sys.stdin.read())
+    with open(path, encoding="utf-8") as f:
+        return parse_structured(f.read(), path)
+
+
+def dump_structured(obj: Any, path: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        if path.lower().endswith((".yaml", ".yml")):
+            _yaml().safe_dump(obj, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        else:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+
+
+# ---------------------------------------------------------------------------
+# データの形（定義から導く）
+# ---------------------------------------------------------------------------
+
+def _set_path(root: dict, path: str, value: Any) -> None:
+    cur = root
+    parts = path.split(".")
+    for part in parts[:-1]:
+        cur = cur.setdefault(part, {})
+    cur[parts[-1]] = value
+
+
+def skeleton_data(definition: dict) -> dict:
+    """定義が必要とするデータの雛形（値は null）。"""
+    out: dict = {}
+    for sd in definition.get("sheets", []):
+        for key in (sd.get("cells") or {}).values():
+            _set_path(out, key, None)
+        for t in sd.get("tables", []):
+            row = {c["key"]: None for c in (t.get("columns") or {}).values()
+                   if c.get("key") and c["key"] != "$index" and not c.get("keep") and not c.get("clear")}
+            _set_path(out, t["key"], [row])
+    return out
+
+
+def validate_definition(template: "str | bytes", definition: dict) -> None:
+    """テンプレートと定義の整合（シート・行・列）を確かめる。"""
+    if definition.get("version") != DEF_VERSION:
+        raise TemplateError(f"定義ファイルの version が未対応です: {definition.get('version')!r}")
+    sheets = dict(Package(template).sheets())
+    for sd in definition.get("sheets", []):
+        if sd["name"] not in sheets:
+            raise TemplateError(f"テンプレートにシート「{sd['name']}」がありません")
+        for ref in (sd.get("cells") or {}):
+            split_ref(ref)
+        for t in sd.get("tables", []):
+            first, count = int(t["first_row"]), int(t["sample_rows"])
+            for p in t.get("pattern") or [first]:
+                if not first <= int(p) < first + count:
+                    raise TemplateError(f"pattern の行 {p} がサンプル行 {first}-{first + count - 1} の外です（表 {t['id']}）")
+            for letter in (t.get("columns") or {}):
+                column_index_from_string(letter.upper())
+
+
+# ---------------------------------------------------------------------------
+# スタンドアローン（固有の render スクリプトを書き出す）
+# ---------------------------------------------------------------------------
+
+STANDALONE_HEADER = '''#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["lxml", "openpyxl", "pyyaml"]
+# ///
+"""{title}
+
+xlsx テンプレートへデータを流し込む、固有の render スクリプト（xlsx-report-builder の export で生成）。
+このファイル 1 つで動く（スキルは不要）。テンプレートと表構造の定義は埋め込み済み。
+
+    uv run {name} --data data.yaml -o out.xlsx
+    python {name} --data data.json -o out.xlsx        # lxml・openpyxl・pyyaml が必要
+    python {name} --example-data > data.yaml          # データの雛形を出す
+
+データの形:
+{shape}
+"""
+'''
+
+
+def _wrap_b64(raw: bytes) -> str:
+    text = base64.b64encode(raw).decode("ascii")
+    lines = [text[i:i + 100] for i in range(0, len(text), 100)] or [""]
+    return "(\n" + "\n".join(f"    {line!r}" for line in lines) + "\n)"
+
+
+def export_script(template_path: str, definition: dict, output: str, embed: bool = True) -> None:
+    with open(template_path, "rb") as f:
+        raw = f.read()
+    validate_definition(raw, definition)
+    src_path = os.path.abspath(__file__)
+    with open(src_path, encoding="utf-8") as f:
+        engine = f.read()
+    # エンジン本体（CLI の入口より前）だけを取り込む
+    engine = engine.split('\nif __name__ == "__main__":')[0]
+    engine = engine.split("\n", 1)[1] if engine.startswith("#!") else engine
+    shape = "\n".join("    " + line for line in
+                       json.dumps(skeleton_data(definition), ensure_ascii=False, indent=2).splitlines())
+    title = f"{os.path.splitext(os.path.basename(template_path))[0]} の render スクリプト"
+    name = os.path.basename(output)
+    header = STANDALONE_HEADER.format(title=title, name=name, shape=shape)
+    # docstring を 2 つ持てないため、エンジンの docstring は取り除く
+    engine = re.sub(r'^"""[\s\S]*?"""\n', "", engine, count=1)
+    rel = os.path.relpath(os.path.abspath(template_path), os.path.dirname(os.path.abspath(output)))
+    tpl_literal = _wrap_b64(raw) if embed else '""'
+    footer = (
+        "\n\n# ---------------------------------------------------------------------------\n"
+        "# 埋め込み（export が書き出した部分）\n"
+        "# ---------------------------------------------------------------------------\n"
+        f"DEFINITION = json.loads({json.dumps(definition, ensure_ascii=False)!r})\n"
+        f"TEMPLATE_B64 = {tpl_literal}\n"
+        f"TEMPLATE_PATH = {rel!r}  # 埋め込まない場合の、このスクリプトからの相対パス\n"
+        "\n\nif __name__ == \"__main__\":\n"
+        "    raise SystemExit(standalone_main(DEFINITION, base64.b64decode(TEMPLATE_B64) or None, TEMPLATE_PATH, __doc__))\n"
+    )
+    with open(output, "w", encoding="utf-8") as f:
+        f.write(header + engine.rstrip() + footer)
+    os.chmod(output, 0o755)
+
+
+def standalone_main(definition: dict, template_bytes: "bytes | None", template_path: str, doc: str | None = None) -> int:
+    parser = argparse.ArgumentParser(description=(doc or "").split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog="\n\n".join((doc or "").split("\n\n")[1:]))
+    parser.add_argument("--data", help="データ（.json / .yaml / .yml。- で標準入力）")
+    parser.add_argument("-o", "--output", help="出力 .xlsx")
+    parser.add_argument("--template", help="埋め込みのテンプレートの代わりに使う .xlsx（定義と構造が同じものに限る）")
+    parser.add_argument("--example-data", action="store_true", help="データの雛形（YAML）を標準出力に出す")
+    parser.add_argument("--extract-template", metavar="PATH", help="埋め込みのテンプレートを書き出す")
+    args = parser.parse_args()
+    try:
+        if args.example_data:
+            print(_yaml().safe_dump(skeleton_data(definition), allow_unicode=True, sort_keys=False, default_flow_style=False), end="")
+            return 0
+        here = os.path.dirname(os.path.abspath(sys.argv[0]))
+        if args.template:
+            with open(args.template, "rb") as f:
+                template = f.read()
+        elif template_bytes:
+            template = template_bytes
+        else:
+            with open(os.path.join(here, template_path), "rb") as f:
+                template = f.read()
+        if args.extract_template:
+            with open(args.extract_template, "wb") as f:
+                f.write(template)
+            print(f"書き出しました: {args.extract_template}")
+            return 0
+        if not args.data or not args.output:
+            parser.error("--data と -o が必要です")
+        warnings = render(template, definition, load_structured(args.data), args.output)
+        for w in warnings:
+            print(f"警告: {w}", file=sys.stderr)
+        print(f"生成しました: {args.output}")
+        return 0
+    except TemplateError as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 def cmd_analyze(args) -> int:
     definition = analyze(args.template)
     out = args.output or re.sub(r"\.xlsx?$", "", args.template, flags=re.I) + ".def.json"
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(definition, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    dump_structured(definition, out)
     print(summarize(definition))
     print(f"\n定義ファイルの下書きを書きました: {out}")
     print("（? の項目をユーザーに確認してから、定義ファイルを直して確定する）")
     return 0
 
 
-def cmd_render(args) -> int:
-    with open(args.definition, encoding="utf-8") as f:
-        definition = json.load(f)
-    with open(args.data, encoding="utf-8") as f:
-        data = json.load(f)
+def _template_arg(args, definition) -> str:
     template = args.template or definition.get("template")
     if not template:
         raise TemplateError("--template か定義ファイルの template が必要です")
-    warnings = render(template, definition, data, args.output)
+    return template
+
+
+def cmd_render(args) -> int:
+    definition = load_structured(args.definition)
+    data = load_structured(args.data)
+    warnings = render(_template_arg(args, definition), definition, data, args.output)
     for w in warnings:
         print(f"警告: {w}", file=sys.stderr)
     print(f"生成しました: {args.output}")
     return 0
 
 
+def cmd_export(args) -> int:
+    definition = load_structured(args.definition)
+    export_script(_template_arg(args, definition), definition, args.output, embed=not args.no_embed)
+    print(f"書き出しました: {args.output}")
+    print(f"  使い方: uv run {os.path.basename(args.output)} --data data.yaml -o out.xlsx")
+    return 0
+
+
 def add_subcommands(sub) -> None:
     a = sub.add_parser("analyze", help="テンプレートを解析して表構造の定義ファイル（下書き）を作る")
     a.add_argument("template", help="テンプレート .xlsx")
-    a.add_argument("-o", "--output", help="定義ファイルの出力先（省略時は <テンプレート>.def.json）")
+    a.add_argument("-o", "--output", help="定義ファイルの出力先（.json / .yaml。省略時は <テンプレート>.def.json）")
     a.set_defaults(func=cmd_analyze)
     r = sub.add_parser("render", help="テンプレート + 定義 + データから xlsx を再構成する")
     r.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template）")
-    r.add_argument("--def", dest="definition", required=True, help="定義ファイル（analyze の出力を確定したもの）")
-    r.add_argument("--data", required=True, help="データ JSON")
+    r.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
+    r.add_argument("--data", required=True, help="データ（.json / .yaml。- で標準入力）")
     r.add_argument("-o", "--output", required=True, help="出力 .xlsx")
     r.set_defaults(func=cmd_render)
+    e = sub.add_parser("export", help="この文書専用の、単体で動く render スクリプトを書き出す")
+    e.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template）")
+    e.add_argument("--def", dest="definition", required=True, help="確定した定義ファイル（.json / .yaml）")
+    e.add_argument("-o", "--output", required=True, help="書き出す .py")
+    e.add_argument("--no-embed", action="store_true", help="テンプレートを埋め込まず、相対パスで参照する")
+    e.set_defaults(func=cmd_export)
 
 
 def main() -> int:

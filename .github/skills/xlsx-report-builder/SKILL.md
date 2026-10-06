@@ -102,7 +102,20 @@ uv run python scripts/xlsx_builder.py analyze path/to/template.xlsx -o def.json
 uv run python scripts/xlsx_builder.py render --def def.json --data data.json -o out.xlsx
 ```
 
-テンプレートは定義の `template` から読む。別のパスなら `--template` で上書きする。
+テンプレートは定義の `template` から読む。別のパスなら `--template` で上書きする。定義ファイルとデータは JSON でも YAML（`.yaml` / `.yml`）でもよい。`analyze -o def.yaml` のように出力の拡張子で形式を選べる。
+
+### T3b: この文書専用の単体スクリプトにする（任意）
+
+同じ帳票を繰り返し作るなら、確定した定義とテンプレートを埋め込んだ、スキル不要の 1 ファイルを書き出せる。
+
+```bash
+uv run python scripts/xlsx_builder.py export --def def.yaml -o render_invoice.py
+uv run render_invoice.py --data data.yaml -o out.xlsx   # PEP 723 で依存（lxml・openpyxl・pyyaml）を自動で入れる
+```
+
+- 書き出した `.py` は、スキルのディレクトリが無くても動く。テンプレートは埋め込み済み（`--no-embed` なら相対パスで参照）
+- `--example-data` でデータの雛形、`--extract-template` で埋め込みのテンプレートを取り出せる。`--help` にデータの形が出る
+- 定義を直したら `export` をやり直す。スクリプトを手で書き換えない
 
 ### T4: 検証する
 
