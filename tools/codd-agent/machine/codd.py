@@ -720,7 +720,8 @@ class Ctx:
         self.root = root
         self.config = load_config(MACHINE_DIR)
         self.side = self.config["side"]
-        self.own = Side("own", root, self.config["scope"], exclude=self.config["exclude"])
+        # テストが書き出す結果のファイル（evidence）は、探す・影響を測る・変えたかを数える対象にしない（直すものではない）
+        self.own = Side("own", root, self.config["scope"], exclude=unique([*self.config["exclude"], *self.config["evidence"]]))
         self.data = root / DATA_DIRNAME
         self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
         self.max_files = self.config["max_files"]
@@ -762,9 +763,25 @@ class Ctx:
                                  entry_skills=unique([*entry["skills"], *added["skills"]["apply"]]),
                                  entry_rules=unique([*entry["rules"], *added["rules"]]),
                                  guides=guides or {}, entry_triggered=added["triggered"]))
+        for r in self.refs:
+            r.exclude = unique([*r.exclude, *r.evidence_patterns])
         self.place_ref_guides()
         self.check_layout()
         self.load_bases()
+        self.exclude_test_outputs()
+
+    def exclude_test_outputs(self) -> None:
+        """テストが撮った画面（evidence の画像の項目の path）も、結果ファイルと同じく直すものに数えない。"""
+        for key, side in [("", self.own), *((r.name, r) for r in self.refs)]:
+            ev = load_evidence(self, key)
+            for item in ev.items.values():
+                if item.get("kind") == "image" and isinstance(item.get("path"), str):
+                    try:
+                        rel = (item["_root"] / item["path"]).resolve().relative_to(side.path.resolve()).as_posix()
+                    except ValueError:
+                        continue
+                    if rel not in side.exclude:
+                        side.exclude.append(rel)
 
     def place_ref_guides(self) -> None:
         """`参照先の名前:パス` と書いた手順の文書を、その参照先のものとして読む（いつも読む決まりは refs[].rules に移す）。"""
@@ -1800,6 +1817,10 @@ def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
 # 文字列の値（画面の文言・URL・メッセージ）。e2e のケースはコードの名前ではなく、こうした文字列で書かれる。
 _LITERAL = re.compile(r"""(["'`])((?:(?!\1)[^\\\n]){3,60})\1""")
 _LETTER = re.compile(r"[^\W\d_]")
+# 画面の部品（JSX・Vue・Svelte・HTML）のタグの間の文言（`<button>サインイン</button>`）。引用符が無いので別に拾う。
+# 画面の文言は「送信」「保存」のように 2 文字のこともある
+MARKUP_EXTS = (".tsx", ".jsx", ".vue", ".svelte", ".html", ".htm")
+_MARKUP_TEXT = re.compile(r">\s*([^<>{}\n]{2,60}?)\s*(?:<|\{|$)")
 
 
 def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
@@ -1808,8 +1829,12 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
     for rel, (plus, minus) in diff_by_file(side).items():
         if is_test(ctx, key, rel) or rel.lower().endswith(DOC_EXTS):
             continue
+        markup = rel.lower().endswith(MARKUP_EXTS)
         for mark, lines in (("+", plus), ("-", minus)):
             counts[mark].update(m.group(2).strip() for ln in lines for m in _LITERAL.finditer(ln))
+            if markup:
+                counts[mark].update(t for ln in lines for m in _MARKUP_TEXT.finditer(ln)
+                                    if (t := m.group(1).strip()) and not re.search(r"[=;()&|]", t))
     return unique(t for t in counts["+"] | counts["-"]
                   if counts["+"][t] != counts["-"][t] and _LETTER.search(t) and "${" not in t)
 
@@ -4636,6 +4661,8 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         state = "通ったあとに、さらに変わっている（変えたあとの検査をもう一度通してください）"
 
     dev, ok = deviations(ctx), accepted(ctx)
+    tp = test_plan(ctx, a.bodies)
+    test_listed = set(tp.listed())
 
     def rows(key: str, planned: set[str], touched: set[str]) -> list[str]:
         def mark(p: str) -> str:
@@ -4646,7 +4673,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
             return "撮り直しても同じ" if may_stay_same(p) else "まだ"
         out = [f"- {p} — {mark(p)}" for p in sorted(planned)]
         for p in sorted(touched):
-            if covered(p, planned):
+            if covered(p, planned) or (key, p) in test_listed:   # テストの変更案のものは「テスト」の節に出す
                 continue
             reason = dev.reason_added(key, p)
             who = "利用者が認めた" if (key, p) in ok else "変える段で足した"
@@ -4659,7 +4686,6 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         if r.name in a.planned or a.touched[r.name]:
             lines += ["", f"## {r.name}（{r.label}）  {r.path}", ""]
             lines += rows(r.name, a.planned.get(r.name, set()), a.touched[r.name])
-    tp = test_plan(ctx, a.bodies)
     after = ctx.data / "impact-after.md"
     if after.is_file():
         text = after.read_text(encoding="utf-8")
@@ -4668,7 +4694,10 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
                   | {rel for key, rel in tp.waived if not key})
         impact_start = len(lines)
         lines += ["", "## 変えたあとに測った影響範囲", ""]
+        proposed = listed_paths(ctx, a.bodies.get("## 自分の変更案", ""))
         for p in measured:
+            if p in proposed:   # 変更案で変えたファイル自身は、影響範囲として出さない
+                continue
             mark = "直した" if p in a.own_touched else NO_CHANGE_MARK if p in waived else "未対応" \
                 if not p.startswith("(") else ""
             if mark != NO_CHANGE_MARK:

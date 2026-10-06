@@ -1458,6 +1458,44 @@ class CoddTest(unittest.TestCase):
         # もう一度検査しても、差し替えた画像は今の画面なので何もしない
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
 
+    def test_tracked_test_outputs_are_not_files_to_fix(self) -> None:
+        # 結果ファイルと撮った画面を git で管理していても、直すファイル・影響範囲・計画に無い変更に数えない。
+        old, new = b"PNG-v1 hello", b"PNG-v2 hello"
+        sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+        (self.impl / "results/screens").mkdir(parents=True)
+        (self.impl / "results/screens/hello.png").write_bytes(old)
+        self.write_evidence([{"kind": "image", "id": "hello/screen", "title": "hello の画面", "path": "results/screens/hello.png",
+                              "sha256": sha(old), "history": [sha(old)], "file": "tests/hello.yaml"}])
+        (self.impl / "results/.gitignore").unlink()
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "results")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("results/", r.stderr + (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        (self.impl / "results/screens/hello.png").write_bytes(new)   # テストを動かすと撮り直す
+        self.write_evidence([{"kind": "image", "id": "hello/screen", "title": "hello の画面", "path": "results/screens/hello.png",
+                              "sha256": sha(new), "history": [sha(new), sha(old)], "file": "tests/hello.yaml"}])
+        (self.impl / "results/.gitignore").unlink()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("results/", r.stderr)
+
+    def test_report_keeps_planned_tests_in_the_test_section(self) -> None:
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\nassert hello() == 1\n"}, "test")
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/test_app.py — `hello` のログも確かめる")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests/test_app.py").write_text("from src.app import hello\nassert hello() == 1  # log\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        report = self.run_pa(self.impl, "report").stdout
+        self.assertNotIn("tests/test_app.py — 変えた（影響範囲）", report)   # テストの変更案のものは「テスト」の節だけに
+        self.assertIn("## テスト\n\n- tests/test_app.py — 変えた", report)
+        self.assertNotIn("- src/app.py — 直した", report)                 # 変更案で変えたファイル自身は影響範囲に出さない
+
     def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
         commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
         commit(self.design, {"docs/perf.md": "# 性能\n\n- <!-- evidence: login/S-01/load -->800 ms<!-- /evidence -->\n"},

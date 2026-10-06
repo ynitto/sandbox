@@ -72,5 +72,24 @@ class TermsFromDiffTest(unittest.TestCase):
         self.assertIn("PAGE_SIZE", terms)
 
 
+
+class LiteralsFromDiffTest(unittest.TestCase):
+    def test_text_between_jsx_tags_counts_as_a_changed_string(self) -> None:
+        # React の画面の文言は引用符で囲まれない。e2e のケースはこの文言で書くので、変えたら拾う。
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            form = "export function F() {\n  if (x > 1 && y < 2) {}\n  return <button type=\"submit\">{0}</button>;\n}}\n"
+            (repo / "LoginForm.tsx").write_text(form.replace("{0}", "ログイン").replace("}}", "}"), encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "LoginForm.tsx").write_text(form.replace("{0}", "送信").replace("}}", "}")
+                                                .replace("x > 1", "x > 2"), encoding="utf-8")
+            ctx = SimpleNamespace(config={"tests": ["**/*.test.*"]})
+            texts = codd.literals_from_diff(ctx, "", codd.Side("own", repo, []))
+        self.assertEqual(sorted(texts), ["ログイン", "送信"])   # 比較式（x > 2 && y < 2）は文言にしない
+
 if __name__ == "__main__":
     unittest.main()
