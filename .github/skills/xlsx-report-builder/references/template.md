@@ -60,6 +60,9 @@ xlsx（zip）の中のシート XML のうち、**可変の表の行だけ**を�
 | `sheets[].drop_rows` | **無視**する行。`[11, "20:22"]`。出力から行ごと取り除き、下の行を詰める |
 | `tables[].block_rows` | 1 件が何行か（既定 1）。`sample_rows` は件数 × `block_rows`。`pattern` はブロックの先頭行 |
 | `tables[].block` | `block_rows` が 2 以上のとき、行ごとの `columns` のリスト（`block_rows` 個） |
+| `keep` | **残す**と決めた範囲。`["A1", "A3:A5"]`。`strict` のときだけ意味を持つ |
+| `strict` | `true`（定義の最上位）なら、テンプレートの値が、`keep`・`cells`・`clear`・列の指定のどれにも入らないまま残るセルがあると、render と check が止まる |
+| `properties` | 文書のプロパティ。`scrub: true` で識別情報を空にし、プレビューとカスタムプロパティ、使われなくなった共有文字列、グラフの古い値のキャッシュを取り除く。`title` / `subject` / `creator` / `lastModifiedBy` / `description` / `keywords` / `category` / `company` / `manager` で値を与える |
 | `decisions` | 判断の記録（範囲・役割・理由）。render は読まない |
 | `_` で始まる項目、`needs_confirm`、`header` | analyze が付ける確認用の情報。render は読まない |
 
@@ -94,6 +97,21 @@ tables:
 ```
 
 どの範囲にどの役割を当てるかは、`inspect` の出力（値・書式の種類・仮の値の疑い）を読んで決める。
+
+## 他プロジェクトの成果物を流用する場合
+
+実データ・メタデータを、出力に持ち越さないための仕組み。
+
+| 持ち越されるもの | 検出 | 除去・防止 |
+|---|---|---|
+| 実データのセル（顧客名・金額など） | `inspect`（値の一覧） | `strict: true` + `keep`。決め忘れは check / render が止まる |
+| 作成者・最終更新者・会社名・タイトル | `inspect` の来歴 | `properties.scrub` |
+| プレビュー画像・カスタムプロパティ | 同上 | `properties.scrub` |
+| 置き換えた後も zip に残る元の文字列（共有文字列） | — | `properties.scrub`（参照されない文字列を取り除く） |
+| グラフに残る元の値のキャッシュ | — | `properties.scrub` |
+| コメント・外部リンク・非表示のシート/行/列・変更履歴・マクロ | `inspect` の来歴、render の警告 | 自動では消さない。ユーザーと扱いを決める |
+
+`check --def def.yaml` で、データ無しに検査できる。`export` も同じ検査をしてから書き出す。
 
 ## 数式の複製ルール（Excel の「下方向へコピー」と同じ）
 

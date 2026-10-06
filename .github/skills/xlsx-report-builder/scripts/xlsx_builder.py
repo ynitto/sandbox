@@ -214,7 +214,7 @@ def main() -> int:
     xlsx_template.add_subcommands(sub)  # analyze / render（既存 xlsx テンプレートへの流し込み）
 
     args = parser.parse_args()
-    if args.command in ("analyze", "inspect", "render", "export"):
+    if args.command in ("analyze", "inspect", "check", "render", "export"):
         try:
             return args.func(args)
         except xlsx_template.TemplateError as e:

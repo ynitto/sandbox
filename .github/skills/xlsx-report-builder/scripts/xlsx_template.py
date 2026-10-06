@@ -679,7 +679,7 @@ def inspect_template(template: "str | bytes") -> dict:
                                      for t in draft["tables"]],
             "warnings": draft["_notes"],
         })
-    return {"style_legend": legend, "sheets": sheets}
+    return {"style_legend": legend, "provenance": provenance(pkg), "sheets": sheets}
 
 
 def _runs(rows: list[dict]) -> list[dict]:
@@ -711,6 +711,9 @@ def _runs(rows: list[dict]) -> list[dict]:
 def format_facts(facts: dict) -> str:
     L = ["書式の種類（S0〜: 同じ見た目は同じ番号）:"]
     L += [f"  {k} = {v}" for k, v in sorted(facts["style_legend"].items(), key=lambda kv: int(kv[0][1:]))]
+    if facts.get("provenance"):
+        L.append("\n来歴・持ち越しの注意（他のプロジェクトの成果物を流用する場合は、定義の properties.scrub と strict を検討する）:")
+        L += [f"  - {p}" for p in facts["provenance"]]
     for sh in facts["sheets"]:
         L.append(f"\n■ シート「{sh['name']}」")
         for key, label in (("merges", "結合"), ("conditional_formats", "条件付き書式"), ("validations", "入力規則")):
@@ -828,7 +831,8 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
     sst = read_shared_strings(pkg)
     styles = Styles(pkg)
     sheet_parts = dict(pkg.sheets())
-    warnings: list[str] = []
+    warnings: list[str] = [f"来歴: {p}" for p in provenance(pkg)]
+    leftovers: dict[str, set] = {}
 
     # --- 1. シートごとの表の出力行数を決め、RowMap を作る -----------------------
     plans: dict[str, dict] = {}
@@ -871,7 +875,8 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
         root = pkg.xml(part)
         rw = Rewriter(name, maps)
         if name in plans:
-            _render_sheet(pkg, part, root, plans[name], maps[name], rw, data, styles, warnings)
+            _render_sheet(pkg, part, root, plans[name], maps[name], rw, data, styles, warnings,
+                          leftovers.setdefault(name, set()))
         elif maps:
             for f in root.iter(q("f")):
                 if f.text and "!" in f.text:
@@ -880,12 +885,33 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
 
     # --- 3. ブック全体の参照（定義名・グラフ）と再計算の設定 --------------------
     _fix_workbook(pkg, maps)
+    props = definition.get("properties") or {}
+    apply_properties(pkg, props)
+    if props.get("scrub"):
+        scrub_leftover_text(pkg)
+    if definition.get("strict"):
+        left = [f"{n}!{r}" for n, refs in leftovers.items() for r in sorted(refs, key=lambda x: (int(re.sub(r"\D", "", x)), x))]
+        if left:
+            raise TemplateError(
+                f"テンプレートの値がそのまま残るセルが {len(left)} 個あります: {', '.join(left[:20])}"
+                f"{' ...' if len(left) > 20 else ''}\n"
+                "残すなら keep、置き換えるなら cells / columns の key、空にするなら clear、行ごと消すなら drop_rows に入れてください")
     pkg.save(output)
     return warnings
 
 
-def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings) -> None:
+def _has_literal(c) -> bool:
+    if c.find(q("f")) is not None:
+        return False
+    if c.find(q("is")) is not None:
+        return True
+    v = c.find(q("v"))
+    return v is not None and v.text not in (None, "")
+
+
+def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, leftovers) -> None:
     sd, tables = plan["def"], plan["tables"]
+    keep_set = {pos for spec in sd.get("keep") or [] for pos in parse_cell_spec(spec)}
     expand_shared_formulas(root)
     sheet_data = root.find(q("sheetData"))
     orig = sheet_rows(root)
@@ -931,6 +957,10 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings) -> 
         for (col, rr), value in fixed_cells.items():
             if rr == r:
                 set_value(_get_or_make_cell(row, col, new_r), value, styles)
+        for c in row:
+            pos = (cell_col(c), r)
+            if _has_literal(c) and pos not in keep_set and pos not in fixed_cells:
+                leftovers.add(f"{get_column_letter(pos[0])}{r}")
         _strip_cached(row)
         new_rows.append(row)
 
@@ -941,7 +971,7 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings) -> 
             if id(t) in done_tables:
                 continue
             done_tables.add(id(t))
-            _emit_table(t, orig, rowmap, rw, styles, new_rows, pattern_map, warnings)
+            _emit_table(t, orig, rowmap, rw, styles, new_rows, pattern_map, warnings, leftovers)
             continue
         if r in orig:
             emit_fixed(r, orig[r])
@@ -950,7 +980,7 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings) -> 
     # 行そのものが無い表（サンプル行が未作成）にも対応
     for t in tables:
         if id(t) not in done_tables:
-            _emit_table(t, orig, rowmap, rw, styles, new_rows, pattern_map, warnings)
+            _emit_table(t, orig, rowmap, rw, styles, new_rows, pattern_map, warnings, leftovers)
     new_rows.sort(key=lambda x: int(x.get("r")))
 
     for child in list(sheet_data):
@@ -972,7 +1002,7 @@ def _column_maps(td: dict, block: int) -> list[dict]:
     return [conv(r) for r in rows]
 
 
-def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings) -> None:
+def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, leftovers) -> None:
     if t.get("drop"):
         return
     td, k = t["def"], t["block"]
@@ -1018,6 +1048,9 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings) ->
                 if isinstance(value, (dict, list)):
                     raise TemplateError(f"{td['key']}[{rec}].{key} に配列・オブジェクトは入れられません")
                 set_value(c, value, styles)
+            for c in row:
+                if cell_col(c) not in colmaps[j] and _has_literal(c):
+                    leftovers.add(f"{get_column_letter(cell_col(c))}{src_r}")
             _strip_cached(row)
             out_rows.append(row)
 
@@ -1124,17 +1157,165 @@ def _fix_workbook(pkg: Package, maps: dict[str, RowMap]) -> None:
     calc.set("fullCalcOnLoad", "1")
     pkg.put_xml("xl/workbook.xml", wb)
     if "xl/calcChain.xml" in pkg.data:
-        pkg.removed.add("xl/calcChain.xml")
-        rels = pkg.xml("xl/_rels/workbook.xml.rels")
-        for r in list(rels):
-            if r.get("Target", "").endswith("calcChain.xml"):
-                rels.remove(r)
-        pkg.put_xml("xl/_rels/workbook.xml.rels", rels)
-        ct = pkg.xml("[Content_Types].xml")
-        for o in list(ct):
-            if o.get("PartName", "").endswith("calcChain.xml"):
-                ct.remove(o)
-        pkg.put_xml("[Content_Types].xml", ct)
+        _drop_part(pkg, "xl/calcChain.xml")
+
+
+def _drop_part(pkg: Package, part: str) -> None:
+    """part を取り除き、それを指す rels と [Content_Types].xml の Override も消す。"""
+    pkg.removed.add(part)
+    for name in list(pkg.data):
+        if not name.endswith(".rels") or name in pkg.removed:
+            continue
+        base = posixpath.dirname(posixpath.dirname(name))
+        root = pkg.xml(name)
+        changed = False
+        for r in list(root):
+            target = r.get("Target", "")
+            if r.get("TargetMode") == "External":
+                continue
+            resolved = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join(base, target))
+            if resolved == part:
+                root.remove(r)
+                changed = True
+        if changed:
+            pkg.put_xml(name, root)
+    ct = pkg.xml("[Content_Types].xml")
+    for o in list(ct):
+        if o.get("PartName", "").lstrip("/") == part:
+            ct.remove(o)
+    pkg.put_xml("[Content_Types].xml", ct)
+
+
+# ---------------------------------------------------------------------------
+# 来歴（他プロジェクトの成果物を流用するときの持ち越し）
+# ---------------------------------------------------------------------------
+
+NS_DC = "http://purl.org/dc/elements/1.1/"
+NS_CP = "http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+NS_APP = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+CORE_FIELDS = {"creator": f"{{{NS_DC}}}creator", "lastModifiedBy": f"{{{NS_CP}}}lastModifiedBy",
+               "title": f"{{{NS_DC}}}title", "subject": f"{{{NS_DC}}}subject",
+               "description": f"{{{NS_DC}}}description", "keywords": f"{{{NS_CP}}}keywords",
+               "category": f"{{{NS_CP}}}category"}
+APP_FIELDS = {"company": f"{{{NS_APP}}}Company", "manager": f"{{{NS_APP}}}Manager"}
+
+
+def read_properties(pkg: Package) -> dict[str, str]:
+    """文書のプロパティ（作成者・会社名など）のうち、値があるもの。"""
+    out: dict[str, str] = {}
+    for part, fields in (("docProps/core.xml", CORE_FIELDS), ("docProps/app.xml", APP_FIELDS)):
+        if part not in pkg.data:
+            continue
+        root = pkg.xml(part)
+        for key, tag in fields.items():
+            el = root.find(tag)
+            if el is not None and (el.text or "").strip():
+                out[key] = el.text.strip()
+    return out
+
+
+def provenance(pkg: Package) -> list[str]:
+    """出力に持ち越されると困るかもしれないものを、文で返す。"""
+    out = []
+    props = read_properties(pkg)
+    if props:
+        out.append("文書のプロパティ: " + "、".join(f"{k}={v!r}" for k, v in props.items()))
+    names = pkg.data.keys()
+    if "docProps/custom.xml" in names:
+        out.append("カスタムプロパティ（docProps/custom.xml）がある")
+    if any(n.startswith("docProps/thumbnail") for n in names):
+        out.append("プレビュー画像（docProps/thumbnail）がある。元の内容が写っている")
+    authors = set()
+    n_comments = 0
+    for _, sheet_part in pkg.sheets():  # 配置場所は Excel と openpyxl で違うので、rels の種類で探す
+        for typ, target in pkg.rels_of(sheet_part).values():
+            if typ.endswith("/comments") and target in pkg.data:
+                root = pkg.xml(target)
+                authors |= {a.text for a in root.iter(q("author")) if a.text}
+                n_comments += len(list(root.iter(q("comment"))))
+    if n_comments:
+        out.append(f"コメント（メモ）が {n_comments} 件ある。作成者: {'、'.join(sorted(authors))}")
+    if any(n.startswith("xl/threadedComments") for n in names):
+        out.append("スレッド形式のコメントがある")
+    if any(n.startswith("xl/externalLinks/") and n.endswith(".xml") for n in names):
+        out.append("他のブックへの外部リンクがある（元のファイル名・パスが残る）")
+    if "xl/vbaProject.bin" in names:
+        out.append("マクロ（VBA）がある。出力の拡張子は .xlsm にする")
+    wb = pkg.xml("xl/workbook.xml")
+    hidden = [s.get("name") for s in wb.find(q("sheets")) if s.get("state") in ("hidden", "veryHidden")]
+    if hidden:
+        out.append("非表示のシートがある: " + "、".join(hidden))
+    n_hidden = 0
+    for _, part in pkg.sheets():
+        root = pkg.xml(part)
+        n_hidden += sum(1 for r in root.iter(q("row")) if r.get("hidden") == "1")
+        n_hidden += sum(1 for c in root.iter(q("col")) if c.get("hidden") == "1")
+    if n_hidden:
+        out.append(f"非表示の行・列が {n_hidden} 個ある")
+    if any(n.startswith("xl/revisions/") for n in names):
+        out.append("変更履歴（リビジョン）がある")
+    return out
+
+
+def apply_properties(pkg: Package, props: dict) -> None:
+    """定義の properties を反映する。scrub: true なら、指定の無い識別情報を空にし、プレビューとカスタムプロパティを取り除く。"""
+    scrub = bool(props.get("scrub"))
+    for part, fields in (("docProps/core.xml", CORE_FIELDS), ("docProps/app.xml", APP_FIELDS)):
+        if part not in pkg.data:
+            continue
+        root = pkg.xml(part)
+        changed = False
+        for key, tag in fields.items():
+            value = props[key] if key in props else ("" if scrub else None)
+            if value is None:
+                continue
+            el = root.find(tag)
+            if el is None:
+                if not value:
+                    continue
+                el = etree.SubElement(root, tag)
+            if (el.text or "") != str(value):
+                el.text = str(value) or None
+                changed = True
+        if changed:  # 変えないものは、元のバイト列のまま
+            pkg.put_xml(part, root)
+    if scrub:
+        for name in list(pkg.data):
+            if name == "docProps/custom.xml" or name.startswith("docProps/thumbnail"):
+                _drop_part(pkg, name)
+
+
+def scrub_leftover_text(pkg: Package) -> None:
+    """どのセルも参照しなくなった共有文字列と、グラフの古い値のキャッシュを取り除く。"""
+    name = "xl/sharedStrings.xml"
+    if name in pkg.data:
+        sst = pkg.xml(name)
+        items = list(sst)
+        roots = {part: pkg.xml(part) for _, part in pkg.sheets()}
+        used = sorted({int(c.find(q("v")).text) for r in roots.values() for c in r.iter(q("c"))
+                       if c.get("t") == "s" and c.find(q("v")) is not None})
+        remap = {old: new for new, old in enumerate(used)}
+        total = 0
+        for part, root in roots.items():
+            for c in root.iter(q("c")):
+                if c.get("t") == "s" and c.find(q("v")) is not None:
+                    c.find(q("v")).text = str(remap[int(c.find(q("v")).text)])
+                    total += 1
+            pkg.put_xml(part, root)
+        for it in items:
+            sst.remove(it)
+        for old in used:
+            sst.append(items[old])
+        sst.set("count", str(total))
+        sst.set("uniqueCount", str(len(used)))
+        pkg.put_xml(name, sst)
+    for part in list(pkg.data):
+        if part.startswith("xl/charts/chart") and part.endswith(".xml"):
+            root = pkg.xml(part)
+            for tag in ("numCache", "strCache", "multiLvlStrCache"):
+                for el in list(root.iter(f"{{{NS_C}}}{tag}")):
+                    el.getparent().remove(el)
+            pkg.put_xml(part, root)
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1420,14 @@ def validate_definition(template: "str | bytes", definition: dict) -> None:
                 pass
 
 
+def check_definition(template: "str | bytes", definition: dict) -> list[str]:
+    """定義の検査。整合を確かめ、雛形データで試しに再構成する（strict なら、残る値の漏れもここで見つかる）。警告を返す。"""
+    import tempfile
+    validate_definition(template, definition)
+    with tempfile.TemporaryDirectory() as d:
+        return render(template, definition, skeleton_data(definition), os.path.join(d, "check.xlsx"))
+
+
 # ---------------------------------------------------------------------------
 # スタンドアローン（固有の render スクリプトを書き出す）
 # ---------------------------------------------------------------------------
@@ -1313,7 +1502,7 @@ def export_script(template: "str | bytes", definition: dict, output: str, embed:
             raw = f.read()
         rel = os.path.relpath(os.path.abspath(template), os.path.dirname(os.path.abspath(output)))
         template_name = os.path.basename(template)
-    validate_definition(raw, definition)
+    check_definition(raw, definition)
     with open(os.path.abspath(__file__), encoding="utf-8") as f:
         engine = f.read()
     # エンジン本体（CLI の入口より前）だけを取り込む
@@ -1407,6 +1596,14 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def cmd_check(args) -> int:
+    definition = load_structured(args.definition)
+    for w in check_definition(_template_arg(args, definition), definition):
+        print(f"警告: {w}")
+    print("定義は問題ありません")
+    return 0
+
+
 def cmd_inspect(args) -> int:
     facts = inspect_template(args.template)
     if args.json:
@@ -1467,6 +1664,10 @@ def add_subcommands(sub) -> None:
     a.add_argument("template", help="テンプレート .xlsx")
     a.add_argument("-o", "--output", help="定義ファイルの出力先（.json / .yaml。省略時は <テンプレート>.def.json）")
     a.set_defaults(func=cmd_analyze)
+    c = sub.add_parser("check", help="定義の検査（整合・strict の漏れ）。雛形データで試しに再構成する")
+    c.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template）")
+    c.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
+    c.set_defaults(func=cmd_check)
     i = sub.add_parser("inspect", help="テンプレートの事実（値・数式・書式の種類・結合・仮値の疑い）を、判断用に出す")
     i.add_argument("template", help="テンプレート .xlsx")
     i.add_argument("--json", action="store_true", help="JSON で出す")

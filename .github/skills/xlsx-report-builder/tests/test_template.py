@@ -706,5 +706,143 @@ class InspectTests(Base):
         self.assertEqual(json.loads(j.stdout)["sheets"][0]["name"], "請求書")
 
 
+class ReusedDeliverableTests(Base):
+    """他のプロジェクトの成果物をテンプレートにする場合の、持ち越しの検出と除去。"""
+
+    def setUp(self):
+        super().setUp()
+        from openpyxl.comments import Comment
+        wb = load_workbook(self.tpl)
+        wb.properties.creator = "他部署の山田"
+        wb.properties.lastModifiedBy = "他部署の佐藤"
+        wb.properties.title = "ProjectX 月次報告"
+        wb["請求書"]["B3"].comment = Comment("旧顧客の連絡先メモ", "山田")
+        wb.create_sheet("旧メモ").sheet_state = "hidden"
+        wb.save(self.tpl)
+        # 会社名・プレビュー画像を足す（openpyxl は書かない）
+        patched = os.path.join(self.dir, "patched.xlsx")
+        with zipfile.ZipFile(self.tpl) as zi, zipfile.ZipFile(patched, "w", zipfile.ZIP_DEFLATED) as zo:
+            for info in zi.infolist():
+                raw = zi.read(info.filename)
+                if info.filename == "docProps/app.xml":
+                    raw = raw.decode().replace("</Properties>", "<Company>X 社</Company></Properties>").encode()
+                if info.filename == "_rels/.rels":
+                    raw = raw.decode().replace("</Relationships>", '<Relationship Id="rIdT" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail" Target="docProps/thumbnail.jpeg"/></Relationships>').encode()
+                if info.filename == "[Content_Types].xml":
+                    text = raw.decode()
+                    if 'Extension="jpeg"' not in text:
+                        text = text.replace("<Override", '<Default Extension="jpeg" ContentType="image/jpeg"/><Override', 1)
+                    raw = text.encode()
+                zo.writestr(info.filename, raw)
+            zo.writestr("docProps/thumbnail.jpeg", b"\xff\xd8preview-of-old-content")
+        self.tpl = patched
+
+    def props(self, path):
+        with zipfile.ZipFile(path) as z:
+            return z.read("docProps/core.xml").decode(), z.read("docProps/app.xml").decode(), z.namelist()
+
+    def test_inspect_lists_what_would_be_carried_over(self):
+        text = "\n".join(xt.inspect_template(self.tpl)["provenance"])
+        for needle in ("他部署の山田", "X 社", "thumbnail", "コメント", "山田", "非表示のシート", "旧メモ"):
+            self.assertIn(needle, text)
+        self.assertIn("来歴・持ち越しの注意", xt.format_facts(xt.inspect_template(self.tpl)))
+
+    def test_render_warns_but_keeps_properties_by_default(self):
+        out = self.render()
+        self.assertTrue(any("来歴" in w and "他部署の山田" in w for w in self.warnings))
+        core, app, names = self.props(out)
+        self.assertIn("他部署の山田", core)
+        self.assertIn("docProps/thumbnail.jpeg", names)
+
+    def test_scrub_clears_identity_and_applies_explicit_values(self):
+        d = json.loads(json.dumps(DEF))
+        d["properties"] = {"scrub": True, "title": "請求書 2026-10", "creator": "経理部"}
+        core, app, names = self.props(self.render(definition=d))
+        self.assertNotIn("他部署の山田", core)
+        self.assertNotIn("他部署の佐藤", core)
+        self.assertNotIn("ProjectX", core)
+        self.assertIn("経理部", core)
+        self.assertIn("請求書 2026-10", core)
+        self.assertNotIn("X 社", app)
+        self.assertNotIn("docProps/thumbnail.jpeg", names)
+        with zipfile.ZipFile(os.path.join(self.dir, "out.xlsx")) as z:
+            self.assertNotIn("thumbnail", z.read("_rels/.rels").decode())
+        load_workbook(os.path.join(self.dir, "out.xlsx"))  # 壊れていない
+
+    def test_strict_reports_template_values_that_would_leak(self):
+        d = json.loads(json.dumps(DEF))
+        d["strict"] = True
+        with self.assertRaises(xt.TemplateError) as cm:
+            self.render(definition=d)
+        msg = str(cm.exception)
+        for ref in ("請求書!A1", "請求書!A3", "請求書!A18"):
+            self.assertIn(ref, msg)
+        self.assertNotIn("請求書!B8", msg)  # 流し込む列は漏れではない
+
+    def test_strict_passes_once_every_literal_is_decided(self):
+        d = json.loads(json.dumps(DEF))
+        sheet = d["sheets"][0]
+        d["strict"] = True
+        sheet["keep"] = ["A1", "A3:A5", "A7:E7", "D10:D12", "A14", "A15:C15", "A18"]
+        self.render(definition=d)  # 例外なし
+        xt.check_definition(self.tpl, d)
+
+    def test_strict_catches_unlisted_sample_column_in_table(self):
+        d = json.loads(json.dumps(DEF))
+        d["strict"] = True
+        sheet = d["sheets"][0]
+        sheet["keep"] = ["A1", "A3:A5", "A7:E7", "D10:D12", "A14", "A15:C15", "A18"]
+        del sheet["tables"][1]["columns"]["B"]  # 支払表の方法列を決めていない
+        with self.assertRaises(xt.TemplateError) as cm:
+            self.render(definition=d)
+        self.assertIn("請求書!B16", str(cm.exception))
+        sheet["tables"][1]["columns"]["B"] = {"keep": True}
+        self.render(definition=d)
+
+    def test_check_command_and_export_reject_strict_leaks(self):
+        d = json.loads(json.dumps(DEF))
+        d["strict"] = True
+        with self.assertRaises(xt.TemplateError):
+            xt.check_definition(self.tpl, d)
+        with self.assertRaises(xt.TemplateError):
+            xt.export_script(self.tpl, d, os.path.join(self.dir, "x.py"))
+        dp = os.path.join(self.dir, "d.json")
+        xt.dump_structured(DEF, dp)
+        script = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
+        r = subprocess.run([sys.executable, script, "check", "--template", self.tpl, "--def", dp], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("定義は問題ありません", r.stdout)
+
+    @unittest.skipUnless(shutil.which("soffice"), "LibreOffice がない")
+    def test_scrub_removes_orphan_shared_strings_and_chart_caches(self):
+        lo_dir = os.path.join(self.dir, "lo_tpl")
+        os.makedirs(lo_dir)
+        subprocess.run(["soffice", "--headless", f"-env:UserInstallation=file://{self.dir}/lo", "--convert-to", "xlsx", "--outdir", lo_dir, self.tpl],
+                       check=True, capture_output=True, timeout=120)
+        self.tpl = os.path.join(lo_dir, os.path.basename(self.tpl))
+        d = json.loads(json.dumps(DEF))
+        d["properties"] = {"scrub": True}
+        # 置き換えるサンプル値（サンプル株式会社・サンプル8・振込 など）が、共有文字列にも残らない
+        out = self.render(definition=d)
+        with zipfile.ZipFile(out) as z:
+            sst = z.read("xl/sharedStrings.xml").decode()
+            charts = [z.read(n).decode() for n in z.namelist() if n.startswith("xl/charts/chart")]
+        for old in ("サンプル株式会社", "サンプル8", "サンプル9"):
+            self.assertNotIn(old, sst)
+        self.assertIn("商品5", sst + "".join(self.cells_text(out)))
+        self.assertTrue(charts)
+        for c in charts:
+            self.assertNotIn("numCache", c)
+            self.assertNotIn("strCache", c)
+        ws = load_workbook(out)["請求書"]
+        self.assertEqual(ws["B12"].value, "商品5")
+        self.assertEqual(ws["A7"].value, "No")  # 残す文字列は、再採番後も正しい
+        self.assertEqual(ws["A22"].value, "※ 振込手数料はご負担ください")
+
+    def cells_text(self, path):
+        with zipfile.ZipFile(path) as z:
+            return [z.read(n).decode() for n in z.namelist() if n.startswith("xl/worksheets/sheet")]
+
+
 if __name__ == "__main__":
     unittest.main()
