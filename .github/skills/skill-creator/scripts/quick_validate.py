@@ -212,6 +212,9 @@ def validate_meta_yaml(meta_path: str) -> tuple[list[str], list[str]]:
 
 
 def main() -> None:
+    if len(sys.argv) >= 2 and sys.argv[1] in ("-h", "--help"):
+        print("使い方: python quick_validate.py <path/to/skill-folder>")
+        sys.exit(0)
     if len(sys.argv) < 2:
         print("使い方: python quick_validate.py <path/to/skill-folder>")
         sys.exit(1)

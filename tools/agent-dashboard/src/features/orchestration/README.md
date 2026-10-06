@@ -77,4 +77,4 @@ agent-flow のノード機能（work / classify / judge …）・役割（planne
 **エンジンはこのカタログを読まない**（profiles と同じ分業）。
 
 設計: [`docs/plans/2026-08-12-agent-flow-tier-eligibility-strategy-design.md`](../../../../../docs/plans/2026-08-12-agent-flow-tier-eligibility-strategy-design.md)。
-テスト: [`test/orchestration-profiles.test.js`](../../../../test/orchestration-profiles.test.js)。
+テスト: [`test/orchestration-profiles.test.js`](../../../test/orchestration-profiles.test.js)。

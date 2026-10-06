@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### wiki-use・skill-creator・agent-amigos: 使い方の誤りや未初期化を、トレースバックでなく 1 文で知らせる
+
+- **wiki-use:** `wiki_query.py`・`wiki_ingest.py`・`wiki_lint.py` が、初期化前は `--help` も RuntimeError の
+  トレースバックで落ちていた。引数を先に解釈し、未初期化は `[ERROR]` と `wiki_init.py` の案内で終了コード 1 にした
+- **skill-creator:** `quick_validate.py`・`package_skill.py` が `-h` / `--help` をスキルのフォルダ名として読んでいた。使い方を出して終了コード 0 にした
+- **agent-amigos:** `build-team` で `--goal` も `--design` も無い・`--agent-cli` が stub / 未指定・未知の `--pattern` のとき、
+  トレースバックでなく `[agent-amigos]` の 1 文で終えるようにした
+- agent-dashboard の orchestration の README から、テストへの切れた相対リンクを直した
+
 ### codd-agent: 手順（guides）のよくある書き方で、手順が黙って効かなくならないようにする
 
 - 先頭の `codd:` を、YAML のふつうの書き方でも読む。`files:` の下に `- 値` を並べた配列、` #` から後ろの注釈、

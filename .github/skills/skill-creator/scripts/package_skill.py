@@ -62,6 +62,9 @@ def package_skill(skill_path: str, output_dir: str | None = None) -> str | None:
 
 
 def main() -> None:
+    if len(sys.argv) >= 2 and sys.argv[1] in ("-h", "--help"):
+        print("使い方: python package_skill.py <path/to/skill-folder> [output-directory]")
+        sys.exit(0)
     if len(sys.argv) < 2:
         print("使い方: python package_skill.py <path/to/skill-folder> [output-directory]")
         sys.exit(1)

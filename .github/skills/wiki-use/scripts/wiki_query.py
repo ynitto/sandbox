@@ -33,7 +33,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from wiki_utils import load_config, resolve_wiki_root
+from wiki_utils import load_config_or_exit, resolve_wiki_root
 
 
 def _load_shared_hints():
@@ -532,9 +532,6 @@ def cmd_save_query(args, wiki_root: Path) -> None:
 
 
 def main() -> None:
-    config = load_config()
-    wiki_root = resolve_wiki_root(config)
-
     parser = argparse.ArgumentParser(
         description="Wiki を検索・閲覧するスクリプト",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -584,6 +581,10 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # 設定は引数を解釈したあとに読む（未初期化でも --help は出せるように）
+    config = load_config_or_exit()
+    wiki_root = resolve_wiki_root(config)
 
     dispatch = {
         "search": cmd_search,
