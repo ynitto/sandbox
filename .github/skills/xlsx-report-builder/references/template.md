@@ -65,7 +65,8 @@ xlsx（zip）の中のシート XML のうち、**可変の表の行だけ**を�
 | `strict` | `true`（定義の最上位）なら、テンプレートの値が、`keep`・`cells`・`clear`・列の指定のどれにも入らないまま残るセルがあると、render と check が止まる |
 | `properties` | 文書のプロパティ。`scrub: true` で識別情報を空にし、プレビューとカスタムプロパティ、使われなくなった共有文字列、グラフの古い値のキャッシュを取り除く。`title` / `subject` / `creator` / `lastModifiedBy` / `description` / `keywords` / `category` / `company` / `manager` で値を与える |
 | `decisions` | 判断の記録（範囲・役割・理由）。render は読まない |
-| `_` で始まる項目、`needs_confirm`、`header` | analyze が付ける確認用の情報。render は読まない |
+| `columns.<列>.header` | analyze が書く、その列の見出し。render は見出しの行と突き合わせ、違えば止める（列を足した・並べ替えたテンプレートで、値が別の列に入らないように）。手で書いた定義では省いてよい |
+| `_` で始まる項目、`needs_confirm` | analyze が付ける確認用の情報。render は読まない |
 
 - 定義に無い列は、サンプル行のまま複製される（不変）
 - `cells` や `columns.<列>.key` で流し込むセルにテンプレートの数式があれば、数式もデータの値で置き換える

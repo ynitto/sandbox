@@ -1084,5 +1084,26 @@ class ChecklistTests(Base):
         cells = {c["ref"]: c["value"] for row in facts["sheets"][1]["rows"] for c in row["cells"]}
         self.assertEqual((cells["A2"], cells["B2"]), ("2025-01-02", "2025-01-02 09:30"))   # 通し番号（45659）ではなく
 
+    def test_a_template_with_an_inserted_column_is_refused_instead_of_shifting_values(self):
+        def build(heads):
+            def inner(wb):
+                ws = wb.create_sheet("C")
+                ws.append(heads)
+                for c in ws[1]:
+                    c.font = Font(bold=True)
+                ws.append(["1"] * len(heads))
+                ws.append(["2"] * len(heads))
+            return inner
+        old = os.path.join(self.dir, "old.xlsx")
+        shutil.move(self.checklist(build(["No", "観点", "判定"])), old)
+        d = xt.analyze(old)                       # header を残した定義
+        new = self.checklist(build(["No", "優先度", "観点", "判定"]))
+        out = os.path.join(self.dir, "o.xlsx")
+        data = {d["sheets"][1]["tables"][0]["key"]: [{"観点": "a", "判定": "OK"}]}
+        xt.render(old, d, data, out)              # 同じ構造なら通る
+        with self.assertRaises(xt.TemplateError) as cm:
+            xt.render(new, d, data, out)
+        self.assertIn("B1: 定義では「観点」、テンプレートでは「優先度」", str(cm.exception))
+
 if __name__ == "__main__":
     unittest.main()

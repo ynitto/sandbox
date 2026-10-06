@@ -1039,6 +1039,25 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
         for r in range(t["first"], t["end"] + 1):
             tbl_of[r] = t
 
+    # 定義に残した列の見出し（analyze が書く header）と、テンプレートの見出しの行を突き合わせる。
+    # 列を足した・並べ替えたテンプレートに差し替えると、黙って 1 列ずつずれて入るので止める
+    sst = read_shared_strings(pkg)
+    moved = []
+    for t in tables:
+        td, head_r = t["def"], t["def"].get("header_row")
+        if t.get("drop") or not head_r or int(head_r) not in orig:
+            continue
+        heads = {cell_col(c): cell_value(c, sst) for c in orig[int(head_r)]}
+        for letter, spec in (td.get("columns") or {}).items():
+            want = spec.get("header") if isinstance(spec, dict) else None
+            have = heads.get(column_index_from_string(letter.upper()))
+            if want is not None and str(want).strip() != str(have if have is not None else "").strip():
+                moved.append(f"{letter}{head_r}: 定義では「{want}」、テンプレートでは「{have if have is not None else '（空）'}」")
+    if moved:
+        raise TemplateError(f"シート「{sd['name']}」の表の見出しが、定義と合いません（列を足した・並べ替えたテンプレートでは、"
+                            "値が別の列に入ります）。analyze から定義を作り直すか、columns の列を直してください:\n  "
+                            + "\n  ".join(moved))
+
     fixed_cells = {}
     for ref, key in (sd.get("cells") or {}).items():
         col, r = split_ref(ref)
