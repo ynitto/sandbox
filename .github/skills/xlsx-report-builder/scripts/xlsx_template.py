@@ -949,11 +949,11 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
     if props.get("scrub"):
         scrub_leftover_text(pkg)
     if definition.get("strict"):
-        left = [f"{n}!{r}" for n, refs in leftovers.items() for r in sorted(refs, key=lambda x: (int(re.sub(r"\D", "", x)), x))]
-        if left:
+        total = sum(len(refs) for refs in leftovers.values())
+        if total:
+            by_sheet = "\n".join(f"  {n}: {', '.join(compress_cells(refs))}" for n, refs in leftovers.items() if refs)
             raise TemplateError(
-                f"テンプレートの値がそのまま残るセルが {len(left)} 個あります: {', '.join(left[:20])}"
-                f"{' ...' if len(left) > 20 else ''}\n"
+                f"テンプレートの値がそのまま残るセルが {total} 個あります（シートごと・範囲にまとめて）:\n{by_sheet}\n"
                 "残すなら keep、置き換えるなら cells / columns の key、空にするなら clear、行ごと消すなら drop_rows に入れてください")
     pkg.save(output)
     return warnings
@@ -976,6 +976,37 @@ def _missing_key_warnings(t: dict, block: int, rows: list, sheet: str) -> list[s
     return [f"シート「{sheet}」表 {t.get('id')}: 列の key {', '.join(map(repr, missing))} が、"
             f"データ {t['key']!r} のどの行にも無いため空欄になります"
             + (f"（データにあって使われていないキー: {', '.join(map(repr, unused))}）" if unused else "")]
+
+
+def compress_cells(refs) -> list[str]:
+    """セルの一覧を、keep などにそのまま書ける範囲（`A1:C1`・`A3:A5`）にまとめる。行ごとに横へ、同じ横幅は縦へつなぐ。"""
+    rows: dict[int, list[int]] = {}
+    for ref in refs:
+        col, r = split_ref(ref)
+        rows.setdefault(r, []).append(col)
+    spans: list[tuple[int, int, int]] = []   # (行, 先頭の列, 末尾の列)
+    for r in sorted(rows):
+        cols = sorted(rows[r])
+        start = prev = cols[0]
+        for c in cols[1:] + [None]:
+            if c is not None and c == prev + 1:
+                prev = c
+                continue
+            spans.append((r, start, prev))
+            if c is not None:
+                start = prev = c
+    blocks: list[list[int]] = []   # [先頭の行, 末尾の行, 先頭の列, 末尾の列]
+    for r, a, b in spans:
+        hit = next((x for x in blocks if x[1] == r - 1 and x[2] == a and x[3] == b), None)
+        if hit:
+            hit[1] = r
+        else:
+            blocks.append([r, r, a, b])
+    out = []
+    for r1, r2, a, b in sorted(blocks):
+        first, last = f"{get_column_letter(a)}{r1}", f"{get_column_letter(b)}{r2}"
+        out.append(first if first == last else f"{first}:{last}")
+    return out
 
 
 def _has_literal(c) -> bool:
@@ -1074,6 +1105,8 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
             filled |= {(col, r) for col, spec in colmaps[(r - t["first"]) % t["block"]].items()
                        if not spec.get("formula") and not spec.get("keep")}
     _drop_stale_links(pkg, part, root, filled, warnings)
+    dropped_rows = {r for t in tables if t.get("drop") for r in range(t["first"], t["end"] + 1)}
+    _fix_comments(pkg, part, filled, set(tbl_of), rowmap, warnings, dropped_rows)
     _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
 
 
@@ -1168,6 +1201,49 @@ def _drop_stale_links(pkg, part, root, filled: set, warnings: list) -> None:
             if r.get("Type", "").endswith("/hyperlink") and r.get("Id") not in used:
                 rels.remove(r)
         pkg.put_xml(rels_name, rels)
+
+
+NS_VML_X = "urn:schemas-microsoft-com:office:excel"
+
+
+def _fix_comments(pkg, part, filled: set, sample_rows: set, rowmap, warnings: list, dropped_rows: set = frozenset()) -> None:
+    """コメント（メモ）を行のずれに追従させる。データを入れる・空にするセルのものは取り除く（新しい値に、元のメモが付く）。"""
+    parts = {typ.rsplit("/", 1)[-1]: target for typ, target in pkg.rels_of(part).values() if target in pkg.data}
+    if "comments" not in parts:
+        return
+    croot = pkg.xml(parts["comments"])
+    vml = None
+    if "vmlDrawing" in parts:
+        try:
+            vml = etree.fromstring(pkg.data[parts["vmlDrawing"]], etree.XMLParser(recover=True))
+        except etree.XMLSyntaxError:
+            vml = None
+    shapes = {}
+    for cd in (vml.iter(f"{{{NS_VML_X}}}ClientData") if vml is not None else []):
+        r, c = cd.find(f"{{{NS_VML_X}}}Row"), cd.find(f"{{{NS_VML_X}}}Column")
+        if r is not None and c is not None and (r.text or "").strip().isdigit() and (c.text or "").strip().isdigit():
+            shapes[(int(c.text) + 1, int(r.text) + 1)] = (cd.getparent(), r)
+    dropped, gone = [], []   # データを入れるセルのもの・取り除く行のもの
+    for cm in list(croot.iter(q("comment"))):
+        col, r = split_ref(cm.get("ref"))
+        shape = shapes.get((col, r))
+        if (col, r) in filled or r in dropped_rows:
+            cm.getparent().remove(cm)
+            if shape is not None and shape[0].getparent() is not None:
+                shape[0].getparent().remove(shape[0])
+            (gone if r in dropped_rows else dropped).append(cm.get("ref"))
+        elif r not in sample_rows:   # 表の外の行は、行と一緒に動かす
+            new_r = rowmap.map(r, False)
+            cm.set("ref", f"{get_column_letter(col)}{new_r}")
+            if shape is not None:
+                shape[1].text = str(new_r - 1)
+    if dropped:
+        warnings.append(f"データを入れるセルのコメント（{', '.join(dropped)}）は、新しい値に元のメモが付くため取り除きました")
+    if gone:
+        warnings.append(f"取り除く行のコメント（{', '.join(gone)}）も取り除きました")
+    pkg.put_xml(parts["comments"], croot)
+    if vml is not None:
+        pkg.data[parts["vmlDrawing"]] = etree.tostring(vml)
 
 
 def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings) -> None:

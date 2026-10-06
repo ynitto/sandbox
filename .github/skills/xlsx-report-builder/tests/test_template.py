@@ -778,8 +778,8 @@ class ReusedDeliverableTests(Base):
         with self.assertRaises(xt.TemplateError) as cm:
             self.render(definition=d)
         msg = str(cm.exception)
-        for ref in ("請求書!A1", "請求書!A3", "請求書!A18"):
-            self.assertIn(ref, msg)
+        # シートごとに、keep にそのまま書ける範囲で、すべてを挙げる
+        self.assertIn("請求書: A1, A3:A5, A7:E7, D10:D12, A14, A15:C15, A18", msg)
         self.assertNotIn("請求書!B8", msg)  # 流し込む列は漏れではない
 
     def test_strict_passes_once_every_literal_is_decided(self):
@@ -798,7 +798,7 @@ class ReusedDeliverableTests(Base):
         del sheet["tables"][1]["columns"]["B"]  # 支払表の方法列を決めていない
         with self.assertRaises(xt.TemplateError) as cm:
             self.render(definition=d)
-        self.assertIn("請求書!B16", str(cm.exception))
+        self.assertIn("請求書: B16\n", str(cm.exception))
         sheet["tables"][1]["columns"]["B"] = {"keep": True}
         self.render(definition=d)
 
@@ -1045,6 +1045,31 @@ class ChecklistTests(Base):
         self.assertIsNone(xt.NOTE_RE.match("備考"))
         self.assertIsNotNone(xt.NOTE_RE.match("備考：振込手数料はご負担ください"))
         self.assertIsNotNone(xt.NOTE_RE.match("※ 判定は OK / NG から選ぶ"))
+
+    def test_comments_on_filled_cells_are_dropped_and_others_follow_their_rows(self):
+        from openpyxl.comments import Comment
+
+        def build(wb):
+            ws = wb.create_sheet("T")
+            ws.append(["ID", "結果"])
+            ws.append(["X-1", "前の結果"])
+            ws["B2"].comment = Comment("前のプロジェクトのメモ", "山田")
+            ws["A4"] = "※ 注記"
+            ws["A4"].comment = Comment("注記の由来", "山田")
+            ws["A5"] = "消す行"
+            ws["A5"].comment = Comment("消す行のメモ", "山田")
+        d = {"version": 1, "sheets": [{"name": "T", "drop_rows": [5], "tables": [{
+            "id": "t", "header_row": 1, "first_row": 2, "sample_rows": 1, "key": "rows",
+            "columns": {"A": {"key": "id"}, "B": {"key": "result"}}}]}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        warnings = xt.render(self.checklist(build), d, {"rows": [{"id": f"N-{i}", "result": "OK"} for i in range(3)]}, out)
+        ws = load_workbook(out)["T"]
+        notes = {c.coordinate: c.comment.text for row in ws.iter_rows() for c in row if c.comment}
+        self.assertEqual(notes, {"A6": "注記の由来"})   # 注記は行と一緒に 4 → 6、データのセルと消した行のメモは無い
+        self.assertIn("データを入れるセルのコメント（B2）は、新しい値に元のメモが付くため取り除きました", warnings)
+        with zipfile.ZipFile(out) as z:
+            vml = next(z.read(n).decode() for n in z.namelist() if n.endswith(".vml"))
+        self.assertEqual(re.findall(r"<[^>]*Row>(\d+)<", vml), ["5"])   # 図形（吹き出し）の位置も 0 始まりで 5
 
 if __name__ == "__main__":
     unittest.main()
