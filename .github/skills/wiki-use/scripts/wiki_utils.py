@@ -74,6 +74,15 @@ def load_config() -> dict:
     return config
 
 
+def load_config_or_exit() -> dict:
+    """load_config() の CLI 向け版。未初期化ならトレースバックを出さず、[ERROR] の 1 文で終了コード 1 にする。"""
+    try:
+        return load_config()
+    except RuntimeError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def save_config(config: dict) -> None:
     """skill-registry.json の skill_configs["wiki-use"] に設定を書き込む。"""
     reg = _load_registry_json()
