@@ -10,6 +10,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const YAML = require('yaml');
 const { readVersion } = require('./skillVersion');
 
 // 走査の上限。置き場に何万も入っている PC で画面を止めない。
@@ -90,6 +91,25 @@ function tagsFromHeader(header) {
   return [];
 }
 
+// YAML として読める frontmatter は YAML に任せる。`description: 使い方は "x" と "y"` の
+// 末尾の引用符を落とさず、`tags: [a, b]` の一行形式や折り返した説明も読める。
+// 読めない（壊れた）frontmatter は null を返し、呼び出し側が行ごとの読みに戻る。
+function fieldsFromYaml(header) {
+  try {
+    const doc = YAML.parseDocument(header);
+    if (doc.errors.length) return null;
+    const data = doc.toJS();
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    const text = (value) => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '');
+    const list = (value) => (Array.isArray(value) ? value : [])
+      .filter((item) => typeof item === 'string' || typeof item === 'number')
+      .map((item) => String(item).trim()).filter(Boolean);
+    const meta = data.metadata && typeof data.metadata === 'object' ? data.metadata : {};
+    const tags = Array.isArray(data.tags) ? list(data.tags) : list(meta.tags);
+    return { description: text(data.description), tags };
+  } catch { return null; }
+}
+
 function metadata(name, file, content) {
   // Windows で書かれた SKILL.md（BOM・CRLF）でも、説明とタグを空にしない。
   const text = String(content || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
@@ -108,7 +128,12 @@ function metadata(name, file, content) {
     }
     description = description.filter(Boolean).join(' ');
   }
-  const tags = tagsFromHeader(header);
+  let tags = tagsFromHeader(header);
+  const parsed = fieldsFromYaml(header);
+  if (parsed) {
+    if (parsed.description || !description) description = parsed.description;
+    tags = parsed.tags;
+  }
   return { name, description, tags, frontmatter: header, version: readVersion(content), path: file, content };
 }
 

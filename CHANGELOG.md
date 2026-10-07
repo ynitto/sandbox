@@ -442,6 +442,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   利用者のフォルダに入れ、npm パッケージと Chromium を入れて `webui-test` コマンドを置く
 - 使い方は `tools/webui-test/README.md`、書式は `tools/webui-test/src/format-reference.md`
 
+### agent-app: スキルの説明の末尾が欠けたり、タグを読み落としたりするのを直す（agent-app 0.48.3）
+
+- 説明が `"` や `'` で終わるとき（`使い方は "a" か "b"`）、末尾の引用符が落ちて表示されていた
+- `tags: [a, b]` の一行形式と、複数行に折り返した説明も読む。書き方が YAML として読めないときは、これまでの行ごとの読みに戻る
+
 ### agent-app: Windows で保存したスキルの説明・タグが空になるのを直す（agent-app 0.48.2）
 
 - **改行が CRLF のスキル（BOM 付きを含む）でも、説明・タグを読む。** これまでは設定 > スキルの説明と、依頼に添える
