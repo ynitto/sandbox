@@ -119,9 +119,13 @@ test('reuse UI: classify, edit, create fresh sessions for all three kinds in a s
     await win.locator('#tasks .row-item').filter({ hasText: '月次集計' }).click();
     const panel = win.locator('#automation-workbench');
     await panel.locator('[data-task-tab="history"]').click(); await panel.locator('[data-history-reuse]').click();
-    assert.equal(await panel.locator('[data-run-param="month"]').inputValue(), '2026-08');
-    await panel.locator('[data-date-mode="run"]').selectOption('@date:previous-month');
-    assert.equal(await panel.locator('[data-run-param="month"]').getAttribute('readonly'), '');
+    assert.match(await panel.locator('.run-input-summary').textContent(), /実行条件 1 件/);
+    await panel.locator('#run-start').click();
+    const inputs = panel.locator('#dlg-run');
+    assert.equal(await inputs.locator('[data-confirm-param="month"]').inputValue(), '2026-08');
+    await inputs.locator('[data-parameter-date]').selectOption('@date:previous-month');
+    assert.equal(await inputs.locator('[data-confirm-param="month"]').inputValue(), require('../src/shared/reuse').resolveDate('@date:previous-month'));
+    assert.equal(await inputs.locator('[data-confirm-param="month"]').getAttribute('data-mode'), '@date:previous-month');
     await win.screenshot({ path: '/tmp/agent-app-reuse.png' });
     assert.deepEqual(errors, []);
   } catch (err) { const win = await electron.firstWindow(); await win.screenshot({ path: '/tmp/agent-app-reuse-failure.png' }); throw err; } finally { await electron.close(); }

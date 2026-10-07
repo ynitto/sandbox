@@ -42,6 +42,9 @@ test('manual run button displays a terminal, preserves it across tabs, and sends
       ipcMain.handle(`automation:${name}`, async (event, p) => ({ ok: true, data: await fn(event, p) }));
     };
     register('agents:list', () => ['kiro']);
+    register('run:snapshot', () => ({ available: true, daemon: { running: false }, tasks: [{
+      id: 'machine:terminal-task', kind: 'statemachine', machine: 'terminal-task', name: 'Terminal task', parameters: [], history: [],
+    }] }));
     register('run:start', (event) => {
       const requestId = 'manual-ui-test';
       global.manualTestSender = event.sender;

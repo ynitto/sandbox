@@ -66,8 +66,8 @@ test('Electron: スキル一覧から選択・確認・キャンセル・ゴミ�
   await win.locator('#settings-open').click();
   await win.locator('[data-settings-tab="skills"]').click();
   await win.waitForFunction(() => document.querySelectorAll('#skills-list input').length === 2);
-  assert.equal(await win.locator('#skills-publish').isVisible(), true);
-  assert.equal(await win.locator('#skills-publish').isDisabled(), true, '公開先がなくても操作の場所は表示する');
+  assert.equal(await win.locator('#skills-publish').isVisible(), false, '公開先が未設定なら公開操作を隠す');
+  assert.equal(await win.locator('#skills-publish').isDisabled(), true);
   assert.equal(await win.locator('#skills-list input:visible').count(), 0, '通常時はチェックボックスを隠す');
   const controls = await win.locator('#skills-remove-mode').boundingBox();
   const list = await win.locator('#skills-list').boundingBox();
@@ -77,6 +77,7 @@ test('Electron: スキル一覧から選択・確認・キャンセル・ゴミ�
   await reviewRow.click();
   await win.locator('#skill-metadata:popover-open').waitFor();
   assert.match(await win.locator('#skill-metadata pre').innerText(), /metadata:\s+version: 1.0.0/);
+  await win.locator('#skill-metadata').getByRole('button', { name: '閉じる' }).click();
   await win.locator('#skills-list .skill-list-row').filter({ hasText: 'design' }).click();
   assert.equal(await win.locator('#skill-metadata:popover-open').count(), 1);
   assert.match(await win.locator('#skill-metadata strong').innerText(), /design/);
