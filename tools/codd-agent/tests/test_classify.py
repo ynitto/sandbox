@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import io
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 MACHINE = Path(__file__).resolve().parents[1] / "machine"
@@ -43,6 +45,11 @@ ASK = (
     "テストで得たものが、文書の求めを満たしていません（実装を直すか、目安を変えるなら利用者に確かめて計画に挙げてから文書を直してください）",
     "文書の書式（見出しの並び）が今の書式から外れています: docs/api.md — 例（見本: docs/a.md。書式は決まりとして守る）",
 )
+# 人の承認が要るファイル（protect）に触れた指摘は、変えたあとの検査でしか出ず、いつも訊く。
+ASK_APPLY = (
+    codd.PROTECTED + "（戻してください。…）: docs/requirements.md",
+    codd.PROTECTED_HIT + "（変えずに利用者に確かめます。…）: legacy/old.py",
+)
 
 
 def asks(phase: str, text: str) -> bool:
@@ -62,6 +69,12 @@ class ClassifyTest(unittest.TestCase):
                 with self.subTest(phase=phase, text=text):
                     self.assertTrue(asks(phase, text))
 
+    def test_protected_files_are_asked(self) -> None:
+        for text in ASK_APPLY:
+            with self.subTest(text=text):
+                self.assertTrue(asks("apply", text))
+                self.assertIn(codd.classify("apply", text), ("protected", "protected-hit"))
+
     def test_same_spelling_names_are_retried_after_changing(self) -> None:
         # 変えたあとに、名前が参照先の別のファイルに同じ綴りで出てくるだけなら、申告で済むので訊かない。
         text = codd.NAMES_TOUCH_REFS + "（…）: docs/zoom.md"
@@ -79,6 +92,35 @@ class ClassifyTest(unittest.TestCase):
                          "## 今回やらないこと の項目に、残す理由のパスがありません"):
                 with self.subTest(phase=phase, text=text):
                     self.assertTrue(asks(phase, text))
+
+
+class ReplayFindingsTest(unittest.TestCase):
+    def test_a_removed_name_in_an_unplanned_file_is_asked(self) -> None:
+        self.assertTrue(asks("apply", codd.STALE_UNPLANNED + "（…）: `hello` — docs/api.md:3"))
+        self.assertFalse(asks("apply", codd.STALE_NAMES + "（…）: `hello` — docs/api.md:3"))
+
+    def test_advice_follows_a_protected_file_before_a_failing_test(self) -> None:
+        # テストの失敗が先に出ても、原因が承認の要るファイルなら、勧めは計画を直す（PLAN）
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / ".codd"
+            data.mkdir()
+            problems = [{"kind": codd.classify("apply", t), "text": t} for t in (
+                "実装のテストの検査が失敗しました（1）: python3 -m unittest", codd.PROTECTED_HIT + "（…）: legacy/old.py")]
+            (data / "problems.json").write_text(json.dumps({"phase": "apply", "problems": problems}), encoding="utf-8")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                codd.cmd_advise(Path(tmp))
+        self.assertIn("1. 変えた分は残して、計画を直す（勧め） → `PLAN`", out.getvalue())
+
+    def test_compacted_plan_keeps_the_blank_line_before_a_heading(self) -> None:
+        text = "## テストの変更案\n\n- a.py — 直す\n- b.py — 変更不要: 触れない\n\n## 今回やらないこと\n\nなし\n"
+        self.assertIn("- a.py — 直す\n\n## 今回やらないこと", codd.compact_plan(text))
+
+    def test_a_failed_check_shows_the_failure_not_only_the_summary(self) -> None:
+        script = "print('not ok 1 - ' + 'broken'); [print(f'ok {i}') for i in range(40)]; raise SystemExit(1)"
+        text = codd.run_check(Path.cwd(), [sys.executable, "-c", script], "x")[0]
+        self.assertIn("not ok 1 - broken", text.split("\n", 1)[1])   # 1 行目はコマンド
 
 
 if __name__ == "__main__":

@@ -1,0 +1,60 @@
+# 1 つのリポジトリにコードと文書があるライブラリ
+
+TypeScript のライブラリで、コード（`src/`・`tests/`）と文書（`docs/`）が同じリポジトリにある。広い改名の段分け、
+機能の削除、途中でやめて戻す、受け持ちの外（CI の設定）に名前が出てくる場合を見る。
+
+## サンプル
+
+1 つのリポジトリを `main` で作り、コミットしてから codd を入れる。テストは node:test（`node --test`）で、TypeScript は
+`tsc` を使わず、`.js`（ES モジュール）で書いてよい。
+
+- `src/` — 日付と金額の小さな関数を 12 ファイルほどに分けて置く。どのファイルも共通の設定 `src/config.js` の
+  `defaultLocale`（既定 `"ja-JP"`）を import して使う。`src/legacy/formatV1.js` は旧い呼び方の互換（`formatMoneyV1`）
+- `tests/` — `src/` のファイルごとにテスト（`*.test.js`）。いくつかは `defaultLocale` を直接読む
+- `docs/` — `docs/guide/*.md`（使い方。関数ごとに 1 本、`defaultLocale` を説明する）、`docs/adr/0001-locale.md`（決めたことの記録）、
+  `docs/guide/migration.md`（旧い関数から移る案内。パスは書かず、名前 `formatMoneyV1` だけを書く）
+- `.github/workflows/ci.yml` — `DEFAULT_LOCALE: ja-JP` を環境変数で渡す行と、`defaultLocale` に触れたコメント
+- `CLAUDE.md` — 関数は 1 ファイル 1 つ。公開する関数は `docs/guide/` に書く
+
+**codd を入れる**: `--side impl --scope src --scope tests --ref docs=. --ref-scope docs=docs --test "node --test tests/**/*.test.js"`
+（node 22 は glob を自分で展開する。codd はシェルを通さずに動かす）。`codd.json` の `protect` に `docs/adr/` と `src/legacy/` を書く。
+
+シナリオは順に流す（前のシナリオで変えてコミットした状態から続ける）。
+
+## 1. 設定の名前を変える（広い改名）
+
+**頼むこと**: `defaultLocale` を `fallbackLocale` に改めて。旧い名前は残さない。
+
+**利用者の答え**: `docs/adr/` は変えない（決めた当時の記録なので）。`src/legacy/` の import も直してよい。
+
+**期待**
+
+- 変えるファイルが 10 を超え、段に分かれる。段ごとに `batch` がその段のファイルだけを示し、最後の段のあとに全体の検査とテストが動く
+- ADR は「人の承認が要るファイル」として確認に出る。退けたら「今回やらないこと」へ回す。ADR に旧い名前が残っても、
+  消した名前の残りとして止めない（今回やらないことに挙げたので）
+- 既定値の `defaultLocale` を改めただけの関数（`formatMoney(amount, locale = defaultLocale)`）の名前で、題に関数の名前を書いただけの
+  テストを響くテストにしない
+- 受け持ちの外の `.github/workflows/ci.yml` のコメントに変わる名前が出てくることを、計画の検査が止めずに知らせ、確認の要約にも出す
+  （環境変数 `DEFAULT_LOCALE` は綴りが違うので当たらない）
+
+## 2. 旧い互換の関数を消す
+
+**頼むこと**: `formatMoneyV1` を消して（使っているところはもう無い）。文書とテストからも消す。
+
+**利用者の答え**: `src/legacy/` を消すのは承認する。
+
+**期待**
+
+- 消すファイルも「変えるファイル」として計画に挙げ、承認したうえで消せる
+- 計画で `docs/guide/migration.md` を挙げ忘れると、消したファイルの名前 `formatMoneyV1` をまだ書いていることで止まる。直せば通る
+
+## 3. 途中でやめて戻す
+
+**頼むこと**: 金額の丸め方を四捨五入から切り捨てに変えて。
+
+`codd.json` の `batch_files` を 2 にして段に分ける。
+
+**利用者の答え**: 変える段で 1 段目を変えたあと、気が変わったので止める（`decide STOP`）。変えた分は戻す（`rollback`）。
+
+**期待**: `rollback` でこの回の変更だけが戻り、前のシナリオのコミットは残る。報告と計画の記録は「利用者がやめた（変えた分は戻した）」
+と書き、やり直しを促さない。前の回の測定（影響範囲・響くテスト）を混ぜない。もう一度同じことを頼めば最初から計画できる。
