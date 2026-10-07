@@ -60,7 +60,7 @@ python3 <sandbox>/tools/codd-agent/init.py shop-docs --side design --ref app=../
 
 **期待**
 
-- 計画の検査が、書式の見本にした設計書を「未判断」として書き足す。判断に書き換えれば通る
+- 計画の検査が、書式の見本にした設計書と、名前で当たる `api.test.js` を「未判断」として書き足す。判断に書き換えれば通る（`api.test.js` は変更不要）
 - 確認の要約に「人の承認が要るファイル」として `docs:docs/requirements/orders.md` が出る。OK の記録に承認したファイルが残る
 - 変えるファイルは 11 前後でも 1 段で変える（10 と 1 に分けない）
 - 変えたあとの検査が、備考を書いていないテスト（`res.status` を読むだけの `api.test.js`、旧 API の `test_legacy.py`）を
@@ -83,7 +83,7 @@ python3 <sandbox>/tools/codd-agent/init.py shop-docs --side design --ref app=../
 
 **頼むこと**（shop-app で）: ワーカーのやり直しを 3 回から 5 回にして（`order-dlq` に落ちる注文が多い）。
 
-**利用者の答え**: 要件（`docs/requirements/`）は変えない。変えずに今回やらないことへ回す。
+**利用者の答え**: 要件（`docs/requirements/`）は変えない。変えずに今回やらないことへ回す。あとで要件を変えて止まったら、戻す（APPLY）。
 
 **期待**
 
@@ -100,7 +100,8 @@ python3 <sandbox>/tools/codd-agent/init.py shop-docs --side design --ref app=../
 
 - 参照先の実装（`get_order`）とテストも、設計書の側の計画から変えられる
 - 備考を使う側（ワーカー・画面）とそのテストは名前で当たって「未判断」になる。「関係なし」「変更不要」と書けば通る
-- 承認が要るファイルの表示は `app:backend/legacy/` のように参照先の名前が付く
+- `show` の「人の承認が要るファイル」は `app:backend/legacy/` のように参照先の名前が付く
+- 報告の「テスト」では、実装のテストに `app:` が付く
 
 ## 5. 点検
 
@@ -121,7 +122,7 @@ python3 <sandbox>/tools/codd-agent/init.py shop-docs --side design --ref app=../
 
 - 旧 API の「未判断」の行に「人の承認が要るファイル: 変えないと動かなくなるなら、直すと書いて確認で承認を得る」と添えてある
 - 変えたあと、単体テストが旧 API（`status.PAID` が無い）で落ちる。検査は「変更の影響を受ける、人の承認が要るファイルがあります」を
-  足し、advise は訊かずにやり直さず利用者に訊く
+  足し、advise は訊かずにやり直さず利用者に訊く。勧めは「変えた分は残して、計画を直す（PLAN）」（変え直しても旧 API は直せない）
 - PLAN で旧 API を計画に挙げ直し、確認で承認すれば通る。計画の記録に PLAN と承認したファイルが残る
 
 ## 直していないもの

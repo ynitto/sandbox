@@ -13,6 +13,7 @@
   確定ボタン（`ConfirmButton`）が `handleDesignGenerationNext` を呼ぶ。生成中は `Dialog_Generating_next` を出す
 - `src/components/ZoomControl.tsx`・`src/components/PageNav.tsx` — どちらも `disabled` を受け取るだけの部品
 - `src/lib/selection.ts` — `canConfirm(items)` と `isSelectableCandidate(c)`
+- `src/components/MobilePrint.tsx` — 別の画面の、同じ名前の部品 `function PrintButton`
 - `tests/selection.test.ts`（`canConfirm` を確かめる）・`tests/workspace.test.tsx`（描画するだけ）
 
 **design（設計書）**
@@ -21,7 +22,7 @@
   `canConfirm` が偽のとき押せない、生成中は `Dialog_Generating_next` を出す
 - `docs/screens/zoom.md`・`docs/screens/mobile.md` — 同じ見出しで、「`disabled` のときボタンを押せない」のような行がある
 
-**codd を入れる**: design は `--side design --ref ../app`、app は `--side impl --ref ../design`。
+**codd を入れる**: design は `--side design --ref ../app`、app は `--side impl --ref ../design`。テストのコマンドは置かない。
 
 ## 1. 確定ボタンをなくす
 
@@ -36,7 +37,8 @@
 - 計画の検査が `tests/selection.test.ts` を「未判断」として書き足す。変更不要とすれば通る
 - テストを変え忘れると、変えたあとの検査が「テストをまだ変えていません」で止め、advise は訊かずにやり直す（AUTO APPLY）
 - 中身だけ変えたローカル変数 `disabled` を検索語にせず、関係の無い `zoom.md`・`mobile.md` を「直していない」に挙げない
-- 同じ綴りの別物に当たったときは、`.codd/apply.md` の「計画との違い」に名前ごとに「関係なし」と書けば、その名前だけで当たったファイルはまとめて済む
+- 変える段で設計書に `PrintButton` と書き足すと、別の画面の `MobilePrint.tsx` に当たって止まる（AUTO APPLY）。`.codd/apply.md` の
+  「計画との違い」に名前ごとに「関係なし」と書けば、その名前だけで当たったファイルはまとめて済む
 
 ## 2. 続けてもう 1 回
 
@@ -46,7 +48,9 @@
 
 ## 3. 変える段の途中でコミットする
 
-**頼むこと**: 1 と同じ。ただし変える段の途中で、app のリポジトリをいったんコミットする。
+**頼むこと**: 1 と同じ（1 で変えたファイルを、サンプルを作ったときの中身に戻すコミットをしてから。計画の記録は残す）。
+ただし変える段の途中で、app のリポジトリをいったんコミットする。
 
 **期待**: 途中のコミットに入った変更も、この回の変更として影響範囲を測る（黙って通らない）。`rollback` は
-「途中でコミットされたので戻せません（git で戻してください）」と答える。
+「途中でコミットされたので戻せません（git で戻してください）」と答える。報告は、app を途中でコミットしたと書く
+（「どのリポジトリもコミットしていない」と書かない）。

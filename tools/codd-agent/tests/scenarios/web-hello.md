@@ -10,7 +10,7 @@
 **impl（実装）**
 
 - `src/app.py` — `def hello(): return 1`
-- `src/page.js` — `renderHello()` が `<h1>Hello page</h1>` を返す
+- `src/page.js` — `renderHello()` が文字列の HTML `'<h1>Hello page</h1>'` を返す（JSX ではない）
 - `tests/test_app.py` — `hello()` が 1 を返すことを確かめる
 - `tests/e2e/hello.yaml` — 先頭に `# coherence: doc=docs/api.md` と書いた e2e のケース
 - `tests/e2e/page.yaml`・`tests/e2e/top.yaml` — 注記の無い e2e のケース。`/hello` を開いて見出しの文言（`Hello page`）を期待する
@@ -18,6 +18,8 @@
 **design（設計書）**
 
 - `docs/api.md` — 見出し `## hello` と「hello は 1 を返す。」
+
+`.gitignore` に `__pycache__/` を入れる。
 
 **codd を入れる**: impl は `--side impl --ref ../design`、design は `--side design --ref ../impl`（`tools/codd-agent/init.py`）。
 
@@ -31,9 +33,13 @@
 計画に無い公開の関数（`welcome` など）を変える段で足したら、変えたあとの検査が「新しく足した名前を確かめるテストがありません」で止める
 （`_inner` のような内向きの名前は数えない）。
 
+**利用者の答え**: `welcome` は消す（APPLY）。
+
 ## 2. 画面の見出しを変える
 
 **頼むこと**（impl で）: `renderHello` の見出しを `Welcome page` に変えて。
+
+**エージェントの判断**: 計画には新しい文言 `Welcome page` だけを書く（古い文言は書かない）。
 
 **期待**
 
@@ -46,4 +52,5 @@
 
 **期待**: 1 回目の計画の検査で、実装のテスト（`tests/test_app.py`・`tests/e2e/hello.yaml`）が「参照先のその他」ではなく
 「テストの変更案」に「未判断」として入る。直すと決めたら、変えたあとの検査が実装の e2e のケースを変えたかを確かめ、
-実装の側の `test` も動かす。
+実装の側の `test` も動かす（直すときは `hello.yaml` のケースの題に補足を足す）。報告は、実装の側を「なし」と書かず、
+テストだけ変えたと書き、テストに `impl:` を付ける。

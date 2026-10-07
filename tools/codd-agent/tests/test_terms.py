@@ -106,6 +106,24 @@ class LiteralsFromDiffTest(unittest.TestCase):
             self.assertEqual(codd.literals_from_diff(ctx, "", codd.Side("own", repo, [])), ["再設定する"])
 
 
+class HtmlInStringsTest(unittest.TestCase):
+    def test_text_between_tags_inside_a_string_counts(self) -> None:
+        # 文字列で HTML を組む画面（`return '<h1>Hello page</h1>'`）。e2e のケースはタグの間の文言で書く。
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "page.js").write_text("export const page = () => '<h1>Hello page</h1>';\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "page.js").write_text("export const page = () => '<h1>Welcome page</h1>';\n", encoding="utf-8")
+            ctx = SimpleNamespace(config={"tests": ["**/*.test.*"]})
+            texts = codd.literals_from_diff(ctx, "", codd.Side("own", repo, []))
+        self.assertIn("Hello page", texts)
+        self.assertIn("Welcome page", texts)
+
+
 class ReorderedLiteralsTest(unittest.TestCase):
     def test_items_added_to_a_line_do_not_count_unchanged_strings(self) -> None:
         # 長い f 文字列の中の引用符で組を取り違えると、並べ替えただけの行の `status` を「変えた文字列」として拾い、
@@ -137,6 +155,43 @@ class QualifiedNamesTest(unittest.TestCase):
         self.assertIsNone(codd._NEW_FILE.search("status.PAID"))
         self.assertIsNotNone(codd._NEW_FILE.search("docs/orders.md"))
         self.assertEqual(codd._CITE.match("app.py:12").group("path"), "app.py")
+
+
+class ScenarioReplayTest(unittest.TestCase):
+    """シナリオの再生（tests/scenarios/）で見つけたもの。"""
+
+    def repo(self, tmp: str, files: dict[str, str]):
+        repo = Path(tmp)
+        git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+        git("init", "-q", "-b", "main")
+        for rel, body in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(body, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "init")
+        return repo
+
+    def test_a_deleted_file_counts_its_names_as_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repo(tmp, {"src/old.py": "def old_format():\n    return 0\n", "src/a.py": "x = 1\n"})
+            (repo / "src/old.py").unlink()
+            self.assertIn("old_format", codd.removed_names(None, "", codd.Side("own", repo, [])))
+
+    def test_a_signature_changed_only_by_a_rename_is_not_a_changed_name(self) -> None:
+        # 既定値の定数を改めただけで定義の行が変わった関数は、関数の名前を拾わない（題に名前を書いたテストにまで当たる）
+        before = ("export const defaultLocale = 'ja-JP';\n"
+                  "export function formatMoney(amount, locale = defaultLocale) {\n  return amount;\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repo(tmp, {"money.js": before})
+            (repo / "money.js").write_text(before.replace("defaultLocale", "fallbackLocale"), encoding="utf-8")
+            terms = codd.terms_from_diff(codd.Side("own", repo, []))
+        self.assertIn("fallbackLocale", terms)
+        self.assertNotIn("formatMoney", terms)
+
+    def test_code_fragments_in_backticks_name_their_head(self) -> None:
+        names = codd.name_terms("`discount: int = 0`・`order.set_status(\"cancelled\")`・`note=備考`・`Math.floor`・"
+                                "`docs/a.md`・`app.py`")
+        self.assertEqual(names, ["discount", "order.set_status", "note", "Math.floor"])
 
 
 class CopiedHeadingsTest(unittest.TestCase):

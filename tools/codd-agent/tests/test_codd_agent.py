@@ -338,7 +338,9 @@ class CoddTest(unittest.TestCase):
                 "- docs/api.md — `hello` の戻り値を 2 と書き直す", "なし"),
             "ずれが「なし」なのに、参照先の変更案があります": PLAN_ALIGNED.replace(
                 "## 参照先の変更案\n\nなし", "## 参照先の変更案\n\n- docs/api.md — 書き直す"),
-            "影響範囲が「なし」": PLAN_DRIFT.replace("- src/app.py — hello の戻り値", "なし"),
+            # 自分も変えるなら影響は測って書き足すので、自分の変更案が「なし」のときだけ求める
+            "影響範囲が「なし」": PLAN_DRIFT.replace("- src/app.py — hello の戻り値", "なし").replace(
+                "- src/app.py — `hello` が 2 を返す", "なし"),
             "自分のリポジトリに実在するパスがありません": PLAN_DRIFT.replace(
                 "- src/app.py — hello の戻り値", "- src/gone.py — 戻り値"),
             "`…` で囲んでください": PLAN_DRIFT.replace("`hello`", "hello"),
@@ -617,6 +619,12 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("段に分ける", r.stdout)    # 4 と 1 に分けない
+
+    def test_an_unrelated_line_may_name_what_the_file_lacks(self) -> None:
+        # 「関係なし」の理由は、根拠のファイルに無い今回の名前を挙げるのが自然。名前の照合で落とさない。
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
+                                             "## 参照先のその他\n\n- 関係なし: docs/api.md:3 — `hello` の説明で、`greet` には触れない"))
+        self.assert_plan_ok()
 
     def test_apply_needs_the_plan_that_passed_and_was_not_rejected(self) -> None:
         self.write_plan(PLAN_ALIGNED)
@@ -3249,6 +3257,73 @@ class CoddTest(unittest.TestCase):
         r = subprocess.run([sys.executable, str(runner), str(TOOL / "machine/workflow.yaml"), "--dry-run"],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
+    # ------------------------------------------------------------ シナリオの再生で見つけたもの（tests/scenarios/）
+
+    RENAME_PLAN = PLAN_ALIGNED.replace("hello にログを足す。", "hello を greet に改める。").replace(
+        "- src/app.py — `hello` の中でログを出す", "- src/app.py — `hello` を `greet` に改める")
+
+    def test_a_removed_name_left_in_an_unplanned_ref_is_asked(self) -> None:
+        # 計画で変えない参照先に、消した名前が残っている。変える段だけでは直せない（直せば計画に無い変更）ので訊く。
+        self.write_plan(self.with_tests(self.RENAME_PLAN, "- `greet` — 変更不要: 名前だけ変える"))
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def greet():\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("計画で変えないファイルがまだ書いています", r.stderr)
+        self.assertIn("docs/api.md", r.stderr)
+        self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
+        # 計画の根拠にしたファイルは、関係なしとして済ませない
+        (self.impl / ".codd/apply.md").write_text("## 計画との違い\n\n- `hello` — 関係なし: 別物\n", encoding="utf-8")
+        self.assertIn("計画で変えないファイルがまだ書いています", self.run_pa(self.impl, "verify-apply").stderr)
+        # 今回やらないと決めたものは残っていてよい
+        self.write_plan(self.with_tests(self.RENAME_PLAN, "- `greet` — 変更不要: 名前だけ変える").replace(
+            "## 今回やらないこと\n\nなし", "## 今回やらないこと\n\n- docs/api.md の名前を直す — 設計書は別の回"))
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / ".codd/apply.md").unlink()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertNotIn("消した名前", r.stderr)
+
+    def test_report_after_stop_says_the_user_stopped(self) -> None:
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        self.run_pa(self.impl, "decide", "STOP")
+        self.assertEqual(self.run_pa(self.impl, "rollback").returncode, 0)
+        r = self.run_pa(self.impl, "report")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("利用者がやめた（変えた分は戻した）", r.stdout)
+        self.assertNotIn("やり直してください", r.stdout)
+
+    def test_a_guide_document_loads_by_its_name(self) -> None:
+        commit(self.design, {".agents/guides/api-doc.md": "---\nname: api-doc\ncodd:\n  files: [\"docs/*.md\"]\n---\n\n# API の文書\n"},
+               "guide")
+        r = self.run_pa(self.impl, "guide", "api-doc")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("API の文書", r.stdout)
+        self.assertIn("design:.agents/guides/api-doc.md", self.run_pa(self.impl, "show").stdout)
+
+    def test_a_guide_check_runs_with_unanswered_asks(self) -> None:
+        # 手順の確かめることに答えていないときも、手順の check を一緒に動かす（答えたあとで落ち、やり直しが増えないように）
+        commit(self.impl, {".agents/guides/mig.md": "---\ncodd:\n  files: [\"db/*.sql\"]\n  check: [\"false\"]\n---\n\n"
+                                                    "# マイグレーション\n\n- [ ] 戻す SQL を書いた\n",
+                           "db/001.sql": "create table t1 (id int);\n"}, "guide")
+        plan = self.with_tests(PLAN_ALIGNED, "- `t2` — 変更不要: 表を作るだけ").replace(
+            "- src/app.py — `hello` の中でログを出す", "- db/002.sql — `t2` を作る").replace(
+            "## 守る決まり\n\nなし", "## 守る決まり\n\n- .agents/guides/mig.md — 戻す SQL を書く")
+        self.run_pa(self.impl, "guide", ".agents/guides/mig.md")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "db/002.sql").write_text("select 1;\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("確かめることに答えていません", r.stderr)
+        self.assertIn("検査が失敗しました", r.stderr)
 
 
 if __name__ == "__main__":
