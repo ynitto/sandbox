@@ -19,6 +19,7 @@ import tempfile
 import textwrap
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from unittest import mock
 from pathlib import Path
 
@@ -346,8 +347,6 @@ class CoddTest(unittest.TestCase):
             "実在する根拠のパスがありません": PLAN_ALIGNED.replace("docs/api.md#hello", "docs/nowhere.md"),
             "ずれがあるのに、参照先の変更案が「なし」": PLAN_DRIFT.replace(
                 "- docs/api.md — `hello` の戻り値を 2 と書き直す", "なし"),
-            "ずれが「なし」なのに、参照先の変更案があります": PLAN_ALIGNED.replace(
-                "## 参照先の変更案\n\nなし", "## 参照先の変更案\n\n- docs/api.md — 書き直す"),
             # 自分も変えるなら影響は測って書き足すので、自分の変更案が「なし」のときだけ求める
             "影響範囲が「なし」": PLAN_DRIFT.replace("- src/app.py — hello の戻り値", "なし").replace(
                 "- src/app.py — `hello` が 2 を返す", "なし"),
@@ -364,7 +363,80 @@ class CoddTest(unittest.TestCase):
                 self.assertEqual(r.returncode, 1)
                 self.assertIn(expected, r.stderr)
 
+    def test_template_comments_are_read_as_none(self) -> None:
+        # ひな形のコメントのままの見出しは「なし」と読む（「なし」と書かせるだけの往復をしない）。
+        # やりたいこと・自分の変更案・テストの変更案は、書き忘れと取り違えないよう必ず書かせる。
+        tpl = (self.impl / ".statemachine/codd/templates/plan.md").read_text(encoding="utf-8")
+        filled = PLAN_ALIGNED.split("## 自分の変更案")[1].split("## 参照先の変更案")[0].strip()
+        plan = (tpl.replace("## やりたいこと\n", "## やりたいこと\n\nhello にログを足す。\n", 1)
+                .replace("## 自分の変更案\n", f"## 自分の変更案\n\n{filled}\n", 1)
+                .replace("## テストの変更案\n", "## テストの変更案\n\n- 変更不要: テストはまだ無い\n", 1))
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("見出しの中身が空です", r.stdout + r.stderr)
+        self.assertNotIn("見出しの中身が空です",
+                         self.run_pa(self.impl, "verify-plan").stderr)
+        self.write_plan(tpl.replace("## やりたいこと\n", "## やりたいこと\n\nhello にログを足す。\n", 1))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("見出しの中身が空です: ## 自分の変更案", r.stderr)
+        self.assertIn("見出しの中身が空です: ## テストの変更案", r.stderr)
+        self.assertNotIn("見出しの中身が空です: ## 参照先の制約", r.stderr)
+
+    def test_ref_change_without_drift_is_allowed(self) -> None:
+        # やりたいことが参照先も変えるなら、ずれが無くても参照先の変更案を書いてよい（無いずれを作らせない）。
+        self.write_plan(PLAN_ALIGNED.replace(
+            "## 参照先の変更案\n\nなし", "## 参照先の変更案\n\n- docs/api.md — `hello` がログを出すと書き足す"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("ずれが「なし」なのに", r.stdout + r.stderr)
+
     # ------------------------------------------------------------ 変えたあとの検査
+
+    def test_verify_apply_reuses_the_graph_built_before_the_change(self) -> None:
+        # 変えたあとの検査は、変える前のグラフを使う。やり直すたびに全体を作り直して待たせない。
+        self.use_graphify_stub()
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.assertIn(f"{self.impl} update . --force", self.calls())
+        before = len(self.calls())
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        after = self.calls()[before:]
+        self.assertFalse(any(c.startswith(f"{self.impl} update") for c in after), after)
+        self.assertTrue(any(" affected " in c for c in after), after)
+
+    def test_without_a_test_command_show_and_report_say_tests_did_not_run(self) -> None:
+        # test が無いと検査はテストを動かさずに通る。「通った」をテストまで通ったと読ませない。
+        self.assertIn("テストのコマンド: 未設定", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertIn("- テスト: 動かしていない（自分のテストのコマンドが未設定）", self.run_pa(self.impl, "report").stdout)
+        self.set_config(self.impl, test=[sys.executable, "-c", "pass"])
+        self.assertNotIn("テストのコマンド: 未設定", self.run_pa(self.impl, "show").stdout)
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertNotIn("動かしていない", self.run_pa(self.impl, "report").stdout)
+
+    def test_init_suggests_a_test_command_without_writing_it(self) -> None:
+        repo = self.tmp / "guess"
+        repo.mkdir()
+        self.assertIsNone(init.guess_test(repo))
+        (repo / "tests").mkdir()
+        (repo / "tests/test_a.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+        self.assertEqual(init.guess_test(repo), "python -m pytest")
+        (repo / "tests/test_a.py").write_text("import unittest\n", encoding="utf-8")
+        self.assertEqual(init.guess_test(repo), "python -m unittest")
+        (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+        self.assertEqual(init.guess_test(repo), "go test ./...")
+        (repo / "package.json").write_text('{"scripts": {"test": "node --test"}}', encoding="utf-8")
+        self.assertEqual(init.guess_test(repo), "npm test")
+        git(repo, "init", "-q")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            init.main([str(repo), "--side", "impl", "--ref", "../design", "--no-agents"])
+        self.assertIn('設定するなら --test "npm test"', out.getvalue())
+        self.assertNotIn("test", json.loads((repo / ".statemachine/codd/codd.json").read_text(encoding="utf-8")))
 
     def test_verify_apply_own_only(self) -> None:
         self.write_plan(PLAN_ALIGNED)
@@ -764,8 +836,8 @@ class CoddTest(unittest.TestCase):
         self.add_caller()
         self.write_plan(PLAN_ALIGNED)
         self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
-        for _ in range(2):   # 未判断だけなら、まず訊かずに練り直す（2 回まで）
-            self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO PLAN\n"))
+        # 未判断だけなら、まず訊かずに練り直す。練り直しても同じ指摘が残れば、回数が残っていても訊く
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO PLAN\n"))
         r = self.run_pa(self.impl, "advise")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("# 計画の検査で止まりました", r.stdout)
@@ -780,8 +852,8 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
         (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
-        for _ in range(2):   # 計画に無い変更は、戻すか申告すれば直せるので、まず訊かずに変え直す（2 回まで）
-            self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
+        # 計画に無い変更は、戻すか申告すれば直せるので、まず訊かずに変え直す（同じ指摘が残れば訊く）
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
         r = self.run_pa(self.impl, "advise")
         self.assertIn("# 変えたあとの検査で止まりました", r.stdout)
         self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
@@ -806,11 +878,13 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('テストが落ちた')"])
         (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
-        for n in (1, 2):
+        for n in (1, 2):   # やり直すたびに落ち方が変わる（直しかけている）なら、訊かずに続ける
+            self.set_check(self.impl, [sys.executable, "-c", f"import sys; sys.exit('テストが落ちた {n}')"])
             self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
             r = self.run_pa(self.impl, "advise")
             self.assertTrue(r.stdout.startswith("AUTO APPLY\n"), r.stdout)
             self.assertIn(f"{n}/2 回目", (self.impl / ".codd/decisions.json").read_text(encoding="utf-8"))
+        self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('テストが落ちた 3')"])
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
         r = self.run_pa(self.impl, "advise")
         self.assertNotIn("AUTO", r.stdout)                  # 上限を超えたら訊く
