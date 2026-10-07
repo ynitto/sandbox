@@ -242,6 +242,16 @@ class CoddTest(unittest.TestCase):
         report = (self.impl / ".codd/explore.md").read_text(encoding="utf-8")
         self.assertEqual(report.count("docs/many.md:"), 3)   # 1 ファイル 3 行までは保つ
 
+    def test_explore_prints_only_this_runs_matches(self) -> None:
+        # 2 回目の explore は、前の回で出したファイルを出し直さない（控えには残す）。
+        commit(self.design, {"docs/other.md": "# other\n\nworld を返す。\n"}, "other")
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        r = self.run_pa(self.impl, "explore", "--term", "world")
+        self.assertIn("docs/other.md:3", r.stdout)
+        self.assertNotIn("docs/api.md", r.stdout)
+        log = json.loads((self.impl / ".codd/explore.json").read_text(encoding="utf-8"))
+        self.assertIn("docs/api.md", next(iter(log.values()))["files"])
+
     def test_a_failing_git_grep_is_not_taken_as_no_match(self) -> None:
         # 古い git が知らないオプションを渡したときのように、git grep が 1 以外で落ちたら「該当なし」にしない。
         shim = self.bin / "git"
@@ -570,6 +580,27 @@ class CoddTest(unittest.TestCase):
         self.run_pa(self.impl, "decide", "NG", "--note", "やり直して")
         self.assertFalse((self.impl / ".codd/approved-plan").exists())
 
+    def test_protect_takes_globs(self) -> None:
+        # protect は exclude と同じ書き方（`*` はフォルダをまたがず、`**/` はまたぐ）。
+        path = self.design / ".statemachine/codd/codd.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["protect"] = ["docs/*.md"]
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.set_config(self.impl, protect=["src/**/legacy_*.py"])
+        commit(self.impl, {"src/v1/legacy_orders.py": "OLD = 1\n", "src/v1/orders.py": "NEW = 1\n"}, "legacy")
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        self.assertIn("## 人の承認が要るファイル\n\n- design:docs/api.md", self.run_pa(self.impl, "summary").stdout)
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.impl / "src/v1/legacy_orders.py").write_text("OLD = 2\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("承認を得ずに変えています", r.stderr)
+        self.assertIn("src/v1/legacy_orders.py", r.stderr)
+        self.assertNotIn("design:docs/api.md", r.stderr.split("承認を得ずに変えています", 1)[1].split("\n", 1)[0])
+
     def test_a_protected_file_that_breaks_is_asked_not_retried(self) -> None:
         # 人の承認が要るファイルを「変更不要」として変え、テストがそのファイルで落ちたら、訊かずに変え直させない
         # （変え直すと、そのファイルを直して次の検査で止まるだけになる）。計画の段で、未判断の行にもそう添える。
@@ -695,6 +726,23 @@ class CoddTest(unittest.TestCase):
         self.assertIn("消したファイルを、まだ指しているところがあります", r.stderr)
         self.assertIn("docs/map.md:3 → src/old.py", r.stderr)
         self.assertTrue((self.impl / ".codd/trace-after.md").is_file())
+
+    def test_a_new_line_to_a_deleted_file_is_reported_once(self) -> None:
+        # 書き足した行が消したファイルを指すときは、「消したファイルを、まだ指している」だけに挙げる。
+        commit(self.impl, {"src/old.py": "def old():\n    return 0\n"}, "old")
+        plan = PLAN_DRIFT.replace("- src/app.py — `hello` が 2 を返す",
+                                  "- src/app.py — `hello` が 2 を返す\n- src/old.py — `old` を消す")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.impl / "src/old.py").unlink()
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。古い入口は `src/old.py`。\n",
+                                                 encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("消したファイルを、まだ指しているところがあります", r.stderr)
+        self.assertNotIn("書き足したパスが、どのリポジトリにもありません", r.stderr)
+        self.assertEqual(r.stderr.count("docs/api.md:5"), 1)
 
     def test_report_lists_changes_without_path_links(self) -> None:
         self.write_plan(PLAN_ALIGNED)
@@ -2014,6 +2062,12 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("変更が響くテストのうち、直していないファイルがあります", r.stderr)
         self.assertIn("tests/test_util.py", r.stderr)
+        # 直せと言われて直したテストは、計画に無くても「計画に無いファイル」で止めない（直しては止まる、を繰り返さない）。
+        (self.impl / "tests/test_util.py").write_text("from src.app import greet\n\n\ndef test_greet():\n"
+                                                      "    assert greet() == 'hi'\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertNotIn("計画に無いファイル", r.stderr)
+        self.assertNotIn("計画で挙げていないファイルを足しました", r.stderr)
 
     def test_spec_change_from_the_design_side_reaches_impl_tests(self) -> None:
         # 仕様書の側から始めても、実装の側の単体テストと e2e のケースを最初の検査から「テストの変更案」で扱わせる。
@@ -2877,6 +2931,18 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- 変更不要: このリポジトリにテストはまだ無い", saved)
         self.assertIn("info で足す", saved)
 
+    def test_replanning_restores_a_waiver_whose_file_is_only_mentioned(self) -> None:
+        # 練り直した計画の別の見出しにパスが出てくるだけなら、省いた判断を戻す（戻さないとまた未判断になる）
+        commit(self.impl, {"src/a.py": "hello()\n"}, "callers")
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/a.py — 変更不要: 契約は同じ"))
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "NG", "--note", "info で出して")
+        plan = self.impl / PLAN
+        plan.write_text(plan.read_text().replace("hello にログを足す。", "hello にログを info で足す（src/a.py と同じ）。"))
+        self.assert_plan_ok()
+        saved = json.loads((self.impl / ".codd/plan-check.json").read_text())["text"]
+        self.assertIn("- src/a.py — 変更不要: 契約は同じ", saved)
+
     def test_plan_keeps_distinct_waiver_reasons(self) -> None:
         commit(self.impl, {"src/a.py": "hello()\n", "src/b.py": "hello()\n"}, "callers")
         self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
@@ -3324,6 +3390,18 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("確かめることに答えていません", r.stderr)
         self.assertIn("検査が失敗しました", r.stderr)
+
+    def test_a_guide_document_may_be_named_in_the_plan(self) -> None:
+        # 「従う手順」には、guide で読み込むときと同じ名前（`mig`）で挙げてよい
+        commit(self.impl, {".agents/guides/mig.md": "---\ncodd:\n  files: [\"db/*.sql\"]\n---\n\n# マイグレーション\n",
+                           "db/001.sql": "create table t1 (id int);\n"}, "guide")
+        plan = self.with_tests(PLAN_ALIGNED, "- `t2` — 変更不要: 表を作るだけ").replace(
+            "- src/app.py — `hello` の中でログを出す", "- db/002.sql — `t2` を作る").replace(
+            "## 守る決まり\n\nなし", "## 守る決まり\n\n- mig — 番号を連番にする")
+        self.run_pa(self.impl, "guide", "mig")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("決められた手順を、「従う手順」に挙げていません", r.stderr)
 
 
 if __name__ == "__main__":

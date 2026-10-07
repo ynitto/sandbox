@@ -193,6 +193,29 @@ class ScenarioReplayTest(unittest.TestCase):
                                 "`docs/a.md`・`app.py`")
         self.assertEqual(names, ["discount", "order.set_status", "note", "Math.floor"])
 
+    def test_names_a_deleted_doc_only_mentions_are_not_changed(self) -> None:
+        # 消した文書が `…` で触れていただけの名前（移る先の関数）は変わっていない
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repo(tmp, {"docs/migration.md": "# 移る\n\n`formatMoneyV1` は `formatMoney` に。\n",
+                                   "src/money.js": "export function formatMoney() {}\n"})
+            (repo / "docs/migration.md").unlink()
+            self.assertNotIn("formatMoney", codd.terms_from_diff(codd.Side("own", repo, [])))
+
+    def test_a_file_committed_midway_then_reverted_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repo(tmp, {"a.txt": "a\n", "c.txt": "c\n"})
+            side = codd.Side("own", repo, [])
+            before = codd.snapshot(side)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            (repo / "a.txt").write_text("A\n", encoding="utf-8")
+            (repo / "new.txt").write_text("n\n", encoding="utf-8")
+            (repo / "c.txt").unlink()
+            git("add", "-A")
+            git("commit", "-q", "-m", "midway")
+            self.assertEqual(sorted(codd.changed_since(side, before)), ["a.txt", "c.txt", "new.txt"])
+            (repo / "a.txt").write_text("a\n", encoding="utf-8")   # コミットしたあと、作業中に戻した
+            self.assertEqual(sorted(codd.changed_since(side, before)), ["c.txt", "new.txt"])
+
 
 class CopiedHeadingsTest(unittest.TestCase):
     def test_headings_copied_from_sibling_docs_are_not_changed_names(self) -> None:

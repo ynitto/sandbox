@@ -60,7 +60,7 @@ python3 <sandbox>/tools/codd-agent/init.py shop-docs --side design --ref app=../
 
 **期待**
 
-- 計画の検査が、書式の見本にした設計書と、名前で当たる `api.test.js` を「未判断」として書き足す。判断に書き換えれば通る（`api.test.js` は変更不要）
+- 計画の検査が、書式の見本にした設計書と、（計画が `createOrder` を変えるなら）名前で当たる `api.test.js` を「未判断」として書き足す。判断に書き換えれば通る（`api.test.js` は変更不要）
 - 確認の要約に「人の承認が要るファイル」として `docs:docs/requirements/orders.md` が出る。OK の記録に承認したファイルが残る
 - 変えるファイルは 11 前後でも 1 段で変える（10 と 1 に分けない）
 - 変えたあとの検査が、備考を書いていないテスト（`res.status` を読むだけの `api.test.js`、旧 API の `test_legacy.py`）を
@@ -123,6 +123,9 @@ python3 <sandbox>/tools/codd-agent/init.py shop-docs --side design --ref app=../
 - 旧 API の「未判断」の行に「人の承認が要るファイル: 変えないと動かなくなるなら、直すと書いて確認で承認を得る」と添えてある
 - 変えたあと、単体テストが旧 API（`status.PAID` が無い）で落ちる。検査は「変更の影響を受ける、人の承認が要るファイルがあります」を
   足し、advise は訊かずにやり直さず利用者に訊く。勧めは「変えた分は残して、計画を直す（PLAN）」（変え直しても旧 API は直せない）
+- PLAN で旧 API を計画に挙げ直しても、前に「変更不要」とした判断（`CLAUDE.md` など）は、「従う手順」に名前が出てくるだけでも戻り、
+  また「未判断」にならない
+- 報告の「テスト」で、自分の変更案に挙げた `order_flow.feature` を「計画に無い」としない
 - PLAN で旧 API を計画に挙げ直し、確認で承認すれば通る。計画の記録に PLAN と承認したファイルが残る
 
 ## 直していないもの

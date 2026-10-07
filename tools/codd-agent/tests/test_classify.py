@@ -123,5 +123,24 @@ class ReplayFindingsTest(unittest.TestCase):
         self.assertIn("not ok 1 - broken", text.split("\n", 1)[1])   # 1 行目はコマンド
 
 
+class SecondReplayTest(unittest.TestCase):
+    """2 回目の再生（tests/scenarios/）で見つけたもの。"""
+
+    def test_an_untested_new_name_is_retried_without_asking(self) -> None:
+        # テストを足すか「変更不要」と書くかはエージェントが決められる（計画の段の同じ指摘も訊かない）
+        self.assertFalse(asks("apply", "新しく足した名前を確かめるテストがありません（…）: `today`（handler.go）"))
+
+    def test_a_no_change_reason_may_quote_names(self) -> None:
+        j = codd.judgment("`Math.floor` — 変更不要: 標準の関数で、`roundMoney` のテストで確かめる")
+        self.assertTrue(j.waived)
+        self.assertEqual(j.reason, "標準の関数で、`roundMoney` のテストで確かめる")
+        self.assertTrue(codd.judgment("tests/a.test.js — 変更不要: `node --test` で動く").waived)
+
+    def test_a_nested_function_is_not_a_new_public_name(self) -> None:
+        grab = lambda ln: [m.group(1) for p in codd._NEW_CODE_NAMES for m in [p.match(ln)] if m]
+        self.assertEqual(grab("+export function welcome() {"), ["welcome"])
+        self.assertEqual(grab("+  function handleSelect() {"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
