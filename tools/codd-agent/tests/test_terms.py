@@ -106,6 +106,39 @@ class LiteralsFromDiffTest(unittest.TestCase):
             self.assertEqual(codd.literals_from_diff(ctx, "", codd.Side("own", repo, [])), ["再設定する"])
 
 
+class ReorderedLiteralsTest(unittest.TestCase):
+    def test_items_added_to_a_line_do_not_count_unchanged_strings(self) -> None:
+        # 長い f 文字列の中の引用符で組を取り違えると、並べ替えただけの行の `status` を「変えた文字列」として拾い、
+        # `res.status` と書いただけのテストまで「響くテスト」にしていた。
+        from types import SimpleNamespace
+        before = ('def notify(order):\n'
+                  '    return f"to={order[\'email\']} order={order[\'order_id\']} status={order[\'status\']} and more"\n'
+                  'def make(body):\n    return {"email": body["email"], "status": "PENDING"}\n')
+        after = ('def notify(order):\n'
+                 '    message = f"to={order[\'email\']} order={order[\'order_id\']} status={order[\'status\']} and more"\n'
+                 '    return message\n'
+                 'def make(body):\n    return {"email": body["email"], "note": body.get("note", ""), "status": "PENDING"}\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "orders.py").write_text(before, encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "orders.py").write_text(after, encoding="utf-8")
+            ctx = SimpleNamespace(config={"tests": ["**/test_*.py"]})
+            self.assertEqual(codd.literals_from_diff(ctx, "", codd.Side("own", repo, [])), ["note"])
+
+
+class QualifiedNamesTest(unittest.TestCase):
+    def test_qualified_names_are_not_new_files(self) -> None:
+        # 計画に `status.COMPLETED` と書くと、まだ無いファイル `status.COMPLETE` を変えると読んでいた。
+        self.assertIsNone(codd._CITE.fullmatch("status.COMPLETED"))
+        self.assertIsNone(codd._NEW_FILE.search("status.PAID"))
+        self.assertIsNotNone(codd._NEW_FILE.search("docs/orders.md"))
+        self.assertEqual(codd._CITE.match("app.py:12").group("path"), "app.py")
+
+
 class CopiedHeadingsTest(unittest.TestCase):
     def test_headings_copied_from_sibling_docs_are_not_changed_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

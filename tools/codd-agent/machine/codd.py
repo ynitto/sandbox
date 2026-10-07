@@ -147,10 +147,10 @@ CHECK_TIMEOUT = 900
 _GRAPHIFY_SRC = re.compile(r"\bsrc=([^\s\]]+)|(?<![\w=])([^\s\[\]=]+):L\d+")
 # 根拠のパス。`名前:パス` の名前は参照先の name（複数あるとき）。末尾に `:行`・`:行-行`・`#見出し` を付けられる。
 _CITE = re.compile(r"(?:(?P<ref>[A-Za-z0-9_.-]+):)?"
-                   r"(?P<path>[\w@.\-]+(?:/[\w@.\-]+)+|[\w@\-]+\.[A-Za-z0-9]{1,8})"
+                   r"(?P<path>[\w@.\-]+(?:/[\w@.\-]+)+|[\w@\-]+\.[A-Za-z0-9]{1,8}(?![\w]))"
                    r"(?::(?P<line>\d+)(?:-(?P<end>\d+))?)?(?:#(?P<anchor>[^\s)）、,。`]+))?")
-# まだ無いファイルとして認める名前（拡張子が英字で始まる。`v1.2` のような語を拾わない）。
-_NEW_FILE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,7}$")
+# まだ無いファイルとして認める名前（拡張子が小文字の英字で始まる。`v1.2` や、`status.PAID` のような修飾した名前を拾わない）。
+_NEW_FILE = re.compile(r"\.[a-z][a-z0-9]{0,7}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SKILL = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _NONE_WORDS = ("なし", "無し")
@@ -1841,7 +1841,9 @@ def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
 
 
 # 文字列の値（画面の文言・URL・メッセージ）。e2e のケースはコードの名前ではなく、こうした文字列で書かれる。
-_LITERAL = re.compile(r"""(["'`])((?:(?!\1)[^\\\n]){3,60})\1""")
+# 引用符の中身。長い文字列も読み飛ばすだけにせず消費する（飛ばすと、その中の引用符で組を取り違え、
+# 並べ替えただけの行から `status` のような語を「変えた文字列」として拾う）。長さは使う側で絞る。
+_LITERAL = re.compile(r"""(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1""")
 _LETTER = re.compile(r"[^\W\d_]")
 # 画面の部品（JSX・Vue・Svelte・HTML）のタグの間の文言（`<button>サインイン</button>`）。引用符が無いので別に拾う。
 # 画面の文言は「送信」「保存」のように 2 文字のこともある
@@ -1860,7 +1862,8 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
         # import の指定（"react"・"../components/X"）は画面の文言ではない
         plus, minus = ([ln for ln in lines if not _IMPORT_LINE.match(ln)] for lines in (plus, minus))
         for mark, lines in (("+", plus), ("-", minus)):
-            counts[mark].update(m.group(2).strip() for ln in lines for m in _LITERAL.finditer(ln))
+            counts[mark].update(t for ln in lines for m in _LITERAL.finditer(ln)
+                                if 3 <= len(t := m.group(2).strip()) <= 60)
             if markup:
                 counts[mark].update(t for ln in lines for m in _MARKUP_TEXT.finditer(ln)
                                     if (t := m.group(1).strip()) and not re.search(r"[=;()&|]", t))
@@ -2339,11 +2342,20 @@ def plan_batches(ctx: Ctx, bodies: dict[str, str]) -> list[list[tuple[str, str]]
     段が増えすぎるとき（ファイル数で分けたときより MAX_EXTRA_BATCHES より多い）は、ファイル数だけで分ける。"""
     files = files_to_change(ctx, bodies, planned_refs(ctx, bodies)[0])
     size = ctx.batch_files
-    plain = [files[i:i + size] for i in range(0, len(files), size)]
     sig: dict[tuple[str, str], frozenset] = {f: frozenset() for f in files}
     for key, g, rels in guide_hits(ctx, files, "apply"):
         for rel in rels:
             sig[(key, rel)] = sig[(key, rel)] | {id(g)}
+
+    def absorb_tail(batches: list[list[tuple[str, str]]]) -> list[list[tuple[str, str]]]:
+        # 手順の無いファイルが少しだけ余った段は、前の段に入れる（11 ファイルを 10 と 1 に分けて、1 ファイルのために
+        # 段を 1 回ぶん回さない）。手順のあるファイルは、段ごとに出す手順を 1 組に保つため動かさない。
+        if len(batches) > 1 and len(batches[-1]) <= size // 4 and not any(sig[f] for f in batches[-1]):
+            tail = batches.pop()
+            batches[-1] = batches[-1] + tail
+        return batches
+
+    plain = absorb_tail([files[i:i + size] for i in range(0, len(files), size)])
     groups: dict[frozenset, list[tuple[str, str]]] = {}
     for f in files:
         groups.setdefault(sig[f], []).append(f)
@@ -2354,7 +2366,7 @@ def plan_batches(ctx: Ctx, bodies: dict[str, str]) -> list[list[tuple[str, str]]
     for b in batches:
         while rest and len(b) < size:
             b.append(rest.pop(0))
-    batches += [rest[i:i + size] for i in range(0, len(rest), size)]
+    batches = absorb_tail(batches + [rest[i:i + size] for i in range(0, len(rest), size)])
     return batches if len(batches) <= len(plain) + MAX_EXTRA_BATCHES else plain
 
 
@@ -2509,6 +2521,11 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     return problems
 
 
+# 「未判断」に添える。変えないと動かなくなるなら直す（確認で承認を訊く）。「変更不要」としてテストで落ち、
+# 訊かずに戻った変える段で直して止まる、という 1 回ぶんの無駄を、計画のうちに避ける。
+PROTECTED_NOTE = "。人の承認が要るファイル: 変えないと動かなくなるなら、直すと書いて確認で承認を得る"
+
+
 class Pending:
     """測ったのに計画に無かったファイル。検査が見出しごとに「未判断」の項目として計画へ書き足す。
 
@@ -2529,7 +2546,7 @@ class Pending:
     def own(self, ctx: Ctx, rel: str, why: str) -> None:
         # 自分のテストのファイルは、影響範囲ではなくテストの変更案で判断する
         heading = TESTS_HEADING if tests_enabled(ctx) and is_test(ctx, "", rel) else "## 影響範囲"
-        self.add(heading, ("", rel), f"- {rel} — {PENDING_MARK}（{why}）")
+        self.add(heading, ("", rel), f"- {rel} — {PENDING_MARK}（{why}{PROTECTED_NOTE if ctx.own.protected(rel) else ''}）")
 
     def ref(self, ctx: Ctx, name: str, rel: str, why: str, line: int | None = None,
             terms: list[str] | None = None) -> None:
@@ -2538,7 +2555,8 @@ class Pending:
         seen = f" 「{snippet(ctx.ref(name).path / rel, line, terms or [], 60).replace('`', '')}」" if line else ""
         if tests_enabled(ctx) and is_test(ctx, name, rel):
             # 参照先のテストも、根拠ではなくテストの変更案で判断する（足す・直す・変更不要）
-            self.add(TESTS_HEADING, (name, rel), f"- {ref_label(ctx, name, rel)} — {PENDING_MARK}（{why}）{seen}")
+            note = PROTECTED_NOTE if ctx.ref(name).protected(rel) else ""
+            self.add(TESTS_HEADING, (name, rel), f"- {ref_label(ctx, name, rel)} — {PENDING_MARK}（{why}{note}）{seen}")
             return
         self.add("## 参照先のその他", (name, rel),
                  f"- {PENDING_MARK}: {ref_label(ctx, name, rel)}{f':{line}' if line else ''}（{why}）{seen}")
@@ -2786,10 +2804,16 @@ def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
                 if rel in tests and (key, rel) not in targets:
                     found.setdefault((key, rel), "名前")
         if texts:
-            args = [a for t in texts[:MAX_TEXTS] for a in ("-e", t)]
-            for rel in git_grep(side, ["--untracked", "-l", "-I", "-F", *args]):
-                if rel in tests and (key, rel) not in targets:
-                    found.setdefault((key, rel), "文字列")
+            # 語の形の文字列（`note` のような項目名）は語として探す（`notes`・`res.status` に当てない）
+            words = [t for t in texts[:MAX_TEXTS] if _WORDLIKE.match(t)]
+            rest = [t for t in texts[:MAX_TEXTS] if not _WORDLIKE.match(t)]
+            for flags, group in ((["-w"], words), ([], rest)):
+                if not group:
+                    continue
+                args = [a for t in group for a in ("-e", t)]
+                for rel in git_grep(side, ["--untracked", "-l", "-I", "-F", *flags, *args]):
+                    if rel in tests and (key, rel) not in targets:
+                        found.setdefault((key, rel), "文字列")
         for rel in sorted(tests):
             if (key, rel) not in targets and file_stem(rel, test=True) in stems:
                 found.setdefault((key, rel), "ファイル名")
@@ -2927,6 +2951,10 @@ def write_tests_report(ctx: Ctx, name: str, title: str, found: dict[tuple[str, s
     (ctx.data / name).write_text("\n".join(lines), encoding="utf-8")
 
 
+# `status.COMPLETED` のように修飾した名前。テストの変更案が末尾の名前（`COMPLETED`）で書いていれば扱ったとみなす。
+_DOTTED = re.compile(r"^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$")
+
+
 def new_names_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     """変更案で新しく足す名前（どの側にもまだ無い `…`）を、テストの変更案が扱っているか。
 
@@ -2935,7 +2963,7 @@ def new_names_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     names = name_terms(bodies.get("## 自分の変更案", "") + "\n" + bodies.get("## 参照先の変更案", ""))
     body = bodies.get(TESTS_HEADING, "")
     # 変えたあとに練り直すときは、この回で消した名前も前からある名前（HEAD にある）として数える。
-    new = [n for n in names if n not in body
+    new = [n for n in names if n not in body and not (_DOTTED.match(n) and mentioned(body, n.rsplit(".", 1)[1]))
            and not any(git_grep(side, ["--untracked", "-l", "-I", "-i", "-F", *grep_word(n), "-e", n])
                        or existed_at_head(side, n) for _, side in all_sides(ctx))]
     if not new:
@@ -3688,6 +3716,11 @@ PROTECTED = "人の承認が要るファイルを、承認を得ずに変えて�
 PROTECTED_HIT = "変更の影響を受ける、人の承認が要るファイルがあります"
 
 
+def protected_label(key: str, rel: str) -> str:
+    """人の承認が要るファイルは、参照先が 1 つでもどのリポジトリのものかを書く（承認の記録で取り違えない）。"""
+    return f"{key}:{rel}" if key else rel
+
+
 def protected_files(ctx: Ctx, files) -> list[tuple[str, str]]:
     """（側の名前, パス）のうち、人の承認が要るもの（codd.json の protect）。"""
     return [(k, rel) for k, rel in files if side_of(ctx, k).protected(rel)]
@@ -3698,20 +3731,48 @@ def plan_protected(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str]]:
     return protected_files(ctx, files_to_change(ctx, bodies, planned_refs(ctx, bodies)[0]))
 
 
+def approved_changes(ctx: Ctx, a: "Applied") -> set[tuple[str, str]]:
+    """利用者が変えてよいと認めたファイル（確認で OK と答えた計画で変えるもの・accept で認めたもの）。"""
+    mark = ctx.data / APPROVED_PLAN
+    approved = mark.is_file() and mark.read_text(encoding="utf-8") == approved_plan_digest(ctx)
+    return (set(files_to_change(ctx, a.bodies, a.planned)) if approved else set()) | accepted(ctx)
+
+
 def protected_problems(ctx: Ctx, a: "Applied") -> list[str]:
     """人の承認が要るファイルを変えてよいのは、確認で利用者が OK と答えた計画に挙げたもの（か、accept で認めたもの）だけ。"""
     touched = [(k, rel) for k, rels in {"": a.own_touched, **a.touched}.items() for rel in sorted(rels)]
     hit = protected_files(ctx, touched)
     if not hit:
         return []
-    mark = ctx.data / APPROVED_PLAN
-    approved = mark.is_file() and mark.read_text(encoding="utf-8") == approved_plan_digest(ctx)
-    allowed = set(files_to_change(ctx, a.bodies, a.planned)) if approved else set()
-    allowed |= accepted(ctx)
-    bad = [side_label(ctx, k, rel) for k, rel in hit
+    allowed = approved_changes(ctx, a)
+    bad = [protected_label(k, rel) for k, rel in hit
            if not any(kk == k and covered(rel, {p}) for kk, p in allowed)]
     return [f"{PROTECTED}（戻してください。変えるなら計画に挙げ、確認で利用者の承認を得てから）: "
             + ", ".join(bad)] if bad else []
+
+
+def protected_in_failures(ctx: Ctx, texts: list[str], allowed: set[tuple[str, str]]) -> list[str]:
+    """テスト・検査の失敗の出力に出てくる、人の承認が要るファイル（トレースバックのパスなど）。変えてよいと認めたものは除く。"""
+    found: list[str] = []
+    for key, side in all_sides(ctx):
+        if not side.protect:
+            continue
+        roots = {side.path.as_posix() + "/", side.path.resolve().as_posix() + "/"}
+        for token in (t for text in texts for t in _FAILURE_PATH.findall(text)):
+            rel = token.replace("\\", "/")
+            root = next((r for r in roots if rel.startswith(r)), "")
+            if root:
+                rel = rel[len(root):]
+            elif rel.startswith("/") or re.match(r"^[A-Za-z]:/", rel):
+                continue
+            rel = rel[2:] if rel.startswith("./") else rel
+            label = protected_label(key, rel)
+            if side.protected(rel) and (key, rel) not in allowed and (side.path / rel).is_file() and label not in found:
+                found.append(label)
+    return found
+
+
+_FAILURE_PATH = re.compile(r"[\w@.\-/\\]+\.[A-Za-z0-9]{1,8}")
 
 
 def backup_dir(ctx: Ctx, key: str) -> Path:
@@ -4606,7 +4667,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
 
     if hold:
         problems.append(f"{PROTECTED_HIT}（変えずに利用者に確かめます。変えるなら計画に挙げて確認で承認を得る。"
-                        f"変えなくてよいなら、{UNDONE_HINT}）: " + ", ".join(side_label(ctx, k, rel) for k, rel in hold))
+                        f"変えなくてよいなら、{UNDONE_HINT}）: " + ", ".join(protected_label(k, rel) for k, rel in hold))
 
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。
@@ -4649,6 +4710,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
 
     # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。作り直したファイルを控える。
     pre = {key: dirty_files(side) for key, side in all_sides(ctx)}
+    before_checks = len(problems)
     for name, argv in test_commands(ctx.config.get("test")):
         problems += run_check(ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
     problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
@@ -4657,6 +4719,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         for name, argv in test_commands(r.test):
             problems += run_check(r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
         problems += run_check(r.path, r.check, f"{r.name}（{r.label}）")
+    held = protected_in_failures(ctx, problems[before_checks:], approved_changes(ctx, a))
+    if held:
+        # 訊かずに変え直させると、人の承認が要るファイルを直して、次の検査でまた止まるだけになる
+        problems.append(f"{PROTECTED_HIT}（テストか検査が、このファイルで落ちています。変えずに利用者に確かめます。"
+                        "変えるなら計画に挙げて確認で承認を得る）: " + ", ".join(held))
     problems += guide_checks(ctx, a)
     record_generated(ctx, pre)
     # 7. テストで得たもの。変わった画面を貼っている文書の画像を差し替え、振る舞い・時間を写した印が今と合うかを見る。
@@ -5170,7 +5237,7 @@ def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
     held = plan_protected(ctx, bodies)
     if held:
         lines += ["", "## 人の承認が要るファイル", "",
-                  *[f"- {side_label(ctx, k, rel)}" for k, rel in held],
+                  *[f"- {protected_label(k, rel)}" for k, rel in held],
                   "", "変えてよいかを、計画とは別にはっきり確かめる（認めないものは「今回やらないこと」へ）"]
     counted = [h for h in (GUIDES_HEADING, "## 参照先の前提", "## 参照先の制約", "## 参照先のその他")
                if h in bodies and not is_none(bodies[h])]
@@ -5216,7 +5283,7 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
         (ctx.data / APPROVED_PLAN).write_text(approved_plan_digest(ctx), encoding="utf-8")
         held = plan_protected(ctx, sections(plan_text_for_checks(ctx), PLAN_HEADINGS)[1])
         if held:
-            note = "; ".join(filter(None, [note, "承認したファイル: " + ", ".join(side_label(ctx, k, r) for k, r in held)]))
+            note = "; ".join(filter(None, [note, "承認したファイル: " + ", ".join(protected_label(k, r) for k, r in held)]))
     log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": args.answer, "note": note})
     (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.answer in ("NG", "STOP"):
@@ -5247,7 +5314,8 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
     """1 回の実行の終わりに、計画を判断の記録として残す（done・stopped で report のあとに呼ぶ）。"""
     report = ctx.data / "report.md"
     if report.is_file():
-        result = report.read_text(encoding="utf-8").splitlines()[2:]
+        # 見出しの後ろのリポジトリの絶対パスは、この端末だけのもの。コミットする記録には残さない
+        result = [re.sub(r"^(## .*?）)  .+$", r"\1", ln) for ln in report.read_text(encoding="utf-8").splitlines()[2:]]
         report.unlink()   # 次の回の記録に、この回の結果を混ぜない
     else:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
