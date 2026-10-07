@@ -88,8 +88,8 @@ SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files", "batch_files",
-               "skill_dirs", "test", "tests", "evidence", "exclude", "guides"}
-REF_KEYS = {"name", "path", "skills", "scope", "rules", "exclude", "guides"}
+               "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect"}
+REF_KEYS = {"name", "path", "skills", "scope", "rules", "exclude", "guides", "protect"}
 # 1 回の計画で変えるファイルの上限と、1 つの段（apply を分けた 1 回ぶん）で変えるファイルの数。
 # 計画は影響範囲・テストまで漏れなく挙げるので大きくなりやすい。上限は緩め、変えるときは段に分けて、
 # 段ごとに挙げたファイルを変え終えたかを確かめてから次へ進む（変え残しをその段のうちに見つける）。
@@ -560,6 +560,7 @@ def load_config(machine_dir: Path) -> dict:
         ref["exclude"] = exclude_list(ref.get("exclude"), f"{path} の refs[{i}].exclude")
         ref["rules"] = rule_list(ref.get("rules"), f"{path} の refs[{i}].rules")
         ref["guides"] = guide_list(ref.get("guides"), f"{path} の refs[{i}].guides")
+        ref["protect"] = exclude_list(ref.get("protect"), f"{path} の refs[{i}].protect")
     skills = config.get("skills") or {}
     if not isinstance(skills, dict) or set(skills) - set(PHASES):
         raise CoddError(f"{path} の skills は {{\"plan\": [...], \"apply\": [...]}} の形です")
@@ -574,6 +575,7 @@ def load_config(machine_dir: Path) -> dict:
     config["skill_dirs"] = [] if skill_dirs == [] else scope_list(skill_dirs, f"{path} の skill_dirs")
     config["scope"] = scope_list(config.get("scope"), f"{path} の scope")
     config["exclude"] = exclude_list(config.get("exclude"), f"{path} の exclude")
+    config["protect"] = exclude_list(config.get("protect"), f"{path} の protect")
     config.setdefault("graphify", "auto")
     if config["graphify"] not in ("auto", "off"):
         raise CoddError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
@@ -637,6 +639,7 @@ class Side:
     path: Path
     scope: list[str]
     exclude: list[str] = field(default_factory=list)
+    protect: list[str] = field(default_factory=list)   # 人の承認なしに変えないファイル（codd.json の protect）
 
     def pathspec(self) -> list[str]:
         # マシンのファイルは :(exclude) で外さず、出力を has() で外す。git 2.43 などでは、scope の最初のフォルダ名が
@@ -648,6 +651,9 @@ class Side:
 
     def has(self, rel: str) -> bool:
         return in_scope(rel, self.scope) and not machine_owned(rel) and not self.excluded(rel)
+
+    def protected(self, rel: str) -> bool:
+        return any(path_matches(pattern, rel) for pattern in self.protect)
 
     @property
     def diff_base(self) -> str:
@@ -721,7 +727,8 @@ class Ctx:
         self.config = load_config(MACHINE_DIR)
         self.side = self.config["side"]
         # テストが書き出す結果のファイル（evidence）は、探す・影響を測る・変えたかを数える対象にしない（直すものではない）
-        self.own = Side("own", root, self.config["scope"], exclude=unique([*self.config["exclude"], *self.config["evidence"]]))
+        self.own = Side("own", root, self.config["scope"], exclude=unique([*self.config["exclude"], *self.config["evidence"]]),
+                        protect=self.config["protect"])
         self.data = root / DATA_DIRNAME
         self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
         self.max_files = self.config["max_files"]
@@ -758,7 +765,11 @@ class Ctx:
             mine = [g.target for g in entry_guides if g.kind == "doc" and g.docs_in is None and g.target in added["rules"]]
             added["rules"] = [s for s in added["rules"] if s not in mine]
             self.config["rules"] = unique([*self.config["rules"], *mine])
+            # 人の承認が要るファイルは、そのファイルを持つリポジトリが決める（参照先の codd.json か、同じリポジトリなら
+            # 自分の codd.json）。呼び出し元は refs[].protect で足せるだけで、外せない。
+            owner_protect = self.config["protect"] if path == root.resolve() else (ref_config or {}).get("protect", [])
             self.refs.append(Ref(entry["name"], path, entry["scope"], exclude=entry["exclude"],
+                                 protect=unique([*owner_protect, *entry["protect"]]),
                                  config=ref_config, label=label,
                                  entry_skills=unique([*entry["skills"], *added["skills"]["apply"]]),
                                  entry_rules=unique([*entry["rules"], *added["rules"]]),
@@ -1259,6 +1270,10 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
         for k, g in optional:
             print(f"  - {guide_line(ctx, k, g)}" + (f"（語: {', '.join(g.terms)}）" if g.terms else ""))
     print(f"スキルは `python3 {MACHINE_REL}/codd.py skill 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
+    protect = [(who, pat) for who, side in [("", ctx.own), *((r.name, r) for r in ctx.refs)] for pat in side.protect]
+    if protect:
+        print("人の承認が要るファイル（計画に挙げ、確認で利用者が認めたときだけ変える。響いても勝手に直さない）: "
+              + ", ".join(f"{who + ':' if who else ''}{pat}" for who, pat in protect))
     print(f"1 回で変えるファイルの上限: {ctx.max_files}（超えるぶんは計画の「今回やらないこと」へ）。"
           f"変えるときは {ctx.batch_files} ファイルずつの段に分ける")
     if tests_enabled(ctx):
@@ -3668,6 +3683,37 @@ def plan_unconfirmed(ctx: Ctx) -> list[str]:
             "計画の検査で止まったままです。計画を練り直し、検査と確認を通してから変えてください）"]
 
 
+APPROVED_PLAN = "approved-plan"   # 確認で利用者が OK と答えた計画の印（人の承認が要るファイルを変えてよい計画）
+PROTECTED = "人の承認が要るファイルを、承認を得ずに変えています"
+PROTECTED_HIT = "変更の影響を受ける、人の承認が要るファイルがあります"
+
+
+def protected_files(ctx: Ctx, files) -> list[tuple[str, str]]:
+    """（側の名前, パス）のうち、人の承認が要るもの（codd.json の protect）。"""
+    return [(k, rel) for k, rel in files if side_of(ctx, k).protected(rel)]
+
+
+def plan_protected(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str]]:
+    """計画で変える、人の承認が要るファイル。"""
+    return protected_files(ctx, files_to_change(ctx, bodies, planned_refs(ctx, bodies)[0]))
+
+
+def protected_problems(ctx: Ctx, a: "Applied") -> list[str]:
+    """人の承認が要るファイルを変えてよいのは、確認で利用者が OK と答えた計画に挙げたもの（か、accept で認めたもの）だけ。"""
+    touched = [(k, rel) for k, rels in {"": a.own_touched, **a.touched}.items() for rel in sorted(rels)]
+    hit = protected_files(ctx, touched)
+    if not hit:
+        return []
+    mark = ctx.data / APPROVED_PLAN
+    approved = mark.is_file() and mark.read_text(encoding="utf-8") == approved_plan_digest(ctx)
+    allowed = set(files_to_change(ctx, a.bodies, a.planned)) if approved else set()
+    allowed |= accepted(ctx)
+    bad = [side_label(ctx, k, rel) for k, rel in hit
+           if not any(kk == k and covered(rel, {p}) for kk, p in allowed)]
+    return [f"{PROTECTED}（戻してください。変えるなら計画に挙げ、確認で利用者の承認を得てから）: "
+            + ", ".join(bad)] if bad else []
+
+
 def backup_dir(ctx: Ctx, key: str) -> Path:
     return ctx.data / "before" / ("own" if not key else f"ref-{key}")
 
@@ -4106,8 +4152,8 @@ def batch_step(ctx: Ctx, a: "Applied") -> int | None:
     通れば次の段へ進め、出力の第 1 行を `MORE` にする（ステートマシンは apply へ戻る）。
     """
     batches, done = load_batches(ctx)
-    if len(batches) <= 1 or plan_unconfirmed(ctx):
-        return None
+    if len(batches) <= 1 or plan_unconfirmed(ctx) or protected_problems(ctx, a):
+        return None         # 人の承認が要るファイルに触れたら、途中の段でも全体の検査で止める
     left = [i for i, b in enumerate(batches) if batch_undone(ctx, a, b)]
     if not left:
         return None         # すべての段を変え終えた
@@ -4432,7 +4478,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if step is not None:
         return step
     bodies = a.bodies
-    problems = plan_unconfirmed(ctx) + list(a.plan_problems)
+    problems = plan_unconfirmed(ctx) + list(a.plan_problems) + protected_problems(ctx, a)
     tp = test_plan(ctx, bodies)
     problems += tp.problems
     problems += formats_apply_problems(ctx, "\n".join(bodies.values()))
@@ -4504,6 +4550,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     terms = unique([t for t in [*(t for r in changed for t in terms_from_diff(r)), *own_diff_terms]
                     if t not in dev.unrelated or t in plan_terms] + plan_terms)
     measured: list[str] = []
+    hold: list[tuple[str, str]] = []   # 直すべきだが、人の承認が要るファイル（エージェントに直させず、利用者に訊く）
     if terms:
         measured = measure(ctx, terms, "impact-after.md",
                            f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）")
@@ -4511,6 +4558,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         # 自分の変更案のファイルは、変え残しとして上で挙げる（同じファイルを 2 回挙げない）。
         untouched = [p for p in measured if p not in a.own_touched and p not in waived and not dev.waived("", p)
                      and p not in want_own]
+        hold += [("", p) for p in untouched if ctx.own.protected(p)]
+        untouched = [p for p in untouched if not ctx.own.protected(p)]
         if untouched:
             problems.append(
                 f"変更の影響を受けるのに、直していないファイルがあります（直すか、{UNDONE_HINT}。{NAME_HINT}）: "
@@ -4540,9 +4589,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         found = affected = affected_tests(ctx, terms, changed_files, texts)
         write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp)
         # テストの変更案で変えると挙げたテストは、変え残しとして上で挙げる。
-        unfixed = [side_label(ctx, k, rel) for (k, rel) in sorted(found)
+        unfixed = [(k, rel) for (k, rel) in sorted(found)
                    if rel not in touched_all.get(k, set()) and (k, rel) not in tp.waived and not dev.waived(k, rel)
                    and (k, rel) not in tp.change]
+        hold += protected_files(ctx, unfixed)
+        unfixed = [side_label(ctx, k, rel) for k, rel in unfixed if (k, rel) not in hold]
         if unfixed:
             problems.append(f"変更が響くテストのうち、直していないファイルがあります（直すか、{UNDONE_HINT}。{NAME_HINT}）: "
                             + ", ".join(unfixed)
@@ -4552,6 +4603,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems.append("新しく足した名前を確かめるテストがありません（テストを足すか、利用者に確かめて計画の"
                             f"{TESTS_HEADING} に「- `名前` — {NO_CHANGE_MARK}: 理由」を書いてください）: "
                             + ", ".join(untested))
+
+    if hold:
+        problems.append(f"{PROTECTED_HIT}（変えずに利用者に確かめます。変えるなら計画に挙げて確認で承認を得る。"
+                        f"変えなくてよいなら、{UNDONE_HINT}）: " + ", ".join(side_label(ctx, k, rel) for k, rel in hold))
 
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。
@@ -4836,6 +4891,7 @@ _KINDS = (
     ("unconfirmed", "apply", ("利用者が確かめたものではありません",)),
     ("pending", "plan", (f"「{PENDING_MARK}」",)),
     ("size", "plan", ("上限",)),
+    ("protected", "apply", (PROTECTED, PROTECTED_HIT)),
     ("outside", "apply", (OUTSIDE_ADDED,)),
     ("extra", "apply", ("計画に無いファイルを変えています", "変更案に無いファイルを変えています", "が変わっています（戻してください）")),
     ("undone", "apply", ("まだ変えていません", "が変わっていません")),
@@ -4900,6 +4956,9 @@ ADVICE = {
         "stale": (["reset", "stop"], "変える前の印がありません。計画から練り直します"),
         "unconfirmed": (["keep", "reset", "stop"],
                         "確かめていない計画で変えました。変えた分を残すか戻すかを決めてもらい、計画の検査と確認からやり直します"),
+        "protected": (["reapply", "keep", "reset", "stop"],
+                      "人の承認が要るファイル（設定の protect）に触れています。変えずにおく（変えたなら戻す）か、"
+                      "計画に挙げて確認で承認するかを決めてもらいます"),
         "outside": (["accept", "reapply", "keep", "stop"],
                     "変える段で、計画で挙げていないファイルを理由付きで足しました。理由を見て、認めて続けるか、戻して変え直すかを決めてもらいます"),
         "extra": (["reapply", "keep", "reset", "stop"],
@@ -5108,6 +5167,11 @@ def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
     lines = ["# 計画の要約", "", f"全文: {rel}", ""]
     want = [ln.strip() for ln in bodies.get("## やりたいこと", "").splitlines() if ln.strip()]
     lines += ["## やりたいこと", "", *([_clip(ln) for ln in want[:3]] or ["（未記入）"])]
+    held = plan_protected(ctx, bodies)
+    if held:
+        lines += ["", "## 人の承認が要るファイル", "",
+                  *[f"- {side_label(ctx, k, rel)}" for k, rel in held],
+                  "", "変えてよいかを、計画とは別にはっきり確かめる（認めないものは「今回やらないこと」へ）"]
     counted = [h for h in (GUIDES_HEADING, "## 参照先の前提", "## 参照先の制約", "## 参照先のその他")
                if h in bodies and not is_none(bodies[h])]
     if counted:
@@ -5145,11 +5209,19 @@ def load_decisions(ctx: Ctx) -> list[dict]:
 def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     """利用者の答えを控える。計画の本文は練り直しで書き換わるので、答えは別に持ち、報告で記録に書く。"""
     log = load_decisions(ctx)
-    log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": args.answer, "note": args.note.strip()})
+    note = args.note.strip()
     ctx.data.mkdir(parents=True, exist_ok=True)
+    if args.answer == "OK" and ctx.plan.is_file():
+        # 確認で OK と答えた計画だけが、人の承認が要るファイルを変えてよい。何を承認したかを記録に残す。
+        (ctx.data / APPROVED_PLAN).write_text(approved_plan_digest(ctx), encoding="utf-8")
+        held = plan_protected(ctx, sections(plan_text_for_checks(ctx), PLAN_HEADINGS)[1])
+        if held:
+            note = "; ".join(filter(None, [note, "承認したファイル: " + ", ".join(side_label(ctx, k, r) for k, r in held)]))
+    log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": args.answer, "note": note})
     (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.answer in ("NG", "STOP"):
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)   # 退けた計画では変えさせない
+        (ctx.data / APPROVED_PLAN).unlink(missing_ok=True)
     print(f"控えました: {args.answer}（{DECISIONS[args.answer]}）")
     return 0
 

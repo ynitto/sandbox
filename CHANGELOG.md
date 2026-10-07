@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 人の承認なしに変えないファイル（要件定義・ガイドライン・旧いコードなど）を設定で決める
+
+- **`codd.json` の `protect`（パス・glob の配列）に書いたファイルは、確認で利用者が OK と答えた計画に挙げたときだけ変える。**
+  確認の要約に「人の承認が要るファイル」として別に出し、変えてよいかをはっきり訊く。承認したファイルは計画の記録に残る
+- 承認した計画に無いのに変えたら、変えたあとの検査が止める（「追加」と申告しても同じ）。影響を受けるだけのものも、
+  エージェントに直させずに止める。どちらも訊かずにやり直さない（直しては止まる、を繰り返さない）
+- 参照先が自分の `codd.json` に書いた `protect` は、呼び出し元からも効く。呼び出し元は `refs[].protect` で足せる
+
 ### wiki-use・skill-creator・agent-amigos: 使い方の誤りや未初期化を、トレースバックでなく 1 文で知らせる
 
 - **wiki-use:** `wiki_query.py`・`wiki_ingest.py`・`wiki_lint.py` が、初期化前は `--help` も RuntimeError の

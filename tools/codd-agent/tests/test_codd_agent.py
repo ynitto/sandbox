@@ -527,6 +527,47 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("impact=3 files", r.stdout)
 
+    def test_protected_files_change_only_with_the_users_ok(self) -> None:
+        # 参照先が決めた「人の承認が要るファイル」は、確認で OK と答えた計画に挙げたときだけ変えてよい。
+        path = self.design / ".statemachine/codd/codd.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["protect"] = ["docs/api.md"]
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.set_config(self.impl, protect=["src/legacy/"])
+        commit(self.impl, {"src/legacy/old.py": "OLD = 1\n"}, "legacy")
+        self.assertIn("人の承認が要るファイル", self.run_pa(self.impl, "show").stdout)
+        self.assertIn("src/legacy/, design:docs/api.md", self.run_pa(self.impl, "show").stdout)
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "summary")
+        self.assertIn("## 人の承認が要るファイル\n\n- docs/api.md", r.stdout)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")   # 確認で OK と答えていない
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"人の承認が要るファイルを、承認を得ずに変えています（戻してください。変えるなら計画に挙げ、"
+                      f"確認で利用者の承認を得てから）: docs/api.md", r.stderr)
+        advice = self.run_pa(self.impl, "advise").stdout
+        self.assertNotIn("AUTO", advice)   # 訊かずにやり直させない
+        self.assertIn("計画に挙げて確認で承認する", advice)
+        self.run_pa(self.impl, "decide", "OK")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        log = json.loads((self.impl / ".codd/decisions.json").read_text(encoding="utf-8"))
+        self.assertEqual(log[-1]["note"], "承認したファイル: docs/api.md")
+        # 計画に無い人の承認が要るファイルは、「追加」と申告しても変えさせない。
+        (self.impl / "src/legacy/old.py").write_text("OLD = 2\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("## 計画との違い\n\n- src/legacy/old.py — 追加: ついでに直す\n",
+                                                  encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("承認を得ずに変えています（戻してください。変えるなら計画に挙げ、確認で利用者の承認を得てから）: "
+                      "src/legacy/old.py", r.stderr)
+        # 計画を退けたら、承認も消える。
+        (self.impl / "src/legacy/old.py").write_text("OLD = 1\n", encoding="utf-8")
+        self.run_pa(self.impl, "decide", "NG", "--note", "やり直して")
+        self.assertFalse((self.impl / ".codd/approved-plan").exists())
+
     def test_apply_needs_the_plan_that_passed_and_was_not_rejected(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()

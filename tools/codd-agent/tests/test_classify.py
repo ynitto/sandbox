@@ -43,6 +43,11 @@ ASK = (
     "テストで得たものが、文書の求めを満たしていません（実装を直すか、目安を変えるなら利用者に確かめて計画に挙げてから文書を直してください）",
     "文書の書式（見出しの並び）が今の書式から外れています: docs/api.md — 例（見本: docs/a.md。書式は決まりとして守る）",
 )
+# 人の承認が要るファイル（protect）に触れた指摘は、変えたあとの検査でしか出ず、いつも訊く。
+ASK_APPLY = (
+    codd.PROTECTED + "（戻してください。…）: docs/requirements.md",
+    codd.PROTECTED_HIT + "（変えずに利用者に確かめます。…）: legacy/old.py",
+)
 
 
 def asks(phase: str, text: str) -> bool:
@@ -61,6 +66,12 @@ class ClassifyTest(unittest.TestCase):
             for text in ASK:
                 with self.subTest(phase=phase, text=text):
                     self.assertTrue(asks(phase, text))
+
+    def test_protected_files_are_asked(self) -> None:
+        for text in ASK_APPLY:
+            with self.subTest(text=text):
+                self.assertTrue(asks("apply", text))
+                self.assertEqual(codd.classify("apply", text), "protected")
 
     def test_same_spelling_names_are_retried_after_changing(self) -> None:
         # 変えたあとに、名前が参照先の別のファイルに同じ綴りで出てくるだけなら、申告で済むので訊かない。
