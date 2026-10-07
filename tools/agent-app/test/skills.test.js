@@ -151,3 +151,22 @@ test('BOM・CRLF の SKILL.md でも説明・タグ・版を読み、段落の�
   assert.strictEqual(unix.description, '一行目。 二行目。');
   assert.deepStrictEqual(unix.tags, ['x']);
 });
+
+test('説明の末尾が引用符でも欠けず、tags の一行形式と折り返した説明も読む', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-yaml-'));
+  const skillRoot = path.join(root, 'skills');
+  const write = (name, body) => {
+    fs.mkdirSync(path.join(skillRoot, name), { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, name, 'SKILL.md'), body);
+  };
+  write('quoted', '---\nname: quoted\ndescription: 使い方は "a" か "b"\ntags: [x, "y z"]\n---\n本文\n');
+  write('folded', '---\nname: folded\ndescription: 一行目\n  二行目\nmetadata:\n  tags: [m]\n---\n本文\n');
+  write('broken', '---\nname: broken\ndescription: 壊れ: た: 行\ntags:\n  - t\n---\n本文\n');
+  const items = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  const get = (n) => items.find((i) => i.name === n);
+  assert.strictEqual(get('quoted').description, '使い方は "a" か "b"');
+  assert.deepStrictEqual(get('quoted').tags, ['x', 'y z']);
+  assert.strictEqual(get('folded').description, '一行目 二行目');
+  assert.deepStrictEqual(get('folded').tags, ['m']);
+  assert.deepStrictEqual(get('broken').tags, ['t']);
+});
