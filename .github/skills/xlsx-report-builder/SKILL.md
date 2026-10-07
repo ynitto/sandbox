@@ -2,7 +2,7 @@
 name: xlsx-report-builder
 description: JSON スペックから Excel (.xlsx) 帳票・レポートを新規生成するスキル。既存の .xlsx テンプレートに、罫線・フォント・セル色などの書式を保ったままデータを流し込む（行数が可変の表・数式の複製・合計行のずれに対応）こともできる。「Excelを作って」「エクセルで帳票を作って」「xlsxを生成して」「集計表を作って」「売上レポートをExcelで」「スプレッドシートを出力して」「データをExcelにまとめて」「Excelのテンプレートにデータを流し込んで」「テンプレートの書式を保ったままxlsxを作って」などのリクエストで発動する。複数シート・見出し装飾・数値書式・合計行・条件付き書式・グラフ・フリーズペイン・オートフィルタに対応する。
 metadata:
-  version: 1.1.0
+  version: 1.1.1
   tier: experimental
   category: document
   tags:
@@ -134,6 +134,8 @@ uv run python scripts/xlsx_builder.py analyze path/to/template.xlsx -o def.yaml 
 - **仮の値の疑い**（`サンプル`・`〇〇`・`yyyy` など）と**注記の疑い**（`※`）、同じ書式が続く範囲
 - **来歴・持ち越しの注意**: 文書のプロパティ（作成者・会社名・タイトル）、プレビュー画像、コメント（作成者つき）、外部リンク、マクロ、非表示のシート・行・列、変更履歴
 
+同じ書式が長く続く行は、テキストでは先頭と末尾だけを出す（仮の値・注記の疑いがある行は省略しない。`--all` ですべて、`--json` は常にすべて）。
+
 `analyze` は、そこから表を機械的に拾った下書き。**下書きは確定ではない**。判断は、`inspect` の事実を読んだこちら（LLM）が行う。
 
 ### T2: 範囲ごとに、役割を決める
@@ -160,9 +162,9 @@ uv run python scripts/xlsx_builder.py analyze path/to/template.xlsx -o def.yaml 
 元の実データを、出力に持ち越さないための追加の決めごと。
 
 1. **値のあるセルを 1 つずつ分類する**。仮の値の疑いの印が付かない実データ（実在の顧客名・金額・日付）も、ラベルや見出しでなければ「流し込む」か「無視する」にする
-2. **定義に `strict: true` を入れ、残す範囲を `keep` に列挙する**（ラベル・見出し・固定の文面）。決め忘れた値が残るセルがあると、`check` と `render` が、そのセルを挙げて止まる
+2. **定義に `strict: true` を入れ、残す範囲を `keep` に列挙する**（ラベル・見出し・固定の文面）。決め忘れた値が残るセルがあると、`check` と `render` が、シートごとに範囲（`A1, A3:A5`）にまとめて挙げて止まる。1 つずつ役割を決めてから `keep` などに書く（挙がったものをそのまま全部 `keep` に貼らない）
 3. **来歴は `properties` で処理する**: `scrub: true` で作成者・最終更新者・会社名・タイトルなどを空にし、プレビュー画像とカスタムプロパティを取り除く。共有文字列に残った元の値と、グラフに残った古い値のキャッシュも取り除く。残したい項目、与えたい値（`title: "請求書"`）は、同じ `properties` に書く
-4. **コメント・外部リンク・非表示のシート/行・変更履歴**は、`inspect` が挙げる。自動では消さないので、ユーザーに見せて扱いを決める（不要なら、先にテンプレートの側で消してもらう）
+4. **コメント・外部リンク・非表示のシート/行・変更履歴**は、`inspect` が挙げる。データを入れるセルのコメントとハイパーリンクは render が取り除くが、それ以外は自動では消さないので、ユーザーに見せて扱いを決める（不要なら、先にテンプレートの側で消してもらう）
 5. マクロ（VBA）つきなら、出力の拡張子は `.xlsm`
 
 決めたら、判断の一覧（範囲 | 役割 | 理由）を**ユーザーに見せて確認してもらう**。確認前に定義を確定しない。確定した定義には、判断の記録として `decisions`（範囲・役割・理由の一覧）を残してよい（render は読まない）。
@@ -170,7 +172,7 @@ uv run python scripts/xlsx_builder.py analyze path/to/template.xlsx -o def.yaml 
 ### T3: 定義を検査する
 
 ```bash
-uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレートは定義の template から読む。--template で上書き
+uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレートは定義の template（定義ファイルからの相対パス）から読む。--template で上書き
 ```
 
 テンプレートと定義の整合（シート名・行・pattern・列）を確かめ、雛形データで試しに再構成する。`strict: true` なら、決め忘れた値の残りもここで見つかる。来歴の警告も出る。問題があれば、定義を直して、もう一度検査する。
@@ -183,7 +185,7 @@ uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレー�
 uv run python scripts/xlsx_builder.py render --def def.yaml --data data.yaml -o out.xlsx
 ```
 
-テンプレートは定義の `template` から読む。別のパスなら `--template` で上書きする。定義ファイルとデータは、JSON でも YAML（`.yaml` / `.yml`）でもよい。`analyze -o def.yaml` のように、出力の拡張子で形式を選べる。
+テンプレートは定義の `template`（定義ファイルのある場所からの相対パス。`analyze` がそう書く）から読む。別のパスなら `--template` で上書きする。列の key がデータのどの行にも無いと、その列は空欄になり、警告が出る（綴りの違いを疑う）。定義ファイルとデータは、JSON でも YAML（`.yaml` / `.yml`）でもよい。`analyze -o def.yaml` のように、出力の拡張子で形式を選べる。
 
 ### T5: この文書専用の単体スクリプトにする（任意）
 
@@ -209,7 +211,7 @@ uv run python scripts/xlsx_builder.py export --from-script render_invoice.py --d
 ```
 
 - 定義を直さずに `--from-script` だけを付けると、定義とテンプレートを引き継いで、最新のエンジンで書き出し直す（エンジンの更新）
-- テンプレートが変わったときは `--template new.xlsx` を付ける。構造が変わったなら、T1 からやり直して定義を確定する
+- テンプレートが変わったときは `--template new.xlsx` を付ける。構造が変わったなら、T1 からやり直して定義を確定する（列を足した・並べ替えたテンプレートは、見出しが定義と合わないので、書き出しの検査が列を挙げて止まる）
 
 ### T6: 検証する
 

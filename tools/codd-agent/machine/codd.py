@@ -265,7 +265,7 @@ def rule_list(value, where: str) -> list[str]:
         return []
     if not (isinstance(value, list) and all(isinstance(r, str) and r.strip() for r in value)):
         raise CoddError(f'{where} は決まりのファイルの配列です（例: ["docs/coding-rules.md"]）')
-    out = unique_paths(r.strip().replace("\\", "/") for r in value)
+    out = unique_paths(re.sub(r"^(\./)+", "", r.strip().replace("\\", "/")) for r in value)
     bad = [r for r in out if r.startswith("/") or ".." in r.split("/")]
     if bad:
         raise CoddError(f"{where} にはリポジトリの中のパスか glob を相対で書きます（今: {', '.join(bad)}）")
@@ -278,7 +278,7 @@ def exclude_list(value, where: str) -> list[str]:
         return []
     if not (isinstance(value, list) and all(isinstance(p, str) and p.strip() for p in value)):
         raise CoddError(f'{where} は除外パターンの配列です（例: ["**/*.config.*", ".github/"]）')
-    out = unique_paths(p.strip().replace("\\", "/") for p in value)
+    out = unique_paths(re.sub(r"^(\./)+", "", p.strip().replace("\\", "/")) for p in value)
     bad = [p for p in out if p.startswith(("/", "~", "!")) or re.match(r"^[A-Za-z]:", p)
            or ".." in p.split("/") or p.rstrip("/") in ("", ".")]
     if bad:
@@ -336,10 +336,23 @@ class Guide:
         return self.target if self.kind == "doc" else f"`{self.target}`"
 
 
+def _strip_comment(value: str) -> str:
+    """YAML と同じに、引用符の外の ` #` から後ろを注釈として除く（`files: ["a/*.sql"]  # 説明`）。"""
+    quote = ""
+    for i, ch in enumerate(value):
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or value[i - 1] in " \t"):
+            return value[:i]
+    return value
+
+
 def _parse_scalar(value: str):
-    value = value.strip()
-    if value in ("true", "false"):
-        return value == "true"
+    value = _strip_comment(value).strip()
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
     if value.startswith("["):
         try:
             return json.loads(value)
@@ -351,21 +364,31 @@ def _parse_scalar(value: str):
 def front_codd(text: str) -> dict | None:
     """文書の先頭（--- で囲んだところ）の `codd:` の下に書いた手順の決まり。無ければ None。
 
-    書けるのは 1 段の `キー: 値`（値は文字列・true/false・[a, b] か JSON の配列）だけ。"""
-    front = _FRONT.match(text)
+    書けるのは 1 段の `キー: 値`（値は文字列・true/false・[a, b] か JSON の配列）と、`キー:` の下に
+    `- 値` を並べた配列だけ。"""
+    front = _FRONT.match(text.lstrip("\ufeff"))
     if not front:
         return None
     out = None
+    listing = None   # `キー:` の下に `- 値` を並べている途中のキー
     for line in front.group(1).splitlines():
-        if re.match(r"^codd:\s*$", line):
+        if re.match(r"^codd:\s*(#.*)?$", line):
             out = {}
             continue
         if out is None:
             continue
+        item = re.match(r"^\s+-\s+(.*)$", line)
+        if listing and item:
+            value = _parse_scalar(item.group(1))
+            if value != "":
+                out[listing].append(value)
+            continue
         m = re.match(r"^\s+([a-z_]+):\s*(.*)$", line)
         if m:
-            out[m.group(1)] = _parse_scalar(m.group(2))
-        elif line.strip() and not line.startswith((" ", "\t")):
+            value = _parse_scalar(m.group(2))
+            listing = m.group(1) if value == "" else None
+            out[m.group(1)] = [] if value == "" else value
+        elif line.strip() and not line.lstrip().startswith("#") and not line.startswith((" ", "\t")):
             break
     return out
 
@@ -443,6 +466,11 @@ def front_guides(repo: Path, skill_dirs: list[str]) -> list[Guide]:
             use = "skill:" + (name.group(1).strip() if name else path.parent.name)
         else:
             use = rel
+        for k in ("files", "terms", "asks"):   # 1 つだけなら配列にしなくてよい（`files: db/*.sql`）
+            if isinstance(meta.get(k), str) and meta[k]:
+                # files は Copilot の applyTo と同じに、`,` で区切って並べてもよい（`{ts,tsx}` の中の `,` は区切らない）
+                meta[k] = [p.strip() for p in re.split(r",(?![^{]*\})", meta[k]) if p.strip()] if k == "files" \
+                    else [meta[k]]
         entry = {"use": use, "when": {k: meta[k] for k in WHEN_KEYS if k in meta}}
         entry.update({k: meta[k] for k in ("must", "check", "asks") if k in meta})
         out.append(parse_guide(entry, f"{rel} の codd", repo, rel))
@@ -497,7 +525,7 @@ def load_config(machine_dir: Path) -> dict:
         raise CoddError(f"設定がありません: {path}\n"
                         '  例: {"side": "impl", "refs": [{"name": "docs", "path": "../my-docs"}]}')
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
+        config = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise CoddError(f"{path} が JSON として読めません: {exc}") from exc
     if not isinstance(config, dict):
@@ -692,7 +720,8 @@ class Ctx:
         self.root = root
         self.config = load_config(MACHINE_DIR)
         self.side = self.config["side"]
-        self.own = Side("own", root, self.config["scope"], exclude=self.config["exclude"])
+        # テストが書き出す結果のファイル（evidence）は、探す・影響を測る・変えたかを数える対象にしない（直すものではない）
+        self.own = Side("own", root, self.config["scope"], exclude=unique([*self.config["exclude"], *self.config["evidence"]]))
         self.data = root / DATA_DIRNAME
         self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
         self.max_files = self.config["max_files"]
@@ -734,9 +763,25 @@ class Ctx:
                                  entry_skills=unique([*entry["skills"], *added["skills"]["apply"]]),
                                  entry_rules=unique([*entry["rules"], *added["rules"]]),
                                  guides=guides or {}, entry_triggered=added["triggered"]))
+        for r in self.refs:
+            r.exclude = unique([*r.exclude, *r.evidence_patterns])
         self.place_ref_guides()
         self.check_layout()
         self.load_bases()
+        self.exclude_test_outputs()
+
+    def exclude_test_outputs(self) -> None:
+        """テストが撮った画面（evidence の画像の項目の path）も、結果ファイルと同じく直すものに数えない。"""
+        for key, side in [("", self.own), *((r.name, r) for r in self.refs)]:
+            ev = load_evidence(self, key)
+            for item in ev.items.values():
+                if item.get("kind") == "image" and isinstance(item.get("path"), str):
+                    try:
+                        rel = (item["_root"] / item["path"]).resolve().relative_to(side.path.resolve()).as_posix()
+                    except ValueError:
+                        continue
+                    if rel not in side.exclude:
+                        side.exclude.append(rel)
 
     def place_ref_guides(self) -> None:
         """`参照先の名前:パス` と書いた手順の文書を、その参照先のものとして読む（いつも読む決まりは refs[].rules に移す）。"""
@@ -811,14 +856,17 @@ class Ctx:
 
     def unmatched_rules(self) -> list[str]:
         """設定に書いたのに、1 つのファイルにも当たらない決まり（綴り違い・移動に気付けるように）。"""
-        out = [p for p in self.config["rules"] if not expand_rules(self.root, [p])]
+        def why(repo: Path, p: str) -> str:   # 文書はあるのに見出しが無いときは、そう伝える（綴り違いに気付けるように）
+            path, anchor = split_anchor(p)
+            return f"（見出し「{anchor}」がありません）" if anchor and expand_rules(repo, [path]) else ""
+        out = [p + why(self.root, p) for p in self.config["rules"] if not expand_rules(self.root, [p])]
         for r in self.refs:
-            out += [f"{r.name}:{p}" for p in r.entry_rules if not expand_rules(r.path, [p])]
+            out += [f"{r.name}:{p}{why(r.path, p)}" for p in r.entry_rules if not expand_rules(r.path, [p])]
         return out
 
     def rule_candidates(self) -> list[tuple[str, str]]:
         """決まりらしいのに、まだ設定に無いマークダウン（（参照先の名前か ""、パス））。"""
-        known = set(self.rule_files())
+        known = {(n, split_anchor(r)[0]) for n, r in self.rule_files()} | set(self.rule_files())
         out = []
         # 自分はリポジトリ全体から探す（決まりは scope の外、ルートにあることが多い）。同じリポジトリの参照先の分は除く。
         same = [r for r in self.refs if r.path == self.root]
@@ -980,6 +1028,7 @@ _NOT_RULES = re.compile(r"(?:^|/)(changelog|history|license)[^/]*$", re.IGNORECA
 
 
 _GLOB_CHARS = re.compile(r"[*?\[]")
+_BRACES = re.compile(r"\{[^{}]*,[^{}]*\}")   # `*.{ts,tsx}`
 _DATED = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
@@ -987,13 +1036,20 @@ def expand_rules(repo: Path, patterns: list[str]) -> list[str]:
     """決まりのパスを実在するファイルに開く。`*`・`?`・`[...]`・`**` を含むものは glob として
     （git の :(glob) と同じ意味。`*` はフォルダをまたがず、`**/` はまたぐ）、追跡中と未追跡のファイルから引く。"""
     out: list[str] = []
-    for pat in unique_paths(patterns):
-        if _GLOB_CHARS.search(pat):
+    for spec in unique_paths(patterns):
+        # `パス#見出し` は、パスを開いてから見出しを付け直す。見出しの無い文書は当たらない
+        pat, anchor = split_anchor(spec)
+        if anchor:
+            out += [f"{h}#{anchor}" for h in expand_rules(repo, [pat])
+                    if f"{h}#{anchor}" not in out and doc_text(repo, f"{h}#{anchor}") is not None]
+            continue
+        if _GLOB_CHARS.search(pat) or _BRACES.search(pat):
             # 除外のパス指定を並べると :(glob) が効かなくなる git があるので、作業フォルダとマシンは後から除く。
-            rc, found = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", f":(glob){pat}"],
-                            repo, GIT_TIMEOUT)
+            # git の :(glob) は `{a,b}` を知らないので、そのときは全体を引いて glob_re で絞る。
+            spec = [] if _BRACES.search(pat) else ["--", f":(glob){pat}"]
+            rc, found = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *spec], repo, GIT_TIMEOUT)
             hits = sorted(ln for ln in found.splitlines() if (repo / ln).is_file()
-                          and not in_scope(ln, MACHINE_OWNED)) if rc == 0 else []
+                          and not in_scope(ln, MACHINE_OWNED) and (spec or path_matches(pat, ln))) if rc == 0 else []
         else:
             hits = [pat] if (repo / pat).is_file() else []
         out += [h for h in hits if h not in out]
@@ -1160,7 +1216,8 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     for name, rel in rules or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
     for pat in ctx.unmatched_rules():
-        print(f"  ! {pat} に当たるファイルがありません（{CONFIG_NAME} の guides・rules を確かめてください）")
+        print(f"  ! {pat if '（見出し' in pat else pat + ' に当たるファイルがありません'}"
+              f"（{CONFIG_NAME} の guides・rules を確かめてください）")
     candidates = ctx.rule_candidates()
     if candidates:
         print("決まりの候補（設定に無い。決まりなら `codd.py rules --write` で設定に書く）:")
@@ -1233,7 +1290,8 @@ def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
     for name, rel in ctx.rule_files() or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
     for pat in ctx.unmatched_rules():
-        print(f"  ! {pat} に当たるファイルがありません（{CONFIG_NAME} の guides・rules を確かめてください）")
+        print(f"  ! {pat if '（見出し' in pat else pat + ' に当たるファイルがありません'}"
+              f"（{CONFIG_NAME} の guides・rules を確かめてください）")
     candidates = ctx.rule_candidates()
     if args.only:
         candidates = [c for c in candidates if (f"{c[0]}:{c[1]}" if c[0] else c[1]) in args.only]
@@ -1243,7 +1301,7 @@ def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
     if not (args.write and candidates):
         return 0
     path = MACHINE_DIR / CONFIG_NAME
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
     for name, rel in candidates:
         if not name:
             target = raw.setdefault("guides", [])
@@ -1469,6 +1527,8 @@ def explore_problems(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> li
 
 def rule_digest(ctx: Ctx, name: str, rel: str) -> str:
     repo = ctx.ref(name).path if name else ctx.root
+    if "#" in rel:   # 見出しで指した決まりは、その節の中身で比べる
+        return doc_digest(repo, rel) if doc_text(repo, rel) is not None else ""
     try:
         return hashlib.sha256((repo / rel).read_bytes()).hexdigest()
     except OSError:
@@ -1493,7 +1553,7 @@ def cmd_rule(ctx: Ctx, args: argparse.Namespace) -> int:
             print(f"# 守る決まり {label}（この回で読み込み済み・変わっていない。出し直すときは --again）\n")
             continue
         print(f"# 守る決まり {label}\n")
-        print(read_text(repo / rel) or "（読めませんでした）")
+        print(doc_text(repo, rel) or "（読めませんでした）")
         log[label] = rule_digest(ctx, name, rel)
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / RULES_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1701,6 +1761,7 @@ def terms_from_diff(side: Side) -> list[str]:
     terms = []
     quoted: dict[str, Counter] = {"+": Counter(), "-": Counter()}
     local: dict[str, set[str]] = {"+": set(), "-": set()}
+    heads: dict[str, set[str]] = {"+": set(), "-": set()}   # 足した・消した見出し
     for line in diff.splitlines():
         if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
             continue
@@ -1708,6 +1769,8 @@ def terms_from_diff(side: Side) -> list[str]:
             m = pat.match(line)
             if m:
                 terms.append(m.group(1))
+                if pat is _DIFF_TERMS[5]:
+                    heads[line[0]].add(m.group(1))
                 if _LOCAL_VAR.match(line):
                     local[line[0]].add(m.group(1))
         quoted[line[0]].update(_BACKTICK.findall(line))
@@ -1724,9 +1787,17 @@ def terms_from_diff(side: Side) -> list[str]:
             text = (repo / name).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        terms += [m.group(1) for ln in text.splitlines() for pat in _DIFF_TERMS
-                  for m in [pat.match("+" + ln)] if m]
-    return unique(terms)
+        for ln in text.splitlines():
+            for pat in _DIFF_TERMS:
+                m = pat.match("+" + ln)
+                if m:
+                    terms.append(m.group(1))
+                    if pat is _DIFF_TERMS[5]:
+                        heads["+"].add(m.group(1))
+    # 足しただけの見出しのうち、前からその側にあるもの（同じフォルダの文書の書式に合わせた `## 画面` など）は、
+    # 変わった名前ではない。ありふれた語で、関係の無いファイルにばかり当たる
+    copied = {h for h in heads["+"] - heads["-"] if existed_at_head(side, h)}
+    return unique(t for t in terms if t not in copied)
 
 
 def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
@@ -1757,6 +1828,11 @@ def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
 # 文字列の値（画面の文言・URL・メッセージ）。e2e のケースはコードの名前ではなく、こうした文字列で書かれる。
 _LITERAL = re.compile(r"""(["'`])((?:(?!\1)[^\\\n]){3,60})\1""")
 _LETTER = re.compile(r"[^\W\d_]")
+# 画面の部品（JSX・Vue・Svelte・HTML）のタグの間の文言（`<button>サインイン</button>`）。引用符が無いので別に拾う。
+# 画面の文言は「送信」「保存」のように 2 文字のこともある
+MARKUP_EXTS = (".tsx", ".jsx", ".vue", ".svelte", ".html", ".htm")
+_IMPORT_LINE = re.compile(r"^\s*(?:import\b|export\b.*\bfrom\s|.*\brequire\(\s*['\"]|from\s+\S+\s+import\b)")
+_MARKUP_TEXT = re.compile(r">\s*([^<>{}\n]{2,60}?)\s*(?:<|\{|$)")
 
 
 def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
@@ -1765,8 +1841,14 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
     for rel, (plus, minus) in diff_by_file(side).items():
         if is_test(ctx, key, rel) or rel.lower().endswith(DOC_EXTS):
             continue
+        markup = rel.lower().endswith(MARKUP_EXTS)
+        # import の指定（"react"・"../components/X"）は画面の文言ではない
+        plus, minus = ([ln for ln in lines if not _IMPORT_LINE.match(ln)] for lines in (plus, minus))
         for mark, lines in (("+", plus), ("-", minus)):
             counts[mark].update(m.group(2).strip() for ln in lines for m in _LITERAL.finditer(ln))
+            if markup:
+                counts[mark].update(t for ln in lines for m in _MARKUP_TEXT.finditer(ln)
+                                    if (t := m.group(1).strip()) and not re.search(r"[=;()&|]", t))
     return unique(t for t in counts["+"] | counts["-"]
                   if counts["+"][t] != counts["-"][t] and _LETTER.search(t) and "${" not in t)
 
@@ -2035,7 +2117,7 @@ def read_text(path: Path) -> str | None:
     try:
         if path.stat().st_size > MAX_READ_BYTES:
             return None
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")   # Windows のエディタが付ける BOM は読み飛ばす
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -2291,9 +2373,10 @@ def rules_problems(ctx: Ctx, body: str) -> list[str]:
     own_rels = {rel for name, rel in rules if not name}
     missing = []
     for name, rel in rules:
-        ok = mentioned(body, f"{name}:{rel}") if name else mentioned(body, rel)
+        path = split_anchor(rel)[0]   # 見出しで指した決まりは、文書のパスを挙げればよい（手順の文書と同じ）
+        ok = any(mentioned(body, f"{name}:{x}") if name else mentioned(body, x) for x in unique([rel, path]))
         if name and not ok and len(ctx.refs) == 1 and rel not in own_rels:
-            ok = mentioned(body, rel)  # 参照先が 1 つで、自分に同じ名前の決まりが無ければ名前を省いてよい
+            ok = any(mentioned(body, x) for x in unique([rel, path]))  # 参照先が 1 つで、自分に同じ名前の決まりが無ければ名前を省いてよい
         if not ok:
             missing.append(f"{name}:{rel}" if name else rel)
     if is_none(body) or missing:
@@ -2399,6 +2482,9 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
         problems.append("参照先の変更案があるのに、影響範囲が「なし」です")
     if impact:
         for item in items(bodies["## 影響範囲"]) or [bodies["## 影響範囲"]]:
+            j = judgment(item)
+            if j.waived and j.reason and not j.targets:
+                continue   # 足すだけで響くファイルが無いとき（テストの変更案と同じ、理由だけの「変更不要」）。測ったファイルは別に求める
             if not cited_own(ctx, item):
                 problems.append(f"影響範囲の項目に、自分のリポジトリに実在するパスがありません: {item[:80]}")
     if ref_change and not terms_from_plan(bodies):
@@ -2481,6 +2567,31 @@ def pending_problem(found: list[tuple[str, str]], added: int = 0) -> list[str]:
                                for _, it in found))]
 
 
+MAX_OUTSIDE = 10
+
+
+def outside_scope_hits(ctx: Ctx, terms: list[str]) -> list[str]:
+    """受け持ちのフォルダ（scope）の外で、変わる名前が出てくるファイル（CI の設定・ほかのアプリなど）。
+
+    scope の外は検査しない約束なので止めないが、改名すると黙って壊れることがあるので知らせる。"""
+    sides = [ctx.own, *ctx.refs]
+    out: list[str] = []
+    for repo in unique_paths(str(s.path.resolve()) for s in sides if s.scope):
+        same = [s for s in sides if str(s.path.resolve()) == repo]
+        if any(not s.scope for s in same):
+            continue   # どれかがリポジトリ全体を受け持っている
+        found: set[str] = set()
+        for term in terms[:MAX_TERMS]:
+            rc, lines = run(["git", "grep", "-l", "-I", "-F", *grep_word(term), "-e", term], Path(repo), GIT_TIMEOUT)
+            if rc == 0:
+                found |= set(lines.splitlines())
+        label = "" if repo == str(ctx.root.resolve()) else next(s.name for s in same) + ":"
+        out += [label + rel for rel in sorted(found)
+                if not machine_owned(rel) and not any(in_scope(rel, s.scope) for s in same)
+                and not any(s.excluded(rel) for s in same)]
+    return out
+
+
 def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[list[str], list[str], int]:
     """計画の名前から影響を測る。（問題, 自分で測ったファイル, 参照先で測った数）
 
@@ -2499,6 +2610,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
         for p in measured:
             if not covered(p, listed):
                 pending.own(ctx, p, "変わる名前が出てくる")
+        ctx.__dict__["_outside"] = outside_scope_hits(ctx, terms)
     ref_hits: set[tuple[str, str]] = set()
     if own_terms:
         # 自分の変更で動く名前に触れている参照先のファイルを、計画が読んで扱っているか（逆向きの漏れ）。
@@ -2554,6 +2666,11 @@ def glob_re(pattern: str) -> re.Pattern:
             out, i = out + "[^/]*", i + 1
         elif pattern[i] == "?":
             out, i = out + "[^/]", i + 1
+        elif pattern[i] == "{" and (end := pattern.find("}", i)) > i and "," in pattern[i:end] \
+                and "{" not in pattern[i + 1:end]:
+            # `*.{ts,tsx}`（ほかの道具の glob でよく使う書き方）。入れ子は扱わない
+            alts = [glob_re(part).pattern for part in pattern[i + 1:end].split(",")]
+            out, i = out + "(?:" + "|".join(alts) + ")", end + 1
         elif pattern[i] == "[":
             end = i + 1
             if end < len(pattern) and pattern[end] in "!^":
@@ -2745,6 +2862,11 @@ def test_plan(ctx: Ctx, bodies: dict[str, str]) -> TestPlan:
             continue
         # 「未判断」は扱った（漏れではない）が、まだ変えると決めていない
         (plan.waived if waived or PENDING_MARK in item else plan.change).update(hits)
+        if not waived and PENDING_MARK not in item:
+            # 「…に移す」と書いた移し先（この回の起点に無かったパス）も変えるファイルに数える。
+            # 文中の前からあるパス（検索の例など）は数えない
+            plan.change.update(("", rel) for rel in listed_paths(ctx, item, allow_new=True)
+                               if run(["git", "cat-file", "-e", f"{ctx.own.diff_base}:{rel}"], ctx.root, GIT_TIMEOUT)[0] != 0)
     return plan
 
 
@@ -3179,6 +3301,14 @@ def doc_screens(ctx: Ctx, evs: dict[str, Evidence]) -> list[ScreenHit]:
     return [hits[k] for k in sorted(hits)]
 
 
+ATTACHMENT_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
+
+
+def attached_to(ctx: Ctx, key: str, rel: str, planned: set[str]) -> bool:
+    """計画に挙げた文書が貼っている画像か（新しい画面の仕様書に足すスクリーンショットなど）。文書の添付として認める。"""
+    return rel.lower().endswith(ATTACHMENT_EXTS) and any(covered(d, planned) for d in docs_showing(ctx, key, rel))
+
+
 def docs_showing(ctx: Ctx, key: str, rel: str) -> list[str]:
     """その画像を貼っている文書（同じ側のマークダウン）。"""
     side = side_of(ctx, key)
@@ -3594,6 +3724,10 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         problems += pending_problem(left + [(h, ln) for h, lns in pending.lines.items() for ln in lns],
                                     pending.count())
         problems += measured_problems
+    outside = ctx.__dict__.get("_outside") or []
+    if outside:
+        print(f"知らせ: 受け持ちのフォルダ（scope）の外にも、変わる名前が出てくるファイルがあります（検査は止めない。"
+              f"改名なら一緒に直すかを確かめる）: {', '.join(outside[:MAX_OUTSIDE])}{' ...' if len(outside) > MAX_OUTSIDE else ''}")
     print_problems(ctx, "plan", problems)
     if problems:
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
@@ -4098,14 +4232,16 @@ def doc_text(repo: Path, spec: str) -> str | None:
     if text is None or not anchor:
         return text
     lines = text.splitlines()
-    for i, line in enumerate(lines):
-        m = re.match(r"^(#+)\s+(.*?)\s*#*\s*$", line)
-        if m and m.group(2) == anchor:
-            level = len(m.group(1))
-            end = next((j for j in range(i + 1, len(lines))
-                        if (h := re.match(r"^(#+)\s", lines[j])) and len(h.group(1)) <= level), len(lines))
-            return "\n".join(lines[i:end]).strip() + "\n"
-    return None
+    heads = [(i, m) for i, line in enumerate(lines) if (m := re.match(r"^(#+)\s+(.*?)\s*#*\s*$", line))]
+    # 見出しの文字どおりか、GitHub のリンクのアンカー（`#table-format`。根拠の `パス#見出し` と同じ読み方）
+    hit = next(((i, m) for i, m in heads if m.group(2) == anchor), None) \
+        or next(((i, m) for i, m in heads if slug(m.group(2)) == slug(anchor.replace("-", " "))), None)
+    if hit is None:
+        return None
+    i, level = hit[0], len(hit[1].group(1))
+    end = next((j for j in range(i + 1, len(lines))
+                if (h := re.match(r"^(#+)\s", lines[j])) and len(h.group(1)) <= level), len(lines))
+    return "\n".join(lines[i:end]).strip() + "\n"
 
 
 def guide_repo_key(ctx: Ctx, g: Guide, key: str) -> str:
@@ -4193,7 +4329,7 @@ def cmd_guide(ctx: Ctx, args: argparse.Namespace) -> int:
         if sep and kind == "skill":
             missing += load_skills(ctx, [rest])
             continue
-        if "/" not in spec and not spec.endswith(".md"):
+        if "/" not in spec and not split_anchor(spec)[0].endswith(".md"):   # `rules.md#見出し` は文書
             missing += load_skills(ctx, [spec])
             continue
         ref_name, sep, rel = spec.partition(":")
@@ -4329,7 +4465,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     outside: list[str] = []
     own_allowed = (want_own | listed_paths(ctx, bodies.get("## 影響範囲", ""), allow_new=True)
                    | tp.paths("", waived=False))
-    extra_own, out_own = added_problems(ctx, dev, "", sorted(p for p in a.own_touched if not covered(p, own_allowed)))
+    extra_own, out_own = added_problems(ctx, dev, "", sorted(p for p in a.own_touched if not covered(p, own_allowed)
+                                                             and not attached_to(ctx, "", p, own_allowed)))
     outside += out_own
     if extra_own:
         problems.append(f"計画に無いファイルを変えています（戻すか、{DECLARE_HINT}）: " + ", ".join(extra_own))
@@ -4342,8 +4479,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         elif r.name not in a.planned and not ref_tests and touched:
             problems.append(f"参照先の変更案に {r.name} は無いのに、{r.name} が変わっています（戻してください）")
         elif touched:
+            allowed = a.planned.get(r.name, set()) | ref_tests
             extra, out_ref = added_problems(ctx, dev, r.name, sorted(
-                p for p in touched if not covered(p, a.planned.get(r.name, set()) | ref_tests)))
+                p for p in touched if not covered(p, allowed) and not attached_to(ctx, r.name, p, allowed)))
             outside += out_ref
             if extra:
                 problems.append(f"{r.name} で参照先の変更案に無いファイルを変えています（戻すか、{DECLARE_HINT}）: "
@@ -4585,6 +4723,8 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         state = "通ったあとに、さらに変わっている（変えたあとの検査をもう一度通してください）"
 
     dev, ok = deviations(ctx), accepted(ctx)
+    tp = test_plan(ctx, a.bodies)
+    test_listed = set(tp.listed())
 
     def rows(key: str, planned: set[str], touched: set[str]) -> list[str]:
         def mark(p: str) -> str:
@@ -4595,7 +4735,10 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
             return "撮り直しても同じ" if may_stay_same(p) else "まだ"
         out = [f"- {p} — {mark(p)}" for p in sorted(planned)]
         for p in sorted(touched):
-            if covered(p, planned):
+            if covered(p, planned) or (key, p) in test_listed:   # テストの変更案のものは「テスト」の節に出す
+                continue
+            if attached_to(ctx, key, p, planned):
+                out.append(f"- {p} — 変えた（計画の文書に貼った画像）")
                 continue
             reason = dev.reason_added(key, p)
             who = "利用者が認めた" if (key, p) in ok else "変える段で足した"
@@ -4608,7 +4751,6 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         if r.name in a.planned or a.touched[r.name]:
             lines += ["", f"## {r.name}（{r.label}）  {r.path}", ""]
             lines += rows(r.name, a.planned.get(r.name, set()), a.touched[r.name])
-    tp = test_plan(ctx, a.bodies)
     after = ctx.data / "impact-after.md"
     if after.is_file():
         text = after.read_text(encoding="utf-8")
@@ -4617,7 +4759,10 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
                   | {rel for key, rel in tp.waived if not key})
         impact_start = len(lines)
         lines += ["", "## 変えたあとに測った影響範囲", ""]
+        proposed = listed_paths(ctx, a.bodies.get("## 自分の変更案", ""))
         for p in measured:
+            if p in proposed:   # 変更案で変えたファイル自身は、影響範囲として出さない
+                continue
             mark = "直した" if p in a.own_touched else NO_CHANGE_MARK if p in waived else "未対応" \
                 if not p.startswith("(") else ""
             if mark != NO_CHANGE_MARK:

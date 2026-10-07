@@ -177,6 +177,12 @@ class Styles:
     def is_date(self, s: str | None) -> bool:
         return self.date.get(int(s or 0), False)
 
+    def is_number(self, s: str | None) -> bool:
+        """数値の書式（`#,##0`・`0.0%` など）のセルか。標準・文字列（@）・日付は含めない。"""
+        code = self.code.get(int(s or 0), "General")
+        return code not in ("General", "@") and not code.startswith("builtin:") and not self.is_date(s) \
+            and bool(re.search(r"[0#]", re.sub(r'"[^"]*"', "", code)))
+
 
 def _is_date_code(code: str) -> bool:
     # Excel の角括弧は色・条件・ロケール指定にも使われるが、
@@ -381,6 +387,13 @@ def analyze(template: str) -> dict:
         root = pkg.xml(part)
         expand_shared_formulas(root)
         sheets_def.append(_analyze_sheet(pkg, name, part, root, sst, styles))
+    # 表のあるシートが 2 つ以上なら、データのキーをシート名にする（同じ items だと、どのシートにも同じ明細が入る）
+    with_tables = [s for s in sheets_def if s["tables"]]
+    if len(with_tables) > 1:
+        for sd in with_tables:
+            base = re.sub(r"[.\s]+", "_", sd["name"]).strip("_") or "sheet"
+            for n, t in enumerate(sd["tables"], start=1):
+                t["key"] = base if len(sd["tables"]) == 1 else f"{base}_{n}"
     return {
         "version": DEF_VERSION,
         "template": posixpath.basename(template),
@@ -388,17 +401,27 @@ def analyze(template: str) -> dict:
     }
 
 
-def _grid(root, sst):
+def _serial_to_iso(value) -> str:
+    """日付の書式のセルの数値（Excel の通し番号）を、読める形（2025-01-01・2025-01-01 09:30）にする。"""
+    d = dt.datetime(1899, 12, 30) + dt.timedelta(days=float(value))
+    return d.date().isoformat() if d.time() == dt.time() else d.isoformat(sep=" ", timespec="minutes")
+
+
+def _grid(root, sst, styles: "Styles | None" = None):
     grid: dict[int, dict[int, dict]] = {}
     for row in root.find(q("sheetData")):
         r = int(row.get("r"))
         cols = {}
         for c in row:
             f = c.find(q("f"))
+            value = cell_value(c, sst)
+            if styles is not None and isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and styles.is_date(c.get("s")) and 0 < value < 2958466:
+                value = _serial_to_iso(value)
             cols[cell_col(c)] = {
                 "ref": c.get("r"),
                 "s": c.get("s", "0"),
-                "value": cell_value(c, sst),
+                "value": value,
                 "formula": ("=" + f.text) if f is not None and f.text else None,
             }
         grid[r] = cols
@@ -465,7 +488,7 @@ def _table_info(grid, header_row, body, lo, hi, after, styles) -> dict:
 
 
 def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
-    grid = _grid(root, sst)
+    grid = _grid(root, sst, styles)
     found = _find_tables(grid, styles)
     notes: list[str] = []
     tables = []
@@ -495,6 +518,9 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
                     if cell and cell["formula"] and not _only_inside(cell["formula"], t, c):
                         confirm.append(f"{cell['ref']} の数式が表の外の行を相対参照している。固定するなら $ を付ける")
                         break
+            elif len(samples) == len(t["body"]) and [s["value"] for s in samples] == list(range(1, len(samples) + 1)):
+                spec["key"] = "$index"  # サンプルが 1, 2, 3 … の連番なら、連番の列
+                spec["_sample"] = 1
             else:
                 spec["key"] = _unique_key(spec["header"], letter, cols_def)
                 spec["_sample"] = next((s["value"] for s in samples if s["value"] is not None), None)
@@ -577,7 +603,8 @@ def _sheet_warnings(pkg, part, root, tables) -> list[str]:
         if inside(mc.get("ref")):
             r1, r2 = (split_ref(p)[1] for p in (mc.get("ref").split(":") * 2)[:2])
             if r1 != r2:
-                w.append(f"サンプル行内の複数行にまたがる結合セル {mc.get('ref')} は複製できず、取り除かれる")
+                w.append(f"サンプル行内の複数行にまたがる結合セル {mc.get('ref')} は、1 件が複数行（block_rows）で"
+                         "その 1 件の中に収まれば各件に複製される。収まらなければ取り除かれる")
             else:
                 w.append(f"サンプル行内の結合セル {mc.get('ref')} は、各行に複製される")
     for cf in root.iter(q("conditionalFormatting")):
@@ -627,8 +654,11 @@ def summarize(definition: dict) -> str:
 # inspect（テンプレートの事実だけを、判断する側（LLM・人）が読める形で出す）
 # ---------------------------------------------------------------------------
 
-PLACEHOLDER_RE = re.compile(r"(〇〇|○○|●●|◯◯|△△|□□|＊＊|\*\*|xxx|サンプル|ダミー|仮|例[:：)）]|sample|dummy|yyyy|\bTBD\b)", re.I)
-NOTE_RE = re.compile(r"^\s*(※|＊|\*|注[:：）)]|備考|Note)")
+# 「仮」は 1 文字だけでは見ない（仮払金・仮受消費税のような、帳票の見出しを仮の値と取り違えないため）
+PLACEHOLDER_RE = re.compile(r"(〇〇|○○|●●|◯◯|△△|□□|＊＊|\*\*|(?<![A-Za-z])x{2,}(?![A-Za-z])|サンプル|ダミー|記入例|"
+                            r"^仮$|[（(]仮[）)]|仮(?:の|入力|置き|名|データ)|例[:：)）]|sample|dummy|example|yyyy|"
+                            r"\b0{4}[-/]0{2}[-/]0{2}\b|\bTBD\b)", re.I)
+NOTE_RE = re.compile(r"^\s*(※|＊|\*|注[:：）)]|備考[:：]|Note[:：])")   # 列の見出しの「備考」は注記ではない
 
 
 def _style_classes(styles: Styles) -> dict[str, str]:
@@ -653,7 +683,7 @@ def inspect_template(template: "str | bytes") -> dict:
     for name, part in pkg.sheets():
         root = pkg.xml(part)
         expand_shared_formulas(root)
-        grid = _grid(root, sst)
+        grid = _grid(root, sst, styles)
         rows = []
         for r in sorted(grid):
             cells, blanks = [], []
@@ -718,7 +748,23 @@ def _runs(rows: list[dict]) -> list[dict]:
     return out
 
 
-def format_facts(facts: dict) -> str:
+FOLD_RUN = 6   # 同じ書式の行がこれより長く続くと、テキストでは先頭 3 行と末尾 1 行だけ見せる
+
+
+def _folded_rows(sh: dict) -> dict[int, int]:
+    """畳む行 → その範囲で畳んだ行数（最初の 1 行にだけ数を付け、残りは 0）。"""
+    out: dict[int, int] = {}
+    for run in sh["same_shape_runs"]:
+        a, b = (int(x) for x in run["rows"].split("-"))
+        if b - a + 1 > FOLD_RUN:
+            # 仮の値・注記の疑いがある行は畳まない（流用のとき、持ち越しを見落とさない）
+            hidden = [r["row"] for r in sh["rows"] if a + 3 <= r["row"] < b and not any("hint" in c for c in r["cells"])]
+            for k, r in enumerate(hidden):
+                out[r] = len(hidden) if k == 0 else 0
+    return out
+
+
+def format_facts(facts: dict, fold: bool = True) -> str:
     L = ["書式の種類（S0〜: 同じ見た目は同じ番号）:"]
     L += [f"  {k} = {v}" for k, v in sorted(facts["style_legend"].items(), key=lambda kv: int(kv[0][1:]))]
     if facts.get("provenance"):
@@ -730,7 +776,12 @@ def format_facts(facts: dict) -> str:
             if sh[key]:
                 L.append(f"  {label}: {' '.join(sh[key])}")
         L.append("  行（値/数式 [書式の種類]）:")
+        folded = _folded_rows(sh) if fold else {}
         for row in sh["rows"]:
+            if row["row"] in folded:
+                if folded[row["row"]]:
+                    L.append(f"         …（同じ書式の行 {folded[row['row']]} 行を省略。--all ですべて出す）")
+                continue
             parts = []
             for c in row["cells"]:
                 body = c["formula"] if "formula" in c else repr(c["value"])
@@ -778,9 +829,15 @@ def _excel_serial(value: str) -> float | None:
     return None
 
 
-def set_value(c, value: Any, styles: Styles) -> None:
+ILLEGAL_XML_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+MAX_CELL_TEXT = 32767
+NUMERIC_TEXT_RE = re.compile(r"^[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$")  # Excel の 1 セルの文字数の上限
+
+
+def set_value(c, value: Any, styles: Styles, replace_formula: bool = False) -> None:
+    """セルの値を置き換える。replace_formula なら、数式もデータの値で置き換える（流し込む欄）。"""
     for child in list(c):
-        if child.tag != q("f"):
+        if child.tag != q("f") or replace_formula:
             c.remove(child)
     c.attrib.pop("t", None)
     if value is None:
@@ -789,9 +846,20 @@ def set_value(c, value: Any, styles: Styles) -> None:
         c.set("t", "b")
         etree.SubElement(c, q("v")).text = "1" if value else "0"
     elif isinstance(value, (int, float)):
+        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+            raise TemplateError(f"{c.get('r')} に入れる数値 {value!r} は Excel に保存できません")
         etree.SubElement(c, q("v")).text = repr(value)
     else:
         text = str(value)
+        if styles.is_number(c.get("s")) and NUMERIC_TEXT_RE.match(text.strip()):
+            # CSV などから来た `"1,200"` を文字のまま入れると、SUM が数えず合計が黙って狂う
+            number = float(text.strip().replace(",", ""))
+            etree.SubElement(c, q("v")).text = repr(int(number) if number.is_integer() and "." not in text else number)
+            return
+        if ILLEGAL_XML_RE.search(text):
+            raise TemplateError(f"{c.get('r')} に入れる文字列に、Excel に保存できない制御文字があります: {text[:40]!r}")
+        if len(text) > MAX_CELL_TEXT:
+            raise TemplateError(f"{c.get('r')} に入れる文字列が {len(text)} 文字あり、Excel の上限 {MAX_CELL_TEXT} 文字を超えています")
         serial = _excel_serial(text) if styles.is_date(c.get("s")) else None
         if serial is not None:
             etree.SubElement(c, q("v")).text = repr(serial)
@@ -867,6 +935,7 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
             for p in pattern:
                 if not first <= p <= first + count - block:
                     raise TemplateError(f"pattern の行 {p} がサンプル行 {first}-{first + count - block}（ブロックの先頭になれる範囲）の外です")
+            warnings += _missing_key_warnings(t, block, rows, name)
             tbls.append({"def": t, "first": first, "count": count, "end": first + count - 1, "block": block,
                          "n": max(len(rows), 1) * block, "rows": rows, "pattern": pattern})
         for spec in sd.get("drop_rows") or []:  # 無視する行: 出力から取り除く
@@ -900,14 +969,64 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
     if props.get("scrub"):
         scrub_leftover_text(pkg)
     if definition.get("strict"):
-        left = [f"{n}!{r}" for n, refs in leftovers.items() for r in sorted(refs, key=lambda x: (int(re.sub(r"\D", "", x)), x))]
-        if left:
+        total = sum(len(refs) for refs in leftovers.values())
+        if total:
+            by_sheet = "\n".join(f"  {n}: {', '.join(compress_cells(refs))}" for n, refs in leftovers.items() if refs)
             raise TemplateError(
-                f"テンプレートの値がそのまま残るセルが {len(left)} 個あります: {', '.join(left[:20])}"
-                f"{' ...' if len(left) > 20 else ''}\n"
+                f"テンプレートの値がそのまま残るセルが {total} 個あります（シートごと・範囲にまとめて）:\n{by_sheet}\n"
                 "残すなら keep、置き換えるなら cells / columns の key、空にするなら clear、行ごと消すなら drop_rows に入れてください")
     pkg.save(output)
     return warnings
+
+
+def _missing_key_warnings(t: dict, block: int, rows: list, sheet: str) -> list[str]:
+    """列の key が、データのどの行にも無い（綴りの違い）と、その列は黙って空欄になる。それを知らせる。"""
+    records = [r for r in rows if isinstance(r, dict)]
+    if not records:
+        return []
+    wanted = [spec["key"] for cols in _column_maps(t, block) for spec in cols.values()
+              if spec.get("key") and spec["key"] != "$index" and not spec.get("formula")
+              and not spec.get("keep") and not spec.get("clear")]
+    present = {k for r in records for k in r}
+    missing = [k for k in dict.fromkeys(wanted) if k not in present]
+    unused = [k for k in dict.fromkeys(k for r in records for k in r) if k not in wanted]
+    # 空欄がふつうの列（備考など）もあるので、綴り違いの手がかり（使われていないキー）があるか、どの key も当たらないときだけ
+    if not missing or not unused and len(missing) < len(set(wanted)):
+        return []
+    return [f"シート「{sheet}」表 {t.get('id')}: 列の key {', '.join(map(repr, missing))} が、"
+            f"データ {t['key']!r} のどの行にも無いため空欄になります"
+            + (f"（データにあって使われていないキー: {', '.join(map(repr, unused))}）" if unused else "")]
+
+
+def compress_cells(refs) -> list[str]:
+    """セルの一覧を、keep などにそのまま書ける範囲（`A1:C1`・`A3:A5`）にまとめる。行ごとに横へ、同じ横幅は縦へつなぐ。"""
+    rows: dict[int, list[int]] = {}
+    for ref in refs:
+        col, r = split_ref(ref)
+        rows.setdefault(r, []).append(col)
+    spans: list[tuple[int, int, int]] = []   # (行, 先頭の列, 末尾の列)
+    for r in sorted(rows):
+        cols = sorted(rows[r])
+        start = prev = cols[0]
+        for c in cols[1:] + [None]:
+            if c is not None and c == prev + 1:
+                prev = c
+                continue
+            spans.append((r, start, prev))
+            if c is not None:
+                start = prev = c
+    blocks: list[list[int]] = []   # [先頭の行, 末尾の行, 先頭の列, 末尾の列]
+    for r, a, b in spans:
+        hit = next((x for x in blocks if x[1] == r - 1 and x[2] == a and x[3] == b), None)
+        if hit:
+            hit[1] = r
+        else:
+            blocks.append([r, r, a, b])
+    out = []
+    for r1, r2, a, b in sorted(blocks):
+        first, last = f"{get_column_letter(a)}{r1}", f"{get_column_letter(b)}{r2}"
+        out.append(first if first == last else f"{first}:{last}")
+    return out
 
 
 def _has_literal(c) -> bool:
@@ -929,6 +1048,25 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
     for t in tables:
         for r in range(t["first"], t["end"] + 1):
             tbl_of[r] = t
+
+    # 定義に残した列の見出し（analyze が書く header）と、テンプレートの見出しの行を突き合わせる。
+    # 列を足した・並べ替えたテンプレートに差し替えると、黙って 1 列ずつずれて入るので止める
+    sst = read_shared_strings(pkg)
+    moved = []
+    for t in tables:
+        td, head_r = t["def"], t["def"].get("header_row")
+        if t.get("drop") or not head_r or int(head_r) not in orig:
+            continue
+        heads = {cell_col(c): cell_value(c, sst) for c in orig[int(head_r)]}
+        for letter, spec in (td.get("columns") or {}).items():
+            want = spec.get("header") if isinstance(spec, dict) else None
+            have = heads.get(column_index_from_string(letter.upper()))
+            if want is not None and str(want).strip() != str(have if have is not None else "").strip():
+                moved.append(f"{letter}{head_r}: 定義では「{want}」、テンプレートでは「{have if have is not None else '（空）'}」")
+    if moved:
+        raise TemplateError(f"シート「{sd['name']}」の表の見出しが、定義と合いません（列を足した・並べ替えたテンプレートでは、"
+                            "値が別の列に入ります）。analyze から定義を作り直すか、columns の列を直してください:\n  "
+                            + "\n  ".join(moved))
 
     fixed_cells = {}
     for ref, key in (sd.get("cells") or {}).items():
@@ -966,7 +1104,7 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
                         set_value(c, None, styles)
         for (col, rr), value in fixed_cells.items():
             if rr == r:
-                set_value(_get_or_make_cell(row, col, new_r), value, styles)
+                set_value(_get_or_make_cell(row, col, new_r), value, styles, replace_formula=True)
         for c in row:
             pos = (cell_col(c), r)
             if _has_literal(c) and pos not in keep_set and pos not in fixed_cells:
@@ -997,6 +1135,17 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
         sheet_data.remove(child)
     sheet_data.extend(new_rows)
 
+    filled = set(fixed_cells) | clear_cells
+    for t in tables:
+        if t.get("drop"):
+            continue
+        colmaps = _column_maps(t["def"], t["block"])
+        for r in range(t["first"], t["end"] + 1):
+            filled |= {(col, r) for col, spec in colmaps[(r - t["first"]) % t["block"]].items()
+                       if not spec.get("formula") and not spec.get("keep")}
+    _drop_stale_links(pkg, part, root, filled, warnings)
+    dropped_rows = {r for t in tables if t.get("drop") for r in range(t["first"], t["end"] + 1)}
+    _fix_comments(pkg, part, filled, set(tbl_of), rowmap, warnings, dropped_rows)
     _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
 
 
@@ -1038,6 +1187,9 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                 f = c.find(q("f"))
                 if f is not None and f.text:
                     f.text = rw.formula(f.text, row_fn)
+                if f is not None and f.get("ref"):  # 配列数式の範囲も、複製先の行へずらす
+                    f.set("ref", re.sub(r"([A-Za-z]+)(\d+)",
+                                        lambda m: f"{m.group(1)}{int(m.group(2)) - src_r + target_r}", f.get("ref")))
             _set_row_number(row, target_r)
             for col, spec in colmaps[j].items():
                 if spec.get("formula") or spec.get("keep"):
@@ -1057,12 +1209,80 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                     raise TemplateError(f"{td['key']!r} の要素はオブジェクトである必要があります")
                 if isinstance(value, (dict, list)):
                     raise TemplateError(f"{td['key']}[{rec}].{key} に配列・オブジェクトは入れられません")
-                set_value(c, value, styles)
+                set_value(c, value, styles, replace_formula=True)
             for c in row:
                 if cell_col(c) not in colmaps[j] and _has_literal(c):
                     leftovers.add(f"{get_column_letter(cell_col(c))}{src_r}")
             _strip_cached(row)
             out_rows.append(row)
+
+
+def _drop_stale_links(pkg, part, root, filled: set, warnings: list) -> None:
+    """データで置き換える・空にするセルのハイパーリンクを取り除く。残すと、新しい値に元の（サンプルの）リンク先が付く。"""
+    links = root.find(q("hyperlinks"))
+    if links is None:
+        return
+    dropped = []
+    for h in list(links):
+        if any(pos in filled for spec in (h.get("ref") or "").split() for pos in parse_cell_spec(spec)):
+            links.remove(h)
+            dropped.append(h.get("ref"))
+    if not dropped:
+        return
+    warnings.append(f"データを入れるセルのハイパーリンク（{', '.join(dropped)}）は、元のリンク先のままになるため取り除きました")
+    if not len(links):
+        root.remove(links)
+    rels_name = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
+    if rels_name in pkg.data:  # どこからも指さなくなったリンク先（元の URL）も残さない
+        used = {v for el in root.iter() for k, v in el.attrib.items() if k == f"{{{NS_R}}}id"}
+        rels = pkg.xml(rels_name)
+        for r in list(rels):
+            if r.get("Type", "").endswith("/hyperlink") and r.get("Id") not in used:
+                rels.remove(r)
+        pkg.put_xml(rels_name, rels)
+
+
+NS_VML_X = "urn:schemas-microsoft-com:office:excel"
+
+
+def _fix_comments(pkg, part, filled: set, sample_rows: set, rowmap, warnings: list, dropped_rows: set = frozenset()) -> None:
+    """コメント（メモ）を行のずれに追従させる。データを入れる・空にするセルのものは取り除く（新しい値に、元のメモが付く）。"""
+    parts = {typ.rsplit("/", 1)[-1]: target for typ, target in pkg.rels_of(part).values() if target in pkg.data}
+    if "comments" not in parts:
+        return
+    croot = pkg.xml(parts["comments"])
+    vml = None
+    if "vmlDrawing" in parts:
+        try:
+            vml = etree.fromstring(pkg.data[parts["vmlDrawing"]], etree.XMLParser(recover=True))
+        except etree.XMLSyntaxError:
+            vml = None
+    shapes = {}
+    for cd in (vml.iter(f"{{{NS_VML_X}}}ClientData") if vml is not None else []):
+        r, c = cd.find(f"{{{NS_VML_X}}}Row"), cd.find(f"{{{NS_VML_X}}}Column")
+        if r is not None and c is not None and (r.text or "").strip().isdigit() and (c.text or "").strip().isdigit():
+            shapes[(int(c.text) + 1, int(r.text) + 1)] = (cd.getparent(), r)
+    dropped, gone = [], []   # データを入れるセルのもの・取り除く行のもの
+    for cm in list(croot.iter(q("comment"))):
+        col, r = split_ref(cm.get("ref"))
+        shape = shapes.get((col, r))
+        if (col, r) in filled or r in dropped_rows:
+            cm.getparent().remove(cm)
+            if shape is not None and shape[0].getparent() is not None:
+                shape[0].getparent().remove(shape[0])
+            (gone if r in dropped_rows else dropped).append(cm.get("ref"))
+        elif r not in sample_rows:   # 表の外の行は、行と一緒に動かす
+            new_r = rowmap.map(r, False)
+            cm.set("ref", f"{get_column_letter(col)}{new_r}")
+            if shape is not None:
+                shape[1].text = str(new_r - 1)
+    if dropped:
+        warnings.append(f"データを入れるセルのコメント（{', '.join(dropped)}）は、新しい値に元のメモが付くため取り除きました")
+    if gone:
+        warnings.append(f"取り除く行のコメント（{', '.join(gone)}）も取り除きました")
+    pkg.put_xml(parts["comments"], croot)
+    if vml is not None:
+        pkg.data[parts["vmlDrawing"]] = etree.tostring(vml)
 
 
 def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings) -> None:
@@ -1076,9 +1296,10 @@ def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
             t = next((t for t in tables if t["first"] <= r1 <= t["end"] or t["first"] <= r2 <= t["end"]), None)
             mc.remove(m)
             if t and t["first"] <= r1 and r2 <= t["end"]:
-                if r1 == r2:
+                same_block = (r1 - t["first"]) // t["block"] == (r2 - t["first"]) // t["block"]
+                if r1 == r2 or same_block:   # 1 件（ブロック）の中の結合は、その行を複製した先ごとに複製する
                     for target in pattern_map.get(r1, []):
-                        keep.append(f"{get_column_letter(c1)}{target}:{get_column_letter(c2)}{target}")
+                        keep.append(f"{get_column_letter(c1)}{target}:{get_column_letter(c2)}{target + r2 - r1}")
                 else:
                     warnings.append(f"複数行にまたがる結合セル {m.get('ref')} は表のサンプル行内のため取り除きました")
                 continue
@@ -1442,11 +1663,12 @@ def check_definition(template: "str | bytes", definition: dict) -> list[str]:
 # スタンドアローン（固有の render スクリプトを書き出す）
 # ---------------------------------------------------------------------------
 
+# PEP 723 の依存宣言。書き出したスクリプトはこのエンジンの本文も含むので、ここに `# /// script` を行頭のまま書くと、
+# uv がメタデータを 2 つと数えて動かない。行頭にならないよう {pep723} で差し込む。
+PEP723 = "\n".join("#" + line for line in (
+    " /// script", ' requires-python = ">=3.10"', ' dependencies = ["lxml", "openpyxl", "pyyaml"]', " ///"))
 STANDALONE_HEADER = '''#!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["lxml", "openpyxl", "pyyaml"]
-# ///
+{pep723}
 """{title}
 
 xlsx テンプレートへデータを流し込む、固有の render スクリプト（xlsx-report-builder の export で生成）。
@@ -1525,7 +1747,7 @@ def export_script(template: "str | bytes", definition: dict, output: str, embed:
     title = f"{os.path.splitext(template_name or 'template')[0]} の render スクリプト"
     note = ("テンプレートも埋め込み済み（--template で差し替えられる）。" if embed
             else f"テンプレート（{rel}）は、このスクリプトからの相対パスで読む。")
-    header = STANDALONE_HEADER.format(title=title, name=os.path.basename(output), shape=shape, template_note=note)
+    header = STANDALONE_HEADER.format(pep723=PEP723, title=title, name=os.path.basename(output), shape=shape, template_note=note)
     tpl_literal = _wrap_b64(raw) if embed else '""'
     footer = (
         "\n\n# ---------------------------------------------------------------------------\n"
@@ -1590,6 +1812,9 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
     except TemplateError as e:
         print(f"エラー: {e}", file=sys.stderr)
         return 1
+    except FileNotFoundError as e:
+        print(f"エラー: ファイルが見つかりません: {e.filename}", file=sys.stderr)
+        return 1
 
 
 # ---------------------------------------------------------------------------
@@ -1599,6 +1824,9 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
 def cmd_analyze(args) -> int:
     definition = analyze(args.template)
     out = args.output or re.sub(r"\.xlsx?$", "", args.template, flags=re.I) + ".def.json"
+    # template は、定義ファイルのある場所からの相対パスで書く（render・check・export がそこから読む）
+    definition["template"] = os.path.relpath(os.path.abspath(args.template),
+                                             os.path.dirname(os.path.abspath(out))).replace(os.sep, "/")
     dump_structured(definition, out)
     print(summarize(definition))
     print(f"\n定義ファイルの下書きを書きました: {out}")
@@ -1620,14 +1848,23 @@ def cmd_inspect(args) -> int:
         json.dump(facts, sys.stdout, ensure_ascii=False, indent=2)
         print()
     else:
-        print(format_facts(facts))
+        print(format_facts(facts, fold=not args.all))
     return 0
 
 
 def _template_arg(args, definition) -> str:
-    template = args.template or definition.get("template")
+    """--template はそのまま、定義の template は定義ファイルのある場所からの相対パスとして読む。"""
+    if args.template:
+        return args.template
+    template = definition.get("template")
     if not template:
         raise TemplateError("--template か定義ファイルの template が必要です")
+    def_path = getattr(args, "definition", None)
+    if os.path.isabs(template) or not def_path or def_path == "-":
+        return template
+    beside = os.path.join(os.path.dirname(os.path.abspath(def_path)), template)
+    if os.path.exists(beside) or not os.path.exists(template):  # 以前の、作業場所からの相対パスも読めるように残す
+        return beside
     return template
 
 
@@ -1680,7 +1917,8 @@ def add_subcommands(sub) -> None:
     c.set_defaults(func=cmd_check)
     i = sub.add_parser("inspect", help="テンプレートの事実（値・数式・書式の種類・結合・仮値の疑い）を、判断用に出す")
     i.add_argument("template", help="テンプレート .xlsx")
-    i.add_argument("--json", action="store_true", help="JSON で出す")
+    i.add_argument("--json", action="store_true", help="JSON で出す（すべての行）")
+    i.add_argument("--all", action="store_true", help="同じ書式が長く続く行も、省略せずにすべて出す")
     i.set_defaults(func=cmd_inspect)
     r = sub.add_parser("render", help="テンプレート + 定義 + データから xlsx を再構成する")
     r.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template）")
@@ -1705,6 +1943,9 @@ def main() -> int:
         return args.func(args)
     except TemplateError as e:
         print(f"エラー: {e}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as e:
+        print(f"エラー: ファイルが見つかりません: {e.filename}", file=sys.stderr)
         return 1
 
 

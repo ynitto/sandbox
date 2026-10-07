@@ -249,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                    scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
                    agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test,
                    exclude=args.exclude, ref_excludes=args.ref_exclude, evidence=args.evidence)
-    config = json.loads((dest / "codd.json").read_text(encoding="utf-8"))
+    config = json.loads((dest / "codd.json").read_text(encoding="utf-8-sig"))
     print(f"置きました: {dest}")
     refs = config.get("refs") or [{"path": config.get("ref_path")}]
     print(f"  この側: {config['side']}  参照先: " + ", ".join(

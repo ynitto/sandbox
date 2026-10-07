@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -412,7 +413,9 @@ class StandaloneAndYamlTests(Base):
         with open(script, encoding="utf-8") as fh:
             text = fh.read()
         self.assertNotIn("import xlsx_template", text)
-        self.assertIn("# /// script", text)
+        # `uv run` は PEP 723 のメタデータが 2 つあると動かない（エンジンの本文に行頭の `# /// script` を残さない）
+        pep723 = re.findall(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$", text)
+        self.assertEqual([m[0] for m in pep723], ["script"])
         data = os.path.join(self.dir, "data.yaml")
         import yaml
         with open(data, "w", encoding="utf-8") as f:
@@ -784,8 +787,8 @@ class ReusedDeliverableTests(Base):
         with self.assertRaises(xt.TemplateError) as cm:
             self.render(definition=d)
         msg = str(cm.exception)
-        for ref in ("請求書!A1", "請求書!A3", "請求書!A18"):
-            self.assertIn(ref, msg)
+        # シートごとに、keep にそのまま書ける範囲で、すべてを挙げる
+        self.assertIn("請求書: A1, A3:A5, A7:E7, D10:D12, A14, A15:C15, A18", msg)
         self.assertNotIn("請求書!B8", msg)  # 流し込む列は漏れではない
 
     def test_strict_passes_once_every_literal_is_decided(self):
@@ -804,7 +807,7 @@ class ReusedDeliverableTests(Base):
         del sheet["tables"][1]["columns"]["B"]  # 支払表の方法列を決めていない
         with self.assertRaises(xt.TemplateError) as cm:
             self.render(definition=d)
-        self.assertIn("請求書!B16", str(cm.exception))
+        self.assertIn("請求書: B16\n", str(cm.exception))
         sheet["tables"][1]["columns"]["B"] = {"keep": True}
         self.render(definition=d)
 
@@ -852,6 +855,264 @@ class ReusedDeliverableTests(Base):
         with zipfile.ZipFile(path) as z:
             return [z.read(n).decode() for n in z.namelist() if n.startswith("xl/worksheets/sheet")]
 
+
+class UsabilityGuardTests(Base):
+    """使う側の取り違え（綴り・置き場所・値の種類）を、黙って通さない。"""
+
+    def cli(self, *args, cwd=None):
+        entry = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py"))
+        return subprocess.run([sys.executable, entry, *args], capture_output=True, text=True, cwd=cwd)
+
+    def test_template_is_read_beside_the_definition_from_any_working_directory(self):
+        defn = os.path.join(self.dir, "def.json")
+        self.assertEqual(self.cli("analyze", self.tpl, "-o", defn).returncode, 0)
+        with open(defn, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["template"], "t.xlsx")
+        with open(defn, "w", encoding="utf-8") as f:
+            json.dump(DEF, f, ensure_ascii=False)  # template: "t.xlsx"（定義の隣）
+        data = os.path.join(self.dir, "data.json")
+        with open(data, "w", encoding="utf-8") as f:
+            json.dump(DATA, f, ensure_ascii=False)
+        elsewhere = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        r = self.cli("render", "--def", defn, "--data", data, "-o", os.path.join(self.dir, "o.xlsx"), cwd=elsewhere)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.cli("check", "--def", defn, cwd=elsewhere).returncode, 0)
+
+    def test_missing_file_is_a_message_not_a_traceback(self):
+        r = self.cli("render", "--def", os.path.join(self.dir, "none.json"), "--data", "x", "-o", "y.xlsx")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("見つかりません", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_keys_absent_from_every_row_are_warned(self):
+        data = dict(DATA, items=[{"品名": "a", "qty": 1, "price": 2}])
+        self.render(data)
+        msg = [w for w in self.warnings if "どの行にも無い" in w]
+        self.assertEqual(len(msg), 1)
+        self.assertIn("'name'", msg[0])
+        self.assertIn("'品名'", msg[0])  # データ側の使われていないキーも示す
+        self.render()
+        self.assertFalse([w for w in self.warnings if "どの行にも無い" in w])
+
+    def test_data_replaces_a_formula_when_the_column_or_cell_is_filled(self):
+        d = json.loads(json.dumps(DEF))
+        d["sheets"][0]["tables"][0]["columns"]["E"] = {"key": "amount"}
+        d["sheets"][0]["cells"]["E12"] = "billed"  # 請求額（数式）を、データの値で置き換える
+        data = dict(DATA, billed=12345, items=[dict(i, amount=7) for i in DATA["items"]])
+        ws = load_workbook(self.render(data, d))["請求書"]
+        self.assertEqual([ws[f"E{r}"].value for r in range(8, 13)], [7] * 5)
+        self.assertEqual(ws["E15"].value, 12345)
+        self.assertEqual(ws["E13"].value, "=SUM(E8:E12)")  # 置き換えない数式はそのまま
+
+    def test_values_excel_cannot_store_are_rejected_with_the_cell(self):
+        for bad, word in (("a\x0bb", "制御文字"), (float("nan"), "保存できません"), ("x" * 40000, "上限")):
+            data = dict(DATA, items=[{"name": bad, "qty": 1, "price": 1}])
+            with self.assertRaises(xt.TemplateError) as cm:
+                self.render(data)
+            self.assertIn("B8", str(cm.exception))
+            self.assertIn(word, str(cm.exception))
+
+    def test_running_number_column_is_drafted_as_index(self):
+        cols = xt.analyze(self.tpl)["sheets"][0]["tables"][0]["columns"]
+        self.assertEqual(cols["A"]["key"], "$index")
+        self.assertEqual(cols["C"]["key"], "数量")  # 1, 1 は連番ではない
+
+
+    def test_numeric_text_becomes_a_number_in_number_formatted_cells(self):
+        data = dict(DATA, items=[{"name": "1,200", "qty": 1, "price": "1,200"}, {"name": "b", "qty": 1, "price": "300"}])
+        ws = load_workbook(self.render(data))["請求書"]
+        self.assertEqual((ws["D8"].value, ws["D9"].value), (1200, 300))   # #,##0 のセルは数値に（SUM が数える）
+        self.assertEqual(ws["B8"].value, "1,200")                          # 標準のセルは文字のまま
+
+    def small(self, build):
+        path = os.path.join(self.dir, "small.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "S"
+        build(ws)
+        wb.save(path)
+        return path
+
+    def test_sample_hyperlinks_do_not_point_new_values_at_the_old_target(self):
+        def build(ws):
+            ws.append(["名前", "URL"])
+            ws.append(["a", "http://old.example"])
+            ws["B2"].hyperlink = "http://old.example"
+            ws["A1"].hyperlink = "http://keep.example"   # データを入れないセルのリンクは残す
+        tpl = self.small(build)
+        d = {"version": 1, "sheets": [{"name": "S", "tables": [{"id": "t", "header_row": 1, "first_row": 2, "sample_rows": 1,
+                                                                 "key": "rows", "columns": {"A": {"key": "n"}, "B": {"key": "u"}}}]}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        warnings = xt.render(tpl, d, {"rows": [{"n": "x", "u": "http://new1"}, {"n": "y", "u": "http://new2"}]}, out)
+        ws = load_workbook(out)["S"]
+        self.assertEqual([ws[c].hyperlink for c in ("B2", "B3")], [None, None])
+        self.assertEqual(ws["A1"].hyperlink.target, "http://keep.example")
+        self.assertTrue(any("ハイパーリンク" in w for w in warnings))
+        with zipfile.ZipFile(out) as z:
+            rels = z.read("xl/worksheets/_rels/sheet1.xml.rels").decode()
+        self.assertNotIn("old.example", rels)    # 元のリンク先を zip に残さない
+
+    def test_array_formula_range_follows_each_copied_row(self):
+        from openpyxl.worksheet.formula import ArrayFormula
+
+        def build(ws):
+            ws.append(["a", "b", "c"])
+            ws.append([1, 2, None])
+            ws["C2"] = ArrayFormula("C2", "=SUM(A2:B2*1)")
+        tpl = self.small(build)
+        d = {"version": 1, "sheets": [{"name": "S", "tables": [{"id": "t", "header_row": 1, "first_row": 2, "sample_rows": 1,
+                                                                 "key": "rows", "columns": {"A": {"key": "a"}, "B": {"key": "b"},
+                                                                                            "C": {"formula": True}}}]}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, d, {"rows": [{"a": 1, "b": 2}, {"a": 3, "b": 4}, {"a": 5, "b": 6}]}, out)
+        with zipfile.ZipFile(out) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        self.assertEqual(re.findall(r'<c r="(C\d)"><f t="array" ref="([^"]+)"', sheet), [("C2", "C2"), ("C3", "C3"), ("C4", "C4")])
+
+    def test_placeholder_hint_skips_ledger_labels_and_catches_common_dummies(self):
+        hinted = [v for v in ("仮払金", "仮受消費税", "仮説", "XXL", "山田 太郎", "Taxi") if xt.PLACEHOLDER_RE.search(v)]
+        self.assertEqual(hinted, [])   # 帳票の見出し・実在しそうな値を、仮の値と取り違えない
+        missed = [v for v in ("（仮）", "仮の名前", "XX株式会社", "xxx-xxxx", "Example Corp", "0000-00-00", "記入例", "〇〇様")
+                  if not xt.PLACEHOLDER_RE.search(v)]
+        self.assertEqual(missed, [])
+
+    def test_inspect_text_folds_long_runs_but_keeps_hinted_rows(self):
+        def build(ws):
+            ws.append(["No", "顧客", "金額"])
+            for c in ws[1]:
+                c.font = Font(bold=True)
+            for i in range(1, 201):
+                ws.append([i, "サンプル株式会社" if i == 100 else f"顧客{i}", i * 10])
+                for c in ws[ws.max_row]:
+                    c.border = BOX
+        facts = xt.inspect_template(self.small(build))
+        text = xt.format_facts(facts)
+        self.assertIn("同じ書式の行 195 行を省略", text)   # 2-201 の 200 行のうち、先頭 3 行・末尾 1 行・印の付いた 1 行を残す
+        self.assertIn("サンプル株式会社", text)
+        self.assertIn("C201", text)
+        self.assertNotIn("顧客50'", text)
+        self.assertEqual(len(xt.format_facts(facts, fold=False).splitlines()) - len(text.splitlines()), 194)
+        self.assertEqual(len(facts["sheets"][0]["rows"]), 201)   # JSON（事実そのもの）は畳まない
+
+
+class ChecklistTests(Base):
+    """動作確認チェックリスト（AAA パターン・複数タブ・サマリの集計）の形。"""
+
+    def checklist(self, build_tabs):
+        path = os.path.join(self.dir, "checklist.xlsx")
+        wb = Workbook()
+        wb.active.title = "サマリ"
+        build_tabs(wb)
+        wb.save(path)
+        return path
+
+    def test_tables_on_several_tabs_get_separate_data_keys(self):
+        def build(wb):
+            for name in ("ログイン", "検索"):
+                ws = wb.create_sheet(name)
+                ws.append(["ID", "Arrange", "Act", "Assert", "判定"])
+                for c in ws[1]:
+                    c.font = Font(bold=True)
+                for i in (1, 2):
+                    ws.append([f"X-{i}", "準備", "操作", "期待", "未実施"])
+        tables = [t for sd in xt.analyze(self.checklist(build))["sheets"] for t in sd["tables"]]
+        self.assertEqual([t["key"] for t in tables], ["ログイン", "検索"])   # 同じ items だと、どのタブにも同じ明細が入る
+
+    def test_merges_inside_a_multi_row_case_are_copied_for_every_case(self):
+        def build(wb):
+            ws = wb.create_sheet("AAA")
+            ws.append(["ID", "段階", "内容", "判定"])
+            for base in (2, 5):
+                for j, stage in enumerate(("Arrange", "Act", "Assert")):
+                    ws[f"B{base + j}"], ws[f"C{base + j}"] = stage, "記入例"
+                ws[f"A{base}"], ws[f"D{base}"] = "ID", "未実施"
+                for c in "AD":
+                    ws.merge_cells(f"{c}{base}:{c}{base + 2}")
+            ws["A9"], ws["B9"] = "件数", "=COUNTA(A2:A7)"
+        d = {"version": 1, "sheets": [{"name": "AAA", "tables": [{
+            "id": "cases", "header_row": 1, "first_row": 2, "sample_rows": 6, "block_rows": 3, "pattern": [2], "key": "cases",
+            "block": [{"A": {"key": "id"}, "B": {"keep": True}, "C": {"key": "arrange"}, "D": {"key": "result"}},
+                      {"B": {"keep": True}, "C": {"key": "act"}}, {"B": {"keep": True}, "C": {"key": "assert"}}]}]}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        warnings = xt.render(self.checklist(build), d, {"cases": [
+            {"id": f"T-{i}", "arrange": "a", "act": "b", "assert": "c", "result": "OK"} for i in range(1, 4)]}, out)
+        ws = load_workbook(out)["AAA"]
+        self.assertEqual(sorted(str(m) for m in ws.merged_cells.ranges),
+                         ["A2:A4", "A5:A7", "A8:A10", "D2:D4", "D5:D7", "D8:D10"])
+        self.assertFalse([w for w in warnings if "結合" in w])
+        self.assertEqual(ws["B12"].value, "=COUNTA(A2:A10)")
+
+    def test_an_optional_column_left_blank_is_not_warned_but_a_misspelling_is(self):
+        data = dict(DATA, items=[{"name": "a", "qty": 1}])   # price は空欄（綴り違いの手がかりなし）
+        self.render(data)
+        self.assertFalse([w for w in self.warnings if "どの行にも無い" in w])
+        self.render(dict(DATA, items=[{"name": "a", "qty": 1, "prise": 1}]))
+        self.assertTrue([w for w in self.warnings if "'prise'" in w])
+
+    def test_remarks_column_heading_is_not_a_note(self):
+        self.assertIsNone(xt.NOTE_RE.match("備考"))
+        self.assertIsNotNone(xt.NOTE_RE.match("備考：振込手数料はご負担ください"))
+        self.assertIsNotNone(xt.NOTE_RE.match("※ 判定は OK / NG から選ぶ"))
+
+    def test_comments_on_filled_cells_are_dropped_and_others_follow_their_rows(self):
+        from openpyxl.comments import Comment
+
+        def build(wb):
+            ws = wb.create_sheet("T")
+            ws.append(["ID", "結果"])
+            ws.append(["X-1", "前の結果"])
+            ws["B2"].comment = Comment("前のプロジェクトのメモ", "山田")
+            ws["A4"] = "※ 注記"
+            ws["A4"].comment = Comment("注記の由来", "山田")
+            ws["A5"] = "消す行"
+            ws["A5"].comment = Comment("消す行のメモ", "山田")
+        d = {"version": 1, "sheets": [{"name": "T", "drop_rows": [5], "tables": [{
+            "id": "t", "header_row": 1, "first_row": 2, "sample_rows": 1, "key": "rows",
+            "columns": {"A": {"key": "id"}, "B": {"key": "result"}}}]}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        warnings = xt.render(self.checklist(build), d, {"rows": [{"id": f"N-{i}", "result": "OK"} for i in range(3)]}, out)
+        ws = load_workbook(out)["T"]
+        notes = {c.coordinate: c.comment.text for row in ws.iter_rows() for c in row if c.comment}
+        self.assertEqual(notes, {"A6": "注記の由来"})   # 注記は行と一緒に 4 → 6、データのセルと消した行のメモは無い
+        self.assertIn("データを入れるセルのコメント（B2）は、新しい値に元のメモが付くため取り除きました", warnings)
+        with zipfile.ZipFile(out) as z:
+            vml = next(z.read(n).decode() for n in z.namelist() if n.endswith(".vml"))
+        self.assertEqual(re.findall(r"<[^>]*Row>(\d+)<", vml), ["5"])   # 図形（吹き出し）の位置も 0 始まりで 5
+
+    def test_inspect_shows_date_cells_as_dates(self):
+        import datetime as dt
+
+        def build(wb):
+            ws = wb.create_sheet("D")
+            ws.append(["実施日", "時刻"])
+            ws.append([dt.date(2025, 1, 2), dt.datetime(2025, 1, 2, 9, 30)])
+            ws["A2"].number_format = "yyyy/mm/dd"
+            ws["B2"].number_format = "yyyy/mm/dd hh:mm"
+        facts = xt.inspect_template(self.checklist(build))
+        cells = {c["ref"]: c["value"] for row in facts["sheets"][1]["rows"] for c in row["cells"]}
+        self.assertEqual((cells["A2"], cells["B2"]), ("2025-01-02", "2025-01-02 09:30"))   # 通し番号（45659）ではなく
+
+    def test_a_template_with_an_inserted_column_is_refused_instead_of_shifting_values(self):
+        def build(heads):
+            def inner(wb):
+                ws = wb.create_sheet("C")
+                ws.append(heads)
+                for c in ws[1]:
+                    c.font = Font(bold=True)
+                ws.append(["1"] * len(heads))
+                ws.append(["2"] * len(heads))
+            return inner
+        old = os.path.join(self.dir, "old.xlsx")
+        shutil.move(self.checklist(build(["No", "観点", "判定"])), old)
+        d = xt.analyze(old)                       # header を残した定義
+        new = self.checklist(build(["No", "優先度", "観点", "判定"]))
+        out = os.path.join(self.dir, "o.xlsx")
+        data = {d["sheets"][1]["tables"][0]["key"]: [{"観点": "a", "判定": "OK"}]}
+        xt.render(old, d, data, out)              # 同じ構造なら通る
+        with self.assertRaises(xt.TemplateError) as cm:
+            xt.render(new, d, data, out)
+        self.assertIn("B1: 定義では「観点」、テンプレートでは「優先度」", str(cm.exception))
 
 if __name__ == "__main__":
     unittest.main()

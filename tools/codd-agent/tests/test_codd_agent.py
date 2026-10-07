@@ -1458,6 +1458,78 @@ class CoddTest(unittest.TestCase):
         # もう一度検査しても、差し替えた画像は今の画面なので何もしない
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
 
+    def test_tracked_test_outputs_are_not_files_to_fix(self) -> None:
+        # 結果ファイルと撮った画面を git で管理していても、直すファイル・影響範囲・計画に無い変更に数えない。
+        old, new = b"PNG-v1 hello", b"PNG-v2 hello"
+        sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+        (self.impl / "results/screens").mkdir(parents=True)
+        (self.impl / "results/screens/hello.png").write_bytes(old)
+        self.write_evidence([{"kind": "image", "id": "hello/screen", "title": "hello の画面", "path": "results/screens/hello.png",
+                              "sha256": sha(old), "history": [sha(old)], "file": "tests/hello.yaml"}])
+        (self.impl / "results/.gitignore").unlink()
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "results")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("results/", r.stderr + (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        (self.impl / "results/screens/hello.png").write_bytes(new)   # テストを動かすと撮り直す
+        self.write_evidence([{"kind": "image", "id": "hello/screen", "title": "hello の画面", "path": "results/screens/hello.png",
+                              "sha256": sha(new), "history": [sha(new), sha(old)], "file": "tests/hello.yaml"}])
+        (self.impl / "results/.gitignore").unlink()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("results/", r.stderr)
+
+    def test_report_keeps_planned_tests_in_the_test_section(self) -> None:
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\nassert hello() == 1\n"}, "test")
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/test_app.py — `hello` のログも確かめる")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests/test_app.py").write_text("from src.app import hello\nassert hello() == 1  # log\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        report = self.run_pa(self.impl, "report").stdout
+        self.assertNotIn("tests/test_app.py — 変えた（影響範囲）", report)   # テストの変更案のものは「テスト」の節だけに
+        self.assertIn("## テスト\n\n- tests/test_app.py — 変えた", report)
+        self.assertNotIn("- src/app.py — 直した", report)                 # 変更案で変えたファイル自身は影響範囲に出さない
+
+    def test_a_test_moved_to_a_new_path_counts_as_planned(self) -> None:
+        # 「…に移す」と書いたテストの移し先も、自分の変更案と同じく計画に挙げたファイルに数える。
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\nassert hello() == 1\n"}, "test")
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/test_app.py — tests/test_hello.py に移し、`hello` のログも確かめる")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests/test_app.py").rename(self.impl / "tests/test_hello.py")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_adding_a_new_doc_with_its_screenshot_needs_no_invented_impact(self) -> None:
+        # 足すだけの変更: 影響範囲は理由だけの「変更不要」でよく、計画の文書に貼った画像は文書の添付として認める。
+        # 前からある見出し（`## hello`）を写しただけなら、変わった名前に数えない。
+        plan = (PLAN_DRIFT
+                .replace("- docs/api.md — `hello` の戻り値を 2 と書き直す",
+                         "- docs/api.md — `hello` の戻り値を 2 と書き直す\n- docs/hello2.md — `hello` の画面の仕様書を足す")
+                .replace("- src/app.py — hello の戻り値", "- 変更不要: 文書を足すだけで、今あるファイルの振る舞いは変わらない")
+                .replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                         "- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）\n"
+                         "- `hello の画面` — 変更不要: 仕様書の題名で、確かめる振る舞いは無い"))
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
+        (self.design / "docs/images/hello2.png").write_bytes(b"PNG hello2")
+        (self.design / "docs/hello2.md").write_text("# hello の画面\n\n## hello\n\n![画面](images/hello2.png)\n",
+                                                   encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("docs/images/hello2.png — 変えた（計画の文書に貼った画像）", self.run_pa(self.impl, "report").stdout)
+
     def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
         commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
         commit(self.design, {"docs/perf.md": "# 性能\n\n- <!-- evidence: login/S-01/load -->800 ms<!-- /evidence -->\n"},
@@ -2029,6 +2101,20 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed refs=docs", r.stdout)
 
+    def test_names_outside_every_scope_are_reported_without_stopping(self) -> None:
+        # CI の設定などは、どの scope にも入らない。止めはしないが、改名で黙って壊れないように知らせる。
+        mono = self.make_mono(scope=["src"], ref_scopes=["docs=docs"])
+        commit(mono, {".github/workflows/ci.yml": "env:\n  hello: 1\n"}, "ci")
+        (mono / ".plans").mkdir(parents=True, exist_ok=True)
+        (mono / PLAN).write_text(PLAN_DRIFT, encoding="utf-8")
+        self.run_pa(mono, "rule", "--all")
+        self.run_pa(mono, "explore", "--term", "hello")
+        r = self.run_pa(mono, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("受け持ちのフォルダ（scope）の外にも、変わる名前が出てくるファイルがあります", r.stdout)
+        self.assertIn(".github/workflows/ci.yml", r.stdout)
+        self.assertNotIn("src/app.py", r.stdout.split("知らせ:")[1].splitlines()[0])   # scope の中のものは挙げない
+
     def test_exclude_filters_each_side_within_scope(self) -> None:
         commit(self.impl, {"src/settings.json": "hello", "src/config/local.yaml": "hello",
                            "src/nested/settings.json": "hello", "src/keep.py": "hello"}, "settings")
@@ -2217,6 +2303,32 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("読み直す）: CLAUDE.md", r.stderr)
         self.assertEqual(self.run_pa(self.impl, "rule", "nothing.md").returncode, 1)
+
+    def test_a_rule_section_named_by_heading_is_read_and_required(self) -> None:
+        # `use: "パス.md#見出し"` のいつも守る手順も、その節を読み込ませ、計画に挙げさせる（黙って効かなくならない）。
+        commit(self.impl, {"docs/rules.md": "# 決まり\n\n## Naming Rules\n\nsnake_case にする。\n\n## 他\n\n関係ない節\n"},
+               "rules")
+        commit(self.design, {"style.md": "# 書き方\n\n## 表\n\n型の列を書く。\n"}, "rules")
+        self.set_config(self.impl, guides=[{"use": "docs/rules.md#naming-rules"}, {"use": "design:style.md#表"},
+                                           {"use": "docs/rules.md#無い節"}])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("  - docs/rules.md#naming-rules\n", r.stdout)
+        self.assertIn("  - design:style.md#表\n", r.stdout)
+        self.assertNotIn("docs/rules.md#naming-rules に当たるファイルがありません", r.stdout)
+        self.assertIn("docs/rules.md#無い節（見出し「無い節」がありません）", r.stdout)
+        plan = PLAN_ALIGNED.replace("## 守る決まり\n\nなし", "## 守る決まり\n\n- docs/rules.md — snake_case\n"
+                                                              "- design:style.md — 型の列")
+        self.write_plan(plan, read=False)
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("読み込んでいません", r.stderr)
+        r = self.run_pa(self.impl, "rule", "--all")
+        self.assertIn("snake_case にする。", r.stdout)
+        self.assertNotIn("関係ない節", r.stdout)        # 見出しで指した節だけ
+        self.assertIn("型の列を書く。", r.stdout)
+        self.assertIn("型の列を書く。", self.run_pa(self.impl, "guide", "design:style.md#表").stdout)
+        self.assert_plan_ok()
 
     def test_plan_needs_exploring_and_handling_what_was_found(self) -> None:
         commit(self.design, {"docs/guide.md": "# 使い方\n\nログは標準出力に出す。\n"}, "guide")
