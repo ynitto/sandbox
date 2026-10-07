@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: これまで通したシナリオを記録する
+
+- サンプルのリポジトリで最初から最後まで通したシナリオを、`tools/codd-agent/tests/scenarios/` に自然文で残す（AWS の注文サービス・
+  注文 API・PC 版のメイン画面・小さな Web 画面）。エージェントに「このシナリオを再生して」と頼むと、サンプルを作り直して codd を回し、
+  期待と違ったところを挙げる。手順やファイルの中身は固めない
+
 ### codd-agent: 人の承認なしに変えないファイル（要件定義・ガイドライン・旧いコードなど）を設定で決める
 
 - **`codd.json` の `protect`（パス・glob の配列）に書いたファイルは、確認で利用者が OK と答えた計画に挙げたときだけ変える。**

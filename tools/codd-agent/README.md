@@ -863,3 +863,9 @@ graphify は `tools/codd-agent/install.py` で入る（このリポジトリの�
 ```bash
 python -m unittest discover -s tools/codd-agent/tests
 ```
+
+### シナリオを再生する
+
+サンプルのリポジトリで最初から最後まで通したときの記録を、`tests/scenarios/` に自然文で置いている（サンプルの要点・頼むこと・
+利用者の答え・期待）。エージェントに「`tests/scenarios/aws-orders.md` のシナリオを再生して」と頼むと、サンプルを作り直して
+codd を回し、期待と違ったところを挙げる。手順やファイルの中身は固めないので、出力が少し違っても構わない。
