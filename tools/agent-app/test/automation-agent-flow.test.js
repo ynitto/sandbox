@@ -7,6 +7,65 @@ const os = require('os');
 const path = require('path');
 const agentFlow = require('../src/main/automation/agent-flow');
 
+function freshAgentFlow(t) {
+  const file = require.resolve('../src/main/automation/agent-flow');
+  const previous = require.cache[file];
+  delete require.cache[file];
+  t.after(() => { require.cache[file] = previous; });
+  return require(file);
+}
+
+const patternFailures = [
+  ['起動失敗', { ok: false, error: 'spawn agent-flow ENOENT' }, '起動できません: spawn agent-flow ENOENT'],
+  ['応答なし', null, '起動できません: agent-flow'],
+  ['JSON解析失敗', { ok: true, stdout: '{broken' }, '標準パターンの一覧を読み取れません'],
+  ['空の出力', { ok: true, stdout: '' }, '標準パターンの一覧を読み取れません'],
+  ['非配列のオブジェクト', { ok: true, stdout: '{}' }, '標準パターンの一覧を読み取れません'],
+  ['非配列のnull', { ok: true, stdout: 'null' }, '標準パターンの一覧を読み取れません'],
+  ['非配列の文字列', { ok: true, stdout: '"available"' }, '標準パターンの一覧を読み取れません'],
+];
+
+for (const [name, failed, summary] of patternFailures) {
+  test(`標準パターン: ${name}をキャッシュせず、次の取得で復旧する`, async (t) => {
+    const flow = freshAgentFlow(t);
+    const rows = [{ id: 'adversarial-verification', name: '確認する' }];
+    const calls = [];
+    const capture = async (...args) => {
+      calls.push(args);
+      return calls.length <= 2 ? failed : { ok: true, stdout: JSON.stringify(rows) };
+    };
+    for (let i = 0; i < 2; i += 1) {
+      assert.deepStrictEqual(await flow.patterns(capture, '/repo'), { ok: false, patterns: [], summary });
+    }
+    assert.deepStrictEqual((await flow.catalog(capture)).patterns, rows);
+    const ctx = await flow.context({ root: '/repo', capture, agentDefinitions: async () => [] });
+    assert.strictEqual(ctx.tools.agentFlow.ok, true);
+    assert.strictEqual(ctx.tools.agentFlow.summary, '利用可能（標準パターン 1 件）');
+    assert.strictEqual(calls.filter(([command]) => command === 'agent-flow').length, 3, '成功後は catalog と context で同じキャッシュを使う');
+    assert.deepStrictEqual(calls[0], ['agent-flow', ['patterns', '--json'], { cwd: '/repo', timeoutMs: 10000 }]);
+  });
+}
+
+test('標準パターン: 非配列応答は画面にも読み取り失敗を返す', async (t) => {
+  const flow = freshAgentFlow(t);
+  const ctx = await flow.context({
+    root: '/repo', agentDefinitions: async () => [],
+    capture: async () => ({ ok: true, stdout: '{}' }),
+  });
+  assert.strictEqual(ctx.tools.agentFlow.ok, false);
+  assert.strictEqual(ctx.tools.agentFlow.summary, '標準パターンの一覧を読み取れません');
+});
+
+test('標準パターン: 正常な空配列もキャッシュする', async (t) => {
+  const flow = freshAgentFlow(t);
+  let calls = 0;
+  const capture = async () => { calls += 1; return { ok: true, stdout: '[]' }; };
+  const expected = { ok: true, patterns: [], summary: '利用可能' };
+  assert.deepStrictEqual(await flow.patterns(capture), expected);
+  assert.deepStrictEqual(await flow.patterns(capture), expected);
+  assert.strictEqual(calls, 1);
+});
+
 function withBus(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'smk-agent-flow-'));
   const previousBus = process.env.AGENT_APP_FLOW_BUS;

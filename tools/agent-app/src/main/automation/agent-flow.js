@@ -62,14 +62,14 @@ async function patterns(capture, cwd = '') {
   if (patternCache) return patternCache;
   const result = await capture('agent-flow', ['patterns', '--json'], { cwd, timeoutMs: 10000 });
   if (!result || !result.ok) {
-    patternCache = { ok: false, patterns: [], summary: `起動できません: ${firstLine(result) || 'agent-flow'}` };
-    return patternCache;
+    return { ok: false, patterns: [], summary: `起動できません: ${firstLine(result) || 'agent-flow'}` };
   }
   try {
-    const rows = JSON.parse(String(result.stdout || '[]'));
-    patternCache = { ok: Array.isArray(rows), patterns: Array.isArray(rows) ? rows : [], summary: '利用可能' };
+    const rows = JSON.parse(String(result.stdout || ''));
+    if (!Array.isArray(rows)) return { ok: false, patterns: [], summary: '標準パターンの一覧を読み取れません' };
+    patternCache = { ok: true, patterns: rows, summary: '利用可能' };
   } catch {
-    patternCache = { ok: false, patterns: [], summary: '標準パターンの一覧を読み取れません' };
+    return { ok: false, patterns: [], summary: '標準パターンの一覧を読み取れません' };
   }
   return patternCache;
 }

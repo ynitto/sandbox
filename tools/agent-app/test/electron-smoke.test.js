@@ -513,8 +513,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
       await win.click('#chat-title', { position: { x: 4, y: 4 } });
     }
 
-    // 共有に依頼: 実行設定は依頼先・エージェント・優先度だけ。依頼先もエージェントも「どれでも」が既定で、
-    // 見つかっている仲間（pc-b）を名指しできる
+    // 共有に依頼: 既存会話のエージェントは保持し、「どれでも」へ変更できる。
+    // 依頼先の既定はどれでもで、見つかっている仲間（pc-b）を名指しできる。
     await win.locator('#input-mode-share:not([hidden])').waitFor({ timeout: 20000 });
     await win.click('#input-mode-share');
     await win.click('#run-settings > summary');
@@ -522,6 +522,9 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     await win.waitForFunction(() => [...document.getElementById('share-target').options].some((o) => o.value === 'pc-b'), null, { timeout: 20000 });
     assert.strictEqual(await win.locator('#share-target').inputValue(), '', '既定はどれでも');
     assert.strictEqual(await win.locator('#policy-field').isVisible(), false, '共有では起動方針を出さない');
+    assert.strictEqual(await win.locator('#cli').inputValue(), 'codex', '既存会話で選んだエージェントを保持する');
+    await win.selectOption('#cli', '*');
+    await win.waitForFunction(() => document.getElementById('run-settings-summary').textContent === 'どれでも · 優先度 通常');
     assert.match(await win.locator('#run-settings-summary').textContent(), /^どれでも · 優先度 通常$/);
     await win.selectOption('#share-target', 'pc-b');
     assert.match(await win.locator('#run-settings-summary').textContent(), /^どれでも · pc-b 宛て · 優先度 通常$/);
@@ -897,7 +900,8 @@ test('実機: 会話・タスク・ワークフローを移動し、登録済み
     assert.match(await win.locator('#flow-teach-create-error').textContent(), /入力してください/);
     await win.locator('#flow-teach-purpose').fill('変更依頼を調査し、並列に実装して品質を確認したい');
     await win.locator('#flow-teach-launch .teach-execution-settings > summary').click();
-    // 既定は自動選択（エージェントの欄は出さない）。手動指定に切り替えると出る（会話・タスクと同じ部品）
+    // 保存済みの選択方法を引き継ぐ。自動選択では欄を隠し、手動指定では表示する。
+    await win.locator('#flow-teach-launch [data-execution-mode]').selectOption('auto');
     assert.strictEqual(await win.locator('#flow-teach-agent').isVisible(), false);
     await win.locator('#flow-teach-launch [data-execution-mode]').selectOption('manual');
     assert.strictEqual(await win.locator('#flow-teach-agent').isVisible(), true);

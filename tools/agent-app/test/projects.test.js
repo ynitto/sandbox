@@ -223,7 +223,13 @@ test('repos.json があればそちらを正として読む', () => {
   assert.ok(result.written.includes(`projects/${definitionOnly.folder}/README.md`), 'コピー対象がなくても索引を作る');
 });
 
-test('add_dir_args を宣言した CLI にだけ、ほかのフォルダを argv で渡す', () => {
+test('add_dir_args を宣言した CLI にだけ、ほかのフォルダを argv で渡す', (t) => {
+  const previous = process.env.KIRO_AGENTS_DIR;
+  process.env.KIRO_AGENTS_DIR = path.resolve(__dirname, '../../../agents');
+  t.after(() => {
+    if (previous == null) delete process.env.KIRO_AGENTS_DIR;
+    else process.env.KIRO_AGENTS_DIR = previous;
+  });
   const agentCli = require('../src/main/agentCli');
   const claude = agentCli.load('claude', '');
   const turn = agentCli.turnCmd(claude, { prompt: 'x', extraDirs: ['/src/api', '/src/kb', '/src/api'] });

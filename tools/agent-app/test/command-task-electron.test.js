@@ -113,8 +113,13 @@ test('command task: create, retain selection, edit and run without AI', async (t
     assert.equal(await win.locator('#flow-teach-launch .flow-patterns').count(), 0);
     const flowLayout = await Promise.all(['#flow-teach-save-name', '#flow-teach-purpose', '#flow-teach-launch .task-actions'].map(id => win.locator(id).boundingBox()));
     for (let i = 0; i < taskLayout.length; i++) {
-      for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(taskLayout[i][key] - flowLayout[i][key]) < 2, `creation layout ${i} ${key}`);
+      for (const key of ['x', 'width', 'height']) assert.ok(Math.abs(taskLayout[i][key] - flowLayout[i][key]) < 2, `creation layout ${i} ${key}`);
     }
+    for (const layout of [taskLayout, flowLayout]) {
+      assert.ok(layout[0].y + layout[0].height < layout[1].y, '保存名と依頼欄が重ならない');
+      assert.ok(layout[1].y + layout[1].height < layout[2].y, '依頼欄と操作が重ならない');
+    }
+    assert.equal(await win.locator('#flow-teach-shape').isVisible(), true, 'ワークフローは依頼欄の前に分担の形を選べる');
     await win.click('#flow-teach-manual');
     await panel.locator('[data-flow-save]').waitFor();
     const catalog = await win.evaluate(() => api.automation.flowCatalog());
@@ -135,7 +140,7 @@ test('command task: create, retain selection, edit and run without AI', async (t
   } finally { await electron.close(); }
 });
 
-test('startup restores the workflow creation form before any navigation', async (t) => {
+test('startup restores the workflow entry and can open the creation form', async (t) => {
   const pw = playwright();
   if (!pw?._electron || process.platform !== 'darwin') return t.skip('local Electron test requires Playwright and macOS');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-startup-ui-'));
@@ -146,6 +151,12 @@ test('startup restores the workflow creation form before any navigation', async 
   try {
     const win = await electron.firstWindow();
     await win.waitForFunction(() => typeof document.getElementById('session-new')?.onclick === 'function');
+    await win.locator('#automation-workbench .flow-auto').waitFor();
+    assert.equal(await win.locator('#area-workflows').getAttribute('aria-current'), 'page');
+    assert.equal(await win.locator('#workflows .row-item.active .list-pick .grow > div').first().textContent(), '依頼から実行');
+    await win.locator('#session-new').click();
+    await win.locator('#flow-teach-purpose').waitFor();
+    await win.locator('#automation-workbench .teaching-create h2').waitFor();
     const status = await win.evaluate(() => ({
       title: document.getElementById('automation-workbench').shadowRoot.querySelector('.teaching-create h2')?.textContent,
       visible: window.FlowTeaching.state.visible,

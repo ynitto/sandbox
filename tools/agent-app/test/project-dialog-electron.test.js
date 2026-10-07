@@ -180,7 +180,7 @@ test('project dialog: shared knowledge/work repo, import names, results and runn
       assert.equal(await win.locator('.execution-title').evaluate(n => n.scrollWidth > n.clientWidth), false, 'workflow title fits at ' + width);
     }
     await win.setViewportSize({ width: 1360, height: 900 });
-    assert.equal(await win.locator('.flow-overview h3').first().textContent(), '実行');
+    assert.equal(await win.locator('.flow-overview h3').first().textContent(), '手動実行');
     const runPosition = await win.locator('[data-flow-start]').evaluate(button => {
       const row = button.closest('.run-toolbar').getBoundingClientRect(), b = button.getBoundingClientRect();
       return Math.abs(row.right - b.right);
