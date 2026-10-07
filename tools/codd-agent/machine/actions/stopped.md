@@ -18,3 +18,5 @@ python3 .statemachine/codd/codd.py record
   戻したか（`rollback` を実行したか）をはっきり書く
 - 止まった理由は `.codd/advice.md` にある。続きをやるなら、次の回のやりたいことを 1 行で示す
 - どちらもコミットしていないこと
+
+**応答:** `caveman` の full で短く（利用者が解除したら従う）。待機中の実況はしない。`summary`・`report` の出力と出力形式は省かず、変えない。

@@ -898,6 +898,37 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
         self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
 
+    def test_a_test_failing_before_the_change_is_asked_not_retried(self) -> None:
+        # 変える前から同じところで落ちるテストは、この回の変更のせいではない。エージェントに直させず訊き、
+        # 認めたら同じ失敗だけを通す（新しい失敗は止める）。
+        commit(self.impl, {"check.py": "import sys, pathlib\n"
+                                       "print('FAILED test_old - broken since long ago')\n"
+                                       "if 'return 2' in pathlib.Path('src/app.py').read_text():\n"
+                                       "    print('FAILED test_new - value changed')\n"
+                                       "sys.exit(1)\n"}, "broken test")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.set_config(self.impl, test=[sys.executable, "check.py"])
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変える前から同じところで落ちています", r.stderr)
+        r = self.run_pa(self.impl, "advise")
+        self.assertNotIn("AUTO", r.stdout)
+        self.assertIn("1. 前から落ちていたものとして続ける（勧め） → `APPLY`。先に `python3 .statemachine/codd/codd.py accept`",
+                      r.stdout)
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("変える前から落ちていたものを、利用者が認めて続けた", self.run_pa(self.impl, "report").stdout)
+        # 新しい失敗が混じれば、これまでどおりこの回の失敗として止める（訊かずに直させる側）
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("検査が失敗しました", r.stderr)
+        self.assertNotIn("変える前から同じところで", r.stderr)
+        self.assertEqual(git(self.impl, "worktree", "list").count("\n"), 1)   # 一時的な worktree は残さない
+
     def test_declared_differences_from_the_plan_need_no_replanning(self) -> None:
         commit(self.impl, {"src/other.py": "LEVEL = 1\n", "src/third.py": "X = 1\n"}, "more")
         self.write_plan(PLAN_ALIGNED.replace(

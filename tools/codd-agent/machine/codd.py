@@ -3692,6 +3692,8 @@ def write_baseline(ctx: Ctx) -> None:
     (ctx.data / REPLACED_FILE).unlink(missing_ok=True)
     (ctx.data / GENERATED_FILE).unlink(missing_ok=True)
     (ctx.data / ACCEPTED_NAME).unlink(missing_ok=True)
+    (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
+    (ctx.data / PREEXISTING_OK_NAME).unlink(missing_ok=True)
     shutil.rmtree(ctx.data / "before", ignore_errors=True)
     state = {"plan": plan_rel(ctx), "own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
@@ -3997,6 +3999,86 @@ def run_check(repo: Path, command: list[str] | None, label: str) -> list[str]:
 
 
 _FAILURE_LINE = re.compile(r"^\s*not ok\b|\bFAIL(?:ED)?\b|\bERROR\b|Error:|^panic:|AssertionError|Traceback")
+
+
+# 変える前から落ちていたテスト。テストの失敗は訊かずにやり直す側だが、変える前から同じ失敗なら、エージェントが
+# 計画に無いファイルを直しに行き、計画に無い変更で止まり、やり直しを使い切ってから訊くことになる。
+# 落ちたときだけ、変える前の中身（印の HEAD と、印のときに作業中だったファイル）を一時的な worktree に作って同じ
+# コマンドを動かし、今の失敗の行がすべて変える前にも出ていれば、最初から利用者に訊く。
+PREEXISTING = "変える前から同じところで落ちています"
+PREEXISTING_NAME = "preexisting.json"           # 見つけた前からの失敗（accept で認める）
+PREEXISTING_OK_NAME = "preexisting-ok.json"     # 利用者が認めた前からの失敗
+BEFORE_RUNS_NAME = "before-runs.json"           # 変える前の中身で動かした結果（印とコマンドが同じなら使い回す）
+
+
+def failure_lines(text: str) -> set[str]:
+    """失敗を表す行（数字・時間を除いて比べる）。"""
+    return {re.sub(r"\d+(?:\.\d+)?", "N", ln.strip()) for ln in text.splitlines() if _FAILURE_LINE.search(ln)}
+
+
+def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tuple[int, str] | None:
+    """変える前の中身で argv を動かす。印が無い・worktree を作れないときは None。"""
+    try:
+        before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    snap = before.get("refs", {}).get(key, {}) if key else before.get("own", {})
+    if not snap.get("head"):
+        return None
+    cache_key = hashlib.sha256(json.dumps([key, snap, argv, str(cwd)], sort_keys=True).encode()).hexdigest()
+    try:
+        cache = json.loads((ctx.data / BEFORE_RUNS_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+    if cache_key in cache:
+        return tuple(cache[cache_key])
+    top = repo_root(side.path)
+    tmp = Path(tempfile.mkdtemp(prefix="codd-before-"))
+    tree = tmp / "tree"
+    try:
+        if run(["git", "worktree", "add", "--detach", str(tree), snap["head"]], top, GIT_TIMEOUT)[0] != 0:
+            return None
+        base = side.path.resolve().relative_to(top)
+        for rel, digest in snap.get("files", {}).items():
+            dest = tree / base / rel
+            if digest == "deleted":
+                dest.unlink(missing_ok=True)
+            elif (backup_dir(ctx, key) / rel).is_file():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup_dir(ctx, key) / rel, dest)
+        result = run(argv, tree / cwd.resolve().relative_to(top), CHECK_TIMEOUT)
+    except (ValueError, OSError):
+        return None
+    finally:
+        run(["git", "worktree", "remove", "--force", str(tree)], top, GIT_TIMEOUT)
+        shutil.rmtree(tmp, ignore_errors=True)
+    cache[cache_key] = list(result)
+    (ctx.data / BEFORE_RUNS_NAME).write_text(json.dumps(cache, ensure_ascii=False) + "\n", encoding="utf-8")
+    return result
+
+
+def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, label: str) -> list[str]:
+    """run_check に、変える前から落ちていたかの見分けを足したもの。認めた前からの失敗だけなら通す。"""
+    problems = run_check(cwd, argv, label)
+    if not problems:
+        return []
+    now = failure_lines(problems[0])
+    try:
+        ok = json.loads((ctx.data / PREEXISTING_OK_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        ok = {}
+    if now and now <= set(ok.get(label, [])):
+        print(f"{label}: 変える前から落ちていたもの（利用者が認めた）だけなので、止めません")
+        return []
+    before = run_before(ctx, key, side, cwd, argv)
+    if before is None or before[0] == 0 or not now or not now <= failure_lines(before[1]):
+        return problems
+    found = json.loads((ctx.data / PREEXISTING_NAME).read_text(encoding="utf-8")) \
+        if (ctx.data / PREEXISTING_NAME).is_file() else {}
+    found[label] = sorted(now)
+    (ctx.data / PREEXISTING_NAME).write_text(json.dumps(found, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return [f"{label}: {PREEXISTING}（この回の変更のせいではないので、エージェントに直させずに利用者に確かめます。"
+            f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1]]
 
 
 @dataclass
@@ -4879,14 +4961,15 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。作り直したファイルを控える。
     pre = {key: dirty_files(side) for key, side in all_sides(ctx)}
     before_checks = len(problems)
+    (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
     for name, argv in test_commands(ctx.config.get("test")):
-        problems += run_check(ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
-    problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
+        problems += checked(ctx, "", ctx.own, ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
+    problems += checked(ctx, "", ctx.own, ctx.root, ctx.config.get("check"), SIDES[ctx.side])
     for r in changed:
         # 参照先のテストと検査は、参照先に置いた同じマシンの設定（codd.json の test・check）を使う。
         for name, argv in test_commands(r.test):
-            problems += run_check(r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
-        problems += run_check(r.path, r.check, f"{r.name}（{r.label}）")
+            problems += checked(ctx, r.name, r, r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
+        problems += checked(ctx, r.name, r, r.path, r.check, f"{r.name}（{r.label}）")
     held = protected_in_failures(ctx, problems[before_checks:], approved_changes(ctx, a))
     if held:
         # 訊かずに変え直させると、人の承認が要るファイルを直して、次の検査でまた止まるだけになる
@@ -5063,6 +5146,10 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     if untested:
         # テストのコマンドが無いと、検査はテストを動かさずに通る。「通った」をテストまで通ったと読ませない
         lines.append(f"- テスト: 動かしていない（{'・'.join(untested)}のテストのコマンドが未設定）")
+    known = json.loads((ctx.data / PREEXISTING_OK_NAME).read_text(encoding="utf-8")) \
+        if (ctx.data / PREEXISTING_OK_NAME).is_file() else {}
+    if known:
+        lines.append(f"- テスト: 変える前から落ちていたものを、利用者が認めて続けた（{'・'.join(known)}）")
     lines += ["", f"## 自分（{SIDES[ctx.side]}）  {ctx.root}", ""]
     lines += rows("", own_planned(ctx, a.bodies), a.own_touched)
     for r in ctx.refs:
@@ -5181,6 +5268,7 @@ _KINDS = (
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ", STALE_NAMES)),
     ("rules", "any", ("守る決まり", "従う手順", "手順の文書", "確かめることに答えていません", "スキル・道具", "リポジトリのスキル", "スキルの手順", "スキルを読み込んでいません",
                         "ファイルに決められた手順", "決められた道具を使った記録", "確かめることの根拠に書いたパス")),
+    ("preexisting", "apply", (PREEXISTING,)),
     ("check", "apply", ("検査が失敗しました",)),
     # 人の判断が要る形の指摘（ずれを直すか残すか・目安や書式を変えてよいか）。下の shape の目印
     # （が「なし」です など）にも当たるので、先に form として止める。
@@ -5216,6 +5304,7 @@ OPTIONS = {
     "reapply": ("計画はそのままで、変え直す", "", "APPLY"),
     "keep": ("変えた分は残して、計画を直す", "", "PLAN"),
     "accept": ("足したファイルを認めて続ける", "accept", "APPLY"),
+    "known": ("前から落ちていたものとして続ける", "accept", "APPLY"),
     "reset": ("変えた分を戻して、計画から練り直す", "rollback", "PLAN"),
     "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
 }
@@ -5262,6 +5351,10 @@ ADVICE = {
                       "同じ綴りの別物なら「関係なし」として変え直すかを決めてもらいます"),
         "rules": (["reapply", "stop"], "変えるときのスキル・道具の記録がありません。変えたファイルをスキルの手順で見直し、使って記録します"),
         "check": (["reapply", "reset", "stop"], "検査コマンドが通りません。直して変え直すか、計画から練り直すかを決めてもらいます"),
+        # 変える前から同じところで落ちている。この回で直させると計画に無い変更になるので、訊く
+        "preexisting": (["known", "stop", "keep"],
+                        "変える前から落ちているテストか検査です。この回の変更のせいではありません。前からの失敗として続けるか、"
+                        "やめるか、直すことを計画に足すかを決めてもらいます"),
         "shape": (["reapply", "stop"], "書き方が決まりどおりではありません。書き直します"),
         "form": (["reapply", "reset", "stop"], "変えた結果が計画と合いません"),
         "config": (["reapply", "stop"], "設定か環境の誤りです。利用者に直してもらってから、同じ段をやり直します"),
@@ -5358,10 +5451,24 @@ def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
     if isinstance(a, str):
         print(a, file=sys.stderr)
         return 1
+    found = ctx.data / PREEXISTING_NAME
+    had_preexisting = found.is_file()
+    if had_preexisting:
+        # 変える前から落ちていたテスト・検査を、前からの失敗として認める（同じ失敗の行だけ。新しい失敗は止める）
+        known_file = ctx.data / PREEXISTING_OK_NAME
+        known = json.loads(known_file.read_text(encoding="utf-8")) if known_file.is_file() else {}
+        add = json.loads(found.read_text(encoding="utf-8"))
+        for label, lines in add.items():
+            known[label] = sorted(set(known.get(label, [])) | set(lines))
+        known_file.write_text(json.dumps(known, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        found.unlink()
+        print("変える前から落ちていたものとして認めました（同じ失敗だけを通し、新しい失敗は止めます）: " + "、".join(add))
     dev, ok = deviations(ctx), accepted(ctx)
     new = sorted((k, rel) for k, files in {"": a.own_touched, **a.touched}.items() for rel in files
                  if dev.reason_added(k, rel) and (k, rel) not in ok and not in_plan_text(ctx, rel))
     if not new:
+        if had_preexisting:
+            return 0
         print("認めるものはありません（計画で挙げていないファイルを、理由付きで足したものがありません）")
         return 0
     (ctx.data / ACCEPTED_NAME).write_text(json.dumps(sorted(ok | set(new)), ensure_ascii=False) + "\n", encoding="utf-8")
@@ -5837,7 +5944,7 @@ def build_parser() -> argparse.ArgumentParser:
     gd.add_argument("name", nargs="+", help="`skill:名前`・スキルの名前・`[参照先の名前:]パス[#見出し]`")
     sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
     sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
-    sub.add_parser("accept", help="変える段で計画に無いファイルを理由付きで足した分を、利用者が認めたと控える")
+    sub.add_parser("accept", help="変える段で計画に無いファイルを理由付きで足した分か、変える前から落ちていたテストを、利用者が認めたと控える")
     sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
     ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
     ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")

@@ -99,6 +99,12 @@ class ReplayFindingsTest(unittest.TestCase):
         self.assertTrue(asks("apply", codd.STALE_UNPLANNED + "（…）: `hello` — docs/api.md:3"))
         self.assertFalse(asks("apply", codd.STALE_NAMES + "（…）: `hello` — docs/api.md:3"))
 
+    def test_a_failure_from_before_the_change_is_asked(self) -> None:
+        # 変える前から同じところで落ちるテストは、この回で直させない（計画に無い変更になる）
+        text = "実装のテスト: " + codd.PREEXISTING + "（…）\nFAILED test_old"
+        self.assertEqual(codd.classify("apply", text), "preexisting")
+        self.assertTrue(asks("apply", text))
+
     def test_the_same_problems_again_are_asked_even_with_retries_left(self) -> None:
         # 訊かずにやり直しても同じ指摘が残るなら、エージェントには直せない。回数が残っていても訊く
         import tempfile
