@@ -1189,6 +1189,61 @@ class ChecklistTests(Base):
         self.assertEqual([c.value for c in ws[7]], ["X", None, 3, "式", 50, None])
         self.assertEqual((ws["B3"].value, ws["B4"].value), ("新顧客", None))
 
+    def build_defaults(self, wb):
+        ws = wb.create_sheet("記録")
+        for i, h in enumerate(["No", "項目", "備考", None, "済"], 1):
+            cell = ws.cell(1, i, h)
+            cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), HEAD_FILL, BOX
+        for r, row in enumerate([(1, "起動", "-", "×", "×"), (2, "停止", "-", "×", "○"),
+                                 (3, None, "-", "×", "×"), (4, None, "-", "×", "×")], 2):
+            for i, v in enumerate(row, 1):
+                ws.cell(r, i, v).border = BOX
+        ws["A7"], ws["B7"] = "担当", "佐藤"
+
+    def test_empty_rows_and_columns_are_judged_after_dropping_defaults(self):
+        tpl = self.checklist(self.build_defaults)
+        d = xt.analyze(tpl)
+        sheet = next(s for s in d["sheets"] if s["name"] == "記録")
+        t = sheet["tables"][0]
+        cols = t["columns"]
+        self.assertEqual(cols["A"]["key"], "$index")
+        self.assertEqual((cols["C"]["key"], cols["C"]["_sample"]), ("備考", None))   # - だけの列は、空の記入欄
+        self.assertTrue(cols["D"]["keep"])          # 見出しが無く × だけの列は余白。データに入れない
+        self.assertNotIn("key", cols["D"])
+        self.assertEqual(cols["E"]["map"], {True: "○", False: "×"})
+        self.assertTrue(any("4, 5 行目は既定値" in c for c in t["needs_confirm"]))
+        self.assertEqual(xt.skeleton_data(d), {"items": [{"項目": None, "備考": None, "済": None}], "担当": None})
+
+        # テンプレート（記入例）から取り出すと、連番と × だけの行は書かない
+        data, notes = xt.extract(tpl, d, tpl)
+        self.assertEqual(data, {"items": [{"項目": "起動", "備考": None, "済": False},
+                                          {"項目": "停止", "備考": None, "済": True}], "担当": "佐藤"})
+        self.assertIn("空の行 4, 5", notes[0])
+
+        # 流し込んだ文書から取り出すと、同じデータに戻る（表が縮んで下へずれた欄も追う）
+        want = {"items": [{"項目": "A", "備考": "要確認", "済": True}, {"項目": None, "備考": None, "済": True},
+                          {"項目": "C", "備考": None, "済": False}], "担当": "鈴木"}
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, d, dict(want, items=want["items"] + [{"項目": None, "備考": None, "済": None}]), out)
+        self.assertEqual(xt.extract(out, d, tpl)[0], want)
+
+    def test_extract_reads_choices_and_dates_back(self):
+        tpl = self.checklist(self.build_readable)
+        d = json.loads(json.dumps(xt.analyze(tpl)))
+        items = [{"項目": "起動", "判定": "合格", "対象OS": ["Windows", "macOS"], "実施日": "2026-10-08", "要再試": None},
+                 {"項目": "停止", "判定": "不合格", "対象OS": ["Linux"], "実施日": "2026-10-09", "要再試": True},
+                 {"項目": "再起動", "判定": None, "対象OS": [], "実施日": None, "要再試": None}]
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, d, {"items": items}, out)
+        self.assertEqual(xt.extract(out, d, tpl)[0], {"items": items})
+        defn = os.path.join(self.dir, "d.json")
+        xt.dump_structured(d, defn)
+        script = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
+        ret = subprocess.run([sys.executable, script, "extract", out, "--def", defn],
+                             capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(ret.returncode, 0, ret.stderr)
+        self.assertEqual(json.loads(ret.stdout), {"items": items})
+
     def test_tables_on_several_tabs_get_separate_data_keys(self):
         def build(wb):
             for name in ("ログイン", "検索"):

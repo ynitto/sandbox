@@ -2,7 +2,7 @@
 name: xlsx-report-builder
 description: JSON スペックから Excel (.xlsx) 帳票・レポートを新規生成するスキル。既存の .xlsx テンプレートに、罫線・フォント・セル色などの書式を保ったままデータを流し込む（行数が可変の表・数式の複製・合計行のずれに対応）こともできる。「Excelを作って」「エクセルで帳票を作って」「xlsxを生成して」「集計表を作って」「売上レポートをExcelで」「スプレッドシートを出力して」「データをExcelにまとめて」「Excelのテンプレートにデータを流し込んで」「テンプレートの書式を保ったままxlsxを作って」などのリクエストで発動する。複数シート・見出し装飾・数値書式・合計行・条件付き書式・グラフ・フリーズペイン・オートフィルタに対応する。
 metadata:
-  version: 1.4.0
+  version: 1.5.0
   tier: experimental
   category: document
   tags:
@@ -154,7 +154,7 @@ uv run python scripts/xlsx_builder.py analyze path/to/template.xlsx -o def.yaml 
 - **データに書くのは、文書ごとに変わる値だけ**。次はデータに書かない。`analyze` は機械的に分かるものを下書きに入れ、`needs_confirm` に挙げる。意味で決まるもの（会社名・発行元のように毎回同じ値、人が手で書く欄）は、下書きを読んで直す
   - 毎回同じ値（どの行も `式`・`円` の列、発行元の会社名）→ 残す（列は `keep: true`、固定セルは `keep`）
   - 人が書き込む欄（押印・署名・承認・確認者・手書きの欄）→ データに入れない。前の値があれば `clear`（列は `clear: true`）
-  - 体裁の余白（見出しも値も無い列・空行）→ 定義にもデータにも入れない
+  - 体裁の余白（見出しも値も無い列・空行）→ 定義にもデータにも入れない。空かどうかは、**既定値を除いてから**判定する。既定値は、連番・`×` や `-` の印・どの行も同じ値・数式。見出しが無く `×` だけの列は余白（印は書式として残す）。連番と `×` だけの行は、記入例ではなく空の行
 - **表の見た目に頼る値は、データで意味の分かる形にする**。○× の列（択一・複数選択）、1 列の ○、年・月・日に分かれた日付、コードは、データでは `判定: 合格`・`対象OS: [Windows, Linux]`・`要再試: true`・`実施日: 2026-10-08`・`優先度: 高` と書き、変換は定義（`when` / `map` / `part`）に任せる。`analyze` が見つけたものは `needs_confirm` に挙がる。詳細は [references/template.md](references/template.md) の「表の見た目に頼る値」
 - **空欄の記入枠も、キーを残す**。今は空でも、次の文書では入れる欄。`analyze` は、ラベルの右隣のセルを、空欄でも `cells` に入れる。消さない
 - 同じ書式が並び、値が連番や例に見える行 → **繰り返す**。縞模様なら `pattern` に周期の行を並べる。1 件が 2 行以上（明細 + 備考など）なら `block_rows` を使う
@@ -189,6 +189,12 @@ uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレー�
 
 ```bash
 uv run python scripts/xlsx_builder.py render --def def.yaml --data data.yaml -o out.xlsx
+```
+
+記入済みの文書（前の案件の成果物・以前に `render` した文書）からデータを起こすなら、`extract` で取り出してから直す。`○`・年月日の列は `判定: 合格`・`実施日: 2026-10-08` の形に戻る。既定値だけの空の行は書かない。どの行も空の欄も、記入枠としてキーを残す。
+
+```bash
+uv run python scripts/xlsx_builder.py extract filled.xlsx --def def.yaml -o data.yaml
 ```
 
 テンプレートは定義の `template`（定義ファイルのある場所からの相対パス。`analyze` がそう書く）から読む。別のパスなら `--template` で上書きする。列の key がデータのどの行にも無いと、その列は空欄になり、警告が出る（綴りの違いを疑う）。定義ファイルとデータは、JSON でも YAML（`.yaml` / `.yml`）でもよい。`analyze -o def.yaml` のように、出力の拡張子で形式を選べる。
@@ -238,6 +244,7 @@ uv run python scripts/xlsx_builder.py export --from-script render_invoice.py --d
 | `analyze <template.xlsx>` | 表の自動検出による、定義の下書きを書く（確定ではない） | `-o def.yaml`（拡張子で JSON / YAML を選ぶ） |
 | `check --def <def>` | 定義の整合と、テンプレートの値の残り（`strict`）を検査する | `--template` |
 | `render --def <def> --data <data> -o <out.xlsx>` | テンプレート + 定義 + データから再構成する | `--template`、`--data -`（標準入力） |
+| `extract <filled.xlsx> --def <def>` | 記入済みの文書から、定義に沿ってデータを取り出す（`render` の逆） | `-o data.yaml`（省略時は標準出力に JSON）、`--template` |
 | `export --def <def> -o <render.py>` | 定義を埋め込んだ、単体で動く専用スクリプトを書き出す | `--embed`、`--template`、`--from-script <旧.py>`（改修・エンジン更新） |
 | `build --spec <spec.json>` | テンプレート無しで、JSON スペックから新規生成する | stdin も可 |
 | `example` | `build` のサンプルスペックを出す | — |

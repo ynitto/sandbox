@@ -543,6 +543,7 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
         if t["period"] and t["period"] > 1:
             confirm.append(f"サンプル行の書式が {t['period']} 行周期（縞模様）。pattern の行を順に繰り返す")
         cols_def = {}
+        filled = _filled_rows(grid, t)
         for c in range(t["lo"], t["hi"] + 1):
             letter = get_column_letter(c)
             head = grid[t["header_row"]].get(c)
@@ -557,8 +558,12 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
                     if cell and cell["formula"] and not _only_inside(cell["formula"], t, c):
                         confirm.append(f"{cell['ref']} の数式が表の外の行を相対参照している。固定するなら $ を付ける")
                         break
-            elif not (head and head["value"] is not None) and not [s for s in samples if s["value"] is not None]:
-                continue   # 見出しも値も無い列は、体裁の余白。データにも定義にも入れない
+            elif not (head and head["value"] is not None) and all(_blankish(s["value"]) for s in samples):
+                if not [s for s in samples if s["value"] is not None]:
+                    continue   # 見出しも値も無い列は、体裁の余白。データにも定義にも入れない
+                spec["keep"] = True   # 見出しが無く、× や - の既定の印だけの列も余白。印は書式としてそのまま残す
+                spec["_sample"] = next(s["value"] for s in samples if s["value"] is not None)
+                confirm.append(f"{letter}列は見出しが無く {spec['_sample']!r} だけなので、余白として残す（データには書かない）")
             elif head and isinstance(head["value"], str) and HUMAN_RE.search(head["value"]):
                 spec["clear"] = True   # 押印・署名など、人が書き込む欄。データに入れず、空欄で出す
                 confirm.append(f"{letter}列「{head['value']}」は人が書き込む欄として、データに入れず空欄で出す")
@@ -571,11 +576,17 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
                 spec["_sample"] = 1
             else:
                 spec["key"] = _unique_key(spec["header"], letter, cols_def)
-                spec["_sample"] = next((s["value"] for s in samples if s["value"] is not None), None)
+                # 例の値は、既定値（連番・× など）だけの空行を除いた行から取る
+                spec["_sample"] = next((grid[r][c]["value"] for r in filled
+                                        if c in grid[r] and not _blankish(grid[r][c]["value"])), None)
             if samples:
                 spec["_format"] = styles.code.get(int(samples[0]["s"]), "General")
             cols_def[letter] = spec
         _readable_columns(cols_def, t, grid, _merge_origins(root), confirm)
+        empty = [r for r in t["body"] if r not in filled]
+        if empty and len(filled) < len(t["body"]):
+            confirm.append(f"{', '.join(map(str, empty))} 行目は既定値（連番・× など）だけの空行。"
+                           "記入例の行数に数えるだけで、データには書かない")
         covered.update(t["body"])
         heads.add(t["header_row"])
         above = grid.get(t["header_row"] - 1, {})
@@ -635,6 +646,31 @@ def _constant(samples: list[dict], n_rows: int) -> bool:
         and len(set(vals)) == 1 and vals[0].strip() not in MARK_ON + MARK_OFF and not PLACEHOLDER_RE.search(vals[0])
 
 
+def _blankish(value) -> bool:
+    """空欄、または × や - の「選ばれていない」既定の印。データとしては空と同じ。"""
+    return value is None or isinstance(value, str) and (not value.strip() or value.strip() in MARK_OFF)
+
+
+def _filled_rows(grid, t: dict) -> list[int]:
+    """表のサンプル行のうち、既定値を除いても値がある行。
+
+    連番の列・数式の列・どの行も同じ値の列（円・式など）と、× や - の印は、どの行にも最初から入っている既定値。
+    それらを除いてから空かを判定する（連番と × だけの行は、記入例ではなく空の行）。
+    すべての行が空なら、すべての行を返す。
+    """
+    body = t["body"]
+    skip = set()
+    for c in range(t["lo"], t["hi"] + 1):
+        samples = [grid[r][c] for r in body if c in grid[r]]
+        vals = [s["value"] for s in samples]
+        if any(s["formula"] for s in samples) or _constant(samples, len(body)) \
+                or len(vals) == len(body) and vals == list(range(1, len(body) + 1)):
+            skip.add(c)
+    filled = [r for r in body
+              if any(not _blankish(i["value"]) for c, i in grid[r].items() if t["lo"] <= c <= t["hi"] and c not in skip)]
+    return filled or list(body)
+
+
 def _merge_origins(root) -> dict[tuple[int, int], tuple[int, int]]:
     """結合範囲の各セル（列, 行）→ 左上のセル。"""
     origin: dict[tuple[int, int], tuple[int, int]] = {}
@@ -648,6 +684,8 @@ def _merge_origins(root) -> dict[tuple[int, int], tuple[int, int]]:
 
 MARK_ON = ("○", "◯", "〇", "●", "◎", "✓", "✔", "レ", "☑", "■")
 MARK_OFF = ("×", "✕", "✖", "☐", "□", "-", "－", "ー", "―")
+DASHES = ("-", "－", "ー", "―")      # 「なし」の意味の横棒。印の列とは限らない（備考の - など）
+MARK_PAIR = {"☐": "☑", "□": "■"}  # × や □ だけの列で、選ばれたときの印
 DATE_HEADS = {"年": "year", "月": "month", "日": "day", "時": "hour", "分": "minute"}
 
 
@@ -695,10 +733,12 @@ def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> N
     for c in plain:
         vals = [text(r, c) for r in t["body"]]
         hit = [v for v in vals if v]
-        if hit and all(v in MARK_ON + MARK_OFF for v in hit) and any(v in MARK_ON for v in hit):
-            marks[c] = vals
-        elif not hit:
-            blank.add(c)   # サンプルが空の列も、印の列と同じまとまりの中なら選択肢にする
+        if hit and all(v in MARK_ON + MARK_OFF for v in hit) and (any(v in MARK_ON for v in hit)
+                                                                    or not set(hit) & set(DASHES)):
+            marks[c] = vals   # ○ がある列と、× や □ だけの列（どれも選ばれていない記入例）
+        elif all(v in DASHES for v in hit):
+            blank.add(c)   # 空か - だけの列は、空と同じ。印の列と同じまとまりの中なら選択肢にする
+            plain[c]["_sample"] = None
     groups = []
     for run in runs(set(marks) | blank):
         if group_head(run):
@@ -710,8 +750,8 @@ def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> N
             marks.setdefault(c, [None] * len(t["body"]))
         letters = [get_column_letter(c) for c in run]
         cells = [v for c in run for v in marks[c] if v]
-        on = max((m for m in MARK_ON if m in cells), key=cells.count)
         off = max((m for m in MARK_OFF if m in cells), key=cells.count, default=None)
+        on = max((m for m in MARK_ON if m in cells), key=cells.count, default=MARK_PAIR.get(off, "○"))
         heads = [str(plain[c].get("header") or get_column_letter(c)) for c in run]
         if len(run) == 1:
             spec = plain[run[0]]
@@ -2021,6 +2061,139 @@ def _as_lists(obj: Any) -> Any:
     return obj
 
 
+def _read_back(items: list) -> dict:
+    """（列・セルの指定, セルの値）の組から、データの値に戻す。convert_value の逆。
+
+    択一・複数選択は選ばれた見出しの配列で返す（1 つにするかは呼び出し側が決める）。
+    × や - の「選ばれていない」印は、空（null）として読む。
+    """
+    out: dict = {}
+    picks: dict = {}
+    parts: dict = {}
+    for spec, v in items:
+        key = spec["key"]
+        out.setdefault(key, None)   # 列の順に並べる
+        if isinstance(v, str):
+            v = v.strip() or None
+        if "when" in spec:
+            got = picks.setdefault(key, [])
+            if v is not None and str(v) == str(spec.get("mark", "○")):
+                got.append(spec["when"])
+        elif "map" in spec:
+            back = {str(m): ({"true": True, "false": False}.get(k, k) if isinstance(k, str) else k)
+                    for k, m in spec["map"].items() if m is not None}
+            out[key] = None if v is None else back.get(str(v), v)
+        elif "part" in spec:
+            parts.setdefault(key, {})[spec["part"]] = v
+        else:
+            out[key] = None if _blankish(v) else v
+    out.update(picks)
+    for key, p in parts.items():
+        try:
+            d = dt.datetime(int(p["year"]), int(p.get("month") or 1), int(p.get("day") or 1),
+                            int(p.get("hour") or 0), int(p.get("minute") or 0))
+            out[key] = d.date().isoformat() if not {"hour", "minute"} & set(p) else d.isoformat(sep=" ", timespec="minutes")
+        except (KeyError, TypeError, ValueError):
+            out[key] = None
+    return out
+
+
+def _settle_choices(records: list[dict], specs: list[dict]) -> None:
+    """択一は見出し 1 つ（選ばれていなければ null）、どこかの行で 2 つ以上選ばれていれば配列にそろえる。"""
+    for key in {s["key"] for s in specs if "when" in s}:
+        multi = any(len(r.get(key) or []) > 1 for r in records)
+        for r in records:
+            got = r.get(key) or []
+            r[key] = got if multi else (got[0] if got else None)
+
+
+def _is_empty_record(values: dict) -> bool:
+    """既定値（null・false・選ばれていない []）しか無い行。連番・定数・数式の列は、はじめから数えない。"""
+    return all(v is None or v is False or v == [] for v in values.values())
+
+
+def _to_data(flat: dict) -> dict:
+    out: dict = {}
+    for k, v in flat.items():
+        _set_path(out, k, v)
+    return _as_lists(out)
+
+
+def extract(source: "str | bytes", definition: dict, template: "str | bytes | None" = None) -> tuple[dict, list[str]]:
+    """記入済みの文書（テンプレートと同じ形）から、定義に沿ってデータを取り出す。render の逆。
+
+    データに書くのは、定義で key を持つ欄だけ（連番・定数・数式・人が書き込む欄は書かない）。
+    表の行は、既定値（連番・× など）を除いて値が無ければ空の行として書かない。
+    欄（key）は、どの行も空でも記入枠として残す。
+    """
+    pkg = Package(source)
+    sst = read_shared_strings(pkg)
+    styles = Styles(pkg)
+    sheet_parts = dict(pkg.sheets())
+    tpl_grids: dict = {}
+    if template is not None:
+        tpkg = Package(template)
+        tsst, tstyles = read_shared_strings(tpkg), Styles(tpkg)
+        tpl_grids = {n: _grid(tpkg.xml(pt), tsst, tstyles) for n, pt in tpkg.sheets()}
+    flat: dict = {}
+    notes: list[str] = []
+    for sd in definition.get("sheets", []):
+        name = sd["name"]
+        if name not in sheet_parts:
+            raise TemplateError(f"文書にシート「{name}」がありません")
+        grid = _grid(pkg.xml(sheet_parts[name]), sst, styles)
+        tgrid = tpl_grids.get(name, {})
+        shifts: list[tuple[int, int]] = []   # (テンプレートの表の最後の行, 文書で増えた行数)
+        offset = 0
+        for t in sorted(sd.get("tables", []), key=lambda x: int(x["first_row"])):
+            first, count = int(t["first_row"]), int(t["sample_rows"])
+            k = int(t.get("block_rows", 1))
+            colmaps = _column_maps(t, k)
+            used_cols = {c for cm in colmaps for c in cm}
+            # 表の後ろの行（テンプレートで表のすぐ下にある見出し・ラベル）に来たら、表は終わり
+            after = {c: i["value"] for c, i in tgrid.get(first + count, {}).items()
+                     if isinstance(i["value"], str) and i["value"].strip()}
+            records, empty = [], []
+            r = first + offset
+            while True:
+                rows = [grid.get(r + j) for j in range(k)]
+                head = rows[0]
+                if head is None or _is_total_row(head) or not any(c in head for c in used_cols) \
+                        or after and all(head.get(c, {}).get("value") == v for c, v in after.items()):
+                    break
+                items = []
+                for j, cm in enumerate(colmaps):
+                    for col, spec in cm.items():
+                        if spec.get("formula") or spec.get("keep") or spec.get("clear") \
+                                or not spec.get("key") or spec["key"] == "$index":
+                            continue
+                        items.append((spec, (rows[j] or {}).get(col, {}).get("value")))
+                values = _read_back(items)
+                (empty.append(r) if _is_empty_record(values) else records.append(values))
+                r += k
+            specs = [spec for cm in colmaps for spec in cm.values() if spec.get("key") and spec["key"] != "$index"]
+            _settle_choices(records, specs)
+            flat[t["key"]] = [_to_data(rec) for rec in records]
+            if empty:
+                notes.append(f"シート「{name}」表 {t.get('id')}: 既定値だけの空の行 {', '.join(map(str, empty))} は書きませんでした")
+            grown = (r - first - offset) - count
+            shifts.append((first + count - 1, grown))
+            offset += grown
+        cell_items: dict = {}
+        for ref, spec in (sd.get("cells") or {}).items():
+            spec = spec if isinstance(spec, dict) else {"key": spec}
+            c, row = split_ref(ref)
+            row += sum(g for end, g in shifts if row > end)   # 表の行数が変わった分、下の欄がずれる
+            cell_items.setdefault(spec["key"], []).append((spec, grid.get(row, {}).get(c, {}).get("value")))
+        for key, items in cell_items.items():
+            values = _read_back(items)
+            if "when" in items[0][0]:
+                got = values[key]
+                values[key] = got if len(got) > 1 else (got[0] if got else None)
+            flat.update(values)
+    return _to_data(flat), notes
+
+
 def validate_definition(template: "str | bytes", definition: dict) -> None:
     """テンプレートと定義の整合（シート・行・列）を確かめる。"""
     if definition.get("version") != DEF_VERSION:
@@ -2303,6 +2476,24 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_extract(args) -> int:
+    definition = load_structured(args.definition)
+    try:
+        template = _template_arg(args, definition)
+    except TemplateError:
+        template = None
+    data, notes = extract(args.source, definition, template if template and os.path.exists(template) else None)
+    for n in notes:
+        print(n, file=sys.stderr)
+    if args.output:
+        dump_structured(data, args.output)
+        print(f"取り出しました: {args.output}")
+    else:
+        json.dump(data, sys.stdout, ensure_ascii=False, indent=2, default=str)
+        print()
+    return 0
+
+
 def add_subcommands(sub) -> None:
     a = sub.add_parser("analyze", help="テンプレートを解析して表構造の定義ファイル（下書き）を作る")
     a.add_argument("template", help="テンプレート .xlsx")
@@ -2330,6 +2521,12 @@ def add_subcommands(sub) -> None:
     e.add_argument("-o", "--output", required=True, help="書き出す .py")
     e.add_argument("--embed", action="store_true", help="テンプレートもスクリプトに埋め込む（既定は別ファイルを相対パスで参照）")
     e.set_defaults(func=cmd_export)
+    x = sub.add_parser("extract", help="記入済みの文書から、定義に沿ってデータ（.json / .yaml）を取り出す（render の逆）")
+    x.add_argument("source", help="記入済みの .xlsx（テンプレートと同じ形の文書）")
+    x.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
+    x.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template。表の終わりを見分けるのに使う）")
+    x.add_argument("-o", "--output", help="データの出力先（.json / .yaml。省略時は標準出力に JSON）")
+    x.set_defaults(func=cmd_extract)
 
 
 def main() -> int:
