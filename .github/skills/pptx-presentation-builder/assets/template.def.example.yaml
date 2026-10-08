@@ -1,0 +1,125 @@
+version: 1
+template: 報告.pptx
+strict: true
+properties:
+  scrub: true
+slides:
+- id: s1
+  slide: 1
+  key: s1
+  texts:
+    Title 1:
+      key: title
+      max_chars: 23
+    Subtitle 2:
+      key: subtitle
+      max_chars: 17
+- id: s2
+  slide: 2
+  key: s2
+  texts:
+    Title 1:
+      key: title
+      max_chars: 6
+  lists:
+    Content Placeholder 2:
+      key: points
+      max_items: 3
+      max_chars: 18
+- id: s3
+  slide: 3
+  key: s3
+  texts:
+    Title 1:
+      key: title
+      max_chars: 8
+    目的:
+      key: 目的
+      max_chars: 17
+  keep:
+  - 目的ラベル
+  repeat: true
+- id: s4
+  slide: 4
+  drop: true
+- id: s5
+  slide: 5
+  key: s5
+  texts:
+    Title 1:
+      key: title
+      max_chars: 7
+  diagrams:
+  - id: flow1
+    key: flow1
+    axis: x
+    items:
+    - - ステップ 1
+      - 番号 1
+    - - ステップ 2
+      - 番号 2
+    - - ステップ 3
+      - 番号 3
+    connectors:
+    - 矢印 1
+    - 矢印 2
+    fields:
+      番号 1:
+        key: $index
+      ステップ 1:
+        key: label
+        max_chars: 6
+    align: center
+    max_items: 4
+- id: s6
+  slide: 6
+  key: s6
+  texts:
+    Title 1:
+      key: title
+      max_chars: 9
+  tables:
+  - shape: 状況表
+    key: rows
+    header_rows: 1
+    footer_rows: 0
+    columns:
+    - key: 作業
+      header: 作業
+      max_chars: 10
+    - key: 担当
+      header: 担当
+      max_chars: 6
+    - key: 完了
+      map:
+        true: ○
+        false: ×
+      header: 完了
+    - clear: true
+      header: 確認印
+    max_rows: 10
+  clear:
+  - 注記
+- id: s7
+  slide: 7
+  key: s7
+  texts:
+    Title 1:
+      key: title
+      max_chars: 9
+  tables:
+  - shape: 案内表
+    cells:
+      1,2:
+        key: 日時
+        max_chars: 24
+      2,2:
+        key: 場所
+        max_chars: 9
+needs_confirm:
+- スライド 3〜4 は同じ形。スライド 3 を見本に、データの件数だけ繰り返す（`s3` は配列）。スライド 4〜4 はサンプルとして取り除く
+- 'スライド 5: 図の並び（横に 3 つ・つなぎ 2 本）を `flow1` として繰り返す。最大 4 つ。1 つずつの図形・矢印はテンプレートのものを複製する'
+- 'スライド 6「状況表」: 列「完了」は ○ の印の列。データは true / false で書く'
+- 'スライド 6「注記」: 書き方の注記（※ 記入例です。実際の作業に置き換える）と見て clear にした'
+- 'スライド 7「案内表」: 2 列の表を、左の列を見出しにした記入欄（行は増やさない）と見た。行を繰り返す表なら key と columns に直す'
+- 'スライド 2: ノートがある。properties.scrub で消える。残すなら notes にキーを書く'

@@ -1,0 +1,10 @@
+[project]
+name = "pptx-presentation-builder"
+version = "1.0.0"
+description = "PowerPoint (.pptx) のテンプレートへ、スライドのスタイルと図形を保ったまま内容を流し込むスキル"
+requires-python = ">=3.10"
+dependencies = [
+    "lxml>=6.1.3",
+    "python-pptx>=1.0.2",
+    "pyyaml>=6.0.3",
+]
