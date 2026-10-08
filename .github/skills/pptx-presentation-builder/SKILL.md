@@ -179,6 +179,8 @@ uv run render_report.py --data data.yaml -o out.pptx   # PEP 723 で依存（lxm
 
 テストの実行: `uv run python -m unittest discover -s tests -v`
 
+具体的な資料で依頼から出来上がりまでを通すシナリオは [tests/scenarios/](tests/scenarios/README.md) にある。エージェントに「このシナリオを再生して」と頼んで回す。
+
 ## フローの詳細: 新規生成（#6）
 
 1. 内容と構成を確認する。数値・事実は捏造しない
