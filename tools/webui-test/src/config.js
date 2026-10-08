@@ -66,11 +66,18 @@ function normalizeServe(raw, where, dir, baseUrl, errors) {
   if (!isPlainObject(s)) { errors.push(`${where}: 起動のコマンド（文字列）か { command, url } を書きます`); return null; }
   unknownKeys(s, SERVE_KEYS, where, errors);
   if (typeof s.command !== 'string' || !s.command.trim()) errors.push(`${where}.command: 起動のコマンドを書きます（例: npm start）`);
-  const url = s.url || baseUrl;
+  if (s.url !== undefined && (typeof s.url !== 'string' || !s.url.trim())) {
+    errors.push(`${where}.url: URL を文字列で書きます`);
+  }
+  if (s.cwd !== undefined && (typeof s.cwd !== 'string' || !s.cwd.trim())) {
+    errors.push(`${where}.cwd: 作業フォルダのパスを文字列で書きます`);
+  }
+  const url = typeof s.url === 'string' && s.url.trim() ? s.url : baseUrl;
   if (!url) errors.push(`${where}.url: 起動したことを確かめる URL を書きます（baseUrl があれば省略可）`);
   if (s.env !== undefined && !isPlainObject(s.env)) errors.push(`${where}.env: 環境変数の対応を書きます`);
   if (s.timeout !== undefined && !(Number.isFinite(s.timeout) && s.timeout > 0)) errors.push(`${where}.timeout: 待つミリ秒を数で書きます`);
-  return { command: s.command, url, cwd: path.resolve(dir, s.cwd || '.'), env: s.env || {}, timeout: s.timeout || 60000 };
+  const cwd = typeof s.cwd === 'string' && s.cwd.trim() ? s.cwd : '.';
+  return { command: s.command, url, cwd: path.resolve(dir, cwd), env: s.env || {}, timeout: s.timeout || 60000 };
 }
 
 function normalizeCheck(raw, dir, errors) {
@@ -114,7 +121,13 @@ function loadEnv({ configPath, envName, cwd } = {}) {
   if (!isPlainObject(raw)) throw new Error(`${file}: 環境「${name}」がありません（あるのは ${Object.keys(data.envs).join(', ')}）`);
   unknownKeys(raw, ENV_KEYS, `${file}: envs.${name}`, errors);
   const settings = expandVars(raw, `envs.${name}`, errors);
-  if (settings.storageState) settings.storageState = path.resolve(dir, settings.storageState);
+  if (settings.storageState !== undefined) {
+    if (typeof settings.storageState !== 'string' || !settings.storageState.trim()) {
+      errors.push(`envs.${name}.storageState: 保存済み認証状態のファイルパスを文字列で書きます`);
+    } else {
+      settings.storageState = path.resolve(dir, settings.storageState);
+    }
+  }
   // 起動は環境ごとの serve が優先（serve: false で起動しない）。全体の serve は、接続先が無いか、
   // 接続先が serve の URL と同じ origin の環境にだけ効く（検証環境を動かすときにローカルを起動しない）。
   const own = settings.serve !== undefined;
