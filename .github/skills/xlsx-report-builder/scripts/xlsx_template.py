@@ -255,6 +255,20 @@ class RowMap:
                     return self.new_last(t)
         return r + self.shift_before(r)
 
+    def map_span(self, r1: int, r2: int) -> "tuple[int, int] | None":
+        """範囲の行 r1..r2 を新しい行に写す。表の残らない行（縮めた・取り除いた分）は、表の新しい範囲に寄せる。
+        範囲がすべて消えるなら None（縮めた表で、先頭と末尾が逆転した範囲を作らない）。"""
+        def one(r: int, is_end: bool) -> int:
+            for t in self.tables:
+                if t["first"] <= r <= t["end"]:
+                    new_first = t["first"] + self.shift_before(t["first"])
+                    if is_end and (r == t["end"] or r - t["first"] >= t["n"]):
+                        return new_first + t["n"] - 1
+                    return new_first + min(r - t["first"], t["n"])
+            return r + self.shift_before(r)
+        a, b = one(r1, False), one(r2, True)
+        return (a, b) if a <= b else None
+
 
 class Rewriter:
     """数式・範囲文字列中の行参照を RowMap で書き換える。他シートの参照はそのシートの RowMap を使う。"""
@@ -322,8 +336,10 @@ class Rewriter:
                 continue
             first = REF_PART_RE.match(parts[0].replace("$", ""))
             last = REF_PART_RE.match(parts[-1].replace("$", ""))
-            a = f"{first.group(2)}{rowmap.map(int(first.group(4)), False)}"
-            b = f"{last.group(2)}{rowmap.map(int(last.group(4)), True)}"
+            span = rowmap.map_span(int(first.group(4)), int(last.group(4)))
+            if span is None:
+                continue   # 範囲の行がすべて消えた
+            a, b = f"{first.group(2)}{span[0]}", f"{last.group(2)}{span[1]}"
             out.append(a if a == b else f"{a}:{b}")
         return " ".join(out)
 
@@ -1036,9 +1052,11 @@ def _missing_key_warnings(t: dict, block: int, rows: list, sheet: str) -> list[s
     wanted = [spec["key"] for cols in _column_maps(t, block) for spec in cols.values()
               if spec.get("key") and spec["key"] != "$index" and not spec.get("formula")
               and not spec.get("keep") and not spec.get("clear")]
-    present = {k for r in records for k in r}
-    missing = [k for k in dict.fromkeys(wanted) if k not in present]
-    unused = [k for k in dict.fromkeys(k for r in records for k in r) if k not in wanted]
+    def found(k: str) -> bool:
+        return any(k in r or _row_value(r, k) is not None for r in records)
+    missing = [k for k in dict.fromkeys(wanted) if not found(k)]
+    heads = {k.split(".")[0] for k in wanted} | set(wanted)
+    unused = [k for k in dict.fromkeys(k for r in records for k in r) if k not in heads]
     # 空欄がふつうの列（備考など）もあるので、綴り違いの手がかり（使われていないキー）があるか、どの key も当たらないときだけ
     if not missing or not unused and len(missing) < len(set(wanted)):
         return []
@@ -1253,7 +1271,7 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                 elif row_data is None:
                     value = None
                 elif isinstance(row_data, dict):
-                    value = row_data.get(key)
+                    value = _row_value(row_data, key)
                 else:
                     raise TemplateError(f"{td['key']!r} の要素はオブジェクトである必要があります")
                 if isinstance(value, (dict, list)):
@@ -1264,6 +1282,16 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                     leftovers.add(f"{get_column_letter(cell_col(c))}{src_r}")
             _strip_cached(row)
             out_rows.append(row)
+
+
+def _row_value(row_data: dict, key: str) -> Any:
+    """行オブジェクトから列の値を取る。キーそのもの（`No.` など）が無ければ、`test.0` のようにドット・添字でたどる。"""
+    if key in row_data:
+        return row_data[key]
+    try:
+        return dig(row_data, key)
+    except KeyError:
+        return None
 
 
 def _drop_stale_links(pkg, part, root, filled: set, warnings: list) -> None:
@@ -1352,9 +1380,9 @@ def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
                 else:
                     warnings.append(f"複数行にまたがる結合セル {m.get('ref')} は表のサンプル行内のため取り除きました")
                 continue
-            na = f"{get_column_letter(c1)}{rowmap.map(r1, False)}"
-            nb = f"{get_column_letter(c2)}{rowmap.map(r2, True)}"
-            keep.append(f"{na}:{nb}")
+            span = rowmap.map_span(r1, r2)
+            if span is not None:
+                keep.append(f"{get_column_letter(c1)}{span[0]}:{get_column_letter(c2)}{span[1]}")
         for ref in keep:
             etree.SubElement(mc, q("mergeCell"), ref=ref)
         mc.set("count", str(len(keep)))
@@ -1362,12 +1390,26 @@ def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
             root.remove(mc)
 
     # 範囲を持つ要素
+    # 範囲がすべて消えた要素は取り除く（空の sqref は、Excel が壊れたファイルと見なす）
     for tag in ("conditionalFormatting", "dataValidation", "ignoredError"):
-        for el in root.iter(q(tag)):
+        for el in list(root.iter(q(tag))):
             if el.get("sqref"):
                 el.set("sqref", rw.sqref(el.get("sqref")))
-    for el in root.iter(q("hyperlink")):
+                if not el.get("sqref"):
+                    el.getparent().remove(el)
+    for el in list(root.iter(q("hyperlink"))):
         el.set("ref", rw.sqref(el.get("ref")))
+        if not el.get("ref"):
+            el.getparent().remove(el)
+    for tag in ("dataValidations", "hyperlinks"):   # 子が無くなった入れ物も取り除き、件数を合わせる
+        for el in list(root.iter(q(tag))):
+            if len(el) == 0:
+                el.getparent().remove(el)
+            elif el.get("count") is not None:
+                el.set("count", str(len(el)))
+    for el in list(root.iter(q("ignoredErrors"))):
+        if len(el) == 0:
+            el.getparent().remove(el)
     af = root.find(q("autoFilter"))
     if af is not None and af.get("ref"):
         af.set("ref", rw.sqref(af.get("ref")))
@@ -1710,10 +1752,22 @@ def skeleton_data(definition: dict) -> dict:
             _set_path(out, key, None)
         for t in sd.get("tables", []):
             colmaps = t["block"] if t.get("block_rows", 1) > 1 and t.get("block") else [t.get("columns")]
-            row = {c["key"]: None for cols in colmaps for c in (cols or {}).values()
-                   if c.get("key") and c["key"] != "$index" and not c.get("keep") and not c.get("clear")}
+            row: dict = {}
+            for c in (c for cols in colmaps for c in (cols or {}).values()):
+                if c.get("key") and c["key"] != "$index" and not c.get("keep") and not c.get("clear"):
+                    _set_path(row, c["key"], None)
             _set_path(out, t["key"], [row])
-    return out
+    return _as_lists(out)
+
+
+def _as_lists(obj: Any) -> Any:
+    """キーが 0, 1, 2 … だけのオブジェクトを配列にする（`test.0`・`test.1` の雛形を `test: [null, null]` に）。"""
+    if not isinstance(obj, dict):
+        return [_as_lists(x) for x in obj] if isinstance(obj, list) else obj
+    obj = {k: _as_lists(v) for k, v in obj.items()}
+    if obj and set(obj) == {str(i) for i in range(len(obj))}:
+        return [obj[str(i)] for i in range(len(obj))]
+    return obj
 
 
 def validate_definition(template: "str | bytes", definition: dict) -> None:

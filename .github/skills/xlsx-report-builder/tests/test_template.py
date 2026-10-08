@@ -920,6 +920,40 @@ class UsabilityGuardTests(Base):
         self.assertEqual(ws["E15"].value, 12345)
         self.assertEqual(ws["E13"].value, "=SUM(E8:E12)")  # 置き換えない数式はそのまま
 
+    def test_shrinking_table_drops_ranges_of_vanished_rows_instead_of_reversing(self):
+        wb = load_workbook(self.tpl)
+        ws = wb["請求書"]
+        dv = DataValidation(type="list", formula1='"A,B"')
+        dv.add("B9")                       # 2 行目のサンプル行だけの入力規則
+        ws.add_data_validation(dv)
+        ws.conditional_formatting.add("D9", CellIsRule(operator="lessThan", formula=["0"], fill=BAND_FILL))
+        wb.save(self.tpl)
+        out = self.render(dict(DATA, items=DATA["items"][:1]))
+        with zipfile.ZipFile(out) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        refs = re.findall(r'sqref="([^"]*)"', sheet)
+        for ref in refs:                   # 先頭と末尾が逆転した範囲（B9:B8）・空の範囲を作らない
+            for a, b in re.findall(r"[A-Z]+(\d+):[A-Z]+(\d+)", ref):
+                self.assertLessEqual(int(a), int(b), ref)
+            self.assertTrue(ref.strip(), refs)
+        self.assertIn("C8", refs)          # 表の全行にあった入力規則（C8:C9）は、残る 1 行に縮む
+        self.assertNotIn("B9", " ".join(refs))
+        load_workbook(out)
+
+    def test_row_keys_follow_dots_and_indexes(self):
+        d = json.loads(json.dumps(DEF))
+        cols = d["sheets"][0]["tables"][0]["columns"]
+        cols["B"]["key"], cols["C"]["key"], cols["D"]["key"] = "item.name", "nums.0", "nums.1"
+        items = [{"item": {"name": f"商品{i}"}, "nums": [i, 100 * i]} for i in (1, 2)]
+        ws = load_workbook(self.render(dict(DATA, items=items), d))["請求書"]
+        self.assertEqual([[ws[f"{c}{r}"].value for c in "BCD"] for r in (8, 9)], [["商品1", 1, 100], ["商品2", 2, 200]])
+        self.assertFalse([w for w in self.warnings if "どの行にも無い" in w])
+        skel = xt.skeleton_data(d)["items"][0]
+        self.assertEqual((skel["item"], skel["nums"]), ({"name": None}, [None, None]))
+        cols["B"]["key"] = "No."           # ドットを含むキーそのものも引ける
+        ws = load_workbook(self.render(dict(DATA, items=[dict(i, **{"No.": "X"}) for i in items]), d))["請求書"]
+        self.assertEqual(ws["B8"].value, "X")
+
     def test_values_excel_cannot_store_are_rejected_with_the_cell(self):
         for bad, word in (("a\x0bb", "制御文字"), ("a\ufffeb", "制御文字"), (float("nan"), "保存できません"), ("x" * 40000, "上限")):
             data = dict(DATA, items=[{"name": bad, "qty": 1, "price": 1}])
