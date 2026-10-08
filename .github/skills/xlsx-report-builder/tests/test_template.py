@@ -500,6 +500,7 @@ class MaintainExportedScriptTests(Base):
         super().setUp()
         self.script = os.path.join(self.dir, "render.py")
         xt.export_script(self.tpl, DEF, self.script)
+        xt.dump_structured(DEF, os.path.join(self.dir, "def.json"))
 
     def cli(self, *args):
         entry = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
@@ -513,6 +514,68 @@ class MaintainExportedScriptTests(Base):
         self.assertEqual(definition, DEF)
         self.assertIsNone(embedded)
         self.assertEqual(rel, "t.xlsx")
+
+    def test_split_data_files_are_merged_by_render_and_the_script(self):
+        def values(path):
+            return [[c.value for c in row] for row in load_workbook(path)["請求書"].iter_rows()]
+        want = os.path.join(self.dir, "want.xlsx")
+        xt.render(self.tpl, DEF, DATA, want)
+
+        # 手で分けたファイル: 表の行はファイルの順につなぎ、null はほかのファイルの値を消さない
+        parts = [{"customer": DATA["customer"], "date": DATA["date"], "rate": DATA["rate"], "items": DATA["items"][:3]},
+                 {"customer": None, "items": DATA["items"][3:]},
+                 {"payments": DATA["payments"]}]
+        paths = []
+        for i, part in enumerate(parts):
+            paths.append(os.path.join(self.dir, f"p{i}.{'yaml' if i else 'json'}"))
+            xt.dump_structured(part, paths[-1])
+        self.assertEqual(xt.load_data(paths), DATA)
+        out = os.path.join(self.dir, "o.xlsx")
+        r = self.run_script("--data", *paths, "-o", out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(values(out), values(want))
+        with self.assertRaises(xt.TemplateError) as cm:
+            xt.merge_data([("a.yaml", {"customer": "A"}), ("b.yaml", {"customer": "B"})])
+        self.assertIn("customer の値が、a.yaml と b.yaml で違います", str(cm.exception))
+
+        # extract --split でタブごとに分け、フォルダごと渡す
+        split = os.path.join(self.dir, "split")
+        r = self.cli("extract", want, "--def", os.path.join(self.dir, "def.json"), "--template", self.tpl, "--split", split)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.listdir(split), ["01-請求書.yaml"])
+        self.assertEqual(xt.load_data(split), DATA)
+        for run in (lambda o: self.run_script("--data", split, "-o", o),
+                    lambda o: self.cli("render", "--template", self.tpl, "--def", os.path.join(self.dir, "def.json"),
+                                       "--data", split, "-o", o)):
+            out = os.path.join(self.dir, "o2.xlsx")
+            r = run(out)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(values(out), values(want))
+
+    def test_split_follows_tab_groups(self):
+        d = {"version": 1, "sheets": [
+            {"name": "表紙", "cells": {"B2": "案件名", "B3": "client.name", "B4": "版"}},
+            {"name": "受注_一覧", "group": "受注", "cells": {"B1": "client.code", "B2": "版"},
+             "tables": [{"key": "受注", "columns": {}}]},
+            {"name": "受注_明細", "group": "受注", "tables": [{"key": "明細", "columns": {}}]},
+            {"name": "結果", "cells": {"A1": "結果.0", "B1": "結果.1"}}]}
+        data = {"案件名": "X", "client": {"name": "N", "code": "C"}, "版": "1.0", "受注": [{"a": 1}],
+                "明細": [{"b": 2}], "結果": [3, 4], "余り": 5}
+        parts = xt.split_data(data, d)
+        self.assertEqual(parts, [("00-common", {"版": "1.0", "結果": [3, 4], "余り": 5}),
+                                 ("01-表紙", {"案件名": "X", "client": {"name": "N"}}),
+                                 ("02-受注", {"client": {"code": "C"}, "受注": [{"a": 1}], "明細": [{"b": 2}]})])
+        self.assertEqual(xt.merge_data(parts), data)
+
+    def test_analyze_groups_tabs_that_share_a_name_prefix(self):
+        wb = Workbook()
+        wb.active.title = "表紙"
+        for name in ("受注_一覧", "受注_明細", "請求"):
+            wb.create_sheet(name)["A1"] = "見出し"
+        path = os.path.join(self.dir, "g.xlsx")
+        wb.save(path)
+        groups = {sd["name"]: sd.get("group") for sd in xt.analyze(path)["sheets"]}
+        self.assertEqual(groups, {"表紙": None, "受注_一覧": "受注", "受注_明細": "受注", "請求": None})
 
     def test_extract_def_edit_and_regenerate(self):
         d = os.path.join(self.dir, "got.yaml")
@@ -1157,6 +1220,92 @@ class ChecklistTests(Base):
         ws = load_workbook(out)["届"]
         self.assertEqual((ws["B1"].value, ws["C1"].value, ws["C2"].value), ("□", "■", 2026))
         self.assertEqual(xt.skeleton_data(d), {"性別": None, "提出日": None})
+
+    def test_data_holds_only_values_that_change_per_document(self):
+        def build(wb):
+            ws = wb.create_sheet("見積")
+            ws["A1"] = "御見積書"
+            ws["A3"], ws["B3"] = "宛先", "旧顧客株式会社"
+            ws["A4"], ws["B4"] = "担当印", "山田"          # 人が押す欄の前の値
+            ws["D3"] = "承認"
+            ws["E3"].border = BOX                           # 人が押す空欄の枠
+            for i, h in enumerate(["品名", None, "数量", "単位", "単価", "確認印"], 1):
+                cell = ws.cell(6, i, h)
+                cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), HEAD_FILL, BOX
+            for r, row in enumerate([("A", None, 2, "式", 100, "済"), ("B", None, 1, "式", 200, None)], 7):
+                for i, v in enumerate(row, 1):
+                    ws.cell(r, i, v).border = BOX
+        tpl = self.checklist(build)
+        d = xt.analyze(tpl)
+        sheet = next(s for s in d["sheets"] if s["name"] == "見積")
+        self.assertEqual(len(sheet["tables"]), 1)        # 「宛先 … 承認」の行を、表と取り違えない
+        cols = sheet["tables"][0]["columns"]
+        self.assertNotIn("B", cols)                      # 見出しも値も無い余白の列
+        self.assertEqual(cols["D"], {"header": "単位", "keep": True, "_sample": "式", "_format": "General"})
+        self.assertTrue(cols["F"]["clear"])              # 確認印は人が押す
+        self.assertEqual(sheet["cells"], {"B3": "宛先"})  # 担当印・承認の欄は入れない
+        self.assertEqual(sheet["clear"], ["B4"])
+        self.assertEqual(xt.skeleton_data(d)["items"], [{"品名": None, "数量": None, "単価": None}])
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, d, {"宛先": "新顧客", "items": [{"品名": "X", "数量": 3, "単価": 50}]}, out)
+        ws = load_workbook(out)["見積"]
+        self.assertEqual([c.value for c in ws[7]], ["X", None, 3, "式", 50, None])
+        self.assertEqual((ws["B3"].value, ws["B4"].value), ("新顧客", None))
+
+    def build_defaults(self, wb):
+        ws = wb.create_sheet("記録")
+        for i, h in enumerate(["No", "項目", "備考", None, "済"], 1):
+            cell = ws.cell(1, i, h)
+            cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), HEAD_FILL, BOX
+        for r, row in enumerate([(1, "起動", "-", "×", "×"), (2, "停止", "-", "×", "○"),
+                                 (3, None, "-", "×", "×"), (4, None, "-", "×", "×")], 2):
+            for i, v in enumerate(row, 1):
+                ws.cell(r, i, v).border = BOX
+        ws["A7"], ws["B7"] = "担当", "佐藤"
+
+    def test_empty_rows_and_columns_are_judged_after_dropping_defaults(self):
+        tpl = self.checklist(self.build_defaults)
+        d = xt.analyze(tpl)
+        sheet = next(s for s in d["sheets"] if s["name"] == "記録")
+        t = sheet["tables"][0]
+        cols = t["columns"]
+        self.assertEqual(cols["A"]["key"], "$index")
+        self.assertEqual((cols["C"]["key"], cols["C"]["_sample"]), ("備考", None))   # - だけの列は、空の記入欄
+        self.assertTrue(cols["D"]["keep"])          # 見出しが無く × だけの列は余白。データに入れない
+        self.assertNotIn("key", cols["D"])
+        self.assertEqual(cols["E"]["map"], {True: "○", False: "×"})
+        self.assertTrue(any("4, 5 行目は既定値" in c for c in t["needs_confirm"]))
+        self.assertEqual(xt.skeleton_data(d), {"items": [{"項目": None, "備考": None, "済": None}], "担当": None})
+
+        # テンプレート（記入例）から取り出すと、連番と × だけの行は書かない
+        data, notes = xt.extract(tpl, d, tpl)
+        self.assertEqual(data, {"items": [{"項目": "起動", "備考": None, "済": False},
+                                          {"項目": "停止", "備考": None, "済": True}], "担当": "佐藤"})
+        self.assertIn("空の行 4, 5", notes[0])
+
+        # 流し込んだ文書から取り出すと、同じデータに戻る（表が縮んで下へずれた欄も追う）
+        want = {"items": [{"項目": "A", "備考": "要確認", "済": True}, {"項目": None, "備考": None, "済": True},
+                          {"項目": "C", "備考": None, "済": False}], "担当": "鈴木"}
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, d, dict(want, items=want["items"] + [{"項目": None, "備考": None, "済": None}]), out)
+        self.assertEqual(xt.extract(out, d, tpl)[0], want)
+
+    def test_extract_reads_choices_and_dates_back(self):
+        tpl = self.checklist(self.build_readable)
+        d = json.loads(json.dumps(xt.analyze(tpl)))
+        items = [{"項目": "起動", "判定": "合格", "対象OS": ["Windows", "macOS"], "実施日": "2026-10-08", "要再試": None},
+                 {"項目": "停止", "判定": "不合格", "対象OS": ["Linux"], "実施日": "2026-10-09", "要再試": True},
+                 {"項目": "再起動", "判定": None, "対象OS": [], "実施日": None, "要再試": None}]
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, d, {"items": items}, out)
+        self.assertEqual(xt.extract(out, d, tpl)[0], {"items": items})
+        defn = os.path.join(self.dir, "d.json")
+        xt.dump_structured(d, defn)
+        script = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
+        ret = subprocess.run([sys.executable, script, "extract", out, "--def", defn],
+                             capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(ret.returncode, 0, ret.stderr)
+        self.assertEqual(json.loads(ret.stdout), {"items": items})
 
     def test_tables_on_several_tabs_get_separate_data_keys(self):
         def build(wb):
