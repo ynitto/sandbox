@@ -25,3 +25,11 @@ test('install.py は Windows では install.ps1 を PowerShell で、ほかで�
   assert.deepStrictEqual(win.slice(6), ['-Check', '-SkipBrowser']);
   assert.deepStrictEqual(other, ['bash', path.join(DIR, 'install.sh'), '--with-deps']);
 });
+
+test('インストーラはフォルダを直接 -g せず、npm pack で固めてから入れる（元のフォルダを消しても動く）', () => {
+  for (const name of ['install.sh', 'install.ps1']) {
+    const text = fs.readFileSync(path.join(DIR, name), 'utf8');
+    assert.match(text, /\bpack\b.*--pack-destination/, name);
+    assert.doesNotMatch(text, /install -g "?\$(TOOL_DIR|ToolDir)\b/, name);
+  }
+});

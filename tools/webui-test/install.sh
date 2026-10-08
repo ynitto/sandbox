@@ -8,7 +8,8 @@
 #
 # 前提: Node.js 18 以上（無い・古いときはエラーで止まる。Node.js は入れない）
 # 入れるもの:
-#   - webui-test をグローバルに npm install -g（依存の playwright・@playwright/test・@playwright/cli・yaml もこのフォルダに入る）
+#   - webui-test をグローバルに npm install -g（実体と依存の playwright・@playwright/test・@playwright/cli・yaml を
+#     グローバル側へコピーする。入れたあとはこのフォルダを消しても動く）
 #   - Playwright の Chromium
 set -euo pipefail
 
@@ -23,7 +24,7 @@ for arg in "$@"; do
     --with-deps) WITH_DEPS=1 ;;
     --skip-browser) SKIP_BROWSER=1 ;;
     --check) CHECK=1 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "知らない指定: $arg（--help で使い方）" >&2; exit 2 ;;
   esac
 done
@@ -49,13 +50,17 @@ NPX="$(command -v npx || true)"
 [ -n "$NPX" ] || die "npx が見つかりません（Node.js と一緒に入れてください）"
 say "Node.js $(node --version)（$NODE）"
 
-# 2. 依存を入れてから、グローバルに入れる（フォルダの -g は依存を入れず、このフォルダへのリンクを global bin に置くだけ）
-say "npm パッケージを入れます（$TOOL_DIR/node_modules）"
-(cd "$TOOL_DIR" && "$NPM" install --omit=dev --no-audit --no-fund)
+# 2. グローバルに入れる。フォルダを直接 -g すると、このフォルダへのリンクが置かれるだけで、
+#    フォルダを消す・移すと動かなくなる。いったん tgz に固めてから入れ、実体と依存をグローバル側にコピーする。
 say "webui-test をグローバルに入れます（npm install -g）"
-"$NPM" install -g "$TOOL_DIR" --omit=dev --no-audit --no-fund ||
+PACK_DIR="$(mktemp -d)"
+trap 'rm -rf "$PACK_DIR"' EXIT
+TARBALL="$PACK_DIR/$(cd "$TOOL_DIR" && "$NPM" pack --silent --pack-destination "$PACK_DIR" | tail -n 1)"
+[ -f "$TARBALL" ] || die "npm pack に失敗しました"
+"$NPM" install -g "$TARBALL" --omit=dev --no-audit --no-fund ||
   die "npm install -g に失敗しました。権限の不足なら npm の prefix をユーザーのフォルダにしてください（npm config set prefix ~/.npm-global）"
 BIN_DIR="$("$NPM" prefix -g)/bin"
+PKG_DIR="$("$NPM" root -g)/webui-test"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) warn "$BIN_DIR が PATH にありません。~/.bashrc などに次を足してください: export PATH=\"$BIN_DIR:\$PATH\"" ;;
@@ -63,14 +68,14 @@ esac
 
 # 3. ブラウザ
 if [ "$SKIP_BROWSER" = 1 ]; then
-  warn "ブラウザは入れません（--skip-browser）。使う前に: cd $TOOL_DIR && npx playwright install chromium"
+  warn "ブラウザは入れません（--skip-browser）。使う前に: cd $PKG_DIR && npx playwright install chromium"
 else
   deps=()
   if [ "$(uname -s)" = Linux ]; then
     if [ "$WITH_DEPS" = 1 ] || [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then deps=(--with-deps); fi
   fi
   say "Playwright の Chromium を入れます ${deps[*]:-}"
-  (cd "$TOOL_DIR" && "$NPX" playwright install "${deps[@]}" chromium)
+  (cd "$PKG_DIR" && "$NPX" playwright install "${deps[@]}" chromium)
   if [ "$(uname -s)" = Linux ] && [ ${#deps[@]} -eq 0 ]; then
     warn "OS のライブラリが足りずにブラウザが起動しないときは: ./install.sh --with-deps"
   fi
@@ -86,10 +91,10 @@ done
 if [ "$CHECK" = 1 ]; then
   say "同梱のサンプルでテストを動かします"
   port=38917
-  "$NODE" "$TOOL_DIR/examples/sample-app/server.js" "$port" >/dev/null &
+  "$NODE" "$PKG_DIR/examples/sample-app/server.js" "$port" >/dev/null &
   server=$!
-  trap 'kill $server 2>/dev/null || true' EXIT
+  trap 'kill $server 2>/dev/null || true; rm -rf "$PACK_DIR"' EXIT
   sleep 1
-  "$BIN_DIR/webui-test" run "$TOOL_DIR/examples/login.yaml" --base-url "http://localhost:$port" --out "$DATA_DIR/check-results"
+  "$BIN_DIR/webui-test" run "$PKG_DIR/examples/login.yaml" --base-url "http://localhost:$port" --out "$DATA_DIR/check-results"
 fi
 say "できました。使い方: webui-test --help"

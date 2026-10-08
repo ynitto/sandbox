@@ -32,10 +32,10 @@ Python からなら OS を問わず `python tools/webui-test/install.py --check`
 install.ps1 を `python` に渡すと PowerShell の書き方を読めずに `SyntaxError` になる。
 
 Node.js 18 以上が前提（入っていなければ止まる。Node.js は入れない）。
-npm パッケージ（playwright・@playwright/test・@playwright/cli・yaml・画像を比べる pngjs と pixelmatch）をこのフォルダに入れたうえで、
-`npm install -g` でグローバルに入れ、どこからでも `webui-test` コマンドで動かせるようにする。続けて Playwright の Chromium を入れる。
+`npm install -g` でグローバルに入れ、どこからでも `webui-test` コマンドで動かせるようにする。
+本体と npm パッケージ（playwright・@playwright/test・@playwright/cli・yaml・画像を比べる pngjs と pixelmatch）はグローバルの置き場にコピーされる。続けて Playwright の Chromium を入れる。
 グローバルの置き場は npm の prefix で、権限が足りないときは `npm config set prefix ~/.npm-global` などでユーザーのフォルダにする。
-グローバルに置かれるのはこのフォルダへのリンクなので、フォルダを移したら入れ直す。
+入れたあとはこのフォルダを消しても移しても動く。このフォルダを更新したら入れ直す。
 `-Check` / `--check` は入れたあとに同梱のサンプルでテストを 1 回動かす。
 Linux でブラウザが OS のライブラリ不足で起動しないときは `install.sh --with-deps`（sudo を使う）。
 

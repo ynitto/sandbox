@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### webui-test: 入れたあと元のフォルダを消しても動く（webui-test 0.4.1）
+
+- インストーラはフォルダをそのまま `npm install -g` せず、`npm pack` で固めてから入れる。グローバルの置き場には
+  元のフォルダへのリンクではなく実体と依存がコピーされ、元のフォルダを消す・移しても `webui-test` が動く
+- 前の版で入れた（リンクになっている）ものも、入れ直すと実体に置き換わる
+
 ### codd-agent: 黙って通る・無駄に回るところを減らす
 
 - テストのコマンド（`test`）が無いと、`show` と終わりの報告に「テストを動かしていない」と出す。`init.py` は `--test` が無いとき、
