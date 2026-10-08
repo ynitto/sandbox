@@ -1,0 +1,104 @@
+{
+  "filename": "report.docx",
+  "page": {
+    "size": "A4",
+    "margins_cm": [
+      2.5,
+      2.5,
+      2.5,
+      2.5
+    ]
+  },
+  "style": {
+    "font": "游明朝",
+    "heading_font": "游ゴシック",
+    "size": 10.5,
+    "accent": "1F4E79"
+  },
+  "numbered_headings": true,
+  "properties": {
+    "title": "業務改善の報告",
+    "creator": "docx-document-builder"
+  },
+  "blocks": [
+    {
+      "type": "title",
+      "text": "業務改善の報告",
+      "subtitle": "申請の確認にかかる時間を半分にする",
+      "date": "2026 年 10 月 8 日"
+    },
+    {
+      "type": "heading",
+      "text": "概要",
+      "level": 1
+    },
+    {
+      "type": "paragraph",
+      "text": "申請の確認に 1 件 30 分かかっている。確認者が 2 人しかいないため、月末に滞留する。\n\n今期は確認を自動化し、確認の時間を半分にする。"
+    },
+    {
+      "type": "heading",
+      "text": "進め方",
+      "level": 1
+    },
+    {
+      "type": "numbered",
+      "items": [
+        "現状を調べる（2 週間）",
+        "確認の手順を決める",
+        {
+          "text": "試行する",
+          "children": [
+            "経理部で 1 か月"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "text": "課題",
+      "level": 2
+    },
+    {
+      "type": "bullets",
+      "items": [
+        "確認者の偏り",
+        "差し戻しが月 40 件"
+      ]
+    },
+    {
+      "type": "heading",
+      "text": "費用",
+      "level": 1
+    },
+    {
+      "type": "table",
+      "columns": [
+        "項目",
+        "金額",
+        "備考"
+      ],
+      "rows": [
+        [
+          "設計",
+          "120 万円",
+          "3 週間"
+        ],
+        [
+          "試行",
+          "80 万円",
+          "1 部署"
+        ],
+        [
+          "合計",
+          "200 万円",
+          ""
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "※ 金額は税抜き。"
+    }
+  ]
+}
