@@ -37,6 +37,7 @@ from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+NS_P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
 NSMAP = {"a": NS_A, "p": NS_P, "r": NS_R}
 
 DEF_VERSION = 1
@@ -53,7 +54,7 @@ LINE_PRSTS = {"line", "straightConnector1", "bentConnector2", "bentConnector3", 
 ARROW_PRSTS = {"rightArrow", "leftArrow", "upArrow", "downArrow", "leftRightArrow", "upDownArrow", "notchedRightArrow",
                "stripedRightArrow"}
 PLACEHOLDER_RE = re.compile(r"(〇〇|○○|●●|◯◯|△△|□□|＊＊|\*\*|(?<![A-Za-z])x{2,}(?![A-Za-z])|サンプル|ダミー|記入例|"
-                            r"テキストを入力|ここに|sample|dummy|lorem|yyyy|YYYY|xxxx|XXXX|20\d\d[/-]0?1[/-]0?1)", re.I)
+                            r"テキストを入力|ここに|を書く|を入力|sample|dummy|lorem|yyyy|YYYY|xxxx|XXXX|mm/dd|20\d\d[/-]0?1[/-]0?1)", re.I)
 NOTE_RE = re.compile(r"^\s*(※|＊|注[:：）)]|Note[:：])")
 LABEL_RE = re.compile(r"^[^:：]{1,16}[:：]$")
 HUMAN_RE = re.compile(r"(印$|押印|捺印|検印|署名|サイン|自署|承認者?$|決裁|確認者|受付者?$|手書き|記入欄)")
@@ -306,17 +307,22 @@ def _set_runs(p, text: str) -> None:
 
 
 def set_paragraphs(body, paras: list[tuple[str, int]]) -> None:
-    """段落を入れ替える。段落・文字の書式は、同じ段（lvl）のサンプルの段落から取る。"""
+    """段落を入れ替える。段落・文字の書式は、同じ位置のサンプルの段落（段が同じとき）から取る。
+
+    1 つの図形の中の見出しと本文のように、段落ごとに書式が違うサンプルを保つ。サンプルより多い段落は、
+    同じ段（lvl）の最後のサンプルの段落に合わせる。
+    """
     ps = body.findall(qa("p"))
     protos: dict[int, Any] = {}
     for p in ps:
-        protos.setdefault(para_level(p), p)
+        protos[para_level(p)] = p
     first = ps[0] if ps else None
     for p in ps:
         body.remove(p)
-    for text, lvl in (paras or [("", 0)]):
+    for i, (text, lvl) in enumerate(paras or [("", 0)]):
         lower = [k for k in protos if k <= lvl]
-        proto = protos.get(lvl, protos.get(max(lower)) if lower else first)
+        proto = ps[i] if i < len(ps) and para_level(ps[i]) == lvl else \
+            protos.get(lvl, protos.get(max(lower)) if lower else first)
         p = deepcopy(proto) if proto is not None else _new_p()
         _set_level(p, lvl)
         _set_runs(p, text)
@@ -477,20 +483,27 @@ class SlideView:
         lines = max(int((h - t - b) / line_h + 0.15), 1)
         return Capacity(cpl, lines, size, body)
 
-    def margin(self) -> int:
-        """スライドの余白。図形（スライドの幅いっぱいの背景を除く）の、左右の端からの距離の最小。"""
+    def margin(self, axis: str = "x", exclude=()) -> int:
+        """スライドの余白（axis の向き）。スライドとレイアウトの図形の、スライドの端からの距離の最小。
+
+        端に付いた図形（背景・帯）と exclude（並べ直す図の見本）は数えない。図形が無ければ 5%。
+        """
+        size = self.width if axis == "x" else self.height
+        layout = self.slide.slide_layout._element.find(f"{qp('cSld')}/{qp('spTree')}")
         ms = []
-        for e in self.top():
-            x, _, w, _ = self.box(e)
-            if 0 < w < self.width * 0.9:
-                ms.append(min(x, self.width - (x + w)))
-        return max(min(ms), 0) if ms else int(self.width * 0.05)
+        boxes = [self.box(e) for e in self.top() if e not in exclude]
+        boxes += [raw_box(e) or (0, 0, 0, 0) for e in (child_shapes(layout) if layout is not None else [])]
+        for x, y, w, h in boxes:
+            a, length = (x, w) if axis == "x" else (y, h)
+            d = min(a, size - (a + length))
+            if length > 0 and d > size * 0.01:
+                ms.append(d)
+        return int(min(ms)) if ms else int(size * 0.05)
 
     def free_end(self, el, box, axis: str, exclude=()) -> int:
         """box の先（x なら右、y なら下）に、他の図形やスライドの余白にぶつからず使える端。"""
         x, y, w, h = box
-        margin = self.margin()
-        limit = (self.width if axis == "x" else self.height) - margin
+        limit = (self.width if axis == "x" else self.height) - self.margin(axis, (el, *exclude))
         for other in self.top():
             if other is el or other in exclude:
                 continue
@@ -504,7 +517,7 @@ class SlideView:
 
     def free_start(self, el, box, axis: str, exclude=()) -> int:
         x, y, w, h = box
-        limit = self.margin()
+        limit = self.margin(axis, (el, *exclude))
         for other in self.top():
             if other is el or other in exclude:
                 continue
@@ -560,6 +573,8 @@ CORE_FIELDS = {"title": f"{{{NS_DC}}}title", "subject": f"{{{NS_DC}}}subject", "
                "keywords": f"{{{NS_CP}}}keywords", "description": f"{{{NS_DC}}}description",
                "lastModifiedBy": f"{{{NS_CP}}}lastModifiedBy", "category": f"{{{NS_CP}}}category"}
 APP_FIELDS = {"company": f"{{{NS_APP}}}Company", "manager": f"{{{NS_APP}}}Manager"}
+APP_STALE = ("HeadingPairs", "TitlesOfParts", "Slides", "Notes", "HiddenSlides", "MMClips", "Words", "Paragraphs", "TotalTime")
+NS_VT = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
 
 
 def read_properties(raw: bytes) -> dict[str, str]:
@@ -584,6 +599,10 @@ def provenance(raw: bytes) -> list[str]:
         notes.append(f"文書のプロパティ {k}: {v}")
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         names = z.namelist()
+        if "docProps/app.xml" in names:
+            titles = [e.text for e in etree.fromstring(z.read("docProps/app.xml")).iter(f"{{{NS_VT}}}lpstr") if e.text]
+            if titles:
+                notes.append(f"文書の情報に、フォントとスライドの題の一覧が残っている（{_short(' / '.join(titles), 60)}）")
     if any(n.startswith("docProps/thumbnail") for n in names):
         notes.append("プレビュー画像（docProps/thumbnail）がある。元のスライドの見た目が残る")
     if "docProps/custom.xml" in names:
@@ -591,6 +610,14 @@ def provenance(raw: bytes) -> list[str]:
     if any(n.endswith("vbaProject.bin") for n in names):
         notes.append("マクロ（VBA）がある。出力の拡張子は .pptm にする")
     prs = open_prs(raw)
+    seen = set()
+    for master in prs.slide_masters:
+        for owner, what in [(master, "スライドマスター")] + [(lay, f"レイアウト「{lay.name}」") for lay in master.slide_layouts]:
+            for e in walk(owner._element.find(f"{qp('cSld')}/{qp('spTree')}")):
+                text = literal_text(e) if placeholder(e) is None else ""
+                if text and (what, text) not in seen:
+                    seen.add((what, text))
+                    notes.append(f"{what}: 「{_short(text, 30)}」（どのスライドにも出る。render は書き換えない）")
     for i, slide in enumerate(prs.slides, start=1):
         if slide._element.get("show") == "0":
             notes.append(f"スライド {i}: 非表示のスライド")
@@ -660,6 +687,10 @@ def finish_package(raw: bytes, props: dict) -> bytes:
                         el.text = str(given[name])
                     elif scrub and name not in keep and el is not None:
                         el.text = ""
+                if scrub and info.filename.endswith("app.xml"):   # スライドの題の一覧と数（前の文書のまま）
+                    for tag in APP_STALE:
+                        for el in root.findall(f"{{{NS_APP}}}{tag}"):
+                            root.remove(el)
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             elif drop and info.filename == "_rels/.rels":
                 root = etree.fromstring(data)
@@ -697,6 +728,8 @@ def _shape_fact(view: SlideView, el, depth: int = 0) -> dict:
         for tr in tbl.findall(qa("tr")):
             rows.append([body_text(tc.find(qa("txBody"))) for tc in tr.findall(qa("tc"))])
         fact["table"] = rows
+        if any(PLACEHOLDER_RE.search(c) for r in rows for c in r):
+            fact["placeholder_suspect"] = True
     body = txbody(el) if local(el) == "sp" else None
     if body is not None:
         paras = paragraphs(body)
@@ -864,6 +897,8 @@ def find_diagrams(view: SlideView) -> list[dict]:
                     break
                 connectors.append(hits[0])
             used.update(connectors)
+        if not connectors and any(all(LABEL_RE.match(literal_text(it[k])) for it in items) for k in range(len(items[0]))):
+            continue   # `目的：` `効果：` のラベルと値の組は、図の並びではない（ラベルは残し、値をそれぞれ流し込む）
         found.append({"axis": run["axis"], "items": items, "connectors": connectors, "pitch": run["pitch"],
                       "columns": run.get("columns")})
     return found
@@ -891,6 +926,18 @@ def _unique(key: str, used: set) -> str:
 def _budget(samples: list[str]) -> "int | None":
     n = max((len(s.replace("\n", "")) for s in samples if s), default=0)
     return max(math.ceil(n * GRANULARITY), n + 4) if n else None
+
+
+def _line_budget(view: SlideView, el, samples: list[str]) -> "int | None":
+    """1 項目の字数の上限。サンプルの 1.5 倍までだが、サンプルが使う行数を超えない（1 行の見出しは 1 行のまま）。"""
+    b = _budget(samples)
+    if not b:
+        return None
+    n = max(len(s.replace("\n", "")) for s in samples)
+    cpl = int(view.capacity(el).cpl)
+    if cpl < 1:
+        return b
+    return max(n, min(b, cpl * math.ceil(n / cpl)))
 
 
 def _ref(view: SlideView, el) -> str:
@@ -1018,7 +1065,7 @@ def _analyze_table(view: SlideView, el, used: set, confirm: list) -> dict:
                 spec["format"] = fmt
             columns.append(spec)
             continue
-        if len(samples) >= 2 and len(set(samples)) == 1 and filled:
+        if len(samples) >= 2 and len(set(samples)) == 1 and filled and not PLACEHOLDER_RE.search(samples[0]):
             columns.append({"keep": True, "header": head})
             continue
         if filled and all(s.strip() in MARK_ON + MARK_OFF for s in filled):
@@ -1038,8 +1085,26 @@ def _analyze_table(view: SlideView, el, used: set, confirm: list) -> dict:
     sample_h = row_h[header:len(trs) - footer] or [370840]
     avail = view.free_end(el, (x, y, w, h), "y") - y - sum(row_h[:header]) - sum(row_h[len(trs) - footer:])
     cap = max(int(avail / max(sum(sample_h) / len(sample_h), 1)), len(body))
-    return {"shape": ref, "key": _unique("rows", used), "header_rows": header, "footer_rows": footer,
-            "columns": columns, "max_rows": cap}
+    out = {"shape": ref, "key": _unique("rows", used), "header_rows": header, "footer_rows": footer,
+           "columns": columns, "max_rows": cap}
+    # 合計の行: 見出し（合計）は残し、値はデータの「合計.件数」のような欄から入れる
+    cells = {}
+    for r in range(len(grid) - footer, len(grid)):
+        base = None
+        for j, text in enumerate(grid[r]):
+            spec = columns[j] if j < len(columns) else None
+            if j == 0 or not text.strip() or not spec or not spec.get("key") or spec.get("keep") or spec["key"] == "$index":
+                continue
+            base = base or _unique((grid[r][0] or "").strip() or "合計", used)
+            cells[f"{r + 1},{j + 1}"] = {"key": f"{base}.{spec['key']}"}
+            b = _budget([text])
+            if b:
+                cells[f"{r + 1},{j + 1}"]["max_chars"] = b
+    if cells:
+        out["cells"] = cells
+        confirm.append(f"{where}: 最後の行（{grid[-1][0].strip()}）の値は、データの `{base}` から入れる"
+                       "（前の値を残さない。計算はしないので、データに書く）")
+    return out
 
 
 def _diagram_capacity(view: SlideView, d: dict) -> int:
@@ -1124,7 +1189,7 @@ def _analyze_diagram(view: SlideView, d: dict, n: int, used: set, confirm: list)
         if fmt is not None:
             fields[_ref(view, el)] = {"key": "$index", **({"format": fmt} if fmt != "{}" else {})}
             continue
-        if len(items) >= 2 and len(set(samples)) == 1:
+        if len(items) >= 2 and len(set(samples)) == 1 and not PLACEHOLDER_RE.search(samples[0] or ""):
             continue   # どの図形も同じ文字（図の一部）。残す
         spec: dict = {"key": next(names)}
         b = _budget(samples)
@@ -1156,17 +1221,19 @@ def analyze(template: "str | bytes") -> dict:
     confirm: list[str] = []
     slides: list[dict] = []
     views = [SlideView(prs, s, i) for i, s in enumerate(prs.slides, start=1)]
-    sigs = [_slide_signature(v) for v in views]
+    sections = slide_sections(prs)
+    sigs = [(sections.get(v.number),) + _slide_signature(v) for v in views]   # 繰り返しはセクションをまたがない
     i = 0
     while i < len(views):
         j = i
-        while j + 1 < len(views) and sigs[j + 1] == sigs[i] and sigs[i][1]:
+        while j + 1 < len(views) and sigs[j + 1] == sigs[i] and sigs[i][2]:
             j += 1
         sd = _analyze_slide(views[i], confirm)
         if j > i:
             sd["repeat"] = True
             for k in range(i + 1, j + 1):
                 _merge_budgets(sd, _analyze_slide(views[k], []))
+            _keep_constant_texts(sd, views[i:j + 1])
             confirm.append(f"スライド {i + 1}〜{j + 1} は同じ形。スライド {i + 1} を見本に、データの件数だけ繰り返す"
                            f"（`{sd['key']}` は配列）。スライド {i + 2}〜{j + 1} はサンプルとして取り除く")
         slides.append(sd)
@@ -1179,7 +1246,6 @@ def analyze(template: "str | bytes") -> dict:
         if v.slide.has_notes_slide and v.slide.notes_slide.notes_text_frame is not None \
                 and v.slide.notes_slide.notes_text_frame.text.strip():
             confirm.append(f"スライド {v.number}: ノートがある。properties.scrub で消える。残すなら notes にキーを書く")
-    sections = slide_sections(prs)
     for sd in slides:
         name = sections.get(sd["slide"])
         if name and not sd.get("drop"):
@@ -1195,12 +1261,26 @@ def slide_sections(prs) -> dict[int, str]:
     """PowerPoint のセクション（章）。スライドの番号 → セクションの名前。"""
     ids = {int(sid.get("id")): n for n, sid in enumerate(prs.slides._sldIdLst, start=1)}
     out: dict[int, str] = {}
-    for sec in prs.part._element.iter("{http://schemas.microsoft.com/office/powerpoint/2010/main}section"):
-        for sid in sec.iter("{http://schemas.microsoft.com/office/powerpoint/2010/main}sldId"):
+    for sec in prs.part._element.iter(f"{{{NS_P14}}}section"):
+        for sid in sec.iter(f"{{{NS_P14}}}sldId"):
             n = ids.get(int(sid.get("id", "0")))
             if n:
                 out[n] = sec.get("name", "")
     return out
+
+
+def _keep_constant_texts(sd: dict, views: list) -> None:
+    """繰り返すスライドのどのサンプルでも同じ文字（「主な取り組み」の見出しなど）は、流し込まずに残す。"""
+    for ref in list(sd.get("texts") or {}):
+        try:
+            texts = {literal_text(v.find(ref)) for v in views}
+        except TemplateError:
+            continue
+        if len(texts) == 1 and texts != {""}:
+            del sd["texts"][ref]
+            sd.setdefault("keep", []).append(ref)
+    if "texts" in sd and not sd["texts"]:
+        del sd["texts"]
 
 
 def _merge_budgets(base: dict, other: dict) -> None:
@@ -1266,13 +1346,16 @@ def _analyze_slide(view: SlideView, confirm: list) -> dict:
         filled = [t for t, _ in paras if t.strip()]
         if len(filled) >= 2 and (_has_bullets(txbody(el)) or (ph and ph[0] in ("body", "obj"))):
             spec = {"key": _unique(_key_for(el, labels, True), used), "max_items": len(filled)}
-            b = _budget(filled)
+            b = _line_budget(view, el, filled)
             if b:
                 spec["max_chars"] = b
             lists[_ref(view, el)] = spec
             continue
+        if len(filled) >= 2 and all(re.match(r"^[・●■◆□◇○\-－*]\s*", t) for t in filled):
+            confirm.append(f"{where}: 行頭の「・」を文字で打った箇条書き。1 つの文字の欄にした。"
+                           "項目の数で収めるなら、段落の行頭記号に直したテンプレートで lists にする")
         spec = {"key": _unique(_key_for(el, labels), used)}
-        b = _budget([text])
+        b = _line_budget(view, el, [text]) if len(filled) <= 1 else _budget([text])
         if b:
             spec["max_chars"] = b
         texts[_ref(view, el)] = spec
@@ -1477,13 +1560,22 @@ def clone_slide(prs, src, after_sid):
     new_sid = lst[-1]
     lst.remove(new_sid)
     after_sid.addnext(new_sid)
+    for entry in _section_entries(prs, after_sid.get("id")):   # 複製は、元のスライドと同じセクションに入れる
+        entry.addnext(etree.Element(entry.tag, id=new_sid.get("id")))
     return new, new_sid
 
 
 def delete_slide(prs, sid) -> None:
     rId = sid.rId
+    for entry in _section_entries(prs, sid.get("id")):
+        entry.getparent().remove(entry)
     prs.slides._sldIdLst.remove(sid)
     prs.part.drop_rel(rId)
+
+
+def _section_entries(prs, slide_id) -> list:
+    """セクション（章）の一覧の中で、そのスライドを指す要素。"""
+    return [e for e in prs.part._element.iter(f"{{{NS_P14}}}sldId") if e.get("id") == str(slide_id)]
 
 
 def _notes_text(slide) -> str:
@@ -1510,6 +1602,24 @@ def validate_definition(template: "str | bytes", definition: dict) -> None:
         raise TemplateError(f"定義ファイルの version が未対応です: {definition.get('version')!r}")
     prs = open_prs(read_bytes(template))
     slides = list(prs.slides)
+    # 名前の変わった図形（テンプレートの差し替え）は、1 つずつでなく、まとめて挙げる
+    missing = []
+    for sd in definition.get("slides", []):
+        n = int(sd.get("slide", 0))
+        if sd.get("drop") or not 1 <= n <= len(slides):
+            continue
+        view = SlideView(prs, slides[n - 1], n)
+        refs = list(sd.get("texts") or {}) + list(sd.get("lists") or {}) + (sd.get("keep") or []) + (sd.get("clear") or [])
+        refs += [t["shape"] for t in sd.get("tables") or []]
+        refs += [r for d in sd.get("diagrams") or [] for it in d.get("items") or [] for r in it] \
+            + [r for d in sd.get("diagrams") or [] for r in d.get("connectors") or []]
+        for ref in refs:
+            try:
+                view.find(ref)
+            except TemplateError as e:
+                missing.append(str(e))
+    if len(missing) > 1:
+        raise TemplateError("テンプレートに無い図形があります:\n" + "\n".join(f"  {m}" for m in missing))
     seen_keys: dict[str, int] = {}
     seen_slides: set[int] = set()
     for sd in definition.get("slides", []):
@@ -1623,6 +1733,14 @@ def find_leftovers(prs, definition: dict) -> list[str]:
                 trs = tbl.findall(qa("tr"))
                 lo, hi = int(t.get("header_rows", 1)), len(trs) - int(t.get("footer_rows", 0))
                 cols = t.get("columns") or []
+                cells = {_rc(rc) for rc in (t.get("cells") or {})}
+                for r in range(hi, len(trs)):   # 合計の行: 数字の残る値の欄は、cells で入れ直す
+                    for j, tc in enumerate(trs[r].findall(qa("tc"))):
+                        spec = cols[j] if j < len(cols) else None
+                        text = body_text(tc.find(qa("txBody")))
+                        if j and spec and spec.get("key") and not spec.get("keep") and (r + 1, j + 1) not in cells \
+                                and re.search(r"\d", text):
+                            out.append(f"スライド {n}「{shape_name(el)}」{r + 1} 行 {j + 1} 列（最後の行）: 「{_short(text, 20)}」")
                 for r in range(lo, hi):
                     for j, tc in enumerate(trs[r].findall(qa("tc"))):
                         if (j >= len(cols) or cols[j] is None) and body_text(tc.find(qa("txBody"))).strip():
@@ -1694,6 +1812,16 @@ def render(template: "str | bytes", definition: dict, data: Any, output: str,
         extra = sorted({k for o in objs if isinstance(o, dict) for k in o if k not in fields})
         if extra:
             warnings.append(f"データ `{key}` の {', '.join(extra)} は、スライド {sd['slide']} のどの欄にもありません（綴りの違いを疑う）")
+        # 表の行・図の項目の中の欄も確かめる
+        groups = [("表", t["key"], t.get("columns") or []) for t in sd.get("tables") or [] if t.get("key")]
+        groups += [("図", d["key"], [_spec(f) for f in (d.get("fields") or {}).values()]) for d in sd.get("diagrams") or []]
+        for kind, gkey, specs in groups:
+            names = {str(c["key"]).split(".")[0] for c in specs if c and c.get("key")}
+            items = [x for o in objs if isinstance(o, dict) for x in (dig(o, gkey) or []) if isinstance(x, dict)]
+            extra = sorted({k for x in items for k in x if k not in names})
+            if extra and names:
+                warnings.append(f"データ `{key}.{gkey}` の {', '.join(extra)} は、スライド {sd['slide']} の{kind}の"
+                                "どの欄にもありません（綴りの違いを疑う）")
     slides, sids = list(prs.slides), list(prs.slides._sldIdLst)
     instances, to_delete = [], []
     for n, (slide, sid) in enumerate(zip(slides, sids), start=1):
@@ -1736,6 +1864,8 @@ def render(template: "str | bytes", definition: dict, data: Any, output: str,
     if fit.problems:
         msg = "収まらない値があります。テンプレートの粒度に合わせて、データの量を減らすか言い換えてください:\n  " \
               + "\n  ".join(fit.problems)
+        if any("行。この枠に" in p or "項目。この枠に" in p for p in fit.problems):
+            msg += "\n（全件の一覧など減らせない内容なら、利用者に確かめて、そのスライドに overflow: split を書く。続きのスライドを足す）"
         if not allow_overflow:
             raise TemplateError(msg)
         warnings.append(msg)
@@ -1804,6 +1934,38 @@ def _fill_slide(view: SlideView, sd: dict, obj: dict, page: int, pages: int, lab
         _set_notes(view.slide, to_text(dig(obj, sd["notes"])))
 
 
+def _cell_rpr(tc):
+    for e in tc.iter(qa("rPr"), qa("endParaRPr")):
+        if len(e) or e.get("sz"):
+            return e
+    return None
+
+
+def _borrow_format(tc, pool) -> None:
+    """空のセル（書式を持たない）に、pool のセル（同じ列・同じ行）の文字の書式を写す。既定の 18pt にしない。"""
+    if _cell_rpr(tc) is not None:
+        return
+    for other in pool:
+        src = _cell_rpr(other) if other is not tc else None
+        if src is not None:
+            for p in tc.iter(qa("p")):
+                end = p.find(qa("endParaRPr"))
+                if end is not None:
+                    p.remove(end)
+                end = deepcopy(src)
+                end.tag = qa("endParaRPr")
+                p.append(end)
+            return
+
+
+def _format_pool(trs, row, col: int, head: int) -> list:
+    """書式を借りるセルの順: 同じ列の本文の行 → 同じ行 → 見出しの行（太字なので最後）。"""
+    def at(r):
+        tcs = r.findall(qa("tc"))
+        return [tcs[col]] if col < len(tcs) else []
+    return [c for r in trs[head:] for c in at(r)] + row.findall(qa("tc")) + [c for r in trs[:head] for c in at(r)]
+
+
 def _fill_table(view: SlideView, t: dict, obj: dict, page: int, pages: int, label: str, fit: Fit) -> None:
     el = view.find(t["shape"])
     tbl = table_of(el)
@@ -1811,10 +1973,13 @@ def _fill_table(view: SlideView, t: dict, obj: dict, page: int, pages: int, labe
     where = f"{label}「{t['shape']}」"
     for rc, spec in (t.get("cells") or {}).items():
         spec = _spec(spec)
+        if spec.get("keep"):
+            continue
         r, c = _rc(rc)
         tc = trs[r - 1].findall(qa("tc"))[c - 1]
         text = field_text(spec, obj, 0, f"{where} ")
         fit.chars(f"{where} {rc}({spec.get('key')})", text, spec.get("max_chars"))
+        _borrow_format(tc, _format_pool(trs, trs[r - 1], c - 1, int(t.get("header_rows", 1))))
         set_text(tc.find(qa("txBody")), text)
     if not t.get("key"):
         return
@@ -1843,6 +2008,7 @@ def _fill_table(view: SlideView, t: dict, obj: dict, page: int, pages: int, labe
                 continue
             text = field_text(spec, row, i, f"{where} {i + 1} 行め ")
             fit.chars(f"{where} {i + 1} 行め({spec.get('key')})", text, spec.get("max_chars"))
+            _borrow_format(tc, _format_pool(trs[:head] + samples, tr, j, head))
             set_text(body, text)
         new_rows.append(tr)
     for k, tr in enumerate(new_rows):
@@ -2130,8 +2296,13 @@ def _read_slide(view: SlideView, sd: dict, tview: "SlideView | None", notes: lis
         tbl = table_of(view.find(t["shape"]))
         trs = tbl.findall(qa("tr"))
         cell_pairs = []
+        tlen = len(table_of(tview.find(t["shape"])).findall(qa("tr"))) if tview and t.get("key") else len(trs)
         for rc, spec in (t.get("cells") or {}).items():
+            if _spec(spec).get("keep"):
+                continue
             r, c = _rc(rc)
+            if r > tlen - int(t.get("footer_rows", 0)):   # 合計の行は、行が増えても表の最後から数える
+                r = len(trs) - (tlen - r)
             if r <= len(trs) and c <= len(trs[r - 1].findall(qa("tc"))):
                 cell_pairs.append((_spec(spec), body_text(trs[r - 1].findall(qa("tc"))[c - 1].find(qa("txBody")))))
         for k, v in _read_back(cell_pairs).items():
@@ -2385,9 +2556,11 @@ def check_definition(template: "str | bytes", definition: dict) -> list[str]:
     raw = read_bytes(template)
     validate_definition(raw, definition)
     with tempfile.TemporaryDirectory() as d:
-        warnings = render(raw, definition, skeleton_data(definition), os.path.join(d, "check.pptx"), allow_overflow=True)
+        out = os.path.join(d, "check.pptx")
+        warnings = render(raw, definition, skeleton_data(definition), out, allow_overflow=True)
+        left = provenance(read_bytes(out))   # 出力に残るものだけ（scrub・drop で消えるものは挙げない）
     warnings = [w for w in warnings if not w.startswith("収まらない値")]
-    return warnings + [f"来歴: {p}" for p in provenance(raw)]
+    return warnings + [f"来歴（出力に残る）: {p}" for p in left]
 
 
 # ---------------------------------------------------------------------------
@@ -2452,14 +2625,18 @@ def data_files(paths: "str | list[str]") -> list[str]:
     return out
 
 
-def merge_data(parts: list) -> dict:
+def merge_data(parts: list, groups: "dict | None" = None) -> dict:
     """分けたデータ（[(ファイル名, 中身), …]）を 1 つにする。
 
     オブジェクトはキーごとに合わせ、配列（繰り返すスライド・箇条書き・表の行・図）はファイルの順につなぐ。
     同じ欄に違う値があれば止める（どちらが正しいか分からない）。null は、ほかのファイルの値を消さない。
+    配列の同じ項目が 2 つのファイルにあっても止める（前のデータを写したまま、ほかのファイルに残っている）。
+    groups（スライドのキー → まとまり）があれば、ほかのまとまりのファイルにも書かれた繰り返しのスライドも止める
+    （地域別のファイルに、事業別の配列が前のまま写っている）。食い違いは、まとめて挙げる。
     """
     merged: dict = {}
     seen: dict[str, str] = {}   # 欄 → その値を最初に書いたファイル
+    problems: list[str] = []
 
     def mark(v, path, src):
         seen.setdefault(path, src)
@@ -2478,13 +2655,18 @@ def merge_data(parts: list) -> dict:
                     mark(v, sub, src)
             return a
         if isinstance(a, list) and isinstance(b, list):
+            dup = [x for x in b if isinstance(x, dict) and x in a]
+            if dup:
+                problems.append(f"{path} の同じ項目が、{seen.get(path, '前のファイル')} と {src} の両方にあります"
+                                f"（{len(dup)} 件。前のデータを写したままなら、片方から消す）")
             return a + b
         if b is None or a == b:
             return a
         if a is None:
             seen[path] = src
             return b
-        raise TemplateError(f"{path} の値が、{seen.get(path, '前のファイル')} と {src} で違います: {a!r} / {b!r}")
+        problems.append(f"{path} の値が、{seen.get(path, '前のファイル')} と {src} で違います: {a!r} / {b!r}")
+        return a
 
     for src, obj in parts:
         if obj is None:
@@ -2492,15 +2674,31 @@ def merge_data(parts: list) -> dict:
         if not isinstance(obj, dict):
             raise TemplateError(f"{src} の中身はオブジェクト（キーと値）にしてください")
         put(merged, deepcopy(obj), "", src)
+    if groups:
+        where: dict[str, list] = {}
+        for src, obj in parts:
+            for k, v in (obj or {}).items():
+                if isinstance(v, list) and k in groups:
+                    where.setdefault(k, []).append(src)
+        for k, srcs in where.items():
+            if len(srcs) < 2:
+                continue
+            mixed = [src for src, obj in parts if src in srcs and {groups.get(x) for x in obj if x in groups} != {groups[k]}]
+            if mixed:
+                problems.append(f"{k}（{groups[k]}）が {', '.join(srcs)} にあります。{', '.join(mixed)} は別のまとまりのファイルなので、"
+                                "前のデータを写したままなら消す")
+    if problems:
+        raise TemplateError("分けたデータが食い違います:\n" + "\n".join(f"  {p}" for p in problems))
     return merged
 
 
-def load_data(paths: "str | list[str]") -> dict:
-    """データを読む。複数のファイル・フォルダなら、1 つにまとめる（merge_data）。"""
+def load_data(paths: "str | list[str]", definition: "dict | None" = None) -> dict:
+    """データを読む。複数のファイル・フォルダなら、1 つにまとめる（merge_data）。定義があれば、まとまり（group）も確かめる。"""
     files = data_files(paths)
     if len(files) == 1:
         return load_structured(files[0])
-    return merge_data([(f if f != "-" else "標準入力", load_structured(f)) for f in files])
+    groups = {sd.get("key", sd["id"]): sd["group"] for sd in (definition or {}).get("slides", []) if sd.get("group")}
+    return merge_data([(f if f != "-" else "標準入力", load_structured(f)) for f in files], groups)
 
 
 def split_data(data: dict, definition: dict) -> list:
@@ -2520,6 +2718,8 @@ def split_data(data: dict, definition: dict) -> list:
     parts: dict[str, dict] = {g: {} for g in order}
     rest = {}
     for key, value in data.items():
+        if value == {} and key in owner:   # 流し込む欄の無いスライド（残すだけ）は、ファイルに書かない
+            continue
         (parts[owner[key]] if key in owner else rest)[key] = value
     out = [("00-common", rest)] if rest else []
     for n, g in enumerate(order, start=1):
@@ -2662,7 +2862,7 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
             return 0
         if not args.data or not args.output:
             parser.error("--data と -o が必要です")
-        for w in render(template, definition, load_data(args.data), args.output, args.allow_overflow):
+        for w in render(template, definition, load_data(args.data, definition), args.output, args.allow_overflow):
             print(f"警告: {w}", file=sys.stderr)
         print(f"生成しました: {args.output}")
         return 0
@@ -2728,7 +2928,7 @@ def cmd_check(args) -> int:
 
 def cmd_render(args) -> int:
     definition = load_structured(args.definition)
-    data = load_data(args.data)
+    data = load_data(args.data, definition)
     for w in render(_template_arg(args, definition), definition, data, args.output, args.allow_overflow):
         print(f"警告: {w}", file=sys.stderr)
     print(f"生成しました: {args.output}")
@@ -2747,7 +2947,9 @@ def cmd_export(args) -> int:
     else:
         raise TemplateError("--def か --from-script が必要です")
     embed = args.embed
-    if args.template or (definition.get("template") and not args.from_script):
+    # --def の template が指すファイルがあれば、それを使う（テンプレートを差し替えたとき）。無ければスクリプトのものを使う
+    given = bool(args.definition and definition.get("template") and os.path.exists(_template_arg(args, definition)))
+    if args.template or given or (definition.get("template") and not args.from_script):
         template: "str | bytes" = _template_arg(args, definition)
     elif old_bytes is not None:
         template, embed = old_bytes, True

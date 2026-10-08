@@ -32,6 +32,7 @@ from pptx import Presentation  # noqa: E402
 from pptx.dml.color import RGBColor  # noqa: E402
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE  # noqa: E402
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN  # noqa: E402
+from pptx.text.text import Font  # noqa: E402
 from pptx.util import Emu, Pt  # noqa: E402
 
 SIZES = {"16:9": (12192000, 6858000), "4:3": (9144000, 6858000)}
@@ -153,7 +154,12 @@ class Builder:
         for j, head in enumerate(cols):
             cell = table.cell(0, j)
             cell.text = str(head)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = self.color("accent")
             self._cell_font(cell, bold=True, color_name=None)
+            for p in cell.text_frame.paragraphs:
+                for r in p.runs:
+                    r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
         for i, row in enumerate(rows[:n], start=1):
             values = row if isinstance(row, list) else [row.get(str(c)) for c in cols]
             for j in range(len(cols)):
@@ -167,12 +173,13 @@ class Builder:
 
     def _cell_font(self, cell, bold=False, color_name="text") -> None:
         for p in cell.text_frame.paragraphs:
-            for r in p.runs:
-                r.font.size = Pt(FONT["table"])
-                r.font.bold = bold
-                r.font.name = self.style["font"]
+            # 空のセルにも書式を持たせる（テンプレートにしたとき、あとで入れた文字が既定の 18pt にならない）
+            for f in [r.font for r in p.runs] + [Font(p._p.get_or_add_endParaRPr())]:
+                f.size = Pt(FONT["table"])
+                f.bold = bold
+                f.name = self.style["font"]
                 if color_name:
-                    r.font.color.rgb = self.color(color_name)
+                    f.color.rgb = self.color(color_name)
 
     def slide_flow(self, sd: dict, where: str) -> None:
         """手順・流れ。図形（矩形・角丸・丸・山形）と矢印のコネクタで描く（画像にしない）。"""

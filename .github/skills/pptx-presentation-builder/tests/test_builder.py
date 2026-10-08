@@ -57,6 +57,14 @@ class BuildTest(Base):
             self.assertIsNotNone(a._element.find(f".//{pt.qa('tailEnd')}"))
         self.assertFalse(any(s.shape_type == MSO_SHAPE_TYPE.PICTURE for sl in prs.slides for s in sl.shapes))
 
+    def test_empty_table_cell_keeps_font_for_later_filling(self):
+        spec = {"slides": [{"type": "table", "title": "費用", "columns": ["プラン", "特徴"], "rows": [["ライト", ""]]}]}
+        prs = Presentation(self.build(spec))
+        table = next(s for s in prs.slides[0].shapes if s.has_table).table
+        end = table.cell(1, 1).text_frame.paragraphs[0]._p.find(pt.qa("endParaRPr"))
+        self.assertEqual(end.get("sz"), str(pb.FONT["table"] * 100))   # あとで入れた文字が既定の 18pt にならない
+        self.assertEqual(str(table.cell(0, 0).fill.fore_color.rgb), pb.DEFAULT_STYLE["accent"])
+
     def test_bullets_use_paragraph_bullets(self):
         prs = Presentation(self.build(pb.EXAMPLE_SPEC))
         body = next(s for s in prs.slides[1].shapes if s.has_text_frame and len(s.text_frame.paragraphs) > 1)

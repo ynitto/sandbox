@@ -434,6 +434,10 @@ class ValidateTest(Base):
         self.assertIn("見出しが定義と違います", str(cm.exception))
 
     def test_check_passes_and_reports_provenance(self):
+        # scrub で消えるもの（作成者など）は挙げず、出力に残るものだけを挙げる
+        warnings = pt.check_definition(self.template, self.definition)
+        self.assertFalse(any("前任者" in w for w in warnings))
+        self.definition["properties"]["scrub"] = False
         warnings = pt.check_definition(self.template, self.definition)
         self.assertTrue(any("前任者" in w for w in warnings))
 
@@ -466,6 +470,21 @@ class ExtractTest(Base):
 class ExportTest(Base):
     def run_script(self, *args):
         return subprocess.run([sys.executable, *args], capture_output=True, text=True, cwd=self.dir)
+
+    def test_from_script_with_a_new_template(self):
+        # テンプレートが更新された: 定義の template を新しいファイルにして書き出し直すと、新しいテンプレートで検査する
+        script = os.path.join(self.dir, "render_report.py")
+        pt.export_script(self.template, self.definition, script)
+        prs = Presentation(self.template)
+        ref = next(iter(self.sd(1)["texts"]))
+        next(sh for sh in prs.slides[0].shapes if sh.name == ref).name = "新しい題"
+        prs.save(os.path.join(self.dir, "report_v2.pptx"))
+        self.sd(1)["texts"]["新しい題"] = self.sd(1)["texts"].pop(ref)
+        pt.dump_structured(dict(self.definition, template="report_v2.pptx"), os.path.join(self.dir, "def.yaml"))
+        cli = os.path.join(os.path.dirname(__file__), "..", "scripts", "pptx_builder.py")
+        r = self.run_script(cli, "export", "--from-script", "render_report.py", "--def", "def.yaml", "-o", "render_report.py")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(pt.read_exported_script(script)[2], "report_v2.pptx")
 
     def test_standalone_script(self):
         script = os.path.join(self.dir, "render_report.py")
@@ -665,8 +684,17 @@ class SplitDataTest(Base):
         self.assertEqual(list(parts), ["00-common", "01-表紙", "02-施策", "03-状況"])
         self.assertEqual(set(parts["02-施策"]), {"s3", "s5"})
         self.assertEqual(parts["00-common"], {"memo": "定義に無いキー"})
+        # 流し込む欄の無いスライド（取り出すと空になる）だけの章は、ファイルにしない
+        data = dict(full_data(), s1={}, s2={})
+        self.assertNotIn("01-表紙", dict(pt.split_data(data, definition)))
         # 分けたファイルのフォルダを渡せば、元のデータに戻る
         pt.render(self.template, definition, full_data(), self.out)
+        # 複製・削除したスライドも、セクションの一覧と食い違わない（PowerPoint が修復を求めない）
+        prs = Presentation(self.out)
+        ids = [sid.get("id") for sid in prs.slides._sldIdLst]
+        listed = [e.get("id") for e in prs.part._element.iter(f"{{{P14}}}sldId")]
+        self.assertEqual(sorted(listed), sorted(ids))
+        self.assertEqual(list(pt.slide_sections(prs).values()).count("施策"), 4)   # 施策 3 枚と手順の 1 枚
         cli = os.path.join(os.path.dirname(__file__), "..", "scripts", "pptx_builder.py")
         pt.dump_structured(dict(definition, template="report.pptx"), os.path.join(self.dir, "def.yaml"))
         r = subprocess.run([sys.executable, cli, "extract", "out.pptx", "--def", "def.yaml", "--split", "parts"],
@@ -693,3 +721,200 @@ class SplitDataTest(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.render()
         self.assertEqual(slide_texts(os.path.join(self.dir, "x.pptx")), slide_texts(self.out))
+
+
+class FromScenariosTest(unittest.TestCase):
+    """シナリオ（tests/scenarios/）を通して見つかったことの再発防止。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def path(self, name: str) -> str:
+        return os.path.join(self.dir, name)
+
+    def deck(self):
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = Emu(12192000), Emu(6858000)
+        return prs
+
+    def test_total_row_is_filled_from_data(self):
+        # 月次報告: 最後の「合計」の行は残し、値はデータから入れる。入れ忘れは strict が止める
+        prs = self.deck()
+        s = prs.slides.add_slide(prs.slide_layouts[5])
+        s.shapes.title.text = "問い合わせの件数"
+        rows = [("種別", "件数"), ("障害", "1"), ("質問", "11"), ("合計", "12")]
+        t = s.shapes.add_table(4, 2, Emu(2 * CM), Emu(4 * CM), Emu(12 * CM), Emu(4 * CM))
+        t.name = "件数表"
+        for r, row in enumerate(rows):
+            for c, v in enumerate(row):
+                t.table.cell(r, c).text = v
+        prs.save(self.path("t.pptx"))
+        definition = pt.analyze(self.path("t.pptx"))
+        table = definition["slides"][0]["tables"][0]
+        self.assertEqual((table["footer_rows"], table["cells"]["4,2"]["key"]), (1, "合計.件数"))
+        data = {"s1": {"title": "問い合わせの件数", "rows": [{"種別": k, "件数": v} for k, v in (("障害", 2), ("質問", 14), ("要望", 3))],
+                       "合計": {"件数": 19}}}
+        pt.render(self.path("t.pptx"), definition, data, self.path("o.pptx"))
+        cells = [[c.text for c in r.cells] for r in Presentation(self.path("o.pptx")).slides[0].shapes[1].table.rows]
+        self.assertEqual(cells[-1], ["合計", "19"])
+        self.assertEqual(pt.extract(self.path("o.pptx"), definition, self.path("t.pptx"))[0]["s1"]["合計"], {"件数": "19"})
+        del table["cells"]
+        with self.assertRaises(pt.TemplateError) as cm:
+            pt.render(self.path("t.pptx"), definition, data, self.path("o.pptx"))
+        self.assertIn("最後の行", str(cm.exception))
+
+    def test_scrub_removes_slide_titles_from_document_info(self):
+        prs = self.deck()
+        s = prs.slides.add_slide(prs.slide_layouts[5])
+        s.shapes.title.text = "東邦物流様 定例報告"
+        prs.save(self.path("t.pptx"))
+        with zipfile.ZipFile(self.path("t.pptx")) as z:
+            app = z.read("docProps/app.xml").decode()
+        app = app.replace("</Properties>", "<TitlesOfParts><vt:vector size=\"1\" baseType=\"lpstr\">"
+                          "<vt:lpstr>東邦物流様 定例報告</vt:lpstr></vt:vector></TitlesOfParts><Slides>6</Slides></Properties>")
+        if "xmlns:vt" not in app:
+            app = app.replace("<Properties ", "<Properties xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\" ", 1)
+        raw = io_replace(self.path("t.pptx"), "docProps/app.xml", app.encode())
+        self.assertTrue(any("スライドの題" in p for p in pt.provenance(raw)))
+        definition = pt.analyze(raw)
+        pt.render(raw, definition, {"s1": {"title": "北斗製薬様 定例報告"}}, self.path("o.pptx"))
+        with zipfile.ZipFile(self.path("o.pptx")) as z:
+            self.assertNotIn("東邦物流", z.read("docProps/app.xml").decode())
+
+    def test_master_text_is_reported(self):
+        prs = self.deck()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        box = slide.shapes.add_textbox(Emu(CM), Emu(17 * CM), Emu(8 * CM), Emu(CM))
+        box.text_frame.text = "FY2026 Q2 業績報告"
+        prs.slide_master.shapes._spTree.append(box._element)   # マスターに移す（どのスライドにも出るフッター）
+        prs.save(self.path("t.pptx"))
+        self.assertTrue(any("スライドマスター" in p and "FY2026 Q2" in p for p in pt.provenance(pt.read_bytes(self.path("t.pptx")))))
+
+    def test_flow_capacity_uses_slide_margin_not_the_diagram(self):
+        # 提案書: 幅 4.5 cm・間隔 2 cm の 3 段が中央にある。題の余白（1.27 cm）までなら 5 段入る
+        prs = self.deck()
+        s = prs.slides.add_slide(prs.slide_layouts[5])
+        s.shapes.title.left, s.shapes.title.width = Emu(int(1.27 * CM)), Emu(int(31.33 * CM))
+        s.shapes.title.text = "進め方"
+        boxes = []
+        for i in range(3):
+            b = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Emu(int((8.18 + 6.5 * i) * CM)), Emu(7 * CM), Emu(int(4.5 * CM)), Emu(int(2.4 * CM)))
+            b.name, b.text_frame.text = f"手順 {i + 1}", ("調査", "設計", "導入")[i]
+            boxes.append(b)
+        for i, (a, b) in enumerate(zip(boxes, boxes[1:]), start=1):
+            c = s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, a.left + a.width, a.top + a.height // 2, b.left, b.top + b.height // 2)
+            c.begin_connect(a, 3)
+            c.end_connect(b, 1)
+        prs.save(self.path("t.pptx"))
+        d = pt.analyze(self.path("t.pptx"))["slides"][0]["diagrams"][0]
+        self.assertEqual(d["max_items"], 5)
+
+    def test_heading_and_body_in_one_shape_keep_their_formats(self):
+        prs = self.deck()
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        b = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Emu(2 * CM), Emu(2 * CM), Emu(8 * CM), Emu(4 * CM))
+        b.name = "カード"
+        tf = b.text_frame
+        tf.text = "時間"
+        tf.paragraphs[0].runs[0].font.size, tf.paragraphs[0].runs[0].font.bold = Pt(18), True
+        p = tf.add_paragraph()
+        p.text = "確認の時間を半分に"
+        p.runs[0].font.size = Pt(12)
+        prs.save(self.path("t.pptx"))
+        definition = {"version": pt.DEF_VERSION, "slides": [{"id": "s1", "slide": 1, "texts": {"カード": "card"}}]}
+        pt.render(self.path("t.pptx"), definition, {"s1": {"card": "品質\n転記の誤りを無くす"}}, self.path("o.pptx"))
+        ps = Presentation(self.path("o.pptx")).slides[0].shapes[0].text_frame.paragraphs
+        self.assertEqual([(p.runs[0].font.size.pt, p.runs[0].font.bold) for p in ps], [(18, True), (12, None)])
+
+    def test_text_in_an_empty_cell_takes_the_column_format(self):
+        prs = self.deck()
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        t = s.shapes.add_table(3, 2, Emu(2 * CM), Emu(2 * CM), Emu(12 * CM), Emu(3 * CM))
+        t.name = "表"
+        for r, row in enumerate([("プラン", "特徴"), ("ライト", ""), ("標準", "")]):
+            for c, v in enumerate(row):
+                t.table.cell(r, c).text = v
+                for run in t.table.cell(r, c).text_frame.paragraphs[0].runs:
+                    run.font.size = Pt(12)
+        prs.save(self.path("t.pptx"))
+        definition = {"version": pt.DEF_VERSION, "slides": [{"id": "s1", "slide": 1, "tables": [
+            {"shape": "表", "key": "rows", "columns": [{"key": "プラン", "header": "プラン"}, {"key": "特徴", "header": "特徴"}]}]}]}
+        pt.render(self.path("t.pptx"), definition, {"s1": {"rows": [{"プラン": "法人", "特徴": "手軽に集計"}]}}, self.path("o.pptx"))
+        cell = Presentation(self.path("o.pptx")).slides[0].shapes[0].table.cell(1, 1)
+        self.assertEqual(cell.text_frame.paragraphs[0].runs[0].font.size, Pt(12))
+
+    def test_copied_repeat_items_and_all_conflicts_stop(self):
+        a = {"s1": {"title": "Q3", "subtitle": "10 月"}, "s4": [{"name": "A 事業部"}]}
+        b = {"s1": {"title": "Q2", "subtitle": "7 月"}, "s4": [{"name": "A 事業部"}], "s5": [{"name": "関東"}]}
+        with self.assertRaises(pt.TemplateError) as cm:
+            pt.merge_data([("01-はじめに.yaml", a), ("03-地域別.yaml", b)])
+        msg = str(cm.exception)
+        self.assertIn("s1.title", msg)
+        self.assertIn("s1.subtitle", msg)
+        self.assertIn("s4 の同じ項目", msg)
+        # 前期のまま写した配列（値は違う）も、別のまとまりのファイルにあれば止める
+        biz = {"s4": [{"name": "A 事業部", "売上": 130}]}
+        region = {"s4": [{"name": "A 事業部", "売上": 120}], "s12": [{"name": "関東"}]}
+        groups = {"s4": "事業別", "s12": "地域別"}
+        with self.assertRaises(pt.TemplateError) as cm:
+            pt.merge_data([("02-事業別.yaml", biz), ("03-地域別.yaml", region)], groups)
+        self.assertIn("03-地域別.yaml は別のまとまり", str(cm.exception))
+        self.assertEqual(len(pt.merge_data([("a.yaml", biz), ("b.yaml", {"s4": [{"name": "B 事業部"}]})], groups)["s4"]), 2)
+
+    def test_label_value_pairs_are_not_a_diagram_and_constant_heading_is_kept(self):
+        # 施策のスライド: 「目的：」「効果：」の右に値。「主な取り組み」はどの施策でも同じ
+        prs = self.deck()
+        for name in ("ペーパーレス化", "会議の短縮"):
+            s = prs.slides.add_slide(prs.slide_layouts[5])
+            s.shapes.title.text = f"施策: {name}"
+            for i, (label, value) in enumerate((("目的：", f"{name}の目的"), ("効果：", f"{name}の効果"))):
+                lab = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Emu(2 * CM), Emu((5 + 2 * i) * CM), Emu(3 * CM), Emu(int(1.4 * CM)))
+                lab.name, lab.text_frame.text = f"{label[:-1]}ラベル", label
+                val = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Emu(6 * CM), Emu((5 + 2 * i) * CM), Emu(20 * CM), Emu(int(1.4 * CM)))
+                val.name, val.text_frame.text = label[:-1], value
+            head = s.shapes.add_textbox(Emu(2 * CM), Emu(10 * CM), Emu(10 * CM), Emu(CM))
+            head.name, head.text_frame.text = "取り組み見出し", "主な取り組み"
+        prs.save(self.path("t.pptx"))
+        sd = pt.analyze(self.path("t.pptx"))["slides"][0]
+        self.assertTrue(sd.get("repeat"))
+        self.assertNotIn("diagrams", sd)
+        self.assertEqual(set(sd["texts"]) & {"目的", "効果"}, {"目的", "効果"})
+        self.assertTrue({"目的ラベル", "効果ラベル", "取り組み見出し"} <= set(sd["keep"]))
+
+    def test_unknown_keys_inside_rows_warn(self):
+        prs = self.deck()
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        t = s.shapes.add_table(2, 2, Emu(2 * CM), Emu(2 * CM), Emu(12 * CM), Emu(2 * CM))
+        t.name = "表"
+        for c, v in enumerate(("項目", "内容")):
+            t.table.cell(0, c).text = v
+        prs.save(self.path("t.pptx"))
+        definition = {"version": pt.DEF_VERSION, "slides": [{"id": "s1", "slide": 1, "tables": [
+            {"shape": "表", "key": "rows", "columns": [{"key": "項目", "header": "項目"}, {"key": "内容", "header": "内容"}]}]}]}
+        warnings = pt.render(self.path("t.pptx"), definition, {"s1": {"rows": [{"項目": "期間", "内用": "19 週"}]}}, self.path("o.pptx"))
+        self.assertTrue(any("内用" in w for w in warnings))
+
+    def test_renamed_shapes_are_listed_together(self):
+        prs = self.deck()
+        s = prs.slides.add_slide(prs.slide_layouts[6])
+        s.shapes.add_textbox(Emu(CM), Emu(CM), Emu(5 * CM), Emu(CM)).text_frame.text = "a"
+        prs.save(self.path("t.pptx"))
+        definition = {"version": pt.DEF_VERSION, "slides": [{"id": "s1", "slide": 1, "texts": {"日付丸 1": "a", "日付丸 2": "b"}}]}
+        with self.assertRaises(pt.TemplateError) as cm:
+            pt.validate_definition(self.path("t.pptx"), definition)
+        self.assertIn("日付丸 1", str(cm.exception))
+        self.assertIn("日付丸 2", str(cm.exception))
+
+
+def io_replace(path: str, name: str, data: bytes) -> bytes:
+    """.pptx の中の 1 つのファイルを差し替えた中身を返す。"""
+    import io
+    out = io.BytesIO()
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            dst.writestr(info, data if info.filename == name else src.read(info.filename))
+    return out.getvalue()
