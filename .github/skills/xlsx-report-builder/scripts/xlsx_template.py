@@ -181,21 +181,25 @@ class Styles:
         """数値の書式（`#,##0`・`0.0%` など）のセルか。標準・文字列（@）・日付は含めない。"""
         code = self.code.get(int(s or 0), "General")
         return code not in ("General", "@") and not code.startswith("builtin:") and not self.is_date(s) \
-            and bool(re.search(r"[0#]", re.sub(r'"[^"]*"', "", code)))
+            and bool(re.search(r"[0#]", re.sub(r"\[[^\]]*\]", "", _strip_literals(code))))
+
+
+def _strip_literals(code: str) -> str:
+    """書式コードから、書式の記号ではない文字（"文字列"・\\x・_x・*x）を除く。"""
+    return re.sub(r'"[^"]*"|[\\_*].', "", code)
 
 
 def _is_date_code(code: str) -> bool:
     # Excel の角括弧は色・条件・ロケール指定にも使われるが、
     # [h] / [m] / [s]（および繰り返し）は 24 時間を超える経過時間の書式。
     # それらだけは日付・時刻判定用に残し、他の角括弧指定は無視する。
-    stripped = re.sub(r'"[^"]*"|\\\\.', "", code)
     stripped = re.sub(
-        r"\\[([hms]+)\\]",
+        r"\[([hms]+)\]",
         lambda m: m.group(1) if len(set(m.group(1).lower())) == 1 else "",
-        stripped,
+        _strip_literals(code),
         flags=re.I,
     )
-    stripped = re.sub(r"\\[[^\\]]*\\]", "", stripped)
+    stripped = re.sub(r"\[[^\]]*\]", "", stripped)
     return bool(re.search(r"[ymdhs]", stripped, re.I))
 
 
@@ -829,9 +833,9 @@ def _excel_serial(value: str) -> float | None:
     return None
 
 
-ILLEGAL_XML_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
-MAX_CELL_TEXT = 32767
-NUMERIC_TEXT_RE = re.compile(r"^[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$")  # Excel の 1 セルの文字数の上限
+ILLEGAL_XML_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+MAX_CELL_TEXT = 32767  # Excel の 1 セルの文字数の上限
+NUMERIC_TEXT_RE = re.compile(r"^[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$")
 
 
 def set_value(c, value: Any, styles: Styles, replace_formula: bool = False) -> None:

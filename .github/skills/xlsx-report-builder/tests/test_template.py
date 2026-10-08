@@ -273,9 +273,19 @@ class AnalyzeTests(Base):
             with self.subTest(code=code):
                 self.assertTrue(xt._is_date_code(code))
 
-        for code in ("[Red]0.00", "[>=100]0", "[$-409]0.00", '[Blue]0 "hours"'):
+        for code in ("[Red]0.00", "[>=100]0", "[$-409]0.00", '[Blue]0 "hours"',
+                     "0.0\\h", "#,##0\\ \\m\\s", "_(* #,##0_)", "0_s", "0*s", "[DBNum1]0"):
             with self.subTest(code=code):
                 self.assertFalse(xt._is_date_code(code))
+
+    def test_number_code_ignores_brackets_and_literals(self):
+        styles = xt.Styles.__new__(xt.Styles)
+        styles.date = {}
+        for code, want in (("#,##0", True), ("[$¥-411]#,##0", True), ("[Red]0.0", True),
+                           ("[$-409]@", False), ('@"件"', False), ("@\\0", False)):
+            styles.code = {1: code}
+            with self.subTest(code=code):
+                self.assertEqual(styles.is_number("1"), want)
 
     def test_cli_roundtrip_with_analyzed_definition(self):
         import xlsx_builder  # noqa: F401  (サブコマンド統合の確認)
@@ -906,7 +916,7 @@ class UsabilityGuardTests(Base):
         self.assertEqual(ws["E13"].value, "=SUM(E8:E12)")  # 置き換えない数式はそのまま
 
     def test_values_excel_cannot_store_are_rejected_with_the_cell(self):
-        for bad, word in (("a\x0bb", "制御文字"), (float("nan"), "保存できません"), ("x" * 40000, "上限")):
+        for bad, word in (("a\x0bb", "制御文字"), ("a\ufffeb", "制御文字"), (float("nan"), "保存できません"), ("x" * 40000, "上限")):
             data = dict(DATA, items=[{"name": bad, "qty": 1, "price": 1}])
             with self.assertRaises(xt.TemplateError) as cm:
                 self.render(data)
