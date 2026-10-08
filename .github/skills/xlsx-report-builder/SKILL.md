@@ -191,7 +191,7 @@ uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレー�
 uv run python scripts/xlsx_builder.py render --def def.yaml --data data.yaml -o out.xlsx
 ```
 
-データが大きくなるなら、ファイルを分けてよい。`--data` に複数のファイルかフォルダを渡すと、1 つにまとめて流し込む。表の行はファイルの順（フォルダなら名前順）につなぐ。同じ欄に違う値があると止まる。書き出した専用スクリプトも同じ。`extract --split DIR --rows 500` は、取り出したデータを表ごと・500 行ごとのファイルに分けて書く。
+データが大きくなるなら、ファイルを分けてよい。`--data` に複数のファイルかフォルダを渡すと、1 つにまとめて流し込む。表の行はファイルの順（フォルダなら名前順）につなぐ。同じ欄に違う値があると止まる。書き出した専用スクリプトも同じ。分け方は、行数ではなく**タブのまとまり**ごと。定義の `sheets[].group` が同じタブを 1 ファイルにし、無ければタブごとに分ける。`analyze` は、名前が同じ言葉で始まるタブ（`受注_一覧`・`受注_明細`）に `group` を入れる。意味で決まるまとまり（表紙と改訂履歴など）は、下書きを読んで `group` を直す。`extract --split DIR` は、取り出したデータをこのまとまりごとのファイルに分けて書く。
 
 ```bash
 uv run python scripts/xlsx_builder.py render --def def.yaml --data head.yaml items-1.yaml items-2.yaml -o out.xlsx
@@ -251,7 +251,7 @@ uv run python scripts/xlsx_builder.py export --from-script render_invoice.py --d
 | `analyze <template.xlsx>` | 表の自動検出による、定義の下書きを書く（確定ではない） | `-o def.yaml`（拡張子で JSON / YAML を選ぶ） |
 | `check --def <def>` | 定義の整合と、テンプレートの値の残り（`strict`）を検査する | `--template` |
 | `render --def <def> --data <data> -o <out.xlsx>` | テンプレート + 定義 + データから再構成する | `--template`、`--data -`（標準入力）、`--data a.yaml b.yaml` / `--data DIR`（分けたデータをまとめる） |
-| `extract <filled.xlsx> --def <def>` | 記入済みの文書から、定義に沿ってデータを取り出す（`render` の逆） | `-o data.yaml`（省略時は標準出力に JSON）、`--template`、`--split DIR`・`--rows N`（表ごと・行数ごとのファイルに分ける） |
+| `extract <filled.xlsx> --def <def>` | 記入済みの文書から、定義に沿ってデータを取り出す（`render` の逆） | `-o data.yaml`（省略時は標準出力に JSON）、`--template`、`--split DIR`（タブのまとまりごとのファイルに分ける） |
 | `export --def <def> -o <render.py>` | 定義を埋め込んだ、単体で動く専用スクリプトを書き出す | `--embed`、`--template`、`--from-script <旧.py>`（改修・エンジン更新） |
 | `build --spec <spec.json>` | テンプレート無しで、JSON スペックから新規生成する | stdin も可 |
 | `example` | `build` のサンプルスペックを出す | — |

@@ -538,14 +538,12 @@ class MaintainExportedScriptTests(Base):
             xt.merge_data([("a.yaml", {"customer": "A"}), ("b.yaml", {"customer": "B"})])
         self.assertIn("customer の値が、a.yaml と b.yaml で違います", str(cm.exception))
 
-        # extract --split で表ごと・行数ごとに分け、フォルダごと渡す
+        # extract --split でタブごとに分け、フォルダごと渡す
         split = os.path.join(self.dir, "split")
-        r = self.cli("extract", want, "--def", os.path.join(self.dir, "def.json"), "--template", self.tpl,
-                     "--split", split, "--rows", "2")
+        r = self.cli("extract", want, "--def", os.path.join(self.dir, "def.json"), "--template", self.tpl, "--split", split)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(sorted(os.listdir(split)), ["00-cells.yaml", "01-items-001.yaml", "01-items-002.yaml",
-                                                     "01-items-003.yaml", "02-payments.yaml"])
-        self.assertEqual(xt.load_data(split)["items"], DATA["items"])
+        self.assertEqual(os.listdir(split), ["01-請求書.yaml"])
+        self.assertEqual(xt.load_data(split), DATA)
         for run in (lambda o: self.run_script("--data", split, "-o", o),
                     lambda o: self.cli("render", "--template", self.tpl, "--def", os.path.join(self.dir, "def.json"),
                                        "--data", split, "-o", o)):
@@ -553,6 +551,31 @@ class MaintainExportedScriptTests(Base):
             r = run(out)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(values(out), values(want))
+
+    def test_split_follows_tab_groups(self):
+        d = {"version": 1, "sheets": [
+            {"name": "表紙", "cells": {"B2": "案件名", "B3": "client.name", "B4": "版"}},
+            {"name": "受注_一覧", "group": "受注", "cells": {"B1": "client.code", "B2": "版"},
+             "tables": [{"key": "受注", "columns": {}}]},
+            {"name": "受注_明細", "group": "受注", "tables": [{"key": "明細", "columns": {}}]},
+            {"name": "結果", "cells": {"A1": "結果.0", "B1": "結果.1"}}]}
+        data = {"案件名": "X", "client": {"name": "N", "code": "C"}, "版": "1.0", "受注": [{"a": 1}],
+                "明細": [{"b": 2}], "結果": [3, 4], "余り": 5}
+        parts = xt.split_data(data, d)
+        self.assertEqual(parts, [("00-common", {"版": "1.0", "結果": [3, 4], "余り": 5}),
+                                 ("01-表紙", {"案件名": "X", "client": {"name": "N"}}),
+                                 ("02-受注", {"client": {"code": "C"}, "受注": [{"a": 1}], "明細": [{"b": 2}]})])
+        self.assertEqual(xt.merge_data(parts), data)
+
+    def test_analyze_groups_tabs_that_share_a_name_prefix(self):
+        wb = Workbook()
+        wb.active.title = "表紙"
+        for name in ("受注_一覧", "受注_明細", "請求"):
+            wb.create_sheet(name)["A1"] = "見出し"
+        path = os.path.join(self.dir, "g.xlsx")
+        wb.save(path)
+        groups = {sd["name"]: sd.get("group") for sd in xt.analyze(path)["sheets"]}
+        self.assertEqual(groups, {"表紙": None, "受注_一覧": "受注", "受注_明細": "受注", "請求": None})
 
     def test_extract_def_edit_and_regenerate(self):
         d = os.path.join(self.dir, "got.yaml")

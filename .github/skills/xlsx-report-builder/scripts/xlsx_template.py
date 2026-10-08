@@ -414,6 +414,12 @@ def analyze(template: str) -> dict:
             base = re.sub(r"[.\s]+", "_", sd["name"]).strip("_") or "sheet"
             for n, t in enumerate(sd["tables"], start=1):
                 t["key"] = base if len(sd["tables"]) == 1 else f"{base}_{n}"
+    # タブの名前が同じ言葉で始まるもの（「受注_一覧」「受注_明細」）は、データを分けるときの 1 つのまとまり（group）にする
+    heads = [re.split(r"[_\-－・\s（(]", sd["name"], maxsplit=1)[0] for sd in sheets_def]
+    for sd, head in zip(sheets_def, heads):
+        if head and head != sd["name"] and heads.count(head) >= 2:
+            sd["group"] = head
+            sd["_notes"].append(f"データを分けるときは、名前が「{head}」で始まるタブと 1 つのファイルにまとめる（group）")
     # 固定セルのデータのキーは、ブック全体で重ならないようにする（別のシートの同じラベルに、黙って同じ値が入らない）
     used = {t["key"] for sd in sheets_def for t in sd["tables"]}
     for sd in sheets_def:
@@ -2053,36 +2059,59 @@ def load_data(paths: "str | list[str]") -> dict:
     return merge_data([(f if f != "-" else "標準入力", load_structured(f)) for f in files])
 
 
-def split_data(data: dict, definition: dict, rows: int = 0) -> list:
-    """データを、表ごとのファイルに分ける。[(ファイル名, 中身), …]。rows を指定すると、表をその行数ごとに分ける。
+def split_data(data: dict, definition: dict) -> list:
+    """データを、タブのまとまり（sheets[].group。無ければタブごと）のファイルに分ける。[(ファイル名, 中身), …]。
 
-    名前順に読めば元の順に戻る（render は、フォルダを渡すと名前順に読んでつなぐ）。
+    いくつかのまとまりで使うキーと、定義に無いキーは 00-common に置く。
+    名前順に読めば元の順に戻る（render は、フォルダを渡すと名前順に読んで 1 つにまとめる）。
     """
-    rest = deepcopy(data)
-    tables = []
+    owner: dict[str, set] = {}
+    order: list[str] = []
     for sd in definition.get("sheets", []):
-        for t in sd.get("tables", []):
-            try:
-                recs = dig(rest, t["key"])
-            except KeyError:
-                continue
-            parent, last = rest, t["key"].split(".")
-            for k in last[:-1]:
-                parent = parent[k]
-            del parent[last[-1]]
-            tables.append((t["key"], recs))
-    out = []
-    if _has_value(rest):
-        out.append(("00-cells", rest))
-    for n, (key, recs) in enumerate(tables, start=1):
-        name = f"{n:02d}-" + re.sub(r"[^\w-]+", "_", key)
-        size = rows if rows and rows > 0 else max(len(recs), 1)
-        chunks = [recs[i:i + size] for i in range(0, len(recs), size)] or [[]]
-        for i, chunk in enumerate(chunks, start=1):
-            part: dict = {}
-            _set_path(part, key, chunk)
-            out.append((name if len(chunks) == 1 else f"{name}-{i:03d}", part))
+        group = str(sd.get("group") or sd["name"])
+        if group not in order:
+            order.append(group)
+        keys = [spec["key"] if isinstance(spec, dict) else spec for spec in (sd.get("cells") or {}).values()]
+        keys += [t["key"] for t in sd.get("tables", [])]
+        for key in keys:
+            owner.setdefault(key, set()).add(group)
+    rest = deepcopy(data)
+    parts: dict[str, dict] = {g: {} for g in order}
+    for key, groups in owner.items():
+        if len(groups) != 1:
+            continue
+        try:
+            value = dig(rest, key)
+        except KeyError:
+            continue
+        if _drop_path(rest, key):
+            _set_path(parts[next(iter(groups))], key, value)
+    out = [("00-common", rest)] if _has_value(rest) else []
+    for n, g in enumerate(order, start=1):
+        if parts[g]:
+            out.append((f"{n:02d}-" + (re.sub(r"[^\w-]+", "_", g).strip("_") or "sheet"), _as_lists(parts[g])))
     return out
+
+
+def _drop_path(root: dict, path: str) -> bool:
+    """ドットでたどったキーを取り除き、空になった親のオブジェクトも取り除く。
+
+    配列の中（`test.0` など）は取り除かずに False を返す（配列ごと 00-common に残す。分けるとつなぎ直しで重なる）。
+    """
+    keys = path.split(".")
+    chain = [root]
+    for k in keys[:-1]:
+        nxt = chain[-1].get(k)
+        if not isinstance(nxt, dict):
+            return False
+        chain.append(nxt)
+    if keys[-1] not in chain[-1]:
+        return False
+    del chain[-1][keys[-1]]
+    for parent, k in zip(reversed(chain[:-1]), reversed(keys[:-1])):
+        if parent[k] == {}:
+            del parent[k]
+    return True
 
 
 def _has_value(obj) -> bool:
@@ -2588,7 +2617,7 @@ def cmd_extract(args) -> int:
     if args.split:
         os.makedirs(args.split, exist_ok=True)
         ext = args.format
-        for name, part in split_data(data, definition, args.rows):
+        for name, part in split_data(data, definition):
             dump_structured(part, os.path.join(args.split, f"{name}.{ext}"))
             print(f"取り出しました: {os.path.join(args.split, name + '.' + ext)}")
     elif args.output:
@@ -2633,8 +2662,8 @@ def add_subcommands(sub) -> None:
     x.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
     x.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template。表の終わりを見分けるのに使う）")
     x.add_argument("-o", "--output", help="データの出力先（.json / .yaml。省略時は標準出力に JSON）")
-    x.add_argument("--split", metavar="DIR", help="データを表ごとのファイルに分けて、このフォルダに書く（render --data DIR で読める）")
-    x.add_argument("--rows", type=int, default=0, help="--split で、表をこの行数ごとのファイルに分ける")
+    x.add_argument("--split", metavar="DIR",
+                   help="データを、タブのまとまり（定義の sheets[].group。無ければタブ）ごとのファイルに分けて、このフォルダに書く（render --data DIR で読める）")
     x.add_argument("--format", choices=("yaml", "json"), default="yaml", help="--split で書く形式（既定 yaml）")
     x.set_defaults(func=cmd_extract)
 
