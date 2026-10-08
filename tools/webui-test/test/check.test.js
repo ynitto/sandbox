@@ -67,6 +67,26 @@ test('config: serve と check を読み、パスは設定ファイルから。�
   assert.throws(() => loadEnv({ cwd: dir }), (e) => /serve\.command/.test(e.message) && /知らないキー「unit」/.test(e.message));
 });
 
+test('config: serve の URL・作業フォルダ・storageState の型を位置付きで知らせる', (t) => {
+  const dir = tmpDir(t);
+  write(path.join(dir, 'webui-test.config.yaml'), [
+    'envs:',
+    '  local:',
+    '    storageState: [auth.json]',
+    '    serve:',
+    '      command: npm start',
+    '      url: [http://localhost:3000]',
+    '      cwd: 123',
+    '',
+  ].join('\n'));
+  assert.throws(() => loadEnv({ cwd: dir }), (e) => (
+    /envs.local.serve.url: URL を文字列/.test(e.message) &&
+    /envs.local.serve.cwd: 作業フォルダのパス/.test(e.message) &&
+    /envs.local.storageState: 保存済み認証状態のファイルパス/.test(e.message) &&
+    !/ERR_INVALID_ARG_TYPE/.test(e.message)
+  ));
+});
+
 test('serve: 応答するまで待って起動し、止める。起動済みならそのまま使う。終わってしまえば理由を出す', async (t) => {
   const port = await freePort();
   const url = `http://127.0.0.1:${port}/`;
