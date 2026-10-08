@@ -398,9 +398,21 @@ def analyze(template: str) -> dict:
             base = re.sub(r"[.\s]+", "_", sd["name"]).strip("_") or "sheet"
             for n, t in enumerate(sd["tables"], start=1):
                 t["key"] = base if len(sd["tables"]) == 1 else f"{base}_{n}"
+    # 固定セルのデータのキーは、ブック全体で重ならないようにする（別のシートの同じラベルに、黙って同じ値が入らない）
+    used = {t["key"] for sd in sheets_def for t in sd["tables"]}
+    for sd in sheets_def:
+        for ref, key in sd["cells"].items():
+            base, n = key, 2
+            while key in used:
+                key, n = f"{base}{n}", n + 1
+            used.add(key)
+            sd["cells"][ref] = key
+    # テンプレートの値は、keep に挙げたもの（見出し・ラベル）以外を出力に残さない。来歴（作成者・コメントなど）も消す
     return {
         "version": DEF_VERSION,
         "template": posixpath.basename(template),
+        "strict": True,
+        "properties": {"scrub": True},
         "sheets": sheets_def,
     }
 
@@ -497,6 +509,7 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
     notes: list[str] = []
     tables = []
     covered: set[int] = set()
+    heads: set[int] = set()
     for n, t in enumerate(found, start=1):
         first, last = t["body"][0], t["body"][-1]
         confirm = ["データのキー（key）と各列の key が意図どおりか"]
@@ -531,10 +544,8 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
             if samples:
                 spec["_format"] = styles.code.get(int(samples[0]["s"]), "General")
             cols_def[letter] = spec
-        for r in [t["header_row"]] + t["body"]:
-            covered.add(r)
-        if t["total_row"]:
-            covered.add(t["total_row"])
+        covered.update(t["body"])
+        heads.add(t["header_row"])
         tables.append({
             "id": f"table{n}",
             "header_row": t["header_row"],
@@ -546,9 +557,9 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
             "_total_row": t["total_row"],
             "needs_confirm": confirm,
         })
-    candidates = _candidates(grid, covered)
+    cells, keep, samples = _fixed_cells(grid, covered, heads, root)
     notes += _sheet_warnings(pkg, part, root, tables)
-    return {"name": name, "tables": tables, "cells": {}, "_candidates": candidates, "_notes": notes}
+    return {"name": name, "tables": tables, "cells": cells, "keep": keep, "_cell_samples": samples, "_notes": notes}
 
 
 def _only_inside(formula: str, t: dict, col: int) -> bool:
@@ -575,21 +586,50 @@ def _unique_key(header, letter: str, cols_def: dict) -> str:
     return key
 
 
-def _candidates(grid, covered: set[int]) -> list[dict]:
-    out = []
+def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tuple[dict, list[str], dict]:
+    """表のサンプル行の外のセルを、ラベル（keep）と、流し込む欄（cells）に分ける。
+
+    ラベルの右隣のセルは、値があってもなくても流し込む欄にする（前の文書の値を持ち越さない・空欄の記入枠も落とさない）。
+    ラベルの無い数値・日付も、流し込む欄にする。それ以外の文字（タイトル・見出し・注記）がラベル（keep）。
+    ラベルと同じ書式の空欄（見出しの帯の続き）は、記入枠と見なさない。
+    """
+    origin: dict[tuple[int, int], tuple[int, int]] = {}   # 結合範囲の各セル → 左上のセル
+    for mc in root.iter(q("mergeCell")):
+        (c1, r1), (c2, r2) = (split_ref(p) for p in (mc.get("ref").split(":") * 2)[:2])
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                origin[(c, r)] = (c1, r1)
+    cells: dict[str, str] = {}
+    keep: list[str] = []
+    samples: dict[str, dict] = {}
     for r in sorted(grid):
-        if r in covered:
+        if r in sample_rows:
             continue
+        labels: dict[int, str] = {}   # この行のラベルの列 → 文字
         for c in sorted(grid[r]):
             i = grid[r][c]
-            if i["value"] is None or i["formula"]:
+            if origin.get((c, r), (c, r)) != (c, r) or i["formula"]:
+                continue   # 結合の左上以外のセル・数式は、どちらにもしない
+            lc, lr = origin.get((c - 1, r), (c - 1, r))
+            label = labels.get(lc) if lr == r and r not in header_rows else None
+            value = i["value"]
+            if value is None and label is not None and grid[r][lc]["s"] == i["s"]:
+                continue   # ラベルと同じ書式の空欄は、行の塗りの続き。記入枠ではない
+            if r in header_rows:
+                if value is not None:
+                    keep.append(i["ref"])
                 continue
-            label = None
-            left = grid[r].get(c - 1)
-            if left and isinstance(left["value"], str):
-                label = left["value"]
-            out.append({"ref": i["ref"], "value": i["value"], "label": label})
-    return out
+            if label is not None or (value is not None and not isinstance(value, str)):
+                base = re.sub(r"[.\s]+", "_", (label or "").strip(" :：")).strip("_") or i["ref"]
+                key, n = base, 2
+                while key in cells.values():
+                    key, n = f"{base}{n}", n + 1
+                cells[i["ref"]] = key
+                samples[i["ref"]] = {"label": label, "value": value}
+            elif value is not None:
+                labels[c] = value
+                keep.append(i["ref"])
+    return cells, compress_cells(keep) if keep else [], samples
 
 
 def _sheet_warnings(pkg, part, root, tables) -> list[str]:
@@ -644,11 +684,13 @@ def summarize(definition: dict) -> str:
                 lines.append(f"      合計行: {t['_total_row']} 行（表の下へずらし、SUM の範囲は表に合わせて伸ばす）")
             for n in t["needs_confirm"]:
                 lines.append(f"      ? {n}")
-        if s["_candidates"]:
-            lines.append("  表の外の値（流し込む欄なら cells に ref とデータのキーを足す）:")
-            for c in s["_candidates"][:30]:
-                lab = f"（左隣: {c['label']}）" if c["label"] else ""
-                lines.append(f"      {c['ref']} = {c['value']!r} {lab}")
+        if s["cells"]:
+            lines.append("  流し込む欄（cells。テンプレートの値は残さない。データで null なら空欄になる）:")
+            for ref, key in s["cells"].items():
+                v = s["_cell_samples"].get(ref, {}).get("value")
+                lines.append(f"      {ref} → key={key}  " + (f"今の値: {v!r}" if v is not None else "（空欄の記入枠）"))
+        if s["keep"]:
+            lines.append(f"  残す（keep。見出し・ラベル・固定の文面）: {', '.join(s['keep'])}")
         for n in s["_notes"]:
             lines.append(f"  ! {n}")
     return "\n".join(lines)
@@ -772,7 +814,7 @@ def format_facts(facts: dict, fold: bool = True) -> str:
     L = ["書式の種類（S0〜: 同じ見た目は同じ番号）:"]
     L += [f"  {k} = {v}" for k, v in sorted(facts["style_legend"].items(), key=lambda kv: int(kv[0][1:]))]
     if facts.get("provenance"):
-        L.append("\n来歴・持ち越しの注意（他のプロジェクトの成果物を流用する場合は、定義の properties.scrub と strict を検討する）:")
+        L.append("\n来歴・持ち越しの注意（analyze の下書きの properties.scrub で消える。外部リンク・非表示・変更履歴は残るので扱いを決める）:")
         L += [f"  - {p}" for p in facts["provenance"]]
     for sh in facts["sheets"]:
         L.append(f"\n■ シート「{sh['name']}」")
@@ -971,6 +1013,9 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
     props = definition.get("properties") or {}
     apply_properties(pkg, props)
     if props.get("scrub"):
+        n = drop_comments(pkg)
+        if n:
+            warnings.append(f"コメント（メモ）{n} 件を取り除きました（properties.scrub）")
         scrub_leftover_text(pkg)
     if definition.get("strict"):
         total = sum(len(refs) for refs in leftovers.values())
@@ -1396,8 +1441,9 @@ def _fix_workbook(pkg: Package, maps: dict[str, RowMap]) -> None:
 
 
 def _drop_part(pkg: Package, part: str) -> None:
-    """part を取り除き、それを指す rels と [Content_Types].xml の Override も消す。"""
+    """part を取り除き、part 自身の rels、それを指す rels、[Content_Types].xml の Override も消す。"""
     pkg.removed.add(part)
+    pkg.removed.add(posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels"))
     for name in list(pkg.data):
         if not name.endswith(".rels") or name in pkg.removed:
             continue
@@ -1518,6 +1564,47 @@ def apply_properties(pkg: Package, props: dict) -> None:
         for name in list(pkg.data):
             if name == "docProps/custom.xml" or name.startswith("docProps/thumbnail"):
                 _drop_part(pkg, name)
+
+
+def drop_comments(pkg: Package) -> int:
+    """コメント（メモ・スレッド形式）を、吹き出しの図形と一緒にすべて取り除く。取り除いた件数を返す。"""
+    total = 0
+    for _, part in pkg.sheets():
+        rels = pkg.rels_of(part)
+        targets = {typ.rsplit("/", 1)[-1]: (rid, target) for rid, (typ, target) in rels.items() if target in pkg.data}
+        if "comments" not in targets and "threadedComment" not in targets:
+            continue
+        for kind in ("comments", "threadedComment"):
+            if kind in targets:
+                target = targets[kind][1]
+                if kind == "comments":
+                    total += len(list(pkg.xml(target).iter(q("comment"))))
+                _drop_part(pkg, target)
+        if "vmlDrawing" not in targets:
+            continue
+        rid, vml_part = targets["vmlDrawing"]
+        try:
+            vml = etree.fromstring(pkg.data[vml_part], etree.XMLParser(recover=True))
+        except etree.XMLSyntaxError:
+            continue
+        for cd in list(vml.iter(f"{{{NS_VML_X}}}ClientData")):
+            if cd.get("ObjectType") == "Note" and cd.getparent() is not None and cd.getparent().getparent() is not None:
+                shape = cd.getparent()
+                shape.getparent().remove(shape)
+        if any(cd.get("ObjectType") != "Note" for cd in vml.iter(f"{{{NS_VML_X}}}ClientData")):
+            pkg.data[vml_part] = etree.tostring(vml)   # フォームのボタンなど、メモ以外の図形は残す
+            continue
+        _drop_part(pkg, vml_part)
+        root = pkg.xml(part)
+        for ld in list(root.iter(q("legacyDrawing"))):
+            if ld.get(f"{{{NS_R}}}id") == rid:
+                ld.getparent().remove(ld)
+        pkg.put_xml(part, root)
+    if not any(n.startswith("xl/threadedComments/") for n in pkg.data if n not in pkg.removed):
+        for name in list(pkg.data):
+            if name.startswith("xl/persons/") and name.endswith(".xml") and name not in pkg.removed:
+                _drop_part(pkg, name)   # スレッド形式のコメントの作成者の一覧
+    return total
 
 
 def scrub_leftover_text(pkg: Package) -> None:
@@ -1834,7 +1921,7 @@ def cmd_analyze(args) -> int:
     dump_structured(definition, out)
     print(summarize(definition))
     print(f"\n定義ファイルの下書きを書きました: {out}")
-    print("（? の項目をユーザーに確認してから、定義ファイルを直して確定する）")
+    print("（? の項目と、流し込む欄・残す範囲の分け方をユーザーに確認してから、定義ファイルを直して確定する）")
     return 0
 
 

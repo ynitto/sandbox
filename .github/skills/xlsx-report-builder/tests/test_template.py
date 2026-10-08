@@ -261,31 +261,17 @@ class AnalyzeTests(Base):
         self.assertEqual((t2["header_row"], t2["first_row"], t2["sample_rows"]), (15, 16, 1))
         self.assertEqual(list(t2["columns"]), ["A", "B", "C"])
 
-    def test_candidates_exclude_tables_and_list_labels(self):
-        sheet = xt.analyze(self.tpl)["sheets"][0]
-        refs = {c["ref"]: c for c in sheet["_candidates"]}
-        self.assertEqual(refs["B3"]["label"], "請求先")
-        self.assertNotIn("B8", refs)
-        self.assertNotIn("E10", refs)  # 数式は候補にしない
-
-    def test_date_code_recognizes_elapsed_time_formats(self):
-        for code in ("[h]:mm", "[hh]:mm:ss", "[m]:ss", "[mm]:ss", "[s]", "[ss]"):
-            with self.subTest(code=code):
-                self.assertTrue(xt._is_date_code(code))
-
-        for code in ("[Red]0.00", "[>=100]0", "[$-409]0.00", '[Blue]0 "hours"',
-                     "0.0\\h", "#,##0\\ \\m\\s", "_(* #,##0_)", "0_s", "0*s", "[DBNum1]0"):
-            with self.subTest(code=code):
-                self.assertFalse(xt._is_date_code(code))
-
-    def test_number_code_ignores_brackets_and_literals(self):
-        styles = xt.Styles.__new__(xt.Styles)
-        styles.date = {}
-        for code, want in (("#,##0", True), ("[$¥-411]#,##0", True), ("[Red]0.0", True),
-                           ("[$-409]@", False), ('@"件"', False), ("@\\0", False)):
-            styles.code = {1: code}
-            with self.subTest(code=code):
-                self.assertEqual(styles.is_number("1"), want)
+    def test_fixed_cells_split_into_fill_and_keep(self):
+        d = xt.analyze(self.tpl)
+        sheet = d["sheets"][0]
+        # ラベルの右隣は、前の値があっても流し込む欄。表の行・数式は入れない
+        self.assertEqual(sheet["cells"], {"B3": "請求先", "B4": "請求日", "B5": "税率"})
+        self.assertEqual(sheet["_cell_samples"]["B3"], {"label": "請求先", "value": "サンプル株式会社"})
+        self.assertEqual(sheet["keep"], ["A1", "A3:A5", "A7:E7", "D10:D12", "A14", "A15:C15", "A18"])
+        # 前の文書の値・来歴を持ち越さないのが既定
+        self.assertTrue(d["strict"])
+        self.assertEqual(d["properties"], {"scrub": True})
+        xt.check_definition(self.tpl, d)   # 下書きのままで、strict の検査が通る
 
     def test_cli_roundtrip_with_analyzed_definition(self):
         import xlsx_builder  # noqa: F401  (サブコマンド統合の確認)
@@ -303,7 +289,7 @@ class AnalyzeTests(Base):
         for letter, key in zip("ABC", ["date", "method", "amount"]):
             d["sheets"][0]["tables"][1]["columns"][letter]["key"] = key
         d["sheets"][0]["tables"][0]["columns"]["A"]["key"] = "$index"
-        d["sheets"][0]["cells"] = {"B3": "customer"}
+        d["sheets"][0]["cells"] = {"B3": "customer", "B4": "date", "B5": "rate"}
         with open(defn, "w", encoding="utf-8") as fh:
             json.dump(d, fh, ensure_ascii=False)
         with open(data, "w", encoding="utf-8") as fh:
@@ -791,6 +777,25 @@ class ReusedDeliverableTests(Base):
             self.assertNotIn("thumbnail", z.read("_rels/.rels").decode())
         load_workbook(os.path.join(self.dir, "out.xlsx"))  # 壊れていない
 
+    def test_scrub_removes_every_comment_with_its_shape(self):
+        from openpyxl.comments import Comment
+        wb = load_workbook(self.tpl)
+        wb["請求書"]["A18"].comment = Comment("前の案件で足した注記の由来", "山田")   # 残すセルのメモ
+        wb.save(self.tpl)
+        d = json.loads(json.dumps(DEF))
+        d["properties"] = {"scrub": True}
+        out = self.render(definition=d)
+        self.assertIn("コメント（メモ）1 件を取り除きました（properties.scrub）", self.warnings)
+        ws = load_workbook(out)["請求書"]
+        self.assertFalse([c.coordinate for row in ws.iter_rows() for c in row if c.comment])
+        with zipfile.ZipFile(out) as z:
+            names = z.namelist()
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+            types = z.read("[Content_Types].xml").decode()
+        self.assertFalse([n for n in names if "comment" in n.lower() or n.endswith(".vml")])
+        self.assertNotIn("legacyDrawing", sheet)
+        self.assertNotIn("comments", types)
+
     def test_strict_reports_template_values_that_would_leak(self):
         d = json.loads(json.dumps(DEF))
         d["strict"] = True
@@ -1016,6 +1021,44 @@ class ChecklistTests(Base):
         build_tabs(wb)
         wb.save(path)
         return path
+
+    def test_blank_input_frames_and_values_get_keys(self):
+        def build(wb):
+            ws = wb.create_sheet("設計書")
+            ws.merge_cells("A1:D1")
+            ws["A1"] = "システム設計書"
+            for r, (label, value) in enumerate([("文書番号", "DOC-0815"), ("版", "1.3"), ("作成日", None),
+                                                ("OS", "Windows Server 2019"), ("備考：", None)], start=3):
+                ws.merge_cells(f"A{r}:B{r}")   # ラベルが結合でも、右隣は記入枠
+                ws[f"A{r}"], ws[f"C{r}"] = label, value
+                ws[f"C{r}"].border = BOX       # 空欄でも枠（書式）がある
+            ws["A9"], ws["B9"] = 2024, "年度"
+            ws["A11"] = "環境情報"
+            for c in "ABCD":
+                ws[f"{c}11"].fill = BAND_FILL   # 見出しの帯。右の空欄は記入枠ではない
+        tpl = self.checklist(build)
+        sheet = next(s for s in xt.analyze(tpl)["sheets"] if s["name"] == "設計書")
+        self.assertEqual(sheet["cells"], {"C3": "文書番号", "C4": "版", "C5": "作成日", "C6": "OS", "C7": "備考", "A9": "A9"})
+        self.assertEqual(sheet["keep"], ["A1", "A3:A7", "B9", "A11"])
+
+    def test_date_code_recognizes_elapsed_time_formats(self):
+        for code in ("[h]:mm", "[hh]:mm:ss", "[m]:ss", "[mm]:ss", "[s]", "[ss]"):
+            with self.subTest(code=code):
+                self.assertTrue(xt._is_date_code(code))
+
+        for code in ("[Red]0.00", "[>=100]0", "[$-409]0.00", '[Blue]0 "hours"',
+                     "0.0\\h", "#,##0\\ \\m\\s", "_(* #,##0_)", "0_s", "0*s", "[DBNum1]0"):
+            with self.subTest(code=code):
+                self.assertFalse(xt._is_date_code(code))
+
+    def test_number_code_ignores_brackets_and_literals(self):
+        styles = xt.Styles.__new__(xt.Styles)
+        styles.date = {}
+        for code, want in (("#,##0", True), ("[$¥-411]#,##0", True), ("[Red]0.0", True),
+                           ("[$-409]@", False), ('@"件"', False), ("@\\0", False)):
+            styles.code = {1: code}
+            with self.subTest(code=code):
+                self.assertEqual(styles.is_number("1"), want)
 
     def test_tables_on_several_tabs_get_separate_data_keys(self):
         def build(wb):
