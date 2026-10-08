@@ -2019,35 +2019,51 @@ def merge_data(parts: list) -> dict:
 
     オブジェクトはキーごとに合わせ、配列（表の行）はファイルの順につなぐ。
     同じ欄に違う値があれば止める（どちらが正しいか分からない）。null は、ほかのファイルの値を消さない。
+    表の同じ行が 2 つのファイルにあっても止める（前のデータを写したまま、ほかのファイルに残っている）。
+    食い違いは、まとめて挙げる。
     """
     merged: dict = {}
+    seen: dict[str, str] = {}   # 欄 → その値を最初に書いたファイル
+    problems: list[str] = []
 
-    def first_src(path):
-        for src, obj in parts:
-            try:
-                if dig(obj, path) is not None:
-                    return src
-            except (KeyError, TypeError):
-                pass
-        return "前のファイル"
+    def mark(v, path, src):
+        seen.setdefault(path, src)
+        if isinstance(v, dict):
+            for k, x in v.items():
+                mark(x, f"{path}.{k}", src)
 
     def put(a, b, path, src):
         if isinstance(a, dict) and isinstance(b, dict):
             for k, v in b.items():
-                a[k] = put(a[k], v, f"{path}.{k}" if path else str(k), src) if k in a else v
+                sub = f"{path}.{k}" if path else str(k)
+                if k in a:
+                    a[k] = put(a[k], v, sub, src)
+                else:
+                    a[k] = v
+                    mark(v, sub, src)
             return a
         if isinstance(a, list) and isinstance(b, list):
+            dup = [x for x in b if isinstance(x, dict) and x in a]
+            if dup:
+                problems.append(f"{path} の同じ行が、{seen.get(path, '前のファイル')} と {src} の両方にあります"
+                                f"（{len(dup)} 件。前のデータを写したままなら、片方から消す）")
             return a + b
         if b is None or a == b:
             return a
         if a is None:
+            seen[path] = src
             return b
-        raise TemplateError(f"{path} の値が、{first_src(path)} と {src} で違います: {a!r} / {b!r}")
+        problems.append(f"{path} の値が、{seen.get(path, '前のファイル')} と {src} で違います: {a!r} / {b!r}")
+        return a
 
     for src, obj in parts:
+        if obj is None:
+            continue
         if not isinstance(obj, dict):
             raise TemplateError(f"{src} の中身はオブジェクト（キーと値）にしてください")
         put(merged, deepcopy(obj), "", src)
+    if problems:
+        raise TemplateError("分けたデータが食い違っています:\n" + "\n".join(f"  {p}" for p in problems))
     return merged
 
 
