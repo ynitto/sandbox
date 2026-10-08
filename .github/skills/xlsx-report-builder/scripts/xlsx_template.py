@@ -1991,6 +1991,104 @@ def load_structured(path: str) -> Any:
         return parse_structured(f.read(), path)
 
 
+DATA_EXTS = (".json", ".yaml", ".yml")
+
+
+def data_files(paths: "str | list[str]") -> list[str]:
+    """データの指定（ファイル・フォルダ・-）を、読む順のファイルの並びにする。フォルダは中のデータファイルを名前順に。"""
+    out: list[str] = []
+    for p in [paths] if isinstance(paths, str) else paths:
+        if p != "-" and os.path.isdir(p):
+            found = sorted(n for n in os.listdir(p) if n.lower().endswith(DATA_EXTS) and not n.startswith("."))
+            if not found:
+                raise TemplateError(f"フォルダ {p} にデータファイル（{' / '.join(DATA_EXTS)}）がありません")
+            out += [os.path.join(p, n) for n in found]
+        else:
+            out.append(p)
+    return out
+
+
+def merge_data(parts: list) -> dict:
+    """分けたデータ（[(ファイル名, 中身), …]）を 1 つにする。
+
+    オブジェクトはキーごとに合わせ、配列（表の行）はファイルの順につなぐ。
+    同じ欄に違う値があれば止める（どちらが正しいか分からない）。null は、ほかのファイルの値を消さない。
+    """
+    merged: dict = {}
+
+    def first_src(path):
+        for src, obj in parts:
+            try:
+                if dig(obj, path) is not None:
+                    return src
+            except (KeyError, TypeError):
+                pass
+        return "前のファイル"
+
+    def put(a, b, path, src):
+        if isinstance(a, dict) and isinstance(b, dict):
+            for k, v in b.items():
+                a[k] = put(a[k], v, f"{path}.{k}" if path else str(k), src) if k in a else v
+            return a
+        if isinstance(a, list) and isinstance(b, list):
+            return a + b
+        if b is None or a == b:
+            return a
+        if a is None:
+            return b
+        raise TemplateError(f"{path} の値が、{first_src(path)} と {src} で違います: {a!r} / {b!r}")
+
+    for src, obj in parts:
+        if not isinstance(obj, dict):
+            raise TemplateError(f"{src} の中身はオブジェクト（キーと値）にしてください")
+        put(merged, deepcopy(obj), "", src)
+    return merged
+
+
+def load_data(paths: "str | list[str]") -> dict:
+    """データを読む。複数のファイル・フォルダなら、1 つにまとめる（merge_data）。"""
+    files = data_files(paths)
+    if len(files) == 1:
+        return load_structured(files[0])
+    return merge_data([(f if f != "-" else "標準入力", load_structured(f)) for f in files])
+
+
+def split_data(data: dict, definition: dict, rows: int = 0) -> list:
+    """データを、表ごとのファイルに分ける。[(ファイル名, 中身), …]。rows を指定すると、表をその行数ごとに分ける。
+
+    名前順に読めば元の順に戻る（render は、フォルダを渡すと名前順に読んでつなぐ）。
+    """
+    rest = deepcopy(data)
+    tables = []
+    for sd in definition.get("sheets", []):
+        for t in sd.get("tables", []):
+            try:
+                recs = dig(rest, t["key"])
+            except KeyError:
+                continue
+            parent, last = rest, t["key"].split(".")
+            for k in last[:-1]:
+                parent = parent[k]
+            del parent[last[-1]]
+            tables.append((t["key"], recs))
+    out = []
+    if _has_value(rest):
+        out.append(("00-cells", rest))
+    for n, (key, recs) in enumerate(tables, start=1):
+        name = f"{n:02d}-" + re.sub(r"[^\w-]+", "_", key)
+        size = rows if rows and rows > 0 else max(len(recs), 1)
+        chunks = [recs[i:i + size] for i in range(0, len(recs), size)] or [[]]
+        for i, chunk in enumerate(chunks, start=1):
+            part: dict = {}
+            _set_path(part, key, chunk)
+            out.append((name if len(chunks) == 1 else f"{name}-{i:03d}", part))
+    return out
+
+
+def _has_value(obj) -> bool:
+    return bool(obj) if isinstance(obj, (dict, list)) else obj is not None
+
+
 def dump_structured(obj: Any, path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         if path.lower().endswith((".yaml", ".yml")):
@@ -2244,6 +2342,7 @@ xlsx テンプレートへデータを流し込む、固有の render スクリ�
 スキルは不要で動く。表構造の定義はこのファイルに埋め込み済み。{template_note}
 
     uv run {name} --data data.yaml -o out.xlsx
+    uv run {name} --data head.yaml items-1.yaml items-2.yaml -o out.xlsx   # 分けたデータをまとめて流し込む（フォルダも可）
     python {name} --data data.json -o out.xlsx        # lxml・openpyxl・pyyaml が必要
     python {name} --example-data > data.yaml          # データの雛形を出す
     python {name} --extract-def def.yaml              # 埋め込みの定義を取り出す（直したら export --from-script で再生成）
@@ -2260,7 +2359,7 @@ def _wrap_b64(raw: bytes) -> str:
     return "(\n" + "\n".join(f"    {line!r}" for line in lines) + "\n)"
 
 
-ENGINE_VERSION = 1  # 書き出したスクリプトに入るエンジンの版。export --from-script で最新へ更新できる
+ENGINE_VERSION = 2  # 書き出したスクリプトに入るエンジンの版。export --from-script で最新へ更新できる
 
 
 def read_exported_script(path: str) -> tuple[dict, "bytes | None", str]:
@@ -2338,7 +2437,8 @@ def export_script(template: "str | bytes", definition: dict, output: str, embed:
 def standalone_main(definition: dict, template_bytes: "bytes | None", template_path: str, doc: str | None = None) -> int:
     parser = argparse.ArgumentParser(description=(doc or "").split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog="\n\n".join((doc or "").split("\n\n")[1:]))
-    parser.add_argument("--data", help="データ（.json / .yaml / .yml。- で標準入力）")
+    parser.add_argument("--data", nargs="+", action="extend",
+                        help="データ（.json / .yaml / .yml。- で標準入力）。複数のファイル・フォルダを渡すと、1 つにまとめる")
     parser.add_argument("-o", "--output", help="出力 .xlsx")
     parser.add_argument("--template", help="埋め込みのテンプレートの代わりに使う .xlsx（定義と構造が同じものに限る）")
     parser.add_argument("--example-data", action="store_true", help="データの雛形（YAML）を標準出力に出す")
@@ -2374,7 +2474,7 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
             return 0
         if not args.data or not args.output:
             parser.error("--data と -o が必要です")
-        warnings = render(template, definition, load_structured(args.data), args.output)
+        warnings = render(template, definition, load_data(args.data), args.output)
         for w in warnings:
             print(f"警告: {w}", file=sys.stderr)
         print(f"生成しました: {args.output}")
@@ -2440,7 +2540,7 @@ def _template_arg(args, definition) -> str:
 
 def cmd_render(args) -> int:
     definition = load_structured(args.definition)
-    data = load_structured(args.data)
+    data = load_data(args.data)
     warnings = render(_template_arg(args, definition), definition, data, args.output)
     for w in warnings:
         print(f"警告: {w}", file=sys.stderr)
@@ -2485,7 +2585,13 @@ def cmd_extract(args) -> int:
     data, notes = extract(args.source, definition, template if template and os.path.exists(template) else None)
     for n in notes:
         print(n, file=sys.stderr)
-    if args.output:
+    if args.split:
+        os.makedirs(args.split, exist_ok=True)
+        ext = args.format
+        for name, part in split_data(data, definition, args.rows):
+            dump_structured(part, os.path.join(args.split, f"{name}.{ext}"))
+            print(f"取り出しました: {os.path.join(args.split, name + '.' + ext)}")
+    elif args.output:
         dump_structured(data, args.output)
         print(f"取り出しました: {args.output}")
     else:
@@ -2511,7 +2617,8 @@ def add_subcommands(sub) -> None:
     r = sub.add_parser("render", help="テンプレート + 定義 + データから xlsx を再構成する")
     r.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template）")
     r.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
-    r.add_argument("--data", required=True, help="データ（.json / .yaml。- で標準入力）")
+    r.add_argument("--data", required=True, nargs="+", action="extend",
+                   help="データ（.json / .yaml。- で標準入力）。複数のファイル・フォルダを渡すと、1 つにまとめる（表の行はつなぐ）")
     r.add_argument("-o", "--output", required=True, help="出力 .xlsx")
     r.set_defaults(func=cmd_render)
     e = sub.add_parser("export", help="この文書専用の、単体で動く render スクリプトを書き出す")
@@ -2526,6 +2633,9 @@ def add_subcommands(sub) -> None:
     x.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
     x.add_argument("--template", help="テンプレート .xlsx（省略時は定義ファイルの template。表の終わりを見分けるのに使う）")
     x.add_argument("-o", "--output", help="データの出力先（.json / .yaml。省略時は標準出力に JSON）")
+    x.add_argument("--split", metavar="DIR", help="データを表ごとのファイルに分けて、このフォルダに書く（render --data DIR で読める）")
+    x.add_argument("--rows", type=int, default=0, help="--split で、表をこの行数ごとのファイルに分ける")
+    x.add_argument("--format", choices=("yaml", "json"), default="yaml", help="--split で書く形式（既定 yaml）")
     x.set_defaults(func=cmd_extract)
 
 

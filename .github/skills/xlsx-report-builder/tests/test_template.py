@@ -500,6 +500,7 @@ class MaintainExportedScriptTests(Base):
         super().setUp()
         self.script = os.path.join(self.dir, "render.py")
         xt.export_script(self.tpl, DEF, self.script)
+        xt.dump_structured(DEF, os.path.join(self.dir, "def.json"))
 
     def cli(self, *args):
         entry = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
@@ -513,6 +514,45 @@ class MaintainExportedScriptTests(Base):
         self.assertEqual(definition, DEF)
         self.assertIsNone(embedded)
         self.assertEqual(rel, "t.xlsx")
+
+    def test_split_data_files_are_merged_by_render_and_the_script(self):
+        def values(path):
+            return [[c.value for c in row] for row in load_workbook(path)["請求書"].iter_rows()]
+        want = os.path.join(self.dir, "want.xlsx")
+        xt.render(self.tpl, DEF, DATA, want)
+
+        # 手で分けたファイル: 表の行はファイルの順につなぎ、null はほかのファイルの値を消さない
+        parts = [{"customer": DATA["customer"], "date": DATA["date"], "rate": DATA["rate"], "items": DATA["items"][:3]},
+                 {"customer": None, "items": DATA["items"][3:]},
+                 {"payments": DATA["payments"]}]
+        paths = []
+        for i, part in enumerate(parts):
+            paths.append(os.path.join(self.dir, f"p{i}.{'yaml' if i else 'json'}"))
+            xt.dump_structured(part, paths[-1])
+        self.assertEqual(xt.load_data(paths), DATA)
+        out = os.path.join(self.dir, "o.xlsx")
+        r = self.run_script("--data", *paths, "-o", out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(values(out), values(want))
+        with self.assertRaises(xt.TemplateError) as cm:
+            xt.merge_data([("a.yaml", {"customer": "A"}), ("b.yaml", {"customer": "B"})])
+        self.assertIn("customer の値が、a.yaml と b.yaml で違います", str(cm.exception))
+
+        # extract --split で表ごと・行数ごとに分け、フォルダごと渡す
+        split = os.path.join(self.dir, "split")
+        r = self.cli("extract", want, "--def", os.path.join(self.dir, "def.json"), "--template", self.tpl,
+                     "--split", split, "--rows", "2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sorted(os.listdir(split)), ["00-cells.yaml", "01-items-001.yaml", "01-items-002.yaml",
+                                                     "01-items-003.yaml", "02-payments.yaml"])
+        self.assertEqual(xt.load_data(split)["items"], DATA["items"])
+        for run in (lambda o: self.run_script("--data", split, "-o", o),
+                    lambda o: self.cli("render", "--template", self.tpl, "--def", os.path.join(self.dir, "def.json"),
+                                       "--data", split, "-o", o)):
+            out = os.path.join(self.dir, "o2.xlsx")
+            r = run(out)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(values(out), values(want))
 
     def test_extract_def_edit_and_regenerate(self):
         d = os.path.join(self.dir, "got.yaml")

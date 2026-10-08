@@ -2,7 +2,7 @@
 name: xlsx-report-builder
 description: JSON スペックから Excel (.xlsx) 帳票・レポートを新規生成するスキル。既存の .xlsx テンプレートに、罫線・フォント・セル色などの書式を保ったままデータを流し込む（行数が可変の表・数式の複製・合計行のずれに対応）こともできる。「Excelを作って」「エクセルで帳票を作って」「xlsxを生成して」「集計表を作って」「売上レポートをExcelで」「スプレッドシートを出力して」「データをExcelにまとめて」「Excelのテンプレートにデータを流し込んで」「テンプレートの書式を保ったままxlsxを作って」などのリクエストで発動する。複数シート・見出し装飾・数値書式・合計行・条件付き書式・グラフ・フリーズペイン・オートフィルタに対応する。
 metadata:
-  version: 1.5.0
+  version: 1.6.0
   tier: experimental
   category: document
   tags:
@@ -191,6 +191,13 @@ uv run python scripts/xlsx_builder.py check --def def.yaml   # テンプレー�
 uv run python scripts/xlsx_builder.py render --def def.yaml --data data.yaml -o out.xlsx
 ```
 
+データが大きくなるなら、ファイルを分けてよい。`--data` に複数のファイルかフォルダを渡すと、1 つにまとめて流し込む。表の行はファイルの順（フォルダなら名前順）につなぐ。同じ欄に違う値があると止まる。書き出した専用スクリプトも同じ。`extract --split DIR --rows 500` は、取り出したデータを表ごと・500 行ごとのファイルに分けて書く。
+
+```bash
+uv run python scripts/xlsx_builder.py render --def def.yaml --data head.yaml items-1.yaml items-2.yaml -o out.xlsx
+uv run render_invoice.py --data data/ -o out.xlsx   # フォルダの中のデータファイルを名前順に
+```
+
 記入済みの文書（前の案件の成果物・以前に `render` した文書）からデータを起こすなら、`extract` で取り出してから直す。`○`・年月日の列は `判定: 合格`・`実施日: 2026-10-08` の形に戻る。既定値だけの空の行は書かない。どの行も空の欄も、記入枠としてキーを残す。
 
 ```bash
@@ -243,13 +250,13 @@ uv run python scripts/xlsx_builder.py export --from-script render_invoice.py --d
 | `inspect <template.xlsx>` | テンプレートの事実（値・数式・書式の種類・結合・仮値の疑い・来歴）を出す | `--json` |
 | `analyze <template.xlsx>` | 表の自動検出による、定義の下書きを書く（確定ではない） | `-o def.yaml`（拡張子で JSON / YAML を選ぶ） |
 | `check --def <def>` | 定義の整合と、テンプレートの値の残り（`strict`）を検査する | `--template` |
-| `render --def <def> --data <data> -o <out.xlsx>` | テンプレート + 定義 + データから再構成する | `--template`、`--data -`（標準入力） |
-| `extract <filled.xlsx> --def <def>` | 記入済みの文書から、定義に沿ってデータを取り出す（`render` の逆） | `-o data.yaml`（省略時は標準出力に JSON）、`--template` |
+| `render --def <def> --data <data> -o <out.xlsx>` | テンプレート + 定義 + データから再構成する | `--template`、`--data -`（標準入力）、`--data a.yaml b.yaml` / `--data DIR`（分けたデータをまとめる） |
+| `extract <filled.xlsx> --def <def>` | 記入済みの文書から、定義に沿ってデータを取り出す（`render` の逆） | `-o data.yaml`（省略時は標準出力に JSON）、`--template`、`--split DIR`・`--rows N`（表ごと・行数ごとのファイルに分ける） |
 | `export --def <def> -o <render.py>` | 定義を埋め込んだ、単体で動く専用スクリプトを書き出す | `--embed`、`--template`、`--from-script <旧.py>`（改修・エンジン更新） |
 | `build --spec <spec.json>` | テンプレート無しで、JSON スペックから新規生成する | stdin も可 |
 | `example` | `build` のサンプルスペックを出す | — |
 
-専用スクリプト（`export` の出力）の引数: `--data`、`-o`、`--template`、`--example-data`、`--extract-def`、`--extract-template`。
+専用スクリプト（`export` の出力）の引数: `--data`（複数のファイル・フォルダも可）、`-o`、`--template`、`--example-data`、`--extract-def`、`--extract-template`。
 
 ## できること / できないこと
 

@@ -18,6 +18,12 @@ xlsx（zip）の中のシート XML のうち、**可変の表の行だけ**を�
 
 定義ファイルとデータは、JSON と YAML のどちらでも渡せる（拡張子 `.json` / `.yaml` / `.yml` で判別。`--data -` は標準入力で、JSON → YAML の順に試す）。YAML の日付（`2026-10-05`）は日付型で読まれるが、日付書式のセルにはそのまま日付として入る。
 
+データは複数のファイルに分けてよい（`--data a.yaml b.yaml`、または `--data DIR` でフォルダの中の `.json` / `.yaml` / `.yml` を名前順に）。
+
+- オブジェクトはキーごとに合わせ、配列（表の行）はファイルの順につなぐ
+- `null` は、ほかのファイルの値を消さない。同じ欄に違う値があると、両方のファイル名を挙げて止まる
+- `extract --split DIR` は、表の無い欄を `00-cells`、表を `01-<key>` … のファイルに分けて書く。`--rows N` で表を N 行ごとに分ける（`01-items-001`、`01-items-002` …）。名前順に読めば元の順に戻る
+
 ## 定義ファイル（JSON / YAML）
 
 ```json
@@ -195,7 +201,7 @@ uv run python scripts/xlsx_builder.py export --def def.yaml -o render_invoice.py
 - 出力は、エンジンと定義を 1 つにまとめた Python ファイル。スキルのパスに依存しない
 - **テンプレートは既定では別ファイル**のまま、スクリプトからの相対パスで読む。`--embed` を付けたときだけ base64 で埋め込む
 - 先頭に PEP 723 の依存宣言があり、`uv run render_invoice.py --data data.yaml -o out.xlsx` でそのまま動く。`python` で動かすときは lxml・openpyxl・pyyaml を入れておく
-- 引数: `--data`（json/yaml/`-`）、`-o`、`--template`（別の .xlsx に差し替える。構造が同じものに限る）、`--example-data`、`--extract-def PATH`、`--extract-template PATH`（埋め込み時のみ）
+- 引数: `--data`（json/yaml/`-`。複数のファイル・フォルダを渡すと 1 つにまとめる）、`-o`、`--template`（別の .xlsx に差し替える。構造が同じものに限る）、`--example-data`、`--extract-def PATH`、`--extract-template PATH`（埋め込み時のみ）
 - 書き出し時に、テンプレートと定義の整合（シート名・サンプル行・pattern・列）を検査する
 
 ### 改修
