@@ -255,6 +255,20 @@ class RowMap:
                     return self.new_last(t)
         return r + self.shift_before(r)
 
+    def map_span(self, r1: int, r2: int) -> "tuple[int, int] | None":
+        """範囲の行 r1..r2 を新しい行に写す。表の残らない行（縮めた・取り除いた分）は、表の新しい範囲に寄せる。
+        範囲がすべて消えるなら None（縮めた表で、先頭と末尾が逆転した範囲を作らない）。"""
+        def one(r: int, is_end: bool) -> int:
+            for t in self.tables:
+                if t["first"] <= r <= t["end"]:
+                    new_first = t["first"] + self.shift_before(t["first"])
+                    if is_end and (r == t["end"] or r - t["first"] >= t["n"]):
+                        return new_first + t["n"] - 1
+                    return new_first + min(r - t["first"], t["n"])
+            return r + self.shift_before(r)
+        a, b = one(r1, False), one(r2, True)
+        return (a, b) if a <= b else None
+
 
 class Rewriter:
     """数式・範囲文字列中の行参照を RowMap で書き換える。他シートの参照はそのシートの RowMap を使う。"""
@@ -322,8 +336,10 @@ class Rewriter:
                 continue
             first = REF_PART_RE.match(parts[0].replace("$", ""))
             last = REF_PART_RE.match(parts[-1].replace("$", ""))
-            a = f"{first.group(2)}{rowmap.map(int(first.group(4)), False)}"
-            b = f"{last.group(2)}{rowmap.map(int(last.group(4)), True)}"
+            span = rowmap.map_span(int(first.group(4)), int(last.group(4)))
+            if span is None:
+                continue   # 範囲の行がすべて消えた
+            a, b = f"{first.group(2)}{span[0]}", f"{last.group(2)}{span[1]}"
             out.append(a if a == b else f"{a}:{b}")
         return " ".join(out)
 
@@ -473,8 +489,12 @@ def _find_tables(grid, styles) -> list[dict]:
             same_style = len({heads[c]["s"] for c in span}) == 1
             emph = all(styles.emphasis.get(int(heads[c]["s"]), False) for c in span)
             differs = any(nxt[c]["s"] != heads[c]["s"] for c in body_cols)
+            # 2 段の見出し（上の段が「判定」「対象OS」のようなまとまり）なら、下の段を見出しにする
+            nxt_heads = [c for c, i in nxt.items() if isinstance(i["value"], str) and i["value"].strip() and not i["formula"]]
+            two_tier = len(nxt_heads) > len(span) and all(styles.emphasis.get(int(nxt[c]["s"]), False) for c in nxt_heads) \
+                and (r + 2) in grid
             if len(body_cols) * 2 >= len(span) and (emph or (same_style and len(span) >= 3 and differs)) \
-                    and not _is_total_row(nxt):
+                    and not _is_total_row(nxt) and not two_tier:
                 lo, hi = span[0], span[-1]
                 body = []
                 rr = r + 1
@@ -544,8 +564,12 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
             if samples:
                 spec["_format"] = styles.code.get(int(samples[0]["s"]), "General")
             cols_def[letter] = spec
+        _readable_columns(cols_def, t, grid, _merge_origins(root), confirm)
         covered.update(t["body"])
         heads.add(t["header_row"])
+        above = grid.get(t["header_row"] - 1, {})
+        if above and all(t["lo"] <= c <= t["hi"] for c, i in above.items() if i["value"] is not None):
+            heads.add(t["header_row"] - 1)   # 2 段の見出しの上の段（「判定」「対象OS」のようなまとまり）
         tables.append({
             "id": f"table{n}",
             "header_row": t["header_row"],
@@ -586,6 +610,128 @@ def _unique_key(header, letter: str, cols_def: dict) -> str:
     return key
 
 
+def _merge_origins(root) -> dict[tuple[int, int], tuple[int, int]]:
+    """結合範囲の各セル（列, 行）→ 左上のセル。"""
+    origin: dict[tuple[int, int], tuple[int, int]] = {}
+    for mc in root.iter(q("mergeCell")):
+        (c1, r1), (c2, r2) = (split_ref(p) for p in (mc.get("ref").split(":") * 2)[:2])
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                origin[(c, r)] = (c1, r1)
+    return origin
+
+
+MARK_ON = ("○", "◯", "〇", "●", "◎", "✓", "✔", "レ", "☑", "■")
+MARK_OFF = ("×", "✕", "✖", "☐", "□", "-", "－", "ー", "―")
+DATE_HEADS = {"年": "year", "月": "month", "日": "day", "時": "hour", "分": "minute"}
+
+
+def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> None:
+    """表の見た目に頼る列（○× の印・年月日に分かれた日付）を、データで意味が分かる書き方にする。
+
+    - ○ の列が並ぶ → 見出しを値にした択一（`判定: 合格`）か、複数選択（`対象: [Windows, Linux]`）
+    - ○ の列が 1 つ → true / false
+    - 年・月・日の列が並ぶ → 1 つの日付（`2026-10-08`）
+    """
+    def text(r, c):
+        v = grid.get(r, {}).get(c, {}).get("value")
+        return str(v).strip() if v is not None and str(v).strip() else None
+
+    def group_head(cols) -> "str | None":   # 見出しの 1 行上で、列のまとまりにかかる見出し（結合セル）
+        above = {origin.get((c, t["header_row"] - 1), (c, t["header_row"] - 1)) for c in cols}
+        if len(above) != 1:
+            return None
+        v = text(*reversed(next(iter(above))))
+        return re.sub(r"[.\s]+", "_", v) if v else None
+
+    def runs(cols):   # 隣り合う列のまとまり。見出しの上の段の結合セルが変わるところで切る
+        out = []
+        above = lambda c: origin.get((c, t["header_row"] - 1), (c, t["header_row"] - 1))
+        for c in sorted(cols):
+            if out and out[-1][-1] == c - 1 and (above(c) == above(c - 1) or above(c)[0] == c and not text(*reversed(above(c)))
+                                                 and above(c - 1)[0] == c - 1 and not text(*reversed(above(c - 1)))):
+                out[-1].append(c)
+            else:
+                out.append([c])
+        return out
+
+    used = {spec.get("key") for spec in cols_def.values()}
+
+    def fresh(base):
+        key, n = base, 2
+        while key in used:
+            key, n = f"{base}{n}", n + 1
+        used.add(key)
+        return key
+
+    plain = {column_index_from_string(L): s for L, s in cols_def.items()
+             if not s.get("formula") and s.get("key") not in (None, "$index")}
+    marks, blank = {}, set()
+    for c in plain:
+        vals = [text(r, c) for r in t["body"]]
+        hit = [v for v in vals if v]
+        if hit and all(v in MARK_ON + MARK_OFF for v in hit) and any(v in MARK_ON for v in hit):
+            marks[c] = vals
+        elif not hit:
+            blank.add(c)   # サンプルが空の列も、印の列と同じまとまりの中なら選択肢にする
+    groups = []
+    for run in runs(set(marks) | blank):
+        if group_head(run):
+            groups += [run] if any(c in marks for c in run) else []
+        else:   # まとまりの見出しが無ければ、印の列だけが隣り合う範囲
+            groups += runs([c for c in run if c in marks])
+    for run in groups:
+        for c in run:
+            marks.setdefault(c, [None] * len(t["body"]))
+        letters = [get_column_letter(c) for c in run]
+        cells = [v for c in run for v in marks[c] if v]
+        on = max((m for m in MARK_ON if m in cells), key=cells.count)
+        off = max((m for m in MARK_OFF if m in cells), key=cells.count, default=None)
+        heads = [str(plain[c].get("header") or get_column_letter(c)) for c in run]
+        if len(run) == 1:
+            spec = plain[run[0]]
+            spec["map"] = {True: on, False: off}
+            spec["_sample"] = marks[run[0]][0] == on if marks[run[0]][0] else None
+            confirm.append(f"{letters[0]}列の {on} を、データでは true / false で書く")
+            continue
+        picked = [[h for c, h in zip(run, heads) if marks[c][i] == on] for i in range(len(t["body"]))]
+        multi = any(len(p) > 1 for p in picked)
+        for c in run:
+            used.discard(plain[c]["key"])
+        key = fresh(group_head(run) or "/".join(heads))
+        for c, h in zip(run, heads):
+            spec = plain[c]
+            spec.update({"key": key, "when": h, "mark": on})
+            if off:
+                spec["unmark"] = off
+            spec["_sample"] = picked[0] if multi else (picked[0][0] if picked[0] else None)
+        confirm.append(f"{letters[0]}〜{letters[-1]}列の {on} を、データでは {key}: "
+                       + (f"[{', '.join(heads[:2])}] のような見出しの配列（複数選択）" if multi else f"{heads[0]} のような見出しの 1 つ（択一）")
+                       + "で書く")
+    plain.update({column_index_from_string(L): s for L, s in cols_def.items() if s.get("key") == "$index"})
+    dates = [c for c in plain if str(plain[c].get("header") or "").strip() in DATE_HEADS]
+    for run in runs(dates):
+        if len(run) < 2:
+            continue
+        parts = [DATE_HEADS[str(plain[c]["header"]).strip()] for c in run]
+        if len(set(parts)) < len(parts):
+            continue
+        for c in run:
+            used.discard(plain[c]["key"])
+        key = fresh(group_head(run) or "日付")
+        got = dict(zip(parts, (text(t["body"][0], c) for c in run)))
+        try:
+            sample = dt.datetime(int(got.get("year", 2000)), int(got.get("month", 1)), int(got.get("day", 1)),
+                                 int(got.get("hour", 0)), int(got.get("minute", 0)))
+            sample = sample.date().isoformat() if not {"hour", "minute"} & set(parts) else sample.isoformat(sep=" ", timespec="minutes")
+        except (TypeError, ValueError):
+            sample = None
+        for c, part in zip(run, parts):
+            plain[c].update({"key": key, "part": part, "_sample": sample})
+        confirm.append(f"{get_column_letter(run[0])}〜{get_column_letter(run[-1])}列の"
+                       f"{'・'.join(str(plain[c]['header']).strip() for c in run)}を、データでは {key}: 2026-10-08 のような 1 つの日付で書く")
+
+
 def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tuple[dict, list[str], dict]:
     """表のサンプル行の外のセルを、ラベル（keep）と、流し込む欄（cells）に分ける。
 
@@ -593,12 +739,7 @@ def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tu
     ラベルの無い数値・日付も、流し込む欄にする。それ以外の文字（タイトル・見出し・注記）がラベル（keep）。
     ラベルと同じ書式の空欄（見出しの帯の続き）は、記入枠と見なさない。
     """
-    origin: dict[tuple[int, int], tuple[int, int]] = {}   # 結合範囲の各セル → 左上のセル
-    for mc in root.iter(q("mergeCell")):
-        (c1, r1), (c2, r2) = (split_ref(p) for p in (mc.get("ref").split(":") * 2)[:2])
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                origin[(c, r)] = (c1, r1)
+    origin = _merge_origins(root)
     cells: dict[str, str] = {}
     keep: list[str] = []
     samples: dict[str, dict] = {}
@@ -679,6 +820,13 @@ def summarize(definition: dict) -> str:
                          f"（{t['sample_rows']} 行）/ 繰り返し元 {t['pattern']} / データのキー: {t['key']}")
             for letter, c in t["columns"].items():
                 kind = f"数式 {c['_sample']}" if c.get("formula") else f"key={c.get('key')}  例: {c.get('_sample')!r}"
+                if "when" in c:
+                    kind += f"（{c['when']!r} を含むとき {c.get('mark', '○')}）"
+                elif "map" in c:
+                    pairs = [f"{k}→{'空欄' if v is None else v}" for k, v in c["map"].items()]
+                    kind += f"（{', '.join(pairs)}）"
+                elif "part" in c:
+                    kind += f"（日付の {c['part']}）"
                 lines.append(f"      {letter}列 「{c.get('header')}」 → {kind}  [{c.get('_format', '')}]")
             if t["_total_row"]:
                 lines.append(f"      合計行: {t['_total_row']} 行（表の下へずらし、SUM の範囲は表に合わせて伸ばす）")
@@ -1036,9 +1184,11 @@ def _missing_key_warnings(t: dict, block: int, rows: list, sheet: str) -> list[s
     wanted = [spec["key"] for cols in _column_maps(t, block) for spec in cols.values()
               if spec.get("key") and spec["key"] != "$index" and not spec.get("formula")
               and not spec.get("keep") and not spec.get("clear")]
-    present = {k for r in records for k in r}
-    missing = [k for k in dict.fromkeys(wanted) if k not in present]
-    unused = [k for k in dict.fromkeys(k for r in records for k in r) if k not in wanted]
+    def found(k: str) -> bool:
+        return any(k in r or _row_value(r, k) is not None for r in records)
+    missing = [k for k in dict.fromkeys(wanted) if not found(k)]
+    heads = {k.split(".")[0] for k in wanted} | set(wanted)
+    unused = [k for k in dict.fromkeys(k for r in records for k in r) if k not in heads]
     # 空欄がふつうの列（備考など）もあるので、綴り違いの手がかり（使われていないキー）があるか、どの key も当たらないときだけ
     if not missing or not unused and len(missing) < len(set(wanted)):
         return []
@@ -1118,14 +1268,17 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
                             + "\n  ".join(moved))
 
     fixed_cells = {}
-    for ref, key in (sd.get("cells") or {}).items():
+    cell_specs = {ref: (spec if isinstance(spec, dict) else {"key": spec}) for ref, spec in (sd.get("cells") or {}).items()}
+    for ref, spec in cell_specs.items():
         col, r = split_ref(ref)
         if r in tbl_of:
             raise TemplateError(f"cells の {ref} は表のサンプル行の中です")
         try:
-            fixed_cells[(col, r)] = dig(data, key)
+            value = dig(data, spec["key"])
         except KeyError:
-            raise TemplateError(f"データに {key!r} がありません（cells の {ref}）")
+            raise TemplateError(f"データに {spec['key']!r} がありません（cells の {ref}）")
+        _check_choice(spec, value, [s for s in cell_specs.values() if s.get("key") == spec["key"]], f"cells の {ref}")
+        fixed_cells[(col, r)] = convert_value(spec, value, f"cells の {ref}")
 
     clear_cells: set[tuple[int, int]] = set()
     for spec in sd.get("clear") or []:  # 無視する値: 書式は残して空にする
@@ -1253,17 +1406,83 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                 elif row_data is None:
                     value = None
                 elif isinstance(row_data, dict):
-                    value = row_data.get(key)
+                    value = _row_value(row_data, key)
                 else:
                     raise TemplateError(f"{td['key']!r} の要素はオブジェクトである必要があります")
+                where = f"{td['key']}[{rec}].{key}"
+                _check_choice(spec, value, [s for s in colmaps[j].values() if s.get("key") == key], where)
+                value = convert_value(spec, value, where)
                 if isinstance(value, (dict, list)):
-                    raise TemplateError(f"{td['key']}[{rec}].{key} に配列・オブジェクトは入れられません")
+                    raise TemplateError(f"{where} に配列・オブジェクトは入れられません")
                 set_value(c, value, styles, replace_formula=True)
             for c in row:
                 if cell_col(c) not in colmaps[j] and _has_literal(c):
                     leftovers.add(f"{get_column_letter(cell_col(c))}{src_r}")
             _strip_cached(row)
             out_rows.append(row)
+
+
+# データを人が読める形で書き、表の見た目（○×・コード・年月日の分割）へは定義で変換する
+DATE_PARTS = ("year", "month", "day", "hour", "minute")
+
+
+def convert_value(spec: dict, value: Any, where: str = "") -> Any:
+    """列・セルの指定（when / map / part）に従って、データの値をセルに入れる値に変える。
+
+    - when: 値が when と同じ（配列なら when を含む）なら mark（既定 ○）、違えば unmark（既定 空欄）。
+      択一（`判定: 合格`）・複数選択（`対象: [Windows, Linux]`）を、見出しの列ごとの ○ にする
+    - map: 値を表の表記に置き換える（`true: ○` / `false: ×`、`高: 1`）
+    - part: 日付・日時の一部（year / month / day / hour / minute）。年・月・日に分かれた欄へ 1 つの日付を入れる
+    """
+    if "when" in spec:
+        if value is None:
+            return None
+        hit = spec["when"] in value if isinstance(value, list) else str(value) == str(spec["when"])
+        return spec.get("mark", "○") if hit else spec.get("unmark")
+    if value is None:
+        return None
+    if "map" in spec:
+        m = spec["map"]
+        for k in ((value, str(value).lower(), str(value)) if isinstance(value, bool) else (value, str(value))):
+            if k in m:
+                return m[k]
+        raise TemplateError(f"{where} の値 {value!r} は、定義の map にありません（使える値: {', '.join(map(str, m))}）")
+    if "part" in spec:
+        part = spec["part"]
+        if part not in DATE_PARTS:
+            raise TemplateError(f"{where} の part は {', '.join(DATE_PARTS)} のどれかにしてください: {part!r}")
+        d = value
+        if isinstance(d, str):
+            try:
+                d = dt.datetime.fromisoformat(d.strip().replace("/", "-"))
+            except ValueError:
+                raise TemplateError(f"{where} の値 {value!r} を日付として読めません（2026-10-08 の形で書く）")
+        if not isinstance(d, (dt.date, dt.datetime)):
+            raise TemplateError(f"{where} の値 {value!r} は日付ではありません")
+        if part in ("hour", "minute") and not isinstance(d, dt.datetime):
+            return 0
+        return getattr(d, part)
+    return value
+
+
+def _check_choice(spec: dict, value: Any, group: list, where: str) -> None:
+    """択一・複数選択の値が、どの列の when にも当たらないと、黙ってどこにも ○ が付かない。それを止める。"""
+    if "when" not in spec or value is None or group[0] is not spec:
+        return   # 同じキーの列のうち、最初の列でだけ確かめる
+    choices = [str(s["when"]) for s in group if "when" in s]
+    for v in (value if isinstance(value, list) else [value]):
+        if str(v) not in choices:
+            raise TemplateError(f"{where} の値 {v!r} は、選べる値（{', '.join(choices)}）のどれでもありません")
+
+
+def _row_value(row_data: dict, key: str) -> Any:
+    """行オブジェクトから列の値を取る。キーそのもの（`No.` など）が無ければ、`test.0` のようにドット・添字でたどる。"""
+    if key in row_data:
+        return row_data[key]
+    try:
+        return dig(row_data, key)
+    except KeyError:
+        return None
 
 
 def _drop_stale_links(pkg, part, root, filled: set, warnings: list) -> None:
@@ -1352,9 +1571,9 @@ def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
                 else:
                     warnings.append(f"複数行にまたがる結合セル {m.get('ref')} は表のサンプル行内のため取り除きました")
                 continue
-            na = f"{get_column_letter(c1)}{rowmap.map(r1, False)}"
-            nb = f"{get_column_letter(c2)}{rowmap.map(r2, True)}"
-            keep.append(f"{na}:{nb}")
+            span = rowmap.map_span(r1, r2)
+            if span is not None:
+                keep.append(f"{get_column_letter(c1)}{span[0]}:{get_column_letter(c2)}{span[1]}")
         for ref in keep:
             etree.SubElement(mc, q("mergeCell"), ref=ref)
         mc.set("count", str(len(keep)))
@@ -1362,12 +1581,26 @@ def _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
             root.remove(mc)
 
     # 範囲を持つ要素
+    # 範囲がすべて消えた要素は取り除く（空の sqref は、Excel が壊れたファイルと見なす）
     for tag in ("conditionalFormatting", "dataValidation", "ignoredError"):
-        for el in root.iter(q(tag)):
+        for el in list(root.iter(q(tag))):
             if el.get("sqref"):
                 el.set("sqref", rw.sqref(el.get("sqref")))
-    for el in root.iter(q("hyperlink")):
+                if not el.get("sqref"):
+                    el.getparent().remove(el)
+    for el in list(root.iter(q("hyperlink"))):
         el.set("ref", rw.sqref(el.get("ref")))
+        if not el.get("ref"):
+            el.getparent().remove(el)
+    for tag in ("dataValidations", "hyperlinks"):   # 子が無くなった入れ物も取り除き、件数を合わせる
+        for el in list(root.iter(q(tag))):
+            if len(el) == 0:
+                el.getparent().remove(el)
+            elif el.get("count") is not None:
+                el.set("count", str(len(el)))
+    for el in list(root.iter(q("ignoredErrors"))):
+        if len(el) == 0:
+            el.getparent().remove(el)
     af = root.find(q("autoFilter"))
     if af is not None and af.get("ref"):
         af.set("ref", rw.sqref(af.get("ref")))
@@ -1706,14 +1939,49 @@ def skeleton_data(definition: dict) -> dict:
     """定義が必要とするデータの雛形（値は null）。"""
     out: dict = {}
     for sd in definition.get("sheets", []):
-        for key in (sd.get("cells") or {}).values():
-            _set_path(out, key, None)
+        for spec in (sd.get("cells") or {}).values():
+            _set_path(out, spec["key"] if isinstance(spec, dict) else spec, None)
         for t in sd.get("tables", []):
             colmaps = t["block"] if t.get("block_rows", 1) > 1 and t.get("block") else [t.get("columns")]
-            row = {c["key"]: None for cols in colmaps for c in (cols or {}).values()
-                   if c.get("key") and c["key"] != "$index" and not c.get("keep") and not c.get("clear")}
+            row: dict = {}
+            for c in (c for cols in colmaps for c in (cols or {}).values()):
+                if c.get("key") and c["key"] != "$index" and not c.get("keep") and not c.get("clear"):
+                    _set_path(row, c["key"], None)
             _set_path(out, t["key"], [row])
-    return out
+    return _as_lists(out)
+
+
+def value_notes(definition: dict) -> list[str]:
+    """値の書き方（択一・複数選択・true/false・日付）の説明。雛形の null だけでは分からないものを補う。"""
+    notes: dict[str, str] = {}
+    for sd in definition.get("sheets", []):
+        specs = [(None, s if isinstance(s, dict) else {"key": s}) for s in (sd.get("cells") or {}).values()]
+        for t in sd.get("tables", []):
+            colmaps = t["block"] if t.get("block_rows", 1) > 1 and t.get("block") else [t.get("columns")]
+            specs += [(t["key"], c) for cols in colmaps for c in (cols or {}).values()]
+        for table, spec in specs:
+            key = spec.get("key")
+            if not key or key == "$index":
+                continue
+            name = f"{table}[].{key}" if table else key
+            if "when" in spec:
+                whens = [str(s["when"]) for tk, s in specs if tk == table and s.get("key") == key and "when" in s]
+                notes[name] = f"{name}: {' / '.join(whens)} のどれか（複数なら配列）"
+            elif "map" in spec:
+                notes[name] = f"{name}: {' / '.join(str(k).lower() if isinstance(k, bool) else str(k) for k in spec['map'])} のどれか"
+            elif "part" in spec:
+                notes[name] = f"{name}: 日付（2026-10-08）"
+    return list(notes.values())
+
+
+def _as_lists(obj: Any) -> Any:
+    """キーが 0, 1, 2 … だけのオブジェクトを配列にする（`test.0`・`test.1` の雛形を `test: [null, null]` に）。"""
+    if not isinstance(obj, dict):
+        return [_as_lists(x) for x in obj] if isinstance(obj, list) else obj
+    obj = {k: _as_lists(v) for k, v in obj.items()}
+    if obj and set(obj) == {str(i) for i in range(len(obj))}:
+        return [obj[str(i)] for i in range(len(obj))]
+    return obj
 
 
 def validate_definition(template: "str | bytes", definition: dict) -> None:
@@ -1834,7 +2102,8 @@ def export_script(template: "str | bytes", definition: dict, output: str, embed:
     # docstring を 2 つ持てないため、エンジンの docstring は取り除く
     engine = re.sub(r'^"""[\s\S]*?"""\n', "", engine, count=1)
     shape = "\n".join("    " + line for line in
-                       json.dumps(skeleton_data(definition), ensure_ascii=False, indent=2).splitlines())
+                       json.dumps(skeleton_data(definition), ensure_ascii=False, indent=2).splitlines()
+                       + ([""] + value_notes(definition) if value_notes(definition) else []))
     title = f"{os.path.splitext(template_name or 'template')[0]} の render スクリプト"
     note = ("テンプレートも埋め込み済み（--template で差し替えられる）。" if embed
             else f"テンプレート（{rel}）は、このスクリプトからの相対パスで読む。")

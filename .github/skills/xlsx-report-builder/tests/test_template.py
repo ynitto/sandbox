@@ -920,6 +920,40 @@ class UsabilityGuardTests(Base):
         self.assertEqual(ws["E15"].value, 12345)
         self.assertEqual(ws["E13"].value, "=SUM(E8:E12)")  # 置き換えない数式はそのまま
 
+    def test_shrinking_table_drops_ranges_of_vanished_rows_instead_of_reversing(self):
+        wb = load_workbook(self.tpl)
+        ws = wb["請求書"]
+        dv = DataValidation(type="list", formula1='"A,B"')
+        dv.add("B9")                       # 2 行目のサンプル行だけの入力規則
+        ws.add_data_validation(dv)
+        ws.conditional_formatting.add("D9", CellIsRule(operator="lessThan", formula=["0"], fill=BAND_FILL))
+        wb.save(self.tpl)
+        out = self.render(dict(DATA, items=DATA["items"][:1]))
+        with zipfile.ZipFile(out) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        refs = re.findall(r'sqref="([^"]*)"', sheet)
+        for ref in refs:                   # 先頭と末尾が逆転した範囲（B9:B8）・空の範囲を作らない
+            for a, b in re.findall(r"[A-Z]+(\d+):[A-Z]+(\d+)", ref):
+                self.assertLessEqual(int(a), int(b), ref)
+            self.assertTrue(ref.strip(), refs)
+        self.assertIn("C8", refs)          # 表の全行にあった入力規則（C8:C9）は、残る 1 行に縮む
+        self.assertNotIn("B9", " ".join(refs))
+        load_workbook(out)
+
+    def test_row_keys_follow_dots_and_indexes(self):
+        d = json.loads(json.dumps(DEF))
+        cols = d["sheets"][0]["tables"][0]["columns"]
+        cols["B"]["key"], cols["C"]["key"], cols["D"]["key"] = "item.name", "nums.0", "nums.1"
+        items = [{"item": {"name": f"商品{i}"}, "nums": [i, 100 * i]} for i in (1, 2)]
+        ws = load_workbook(self.render(dict(DATA, items=items), d))["請求書"]
+        self.assertEqual([[ws[f"{c}{r}"].value for c in "BCD"] for r in (8, 9)], [["商品1", 1, 100], ["商品2", 2, 200]])
+        self.assertFalse([w for w in self.warnings if "どの行にも無い" in w])
+        skel = xt.skeleton_data(d)["items"][0]
+        self.assertEqual((skel["item"], skel["nums"]), ({"name": None}, [None, None]))
+        cols["B"]["key"] = "No."           # ドットを含むキーそのものも引ける
+        ws = load_workbook(self.render(dict(DATA, items=[dict(i, **{"No.": "X"}) for i in items]), d))["請求書"]
+        self.assertEqual(ws["B8"].value, "X")
+
     def test_values_excel_cannot_store_are_rejected_with_the_cell(self):
         for bad, word in (("a\x0bb", "制御文字"), ("a\ufffeb", "制御文字"), (float("nan"), "保存できません"), ("x" * 40000, "上限")):
             data = dict(DATA, items=[{"name": bad, "qty": 1, "price": 1}])
@@ -1059,6 +1093,70 @@ class ChecklistTests(Base):
             styles.code = {1: code}
             with self.subTest(code=code):
                 self.assertEqual(styles.is_number("1"), want)
+
+    def build_readable(self, wb):
+        ws = wb.create_sheet("試験")
+        ws.merge_cells("C1:D1"); ws["C1"] = "判定"
+        ws.merge_cells("E1:G1"); ws["E1"] = "対象OS"
+        ws.merge_cells("H1:J1"); ws["H1"] = "実施日"
+        for i, h in enumerate(["No", "項目", "合格", "不合格", "Windows", "Linux", "macOS", "年", "月", "日", "要再試"], 1):
+            cell = ws.cell(2, i, h)
+            cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), HEAD_FILL, BOX
+        for r, row in enumerate([(1, "起動", "○", "×", "○", "○", None, 2024, 4, 1, "○"),
+                                 (2, "停止", "×", "○", "○", None, None, 2024, 4, 2, None)], 3):
+            for i, v in enumerate(row, 1):
+                ws.cell(r, i, v).border = BOX
+
+    def test_marks_and_split_dates_become_readable_data(self):
+        tpl = self.checklist(self.build_readable)
+        d = xt.analyze(tpl)
+        sheet = next(s for s in d["sheets"] if s["name"] == "試験")
+        cols = sheet["tables"][0]["columns"]
+        # ○× の択一は見出しを値に、複数の ○ は配列に、1 列の ○ は true / false に、年月日は 1 つの日付に
+        self.assertEqual({L: (cols[L]["key"], cols[L].get("when")) for L in "CDEFG"},
+                         {"C": ("判定", "合格"), "D": ("判定", "不合格"), "E": ("対象OS", "Windows"),
+                          "F": ("対象OS", "Linux"), "G": ("対象OS", "macOS")})
+        self.assertEqual((cols["C"]["mark"], cols["C"]["unmark"]), ("○", "×"))
+        self.assertEqual((cols["E"]["_sample"], cols["C"]["_sample"]), (["Windows", "Linux"], "合格"))
+        self.assertEqual(cols["K"]["map"], {True: "○", False: None})
+        self.assertEqual({L: (cols[L]["key"], cols[L]["part"]) for L in "HIJ"},
+                         {"H": ("実施日", "year"), "I": ("実施日", "month"), "J": ("実施日", "day")})
+        self.assertEqual(cols["H"]["_sample"], "2024-04-01")
+        self.assertIn("C1", sheet["keep"])     # 2 段の見出しの上の段は、流し込む欄にしない
+        self.assertEqual(sheet["cells"], {})
+        self.assertIn("items[].判定: 合格 / 不合格 のどれか（複数なら配列）", xt.value_notes(d))
+
+        d = json.loads(json.dumps(d))           # JSON の定義（map のキーが "true" / "false" の文字列）でも同じ
+        out = os.path.join(self.dir, "o.xlsx")
+        items = [{"項目": "起動", "判定": "合格", "対象OS": ["Windows", "macOS"], "実施日": "2026-10-08", "要再試": False},
+                 {"項目": "停止", "判定": "不合格", "対象OS": ["Linux"], "実施日": "2026-10-09", "要再試": True},
+                 {"項目": "再起動", "判定": None, "対象OS": [], "実施日": None, "要再試": None}]
+        xt.render(tpl, d, {"items": items}, out)
+        ws = load_workbook(out)["試験"]
+        self.assertEqual([[c.value for c in row] for row in ws.iter_rows(min_row=3, max_row=5, min_col=3)],
+                         [["○", "×", "○", None, "○", 2026, 10, 8, None],
+                          ["×", "○", None, "○", None, 2026, 10, 9, "○"],
+                          [None, None, None, None, None, None, None, None, None]])
+        for bad, word in (({"判定": "保留"}, "選べる値（合格, 不合格）"), ({"要再試": "たぶん"}, "map にありません"),
+                          ({"実施日": "来週"}, "日付として読めません")):
+            with self.assertRaises(xt.TemplateError) as cm:
+                xt.render(tpl, d, {"items": [dict(items[0], **bad)]}, out)
+            self.assertIn(word, str(cm.exception))
+
+    def test_fixed_cells_take_the_same_conversions(self):
+        def build(wb):
+            ws = wb.create_sheet("届")
+            ws["A1"], ws["B1"], ws["C1"] = "性別", "男", "女"
+            ws["A2"], ws["B2"] = "提出日", "年"
+        d = {"version": 1, "sheets": [{"name": "届", "cells": {
+            "B1": {"key": "性別", "when": "男", "mark": "■", "unmark": "□"},
+            "C1": {"key": "性別", "when": "女", "mark": "■", "unmark": "□"},
+            "C2": {"key": "提出日", "part": "year"}}}]}
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(self.checklist(build), d, {"性別": "女", "提出日": "2026-10-08"}, out)
+        ws = load_workbook(out)["届"]
+        self.assertEqual((ws["B1"].value, ws["C1"].value, ws["C2"].value), ("□", "■", 2026))
+        self.assertEqual(xt.skeleton_data(d), {"性別": None, "提出日": None})
 
     def test_tables_on_several_tabs_get_separate_data_keys(self):
         def build(wb):
