@@ -6,9 +6,11 @@ graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動�
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import io
 import json
+import marshal
 import re
 import os
 import shutil
@@ -170,22 +172,54 @@ def commit(repo: Path, files: dict[str, str], message: str) -> None:
     git(repo, "commit", "-q", "-m", message)
 
 
+# codd.py を毎回コンパイルし直さない（スクリプトとして起動すると .pyc が使われず、1 回 0.1 秒ほどかかる）。
+# 中身ごとにコンパイルしたものを控え、別のプロセスで動かすことは変えない。
+_COMPILED: dict[str, str] = {}
+_COMPILED_DIR = Path(tempfile.mkdtemp(prefix="codd-compiled-"))
+atexit.register(shutil.rmtree, _COMPILED_DIR, True)
+_BOOT = ("import marshal, sys, __main__; c, p = sys.argv[1], sys.argv[2]; sys.argv = [p, *sys.argv[3:]]; "
+         "sys.path[0] = __import__('os').path.dirname(p); __main__.__file__ = p; "
+         "exec(marshal.loads(open(c, 'rb').read()), __main__.__dict__)")
+
+
+def compiled(script: Path) -> str:
+    body = script.read_bytes()
+    key = hashlib.sha256(body).hexdigest()
+    if key not in _COMPILED:
+        out = _COMPILED_DIR / f"{key}.bin"
+        out.write_bytes(marshal.dumps(compile(body, str(script), "exec")))
+        _COMPILED[key] = str(out)
+    return _COMPILED[key]
+
+
 class CoddTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        # 置いたばかりの 2 つのリポジトリは、どのテストも同じ。1 度だけ作り、テストごとに写す。
+        cls.template = Path(tempfile.mkdtemp())
+        impl, design = cls.template / "impl", cls.template / "design"
+        for repo in (impl, design):
+            repo.mkdir()
+            git(repo, "init", "-q", "-b", "main")
+        commit(impl, {"src/app.py": "def hello():\n    return 1\n"}, "init")
+        commit(design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
+        init.init_repo(impl, "impl", ["../design"])
+        init.init_repo(design, "design", ["../impl"])
+        for repo in (impl, design):
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "add codd")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.template, True)
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.impl = self.tmp / "impl"
         self.design = self.tmp / "design"
-        for repo in (self.impl, self.design):
-            repo.mkdir()
-            git(repo, "init", "-q", "-b", "main")
-        commit(self.impl, {"src/app.py": "def hello():\n    return 1\n"}, "init")
-        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
-        init.init_repo(self.impl, "impl", ["../design"])
-        init.init_repo(self.design, "design", ["../impl"])
-        for repo in (self.impl, self.design):
-            git(repo, "add", "-A")
-            git(repo, "commit", "-q", "-m", "add codd")
+        for name in ("impl", "design"):
+            shutil.copytree(self.template / name, self.tmp / name, symlinks=True)
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
         self.log = self.tmp / "graphify.log"
@@ -193,7 +227,8 @@ class CoddTest(unittest.TestCase):
     def run_pa(self, repo: Path, *args: str) -> subprocess.CompletedProcess:
         env = {**os.environ, **GIT_ENV, "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
                "HOME": str(self.tmp / "home")}   # 利用者のホームのスキルを拾わない
-        return subprocess.run([sys.executable, ".statemachine/codd/codd.py", *args],
+        script = repo / ".statemachine/codd/codd.py"
+        return subprocess.run([sys.executable, "-c", _BOOT, compiled(script), str(script), *args],
                               cwd=repo, capture_output=True, text=True, env=env)
 
     def use_graphify_stub(self) -> None:
