@@ -493,7 +493,9 @@ def _find_tables(grid, styles) -> list[dict]:
             nxt_heads = [c for c, i in nxt.items() if isinstance(i["value"], str) and i["value"].strip() and not i["formula"]]
             two_tier = len(nxt_heads) > len(span) and all(styles.emphasis.get(int(nxt[c]["s"]), False) for c in nxt_heads) \
                 and (r + 2) in grid
-            if len(body_cols) * 2 >= len(span) and (emph or (same_style and len(span) >= 3 and differs)) \
+            # 書式の強調が無い見出しは、隙間なく並ぶときだけ表と見る（「宛先 ○○ 承認」のような記入欄の行と取り違えない）
+            no_gap = span[-1] - span[0] + 1 == len(span)
+            if len(body_cols) * 2 >= len(span) and (emph or (same_style and len(span) >= 3 and differs and no_gap)) \
                     and not _is_total_row(nxt) and not two_tier:
                 lo, hi = span[0], span[-1]
                 body = []
@@ -555,6 +557,15 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
                     if cell and cell["formula"] and not _only_inside(cell["formula"], t, c):
                         confirm.append(f"{cell['ref']} の数式が表の外の行を相対参照している。固定するなら $ を付ける")
                         break
+            elif not (head and head["value"] is not None) and not [s for s in samples if s["value"] is not None]:
+                continue   # 見出しも値も無い列は、体裁の余白。データにも定義にも入れない
+            elif head and isinstance(head["value"], str) and HUMAN_RE.search(head["value"]):
+                spec["clear"] = True   # 押印・署名など、人が書き込む欄。データに入れず、空欄で出す
+                confirm.append(f"{letter}列「{head['value']}」は人が書き込む欄として、データに入れず空欄で出す")
+            elif _constant(samples, len(t["body"])):
+                spec["keep"] = True    # どのサンプル行も同じ値（円・式など）。毎回同じなので、データに書かない
+                spec["_sample"] = samples[0]["value"]
+                confirm.append(f"{letter}列はどの行も {samples[0]['value']!r} の定数として残す（行ごとに変わるなら key にする）")
             elif len(samples) == len(t["body"]) and [s["value"] for s in samples] == list(range(1, len(samples) + 1)):
                 spec["key"] = "$index"  # サンプルが 1, 2, 3 … の連番なら、連番の列
                 spec["_sample"] = 1
@@ -581,9 +592,12 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
             "_total_row": t["total_row"],
             "needs_confirm": confirm,
         })
-    cells, keep, samples = _fixed_cells(grid, covered, heads, root)
+    cells, keep, samples, clear = _fixed_cells(grid, covered, heads, root)
     notes += _sheet_warnings(pkg, part, root, tables)
-    return {"name": name, "tables": tables, "cells": cells, "keep": keep, "_cell_samples": samples, "_notes": notes}
+    out = {"name": name, "tables": tables, "cells": cells, "keep": keep, "_cell_samples": samples, "_notes": notes}
+    if clear:
+        out["clear"] = clear
+    return out
 
 
 def _only_inside(formula: str, t: dict, col: int) -> bool:
@@ -608,6 +622,17 @@ def _unique_key(header, letter: str, cols_def: dict) -> str:
     while key in used:
         key, i = f"{base}{i}", i + 1
     return key
+
+
+# 人が書き込む欄（押印・署名など）の見出し・ラベル。データに入れず、空欄のまま出す
+HUMAN_RE = re.compile(r"(印$|押印|捺印|検印|署名|サイン|自署|承認者?$|決裁|確認者|受付者?$|手書き|記入欄)")
+
+
+def _constant(samples: list[dict], n_rows: int) -> bool:
+    """どのサンプル行も同じ文字（印・仮の値を除く）なら、行ごとに変わらない定数の列。"""
+    vals = [s["value"] for s in samples]
+    return n_rows >= 2 and len(vals) == n_rows and isinstance(vals[0], str) and vals[0].strip() != "" \
+        and len(set(vals)) == 1 and vals[0].strip() not in MARK_ON + MARK_OFF and not PLACEHOLDER_RE.search(vals[0])
 
 
 def _merge_origins(root) -> dict[tuple[int, int], tuple[int, int]]:
@@ -732,16 +757,18 @@ def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> N
                        f"{'・'.join(str(plain[c]['header']).strip() for c in run)}を、データでは {key}: 2026-10-08 のような 1 つの日付で書く")
 
 
-def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tuple[dict, list[str], dict]:
+def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tuple[dict, list[str], dict, list[str]]:
     """表のサンプル行の外のセルを、ラベル（keep）と、流し込む欄（cells）に分ける。
 
     ラベルの右隣のセルは、値があってもなくても流し込む欄にする（前の文書の値を持ち越さない・空欄の記入枠も落とさない）。
     ラベルの無い数値・日付も、流し込む欄にする。それ以外の文字（タイトル・見出し・注記）がラベル（keep）。
     ラベルと同じ書式の空欄（見出しの帯の続き）は、記入枠と見なさない。
+    押印・署名など人が書き込む欄は、データに入れない（前の値があれば clear で消す）。
     """
     origin = _merge_origins(root)
     cells: dict[str, str] = {}
     keep: list[str] = []
+    clear: list[str] = []
     samples: dict[str, dict] = {}
     for r in sorted(grid):
         if r in sample_rows:
@@ -760,6 +787,10 @@ def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tu
                 if value is not None:
                     keep.append(i["ref"])
                 continue
+            if label is not None and HUMAN_RE.search(label.strip(" :：")):
+                if value is not None:
+                    clear.append(i["ref"])   # 人が書き込む欄の前の値は消すだけ。データには入れない
+                continue
             if label is not None or (value is not None and not isinstance(value, str)):
                 base = re.sub(r"[.\s]+", "_", (label or "").strip(" :：")).strip("_") or i["ref"]
                 key, n = base, 2
@@ -770,7 +801,7 @@ def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tu
             elif value is not None:
                 labels[c] = value
                 keep.append(i["ref"])
-    return cells, compress_cells(keep) if keep else [], samples
+    return cells, compress_cells(keep) if keep else [], samples, compress_cells(clear) if clear else []
 
 
 def _sheet_warnings(pkg, part, root, tables) -> list[str]:
@@ -820,6 +851,10 @@ def summarize(definition: dict) -> str:
                          f"（{t['sample_rows']} 行）/ 繰り返し元 {t['pattern']} / データのキー: {t['key']}")
             for letter, c in t["columns"].items():
                 kind = f"数式 {c['_sample']}" if c.get("formula") else f"key={c.get('key')}  例: {c.get('_sample')!r}"
+                if c.get("keep"):
+                    kind = f"定数として残す（データに書かない）  値: {c.get('_sample')!r}"
+                elif c.get("clear"):
+                    kind = "人が書き込む欄（データに書かず、空欄で出す）"
                 if "when" in c:
                     kind += f"（{c['when']!r} を含むとき {c.get('mark', '○')}）"
                 elif "map" in c:
@@ -839,6 +874,8 @@ def summarize(definition: dict) -> str:
                 lines.append(f"      {ref} → key={key}  " + (f"今の値: {v!r}" if v is not None else "（空欄の記入枠）"))
         if s["keep"]:
             lines.append(f"  残す（keep。見出し・ラベル・固定の文面）: {', '.join(s['keep'])}")
+        if s.get("clear"):
+            lines.append(f"  空にする（clear。人が書き込む欄の前の値）: {', '.join(s['clear'])}")
         for n in s["_notes"]:
             lines.append(f"  ! {n}")
     return "\n".join(lines)

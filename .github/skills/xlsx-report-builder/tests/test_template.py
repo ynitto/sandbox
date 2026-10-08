@@ -1158,6 +1158,37 @@ class ChecklistTests(Base):
         self.assertEqual((ws["B1"].value, ws["C1"].value, ws["C2"].value), ("□", "■", 2026))
         self.assertEqual(xt.skeleton_data(d), {"性別": None, "提出日": None})
 
+    def test_data_holds_only_values_that_change_per_document(self):
+        def build(wb):
+            ws = wb.create_sheet("見積")
+            ws["A1"] = "御見積書"
+            ws["A3"], ws["B3"] = "宛先", "旧顧客株式会社"
+            ws["A4"], ws["B4"] = "担当印", "山田"          # 人が押す欄の前の値
+            ws["D3"] = "承認"
+            ws["E3"].border = BOX                           # 人が押す空欄の枠
+            for i, h in enumerate(["品名", None, "数量", "単位", "単価", "確認印"], 1):
+                cell = ws.cell(6, i, h)
+                cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), HEAD_FILL, BOX
+            for r, row in enumerate([("A", None, 2, "式", 100, "済"), ("B", None, 1, "式", 200, None)], 7):
+                for i, v in enumerate(row, 1):
+                    ws.cell(r, i, v).border = BOX
+        tpl = self.checklist(build)
+        d = xt.analyze(tpl)
+        sheet = next(s for s in d["sheets"] if s["name"] == "見積")
+        self.assertEqual(len(sheet["tables"]), 1)        # 「宛先 … 承認」の行を、表と取り違えない
+        cols = sheet["tables"][0]["columns"]
+        self.assertNotIn("B", cols)                      # 見出しも値も無い余白の列
+        self.assertEqual(cols["D"], {"header": "単位", "keep": True, "_sample": "式", "_format": "General"})
+        self.assertTrue(cols["F"]["clear"])              # 確認印は人が押す
+        self.assertEqual(sheet["cells"], {"B3": "宛先"})  # 担当印・承認の欄は入れない
+        self.assertEqual(sheet["clear"], ["B4"])
+        self.assertEqual(xt.skeleton_data(d)["items"], [{"品名": None, "数量": None, "単価": None}])
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, d, {"宛先": "新顧客", "items": [{"品名": "X", "数量": 3, "単価": 50}]}, out)
+        ws = load_workbook(out)["見積"]
+        self.assertEqual([c.value for c in ws[7]], ["X", None, 3, "式", 50, None])
+        self.assertEqual((ws["B3"].value, ws["B4"].value), ("新顧客", None))
+
     def test_tables_on_several_tabs_get_separate_data_keys(self):
         def build(wb):
             for name in ("ログイン", "検索"):
