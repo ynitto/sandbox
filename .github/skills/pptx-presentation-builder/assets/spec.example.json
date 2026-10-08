@@ -1,0 +1,99 @@
+{
+  "filename": "proposal.pptx",
+  "size": "16:9",
+  "style": {
+    "font": "Meiryo",
+    "accent": "1F4E79"
+  },
+  "properties": {
+    "title": "業務改善のご提案",
+    "creator": "pptx-presentation-builder"
+  },
+  "slides": [
+    {
+      "type": "title",
+      "title": "業務改善のご提案",
+      "subtitle": "2026 年 10 月"
+    },
+    {
+      "type": "bullets",
+      "title": "現状の課題",
+      "bullets": [
+        "申請の確認に 1 件 30 分かかる",
+        {
+          "text": "確認者が 2 人しかいない",
+          "level": 1
+        },
+        "差し戻しが月 40 件ある"
+      ]
+    },
+    {
+      "type": "flow",
+      "title": "進め方",
+      "shape": "rounded",
+      "steps": [
+        {
+          "label": "現状調査",
+          "note": "2 週間"
+        },
+        {
+          "label": "設計",
+          "note": "3 週間"
+        },
+        {
+          "label": "試行",
+          "note": "1 か月"
+        },
+        {
+          "label": "展開",
+          "note": "全部署"
+        }
+      ]
+    },
+    {
+      "type": "cards",
+      "title": "効果",
+      "columns": 3,
+      "cards": [
+        {
+          "title": "時間",
+          "body": "確認の時間を半分に"
+        },
+        {
+          "title": "品質",
+          "body": "差し戻しを 1/4 に"
+        },
+        {
+          "title": "負荷",
+          "body": "確認者の偏りを解消"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "費用",
+      "columns": [
+        "項目",
+        "金額",
+        "備考"
+      ],
+      "rows": [
+        [
+          "設計",
+          "120 万円",
+          "3 週間"
+        ],
+        [
+          "試行",
+          "80 万円",
+          "1 部署"
+        ],
+        [
+          "展開",
+          "200 万円",
+          "全部署"
+        ]
+      ]
+    }
+  ]
+}

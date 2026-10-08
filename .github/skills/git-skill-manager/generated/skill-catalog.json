@@ -1,6 +1,6 @@
 {
   "generated_by": "generate_skill_catalog.py",
-  "total_skills": 89,
+  "total_skills": 90,
   "categories": {
     "integration": 7,
     "orchestration": 8,
@@ -15,7 +15,7 @@
     "testing": 1,
     "implementation": 8,
     "documentation": 3,
-    "document": 6,
+    "document": 7,
     "git": 1,
     "unknown": 1,
     "research": 6,
@@ -33,7 +33,7 @@
     "knowledge": 1
   },
   "tiers": {
-    "experimental": 53,
+    "experimental": 54,
     "stable": 21,
     "core": 11,
     "unknown": 2,
@@ -1209,6 +1209,29 @@
       "triggers": [],
       "has_scripts": true,
       "has_references": false
+    },
+    {
+      "name": "pptx-presentation-builder",
+      "description": "既存の PowerPoint (.pptx) テンプレートやサンプルの資料に、スライドのスタイルと図形（矩形・丸・矢印線）を保ったまま内容を流し込み、文字と図形をサンプルと同じ粒度に収めるスキル。「このパワポのテンプレートに流し込んで」「この資料と同じ形式でスライドを作って」「前回の報告スライドを雛形にして」「このpptxから内容を取り出して」などで発動する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "document",
+      "tags": [
+        "pptx",
+        "powerpoint",
+        "slides",
+        "template",
+        "python-pptx",
+        "json"
+      ],
+      "triggers": [
+        "このパワポのテンプレートに流し込んで",
+        "この資料と同じ形式でスライドを作って",
+        "前回の報告スライドを雛形にして",
+        "このpptxから内容を取り出して"
+      ],
+      "has_scripts": true,
+      "has_references": true
     },
     {
       "name": "presenter",
