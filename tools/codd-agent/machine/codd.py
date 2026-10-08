@@ -131,6 +131,8 @@ PLAN_HEADINGS = (
     "## テストの変更案",
     "## 今回やらないこと",
 )
+# ひな形のまま（空）を「なし」と読まない見出し。やりたいことと変更は、書き忘れを「なし」と取り違えない。
+FILLED_HEADINGS = ("## やりたいこと", "## 自分の変更案", "## テストの変更案")
 CITED_IN_REFS = ("## 参照先の前提", "## 参照先の制約", "## 参照先のその他", "## ずれ")
 # 根拠のファイルに `…` の名前が書かれているかまで確かめる見出し（ずれは自分の側の名前も書くので除く）。
 ANCHORED_IN_REFS = ("## 参照先の前提", "## 参照先の制約", "## 参照先のその他")
@@ -142,6 +144,7 @@ GRAPHIFY_TIMEOUT = 120
 GRAPHIFY_UPDATE_TIMEOUT = 900
 GRAPHIFY_BUDGET = 600
 CHECK_TIMEOUT = 900
+NO_TEST_COMMAND = "未設定（変えたあとにテストを動かさない。`init.py --test \"コマンド\"` で設定する）"
 
 # graphify の出力からファイルを拾う。query は `[src=docs/api.md loc=L3]`、affected は `src/use.py:L4`。
 _GRAPHIFY_SRC = re.compile(r"\bsrc=([^\s\]]+)|(?<![\w=])([^\s\[\]=]+):L\d+")
@@ -1311,6 +1314,8 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
               + "、".join(f"{'自分' if not k else k} {len(e.items)} 件" for k, e in evs.items()))
     checks = [("自分", ctx.config.get("test"), ctx.config.get("check")),
               *((r.name, r.test, r.check) for r in ctx.refs)]
+    if not ctx.config.get("test"):
+        print(f"テストのコマンド: {NO_TEST_COMMAND}")
     if any(t or c for _, t, c in checks):
         print("変えたあとに実行するもの（作り直すファイルがあれば、それも計画に挙げる）:")
         for who, t, c in checks:
@@ -1358,8 +1363,11 @@ def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
 
 # ---------------------------------------------------------------- 探す（graphify + git grep）
 
-def ensure_graph(ctx: Ctx, repo: Path) -> tuple[str | None, Path | None, str]:
-    """graphify のグラフを用意する。印が変わっていれば作り直す。戻り値は（実行ファイル, グラフ, 状態）。"""
+def ensure_graph(ctx: Ctx, repo: Path, rebuild: bool = True) -> tuple[str | None, Path | None, str]:
+    """graphify のグラフを用意する。印が変わっていれば作り直す。戻り値は（実行ファイル, グラフ, 状態）。
+
+    rebuild=False なら作り直さず、今あるグラフ（変える前に作ったもの）を使う。無ければ使わない。
+    """
     if ctx.config["graphify"] == "off":
         return None, None, "off"
     exe = shutil.which("graphify")
@@ -1371,6 +1379,8 @@ def ensure_graph(ctx: Ctx, repo: Path) -> tuple[str | None, Path | None, str]:
     now = stamp(repo)
     if graph.is_file() and stamp_file.is_file() and stamp_file.read_text(encoding="utf-8") == now:
         return exe, graph, "fresh"
+    if not rebuild:
+        return (exe, graph, "kept") if graph.is_file() else (None, None, "not-built")
     out_dir.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "GRAPHIFY_OUT": str(out_dir)}
     # --force: 削除や改名でノードが減っても作り直した方を採る（古いノードを残さない）。
@@ -1383,7 +1393,8 @@ def ensure_graph(ctx: Ctx, repo: Path) -> tuple[str | None, Path | None, str]:
 
 
 def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
-           use_graph: bool = True, first_lines: dict[str, int] | None = None) -> tuple[str, list[str], str]:
+           use_graph: bool = True, first_lines: dict[str, int] | None = None,
+           rebuild: bool = True) -> tuple[str, list[str], str]:
     """語ごとに graphify と git grep で引き、（本文, 候補のファイル, graphify の状態）を返す。scope の外は捨てる。
 
     first_lines を渡すと、git grep で一致したファイルごとに最初に一致した行の番号を入れる（文字列の一致だけ）。
@@ -1392,7 +1403,7 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
     repo = side.path
     key = hashlib.sha256(json.dumps(
         [str(repo), side.scope, side.exclude, terms, graph_cmd, use_graph and ctx.config["graphify"] != "off",
-         use_graph and bool(shutil.which("graphify")), stamp(repo)], ensure_ascii=False).encode()).hexdigest()
+         use_graph and bool(shutil.which("graphify")), stamp(repo), rebuild], ensure_ascii=False).encode()).hexdigest()
     cache = load_search_cache(ctx)
     if key in cache:
         hit = cache[key]
@@ -1400,7 +1411,7 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
             first_lines.update(hit["first"])
         return hit["body"], hit["files"], "fresh" if hit["note"] == "updated" else hit["note"]
     found_lines: dict[str, int] = {}
-    body, files, note = _search(ctx, side, terms, graph_cmd, use_graph, found_lines)
+    body, files, note = _search(ctx, side, terms, graph_cmd, use_graph, found_lines, rebuild)
     if first_lines is not None:
         first_lines.update(found_lines)
     cache[key] = {"body": body, "files": files, "note": note, "first": found_lines}
@@ -1427,9 +1438,9 @@ def save_search_cache(ctx: Ctx, cache: dict) -> None:
 
 
 def _search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
-            use_graph: bool, first_lines: dict[str, int]) -> tuple[str, list[str], str]:
+            use_graph: bool, first_lines: dict[str, int], rebuild: bool = True) -> tuple[str, list[str], str]:
     repo = side.path
-    exe, graph, note = ensure_graph(ctx, repo) if use_graph else (None, None, "unused")
+    exe, graph, note = ensure_graph(ctx, repo, rebuild) if use_graph else (None, None, "unused")
     lines: list[str] = []
     files: list[str] = []
 
@@ -1989,10 +2000,10 @@ def tested_anywhere(ctx: Ctx, term: str) -> bool:
     return False
 
 
-def measure(ctx: Ctx, terms: list[str], name: str, title: str) -> list[str]:
+def measure(ctx: Ctx, terms: list[str], name: str, title: str, rebuild: bool = True) -> list[str]:
     """変わる名前から、自分のリポジトリで影響を受けるファイルを測る（graphify affected + git grep）。"""
     terms = terms[:MAX_TERMS]
-    body, files, note = search(ctx, ctx.own, terms, "affected")
+    body, files, note = search(ctx, ctx.own, terms, "affected", rebuild=rebuild)
     files = files[:MAX_MEASURED]
     write_report(ctx, name, title, terms, [(f"{ctx.root}{scope_words(ctx.own)}", note, body)], files)
     return files
@@ -2366,8 +2377,10 @@ def sections(text: str, headings: tuple[str, ...]) -> tuple[list[str], dict[str,
         nxt = re.search(r"^## ", text[end:], re.MULTILINE)
         body = re.sub(r"<!--.*?-->", "", text[end:end + nxt.start()] if nxt else text[end:], flags=re.DOTALL)
         bodies[heading] = body.strip()
-        if not bodies[heading]:
+        if not bodies[heading] and heading in FILLED_HEADINGS:
             problems.append(f"見出しの中身が空です: {heading}")
+        elif not bodies[heading]:
+            bodies[heading] = "なし"   # ひな形のまま（コメントだけ）なら「なし」と読む。「なし」を書かせるだけの往復をしない
     return problems, bodies
 
 
@@ -2575,8 +2588,6 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     impact = not is_none(bodies["## 影響範囲"])
     if drift and not ref_change:
         problems.append("ずれがあるのに、参照先の変更案が「なし」です（ずれを残すなら、ずれではなくその他に書く）")
-    if not drift and ref_change:
-        problems.append("ずれが「なし」なのに、参照先の変更案があります")
     if not is_none(bodies["## 自分の変更案"]):
         for item in items(bodies["## 自分の変更案"]) or [bodies["## 自分の変更案"]]:
             if not cited_own(ctx, item, allow_new=True):
@@ -2668,6 +2679,14 @@ def pending_items(bodies: dict[str, str]) -> list[tuple[str, str]]:
     return [(h, it) for h, body in bodies.items() for it in items(body) if PENDING_MARK in it]
 
 
+PENDING_HOW = {
+    "## 影響範囲": f"影響範囲は直し方か「{NO_CHANGE_MARK}: 理由」",
+    TESTS_HEADING: f"テストは直し方か「{NO_CHANGE_MARK}: 理由」",
+    "## 参照先のその他": "参照先のファイルは示した行の前後だけを読み、前提・制約・ずれの根拠に移すか「関係なし: 理由」",
+    GUIDES_HEADING: "書式の見本は、その書式をどう守るか",
+}
+
+
 def pending_problem(found: list[tuple[str, str]], added: int = 0) -> list[str]:
     if not found:
         return []
@@ -2675,9 +2694,9 @@ def pending_problem(found: list[tuple[str, str]], added: int = 0) -> list[str]:
                       for n in [sum(1 for x, _ in found if x == h)])
     lead = (f"測ったのに計画に無かったファイル {added} 件を、計画に「{PENDING_MARK}」として書き足しました。"
             if added else f"計画に「{PENDING_MARK}」の項目が {len(found)} 件残っています。")
-    return [lead + f"（{heads}）各行を判断に書き換えてください: 自分のファイルは直し方か「{NO_CHANGE_MARK}: 理由」、"
-            "参照先のファイルは示した行の前後だけを読み、前提・制約・ずれの根拠に移すか「関係なし: 理由」、"
-            "書式の見本は守り方。ファイル全体は読まなくてよい: "
+    # 書き足した見出しの書き方だけを示す（ほかの見出しの書き方まで並べて迷わせない）
+    how = unique(PENDING_HOW.get(h, PENDING_HOW["## 参照先のその他"]) for h, _ in found)
+    return [lead + f"（{heads}）各行を判断に書き換えてください: {'、'.join(how)}。ファイル全体は読まなくてよい: "
             + ", ".join(unique(re.split(r"（| — ", it.lstrip("-* ").replace(f"{PENDING_MARK}: ", ""), maxsplit=1)[0].strip()
                                for _, it in found))]
 
@@ -3673,6 +3692,8 @@ def write_baseline(ctx: Ctx) -> None:
     (ctx.data / REPLACED_FILE).unlink(missing_ok=True)
     (ctx.data / GENERATED_FILE).unlink(missing_ok=True)
     (ctx.data / ACCEPTED_NAME).unlink(missing_ok=True)
+    (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
+    (ctx.data / PREEXISTING_OK_NAME).unlink(missing_ok=True)
     shutil.rmtree(ctx.data / "before", ignore_errors=True)
     state = {"plan": plan_rel(ctx), "own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
@@ -3978,6 +3999,86 @@ def run_check(repo: Path, command: list[str] | None, label: str) -> list[str]:
 
 
 _FAILURE_LINE = re.compile(r"^\s*not ok\b|\bFAIL(?:ED)?\b|\bERROR\b|Error:|^panic:|AssertionError|Traceback")
+
+
+# 変える前から落ちていたテスト。テストの失敗は訊かずにやり直す側だが、変える前から同じ失敗なら、エージェントが
+# 計画に無いファイルを直しに行き、計画に無い変更で止まり、やり直しを使い切ってから訊くことになる。
+# 落ちたときだけ、変える前の中身（印の HEAD と、印のときに作業中だったファイル）を一時的な worktree に作って同じ
+# コマンドを動かし、今の失敗の行がすべて変える前にも出ていれば、最初から利用者に訊く。
+PREEXISTING = "変える前から同じところで落ちています"
+PREEXISTING_NAME = "preexisting.json"           # 見つけた前からの失敗（accept で認める）
+PREEXISTING_OK_NAME = "preexisting-ok.json"     # 利用者が認めた前からの失敗
+BEFORE_RUNS_NAME = "before-runs.json"           # 変える前の中身で動かした結果（印とコマンドが同じなら使い回す）
+
+
+def failure_lines(text: str) -> set[str]:
+    """失敗を表す行（数字・時間を除いて比べる）。"""
+    return {re.sub(r"\d+(?:\.\d+)?", "N", ln.strip()) for ln in text.splitlines() if _FAILURE_LINE.search(ln)}
+
+
+def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tuple[int, str] | None:
+    """変える前の中身で argv を動かす。印が無い・worktree を作れないときは None。"""
+    try:
+        before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    snap = before.get("refs", {}).get(key, {}) if key else before.get("own", {})
+    if not snap.get("head"):
+        return None
+    cache_key = hashlib.sha256(json.dumps([key, snap, argv, str(cwd)], sort_keys=True).encode()).hexdigest()
+    try:
+        cache = json.loads((ctx.data / BEFORE_RUNS_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+    if cache_key in cache:
+        return tuple(cache[cache_key])
+    top = repo_root(side.path)
+    tmp = Path(tempfile.mkdtemp(prefix="codd-before-"))
+    tree = tmp / "tree"
+    try:
+        if run(["git", "worktree", "add", "--detach", str(tree), snap["head"]], top, GIT_TIMEOUT)[0] != 0:
+            return None
+        base = side.path.resolve().relative_to(top)
+        for rel, digest in snap.get("files", {}).items():
+            dest = tree / base / rel
+            if digest == "deleted":
+                dest.unlink(missing_ok=True)
+            elif (backup_dir(ctx, key) / rel).is_file():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup_dir(ctx, key) / rel, dest)
+        result = run(argv, tree / cwd.resolve().relative_to(top), CHECK_TIMEOUT)
+    except (ValueError, OSError):
+        return None
+    finally:
+        run(["git", "worktree", "remove", "--force", str(tree)], top, GIT_TIMEOUT)
+        shutil.rmtree(tmp, ignore_errors=True)
+    cache[cache_key] = list(result)
+    (ctx.data / BEFORE_RUNS_NAME).write_text(json.dumps(cache, ensure_ascii=False) + "\n", encoding="utf-8")
+    return result
+
+
+def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, label: str) -> list[str]:
+    """run_check に、変える前から落ちていたかの見分けを足したもの。認めた前からの失敗だけなら通す。"""
+    problems = run_check(cwd, argv, label)
+    if not problems:
+        return []
+    now = failure_lines(problems[0])
+    try:
+        ok = json.loads((ctx.data / PREEXISTING_OK_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        ok = {}
+    if now and now <= set(ok.get(label, [])):
+        print(f"{label}: 変える前から落ちていたもの（利用者が認めた）だけなので、止めません")
+        return []
+    before = run_before(ctx, key, side, cwd, argv)
+    if before is None or before[0] == 0 or not now or not now <= failure_lines(before[1]):
+        return problems
+    found = json.loads((ctx.data / PREEXISTING_NAME).read_text(encoding="utf-8")) \
+        if (ctx.data / PREEXISTING_NAME).is_file() else {}
+    found[label] = sorted(now)
+    (ctx.data / PREEXISTING_NAME).write_text(json.dumps(found, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return [f"{label}: {PREEXISTING}（この回の変更のせいではないので、エージェントに直させずに利用者に確かめます。"
+            f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1]]
 
 
 @dataclass
@@ -4736,8 +4837,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     ref_hits: set[tuple[str, str]] = set()
     hold: list[tuple[str, str]] = []   # 直すべきだが、人の承認が要るファイル（エージェントに直させず、利用者に訊く）
     if terms:
+        # グラフは変える前のものを使う（変わる名前の呼び出し元は変える前のグラフで分かり、足した名前は git grep が拾う）。
+        # 作り直すと、訊かずにやり直すたびに全体を作り直して待たせる。
         measured = measure(ctx, terms, "impact-after.md",
-                           f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）")
+                           f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）", rebuild=False)
         waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
         # 自分の変更案のファイルは、変え残しとして上で挙げる（同じファイルを 2 回挙げない）。
         untouched = [p for p in measured if p not in a.own_touched and p not in waived and not dev.waived("", p)
@@ -4858,14 +4961,15 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     # 6. テスト（test。単体・API・シナリオなど）と検査コマンド（check）。作り直したファイルを控える。
     pre = {key: dirty_files(side) for key, side in all_sides(ctx)}
     before_checks = len(problems)
+    (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
     for name, argv in test_commands(ctx.config.get("test")):
-        problems += run_check(ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
-    problems += run_check(ctx.root, ctx.config.get("check"), SIDES[ctx.side])
+        problems += checked(ctx, "", ctx.own, ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
+    problems += checked(ctx, "", ctx.own, ctx.root, ctx.config.get("check"), SIDES[ctx.side])
     for r in changed:
         # 参照先のテストと検査は、参照先に置いた同じマシンの設定（codd.json の test・check）を使う。
         for name, argv in test_commands(r.test):
-            problems += run_check(r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
-        problems += run_check(r.path, r.check, f"{r.name}（{r.label}）")
+            problems += checked(ctx, r.name, r, r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
+        problems += checked(ctx, r.name, r, r.path, r.check, f"{r.name}（{r.label}）")
     held = protected_in_failures(ctx, problems[before_checks:], approved_changes(ctx, a))
     if held:
         # 訊かずに変え直させると、人の承認が要るファイルを直して、次の検査でまた止まるだけになる
@@ -5036,7 +5140,17 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         # テストだけ変えた側を「なし」と書くと、コミットし忘れる
         return out or (["- テストだけ変えた（下の「テスト」）"] if tests_only else ["- なし"])
 
-    lines = ["# 結果", "", f"- 変えたあとの検査: {state}", "", f"## 自分（{SIDES[ctx.side]}）  {ctx.root}", ""]
+    lines = ["# 結果", "", f"- 変えたあとの検査: {state}"]
+    untested = [*(["自分"] if not ctx.config.get("test") else []),
+                *(r.name for r in ctx.refs if a.touched[r.name] and not r.test)]
+    if untested:
+        # テストのコマンドが無いと、検査はテストを動かさずに通る。「通った」をテストまで通ったと読ませない
+        lines.append(f"- テスト: 動かしていない（{'・'.join(untested)}のテストのコマンドが未設定）")
+    known = json.loads((ctx.data / PREEXISTING_OK_NAME).read_text(encoding="utf-8")) \
+        if (ctx.data / PREEXISTING_OK_NAME).is_file() else {}
+    if known:
+        lines.append(f"- テスト: 変える前から落ちていたものを、利用者が認めて続けた（{'・'.join(known)}）")
+    lines += ["", f"## 自分（{SIDES[ctx.side]}）  {ctx.root}", ""]
     lines += rows("", own_planned(ctx, a.bodies), a.own_touched)
     for r in ctx.refs:
         if r.name in a.planned or a.touched[r.name]:
@@ -5154,10 +5268,11 @@ _KINDS = (
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ", STALE_NAMES)),
     ("rules", "any", ("守る決まり", "従う手順", "手順の文書", "確かめることに答えていません", "スキル・道具", "リポジトリのスキル", "スキルの手順", "スキルを読み込んでいません",
                         "ファイルに決められた手順", "決められた道具を使った記録", "確かめることの根拠に書いたパス")),
+    ("preexisting", "apply", (PREEXISTING,)),
     ("check", "apply", ("検査が失敗しました",)),
     # 人の判断が要る形の指摘（ずれを直すか残すか・目安や書式を変えてよいか）。下の shape の目印
     # （が「なし」です など）にも当たるので、先に form として止める。
-    ("form", "any", ("ずれがあるのに", "ずれが「なし」なのに", "文書の求めを満たしていません", "今の書式から外れています")),
+    ("form", "any", ("ずれがあるのに", "文書の求めを満たしていません", "今の書式から外れています")),
     # 計画の書き方・根拠の書き方・探索の未実行（エージェントが自分で直せる）。目印は指摘の言い回しをそのまま長めに取る
     # （「が「なし」です」のような短い目印だと、あとで足した判断の要る指摘まで訊かない側に吸うため）。
     ("shape", "any", ("見出しがありません: ", "見出しの順番がテンプレートと違います", "見出しの中身が空です: ",
@@ -5189,6 +5304,7 @@ OPTIONS = {
     "reapply": ("計画はそのままで、変え直す", "", "APPLY"),
     "keep": ("変えた分は残して、計画を直す", "", "PLAN"),
     "accept": ("足したファイルを認めて続ける", "accept", "APPLY"),
+    "known": ("前から落ちていたものとして続ける", "accept", "APPLY"),
     "reset": ("変えた分を戻して、計画から練り直す", "rollback", "PLAN"),
     "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
 }
@@ -5235,6 +5351,10 @@ ADVICE = {
                       "同じ綴りの別物なら「関係なし」として変え直すかを決めてもらいます"),
         "rules": (["reapply", "stop"], "変えるときのスキル・道具の記録がありません。変えたファイルをスキルの手順で見直し、使って記録します"),
         "check": (["reapply", "reset", "stop"], "検査コマンドが通りません。直して変え直すか、計画から練り直すかを決めてもらいます"),
+        # 変える前から同じところで落ちている。この回で直させると計画に無い変更になるので、訊く
+        "preexisting": (["known", "stop", "keep"],
+                        "変える前から落ちているテストか検査です。この回の変更のせいではありません。前からの失敗として続けるか、"
+                        "やめるか、直すことを計画に足すかを決めてもらいます"),
         "shape": (["reapply", "stop"], "書き方が決まりどおりではありません。書き直します"),
         "form": (["reapply", "reset", "stop"], "変えた結果が計画と合いません"),
         "config": (["reapply", "stop"], "設定か環境の誤りです。利用者に直してもらってから、同じ段をやり直します"),
@@ -5252,17 +5372,22 @@ AUTO_NAME = "auto.json"
 MAX_AUTO = 2     # 同じ段で人に訊かずに進める回数。直らない失敗をいつまでも回さない
 
 
-def auto_step(data: Path, phase: str, kinds: set[str]) -> str | None:
-    """人の判断が要らない理由だけなら、利用者に訊かずに進める語（PLAN・APPLY）。上限を超えたら None。"""
+def auto_step(data: Path, phase: str, kinds: set[str], texts: list[str] = ()) -> str | None:
+    """人の判断が要らない理由だけなら、利用者に訊かずに進める語（PLAN・APPLY）。上限を超えたら None。
+
+    前に訊かずにやり直したときと同じ指摘が残っていれば、回数が残っていても訊く（直せないものを回し続けない）。
+    """
     if not kinds or not kinds <= AUTO_KINDS.get(phase, set()):
         return None
     try:
-        count = json.loads((data / AUTO_NAME).read_text(encoding="utf-8")).get(phase, 0)
+        rec = json.loads((data / AUTO_NAME).read_text(encoding="utf-8"))
+        count, last = rec.get(phase, 0), rec.get("last", "")
     except (OSError, ValueError, AttributeError):
-        count = 0
-    if count >= MAX_AUTO:
+        count, last = 0, ""
+    digest = hashlib.sha256("\n".join(sorted(texts)).encode()).hexdigest()
+    if count >= MAX_AUTO or (count and digest == last):
         return None
-    (data / AUTO_NAME).write_text(json.dumps({phase: count + 1}) + "\n", encoding="utf-8")
+    (data / AUTO_NAME).write_text(json.dumps({phase: count + 1, "last": digest}) + "\n", encoding="utf-8")
     word = "PLAN" if phase == "plan" else "APPLY"
     log = []
     try:
@@ -5299,7 +5424,8 @@ def cmd_advise(root: Path) -> int:
         if ask not in asks:
             asks.append(ask)
         order += [o for o in options if o not in order]
-    word = auto_step(data, phase, {item.get("kind", "form") for item in rec.get("problems", [])})
+    word = auto_step(data, phase, {item.get("kind", "form") for item in rec.get("problems", [])},
+                     [item.get("text", "") for item in rec.get("problems", [])])
     if word:
         lines += ["", "## 利用者に訊かずに進める", "",
                   f"人の判断が要らない指摘だけです。利用者に訊かず、答えを待たずに `{word}` で同じ段をやり直してください"
@@ -5325,10 +5451,24 @@ def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
     if isinstance(a, str):
         print(a, file=sys.stderr)
         return 1
+    found = ctx.data / PREEXISTING_NAME
+    had_preexisting = found.is_file()
+    if had_preexisting:
+        # 変える前から落ちていたテスト・検査を、前からの失敗として認める（同じ失敗の行だけ。新しい失敗は止める）
+        known_file = ctx.data / PREEXISTING_OK_NAME
+        known = json.loads(known_file.read_text(encoding="utf-8")) if known_file.is_file() else {}
+        add = json.loads(found.read_text(encoding="utf-8"))
+        for label, lines in add.items():
+            known[label] = sorted(set(known.get(label, [])) | set(lines))
+        known_file.write_text(json.dumps(known, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        found.unlink()
+        print("変える前から落ちていたものとして認めました（同じ失敗だけを通し、新しい失敗は止めます）: " + "、".join(add))
     dev, ok = deviations(ctx), accepted(ctx)
     new = sorted((k, rel) for k, files in {"": a.own_touched, **a.touched}.items() for rel in files
                  if dev.reason_added(k, rel) and (k, rel) not in ok and not in_plan_text(ctx, rel))
     if not new:
+        if had_preexisting:
+            return 0
         print("認めるものはありません（計画で挙げていないファイルを、理由付きで足したものがありません）")
         return 0
     (ctx.data / ACCEPTED_NAME).write_text(json.dumps(sorted(ok | set(new)), ensure_ascii=False) + "\n", encoding="utf-8")
@@ -5804,7 +5944,7 @@ def build_parser() -> argparse.ArgumentParser:
     gd.add_argument("name", nargs="+", help="`skill:名前`・スキルの名前・`[参照先の名前:]パス[#見出し]`")
     sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
     sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
-    sub.add_parser("accept", help="変える段で計画に無いファイルを理由付きで足した分を、利用者が認めたと控える")
+    sub.add_parser("accept", help="変える段で計画に無いファイルを理由付きで足した分か、変える前から落ちていたテストを、利用者が認めたと控える")
     sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
     ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
     ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")

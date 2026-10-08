@@ -165,6 +165,35 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     return dest
 
 
+def guess_test(target: Path) -> str | None:
+    """よくある置き方からテストのコマンドを推す。示すだけで、codd.json には書かない。"""
+    try:
+        scripts = json.loads((target / "package.json").read_text(encoding="utf-8")).get("scripts") or {}
+        if isinstance(scripts, dict) and scripts.get("test"):
+            return "npm test"
+    except (OSError, ValueError, AttributeError):
+        pass
+    if (target / "pytest.ini").is_file() or "[tool.pytest" in _read(target / "pyproject.toml"):
+        return "python -m pytest"
+    if (target / "go.mod").is_file():
+        return "go test ./..."
+    if (target / "Cargo.toml").is_file():
+        return "cargo test"
+    if re.search(r"^test\s*:", _read(target / "Makefile"), re.M):
+        return "make test"
+    tests = [*target.glob("tests/test_*.py"), *target.glob("test/test_*.py")]
+    if tests:
+        return "python -m unittest" if all("unittest" in _read(f) for f in tests) else "python -m pytest"
+    return None
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def write_agents(target: Path, kinds) -> list[Path]:
     """必ずこのマシンで変えるカスタムエージェントを書く（置くたびに書き直す生成物）。"""
     prompt = AGENT_PROMPT.read_text(encoding="utf-8")
@@ -256,6 +285,10 @@ def main(argv: list[str] | None = None) -> int:
         f"{ref_name(r)}={r['path']}" + (f"（{', '.join(r['scope'])}）" if r.get("scope") else "") for r in refs))
     if config.get("test"):
         print("  変えたあとの単体テスト: " + " ".join(config["test"]))
+    else:
+        guess = guess_test(Path(args.target).resolve())
+        print("  変えたあとの単体テスト: 未設定（テストを動かさずに検査が通る）"
+              + (f"。設定するなら --test \"{guess}\"" if guess else "。--test \"コマンド\" で設定する"))
     if config.get("check"):
         print("  変えたあとの検査: " + " ".join(config["check"]))
     if not args.no_agents:

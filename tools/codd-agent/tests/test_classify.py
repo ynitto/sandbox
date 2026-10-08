@@ -99,6 +99,23 @@ class ReplayFindingsTest(unittest.TestCase):
         self.assertTrue(asks("apply", codd.STALE_UNPLANNED + "（…）: `hello` — docs/api.md:3"))
         self.assertFalse(asks("apply", codd.STALE_NAMES + "（…）: `hello` — docs/api.md:3"))
 
+    def test_a_failure_from_before_the_change_is_asked(self) -> None:
+        # 変える前から同じところで落ちるテストは、この回で直させない（計画に無い変更になる）
+        text = "実装のテスト: " + codd.PREEXISTING + "（…）\nFAILED test_old"
+        self.assertEqual(codd.classify("apply", text), "preexisting")
+        self.assertTrue(asks("apply", text))
+
+    def test_the_same_problems_again_are_asked_even_with_retries_left(self) -> None:
+        # 訊かずにやり直しても同じ指摘が残るなら、エージェントには直せない。回数が残っていても訊く
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            same = ["実装のテストの検査が失敗しました（1）: python3 -m unittest"]
+            self.assertEqual(codd.auto_step(data, "apply", {"check"}, same), "APPLY")
+            self.assertIsNone(codd.auto_step(data, "apply", {"check"}, same))
+            other = ["自分の変更案のファイルをまだ変えていません: src/a.py"]
+            self.assertEqual(codd.auto_step(data, "apply", {"undone"}, other), "APPLY")
+
     def test_advice_follows_a_protected_file_before_a_failing_test(self) -> None:
         # テストの失敗が先に出ても、原因が承認の要るファイルなら、勧めは計画を直す（PLAN）
         import json, tempfile
