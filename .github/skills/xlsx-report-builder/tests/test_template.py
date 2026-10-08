@@ -1416,3 +1416,27 @@ class ChecklistTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuildSpecValidationTests(Base):
+    """build の spec の形の誤りは、トレースバックでなく直し方の分かるエラーで止まる。"""
+
+    def run_build(self, spec):
+        path = os.path.join(self.dir, "s.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(spec, fh)
+        script = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
+        return subprocess.run([sys.executable, script, "build", "--spec", path],
+                              cwd=self.dir, capture_output=True, text=True)
+
+    def test_malformed_specs_report_a_message(self):
+        col = [{"key": "k"}]
+        for spec in ([1], {"sheets": "x"}, {"sheets": ["x"]}, {"sheets": [{"name": "a"}]},
+                     {"sheets": [{"name": "a/b", "columns": col}]},
+                     {"sheets": [{"name": "a", "columns": col}, {"name": "A", "columns": col}]},
+                     {"sheets": [{"name": "a", "columns": col, "rows": ["x"]}]}):
+            with self.subTest(spec=spec):
+                r = self.run_build(spec)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("エラー:", r.stderr)
+                self.assertNotIn("Traceback", r.stderr)

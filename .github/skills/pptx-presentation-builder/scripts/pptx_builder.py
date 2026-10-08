@@ -263,7 +263,11 @@ class Builder:
         slides = self.spec.get("slides") or []
         if not slides:
             raise pt.TemplateError("spec.slides が空です。少なくとも 1 枚必要です")
+        if not isinstance(slides, list):
+            raise pt.TemplateError("spec.slides は配列で書いてください")
         for i, sd in enumerate(slides, start=1):
+            if not isinstance(sd, dict):
+                raise pt.TemplateError(f"スライド {i}: オブジェクト（type・title など）で書いてください")
             kind = sd.get("type", "bullets")
             if kind not in kinds:
                 raise pt.TemplateError(f"スライド {i}: type は {', '.join(kinds)} のどれかです: {kind!r}")
@@ -279,6 +283,8 @@ class Builder:
 
 
 def build(spec: dict, allow_overflow: bool = False) -> tuple[str, list[str]]:
+    if not isinstance(spec, dict):
+        raise pt.TemplateError("spec はオブジェクト（slides を持つ JSON）で書いてください")
     b = Builder(spec)
     prs = b.build()
     if b.problems and not allow_overflow:

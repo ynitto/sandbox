@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### xlsx-report-builder / pptx-presentation-builder: 形の誤った spec をトレースバックでなく案内で止める
+
+- `build` に配列・文字列・欠けた `columns` などの崩れた spec を渡すと Python のトレースバックで落ちていた。何をどう直すかを書いた 1 行のエラーで止める（終了コード 1）
+- xlsx: シート名の重複・使えない文字、`rows` がオブジェクトの配列でない場合、JSON の構文誤りも同じ形で知らせる（重複名は黙って別名に変えられていた）
+
 ### webui-test: 入れたあと元のフォルダを消しても動く（webui-test 0.4.1）
 
 - インストーラはフォルダをそのまま `npm install -g` せず、`npm pack` で固めてから入れる。グローバルの置き場には
