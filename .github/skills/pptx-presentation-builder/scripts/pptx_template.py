@@ -1179,8 +1179,28 @@ def analyze(template: "str | bytes") -> dict:
         if v.slide.has_notes_slide and v.slide.notes_slide.notes_text_frame is not None \
                 and v.slide.notes_slide.notes_text_frame.text.strip():
             confirm.append(f"スライド {v.number}: ノートがある。properties.scrub で消える。残すなら notes にキーを書く")
+    sections = slide_sections(prs)
+    for sd in slides:
+        name = sections.get(sd["slide"])
+        if name and not sd.get("drop"):
+            sd["group"] = name
+    if sections:
+        confirm.append("データを分けるときは、PowerPoint のセクションごとに 1 つのファイルにまとめる（group）。"
+                       "セクションで分かれない意味のまとまりは、group を書き直す")
     return {"version": DEF_VERSION, "template": "", "strict": True, "properties": {"scrub": True},
             "slides": slides, "needs_confirm": confirm}
+
+
+def slide_sections(prs) -> dict[int, str]:
+    """PowerPoint のセクション（章）。スライドの番号 → セクションの名前。"""
+    ids = {int(sid.get("id")): n for n, sid in enumerate(prs.slides._sldIdLst, start=1)}
+    out: dict[int, str] = {}
+    for sec in prs.part._element.iter("{http://schemas.microsoft.com/office/powerpoint/2010/main}section"):
+        for sid in sec.iter("{http://schemas.microsoft.com/office/powerpoint/2010/main}sldId"):
+            n = ids.get(int(sid.get("id", "0")))
+            if n:
+                out[n] = sec.get("name", "")
+    return out
 
 
 def _merge_budgets(base: dict, other: dict) -> None:
@@ -2415,6 +2435,99 @@ def dump_structured(obj: Any, path: str) -> None:
             f.write("\n")
 
 
+DATA_EXTS = (".json", ".yaml", ".yml")
+
+
+def data_files(paths: "str | list[str]") -> list[str]:
+    """データの指定（ファイル・フォルダ・-）を、読む順のファイルの並びにする。フォルダは中のデータファイルを名前順に。"""
+    out: list[str] = []
+    for p in [paths] if isinstance(paths, str) else paths:
+        if p != "-" and os.path.isdir(p):
+            found = sorted(n for n in os.listdir(p) if n.lower().endswith(DATA_EXTS) and not n.startswith("."))
+            if not found:
+                raise TemplateError(f"フォルダ {p} にデータファイル（{' / '.join(DATA_EXTS)}）がありません")
+            out += [os.path.join(p, n) for n in found]
+        else:
+            out.append(p)
+    return out
+
+
+def merge_data(parts: list) -> dict:
+    """分けたデータ（[(ファイル名, 中身), …]）を 1 つにする。
+
+    オブジェクトはキーごとに合わせ、配列（繰り返すスライド・箇条書き・表の行・図）はファイルの順につなぐ。
+    同じ欄に違う値があれば止める（どちらが正しいか分からない）。null は、ほかのファイルの値を消さない。
+    """
+    merged: dict = {}
+    seen: dict[str, str] = {}   # 欄 → その値を最初に書いたファイル
+
+    def mark(v, path, src):
+        seen.setdefault(path, src)
+        if isinstance(v, dict):
+            for k, x in v.items():
+                mark(x, f"{path}.{k}", src)
+
+    def put(a, b, path, src):
+        if isinstance(a, dict) and isinstance(b, dict):
+            for k, v in b.items():
+                sub = f"{path}.{k}" if path else str(k)
+                if k in a:
+                    a[k] = put(a[k], v, sub, src)
+                else:
+                    a[k] = v
+                    mark(v, sub, src)
+            return a
+        if isinstance(a, list) and isinstance(b, list):
+            return a + b
+        if b is None or a == b:
+            return a
+        if a is None:
+            seen[path] = src
+            return b
+        raise TemplateError(f"{path} の値が、{seen.get(path, '前のファイル')} と {src} で違います: {a!r} / {b!r}")
+
+    for src, obj in parts:
+        if obj is None:
+            continue
+        if not isinstance(obj, dict):
+            raise TemplateError(f"{src} の中身はオブジェクト（キーと値）にしてください")
+        put(merged, deepcopy(obj), "", src)
+    return merged
+
+
+def load_data(paths: "str | list[str]") -> dict:
+    """データを読む。複数のファイル・フォルダなら、1 つにまとめる（merge_data）。"""
+    files = data_files(paths)
+    if len(files) == 1:
+        return load_structured(files[0])
+    return merge_data([(f if f != "-" else "標準入力", load_structured(f)) for f in files])
+
+
+def split_data(data: dict, definition: dict) -> list:
+    """データを、スライドのまとまり（slides[].group。無ければスライドごと）のファイルに分ける。[(ファイル名, 中身), …]。
+
+    定義に無いキーは 00-common に置く。名前順に読めば元の順に戻る（render は、フォルダを渡すと名前順に読んで 1 つにまとめる）。
+    """
+    order: list[str] = []
+    owner: dict[str, str] = {}
+    for sd in definition.get("slides", []):
+        if sd.get("drop"):
+            continue
+        group = str(sd.get("group") or sd.get("key", sd["id"]))
+        if group not in order:
+            order.append(group)
+        owner[sd.get("key", sd["id"])] = group
+    parts: dict[str, dict] = {g: {} for g in order}
+    rest = {}
+    for key, value in data.items():
+        (parts[owner[key]] if key in owner else rest)[key] = value
+    out = [("00-common", rest)] if rest else []
+    for n, g in enumerate(order, start=1):
+        if parts[g]:
+            out.append((f"{n:02d}-" + (re.sub(r"[^\w-]+", "_", g).strip("_") or "slide"), parts[g]))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # スタンドアローン（この文書専用の render スクリプトを書き出す）
 # ---------------------------------------------------------------------------
@@ -2429,6 +2542,7 @@ pptx テンプレートへ内容を流し込む、専用の render スクリプ�
 スキルは不要で動く。定義はこのファイルに埋め込み済み。{template_note}
 
     uv run {name} --data data.yaml -o out.pptx
+    uv run {name} --data data/ -o out.pptx            # 分けたデータ（フォルダの中を名前順に）をまとめて流し込む
     python {name} --data data.json -o out.pptx        # lxml・python-pptx・pyyaml が必要
     python {name} --example-data > data.yaml          # データの雛形を出す
     python {name} --extract-def def.yaml              # 埋め込みの定義を取り出す（直したら export --from-script で再生成）
@@ -2510,7 +2624,8 @@ def export_script(template: "str | bytes", definition: dict, output: str, embed:
 def standalone_main(definition: dict, template_bytes: "bytes | None", template_path: str, doc: str | None = None) -> int:
     parser = argparse.ArgumentParser(description=(doc or "").split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog="\n\n".join((doc or "").split("\n\n")[1:]))
-    parser.add_argument("--data", help="データ（.json / .yaml / .yml。- で標準入力）")
+    parser.add_argument("--data", nargs="+", action="extend",
+                        help="データ（.json / .yaml / .yml。- で標準入力）。複数のファイルかフォルダを渡すと 1 つにまとめる")
     parser.add_argument("-o", "--output", help="出力 .pptx")
     parser.add_argument("--template", help="埋め込みのテンプレートの代わりに使う .pptx（定義と構造が同じものに限る）")
     parser.add_argument("--allow-overflow", action="store_true", help="収まらない値があっても止めず、警告にする")
@@ -2547,7 +2662,7 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
             return 0
         if not args.data or not args.output:
             parser.error("--data と -o が必要です")
-        for w in render(template, definition, load_structured(args.data), args.output, args.allow_overflow):
+        for w in render(template, definition, load_data(args.data), args.output, args.allow_overflow):
             print(f"警告: {w}", file=sys.stderr)
         print(f"生成しました: {args.output}")
         return 0
@@ -2613,7 +2728,7 @@ def cmd_check(args) -> int:
 
 def cmd_render(args) -> int:
     definition = load_structured(args.definition)
-    data = load_structured(args.data)
+    data = load_data(args.data)
     for w in render(_template_arg(args, definition), definition, data, args.output, args.allow_overflow):
         print(f"警告: {w}", file=sys.stderr)
     print(f"生成しました: {args.output}")
@@ -2656,7 +2771,13 @@ def cmd_extract(args) -> int:
     data, notes = extract(args.source, definition, template if template and os.path.exists(template) else None)
     for n in notes:
         print(n, file=sys.stderr)
-    if args.output:
+    if args.split:
+        os.makedirs(args.split, exist_ok=True)
+        for name, part in split_data(data, definition):
+            path = os.path.join(args.split, f"{name}.{args.format}")
+            dump_structured(part, path)
+            print(f"取り出しました: {path}")
+    elif args.output:
         dump_structured(data, args.output)
         print(f"取り出しました: {args.output}")
     else:
@@ -2681,7 +2802,8 @@ def add_subcommands(sub) -> None:
     r = sub.add_parser("render", help="テンプレート + 定義 + データから pptx を再構成する")
     r.add_argument("--template", help="テンプレート .pptx（省略時は定義ファイルの template）")
     r.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
-    r.add_argument("--data", required=True, help="データ（.json / .yaml。- で標準入力）")
+    r.add_argument("--data", required=True, nargs="+", action="extend",
+                   help="データ（.json / .yaml。- で標準入力）。複数のファイルかフォルダ（中を名前順に）を渡すと 1 つにまとめる")
     r.add_argument("-o", "--output", required=True, help="出力 .pptx")
     r.add_argument("--allow-overflow", action="store_true", help="収まらない値があっても止めず、警告にする")
     r.set_defaults(func=cmd_render)
@@ -2690,6 +2812,8 @@ def add_subcommands(sub) -> None:
     x.add_argument("--def", dest="definition", required=True, help="定義ファイル（.json / .yaml）")
     x.add_argument("--template", help="テンプレート .pptx（省略時は定義ファイルの template。スライドの並びを合わせるのに使う）")
     x.add_argument("-o", "--output", help="データの出力先（.json / .yaml。省略時は標準出力に JSON）")
+    x.add_argument("--split", metavar="DIR", help="データを、スライドのまとまり（group。無ければスライド）ごとのファイルに分けて DIR に書く")
+    x.add_argument("--format", choices=("yaml", "json"), default="yaml", help="--split で書く形式（既定 yaml）")
     x.set_defaults(func=cmd_extract)
     e = sub.add_parser("export", help="この文書専用の、単体で動く render スクリプトを書き出す")
     e.add_argument("--template", help="テンプレート .pptx（省略時は定義ファイルの template）")

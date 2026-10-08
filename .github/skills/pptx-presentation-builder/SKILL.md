@@ -146,6 +146,13 @@ uv run python scripts/pptx_builder.py render --def def.yaml --data data.yaml -o 
 - 粒度の上限そのもの（`max_chars`・`max_items`）を変えるのは、ユーザーが望んだときだけ
 - `--allow-overflow` は、止めずに警告にする（下書きを見せるときだけ使う）
 
+データが大きくなるなら、ファイルを分けてよい。`--data` に複数のファイルかフォルダを渡すと、1 つにまとめて流し込む。繰り返すスライド・箇条書き・表の行・図の配列はファイルの順（フォルダなら名前順）につなぐ。同じ欄に違う値があると止まる。書き出した専用スクリプトも同じ。分け方は、枚数ではなく**スライドのまとまり**ごと。定義の `slides[].group` が同じスライドを 1 ファイルにし、無ければスライドごとに分ける。`analyze` は、PowerPoint のセクション（章）の名前を `group` に入れる。セクションで分かれない意味のまとまりは、下書きを読んで `group` を直す。`extract --split DIR` は、取り出したデータをこのまとまりごとのファイルに分けて書く。
+
+```bash
+uv run python scripts/pptx_builder.py render --def def.yaml --data 01-表紙.yaml 02-施策.yaml -o out.pptx
+uv run render_report.py --data data/ -o out.pptx   # フォルダの中のデータファイルを名前順に
+```
+
 記入済みの資料（前の案件の資料・以前に `render` した資料）からデータを起こすなら、`extract` で取り出してから直す。
 
 ```bash
@@ -160,6 +167,7 @@ uv run render_report.py --data data.yaml -o out.pptx   # PEP 723 で依存（lxm
 ```
 
 - テンプレートは既定では別ファイルのまま、スクリプトからの相対パスで読む。1 ファイルにしたいときだけ `--embed`
+- `--data` には、分けたデータの複数のファイルかフォルダも渡せる
 - `--example-data` でデータの雛形と収まる量、`--extract-def` で埋め込みの定義を取り出せる
 - 改修は、スクリプトを手で書き換えず、定義を直して `export --from-script render_report.py --def def.yaml -o render_report.py` で書き出し直す。`--def` を付けなければエンジンだけを最新にする
 
@@ -190,8 +198,8 @@ uv run render_report.py --data data.yaml -o out.pptx   # PEP 723 で依存（lxm
 | `inspect <template.pptx>` | テンプレートの事実（図形・文字・大きさ・収まる量・図の並び・仮値の疑い・来歴）を出す | `--json` |
 | `analyze <template.pptx>` | 定義の下書きを書く（確定ではない） | `-o def.yaml`（拡張子で JSON / YAML を選ぶ） |
 | `check --def <def>` | 定義の整合と、テンプレートの値の残り（`strict`）を検査し、収まる量の一覧を出す | `--template` |
-| `render --def <def> --data <data> -o <out.pptx>` | テンプレート + 定義 + データから再構成する | `--template`、`--data -`（標準入力）、`--allow-overflow` |
-| `extract <filled.pptx> --def <def>` | 記入済みの資料から、定義に沿ってデータを取り出す（`render` の逆） | `-o data.yaml`（省略時は標準出力に JSON）、`--template` |
+| `render --def <def> --data <data> -o <out.pptx>` | テンプレート + 定義 + データから再構成する | `--template`、`--data -`（標準入力）、`--data a.yaml b.yaml` / `--data DIR`（分けたデータをまとめる）、`--allow-overflow` |
+| `extract <filled.pptx> --def <def>` | 記入済みの資料から、定義に沿ってデータを取り出す（`render` の逆） | `-o data.yaml`（省略時は標準出力に JSON）、`--template`、`--split DIR`（スライドのまとまりごとのファイルに分ける） |
 | `export --def <def> -o <render.py>` | 定義を埋め込んだ、単体で動く専用スクリプトを書き出す | `--embed`、`--template`、`--from-script <旧.py>` |
 | `build --spec <spec.json>` | テンプレート無しで、JSON スペックから新規生成する | stdin も可、`--allow-overflow` |
 | `example` | `build` のサンプルスペックを出す | — |

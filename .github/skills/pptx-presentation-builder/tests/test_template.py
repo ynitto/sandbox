@@ -600,3 +600,96 @@ class VerticalAndCommentsTest(unittest.TestCase):
             self.assertEqual(got[0].left, Emu(8 * CM))
             with zipfile.ZipFile(out) as z:
                 self.assertFalse(any("comments/" in n for n in z.namelist()))
+
+
+P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
+
+
+def add_sections(path: str, sections: list[tuple[str, list[int]]]) -> None:
+    """PowerPoint のセクション（章）を付ける。[(名前, [スライドの番号, …]), …]。"""
+    prs = Presentation(path)
+    ids = [sid.get("id") for sid in prs.slides._sldIdLst]
+    root = prs.part._element
+    ext_lst = root.find(f"{{{pt.NS_P}}}extLst")
+    if ext_lst is None:
+        ext_lst = etree.SubElement(root, f"{{{pt.NS_P}}}extLst")
+    ext = etree.SubElement(ext_lst, f"{{{pt.NS_P}}}ext", uri="{521415D9-36F7-43E2-AB2F-B90AF26B5E84}")
+    lst = etree.SubElement(ext, f"{{{P14}}}sectionLst", nsmap={"p14": P14})
+    for i, (name, slides) in enumerate(sections):
+        sec = etree.SubElement(lst, f"{{{P14}}}section", name=name, id=f"{{00000000-0000-0000-0000-00000000000{i}}}")
+        sl = etree.SubElement(sec, f"{{{P14}}}sldIdLst")
+        for n in slides:
+            etree.SubElement(sl, f"{{{P14}}}sldId", id=ids[n - 1])
+    prs.save(path)
+
+
+class SplitDataTest(Base):
+    def write(self, name: str, obj) -> str:
+        path = os.path.join(self.dir, name)
+        pt.dump_structured(obj, path)
+        return path
+
+    def test_render_from_several_files_and_folder(self):
+        data = full_data()
+        folder = os.path.join(self.dir, "data")
+        os.makedirs(folder)
+        self.write("data/01-head.yaml", {"s1": data["s1"], "s2": data["s2"], "s3": data["s3"][:2]})
+        self.write("data/02-more.yaml", {"s3": data["s3"][2:], "s5": data["s5"]})
+        self.write("data/03-rest.json", {"s6": data["s6"], "s7": data["s7"]})
+        self.assertEqual(pt.load_data(folder), data)   # 繰り返すスライドの配列は、ファイルの順につなぐ
+        files = [os.path.join(folder, n) for n in ("01-head.yaml", "02-more.yaml", "03-rest.json")]
+        self.assertEqual(pt.load_data(files), data)
+        self.render()
+        single = slide_texts(self.out)
+        pt.render(self.template, self.definition, pt.load_data(folder), self.out)
+        self.assertEqual(slide_texts(self.out), single)
+
+    def test_conflict_stops(self):
+        a = self.write("a.yaml", {"s1": {"title": "第3四半期"}})
+        b = self.write("b.yaml", {"s1": {"title": "第4四半期", "subtitle": "x"}})
+        with self.assertRaises(pt.TemplateError) as cm:
+            pt.load_data([a, b])
+        self.assertIn("s1.title", str(cm.exception))
+        self.assertIn("a.yaml", str(cm.exception))
+        c = self.write("c.yaml", {"s1": {"title": None, "subtitle": "x"}})
+        self.assertEqual(pt.load_data([a, c])["s1"], {"title": "第3四半期", "subtitle": "x"})
+
+    def test_split_by_sections(self):
+        add_sections(self.template, [("表紙", [1, 2]), ("施策", [3, 4, 5]), ("状況", [6, 7])])
+        definition = pt.analyze(self.template)
+        groups = {s["slide"]: s.get("group") for s in definition["slides"] if not s.get("drop")}
+        self.assertEqual(groups, {1: "表紙", 2: "表紙", 3: "施策", 5: "施策", 6: "状況", 7: "状況"})
+        data = full_data()
+        data["memo"] = "定義に無いキー"
+        parts = dict(pt.split_data(data, definition))
+        self.assertEqual(list(parts), ["00-common", "01-表紙", "02-施策", "03-状況"])
+        self.assertEqual(set(parts["02-施策"]), {"s3", "s5"})
+        self.assertEqual(parts["00-common"], {"memo": "定義に無いキー"})
+        # 分けたファイルのフォルダを渡せば、元のデータに戻る
+        pt.render(self.template, definition, full_data(), self.out)
+        cli = os.path.join(os.path.dirname(__file__), "..", "scripts", "pptx_builder.py")
+        pt.dump_structured(dict(definition, template="report.pptx"), os.path.join(self.dir, "def.yaml"))
+        r = subprocess.run([sys.executable, cli, "extract", "out.pptx", "--def", "def.yaml", "--split", "parts"],
+                           capture_output=True, text=True, cwd=self.dir)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.dir, "parts"))), ["01-表紙.yaml", "02-施策.yaml", "03-状況.yaml"])
+        self.assertEqual(pt.load_data(os.path.join(self.dir, "parts")), full_data())
+        r = subprocess.run([sys.executable, cli, "render", "--def", "def.yaml", "--data", "parts", "-o", "o2.pptx"],
+                           capture_output=True, text=True, cwd=self.dir)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(slide_texts(os.path.join(self.dir, "o2.pptx")), slide_texts(self.out))
+
+    def test_without_sections_one_file_per_slide(self):
+        names = [n for n, _ in pt.split_data(full_data(), self.definition)]
+        self.assertEqual(names, ["01-s1", "02-s2", "03-s3", "04-s5", "05-s6", "06-s7"])
+
+    def test_standalone_script_takes_several_files(self):
+        script = os.path.join(self.dir, "render_report.py")
+        pt.export_script(self.template, self.definition, script)
+        data = full_data()
+        a = self.write("a.json", {k: v for k, v in data.items() if k in ("s1", "s2", "s3")})
+        b = self.write("b.yaml", {k: v for k, v in data.items() if k not in ("s1", "s2", "s3")})
+        r = subprocess.run([sys.executable, script, "--data", a, b, "-o", "x.pptx"], capture_output=True, text=True, cwd=self.dir)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.render()
+        self.assertEqual(slide_texts(os.path.join(self.dir, "x.pptx")), slide_texts(self.out))

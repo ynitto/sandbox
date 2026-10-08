@@ -109,6 +109,7 @@ slides:
 | `slides[].keep` | 残す図形。`strict` のときだけ意味を持つ |
 | `slides[].clear` | 文字だけ空にする図形（書式は残す）。グループなら中のすべて |
 | `slides[].notes` | ノートに入れる欄。無ければ、`properties.scrub` でノートは空になる |
+| `slides[].group` | データを分けるときのまとまり。同じ `group` のスライドのデータは 1 つのファイルになる（無ければスライドごと）。`analyze` は PowerPoint のセクションの名前を入れる |
 | `slides[].overflow` | `error`（既定。収まらなければ止める）か `split`（続きのスライドを足す） |
 | 欄の `max_chars` | サンプルの粒度。この字数を超えると止まる。`analyze` は、サンプルの字数の 1.5 倍（少なくとも +4 字）を書く |
 | 欄の `max_items` | 箇条書きの項目数・図の数の上限。`analyze` は、箇条書きはサンプルの項目数、図は見本と同じ間隔でスライドの余白まで並ぶ数を書く |
@@ -143,6 +144,8 @@ s7: {日時: 2026/11/05 14:00, 場所: 本社 3F}
 ```
 
 - データに無い欄は空欄になる。定義に無いキー（綴りの違いの疑い）は警告が出る
+- データは複数のファイルに分けてよい。`--data a.yaml b.yaml` か `--data DIR`（中の `.json` / `.yaml` / `.yml` を名前順に）で 1 つにまとめる。オブジェクトはキーごとに合わせ、配列（繰り返すスライド・箇条書き・表の行・図）はファイルの順につなぐ。同じ欄に違う値があると、両方のファイル名を挙げて止まる。`null` はほかのファイルの値を消さない
+- `extract --split DIR` は、`group` ごと（無ければスライドごと）に `01-<まとまり>.yaml` … と分けて書く。定義に無いキーは `00-common.yaml` に置く。フォルダを `--data` に渡せば元のデータに戻る
 - 表のデータが 0 行なら、空の 1 行を残す。図のデータが 0 件なら、図の図形と矢印をすべて取り除く
 
 ## 図の並び
@@ -200,7 +203,7 @@ uv run python scripts/pptx_builder.py export --def def.yaml -o render_report.py
 
 - 出力は、エンジンと定義を 1 つにまとめた Python ファイル。スキルのパスに依存しない
 - テンプレートは既定では別ファイルのまま、スクリプトからの相対パスで読む。`--embed` で base64 で埋め込む
-- 引数: `--data`、`-o`、`--template`、`--allow-overflow`、`--example-data`（雛形と収まる量）、`--extract-def PATH`、`--extract-template PATH`（埋め込み時のみ）
+- 引数: `--data`（複数のファイル・フォルダも可）、`-o`、`--template`、`--allow-overflow`、`--example-data`（雛形と収まる量）、`--extract-def PATH`、`--extract-template PATH`（埋め込み時のみ）
 
 | やりたいこと | コマンド |
 |---|---|
