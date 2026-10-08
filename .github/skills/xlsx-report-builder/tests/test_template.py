@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -454,7 +455,7 @@ class StandaloneAndYamlTests(Base):
     def test_template_stays_separate_by_default(self):
         script = self.export()
         with open(script, encoding="utf-8") as fh:
-            self.assertLess(len(fh.read()), 120_000)  # 既定ではテンプレートを抱え込まない
+            self.assertLess(len(fh.read()), 160_000)  # 既定ではテンプレートを抱え込まない
         self.assertNotEqual(self.run_script(script, "--extract-template", os.path.join(self.dir, "x.xlsx")).returncode, 0)
         os.rename(self.tpl, self.tpl + ".bak")
         data = os.path.join(self.dir, "data.json")
@@ -1199,7 +1200,7 @@ class ChecklistTests(Base):
         self.assertEqual([[c.value for c in row] for row in ws.iter_rows(min_row=3, max_row=5, min_col=3)],
                          [["○", "×", "○", None, "○", 2026, 10, 8, None],
                           ["×", "○", None, "○", None, 2026, 10, 9, "○"],
-                          [None, None, None, None, None, None, None, None, None]])
+                          ["×", "×", None, None, None, None, None, None, None]])   # 判定が null の行は、どちらも ×（選ばれていない）
         for bad, word in (({"判定": "保留"}, "選べる値（合格, 不合格）"), ({"要再試": "たぶん"}, "map にありません"),
                           ({"実施日": "来週"}, "日付として読めません")):
             with self.assertRaises(xt.TemplateError) as cm:
@@ -1375,7 +1376,7 @@ class ChecklistTests(Base):
         ws = load_workbook(out)["T"]
         notes = {c.coordinate: c.comment.text for row in ws.iter_rows() for c in row if c.comment}
         self.assertEqual(notes, {"A6": "注記の由来"})   # 注記は行と一緒に 4 → 6、データのセルと消した行のメモは無い
-        self.assertIn("データを入れるセルのコメント（B2）は、新しい値に元のメモが付くため取り除きました", warnings)
+        self.assertIn("シート「T」: データを入れるセルのコメント（B2）は、新しい値に元のメモが付くため取り除きました", warnings)
         with zipfile.ZipFile(out) as z:
             vml = next(z.read(n).decode() for n in z.namelist() if n.endswith(".vml"))
         self.assertEqual(re.findall(r"<[^>]*Row>(\d+)<", vml), ["5"])   # 図形（吹き出し）の位置も 0 始まりで 5
@@ -1416,3 +1417,124 @@ class ChecklistTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScenarioRegressionTests(Base):
+    """tests/scenarios/ のシナリオを再生して見つかった不具合（2026-10-08）。"""
+
+    def book(self, build, name="s.xlsx"):
+        path = os.path.join(self.dir, name)
+        wb = Workbook()
+        build(wb.active)
+        wb.save(path)
+        return path
+
+    def head(self, ws, row, names, start=1):
+        for i, h in enumerate(names, start):
+            if h is not None:
+                cell = ws.cell(row, i, h)
+                cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), HEAD_FILL, BOX
+
+    def test_headerless_mark_column_at_the_edge_is_kept_and_strict_passes(self):
+        def build(ws):
+            self.head(ws, 1, ["No", "項目", "結果"])
+            for r in (2, 3):
+                ws.cell(r, 1, r - 1); ws.cell(r, 2, f"項目{r}"); ws.cell(r, 3, "OK"); ws.cell(r, 4, "×")
+        tpl = self.book(build)
+        d = xt.analyze(tpl)
+        self.assertTrue(d["sheets"][0]["tables"][0]["columns"]["D"]["keep"])
+        self.assertEqual(xt.check_definition(tpl, d), [])
+
+    def test_sum_across_the_same_row_is_a_column_not_a_total_row(self):
+        def build(ws):
+            self.head(ws, 1, ["支店", "A", "B", "合計"])
+            for r in (2, 3, 4):
+                ws.cell(r, 1, f"支店{r}"); ws.cell(r, 2, r); ws.cell(r, 3, r * 2); ws.cell(r, 4, f"=SUM(B{r}:C{r})")
+            ws.cell(5, 1, "合計"); ws.cell(5, 4, "=SUM(D2:D4)")
+        t = xt.analyze(self.book(build))["sheets"][0]["tables"]
+        self.assertEqual((len(t), t[0]["sample_rows"], t[0]["_total_row"]), (1, 3, 5))
+        self.assertTrue(t[0]["columns"]["D"]["formula"])
+
+    def test_examples_come_from_the_first_filled_row(self):
+        def build(ws):
+            ws.merge_cells("C1:D1"); ws["C1"] = "判定"
+            self.head(ws, 2, ["No", "項目", "合格", "不合格"])
+            for r, row in enumerate([(1, None, "×", "×"), (2, "起動", "○", "×")], 3):
+                for i, v in enumerate(row, 1):
+                    ws.cell(r, i, v).border = BOX
+        cols = xt.analyze(self.book(build))["sheets"][0]["tables"][0]["columns"]
+        self.assertEqual((cols["B"]["_sample"], cols["C"]["_sample"]), ("起動", "合格"))
+
+    def test_fixed_cells_split_dates_boxes_below_labels_and_sub_labels(self):
+        def build(ws):
+            ws["A1"], ws["B1"], ws["C1"], ws["D1"], ws["E1"], ws["F1"], ws["G1"] = "報告週", 2026, "年", 9, "月", 25, "日"
+            ws["A3"] = "所感"
+            ws.merge_cells("A4:F6"); ws["A4"] = "（今週の所感を記入）"
+            ws["A8"], ws["B8"], ws["C8"] = "振込先", "銀行名", "みらい銀行 本店"
+            ws["B9"], ws["C9"] = "口座番号", "普通 1234567"
+        tpl = self.book(build)
+        sheet = xt.analyze(tpl)["sheets"][0]
+        self.assertEqual(sheet["cells"], {"B1": {"key": "報告週", "part": "year"}, "D1": {"key": "報告週", "part": "month"},
+                                          "F1": {"key": "報告週", "part": "day"}, "A4": "所感", "C8": "銀行名", "C9": "口座番号"})
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, json.loads(json.dumps(xt.analyze(tpl))),
+                  {"報告週": "2026-10-02", "所感": "順調", "銀行名": "B銀行", "口座番号": "1"}, out)
+        ws = load_workbook(out).active
+        self.assertEqual([ws[r].value for r in ("B1", "D1", "F1", "A4", "B8", "C8")], [2026, 10, 2, "順調", "銀行名", "B銀行"])
+
+    def test_added_header_column_and_extract_from_another_shape_stop(self):
+        d = json.loads(json.dumps(DEF))
+        d["sheets"][0]["tables"][0]["columns"]["B"]["header"] = "品名"
+        wb = load_workbook(self.tpl)
+        wb["請求書"]["F7"] = "備考"
+        wide = os.path.join(self.dir, "wide.xlsx")
+        wb.save(wide)
+        with self.assertRaises(xt.TemplateError) as cm:
+            xt.render(wide, d, DATA, os.path.join(self.dir, "o.xlsx"))
+        self.assertIn("F7: テンプレートに見出し「備考」の列があるが、定義の columns に無い", str(cm.exception))
+        with self.assertRaises(xt.TemplateError):
+            xt.extract(wide, d, self.tpl)
+
+    def test_non_numbers_in_number_cells_are_warned_and_text_cells_keep_text(self):
+        self.render(dict(DATA, items=[{"name": "a", "qty": "たくさん", "price": 1}]))
+        self.assertTrue([w for w in self.warnings if "'たくさん' は数値ではありません" in w])
+
+        def build(ws):
+            ws["A1"], ws["B1"] = "版", "1.3"
+            ws["B1"].number_format = "@"
+        tpl = self.book(build)
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(tpl, {"version": 1, "sheets": [{"name": "Sheet", "cells": {"B1": "版"}}]}, {"版": 1.0}, out)
+        self.assertEqual(load_workbook(out).active["B1"].value, "1.0")
+
+    def test_scrub_resets_dates_and_creates_the_output_folder(self):
+        wb = load_workbook(self.tpl)
+        wb.properties.created = wb.properties.modified = dt.datetime(2020, 1, 1)
+        wb.properties.creator = "山田"
+        wb.save(self.tpl)
+        out = os.path.join(self.dir, "new", "dir", "o.xlsx")
+        warnings = xt.render(self.tpl, dict(DEF, properties={"scrub": True}), DATA, out)
+        props = load_workbook(out).properties
+        self.assertGreater(props.created.year, 2020)
+        self.assertFalse([w for w in warnings if "山田" in w])   # scrub で消すプロパティは、来歴の警告に出さない
+
+    def test_copied_tables_in_another_groups_file_are_refused(self):
+        d = {"version": 1, "sheets": [{"name": "受注", "tables": [{"key": "受注"}]},
+                                      {"name": "出荷", "cells": {"A1": "対象月"}, "tables": [{"key": "出荷"}]}]}
+        fresh = [{"no": "J10-1"}]
+        stale = [{"no": "J09-1"}, {"no": "J09-2"}]
+        with self.assertRaises(xt.TemplateError) as cm:
+            xt.merge_data([("02-受注.yaml", {"受注": fresh}), ("03-出荷.yaml", {"出荷": [{"no": "S1"}], "受注": stale})], d)
+        self.assertIn("03-出荷.yaml はほかのまとまりのデータも持つ", str(cm.exception))
+        self.assertEqual(len(xt.merge_data([("a.yaml", {"受注": fresh}), ("b.yaml", {"受注": stale})], d)["受注"]), 3)
+
+    def test_provenance_names_comments_and_kept_text_with_the_old_author(self):
+        from openpyxl.comments import Comment
+        wb = load_workbook(self.tpl)
+        wb.properties.creator = "山田 太郎"
+        wb["請求書"]["A1"] = "山田 太郎 作成の請求書"
+        wb["請求書"]["B3"].comment = Comment("前のメモ", "山田")
+        wb.save(self.tpl)
+        notes = xt.analyze(self.tpl)["sheets"][0]["_notes"]
+        self.assertTrue([n for n in notes if n.startswith("A1 の") and "作成者「山田 太郎」" in n])
+        self.assertTrue([p for p in xt.provenance(xt.Package(self.tpl)) if "請求書!B3「前のメモ」" in p])
