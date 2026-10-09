@@ -106,6 +106,22 @@ test('userData の exports/ へ書き、そのパスと名前を返す', () => {
   assert.match(fs.readFileSync(out.path, 'utf8'), /\[依頼\].*\nやあ/);
 });
 
+test('同じ名前と時刻で繰り返し書き出しても既存ファイルを上書きしない', () => {
+  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-export-repeat-'));
+  const at = new Date(2026, 8, 16, 20, 53);
+  const first = sessionExport.write(ud, { title: '会話名', repo: '/repo', messages: [{ role: 'user', at, text: '1回目' }] }, { at });
+  const second = sessionExport.write(ud, { title: '会話名', repo: '/repo', messages: [{ role: 'user', at, text: '2回目' }] }, { at });
+  const third = sessionExport.write(ud, { title: '会話名', repo: '/repo', messages: [{ role: 'user', at, text: '3回目' }] }, { at });
+
+  assert.deepStrictEqual(
+    [first.name, second.name, third.name],
+    ['会話名-20260916-2053.txt', '会話名-20260916-2053-2.txt', '会話名-20260916-2053-3.txt'],
+  );
+  assert.match(fs.readFileSync(first.path, 'utf8'), /1回目/);
+  assert.match(fs.readFileSync(second.path, 'utf8'), /2回目/);
+  assert.match(fs.readFileSync(third.path, 'utf8'), /3回目/);
+});
+
 test('ipc は書き出したファイルを開き、開けなければ理由だけ返す', () => {
   const ipc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8');
   assert.match(ipc, /handle\('session:export'/);
