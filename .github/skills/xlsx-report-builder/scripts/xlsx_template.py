@@ -74,6 +74,8 @@ class Package:
         self.data[name] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
     def save(self, path: str) -> None:
+        if os.path.dirname(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)   # 出力先のフォルダが無ければ作る
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
             for info in self.infos:
                 if info.filename in self.removed:
@@ -403,10 +405,14 @@ def analyze(template: str) -> dict:
     sst = read_shared_strings(pkg)
     styles = Styles(pkg)
     sheets_def = []
+    # 前の文書の作成者・会社名。残す文字（タイトルなど）に含まれていたら、前の案件の値の疑い
+    props = read_properties(pkg)
+    words = {v2: k for k, v in props.items() if k in ("creator", "lastModifiedBy", "company", "manager")
+             for v2 in {v.strip(), re.sub(r"(株式会社|有限会社|\(株\)|（株）|様|御中|\s)", "", v)} if len(v2) >= 2}
     for name, part in pkg.sheets():
         root = pkg.xml(part)
         expand_shared_formulas(root)
-        sheets_def.append(_analyze_sheet(pkg, name, part, root, sst, styles))
+        sheets_def.append(_analyze_sheet(pkg, name, part, root, sst, styles, words))
     # 表のあるシートが 2 つ以上なら、データのキーをシート名にする（同じ items だと、どのシートにも同じ明細が入る）
     with_tables = [s for s in sheets_def if s["tables"]]
     if len(with_tables) > 1:
@@ -423,12 +429,16 @@ def analyze(template: str) -> dict:
     # 固定セルのデータのキーは、ブック全体で重ならないようにする（別のシートの同じラベルに、黙って同じ値が入らない）
     used = {t["key"] for sd in sheets_def for t in sd["tables"]}
     for sd in sheets_def:
-        for ref, key in sd["cells"].items():
-            base, n = key, 2
-            while key in used:
-                key, n = f"{base}{n}", n + 1
-            used.add(key)
-            sd["cells"][ref] = key
+        renamed: dict[str, str] = {}   # 年・月・日に分かれた欄は、同じキーのまま名前を変える
+        for ref, spec in sd["cells"].items():
+            key = spec["key"] if isinstance(spec, dict) else spec
+            if key not in renamed:
+                base, new, n = key, key, 2
+                while new in used:
+                    new, n = f"{base}{n}", n + 1
+                used.add(new)
+                renamed[key] = new
+            sd["cells"][ref] = dict(spec, key=renamed[key]) if isinstance(spec, dict) else renamed[key]
     # テンプレートの値は、keep に挙げたもの（見出し・ラベル）以外を出力に残さない。来歴（作成者・コメントなど）も消す
     return {
         "version": DEF_VERSION,
@@ -472,12 +482,19 @@ def _sig(cols: dict[int, dict]) -> tuple:
 
 def _is_total_row(cols: dict[int, dict]) -> bool:
     for i in cols.values():
-        if i["formula"] and TOTAL_FUNCS.match(i["formula"][1:]):
+        if i["formula"] and TOTAL_FUNCS.match(i["formula"][1:]) and _sums_rows_above(i):
             return True
         v = i["value"]
         if isinstance(v, str) and v.strip().lower().replace(" ", "").replace("　", "") in TOTAL_WORDS:
             return True
     return False
+
+
+def _sums_rows_above(cell: dict) -> bool:
+    """SUM などが、上の行を縦に集めているか（合計の行）。同じ行を横に足す `=SUM(B2:E2)` は、明細の行の合計の列。"""
+    own = split_ref(cell["ref"])[1]
+    rows = [int(m.group(1)) for m in re.finditer(r"(?<![A-Za-z0-9_.])\$?[A-Za-z]{1,3}\$?(\d+)(?![\d(])", cell["formula"])]
+    return not rows or min(rows) < own
 
 
 def _find_tables(grid, styles) -> list[dict]:
@@ -514,6 +531,15 @@ def _find_tables(grid, styles) -> list[dict]:
                     body.append(rr)
                     rr += 1
                 if body:
+                    # 見出しの無い端の列でも、× や - の既定の印が並ぶなら表の列（余白として残す）。表の範囲に入れる
+                    def marks_only(c):
+                        cells = [grid[b][c]["value"] for b in body if c in grid[b]]
+                        return not (cols.get(c) and cols[c]["value"] not in (None, "")) and len(cells) == len(body) \
+                            and all(isinstance(v, str) and v.strip() in MARK_OFF for v in cells)
+                    while marks_only(hi + 1):
+                        hi += 1
+                    while lo > 1 and marks_only(lo - 1):
+                        lo -= 1
                     tables.append(_table_info(grid, r, body, lo, hi, rr, styles))
                     r_idx = next((k for k, x in enumerate(rows) if x >= rr), len(rows))
                     continue
@@ -531,7 +557,7 @@ def _table_info(grid, header_row, body, lo, hi, after, styles) -> dict:
     }
 
 
-def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
+def _analyze_sheet(pkg, name, part, root, sst, styles, words: "dict | None" = None) -> dict:
     grid = _grid(root, sst, styles)
     found = _find_tables(grid, styles)
     notes: list[str] = []
@@ -588,7 +614,7 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
             if samples:
                 spec["_format"] = styles.code.get(int(samples[0]["s"]), "General")
             cols_def[letter] = spec
-        _readable_columns(cols_def, t, grid, _merge_origins(root), confirm)
+        _readable_columns(cols_def, t, grid, _merge_origins(root), confirm, filled)
         empty = [r for r in t["body"] if r not in filled]
         if empty and len(filled) < len(t["body"]):
             confirm.append(f"{', '.join(map(str, empty))} 行目は既定値（連番・× など）だけの空行。"
@@ -610,6 +636,15 @@ def _analyze_sheet(pkg, name, part, root, sst, styles) -> dict:
             "needs_confirm": confirm,
         })
     cells, keep, samples, clear = _fixed_cells(grid, covered, heads, root)
+    for r in sorted(grid):
+        for i in grid[r].values():
+            v = i["value"]
+            if r in covered or i["ref"] in cells or not isinstance(v, str):
+                continue
+            hit = next((w for w in (words or {}) if w in v), None)
+            if hit:
+                notes.append(f"{i['ref']} の「{v}」は、前の文書の{ {'company': '会社名', 'manager': '管理者'}.get(words[hit], '作成者') }"
+                             f"「{hit}」を含む。残さずに流し込むか、利用者に確かめる")
     notes += _sheet_warnings(pkg, part, root, tables)
     out = {"name": name, "tables": tables, "cells": cells, "keep": keep, "_cell_samples": samples, "_notes": notes}
     if clear:
@@ -695,7 +730,7 @@ MARK_PAIR = {"☐": "☑", "□": "■"}  # × や □ だけの列で、選ば�
 DATE_HEADS = {"年": "year", "月": "month", "日": "day", "時": "hour", "分": "minute"}
 
 
-def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> None:
+def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list, filled: "list | None" = None) -> None:
     """表の見た目に頼る列（○× の印・年月日に分かれた日付）を、データで意味が分かる書き方にする。
 
     - ○ の列が並ぶ → 見出しを値にした択一（`判定: 合格`）か、複数選択（`対象: [Windows, Linux]`）
@@ -725,6 +760,7 @@ def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> N
         return out
 
     used = {spec.get("key") for spec in cols_def.values()}
+    first = t["body"].index(filled[0]) if filled else 0   # 例の値を取る行（既定値だけの空の行は飛ばす）
 
     def fresh(base):
         key, n = base, 2
@@ -762,7 +798,7 @@ def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> N
         if len(run) == 1:
             spec = plain[run[0]]
             spec["map"] = {True: on, False: off}
-            spec["_sample"] = marks[run[0]][0] == on if marks[run[0]][0] else None
+            spec["_sample"] = marks[run[0]][first] == on if marks[run[0]][first] else None
             confirm.append(f"{letters[0]}列の {on} を、データでは true / false で書く")
             continue
         picked = [[h for c, h in zip(run, heads) if marks[c][i] == on] for i in range(len(t["body"]))]
@@ -775,7 +811,7 @@ def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> N
             spec.update({"key": key, "when": h, "mark": on})
             if off:
                 spec["unmark"] = off
-            spec["_sample"] = picked[0] if multi else (picked[0][0] if picked[0] else None)
+            spec["_sample"] = picked[first] if multi else (picked[first][0] if picked[first] else None)
         confirm.append(f"{letters[0]}〜{letters[-1]}列の {on} を、データでは {key}: "
                        + (f"[{', '.join(heads[:2])}] のような見出しの配列（複数選択）" if multi else f"{heads[0]} のような見出しの 1 つ（択一）")
                        + "で書く")
@@ -790,7 +826,7 @@ def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list) -> N
         for c in run:
             used.discard(plain[c]["key"])
         key = fresh(group_head(run) or "日付")
-        got = dict(zip(parts, (text(t["body"][0], c) for c in run)))
+        got = dict(zip(parts, (text(t["body"][first], c) for c in run)))
         try:
             sample = dt.datetime(int(got.get("year", 2000)), int(got.get("month", 1)), int(got.get("day", 1)),
                                  int(got.get("hour", 0)), int(got.get("minute", 0)))
@@ -812,22 +848,73 @@ def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tu
     押印・署名など人が書き込む欄は、データに入れない（前の値があれば clear で消す）。
     """
     origin = _merge_origins(root)
-    cells: dict[str, str] = {}
+    cells: dict[str, Any] = {}
     keep: list[str] = []
     clear: list[str] = []
     samples: dict[str, dict] = {}
+    # 2 行以上の結合の枠（所感・備考の記入欄）で、すぐ上にラベルがあるもの。空か仮の文（〜を記入）なら記入欄
+    boxes: dict[tuple[int, int], str] = {}
+    spans: dict[tuple[int, int], int] = {}   # 結合の左上 → 右端の列
+    for (c, r), (c1, r1) in origin.items():
+        spans[(c1, r1)] = max(spans.get((c1, r1), c1), c)
+        if (c, r) == (c1, r1) and (c, r + 1) in origin and origin[(c, r + 1)] == (c1, r1):
+            above = grid.get(r - 1, {}).get(c)
+            v = grid.get(r, {}).get(c, {}).get("value")
+            if above and isinstance(above["value"], str) and above["value"].strip() and not above["formula"] \
+                    and (v is None or isinstance(v, str) and PLACEHOLDER_RE.search(v)):
+                boxes[(c, r)] = above["value"]
+
+    def new_key(label: "str | None", ref: str) -> str:
+        base = re.sub(r"[.\s]+", "_", (label or "").strip(" :：")).strip("_") or ref
+        taken = {v if isinstance(v, str) else v["key"] for v in cells.values()}
+        key, n = base, 2
+        while key in taken:
+            key, n = f"{base}{n}", n + 1
+        return key
+
     for r in sorted(grid):
         if r in sample_rows:
             continue
+        row = grid[r]
+        # 「2026 年 9 月 25 日」のように、数と年・月・日の文字が交互に並ぶ欄は、1 つの日付（part）
+        dates: dict[int, str] = {}
+        units: set[int] = set()
+        c = min(row) if row else 0
+        while row and c <= max(row):
+            run, k = [], c
+            while k in row and (row[k]["value"] is None or isinstance(row[k]["value"], int)) and not row[k]["formula"] \
+                    and str((row.get(k + 1) or {}).get("value") or "").strip() in DATE_HEADS:
+                run.append(k)
+                k += 2
+            parts = [DATE_HEADS[str(row[k + 1]["value"]).strip()] for k in run]
+            if len(run) >= 2 and len(set(parts)) == len(parts):
+                dates.update(dict(zip(run, parts)))
+                units.update(k + 1 for k in run)
+                c = k
+            else:
+                c += 1
+        date_key = None
         labels: dict[int, str] = {}   # この行のラベルの列 → 文字
-        for c in sorted(grid[r]):
-            i = grid[r][c]
+        for c in sorted(row):
+            i = row[c]
             if origin.get((c, r), (c, r)) != (c, r) or i["formula"]:
                 continue   # 結合の左上以外のセル・数式は、どちらにもしない
             lc, lr = origin.get((c - 1, r), (c - 1, r))
             label = labels.get(lc) if lr == r and r not in header_rows else None
             value = i["value"]
-            if value is None and label is not None and grid[r][lc]["s"] == i["s"]:
+            if c in units:
+                keep.append(i["ref"])
+                continue
+            if c in dates:
+                date_key = date_key or new_key(label or "日付", i["ref"])
+                cells[i["ref"]] = {"key": date_key, "part": dates[c]}
+                samples[i["ref"]] = {"label": label, "value": value}
+                continue
+            if (c, r) in boxes and r not in header_rows:
+                cells[i["ref"]] = new_key(boxes[(c, r)], i["ref"])
+                samples[i["ref"]] = {"label": boxes[(c, r)], "value": value}
+                continue
+            if value is None and label is not None and row[lc]["s"] == i["s"]:
                 continue   # ラベルと同じ書式の空欄は、行の塗りの続き。記入枠ではない
             if r in header_rows:
                 if value is not None:
@@ -837,12 +924,14 @@ def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tu
                 if value is not None:
                     clear.append(i["ref"])   # 人が書き込む欄の前の値は消すだけ。データには入れない
                 continue
+            nxt = row.get(spans.get((c, r), c) + 1)
+            if label is not None and isinstance(value, str) and len(value.strip()) <= 10 and nxt and not nxt["formula"] \
+                    and nxt["value"] is not None and len(str(nxt["value"]).strip()) > 2:
+                labels[c] = value   # 「振込先 | 銀行名 | ○○銀行」の中の見出し。右の値のラベル
+                keep.append(i["ref"])
+                continue
             if label is not None or (value is not None and not isinstance(value, str)):
-                base = re.sub(r"[.\s]+", "_", (label or "").strip(" :：")).strip("_") or i["ref"]
-                key, n = base, 2
-                while key in cells.values():
-                    key, n = f"{base}{n}", n + 1
-                cells[i["ref"]] = key
+                cells[i["ref"]] = new_key(label, i["ref"])
                 samples[i["ref"]] = {"label": label, "value": value}
             elif value is not None:
                 labels[c] = value
@@ -877,8 +966,6 @@ def _sheet_warnings(pkg, part, root, tables) -> list[str]:
             w.append(f"入力規則 {dv.get('sqref')} は、表の行数に合わせて範囲が伸びる")
     rels = pkg.rels_of(part)
     for _, (typ, target) in rels.items():
-        if typ.endswith("/comments"):
-            w.append("コメント（メモ）は行がずれても位置が追従しない場合がある。確認すること")
         if typ.endswith("/table"):
             w.append(f"Excel のテーブル（{target}）は、範囲を表の行数に合わせて更新する")
     return w
@@ -908,7 +995,7 @@ def summarize(definition: dict) -> str:
                     kind += f"（{', '.join(pairs)}）"
                 elif "part" in c:
                     kind += f"（日付の {c['part']}）"
-                lines.append(f"      {letter}列 「{c.get('header')}」 → {kind}  [{c.get('_format', '')}]")
+                lines.append(f"      {letter}列 「{c.get('header') or '（見出し無し）'}」 → {kind}  [{c.get('_format', '')}]")
             if t["_total_row"]:
                 lines.append(f"      合計行: {t['_total_row']} 行（表の下へずらし、SUM の範囲は表に合わせて伸ばす）")
             for n in t["needs_confirm"]:
@@ -917,6 +1004,8 @@ def summarize(definition: dict) -> str:
             lines.append("  流し込む欄（cells。テンプレートの値は残さない。データで null なら空欄になる）:")
             for ref, key in s["cells"].items():
                 v = s["_cell_samples"].get(ref, {}).get("value")
+                if isinstance(key, dict):
+                    key = f"{key['key']}（日付の {key['part']}）" if "part" in key else key["key"]
                 lines.append(f"      {ref} → key={key}  " + (f"今の値: {v!r}" if v is not None else "（空欄の記入枠）"))
         if s["keep"]:
             lines.append(f"  残す（keep。見出し・ラベル・固定の文面）: {', '.join(s['keep'])}")
@@ -934,7 +1023,7 @@ def summarize(definition: dict) -> str:
 # 「仮」は 1 文字だけでは見ない（仮払金・仮受消費税のような、帳票の見出しを仮の値と取り違えないため）
 PLACEHOLDER_RE = re.compile(r"(〇〇|○○|●●|◯◯|△△|□□|＊＊|\*\*|(?<![A-Za-z])x{2,}(?![A-Za-z])|サンプル|ダミー|記入例|"
                             r"^仮$|[（(]仮[）)]|仮(?:の|入力|置き|名|データ)|例[:：)）]|sample|dummy|example|yyyy|"
-                            r"\b0{4}[-/]0{2}[-/]0{2}\b|\bTBD\b)", re.I)
+                            r"\b0{4}[-/]0{2}[-/]0{2}\b|\bTBD\b|を(?:記入|入力)(?:する|して|してください)?[）)]?$|^[（(].*(?:記入|入力).*[）)]$)", re.I)
 NOTE_RE = re.compile(r"^\s*(※|＊|\*|注[:：）)]|備考[:：]|Note[:：])")   # 列の見出しの「備考」は注記ではない
 
 
@@ -1122,6 +1211,11 @@ def set_value(c, value: Any, styles: Styles, replace_formula: bool = False) -> N
     if isinstance(value, bool):
         c.set("t", "b")
         etree.SubElement(c, q("v")).text = "1" if value else "0"
+    elif isinstance(value, (int, float)) and styles.code.get(int(c.get("s") or 0)) in ("@", "builtin:49"):
+        # 文字列の書式（@）の欄（版 1.0・郵便番号など）は、YAML が数値と読んでも、文字のまま入れる
+        c.set("t", "inlineStr")
+        t = etree.SubElement(etree.SubElement(c, q("is")), q("t"))
+        t.text = str(value)
     elif isinstance(value, (int, float)):
         if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
             raise TemplateError(f"{c.get('r')} に入れる数値 {value!r} は Excel に保存できません")
@@ -1146,6 +1240,20 @@ def set_value(c, value: Any, styles: Styles, replace_formula: bool = False) -> N
             t = etree.SubElement(is_, q("t"))
             t.text = text
             t.set(XML_SPACE, "preserve")
+
+
+def _warn_not_number(c, value: Any, styles: "Styles", where: str, warnings: list) -> None:
+    """テンプレートでは数値の欄に、数値として読めない文字を入れるとき知らせる（数量「たくさん」・単価「8,200円」）。
+
+    文字のまま入るので、その欄を使う数式（金額・小計・合計）が #VALUE! になる。
+    """
+    if not isinstance(value, str) or NUMERIC_TEXT_RE.match(value.strip()) or styles.is_date(c.get("s")):
+        return
+    v = c.find(q("v"))
+    was_number = c.get("t") in (None, "n") and v is not None and v.text and c.find(q("f")) is None
+    if was_number or styles.is_number(c.get("s")):
+        warnings.append(f"{where} の値 {value!r} は数値ではありません（{c.get('r')} はテンプレートでは数値の欄。"
+                        "文字のまま入り、この欄を使う数式は #VALUE! になる）")
 
 
 def _get_or_make_cell(row, col: int, r: int):
@@ -1186,7 +1294,10 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
     sst = read_shared_strings(pkg)
     styles = Styles(pkg)
     sheet_parts = dict(pkg.sheets())
-    warnings: list[str] = [f"来歴: {p}" for p in provenance(pkg)]
+    # scrub なら、プロパティ・プレビュー・コメントは出力から取り除く。残るもの（外部リンク・非表示など）だけを来歴として挙げる
+    scrubbed = ("文書のプロパティ", "カスタムプロパティ", "プレビュー画像", "コメント", "スレッド形式のコメント")
+    warnings: list[str] = [f"来歴: {p}" for p in provenance(pkg)
+                           if not ((definition.get("properties") or {}).get("scrub") and p.startswith(scrubbed))]
     leftovers: dict[str, set] = {}
 
     # --- 1. シートごとの表の出力行数を決め、RowMap を作る -----------------------
@@ -1339,12 +1450,7 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
         td, head_r = t["def"], t["def"].get("header_row")
         if t.get("drop") or not head_r or int(head_r) not in orig:
             continue
-        heads = {cell_col(c): cell_value(c, sst) for c in orig[int(head_r)]}
-        for letter, spec in (td.get("columns") or {}).items():
-            want = spec.get("header") if isinstance(spec, dict) else None
-            have = heads.get(column_index_from_string(letter.upper()))
-            if want is not None and str(want).strip() != str(have if have is not None else "").strip():
-                moved.append(f"{letter}{head_r}: 定義では「{want}」、テンプレートでは「{have if have is not None else '（空）'}」")
+        moved += _header_mismatches(td, {cell_col(c): cell_value(c, sst) for c in orig[int(head_r)]})
     if moved:
         raise TemplateError(f"シート「{sd['name']}」の表の見出しが、定義と合いません（列を足した・並べ替えたテンプレートでは、"
                             "値が別の列に入ります）。analyze から定義を作り直すか、columns の列を直してください:\n  "
@@ -1389,7 +1495,9 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
                         set_value(c, None, styles)
         for (col, rr), value in fixed_cells.items():
             if rr == r:
-                set_value(_get_or_make_cell(row, col, new_r), value, styles, replace_formula=True)
+                c = _get_or_make_cell(row, col, new_r)
+                _warn_not_number(c, value, styles, f"cells の {get_column_letter(col)}{r}", warnings)
+                set_value(c, value, styles, replace_formula=True)
         for c in row:
             pos = (cell_col(c), r)
             if _has_literal(c) and pos not in keep_set and pos not in fixed_cells:
@@ -1428,10 +1536,43 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
         for r in range(t["first"], t["end"] + 1):
             filled |= {(col, r) for col, spec in colmaps[(r - t["first"]) % t["block"]].items()
                        if not spec.get("formula") and not spec.get("keep")}
-    _drop_stale_links(pkg, part, root, filled, warnings)
+    _drop_stale_links(pkg, part, root, filled, warnings, sd["name"])
     dropped_rows = {r for t in tables if t.get("drop") for r in range(t["first"], t["end"] + 1)}
-    _fix_comments(pkg, part, filled, set(tbl_of), rowmap, warnings, dropped_rows)
+    _fix_comments(pkg, part, filled, set(tbl_of), rowmap, warnings, dropped_rows, sd["name"])
     _fix_sheet_parts(pkg, part, root, tables, rowmap, rw, pattern_map, warnings)
+
+
+def _header_mismatches(td: dict, heads: dict) -> list[str]:
+    """表の見出しの行（列番号 → 値）と、定義の columns の header を突き合わせる。
+
+    違う見出しの列と、定義に無いのに見出しのある列（表の右・左に足された列、間に挟まった列）を挙げる。
+    """
+    head_r = td.get("header_row")
+    text = lambda v: str(v if v is not None else "").strip()
+    out = []
+    defined = {}
+    for letter, spec in (td.get("columns") or {}).items():
+        col = column_index_from_string(letter.upper())
+        want = spec.get("header") if isinstance(spec, dict) else None
+        defined[col] = want
+        have = heads.get(col)
+        if want is not None and text(want) != text(have):
+            out.append(f"{letter}{head_r}: 定義では「{want}」、テンプレートでは「{have if text(have) else '（空）'}」")
+    if not defined or not any(w is not None for w in defined.values()):
+        return out   # 見出しを書いていない定義（手で書いたもの）は、足された列も見ない
+    lo, hi = min(defined), max(defined)
+    extra = [c for c in range(lo, hi + 1) if c not in defined and text(heads.get(c))]
+    c = hi + 1
+    while text(heads.get(c)):
+        extra.append(c)
+        c += 1
+    c = lo - 1
+    while c >= 1 and text(heads.get(c)):
+        extra.append(c)
+        c -= 1
+    out += [f"{get_column_letter(c)}{head_r}: テンプレートに見出し「{text(heads[c])}」の列があるが、定義の columns に無い"
+            for c in sorted(extra)]
+    return out
 
 
 def _column_maps(td: dict, block: int) -> list[dict]:
@@ -1493,10 +1634,12 @@ def _emit_table(t, orig, rowmap, rw, styles, out_rows, pattern_map, warnings, le
                 else:
                     raise TemplateError(f"{td['key']!r} の要素はオブジェクトである必要があります")
                 where = f"{td['key']}[{rec}].{key}"
-                _check_choice(spec, value, [s for s in colmaps[j].values() if s.get("key") == key], where)
-                value = convert_value(spec, value, where)
+                if row_data is not None:   # データの無い空の 1 行は、印も入れずに空欄
+                    _check_choice(spec, value, [s for s in colmaps[j].values() if s.get("key") == key], where)
+                    value = convert_value(spec, value, where)
                 if isinstance(value, (dict, list)):
                     raise TemplateError(f"{where} に配列・オブジェクトは入れられません")
+                _warn_not_number(c, value, styles, where, warnings)
                 set_value(c, value, styles, replace_formula=True)
             for c in row:
                 if cell_col(c) not in colmaps[j] and _has_literal(c):
@@ -1519,7 +1662,7 @@ def convert_value(spec: dict, value: Any, where: str = "") -> Any:
     """
     if "when" in spec:
         if value is None:
-            return None
+            return spec.get("unmark")   # 選ばれていない（テンプレートの × の作法のまま）
         hit = spec["when"] in value if isinstance(value, list) else str(value) == str(spec["when"])
         return spec.get("mark", "○") if hit else spec.get("unmark")
     if value is None:
@@ -1568,7 +1711,7 @@ def _row_value(row_data: dict, key: str) -> Any:
         return None
 
 
-def _drop_stale_links(pkg, part, root, filled: set, warnings: list) -> None:
+def _drop_stale_links(pkg, part, root, filled: set, warnings: list, sheet: str = "") -> None:
     """データで置き換える・空にするセルのハイパーリンクを取り除く。残すと、新しい値に元の（サンプルの）リンク先が付く。"""
     links = root.find(q("hyperlinks"))
     if links is None:
@@ -1580,7 +1723,7 @@ def _drop_stale_links(pkg, part, root, filled: set, warnings: list) -> None:
             dropped.append(h.get("ref"))
     if not dropped:
         return
-    warnings.append(f"データを入れるセルのハイパーリンク（{', '.join(dropped)}）は、元のリンク先のままになるため取り除きました")
+    warnings.append(f"シート「{sheet}」: データを入れるセルのハイパーリンク（{', '.join(dropped)}）は、元のリンク先のままになるため取り除きました")
     if not len(links):
         root.remove(links)
     rels_name = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
@@ -1596,7 +1739,8 @@ def _drop_stale_links(pkg, part, root, filled: set, warnings: list) -> None:
 NS_VML_X = "urn:schemas-microsoft-com:office:excel"
 
 
-def _fix_comments(pkg, part, filled: set, sample_rows: set, rowmap, warnings: list, dropped_rows: set = frozenset()) -> None:
+def _fix_comments(pkg, part, filled: set, sample_rows: set, rowmap, warnings: list, dropped_rows: set = frozenset(),
+                  sheet: str = "") -> None:
     """コメント（メモ）を行のずれに追従させる。データを入れる・空にするセルのものは取り除く（新しい値に、元のメモが付く）。"""
     parts = {typ.rsplit("/", 1)[-1]: target for typ, target in pkg.rels_of(part).values() if target in pkg.data}
     if "comments" not in parts:
@@ -1628,9 +1772,9 @@ def _fix_comments(pkg, part, filled: set, sample_rows: set, rowmap, warnings: li
             if shape is not None:
                 shape[1].text = str(new_r - 1)
     if dropped:
-        warnings.append(f"データを入れるセルのコメント（{', '.join(dropped)}）は、新しい値に元のメモが付くため取り除きました")
+        warnings.append(f"シート「{sheet}」: データを入れるセルのコメント（{', '.join(dropped)}）は、新しい値に元のメモが付くため取り除きました")
     if gone:
-        warnings.append(f"取り除く行のコメント（{', '.join(gone)}）も取り除きました")
+        warnings.append(f"シート「{sheet}」: 取り除く行のコメント（{', '.join(gone)}）も取り除きました")
     pkg.put_xml(parts["comments"], croot)
     if vml is not None:
         pkg.data[parts["vmlDrawing"]] = etree.tostring(vml)
@@ -1789,6 +1933,7 @@ def _drop_part(pkg: Package, part: str) -> None:
 
 NS_DC = "http://purl.org/dc/elements/1.1/"
 NS_CP = "http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+NS_DCTERMS = "http://purl.org/dc/terms/"
 NS_APP = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
 CORE_FIELDS = {"creator": f"{{{NS_DC}}}creator", "lastModifiedBy": f"{{{NS_CP}}}lastModifiedBy",
                "title": f"{{{NS_DC}}}title", "subject": f"{{{NS_DC}}}subject",
@@ -1823,15 +1968,18 @@ def provenance(pkg: Package) -> list[str]:
     if any(n.startswith("docProps/thumbnail") for n in names):
         out.append("プレビュー画像（docProps/thumbnail）がある。元の内容が写っている")
     authors = set()
-    n_comments = 0
-    for _, sheet_part in pkg.sheets():  # 配置場所は Excel と openpyxl で違うので、rels の種類で探す
+    where: list[str] = []
+    for sheet_name, sheet_part in pkg.sheets():  # 配置場所は Excel と openpyxl で違うので、rels の種類で探す
         for typ, target in pkg.rels_of(sheet_part).values():
             if typ.endswith("/comments") and target in pkg.data:
                 root = pkg.xml(target)
                 authors |= {a.text for a in root.iter(q("author")) if a.text}
-                n_comments += len(list(root.iter(q("comment"))))
-    if n_comments:
-        out.append(f"コメント（メモ）が {n_comments} 件ある。作成者: {'、'.join(sorted(authors))}")
+                for cm in root.iter(q("comment")):
+                    text = "".join(t.text or "" for t in cm.iter(q("t"))).strip().replace("\n", " ")
+                    where.append(f"{sheet_name}!{cm.get('ref')}「{text[:30]}{'…' if len(text) > 30 else ''}」")
+    if where:
+        out.append(f"コメント（メモ）が {len(where)} 件ある。作成者: {'、'.join(sorted(authors))}。"
+                   + "、".join(where[:5]) + (f" ほか {len(where) - 5} 件" if len(where) > 5 else ""))
     if any(n.startswith("xl/threadedComments") for n in names):
         out.append("スレッド形式のコメントがある")
     if any(n.startswith("xl/externalLinks/") and n.endswith(".xml") for n in names):
@@ -1876,6 +2024,18 @@ def apply_properties(pkg: Package, props: dict) -> None:
                 changed = True
         if changed:  # 変えないものは、元のバイト列のまま
             pkg.put_xml(part, root)
+    if scrub and "docProps/core.xml" in pkg.data:
+        # 作成日時・更新日時・印刷日時も、前の文書の来歴。作成と更新は今の日時にし、印刷は取り除く
+        root = pkg.xml("docProps/core.xml")
+        now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for tag in (f"{{{NS_DCTERMS}}}created", f"{{{NS_DCTERMS}}}modified"):
+            el = root.find(tag)
+            if el is not None:
+                el.text = now
+        printed = root.find(f"{{{NS_CP}}}lastPrinted")
+        if printed is not None:
+            root.remove(printed)
+        pkg.put_xml("docProps/core.xml", root)
     if scrub:
         for name in list(pkg.data):
             if name == "docProps/custom.xml" or name.startswith("docProps/thumbnail"):
@@ -2014,49 +2174,120 @@ def data_files(paths: "str | list[str]") -> list[str]:
     return out
 
 
-def merge_data(parts: list) -> dict:
+def merge_data(parts: list, definition: "dict | None" = None) -> dict:
     """分けたデータ（[(ファイル名, 中身), …]）を 1 つにする。
 
     オブジェクトはキーごとに合わせ、配列（表の行）はファイルの順につなぐ。
     同じ欄に違う値があれば止める（どちらが正しいか分からない）。null は、ほかのファイルの値を消さない。
+    表の同じ行が 2 つのファイルにあっても止める（前のデータを写したまま、ほかのファイルに残っている）。
+    definition があれば、ほかのまとまり（sheets[].group）のデータも持つファイルから来た表の行も止める
+    （出荷のファイルに、受注の表が前のまま写っている。行を直したあとでも、同じ行が無くても見つかる）。
+    食い違いは、まとめて挙げる。
     """
     merged: dict = {}
+    seen: dict[str, str] = {}   # 欄 → その値を最初に書いたファイル
+    problems: list[str] = []
 
-    def first_src(path):
-        for src, obj in parts:
-            try:
-                if dig(obj, path) is not None:
-                    return src
-            except (KeyError, TypeError):
-                pass
-        return "前のファイル"
+    def mark(v, path, src):
+        seen.setdefault(path, src)
+        if isinstance(v, dict):
+            for k, x in v.items():
+                mark(x, f"{path}.{k}", src)
 
     def put(a, b, path, src):
         if isinstance(a, dict) and isinstance(b, dict):
             for k, v in b.items():
-                a[k] = put(a[k], v, f"{path}.{k}" if path else str(k), src) if k in a else v
+                sub = f"{path}.{k}" if path else str(k)
+                if k in a:
+                    a[k] = put(a[k], v, sub, src)
+                else:
+                    a[k] = v
+                    mark(v, sub, src)
             return a
         if isinstance(a, list) and isinstance(b, list):
+            have = {_row_sig(x) for x in a if isinstance(x, dict)}
+            dup = [x for x in b if isinstance(x, dict) and _row_sig(x) in have]
+            if dup:
+                problems.append(f"{path} の同じ行が、{seen.get(path, '前のファイル')} と {src} の両方にあります"
+                                f"（{len(dup)} 件。前のデータを写したままなら、片方から消す）")
             return a + b
         if b is None or a == b:
             return a
         if a is None:
+            seen[path] = src
             return b
-        raise TemplateError(f"{path} の値が、{first_src(path)} と {src} で違います: {a!r} / {b!r}")
+        problems.append(f"{path} の値が、{seen.get(path, '前のファイル')} と {src} で違います: {a!r} / {b!r}")
+        return a
 
     for src, obj in parts:
+        if obj is None:
+            continue
         if not isinstance(obj, dict):
             raise TemplateError(f"{src} の中身はオブジェクト（キーと値）にしてください")
         put(merged, deepcopy(obj), "", src)
+    if definition is not None:
+        problems += _stray_tables(parts, definition)
+    if problems:
+        raise TemplateError("分けたデータが食い違っています:\n" + "\n".join(f"  {p}" for p in problems))
     return merged
 
 
-def load_data(paths: "str | list[str]") -> dict:
+def load_data(paths: "str | list[str]", definition: "dict | None" = None) -> dict:
     """データを読む。複数のファイル・フォルダなら、1 つにまとめる（merge_data）。"""
     files = data_files(paths)
     if len(files) == 1:
         return load_structured(files[0])
-    return merge_data([(f if f != "-" else "標準入力", load_structured(f)) for f in files])
+    return merge_data([(f if f != "-" else "標準入力", load_structured(f)) for f in files], definition)
+
+
+def _row_sig(row: dict) -> str:
+    return json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _key_groups(definition: dict) -> tuple[dict, dict]:
+    """データのキー → それを使うまとまり（sheets[].group。無ければタブ）の集まり。表のキーと、固定セルのキーに分けて返す。"""
+    tables: dict[str, set] = {}
+    cells: dict[str, set] = {}
+    for sd in definition.get("sheets", []):
+        group = str(sd.get("group") or sd["name"])
+        for spec in (sd.get("cells") or {}).values():
+            cells.setdefault(spec["key"] if isinstance(spec, dict) else spec, set()).add(group)
+        for t in sd.get("tables", []):
+            tables.setdefault(t["key"], set()).add(group)
+    return tables, cells
+
+
+def _stray_tables(parts: list, definition: dict) -> list[str]:
+    """表の行が 2 つ以上のファイルから来て、そのうちのファイルがほかのまとまりのデータも持つなら、写したままの疑い。"""
+    tables, cells = _key_groups(definition)
+    owner = {k: g for k, g in {**cells, **tables}.items() if len(g) == 1}
+
+    def groups_of(obj) -> set:
+        out = set()
+        for key, g in owner.items():
+            try:
+                if dig(obj, key) is not None:
+                    out |= g
+            except KeyError:
+                pass
+        return out
+    found = []
+    for key, g in tables.items():
+        srcs = []
+        for src, obj in parts:
+            try:
+                rows = dig(obj, key) if isinstance(obj, dict) else None
+            except KeyError:
+                rows = None
+            if isinstance(rows, list) and rows:
+                srcs.append((src, obj))
+        if len(srcs) < 2:
+            continue
+        stray = [src for src, obj in srcs if groups_of(obj) - g]
+        if stray:
+            found.append(f"{key} の行が {'、'.join(src for src, _ in srcs)} から来ています。"
+                         f"{'、'.join(stray)} はほかのまとまりのデータも持つので、前のデータを写したままに見える（不要なら消す）")
+    return found
 
 
 def split_data(data: dict, definition: dict) -> list:
@@ -2119,6 +2350,8 @@ def _has_value(obj) -> bool:
 
 
 def dump_structured(obj: Any, path: str) -> None:
+    if os.path.dirname(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         if path.lower().endswith((".yaml", ".yml")):
             _yaml().safe_dump(obj, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
@@ -2277,6 +2510,12 @@ def extract(source: "str | bytes", definition: dict, template: "str | bytes | No
             k = int(t.get("block_rows", 1))
             colmaps = _column_maps(t, k)
             used_cols = {c for cm in colmaps for c in cm}
+            head_r = t.get("header_row")
+            if head_r and int(head_r) + offset in grid:
+                moved = _header_mismatches(t, {c: i["value"] for c, i in grid[int(head_r) + offset].items()})
+                if moved:
+                    raise TemplateError(f"シート「{name}」の表の見出しが、定義と合いません（別の形の文書からは、値が別の欄に入って"
+                                        "取り出されます）。その文書の形に合う定義を使ってください:\n  " + "\n  ".join(moved))
             # 表の後ろの行（テンプレートで表のすぐ下にある見出し・ラベル）に来たら、表は終わり
             after = {c: i["value"] for c, i in tgrid.get(first + count, {}).items()
                      if isinstance(i["value"], str) and i["value"].strip()}
@@ -2458,6 +2697,8 @@ def export_script(template: "str | bytes", definition: dict, output: str, embed:
         "\n\nif __name__ == \"__main__\":\n"
         "    raise SystemExit(standalone_main(DEFINITION, base64.b64decode(TEMPLATE_B64) or None, TEMPLATE_PATH, __doc__))\n"
     )
+    if os.path.dirname(output):
+        os.makedirs(os.path.dirname(output), exist_ok=True)
     with open(output, "w", encoding="utf-8") as f:
         f.write(header + engine.rstrip() + footer)
     os.chmod(output, 0o755)
@@ -2469,9 +2710,11 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
     parser.add_argument("--data", nargs="+", action="extend",
                         help="データ（.json / .yaml / .yml。- で標準入力）。複数のファイル・フォルダを渡すと、1 つにまとめる")
     parser.add_argument("-o", "--output", help="出力 .xlsx")
-    parser.add_argument("--template", help="埋め込みのテンプレートの代わりに使う .xlsx（定義と構造が同じものに限る）")
+    parser.add_argument("--template", help=("埋め込みのテンプレート" if template_bytes else f"既定のテンプレート（{template_path}）")
+                        + "の代わりに使う .xlsx（定義と構造が同じものに限る）")
     parser.add_argument("--example-data", action="store_true", help="データの雛形（YAML）を標準出力に出す")
-    parser.add_argument("--extract-template", metavar="PATH", help="埋め込みのテンプレートを書き出す")
+    if template_bytes:
+        parser.add_argument("--extract-template", metavar="PATH", help="埋め込みのテンプレートを書き出す")
     parser.add_argument("--extract-def", metavar="PATH", help="埋め込みの定義を書き出す（.json / .yaml）")
     args = parser.parse_args()
     try:
@@ -2494,7 +2737,7 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
                 raise TemplateError(f"テンプレートが見つかりません: {path}（--template で指定するか、export し直す）")
             with open(path, "rb") as f:
                 template = f.read()
-        if args.extract_template:
+        if getattr(args, "extract_template", None):
             if not template_bytes and not args.template:
                 raise TemplateError("テンプレートは埋め込まれていません（元の .xlsx を使う）")
             with open(args.extract_template, "wb") as f:
@@ -2503,7 +2746,7 @@ def standalone_main(definition: dict, template_bytes: "bytes | None", template_p
             return 0
         if not args.data or not args.output:
             parser.error("--data と -o が必要です")
-        warnings = render(template, definition, load_data(args.data), args.output)
+        warnings = render(template, definition, load_data(args.data, definition), args.output)
         for w in warnings:
             print(f"警告: {w}", file=sys.stderr)
         print(f"生成しました: {args.output}")
@@ -2569,7 +2812,7 @@ def _template_arg(args, definition) -> str:
 
 def cmd_render(args) -> int:
     definition = load_structured(args.definition)
-    data = load_data(args.data)
+    data = load_data(args.data, definition)
     warnings = render(_template_arg(args, definition), definition, data, args.output)
     for w in warnings:
         print(f"警告: {w}", file=sys.stderr)
