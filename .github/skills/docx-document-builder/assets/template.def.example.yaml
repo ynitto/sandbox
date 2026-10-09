@@ -1,0 +1,115 @@
+version: 1
+template: 報告書.docx
+strict: true
+properties:
+  scrub: true
+parts:
+- id: p1
+  blocks: '#1-#4'
+  key: 表紙
+  texts:
+    '#1':
+      key: title
+      max_items: 1
+      max_chars: 18
+    '#2':
+      key: 日付
+      max_items: 1
+      max_chars: 14
+    '#3':
+      key: 宛先
+      max_items: 1
+      max_chars: 17
+    '#4':
+      key: 件名
+      after: 件名：
+      max_items: 1
+      max_chars: 18
+- id: p2
+  blocks: '#5-#7'
+  key: 概要
+  texts:
+    '#6-#7':
+      key: body
+      max_items: 3
+      max_chars: 41
+  keep:
+  - '#5'
+  group: 概要
+- id: p3
+  blocks: '#8'
+  keep:
+  - '#8'
+  group: 施策
+- id: p4
+  blocks: '#9-#13'
+  key: 施策
+  repeat: true
+  texts:
+    '#9':
+      key: title
+      max_items: 1
+      format: 2.{n} {}
+      max_chars: 10
+    '#10':
+      key: 目的
+      after: 目的：
+      max_items: 1
+      max_chars: 18
+    '#11':
+      key: 担当
+      after: 担当：
+      max_items: 1
+      max_chars: 6
+  lists:
+    '#12-#13':
+      key: points
+      max_items: 5
+      max_chars: 12
+  group: 施策
+- id: p5
+  blocks: '#14-#19'
+  drop: true
+- id: p6
+  blocks: '#20-#23'
+  key: 進捗
+  tables:
+  - block: '#21'
+    key: rows
+    header_rows: 1
+    footer_rows: 0
+    columns:
+    - key: $index
+      header: 'No'
+    - key: 作業
+      header: 作業
+      max_chars: 7
+    - key: 担当
+      header: 担当
+      max_chars: 6
+    - key: 完了
+      map:
+        true: ○
+        false: ×
+      header: 完了
+    - clear: true
+      header: 確認印
+  keep:
+  - '#20'
+  - '#23'
+  group: 進捗
+- id: p7
+  blocks: '#24-#26'
+  key: 連絡先
+  tables:
+  - block: '#25'
+    cells:
+      1,2:
+        key: 担当部署
+        max_chars: 11
+      2,2:
+        key: 電話
+        max_chars: 18
+  keep:
+  - '#24'
+  group: 連絡先
