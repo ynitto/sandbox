@@ -1415,8 +1415,30 @@ class ChecklistTests(Base):
             xt.render(new, d, data, out)
         self.assertIn("B1: 定義では「観点」、テンプレートでは「優先度」", str(cm.exception))
 
-if __name__ == "__main__":
-    unittest.main()
+
+
+class BuildSpecValidationTests(Base):
+    """build の spec の形の誤りは、トレースバックでなく直し方の分かるエラーで止まる。"""
+
+    def run_build(self, spec):
+        path = os.path.join(self.dir, "s.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(spec, fh)
+        script = os.path.join(os.path.dirname(__file__), "..", "scripts", "xlsx_builder.py")
+        return subprocess.run([sys.executable, script, "build", "--spec", path],
+                              cwd=self.dir, capture_output=True, text=True)
+
+    def test_malformed_specs_report_a_message(self):
+        col = [{"key": "k"}]
+        for spec in ([1], {"sheets": "x"}, {"sheets": ["x"]}, {"sheets": [{"name": "a"}]},
+                     {"sheets": [{"name": "a/b", "columns": col}]},
+                     {"sheets": [{"name": "a", "columns": col}, {"name": "A", "columns": col}]},
+                     {"sheets": [{"name": "a", "columns": col, "rows": ["x"]}]}):
+            with self.subTest(spec=spec):
+                r = self.run_build(spec)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("エラー:", r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
 
 
 class ScenarioRegressionTests(Base):
@@ -1538,3 +1560,7 @@ class ScenarioRegressionTests(Base):
         notes = xt.analyze(self.tpl)["sheets"][0]["_notes"]
         self.assertTrue([n for n in notes if n.startswith("A1 の") and "作成者「山田 太郎」" in n])
         self.assertTrue([p for p in xt.provenance(xt.Package(self.tpl)) if "請求書!B3「前のメモ」" in p])
+
+
+if __name__ == "__main__":
+    unittest.main()

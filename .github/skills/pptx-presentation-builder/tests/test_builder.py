@@ -87,6 +87,11 @@ class BuildTest(Base):
         with self.assertRaises(pt.TemplateError):
             self.build({"slides": [{"type": "chart"}]})
 
+    def test_malformed_spec_is_reported_not_crashed(self):
+        for spec in ([1], {"slides": "x"}, {"slides": ["x"]}):
+            with self.subTest(spec=spec), self.assertRaises(pt.TemplateError):
+                pb.build(spec)
+
 
 class BuiltDeckAsTemplateTest(Base):
     """build で作った資料を、そのままテンプレートにして流し込む（図の並び・格子の並び）。"""

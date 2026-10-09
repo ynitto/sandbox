@@ -151,20 +151,52 @@ def _build_sheet(ws, sheet: dict) -> None:
         ws.add_chart(chart, chart_spec.get("anchor", "H2"))
 
 
+def _validate(spec: Any) -> None:
+    """spec の形の誤りを、トレースバックではなく直し方の分かる ValueError で返す。"""
+    if not isinstance(spec, dict):
+        raise ValueError("spec はオブジェクト（sheets を持つ JSON）で書いてください。")
+    sheets = spec.get("sheets") or []
+    if not sheets:
+        raise ValueError("spec.sheets が空です。少なくとも 1 シート必要です。")
+    if not isinstance(sheets, list):
+        raise ValueError("spec.sheets は配列で書いてください。")
+    seen: set[str] = set()
+    for i, sheet in enumerate(sheets, start=1):
+        where = f"シート {i}"
+        if not isinstance(sheet, dict):
+            raise ValueError(f"{where}: オブジェクト（name・columns・rows）で書いてください。")
+        name = sheet.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{where}: name（シート名）が必要です。")
+        title = name[:31]
+        if any(ch in title for ch in "\\/*?:[]"):
+            raise ValueError(f"{where}: シート名 {name!r} に使えない文字（\\ / * ? : [ ]）があります。")
+        if title.lower() in seen:
+            raise ValueError(f"{where}: シート名 {name!r} が重複しています（先頭 31 文字、大小文字を区別せず比べます）。")
+        seen.add(title.lower())
+        columns = sheet.get("columns")
+        if not isinstance(columns, list) or not columns:
+            raise ValueError(f"{where}（{name}）: columns（header・key の配列）が必要です。")
+        for c in columns:
+            if not isinstance(c, dict) or not c.get("key"):
+                raise ValueError(f"{where}（{name}）: columns の各要素は key を持つオブジェクトで書いてください。")
+        rows = sheet.get("rows", [])
+        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+            raise ValueError(f"{where}（{name}）: rows は、列の key を項目に持つオブジェクトの配列で書いてください。")
+
+
 def build(spec: dict) -> str:
+    _validate(spec)
     wb = Workbook()
     wb.remove(wb.active)
 
-    props = spec.get("properties", {})
+    props = spec.get("properties") or {}
     if props.get("title"):
         wb.properties.title = props["title"]
     if props.get("creator"):
         wb.properties.creator = props["creator"]
 
-    sheets = spec.get("sheets", [])
-    if not sheets:
-        raise ValueError("spec.sheets が空です。少なくとも 1 シート必要です。")
-    for sheet in sheets:
+    for sheet in spec["sheets"]:
         ws = wb.create_sheet(title=sheet["name"][:31])
         _build_sheet(ws, sheet)
 
@@ -229,13 +261,19 @@ def main() -> int:
         print()
         return 0
 
-    if args.spec:
-        with open(args.spec, encoding="utf-8") as f:
-            spec = json.load(f)
-    else:
-        spec = json.load(sys.stdin)
-
-    filename = build(spec)
+    try:
+        if args.spec:
+            with open(args.spec, encoding="utf-8") as f:
+                spec = json.load(f)
+        else:
+            spec = json.load(sys.stdin)
+        filename = build(spec)
+    except FileNotFoundError as e:
+        print(f"エラー: ファイルが見つかりません: {e.filename}", file=sys.stderr)
+        return 1
+    except (ValueError, KeyError) as e:  # JSON の構文誤りも ValueError
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
     print(f"生成しました: {filename}")
     return 0
 

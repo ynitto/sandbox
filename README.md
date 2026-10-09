@@ -3,7 +3,7 @@
 AIエージェント（GitHub Copilot / Claude Code）の能力を拡張するスキル集。
 スキルは `.github/skills/` に配置された SKILL.md で定義され、エージェントが読み込むことで特定のタスクを高品質に実行できるようになる。
 
-## スキル一覧（全 90 スキル）
+## スキル一覧（全 91 スキル）
 
 ### 基盤スキル（常時ロード）— 11
 
@@ -77,6 +77,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **commit-pr-writer** | diff・コミット履歴から Conventional Commits 準拠のコミットメッセージ・PR 説明文・CHANGELOG / リリースノート・semver 判定を生成する |
 | **presenter** | JSON スペックから PowerPoint を生成する。ブリーフィング→アウトライン→アートディレクション→スライド構成→レビューの段階的ワークフローで作成する。「スライドを作って」「パワポを作って」などで発動する |
 | **pptx-presentation-builder** | 既存の .pptx テンプレートやサンプルの資料へ、スライドのスタイルと図形（矩形・丸・矢印線）を保ったまま内容を流し込む。繰り返すスライド・箇条書き・表の行・図の並びをデータの件数に合わせて増減し、文字と図形がサンプルと同じ粒度で収まるかを検査する。xlsx-report-builder と同じサブコマンド（inspect / analyze / check / render / extract / export / build） |
+| **docx-document-builder** | 既存の .docx テンプレートやサンプルの文書へ、文書のスタイル（フォント・章・段落・改行）を保ったまま内容を流し込む。繰り返す節・本文の段落・リスト・表の行をデータの件数に合わせて増減し、章の番号は続け、文字と段落がサンプルと同じ粒度で収まるかを検査する。xlsx-report-builder と同じサブコマンド（inspect / analyze / check / render / extract / export / build） |
 | **xlsx-report-builder** | JSON スペックから Excel (.xlsx) 帳票を生成する。複数シート・数値書式・合計行・条件付き書式・グラフ・フリーズペイン・オートフィルタに対応（openpyxl）。既存の .xlsx テンプレートへ、書式を保ったまま可変行の表を流し込む機能もある |
 | **table-spec-extractor** | 【非推奨】spec-value-finder を使用。Excel/PDF の仕様書テーブルを Table Transformer で AST 化し Neo4j グラフへ保存・GraphRAG 検索するパイプライン（Neo4j・GPU 依存のため後継へ移行） |
 
