@@ -101,10 +101,21 @@ function dir(userData) { return path.join(userData, 'exports'); }
 function write(userData, sess, { at = new Date() } = {}) {
   const base = dir(userData);
   fs.mkdirSync(base, { recursive: true });
-  const name = fileName(sess, at);
-  const file = path.join(base, name);
-  fs.writeFileSync(file, render(sess, { at }), 'utf8');
-  return { path: file, name };
+  const initial = fileName(sess, at);
+  const ext = path.extname(initial);
+  const stem = initial.slice(0, -ext.length);
+  const content = render(sess, { at });
+
+  for (let n = 1; ; n += 1) {
+    const name = n === 1 ? initial : `${stem}-${n}${ext}`;
+    const file = path.join(base, name);
+    try {
+      fs.writeFileSync(file, content, { encoding: 'utf8', flag: 'wx' });
+      return { path: file, name };
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') throw error;
+    }
+  }
 }
 
 module.exports = { cleanText, fileName, render, write, dir };
