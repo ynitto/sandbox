@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: `tags: ui, ux` とカンマ区切りで書いたスキルのタグを読み落とさない（agent-app 0.48.4）
+
+- スキルの `tags` を 1 行のカンマ区切りで書くと、タグが空になり、依頼に添えるスキルの自動選択に使われなかった
+
 ### xlsx-report-builder / pptx-presentation-builder: 形の誤った spec をトレースバックでなく案内で止める
 
 - `build` に配列・文字列・欠けた `columns` などの崩れた spec を渡すと Python のトレースバックで落ちていた。何をどう直すかを書いた 1 行のエラーで止める（終了コード 1）

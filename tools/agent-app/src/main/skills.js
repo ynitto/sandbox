@@ -101,11 +101,12 @@ function fieldsFromYaml(header) {
     const data = doc.toJS();
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     const text = (value) => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '');
-    const list = (value) => (Array.isArray(value) ? value : [])
+    // `tags: ui, ux` のようにカンマ区切りの 1 行で書かれていても読む。
+    const list = (value) => (Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,、]/) : [])
       .filter((item) => typeof item === 'string' || typeof item === 'number')
       .map((item) => String(item).trim()).filter(Boolean);
     const meta = data.metadata && typeof data.metadata === 'object' ? data.metadata : {};
-    const tags = Array.isArray(data.tags) ? list(data.tags) : list(meta.tags);
+    const tags = data.tags != null ? list(data.tags) : list(meta.tags);
     return { description: text(data.description), tags };
   } catch { return null; }
 }
