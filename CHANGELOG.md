@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: `tags: ui, ux` とカンマ区切りで書いたスキルのタグを読み落とさない（agent-app 0.48.4）
+
+- スキルの `tags` を 1 行のカンマ区切りで書くと、タグが空になり、依頼に添えるスキルの自動選択に使われなかった
+
 ### webui-test: 入れたあと元のフォルダを消しても動く（webui-test 0.4.1）
 
 - インストーラはフォルダをそのまま `npm install -g` せず、`npm pack` で固めてから入れる。グローバルの置き場には

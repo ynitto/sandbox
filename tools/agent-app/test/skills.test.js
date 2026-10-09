@@ -170,3 +170,12 @@ test('説明の末尾が引用符でも欠けず、tags の一行形式と折り
   assert.deepStrictEqual(get('folded').tags, ['m']);
   assert.deepStrictEqual(get('broken').tags, ['t']);
 });
+
+test('tags がカンマ区切りの 1 行でも読む', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-app-skill-tags-csv-'));
+  const skillRoot = path.join(root, 'skills');
+  fs.mkdirSync(path.join(skillRoot, 'csv'), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, 'csv', 'SKILL.md'), '---\nname: csv\ndescription: d\ntags: ui, ux,  review\n---\n本文\n');
+  const [item] = skills.catalogFromRoots([{ path: skillRoot, kind: 'skill-dir' }]);
+  assert.deepStrictEqual(item.tags, ['ui', 'ux', 'review']);
+});
