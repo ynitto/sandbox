@@ -73,7 +73,10 @@ from pathlib import Path, PurePosixPath
 MACHINE_DIR = Path(__file__).resolve().parent
 MACHINE_REL = ".statemachine/codd"
 # init.py が書くカスタムエージェント。マシンの一部なので、探す・変わったかを測る対象にしない。
-AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md")
+AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md",
+               ".kiro/agents/codd-apply.json", ".github/agents/codd-apply.agent.md")
+# 変える段を渡すサブエージェントの名前（codd.json の subagent が true のとき）
+APPLY_AGENT = "codd-apply"
 CONFIG_NAME = "codd.json"
 DATA_DIRNAME = ".codd"
 # 計画の置き場所（自分のリポジトリ）。1 回の実行の計画は、始めるときに一意な名前（日時と英語の短い名前）で置き、
@@ -88,6 +91,7 @@ SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files", "batch_files",
+               "subagent",
                "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect"}
 REF_KEYS = {"name", "path", "skills", "scope", "rules", "exclude", "guides", "protect"}
 # 1 回の計画で変えるファイルの上限と、1 つの段（apply を分けた 1 回ぶん）で変えるファイルの数。
@@ -602,6 +606,9 @@ def load_config(machine_dir: Path) -> dict:
     if not (isinstance(config["batch_files"], int) and not isinstance(config["batch_files"], bool)
             and config["batch_files"] > 0):
         raise CoddError(f"{path} の batch_files は 1 以上の整数です（今: {config['batch_files']!r}）")
+    config.setdefault("subagent", False)
+    if not isinstance(config["subagent"], bool):
+        raise CoddError(f"{path} の subagent は true か false です（今: {config['subagent']!r}）")
     repo = machine_dir.parent.parent
     fold_guides(config, [parse_guide(e, f"{path} の guides[{i}]", repo, CONFIG_NAME)
                          for i, e in enumerate(config["guides"])] + front_guides(repo, config["skill_dirs"]))
@@ -736,6 +743,7 @@ class Ctx:
         self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
         self.max_files = self.config["max_files"]
         self.batch_files = self.config["batch_files"]
+        self.subagent = self.config["subagent"]
         self.refs: list[Ref] = []
         for entry in self.config["refs"]:
             path = Path(os.path.expanduser(entry["path"]))
@@ -4695,8 +4703,9 @@ def apply_skills(ctx: Ctx, keys) -> list[tuple[str, str]]:
 APPLY_LOG_FORM = "`- `名前` — 変えたファイル: 何をしたか`"
 
 
-def print_apply_skills(ctx: Ctx, keys, files=()) -> None:
-    """変える前に、使う手順を出して読み込ませる。この回でもう読み込んだものは名前だけを出す。
+def print_apply_skills(ctx: Ctx, keys, files=(), full: bool = False) -> None:
+    """変える前に、使う手順を出して読み込ませる。この回でもう読み込んだものは名前だけを出す
+    （full なら、読み込み済みでも全文を出す。段ごとに新しい文脈で変えるサブエージェントは、前の段で読んだものを覚えていない）。
     files（側の名前、パス）は今の段で変えるファイルで、そのファイルに決められた手順も、効くファイルと確かめることを添えて出す。"""
     hits = guide_hits(ctx, files, "apply")
     names = unique([*(n for _, n in apply_skills(ctx, keys)), *(g.target for _, g, _ in hits if g.kind == "skill")])
@@ -4707,8 +4716,8 @@ def print_apply_skills(ctx: Ctx, keys, files=()) -> None:
         return
     since = (ctx.data / "before.json").stat().st_mtime if (ctx.data / "before.json").is_file() else 0.0
     log = skills_read(ctx)
-    fresh = [n for n in names if skill_read_at(ctx, log, n) < since and find_skill(ctx, n)]
-    fresh_docs = [d for d in docs if d[0] in unread_docs(ctx, [d], since)]
+    fresh = [n for n in names if (full or skill_read_at(ctx, log, n) < since) and find_skill(ctx, n)]
+    fresh_docs = [d for d in docs if full or d[0] in unread_docs(ctx, [d], since)]
     print("\n## 変えるときに従う手順\n")
     print("次の手順に従って変えてください。変えたら、手順ごとに .codd/apply.md へ "
           f"{APPLY_LOG_FORM} で書きます（変えたファイルを挙げていないと検査で落ちます）。")
@@ -4735,14 +4744,32 @@ def print_apply_skills(ctx: Ctx, keys, files=()) -> None:
         load_docs(ctx, fresh_docs)
 
 
+def print_hand_over(ctx: Ctx, batches: list, cur: int) -> None:
+    """変える段をサブエージェントに渡す指示（codd.json の subagent）。親は変えず、手順の全文も読まない。"""
+    files = batches[cur] if batches else []
+    where = f"段 {cur + 1}/{len(batches)}" if len(batches) > 1 else "変える段"
+    print(f"# {where}{' ' if len(batches) > 1 else ''}は `{APPLY_AGENT}` サブエージェントに渡す（{CONFIG_NAME} の subagent）\n")
+    print(f"自分ではファイルを変えません。`{APPLY_AGENT}` を呼び、次の文を渡してください:")
+    print(f"  「codd の{where}を変えてください。」に、止まったときの利用者の答え（あれば）と、"
+          "検査の指摘（戻ってきたときは、その出力）をそのまま添える")
+    if files:
+        print(f"この段で変えるもの: {len(files)} files")
+    print("サブエージェントの第 1 行（OK か FAILED と理由）を、このステートの出力にします。")
+    print(f"`{APPLY_AGENT}` を呼べないときは `python3 {MACHINE_REL}/codd.py batch --worker` を実行し、自分で変えます。")
+
+
 def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
     """今の段で変えるファイルと、変えるときに使うスキルの手順を示す（apply が段ごとに読む）。"""
     batches, done = load_batches(ctx)
+    cur = min(done, len(batches) - 1) if batches else 0
+    worker = args.worker
+    if ctx.subagent and not worker:
+        print_hand_over(ctx, batches, cur)
+        return 0
     if len(batches) <= 1:
         print("段に分けていません。計画に挙げたファイルをすべて変えてください")
-        print_apply_skills(ctx, {k for b in batches for k, _ in b} or {""}, [f for b in batches for f in b])
+        print_apply_skills(ctx, {k for b in batches for k, _ in b} or {""}, [f for b in batches for f in b], full=worker)
         return 0
-    cur = min(done, len(batches) - 1)
     named = unique(guide_label(ctx, g, k) for k, g, _ in guide_hits(ctx, batches[cur], "apply"))
     print(f"# 段 {cur + 1}/{len(batches)}" + (f"（{'・'.join(named)} の手順の段）" if named else "")
           + ("（最後の段。変えたあと、全体の検査とテストが動く）" if cur == len(batches) - 1 else ""))
@@ -4755,7 +4782,7 @@ def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
     rest = [side_label(ctx, k, rel) for b in batches[cur + 1:] for k, rel in b]
     if rest:
         print(f"このあとの段で変えるもの（{len(rest)} files）は、まだ変えない。")
-    print_apply_skills(ctx, {k for k, _ in batches[cur]}, batches[cur])
+    print_apply_skills(ctx, {k for k, _ in batches[cur]}, batches[cur], full=worker)
     return 0
 
 
@@ -5925,7 +5952,9 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--term", action="append", help="検索語（繰り返し可）")
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
-    sub.add_parser("batch", help="段に分けて変えるとき、今の段で変えるファイルを示す")
+    ba = sub.add_parser("batch", help="段に分けて変えるとき、今の段で変えるファイルを示す")
+    ba.add_argument("--worker", action="store_true",
+                    help="変える側として、今の段のファイルと手順の全文を示す（サブエージェントに渡すときも、それが呼ぶ）")
     sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
     dr = sub.add_parser("draft", help="計画のひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）")
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")

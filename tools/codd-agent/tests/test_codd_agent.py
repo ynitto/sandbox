@@ -1424,6 +1424,15 @@ class CoddTest(unittest.TestCase):
         # 応答の長さに上限があるエージェントでも止まらないよう、全文を貼らず分けて書くことを指示する。
         self.assertIn("the response hit the length limit", copilot)
         self.assertIn("codd.py summary", copilot)
+        # 変える段を渡すサブエージェント。モデルは書かない（呼び出し元と同じモデルで動かす）。
+        self.assertIn("agents: [codd-apply]", copilot)
+        worker = (self.impl / ".github/agents/codd-apply.agent.md").read_text(encoding="utf-8")
+        self.assertTrue(worker.startswith("---\nname: codd-apply\n"))
+        self.assertIn("codd.py batch --worker", worker)
+        kiro_worker = json.loads((self.impl / ".kiro/agents/codd-apply.json").read_text(encoding="utf-8"))
+        self.assertEqual(kiro_worker["name"], "codd-apply")
+        self.assertNotIn("model", kiro_worker)
+        self.assertNotIn("model:", worker.split("---")[1])
         # エージェントのファイルはマシンの一部なので、影響範囲や変えたファイルに数えない。
         self.run_pa(self.impl, "impact", "--term", "statemachine")
         self.assertNotIn("codd.agent.md", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
@@ -2713,6 +2722,35 @@ class CoddTest(unittest.TestCase):
         (self.impl / ".codd/apply.md").write_text("- `tdd-lite` — src/app.py: テストを先に書いた\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_subagent_hands_each_batch_over(self) -> None:
+        # subagent が true なら、親は段を codd-apply に渡すだけで、手順の全文を読まない。
+        # 渡された側（batch --worker）は新しい文脈なので、読み込み済みの手順も毎回全文で受け取る。
+        commit(self.impl, {".agents/skills/tdd-lite/SKILL.md":
+                           "---\nname: tdd-lite\ndescription: テストを先に書く\n---\n\n# tdd-lite\n\n先にテストを書く。\n"}, "skill")
+        self.set_config(self.impl, skills={"plan": [], "apply": ["tdd-lite"]}, subagent=True)
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "batch")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("`codd-apply` サブエージェントに渡す", r.stdout)
+        self.assertIn("codd.py batch --worker", r.stdout)   # 呼べないときは自分で変える
+        self.assertNotIn("先にテストを書く。", r.stdout)
+        for _ in range(2):
+            r = self.run_pa(self.impl, "batch", "--worker")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("計画に挙げたファイルをすべて変えてください", r.stdout)
+            self.assertIn("先にテストを書く。", r.stdout)
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("- `tdd-lite` — src/app.py: テストを先に書いた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")   # 渡された側が読み込んだ記録で、検査が通る
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_subagent_must_be_true_or_false(self) -> None:
+        self.set_config(self.impl, subagent="yes")
+        r = self.run_pa(self.impl, "show")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("subagent は true か false です", r.stderr)
 
     def use_guides(self, plan: str, *lines: str) -> str:
         return plan.replace("## 使ったスキルと道具\n\nなし", "## 使ったスキルと道具\n\n" + "\n".join(lines))

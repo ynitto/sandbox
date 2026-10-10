@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 変える段をサブエージェントに渡せるようにする
+
+- `codd.json` に `"subagent": true` と書くと、変える段を codd が自分で変えずに、サブエージェント `codd-apply` に 1 段ずつ渡す。
+  codd の会話には計画・確認・相談・報告と各段の短い結果だけが残り、大きな計画でも会話が長くなりにくい（既定は `false` で今までどおり）
+- `init.py` は `codd` と並べて `codd-apply` のカスタムエージェントを kiro-cli・GitHub Copilot 向けに書く。モデルは書かず、呼び出し元と同じモデルで動かす
+
 ### office-preview: docx / xlsx / pptx / pdf のプレビュー画像を作るモジュールを追加（office-preview 0.1.0）
 
 - Electron の main プロセスから `renderPreview(ファイル, { width })` を呼ぶと、docx の 1 ページ目・xlsx の開いたときのシート・
