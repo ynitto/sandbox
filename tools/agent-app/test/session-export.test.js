@@ -94,6 +94,10 @@ test('保存名は会話名と時刻から決め、ファイル名に使えな�
   assert.strictEqual(sessionExport.fileName({ title: '' }, at), '会話-20260916-2053.txt');
   assert.strictEqual(sessionExport.fileName({ title: '名前.' }, at), '名前-20260916-2053.txt');
   assert.strictEqual(sessionExport.fileName({ title: 'あ'.repeat(80) }, at).length, 40 + '-20260916-2053.txt'.length);
+  // 絵文字（サロゲートペア）の途中で切って、保存名に壊れた文字を残さない。
+  const emojiName = sessionExport.fileName({ title: 'a'.repeat(39) + '😀😀' }, at);
+  assert.strictEqual(emojiName, 'a'.repeat(39) + '😀-20260916-2053.txt');
+  assert.ok(emojiName.isWellFormed());
   assert.strictEqual(sessionExport.fileName({ title: '1 行目\n2 行目' }, at), '1 行目-20260916-2053.txt');
 });
 

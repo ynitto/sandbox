@@ -56,10 +56,10 @@ function fileName(sess, at = new Date()) {
   const title = cleanText((sess && sess.title) || '').split('\n')[0]
     .replace(/[\\/:*?"<>|]/g, '_')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, MAX_NAME_CHARS)
-    .replace(/[. ]+$/, '');
-  return `${title || '会話'}-${fileStamp(at)}.txt`;
+    .trim();
+  // 絵文字などのサロゲートペアの途中で切ると、保存名が壊れる。コードポイント単位で切る。
+  const cut = Array.from(title).slice(0, MAX_NAME_CHARS).join('').replace(/[. ]+$/, '');
+  return `${cut || '会話'}-${fileStamp(at)}.txt`;
 }
 
 // 依頼・回答の 1 行目に出す、そのターンの条件（エージェント・モデル・モード）
