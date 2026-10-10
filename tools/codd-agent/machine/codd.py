@@ -50,7 +50,7 @@
 graphify のグラフは、リポジトリの HEAD と作業中の変更から作る「印」を控えておき、
 explore / impact のたびに印が変わっていれば `graphify update` で作り直す（自動更新）。
 グラフは参照先の中ではなく自分の `.codd/graph/` に書く（探すだけで参照先に何も書かない）。
-影響範囲は、文字列の一致に加えてグラフを辿り、根拠の強さで明示・要判断・参考に分ける（「グラフで影響を測る」の節）。
+影響範囲は、文字列の一致に加えてグラフを辿り、根拠の強さで必須・要判断・参考に分ける（「グラフで影響を測る」の節）。
 
 名前の一致とは別に、ファイル同士がパスで指し合う「つながり」（注記 `coherence: doc=パス`、文書の `…` のパスとリンク。
 codd-gate と同じ書き方）もたどる。計画・変更で動くファイルとつながった相手の側のファイルを、計画が扱っているかを見る。
@@ -2149,10 +2149,10 @@ def _chunk_rel(repo: Path, value) -> str:
     return text[2:] if text.startswith("./") else text
 
 
-# ---------------------------------------------------------------- グラフで影響を測る（明示・要判断・参考）
+# ---------------------------------------------------------------- グラフで影響を測る（必須・要判断・参考）
 #
 # 拾う範囲は広げ、見せる量は根拠の強さで絞る。どの候補にも「なぜ拾ったか」を付け、強さで 3 段に分ける。
-# - 明示: 構文の辺（graphify update）と、文書に書いてあるつながり（EXTRACTED）。変わる名前から 2 歩まで
+# - 必須: 構文の辺（graphify update）と、文書に書いてあるつながり（EXTRACTED）。変わる名前から 2 歩まで
 #   （参照先は 1 歩まで）。今までの graphify affected と同じ範囲。計画が扱うまで通さない
 # - 要判断: LLM が読み取ったつながり（INFERRED）のうち、確からしさ ASK_SCORE 以上で、変わる名前から 1 歩のもの。
 #   計画に「変更不要: 理由」（参照先は「関係なし: 理由」）か変更案を書かせる（黙って落とせない）
@@ -2164,7 +2164,7 @@ AFFECT_RELATIONS = {"calls", "indirect_call", "references", "imports", "imports_
                     "inherits", "extends", "implements", "uses", "mixes_in", "embeds", "requires"}
 _IDENT = re.compile(r"^[A-Za-z_$][\w$.]*(?:\(\))?$")
 TIER_RANK = {"sure": 0, "ask": 1, "note": 2}
-TIER_WORDS = {"sure": "明示", "ask": "要判断", "note": "参考"}
+TIER_WORDS = {"sure": "必須", "ask": "要判断", "note": "参考"}
 
 
 @dataclass
@@ -2782,7 +2782,7 @@ def tested_anywhere(ctx: Ctx, term: str) -> bool:
 def measure(ctx: Ctx, terms: list[str], name: str, title: str, rebuild: bool = True,
             focus: dict[str, set[str]] | None = None,
             sections: dict[str, dict[str, set[int] | None]] | None = None) -> tuple[list[str], dict[str, str]]:
-    """変わる名前から、自分のリポジトリで影響を受けるファイルを測る（git grep + グラフの明示・要判断）。
+    """変わる名前から、自分のリポジトリで影響を受けるファイルを測る（git grep + グラフの必須・要判断）。
 
     （ファイル, ファイルごとの拾った理由（グラフで拾ったものだけ））を返す。グラフの参考は測った結果のファイルにだけ書く。
     """
@@ -2806,7 +2806,7 @@ def measure(ctx: Ctx, terms: list[str], name: str, title: str, rebuild: bool = T
 def measure_refs(ctx: Ctx, terms: list[str], name: str, title: str,
                  lines: dict[str, dict[str, int]] | None = None, why: dict[tuple[str, str], str] | None = None,
                  rebuild: bool = True, focus: dict[str, set[str]] | None = None) -> set[tuple[str, str]]:
-    """自分の変更で変わる名前に、参照先のどのファイルが触れているかを測る（git grep。語単位。とグラフの明示・要判断）。
+    """自分の変更で変わる名前に、参照先のどのファイルが触れているかを測る（git grep。語単位。とグラフの必須・要判断）。
 
     グラフは自分と参照先を同じ名前の識別子でつないで辿る。推定のつながりは、確からしさの高い 1 歩だけを判断させる。
     """
@@ -3696,7 +3696,7 @@ def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
     - 文字列: 変えた文字列（画面の文言・URL など。差分の引用符の中）がテストのファイルに書かれている
     - ファイル名: テストのファイル名が、変えるファイルと同じ語幹を持つ（app.py と test_app.py、Login.tsx と login.yaml）
     - つながり: テストのファイルが変えるファイルをパスで指している（`coherence: code=…`・`doc=…` など）か、その逆
-    - グラフ: グラフで変わる名前につながる（明示と要判断。理由は拾った辺）
+    - グラフ: グラフで変わる名前につながる（必須と要判断。理由は拾った辺）
 
     e2e のケースは画面の文言や URL で書かれ、コードの名前が出てこないことが多い。文字列とファイル名は、
     テストの道具の書き方を知らずに e2e のケースを拾うための手がかり。
