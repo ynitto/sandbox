@@ -364,7 +364,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("graphify: off", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
         self.assertEqual(self.calls(), [])
 
-    # ------------------------------------------------------------ グラフで影響を測る（確か・要判断・参考）
+    # ------------------------------------------------------------ グラフで影響を測る（明示・要判断・参考）
 
     def write_graphs(self) -> None:
         """graphify update のスタブが写すグラフ。自分: hello ← greet ← wrap（構文）と、文書から読み取ったつながり。
@@ -411,7 +411,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1, r.stdout)
         plan = (self.impl / PLAN).read_text(encoding="utf-8")
-        # 確か: 構文で 2 歩先（wrap.py は hello と書いていない）
+        # 明示: 構文で 2 歩先（wrap.py は hello と書いていない）
         self.assertIn("- src/wrap.py — 未判断（グラフで `hello` につながる（calls））", plan)
         # 要判断: 推定 0.9 で 1 歩。自分のファイルと、別のリポジトリの同じ名前の言及からたどった参照先の文書
         self.assertIn("- README.txt — 未判断（意味のつながり（推定 0.90・conceptually_related_to）: 「挨拶の流れ」と `hello`）",
@@ -436,7 +436,7 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         dismissed = json.loads((self.impl / ".codd/graph/dismissed.json").read_text(encoding="utf-8"))
         self.assertEqual(sorted(dismissed), ["design|docs/guide.md", "|README.txt"])
-        # 次の回（別の計画）: 同じ語から同じファイルに当たっても、変わっていなければ要判断に出さない（確かなものは出す）
+        # 次の回（別の計画）: 同じ語から同じファイルに当たっても、変わっていなければ要判断に出さない（明示のものは出す）
         (self.impl / PLAN).unlink()
         again = self.impl / ".plans/2026-10-02-0000-again.md"
         again.write_text(PLAN_ALIGNED, encoding="utf-8")
