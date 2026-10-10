@@ -12,6 +12,8 @@ name: CI
 #      agent-app … 同じく `npm test`（会話・タスク・ワークフローの Electron アプリ。旧 statemachine-maker
 #      を統合済み）。生成した定義を statemachine-use スキルの run_machine.py --dry-run に通す
 #      結合テストを含むので python も要る。実機の起動（electron）は CI では skip される。
+#      office-preview … `npm test`（docx / xlsx / pptx のプレビュー画像。変換は node だけで確かめ、
+#      Electron で実際に描くテストは CI では skip される）。
 #   3. docs    … 利用者向け文書の内部名検査（R10）、スキルの references/ 健全性検査
 #                （切れリンク・孤児・未許可の2ホップ参照）、スキル自身の品質検査
 #                （skill-evaluator 同梱の quality_check.py。frontmatter の未知キーなど
@@ -179,6 +181,23 @@ jobs:
           git config --global user.name "ci"
       - name: npm test
         working-directory: tools/agent-app
+        run: npm test
+
+  office-preview:
+    name: office-preview (npm test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      # 実行時の依存は無い。electron（開発依存）はバイナリを取らずに入れるので、実際に描くテストは skip される。
+      - name: 依存の導入（バイナリ取得は走らせない）
+        working-directory: tools/office-preview
+        run: npm install --no-audit --no-fund --ignore-scripts
+      - name: npm test
+        working-directory: tools/office-preview
         run: npm test
 
   vscode-copilot:

@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### office-preview: docx / xlsx / pptx のプレビュー画像を作るモジュールを追加（office-preview 0.1.0）
+
+- Electron の main プロセスから `renderPreview(ファイル, { width })` を呼ぶと、docx の 1 ページ目・xlsx の開いたときのシート・
+  pptx の 1 枚目を PNG（または JPEG）で返す。Office も LibreOffice も要らず、実行時の依存も無い
+- スタイル・段落番号・行グリッド（docx）、表示形式・結合・列幅（xlsx）、レイアウトとマスターの継承・テーマ・図形・表（pptx）を描く
+- 文書は信頼しない前提で、スクリプトを止めた隠しウィンドウで描き、外への通信を止める。ZIP の展開量に上限を設ける
+
 ### agent-app: `tags: ui, ux` とカンマ区切りで書いたスキルのタグを読み落とさない（agent-app 0.48.4）
 
 - スキルの `tags` を 1 行のカンマ区切りで書くと、タグが空になり、依頼に添えるスキルの自動選択に使われなかった
