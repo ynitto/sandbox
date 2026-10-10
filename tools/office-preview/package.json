@@ -1,0 +1,25 @@
+{
+  "name": "office-preview",
+  "version": "0.1.0",
+  "description": "docx / xlsx / pptx / pdf の 1 ページ目（1 シート・1 枚目のスライド）を Electron の main プロセスで PNG にするモジュール。実行時の依存は無い",
+  "author": "sandbox",
+  "license": "MIT",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "peerDependencies": {
+    "electron": ">=28"
+  },
+  "peerDependenciesMeta": {
+    "electron": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "electron": "43.6.0"
+  }
+}
