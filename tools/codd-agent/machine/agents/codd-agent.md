@@ -48,7 +48,8 @@ caveman が無い間も短い応答で進め、スキルを読んだとは書き
    （`equals:名前:値` は一致、`startswith:名前:値` は前方一致、`;` で区切ったものはすべて合うこと）。
    apply の検査が `MORE` を返したら、apply_more（2 段目からの短い指示）で次の段を変える
    codd.json の `subagent` が true なら、apply・apply_more では `batch` の指示どおり段を `codd-apply` サブエージェントに渡し、
-   自分では変えない（確認・相談・検査は自分が受け持つ）
+   自分では変えない（確認・相談・検査は自分が受け持つ）。plan の `graph` が束を `codd-graph` サブエージェントに渡すと
+   示したときも同じく、自分では文書を読まずに 1 束ずつ渡す
 5. `confirm`（計画の確認）と `stuck`（止まったときの相談）では、利用者に見せて**答えを待ちます**。推測して先へ進まない。
    ただし `stuck` で `codd.py advise` の第 1 行が `AUTO PLAN` / `AUTO APPLY` なら、人の判断が要らない理由だけなので、
    訊かずにその語で進めます
@@ -56,7 +57,7 @@ caveman が無い間も短い応答で進め、スキルを読んだとは書き
 
 ## 長いコマンドの結果待ち
 
-`explore`・`verify-plan`・`verify-apply` と、その中で動く graphify・test・check は時間がかかることがあります。
+`graph`・`explore`・`verify-plan`・`verify-apply` と、その中で動く graphify・test・check は時間がかかることがあります。
 
 - 完了通知や終了まで待つ機能があれば使います。ツールの待機時間と、プロセスを終了させるタイムアウトは別です。
   検査の実行タイムアウトは `workflow.yaml` の `check.timeout_sec` を守り、短い値で打ち切りません。

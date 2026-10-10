@@ -13,6 +13,7 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 | [web-hello.md](web-hello.md) | 小さな Web 画面と e2e のケース | 新しい名前のテスト、注記の無い e2e のケース |
 | [monorepo-library.md](monorepo-library.md) | ソース・テスト・文書が 1 つのリポジトリにあるライブラリ（TS） | 同じリポジトリの文書を参照先にする、ファイルの削除、やめて戻す |
 | [three-repos-guides.md](three-repos-guides.md) | 画面・サーバー（Go）・設計書の 3 つのリポジトリと手引き | 3 つにまたがる変更、手引きの検査と確かめごと、設計書の側からの変更 |
+| [semantic-graph.md](semantic-graph.md) | 税の計算（Python）と設計書・運用メモ・e2e のケース | 文書を LLM で読んだグラフ、確か・要判断・参考の分け方、判断済みを出さない |
 
 ## 再生する
 

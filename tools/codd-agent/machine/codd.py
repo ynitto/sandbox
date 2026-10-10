@@ -8,6 +8,8 @@
     rules [--write]     守る決まりのファイルと、決まりらしいマークダウンの候補を示す。--write で候補を codd.json に書く
     explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）。--ref で絞れる
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
+    graph [--merge]     グラフを用意する。codd.json の graphify が {"semantic": "session"} なら、文書の意味を抜き出す束を示し
+                        （--chunk 束 で 1 束の抜き出し方）、書かれた JSON を --merge で確かめて取り込む
     verify-plan         計画（.plans/日時-名前.md）が決まった形か、根拠が参照先に実在するか（パス・行・見出し・
                         `…` で囲んだ名前）、1 回で扱う範囲（max_files）に収まるかを検査する。
                         参照先の変更案があれば、それを自分に適用したときの影響範囲を測り、計画の影響範囲が
@@ -48,6 +50,7 @@
 graphify のグラフは、リポジトリの HEAD と作業中の変更から作る「印」を控えておき、
 explore / impact のたびに印が変わっていれば `graphify update` で作り直す（自動更新）。
 グラフは参照先の中ではなく自分の `.codd/graph/` に書く（探すだけで参照先に何も書かない）。
+影響範囲は、文字列の一致に加えてグラフを辿り、根拠の強さで確か・要判断・参考に分ける（「グラフで影響を測る」の節）。
 
 名前の一致とは別に、ファイル同士がパスで指し合う「つながり」（注記 `coherence: doc=パス`、文書の `…` のパスとリンク。
 codd-gate と同じ書き方）もたどる。計画・変更で動くファイルとつながった相手の側のファイルを、計画が扱っているかを見る。
@@ -66,7 +69,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -74,7 +77,8 @@ MACHINE_DIR = Path(__file__).resolve().parent
 MACHINE_REL = ".statemachine/codd"
 # init.py が書くカスタムエージェント。マシンの一部なので、探す・変わったかを測る対象にしない。
 AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md",
-               ".kiro/agents/codd-apply.json", ".github/agents/codd-apply.agent.md")
+               ".kiro/agents/codd-apply.json", ".github/agents/codd-apply.agent.md",
+               ".kiro/agents/codd-graph.json", ".github/agents/codd-graph.agent.md")
 # 変える段を渡すサブエージェントの名前（codd.json の subagent が true のとき）
 APPLY_AGENT = "codd-apply"
 CONFIG_NAME = "codd.json"
@@ -147,6 +151,24 @@ GIT_TIMEOUT = 60
 GRAPHIFY_TIMEOUT = 120
 GRAPHIFY_UPDATE_TIMEOUT = 900
 GRAPHIFY_BUDGET = 600
+GRAPHIFY_EXTRACT_TIMEOUT = 3600   # バックエンドの LLM で文書の意味まで抜き出すとき
+# 意味の抽出（graphify の LLM の抽出）。文書と PDF の中身から、見出し・用語・ほかのファイルとのつながりを抜き出し、
+# 構文だけのグラフ（graphify update）に足す。画像は抜き出さない（文書の画面はテストで得たもの（evidence）で扱う）。
+SEMANTIC_KINDS = ("document", "paper")
+SEMANTIC_MAX_FILES = 100          # 1 回の実行で抜き出すファイルの上限（残りは次の回に回す）
+SEMANTIC_CHUNK = 20               # 1 束のファイル数（サブエージェントに渡すとき）
+SEMANTIC_CHUNK_SELF = 5           # 自分で抜き出すとき（応答の長さに上限があるエージェントに収まるように）
+SEMANTIC_ORIGIN = "codd-semantic" # codd が足したノード・辺の印（足し直すときに、前に足したものを外す）
+GRAPH_AGENT = "codd-graph"        # 束を渡すサブエージェント（codd.json の subagent が true のとき）
+GRAPH_LOG = "graph-run.json"      # この回にグラフを用意したか（計画の検査が確かめる）
+DISMISSED_NAME = "graph/dismissed.json"   # 要判断のうち、計画で「変更不要」「関係なし」とした組
+# グラフで影響を測るときの線。推定の辺は確からしさがこれ以上で、変わる名前から 1 歩のものだけを判断させる。
+ASK_SCORE = 0.85
+# つながりの多いノード（README・用語集・共通の util など）は、候補にはするが先へは辿らない。
+HUB_DEGREE = 30
+GRAPH_DEPTH = 2
+# 変えた箇所から辿る文書（見出し・用語のノードを持つもの）
+DOC_SUFFIXES = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt", ".adoc", ".html", ".yaml", ".yml"}
 CHECK_TIMEOUT = 900
 NO_TEST_COMMAND = "未設定（変えたあとにテストを動かさない。`init.py --test \"コマンド\"` で設定する）"
 
@@ -584,8 +606,13 @@ def load_config(machine_dir: Path) -> dict:
     config["exclude"] = exclude_list(config.get("exclude"), f"{path} の exclude")
     config["protect"] = exclude_list(config.get("protect"), f"{path} の protect")
     config.setdefault("graphify", "auto")
-    if config["graphify"] not in ("auto", "off"):
-        raise CoddError(f"{path} の graphify は auto か off です（今: {config['graphify']!r}）")
+    config["graphify_semantic"] = None
+    if isinstance(config["graphify"], dict):
+        config["graphify_semantic"] = semantic_config(config["graphify"], f"{path} の graphify")
+        config["graphify"] = "auto"
+    elif config["graphify"] not in ("auto", "off"):
+        raise CoddError(f"{path} の graphify は auto か off、または {{\"semantic\": \"session\"}} の形です"
+                        f"（今: {config['graphify']!r}）")
     command = config.get("check")
     if command is not None and not is_argv(command):
         raise CoddError(f'{path} の check はコマンドの配列です（例: ["npm", "test"]）')
@@ -613,6 +640,27 @@ def load_config(machine_dir: Path) -> dict:
     fold_guides(config, [parse_guide(e, f"{path} の guides[{i}]", repo, CONFIG_NAME)
                          for i, e in enumerate(config["guides"])] + front_guides(repo, config["skill_dirs"]))
     return config
+
+
+SEMANTIC_KEYS = {"semantic", "model", "max_files"}
+
+
+def semantic_config(value: dict, where: str) -> dict:
+    """graphify の意味の抽出の設定。semantic は session（セッションの LLM が抜き出す）か graphify のバックエンド名。"""
+    unknown = sorted(set(value) - SEMANTIC_KEYS)
+    if unknown:
+        raise CoddError(f"{where} に知らない項目があります: {', '.join(unknown)}（書けるのは {', '.join(sorted(SEMANTIC_KEYS))}）")
+    semantic = value.get("semantic")
+    if not (isinstance(semantic, str) and _NAME.match(semantic)):
+        raise CoddError(f"{where} の semantic は session か、graphify のバックエンド名（ollama・openai など）です"
+                        f"（今: {semantic!r}）")
+    model = value.get("model")
+    if model is not None and not (isinstance(model, str) and model.strip()):
+        raise CoddError(f"{where} の model はモデル名の文字列です（今: {model!r}）")
+    limit = value.get("max_files", SEMANTIC_MAX_FILES)
+    if not (isinstance(limit, int) and not isinstance(limit, bool) and limit > 0):
+        raise CoddError(f"{where} の max_files は 1 以上の整数です（今: {limit!r}）")
+    return {"semantic": semantic, "model": model, "max_files": limit}
 
 
 def path_matches(pattern: str, rel: str) -> bool:
@@ -1391,10 +1439,18 @@ def ensure_graph(ctx: Ctx, repo: Path, rebuild: bool = True) -> tuple[str | None
         return (exe, graph, "kept") if graph.is_file() else (None, None, "not-built")
     out_dir.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "GRAPHIFY_OUT": str(out_dir)}
-    # --force: 削除や改名でノードが減っても作り直した方を採る（古いノードを残さない）。
-    rc, out = run([exe, "update", ".", "--force"], repo, GRAPHIFY_UPDATE_TIMEOUT, env)
+    sem = ctx.config.get("graphify_semantic")
+    if sem and sem["semantic"] != "session":
+        # バックエンドの LLM があれば、graphify が文書の意味まで抜き出す（変わったファイルだけ。結果は出力先に控える）。
+        argv = [exe, "extract", ".", "--backend", sem["semantic"], *(["--model", sem["model"]] if sem["model"] else [])]
+        timeout = GRAPHIFY_EXTRACT_TIMEOUT
+    else:
+        # --force: 削除や改名でノードが減っても作り直した方を採る（古いノードを残さない）。
+        # codd が足した意味のノードは、graphify が残す（文書が消えたときだけ外れる）。
+        argv, timeout = [exe, "update", ".", "--force"], GRAPHIFY_UPDATE_TIMEOUT
+    rc, out = run(argv, repo, timeout, env)
     if rc != 0 or not graph.is_file():
-        print(f"  graphify update に失敗しました（{rc}）: {out.strip()[:200]}", file=sys.stderr)
+        print(f"  graphify {argv[1]} に失敗しました（{rc}）: {out.strip()[:200]}", file=sys.stderr)
         return None, None, "update-failed"
     stamp_file.write_text(now, encoding="utf-8")
     return exe, graph, "updated"
@@ -1647,7 +1703,7 @@ def unread_rules(ctx: Ctx) -> list[str]:
 
 def clear_reading_logs(ctx: Ctx) -> None:
     """1 回の実行の終わりに、探した・読んだ記録を消す（次の回で使い回させない）。"""
-    for name in (EXPLORE_LOG, RULES_READ, SKILLS_READ, GUIDES_READ, AUTO_NAME, OUTSIDE_NAME):
+    for name in (EXPLORE_LOG, RULES_READ, SKILLS_READ, GUIDES_READ, AUTO_NAME, OUTSIDE_NAME, GRAPH_LOG, SEMANTIC_STATE):
         (ctx.data / name).unlink(missing_ok=True)
 
 
@@ -1659,6 +1715,721 @@ def cmd_impact(ctx: Ctx, args: argparse.Namespace) -> int:
     print(f"FOUND {len(files)} files (graphify: {note})")
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
+
+
+# ---------------------------------------------------------------- 意味のグラフ（LLM で文書の中身を抜き出す）
+#
+# graphify update はコードと Markdown の見出しまでしか読まない。文書・PDF などの中身は LLM で抜き出して足す。
+# 段取り（どのファイルを抜き出すか・前の結果の使い回し・グラフへの取り込み）は codd.py が graphify の Python の部品で行い、
+# LLM には「渡したファイルを読んで、決まった形の JSON を書く」ことだけを頼む（セッションの LLM か、サブエージェント）。
+# graphify スキルは出力先を作業フォルダ直下に決め打ちするので使わない（参照先に書き込まず、.codd/graph/ に置く）。
+
+# graphify を入れた Python で動かす下請け。作業フォルダはグラフの置き場所（リポジトリの中のファイルを読み込ませない）。
+GRAPHIFY_HELPER = r'''
+import json, sys
+from pathlib import Path
+req = json.loads(sys.stdin.read())
+root = Path(req["root"]).resolve()
+import graphify
+from graphify.cache import check_semantic_cache, save_semantic_cache
+base = Path(graphify.__file__).parent
+spec = base / "skills" / "agents" / "references" / "extraction-spec.md"
+if not spec.is_file():
+    spec = next(iter(sorted(base.glob("skills/*/references/extraction-spec.md"))), spec)
+
+def rel(p):
+    p = Path(str(p))
+    if not p.is_absolute():
+        return p.as_posix()
+    try:
+        return p.resolve().relative_to(root).as_posix()
+    except (ValueError, OSError):
+        return p.as_posix()
+
+def absolute(files):
+    return [str(root / f) for f in files]
+
+out = {"spec": str(spec)}
+if req["cmd"] == "pending":
+    from graphify.detect import detect
+    found = detect(root)
+    files = [rel(p) for kind in req["kinds"] for p in found["files"].get(kind, [])]
+    _, _, _, uncached = check_semantic_cache(absolute(files), root=root, prompt_file=spec)
+    out.update(files=files, uncached=[rel(p) for p in uncached])
+elif req["cmd"] == "merge":
+    from graphify.build import build_from_json
+    from graphify.cluster import cluster
+    from graphify.export import to_json
+    new, mark = req["new"], req["origin"]
+    if req["extracted"]:
+        save_semantic_cache(new["nodes"], new["edges"], [], root=root,
+                            allowed_source_files=absolute(req["extracted"]), prompt_file=spec)
+    nodes, edges, _, _ = check_semantic_cache(absolute(req["files"]), root=root, prompt_file=spec)
+    path = Path(req["graph"])
+    graph = json.loads(path.read_text(encoding="utf-8"))
+    kept = [n for n in graph.get("nodes", []) if n.get("_origin") != mark]
+    ids = {n["id"] for n in kept}
+    links = [e for e in graph.get("links", graph.get("edges", []))
+             if e.get("_origin") != mark and e.get("source") in ids and e.get("target") in ids]
+    added = [dict(n, _origin=mark, source_file=rel(n.get("source_file") or "")) for n in nodes if n.get("id") not in ids]
+    ids |= {n["id"] for n in added}
+    joined = [dict(e, _origin=mark, source_file=rel(e.get("source_file") or "")) for e in edges
+              if e.get("source") in ids and e.get("target") in ids]
+    G = build_from_json({"nodes": kept + added, "edges": links + joined, "hyperedges": graph.get("hyperedges", [])},
+                        root=root)
+    to_json(G, cluster(G), str(path), force=True, built_at_commit=graph.get("built_at_commit"))
+    out.update(nodes=len(added), edges=len(joined))
+print(json.dumps(out, ensure_ascii=False))
+'''
+SEMANTIC_STATE = "graph/semantic.json"   # この回の抽出の束（まだ取り込んでいないもの）と、抜き出した数
+FILE_TYPES = {"code", "document", "paper", "image", "rationale", "concept"}
+CONFIDENCES = {"EXTRACTED", "INFERRED", "AMBIGUOUS"}
+
+
+def graphify_python(ctx: Ctx, exe: str) -> str | None:
+    """graphify を入れた Python（graphify の部品を読み込める Python）。uv・pipx・pip のどれで入れても探せるように。"""
+    if "_gpy" in ctx.__dict__:
+        return ctx.__dict__["_gpy"]
+    cands: list[str] = []
+    try:
+        first = Path(exe).read_bytes()[:512].split(b"\n", 1)[0]
+        if first.startswith(b"#!"):
+            parts = first[2:].decode("utf-8", "replace").split()
+            if parts and Path(parts[0]).name == "env" and len(parts) > 1:
+                cands.append(shutil.which(parts[1]) or "")
+            elif parts:
+                cands.append(parts[0])
+    except OSError:
+        pass
+    here = Path(exe).resolve().parent
+    cands += [*(str(here / n) for n in ("python", "python3", "python.exe")), sys.executable]
+    found = None
+    for c in dict.fromkeys(c for c in cands if c):
+        if Path(c).is_file() and run([c, "-c", "import graphify"], MACHINE_DIR, GIT_TIMEOUT)[0] == 0:
+            found = c
+            break
+    ctx.__dict__["_gpy"] = found
+    return found
+
+
+def run_helper(gpy: str, out_dir: Path, req: dict) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "GRAPHIFY_OUT": str(out_dir)}
+    try:
+        proc = subprocess.run([gpy, "-c", GRAPHIFY_HELPER], cwd=str(out_dir), input=json.dumps(req, ensure_ascii=False),
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+                              timeout=GRAPHIFY_UPDATE_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise CoddError(f"graphify の部品を動かせませんでした: {exc}") from exc
+    lines = [ln for ln in (proc.stdout or "").splitlines() if ln.startswith("{")]
+    if proc.returncode != 0 or not lines:
+        raise CoddError(f"graphify の部品が失敗しました（{proc.returncode}）: {(proc.stderr or proc.stdout).strip()[-400:]}")
+    return json.loads(lines[-1])
+
+
+def graph_repos(ctx: Ctx) -> list[tuple[str, Path, list[Side]]]:
+    """グラフごとの（名前, リポジトリ, そのリポジトリを受け持つ側）。同じリポジトリの側は 1 つのグラフを使う。"""
+    out: dict[str, tuple[Path, list[Side]]] = {}
+    for side in [ctx.own, *ctx.refs]:
+        out.setdefault(ctx.graph_key(side.path), (side.path, []))[1].append(side)
+    return [(gk, path, sides) for gk, (path, sides) in out.items()]
+
+
+def graph_dir(ctx: Ctx, gk: str) -> Path:
+    return ctx.data / "graph" / gk
+
+
+def semantic_session(ctx: Ctx) -> bool:
+    sem = ctx.config.get("graphify_semantic")
+    return bool(sem) and sem["semantic"] == "session" and ctx.config["graphify"] != "off"
+
+
+def load_semantic_state(ctx: Ctx) -> dict:
+    try:
+        state = json.loads((ctx.data / SEMANTIC_STATE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("chunks", [])
+    state.setdefault("extracted", 0)
+    state.setdefault("files", {})
+    return state
+
+
+def save_semantic_state(ctx: Ctx, state: dict) -> None:
+    path = ctx.data / SEMANTIC_STATE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def chunk_out(ctx: Ctx, chunk: dict) -> Path:
+    return graph_dir(ctx, chunk["gk"]) / "semantic" / f"{chunk['id']}.json"
+
+
+def graph_label(ctx: Ctx, gk: str) -> str:
+    return SIDES[ctx.side] + "（自分）" if gk == "own" else gk[len("ref-"):]
+
+
+def cmd_graph(ctx: Ctx, args: argparse.Namespace) -> int:
+    """グラフを用意する。意味の抽出をセッションで行う設定なら、抜き出す束を示し、書かれた JSON を取り込む。"""
+    if args.chunk:
+        return print_chunk(ctx, args.chunk)
+    notes, exes = [], {}
+    for gk, repo, _ in graph_repos(ctx):
+        exe, graph, note = ensure_graph(ctx, repo)
+        notes.append(f"{graph_label(ctx, gk)}={note}")
+        exes[gk] = (exe, graph)
+    if not semantic_session(ctx):
+        write_graph_log(ctx)
+        print(f"OK graph（graphify: {', '.join(notes)}）")
+        return 0
+    exe = next((e for e, g in exes.values() if e and g), None)
+    gpy = graphify_python(ctx, exe) if exe else None
+    if not gpy:
+        print("FAILED graphify が無いか、graphify を入れた Python が見つかりません（意味の抽出をしない。"
+              f"`install.py` で graphify を入れるか、{CONFIG_NAME} の graphify を auto にする）")
+        return 1
+    state = load_semantic_state(ctx)
+    if args.merge:
+        failed = merge_chunks(ctx, gpy, state, exes)
+        if failed:
+            print(f"FAILED 取り込めない束があります（その束だけ `python3 {MACHINE_REL}/codd.py graph --chunk 束` からやり直す）:")
+            for cid, why in failed:
+                print(f"- {cid}: {why}")
+            return 1
+    elif state["chunks"]:
+        print_pending(ctx, state)
+        return 0
+    rest = plan_chunks(ctx, gpy, state, exes)
+    if state["chunks"]:
+        print_pending(ctx, state)
+        return 0
+    write_graph_log(ctx)
+    tail = f"。残り {rest} files は次の回に抜き出す（1 回の上限 {ctx.config['graphify_semantic']['max_files']}）" if rest else ""
+    print(f"OK graph（graphify: {', '.join(notes)}。意味の抽出: この回 {state['extracted']} files{tail}）")
+    return 0
+
+
+def write_graph_log(ctx: Ctx) -> None:
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / GRAPH_LOG).write_text(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M")}) + "\n", encoding="utf-8")
+
+
+def plan_chunks(ctx: Ctx, gpy: str, state: dict, exes: dict) -> int:
+    """まだ抜き出していない（か、中身が変わった）文書を束に分ける。上限を超えた数を返す。"""
+    limit = ctx.config["graphify_semantic"]["max_files"] - state["extracted"]
+    size = SEMANTIC_CHUNK if ctx.subagent else SEMANTIC_CHUNK_SELF
+    chunks, rest, spec = [], 0, state.get("spec", "")
+    for gk, repo, sides in graph_repos(ctx):
+        if not exes.get(gk, (None, None))[1]:
+            continue
+        res = run_helper(gpy, graph_dir(ctx, gk), {"cmd": "pending", "root": str(repo), "kinds": list(SEMANTIC_KINDS)})
+        spec = res.get("spec", spec)
+        allowed = [f for f in res["files"] if not machine_owned(f) and any(s.has(f) for s in sides)]
+        state["files"][gk] = allowed
+        todo = [f for f in res["uncached"] if f in set(allowed)]
+        take = todo[:max(limit, 0)]
+        limit -= len(take)
+        rest += len(todo) - len(take)
+        for i in range(0, len(take), size):
+            chunks.append({"id": f"{gk}-{i // size + 1}", "gk": gk, "repo": str(repo), "files": take[i:i + size]})
+    for chunk in chunks:
+        chunk_out(ctx, chunk).parent.mkdir(parents=True, exist_ok=True)
+        chunk_out(ctx, chunk).unlink(missing_ok=True)   # 前に途中でやめた回の書きかけを取り込まない
+    state["chunks"], state["spec"] = chunks, spec
+    save_semantic_state(ctx, state)
+    return rest
+
+
+def print_pending(ctx: Ctx, state: dict) -> None:
+    chunks = state["chunks"]
+    total = sum(len(c["files"]) for c in chunks)
+    names = ", ".join(f"{c['id']}（{len(c['files'])} files）" for c in chunks)
+    print(f"PENDING 意味の抽出が要る文書が {total} files（{len(chunks)} 束）あります。"
+          f"束ごとに抜き出してから `python3 {MACHINE_REL}/codd.py graph --merge` を実行します")
+    if ctx.subagent:
+        print(f"自分では文書を読みません。束ごとに `{GRAPH_AGENT}` サブエージェントを呼び、"
+              f"「codd のグラフの束 束の名前 を抜き出してください。」と渡します（呼べる環境なら束を並べて呼んでよい）")
+        print(f"束: {names}")
+        print(f"`{GRAPH_AGENT}` を呼べないときは、束ごとに `python3 {MACHINE_REL}/codd.py graph --chunk 束の名前` を"
+              "実行し、示された指示どおりに自分で抜き出します。")
+    else:
+        print(f"束ごとに `python3 {MACHINE_REL}/codd.py graph --chunk 束の名前` を実行し、示された指示どおりに抜き出します。"
+              "1 束を書き終えてから次の束を開きます")
+        print(f"束: {names}")
+
+
+def print_chunk(ctx: Ctx, cid: str) -> int:
+    state = load_semantic_state(ctx)
+    chunks = state["chunks"]
+    chunk = next((c for c in chunks if c["id"] == cid), None)
+    if not chunk:
+        known = ", ".join(c["id"] for c in chunks) or "なし（`codd.py graph` で束を作る）"
+        print(f"束 {cid} はありません（今の束: {known}）", file=sys.stderr)
+        return 1
+    repo = Path(chunk["repo"])
+    out = chunk_out(ctx, chunk)
+    print(f"# グラフの束 {cid}（{graph_label(ctx, chunk['gk'])}、{len(chunk['files'])} files）\n")
+    print(f"1. 抽出の指示を読む: {state.get('spec') or '（graphify の references/extraction-spec.md）'}")
+    print("   コードブロックの中が指示です。FILE_LIST は下のファイル、CHUNK_NUM と TOTAL_CHUNKS は 1、"
+          "DEEP_MODE は無し、CHUNK_PATH は 3 の書き出し先です。")
+    print("2. 次のファイルだけを読む（左のパスを source_file に、右は開く場所）:")
+    for rel in chunk["files"]:
+        print(f"   - {rel}  （{repo / rel}）")
+    print(f"3. 指示の形の JSON をこのファイルに書く: {out}")
+    print("\ncodd の決まり（抽出の指示より優先）:")
+    print("- source_file には、2 の左のパスをそのまま書く")
+    print("- ほかのファイルの関数・クラス・見出し・用語とのつながりは、その名前をそのまま label に書いたノード"
+          "（source_file はそのファイルのパス。分からなければ空）を作り、辺を張る。codd が今のグラフの同じ名前のノードにつなぐ")
+    print("- 確からしさ（confidence と confidence_score）は指示のとおりに必ず付ける。文書に書いてあるつながりは EXTRACTED、"
+          "読み取ったつながりは INFERRED")
+    print("- 書き出し先のほかに何も書かない（グラフ・文書・コードを変えない）")
+    print("\n書き終えたら第 1 行に OK（書けなかったら FAILED と理由）を返します。")
+    return 0
+
+
+def _label_key(label: str) -> str:
+    text = str(label or "").strip().strip("`'\"「」").lower()
+    return text[:-2] if text.endswith("()") else text
+
+
+def merge_chunks(ctx: Ctx, gpy: str, state: dict, exes: dict) -> list[tuple[str, str]]:
+    """書かれた束の JSON を確かめ、今のグラフの名前につないでから取り込む。取り込めなかった束（名前, 理由）を返す。"""
+    failed: list[tuple[str, str]] = []
+    by_graph: dict[str, list[tuple[dict, dict]]] = {}
+    for chunk in state["chunks"]:
+        path = chunk_out(ctx, chunk)
+        if not path.is_file():
+            failed.append((chunk["id"], f"JSON がありません（{path}）"))
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            failed.append((chunk["id"], f"JSON として読めません: {exc}"))
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
+            failed.append((chunk["id"], "nodes の配列がありません"))
+            continue
+        by_graph.setdefault(chunk["gk"], []).append((chunk, data))
+    merged: list[str] = []
+    for gk, items in by_graph.items():
+        graph = exes.get(gk, (None, None))[1]
+        if not graph:
+            failed += [(c["id"], "グラフがありません（graphify update に失敗）") for c, _ in items]
+            continue
+        try:
+            base = json.loads(graph.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            base = {}
+        cleaned = clean_chunks(base, items)
+        nodes, edges, files = [], [], []
+        for chunk, (ok_nodes, ok_edges, why) in zip([c for c, _ in items], cleaned):
+            if why:
+                failed.append((chunk["id"], why))
+                continue
+            nodes += ok_nodes
+            edges += ok_edges
+            files += chunk["files"]
+            merged.append(chunk["id"])
+        if not files:
+            continue
+        run_helper(gpy, graph_dir(ctx, gk), {
+            "cmd": "merge", "root": str(Path(items[0][0]["repo"])), "graph": str(graph), "origin": SEMANTIC_ORIGIN,
+            "new": {"nodes": nodes, "edges": edges}, "extracted": files,
+            "files": state["files"].get(gk, files)})
+        state["extracted"] += len(files)
+    state["chunks"] = [c for c in state["chunks"] if c["id"] not in merged]
+    save_semantic_state(ctx, state)
+    return failed
+
+
+def clean_chunks(base: dict, items: list[tuple[dict, dict]]) -> list[tuple[list, list, str]]:
+    """束ごとに、渡したファイルのノードだけを残し、ほかのファイルの名前のノードを今のグラフのノードにつなぎ替える。
+
+    ノードの id は束とファイルで一意にする（LLM の id が構文のグラフの id とぶつからないように）。
+    """
+    index: dict[str, list[tuple[str, str]]] = {}
+    for n in base.get("nodes", []):
+        if isinstance(n, dict) and n.get("id") is not None and n.get("_origin") != SEMANTIC_ORIGIN:
+            index.setdefault(_label_key(n.get("label", "")), []).append((str(n["id"]), str(n.get("source_file") or "")))
+    kept_all: list[tuple[dict, dict[str, str], list[dict]]] = []
+    for chunk, data in items:
+        files = set(chunk["files"])
+        repo = Path(chunk["repo"])
+        ids: dict[str, str] = {}
+        kept: list[dict] = []
+        for n in data.get("nodes", []):
+            if not (isinstance(n, dict) and isinstance(n.get("id"), (str, int)) and str(n.get("label") or "").strip()):
+                continue
+            src = _chunk_rel(repo, n.get("source_file"))
+            if src not in files:
+                continue
+            new_id = f"{SEMANTIC_ORIGIN}:{src}:{n['id']}"
+            ids[str(n["id"])] = new_id
+            kept.append({**{k: v for k, v in n.items() if k not in ("id", "source_file", "file_type")},
+                         "id": new_id, "label": str(n["label"]).strip(), "source_file": src,
+                         "file_type": n.get("file_type") if n.get("file_type") in FILE_TYPES else "concept"})
+        kept_all.append((chunk, ids, kept))
+        for k in kept:   # ほかの束の用語にもつなげる
+            index.setdefault(_label_key(k["label"]), []).append((k["id"], k["source_file"]))
+    out = []
+    for (chunk, data), (_, ids, kept) in zip(items, kept_all):
+        if not kept:
+            out.append(([], [], "渡したファイルのノードがありません（source_file が渡したパスと違うか、空）"))
+            continue
+        repo = Path(chunk["repo"])
+        outside = {str(n["id"]): n for n in data.get("nodes", [])
+                   if isinstance(n, dict) and n.get("id") is not None and str(n["id"]) not in ids}
+
+        def resolve(raw) -> str | None:
+            if str(raw) in ids:
+                return ids[str(raw)]
+            n = outside.get(str(raw))
+            if not n:
+                return None
+            cands = index.get(_label_key(n.get("label", "")), [])
+            src = _chunk_rel(repo, n.get("source_file"))
+            same = [c for c in cands if src and c[1] == src]
+            pick = same or cands
+            return pick[0][0] if len({c[0] for c in pick}) == 1 else None
+
+        edges = []
+        for e in data.get("edges", []) if isinstance(data.get("edges"), list) else []:
+            if not isinstance(e, dict) or not str(e.get("relation") or "").strip():
+                continue
+            s, t = resolve(e.get("source")), resolve(e.get("target"))
+            own = [i for i in (s, t) if i and i.startswith(SEMANTIC_ORIGIN + ":")]
+            conf = str(e.get("confidence") or "").upper()
+            if not own or conf not in CONFIDENCES:
+                continue
+            if not (s and t):
+                # このグラフに無い名前（別のリポジトリの関数など）は、指した文書の中の「その名前への言及」として置く。
+                # 名前が識別子なら、影響を測るときに別のリポジトリの同じ名前のノードとつながる。
+                raw = e.get("target") if s else e.get("source")
+                label = str((outside.get(str(raw)) or {}).get("label") or "").strip()
+                if not label:
+                    continue
+                home = own[0].split(":", 2)[1]
+                ref_id = f"{SEMANTIC_ORIGIN}:{home}:ref:{_label_key(label)}"
+                if ref_id not in ids.values():
+                    ids[f"ref:{home}:{label}"] = ref_id
+                    kept.append({"id": ref_id, "label": label, "source_file": home, "_mention": True,
+                                 "file_type": (outside[str(raw)].get("file_type") if outside[str(raw)].get("file_type")
+                                               in FILE_TYPES else "concept"),
+                                 "source_location": None})
+                s, t = (s or ref_id), (t or ref_id)
+            if s == t:
+                continue
+            try:
+                score = float(e.get("confidence_score"))
+            except (TypeError, ValueError):
+                score = 0.55 if conf == "INFERRED" else 0.2
+            src = _chunk_rel(repo, e.get("source_file"))
+            if src not in set(chunk["files"]):
+                src = next(i for i in own).split(":", 2)[1]
+            edges.append({"source": s, "target": t, "relation": str(e["relation"]).strip(), "confidence": conf,
+                          "confidence_score": 1.0 if conf == "EXTRACTED" else max(0.0, min(score, 1.0)),
+                          "source_file": src, "source_location": e.get("source_location"),
+                          "weight": e.get("weight", 1.0)})
+        out.append((kept, edges, ""))
+    return out
+
+
+def _chunk_rel(repo: Path, value) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    p = Path(text)
+    if p.is_absolute():
+        try:
+            return p.resolve().relative_to(repo.resolve()).as_posix()
+        except (ValueError, OSError):
+            return text
+    return text[2:] if text.startswith("./") else text
+
+
+# ---------------------------------------------------------------- グラフで影響を測る（確か・要判断・参考）
+#
+# 拾う範囲は広げ、見せる量は根拠の強さで絞る。どの候補にも「なぜ拾ったか」を付け、強さで 3 段に分ける。
+# - 確か: 構文の辺（graphify update）と、文書に書いてあるつながり（EXTRACTED）。変わる名前から 2 歩まで
+#   （参照先は 1 歩まで）。今までの graphify affected と同じ範囲。計画が扱うまで通さない
+# - 要判断: LLM が読み取ったつながり（INFERRED）のうち、確からしさ ASK_SCORE 以上で、変わる名前から 1 歩のもの。
+#   計画に「変更不要: 理由」（参照先は「関係なし: 理由」）か変更案を書かせる（黙って落とせない）
+# - 参考: それより弱いもの・似ているだけのもの・2 歩目の推定。検査には出さず、測った結果のファイルにだけ残す
+# 自分と参照先のグラフは、同じ名前の識別子（関数・クラスなど）でつなぎ、リポジトリをまたいで辿る。
+
+# 影響が向かう辺（graphify affected と同じ）。src が dst に頼っている（呼ぶ・読み込む・参照する）。
+AFFECT_RELATIONS = {"calls", "indirect_call", "references", "imports", "imports_from", "dynamic_import", "re_exports",
+                    "inherits", "extends", "implements", "uses", "mixes_in", "embeds", "requires"}
+_IDENT = re.compile(r"^[A-Za-z_$][\w$.]*(?:\(\))?$")
+TIER_RANK = {"sure": 0, "ask": 1, "note": 2}
+TIER_WORDS = {"sure": "確か", "ask": "要判断", "note": "参考"}
+
+
+@dataclass
+class GraphHit:
+    key: str          # 自分は ""、参照先は名前
+    rel: str
+    tier: str         # sure・ask・note
+    why: str
+    term: str
+    line: int | None = None
+
+
+class GraphView:
+    """自分と参照先のグラフを合わせて引く（ノードは（グラフの名前, id））。"""
+
+    def __init__(self, ctx: Ctx, rebuild: bool) -> None:
+        self.ctx = ctx
+        self.nodes: dict[tuple[str, str], dict] = {}
+        self.links: dict[tuple[str, str], list[tuple[tuple[str, str], dict | None, bool, bool]]] = {}
+        self.members: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        self.degree: Counter = Counter()
+        self.sides: dict[str, list[tuple[str, Side]]] = {}
+        self.notes: list[str] = []
+        index: dict[str, list[tuple[str, str]]] = {}
+        for gk, repo, sides in graph_repos(ctx):
+            self.sides[gk] = [("" if s is ctx.own else s.name, s) for s in sides]
+            _, graph, note = ensure_graph(ctx, repo, rebuild)
+            self.notes.append(f"{graph_label(ctx, gk)}={note}")
+            try:
+                data = json.loads(graph.read_text(encoding="utf-8")) if graph else {}
+            except (OSError, ValueError):
+                data = {}
+            for n in data.get("nodes", []) if isinstance(data, dict) else []:
+                if isinstance(n, dict) and n.get("id") is not None:
+                    key = (gk, str(n["id"]))
+                    self.nodes[key] = n
+                    index.setdefault(_label_key(n.get("label", "")), []).append(key)
+            for e in data.get("links", data.get("edges", [])) if isinstance(data, dict) else []:
+                if not isinstance(e, dict):
+                    continue
+                s, t = (gk, str(e.get("source"))), (gk, str(e.get("target")))
+                if s not in self.nodes or t not in self.nodes:
+                    continue
+                self.degree[s] += 1
+                self.degree[t] += 1
+                relation = str(e.get("relation") or "")
+                if relation in ("contains", "method"):
+                    self.members.setdefault(s, []).append(t)
+                    continue
+                ast = e.get("_origin") == "ast"
+                solid = ast or str(e.get("confidence") or "").upper() == "EXTRACTED"
+                if ast:
+                    if relation in AFFECT_RELATIONS:   # dst が変われば src に響く
+                        self.links.setdefault(t, []).append((s, e, True, False))
+                else:
+                    # 文書から読み取ったつながりは、どちらが変わっても相手に響きうる（文書とコードの整合）
+                    self.links.setdefault(t, []).append((s, e, solid, True))
+                    self.links.setdefault(s, []).append((t, e, solid, True))
+        # 別のリポジトリの同じ名前の識別子は同じものとして渡る（歩数に数えない）
+        for label, keys in index.items():
+            if not _IDENT.match(label) or len({k[0] for k in keys}) < 2:
+                continue
+            for a in keys:
+                for b in keys:
+                    if a[0] != b[0]:
+                        self.links.setdefault(a, []).append((b, None, True, False))
+        self.index = index
+        self.section_index: dict[tuple[str, str], list[tuple[int, tuple[str, str]]]] = {}
+        for key, n in self.nodes.items():
+            line = _loc_line(n.get("source_location"))
+            if line and n.get("file_type") in ("document", "rationale", "concept"):
+                self.section_index.setdefault((key[0], str(n.get("source_file") or "")), []).append((line, key))
+
+    def side_key(self, gk: str, rel: str) -> tuple[str, Side] | None:
+        for key, side in self.sides.get(gk, []):
+            if rel and side.has(rel) and not machine_owned(rel) and not side.excluded(rel):
+                return key, side
+        return None
+
+    def node_side(self, node: tuple[str, str]) -> tuple[str, str] | None:
+        rel = str(self.nodes[node].get("source_file") or "")
+        hit = self.side_key(node[0], rel)
+        return (hit[0], rel) if hit else None
+
+    def seeds(self, term: str, focus: dict[str, set[str]] | None) -> list[tuple[str, str]]:
+        t = _label_key(term)
+        found = list(self.index.get(t, []))
+        if "." not in t:
+            found += [k for label, keys in self.index.items() if label.endswith("." + t) for k in keys]
+        if focus:
+            near = [k for k in found if (s := self.node_side(k)) and s[1] in focus.get(s[0], set())]
+            found = near or found
+        out = list(dict.fromkeys(found))
+        for k in list(out):
+            out += [m for m in self.members.get(k, []) if m not in out]
+        return out
+
+    def section_seeds(self, key: str, rel: str, lines: set[int] | None) -> list[tuple[str, str]]:
+        """変えた行を含む文書の見出し・用語のノード（変えた箇所そのものから辿る）。"""
+        out = []
+        for gk, sides in self.sides.items():
+            if not any(k == key for k, _ in sides):
+                continue
+            nodes = sorted(self.section_index.get((gk, rel), []))
+            for line in sorted(lines or []) if lines is not None else [n[0] for n in nodes]:
+                before = [n for n in nodes if n[0] <= line]
+                if before and before[-1][1] not in out:
+                    out.append(before[-1][1])
+        return out
+
+    def impact(self, starts: list[tuple[str, list[tuple[str, str]]]]) -> dict[tuple[str, str], GraphHit]:
+        """（語, 起点のノード）ごとに辿り、ファイルごとにいちばん強い根拠を返す。"""
+        hits: dict[tuple[str, str], GraphHit] = {}
+
+        def record(node, tier, why, term, e) -> None:
+            if self.nodes[node].get("_mention"):
+                return   # 別のリポジトリの名前への言及（つなぎ目）。それ自体は根拠にしない
+            where = self.node_side(node)
+            if not where:
+                return
+            line = _loc_line(e.get("source_location")) if e and str(e.get("source_file") or "") == where[1] else None
+            line = line or _loc_line(self.nodes[node].get("source_location"))
+            old = hits.get(where)
+            if old is None or TIER_RANK[tier] < TIER_RANK[old.tier]:
+                hits[where] = GraphHit(where[0], where[1], tier, why, term, line)
+
+        for term, seeds in starts:
+            if not seeds:
+                continue
+            # 名前を定義しているファイルは数えない（言及のノードは、名前をよそから指しているだけなので数える）
+            seed_files = {self.node_side(s) for s in seeds if not self.nodes[s].get("_mention")}
+            depth = {s: 0 for s in seeds}
+            queue = deque(seeds)
+            label = term
+            while queue:
+                cur = queue.popleft()
+                d = depth[cur]
+                if d >= GRAPH_DEPTH or (d > 0 and self.degree[cur] >= HUB_DEGREE):
+                    continue
+                for other, e, solid, _ in self.links.get(cur, []):
+                    if not solid:
+                        continue
+                    nd = d if e is None else d + 1
+                    if other in depth and depth[other] <= nd:
+                        continue
+                    depth[other] = nd
+                    queue.append(other)
+                    where = self.node_side(other)
+                    if not where or where in seed_files:
+                        continue
+                    far = where[0] != "" and nd > 1   # 参照先は 1 歩まで（その先は参照先の中の呼び出し元）
+                    how = "別のリポジトリの同じ名前" if e is None else e.get("relation")
+                    record(other, "note" if far else "sure", f"グラフで `{label}` につながる（{how}）", term, e)
+            for cur, d in list(depth.items()):
+                if d > 1 or (d == 1 and self.degree[cur] >= HUB_DEGREE):
+                    continue
+                for other, e, solid, _ in self.links.get(cur, []):
+                    if solid or e is None or other in depth:
+                        continue
+                    where = self.node_side(other)
+                    if not where or where in seed_files:
+                        continue
+                    conf = str(e.get("confidence") or "").upper()
+                    try:
+                        score = float(e.get("confidence_score") or 0)
+                    except (TypeError, ValueError):
+                        score = 0.0
+                    rel = str(e.get("relation") or "")
+                    tier = ("ask" if d == 0 and conf == "INFERRED" and score >= ASK_SCORE
+                            and rel != "semantically_similar_to" else "note")
+                    name = str(self.nodes[other].get("label") or "")
+                    record(other, tier,
+                           f"{'意味のつながり' if tier == 'ask' else '参考'}（推定 {score:.2f}・{rel}）: 「{name}」と `{label}`",
+                           term, e)
+        return hits
+
+
+def _loc_line(loc) -> int | None:
+    m = re.match(r"^L?(\d+)", str(loc or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def graph_view(ctx: Ctx, rebuild: bool) -> GraphView:
+    views = ctx.__dict__.setdefault("_graph_views", {})
+    if rebuild not in views:
+        views[rebuild] = GraphView(ctx, rebuild)
+    return views[rebuild]
+
+
+def graph_impact(ctx: Ctx, terms: list[str], rebuild: bool = True, focus: dict[str, set[str]] | None = None,
+                 sections: dict[str, dict[str, set[int] | None]] | None = None) -> dict[tuple[str, str], GraphHit]:
+    """変わる名前（と変えた文書の箇所）から、自分と参照先で響くファイルを根拠の強さ付きで測る。"""
+    if ctx.config["graphify"] == "off":
+        return {}
+    cache = ctx.__dict__.setdefault("_graph_hits", {})
+    key = json.dumps([terms, rebuild, {k: sorted(v) for k, v in (focus or {}).items()},
+                      {k: {r: sorted(ls) if ls is not None else None for r, ls in v.items()}
+                       for k, v in (sections or {}).items()}], ensure_ascii=False, sort_keys=True)
+    if key in cache:
+        return cache[key]
+    view = graph_view(ctx, rebuild)
+    starts = [(t, view.seeds(t, focus)) for t in terms[:MAX_TERMS]]
+    for k, files in (sections or {}).items():
+        for rel, lines in files.items():
+            for node in view.section_seeds(k, rel, lines):
+                starts.append((str(view.nodes[node].get("label") or rel), [node]))
+    hits = view.impact(starts)
+    gone = load_dismissed(ctx)
+    asked = ctx.__dict__.setdefault("_asked", {})
+    for where, h in hits.items():
+        if h.tier != "ask":
+            continue
+        rec = gone.get(f"{h.key}|{h.rel}")
+        if rec and h.term in rec.get("terms", []) and rec.get("hash") == now_hash(side_of(ctx, h.key), h.rel):
+            h.tier, h.why = "note", f"前の計画で判断済み（変わっていない）: {h.why}"
+        else:
+            asked[where] = h.term
+    cache[key] = hits
+    return hits
+
+
+def graph_report(hits: dict[tuple[str, str], GraphHit], ctx: Ctx, keys: set[str]) -> str:
+    lines = []
+    for tier in ("sure", "ask", "note"):
+        rows = sorted((h for h in hits.values() if h.tier == tier and h.key in keys), key=lambda h: (h.key, h.rel))
+        lines += [f"#### {TIER_WORDS[tier]}", "",
+                  *([f"- {side_label(ctx, h.key, h.rel)}{f':{h.line}' if h.line else ''} — {h.why}" for h in rows]
+                    or ["- (なし)"]), ""]
+    return "\n".join(lines)
+
+
+def load_dismissed(ctx: Ctx) -> dict:
+    try:
+        rec = json.loads((ctx.data / DISMISSED_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
+    """要判断のうち、計画が「変更不要」「関係なし」としたもの（ファイルの中身と語）を控える。
+
+    次の回で同じ語から同じファイルに当たっても、ファイルが変わっていなければ要判断に出さない（参考に回す）。
+    変更不要の判断は通ったあとの計画から外れるので、計画の記録ではなく作業フォルダに控える。
+    """
+    asked = ctx.__dict__.get("_asked") or {}
+    if not asked:
+        return
+    own_waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True)
+    tp = test_plan(ctx, bodies)
+    unrelated = [it for h in CITED_IN_REFS for it in items(bodies.get(h, "")) if UNRELATED_MARK in it]
+    rec = load_dismissed(ctx)
+    for (key, rel), term in asked.items():
+        if key:
+            ok = (key, rel) in tp.waived or any(ref_label(ctx, key, rel) in it or rel in it for it in unrelated)
+        else:
+            ok = rel in own_waived or ("", rel) in tp.waived
+        if not ok:
+            continue
+        entry = rec.get(f"{key}|{rel}") or {}
+        rec[f"{key}|{rel}"] = {"terms": unique([*entry.get("terms", []), term]),
+                               "hash": now_hash(side_of(ctx, key), rel)}
+    path = ctx.data / DISMISSED_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------- 根拠のパス
@@ -2008,30 +2779,55 @@ def tested_anywhere(ctx: Ctx, term: str) -> bool:
     return False
 
 
-def measure(ctx: Ctx, terms: list[str], name: str, title: str, rebuild: bool = True) -> list[str]:
-    """変わる名前から、自分のリポジトリで影響を受けるファイルを測る（graphify affected + git grep）。"""
+def measure(ctx: Ctx, terms: list[str], name: str, title: str, rebuild: bool = True,
+            focus: dict[str, set[str]] | None = None,
+            sections: dict[str, dict[str, set[int] | None]] | None = None) -> tuple[list[str], dict[str, str]]:
+    """変わる名前から、自分のリポジトリで影響を受けるファイルを測る（git grep + グラフの確か・要判断）。
+
+    （ファイル, ファイルごとの拾った理由（グラフで拾ったものだけ））を返す。グラフの参考は測った結果のファイルにだけ書く。
+    """
     terms = terms[:MAX_TERMS]
-    body, files, note = search(ctx, ctx.own, terms, "affected", rebuild=rebuild)
+    body, files, _ = search(ctx, ctx.own, terms, "affected", use_graph=False, rebuild=rebuild)
+    hits = graph_impact(ctx, terms, rebuild, focus, sections)
+    why: dict[str, str] = {}
+    for h in sorted(hits.values(), key=lambda h: (TIER_RANK[h.tier], h.rel)):
+        if not h.key and h.tier != "note" and h.rel not in files:
+            files.append(h.rel)
+            why[h.rel] = h.why
     files = files[:MAX_MEASURED]
-    write_report(ctx, name, title, terms, [(f"{ctx.root}{scope_words(ctx.own)}", note, body)], files)
-    return files
+    view = graph_view(ctx, rebuild) if ctx.config["graphify"] != "off" else None
+    note = ", ".join(view.notes) if view else "off"
+    write_report(ctx, name, title, terms, [(f"{ctx.root}{scope_words(ctx.own)}", note,
+                                            body + "\n### グラフ（根拠の強さごと）\n\n" + graph_report(hits, ctx, {""}))],
+                 files)
+    return files, {p: w for p, w in why.items() if p in files}
 
 
 def measure_refs(ctx: Ctx, terms: list[str], name: str, title: str,
-                 lines: dict[str, dict[str, int]] | None = None) -> set[tuple[str, str]]:
-    """自分の変更で変わる名前に、参照先のどのファイルが触れているかを測る（git grep。語単位）。
+                 lines: dict[str, dict[str, int]] | None = None, why: dict[tuple[str, str], str] | None = None,
+                 rebuild: bool = True, focus: dict[str, set[str]] | None = None) -> set[tuple[str, str]]:
+    """自分の変更で変わる名前に、参照先のどのファイルが触れているかを測る（git grep。語単位。とグラフの確か・要判断）。
 
-    グラフの query は関係の近いものまで広く拾うので、漏れの検査には文字列の一致だけを使う。
+    グラフは自分と参照先を同じ名前の識別子でつないで辿る。推定のつながりは、確からしさの高い 1 歩だけを判断させる。
     """
     terms = terms[:MAX_TERMS]
     parts, files, found = [], [], set()
+    hits = graph_impact(ctx, terms, rebuild, focus)
     for r in ctx.refs:
         first: dict[str, int] = {}
-        body, hits, _ = search(ctx, r, terms, "query", use_graph=False, first_lines=first)
+        body, grep_hits, _ = search(ctx, r, terms, "query", use_graph=False, first_lines=first)
         if lines is not None:
             lines[r.name] = first
-        parts.append((f"{r.name}（{r.label}）  {r.path}{scope_words(r)}", "（文字列の一致だけで測る）", body))
-        for rel in hits[:MAX_MEASURED]:
+        graph_hits = [h for h in sorted(hits.values(), key=lambda h: (TIER_RANK[h.tier], h.rel))
+                      if h.key == r.name and h.tier != "note" and h.rel not in grep_hits]
+        for h in graph_hits:
+            if lines is not None and h.line:
+                lines[r.name].setdefault(h.rel, h.line)
+            if why is not None:
+                why[(r.name, h.rel)] = h.why
+        parts.append((f"{r.name}（{r.label}）  {r.path}{scope_words(r)}", "（文字列の一致とグラフ）",
+                      body + "\n### グラフ（根拠の強さごと）\n\n" + graph_report(hits, ctx, {r.name})))
+        for rel in [*grep_hits, *(h.rel for h in graph_hits)][:MAX_MEASURED]:
             found.add((r.name, rel))
             files.append(f"{r.name}:{rel}" if len(ctx.refs) > 1 else rel)
     write_report(ctx, name, title, terms, parts, files)
@@ -2745,24 +3541,27 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
     measured: list[str] = []
     if terms:
         # 自分の変更と参照先の変更で動く名前が、自分のどこに響くか。変えるか「変更不要」と書くか。
-        measured = measure(ctx, terms, "impact.md",
-                           f"計画の変更が自分のリポジトリ（{SIDES[ctx.side]}）に響く範囲（測定）")
+        measured, why = measure(ctx, terms, "impact.md",
+                                f"計画の変更が自分のリポジトリ（{SIDES[ctx.side]}）に響く範囲（測定）",
+                                focus=plan_changes(ctx, bodies))
         listed = (listed_paths(ctx, bodies["## 自分の変更案"], allow_new=True)
                   | listed_paths(ctx, bodies["## 影響範囲"]) | test_plan(ctx, bodies).paths(""))
         for p in measured:
             if not covered(p, listed):
-                pending.own(ctx, p, "変わる名前が出てくる")
+                pending.own(ctx, p, why.get(p, "変わる名前が出てくる"))
         ctx.__dict__["_outside"] = outside_scope_hits(ctx, terms)
     ref_hits: set[tuple[str, str]] = set()
     if own_terms:
         # 自分の変更で動く名前に触れている参照先のファイルを、計画が読んで扱っているか（逆向きの漏れ）。
         ref_lines: dict[str, dict[str, int]] = {}
+        ref_why: dict[tuple[str, str], str] = {}
         ref_hits = measure_refs(ctx, own_terms, "ref-impact.md", "自分の変更で動く名前に触れている参照先のファイル（測定）",
-                                ref_lines)
+                                ref_lines, ref_why, focus=plan_changes(ctx, bodies))
         cited = cited_anywhere(ctx, bodies)
         for n, r in sorted(ref_hits):
             if (n, r) not in cited:
-                pending.ref(ctx, n, r, "自分の変更で変わる名前が出てくる", ref_lines.get(n, {}).get(r), own_terms)
+                pending.ref(ctx, n, r, ref_why.get((n, r), "自分の変更で変わる名前が出てくる"),
+                            ref_lines.get(n, {}).get(r), own_terms)
     problems += explore_problems(ctx, bodies, pending)
     problems += trace_plan(ctx, bodies, pending)
     problems += tests_plan_problems(ctx, bodies, terms, pending)
@@ -2889,13 +3688,15 @@ def file_stem(rel: str, test: bool = False) -> str:
 
 
 def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
-                   texts: list[str] | None = None) -> dict[tuple[str, str], str]:
+                   texts: list[str] | None = None, rebuild: bool = True,
+                   sections: dict[str, dict[str, set[int] | None]] | None = None) -> dict[tuple[str, str], str]:
     """変える名前・変えるファイルが響くテストのファイル（自分と参照先。同じ側でも数える）と、その理由。
 
     - 名前: 変わる名前（`…`・差分の定義や見出し）がテストのファイルに書かれている
     - 文字列: 変えた文字列（画面の文言・URL など。差分の引用符の中）がテストのファイルに書かれている
     - ファイル名: テストのファイル名が、変えるファイルと同じ語幹を持つ（app.py と test_app.py、Login.tsx と login.yaml）
     - つながり: テストのファイルが変えるファイルをパスで指している（`coherence: code=…`・`doc=…` など）か、その逆
+    - グラフ: グラフで変わる名前につながる（確かと要判断。理由は拾った辺）
 
     e2e のケースは画面の文言や URL で書かれ、コードの名前が出てこないことが多い。文字列とファイル名は、
     テストの道具の書き方を知らずに e2e のケースを拾うための手がかり。
@@ -2912,6 +3713,10 @@ def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
             for rel in hits:
                 if rel in tests and (key, rel) not in targets:
                     found.setdefault((key, rel), "名前")
+        if terms or sections:
+            for h in graph_impact(ctx, terms, rebuild, changed, sections).values():
+                if h.key == key and h.tier != "note" and h.rel in tests and (key, h.rel) not in targets:
+                    found.setdefault((key, h.rel), h.why)
         if texts:
             # 語の形の文字列（`note` のような項目名）は語として探す（`notes`・`res.status` に当てない）
             words = [t for t in texts[:MAX_TEXTS] if _WORDLIKE.match(t)]
@@ -3938,6 +4743,9 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         text = restored
     _, bodies = sections(text, PLAN_HEADINGS)
     problems = verify_plan_text(ctx, text) + record_problems_of(ctx)
+    if semantic_session(ctx) and not (ctx.data / GRAPH_LOG).is_file():
+        problems.append(f"{GRAPH_NOT_READY}。`python3 {MACHINE_REL}/codd.py graph` を実行し、PENDING なら示された束を"
+                        "抜き出して `graph --merge` で OK になるまで進めてから、検査し直してください")
     measured: list[str] = []
     ref_count = 0
     if all(h in bodies for h in PLAN_HEADINGS):
@@ -3962,6 +4770,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
             print(notice)
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
         return 1
+    record_dismissed(ctx, bodies)
     ctx.plan.write_text(compact_plan(text), encoding="utf-8")
     (ctx.data / PLAN_CHECK_TEXT).write_text(json.dumps(
         {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -3985,6 +4794,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
 
 
 OUTSIDE_NAME = "outside.json"
+GRAPH_NOT_READY = "意味のグラフを、この回にまだ用意していません"
 OUTSIDE_NOTICE = "受け持ちのフォルダ（scope）の外にも、変わる名前が出てくるファイルがあります"
 
 
@@ -4863,11 +5673,16 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     measured: list[str] = []
     ref_hits: set[tuple[str, str]] = set()
     hold: list[tuple[str, str]] = []   # 直すべきだが、人の承認が要るファイル（エージェントに直させず、利用者に訊く）
-    if terms:
+    touched_all = {"": a.own_touched, **a.touched}
+    # 変えた文書の箇所（見出し・用語）からもグラフを辿る。名前が変わらない書き直しでも、つながる相手を拾う。
+    sections = {k: {rel: added_lines(side_of(ctx, k), rel) for rel in rels if Path(rel).suffix.lower() in DOC_SUFFIXES}
+                for k, rels in touched_all.items()}
+    if terms or any(sections.values()):
         # グラフは変える前のものを使う（変わる名前の呼び出し元は変える前のグラフで分かり、足した名前は git grep が拾う）。
         # 作り直すと、訊かずにやり直すたびに全体を作り直して待たせる。
-        measured = measure(ctx, terms, "impact-after.md",
-                           f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）", rebuild=False)
+        measured, _ = measure(ctx, terms, "impact-after.md",
+                              f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）", rebuild=False,
+                              focus=touched_all, sections=sections)
         waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
         # 自分の変更案のファイルは、変え残しとして上で挙げる（同じファイルを 2 回挙げない）。
         untouched = [p for p in measured if p not in a.own_touched and p not in waived and not dev.waived("", p)
@@ -4883,7 +5698,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if new_own_terms:
         # 計画に無い名前まで自分で変えたなら、それに触れている参照先も扱ったか。
         hits = ref_hits = measure_refs(ctx, new_own_terms, "ref-impact-after.md",
-                            "自分の実際の変更で動く名前に触れている参照先のファイル（測定）")
+                                       "自分の実際の変更で動く名前に触れている参照先のファイル（測定）",
+                                       rebuild=False, focus=touched_all)
         cited = cited_anywhere(ctx, bodies)
         missing = sorted(ref_label(ctx, n, rel) for n, rel in hits
                          if (n, rel) not in cited and rel not in a.touched.get(n, set())
@@ -4896,11 +5712,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     # 3'. 実際の変更が響くテストを、直したか「変更不要」としたか（同じ側のテストも。名前とつながりで測る）。
     affected: dict[tuple[str, str], str] = {}
     if tests_enabled(ctx):
-        touched_all = {"": a.own_touched, **a.touched}
         changed_files = {k: {p for p in v if not is_test(ctx, k, p)} for k, v in touched_all.items()}
         texts = unique(t for key, side in all_sides(ctx) if touched_all.get(key)
                        for t in literals_from_diff(ctx, key, side))
-        found = affected = affected_tests(ctx, terms, changed_files, texts)
+        found = affected = affected_tests(ctx, terms, changed_files, texts, rebuild=False, sections=sections)
         write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp,
                            {"": want_own, **a.planned}, touched_all)
         # テストの変更案で変えると挙げたテストは、変え残しとして上で挙げる。
@@ -5313,7 +6128,7 @@ _KINDS = (
                       "を確かめるテストが ## テストの変更案 にありません。",
                       # 計画に挙げ忘れたもの・戻せば済むもの（計画は確認で利用者が見るので、書き足しは訊かずに任せる）
                       "変更が響くテストの結果を写している文書が、計画にありません",
-                      "終わった回の計画の記録を書き換えています")),
+                      "終わった回の計画の記録を書き換えています", GRAPH_NOT_READY)),
 )
 
 
@@ -5950,6 +6765,9 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--ref", action="append", help="探す参照先の名前（繰り返し可。既定はすべて）")
     i = sub.add_parser("impact", help="自分のリポジトリで影響を受ける箇所を探す")
     i.add_argument("--term", action="append", help="検索語（繰り返し可）")
+    gr = sub.add_parser("graph", help="グラフを用意する（意味の抽出をセッションで行う設定なら、抜き出す束を示して取り込む）")
+    gr.add_argument("--merge", action="store_true", help="書かれた束の JSON を確かめてグラフに取り込む")
+    gr.add_argument("--chunk", help="束 1 つの抜き出し方（読むファイル・抽出の指示・書き出し先）を示す")
     sub.add_parser("verify-plan", help="計画が決まった形かを検査する")
     sub.add_parser("verify-apply", help="計画どおりに変えたかを検査する")
     ba = sub.add_parser("batch", help="段に分けて変えるとき、今の段で変えるファイルを示す")
@@ -5987,7 +6805,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact,
+COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact, "graph": cmd_graph,
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "batch": cmd_batch, "report": cmd_report,
             "rules": cmd_rules, "rollback": cmd_rollback, "accept": cmd_accept,
             "skill": cmd_skill, "guide": cmd_guide, "evidence": cmd_evidence, "rule": cmd_rule,

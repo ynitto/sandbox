@@ -29,6 +29,7 @@ refs[].rules に書く（--no-discover-rules でやめる。あとからは `cod
 kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカスタムエージェント `codd` を書く
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
 変える段を受け持つサブエージェント `codd-apply` も並べて書く（codd.json の subagent が true のときに codd が呼ぶ）。
+文書の意味を抜き出す束を受け持つサブエージェント `codd-graph` も書く（graphify が {"semantic": "session"} のときに呼ぶ）。
 --check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。
 --evidence "パス" で結果ファイルの一覧を指定する（繰り返し可。"" で扱わない）。検査ツールの設定は自動検出しない。
 --test "コマンド" で、変えたあとに実行する単体テストのコマンド（codd.json の test）を書く（"" で消す）。
@@ -55,6 +56,10 @@ AGENT_DESCRIPTION = "実装と設計書の一貫性を保って変える。コ�
 # モデルは書かない（書かなければ呼び出し元と同じモデルで動く）。
 APPLY_AGENT_PROMPT = SRC / "agents" / "codd-apply.md"
 APPLY_AGENT_DESCRIPTION = "codd が呼ぶ。承認された計画の、今の段のファイルだけを変える"
+# 文書の意味を抜き出す束を 1 つずつ受け持つサブエージェント（codd.json の graphify が {"semantic": "session"} で、
+# subagent が true のときに codd が呼ぶ）。モデルは書かない。
+GRAPH_AGENT_PROMPT = SRC / "agents" / "codd-graph.md"
+GRAPH_AGENT_DESCRIPTION = "codd が呼ぶ。グラフの束の文書を読み、知識グラフの断片（JSON）を書く"
 AGENT_KINDS = ("kiro", "copilot")
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
 GRAPHIFY_IGNORE_LINE = ".statemachine/codd/"
@@ -203,6 +208,7 @@ def write_agents(target: Path, kinds) -> list[Path]:
     """必ずこのマシンで変えるカスタムエージェントを書く（置くたびに書き直す生成物）。"""
     prompt = AGENT_PROMPT.read_text(encoding="utf-8")
     apply_prompt = APPLY_AGENT_PROMPT.read_text(encoding="utf-8")
+    graph_prompt = GRAPH_AGENT_PROMPT.read_text(encoding="utf-8")
     written = []
     if "kiro" in kinds:
         path = target / ".kiro" / "agents" / "codd.json"
@@ -226,15 +232,24 @@ def write_agents(target: Path, kinds) -> list[Path]:
                   "tools": ["*"], "includeMcpJson": True}
         path.write_text(json.dumps(worker, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         written.append(path)
+        path = target / ".kiro" / "agents" / "codd-graph.json"
+        worker = {"name": "codd-graph", "description": GRAPH_AGENT_DESCRIPTION, "prompt": graph_prompt,
+                  "tools": ["*"], "includeMcpJson": True}
+        path.write_text(json.dumps(worker, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        written.append(path)
     if "copilot" in kinds:
         path = target / ".github" / "agents" / "codd.agent.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"---\nname: codd\ndescription: {AGENT_DESCRIPTION}\nagents: [codd-apply]\n---\n\n{prompt}",
-                        encoding="utf-8")
+        path.write_text(f"---\nname: codd\ndescription: {AGENT_DESCRIPTION}\nagents: [codd-apply, codd-graph]\n---\n\n"
+                        f"{prompt}", encoding="utf-8")
         written.append(path)
         path = target / ".github" / "agents" / "codd-apply.agent.md"
         path.write_text(f"---\nname: codd-apply\ndescription: {APPLY_AGENT_DESCRIPTION}\nuser-invocable: false\n---\n\n"
                         f"{apply_prompt}", encoding="utf-8")
+        written.append(path)
+        path = target / ".github" / "agents" / "codd-graph.agent.md"
+        path.write_text(f"---\nname: codd-graph\ndescription: {GRAPH_AGENT_DESCRIPTION}\nuser-invocable: false\n---\n\n"
+                        f"{graph_prompt}", encoding="utf-8")
         written.append(path)
     return written
 
