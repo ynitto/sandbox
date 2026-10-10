@@ -45,7 +45,8 @@ out_dir="${{GRAPHIFY_OUT:-graphify-out}}"
 mkdir -p "$out_dir"
 echo "$1" > "$out_dir/manifest.json"
 case "$1" in
-  update) echo '{{}}' > "$out_dir/graph.json" ;;
+  update) if [ -f "{fixtures}/$(basename "$PWD").json" ]; then cp "{fixtures}/$(basename "$PWD").json" "$out_dir/graph.json";
+          else echo '{{}}' > "$out_dir/graph.json"; fi ;;
   query) echo "NODE $2 [src=docs/api.md loc=L3]" ;;
   affected) echo "Affected nodes for $2"; echo "- use() [calls] src/use.py:L4" ;;
 esac
@@ -233,7 +234,7 @@ class CoddTest(unittest.TestCase):
 
     def use_graphify_stub(self) -> None:
         stub = self.bin / "graphify"
-        stub.write_text(GRAPHIFY_STUB.format(log=self.log), encoding="utf-8")
+        stub.write_text(GRAPHIFY_STUB.format(log=self.log, fixtures=self.tmp / "graphs"), encoding="utf-8")
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
 
     def calls(self) -> list[str]:
@@ -363,6 +364,217 @@ class CoddTest(unittest.TestCase):
         self.assertIn("graphify: off", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
         self.assertEqual(self.calls(), [])
 
+    # ------------------------------------------------------------ グラフで影響を測る（必須・要判断・参考）
+
+    def write_graphs(self) -> None:
+        """graphify update のスタブが写すグラフ。自分: hello ← greet ← wrap（構文）と、文書から読み取ったつながり。
+        参照先: docs/guide.md の用語が hello に関係する（推定 0.9）。どちらのファイルも hello とは書いていない。"""
+        commit(self.impl, {"src/greet.py": "from app import hello\n\n\ndef greet():\n    return hello()\n",
+                           "src/wrap.py": "from greet import greet\n\n\ndef wrap():\n    return greet()\n",
+                           "README.txt": "挨拶の流れの説明。\n", "CHANGES.txt": "変更の記録。\n"}, "callers")
+        commit(self.design, {"docs/guide.md": "# 手引き\n\n挨拶の手順。\n"}, "guide")
+        sem = "codd-semantic"
+        impl = {"nodes": [
+            {"id": "app_hello", "label": "hello()", "source_file": "src/app.py", "source_location": "L1", "_origin": "ast"},
+            {"id": "greet_greet", "label": "greet()", "source_file": "src/greet.py", "source_location": "L4", "_origin": "ast"},
+            {"id": "wrap_wrap", "label": "wrap()", "source_file": "src/wrap.py", "source_location": "L4", "_origin": "ast"},
+            {"id": f"{sem}:README.txt:flow", "label": "挨拶の流れ", "file_type": "concept", "source_file": "README.txt",
+             "source_location": "L1", "_origin": sem},
+            {"id": f"{sem}:CHANGES.txt:log", "label": "変更の記録", "file_type": "concept", "source_file": "CHANGES.txt",
+             "source_location": "L1", "_origin": sem}],
+            "links": [
+            {"source": "greet_greet", "target": "app_hello", "relation": "calls", "confidence": "EXTRACTED",
+             "source_file": "src/greet.py", "source_location": "L5", "_origin": "ast"},
+            {"source": "wrap_wrap", "target": "greet_greet", "relation": "calls", "confidence": "EXTRACTED",
+             "source_file": "src/wrap.py", "source_location": "L5", "_origin": "ast"},
+            {"source": f"{sem}:README.txt:flow", "target": "app_hello", "relation": "conceptually_related_to",
+             "confidence": "INFERRED", "confidence_score": 0.9, "source_file": "README.txt", "_origin": sem},
+            {"source": f"{sem}:CHANGES.txt:log", "target": "app_hello", "relation": "conceptually_related_to",
+             "confidence": "INFERRED", "confidence_score": 0.6, "source_file": "CHANGES.txt", "_origin": sem}]}
+        design = {"nodes": [
+            {"id": f"{sem}:docs/guide.md:ref:hello", "label": "hello", "source_file": "docs/guide.md", "_mention": True,
+             "_origin": sem},
+            {"id": f"{sem}:docs/guide.md:steps", "label": "挨拶の手順", "file_type": "concept",
+             "source_file": "docs/guide.md", "source_location": "L3", "_origin": sem}],
+            "links": [
+            {"source": f"{sem}:docs/guide.md:steps", "target": f"{sem}:docs/guide.md:ref:hello",
+             "relation": "conceptually_related_to", "confidence": "INFERRED", "confidence_score": 0.9,
+             "source_file": "docs/guide.md", "source_location": "L3", "_origin": sem}]}
+        (self.tmp / "graphs").mkdir(exist_ok=True)
+        for name, graph in (("impl", impl), ("design", design)):
+            (self.tmp / "graphs" / f"{name}.json").write_text(json.dumps(graph, ensure_ascii=False), encoding="utf-8")
+
+    def test_graph_hits_are_split_by_how_sure_they_are(self) -> None:
+        self.use_graphify_stub()
+        self.write_graphs()
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        plan = (self.impl / PLAN).read_text(encoding="utf-8")
+        # 必須: 構文で 2 歩先（wrap.py は hello と書いていない）
+        self.assertIn("- src/wrap.py — 未判断（グラフで `hello` につながる（calls））", plan)
+        # 要判断: 推定 0.9 で 1 歩。自分のファイルと、別のリポジトリの同じ名前の言及からたどった参照先の文書
+        self.assertIn("- README.txt — 未判断（意味のつながり（推定 0.90・conceptually_related_to）: 「挨拶の流れ」と `hello`）",
+                      plan)
+        self.assertIn("未判断: docs/guide.md:3（意味のつながり（推定 0.90・conceptually_related_to）: 「挨拶の手順」と `hello`）",
+                      plan)
+        # 参考: 弱い推定は計画に出さず、測った結果のファイルにだけ残す
+        self.assertNotIn("CHANGES.txt", plan)
+        report = (self.impl / ".codd/impact.md").read_text(encoding="utf-8")
+        self.assertIn("#### 参考\n\n- CHANGES.txt:1 — 参考（推定 0.60", report)
+
+    def test_a_dismissed_guess_is_not_asked_again_until_the_file_changes(self) -> None:
+        self.use_graphify_stub()
+        self.write_graphs()
+        self.write_plan(PLAN_ALIGNED)
+        self.run_pa(self.impl, "verify-plan")
+        judged = PLAN_ALIGNED.replace(
+            "## 影響範囲\n\nなし\n",
+            "## 影響範囲\n\n- src/greet.py, src/wrap.py — 変更不要: 戻り値を使うだけ\n- README.txt — 変更不要: 流れの説明だけ\n"
+        ).replace("## 参照先のその他\n\nなし\n", "## 参照先のその他\n\n- 関係なし: docs/guide.md — 手順の説明だけ\n")
+        self.write_plan(judged, read=False)
+        self.assert_plan_ok()
+        dismissed = json.loads((self.impl / ".codd/graph/dismissed.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(dismissed), ["design|docs/guide.md", "|README.txt"])
+        # 次の回（別の計画）: 同じ語から同じファイルに当たっても、変わっていなければ要判断に出さない（必須のものは出す）
+        (self.impl / PLAN).unlink()
+        again = self.impl / ".plans/2026-10-02-0000-again.md"
+        again.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.run_pa(self.impl, "verify-plan")
+        plan = again.read_text(encoding="utf-8")
+        self.assertIn("- src/wrap.py — 未判断", plan)
+        self.assertNotIn("README.txt", plan)
+        self.assertNotIn("docs/guide.md", plan)
+        self.assertIn("前の計画で判断済み", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
+        # ファイルが変われば、また訊く
+        (self.impl / "README.txt").write_text("挨拶の流れの説明。書き足した。\n", encoding="utf-8")
+        again.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.run_pa(self.impl, "verify-plan")
+        self.assertIn("- README.txt — 未判断（意味のつながり", again.read_text(encoding="utf-8"))
+
+    def test_graphify_setting_must_be_auto_off_or_semantic(self) -> None:
+        for value, word in (({"semantic": 1}, "semantic は session か"), ({"semantic": "session", "x": 1}, "知らない項目"),
+                            ("yes", "auto か off")):
+            self.set_config(self.impl, graphify=value)
+            r = self.run_pa(self.impl, "show")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn(word, r.stderr)
+
+    def use_fake_graphify_python(self) -> None:
+        """graphify の Python の部品の代わり（意味の抽出の段取りを確かめる。LLM は呼ばない）。"""
+        pkg = self.tmp / "pylib" / "graphify"
+        pkg.mkdir(parents=True)
+        files = {
+            "__init__.py": "",
+            "detect.py": textwrap.dedent("""\
+                import os
+                from pathlib import Path
+                def detect(root, **kw):
+                    docs = []
+                    for d, dirs, names in os.walk(root):
+                        dirs[:] = [x for x in dirs if not x.startswith(".")]
+                        docs += [str(Path(d) / n) for n in names if n.endswith((".md", ".txt", ".yaml"))]
+                    return {"files": {"document": sorted(docs), "paper": []}}
+                """),
+            "cache.py": textwrap.dedent("""\
+                import hashlib, json, os
+                from pathlib import Path
+                def _path():
+                    return Path(os.environ["GRAPHIFY_OUT"]) / "cache" / "semantic.json"
+                def _load():
+                    try:
+                        return json.loads(_path().read_text(encoding="utf-8"))
+                    except OSError:
+                        return {}
+                def _rel(p, root):
+                    return Path(p).resolve().relative_to(Path(root).resolve()).as_posix()
+                def _hash(p):
+                    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+                def check_semantic_cache(files, root=".", prompt_file=None, **kw):
+                    cache, nodes, edges, uncached = _load(), [], [], []
+                    for f in files:
+                        hit = cache.get(_rel(f, root))
+                        if hit and hit["hash"] == _hash(f):
+                            nodes += hit["nodes"]; edges += hit["edges"]
+                        else:
+                            uncached.append(f)
+                    return nodes, edges, [], uncached
+                def save_semantic_cache(nodes, edges, hyperedges=None, root=".", allowed_source_files=(), **kw):
+                    cache = _load()
+                    for f in allowed_source_files:
+                        rel = _rel(f, root)
+                        cache[rel] = {"hash": _hash(f), "nodes": [n for n in nodes if n["source_file"] == rel],
+                                      "edges": [e for e in edges if e["source_file"] == rel]}
+                    _path().parent.mkdir(parents=True, exist_ok=True)
+                    _path().write_text(json.dumps(cache), encoding="utf-8")
+                    return len(allowed_source_files)
+                """),
+            "build.py": "def build_from_json(ext, root=None, **kw):\n    return {'nodes': ext['nodes'], 'links': ext['edges']}\n",
+            "cluster.py": "def cluster(G):\n    return {}\n",
+            "export.py": textwrap.dedent("""\
+                import json
+                def to_json(G, communities, path, force=False, built_at_commit=None, **kw):
+                    open(path, "w", encoding="utf-8").write(json.dumps(G))
+                    return True
+                """),
+        }
+        for name, body in files.items():
+            (pkg / name).write_text(body, encoding="utf-8")
+        (pkg / "skills/agents/references").mkdir(parents=True)
+        (pkg / "skills/agents/references/extraction-spec.md").write_text("# spec\n", encoding="utf-8")
+        patcher = mock.patch.dict(os.environ, {"PYTHONPATH": str(pkg.parent)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_graph_hands_documents_to_the_llm_in_chunks_and_merges_them(self) -> None:
+        self.use_graphify_stub()
+        self.use_fake_graphify_python()
+        commit(self.design, {"docs/notes.txt": "挨拶は朝だけ。\n"}, "notes")
+        self.set_config(self.impl, graphify={"semantic": "session"})
+        # 計画の検査は、この回にグラフを用意したかを確かめる
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("意味のグラフを、この回にまだ用意していません", r.stdout + r.stderr)
+
+        r = self.run_pa(self.impl, "graph")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("PENDING 意味の抽出が要る文書が 2 files（1 束）"), r.stdout)
+        self.assertIn("graph --chunk 束の名前", r.stdout)
+        r = self.run_pa(self.impl, "graph", "--chunk", "ref-design-1")
+        self.assertIn("- docs/api.md", r.stdout)
+        self.assertIn("- docs/notes.txt", r.stdout)
+        self.assertIn("extraction-spec.md", r.stdout)
+        out = self.impl / ".codd/graph/ref-design/semantic/ref-design-1.json"
+        self.assertIn(str(out), r.stdout)
+        self.assertFalse((self.design / "graphify-out").exists())   # 参照先に何も書かない
+
+        # 書かなかった・壊れた束は取り込まず、その束だけやり直させる
+        r = self.run_pa(self.impl, "graph", "--merge")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("- ref-design-1: JSON がありません", r.stdout)
+        out.write_text(json.dumps({"nodes": [
+            {"id": "morning", "label": "朝の挨拶", "file_type": "concept", "source_file": "docs/notes.txt"},
+            {"id": "h", "label": "hello", "file_type": "code", "source_file": ""},
+            {"id": "elsewhere", "label": "よそ", "source_file": "docs/other.md"}],
+            "edges": [{"source": "morning", "target": "h", "relation": "conceptually_related_to",
+                       "confidence": "INFERRED", "confidence_score": 0.9, "source_file": "docs/notes.txt"}]},
+            ensure_ascii=False), encoding="utf-8")
+        r = self.run_pa(self.impl, "graph", "--merge")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("OK graph"), r.stdout)
+        graph = json.loads((self.impl / ".codd/graph/ref-design/graph.json").read_text(encoding="utf-8"))
+        ids = {n["id"] for n in graph["nodes"]}
+        # 渡したファイルのノードだけを残し、よその名前は「言及」のノードにして、別のリポジトリの同じ名前とつなぐ
+        self.assertIn("codd-semantic:docs/notes.txt:morning", ids)
+        self.assertIn("codd-semantic:docs/notes.txt:ref:hello", ids)
+        self.assertNotIn("codd-semantic:docs/other.md:elsewhere", ids)
+        # 2 回目は、変わっていない文書を抜き出し直さない
+        self.assertTrue(self.run_pa(self.impl, "graph").stdout.startswith("OK graph"))
+
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("意味のグラフを", r.stdout + r.stderr)
+        self.assertIn("未判断: docs/notes.txt（意味のつながり（推定 0.90", (self.impl / PLAN).read_text(encoding="utf-8"))
+
     # ------------------------------------------------------------ 計画の検査
 
     def test_verify_plan_accepts_aligned_and_drift_plans(self) -> None:
@@ -438,7 +650,8 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         after = self.calls()[before:]
         self.assertFalse(any(c.startswith(f"{self.impl} update") for c in after), after)
-        self.assertTrue(any(" affected " in c for c in after), after)
+        # グラフは graphify を呼ばずに、変える前の graph.json を読んで辿る
+        self.assertIn("### グラフ（根拠の強さごと）", (self.impl / ".codd/impact-after.md").read_text(encoding="utf-8"))
 
     def test_without_a_test_command_show_and_report_say_tests_did_not_run(self) -> None:
         # test が無いと検査はテストを動かさずに通る。「通った」をテストまで通ったと読ませない。
@@ -1425,7 +1638,12 @@ class CoddTest(unittest.TestCase):
         self.assertIn("the response hit the length limit", copilot)
         self.assertIn("codd.py summary", copilot)
         # 変える段を渡すサブエージェント。モデルは書かない（呼び出し元と同じモデルで動かす）。
-        self.assertIn("agents: [codd-apply]", copilot)
+        self.assertIn("agents: [codd-apply, codd-graph]", copilot)
+        graph_worker = (self.impl / ".github/agents/codd-graph.agent.md").read_text(encoding="utf-8")
+        self.assertTrue(graph_worker.startswith("---\nname: codd-graph\n"))
+        self.assertIn("codd.py graph --chunk", graph_worker)
+        self.assertEqual(json.loads((self.impl / ".kiro/agents/codd-graph.json").read_text(encoding="utf-8"))["name"],
+                         "codd-graph")
         worker = (self.impl / ".github/agents/codd-apply.agent.md").read_text(encoding="utf-8")
         self.assertTrue(worker.startswith("---\nname: codd-apply\n"))
         self.assertIn("codd.py batch --worker", worker)

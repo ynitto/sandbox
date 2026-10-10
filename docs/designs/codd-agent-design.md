@@ -214,10 +214,9 @@ confirm は、計画を見せて利用者の答えを待つアクションであ
 | verify-apply（逆向き） | 自分の差分の名前のうち計画に無かったもの | 測った参照先のファイル ⊆ 計画が扱ったファイル ∪ 変えた参照先のファイル | `.codd/ref-impact-after.md` |
 
 - 自分の変更の影響も測る。参照先を変えない計画でも、関数の呼び出し元や同じ名前に触れる設計書を見落とさないため
-- 逆向き（参照先）は `git grep` だけで測る。graphify の `query` は関係の近いものまで広く拾うので、
-  「扱ったか」を問う検査には決定的な文字列の一致を使う。関係の無いファイルは「その他」に「関係なし: 理由」と根拠付きで書く
-- 測り方は graphify `affected`（依存している呼び出し元・参照元を深さ 2 までたどる）と `git grep --untracked`。
-  識別子は語単位（`-w`）で引き、`hello` で `helloWorld` を拾わない。1 回に測るファイルは 40 まで
+- 逆向き（参照先）も、文字列の一致と、自分と参照先を合わせたグラフ（§4.0）で測る。graphify の `query` は関係の近いものまで
+  広く拾うので検査には使わない。関係の無いファイルは「その他」に「関係なし: 理由」と根拠付きで書く
+- 文字列は `git grep --untracked` で引く。識別子は語単位（`-w`）で引き、`hello` で `helloWorld` を拾わない。1 回に測るファイルは 40 まで
 - 変えたあとに測り直すのは、参照先を計画より広く変えたときの影響を取りこぼさないため。計画時の語だけでは、
   計画に書かれなかった変更の影響が見えない
 - 「自分で変えたファイル」は、verify-plan が通ったときに控えた作業中ファイルの中身のハッシュと HEAD から比べる
@@ -230,6 +229,50 @@ confirm は、計画を見せて利用者の答えを待つアクションであ
   直していないファイルとして落ちた。そこで、理由の無い変更不要と、ほかの言い回し（「直さない」「対応不要」「影響なし」
   など）を verify-plan で書き直させる
   （apply で足すときは利用者に確かめる）
+
+### 4.0 グラフで測る（必須・要判断・参考）
+
+取りこぼしを減らしたいがノイズは増やしたくない、という二つを両立させるため、**拾う範囲は広げ、見せる量は根拠の強さで絞る**。
+graphify の `affected` を呼ぶのをやめ、codd.py が `graph.json` を読んで自分で辿る（`GraphView`）。どの候補にも「なぜ拾ったか」を付ける。
+
+| 段 | 辺 | 扱い |
+|---|---|---|
+| 必須（sure） | AST の辺（`_origin=ast`）と、LLM の抽出でも `EXTRACTED`（文書に書いてある）の辺。変わる名前から 2 歩まで、参照先は 1 歩まで | 今までの `affected` と同じ。計画が扱うまで通さない |
+| 要判断（ask） | LLM が推定した辺（`INFERRED`）のうち `confidence_score` ≥ `ASK_SCORE`（0.85）で、`semantically_similar_to` でないもの。変わる名前のノードから 1 歩 | 必須と同じく、計画が扱うまで通さない（未判断として書き足され、変更案か「変更不要: 理由」の 1 行が要る）。理由の文字列は辺の relation と score |
+| 参考（note） | それより弱い推定・`AMBIGUOUS`・似ているだけ・推定の 2 歩目・参照先の 2 歩目 | 検査には出さない。`.codd/impact*.md` の「グラフ（根拠の強さごと）」にだけ残す |
+
+- 辺の向き: AST の影響の辺（`calls`・`imports` など `AFFECT_RELATIONS`）は依存している側へだけ辿る。LLM の辺は向きが当てにならないので両向き
+- 種（辿り始め）: 語に一致するノードのうち、計画に挙げたファイル（verify-apply では変えたファイル）にあるものを優先する。
+  無いときだけ全ノードから取る。verify-apply では、変えた文書の行に重なる見出し（`source_location`）も種にする。
+  一般的な語が関係の無いノードに当たって広がるのを防ぐ
+- 推定の辺は最後の 1 歩だけ。推定 → 推定で広げない
+- 次数が `HUB_DEGREE`（30）以上のノード（README・用語集・共通の util）は候補にするが通り抜けない
+- 自分と参照先のグラフは、同じ識別子のラベル（関数・クラス）を持つノードを費用 0 でつなぐ。graphify の `global_graph` は
+  `~/.graphify/` に書くので使わない。LLM の抽出で束の外の名前を指した辺は、既存のノードにラベルで解決し、
+  解決できなければ「言及」のノード（`_mention`）として残す。言及のノードは橋渡しにだけ使い、それ自体は候補にしない
+- 一度「変更不要」「関係なし」とした要判断のファイルは `.codd/graph/dismissed.json` に（語, ファイル, 中身のハッシュ）で控え、
+  ファイルが変わるまで参考に下げる。計画の記録から読み戻す案もあったが、`compact_plan` が「変更不要」の行を記録から消すため、
+  検査が通る直前（`compact_plan` の前）に控える
+- 0.85 と 30 は仮の値。シナリオ `tests/scenarios/semantic-graph.md` で取りこぼしと要判断の数を測って決め直す
+
+### 4.0.1 文書の意味をグラフに入れる（`graphify.semantic`）
+
+`graphify update` は AST と Markdown の見出しだけで、`.txt`・`.yaml`・PDF などは入らない。graphify スキルは出力先を
+`graphify-out/` に決め打ちしていて参照先に書き込むうえ、手順が長く長いセッションで崩れやすい。そこで、LLM が要る
+「文書を読んで決まった形の JSON に書く」ところだけをエージェントに頼み、残りは codd.py が graphify の Python API で行う。
+
+- `codd.py graph`: 自分と参照先ごとに、`detect` で文書（`document`・`paper`）を洗い出し、`check_semantic_cache` で
+  変わっていないものを除く。残りを束（サブエージェントなら 20、自分で読むなら 5 ファイル）に分け、`.codd/graph/semantic/` に
+  控えて `PENDING` を返す。1 回に読むのは `max_files`（既定 100）まで
+- `codd.py graph --chunk 名前`: 読むファイル・graphify 同梱の `extraction-spec.md`・書き出し先を出す。`codd-graph` はこれだけを読んで JSON を書く
+- `codd.py graph --merge`: 束ごとに、渡したファイルのノードだけを残し（id は `codd-semantic:<ファイル>:<id>`）、
+  `save_semantic_cache` に保存し、前の `_origin=codd-semantic` を除いてキャッシュ全体から入れ直し、`build`・`cluster`・`to_json` で書く。
+  壊れた束・足りない束はその束だけ出し直させる
+- graphify の Python は、`graphify` の shebang・同じフォルダの python・codd.py の python の順に `import graphify` で確かめて選ぶ。
+  ヘルパーは `GRAPHIFY_OUT` の下で標準入力の JSON を受けて動く
+- `update . --force` は意味のノードを残す（graphify 0.9.84 で確かめた）。消えた文書のノードは消える
+- `semantic` がバックエンド名なら、`update` の代わりに `graphify extract . --backend B [--model M]` を codd.py が呼ぶ（リポジトリ全体）
+- `session` のとき、この回の `graph` が `OK` を出していなければ verify-plan が `GRAPH_NOT_READY` で止める（AUTO でやり直す）
 
 ### 4.1 パスのつながり（codd-gate から取り込んだもの）
 
@@ -387,7 +430,7 @@ verify-apply が確かめる印は、変えた・変える文書のものと、�
 分かり、足した名前は git grep が拾う。作り直すと、訊かずにやり直すたびに全体の作り直し（最長 900 秒）を待たせる。
 
 グラフは `GRAPHIFY_OUT` で自分の `.codd/graph/own/` と `.codd/graph/ref-<名前>/` に書く。参照先の中に `graphify-out/` を作らない。
-`update` は AST と見出しの抽出だけで LLM を使わない。設計書の意味的な抽出（`graphify extract`）は重いので自動では回さない。
+`update` は AST と見出しの抽出だけで LLM を使わない。文書の意味の抽出は、設定したときだけ plan の初めに回す（§4.0.1）。
 
 常駐の監視（`graphify watch`）や git hook は入れない。使うときに確かめて作り直す方が、仕組みが少なく、
 参照先に何も仕込まずに済む。
