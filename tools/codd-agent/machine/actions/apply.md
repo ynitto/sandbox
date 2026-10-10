@@ -9,8 +9,10 @@
 
    ```bash
    python3 .statemachine/codd/codd.py batch
-   python3 .statemachine/codd/codd.py show --phase apply
    ```
+
+   `batch` が「サブエージェントに渡す」と示したら、その指示どおりに渡し、返った第 1 行を出力にして終えます（以下は行いません）。
+   示さなければ、続けて `python3 .statemachine/codd/codd.py show --phase apply` を実行し、以下のとおり自分で変えます。
 
    **計画のファイルが多いときは、段に分けて変えます。** `batch` が示した今の段のファイルだけを、計画の該当する項目の
    とおりに変え終えてください（以下の 1〜5 も、今の段に入っているファイルについて行います）。前の段は変え終えています。
