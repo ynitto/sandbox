@@ -20,7 +20,7 @@ test('Electron の外で renderPreview を呼ぶと NO_ELECTRON', async () => {
   await assert.rejects(renderPreview(Buffer.alloc(0)), { code: 'NO_ELECTRON' });
 });
 
-test('実機: docx / xlsx / pptx を同時に PNG にし、JPEG でも出せる', (t) => {
+test('実機: docx / xlsx / pptx / pdf を同時に PNG にし、JPEG でも出せる', (t) => {
   const binary = electronBinary();
   if (!binary) { t.skip('electron のバイナリが無い'); return; }
   if (process.platform === 'linux' && !process.env.DISPLAY) { t.skip('表示先が無い（xvfb-run で動かす）'); return; }
@@ -43,4 +43,9 @@ test('実機: docx / xlsx / pptx を同時に PNG にし、JPEG でも出せる'
   assert.strictEqual(r.pptx.corner, '#102030'); // マスターの背景が描かれている
   assert.strictEqual(r.docx.corner, '#FFFFFF');
   assert.deepStrictEqual(r.jpeg, { mime: 'image/jpeg', width: 320, height: 180, soi: 'ffd8' });
+  assert.deepStrictEqual(r.pdf, [
+    { type: 'pdf', page: 0, width: 400, height: 200, center: '#FF0000' },
+    { type: 'pdf', page: 1, width: 300, height: 600, center: '#0000FF' },
+  ]);
+  assert.deepStrictEqual(r.pdfErrors, ['BROKEN']);
 });

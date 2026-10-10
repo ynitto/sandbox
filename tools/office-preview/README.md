@@ -1,13 +1,15 @@
 # office-preview
 
-Word（docx）・Excel（xlsx）・PowerPoint（pptx）のファイルから、プレビュー用の画像（PNG / JPEG）を作るモジュールです。
+Word（docx）・Excel（xlsx）・PowerPoint（pptx）・PDF のファイルから、プレビュー用の画像（PNG / JPEG）を作るモジュールです。
 Electron アプリの main プロセスから呼び出します。実行時に追加のパッケージは要りません。Office も LibreOffice も使いません。
+PDF は Electron に入っている PDF ビューアで描きます。
 
 | 種類 | 画像になる範囲 | 既定の大きさ（CSS px） |
 |---|---|---|
 | docx | 1 ページ目 | 用紙の大きさ（A4 縦なら 794×1123） |
 | xlsx | Excel で開いたときに表示されるシートの左上 | 1024×640 |
 | pptx | 1 枚目のスライド（`slide` で選べる） | スライドの大きさ（16:9 なら 1280×720） |
+| pdf | 1 ページ目（`page` で選べる） | ページの大きさ（1 pt = 96/72 px。読めなければ A4） |
 
 同じ系統の docm・dotx・xlsm・xltx・pptm・potx・ppsx も読めます。
 
@@ -44,20 +46,22 @@ app.whenReady().then(() => {
 | `quality` | JPEG の品質（0〜100） | 85 |
 | `slide` | pptx の何枚目か（0 始まり） | 0 |
 | `sheet` | xlsx のシート（0 始まりの番号か、シート名） | 開いたときに表示されるシート |
+| `page` | PDF の何ページ目か（0 始まり） | 0 |
 | `viewport` | xlsx で切り取る大きさ `{ width, height }`（CSS px） | `{ width: 1024, height: 640 }` |
 | `headers` | xlsx の列見出し（A, B, …）と行番号を描くか | `true` |
 | `timeoutMs` | これを過ぎたら `TIMEOUT` で止める | 20000 |
 
-返り値には、pptx なら `slide` と `slideCount`、xlsx なら `sheet`（シート名）も入ります。
+返り値には、pptx なら `slide` と `slideCount`、xlsx なら `sheet`（シート名）、PDF なら `page` も入ります。
+PDF の出力の高さは、描いたページの縦横比で決まります。
 
 `app` の準備ができる前に呼ぶと、準備ができるまで待ちます。同時に描くのは既定で 2 件までで、残りは順番を待ちます
 （`setConcurrency(n)` で変えられます）。
 
 ### そのほかの関数
 
-- `toHtml(input, options)` … 画像にする前の HTML を返します（Electron がなくても動きます）。見た目を調べるときに使います。
+- `toHtml(input, options)` … 画像にする前の HTML を返します（Electron がなくても動きます）。見た目を調べるときに使います。PDF には使えません。
 - `readEmbeddedThumbnail(input)` … 保存時に「プレビューの画像を保存する」を選んだファイルに入っている
-  サムネイルを `{ mime, data }` で返します。無ければ `null` です。小さい画像ですが、描くより速く取り出せます。
+  サムネイルを `{ mime, data }` で返します。無ければ `null` です（PDF も `null`）。小さい画像ですが、描くより速く取り出せます。
 - `supports(path)` … 拡張子が対象かどうか。
 
 ### 失敗したとき
@@ -66,9 +70,9 @@ app.whenReady().then(() => {
 
 | `code` | 意味 |
 |---|---|
-| `ENCRYPTED_OR_LEGACY` | パスワード付き、または古い形式（.doc / .xls / .ppt） |
+| `ENCRYPTED_OR_LEGACY` | パスワード付き（開くのにパスワードが要る PDF を含む）、または古い形式（.doc / .xls / .ppt） |
 | `NOT_ZIP` / `BROKEN` | ファイルが壊れている |
-| `UNSUPPORTED` | docx / xlsx / pptx ではない |
+| `UNSUPPORTED` | docx / xlsx / pptx / pdf ではない |
 | `TOO_LARGE` | ファイル（200 MB まで）や中身の展開後の大きさが上限を超えた |
 | `TIMEOUT` | 時間内に描き終わらなかった |
 | `NO_ELECTRON` | Electron の main プロセスの外で `renderPreview` を呼んだ |
@@ -85,11 +89,14 @@ Office と同じ見た目にはなりません。何のファイルかが一目�
 
 フォントは文書の指定どおりに頼みますが、その PC に無いフォントは游ゴシック・メイリオなどで代わりに描きます。
 
+PDF は Electron（Chromium）の PDF ビューアが描くので、見た目は Chrome で開いたときと同じです。注釈やフォームの入力値も描かれます。
+
 ## 安全のために
 
 文書は信頼できない入力として扱います。
 
-- 描画は専用の隠しウィンドウで行い、スクリプトを止め、Node の機能も渡しません。
+- 描画は専用の隠しウィンドウで行い、Node の機能は渡しません。Office の文書を描くウィンドウではスクリプトも止めます。
+  PDF のウィンドウだけは、ビューア自身がスクリプトで動くので止められません（Chrome で PDF を開くのと同じ扱いです）。
 - 外への通信はすべて止めます。画像は文書の中のものだけを使います。
 - ZIP の展開後の大きさに上限を設けています（部品 1 つで 64 MB、全体で 256 MB）。
 - XML の外部実体（DTD）は読みません。

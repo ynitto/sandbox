@@ -1,10 +1,10 @@
 'use strict';
 
-// electron.test.js から Electron で起動される。3 形式を同時に撮り、結果を JSON で標準出力に書く。
+// electron.test.js から Electron で起動される。4 形式を撮り、結果を JSON で標準出力に書く。
 
 const { app, nativeImage } = require('electron');
 const { renderPreview } = require('../src');
-const { docx, xlsx, pptx } = require('./helpers');
+const { docx, xlsx, pptx, pdf } = require('./helpers');
 
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
@@ -38,6 +38,14 @@ app.whenReady().then(async () => {
         corner: pixel(r.data, 2, r.height - 3),
       };
     }));
+    // PDF は Electron の PDF ビューアで描く。1 ページ目は横長の赤、2 ページ目は縦長の青
+    const doc = pdf([{ width: 200, height: 100, rgb: [1, 0, 0] }, { width: 100, height: 200, rgb: [0, 0, 1] }]);
+    const [p1, p2] = await Promise.all([renderPreview(doc, { width: 400 }), renderPreview(doc, { width: 300, page: 1 })]);
+    out.pdf = [p1, p2].map((r) => ({ type: r.type, page: r.page, width: r.width, height: r.height, center: pixel(r.data, Math.floor(r.width / 2), Math.floor(r.height / 2)) }));
+    out.pdfErrors = [];
+    for (const bad of [Buffer.from(`%PDF-1.7\n${'x'.repeat(500)}`)]) {
+      try { await renderPreview(bad, { width: 200 }); out.pdfErrors.push('no error'); } catch (err) { out.pdfErrors.push(err.code); }
+    }
     const jpeg = await renderPreview(inputs.pptx, { scale: 0.25, format: 'jpeg' });
     out.jpeg = { mime: jpeg.mime, width: jpeg.width, height: jpeg.height, soi: jpeg.data.subarray(0, 2).toString('hex') };
     process.stdout.write(`RESULT ${JSON.stringify(out)}\n`);

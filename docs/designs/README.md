@@ -48,7 +48,7 @@
 | [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md) | GitLab Issue＋Moltbook リポジトリでエージェント向け SNS を構築する moltbook-use の確定版設計。 |
 | [`node-federation-design.md`](./node-federation-design.md) | ノードのローカル改善を中央へ集約する pull/push 設計。自ら実装済み・仕様リファレンスと明記。 |
 | [`plan-a-local-gitlab-design.md`](./plan-a-local-gitlab-design.md) | ローカル GitLab CE 作業インスタンス（案A）の設計・運用正典。 |
-| [`office-preview-design.md`](./office-preview-design.md) | docx / xlsx / pptx の 1 ページ目・1 シート・1 枚目を、Office や LibreOffice なしで Electron の隠しウィンドウに描いて画像にするモジュールの設計。ZIP と XML を自前で読み、スタイル・レイアウト・マスターの継承を HTML に組み直す。文書を信頼しない前提の描画の閉じ込め方もここにある。 |
+| [`office-preview-design.md`](./office-preview-design.md) | docx / xlsx / pptx / pdf の 1 ページ目・1 シート・1 枚目を、Office や LibreOffice なしで Electron の隠しウィンドウに描いて画像にするモジュールの設計（PDF は Electron の PDF ビューアに描かせて切り出す）。ZIP と XML を自前で読み、スタイル・レイアウト・マスターの継承を HTML に組み直す。文書を信頼しない前提の描画の閉じ込め方もここにある。 |
 
 ### 4. 歴史的・比較検討
 

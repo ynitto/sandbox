@@ -17,7 +17,7 @@ test('種類は拡張子でなく中身で決め、対応していない ZIP は
   assert.strictEqual(r.type, 'docx');
   await assert.rejects(toHtml(makeZip({ 'hello.txt': 'x' })), { code: 'UNSUPPORTED' });
   assert.ok(supports('a.PPTX') && supports('b.xlsm') && supports('c.docx'));
-  assert.ok(!supports('d.doc') && !supports('e.pdf'));
+  assert.ok(!supports('d.doc') && !supports('e.txt'));
 });
 
 test('出力の HTML は CSP でスクリプトと外部の読み込みを止め、本文は文字として逃がす', async () => {

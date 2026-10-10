@@ -1,6 +1,6 @@
 # office-preview 設計
 
-docx / xlsx / pptx のプレビュー画像を、Electron の main プロセスで外部依存なしに作るモジュール
+docx / xlsx / pptx / pdf のプレビュー画像を、Electron の main プロセスで外部依存なしに作るモジュール
 （`tools/office-preview/`）の設計。使い方と対応範囲は [README](../../tools/office-preview/README.md) にある。
 
 ## 1. 方針
@@ -71,6 +71,26 @@ docx / xlsx / pptx のプレビュー画像を、Electron の main プロセス�
   `objectBoundingBox` だと何も描かれない。
 - SmartArt は PowerPoint が保存した描画結果（diagramDrawing）を、枠の位置へずらして描く。
 
+### 3.4 pdf
+
+PDF の描画（PDFium）を自前で持つのは割に合わないので、Electron に組み込みの PDF ビューアに描かせる。
+ビューアは画像を返す API を持たないので、表示した画面を撮ってページを切り出す。
+
+- URL の断片で表示を決める: `#page=N&toolbar=0&navpanes=0&view=Fit`。スクロールバーは消せない。
+- 窓はページより十分横長に取る（ページの大きさが読めれば幅 1.5 倍、読めなければ A4 の高さで幅 3 倍）。
+  ビューアはページを高さで合わせて中央に置くので、左右に必ず背景が残る。窓の形でビューアの余白の付け方が
+  変わり、背景の色の読み取りやページの判定が揺れたため、この配置に固定した。
+- ページの切り出し（`findPageBox`）: 背景の色は左端の列でいちばん多い色（ビューアの版で変わりうるので決め打ちしない）。
+  背景より最大 20 段ほど暗い無彩色はページの影とみなす。右端 24 px はスクロールバー。背景と違う画素が幅の 15% 以上
+  並ぶ行のうち、上から最初のかたまりを 1 ページ目とする（下に次のページが見えていても切り離す）。
+- 描き終わりの判定: ビューアは粗い絵を先に出してから細かく描き直すので、続けて撮った 2 枚のページ部分が
+  同じになるまで撮り直す。
+- 失敗の見分け: パスワードの入力や読み込み失敗は、ビューアが角の丸い案内の箱を出す。ページの四隅は角ばっているので、
+  隅が背景の色なら案内とみなし、3 回続いたら止める。ファイルに `/Encrypt` があれば `ENCRYPTED_OR_LEGACY`、
+  無ければ `BROKEN`。8 秒たってもページが出なければ同じく止める。
+- ページの大きさは最初に見つかった `/MediaBox`（と `/Rotate`）から推す。圧縮されたオブジェクトの中にしかない PDF では
+  読めないので、そのときと 2 ページ目以降は大きさを知らないものとして窓を取る。出力の高さは切り出したページの縦横比で決める。
+
 ## 4. 安全
 
 文書は信頼できない入力として扱う。
@@ -78,7 +98,7 @@ docx / xlsx / pptx のプレビュー画像を、Electron の main プロセス�
 | 脅威 | 対策 |
 |---|---|
 | 文書の文字列が HTML として解釈される | 本文はすべて `escapeHtml`。色は 6 桁の 16 進（`safeHex`）か、RGB に直して書き直したものだけを CSS に入れる。数値は `Number` を通す。フォント名から引用符などを取り除く |
-| 描画中のスクリプト・外部への通信 | `javascript: false`・`sandbox`・Node 統合なし。専用のセッションで、自分が書いた一時ファイルと `data:` 以外の読み込みを止める。HTML 側にも CSP（`default-src 'none'; img-src data:`）を入れる |
+| 描画中のスクリプト・外部への通信 | `javascript: false`・`sandbox`・Node 統合なし。専用のセッションで、自分が書いた一時ファイル・`data:`・PDF ビューアの部品（`chrome-extension:` / `chrome:`）以外の読み込みを止める。HTML 側にも CSP（`default-src 'none'; img-src data:`）を入れる。PDF のウィンドウはビューアがスクリプトで動くので `javascript` を止められないが、`sandbox` と Node 統合なし・外への通信の遮断は同じ（Chrome で PDF を開くのと同じ水準） |
 | ZIP 爆弾 | 部品ごと 64 MB・合計 256 MB を上限に展開する（`inflateRawSync` の `maxOutputLength`） |
 | XML の外部実体（XXE） | DTD を読み飛ばし、実体は 5 つの定義済みと数値参照だけを展開する |
 | 描画が終わらない | 時間切れでウィンドウを壊す。同時に開くウィンドウは既定 2 つまで |
@@ -87,7 +107,10 @@ docx / xlsx / pptx のプレビュー画像を、Electron の main プロセス�
 
 - `test/convert.test.js` は、テストの中で組み立てた最小の docx / xlsx / pptx（`test/helpers.js`）を HTML にして、
   継承・書式・表示形式・打ち切りを確かめる。バイナリのテスト用ファイルはリポジトリに置かない。
-- `test/electron.test.js` は Electron を起動して 3 形式を同時に PNG にし、大きさと画素の色を確かめる。
+- `test/pdf.test.js` は、ビューアの画面を模した画像でページの切り出し（影・スクロールバー・次のページ・黒いページ・
+  角の丸い案内）を確かめる。
+- `test/electron.test.js` は Electron を起動して 4 形式を同時に PNG にし、大きさと画素の色を確かめる。PDF はテストの中で
+  組み立てた 2 ページ（横長の赤・縦長の青）を描き、壊れた PDF が `BROKEN` になることも見る。
   electron のバイナリか画面が無い環境（CI）では飛ばす。
 - 見た目は、python-docx / openpyxl / python-pptx で作ったファイルと、リポジトリにある実際のスライド
   （`.github/skills/presenter/references/examples/*.pptx`、49 枚）を、LibreOffice で PDF にしたものと並べて比べた。

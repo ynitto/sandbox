@@ -7,10 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### office-preview: docx / xlsx / pptx のプレビュー画像を作るモジュールを追加（office-preview 0.1.0）
+### office-preview: docx / xlsx / pptx / pdf のプレビュー画像を作るモジュールを追加（office-preview 0.1.0）
 
 - Electron の main プロセスから `renderPreview(ファイル, { width })` を呼ぶと、docx の 1 ページ目・xlsx の開いたときのシート・
-  pptx の 1 枚目を PNG（または JPEG）で返す。Office も LibreOffice も要らず、実行時の依存も無い
+  pptx の 1 枚目・PDF の 1 ページ目を PNG（または JPEG）で返す。Office も LibreOffice も要らず、実行時の依存も無い
+- PDF は Electron に入っている PDF ビューアで描いて、ページだけを切り出す。パスワード付きと壊れた PDF は見分けて止める
 - スタイル・段落番号・行グリッド（docx）、表示形式・結合・列幅（xlsx）、レイアウトとマスターの継承・テーマ・図形・表（pptx）を描く
 - 文書は信頼しない前提で、スクリプトを止めた隠しウィンドウで描き、外への通信を止める。ZIP の展開量に上限を設ける
 
