@@ -9,6 +9,8 @@
 // 通知を押したら、その会話を開く（`notify:open`）。Windows ではタスクバーも点滅させる
 // （`flashFrame`）。前面にあるときは画面そのものが答えを出しているので、何も出さない。
 
+const { headChars } = require('./text');
+
 // 会話・タスクの状態 → 通知に出す語。renderer の PHASE_LABEL と同じ言い回しにそろえる。
 const LABEL = {
   attention: '確認待ち',
@@ -26,7 +28,7 @@ function notificationText({ kind, name } = {}) {
   const label = LABEL[String(kind || '')];
   const title = String(name || '').trim();
   if (!label || !title) return '';
-  return `${title.slice(0, MAX_NAME_CHARS)} · ${label}`;
+  return `${headChars(title, MAX_NAME_CHARS)} · ${label}`;
 }
 
 // ターンの結果・タスクの実行結果を、通知の種類へ写す。

@@ -36,4 +36,16 @@ function ereToRegExp(ere, flags = 'im') {
   try { return new RegExp(src, flags); } catch { return null; }
 }
 
-module.exports = { stripAnsi, cleanAnswer, lineEmitter, ereToRegExp };
+// 先頭から n 文字（コードポイント単位）。絵文字などのサロゲートペアの途中で切らない。
+function headChars(text, n) {
+  const s = String(text == null ? '' : text);
+  return s.length <= n ? s : Array.from(s).slice(0, n).join('');
+}
+
+// 末尾から n 文字（コードポイント単位）。
+function tailChars(text, n) {
+  const s = String(text == null ? '' : text);
+  return s.length <= n ? s : Array.from(s).slice(-n).join('');
+}
+
+module.exports = { headChars, tailChars, stripAnsi, cleanAnswer, lineEmitter, ereToRegExp };
