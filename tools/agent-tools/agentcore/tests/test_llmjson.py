@@ -17,6 +17,10 @@ class ExtractJsonTests(unittest.TestCase):
         self.assertEqual(llmjson.extract_json('{"a": 1}'), {"a": 1})
         self.assertEqual(llmjson.extract_json('["a", "b"]'), ["a", "b"])
 
+    def test_plain_double_encoded_json_is_unwrapped_once(self):
+        self.assertEqual(llmjson.extract_json('"{\\\"a\\\": 1}"'), {"a": 1})
+        self.assertEqual(llmjson.extract_json('"[1, 2]"'), [1, 2])
+
     def test_fence_survives_trailing_prose_with_brackets(self):
         """フェンスの後ろに角括弧を含む散文があっても壊れない（map の実測の形）。"""
         text = ('成果物を提示します。\n\n```json\n["概要", "手順", "補足"]\n```\n\n'
