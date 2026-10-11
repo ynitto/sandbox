@@ -1136,7 +1136,7 @@ class ChecklistTests(Base):
                 ws[f"{c}11"].fill = BAND_FILL   # 見出しの帯。右の空欄は記入枠ではない
         tpl = self.checklist(build)
         sheet = next(s for s in xt.analyze(tpl)["sheets"] if s["name"] == "設計書")
-        self.assertEqual(sheet["cells"], {"C3": "文書番号", "C4": "版", "C5": "作成日", "C6": "OS", "C7": "備考", "A9": "A9"})
+        self.assertEqual(sheet["cells"], {"C3": "文書.文書番号", "C4": "文書.版", "C5": "文書.作成日", "C6": "OS", "C7": "備考", "A9": "A9"})
         self.assertEqual(sheet["keep"], ["A1", "A3:A7", "B9", "A11"])
 
     def test_date_code_recognizes_elapsed_time_formats(self):
@@ -1244,11 +1244,11 @@ class ChecklistTests(Base):
         self.assertNotIn("B", cols)                      # 見出しも値も無い余白の列
         self.assertEqual(cols["D"], {"header": "単位", "keep": True, "_sample": "式", "_format": "General"})
         self.assertTrue(cols["F"]["clear"])              # 確認印は人が押す
-        self.assertEqual(sheet["cells"], {"B3": "宛先"})  # 担当印・承認の欄は入れない
+        self.assertEqual(sheet["cells"], {"B3": "文書.宛先"})  # 担当印・承認の欄は入れない
         self.assertEqual(sheet["clear"], ["B4"])
         self.assertEqual(xt.skeleton_data(d)["items"], [{"品名": None, "数量": None, "単価": None}])
         out = os.path.join(self.dir, "o.xlsx")
-        xt.render(tpl, d, {"宛先": "新顧客", "items": [{"品名": "X", "数量": 3, "単価": 50}]}, out)
+        xt.render(tpl, d, {"文書": {"宛先": "新顧客"}, "items": [{"品名": "X", "数量": 3, "単価": 50}]}, out)
         ws = load_workbook(out)["見積"]
         self.assertEqual([c.value for c in ws[7]], ["X", None, 3, "式", 50, None])
         self.assertEqual((ws["B3"].value, ws["B4"].value), ("新顧客", None))
@@ -1560,6 +1560,121 @@ class ScenarioRegressionTests(Base):
         notes = xt.analyze(self.tpl)["sheets"][0]["_notes"]
         self.assertTrue([n for n in notes if n.startswith("A1 の") and "作成者「山田 太郎」" in n])
         self.assertTrue([p for p in xt.provenance(xt.Package(self.tpl)) if "請求書!B3「前のメモ」" in p])
+
+
+def make_report_template(path: str) -> None:
+    """表紙（タイトル・宛名・作成日）と明細のある報告書。タイトルや期間は、データではないが文書ごとに変わる。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "表紙"
+    ws.merge_cells("B3:H5")
+    ws["B3"] = "2025年度 第2四半期 売上報告書"
+    ws["B3"].font = Font(size=20, bold=True)
+    ws["B8"] = "株式会社東和商事 御中"
+    ws["F12"], ws["G12"] = "作成日", "2025年7月1日"
+    ws["F13"], ws["G13"] = "作成者", "山田太郎"
+    ws["B20"] = "社外秘"
+    ws.oddFooter.center.text = "2025年度 第2四半期 売上報告書"
+    d = wb.create_sheet("明細")
+    d["A1"] = "売上明細（2025年9月）"
+    d["A1"].font = Font(size=14, bold=True)
+    d["A2"] = "対象期間: 2025/07/01〜2025/09/30"
+    d["F1"], d["G1"] = "作成日", "2025年7月1日"
+    for i, h in enumerate(["No", "商品", "数量", "金額"], 1):
+        c = d.cell(4, i, h)
+        c.font, c.fill, c.border = Font(bold=True), HEAD_FILL, BOX
+    for r, (n, q, a) in enumerate([("商品A", 1, 100), ("商品B", 2, 200), ("商品C", 3, 300)], 5):
+        for i, v in enumerate([r - 4, n, q, a], 1):
+            d.cell(r, i, v).border = BOX
+    d["A8"], d["D8"] = "合計", "=SUM(D5:D7)"
+    wb.save(path)
+
+
+REPORT_DATA = {
+    "文書": {"年度": 2026, "四半期": 3, "宛先": "株式会社A&B", "作成日": "2026-10-01", "作成者": "佐藤",
+             "年月": "2026-09", "対象期間": {"開始": "2026-07-01", "終了": "2026-09-30"}},
+    "items": [{"商品": "X", "数量": 5, "金額": 500}],
+}
+
+
+class DocumentValueTests(Base):
+    """表紙・タイトル・期間・宛名のように、データではないが文書ごとに変わる値（文書の値）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.tpl = os.path.join(self.dir, "report.xlsx")
+        make_report_template(self.tpl)
+        self.d = xt.analyze(self.tpl)
+
+    def test_analyze_turns_variable_parts_of_titles_into_document_values(self):
+        cover, items = self.d["sheets"]
+        self.assertEqual(cover["cells"]["B3"], {"text": "{文書.年度}年度 第{文書.四半期}四半期 売上報告書"})
+        self.assertEqual(cover["cells"]["B8"], {"text": "{文書.宛先} 御中"})
+        self.assertEqual(cover["cells"]["G12"], {"text": "{文書.作成日:%Y年%-m月%-d日}"})
+        self.assertEqual(cover["cells"]["G13"], "文書.作成者")
+        self.assertIn("B20", cover["keep"])   # 毎回同じ文字は残す
+        self.assertEqual(cover["header_footer"], {"oddFooter": "&C{文書.年度}年度 第{文書.四半期}四半期 売上報告書"})
+        self.assertEqual(items["cells"]["A1"], {"text": "売上明細（{文書.年月:%Y年%-m月}）"})
+        self.assertEqual(items["cells"]["A2"], {"text": "対象期間: {文書.対象期間.開始:%Y/%m/%d}〜{文書.対象期間.終了:%Y/%m/%d}"})
+        # 別のタブの同じ作成日は、同じキー（1 つの値が両方に入る）
+        self.assertEqual(items["cells"]["G1"], {"text": "{文書.作成日:%Y年%-m月%-d日}"})
+
+    def test_quantity_that_happens_to_be_1_2_3_is_not_a_serial_number(self):
+        cols = self.d["sheets"][1]["tables"][0]["columns"]
+        self.assertEqual(cols["A"]["key"], "$index")
+        self.assertEqual(cols["C"]["key"], "数量")
+
+    def test_render_fills_only_the_variable_parts_and_extract_reads_them_back(self):
+        out = os.path.join(self.dir, "o.xlsx")
+        xt.render(self.tpl, self.d, REPORT_DATA, out)
+        wb = load_workbook(out)
+        cover, items = wb["表紙"], wb["明細"]
+        self.assertEqual(cover["B3"].value, "2026年度 第3四半期 売上報告書")
+        self.assertEqual(cover["B8"].value, "株式会社A&B 御中")
+        self.assertEqual(cover["G12"].value, "2026年10月1日")
+        self.assertEqual(cover.oddFooter.center.text, "2026年度 第3四半期 売上報告書")
+        self.assertEqual(items["A1"].value, "売上明細（2026年9月）")
+        self.assertEqual(items["A2"].value, "対象期間: 2026/07/01〜2026/09/30")
+        self.assertEqual(items["G1"].value, "2026年10月1日")
+        data, _ = xt.extract(out, self.d)
+        self.assertEqual(data["文書"], REPORT_DATA["文書"])
+
+    def test_skeleton_puts_document_values_together(self):
+        sk = xt.skeleton_data(self.d)
+        self.assertEqual(set(sk["文書"]), {"年度", "四半期", "宛先", "作成日", "作成者", "年月", "対象期間"})
+        self.assertIn("文書.作成日: 日付（2026-10-08）", xt.value_notes(self.d))
+        self.assertIn("文書.年月: 年月（2026-10）", xt.value_notes(self.d))
+        xt.check_definition(self.tpl, self.d)
+
+    def test_text_templates_are_checked(self):
+        with self.assertRaises(xt.TemplateError):
+            xt.text_fields("{文書.年度年度")
+        self.assertEqual(xt.fill_text("{{固定}} {a}", {"a": 1}, "x"), "{固定} 1")
+        with self.assertRaises(xt.TemplateError) as cm:
+            xt.fill_text("{文書.年度}年度", {}, "cells の B3")
+        self.assertIn("文書.年度", str(cm.exception))
+        with self.assertRaises(xt.TemplateError):
+            xt.fill_text("{d:%Y年}", {"d": "来年"}, "x")
+
+    def test_properties_can_use_document_values(self):
+        out = os.path.join(self.dir, "o.xlsx")
+        d = dict(self.d, properties={"scrub": True, "title": "{文書.年度}年度 売上報告書"})
+        xt.render(self.tpl, d, REPORT_DATA, out)
+        self.assertEqual(load_workbook(out).properties.title, "2026年度 売上報告書")
+
+    def test_different_values_with_the_same_name_get_different_keys(self):
+        wb = load_workbook(self.tpl)
+        wb["明細"]["A1"] = "前年（2024年度）との比較"
+        wb.save(self.tpl)
+        cells = xt.analyze(self.tpl)["sheets"][1]["cells"]
+        self.assertEqual(cells["A1"], {"text": "前年（{文書.年度2}年度）との比較"})
+
+    def test_variable_parts_leave_notes_and_placeholders_alone(self):
+        self.assertIsNone(xt.variable_parts("※ 2024年4月より税率を変更しています"))
+        self.assertIsNone(xt.variable_parts("サンプル株式会社 御中"))
+        self.assertEqual(xt.variable_parts("設計書 第1.2版")[0], "設計書 第{版}版")
+        self.assertEqual(xt.variable_parts("令和7年度 事業報告")[0], "令和{和暦年度}年度 事業報告")
+        self.assertEqual(xt.variable_parts("2025年 Q3 報告")[0], "{年}年 Q{四半期} 報告")
 
 
 if __name__ == "__main__":
