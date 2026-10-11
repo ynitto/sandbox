@@ -134,9 +134,10 @@ function formatDate(serial, body, date1904) {
     } else if (lower === 'aaa') out += DAYS_JA[W];
     else if (lower === 'aaaa') out += `${DAYS_JA[W]}曜日`;
     else if (/^h+$/.test(lower)) { const hh = ampm ? ((h % 12) || 12) : h; out += lower.length === 2 ? pad(hh) : hh; }
-    else if (/^\[h+\]$/.test(lower)) out += Math.floor(serial * 24);
-    else if (/^\[m+\]$/.test(lower)) out += Math.floor(serial * 1440);
-    else if (/^\[s+\]$/.test(lower)) out += Math.floor(serial * 86400);
+    // [h] は最小桁数 1、[hh] は最小桁数 2。分・秒の経過時間も同様。
+    else if (/^\[h+\]$/.test(lower)) out += pad(Math.floor(serial * 24), lower.length - 2);
+    else if (/^\[m+\]$/.test(lower)) out += pad(Math.floor(serial * 1440), lower.length - 2);
+    else if (/^\[s+\]$/.test(lower)) out += pad(Math.floor(serial * 86400), lower.length - 2);
     else if (/^s+$/.test(lower)) out += lower.length === 2 ? pad(s) : s;
     else if (/^\.0+$/.test(t)) out += (d.getUTCMilliseconds() / 1000).toFixed(t.length - 1).slice(1);
     else if (lower === 'am/pm') out += h < 12 ? 'AM' : 'PM';
