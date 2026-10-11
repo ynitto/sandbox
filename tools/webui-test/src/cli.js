@@ -5,7 +5,7 @@ const path = require('path');
 const { parseArgs } = require('util');
 const { spawn } = require('child_process');
 const { loadFile, collectFiles } = require('./casefile');
-const { loadEnv } = require('./config');
+const { loadEnv, loadGenerateSettings } = require('./config');
 const { collect } = require('./context');
 const { withServer } = require('./serve');
 
@@ -46,6 +46,8 @@ const USAGE = `webui-test — 条件からテストケースを作り、Playwrig
         --update                      -o のファイルを直す・足す（今の内容をエージェントに渡す）
         --no-snapshot                 画面の要素一覧を取らない
         --retries <n>                 書式の誤りを直してもらう回数（既定 1）
+        --guide <file>                どのケースを作るかの観点を足す（チームの約束・ドメインの知識。繰り返し可）
+        --no-default-guide            組み込みの観点（同値分割・境界値・状態・エラー推測）を外す
         --explore                     エージェントに playwright-cli で画面を操作・探索させてから書かせる
                                       （画面をまたぐ条件向け。--url が要る）
         --probe-before-act            --explore で、状態を変える操作の前に対象が 1 つだけ・見えている・押せることを
@@ -71,7 +73,7 @@ const USAGE = `webui-test — 条件からテストケースを作り、Playwrig
       アプリをローカルで起動して e2e を動かし、スクリーンショットを前回の画面と比べる
       （webui-test.config.yaml の check と serve を使う）。振る舞い・時間・画面を results/webui-test-evidence.json に書く
   webui-test validate <ファイルかディレクトリ>...   書式を検査する
-  webui-test prompt "<条件>" [--url <url>]           エージェントへ渡す依頼文を表示する（チャットに貼る用）
+  webui-test prompt "<条件>" [--url <url>]           エージェントへ渡す依頼文を表示する（チャットに貼る用。--guide も使える）
   webui-test snapshot <url>                          画面の要素一覧（アクセシビリティツリー）を表示する
   webui-test format                                  テストケースファイルの書式を表示する
 
@@ -99,6 +101,8 @@ const OPTIONS = {
   'conditions-file': { type: 'string', short: 'f' },
   update: { type: 'boolean' },
   'no-snapshot': { type: 'boolean' },
+  guide: { type: 'string', multiple: true },
+  'no-default-guide': { type: 'boolean' },
   retries: { type: 'string' },
   verbose: { type: 'boolean' },
   locale: { type: 'string' },
@@ -161,6 +165,17 @@ function conditionsFrom(values, positionals) {
   return text;
 }
 
+// generate / prompt に渡す観点。設定の generate.guide（設定ファイルからの相対）に --guide（カレントからの相対）を足す
+function guidesFrom(values) {
+  const conf = loadGenerateSettings({ configPath: values.config });
+  const files = [...conf.guides, ...(values.guide || []).map((g) => path.resolve(g))];
+  const guides = files.map((f) => {
+    if (!fs.existsSync(f)) throw usageError(`観点のファイルがありません: ${f}`);
+    return { name: path.relative(process.cwd(), f) || path.basename(f), text: fs.readFileSync(f, 'utf8') };
+  });
+  return { guides, defaultGuide: conf.defaultGuide && !values['no-default-guide'] };
+}
+
 async function main(argv, io = { out: process.stdout, err: process.stderr }) {
   const say = (s) => io.out.write(s + '\n');
   const warn = (s) => io.err.write(s + '\n');
@@ -211,7 +226,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
       case 'prompt': {
         const { buildPrompt, snapshotPage } = require('./generate');
         const pageInfo = values.url && !values['no-snapshot'] ? await snapshotPage(values.url, { executablePath, locale: values.locale }) : null;
-        say(buildPrompt({ conditions: conditionsFrom(values, rest), url: values.url, baseUrl: values['base-url'], pageInfo }));
+        say(buildPrompt({ conditions: conditionsFrom(values, rest), url: values.url, baseUrl: values['base-url'], pageInfo, ...guidesFrom(values) }));
         return 0;
       }
       case 'snapshot': {
@@ -226,6 +241,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
         const { generate } = require('./generate');
         const r = await generate({
           conditions: conditionsFrom(values, rest),
+          ...guidesFrom(values),
           outFile: values.out,
           agent: values.agent,
           agentCmd: values['agent-cmd'],

@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### webui-test: テストケースを作るときの観点を依頼に入れ、チームの観点を足せるようにする（webui-test 0.5.0）
+
+- `generate` と `prompt` の依頼に、どのケースを作るかの観点を入れる。条件の 1 文ごとに確かめる、入力値は同値分割と境界値で選ぶ、
+  状態ごとにケースを分ける、通信の失敗・遅延は `mocks` で作る、言語や画面幅は `variants` にする、など。これまでは「異常系・境界値も作る」の 1 行だけだった
+- `--guide <ファイル>`（繰り返し可）か、設定の `generate.guide` で、チームの約束やドメインの知識を書いた Markdown を足せる
+- `--no-default-guide` か `generate.defaultGuide: false` で、最初から入っている観点を外せる
+
 ### pptx-presentation-builder / docx-document-builder: 文体と論理構成もサンプルにそろえる（pptx 1.2.0・docx 1.2.0）
 
 - 定義に「文章の型」を書けるようにする。pptx はスライドごとの趣旨と論理構成（`slides[].intent`・`logic`）、docx は段落の役割・章の趣旨と論理構成
