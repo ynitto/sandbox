@@ -15,6 +15,7 @@
 | [large-workbook-split.md](large-workbook-split.md) | タブの多い受注管理のブック（表紙・受注・出荷・改訂履歴） | タブのまとまりごとにデータを分ける、ファイル間の食い違い、別のタブへの参照 |
 | [revise-filled-report.md](revise-filled-report.md) | 前回に記入して配った週次報告 | 記入済みの文書から取り出して直す、テンプレートに列が増えたときの書き出し直し |
 | [new-without-template.md](new-without-template.md) | テンプレートの無い売上の集計表 | 新規生成、合計・グラフ・見出しの固定、作った表を次のテンプレートにする |
+| [quarterly-report-cover.md](quarterly-report-cover.md) | 表紙つきの四半期の売上報告書（タイトル・宛名・作成日・期間・フッター） | 文書ごとに変わる値（文書の値）を固定の文字と見分ける、文の一部だけの差し替え、取り出し |
 
 ## 再生する
 
