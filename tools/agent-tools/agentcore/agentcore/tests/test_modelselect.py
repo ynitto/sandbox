@@ -189,6 +189,63 @@ class QuotaAndPrefilterTests(IsolatedHome):
         self.assertEqual([c["id"] for c in kept], ["aider/gemma4:12b"])
         self.assertIn("budget-degrade", [d["reason"] for d in dropped])
 
+    def test_degrade_and_judge_narrow_by_site(self):
+        """降格と judge のローカル候補の絞り込みは site で判断する（単価では判断しない）。"""
+        from agentcore import agentcli
+        agents = self.home / "agents-dir"
+        agents.mkdir()
+        (agents / "cop.json").write_text(json.dumps({
+            "command": ["c"], "relative_cost": 1, "default_model": "gpt-5.1",
+            "models": {"gemma4:e4b": {"relative_cost": 1, "site": "local"}}}), encoding="utf-8")
+        (agents / "free.json").write_text(json.dumps({
+            "command": ["c"], "relative_cost": 0, "default_model": "gemma4:12b"}),
+            encoding="utf-8")
+        (agents / "paid.json").write_text(json.dumps({
+            "command": ["c"], "relative_cost": 1}), encoding="utf-8")
+        degrade = {"exceeded": True, "on_exhausted": "degrade"}
+        profile = modelselect.prompt_profile("hi")
+        with mock.patch.dict(os.environ, {"KIRO_AGENTS_DIR": str(agents)}):
+            agentcli.clear_cache()
+            self.addCleanup(agentcli.clear_cache)
+            local_cop = modelselect.describe_candidate({"agent_cli": "cop", "model": "gemma4:e4b"})
+            cloud_cop = modelselect.describe_candidate({"agent_cli": "cop"})
+            free = modelselect.describe_candidate({"agent_cli": "free"})
+            paid = modelselect.describe_candidate({"agent_cli": "paid", "model": "m"})
+        kept, dropped = modelselect.prefilter([local_cop, cloud_cop, paid], profile, budget=degrade)
+        self.assertEqual([c["id"] for c in kept], ["cop/gemma4:e4b"],
+                         "site=local を宣言した cost 1 の候補は降格で残る")
+        self.assertEqual(sorted(d["id"] for d in dropped), ["cop/gpt-5.1", "paid/m"])
+        kept, _ = modelselect.prefilter([free, paid], profile, budget=degrade)
+        self.assertEqual([c["id"] for c in kept], ["free/gemma4:12b"],
+                         "cost 0 で site 未宣言の候補は従来どおり残る")
+        self.assertEqual(modelselect.judge_model_for([cloud_cop, local_cop]), "gemma4:e4b")
+        self.assertIsNone(modelselect.judge_model_for([cloud_cop, paid]))
+        # 候補自身が relative_cost だけを持つとき（定義を解けない評価用の候補など）も、
+        # 以前の `relative_cost == 0` と同じ候補が残る
+        with mock.patch.object(modelselect, "_spec_of", return_value=None):
+            given = [modelselect.describe_candidate(c) for c in (
+                {"agent_cli": "fixture-small", "model": "v1", "relative_cost": 0},
+                {"agent_cli": "fixture-large", "model": "v1", "relative_cost": 5},
+                {"agent_cli": "fixture-none", "model": "v1"})]
+        self.assertEqual([c["site"] for c in given], ["local", "cloud", "unknown"])
+        kept, _ = modelselect.prefilter(given, profile, budget=degrade)
+        self.assertEqual([c["id"] for c in kept], ["fixture-small/v1"])
+
+    def test_bundled_definitions_narrow_as_before(self):
+        """同梱 8 定義だけの候補集合では、降格の絞り込みと judge のモデルが以前と同じ。"""
+        clis = ("aider", "claude", "codex", "copilot", "cursor", "kiro", "ollama",
+                "vscode-copilot")
+        described = [modelselect.describe_candidate({"agent_cli": c}) for c in clis]
+        kept, dropped = modelselect.prefilter(
+            described, modelselect.prompt_profile("hi"),
+            budget={"exceeded": True, "on_exhausted": "degrade"})
+        self.assertEqual([c["agent_cli"] for c in kept], ["aider", "ollama"])
+        self.assertEqual([c["id"].split("/")[0] for c in dropped],
+                         ["claude", "codex", "copilot", "cursor", "kiro", "vscode-copilot"])
+        self.assertEqual(modelselect.judge_model_for(described), "gemma4:e4b")
+        self.assertIsNone(modelselect.judge_model_for(
+            [c for c in described if c["agent_cli"] not in ("aider", "ollama")]))
+
     def test_prefilter_never_empties_the_list(self):
         described = [dict(modelselect.describe_candidate(CLAUDE),
                           quota={"blocked": True, "kind": "rate_limit"})]
