@@ -83,3 +83,17 @@ test('窓が無い・壊れているときは何もしない', () => {
   assert.strictEqual(notify.createNotifier({ getWindow: () => gone, electron: fakeElectron(shown) }).show({ kind: 'done', name: '会話' }), null);
   assert.strictEqual(shown.length, 0);
 });
+
+test('通知の題は、絵文字の途中で切らない', () => {
+  const text = notify.notificationText({ kind: 'done', name: `${'あ'.repeat(59)}😀😀` });
+  assert.ok(!/[\ud800-\udbff](?![\udc00-\udfff])/.test(text) && !/(?<![\ud800-\udbff])[\udc00-\udfff]/.test(text));
+  assert.ok(text.startsWith('あ'.repeat(59) + '😀 · '));
+});
+
+test('添付のファイル名と評価の抜粋も、絵文字の途中で切らない', () => {
+  const { safeName } = require('../src/main/attachments');
+  assert.strictEqual(safeName('a'.repeat(119) + '😀.txt'), 'a'.repeat(119) + '😀');
+  const { headChars, tailChars } = require('../src/main/text');
+  assert.strictEqual(headChars('ab😀c', 3), 'ab😀');
+  assert.strictEqual(tailChars('a😀bc', 3), '😀bc');
+});
