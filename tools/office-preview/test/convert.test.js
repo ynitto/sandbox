@@ -103,6 +103,16 @@ test('xlsx: 表示形式（桁区切り・%・日付・負の数の色・時刻�
   assert.strictEqual(colName(703), 'AA' + 'A');
 });
 
+test('xlsx: 経過時間の角括弧書式は h/m/s の桁数を守る', () => {
+  assert.strictEqual(formatValue(1 / 24, '[h]:mm').text, '1:00');
+  assert.strictEqual(formatValue(1 / 24, '[hh]:mm').text, '01:00');
+  assert.strictEqual(formatValue(1.5, '[hh]:mm:ss').text, '36:00:00');
+  assert.strictEqual(formatValue(1.5 / 1440, '[m]:ss').text, '1:30');
+  assert.strictEqual(formatValue(1.5 / 1440, '[mm]:ss').text, '01:30');
+  assert.strictEqual(formatValue(1.5 / 86400, '[s]').text, '1');
+  assert.strictEqual(formatValue(1.5 / 86400, '[ss]').text, '01');
+});
+
 test('xlsx: 共有文字列・結合・書式付きの数値を描き、隠しシートは開かない', async () => {
   const styles = '<numFmts><numFmt numFmtId="164" formatCode="#,##0"/></numFmts>'
     + '<fonts><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="FF1F4E79"/><name val="Calibri"/></font></fonts>'
