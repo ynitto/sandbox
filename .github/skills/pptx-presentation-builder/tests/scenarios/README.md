@@ -15,6 +15,7 @@
 | [large-deck-split.md](large-deck-split.md) | 章（セクション）に分かれた 30 枚の四半期報告 | データをまとまりごとのファイルに分ける、専用スクリプト、ファイル間の食い違い |
 | [revise-previous-deck.md](revise-previous-deck.md) | 前回に作って配った説明会の資料 | 記入済みの資料から取り出して直す、テンプレートが更新されたときの書き出し直し |
 | [new-without-template.md](new-without-template.md) | テンプレートの無い社内勉強会の資料 | 新規生成、収まらない量、作った資料を次のテンプレートにする |
+| [same-storyline-proposal.md](same-storyline-proposal.md) | 通った業務改善の提案（6 枚。論点を言い切るタイトル） | スライドごとの趣旨・論理構成を写す、材料を流れの順に並べ直す、タイトル・箇条書きの文末、数字を作らない |
 
 ## 再生する
 

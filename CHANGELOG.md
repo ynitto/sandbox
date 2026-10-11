@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### pptx-presentation-builder / docx-document-builder: 文体と論理構成もサンプルにそろえる（pptx 1.2.0・docx 1.2.0）
+
+- 定義に「文章の型」を書けるようにする。pptx はスライドごとの趣旨と論理構成（`slides[].intent`・`logic`）、docx は段落の役割・章の趣旨と論理構成
+  （欄の `logic`、`parts[].intent`・`logic`）、どちらも資料全体の流れ（`style.logic`）。サンプルを読んだエージェントが書き、`check` の一覧と
+  `--example-data` に出る。データはこれに沿って書く
+- `analyze` が、欄ごとの文末（です・ます／だ・である／体言止め）と 1 文の長さの上限、文書全体の数字（半角・全角）と句読点（「、。」「，．」など）を
+  サンプルの文から測って書く。名前・数字だけの欄と仮の文は測らない
+- `render` は、文体の違う文を欄と文で挙げて止める（`--allow-overflow` で警告に）。タイトル・表題は、言い切るか名詞で止めるかが違えば止め、
+  文が続く欄と箇条書きは、です・ます と だ・である が混ざるような目立つものだけを止める。数字と句読点の表記は表のセルも見る
+- 数字・日付を持つ注記（前の資料の集計の出所など）は、黙って残さず確認の項目に挙げる
+
 ### xlsx-report-builder / pptx-presentation-builder / docx-document-builder: 表紙・タイトル・期間のような「文書の値」を、固定の文字と見分けて流し込む（xlsx 1.8.0・pptx 1.1.0・docx 1.1.0）
 
 - 「2025年度 第2四半期 売上報告書」「株式会社○○ 御中」「売上明細（2025年9月）」「対象期間: 2025/07/01〜2025/09/30」のような文字は、

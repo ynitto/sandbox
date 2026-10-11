@@ -661,6 +661,61 @@ class VerticalAndCommentsTest(unittest.TestCase):
 P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
 
 
+class WritingStyleTest(Base):
+    """文体（文末・1 文の長さ・数字・句読点）と、スライドの趣旨・論理構成（intent・logic）。"""
+
+    def test_analyze_measures_endings_from_samples(self):
+        self.assertEqual(self.sd(2)["lists"]["Content Placeholder 2"]["ending"], "常体")   # 「確認者が少ない」
+        self.assertEqual(self.sd(5)["texts"]["Title 1"]["ending"], "体言止め")   # 「進め方」
+        self.assertNotIn("ending", self.sd(1)["texts"]["Subtitle 2"])   # 仮の値（サンプル株式会社）からは測らない
+        self.assertEqual(self.definition["style"], {"digits": "半角"})
+        self.assertTrue(any("趣旨（intent" in c for c in self.definition["needs_confirm"]))
+
+    def test_render_stops_on_a_different_ending(self):
+        data = full_data()
+        data["s2"]["points"] = ["確認に時間がかかります", "様式がばらばら"]
+        with self.assertRaises(pt.TemplateError) as cm:
+            self.render(data)
+        self.assertIn("「確認に時間がかかります」はです・ます調。サンプルはだ・である調", str(cm.exception))
+        w = self.render(data, allow_overflow=True)
+        self.assertTrue(any("サンプルの文体と違う文" in x for x in w))
+
+    def test_title_keeps_its_form(self):
+        data = full_data()
+        data["s5"]["title"] = "進め方を決める"   # サンプルは名詞で止めるタイトル（「進め方」）
+        with self.assertRaises(pt.TemplateError) as cm:
+            self.render(data)
+        self.assertIn("「進め方を決める」はだ・である調。サンプルは体言止め", str(cm.exception))
+        data = full_data()
+        data["s2"]["points"] = ["確認に時間がかかる", "担当の不足"]   # 箇条書きに混ざる体言止めは止めない
+        self.render(data)
+
+    def test_marks_apply_to_every_text(self):
+        data = full_data()
+        data["s3"][0]["目的"] = "確認を２割減らす"
+        with self.assertRaises(pt.TemplateError) as cm:
+            self.render(data)
+        self.assertIn("全角の数字（「２」）。サンプルは半角の数字", str(cm.exception))
+        data = full_data()
+        data["s6"]["rows"][0]["作業"] = "要件の整理（２回め）"   # 表のセルも同じ
+        with self.assertRaises(pt.TemplateError) as cm:
+            self.render(data)
+        self.assertIn("1 行め(作業): 全角の数字", str(cm.exception))
+
+    def test_intent_and_logic_reach_the_data_notes(self):
+        self.definition["style"]["logic"] = "背景 → 施策 → 進め方 → 状況"
+        self.sd(2).update({"intent": "なぜ取り組むかを、困っていることで示す", "logic": "タイトルで論点 → 課題を 3 つ"})
+        notes = pt.value_notes(self.definition)
+        self.assertIn("資料全体: 論理構成「背景 → 施策 → 進め方 → 状況」", notes)
+        self.assertIn("s2: 趣旨「なぜ取り組むかを、困っていることで示す」・論理構成「タイトルで論点 → 課題を 3 つ」", notes)
+        self.assertIn("s2.points[]: 最大 3 項目・1 項目 18 字まで・だ・である調", notes)
+        self.assertIn("論理構成「タイトルで論点 → 課題を 3 つ」", pt.summarize(self.definition))
+        pt.validate_definition(self.template, self.definition)
+        self.definition["style"]["digits"] = "zenkaku"
+        with self.assertRaises(pt.TemplateError):
+            pt.validate_definition(self.template, self.definition)
+
+
 def add_sections(path: str, sections: list[tuple[str, list[int]]]) -> None:
     """PowerPoint のセクション（章）を付ける。[(名前, [スライドの番号, …]), …]。"""
     prs = Presentation(path)
