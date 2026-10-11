@@ -158,7 +158,10 @@ def describe_candidate(candidate: dict, *, project_dir=None, quotas: "dict | Non
     if spec is not None:
         cost = agentcli.resolve_relative_cost(spec, model or None)
         out["relative_cost"] = cost
-        out["site"] = "local" if cost == 0 else "cloud"
+        # 実行場所は定義の宣言（models.<name>.site → site）が勝ち、無ければ従来どおり
+        # relative_cost から導く。同梱定義は宣言しないので結果は変わらない。
+        out["site"] = agentcli.resolve_site(spec, model or None) or (
+            "local" if cost == 0 else "cloud")
         out["autonomy"] = str(spec.get("headless_autonomy") or "")
         out["definition"] = str(spec.get("name") or candidate["agent_cli"])
     else:

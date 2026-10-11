@@ -76,7 +76,7 @@ def _bundled_dir() -> "Path | None":
 #
 # 継承の規則（今日の挙動をそのまま再現するために、こう分けてある）:
 #
-# - **引き継ぐ**（エージェント単位の性質）… relative_cost / models / prompt_via / prompt_flag /
+# - **引き継ぐ**（エージェント単位の性質）… relative_cost / site / models / prompt_via / prompt_flag /
 #   file_flag / read_flag / model_flag / output / command_suffix / skill_command_prefix /
 #   empty_output_is_error / readonly / spill / errors / session_log / default_model /
 #   timeout / headless_autonomy / write_args / readonly_args / no_session_args / env
@@ -94,7 +94,7 @@ _PROFILE_FIELDS = (
     "headless_autonomy", "default_model", "timeout", "env", "readonly", "prompt_via",
     "prompt_flag", "file_flag", "read_flag", "model_flag", "empty_output_is_error",
     "json_object_only",
-    "output", "skill_command_prefix", "relative_cost", "models", "interactive", "variants",
+    "output", "skill_command_prefix", "relative_cost", "site", "models", "interactive", "variants",
     "slash_native",
     # errors は本来エージェント単位の性質だが、実際には役割ごとに調整されている
     # （read は同じ match に別の hint、verify は自前の timeout 規則）。分類の挙動を
@@ -282,6 +282,19 @@ def _strs(raw, field: str, path) -> "list[str]":
     return list(raw)
 
 
+# 実行場所の宣言の値域（schemas/agent-cli.schema.json の site）。管理面の execution_site
+# （device / external / managed）とは別の面なので値をそろえない。
+_SITES = ("local", "cloud")
+
+
+def _site(raw, field: str, path) -> "str | None":
+    if raw is None:
+        return None
+    if raw not in _SITES:
+        raise AgentCliError(f"エージェント定義 {path}: {field} は local か cloud です")
+    return raw
+
+
 def normalize(name: str, raw: dict, path) -> dict:
     """定義を正規化する。壊れた定義は黙って無視せず例外（設定ミスの静かな握り潰しを作らない）。"""
     if not isinstance(raw, dict):
@@ -395,6 +408,10 @@ def normalize(name: str, raw: dict, path) -> dict:
     if (not isinstance(relative_cost, (int, float)) or isinstance(relative_cost, bool)
             or not math.isfinite(relative_cost) or relative_cost < 0):
         raise AgentCliError(f"エージェント定義 {path}: relative_cost は 0 以上の数値です")
+    # 実行場所（任意）。単価と場所は独立の属性なので、宣言があればそれを使い、無ければ
+    # 呼び出し側が relative_cost から導く（resolve_site は None を返す）。宣言しなければ
+    # 挙動は変わらない。
+    site = _site(raw.get("site"), "site", path)
     # モデル別の相対コスト（任意）。同じ定義の中でモデルによって単価が違う CLI のために、
     # 昇格の判定を agent_cli + model の組で行えるようにする。宣言の無いモデルは定義単位の
     # relative_cost へ落ちる（resolve_relative_cost）ので、書かなければ挙動は変わらない。
@@ -412,9 +429,13 @@ def normalize(name: str, raw: dict, path) -> dict:
             raise AgentCliError(
                 f"エージェント定義 {path}: models.{mkey}.relative_cost は 0 以上の数値です")
         models[mkey] = {"relative_cost": float(mcost)}
+        msite = _site(mbody.get("site"), f"models.{mkey}.site", path)
+        if msite is not None:
+            models[mkey]["site"] = msite
     spec = {
         "name": str(raw.get("name") or name),
         "relative_cost": float(relative_cost),
+        "site": site,
         "models": models,
         "path": str(path),
         "command": command,
@@ -644,6 +665,24 @@ def resolve_relative_cost(spec: dict, model: "str | None" = None) -> float:
     if isinstance(entry, dict) and entry.get("relative_cost") is not None:
         return float(entry["relative_cost"])
     return float(spec["relative_cost"])
+
+
+def resolve_site(spec: dict, model: "str | None" = None) -> "str | None":
+    """(定義, モデル) の宣言された実行場所（`local` / `cloud`）。宣言が無ければ None。
+
+    解決の順（resolve_relative_cost と同じ落ち方）:
+
+    1. 定義の `models` がそのモデルの `site` を宣言していればそれ。
+    2. 定義単位の `site`。
+    3. どちらも無ければ None——呼び出し側が relative_cost から導く（0 なら local）。
+
+    モデル未指定のときは定義の `default_model` で引く。
+    """
+    key = str(model or spec.get("default_model") or "").strip()
+    entry = (spec.get("models") or {}).get(key) if key else None
+    if isinstance(entry, dict) and entry.get("site") in _SITES:
+        return entry["site"]
+    return spec.get("site") if spec.get("site") in _SITES else None
 
 
 def costlier_fallback(current: str, candidates, project_dir=None,

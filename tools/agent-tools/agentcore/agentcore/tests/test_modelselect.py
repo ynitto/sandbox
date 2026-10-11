@@ -93,6 +93,44 @@ class CandidateShapeTests(IsolatedHome):
         self.assertEqual((local["site"], local["relative_cost"]), ("local", 0.0))
         self.assertEqual(local["id"], "ollama/gemma4:e4b")
 
+    def test_bundled_definitions_keep_todays_site(self):
+        """同梱 8 定義は site を宣言しないので、場所は今日どおり relative_cost から導く。"""
+        expected = {"aider": "local", "ollama": "local", "claude": "cloud", "codex": "cloud",
+                    "copilot": "cloud", "cursor": "cloud", "kiro": "cloud",
+                    "vscode-copilot": "cloud"}
+        for cli, site in expected.items():
+            for model in (None, "gpt-5.1", "gemma4:e4b"):
+                cand = {"agent_cli": cli, **({"model": model} if model else {})}
+                got = modelselect.describe_candidate(cand)
+                self.assertEqual(got["site"], site, f"{cli} / {model}")
+                self.assertEqual(got["relative_cost"], 0.0 if site == "local" else 1.0)
+
+    def test_declared_site_wins_over_cost(self):
+        """定義が site を宣言していればそれ（models.<name>.site が定義単位より勝つ）。
+        宣言が無ければ cost 0 → local / cost 1 → cloud。"""
+        from agentcore import agentcli
+        agents = self.home / "agents-dir"
+        agents.mkdir()
+        (agents / "cop.json").write_text(json.dumps({
+            "command": ["c"], "relative_cost": 1, "default_model": "gpt-5.1",
+            "models": {"gemma4:e4b": {"relative_cost": 1, "site": "local"}}}), encoding="utf-8")
+        (agents / "box.json").write_text(json.dumps({
+            "command": ["c"], "relative_cost": 1, "site": "local"}), encoding="utf-8")
+        (agents / "free.json").write_text(json.dumps({
+            "command": ["c"], "relative_cost": 0}), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"KIRO_AGENTS_DIR": str(agents)}):
+            agentcli.clear_cache()
+            self.addCleanup(agentcli.clear_cache)
+            site = lambda c: modelselect.describe_candidate(c)["site"]   # noqa: E731
+            self.assertEqual(site({"agent_cli": "cop", "model": "gemma4:e4b"}), "local")
+            self.assertEqual(site({"agent_cli": "cop"}), "cloud")
+            self.assertEqual(site({"agent_cli": "box"}), "local")
+            self.assertEqual(site({"agent_cli": "free"}), "local")
+            self.assertEqual(modelselect.describe_candidate(
+                {"agent_cli": "cop", "model": "gemma4:e4b"})["relative_cost"], 1.0)
+            self.assertEqual(site({"agent_cli": "box", "site": "cloud"}), "cloud",
+                             "候補自身の値は従来どおり定義より勝つ")
+
     def test_ratings_rows_attach_by_purpose_then_model(self):
         ratings = {"rows": [
             {"purpose": "review", "model": "sonnet", "pass_rate": 0.9, "average_tokens": 1200,
