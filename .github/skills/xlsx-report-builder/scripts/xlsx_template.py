@@ -409,10 +409,11 @@ def analyze(template: str) -> dict:
     props = read_properties(pkg)
     words = {v2: k for k, v in props.items() if k in ("creator", "lastModifiedBy", "company", "manager")
              for v2 in {v.strip(), re.sub(r"(株式会社|有限会社|\(株\)|（株）|様|御中|\s)", "", v)} if len(v2) >= 2}
+    doc = DocValues()   # 文書の値（年度・作成日・宛先など）の名前は、ブック全体で 1 つ
     for name, part in pkg.sheets():
         root = pkg.xml(part)
         expand_shared_formulas(root)
-        sheets_def.append(_analyze_sheet(pkg, name, part, root, sst, styles, words))
+        sheets_def.append(_analyze_sheet(pkg, name, part, root, sst, styles, words, doc))
     # 表のあるシートが 2 つ以上なら、データのキーをシート名にする（同じ items だと、どのシートにも同じ明細が入る）
     with_tables = [s for s in sheets_def if s["tables"]]
     if len(with_tables) > 1:
@@ -431,7 +432,11 @@ def analyze(template: str) -> dict:
     for sd in sheets_def:
         renamed: dict[str, str] = {}   # 年・月・日に分かれた欄は、同じキーのまま名前を変える
         for ref, spec in sd["cells"].items():
+            if isinstance(spec, dict) and "text" in spec:
+                continue
             key = spec["key"] if isinstance(spec, dict) else spec
+            if key.startswith(DOC_PREFIX + "."):
+                continue   # 文書の値は、どのタブでも同じキー（同じ値が入る）
             if key not in renamed:
                 base, new, n = key, key, 2
                 while new in used:
@@ -557,7 +562,8 @@ def _table_info(grid, header_row, body, lo, hi, after, styles) -> dict:
     }
 
 
-def _analyze_sheet(pkg, name, part, root, sst, styles, words: "dict | None" = None) -> dict:
+def _analyze_sheet(pkg, name, part, root, sst, styles, words: "dict | None" = None,
+                   doc: "DocValues | None" = None) -> dict:
     grid = _grid(root, sst, styles)
     found = _find_tables(grid, styles)
     notes: list[str] = []
@@ -603,7 +609,8 @@ def _analyze_sheet(pkg, name, part, root, sst, styles, words: "dict | None" = No
                 spec["keep"] = True    # どのサンプル行も同じ値（円・式など）。毎回同じなので、データに書かない
                 spec["_sample"] = samples[0]["value"]
                 confirm.append(f"{letter}列はどの行も {samples[0]['value']!r} の定数として残す（行ごとに変わるなら key にする）")
-            elif len(samples) == len(t["body"]) and [s["value"] for s in samples] == list(range(1, len(samples) + 1)):
+            elif len(samples) == len(t["body"]) and [s["value"] for s in samples] == list(range(1, len(samples) + 1)) \
+                    and (not head or head["value"] is None or INDEX_HEAD_RE.match(str(head["value"]).strip())):
                 spec["key"] = "$index"  # サンプルが 1, 2, 3 … の連番なら、連番の列
                 spec["_sample"] = 1
             else:
@@ -635,7 +642,21 @@ def _analyze_sheet(pkg, name, part, root, sst, styles, words: "dict | None" = No
             "_total_row": t["total_row"],
             "needs_confirm": confirm,
         })
-    cells, keep, samples, clear = _fixed_cells(grid, covered, heads, root)
+    doc = doc if doc is not None else DocValues()
+    cells, keep, samples, clear = _fixed_cells(grid, covered, heads, root, doc)
+    for ref, spec in cells.items():
+        if isinstance(spec, dict) and "text" in spec and samples.get(ref, {}).get("label") is None:
+            notes.append(f"{ref} の「{samples[ref]['value']}」は、可変の部分だけを文書の値として流し込む（{spec['text']}）。"
+                         "毎回同じ文字なら keep に移す")
+    header_footer = {}
+    for tag, el in _header_footer(root).items():
+        tpl = _header_footer_template(el.text or "", doc)
+        if tpl is not None:
+            header_footer[tag] = tpl
+            notes.append(f"ヘッダー・フッター {tag} の「{el.text}」は、可変の部分を文書の値として流し込む")
+        elif el.text and HF_CODE_RE.sub("", el.text).strip():
+            notes.append(f"ヘッダー・フッター {tag} の「{el.text}」はそのまま残る。前の文書の名前・日付なら、"
+                         "header_footer に文のひな形を書く")
     for r in sorted(grid):
         for i in grid[r].values():
             v = i["value"]
@@ -647,6 +668,8 @@ def _analyze_sheet(pkg, name, part, root, sst, styles, words: "dict | None" = No
                              f"「{hit}」を含む。残さずに流し込むか、利用者に確かめる")
     notes += _sheet_warnings(pkg, part, root, tables)
     out = {"name": name, "tables": tables, "cells": cells, "keep": keep, "_cell_samples": samples, "_notes": notes}
+    if header_footer:
+        out["header_footer"] = header_footer
     if clear:
         out["clear"] = clear
     return out
@@ -675,6 +698,9 @@ def _unique_key(header, letter: str, cols_def: dict) -> str:
         key, i = f"{base}{i}", i + 1
     return key
 
+
+# 連番の列の見出し。数量のサンプルがたまたま 1, 2, 3 でも、見出しが連番でなければ連番にしない
+INDEX_HEAD_RE = re.compile(r"^(No\.?|NO\.?|no\.?|№|#|番号|項番|連番|通番|行番号?|順|順番|項)$")
 
 # 人が書き込む欄（押印・署名など）の見出し・ラベル。データに入れず、空欄のまま出す
 HUMAN_RE = re.compile(r"(印$|押印|捺印|検印|署名|サイン|自署|承認者?$|決裁|確認者|受付者?$|手書き|記入欄)")
@@ -839,7 +865,163 @@ def _readable_columns(cols_def: dict, t: dict, grid, origin, confirm: list, fill
                        f"{'・'.join(str(plain[c]['header']).strip() for c in run)}を、データでは {key}: 2026-10-08 のような 1 つの日付で書く")
 
 
-def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tuple[dict, list[str], dict, list[str]]:
+# ---------------------------------------------------------------------------
+# 文書の値（表紙・タイトルの年度・期間・宛名・作成日など）。データでもラベルでもなく、文書ごとに変わる値
+# ---------------------------------------------------------------------------
+
+DOC_PREFIX = "文書"
+# ラベルがこれなら、その右の値は表の外の 1 件の値ではなく、文書全体の値（どのタブでも同じ値が入る）
+DOC_LABEL_RE = re.compile(r"^(作成日|作成者|作成部署|発行日|発行者|提出日|提出先|報告日|報告者|更新日|改訂日|日付|"
+                          r"文書番号|文書名|資料番号|管理番号|版|版数|バージョン|Ver\.?|宛先|宛名|件名|表題|タイトル|"
+                          r"プロジェクト名?|案件名|システム名|対象期間|期間|報告期間|年度)$", re.I)
+
+
+def _date_fmt(text: str, m: "re.Match", codes: dict) -> str:
+    """一致した日付の文字から、同じ見た目に戻す書式（`2025/07/01` → `%Y/%m/%d`、`7月` → `%-m月`）を作る。"""
+    # 月・日のどれかが 0 埋め（07）なら 0 埋めの書式、どれも 1 桁か 10 以上なら 0 を付けない書式
+    padded = any(m.group(g).startswith("0") for g, code in codes.items() if code != "Y")
+    out, pos = "", m.start()
+    for g, code in codes.items():
+        a, b = m.span(g)
+        out += text[pos:a].replace("%", "%%") + (f"%{code}" if code == "Y" or padded else f"%-{code}")
+        pos = b
+    return out + text[pos:m.end()].replace("%", "%%")
+
+
+# 文の中の可変の部分。(名前, 正規表現, 種類)。上から順に、重ならないものを拾う
+VAR_PATTERNS = [
+    ("日付", re.compile(r"(?<!\d)(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"), "date"),
+    ("日付", re.compile(r"(?<![\d./-])(\d{4})([/.\-])(\d{1,2})\2(\d{1,2})(?![\d./-])"), "date_sep"),
+    ("年月", re.compile(r"(?<!\d)(\d{4})\s*年\s*(\d{1,2})\s*月(?!\s*\d)"), "ym"),
+    ("年月", re.compile(r"(?<![\d./-])(\d{4})/(\d{1,2})(?![\d./-])"), "ym_sep"),
+    ("年度", re.compile(r"(?<!\d)(\d{4})\s*年度"), "int1"),
+    ("和暦年度", re.compile(r"(?:令和|平成)\s*(\d{1,2}|元)\s*年度"), "wareki"),
+    ("和暦年", re.compile(r"(?:令和|平成)\s*(\d{1,2}|元)\s*年(?!度)"), "wareki"),
+    ("年", re.compile(r"(?<!\d)(\d{4})\s*年(?![度\d])"), "int1"),
+    ("四半期", re.compile(r"第\s*([1-4])\s*四半期"), "int1"),
+    ("四半期", re.compile(r"(?<![A-Za-z0-9])Q([1-4])(?![A-Za-z0-9])"), "int1"),
+    ("四半期", re.compile(r"(?<![A-Za-z0-9])([1-4])Q(?![A-Za-z0-9])"), "int1"),
+    ("半期", re.compile(r"(上|下)半?期"), "str1"),
+    ("月", re.compile(r"(?<![\d/.\-])(\d{1,2})\s*月(?=度|分|[\s）)]|$)"), "int1"),
+    ("版", re.compile(r"第\s*(\d+(?:\.\d+)*)\s*版"), "str1"),
+    ("版", re.compile(r"(?<![A-Za-z])(?:Ver\.?|ver\.?|[vV])\s?(\d+(?:\.\d+)+)"), "str1"),
+]
+VAR_ADDRESSEE_RE = re.compile(r"^(?P<name>\S.*?)\s*(?P<tail>御中|様|殿)(?=\s|$|向け)")   # 「北斗製薬様 定例報告」の文頭の宛名も
+NOT_ADDRESSEE = {"お客", "皆", "各位", "関係者各位"}
+LABELLED_RE = re.compile(r"^(?P<label>[^:：\d]{1,15})\s*[:：]\s*")
+
+
+def variable_parts(text: str) -> "tuple[str, list[tuple[str, Any]]] | None":
+    """文の中の、文書ごとに変わりそうな部分（年度・四半期・年月・日付・版・宛名）を、欄（{名前}）にしたひな形にする。
+
+    返すのは (ひな形, [(欄の名前, 今の値), …])。可変の部分が無ければ None。欄の名前は、まだ `文書.` を付けない仮の名前。
+    注記（※）や長い文は対象にしない。
+    """
+    if not isinstance(text, str) or not text.strip() or len(text) > 80 or NOTE_RE.match(text) or PLACEHOLDER_RE.search(text):
+        return None
+    hits: list[tuple[int, int, str, str, Any]] = []   # (先頭, 末尾, 名前, 欄の中身, 値)
+    taken: list[tuple[int, int]] = []
+    m = VAR_ADDRESSEE_RE.match(text)
+    if m and len(m.group("name").strip()) >= 2 and m.group("name").strip() not in NOT_ADDRESSEE \
+            and not DOC_LABEL_RE.match(m.group("name").strip()) and not any(rx.search(m.group("name")) for _, rx, _ in VAR_PATTERNS):
+        hits.append((m.start("name"), m.end("name"), "宛先", "", m.group("name").strip()))
+        taken.append(m.span())
+    for name, rx, kind in VAR_PATTERNS:
+        for m in rx.finditer(text):
+            if any(a < m.end() and m.start() < b for a, b in taken):
+                continue
+            if kind == "date":
+                fmt = _date_fmt(text, m, {1: "Y", 2: "m", 3: "d"})
+                value = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                span = m.span()
+            elif kind == "date_sep":
+                fmt = _date_fmt(text, m, {1: "Y", 3: "m", 4: "d"})
+                value = f"{int(m.group(1)):04d}-{int(m.group(3)):02d}-{int(m.group(4)):02d}"
+                span = m.span()
+            elif kind in ("ym", "ym_sep"):
+                fmt = _date_fmt(text, m, {1: "Y", 2: "m"})
+                value = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+                span = m.span()
+            else:
+                fmt = ""
+                g = m.group(1)
+                value = 1 if g == "元" else int(g) if kind in ("int1", "wareki") else g
+                span = m.span(1)
+            taken.append(m.span())
+            hits.append((span[0], span[1], name, fmt, value))
+    if not hits:
+        return None
+    hits.sort()
+    lab = LABELLED_RE.match(text)
+    dates = [h for h in hits if h[2] == "日付"]
+    names: list[str] = []
+    for h in hits:
+        name = h[2]
+        if lab and len(hits) == len(dates) and dates:
+            label = lab.group("label").strip()
+            name = label if len(dates) == 1 else (f"{label}.開始" if h is dates[0] else f"{label}.終了") if len(dates) == 2 \
+                else label
+        names.append(name)
+    # 同じ名前が 2 つ以上なら 2, 3 … を付ける（同じ文の中で、違う値を同じ欄にしない）
+    seen: dict[str, int] = {}
+    out, fields, pos = "", [], 0
+    for (a, b, _, fmt, value), name in zip(hits, names):
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:
+            name = f"{name}{seen[name]}"
+        out += text[pos:a].replace("{", "{{").replace("}", "}}") + "{" + name + (f":{fmt}" if fmt else "") + "}"
+        fields.append((name, value))
+        pos = b
+    out += text[pos:].replace("{", "{{").replace("}", "}}")
+    return out, fields
+
+
+class DocValues:
+    """ブック全体の文書の値の名前。同じ名前で同じ値なら、同じキーにする（表紙とヘッダーの年度に、1 つの値が入る）。"""
+
+    def __init__(self) -> None:
+        self.values: dict[str, Any] = {}
+
+    def key(self, name: str, value: Any) -> str:
+        base = re.sub(r"[\s]+", "_", name.strip(" :：")) or "値"
+        cand, n = base, 2
+        while cand in self.values and self.values[cand] != value and value is not None and self.values[cand] is not None:
+            cand, n = f"{base}{n}", n + 1
+        if self.values.get(cand) is None:
+            self.values[cand] = value
+        return f"{DOC_PREFIX}.{cand}"
+
+    def template(self, tpl: str, fields: list[tuple[str, Any]]) -> str:
+        """variable_parts の仮の名前を、文書の値のキーに置き換える。"""
+        for name, value in fields:
+            key = self.key(name, value)
+            tpl = re.sub(r"\{" + re.escape(name) + r"(?=[:}])", "{" + key, tpl, count=1)
+        return tpl
+
+
+HF_CODE_RE = re.compile(r'&(?:"[^"]*"|\d+|[A-Za-z&+\-])')
+
+
+def _header_footer_template(text: str, doc: DocValues) -> "str | None":
+    """ヘッダー・フッターの文字の、可変の部分を欄にする（& の記号は、そのまま残す）。"""
+    out, pos, found = "", 0, False
+    pieces = []
+    for m in HF_CODE_RE.finditer(text):
+        pieces += [(False, text[pos:m.start()]), (True, m.group(0))]
+        pos = m.end()
+    pieces.append((False, text[pos:]))
+    for is_code, piece in pieces:
+        got = None if is_code else variable_parts(piece)
+        if got:
+            found = True
+            out += doc.template(*got)
+        else:
+            out += piece.replace("{", "{{").replace("}", "}}")
+    return out if found else None
+
+
+def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root,
+                 doc: "DocValues | None" = None) -> tuple[dict, list[str], dict, list[str]]:
     """表のサンプル行の外のセルを、ラベル（keep）と、流し込む欄（cells）に分ける。
 
     ラベルの右隣のセルは、値があってもなくても流し込む欄にする（前の文書の値を持ち越さない・空欄の記入枠も落とさない）。
@@ -866,7 +1048,7 @@ def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tu
 
     def new_key(label: "str | None", ref: str) -> str:
         base = re.sub(r"[.\s]+", "_", (label or "").strip(" :：")).strip("_") or ref
-        taken = {v if isinstance(v, str) else v["key"] for v in cells.values()}
+        taken = {k for v in cells.values() for k in spec_keys(v)}
         key, n = base, 2
         while key in taken:
             key, n = f"{base}{n}", n + 1
@@ -930,10 +1112,28 @@ def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root) -> tu
                 labels[c] = value   # 「振込先 | 銀行名 | ○○銀行」の中の見出し。右の値のラベル
                 keep.append(i["ref"])
                 continue
-            if label is not None or (value is not None and not isinstance(value, str)):
+            if label is not None and doc is not None and DOC_LABEL_RE.match(label.strip(" :：")):
+                # 作成日・作成者・版など、文書全体の値。どのタブでも同じキーにし、データの「文書」にまとめる
+                key = doc.key(label.strip(" :："), value)
+                got = variable_parts(value) if isinstance(value, str) else None
+                if got and len(got[1]) == 1 and got[0].startswith("{" + got[1][0][0]) and got[0].endswith("}") \
+                        and ":" in got[0] and not got[0].endswith(":%Y-%m-%d}"):   # 日付のセル（2025-04-01）はキーのまま
+                    # 「2025年7月1日」のような文字の日付は、同じ見た目で入るように書式つきの文にする
+                    cells[i["ref"]] = {"text": "{" + key + got[0][len(got[1][0][0]) + 1:]}
+                else:
+                    cells[i["ref"]] = key
+                samples[i["ref"]] = {"label": label, "value": value}
+            elif label is not None or (value is not None and not isinstance(value, str)):
                 cells[i["ref"]] = new_key(label, i["ref"])
                 samples[i["ref"]] = {"label": label, "value": value}
             elif value is not None:
+                nxt_value = row.get(spans.get((c, r), c) + 1, {}).get("value")
+                got = variable_parts(value) if doc is not None and nxt_value is None else None
+                if got:
+                    # タイトル・宛名の中の、年度・期間・日付・宛先。文の残りはそのまま、可変の部分だけを流し込む
+                    cells[i["ref"]] = {"text": doc.template(*got)}
+                    samples[i["ref"]] = {"label": None, "value": value}
+                    continue
                 labels[c] = value
                 keep.append(i["ref"])
     return cells, compress_cells(keep) if keep else [], samples, compress_cells(clear) if clear else []
@@ -1004,9 +1204,14 @@ def summarize(definition: dict) -> str:
             lines.append("  流し込む欄（cells。テンプレートの値は残さない。データで null なら空欄になる）:")
             for ref, key in s["cells"].items():
                 v = s["_cell_samples"].get(ref, {}).get("value")
+                if isinstance(key, dict) and "text" in key:
+                    lines.append(f"      {ref} → 文={key['text']!r}  今の値: {v!r}")
+                    continue
                 if isinstance(key, dict):
                     key = f"{key['key']}（日付の {key['part']}）" if "part" in key else key["key"]
                 lines.append(f"      {ref} → key={key}  " + (f"今の値: {v!r}" if v is not None else "（空欄の記入枠）"))
+        for tag, tpl in (s.get("header_footer") or {}).items():
+            lines.append(f"  ヘッダー・フッター {tag} → 文={tpl!r}")
         if s["keep"]:
             lines.append(f"  残す（keep。見出し・ラベル・固定の文面）: {', '.join(s['keep'])}")
         if s.get("clear"):
@@ -1050,6 +1255,8 @@ def inspect_template(template: "str | bytes") -> dict:
         root = pkg.xml(part)
         expand_shared_formulas(root)
         grid = _grid(root, sst, styles)
+        draft = _analyze_sheet(pkg, name, part, root, sst, styles)
+        in_tables = {r for t in draft["tables"] for r in range(t["header_row"], t["first_row"] + t["sample_rows"])}
         rows = []
         for r in sorted(grid):
             cells, blanks = [], []
@@ -1069,16 +1276,19 @@ def inspect_template(template: "str | bytes") -> dict:
                             item["hint"] = "仮の値の疑い"
                         elif NOTE_RE.match(i["value"]):
                             item["hint"] = "注記の疑い"
+                        elif r not in in_tables and variable_parts(i["value"]):
+                            names = "・".join(dict.fromkeys(n for n, _ in variable_parts(i["value"])[1]))
+                            item["hint"] = f"文書ごとに変わる値の疑い（{names}）"
                 cells.append(item)
             rows.append({"row": r, "cells": cells,
                          "styled_blank": f"{get_column_letter(min(blanks))}-{get_column_letter(max(blanks))}" if blanks else None,
                          "shape": [(c, classes.get(grid[r][c]["s"], "S0")) for c in sorted(grid[r])]})
-        draft = _analyze_sheet(pkg, name, part, root, sst, styles)
         sheets.append({
             "name": name,
             "merges": [m.get("ref") for m in root.iter(q("mergeCell"))],
             "conditional_formats": [c.get("sqref") for c in root.iter(q("conditionalFormatting"))],
             "validations": [d.get("sqref") for d in root.iter(q("dataValidation"))],
+            "header_footer": {tag: el.text for tag, el in _header_footer(root).items() if el.text},
             "rows": rows,
             "same_shape_runs": _runs(rows),
             "auto_detected_tables": [{k: t[k] for k in ("id", "header_row", "first_row", "sample_rows", "pattern")}
@@ -1141,6 +1351,8 @@ def format_facts(facts: dict, fold: bool = True) -> str:
         for key, label in (("merges", "結合"), ("conditional_formats", "条件付き書式"), ("validations", "入力規則")):
             if sh[key]:
                 L.append(f"  {label}: {' '.join(sh[key])}")
+        for tag, text in (sh.get("header_footer") or {}).items():
+            L.append(f"  ヘッダー・フッター {tag}: {text!r}")
         L.append("  行（値/数式 [書式の種類]）:")
         folded = _folded_rows(sh) if fold else {}
         for row in sh["rows"]:
@@ -1352,7 +1564,11 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
 
     # --- 3. ブック全体の参照（定義名・グラフ）と再計算の設定 --------------------
     _fix_workbook(pkg, maps)
-    props = definition.get("properties") or {}
+    props = {k: fill_text(v, data, f"properties の {k}") if isinstance(v, str) else v
+             for k, v in (definition.get("properties") or {}).items()}
+    used = {k for sd in definition["sheets"] for k in sheet_cell_keys(sd)}
+    used |= {k for v in (definition.get("properties") or {}).values() if isinstance(v, str) for k, _ in text_fields(v)}
+    warnings += unused_doc_warnings(data, used)
     apply_properties(pkg, props)
     if props.get("scrub"):
         n = drop_comments(pkg)
@@ -1462,6 +1678,9 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
         col, r = split_ref(ref)
         if r in tbl_of:
             raise TemplateError(f"cells の {ref} は表のサンプル行の中です")
+        if "text" in spec:   # 文の一部だけを差し替える（タイトルの年度・期間など）
+            fixed_cells[(col, r)] = fill_text(spec["text"], data, f"cells の {ref}")
+            continue
         try:
             value = dig(data, spec["key"])
         except KeyError:
@@ -1475,6 +1694,15 @@ def _render_sheet(pkg, part, root, plan, rowmap, rw, data, styles, warnings, lef
             if r in tbl_of:
                 raise TemplateError(f"clear の {spec} は表のサンプル行の中です（列の clear を使う）")
             clear_cells.add((col, r))
+
+    # ヘッダー・フッター（印刷したときの上下の文字）。& は Excel の記号なので、値の中の & は && にする
+    existing = _header_footer(root)
+    for tag, tpl in (sd.get("header_footer") or {}).items():
+        if tag not in existing:
+            raise TemplateError(f"シート「{sd['name']}」の header_footer の {tag} は、テンプレートにありません"
+                                f"（使えるもの: {', '.join(existing) or 'なし'}）")
+        existing[tag].text = fill_text(tpl, data, f"シート「{sd['name']}」の header_footer の {tag}",
+                                       escape=lambda s: s.replace("&", "&&"))
 
     new_rows: list[etree._Element] = []
     pattern_map: dict[int, list[int]] = {}  # 元のサンプル行 → 出力行の一覧（結合セルの複製用）
@@ -1709,6 +1937,173 @@ def _row_value(row_data: dict, key: str) -> Any:
         return dig(row_data, key)
     except KeyError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# 文の中の一部を差し替える（`{文書.年度}年度 第{文書.四半期}四半期 売上報告書`）
+# ---------------------------------------------------------------------------
+
+TEXT_FIELD_RE = re.compile(r"\{\{|\}\}|\{([^{}:]+)(?::([^{}]*))?\}")
+HEADER_FOOTER_TAGS = ("oddHeader", "oddFooter", "evenHeader", "evenFooter", "firstHeader", "firstFooter")
+
+
+def text_fields(tpl: str) -> list[tuple[str, str]]:
+    """文のひな形の中の欄 [(データのキー, 書式), …]。`{{`・`}}` は文字の波かっこ。"""
+    out, rest, pos = [], "", 0
+    for m in TEXT_FIELD_RE.finditer(str(tpl)):
+        rest += str(tpl)[pos:m.start()]
+        pos = m.end()
+        if m.group(1) is not None:
+            out.append((m.group(1).strip(), m.group(2) or ""))
+    rest += str(tpl)[pos:]
+    if "{" in rest or "}" in rest:
+        raise TemplateError(f"文のひな形 {tpl!r} の波かっこが閉じていません（文字の波かっこは {{{{ と }}}} と書く）")
+    return out
+
+
+def spec_keys(spec: Any) -> list[str]:
+    """固定セルの指定が使う、データのキーの一覧（文のひな形なら、その中の欄のキー）。"""
+    if not isinstance(spec, dict):
+        return [spec]
+    if "text" in spec:
+        return list(dict.fromkeys(k for k, _ in text_fields(spec["text"])))
+    return [spec["key"]]
+
+
+def _as_date(value: Any, where: str) -> "dt.date | dt.datetime":
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value
+    s = str(value).strip().replace("/", "-")
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", s)   # 年月だけ（2026-10）
+    if m:
+        return dt.date(int(m.group(1)), int(m.group(2)), 1)
+    try:
+        return dt.datetime.fromisoformat(s) if (" " in s or "T" in s) else dt.date.fromisoformat(
+            "-".join(p.zfill(2) for p in s.split("-")))
+    except ValueError:
+        raise TemplateError(f"{where} の値 {value!r} を日付として読めません（2026-10-08 か、年月なら 2026-10 の形で書く）")
+
+
+def _strftime(d: "dt.date | dt.datetime", fmt: str) -> str:
+    """strftime と同じ。ただし `%-m`・`%-d`・`%-H`（0 を付けない）は、どの OS でも使える。"""
+    def sub(m: "re.Match") -> str:
+        code = m.group(1)
+        if code.startswith("-"):
+            return str(int(d.strftime("%" + code[1:])))
+        return "%" if code == "%" else d.strftime("%" + code)
+    return re.sub(r"%(-?[A-Za-z%])", sub, fmt)
+
+
+def _field_text(value: Any, fmt: str, where: str) -> str:
+    if value is None:
+        return ""
+    if "%" in fmt:
+        return _strftime(_as_date(value, where), fmt)
+    if fmt:
+        try:
+            return format(value, fmt)
+        except (ValueError, TypeError):
+            raise TemplateError(f"{where} の値 {value!r} に書式 {fmt!r} を使えません")
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()
+    return str(value)
+
+
+def fill_text(tpl: str, data: Any, where: str, escape=None) -> str:
+    """文のひな形の欄を、データの値で埋める。値が null の欄は空にする。
+
+    data はデータか、キーから値を引く関数（無ければ KeyError）。
+    """
+    lookup = data if callable(data) else (lambda key: dig(data, key))
+    text_fields(tpl)   # 閉じていない波かっこを先に止める
+
+    def sub(m: "re.Match") -> str:
+        if m.group(1) is None:
+            return m.group(0)[0]
+        key = m.group(1).strip()
+        try:
+            value = lookup(key)
+        except KeyError:
+            raise TemplateError(f"データに {key!r} がありません（{where}）")
+        text = _field_text(value, m.group(2) or "", f"{where} の {key}")
+        return escape(text) if escape else text
+    return TEXT_FIELD_RE.sub(sub, str(tpl))
+
+
+def read_text(tpl: str, text: Any) -> "dict | None":
+    """fill_text の逆。文から欄の値を読み戻す（合わなければ None）。数字だけは数値、日付の書式は 2026-10-08 の形にする。"""
+    if text is None:
+        return None
+    pattern, names, n = "", {}, 0
+    pos = 0
+    for m in TEXT_FIELD_RE.finditer(str(tpl)):
+        pattern += re.escape(tpl[pos:m.start()])
+        pos = m.end()
+        if m.group(1) is None:
+            pattern += re.escape(m.group(0)[0])
+            continue
+        key = m.group(1).strip()
+        if key in names:
+            pattern += f"(?P={names[key][0]})"
+            continue
+        names[key] = (f"g{n}", m.group(2) or "")
+        pattern += f"(?P<g{n}>.*?)"
+        n += 1
+    pattern += re.escape(tpl[pos:])
+    m = re.fullmatch(pattern, str(text).strip(), re.S) or re.fullmatch(pattern, str(text), re.S)
+    if not m:
+        return None
+    out = {}
+    for key, (g, fmt) in names.items():
+        v = m.group(g).strip()
+        if not v:
+            out[key] = None
+        elif "%" in fmt:
+            try:
+                d = dt.datetime.strptime(v, re.sub(r"%-", "%", fmt))
+            except ValueError:
+                out[key] = v
+                continue
+            if "%d" in fmt or "%-d" in fmt:
+                out[key] = d.date().isoformat() if not re.search(r"%-?[HM]", fmt) else d.isoformat(sep=" ", timespec="minutes")
+            else:
+                out[key] = f"{d.year:04d}-{d.month:02d}"
+        else:
+            out[key] = int(v) if re.fullmatch(r"[+-]?\d+", v) and not (len(v) > 1 and v[0] == "0") else v
+    return out
+
+
+def text_notes(tpl: str) -> dict:
+    """文のひな形の欄の書き方（雛形の null だけでは、文のどこに入るかが分からない）。"""
+    notes = {}
+    for key, fmt in text_fields(tpl):
+        if "%" in fmt:
+            notes[key] = f"{key}: 日付（2026-10-08）" if re.search(r"%-?d", fmt) else f"{key}: 年月（2026-10）"
+        else:
+            notes.setdefault(key, f"{key}: 「{tpl}」の {{{key}}} に入る文字")
+    return notes
+
+
+def unused_doc_warnings(data: Any, used: "set[str]") -> list[str]:
+    """データの `文書:` にあって、定義のどこでも使われていない値（綴りの違いの疑い）。"""
+    def leaves(obj, path):
+        if isinstance(obj, dict) and obj:
+            for k, v in obj.items():
+                yield from leaves(v, f"{path}.{k}")
+        else:
+            yield path
+    doc = data.get(DOC_PREFIX) if isinstance(data, dict) else None
+    if not isinstance(doc, dict):
+        return []
+    unused = [p for p in leaves(doc, DOC_PREFIX) if not any(p == u or p.startswith(u + ".") or u.startswith(p + ".") for u in used)]
+    return [f"データの {', '.join(unused)} は、定義のどこでも使われていません（綴りの違いを疑う）"] if unused else []
+
+
+def _header_footer(root) -> dict:
+    hf = root.find(q("headerFooter"))
+    return {} if hf is None else {el.tag.split("}")[1]: el for el in hf if el.tag.split("}")[1] in HEADER_FOOTER_TAGS}
 
 
 def _drop_stale_links(pkg, part, root, filled: set, warnings: list, sheet: str = "") -> None:
@@ -2244,14 +2639,27 @@ def _row_sig(row: dict) -> str:
     return json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def sheet_texts(sd: dict) -> list[str]:
+    """シートの、文のひな形（cells の text と header_footer）。"""
+    return [s["text"] for s in (sd.get("cells") or {}).values() if isinstance(s, dict) and "text" in s] \
+        + list((sd.get("header_footer") or {}).values())
+
+
+def sheet_cell_keys(sd: dict) -> list[str]:
+    """シートの固定セル・ヘッダー/フッターが使う、データのキー（表のキーは含まない）。"""
+    keys = [k for spec in (sd.get("cells") or {}).values() for k in spec_keys(spec)]
+    keys += [k for tpl in (sd.get("header_footer") or {}).values() for k, _ in text_fields(tpl)]
+    return list(dict.fromkeys(keys))
+
+
 def _key_groups(definition: dict) -> tuple[dict, dict]:
     """データのキー → それを使うまとまり（sheets[].group。無ければタブ）の集まり。表のキーと、固定セルのキーに分けて返す。"""
     tables: dict[str, set] = {}
     cells: dict[str, set] = {}
     for sd in definition.get("sheets", []):
         group = str(sd.get("group") or sd["name"])
-        for spec in (sd.get("cells") or {}).values():
-            cells.setdefault(spec["key"] if isinstance(spec, dict) else spec, set()).add(group)
+        for key in sheet_cell_keys(sd):
+            cells.setdefault(key, set()).add(group)
         for t in sd.get("tables", []):
             tables.setdefault(t["key"], set()).add(group)
     return tables, cells
@@ -2302,7 +2710,7 @@ def split_data(data: dict, definition: dict) -> list:
         group = str(sd.get("group") or sd["name"])
         if group not in order:
             order.append(group)
-        keys = [spec["key"] if isinstance(spec, dict) else spec for spec in (sd.get("cells") or {}).values()]
+        keys = sheet_cell_keys(sd)
         keys += [t["key"] for t in sd.get("tables", [])]
         for key in keys:
             owner.setdefault(key, set()).add(group)
@@ -2376,8 +2784,8 @@ def skeleton_data(definition: dict) -> dict:
     """定義が必要とするデータの雛形（値は null）。"""
     out: dict = {}
     for sd in definition.get("sheets", []):
-        for spec in (sd.get("cells") or {}).values():
-            _set_path(out, spec["key"] if isinstance(spec, dict) else spec, None)
+        for key in sheet_cell_keys(sd):
+            _set_path(out, key, None)
         for t in sd.get("tables", []):
             colmaps = t["block"] if t.get("block_rows", 1) > 1 and t.get("block") else [t.get("columns")]
             row: dict = {}
@@ -2385,6 +2793,9 @@ def skeleton_data(definition: dict) -> dict:
                 if c.get("key") and c["key"] != "$index" and not c.get("keep") and not c.get("clear"):
                     _set_path(row, c["key"], None)
             _set_path(out, t["key"], [row])
+    for v in (definition.get("properties") or {}).values():
+        for key, _ in (text_fields(v) if isinstance(v, str) else []):
+            _set_path(out, key, None)
     return _as_lists(out)
 
 
@@ -2392,7 +2803,10 @@ def value_notes(definition: dict) -> list[str]:
     """値の書き方（択一・複数選択・true/false・日付）の説明。雛形の null だけでは分からないものを補う。"""
     notes: dict[str, str] = {}
     for sd in definition.get("sheets", []):
-        specs = [(None, s if isinstance(s, dict) else {"key": s}) for s in (sd.get("cells") or {}).values()]
+        specs = [(None, s if isinstance(s, dict) else {"key": s}) for s in (sd.get("cells") or {}).values()
+                 if not (isinstance(s, dict) and "text" in s)]
+        for tpl in sheet_texts(sd):
+            notes.update(text_notes(tpl))
         for t in sd.get("tables", []):
             colmaps = t["block"] if t.get("block_rows", 1) > 1 and t.get("block") else [t.get("columns")]
             specs += [(t["key"], c) for cols in colmaps for c in (cols or {}).values()]
@@ -2408,6 +2822,9 @@ def value_notes(definition: dict) -> list[str]:
                 notes[name] = f"{name}: {' / '.join(str(k).lower() if isinstance(k, bool) else str(k) for k in spec['map'])} のどれか"
             elif "part" in spec:
                 notes[name] = f"{name}: 日付（2026-10-08）"
+    for v in (definition.get("properties") or {}).values():
+        if isinstance(v, str):
+            notes.update(text_notes(v))
     return list(notes.values())
 
 
@@ -2550,6 +2967,15 @@ def extract(source: "str | bytes", definition: dict, template: "str | bytes | No
             spec = spec if isinstance(spec, dict) else {"key": spec}
             c, row = split_ref(ref)
             row += sum(g for end, g in shifts if row > end)   # 表の行数が変わった分、下の欄がずれる
+            if "text" in spec:
+                text = grid.get(row, {}).get(c, {}).get("value")
+                got = read_text(spec["text"], text)
+                if got is None:
+                    notes.append(f"シート「{name}」{ref} の {text!r} は、文のひな形 {spec['text']!r} と合わないので読めませんでした")
+                for key in spec_keys(spec):
+                    if flat.get(key) is None:
+                        flat[key] = (got or {}).get(key)
+                continue
             cell_items.setdefault(spec["key"], []).append((spec, grid.get(row, {}).get(c, {}).get("value")))
         for key, items in cell_items.items():
             values = _read_back(items)
@@ -2557,6 +2983,12 @@ def extract(source: "str | bytes", definition: dict, template: "str | bytes | No
                 got = values[key]
                 values[key] = got if len(got) > 1 else (got[0] if got else None)
             flat.update(values)
+        hf = _header_footer(pkg.xml(sheet_parts[name]))
+        for tag, tpl in (sd.get("header_footer") or {}).items():
+            got = read_text(tpl.replace("&&", "&"), (hf[tag].text or "").replace("&&", "&")) if tag in hf else None
+            for key, _ in text_fields(tpl):
+                if flat.get(key) is None:
+                    flat[key] = (got or {}).get(key)
     return _to_data(flat), notes
 
 
@@ -2570,6 +3002,10 @@ def validate_definition(template: "str | bytes", definition: dict) -> None:
             raise TemplateError(f"テンプレートにシート「{sd['name']}」がありません")
         for ref in (sd.get("cells") or {}):
             split_ref(ref)
+        for tag in (sd.get("header_footer") or {}):
+            if tag not in HEADER_FOOTER_TAGS:
+                raise TemplateError(f"header_footer の {tag!r} は、{', '.join(HEADER_FOOTER_TAGS)} のどれかにしてください")
+        sheet_cell_keys(sd)   # 文のひな形の波かっこを確かめる
         for spec in sd.get("clear") or []:
             parse_cell_spec(spec)
         for spec in sd.get("drop_rows") or []:

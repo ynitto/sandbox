@@ -118,7 +118,8 @@ def make_template(path: str) -> None:
 
 def full_data() -> dict:
     return {
-        "s1": {"title": "2026年度 第3四半期 報告", "subtitle": "株式会社テスト 御中"},
+        "文書": {"年度": 2026, "四半期": 3},   # 表紙のタイトルの、年度・四半期だけが変わる
+        "s1": {"subtitle": "株式会社テスト 御中"},
         "s2": {"title": "課題", "points": ["確認に時間がかかる", {"text": "担当が 2 人", "level": 1}, "様式がばらばら"]},
         "s3": [{"title": "施策 1", "目的": "確認を自動化する"}, {"title": "施策 2", "目的": "様式を統一する"},
                {"title": "施策 3", "目的": "差し戻し理由を記録する"}],
@@ -191,7 +192,9 @@ class AnalyzeTest(Base):
         self.assertTrue(d["strict"])
         self.assertTrue(d["properties"]["scrub"])
         s1 = self.sd(1)
-        self.assertEqual(sorted(pt._spec(v)["key"] for v in s1["texts"].values()), ["subtitle", "title"])
+        self.assertEqual(sorted(pt._spec(v).get("key", "") for v in s1["texts"].values()), ["", "subtitle"])
+        self.assertIn({"text": "{文書.年度}年度 第{文書.四半期}四半期 報告", "max_chars": 23},
+                      [pt._spec(v) for v in s1["texts"].values()])
         s2 = self.sd(2)
         spec = next(iter(s2["lists"].values()))
         self.assertEqual((spec["key"], spec["max_items"]), ("points", 3))
@@ -355,10 +358,10 @@ class FitTest(Base):
         self.assertTrue(any("収まらない" in w for w in warnings))
 
     def test_geometric_overflow_without_budget(self):
-        spec = next(iter(self.sd(1)["texts"].values()))
+        spec = next(s for s in self.sd(1)["texts"].values() if s.get("key") == "subtitle")
         spec.pop("max_chars")
         data = full_data()
-        data["s1"]["title"] = "とても長い表題" * 12
+        data["s1"]["subtitle"] = "とても長い宛名" * 12
         with self.assertRaises(pt.TemplateError) as cm:
             self.render(data)
         self.assertIn("行になる", str(cm.exception))
@@ -579,6 +582,40 @@ class OpensCleanlyTest(Base):
                         self.assertIn(v, rids)
 
 
+class DocumentValueTest(unittest.TestCase):
+    """表紙のタイトル・作成日のように、データではないが文書ごとに変わる値（文書の値）。"""
+
+    def test_label_values_and_titles_become_document_values(self):
+        d = tempfile.mkdtemp()
+        tpl, out = os.path.join(d, "t.pptx"), os.path.join(d, "o.pptx")
+        prs = Presentation()
+        s = prs.slides.add_slide(prs.slide_layouts[5])   # タイトルのみ
+        s.shapes.title.text = "売上明細（2025年9月）"
+        lab = s.shapes.add_textbox(Emu(2 * CM), Emu(6 * CM), Emu(3 * CM), Emu(1 * CM))
+        lab.text_frame.text = "作成日："
+        val = s.shapes.add_textbox(Emu(5 * CM), Emu(6 * CM), Emu(6 * CM), Emu(1 * CM))
+        val.text_frame.text = "2025年7月1日"
+        prs.save(tpl)
+        definition = pt.analyze(tpl)
+        specs = [pt._spec(v) for v in definition["slides"][0]["texts"].values()]
+        self.assertIn("売上明細（{文書.年月:%Y年%-m月}）", [x.get("text") for x in specs])
+        self.assertIn("{文書.作成日:%Y年%-m月%-d日}", [x.get("text") for x in specs])
+        self.assertIn("文書.作成日: 日付（2026-10-08）", pt.value_notes(definition))
+        data = {"文書": {"年月": "2026-09", "作成日": "2026-10-01"}}
+        self.assertEqual(pt.skeleton_data(definition)["文書"], {"年月": None, "作成日": None})
+        pt.render(tpl, definition, data, out)
+        texts = [sh.text_frame.text for sh in Presentation(out).slides[0].shapes if sh.has_text_frame]
+        self.assertIn("売上明細（2026年9月）", texts)
+        self.assertIn("2026年10月1日", texts)
+        back, _ = pt.extract(out, definition, tpl)
+        self.assertEqual(back["文書"], data["文書"])
+        with self.assertRaises(pt.TemplateError) as cm:   # 書き忘れた文書の値は、崩れた文のまま出さずに止める
+            pt.render(tpl, definition, {"文書": {"年月": "2026-09"}}, out)
+        self.assertIn("文書.作成日", str(cm.exception))
+        warnings = pt.render(tpl, definition, {"文書": dict(data["文書"], 作成者="x")}, out)
+        self.assertTrue([w for w in warnings if "文書.作成者" in w])
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -652,7 +689,7 @@ class SplitDataTest(Base):
         data = full_data()
         folder = os.path.join(self.dir, "data")
         os.makedirs(folder)
-        self.write("data/01-head.yaml", {"s1": data["s1"], "s2": data["s2"], "s3": data["s3"][:2]})
+        self.write("data/01-head.yaml", {"文書": data["文書"], "s1": data["s1"], "s2": data["s2"], "s3": data["s3"][:2]})
         self.write("data/02-more.yaml", {"s3": data["s3"][2:], "s5": data["s5"]})
         self.write("data/03-rest.json", {"s6": data["s6"], "s7": data["s7"]})
         self.assertEqual(pt.load_data(folder), data)   # 繰り返すスライドの配列は、ファイルの順につなぐ
@@ -683,7 +720,7 @@ class SplitDataTest(Base):
         parts = dict(pt.split_data(data, definition))
         self.assertEqual(list(parts), ["00-common", "01-表紙", "02-施策", "03-状況"])
         self.assertEqual(set(parts["02-施策"]), {"s3", "s5"})
-        self.assertEqual(parts["00-common"], {"memo": "定義に無いキー"})
+        self.assertEqual(parts["00-common"], {"文書": {"年度": 2026, "四半期": 3}, "memo": "定義に無いキー"})   # 文書の値は共通
         # 流し込む欄の無いスライド（取り出すと空になる）だけの章は、ファイルにしない
         data = dict(full_data(), s1={}, s2={})
         self.assertNotIn("01-表紙", dict(pt.split_data(data, definition)))
@@ -700,7 +737,7 @@ class SplitDataTest(Base):
         r = subprocess.run([sys.executable, cli, "extract", "out.pptx", "--def", "def.yaml", "--split", "parts"],
                            capture_output=True, text=True, cwd=self.dir)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(sorted(os.listdir(os.path.join(self.dir, "parts"))), ["01-表紙.yaml", "02-施策.yaml", "03-状況.yaml"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.dir, "parts"))), ["00-common.yaml", "01-表紙.yaml", "02-施策.yaml", "03-状況.yaml"])
         self.assertEqual(pt.load_data(os.path.join(self.dir, "parts")), full_data())
         r = subprocess.run([sys.executable, cli, "render", "--def", "def.yaml", "--data", "parts", "-o", "o2.pptx"],
                            capture_output=True, text=True, cwd=self.dir)
@@ -709,7 +746,7 @@ class SplitDataTest(Base):
 
     def test_without_sections_one_file_per_slide(self):
         names = [n for n, _ in pt.split_data(full_data(), self.definition)]
-        self.assertEqual(names, ["01-s1", "02-s2", "03-s3", "04-s5", "05-s6", "06-s7"])
+        self.assertEqual(names, ["00-common", "01-s1", "02-s2", "03-s3", "04-s5", "05-s6", "06-s7"])
 
     def test_standalone_script_takes_several_files(self):
         script = os.path.join(self.dir, "render_report.py")
@@ -781,7 +818,8 @@ class FromScenariosTest(unittest.TestCase):
         raw = io_replace(self.path("t.pptx"), "docProps/app.xml", app.encode())
         self.assertTrue(any("スライドの題" in p for p in pt.provenance(raw)))
         definition = pt.analyze(raw)
-        pt.render(raw, definition, {"s1": {"title": "北斗製薬様 定例報告"}}, self.path("o.pptx"))
+        self.assertEqual(pt._spec(next(iter(definition["slides"][0]["texts"].values())))["text"], "{文書.宛先}様 定例報告")
+        pt.render(raw, definition, {"文書": {"宛先": "北斗製薬"}}, self.path("o.pptx"))
         with zipfile.ZipFile(self.path("o.pptx")) as z:
             self.assertNotIn("東邦物流", z.read("docProps/app.xml").decode())
 

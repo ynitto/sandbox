@@ -26,8 +26,9 @@ import fixtures
 SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "scripts")
 
 DATA = {
-    "表紙": {"title": "2026年度 第3四半期 業務報告書", "日付": "2026年10月8日", "宛先": "北斗製薬株式会社 御中",
-           "件名": "基幹システムの定例報告"},
+    # 表題の年度・四半期、日付、件名は文書の値（表題の「業務報告書」は残る）
+    "文書": {"年度": 2026, "四半期": 3, "日付": "2026-10-08", "件名": "基幹システムの定例報告"},
+    "表紙": {"宛先": "北斗製薬株式会社 御中"},
     "概要": {"body": "夜間バッチの遅延が 2 回あった。\nどちらも翌朝に復旧した。\n\n来月から監視を 5 分間隔に変える。"},
     "施策": [
         {"title": "監視の強化", "目的": "遅延に早く気づく", "担当": "小林", "points": ["間隔を決める", "通知先を決める", "試す"]},
@@ -100,7 +101,8 @@ class AnalyzeTest(Base):
         self.assertEqual(d["properties"], {"scrub": True})
         cover = self.part("p1")
         self.assertEqual(cover["key"], "表紙")
-        self.assertEqual([s["key"] for s in cover["texts"].values()], ["title", "日付", "宛先", "件名"])
+        self.assertEqual([s.get("key", s.get("text")) for s in cover["texts"].values()],
+                         ["{文書.年度}年度 第{文書.四半期}四半期 業務報告書", "{文書.日付:%Y年%-m月%-d日}", "宛先", "文書.件名"])
         self.assertEqual(cover["texts"]["#4"]["after"], "件名：")
         self.assertEqual(self.part("p2")["texts"]["#6-#7"]["key"], "body")
         self.assertEqual(self.part("p2")["keep"], ["#5"])
@@ -190,13 +192,13 @@ class RenderTest(Base):
 
     def test_overflow(self):
         data = deepcopy(DATA)
-        data["表紙"]["title"] = "2026年度 第3四半期 基幹システム 業務報告書（改訂版）"
+        data["文書"]["四半期"] = "3（基幹システム・改訂版）"
         data["概要"]["body"] = "一\n\n二\n\n三\n\n四"
         data["施策"][0]["points"] = list("abcdef")
         with self.assertRaises(dt.TemplateError) as cm:
             self.render(data)
         msg = str(cm.exception)
-        self.assertIn("表紙.title（#1）: 30 字。サンプルの粒度は 18 字まで（12 字減らす）", msg)
+        self.assertIn("文書.年度・文書.四半期（表紙 の #1）: 30 字。サンプルの粒度は 18 字まで（12 字減らす）", msg)
         self.assertIn("概要.body（#6-#7）: 4 段落。サンプルの粒度は 3 段落まで", msg)
         self.assertIn("施策[0].points（#12-#13）: 6 項目", msg)
         self.render(data, allow_overflow=True)
@@ -259,7 +261,7 @@ class ExtractTest(Base):
 
     def test_split_and_merge(self):
         parts = dt.split_data(DATA, self.definition)
-        self.assertEqual([n for n, _ in parts], ["01-表紙", "02-概要", "03-施策", "04-進捗", "05-連絡先"])
+        self.assertEqual([n for n, _ in parts], ["00-common", "01-表紙", "02-概要", "03-施策", "04-進捗", "05-連絡先"])
         self.assertEqual(dt.merge_data(parts), DATA)
         with self.assertRaises(dt.TemplateError):
             dt.merge_data([("a", {"表紙": {"title": "A"}}), ("b", {"表紙": {"title": "B"}})])
@@ -460,6 +462,43 @@ class RepeatFitTest(Base):
         with self.assertRaises(dt.TemplateError) as e:
             dt.render(self.template, self.definition, data, os.path.join(self.dir, "o.docx"))
         self.assertIn("施策: []", str(e.exception))
+
+
+class DocumentValueTest(Base):
+    """表題の年度・日付・件名、フッターの表題のように、データではないが文書ごとに変わる値（文書の値）。"""
+
+    def test_one_line_title_budget_stays_on_one_line(self):
+        from docx import Document
+        d = Document(self.template)
+        d.paragraphs[0].text = "ABCDEFGHIJ abcdefghij 報告"   # 半角が多く、字数（25）では 2 行ぶんに見える
+        d.save(self.template)
+        view = dt.DocView(dt.open_doc(self.template))
+        cap = view.capacity(view.blocks[0])
+        self.assertEqual(cap.lines_for(dt.para_text(view.blocks[0])), 1)
+        spec = dt.analyze(self.template)["parts"][0]["texts"]["#1"]
+        self.assertLessEqual(spec["max_chars"], 25)   # 1 行の表題は 1 行のまま（以前は 36 字まで通し、2 行に折り返した）
+
+    def test_footer_text_is_a_document_value(self):
+        from docx import Document
+        d = Document(self.template)
+        d.sections[0].footer.paragraphs[0].text = "2025年度 第1四半期 業務報告書"
+        d.save(self.template)
+        definition = dt.analyze(self.template)
+        ref, tpl = next(iter(definition["header_footer"].items()))
+        self.assertEqual(tpl, "{文書.年度}年度 第{文書.四半期}四半期 業務報告書")   # 表紙の表題と同じキー
+        out = self.path("o.docx")
+        dt.render(self.template, definition, deepcopy(DATA), out)
+        self.assertEqual(Document(out).sections[0].footer.paragraphs[0].text, "2026年度 第3四半期 業務報告書")
+        data, _ = dt.extract(out, definition, self.template)
+        self.assertEqual(data["文書"], DATA["文書"])
+        self.assertIn("文書.日付: 日付（2026-10-08）", dt.value_notes(definition))
+        self.assertEqual(dt.skeleton_data(definition)["文書"], {"年度": None, "四半期": None, "日付": None, "件名": None})
+        self.assertTrue([n for n in dt.value_notes(definition) if n.startswith("文書.年度:")])
+        data = deepcopy(DATA)
+        del data["文書"]["年度"]
+        with self.assertRaises(dt.TemplateError) as cm:   # 書き忘れた文書の値は、崩れた文のまま出さずに止める
+            dt.render(self.template, definition, data, out)
+        self.assertIn("文書.年度", str(cm.exception))
 
 
 if __name__ == "__main__":
