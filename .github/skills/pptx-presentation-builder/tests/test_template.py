@@ -609,6 +609,11 @@ class DocumentValueTest(unittest.TestCase):
         self.assertIn("2026年10月1日", texts)
         back, _ = pt.extract(out, definition, tpl)
         self.assertEqual(back["文書"], data["文書"])
+        with self.assertRaises(pt.TemplateError) as cm:   # 書き忘れた文書の値は、崩れた文のまま出さずに止める
+            pt.render(tpl, definition, {"文書": {"年月": "2026-09"}}, out)
+        self.assertIn("文書.作成日", str(cm.exception))
+        warnings = pt.render(tpl, definition, {"文書": dict(data["文書"], 作成者="x")}, out)
+        self.assertTrue([w for w in warnings if "文書.作成者" in w])
 
 
 if __name__ == "__main__":
@@ -813,7 +818,8 @@ class FromScenariosTest(unittest.TestCase):
         raw = io_replace(self.path("t.pptx"), "docProps/app.xml", app.encode())
         self.assertTrue(any("スライドの題" in p for p in pt.provenance(raw)))
         definition = pt.analyze(raw)
-        pt.render(raw, definition, {"s1": {"title": "北斗製薬様 定例報告"}}, self.path("o.pptx"))
+        self.assertEqual(pt._spec(next(iter(definition["slides"][0]["texts"].values())))["text"], "{文書.宛先}様 定例報告")
+        pt.render(raw, definition, {"文書": {"宛先": "北斗製薬"}}, self.path("o.pptx"))
         with zipfile.ZipFile(self.path("o.pptx")) as z:
             self.assertNotIn("東邦物流", z.read("docProps/app.xml").decode())
 

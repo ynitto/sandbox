@@ -906,7 +906,8 @@ VAR_PATTERNS = [
     ("版", re.compile(r"第\s*(\d+(?:\.\d+)*)\s*版"), "str1"),
     ("版", re.compile(r"(?<![A-Za-z])(?:Ver\.?|ver\.?|[vV])\s?(\d+(?:\.\d+)+)"), "str1"),
 ]
-VAR_ADDRESSEE_RE = re.compile(r"^(?P<name>\S.*?)\s*(?P<tail>御中|様|殿)\s*$")
+VAR_ADDRESSEE_RE = re.compile(r"^(?P<name>\S.*?)\s*(?P<tail>御中|様|殿)(?=\s|$|向け)")   # 「北斗製薬様 定例報告」の文頭の宛名も
+NOT_ADDRESSEE = {"お客", "皆", "各位", "関係者各位"}
 LABELLED_RE = re.compile(r"^(?P<label>[^:：\d]{1,15})\s*[:：]\s*")
 
 
@@ -920,6 +921,11 @@ def variable_parts(text: str) -> "tuple[str, list[tuple[str, Any]]] | None":
         return None
     hits: list[tuple[int, int, str, str, Any]] = []   # (先頭, 末尾, 名前, 欄の中身, 値)
     taken: list[tuple[int, int]] = []
+    m = VAR_ADDRESSEE_RE.match(text)
+    if m and len(m.group("name").strip()) >= 2 and m.group("name").strip() not in NOT_ADDRESSEE \
+            and not DOC_LABEL_RE.match(m.group("name").strip()) and not any(rx.search(m.group("name")) for _, rx, _ in VAR_PATTERNS):
+        hits.append((m.start("name"), m.end("name"), "宛先", "", m.group("name").strip()))
+        taken.append(m.span())
     for name, rx, kind in VAR_PATTERNS:
         for m in rx.finditer(text):
             if any(a < m.end() and m.start() < b for a, b in taken):
@@ -944,9 +950,6 @@ def variable_parts(text: str) -> "tuple[str, list[tuple[str, Any]]] | None":
             taken.append(m.span())
             hits.append((span[0], span[1], name, fmt, value))
     if not hits:
-        m = VAR_ADDRESSEE_RE.match(text)
-        if m and len(m.group("name").strip()) >= 2 and not DOC_LABEL_RE.match(m.group("name").strip()):
-            return "{宛先}" + text[m.end("name"):], [("宛先", m.group("name").strip())]
         return None
     hits.sort()
     lab = LABELLED_RE.match(text)
@@ -1563,6 +1566,9 @@ def render(template: "str | bytes", definition: dict, data: dict, output: str) -
     _fix_workbook(pkg, maps)
     props = {k: fill_text(v, data, f"properties の {k}") if isinstance(v, str) else v
              for k, v in (definition.get("properties") or {}).items()}
+    used = {k for sd in definition["sheets"] for k in sheet_cell_keys(sd)}
+    used |= {k for v in (definition.get("properties") or {}).values() if isinstance(v, str) for k, _ in text_fields(v)}
+    warnings += unused_doc_warnings(data, used)
     apply_properties(pkg, props)
     if props.get("scrub"):
         n = drop_comments(pkg)
@@ -2067,6 +2073,32 @@ def read_text(tpl: str, text: Any) -> "dict | None":
         else:
             out[key] = int(v) if re.fullmatch(r"[+-]?\d+", v) and not (len(v) > 1 and v[0] == "0") else v
     return out
+
+
+def text_notes(tpl: str) -> dict:
+    """文のひな形の欄の書き方（雛形の null だけでは、文のどこに入るかが分からない）。"""
+    notes = {}
+    for key, fmt in text_fields(tpl):
+        if "%" in fmt:
+            notes[key] = f"{key}: 日付（2026-10-08）" if re.search(r"%-?d", fmt) else f"{key}: 年月（2026-10）"
+        else:
+            notes.setdefault(key, f"{key}: 「{tpl}」の {{{key}}} に入る文字")
+    return notes
+
+
+def unused_doc_warnings(data: Any, used: "set[str]") -> list[str]:
+    """データの `文書:` にあって、定義のどこでも使われていない値（綴りの違いの疑い）。"""
+    def leaves(obj, path):
+        if isinstance(obj, dict) and obj:
+            for k, v in obj.items():
+                yield from leaves(v, f"{path}.{k}")
+        else:
+            yield path
+    doc = data.get(DOC_PREFIX) if isinstance(data, dict) else None
+    if not isinstance(doc, dict):
+        return []
+    unused = [p for p in leaves(doc, DOC_PREFIX) if not any(p == u or p.startswith(u + ".") or u.startswith(p + ".") for u in used)]
+    return [f"データの {', '.join(unused)} は、定義のどこでも使われていません（綴りの違いを疑う）"] if unused else []
 
 
 def _header_footer(root) -> dict:
@@ -2774,9 +2806,7 @@ def value_notes(definition: dict) -> list[str]:
         specs = [(None, s if isinstance(s, dict) else {"key": s}) for s in (sd.get("cells") or {}).values()
                  if not (isinstance(s, dict) and "text" in s)]
         for tpl in sheet_texts(sd):
-            for key, fmt in text_fields(tpl):
-                if "%" in fmt:
-                    notes[key] = f"{key}: 日付（2026-10-08）" if re.search(r"%-?d", fmt) else f"{key}: 年月（2026-10）"
+            notes.update(text_notes(tpl))
         for t in sd.get("tables", []):
             colmaps = t["block"] if t.get("block_rows", 1) > 1 and t.get("block") else [t.get("columns")]
             specs += [(t["key"], c) for cols in colmaps for c in (cols or {}).values()]
@@ -2792,6 +2822,9 @@ def value_notes(definition: dict) -> list[str]:
                 notes[name] = f"{name}: {' / '.join(str(k).lower() if isinstance(k, bool) else str(k) for k in spec['map'])} のどれか"
             elif "part" in spec:
                 notes[name] = f"{name}: 日付（2026-10-08）"
+    for v in (definition.get("properties") or {}).values():
+        if isinstance(v, str):
+            notes.update(text_notes(v))
     return list(notes.values())
 
 

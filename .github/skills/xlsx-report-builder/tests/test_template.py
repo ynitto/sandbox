@@ -1684,6 +1684,16 @@ class DocumentValueTests(Base):
         cells = xt.analyze(self.tpl)["sheets"][1]["cells"]
         self.assertEqual(cells["A1"], {"text": "前年（{文書.年度2}年度）との比較"})
 
+    def test_addressee_at_the_head_of_a_title_and_unused_document_values(self):
+        self.assertEqual(xt.variable_parts("東邦物流様 システム保守 定例報告")[0], "{宛先}様 システム保守 定例報告")
+        self.assertEqual(xt.variable_parts("東邦物流様向け 社外秘")[0], "{宛先}様向け 社外秘")
+        self.assertIsNone(xt.variable_parts("お客様 各位"))
+        self.assertIn("文書.宛先: 「{文書.宛先} 御中」の {文書.宛先} に入る文字", xt.value_notes(self.d))
+        data = json.loads(json.dumps(REPORT_DATA))
+        data["文書"]["宛名"] = "綴り違い"
+        warnings = xt.render(self.tpl, self.d, data, os.path.join(self.dir, "o.xlsx"))
+        self.assertTrue([w for w in warnings if "文書.宛名" in w and "使われていません" in w])
+
     def test_variable_parts_leave_notes_and_placeholders_alone(self):
         self.assertIsNone(xt.variable_parts("※ 2024年4月より税率を変更しています"))
         self.assertIsNone(xt.variable_parts("サンプル株式会社 御中"))

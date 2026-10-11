@@ -198,7 +198,7 @@ class RenderTest(Base):
         with self.assertRaises(dt.TemplateError) as cm:
             self.render(data)
         msg = str(cm.exception)
-        self.assertIn("表紙.{文書.年度}年度 第{文書.四半期}四半期 業務報告書（#1）: 30 字。サンプルの粒度は 18 字まで（12 字減らす）", msg)
+        self.assertIn("文書.年度・文書.四半期（表紙 の #1）: 30 字。サンプルの粒度は 18 字まで（12 字減らす）", msg)
         self.assertIn("概要.body（#6-#7）: 4 段落。サンプルの粒度は 3 段落まで", msg)
         self.assertIn("施策[0].points（#12-#13）: 6 項目", msg)
         self.render(data, allow_overflow=True)
@@ -467,6 +467,17 @@ class RepeatFitTest(Base):
 class DocumentValueTest(Base):
     """表題の年度・日付・件名、フッターの表題のように、データではないが文書ごとに変わる値（文書の値）。"""
 
+    def test_one_line_title_budget_stays_on_one_line(self):
+        from docx import Document
+        d = Document(self.template)
+        d.paragraphs[0].text = "ABCDEFGHIJ abcdefghij 報告"   # 半角が多く、字数（25）では 2 行ぶんに見える
+        d.save(self.template)
+        view = dt.DocView(dt.open_doc(self.template))
+        cap = view.capacity(view.blocks[0])
+        self.assertEqual(cap.lines_for(dt.para_text(view.blocks[0])), 1)
+        spec = dt.analyze(self.template)["parts"][0]["texts"]["#1"]
+        self.assertLessEqual(spec["max_chars"], 25)   # 1 行の表題は 1 行のまま（以前は 36 字まで通し、2 行に折り返した）
+
     def test_footer_text_is_a_document_value(self):
         from docx import Document
         d = Document(self.template)
@@ -482,6 +493,12 @@ class DocumentValueTest(Base):
         self.assertEqual(data["文書"], DATA["文書"])
         self.assertIn("文書.日付: 日付（2026-10-08）", dt.value_notes(definition))
         self.assertEqual(dt.skeleton_data(definition)["文書"], {"年度": None, "四半期": None, "日付": None, "件名": None})
+        self.assertTrue([n for n in dt.value_notes(definition) if n.startswith("文書.年度:")])
+        data = deepcopy(DATA)
+        del data["文書"]["年度"]
+        with self.assertRaises(dt.TemplateError) as cm:   # 書き忘れた文書の値は、崩れた文のまま出さずに止める
+            dt.render(self.template, definition, data, out)
+        self.assertIn("文書.年度", str(cm.exception))
 
 
 if __name__ == "__main__":

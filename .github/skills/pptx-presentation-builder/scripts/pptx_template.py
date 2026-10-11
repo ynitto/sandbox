@@ -1462,7 +1462,8 @@ VAR_PATTERNS = [
     ("版", re.compile(r"第\s*(\d+(?:\.\d+)*)\s*版"), "str1"),
     ("版", re.compile(r"(?<![A-Za-z])(?:Ver\.?|ver\.?|[vV])\s?(\d+(?:\.\d+)+)"), "str1"),
 ]
-VAR_ADDRESSEE_RE = re.compile(r"^(?P<name>\S.*?)\s*(?P<tail>御中|様|殿)\s*$")
+VAR_ADDRESSEE_RE = re.compile(r"^(?P<name>\S.*?)\s*(?P<tail>御中|様|殿)(?=\s|$|向け)")   # 「北斗製薬様 定例報告」の文頭の宛名も
+NOT_ADDRESSEE = {"お客", "皆", "各位", "関係者各位"}
 LABELLED_RE = re.compile(r"^(?P<label>[^:：\d]{1,15})\s*[:：]\s*")
 
 
@@ -1476,6 +1477,11 @@ def variable_parts(text: str) -> "tuple[str, list[tuple[str, Any]]] | None":
         return None
     hits: list[tuple[int, int, str, str, Any]] = []   # (先頭, 末尾, 名前, 欄の中身, 値)
     taken: list[tuple[int, int]] = []
+    m = VAR_ADDRESSEE_RE.match(text)
+    if m and len(m.group("name").strip()) >= 2 and m.group("name").strip() not in NOT_ADDRESSEE \
+            and not DOC_LABEL_RE.match(m.group("name").strip()) and not any(rx.search(m.group("name")) for _, rx, _ in VAR_PATTERNS):
+        hits.append((m.start("name"), m.end("name"), "宛先", "", m.group("name").strip()))
+        taken.append(m.span())
     for name, rx, kind in VAR_PATTERNS:
         for m in rx.finditer(text):
             if any(a < m.end() and m.start() < b for a, b in taken):
@@ -1500,9 +1506,6 @@ def variable_parts(text: str) -> "tuple[str, list[tuple[str, Any]]] | None":
             taken.append(m.span())
             hits.append((span[0], span[1], name, fmt, value))
     if not hits:
-        m = VAR_ADDRESSEE_RE.match(text)
-        if m and len(m.group("name").strip()) >= 2 and not DOC_LABEL_RE.match(m.group("name").strip()):
-            return "{宛先}" + text[m.end("name"):], [("宛先", m.group("name").strip())]
         return None
     hits.sort()
     lab = LABELLED_RE.match(text)
@@ -1630,7 +1633,7 @@ def fill_text(tpl: str, data: Any, where: str, escape=None) -> str:
 
     data はデータか、キーから値を引く関数（無ければ KeyError）。
     """
-    lookup = data if callable(data) else (lambda key: dig(data, key))
+    lookup = data if callable(data) else (lambda key: _lookup(data, key))
     text_fields(tpl)   # 閉じていない波かっこを先に止める
 
     def sub(m: "re.Match") -> str:
@@ -1689,6 +1692,32 @@ def read_text(tpl: str, text: Any) -> "dict | None":
     return out
 
 
+def text_notes(tpl: str) -> dict:
+    """文のひな形の欄の書き方（雛形の null だけでは、文のどこに入るかが分からない）。"""
+    notes = {}
+    for key, fmt in text_fields(tpl):
+        if "%" in fmt:
+            notes[key] = f"{key}: 日付（2026-10-08）" if re.search(r"%-?d", fmt) else f"{key}: 年月（2026-10）"
+        else:
+            notes.setdefault(key, f"{key}: 「{tpl}」の {{{key}}} に入る文字")
+    return notes
+
+
+def unused_doc_warnings(data: Any, used: "set[str]") -> list[str]:
+    """データの `文書:` にあって、定義のどこでも使われていない値（綴りの違いの疑い）。"""
+    def leaves(obj, path):
+        if isinstance(obj, dict) and obj:
+            for k, v in obj.items():
+                yield from leaves(v, f"{path}.{k}")
+        else:
+            yield path
+    doc = data.get(DOC_PREFIX) if isinstance(data, dict) else None
+    if not isinstance(doc, dict):
+        return []
+    unused = [p for p in leaves(doc, DOC_PREFIX) if not any(p == u or p.startswith(u + ".") or u.startswith(p + ".") for u in used)]
+    return [f"データの {', '.join(unused)} は、定義のどこでも使われていません（綴りの違いを疑う）"] if unused else []
+
+
 
 
 _DOC_DATA: "dict | None" = None   # render・check の間だけ、データ全体（文書の値は、スライドのデータでなくここから引く）
@@ -1697,8 +1726,28 @@ _DOC_DATA: "dict | None" = None   # render・check の間だけ、データ全�
 def _lookup(obj: Any, key: str) -> Any:
     """欄の値。`文書.` で始まるキーは、スライドのデータではなく、データ全体の `文書:` から引く。"""
     if key.split(".")[0] == DOC_PREFIX and _DOC_DATA is not None:
-        return dig(_DOC_DATA, key)
+        cur: Any = _DOC_DATA   # 書き忘れると「 御中」のような崩れた文が黙って出るので、無ければ止める（null は空）
+        for part in key.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                raise TemplateError(f"データに {key!r} がありません（文書の値。空でよければ null と書く）")
+            cur = cur[part]
+        return cur
     return dig(obj, key)
+
+
+def doc_keys(definition: dict) -> set:
+    """定義が使う文書の値のキー（`文書.` で始まるもの）。"""
+    keys = set()
+    texts = [v for v in (definition.get("properties") or {}).values() if isinstance(v, str)]
+    texts += list((definition.get("header_footer") or {}).values())
+    for sd in definition.get("slides", []):
+        for spec in (sd.get("texts") or {}).values():
+            spec = _spec(spec)
+            if "text" in spec:
+                texts.append(spec["text"])
+            elif str(spec.get("key", "")).startswith(DOC_PREFIX + "."):
+                keys.add(spec["key"])
+    return keys | {k for t in texts for k, _ in text_fields(t) if k.startswith(DOC_PREFIX + ".")}
 
 
 def _hoist_doc(data: dict) -> dict:
@@ -2117,9 +2166,10 @@ def render(template: "str | bytes", definition: dict, data: Any, output: str,
             raise TemplateError("テンプレートの値が、定義のどこにも入らないまま残ります（keep・texts・clear などに入れる）:\n  "
                                 + "\n  ".join(left))
     defs = {int(sd["slide"]): sd for sd in definition.get("slides", [])}
-    props = {k: fill_text(v, lambda key: dig(data, key), f"properties の {k}") if isinstance(v, str) else v
+    props = {k: fill_text(v, lambda key: _lookup(data, key), f"properties の {k}") if isinstance(v, str) else v
              for k, v in (definition.get("properties") or {}).items()}
     known = {sd.get("key", sd.get("id")) for sd in defs.values() if not sd.get("drop")} | {DOC_PREFIX}
+    warnings += unused_doc_warnings(data, doc_keys(definition))
     unknown = [k for k in data if k not in known]
     if unknown:
         warnings.append(f"データの {', '.join(unknown)} は、どのスライドのキーにもありません（綴りの違いを疑う）")
@@ -2854,9 +2904,8 @@ def value_notes(definition: dict) -> list[str]:
             s = _spec(s)
             if s.get("key"):
                 note(s["key"] if s["key"].startswith(DOC_PREFIX + ".") else f"{base}.{s['key']}", s)
-            for key, fmt in text_fields(s["text"]) if "text" in s else []:
-                if "%" in fmt:
-                    notes[key] = f"{key}: 日付（2026-10-08）" if re.search(r"%-?d", fmt) else f"{key}: 年月（2026-10）"
+            if "text" in s:
+                notes.update(text_notes(s["text"]))
         for s in (sd.get("lists") or {}).values():
             s = _spec(s)
             note(f"{base}.{s['key']}[]", s, "項目")
@@ -2878,6 +2927,9 @@ def value_notes(definition: dict) -> list[str]:
                     note(f"{base}.{d['key']}[].{s['key']}", s)
         if sd.get("overflow") == "split":
             notes[f"{base}.*"] = f"{base}: 項目・行が上限を超えたら、同じ形のスライドを続けて足す（split）"
+    for v in list((definition.get("properties") or {}).values()) + list((definition.get("header_footer") or {}).values()):
+        if isinstance(v, str):
+            notes.update(text_notes(v))
     return list(notes.values())
 
 
