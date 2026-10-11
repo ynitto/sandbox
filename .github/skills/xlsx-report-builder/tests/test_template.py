@@ -1612,12 +1612,27 @@ class DocumentValueTests(Base):
         self.assertEqual(cover["cells"]["B8"], {"text": "{文書.宛先} 御中"})
         self.assertEqual(cover["cells"]["G12"], {"text": "{文書.作成日:%Y年%-m月%-d日}"})
         self.assertEqual(cover["cells"]["G13"], "文書.作成者")
+        wb = load_workbook(self.tpl)
+        wb["表紙"]["G12"] = dt.date(2025, 7, 1)   # 日付のセルは、文のひな形でなくキーのまま（日付として入る）
+        wb["表紙"]["G12"].number_format = "yyyy/mm/dd"
+        wb.save(self.tpl)
+        self.assertEqual(xt.analyze(self.tpl)["sheets"][0]["cells"]["G12"], "文書.作成日")
         self.assertIn("B20", cover["keep"])   # 毎回同じ文字は残す
         self.assertEqual(cover["header_footer"], {"oddFooter": "&C{文書.年度}年度 第{文書.四半期}四半期 売上報告書"})
         self.assertEqual(items["cells"]["A1"], {"text": "売上明細（{文書.年月:%Y年%-m月}）"})
         self.assertEqual(items["cells"]["A2"], {"text": "対象期間: {文書.対象期間.開始:%Y/%m/%d}〜{文書.対象期間.終了:%Y/%m/%d}"})
         # 別のタブの同じ作成日は、同じキー（1 つの値が両方に入る）
         self.assertEqual(items["cells"]["G1"], {"text": "{文書.作成日:%Y年%-m月%-d日}"})
+
+    def test_inspect_marks_titles_but_not_values_inside_tables(self):
+        wb = load_workbook(self.tpl)
+        wb["明細"]["B5"] = "2025/07/01 納品"
+        wb.save(self.tpl)
+        facts = xt.inspect_template(self.tpl)
+        cells = {c["ref"]: c for sh in facts["sheets"] for row in sh["rows"] for c in row["cells"]}
+        self.assertIn("文書ごとに変わる値の疑い", cells["A1"].get("hint", ""))
+        self.assertNotIn("hint", cells["B5"])
+        self.assertEqual(facts["sheets"][0]["header_footer"], {"oddFooter": "&C2025年度 第2四半期 売上報告書"})
 
     def test_quantity_that_happens_to_be_1_2_3_is_not_a_serial_number(self):
         cols = self.d["sheets"][1]["tables"][0]["columns"]

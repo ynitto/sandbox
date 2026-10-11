@@ -1114,7 +1114,7 @@ def _fixed_cells(grid, sample_rows: set[int], header_rows: set[int], root,
                 key = doc.key(label.strip(" :："), value)
                 got = variable_parts(value) if isinstance(value, str) else None
                 if got and len(got[1]) == 1 and got[0].startswith("{" + got[1][0][0]) and got[0].endswith("}") \
-                        and ":" in got[0]:
+                        and ":" in got[0] and not got[0].endswith(":%Y-%m-%d}"):   # 日付のセル（2025-04-01）はキーのまま
                     # 「2025年7月1日」のような文字の日付は、同じ見た目で入るように書式つきの文にする
                     cells[i["ref"]] = {"text": "{" + key + got[0][len(got[1][0][0]) + 1:]}
                 else:
@@ -1252,6 +1252,8 @@ def inspect_template(template: "str | bytes") -> dict:
         root = pkg.xml(part)
         expand_shared_formulas(root)
         grid = _grid(root, sst, styles)
+        draft = _analyze_sheet(pkg, name, part, root, sst, styles)
+        in_tables = {r for t in draft["tables"] for r in range(t["header_row"], t["first_row"] + t["sample_rows"])}
         rows = []
         for r in sorted(grid):
             cells, blanks = [], []
@@ -1271,14 +1273,13 @@ def inspect_template(template: "str | bytes") -> dict:
                             item["hint"] = "仮の値の疑い"
                         elif NOTE_RE.match(i["value"]):
                             item["hint"] = "注記の疑い"
-                        elif variable_parts(i["value"]):
+                        elif r not in in_tables and variable_parts(i["value"]):
                             names = "・".join(dict.fromkeys(n for n, _ in variable_parts(i["value"])[1]))
                             item["hint"] = f"文書ごとに変わる値の疑い（{names}）"
                 cells.append(item)
             rows.append({"row": r, "cells": cells,
                          "styled_blank": f"{get_column_letter(min(blanks))}-{get_column_letter(max(blanks))}" if blanks else None,
                          "shape": [(c, classes.get(grid[r][c]["s"], "S0")) for c in sorted(grid[r])]})
-        draft = _analyze_sheet(pkg, name, part, root, sst, styles)
         sheets.append({
             "name": name,
             "merges": [m.get("ref") for m in root.iter(q("mergeCell"))],
