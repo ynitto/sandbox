@@ -1378,7 +1378,8 @@ def _cover_key(view: DocView, el, text: str, biggest: float) -> str:
     return "text"
 
 
-def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool) -> dict:
+def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool, doc: "DocValues | None" = None) -> dict:
+    doc = doc if doc is not None else DocValues()
     texts, lists, tables, keep, clear = {}, {}, [], [], []
     used: set = set()
     label = None
@@ -1423,11 +1424,17 @@ def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool) -> 
             n += 1
             continue
         if view.heading_level(el):
-            if PLACEHOLDER_RE.search(text):
-                texts[where] = {"key": _unique("title", used), "max_items": 1}
+            got = None if PLACEHOLDER_RE.search(text) else variable_parts(text)
+            if PLACEHOLDER_RE.search(text) or got:
+                # 見出しの中の年度・期間（「2025年度の実績」）は、可変の部分だけを文書の値にする
+                texts[where] = {"text": doc.template(*got)} if got else {"key": _unique("title", used)}
+                texts[where]["max_items"] = 1
                 bud = _line_budget(view, el, [text])
                 if bud:
                     texts[where]["max_chars"] = bud
+                if got:
+                    confirm.append(f"{where}: 見出し「{_short(text, 20)}」は、可変の部分だけを文書の値として流し込む"
+                                   f"（{texts[where]['text']}）。毎回同じ文字なら keep に移す")
             else:
                 keep.append(where)
             n += 1
@@ -1454,7 +1461,16 @@ def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool) -> 
         m = LABEL_VALUE_RE.match(text)
         if m and not view.is_list(el):
             key = re.sub(r"[\s　]+", "", m.group(1).strip().rstrip(":：\t"))
-            spec = {"key": _unique(key or "text", used), "after": m.group(1), "max_items": 1}
+            if key and DOC_LABEL_RE.match(key):
+                # 作成日・作成者・版など、文書全体の値。どの部分でも同じキーにし、データの「文書」にまとめる
+                value = text[len(m.group(1)):]
+                dkey = doc.key(key, value)
+                got = variable_parts(value)
+                whole = got and len(got[1]) == 1 and got[0].startswith("{" + got[1][0][0] + ":") and got[0].endswith("}")
+                spec = {"text": "{" + dkey + got[0][len(got[1][0][0]) + 1:]} if whole else {"key": dkey}
+                spec.update({"after": m.group(1), "max_items": 1})
+            else:
+                spec = {"key": _unique(key or "text", used), "after": m.group(1), "max_items": 1}
             bud = _line_budget(view, el, [text])
             if bud:
                 spec["max_chars"] = max(bud - len(m.group(1)), 1)
@@ -1475,6 +1491,18 @@ def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool) -> 
             lists[fmt_range(n, e)] = spec
             label = None
             n = e + 1
+            continue
+        got = variable_parts(text) if cover else None
+        if got:
+            # 表題・宛名・日付の中の、年度・四半期・日付・宛先。文の残りはそのまま、可変の部分だけを流し込む
+            spec = {"text": doc.template(*got), "max_items": 1}
+            bud = _line_budget(view, el, [text])
+            if bud:
+                spec["max_chars"] = bud
+            texts[where] = spec
+            confirm.append(f"{where}: 「{_short(text, 20)}」は、可変の部分だけを文書の値として流し込む（{spec['text']}）。"
+                           "毎回同じ文字なら keep に移す")
+            n += 1
             continue
         if cover:
             key = _cover_key(view, el, text, biggest)
@@ -1535,6 +1563,7 @@ def analyze(template: "str | bytes") -> dict:
     doc = open_doc(raw)
     view = DocView(doc)
     confirm: list[str] = []
+    dv = DocValues()   # 文書の値（年度・作成日・宛先など）の名前は、文書全体で 1 つ
     segs = _segments(view)
     repeats = {c["ranges"][0]: c for c in find_repeats(view)}
     parts: list[dict] = []
@@ -1558,7 +1587,7 @@ def analyze(template: "str | bytes") -> dict:
         rep = repeats.get((a, b))
         if rep is not None and rep["likely"]:
             ranges = rep["ranges"]
-            body = _analyze_part(view, a, b, confirm, cover=False)
+            body = _analyze_part(view, a, b, confirm, cover=False, doc=dv)
             for ra, rb in ranges[1:]:
                 _merge_budgets(body, _analyze_part(view, ra, rb, [], cover=False))
             heads = [para_text(view.blocks[x - 1]) for x, _ in ranges]
@@ -1591,7 +1620,7 @@ def analyze(template: "str | bytes") -> dict:
         if rep is not None:
             confirm.append(f"{' と '.join(fmt_range(x, y) for x, y in rep['ranges'])} は同じ形の節（{rep['evidence']}）。"
                            "同じ種類の節を並べたものなら、1 つめを repeat にして残りを drop にする")
-        body = _analyze_part(view, a, b, confirm, cover=not lvl)
+        body = _analyze_part(view, a, b, confirm, cover=not lvl, doc=dv)
         part["blocks"] = fmt_range(a, b)
         if any(body.get(s) for s in ("texts", "lists", "tables")):
             part["key"] = _unique(heading_key(head) if lvl else "表紙", keys)
@@ -1607,8 +1636,18 @@ def analyze(template: "str | bytes") -> dict:
     if any(p.get("group") for p in parts):
         confirm.append("データを分けるときは、章（見出し 1）ごとに 1 つのファイルにまとめる（group）。章で分かれない意味のまとまりは、"
                        "group を書き直す")
-    return {"version": DEF_VERSION, "template": "", "strict": True, "properties": {"scrub": True},
-            "parts": parts, "needs_confirm": confirm}
+    header_footer = {}
+    for ref, p in header_footer_paras(doc).items():
+        got = None if has_field(p) else variable_parts(para_text(p))
+        if got:   # ヘッダー・フッターの表題・年度（ページ番号などのフィールドを持つ段落は触らない）
+            header_footer[ref] = dv.template(*got)
+            confirm.append(f"ヘッダー・フッター {ref} の「{_short(para_text(p), 24)}」は、可変の部分を文書の値として流し込む"
+                           f"（{header_footer[ref]}）")
+    out = {"version": DEF_VERSION, "template": "", "strict": True, "properties": {"scrub": True}, "parts": parts}
+    if header_footer:
+        out["header_footer"] = header_footer
+    out["needs_confirm"] = confirm
+    return out
 
 
 def summarize(definition: dict) -> str:
@@ -1624,7 +1663,7 @@ def summarize(definition: dict) -> str:
         lines.append(f"{head}: データ `{pd['key']}`{'（配列。1 件 1 節）' if pd.get('repeat') else ''}")
         for ref, spec in (pd.get("texts") or {}).items():
             spec = _spec(spec)
-            lines.append(f"  文字 {ref} → {spec.get('key')}{_limit(spec)}")
+            lines.append(f"  文字 {ref} → " + (f"文 {spec['text']!r}" if "text" in spec else str(spec.get("key"))) + _limit(spec))
         for ref, spec in (pd.get("lists") or {}).items():
             spec = _spec(spec)
             lines.append(f"  リスト {ref} → {spec.get('key')}[]{_limit(spec, '項目')}")
@@ -1643,6 +1682,312 @@ def summarize(definition: dict) -> str:
         lines.append("確認すること:")
         lines.extend(f"  ? {c}" for c in definition["needs_confirm"])
     return "\n".join(lines)
+
+
+
+# ---------------------------------------------------------------------------
+# 文書の値（表紙・タイトルの年度・期間・宛名・作成日など）。データでもラベルでもなく、文書ごとに変わる値
+# ---------------------------------------------------------------------------
+
+DOC_PREFIX = "文書"
+# ラベルがこれなら、その右の値は表の外の 1 件の値ではなく、文書全体の値（どのタブでも同じ値が入る）
+DOC_LABEL_RE = re.compile(r"^(作成日|作成者|作成部署|発行日|発行者|提出日|提出先|報告日|報告者|更新日|改訂日|日付|"
+                          r"文書番号|文書名|資料番号|管理番号|版|版数|バージョン|Ver\.?|宛先|宛名|件名|表題|タイトル|"
+                          r"プロジェクト名?|案件名|システム名|対象期間|期間|報告期間|年度)$", re.I)
+
+
+def _date_fmt(text: str, m: "re.Match", codes: dict) -> str:
+    """一致した日付の文字から、同じ見た目に戻す書式（`2025/07/01` → `%Y/%m/%d`、`7月` → `%-m月`）を作る。"""
+    # 月・日のどれかが 0 埋め（07）なら 0 埋めの書式、どれも 1 桁か 10 以上なら 0 を付けない書式
+    padded = any(m.group(g).startswith("0") for g, code in codes.items() if code != "Y")
+    out, pos = "", m.start()
+    for g, code in codes.items():
+        a, b = m.span(g)
+        out += text[pos:a].replace("%", "%%") + (f"%{code}" if code == "Y" or padded else f"%-{code}")
+        pos = b
+    return out + text[pos:m.end()].replace("%", "%%")
+
+
+# 文の中の可変の部分。(名前, 正規表現, 種類)。上から順に、重ならないものを拾う
+VAR_PATTERNS = [
+    ("日付", re.compile(r"(?<!\d)(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"), "date"),
+    ("日付", re.compile(r"(?<![\d./-])(\d{4})([/.\-])(\d{1,2})\2(\d{1,2})(?![\d./-])"), "date_sep"),
+    ("年月", re.compile(r"(?<!\d)(\d{4})\s*年\s*(\d{1,2})\s*月(?!\s*\d)"), "ym"),
+    ("年月", re.compile(r"(?<![\d./-])(\d{4})/(\d{1,2})(?![\d./-])"), "ym_sep"),
+    ("年度", re.compile(r"(?<!\d)(\d{4})\s*年度"), "int1"),
+    ("和暦年度", re.compile(r"(?:令和|平成)\s*(\d{1,2}|元)\s*年度"), "wareki"),
+    ("和暦年", re.compile(r"(?:令和|平成)\s*(\d{1,2}|元)\s*年(?!度)"), "wareki"),
+    ("年", re.compile(r"(?<!\d)(\d{4})\s*年(?![度\d])"), "int1"),
+    ("四半期", re.compile(r"第\s*([1-4])\s*四半期"), "int1"),
+    ("四半期", re.compile(r"(?<![A-Za-z0-9])Q([1-4])(?![A-Za-z0-9])"), "int1"),
+    ("四半期", re.compile(r"(?<![A-Za-z0-9])([1-4])Q(?![A-Za-z0-9])"), "int1"),
+    ("半期", re.compile(r"(上|下)半?期"), "str1"),
+    ("月", re.compile(r"(?<![\d/.\-])(\d{1,2})\s*月(?=度|分|[\s）)]|$)"), "int1"),
+    ("版", re.compile(r"第\s*(\d+(?:\.\d+)*)\s*版"), "str1"),
+    ("版", re.compile(r"(?<![A-Za-z])(?:Ver\.?|ver\.?|[vV])\s?(\d+(?:\.\d+)+)"), "str1"),
+]
+VAR_ADDRESSEE_RE = re.compile(r"^(?P<name>\S.*?)\s*(?P<tail>御中|様|殿)\s*$")
+LABELLED_RE = re.compile(r"^(?P<label>[^:：\d]{1,15})\s*[:：]\s*")
+
+
+def variable_parts(text: str) -> "tuple[str, list[tuple[str, Any]]] | None":
+    """文の中の、文書ごとに変わりそうな部分（年度・四半期・年月・日付・版・宛名）を、欄（{名前}）にしたひな形にする。
+
+    返すのは (ひな形, [(欄の名前, 今の値), …])。可変の部分が無ければ None。欄の名前は、まだ `文書.` を付けない仮の名前。
+    注記（※）や長い文は対象にしない。
+    """
+    if not isinstance(text, str) or not text.strip() or len(text) > 80 or NOTE_RE.match(text) or PLACEHOLDER_RE.search(text):
+        return None
+    hits: list[tuple[int, int, str, str, Any]] = []   # (先頭, 末尾, 名前, 欄の中身, 値)
+    taken: list[tuple[int, int]] = []
+    for name, rx, kind in VAR_PATTERNS:
+        for m in rx.finditer(text):
+            if any(a < m.end() and m.start() < b for a, b in taken):
+                continue
+            if kind == "date":
+                fmt = _date_fmt(text, m, {1: "Y", 2: "m", 3: "d"})
+                value = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                span = m.span()
+            elif kind == "date_sep":
+                fmt = _date_fmt(text, m, {1: "Y", 3: "m", 4: "d"})
+                value = f"{int(m.group(1)):04d}-{int(m.group(3)):02d}-{int(m.group(4)):02d}"
+                span = m.span()
+            elif kind in ("ym", "ym_sep"):
+                fmt = _date_fmt(text, m, {1: "Y", 2: "m"})
+                value = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+                span = m.span()
+            else:
+                fmt = ""
+                g = m.group(1)
+                value = 1 if g == "元" else int(g) if kind in ("int1", "wareki") else g
+                span = m.span(1)
+            taken.append(m.span())
+            hits.append((span[0], span[1], name, fmt, value))
+    if not hits:
+        m = VAR_ADDRESSEE_RE.match(text)
+        if m and len(m.group("name").strip()) >= 2 and not DOC_LABEL_RE.match(m.group("name").strip()):
+            return "{宛先}" + text[m.end("name"):], [("宛先", m.group("name").strip())]
+        return None
+    hits.sort()
+    lab = LABELLED_RE.match(text)
+    dates = [h for h in hits if h[2] == "日付"]
+    names: list[str] = []
+    for h in hits:
+        name = h[2]
+        if lab and len(hits) == len(dates) and dates:
+            label = lab.group("label").strip()
+            name = label if len(dates) == 1 else (f"{label}.開始" if h is dates[0] else f"{label}.終了") if len(dates) == 2 \
+                else label
+        names.append(name)
+    # 同じ名前が 2 つ以上なら 2, 3 … を付ける（同じ文の中で、違う値を同じ欄にしない）
+    seen: dict[str, int] = {}
+    out, fields, pos = "", [], 0
+    for (a, b, _, fmt, value), name in zip(hits, names):
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:
+            name = f"{name}{seen[name]}"
+        out += text[pos:a].replace("{", "{{").replace("}", "}}") + "{" + name + (f":{fmt}" if fmt else "") + "}"
+        fields.append((name, value))
+        pos = b
+    out += text[pos:].replace("{", "{{").replace("}", "}}")
+    return out, fields
+
+
+class DocValues:
+    """ブック全体の文書の値の名前。同じ名前で同じ値なら、同じキーにする（表紙とヘッダーの年度に、1 つの値が入る）。"""
+
+    def __init__(self) -> None:
+        self.values: dict[str, Any] = {}
+
+    def key(self, name: str, value: Any) -> str:
+        base = re.sub(r"[\s]+", "_", name.strip(" :：")) or "値"
+        cand, n = base, 2
+        while cand in self.values and self.values[cand] != value and value is not None and self.values[cand] is not None:
+            cand, n = f"{base}{n}", n + 1
+        if self.values.get(cand) is None:
+            self.values[cand] = value
+        return f"{DOC_PREFIX}.{cand}"
+
+    def template(self, tpl: str, fields: list[tuple[str, Any]]) -> str:
+        """variable_parts の仮の名前を、文書の値のキーに置き換える。"""
+        for name, value in fields:
+            key = self.key(name, value)
+            tpl = re.sub(r"\{" + re.escape(name) + r"(?=[:}])", "{" + key, tpl, count=1)
+        return tpl
+
+
+
+
+# ---------------------------------------------------------------------------
+# 文の中の一部を差し替える（`{文書.年度}年度 第{文書.四半期}四半期 売上報告書`）
+# ---------------------------------------------------------------------------
+
+TEXT_FIELD_RE = re.compile(r"\{\{|\}\}|\{([^{}:]+)(?::([^{}]*))?\}")
+
+
+def text_fields(tpl: str) -> list[tuple[str, str]]:
+    """文のひな形の中の欄 [(データのキー, 書式), …]。`{{`・`}}` は文字の波かっこ。"""
+    out, rest, pos = [], "", 0
+    for m in TEXT_FIELD_RE.finditer(str(tpl)):
+        rest += str(tpl)[pos:m.start()]
+        pos = m.end()
+        if m.group(1) is not None:
+            out.append((m.group(1).strip(), m.group(2) or ""))
+    rest += str(tpl)[pos:]
+    if "{" in rest or "}" in rest:
+        raise TemplateError(f"文のひな形 {tpl!r} の波かっこが閉じていません（文字の波かっこは {{{{ と }}}} と書く）")
+    return out
+
+
+def spec_keys(spec: Any) -> list[str]:
+    """固定セルの指定が使う、データのキーの一覧（文のひな形なら、その中の欄のキー）。"""
+    if not isinstance(spec, dict):
+        return [spec]
+    if "text" in spec:
+        return list(dict.fromkeys(k for k, _ in text_fields(spec["text"])))
+    return [spec["key"]]
+
+
+def _as_date(value: Any, where: str) -> "dt.date | dt.datetime":
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value
+    s = str(value).strip().replace("/", "-")
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", s)   # 年月だけ（2026-10）
+    if m:
+        return dt.date(int(m.group(1)), int(m.group(2)), 1)
+    try:
+        return dt.datetime.fromisoformat(s) if (" " in s or "T" in s) else dt.date.fromisoformat(
+            "-".join(p.zfill(2) for p in s.split("-")))
+    except ValueError:
+        raise TemplateError(f"{where} の値 {value!r} を日付として読めません（2026-10-08 か、年月なら 2026-10 の形で書く）")
+
+
+def _strftime(d: "dt.date | dt.datetime", fmt: str) -> str:
+    """strftime と同じ。ただし `%-m`・`%-d`・`%-H`（0 を付けない）は、どの OS でも使える。"""
+    def sub(m: "re.Match") -> str:
+        code = m.group(1)
+        if code.startswith("-"):
+            return str(int(d.strftime("%" + code[1:])))
+        return "%" if code == "%" else d.strftime("%" + code)
+    return re.sub(r"%(-?[A-Za-z%])", sub, fmt)
+
+
+def _field_text(value: Any, fmt: str, where: str) -> str:
+    if value is None:
+        return ""
+    if "%" in fmt:
+        return _strftime(_as_date(value, where), fmt)
+    if fmt:
+        try:
+            return format(value, fmt)
+        except (ValueError, TypeError):
+            raise TemplateError(f"{where} の値 {value!r} に書式 {fmt!r} を使えません")
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()
+    return str(value)
+
+
+def fill_text(tpl: str, data: Any, where: str, escape=None) -> str:
+    """文のひな形の欄を、データの値で埋める。値が null の欄は空にする。
+
+    data はデータか、キーから値を引く関数（無ければ KeyError）。
+    """
+    lookup = data if callable(data) else (lambda key: dig(data, key))
+    text_fields(tpl)   # 閉じていない波かっこを先に止める
+
+    def sub(m: "re.Match") -> str:
+        if m.group(1) is None:
+            return m.group(0)[0]
+        key = m.group(1).strip()
+        try:
+            value = lookup(key)
+        except KeyError:
+            raise TemplateError(f"データに {key!r} がありません（{where}）")
+        text = _field_text(value, m.group(2) or "", f"{where} の {key}")
+        return escape(text) if escape else text
+    return TEXT_FIELD_RE.sub(sub, str(tpl))
+
+
+def read_text(tpl: str, text: Any) -> "dict | None":
+    """fill_text の逆。文から欄の値を読み戻す（合わなければ None）。数字だけは数値、日付の書式は 2026-10-08 の形にする。"""
+    if text is None:
+        return None
+    pattern, names, n = "", {}, 0
+    pos = 0
+    for m in TEXT_FIELD_RE.finditer(str(tpl)):
+        pattern += re.escape(tpl[pos:m.start()])
+        pos = m.end()
+        if m.group(1) is None:
+            pattern += re.escape(m.group(0)[0])
+            continue
+        key = m.group(1).strip()
+        if key in names:
+            pattern += f"(?P={names[key][0]})"
+            continue
+        names[key] = (f"g{n}", m.group(2) or "")
+        pattern += f"(?P<g{n}>.*?)"
+        n += 1
+    pattern += re.escape(tpl[pos:])
+    m = re.fullmatch(pattern, str(text).strip(), re.S) or re.fullmatch(pattern, str(text), re.S)
+    if not m:
+        return None
+    out = {}
+    for key, (g, fmt) in names.items():
+        v = m.group(g).strip()
+        if not v:
+            out[key] = None
+        elif "%" in fmt:
+            try:
+                d = dt.datetime.strptime(v, re.sub(r"%-", "%", fmt))
+            except ValueError:
+                out[key] = v
+                continue
+            if "%d" in fmt or "%-d" in fmt:
+                out[key] = d.date().isoformat() if not re.search(r"%-?[HM]", fmt) else d.isoformat(sep=" ", timespec="minutes")
+            else:
+                out[key] = f"{d.year:04d}-{d.month:02d}"
+        else:
+            out[key] = int(v) if re.fullmatch(r"[+-]?\d+", v) and not (len(v) > 1 and v[0] == "0") else v
+    return out
+
+
+
+
+_DOC_DATA: "dict | None" = None   # render・check の間だけ、データ全体（文書の値は、部分のデータでなくここから引く）
+
+
+def _lookup(obj: Any, key: str) -> Any:
+    """欄の値。`文書.` で始まるキーは、部分のデータではなく、データ全体の `文書:` から引く。"""
+    if key.split(".")[0] == DOC_PREFIX and _DOC_DATA is not None:
+        return dig(_DOC_DATA, key)
+    return dig(obj, key)
+
+
+def _hoist_doc(data: dict) -> dict:
+    """部分のデータの中に入った `文書:` を、データ全体の `文書:` に移す（extract・雛形）。"""
+    doc: dict = {}
+    for key, val in list(data.items()):
+        for obj in (val if isinstance(val, list) else [val]):
+            if isinstance(obj, dict) and isinstance(obj.get(DOC_PREFIX), dict):
+                for k, v in obj.pop(DOC_PREFIX).items():
+                    if doc.get(k) is None:
+                        doc[k] = v
+    if doc:
+        data = {DOC_PREFIX: {**doc, **(data.get(DOC_PREFIX) or {})}, **{k: v for k, v in data.items() if k != DOC_PREFIX}}
+    return data
+
+
+def header_footer_paras(doc) -> dict:
+    """ヘッダー・フッターの段落。`footer1.xml#1`（部品の名前#段落の番号）→ 段落。"""
+    out = {}
+    for kind in ("header", "footer"):
+        for part in _parts_of(doc, kind):
+            name = str(part.partname).rsplit("/", 1)[-1]
+            for i, p in enumerate(_part_paras(part), start=1):
+                out[f"{name}#{i}"] = p
+    return out
 
 
 def _spec(spec: Any) -> dict:
@@ -1728,11 +2073,13 @@ def convert_value(spec: dict, value: Any, where: str = "") -> Any:
 
 
 def field_text(spec: dict, obj: Any, index: int, where: str) -> str:
+    if "text" in spec:   # 文の一部だけを差し替える（表題の年度・期間など）
+        return fill_text(spec["text"], lambda k: _lookup(obj, k), where.strip(". ") or "文")
     key = spec.get("key")
     if key == "$index":
         value: Any = index + 1
     else:
-        value = convert_value(spec, dig(obj, key) if key else None, where)
+        value = convert_value(spec, _lookup(obj, key) if key else None, where)
     text = to_text(value)
     if spec.get("format") and text:
         text = spec["format"].replace("{n}", str(index + 1)).replace("{}", text)
@@ -2073,14 +2420,23 @@ def render(template: "str | bytes", definition: dict, data: Any, output: str,
     doc = open_doc(raw)
     view = DocView(doc)
     warnings: list[str] = []
+    global _DOC_DATA
+    _DOC_DATA = data
     if definition.get("strict"):
         left = find_leftovers(view, definition)
         if left:
             raise TemplateError("テンプレートの値が、定義のどこにも入らないまま残ります（keep・texts・clear などに入れる）:\n  "
                                 + "\n  ".join(left))
     parts = sorted(definition.get("parts", []), key=lambda pd: _part_range(pd)[0])
-    props = definition.get("properties") or {}
-    known = {_pkey(pd) for pd in parts if not pd.get("drop") and _has_fields(pd)}
+    props = {k: fill_text(v, lambda key: dig(data, key), f"properties の {k}") if isinstance(v, str) else v
+             for k, v in (definition.get("properties") or {}).items()}
+    known = {_pkey(pd) for pd in parts if not pd.get("drop") and _has_fields(pd)} | {DOC_PREFIX}
+    hf = header_footer_paras(doc)
+    for ref, tpl in (definition.get("header_footer") or {}).items():   # ヘッダー・フッターの表題・年度
+        if ref not in hf:
+            raise TemplateError(f"header_footer の {ref} は、テンプレートのヘッダー・フッターにありません（使えるもの: "
+                                f"{', '.join(hf) or 'なし'}）")
+        set_para_text(hf[ref], fill_text(tpl, lambda key: dig(data, key), f"header_footer の {ref}"))
     unknown = [k for k in data if k not in known]
     if unknown:
         warnings.append(f"データの {', '.join(unknown)} は、どの部分のキーにもありません（綴りの違いを疑う）")
@@ -2198,7 +2554,7 @@ def _fill_part(view: DocView, pd: dict, a: int, els: list, obj: dict, index: int
     for ref in pd.get("clear") or []:
         targets.append(("clear", ref, {}, at(ref)))
     for kind, ref, spec, blocks in targets:
-        where = f"{label}.{spec.get('key')}（{ref}）"
+        where = f"{label}.{spec.get('key') or spec.get('text')}（{ref}）"
         if kind == "texts":
             if spec.get("keep"):
                 continue
@@ -2376,6 +2732,12 @@ def _read_back(pairs: list[tuple[dict, str]]) -> dict:
     choices: dict[str, list] = {}
     parts: dict[str, dict] = {}
     for spec, text in pairs:
+        if "text" in spec:
+            got = read_text(spec["text"], text.strip()) or {}
+            for k in spec_keys(spec):
+                if out.get(k) is None:
+                    out[k] = got.get(k)
+            continue
         key = spec.get("key")
         if not key or key == "$index" or spec.get("keep") or spec.get("clear"):
             continue
@@ -2654,6 +3016,13 @@ def extract(source: "str | bytes", definition: dict, template: "str | bytes | No
             t.pop("_template_rows", None)
         if pd.get("repeat") and _has_fields(pd):
             data.setdefault(_pkey(pd), [])
+    data = _hoist_doc(data)
+    hf = header_footer_paras(view.doc)
+    for ref, tpl in (definition.get("header_footer") or {}).items():
+        got = read_text(tpl, para_text(hf[ref])) if ref in hf else None
+        for key, _ in text_fields(tpl):
+            if dig(data, key) is None:
+                _set_path(data, key, (got or {}).get(key))
     return data, notes
 
 
@@ -2674,6 +3043,8 @@ def skeleton_data(definition: dict) -> dict:
         obj: dict = {}
         for k in _field_keys(_spec(s) for s in (pd.get("texts") or {}).values()):
             _set_path(obj, k, None)
+        for k in (k for s in (pd.get("texts") or {}).values() if "text" in _spec(s) for k in spec_keys(s)):
+            _set_path(obj, k, None)
         for s in (pd.get("lists") or {}).values():
             _set_path(obj, _spec(s)["key"], [None])
         for t in pd.get("tables") or []:
@@ -2685,7 +3056,11 @@ def skeleton_data(definition: dict) -> dict:
                     _set_path(row, k, None)
                 _set_path(obj, t["key"], [row])
         out[_pkey(pd)] = [_as_lists(obj)] if pd.get("repeat") else _as_lists(obj)
-    return out
+    for tpl in list((definition.get("header_footer") or {}).values()) \
+            + [v for v in (definition.get("properties") or {}).values() if isinstance(v, str)]:
+        for k, _ in text_fields(tpl):
+            _set_path(out, k, None)
+    return _hoist_doc(out)
 
 
 def value_notes(definition: dict) -> list[str]:
@@ -2716,7 +3091,10 @@ def value_notes(definition: dict) -> list[str]:
         for s in (pd.get("texts") or {}).values():
             s = _spec(s)
             if s.get("key"):
-                note(f"{base}.{s['key']}", s)
+                note(s["key"] if s["key"].startswith(DOC_PREFIX + ".") else f"{base}.{s['key']}", s)
+            for key, fmt in text_fields(s["text"]) if "text" in s else []:
+                if "%" in fmt:
+                    notes[key] = f"{key}: 日付（2026-10-08）" if re.search(r"%-?d", fmt) else f"{key}: 年月（2026-10）"
         for s in (pd.get("lists") or {}).values():
             s = _spec(s)
             note(f"{base}.{s['key']}[]", s, "項目")

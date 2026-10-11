@@ -906,7 +906,7 @@ VAR_PATTERNS = [
     ("版", re.compile(r"第\s*(\d+(?:\.\d+)*)\s*版"), "str1"),
     ("版", re.compile(r"(?<![A-Za-z])(?:Ver\.?|ver\.?|[vV])\s?(\d+(?:\.\d+)+)"), "str1"),
 ]
-ADDRESSEE_RE = re.compile(r"^(?P<name>\S.*?)\s*(?P<tail>御中|様|殿)\s*$")
+VAR_ADDRESSEE_RE = re.compile(r"^(?P<name>\S.*?)\s*(?P<tail>御中|様|殿)\s*$")
 LABELLED_RE = re.compile(r"^(?P<label>[^:：\d]{1,15})\s*[:：]\s*")
 
 
@@ -944,7 +944,7 @@ def variable_parts(text: str) -> "tuple[str, list[tuple[str, Any]]] | None":
             taken.append(m.span())
             hits.append((span[0], span[1], name, fmt, value))
     if not hits:
-        m = ADDRESSEE_RE.match(text)
+        m = VAR_ADDRESSEE_RE.match(text)
         if m and len(m.group("name").strip()) >= 2 and not DOC_LABEL_RE.match(m.group("name").strip()):
             return "{宛先}" + text[m.end("name"):], [("宛先", m.group("name").strip())]
         return None
@@ -2006,7 +2006,11 @@ def _field_text(value: Any, fmt: str, where: str) -> str:
 
 
 def fill_text(tpl: str, data: Any, where: str, escape=None) -> str:
-    """文のひな形の欄を、データの値で埋める。値が null の欄は空にする。"""
+    """文のひな形の欄を、データの値で埋める。値が null の欄は空にする。
+
+    data はデータか、キーから値を引く関数（無ければ KeyError）。
+    """
+    lookup = data if callable(data) else (lambda key: dig(data, key))
     text_fields(tpl)   # 閉じていない波かっこを先に止める
 
     def sub(m: "re.Match") -> str:
@@ -2014,7 +2018,7 @@ def fill_text(tpl: str, data: Any, where: str, escape=None) -> str:
             return m.group(0)[0]
         key = m.group(1).strip()
         try:
-            value = dig(data, key)
+            value = lookup(key)
         except KeyError:
             raise TemplateError(f"データに {key!r} がありません（{where}）")
         text = _field_text(value, m.group(2) or "", f"{where} の {key}")

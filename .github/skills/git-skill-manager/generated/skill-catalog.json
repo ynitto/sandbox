@@ -602,7 +602,7 @@
     {
       "name": "docx-document-builder",
       "description": "既存の Word (.docx) テンプレートやサンプルの文書に、文書のスタイル（フォント・章・段落・改行）を保ったまま内容を流し込み、文字と段落をサンプルと同じ粒度に収めるスキル。「このWordのテンプレートに流し込んで」「この文書と同じ形式で報告書を作って」「前回の報告書を雛形にして」「このdocxから内容を取り出して」などで発動する。",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "tier": "experimental",
       "category": "document",
       "tags": [
@@ -1236,7 +1236,7 @@
     {
       "name": "pptx-presentation-builder",
       "description": "既存の PowerPoint (.pptx) テンプレートやサンプルの資料に、スライドのスタイルと図形（矩形・丸・矢印線）を保ったまま内容を流し込み、文字と図形をサンプルと同じ粒度に収めるスキル。「このパワポのテンプレートに流し込んで」「この資料と同じ形式でスライドを作って」「前回の報告スライドを雛形にして」「このpptxから内容を取り出して」などで発動する。",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "tier": "experimental",
       "category": "document",
       "tags": [

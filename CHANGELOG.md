@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### xlsx-report-builder: 表紙・タイトル・期間のような「文書の値」を、固定の文字と見分けて流し込む（1.8.0）
+### xlsx-report-builder / pptx-presentation-builder / docx-document-builder: 表紙・タイトル・期間のような「文書の値」を、固定の文字と見分けて流し込む（xlsx 1.8.0・pptx 1.1.0・docx 1.1.0）
 
 - 「2025年度 第2四半期 売上報告書」「株式会社○○ 御中」「売上明細（2025年9月）」「対象期間: 2025/07/01〜2025/09/30」のような文字は、
   これまで固定の文字（keep）として前の値のまま残っていた。`analyze` が年度・四半期・年月・日付・期間・版・宛名を見つけ、
@@ -16,6 +16,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - ヘッダー・フッターの文字も `header_footer` で差し替えられる。`properties` の値にも文のひな形を書ける。`inspect` はヘッダー・フッターと「文書ごとに変わる値の疑い」を挙げる
 - `extract` は、文のひな形から年度・期間などを読み戻す
 - 数量のサンプルがたまたま 1, 2, 3 だと、連番（`$index`）と取り違えていた。見出しが No・番号などのときだけ連番にする
+- pptx・docx も同じ書き方にそろえる。これまで表題を丸ごとデータにしていたものは、変わる部分だけを `文書:` の値にする（`texts` の `{text: …}`）。
+  ラベルの右・後ろの作成日・作成者・版・件名なども `文書.` のキーになる。docx はヘッダー・フッターの段落も `header_footer` で差し替える。`extract --split` は `文書:` を `00-common` に置く
 
 ### codd-agent: 文書の意味もグラフに入れ、影響範囲を根拠の強さで 3 段に分ける
 
