@@ -130,7 +130,7 @@ class AnalyzeTest(Base):
         warnings = dt.check_definition(self.template, self.definition)
         self.assertTrue(any("ヘッダー" in w for w in warnings))
         notes = dt.value_notes(self.definition)
-        self.assertIn("施策[].points[]: 最大 5 項目・1 項目 12 字まで", notes)
+        self.assertIn("施策[].points[]: 最大 5 項目・1 項目 12 字まで・だ・である調", notes)
 
 
 class RenderTest(Base):
@@ -499,6 +499,67 @@ class DocumentValueTest(Base):
         with self.assertRaises(dt.TemplateError) as cm:   # 書き忘れた文書の値は、崩れた文のまま出さずに止める
             dt.render(self.template, definition, data, out)
         self.assertIn("文書.年度", str(cm.exception))
+
+
+class WritingStyleTest(Base):
+    """文体（文末・1 文の長さ・数字・句読点）と、趣旨・論理構成（intent・logic）。"""
+
+    def part(self, key: str) -> dict:
+        return next(p for p in self.definition["parts"] if p.get("key") == key)
+
+    def test_analyze_measures_endings_from_samples(self):
+        body = self.part("概要")["texts"]["#6-#7"]
+        self.assertEqual(body["ending"], "常体")   # 「今期は夜間の処理が 2 回遅れた。」
+        self.assertGreater(body["sentence_chars"], 10)
+        self.assertEqual(self.part("施策")["texts"]["#9"]["ending"], "体言止め")   # 見出し「確認の自動化」
+        self.assertTrue(any("趣旨（intent" in c for c in self.definition["needs_confirm"]))
+
+    def test_render_stops_on_a_different_ending(self):
+        data = deepcopy(DATA)
+        data["概要"]["body"] = "夜間バッチの遅延が 2 回ありました。\n\n来月から監視を 5 分間隔に変える。"
+        with self.assertRaises(dt.TemplateError) as cm:
+            self.render(data)
+        msg = str(cm.exception)
+        self.assertIn("サンプルの文体と違う文があります", msg)
+        self.assertIn("「夜間バッチの遅延が 2 回ありました。」はです・ます調。サンプルはだ・である調", msg)
+        self.render(data, allow_overflow=True)   # 下書きなら警告にする
+        self.assertTrue(any("です・ます調" in w for w in self.warnings))
+
+    def test_long_sentence_and_marks(self):
+        d = deepcopy(self.definition)
+        d["style"] = {"digits": "半角", "punctuation": "、。"}
+        data = deepcopy(DATA)
+        data["概要"]["body"] = "監視を５分間隔に変える。" + "あ" * 60 + "。"
+        with self.assertRaises(dt.TemplateError) as cm:
+            self.render(data, definition=d)
+        msg = str(cm.exception)
+        self.assertIn("全角の数字（「５」）。サンプルは半角の数字", msg)
+        self.assertIn("1 文が 61 字", msg)
+
+    def test_intent_and_logic_reach_the_data_notes(self):
+        d = deepcopy(self.definition)
+        d["style"] = {"logic": "現状 → 施策 → 進捗 → 連絡先"}
+        part = next(p for p in d["parts"] if p.get("key") == "概要")
+        part.update({"intent": "今期の運用の結果を一言でまとめる", "logic": "起きたこと → 今後"})
+        part["texts"]["#6-#7"]["logic"] = "1 段落め: 事実、2 段落め: 対応"
+        notes = dt.value_notes(d)
+        self.assertIn("文書全体: 論理構成「現状 → 施策 → 進捗 → 連絡先」", notes)
+        self.assertIn("概要: 趣旨「今期の運用の結果を一言でまとめる」・論理構成「起きたこと → 今後」", notes)
+        self.assertTrue(any(n.startswith("概要.body:") and "流れ「1 段落め: 事実、2 段落め: 対応」" in n for n in notes))
+        self.assertIn("趣旨「今期の運用の結果を一言でまとめる」", dt.summarize(d))
+        dt.validate_definition(self.template, d)
+        part["texts"]["#6-#7"]["ending"] = "ですます"
+        with self.assertRaises(dt.TemplateError):
+            dt.validate_definition(self.template, d)
+
+    def test_ending_of(self):
+        cases = {"売上の推移": "体言止め", "売上は前年比20%増加した": "常体", "監視を強化します。": "敬体",
+                 "実施すること": "体言止め", "改善が必要である": "常体", "見直しを進めています": "敬体", "検討中（予定）": "体言止め"}
+        for text, want in cases.items():
+            self.assertEqual(dt.ending_of(text), want, text)
+        self.assertEqual(dt.measure_style(["佐藤"]), {})   # 名前・数字だけの欄は測らない
+        self.assertEqual(dt.measure_style(["〇〇について書く。"]), {})   # 仮の文も測らない
+        self.assertEqual(dt.measure_marks(["1．概要", "原因は、容量の不足。対策は、増設。費用は、未定。"]), {"punctuation": "、。"})
 
 
 if __name__ == "__main__":

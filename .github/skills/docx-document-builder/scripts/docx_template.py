@@ -1452,6 +1452,9 @@ def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool, doc
                 confirm.append(f"{where}: 書き方の注記（{_short(text, 20)}）と見て clear にした")
             else:
                 keep.append(where)
+                if re.search(r"[0-9０-９]", text):
+                    confirm.append(f"{where}: 注記「{_short(text, 24)}」は数字・日付を持つ。前の文書の集計の出所なら、"
+                                   "今回の値に直すか clear にする")
             n += 1
             continue
         if n < b and local(view.blocks[n]) in ("sdt", "tbl") and len(text.strip()) <= 10 \
@@ -1490,6 +1493,7 @@ def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool, doc
             bud = _line_budget(view, el, samples)
             if bud:
                 spec["max_chars"] = bud
+            spec.update(measure_style(samples))
             lists[fmt_range(n, e)] = spec
             label = None
             n = e + 1
@@ -1518,6 +1522,7 @@ def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool, doc
             bud = _line_budget(view, el, [text])
             if bud:
                 spec["max_chars"] = bud
+            spec.update(measure_style([text]))
             texts[where] = spec
             n += 1
             continue
@@ -1536,6 +1541,7 @@ def _analyze_part(view: DocView, a: int, b: int, confirm: list, cover: bool, doc
         bud = _line_budget(view, el, samples)
         if bud:
             spec["max_chars"] = bud
+        spec.update(measure_style(samples))   # 段落の文末・1 文の長さ
         texts[fmt_range(n, e)] = spec
         label = None
         n = e + 1
@@ -1554,6 +1560,7 @@ def _merge_budgets(base: dict, other: dict) -> None:
         for k in ("max_chars", "max_items"):
             if isinstance(x.get(k), int) and isinstance(y.get(k), int):
                 x[k] = max(x[k], y[k])
+        merge_style(x, y)
     for t1, t2 in zip(base.get("tables") or [], other.get("tables") or []):
         for c1, c2 in zip(t1.get("columns") or [], t2.get("columns") or []):
             if c1 and c2 and isinstance(c1.get("max_chars"), int) and isinstance(c2.get("max_chars"), int):
@@ -1606,6 +1613,7 @@ def analyze(template: "str | bytes") -> dict:
                 bud = _line_budget(view, el, [NUMBERING_RE.sub("", h) if fmt else h for h in heads])
                 if bud:
                     spec["max_chars"] = bud
+                spec.update(measure_style([NUMBERING_RE.sub("", h) for h in heads]))   # 見出しの言い切り方
                 body["texts"] = {f"#{a}": spec, **(body.get("texts") or {})}
             name = parents.get(lvl - 1) or _common_affix(heads) or heading_key(heads[0]) or f"p{pid}"
             part.update({"blocks": fmt_range(a, b), "key": _unique(name, keys), "repeat": True, **body})
@@ -1645,7 +1653,17 @@ def analyze(template: "str | bytes") -> dict:
             header_footer[ref] = dv.template(*got)
             confirm.append(f"ヘッダー・フッター {ref} の「{_short(para_text(p), 24)}」は、可変の部分を文書の値として流し込む"
                            f"（{header_footer[ref]}）")
-    out = {"version": DEF_VERSION, "template": "", "strict": True, "properties": {"scrub": True}, "parts": parts}
+    confirm.append("サンプルの文章を読んで、部分（章・節）ごとに趣旨（intent: その章で言いたいこと）と論理構成"
+                   "（logic: 段落をどの順にどうつなぐか）を書く。段落が続く欄には、段落ごとの役割を logic に書く"
+                   "（「結論 → 理由 → 今後」）。文書全体の流れは style.logic に書く")
+    if any(_spec(f).get("ending") for pd in parts for sec in ("texts", "lists") for f in (pd.get(sec) or {}).values()):
+        confirm.append("文末（ending）と 1 文の長さ（sentence_chars）は、サンプルの文から測った。"
+                       "サンプルが書き方の説明や仮の文なら、その欄から外す")
+    out = {"version": DEF_VERSION, "template": "", "strict": True, "properties": {"scrub": True}}
+    marks = measure_marks([para_text(p) for p in view.body.iter(qw("p"))])
+    if marks:
+        out["style"] = marks
+    out["parts"] = parts
     if header_footer:
         out["header_footer"] = header_footer
     out["needs_confirm"] = confirm
@@ -1663,6 +1681,8 @@ def summarize(definition: dict) -> str:
             lines.append(f"{head}: 残す" + (f"（{', '.join(pd.get('keep') or [])}）" if pd.get("keep") else ""))
             continue
         lines.append(f"{head}: データ `{pd['key']}`{'（配列。1 件 1 節）' if pd.get('repeat') else ''}")
+        if intent_note("", pd):
+            lines.append(f"  {intent_note('', pd)[2:]}")
         for ref, spec in (pd.get("texts") or {}).items():
             spec = _spec(spec)
             lines.append(f"  文字 {ref} → " + (f"文 {spec['text']!r}" if "text" in spec else str(spec.get("key"))) + _limit(spec))
@@ -2051,6 +2071,7 @@ def _limit(spec: dict, unit: str = "段落") -> str:
         parts.append(f"最大 {spec['max_items']} {unit}" if spec.get("max_items") != 1 or unit != "段落" else "1 段落")
     if spec.get("max_chars"):
         parts.append(f"{spec['max_chars']} 字まで")
+    parts += style_notes(spec)
     return f"（{'・'.join(parts)}）" if parts else ""
 
 
@@ -2164,12 +2185,184 @@ def _format_extra(spec: "dict | None") -> int:
     return len(re.sub(r"\{n\}", "0", fmt).replace("{}", ""))
 
 
+# ---------------------------------------------------------------------------
+# 文体（文末・1 文の長さ・数字・句読点）。サンプルの文から測り、データの文を同じ形にそろえる。
+# 趣旨・論理構成（intent・logic）は、サンプルを読んだ LLM が定義に書き、データを書くときの目安にする
+# ---------------------------------------------------------------------------
+
+ENDINGS = {"敬体": "です・ます調", "常体": "だ・である調", "体言止め": "体言止め"}
+CLASH = {"敬体": ("常体",), "常体": ("敬体",), "体言止め": ("敬体", "常体")}   # 文が続く欄で、混ざると目立つ組み合わせ
+POLITE_END_RE = re.compile(r"(です|ます|でした|ました|ません|でしょう|ましょう|ください|ございます)[かねよ]?$")
+NOUN_END_RE = re.compile(r"(こと|もの|ため|など|まで|とおり|見込み|込み|済み|向け|まま|はず|つもり|ところ|[一-鿿々〆ヵヶァ-ヺーA-Za-z0-9０-９%％])$")
+PLAIN_END_RE = re.compile(r"(だ|である|であった|だった|ない|なかった|たい|しい|かった|ろう|[うくぐすつぬぶむるた])か?$")
+KANA_RE = re.compile(r"[ぁ-ん]")
+SENTENCE_RE = re.compile(r"[^。．！？!?\n]+[。．！？!?]*")
+TAIL_RE = re.compile(r"(\s|[。．.！!？?、，,」』）)\]】]|[（(][^（()）]*[）)])+$")
+FULL_DIGIT_RE = re.compile(r"[０-９]+")
+HALF_DIGIT_RE = re.compile(r"[0-9]+")
+STYLE_MARKS = ("digits", "punctuation")
+PUNCTUATIONS = ("、。", "，。", "，．", "、．")
+
+
+def sentences(text: str) -> list[str]:
+    return [s.strip() for s in SENTENCE_RE.findall(text or "") if s.strip()]
+
+
+def ending_of(sentence: str) -> "str | None":
+    """文末の形。です・ます（敬体）／だ・である（常体）／名詞で終わる（体言止め）。決められなければ None。"""
+    s = TAIL_RE.sub("", sentence)
+    if len(s) < 2:
+        return None
+    if POLITE_END_RE.search(s):
+        return "敬体"
+    if NOUN_END_RE.search(s):
+        return "体言止め"
+    if PLAIN_END_RE.search(s):
+        return "常体"
+    return None
+
+
+def measure_style(samples: list[str]) -> dict:
+    """1 つの欄のサンプルの文から、文末（ending）と 1 文の長さ（sentence_chars）を測る。名前・数字だけの欄は測らない。"""
+    sents = [s for t in samples if t and not PLACEHOLDER_RE.search(t) and not NOTE_RE.search(t) for s in sentences(t)]
+    out: dict[str, Any] = {}
+    if not any(KANA_RE.search(s) for s in sents):
+        return out
+    kinds = [k for k in map(ending_of, sents) if k]
+    noun, polite, plain = kinds.count("体言止め"), kinds.count("敬体"), kinds.count("常体")
+    prose = any(len(sentences(t)) >= 2 for t in samples if t)
+    if kinds and noun >= 0.8 * len(kinds):
+        out["ending"] = "体言止め"
+    elif prose and polite + plain and max(polite, plain) >= 0.8 * (polite + plain):
+        out["ending"] = "敬体" if polite >= plain else "常体"   # 地の文に混ざる体言止めは数えない
+    elif not prose and kinds and max(polite, plain) >= 0.8 * len(kinds):
+        out["ending"] = "敬体" if polite >= plain else "常体"   # 1 文の欄（タイトル・項目）は、言い切るか名詞で止めるかも型
+    if prose:   # 文が続く欄（段落）だけ、1 文の長さを持つ。これがあれば、地の文に混ざる体言止めは止めない
+        out["sentence_chars"] = math.ceil(max(len(s) for s in sents) * GRANULARITY)
+    return out
+
+
+def measure_marks(texts: list[str]) -> dict:
+    """文書全体の表記（数字の全角・半角、句読点）。どちらかに 9 割以上そろっているときだけ書く。"""
+    joined = "\n".join(t for t in texts if t and not PLACEHOLDER_RE.search(t))
+    out: dict[str, str] = {}
+    half, full = len(re.findall(r"[0-9]", joined)), len(re.findall(r"[０-９]", joined))
+    if half + full >= 3 and max(half, full) >= 0.9 * (half + full):
+        out["digits"] = "半角" if half > full else "全角"
+    commas = {c: joined.count(c) for c in "、，"}
+    periods = {c: len(re.findall(rf"(?<![0-9０-９]){c}", joined)) for c in "。．"}   # 「1．概要」の番号は句点に数えない
+    if sum(commas.values()) >= 3 and sum(periods.values()) >= 3:
+        c, p = max(commas, key=commas.get), max(periods, key=periods.get)
+        if commas[c] >= 0.9 * sum(commas.values()) and periods[p] >= 0.9 * sum(periods.values()):
+            out["punctuation"] = c + p
+    return out
+
+
+def merge_style(base: dict, other: dict) -> None:
+    """繰り返す見本が複数あるとき。1 文の長さは長い方に、文末は食い違えば書かない。"""
+    if isinstance(base.get("sentence_chars"), int) and isinstance(other.get("sentence_chars"), int):
+        base["sentence_chars"] = max(base["sentence_chars"], other["sentence_chars"])
+    if base.get("ending") and other.get("ending") and base["ending"] != other["ending"]:
+        del base["ending"]
+
+
+def style_problems(where: str, text: str, spec: dict, marks: dict, single: bool = False) -> list[str]:
+    """データの文が、定義の文体（欄の ending・sentence_chars、文書全体の digits・punctuation）と違うところ。
+    single は 1 文の欄（タイトル・表題）。言い切るか名詞で止めるかも型なので、違えば挙げる。"""
+    if not text:
+        return []
+    out = []
+    sents = sentences(text)
+    want = spec.get("ending")
+    if want in CLASH:
+        clash = [k for k in ENDINGS if k != want] if single and not spec.get("sentence_chars") else CLASH[want]
+        bad = [(s, k) for s in sents for k in [ending_of(s)] if k in clash]
+        if bad:
+            more = f"ほか {len(bad) - 1} 文" if len(bad) > 1 else ""
+            out.append(f"{where}: 「{_short(bad[0][0], 20)}」は{ENDINGS[bad[0][1]]}{('（' + more + '）') if more else ''}。"
+                       f"サンプルは{ENDINGS[want]}")
+    limit = spec.get("sentence_chars")
+    if isinstance(limit, int):
+        long = [s for s in sents if len(s) > limit]
+        if long:
+            out.append(f"{where}: 1 文が {len(long[0])} 字（「{_short(long[0], 16)}」）。サンプルの 1 文は {limit} 字まで"
+                       "（文を分けるか短くする）")
+    digits = marks.get("digits")
+    other = (FULL_DIGIT_RE if digits == "半角" else HALF_DIGIT_RE).search(text) if digits else None
+    if other:
+        out.append(f"{where}: {'全角' if digits == '半角' else '半角'}の数字（「{other.group(0)}」）。サンプルは{digits}の数字")
+    punct = marks.get("punctuation")
+    if isinstance(punct, str) and len(punct) == 2:
+        for want_c, alt in ((punct[0], "，" if punct[0] == "、" else "、"), (punct[1], "．" if punct[1] == "。" else "。")):
+            if re.search(rf"(?<![0-9０-９]){alt}", text):
+                out.append(f"{where}: 「{alt}」を使っている。サンプルは「{want_c}」")
+    return out
+
+
+def style_notes(spec: dict) -> list[str]:
+    """値の書き方の一覧に出す、欄の文体と流れ。"""
+    bits = []
+    if spec.get("ending") in ENDINGS:
+        bits.append(ENDINGS[spec["ending"]])
+    if spec.get("sentence_chars"):
+        bits.append(f"1 文 {spec['sentence_chars']} 字まで")
+    if spec.get("logic"):
+        bits.append(f"流れ「{spec['logic']}」")
+    return bits
+
+
+def intent_note(name: str, d: dict) -> "str | None":
+    """スライド・部分・文書全体の趣旨と論理構成（LLM が書いたもの）。"""
+    bits = [f"趣旨「{d['intent']}」" if d.get("intent") else "", f"論理構成「{d['logic']}」" if d.get("logic") else ""]
+    bits = [b for b in bits if b]
+    return f"{name}: {'・'.join(bits)}" if bits else None
+
+
+def marks_note(style: dict, scope: str = "文書全体") -> "str | None":
+    bits = []
+    if style.get("digits"):
+        bits.append(f"数字は{style['digits']}")
+    if style.get("punctuation"):
+        bits.append(f"句読点は「{style['punctuation']}」")
+    return f"{scope}の表記: {'・'.join(bits)}" if bits else None
+
+
+def validate_style(definition: dict, holders: list[tuple[str, dict]]) -> None:
+    """style・intent・logic・ending・sentence_chars の書き方を確かめる。holders は（場所, スライド・部分・欄の定義）。"""
+    style = definition.get("style") or {}
+    if not isinstance(style, dict):
+        raise TemplateError("style は、logic・digits・punctuation を持つオブジェクトにしてください")
+    unknown = set(style) - {"logic", "intent", *STYLE_MARKS}
+    if unknown:
+        raise TemplateError(f"style に知らない項目があります: {', '.join(sorted(unknown))}（logic・digits・punctuation）")
+    if style.get("digits") not in (None, "半角", "全角"):
+        raise TemplateError(f"style.digits は 半角 か 全角 です: {style['digits']!r}")
+    if style.get("punctuation") not in (None, *PUNCTUATIONS):
+        raise TemplateError(f"style.punctuation は {' / '.join(PUNCTUATIONS)} のどれかです: {style['punctuation']!r}")
+    for where, d in holders:
+        if not isinstance(d, dict):
+            continue
+        for k in ("intent", "logic"):
+            if d.get(k) is not None and not isinstance(d[k], str):
+                raise TemplateError(f"{where} の {k} は文にしてください")
+        if d.get("ending") is not None and d["ending"] not in ENDINGS:
+            raise TemplateError(f"{where} の ending は {' / '.join(ENDINGS)} のどれかです: {d['ending']!r}")
+        if d.get("sentence_chars") is not None and (not isinstance(d["sentence_chars"], int) or d["sentence_chars"] < 1):
+            raise TemplateError(f"{where} の sentence_chars は 1 以上の整数にしてください")
+
+
 class Fit:
     """収まらない値（サンプルの粒度を超える）を集める。"""
 
-    def __init__(self):
+    def __init__(self, marks: "dict | None" = None):
         self.problems: list[str] = []
+        self.wording_issues: list[str] = []   # サンプルの文体と違う文
         self.missing: list[str] = []
+        self.marks = {k: v for k, v in (marks or {}).items() if k in STYLE_MARKS}
+
+    def wording(self, where: str, text: str, spec: dict, single: bool = False) -> None:
+        if "text" not in spec:   # 文の一部だけを差し替える欄は、決まった文字の方がサンプルの文体
+            self.wording_issues.extend(style_problems(where, text, spec, self.marks, single))
 
     def chars(self, where: str, text: str, limit: "int | None", spec: "dict | None" = None) -> None:
         """字数は値だけを数える（format の決まった文字は数えない）。段落の中の改行は数えず、段落全体で数える。"""
@@ -2285,6 +2478,9 @@ def validate_definition(template: "str | bytes", definition: dict) -> None:
                     raise TemplateError(f"{where}: {t['block']} の表に {rc} のセルがありません")
     if definition.get("max_pages") is not None and int(definition["max_pages"]) < 1:
         raise TemplateError("max_pages は 1 以上にしてください")
+    validate_style(definition, [(f"部分 {_pkey(pd)}", pd) for pd in definition.get("parts", [])]
+                   + [(f"部分 {_pkey(pd)} の {ref}", f) for pd in definition.get("parts", [])
+                      for sec in ("texts", "lists") for ref, f in (pd.get(sec) or {}).items()])
 
 
 def _rc(spec: str) -> tuple[int, int]:
@@ -2545,7 +2741,7 @@ def render(template: "str | bytes", definition: dict, data: Any, output: str,
             if val is not None and not isinstance(val, dict):
                 raise TemplateError(f"`{key}` はオブジェクト（欄: 値）にしてください")
             instances.append((pd, a, els, val or {}, 0, key))
-    fit = Fit()
+    fit = Fit(definition.get("style"))
     for pd, a, els, obj, i, label in instances:
         _fill_part(view, pd, a, els, obj, i, label, fit)
     if fit.missing:
@@ -2559,12 +2755,18 @@ def render(template: "str | bytes", definition: dict, data: Any, output: str,
         if pages > int(definition["max_pages"]):
             fit.problems.append(f"文書全体: 約 {pages} ページになる（見積もり）。max_pages は {definition['max_pages']} ページ"
                                 "（長い欄を要約するか、段落・行をまとめる）")
+    stops = []
     if fit.problems:
         msg = "収まらない値があります。テンプレートの粒度に合わせて、データの量を減らすか言い換えてください:\n  " \
               + "\n  ".join(fit.problems)
+        stops.append(msg)
+    if fit.wording_issues:
+        stops.append("サンプルの文体と違う文があります。定義の文体（ending・sentence_chars・style）に合わせて書き直してください:\n  "
+                     + "\n  ".join(fit.wording_issues))
+    if stops:
         if not allow_overflow:
-            raise TemplateError(msg)
-        warnings.append(msg)
+            raise TemplateError("\n".join(stops))
+        warnings.extend(stops)
     if props.get("scrub"):
         n_comments = drop_comments(doc)
         if n_comments:
@@ -2618,6 +2820,7 @@ def _fill_part(view: DocView, pd: dict, a: int, els: list, obj: dict, index: int
             for k, t in enumerate(paras):
                 fit.chars(where if len(paras) == 1 else f"{where} {k + 1} 段落め", t, spec.get("max_chars"),
                           spec if len(paras) == 1 else None)
+                fit.wording(where if len(paras) == 1 else f"{where} {k + 1} 段落め", t, spec, single=True)
             if local(blocks[0]) == "sdt":
                 _fill_sdt(blocks[0], paras)
             else:
@@ -2629,6 +2832,7 @@ def _fill_part(view: DocView, pd: dict, a: int, els: list, obj: dict, index: int
             fit.items(where, len(items), spec.get("max_items"), "項目")
             for k, (t, _) in enumerate(items):
                 fit.chars(f"{where} {k + 1} 項目め", t, spec.get("max_chars"))
+                fit.wording(f"{where} {k + 1} 項目め", t, spec)
             base = min(view.list_level(s) for s in blocks)
             fill_paragraphs(blocks, [t for t, _ in items], levels=[base + lvl for _, lvl in items], view=view)
         elif kind == "tables":
@@ -2733,6 +2937,7 @@ def _fill_table(view: DocView, tbl, t: dict, obj: dict, label: str, fit: Fit) ->
         cw = f"{label}.{spec.get('key')}（{t['block']} の表 {rc}）"
         text = field_text(spec, obj, 0, f"{label}.")
         fit.chars(cw, text, spec.get("max_chars"), spec)
+        fit.wording(cw, text, spec)
         ex = _exact_lines(view, trs[r - 1], tc)
         if ex and text:
             fit.lines(cw, ex[0], text, ex[1])
@@ -2764,6 +2969,7 @@ def _fill_table(view: DocView, tbl, t: dict, obj: dict, label: str, fit: Fit) ->
             rw = f"{label}.{t['key']}[{i}].{spec.get('key')}（{t['block']} の表）"
             text = field_text(spec, row, i, f"{label}.{t['key']}[{i}].")
             fit.chars(rw, text, spec.get("max_chars"), spec)
+            fit.wording(rw, text, spec)
             ex = _exact_lines(view, tr, tc)
             if ex and text:
                 fit.lines(rw, ex[0], text, ex[1])
@@ -3133,13 +3339,20 @@ def value_notes(definition: dict) -> list[str]:
         if spec.get("max_chars"):
             bits.append(f"{'1 項目 ' if items_word else ('1 段落 ' if (spec.get('max_items') or 1) > 1 else '')}"
                         f"{spec['max_chars']} 字まで")
+        bits += style_notes(spec)
         if bits:
             notes[name] = f"{name}: {'・'.join(bits)}"
 
+    style = definition.get("style") or {}
+    for name, v in (("*", intent_note("文書全体", style)), ("*marks", marks_note(style))):
+        if v:
+            notes[name] = v
     for pd in definition.get("parts", []):
         if pd.get("drop") or not _has_fields(pd):
             continue
         base = _pkey(pd) + ("[]" if pd.get("repeat") else "")
+        if intent_note(base, pd):
+            notes[f"{base}#intent"] = intent_note(base, pd)
         for s in (pd.get("texts") or {}).values():
             s = _spec(s)
             if s.get("key"):
@@ -3159,7 +3372,7 @@ def value_notes(definition: dict) -> list[str]:
                     if c and c.get("key") and c["key"] != "$index":
                         note(f"{base}.{t['key']}[].{c['key']}", c)
     if definition.get("max_pages"):
-        notes["*"] = f"文書全体: {definition['max_pages']} ページまで（見積もり）"
+        notes["*pages"] = f"文書全体: {definition['max_pages']} ページまで（見積もり）"
     for v in list((definition.get("properties") or {}).values()) + list((definition.get("header_footer") or {}).values()):
         if isinstance(v, str):
             notes.update(text_notes(v))
@@ -3175,7 +3388,7 @@ def check_definition(template: "str | bytes", definition: dict) -> list[str]:
         out = os.path.join(d, "check.docx")
         warnings = render(raw, definition, skeleton_data(definition), out, allow_overflow=True)
         left = provenance(read_bytes(out))   # 出力に残るものだけ（scrub・drop で消えるものは挙げない）
-    warnings = [w for w in warnings if not w.startswith(("収まらない値", "目次・相互参照"))]
+    warnings = [w for w in warnings if not w.startswith(("収まらない値", "サンプルの文体", "目次・相互参照"))]
     return warnings + [f"来歴（出力に残る）: {p}" for p in left]
 
 
