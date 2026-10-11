@@ -80,6 +80,27 @@ webui-test generate "ログイン画面。正しいパスワードで商品一�
 
 作ったファイルは人が読んで直せる。書式は `webui-test format` か [src/format-reference.md](src/format-reference.md)。
 
+#### どのケースを作るかの観点（`--guide`）
+
+エージェントへの依頼には、どのケースを作るかの観点が最初から入っている。条件の 1 文ごとにケースを作る、入力値は
+受け付ける値と受け付けない値の代表と境界を試す、状態ごとにケースを分ける、通信の失敗は `mocks` で作る、などで、
+中身は `webui-test prompt "<条件>"` で見られる。
+
+チームの約束やドメインの知識（「金額は 0 円と上限を必ず試す」「管理者と一般利用者の両方で確かめる」など）は、
+Markdown に書いて足す。
+
+```bash
+webui-test generate -f conditions.md --url http://localhost:3000/ -o tests/order.yaml --guide docs/test-guide.md
+```
+
+毎回使うなら `webui-test.config.yaml` に書く（パスは設定ファイルからの相対）。`--guide` はこれに足される。
+
+```yaml
+generate:
+  guide: [docs/test-guide.md]
+  defaultGuide: true        # false で最初から入っている観点を外し、足したものだけにする（--no-default-guide と同じ）
+```
+
 #### 操作の前に対象を確かめる（`--probe-before-act`）
 
 ```bash

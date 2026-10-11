@@ -6,6 +6,7 @@
 //   evidence: results/webui-test-evidence.json                 # 最新の結果（省略時もこのパス）
 //   serve: { command: npm start, url: http://localhost:3000 }   # ローカルで起動してから動かす（任意）
 //   check: { cases: [tests/e2e] }                               # webui-test check（任意）
+//   generate: { guide: [docs/test-guide.md], defaultGuide: true } # generate に足す観点（任意）
 //   envs:
 //     local:   { baseUrl: http://localhost:3000 }
 //     staging: { baseUrl: https://stg.example.com, mocks: false, storageState: auth/staging.json,
@@ -19,7 +20,8 @@ const YAML = require('yaml');
 const { isPlainObject } = require('./casefile');
 
 const CONFIG_NAMES = ['webui-test.config.yaml', 'webui-test.config.yml', 'webui-test.config.json'];
-const TOP_KEYS = ['defaultEnv', 'envs', 'serve', 'check', 'evidence'];
+const TOP_KEYS = ['defaultEnv', 'envs', 'serve', 'check', 'evidence', 'generate'];
+const GENERATE_KEYS = ['guide', 'defaultGuide'];
 const DEFAULT_EVIDENCE = 'results/webui-test-evidence.json';
 const ENV_KEYS = ['baseUrl', 'localStorage', 'sessionStorage', 'cookies', 'headers', 'storageState', 'mocks', 'locale', 'timezone', 'serve'];
 const SERVE_KEYS = ['command', 'url', 'cwd', 'env', 'timeout'];
@@ -140,4 +142,27 @@ function loadEnv({ configPath, envName, cwd } = {}) {
   return { name, settings, file, dir, serve, check, evidence: path.resolve(dir, top.evidence || DEFAULT_EVIDENCE) };
 }
 
-module.exports = { loadEnv, findConfig, expandVars, CONFIG_NAMES, DEFAULT_EVIDENCE };
+// generate の設定だけを読む。環境（envs）の値や環境変数は見ないので、検証環境のトークンが無い PC でも作れる。
+// 戻り値: { guides: [絶対パス], defaultGuide }
+function loadGenerateSettings({ configPath, cwd } = {}) {
+  const file = findConfig(configPath, cwd);
+  if (!file) {
+    if (configPath) throw new Error(`設定ファイルがありません: ${configPath}`);
+    return { guides: [], defaultGuide: true };
+  }
+  const text = fs.readFileSync(file, 'utf8');
+  const data = file.endsWith('.json') ? JSON.parse(text) : YAML.parse(text);
+  const raw = isPlainObject(data) ? data.generate : undefined;
+  if (raw === undefined) return { guides: [], defaultGuide: true };
+  const errors = [];
+  if (!isPlainObject(raw)) throw new Error(`${file}: generate: { guide, defaultGuide } を書きます`);
+  unknownKeys(raw, GENERATE_KEYS, `${file}: generate`, errors);
+  const guides = strList(raw.guide);
+  if (!guides.every((g) => typeof g === 'string' && g.trim())) errors.push(`${file}: generate.guide: 観点を書いたファイルのパス（の配列）を書きます`);
+  if (raw.defaultGuide !== undefined && typeof raw.defaultGuide !== 'boolean') errors.push(`${file}: generate.defaultGuide: true か false を書きます`);
+  if (errors.length) throw new Error(errors.join('\n'));
+  const dir = path.dirname(file);
+  return { guides: guides.map((g) => path.resolve(dir, g)), defaultGuide: raw.defaultGuide !== false };
+}
+
+module.exports = { loadEnv, loadGenerateSettings, findConfig, expandVars, CONFIG_NAMES, DEFAULT_EVIDENCE };

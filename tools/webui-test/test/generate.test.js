@@ -27,6 +27,58 @@ test('依頼文に書式・条件・画面の要素一覧が入る', () => {
   assert.match(p, /# テストケースファイルの書式/);
 });
 
+test('依頼文に組み込みのテスト設計の観点が入り、外すと元の 1 行に戻る', () => {
+  const p = buildPrompt({ conditions: 'c' });
+  assert.match(p, /## テスト設計の観点/);
+  assert.match(p, /境界ちょうどと 1 つ外側/);
+  assert.match(p, /下の観点に沿って決める/);
+  assert.ok(p.indexOf('## テスト設計の観点') < p.indexOf('# テストケースファイルの書式'), '観点は書式の前に置く');
+  const off = buildPrompt({ conditions: 'c', defaultGuide: false });
+  assert.doesNotMatch(off, /## テスト設計の観点/);
+  assert.match(off, /異常系・境界値のケースも作る/);
+});
+
+test('prompt: 設定の generate.guide と --guide の観点を足し、--no-default-guide で組み込みを外す', async (t) => {
+  const dir = tmpDir(t);
+  fs.mkdirSync(path.join(dir, 'docs'));
+  fs.writeFileSync(path.join(dir, 'docs', 'team.md'), '金額は 0 円と上限 999,999 円を必ず試す\n');
+  fs.writeFileSync(path.join(dir, 'extra.md'), '管理者と一般利用者の両方で確かめる\n');
+  fs.writeFileSync(path.join(dir, 'webui-test.config.yaml'), 'envs:\n  local: {}\ngenerate:\n  guide: docs/team.md\n');
+  const r = await cli(['prompt', '条件', '--guide', 'extra.md'], { cwd: dir });
+  assert.strictEqual(r.code, 0, r.err);
+  assert.match(r.out, /## テスト設計の観点/);
+  assert.match(r.out, /## 追加の観点（docs[\\/]team\.md）\n金額は 0 円/);
+  assert.match(r.out, /## 追加の観点（extra\.md）\n管理者と一般利用者/);
+  assert.ok(r.out.indexOf('team.md') < r.out.indexOf('extra.md'), '設定の観点が先');
+  const off = await cli(['prompt', '条件', '--no-default-guide'], { cwd: dir });
+  assert.doesNotMatch(off.out, /## テスト設計の観点/);
+  assert.match(off.out, /## 追加の観点（docs[\\/]team\.md）/);
+});
+
+test('prompt: 観点の設定の誤りと、無いファイルを知らせる', async (t) => {
+  const dir = tmpDir(t);
+  fs.writeFileSync(path.join(dir, 'webui-test.config.yaml'), 'envs:\n  local: {}\ngenerate:\n  guides: a.md\n  defaultGuide: "no"\n');
+  const bad = await cli(['prompt', '条件'], { cwd: dir });
+  assert.notStrictEqual(bad.code, 0);
+  assert.match(bad.err, /知らないキー「guides」/);
+  assert.match(bad.err, /generate\.defaultGuide: true か false/);
+  fs.writeFileSync(path.join(dir, 'webui-test.config.yaml'), 'envs:\n  local: {}\n');
+  const missing = await cli(['prompt', '条件', '--guide', 'nothing.md'], { cwd: dir });
+  assert.strictEqual(missing.code, 2);
+  assert.match(missing.err, /観点のファイルがありません/);
+});
+
+test('generate: --guide の観点をエージェントへの依頼に入れる', async (t) => {
+  const dir = tmpDir(t);
+  const log = path.join(dir, 'log.txt');
+  fs.writeFileSync(path.join(dir, 'g.md'), '退会の確認ダイアログを必ず確かめる\n');
+  process.env.FAKE_AGENT_LOG = log;
+  t.after(() => { delete process.env.FAKE_AGENT_LOG; });
+  const r = await cli(['generate', '条件', '-o', path.join(dir, 'g.yaml'), '--agent-cmd', FAKE, '--guide', 'g.md'], { cwd: dir });
+  assert.strictEqual(r.code, 0, r.err);
+  assert.match(fs.readFileSync(log, 'utf8'), /## 追加の観点（g\.md）\n退会の確認ダイアログ/);
+});
+
 test('generate: エージェントの出力を検査して保存し、baseUrl を補う', async (t) => {
   const dir = tmpDir(t);
   const out = path.join(dir, 'gen.yaml');
