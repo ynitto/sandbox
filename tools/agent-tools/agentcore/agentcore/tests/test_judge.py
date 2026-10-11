@@ -293,6 +293,38 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertIn("YAML", current["error"])
         self.assertIsNone(judge.model_for_spec(self.CLOUD))
 
+    def test_auto_resolves_the_cost_per_model(self):
+        """auto の門は (定義, モデル) の組で解いた relative_cost を見る（resolve_relative_cost）。
+        クラウド定義でも、`models` でそのモデルに 0 を宣言していればそのモデルで judge を使う。"""
+        cloud_with_local = {"name": "copilot", "relative_cost": 1,
+                            "models": {"x": {"relative_cost": 0}}}
+        self.assertEqual(judge.model_for_spec(cloud_with_local, "x"), "x")
+        self.assertIsNone(judge.model_for_spec(cloud_with_local, "gpt-5.1"),
+                          "宣言の無いモデルは定義単位の値（1）へ落ちる")
+        self.assertIsNone(judge.model_for_spec(cloud_with_local))
+        self.assertEqual(judge.model_for_spec(dict(cloud_with_local, default_model="x")), "x",
+                         "モデル未指定なら定義の既定モデルで引く")
+        self.assertIsNone(judge.model_for_spec(self.CLOUD, "x"),
+                          "宣言の無いクラウド定義は従来どおり None")
+        self.assertEqual(judge.model_for_spec(
+            {"name": "aider", "relative_cost": 0, "models": {"big": {"relative_cost": 1}}},
+            "big"), None, "ローカル定義でもモデル別に 1 を宣言したモデルは外れる")
+
+    def test_bundled_definitions_keep_todays_answer(self):
+        """同梱 8 定義は値が変わらないので、auto の答えは直す前と同じ（aider / ollama だけ）。"""
+        from agentcore import agentcli
+        root = pathlib.Path(__file__).resolve().parents[5] / "agents"
+        expected = {"aider": "gemma4:e4b", "ollama": "gemma4:e4b", "claude": None,
+                    "codex": None, "copilot": None, "cursor": None, "kiro": None,
+                    "vscode-copilot": None}
+        with mock.patch.dict(os.environ, {"KIRO_AGENTS_DIR": str(root)}):
+            for cli, want in expected.items():
+                self.assertEqual(judge.local_model(cli), want, cli)
+                for model in ("gpt-5.1", "opus", "gemma4:e4b"):
+                    spec = agentcli.load_cli(cli)
+                    got = judge.model_for_spec(spec, model)
+                    self.assertEqual(got, model if want else None, f"{cli} / {model}")
+
     def test_local_model_does_not_resolve_a_definition_when_pinned(self):
         self._write("judge:\n  model: gemma4:e4b\n")
         self.assertEqual(judge.local_model("no-such-definition"), "gemma4:e4b")
