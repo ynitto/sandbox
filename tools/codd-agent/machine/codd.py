@@ -114,7 +114,7 @@ DEFAULT_TEST_PATTERNS = [
     "cypress/**", "playwright/**",
 ]
 MAX_TEST_FILES = 2000
-# テストで得たもの（確かめた振る舞い・測った時間・撮った画像）を書いたファイル。文書の印（<!-- evidence: id -->）に写し、
+# テストで得たもの（確かめた振る舞い・測った時間・作ったファイル）を書いたファイル。文書の印（<!-- evidence: id -->）に写し、
 # 今と同じか・目安を超えていないかを確かめる。codd.json の evidence で変えられ、[] で扱わない。
 DEFAULT_EVIDENCE = []
 EVIDENCE_TOLERANCE = 0.2   # 測った値は揺れるので、写した値と 2 割までの違いは同じとみなす
@@ -153,7 +153,7 @@ GRAPHIFY_UPDATE_TIMEOUT = 900
 GRAPHIFY_BUDGET = 600
 GRAPHIFY_EXTRACT_TIMEOUT = 3600   # バックエンドの LLM で文書の意味まで抜き出すとき
 # 意味の抽出（graphify の LLM の抽出）。文書と PDF の中身から、見出し・用語・ほかのファイルとのつながりを抜き出し、
-# 構文だけのグラフ（graphify update）に足す。画像は抜き出さない（文書の画面はテストで得たもの（evidence）で扱う）。
+# 構文だけのグラフ（graphify update）に足す。バイナリは抜き出さない（テストが作るファイルはテストで得たもの（evidence）で扱う）。
 SEMANTIC_KINDS = ("document", "paper")
 SEMANTIC_MAX_FILES = 100          # 1 回の実行で抜き出すファイルの上限（残りは次の回に回す）
 SEMANTIC_CHUNK = 20               # 1 束のファイル数（サブエージェントに渡すとき）
@@ -701,7 +701,7 @@ class Side:
 
     def pathspec(self) -> list[str]:
         # マシンのファイルは :(exclude) で外さず、出力を has() で外す。git 2.43 などでは、scope の最初のフォルダ名が
-        # 除外する名前（.codd）より長いと ls-files が何も返さなくなり、テストや画像を黙って取りこぼすため。
+        # 除外する名前（.codd）より長いと ls-files が何も返さなくなり、テストやバイナリを黙って取りこぼすため。
         return ["--", *(self.scope or ["."])]
 
     def excluded(self, rel: str) -> bool:
@@ -841,11 +841,11 @@ class Ctx:
         self.exclude_test_outputs()
 
     def exclude_test_outputs(self) -> None:
-        """テストが撮った画面（evidence の画像の項目の path）も、結果ファイルと同じく直すものに数えない。"""
+        """テストが作ったファイル（evidence の出力の項目の path）も、結果ファイルと同じく直すものに数えない。"""
         for key, side in [("", self.own), *((r.name, r) for r in self.refs)]:
             ev = load_evidence(self, key)
             for item in ev.items.values():
-                if item.get("kind") == "image" and isinstance(item.get("path"), str):
+                if is_output(item) and isinstance(item.get("path"), str):
                     try:
                         rel = (item["_root"] / item["path"]).resolve().relative_to(side.path.resolve()).as_posix()
                     except ValueError:
@@ -1366,7 +1366,7 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
               f"（書き方は {CONFIG_NAME} の tests）")
     evs = {k: e for k, e in all_evidence(ctx).items() if e.files}
     if evs:
-        print("テストで得たもの（振る舞い・時間・画像。文書へは `<!-- evidence: id -->` の印で写す。`codd.py evidence` で一覧）: "
+        print("テストで得たもの（振る舞い・時間・ファイル。文書へは `<!-- evidence: id -->` の印で写す。`codd.py evidence` で一覧）: "
               + "、".join(f"{'自分' if not k else k} {len(e.items)} 件" for k, e in evs.items()))
     checks = [("自分", ctx.config.get("test"), ctx.config.get("check")),
               *((r.name, r.test, r.check) for r in ctx.refs)]
@@ -2642,7 +2642,7 @@ def terms_from_diff(side: Side) -> list[str]:
         if not deleting:
             quoted[line[0]].update(_BACKTICK.findall(line))
     # 関数の中の変数で、名前はそのままに中身だけ変えたもの（`disabled` など）は拾わない。外から指される名前ではなく、
-    # 同じ綴りの別物（ほかの画面の disabled）にばかり当たる。消した・足した変数は拾う。
+    # 同じ綴りの別物（ほかの部品の disabled）にばかり当たる。消した・足した変数は拾う。
     terms = [t for t in terms if not (t in local["+"] and t in local["-"])]
     # 定義の行が、ほかの名前を変えただけで変わった関数（既定値の `defaultLocale` を改めた `f(x = defaultLocale)`）は、
     # その関数の名前を拾わない。関数の名前で書いたテストの題にまで当たり、直さなくてよいものを直させる
@@ -2666,7 +2666,7 @@ def terms_from_diff(side: Side) -> list[str]:
                     terms.append(m.group(1))
                     if pat is _DIFF_TERMS[5]:
                         heads["+"].add(m.group(1))
-    # 足しただけの見出しのうち、前からその側にあるもの（同じフォルダの文書の書式に合わせた `## 画面` など）は、
+    # 足しただけの見出しのうち、前からその側にあるもの（同じフォルダの文書の書式に合わせた `## 使い方` など）は、
     # 変わった名前ではない。ありふれた語で、関係の無いファイルにばかり当たる
     copied = {h for h in heads["+"] - heads["-"] if existed_at_head(side, h)}
     return unique(t for t in terms if t not in copied)
@@ -2701,13 +2701,13 @@ def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
     return out
 
 
-# 文字列の値（画面の文言・URL・メッセージ）。e2e のケースはコードの名前ではなく、こうした文字列で書かれる。
+# 文字列の値（表示する文言・URL・メッセージ）。e2e のケースはコードの名前ではなく、こうした文字列で書かれる。
 # 引用符の中身。長い文字列も読み飛ばすだけにせず消費する（飛ばすと、その中の引用符で組を取り違え、
 # 並べ替えただけの行から `status` のような語を「変えた文字列」として拾う）。長さは使う側で絞る。
 _LITERAL = re.compile(r"""(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1""")
 _LETTER = re.compile(r"[^\W\d_]")
-# 画面の部品（JSX・Vue・Svelte・HTML）のタグの間の文言（`<button>サインイン</button>`）。引用符が無いので別に拾う。
-# 画面の文言は「送信」「保存」のように 2 文字のこともある
+# 部品のマークアップ（JSX・Vue・Svelte・HTML）のタグの間の文言（`<button>サインイン</button>`）。引用符が無いので別に拾う。
+# 表示する文言は「送信」「保存」のように 2 文字のこともある
 MARKUP_EXTS = (".tsx", ".jsx", ".vue", ".svelte", ".html", ".htm")
 _IMPORT_LINE = re.compile(r"^\s*(?:import\b|export\b.*\bfrom\s|.*\brequire\(\s*['\"]|from\s+\S+\s+import\b)")
 _MARKUP_TEXT = re.compile(r">\s*([^<>{}\n]{2,60}?)\s*(?:<|\{|$)")
@@ -2720,7 +2720,7 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
         if is_test(ctx, key, rel) or rel.lower().endswith(DOC_EXTS):
             continue
         markup = rel.lower().endswith(MARKUP_EXTS)
-        # import の指定（"react"・"../components/X"）は画面の文言ではない
+        # import の指定（"react"・"../components/X"）は表示する文言ではない
         plus, minus = ([ln for ln in lines if not _IMPORT_LINE.match(ln)] for lines in (plus, minus))
         for mark, lines in (("+", plus), ("-", minus)):
             texts = [m.group(2).strip() for ln in lines for m in _LITERAL.finditer(ln)]
@@ -3693,12 +3693,12 @@ def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
     """変える名前・変えるファイルが響くテストのファイル（自分と参照先。同じ側でも数える）と、その理由。
 
     - 名前: 変わる名前（`…`・差分の定義や見出し）がテストのファイルに書かれている
-    - 文字列: 変えた文字列（画面の文言・URL など。差分の引用符の中）がテストのファイルに書かれている
+    - 文字列: 変えた文字列（表示する文言・URL など。差分の引用符の中）がテストのファイルに書かれている
     - ファイル名: テストのファイル名が、変えるファイルと同じ語幹を持つ（app.py と test_app.py、Login.tsx と login.yaml）
     - つながり: テストのファイルが変えるファイルをパスで指している（`coherence: code=…`・`doc=…` など）か、その逆
     - グラフ: グラフで変わる名前につながる（必須と要判断。理由は拾った辺）
 
-    e2e のケースは画面の文言や URL で書かれ、コードの名前が出てこないことが多い。文字列とファイル名は、
+    e2e のケースは表示する文言や URL で書かれ、コードの名前が出てこないことが多い。文字列とファイル名は、
     テストの道具の書き方を知らずに e2e のケースを拾うための手がかり。
     """
     found: dict[tuple[str, str], str] = {}
@@ -3922,9 +3922,10 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
 
 
 # ---------------------------------------------------------------- テストで得たもの（evidence）を実装・文書に活かす
-# テストは合否のほかに、確かめた振る舞い・測った時間・前回と比べた画面を残す（evidence JSON。
+# テストは合否のほかに、確かめた振る舞い・測った時間・作ったファイルを残す（evidence JSON。
 # 実行する道具が共通の形で書く）。テストの側は文書を知らない。文書への影響を測って直すのはこのマシンの仕事:
-# - 画面: 文書のリポジトリの画像を sha256 で引き、画面のこれまでの版と同じ画像を見つけて今の画面に差し替える
+# - 作ったファイル: リポジトリのファイルを sha256 で引き、出力のこれまでの版と同じ写しを見つけて今の版に差し替える
+#   （計画が見込んだ変化だけ。見込んでいない変化は止めて訊く）
 # - 振る舞い・時間: 文書は値を手で写さず `<!-- evidence: id -->…<!-- /evidence -->` の印で写し、今と同じか
 #   （`codd.py evidence --write` で写し直す）・目安（max=）を超えていないかを確かめる
 
@@ -3979,8 +3980,8 @@ def find_evidence(ctx: Ctx, evs: dict[str, Evidence], doc_key: str, ident: str) 
     elif sep and _NAME.match(name) and not any(ident in e.items for e in evs.values()):
         ident = rest
     for key in dict.fromkeys(order):
-        # 画面は印で写さない（文書の画像はハーネスが sha256 で見つけて差し替える。replace_screens）
-        items = {i: v for i, v in evs[key].items.items() if v.get("kind") != "image"}
+        # テストが作ったファイルは印で写さない（写しはハーネスが sha256 で見つけて差し替える。replace_outputs）
+        items = {i: v for i, v in evs[key].items.items() if not is_output(v)}
         if ident.endswith("*"):
             hits = [items[i] for i in sorted(items) if i.startswith(ident[:-1])]
         else:
@@ -3994,8 +3995,8 @@ def render_item(item: dict, doc_path: Path) -> str:
     kind = item.get("kind")
     if kind == "metric":
         return f"{item.get('value')} {item.get('unit', '')}".strip()
-    if kind == "image":
-        return f"画面 {item.get('status', '')} {item.get('path', '')}".strip()
+    if is_output(item):
+        return f"ファイル {item.get('status', '')} {item.get('path', '')}".strip()
     status = item.get("status", "")
     return f"{STATUS_MARK.get(status, '')} {item.get('title', item['id'])}".strip()
 
@@ -4138,7 +4139,7 @@ def evidence_plan_problems(ctx: Ctx, bodies: dict[str, str], tests: set[tuple[st
     if not marks and not any(e.items for e in evs.values()):
         return []
     planned = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels}
-    # 変える・響くファイルに関係する、今のテストの結果（確かめた振る舞い・時間・画像）
+    # 変える・響くファイルに関係する、今のテストの結果（確かめた振る舞い・時間・ファイル）
     related: list[tuple[str, dict]] = []
     for key, ev in evs.items():
         for item in ev.items.values():
@@ -4158,12 +4159,11 @@ def evidence_plan_problems(ctx: Ctx, bodies: dict[str, str], tests: set[tuple[st
               for k, i in related[:MAX_MEASURED * 2]] or ["- なし"]
     lines += ["", "## 響くテストの結果を写している文書", ""]
     lines += [f"- {side_label(ctx, k, rel)} — " + ", ".join(ids) for (k, rel), ids in sorted(hit_docs.items())] or ["- なし"]
-    # 響くテストの画面を貼っている文書の画像（変えたあと、画面が変われば差し替える。知らせるだけ）
-    ev_key_of = {id(item): k for k, e in evs.items() for item in e.items.values()}
-    shown = [h for h in doc_screens(ctx, evs) if (ev_key_of.get(id(h.item), ""), str(h.item.get("file") or "")) in tests]
-    lines += ["", "## 響くテストの画面を貼っている文書の画像（画面が変われば、変えたあとに差し替える）", ""]
+    # 響くテストの出力の写し（文書に貼ったものなど。変えたあと、出力が変われば差し替える。知らせるだけ）
+    shown = [h for h in output_copies(ctx, evs) if (h.ev_key, item_file(ctx, h.ev_key, h.item)) in tests]
+    lines += ["", "## 響くテストの出力の写し（出力が変われば、変えたあとに差し替える）", ""]
     lines += [f"- {side_label(ctx, h.key, h.rel)} ← {h.item['id']}"
-              + (f"（{', '.join(docs_showing(ctx, h.key, h.rel))}）" if docs_showing(ctx, h.key, h.rel) else "")
+              + (f"（{', '.join(docs_linking(ctx, h.key, h.rel))}）" if docs_linking(ctx, h.key, h.rel) else "")
               for h in shown] or ["- なし"]
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / "evidence.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -4199,37 +4199,62 @@ def evidence_changes(ctx: Ctx) -> list[str]:
             elif item.get("kind") == "metric" and not close_enough(str(prev.get("value")), str(item.get("value")),
                                                                     EVIDENCE_TOLERANCE):
                 lines.append(f"- {label} — {prev.get('value')} → {item.get('value')} {item.get('unit', '')}")
-            elif item.get("kind") == "image" and prev.get("sha256") != item.get("sha256"):
-                lines.append(f"- {label} — 画面が変わった" + (f"（前: {item['previous']}）" if item.get("previous") else ""))
+            elif is_output(item) and prev.get("sha256") != item.get("sha256"):
+                lines.append(f"- {label} — 中身が変わった" + (f"（前: {item['previous']}）" if item.get("previous") else ""))
             elif item.get("kind") == "behavior" and prev.get("status") != item.get("status"):
                 lines.append(f"- {label} — {prev.get('status')} → {item.get('status')}")
     return lines
 
 
-IMAGE_EXTS = (".png",)
-# 撮り直す画像は、画面が変わっていなければ同じバイト列のまま残る（撮影の道具は同じとみなした画像を書き換えない）。
-# 計画に「撮り直す」と挙げた画像が変わらなくても、変え残しとはみなさない（報告で「撮り直しても同じ」と伝える）。
-MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+def is_output(item: dict) -> bool:
+    """テストが作ったファイルの項目か（`sha256` を持つ）。種類の名前や中身（バイナリ・JSON・図など）は問わない。"""
+    return isinstance(item.get("sha256"), str)
 
 
-def may_stay_same(rel: str) -> bool:
-    return rel.lower().endswith(MEDIA_EXTS)
-MAX_IMAGE_FILES = 5000
+def is_binary(path: Path) -> bool:
+    """文字のファイルでないか（先頭に NUL がある）。道具が作るバイナリは、作り直しても同じバイト列のことがある。"""
+    try:
+        with path.open("rb") as f:
+            return b"\0" in f.read(8192)
+    except OSError:
+        return False
+
+
+def may_stay_same(ctx: Ctx, key: str, rel: str) -> bool:
+    """計画に挙げても、中身が変わらないことのあるファイルか（道具が作り直すバイナリ）。
+
+    作り直す道具は、同じとみなした出力を書き換えないことがある。計画に「作り直す」と挙げたバイナリが変わらなくても、
+    変え残しとはみなさない（報告で「作り直しても同じ」と伝える）。文字のファイルは、変えないなら「変更不要」と書かせる。
+    """
+    return is_binary(side_of(ctx, key).path / rel)
+
+
+MAX_OUTPUT_FILES = 5000
 REPLACED_FILE = "replaced.json"
-# テストと検査コマンド（画面を撮り直す・結果を書くなど）が作り直したファイルと、そのときの中身のハッシュ。
+# 利用者が「意図した変化」と認めた、計画に無いテストの出力の変化（項目の id → 認めた sha256）
+OUTPUTS_OK_NAME = "outputs-accepted.json"
+OUTPUTS_PENDING_NAME = "outputs-pending.json"   # 差し替えずに止めた変化（accept で認める）
+UNPLANNED_OUTPUT = "計画に無いテストの出力が変わりました"
+# テストと検査コマンド（ファイルを作り直す・結果を書くなど）が作り直したファイルと、そのときの中身のハッシュ。
 # 中身がそのままなら「変えたファイル」に数えない（数えると、検査を通し直すたびに「計画に無いファイル」で止まる）。
 GENERATED_FILE = "generated.json"
-_IMG_LINK = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)|<img\s[^>]*?src\s*=\s*[\"']([^\"']+)[\"']", re.I)
+# 文書からファイルへのリンク（マークダウンのリンク・埋め込み、HTML の src・href）
+_FILE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)|<\w+\s[^>]*?(?:src|href)\s*=\s*[\"']([^\"']+)[\"']", re.I)
 
 
-def image_index(ctx: Ctx) -> dict[str, list[tuple[str, str]]]:
-    """各側の画像（git が無視していないもの）を sha256 で引けるようにする。"""
+def output_index(ctx: Ctx, evs: dict[str, "Evidence"]) -> dict[str, list[tuple[str, str]]]:
+    """各側のファイル（git が無視していないもの）のうち、テストの出力と同じ拡張子のものを sha256 で引けるようにする。"""
+    exts = {Path(i[f]).suffix.lower() for e in evs.values() for i in e.items.values() if is_output(i)
+            for f in ("path", "previous") if isinstance(i.get(f), str)}
+    exts.discard("")
+    if not exts:
+        return {}
     index: dict[str, list[tuple[str, str]]] = {}
     for key, side in all_sides(ctx):
         rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
                       side.path, GIT_TIMEOUT)
-        files = [ln for ln in out.splitlines() if side.has(ln) and ln.lower().endswith(IMAGE_EXTS)] if rc == 0 else []
-        for rel in files[:MAX_IMAGE_FILES]:
+        files = [ln for ln in out.splitlines() if side.has(ln) and Path(ln).suffix.lower() in exts] if rc == 0 else []
+        for rel in files[:MAX_OUTPUT_FILES]:
             try:
                 digest = hashlib.sha256((side.path / rel).read_bytes()).hexdigest()
             except OSError:
@@ -4239,40 +4264,52 @@ def image_index(ctx: Ctx) -> dict[str, list[tuple[str, str]]]:
 
 
 @dataclass
-class ScreenHit:
-    key: str            # 画像のある側
-    rel: str            # 画像のパス
-    item: dict          # テストの画面
-    state: str          # current（今の画面）/ stale（前の版）/ removed（撮らなくなった画面）
+class OutputHit:
+    key: str            # 写しのある側
+    rel: str            # 写しのパス
+    item: dict          # テストの出力の項目
+    state: str          # current（今の版）/ stale（前の版）/ removed（作らなくなった出力）
+    ev_key: str = ""    # 項目を書いた evidence の側
 
 
-def doc_screens(ctx: Ctx, evs: dict[str, Evidence]) -> list[ScreenHit]:
-    """文書のリポジトリにある画像のうち、テストの画面（今か前の版）と同じもの。"""
-    index = image_index(ctx)
-    hits: dict[tuple[str, str], ScreenHit] = {}
-    for ev in evs.values():
+def output_copies(ctx: Ctx, evs: dict[str, "Evidence"]) -> list[OutputHit]:
+    """リポジトリにあるファイルのうち、テストの出力（今か前の版）と同じ中身のもの（文書に貼った写しなど）。"""
+    index = output_index(ctx, evs)
+    hits: dict[tuple[str, str], OutputHit] = {}
+    for ev_key, ev in evs.items():
         for item in ev.items.values():
-            if item.get("kind") != "image":
+            if not is_output(item):
                 continue
             current = item.get("sha256")
             for digest in [h for h in item.get("history") or [] if isinstance(h, str)]:
                 for key, rel in index.get(digest, []):
                     state = "removed" if item.get("status") == "removed" else "current" if digest == current else "stale"
                     if (key, rel) not in hits or hits[(key, rel)].state == "current":
-                        hits[(key, rel)] = ScreenHit(key, rel, item, state)
+                        hits[(key, rel)] = OutputHit(key, rel, item, state, ev_key)
     return [hits[k] for k in sorted(hits)]
 
 
-ATTACHMENT_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
+def item_file(ctx: Ctx, ev_key: str, item: dict, field_name: str = "file") -> str:
+    """項目のパス（evidence の root からの相対）を、その側のルートからの相対にする。"""
+    raw = str(item.get(field_name) or "")
+    if not raw or "_root" not in item:
+        return raw
+    try:
+        return (item["_root"] / raw).resolve().relative_to(side_of(ctx, ev_key).path.resolve()).as_posix()
+    except ValueError:
+        return raw
 
 
 def attached_to(ctx: Ctx, key: str, rel: str, planned: set[str]) -> bool:
-    """計画に挙げた文書が貼っている画像か（新しい画面の仕様書に足すスクリーンショットなど）。文書の添付として認める。"""
-    return rel.lower().endswith(ATTACHMENT_EXTS) and any(covered(d, planned) for d in docs_showing(ctx, key, rel))
+    """計画に挙げた文書がリンクしているバイナリか（新しい文書に足す図など）。文書の添付として認める。
+
+    文字のファイル（コード・文書）は、リンクされていても計画に挙げさせる（添付の扱いで黙って通さない）。
+    """
+    return is_binary(side_of(ctx, key).path / rel) and any(covered(d, planned) for d in docs_linking(ctx, key, rel))
 
 
-def docs_showing(ctx: Ctx, key: str, rel: str) -> list[str]:
-    """その画像を貼っている文書（同じ側のマークダウン）。"""
+def docs_linking(ctx: Ctx, key: str, rel: str) -> list[str]:
+    """そのファイルをリンクしている文書（同じ側）。"""
     side = side_of(ctx, key)
     target = (side.path / rel).resolve()
     out = []
@@ -4280,7 +4317,7 @@ def docs_showing(ctx: Ctx, key: str, rel: str) -> list[str]:
         if not doc.lower().endswith(DOC_EXTS):
             continue
         text = read_text(side.path / doc) or ""
-        for m in _IMG_LINK.finditer(text):
+        for m in _FILE_LINK.finditer(text):
             link = (m.group(1) or m.group(2) or "").split("#")[0].split("?")[0]
             if link and not re.match(r"^[a-z][a-z0-9+.-]*:", link, re.I) and (side.path / doc).parent.joinpath(link).resolve() == target:
                 out.append(doc)
@@ -4293,16 +4330,29 @@ def replaced_files(ctx: Ctx) -> dict:
     return json.loads(file.read_text(encoding="utf-8")) if file.is_file() else {"replaced": [], "removed": []}
 
 
-def replace_screens(ctx: Ctx) -> dict:
-    """テストの画面が変わったら、前の版を貼っている文書の画像を今の画面に差し替える（ハーネスがする変更）。
+def accepted_outputs(ctx: Ctx) -> dict[str, str]:
+    try:
+        data = json.loads((ctx.data / OUTPUTS_OK_NAME).read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in data.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
-    差し替えた画像は .codd/replaced.json に控え、「計画に無い変更」に数えない。報告で、どの文書に響いたかを伝える。
+
+def replace_outputs(ctx: Ctx, expected: set[tuple[str, str]], planned: set[tuple[str, str]]) -> tuple[dict, list[str]]:
+    """テストの出力が変わったら、前の版の写し（文書に貼ったものなど）を今の版に差し替える（ハーネスがする変更）。
+
+    差し替えるのは、この回の計画が変わると見込んだものだけ: 出力を作ったテスト（`file`）が計画のテスト・響くテスト・
+    変えたテストにある（expected）か、写し・写しをリンクしている文書が計画にある（planned）か、利用者が認めたもの。
+    それ以外の変化（巻き込みや崩れ）は差し替えず、止めて訊く。黙って差し替えると、壊れた出力が文書の正解になる。
+    差し替えた写しは .codd/replaced.json に控え、「計画に無い変更」に数えない。報告で、どの文書に響いたかを伝える。
     """
     record = replaced_files(ctx)
     done = {(r["side"], r["path"]) for r in record["replaced"]}
-    removed = []
-    for hit in doc_screens(ctx, all_evidence(ctx)):
-        entry = {"side": hit.key, "path": hit.rel, "id": hit.item["id"], "docs": docs_showing(ctx, hit.key, hit.rel)}
+    ok = accepted_outputs(ctx)
+    removed, pending, held = [], {}, []
+    for hit in output_copies(ctx, all_evidence(ctx)):
+        docs = docs_linking(ctx, hit.key, hit.rel)
+        entry = {"side": hit.key, "path": hit.rel, "id": hit.item["id"], "docs": docs}
         if hit.state == "removed":
             removed.append(entry)
             continue
@@ -4311,6 +4361,16 @@ def replace_screens(ctx: Ctx) -> dict:
         src = hit.item["_root"] / str(hit.item.get("path", ""))
         if not src.is_file():
             continue
+        foreseen = ((hit.ev_key, item_file(ctx, hit.ev_key, hit.item)) in expected
+                    or (hit.key, hit.rel) in planned or any((hit.key, d) in planned for d in docs)
+                    or ok.get(hit.item["id"]) == hit.item["sha256"])
+        if not foreseen:
+            pending[hit.item["id"]] = hit.item["sha256"]
+            seen = [item_file(ctx, hit.ev_key, hit.item, f) for f in ("previous", "diff") if hit.item.get(f)]
+            held.append(f"{side_label(ctx, hit.key, hit.rel)} ← {hit.item['id']}"
+                        + (f"（貼っている文書: {', '.join(docs)}）" if docs else "")
+                        + (f"（見比べる: {', '.join(seen)}）" if seen else ""))
+            continue
         shutil.copyfile(src, side_of(ctx, hit.key).path / hit.rel)
         if (hit.key, hit.rel) not in done:
             record["replaced"].append(entry)
@@ -4318,15 +4378,22 @@ def replace_screens(ctx: Ctx) -> dict:
     record["removed"] = removed
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / REPLACED_FILE).write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return record
+    pending_file = ctx.data / OUTPUTS_PENDING_NAME
+    if pending:
+        pending_file.write_text(json.dumps(pending, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    else:
+        pending_file.unlink(missing_ok=True)
+    problems = [f"{UNPLANNED_OUTPUT}。計画のテストにも響くテストにも無いので、写しは差し替えていません（意図した変化なら"
+                "利用者に確かめて `codd.py accept` で認める。意図しない変化なら実装を直す）: " + " / ".join(held)] if held else []
+    return record, problems
 
 
-def screen_lines(ctx: Ctx, record: dict) -> list[str]:
+def output_lines(ctx: Ctx, record: dict) -> list[str]:
     lines = [f"- {side_label(ctx, r['side'], r['path'])} ← {r['id']}"
-             + (f"（貼っている文書: {', '.join(r['docs'])}）" if r["docs"] else "（どの文書も貼っていない）")
+             + (f"（リンクしている文書: {', '.join(r['docs'])}）" if r["docs"] else "（どの文書もリンクしていない）")
              for r in record["replaced"]]
-    lines += [f"- {side_label(ctx, r['side'], r['path'])} — テストで撮らなくなった画面です（{r['id']}）"
-              + (f"。貼っている文書: {', '.join(r['docs'])}" if r["docs"] else "") for r in record["removed"]]
+    lines += [f"- {side_label(ctx, r['side'], r['path'])} — テストが作らなくなった出力です（{r['id']}）"
+              + (f"。リンクしている文書: {', '.join(r['docs'])}" if r["docs"] else "") for r in record["removed"]]
     return lines
 
 
@@ -4829,6 +4896,38 @@ PREEXISTING_OK_NAME = "preexisting-ok.json"     # 利用者が認めた前から
 BEFORE_RUNS_NAME = "before-runs.json"           # 変える前の中身で動かした結果（印とコマンドが同じなら使い回す）
 
 
+FAILED_TESTS = "落ちたテスト（テストが書いた結果から。見るファイルがあれば開いて確かめてから直す）:"
+MAX_FAILED_SHOWN = 8
+
+
+def failed_tests(ctx: Ctx, key: str, since: float) -> list[str]:
+    """コマンドが今回書いた evidence から、落ちた振る舞いと、その理由（`error`）・見るファイル（`path`）を並べる。
+
+    出力の末尾だけでは、どのテストがなぜ落ちたかが分からないことがある（e2e の失敗時の様子など）。
+    前の回に書かれたままの結果を今の失敗と取り違えないよう、コマンドを動かし始めたあとに書かれたファイルだけを読む。
+    """
+    side = side_of(ctx, key)
+    out: list[str] = []
+    for pattern in evidence_patterns(ctx, key):
+        for path in sorted(side.path.glob(pattern)):
+            try:
+                if path.stat().st_mtime < since:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            items = data.get("items") if isinstance(data, dict) else None
+            root = (path.parent / data["root"]).resolve() if isinstance(data.get("root"), str) else side.path
+            for item in items if isinstance(items, list) else []:
+                if not isinstance(item, dict) or item.get("status") != "failed" or is_output(item):
+                    continue
+                look = item_file(ctx, key, {**item, "_root": root}, "path") if isinstance(item.get("path"), str) else ""
+                out.append(f"  ✗ {item.get('title') or item.get('id')}"
+                           + (f" — {' '.join(str(item['error']).split())[:200]}" if item.get("error") else "")
+                           + (f"（見る: {look}）" if look else ""))
+    return out[:MAX_FAILED_SHOWN] + ([f"  …ほか {len(out) - MAX_FAILED_SHOWN} 件"] if len(out) > MAX_FAILED_SHOWN else [])
+
+
 def failure_lines(text: str) -> set[str]:
     """失敗を表す行（数字・時間を除いて比べる）。"""
     return {re.sub(r"\d+(?:\.\d+)?", "N", ln.strip()) for ln in text.splitlines() if _FAILURE_LINE.search(ln)}
@@ -4877,9 +4976,12 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
 
 def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, label: str) -> list[str]:
     """run_check に、変える前から落ちていたかの見分けを足したもの。認めた前からの失敗だけなら通す。"""
+    started = time.time()
     problems = run_check(cwd, argv, label)
     if not problems:
         return []
+    failed = failed_tests(ctx, key, started - 1)
+    detail = ("\n" + FAILED_TESTS + "\n" + "\n".join(failed)) if failed else ""
     now = failure_lines(problems[0])
     try:
         ok = json.loads((ctx.data / PREEXISTING_OK_NAME).read_text(encoding="utf-8"))
@@ -4890,13 +4992,13 @@ def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, l
         return []
     before = run_before(ctx, key, side, cwd, argv)
     if before is None or before[0] == 0 or not now or not now <= failure_lines(before[1]):
-        return problems
+        return [problems[0] + detail]
     found = json.loads((ctx.data / PREEXISTING_NAME).read_text(encoding="utf-8")) \
         if (ctx.data / PREEXISTING_NAME).is_file() else {}
     found[label] = sorted(now)
     (ctx.data / PREEXISTING_NAME).write_text(json.dumps(found, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return [f"{label}: {PREEXISTING}（この回の変更のせいではないので、エージェントに直させずに利用者に確かめます。"
-            f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1]]
+            f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1] + detail]
 
 
 @dataclass
@@ -4959,7 +5061,7 @@ def load_applied(ctx: Ctx) -> Applied | str:
         return "変える前の印が古い形です（計画の検査からやり直してください）"
     _, bodies = sections(plan_text_for_checks(ctx), PLAN_HEADINGS)
     planned, plan_problems = planned_refs(ctx, bodies)
-    # テストの画面から差し替えた画像と、テスト・検査コマンドが作り直したファイルはハーネスの変更なので、
+    # テストの出力から差し替えた写しと、テスト・検査コマンドが作り直したファイルはハーネスの変更なので、
     # 「変えたファイル」に数えない。
     harness = {(r["side"], r["path"]) for r in replaced_files(ctx)["replaced"]}
     harness |= {(k, p) for k, side in all_sides(ctx) for p in made_by_checks(ctx, k, side)}
@@ -5079,7 +5181,7 @@ def batch_undone(ctx: Ctx, a: "Applied", batch: list[tuple[str, str]]) -> list[s
     touched = {"": a.own_touched, **a.touched}
     dev = deviations(ctx)
     return [side_label(ctx, k, rel) for k, rel in batch
-            if not may_stay_same(rel) and not dev.waived(k, rel)
+            if not may_stay_same(ctx, k, rel) and not dev.waived(k, rel)
             and not any(covered(t, {rel}) for t in touched.get(k, set()))]
 
 
@@ -5615,12 +5717,12 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     #    変える段で「変更不要」と申告したもの（理由付き）は、訊かずに認めて報告に残す。
     dev = deviations(ctx)
     want_own = own_planned(ctx, bodies)
-    only_media = bool(want_own) and all(may_stay_same(p) for p in want_own)
+    only_media = bool(want_own) and all(may_stay_same(ctx, "", p) for p in want_own)
     if not is_none(bodies.get("## 自分の変更案", "なし")) and not a.own_touched and not only_media:
         problems.append("自分の変更案があるのに、自分のリポジトリが変わっていません")
     else:
         tests_listed = set(tp.paths("", waived=False))   # テストの変更案にもあるものは、下のテストの指摘だけに出す
-        undone = sorted(p for p in want_own if not may_stay_same(p) and not dev.waived("", p) and p not in tests_listed
+        undone = sorted(p for p in want_own if not may_stay_same(ctx, "", p) and not dev.waived("", p) and p not in tests_listed
                         and not any(covered(t, {p}) for t in a.own_touched))
         if undone:
             problems.append(f"自分の変更案のファイルをまだ変えていません（最後まで変えてください。{UNDONE_HINT}）: "
@@ -5646,7 +5748,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     for r in ctx.refs:
         touched = a.touched[r.name]
         ref_tests = tp.paths(r.name, waived=False)
-        ref_media_only = all(may_stay_same(p) for p in a.planned.get(r.name, set()))
+        ref_media_only = all(may_stay_same(ctx, r.name, p) for p in a.planned.get(r.name, set()))
         if r.name in a.planned and not touched and not ref_media_only:
             problems.append(f"参照先の変更案で {r.name} を変えるはずなのに、{r.name} が変わっていません")
         elif r.name not in a.planned and not ref_tests and touched:
@@ -5657,7 +5759,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             extra_cands[r.name] = sorted(p for p in touched if not covered(p, allowed)
                                          and not attached_to(ctx, r.name, p, allowed))
             undone = sorted(p for p in a.planned.get(r.name, set())
-                            if not may_stay_same(p) and not dev.waived(r.name, p)
+                            if not may_stay_same(ctx, r.name, p) and not dev.waived(r.name, p)
                             and not any(covered(t, {p}) for t in touched))
             if undone:
                 problems.append(f"{r.name} で参照先の変更案のファイルをまだ変えていません（{UNDONE_HINT}）: "
@@ -5819,15 +5921,17 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                         "変えるなら計画に挙げて確認で承認を得る）: " + ", ".join(held))
     problems += guide_checks(ctx, a)
     record_generated(ctx, pre)
-    # 7. テストで得たもの。変わった画面を貼っている文書の画像を差し替え、振る舞い・時間を写した印が今と合うかを見る。
-    screens = replace_screens(ctx)
-    for line in screen_lines(ctx, screens):
-        print(f"テストの画面から: {line[2:]}")
+    # 7. テストで得たもの。変わった出力の写し（文書に貼ったものなど）を、計画が見込んだものだけ差し替え、
+    #    振る舞い・時間を写した印が今と合うかを見る。
     touched_all = {"": a.own_touched, **a.touched}
     docs = {(k, rel) for k, rels in touched_all.items() for rel in rels}
     docs |= {("", rel) for rel in own_allowed} | {(k, rel) for k, rels in a.planned.items() for rel in rels}
     tests = (tp.listed() | set(affected)
              | {(k, rel) for k, rels in touched_all.items() for rel in rels if is_test(ctx, k, rel)})
+    outputs, held_outputs = replace_outputs(ctx, tests, docs)
+    for line in output_lines(ctx, outputs):
+        print(f"テストの出力から: {line[2:]}")
+    problems += held_outputs
     problems += evidence_apply_problems(ctx, docs, tests)
     print_problems(ctx, "apply", problems)
     if problems:
@@ -5966,7 +6070,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
                 return "変えた"
             if dev.waived(key, p):
                 return f"{NO_CHANGE_MARK}（変える段で判断）: {dev.waived(key, p)}"
-            return "撮り直しても同じ" if may_stay_same(p) else "変えていない（やめた）" if stopped else "まだ"
+            return "作り直しても同じ" if may_stay_same(ctx, key, p) else "変えていない（やめた）" if stopped else "まだ"
         out = [f"- {p} — {mark(p)}" for p in sorted(planned)]
         tests_only = False
         for p in sorted(touched):
@@ -5974,7 +6078,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
                 tests_only = tests_only or not covered(p, planned)
                 continue
             if attached_to(ctx, key, p, planned):
-                out.append(f"- {p} — 変えた（計画の文書に貼った画像）")
+                out.append(f"- {p} — 変えた（計画の文書がリンクしているファイル）")
                 continue
             reason = dev.reason_added(key, p)
             who = "利用者が認めた" if (key, p) in ok else "変える段で足した"
@@ -6041,14 +6145,14 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
             lines += extra
         if len(lines) == tests_start + 3:
             del lines[tests_start:]
-    screens = screen_lines(ctx, replaced_files(ctx))
-    if screens:
-        lines += ["", "## テストの画面から差し替えた文書の画像", "", *screens]
+    outputs = output_lines(ctx, replaced_files(ctx))
+    if outputs:
+        lines += ["", "## テストの出力から差し替えたファイル", "", *outputs]
     changes = evidence_changes(ctx)
     if changes:
         lines += ["", "## テストで得たものの変化（計画のときと比べて）", "", *changes[:MAX_MEASURED],
                   "", "（振る舞いや時間を文書に活かすなら `<!-- evidence: id -->…<!-- /evidence -->` で写す。"
-                  "画面は結果の画像を文書に貼れば、以後は差し替える）"]
+                  "テストが作ったファイルは、その中身を文書から写しとしてリンクすれば、以後は差し替える）"]
     own_now = sorted(p for p in a.own_touched if (ctx.root / p).is_file())
     lonely = [p for p in own_now if not any(k for k, _ in linked(ctx, "", {p}))]
     if lonely:
@@ -6100,6 +6204,7 @@ _KINDS = (
     ("protected", "apply", (PROTECTED,)),
     ("protected-hit", "apply", (PROTECTED_HIT,)),
     ("outside", "apply", (OUTSIDE_ADDED,)),
+    ("output", "apply", (UNPLANNED_OUTPUT,)),
     ("extra", "apply", ("計画に無いファイルを変えています", "変更案に無いファイルを変えています", "が変わっています（戻してください）")),
     ("undone", "apply", ("まだ変えていません", "が変わっていません")),
     # 新しく足した名前のテストは、足すか「変更不要」と書くかをエージェントが決められる（計画の段の同じ指摘も訊かない）
@@ -6147,6 +6252,7 @@ OPTIONS = {
     "keep": ("変えた分は残して、計画を直す", "", "PLAN"),
     "accept": ("足したファイルを認めて続ける", "accept", "APPLY"),
     "known": ("前から落ちていたものとして続ける", "accept", "APPLY"),
+    "intended": ("意図した変化として認め、写しを差し替える", "accept", "APPLY"),
     "reset": ("変えた分を戻して、計画から練り直す", "rollback", "PLAN"),
     "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
 }
@@ -6176,6 +6282,10 @@ ADVICE = {
                           "承認するか、変更を戻して練り直すかを決めてもらいます"),
         "outside": (["accept", "reapply", "keep", "stop"],
                     "変える段で、計画で挙げていないファイルを理由付きで足しました。理由を見て、認めて続けるか、戻して変え直すかを決めてもらいます"),
+        # 計画が見込んでいない出力の変化（巻き込み・崩れかもしれない）。差し替えるかは人が決める
+        "output": (["intended", "reapply", "keep", "stop"],
+                   "計画に無いテストの出力が変わりました。見比べるファイルを見て、意図した変化として写しを差し替えるか、"
+                   "意図しない変化として実装を直すかを決めてもらいます"),
         "extra": (["reapply", "keep", "reset", "stop"],
                   "計画に無いファイルを変えました。その変更を戻して変え直すか、計画に足すかを決めてもらいます"),
         "undone": (["reapply", "keep", "reset", "stop"],
@@ -6305,11 +6415,20 @@ def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
         known_file.write_text(json.dumps(known, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         found.unlink()
         print("変える前から落ちていたものとして認めました（同じ失敗だけを通し、新しい失敗は止めます）: " + "、".join(add))
+    pending = ctx.data / OUTPUTS_PENDING_NAME
+    had_outputs = pending.is_file()
+    if had_outputs:
+        # 計画に無いテストの出力の変化を、意図した変化として認める（認めた中身だけ。また変われば止める）
+        add_outputs = json.loads(pending.read_text(encoding="utf-8"))
+        (ctx.data / OUTPUTS_OK_NAME).write_text(json.dumps({**accepted_outputs(ctx), **add_outputs}, ensure_ascii=False,
+                                                           indent=2) + "\n", encoding="utf-8")
+        pending.unlink()
+        print("意図した変化として認めました（次の検査で写しを差し替えます）: " + "、".join(add_outputs))
     dev, ok = deviations(ctx), accepted(ctx)
     new = sorted((k, rel) for k, files in {"": a.own_touched, **a.touched}.items() for rel in files
                  if dev.reason_added(k, rel) and (k, rel) not in ok and not in_plan_text(ctx, rel))
     if not new:
-        if had_preexisting:
+        if had_preexisting or had_outputs:
             return 0
         print("認めるものはありません（計画で挙げていないファイルを、理由付きで足したものがありません）")
         return 0
@@ -6791,9 +6910,9 @@ def build_parser() -> argparse.ArgumentParser:
     gd.add_argument("name", nargs="+", help="`skill:名前`・スキルの名前・`[参照先の名前:]パス[#見出し]`")
     sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
     sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
-    sub.add_parser("accept", help="変える段で計画に無いファイルを理由付きで足した分か、変える前から落ちていたテストを、利用者が認めたと控える")
+    sub.add_parser("accept", help="変える段で計画に無いファイルを理由付きで足した分・変える前から落ちていたテスト・計画に無いテストの出力の変化を、利用者が認めたと控える")
     sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
-    ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・画像）と、それを写した文書の印を示す")
+    ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・ファイル）と、それを写した文書の印を示す")
     ev.add_argument("path", nargs="*", help="見る・写し直す文書（参照先は `名前:パス`。既定はすべて）")
     ev.add_argument("--write", action="store_true", help="文書の印を今の値に写し直す")
     au = sub.add_parser("lint", help="本流とは別の点検。リポジトリ全体の食い違いを探し、本流に渡すやりたいことにする（直さない）")

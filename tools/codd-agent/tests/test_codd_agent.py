@@ -15,6 +15,7 @@ import re
 import os
 import shutil
 import stat
+import time
 import subprocess
 import sys
 import tempfile
@@ -727,7 +728,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("own=changed refs=design", r.stdout)
 
     def test_files_the_checks_regenerate_are_not_changes(self) -> None:
-        # 検査コマンド（画面を撮り直すなど）が作り直したファイルは、エージェントの変更に数えない。
+        # 検査コマンド（図を作り直すなど）が作り直したファイルは、エージェントの変更に数えない。
         # 数えると、検査を通し直すたびに「計画に無いファイル」で止まる。
         commit(self.design, {"docs/images/hello.png": "old\n"}, "image")
         shot = ("import pathlib, time; p = pathlib.Path('docs/images'); p.mkdir(parents=True, exist_ok=True); "
@@ -750,18 +751,26 @@ class CoddTest(unittest.TestCase):
         self.assertIn("計画に無いファイルを変えています", r.stderr)
         self.assertIn("report.txt", r.stderr)
 
-    def test_planned_images_may_come_out_the_same(self) -> None:
-        # 撮り直すと計画に挙げた画像が、画面が変わらず同じバイト列のままでも、変え残しとして止めない。
-        commit(self.design, {"docs/images/hello.png": "same\n"}, "image")
+    def test_planned_binaries_may_come_out_the_same(self) -> None:
+        # 作り直すと計画に挙げたバイナリが、同じバイト列のままでも、変え残しとして止めない。
+        (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
+        (self.design / "docs/images/hello.bin").write_bytes(b"BIN\0same")
+        commit(self.design, {"docs/text.txt": "same\n"}, "binary")
         plan = PLAN_DRIFT.replace("- docs/api.md — `hello` の戻り値を 2 と書き直す",
-                                  "- docs/api.md — `hello` の戻り値を 2 と書き直す\n- docs/images/hello.png — 撮り直す")
+                                  "- docs/api.md — `hello` の戻り値を 2 と書き直す\n- docs/images/hello.bin — 作り直す")
         self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("docs/images/hello.png — 撮り直しても同じ", self.run_pa(self.impl, "report").stdout)
+        self.assertIn("docs/images/hello.bin — 作り直しても同じ", self.run_pa(self.impl, "report").stdout)
+        # 文字のファイルは、変えないなら「変更不要」と書かせる（作り直しで同じになったとはみなさない）
+        self.write_plan(plan.replace("docs/images/hello.bin — 作り直す", "docs/text.txt — 作り直す"))
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/text.txt", r.stderr)
 
     # ------------------------------------------------------------ 影響範囲を測る
 
@@ -1936,41 +1945,98 @@ class CoddTest(unittest.TestCase):
         self.assertIn("\n読み込み: <!-- evidence: login/S-01/load -->850 ms<!-- /evidence -->\n", text)
         self.assertEqual(self.run_pa(self.impl, "evidence").returncode, 0)
 
-    def test_changed_screens_replace_the_images_docs_show(self) -> None:
-        # テストの側は文書を知らない。画面のこれまでの版と同じ画像を文書のリポジトリから sha256 で見つけ、差し替える。
+    def setup_changed_outputs(self) -> tuple[bytes, bytes]:
+        """文書の側に、テストの出力（前の版）の写しを貼った文書を置き、テストの出力が新しい版になった状態にする。"""
         old, new, gone = b"PNG-v1 login", b"PNG-v2 login", b"PNG-old menu"
         sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
         commit(self.design, {"docs/login.md": "# ログイン\n\n![ログイン](images/login.png)\n",
-                             "docs/menu.md": "# メニュー\n\n<img src=\"images/menu.png\">\n"}, "screens")
+                             "docs/menu.md": "# メニュー\n\n<img src=\"images/menu.png\">\n"}, "outputs")
         (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
         (self.design / "docs/images/login.png").write_bytes(old)
         (self.design / "docs/images/menu.png").write_bytes(gone)
         git(self.design, "add", "-A")
-        git(self.design, "commit", "-q", "-m", "images")
+        git(self.design, "commit", "-q", "-m", "copies")
+        outputs = self.impl / "results/out"
+        outputs.mkdir(parents=True)
+        (outputs / "login.png").write_bytes(new)
+        (outputs / "login-diff.png").write_bytes(b"diff")
+        # 種類の名前は道具が決める（codd は sha256 を持つ項目をテストが作ったファイルとして扱う）
+        base = {"kind": "snapshot", "file": "tests/login.yaml"}
+        self.write_evidence([
+            {**base, "id": "login/S-01/login", "status": "changed", "path": "results/out/login.png",
+             "sha256": sha(new), "history": [sha(new), sha(old)], "diff": "results/out/login-diff.png"},
+            {**base, "id": "menu/S-01/menu", "status": "removed", "path": "results/out/menu.png",
+             "sha256": sha(gone), "history": [sha(gone)]},
+        ])
+        return old, new
+
+    def test_unforeseen_output_changes_stop_instead_of_replacing_copies(self) -> None:
+        # 計画が見込んでいない出力の変化（巻き込み・崩れかもしれない）は、写しを黙って差し替えずに止めて訊く。
+        old, new = self.setup_changed_outputs()
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
-        screens = self.impl / "results/screens"
-        screens.mkdir(parents=True)
-        (screens.parent / ".gitignore").write_text("*\n", encoding="utf-8")
-        (screens / "login.png").write_bytes(new)
-        base = {"kind": "image", "file": "tests/login.yaml"}
-        self.write_evidence([
-            {**base, "id": "login/S-01/login", "status": "changed", "path": "results/screens/login.png",
-             "sha256": sha(new), "history": [sha(new), sha(old)]},
-            {**base, "id": "menu/S-01/menu", "status": "removed", "sha256": sha(gone), "history": [sha(gone)]},
-        ])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("計画に無いテストの出力が変わりました", r.stderr)
+        self.assertIn("docs/images/login.png ← login/S-01/login（貼っている文書: docs/login.md）（見比べる: results/out/login-diff.png）",
+                      r.stderr)
+        self.assertEqual((self.design / "docs/images/login.png").read_bytes(), old)
+        advice = self.run_pa(self.impl, "advise").stdout
+        self.assertNotIn("AUTO", advice)                          # 人に訊く
+        self.assertIn("意図した変化として認め、写しを差し替える（勧め）", advice)
+        # 利用者が意図した変化と認めたら、次の検査で差し替える
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)   # ハーネスの差し替えは「計画に無い変更」に数えない
         self.assertEqual((self.design / "docs/images/login.png").read_bytes(), new)
-        self.assertIn("テストの画面から: docs/images/login.png ← login/S-01/login（貼っている文書: docs/login.md）", r.stdout)
-        self.assertIn("docs/images/menu.png — テストで撮らなくなった画面です（menu/S-01/menu）。貼っている文書: docs/menu.md",
+        self.assertIn("テストの出力から: docs/images/login.png ← login/S-01/login（リンクしている文書: docs/login.md）", r.stdout)
+        self.assertIn("docs/images/menu.png — テストが作らなくなった出力です（menu/S-01/menu）。リンクしている文書: docs/menu.md",
                       r.stdout)
         report = self.run_pa(self.impl, "report")
         self.assertEqual(report.returncode, 0, report.stdout)
-        self.assertIn("## テストの画面から差し替えた文書の画像", report.stdout)
-        # もう一度検査しても、差し替えた画像は今の画面なので何もしない
+        self.assertIn("## テストの出力から差し替えたファイル", report.stdout)
+        # もう一度検査しても、差し替えた写しは今の版なので何もしない
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+
+    def test_output_changes_of_planned_tests_replace_copies(self) -> None:
+        # 計画のテスト（テストの変更案）が作る出力の変化は、見込んだ変化なので訊かずに差し替える。
+        commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
+        _, new = self.setup_changed_outputs()
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/login.yaml — `hello` のログを確かめる手順を足す")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests/login.yaml").write_text("suite: ログイン\n# hello のログ\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.design / "docs/images/login.png").read_bytes(), new)
+
+    def test_failed_tests_show_their_reason_and_file(self) -> None:
+        # 検査が落ちたら、テストが今回書いた結果から、落ちた振る舞いの理由と見るファイルを出す。
+        self.write_evidence([{"kind": "behavior", "id": "old/S-09", "title": "前の回の失敗", "status": "failed",
+                              "error": "前の回"}])
+        os.utime(self.impl / "results/ui-evidence.json", (time.time() - 3600, time.time() - 3600))
+        self.set_check(self.impl, [sys.executable, "-c", "raise SystemExit(1)"])
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("落ちたテスト（", r.stderr)   # 前の回に書かれたままの結果は、今の失敗と取り違えない
+        write = ("import json; json.dump({'version': 1, 'root': '..', 'items': [{'kind': 'behavior', 'id': 'login/S-01', "
+                 "'title': 'ログイン 正しい ID で進める', 'status': 'failed', 'error': 'Timeout: 商品一覧 が出ない', "
+                 "'path': 'results/out/failure.png'}, {'kind': 'behavior', 'id': 'login/S-02', 'title': '通る', "
+                 "'status': 'passed'}]}, open('results/ui-evidence.json', 'w')); raise SystemExit(1)")
+        self.set_check(self.impl, [sys.executable, "-c", write])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("落ちたテスト（テストが書いた結果から。", r.stderr)
+        self.assertIn("✗ ログイン 正しい ID で進める — Timeout: 商品一覧 が出ない（見る: results/out/failure.png）", r.stderr)
+        failed = r.stderr.split("落ちたテスト（", 1)[1]
+        self.assertNotIn("通る", failed)
+        self.assertNotIn("前の回の失敗", failed)
 
     def test_tracked_test_outputs_are_not_files_to_fix(self) -> None:
         # 結果ファイルと撮った画面を git で管理していても、直すファイル・影響範囲・計画に無い変更に数えない。
@@ -2037,12 +2103,12 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
         (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
-        (self.design / "docs/images/hello2.png").write_bytes(b"PNG hello2")
+        (self.design / "docs/images/hello2.png").write_bytes(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR hello2")
         (self.design / "docs/hello2.md").write_text("# hello の画面\n\n## hello\n\n![画面](images/hello2.png)\n",
                                                    encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("docs/images/hello2.png — 変えた（計画の文書に貼った画像）", self.run_pa(self.impl, "report").stdout)
+        self.assertIn("docs/images/hello2.png — 変えた（計画の文書がリンクしているファイル）", self.run_pa(self.impl, "report").stdout)
 
     def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
         commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")

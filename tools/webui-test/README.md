@@ -255,8 +255,9 @@ PC ごとの描画の差で揺れるときは `check.maxDiffRatio: 0.001` のよ
 ### codd-agent と組む
 
 [codd-agent](../codd-agent/README.md) の「変えたあとの検査」に `webui-test check` を入れると、変えるたびに
-e2e を動かし、明示した `--evidence` の結果を codd-agent が受け取る。codd-agent は、変わった画面を貼っている
-文書を探して画像を差し替え、どの文書に響いたかを報告する。
+e2e を動かし、明示した `--evidence` の結果を codd-agent が受け取る。codd-agent は、変わった画面の前の版を貼っている
+文書を探し、計画が見込んだ変化なら画像を差し替えて、どの文書に響いたかを報告する（見込んでいない画面の変化は、
+前の画像と差分の画像を示して訊く）。落ちたケースは、理由と失敗した時点の画面のパスを codd-agent が示す。
 単体テスト・API テスト・シナリオテストは codd-agent の `test` に書く（codd-agent が動かす）。
 
 ```bash
@@ -264,9 +265,30 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-
   --test "npm test" --check "webui-test check" --evidence "results/webui-test-evidence.json"
 ```
 
-設計書側から画像を作る場合は、[codd-agent の設計書側からの撮影手順](../codd-agent/README.md#設計書側から画像を作る)
-のように、設計書側の `check` に `webui-test capture` を設定する。
-webui-test 単独でも同じコマンドで撮影できる。双方のインストールや実行に、もう一方は必須ではない。
+webui-test の保存先を変えたら、codd-agent の `evidence` も合わせる。
+e2e のケースファイルに `# coherence: doc=docs:docs/login.md` のように仕様書を書いておくと、仕様書を変える codd-agent の
+計画はケースファイルも扱わないと通らない（webui-test はこの注記を読まない）。
+
+#### 設計書側から画像を作る
+
+設計書側の codd-agent の `check` に `webui-test capture` を設定すると、設計書側からも画像を作れる。
+次の例では、実装側が `~/work/my-app`、設計書側が `~/work/my-app-docs` にある。
+
+```bash
+webui-test init ~/work/my-app --base-url http://localhost:3000 --serve "npm start"
+python3 tools/codd-agent/init.py ~/work/my-app-docs --side design --ref app=../my-app \
+  --check "webui-test capture docs/screens.yaml --config ../my-app/webui-test.config.yaml --out docs/images"
+```
+
+実装側に設定がすでにあれば `webui-test init` は要らない（既存の設定は上書きしない）。
+設計書側の `docs/screens.yaml` に、撮影する画面への操作と画像名を書く（書き方は「4. 仕様書の画像を撮る」と同じ）。
+`docs/images/login-form.png` を作るなら、`docs/login.md` から `![ログイン画面](images/login-form.png)` で参照する。
+初めて撮るときは、撮影の YAML・作る画像・画像を貼る文書を codd-agent の計画に挙げ、変える段で撮影してから文書に貼る。
+撮影は設計書側のルートで実行し、変えたあとの検査でも同じ `check` が動くので、撮影に失敗すれば検査は通らない。
+参照先の実装を読むだけのときは、その参照先の `check` は実行されないので、撮影のコマンドは設計書側に設定する。
+`capture` は画像を作るだけで、画面を比べるための結果ファイルは作らない（結果ファイルを使った差し替えは実装側の `check` で使う）。
+
+どちらも相手の設定やコードを読まず、組み方は使うプロジェクトの設定に書くので、双方のインストールや実行に、もう一方は必須ではない。
 
 ## 環境を切り替える（ローカル・検証環境）
 

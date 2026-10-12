@@ -83,8 +83,10 @@ function compareScreens(report, { outDir, screensDir, maxDiffRatio = 0 }) {
   // 今回動かしたケースファイルで、撮らなくなった画面
   for (const [id, prev] of Object.entries(index)) {
     if (seen.has(id) || !ranFiles.has(prev.file)) continue;
-    out.push({ id, file: prev.file, status: 'removed', sha256: prev.sha256, history: prev.history || [prev.sha256] });
-    fs.rmSync(path.join(screensDir, ...id.split('/').map(safe)) + '.png', { force: true });
+    // path は前にあった場所（消したあとも、読む側が拡張子から写しを探せるように残す）
+    const dest = path.join(screensDir, ...id.split('/').map(safe)) + '.png';
+    out.push({ id, file: prev.file, status: 'removed', path: dest, sha256: prev.sha256, history: prev.history || [prev.sha256] });
+    fs.rmSync(dest, { force: true });
     delete index[id];
   }
   fs.writeFileSync(indexFile, JSON.stringify(index, null, 2) + '\n');
