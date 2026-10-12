@@ -7,6 +7,7 @@ wiki_query.py — Wiki を検索・閲覧するスクリプト
       キーワードで Wiki ページを検索する（トークン化＋フィールド重み付け）
       - 日本語/英語/表記ゆれをまたいでヒットする（title・aliases を最重視）
       - 完全一致を優先し、部分一致は被覆率順に提示する
+      - graphify とそのグラフ（<wiki_root>/graphify-out/graph.json）があれば、グラフでつながるページも足す
 
   python scripts/wiki_query.py list-pages [--category atoms|topics]
       ページ一覧を表示する
@@ -27,6 +28,8 @@ wiki_query.py — Wiki を検索・閲覧するスクリプト
 import argparse
 import json
 import re
+import shutil
+import subprocess
 import sys
 import unicodedata
 from datetime import date, datetime
@@ -72,6 +75,13 @@ _FIELD_WEIGHTS = {"title": 5, "aliases": 5, "tags": 3, "summary": 2, "body": 1}
 
 # 部分一致として採用する最小被覆率（これ未満は bigram の偶発一致とみなして捨てる）
 PARTIAL_COVERAGE_MIN = 0.5
+
+# graphify のグラフ（graphify スキルが wiki_root で作る。無ければキーワード検索だけで動く）
+GRAPH_PATH = Path("graphify-out") / "graph.json"
+GRAPH_BUDGET = 1500
+GRAPH_TIMEOUT = 60
+# graphify query の出力からページを拾う（`NODE 自己注意 [src=wiki/atoms/transformer.md loc=L8 ...]`）
+_GRAPH_SRC_RE = re.compile(r"\[src=(wiki/(?:atoms|topics)/[^\s\]]+\.md)")
 
 # 0 件ヒット時に近傍として提示する最大件数（採用ラインに届かなかった弱一致・
 # トークンが全く重ならなかった場合のアルファベット順フォールバックの両方に使う）
@@ -287,6 +297,44 @@ def _alphabetical_neighbors(pages: list, limit: int = NEIGHBOR_LIMIT) -> list:
     return titled[:limit]
 
 
+def graph_pages(wiki_root: Path, keyword: str) -> list:
+    """graphify のグラフで、キーワードからたどれるページを近い順に返す。
+
+    graphify が無い・グラフがまだ無い・引けなかったときは空（キーワード検索だけで動く）。
+    """
+    exe = shutil.which("graphify")
+    graph = wiki_root / GRAPH_PATH
+    if not exe or not graph.is_file():
+        return []
+    try:
+        proc = subprocess.run(
+            [exe, "query", keyword, "--graph", str(graph), "--budget", str(GRAPH_BUDGET)],
+            cwd=str(wiki_root), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=GRAPH_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    pages = []
+    for rel in _GRAPH_SRC_RE.findall(proc.stdout or ""):
+        path = wiki_root / rel
+        if path not in pages and path.is_file():   # 消したページはグラフに残っていても出さない
+            pages.append(path)
+    return pages
+
+
+def _page_ref(page_path: Path, wiki_root: Path) -> dict:
+    fields = get_page_fields(page_path)
+    return {"id": str(page_path.relative_to(wiki_root).with_suffix("")),
+            "title": fields["title"], "summary": fields["summary"]}
+
+
+def _print_linked(linked: list, wiki_root: Path) -> None:
+    print(f"グラフでつながるページ（graphify）: {len(linked)} 件")
+    for page_path in linked:
+        rel = page_path.relative_to(wiki_root)
+        print(f"  [{rel.parts[1]}] {get_page_title(page_path)}  {rel}")
+
+
 def cmd_search(args, wiki_root: Path) -> None:
     """キーワードで Wiki ページを検索する（トークン化＋フィールド重み付け）。
 
@@ -323,14 +371,20 @@ def cmd_search(args, wiki_root: Path) -> None:
     partial = [r for r in scored if PARTIAL_COVERAGE_MIN <= r[1] < 1.0]
     primary = full if full else partial
 
+    # グラフでつながるページ（キーワードでは拾えなかったもの）
+    found = {r[3] for r in primary}
+    linked = [p for p in graph_pages(wiki_root, args.keyword) if p not in found]
+
     # 採用ラインに届かなかった弱一致（近傍候補。0 件時のみ使う。scored は既にスコア順）
-    weak = scored[:NEIGHBOR_LIMIT] if not primary else []
+    weak = scored[:NEIGHBOR_LIMIT] if not primary and not linked else []
 
     # ── JSON 出力（agentic search のループ駆動用） ──
     if as_json:
         norm = _normalize_search_results(primary, wiki_root)
         out = {"query": args.keyword, "count": len(norm), "results": norm}
-        if not primary:
+        if linked:
+            out["graph"] = [_page_ref(p, wiki_root) for p in linked]
+        if not primary and not linked:
             if weak:
                 out["neighbors"] = _normalize_search_results(weak, wiki_root)
             else:
@@ -341,6 +395,11 @@ def cmd_search(args, wiki_root: Path) -> None:
         if _SHARED_HINTS is not None:
             out["hints"] = _SHARED_HINTS.compute_hints(norm, keywords)
         print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
+    if not primary and linked:
+        print(f"[INFO] '{args.keyword}' を含むページはありません")
+        _print_linked(linked, wiki_root)
         return
 
     if not primary:
@@ -382,6 +441,8 @@ def cmd_search(args, wiki_root: Path) -> None:
     # 完全一致を出したが部分一致も残っている場合、近傍候補として件数を示す
     if full and partial:
         print(f"  （ほか部分一致 {len(partial)} 件。list-pages で全体を確認できます）")
+    if linked:
+        _print_linked(linked, wiki_root)
 
     # ── agentic search ヒント（--suggest） ──
     if suggest:

@@ -60,6 +60,9 @@ python scripts/wiki_query.py hot
 - ヒット 0 のときは近傍候補をその場に出す（弱一致があればスコア順、無ければタイトルの
   アルファベット順）。`--json` では `neighbors` に同じ候補が入る。**近傍候補にも該当ページが
   無ければ、それは新規 ingest の好機**（`op-ingest.md`）。
+- `wiki_root/graphify-out/graph.json`（[ingest のグラフ更新](op-ingest.md#グラフを更新するgraphify-があるとき)で作る）と
+  graphify があれば、キーワードを含まないがグラフでつながるページを「グラフでつながるページ」として足す
+  （`--json` では `graph`）。どちらかが無ければ従来どおりキーワード検索だけで動く。
 - 単発検索で手がかりが弱いときは `--json` / `--suggest` で **agentic search（反復探索）** に切り替える。
   `next_action`（refine/expand/broaden/synthesize）に従い、`suggested_queries` で再検索したり
   `related_ids`（本文の `[[wikilink]]`）を辿ってマルチホップ展開する。ループの正典は共有スキル

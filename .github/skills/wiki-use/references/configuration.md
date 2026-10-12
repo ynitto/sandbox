@@ -88,7 +88,11 @@ wiki_root exists : True
 │       └── queries.md        ← 価値あるクエリの記録（直近50件）
 ├── SCHEMA.md                 ← このWikiの構造・規約定義（LLMと共に育てる）
 ├── index.md                  ← 全ページの目録（1ページ1行の箇条書き）
-└── log.md                    ← 操作ログ（追記専用）
+├── log.md                    ← 操作ログ（追記専用）
+└── .graphifyignore           ← グラフに入れないファイル（graphify を使うとき）
 ```
+
+graphify を使うと、グラフが `graphify-out/` にできる（[ingest のグラフ更新](op-ingest.md#グラフを更新するgraphify-があるとき)）。
+Obsidian Vault に置くなら、Obsidian の除外ファイルに `graphify-out/` を足す。
 
 ソースデータは wiki_root 外で管理する（取り込み前に保全済みであることを前提とする）。
