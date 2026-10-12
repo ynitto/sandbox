@@ -30,11 +30,13 @@ function compareScreens(report, { outDir, screensDir, maxDiffRatio = 0 }) {
   const out = [];
   const seen = new Set();
   const ranFiles = new Set();
+  const unfinished = new Set(); // 落ちた・飛ばしたケース（途中までしか撮っていない。撮らなかった画面を「なくなった」にしない）
   for (const s of report.suites) {
     if (!s.file) continue;
     const file = path.resolve(s.file);
     ranFiles.add(file);
     for (const c of s.cases) {
+      if (c.status !== 'passed') unfinished.add(`${caseKey(file, c)}/`);
       if (c.status === 'skipped') continue;
       const names = new Map();
       for (const sh of c.screenshots || []) {
@@ -83,6 +85,7 @@ function compareScreens(report, { outDir, screensDir, maxDiffRatio = 0 }) {
   // 今回動かしたケースファイルで、撮らなくなった画面
   for (const [id, prev] of Object.entries(index)) {
     if (seen.has(id) || !ranFiles.has(prev.file)) continue;
+    if ([...unfinished].some((k) => id.startsWith(k))) continue; // 版の控えも残す（次に通ったとき、文書の写しを見つけられるように）
     // path は前にあった場所（消したあとも、読む側が拡張子から写しを探せるように残す）
     const dest = path.join(screensDir, ...id.split('/').map(safe)) + '.png';
     out.push({ id, file: prev.file, status: 'removed', path: dest, sha256: prev.sha256, history: prev.history || [prev.sha256] });

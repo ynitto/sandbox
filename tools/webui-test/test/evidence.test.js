@@ -59,7 +59,8 @@ test('evidence: 落ちたケースに理由と失敗時の画面を書く', (t) 
   const outDir = path.join(root, 'reports/run');
   const report = { suites: [{ suite: 'ログイン', file: path.join(root, 'login.yaml'), cases: [
     { id: 'S-01', title: '落ちる', status: 'failed', error: 'Timeout: 商品一覧 が出ない',
-      screenshots: [{ name: 'goto', file: 'login/S-01/01-goto.png' }, { name: 'failure', file: 'login/S-01/02-failure.png' }] },
+      screenshots: [{ name: 'goto', file: 'login/S-01/01-goto.png' }, { name: 'failure', file: 'login/S-01/02-failure.png' },
+        { name: 'failure', file: 'login/S-01/03-failure.png', explicit: true }] },   // 利用者が同じ名前で撮った画面は取り違えない
     { id: 'S-02', title: '通る', status: 'passed', error: null, screenshots: [] },
   ] }] };
   writeEvidence(report, [], { root, outDir, evidenceFile: path.join(root, 'ui.json') });

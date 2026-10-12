@@ -30,7 +30,7 @@ function buildEvidence(report, screens, { root, outDir }) {
     for (const c of s.cases) {
       const id = caseKey(s.file, c);
       const title = `${s.suite} ${c.title}${c.variant ? ` [${c.variant}]` : ''}`;
-      const failure = c.status === 'failed' ? (c.screenshots || []).filter((x) => x.name === 'failure').pop() : null;
+      const failure = c.status === 'failed' ? (c.screenshots || []).filter((x) => x.name === 'failure' && !x.explicit).pop() : null;
       items.push({
         id, kind: 'behavior', title, status: c.status, requirement: c.requirement || undefined, file,
         error: c.status === 'failed' && c.error ? c.error : undefined,

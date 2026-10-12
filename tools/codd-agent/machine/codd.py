@@ -69,6 +69,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -842,17 +843,28 @@ class Ctx:
         self.exclude_test_outputs()
 
     def exclude_test_outputs(self) -> None:
-        """テストが作ったファイル（evidence の出力の項目の path）も、結果ファイルと同じく直すものに数えない。"""
+        """テストが作ったファイル（evidence の出力の項目の path）も、結果ファイルと同じく直すものに数えない。
+
+        外すのは、git が追っていないファイルと、追っているバイナリだけ。追っている文字のファイル（スナップショット・
+        作り直す仕様など）と人の承認が要るファイルは外さない（evidence に書くだけで、変更を検査から隠せないように）。
+        """
         for key, side in [("", self.own), *((r.name, r) for r in self.refs)]:
             ev = load_evidence(self, key)
+            tracked: set[str] | None = None
             for item in ev.items.values():
                 if is_output(item) and isinstance(item.get("path"), str):
                     try:
                         rel = (item["_root"] / item["path"]).resolve().relative_to(side.path.resolve()).as_posix()
                     except ValueError:
                         continue
-                    if rel not in side.exclude:
-                        side.exclude.append(rel)
+                    if rel in side.exclude or side.protected(rel):
+                        continue
+                    if tracked is None:
+                        rc, out = run(["git", "ls-files", *side.pathspec()], side.path, GIT_TIMEOUT)
+                        tracked = set(out.splitlines()) if rc == 0 else set()
+                    if rel in tracked and not is_binary(side.path / rel):
+                        continue
+                    side.exclude.append(rel)
 
     def place_ref_guides(self) -> None:
         """`参照先の名前:パス` と書いた手順の文書を、その参照先のものとして読む（いつも読む決まりは refs[].rules に移す）。"""
@@ -4347,12 +4359,32 @@ def is_output(item: dict) -> bool:
 
 
 def may_stay_same(ctx: Ctx, key: str, rel: str) -> bool:
-    """計画に挙げても、中身が変わらないことのあるファイルか（道具が作り直すバイナリ）。
+    """計画に挙げても、中身が変わらないことのあるファイルか（道具が作り直して文書に貼るもの）。
 
-    作り直す道具は、同じとみなした出力を書き換えないことがある。計画に「作り直す」と挙げたバイナリが変わらなくても、
-    変え残しとはみなさない（報告で「作り直しても同じ」と伝える）。文字のファイルは、変えないなら「変更不要」と書かせる。
+    作り直す道具は、同じとみなした出力を書き換えないことがある。計画に「作り直す」と挙げたファイルが変わらなくても、
+    変え残しとはみなさない（報告で「作り直しても同じ」と伝える）。当たるのは、コードと文書を除いたファイルのうち、
+    文書がリンクしているもの（貼った図など）・検査コマンドが作り直したもの・テストの出力と同じ中身のもの。
+    それ以外（単独の表計算のファイルなど）は、変えないなら「変更不要」と書かせる。
     """
-    return is_binary(side_of(ctx, key).path / rel)
+    if rel.lower().endswith(DOC_EXTS) or Path(rel).suffix.lower() in CODE_EXTS or is_test(ctx, key, rel):
+        return False
+    path = side_of(ctx, key).path / rel
+    if not path.is_file():
+        return False
+    if rel in generated_files(ctx).get(key, {}) or docs_linking(ctx, key, rel):
+        return True
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest() in output_digests(ctx)
+    except OSError:
+        return False
+
+
+def output_digests(ctx: Ctx) -> set[str]:
+    """テストの出力の、今と前の版の sha256。"""
+    if "_output_digests" not in ctx.__dict__:
+        ctx.__dict__["_output_digests"] = {h for e in all_evidence(ctx).values() for i in e.items.values() if is_output(i)
+                                           for h in [i["sha256"], *(i.get("history") or [])] if isinstance(h, str)}
+    return ctx.__dict__["_output_digests"]
 
 
 MAX_OUTPUT_FILES = 5000
@@ -4375,11 +4407,15 @@ def output_index(ctx: Ctx, evs: dict[str, "Evidence"]) -> dict[str, list[tuple[s
     exts.discard("")
     if not exts:
         return {}
+    # テストが書いた前の版・差分のファイルは写しではない
+    aside = {(k, item_file(ctx, k, i, f)) for k, e in evs.items() for i in e.items.values() if is_output(i)
+             for f in ("previous", "diff") if isinstance(i.get(f), str)}
     index: dict[str, list[tuple[str, str]]] = {}
     for key, side in all_sides(ctx):
         rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
                       side.path, GIT_TIMEOUT)
-        files = [ln for ln in out.splitlines() if side.has(ln) and Path(ln).suffix.lower() in exts] if rc == 0 else []
+        files = [ln for ln in out.splitlines() if side.has(ln) and Path(ln).suffix.lower() in exts
+                 and (key, ln) not in aside] if rc == 0 else []
         for rel in files[:MAX_OUTPUT_FILES]:
             try:
                 digest = hashlib.sha256((side.path / rel).read_bytes()).hexdigest()
@@ -4410,7 +4446,8 @@ def output_copies(ctx: Ctx, evs: dict[str, "Evidence"]) -> list[OutputHit]:
             for digest in [h for h in item.get("history") or [] if isinstance(h, str)]:
                 for key, rel in index.get(digest, []):
                     state = "removed" if item.get("status") == "removed" else "current" if digest == current else "stale"
-                    if (key, rel) not in hits or hits[(key, rel)].state == "current":
+                    # 今の版と同じ中身の写しは、ほかの項目の前の版と同じでも差し替えない（今の版が勝つ）
+                    if (key, rel) not in hits or (state == "current" and hits[(key, rel)].state != "current"):
                         hits[(key, rel)] = OutputHit(key, rel, item, state, ev_key)
     return [hits[k] for k in sorted(hits)]
 
@@ -4439,13 +4476,18 @@ def docs_linking(ctx: Ctx, key: str, rel: str) -> list[str]:
     side = side_of(ctx, key)
     target = (side.path / rel).resolve()
     out = []
-    for doc in files_mentioning(side, [Path(rel).name]):
+    name = Path(rel).name
+    for doc in sorted(set(files_mentioning(side, [name])) | set(files_mentioning(side, [urllib.parse.quote(name)]))):
         if not doc.lower().endswith(DOC_EXTS):
             continue
         text = read_text(side.path / doc) or ""
         for m in _FILE_LINK.finditer(text):
-            link = (m.group(1) or m.group(2) or "").split("#")[0].split("?")[0]
-            if link and not re.match(r"^[a-z][a-z0-9+.-]*:", link, re.I) and (side.path / doc).parent.joinpath(link).resolve() == target:
+            link = urllib.parse.unquote((m.group(1) or m.group(2) or "").split("#")[0].split("?")[0])
+            if not link or re.match(r"^[a-z][a-z0-9+.-]*:", link, re.I):
+                continue
+            # `/docs/x.png` はリポジトリのルートから
+            base = side.path if link.startswith("/") else (side.path / doc).parent
+            if base.joinpath(link.lstrip("/")).resolve() == target:
                 out.append(doc)
                 break
     return out
@@ -4464,6 +4506,11 @@ def accepted_outputs(ctx: Ctx) -> dict[str, str]:
         return {}
 
 
+def output_key(ev_key: str, item: dict) -> str:
+    """認めた・止めた出力の控えの鍵（側ごとに分ける。自分と参照先が同じ id の出力を作ることがある）。"""
+    return f"{ev_key}:{item['id']}" if ev_key else str(item["id"])
+
+
 def replace_outputs(ctx: Ctx, expected: set[tuple[str, str]], planned: set[tuple[str, str]]) -> tuple[dict, list[str]]:
     """テストの出力が変わったら、前の版の写し（文書に貼ったものなど）を今の版に差し替える（ハーネスがする変更）。
 
@@ -4471,11 +4518,16 @@ def replace_outputs(ctx: Ctx, expected: set[tuple[str, str]], planned: set[tuple
     変えたテストにある（expected）か、写し・写しをリンクしている文書が計画にある（planned）か、利用者が認めたもの。
     それ以外の変化（巻き込みや崩れ）は差し替えず、止めて訊く。黙って差し替えると、壊れた出力が文書の正解になる。
     差し替えた写しは .codd/replaced.json に控え、「計画に無い変更」に数えない。報告で、どの文書に響いたかを伝える。
+    計画のときから出力が変わっていない項目の古い写しは、この回が起こした変化ではないので、差し替えず止めもせず知らせる。
     """
     record = replaced_files(ctx)
     done = {(r["side"], r["path"]) for r in record["replaced"]}
     ok = accepted_outputs(ctx)
-    removed, pending, held = [], {}, []
+    try:
+        before = json.loads((ctx.data / "evidence-before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        before = {}
+    removed, older, pending, held = [], [], {}, []
     for hit in output_copies(ctx, all_evidence(ctx)):
         docs = docs_linking(ctx, hit.key, hit.rel)
         entry = {"side": hit.key, "path": hit.rel, "id": hit.item["id"], "docs": docs}
@@ -4487,11 +4539,16 @@ def replace_outputs(ctx: Ctx, expected: set[tuple[str, str]], planned: set[tuple
         src = hit.item["_root"] / str(hit.item.get("path", ""))
         if not src.is_file():
             continue
+        mine = {rel for k, rel in planned if k == hit.key}
         foreseen = ((hit.ev_key, item_file(ctx, hit.ev_key, hit.item)) in expected
-                    or (hit.key, hit.rel) in planned or any((hit.key, d) in planned for d in docs)
-                    or ok.get(hit.item["id"]) == hit.item["sha256"])
+                    or covered(hit.rel, mine) or any(covered(d, mine) for d in docs)
+                    or ok.get(output_key(hit.ev_key, hit.item)) == hit.item["sha256"])
+        prev = before.get(hit.ev_key, {}).get(hit.item["id"], {}) if isinstance(before, dict) else {}
+        if not foreseen and isinstance(prev, dict) and prev.get("sha256") == hit.item["sha256"]:
+            older.append(entry)
+            continue
         if not foreseen:
-            pending[hit.item["id"]] = hit.item["sha256"]
+            pending[output_key(hit.ev_key, hit.item)] = hit.item["sha256"]
             seen = [item_file(ctx, hit.ev_key, hit.item, f) for f in ("previous", "diff") if hit.item.get(f)]
             held.append(f"{side_label(ctx, hit.key, hit.rel)} ← {hit.item['id']}"
                         + (f"（貼っている文書: {', '.join(docs)}）" if docs else "")
@@ -4502,6 +4559,7 @@ def replace_outputs(ctx: Ctx, expected: set[tuple[str, str]], planned: set[tuple
             record["replaced"].append(entry)
             done.add((hit.key, hit.rel))
     record["removed"] = removed
+    record["older"] = older
     ctx.data.mkdir(parents=True, exist_ok=True)
     (ctx.data / REPLACED_FILE).write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     pending_file = ctx.data / OUTPUTS_PENDING_NAME
@@ -4520,6 +4578,8 @@ def output_lines(ctx: Ctx, record: dict) -> list[str]:
              for r in record["replaced"]]
     lines += [f"- {side_label(ctx, r['side'], r['path'])} — テストが作らなくなった出力です（{r['id']}）"
               + (f"。リンクしている文書: {', '.join(r['docs'])}" if r["docs"] else "") for r in record["removed"]]
+    lines += [f"- {side_label(ctx, r['side'], r['path'])} — この回の前から古い写しです（{r['id']}。差し替えていません）"
+              + (f"。リンクしている文書: {', '.join(r['docs'])}" if r["docs"] else "") for r in record.get("older", [])]
     return lines
 
 
@@ -5042,7 +5102,9 @@ def failed_tests(ctx: Ctx, key: str, since: float) -> list[str]:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                continue
+            items = data.get("items")
             root = (path.parent / data["root"]).resolve() if isinstance(data.get("root"), str) else side.path
             for item in items if isinstance(items, list) else []:
                 if not isinstance(item, dict) or item.get("status") != "failed" or is_output(item):
@@ -5833,6 +5895,8 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if step is not None:
         return step
     bodies = a.bodies
+    # 前の回に止めた出力の変化は、accept で認めていなければ今回測り直す（早く止まった回の控えを、あとの accept で認めない）
+    (ctx.data / OUTPUTS_PENDING_NAME).unlink(missing_ok=True)
     problems = plan_unconfirmed(ctx) + list(a.plan_problems) + protected_problems(ctx, a)
     tp = test_plan(ctx, bodies)
     problems += tp.problems
@@ -6041,6 +6105,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         for name, argv in test_commands(r.test):
             problems += checked(ctx, r.name, r, r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
         problems += checked(ctx, r.name, r, r.path, r.check, f"{r.name}（{r.label}）")
+    checks_failed = len(problems) > before_checks
     held = protected_in_failures(ctx, problems[before_checks:], approved_changes(ctx, a))
     if held:
         # 訊かずに変え直させると、人の承認が要るファイルを直して、次の検査でまた止まるだけになる
@@ -6055,7 +6120,13 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     docs |= {("", rel) for rel in own_allowed} | {(k, rel) for k, rels in a.planned.items() for rel in rels}
     tests = (tp.listed() | set(affected)
              | {(k, rel) for k, rels in touched_all.items() for rel in rels if is_test(ctx, k, rel)})
-    outputs, held_outputs = replace_outputs(ctx, tests, docs)
+    # 見込んだ変化かは、計画で変えると書いたものだけで決める（変えたファイル・「変更不要」の影響範囲では見込まない）
+    planned_outputs = ({("", rel) for rel in want_own | listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True,
+                                                                      allow_new=True)}
+                       | {(k, rel) for k, rels in a.planned.items() for rel in rels})
+    # テストか検査が落ちた回の出力では差し替えない（壊れた出力を文書に写さない。直したあとの検査で差し替える）
+    outputs, held_outputs = ((replaced_files(ctx), []) if checks_failed
+                             else replace_outputs(ctx, tests, planned_outputs))
     for line in output_lines(ctx, outputs):
         print(f"テストの出力から: {line[2:]}")
     problems += held_outputs

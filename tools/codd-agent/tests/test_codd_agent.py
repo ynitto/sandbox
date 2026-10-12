@@ -754,23 +754,30 @@ class CoddTest(unittest.TestCase):
     def test_planned_binaries_may_come_out_the_same(self) -> None:
         # 作り直すと計画に挙げたバイナリが、同じバイト列のままでも、変え残しとして止めない。
         (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
-        (self.design / "docs/images/hello.bin").write_bytes(b"BIN\0same")
-        commit(self.design, {"docs/text.txt": "same\n"}, "binary")
+        (self.design / "docs/images/fig.bin").write_bytes(b"BIN\0same")
+        (self.design / "docs/spec.bin").write_bytes(b"BIN\0spec")
+        commit(self.design, {"docs/text.txt": "same\n", "docs/figures.md": "# 図\n\n![図](images/fig.bin)\n"}, "binary")
         plan = PLAN_DRIFT.replace("- docs/api.md — `hello` の戻り値を 2 と書き直す",
-                                  "- docs/api.md — `hello` の戻り値を 2 と書き直す\n- docs/images/hello.bin — 作り直す")
+                                  "- docs/api.md — `hello` の戻り値を 2 と書き直す\n- docs/images/fig.bin — 作り直す")
         self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("docs/images/hello.bin — 作り直しても同じ", self.run_pa(self.impl, "report").stdout)
+        self.assertIn("docs/images/fig.bin — 作り直しても同じ", self.run_pa(self.impl, "report").stdout)
         # 文字のファイルは、変えないなら「変更不要」と書かせる（作り直しで同じになったとはみなさない）
-        self.write_plan(plan.replace("docs/images/hello.bin — 作り直す", "docs/text.txt — 作り直す"))
+        self.write_plan(plan.replace("docs/images/fig.bin — 作り直す", "docs/text.txt — 作り直す"))
         self.assert_plan_ok()
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("docs/text.txt", r.stderr)
+        # 文書が貼っていない単独のバイナリ（表計算のファイルなど）も、変えないなら「変更不要」と書かせる
+        self.write_plan(plan.replace("docs/images/fig.bin — 作り直す", "docs/spec.bin — 表を直す"))
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docs/spec.bin", r.stderr)
 
     # ------------------------------------------------------------ 影響範囲を測る
 
@@ -2011,7 +2018,8 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "evidence").returncode, 0)
 
     def setup_changed_outputs(self) -> tuple[bytes, bytes]:
-        """文書の側に、テストの出力（前の版）の写しを貼った文書を置き、テストの出力が新しい版になった状態にする。"""
+        """文書の側に、テストの出力（前の版）の写しを貼った文書を置く。計画のあとで change_outputs を呼ぶと、
+        テストの出力が新しい版になる（計画のときから変わったものだけが、この回の変化）。"""
         old, new, gone = b"PNG-v1 login", b"PNG-v2 login", b"PNG-old menu"
         sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
         commit(self.design, {"docs/login.md": "# ログイン\n\n![ログイン](images/login.png)\n",
@@ -2023,16 +2031,27 @@ class CoddTest(unittest.TestCase):
         git(self.design, "commit", "-q", "-m", "copies")
         outputs = self.impl / "results/out"
         outputs.mkdir(parents=True)
-        (outputs / "login.png").write_bytes(new)
-        (outputs / "login-diff.png").write_bytes(b"diff")
+        (outputs / "login.png").write_bytes(old)
+        (outputs / "menu.png").write_bytes(gone)
         # 種類の名前は道具が決める（codd は sha256 を持つ項目をテストが作ったファイルとして扱う）
         base = {"kind": "snapshot", "file": "tests/login.yaml"}
         self.write_evidence([
-            {**base, "id": "login/S-01/login", "status": "changed", "path": "results/out/login.png",
-             "sha256": sha(new), "history": [sha(new), sha(old)], "diff": "results/out/login-diff.png"},
-            {**base, "id": "menu/S-01/menu", "status": "removed", "path": "results/out/menu.png",
+            {**base, "id": "login/S-01/login", "status": "same", "path": "results/out/login.png",
+             "sha256": sha(old), "history": [sha(old)]},
+            {**base, "id": "menu/S-01/menu", "status": "same", "path": "results/out/menu.png",
              "sha256": sha(gone), "history": [sha(gone)]},
         ])
+
+        def change() -> None:
+            (outputs / "login.png").write_bytes(new)
+            (outputs / "login-diff.png").write_bytes(b"diff")
+            self.write_evidence([
+                {**base, "id": "login/S-01/login", "status": "changed", "path": "results/out/login.png",
+                 "sha256": sha(new), "history": [sha(new), sha(old)], "diff": "results/out/login-diff.png"},
+                {**base, "id": "menu/S-01/menu", "status": "removed", "path": "results/out/menu.png",
+                 "sha256": sha(gone), "history": [sha(gone)]},
+            ])
+        self.change_outputs = change
         return old, new
 
     def test_unforeseen_output_changes_stop_instead_of_replacing_copies(self) -> None:
@@ -2041,6 +2060,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        self.change_outputs()
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("計画に無いテストの出力が変わりました", r.stderr)
@@ -2074,9 +2094,64 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
         (self.impl / "tests/login.yaml").write_text("suite: ログイン\n# hello のログ\n", encoding="utf-8")
+        self.change_outputs()
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.design / "docs/images/login.png").read_bytes(), new)
+
+    def test_copies_stale_before_this_run_are_reported_not_stopped(self) -> None:
+        # 計画のときから出力が変わっていない項目の古い写しは、この回が起こした変化ではない。止めず、差し替えず、知らせる。
+        old, new = self.setup_changed_outputs()
+        self.change_outputs()   # 計画の前から、出力は新しい版
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.design / "docs/images/login.png").read_bytes(), old)
+        self.assertIn("docs/images/login.png — この回の前から古い写しです（login/S-01/login。差し替えていません）", r.stdout)
+
+    def test_outputs_are_not_replaced_from_a_failing_run(self) -> None:
+        # テストか検査が落ちた回の出力では、見込んだ変化でも差し替えない（壊れた出力を文書に写さない）。
+        commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
+        old, _ = self.setup_changed_outputs()
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/login.yaml — `hello` のログを確かめる手順を足す")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        self.set_check(self.impl, [sys.executable, "-c", "raise SystemExit(1)"])
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests/login.yaml").write_text("suite: ログイン\n# hello のログ\n", encoding="utf-8")
+        self.change_outputs()
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual((self.design / "docs/images/login.png").read_bytes(), old)
+
+    def test_a_copy_of_a_current_output_is_never_taken_for_another_items_old_version(self) -> None:
+        # A の今の出力と、B の前の版が同じ中身（同じ空の画面など）でも、A の写しを B の新しい版で上書きしない。
+        same, other = b"BIN\0empty", b"BIN\0filled"
+        sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+        commit(self.design, {"docs/a.md": "# A\n\n![a](images/a.bin)\n"}, "doc")
+        (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
+        (self.design / "docs/images/a.bin").write_bytes(same)
+        git(self.design, "add", "-A")
+        git(self.design, "commit", "-q", "-m", "copy")
+        out = self.impl / "results/out"
+        out.mkdir(parents=True)
+        (out / "a.bin").write_bytes(same)
+        (out / "b.bin").write_bytes(same)
+        items = lambda b_sha, b_hist: [  # noqa: E731
+            {"id": "a", "path": "results/out/a.bin", "sha256": sha(same), "history": [sha(same)], "file": "tests/a.yaml"},
+            {"id": "b", "path": "results/out/b.bin", "sha256": b_sha, "history": b_hist, "file": "tests/b.yaml"}]
+        self.write_evidence(items(sha(same), [sha(same)]))
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        (out / "b.bin").write_bytes(other)
+        self.write_evidence(items(sha(other), [sha(other), sha(same)]))
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertNotIn("計画に無いテストの出力が変わりました", r.stderr)
+        self.assertEqual((self.design / "docs/images/a.bin").read_bytes(), same)
 
     def test_failed_tests_show_their_reason_and_file(self) -> None:
         # 検査が落ちたら、テストが今回書いた結果から、落ちた振る舞いの理由と見るファイルを出す。
@@ -2093,8 +2168,11 @@ class CoddTest(unittest.TestCase):
         write = ("import json; json.dump({'version': 1, 'root': '..', 'items': [{'kind': 'behavior', 'id': 'login/S-01', "
                  "'title': 'ログイン 正しい ID で進める', 'status': 'failed', 'error': 'Timeout: 商品一覧 が出ない', "
                  "'path': 'results/out/failure.png'}, {'kind': 'behavior', 'id': 'login/S-02', 'title': '通る', "
-                 "'status': 'passed'}]}, open('results/ui-evidence.json', 'w')); raise SystemExit(1)")
+                 "'status': 'passed'}]}, open('results/ui-evidence.json', 'w')); "
+                 "json.dump([{'file': 'x.js'}], open('results/lint.json', 'w')); raise SystemExit(1)")
         self.set_check(self.impl, [sys.executable, "-c", write])
+        cfg = self.impl / ".statemachine/codd/codd.json"   # 結果の置き場に、配列の JSON（ほかの道具の出力）があっても読める
+        cfg.write_text(json.dumps({**json.loads(cfg.read_text(encoding="utf-8")), "evidence": ["results/*.json"]}), encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("落ちたテスト（テストが書いた結果から。", r.stderr)
@@ -2105,7 +2183,7 @@ class CoddTest(unittest.TestCase):
 
     def test_tracked_test_outputs_are_not_files_to_fix(self) -> None:
         # 結果ファイルと撮った画面を git で管理していても、直すファイル・影響範囲・計画に無い変更に数えない。
-        old, new = b"PNG-v1 hello", b"PNG-v2 hello"
+        old, new = b"PNG\0v1 hello", b"PNG\0v2 hello"
         sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
         (self.impl / "results/screens").mkdir(parents=True)
         (self.impl / "results/screens/hello.png").write_bytes(old)
