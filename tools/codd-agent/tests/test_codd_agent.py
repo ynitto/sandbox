@@ -204,7 +204,7 @@ class CoddTest(unittest.TestCase):
             repo.mkdir()
             git(repo, "init", "-q", "-b", "main")
         commit(impl, {"src/app.py": "def hello():\n    return 1\n"}, "init")
-        commit(design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
+        commit(design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n"}, "init")
         init.init_repo(impl, "impl", ["../design"])
         init.init_repo(design, "design", ["../impl"])
         for repo in (impl, design):
@@ -322,7 +322,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(manifest.read_text(encoding="utf-8").strip(), "query")
 
         # 参照先が変わったら（コミットでも、作業中の変更でも）作り直す。
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\n変えた。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\n変えた。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         self.assertIn("graphify: updated", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
         commit(self.design, {"docs/new.md": "# new\n"}, "add")
         self.assertIn("graphify: updated", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
@@ -713,7 +713,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("design を変えるはずなのに、design が変わっていません", r.stderr)
 
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         # 各リポジトリの検査は、それぞれの codd.json の check。
         self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('return 2' not in open('src/app.py').read())"])
         self.set_check(self.design, [sys.executable, "-c", "import sys; sys.exit('3 を返す' not in open('docs/api.md').read())"])
@@ -738,7 +738,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         for _ in range(2):   # 2 回目は、1 回目の検査が作り直したファイルがある
             r = self.run_pa(self.impl, "verify-apply")
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -761,7 +761,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("docs/images/hello.bin — 作り直しても同じ", self.run_pa(self.impl, "report").stdout)
@@ -847,7 +847,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         # 参照先は計画に無い見出しまで足した。実際の差分から測るので、その影響も拾う。
         (self.design / "docs/api.md").write_text(
-            "# API\n\n## hello\n\nhello は 2 を返す。\n\n## goodbye_world\n\n3 を返す。\n", encoding="utf-8")
+            "# API\n\n## hello\n\nhello は 2 を返す。\n\n## goodbye_world\n\n3 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("直していないファイル", r.stderr)
@@ -883,7 +883,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "summary")
         self.assertIn("## 人の承認が要るファイル\n\n- design:docs/api.md", r.stdout)
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")   # 確認で OK と答えていない
         self.assertEqual(r.returncode, 1)
         self.assertIn(f"人の承認が要るファイルを、承認を得ずに変えています（戻してください。変えるなら計画に挙げ、"
@@ -922,7 +922,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("## 人の承認が要るファイル\n\n- design:docs/api.md", self.run_pa(self.impl, "summary").stdout)
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         (self.impl / "src/v1/legacy_orders.py").write_text("OLD = 2\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
@@ -1030,7 +1030,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
 
@@ -1045,7 +1045,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.impl / "src/old.py").unlink()
         (self.design / "docs/api.md").write_text(
-            "# API\n\n## hello\n\nhello は 2 を返す。詳しくは [手順](steps.md)。\n\n"
+            "# API\n\n## hello\n\nhello は 2 を返す。詳しくは [手順](steps.md)。\n\n\n実装は `src/app.py`（`src/` の下）。\n"
             "```\n例: `path/to/nothing.md`\n```\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
@@ -1065,7 +1065,7 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.impl / "src/old.py").unlink()
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。古い入口は `src/old.py`。\n",
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。古い入口は `src/old.py`。\n\n実装は `src/app.py`（`src/` の下）。\n",
                                                  encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
@@ -1074,18 +1074,62 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.stderr.count("docs/api.md:5"), 1)
 
     def test_report_lists_changes_without_path_links(self) -> None:
-        self.write_plan(PLAN_ALIGNED)
+        # コードは文書とつながっていないと通らない。コード以外（設定など）は、つながっていなければ報告で知らせる。
+        commit(self.impl, {"settings.toml": "level = 1\n"}, "settings")
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                    "- src/app.py — `hello` の中でログを出す\n- settings.toml — ログの水準を上げる")
+        self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
-        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        (self.impl / "settings.toml").write_text("level = 2\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
         r = self.run_pa(self.impl, "report")
-        self.assertIn("## 参照先とパスでつながっていない変更", r.stdout)
-        self.assertIn("- src/app.py\n", r.stdout)
-        (self.impl / "src/app.py").write_text("# coherence: doc=docs/api.md\ndef hello():\n    return 1\n",
-                                              encoding="utf-8")
-        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        r = self.run_pa(self.impl, "report")
-        self.assertNotIn("## 参照先とパスでつながっていない変更", r.stdout)
+        self.assertIn("## 参照先とパスでつながっていない変更\n\n- settings.toml\n", r.stdout)
+        self.assertNotIn("- src/app.py\n", r.stdout.split("## 参照先とパスでつながっていない変更", 1)[1])
+
+    def test_code_without_docs_must_get_one_like_its_neighbors(self) -> None:
+        # コードには対応する文書が 1 つ以上ある前提。無ければ、近いコードの文書を見本に作る（足す）まで通さない。
+        commit(self.impl, {"lib/pay.py": "def pay():\n    return 0\n"}, "pay")
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                    "- src/app.py — `hello` の中でログを出す\n- lib/pay.py — `pay` にログを足す")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("対応する文書の無いコードです", r.stderr)
+        self.assertIn("lib/pay.py（近い粒度の見本: docs/api.md（src/app.py に対応））", r.stderr)
+        self.assertNotIn("src/app.py（近い", r.stderr)   # 文書のあるコードは挙げない
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO PLAN\n"))   # 訊かずに練り直す
+
+        # 見本に倣って文書を作る項目を変更案に書けば、計画は通る。
+        plan = plan.replace("## 参照先の変更案\n\nなし",
+                            "## 参照先の変更案\n\n- docs/pay.md — `lib/pay.py` の文書を docs/api.md に倣って新しく書き、`pay` の節を置く")
+        plan = plan.replace("## 守る決まり\n\nなし",
+                            "## 守る決まり\n\n- docs/api.md — 文書の書式: 見本。見出しの並びと書き方を docs/pay.md でも同じにする")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+
+        # 作った文書がコードのパスを書いていなければ、変えたあとも止まる。
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        (self.impl / "lib/pay.py").write_text("def pay():\n    print('pay')\n    return 0\n", encoding="utf-8")
+        (self.design / "docs/pay.md").write_text("# pay\n\n## pay\n\npay は 0 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("対応する文書の無いコードです", r.stderr)
+        self.assertIn("lib/pay.py", r.stderr)
+        (self.design / "docs/pay.md").write_text("# pay\n\n## pay\n\npay は 0 を返す。\n\n実装は `lib/pay.py`。\n",
+                                                 encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertNotIn("対応する文書の無いコードです", r.stderr)
+
+    def test_code_without_any_doc_to_follow_says_so(self) -> None:
+        # 見本になる文書がどこにも無ければ、そう伝える（作る手順は同じ）。
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 1 を返す。\n", encoding="utf-8")
+        git(self.design, "commit", "-qam", "unlink")
+        self.write_plan(PLAN_ALIGNED.replace("（根拠: docs/api.md:3）", "（根拠: docs/api.md:5）"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("src/app.py（見本になる文書がありません）", r.stderr)
 
     # ------------------------------------------------------------ 止まったとき
 
@@ -1257,21 +1301,21 @@ class CoddTest(unittest.TestCase):
         # 参照先の文書を直しても、消した名前を書いた行が残っていれば止める（人には訊かない）。
         commit(self.impl, {"src/app.py": "def hello():\n    return 1\n\n\ndef make_greeting():\n    return 'hi'\n"},
                "greet")
-        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n"
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n\n実装は `src/app.py`（`src/` の下）。\n"
                                             "挨拶は `make_greeting` で作る。\n"}, "greet")
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text(
             "def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text(
-            "# API\n\n## hello\n\nhello は 2 を返す。\n\n挨拶は `make_greeting` で作る。\n", encoding="utf-8")
+            "# API\n\n## hello\n\nhello は 2 を返す。\n\n挨拶は `make_greeting` で作る。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("消した名前を、まだ書いているところがあります", r.stderr)
         self.assertIn("`make_greeting` — docs/api.md:7", r.stderr)
         self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"))
         (self.design / "docs/api.md").write_text(
-            "# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+            "# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
 
@@ -1337,7 +1381,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hi():\n    return 2\n", encoding="utf-8")   # hello を消した
-        (self.design / "docs/api.md").write_text("# API\n\nhi は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\nhi は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
         self.write_plan(plan.replace("と書き直す", "と書き直し、名前を hi にする"))
         r = self.run_pa(self.impl, "verify-plan")
@@ -1375,7 +1419,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertIn("文書の書式（見出しの並び）が今の書式から外れています", r.stderr)
         self.write_plan(PLAN_DRIFT.replace("と書き直す", "と書き直す（表も直す）"))
@@ -1756,7 +1800,7 @@ class CoddTest(unittest.TestCase):
         api = self.tmp / "api"
         api.mkdir()
         git(api, "init", "-q", "-b", "main")
-        commit(api, {"docs/api.md": "# API\n\n## hello\n\nHTTP でも hello を返す。\n",
+        commit(api, {"docs/api.md": "# API\n\n## hello\n\nHTTP でも hello を返す。\n\n実装は `src/app.py`（`src/` の下）。\n",
                      "spec/hello.md": "# hello\n"}, "init")
         init.init_repo(api, "design", ["../impl"])
         self.set_check(api, [sys.executable, "-c", "print('api ok')"])
@@ -1812,7 +1856,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("参照先の変更案に design は無いのに、design が変わっています", r.stderr)
 
         git(self.design, "checkout", "--", ".")
-        (api / "docs/api.md").write_text("# API\n\n## hello\n\nHTTP でも 2 を返す。\n", encoding="utf-8")
+        (api / "docs/api.md").write_text("# API\n\n## hello\n\nHTTP でも 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("refs=api", r.stdout)
@@ -1830,17 +1874,17 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("文書の書式（見出しの並び）が今の書式から外れています: docs/api.md — ## hello", r.stderr)
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertNotIn("文書の書式", r.stderr)
         # 見出しを変えると計画に `## 見出し` と書いたなら、その見出しは外れてよい。
         self.write_plan(PLAN_DRIFT.replace("と書き直す", "と書き直し、`## hello` を `## hello()` にする"))
         self.assert_plan_ok()
-        (self.design / "docs/api.md").write_text("# API\n\n## hello()\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello()\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         self.assertNotIn("文書の書式", self.run_pa(self.impl, "verify-apply").stderr)
 
     def test_new_doc_follows_the_format_of_its_folder(self) -> None:
@@ -2101,7 +2145,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
         (self.design / "docs/images/hello2.png").write_bytes(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR hello2")
         (self.design / "docs/hello2.md").write_text("# hello の画面\n\n## hello\n\n![画面](images/hello2.png)\n",
@@ -2204,8 +2248,8 @@ class CoddTest(unittest.TestCase):
 
     def test_evidence_points_at_real_lines_headings_and_names(self) -> None:
         cases = {
-            "6 行目はありません": PLAN_ALIGNED.replace("docs/api.md:3", "docs/api.md:6"),
-            "3-9 行目はありません": PLAN_ALIGNED.replace("docs/api.md:3", "docs/api.md:3-9"),
+            "9 行目はありません": PLAN_ALIGNED.replace("docs/api.md:3", "docs/api.md:9"),
+            "3-12 行目はありません": PLAN_ALIGNED.replace("docs/api.md:3", "docs/api.md:3-12"),
             "見出し #goodbye がありません": PLAN_ALIGNED.replace("docs/api.md#hello", "docs/api.md#goodbye"),
             "根拠のファイルに見当たりません: `hello_world`": PLAN_ALIGNED.replace(
                 "- hello は整数を返す", "- `hello_world` は整数を返す"),
@@ -2310,7 +2354,7 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         (self.design / "docs/other.md").write_text("# other\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
@@ -2366,7 +2410,7 @@ class CoddTest(unittest.TestCase):
 
         # 変えたあと: 挙げたテストを変えていなければ落とし、単体テスト（test）も codd が実行する。
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("## テストの変更案 のテストをまだ変えていません", r.stderr)
@@ -2464,7 +2508,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(self.with_tests(base.format(impact="- 変更不要: src/use.py — 表示は変わらない"), tests))
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
 
@@ -2531,7 +2575,7 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok(self.design)
 
         # 変えたあと: 実装の側のテストも直させ、実装の側の test を codd が動かす。
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 1 を返す。いつも同じ値。\n",
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 1 を返す。いつも同じ値。\n\n実装は `src/app.py`（`src/` の下）。\n",
                                                  encoding="utf-8")
         r = self.run_pa(self.design, "verify-apply")
         self.assertEqual(r.returncode, 1)
@@ -2625,7 +2669,7 @@ class CoddTest(unittest.TestCase):
         mono.mkdir()
         git(mono, "init", "-q", "-b", "main")
         commit(mono, {"src/app.py": "def hello():\n    return 1\n",
-                      "docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n"}, "init")
+                      "docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n"}, "init")
         init.init_repo(mono, "impl", ["docs=."], **kw)
         return mono
 
@@ -2682,7 +2726,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(mono, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("docs を変えるはずなのに、docs が変わっていません", r.stderr)
-        (mono / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (mono / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(mono, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed refs=docs", r.stdout)
@@ -3094,7 +3138,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(self.use_guides(PLAN_DRIFT, "- `api-doc` — 戻り値を表で書く"), read=False)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("`api-doc`", r.stderr)
@@ -3283,7 +3327,7 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         self.run_pa(self.impl, "skill", "design:api-doc")   # 変える段で読み込む（名前の書き方は問わない）
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         (self.impl / ".codd/apply.md").write_text("- `design:api-doc` — design:docs/api.md: 戻り値を書いた\n",
                                                   encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
@@ -3453,7 +3497,7 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()   # 同じ回の練り直しでは同じ計画を直す
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         # 計画のフォルダは変えたファイルに数えない（記録のために置くもの）。
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
         self.assertEqual(self.run_pa(self.impl, "report").returncode, 0)
@@ -3528,7 +3572,7 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         self.assertEqual(self.run_pa(self.impl, "report").returncode, 1)  # まだ変えたあとの検査を通っていない
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
-        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
         r = self.run_pa(self.impl, "report")
         self.assertEqual(r.returncode, 0, r.stderr)

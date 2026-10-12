@@ -3564,6 +3564,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
                             ref_lines.get(n, {}).get(r), own_terms)
     problems += explore_problems(ctx, bodies, pending)
     problems += trace_plan(ctx, bodies, pending)
+    problems += nodoc_plan_problems(ctx, bodies)
     problems += tests_plan_problems(ctx, bodies, terms, pending)
     problems += formats_plan_problems(ctx, bodies, pending)
     return problems, measured, len(ref_hits)
@@ -3590,6 +3591,110 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> list[str]:
         pending.own(ctx, p, "参照先の変更案のファイルとパスでつながっている")
     return []
 
+
+# ---------------------------------------------------------------- コードには対応する文書がある
+# codd が扱うプロジェクトはコードを持ち、コードには対応する文書（ほかの側の、パスでつながっている文書）が 1 つ以上ある、
+# を前提にする。計画で作る・変えるコードに対応する文書が無ければ、近い粒度の文書に倣って文書を作る（今ある文書に足す）
+# 行を計画に書かせ、変えたあとは文書がそのコードをパスで指しているかを確かめる。つながりが無いままだと、
+# 次の回にそのコードを変えても、どの文書を確かめればよいかを誰も測れない。
+CODE_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".java", ".kt", ".kts", ".rb", ".rs", ".c", ".h",
+             ".cc", ".cpp", ".hpp", ".cs", ".php", ".swift", ".dart", ".vue", ".svelte", ".scala", ".m", ".mm", ".lua",
+             ".ex", ".exs", ".erl", ".clj", ".fs", ".vb"}
+# 言語の決まりで置くだけのファイル（パッケージの印・テストの設定）。文書を求めない
+NO_DOC_STEMS = {"__init__", "__main__", "conftest", "setup"}
+NO_DOC = "対応する文書の無いコードです"
+MAX_DOC_SAMPLE_PROBES = 30
+_DOC_TOKEN = re.compile(r"[\w./-]+\.(?:md|markdown|rst|adoc|txt)\b", re.I)
+
+
+def is_code(ctx: Ctx, key: str, rel: str) -> bool:
+    p = Path(rel)
+    return p.suffix.lower() in CODE_EXTS and p.stem not in NO_DOC_STEMS and not is_test(ctx, key, rel)
+
+
+def docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
+    """そのコードとパスでつながっている、ほかの側の文書（どちらが指していてもよい）。
+
+    コードのファイルを指す文書のほか、コードのあるフォルダ（`src/orders/` など）を指す文書も、そのフォルダをまとめた
+    文書として数える（文書の粒度はプロジェクトが決める）。
+    """
+    found = {h for h in linked(ctx, key, {rel}) if h[1].lower().endswith(DOC_EXTS)}
+    side = side_of(ctx, key)
+    folders = {p.as_posix() for p in Path(rel).parents if p.as_posix() != "."}
+    if folders:
+        for other_key, other in all_sides(ctx):
+            if other_key == key:
+                continue
+            for doc in files_mentioning(other, [f + "/" for f in folders]):
+                if not doc.lower().endswith(DOC_EXTS):
+                    continue
+                for claim in claims_in(doc, read_text(other.path / doc) or ""):
+                    token = claim.token.strip()
+                    token = token.split(":", 1)[1] if token.startswith(f"{key}:") and key else token
+                    token = token[2:] if token.startswith("./") else token
+                    if token.endswith("/") and token.rstrip("/") in folders and (side.path / token).is_dir():
+                        found.add((other_key, doc))
+                        break
+    return sorted(found)
+
+
+def doc_samples(ctx: Ctx, key: str, rel: str, limit: int = 2) -> list[str]:
+    """近い粒度の見本: 近くのコード（同じフォルダから順に）に対応している文書と、それがどのコードに対応しているか。"""
+    side = side_of(ctx, key)
+    rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
+                  side.path, GIT_TIMEOUT)
+    files = [f for f in out.splitlines() if f != rel and side.has(f) and is_code(ctx, key, f)] if rc == 0 else []
+    here = Path(rel).parent.parts
+
+    def near(f: str) -> tuple[int, str]:
+        parts = Path(f).parent.parts
+        common = next((i for i, (a, b) in enumerate(zip(here, parts)) if a != b), min(len(here), len(parts)))
+        return (len(here) - common) + (len(parts) - common), f
+
+    samples: dict[tuple[str, str], list[str]] = {}
+    for f in sorted(files, key=near)[:MAX_DOC_SAMPLE_PROBES]:
+        for doc in docs_for(ctx, key, f):
+            samples.setdefault(doc, []).append(f)
+        if len(samples) >= limit:
+            break
+    return [f"{side_label(ctx, k, d)}（{', '.join(codes[:3])} に対応）" for (k, d), codes in list(samples.items())[:limit]]
+
+
+def doc_lines_cover(bodies: dict[str, str], rel: str) -> bool:
+    """変更案に、そのコードのパスと文書のパスを同じ行に書いた項目があるか（文書を作る・足す行）。"""
+    for heading in ("## 自分の変更案", "## 参照先の変更案"):
+        for line in bodies.get(heading, "").splitlines():
+            if rel in line and _DOC_TOKEN.search(line):
+                return True
+    return False
+
+
+def nodoc_message(ctx: Ctx, key: str, rel: str) -> str:
+    samples = doc_samples(ctx, key, rel)
+    return side_label(ctx, key, rel) + (f"（近い粒度の見本: {' / '.join(samples)}）" if samples else "（見本になる文書がありません）")
+
+
+def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
+    """計画で作る・変えるコードのうち、対応する文書が無く、文書を作る・足す行も計画に無いもの。"""
+    impact = (listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True))
+    targets = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels} | {("", p) for p in impact}
+    missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(targets)
+               if is_code(ctx, k, rel) and not doc_lines_cover(bodies, rel)
+               and not docs_for(ctx, k, rel)]   # まだ無いコードも、フォルダをまとめた文書があればよい
+    if not missing:
+        return []
+    return [f"{NO_DOC}（見本の文書に倣い、同じ粒度で文書を作るか今ある文書に足す項目を変更案に書き、その項目にコードのパスを書く。"
+            "見本が 1 つのコードに 1 つの文書なら同じ並びで新しく作り、フォルダや機能をまとめた文書なら、その文書に節を足す。"
+            "文書の本文にもコードのパスを書いてつなぐ）: " + " / ".join(missing)]
+
+
+def nodoc_apply_problems(ctx: Ctx, touched: dict[str, set[str]]) -> list[str]:
+    """変えたコードのうち、どの文書ともパスでつながっていないもの（文書がコードのパスを書いていない）。"""
+    missing = [nodoc_message(ctx, k, rel) for k, rels in sorted(touched.items()) for rel in sorted(rels)
+               if is_code(ctx, k, rel) and (side_of(ctx, k).path / rel).is_file() and not docs_for(ctx, k, rel)]
+    if not missing:
+        return []
+    return [f"{NO_DOC}（計画で作る・足すとした文書に、コードのパスを `…` かリンクで書いてつなぐ）: " + " / ".join(missing)]
 
 # ---------------------------------------------------------------- テスト（コード・仕様書と同じに扱う）
 
@@ -4209,15 +4314,6 @@ def evidence_changes(ctx: Ctx) -> list[str]:
 def is_output(item: dict) -> bool:
     """テストが作ったファイルの項目か（`sha256` を持つ）。種類の名前や中身（バイナリ・JSON・図など）は問わない。"""
     return isinstance(item.get("sha256"), str)
-
-
-def is_binary(path: Path) -> bool:
-    """文字のファイルでないか（先頭に NUL がある）。道具が作るバイナリは、作り直しても同じバイト列のことがある。"""
-    try:
-        with path.open("rb") as f:
-            return b"\0" in f.read(8192)
-    except OSError:
-        return False
 
 
 def may_stay_same(ctx: Ctx, key: str, rel: str) -> bool:
@@ -5864,6 +5960,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。
     problems += trace_apply(ctx, a)
+    problems += nodoc_apply_problems(ctx, {"": a.own_touched, **a.touched})
 
     # 5. 変えるときに使うと決めたスキル・道具を使ったか（.codd/apply.md に書く）。
     names = ctx.config["skills"]["apply"] + ctx.config["tools"]["apply"]
@@ -6233,7 +6330,7 @@ _KINDS = (
                       "を確かめるテストが ## テストの変更案 にありません。",
                       # 計画に挙げ忘れたもの・戻せば済むもの（計画は確認で利用者が見るので、書き足しは訊かずに任せる）
                       "変更が響くテストの結果を写している文書が、計画にありません",
-                      "終わった回の計画の記録を書き換えています", GRAPH_NOT_READY)),
+                      "終わった回の計画の記録を書き換えています", GRAPH_NOT_READY, NO_DOC)),
 )
 
 
