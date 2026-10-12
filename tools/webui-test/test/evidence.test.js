@@ -53,3 +53,21 @@ test('evidence: 既定出力では対象ファイルだけを無視し、既存�
   const ignored = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
   assert.equal(ignored, '/other-tool.tmp\n/webui-test-evidence.json\n/.gitignore\n');
 });
+
+test('evidence: 落ちたケースに理由と失敗時の画面を書く', (t) => {
+  const root = tmpDir(t);
+  const outDir = path.join(root, 'reports/run');
+  const report = { suites: [{ suite: 'ログイン', file: path.join(root, 'login.yaml'), cases: [
+    { id: 'S-01', title: '落ちる', status: 'failed', error: 'Timeout: 商品一覧 が出ない',
+      screenshots: [{ name: 'goto', file: 'login/S-01/01-goto.png' }, { name: 'failure', file: 'login/S-01/02-failure.png' },
+        { name: 'failure', file: 'login/S-01/03-failure.png', explicit: true }] },   // 利用者が同じ名前で撮った画面は取り違えない
+    { id: 'S-02', title: '通る', status: 'passed', error: null, screenshots: [] },
+  ] }] };
+  writeEvidence(report, [], { root, outDir, evidenceFile: path.join(root, 'ui.json') });
+  const [failed, passed] = JSON.parse(fs.readFileSync(path.join(root, 'ui.json'), 'utf8')).items;
+  assert.equal(failed.error, 'Timeout: 商品一覧 が出ない');
+  assert.equal(failed.path, 'reports/run/login/S-01/02-failure.png');
+  assert.equal(failed.sha256, undefined);   // 読む側がテストの出力（写しを差し替えるファイル）と取り違えない
+  assert.equal(passed.error, undefined);
+  assert.equal(passed.path, undefined);
+});

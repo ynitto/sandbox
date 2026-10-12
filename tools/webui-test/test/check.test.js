@@ -173,6 +173,12 @@ test('check: ケースが落ちれば落とす。測った時間が目安を超�
   r = await cli(['check', ...ep()], { cwd: dir });
   assert.strictEqual(r.code, 1, r.out);
   assert.match(r.out, /e2e: 1 件中 合格 0 \/ 不合格 1/);
+  // 落ちたケースの理由と、失敗した時点の画面を結果に書く（読む側が出力の末尾を見ずに直せるように）
+  const failed = JSON.parse(fs.readFileSync(path.join(dir, 'results/webui-test-evidence.json'), 'utf8'))
+    .items.find((i) => i.kind === 'behavior' && i.status === 'failed');
+  assert.ok(failed.error, JSON.stringify(failed));
+  assert.match(failed.path, /failure\.png$/);
+  assert.ok(fs.existsSync(path.join(dir, failed.path)), failed.path);
   const empty = tmpDir(t);
   write(path.join(empty, 'webui-test.config.yaml'), 'envs: { local: {} }\n');
   r = await cli(['check'], { cwd: empty });

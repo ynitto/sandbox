@@ -1,10 +1,12 @@
 'use strict';
 // テストで得たもの（合否のほかに、確かめた振る舞い・測った時間・前回と比べた画面）を evidence.json に書き出す。
-// 仕様書には依存しない。codd-agent などがこれを読み、文書への影響を測って差し替える。
+// 仕様書にも、これを読む道具にも依存しない（読む側は、この形のファイルを読めればよい）。
 //
 //   { "version": 1, "source": "webui-test", "generatedAt": "…", "items": [
 //     { "id": "login/S-01", "kind": "behavior", "title": "ログイン画面 正しい ID でログインできる", "status": "passed",
 //       "file": "tests/login.yaml" },
+//     { "id": "login/S-02", "kind": "behavior", "status": "failed", "error": "失敗の理由（1 行）",
+//       "path": "webui-test-results/…/03-failure.png", … },   // 落ちたときの理由と、失敗した時点の画面
 //     { "id": "login/S-01/load", "kind": "metric", "title": "…（ページの読み込み）", "value": 812, "unit": "ms", … },
 //     { "id": "login/S-01/ログイン画面", "kind": "image", "status": "changed", "path": "webui-test-results/screens/…png",
 //       "sha256": "…", "history": ["今の sha256", "前の sha256", …], "previous": "…png", … } ] }
@@ -19,7 +21,7 @@ const { DEFAULT_EVIDENCE } = require('./config');
 
 const posix = (p) => p.split(path.sep).join('/');
 
-function buildEvidence(report, screens, { root }) {
+function buildEvidence(report, screens, { root, outDir }) {
   const rel = (p) => posix(path.relative(root, p));
   const items = [];
   for (const s of report.suites) {
@@ -28,7 +30,12 @@ function buildEvidence(report, screens, { root }) {
     for (const c of s.cases) {
       const id = caseKey(s.file, c);
       const title = `${s.suite} ${c.title}${c.variant ? ` [${c.variant}]` : ''}`;
-      items.push({ id, kind: 'behavior', title, status: c.status, requirement: c.requirement || undefined, file });
+      const failure = c.status === 'failed' ? (c.screenshots || []).filter((x) => x.name === 'failure' && !x.explicit).pop() : null;
+      items.push({
+        id, kind: 'behavior', title, status: c.status, requirement: c.requirement || undefined, file,
+        error: c.status === 'failed' && c.error ? c.error : undefined,
+        path: failure && outDir ? rel(path.join(outDir, failure.file)) : undefined,
+      });
       if (c.status === 'skipped') continue;
       for (const m of c.metrics || []) {
         items.push({ id: `${id}/${m.name}`, kind: 'metric', title: `${title}（${m.label || m.name}）`, value: m.value, unit: m.unit, max: m.max, file });
@@ -47,7 +54,7 @@ function buildEvidence(report, screens, { root }) {
 
 // 実行ごとの evidence.json と、指定された最新の結果ファイルを書く。最新は今回動かしたケースファイルの分だけ入れ替える。
 function writeEvidence(report, screens, { outDir, root, evidenceFile = path.resolve(root, DEFAULT_EVIDENCE) }) {
-  const items = buildEvidence(report, screens, { root });
+  const items = buildEvidence(report, screens, { root, outDir });
   const doc = (list, dir) => JSON.stringify({
     version: 1, source: 'webui-test', generatedAt: report.finishedAt || new Date().toISOString(),
     root: posix(path.relative(dir, root)) || '.', items: list,
