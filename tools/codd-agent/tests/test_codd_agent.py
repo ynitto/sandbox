@@ -1101,6 +1101,10 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("src/app.py（近い", r.stderr)   # 文書のあるコードは挙げない
         self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO PLAN\n"))   # 訊かずに練り直す
 
+        # 行に文書の名前があるだけ（変えない文書）では、作る項目にならない。
+        self.write_plan(plan.replace("`pay` にログを足す", "`pay` にログを足す（仕様は design:docs/api.md）"))
+        self.assertIn("対応する文書の無いコードです", self.run_pa(self.impl, "verify-plan").stderr)
+
         # 見本に倣って文書を作る項目を変更案に書けば、計画は通る。
         plan = plan.replace("## 参照先の変更案\n\nなし",
                             "## 参照先の変更案\n\n- docs/pay.md — `lib/pay.py` の文書を docs/api.md に倣って新しく書き、`pay` の節を置く")
@@ -1121,6 +1125,23 @@ class CoddTest(unittest.TestCase):
                                                  encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertNotIn("対応する文書の無いコードです", r.stderr)
+
+    def test_code_to_delete_or_tool_settings_need_no_doc(self) -> None:
+        # 消すコードと道具の設定（vite.config.ts など）には文書を求めない。消すと書いて消さなければ、変えたあとに止める。
+        commit(self.impl, {"lib/old.py": "def old():\n    return 0\n", "vite.config.ts": "export default {}\n"}, "old")
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                    "- src/app.py — `hello` の中でログを出す\n- lib/old.py — 使っていないので消す\n"
+                                    "- vite.config.ts — 出力先を変える")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        (self.impl / "vite.config.ts").write_text("export default { base: '/' }\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("対応する文書の無いコードです", r.stderr)   # lib/old.py が残っている
+        self.assertIn("lib/old.py", r.stderr)
+        self.assertNotIn("vite.config.ts（", r.stderr)
+        (self.impl / "lib/old.py").unlink()
+        self.assertNotIn("対応する文書の無いコードです", self.run_pa(self.impl, "verify-apply").stderr)
 
     def test_code_without_any_doc_to_follow_says_so(self) -> None:
         # 見本になる文書がどこにも無ければ、そう伝える（作る手順は同じ）。

@@ -175,8 +175,9 @@ NO_TEST_COMMAND = "未設定（変えたあとにテストを動かさない。`
 # graphify の出力からファイルを拾う。query は `[src=docs/api.md loc=L3]`、affected は `src/use.py:L4`。
 _GRAPHIFY_SRC = re.compile(r"\bsrc=([^\s\]]+)|(?<![\w=])([^\s\[\]=]+):L\d+")
 # 根拠のパス。`名前:パス` の名前は参照先の name（複数あるとき）。末尾に `:行`・`:行-行`・`#見出し` を付けられる。
+# ルートのファイルは点をいくつ含んでもよい（`vite.config.ts`・`tsconfig.base.json`）
 _CITE = re.compile(r"(?:(?P<ref>[A-Za-z0-9_.-]+):)?"
-                   r"(?P<path>[\w@.\-]+(?:/[\w@.\-]+)+|[\w@\-]+\.[A-Za-z0-9]{1,8}(?![\w]))"
+                   r"(?P<path>[\w@.\-]+(?:/[\w@.\-]+)+|[\w@\-]+(?:\.[\w@\-]+)*\.[A-Za-z0-9]{1,8}(?![\w]))"
                    r"(?::(?P<line>\d+)(?:-(?P<end>\d+))?)?(?:#(?P<anchor>[^\s)）、,。`]+))?")
 # まだ無いファイルとして認める名前（拡張子が小文字の英字で始まる。`v1.2` や、`status.PAID` のような修飾した名前を拾わない）。
 _NEW_FILE = re.compile(r"\.[a-z][a-z0-9]{0,7}$")
@@ -3600,16 +3601,20 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> list[str]:
 CODE_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".java", ".kt", ".kts", ".rb", ".rs", ".c", ".h",
              ".cc", ".cpp", ".hpp", ".cs", ".php", ".swift", ".dart", ".vue", ".svelte", ".scala", ".m", ".mm", ".lua",
              ".ex", ".exs", ".erl", ".clj", ".fs", ".vb"}
-# 言語の決まりで置くだけのファイル（パッケージの印・テストの設定）。文書を求めない
-NO_DOC_STEMS = {"__init__", "__main__", "conftest", "setup"}
+# 言語の決まりで置くだけのファイル（パッケージの印・テストの設定）と、道具の設定・型の宣言・部品の見本。文書を求めない
+NO_DOC_STEMS = {"__init__", "__main__", "conftest", "setup", "noxfile", "manage", "gulpfile", "Gruntfile"}
+NO_DOC_STEM_ENDS = (".config", ".conf", ".d", ".stories")
 NO_DOC = "対応する文書の無いコードです"
 MAX_DOC_SAMPLE_PROBES = 30
-_DOC_TOKEN = re.compile(r"[\w./-]+\.(?:md|markdown|rst|adoc|txt)\b", re.I)
+_DOC_TOKEN = re.compile(r"(?:[\w-]+:)?([\w./-]+\.(?:md|markdown|rst|adoc|txt))\b", re.I)
+# 変更案でコードを消すと書いた行。消すコードには文書を求めない（消さなかったら、変えたあとの検査で求める）
+_DELETE_WORD = re.compile(r"消す|消し|削除|取り除|delete|remove", re.I)
 
 
 def is_code(ctx: Ctx, key: str, rel: str) -> bool:
     p = Path(rel)
-    return p.suffix.lower() in CODE_EXTS and p.stem not in NO_DOC_STEMS and not is_test(ctx, key, rel)
+    return (p.suffix.lower() in CODE_EXTS and p.stem not in NO_DOC_STEMS and not p.name.startswith(".")
+            and not p.stem.endswith(NO_DOC_STEM_ENDS) and not is_test(ctx, key, rel))
 
 
 def docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
@@ -3618,6 +3623,13 @@ def docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
     コードのファイルを指す文書のほか、コードのあるフォルダ（`src/orders/` など）を指す文書も、そのフォルダをまとめた
     文書として数える（文書の粒度はプロジェクトが決める）。
     """
+    memo = ctx.__dict__.setdefault("_docs_for", {})
+    if (key, rel) not in memo:
+        memo[(key, rel)] = _docs_for(ctx, key, rel)
+    return memo[(key, rel)]
+
+
+def _docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
     found = {h for h in linked(ctx, key, {rel}) if h[1].lower().endswith(DOC_EXTS)}
     side = side_of(ctx, key)
     folders = {p.as_posix() for p in Path(rel).parents if p.as_posix() != "."}
@@ -3660,13 +3672,28 @@ def doc_samples(ctx: Ctx, key: str, rel: str, limit: int = 2) -> list[str]:
     return [f"{side_label(ctx, k, d)}（{', '.join(codes[:3])} に対応）" for (k, d), codes in list(samples.items())[:limit]]
 
 
-def doc_lines_cover(bodies: dict[str, str], rel: str) -> bool:
-    """変更案に、そのコードのパスと文書のパスを同じ行に書いた項目があるか（文書を作る・足す行）。"""
-    for heading in ("## 自分の変更案", "## 参照先の変更案"):
-        for line in bodies.get(heading, "").splitlines():
-            if rel in line and _DOC_TOKEN.search(line):
-                return True
-    return False
+def plan_lines_naming(bodies: dict[str, str], rel: str) -> list[str]:
+    """変更案（自分・参照先）のうち、そのパスを書いた行（`src/app.py` が `src/app.pyc` や `lib/src/app.py` に当たらないように）。"""
+    pat = re.compile(r"(?<![\w./-])" + re.escape(rel) + r"(?![\w/-])")
+    return [line for heading in ("## 自分の変更案", "## 参照先の変更案")
+            for line in bodies.get(heading, "").splitlines() if pat.search(line)]
+
+
+def doc_lines_cover(ctx: Ctx, bodies: dict[str, str], rel: str) -> bool:
+    """変更案に、そのコードのパスと、計画で作る・変える文書のパスを同じ行に書いた項目があるか（文書を作る・足す行）。
+
+    行にあるだけの文書（「仕様は README.md」など）では足りない。その文書も変更案に挙げて、変えるものでなければならない。
+    """
+    planned_docs = {d for rels in plan_changes(ctx, bodies).values() for d in rels if d.lower().endswith(DOC_EXTS)}
+    return any(m.group(1).lstrip("./") in planned_docs or m.group(1) in planned_docs
+               for line in plan_lines_naming(bodies, rel) for m in _DOC_TOKEN.finditer(line))
+
+
+def planned_code(ctx: Ctx, bodies: dict[str, str]) -> set[tuple[str, str]]:
+    """計画で作る・変えるコード（自分の変更案・参照先の変更案と、影響範囲の変更不要でないもの）。"""
+    impact = listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
+    targets = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels} | {("", p) for p in impact}
+    return {(k, rel) for k, rel in targets if is_code(ctx, k, rel)}
 
 
 def nodoc_message(ctx: Ctx, key: str, rel: str) -> str:
@@ -3676,10 +3703,9 @@ def nodoc_message(ctx: Ctx, key: str, rel: str) -> str:
 
 def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     """計画で作る・変えるコードのうち、対応する文書が無く、文書を作る・足す行も計画に無いもの。"""
-    impact = (listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True))
-    targets = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels} | {("", p) for p in impact}
-    missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(targets)
-               if is_code(ctx, k, rel) and not doc_lines_cover(bodies, rel)
+    missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(planned_code(ctx, bodies))
+               if not doc_lines_cover(ctx, bodies, rel)
+               and not any(_DELETE_WORD.search(line) for line in plan_lines_naming(bodies, rel))
                and not docs_for(ctx, k, rel)]   # まだ無いコードも、フォルダをまとめた文書があればよい
     if not missing:
         return []
@@ -3688,10 +3714,14 @@ def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
             "文書の本文にもコードのパスを書いてつなぐ）: " + " / ".join(missing)]
 
 
-def nodoc_apply_problems(ctx: Ctx, touched: dict[str, set[str]]) -> list[str]:
-    """変えたコードのうち、どの文書ともパスでつながっていないもの（文書がコードのパスを書いていない）。"""
-    missing = [nodoc_message(ctx, k, rel) for k, rels in sorted(touched.items()) for rel in sorted(rels)
-               if is_code(ctx, k, rel) and (side_of(ctx, k).path / rel).is_file() and not docs_for(ctx, k, rel)]
+def nodoc_apply_problems(ctx: Ctx, bodies: dict[str, str], touched: dict[str, set[str]]) -> list[str]:
+    """変えたコードと計画で挙げたコードのうち、どの文書ともパスでつながっていないもの（文書がコードのパスを書いていない）。
+
+    計画で挙げたコードは、変えずに済んでも確かめる（計画で文書を作ると書いたのに、作らずに終えさせない）。
+    """
+    targets = {(k, rel) for k, rels in touched.items() for rel in rels if is_code(ctx, k, rel)} | planned_code(ctx, bodies)
+    missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(targets)
+               if (side_of(ctx, k).path / rel).is_file() and not docs_for(ctx, k, rel)]
     if not missing:
         return []
     return [f"{NO_DOC}（計画で作る・足すとした文書に、コードのパスを `…` かリンクで書いてつなぐ）: " + " / ".join(missing)]
@@ -5960,7 +5990,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。
     problems += trace_apply(ctx, a)
-    problems += nodoc_apply_problems(ctx, {"": a.own_touched, **a.touched})
+    problems += nodoc_apply_problems(ctx, bodies, {"": a.own_touched, **a.touched})
 
     # 5. 変えるときに使うと決めたスキル・道具を使ったか（.codd/apply.md に書く）。
     names = ctx.config["skills"]["apply"] + ctx.config["tools"]["apply"]
