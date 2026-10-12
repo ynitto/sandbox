@@ -19,6 +19,13 @@
       "default": 1,
       "description": "同じ仕事を 1 回実行する相対コスト。通貨は持たず、ローカル=0、通常のクラウド=1を基準にする。降格・昇格はこの値を共通の『安いほう』判定に使う。値は**定義単位**でモデル単位ではない——プロバイダを切り替えられる CLI では、その定義でふだん使う経路の値を書く。"
     },
+    "site": {
+      "enum": [
+        "local",
+        "cloud"
+      ],
+      "description": "この定義（またはモデル）がどこで動くか。宣言しなければ relative_cost から導く（0 なら local）。単価と実行場所は独立の属性で、相互に導出させないための欄。値域はエンジン側の 2 値で、管理面の execution_site（device / external / managed）とは別の面"
+    },
     "models": {
       "type": "object",
       "description": "モデル別の相対コスト。同じ定義の中でモデルによって単価が違う CLI（claude の sonnet と opus など）で、失敗時の昇格の『より高い候補』判定を **agent_cli + model の組**で行うための値。キーはモデル名（`default_model` や候補の `model` に書く綴りと同じ）、値の relative_cost は定義単位のものと同じ尺度（ローカル=0、通常のクラウド=1）。宣言の無いモデルは定義単位の relative_cost へ落ちる（後方互換。この項目を書かなければ挙動は変わらない）。通貨も実測の単価も持たず、格付け（agent-audit）の代わりにもならない——0 をローカルと同義に扱わない点は候補契約（agent-candidate-qualifications）と同じ。",
@@ -33,6 +40,13 @@
             "type": "number",
             "minimum": 0,
             "description": "そのモデル 1 回分の相対コスト（定義単位の relative_cost と同じ尺度）。"
+          },
+          "site": {
+            "enum": [
+              "local",
+              "cloud"
+            ],
+            "description": "そのモデルがどこで動くか（定義単位の site と同じ値域）。宣言の無いモデルは定義単位の site へ、それも無ければ relative_cost から導く。同じ CLI がモデル次第でローカルにもクラウドにもなる（copilot から Ollama のモデルを選ぶ等）ときに置く欄"
           }
         }
       }
@@ -622,6 +636,13 @@
             "default": 1,
             "description": "同じ仕事を 1 回実行する相対コスト。通貨は持たず、ローカル=0、通常のクラウド=1を基準にする。降格・昇格はこの値を共通の『安いほう』判定に使う。値は**定義単位**でモデル単位ではない——プロバイダを切り替えられる CLI では、その定義でふだん使う経路の値を書く。"
           },
+          "site": {
+            "enum": [
+              "local",
+              "cloud"
+            ],
+            "description": "この定義（またはモデル）がどこで動くか。宣言しなければ relative_cost から導く（0 なら local）。単価と実行場所は独立の属性で、相互に導出させないための欄。値域はエンジン側の 2 値で、管理面の execution_site（device / external / managed）とは別の面"
+          },
           "models": {
             "type": "object",
             "description": "モデル別の相対コスト。同じ定義の中でモデルによって単価が違う CLI（claude の sonnet と opus など）で、失敗時の昇格の『より高い候補』判定を **agent_cli + model の組**で行うための値。キーはモデル名（`default_model` や候補の `model` に書く綴りと同じ）、値の relative_cost は定義単位のものと同じ尺度（ローカル=0、通常のクラウド=1）。宣言の無いモデルは定義単位の relative_cost へ落ちる（後方互換。この項目を書かなければ挙動は変わらない）。通貨も実測の単価も持たず、格付け（agent-audit）の代わりにもならない——0 をローカルと同義に扱わない点は候補契約（agent-candidate-qualifications）と同じ。",
@@ -636,6 +657,13 @@
                   "type": "number",
                   "minimum": 0,
                   "description": "そのモデル 1 回分の相対コスト（定義単位の relative_cost と同じ尺度）。"
+                },
+                "site": {
+                  "enum": [
+                    "local",
+                    "cloud"
+                  ],
+                  "description": "そのモデルがどこで動くか（定義単位の site と同じ値域）。宣言の無いモデルは定義単位の site へ、それも無ければ relative_cost から導く。同じ CLI がモデル次第でローカルにもクラウドにもなる（copilot から Ollama のモデルを選ぶ等）ときに置く欄"
                 }
               }
             }

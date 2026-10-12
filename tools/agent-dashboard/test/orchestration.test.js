@@ -631,6 +631,14 @@ test('エージェント: validateSpec は variants・headless_autonomy 等の�
     .some((e) => e.includes('models.opus.relative_cost')));
   assert.ok(agents.validateSpec({ ...base, models: ['opus'] })
     .some((e) => e.includes('models は')));
+  // 実行場所（site）は定義単位とモデル別の 2 箇所に置け、値は local / cloud だけ
+  assert.deepStrictEqual(agents.validateSpec({
+    ...base, site: 'local', models: { 'gemma4:e4b': { relative_cost: 1, site: 'local' } },
+  }), []);
+  assert.ok(agents.validateSpec({ ...base, site: 'device' })
+    .some((e) => e.includes('site が不正です')));
+  assert.ok(agents.validateSpec({ ...base, models: { m: { relative_cost: 0, site: 'lan' } } })
+    .some((e) => e.includes('models.m.site が不正です')));
   // 未知のフィールドは引き続き弾く（ALLOWED_KEYS の網を広げすぎていないことの固定）
   assert.ok(agents.validateSpec({ ...base, totally_unknown_field: 1 })
     .some((e) => e.includes('未知のフィールド: totally_unknown_field')));

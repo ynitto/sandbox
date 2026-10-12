@@ -140,7 +140,7 @@ def extract_json(text: str, *, what: str = "エージェント出力"):
     "エージェント出力"）。
     """
     try:
-        return json.loads(text)
+        return _reparse(json.loads(text))
     except json.JSONDecodeError:
         pass
     picked = (_scan(_prose_only(text)) or _pick(_FENCE.findall(text or ""))

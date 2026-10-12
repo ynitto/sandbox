@@ -555,7 +555,9 @@ def model_for_spec(spec, model: "str | None" = None) -> "str | None":
     1. `off` なら None（judge を使わない）。
     2. モデル名なら、定義がクラウド CLI でもそのモデル。判定を実行のモデルから切り離して
        LAN の ollama に固定する口で、クラウド CLI の実行で判定に使っていたトークンがここで消える。
-    3. `auto`（未設定）なら**ローカルの定義**（`relative_cost` が 0 の aider / ollama）だけ。
+    3. `auto`（未設定）なら**ローカルの定義**（`relative_cost` が 0 に解ける定義）だけ。
+       値は `agentcli.resolve_relative_cost` で (定義, モデル) の組から解く——`models` で
+       そのモデルに 0 を宣言したクラウド CLI の定義も、そのモデルのときはここに入る。
        judge は ollama を直に叩くので、指名なしにクラウド CLI の定義で叩きに行かない。
        モデルは呼び出し側の指定を持ち越し、無ければ定義の既定。
     """
@@ -564,7 +566,10 @@ def model_for_spec(spec, model: "str | None" = None) -> "str | None":
         return None
     if current["mode"] == "pinned":
         return current["model"]
-    if not isinstance(spec, dict) or spec.get("relative_cost") != 0:
+    if not isinstance(spec, dict) or spec.get("relative_cost") is None:
+        return None
+    from agentcore import agentcli
+    if agentcli.resolve_relative_cost(spec, model) != 0:
         return None
     name = str(model or spec.get("default_model") or "").strip()
     return name or DEFAULT_MODEL

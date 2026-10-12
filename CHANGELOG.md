@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### webui-test: テストケースを作るときの観点を依頼に入れ、チームの観点を足せるようにする（webui-test 0.5.0）
+
+- `generate` と `prompt` の依頼に、どのケースを作るかの観点を入れる。条件の 1 文ごとに確かめる、入力値は同値分割と境界値で選ぶ、
+  状態ごとにケースを分ける、通信の失敗・遅延は `mocks` で作る、言語や画面幅は `variants` にする、など。これまでは「異常系・境界値も作る」の 1 行だけだった
+- `--guide <ファイル>`（繰り返し可）か、設定の `generate.guide` で、チームの約束やドメインの知識を書いた Markdown を足せる
+- `--no-default-guide` か `generate.defaultGuide: false` で、最初から入っている観点を外せる
+
 ### pptx-presentation-builder / docx-document-builder: 文体と論理構成もサンプルにそろえる（pptx 1.2.0・docx 1.2.0）
 
 - 定義に「文章の型」を書けるようにする。pptx はスライドごとの趣旨と論理構成（`slides[].intent`・`logic`）、docx は段落の役割・章の趣旨と論理構成
@@ -56,6 +63,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - PDF は Electron に入っている PDF ビューアで描いて、ページだけを切り出す。パスワード付きと壊れた PDF は見分けて止める
 - スタイル・段落番号・行グリッド（docx）、表示形式・結合・列幅（xlsx）、レイアウトとマスターの継承・テーマ・図形・表（pptx）を描く
 - 文書は信頼しない前提で、スクリプトを止めた隠しウィンドウで描き、外への通信を止める。ZIP の展開量に上限を設ける
+
+### agent-app: 絵文字で終わる長い名前が、通知・添付のファイル名・評価の抜粋で壊れるのを直す（agent-app 0.48.6）
+
+- 名前や本文を文字数で切るとき、絵文字の途中で切って壊れた文字（�）が残ることがあった。通知の題、添付のファイル名、評価に渡す抜粋を、1 文字ずつ数えて切る。
 
 ### agent-app: 絵文字を含む長い会話名で、書き出すファイル名が壊れるのを直す（agent-app 0.48.5）
 

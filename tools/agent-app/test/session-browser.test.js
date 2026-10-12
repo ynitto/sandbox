@@ -238,7 +238,7 @@ test('local forks keep the working directory and expose current defaults; cross-
 });
 
 // --- 索引（アプリ側の SQLite）------------------------------------------------
-const { SessionIndex } = require('../src/main/sessionIndex');
+const { SessionIndex, BODY_LIMIT } = require('../src/main/sessionIndex');
 function indexed(descriptor, { title = '月次の集計', body = '集計しました。稀なキーワードです', truncated = false } = {}) {
   return { path: descriptor.path, provider: descriptor.provider, descriptorId: descriptor.nativeId || '',
     nativeId: 'native-' + path.basename(descriptor.path), size: descriptor.size, mtime: descriptor.updatedAt,
@@ -299,6 +299,19 @@ test('a changed conversation is read again and a deleted one leaves the index', 
   assert.equal(second.sessions[0].updatedAt, 900);
   assert.equal(index.stats().sessions, 2, '消えた会話は索引からも落ちる');
 });
+test('index storage truncation itself marks a conversation for keyword rescanning', async t => {
+  const files = [{ path: '/logs/oversized.json', provider: 'vscode', updatedAt: 500, size: 100 }];
+  const tailKeyword = '末尾だけにある検索語';
+  const body = 'a'.repeat(BODY_LIMIT) + tailKeyword;
+  const { browser, asked } = indexFixture(t, () => files, { record: () => ({ body, truncated: false }) });
+  await run(browser, {});
+  asked.length = 0;
+
+  const keyword = await run(browser, { text: tailKeyword }, 'storage-truncated');
+  assert.deepEqual(asked, ['inventory', 'stream']);
+  assert.equal(keyword.done.scanned, 1);
+});
+
 test('conversations too long for the index are scanned again for keyword searches', async t => {
   const files = [{ path: '/logs/long.json', provider: 'vscode', updatedAt: 500, size: 100 }];
   const { browser, asked } = indexFixture(t, () => files, { record: () => ({ truncated: true }) });

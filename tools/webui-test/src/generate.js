@@ -11,6 +11,8 @@ const { normalize } = require('./casefile');
 const { initState, loadState } = require('./probe');
 
 const FORMAT_REFERENCE = fs.readFileSync(path.join(__dirname, 'format-reference.md'), 'utf8');
+// どのケースを作るかの観点（同値分割・境界値・状態・エラー推測）。--no-default-guide で外し、--guide で足す
+const DESIGN_GUIDE = fs.readFileSync(path.join(__dirname, 'test-design-guide.md'), 'utf8');
 
 // プロンプトは長くなる（書式の説明 + 画面の要素一覧）ので、コマンドライン引数ではなくファイルで渡し、
 // エージェントにはそのファイルを読むよう頼む。Windows の .cmd 経由でも引数の引用が壊れない。
@@ -56,7 +58,12 @@ function agentCommand(opts) {
   return opts.explore ? a.explore : a.command;
 }
 
-function buildPrompt({ conditions, url, pageInfo, existing, baseUrl, feedback, explore }) {
+// guides: [{ name, text }] は利用者が足す観点（チームの約束・ドメインの知識）。既定の観点のあとに置く
+function buildPrompt({ conditions, url, pageInfo, existing, baseUrl, feedback, explore, guides = [], defaultGuide = true }) {
+  const guidance = [
+    ...(defaultGuide ? ['', DESIGN_GUIDE.trim()] : []),
+    ...guides.flatMap((g) => ['', `## 追加の観点（${g.name}）`, g.text.trim()]),
+  ];
   const parts = [
     'あなたは Web アプリのテスト設計者です。下の「条件」を満たすテストケースファイルを作ってください。',
     '',
@@ -65,8 +72,11 @@ function buildPrompt({ conditions, url, pageInfo, existing, baseUrl, feedback, e
     '- 要素は「対象の書き方」の表の上の方（role / label / text）を優先して指す。「画面の要素一覧」に出ている名前をそのまま使い、無い名前を想像で作らない。',
     '- 各ケースには確かめるステップ（expect）を入れる。操作だけのケースにしない。',
     '- 結果を目で確かめられるよう、確かめたい画面の状態で screenshot ステップを入れる。',
-    '- 正常系に加えて、条件から読み取れる異常系・境界値のケースも作る（条件で指定があればそれに従う）。',
+    guidance.length
+      ? '- どのケースを作るかは下の観点に沿って決める。条件にケースの数や範囲の指定があれば、観点よりそれを優先する。'
+      : '- 正常系に加えて、条件から読み取れる異常系・境界値のケースも作る（条件で指定があればそれに従う）。',
     '- ケース ID は TC-001 から連番。条件に要件 ID があれば requirement に書く。',
+    ...guidance,
     '',
     FORMAT_REFERENCE,
     '',
@@ -248,7 +258,8 @@ async function generate(opts) {
       opts = { ...opts, exploreEnv: { WEBUI_TEST_PLAYWRIGHT_CLI: explore.command } };
     }
     for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
-      const prompt = buildPrompt({ conditions: opts.conditions, url: opts.url, baseUrl: opts.baseUrl, pageInfo, existing, feedback, explore });
+      const prompt = buildPrompt({ conditions: opts.conditions, url: opts.url, baseUrl: opts.baseUrl, pageInfo, existing, feedback, explore,
+        guides: opts.guides, defaultGuide: opts.defaultGuide !== false });
       const promptFile = path.join(workDir, `request-${attempt}.md`);
       fs.writeFileSync(promptFile, prompt);
       if (opts.log) opts.log(`エージェントに依頼しています（${attempt} 回目）: ${argv[0]}`);
@@ -284,4 +295,4 @@ async function generate(opts) {
   }
 }
 
-module.exports = { generate, findPlaywrightCli, openExploreSession, buildPrompt, extractYaml, snapshotPage, splitCommand, agentCommand, FORMAT_REFERENCE, AGENTS };
+module.exports = { generate, findPlaywrightCli, openExploreSession, buildPrompt, extractYaml, snapshotPage, splitCommand, agentCommand, FORMAT_REFERENCE, DESIGN_GUIDE, AGENTS };

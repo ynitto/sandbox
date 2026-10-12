@@ -155,21 +155,32 @@ def describe_candidate(candidate: dict, *, project_dir=None, quotas: "dict | Non
     model = candidate.get("model") or ((spec or {}).get("default_model") or "")
     out = {"agent_cli": candidate["agent_cli"], "model": str(model or ""),
            "id": candidate_id({"agent_cli": candidate["agent_cli"], "model": model})}
+    declared_site = None
     if spec is not None:
-        cost = agentcli.resolve_relative_cost(spec, model or None)
-        out["relative_cost"] = cost
-        out["site"] = "local" if cost == 0 else "cloud"
+        out["relative_cost"] = agentcli.resolve_relative_cost(spec, model or None)
+        declared_site = agentcli.resolve_site(spec, model or None)
         out["autonomy"] = str(spec.get("headless_autonomy") or "")
         out["definition"] = str(spec.get("name") or candidate["agent_cli"])
     else:
         out["relative_cost"] = None
-        out["site"] = "unknown"
         out["autonomy"] = ""
         out["definition"] = None
     for key in ("relative_cost", "context_tokens", "rank", "status", "qualification_refs",
-                "site", "notes"):
+                "notes"):
         if candidate.get(key) is not None:
             out[key] = candidate[key]
+    # 実行場所の解決の順:
+    #
+    # 1. 候補自身の `site`（呼び出し側の実測）。
+    # 2. 定義の宣言（models.<name>.site → site。agentcli.resolve_site）。
+    # 3. どちらも無ければ実効の relative_cost から導く（0 なら local）。値も無ければ unknown。
+    #
+    # 3 は降格と judge の絞り込みが以前 `relative_cost == 0` で判断していたのと同じ結果に
+    # なるよう、候補自身の relative_cost も含めた実効値で導く。同梱定義は宣言しないので
+    # 結果は変わらない。
+    cost = out["relative_cost"]
+    out["site"] = (candidate.get("site") or declared_site
+                   or ("unknown" if cost is None else "local" if cost == 0 else "cloud"))
     out["model_source"] = ("explicit" if candidate.get("model") else
                            "definition-default" if model else "provider-default-not-resolved")
     if isinstance(candidate.get("rating"), dict):
@@ -343,10 +354,12 @@ def prefilter(described: "list[dict]", profile: dict, *, budget: "dict | None" =
             continue
         kept.append(cand)
     if budget and budget.get("exceeded") and budget.get("on_exhausted") == "degrade":
-        local = [c for c in kept if c.get("relative_cost") == 0]
+        # 実行場所で判断する（単価では判断しない）。宣言の無い候補の site は relative_cost
+        # から導かれる（describe_candidate）ので、同梱定義だけなら結果は以前と同じ。
+        local = [c for c in kept if c.get("site") == "local"]
         if local and len(local) < len(kept):
             for cand in kept:
-                if cand.get("relative_cost") != 0:
+                if cand.get("site") != "local":
                     dropped.append({"id": cand["id"], "reason": "budget-degrade"})
             kept = local
     if not kept:
@@ -572,17 +585,18 @@ def ask_jev(state: dict, questions: dict, *, setting: "dict | None" = None,
 # 段 2: agent-herd judge
 # ---------------------------------------------------------------------------
 def judge_model_for(fit: "list[dict]") -> "str | None":
-    """judge を使えるなら、そのモデル名。判定の門は `judge.model_for_spec` と同じ。
+    """judge を使えるなら、そのモデル名。`off` と指名の扱いは `judge.model_for_spec` と同じ。
 
-    `off` は None。指名があればそれ。`auto` は候補にローカル定義（相対コスト 0）があるとき
-    だけ——judge は LAN の ollama を直に叩くので、クラウド候補しか無い場面で叩きに行かない。
+    `off` は None。指名があればそれ。`auto` は候補にローカルで動くもの（`site` が local。
+    宣言が無ければ相対コスト 0 から導く）があるときだけ——judge は LAN の ollama を直に
+    叩くので、クラウド候補しか無い場面で叩きに行かない。
     """
     current = judge.setting()
     if current["mode"] == "off":
         return None
     if current["mode"] == "pinned":
         return current["model"]
-    local = [c for c in fit if c.get("relative_cost") == 0 and c.get("model")]
+    local = [c for c in fit if c.get("site") == "local" and c.get("model")]
     if not local:
         return None
     return str(local[0]["model"])

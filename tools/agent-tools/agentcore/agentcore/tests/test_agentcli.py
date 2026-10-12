@@ -360,6 +360,59 @@ class TestModelLevelCost(_Isolated):
         prof = agentcli.load_cli("cloud-json", project_dir=self._proj(), use_cache=False)
         self.assertEqual(agentcli.resolve_relative_cost(prof, "opus"), 3.0)
 
+    def test_site_is_declared_independently_of_cost(self):
+        """実行場所（`site`）は relative_cost と独立に宣言できる。宣言が無ければ None で、
+        呼び出し側が relative_cost から導く。落ち方は resolve_relative_cost と同じ
+        （models の宣言 → 定義単位 → None）。"""
+        self.write_def("proj/agents", "cloud", {
+            "command": ["c"], "relative_cost": 1, "default_model": "gpt-5.1",
+            "models": {"gemma4:e4b": {"relative_cost": 1, "site": "local"},
+                       "opus": {"relative_cost": 3}},
+            "profiles": {"json": {"command": ["c", "--json"]}}})
+        spec = agentcli.load_cli("cloud", project_dir=self._proj(), use_cache=False)
+        self.assertIsNone(spec["site"])
+        self.assertEqual(spec["models"]["gemma4:e4b"], {"relative_cost": 1.0, "site": "local"})
+        self.assertEqual(spec["models"]["opus"], {"relative_cost": 3.0},
+                         "宣言しないモデルに site を生やさない")
+        self.assertEqual(agentcli.resolve_site(spec, "gemma4:e4b"), "local")
+        self.assertIsNone(agentcli.resolve_site(spec, "opus"))
+        self.assertIsNone(agentcli.resolve_site(spec))                # default_model
+        self.assertEqual(agentcli.resolve_relative_cost(spec, "gemma4:e4b"), 1.0,
+                         "site は単価を動かさない")
+        # 定義単位の宣言は、モデル別の宣言が無いモデルに効く
+        self.write_def("proj/agents", "box", {
+            "command": ["c"], "relative_cost": 1, "site": "local",
+            "models": {"remote": {"relative_cost": 1, "site": "cloud"}}})
+        box = agentcli.load_cli("box", project_dir=self._proj(), use_cache=False)
+        self.assertEqual(agentcli.resolve_site(box), "local")
+        self.assertEqual(agentcli.resolve_site(box, "anything"), "local")
+        self.assertEqual(agentcli.resolve_site(box, "remote"), "cloud", "モデル別が勝つ")
+        # relative_cost と同じくエージェント単位の性質なので profile へ引き継ぎ、上書きもできる
+        prof = agentcli.load_cli("cloud-json", project_dir=self._proj(), use_cache=False)
+        self.assertEqual(agentcli.resolve_site(prof, "gemma4:e4b"), "local")
+        self.write_def("proj/agents", "box", {
+            "command": ["c"], "site": "local",
+            "profiles": {"remote": {"command": ["c"], "site": "cloud"}}})
+        agentcli.clear_cache()
+        self.assertEqual(agentcli.resolve_site(
+            agentcli.load_cli("box-remote", project_dir=self._proj(), use_cache=False)), "cloud")
+
+    def test_site_is_validated(self):
+        for raw, field in (({"site": "device"}, "site"),
+                           ({"site": 0}, "site"),
+                           ({"models": {"m": {"relative_cost": 0, "site": "lan"}}},
+                            "models.m.site")):
+            with self.assertRaisesRegex(agentcli.AgentCliError, field):
+                agentcli.normalize("bad", {"command": ["c"], **raw}, "bad.json")
+
+    def test_bundled_definitions_declare_no_site(self):
+        """同梱定義は site を宣言しない——場所は今日どおり relative_cost から導かれる。"""
+        os.environ["KIRO_AGENTS_DIR"] = str(BUNDLED)
+        for p in sorted(BUNDLED.glob("*.json")):
+            spec = agentcli.load_cli(p.stem, use_cache=False)
+            for model in (None, "gpt-5.1", "opus", "gemma4:e4b"):
+                self.assertIsNone(agentcli.resolve_site(spec, model), f"{p.stem} / {model}")
+
     def test_bundled_cloud_definitions_escalate_only_with_model_declaration(self):
         """同梱の agents/ を実際に読む回帰。
 

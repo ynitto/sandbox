@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const audit = require('./audit');
 const qualityEvaluation = require('./quality-evaluation');
+const { headChars, tailChars } = require('./text');
 
 // まとめて評価の記録（userData/evaluation/batches.json。最新 20 件）。受信箱が「終わった」を未読として
 // 出すための正典で、進み具合そのものは Evaluator が持つ。
@@ -78,7 +79,7 @@ const RETRY_MS = 30000;
 function clip(text, limit, { tail = false } = {}) {
   const s = String(text == null ? '' : text);
   if (s.length <= limit) return s;
-  return tail ? `…${s.slice(-limit)}` : `${s.slice(0, limit)}…`;
+  return tail ? `…${tailChars(s, limit)}` : `${headChars(s, limit)}…`;
 }
 
 // 標本の判定。失敗は必ず、成功は mode に従う（counter は評価の候補になった成功の通し番号）。

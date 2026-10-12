@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { headChars } = require('./text');
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const MAX_PER_TURN = 20;
@@ -26,7 +27,7 @@ function checkId(id) {
 function safeName(name) {
   const base = String(name || '').split(/[\\/]/).pop().replace(/[\x00-\x1f]/g, '').trim();
   const s = base === '.' || base === '..' ? '' : base;
-  return (s || 'file').slice(0, 120);
+  return headChars(s || 'file', 120);
 }
 
 function pathOf(userData, id, name) {

@@ -86,11 +86,12 @@ class SessionIndex {
         created_at=excluded.created_at, updated_at=excluded.updated_at, archived=excluded.archived,
         messages=excluded.messages, partial=excluded.partial, truncated=excluded.truncated, body=excluded.body`);
     for (const record of records) {
+      const body = String(record.body || '');
       insert.run(target, record.path, record.descriptorId || '', record.nativeId || '', record.provider || '', record.size || 0,
         record.mtime || 0, record.repo || '', comparablePath(record.repo), record.model || '',
         String(record.model || '').toLocaleLowerCase(), record.title || '', record.createdAt || 0,
         record.updatedAt || 0, record.archived ? 1 : 0, record.count || 0, record.partial ? 1 : 0,
-        record.truncated ? 1 : 0, String(record.body || '').slice(0, BODY_LIMIT));
+        record.truncated || body.length > BODY_LIMIT ? 1 : 0, body.slice(0, BODY_LIMIT));
     }
   }
   forget(target, paths) {

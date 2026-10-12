@@ -27,12 +27,15 @@ const ALLOWED_KEYS = [
   'profiles',
   // モデル別の相対コスト（昇格判定を agent_cli + model の組で行うための任意宣言）。
   'models',
+  // 実行場所（任意。宣言しなければ relative_cost から導く。models.<name>.site にも置ける）。
+  'site',
 ];
 const OUTPUT_ENUM = ['stdout', 'file'];
 const PROMPT_VIA_ENUM = ['stdin', 'argv'];
 const ERROR_CLASS_ENUM = ['quota', 'auth', 'env', 'transient'];
 const READONLY_ENUM = ['enforced', 'best-effort'];
 const HEADLESS_AUTONOMY_ENUM = ['tool-loop', 'single-shot'];
+const SITE_ENUM = ['local', 'cloud'];
 // agent-cli.schema.json の session_log.format と同じ並び。片方に足してもう片方を忘れると、
 // 同梱の agents/*.json が「未知の形式」で丸ごと落ちる（vscode-chat を足したときに起きた）。
 const SESSION_LOG_FORMAT_ENUM = ['jsonl-dir', 'kiro-sqlite', 'vscode-chat'];
@@ -103,8 +106,15 @@ function validateSpec(spec) {
         if (!Number.isFinite(cost) || cost < 0) {
           errors.push(`models.${name}.relative_cost は 0 以上の数値で指定してください`);
         }
+        if (body && typeof body === 'object' && body.site !== undefined
+            && !SITE_ENUM.includes(body.site)) {
+          errors.push(`models.${name}.site が不正です: ${body.site}（local / cloud）`);
+        }
       }
     }
+  }
+  if (spec.site !== undefined && !SITE_ENUM.includes(spec.site)) {
+    errors.push(`site が不正です: ${spec.site}（local / cloud）`);
   }
   if (spec.output !== undefined && !OUTPUT_ENUM.includes(spec.output)) {
     errors.push(`output が不正です: ${spec.output}（stdout / file）`);
