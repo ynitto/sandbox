@@ -3875,6 +3875,43 @@ class CoddTest(unittest.TestCase):
         self.assertIn('{from: confirm, to: stopped, condition_rule: "startswith:answer:STOP"', text)
         self.assertIn('{from: stuck, to: stopped, condition_rule: "startswith:choice:STOP"', text)
 
+    def test_retro_does_nothing_unless_a_prompt_is_set(self) -> None:
+        # 終わりの振り返りは既定で何もしない。設定のプロンプトがあれば、材料のありかと一緒に出す。
+        r = self.run_pa(self.impl, "retro")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "NONE"))
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        config = json.loads(cfg.read_text(encoding="utf-8"))
+        cfg.write_text(json.dumps({**config, "retro": "KPT で振り返る"}), encoding="utf-8")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        r = self.run_pa(self.impl, "retro")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("RETRO\n"), r.stdout)
+        self.assertIn("利用者に訊かずに", r.stdout)
+        self.assertIn(f"計画の記録（確認の答えと結果）: {PLAN}", r.stdout)
+        self.assertTrue(r.stdout.rstrip().endswith("## プロンプト\n\nKPT で振り返る"), r.stdout)
+        # 長いプロンプトは .md に書いてパスを指せる
+        commit(self.impl, {".agents/codd-retro.md": "# 振り返り\n\nwiki に残す\n"}, "retro")
+        cfg.write_text(json.dumps({**config, "retro": ".agents/codd-retro.md"}), encoding="utf-8")
+        self.assertIn("## プロンプト\n\n# 振り返り\n\nwiki に残す", self.run_pa(self.impl, "retro").stdout)
+        cfg.write_text(json.dumps({**config, "retro": ".agents/none.md"}), encoding="utf-8")
+        self.assertIn("retro に書いたファイルがありません", self.run_pa(self.impl, "retro").stderr)
+        cfg.write_text(json.dumps({**config, "retro": ["x"]}), encoding="utf-8")
+        self.assertIn("retro は", self.run_pa(self.impl, "retro").stderr)
+
+    def test_workflow_ends_with_the_retro_after_reporting(self) -> None:
+        # 報告（done・stopped）のあと、どちらからも終端の振り返りへ進む。振り返りは訊かずに進める。
+        text = (TOOL / "machine/workflow.yaml").read_text(encoding="utf-8")
+        self.assertIn("  - {from: done, to: retro}\n", text)
+        self.assertIn("  - {from: stopped, to: retro}\n", text)
+        retro = text.split("  retro:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("terminal: true", retro)
+        self.assertEqual(text.count("terminal: true"), 1)
+        action = (TOOL / "machine/actions/retro.md").read_text(encoding="utf-8")
+        self.assertIn("`NONE` なら", action)
+        self.assertIn("利用者に訊かずに進めます", action)
+
     # ------------------------------------------------------------ 意味のずれのサンプル（samples/drift）
 
     def drift(self, mode: str) -> subprocess.CompletedProcess:

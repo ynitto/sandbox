@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 終わりに振り返り（retro）の段を足す
+
+- 報告のあと（やめたときも）に振り返りの段を通る。既定では何もしない。codd.json の `retro` にプロンプト（か、それを書いた `.md` のパス）を
+  書くと、利用者に訊かずに実行して終わる。材料として、この回の計画の記録と止まった理由のありかを渡す
+- 例として、kpt スキルで振り返って wiki-use で残すプロンプトを `samples/retro/kpt-wiki.md` に置く
+
 ### codd-agent: 文書の要らないコードを設定で外し、見本が無いときは文書の置き場を示す
 
 - codd.json の `no_doc` に、文書を求めないコード（生成したコードなど）を書ける。参照先のコードは、参照先に置いた codd.json の `no_doc` を使う
