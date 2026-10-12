@@ -15,7 +15,8 @@
   "interactive": {
     "command": ["cursor-agent"],
     "readonly_args": ["--mode", "ask"],
-    "ready_pattern": "plan, search, build anything|add a follow-up",
+    "ready_pattern": "^[[:space:]]*→[[:space:]]*$|^[[:space:]]*→[[:space:]]+(plan, search, build anything|add a follow-up)[[:space:]]*$",
+    "ready_tail_lines": 16,
     "busy_pattern": "^[[:space:]]*[⠀-⣿]+[[:space:]]+.+$",
     "prompt_inject": "send-keys"
   },

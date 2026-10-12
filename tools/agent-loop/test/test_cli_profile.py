@@ -11,6 +11,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -122,6 +123,137 @@ class CodexProfileTest(unittest.TestCase):
             "  gpt-5.6-luna default · ~/Workspace/sandbox-test"
         )
         self.assertFalse(profile.is_ready(echoed))
+
+
+class CursorProfileTest(unittest.TestCase):
+    """Cursor 2026.10: wrapped footer and retained input after an answer."""
+
+    def setUp(self):
+        spec = json.loads((HERE.parents[2] / "agents" / "cursor.json").read_text())
+        self.profile = al.CliProfile("cursor", spec)
+
+    def _screen(self, prompt):
+        return (prompt + "\n\nAsk (shift+tab to cycle)\n"
+                "Grok 4.5 High· 7.4%  Run Everything\n"
+                "/private/tmp/agent-loop-cli-check-90\n7ip4n4\n")
+
+    def test_initial_prompt_above_wrapped_footer_is_ready(self):
+        self.assertTrue(self.profile.is_ready(self._screen("  → Plan, search, build anything")))
+
+    def test_response_with_empty_input_above_wrapped_footer_is_ready(self):
+        self.assertTrue(self.profile.is_ready("AL_PERIODIC_RESPONSE_OK\n" + self._screen("  →")))
+
+    def test_retained_or_typed_input_is_not_completion(self):
+        self.assertFalse(self.profile.is_ready("AL_PERIODIC_RESPONSE_OK\n" + self._screen(
+            "  → ツール実行やファイル変更を行わず\n"
+            "    次の4語をつないでください: AL\n    PERIODIC RESPONSE OK")))
+
+    def test_busy_spinner_overrides_the_visible_input_arrow(self):
+        self.assertFalse(self.profile.is_ready("  ⠋ Generating response\n" + self._screen(
+            "  →")))
+
+    def test_an_old_prompt_in_scrollback_is_not_ready(self):
+        self.assertFalse(self.profile.is_ready("  →\n" + "output\n" * 20))
+
+    def test_workspace_trust_is_not_ready(self):
+        self.assertFalse(self.profile.is_ready(
+            "Workspace Trust Required\n▶ [a] Trust this workspace\n[q] Quit\n"))
+
+    def test_response_completion_releases_the_slot(self):
+        semaphore, completed, failed = mock.Mock(), mock.Mock(), mock.Mock()
+        monitor = al.SlotMonitor(semaphore)
+        monitor.track("%1", profile=self.profile, on_complete=completed, on_failure=failed)
+        idle = "AL_PERIODIC_RESPONSE_OK\n" + self._screen("  →")
+        busy = "  ⠋ Generating response\n" + self._screen("  →")
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)), \
+                mock.patch.object(al, "_capture_pane", side_effect=[busy, idle]):
+            monitor._check_pane("%1")
+            self.assertTrue(monitor.is_tracking("%1"))
+            monitor._check_pane("%1")
+        self.assertFalse(monitor.is_tracking("%1"))
+        semaphore.release.assert_called_once_with("%1")
+        completed.assert_called_once()
+        failed.assert_not_called()
+
+
+class CursorPromptSendTest(unittest.TestCase):
+    def _manager(self):
+        manager = al.SessionManager.__new__(al.SessionManager)
+        manager._lock = al.threading.RLock()
+        manager._panes = {'entry': '%1'}
+        manager._prompt_cwds = {'entry': '/tmp/check'}
+        manager._target_path = '/tmp/check'
+        manager._pane_exists = lambda _pane: True
+        manager._maybe_prepend_instructions = lambda _entry, text: text
+        return manager
+
+    def test_cursor_clears_the_previous_input_before_pasting(self):
+        events = []
+        def tmux(*args):
+            events.append(('clear', args))
+            return mock.Mock(returncode=0)
+        def send(pane, text):
+            events.append(('send', pane, text))
+            return True, ''
+        with mock.patch.object(al, '_CLI_PROFILE', mock.Mock(name='cursor')) as profile, \
+                mock.patch.object(al, '_tmux_cmd', side_effect=tmux), \
+                mock.patch.object(al, '_capture_pane', return_value='  → previous prompt\nAsk'), \
+                mock.patch.object(al, '_send_chat_to_pane', side_effect=send):
+            profile.name = 'cursor'
+            self.assertTrue(self._manager().send_prompt('entry', 'next prompt', apply_tuning=False))
+        self.assertEqual(events, [('clear', ('send-keys', '-t', '%1', 'C-c')),
+                                  ('send', '%1', 'next prompt')])
+
+    def test_failed_clear_does_not_append_another_prompt(self):
+        with mock.patch.object(al, '_CLI_PROFILE', mock.Mock(name='cursor')) as profile, \
+                mock.patch.object(al, '_tmux_cmd', return_value=mock.Mock(returncode=1, stderr='closed')), \
+                mock.patch.object(al, '_capture_pane', return_value='  → previous prompt\nAsk'), \
+                mock.patch.object(al, '_send_chat_to_pane') as send:
+            profile.name = 'cursor'
+            self.assertFalse(self._manager().send_prompt('entry', 'next prompt', apply_tuning=False))
+        send.assert_not_called()
+
+    def test_empty_cursor_input_is_not_canceled(self):
+        with mock.patch.object(al, '_CLI_PROFILE', mock.Mock(name='cursor')) as profile, \
+                mock.patch.object(al, '_tmux_cmd') as tmux, \
+                mock.patch.object(al, '_capture_pane', return_value='  → Plan, search, build anything\nAsk'), \
+                mock.patch.object(al, '_send_chat_to_pane', return_value=(True, '')):
+            profile.name = 'cursor'
+            self.assertTrue(self._manager().send_prompt('entry', 'next prompt', apply_tuning=False))
+        tmux.assert_not_called()
+
+    def test_blank_arrow_does_not_consume_the_footer_as_input(self):
+        with mock.patch.object(al, '_CLI_PROFILE', mock.Mock(name='cursor')) as profile, \
+                mock.patch.object(al, '_tmux_cmd') as tmux, \
+                mock.patch.object(al, '_capture_pane', return_value='  →\n\nAsk\nGrok'), \
+                mock.patch.object(al, '_send_chat_to_pane', return_value=(True, '')):
+            profile.name = 'cursor'
+            self.assertTrue(self._manager().send_prompt('entry', 'next prompt', apply_tuning=False))
+        tmux.assert_not_called()
+
+
+class ClaudeProfileTest(unittest.TestCase):
+    def setUp(self):
+        spec_path = HERE.parents[2] / "agents" / "claude.json"
+        self.profile = al.CliProfile("claude", json.loads(spec_path.read_text()))
+
+    def test_initial_suggestion_above_plan_footer_is_ready(self):
+        self.assertTrue(self.profile.is_ready(
+            '❯ Try "edit <filepath> to..."\n────────────\n'
+            '  ⏸ plan mode on (shift+tab to cycle)\n'))
+
+    def test_busy_response_overrides_the_input_suggestion(self):
+        self.assertFalse(self.profile.is_ready(
+            'esc to interrupt\n❯ Try "edit <filepath> to..."\n────────────\n'
+            '  ⏸ plan mode on (shift+tab to cycle)\n'))
+
+    def test_typed_input_is_not_ready(self):
+        self.assertFalse(self.profile.is_ready(
+            '❯ Try editing the file\n────────────\n  ⏸ plan mode on\n'))
+
+    def test_old_suggestion_is_not_ready(self):
+        self.assertFalse(self.profile.is_ready(
+            '❯ Try "edit <filepath> to..."\n' + 'output\n' * 10))
 
 
 class CopilotProfileTest(unittest.TestCase):

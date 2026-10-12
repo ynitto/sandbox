@@ -652,7 +652,17 @@ class SessionManager:
 
         # Codex TUI は paste-buffer 直後の Enter を送信ではなく改行として
         # 扱う。文字列と Enter を分ける対話送信を使う。
-        sender = _send_chat_to_pane if _CLI_PROFILE.name == "codex" else _send_to_pane
+        # Cursor の Ctrl-C は、入力文がある場合だけ入力全体を消す（空欄では終了操作）。
+        # 前回本文が残っている場合だけ消し、paste-buffer ではなく直接入力で送る。
+        if _CLI_PROFILE.name == "cursor":
+            arrows = re.findall(r"^[ \t]*→[ \t]*([^\n]*)", _capture_pane(pane_target), re.MULTILINE)
+            draft = arrows[-1].strip() if arrows else ""
+            if draft and not re.match(r"(?i)plan, search, build anything|add a follow-up", draft):
+                cleared = _tmux_cmd("send-keys", "-t", pane_target, "C-c")
+                if cleared.returncode != 0:
+                    log.warning("Cursor 入力欄のクリアに失敗しました: %s", cleared.stderr)
+                    return False
+        sender = _send_chat_to_pane if _CLI_PROFILE.name in ("codex", "cursor") else _send_to_pane
         ok, err = sender(pane_target, prompt_text)
         if not ok:
             log.warning("テキスト送信に失敗しました: %s", err)

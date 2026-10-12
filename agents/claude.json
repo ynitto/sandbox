@@ -36,7 +36,8 @@
     "turn_completion": "claude",
     "readonly_args": ["--permission-mode", "plan"],
     "no_session_args": ["--no-session-persistence"],
-    "ready_pattern": "^[[:space:]]*[>?❯›][[:space:]]*$|│[[:space:]]*[>❯›]|\\? for shortcuts",
+    "ready_tail_lines": 8,
+    "ready_pattern": "^[[:space:]]*[>?❯›][[:space:]]*$|│[[:space:]]*[>❯›]|\\? for shortcuts|^[[:space:]]*[>?❯›][[:space:]]*Try[[:space:]]+\"[^\"\\n]*\"[[:space:]]*$",
     "busy_pattern": "esc to interrupt",
     "prompt_inject": "send-keys"
   },
