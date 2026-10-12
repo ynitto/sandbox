@@ -67,7 +67,10 @@ def run_in_pane(argv, *, cwd, env, timeout, log_file, open_pane, tmux):
                     raise CommandRunError(reply.stderr or 'tmux ペインの準備に失敗しました')
             pid = tmux('display-message', '-p', '-t', pane, '#{pane_pid}')
             if pid.returncode == 0:
-                group = os.getpgid(int(pid.stdout.strip()))
+                try:
+                    group = os.getpgid(int(pid.stdout.strip()))
+                except (ValueError, ProcessLookupError):
+                    group = None  # ペインのプロセスが既に終わっている。後段は結果ファイルで判定する
             if log_file:
                 _tl_append_log(log_file, {'event': 'command_terminal', 'paneId': pane,
                                           'terminalLog': str(output)})

@@ -168,3 +168,19 @@ class SkipIfMissingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MissingExecutableLogTest(unittest.TestCase):
+    """実行ファイルが無い失敗は、結果ログとは別に `command_error` を残す。"""
+
+    def test_missing_executable_is_logged_as_command_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = str(Path(td) / "run.jsonl")
+            spec = al._loopentry.command_spec({"command": {
+                "argv": ["/nonexistent/agent-loop-missing-bin"], "timeout_sec": 30}})
+            result = al._commandrun.run_command(spec, cwd=td, log_file=log)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["stopReason"], "command_error")
+            events = [json.loads(line)["event"]
+                      for line in Path(log).read_text(encoding="utf-8").splitlines()]
+            self.assertIn("command_error", events)
