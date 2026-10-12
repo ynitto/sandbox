@@ -226,6 +226,29 @@ class SessionManager:
                       prompt_id, exc_info=True)
             return False
 
+    def run_command_in_pane(self, prompt_id: str, prompt_name: str, argv, **kwargs):
+        """Run the command itself in a reusable TTY pane; users can type into this pane."""
+        from agentcore.commandpane import run_in_pane
+
+        def open_pane(command, cwd):
+            with self._lock:
+                panes = getattr(self, "_command_panes", {})
+                self._command_panes = panes
+                pane = panes.get(prompt_id)
+            existing = _tmux_cmd("list-panes", "-a", "-F", "#{pane_id}")
+            if pane and pane in existing.stdout.splitlines():
+                reply = _tmux_cmd("respawn-pane", "-k", "-t", pane, "-c", cwd, command)
+                if reply.returncode:
+                    raise _commandrun.CommandRunError(reply.stderr or "ペイン再起動失敗")
+            else:
+                pane = self._create_worker_pane(command, cwd)
+                with self._lock:
+                    self._command_panes[prompt_id] = pane
+            _tmux_cmd("select-pane", "-t", pane, "-T", f"command:{prompt_name}")
+            return pane
+
+        return run_in_pane(argv, open_pane=open_pane, tmux=_tmux_cmd, **kwargs)
+
     # ------------------------------------------------------------------
     # セッション識別ヘルパー
     # ------------------------------------------------------------------
@@ -1059,6 +1082,8 @@ class SessionManager:
             prompt_ids = list(self._panes.keys())
             log_panes = list(self._headless_log_panes.values())
             self._headless_log_panes.clear()
+            log_panes.extend(getattr(self, "_command_panes", {}).values())
+            getattr(self, "_command_panes", {}).clear()
             self._prompt_names.clear()
             self._tmux_names.clear()
             self._prompt_cwds.clear()

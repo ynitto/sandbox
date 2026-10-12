@@ -90,7 +90,7 @@ def _terminate(proc) -> None:
 
 
 def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" = None,
-                tag: str = "command") -> dict:
+                tag: str = "command", terminal=None) -> dict:
     """`command_spec()` が返した宣言を 1 回実行する。
 
     戻り値: `{ok, status, stopReason, stdout, stderr, argv, durationSec, logFile}`
@@ -112,6 +112,10 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     `continue_on_error` の段だけは止めずに次へ進むが、失敗は最後まで覚えていて全体は
     `ok: False` になる。`completedCommands` は**成功した段の数**。
 
+    `terminal` があれば、実際の子プロセス実行をその TTY 実行器へ渡す。引数は argv と
+    cwd/env/timeout/log_file、返り値は (stdout, stderr, status, timed_out)。段の順序、
+    許す終了コード、結果ログはこの関数で共通に扱う。
+
     例外を投げるのは実行を**始められなかった**ときだけ。始まった実行の失敗
     （許していない終了コード・タイムアウト）は `ok: False` で返す——呼ぶ側はどちらも同じ
     「失敗として記録する」に落とすが、記録に残す理由が違う。
@@ -124,7 +128,8 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
         for index, step in enumerate(spec["commands"], 1):
             _tl_progress(f"コマンド {index}/{len(spec['commands'])}", tag)
             try:
-                result = run_command(step, cwd=cwd, log_file=log_file, env=env, tag=tag)
+                result = run_command(step, cwd=cwd, log_file=log_file, env=env, tag=tag,
+                                     terminal=terminal)
             except CommandRunError as exc:
                 result = {"ok": False, "status": None, "stopReason": stopreason.COMMAND_ERROR,
                           "stdout": "", "stderr": str(exc), "error": str(exc),
@@ -184,51 +189,29 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
         _tl_progress(f"コマンドを実行します: {' '.join(argv)}", tag)
 
     started = time.monotonic()
-    try:
-        proc = subprocess.Popen(
-            argv, cwd=work_dir, env=child_env, start_new_session=True,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except FileNotFoundError:
-        # 実行ファイルが無いのは**宣言の誤り**だが、reload をまたいで直せるので
-        # 例外にせず失敗として返す（デーモンを落とさない）。
-        detail = f"実行ファイルが見つかりません: {argv[0]}"
-        if log_file:
-            _tl_append_log(log_file, {"event": "command_error", "argv": argv,
-                                      "error": detail})
-        _tl_progress(f"ERROR: {detail}", tag)
-        return {"ok": False, "status": None, "stopReason": stopreason.COMMAND_ERROR,
-                "stdout": "", "stderr": detail, "error": detail, "argv": argv,
-                "durationSec": 0.0, "logFile": log_file}
-    except OSError as exc:
-        raise CommandRunError(f"コマンドを起こせません: {exc}") from exc
-
-    timed_out = False
-    try:
-        out, err = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _terminate(proc)
-        out, err = b"", b""
-        try:
-            out, err = proc.communicate(timeout=5)
-        except (subprocess.TimeoutExpired, ValueError, OSError):
-            pass
+    if terminal is not None:
+        # terminal は実際の TTY 内で子を実行する。結果の判定・段の制御・記録は共有する。
+        out, err, returncode, timed_out = terminal(
+            argv, cwd=work_dir, env=child_env, timeout=timeout, log_file=log_file)
+    else:
+        out, err, returncode, timed_out = _run_subprocess(argv, work_dir, child_env, timeout)
     duration = round(time.monotonic() - started, 3)
     stdout = _tl_decode(out or b"")
     stderr = _tl_decode(err or b"")
-    status = None if timed_out else proc.returncode
-    ok = status in allow_status
+    status = None if timed_out else returncode
+    ok = not timed_out and status in allow_status
 
     if timed_out:
         stop = stopreason.COMMAND_TIMEOUT
         error = f"コマンドがタイムアウトしました ({timeout}s)"
+    elif status is None:
+        stop = stopreason.COMMAND_ERROR
+        error = _first_line(stderr) or "コマンドを起動できませんでした"
     elif ok:
         stop = stopreason.COMMAND_EXIT
         error = ""
     else:
         stop = stopreason.COMMAND_EXIT
-        # スクリプトの stdout は成果の出力なので、失敗の理由には使わない（`-e` で落ちた
-        # ときの最後の 1 行は、たいてい直前の成功した行が出したものになる）。
         error = (_first_line(stderr) or (_first_line(stdout) if not script else "")
                  or f"status={status}")
 
@@ -245,3 +228,30 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
             "stdout": stdout[-OUTPUT_LIMIT:], "stderr": stderr[-OUTPUT_LIMIT:],
             "error": error, "argv": argv, "durationSec": duration,
             "logFile": log_file}
+
+
+def _run_subprocess(argv, work_dir, child_env, timeout):
+    try:
+        proc = subprocess.Popen(
+            argv, cwd=work_dir, env=child_env, start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        # 実行ファイルが無いのは**宣言の誤り**だが、reload をまたいで直せるので
+        # 例外にせず失敗として返す（デーモンを落とさない）。
+        detail = f"実行ファイルが見つかりません: {argv[0]}"
+        return b"", detail.encode(), None, False
+    except OSError as exc:
+        raise CommandRunError(f"コマンドを起こせません: {exc}") from exc
+
+    timed_out = False
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate(proc)
+        out, err = b"", b""
+        try:
+            out, err = proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            pass
+    return out, err, proc.returncode, timed_out

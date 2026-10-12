@@ -1,7 +1,8 @@
 """定期プロンプトの `command:` 実行の回帰。
 
-entry が固定コマンドを宣言したら、デーモンは対話ペインにも LLM にも触れず、宣言された
-argv を 1 回実行する。成否は**終了コード**で決まり、実行はスロット・実行レコード・
+entry が固定コマンドを宣言したら、デーモンは LLM を起こさず、宣言された argv を
+実行する。command_pane のときはスクリプトの TTY を開く。成否は**終了コード**で決まり、
+実行はスロット・実行レコード・
 リポジトリ履歴・`RESULT` 行という既存の記録面に乗る。
 
 `{…}` の補完はフック / webhook が返した辞書を材料にする。規則は本文テンプレートと同じ
@@ -58,6 +59,13 @@ class DeclarationTest(unittest.TestCase):
         entries = al.validate_entries([
             {"name": "c", "command": "echo hi", "interval_minutes": 5}])
         self.assertEqual(len(entries), 1)
+
+    def test_a_command_does_not_prepare_an_interactive_cli_pane(self):
+        scheduler = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+        scheduler._entry_route = mock.Mock(side_effect=AssertionError("CLI resolution"))
+        entries = scheduler._annotate_pane_routes([self._one()])
+        self.assertEqual(entries[0]["_pane_route"], "per-run")
+        scheduler._entry_route.assert_not_called()
 
     def test_it_cannot_be_combined_with_another_kind_of_work(self):
         for extra in ({"prompt": "本文"}, {"statemachine": "digest"}, {"slash": ["x"]}):
@@ -149,6 +157,28 @@ class HeadlessRunTest(unittest.TestCase):
         self.sched._fail_execution.assert_called_once()
         self.assertEqual(self.sched._fail_execution.call_args.kwargs["reason"],
                          "command_failed")
+
+    def test_a_normalized_command_sequence_runs_every_step(self):
+        Path(self.dir, "mark.py").write_text(
+            "from pathlib import Path\nPath('sequence-completed').touch()\n")
+        self._run(self._entry({"commands": [
+            [sys.executable, "ok.py"], [sys.executable, "mark.py"]]}))
+        self.sched._fail_execution.assert_not_called()
+        self.assertTrue(Path(self.dir, "sequence-completed").exists())
+
+    def test_a_normalized_shell_command_runs(self):
+        self._run(self._entry({"shell": "echo one\necho two"}))
+        self.sched._fail_execution.assert_not_called()
+
+    def test_a_command_pane_supplies_the_terminal_executor(self):
+        self.sched._tool_config['command_pane'] = True
+        self.sched._session_mgr.run_command_in_pane.return_value = (
+            b'answered\n', b'', 0, False)
+        resolve, run_prompt = self._run(self._entry([sys.executable, 'ok.py']))
+        self.sched._session_mgr.run_command_in_pane.assert_called_once()
+        self.sched._fail_execution.assert_not_called()
+        resolve.assert_not_called()
+        run_prompt.assert_not_called()
 
     def test_a_missing_executable_fails_without_crashing_the_daemon(self):
         self._run(self._entry(["no-such-executable-xyz"]))

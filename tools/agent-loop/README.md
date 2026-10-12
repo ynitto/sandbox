@@ -289,6 +289,10 @@ startup_timeout: 60      # kiro-cli 起動待ち
 #                           # エントリごとに 1 枚）で表示する。機械記録の jsonl は同名 .jsonl。
 #                           # false でペインも開かない（サーバ・CI 常駐）。tmux の外では何もしない
 # headless_window: true    # ペインの代わりに専用 tmux ウィンドウを開く（エントリごとに 1 枚）
+# command_pane: true       # command ジョブはスクリプト本体を TTY ペインで実行する。
+#                           # ユーザー入力が可能。省略時は headless_pane に従う。
+#                           # false は非対話バッチ（stdin は閉じる）。終了後も出力を残し、
+#                           # 次回は同じペインを再利用する。入力待ちも timeout_sec に含む。
 
 # 設定内の文字列から参照できる値
 mapping:

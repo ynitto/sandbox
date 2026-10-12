@@ -560,6 +560,9 @@ class PeriodicScheduler:
         付きで正しい CLI のペインを起こす。
         """
         for entry in normalized:
+            if entry.get("command"):
+                entry["_pane_route"] = "per-run"
+                continue
             _, route = self._entry_route(entry)
             if route == "per-run":
                 entry["_pane_route"] = "per-run"
@@ -1514,12 +1517,9 @@ class PeriodicScheduler:
         parameters: dict[str, str] = {}
         command: "dict[str, Any] | None" = None
         if entry.get("command"):
-            try:
-                command = _loopentry.command_spec(entry)
-            except _loopentry.LoopEntryError as exc:
-                log.error("[%s] command の宣言が不正です: %s", name, exc)
-                self._fail_execution(req, slot_key, reason="command_invalid")
-                return
+            # validate_entries が正規化済み。列・シェルの代表 argv は記録用であり、
+            # 宣言として再解析すると commands / shell との併記扱いになってしまう。
+            command = dict(entry["command"])
         if entry.get("statemachine"):
             try:
                 spec = _loopentry.statemachine_spec(entry, prompt=prompt)
@@ -1546,7 +1546,11 @@ class PeriodicScheduler:
                             f" / log: {log_file}\n")
         except OSError:
             pass
-        self._open_headless_log_view(entry, view_file)
+        command_pane = command is not None and bool(
+            self._tool_config.get("command_pane",
+                                  self._tool_config.get("headless_pane", True)))
+        if not command_pane:
+            self._open_headless_log_view(entry, view_file)
         # このスレッドの進行表示（_tl_progress）を実行ログへ振り向ける。デーモンの stdout は
         # コントロールペインなので、そのまま print させると実行の様子が controller に混ざる。
         _harness_toolloop._TL_PROGRESS_LOCAL.view_file = view_file
@@ -1563,7 +1567,10 @@ class PeriodicScheduler:
                 log.info("[%s] コマンド実行: %s（log=%s）", name, " ".join(rendered_command["argv"]), log_file)
                 result = _commandrun.run_command(
                     rendered_command, cwd=work_dir, log_file=log_file,
-                    tag="agent-loop")
+                    tag="agent-loop", terminal=(
+                        lambda argv, **kwargs: self._session_mgr.run_command_in_pane(
+                            str(entry["id"]), name, argv, **kwargs)
+                        ) if command_pane else None)
             elif workflow:
                 # ステートマシン実行。ハーネスは自分のログ（.statemachine-use/logs）へ
                 # 記録するので、こちらの jsonl は使わない——進行表示だけ同じペインへ流す。
