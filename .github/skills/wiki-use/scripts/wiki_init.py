@@ -91,6 +91,15 @@ QUERIES_TEMPLATE = """\
 """
 
 
+# graphify のグラフに入れないファイル（目録・ログは全ページにつながり、グラフを平らにする）
+GRAPHIFYIGNORE_TEMPLATE = """\
+index.md
+log.md
+SCHEMA.md
+wiki/meta/
+"""
+
+
 def create_structure(wiki_root: Path) -> None:
     """Wiki のディレクトリ構造を作成する。"""
     dirs = [
@@ -139,6 +148,14 @@ def create_structure(wiki_root: Path) -> None:
         print(f"  作成: {hot_path}")
     else:
         print(f"  スキップ（既存）: {hot_path}")
+
+    # .graphifyignore
+    ignore_path = wiki_root / ".graphifyignore"
+    if not ignore_path.exists():
+        ignore_path.write_text(GRAPHIFYIGNORE_TEMPLATE, encoding="utf-8")
+        print(f"  作成: {ignore_path}")
+    else:
+        print(f"  スキップ（既存）: {ignore_path}")
 
     # wiki/meta/queries.md
     queries_path = wiki_root / "wiki" / "meta" / "queries.md"
