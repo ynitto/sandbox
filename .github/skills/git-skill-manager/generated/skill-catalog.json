@@ -1,11 +1,11 @@
 {
   "generated_by": "generate_skill_catalog.py",
-  "total_skills": 91,
+  "total_skills": 92,
   "categories": {
     "integration": 7,
     "orchestration": 8,
     "operations": 5,
-    "review": 5,
+    "review": 6,
     "meta": 7,
     "design": 6,
     "maintenance": 2,
@@ -33,7 +33,7 @@
     "knowledge": 1
   },
   "tiers": {
-    "experimental": 55,
+    "experimental": 56,
     "stable": 21,
     "core": 11,
     "unknown": 2,
@@ -931,6 +931,26 @@
         "caution"
       ],
       "triggers": [],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "kpt",
+      "description": "エージェントとの作業セッションを振り返り、Keep・Problem・Try を洗い出す。Try は次のセッションで効いたかを確かめられる形（何をどこに変えるか、効いたときに何が起きるか）で記録し、次の振り返りの最初に前回の Try を検証する。「振り返って」「KPT して」「今回のセッションを反省して」「レトロして」などで発動する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "review",
+      "tags": [
+        "kpt",
+        "retrospective",
+        "continuous-improvement"
+      ],
+      "triggers": [
+        "振り返って",
+        "KPT して",
+        "今回のセッションを反省して",
+        "レトロして"
+      ],
       "has_scripts": false,
       "has_references": false
     },
