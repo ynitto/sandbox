@@ -1157,7 +1157,12 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED.replace("（根拠: docs/api.md:3）", "（根拠: docs/api.md:5）"))
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertIn("src/app.py（見本になる文書がありません）", r.stderr)
+        self.assertIn("src/app.py（見本になる文書がありません。文書は design（設計書） に置く）", r.stderr)
+        # 文書の要らないコードは、設定の no_doc で外せる
+        cfg = self.impl / ".statemachine/codd/codd.json"
+        cfg.write_text(json.dumps({**json.loads(cfg.read_text(encoding="utf-8")), "no_doc": ["src/"]}), encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("対応する文書の無いコードです", r.stderr)
 
     # ------------------------------------------------------------ 止まったとき
 

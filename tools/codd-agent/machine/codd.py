@@ -97,7 +97,7 @@ OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files", "batch_files",
                "subagent",
-               "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect"}
+               "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect", "no_doc"}
 REF_KEYS = {"name", "path", "skills", "scope", "rules", "exclude", "guides", "protect"}
 # 1 回の計画で変えるファイルの上限と、1 つの段（apply を分けた 1 回ぶん）で変えるファイルの数。
 # 計画は影響範囲・テストまで漏れなく挙げるので大きくなりやすい。上限は緩め、変えるときは段に分けて、
@@ -607,6 +607,7 @@ def load_config(machine_dir: Path) -> dict:
     config["scope"] = scope_list(config.get("scope"), f"{path} の scope")
     config["exclude"] = exclude_list(config.get("exclude"), f"{path} の exclude")
     config["protect"] = exclude_list(config.get("protect"), f"{path} の protect")
+    config["no_doc"] = exclude_list(config.get("no_doc"), f"{path} の no_doc")
     config.setdefault("graphify", "auto")
     config["graphify_semantic"] = None
     if isinstance(config["graphify"], dict):
@@ -3623,10 +3624,24 @@ _DOC_TOKEN = re.compile(r"(?:[\w-]+:)?([\w./-]+\.(?:md|markdown|rst|adoc|txt))\b
 _DELETE_WORD = re.compile(r"消す|消し|削除|取り除|delete|remove", re.I)
 
 
+def no_doc_patterns(ctx: Ctx, key: str) -> list[str]:
+    """文書を求めないファイル。自分は codd.json の no_doc、参照先は参照先に置いた codd.json の no_doc。"""
+    if not key:
+        return ctx.config["no_doc"]
+    raw = (ctx.ref(key).config or {}).get("no_doc") or []
+    return [p for p in raw if isinstance(p, str)] if isinstance(raw, list) else []
+
+
 def is_code(ctx: Ctx, key: str, rel: str) -> bool:
     p = Path(rel)
     return (p.suffix.lower() in CODE_EXTS and p.stem not in NO_DOC_STEMS and not p.name.startswith(".")
-            and not p.stem.endswith(NO_DOC_STEM_ENDS) and not is_test(ctx, key, rel))
+            and not p.stem.endswith(NO_DOC_STEM_ENDS) and not is_test(ctx, key, rel)
+            and not any(path_matches(pattern, rel) for pattern in no_doc_patterns(ctx, key)))
+
+
+def doc_homes(ctx: Ctx, key: str) -> list[str]:
+    """コードの文書を置ける側（コードと別の側。どこを参照先にするかは設定の refs・scope で決まる）。"""
+    return [("自分のリポジトリ" if not k else f"{k}（{side.label}）") for k, side in all_sides(ctx) if k != key]
 
 
 def docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
@@ -3710,7 +3725,9 @@ def planned_code(ctx: Ctx, bodies: dict[str, str]) -> set[tuple[str, str]]:
 
 def nodoc_message(ctx: Ctx, key: str, rel: str) -> str:
     samples = doc_samples(ctx, key, rel)
-    return side_label(ctx, key, rel) + (f"（近い粒度の見本: {' / '.join(samples)}）" if samples else "（見本になる文書がありません）")
+    if samples:
+        return side_label(ctx, key, rel) + f"（近い粒度の見本: {' / '.join(samples)}）"
+    return side_label(ctx, key, rel) + f"（見本になる文書がありません。文書は {' か '.join(doc_homes(ctx, key))} に置く）"
 
 
 def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
