@@ -97,3 +97,9 @@ test('添付のファイル名と評価の抜粋も、絵文字の途中で切�
   assert.strictEqual(headChars('ab😀c', 3), 'ab😀');
   assert.strictEqual(tailChars('a😀bc', 3), '😀bc');
 });
+
+test('定型の依頼の名前と会話の題も、絵文字の途中で切らない', () => {
+  const { quickRequests, MAX_QUICK_LABEL_CHARS } = require('../src/main/settings');
+  const [item] = quickRequests([{ text: `${'あ'.repeat(MAX_QUICK_LABEL_CHARS - 1)}😀😀` }]);
+  assert.strictEqual(item.label, `${'あ'.repeat(MAX_QUICK_LABEL_CHARS - 1)}😀`);
+});

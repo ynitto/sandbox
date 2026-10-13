@@ -2,6 +2,7 @@
 
 const TIERS = ['small', 'medium', 'large'];
 const allocation = require('../shared/allocation');
+const { headChars } = require('./text');
 const POLICY_TIER = { recommended: 'medium', saving: 'small', quality: 'large' };
 const POLICIES = Object.keys(POLICY_TIER);
 // 「エージェントを最適化する」が効いていないとき（設定で OFF、またはローカル実行系 agent-herd が
@@ -61,8 +62,8 @@ function quickRequests(value) {
     if (!item || typeof item !== 'object') return null;
     const text = String(item.text || '').trim().slice(0, MAX_QUICK_TEXT_CHARS);
     if (!text) return null;
-    const label = String(item.label || '').trim().slice(0, MAX_QUICK_LABEL_CHARS);
-    return { label: label || text.split(/\r?\n/)[0].slice(0, MAX_QUICK_LABEL_CHARS), text };
+    const label = headChars(String(item.label || '').trim(), MAX_QUICK_LABEL_CHARS);
+    return { label: label || headChars(text.split(/\r?\n/)[0], MAX_QUICK_LABEL_CHARS), text };
   }).filter(Boolean).slice(0, MAX_QUICK_REQUESTS);
 }
 
@@ -244,7 +245,7 @@ function resolve(config, request = {}, { optimized: on = true, agents = null, no
 
 module.exports = {
   TIERS, POLICIES, BASIC_POLICIES, POLICY_TIER, SKILL_MODES, MAX_INSTRUCTION_CHARS, SHARED_POLICY, SHARE_DEFAULTS, ACCEPT_MODES,
-  MAX_QUICK_REQUESTS, DEFAULT_QUICK_REQUESTS, UPDATE_DEFAULTS, UPDATE_INTERVALS,
+  MAX_QUICK_REQUESTS, MAX_QUICK_LABEL_CHARS, DEFAULT_QUICK_REQUESTS, UPDATE_DEFAULTS, UPDATE_INTERVALS,
   AUDIT_DEFAULTS, AUDIT_INTERVALS,
   normalize, resolve, optimized, effectivePolicy, share, acceptMode, quickRequests, notify, update, audit, evaluation, EVALUATION_MODES,
 };
