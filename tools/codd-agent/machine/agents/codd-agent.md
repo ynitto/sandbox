@@ -45,7 +45,7 @@ caveman が無い間も短い応答で進め、スキルを読んだとは書き
    使い切ったら `check_ok` を `false` にして次へ。
    `check_output` は検査の出力の最初の行
 4. `transitions` のうち今のステートから出るものを `priority` の小さい順に見て、最初に合う `condition_rule` の先へ進む
-   （`equals:名前:値` は一致、`startswith:名前:値` は前方一致、`;` で区切ったものはすべて合うこと）。
+   （`equals:名前:値` は一致、`startswith:名前:値` は前方一致、`;` で区切ったものはすべて合うこと。`condition_rule` が無ければ無条件）。
    apply の検査が `MORE` を返したら、apply_more（2 段目からの短い指示）で次の段を変える
    codd.json の `subagent` が true なら、apply・apply_more では `batch` の指示どおり段を `codd-apply` サブエージェントに渡し、
    自分では変えない（確認・相談・検査は自分が受け持つ）。plan の `graph` が束を `codd-graph` サブエージェントに渡すと
@@ -53,7 +53,7 @@ caveman が無い間も短い応答で進め、スキルを読んだとは書き
 5. `confirm`（計画の確認）と `stuck`（止まったときの相談）では、利用者に見せて**答えを待ちます**。推測して先へ進まない。
    ただし `stuck` で `codd.py advise` の第 1 行が `AUTO PLAN` / `AUTO APPLY` なら、人の判断が要らない理由だけなので、
    訊かずにその語で進めます
-6. `terminal: true` のステートを実行したら終わり
+6. `terminal: true` のステートを実行したら終わり。最後の `retro`（振り返り）は利用者に訊かずに進め、設定が無ければ何もせずに終える
 
 ## 長いコマンドの結果待ち
 
