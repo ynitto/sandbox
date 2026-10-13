@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { isInside, NameRegistry, nodeIdToFileName, resolveInside, safeName, sniffExtension, writeFileInside } from '../scripts/lib/files.mjs';
+import { isInside, NameRegistry, nodeIdToFileName, resolveInside, safeName, sniffExtension, writeFileInside } from '../scripts/modules/files.mjs';
 
 test('Windows で使えない文字・予約名・末尾のドットを避ける', () => {
   assert.equal(safeName('icon/close:24?'), 'icon_close_24_');

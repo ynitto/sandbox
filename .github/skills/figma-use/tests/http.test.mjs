@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { ApiError, EXIT, FigmaClient, parseRetryAfter } from '../scripts/lib/http.mjs';
+import { ApiError, EXIT, FigmaClient, parseRetryAfter } from '../scripts/modules/http.mjs';
 
 function fakeFetch(responses, calls = []) {
   return async (url, init) => {

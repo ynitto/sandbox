@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { colorToHex, normalizeEntry, toPlain } from '../scripts/lib/normalize.mjs';
+import { colorToHex, normalizeEntry, toPlain } from '../scripts/modules/normalize.mjs';
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const file = JSON.parse(fs.readFileSync(path.join(FIX, 'design-file.json'), 'utf8'));

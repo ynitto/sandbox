@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { InputError, normalizeNodeId, normalizeNodeIds, parseFigmaInput, sanitizeSourceUrl } from '../scripts/lib/url.mjs';
+import { InputError, normalizeNodeId, normalizeNodeIds, parseFigmaInput, sanitizeSourceUrl } from '../scripts/modules/url.mjs';
 
 const KEY = 'AbCdEfGhIjKlMnOpQrStUv';
 

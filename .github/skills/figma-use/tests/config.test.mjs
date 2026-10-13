@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { findConnectionFiles, parseServiceEntries, resolveCredentials } from '../scripts/lib/config.mjs';
+import { findConnectionFiles, parseServiceEntries, resolveCredentials } from '../scripts/modules/config.mjs';
 
 const YAML = `# comment
 redmine:

@@ -7,12 +7,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { connectionsWritePath, DEFAULT_API_BASE, resolveCredentials } from './lib/config.mjs';
-import { ApiError, EXIT, FigmaClient } from './lib/http.mjs';
-import { buildMapping } from './lib/mapping.mjs';
-import { CLI_VERSION, assets, context, exportAll, indexNodes, inspect, renderImages } from './lib/ops.mjs';
-import { renderInspect } from './lib/render.mjs';
-import { InputError, normalizeNodeIds, parseFigmaInput, sanitizeSourceUrl } from './lib/url.mjs';
+import { connectionsWritePath, DEFAULT_API_BASE, resolveCredentials } from './modules/config.mjs';
+import { ApiError, EXIT, FigmaClient } from './modules/http.mjs';
+import { buildMapping } from './modules/mapping.mjs';
+import { CLI_VERSION, assets, context, exportAll, indexNodes, inspect, renderImages } from './modules/ops.mjs';
+import { renderInspect } from './modules/render.mjs';
+import { InputError, normalizeNodeIds, parseFigmaInput, sanitizeSourceUrl } from './modules/url.mjs';
 
 const MIN_NODE = 22;
 const TARGET_NODE = 24;
