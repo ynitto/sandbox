@@ -3,7 +3,7 @@
 AIエージェント（GitHub Copilot / Claude Code）の能力を拡張するスキル集。
 スキルは `.github/skills/` に配置された SKILL.md で定義され、エージェントが読み込むことで特定のタスクを高品質に実行できるようになる。
 
-## スキル一覧（全 92 スキル）
+## スキル一覧（全 93 スキル）
 
 ### 基盤スキル（常時ロード）— 11
 
@@ -149,7 +149,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **wiki-use** | Karpathy LLM Wiki パターンに基づく知識ベース管理。URL・論文・記事の ingest、検索、初期化、lint に対応。「wiki に追加して」「wiki を検索して」などで発動する |
 | **obsidian-use** | Obsidian ノートの作成・編集・CLI 操作・Web 抽出・Office ファイル変換を統合。「Obsidian のノートを作って」「.base ファイルでフィルターを設定して」などで発動する |
 
-### 外部サービス連携 — 5
+### 外部サービス連携 — 6
 
 | スキル | 概要 |
 |--------|------|
@@ -157,6 +157,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **outlook-use** | Python + Microsoft Graph API で Outlook のメール読み取り・送信・カレンダー管理を行う。MSAL デバイスコードフローで認証し、受信トレイ確認・メール検索・予定の作成・削除に対応 |
 | **ms365-copilot-use** | Microsoft 365 Copilot Chat を Playwright で操作し回答を Markdown/JSON で取得する。「M365 Copilot に聞いて」「M365 Copilot で検索」などで発動する |
 | **jenkins-use** | Jenkins REST API でビルド操作・状態監視・ログ取得を行う。Python スクリプト経由でリトライ・タイムアウト付きで安定実行する。「Jenkins でビルドして」などで発動する |
+| **figma-use** | Figma MCP を使わずに、Figma の URL から画面の構造・スクリーンショット・画像・SVG・スタイル・コンポーネントを取得して整理し、足りない情報を明示する。Node.js 24 の CLI 同梱。React の設計は後工程のスキルが担う |
 | **redmine-use** | Redmine REST API でチケットの一覧取得・読み取り・更新・コメント投稿を行う。「Redmine のチケットを確認して」「コメントを投稿して」などで発動する |
 
 ### AI CLI 連携 — 2

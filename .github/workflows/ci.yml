@@ -19,6 +19,7 @@ name: CI
 #                （skill-evaluator 同梱の quality_check.py。frontmatter の未知キーなど
 #                エラーだけで落ち、description の字数超過は警告なので落ちない）、
 #                それぞれの検査自身の単体テスト。
+#      figma-use … スキル同梱の CLI の `node --test`（依存なし。Figma の実 API は呼ばない）。
 #   4. vscode-copilot … このスイートだけ pytest 形式（tmp_path などを使う）なので
 #                独立したジョブにする。**上の python matrix へ足してはいけない**——
 #                あちらは `unittest discover` で、pytest 形式のテストは 1 件も収集
@@ -199,6 +200,21 @@ jobs:
       - name: npm test
         working-directory: tools/office-preview
         run: npm test
+
+  # figma-use スキルの CLI（Node 24 の標準モジュールだけで動く）。Figma の実 API は呼ばず、
+  # テストが立てる模造の API に対して URL 解析・正規化・再試行・キャッシュ・部分失敗を確かめる。
+  figma-use:
+    name: figma-use (node --test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: node --test
+        working-directory: .github/skills/figma-use
+        run: node --test tests/*.test.mjs
 
   vscode-copilot:
     name: python (vscode-copilot)
