@@ -1020,7 +1020,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("「未判断」として書き足しました", r.stderr)
         self.assertIn("docs/map.md", r.stderr)
-        self.assertIn("- 未判断: docs/map.md（自分の変更案のファイルとパスでつながっている）",
+        self.assertIn("- 未判断: docs/map.md（自分の変えるファイルとパスでつながっている）",
                       (self.impl / PLAN).read_text(encoding="utf-8"))
         self.assertIn("docs/map.md", (self.impl / ".codd/trace.md").read_text(encoding="utf-8"))
         self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
@@ -2644,6 +2644,16 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
+
+    def test_files_fixed_in_the_impact_are_measured_like_planned_ones(self) -> None:
+        # 影響範囲で直すファイルも変える。そのファイルと対になるテストを、計画のときに測る（変えたあとまで待たない）。
+        self.add_caller()
+        commit(self.impl, {"tests/test_use.py": "import use\n"}, "tests")
+        plan = PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/use.py — ログに合わせて表示を直す")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("- tests/test_use.py — 未判断", (self.impl / PLAN).read_text(encoding="utf-8"))
 
     def test_a_non_test_file_is_not_a_test_decision(self) -> None:
         # テストのファイルでないものを挙げても、テストの判断に数えない。
