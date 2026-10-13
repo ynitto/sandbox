@@ -246,6 +246,11 @@ jobs:
           python-version: "3.11"
       - name: 利用者向け文書に内部名が出ていないこと
         run: python tools/ci/check_user_docs.py
+      # Windows（cmd.exe / wslpath / PowerShell）と喋るファイルだけを見る。CI は ubuntu だけで
+      # 回すので、WSL の Python が CP932 の出力を読み損ねる壊れ方は実行では捕まらない。
+      # 新しく text=True のまま書いた呼び出しを止め、decode_cli_output へ寄せる。
+      - name: Windows と喋る subprocess が出力の文字コードを決め打ちしていないこと
+        run: python tools/ci/check_subprocess_encoding.py
       - name: スキルの references/ に切れリンク・孤児・未許可の2ホップ参照が無いこと
         run: python tools/ci/check_skill_references.py
       # 列挙は install.py の _discover_all_skills / _discover_core_skills に任せ、

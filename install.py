@@ -77,6 +77,35 @@ REPO_ROOT = SCRIPT_DIR  # install.py はリポジトリルートに配置
 REPO_SKILLS_DIR = os.path.join(REPO_ROOT, ".github", "skills")
 MCP_CONFIG_SRC = os.path.join(REPO_ROOT, ".github", "mcp", "mcp.json")
 
+# decode_cli_output の写し。原本は tools/winauto/winauto.py（単体で配るので共有モジュールに
+# 依存できない）。直すときは原本と全部の写しを揃える（本体の一致は
+# tools/ci/tests/test_check_subprocess_encoding.py が検査する）。
+def decode_cli_output(data) -> str:
+    """子プロセスの出力（bytes）を文字列にする。Windows ネイティブの CLI は CP932、WSL は
+    UTF-8 で吐くので、どちらが来ても読む。JS 版 decodeCliOutput
+    （tools/agent-dashboard/src/features/cowork/main/loopProvider.js:51）と同じ段取り。
+
+    解決の順:
+      1. None・空なら ''、すでに str ならそのまま返す
+      2. UTF-8 として読めればそれ
+      3. 読めなければ CP932
+      4. CP932 でも読めなければ UTF-8 の置換文字つき（例外は投げない）
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    data = bytes(data)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("cp932")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
 def _discover_skills_by_tier(skills_dir: str, tier: str) -> list[str]:
     """SKILL.md の metadata.tier が指定値に一致するスキルを動的収集する。"""
     result = []
@@ -602,10 +631,9 @@ def copy_skills(paths: dict[str, str], skill_names: list[str]) -> list[dict]:
                 ["git", "rev-parse", "--short", "HEAD"],
                 cwd=REPO_ROOT,
                 capture_output=True,
-                text=True,
             )
             if result.returncode == 0:
-                commit_hash = result.stdout.strip()
+                commit_hash = decode_cli_output(result.stdout).strip()
         except FileNotFoundError:
             pass
 
@@ -630,10 +658,9 @@ def detect_repo_url() -> str | None:
             ["git", "remote", "get-url", "origin"],
             cwd=REPO_ROOT,
             capture_output=True,
-            text=True,
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            return decode_cli_output(result.stdout).strip()
     except FileNotFoundError:
         pass
     return None
@@ -1018,13 +1045,13 @@ def setup_lsp_for_kiro() -> None:
     for cmd, label in commands:
         print(f"   インストール中: {label}")
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True)
             if result.returncode == 0:
                 print(f"   ✓ {label}")
             else:
                 print(f"   ✗ {label} (終了コード {result.returncode})")
                 if result.stderr:
-                    print(f"     {result.stderr.strip()}")
+                    print(f"     {decode_cli_output(result.stderr).strip()}")
         except FileNotFoundError:
             print(f"   ✗ {label}: コマンドが見つかりません ({cmd[0]})")
 
@@ -1067,9 +1094,9 @@ def _run_text(cmd: list[str], *, timeout: int = 60) -> tuple[int, str, str]:
     """コマンドを実行し (returncode, stdout, stderr) を返す。"""
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
+            cmd, capture_output=True, timeout=timeout,
         )
-        return result.returncode, result.stdout or "", result.stderr or ""
+        return result.returncode, decode_cli_output(result.stdout), decode_cli_output(result.stderr)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return 127, "", ""
 
@@ -1230,7 +1257,7 @@ def setup_playwright_cli_skill(
         result = subprocess.run(
             ["playwright-cli", "install", "--skills"],
             cwd=user_home,
-            capture_output=True, text=True,
+            capture_output=True,
         )
     except FileNotFoundError:
         print("   ✗ playwright-cli コマンドが見つかりません")
@@ -1238,10 +1265,10 @@ def setup_playwright_cli_skill(
     if result.returncode != 0:
         print(f"   ✗ playwright-cli install --skills に失敗しました (code {result.returncode})")
         if result.stderr:
-            print(f"     {result.stderr.strip()}")
+            print(f"     {decode_cli_output(result.stderr).strip()}")
         return False
     if result.stdout:
-        for line in result.stdout.strip().splitlines():
+        for line in decode_cli_output(result.stdout).strip().splitlines():
             print(f"   {line}")
 
     if not os.path.isdir(claude_skill_path):
@@ -1813,7 +1840,6 @@ def _install_rtk_binary() -> str | None:
         curl = subprocess.run(
             ["curl", "-fsSL", RTK_INSTALL_SH],
             capture_output=True,
-            text=True,
         )
     except FileNotFoundError:
         print("   ✗ curl が見つかりません")
@@ -1821,11 +1847,11 @@ def _install_rtk_binary() -> str | None:
     if curl.returncode != 0:
         print(f"   ✗ install.sh の取得に失敗しました (code {curl.returncode})")
         if curl.stderr:
-            print(f"     {curl.stderr.strip()}")
+            print(f"     {decode_cli_output(curl.stderr).strip()}")
         return None
 
     try:
-        result = subprocess.run(["sh", "-s"], input=curl.stdout, text=True)
+        result = subprocess.run(["sh", "-s"], input=curl.stdout)
     except FileNotFoundError:
         print("   ✗ sh が見つかりません")
         return None
