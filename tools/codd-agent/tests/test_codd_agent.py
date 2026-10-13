@@ -3963,6 +3963,50 @@ class CoddTest(unittest.TestCase):
         text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
         self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1])  # 記録に出てくれば通った変更
 
+    def test_lint_finds_changes_made_after_codd_passed(self) -> None:
+        # 記録には検査を通った中身（git の blob）が残り、点検はコミットされた中身と突き合わせる。
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        record = (self.impl / PLAN).read_text(encoding="utf-8")
+        passed = git(self.impl, "hash-object", "src/app.py").strip()[:12]
+        rows = record.split("### 検査を通った中身\n\n")[1]
+        self.assertIn(f"- `src/app.py` — {passed}", rows)
+        self.assertRegex(rows, r"- `docs/api.md` — [0-9a-f]{12}")   # 参照先で変えたものも残す
+
+        # 検査を通した中身のままコミットすれば、どちらにも挙がらない。
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "codd で変えた")
+        git(self.design, "add", "-A")
+        git(self.design, "commit", "-q", "-m", "codd で変えた")
+        r = self.run_pa(self.impl, "lint", "--no-test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = (self.impl / ".codd/lint.md").read_text(encoding="utf-8")
+        self.assertIn("## codd を通ったあとに変わった変更\n\n- なし", text)
+
+        # 通ったあとに手で変えたものは、記録があっても「通ったあとに変わった変更」に挙がる。
+        commit(self.impl, {"src/app.py": "def hello():\n    return 3\n"}, "手で直した")
+        r = self.run_pa(self.impl, "lint", "--no-test")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        text = (self.impl / ".codd/lint.md").read_text(encoding="utf-8")
+        self.assertIn("src/app.py", text.split("## codd を通ったあとに変わった変更")[1].split("##")[0])
+        self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1].split("##")[0])
+        self.assertNotIn("docs/api.md", text.split("## codd を通ったあとに変わった変更")[1].split("##")[0])
+        self.assertIn("codd を通ったあとに変わった変更（", r.stdout)
+
+        # 消したファイルも、記録で消したことになっていなければ挙がる。中身を検査を通した版に戻せば、挙がらない。
+        commit(self.impl, {"src/app.py": "def hello():\n    return 2\n"}, "戻した")
+        self.assertEqual(self.run_pa(self.impl, "lint", "--no-test").returncode, 0)
+        (self.impl / "src/app.py").unlink()
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "消した")
+        self.run_pa(self.impl, "lint", "--no-test")
+        text = (self.impl / ".codd/lint.md").read_text(encoding="utf-8")
+        self.assertIn("src/app.py（いまは無い）", text.split("## codd を通ったあとに変わった変更")[1])
+
     def test_lint_runs_the_tests_of_both_sides(self) -> None:
         config = self.impl / ".statemachine/codd/codd.json"
         data = json.loads(config.read_text(encoding="utf-8"))
