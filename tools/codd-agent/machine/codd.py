@@ -35,7 +35,8 @@
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
     accept              変える段で計画に無いファイルを理由付きで足した分を、利用者が認めたと控える（計画は書き直さない）
     lint [--since 日]  本流とは別の点検。リポジトリ全体の食い違い（壊れたパス・文書の書式・写したテストの結果・
-                        テスト・codd を通らなかった変更）を探し、本流に渡す「やりたいこと」の 1 行にする。何も直さない
+                        テスト・codd を通らなかった変更・codd を通ったあとに変わった変更）を探し、
+                        本流に渡す「やりたいこと」の 1 行にする。何も直さない
 
 置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
 作業ファイルと graphify のグラフは `<リポジトリ>/.codd/` に置く。依存は python3 と git のみ
@@ -6185,7 +6186,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if problems:
         return 1
     # 通ったときの中身を控える。report はこれと今を比べ、通ったあとに変わっていないかを確かめる。
-    write_text(ctx.data / "applied.json", json.dumps(applied_state(ctx), ensure_ascii=False, indent=2) + "\n")
+    # 変えたファイルの git の blob も控え、record が記録に残す（lint がコミットされた中身と突き合わせる）。
+    write_text(ctx.data / "applied.json",
+               json.dumps({**applied_state(ctx), APPLIED_BLOBS: applied_blobs(ctx)}, ensure_ascii=False, indent=2) + "\n")
     refs_note = ",".join(a.changed) or "none"
     print(f"OK own={'changed' if a.own_touched else 'same'} refs={refs_note}"
           + (f" impact={len(measured)} files（{DATA_DIRNAME}/impact-after.md）" if measured else ""))
@@ -6285,6 +6288,49 @@ def applied_state(ctx: Ctx) -> dict:
     return {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
 
 
+APPLIED_BLOBS = "blobs"
+BLOB_LEN = 12            # 記録に書く blob の長さ（読める長さで、取り違えない長さ）
+BLOB_DELETED = "削除"
+APPLIED_HEADING = "### 検査を通った中身"
+
+
+def blob_hashes(side: Side, rels: list[str]) -> dict[str, str]:
+    """ファイル → git の blob（`git hash-object`。git のフィルタを通すので、コミットされる中身と同じ）。消えていれば削除。"""
+    present = [rel for rel in rels if (side.path / rel).is_file()]
+    out = {rel: BLOB_DELETED for rel in rels}
+    if present:
+        rc, text = run(["git", "hash-object", "--", *present], side.path, GIT_TIMEOUT)
+        hashes = text.split() if rc == 0 else []
+        if len(hashes) == len(present):
+            out.update({rel: h[:BLOB_LEN] for rel, h in zip(present, hashes)})
+        else:
+            out = {rel: h for rel, h in out.items() if h == BLOB_DELETED}   # 測れなかったものは書かない
+    return out
+
+
+def applied_blobs(ctx: Ctx) -> dict[str, dict[str, str]]:
+    """変えたあとの検査を通ったときに、この回で変わったファイルの中身（側ごと。テストの出力の写しなども含む）。"""
+    try:
+        before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for key, side, snap in ((k, s, before.get("refs", {}).get(k, {}) if k else before.get("own", {}))
+                            for k, s in all_sides(ctx)):
+        changed = sorted(p for p in changed_since(side, snap) if side.has(p))
+        if changed:
+            out[key] = blob_hashes(side, changed)
+    return out
+
+
+def applied_lines(ctx: Ctx, applied: dict | None) -> list[str]:
+    """記録の「結果」に書く、検査を通った中身（lint がコミットされた中身と突き合わせる）。"""
+    blobs = (applied or {}).get(APPLIED_BLOBS) or {}
+    rows = [f"- `{side_label(ctx, key, rel)}` — {h}" for key, side in all_sides(ctx)
+            for rel, h in sorted((blobs.get(key) or {}).items())]
+    return ["", APPLIED_HEADING, "", *rows] if rows else []
+
+
 def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     """計画のファイルごとに変えたかと、測った影響範囲、今回やらないことをまとめる。モデルの記憶に頼らず報告する。"""
     a = load_applied(ctx)
@@ -6302,7 +6348,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         state = "利用者がやめた（" + ("変えた分は残している" if left else "変えた分は戻した") + "）"
     elif applied is None:
         state = "まだ通っていない（変えたあとの検査からやり直してください）"
-    elif applied == now:
+    elif {k: v for k, v in applied.items() if k != APPLIED_BLOBS} == now:
         state = "通った"
     else:
         state = "通ったあとに、さらに変わっている（変えたあとの検査をもう一度通してください）"
@@ -6925,6 +6971,10 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
     """
     if not ctx.plan.is_file():
         return None
+    try:
+        applied = json.loads((ctx.data / "applied.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        applied = None
     report = ctx.data / "report.md"
     report.unlink(missing_ok=True)   # 前に出した報告を、この回の結果に取り違えない
     sink = io.StringIO()
@@ -6937,6 +6987,8 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
         report.unlink()   # 次の回の記録に、この回の結果を混ぜない
     else:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
+    if applied is not None and same_plan_baseline(ctx):
+        result += applied_lines(ctx, applied)
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
     for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN):
@@ -7145,38 +7197,98 @@ def plan_records(ctx: Ctx) -> str:
     return "\n".join(text)
 
 
-def lint_bypassed(ctx: Ctx, since: str) -> list[tuple[str, str]]:
-    """codd を置いたあと、期間のうちにコミットされた変更で、計画の記録に出てこないファイル（codd を通らずに入った変更）。"""
+_APPLIED_ROW = re.compile(r"^- `([^`]+)` — ([0-9a-f]{%d}|%s)$" % (BLOB_LEN, BLOB_DELETED))
+
+
+def applied_records(records: str) -> dict[str, set[str]]:
+    """記録の「検査を通った中身」から、ファイル → codd の検査を通った中身（blob の集まり）。
+
+    参照先の名前は呼ぶ側のリポジトリで違うので、`名前:パス` は名前を外したパスでも引けるようにする。
+    """
+    out: dict[str, set[str]] = {}
+    inside = False
+    for line in records.splitlines():
+        if line.startswith("#"):
+            inside = line.strip() == APPLIED_HEADING
+            continue
+        m = _APPLIED_ROW.match(line.strip()) if inside else None
+        if m:
+            label, h = m.groups()
+            keys = {label}
+            if re.match(r"^[A-Za-z0-9_.-]+:", label):
+                keys.add(label.split(":", 1)[1])
+            for k in keys:
+                out.setdefault(k, set()).add(h)
+    return out
+
+
+def committed_blobs(side: Side, commit: str, rels: list[str]) -> dict[str, str]:
+    """コミットの時点のファイルの中身（blob。無ければ削除）。"""
+    rc, out = run(["git", "-c", "core.quotepath=false", "ls-tree", "-r", commit, "--", *rels], side.path, GIT_TIMEOUT)
+    found = {}
+    for line in out.splitlines() if rc == 0 else []:
+        meta, _, path = line.partition("\t")
+        if path and len(meta.split()) == 3:
+            found[path] = meta.split()[2][:BLOB_LEN]
+    return {rel: found.get(rel, BLOB_DELETED) for rel in rels}
+
+
+def lint_bypassed(ctx: Ctx, since: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """codd を置いたあと、期間のうちにコミットされた変更のうち、codd を通らなかったものと、通ったあとに変わったもの。
+
+    通らなかった: 計画の記録に出てこないファイル。通ったあとに変わった: 記録に検査を通った中身（blob）があるのに、
+    コミットされた中身がそのどれとも違うファイル（コミットする前の手直しも、あとで codd を通さずに変えたものも）。
+    中身の無い前の版の記録は、今までどおりパスが出てくれば通ったとみなす。
+    """
     records = plan_records(ctx)
-    out = []
+    applied = applied_records(records)
+    bypassed: list[tuple[str, str]] = []
+    drifted: list[tuple[str, str]] = []
     for key, side in all_sides(ctx):
         # codd を置いたコミットより前は、codd を通りようがないので数えない。
         placed = run(["git", "log", "--format=%H", "--diff-filter=A", "--", f"{MACHINE_REL}/{CONFIG_NAME}"],
                      side.path, GIT_TIMEOUT)[1].split()
         rng = [f"{placed[-1]}..HEAD"] if placed else []
         rc, log = run(["git", "-c", "core.quotepath=false", "log", *rng, f"--since={since}", "--no-merges",
-                       "--date=short", "--format=%x00%h %ad", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
+                       "--date=short", "--format=%x00%H %h %ad", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
         seen: set[str] = set()
         for chunk in (log.split("\0") if rc == 0 else []):
             first, *names = chunk.strip().splitlines() or [""]
-            labels = []
+            sha, _, first = first.partition(" ")
+            rels = []
             for rel in names:
                 rel = rel.strip()
-                if not rel or rel in seen or not side.has(rel) or rel in records:
+                if rel and rel not in seen and side.has(rel):
+                    seen.add(rel)   # 新しいコミットから見るので、同じファイルは最後に変えたコミットで判断する
+                    rels.append(rel)
+            known = [rel for rel in rels if rel in applied]
+            blobs = committed_blobs(side, sha, known) if known else {}
+            groups: dict[str, list[str]] = {"bypassed": [], "drifted": []}
+            for rel in rels:
+                if rel in applied:
+                    if blobs.get(rel) in applied[rel]:
+                        continue   # codd の検査を通った中身がそのままコミットされた
+                    kind = "drifted"
+                elif rel in records:
                     continue
-                seen.add(rel)   # 新しいコミットから見るので、同じファイルは最後に変えたコミットで挙げる
-                labels.append(side_label(ctx, key, rel))
+                else:
+                    kind = "bypassed"
+                label = side_label(ctx, key, rel)
+                groups[kind].append(label)
                 gone = "（いまは無い）" if not (side.path / rel).exists() else ""
-                out.append((f"{labels[-1]}{gone} — {first}", ""))
-            if labels:   # やりたいことはコミットごとに 1 行
-                shown = ", ".join(f"`{x}`" for x in labels[:5]) + (f" ほか {len(labels) - 5} 件" if len(labels) > 5 else "")
-                out[-1] = (out[-1][0], f"codd を通らずに入った変更（{first}: {shown}）に合わせて、"
-                                       "コード・文書・テストの食い違いを確かめたい")
-    return out
+                (drifted if kind == "drifted" else bypassed).append((f"{label}{gone} — {first}", ""))
+            for kind, out, what in (("bypassed", bypassed, "codd を通らずに入った変更"),
+                                    ("drifted", drifted, "codd を通ったあとに変わった変更")):
+                labels = groups[kind]
+                if labels:   # やりたいことはコミットごとに 1 行
+                    shown = ", ".join(f"`{x}`" for x in labels[:5]) + (f" ほか {len(labels) - 5} 件" if len(labels) > 5 else "")
+                    out[-1] = (out[-1][0], f"{what}（{first}: {shown}）に合わせて、"
+                                           "コード・文書・テストの食い違いを確かめたい")
+    return bypassed, drifted
 
 
 LINT_SECTIONS = (("壊れたパス", "paths"), ("文書の書式", "formats"), ("テストの結果を写した文書", "evidence"),
-                  ("テスト", "tests"), ("codd を通らなかった変更", "bypassed"))
+                  ("テスト", "tests"), ("codd を通らなかった変更", "bypassed"), ("codd を通ったあとに変わった変更", "drifted"))
 LINT_SHOWN = 30
 
 
@@ -7184,7 +7296,7 @@ def cmd_lint(ctx: Ctx, args: argparse.Namespace) -> int:
     found = {"paths": lint_paths(ctx), "formats": lint_formats(ctx),
              "tests": [] if args.no_test else lint_tests(ctx)}
     found["evidence"] = lint_evidence(ctx, not args.no_test)     # テストのあとに見る（テストが evidence を書き直す）
-    found["bypassed"] = lint_bypassed(ctx, args.since)
+    found["bypassed"], found["drifted"] = lint_bypassed(ctx, args.since)
     lines = [f"# 点検の結果（{time.strftime('%Y-%m-%d %H:%M')}。変更は {args.since} から）", ""]
     for title, key in LINT_SECTIONS:
         if key == "tests" and args.no_test:
