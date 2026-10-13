@@ -23,6 +23,7 @@ const { EventEmitter } = require('events');
 const store = require('../store');
 const { call } = require('./server');
 const { priorityOf } = require('./queue');
+const { headChars } = require('../text');
 
 const WATCHDOG_MS = 90 * 1000;
 const TICK_MS = 15 * 1000;
@@ -115,10 +116,10 @@ class Requester extends EventEmitter {
       state: 'open',
       posted_by: this.node,
       posted_at: nowIso(),
-      title: String(input.title || String(input.goal || '').split('\n')[0]).slice(0, 60),
+      title: headChars(String(input.title || String(input.goal || '').split('\n')[0]), 60),
       // 引き受ける人が中身を見て決められるよう、利用者が書いた依頼文だけを短く添える
       // （合成した本文（goal）は履歴も含むので配らない。全文は claim した人にだけ渡す）
-      summary: String(input.summary || input.title || '').slice(0, MAX_SUMMARY),
+      summary: headChars(String(input.summary || input.title || ''), MAX_SUMMARY),
       priority: priorityOf(input.priority),
       to: targetOf(input.to),
       mode: input.mode === 'write' ? 'write' : 'read',
