@@ -70,18 +70,24 @@ node "$F" export 'https://www.figma.com/design/<FILE_KEY>/<NAME>?node-id=1-2' --
 
 ## プロキシのある環境
 
-Node.js の `fetch` は、既定では `HTTPS_PROXY` を見ない。プロキシ経由で Figma に出る環境では、
-Node 24 の `NODE_USE_ENV_PROXY=1` を設定する。プロキシが TLS を中継して独自の証明書を使うなら、
-その CA 証明書を `NODE_EXTRA_CA_CERTS` に指定する。`doctor` は `HTTPS_PROXY` があって
-`NODE_USE_ENV_PROXY` が無いときに注意を出す。
+環境変数 `http_proxy` / `https_proxy`（`no_proxy` も）が設定されていれば、CLI はそのプロキシを使う。
+名前の大文字小文字は区別しない（`HTTPS_PROXY`・`https_proxy`・`Https_Proxy` のどれでもよい）。
+同じ名前が複数の綴りで設定されていれば大文字の綴りを優先する。`doctor` がプロキシの行に使う先を表示する
+（`user:pass@` のような認証情報は表示しない）。
+
+Node.js の fetch は、そのままでは環境変数のプロキシを使わない。CLI はプロキシの指定を見つけると、
+綴りを大文字にそろえ `NODE_USE_ENV_PROXY=1` を付けて自分自身を起動し直す（利用者が設定する必要はない）。
+Node 24 のこの機能は 24.5 以降にある。
+
+プロキシが TLS を中継して独自の証明書を使うなら、その CA 証明書を `NODE_EXTRA_CA_CERTS` に指定する。
 
 ```powershell
-$env:NODE_USE_ENV_PROXY = '1'
+$env:https_proxy = 'http://proxy.example.co.jp:8080'
 $env:NODE_EXTRA_CA_CERTS = 'C:\path\to\corp-ca.pem'   # 必要なときだけ
 ```
 
 ```bash
-export NODE_USE_ENV_PROXY=1
+export https_proxy=http://proxy.example.co.jp:8080
 export NODE_EXTRA_CA_CERTS=/path/to/corp-ca.pem       # 必要なときだけ
 ```
 

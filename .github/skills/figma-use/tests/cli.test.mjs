@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
@@ -250,4 +252,71 @@ test('Code Connect のファイルからコンポーネントの対応を読む'
   const r = await run(['context', URL_, '--code-connect-dir', 'src', '--out', 'o'], { apiBase: mock.apiBase, cwd: work });
   assert.equal(r.code, 0, r.stderr);
   assert.match(fs.readFileSync(path.join(work, 'o', 'normalized', '1-2.md'), 'utf8'), /Button（code-connect）/);
+});
+
+// 記録付きの転送プロキシ。Node.js の fetch は http の宛先にも CONNECT でトンネルを張る。
+async function startProxy({ answer = true } = {}) {
+  const seen = [];
+  const sockets = new Set();
+  const proxy = http.createServer((req, res) => {
+    seen.push(req.url);
+    res.writeHead(502).end();
+  });
+  proxy.on('connect', (req, sock, head) => {
+    seen.push(`CONNECT ${req.url}`);
+    sockets.add(sock);
+    if (!answer) return; // 応答しないプロキシ
+    const [host, port] = req.url.split(':');
+    const up = net.connect(Number(port), host, () => {
+      sock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      up.write(head);
+      up.pipe(sock);
+      sock.pipe(up);
+    });
+    sockets.add(up);
+    up.on('error', () => sock.destroy());
+    sock.on('error', () => up.destroy());
+  });
+  await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+  return {
+    url: `http://user:secret@127.0.0.1:${proxy.address().port}`,
+    seen,
+    close: () => {
+      for (const s of sockets) s.destroy();
+      proxy.closeAllConnections();
+      return new Promise((r) => proxy.close(r));
+    },
+  };
+}
+
+test('Http_Proxy のように綴りが混ざっていても、設定されたプロキシを経由する', async () => {
+  const proxy = await startProxy();
+  try {
+    const r = await run(['inspect', FILE_KEY], { apiBase: mock.apiBase, env: { Http_Proxy: proxy.url } });
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(proxy.seen.some((u) => u.startsWith('CONNECT 127.0.0.1:')), 'プロキシを通っていない');
+    const doctor = await run(['doctor'], { env: { FIGMA_TOKEN: TOKEN, hTtP_pRoXy: proxy.url } });
+    assert.match(doctor.stdout, /\[OK\] プロキシ: http: http:\/\/127\.0\.0\.1:/);
+    assert.doesNotMatch(doctor.stdout, /secret/);
+  } finally {
+    await proxy.close();
+  }
+});
+
+test('応答しないプロキシでも --timeout で打ち切って終わる', async () => {
+  const proxy = await startProxy({ answer: false });
+  try {
+    const started = Date.now();
+    const r = await run(['inspect', FILE_KEY, '--timeout', '1', '--retries', '0'], { apiBase: mock.apiBase, env: { HTTPS_PROXY: proxy.url, http_proxy: proxy.url } });
+    assert.equal(r.code, 7, r.stderr);
+    assert.match(r.stderr, /タイムアウト/);
+    assert.ok(Date.now() - started < 10_000, '打ち切られずに待ち続けた');
+  } finally {
+    await proxy.close();
+  }
+});
+
+test('プロキシの指定が無ければ直接つなぐ', async () => {
+  const r = await run(['doctor'], { env: { FIGMA_TOKEN: TOKEN } });
+  assert.match(r.stdout, /プロキシ: なし/);
 });

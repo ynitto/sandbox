@@ -11,6 +11,7 @@ import { connectionsWritePath, DEFAULT_API_BASE, resolveCredentials } from './mo
 import { ApiError, EXIT, FigmaClient } from './modules/http.mjs';
 import { buildMapping } from './modules/mapping.mjs';
 import { CLI_VERSION, assets, context, exportAll, indexNodes, inspect, renderImages } from './modules/ops.mjs';
+import { CHILD_MARK, describeProxy, readProxyEnv, reexecWithProxy } from './modules/proxy.mjs';
 import { renderInspect } from './modules/render.mjs';
 import { InputError, normalizeNodeIds, parseFigmaInput, sanitizeSourceUrl } from './modules/url.mjs';
 
@@ -220,9 +221,13 @@ async function cmdDoctor(values, io) {
   lines.push(`[情報] 読んだ connections.yaml: ${creds.files.length ? creds.files.join(', ') : 'なし'}`);
   lines.push(`[情報] connections.yaml を置く場所（ワークスペース優先）: ${connectionsWritePath()}`);
   if (creds.apiBase !== DEFAULT_API_BASE) lines.push(`[注意] API の接続先を変更しています: ${creds.apiBase}`);
-  const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
-  if (proxy && process.env.NODE_USE_ENV_PROXY !== '1') {
-    lines.push('[注意] HTTPS_PROXY が設定されていますが、Node.js はそのままではプロキシを使いません。経由させるには NODE_USE_ENV_PROXY=1 を設定してください');
+  const proxy = readProxyEnv();
+  if (proxy.HTTPS_PROXY || proxy.HTTP_PROXY) {
+    const used = process.env[CHILD_MARK] === '1' && process.env.NODE_USE_ENV_PROXY === '1';
+    const shown = [proxy.HTTPS_PROXY && `https: ${describeProxy(proxy.HTTPS_PROXY)}`, proxy.HTTP_PROXY && `http: ${describeProxy(proxy.HTTP_PROXY)}`, proxy.NO_PROXY && `除外: ${proxy.NO_PROXY}`].filter(Boolean).join(' / ');
+    lines.push(used ? `[OK] プロキシ: ${shown}` : `[NG] プロキシの指定（${shown}）を Node.js に渡せていません`);
+  } else {
+    lines.push('[情報] プロキシ: なし（http_proxy / https_proxy が未設定）');
   }
   const cacheDir = values['cache-dir'] || defaultCacheDir();
   lines.push(`[情報] キャッシュ: ${cacheDir}${fs.existsSync(cacheDir) ? '' : '（未作成）'}`);
@@ -416,7 +421,14 @@ export async function main(argv) {
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
-  main(process.argv.slice(2)).then((code) => {
-    process.exitCode = code;
-  });
+  // http_proxy / https_proxy があれば、Node.js の fetch が使える形にそろえて起動し直す。
+  const code = reexecWithProxy(fileURLToPath(import.meta.url), process.argv.slice(2));
+  if (code !== null) process.exitCode = code;
+  else {
+    main(process.argv.slice(2)).then((c) => {
+      process.exitCode = c;
+      // 打ち切った通信の接続が残っていても終わる（残っていなければ、この時計を待たずに終わる）。
+      setTimeout(() => process.exit(c), 2000).unref();
+    });
+  }
 }

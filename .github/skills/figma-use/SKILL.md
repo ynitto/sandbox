@@ -96,7 +96,7 @@ figma:
 | 終了コード 3（401・403） | トークンの期限・スコープ（`file_content:read`）・ファイルの共有権限を確認する。`F doctor` で出所を見る |
 | 終了コード 4（404） | URL の file key・node-id を確かめる。branch の URL なら branch のまま渡す |
 | 終了コード 5（429） | 時間を置く。キャッシュがある取得は `--refresh` を外せば API を呼ばない。表示された席の種別（Collab・View は上限が低い）をユーザーに伝える |
-| 終了コード 7（接続エラー） | プロキシのある環境なら `NODE_USE_ENV_PROXY=1`（doctor が注意を出す）。それでも届かなければ、その環境から api.figma.com へ出られないことをユーザーに伝え、手元で `export` した成果物を渡してもらう |
+| 終了コード 7（接続エラー） | `F doctor` でプロキシの行を見る（http_proxy / https_proxy を大文字小文字を問わず読み、設定があれば使う）。それでも届かなければ、その環境から api.figma.com へ出られないことをユーザーに伝え、手元で `export` した成果物を渡してもらう |
 | 終了コード 6 | `missing-information.md` の「取得失敗」を見て、対象を絞って再実行する |
 | Figma Make・FigJam・Slides の URL | 対象外として拒否される。デザインファイル（/design/）の URL をもらう |
 

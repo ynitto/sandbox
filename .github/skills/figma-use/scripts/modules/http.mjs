@@ -47,6 +47,21 @@ export function hintFor(status) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 期限付きで待つ。fetch の signal だけでは、プロキシが CONNECT に応答しないときなどに
+ * 打ち切られないことがあるため、こちらでも時間切れにする。
+ */
+function withDeadline(promise, ms, controller) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(Object.assign(new Error('timeout'), { name: 'TimeoutError' }));
+    }, ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 /** Retry-After（秒 or HTTP 日付）をミリ秒にする。読めなければ null。 */
 export function parseRetryAfter(value, now = Date.now()) {
   if (value == null || value === '') return null;
@@ -161,8 +176,13 @@ export class FigmaClient {
       attempt += 1;
       this.calls += 1;
       let res;
+      let body = null;
+      const controller = new AbortController();
+      const within = (p) => withDeadline(p, this.timeoutMs, controller);
       try {
-        res = await this.fetchImpl(url, { headers, signal: AbortSignal.timeout(this.timeoutMs) });
+        res = await within(this.fetchImpl(url, { headers, signal: controller.signal }));
+        // 本文の読み取りも同じ期限と再試行の対象にする。
+        if (res.ok) body = binary ? Buffer.from(await within(res.arrayBuffer())) : await within(res.text());
       } catch (e) {
         const reason = e?.name === 'TimeoutError' ? `タイムアウト（${this.timeoutMs / 1000} 秒）` : `接続エラー（${e?.cause?.code || e?.cause?.message || e?.message || e}）`;
         if (attempt <= this.maxRetries) {
@@ -173,18 +193,11 @@ export class FigmaClient {
         }
         throw new ApiError(`${endpoint}: ${reason}`, { exitCode: EXIT.NETWORK, endpoint, hint: 'ネットワークとプロキシ設定を確認してください。' });
       }
-      if (res.ok) {
-        if (binary) {
-          const bytes = Buffer.from(await res.arrayBuffer());
-          return { bytes, contentType: res.headers.get('content-type') || '' };
-        }
-        return { text: await res.text() };
-      }
+      if (res.ok) return binary ? { bytes: body, contentType: res.headers.get('content-type') || '' } : { text: body };
       const status = res.status;
       let detail = '';
       try {
-        const body = await res.text();
-        const parsed = JSON.parse(body);
+        const parsed = JSON.parse(await within(res.text()));
         detail = parsed.err || parsed.message || '';
       } catch {
         // 本文が JSON でなければ詳細なし。

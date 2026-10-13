@@ -14,6 +14,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - Node.js 24 の標準モジュールだけで動く CLI（doctor / inspect / context / screenshot / assets / export）。
   トークンは connections.yaml の `figma` か環境変数 `FIGMA_TOKEN` から読み、引数・ログ・成果物に出さない
 - タイムアウト・有限回の再試行・Retry-After・キャッシュ（`--refresh` / `--check-update`）・部分失敗の終了コードを持つ
+- 環境変数 `http_proxy` / `https_proxy` / `no_proxy`（大文字小文字を問わない）が設定されていれば、そのプロキシを経由する
 - React の設計（既存部品への対応付け・Props・Hooks）はこのスキルの範囲外とし、受け渡しの項目だけを定める
 - Figma Make・FigJam・Slides などの URL と、Figma への書き込みは対象外
 
