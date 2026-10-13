@@ -3710,6 +3710,40 @@ class CoddTest(unittest.TestCase):
         decided = new.read_text(encoding="utf-8").split("## 確認と判断", 1)[1].split("## 結果", 1)[0]
         self.assertEqual(decided.count("OK（計画で進める）"), 1)   # 前の回の答えを混ぜない
 
+    def test_unlogged_answers_are_recorded_from_where_the_run_went(self) -> None:
+        # 確認の答え（decide）を控え忘れても、進んだ先から控えて記録に残す（NG で直した・OK で変える段に来た）。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        plan = self.impl / PLAN
+        plan.write_text(plan.read_text(encoding="utf-8").replace("hello にログを足す。", "hello にログを 1 行足す。"),
+                        encoding="utf-8")
+        self.assert_plan_ok()                     # decide NG を呼ばずに直して検査し直した
+        self.assert_plan_ok()                     # 同じ計画の検査をもう一度通しても、答えを重ねない
+        self.assertEqual(self.run_pa(self.impl, "batch").returncode, 0)   # decide OK を呼ばずに変える段へ来た
+        self.run_pa(self.impl, "batch")
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        decided = plan.read_text(encoding="utf-8").split("## 確認と判断", 1)[1].split("## 結果", 1)[0]
+        self.assertRegex(decided, r"NG（計画を直す）: 答えの控えが無かった.*\n- [-0-9: ]+ OK（計画で進める）: 答えの控えが無かった")
+        self.assertEqual(decided.count("（計画"), 2)
+        # 次の回の計画では、前の回の印から答えを推し量らない
+        self.run_pa(self.impl, "draft", "--name", "next")
+        new = next((self.impl / ".plans").glob("*-next.md"))
+        new.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.read_up(self.impl)
+        self.assert_plan_ok()
+        self.assertFalse((self.impl / ".codd/decisions.json").exists())
+
+    def test_stopped_run_is_recorded_as_stopped_without_a_logged_answer(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "record", "--stop")   # decide STOP を呼ばずに、やめたときの段に来た
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = (self.impl / PLAN).read_text(encoding="utf-8")
+        self.assertIn("STOP（やめる）: 答えの控えが無かった", text)
+        self.assertIn("- 変えたあとの検査: 利用者がやめた", text)
+
     def test_draft_keeps_the_plan_while_the_run_goes_on(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()

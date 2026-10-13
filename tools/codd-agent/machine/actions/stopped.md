@@ -8,10 +8,10 @@
 次を実行し、出力をそのまま利用者へ伝えてください。
 
 ```bash
-python3 .statemachine/codd/codd.py record
+python3 .statemachine/codd/codd.py record --stop
 ```
 
-`record` は終わりの報告を出し、やめたことも含めて計画（`.plans/日時-名前.md`）を判断の記録として残します
+`record --stop` は終わりの報告を出し、やめたことも含めて計画（`.plans/日時-名前.md`）を判断の記録として残します
 （`report` だけで終えない）。最後に出る記録のパスも伝えます。
 
 - 計画の確認でやめたときは、まだ何も変えていないと書く。止まったところでやめたときは、変えた分を残したか、

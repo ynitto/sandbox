@@ -23,7 +23,7 @@
     batch               段に分けて変えるとき、今の段で変えるファイルを示す
     draft --name 名前   計画のひな形を .plans/日時-名前.md に置く（名前は英語の短い名前。進めている計画があれば残す）。
                         見出しごとに書き込ませ、全文を一度に書かせない
-    record              1 回の終わりに、報告（report）を出し、計画へ確認の答えと結果を書き足して記録として残す（要らない情報は除く）
+    record [--stop]     1 回の終わりに、報告（report）を出し、計画へ確認の答えと結果を書き足して記録として残す（要らない情報は除く）
     decide 答え         確認・相談での利用者の答え（OK / NG / PLAN / APPLY / STOP）と指摘を控える。終わりの報告で計画の記録に書く
     summary             計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
@@ -5009,6 +5009,12 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     if not ctx.plan.is_file():
         print_problems(ctx, "plan", [NO_PLAN])
         return 1
+    if plan_unconfirmed(ctx):   # 通った計画を直して検査し直す
+        try:
+            phase = json.loads((ctx.data / PROBLEMS_NAME).read_text(encoding="utf-8")).get("phase")
+        except (OSError, ValueError, AttributeError):
+            phase = None
+        infer_answer(ctx, "PLAN" if phase == "apply" else "NG")
     merged = merge_legacy_headings(ctx.plan.read_text(encoding="utf-8"))
     if merged != ctx.plan.read_text(encoding="utf-8"):
         ctx.plan.write_text(merged, encoding="utf-8")   # 前の版の 2 つの見出しを「従う手順」にまとめて書き直す
@@ -5883,6 +5889,8 @@ def print_hand_over(ctx: Ctx, batches: list, cur: int) -> None:
 
 def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
     """今の段で変えるファイルと、変えるときに使うスキルの手順を示す（apply が段ごとに読む）。"""
+    if not plan_unconfirmed(ctx):
+        infer_answer(ctx, "OK")
     batches, done = load_batches(ctx)
     cur = min(done, len(batches) - 1) if batches else 0
     worker = args.worker
@@ -6812,6 +6820,29 @@ def load_decisions(ctx: Ctx) -> list[dict]:
         return []
 
 
+def log_decision(ctx: Ctx, answer: str, note: str) -> None:
+    log = load_decisions(ctx)
+    log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": answer, "note": note})
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+UNLOGGED = "答えの控えが無かったので、進んだ先から控えた"
+
+
+def infer_answer(ctx: Ctx, answer: str) -> None:
+    """検査を通った計画から先へ進んだのに、利用者の答えが控えられていなければ、進んだ先から控える（記録の取りこぼしを防ぐ）。
+
+    変える段に来たなら OK、通った計画を直して検査し直すなら NG（変えたあとに止まったのなら PLAN）。
+    人の承認が要るファイルを変えてよい印（approved-plan）は書かない。それは `decide OK` だけが書く。"""
+    passed, log = ctx.data / PASSED_PLAN, ctx.data / DECISIONS_NAME
+    if not passed.is_file() or (log.is_file() and log.stat().st_mtime >= passed.stat().st_mtime):
+        return
+    if not same_plan_baseline(ctx):
+        return   # 前の回の印。この計画はまだ通っていない
+    log_decision(ctx, answer, UNLOGGED)
+
+
 def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     """利用者の答えを控える。計画の本文は練り直しで書き換わるので、答えは別に持ち、報告で記録に書く。"""
     log = load_decisions(ctx)
@@ -6823,8 +6854,7 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
         held = plan_protected(ctx, sections(plan_text_for_checks(ctx), PLAN_HEADINGS)[1])
         if held:
             note = "; ".join(filter(None, [note, "承認したファイル: " + ", ".join(protected_label(k, r) for k, r in held)]))
-    log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": args.answer, "note": note})
-    (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    log_decision(ctx, args.answer, note)
     if args.answer in ("NG", "STOP"):
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)   # 退けた計画では変えさせない
         (ctx.data / APPROVED_PLAN).unlink(missing_ok=True)
@@ -6905,6 +6935,8 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
+    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN):
+        (ctx.data / name).unlink(missing_ok=True)   # 閉じた回の印を、次の回に持ち越さない
     # この回より前の、結果の見出しが無い計画は `draft --new` で捨てたもの（戻されて残ったもの）。
     # 残すと次の回にそれが「進めている計画」になるので消す。
     for p in stale:
@@ -6915,14 +6947,27 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
     return record
 
 
+def same_plan_baseline(ctx: Ctx) -> bool:
+    """変える前の印（before.json）が、いま進めている計画のものか（前の回の印を取り違えない）。"""
+    try:
+        before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(before, dict) and before.get("plan") == plan_rel(ctx)
+
+
 def run_ended(ctx: Ctx) -> bool:
     """進めている計画の回が、記録を書かずに終わっているか（変えたあとの検査を通った・利用者がやめた）。"""
     decisions = load_decisions(ctx)
-    return (ctx.data / "applied.json").is_file() or bool(decisions) and decisions[-1].get("answer") == "STOP"
+    applied = (ctx.data / "applied.json").is_file() and same_plan_baseline(ctx)
+    return applied or bool(decisions) and decisions[-1].get("answer") == "STOP"
 
 
 def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
     """1 回の実行の終わり（done・stopped）に、報告を出し、計画を判断の記録として残す。"""
+    decisions = load_decisions(ctx)
+    if args.stop and ctx.plan.is_file() and not (decisions and decisions[-1].get("answer") == "STOP"):
+        log_decision(ctx, "STOP", UNLOGGED)   # やめた回を「まだ通っていない」と記録しない
     record = close_plan(ctx)
     if not record:
         print(NO_PLAN, file=sys.stderr)
@@ -7180,7 +7225,8 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
     sub.add_parser("retro", help="終わりの振り返りで実行するプロンプトと材料を示す（codd.json の retro。無ければ NONE）")
-    sub.add_parser("record", help="終わりの報告を出し、計画に確認の答えと結果を書き足して判断の記録として残す（終わりに呼ぶ）")
+    rc = sub.add_parser("record", help="終わりの報告を出し、計画に確認の答えと結果を書き足して判断の記録として残す（終わりに呼ぶ）")
+    rc.add_argument("--stop", action="store_true", help="利用者がやめた回として残す（stopped から呼ぶ）")
     de = sub.add_parser("decide", help="確認・相談での利用者の答えを控える（終わりの報告で計画の記録に書く）")
     de.add_argument("answer", choices=list(DECISIONS), help="OK / NG（確認）か PLAN / APPLY / STOP（止まったときの相談）")
     de.add_argument("--note", default="", help="利用者の指摘や指示（そのまま）")
