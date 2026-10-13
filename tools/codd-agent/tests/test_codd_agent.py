@@ -1020,7 +1020,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("「未判断」として書き足しました", r.stderr)
         self.assertIn("docs/map.md", r.stderr)
-        self.assertIn("- 未判断: docs/map.md（自分の変更案のファイルとパスでつながっている）",
+        self.assertIn("- 未判断: docs/map.md（自分の変えるファイルとパスでつながっている）",
                       (self.impl / PLAN).read_text(encoding="utf-8"))
         self.assertIn("docs/map.md", (self.impl / ".codd/trace.md").read_text(encoding="utf-8"))
         self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
@@ -2634,7 +2634,36 @@ class CoddTest(unittest.TestCase):
         self.write_plan(self.with_tests(PLAN_ALIGNED, "なし"))
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("## テストの変更案 が「なし」です", r.stderr)
+        self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
+
+    def test_tests_section_is_needed_when_only_the_impact_fixes_a_file(self) -> None:
+        # 影響範囲で直すだけのファイルも変える。テストの判断は同じく要る。
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す", "なし")
+        plan = plan.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/app.py — `hello` の中でログを出す")
+        self.write_plan(self.with_tests(plan, "なし"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
+
+    def test_files_fixed_in_the_impact_are_measured_like_planned_ones(self) -> None:
+        # 影響範囲で直すファイルも変える。そのファイルと対になるテストを、計画のときに測る（変えたあとまで待たない）。
+        self.add_caller()
+        commit(self.impl, {"tests/test_use.py": "import use\n"}, "tests")
+        plan = PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/use.py — ログに合わせて表示を直す")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("- tests/test_use.py — 未判断", (self.impl / PLAN).read_text(encoding="utf-8"))
+
+    def test_a_non_test_file_is_not_a_test_decision(self) -> None:
+        # テストのファイルでないものを挙げても、テストの判断に数えない。
+        self.write_plan(self.with_tests(PLAN_ALIGNED, "- src/app.py — ログが出るか確かめる"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\n"}, "tests")
+        self.write_plan(self.with_tests(PLAN_ALIGNED, "- tests/test_app.py — `hello` がログを出すか確かめる"))
+        self.assert_plan_ok()
 
     def test_apply_catches_tests_hit_by_names_changed_beyond_the_plan(self) -> None:
         commit(self.impl, {"tests/test_util.py": "from src.app import greet\n"}, "tests")

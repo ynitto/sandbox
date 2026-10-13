@@ -2615,9 +2615,9 @@ def terms_from_plan(bodies: dict[str, str]) -> list[str]:
 
 
 def own_terms_from_plan(bodies: dict[str, str]) -> list[str]:
-    """自分の変更で動く名前（自分の変更案で `…` に囲んだもの）。"""
+    """自分の変更で動く名前（自分の変更案と、影響範囲の直し方で `…` に囲んだもの）。"""
     body = bodies.get("## 自分の変更案", "")
-    return [] if is_none(body) else name_terms(body)
+    return unique(([] if is_none(body) else name_terms(body)) + name_terms(impact_fix_lines(bodies)))
 
 
 _CALLABLE_DEFS = (_DIFF_TERMS[0], _DIFF_TERMS[1], _DIFF_TERMS[2], _DIFF_TERMS[4])
@@ -3592,7 +3592,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
 
 def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> list[str]:
     """計画で変えるファイルとつながっている（互いにパスで指している）ほかの側のファイルのうち、計画に無いものを pending へ。"""
-    own_plan = own_planned(ctx, bodies)
+    own_plan = plan_changes(ctx, bodies)[""]
     planned, _ = planned_refs(ctx, bodies)
     ref_links = sorted(h for h in linked(ctx, "", own_plan) if h[0]) if own_plan else []
     cited = cited_anywhere(ctx, bodies)
@@ -3601,12 +3601,12 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> list[str]:
     own_links = sorted({rel for name, rels in planned.items() for k, rel in linked(ctx, name, rels) if not k})
     missing_own = [p for p in own_links if not covered(p, listed)]
     write_trace(ctx, "trace.md", "計画で変えるファイルとつながっているファイル（パスで指し合っているもの）", [
-        ("自分の変更案のファイルとつながっている参照先のファイル", [ref_label(ctx, n, r) for n, r in ref_links]),
+        ("自分の変更案・影響範囲で直すファイルとつながっている参照先のファイル", [ref_label(ctx, n, r) for n, r in ref_links]),
         ("参照先の変更案のファイルとつながっている自分のファイル", own_links),
     ])
     for n, r in ref_links:
         if (n, r) not in cited:
-            pending.ref(ctx, n, r, "自分の変更案のファイルとパスでつながっている")
+            pending.ref(ctx, n, r, "自分の変えるファイルとパスでつながっている")
     for p in missing_own:
         pending.own(ctx, p, "参照先の変更案のファイルとパスでつながっている")
     return []
@@ -3724,8 +3724,7 @@ def doc_lines_cover(ctx: Ctx, bodies: dict[str, str], rel: str) -> bool:
 
 def planned_code(ctx: Ctx, bodies: dict[str, str]) -> set[tuple[str, str]]:
     """計画で作る・変えるコード（自分の変更案・参照先の変更案と、影響範囲の変更不要でないもの）。"""
-    impact = listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
-    targets = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels} | {("", p) for p in impact}
+    targets = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels}
     return {(k, rel) for k, rel in targets if is_code(ctx, k, rel)}
 
 
@@ -3993,9 +3992,19 @@ def test_plan(ctx: Ctx, bodies: dict[str, str]) -> TestPlan:
     return plan
 
 
+def impact_fixes(ctx: Ctx, bodies: dict[str, str]) -> set[str]:
+    """影響範囲で直すファイル（変更不要・未判断を除く）。apply で変えるので、変更案のファイルと同じに測る。"""
+    return listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
+
+
+def impact_fix_lines(bodies: dict[str, str]) -> str:
+    body = bodies.get("## 影響範囲", "")
+    return "\n".join(i for i in items(body) if not judgment(i).waived and PENDING_MARK not in i)
+
+
 def plan_changes(ctx: Ctx, bodies: dict[str, str]) -> dict[str, set[str]]:
-    """計画で変えるファイル（自分の変更案・参照先の変更案。テストの変更案は除く）。"""
-    changed = {"": own_planned(ctx, bodies)}
+    """計画で変えるファイル（自分の変更案・影響範囲で直すもの・参照先の変更案。テストの変更案は除く）。"""
+    changed = {"": own_planned(ctx, bodies) | impact_fixes(ctx, bodies)}
     for name, rels in planned_refs(ctx, bodies)[0].items():
         changed.setdefault(name, set()).update(rels)
     return changed
@@ -4049,7 +4058,8 @@ def new_names_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
 
     今あるテストに当たらない新しい振る舞いは、測っても響くテストが見つからない。足すテストを計画させる。
     """
-    names = name_terms(bodies.get("## 自分の変更案", "") + "\n" + bodies.get("## 参照先の変更案", ""))
+    names = name_terms(bodies.get("## 自分の変更案", "") + "\n" + bodies.get("## 参照先の変更案", "")
+                       + "\n" + impact_fix_lines(bodies))
     body = bodies.get(TESTS_HEADING, "")
     # 変えたあとに練り直すときは、この回で消した名前も前からある名前（HEAD にある）として数える。
     new = [n for n in names if n not in body and not (_DOTTED.match(n) and mentioned(body, n.rsplit(".", 1)[1]))
@@ -4069,9 +4079,14 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
     tp = test_plan(ctx, bodies)
     problems: list[str] = []
     changed = plan_changes(ctx, bodies)
-    if any(changed.values()) and not tp.listed() and not tp.reason_only:
-        problems.append(f"{TESTS_HEADING} が「なし」です。コード・仕様書と同じく、足す・直すテストを挙げてください"
-                        f"（要らないなら `- {NO_CHANGE_MARK}: 理由`）")
+    # 何かを変えるなら、テストを足すか・直すか・要らないかの判断を必ず書かせる。
+    # 判断に数えるのはテストのファイル（変更案に挙げたものも）と、パスの無い「変更不要: 理由」だけ。
+    judged = [(k, rel) for k, rel in tp.listed() | {(k, r) for k, rs in changed.items() for r in rs}
+              if is_test(ctx, k, rel)]
+    if any(changed.values()) and not judged and not tp.reason_only:
+        problems.append(f"{TESTS_HEADING} にテストの判断がありません。コード・仕様書と同じく、足す・直すテストのファイルを"
+                        f"挙げてください（要らないなら `- {NO_CHANGE_MARK}: 理由`。テストのファイルは codd.json の tests の"
+                        "書き方に当たるもの）")
     found = affected_tests(ctx, terms, changed)
     write_tests_report(ctx, "tests.md", "計画の変更が響くテスト（測定）", found, tp, changed)
     problems += new_names_plan_problems(ctx, bodies)
@@ -4088,7 +4103,7 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
         pending.add(TESTS_HEADING, (k, rel),
                     f"- {side_label(ctx, k, rel)} — {PENDING_MARK}（{why.get(found[(k, rel)], found[(k, rel)])}）")
     # 響くテストを書き足せば、「なし」の指摘は書き足した項目の判断に置き換わる
-    return [p for p in problems if "が「なし」です" not in p]
+    return [p for p in problems if "にテストの判断がありません" not in p]
 
 
 # ---------------------------------------------------------------- テストで得たもの（evidence）を実装・文書に活かす
@@ -6453,7 +6468,7 @@ _KINDS = (
     # （「が「なし」です」のような短い目印だと、あとで足した判断の要る指摘まで訊かない側に吸うため）。
     ("shape", "any", ("見出しがありません: ", "見出しの順番がテンプレートと違います", "見出しの中身が空です: ",
                       "は箇条書きにしてください（無ければ「なし」）", "参照先を探していません: ", "を `…` で囲んでください",
-                      "## テストの変更案 が「なし」です。", "参照先の変更案があるのに、影響範囲が「なし」です",
+                      "## テストの変更案 にテストの判断がありません", "参照先の変更案があるのに、影響範囲が「なし」です",
                       "のパスがどの参照先か決まりません。", "の項目に、参照先のパスがありません",
                       "の項目に、参照先に実在する根拠のパスがありません", "の項目の名前が、根拠のファイルに見当たりません",
                       "の項目に、自分のリポジトリのパスがありません", "の項目に、自分のリポジトリに実在するパスがありません",
