@@ -1,8 +1,8 @@
 {
   "generated_by": "generate_skill_catalog.py",
-  "total_skills": 92,
+  "total_skills": 93,
   "categories": {
-    "integration": 7,
+    "integration": 8,
     "orchestration": 8,
     "operations": 5,
     "review": 6,
@@ -33,7 +33,7 @@
     "knowledge": 1
   },
   "tiers": {
-    "experimental": 56,
+    "experimental": 57,
     "stable": 21,
     "core": 11,
     "unknown": 2,
@@ -724,6 +724,26 @@
       ],
       "has_scripts": false,
       "has_references": false
+    },
+    {
+      "name": "figma-use",
+      "description": "Figma MCP を使わずに、Figma REST API からデザイン情報（構造・スクリーンショット・画像・SVG・スタイル・コンポーネント）を取得・正規化し、不足情報を明示する。「この Figma を見て」「Figma の画面を取ってきて」「Figma から素材を書き出して」などで発動する。Node.js 24 の CLI 同梱。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "integration",
+      "tags": [
+        "figma",
+        "design",
+        "rest-api",
+        "node"
+      ],
+      "triggers": [
+        "この Figma を見て",
+        "Figma の画面を取ってきて",
+        "Figma から素材を書き出して"
+      ],
+      "has_scripts": true,
+      "has_references": true
     },
     {
       "name": "flow-planner",

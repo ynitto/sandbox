@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### figma-use: Figma MCP なしで Figma のデザイン情報を取得するスキルを追加（1.0.0）
+
+- Figma の URL（node-id のハイフン・コロン表記、branch の URL）から、構造・スクリーンショット・画像の塗り・SVG を
+  REST API で取得し、正規化 JSON と Markdown・要約・不足情報（未取得／属性なし／アクセス不可／未解決）を保存する
+- Node.js 24 の標準モジュールだけで動く CLI（doctor / inspect / context / screenshot / assets / export）。
+  トークンは connections.yaml の `figma` か環境変数 `FIGMA_TOKEN` から読み、引数・ログ・成果物に出さない
+- タイムアウト・有限回の再試行・Retry-After・キャッシュ（`--refresh` / `--check-update`）・部分失敗の終了コードを持つ
+- React の設計（既存部品への対応付け・Props・Hooks）はこのスキルの範囲外とし、受け渡しの項目だけを定める
+- Figma Make・FigJam・Slides などの URL と、Figma への書き込みは対象外
+
 ### agent-loop: `command:` の実行ファイル不在を記録に残し、実行ペインの起動直後の終了で落ちないようにする
 
 - ペイン実行へ分けた際に落ちていた、実行ファイルが見つからないときの `command_error` の記録と ERROR の進捗表示を戻した

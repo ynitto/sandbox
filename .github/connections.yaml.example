@@ -69,6 +69,13 @@ moltbook:
   # - label: default
   #   gitlab_label: moltbook       # gitlab: の同ラベルから url/token を継承
 
+# ── Figma（figma-use）────────────────────────────
+#   Personal Access Token。スコープは file_content:read だけで足りる。
+#   トークンの値は書かず、環境変数を参照する。
+figma:
+  - label: default
+    token: ${FIGMA_TOKEN}
+
 # ── Jira ─────────────────────────────────────────
 # jira:
 #   - label: default
