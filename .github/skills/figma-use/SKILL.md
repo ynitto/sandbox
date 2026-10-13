@@ -1,6 +1,6 @@
 ---
 name: figma-use
-description: Figma MCP を使わずに、Figma REST API からデザイン情報（構造・スクリーンショット・画像・SVG・スタイル・コンポーネント）を取得・正規化し、不足情報を明示する。「この Figma を見て」「Figma の画面を取ってきて」「Figma から素材を書き出して」などで発動する。Node.js 24 の CLI 同梱。
+description: Figma の URL やデザインが出たら使う。Figma REST API で画面の構造・スクショ・画像・SVG・スタイル・コンポーネントを取得し、不足情報を明示する（MCP 不要、Node.js 24）。「この Figma を見て」「Figma の画面を取ってきて」「Figma のアイコンを書き出して」「デザインどおり実装したいので情報を取って」「Figma のトークンを設定して」で発動。
 metadata:
   version: 1.0.0
   tier: experimental
@@ -96,6 +96,7 @@ figma:
 | 終了コード 3（401・403） | トークンの期限・スコープ（`file_content:read`）・ファイルの共有権限を確認する。`F doctor` で出所を見る |
 | 終了コード 4（404） | URL の file key・node-id を確かめる。branch の URL なら branch のまま渡す |
 | 終了コード 5（429） | 時間を置く。キャッシュがある取得は `--refresh` を外せば API を呼ばない。表示された席の種別（Collab・View は上限が低い）をユーザーに伝える |
+| 終了コード 7（接続エラー） | プロキシのある環境なら `NODE_USE_ENV_PROXY=1`（doctor が注意を出す）。それでも届かなければ、その環境から api.figma.com へ出られないことをユーザーに伝え、手元で `export` した成果物を渡してもらう |
 | 終了コード 6 | `missing-information.md` の「取得失敗」を見て、対象を絞って再実行する |
 | Figma Make・FigJam・Slides の URL | 対象外として拒否される。デザインファイル（/design/）の URL をもらう |
 

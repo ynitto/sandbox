@@ -727,7 +727,7 @@
     },
     {
       "name": "figma-use",
-      "description": "Figma MCP を使わずに、Figma REST API からデザイン情報（構造・スクリーンショット・画像・SVG・スタイル・コンポーネント）を取得・正規化し、不足情報を明示する。「この Figma を見て」「Figma の画面を取ってきて」「Figma から素材を書き出して」などで発動する。Node.js 24 の CLI 同梱。",
+      "description": "Figma の URL やデザインが出たら使う。Figma REST API で画面の構造・スクショ・画像・SVG・スタイル・コンポーネントを取得し、不足情報を明示する（MCP 不要、Node.js 24）。「この Figma を見て」「Figma の画面を取ってきて」「Figma のアイコンを書き出して」「デザインどおり実装したいので情報を取って」「Figma のトークンを設定して」で発動。",
       "version": "1.0.0",
       "tier": "experimental",
       "category": "integration",
@@ -740,7 +740,9 @@
       "triggers": [
         "この Figma を見て",
         "Figma の画面を取ってきて",
-        "Figma から素材を書き出して"
+        "Figma のアイコンを書き出して",
+        "デザインどおり実装したいので情報を取って",
+        "Figma のトークンを設定して"
       ],
       "has_scripts": true,
       "has_references": true
