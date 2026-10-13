@@ -4069,9 +4069,15 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
     tp = test_plan(ctx, bodies)
     problems: list[str] = []
     changed = plan_changes(ctx, bodies)
-    if any(changed.values()) and not tp.listed() and not tp.reason_only:
-        problems.append(f"{TESTS_HEADING} が「なし」です。コード・仕様書と同じく、足す・直すテストを挙げてください"
-                        f"（要らないなら `- {NO_CHANGE_MARK}: 理由`）")
+    # 何かを変えるなら、テストを足すか・直すか・要らないかの判断を必ず書かせる。影響範囲で直すだけのファイルも変える。
+    # 判断に数えるのはテストのファイル（変更案に挙げたものも）と、パスの無い「変更不要: 理由」だけ。
+    fixes = listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)
+    judged = [(k, rel) for k, rel in tp.listed() | {(k, r) for k, rs in changed.items() for r in rs}
+              if is_test(ctx, k, rel)]
+    if (any(changed.values()) or fixes) and not judged and not tp.reason_only:
+        problems.append(f"{TESTS_HEADING} にテストの判断がありません。コード・仕様書と同じく、足す・直すテストのファイルを"
+                        f"挙げてください（要らないなら `- {NO_CHANGE_MARK}: 理由`。テストのファイルは codd.json の tests の"
+                        "書き方に当たるもの）")
     found = affected_tests(ctx, terms, changed)
     write_tests_report(ctx, "tests.md", "計画の変更が響くテスト（測定）", found, tp, changed)
     problems += new_names_plan_problems(ctx, bodies)
@@ -4088,7 +4094,7 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
         pending.add(TESTS_HEADING, (k, rel),
                     f"- {side_label(ctx, k, rel)} — {PENDING_MARK}（{why.get(found[(k, rel)], found[(k, rel)])}）")
     # 響くテストを書き足せば、「なし」の指摘は書き足した項目の判断に置き換わる
-    return [p for p in problems if "が「なし」です" not in p]
+    return [p for p in problems if "にテストの判断がありません" not in p]
 
 
 # ---------------------------------------------------------------- テストで得たもの（evidence）を実装・文書に活かす
@@ -6453,7 +6459,7 @@ _KINDS = (
     # （「が「なし」です」のような短い目印だと、あとで足した判断の要る指摘まで訊かない側に吸うため）。
     ("shape", "any", ("見出しがありません: ", "見出しの順番がテンプレートと違います", "見出しの中身が空です: ",
                       "は箇条書きにしてください（無ければ「なし」）", "参照先を探していません: ", "を `…` で囲んでください",
-                      "## テストの変更案 が「なし」です。", "参照先の変更案があるのに、影響範囲が「なし」です",
+                      "## テストの変更案 にテストの判断がありません", "参照先の変更案があるのに、影響範囲が「なし」です",
                       "のパスがどの参照先か決まりません。", "の項目に、参照先のパスがありません",
                       "の項目に、参照先に実在する根拠のパスがありません", "の項目の名前が、根拠のファイルに見当たりません",
                       "の項目に、自分のリポジトリのパスがありません", "の項目に、自分のリポジトリに実在するパスがありません",
