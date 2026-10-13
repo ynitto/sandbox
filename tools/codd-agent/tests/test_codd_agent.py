@@ -3662,6 +3662,62 @@ class CoddTest(unittest.TestCase):
         self.assertIn(f"捨てた計画を消しました: {PLAN}", r.stdout)
         self.assertEqual(list((self.impl / ".plans").glob("*.md")), [new])
 
+    def test_record_reports_and_closes_the_plan_in_one_command(self) -> None:
+        # 終わり（done・stopped）は record だけを呼ぶ。report を別に呼ばなくても、報告を出して結果を計画に書く。
+        for name in ("done.md", "stopped.md"):
+            action = (self.impl / ".statemachine/codd/actions" / name).read_text(encoding="utf-8")
+            self.assertIn("codd.py record", action)
+            self.assertNotIn("codd.py report\n", action)
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("- 変えたあとの検査: 通った", r.stdout)       # 報告をそのまま伝えられる
+        self.assertIn(f"計画の記録: {PLAN}", r.stdout)
+        text = (self.impl / PLAN).read_text(encoding="utf-8")
+        self.assertIn("## 結果\n\n- 変えたあとの検査: 通った", text)
+        self.assertIn("- src/app.py — 変えた", text)
+
+    def test_next_draft_closes_a_finished_plan_left_without_a_record(self) -> None:
+        # 前の回が記録を書かずに終わると、次の回がその計画と前の回の印を引き継ぎ、前の回の変更で落ちていた。
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertEqual(self.run_pa(self.impl, "report").returncode, 0)   # record を呼ばずに終わった
+        for repo in (self.impl, self.design):
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "previous run")
+        r = self.run_pa(self.impl, "draft", "--name", "next")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"前の回の計画を、記録として閉じました: {PLAN}", r.stdout)
+        self.assertIn("## 結果\n\n- 変えたあとの検査: 通った", (self.impl / PLAN).read_text(encoding="utf-8"))
+        new = next((self.impl / ".plans").glob("*-next.md"))
+        new.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.read_up(self.impl)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 2\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)   # 前の回の design の変更を、この回のものと数えない
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        decided = new.read_text(encoding="utf-8").split("## 確認と判断", 1)[1].split("## 結果", 1)[0]
+        self.assertEqual(decided.count("OK（計画で進める）"), 1)   # 前の回の答えを混ぜない
+
+    def test_draft_keeps_the_plan_while_the_run_goes_on(self) -> None:
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.run_pa(self.impl, "decide", "NG", "--note", "直して")
+        r = self.run_pa(self.impl, "draft", "--name", "again")
+        self.assertIn(f"計画はもうあります: {PLAN}", r.stdout)
+        self.assertNotIn("## 結果", (self.impl / PLAN).read_text(encoding="utf-8"))
+
     def test_record_when_stopped_before_changing(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         self.run_pa(self.impl, "decide", "STOP", "--note", "今回はやめる")

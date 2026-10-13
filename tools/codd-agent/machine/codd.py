@@ -23,7 +23,7 @@
     batch               段に分けて変えるとき、今の段で変えるファイルを示す
     draft --name 名前   計画のひな形を .plans/日時-名前.md に置く（名前は英語の短い名前。進めている計画があれば残す）。
                         見出しごとに書き込ませ、全文を一度に書かせない
-    record              1 回の終わりに、計画へ確認の答えと結果（report）を書き足して記録として残す（要らない情報は除く）
+    record              1 回の終わりに、報告（report）を出し、計画へ確認の答えと結果を書き足して記録として残す（要らない情報は除く）
     decide 答え         確認・相談での利用者の答え（OK / NG / PLAN / APPLY / STOP）と指摘を控える。終わりの報告で計画の記録に書く
     summary             計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import fnmatch
 import json
 import os
@@ -71,6 +72,7 @@ import tempfile
 import time
 import urllib.parse
 from collections import Counter, deque
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -6706,6 +6708,10 @@ SUMMARY_WIDTH = 120
 
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
+    if ctx.plan.is_file() and run_ended(ctx):
+        # 前の回が記録を書かずに終わっていたら、ここで閉じる（引き継ぐと、前の回の変更をこの回のものと数えて落ちる）
+        print(f"前の回の計画を、記録として閉じました: {close_plan(ctx, quiet=True)}（終わりの記録が書かれていなかった）")
+        ctx.plan = active_plan(ctx.root) or ctx.root / PLAN_DIR / "（計画がありません）.md"
     if ctx.plan.is_file() and not args.new:
         print(f"計画はもうあります: {plan_rel(ctx)}（直す見出しだけを書き換える。最初から書き直すときは --new）")
         return 0
@@ -6877,9 +6883,19 @@ def cmd_retro(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
-    """1 回の実行の終わりに、計画を判断の記録として残す（done・stopped で report のあとに呼ぶ）。"""
+def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
+    """終わりの報告を作り、その結果と確認の答えを計画に書き足して閉じる。閉じた計画のパス（計画が無ければ None）。
+
+    報告と記録を 1 つのコマンドで行う（別々に呼ばせると、記録を呼び忘れた計画が「進めている計画」のまま残り、
+    次の回がそれと前の回の印を引き継いで、計画と変えたあとの検査で落ちる）。
+    """
+    if not ctx.plan.is_file():
+        return None
     report = ctx.data / "report.md"
+    report.unlink(missing_ok=True)   # 前に出した報告を、この回の結果に取り違えない
+    sink = io.StringIO()
+    with redirect_stdout(sink if quiet else sys.stdout), redirect_stderr(sink if quiet else sys.stderr):
+        cmd_report(ctx, argparse.Namespace())
     if report.is_file():
         # 見出しの後ろのリポジトリの絶対パスは、この端末だけのもの。コミットする記録には残さない
         result = [re.sub(r"^(## .*?）)  .+$", r"\1", ln) for ln in report.read_text(encoding="utf-8").splitlines()[2:]
@@ -6887,18 +6903,31 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         report.unlink()   # 次の回の記録に、この回の結果を混ぜない
     else:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
-    stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan] if ctx.plan.is_file() else []
+    stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
-    if not record:
-        print(NO_PLAN, file=sys.stderr)
-        return 1
-    print(f"計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
     # この回より前の、結果の見出しが無い計画は `draft --new` で捨てたもの（戻されて残ったもの）。
     # 残すと次の回にそれが「進めている計画」になるので消す。
     for p in stale:
         if p.stem < ctx.plan.stem and RESULT_HEADING not in (read_text(p) or "").splitlines():
             p.unlink()
-            print(f"捨てた計画を消しました: {p.relative_to(ctx.root).as_posix()}")
+            if not quiet:
+                print(f"捨てた計画を消しました: {p.relative_to(ctx.root).as_posix()}")
+    return record
+
+
+def run_ended(ctx: Ctx) -> bool:
+    """進めている計画の回が、記録を書かずに終わっているか（変えたあとの検査を通った・利用者がやめた）。"""
+    decisions = load_decisions(ctx)
+    return (ctx.data / "applied.json").is_file() or bool(decisions) and decisions[-1].get("answer") == "STOP"
+
+
+def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
+    """1 回の実行の終わり（done・stopped）に、報告を出し、計画を判断の記録として残す。"""
+    record = close_plan(ctx)
+    if not record:
+        print(NO_PLAN, file=sys.stderr)
+        return 1
+    print(f"\n計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
     return 0
 
 
@@ -7151,7 +7180,7 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
     sub.add_parser("retro", help="終わりの振り返りで実行するプロンプトと材料を示す（codd.json の retro。無ければ NONE）")
-    sub.add_parser("record", help="計画に確認の答えと結果を書き足し、判断の記録として残す（終わりに呼ぶ）")
+    sub.add_parser("record", help="終わりの報告を出し、計画に確認の答えと結果を書き足して判断の記録として残す（終わりに呼ぶ）")
     de = sub.add_parser("decide", help="確認・相談での利用者の答えを控える（終わりの報告で計画の記録に書く）")
     de.add_argument("answer", choices=list(DECISIONS), help="OK / NG（確認）か PLAN / APPLY / STOP（止まったときの相談）")
     de.add_argument("--note", default="", help="利用者の指摘や指示（そのまま）")
