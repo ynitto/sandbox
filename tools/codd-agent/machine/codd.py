@@ -1731,7 +1731,8 @@ def unread_rules(ctx: Ctx) -> list[str]:
 
 def clear_reading_logs(ctx: Ctx) -> None:
     """1 回の実行の終わりに、探した・読んだ記録を消す（次の回で使い回させない）。"""
-    for name in (EXPLORE_LOG, RULES_READ, SKILLS_READ, GUIDES_READ, AUTO_NAME, OUTSIDE_NAME, GRAPH_LOG, SEMANTIC_STATE):
+    for name in (EXPLORE_LOG, RULES_READ, SKILLS_READ, GUIDES_READ, AUTO_NAME, OUTSIDE_NAME, GRAPH_LOG, SEMANTIC_STATE,
+                 RUN_START):
         (ctx.data / name).unlink(missing_ok=True)
 
 
@@ -4817,6 +4818,56 @@ def write_baseline(ctx: Ctx) -> None:
     write_text(ctx.data / "before.json", json.dumps(state, indent=2) + "\n")
 
 
+RUN_START = "run-start.json"   # この回の計画を練り始めたときの印（計画の段で変えたファイルを見つける）
+PLAN_EDITED = "計画を練っている間に、ファイルが変わっています"
+# 計画を練り始めたとみなすコマンド（kiro の起動時の `show` は数えない。依頼の前に利用者が変えたものを拾わない）
+RUN_START_COMMANDS = ("rule", "explore", "graph", "impact", "draft", "verify-plan")
+
+
+def mark_run_start(ctx: Ctx) -> None:
+    """この回の計画を練り始めたときの中身を控える（控えがあればそのまま）。計画の検査が、印を取る前に比べる。"""
+    path = ctx.data / RUN_START
+    if path.is_file():
+        return
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    state = {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
+    write_text(path, json.dumps(state, indent=2) + "\n")
+
+
+def edited_while_planning(ctx: Ctx) -> list[str]:
+    """計画を練り始めてから変わったファイル。変える前の印を取り直すときだけ測る。
+
+    印は計画の検査が通ったときに取るので、計画の段で変えたファイルは「変える前」の中身に入り、
+    変えたあとの検査が計画に無い変更として数えない（確認も経ずに変わる）。印を取る前に止める。
+    同じ計画で印のあとに変えていれば印は取り直さず、そのあとの変更は変えたあとの検査が数える。
+    """
+    if changed_in_this_run(ctx):
+        return []
+    try:
+        start = json.loads((ctx.data / RUN_START).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(start, dict):
+        return []
+    return [side_label(ctx, key, rel) for key, side in all_sides(ctx)
+            for rel in sorted(changed_since(side, start.get("refs", {}).get(key, {}) if key else start.get("own", {})))]
+
+
+def accept_plan_edits(ctx: Ctx) -> bool:
+    """計画の検査が、計画を練っている間に変わったファイルで止めていれば、計画の前からの変更として認める。"""
+    try:
+        rec = json.loads((ctx.data / PROBLEMS_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(rec, dict) or rec.get("phase") != "plan" \
+            or not any(PLAN_EDITED in str(it.get("text", "")) for it in rec.get("problems", [])):
+        return False
+    (ctx.data / RUN_START).unlink(missing_ok=True)
+    mark_run_start(ctx)
+    print("計画を練っている間に変わったファイルを、計画の前からの変更として認めました（計画の検査からやり直す）")
+    return True
+
+
 def changed_in_this_run(ctx: Ctx) -> bool:
     """同じ計画の印があり、そのあとに変えたファイルがあるか（終えた回の計画は結果を書き足して閉じるので、次の回は別の計画になる）。"""
     try:
@@ -5045,6 +5096,12 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         text = restored
     _, bodies = sections(text, PLAN_HEADINGS)
     problems = verify_plan_text(ctx, text) + record_problems_of(ctx)
+    edited = edited_while_planning(ctx)
+    if edited:
+        problems.append(f"{PLAN_EDITED}（計画の段ではどのリポジトリも変えない。変えたいことは計画の変更案に書く。"
+                        "利用者が変えたものかもしれないので、自分では戻さずに利用者に確かめる。利用者の変更なら "
+                        f"`python3 {MACHINE_REL}/codd.py accept` で計画の前からの変更として認める）: "
+                        + ", ".join(edited[:MAX_OUTSIDE]) + (" ..." if len(edited) > MAX_OUTSIDE else ""))
     if semantic_session(ctx) and not (ctx.data / GRAPH_LOG).is_file():
         problems.append(f"{GRAPH_NOT_READY}。`python3 {MACHINE_REL}/codd.py graph` を実行し、PENDING なら示された束を"
                         "抜き出して `graph --merge` で OK になるまで進めてから、検査し直してください")
@@ -6491,6 +6548,7 @@ def record_problems(data: Path, phase: str, problems: list[str], kind: str | Non
 _KINDS = (
     ("stale", "any", ("計画がありません", "印がありません", "印が古い形")),
     ("unconfirmed", "apply", ("利用者が確かめたものではありません",)),
+    ("edited", "plan", (PLAN_EDITED,)),
     ("pending", "plan", (f"「{PENDING_MARK}」",)),
     ("size", "plan", ("上限",)),
     ("protected", "apply", (PROTECTED,)),
@@ -6545,6 +6603,7 @@ OPTIONS = {
     "accept": ("足したファイルを認めて続ける", "accept", "APPLY"),
     "known": ("前から落ちていたものとして続ける", "accept", "APPLY"),
     "intended": ("意図した変化として認め、写しを差し替える", "accept", "APPLY"),
+    "edited": ("利用者が変えたものとして認め、計画の前からの変更にする", "accept", "PLAN"),
     "reset": ("変えた分を戻して、計画から練り直す", "rollback", "PLAN"),
     "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
 }
@@ -6553,6 +6612,10 @@ OPTIONS = {
 ADVICE = {
     "plan": {
         "stale": (["replan", "stop"], "計画がまだ無いか、読めません。やりたいことをもう一度伝えてもらい、練り直します"),
+        # 利用者の変更かエージェントの変更かは、利用者にしか分からない。エージェントは自分では戻さない
+        "edited": (["edited", "replan", "stop"],
+                   "計画を練っている間にファイルが変わりました。利用者が変えたものなら計画の前からの変更として認め、"
+                   "エージェントが変えたものなら利用者の指示で戻してから練り直します（変えたいことは計画に書く）"),
         "size": (["replan", "stop"], "1 回で変えるには大きすぎます。今回やることを絞ってもらい、残りは「今回やらないこと」に回します"),
         "pending": (["replan", "stop"],
                     f"測ったファイルのうち、計画が「{PENDING_MARK}」のままのものがあります。ファイルごとに、直すか"
@@ -6691,6 +6754,8 @@ def cmd_advise(root: Path) -> int:
 
 def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
     """変える段で、計画で挙げていないファイルを理由付きで足した分を、利用者が認めたと控える（計画は書き直さない）。"""
+    if accept_plan_edits(ctx):
+        return 0
     a = load_applied(ctx)
     if isinstance(a, str):
         print(a, file=sys.stderr)
@@ -6991,8 +7056,10 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
         result += applied_lines(ctx, applied)
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
-    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN):
+    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME):
         (ctx.data / name).unlink(missing_ok=True)   # 閉じた回の印を、次の回に持ち越さない
+    # 報告が出せなかった回（計画の検査を通る前にやめた回など）も、探した・読んだ記録を次の回に持ち越さない
+    clear_reading_logs(ctx)
     # この回より前の、結果の見出しが無い計画は `draft --new` で捨てたもの（戻されて残ったもの）。
     # 残すと次の回にそれが「進めている計画」になるので消す。
     for p in stale:
@@ -7383,7 +7450,13 @@ def main(argv: list[str] | None = None) -> int:
         root = repo_root(Path.cwd())
         if args.cmd == "advise":   # 設定が壊れていても理由と次の手は示す
             return cmd_advise(root)
-        return COMMANDS[args.cmd](Ctx(root), args)
+        ctx = Ctx(root)
+        if args.cmd == "verify-plan":
+            mark_run_start(ctx)   # 練り始めの印が無ければ今を始まりにする（比べるものが無いだけで、止めない）
+        rc = COMMANDS[args.cmd](ctx, args)
+        if args.cmd in RUN_START_COMMANDS or (args.cmd == "show" and args.phase == "plan"):
+            mark_run_start(ctx)   # 後に取る（draft が前の回を閉じて記録を消したあとに、この回の始まりを控える）
+        return rc
     except CoddError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         if args.cmd in ("verify-plan", "verify-apply"):

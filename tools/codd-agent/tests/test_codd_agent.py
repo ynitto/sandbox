@@ -2500,6 +2500,7 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("__pycache__", r.stderr)
         pyc.unlink()
         pyc.parent.rmdir()
+        (self.impl / ".codd/run-start.json").unlink()   # 消した .pyc を、計画の段で変えたものに数えない
         plan = (self.impl / PLAN).read_text(encoding="utf-8")
         tests_part = plan.split("## テストの変更案", 1)[1].split("\n## ", 1)[0]
         for rel in ("tests/test_app.py", "tests/e2e/hello.yaml", "tests/e2e/page.yaml"):
@@ -2662,6 +2663,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
         commit(self.impl, {"tests/test_app.py": "from src.app import hello\n"}, "tests")
+        (self.impl / ".codd/run-start.json").unlink()   # 利用者がテストを足してから、計画を練り直す
         self.write_plan(self.with_tests(PLAN_ALIGNED, "- tests/test_app.py — `hello` がログを出すか確かめる"))
         self.assert_plan_ok()
 
@@ -3764,6 +3766,45 @@ class CoddTest(unittest.TestCase):
         text = (self.impl / PLAN).read_text(encoding="utf-8")
         self.assertIn("STOP（やめる）: 答えの控えが無かった", text)
         self.assertIn("- 変えたあとの検査: 利用者がやめた", text)
+
+    def test_files_changed_while_planning_stop_before_the_baseline(self) -> None:
+        # 計画の段で変えたファイルは、印に入ると変えたあとの検査が数えない。印を取る前に止め、利用者に確かめる。
+        self.write_plan(PLAN_ALIGNED)
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("計画を練っている間に、ファイルが変わっています", r.stderr)
+        self.assertIn("src/extra.py", r.stderr)
+        self.assertFalse((self.impl / ".codd/before.json").exists())
+        advice = self.run_pa(self.impl, "advise").stdout
+        self.assertNotIn("AUTO", advice)   # 利用者の変更かもしれない。訊かずに戻させない
+        self.assertIn("利用者が変えたものとして認め", advice)
+        # 利用者が自分で変えたと答えたら、計画の前からの変更として認めて続ける
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+
+    def test_changes_after_the_baseline_are_still_counted_when_replanning(self) -> None:
+        # 確認で NG のあと、計画の段で変えたものは、取り直さない印から変えたあとの検査が数える。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok(ok=False)
+        self.run_pa(self.impl, "decide", "NG", "--note", "直して")
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/extra.py", r.stderr)
+
+    def test_reading_logs_do_not_outlive_a_run_stopped_before_the_plan_passed(self) -> None:
+        self.write_plan("# 変更の計画\n\n## やりたいこと\n\nx\n")
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        self.run_pa(self.impl, "decide", "STOP")
+        self.assertEqual(self.run_pa(self.impl, "record", "--stop").returncode, 0)
+        left = {p.name for p in (self.impl / ".codd").iterdir()}
+        for name in ("explore.json", "rules-read.json", "problems.json", "run-start.json"):
+            self.assertNotIn(name, left)
 
     def test_draft_keeps_the_plan_while_the_run_goes_on(self) -> None:
         self.write_plan(PLAN_ALIGNED)
