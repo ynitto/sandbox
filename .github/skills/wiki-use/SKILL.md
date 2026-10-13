@@ -2,7 +2,7 @@
 name: wiki-use
 description: Karpathy LLM Wiki パターンに基づく知識ベース管理スキル。「wikiに取り込んで」「wikiに追加して」「このURLをwikiに追加して」「URLをwikiに保存して」でingest、「wikiを検索して」でquery、「wikiを初期化して」でinit、「wikiをチェックして」でlint。URLや論文・記事を「読んで」「まとめて」「説明して」と言われたときも自動ingest。
 metadata:
-  version: 1.6.0
+  version: 1.7.0
   tier: experimental
   category: knowledge
   config_script: scripts/wiki_init.py
@@ -44,7 +44,8 @@ wiki-use は **意味的・参照的な知識**（概念・用語・人物・組
 │       └── queries.md  ← 価値あるクエリの記録（直近50件）
 ├── SCHEMA.md         ← このWikiの構造・規約定義（LLMと共に育てる）
 ├── index.md          ← 全ページの目録（1ページ1行の箇条書き）
-└── log.md            ← 操作ログ（追記専用）
+├── log.md            ← 操作ログ（追記専用）
+└── graphify-out/     ← graphify のグラフ（graphify があるとき。ingest のあとに更新）
 ```
 
 ソースデータは wiki_root 外で管理する（取り込み前に保全済みであることを前提とする）。
@@ -91,6 +92,7 @@ wiki_root: /home/user/Documents/wiki
 |------|-----------|---------|
 | **init** | 「wikiを初期化して」「wiki-useをセットアップして」 | [`references/op-init.md`](references/op-init.md) |
 | **ingest** | 「wikiに取り込んで」「ソースを取り込んで」「〈ファイル〉をwikiに追加して」 | [`references/op-ingest.md`](references/op-ingest.md) |
+| **graph** | 「wikiのグラフを更新して」／ingest のあと（graphify があるとき） | [`references/op-ingest.md`](references/op-ingest.md#グラフを更新するgraphify-があるとき) |
 | **query** | 「wikiを検索して」「〜についてwikiで調べて」「〜の知識は？」 | [`references/op-query.md`](references/op-query.md) |
 | **share** | 「wikiの知識を共有して」「チームに広める」／再利用価値の高い atom/topic を作ったとき（自律） | `moltbook-use` の `publish` |
 | **lint** | 「wikiをチェックして」「リントして」「wiki の整合性を確認して」 | [`references/op-lint.md`](references/op-lint.md) |

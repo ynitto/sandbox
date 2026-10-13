@@ -8,11 +8,11 @@
 # 変え終えたかだけを確かめて MORE を返し、apply_more で次の段を変える。最後の段で全体を検査し、テストを動かす。
 # 段は効く手順（ファイルに決められた手順）の組ごとに分ける。apply_more は 2 段目からの短い指示で、段ごとに読み直す量を抑える。
 #
-#   plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: verify-apply]→ done
+#   plan ─[check: verify-plan]→ confirm ─┬─ OK ─→ apply ─[check: verify-apply]→ done ─→ retro
 #                                        │          └ MORE → apply_more ↺ MORE（次の段）→ done
 #     ↑                                  ├─ NG ─┐
 #     └──────────────────────────────────┼──────┘（利用者の指摘を受けて練り直す）
-#                                        └─ STOP ─→ stopped（何も変えずにやめる）
+#                                        └─ STOP ─→ stopped（何も変えずにやめる）─→ retro
 #
 #   plan の検査がやり直し（check_retries）を使い切っても落ちたら、apply の検査が落ちたら、stuck へ。
 #   テストの失敗・計画の書き方など人の判断が要らない理由だけなら、stuck は訊かずに同じ段へ戻す（段ごとに 2 回まで。
@@ -43,6 +43,7 @@
 #         変えた分を戻す（rollback）か残すかも、ここで確かめてから進む。
 #         apply へ戻るのは、検査を通って確認で退けられていない計画のときだけ（verify-apply が確かめる）
 # stopped やめたときの結果（report）を伝える
+# retro   終わりの振り返り。codd.json の retro にプロンプトがあれば、利用者に訊かずに実行して終わる（既定は何もしない）
 #
 # 決定的な仕事（探す・グラフの更新・計画の形と根拠の検査・どちらを変えたかの検査）は codd.py が行う。
 
@@ -108,11 +109,15 @@ states:
   done:
     description: "変えた結果を伝える"
     action_file: actions/done.md
-    terminal: true
 
   stopped:
     description: "やめたときの結果を伝える"
     action_file: actions/stopped.md
+
+  retro:
+    description: "振り返る（設定のプロンプトがあれば、訊かずに実行する）"
+    action_file: actions/retro.md
+    output_validator: "startswith:OK,FAILED"
     terminal: true
 
 transitions:
@@ -130,3 +135,5 @@ transitions:
   - {from: stuck, to: plan, condition_rule: "startswith:choice:PLAN", priority: 1}
   - {from: stuck, to: apply, condition_rule: "startswith:choice:APPLY", priority: 2}
   - {from: stuck, to: stopped, condition_rule: "startswith:choice:STOP", priority: 3}
+  - {from: done, to: retro}
+  - {from: stopped, to: retro}

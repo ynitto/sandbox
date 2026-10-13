@@ -97,7 +97,7 @@ OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files", "batch_files",
                "subagent",
-               "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect"}
+               "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect", "no_doc", "retro"}
 REF_KEYS = {"name", "path", "skills", "scope", "rules", "exclude", "guides", "protect"}
 # 1 回の計画で変えるファイルの上限と、1 つの段（apply を分けた 1 回ぶん）で変えるファイルの数。
 # 計画は影響範囲・テストまで漏れなく挙げるので大きくなりやすい。上限は緩め、変えるときは段に分けて、
@@ -607,6 +607,11 @@ def load_config(machine_dir: Path) -> dict:
     config["scope"] = scope_list(config.get("scope"), f"{path} の scope")
     config["exclude"] = exclude_list(config.get("exclude"), f"{path} の exclude")
     config["protect"] = exclude_list(config.get("protect"), f"{path} の protect")
+    config["no_doc"] = exclude_list(config.get("no_doc"), f"{path} の no_doc")
+    retro = config.get("retro", "")
+    if not isinstance(retro, str):
+        raise CoddError(f"{path} の retro は、終わりの振り返りで実行するプロンプト（文字列）か、それを書いた .md のパスです")
+    config["retro"] = retro.strip()
     config.setdefault("graphify", "auto")
     config["graphify_semantic"] = None
     if isinstance(config["graphify"], dict):
@@ -3623,10 +3628,24 @@ _DOC_TOKEN = re.compile(r"(?:[\w-]+:)?([\w./-]+\.(?:md|markdown|rst|adoc|txt))\b
 _DELETE_WORD = re.compile(r"消す|消し|削除|取り除|delete|remove", re.I)
 
 
+def no_doc_patterns(ctx: Ctx, key: str) -> list[str]:
+    """文書を求めないファイル。自分は codd.json の no_doc、参照先は参照先に置いた codd.json の no_doc。"""
+    if not key:
+        return ctx.config["no_doc"]
+    raw = (ctx.ref(key).config or {}).get("no_doc") or []
+    return [p for p in raw if isinstance(p, str)] if isinstance(raw, list) else []
+
+
 def is_code(ctx: Ctx, key: str, rel: str) -> bool:
     p = Path(rel)
     return (p.suffix.lower() in CODE_EXTS and p.stem not in NO_DOC_STEMS and not p.name.startswith(".")
-            and not p.stem.endswith(NO_DOC_STEM_ENDS) and not is_test(ctx, key, rel))
+            and not p.stem.endswith(NO_DOC_STEM_ENDS) and not is_test(ctx, key, rel)
+            and not any(path_matches(pattern, rel) for pattern in no_doc_patterns(ctx, key)))
+
+
+def doc_homes(ctx: Ctx, key: str) -> list[str]:
+    """コードの文書を置ける側（コードと別の側。どこを参照先にするかは設定の refs・scope で決まる）。"""
+    return [("自分のリポジトリ" if not k else f"{k}（{side.label}）") for k, side in all_sides(ctx) if k != key]
 
 
 def docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
@@ -3710,7 +3729,9 @@ def planned_code(ctx: Ctx, bodies: dict[str, str]) -> set[tuple[str, str]]:
 
 def nodoc_message(ctx: Ctx, key: str, rel: str) -> str:
     samples = doc_samples(ctx, key, rel)
-    return side_label(ctx, key, rel) + (f"（近い粒度の見本: {' / '.join(samples)}）" if samples else "（見本になる文書がありません）")
+    if samples:
+        return side_label(ctx, key, rel) + f"（近い粒度の見本: {' / '.join(samples)}）"
+    return side_label(ctx, key, rel) + f"（見本になる文書がありません。文書は {' か '.join(doc_homes(ctx, key))} に置く）"
 
 
 def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
@@ -6822,6 +6843,40 @@ def record_problems_of(ctx: Ctx) -> list[str]:
             f"いま進めている計画だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else []
 
 
+RETRO_NONE = "NONE"
+
+
+def retro_prompt(ctx: Ctx) -> str:
+    """codd.json の retro。.md のパス（リポジトリのルートから）なら、その中身。"""
+    value = ctx.config["retro"]
+    if value.lower().endswith(".md") and "\n" not in value:
+        text = read_text(ctx.root / value)
+        if text is None:
+            raise CoddError(f"retro に書いたファイルがありません: {value}")
+        return text.strip()
+    return value
+
+
+def cmd_retro(ctx: Ctx, args: argparse.Namespace) -> int:
+    """終わりの振り返り（done・stopped のあと）。設定のプロンプトと、振り返りの材料のありかを示す。設定が無ければ NONE。"""
+    prompt = retro_prompt(ctx)
+    if not prompt:
+        print(RETRO_NONE)
+        return 0
+    records = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md"))
+               if RESULT_HEADING in (read_text(p) or "").splitlines()]
+    materials = ["- この回の会話（依頼・確認と相談での答え・検査の指摘とやり直し）"]
+    if records:
+        materials.append(f"- 計画の記録（確認の答えと結果）: {records[-1].relative_to(ctx.root).as_posix()}")
+    for name, label in (("advice.md", "止まった理由と次の手"), ("problems.json", "最後の検査の指摘")):
+        if (ctx.data / name).is_file():
+            materials.append(f"- {label}: {DATA_DIRNAME}/{name}")
+    print("RETRO\n\n# 振り返り\n\n利用者に訊かずに、次のプロンプトを最後まで実行する。リポジトリのファイルはプロンプトが求めない限り"
+          "変えず、コミットしない（振り返りの変更は codd の検査を通らない）。\n\n## 材料\n\n" + "\n".join(materials)
+          + "\n\n## プロンプト\n\n" + prompt)
+    return 0
+
+
 def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
     """1 回の実行の終わりに、計画を判断の記録として残す（done・stopped で report のあとに呼ぶ）。"""
     report = ctx.data / "report.md"
@@ -7095,6 +7150,7 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
+    sub.add_parser("retro", help="終わりの振り返りで実行するプロンプトと材料を示す（codd.json の retro。無ければ NONE）")
     sub.add_parser("record", help="計画に確認の答えと結果を書き足し、判断の記録として残す（終わりに呼ぶ）")
     de = sub.add_parser("decide", help="確認・相談での利用者の答えを控える（終わりの報告で計画の記録に書く）")
     de.add_argument("answer", choices=list(DECISIONS), help="OK / NG（確認）か PLAN / APPLY / STOP（止まったときの相談）")
@@ -7126,7 +7182,7 @@ COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact, "gra
             "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "batch": cmd_batch, "report": cmd_report,
             "rules": cmd_rules, "rollback": cmd_rollback, "accept": cmd_accept,
             "skill": cmd_skill, "guide": cmd_guide, "evidence": cmd_evidence, "rule": cmd_rule,
-            "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record,
+            "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record, "retro": cmd_retro,
             "lint": cmd_lint}
 
 

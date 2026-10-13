@@ -21,6 +21,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
@@ -106,6 +107,66 @@ class WikiSearchNeighborTests(unittest.TestCase):
             out = buf.getvalue()
             self.assertIn("完全一致", out)
             self.assertNotIn("近傍候補", out)
+
+
+class WikiSearchGraphTests(unittest.TestCase):
+    """graphify のグラフでつながるページを足す。graphify かグラフが無ければ従来どおり。"""
+
+    QUERY_OUT = (
+        "[graphify] note: old ids\n"
+        "NODE 自己注意 [src=wiki/atoms/transformer.md loc=L8 community=x]\n"
+        "NODE 翻訳 [src=wiki/topics/mt-history.md loc=L1 community=x]\n"
+        "NODE 消えた [src=wiki/atoms/gone.md loc=L1 community=x]\n"
+        "NODE 目録 [src=index.md loc=L1 community=x]\n"
+    )
+
+    def _wiki(self, root: Path) -> None:
+        _mk_page(root, "atoms", "transformer", title="Transformer", body="自己注意を重ねる。\n")
+        _mk_page(root, "topics", "mt-history", title="機械翻訳の歴史", body="RNN から。\n")
+        (root / "graphify-out").mkdir()
+        (root / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+
+    def _search(self, root: Path, keyword: str, *, which="/usr/bin/graphify", as_json=False):
+        run = mock.Mock(return_value=mock.Mock(stdout=self.QUERY_OUT))
+        buf = io.StringIO()
+        with mock.patch.object(wq.shutil, "which", return_value=which), \
+                mock.patch.object(wq.subprocess, "run", run), contextlib.redirect_stdout(buf):
+            wq.cmd_search(Namespace(keyword=keyword, json=as_json, suggest=False), root)
+        return buf.getvalue(), run
+
+    def test_adds_linked_pages_not_found_by_keyword(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._wiki(root)
+            out, run = self._search(root, "自己注意")
+            self.assertEqual(run.call_args.args[0][:3], ["/usr/bin/graphify", "query", "自己注意"])
+            self.assertIn("グラフでつながるページ（graphify）: 1 件", out)
+            self.assertIn("wiki/topics/mt-history.md", out)
+            self.assertNotIn("gone.md", out)    # 消したページは出さない
+            self.assertNotIn("index.md", out)   # ページでないものは出さない
+
+    def test_graph_only_hits_replace_neighbors(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._wiki(root)
+            out, _ = self._search(root, "注意機構", as_json=True)
+            res = json.loads(out)
+            self.assertEqual(res["count"], 0)
+            self.assertEqual([g["id"] for g in res["graph"]],
+                             ["wiki/atoms/transformer", "wiki/topics/mt-history"])
+            self.assertNotIn("neighbors", res)
+
+    def test_falls_back_without_graphify_or_graph(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._wiki(root)
+            out, run = self._search(root, "自己注意", which=None)
+            run.assert_not_called()
+            self.assertNotIn("グラフ", out)
+            (root / "graphify-out" / "graph.json").unlink()
+            out, run = self._search(root, "自己注意")
+            run.assert_not_called()
+            self.assertNotIn("グラフ", out)
 
 
 if __name__ == "__main__":
