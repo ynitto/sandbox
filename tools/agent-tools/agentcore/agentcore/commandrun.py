@@ -207,6 +207,9 @@ def run_command(spec: dict, *, cwd: str, log_file: str = "", env: "dict | None" 
     elif status is None:
         stop = stopreason.COMMAND_ERROR
         error = _first_line(stderr) or "コマンドを起動できませんでした"
+        if log_file:
+            _tl_append_log(log_file, {"event": "command_error", "argv": argv, "error": error})
+        _tl_progress(f"ERROR: {error}", tag)
     elif ok:
         stop = stopreason.COMMAND_EXIT
         error = ""
