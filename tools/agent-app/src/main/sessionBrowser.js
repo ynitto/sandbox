@@ -13,6 +13,7 @@ const reuse = require('../shared/reuse');
 const { SharedSessionSearch } = require('./sharedSessionSearch');
 const { SessionWorker, WorkerGroup, runtimeDir } = require('./sessionWorker');
 const { SessionIndex, comparablePath } = require('./sessionIndex');
+const { headChars } = require('./text');
 const exec = promisify(execFile);
 
 // 並び順を保つ単位。窓が終わるたびに、その窓の一致を新しい順で画面へ流す。
@@ -37,7 +38,7 @@ function appRecord(s) {
   return { key: 'app:' + s.id, appId: s.id, provider: s.cli, source: 'app', agent: s.cli, repo: s.repo,
     defaults: { permission: s.readonly ? 'ask' : s.autoApprove ? 'auto' : 'confirm',
       worktree: s.worktree || '', branch: s.branch || '', transport: s.transport },
-    nativeId: s.cliSessions?.[s.cli]?.id || '', model: s.model || '', title: s.title || messages[0]?.text?.slice(0, 120) || '無題',
+    nativeId: s.cliSessions?.[s.cli]?.id || '', model: s.model || '', title: s.title || (messages[0]?.text ? headChars(messages[0].text, 120) : '') || '無題',
     createdAt: Date.parse(s.createdAt) / 1000, updatedAt: Date.parse(s.updatedAt) / 1000,
     revision: key(messages), messages, archived: !!s.supersededBy, partial: false };
 }
