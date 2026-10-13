@@ -162,7 +162,7 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
         config.setdefault("graphify", "auto")
     # 既にある codd.json は利用者の設定なので、渡された項目が値を変えたときだけ書き直す。
     if config != original:
-        config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_text(config_file, json.dumps(config, ensure_ascii=False, indent=2) + "\n")
     else:
         print("  codd.json は既にあるので書き換えていません（変えるときは手で直すか、--side などで項目を渡す）")
 
@@ -225,31 +225,31 @@ def write_agents(target: Path, kinds) -> list[Path]:
             "hooks": {"agentSpawn": [{"command": "python3 .statemachine/codd/codd.py show"}]},
             "welcomeMessage": "codd: コードや文書の変更は、計画・確認・変更・検査のステートマシンで進めます",
         }
-        path.write_text(json.dumps(agent, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_text(path, json.dumps(agent, ensure_ascii=False, indent=2) + "\n")
         written.append(path)
         path = target / ".kiro" / "agents" / "codd-apply.json"
         worker = {"name": "codd-apply", "description": APPLY_AGENT_DESCRIPTION, "prompt": apply_prompt,
                   "tools": ["*"], "includeMcpJson": True}
-        path.write_text(json.dumps(worker, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_text(path, json.dumps(worker, ensure_ascii=False, indent=2) + "\n")
         written.append(path)
         path = target / ".kiro" / "agents" / "codd-graph.json"
         worker = {"name": "codd-graph", "description": GRAPH_AGENT_DESCRIPTION, "prompt": graph_prompt,
                   "tools": ["*"], "includeMcpJson": True}
-        path.write_text(json.dumps(worker, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_text(path, json.dumps(worker, ensure_ascii=False, indent=2) + "\n")
         written.append(path)
     if "copilot" in kinds:
         path = target / ".github" / "agents" / "codd.agent.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"---\nname: codd\ndescription: {AGENT_DESCRIPTION}\nagents: [codd-apply, codd-graph]\n---\n\n"
-                        f"{prompt}", encoding="utf-8")
+        write_text(path, f"---\nname: codd\ndescription: {AGENT_DESCRIPTION}\nagents: [codd-apply, codd-graph]\n---\n\n"
+                         f"{prompt}")
         written.append(path)
         path = target / ".github" / "agents" / "codd-apply.agent.md"
-        path.write_text(f"---\nname: codd-apply\ndescription: {APPLY_AGENT_DESCRIPTION}\nuser-invocable: false\n---\n\n"
-                        f"{apply_prompt}", encoding="utf-8")
+        write_text(path, f"---\nname: codd-apply\ndescription: {APPLY_AGENT_DESCRIPTION}\nuser-invocable: false\n---\n\n"
+                         f"{apply_prompt}")
         written.append(path)
         path = target / ".github" / "agents" / "codd-graph.agent.md"
-        path.write_text(f"---\nname: codd-graph\ndescription: {GRAPH_AGENT_DESCRIPTION}\nuser-invocable: false\n---\n\n"
-                        f"{graph_prompt}", encoding="utf-8")
+        write_text(path, f"---\nname: codd-graph\ndescription: {GRAPH_AGENT_DESCRIPTION}\nuser-invocable: false\n---\n\n"
+                         f"{graph_prompt}")
         written.append(path)
     return written
 
@@ -269,14 +269,20 @@ def discover_rules(target: Path, dest: Path) -> None:
         print("\n".join("  " + ln for ln in proc.stdout[start:].splitlines()[1:] if ln.startswith("  - ")))
 
 
+def write_text(path: Path, text: str) -> None:
+    """改行は元のファイルに合わせ、新しいファイルは LF で書く（Windows のテキストモードは既定で \\n を CRLF にする）。"""
+    newline = "\r\n" if path.is_file() and b"\r\n" in path.read_bytes() else "\n"
+    with path.open("w", encoding="utf-8", newline=newline) as f:
+        f.write(text)
+
+
 def append_line(path: Path, line: str) -> None:
     lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
     if line in lines:
         return
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     prefix = "" if not text or text.endswith("\n") else "\n"
-    with path.open("a", encoding="utf-8") as f:
-        f.write(f"{prefix}{line}\n")
+    write_text(path, f"{text}{prefix}{line}\n")
 
 
 def main(argv: list[str] | None = None) -> int:

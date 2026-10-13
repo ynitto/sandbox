@@ -33,6 +33,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - ペイン実行へ分けた際に落ちていた、実行ファイルが見つからないときの `command_error` の記録と ERROR の進捗表示を戻した
 - 実行ペインのプロセスが起動直後に終わっていても、デーモンが例外で止まらず、結果ファイルで成否を判定する
 
+### codd-agent: Windows で書いたファイルの改行が CRLF にならないようにする
+
+- `codd.py` と `init.py` が書くファイル（計画・codd.json・印を写し直した文書・エージェント定義・.gitignore など）は、
+  Windows の Python ではテキストモードの既定で改行が CRLF になっていた。読むときに CRLF は LF に揃うため、LF の文書を
+  `evidence --write` などで書き直すと、ファイル全体が CRLF に変わっていた
+- 新しいファイルは LF で、既にあるファイルは元の改行のまま書く
+
 ### codd-agent: 終わりの記録を確実に計画へ書く
 
 - 終わり（done・stopped）は `codd.py record` 1 つで、報告を出して同じ結果を計画に書き足す。これまでは `report` と `record` を
