@@ -25,7 +25,7 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 
 1. 作業用の一時フォルダに、「サンプル」の要点を満たすリポジトリを作り、このリポジトリの `tools/codd-agent/init.py` で codd を入れる
 2. シナリオを順に、codd エージェントの役で回す（`.statemachine/codd/codd.py` を `show` → `rule --all` → `explore` → `draft` →
-   計画を書く → `verify-plan` → `summary` → `decide` → 変える → `verify-apply` → `report` → `record`）。利用者に訊く場面では、
+   計画を書く → `verify-plan` → `summary` → `decide` → 変える → `verify-apply` → `record`（やめたときは `record --stop`））。利用者に訊く場面では、
    シナリオに書いた「利用者の答え」を返す。終わったら両方のリポジトリでコミットして次へ
 3. 「期待」と違ったところ（止まらないはずで止まった、止まるはずで通った、余計に回った、訊くはずで訊かなかった）を挙げる。
    ファイル名・行・文言の違いは気にしない

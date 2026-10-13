@@ -23,7 +23,7 @@
     batch               段に分けて変えるとき、今の段で変えるファイルを示す
     draft --name 名前   計画のひな形を .plans/日時-名前.md に置く（名前は英語の短い名前。進めている計画があれば残す）。
                         見出しごとに書き込ませ、全文を一度に書かせない
-    record              1 回の終わりに、計画へ確認の答えと結果（report）を書き足して記録として残す（要らない情報は除く）
+    record [--stop]     1 回の終わりに、報告（report）を出し、計画へ確認の答えと結果を書き足して記録として残す（要らない情報は除く）
     decide 答え         確認・相談での利用者の答え（OK / NG / PLAN / APPLY / STOP）と指摘を控える。終わりの報告で計画の記録に書く
     summary             計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import fnmatch
 import json
 import os
@@ -71,6 +72,7 @@ import tempfile
 import time
 import urllib.parse
 from collections import Counter, deque
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -4902,13 +4904,18 @@ def approved_plan_digest(ctx: Ctx) -> str:
 
 def plan_unconfirmed(ctx: Ctx) -> list[str]:
     """変えてよいのは、計画の検査を通って、確認で退けられていない計画だけ（止まったところから飛ばして来ても通さない）。"""
-    mark = ctx.data / PASSED_PLAN
-    if mark.is_file() and mark.read_text(encoding="utf-8") == approved_plan_digest(ctx):
-        return []
+    digest = approved_plan_digest(ctx)
+    if read_text(ctx.data / PASSED_PLAN) == digest:
+        if read_text(ctx.data / APPROVED_PLAN) == digest:
+            return []
+        # 確認の答え（decide OK）が控えられていない。人の承認が要るファイルの許しもこの印なので、推し量って書かない
+        return [f"{UNLOGGED_OK}（利用者が OK と答えたなら `python3 {MACHINE_REL}/codd.py decide OK` を実行してから変える。"
+                "まだ訊いていなければ、計画の確認に戻る）"]
     return ["計画が、検査を通って利用者が確かめたものではありません（計画を直したか、確認で退けられたか、"
             "計画の検査で止まったままです。計画を練り直し、検査と確認を通してから変えてください）"]
 
 
+UNLOGGED_OK = "計画の確認の答えが控えられていません"
 APPROVED_PLAN = "approved-plan"   # 確認で利用者が OK と答えた計画の印（人の承認が要るファイルを変えてよい計画）
 PROTECTED = "人の承認が要るファイルを、承認を得ずに変えています"
 PROTECTED_HIT = "変更の影響を受ける、人の承認が要るファイルがあります"
@@ -4931,8 +4938,7 @@ def plan_protected(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str]]:
 
 def approved_changes(ctx: Ctx, a: "Applied") -> set[tuple[str, str]]:
     """利用者が変えてよいと認めたファイル（確認で OK と答えた計画で変えるもの・accept で認めたもの）。"""
-    mark = ctx.data / APPROVED_PLAN
-    approved = mark.is_file() and mark.read_text(encoding="utf-8") == approved_plan_digest(ctx)
+    approved = read_text(ctx.data / APPROVED_PLAN) == approved_plan_digest(ctx)
     return (set(files_to_change(ctx, a.bodies, a.planned)) if approved else set()) | accepted(ctx)
 
 
@@ -5881,6 +5887,10 @@ def print_hand_over(ctx: Ctx, batches: list, cur: int) -> None:
 
 def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
     """今の段で変えるファイルと、変えるときに使うスキルの手順を示す（apply が段ごとに読む）。"""
+    unconfirmed = plan_unconfirmed(ctx)
+    if unconfirmed:   # 変え始める前に止める（変えたあとの検査で止まると、相談からやり直しになる）
+        print(unconfirmed[0], file=sys.stderr)
+        return 1
     batches, done = load_batches(ctx)
     cur = min(done, len(batches) - 1) if batches else 0
     worker = args.worker
@@ -6706,6 +6716,10 @@ SUMMARY_WIDTH = 120
 
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
+    if ctx.plan.is_file() and run_ended(ctx):
+        # 前の回が記録を書かずに終わっていたら、ここで閉じる（引き継ぐと、前の回の変更をこの回のものと数えて落ちる）
+        print(f"前の回の計画を、記録として閉じました: {close_plan(ctx, quiet=True)}（終わりの記録が書かれていなかった）")
+        ctx.plan = active_plan(ctx.root) or ctx.root / PLAN_DIR / "（計画がありません）.md"
     if ctx.plan.is_file() and not args.new:
         print(f"計画はもうあります: {plan_rel(ctx)}（直す見出しだけを書き換える。最初から書き直すときは --new）")
         return 0
@@ -6806,6 +6820,16 @@ def load_decisions(ctx: Ctx) -> list[dict]:
         return []
 
 
+def log_decision(ctx: Ctx, answer: str, note: str) -> None:
+    log = load_decisions(ctx)
+    log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": answer, "note": note})
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+UNLOGGED = "答えの控えが無かった（やめたときの段から控えた）"
+
+
 def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     """利用者の答えを控える。計画の本文は練り直しで書き換わるので、答えは別に持ち、報告で記録に書く。"""
     log = load_decisions(ctx)
@@ -6817,8 +6841,7 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
         held = plan_protected(ctx, sections(plan_text_for_checks(ctx), PLAN_HEADINGS)[1])
         if held:
             note = "; ".join(filter(None, [note, "承認したファイル: " + ", ".join(protected_label(k, r) for k, r in held)]))
-    log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": args.answer, "note": note})
-    (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    log_decision(ctx, args.answer, note)
     if args.answer in ("NG", "STOP"):
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)   # 退けた計画では変えさせない
         (ctx.data / APPROVED_PLAN).unlink(missing_ok=True)
@@ -6877,9 +6900,19 @@ def cmd_retro(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
-    """1 回の実行の終わりに、計画を判断の記録として残す（done・stopped で report のあとに呼ぶ）。"""
+def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
+    """終わりの報告を作り、その結果と確認の答えを計画に書き足して閉じる。閉じた計画のパス（計画が無ければ None）。
+
+    報告と記録を 1 つのコマンドで行う（別々に呼ばせると、記録を呼び忘れた計画が「進めている計画」のまま残り、
+    次の回がそれと前の回の印を引き継いで、計画と変えたあとの検査で落ちる）。
+    """
+    if not ctx.plan.is_file():
+        return None
     report = ctx.data / "report.md"
+    report.unlink(missing_ok=True)   # 前に出した報告を、この回の結果に取り違えない
+    sink = io.StringIO()
+    with redirect_stdout(sink if quiet else sys.stdout), redirect_stderr(sink if quiet else sys.stderr):
+        cmd_report(ctx, argparse.Namespace())
     if report.is_file():
         # 見出しの後ろのリポジトリの絶対パスは、この端末だけのもの。コミットする記録には残さない
         result = [re.sub(r"^(## .*?）)  .+$", r"\1", ln) for ln in report.read_text(encoding="utf-8").splitlines()[2:]
@@ -6887,18 +6920,46 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         report.unlink()   # 次の回の記録に、この回の結果を混ぜない
     else:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
-    stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan] if ctx.plan.is_file() else []
+    stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
-    if not record:
-        print(NO_PLAN, file=sys.stderr)
-        return 1
-    print(f"計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
+    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN):
+        (ctx.data / name).unlink(missing_ok=True)   # 閉じた回の印を、次の回に持ち越さない
     # この回より前の、結果の見出しが無い計画は `draft --new` で捨てたもの（戻されて残ったもの）。
     # 残すと次の回にそれが「進めている計画」になるので消す。
     for p in stale:
         if p.stem < ctx.plan.stem and RESULT_HEADING not in (read_text(p) or "").splitlines():
             p.unlink()
-            print(f"捨てた計画を消しました: {p.relative_to(ctx.root).as_posix()}")
+            if not quiet:
+                print(f"捨てた計画を消しました: {p.relative_to(ctx.root).as_posix()}")
+    return record
+
+
+def same_plan_baseline(ctx: Ctx) -> bool:
+    """変える前の印（before.json）が、いま進めている計画のものか（前の回の印を取り違えない）。"""
+    try:
+        before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(before, dict) and before.get("plan") == plan_rel(ctx)
+
+
+def run_ended(ctx: Ctx) -> bool:
+    """進めている計画の回が、記録を書かずに終わっているか（変えたあとの検査を通った・利用者がやめた）。"""
+    decisions = load_decisions(ctx)
+    applied = (ctx.data / "applied.json").is_file() and same_plan_baseline(ctx)
+    return applied or bool(decisions) and decisions[-1].get("answer") == "STOP"
+
+
+def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
+    """1 回の実行の終わり（done・stopped）に、報告を出し、計画を判断の記録として残す。"""
+    decisions = load_decisions(ctx)
+    if args.stop and ctx.plan.is_file() and not (decisions and decisions[-1].get("answer") == "STOP"):
+        log_decision(ctx, "STOP", UNLOGGED)   # やめた回を「まだ通っていない」と記録しない
+    record = close_plan(ctx)
+    if not record:
+        print(NO_PLAN, file=sys.stderr)
+        return 1
+    print(f"\n計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
     return 0
 
 
@@ -7151,7 +7212,8 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
     sub.add_parser("retro", help="終わりの振り返りで実行するプロンプトと材料を示す（codd.json の retro。無ければ NONE）")
-    sub.add_parser("record", help="計画に確認の答えと結果を書き足し、判断の記録として残す（終わりに呼ぶ）")
+    rc = sub.add_parser("record", help="終わりの報告を出し、計画に確認の答えと結果を書き足して判断の記録として残す（終わりに呼ぶ）")
+    rc.add_argument("--stop", action="store_true", help="利用者がやめた回として残す（stopped から呼ぶ）")
     de = sub.add_parser("decide", help="確認・相談での利用者の答えを控える（終わりの報告で計画の記録に書く）")
     de.add_argument("answer", choices=list(DECISIONS), help="OK / NG（確認）か PLAN / APPLY / STOP（止まったときの相談）")
     de.add_argument("--note", default="", help="利用者の指摘や指示（そのまま）")

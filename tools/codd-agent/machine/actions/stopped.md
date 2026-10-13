@@ -5,14 +5,14 @@
 **止まったときの利用者の答え（空なら、計画の確認でやめた）:** {{choice}}
 **計画の確認での答え:** {{answer}}
 
-次を実行し、出力をそのまま利用者へ伝えてください（終了コードが 0 でなくてもかまいません）。
+次を実行し、出力をそのまま利用者へ伝えてください。
 
 ```bash
-python3 .statemachine/codd/codd.py report
-python3 .statemachine/codd/codd.py record
+python3 .statemachine/codd/codd.py record --stop
 ```
 
-`record` は、やめたことも含めて計画（`.plans/日時-名前.md`）を判断の記録として残します。出てきたパスも伝えます。
+`record --stop` は終わりの報告を出し、やめたことも含めて計画（`.plans/日時-名前.md`）を判断の記録として残します
+（`report` だけで終えない）。最後に出る記録のパスも伝えます。
 
 - 計画の確認でやめたときは、まだ何も変えていないと書く。止まったところでやめたときは、変えた分を残したか、
   戻したか（`rollback` を実行したか）をはっきり書く

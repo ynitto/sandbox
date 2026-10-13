@@ -15,7 +15,7 @@ python3 .statemachine/codd/codd.py summary
 
 **利用者が答えるまで待ってください。答えを推測したり、先へ進んだりしないでください。**
 
-答えを受けたら、判断の記録に残すため控えます（指摘は利用者の言葉のまま）。
+答えを受けたら、必ず控えます（指摘は利用者の言葉のまま）。OK を控えていない計画では、変える段が変え始める前に止まります。
 
 ```bash
 python3 .statemachine/codd/codd.py decide OK
