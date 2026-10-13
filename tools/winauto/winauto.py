@@ -1600,13 +1600,14 @@ def doctor_wsl() -> list:
 
     try:
         r = subprocess.run(["cmd.exe", "/c", "echo", "winauto-interop-ok"],
-                           capture_output=True, text=True, timeout=20)
-        if "winauto-interop-ok" in r.stdout:
+                           capture_output=True, timeout=20)
+        out, err = decode_cli_output(r.stdout), decode_cli_output(r.stderr)
+        if "winauto-interop-ok" in out:
             checks.append(_check("wsl_interop", "ok",
                                  "cmd.exe を起動できます（Windows 相互運用 有効）"))
         else:
             checks.append(_check("wsl_interop", "error",
-                                 f"cmd.exe の応答が不正です: {(r.stdout + r.stderr).strip()[:120]}"))
+                                 f"cmd.exe の応答が不正です: {(out + err).strip()[:120]}"))
     except Exception as e:
         checks.append(_check("wsl_interop", "error",
                              f"cmd.exe を起動できません（interop 無効の可能性）: {e}"))
@@ -1623,14 +1624,15 @@ def doctor_wsl() -> list:
     env[DOCTOR_CHILD_ENV] = "1"
     try:
         r = subprocess.run([wrapper, "doctor", "--output", "json"],
-                           capture_output=True, text=True, timeout=180, env=env)
+                           capture_output=True, timeout=180, env=env)
     except Exception as e:
         checks.append(_check("bridge", "error", f"ラッパーを実行できません: {e}"))
         return checks
 
-    payload = _parse_json_tail(r.stdout)
+    out, err = decode_cli_output(r.stdout), decode_cli_output(r.stderr)
+    payload = _parse_json_tail(out)
     if payload is None:
-        detail = (r.stderr or r.stdout).strip()[:200] or f"終了コード {r.returncode}"
+        detail = (err or out).strip()[:200] or f"終了コード {r.returncode}"
         checks.append(_check(
             "bridge", "error",
             f"Windows 側 doctor の応答を解釈できません（{detail}）。Windows 側に配置された "
