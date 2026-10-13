@@ -254,9 +254,12 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.run_pa(repo, "rule", "--all")
 
-    def assert_plan_ok(self, repo: Path | None = None) -> None:
+    def assert_plan_ok(self, repo: Path | None = None, ok: bool = True) -> None:
+        """計画の検査を通し、確認で利用者が OK と答えたことを控える（ok=False なら控えない）。"""
         r = self.run_pa(repo or self.impl, "verify-plan")
         self.assertEqual(r.returncode, 0, r.stderr)
+        if ok:
+            self.assertEqual(self.run_pa(repo or self.impl, "decide", "OK").returncode, 0)
 
     def set_check(self, repo: Path, command: list[str]) -> None:
         path = repo / ".statemachine/codd/codd.json"
@@ -886,7 +889,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("人の承認が要るファイル", self.run_pa(self.impl, "show").stdout)
         self.assertIn("src/legacy/, design:docs/api.md", self.run_pa(self.impl, "show").stdout)
         self.write_plan(PLAN_DRIFT)
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         r = self.run_pa(self.impl, "summary")
         self.assertIn("## 人の承認が要るファイル\n\n- design:docs/api.md", r.stdout)
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
@@ -1878,7 +1881,7 @@ class CoddTest(unittest.TestCase):
                 .replace("- docs/api.md — 文書の書式", "- api:docs/api.md — 文書の書式")
                 .replace("## 参照先のその他\n\n- なし", "## 参照先のその他\n\n- 見出しだけ（根拠: api:spec/hello.md）"))
         self.write_plan(plan)
-        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 0)
+        self.assert_plan_ok()
         self.run_pa(self.impl, "explore", "--term", "hello")
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         # 計画は api を変える。design を変えてしまい、api を変えていない。
@@ -2417,6 +2420,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("2 段に分ける", r.stdout)
+        self.run_pa(self.impl, "decide", "OK")
         out = self.run_pa(self.impl, "batch").stdout
         self.assertIn("段 1/2", out)
         self.assertIn("- src/app.py", out)
@@ -3545,7 +3549,7 @@ class CoddTest(unittest.TestCase):
         # 練り直した計画の別の見出しにパスが出てくるだけなら、省いた判断を戻す（戻さないとまた未判断になる）
         commit(self.impl, {"src/a.py": "hello()\n"}, "callers")
         self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/a.py — 変更不要: 契約は同じ"))
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "NG", "--note", "info で出して")
         plan = self.impl / PLAN
         plan.write_text(plan.read_text().replace("hello にログを足す。", "hello にログを info で足す（src/a.py と同じ）。"))
@@ -3596,9 +3600,9 @@ class CoddTest(unittest.TestCase):
     def test_plan_is_kept_as_a_decision_record(self) -> None:
         # 計画は .plans/日時-名前.md に書き、終わりに確認の答えと結果を書き足して、その名前のまま残す。
         self.write_plan(PLAN_DRIFT)
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "NG", "--note", "戻り値の説明も直して")
-        self.assert_plan_ok()   # 同じ回の練り直しでは同じ計画を直す
+        self.assert_plan_ok(ok=False)   # 同じ回の練り直しでは同じ計画を直す
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
@@ -3669,7 +3673,7 @@ class CoddTest(unittest.TestCase):
             self.assertIn("codd.py record", action)
             self.assertNotIn("codd.py report\n", action)
         self.write_plan(PLAN_DRIFT)
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
@@ -3685,7 +3689,7 @@ class CoddTest(unittest.TestCase):
     def test_next_draft_closes_a_finished_plan_left_without_a_record(self) -> None:
         # 前の回が記録を書かずに終わると、次の回がその計画と前の回の印を引き継ぎ、前の回の変更で落ちていた。
         self.write_plan(PLAN_DRIFT)
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
@@ -3701,7 +3705,7 @@ class CoddTest(unittest.TestCase):
         new = next((self.impl / ".plans").glob("*-next.md"))
         new.write_text(PLAN_ALIGNED, encoding="utf-8")
         self.read_up(self.impl)
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 2\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
@@ -3710,30 +3714,18 @@ class CoddTest(unittest.TestCase):
         decided = new.read_text(encoding="utf-8").split("## 確認と判断", 1)[1].split("## 結果", 1)[0]
         self.assertEqual(decided.count("OK（計画で進める）"), 1)   # 前の回の答えを混ぜない
 
-    def test_unlogged_answers_are_recorded_from_where_the_run_went(self) -> None:
-        # 確認の答え（decide）を控え忘れても、進んだ先から控えて記録に残す（NG で直した・OK で変える段に来た）。
+    def test_changing_waits_until_the_users_ok_is_logged(self) -> None:
+        # 確認の答え（decide OK）を控えずに変える段へ来たら、変え始める前に止める（推し量って控えない）。
         self.write_plan(PLAN_ALIGNED)
-        self.assert_plan_ok()
-        plan = self.impl / PLAN
-        plan.write_text(plan.read_text(encoding="utf-8").replace("hello にログを足す。", "hello にログを 1 行足す。"),
-                        encoding="utf-8")
-        self.assert_plan_ok()                     # decide NG を呼ばずに直して検査し直した
-        self.assert_plan_ok()                     # 同じ計画の検査をもう一度通しても、答えを重ねない
-        self.assertEqual(self.run_pa(self.impl, "batch").returncode, 0)   # decide OK を呼ばずに変える段へ来た
-        self.run_pa(self.impl, "batch")
+        self.assert_plan_ok(ok=False)
+        r = self.run_pa(self.impl, "batch")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("計画の確認の答えが控えられていません", r.stderr)
         (self.impl / "src/app.py").write_text("def hello():\n    print('hello')\n    return 1\n", encoding="utf-8")
+        self.assertIn("計画の確認の答えが控えられていません", self.run_pa(self.impl, "verify-apply").stderr)
+        self.run_pa(self.impl, "decide", "OK")
+        self.assertEqual(self.run_pa(self.impl, "batch").returncode, 0)
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
-        decided = plan.read_text(encoding="utf-8").split("## 確認と判断", 1)[1].split("## 結果", 1)[0]
-        self.assertRegex(decided, r"NG（計画を直す）: 答えの控えが無かった.*\n- [-0-9: ]+ OK（計画で進める）: 答えの控えが無かった")
-        self.assertEqual(decided.count("（計画"), 2)
-        # 次の回の計画では、前の回の印から答えを推し量らない
-        self.run_pa(self.impl, "draft", "--name", "next")
-        new = next((self.impl / ".plans").glob("*-next.md"))
-        new.write_text(PLAN_ALIGNED, encoding="utf-8")
-        self.read_up(self.impl)
-        self.assert_plan_ok()
-        self.assertFalse((self.impl / ".codd/decisions.json").exists())
 
     def test_stopped_run_is_recorded_as_stopped_without_a_logged_answer(self) -> None:
         self.write_plan(PLAN_ALIGNED)
@@ -3746,7 +3738,7 @@ class CoddTest(unittest.TestCase):
 
     def test_draft_keeps_the_plan_while_the_run_goes_on(self) -> None:
         self.write_plan(PLAN_ALIGNED)
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "NG", "--note", "直して")
         r = self.run_pa(self.impl, "draft", "--name", "again")
         self.assertIn(f"計画はもうあります: {PLAN}", r.stdout)
@@ -4070,7 +4062,7 @@ class CoddTest(unittest.TestCase):
     def test_a_removed_name_left_in_an_unplanned_ref_is_asked(self) -> None:
         # 計画で変えない参照先に、消した名前が残っている。変える段だけでは直せない（直せば計画に無い変更）ので訊く。
         self.write_plan(self.with_tests(self.RENAME_PLAN, "- `greet` — 変更不要: 名前だけ変える"))
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def greet():\n    return 1\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
@@ -4084,7 +4076,7 @@ class CoddTest(unittest.TestCase):
         # 今回やらないと決めたものは残っていてよい
         self.write_plan(self.with_tests(self.RENAME_PLAN, "- `greet` — 変更不要: 名前だけ変える").replace(
             "## 今回やらないこと\n\nなし", "## 今回やらないこと\n\n- docs/api.md の名前を直す — 設計書は別の回"))
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / ".codd/apply.md").unlink()
         r = self.run_pa(self.impl, "verify-apply")
@@ -4092,7 +4084,7 @@ class CoddTest(unittest.TestCase):
 
     def test_report_after_stop_says_the_user_stopped(self) -> None:
         self.write_plan(PLAN_DRIFT)
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         self.run_pa(self.impl, "decide", "STOP")
@@ -4120,7 +4112,7 @@ class CoddTest(unittest.TestCase):
             "## 守る決まり\n\nなし", "## 守る決まり\n\n- .agents/guides/mig.md — 戻す SQL を書く")
         self.run_pa(self.impl, "guide", ".agents/guides/mig.md")
         self.write_plan(plan)
-        self.assert_plan_ok()
+        self.assert_plan_ok(ok=False)
         self.run_pa(self.impl, "decide", "OK")
         (self.impl / "db/002.sql").write_text("select 1;\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")

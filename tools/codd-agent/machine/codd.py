@@ -4904,13 +4904,18 @@ def approved_plan_digest(ctx: Ctx) -> str:
 
 def plan_unconfirmed(ctx: Ctx) -> list[str]:
     """変えてよいのは、計画の検査を通って、確認で退けられていない計画だけ（止まったところから飛ばして来ても通さない）。"""
-    mark = ctx.data / PASSED_PLAN
-    if mark.is_file() and mark.read_text(encoding="utf-8") == approved_plan_digest(ctx):
-        return []
+    digest = approved_plan_digest(ctx)
+    if read_text(ctx.data / PASSED_PLAN) == digest:
+        if read_text(ctx.data / APPROVED_PLAN) == digest:
+            return []
+        # 確認の答え（decide OK）が控えられていない。人の承認が要るファイルの許しもこの印なので、推し量って書かない
+        return [f"{UNLOGGED_OK}（利用者が OK と答えたなら `python3 {MACHINE_REL}/codd.py decide OK` を実行してから変える。"
+                "まだ訊いていなければ、計画の確認に戻る）"]
     return ["計画が、検査を通って利用者が確かめたものではありません（計画を直したか、確認で退けられたか、"
             "計画の検査で止まったままです。計画を練り直し、検査と確認を通してから変えてください）"]
 
 
+UNLOGGED_OK = "計画の確認の答えが控えられていません"
 APPROVED_PLAN = "approved-plan"   # 確認で利用者が OK と答えた計画の印（人の承認が要るファイルを変えてよい計画）
 PROTECTED = "人の承認が要るファイルを、承認を得ずに変えています"
 PROTECTED_HIT = "変更の影響を受ける、人の承認が要るファイルがあります"
@@ -4933,8 +4938,7 @@ def plan_protected(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str]]:
 
 def approved_changes(ctx: Ctx, a: "Applied") -> set[tuple[str, str]]:
     """利用者が変えてよいと認めたファイル（確認で OK と答えた計画で変えるもの・accept で認めたもの）。"""
-    mark = ctx.data / APPROVED_PLAN
-    approved = mark.is_file() and mark.read_text(encoding="utf-8") == approved_plan_digest(ctx)
+    approved = read_text(ctx.data / APPROVED_PLAN) == approved_plan_digest(ctx)
     return (set(files_to_change(ctx, a.bodies, a.planned)) if approved else set()) | accepted(ctx)
 
 
@@ -5009,12 +5013,6 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     if not ctx.plan.is_file():
         print_problems(ctx, "plan", [NO_PLAN])
         return 1
-    if plan_unconfirmed(ctx):   # 通った計画を直して検査し直す
-        try:
-            phase = json.loads((ctx.data / PROBLEMS_NAME).read_text(encoding="utf-8")).get("phase")
-        except (OSError, ValueError, AttributeError):
-            phase = None
-        infer_answer(ctx, "PLAN" if phase == "apply" else "NG")
     merged = merge_legacy_headings(ctx.plan.read_text(encoding="utf-8"))
     if merged != ctx.plan.read_text(encoding="utf-8"):
         ctx.plan.write_text(merged, encoding="utf-8")   # 前の版の 2 つの見出しを「従う手順」にまとめて書き直す
@@ -5889,8 +5887,10 @@ def print_hand_over(ctx: Ctx, batches: list, cur: int) -> None:
 
 def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
     """今の段で変えるファイルと、変えるときに使うスキルの手順を示す（apply が段ごとに読む）。"""
-    if not plan_unconfirmed(ctx):
-        infer_answer(ctx, "OK")
+    unconfirmed = plan_unconfirmed(ctx)
+    if unconfirmed:   # 変え始める前に止める（変えたあとの検査で止まると、相談からやり直しになる）
+        print(unconfirmed[0], file=sys.stderr)
+        return 1
     batches, done = load_batches(ctx)
     cur = min(done, len(batches) - 1) if batches else 0
     worker = args.worker
@@ -6827,20 +6827,7 @@ def log_decision(ctx: Ctx, answer: str, note: str) -> None:
     (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-UNLOGGED = "答えの控えが無かったので、進んだ先から控えた"
-
-
-def infer_answer(ctx: Ctx, answer: str) -> None:
-    """検査を通った計画から先へ進んだのに、利用者の答えが控えられていなければ、進んだ先から控える（記録の取りこぼしを防ぐ）。
-
-    変える段に来たなら OK、通った計画を直して検査し直すなら NG（変えたあとに止まったのなら PLAN）。
-    人の承認が要るファイルを変えてよい印（approved-plan）は書かない。それは `decide OK` だけが書く。"""
-    passed, log = ctx.data / PASSED_PLAN, ctx.data / DECISIONS_NAME
-    if not passed.is_file() or (log.is_file() and log.stat().st_mtime >= passed.stat().st_mtime):
-        return
-    if not same_plan_baseline(ctx):
-        return   # 前の回の印。この計画はまだ通っていない
-    log_decision(ctx, answer, UNLOGGED)
+UNLOGGED = "答えの控えが無かった（やめたときの段から控えた）"
 
 
 def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
