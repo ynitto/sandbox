@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 点検で「codd を通ったあとに変わった変更」を見分ける
+
+- 変えたあとの検査を通った回の記録（`.plans/`）に「検査を通った中身」として、変えたファイルごとの git の blob（先頭 12 文字。
+  消したファイルは「削除」）を残す。自分と参照先の両方の分を書く
+- `lint` は、期間のうちのコミットで変わったファイルの中身をこれと比べ、記録があるのに中身が違うものを新しい節
+  「codd を通ったあとに変わった変更」に挙げる（検査を通したあと、コミットする前の手直しも、あとで codd を通さずに変えたものも）。
+  これまでは一度記録に名前が出たファイルを、そのあといつ変えても「通った」とみなしていた
+- 中身の無い前の版の記録は、これまでどおり名前が出てくれば通ったとみなす。意味のずれのサンプル（`samples/drift/`）は、
+  新しい節も比べる対象に入れる
+
 ### figma-use: Figma MCP なしで Figma のデザイン情報を取得するスキルを追加（1.0.0）
 
 - Figma の URL（node-id のハイフン・コロン表記、branch の URL）から、構造・スクリーンショット・画像の塗り・SVG を
@@ -31,6 +41,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 計画の検査を通る前にやめた回（報告が出せない回）は、探した・読んだ記録と止めた理由が消えずに次の回に持ち越され、
   次の回が読まずに計画の検査を通れた。回を閉じるときは、報告が出せなくても消す
 - 検査（`verify-plan`・`verify-apply`）は `subagent` を `true` にしてもサブエージェントに渡さないことを README に書いた
+
+### codd-agent: Windows で書いたファイルの改行が CRLF にならないようにする
+
+- `codd.py` と `init.py` が書くファイル（計画・codd.json・印を写し直した文書・エージェント定義・.gitignore など）は、
+  Windows の Python ではテキストモードの既定で改行が CRLF になっていた。読むときに CRLF は LF に揃うため、LF の文書を
+  `evidence --write` などで書き直すと、ファイル全体が CRLF に変わっていた
+- 新しいファイルは LF で、既にあるファイルは元の改行のまま書く
 
 ### codd-agent: 終わりの記録を確実に計画へ書く
 

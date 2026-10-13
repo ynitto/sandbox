@@ -72,6 +72,36 @@ def _is_wsl() -> bool:
         return False
 
 
+# Windows ネイティブの CLI（cmd.exe / PowerShell / where.exe）は CP932、WSL は UTF-8 で吐く。
+# text=True だとロケールの既定で読んで UnicodeDecodeError になるので、bytes で受けてここで読む。
+# 単体で配るツール・スキルは共有モジュールに依存できないため、これが原本で写しが各所にある
+# （写しの一覧と本体の一致は tools/ci/tests/test_check_subprocess_encoding.py が検査する）。
+def decode_cli_output(data) -> str:
+    """子プロセスの出力（bytes）を文字列にする。Windows ネイティブの CLI は CP932、WSL は
+    UTF-8 で吐くので、どちらが来ても読む。JS 版 decodeCliOutput
+    （tools/agent-dashboard/src/features/cowork/main/loopProvider.js:51）と同じ段取り。
+
+    解決の順:
+      1. None・空なら ''、すでに str ならそのまま返す
+      2. UTF-8 として読めればそれ
+      3. 読めなければ CP932
+      4. CP932 でも読めなければ UTF-8 の置換文字つき（例外は投げない）
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    data = bytes(data)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("cp932")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
 def _import_pywinauto():
     try:
         import pywinauto
@@ -1570,13 +1600,14 @@ def doctor_wsl() -> list:
 
     try:
         r = subprocess.run(["cmd.exe", "/c", "echo", "winauto-interop-ok"],
-                           capture_output=True, text=True, timeout=20)
-        if "winauto-interop-ok" in r.stdout:
+                           capture_output=True, timeout=20)
+        out, err = decode_cli_output(r.stdout), decode_cli_output(r.stderr)
+        if "winauto-interop-ok" in out:
             checks.append(_check("wsl_interop", "ok",
                                  "cmd.exe を起動できます（Windows 相互運用 有効）"))
         else:
             checks.append(_check("wsl_interop", "error",
-                                 f"cmd.exe の応答が不正です: {(r.stdout + r.stderr).strip()[:120]}"))
+                                 f"cmd.exe の応答が不正です: {(out + err).strip()[:120]}"))
     except Exception as e:
         checks.append(_check("wsl_interop", "error",
                              f"cmd.exe を起動できません（interop 無効の可能性）: {e}"))
@@ -1593,14 +1624,15 @@ def doctor_wsl() -> list:
     env[DOCTOR_CHILD_ENV] = "1"
     try:
         r = subprocess.run([wrapper, "doctor", "--output", "json"],
-                           capture_output=True, text=True, timeout=180, env=env)
+                           capture_output=True, timeout=180, env=env)
     except Exception as e:
         checks.append(_check("bridge", "error", f"ラッパーを実行できません: {e}"))
         return checks
 
-    payload = _parse_json_tail(r.stdout)
+    out, err = decode_cli_output(r.stdout), decode_cli_output(r.stderr)
+    payload = _parse_json_tail(out)
     if payload is None:
-        detail = (r.stderr or r.stdout).strip()[:200] or f"終了コード {r.returncode}"
+        detail = (err or out).strip()[:200] or f"終了コード {r.returncode}"
         checks.append(_check(
             "bridge", "error",
             f"Windows 側 doctor の応答を解釈できません（{detail}）。Windows 側に配置された "

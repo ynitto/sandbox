@@ -41,6 +41,7 @@ from sdpm.layout import (
 from sdpm.preview.backend import _is_wsl
 from sdpm.utils.effects import apply_effects  # noqa: F401
 from sdpm.utils.image import apply_image_effects, resolve_image_path  # noqa: F401
+from sdpm.utils.cli_output import decode_cli_output
 from sdpm.utils.io import read_json, write_json
 from sdpm.utils.svg import (  # noqa: F401
     _recolor_svg,
@@ -307,11 +308,11 @@ def _get_documents_dir():
                 ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-Command",
                  "[Environment]::GetFolderPath('MyDocuments')"],
                 capture_output=True, timeout=10)
-            win_path = result.stdout.decode("cp932", errors="replace").strip()
+            win_path = decode_cli_output(result.stdout).strip()
             if win_path:
-                wsl = subprocess.run(["wslpath", win_path], capture_output=True, text=True)  # nosec B603 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+                wsl = subprocess.run(["wslpath", win_path], capture_output=True)  # nosec B603 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 if wsl.returncode == 0:
-                    return Path(wsl.stdout.strip()) / "SDPM-Presentations"
+                    return Path(decode_cli_output(wsl.stdout).strip()) / "SDPM-Presentations"
         except Exception:
             pass
     return Path.home() / "Documents" / "SDPM-Presentations"
@@ -734,7 +735,7 @@ def cmd_analyze_template(args):
             if export_pdf(template_path, pdf_path):
                 subprocess.run(  # nosec B603 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                     ["pdftoppm", "-png", "-scale-to", "1280", str(pdf_path), str(preview_dir / "page")],
-                    capture_output=True, text=True,
+                    capture_output=True,
                 )
                 pdf_path.unlink(missing_ok=True)
         except Exception:

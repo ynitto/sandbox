@@ -129,6 +129,35 @@ def check_source(script_dir: Path) -> Path:
     return src
 
 
+# decode_cli_output の写し。原本は tools/winauto/winauto.py（単体で配るので共有モジュールに
+# 依存できない）。直すときは原本と全部の写しを揃える（本体の一致は
+# tools/ci/tests/test_check_subprocess_encoding.py が検査する）。
+def decode_cli_output(data) -> str:
+    """子プロセスの出力（bytes）を文字列にする。Windows ネイティブの CLI は CP932、WSL は
+    UTF-8 で吐くので、どちらが来ても読む。JS 版 decodeCliOutput
+    （tools/agent-dashboard/src/features/cowork/main/loopProvider.js:51）と同じ段取り。
+
+    解決の順:
+      1. None・空なら ''、すでに str ならそのまま返す
+      2. UTF-8 として読めればそれ
+      3. 読めなければ CP932
+      4. CP932 でも読めなければ UTF-8 の置換文字つき（例外は投げない）
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    data = bytes(data)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("cp932")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
 # ---------------------------------------------------------------------------
 # Windows Python の検出（WSL から利用）
 # ---------------------------------------------------------------------------
@@ -139,9 +168,9 @@ def find_windows_python() -> str | None:
     try:
         result = subprocess.run(
             ["cmd.exe", "/c", "where", "python"],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, timeout=5
         )
-        for line in result.stdout.splitlines():
+        for line in decode_cli_output(result.stdout).splitlines():
             line = line.strip()
             if line and "python.exe" in line.lower() and "WindowsApps" not in line:
                 return line
@@ -161,9 +190,9 @@ def find_windows_python() -> str | None:
         try:
             result = subprocess.run(
                 ["cmd.exe", "/c", "echo", "%USERPROFILE%"],
-                capture_output=True, text=True, timeout=3
+                capture_output=True, timeout=3
             )
-            userprofile = result.stdout.strip()
+            userprofile = decode_cli_output(result.stdout).strip()
         except Exception:
             pass
 
@@ -175,9 +204,9 @@ def find_windows_python() -> str | None:
 
     for path in candidates:
         try:
-            wsl_path = subprocess.run(
-                ["wslpath", path], capture_output=True, text=True
-            ).stdout.strip()
+            wsl_path = decode_cli_output(subprocess.run(
+                ["wslpath", path], capture_output=True
+            ).stdout).strip()
             if Path(wsl_path).exists():
                 return path
         except Exception:
@@ -190,9 +219,9 @@ def wslpath_to_windows(unix_path: str) -> str:
     """WSL パスを Windows パスに変換する。"""
     result = subprocess.run(
         ["wslpath", "-w", unix_path],
-        capture_output=True, text=True
+        capture_output=True
     )
-    return result.stdout.strip()
+    return decode_cli_output(result.stdout).strip()
 
 
 def windows_to_wsl_path(win_path: str) -> str:
@@ -203,9 +232,9 @@ def windows_to_wsl_path(win_path: str) -> str:
     try:
         result = subprocess.run(
             ["wslpath", "-u", win_path],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, timeout=5
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        return decode_cli_output(result.stdout).strip() if result.returncode == 0 else ""
     except Exception:
         return ""
 
@@ -391,9 +420,9 @@ def install_wsl(src: Path, prefix: Path, win_python: str, dry_run: bool) -> Path
     try:
         result = subprocess.run(
             ["cmd.exe", "/c", "echo", "%USERPROFILE%"],
-            capture_output=True, text=True, timeout=3
+            capture_output=True, timeout=3
         )
-        win_userprofile = result.stdout.strip()
+        win_userprofile = decode_cli_output(result.stdout).strip()
     except Exception:
         win_userprofile = r"C:\Users\Public"
 
@@ -409,9 +438,9 @@ def install_wsl(src: Path, prefix: Path, win_python: str, dry_run: bool) -> Path
         )
 
     # winauto.py を Windows 側へコピー
-    win_script_unix = subprocess.run(
-        ["wslpath", win_script_win], capture_output=True, text=True
-    ).stdout.strip()
+    win_script_unix = decode_cli_output(subprocess.run(
+        ["wslpath", win_script_win], capture_output=True
+    ).stdout).strip()
     info(f"コピー先: {win_script_unix}")
     if not dry_run:
         Path(win_script_unix).parent.mkdir(parents=True, exist_ok=True)
@@ -558,7 +587,7 @@ def verify_installation(dry_run: bool) -> None:
 
     try:
         result = subprocess.run(
-            ["winauto", "--version"], capture_output=True, text=True, timeout=60
+            ["winauto", "--version"], capture_output=True, timeout=60
         )
     except (OSError, subprocess.SubprocessError) as e:
         warn(f"winauto コマンドを実行できませんでした（{e}）。")
@@ -569,21 +598,22 @@ def verify_installation(dry_run: bool) -> None:
         warn("winauto コマンドが PATH 上で見つかりません。")
         warn("新しい端末を開いて（PATH 反映後に）winauto --version を実行してください。")
         return
-    ok(f"winauto コマンド確認: {result.stdout.strip()}")
+    ok(f"winauto コマンド確認: {decode_cli_output(result.stdout).strip()}")
 
     # doctor は WSL→Windows のブリッジを端から端まで確認する。失敗しても
     # インストール自体は成功しているので、所見を見せるだけで止めない。
     step("ブリッジ診断（winauto doctor）")
     try:
-        doc = subprocess.run(["winauto", "doctor"], capture_output=True, text=True,
+        doc = subprocess.run(["winauto", "doctor"], capture_output=True,
                              timeout=240)
     except (OSError, subprocess.SubprocessError) as e:
         warn(f"winauto doctor を実行できませんでした: {e}")
         return
 
-    print(doc.stdout.rstrip())
-    if doc.stderr.strip():
-        print(doc.stderr.rstrip(), file=sys.stderr)
+    doc_out, doc_err = decode_cli_output(doc.stdout), decode_cli_output(doc.stderr)
+    print(doc_out.rstrip())
+    if doc_err.strip():
+        print(doc_err.rstrip(), file=sys.stderr)
     if doc.returncode == 0:
         ok("ブリッジ診断: 問題なし")
     else:

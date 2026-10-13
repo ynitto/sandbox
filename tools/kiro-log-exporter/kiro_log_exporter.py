@@ -37,6 +37,35 @@ _STATE_FILE = ".kiro_export_state.json"
 
 # ── OS / 環境検出 ─────────────────────────────────────────────────────────────
 
+# decode_cli_output の写し。原本は tools/winauto/winauto.py（単体で配るので共有モジュールに
+# 依存できない）。直すときは原本と全部の写しを揃える（本体の一致は
+# tools/ci/tests/test_check_subprocess_encoding.py が検査する）。
+def decode_cli_output(data) -> str:
+    """子プロセスの出力（bytes）を文字列にする。Windows ネイティブの CLI は CP932、WSL は
+    UTF-8 で吐くので、どちらが来ても読む。JS 版 decodeCliOutput
+    （tools/agent-dashboard/src/features/cowork/main/loopProvider.js:51）と同じ段取り。
+
+    解決の順:
+      1. None・空なら ''、すでに str ならそのまま返す
+      2. UTF-8 として読めればそれ
+      3. 読めなければ CP932
+      4. CP932 でも読めなければ UTF-8 の置換文字つき（例外は投げない）
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    data = bytes(data)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("cp932")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
 def _is_wsl() -> bool:
     if sys.platform != "linux":
         return False
@@ -88,11 +117,11 @@ def _kiro_cli_wsl_windows_candidates() -> list[Path]:
     try:
         result = subprocess.run(
             ["wslpath", "-u", r"C:\Users"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, timeout=5,
         )
         if result.returncode != 0:
             return []
-        win_users = Path(result.stdout.strip())
+        win_users = Path(decode_cli_output(result.stdout).strip())
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return []
 
@@ -123,11 +152,11 @@ def _kiro_cli_db_wsl_candidates() -> list[Path]:
         try:
             result = subprocess.run(
                 ["wsl", "-d", distro, "-e", "bash", "-c", "echo $HOME"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, timeout=10,
             )
             if result.returncode != 0:
                 continue
-            wsl_home = result.stdout.strip()
+            wsl_home = decode_cli_output(result.stdout).strip()
             # WSL UNC パスに変換: /home/user → \\wsl$\Ubuntu\home\user
             rel = wsl_home.lstrip("/").replace("/", "\\")
             base_unc = Path(f"\\\\wsl$\\{distro}") / rel / ".kiro"
@@ -180,11 +209,11 @@ def _kiro_ide_wsl_windows_paths() -> list[Path]:
     try:
         result = subprocess.run(
             ["wslpath", "-u", r"C:\Users"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, timeout=5,
         )
         if result.returncode != 0:
             return []
-        win_users = Path(result.stdout.strip())
+        win_users = Path(decode_cli_output(result.stdout).strip())
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return []
 

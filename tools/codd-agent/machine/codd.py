@@ -35,7 +35,8 @@
     rollback            計画の検査が通ったとき（変える前）の中身へ戻す。そのあとに変わったファイルだけ
     accept              変える段で計画に無いファイルを理由付きで足した分を、利用者が認めたと控える（計画は書き直さない）
     lint [--since 日]  本流とは別の点検。リポジトリ全体の食い違い（壊れたパス・文書の書式・写したテストの結果・
-                        テスト・codd を通らなかった変更）を探し、本流に渡す「やりたいこと」の 1 行にする。何も直さない
+                        テスト・codd を通らなかった変更・codd を通ったあとに変わった変更）を探し、
+                        本流に渡す「やりたいこと」の 1 行にする。何も直さない
 
 置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
 作業ファイルと graphify のグラフは `<リポジトリ>/.codd/` に置く。依存は python3 と git のみ
@@ -781,6 +782,13 @@ def active_plan(root: Path) -> Path | None:
     return open_plans[-1] if open_plans else None
 
 
+def write_text(path: Path, text: str) -> None:
+    """改行は元のファイルに合わせ、新しいファイルは LF で書く（Windows のテキストモードは既定で \\n を CRLF にする）。"""
+    newline = "\r\n" if path.is_file() and b"\r\n" in path.read_bytes() else "\n"
+    with path.open("w", encoding="utf-8", newline=newline) as f:
+        f.write(text)
+
+
 def plan_rel(ctx: "Ctx") -> str:
     return ctx.plan.relative_to(ctx.root).as_posix()
 
@@ -1095,7 +1103,7 @@ def load_skills(ctx: "Ctx", specs: list[str]) -> list[str]:
         print(read_text(path) or "")
         log[spec] = {"path": str(path), "time": time.time()}
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / SKILLS_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / SKILLS_READ, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
     return missing
 
 
@@ -1432,7 +1440,7 @@ def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
             target = entry.setdefault("guides", [])
         if {"use": rel} not in target:
             target.append({"use": rel})
-    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(path, json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
     print(f"{len(candidates)} 件を {CONFIG_NAME} に書きました（決まりでないものは手で消してください）")
     return 0
 
@@ -1472,7 +1480,7 @@ def ensure_graph(ctx: Ctx, repo: Path, rebuild: bool = True) -> tuple[str | None
     if rc != 0 or not graph.is_file():
         print(f"  graphify {argv[1]} に失敗しました（{rc}）: {out.strip()[:200]}", file=sys.stderr)
         return None, None, "update-failed"
-    stamp_file.write_text(now, encoding="utf-8")
+    write_text(stamp_file, now)
     return exe, graph, "updated"
 
 
@@ -1518,7 +1526,7 @@ def load_search_cache(ctx: Ctx) -> dict:
 def save_search_cache(ctx: Ctx, cache: dict) -> None:
     ctx.data.mkdir(parents=True, exist_ok=True)
     keep = dict(list(cache.items())[-MAX_SEARCH_CACHE:])   # 新しいものを残す（dict は足した順）
-    (ctx.data / SEARCH_CACHE).write_text(json.dumps(keep, ensure_ascii=False) + "\n", encoding="utf-8")
+    write_text(ctx.data / SEARCH_CACHE, json.dumps(keep, ensure_ascii=False) + "\n")
 
 
 def _search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
@@ -1579,7 +1587,7 @@ def write_report(ctx: Ctx, name: str, title: str, terms: list[str], parts: list[
     for heading, note, body in parts:
         lines += [f"## {heading}", "", f"- graphify: {note}", "", body]
     lines += ["## 候補のファイル", "", *([f"- {p}" for p in files] or ["- (見つからない)"]), ""]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    write_text(path, "\n".join(lines))
     return path
 
 
@@ -1617,7 +1625,7 @@ def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
             print(f"- {ref_label(ctx, r.name, rel)}:{lines[rel]}  {snippet(r.path / rel, lines[rel], terms)}")
             shown += 1
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / EXPLORE_LOG).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / EXPLORE_LOG, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
     print(f"FOUND {len(files)} files (graphify: {', '.join(notes)})")
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
@@ -1693,7 +1701,7 @@ def cmd_rule(ctx: Ctx, args: argparse.Namespace) -> int:
         print(doc_text(repo, rel) or "（読めませんでした）")
         log[label] = rule_digest(ctx, name, rel)
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / RULES_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / RULES_READ, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
     if not rules:
         print("守る決まりのファイルはありません")
     if unknown:
@@ -1881,7 +1889,7 @@ def load_semantic_state(ctx: Ctx) -> dict:
 def save_semantic_state(ctx: Ctx, state: dict) -> None:
     path = ctx.data / SEMANTIC_STATE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(path, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
 
 
 def chunk_out(ctx: Ctx, chunk: dict) -> Path:
@@ -1934,7 +1942,7 @@ def cmd_graph(ctx: Ctx, args: argparse.Namespace) -> int:
 
 def write_graph_log(ctx: Ctx) -> None:
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / GRAPH_LOG).write_text(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M")}) + "\n", encoding="utf-8")
+    write_text(ctx.data / GRAPH_LOG, json.dumps({"at": time.strftime("%Y-%m-%d %H:%M")}) + "\n")
 
 
 def plan_chunks(ctx: Ctx, gpy: str, state: dict, exes: dict) -> int:
@@ -2450,7 +2458,7 @@ def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
                                "hash": now_hash(side_of(ctx, key), rel)}
     path = ctx.data / DISMISSED_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(rec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(path, json.dumps(rec, ensure_ascii=False, indent=2) + "\n")
 
 
 # ---------------------------------------------------------------- 根拠のパス
@@ -3095,7 +3103,7 @@ def write_trace(ctx: Ctx, name: str, title: str, groups: list[tuple[str, list[st
     lines = [f"# {title}", ""]
     for heading, rows in groups:
         lines += [f"## {heading}", "", *([f"- {r}" for r in rows] or ["- なし"]), ""]
-    (ctx.data / name).write_text("\n".join(lines), encoding="utf-8")
+    write_text(ctx.data / name, "\n".join(lines))
 
 
 def added_lines(side: Side, rel: str) -> set[int] | None:
@@ -4047,7 +4055,7 @@ def write_tests_report(ctx: Ctx, name: str, title: str, found: dict[tuple[str, s
         return f"- {side_label(ctx, k, rel)} — {why}（{state}）"
     lines = [f"# {title}", "", *([row(k, r, w) for (k, r), w in sorted(found.items())] or ["- なし"]), ""]
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / name).write_text("\n".join(lines), encoding="utf-8")
+    write_text(ctx.data / name, "\n".join(lines))
 
 
 # `status.COMPLETED` のように修飾した名前。テストの変更案が末尾の名前（`COMPLETED`）で書いていれば扱ったとみなす。
@@ -4352,11 +4360,11 @@ def evidence_plan_problems(ctx: Ctx, bodies: dict[str, str], tests: set[tuple[st
               + (f"（{', '.join(docs_linking(ctx, h.key, h.rel))}）" if docs_linking(ctx, h.key, h.rel) else "")
               for h in shown] or ["- なし"]
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / "evidence.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_text(ctx.data / "evidence.md", "\n".join(lines) + "\n")
     if not changed_in_this_run(ctx):   # 変えたあとに練り直すときは、変える前に控えたものと比べる
-        (ctx.data / "evidence-before.json").write_text(json.dumps(
+        write_text(ctx.data / "evidence-before.json", json.dumps(
             {k: {i: {kk: vv for kk, vv in item.items() if kk != "_root"} for i, item in e.items.items()}
-             for k, e in evs.items()}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+             for k, e in evs.items()}, ensure_ascii=False, indent=2) + "\n")
     own_listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
                   | listed_paths(ctx, bodies.get("## 影響範囲", "")))
     cited = cited_anywhere(ctx, bodies) | planned
@@ -4600,10 +4608,10 @@ def replace_outputs(ctx: Ctx, expected: set[tuple[str, str]], planned: set[tuple
     record["removed"] = removed
     record["older"] = older
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / REPLACED_FILE).write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / REPLACED_FILE, json.dumps(record, ensure_ascii=False, indent=2) + "\n")
     pending_file = ctx.data / OUTPUTS_PENDING_NAME
     if pending:
-        pending_file.write_text(json.dumps(pending, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_text(pending_file, json.dumps(pending, ensure_ascii=False, indent=2) + "\n")
     else:
         pending_file.unlink(missing_ok=True)
     problems = [f"{UNPLANNED_OUTPUT}。計画のテストにも響くテストにも無いので、写しは差し替えていません（意図した変化なら"
@@ -4657,7 +4665,7 @@ def cmd_evidence(ctx: Ctx, args: argparse.Namespace) -> int:
                     pos = m.end("body")
             new = "".join(new) + text[pos:]
             if new != text:
-                path.write_text(new, encoding="utf-8")
+                write_text(path, new)
                 written.append(side_label(ctx, key, rel))
         print("写し直した: " + (", ".join(written) or "なし"))
         marks = evidence_marks(ctx, only)
@@ -4742,14 +4750,13 @@ def formats_plan_problems(ctx: Ctx, bodies: dict[str, str], pending: Pending) ->
         if fmt:
             formats.append({"side": key, "path": rel, **fmt})
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / FORMATS_FILE).write_text(json.dumps(formats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / FORMATS_FILE, json.dumps(formats, ensure_ascii=False, indent=2) + "\n")
     lines = ["# 変える文書が守る書式（見本と見出しの並び）", ""]
     for f in formats:
         lines.append(f"- {side_label(ctx, f['side'], f['path'])}（見本: "
                      + ", ".join(model_label(ctx, f["side"], m) for m in f["models"]) + "）")
         lines += [f"  - {h}" for h in f["headings"]]
-    (ctx.data / "formats.md").write_text("\n".join(lines + (["- なし"] if not formats else []) + [""]),
-                                         encoding="utf-8")
+    write_text(ctx.data / "formats.md", "\n".join(lines + (["- なし"] if not formats else []) + [""]))
     body = bodies.get(GUIDES_HEADING, "")
     for f in formats:
         names = [model_label(ctx, f["side"], m) for m in f["models"]]
@@ -4808,7 +4815,7 @@ def write_baseline(ctx: Ctx) -> None:
                 dest = backup_dir(ctx, key) / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(side.path / rel, dest)
-    (ctx.data / "before.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / "before.json", json.dumps(state, indent=2) + "\n")
 
 
 RUN_START = "run-start.json"   # この回の計画を練り始めたときの印（計画の段で変えたファイルを見つける）
@@ -4824,7 +4831,7 @@ def mark_run_start(ctx: Ctx) -> None:
         return
     ctx.data.mkdir(parents=True, exist_ok=True)
     state = {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
-    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    write_text(path, json.dumps(state, indent=2) + "\n")
 
 
 def edited_while_planning(ctx: Ctx) -> list[str]:
@@ -5081,11 +5088,11 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         return 1
     merged = merge_legacy_headings(ctx.plan.read_text(encoding="utf-8"))
     if merged != ctx.plan.read_text(encoding="utf-8"):
-        ctx.plan.write_text(merged, encoding="utf-8")   # 前の版の 2 つの見出しを「従う手順」にまとめて書き直す
+        write_text(ctx.plan, merged)   # 前の版の 2 つの見出しを「従う手順」にまとめて書き直す
     text = plan_text_for_checks(ctx)
     restored = restore_hidden(ctx, text) if text == ctx.plan.read_text(encoding="utf-8") else text
     if restored != text:
-        ctx.plan.write_text(restored, encoding="utf-8")
+        write_text(ctx.plan, restored)
         text = restored
     _, bodies = sections(text, PLAN_HEADINGS)
     problems = verify_plan_text(ctx, text) + record_problems_of(ctx)
@@ -5106,7 +5113,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         pending = Pending()
         measured_problems, measured, ref_count = measure_plan(ctx, bodies, pending)
         if pending.count():
-            ctx.plan.write_text(add_pending(text, pending), encoding="utf-8")
+            write_text(ctx.plan, add_pending(text, pending))
         problems += pending_problem(left + [(h, ln) for h, lns in pending.lines.items() for ln in lns],
                                     pending.count())
         problems += measured_problems
@@ -5115,7 +5122,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
               f"{', '.join(outside[:MAX_OUTSIDE])}{' ...' if len(outside) > MAX_OUTSIDE else ''}") if outside else ""
     # 確認の要約にも出す（利用者に確かめるのは確認の場なので）
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / OUTSIDE_NAME).write_text(json.dumps(outside[:MAX_OUTSIDE], ensure_ascii=False) + "\n", encoding="utf-8")
+    write_text(ctx.data / OUTSIDE_NAME, json.dumps(outside[:MAX_OUTSIDE], ensure_ascii=False) + "\n")
     print_problems(ctx, "plan", problems)
     if problems:
         if notice:
@@ -5123,15 +5130,14 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
         return 1
     record_dismissed(ctx, bodies)
-    ctx.plan.write_text(compact_plan(text), encoding="utf-8")
-    (ctx.data / PLAN_CHECK_TEXT).write_text(json.dumps(
-        {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.plan, compact_plan(text))
+    write_text(ctx.data / PLAN_CHECK_TEXT, json.dumps(
+        {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text}, ensure_ascii=False, indent=2) + "\n")
     write_baseline(ctx)
     batches = plan_batches(ctx, bodies)
-    (ctx.data / BATCHES_NAME).write_text(json.dumps(
-        {"batches": [[list(f) for f in b] for b in batches], "done": 0}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8")
-    (ctx.data / PASSED_PLAN).write_text(approved_plan_digest(ctx), encoding="utf-8")
+    write_text(ctx.data / BATCHES_NAME, json.dumps(
+        {"batches": [[list(f) for f in b] for b in batches], "done": 0}, ensure_ascii=False, indent=2) + "\n")
+    write_text(ctx.data / PASSED_PLAN, approved_plan_digest(ctx))
     notes = []
     if measured:
         notes.append(f"影響範囲を測った: {len(measured)} files、{DATA_DIRNAME}/impact.md")
@@ -5257,7 +5263,7 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
         run(["git", "worktree", "remove", "--force", str(tree)], top, GIT_TIMEOUT)
         shutil.rmtree(tmp, ignore_errors=True)
     cache[cache_key] = list(result)
-    (ctx.data / BEFORE_RUNS_NAME).write_text(json.dumps(cache, ensure_ascii=False) + "\n", encoding="utf-8")
+    write_text(ctx.data / BEFORE_RUNS_NAME, json.dumps(cache, ensure_ascii=False) + "\n")
     return result
 
 
@@ -5283,7 +5289,7 @@ def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, l
     found = json.loads((ctx.data / PREEXISTING_NAME).read_text(encoding="utf-8")) \
         if (ctx.data / PREEXISTING_NAME).is_file() else {}
     found[label] = sorted(now)
-    (ctx.data / PREEXISTING_NAME).write_text(json.dumps(found, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / PREEXISTING_NAME, json.dumps(found, ensure_ascii=False, indent=2) + "\n")
     return [f"{label}: {PREEXISTING}（この回の変更のせいではないので、エージェントに直させずに利用者に確かめます。"
             f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1] + detail]
 
@@ -5327,7 +5333,7 @@ def record_generated(ctx: Ctx, pre: dict[str, dict[str, str]]) -> None:
                 continue
             if pre[key].get(path) in (base.get(path), made.get(path)):
                 made[path] = now.get(path, "deleted")
-    (ctx.data / GENERATED_FILE).write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / GENERATED_FILE, json.dumps(record, ensure_ascii=False, indent=2) + "\n")
 
 
 def made_by_checks(ctx: Ctx, key: str, side: Side) -> set[str]:
@@ -5541,7 +5547,7 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
             out += ["新しく足したファイル（差分に無いので、開いて見る）: " + ", ".join(new), ""]
         mark_read()
     ctx.data.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(out), encoding="utf-8")
+    write_text(path, "\n".join(out))
     return (problems + [f"変えたファイルを、使うと決めたスキルの手順で見直していません（{DATA_DIRNAME}/{SKILL_REVIEW} の手順と差分を"
                         f"見比べて合わない箇所を直し、{DATA_DIRNAME}/apply.md に {APPLY_LOG_FORM} で書いてください）: "
                         + ", ".join(label for _, label, _, _, _ in missing)],
@@ -5571,7 +5577,7 @@ def mark_docs_read(ctx: Ctx, docs: list[tuple[str, Path, str]]) -> None:
     for label, repo, spec in docs:
         log[label] = {"digest": doc_digest(repo, spec), "time": time.time()}
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / GUIDES_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / GUIDES_READ, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
 
 
 _ANSWER_PATH = re.compile(r"(?<![\w/.:-])((?:[A-Za-z0-9_.-]+:)?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+)")
@@ -5620,7 +5626,7 @@ def log_skill_read(ctx: Ctx, name: str, found: tuple[str, Path] | None) -> None:
         return
     log = skills_read(ctx)
     log[name] = {"path": str(found[1]), "time": time.time()}
-    (ctx.data / SKILLS_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / SKILLS_READ, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
 
 
 def batch_step(ctx: Ctx, a: "Applied") -> int | None:
@@ -5643,9 +5649,8 @@ def batch_step(ctx: Ctx, a: "Applied") -> int | None:
             f"段 {first + 1}/{len(batches)} のファイルをまだ変えていません（この段で挙げたファイルを変え終えてから"
             f"次の段へ進みます）: " + ", ".join(batch_undone(ctx, a, batches[first]))])
         return 1
-    (ctx.data / BATCHES_NAME).write_text(json.dumps(
-        {"batches": [[list(f) for f in b] for b in batches], "done": first}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8")
+    write_text(ctx.data / BATCHES_NAME, json.dumps(
+        {"batches": [[list(f) for f in b] for b in batches], "done": first}, ensure_ascii=False, indent=2) + "\n")
     print_problems(ctx, "apply", [])
     print(f"MORE 段 {first}/{len(batches)} まで変えました。次は段 {first + 1}/{len(batches)}"
           f"（`python3 {MACHINE_REL}/codd.py batch` で、その段で変えるファイルを確かめる）")
@@ -5845,7 +5850,7 @@ def load_docs(ctx: Ctx, docs: list[tuple[str, Path, str]]) -> None:
         print(text if text is not None else "（読めませんでした。パスか見出しを確かめてください）")
         log[label] = {"digest": doc_digest(repo, spec), "time": time.time()}
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / GUIDES_READ).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / GUIDES_READ, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
 
 
 def unread_docs(ctx: Ctx, docs: list[tuple[str, Path, str]], since: float = 0.0) -> list[str]:
@@ -6238,8 +6243,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if problems:
         return 1
     # 通ったときの中身を控える。report はこれと今を比べ、通ったあとに変わっていないかを確かめる。
-    (ctx.data / "applied.json").write_text(json.dumps(applied_state(ctx), ensure_ascii=False, indent=2) + "\n",
-                                           encoding="utf-8")
+    # 変えたファイルの git の blob も控え、record が記録に残す（lint がコミットされた中身と突き合わせる）。
+    write_text(ctx.data / "applied.json",
+               json.dumps({**applied_state(ctx), APPLIED_BLOBS: applied_blobs(ctx)}, ensure_ascii=False, indent=2) + "\n")
     refs_note = ",".join(a.changed) or "none"
     print(f"OK own={'changed' if a.own_touched else 'same'} refs={refs_note}"
           + (f" impact={len(measured)} files（{DATA_DIRNAME}/impact-after.md）" if measured else ""))
@@ -6339,6 +6345,49 @@ def applied_state(ctx: Ctx) -> dict:
     return {"own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
 
 
+APPLIED_BLOBS = "blobs"
+BLOB_LEN = 12            # 記録に書く blob の長さ（読める長さで、取り違えない長さ）
+BLOB_DELETED = "削除"
+APPLIED_HEADING = "### 検査を通った中身"
+
+
+def blob_hashes(side: Side, rels: list[str]) -> dict[str, str]:
+    """ファイル → git の blob（`git hash-object`。git のフィルタを通すので、コミットされる中身と同じ）。消えていれば削除。"""
+    present = [rel for rel in rels if (side.path / rel).is_file()]
+    out = {rel: BLOB_DELETED for rel in rels}
+    if present:
+        rc, text = run(["git", "hash-object", "--", *present], side.path, GIT_TIMEOUT)
+        hashes = text.split() if rc == 0 else []
+        if len(hashes) == len(present):
+            out.update({rel: h[:BLOB_LEN] for rel, h in zip(present, hashes)})
+        else:
+            out = {rel: h for rel, h in out.items() if h == BLOB_DELETED}   # 測れなかったものは書かない
+    return out
+
+
+def applied_blobs(ctx: Ctx) -> dict[str, dict[str, str]]:
+    """変えたあとの検査を通ったときに、この回で変わったファイルの中身（側ごと。テストの出力の写しなども含む）。"""
+    try:
+        before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for key, side, snap in ((k, s, before.get("refs", {}).get(k, {}) if k else before.get("own", {}))
+                            for k, s in all_sides(ctx)):
+        changed = sorted(p for p in changed_since(side, snap) if side.has(p))
+        if changed:
+            out[key] = blob_hashes(side, changed)
+    return out
+
+
+def applied_lines(ctx: Ctx, applied: dict | None) -> list[str]:
+    """記録の「結果」に書く、検査を通った中身（lint がコミットされた中身と突き合わせる）。"""
+    blobs = (applied or {}).get(APPLIED_BLOBS) or {}
+    rows = [f"- `{side_label(ctx, key, rel)}` — {h}" for key, side in all_sides(ctx)
+            for rel, h in sorted((blobs.get(key) or {}).items())]
+    return ["", APPLIED_HEADING, "", *rows] if rows else []
+
+
 def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     """計画のファイルごとに変えたかと、測った影響範囲、今回やらないことをまとめる。モデルの記憶に頼らず報告する。"""
     a = load_applied(ctx)
@@ -6356,7 +6405,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         state = "利用者がやめた（" + ("変えた分は残している" if left else "変えた分は戻した") + "）"
     elif applied is None:
         state = "まだ通っていない（変えたあとの検査からやり直してください）"
-    elif applied == now:
+    elif {k: v for k, v in applied.items() if k != APPLIED_BLOBS} == now:
         state = "通った"
     else:
         state = "通ったあとに、さらに変わっている（変えたあとの検査をもう一度通してください）"
@@ -6472,7 +6521,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     else:
         lines += ["どのリポジトリもコミットしていない。内容を確かめてから、それぞれでコミットする。", ""]
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / "report.md").write_text("\n".join(lines), encoding="utf-8")
+    write_text(ctx.data / "report.md", "\n".join(lines))
     print("\n".join(lines))
     clear_reading_logs(ctx)   # 報告で 1 回の実行が終わる。探した・読んだ記録は次の回に持ち越さない
     return 0 if state == "通った" or stopped else 1
@@ -6492,8 +6541,7 @@ def record_problems(data: Path, phase: str, problems: list[str], kind: str | Non
         return
     data.mkdir(parents=True, exist_ok=True)
     items = [{"kind": kind or classify(phase, p), "text": p} for p in problems]
-    path.write_text(json.dumps({"phase": phase, "problems": items}, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8")
+    write_text(path, json.dumps({"phase": phase, "problems": items}, ensure_ascii=False, indent=2) + "\n")
 
 
 # 止めた理由の分類。上から順に当てる。（種類, 段, 目印）
@@ -6646,7 +6694,7 @@ def auto_step(data: Path, phase: str, kinds: set[str], texts: list[str] = ()) ->
     digest = hashlib.sha256("\n".join(sorted(texts)).encode()).hexdigest()
     if count >= MAX_AUTO or (count and digest == last):
         return None
-    (data / AUTO_NAME).write_text(json.dumps({phase: count + 1, "last": digest}) + "\n", encoding="utf-8")
+    write_text(data / AUTO_NAME, json.dumps({phase: count + 1, "last": digest}) + "\n")
     word = "PLAN" if phase == "plan" else "APPLY"
     log = []
     try:
@@ -6655,7 +6703,7 @@ def auto_step(data: Path, phase: str, kinds: set[str], texts: list[str] = ()) ->
         pass
     log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": word,
                 "note": f"人の判断が要らない指摘なので、訊かずにやり直した（{count + 1}/{MAX_AUTO} 回目）"})
-    (data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(data / DECISIONS_NAME, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
     return word
 
 
@@ -6690,7 +6738,7 @@ def cmd_advise(root: Path) -> int:
                   f"人の判断が要らない指摘だけです。利用者に訊かず、答えを待たずに `{word}` で同じ段をやり直してください"
                   "（指摘を直す。控えは済んでいるので decide は要らない）"]
         text = "\n".join(lines) + "\n"
-        (data / "advice.md").write_text(text, encoding="utf-8")
+        write_text(data / "advice.md", text)
         print(f"AUTO {word}\n\n" + text, end="")
         return 0
     lines += ["", "## 利用者に確かめること", "", *[f"- {a}" for a in asks], "", "## 選択肢（最初が勧め）", ""]
@@ -6699,7 +6747,7 @@ def cmd_advise(root: Path) -> int:
         run_it = f"。先に `python3 {MACHINE_REL}/codd.py {command}` を実行" if command else ""
         lines.append(f"{i + 1}. {title}{'（勧め）' if i == 0 else ''} → `{word}`{run_it}")
     text = "\n".join(lines) + "\n"
-    (data / "advice.md").write_text(text, encoding="utf-8")
+    write_text(data / "advice.md", text)
     print(text, end="")
     return 0
 
@@ -6721,7 +6769,7 @@ def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
         add = json.loads(found.read_text(encoding="utf-8"))
         for label, lines in add.items():
             known[label] = sorted(set(known.get(label, [])) | set(lines))
-        known_file.write_text(json.dumps(known, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_text(known_file, json.dumps(known, ensure_ascii=False, indent=2) + "\n")
         found.unlink()
         print("変える前から落ちていたものとして認めました（同じ失敗だけを通し、新しい失敗は止めます）: " + "、".join(add))
     pending = ctx.data / OUTPUTS_PENDING_NAME
@@ -6729,8 +6777,8 @@ def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
     if had_outputs:
         # 計画に無いテストの出力の変化を、意図した変化として認める（認めた中身だけ。また変われば止める）
         add_outputs = json.loads(pending.read_text(encoding="utf-8"))
-        (ctx.data / OUTPUTS_OK_NAME).write_text(json.dumps({**accepted_outputs(ctx), **add_outputs}, ensure_ascii=False,
-                                                           indent=2) + "\n", encoding="utf-8")
+        write_text(ctx.data / OUTPUTS_OK_NAME, json.dumps({**accepted_outputs(ctx), **add_outputs}, ensure_ascii=False,
+                                                          indent=2) + "\n")
         pending.unlink()
         print("意図した変化として認めました（次の検査で写しを差し替えます）: " + "、".join(add_outputs))
     dev, ok = deviations(ctx), accepted(ctx)
@@ -6741,7 +6789,7 @@ def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
             return 0
         print("認めるものはありません（計画で挙げていないファイルを、理由付きで足したものがありません）")
         return 0
-    (ctx.data / ACCEPTED_NAME).write_text(json.dumps(sorted(ok | set(new)), ensure_ascii=False) + "\n", encoding="utf-8")
+    write_text(ctx.data / ACCEPTED_NAME, json.dumps(sorted(ok | set(new)), ensure_ascii=False) + "\n")
     print("足したファイルを認めました（報告と計画の記録に残ります）:"
           + "".join(f"\n  - {side_label(ctx, k, rel)} — {dev.reason_added(k, rel)}" for k, rel in new))
     return 0
@@ -6823,7 +6871,7 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
         stat = before_file.stat()
         state = json.loads(before_file.read_text(encoding="utf-8"))
         state["plan"] = dest.relative_to(ctx.root).as_posix()
-        before_file.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        write_text(before_file, json.dumps(state, indent=2) + "\n")
         os.utime(before_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))   # 変える段の申告・読んだ記録を古くしない
         print("この回で変えた分は残し、変える前の印から数えます（捨てるなら `rollback` で戻してから練り直す）")
     print(f"ひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
@@ -6904,7 +6952,7 @@ def log_decision(ctx: Ctx, answer: str, note: str) -> None:
     log = load_decisions(ctx)
     log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "answer": answer, "note": note})
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / DECISIONS_NAME).write_text(json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text(ctx.data / DECISIONS_NAME, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
 
 
 UNLOGGED = "答えの控えが無かった（やめたときの段から控えた）"
@@ -6917,7 +6965,7 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     ctx.data.mkdir(parents=True, exist_ok=True)
     if args.answer == "OK" and ctx.plan.is_file():
         # 確認で OK と答えた計画だけが、人の承認が要るファイルを変えてよい。何を承認したかを記録に残す。
-        (ctx.data / APPROVED_PLAN).write_text(approved_plan_digest(ctx), encoding="utf-8")
+        write_text(ctx.data / APPROVED_PLAN, approved_plan_digest(ctx))
         held = plan_protected(ctx, sections(plan_text_for_checks(ctx), PLAN_HEADINGS)[1])
         if held:
             note = "; ".join(filter(None, [note, "承認したファイル: " + ", ".join(protected_label(k, r) for k, r in held)]))
@@ -6988,6 +7036,10 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
     """
     if not ctx.plan.is_file():
         return None
+    try:
+        applied = json.loads((ctx.data / "applied.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        applied = None
     report = ctx.data / "report.md"
     report.unlink(missing_ok=True)   # 前に出した報告を、この回の結果に取り違えない
     sink = io.StringIO()
@@ -7000,6 +7052,8 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
         report.unlink()   # 次の回の記録に、この回の結果を混ぜない
     else:
         result = ["- 変えていない（変えたあとの検査まで進まなかった）"]
+    if applied is not None and same_plan_baseline(ctx):
+        result += applied_lines(ctx, applied)
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
     for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME):
@@ -7106,7 +7160,7 @@ def finalize_plan(ctx: Ctx, result: list[str]) -> str | None:
     lines += [f"- {d['at']} {d['answer']}（{DECISIONS.get(d['answer'], '')}）" + (f": {d['note']}" if d["note"] else "")
               for d in decisions] or ["- 記録なし"]
     lines += ["", RESULT_HEADING, "", *[("#" + ln if ln.startswith("## ") else ln) for ln in result], ""]
-    ctx.plan.write_text("\n".join(lines), encoding="utf-8")
+    write_text(ctx.plan, "\n".join(lines))
     (ctx.data / DECISIONS_NAME).unlink(missing_ok=True)
     return plan_rel(ctx)
 
@@ -7210,38 +7264,98 @@ def plan_records(ctx: Ctx) -> str:
     return "\n".join(text)
 
 
-def lint_bypassed(ctx: Ctx, since: str) -> list[tuple[str, str]]:
-    """codd を置いたあと、期間のうちにコミットされた変更で、計画の記録に出てこないファイル（codd を通らずに入った変更）。"""
+_APPLIED_ROW = re.compile(r"^- `([^`]+)` — ([0-9a-f]{%d}|%s)$" % (BLOB_LEN, BLOB_DELETED))
+
+
+def applied_records(records: str) -> dict[str, set[str]]:
+    """記録の「検査を通った中身」から、ファイル → codd の検査を通った中身（blob の集まり）。
+
+    参照先の名前は呼ぶ側のリポジトリで違うので、`名前:パス` は名前を外したパスでも引けるようにする。
+    """
+    out: dict[str, set[str]] = {}
+    inside = False
+    for line in records.splitlines():
+        if line.startswith("#"):
+            inside = line.strip() == APPLIED_HEADING
+            continue
+        m = _APPLIED_ROW.match(line.strip()) if inside else None
+        if m:
+            label, h = m.groups()
+            keys = {label}
+            if re.match(r"^[A-Za-z0-9_.-]+:", label):
+                keys.add(label.split(":", 1)[1])
+            for k in keys:
+                out.setdefault(k, set()).add(h)
+    return out
+
+
+def committed_blobs(side: Side, commit: str, rels: list[str]) -> dict[str, str]:
+    """コミットの時点のファイルの中身（blob。無ければ削除）。"""
+    rc, out = run(["git", "-c", "core.quotepath=false", "ls-tree", "-r", commit, "--", *rels], side.path, GIT_TIMEOUT)
+    found = {}
+    for line in out.splitlines() if rc == 0 else []:
+        meta, _, path = line.partition("\t")
+        if path and len(meta.split()) == 3:
+            found[path] = meta.split()[2][:BLOB_LEN]
+    return {rel: found.get(rel, BLOB_DELETED) for rel in rels}
+
+
+def lint_bypassed(ctx: Ctx, since: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """codd を置いたあと、期間のうちにコミットされた変更のうち、codd を通らなかったものと、通ったあとに変わったもの。
+
+    通らなかった: 計画の記録に出てこないファイル。通ったあとに変わった: 記録に検査を通った中身（blob）があるのに、
+    コミットされた中身がそのどれとも違うファイル（コミットする前の手直しも、あとで codd を通さずに変えたものも）。
+    中身の無い前の版の記録は、今までどおりパスが出てくれば通ったとみなす。
+    """
     records = plan_records(ctx)
-    out = []
+    applied = applied_records(records)
+    bypassed: list[tuple[str, str]] = []
+    drifted: list[tuple[str, str]] = []
     for key, side in all_sides(ctx):
         # codd を置いたコミットより前は、codd を通りようがないので数えない。
         placed = run(["git", "log", "--format=%H", "--diff-filter=A", "--", f"{MACHINE_REL}/{CONFIG_NAME}"],
                      side.path, GIT_TIMEOUT)[1].split()
         rng = [f"{placed[-1]}..HEAD"] if placed else []
         rc, log = run(["git", "-c", "core.quotepath=false", "log", *rng, f"--since={since}", "--no-merges",
-                       "--date=short", "--format=%x00%h %ad", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
+                       "--date=short", "--format=%x00%H %h %ad", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
         seen: set[str] = set()
         for chunk in (log.split("\0") if rc == 0 else []):
             first, *names = chunk.strip().splitlines() or [""]
-            labels = []
+            sha, _, first = first.partition(" ")
+            rels = []
             for rel in names:
                 rel = rel.strip()
-                if not rel or rel in seen or not side.has(rel) or rel in records:
+                if rel and rel not in seen and side.has(rel):
+                    seen.add(rel)   # 新しいコミットから見るので、同じファイルは最後に変えたコミットで判断する
+                    rels.append(rel)
+            known = [rel for rel in rels if rel in applied]
+            blobs = committed_blobs(side, sha, known) if known else {}
+            groups: dict[str, list[str]] = {"bypassed": [], "drifted": []}
+            for rel in rels:
+                if rel in applied:
+                    if blobs.get(rel) in applied[rel]:
+                        continue   # codd の検査を通った中身がそのままコミットされた
+                    kind = "drifted"
+                elif rel in records:
                     continue
-                seen.add(rel)   # 新しいコミットから見るので、同じファイルは最後に変えたコミットで挙げる
-                labels.append(side_label(ctx, key, rel))
+                else:
+                    kind = "bypassed"
+                label = side_label(ctx, key, rel)
+                groups[kind].append(label)
                 gone = "（いまは無い）" if not (side.path / rel).exists() else ""
-                out.append((f"{labels[-1]}{gone} — {first}", ""))
-            if labels:   # やりたいことはコミットごとに 1 行
-                shown = ", ".join(f"`{x}`" for x in labels[:5]) + (f" ほか {len(labels) - 5} 件" if len(labels) > 5 else "")
-                out[-1] = (out[-1][0], f"codd を通らずに入った変更（{first}: {shown}）に合わせて、"
-                                       "コード・文書・テストの食い違いを確かめたい")
-    return out
+                (drifted if kind == "drifted" else bypassed).append((f"{label}{gone} — {first}", ""))
+            for kind, out, what in (("bypassed", bypassed, "codd を通らずに入った変更"),
+                                    ("drifted", drifted, "codd を通ったあとに変わった変更")):
+                labels = groups[kind]
+                if labels:   # やりたいことはコミットごとに 1 行
+                    shown = ", ".join(f"`{x}`" for x in labels[:5]) + (f" ほか {len(labels) - 5} 件" if len(labels) > 5 else "")
+                    out[-1] = (out[-1][0], f"{what}（{first}: {shown}）に合わせて、"
+                                           "コード・文書・テストの食い違いを確かめたい")
+    return bypassed, drifted
 
 
 LINT_SECTIONS = (("壊れたパス", "paths"), ("文書の書式", "formats"), ("テストの結果を写した文書", "evidence"),
-                  ("テスト", "tests"), ("codd を通らなかった変更", "bypassed"))
+                  ("テスト", "tests"), ("codd を通らなかった変更", "bypassed"), ("codd を通ったあとに変わった変更", "drifted"))
 LINT_SHOWN = 30
 
 
@@ -7249,7 +7363,7 @@ def cmd_lint(ctx: Ctx, args: argparse.Namespace) -> int:
     found = {"paths": lint_paths(ctx), "formats": lint_formats(ctx),
              "tests": [] if args.no_test else lint_tests(ctx)}
     found["evidence"] = lint_evidence(ctx, not args.no_test)     # テストのあとに見る（テストが evidence を書き直す）
-    found["bypassed"] = lint_bypassed(ctx, args.since)
+    found["bypassed"], found["drifted"] = lint_bypassed(ctx, args.since)
     lines = [f"# 点検の結果（{time.strftime('%Y-%m-%d %H:%M')}。変更は {args.since} から）", ""]
     for title, key in LINT_SECTIONS:
         if key == "tests" and args.no_test:
@@ -7258,7 +7372,7 @@ def cmd_lint(ctx: Ctx, args: argparse.Namespace) -> int:
     asks = list(dict.fromkeys(a for key in found for _, a in found[key] if a))
     lines += ["## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
     ctx.data.mkdir(parents=True, exist_ok=True)
-    (ctx.data / "lint.md").write_text("\n".join(lines), encoding="utf-8")
+    write_text(ctx.data / "lint.md", "\n".join(lines))
     counts = "、".join(f"{t} {len(found[k])}" for t, k in LINT_SECTIONS if not (k == "tests" and args.no_test))
     print(f"{'NG' if asks else 'OK'} 点検: {counts}（全文: {DATA_DIRNAME}/lint.md）")
     for a in asks[:LINT_SHOWN]:
