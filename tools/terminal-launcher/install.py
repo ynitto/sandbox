@@ -24,6 +24,35 @@ DEFAULT_TASK_NAME = "TerminalLauncher"
 DEFAULT_DELAY_SECONDS = 30
 
 
+# decode_cli_output の写し。原本は tools/winauto/winauto.py（単体で配るので共有モジュールに
+# 依存できない）。直すときは原本と全部の写しを揃える（本体の一致は
+# tools/ci/tests/test_check_subprocess_encoding.py が検査する）。
+def decode_cli_output(data) -> str:
+    """子プロセスの出力（bytes）を文字列にする。Windows ネイティブの CLI は CP932、WSL は
+    UTF-8 で吐くので、どちらが来ても読む。JS 版 decodeCliOutput
+    （tools/agent-dashboard/src/features/cowork/main/loopProvider.js:51）と同じ段取り。
+
+    解決の順:
+      1. None・空なら ''、すでに str ならそのまま返す
+      2. UTF-8 として読めればそれ
+      3. 読めなければ CP932
+      4. CP932 でも読めなければ UTF-8 の置換文字つき（例外は投げない）
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    data = bytes(data)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("cp932")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
 def normalize_windows_path(path: str) -> str:
     """日本語キーボード由来の ¥/￥ を Windows 区切り文字として解釈する。"""
     # U+00A5(¥) と U+FFE5(￥) の両方を許容する。
@@ -74,7 +103,6 @@ def register_task(
     check = subprocess.run(
         ["schtasks", "/Query", "/TN", task_name],
         capture_output=True,
-        text=True,
     )
     task_exists = check.returncode == 0
 
@@ -85,11 +113,10 @@ def register_task(
         del_result = subprocess.run(
             ["schtasks", "/Delete", "/TN", task_name, "/F"],
             capture_output=True,
-            text=True,
         )
         if del_result.returncode != 0:
             if del_result.stderr:
-                print(del_result.stderr.rstrip(), file=sys.stderr)
+                print(decode_cli_output(del_result.stderr).rstrip(), file=sys.stderr)
             print("[エラー] 既存タスクの削除に失敗しました。", file=sys.stderr)
             sys.exit(del_result.returncode)
         print(f"[削除] 既存タスク '{task_name}' を削除しました。")
@@ -117,13 +144,12 @@ def register_task(
             "/F",
         ],
         capture_output=True,
-        text=True,
     )
 
     if create_result.stdout:
-        print(create_result.stdout.rstrip())
+        print(decode_cli_output(create_result.stdout).rstrip())
     if create_result.stderr:
-        print(create_result.stderr.rstrip(), file=sys.stderr)
+        print(decode_cli_output(create_result.stderr).rstrip(), file=sys.stderr)
 
     if create_result.returncode != 0:
         print("[エラー] タスクスケジューラへの登録に失敗しました。", file=sys.stderr)

@@ -1020,7 +1020,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("「未判断」として書き足しました", r.stderr)
         self.assertIn("docs/map.md", r.stderr)
-        self.assertIn("- 未判断: docs/map.md（自分の変更案のファイルとパスでつながっている）",
+        self.assertIn("- 未判断: docs/map.md（自分の変えるファイルとパスでつながっている）",
                       (self.impl / PLAN).read_text(encoding="utf-8"))
         self.assertIn("docs/map.md", (self.impl / ".codd/trace.md").read_text(encoding="utf-8"))
         self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
@@ -2500,6 +2500,7 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("__pycache__", r.stderr)
         pyc.unlink()
         pyc.parent.rmdir()
+        (self.impl / ".codd/run-start.json").unlink()   # 消した .pyc を、計画の段で変えたものに数えない
         plan = (self.impl / PLAN).read_text(encoding="utf-8")
         tests_part = plan.split("## テストの変更案", 1)[1].split("\n## ", 1)[0]
         for rel in ("tests/test_app.py", "tests/e2e/hello.yaml", "tests/e2e/page.yaml"):
@@ -2634,7 +2635,37 @@ class CoddTest(unittest.TestCase):
         self.write_plan(self.with_tests(PLAN_ALIGNED, "なし"))
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("## テストの変更案 が「なし」です", r.stderr)
+        self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
+
+    def test_tests_section_is_needed_when_only_the_impact_fixes_a_file(self) -> None:
+        # 影響範囲で直すだけのファイルも変える。テストの判断は同じく要る。
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す", "なし")
+        plan = plan.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/app.py — `hello` の中でログを出す")
+        self.write_plan(self.with_tests(plan, "なし"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
+
+    def test_files_fixed_in_the_impact_are_measured_like_planned_ones(self) -> None:
+        # 影響範囲で直すファイルも変える。そのファイルと対になるテストを、計画のときに測る（変えたあとまで待たない）。
+        self.add_caller()
+        commit(self.impl, {"tests/test_use.py": "import use\n"}, "tests")
+        plan = PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/use.py — ログに合わせて表示を直す")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("- tests/test_use.py — 未判断", (self.impl / PLAN).read_text(encoding="utf-8"))
+
+    def test_a_non_test_file_is_not_a_test_decision(self) -> None:
+        # テストのファイルでないものを挙げても、テストの判断に数えない。
+        self.write_plan(self.with_tests(PLAN_ALIGNED, "- src/app.py — ログが出るか確かめる"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\n"}, "tests")
+        (self.impl / ".codd/run-start.json").unlink()   # 利用者がテストを足してから、計画を練り直す
+        self.write_plan(self.with_tests(PLAN_ALIGNED, "- tests/test_app.py — `hello` がログを出すか確かめる"))
+        self.assert_plan_ok()
 
     def test_apply_catches_tests_hit_by_names_changed_beyond_the_plan(self) -> None:
         commit(self.impl, {"tests/test_util.py": "from src.app import greet\n"}, "tests")
@@ -3736,6 +3767,45 @@ class CoddTest(unittest.TestCase):
         self.assertIn("STOP（やめる）: 答えの控えが無かった", text)
         self.assertIn("- 変えたあとの検査: 利用者がやめた", text)
 
+    def test_files_changed_while_planning_stop_before_the_baseline(self) -> None:
+        # 計画の段で変えたファイルは、印に入ると変えたあとの検査が数えない。印を取る前に止め、利用者に確かめる。
+        self.write_plan(PLAN_ALIGNED)
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("計画を練っている間に、ファイルが変わっています", r.stderr)
+        self.assertIn("src/extra.py", r.stderr)
+        self.assertFalse((self.impl / ".codd/before.json").exists())
+        advice = self.run_pa(self.impl, "advise").stdout
+        self.assertNotIn("AUTO", advice)   # 利用者の変更かもしれない。訊かずに戻させない
+        self.assertIn("利用者が変えたものとして認め", advice)
+        # 利用者が自分で変えたと答えたら、計画の前からの変更として認めて続ける
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+
+    def test_changes_after_the_baseline_are_still_counted_when_replanning(self) -> None:
+        # 確認で NG のあと、計画の段で変えたものは、取り直さない印から変えたあとの検査が数える。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok(ok=False)
+        self.run_pa(self.impl, "decide", "NG", "--note", "直して")
+        (self.impl / "src/extra.py").write_text("x = 1\n", encoding="utf-8")
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/extra.py", r.stderr)
+
+    def test_reading_logs_do_not_outlive_a_run_stopped_before_the_plan_passed(self) -> None:
+        self.write_plan("# 変更の計画\n\n## やりたいこと\n\nx\n")
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        self.run_pa(self.impl, "decide", "STOP")
+        self.assertEqual(self.run_pa(self.impl, "record", "--stop").returncode, 0)
+        left = {p.name for p in (self.impl / ".codd").iterdir()}
+        for name in ("explore.json", "rules-read.json", "problems.json", "run-start.json"):
+            self.assertNotIn(name, left)
+
     def test_draft_keeps_the_plan_while_the_run_goes_on(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok(ok=False)
@@ -3933,6 +4003,50 @@ class CoddTest(unittest.TestCase):
         commit(self.impl, {".plans/2026-10-01-0000-x.md": "## 自分の変更案\n\n- src/app.py — 戻り値\n\n## 結果\n"}, "記録")
         text = (self.run_pa(self.impl, "lint", "--no-test"), (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))[1]
         self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1])  # 記録に出てくれば通った変更
+
+    def test_lint_finds_changes_made_after_codd_passed(self) -> None:
+        # 記録には検査を通った中身（git の blob）が残り、点検はコミットされた中身と突き合わせる。
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        record = (self.impl / PLAN).read_text(encoding="utf-8")
+        passed = git(self.impl, "hash-object", "src/app.py").strip()[:12]
+        rows = record.split("### 検査を通った中身\n\n")[1]
+        self.assertIn(f"- `src/app.py` — {passed}", rows)
+        self.assertRegex(rows, r"- `docs/api.md` — [0-9a-f]{12}")   # 参照先で変えたものも残す
+
+        # 検査を通した中身のままコミットすれば、どちらにも挙がらない。
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "codd で変えた")
+        git(self.design, "add", "-A")
+        git(self.design, "commit", "-q", "-m", "codd で変えた")
+        r = self.run_pa(self.impl, "lint", "--no-test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = (self.impl / ".codd/lint.md").read_text(encoding="utf-8")
+        self.assertIn("## codd を通ったあとに変わった変更\n\n- なし", text)
+
+        # 通ったあとに手で変えたものは、記録があっても「通ったあとに変わった変更」に挙がる。
+        commit(self.impl, {"src/app.py": "def hello():\n    return 3\n"}, "手で直した")
+        r = self.run_pa(self.impl, "lint", "--no-test")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        text = (self.impl / ".codd/lint.md").read_text(encoding="utf-8")
+        self.assertIn("src/app.py", text.split("## codd を通ったあとに変わった変更")[1].split("##")[0])
+        self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1].split("##")[0])
+        self.assertNotIn("docs/api.md", text.split("## codd を通ったあとに変わった変更")[1].split("##")[0])
+        self.assertIn("codd を通ったあとに変わった変更（", r.stdout)
+
+        # 消したファイルも、記録で消したことになっていなければ挙がる。中身を検査を通した版に戻せば、挙がらない。
+        commit(self.impl, {"src/app.py": "def hello():\n    return 2\n"}, "戻した")
+        self.assertEqual(self.run_pa(self.impl, "lint", "--no-test").returncode, 0)
+        (self.impl / "src/app.py").unlink()
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "消した")
+        self.run_pa(self.impl, "lint", "--no-test")
+        text = (self.impl / ".codd/lint.md").read_text(encoding="utf-8")
+        self.assertIn("src/app.py（いまは無い）", text.split("## codd を通ったあとに変わった変更")[1])
 
     def test_lint_runs_the_tests_of_both_sides(self) -> None:
         config = self.impl / ".statemachine/codd/codd.json"

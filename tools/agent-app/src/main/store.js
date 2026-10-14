@@ -14,6 +14,7 @@ const settings = require('./settings');
 const reuse = require('../shared/reuse');
 const attention = require('./attention');
 const sessionFindings = require('./sessionFindings');
+const { headChars } = require('./text');
 
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
@@ -483,7 +484,7 @@ function updateSession(userData, id, patch) {
 function appendMessage(userData, id, message) {
   const sess = readSession(userData, id);
   sess.messages.push({ at: new Date().toISOString(), ...message });
-  if (!sess.title && message.role === 'user') sess.title = String(message.text || '').split('\n')[0].slice(0, 60);
+  if (!sess.title && message.role === 'user') sess.title = headChars(String(message.text || '').split('\n')[0], 60);
   return writeSession(userData, sess);
 }
 

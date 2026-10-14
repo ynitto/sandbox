@@ -11,6 +11,7 @@ const flowModel = require('./flow-model');
 const flowStore = require('./flow-store');
 const flowSettings = require('./flow-settings');
 const templateParameters = require('./template-parameters');
+const { headChars } = require('../text');
 
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'canceled']);
 const PHASES = new Set(['planning', 'executing', 'evaluating', 'verifying', 'finalizing']);
@@ -167,7 +168,7 @@ async function start(payload, deps) {
   const hostPath = typeof deps.hostPath === 'function' ? deps.hostPath : (value) => String(value || '');
   const inbox = {
     id,
-    title: String(payload.title || '').trim() || resolvedRequest.slice(0, 60),
+    title: String(payload.title || '').trim() || headChars(resolvedRequest, 60),
     request: resolvedRequest,
     submitter: 'agent-app',
     purpose: 'implementation',
@@ -489,7 +490,7 @@ function readRun(root, id, hostRoot = '') {
     const age = Date.now() - parseDate(inbox && inbox.submitted_at);
     const state = age < 60000 ? 'launching' : 'launch-failed';
     return {
-      runId: files.id, title: String((inbox && inbox.title) || (inbox && inbox.request) || files.id).slice(0, 60),
+      runId: files.id, title: headChars(String((inbox && inbox.title) || (inbox && inbox.request) || files.id), 60),
       workflowId: inbox && inbox.submitter_context ? inbox.submitter_context.workflow || null : null,
       state, terminal: state === 'launch-failed', createdAt: String((inbox && inbox.submitted_at) || ''), updatedAt: null,
       progress: { done: 0, failed: 0, total: 0 }, waiting: 0, readonly: !!(inbox && inbox.readonly),
@@ -551,7 +552,7 @@ function readRun(root, id, hostRoot = '') {
   } : null;
   return {
     runId: files.id,
-    title: String((inbox && inbox.title) || (inbox && inbox.request) || meta.request || files.id).slice(0, 60),
+    title: headChars(String((inbox && inbox.title) || (inbox && inbox.request) || meta.request || files.id), 60),
     workflowId: inbox && inbox.submitter_context ? inbox.submitter_context.workflow || null : null,
     state, terminal, createdAt: String(meta.created_at || (inbox && inbox.submitted_at) || ''), updatedAt: meta.updated_at || null,
     progress, waiting: interactions.filter((item) => item.state === 'open').length,
@@ -863,7 +864,7 @@ function planDraft(root, id, hostRoot = '') {
   if (!nodes.length) throw flowError('plan-unavailable', '保存できる工程がありません');
   const title = String((inbox && inbox.title) || '').trim();
   return {
-    version: 2, id: `flow-${Date.now().toString(36)}`, name: title.slice(0, 40), description: '',
+    version: 2, id: `flow-${Date.now().toString(36)}`, name: headChars(title, 40), description: '',
     purpose: 'implementation', entry: [], exit: [], nodes, rework: [],
     defaultRequest: String((inbox && inbox.request) || ''),
   };

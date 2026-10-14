@@ -15,12 +15,14 @@
 // 台帳の行は node-budget と同じ形にする。reader を増やさないためで、追加したのは
 // `artifact`（成果物の種別・名前・出所）だけ——これが成果物の適格性の集計鍵になる。
 
+const { headChars } = require('./text');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const host = require('./host');
 const usagePresentation = require('../shared/usagePresentation');
+
 
 const FEED_DIR = 'audit-feed';
 const STORE_DIR = 'audit';
@@ -87,7 +89,7 @@ function usedOf(message = {}) {
   const information = message.parts && Array.isArray(message.parts.information) ? message.parts.information : [];
   for (const item of information) {
     if (!item || item.type !== 'command') continue;
-    const line = String(item.title || item.detail || '').trim().split('\n')[0].slice(0, 120);
+    const line = headChars(String(item.title || item.detail || '').trim().split('\n')[0], 120);
     if (line && !commands.includes(line)) commands.push(line);
   }
   const tools = [];

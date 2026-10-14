@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sdpm.utils.cli_output import decode_cli_output
+
 
 def _resolve_template(data: dict, input_path: str | Path | None, templates_dir: Path) -> tuple[Path, bool]:
     """Resolve template path from presentation data.
@@ -56,11 +58,11 @@ def _get_output_base_dir() -> Path:
                 capture_output=True,
                 timeout=10,
             )
-            win_path = result.stdout.decode("cp932", errors="replace").strip()
+            win_path = decode_cli_output(result.stdout).strip()
             if win_path:
-                wsl = subprocess.run(["wslpath", win_path], capture_output=True, text=True)  # nosec B603 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+                wsl = subprocess.run(["wslpath", win_path], capture_output=True)  # nosec B603 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 if wsl.returncode == 0:
-                    return Path(wsl.stdout.strip()) / "SDPM-Presentations"
+                    return Path(decode_cli_output(wsl.stdout).strip()) / "SDPM-Presentations"
         except Exception:
             pass
     return Path.home() / "Documents" / "SDPM-Presentations"
@@ -362,9 +364,9 @@ def preview(
         raise RuntimeError("PDF export failed. Is LibreOffice (soffice) installed?")
 
     cmd = ["pdftoppm", "-png", "-scale-to", "1280", str(pdf), str(out_dir / "page")]
-    result = subprocess.run(cmd, capture_output=True, text=True)  # nosec B603 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    result = subprocess.run(cmd, capture_output=True)  # nosec B603 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
     if result.returncode != 0:
-        raise RuntimeError(f"PNG conversion failed. Is poppler (pdftoppm) installed? {result.stderr}")
+        raise RuntimeError(f"PNG conversion failed. Is poppler (pdftoppm) installed? {decode_cli_output(result.stderr)}")
 
     # Rename with slide titles
     prs = Presentation(str(out))
