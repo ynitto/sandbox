@@ -2650,43 +2650,81 @@ class CoddTest(unittest.TestCase):
         path = self.impl / ".statemachine/codd/links.json"
         return json.loads(path.read_text(encoding="utf-8"))["links"] if path.is_file() else []
 
-    def test_a_link_found_while_planning_is_kept_and_asked_next_time(self) -> None:
-        # 測る道具では見つからないファイルを、利用者の指摘で影響範囲に足した。そのつながりを控え、次の計画で訊く。
+    def apply_ok(self, plan: str, files: dict[str, str]) -> None:
+        """計画を確認まで通し、files のとおりに変えて、変えたあとの検査を通す。"""
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        for rel, text in {"src/app.py": "def hello():\n    print('a')\n    return 1\n", **files}.items():
+            (self.impl / rel).write_text(text, encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_link_found_while_planning_is_kept_once_the_change_passes(self) -> None:
+        # 測る道具では見つからないファイルを、利用者の指摘で影響範囲に足した。そのつながりを、変えたあとの検査を
+        # 通ったときに控える（計画の検査の時点では書かない。確認で外したり、やめたりするかもしれない）。
         commit(self.impl, {"src/settings.py": "LEVEL = 'info'\n"}, "settings")
-        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
-                                             "## 影響範囲\n\n- src/settings.py — ログの段を足す（利用者の指摘）"))
+        plan = PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
+                                    "## 影響範囲\n\n- src/settings.py — ログの段を足す（利用者の指摘）")
+        self.write_plan(plan)
         self.assert_plan_ok(ok=False)
+        self.assertEqual(self.links(), [])
+        self.apply_ok(plan, {"src/settings.py": "LEVEL = 'debug'\n"})
         self.assertEqual(self.links(), [{"when": ["src/app.py"], "then": "src/settings.py",
                                          "why": "ログの段を足す（利用者の指摘）", "plan": PLAN}])
         # 測って見つかったファイル（文書がパスで指す docs/api.md）は控えない
         self.assertNotIn("docs/api.md", (self.impl / ".statemachine/codd/links.json").read_text(encoding="utf-8"))
 
+    def test_a_link_from_a_stopped_run_is_not_kept(self) -> None:
+        commit(self.impl, {"src/settings.py": "LEVEL = 'info'\n"}, "settings")
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
+                                             "## 影響範囲\n\n- src/settings.py — ログの段を足す（利用者の指摘）"))
+        self.assert_plan_ok(ok=False)
+        self.assertEqual(self.run_pa(self.impl, "decide", "STOP").returncode, 0)
+        self.assertEqual(self.links(), [])
+
+    def write_links(self, *rows: dict) -> None:
+        (self.impl / ".statemachine/codd/links.json").write_text(json.dumps({"links": list(rows)}), encoding="utf-8")
+
+    def test_a_kept_link_is_asked_next_time_and_dropped_when_not_needed(self) -> None:
+        commit(self.impl, {"src/settings.py": "LEVEL = 'info'\n", "src/extra.py": "X = 1\n"}, "settings")
+        self.write_links({"when": ["src/app.py", "src/extra.py"], "then": "src/settings.py", "why": "ログの段を足す"})
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("- src/settings.py — 未判断（前の回に見つけたつながり（.statemachine/codd/links.json）: ログの段を足す（利用者の指摘））",
+        self.assertIn("- src/settings.py — 未判断（前の回に見つけたつながり（.statemachine/codd/links.json）: ログの段を足す）",
                       (self.impl / PLAN).read_text(encoding="utf-8"))
-        # 「変更不要」と判断したら、その起点からのつながりは外す（古い発見を訊き続けない）
-        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
-                                             "## 影響範囲\n\n- src/settings.py — 変更不要: 段は変えない"))
-        self.assert_plan_ok(ok=False)
-        self.assertEqual(self.links(), [])
+        # 「変更不要」と判断したら、当たった起点からのつながりだけを外す（古い発見を訊き続けない）
+        self.apply_ok(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
+                                           "## 影響範囲\n\n- src/settings.py — 変更不要: 段は変えない"), {})
+        self.assertEqual([r["when"] for r in self.links()], [["src/extra.py"]])
+
+    def test_a_kept_link_that_is_fixed_again_does_not_widen_its_sources(self) -> None:
+        # 控えから訊いたものは新しい発見ではない。計画の他のファイルまで起点に広げない。
+        commit(self.impl, {"src/settings.py": "LEVEL = 'info'\n", "src/extra.py": "X = 1\n"}, "settings")
+        self.write_links({"when": ["src/app.py"], "then": "src/settings.py", "why": "ログの段を足す"})
+        plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                    "- src/app.py — `hello` の中でログを出す\n- src/extra.py — 値を変える")
+        plan = plan.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/settings.py — 段を足す")
+        self.apply_ok(plan, {"src/extra.py": "X = 2\n", "src/settings.py": "LEVEL = 'debug'\n"})
+        self.assertEqual([r["when"] for r in self.links()], [["src/app.py"]])
 
     def test_a_ref_doc_relied_on_is_kept_as_a_link_without_writing_paths_into_it(self) -> None:
         # 決まりや仕様書は単独で配ることがあるので、コードのパスを書かせずに、つながりを自分の側に控える。
         commit(self.design, {"docs/style.md": "# 書き方\n\nログは info で出す。\n"}, "style")
-        self.write_plan(PLAN_ALIGNED.replace("## 参照先の前提\n\n",
-                                             "## 参照先の前提\n\n- ログは info で出す（根拠: docs/style.md:3）\n"))
-        self.assert_plan_ok(ok=False)
+        self.apply_ok(PLAN_ALIGNED.replace("## 参照先の前提\n\n",
+                                           "## 参照先の前提\n\n- ログは info で出す（根拠: docs/style.md:3）\n"), {})
         self.assertEqual([(r["when"], r["then"]) for r in self.links()], [(["src/app.py"], "design:docs/style.md")])
+        self.assertNotIn("src/app.py", (self.design / "docs/style.md").read_text(encoding="utf-8"))
+
+    def test_a_kept_ref_link_marked_unrelated_is_dropped(self) -> None:
+        commit(self.design, {"docs/style.md": "# 書き方\n\nログは info で出す。\n"}, "style")
+        self.write_links({"when": ["src/app.py"], "then": "design:docs/style.md", "why": "書き方"})
         self.write_plan(PLAN_ALIGNED)
         self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
         self.assertIn("- 未判断: docs/style.md（前の回に見つけたつながり", (self.impl / PLAN).read_text(encoding="utf-8"))
-        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
-                                             "## 参照先のその他\n\n- 関係なし: docs/style.md — ログの段は変えない"))
-        self.assert_plan_ok(ok=False)
+        self.apply_ok(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
+                                           "## 参照先のその他\n\n- 関係なし: docs/style.md — ログの段は変えない"), {})
         self.assertEqual(self.links(), [])
-        self.assertNotIn("src/app.py", (self.design / "docs/style.md").read_text(encoding="utf-8"))
 
     def test_links_from_files_changed_beyond_the_plan_are_checked_after_applying(self) -> None:
         # 計画に無いファイルを変える段で足しても、そのファイルから伸びる見つけたつながりの先を確かめる
@@ -2716,6 +2754,8 @@ class CoddTest(unittest.TestCase):
                             encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
+        # 変える段で「変更不要」「関係なし」とされたつながりも、当たった起点を外す
+        self.assertEqual(self.links(), [{"when": ["src/app.py"], "then": "src/extra.py", "why": "値をそろえた", "plan": PLAN}])
 
     def test_a_file_added_while_applying_is_kept_as_a_link(self) -> None:
         commit(self.impl, {"src/settings.py": "LEVEL = 'info'\n"}, "settings")

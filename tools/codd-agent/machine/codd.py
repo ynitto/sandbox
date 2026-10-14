@@ -166,6 +166,7 @@ SEMANTIC_ORIGIN = "codd-semantic" # codd が足したノード・辺の印（足
 GRAPH_AGENT = "codd-graph"        # 束を渡すサブエージェント（codd.json の subagent が true のとき）
 GRAPH_LOG = "graph-run.json"      # この回にグラフを用意したか（計画の検査が確かめる）
 DISMISSED_NAME = "graph/dismissed.json"   # 要判断のうち、計画で「変更不要」「関係なし」とした組
+LINKS_FOUND_NAME = "links-found.json"   # 計画の検査で見つけた・外したつながり（変えたあとの検査を通ったら links.json へ）
 LINKS_REL = f"{MACHINE_REL}/links.json"     # 測る道具では見つからなかったつながり（codd.json の隣。コミットして共有する）
 # グラフで影響を測るときの線。推定の辺は確からしさがこれ以上で、変わる名前から 1 歩のものだけを判断させる。
 ASK_SCORE = 0.85
@@ -2443,16 +2444,10 @@ def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
     asked = ctx.__dict__.get("_asked") or {}
     if not asked:
         return
-    own_waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True)
-    tp = test_plan(ctx, bodies)
-    unrelated = [it for h in CITED_IN_REFS for it in items(bodies.get(h, "")) if UNRELATED_MARK in it]
+    waived = plan_waived(ctx, bodies, asked)
     rec = load_dismissed(ctx)
     for (key, rel), term in asked.items():
-        if key:
-            ok = (key, rel) in tp.waived or any(ref_label(ctx, key, rel) in it or rel in it for it in unrelated)
-        else:
-            ok = rel in own_waived or ("", rel) in tp.waived
-        if not ok:
+        if (key, rel) not in waived:
             continue
         entry = rec.get(f"{key}|{rel}") or {}
         rec[f"{key}|{rel}"] = {"terms": unique([*entry.get("terms", []), term]),
@@ -2469,6 +2464,7 @@ def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
 # いないので作り直せない。それを「この自分のファイルを変えたら、このファイルも響く」として codd.json の隣に控え、
 # コミットして共有する。文書にパスを書かせない（決まりや仕様書は単独で配ることがある）。
 # 次の計画で同じファイルを変えるなら「未判断」として書き足し、「変更不要」「関係なし」とされたら、その起点を外す。
+# 控えに書くのは変えたあとの検査を通ったときだけ（確認で外したファイル・やめた回の発見を共有しない）。
 
 def link_label(key: str, rel: str) -> str:
     return f"{key}:{rel}" if key else rel
@@ -2509,12 +2505,12 @@ def link_reason(item: str) -> str:
     return text[:80]
 
 
-def links_plan(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> list[str]:
+def links_plan(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> None:
     """前の回に見つけたつながりのうち、計画で変える自分のファイルから伸びていて、計画に無いものを pending へ。"""
     own = plan_changes(ctx, bodies)[""]
     asked = ctx.__dict__.setdefault("_link_asked", {})
     if not own:
-        return []
+        return
     listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
               | listed_paths(ctx, bodies.get("## 影響範囲", "")) | test_plan(ctx, bodies).paths(""))
     cited = cited_anywhere(ctx, bodies)
@@ -2530,7 +2526,6 @@ def links_plan(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> list[str
             pending.ref(ctx, key, rel, why)
         elif not key and not covered(rel, listed):
             pending.own(ctx, rel, why)
-    return []
 
 
 def plan_found_links(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str, str]]:
@@ -2545,17 +2540,19 @@ def plan_found_links(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str, s
         for item in items(bodies.get(heading, "")):
             if UNRELATED_MARK not in item:
                 out += [(k, rel, link_reason(item)) for k, rel in cited_refs(ctx, item).found]
-    found = ctx.__dict__.get("_found") or set()
+    # 測って見つかったものと、控えから書き足したもの（新しい発見ではない。起点を計画の全ファイルへ広げない）
+    found = (ctx.__dict__.get("_found") or set()) | set(ctx.__dict__.get("_link_asked") or {})
     rules = {(k, split_anchor(r)[0]) for k, r in ctx.rule_files()}
     return [(k, rel, why) for k, rel, why in out
             if (k, rel) not in found and (k, rel) not in rules and (side_of(ctx, k).path / rel).is_file()]
 
 
 def add_links(ctx: Ctx, own: set[str], found: list[tuple[str, str, str]],
-              waived: set[tuple[str, str]] = frozenset()) -> None:
-    """つながりを控える。waived は、控えから書き足したのに「変更不要」「関係なし」とされたもの（その起点を外す）。"""
+              asked: dict[tuple[str, str], set[str]], waived: set[tuple[str, str]]) -> None:
+    """つながりを控える。asked は控えから訊いたもの（先 → 当たった起点）、waived はそのうち「変更不要」「関係なし」と
+    されたもの（その起点を外す）。"""
     rows = {r["then"]: r for r in load_links(ctx)}
-    for (key, rel), hit in (ctx.__dict__.get("_link_asked") or {}).items():
+    for (key, rel), hit in asked.items():
         row = rows.get(link_label(key, rel))
         if row and (key, rel) in waived:
             row["when"] = [w for w in row["when"] if w not in hit]
@@ -2577,29 +2574,50 @@ def add_links(ctx: Ctx, own: set[str], found: list[tuple[str, str, str]],
     save_links(ctx, kept)
 
 
-def record_plan_links(ctx: Ctx, bodies: dict[str, str]) -> None:
-    """計画の検査を通ったときに、測る道具では見つからなかったつながりを控え、外れたつながりの起点を外す。"""
+def plan_waived(ctx: Ctx, bodies: dict[str, str], keys) -> set[tuple[str, str]]:
+    """keys のうち、計画が「変更不要」「関係なし」としたもの。"""
     own_waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True)
-    tp = test_plan(ctx, bodies)
+    tp_waived = test_plan(ctx, bodies).waived
     unrelated = [it for h in CITED_IN_REFS for it in items(bodies.get(h, "")) if UNRELATED_MARK in it]
-    waived = set()
-    for key, rel in (ctx.__dict__.get("_link_asked") or {}):
-        if (key, rel) in tp.waived or (not key and rel in own_waived) or (
-                key and any(ref_label(ctx, key, rel) in it or rel in it for it in unrelated)):
-            waived.add((key, rel))
-    add_links(ctx, own_planned(ctx, bodies), plan_found_links(ctx, bodies), waived)
+    return {(key, rel) for key, rel in keys
+            if (key, rel) in tp_waived or (any(ref_label(ctx, key, rel) in it or rel in it for it in unrelated)
+                                           if key else rel in own_waived)}
 
 
-def record_added_links(ctx: Ctx, a: "Applied") -> None:
-    """変える段で `追加: 理由` と申告して足したファイルを、計画で変えたファイルとのつながりとして控える。"""
-    found = []
+def keep_plan_links(ctx: Ctx, bodies: dict[str, str]) -> None:
+    """計画の検査を通ったときに、見つけたつながりと外したつながりを作業フォルダに置く（検査し直すたびに置き直す）。"""
+    asked = ctx.__dict__.get("_link_asked") or {}
+    write_text(ctx.data / LINKS_FOUND_NAME, json.dumps({
+        "plan": plan_rel(ctx), "found": [list(f) for f in plan_found_links(ctx, bodies)],
+        "asked": [[k, rel, sorted(hit)] for (k, rel), hit in sorted(asked.items())],
+        "waived": sorted(map(list, plan_waived(ctx, bodies, asked)))}, ensure_ascii=False, indent=2) + "\n")
+
+
+def record_links(ctx: Ctx, a: "Applied") -> None:
+    """変えたあとの検査を通ったときに、この回で見つけたつながりを控え、外したつながりの起点を外す。
+
+    計画の検査で見つけたもの（作業フォルダに置いたもの）に、変える段で `追加: 理由` と申告して足したファイルと、
+    変えたファイルから訊いて「変更不要」「関係なし」とされたものを合わせる。
+    """
+    try:
+        kept = json.loads((ctx.data / LINKS_FOUND_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        kept = {}
+    if not isinstance(kept, dict) or kept.get("plan") != plan_rel(ctx):
+        kept = {}
+    found = [tuple(f) for f in kept.get("found", [])]
+    asked: dict[tuple[str, str], set[str]] = {(k, rel): set(hit) for k, rel, hit in kept.get("asked", [])}
+    waived = {tuple(w) for w in kept.get("waived", [])}
+    for (key, rel), hit in (ctx.__dict__.get("_link_asked_apply") or {}).items():
+        asked.setdefault((key, rel), set()).update(hit)
+    waived |= ctx.__dict__.get("_link_waived_apply") or set()
     for (key, rel), why in deviations(ctx).added.items():
         if key is None:
             key = "" if rel in a.own_touched else next((n for n, rels in a.touched.items() if rel in rels), None)
         if key is not None and (side_of(ctx, key).path / rel).is_file():
             found.append((key, rel, why.replace("`", "")[:80]))
-    if found:
-        add_links(ctx, own_planned(ctx, a.bodies), found)
+    if found or asked:
+        add_links(ctx, own_planned(ctx, a.bodies), found, asked, waived)
 
 
 # ---------------------------------------------------------------- 根拠のパス
@@ -3736,7 +3754,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
                             ref_lines.get(n, {}).get(r), own_terms)
     problems += explore_problems(ctx, bodies, pending)
     problems += trace_plan(ctx, bodies, pending)
-    problems += links_plan(ctx, bodies, pending)
+    links_plan(ctx, bodies, pending)
     problems += nodoc_plan_problems(ctx, bodies)
     problems += tests_plan_problems(ctx, bodies, terms, pending)
     problems += formats_plan_problems(ctx, bodies, pending)
@@ -5276,7 +5294,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
         return 1
     record_dismissed(ctx, bodies)
-    record_plan_links(ctx, bodies)
+    keep_plan_links(ctx, bodies)
     write_text(ctx.plan, compact_plan(text))
     write_text(ctx.data / PLAN_CHECK_TEXT, json.dumps(
         {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text}, ensure_ascii=False, indent=2) + "\n")
@@ -6390,7 +6408,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     print_problems(ctx, "apply", problems)
     if problems:
         return 1
-    record_added_links(ctx, a)
+    record_links(ctx, a)
     # 通ったときの中身を控える。report はこれと今を比べ、通ったあとに変わっていないかを確かめる。
     # 変えたファイルの git の blob も控え、record が記録に残す（lint がコミットされた中身と突き合わせる）。
     write_text(ctx.data / "applied.json",
@@ -6457,16 +6475,27 @@ def links_apply(ctx: Ctx, a: Applied) -> list[str]:
     waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
               | {rel for k, rel in test_plan(ctx, a.bodies).waived if not k})
     missing_own, missing_refs = [], []
+    asked = ctx.__dict__.setdefault("_link_asked_apply", {})
+    waived_links = ctx.__dict__.setdefault("_link_waived_apply", set())
     for row in load_links(ctx):
         side = link_side(ctx, row["then"])
-        if not side or not set(row["when"]) & a.own_touched or not (side_of(ctx, side[0]).path / side[1]).is_file():
+        hit = set(row["when"]) & a.own_touched
+        if not side or not hit or not (side_of(ctx, side[0]).path / side[1]).is_file():
             continue
         key, rel = side
+        asked.setdefault((key, rel), set()).update(hit)
         if not key:
-            if rel not in a.own_touched and not covered(rel, waived) and not dev.waived("", rel):
+            if rel in a.own_touched:
+                continue
+            if covered(rel, waived) or dev.waived("", rel):
+                waived_links.add((key, rel))   # 要らないと分かった（その起点を外す）
+            else:
                 missing_own.append(rel)
-        elif (key, rel) not in cited and rel not in a.touched.get(key, set()) and not dev.unrelated_file(key, rel):
-            missing_refs.append(ref_label(ctx, key, rel))
+        elif (key, rel) not in cited and rel not in a.touched.get(key, set()):
+            if dev.unrelated_file(key, rel):
+                waived_links.add((key, rel))
+            else:
+                missing_refs.append(ref_label(ctx, key, rel))
     problems = []
     if missing_own:
         problems.append(f"変えたファイルから、前の回に見つけたつながり（{LINKS_REL}）の先にある自分のファイルを、直していません"
@@ -7243,7 +7272,7 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
         result += applied_lines(ctx, applied)
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
-    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME):
+    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME, LINKS_FOUND_NAME):
         (ctx.data / name).unlink(missing_ok=True)   # 閉じた回の印を、次の回に持ち越さない
     # 報告が出せなかった回（計画の検査を通る前にやめた回など）も、探した・読んだ記録を次の回に持ち越さない
     clear_reading_logs(ctx)
