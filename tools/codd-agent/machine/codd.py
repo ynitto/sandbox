@@ -166,6 +166,7 @@ SEMANTIC_ORIGIN = "codd-semantic" # codd が足したノード・辺の印（足
 GRAPH_AGENT = "codd-graph"        # 束を渡すサブエージェント（codd.json の subagent が true のとき）
 GRAPH_LOG = "graph-run.json"      # この回にグラフを用意したか（計画の検査が確かめる）
 DISMISSED_NAME = "graph/dismissed.json"   # 要判断のうち、計画で「変更不要」「関係なし」とした組
+LINKS_REL = f"{MACHINE_REL}/links.json"     # 測る道具では見つからなかったつながり（codd.json の隣。コミットして共有する）
 # グラフで影響を測るときの線。推定の辺は確からしさがこれ以上で、変わる名前から 1 歩のものだけを判断させる。
 ASK_SCORE = 0.85
 # つながりの多いノード（README・用語集・共通の util など）は、候補にはするが先へは辿らない。
@@ -2461,6 +2462,146 @@ def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
     write_text(path, json.dumps(rec, ensure_ascii=False, indent=2) + "\n")
 
 
+# ---------------------------------------------------------------- 見つけたつながり（.statemachine/codd/links.json）
+#
+# グラフ・文字列の検索・パスのつながりはファイルの中身から作り直せるので、共有しない（.codd/graph/ は端末のキャッシュ）。
+# 作業中の発見や利用者の指摘で計画に足したファイル（測る道具では見つからなかったもの）は、どのファイルにも書かれて
+# いないので作り直せない。それを「この自分のファイルを変えたら、このファイルも響く」として codd.json の隣に控え、
+# コミットして共有する。文書にパスを書かせない（決まりや仕様書は単独で配ることがある）。
+# 次の計画で同じファイルを変えるなら「未判断」として書き足し、「変更不要」「関係なし」とされたら、その起点を外す。
+
+def link_label(key: str, rel: str) -> str:
+    return f"{key}:{rel}" if key else rel
+
+
+def link_side(ctx: Ctx, label: str) -> tuple[str, str] | None:
+    """控えのラベル（自分はパス、参照先は `名前:パス`）。いまの設定に無い参照先なら None（控えは消さずに残す）。"""
+    name, sep, rel = label.partition(":")
+    if sep and "/" not in name:
+        return (name, rel) if name in {r.name for r in ctx.refs} else None
+    return "", label
+
+
+def load_links(ctx: Ctx) -> list[dict]:
+    try:
+        data = json.loads((ctx.root / LINKS_REL).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = data.get("links") if isinstance(data, dict) else None
+    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("then"), str)
+            and isinstance(r.get("when"), list)] if isinstance(rows, list) else []
+
+
+def save_links(ctx: Ctx, rows: list[dict]) -> None:
+    path = ctx.root / LINKS_REL
+    if not rows and not path.is_file():
+        return
+    rows = sorted(rows, key=lambda r: r["then"])
+    text = json.dumps({"links": rows}, ensure_ascii=False, indent=2) + "\n"
+    if read_text(path) != text:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_text(path, text)
+
+
+def link_reason(item: str) -> str:
+    """項目の理由（— の後ろ）。計画に書き足すときに根拠のパスとして読まれないよう ` を外し、短くする。"""
+    text = item.split("—", 1)[-1].replace("`", "").strip(" -")
+    return text[:80]
+
+
+def links_plan(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> list[str]:
+    """前の回に見つけたつながりのうち、計画で変える自分のファイルから伸びていて、計画に無いものを pending へ。"""
+    own = plan_changes(ctx, bodies)[""]
+    asked = ctx.__dict__.setdefault("_link_asked", {})
+    if not own:
+        return []
+    listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
+              | listed_paths(ctx, bodies.get("## 影響範囲", "")) | test_plan(ctx, bodies).paths(""))
+    cited = cited_anywhere(ctx, bodies)
+    for row in load_links(ctx):
+        hit = set(row["when"]) & own
+        side = link_side(ctx, row["then"])
+        if not hit or not side or not (side_of(ctx, side[0]).path / side[1]).is_file():
+            continue
+        key, rel = side
+        asked.setdefault((key, rel), set()).update(hit)
+        why = f"前の回に見つけたつながり（{LINKS_REL}）: {row.get('why') or '理由の控えなし'}"
+        if key and (key, rel) not in cited:
+            pending.ref(ctx, key, rel, why)
+        elif not key and not covered(rel, listed):
+            pending.own(ctx, rel, why)
+    return []
+
+
+def plan_found_links(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str, str]]:
+    """計画が直す・根拠にしたファイルのうち、測る道具では見つからなかったもの（側, パス, 理由）。"""
+    # 直すファイルは、計画の検査と同じ読み方で拾う（テストの変更案の検索コマンドの入出力やコードブロックは拾わない）
+    def reason(heading: str, rel: str) -> str:
+        return next((link_reason(it) for it in items(bodies.get(heading, "")) if rel in it), "")
+    out: list[tuple[str, str, str]] = [("", rel, reason("## 影響範囲", rel)) for rel in sorted(impact_fixes(ctx, bodies))]
+    out += [(k, rel, reason(TESTS_HEADING, rel)) for k, rel in sorted(test_plan(ctx, bodies).change)]
+    # 参照先の変更案は、自分の変更案と同じく、この回にやると決めたこと（見つけたつながりではない）なので控えない
+    for heading in ("## 参照先の前提", "## 参照先の制約", "## ずれ"):
+        for item in items(bodies.get(heading, "")):
+            if UNRELATED_MARK not in item:
+                out += [(k, rel, link_reason(item)) for k, rel in cited_refs(ctx, item).found]
+    found = ctx.__dict__.get("_found") or set()
+    rules = {(k, split_anchor(r)[0]) for k, r in ctx.rule_files()}
+    return [(k, rel, why) for k, rel, why in out
+            if (k, rel) not in found and (k, rel) not in rules and (side_of(ctx, k).path / rel).is_file()]
+
+
+def add_links(ctx: Ctx, own: set[str], found: list[tuple[str, str, str]],
+              waived: set[tuple[str, str]] = frozenset()) -> None:
+    """つながりを控える。waived は、控えから書き足したのに「変更不要」「関係なし」とされたもの（その起点を外す）。"""
+    rows = {r["then"]: r for r in load_links(ctx)}
+    for (key, rel), hit in (ctx.__dict__.get("_link_asked") or {}).items():
+        row = rows.get(link_label(key, rel))
+        if row and (key, rel) in waived:
+            row["when"] = [w for w in row["when"] if w not in hit]
+    for key, rel, why in found:
+        label = link_label(key, rel)
+        if not own - {rel} or (not key and rel in own):
+            continue
+        row = rows.setdefault(label, {"when": [], "then": label})
+        row["when"] = sorted(set(row["when"]) | own)
+        row.update(why=why or row.get("why", ""), plan=plan_rel(ctx))
+    kept = []
+    for row in rows.values():
+        side = link_side(ctx, row["then"])
+        if side and not (side_of(ctx, side[0]).path / side[1]).is_file():
+            continue   # 消えたファイルのつながりは捨てる
+        row["when"] = [w for w in row["when"] if isinstance(w, str) and (ctx.root / w).exists()]
+        if row["when"]:
+            kept.append(row)
+    save_links(ctx, kept)
+
+
+def record_plan_links(ctx: Ctx, bodies: dict[str, str]) -> None:
+    """計画の検査を通ったときに、測る道具では見つからなかったつながりを控え、外れたつながりの起点を外す。"""
+    own_waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True)
+    tp = test_plan(ctx, bodies)
+    unrelated = [it for h in CITED_IN_REFS for it in items(bodies.get(h, "")) if UNRELATED_MARK in it]
+    waived = set()
+    for key, rel in (ctx.__dict__.get("_link_asked") or {}):
+        if (key, rel) in tp.waived or (not key and rel in own_waived) or (
+                key and any(ref_label(ctx, key, rel) in it or rel in it for it in unrelated)):
+            waived.add((key, rel))
+    add_links(ctx, own_planned(ctx, bodies), plan_found_links(ctx, bodies), waived)
+
+
+def record_added_links(ctx: Ctx, a: "Applied") -> None:
+    """変える段で `追加: 理由` と申告して足したファイルを、計画で変えたファイルとのつながりとして控える。"""
+    found = []
+    for (key, rel), why in deviations(ctx).added.items():
+        if key is None:
+            key = "" if rel in a.own_touched else next((n for n, rels in a.touched.items() if rel in rels), None)
+        if key is not None and (side_of(ctx, key).path / rel).is_file():
+            found.append((key, rel, why.replace("`", "")[:80]))
+    if found:
+        add_links(ctx, own_planned(ctx, a.bodies), found)
+
+
 # ---------------------------------------------------------------- 根拠のパス
 
 def slug(text: str) -> str:
@@ -3575,6 +3716,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
                                 focus=plan_changes(ctx, bodies))
         listed = (listed_paths(ctx, bodies["## 自分の変更案"], allow_new=True)
                   | listed_paths(ctx, bodies["## 影響範囲"]) | test_plan(ctx, bodies).paths(""))
+        ctx.__dict__.setdefault("_found", set()).update(("", p) for p in measured)
         for p in measured:
             if not covered(p, listed):
                 pending.own(ctx, p, why.get(p, "変わる名前が出てくる"))
@@ -3586,6 +3728,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
         ref_why: dict[tuple[str, str], str] = {}
         ref_hits = measure_refs(ctx, own_terms, "ref-impact.md", "自分の変更で動く名前に触れている参照先のファイル（測定）",
                                 ref_lines, ref_why, focus=plan_changes(ctx, bodies))
+        ctx.__dict__.setdefault("_found", set()).update(ref_hits)
         cited = cited_anywhere(ctx, bodies)
         for n, r in sorted(ref_hits):
             if (n, r) not in cited:
@@ -3593,6 +3736,7 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
                             ref_lines.get(n, {}).get(r), own_terms)
     problems += explore_problems(ctx, bodies, pending)
     problems += trace_plan(ctx, bodies, pending)
+    problems += links_plan(ctx, bodies, pending)
     problems += nodoc_plan_problems(ctx, bodies)
     problems += tests_plan_problems(ctx, bodies, terms, pending)
     problems += formats_plan_problems(ctx, bodies, pending)
@@ -3609,6 +3753,7 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> list[str]:
               | listed_paths(ctx, bodies.get("## 影響範囲", "")) | test_plan(ctx, bodies).paths(""))
     own_links = sorted({rel for name, rels in planned.items() for k, rel in linked(ctx, name, rels) if not k})
     missing_own = [p for p in own_links if not covered(p, listed)]
+    ctx.__dict__.setdefault("_found", set()).update([*ref_links, *(("", p) for p in own_links)])
     write_trace(ctx, "trace.md", "計画で変えるファイルとつながっているファイル（パスで指し合っているもの）", [
         ("自分の変更案・影響範囲で直すファイルとつながっている参照先のファイル", [ref_label(ctx, n, r) for n, r in ref_links]),
         ("参照先の変更案のファイルとつながっている自分のファイル", own_links),
@@ -4097,6 +4242,7 @@ def tests_plan_problems(ctx: Ctx, bodies: dict[str, str], terms: list[str], pend
                         f"挙げてください（要らないなら `- {NO_CHANGE_MARK}: 理由`。テストのファイルは codd.json の tests の"
                         "書き方に当たるもの）")
     found = affected_tests(ctx, terms, changed)
+    ctx.__dict__.setdefault("_found", set()).update(found)
     write_tests_report(ctx, "tests.md", "計画の変更が響くテスト（測定）", found, tp, changed)
     problems += new_names_plan_problems(ctx, bodies)
     problems += evidence_plan_problems(ctx, bodies, set(found) | tp.change)
@@ -5130,6 +5276,7 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)
         return 1
     record_dismissed(ctx, bodies)
+    record_plan_links(ctx, bodies)
     write_text(ctx.plan, compact_plan(text))
     write_text(ctx.data / PLAN_CHECK_TEXT, json.dumps(
         {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text}, ensure_ascii=False, indent=2) + "\n")
@@ -6162,6 +6309,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。
     problems += trace_apply(ctx, a)
+    problems += links_apply(ctx, a)
     problems += nodoc_apply_problems(ctx, bodies, {"": a.own_touched, **a.touched})
 
     # 5. 変えるときに使うと決めたスキル・道具を使ったか（.codd/apply.md に書く）。
@@ -6242,6 +6390,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     print_problems(ctx, "apply", problems)
     if problems:
         return 1
+    record_added_links(ctx, a)
     # 通ったときの中身を控える。report はこれと今を比べ、通ったあとに変わっていないかを確かめる。
     # 変えたファイルの git の blob も控え、record が記録に残す（lint がコミットされた中身と突き合わせる）。
     write_text(ctx.data / "applied.json",
@@ -6292,6 +6441,42 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
         problems.append(f"{STALE_UNPLANNED}（同じものなら、そのファイルを直すことを計画に足して確認で認めてもらう。"
                         f"同じ綴りの別物なら、{UNRELATED_HINT}。計画の根拠に挙げたファイルは別物にできない）: "
                         + ", ".join(unplanned))
+    return problems
+
+
+def links_apply(ctx: Ctx, a: Applied) -> list[str]:
+    """実際に変えた自分のファイルから伸びる、前の回に見つけたつながり（links.json）の先を扱ったか。
+
+    計画の検査は計画で変えるファイルから引く。変える段で足したファイル（`追加: 理由`）や計画より広く変えた分は、
+    グラフ・文字列と同じく、変えたあとに実際の変更から引き直す。
+    """
+    if not a.own_touched:
+        return []
+    dev = deviations(ctx)
+    cited = cited_anywhere(ctx, a.bodies)
+    waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+              | {rel for k, rel in test_plan(ctx, a.bodies).waived if not k})
+    missing_own, missing_refs = [], []
+    for row in load_links(ctx):
+        side = link_side(ctx, row["then"])
+        if not side or not set(row["when"]) & a.own_touched or not (side_of(ctx, side[0]).path / side[1]).is_file():
+            continue
+        key, rel = side
+        if not key:
+            if rel not in a.own_touched and not covered(rel, waived) and not dev.waived("", rel):
+                missing_own.append(rel)
+        elif (key, rel) not in cited and rel not in a.touched.get(key, set()) and not dev.unrelated_file(key, rel):
+            missing_refs.append(ref_label(ctx, key, rel))
+    problems = []
+    if missing_own:
+        problems.append(f"変えたファイルから、前の回に見つけたつながり（{LINKS_REL}）の先にある自分のファイルを、直していません"
+                        f"（直すか、要らないと分かったなら {DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
+                        f"`- パス — {NO_CHANGE_MARK}: 理由` と書く）: " + ", ".join(sorted(missing_own)))
+    if missing_refs:
+        problems.append(f"変えたファイルから、前の回に見つけたつながり（{LINKS_REL}）の先にある参照先のファイルを、計画で扱っていません"
+                        f"（関係しないなら {DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
+                        f"`- パス — {UNRELATED_MARK}: 理由` と書く。直すなら利用者に確かめて計画を直す）: "
+                        + ", ".join(sorted(missing_refs)))
     return problems
 
 
@@ -6844,6 +7029,8 @@ SUMMARY_WIDTH = 120
 
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
+    if ctx.plan.is_file() and not run_ended(ctx) and taken_over(ctx):
+        log_decision(ctx, "STOP", TAKEN_OVER)
     if ctx.plan.is_file() and run_ended(ctx):
         # 前の回が記録を書かずに終わっていたら、ここで閉じる（引き継ぐと、前の回の変更をこの回のものと数えて落ちる）
         print(f"前の回の計画を、記録として閉じました: {close_plan(ctx, quiet=True)}（終わりの記録が書かれていなかった）")
@@ -7084,6 +7271,24 @@ def run_ended(ctx: Ctx) -> bool:
     decisions = load_decisions(ctx)
     applied = (ctx.data / "applied.json").is_file() and same_plan_baseline(ctx)
     return applied or bool(decisions) and decisions[-1].get("answer") == "STOP"
+
+
+TAKEN_OVER = "変える前の印のあとにコミットされ、この回の作業中の変更が残っていない（利用者が引き取って終えた）"
+
+
+def taken_over(ctx: Ctx) -> bool:
+    """進めている計画の回を、利用者が引き取って終えたか（変える前の印のあとに、印から変わったファイルをコミットし、
+    作業中の変更が印のときのまま）。
+
+    変えたあとの検査で止まったまま利用者が直してコミットし、次の依頼に移ると、記録が書かれず計画が残る。そのまま
+    引き継ぐと、印のあとのコミットを「途中でコミットした」この回の変更と数え、次の依頼で計画に無い変更として落ちる。
+    作業中の変更が残っていれば、途中でコミットしただけの同じ回として引き継ぐ。計画のファイルだけのコミットや、
+    計画を練っている間（印の前）のコミットは数えない（練りかけの計画を閉じない）。
+    """
+    snaps = before_snapshots(ctx) if same_plan_baseline(ctx) else []
+    moved = any(snap.get("head") and head(side.path) != snap["head"] for side, snap in snaps)
+    return (moved and all(dirty_files(side) == snap.get("files", {}) for side, snap in snaps)
+            and any(changed_since(side, snap) for side, snap in snaps))
 
 
 def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:

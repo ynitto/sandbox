@@ -1750,6 +1750,15 @@ class CoddTest(unittest.TestCase):
         self.assertFalse((other / ".kiro").exists())
         self.assertFalse((other / ".github").exists())
 
+    def test_init_keeps_the_links_found_before(self) -> None:
+        # 見つけたつながりの控えは codd.json と同じく、置き直しても消さない（スクリプトだけ入れ替える）
+        links = self.impl / ".statemachine/codd/links.json"
+        links.write_text('{"links": []}\n', encoding="utf-8")
+        (self.impl / ".statemachine/codd/old.py").write_text("", encoding="utf-8")
+        init.init_repo(self.impl, None, None, discover=False)
+        self.assertEqual(links.read_text(encoding="utf-8"), '{"links": []}\n')
+        self.assertFalse((self.impl / ".statemachine/codd/old.py").exists())
+
     def test_init_uses_only_explicit_check(self) -> None:
         cfg = self.impl / ".statemachine/codd/codd.json"
         self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
@@ -2636,6 +2645,93 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
+
+    def links(self) -> list[dict]:
+        path = self.impl / ".statemachine/codd/links.json"
+        return json.loads(path.read_text(encoding="utf-8"))["links"] if path.is_file() else []
+
+    def test_a_link_found_while_planning_is_kept_and_asked_next_time(self) -> None:
+        # 測る道具では見つからないファイルを、利用者の指摘で影響範囲に足した。そのつながりを控え、次の計画で訊く。
+        commit(self.impl, {"src/settings.py": "LEVEL = 'info'\n"}, "settings")
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
+                                             "## 影響範囲\n\n- src/settings.py — ログの段を足す（利用者の指摘）"))
+        self.assert_plan_ok(ok=False)
+        self.assertEqual(self.links(), [{"when": ["src/app.py"], "then": "src/settings.py",
+                                         "why": "ログの段を足す（利用者の指摘）", "plan": PLAN}])
+        # 測って見つかったファイル（文書がパスで指す docs/api.md）は控えない
+        self.assertNotIn("docs/api.md", (self.impl / ".statemachine/codd/links.json").read_text(encoding="utf-8"))
+
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("- src/settings.py — 未判断（前の回に見つけたつながり（.statemachine/codd/links.json）: ログの段を足す（利用者の指摘））",
+                      (self.impl / PLAN).read_text(encoding="utf-8"))
+        # 「変更不要」と判断したら、その起点からのつながりは外す（古い発見を訊き続けない）
+        self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
+                                             "## 影響範囲\n\n- src/settings.py — 変更不要: 段は変えない"))
+        self.assert_plan_ok(ok=False)
+        self.assertEqual(self.links(), [])
+
+    def test_a_ref_doc_relied_on_is_kept_as_a_link_without_writing_paths_into_it(self) -> None:
+        # 決まりや仕様書は単独で配ることがあるので、コードのパスを書かせずに、つながりを自分の側に控える。
+        commit(self.design, {"docs/style.md": "# 書き方\n\nログは info で出す。\n"}, "style")
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先の前提\n\n",
+                                             "## 参照先の前提\n\n- ログは info で出す（根拠: docs/style.md:3）\n"))
+        self.assert_plan_ok(ok=False)
+        self.assertEqual([(r["when"], r["then"]) for r in self.links()], [(["src/app.py"], "design:docs/style.md")])
+        self.write_plan(PLAN_ALIGNED)
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        self.assertIn("- 未判断: docs/style.md（前の回に見つけたつながり", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
+                                             "## 参照先のその他\n\n- 関係なし: docs/style.md — ログの段は変えない"))
+        self.assert_plan_ok(ok=False)
+        self.assertEqual(self.links(), [])
+        self.assertNotIn("src/app.py", (self.design / "docs/style.md").read_text(encoding="utf-8"))
+
+    def test_links_from_files_changed_beyond_the_plan_are_checked_after_applying(self) -> None:
+        # 計画に無いファイルを変える段で足しても、そのファイルから伸びる見つけたつながりの先を確かめる
+        # （計画の検査は計画のファイルからしか引かない）。
+        commit(self.impl, {"src/extra.py": "X = 1\n", "src/settings.py": "LEVEL = 'info'\n"}, "more")
+        commit(self.design, {"docs/style.md": "# 書き方\n\nログは info で出す。\n"}, "style")
+        links = self.impl / ".statemachine/codd/links.json"
+        links.write_text(json.dumps({"links": [
+            {"when": ["src/extra.py"], "then": "src/settings.py", "why": "段を合わせる"},
+            {"when": ["src/extra.py"], "then": "design:docs/style.md", "why": "書き方"}]}), encoding="utf-8")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('a')\n    return 1\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("X = 2\n", encoding="utf-8")
+        apply_md = self.impl / ".codd/apply.md"
+        apply_md.write_text("## 計画との違い\n\n- src/extra.py — 追加: 値をそろえた\n", encoding="utf-8")
+        self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("前の回に見つけたつながり（.statemachine/codd/links.json）の先にある自分のファイルを、直していません", r.stderr)
+        self.assertIn("src/settings.py", r.stderr)
+        self.assertIn("先にある参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/style.md", r.stderr)
+        apply_md.write_text("## 計画との違い\n\n- src/extra.py — 追加: 値をそろえた\n"
+                            "- src/settings.py — 変更不要: 段は変えない\n- docs/style.md — 関係なし: ログの書き方は変えない\n",
+                            encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_file_added_while_applying_is_kept_as_a_link(self) -> None:
+        commit(self.impl, {"src/settings.py": "LEVEL = 'info'\n"}, "settings")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.assertEqual(self.links(), [])
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "src/settings.py").write_text("LEVEL = 'debug'\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text("## 計画との違い\n\n- src/settings.py — 追加: `LEVEL` を合わせた\n",
+                                                  encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)   # 計画に無いファイルは確かめる
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.links(), [{"when": ["src/app.py"], "then": "src/settings.py",
+                                         "why": "LEVEL を合わせた", "plan": PLAN}])
 
     def test_tests_section_is_needed_when_only_the_impact_fixes_a_file(self) -> None:
         # 影響範囲で直すだけのファイルも変える。テストの判断は同じく要る。
@@ -3744,6 +3840,40 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
         decided = new.read_text(encoding="utf-8").split("## 確認と判断", 1)[1].split("## 結果", 1)[0]
         self.assertEqual(decided.count("OK（計画で進める）"), 1)   # 前の回の答えを混ぜない
+
+    def test_next_draft_closes_a_stuck_plan_the_user_committed(self) -> None:
+        # 変えたあとの検査で止まったまま、利用者が自分で直してコミットし、ブランチを分けずに次の依頼へ進んだ。
+        # 計画を引き継ぐと、前のコミットをこの回の「計画に無い変更」と数えて落ちていた。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('a')\n    return 1\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("X = 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "fixed by hand")
+        r = self.run_pa(self.impl, "draft", "--name", "next")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"前の回の計画を、記録として閉じました: {PLAN}", r.stdout)
+        self.assertIn("STOP（やめる）: 変える前の印のあとにコミットされ", (self.impl / PLAN).read_text(encoding="utf-8"))
+        new = next((self.impl / ".plans").glob("*-next.md"))
+        new.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.read_up(self.impl)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('b')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)   # 前のコミットの src/extra.py を数えない
+
+    def test_a_commit_midway_with_work_left_keeps_the_same_run(self) -> None:
+        # 作業中の変更が残っていれば、途中でコミットしただけの同じ回として計画を引き継ぐ。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('a')\n    return 1\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("X = 1\n", encoding="utf-8")
+        git(self.impl, "add", "src/app.py")
+        git(self.impl, "commit", "-q", "-m", "midway")
+        r = self.run_pa(self.impl, "draft", "--name", "next")
+        self.assertIn(f"計画はもうあります: {PLAN}", r.stdout)
+        self.assertIn("src/extra.py", self.run_pa(self.impl, "verify-apply").stderr)
 
     def test_changing_waits_until_the_users_ok_is_logged(self) -> None:
         # 確認の答え（decide OK）を控えずに変える段へ来たら、変え始める前に止める（推し量って控えない）。

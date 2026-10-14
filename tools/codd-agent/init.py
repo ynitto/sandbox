@@ -91,9 +91,9 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
         raise SystemExit("初めて置くときは --side と --ref を指定してください")
 
     dest.mkdir(parents=True, exist_ok=True)
-    # 古い版のファイルを残さない（codd.json だけは利用者の設定なので残す）。
+    # 古い版のファイルを残さない（codd.json は利用者の設定、links.json は見つけたつながりの控えなので残す）。
     for item in dest.iterdir():
-        if item.name == "codd.json":
+        if item.name in ("codd.json", "links.json"):
             continue
         if item.is_dir():
             shutil.rmtree(item)
