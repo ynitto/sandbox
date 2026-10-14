@@ -2535,14 +2535,11 @@ def links_plan(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> list[str
 
 def plan_found_links(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str, str]]:
     """計画が直す・根拠にしたファイルのうち、測る道具では見つからなかったもの（側, パス, 理由）。"""
-    out: list[tuple[str, str, str]] = []
-    for heading in ("## 影響範囲", TESTS_HEADING):
-        for item in items(bodies.get(heading, "")):
-            j = judgment(item)
-            if j.waived or PENDING_MARK in item:
-                continue
-            out += [("", rel, link_reason(item)) for rel in cited_own(ctx, j.targets)]
-            out += [(k, rel, link_reason(item)) for k, rel in cited_refs(ctx, j.targets).found]
+    # 直すファイルは、計画の検査と同じ読み方で拾う（テストの変更案の検索コマンドの入出力やコードブロックは拾わない）
+    def reason(heading: str, rel: str) -> str:
+        return next((link_reason(it) for it in items(bodies.get(heading, "")) if rel in it), "")
+    out: list[tuple[str, str, str]] = [("", rel, reason("## 影響範囲", rel)) for rel in sorted(impact_fixes(ctx, bodies))]
+    out += [(k, rel, reason(TESTS_HEADING, rel)) for k, rel in sorted(test_plan(ctx, bodies).change)]
     # 参照先の変更案は、自分の変更案と同じく、この回にやると決めたこと（見つけたつながりではない）なので控えない
     for heading in ("## 参照先の前提", "## 参照先の制約", "## ずれ"):
         for item in items(bodies.get(heading, "")):
@@ -6312,6 +6309,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     # 4. パスのつながり。変えたファイルとつながっているほかの側のファイルを扱ったか、書き足したパスが実在するか、
     #    消したファイルを指したままのファイルが無いか。
     problems += trace_apply(ctx, a)
+    problems += links_apply(ctx, a)
     problems += nodoc_apply_problems(ctx, bodies, {"": a.own_touched, **a.touched})
 
     # 5. 変えるときに使うと決めたスキル・道具を使ったか（.codd/apply.md に書く）。
@@ -6443,6 +6441,42 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
         problems.append(f"{STALE_UNPLANNED}（同じものなら、そのファイルを直すことを計画に足して確認で認めてもらう。"
                         f"同じ綴りの別物なら、{UNRELATED_HINT}。計画の根拠に挙げたファイルは別物にできない）: "
                         + ", ".join(unplanned))
+    return problems
+
+
+def links_apply(ctx: Ctx, a: Applied) -> list[str]:
+    """実際に変えた自分のファイルから伸びる、前の回に見つけたつながり（links.json）の先を扱ったか。
+
+    計画の検査は計画で変えるファイルから引く。変える段で足したファイル（`追加: 理由`）や計画より広く変えた分は、
+    グラフ・文字列と同じく、変えたあとに実際の変更から引き直す。
+    """
+    if not a.own_touched:
+        return []
+    dev = deviations(ctx)
+    cited = cited_anywhere(ctx, a.bodies)
+    waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+              | {rel for k, rel in test_plan(ctx, a.bodies).waived if not k})
+    missing_own, missing_refs = [], []
+    for row in load_links(ctx):
+        side = link_side(ctx, row["then"])
+        if not side or not set(row["when"]) & a.own_touched or not (side_of(ctx, side[0]).path / side[1]).is_file():
+            continue
+        key, rel = side
+        if not key:
+            if rel not in a.own_touched and not covered(rel, waived) and not dev.waived("", rel):
+                missing_own.append(rel)
+        elif (key, rel) not in cited and rel not in a.touched.get(key, set()) and not dev.unrelated_file(key, rel):
+            missing_refs.append(ref_label(ctx, key, rel))
+    problems = []
+    if missing_own:
+        problems.append(f"変えたファイルから、前の回に見つけたつながり（{LINKS_REL}）の先にある自分のファイルを、直していません"
+                        f"（直すか、要らないと分かったなら {DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
+                        f"`- パス — {NO_CHANGE_MARK}: 理由` と書く）: " + ", ".join(sorted(missing_own)))
+    if missing_refs:
+        problems.append(f"変えたファイルから、前の回に見つけたつながり（{LINKS_REL}）の先にある参照先のファイルを、計画で扱っていません"
+                        f"（関係しないなら {DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
+                        f"`- パス — {UNRELATED_MARK}: 理由` と書く。直すなら利用者に確かめて計画を直す）: "
+                        + ", ".join(sorted(missing_refs)))
     return problems
 
 

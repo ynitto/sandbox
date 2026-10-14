@@ -2688,6 +2688,35 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.links(), [])
         self.assertNotIn("src/app.py", (self.design / "docs/style.md").read_text(encoding="utf-8"))
 
+    def test_links_from_files_changed_beyond_the_plan_are_checked_after_applying(self) -> None:
+        # 計画に無いファイルを変える段で足しても、そのファイルから伸びる見つけたつながりの先を確かめる
+        # （計画の検査は計画のファイルからしか引かない）。
+        commit(self.impl, {"src/extra.py": "X = 1\n", "src/settings.py": "LEVEL = 'info'\n"}, "more")
+        commit(self.design, {"docs/style.md": "# 書き方\n\nログは info で出す。\n"}, "style")
+        links = self.impl / ".statemachine/codd/links.json"
+        links.write_text(json.dumps({"links": [
+            {"when": ["src/extra.py"], "then": "src/settings.py", "why": "段を合わせる"},
+            {"when": ["src/extra.py"], "then": "design:docs/style.md", "why": "書き方"}]}), encoding="utf-8")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('a')\n    return 1\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("X = 2\n", encoding="utf-8")
+        apply_md = self.impl / ".codd/apply.md"
+        apply_md.write_text("## 計画との違い\n\n- src/extra.py — 追加: 値をそろえた\n", encoding="utf-8")
+        self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("前の回に見つけたつながり（.statemachine/codd/links.json）の先にある自分のファイルを、直していません", r.stderr)
+        self.assertIn("src/settings.py", r.stderr)
+        self.assertIn("先にある参照先のファイルを、計画で扱っていません", r.stderr)
+        self.assertIn("docs/style.md", r.stderr)
+        apply_md.write_text("## 計画との違い\n\n- src/extra.py — 追加: 値をそろえた\n"
+                            "- src/settings.py — 変更不要: 段は変えない\n- docs/style.md — 関係なし: ログの書き方は変えない\n",
+                            encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_a_file_added_while_applying_is_kept_as_a_link(self) -> None:
         commit(self.impl, {"src/settings.py": "LEVEL = 'info'\n"}, "settings")
         self.write_plan(PLAN_ALIGNED)
