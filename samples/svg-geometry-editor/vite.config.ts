@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   build: {
     lib: { entry: 'src/index.ts', name: 'SvgGeometryEditor', formats: ['es'], fileName: 'index' },
-    rollupOptions: { external: ['react', 'react-dom', 'react/jsx-runtime', '@mui/material', '@emotion/react', '@emotion/styled'] }
+    rollupOptions: { external: ['react', 'react-dom', 'react/jsx-runtime'] }
   },
   test: { environment: 'jsdom' }
 });
