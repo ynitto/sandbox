@@ -19,6 +19,7 @@
 
 const YAML = require('yaml');
 const templateParameters = require('./template-parameters');
+const { headChars } = require('../text');
 
 const PROCEDURE_VERSION = 4;
 const MAX_STEPS = 40;
@@ -155,7 +156,7 @@ function catalog() {
 // --- 正規化 -------------------------------------------------------------------------
 
 function text(value, max = MAX_TEXT) {
-  return String(value == null ? '' : value).replace(/\r\n?/g, '\n').trim().slice(0, max);
+  return headChars(String(value == null ? '' : value).replace(/\r\n?/g, '\n').trim(), max);
 }
 
 // 判断のラベル。出力契約は「第 1 行がこのラベルで始まる」なので空白を含めない。
