@@ -267,7 +267,7 @@ async function renameConversation() {
   if (!cur) return;
   const next = prompt('この会話の名前', cur.title || '');
   if (next == null) return;
-  const title = next.trim().slice(0, 80);
+  const title = Array.from(next.trim()).slice(0, 80).join('');
   if (!title || title === cur.title) return;
   state.current = await api.updateSession(cur.id, { title });
   state.sessions = await api.listSessions(state.repo);

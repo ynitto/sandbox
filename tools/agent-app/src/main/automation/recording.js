@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('../text');
 
 // 操作の記録（Recording）— 人が画面でやった操作の記録を、工程列（model.js の raw 形）へ
 // **決定的に**変換する。変換の規則は agent-dashboard の recording.js と同じ
@@ -37,7 +38,7 @@ const ROLE_JA = {
 };
 
 function text(value, max = MAX_TEXT) {
-  return String(value == null ? '' : value).replace(/\r\n/g, '\n').trim().slice(0, max);
+  return headChars(String(value == null ? '' : value).replace(/\r\n/g, '\n').trim(), max);
 }
 
 // --- Playwright コード行 ------------------------------------------------------------
@@ -249,7 +250,7 @@ function stepTitle(group) {
   if (op.op === 'press') return 'Enter で確定する';
   if (op.op === 'goto') return '画面を開く';
   if (op.op === 'launch' || op.op === 'window') return `${op.target} を開く`;
-  return describeOp(op).replace(/（記録時の例: .*）$/, '').slice(0, 60);
+  return headChars(describeOp(op).replace(/（記録時の例: .*）$/, ''), 60);
 }
 
 function recordedEntry(op) {
@@ -367,7 +368,7 @@ function supportsPlaywrightRecording(raw) {
 function firstLine(res) {
   const lines = String((res && (res.stderr || res.stdout)) || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const meaningful = lines.find((l) => /error|not found|cannot|enoent|failed|見つかり/i.test(l) && !/^#+\s*Error$/i.test(l));
-  return String(meaningful || lines[0] || '').slice(0, 200);
+  return headChars(String(meaningful || lines[0] || ''), 200);
 }
 
 function browserOpenHint(detail) {

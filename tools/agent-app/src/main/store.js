@@ -57,7 +57,7 @@ function taskInputs(raw) {
       const kept = {};
       for (const [key, value] of Object.entries(values)) {
         if (value == null || typeof value === 'object') continue;
-        kept[String(key)] = String(value).slice(0, MAX_TASK_INPUT_CHARS);
+        kept[String(key)] = headChars(String(value), MAX_TASK_INPUT_CHARS);
       }
       if (Object.keys(kept).length) perRepo[String(task)] = kept;
     }
@@ -79,7 +79,7 @@ function taskInputHistory(raw) {
       for (const [name, values] of Object.entries(fields)) {
         if (!Array.isArray(values)) continue;
         const kept = [...new Set(values.filter((value) => typeof value === 'string')
-          .map((value) => value.trim().slice(0, MAX_TASK_INPUT_CHARS)).filter(Boolean))].slice(0, 8);
+          .map((value) => headChars(value.trim(), MAX_TASK_INPUT_CHARS)).filter(Boolean))].slice(0, 8);
         if (kept.length) perTask[name] = kept;
       }
       if (Object.keys(perTask).length) perRepo[task] = perTask;
