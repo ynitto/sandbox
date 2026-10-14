@@ -1750,6 +1750,15 @@ class CoddTest(unittest.TestCase):
         self.assertFalse((other / ".kiro").exists())
         self.assertFalse((other / ".github").exists())
 
+    def test_init_keeps_the_links_found_before(self) -> None:
+        # 見つけたつながりの控えは codd.json と同じく、置き直しても消さない（スクリプトだけ入れ替える）
+        links = self.impl / ".statemachine/codd/links.json"
+        links.write_text('{"links": []}\n', encoding="utf-8")
+        (self.impl / ".statemachine/codd/old.py").write_text("", encoding="utf-8")
+        init.init_repo(self.impl, None, None, discover=False)
+        self.assertEqual(links.read_text(encoding="utf-8"), '{"links": []}\n')
+        self.assertFalse((self.impl / ".statemachine/codd/old.py").exists())
+
     def test_init_uses_only_explicit_check(self) -> None:
         cfg = self.impl / ".statemachine/codd/codd.json"
         self.assertNotIn("check", json.loads(cfg.read_text(encoding="utf-8")))
@@ -2638,7 +2647,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("## テストの変更案 にテストの判断がありません", r.stderr)
 
     def links(self) -> list[dict]:
-        path = self.impl / ".plans/links.json"
+        path = self.impl / ".statemachine/codd/links.json"
         return json.loads(path.read_text(encoding="utf-8"))["links"] if path.is_file() else []
 
     def test_a_link_found_while_planning_is_kept_and_asked_next_time(self) -> None:
@@ -2650,12 +2659,12 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.links(), [{"when": ["src/app.py"], "then": "src/settings.py",
                                          "why": "ログの段を足す（利用者の指摘）", "plan": PLAN}])
         # 測って見つかったファイル（文書がパスで指す docs/api.md）は控えない
-        self.assertNotIn("docs/api.md", (self.impl / ".plans/links.json").read_text(encoding="utf-8"))
+        self.assertNotIn("docs/api.md", (self.impl / ".statemachine/codd/links.json").read_text(encoding="utf-8"))
 
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("- src/settings.py — 未判断（前の回に見つけたつながり（.plans/links.json）: ログの段を足す（利用者の指摘））",
+        self.assertIn("- src/settings.py — 未判断（前の回に見つけたつながり（.statemachine/codd/links.json）: ログの段を足す（利用者の指摘））",
                       (self.impl / PLAN).read_text(encoding="utf-8"))
         # 「変更不要」と判断したら、その起点からのつながりは外す（古い発見を訊き続けない）
         self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし",
