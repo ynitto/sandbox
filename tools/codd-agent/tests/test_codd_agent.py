@@ -3812,6 +3812,40 @@ class CoddTest(unittest.TestCase):
         decided = new.read_text(encoding="utf-8").split("## 確認と判断", 1)[1].split("## 結果", 1)[0]
         self.assertEqual(decided.count("OK（計画で進める）"), 1)   # 前の回の答えを混ぜない
 
+    def test_next_draft_closes_a_stuck_plan_the_user_committed(self) -> None:
+        # 変えたあとの検査で止まったまま、利用者が自分で直してコミットし、ブランチを分けずに次の依頼へ進んだ。
+        # 計画を引き継ぐと、前のコミットをこの回の「計画に無い変更」と数えて落ちていた。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('a')\n    return 1\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("X = 1\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        git(self.impl, "add", "-A")
+        git(self.impl, "commit", "-q", "-m", "fixed by hand")
+        r = self.run_pa(self.impl, "draft", "--name", "next")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"前の回の計画を、記録として閉じました: {PLAN}", r.stdout)
+        self.assertIn("STOP（やめる）: 変える前の印のあとにコミットされ", (self.impl / PLAN).read_text(encoding="utf-8"))
+        new = next((self.impl / ".plans").glob("*-next.md"))
+        new.write_text(PLAN_ALIGNED, encoding="utf-8")
+        self.read_up(self.impl)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('b')\n    return 1\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)   # 前のコミットの src/extra.py を数えない
+
+    def test_a_commit_midway_with_work_left_keeps_the_same_run(self) -> None:
+        # 作業中の変更が残っていれば、途中でコミットしただけの同じ回として計画を引き継ぐ。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('a')\n    return 1\n", encoding="utf-8")
+        (self.impl / "src/extra.py").write_text("X = 1\n", encoding="utf-8")
+        git(self.impl, "add", "src/app.py")
+        git(self.impl, "commit", "-q", "-m", "midway")
+        r = self.run_pa(self.impl, "draft", "--name", "next")
+        self.assertIn(f"計画はもうあります: {PLAN}", r.stdout)
+        self.assertIn("src/extra.py", self.run_pa(self.impl, "verify-apply").stderr)
+
     def test_changing_waits_until_the_users_ok_is_logged(self) -> None:
         # 確認の答え（decide OK）を控えずに変える段へ来たら、変え始める前に止める（推し量って控えない）。
         self.write_plan(PLAN_ALIGNED)

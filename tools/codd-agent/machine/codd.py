@@ -6995,6 +6995,8 @@ SUMMARY_WIDTH = 120
 
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
+    if ctx.plan.is_file() and not run_ended(ctx) and taken_over(ctx):
+        log_decision(ctx, "STOP", TAKEN_OVER)
     if ctx.plan.is_file() and run_ended(ctx):
         # 前の回が記録を書かずに終わっていたら、ここで閉じる（引き継ぐと、前の回の変更をこの回のものと数えて落ちる）
         print(f"前の回の計画を、記録として閉じました: {close_plan(ctx, quiet=True)}（終わりの記録が書かれていなかった）")
@@ -7235,6 +7237,24 @@ def run_ended(ctx: Ctx) -> bool:
     decisions = load_decisions(ctx)
     applied = (ctx.data / "applied.json").is_file() and same_plan_baseline(ctx)
     return applied or bool(decisions) and decisions[-1].get("answer") == "STOP"
+
+
+TAKEN_OVER = "変える前の印のあとにコミットされ、この回の作業中の変更が残っていない（利用者が引き取って終えた）"
+
+
+def taken_over(ctx: Ctx) -> bool:
+    """進めている計画の回を、利用者が引き取って終えたか（変える前の印のあとに、印から変わったファイルをコミットし、
+    作業中の変更が印のときのまま）。
+
+    変えたあとの検査で止まったまま利用者が直してコミットし、次の依頼に移ると、記録が書かれず計画が残る。そのまま
+    引き継ぐと、印のあとのコミットを「途中でコミットした」この回の変更と数え、次の依頼で計画に無い変更として落ちる。
+    作業中の変更が残っていれば、途中でコミットしただけの同じ回として引き継ぐ。計画のファイルだけのコミットや、
+    計画を練っている間（印の前）のコミットは数えない（練りかけの計画を閉じない）。
+    """
+    snaps = before_snapshots(ctx) if same_plan_baseline(ctx) else []
+    moved = any(snap.get("head") and head(side.path) != snap["head"] for side, snap in snaps)
+    return (moved and all(dirty_files(side) == snap.get("files", {}) for side, snap in snaps)
+            and any(changed_since(side, snap) for side, snap in snaps))
 
 
 def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
