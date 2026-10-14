@@ -1,6 +1,6 @@
 # SVG Geometry Editor
 
-React + TypeScript の軽量な SVG ビューア兼画像幾何エディタです。画像のピクセルは加工せず、インライン SVG 内の単一の `<image>` を選択して位置・倍率・角度を編集します。画像以外のフレームや背景は固定です。MIT ライセンス。
+React + TypeScript の軽量な SVG ビューア兼画像幾何エディタです。画像のピクセルは加工せず、インライン SVG 内の `<image>` を 1 つ選択して位置・倍率・角度を編集します。画像以外のフレームや背景は固定です。編集できる要素と取り込みで許す要素・属性は、外から変えられます。MIT ライセンス。
 
 ## 実行
 
@@ -41,9 +41,10 @@ function Example({ svg }: { svg: string }) {
 | prop | 型 | 説明 |
 | --- | --- | --- |
 | `svg` | `string` | `viewBox` を持つ SVG 文字列。画像は安全な PNG/JPEG/WebP/GIF の base64 data URL。 |
+| `rules` | `SanitizeRules` | 取り込みのルールの追加と、編集できる要素の判定。後述。render の外で一度だけ作って渡す（オブジェクトが変わるたびに SVG を取り込み直す）。 |
 | `mode` | `'view' \| 'edit'` | 閲覧と編集を切り替える。 |
 | `value`, `onChange` | `Edits`, `(value, { final }) => void` | 編集データ。必ず呼び出し元が持つ。`final` が `false` のときはドラッグ中などの途中経過、`true` のときはポインター操作の完了や矢印キーでの移動など、確定した一手。 |
-| `selectedId`, `onSelectionChange` | `string \| null`, callback | 選択中の画像。必ず呼び出し元が持つ。 |
+| `selectedId`, `onSelectionChange` | `string \| null`, callback | 選択中の要素。必ず呼び出し元が持つ。 |
 | `minScale`, `maxScale` | `number` | ハンドルとピンチで変えられる倍率の範囲。既定は 0.1〜10。 |
 | `moveStep` | `number` | 矢印キー 1 回の移動量。既定は 1。 |
 | `onViewChange` | `(view) => void` | 表示ズーム・パンが変わったときの通知。倍率表示などに使う。 |
@@ -62,7 +63,7 @@ function Example({ svg }: { svg: string }) {
 - **編集:** 画像をクリック／タップして選択し、ドラッグで移動。四隅の丸いハンドルで縦横比を保って拡大縮小、上の丸で回転。選択画像上の2本指で移動と拡大縮小。画像のない所をドラッグすると画面移動、タップすると選択解除。ホイールと2本指でのズームは閲覧と同じ。
 - キャンバスにフォーカスした PC では矢印キーで移動、Shift+矢印で10倍移動、Escapeで進行中の操作を取り消す。
 - 表示ズームとパンは編集データに含まれない。
-- デモではさらに、ツールバーの拡大・縮小・全体表示、確定単位の戻す／やり直す、数値パネル（X、Y、倍率、角度と微調整ボタン、画像を初期状態に戻す）を組み込んでいる。
+- デモではさらに、ツールバーの拡大・縮小・全体表示、確定単位の戻す／やり直す、数値パネル（X、Y、倍率、角度と微調整ボタン、初期状態に戻す）を組み込んでいる。`rules` の例として、id が `sticker-` で始まるグループ（NEW バッジ）も画像と同じように動かせる。
 - 途中で指が増えたとき、画像ドラッグ中に同じ画像へ2本目を置いた場合だけ画像ピンチへ移る。それ以外の増減では進行中の操作を確定して残りの指を離すまで待つ。`pointercancel`、ウィンドウのフォーカス喪失では進行中の操作を元に戻す。
 
 デモのモバイル表示ではツールバーが下に移り、「詳細」から数値パネルを開けます。キャンバスに `touch-action: none` を設定し、ページスクロールとの競合を避けます。キャンバス外は通常どおりスクロールできます。ボタンとハンドルのタッチ領域は約44 CSS pxです。`safe-area-inset-bottom` と `dvh` をデモで使用しています。
@@ -78,7 +79,7 @@ function Example({ svg }: { svg: string }) {
 どの SVG テンプレートの編集かは、保存する側が包んで持ちます。デモでは次の形で保存しています。テンプレートの構造や画像の初期値を変えたら revision を更新し、読み込み時に照合してください。
 
 ```json
-{ "templateId": "card-42", "templateRevision": "rev-3", "images": { "photo": [1, 0, 0, 1, 12, -5] } }
+{ "templateId": "card-42", "templateRevision": "rev-3", "edits": { "photo": [1, 0, 0, 1, 12, -5] } }
 ```
 
 コンポーネント内部ではサーバー通信をしません。保存例:
@@ -88,7 +89,7 @@ async function saveEdits(edits: Edits) {
   const response = await fetch('/api/edits', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ templateId: 'card-42', templateRevision: 'rev-3', images: edits })
+    body: JSON.stringify({ templateId: 'card-42', templateRevision: 'rev-3', edits })
   });
   if (!response.ok) throw new Error('保存に失敗しました');
 }
@@ -100,10 +101,28 @@ async function saveEdits(edits: Edits) {
 
 SVG は `DOMParser` で一度だけ解析し、許可した SVG 要素・属性だけで新しい DOM を作ってから表示します。`script`、`foreignObject`、イベント属性、`style`、DTD、外部 URL、危険な `url()` は除去または拒否し、`onError` で知らせます。SVG 内の ID と `#id` 参照はインスタンスごとに付け替えます。安全な base64 ラスター画像、基本図形、テキスト、入れ子の `g`、既存transform、`clipPath`、`mask`、グラデーションを対象とします。
 
-編集できるのは一意で安定した `id` と安全な `href` を持つ `<image>` だけです。外部画像URLは読み込みません。画像データは呼び出し元で SVG に埋め込んでください。`clipPath` と `mask` は固定の祖先グループに置く構造を推奨します。画像自身に付いたクリップやマスク、CSS style、フィルター、アニメーション、外部 `<use>`、任意形状フレームへの自動フィットは対象外です。複数選択、パス編集、画素加工も行いません。非常に複雑な SVG は除去通知を確認し、必要な表現だけに簡略化してください。
+既定で編集できるのは、一意で安定した `id` と安全な `href` を持つ `<image>` だけです。外部画像URLは読み込みません。
 
-`onError` は取り込み時の除去内容も通知します。編集データは、編集できる画像の ID であることと、有限で逆行列を持つ 6 要素の行列であることを検証し、合わない項目は無視して通知します。
+`rules` で次を変えられます。
+
+```ts
+import { isEditableImage } from 'svg-geometry-editor';
+import type { SanitizeRules } from 'svg-geometry-editor';
+
+const rules: SanitizeRules = {
+  tags: ['title'],                 // 既定に加えて許す要素
+  attributes: ['letter-spacing'],  // 既定に加えて許す属性
+  // 編集できる要素。既定の判定を置き換えるので、画像も残すなら isEditableImage を併用する
+  isEditable: (element, id) => isEditableImage(element) || id.startsWith('sticker-'),
+};
+```
+
+`isEditable` は取り込み後の要素と元の `id` を受け取ります。`id` を持つ要素だけが対象で、ルートの `<svg>` は対象になりません。`tags` と `attributes` で足しても、`script`、`foreignObject`、`style` 要素、アニメーション要素、`on` で始まるイベント属性は除去されます。属性値の検査（`url()` は `#id` 参照だけ、など）も変わりません。
+
+画像データは呼び出し元で SVG に埋め込んでください。`clipPath` と `mask` は固定の祖先グループに置く構造を推奨します。画像自身に付いたクリップやマスク、CSS style、フィルター、アニメーション、外部 `<use>`、任意形状フレームへの自動フィットは対象外です。複数選択、パス編集、画素加工も行いません。非常に複雑な SVG は除去通知を確認し、必要な表現だけに簡略化してください。
+
+`onError` は取り込み時の除去内容も通知します。編集データは、編集できる要素の ID であることと、有限で逆行列を持つ 6 要素の行列であることを検証し、合わない項目は無視して通知します。
 
 ## 検証
 
-`npm test` は行列の逆変換・ズーム基点・位置/倍率/角度の個別変更、編集データの再読込、SVGサニタイズ、指の残数処理、デモの履歴を確認します。Chrome デモで画像選択、ドラッグ、倍率変更、undo/redo、ズーム後の選択表示、モバイル幅のレイアウトを確認しました。実機タッチ、画面回転、ソフトキーボードの操作は未確認です。
+`npm test` は行列の逆変換・ズーム基点・位置/倍率/角度の個別変更、編集データの再読込、SVGサニタイズとルールの追加、指の残数処理、デモの履歴を確認します。Chrome デモで画像選択、ドラッグ、倍率変更、undo/redo、ズーム後の選択表示、モバイル幅のレイアウトを確認しました。実機タッチ、画面回転、ソフトキーボードの操作は未確認です。

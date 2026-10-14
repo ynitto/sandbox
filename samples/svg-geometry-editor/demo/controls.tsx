@@ -46,8 +46,8 @@ export function EditorPanel(p: PanelProps) {
     : field === 'scale' ? scaleTo(m, clampScale(v))
     : rotateBy(m, v - decompose(m).angle), false);
   const fields: Array<{ key: Field; label: string }> = [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'scale', label: '倍率' }, { key: 'angle', label: '角度' }];
-  return <aside className={`demo-panel ${p.open ? 'demo-panel-open' : ''}`} aria-label="画像編集パネル">
-    <Typography variant="subtitle1" gutterBottom>{p.selection ? `画像: ${p.selection}` : '画像を選択してください'}</Typography>
+  return <aside className={`demo-panel ${p.open ? 'demo-panel-open' : ''}`} aria-label="編集パネル">
+    <Typography variant="subtitle1" gutterBottom>{p.selection ? `選択中: ${p.selection}` : '動かすものを選択してください'}</Typography>
     <Stack spacing={1.5}>
       {fields.map(f => <NumberField key={f.key} label={f.label} step={f.key === 'scale' ? 0.01 : 1} value={parts?.[f.key]}
         onType={v => type(f.key, v)} onFinish={p.onFinishTyping} />)}
@@ -68,7 +68,7 @@ export function EditorPanel(p: PanelProps) {
         <Button disabled={!m} onClick={() => edit(m => rotateBy(m, -p.rotationStep))}>−{p.rotationStep}°</Button>
         <Button disabled={!m} onClick={() => edit(m => rotateBy(m, p.rotationStep))}>＋{p.rotationStep}°</Button>
       </Stack>
-      <Button disabled={!m} onClick={() => p.onEdit(null, true)}>画像を初期状態に戻す</Button>
+      <Button disabled={!m} onClick={() => p.onEdit(null, true)}>初期状態に戻す</Button>
     </Stack>
   </aside>;
 }

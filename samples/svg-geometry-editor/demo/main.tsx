@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button, CssBaseline, Stack, ThemeProvider, Typography, createTheme } from '@mui/material';
-import { IDENTITY, SvgGeometryCanvas } from '../src';
-import type { CanvasHandle, Edits, EditorMode, EditorNotice, Matrix } from '../src';
+import { IDENTITY, SvgGeometryCanvas, isEditableImage } from '../src';
+import type { CanvasHandle, Edits, EditorMode, EditorNotice, Matrix, SanitizeRules } from '../src';
 import { EditorPanel, EditorToolbar } from './controls';
 import { commit, initHistory, redo, undo } from './history';
 import './demo.css';
@@ -38,9 +38,15 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560">
     <rect x="80" y="90" width="320" height="320" rx="30"/>
     <circle cx="640" cy="250" r="155"/>
   </g>
+  <g id="sticker-badge" transform="translate(800 455)">
+    <circle r="44" fill="#ffca28" stroke="#283b59" stroke-width="4"/>
+    <text text-anchor="middle" dominant-baseline="central" font-size="20" font-family="Arial" font-weight="bold" fill="#283b59">NEW</text>
+  </g>
   <text x="80" y="490" fill="#283b59" font-size="30" font-family="Arial">Fixed frames · editable images</text>
 </svg>`;
 
+// Images stay editable, and groups whose id starts with "sticker-" become editable too.
+const rules: SanitizeRules = { isEditable: (element, id) => isEditableImage(element) || id.startsWith('sticker-') };
 const limits = { minScale: 0.2, maxScale: 5, moveStep: 1, rotationStep: 1 };
 const theme = createTheme({ palette: { primary: { main: '#365a95' } } });
 
@@ -54,7 +60,7 @@ function App() {
   const [notice, setNotice] = useState('');
   const canvas = useRef<CanvasHandle>(null);
   // The canvas only knows image ids and matrices; the app decides which template they belong to.
-  const saved = { templateId: 'demo-card', templateRevision: '1', images: edits };
+  const saved = { templateId: 'demo-card', templateRevision: '1', edits };
 
   function change(next: Edits, final: boolean) {
     setEdits(next);
@@ -75,7 +81,7 @@ function App() {
   }
   return <ThemeProvider theme={theme}><CssBaseline /><main>
     <header><Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1}>
-      <div><Typography variant="h5">SVG Geometry Editor</Typography><Typography variant="body2">単一画像を選択し、フレーム内で移動・拡大・回転</Typography></div>
+      <div><Typography variant="h5">SVG Geometry Editor</Typography><Typography variant="body2">画像やバッジを選択し、フレーム内で移動・拡大・回転</Typography></div>
       <Stack direction="row" gap={1}><Button variant={mode === 'view' ? 'contained' : 'outlined'} onClick={() => setMode('view')}>閲覧</Button><Button variant={mode === 'edit' ? 'contained' : 'outlined'} onClick={() => setMode('edit')}>編集</Button></Stack>
     </Stack></header>
     <div className="demo-editor">
@@ -83,7 +89,7 @@ function App() {
         canUndo={history.past.length > 0} canRedo={history.future.length > 0} onUndo={() => step(undo)} onRedo={() => step(redo)}
         detailsOpen={detailsOpen} onToggleDetails={() => setDetailsOpen(!detailsOpen)} />
       <div className="demo-workspace">
-        <SvgGeometryCanvas ref={canvas} className="demo-canvas" svg={svg} mode={mode}
+        <SvgGeometryCanvas ref={canvas} className="demo-canvas" svg={svg} rules={rules} mode={mode}
           value={edits} onChange={(next, { final }) => change(next, final)}
           selectedId={selected} onSelectionChange={setSelected} onViewChange={view => setZoom(view.zoom)}
           minScale={limits.minScale} maxScale={limits.maxScale} moveStep={limits.moveStep}

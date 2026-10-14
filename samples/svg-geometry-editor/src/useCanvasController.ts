@@ -24,7 +24,7 @@ function selectedImage(target: EventTarget | null): string | null {
 }
 
 export function useCanvasController(props: SvgGeometryCanvasProps) {
-  const { svg, mode, value, onChange, onSelectionChange, onViewChange } = props;
+  const { svg, rules, mode, value, onChange, onSelectionChange, onViewChange } = props;
   const minScale = Math.max(0.01, props.minScale ?? 0.1);
   const maxScale = Math.max(minScale, props.maxScale ?? 10);
   const moveStep = props.moveStep ?? 1;
@@ -32,10 +32,10 @@ export function useCanvasController(props: SvgGeometryCanvasProps) {
   onErrorRef.current = props.onError;
   const prefix = useId();
   const prepared = useMemo(() => {
-    try { return { svg: sanitizeSvg(svg, prefix), error: null as string | null }; }
+    try { return { svg: sanitizeSvg(svg, prefix, rules), error: null as string | null }; }
     catch (error) { return { svg: null, error: (error as Error).message }; }
-  }, [svg, prefix]);
-  const ids = useMemo(() => new Set(prepared.svg?.imageIds ?? []), [prepared.svg]);
+  }, [svg, prefix, rules]);
+  const ids = useMemo(() => new Set(prepared.svg?.editableIds ?? []), [prepared.svg]);
   const { edits, dropped } = useMemo(() => validateEdits(value, ids), [value, ids]);
   // The latest edits, including ones emitted but not yet rendered by the caller.
   const latest = useRef(edits);
@@ -43,7 +43,7 @@ export function useCanvasController(props: SvgGeometryCanvasProps) {
   const selection = props.selectedId && ids.has(props.selectedId) ? props.selectedId : null;
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
-  const images = useRef(new Map<string, SVGImageElement>());
+  const images = useRef(new Map<string, SVGGraphicsElement>());
   const wrappers = useRef(new Map<string, SVGGElement>());
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture>({ kind: 'idle' });
@@ -58,7 +58,7 @@ export function useCanvasController(props: SvgGeometryCanvasProps) {
     prepared.svg?.notices.forEach(n => notify(n.code, n.message));
   }, [prepared, notify]);
   useEffect(() => {
-    if (dropped.length) notify('invalid-data', `Edits that do not match an editable image were ignored: ${dropped.join(', ')}`);
+    if (dropped.length) notify('invalid-data', `Edits that do not match an editable element were ignored: ${dropped.join(', ')}`);
   }, [dropped, notify]);
 
   const refreshGeometry = useCallback(() => setGeometryTick(t => t + 1), []);
@@ -66,7 +66,7 @@ export function useCanvasController(props: SvgGeometryCanvasProps) {
     images.current.clear(); wrappers.current.clear();
     const root = sceneRef.current?.querySelector('svg');
     if (!root) return;
-    for (const image of Array.from(root.querySelectorAll<SVGImageElement>('image[data-editor-id]'))) {
+    for (const image of Array.from(root.querySelectorAll<SVGGraphicsElement>('[data-editor-id]'))) {
       const id = image.getAttribute('data-editor-id')!;
       const wrapper = document.createElementNS(SVG_NS, 'g');
       wrapper.setAttribute('data-editor-wrapper', id);
