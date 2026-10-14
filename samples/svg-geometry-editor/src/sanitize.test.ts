@@ -1,0 +1,19 @@
+import { describe, expect, it } from 'vitest';
+import { sanitizeSvg } from './sanitize';
+
+const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lZkAAAAASUVORK5CYII=';
+describe('SVG import', () => {
+  it('namespaces references and retains supported transforms and clips', () => {
+    const input = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><defs><clipPath id="clip"><rect width="10" height="10"/></clipPath></defs><g transform="translate(2 3)" clip-path="url(#clip)"><image id="photo" href="${png}" width="10" height="10"/></g></svg>`;
+    const a = sanitizeSvg(input, 'one'); const b = sanitizeSvg(input, 'two');
+    expect(a.imageIds).toEqual(['photo']);
+    expect(a.markup).toContain('url(#one-clip)'); expect(a.markup).toContain('transform="translate(2 3)"');
+    expect(b.markup).toContain('id="two-photo"');
+  });
+  it('removes scripts, handlers and unsafe URLs with a notice', () => {
+    const input = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" onload="alert(1)"><script>alert(1)</script><image id="a" href="javascript:alert(1)"/></svg>`;
+    const output = sanitizeSvg(input, 'safe');
+    expect(output.markup).not.toContain('script'); expect(output.markup).not.toContain('javascript:');
+    expect(output.imageIds).toEqual([]); expect(output.notices[0].code).toBe('removed-content');
+  });
+});
