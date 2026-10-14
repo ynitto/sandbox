@@ -1,4 +1,4 @@
-import type { Matrix } from './types';
+import type { Matrix, View } from './types';
 
 export const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 export type Point = { x: number; y: number };
@@ -34,7 +34,12 @@ export function compose(x: number, y: number, s: number, angle: number): Matrix 
 }
 export function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, value)); }
 
-export interface View { x: number; y: number; zoom: number }
+// Edits for controls outside the canvas. Scale and rotation pivot on the matrix's translation.
+export const setPosition = (m: Matrix, x: number, y: number): Matrix => [m[0], m[1], m[2], m[3], x, y];
+export const translateBy = (m: Matrix, dx: number, dy: number): Matrix => multiply(translate(dx, dy), m);
+export const scaleTo = (m: Matrix, s: number): Matrix => multiply(around({ x: m[4], y: m[5] }, scale(s / decompose(m).scale)), m);
+export const rotateBy = (m: Matrix, degrees: number): Matrix => multiply(around({ x: m[4], y: m[5] }, rotate(degrees * Math.PI / 180)), m);
+
 export const DEFAULT_VIEW: View = { x: 0, y: 0, zoom: 1 };
 export function zoomAt(view: View, client: Point, factor: number, min = 0.25, max = 8): View {
   const zoom = clamp(view.zoom * factor, min, max);

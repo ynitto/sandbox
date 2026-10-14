@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button, CssBaseline, Stack, ThemeProvider, Typography, createTheme } from '@mui/material';
-import { SvgGeometryEditor, emptyDocument } from '../src';
-import type { EditorDocument, EditorMode, EditorNotice } from '../src';
+import { IDENTITY, SvgGeometryCanvas } from '../src';
+import type { CanvasHandle, Edits, EditorMode, EditorNotice, Matrix } from '../src';
+import { EditorPanel, EditorToolbar } from './controls';
+import { commit, initHistory, redo, undo } from './history';
 import './demo.css';
 
 function picture(background: string, foreground: string, variant: number) {
@@ -39,26 +41,59 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560">
   <text x="80" y="490" fill="#283b59" font-size="30" font-family="Arial">Fixed frames · editable images</text>
 </svg>`;
 
+const limits = { minScale: 0.2, maxScale: 5, moveStep: 1, rotationStep: 1 };
+const theme = createTheme({ palette: { primary: { main: '#365a95' } } });
+
 function App() {
   const [mode, setMode] = useState<EditorMode>('edit');
-  const [value, setValue] = useState<EditorDocument>(() => emptyDocument('demo-card', '1'));
+  const [edits, setEdits] = useState<Edits>({});
+  const [history, setHistory] = useState(() => initHistory<Edits>({}));
   const [selected, setSelected] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [notice, setNotice] = useState('');
-  const theme = createTheme({ palette: { primary: { main: '#365a95' } } });
-  async function save(document: EditorDocument) {
+  const canvas = useRef<CanvasHandle>(null);
+  // The canvas only knows image ids and matrices; the app decides which template they belong to.
+  const saved = { templateId: 'demo-card', templateRevision: '1', images: edits };
+
+  function change(next: Edits, final: boolean) {
+    setEdits(next);
+    if (final) { setHistory(h => commit(h, next)); setNotice(`確定: ${Object.keys(next).length} 件の画像変換`); }
+  }
+  function step(move: typeof undo) {
+    const next = move(history);
+    setHistory(next); setEdits(next.present);
+  }
+  function editSelected(matrix: Matrix | null, final: boolean) {
+    if (!selected) return;
+    const { [selected]: _, ...rest } = edits;
+    change(matrix ? { ...edits, [selected]: matrix } : rest, final);
+  }
+  async function save() {
     // Replace /api/edits with your application's endpoint. The component never fetches.
-    await fetch('/api/edits', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(document) });
+    await fetch('/api/edits', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(saved) });
   }
   return <ThemeProvider theme={theme}><CssBaseline /><main>
     <header><Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1}>
       <div><Typography variant="h5">SVG Geometry Editor</Typography><Typography variant="body2">単一画像を選択し、フレーム内で移動・拡大・回転</Typography></div>
       <Stack direction="row" gap={1}><Button variant={mode === 'view' ? 'contained' : 'outlined'} onClick={() => setMode('view')}>閲覧</Button><Button variant={mode === 'edit' ? 'contained' : 'outlined'} onClick={() => setMode('edit')}>編集</Button></Stack>
     </Stack></header>
-    <div className="demo-editor"><SvgGeometryEditor svg={svg} templateId="demo-card" templateRevision="1" mode={mode}
-      value={value} selectedId={selected} onSelectionChange={setSelected} onChange={setValue}
-      onCommit={document => { setValue(document); setNotice(`確定: ${document.images.length} 件の画像変換`); }}
-      onError={(error: EditorNotice) => setNotice(`${error.code}: ${error.message}`)} /></div>
-    <section className="demo-output"><Stack direction="row" gap={1} alignItems="center"><Typography variant="h6">保存 JSON</Typography><Button onClick={() => navigator.clipboard.writeText(JSON.stringify(value, null, 2))}>コピー</Button><Button onClick={() => save(value).then(() => setNotice('保存しました')).catch(() => setNotice('デモには保存 API がありません'))}>保存 API 例</Button></Stack><pre>{JSON.stringify(value, null, 2)}</pre><Typography role="status" variant="body2">{notice}</Typography></section>
+    <div className="demo-editor">
+      <EditorToolbar mode={mode} zoom={zoom} onZoom={f => canvas.current?.zoom(f)} onResetView={() => canvas.current?.resetView()}
+        canUndo={history.past.length > 0} canRedo={history.future.length > 0} onUndo={() => step(undo)} onRedo={() => step(redo)}
+        detailsOpen={detailsOpen} onToggleDetails={() => setDetailsOpen(!detailsOpen)} />
+      <div className="demo-workspace">
+        <SvgGeometryCanvas ref={canvas} className="demo-canvas" svg={svg} mode={mode}
+          value={edits} onChange={(next, { final }) => change(next, final)}
+          selectedId={selected} onSelectionChange={setSelected} onViewChange={view => setZoom(view.zoom)}
+          minScale={limits.minScale} maxScale={limits.maxScale} moveStep={limits.moveStep}
+          onError={(error: EditorNotice) => setNotice(`${error.code}: ${error.message}`)} />
+        {mode === 'edit' && <EditorPanel {...limits} open={detailsOpen} selection={selected}
+          matrix={selected ? edits[selected] ?? IDENTITY : null} onEdit={editSelected}
+          onFinishTyping={() => { if (edits !== history.present) change(edits, true); }} />}
+      </div>
+    </div>
+    <section className="demo-output"><Stack direction="row" gap={1} alignItems="center"><Typography variant="h6">保存 JSON</Typography><Button onClick={() => navigator.clipboard.writeText(JSON.stringify(saved, null, 2))}>コピー</Button><Button onClick={() => save().then(() => setNotice('保存しました')).catch(() => setNotice('デモには保存 API がありません'))}>保存 API 例</Button></Stack><pre>{JSON.stringify(saved, null, 2)}</pre><Typography role="status" variant="body2">{notice}</Typography></section>
   </main></ThemeProvider>;
 }
 createRoot(document.getElementById('root')!).render(<App />);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { around, compose, decompose, inverse, multiply, point, scale, translate, zoomAt } from './geometry';
+import { around, compose, decompose, inverse, multiply, point, rotateBy, scale, scaleTo, setPosition, translate, zoomAt } from './geometry';
 
 describe('geometry', () => {
   it('round trips affine points through inverse', () => {
@@ -30,5 +30,13 @@ describe('geometry', () => {
     const a = point(back, start), b = point(back, end);
     expect(b.x - a.x).toBeCloseTo(10);
     expect(b.y - a.y).toBeCloseTo(5);
+  });
+  it('edits position, scale and angle independently', () => {
+    const start = compose(10, 20, 2, 30);
+    const scaled = decompose(scaleTo(start, 3));
+    expect(scaled.x).toBeCloseTo(10); expect(scaled.scale).toBeCloseTo(3); expect(scaled.angle).toBeCloseTo(30);
+    const turned = decompose(rotateBy(start, 15));
+    expect(turned.y).toBeCloseTo(20); expect(turned.scale).toBeCloseTo(2); expect(turned.angle).toBeCloseTo(45);
+    expect(decompose(setPosition(start, 1, 2))).toMatchObject({ x: 1, y: 2 });
   });
 });

@@ -1,13 +1,13 @@
-import type { EditorDocument, Matrix } from './types';
-import type { Point, View } from './geometry';
+import type { Edits, Matrix, View } from './types';
+import type { Point } from './geometry';
 
 export type Gesture =
   | { kind: 'idle' }
   | { kind: 'blocked'; pointers: Set<number> }
-  | { kind: 'image-drag'; id: string; pointer: number; start: Point; startMatrix: Matrix; before: EditorDocument; parentInverse: DOMMatrix }
-  | { kind: 'image-resize'; id: string; pointer: number; start: Point; startMatrix: Matrix; before: EditorDocument; pivot: Point; pivotScreen: Point; parentInverse: DOMMatrix }
-  | { kind: 'image-rotate'; id: string; pointer: number; start: Point; startMatrix: Matrix; before: EditorDocument; pivot: Point; pivotScreen: Point }
-  | { kind: 'image-pinch'; id: string; pointers: [number, number]; start: [Point, Point]; startMatrix: Matrix; before: EditorDocument; parentInverse: DOMMatrix }
+  | { kind: 'image-drag'; id: string; pointer: number; start: Point; startMatrix: Matrix; before: Edits; parentInverse: DOMMatrix }
+  | { kind: 'image-resize'; id: string; pointer: number; start: Point; startMatrix: Matrix; before: Edits; pivot: Point; pivotScreen: Point; parentInverse: DOMMatrix }
+  | { kind: 'image-rotate'; id: string; pointer: number; start: Point; startMatrix: Matrix; before: Edits; pivot: Point; pivotScreen: Point }
+  | { kind: 'image-pinch'; id: string; pointers: [number, number]; start: [Point, Point]; startMatrix: Matrix; before: Edits; parentInverse: DOMMatrix }
   | { kind: 'view-pan'; pointer: number; start: Point; startView: View }
   | { kind: 'view-pinch'; pointers: [number, number]; start: [Point, Point]; startView: View };
 
