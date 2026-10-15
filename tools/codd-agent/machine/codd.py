@@ -326,6 +326,13 @@ def is_argv(value) -> bool:
     return isinstance(value, list) and bool(value) and all(isinstance(a, str) for a in value)
 
 
+def check_commands(value) -> list[list[str]]:
+    """codd.json の check を、順に動かすコマンドの並びに。1 つならコマンドの配列、いくつもならその配列を並べる。"""
+    if not value:
+        return []
+    return [value] if is_argv(value) else value
+
+
 def test_commands(value) -> list[tuple[str, list[str]]]:
     """codd.json の test を（名前, コマンド）の並びに。単体テストも API テストもシナリオテストも同じに動かす。"""
     if not value:
@@ -626,8 +633,10 @@ def load_config(machine_dir: Path) -> dict:
         raise CoddError(f"{path} の graphify は auto か off、または {{\"semantic\": \"session\"}} の形です"
                         f"（今: {config['graphify']!r}）")
     command = config.get("check")
-    if command is not None and not is_argv(command):
-        raise CoddError(f'{path} の check はコマンドの配列です（例: ["npm", "test"]）')
+    if command is not None and not (is_argv(command) or (isinstance(command, list) and command
+                                                         and all(is_argv(c) for c in command))):
+        raise CoddError(f'{path} の check はコマンドの配列か、順に動かすコマンドの並びです'
+                        '（例: ["npm", "test"] / [["npm", "run", "lint"], ["npm", "run", "e2e"]]）')
     test = config.get("test")
     if test is not None and not (is_argv(test) or (isinstance(test, dict) and test and all(
             isinstance(k, str) and k and is_argv(v) for k, v in test.items()))):
@@ -760,7 +769,7 @@ class Ref(Side):
         return [*self.guides.get("triggered", []), *self.entry_triggered]
 
     @property
-    def check(self) -> list[str] | None:
+    def check(self) -> list | None:
         return (self.config or {}).get("check")
 
     @property
@@ -1407,8 +1416,8 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
         for who, t, c in checks:
             for name, argv in test_commands(t):
                 print(f"  - {who}のテスト{f'（{name}）' if name else ''}: {' '.join(argv)}")
-            if c:
-                print(f"  - {who}の検査: {' '.join(c)}")
+            for argv in check_commands(c):
+                print(f"  - {who}の検査: {' '.join(argv)}")
     if len(ctx.refs) > 1:
         print("計画の根拠は `名前:パス` で書く（例: " + f"{ctx.refs[0].name}:docs/api.md）")
     return 0
@@ -5459,6 +5468,15 @@ def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, l
             f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1] + detail]
 
 
+def run_checks(ctx: Ctx, key: str, side: Side, cwd: Path, value, label: str) -> list[str]:
+    """check のコマンドを書いた順に動かし、落ちたところで止める（後のコマンドは前のコマンドが通る前提で書く）。"""
+    for argv in check_commands(value):
+        problems = checked(ctx, key, side, cwd, argv, label)
+        if problems:
+            return problems
+    return []
+
+
 @dataclass
 class Applied:
     """変えたあとの様子。verify-apply と report が使う。"""
@@ -6373,12 +6391,12 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
     for name, argv in test_commands(ctx.config.get("test")):
         problems += checked(ctx, "", ctx.own, ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
-    problems += checked(ctx, "", ctx.own, ctx.root, ctx.config.get("check"), SIDES[ctx.side])
+    problems += run_checks(ctx, "", ctx.own, ctx.root, ctx.config.get("check"), SIDES[ctx.side])
     for r in changed:
         # 参照先のテストと検査は、参照先に置いた同じマシンの設定（codd.json の test・check）を使う。
         for name, argv in test_commands(r.test):
             problems += checked(ctx, r.name, r, r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
-        problems += checked(ctx, r.name, r, r.path, r.check, f"{r.name}（{r.label}）")
+        problems += run_checks(ctx, r.name, r, r.path, r.check, f"{r.name}（{r.label}）")
     checks_failed = len(problems) > before_checks
     held = protected_in_failures(ctx, problems[before_checks:], approved_changes(ctx, a))
     if held:

@@ -19,6 +19,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - `--source <フォルダ>` で、期待する文言が実装にあるかを見る（差し込みのある文字列も照らし、近い文言を示す）
 - チームの書式は JSON Schema で指定でき、合わない所を行番号付きで出す。LLM に渡すおすすめの書式も同梱
 
+### codd-agent: check にコマンドをいくつも書ける
+
+- codd.json の `check` に、コマンドの配列を並べて書けるようにした（例: `[["npm", "run", "lint"], ["npm", "run", "e2e"]]`）。
+  書いた順に動かし、落ちたらそこで止めて後のコマンドは動かさない。1 つだけ書く今までの形はそのまま使える
+
 ### webui-test: Volta で Node.js を管理していても入れられる（webui-test 0.6.1）
 
 - Volta は `npm install -g` を横取りして自分の置き場へ入れるので、インストーラが npm の置き場で `webui-test` を探して
