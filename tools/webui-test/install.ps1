@@ -57,6 +57,24 @@ try {
 } finally { Remove-Item -Recurse -Force $PackDir -ErrorAction SilentlyContinue }
 $BinDir = (& $Npm prefix -g).Trim()
 $PkgDir = Join-Path (& $Npm root -g).Trim() 'webui-test'
+$cmd = Join-Path $BinDir 'webui-test.cmd'
+if (-not (Test-Path $PkgDir) -and (Get-Command volta -ErrorAction SilentlyContinue)) {
+  # Volta で Node を管理していると、npm install -g は Volta に横取りされ、パッケージは Volta の置き場
+  # （%LOCALAPPDATA%\Volta\tools\image\packages\webui-test）に入り、コマンドは Volta\bin の shim から呼ばれる。
+  # npm prefix -g / root -g は Node 本体の置き場を指すので、Volta に実体の場所を聞く。
+  $real = $null
+  try { $real = (& volta which webui-test 2>$null | Select-Object -First 1) } catch { }
+  if (-not $real) { throw 'Volta に入れた webui-test が見つかりません（volta list で確かめてください）' }
+  $img = Split-Path -Parent "$real".Trim()
+  # Windows の npm は <prefix>\node_modules に入れる（Linux / macOS は <prefix>\lib\node_modules）
+  $PkgDir = @((Join-Path $img 'node_modules\webui-test'), (Join-Path (Split-Path -Parent $img) 'lib\node_modules\webui-test')) |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+  $BinDir = if ($env:VOLTA_HOME) { Join-Path $env:VOLTA_HOME 'bin' } else { Join-Path $env:LOCALAPPDATA 'Volta\bin' }
+  $shim = Get-Command webui-test -ErrorAction SilentlyContinue
+  $cmd = if ($shim) { $shim.Source } else { Join-Path $img 'webui-test.cmd' }
+  Say "Volta の置き場に入りました（$PkgDir）"
+}
+if (-not $PkgDir -or -not (Test-Path $PkgDir)) { throw "入れた webui-test が見つかりません（$PkgDir）" }
 
 # 3. ブラウザ
 if ($SkipBrowser) {
@@ -71,7 +89,6 @@ if ($SkipBrowser) {
 }
 
 if (-not (($env:Path -split ';') -contains $BinDir)) { Warn "$BinDir が PATH にありません。ユーザーの PATH に足してください" }
-$cmd = Join-Path $BinDir 'webui-test.cmd'
 
 # 4. エージェント CLI（テストケースを作るときに使う）
 foreach ($c in @('kiro-cli', 'copilot')) {

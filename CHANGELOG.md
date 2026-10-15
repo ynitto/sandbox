@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### webui-test: Volta で Node.js を管理していても入れられる（webui-test 0.6.1）
+
+- Volta は `npm install -g` を横取りして自分の置き場へ入れるので、インストーラが npm の置き場で `webui-test` を探して
+  見つけられず、ブラウザを入れる段と確かめる段で止まっていた。Volta を使っているときは Volta に入れた場所を聞いて続ける
+
 ### codd-agent: 見つけたつながりの控えの穴を塞ぐ
 
 - 控えに書くのを、計画の検査を通ったときから変えたあとの検査を通ったときへ移す。確認で計画から外したファイルや、
