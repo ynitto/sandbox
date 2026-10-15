@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### testcase-lint: 自然文のテストケースの重複・矛盾・漏れ・不備を LLM なしで指摘する（新規、0.1.0）
+
+- e2e・シナリオテスト・チェックリストを JSON / YAML で読み、28 の規則で点検する。項目名は英語・日本語・Gherkin の
+  綴りを受け、LLM 出力の ``` の囲みも行番号を保って読む。webui-test のケースファイルもそのまま読める
+- 不備（項目の欠け・曖昧な表現・書きかけ・データ未確定・他ケース依存・重複キー）、重複（完全一致・ほぼ同じ・値だけ違う）、
+  矛盾（同じ手順で逆の期待結果・ケース内の食い違い・数値の条件の食い違い）、漏れ（ケースのない要件・異常系なし・
+  境界値・対になる条件）
+- 依存は PyYAML と Janome だけ。text / json / markdown で出し、終了コードで CI のゲートに使える
+
 ### webui-test: Volta で Node.js を管理していても入れられる（webui-test 0.6.1）
 
 - Volta は `npm install -g` を横取りして自分の置き場へ入れるので、インストーラが npm の置き場で `webui-test` を探して

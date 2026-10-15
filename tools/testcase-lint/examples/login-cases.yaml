@@ -1,0 +1,79 @@
+# わざと問題を混ぜたテストケースの例（LLM がよく出す形）。
+#   testcase-lint examples/login-cases.yaml -r examples/requirements.yaml
+feature: ログイン
+scenarios:
+  - id: TC-01
+    title: 正しいパスワードでログインできる
+    requirement: REQ-01
+    preconditions:
+      - ユーザー user@example.com が登録されている
+    steps:
+      - ログイン画面を開く
+      - メールアドレスに「user@example.com」を入力する
+      - パスワードに「Passw0rd」を入力する
+      - ログインボタンを押す
+    expected:
+      - ホーム画面が表示される
+
+  - id: TC-02
+    title: 誤ったパスワードではログインできない
+    requirement: REQ-01
+    preconditions:
+      - ユーザー user@example.com が登録されている
+    steps:
+      - ログイン画面を開く
+      - メールアドレスに「user@example.com」を入力する
+      - パスワードに「wrong-pass」を入力する
+      - ログインボタンを押す
+    expected:
+      - エラーメッセージが正しく表示される
+
+  - id: TC-03
+    title: パスワードの文字数の下限
+    requirement: REQ-02
+    steps:
+      - ログイン画面を開く
+      - パスワードに7文字を入力する
+      - ログインボタンを押す
+    expected:
+      - 「パスワードは8文字以上で入力してください」と表示される
+
+  - id: TC-04
+    title: 正しいパスワードでログインできる
+    requirement: REQ-01
+    preconditions:
+      - ユーザー user@example.com が登録されている
+    steps:
+      - ログイン画面を開く
+      - メールアドレスに「user@example.com」を入力する
+      - パスワードに「Passw0rd」を入力する
+      - ログインボタンを押す
+    expected:
+      - ホーム画面が表示されない
+
+  - id: TC-05
+    title: アカウントロック
+    requirement: REQ-03
+    steps:
+      - 前のケースと同じ手順で、任意の誤ったパスワードを5回入力する
+    expected:
+      - TBD
+
+  - id: TC-05
+    title: ログイン後の画面
+    requirement: REQ-09
+    steps:
+      - ログイン画面を開いて、メールアドレスを入力して、パスワードを入力して、ログインボタンを押して、表示を待つ
+      - ホーム画面が表示されること
+    expected:
+      - ログアウトボタンをクリックする
+
+  - id: TC-07
+    title: パスワードの上限
+    requirement: REQ-02
+    preconditions:
+      - パスワードは最大30文字
+    steps:
+      - パスワードに30文字を入力する
+    expected:
+      - ログインできる

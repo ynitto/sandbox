@@ -3,7 +3,7 @@ name: CI
 # このリポジトリ初の CI（修正計画 P3-1 / 実装計画 R4）。回すのは 3 系統:
 #
 #   1. python  … 各パッケージの単体テスト（agent-project / agent-flow / agent-amigos /
-#                agent-audit / agentcore / winauto / gitlab-repo-sync / agent-loop）。
+#                agent-audit / agentcore / winauto / gitlab-repo-sync / agent-loop / testcase-lint）。
 #                **agentcore はテストルートが 2 つある**ので両方を明示する
 #                （片方だけ discover すると残りが黙ってスキップされる）。
 #                設定キーの構造テスト（CONFIG_DEFAULTS → Config の到達性）は
@@ -77,6 +77,9 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
+          # testcase-lint。自然文のテストケースの点検（LLM は呼ばない）。形態素解析に Janome を入れる。
+          - package: testcase-lint
+            suites: tools/testcase-lint/tests
           # 評価ハーネス（worker_eval の手順制御・engine の解決）。LLM もエージェント
           # CLI も呼ばない部分だけを見る。**測定の道具が壊れていると、壊れたことが
           # モデルの数字として台帳へ残る**ので、ここも CI で押さえる。readout_eval の
@@ -96,6 +99,9 @@ jobs:
       # eval の決定的チェッカー（T4 の probe・T5/T6 の pytest）はハーネス自身が回す。
       # 実機ではリポジトリの .venv を使うが、CI のクリーンな木には .venv が無いので
       # 走っているインタプリタ側へ pytest を入れる（worker_eval.CHECK_PY が倒れる先）。
+      - name: 依存（testcase-lint の形態素解析）
+        if: matrix.package == 'testcase-lint'
+        run: python -m pip install janome
       - name: 依存（eval の決定的チェッカーが回す pytest）
         if: matrix.package == 'eval'
         run: python -m pip install pytest
