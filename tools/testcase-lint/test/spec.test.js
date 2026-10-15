@@ -187,3 +187,14 @@ test('仕様のフォルダが無ければ知らせる（落とさない）', as
   assert.match(r.spec.errors[0], /ありません/);
   assert.ok(!codes(r.findings).some((c) => c.startsWith('S')));
 });
+
+test('突き合わせ: 実装のエラーコード（I02）。データの ID・文言の中のコードは見ない', async () => {
+  const f = await run(`
+- id: A
+  title: t
+  preconditions: [注文 O-100 がある, 注文画面を開いている]
+  steps: [注文 O-100 を取り消す]
+  expected: [エラーコード E1001 が表示される, 応答のコードが ORDER_NOT_FOUND になる, エラーコード E9999 が表示される, 注文 O-100 の状態が受付のまま, 「処理できません（E7777）」とエラーが出る]
+`, { source: { 'errors.js': 'export const E1001 = "E1001";\nthrow new AppError("ORDER_NOT_FOUND");\n' } });
+  assert.deepEqual(byCode(f, 'I02').map((x) => x.message), ['期待するエラーコード「E9999」が実装のどこにもありません']);
+});

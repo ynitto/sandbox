@@ -23,6 +23,9 @@
 //     negative: [差し戻し]                # 異常系とみなす語を足す（正規表現）
 //     pairs: [{ a_label: 会員, b_label: 非会員, a: ["(?<!非)会員"], b: [非会員] }]
 //   requirement_id: "(?:REQ|FR|NFR)-\\d+" # 仕様の中の要件 ID の形（正規表現）
+//   test_data:
+//     domains: [staging.example.co.jp]    # テスト用のメールアドレスのドメインを足す（D18。末尾一致）
+//     cards: ["4000 0000 0000 0077"]      # テスト用のカード番号を足す（D19）
 
 const fs = require('fs');
 const path = require('path');
@@ -47,6 +50,7 @@ function defaults() {
     rules: {}, duplicate: 0.9, sameSteps: 0.92,
     words: { vague: [], negative: [], pairs: [] },
     requirementId: null,
+    testData: { domains: [], cards: [] },
   };
 }
 
@@ -130,6 +134,8 @@ function loadConfig(file, { required = false } = {}) {
     try { new RegExp(raw.requirement_id); } catch (e) { throw fail(`requirement_id が正規表現として読めません: ${e.message}`); }
     cfg.requirementId = String(raw.requirement_id);
   }
+  const td = raw.test_data || {};
+  cfg.testData = { domains: list(td.domains).map((d) => d.toLowerCase()), cards: list(td.cards).map((x) => x.replace(/\D/g, '')) };
   return cfg;
 }
 

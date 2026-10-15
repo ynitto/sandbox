@@ -156,3 +156,78 @@ cases:
 `);
   assert.deepEqual(byCode(f, 'G02'), []);
 });
+
+// 本物らしい番号・鍵は、ソースに書かず組み立てる（このファイル自体が秘密の検査に掛からないように）
+const withLuhn = (body) => {
+  for (let d = 0; d <= 9; d++) {
+    const s = `${body}${d}`;
+    let sum = 0;
+    for (let i = 0; i < s.length; i++) { let x = Number(s[s.length - 1 - i]); if (i % 2) { x *= 2; if (x > 9) x -= 9; } sum += x; }
+    if (sum % 10 === 0) return s;
+  }
+  return '';
+};
+
+test('テストデータ: 実在しうるメールアドレス・本物らしいカード番号・鍵（D18・D19）', async () => {
+  const card = withLuhn('453957812346789');
+  const aws = `AKIA${'Z7QK3M9X2B4N6P8R'}`;
+  const f = await run(`
+- id: A
+  title: 実在しうる
+  preconditions: [会員 taro@gmail.com が登録されている, ログイン画面を開いている]
+  steps: ["カード番号に「${card.replace(/(\d{4})(?=\d)/g, '$1 ')}」を入力する", "アクセスキー ${aws} を設定する"]
+  expected: [「登録しました」と表示される]
+- id: B
+  title: テスト用
+  preconditions: [会員 user@example.com と qa@mail.test が登録されている, ログイン画面を開いている]
+  steps: [カード番号に「4242 4242 4242 4242」を入力する, カード番号に「4000 0000 0000 0077」を入力する, キー sk-xxxxxxxxxxxxxxxxxxxxxxxx を設定する, 注文時刻 1700000000000 を入れる]
+  expected: [「登録しました」と表示される]
+`);
+  assert.deepEqual(byCode(f, 'D18').map((x) => x.cases[0]), ['A']);
+  assert.match(byCode(f, 'D18')[0].message, /gmail\.com/);
+  const d19 = byCode(f, 'D19');
+  assert.deepEqual(d19.map((x) => x.cases[0]), ['A', 'A']);
+  // 鍵・番号そのものは出力に写さない
+  for (const x of d19) {
+    assert.ok(!`${x.message}${x.excerpt}`.includes(card) && !`${x.message}${x.excerpt}`.includes(aws), x.message);
+  }
+  assert.ok(d19.some((x) => x.message.includes(`末尾 ${card.slice(-4)}`)));
+});
+
+test('テストデータ: 設定の test_data で自分のテスト用ドメイン・番号を足せる', async () => {
+  const card = withLuhn('453957812346789');
+  const f = await run(`
+- id: A
+  title: t
+  preconditions: [会員 qa@staging.my-corp.co.jp が登録されている, ログイン画面を開いている]
+  steps: [カード番号に「${card}」を入力する]
+  expected: [「登録しました」と表示される]
+`, { config: { testData: { domains: ['my-corp.co.jp'], cards: [card] } } });
+  assert.deepEqual([...byCode(f, 'D18'), ...byCode(f, 'D19')], []);
+});
+
+test('文言の揺れ: 句読点だけ違う（C06）・1〜2 文字違う（C07）。数値の違い・同じケースの中は言わない', async () => {
+  const f = await run(`
+- {id: A, title: a, preconditions: [画面を開いている], steps: [保存ボタンを押す], expected: [「設定を保存しました。」と表示される]}
+- {id: B, title: b, preconditions: [画面を開いている], steps: [保存ボタンを押す], expected: [「設定を保存しました」と表示される]}
+- {id: C, title: c, preconditions: [画面を開いている], steps: [保存ボタンを押す], expected: [「設定を保存しました」と表示される]}
+- {id: D, title: d, preconditions: [一覧画面を開いている], steps: [申請ボタンを押す], expected: [「申請内容を受け付けました」と表示される]}
+- {id: E, title: e, preconditions: [一覧画面を開いている], steps: [申請ボタンを押す], expected: [「申請内容を受けつけました」と表示される]}
+- {id: F, title: f, preconditions: [一覧画面を開いている], steps: [検索する], expected: [「検索結果は3件です」と表示される]}
+- {id: G, title: g, preconditions: [一覧画面を開いている], steps: [検索する], expected: [「検索結果は5件です」と表示される]}
+- {id: H, title: h, preconditions: [入力画面を開いている], steps: [空で送る], expected: [「姓を入力してください」と表示される, 「名を入力してください」と表示される]}
+`);
+  const c06 = byCode(f, 'C06');
+  assert.deepEqual(c06.map((x) => x.cases), [['A', 'B', 'C']]);
+  assert.deepEqual(byCode(f, 'C07').map((x) => x.cases.length), [2]);
+  assert.match(byCode(f, 'C07')[0].message, /受(け付|けつ)け/);
+});
+
+test('文言の揺れ: 実装に片方があれば、揺れでなく I01 に任せる', async () => {
+  const f = await run(`
+- {id: A, title: a, preconditions: [画面を開いている], steps: [保存ボタンを押す], expected: [「設定を保存しました。」と表示される]}
+- {id: B, title: b, preconditions: [画面を開いている], steps: [保存ボタンを押す], expected: [「設定を保存しました」と表示される]}
+`, { source: { 'messages.json': '{"saved": "設定を保存しました"}' } });
+  assert.deepEqual(byCode(f, 'C06'), []);
+  assert.deepEqual(byCode(f, 'I01').map((x) => x.cases[0]), ['A']);
+});

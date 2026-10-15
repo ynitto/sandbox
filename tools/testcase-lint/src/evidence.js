@@ -34,7 +34,9 @@ function writeEvidence(file, result, { prefix = 'testcase-lint', failOn = 'error
     });
   }
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify({ version: 1, root: path.relative(dir, process.cwd()).split(path.sep).join('/') || '.', items }, null, 2)}\n`);
+  // 実パスどうしで比べる（macOS の /var → /private/var のようなリンクを挟むと、cwd だけが実パスになり root がずれる）
+  const root = path.relative(fs.realpathSync(dir), fs.realpathSync(process.cwd()));
+  fs.writeFileSync(file, `${JSON.stringify({ version: 1, root: root.split(path.sep).join('/') || '.', items }, null, 2)}\n`);
 }
 
 module.exports = { writeEvidence };

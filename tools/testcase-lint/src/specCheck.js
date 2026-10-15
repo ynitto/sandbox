@@ -243,4 +243,4 @@ function nearest(n, candidates, min = 0.5) {
   return best;
 }
 
-module.exports = { SpecCheck, pathRegex, expectedStrings, nearest, mentions };
+module.exports = { SpecCheck, pathRegex, expectedStrings, nearest, mentions, NOT_TEXT_KEYS };

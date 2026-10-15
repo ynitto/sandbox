@@ -6,7 +6,7 @@ const path = require('path');
 const tx = require('./text');
 const { FieldMap, loadFile, lineAt } = require('./load');
 const { Findings } = require('./findings');
-const { Lint } = require('./lint');
+const { Lint, messageVariants } = require('./lint');
 const { Validity } = require('./validity');
 const { Ambiguity } = require('./ambiguity');
 const { SpecCheck } = require('./specCheck');
@@ -130,6 +130,7 @@ async function audit(opts) {
     untouched = spec.files.filter((x) => !sc.inScope.has(x));
   }
   if (source) checkSource(ctx);
+  messageVariants(ctx);
 
   const floor = SEVERITY_ORDER[opts.minSeverity || 'info'];
   const findings = [];

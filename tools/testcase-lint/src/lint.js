@@ -41,6 +41,44 @@ const PAIRS = [
     b: ['キャンセル', '取り消', '取消', '中止', '破棄'], both: false },
 ];
 
+// テストデータの安全（D18・D19）。ケースは CI のログや不具合票に写るので、本物の個人情報・鍵を置かない
+const EMAIL = /[\w.+-]+@((?:[a-z0-9-]+\.)+[a-z]{2,})\b/gi;
+// 予約済みのドメイン（RFC 2606・6761）。これ以外は実在しうる
+const RESERVED_DOMAIN = /(^|\.)(example\.(com|net|org)|example|test|invalid|localhost)$/;
+// 国際ブランドの番号の形（先頭の数字と桁数）。13 桁のタイムスタンプ・JAN コードを拾わないため、形の合うものだけを見る
+const CARD = /(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])/g;
+const CARD_BRAND = /^(4(\d{12}|\d{15}|\d{18})|5[1-5]\d{14}|2(2[2-9]\d|[3-6]\d\d|7[01]\d|720)\d{12}|3[47]\d{13}|35(2[89]|[3-8]\d)\d{12}|3(0[0-5]|[68]\d)\d{11}|6(011|5\d\d)\d{12})$/;
+// 決済会社が公開しているテスト用の番号（設定の test_data.cards で足せる）
+const TEST_CARDS = new Set(['4111111111111111', '4242424242424242', '4012888888881881', '4000056655665556', '5555555555554444',
+  '5105105105105100', '2223003122003222', '378282246310005', '371449635398431', '3530111333300000', '3566002020360505',
+  '3566111111111113', '36227206271667', '30569309025904', '6011111111111117', '6011000990139424', '4222222222222']);
+// 形の決まった鍵だけを拾う（「パスワード」はテストの値として要るので見ない）
+const SECRETS = [
+  [/\b(AKIA|ASIA)[0-9A-Z]{16}\b/g, 'AWS のアクセスキー'],
+  [/\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}/g, 'GitHub のトークン'],
+  [/\bsk-[A-Za-z0-9_-]{20,}/g, 'API キー'],
+  [/\b[sr]k_live_[A-Za-z0-9]{20,}/g, 'Stripe の本番キー'],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'Slack のトークン'],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/g, 'Google の API キー'],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, 'JWT'],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/g, '秘密鍵'],
+];
+
+function luhn(digits) {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+// ponytail: 同じ数字が 6 つ続く番号はテスト用とみなす（4000 0000 0000 0077 など）。本物でもまれに当たる
+const testLikeCard = (digits, extra) => TEST_CARDS.has(digits) || extra.includes(digits) || /(\d)\1{5}/.test(digits);
+// 「sk-xxxxxxxx…」のような伏せ字は鍵とみなさない
+const placeholderSecret = (s) => !s.startsWith('-----') && new Set(s.replace(/^[a-z]+[-_]/i, '')).size < 8;
+
 const stepOf = (item) => { const m = /^steps\[(\d+)\]/.exec(item.field); return m ? m[1] : null; };
 
 function groupsOf(pairs) {
@@ -85,6 +123,32 @@ class Lint {
 
   // ---- 不備 ----
 
+  // 本物らしい個人情報・鍵（D18・D19）。鍵・カード番号は出力に写さない（指摘が CI のログに残るため）
+  testData(c) {
+    const td = this.ctx.config.testData || { domains: [], cards: [] };
+    const conds = c.conditions ? Object.entries(c.conditions).map(([k, v]) => ({ text: `${k}: ${v}`, line: c.line })) : [];
+    for (const [item, text] of [[null, c.title], ...[...allItems(c), ...conds].map((i) => [i, i.text])]) {
+      if (!text) continue;
+      const raw = String(text).normalize('NFKC');
+      for (const m of raw.matchAll(EMAIL)) {
+        const domain = m[1].toLowerCase();
+        if (RESERVED_DOMAIN.test(domain) || td.domains.some((d) => domain === d || domain.endsWith(`.${d}`))) continue;
+        this.f.add('D18', `メールアドレス「${m[0]}」のドメイン「${domain}」は実在しうるので、メールが本当に届くおそれがあります`, { case: c, item, hint: 'example.com・*.test などの予約済みのドメインにする。テスト用に持っているドメインなら設定の test_data.domains に足す', excerpt: excerpt(text) });
+      }
+      for (const m of raw.matchAll(CARD)) {
+        const digits = m[0].replace(/\D/g, '');
+        if (!CARD_BRAND.test(digits) || !luhn(digits) || testLikeCard(digits, td.cards)) continue;
+        this.f.add('D19', `本物らしいカード番号（末尾 ${digits.slice(-4)}）が書かれています`, { case: c, item, hint: '決済会社が公開しているテスト用の番号にする。テスト用の番号なら設定の test_data.cards に足す' });
+      }
+      for (const [re, what] of SECRETS) {
+        for (const m of raw.matchAll(re)) {
+          if (placeholderSecret(m[0])) continue;
+          this.f.add('D19', `${what}らしい値（${m[0].slice(0, 4)}…）が書かれています`, { case: c, item, hint: '鍵はケースに書かず、実行するときに環境変数などから渡す。漏れた鍵は無効にする' });
+        }
+      }
+    }
+  }
+
   ids() {
     const byFile = new Map();
     for (const c of this.cases) { if (!byFile.has(c.file)) byFile.set(c.file, []); byFile.get(c.file).push(c); }
@@ -121,6 +185,7 @@ class Lint {
       if (PLACEHOLDER.test(n)) this.f.add('D07', '書きかけのまま残っています', { case: c, item, hint: '決めて書き切るか、ケースを外す', excerpt: excerpt(text) });
       if (DEPENDS.test(n)) this.f.add('D09', 'ほかのケースを前提にしていて、このケースだけでは実行できません', { case: c, item, hint: '必要な前提・手順をこのケースに書き写す', excerpt: excerpt(text) });
     }
+    this.testData(c);
     for (const item of c.expected) {
       if (tx.normalize(item.text).split(/[。\n]/).some((p) => OPERATION_END.test(p.trim()))) {
         this.f.add('D10', '期待結果に操作が書かれています', { case: c, item, hint: '操作は手順へ移し、期待結果にはその結果どうなるかを書く', excerpt: excerpt(item.text) });
@@ -357,4 +422,43 @@ function boundaryGaps(cases, k) {
   return points.filter((p) => !tested.has(p));
 }
 
-module.exports = { Lint, NEGATIVE_WORDS, boundaryGaps, boundaryPoints, rx };
+// 期待する文言の揺れ（C06・C07）。ケースどうしで同じ文言を少しだけ違えて書いたものを出す。
+// 仕様・実装のどちらかに片方でもあれば出さない（両方あれば別の文言、片方だけなら S06・I01 がもう片方を言う）。
+// 仕様も実装も渡さないときに、文言の誤りを拾う唯一の手がかりになる。
+const PUNCT = /[\s。、．，,.!！?？・…]/g;
+function messageVariants(ctx) {
+  const { expectedStrings } = require('./specCheck');
+  const known = (n) => (ctx.source && ctx.source.files && ctx.source.corpus.includes(n)) || (ctx.spec && ctx.spec.corpus && ctx.spec.corpus.includes(n));
+  // 文言（数値を伏せたもの）→ 出てくる所
+  const byText = new Map();
+  for (const c of ctx.cases) {
+    for (const item of c.expected) {
+      for (const q of expectedStrings(item.text)) {
+        const n = tx.normalize(q);
+        const key = n.replace(/\d+(?:[.,]\d+)?/g, '0');
+        if (!byText.has(key)) byText.set(key, { key, n, q, at: [] });
+        byText.get(key).at.push({ c, item });
+      }
+    }
+  }
+  const texts = [...byText.values()];
+  const vecs = tx.vectorize(texts.map((t) => t.key));
+  // 候補は n-gram の余弦で絞り（件数の 2 乗を避ける）、編集距離で確かめる
+  for (const [i, j] of tx.similarPairs(vecs, 0.6)) {
+    const a = texts[i]; const b = texts[j];
+    const sameCase = a.at.some((x) => b.at.some((y) => x.c === y.c));
+    if (sameCase || known(a.n) || known(b.n)) continue; // 1 つのケースで両方を確かめているなら、別の文言として書き分けている
+    const punctOnly = a.key.replace(PUNCT, '') === b.key.replace(PUNCT, '');
+    // ponytail: 「姓を入力」「名を入力」のような別の文言も 0.85 を超えうるので、C07 は参考にとどめる
+    if (!punctOnly && ([...a.key].length < 8 || tx.editSimilarity(a.key, b.key) < 0.85)) continue;
+    // 少ない方を揺れとみなし、多い方を示す
+    const [few, many] = a.at.length <= b.at.length ? [a, b] : [b, a];
+    const others = [...new Set(many.at.map((x) => x.c))].slice(0, 3);
+    const msg = punctOnly
+      ? `期待する文言「${excerpt(few.q, 40)}」が、ほかのケースの「${excerpt(many.q, 40)}」と句読点・空白だけ違います`
+      : `期待する文言「${excerpt(few.q, 40)}」が、ほかのケースの「${excerpt(many.q, 40)}」と少しだけ違います`;
+    ctx.findings.add(punctOnly ? 'C06' : 'C07', msg, { case: few.at[0].c, item: few.at[0].item, others, hint: '画面に出る文言を確かめて、どちらかにそろえる（仕様か実装のフォルダを渡すと、どちらが正しいかも分かる）' });
+  }
+}
+
+module.exports = { Lint, NEGATIVE_WORDS, boundaryGaps, boundaryPoints, rx, messageVariants };
