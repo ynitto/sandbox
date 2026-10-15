@@ -12,7 +12,7 @@ name: CI
 #      agent-app … 同じく `npm test`（会話・タスク・ワークフローの Electron アプリ。旧 statemachine-maker
 #      を統合済み）。生成した定義を statemachine-use スキルの run_machine.py --dry-run に通す
 #      結合テストを含むので python も要る。実機の起動（electron）は CI では skip される。
-#      testcase-audit … `npm test`（自然文のテストケースの点検。LLM は呼ばない。形態素解析の辞書は依存に同梱）。
+#      testcase-lint … `npm test`（自然文のテストケースの点検。LLM は呼ばない。形態素解析の辞書は依存に同梱）。
 #      office-preview … `npm test`（docx / xlsx / pptx のプレビュー画像。変換は node だけで確かめ、
 #      Electron で実際に描くテストは CI では skip される）。
 #   3. docs    … 利用者向け文書の内部名検査（R10）、スキルの references/ 健全性検査
@@ -151,8 +151,8 @@ jobs:
         working-directory: tools/webui-test
         run: npm test
 
-  testcase-audit:
-    name: testcase-audit (npm test)
+  testcase-lint:
+    name: testcase-lint (npm test)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -161,10 +161,10 @@ jobs:
         with:
           node-version: "22"
       - name: 依存の導入
-        working-directory: tools/testcase-audit
+        working-directory: tools/testcase-lint
         run: npm install --no-audit --no-fund --ignore-scripts
       - name: npm test
-        working-directory: tools/testcase-audit
+        working-directory: tools/testcase-lint
         run: npm test
 
   agent-app:

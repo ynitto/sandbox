@@ -2,17 +2,17 @@
 // 規則の一覧。コード・分類・既定の重さ・短い名前は、出力・--rules・設定の上書きがすべてこの表を引く。
 //
 // コードの頭文字は、どの観点の規則かを表す。
-//   D 書き方の不備 / U 重複 / C 矛盾 / G 漏れ（ケースの中だけで分かるもの）
+//   D 書き方の不備 / A 曖昧（人によって実行・判定が変わる）/ U 重複 / C 矛盾 / G 漏れ（ケースの中だけで分かるもの）
 //   O 判定の強さ / X 実行できるか / M 条件の組み合わせ（ケースから取り出した表）
 //   S 仕様との突き合わせ（--spec） / I 実装との突き合わせ（--source）
 
 const CATEGORY = {
-  defect: '不備', duplicate: '重複', conflict: '矛盾', gap: '漏れ', oracle: '判定', exec: '実行',
+  defect: '不備', ambiguity: '曖昧', duplicate: '重複', conflict: '矛盾', gap: '漏れ', oracle: '判定', exec: '実行',
 };
 const SEVERITY_ORDER = { info: 0, warning: 1, error: 2 };
 const SEVERITY_LABEL = { error: 'エラー', warning: '警告', info: '参考' };
 
-const D = CATEGORY.defect, U = CATEGORY.duplicate, C = CATEGORY.conflict, G = CATEGORY.gap;
+const D = CATEGORY.defect, A = CATEGORY.ambiguity, U = CATEGORY.duplicate, C = CATEGORY.conflict, G = CATEGORY.gap;
 const O = CATEGORY.oracle, X = CATEGORY.exec;
 
 const RULES = {
@@ -22,9 +22,7 @@ const RULES = {
   D03: [D, 'warning', 'タイトルがない'],
   D04: [D, 'warning', '手順がない'],
   D05: [D, 'error', '期待結果がない'],
-  D06: [D, 'warning', '合否を決められない曖昧な表現'],
   D07: [D, 'error', '書きかけ（TBD・要確認など）'],
-  D08: [D, 'warning', 'テストデータが決まっていない'],
   D09: [D, 'warning', '他のケースに依存している'],
   D10: [D, 'warning', '期待結果に操作が書かれている'],
   D11: [D, 'info', '手順に確認が混ざっている'],
@@ -33,6 +31,15 @@ const RULES = {
   D14: [D, 'warning', '要件一覧にない要件を指している'],
   D15: [D, 'error', '同じキーが 2 回書かれている'],
   D16: [D, 'error', '指定した書式に合わない'],
+  A01: [A, 'warning', '合否の基準があいまい'],
+  A02: [A, 'warning', '使う値が決まっていない'],
+  A03: [A, 'warning', '量・回数・時間があいまい'],
+  A04: [A, 'warning', '指すものがあいまい'],
+  A05: [A, 'warning', '期待結果に選択肢がある'],
+  A06: [A, 'warning', '期待結果を言い切っていない'],
+  A07: [A, 'warning', '比べる基準がない'],
+  A08: [A, 'warning', '操作の対象があいまい'],
+  A09: [A, 'info', '列挙が閉じていない'],
   U01: [U, 'error', '完全に同じケース'],
   U02: [U, 'warning', 'ほぼ同じケース'],
   U03: [U, 'info', '値だけが違うケース（表にまとめられる）'],

@@ -6,7 +6,7 @@ const { audit } = require('../src/audit');
 const { defaults } = require('../src/config');
 const { main } = require('../src/cli');
 
-const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'testcase-audit-'));
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'testcase-lint-'));
 process.on('exit', () => fs.rmSync(ROOT, { recursive: true, force: true }));
 
 let n = 0;

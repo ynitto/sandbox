@@ -11,9 +11,9 @@ const fs = require('fs');
 const path = require('path');
 const { CATEGORY } = require('./rules');
 
-const CATEGORY_IDS = { [CATEGORY.defect]: 'defect', [CATEGORY.duplicate]: 'duplicate', [CATEGORY.conflict]: 'conflict', [CATEGORY.gap]: 'gap', [CATEGORY.oracle]: 'oracle', [CATEGORY.exec]: 'exec' };
+const CATEGORY_IDS = { [CATEGORY.defect]: 'defect', [CATEGORY.ambiguity]: 'ambiguity', [CATEGORY.duplicate]: 'duplicate', [CATEGORY.conflict]: 'conflict', [CATEGORY.gap]: 'gap', [CATEGORY.oracle]: 'oracle', [CATEGORY.exec]: 'exec' };
 
-function writeEvidence(file, result, { prefix = 'testcase-audit', failOn = 'error' } = {}) {
+function writeEvidence(file, result, { prefix = 'testcase-lint', failOn = 'error' } = {}) {
   const rank = { info: 0, warning: 1, error: 2 };
   const limit = failOn === 'never' ? Infinity : rank[failOn];
   const count = (sev) => result.findings.filter((f) => f.severity === sev).length;

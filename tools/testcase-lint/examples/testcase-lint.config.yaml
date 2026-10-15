@@ -1,0 +1,9 @@
+# 設定の例。このフォルダで testcase-lint を（オプション無しで）実行すると読まれる。パスはこのファイルからの相対。
+# 仕様・実装は別のリポジトリのフォルダでもよい（例: ../../my-app-docs/docs）。
+cases: [cases]
+spec: [spec]
+source: [app]
+# evidence: results/testcase-lint.json        # 結果ファイルも書く（ほかの道具に渡す）
+# format: { schema: ../schema/testcase.schema.json }   # ケースが従う書式。合わない所を D16 で出す
+rules:
+  D11: off

@@ -41,8 +41,7 @@ test('言葉の不備', async () => {
     - 保存ボタンをクリックする
     - TBD
 `);
-  assert.deepEqual(D(f), ['D06', 'D07', 'D08', 'D09', 'D10', 'D11', 'D12']);
-  assert.equal(byCode(f, 'D06')[0].line, 9);
+  assert.deepEqual(D(f), ['D07', 'D09', 'D10', 'D11', 'D12']);
 });
 
 test('きちんと書いたケースには不備を言わない', async () => {
@@ -57,12 +56,7 @@ test('きちんと書いたケースには不備を言わない', async () => {
   expected: [「8 文字以上で入力してください」と表示される]
 `);
   assert.deepEqual(D(f), []);
-  assert.deepEqual(byCode(f, 'D06'), []);
-});
-
-test('「等しい」は曖昧な表現にしない', async () => {
-  const f = await run('- {id: A, title: t, steps: [計算する], expected: [合計が小計と等しい]}\n');
-  assert.deepEqual(byCode(f, 'D06'), []);
+  assert.deepEqual(codes(f).filter((c) => c.startsWith('A')), []);
 });
 
 const PAIR = `

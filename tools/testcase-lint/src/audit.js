@@ -8,6 +8,7 @@ const { FieldMap, loadFile, lineAt } = require('./load');
 const { Findings } = require('./findings');
 const { Lint } = require('./lint');
 const { Validity } = require('./validity');
+const { Ambiguity } = require('./ambiguity');
 const { SpecCheck } = require('./specCheck');
 const { loadSpec } = require('./spec');
 const { loadSource, checkSource } = require('./source');
@@ -37,7 +38,7 @@ function expand(inputs) {
         for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
           if (e.name.startsWith('.') || e.name === 'node_modules') continue;
           const p = path.join(d, e.name);
-          if (e.isDirectory()) walk(p); else if (/\.(json|ya?ml)$/i.test(e.name) && !/^testcase-audit\.config\./.test(e.name)) out.push(p);
+          if (e.isDirectory()) walk(p); else if (/\.(json|ya?ml)$/i.test(e.name) && !/^testcase-lint\.config\./.test(e.name)) out.push(p);
         }
       };
       walk(input);
@@ -112,6 +113,7 @@ async function audit(opts) {
   const lint = new Lint(ctx);
   ctx.isNegative = (c) => lint.isNegative(c);
   lint.run();
+  new Ambiguity(ctx).run();
   new Validity(ctx).run();
   let untouched = [];
   if (spec) {

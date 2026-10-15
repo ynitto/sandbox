@@ -1,5 +1,5 @@
 # おすすめの書式で書いたケースの例（conditions に条件の組を書く）。
-#   testcase-audit examples/cases/orders.yaml --spec examples/spec --source examples/app
+#   testcase-lint examples/cases/orders.yaml --spec examples/spec --source examples/app
 feature: 注文の取り消し
 cases:
   - id: ORD-01

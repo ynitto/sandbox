@@ -28,9 +28,21 @@ function where(f) {
   return rel.length ? `（ほかに ${rel.join('・')}）` : '';
 }
 
+// 何を点検したか（オプション無しで動かしたとき、どこを見たかが分かるように）
+function inputsLine(result) {
+  const i = result.inputs;
+  if (!i) return '';
+  const parts = [`ケース: ${i.cases.join('、')}`];
+  if (i.spec.length) parts.push(`仕様: ${i.spec.join('、')}`);
+  if (i.source.length) parts.push(`実装: ${i.source.join('、')}`);
+  const from = i.config ? `（${i.config}）` : i.auto ? '（設定ファイルが無いので、見つけたフォルダを使用。testcase-lint init で設定を作れる）' : '';
+  return `${parts.join(' / ')}${from}`;
+}
+
 function renderText(result) {
   const s = summary(result);
-  const out = [];
+  const head = inputsLine(result);
+  const out = head ? [head] : [];
   let current = null;
   for (const f of [...result.findings].sort(sortKey)) {
     if (f.file !== current) { current = f.file; out.push('', f.file); }
@@ -46,18 +58,19 @@ function renderText(result) {
   const untouched = (result.spec && result.spec.untouched) || [];
   if (untouched.length) out.push(`どのケースも触れていない仕様（突き合わせの対象外）: ${untouched.slice(0, 5).join('、')}${untouched.length > 5 ? ` ほか ${untouched.length - 5} 件` : ''}`);
   out.push(result.findings.length ? summaryLine(s) : `${summaryLine(s)} — 指摘はありません`);
-  return `${out.join('\n').replace(/^\n+/, '')}\n`;
+  return `${out.join('\n')}\n`;
 }
 
 function renderJson(result) {
-  return `${JSON.stringify({ tool: 'testcase-audit', version, summary: summary(result), findings: [...result.findings].sort(sortKey) }, null, 2)}\n`;
+  return `${JSON.stringify({ tool: 'testcase-lint', version, inputs: result.inputs, summary: summary(result), findings: [...result.findings].sort(sortKey) }, null, 2)}\n`;
 }
 
 const md = (s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
 function renderMarkdown(result) {
   const s = summary(result);
-  const out = ['# テストケースの点検結果', '', summaryLine(s), ''];
+  const head = inputsLine(result);
+  const out = ['# テストケースの点検結果', '', ...(head ? [head, ''] : []), summaryLine(s), ''];
   for (const cat of CATEGORIES) {
     const fs = result.findings.filter((f) => f.category === cat).sort(sortKey);
     out.push(`## ${cat}（${fs.length} 件）`, '');

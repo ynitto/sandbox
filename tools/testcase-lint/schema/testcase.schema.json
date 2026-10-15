@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://example.invalid/testcase-audit/testcase.schema.json",
+  "$id": "https://example.invalid/testcase-lint/testcase.schema.json",
   "title": "テストケースのファイル（おすすめの書式）",
   "description": "LLM にケースを書かせるときに渡す書式。条件（conditions）と期待結果を分けて書くと、組み合わせ・判定の強さの点検が推測なしで効く。",
   "type": "object",

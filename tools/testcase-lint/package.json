@@ -1,17 +1,17 @@
 {
-  "name": "testcase-audit",
+  "name": "testcase-lint",
   "version": "0.1.0",
   "description": "自然文のテストケース（JSON / YAML）を、テストケースとしての妥当性（判定できるか・実行できるか・網羅しているか・仕様と合うか）で点検する。LLM は使わない",
   "author": "sandbox",
   "license": "MIT",
   "bin": {
-    "testcase-audit": "bin/testcase-audit.js"
+    "testcase-lint": "bin/testcase-lint.js"
   },
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/load.test.js test/lint.test.js test/validity.test.js test/spec.test.js test/cli.test.js test/independence.test.js"
+    "test": "node --test test/load.test.js test/lint.test.js test/ambiguity.test.js test/validity.test.js test/spec.test.js test/cli.test.js test/independence.test.js"
   },
   "dependencies": {
     "ajv": "^8.17.1",

@@ -11,17 +11,7 @@ const { procedureText, expectedText, fullText, allItems, excerpt } = require('./
 
 const rx = (patterns) => new RegExp(patterns.map((p) => `(?:${p})`).join('|'));
 
-const VAGUE = [
-  '正しく', '正常に', '適切(に|な|で)', '問題(なく|ない|がない|のない)', 'うまく', 'ちゃんと', 'きちんと', 'スムーズ', '速やかに',
-  'すばやく|素早く', '十分(に|な)', '妥当(に|な)', '(想定|期待|仕様|意図|設計|要件)(通り|どおり)',
-  '見やすい|わかりやすい|分かりやすい|使いやすい', '違和感(が|の)?(ない|なく)', 'など', '(?<![平同均対])等(?![しく級分価号])',
-  '適宜', '必要に応じ', '可能な限り|なるべく|できるだけ', 'ある程度', '高速に|軽快', '^.{0,8}(動作|機能)する(こと)?$',
-  '(画面|表示|内容|結果|動作|挙動|状態|画面表示)を確認(する|します)?$',
-  '\\bcorrectly\\b', '\\bproperly\\b', '\\bappropriate(ly)?\\b', '\\bas expected\\b', 'works? (fine|well)', 'should work',
-  'user[- ]friendly', '\\betc\\b', '\\bquickly\\b',
-];
 const PLACEHOLDER = /\btbd\b|\btodo\b|\bfixme\b|\bxxx+\b|未定|要確認|検討中|\?{2,}|●●|○○|〇〇|◯◯|△△|\*\*\*|<[^>]*(ここ|記入|入力して)[^>]*>|\[(ここ|要|tbd)[^\]]*\]/;
-const UNDEFINED_DATA = /任意の|適当な|適当に|何か(の|を)|なんらかの|何らかの|ランダムな|適宜|有効な(値|データ)|無効な(値|データ)|\bsome (value|data|text)\b|\bany (value|data|text)\b|\brandom\b/;
 const DEPENDS = /同上|前述の|上記の?(手順|操作|ケース|状態)|前(の|回の)?(ケース|テスト|項目)|前項|(tc|ケース|テスト|no\.?)[-_]?\d+\s*(と同(じ|様)|を(実施|実行)|の(後|あと|続き|結果|状態))/;
 const OPERATION_END = /(を|に)?(クリック|ダブルクリック|押下|入力|選択|タップ|ドラッグ|スクロール)(する|します)?$|を押す$|を開く$/;
 const VERIFY_IN_STEP = /(ことを確認|を確認)(する|します)?$|(が|は)表示される(こと)?$|になっている(こと)?$|であること$|されること$|できること$/;
@@ -73,7 +63,6 @@ class Lint {
     this.cases = ctx.cases;
     this.f = ctx.findings;
     const w = ctx.config.words;
-    this.vague = rx([...VAGUE, ...w.vague]);
     this.negative = rx([...NEGATIVE_WORDS, ...w.negative]);
   }
 
@@ -132,22 +121,10 @@ class Lint {
       if (PLACEHOLDER.test(n)) this.f.add('D07', '書きかけのまま残っています', { case: c, item, hint: '決めて書き切るか、ケースを外す', excerpt: excerpt(text) });
       if (DEPENDS.test(n)) this.f.add('D09', 'ほかのケースを前提にしていて、このケースだけでは実行できません', { case: c, item, hint: '必要な前提・手順をこのケースに書き写す', excerpt: excerpt(text) });
     }
-    // 曖昧な表現は、合否を決める文（期待結果・チェック項目）に当てる
-    const judge = c.kind === 'case' ? c.expected : (c.title ? [{ text: c.title, line: c.line, field: 'title' }] : []);
-    for (const item of judge) {
-      const m = this.vague.exec(tx.normalize(item.text));
-      if (m) {
-        this.f.add('D06', `「${m[0]}」では合否を決められません`, { case: c, item, hint: '何が・どうなれば合格かを、見て判断できる形（表示される文言・値・件数など）で書く', excerpt: excerpt(item.text) });
-      }
-    }
     for (const item of c.expected) {
       if (tx.normalize(item.text).split(/[。\n]/).some((p) => OPERATION_END.test(p.trim()))) {
         this.f.add('D10', '期待結果に操作が書かれています', { case: c, item, hint: '操作は手順へ移し、期待結果にはその結果どうなるかを書く', excerpt: excerpt(item.text) });
       }
-    }
-    for (const item of [...c.preconditions, ...c.steps]) {
-      const m = UNDEFINED_DATA.exec(tx.normalize(item.text));
-      if (m) this.f.add('D08', `「${m[0]}」では人によって使う値が変わります`, { case: c, item, hint: '使う値を具体的に書く（境界や種類を試すなら、値ごとにケースを分ける）', excerpt: excerpt(item.text) });
     }
     for (const item of c.steps) {
       const n = tx.normalize(item.text);
