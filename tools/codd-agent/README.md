@@ -288,7 +288,7 @@ python3 .statemachine/codd/codd.py lint            # 定期的な点検（下記
 | `test` | 任意。変えたあとに動かすテストのコマンド。1 つなら配列（例: `["npm", "test"]`）、単体・API・シナリオなどいくつもあるなら名前ごと（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
 | `tests` | 任意。テストのファイルの書き方（glob の配列）。既定は `test/**`・`tests/**`・`e2e/**`・`**/*.test.*`・`**/*.spec.*`・`**/test_*.py`・`**/*.feature`・`**/*.http`・`**/scenarios/**` など。`[]` でテストを扱わない |
 | `evidence` | 任意。テストで得たもの（振る舞い・時間・作ったファイル）を書いたファイル（glob の配列）。既定 `[]`（扱わない）。使う結果ファイルのパスを明示する |
-| `check` | 任意。テストのあとに実行する検査コマンドの配列（例: `["npm", "run", "e2e"]`）。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
+| `check` | 任意。テストのあとに実行する検査コマンドの配列（例: `["npm", "run", "e2e"]`）。いくつも動かすときはコマンドの配列を並べる（例: `[["npm", "run", "lint"], ["npm", "run", "e2e"]]`）。書いた順に動かし、落ちたらそこで止める。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
 | `scope` | 任意。このリポジトリのうち自分が受け持つフォルダの配列（例: `["src", "tests"]`）。書かなければ全体 |
 | `refs[].scope` | 任意。その参照先のうち読む・変えるフォルダの配列。書かなければ全体 |
 | `exclude` | 任意。自分側で対象から除くパス・glob の配列。ルートからの相対。省略・`[]` は追加の除外なし |
@@ -386,6 +386,8 @@ python3 tools/codd-agent/init.py ~/work/my-app \
 `test` には変えたあとに動かすテストを、`check` にはそのあとに実行する検査コマンドを書く。参照先も変えたときは、
 参照先に置いた `codd.json` の `test` と `check` も動かす。どのファイルがテストかは `tests` の書き方で決まり、
 参照先のテストは参照先の `codd.json` の `tests` を使う。
+`check` にコマンドをいくつも書くと書いた順に動かし、落ちたところで止める（後のコマンドは動かさない）。
+`--check` で書けるのは 1 つなので、いくつも書くときは `codd.json` を直接書き換える。
 
 ```bash
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"

@@ -326,8 +326,9 @@ def main(argv: list[str] | None = None) -> int:
         guess = guess_test(Path(args.target).resolve())
         print("  変えたあとの単体テスト: 未設定（テストを動かさずに検査が通る）"
               + (f"。設定するなら --test \"{guess}\"" if guess else "。--test \"コマンド\" で設定する"))
-    if config.get("check"):
-        print("  変えたあとの検査: " + " ".join(config["check"]))
+    check = config.get("check") or []
+    for argv in [check] if check and isinstance(check[0], str) else check:
+        print("  変えたあとの検査: " + " ".join(argv))
     if not args.no_agents:
         print("  カスタムエージェント codd: " + "、".join(
             {"kiro": "kiro-cli chat --agent codd", "copilot": "Copilot のエージェント選択で codd"}[k]
