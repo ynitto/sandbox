@@ -27,6 +27,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - `node tools/testcase-lint/install.js` でグローバルに入れる（`npm pack` で固めて `npm install -g`。リポジトリへのリンクにしない）
 - webui-test とも codd-agent とも独立して動き、ほかの道具とは終了コードと結果ファイルだけでつながる
 
+### codd-agent: テストが通ったフリを止める
+
+- テストか検査が落ちたあとに、テストのファイルのほうを変えたら、訊かずにやり直さず利用者に訊く（消した行・足した行の数を
+  添える）。実装でなくテストの期待値を合わせて通すのを止める。認めるなら `accept`
+- テストのコマンドが通っても、変更が響くテストの結果が `evidence` に無いか、すべて飛ばされていれば止めて訊く。
+  `evidence` を設定していなければ止めず、終わりの報告に「動いたかは確かめていない」と件数を出す
+- テストや検査のコマンドを動かせない（終了コード 126・127、`command not found` など）ときは、テストの失敗として
+  訊かずにやり直さず、設定か環境の誤りとして最初から訊く
+- CoDD（codd-dev）の anti-false-green を借りた。詳しくは設計書 §4.2.1〜§4.2.3
+
 ### codd-agent: check にコマンドをいくつも書ける
 
 - codd.json の `check` に、コマンドの配列を並べて書けるようにした（例: `[["npm", "run", "lint"], ["npm", "run", "e2e"]]`）。

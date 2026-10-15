@@ -60,6 +60,7 @@ codd-gate と同じ書き方）もたどる。計画・変更で動くファイ�
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import io
 import fnmatch
@@ -4979,6 +4980,9 @@ def write_baseline(ctx: Ctx) -> None:
     (ctx.data / ACCEPTED_NAME).unlink(missing_ok=True)
     (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
     (ctx.data / PREEXISTING_OK_NAME).unlink(missing_ok=True)
+    for name in (UNRUN_NAME, UNRUN_OK_NAME, UNCHECKED_NAME):
+        (ctx.data / name).unlink(missing_ok=True)
+    clear_failed_tests(ctx)
     shutil.rmtree(ctx.data / "before", ignore_errors=True)
     state = {"plan": plan_rel(ctx), "own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
@@ -5345,9 +5349,14 @@ def run_check(repo: Path, command: list[str] | None, label: str) -> list[str]:
     if first is not None and first < len(lines) - 20:
         shown = [*lines[first:first + 15], "…", *lines[-8:]]
     tail = "\n".join(shown)
+    if rc in (126, 127) or _CANNOT_RUN.search(out):
+        # 実装を直しても通らない。訊かずにやり直させず、設定か環境の誤りとして利用者に訊く
+        return [f"{label}: {CANNOT_RUN}（{rc}）: {' '.join(command)}\n{tail}"]
     return [f"{label}の検査が失敗しました（{rc}）: {' '.join(command)}\n{tail}"]
 
 
+CANNOT_RUN = "テストか検査のコマンドを動かせませんでした"
+_CANNOT_RUN = re.compile(r"command not found|is not recognized as an internal or external command")
 _FAILURE_LINE = re.compile(r"^\s*not ok\b|\bFAIL(?:ED)?\b|\bERROR\b|Error:|^panic:|AssertionError|Traceback")
 
 
@@ -5445,8 +5454,8 @@ def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, l
     """run_check に、変える前から落ちていたかの見分けを足したもの。認めた前からの失敗だけなら通す。"""
     started = time.time()
     problems = run_check(cwd, argv, label)
-    if not problems:
-        return []
+    if not problems or CANNOT_RUN in problems[0]:
+        return problems   # 動かせないものは、変える前の中身で動かしても同じ理由で落ちるだけ
     failed = failed_tests(ctx, key, started - 1)
     detail = ("\n" + FAILED_TESTS + "\n" + "\n".join(failed)) if failed else ""
     now = failure_lines(problems[0])
@@ -5466,6 +5475,135 @@ def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, l
     write_text(ctx.data / PREEXISTING_NAME, json.dumps(found, ensure_ascii=False, indent=2) + "\n")
     return [f"{label}: {PREEXISTING}（この回の変更のせいではないので、エージェントに直させずに利用者に確かめます。"
             f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1] + detail]
+
+
+# テストを弱めて通すのを止める（§4.2.1）。テストか検査が落ちたら、その時点のテストのファイルを控える。次の検査までに
+# テストのほうが変わっていれば、実装を直さずにテストを合わせた見込みがあるので、訊かずにやり直させず利用者に訊く。
+TEST_EDITED = "検査が落ちたあとに、テストのファイルを変えています"
+FAILED_TESTS_NAME = "failed-tests.json"     # 落ちたときのテストのファイル → 中身のハッシュ（作業中のものだけ）
+FAILED_TESTS_DIR = "failed-tests"           # 同じときの中身の写し（差分の行数を出す）
+TEST_EDITS_NAME = "test-edits.json"         # 止めたテストの変更（accept で認める）
+
+
+def test_state(ctx: Ctx) -> dict[str, dict[str, str]]:
+    return {key: {rel: h for rel, h in dirty_files(side).items() if is_test(ctx, key, rel)}
+            for key, side in all_sides(ctx)}
+
+
+def save_failed_tests(ctx: Ctx) -> None:
+    state = test_state(ctx)
+    copies = ctx.data / FAILED_TESTS_DIR
+    shutil.rmtree(copies, ignore_errors=True)
+    for key, files in state.items():
+        side = side_of(ctx, key)
+        for rel, h in files.items():
+            if h != "deleted":
+                dst = copies / ("own" if not key else f"ref-{key}") / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(side.path / rel, dst)
+    write_text(ctx.data / FAILED_TESTS_NAME, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+
+
+def clear_failed_tests(ctx: Ctx) -> None:
+    for name in (FAILED_TESTS_NAME, TEST_EDITS_NAME):
+        (ctx.data / name).unlink(missing_ok=True)
+    shutil.rmtree(ctx.data / FAILED_TESTS_DIR, ignore_errors=True)
+
+
+def test_edit_problems(ctx: Ctx) -> list[str]:
+    """前に落ちたときから中身が変わったテストのファイル（足した・消したものを含む）。差分の行数を添える。"""
+    (ctx.data / TEST_EDITS_NAME).unlink(missing_ok=True)
+    try:
+        saved = json.loads((ctx.data / FAILED_TESTS_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    now = test_state(ctx)
+    rows: list[str] = []
+    for key, side in all_sides(ctx):
+        was, cur = saved.get(key, {}), now.get(key, {})
+        for rel in sorted(set(was) | set(cur)):
+            if was.get(rel) == cur.get(rel):
+                continue
+            if rel not in was:   # 落ちたときは手を付けていなかった（HEAD のまま）
+                old = run(["git", "show", f"HEAD:{rel}"], side.path, GIT_TIMEOUT)
+                old_text = old[1] if old[0] == 0 else ""
+            elif was[rel] == "deleted":
+                old_text = ""
+            else:
+                old_text = (ctx.data / FAILED_TESTS_DIR / ("own" if not key else f"ref-{key}") / rel).read_text(
+                    encoding="utf-8", errors="replace")
+            path = side.path / rel
+            new_text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+            diff = list(difflib.unified_diff(old_text.splitlines(), new_text.splitlines(), lineterm="", n=0))[2:]
+            minus = sum(1 for ln in diff if ln.startswith("-"))
+            plus = sum(1 for ln in diff if ln.startswith("+"))
+            rows.append(f"{side_label(ctx, key, rel)}（消した行 {minus}・足した行 {plus}）")
+    if not rows:
+        return []
+    write_text(ctx.data / TEST_EDITS_NAME, json.dumps(rows, ensure_ascii=False) + "\n")
+    return [f"{TEST_EDITED}（テストと実装のどちらが設計書と違うかは利用者が決めます。テストを落ちたときの中身へ戻して"
+            f"実装を直すか、テストの変更を認めるなら `python3 {MACHINE_REL}/codd.py accept`）: " + ", ".join(rows)]
+
+
+# 響くテストが動かないまま通るのを止める（§4.2.2）。evidence を設定した側だけで確かめる。
+UNRUN = "変更が響くテストが動いていません"
+UNRUN_NAME = "unrun.json"            # 止めた、動いていないテスト（accept で認める）
+UNRUN_OK_NAME = "unrun-ok.json"      # 利用者が動かないものと認めたテスト
+UNCHECKED_NAME = "unchecked-tests.json"   # evidence が無く、動いたかを確かめていない響くテストの数（報告に出す）
+
+
+def ran_tests(ctx: Ctx, key: str, since: float) -> tuple[bool, dict[str, set[str]]]:
+    """since のあとに書かれた evidence があるかと、テストのファイル → 振る舞いの状態の集まり。"""
+    side = side_of(ctx, key)
+    wrote, out = False, {}
+    for pattern in evidence_patterns(ctx, key):
+        for path in sorted(side.path.glob(pattern)):
+            try:
+                if path.stat().st_mtime < since:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                continue
+            wrote = True
+            root = (path.parent / data["root"]).resolve() if isinstance(data.get("root"), str) else side.path
+            for item in data["items"]:
+                if isinstance(item, dict) and item.get("kind") == "behavior" and not is_output(item):
+                    rel = item_file(ctx, key, {**item, "_root": root})
+                    if rel:
+                        out.setdefault(rel, set()).add(str(item.get("status")))
+    return wrote, out
+
+
+def unrun_problems(ctx: Ctx, since: float, sides: list[str], required: set[tuple[str, str]]) -> list[str]:
+    try:
+        ok = {tuple(x) for x in json.loads((ctx.data / UNRUN_OK_NAME).read_text(encoding="utf-8"))}
+    except (OSError, ValueError):
+        ok = set()
+    missing: list[tuple[str, str]] = []
+    unchecked: dict[str, int] = {}
+    for key in sides:
+        side = side_of(ctx, key)
+        want = sorted(rel for k, rel in required if k == key and (side.path / rel).is_file() and (k, rel) not in ok)
+        if not want:
+            continue
+        if not evidence_patterns(ctx, key):
+            unchecked[key or "自分"] = len(want)
+            continue
+        _, ran = ran_tests(ctx, key, since)
+        missing += [(key, rel) for rel in want if not ran.get(rel, set()) - {"skipped"}]
+    if unchecked:
+        write_text(ctx.data / UNCHECKED_NAME, json.dumps(unchecked, ensure_ascii=False) + "\n")
+    else:
+        (ctx.data / UNCHECKED_NAME).unlink(missing_ok=True)
+    if not missing:
+        (ctx.data / UNRUN_NAME).unlink(missing_ok=True)
+        return []
+    write_text(ctx.data / UNRUN_NAME, json.dumps(missing, ensure_ascii=False) + "\n")
+    return [f"{UNRUN}（テストのコマンドが動かしたテストの結果（evidence）に無いか、すべて飛ばされています。"
+            "テストのコマンドの範囲か環境を直すか、動かないテストとして認めるなら "
+            f"`python3 {MACHINE_REL}/codd.py accept`）: " + ", ".join(side_label(ctx, k, rel) for k, rel in missing)]
 
 
 def run_checks(ctx: Ctx, key: str, side: Side, cwd: Path, value, label: str) -> list[str]:
@@ -6193,6 +6331,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     problems += tp.problems
     problems += formats_apply_problems(ctx, "\n".join(bodies.values()))
     problems += record_problems_of(ctx)
+    problems += test_edit_problems(ctx)
 
     # 1. 計画のファイルを最後まで変えたか（途中で止まっていないか）。テストの変更案のファイルも同じ。
     #    変える段で「変更不要」と申告したもの（理由付き）は、訊かずに認めて報告に残す。
@@ -6389,6 +6528,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     pre = {key: dirty_files(side) for key, side in all_sides(ctx)}
     before_checks = len(problems)
     (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
+    started = time.time() - 1
     for name, argv in test_commands(ctx.config.get("test")):
         problems += checked(ctx, "", ctx.own, ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
     problems += run_checks(ctx, "", ctx.own, ctx.root, ctx.config.get("check"), SIDES[ctx.side])
@@ -6398,6 +6538,13 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems += checked(ctx, r.name, r, r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
         problems += run_checks(ctx, r.name, r, r.path, r.check, f"{r.name}（{r.label}）")
     checks_failed = len(problems) > before_checks
+    if checks_failed:
+        save_failed_tests(ctx)
+    else:
+        clear_failed_tests(ctx)
+        tested = [*([""] if ctx.config.get("test") else []), *(r.name for r in changed if r.test)]
+        problems += unrun_problems(ctx, started, tested, set(affected) | {
+            (k, rel) for k, rels in touched_all.items() for rel in rels if is_test(ctx, k, rel)})
     held = protected_in_failures(ctx, problems[before_checks:], approved_changes(ctx, a))
     if held:
         # 訊かずに変え直させると、人の承認が要るファイルを直して、次の検査でまた止まるだけになる
@@ -6678,6 +6825,15 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         if (ctx.data / PREEXISTING_OK_NAME).is_file() else {}
     if known:
         lines.append(f"- テスト: 変える前から落ちていたものを、利用者が認めて続けた（{'・'.join(known)}）")
+    unchecked_file = ctx.data / UNCHECKED_NAME
+    if applied is not None and unchecked_file.is_file():
+        counts = json.loads(unchecked_file.read_text(encoding="utf-8"))
+        lines.append("- テスト: 変更が響くテストが動いたかは確かめていない（evidence が未設定。"
+                     + "・".join(f"{k} {n} 件" for k, n in counts.items()) + "）")
+    if (ctx.data / UNRUN_OK_NAME).is_file():
+        unrun_ok = json.loads((ctx.data / UNRUN_OK_NAME).read_text(encoding="utf-8"))
+        lines.append("- テスト: 動かないまま、利用者が認めて続けた（"
+                     + "・".join(side_label(ctx, k, rel) for k, rel in unrun_ok) + "）")
     lines += ["", f"## 自分（{SIDES[ctx.side]}）  {ctx.root}", ""]
     lines += rows("", own_planned(ctx, a.bodies), a.own_touched)
     for r in ctx.refs:
@@ -6780,6 +6936,8 @@ def record_problems(data: Path, phase: str, problems: list[str], kind: str | Non
 _KINDS = (
     ("stale", "any", ("計画がありません", "印がありません", "印が古い形")),
     ("unconfirmed", "apply", ("利用者が確かめたものではありません",)),
+    ("test-edit", "apply", (TEST_EDITED,)),
+    ("unrun", "apply", (UNRUN,)),
     ("edited", "plan", (PLAN_EDITED,)),
     ("pending", "plan", (f"「{PENDING_MARK}」",)),
     ("size", "plan", ("上限",)),
@@ -6797,6 +6955,7 @@ _KINDS = (
     ("paths", "apply", ("どのリポジトリにもありません", "まだ指しているところ", STALE_NAMES)),
     ("rules", "any", ("守る決まり", "従う手順", "手順の文書", "確かめることに答えていません", "スキル・道具", "リポジトリのスキル", "スキルの手順", "スキルを読み込んでいません",
                         "ファイルに決められた手順", "決められた道具を使った記録", "確かめることの根拠に書いたパス")),
+    ("config", "any", (CANNOT_RUN,)),
     ("preexisting", "apply", (PREEXISTING,)),
     ("check", "apply", ("検査が失敗しました",)),
     # 人の判断が要る形の指摘（ずれを直すか残すか・目安や書式を変えてよいか）。下の shape の目印
@@ -6837,6 +6996,8 @@ OPTIONS = {
     "intended": ("意図した変化として認め、写しを差し替える", "accept", "APPLY"),
     "edited": ("利用者が変えたものとして認め、計画の前からの変更にする", "accept", "PLAN"),
     "reset": ("変えた分を戻して、計画から練り直す", "rollback", "PLAN"),
+    "tests-ok": ("テストの変更を認めて続ける", "accept", "APPLY"),
+    "unrun-ok": ("動かないテストとして認めて続ける", "accept", "APPLY"),
     "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
 }
 
@@ -6867,6 +7028,14 @@ ADVICE = {
         "protected-hit": (["keep", "reset", "stop"],
                           "変更の影響を受ける、人の承認が要るファイルがあります（テストがそこで落ちるなど）。直すことを計画に挙げて"
                           "承認するか、変更を戻して練り直すかを決めてもらいます"),
+        # テストを合わせて通したかもしれない。テストと実装のどちらが違うかは、設計書と照らして人が決める
+        "test-edit": (["reapply", "tests-ok", "keep", "stop"],
+                      "検査が落ちたあとに、テストのほうを変えています。テストと実装のどちらが設計書と違うかを見て、"
+                      "テストを戻して実装を直すか、テストの変更を認めるかを決めてもらいます"),
+        # 動かない理由はたいていテストのコマンドの範囲か環境で、設定を変える判断になる
+        "unrun": (["reapply", "unrun-ok", "stop"],
+                  "テストのコマンドは通りましたが、変更が響くテストが動いていません。テストのコマンドの範囲か環境を直すか、"
+                  "動かないテストとして認めるかを決めてもらいます"),
         "outside": (["accept", "reapply", "keep", "stop"],
                     "変える段で、計画で挙げていないファイルを理由付きで足しました。理由を見て、認めて続けるか、戻して変え直すかを決めてもらいます"),
         # 計画が見込んでいない出力の変化（巻き込み・崩れかもしれない）。差し替えるかは人が決める
@@ -6954,7 +7123,7 @@ def cmd_advise(root: Path) -> int:
     order: list[str] = []
     asks: list[str] = []
     # 人の判断でしか解けない理由を先に置き、勧めをそれに合わせる（テストの失敗が先に出ても、原因が承認の要るファイルなら）
-    first = ("protected-hit", "protected", "stale-ref", "outside")
+    first = ("protected-hit", "protected", "test-edit", "stale-ref", "outside")
     problems = sorted(rec.get("problems", []), key=lambda it: it.get("kind") not in first)
     for item in problems:
         kind = item.get("kind", "form")
@@ -6992,6 +7161,22 @@ def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
     if isinstance(a, str):
         print(a, file=sys.stderr)
         return 1
+    had_tests = (ctx.data / TEST_EDITS_NAME).is_file()
+    if had_tests:
+        # 落ちたあとのテストの変更を認める（今の中身を新しい起点にする。また変われば訊く）
+        rows = json.loads((ctx.data / TEST_EDITS_NAME).read_text(encoding="utf-8"))
+        save_failed_tests(ctx)
+        (ctx.data / TEST_EDITS_NAME).unlink()
+        print("テストの変更を認めました（今の中身から変われば、また訊きます）: " + "、".join(rows))
+    unrun_file = ctx.data / UNRUN_NAME
+    had_unrun = unrun_file.is_file()
+    if had_unrun:
+        add_unrun = {tuple(x) for x in json.loads(unrun_file.read_text(encoding="utf-8"))}
+        ok_file = ctx.data / UNRUN_OK_NAME
+        known_unrun = {tuple(x) for x in json.loads(ok_file.read_text(encoding="utf-8"))} if ok_file.is_file() else set()
+        write_text(ok_file, json.dumps(sorted(known_unrun | add_unrun), ensure_ascii=False) + "\n")
+        unrun_file.unlink()
+        print("動かないテストとして認めました（報告に残ります）: " + "、".join(side_label(ctx, k, r) for k, r in add_unrun))
     found = ctx.data / PREEXISTING_NAME
     had_preexisting = found.is_file()
     if had_preexisting:
@@ -7017,7 +7202,7 @@ def cmd_accept(ctx: Ctx, args: argparse.Namespace) -> int:
     new = sorted((k, rel) for k, files in {"": a.own_touched, **a.touched}.items() for rel in files
                  if dev.reason_added(k, rel) and (k, rel) not in ok and not in_plan_text(ctx, rel))
     if not new:
-        if had_preexisting or had_outputs:
+        if had_preexisting or had_outputs or had_tests or had_unrun:
             return 0
         print("認めるものはありません（計画で挙げていないファイルを、理由付きで足したものがありません）")
         return 0
@@ -7290,8 +7475,10 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
         result += applied_lines(ctx, applied)
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
-    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME, LINKS_FOUND_NAME):
+    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME, LINKS_FOUND_NAME,
+                 UNRUN_NAME, UNRUN_OK_NAME, UNCHECKED_NAME):
         (ctx.data / name).unlink(missing_ok=True)   # 閉じた回の印を、次の回に持ち越さない
+    clear_failed_tests(ctx)
     # 報告が出せなかった回（計画の検査を通る前にやめた回など）も、探した・読んだ記録を次の回に持ち越さない
     clear_reading_logs(ctx)
     # この回より前の、結果の見出しが無い計画は `draft --new` で捨てたもの（戻されて残ったもの）。

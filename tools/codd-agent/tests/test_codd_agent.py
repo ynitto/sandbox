@@ -1235,6 +1235,92 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
         self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
 
+    def test_a_command_that_cannot_run_is_asked_as_config(self) -> None:
+        # コマンドが動かせない失敗は、実装を直しても通らない。訊かずにやり直させず、設定か環境の誤りとして訊く。
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        for command in (["no-such-command-for-codd"],
+                        [sys.executable, "-c", "print('sh: jest: command not found'); raise SystemExit(1)"]):
+            self.set_config(self.impl, test=command)
+            r = self.run_pa(self.impl, "verify-apply")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("テストか検査のコマンドを動かせませんでした", r.stderr)
+            r = self.run_pa(self.impl, "advise")
+            self.assertNotIn("AUTO", r.stdout)
+            self.assertIn("設定か環境の誤りです", r.stdout)
+
+    def test_tests_changed_after_a_failure_are_asked(self) -> None:
+        # 落ちたあとにテストのほうを変えたら、テストを合わせて通したかもしれない。訊かずにやり直させず利用者に訊く。
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\n\n\ndef test_hello():\n    assert hello() == 1\n"},
+               "test")
+        self.write_plan(PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                             "- tests/test_app.py — `hello` のログを確かめる"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2  # log\n", encoding="utf-8")
+        (self.impl / "tests/test_app.py").write_text(
+            "from src.app import hello\n\n\ndef test_hello():\n    assert hello() == 1  # log\n", encoding="utf-8")
+        check = "import sys, pathlib; sys.exit('FAILED test_hello' if '== 1' in pathlib.Path('tests/test_app.py').read_text() else 0)"
+        self.set_config(self.impl, test=[sys.executable, "-c", check])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("検査が失敗しました", r.stderr)
+        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY"))
+        # 実装でなくテストの期待値を書き換えた
+        (self.impl / "tests/test_app.py").write_text(
+            "from src.app import hello\n\n\ndef test_hello():\n    assert hello() == 2  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("検査が落ちたあとに、テストのファイルを変えています", r.stderr)
+        self.assertIn("tests/test_app.py（消した行 1・足した行 1）", r.stderr)
+        r = self.run_pa(self.impl, "advise")
+        self.assertNotIn("AUTO", r.stdout)
+        self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
+        self.assertIn("テストの変更を認めて続ける → `APPLY`。先に `python3 .statemachine/codd/codd.py accept`", r.stdout)
+        # 利用者が認めたら、その中身で続ける
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.impl / ".codd/failed-tests.json").exists())   # 通れば控えを消す
+
+    def test_affected_tests_that_did_not_run_are_asked(self) -> None:
+        # テストのコマンドが通っても、響くテストの結果が evidence に無ければ止める。evidence が無ければ報告で知らせる。
+        commit(self.impl, {"tests/test_app.py": "from src.app import hello\n\n\ndef test_hello():\n    assert hello() == 1\n"},
+               "test")
+        self.write_plan(PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                             "- tests/test_app.py — `hello` のログを確かめる"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / "tests/test_app.py").write_text(
+            "from src.app import hello\n\n\ndef test_hello():\n    assert hello() == 1  # log\n", encoding="utf-8")
+        self.set_config(self.impl, test=[sys.executable, "-c", "pass"])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("変更が響くテストが動いたかは確かめていない（evidence が未設定。自分 1 件）",
+                      self.run_pa(self.impl, "report").stdout)
+
+        def writes(status: str, file: str) -> list[str]:
+            item = {"kind": "behavior", "id": "hello", "title": "hello", "status": status, "file": file}
+            return [sys.executable, "-c", "import json; json.dump({'version': 1, 'root': '..', 'items': ["
+                    + json.dumps(item) + "]}, open('results/ui-evidence.json', 'w'))"]
+        self.write_evidence([])
+        for status, file in (("passed", "tests/test_other.py"), ("skipped", "tests/test_app.py")):
+            self.set_config(self.impl, test=writes(status, file))
+            r = self.run_pa(self.impl, "verify-apply")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("変更が響くテストが動いていません", r.stderr)
+            self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
+        self.set_config(self.impl, test=writes("passed", "tests/test_app.py"))
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 動かないものと利用者が認めれば通し、報告に残す
+        self.set_config(self.impl, test=writes("skipped", "tests/test_app.py"))
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("動かないまま、利用者が認めて続けた（tests/test_app.py）", self.run_pa(self.impl, "report").stdout)
+
     def test_a_test_failing_before_the_change_is_asked_not_retried(self) -> None:
         # 変える前から同じところで落ちるテストは、この回の変更のせいではない。エージェントに直させず訊き、
         # 認めたら同じ失敗だけを通す（新しい失敗は止める）。
