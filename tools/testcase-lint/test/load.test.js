@@ -94,3 +94,12 @@ test('重複キーと読めないファイル', () => {
   assert.deepEqual(r.findings.map((f) => f.code), ['D00']);
   assert.ok(r.findings[0].line >= 2);
 });
+
+test('ケースを 1 件も読み取れないファイルは D17 を出し、何も点検しないまま通さない', () => {
+  for (const content of ['', 'foo: bar\n']) {
+    const { cases, findings } = load(content);
+    assert.equal(cases.length, 0);
+    assert.deepEqual(findings.map((f) => f.code), ['D17']);
+  }
+  assert.deepEqual(load('cases:\n  - id: A\n    steps: [x]\n    expected: y\n').findings, []);
+});
