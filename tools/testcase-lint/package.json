@@ -1,6 +1,6 @@
 {
   "name": "testcase-lint",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "自然文のテストケース（JSON / YAML）を、テストケースとしての妥当性（判定できるか・実行できるか・網羅しているか・仕様と合うか）で点検する。LLM は使わない",
   "author": "sandbox",
   "license": "MIT",

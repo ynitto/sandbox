@@ -341,6 +341,12 @@ function loadFile(path, display, fmap, startIndex = 0) {
   }));
   const cases = [];
   for (const tree of parsed.trees) cases.push(...extractCases(tree, display, fmap, startIndex + cases.length));
+  if (!cases.length) {
+    findings.push({
+      code: 'D17', message: 'ケースを 1 件も読み取れませんでした（空のファイル、または項目名が読み取れる綴りと違います）', file: display, line: 0,
+      hint: 'ケースの列（cases・tests・テストケース など）と、手順・期待結果の項目名を確かめる。`testcase-lint schema` におすすめの書式がある',
+    });
+  }
   return { cases, findings, docs: parsed.trees.map(plain), trees: parsed.trees };
 }
 
