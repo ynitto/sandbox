@@ -1,0 +1,8 @@
+{
+  "login.welcome": "ようこそ、{email} さん",
+  "login.error": "メールアドレスかパスワードが違います",
+  "login.length": "パスワードは{min}文字以上{max}文字以下で入力してください",
+  "login.locked": "アカウントがロックされました",
+  "order.cancelled": "注文を取り消しました",
+  "order.shipped": "発送済みの注文は取り消せません"
+}

@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.invalid/testcase-lint/testcase.schema.json",
+  "title": "テストケースのファイル（おすすめの書式）",
+  "description": "LLM にケースを書かせるときに渡す書式。条件（conditions）と期待結果を分けて書くと、組み合わせ・判定の強さの点検が推測なしで効く。",
+  "type": "object",
+  "required": ["cases"],
+  "properties": {
+    "feature": { "type": "string", "description": "機能のまとまりの名前" },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/case" }
+    }
+  },
+  "definitions": {
+    "case": {
+      "type": "object",
+      "required": ["id", "title", "steps", "expected"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z]+-\\d+$", "description": "ファイルの中で一意な ID（例: ORD-01）" },
+        "title": { "type": "string", "minLength": 1, "description": "何を確かめるかを 1 行で" },
+        "requirement": {
+          "description": "確かめる要件の ID（仕様の ID と同じ綴り）",
+          "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
+        },
+        "conditions": {
+          "type": "object",
+          "description": "このケースの条件の組（役割・状態・入力の種類など）。値は文字列。組み合わせの点検に使う",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "preconditions": {
+          "type": "array", "items": { "type": "string" },
+          "description": "始める前の状態（ログインしている利用者・用意するデータ・開いている画面）"
+        },
+        "steps": {
+          "type": "array", "minItems": 1, "items": { "type": "string" },
+          "description": "1 手順 1 操作。入力する値は「」で囲む"
+        },
+        "expected": {
+          "type": "array", "minItems": 1, "items": { "type": "string" },
+          "description": "見て確かめられる結果。文言は「」で囲み、件数・値は具体的に書く。失敗するケースは、変わらないこと（保存されていない等）も書く"
+        },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "priority": { "type": "string" }
+      }
+    }
+  }
+}
