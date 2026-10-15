@@ -14,8 +14,14 @@ const { loadSpec } = require('./spec');
 const { loadSource, checkSource } = require('./source');
 const { RULES, SEVERITY_ORDER } = require('./rules');
 const { severityOf } = require('./config');
+const { globSync, isGlob } = require('./glob');
 
 const EXTS = /\.(json|ya?ml|md)$/i;
+
+// 仕様・実装に渡したパスの glob を、当てはまるファイルにする（フォルダ・ファイルはそのまま）
+function expandPaths(inputs) {
+  return inputs.flatMap((p) => (isGlob(p) ? globSync(p) : [p]));
+}
 
 function display(p) {
   const rel = path.relative(process.cwd(), p);
@@ -26,9 +32,10 @@ function display(p) {
 function expand(inputs) {
   const out = [];
   for (const input of inputs) {
-    if (/[*?[]/.test(input)) {
-      if (typeof fs.globSync !== 'function') throw Object.assign(new Error(`この Node では glob を使えません（フォルダを渡す）: ${input}`), { exitCode: 2 });
-      out.push(...fs.globSync(input).filter((p) => EXTS.test(p)).sort());
+    if (isGlob(input)) {
+      const hits = globSync(input).filter((p) => EXTS.test(p) && !/(^|[\\/])testcase-lint\.config\./.test(p));
+      if (!hits.length) throw Object.assign(new Error(`当てはまるファイルがありません: ${input}`), { exitCode: 2 });
+      out.push(...hits);
       continue;
     }
     let stat;
@@ -104,8 +111,9 @@ async function audit(opts) {
   }
   if (cfg.format.schema) schemaFindings(cfg.format.schema, loaded, f);
 
-  const spec = opts.spec.length ? loadSpec(opts.spec, { requirementId: cfg.requirementId, display }) : null;
-  const source = opts.source.length ? loadSource(opts.source) : null;
+  const specPaths = expandPaths(opts.spec); const sourcePaths = expandPaths(opts.source);
+  const spec = opts.spec.length ? loadSpec(specPaths, { requirementId: cfg.requirementId, display }) : null;
+  const source = opts.source.length ? loadSource(sourcePaths) : null;
   const ctx = { cases, config: cfg, findings: f, spec, source, requirements: spec ? spec.requirements : null };
   if (spec) {
     ctx.specBoundaryKeys = new Set(spec.fields.flatMap((fld) => [['min', fld.min], ['max', fld.max]].filter(([, v]) => v != null && fld.unit).map(([kind, v]) => `${tx.normalize(fld.name)}|${fld.unit}|${kind}|${Math.round(v)}`)));
@@ -137,4 +145,4 @@ async function audit(opts) {
   };
 }
 
-module.exports = { audit, expand, display };
+module.exports = { audit, expand, expandPaths, display };

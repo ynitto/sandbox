@@ -5,6 +5,7 @@
 // 「{0}文字以内」「%d 件」「${n}件」のような差し込みのある文字列は、その部分を任意の値として照らし合わせる。
 
 const fs = require('fs');
+const path = require('path');
 const tx = require('./text');
 const { walkFiles } = require('./spec');
 const { excerpt } = require('./findings');
@@ -18,10 +19,13 @@ const MAX_BYTES = 64 * 1024 * 1024;
 
 function loadSource(dirs) {
   let corpus = ''; const literals = []; const templates = []; const errors = []; let files = 0;
+  const seen = new Set(); // 同じファイルを 2 度読まない
   for (const dir of dirs) {
     let stat;
     try { stat = fs.statSync(dir); } catch { errors.push(`実装のフォルダがありません: ${dir}`); continue; }
     for (const file of stat.isDirectory() ? walkFiles(dir, EXTS) : [dir]) {
+      if (seen.has(path.resolve(file))) continue;
+      seen.add(path.resolve(file));
       let text;
       try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
       if (text.length > 2 * 1024 * 1024 || corpus.length > MAX_BYTES) continue; // 生成物・巨大ファイルは飛ばす

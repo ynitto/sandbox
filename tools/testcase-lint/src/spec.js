@@ -331,11 +331,14 @@ function splitCsv(line) {
 function loadSpec(dirs, { requirementId, display = (p) => p } = {}) {
   const reqRe = requirementId || DEFAULT_REQ_ID;
   const model = { requirements: [], fields: [], machines: [], permissions: [], endpoints: [], messages: [], files: [], errors: [], corpus: '' };
+  const seen = new Set(); // 同じファイルを 2 度読まない（フォルダと glob の両方で渡したときなど）
   for (const dir of dirs) {
     let stat;
     try { stat = fs.statSync(dir); } catch { model.errors.push(`仕様のフォルダがありません: ${dir}`); continue; }
     const files = stat.isDirectory() ? walkFiles(dir, /\.(md|markdown|ya?ml|json|csv)$/i) : [dir];
     for (const abs of files) {
+      if (seen.has(path.resolve(abs))) continue;
+      seen.add(path.resolve(abs));
       const file = display(abs);
       let text;
       try { text = fs.readFileSync(abs, 'utf8').replace(/^﻿/, ''); } catch { continue; }

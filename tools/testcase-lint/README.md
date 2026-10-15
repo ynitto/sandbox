@@ -14,13 +14,19 @@
 
 ## 入れる
 
-Node.js 18 以上。依存（YAML の読み取り・JSON Schema の検査・日本語の形態素解析）は `npm install` で入る。
+Node.js 18 以上と npm があればよい（Windows・macOS・Linux 共通）。グローバルに入れる:
 
 ```bash
-cd tools/testcase-lint
-npm install
-npm install -g .                 # testcase-lint コマンドを入れる（入れずに node bin/testcase-lint.js でもよい）
+node tools/testcase-lint/install.js            # testcase-lint コマンドを入れる（入っていれば入れ直す）
+node tools/testcase-lint/install.js --check    # 入れたあと、同梱の例で動くか確かめる
 ```
+
+`npm pack` で固めたものを `npm install -g` で入れる（依存の YAML・JSON Schema・形態素解析の辞書も一緒に入る）。
+フォルダを直接 `npm install -g .` すると、このフォルダへのリンクが置かれるだけで、リポジトリを動かす・消すと
+コマンドが壊れるので使わない。権限が足りないと言われたら、npm の置き場をユーザーのフォルダにしてから入れ直す
+（`npm config set prefix ~/.npm-global` のあと、`~/.npm-global/bin` を PATH に足す）。
+外すときは `npm uninstall -g testcase-lint`。入れずに使うなら、このフォルダで `npm install` してから
+`node bin/testcase-lint.js` を呼ぶ。
 
 ## 使う
 
@@ -94,21 +100,28 @@ requirement_id: "(?:REQ|FR|NFR)-\\d+" # 仕様の中の要件 ID の形
 `testcase-lint init` は、この探し方で見つけたフォルダを書いた設定ファイルを作る（`--cases` `--spec` `--source` で
 指定もできる。既存の設定は上書きしない）。
 
-### その場で対象を渡す
+### その場で対象を渡す（init も設定ファイルも要らない）
 
-設定ファイルを使わずに、その場で渡すこともできる（試すとき・一時的に別のものを見るとき）。
+ケースのファイル・フォルダ・glob を引数に渡せば、`init` をせず設定ファイルが無くても動く。
 
 ```bash
-testcase-lint tests/cases/ --spec ../my-app-docs/docs --source ../my-app/src
-testcase-lint cases.yaml -f markdown -o report.md     # 表にして書き出す（ほかに -f json）
-testcase-lint cases.yaml --fail-on warning            # 警告以上があれば終了コード 1
-testcase-lint spec                                    # 仕様から何を読み取ったかを確かめる（設定の spec を読む）
+testcase-lint qa/login.yaml                           # ファイル
+testcase-lint qa/                                     # フォルダ（下の .json / .yaml / .yml をすべて）
+testcase-lint "qa/**/*.yaml" "e2e/*.json"             # glob（いくつでも）
+testcase-lint "qa/**/*.yaml" --spec "../my-app-docs/docs/**/*.md" --source ../my-app/src
+testcase-lint qa/ -f markdown -o report.md            # 表にして書き出す（ほかに -f json）
+testcase-lint qa/ --fail-on warning                   # 警告以上があれば終了コード 1
+testcase-lint spec ../my-app-docs/docs                # 仕様から何を読み取ったかを確かめる
 testcase-lint rules                                   # 規則の一覧
 testcase-lint schema                                  # おすすめのケースの書式
 ```
 
-ケースを引数で渡したときは、設定ファイルの `spec` `source` はそのまま使う。設定ファイルが無いときに見つけた
-仕様・実装のフォルダは使わない（その場で渡したケースと関係の無い `src` を読まないため）。
+- glob は `**`（0 個以上のフォルダ）・`*`・`?`・`{a,b}`・`[a-z]` が使える。testcase-lint 自身が展開するので、
+  Node の版にも Windows のシェルにもよらず同じに動く。シェルに先に展開させないよう `"` で囲む
+  （bash は `**` をフォルダをまたがない `*` として扱ってしまう）
+- `--spec` `--source` にもフォルダ・ファイル・glob を渡せる（繰り返し可）
+- 設定ファイルがあるフォルダで引数を渡したときは、設定ファイルの `spec` `source` も合わせて使う。
+  設定ファイルが無いときに見つけた仕様・実装のフォルダは使わない（その場で渡したケースと関係の無い `src` を読まないため）
 
 ## ケースの書式
 
@@ -273,3 +286,5 @@ codd-agent の印（`<!-- evidence: testcase-lint/errors -->`）を使う。
 ```bash
 cd tools/testcase-lint && npm install && npm test
 ```
+
+入れた版を作り直すときは、もう一度 `node install.js` を実行する。

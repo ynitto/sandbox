@@ -22,6 +22,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （表・Mermaid）・権限表・API（OpenAPI・本文）・文言を読み取り、試していない要件・境界・遷移・権限・応答や、
   仕様と違う文言・遷移を出す。実装のフォルダとも突き合わせ、期待する文言が実装にあるかを見る
 - チームの書式は JSON Schema で指定でき、合わない所を行番号付きで出す。LLM に渡すおすすめの書式も同梱
+- 設定ファイル無しでも、ケースのファイル・フォルダ・glob（`"qa/**/*.yaml"`）を引数に渡して動く。glob は自前で展開するので
+  Node の版・Windows のシェルによらない
+- `node tools/testcase-lint/install.js` でグローバルに入れる（`npm pack` で固めて `npm install -g`。リポジトリへのリンクにしない）
 - webui-test とも codd-agent とも独立して動き、ほかの道具とは終了コードと結果ファイルだけでつながる
 
 ### codd-agent: check にコマンドをいくつも書ける

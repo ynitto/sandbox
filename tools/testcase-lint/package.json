@@ -7,11 +7,17 @@
   "bin": {
     "testcase-lint": "bin/testcase-lint.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "schema/",
+    "README.md"
+  ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/load.test.js test/lint.test.js test/ambiguity.test.js test/validity.test.js test/spec.test.js test/cli.test.js test/independence.test.js"
+    "test": "node --test test/load.test.js test/lint.test.js test/ambiguity.test.js test/glob.test.js test/validity.test.js test/spec.test.js test/cli.test.js test/independence.test.js"
   },
   "dependencies": {
     "ajv": "^8.17.1",
