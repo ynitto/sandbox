@@ -1385,6 +1385,29 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(mark.exists())    # 通すときは必ず動かす
 
+    def test_several_checks_run_in_order_and_stop_at_the_first_failure(self) -> None:
+        log = self.tmp / "ran"
+        step = lambda name, code: [sys.executable, "-c",  # noqa: E731
+                                   f"open({str(log)!r}, 'a').write({name!r}); raise SystemExit({code})"]
+        self.set_check(self.impl, [step("a", 0), step("b", 1), step("c", 0)])
+        r = self.run_pa(self.impl, "show")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.count("自分の検査: "), 3)
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("検査が失敗しました", r.stderr)
+        ran = log.read_text(encoding="utf-8")   # 落ちた b は、変える前の中身でもう一度動く
+        self.assertTrue(ran.startswith("ab"), ran)
+        self.assertNotIn("c", ran)               # 落ちたあとのコマンドは動かさない
+        log.unlink()
+        self.set_check(self.impl, [step("a", 0), step("c", 0)])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(log.read_text(encoding="utf-8"), "ac")
+
     def test_rechecking_the_plan_keeps_the_work_already_done(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()

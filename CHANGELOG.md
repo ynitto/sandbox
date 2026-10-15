@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: check にコマンドをいくつも書ける
+
+- codd.json の `check` に、コマンドの配列を並べて書けるようにした（例: `[["npm", "run", "lint"], ["npm", "run", "e2e"]]`）。
+  書いた順に動かし、落ちたらそこで止めて後のコマンドは動かさない。1 つだけ書く今までの形はそのまま使える
+
 ### webui-test: Volta で Node.js を管理していても入れられる（webui-test 0.6.1）
 
 - Volta は `npm install -g` を横取りして自分の置き場へ入れるので、インストーラが npm の置き場で `webui-test` を探して
