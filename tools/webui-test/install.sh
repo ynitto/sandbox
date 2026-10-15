@@ -61,6 +61,16 @@ TARBALL="$PACK_DIR/$(cd "$TOOL_DIR" && "$NPM" pack --silent --pack-destination "
   die "npm install -g に失敗しました。権限の不足なら npm の prefix をユーザーのフォルダにしてください（npm config set prefix ~/.npm-global）"
 BIN_DIR="$("$NPM" prefix -g)/bin"
 PKG_DIR="$("$NPM" root -g)/webui-test"
+if [ ! -d "$PKG_DIR" ] && command -v volta >/dev/null 2>&1; then
+  # Volta で Node を管理していると、npm install -g は Volta に横取りされ、パッケージは Volta の置き場
+  # （~/.volta/tools/image/packages/webui-test）に入り、コマンドは ~/.volta/bin の shim から呼ばれる。
+  # npm prefix -g / root -g は Node 本体の置き場を指すので、Volta に実体の場所を聞く。
+  real="$(volta which webui-test 2>/dev/null)" || die "Volta に入れた webui-test が見つかりません（volta list で確かめてください）"
+  PKG_DIR="$(cd "$(dirname "$real")/.." && pwd)/lib/node_modules/webui-test"
+  BIN_DIR="${VOLTA_HOME:-$HOME/.volta}/bin"
+  say "Volta の置き場に入りました（$PKG_DIR）"
+fi
+[ -d "$PKG_DIR" ] || die "入れた webui-test が見つかりません（$PKG_DIR）"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) warn "$BIN_DIR が PATH にありません。~/.bashrc などに次を足してください: export PATH=\"$BIN_DIR:\$PATH\"" ;;
