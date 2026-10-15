@@ -197,6 +197,21 @@ def guess_test(target: Path) -> str | None:
     return None
 
 
+# 変えればテストの合否を左右できるファイル（テストの設定・CI・依存の宣言）。protect の候補として示すだけで書かない。
+PROTECT_CANDIDATES = (
+    "**/conftest.py", "pytest.ini", "tox.ini", "jest.config.*", "vitest.config.*", "playwright.config.*",
+    "cypress.config.*", "karma.conf.*", ".mocharc.*",
+    ".github/workflows/", ".gitlab-ci.yml", "Jenkinsfile", "azure-pipelines.yml", ".circleci/",
+    "package.json", "pyproject.toml", "requirements*.txt", "go.mod", "Cargo.toml", "Gemfile", "pom.xml", "build.gradle*",
+)
+
+
+def guess_protect(target: Path) -> list[str]:
+    """リポジトリにある PROTECT_CANDIDATES。フォルダの候補は、フォルダがあるときだけ挙げる。"""
+    return [c for c in PROTECT_CANDIDATES
+            if ((target / c).is_dir() if c.endswith("/") else any(target.glob(c)))]
+
+
 def _read(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -326,6 +341,11 @@ def main(argv: list[str] | None = None) -> int:
         guess = guess_test(Path(args.target).resolve())
         print("  変えたあとの単体テスト: 未設定（テストを動かさずに検査が通る）"
               + (f"。設定するなら --test \"{guess}\"" if guess else "。--test \"コマンド\" で設定する"))
+    if not config.get("protect"):
+        found = guess_protect(Path(args.target).resolve())
+        if found:
+            print("  人の承認が要るファイル（protect）: 未設定。テストの設定・CI・依存の宣言を、テストを通すために"
+                  "変えさせないなら codd.json に書く: \"protect\": " + json.dumps(found, ensure_ascii=False))
     check = config.get("check") or []
     for argv in [check] if check and isinstance(check[0], str) else check:
         print("  変えたあとの検査: " + " ".join(argv))

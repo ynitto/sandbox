@@ -690,6 +690,21 @@ class CoddTest(unittest.TestCase):
         self.assertIn('設定するなら --test "npm test"', out.getvalue())
         self.assertNotIn("test", json.loads((repo / ".statemachine/codd/codd.json").read_text(encoding="utf-8")))
 
+    def test_init_suggests_protecting_test_settings_without_writing_them(self) -> None:
+        repo = self.tmp / "guess"
+        (repo / "tests/unit").mkdir(parents=True)
+        (repo / ".github/workflows").mkdir(parents=True)
+        for rel in ("tests/unit/conftest.py", "jest.config.ts", "package.json", "requirements-dev.txt"):
+            (repo / rel).write_text("\n", encoding="utf-8")
+        self.assertEqual(init.guess_protect(repo), ["**/conftest.py", "jest.config.*", ".github/workflows/", "package.json",
+                                                    "requirements*.txt"])
+        git(repo, "init", "-q")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            init.main([str(repo), "--side", "impl", "--ref", "../design", "--no-agents"])
+        self.assertIn('"protect": ["**/conftest.py", "jest.config.*", ".github/workflows/"', out.getvalue())
+        self.assertNotIn("protect", json.loads((repo / ".statemachine/codd/codd.json").read_text(encoding="utf-8")))
+
     def test_verify_apply_own_only(self) -> None:
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()

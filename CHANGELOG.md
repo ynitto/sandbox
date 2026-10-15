@@ -27,6 +27,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - `node tools/testcase-lint/install.js` でグローバルに入れる（`npm pack` で固めて `npm install -g`。リポジトリへのリンクにしない）
 - webui-test とも codd-agent とも独立して動き、ほかの道具とは終了コードと結果ファイルだけでつながる
 
+### codd-agent: init がテストの設定・CI・依存の宣言を protect の候補として示す
+
+- `protect` が未設定なら、`init.py` がリポジトリにある `conftest.py`・`jest.config.*`・`.github/workflows/`・`package.json`
+  などを候補として表示する。`codd.json` には書かない（`test` の提案と同じ）。テストを通すために検証側を変える道を、
+  利用者が選んで塞げるようにした
+
 ### codd-agent: テストが通ったフリを止める
 
 - テストか検査が落ちたあとに、テストのファイルのほうを変えたら、訊かずにやり直さず利用者に訊く（消した行・足した行の数を
