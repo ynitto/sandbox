@@ -1,2 +1,0 @@
-PyYAML>=5.4
-Janome>=0.4

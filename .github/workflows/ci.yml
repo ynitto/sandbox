@@ -3,7 +3,7 @@ name: CI
 # このリポジトリ初の CI（修正計画 P3-1 / 実装計画 R4）。回すのは 3 系統:
 #
 #   1. python  … 各パッケージの単体テスト（agent-project / agent-flow / agent-amigos /
-#                agent-audit / agentcore / winauto / gitlab-repo-sync / agent-loop / testcase-lint）。
+#                agent-audit / agentcore / winauto / gitlab-repo-sync / agent-loop）。
 #                **agentcore はテストルートが 2 つある**ので両方を明示する
 #                （片方だけ discover すると残りが黙ってスキップされる）。
 #                設定キーの構造テスト（CONFIG_DEFAULTS → Config の到達性）は
@@ -12,6 +12,7 @@ name: CI
 #      agent-app … 同じく `npm test`（会話・タスク・ワークフローの Electron アプリ。旧 statemachine-maker
 #      を統合済み）。生成した定義を statemachine-use スキルの run_machine.py --dry-run に通す
 #      結合テストを含むので python も要る。実機の起動（electron）は CI では skip される。
+#      testcase-audit … `npm test`（自然文のテストケースの点検。LLM は呼ばない。形態素解析の辞書は依存に同梱）。
 #      office-preview … `npm test`（docx / xlsx / pptx のプレビュー画像。変換は node だけで確かめ、
 #      Electron で実際に描くテストは CI では skip される）。
 #   3. docs    … 利用者向け文書の内部名検査（R10）、スキルの references/ 健全性検査
@@ -77,9 +78,6 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
-          # testcase-lint。自然文のテストケースの点検（LLM は呼ばない）。形態素解析に Janome を入れる。
-          - package: testcase-lint
-            suites: tools/testcase-lint/tests
           # 評価ハーネス（worker_eval の手順制御・engine の解決）。LLM もエージェント
           # CLI も呼ばない部分だけを見る。**測定の道具が壊れていると、壊れたことが
           # モデルの数字として台帳へ残る**ので、ここも CI で押さえる。readout_eval の
@@ -99,9 +97,6 @@ jobs:
       # eval の決定的チェッカー（T4 の probe・T5/T6 の pytest）はハーネス自身が回す。
       # 実機ではリポジトリの .venv を使うが、CI のクリーンな木には .venv が無いので
       # 走っているインタプリタ側へ pytest を入れる（worker_eval.CHECK_PY が倒れる先）。
-      - name: 依存（testcase-lint の形態素解析）
-        if: matrix.package == 'testcase-lint'
-        run: python -m pip install janome
       - name: 依存（eval の決定的チェッカーが回す pytest）
         if: matrix.package == 'eval'
         run: python -m pip install pytest
@@ -154,6 +149,22 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: npm test
         working-directory: tools/webui-test
+        run: npm test
+
+  testcase-audit:
+    name: testcase-audit (npm test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: 依存の導入
+        working-directory: tools/testcase-audit
+        run: npm install --no-audit --no-fund --ignore-scripts
+      - name: npm test
+        working-directory: tools/testcase-audit
         run: npm test
 
   agent-app:

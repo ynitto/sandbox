@@ -1,0 +1,54 @@
+# おすすめの書式で書いたケースの例（conditions に条件の組を書く）。
+#   testcase-audit examples/cases/orders.yaml --spec examples/spec --source examples/app
+feature: 注文の取り消し
+cases:
+  - id: ORD-01
+    title: 受付の注文を一般会員が取り消せる
+    requirement: REQ-10
+    conditions: { 役割: 一般会員, 状態: 受付, 支払: カード }
+    preconditions:
+      - 一般会員 member@example.com でログイン済み
+      - 状態が受付の注文 O-100 がある
+    steps:
+      - 注文履歴画面を開く
+      - 注文 O-100 の取り消すボタンを押す
+    expected:
+      - 「注文を取り消しました」と表示される
+      - 注文 O-100 の状態が取消済みになる
+
+  - id: ORD-02
+    title: 発送済みの注文は取り消せない
+    requirement: REQ-10
+    conditions: { 役割: 一般会員, 状態: 発送済み, 支払: 銀行振込 }
+    preconditions:
+      - 一般会員 member@example.com でログイン済み
+      - 状態が発送済みの注文 O-200 がある
+    steps:
+      - 注文履歴画面を開く
+      - 注文 O-200 の取り消すボタンを押す
+    expected:
+      - エラーが表示される
+
+  - id: ORD-03
+    title: 管理者が受付の注文を取り消す
+    conditions: { 役割: 管理者, 状態: 受付, 支払: カード }
+    preconditions:
+      - 管理者でログイン済み
+    steps:
+      - 注文管理画面を開く
+      - 注文 O-300 を取り消す
+    expected:
+      - 「注文を取消しました」と表示される
+      - 注文 O-300 の状態が発送済みになる
+
+  - id: ORD-04
+    title: API で受付の注文を取り消す
+    conditions: { 役割: 一般会員, 状態: 受付, 支払: 銀行振込 }
+    preconditions:
+      - 一般会員のトークンを持っている
+      - 状態が受付の注文 O-400 がある
+    steps:
+      - POST /orders/O-400/cancel を送る
+    expected:
+      - ステータス 200 が返る
+      - 注文は保存される

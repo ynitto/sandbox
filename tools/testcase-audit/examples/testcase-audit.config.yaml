@@ -1,0 +1,9 @@
+# 設定の例。examples フォルダで testcase-audit を実行すると読まれる（パスはこのファイルからの相対）。
+# 仕様・実装は別のリポジトリのフォルダでもよい（例: ../../my-app-docs/docs）。
+cases: [cases]
+spec: [spec]
+source: [app]
+format:
+  schema: ../schema/testcase.schema.json   # ケースが従う書式。合わなければ D16
+rules:
+  D11: off
