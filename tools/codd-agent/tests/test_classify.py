@@ -50,6 +50,12 @@ ASK_APPLY = (
     codd.PROTECTED + "（戻してください。…）: docs/requirements.md",
     codd.PROTECTED_HIT + "（変えずに利用者に確かめます。…）: legacy/old.py",
 )
+# テストが通ったフリ（§4.2.1〜§4.2.3）。訊かずにやり直すと、誤った合格か同じ失敗の繰り返しになる
+FALSE_GREEN = (
+    codd.TEST_EDITED + "（…）: tests/test_app.py（消した行 1・足した行 1）",
+    codd.UNRUN + "（…）: tests/test_app.py",
+    "実装のテスト: " + codd.CANNOT_RUN + "（127）: npm test\nsh: jest: command not found",
+)
 
 
 def asks(phase: str, text: str) -> bool:
@@ -74,6 +80,11 @@ class ClassifyTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(asks("apply", text))
                 self.assertIn(codd.classify("apply", text), ("protected", "protected-hit"))
+
+    def test_false_green_is_asked(self) -> None:
+        for text in FALSE_GREEN:
+            with self.subTest(text=text):
+                self.assertTrue(asks("apply", text))
 
     def test_same_spelling_names_are_retried_after_changing(self) -> None:
         # 変えたあとに、名前が参照先の別のファイルに同じ綴りで出てくるだけなら、申告で済むので訊かない。

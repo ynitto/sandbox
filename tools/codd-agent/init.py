@@ -208,8 +208,15 @@ PROTECT_CANDIDATES = (
 
 def guess_protect(target: Path) -> list[str]:
     """リポジトリにある PROTECT_CANDIDATES。フォルダの候補は、フォルダがあるときだけ挙げる。"""
-    return [c for c in PROTECT_CANDIDATES
-            if ((target / c).is_dir() if c.endswith("/") else any(target.glob(c)))]
+    def present(c: str) -> bool:
+        if c.endswith("/"):
+            return (target / c).is_dir()
+        if c.startswith("**/"):   # 依存の置き場（node_modules・.venv）までたどらない
+            name = c[3:]
+            return any(target.glob(name)) or any(d.glob(f"**/{name}") for d in (target / "tests", target / "test")
+                                                 if d.is_dir())
+        return any(target.glob(c))
+    return [c for c in PROTECT_CANDIDATES if present(c)]
 
 
 def _read(path: Path) -> str:

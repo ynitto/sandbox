@@ -311,7 +311,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("graphify: updated", r.stdout)
         self.assertIn("- docs/api.md", (self.impl / ".codd/explore.md").read_text(encoding="utf-8"))
         first = self.calls()
-        self.assertEqual(first[0], f"{self.design} update . --force")   # 参照先の中で作り、
+        self.assertEqual(first[0], f"{self.design.resolve()} update . --force")   # 参照先の中で作り、
         self.assertTrue((self.impl / ".codd/graph/ref-design/graph.json").is_file())  # 自分の側に置く
         self.assertFalse((self.design / "graphify-out").exists())
         self.assertIn("query hello --graph", first[1])
@@ -336,7 +336,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/use.py").write_text("from app import hello\n\nhello()\n", encoding="utf-8")
         r = self.run_pa(self.impl, "impact", "--term", "hello")
         self.assertIn("FOUND 2 files (graphify: updated)", r.stdout)
-        self.assertEqual(self.calls()[0], f"{self.impl} update . --force")
+        self.assertEqual(self.calls()[0], f"{self.impl.resolve()} update . --force")
         self.assertIn("affected hello --graph", self.calls()[1])
         self.assertEqual((self.impl / ".codd/graph/own/manifest.json").read_text(encoding="utf-8").strip(),
                          "affected")
@@ -647,13 +647,13 @@ class CoddTest(unittest.TestCase):
         self.use_graphify_stub()
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
-        self.assertIn(f"{self.impl} update . --force", self.calls())
+        self.assertIn(f"{self.impl.resolve()} update . --force", self.calls())
         before = len(self.calls())
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         after = self.calls()[before:]
-        self.assertFalse(any(c.startswith(f"{self.impl} update") for c in after), after)
+        self.assertFalse(any(c.startswith(f"{self.impl.resolve()} update") for c in after), after)
         # グラフは graphify を呼ばずに、変える前の graph.json を読んで辿る
         self.assertIn("### グラフ（根拠の強さごと）", (self.impl / ".codd/impact-after.md").read_text(encoding="utf-8"))
 
@@ -692,6 +692,9 @@ class CoddTest(unittest.TestCase):
 
     def test_init_suggests_protecting_test_settings_without_writing_them(self) -> None:
         repo = self.tmp / "guess"
+        (repo / "node_modules/x").mkdir(parents=True)
+        (repo / "node_modules/x/conftest.py").write_text("\n", encoding="utf-8")
+        self.assertEqual(init.guess_protect(repo), [])   # 依存の置き場の中は候補にしない
         (repo / "tests/unit").mkdir(parents=True)
         (repo / ".github/workflows").mkdir(parents=True)
         for rel in ("tests/unit/conftest.py", "jest.config.ts", "package.json", "requirements-dev.txt"):
@@ -1264,6 +1267,12 @@ class CoddTest(unittest.TestCase):
             r = self.run_pa(self.impl, "advise")
             self.assertNotIn("AUTO", r.stdout)
             self.assertIn("設定か環境の誤りです", r.stdout)
+        # CLI のテストが期待値として同じ文言を出して落ちたのは、テストの失敗のまま（訊かずに直させる）
+        self.set_config(self.impl, test=[sys.executable, "-c",
+                                         "print('FAILED test_cli - expected: sh: x: command not found'); raise SystemExit(1)"])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("検査が失敗しました", r.stderr)
+        self.assertNotIn("動かせませんでした", r.stderr)
 
     def test_tests_changed_after_a_failure_are_asked(self) -> None:
         # 落ちたあとにテストのほうを変えたら、テストを合わせて通したかもしれない。訊かずにやり直させず利用者に訊く。
@@ -1292,6 +1301,19 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("AUTO", r.stdout)
         self.assertIn("1. 計画はそのままで、変え直す（勧め） → `APPLY`", r.stdout)
         self.assertIn("テストの変更を認めて続ける → `APPLY`。先に `python3 .statemachine/codd/codd.py accept`", r.stdout)
+        # 練り直した計画を確認で認めたら、それまでのテストの変更は利用者が見たもの（落ちた控えと比べない）
+        self.assertTrue((self.impl / ".codd/failed-tests.json").exists())
+        self.run_pa(self.impl, "decide", "OK")
+        self.assertFalse((self.impl / ".codd/failed-tests.json").exists())
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # また落ち、テストのほうを変えたら訊く
+        (self.impl / "tests/test_app.py").write_text(
+            "from src.app import hello\n\n\ndef test_hello():\n    assert hello() == 1  # log 2\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+        (self.impl / "tests/test_app.py").write_text(
+            "from src.app import hello\n\n\ndef test_hello():\n    assert hello() == 2  # log 2\n", encoding="utf-8")
+        self.assertIn("検査が落ちたあとに、テストのファイルを変えています", self.run_pa(self.impl, "verify-apply").stderr)
         # 利用者が認めたら、その中身で続ける
         self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
         r = self.run_pa(self.impl, "verify-apply")
@@ -1311,7 +1333,7 @@ class CoddTest(unittest.TestCase):
         self.set_config(self.impl, test=[sys.executable, "-c", "pass"])
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("変更が響くテストが動いたかは確かめていない（evidence が未設定。自分 1 件）",
+        self.assertIn("変更が響くテストが動いたかは確かめていない（テストの結果（evidence）が扱っていないテスト。自分 1 件）",
                       self.run_pa(self.impl, "report").stdout)
 
         def writes(status: str, file: str) -> list[str]:
@@ -1328,6 +1350,13 @@ class CoddTest(unittest.TestCase):
         self.set_config(self.impl, test=writes("passed", "tests/test_app.py"))
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
+        # evidence が e2e のケース（別の種類）しか書かないなら、単体テストは止めずに報告で知らせる
+        (self.impl / "results/ui-evidence.json").unlink()
+        self.set_config(self.impl, test=writes("passed", "e2e/login.yaml"))
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("確かめていない（テストの結果（evidence）が扱っていないテスト。自分 1 件）",
+                      self.run_pa(self.impl, "report").stdout)
         # 動かないものと利用者が認めれば通し、報告に残す
         self.set_config(self.impl, test=writes("skipped", "tests/test_app.py"))
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)

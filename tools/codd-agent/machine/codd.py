@@ -5218,7 +5218,11 @@ def protected_in_failures(ctx: Ctx, texts: list[str], allowed: set[tuple[str, st
             if root:
                 rel = rel[len(root):]
             elif rel.startswith("/") or re.match(r"^[A-Za-z]:/", rel):
-                continue
+                # シンボリックリンクを挟んだ書き方（macOS の /var と /private/var など）は、たどってから比べる
+                try:
+                    rel = Path(rel).resolve().relative_to(side.path.resolve()).as_posix()
+                except (ValueError, OSError):
+                    continue
             rel = rel[2:] if rel.startswith("./") else rel
             label = protected_label(key, rel)
             if side.protected(rel) and (key, rel) not in allowed and (side.path / rel).is_file() and label not in found:
@@ -5349,7 +5353,8 @@ def run_check(repo: Path, command: list[str] | None, label: str) -> list[str]:
     if first is not None and first < len(lines) - 20:
         shown = [*lines[first:first + 15], "…", *lines[-8:]]
     tail = "\n".join(shown)
-    if rc in (126, 127) or _CANNOT_RUN.search(out):
+    # 文言だけで決めるのは、テストの失敗の行が無いときだけ（CLI のテストが期待値として同じ文言を出すことがある）
+    if rc in (126, 127) or (_CANNOT_RUN.search(out) and not _FAILURE_LINE.search(out)):
         # 実装を直しても通らない。訊かずにやり直させず、設定か環境の誤りとして利用者に訊く
         return [f"{label}: {CANNOT_RUN}（{rc}）: {' '.join(command)}\n{tail}"]
     return [f"{label}の検査が失敗しました（{rc}）: {' '.join(command)}\n{tail}"]
@@ -5592,7 +5597,13 @@ def unrun_problems(ctx: Ctx, since: float, sides: list[str], required: set[tuple
             unchecked[key or "自分"] = len(want)
             continue
         _, ran = ran_tests(ctx, key, since)
-        missing += [(key, rel) for rel in want if not ran.get(rel, set()) - {"skipped"}]
+        # evidence が結果を書く種類（拡張子）のテストだけを確かめる。e2e の道具だけが evidence を書くプロジェクトで、
+        # 単体テストを毎回「動いていない」と止めない。前の回の結果も含めて、書いたことのある種類を見る
+        kinds = {Path(rel).suffix for rel in ran_tests(ctx, key, 0)[1]}
+        judged = [rel for rel in want if Path(rel).suffix in kinds]
+        if len(judged) < len(want):
+            unchecked[key or "自分"] = len(want) - len(judged)
+        missing += [(key, rel) for rel in judged if not ran.get(rel, set()) - {"skipped"}]
     if unchecked:
         write_text(ctx.data / UNCHECKED_NAME, json.dumps(unchecked, ensure_ascii=False) + "\n")
     else:
@@ -6828,7 +6839,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     unchecked_file = ctx.data / UNCHECKED_NAME
     if applied is not None and unchecked_file.is_file():
         counts = json.loads(unchecked_file.read_text(encoding="utf-8"))
-        lines.append("- テスト: 変更が響くテストが動いたかは確かめていない（evidence が未設定。"
+        lines.append("- テスト: 変更が響くテストが動いたかは確かめていない（テストの結果（evidence）が扱っていないテスト。"
                      + "・".join(f"{k} {n} 件" for k, n in counts.items()) + "）")
     if (ctx.data / UNRUN_OK_NAME).is_file():
         unrun_ok = json.loads((ctx.data / UNRUN_OK_NAME).read_text(encoding="utf-8"))
@@ -7382,6 +7393,8 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
     log = load_decisions(ctx)
     note = args.note.strip()
     ctx.data.mkdir(parents=True, exist_ok=True)
+    if args.answer == "OK":
+        clear_failed_tests(ctx)   # 確認で計画を認めたら、それまでのテストの変更は利用者が見たもの（落ちた控えと比べない）
     if args.answer == "OK" and ctx.plan.is_file():
         # 確認で OK と答えた計画だけが、人の承認が要るファイルを変えてよい。何を承認したかを記録に残す。
         write_text(ctx.data / APPROVED_PLAN, approved_plan_digest(ctx))
