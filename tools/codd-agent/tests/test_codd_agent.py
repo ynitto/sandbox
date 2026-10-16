@@ -1538,12 +1538,12 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(log.read_text(encoding="utf-8"), "ac")
 
-    def test_several_tests_run_in_order_before_checks_and_stop_at_the_first_failure(self) -> None:
-        # test も check と同じに、書いた順に動かし、落ちたところで止める（落ちたら check も動かさない）
+    def test_several_tests_all_run_even_when_one_fails(self) -> None:
+        # test は check と同じ書き方でコマンドを並べられるが、互いに独立なので落ちても残りを動かす（失敗を一度に返す）
         log = self.tmp / "ran"
         step = lambda name, code: [sys.executable, "-c",  # noqa: E731
                                    f"open({str(log)!r}, 'a').write({name!r}); raise SystemExit({code})"]
-        self.set_check(self.impl, [step("a", 0), step("b", 1), step("c", 0)], key="test")
+        self.set_check(self.impl, [step("a", 1), step("b", 0), step("c", 1)], key="test")
         self.set_check(self.impl, [step("x", 0)])
         r = self.run_pa(self.impl, "show")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1551,17 +1551,18 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        log.unlink(missing_ok=True)
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
-        ran = log.read_text(encoding="utf-8")
-        self.assertTrue(ran.startswith("ab"), ran)
-        self.assertNotIn("c", ran)
-        self.assertNotIn("x", ran)
+        ran = log.read_text(encoding="utf-8")   # 落ちた a と c は、変える前の中身でもう一度動く
+        for name in "abcx":
+            self.assertIn(name, ran)
+        self.assertTrue(ran.startswith("a"), ran)
         log.unlink()
         self.set_check(self.impl, [step("a", 0), step("c", 0)], key="test")
         r = self.run_pa(self.impl, "verify-apply")
-        self.assertIn("ac", log.read_text(encoding="utf-8"))
-        self.assertTrue(log.read_text(encoding="utf-8").startswith("acx"), log.read_text(encoding="utf-8"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(log.read_text(encoding="utf-8"), "acx")
 
     def test_rechecking_the_plan_keeps_the_work_already_done(self) -> None:
         self.write_plan(PLAN_ALIGNED)

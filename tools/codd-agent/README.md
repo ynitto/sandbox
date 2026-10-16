@@ -297,7 +297,7 @@ python3 .statemachine/codd/codd.py lint            # 定期的な点検（下記
 | `skills` / `tools` / `rules` / `refs[].skills` / `refs[].rules` | 前の版の書き方。今も読み、`guides` と同じに扱う（`skills.plan` は計画を練るとき、`skills.apply` は変えるときのスキル、`tools` は同じ形の道具、`rules` はいつも守る決まり） |
 | `skill_dirs` | 任意。設定しなくても使うスキルの置き場所（既定 `[".agents/skills"]`。`名前/SKILL.md` の形）。`[]` で使わない |
 | `graphify` | `auto`（あれば使う）か `off`。文書の意味もグラフに入れるなら `{"semantic": "session"}` か `{"semantic": "ollama", "model": "qwen2.5-coder:7b"}` のように書く（[下記](#文書の意味もグラフに入れる)） |
-| `test` | 任意。変えたあとに動かすテストのコマンド。書き方は `check` と同じで、1 つなら配列（例: `["npm", "test"]`）、いくつもならその配列を並べる（例: `[["npm", "test"], ["npm", "run", "test:api"]]`）。結果に名前を付けるなら名前ごとにも書ける（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。書いた順に動かし、落ちたらそこで止める。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
+| `test` | 任意。変えたあとに動かすテストのコマンド。書き方は `check` と同じで、1 つなら配列（例: `["npm", "test"]`）、いくつもならその配列を並べる（例: `[["npm", "test"], ["npm", "run", "test:api"]]`）。結果に名前を付けるなら名前ごとにも書ける（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。書いた順に動かし、落ちても残りを動かす。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
 | `tests` | 任意。テストのファイルの書き方（glob の配列）。既定は `test/**`・`tests/**`・`e2e/**`・`**/*.test.*`・`**/*.spec.*`・`**/test_*.py`・`**/*.feature`・`**/*.http`・`**/scenarios/**` など。`[]` でテストを扱わない |
 | `evidence` | 任意。テストで得たもの（振る舞い・時間・作ったファイル）を書いたファイル（glob の配列）。既定 `[]`（扱わない）。使う結果ファイルのパスを明示する |
 | `check` | 任意。テストのあとに実行する検査コマンドの配列（例: `["npm", "run", "e2e"]`）。いくつも動かすときはコマンドの配列を並べる（例: `[["npm", "run", "lint"], ["npm", "run", "e2e"]]`）。書いた順に動かし、落ちたらそこで止める。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
@@ -412,8 +412,9 @@ python3 tools/codd-agent/init.py ~/work/my-app \
 `test` には変えたあとに動かすテストを、`check` にはそのあとに実行する検査コマンドを書く。参照先も変えたときは、
 参照先に置いた `codd.json` の `test` と `check` も動かす。どのファイルがテストかは `tests` の書き方で決まり、
 参照先のテストは参照先の `codd.json` の `tests` を使う。
-`test` と `check` は、コマンドをいくつも書くと書いた順に動かし、落ちたところで止める（後のコマンドは動かさない）。
-テストが落ちたら `check` も動かさない。`--test` と `--check` は繰り返して渡せる。
+`test` と `check` は、コマンドをいくつも書くと書いた順に動かす。テストは互いに独立なので、落ちても残りと `check` を動かし、
+失敗を一度に示す。`check` は前のコマンドが通る前提で並べる（lint → build → e2e など）ので、落ちたところで止める。
+`--test` と `--check` は繰り返して渡せる。
 
 ```bash
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"

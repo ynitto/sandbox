@@ -5628,14 +5628,19 @@ def unrun_problems(ctx: Ctx, since: float, sides: list[str], required: set[tuple
 
 
 def run_checks(ctx: Ctx, key: str, side: Side, cwd: Path, test, check, label: str) -> list[str]:
-    """test、check の順にコマンドを書いた順に動かし、落ちたところで止める（後のコマンドは前のコマンドが通る前提で書く）。"""
-    commands = [(argv, f"{label}のテスト{f'（{name}）' if name else ''}") for name, argv in test_commands(test)]
-    commands += [(argv, label) for argv in check_commands(check)]
-    for argv, where in commands:
-        problems = checked(ctx, key, side, cwd, argv, where)
-        if problems:
-            return problems
-    return []
+    """テスト（test）をすべて動かし、続けて検査（check）を書いた順に動かして落ちたところで止める。
+
+    テストは互いに独立なので、落ちても残りを動かし、失敗を一度に返す（1 つずつ見つけると、訊かずにやり直せる
+    回数を使い切ったり、変える前から落ちていたものを何度にも分けて訊いたりする）。検査は前のコマンドが通る前提で
+    書く（lint → build → e2e など）ので、落ちたら後のコマンドは動かさない。"""
+    problems: list[str] = []
+    for name, argv in test_commands(test):
+        problems += checked(ctx, key, side, cwd, argv, f"{label}のテスト{f'（{name}）' if name else ''}")
+    for argv in check_commands(check):
+        failed = checked(ctx, key, side, cwd, argv, label)
+        if failed:
+            return problems + failed
+    return problems
 
 
 @dataclass
@@ -7705,14 +7710,11 @@ def lint_tests(ctx: Ctx) -> list[tuple[str, str]]:
         for name, argv in test_commands(test):
             before = run(["git", "status", "--porcelain"], repo, GIT_TIMEOUT)[1]
             label = f"{who}のテスト{f'（{name}）' if name else ''}"
-            failed = run_check(repo, argv, label)
-            for p in failed:
+            for p in run_check(repo, argv, label):
                 out.append((p, f"{label}（{' '.join(argv)}）が落ちているので直したい"))
             if run(["git", "status", "--porcelain"], repo, GIT_TIMEOUT)[1] != before:
                 out.append((f"{label}を動かしたら、作業中のファイルが変わりました（点検は直さないので、確かめてください）",
                             f"{label}が書き換えるファイルを、コミットするものか .gitignore に入れるものかに分けたい"))
-            if failed:
-                break   # 後のコマンドは前のコマンドが通る前提で書く（変えたあとの検査と同じ）
     return out
 
 

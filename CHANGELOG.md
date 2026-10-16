@@ -12,8 +12,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - `init.py` を `--ref` なしで実行すると、同じリポジトリの `docs/` を設計書（参照先 `docs`）にし、それ以外の全部を
   実装として受け持つ。設計書のフォルダが違えば `--ref-scope docs=フォルダ`。`--side` の既定は `impl`。
   自分の `scope` は書かなくてよくなった（同じリポジトリの参照先の `scope` の外を受け持つ）
-- codd.json の `test` も `check` と同じく、コマンドの配列を並べて書ける。`test` も `check` も書いた順に動かし、
-  落ちたところで止める（テストが落ちたら `check` も動かさない。名前ごとに書いた `test` も同じ）。
+- codd.json の `test` も `check` と同じく、コマンドの配列を並べて書ける。書いた順に動かし、テストは落ちても残りを動かして
+  失敗を一度に示す（`check` は今までどおり落ちたところで止める）。
   `init.py` の `--test` と `--check` は繰り返して渡せる
 - links.json の `why` が 80 文字で途中から切れていた。理由はそのまま 1 行にして控える
 
