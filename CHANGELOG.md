@@ -7,11 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### codd-agent: 1 つのリポジトリでも init だけで使える・test もコマンドを並べられる・つながりの理由を切らない
+### codd-agent: 1 つのリポジトリでも init だけで使える（文書が無くてもよい）・test もコマンドを並べられる・つながりの理由を切らない
 
 - `init.py` を `--ref` なしで実行すると、同じリポジトリの `docs/` を設計書（参照先 `docs`）にし、それ以外の全部を
   実装として受け持つ。設計書のフォルダが違えば `--ref-scope docs=フォルダ`。`--side` の既定は `impl`。
   自分の `scope` は書かなくてよくなった（同じリポジトリの参照先の `scope` の外を受け持つ）
+- `docs/` も無ければ、文書を持たないリポジトリとして置く（`refs` は `[]`）。対応する文書を求めず、実装とテストの
+  一貫性だけを取る。守る決まりは `guides` で指定できる
 - codd.json の `test` も `check` と同じく、コマンドの配列を並べて書ける。書いた順に動かし、テストは落ちても残りを動かして
   失敗を一度に示す（`check` は今までどおり落ちたところで止める）。
   `init.py` の `--test` と `--check` は繰り返して渡せる

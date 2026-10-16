@@ -16,6 +16,7 @@
 --scope は自分が受け持つフォルダ、--ref-scope は `参照先の名前=フォルダ` で参照先が受け持つフォルダ（どちらも繰り返し可）。
 初めて置くときに --ref を渡さなければ、同じリポジトリの docs/（--ref-scope docs=フォルダ で変える）を参照先 docs にし、
 --side の既定は impl、自分はそのフォルダの外の全部を受け持つ（--scope で絞れる）。
+docs/ も無ければ（--ref-scope も渡さなければ）、文書を持たないリポジトリとして置き（refs は空）、実装とテストだけの一貫性を取る。
 --exclude は自分の除外パターン、--ref-exclude は `参照先の名前=除外パターン`（どちらも繰り返し可）。
 渡した側の一覧を入れ替え、--exclude "" / --ref-exclude 名前= で空にする。
 
@@ -91,15 +92,21 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     config = json.loads(config_file.read_text(encoding="utf-8")) if config_file.is_file() else None
     existed = config is not None
     original = copy.deepcopy(config)
+    code_only = False
     if config is None and not refs:
-        # 実装と設計書が同じリポジトリ: 設計書のフォルダを参照先 docs にし、自分はその外の全部を受け持つ
-        refs, side = [SAME_REPO_REF], side or "impl"
+        # 実装と設計書が同じリポジトリ: 設計書のフォルダを参照先 docs にし、自分はその外の全部を受け持つ。
+        # 設計書のフォルダも無ければ、文書を持たないリポジトリとして実装とテストだけの一貫性を取る（refs は空）。
+        side = side or "impl"
         name = SAME_REPO_REF.split("=")[0]
-        ref_scopes = ref_scopes or [f"{name}={SAME_REPO_DOCS}"]
-        missing = [v.partition("=")[2] for v in ref_scopes if not (target / v.partition("=")[2]).is_dir()]
-        if missing:
-            raise SystemExit(f"設計書のフォルダがありません: {', '.join(missing)}（--ref-scope {name}=フォルダ で指定するか、"
-                             "別のリポジトリなら --ref で参照先を指定してください）")
+        if not ref_scopes and not (target / SAME_REPO_DOCS).is_dir():
+            code_only = True
+        else:
+            refs = [SAME_REPO_REF]
+            ref_scopes = ref_scopes or [f"{name}={SAME_REPO_DOCS}"]
+            missing = [v.partition("=")[2] for v in ref_scopes if not (target / v.partition("=")[2]).is_dir()]
+            if missing:
+                raise SystemExit(f"設計書のフォルダがありません: {', '.join(missing)}（--ref-scope {name}=フォルダ で指定するか、"
+                                 "別のリポジトリなら --ref で参照先を指定してください）")
     if config is None and side is None:
         raise SystemExit("初めて置くときは --side を指定してください")
 
@@ -122,6 +129,8 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
             shutil.copyfile(item, target_item)
 
     config = config or {}
+    if code_only:
+        config["refs"] = []
     if side:
         config["side"] = side
     if refs:
@@ -350,9 +359,10 @@ def main(argv: list[str] | None = None) -> int:
                    exclude=args.exclude, ref_excludes=args.ref_exclude, evidence=args.evidence)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8-sig"))
     print(f"置きました: {dest}")
-    refs = config.get("refs") or [{"path": config.get("ref_path")}]
-    print(f"  この側: {config['side']}  参照先: " + ", ".join(
-        f"{ref_name(r)}={r['path']}" + (f"（{', '.join(r['scope'])}）" if r.get("scope") else "") for r in refs))
+    refs = config["refs"] if "refs" in config else [{"path": config.get("ref_path")}]
+    print(f"  この側: {config['side']}  参照先: " + (", ".join(
+        f"{ref_name(r)}={r['path']}" + (f"（{', '.join(r['scope'])}）" if r.get("scope") else "") for r in refs)
+        or "なし（文書を持たないリポジトリ。実装とテストの一貫性だけを取る）"))
     test = config.get("test")
     if isinstance(test, dict):
         for name, argv in test.items():

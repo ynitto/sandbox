@@ -588,8 +588,8 @@ def load_config(machine_dir: Path) -> dict:
     if "refs" not in config and config.get("ref_path"):  # 参照先が 1 つだった頃の書き方
         config["refs"] = [{"path": config["ref_path"]}]
     refs = config.get("refs")
-    if not (isinstance(refs, list) and refs):
-        raise CoddError(f"{path} の refs が空です（参照先のリポジトリを 1 つ以上書いてください）")
+    if not isinstance(refs, list):
+        raise CoddError(f"{path} の refs は参照先の配列です（文書の無いリポジトリなら []）")
     names = set()
     for i, ref in enumerate(refs):
         if not (isinstance(ref, dict) and isinstance(ref.get("path"), str) and ref["path"]):
@@ -1353,7 +1353,7 @@ def guide_line(ctx: Ctx, key: str, g: Guide) -> str:
 
 def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     print(f"この側: {SIDES[ctx.side]}（{ctx.side}）  {ctx.root}{scope_words(ctx.own)}")
-    print("参照先:")
+    print("参照先:" if ctx.refs else "参照先: なし（文書を持たないリポジトリ。実装とテストの一貫性だけを取り、計画の参照先の見出しは「なし」と書く）")
     for r in ctx.refs:
         print(f"  - {r.name}: {r.label}  {r.path}{scope_words(r)}")
     rules = ctx.rule_files()
@@ -3929,6 +3929,8 @@ def nodoc_message(ctx: Ctx, key: str, rel: str) -> str:
 
 def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     """計画で作る・変えるコードのうち、対応する文書が無く、文書を作る・足す行も計画に無いもの。"""
+    if not ctx.refs:
+        return []   # 文書の無いリポジトリ（refs が空）は、実装とテストだけの一貫性を取る
     missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(planned_code(ctx, bodies))
                if not doc_lines_cover(ctx, bodies, rel)
                and not any(_DELETE_WORD.search(line) for line in plan_lines_naming(bodies, rel))
@@ -3945,6 +3947,8 @@ def nodoc_apply_problems(ctx: Ctx, bodies: dict[str, str], touched: dict[str, se
 
     計画で挙げたコードは、変えずに済んでも確かめる（計画で文書を作ると書いたのに、作らずに終えさせない）。
     """
+    if not ctx.refs:
+        return []   # 文書の無いリポジトリ（refs が空）は、実装とテストだけの一貫性を取る
     targets = {(k, rel) for k, rels in touched.items() for rel in rels if is_code(ctx, k, rel)} | planned_code(ctx, bodies)
     missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(targets)
                if (side_of(ctx, k).path / rel).is_file() and not docs_for(ctx, k, rel)]

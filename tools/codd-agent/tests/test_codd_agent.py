@@ -2021,8 +2021,8 @@ class CoddTest(unittest.TestCase):
         fresh = self.tmp / "fresh"
         fresh.mkdir()
         git(fresh, "init", "-q")
-        with self.assertRaises(SystemExit):
-            init.init_repo(fresh, "impl", [])
+        init.init_repo(fresh, "impl", [], discover=False, agents=())   # 設計書のフォルダも無ければ、文書を持たないリポジトリ
+        self.assertEqual(json.loads((fresh / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["refs"], [])
 
     # ------------------------------------------------------------ 参照先が複数
 
@@ -3161,13 +3161,45 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(mono, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("own=changed refs=docs", r.stdout)   # 同じリポジトリでも自分と設計書を分けて測る
-        # 設計書のフォルダが無ければ、指定を求めて止まる
+        # 指定した設計書のフォルダが無ければ、止まる
         bare = self.tmp / "bare"
         bare.mkdir()
         git(bare, "init", "-q")
         with self.assertRaises(SystemExit) as e:
-            init.init_repo(bare, None, None, discover=False, agents=())
+            init.init_repo(bare, None, None, discover=False, agents=(), ref_scopes=["docs=spec"])
         self.assertIn("--ref-scope docs=", str(e.exception))
+
+    def test_code_only_repo_keeps_code_and_tests_coherent(self) -> None:
+        # docs/ も無ければ文書を持たないリポジトリとして置き、文書は求めずに、実装とテストの一貫性だけを取る
+        repo = self.tmp / "solo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        commit(repo, {"src/app.py": "def hello():\n    return 1\n",
+                      "tests/test_app.py": "from src.app import hello\n\nassert hello() == 1\n"}, "init")
+        init.init_repo(repo, None, None, discover=False, agents=(), test=f"{sys.executable} -c pass")
+        self.assertEqual(json.loads((repo / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["refs"], [])
+        r = self.run_pa(repo, "show")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("参照先: なし", r.stdout)
+        self.read_up(repo)
+        plan = (PLAN_ALIGNED.replace("- hello は整数を返す（根拠: docs/api.md#hello）", "なし")
+                .replace("- hello は 1 を返す（根拠: docs/api.md:3）", "なし"))
+        (repo / ".plans").mkdir(parents=True, exist_ok=True)
+        # テストの判断はやはり要る（響くテストを挙げさせる）
+        (repo / PLAN).write_text(plan.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）", ""),
+                                 encoding="utf-8")
+        r = self.run_pa(repo, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("対応する文書の無いコード", r.stderr)
+        (repo / PLAN).write_text(plan.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                              "- tests/test_app.py — ログを出しても 1 を返すことを確かめる"), encoding="utf-8")
+        self.assert_plan_ok(repo)
+        (repo / "src/app.py").write_text("def hello():\n    print('a')\n    return 1\n", encoding="utf-8")
+        (repo / "tests/test_app.py").write_text("from src.app import hello\n\nassert hello() == 1  # log\n",
+                                                encoding="utf-8")
+        r = self.run_pa(repo, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("refs=none", r.stdout)
 
     def test_same_repo_needs_scopes(self) -> None:
         mono = self.make_mono()
