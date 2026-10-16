@@ -288,7 +288,7 @@ function outcomeValue(o) {
 }
 
 function whenChip(o) {
-  if (o.when === 'text') { const t = String(o.text || ''); return { label: `もし「${t.length > 18 ? `${t.slice(0, 18)}…` : t}」` }; }
+  if (o.when === 'text') { const t = String(o.text || ''); return { label: `もし「${Array.from(t).length > 18 ? `${Array.from(t).slice(0, 18).join('')}…` : t}」` }; }
   if (o.when === 'always') return { label: '常に' };
   if (o.when === 'rule') return { label: '詳細条件' };
   return { label: o.label || '（指定の言葉）' };
@@ -2160,7 +2160,7 @@ function recordPickHtml(rec) {
   const head = `<div class="row"><button type="button" id="r-snapshot" ${rec.busy ? 'disabled' : ''}>いま見えている要素を読み取る</button>
     <span class="small muted">${rec.extracts ? `読み取り ${rec.extracts} 件を挿しました。` : '記事の本文や表など、後の工程で使う内容を選びます。'}</span></div>`;
   if (!pick) return head;
-  const label = (c) => `${'　'.repeat(Math.min(c.depth, 6))}${c.role}${c.name ? ` 「${c.name.slice(0, 40)}」` : ''}`;
+  const label = (c) => `${'　'.repeat(Math.min(c.depth, 6))}${c.role}${c.name ? ` 「${Array.from(c.name).slice(0, 40).join('')}」` : ''}`;
   return `${head}<div class="ext-grid" style="margin-top:8px">
     <div class="field" style="grid-column: 1 / -1"><label>要素（${pick.candidates.length} 件）</label><select id="r-pick" size="8" class="mono">${pick.candidates.map((c) => `<option value="${esc(c.ref)}" ${c.ref === pick.ref ? 'selected' : ''}>${esc(label(c))}</option>`).join('')}</select></div>
     <div class="field"><label>形</label><select id="r-pick-mode">${options(EXTRACT_MODES, pick.mode)}</select></div>

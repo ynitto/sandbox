@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('./text');
 
 const forkProtocol = require('../renderer/forkProtocol');
 
@@ -79,7 +80,7 @@ async function runCommands(commands, run, { eachMs = 60000, totalMs = 120000 } =
     const ok = !!(result && result.ok);
     information.push({
       type: 'command', title: item.command, status: ok ? 'success' : 'error',
-      detail: String((result && (result.output || result.error)) || '').trim().slice(0, 4000),
+      detail: headChars(String((result && (result.output || result.error)) || '').trim(), 4000),
     });
     if (ok) continue;
     const message = `起動時アクションに失敗しました: ${item.command}`;

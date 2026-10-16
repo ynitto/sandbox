@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('../text');
 const KINDS = ['skill', 'task', 'workflow'];
 const LABELS = { skill: 'スキル', task: 'タスク', workflow: 'ワークフロー' };
 const DEFINITIONS = 'スキル: 状況に応じて使う専門知識・判断基準・作業のコツを再利用するもの。入力と完了条件を固定した仕事より、複数の仕事で使える知識が中心。タスク: 手順を覚えて、1つのAIが最初から最後まで順に進める定型の仕事。条件分岐や繰り返しを含んでもよい。ワークフロー: 役割を分けて複数のAIに任せる仕事。作ったものを別のAIに確かめさせる（別の目で確かめる）、複数の案を出させて基準で選ぶ（並べて比べる）、1つのAIでは収まらない量を分けて進めて最後にまとめる（分けて広く進める）、のどれかが必要なもの。';
@@ -22,6 +23,6 @@ function parse(output, kind = null) {
   try { value = JSON.parse(raw); } catch { throw new Error('定型化の応答を読み取れません'); }
   if (!value || !KINDS.includes(value.kind) || typeof value.reason !== 'string' || !value.reason.trim() || typeof value.purpose !== 'string' || !value.purpose.trim() || value.purpose.length > 30000) throw new Error('定型化の種類・理由・手順が不足しています');
   // 利用者が選んだ種類は AI の判定より優先する
-  return { kind: kind || value.kind, reason: value.reason.slice(0, 1000), purpose: value.purpose };
+  return { kind: kind || value.kind, reason: headChars(value.reason, 1000), purpose: value.purpose };
 }
 module.exports = { prompt, parse, KINDS };

@@ -251,12 +251,12 @@ const SessionSearch = (() => {
     $('search-transfer-title').textContent = routine ? 'この作業を定型化' : 'フォーク';
     $('search-transfer-start').textContent = routine ? '定型化する' : 'フォーク';
     const turns = record.messages.filter(m => m.role === 'assistant' && m.complete !== false);
-    $('search-boundary').replaceChildren(...turns.map((m, i) => new Option(`${i + 1}: ${m.text.slice(0, 80)}`, m.id)));
+    $('search-boundary').replaceChildren(...turns.map((m, i) => new Option(`${i + 1}: ${Array.from(m.text).slice(0, 80).join('')}`, m.id)));
     $('search-boundary').value = boundary == null ? turns.at(-1)?.id || '' : boundary;
     $('search-intent').querySelector('[value="session"]').disabled = routine;
     $('search-intent').value = routine ? 'task' : 'session';
     $('search-execution-settings').open = false;
-    const excerpt = boundary == null ? '' : ' · ' + record.messages.find(m => m.id === boundary)?.text.slice(0, 100);
+    const excerpt = boundary == null ? '' : ' · ' + Array.from(record.messages.find(m => m.id === boundary)?.text || '').slice(0, 100).join('');
     $('search-transfer-source').textContent = record.title + excerpt;
     $('search-request').previousElementSibling.textContent = '追加の依頼（任意）';
     $('search-request').value = ''; $('search-transfer-status').textContent = '';

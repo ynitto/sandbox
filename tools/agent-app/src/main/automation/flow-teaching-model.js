@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('../text');
 
 const flowShapes = require('../../shared/flowShapes');
 
@@ -23,7 +24,7 @@ function redact(value, context = '') {
 const VERSION = 1;
 const STATUSES = new Set(['draft', 'needs-trial', 'awaiting-confirmation', 'ready']);
 
-function text(value, max = 4000) { return String(value || '').trim().slice(0, max); }
+function text(value, max = 4000) { return headChars(String(value || '').trim(), max); }
 function list(value, map = (item) => item) { return Array.isArray(value) ? value.map(map).filter(Boolean) : []; }
 
 function normalizeUnderstanding(value = {}) {
