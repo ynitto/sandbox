@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('../text');
 
 // agent-tools へ渡す情報と、返ってきた構造化応答の境界。
 // AI は候補を返すだけで、ここでもファイルは一切変更しない。
@@ -117,9 +118,9 @@ ${responseContract()}`;
 function repairPrompt({ originalPrompt = '', output = '', error = '' } = {}) {
   return `${String(originalPrompt)}
 
-前回の応答は契約違反でした。エラー: ${String(error).slice(0, 1000)}
+前回の応答は契約違反でした。エラー: ${headChars(String(error), 1000)}
 前回の応答:
-${String(output).slice(0, 12000)}
+${headChars(String(output), 12000)}
 
 内容を修正し、指定された JSON オブジェクトだけを返してください。`;
 }
@@ -142,7 +143,7 @@ function parseJsonOnly(output) {
 }
 
 function shortText(value, max = 4000) {
-  return String(value || '').trim().slice(0, max);
+  return headChars(String(value || '').trim(), max);
 }
 
 function normalizeQuestions(value) {

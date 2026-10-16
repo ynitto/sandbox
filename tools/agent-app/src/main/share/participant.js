@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('../text');
 
 // 参加者の側。余っている枠を差し出し、仲間の依頼を拾って自分の CLI で答える。
 //
@@ -55,7 +56,7 @@ function reasonText(reason) {
 }
 
 function safeName(name) {
-  return String(name || '').replace(/[\\/]/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file';
+  return headChars(String(name || '').replace(/[\\/]/g, '_').replace(/^\.+/, '_'), 120) || 'file';
 }
 
 class Participant extends EventEmitter {

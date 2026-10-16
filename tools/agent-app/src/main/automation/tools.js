@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('../text');
 
 // 実行環境の確認と、statemachine-use スキルの所在。LLM を使わない診断コマンドだけを呼ぶ。
 //   playwright-cli --version      … ブラウザ操作（記録・実行）
@@ -66,12 +67,12 @@ function summarizeDoctor(stdout, stderr) {
     return { ok: false, summary: names.length ? `不備: ${names.join(' / ')}` : '診断に失敗した項目があります' };
   } catch {
     const line = (String(stderr || '').trim() || raw).split(/\r?\n/).find(Boolean) || '';
-    return { ok: false, summary: line.slice(0, 200) || '診断の出力を読めませんでした' };
+    return { ok: false, summary: headChars(line, 200) || '診断の出力を読めませんでした' };
   }
 }
 
 function firstLine(res) {
-  return (String((res && (res.stdout || res.stderr)) || '').trim().split(/\r?\n/).find(Boolean) || '').slice(0, 120);
+  return headChars(String((res && (res.stdout || res.stderr)) || '').trim().split(/\r?\n/).find(Boolean) || '', 120);
 }
 
 async function agentDefinitions({ cwd = '', capture } = {}) {

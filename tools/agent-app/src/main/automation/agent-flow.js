@@ -361,7 +361,7 @@ function nodeErrorOf(result) {
     .map((line) => line.replace(/\[[^\]]+\]\s*/g, '').replace(/^verify=fail:?\s*/i, '').replace(/^\S+ 失敗 \(rc=-?\d+\):?\s*/, '').trim())
     .find(Boolean) || '理由は記録されていません';
   const group = ERROR_GROUP[cls] || 'content';
-  return { cls, group, message: message.slice(0, 300), remedy: group === 'setup' ? SETUP_REMEDY[cls] : '' };
+  return { cls, group, message: headChars(message, 300), remedy: group === 'setup' ? SETUP_REMEDY[cls] : '' };
 }
 
 function deliveryOf(nodes, finalJson) {
@@ -851,8 +851,11 @@ function planDraft(root, id, hostRoot = '') {
     seen.add(dep);
     return resolveDeps(dropped.get(dep), seen);
   });
-  const label = (goal, fallback) => String(goal || '').split(/\r?\n/).map((line) => line.trim())
-    .find((line) => line && !/^\[(scope|out_of_scope)\]/i.test(line))?.slice(0, 40) || fallback;
+  const label = (goal, fallback) => {
+    const found = String(goal || '').split(/\r?\n/).map((line) => line.trim())
+      .find((line) => line && !/^\[(scope|out_of_scope)\]/i.test(line));
+    return found ? headChars(found, 40) : fallback;
+  };
   const nodes = kept.slice(0, flowModel.MAX_NODES).map((spec) => ({
     id: spec.id,
     label: label(spec.goal, spec.id),

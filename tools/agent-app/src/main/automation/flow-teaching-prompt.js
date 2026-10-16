@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('../text');
 
 // ワークフローを AI と**tmux の会話で**作る・変えるための本文。タスク（`automation/teaching.js`）の
 // 対になる。違うのは書かせる先だけで、進め方（目的を聞く → 定義を書く → 短く報告）は同じ。
@@ -10,7 +11,7 @@
 const flowModel = require('./flow-model');
 const flowShapes = require('../../shared/flowShapes');
 
-function text(value, max = 6000) { return String(value || '').trim().slice(0, max); }
+function text(value, max = 6000) { return headChars(String(value || '').trim(), max); }
 
 function kindLines() {
   return flowModel.KIND_INFOS.map((info) => `   - \`${info.kind}\`（${info.label}）… ${info.description}`);

@@ -1,4 +1,5 @@
 'use strict';
+const { headChars } = require('../text');
 
 // タスク（ステートマシン）を AI と**tmux の会話で**作る・変えるための材料。
 //
@@ -29,7 +30,7 @@ const RECORDINGS = 'recordings';
 const VERSION = 2;
 
 function text(value, max = 4000) {
-  return String(value || '').trim().slice(0, max);
+  return headChars(String(value || '').trim(), max);
 }
 
 function fileFor(root, machine) {

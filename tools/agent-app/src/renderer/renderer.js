@@ -1848,7 +1848,7 @@ function renderQuickRequestMenu() {
   const box = $('quick-menu-list');
   box.replaceChildren();
   for (const request of requests) {
-    const button = el('button', '', request.label || request.text.slice(0, 20));
+    const button = el('button', '', request.label || Array.from(request.text).slice(0, 20).join(''));
     button.type = 'button';
     button.title = request.text;
     button.onclick = () => { menu.open = false; fillPrompt(request.text); };
@@ -2031,7 +2031,7 @@ async function forkConversation(index, request) {
   }
   if (repo === origin.repo) { notice('分岐先には別のリポジトリを選んでください', 'error'); return; }
   const firstLine = String(request.prompt || '').split('\n').find((line) => line.trim()) || '';
-  if (!confirm(`${basename(repo)} で新しい会話を分岐して、次の依頼を送ります。\n\n${firstLine.slice(0, 120)}`)) return;
+  if (!confirm(`${basename(repo)} で新しい会話を分岐して、次の依頼を送ります。\n\n${Array.from(firstLine).slice(0, 120).join('')}`)) return;
   inputStatus('pending', `${basename(repo)} で会話を分岐中`);
   let result;
   try {
