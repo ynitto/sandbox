@@ -8,13 +8,14 @@
     python3 tools/codd-agent/init.py <設計書のリポジトリ> --side design --ref ../my-impl
     python3 tools/codd-agent/init.py <実装のリポジトリ> --side impl --ref api=../api-docs --ref ui=../ui-docs
 
-    # 実装と設計書が同じリポジトリ（src/ と docs/）にあるとき
-    python3 tools/codd-agent/init.py <リポジトリ> --side impl --scope src --scope tests \\
-        --ref docs=. --ref-scope docs=docs
+    # 実装と設計書が同じリポジトリにあるとき（設計書は docs/、それ以外を実装として受け持つ）
+    python3 tools/codd-agent/init.py <リポジトリ>
+    python3 tools/codd-agent/init.py <リポジトリ> --ref-scope docs=design   # 設計書のフォルダが docs/ でないとき
 
 --ref は `名前=パス` か `パス`（名前はフォルダ名）。いくつでも渡せる。
 --scope は自分が受け持つフォルダ、--ref-scope は `参照先の名前=フォルダ` で参照先が受け持つフォルダ（どちらも繰り返し可）。
-同じリポジトリを参照先にするときは両方が要る。
+初めて置くときに --ref を渡さなければ、同じリポジトリの docs/（--ref-scope docs=フォルダ で変える）を参照先 docs にし、
+--side の既定は impl、自分はそのフォルダの外の全部を受け持つ（--scope で絞れる）。
 --exclude は自分の除外パターン、--ref-exclude は `参照先の名前=除外パターン`（どちらも繰り返し可）。
 渡した側の一覧を入れ替え、--exclude "" / --ref-exclude 名前= で空にする。
 
@@ -30,9 +31,9 @@ kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカス�
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
 変える段を受け持つサブエージェント `codd-apply` も並べて書く（codd.json の subagent が true のときに codd が呼ぶ）。
 文書の意味を抜き出す束を受け持つサブエージェント `codd-graph` も書く（graphify が {"semantic": "session"} のときに呼ぶ）。
---check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く。
+--check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く（繰り返すと書いた順に動かす）。
 --evidence "パス" で結果ファイルの一覧を指定する（繰り返し可。"" で扱わない）。検査ツールの設定は自動検出しない。
---test "コマンド" で、変えたあとに実行する単体テストのコマンド（codd.json の test）を書く（"" で消す）。
+--test "コマンド" で、変えたあとに実行するテストのコマンド（codd.json の test）を書く（繰り返すと書いた順に動かす。"" で消す）。
 """
 
 from __future__ import annotations
@@ -49,6 +50,9 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent / "machine"
 DEST_REL = Path(".statemachine") / "codd"
+# --ref を渡さずに初めて置くとき（実装と設計書が同じリポジトリ）の参照先と、設計書の既定のフォルダ。
+SAME_REPO_REF = "docs=."
+SAME_REPO_DOCS = "docs"
 IGNORE_LINE = ".codd/"
 AGENT_PROMPT = SRC / "agents" / "codd-agent.md"
 AGENT_DESCRIPTION = "実装と設計書の一貫性を保って変える。コードや文書の変更は必ず codd のステートマシンで進める"
@@ -77,8 +81,8 @@ def ref_name(ref: dict) -> str:
 
 def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore: bool = True,
             scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
-            agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | None = None,
-            test: str | None = None, exclude: list[str] | None = None,
+            agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | list[str] | None = None,
+            test: str | list[str] | None = None, exclude: list[str] | None = None,
             ref_excludes: list[str] | None = None, evidence: list[str] | None = None) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
@@ -87,8 +91,17 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     config = json.loads(config_file.read_text(encoding="utf-8")) if config_file.is_file() else None
     existed = config is not None
     original = copy.deepcopy(config)
-    if config is None and (side is None or not refs):
-        raise SystemExit("初めて置くときは --side と --ref を指定してください")
+    if config is None and not refs:
+        # 実装と設計書が同じリポジトリ: 設計書のフォルダを参照先 docs にし、自分はその外の全部を受け持つ
+        refs, side = [SAME_REPO_REF], side or "impl"
+        name = SAME_REPO_REF.split("=")[0]
+        ref_scopes = ref_scopes or [f"{name}={SAME_REPO_DOCS}"]
+        missing = [v.partition("=")[2] for v in ref_scopes if not (target / v.partition("=")[2]).is_dir()]
+        if missing:
+            raise SystemExit(f"設計書のフォルダがありません: {', '.join(missing)}（--ref-scope {name}=フォルダ で指定するか、"
+                             "別のリポジトリなら --ref で参照先を指定してください）")
+    if config is None and side is None:
+        raise SystemExit("初めて置くときは --side を指定してください")
 
     dest.mkdir(parents=True, exist_ok=True)
     # 古い版のファイルを残さない（codd.json は利用者の設定、links.json は見つけたつながりの控えなので残す）。
@@ -143,18 +156,14 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     for name, patterns in grouped.items():
         entry = next(r for r in config["refs"] if ref_name(r) == name)
         entry["exclude"] = patterns
-    if test is not None:
-        argv = shlex.split(test)
-        if argv:
-            config["test"] = argv
+    for key, value in (("test", test), ("check", check)):
+        if value is None:
+            continue
+        commands = [argv for argv in map(shlex.split, [value] if isinstance(value, str) else value) if argv]
+        if commands:
+            config[key] = commands[0] if len(commands) == 1 else commands
         else:
-            config.pop("test", None)
-    if check is not None:
-        argv = shlex.split(check)
-        if argv:
-            config["check"] = argv
-        else:
-            config.pop("check", None)
+            config.pop(key, None)
     if evidence is not None:
         config["evidence"] = [p for p in evidence if p]
     if not existed:
@@ -312,7 +321,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("target", help="置き先のリポジトリ")
     p.add_argument("--side", choices=["impl", "design"], help="このリポジトリの側（impl = 実装 / design = 設計書）")
     p.add_argument("--ref", action="append",
-                   help="参照先。`名前=パス` か `パス`（置き先からの相対でも絶対でもよい）。繰り返し可")
+                   help="参照先。`名前=パス` か `パス`（置き先からの相対でも絶対でもよい）。繰り返し可。"
+                        "初めて置くときに渡さなければ、同じリポジトリの docs/ を参照先 docs にする")
     p.add_argument("--scope", action="append", help="自分が受け持つフォルダ（繰り返し可。既定はリポジトリ全体）")
     p.add_argument("--ref-scope", action="append",
                    help="`参照先の名前=フォルダ`。その参照先が受け持つフォルダ（繰り返し可）")
@@ -326,12 +336,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--agent", action="append", choices=list(AGENT_KINDS),
                    help="書くカスタムエージェント（繰り返し可。既定は kiro と copilot の両方）")
     p.add_argument("--no-agents", action="store_true", help="カスタムエージェントを書かない")
-    p.add_argument("--check", metavar="コマンド",
-                   help="変えたあとに実行する検査コマンド（例: \"npm test\"）。\"\" で消す")
+    p.add_argument("--check", action="append", metavar="コマンド",
+                   help="変えたあとに実行する検査コマンド（例: \"npm run lint\"）。繰り返すと書いた順に動かす。\"\" で消す")
     p.add_argument("--evidence", action="append", metavar="パス",
                    help='結果ファイルのパス・glob（繰り返し可。一覧を入れ替える。既定は扱わない。"" で消す）')
-    p.add_argument("--test", metavar="コマンド",
-                   help="変えたあとに実行する単体テストのコマンド（例: \"npm test\"、\"python -m unittest\"）。\"\" で消す")
+    p.add_argument("--test", action="append", metavar="コマンド",
+                   help="変えたあとに実行するテストのコマンド（例: \"npm test\"、\"python -m unittest\"）。"
+                        "繰り返すと書いた順に動かす。\"\" で消す")
     args = p.parse_args(argv)
     dest = init_repo(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
                    scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
@@ -342,11 +353,16 @@ def main(argv: list[str] | None = None) -> int:
     refs = config.get("refs") or [{"path": config.get("ref_path")}]
     print(f"  この側: {config['side']}  参照先: " + ", ".join(
         f"{ref_name(r)}={r['path']}" + (f"（{', '.join(r['scope'])}）" if r.get("scope") else "") for r in refs))
-    if config.get("test"):
-        print("  変えたあとの単体テスト: " + " ".join(config["test"]))
+    test = config.get("test")
+    if isinstance(test, dict):
+        for name, argv in test.items():
+            print(f"  変えたあとのテスト（{name}）: " + " ".join(argv))
+    elif test:
+        for argv in [test] if isinstance(test[0], str) else test:
+            print("  変えたあとのテスト: " + " ".join(argv))
     else:
         guess = guess_test(Path(args.target).resolve())
-        print("  変えたあとの単体テスト: 未設定（テストを動かさずに検査が通る）"
+        print("  変えたあとのテスト: 未設定（テストを動かさずに検査が通る）"
               + (f"。設定するなら --test \"{guess}\"" if guess else "。--test \"コマンド\" で設定する"))
     if not config.get("protect"):
         found = guess_protect(Path(args.target).resolve())

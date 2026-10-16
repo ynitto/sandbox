@@ -70,7 +70,8 @@ python3 tools/codd-agent/init.py ~/work/my-app-docs --side design --ref app=../m
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs --ref ui=../ui-docs
 ```
 
-`--ref` は `名前=パス` か `パス`（名前はフォルダ名になる）。初めて置くときは `--side` と `--ref` が要る。
+`--ref` は `名前=パス` か `パス`（名前はフォルダ名になる）。別のリポジトリを参照先にして初めて置くときは `--side` も要る。
+実装と設計書が 1 つのリポジトリにあるなら、`--ref` を渡さずに置く（[下記](#実装と設計書が同じリポジトリにあるとき)）。
 
 `init.py` は次をする。
 
@@ -91,7 +92,7 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs
 | `--scope` | 自分の `scope` を入れ替える |
 | `--ref-scope 名前=フォルダ` | その参照先の `scope` にフォルダを足す |
 | `--exclude` / `--ref-exclude 名前=パターン` | その呼び出しで渡したパターンに入れ替える。`--exclude ""` / `--ref-exclude 'docs='` で空にする |
-| `--test` / `--check` | 入れ替える。`""` で消す |
+| `--test` / `--check` | 入れ替える。繰り返すと、書いた順に動かすコマンドの並びになる。`""` で消す |
 | `--evidence` | 渡した一覧に入れ替える。`""` で結果を扱わなくする |
 
 置き先の名前は `codd` のまま変わらないので、前の版で置いたものもそのまま入れ替えられる。
@@ -296,7 +297,7 @@ python3 .statemachine/codd/codd.py lint            # 定期的な点検（下記
 | `skills` / `tools` / `rules` / `refs[].skills` / `refs[].rules` | 前の版の書き方。今も読み、`guides` と同じに扱う（`skills.plan` は計画を練るとき、`skills.apply` は変えるときのスキル、`tools` は同じ形の道具、`rules` はいつも守る決まり） |
 | `skill_dirs` | 任意。設定しなくても使うスキルの置き場所（既定 `[".agents/skills"]`。`名前/SKILL.md` の形）。`[]` で使わない |
 | `graphify` | `auto`（あれば使う）か `off`。文書の意味もグラフに入れるなら `{"semantic": "session"}` か `{"semantic": "ollama", "model": "qwen2.5-coder:7b"}` のように書く（[下記](#文書の意味もグラフに入れる)） |
-| `test` | 任意。変えたあとに動かすテストのコマンド。1 つなら配列（例: `["npm", "test"]`）、単体・API・シナリオなどいくつもあるなら名前ごと（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
+| `test` | 任意。変えたあとに動かすテストのコマンド。書き方は `check` と同じで、1 つなら配列（例: `["npm", "test"]`）、いくつもならその配列を並べる（例: `[["npm", "test"], ["npm", "run", "test:api"]]`）。結果に名前を付けるなら名前ごとにも書ける（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。書いた順に動かし、落ちたらそこで止める。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
 | `tests` | 任意。テストのファイルの書き方（glob の配列）。既定は `test/**`・`tests/**`・`e2e/**`・`**/*.test.*`・`**/*.spec.*`・`**/test_*.py`・`**/*.feature`・`**/*.http`・`**/scenarios/**` など。`[]` でテストを扱わない |
 | `evidence` | 任意。テストで得たもの（振る舞い・時間・作ったファイル）を書いたファイル（glob の配列）。既定 `[]`（扱わない）。使う結果ファイルのパスを明示する |
 | `check` | 任意。テストのあとに実行する検査コマンドの配列（例: `["npm", "run", "e2e"]`）。いくつも動かすときはコマンドの配列を並べる（例: `[["npm", "run", "lint"], ["npm", "run", "e2e"]]`）。書いた順に動かし、落ちたらそこで止める。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
@@ -316,9 +317,20 @@ python3 .statemachine/codd/codd.py lint            # 定期的な点検（下記
 
 ### 実装と設計書が同じリポジトリにあるとき
 
-実装と設計書が同じリポジトリ（例: `src/` と `docs/`）にあるときは、参照先の `path` を `.` にし、
-自分と参照先がそれぞれ受け持つフォルダを `scope` に書く。探す・根拠を認める・変わったかを測るのは、
-それぞれのフォルダの中だけになる。フォルダが重なっている・書いていないときは動かす前に止まる。
+実装と設計書が同じリポジトリ（例: `src/` と `docs/`）にあるときは、`--ref` を渡さずに置く。`docs/` を設計書
+（参照先 `docs`）にし、それ以外の全部を実装として受け持つ。設計書のフォルダが `docs/` でなければ `--ref-scope docs=フォルダ` で渡す。
+探す・根拠を認める・変わったかを測るのは、それぞれのフォルダの中だけになる。
+
+```bash
+python3 tools/codd-agent/init.py ~/work/my-app
+python3 tools/codd-agent/init.py ~/work/my-app --ref-scope docs=design   # 設計書が design/ にあるとき
+```
+
+```json
+{"side": "impl", "refs": [{"name": "docs", "path": ".", "scope": ["docs"]}]}
+```
+
+実装側も特定のフォルダに絞るなら、`scope` に書く。フォルダが重なっている・参照先の `scope` を書いていないときは動かす前に止まる。
 どの `scope` にも入らないファイル（CI の設定など）に、変わる名前が出てくるときは、計画の検査が「知らせ」として挙げる
 （検査は止めない。環境変数や API の改名なら、一緒に直すかを確かめる）。
 
@@ -400,11 +412,12 @@ python3 tools/codd-agent/init.py ~/work/my-app \
 `test` には変えたあとに動かすテストを、`check` にはそのあとに実行する検査コマンドを書く。参照先も変えたときは、
 参照先に置いた `codd.json` の `test` と `check` も動かす。どのファイルがテストかは `tests` の書き方で決まり、
 参照先のテストは参照先の `codd.json` の `tests` を使う。
-`check` にコマンドをいくつも書くと書いた順に動かし、落ちたところで止める（後のコマンドは動かさない）。
-`--check` で書けるのは 1 つなので、いくつも書くときは `codd.json` を直接書き換える。
+`test` と `check` は、コマンドをいくつも書くと書いた順に動かし、落ちたところで止める（後のコマンドは動かさない）。
+テストが落ちたら `check` も動かさない。`--test` と `--check` は繰り返して渡せる。
 
 ```bash
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
+python3 tools/codd-agent/init.py ~/work/my-app --test "npm test" --test "npm run test:api" --check "npm run lint"
 ```
 
 `test` が無いと、変えたあとの検査はテストを動かさずに通る。そのときは `show` と終わりの報告に「動かしていない」と出る。
