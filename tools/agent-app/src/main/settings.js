@@ -60,7 +60,7 @@ function quickRequests(value) {
   if (!Array.isArray(value)) return DEFAULT_QUICK_REQUESTS.map((item) => ({ ...item }));
   return value.map((item) => {
     if (!item || typeof item !== 'object') return null;
-    const text = String(item.text || '').trim().slice(0, MAX_QUICK_TEXT_CHARS);
+    const text = headChars(String(item.text || '').trim(), MAX_QUICK_TEXT_CHARS);
     if (!text) return null;
     const label = headChars(String(item.label || '').trim(), MAX_QUICK_LABEL_CHARS);
     return { label: label || headChars(text.split(/\r?\n/)[0], MAX_QUICK_LABEL_CHARS), text };
