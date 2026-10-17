@@ -1905,6 +1905,9 @@ class CoddTest(unittest.TestCase):
         # 応答の長さに上限があるエージェントでも止まらないよう、全文を貼らず分けて書くことを指示する。
         self.assertIn("the response hit the length limit", copilot)
         self.assertIn("codd.py summary", copilot)
+        # 「チェックして」には、ステートマシンを使わず読むだけで確かめる（直さない）。
+        self.assertIn("## チェック・点検・レビューを頼まれたら", copilot)
+        self.assertIn(".codd/review.md", copilot)
         # 変える段を渡すサブエージェント。モデルは書かない（呼び出し元と同じモデルで動かす）。
         self.assertIn("agents: [codd-apply, codd-graph]", copilot)
         graph_worker = (self.impl / ".github/agents/codd-graph.agent.md").read_text(encoding="utf-8")
