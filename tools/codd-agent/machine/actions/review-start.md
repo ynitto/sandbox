@@ -12,6 +12,8 @@ python3 .statemachine/codd/codd.py review start --path src/orders        # フ�
 python3 .statemachine/codd/codd.py review start --since "7 days ago"     # 期間を挙げた
 ```
 
+機能や名前だけを挙げられたとき（「注文まわり」「`hello`」など）は、先に `codd.py impact --term 名前`（自分）と
+`codd.py explore --term 名前`（参照先）で関係するファイルを探し、そのファイルを `--path` に並べます（多くても 20）。
 テストを動かさないよう頼まれたときだけ `--no-test` を付けます。
 
 **出力形式:** コマンドの出力の第 1 行（`OK …` か `NONE …`）をそのまま第 1 行に。

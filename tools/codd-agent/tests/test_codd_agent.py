@@ -4526,6 +4526,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / ".codd/review/answers.md").write_text("# 項目への答え\n\n", encoding="utf-8")
         self.review_answer(f"- {by_name['hello']} 問題: docs/api.md:5 — 実装は 2、設計書は 1\n"
                            "  - やりたいこと: hello の戻り値を、実装と設計書で合わせたい")
+        self.assertIn("R99 という項目はありません", self.run_pa(self.impl, "review", "next", "--id", "R99").stderr)
         self.run_pa(self.impl, "review", "next", "--id", by_name["bye"])   # 示し直してから答えてもよい
         self.review_answer(f"- {by_name['bye']} 問題なし: README.md:1 — 内部の名前")
         r = self.run_pa(self.impl, "review", "verify", "--part", "items")
@@ -4547,12 +4548,16 @@ class CoddTest(unittest.TestCase):
         report = (self.impl / ".codd/review.md").read_text(encoding="utf-8")
         self.assertIn("- hello の戻り値を、実装と設計書で合わせたい", report.split("## 本流に渡すやりたいこと")[1])
         self.assertIn("- bye の役目を決めたい", report)
+        # codd を通らなかった変更は lint が挙げるが、このレビューが確かめたので「確かめたい」を本流に渡さない
+        self.assertIn("codd を通らなかった変更 1", report)
+        self.assertNotIn("codd を通らずに入った変更", report.split("## 本流に渡すやりたいこと")[1])
         # 何も直さない
         self.assertEqual(git(self.impl, "status", "--porcelain").strip(), "")
 
     def test_review_reads_the_rules_for_design_items(self) -> None:
         commit(self.impl, {"docs/rules.md": "# 決まり\n\n- 失敗は例外で伝える\n"}, "rules")
         self.set_config(self.impl, guides=[{"use": "docs/rules.md"}])
+        self.run_pa(self.impl, "rule", "--all")   # レビューの前に読んだものは数えない
         self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
         for _ in self.review_items():
             rid = self.run_pa(self.impl, "review", "next").stdout.split()[1].split("（")[0]
@@ -4561,11 +4566,15 @@ class CoddTest(unittest.TestCase):
         self.assertIn("守る決まりを読んでいません: docs/rules.md", r.stdout)
         self.run_pa(self.impl, "rule", "--all")
         self.assertEqual(self.run_pa(self.impl, "review", "verify", "--part", "items").returncode, 0)
+        # レビューで読んだものを、あとで始める本流の計画の検査で数えない
+        self.run_pa(self.impl, "review", "report")
+        self.assertFalse((self.impl / ".codd/rules-read.json").exists())
 
     def test_review_says_none_when_nothing_to_look_at(self) -> None:
         commit(self.impl, {"setup.cfg": "[metadata]\n"}, "cfg")   # 名前も文書も持たないファイルには項目が出ない
         r = self.run_pa(self.impl, "review", "start", "--path", "setup.cfg", "--no-test")
         self.assertTrue(r.stdout.startswith("NONE"), r.stdout + r.stderr)
+        self.assertNotIn("答えの検査が通っていません", self.run_pa(self.impl, "review", "report").stdout)
         r = self.run_pa(self.impl, "review", "start", "--path", "nowhere", "--no-test")
         self.assertIn("に当たるファイルがありません", r.stderr)
 

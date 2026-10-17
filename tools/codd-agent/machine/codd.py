@@ -63,6 +63,7 @@ import argparse
 import difflib
 import hashlib
 import io
+import itertools
 import fnmatch
 import json
 import os
@@ -7828,8 +7829,11 @@ LINT_SECTIONS = (("壊れたパス", "paths"), ("文書の書式", "formats"), (
 LINT_SHOWN = 30
 
 
-def run_lint(ctx: Ctx, since: str, no_test: bool) -> tuple[list[str], str]:
-    """点検して .codd/lint.md に書き、（本流に渡すやりたいこと, 種類ごとの件数）を返す（レビューも使う）。"""
+def run_lint(ctx: Ctx, since: str, no_test: bool, skip: tuple[str, ...] = ()) -> tuple[list[str], str]:
+    """点検して .codd/lint.md に書き、（本流に渡すやりたいこと, 種類ごとの件数）を返す（レビューも使う）。
+
+    skip の種類は、見つけたものを書くが、やりたいことには数えない（レビューは、自分で確かめる変更を数えない）。
+    """
     found = {"paths": lint_paths(ctx), "formats": lint_formats(ctx),
              "tests": [] if no_test else lint_tests(ctx)}
     found["evidence"] = lint_evidence(ctx, not no_test)     # テストのあとに見る（テストが evidence を書き直す）
@@ -7839,7 +7843,7 @@ def run_lint(ctx: Ctx, since: str, no_test: bool) -> tuple[list[str], str]:
         if key == "tests" and no_test:
             continue
         lines += [f"## {title}", "", *([f"- {f}" for f, _ in found[key]] or ["- なし"]), ""]
-    asks = list(dict.fromkeys(a for key in found for _, a in found[key] if a))
+    asks = list(dict.fromkeys(a for key in found if key not in skip for _, a in found[key] if a))
     lines += ["## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
     ctx.data.mkdir(parents=True, exist_ok=True)
     write_text(ctx.data / "lint.md", "\n".join(lines))
@@ -7914,14 +7918,17 @@ def review_targets(ctx: Ctx, paths: list[str], since: str) -> list[tuple[str, st
             if not hit:
                 raise CoddError(f"{spec} に当たるファイルがありません（参照先のものは `名前:パス`）")
         return list(dict.fromkeys(out))
+    per_side = []
     for key, side in all_sides(ctx):
         rc, log = run(["git", "-c", "core.quotepath=false", "log", f"--since={since}", "--no-merges",
                        "--format=", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
-        names = [ln.strip() for ln in (log.splitlines() if rc == 0 else [])]
-        names += [rel for rel, h in dirty_files(side).items() if h != "deleted"]
-        out += [(key, rel) for rel in dict.fromkeys(names)
-                if rel and side.has(rel) and (side.path / rel).is_file() and not is_binary(side.path / rel)
-                and (is_code(ctx, key, rel) or is_test(ctx, key, rel) or review_is_doc(rel))]   # 項目の出るものだけ
+        names = [rel for rel, h in dirty_files(side).items() if h != "deleted"]   # 作業中のものを先に
+        names += [ln.strip() for ln in (log.splitlines() if rc == 0 else [])]     # 新しく変えたものから
+        per_side.append([(key, rel) for rel in dict.fromkeys(names)
+                         if rel and side.has(rel) and (side.path / rel).is_file() and not is_binary(side.path / rel)
+                         and (is_code(ctx, key, rel) or is_test(ctx, key, rel) or review_is_doc(rel))])   # 項目の出るものだけ
+    # 側ごとに交互に並べる（上限で切っても、参照先のファイルが自分のファイルに押し出されない）
+    out = [x for group in itertools.zip_longest(*per_side) for x in group if x]
     return list(dict.fromkeys(out))
 
 
@@ -7949,7 +7956,12 @@ def code_names(text: str) -> list[tuple[str, int]]:
         name = next((g for g in m.groups() if g), "") if m and not _LOCAL_VAR.match("+" + line) else ""
         if name and not name.startswith("_"):
             out.setdefault(name, i)
-    return list(out.items())[:REVIEW_NAMES]
+    # 外から呼べる字下げの無い定義を先に（メソッドの get・run のような短くよくある名前で上限を使い切らない）
+    lines = text.splitlines()
+    return sorted(out.items(), key=lambda x: lines[x[1] - 1][:1].isspace())[:REVIEW_NAMES]
+
+
+REVIEW_STOPWORDS = {"true", "false", "null", "none", "None", "nil", "undefined", "self", "this"}
 
 
 def doc_names(text: str) -> list[tuple[str, int]]:
@@ -7961,7 +7973,8 @@ def doc_names(text: str) -> list[tuple[str, int]]:
             fenced = fenced != bool(_FENCE.match(line))
             continue
         for name in name_terms(line):
-            if _WORDLIKE.match(name) and len(name) >= 3 and re.search(r"[A-Za-z]", name) and not name.isupper():
+            if (_WORDLIKE.match(name) and len(name) >= 3 and re.search(r"[A-Za-z]", name) and not name.isupper()
+                    and name not in REVIEW_STOPWORDS):
                 out.setdefault(name, i)
     return list(out.items())[:REVIEW_NAMES]
 
@@ -8002,7 +8015,7 @@ def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], 
         elif is_code(ctx, key, rel):
             own_docs = docs_for(ctx, key, rel)
             for name, line in code_names(text):
-                doc_hits = review_grep(ctx, name, docs)
+                doc_hits = sorted(review_grep(ctx, name, docs), key=lambda h: (h[0], h[1]) not in own_docs)
                 test_hits = review_grep(ctx, name, tests) if tests_on else []
                 here = (key, rel, line)
                 if doc_hits:
@@ -8204,6 +8217,13 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
     return [f"{'NG' if asks else 'OK'} レビュー: {counts}（全文: {DATA_DIRNAME}/review.md）", *out], asks
 
 
+def forget_review_reads(ctx: Ctx) -> None:
+    """守る決まりを読んだ控えを消す（本流の回が進んでいなければ）。レビューの前に読んだものをレビューで数えず、
+    レビューで読んだものを、あとで始める本流の計画の検査で数えない。"""
+    if active_plan(ctx.root) is None:
+        (ctx.data / RULES_READ).unlink(missing_ok=True)
+
+
 def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
     if args.step == "start":
         targets = review_targets(ctx, args.path or [], args.since)
@@ -8211,8 +8231,10 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
                  "dropped": 0, "shown": []}
         if review_dir(ctx).is_dir():
             shutil.rmtree(review_dir(ctx))   # 前の回の答えを使い回させない
-        asks, counts = run_lint(ctx, args.since, args.no_test)
+        # codd を通らなかった変更は、このレビューが自分で確かめるので、やりたいことに数えない
+        asks, counts = run_lint(ctx, args.since, args.no_test, skip=("bypassed", "drifted"))
         state["lint_asks"], state["lint_counts"] = asks, counts
+        forget_review_reads(ctx)
         state["targets"] = [side_label(ctx, k, r) for k, r in targets[:REVIEW_MAX_FILES]]
         state["skipped_files"] = [side_label(ctx, k, r) for k, r in targets[REVIEW_MAX_FILES:]]
         state["items"], state["dropped"] = review_items(ctx, targets[:REVIEW_MAX_FILES])
@@ -8234,6 +8256,8 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
         done = {m.group(1) for b in lines if (m := _REVIEW_ANSWER.match(b.split("\n")[0]))}
         item = next((i for i in state["items"] if i["id"] == args.id), None) if args.id else \
             next((i for i in state["items"] if i["id"] not in done), None)
+        if args.id and item is None:
+            raise CoddError(f"{args.id} という項目はありません（R01〜R{len(state['items']):02d}）")
         if item is None:
             print(f"DONE すべての項目に答えました。`{DATA_DIRNAME}/{REVIEW_DIR}/{REVIEW_ANSWERS}` を検査します"
                   "（`codd.py review verify --part items`）")
@@ -8255,7 +8279,8 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
         print("OK 項目にすべて答えました" if args.part == "items" else "OK レビューの答えは決まった形です")
         return 0
     lines, _ = review_report(ctx, state)
-    unfinished = review_problems(ctx, state, "all")
+    unfinished = review_problems(ctx, state, "all") if state["items"] else []   # 項目が無ければ答えるものも無い
+    forget_review_reads(ctx)
     if unfinished:
         lines[1:1] = [f"（答えの検査が通っていません: {unfinished[0]}{' ほか' if len(unfinished) > 1 else ''}）"]
     write_text(ctx.data / "review.md", "\n".join(lines[1:]))
