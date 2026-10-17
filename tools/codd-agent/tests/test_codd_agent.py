@@ -4504,12 +4504,13 @@ class CoddTest(unittest.TestCase):
         commit(self.impl, {"src/app.py": "def hello():\n    return 2\n\n\ndef bye():\n    return 0\n"}, "bye")
         r = self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(r.stdout.startswith("OK レビュー: ファイル 1 件"))
+        self.assertTrue(r.stdout.startswith("OK レビュー: ファイル 2 件"), r.stdout)   # コードと、つながる文書
         items = self.review_items()
         kinds = {(i["kind"], i["name"]) for i in items.values()}
         # 文書も述べている名前は突き合わせ、文書・テストに出てこない名前は漏れ、コードのファイルには設計を問う
-        self.assertEqual(kinds, {("矛盾", "hello"), ("漏れ", "bye"), ("漏れ", "hello#test"), ("漏れ", "bye#test"),
-                                 ("設計の不備", "src/app.py")})
+        self.assertLessEqual({("矛盾", "hello"), ("漏れ", "bye"), ("漏れ", "hello#test"), ("漏れ", "bye#test"),
+                              ("設計の不備", "src/app.py")}, kinds)
+        self.assertEqual(next(iter(items.values()))["kind"], "設計の不備")   # 1 ファイルの上限で落とさないよう先に置く
         by_name = {i["name"]: rid for rid, i in items.items()}
         # 示していない項目には答えさせない（弱いモデルが読まずにまとめて答えるのを止める）
         self.review_answer(f"- {by_name['hello']} 問題なし: src/app.py:1 — 読んだ")
@@ -4518,10 +4519,11 @@ class CoddTest(unittest.TestCase):
         self.assertIn("`codd.py review next` で見ずに答えています", r.stdout)
         self.assertIn("答えていない項目", r.stdout)
         (self.impl / ".codd/review/answers.md").write_text("# 項目への答え\n\n", encoding="utf-8")
-        shown = self.run_pa(self.impl, "review", "next").stdout
-        self.assertTrue(shown.startswith(f"ITEM {by_name['hello']}"))
+        first = self.run_pa(self.impl, "review", "next").stdout
+        self.assertTrue(first.startswith("ITEM R01"))
+        self.assertEqual(self.run_pa(self.impl, "review", "next").stdout, first)   # 答えるまで同じ項目を示す
+        shown = self.run_pa(self.impl, "review", "next", "--id", by_name["hello"]).stdout
         self.assertIn("hello は 1 を返す。", shown)          # 相手の側の箇所を前後ごと示す
-        self.assertEqual(self.run_pa(self.impl, "review", "next").stdout, shown)   # 答えるまで同じ項目を示す
         # 根拠は項目のファイルの実在する行。問題には「やりたいこと」が要る
         self.review_answer(f"- {by_name['hello']} 問題: docs/api.md:99 — 実装は 2、設計書は 1")
         r = self.run_pa(self.impl, "review", "verify", "--part", "items")
@@ -4548,7 +4550,7 @@ class CoddTest(unittest.TestCase):
                            "  - やりたいこと: bye の役目を決めたい")
         self.assertEqual(self.run_pa(self.impl, "review", "verify").returncode, 0)
         r = self.run_pa(self.impl, "review", "report")
-        self.assertTrue(r.stdout.startswith("NG レビュー: 漏れ 0、矛盾 1、設計の不備 1、その他 0、判断できない 3"))
+        self.assertTrue(r.stdout.startswith("FOUND レビュー: 漏れ 0、矛盾 1、設計の不備 1、その他 0、判断できない 3"))
         report = (self.impl / ".codd/review.md").read_text(encoding="utf-8")
         self.assertIn("- hello の戻り値を、実装と設計書で合わせたい", report.split("## 本流に渡すやりたいこと")[1])
         self.assertIn("- bye の役目を決めたい", report)
@@ -4573,6 +4575,41 @@ class CoddTest(unittest.TestCase):
         # レビューで読んだものを、あとで始める本流の計画の検査で数えない
         self.run_pa(self.impl, "review", "report")
         self.assertFalse((self.impl / ".codd/rules-read.json").exists())
+
+    def test_review_looks_at_constants_and_skips_empty_files(self) -> None:
+        commit(self.impl, {"src/app.py": "TIMEOUT_SEC = 10\n\n\ndef hello():\n    return 2\n", "src/__init__.py": ""}, "cfg")
+        commit(self.design, {"docs/api.md": "## hello\n\n`hello` は 1 を返す。待ちは `TIMEOUT_SEC`（30 秒）。\n\n"
+                                            "`restock` もある。\n\n実装は `src/app.py`。\n"}, "doc")
+        self.run_pa(self.impl, "review", "start", "--path", "src", "--no-test")
+        state = json.loads((self.impl / ".codd/review/state.json").read_text(encoding="utf-8"))
+        self.assertNotIn("src/__init__.py", state["targets"])            # 空のファイルには見るものが無い
+        self.assertTrue(any(t.endswith("docs/api.md") for t in state["targets"]))   # コードを挙げても、つながる文書を見る
+        kinds = {(i["kind"], i["name"]) for i in state["items"]}
+        self.assertIn(("矛盾", "TIMEOUT_SEC"), kinds)                     # 設定の値の食い違い
+        self.assertIn(("漏れ", "restock"), kinds)                         # 文書にだけある名前
+
+    def test_review_test_gaps_cite_tests_and_same_roots_are_not_repeated(self) -> None:
+        commit(self.impl, {"src/app.py": "def hello():\n    return 2\n\n\ndef bye():\n    return 0\n",
+                           "tests/test_app.py": "from src.app import bye\n\n\ndef test_bye():\n    assert bye() == 0\n"}, "t")
+        self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
+        by_name = {i["name"]: rid for rid, i in self.review_items().items()}
+        for name, rid in by_name.items():
+            self.run_pa(self.impl, "review", "next", "--id", rid)
+            if name == "hello#test":   # テストが無いことの根拠に、テストのファイルを挙げてよい
+                self.review_answer(f"- {rid} 問題: tests/test_app.py:1 — bye しか呼ばない\n  - やりたいこと: hello のテストを足したい")
+            elif name == "hello":
+                self.review_answer(f"- {rid} 問題: src/app.py:2 — 実装は 2\n  - やりたいこと: hello の戻り値を合わせたい")
+            elif name == "bye":
+                self.review_answer(f"- {rid} 問題: src/app.py:5 — 文書に無い\n  - やりたいこと: {by_name['hello']} と同じ")
+            else:
+                self.review_answer(f"- {rid} 問題なし: src/app.py:1 — 読んだ")
+        r = self.run_pa(self.impl, "review", "verify", "--part", "items")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        out = self.run_pa(self.impl, "review", "report").stdout
+        self.assertTrue(out.startswith("FOUND レビュー"), out)   # 見つけたことを、検査の失敗と取り違えない
+        asks = out.split("## 本流に渡すやりたいこと")[1]
+        self.assertIn("hello のテストを足したい", asks)
+        self.assertNotIn("と同じ", asks)
 
     def test_review_says_none_when_nothing_to_look_at(self) -> None:
         commit(self.impl, {"setup.cfg": "[metadata]\n"}, "cfg")   # 名前も文書も持たないファイルには項目が出ない
@@ -4632,10 +4669,13 @@ class CoddTest(unittest.TestCase):
         twin.unlink()
         self.assertEqual(self.run_pa(self.impl, "next", "--verify").returncode, 0)
         self.assertIn(f"- {ahead.name} — hello の戻り値を 2 にしたい", self.run_pa(self.impl, "next").stdout)
+        commit(self.impl, {"src/app.py": "def hello():\n    return 3\n"}, "changed after")   # 立てたあとに変わった
         # 本流が引き継ぐと、進めている計画になり、next/ から消える
         r = self.run_pa(self.impl, "draft", "--next", ahead.name)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("立てておいた計画から始めます", r.stdout)
+        self.assertIn("立てたあとに変わったファイル", r.stdout)   # 読み直す箇所を示す
+        self.assertIn("  - src/app.py", r.stdout)
         plans = list((self.impl / ".plans").glob("*-hello-returns-two.md"))
         self.assertEqual(len(plans), 1)
         self.assertIn("hello の戻り値を 2 にしたい", plans[0].read_text(encoding="utf-8"))

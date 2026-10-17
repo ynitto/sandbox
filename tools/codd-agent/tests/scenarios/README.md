@@ -15,6 +15,7 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 | [three-repos-guides.md](three-repos-guides.md) | 画面・サーバー（Go）・設計書の 3 つのリポジトリと手引き | 3 つにまたがる変更、手引きの検査と確かめごと、設計書の側からの変更 |
 | [semantic-graph.md](semantic-graph.md) | 税の計算（Python）と設計書・運用メモ・e2e のケース | 文書を LLM で読んだグラフ、必須・要判断・参考の分け方、判断済みを出さない |
 | [review-check.md](review-check.md) | 小さな関数と設計書・テスト（codd を通らずに変えたもの） | 確かめる、項目と答えの検査、次の計画を立てて引き継ぐ、変更が無ければ遡る |
+| [review-usecases.md](review-usecases.md) | 在庫の引き当てサービス（Python）と設計書。漏れ・矛盾・設計の不備を 7 つ仕込む | 確かめる流れが役に立つか（拾えた数とノイズ）、弱いモデルとの比べ方、立てた計画を本流で進める |
 
 ## 再生する
 
