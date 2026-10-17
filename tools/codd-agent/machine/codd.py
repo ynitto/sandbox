@@ -63,6 +63,7 @@ import argparse
 import difflib
 import hashlib
 import io
+import itertools
 import fnmatch
 import json
 import os
@@ -80,6 +81,8 @@ from pathlib import Path, PurePosixPath
 
 MACHINE_DIR = Path(__file__).resolve().parent
 MACHINE_REL = ".statemachine/codd"
+# 確かめる・手入れするステートマシン（init.py が本流の隣に置く）。これもマシンの一部として数えない。
+REVIEW_REL = ".statemachine/codd-review"
 # init.py が書くカスタムエージェント。マシンの一部なので、探す・変わったかを測る対象にしない。
 AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md",
                ".kiro/agents/codd-apply.json", ".github/agents/codd-apply.agent.md",
@@ -94,7 +97,7 @@ DATA_DIRNAME = ".codd"
 PLAN_DIR = ".plans"
 LEGACY_PLAN_DIRS = ("docs/.plans", "docs/.plan")
 RESULT_HEADING = "## 結果"
-MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR, *LEGACY_PLAN_DIRS]
+MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, REVIEW_REL, *AGENT_FILES, PLAN_DIR, *LEGACY_PLAN_DIRS]
 _PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
@@ -3598,8 +3601,9 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     drift = not is_none(bodies["## ずれ"])
     ref_change = not is_none(bodies["## 参照先の変更案"])
     impact = not is_none(bodies["## 影響範囲"])
-    if drift and not ref_change:
-        problems.append("ずれがあるのに、参照先の変更案が「なし」です（ずれを残すなら、ずれではなくその他に書く）")
+    # ずれは、参照先を直しても、自分を参照先に合わせても解ける。どちらの案も無いときだけ落とす
+    if drift and not ref_change and is_none(bodies["## 自分の変更案"]):
+        problems.append("ずれがあるのに、自分の変更案も参照先の変更案も「なし」です（ずれを残すなら、ずれではなくその他に書く）")
     if not is_none(bodies["## 自分の変更案"]):
         for item in items(bodies["## 自分の変更案"]) or [bodies["## 自分の変更案"]]:
             if not cited_own(ctx, item, allow_new=True):
@@ -7287,8 +7291,55 @@ SUMMARY_ITEMS = 12
 SUMMARY_WIDTH = 120
 
 
+NEXT_DIR = "next"     # 立てておいた次の計画（.plans/next/）。進めている計画にも記録にも数えない
+NEXT_MAX = 5         # 立てておく計画の上限（古いものを使うか消してから足す）
+NEXT_MARK = "立てたときのコミット:"
+
+
+def next_plans(ctx: Ctx) -> list[Path]:
+    folder = ctx.root / PLAN_DIR / NEXT_DIR
+    return sorted(folder.glob("*.md")) if folder.is_dir() else []
+
+
+def plan_request(path: Path) -> str:
+    """計画の「やりたいこと」（1 行にまとめる。書いていなければ空）。"""
+    _, bodies = sections(compact_plan(read_text(path) or ""), PLAN_HEADINGS)
+    body = bodies.get("## やりたいこと", "")
+    return "" if is_none(body) else " ".join(re.sub(r"^[-*]\s+", "", ln.strip()) for ln in body.splitlines() if ln.strip())
+
+
+def new_plan_path(folder: Path, name: str) -> Path:
+    base = f"{time.strftime('%Y-%m-%d-%H%M')}-{name}"
+    dest, n = folder / f"{base}.md", 2
+    while dest.exists():
+        dest, n = folder / f"{base}-{n}.md", n + 1
+    folder.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
-    """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
+    """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。
+
+    --ahead は次の計画として .plans/next/ に置き（進めている計画には触れない）、--next はそこから 1 つを
+    進めている計画に移す（立てておいた計画から始める。検査は今のコードで測り直す）。
+    """
+    if args.ahead:
+        name = (args.name or "").strip().lower()
+        if not _PLAN_NAME.match(name) or len(name) > 40:
+            print("計画の名前を、英語の短い名前で渡してください（例: `--name hello-returns-two`）", file=sys.stderr)
+            return 2
+        if len(next_plans(ctx)) >= NEXT_MAX:
+            print(f"立てておいた計画が上限（{NEXT_MAX}）に達しています。古いものを進めるか消してから足してください: "
+                  + ", ".join(p.relative_to(ctx.root).as_posix() for p in next_plans(ctx)), file=sys.stderr)
+            return 1
+        dest = new_plan_path(ctx.root / PLAN_DIR / NEXT_DIR, name)
+        shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
+        # 立てたときのコミットを控える（進めるときに、そのあと変わったファイルを示すため）
+        marks = " ".join(f"{k or '.'}={head(side.path)}" for k, side in all_sides(ctx) if head(side.path))
+        with dest.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(f"\n<!-- {NEXT_MARK} {marks} -->\n")
+        print(f"次の計画のひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（進めるときに測り直す）")
+        return 0
     if ctx.plan.is_file() and not run_ended(ctx) and taken_over(ctx):
         log_decision(ctx, "STOP", TAKEN_OVER)
     if ctx.plan.is_file() and run_ended(ctx):
@@ -7298,6 +7349,13 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     if ctx.plan.is_file() and not args.new:
         print(f"計画はもうあります: {plan_rel(ctx)}（直す見出しだけを書き換える。最初から書き直すときは --new）")
         return 0
+    ahead = None
+    if args.next:
+        ahead = next((p for p in next_plans(ctx) if args.next in (p.name, p.stem, p.relative_to(ctx.root).as_posix())), None)
+        if ahead is None:
+            print(f"立てておいた計画に {args.next} がありません（`codd.py next` で一覧）", file=sys.stderr)
+            return 2
+        args.name = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "", ahead.stem)   # 日時を付け直す
     name = (args.name or "").strip().lower()
     if not _PLAN_NAME.match(name) or len(name) > 40:
         print("計画の名前を、英語の短い名前で渡してください（小文字・数字・ハイフン。40 文字まで。"
@@ -7307,12 +7365,11 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     keep_baseline = ctx.plan.is_file() and changed_in_this_run(ctx)
     if ctx.plan.is_file():
         ctx.plan.unlink()   # --new: 進めていた計画を捨てて書き直す
-    base = f"{time.strftime('%Y-%m-%d-%H%M')}-{name}"
-    dest, n = ctx.root / PLAN_DIR / f"{base}.md", 2
-    while dest.exists():
-        dest, n = ctx.root / PLAN_DIR / f"{base}-{n}.md", n + 1
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
+    dest = new_plan_path(ctx.root / PLAN_DIR, name)
+    if ahead is not None:
+        shutil.move(str(ahead), dest)   # 立てておいた計画は、進める計画になって next/ から消える
+    else:
+        shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
     if keep_baseline:
         before_file = ctx.data / "before.json"
         stat = before_file.stat()
@@ -7321,7 +7378,64 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
         write_text(before_file, json.dumps(state, indent=2) + "\n")
         os.utime(before_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))   # 変える段の申告・読んだ記録を古くしない
         print("この回で変えた分は残し、変える前の印から数えます（捨てるなら `rollback` で戻してから練り直す）")
-    print(f"ひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
+    if ahead is not None:
+        print(f"立てておいた計画から始めます: {dest.relative_to(ctx.root).as_posix()}（立てたあとにコードや文書が"
+              "変わっていることがあるので、いつもどおり読み込み・探してから、検査の指摘を直す）")
+        if moved := changed_since_ahead(ctx, read_text(dest) or ""):
+            print("立てたあとに変わったファイル（計画が触れていれば、そこを読み直して見出しを直す）:")
+            print("\n".join(f"  - {x}" for x in moved[:20]) + (f"\n  ほか {len(moved) - 20} 件" if len(moved) > 20 else ""))
+    else:
+        print(f"ひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
+    return 0
+
+
+def changed_since_ahead(ctx: Ctx, text: str) -> list[str]:
+    """次の計画を立てたあとに、コミットか作業中で変わったファイル（立てたときのコミットの控えから）。"""
+    m = re.search(rf"<!-- {NEXT_MARK} (.*?) -->", text)
+    marks = dict(x.split("=", 1) for x in (m.group(1).split() if m else []) if "=" in x)
+    out: list[str] = []
+    for key, side in all_sides(ctx):
+        sha = marks.get(key or ".")
+        if not sha:
+            continue
+        rc, log = run(["git", "-c", "core.quotepath=false", "diff", "--name-only", sha, "--", *side.pathspec()],
+                      side.path, GIT_TIMEOUT)
+        names = [ln.strip() for ln in log.splitlines()] if rc == 0 else []
+        names += [rel for rel in dirty_files(side)]
+        out += [side_label(ctx, key, rel) for rel in dict.fromkeys(names)
+                if rel and side.has(rel) and not rel.startswith(PLAN_DIR + "/")]
+    return list(dict.fromkeys(out))
+
+
+def cmd_next(ctx: Ctx, args: argparse.Namespace) -> int:
+    """立てておいた次の計画の一覧。--verify は、どれもやりたいことを書き、同じやりたいことが重なっていないかを確かめる。"""
+    plans = next_plans(ctx)
+    if args.verify:
+        problems, seen = [], {}
+        for path in plans:
+            rel = path.relative_to(ctx.root).as_posix()
+            want = plan_request(path)
+            if not want:
+                problems.append(f"{rel}: ## やりたいこと を書いていません（本流に渡す依頼の 1〜3 行）")
+            elif want in seen:
+                problems.append(f"{rel}: {seen[want]} と同じやりたいことです（どちらかを消す）")
+            seen.setdefault(want, rel)
+        if problems:
+            print(f"NG 立てておいた計画に {len(problems)} 件の問題があります")
+            for prob in problems:
+                print(f"- {prob}")
+            return 1
+        print(f"OK 立てておいた計画: {len(plans)} 件")
+        return 0
+    if not plans:
+        print("NONE 立てておいた計画はありません")
+        return 0
+    print(f"NEXT 立てておいた計画: {len(plans)} 件（古い順。進めるときは、そのやりたいことを依頼にして本流を始め、"
+          "計画の段で `codd.py draft --next ファイル名` を使う）")
+    for path in plans:
+        moved = changed_since_ahead(ctx, read_text(path) or "")
+        note = f"（立てたあとに {len(moved)} ファイル変わった。進めるときに読み直す）" if moved else ""
+        print(f"- {path.name} — {plan_request(path) or '（やりたいこと未記入）'}{note}")
     return 0
 
 
@@ -7828,27 +7942,523 @@ LINT_SECTIONS = (("壊れたパス", "paths"), ("文書の書式", "formats"), (
 LINT_SHOWN = 30
 
 
-def cmd_lint(ctx: Ctx, args: argparse.Namespace) -> int:
+def run_lint(ctx: Ctx, since: str, no_test: bool, skip: tuple[str, ...] = ()) -> tuple[list[str], str]:
+    """点検して .codd/lint.md に書き、（本流に渡すやりたいこと, 種類ごとの件数）を返す（レビューも使う）。
+
+    skip の種類は、見つけたものを書くが、やりたいことには数えない（レビューは、自分で確かめる変更を数えない）。
+    """
     found = {"paths": lint_paths(ctx), "formats": lint_formats(ctx),
-             "tests": [] if args.no_test else lint_tests(ctx)}
-    found["evidence"] = lint_evidence(ctx, not args.no_test)     # テストのあとに見る（テストが evidence を書き直す）
-    found["bypassed"], found["drifted"] = lint_bypassed(ctx, args.since)
-    lines = [f"# 点検の結果（{time.strftime('%Y-%m-%d %H:%M')}。変更は {args.since} から）", ""]
+             "tests": [] if no_test else lint_tests(ctx)}
+    found["evidence"] = lint_evidence(ctx, not no_test)     # テストのあとに見る（テストが evidence を書き直す）
+    found["bypassed"], found["drifted"] = lint_bypassed(ctx, since)
+    lines = [f"# 点検の結果（{time.strftime('%Y-%m-%d %H:%M')}。変更は {since} から）", ""]
     for title, key in LINT_SECTIONS:
-        if key == "tests" and args.no_test:
+        if key == "tests" and no_test:
             continue
         lines += [f"## {title}", "", *([f"- {f}" for f, _ in found[key]] or ["- なし"]), ""]
-    asks = list(dict.fromkeys(a for key in found for _, a in found[key] if a))
+    asks = list(dict.fromkeys(a for key in found if key not in skip for _, a in found[key] if a))
     lines += ["## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
     ctx.data.mkdir(parents=True, exist_ok=True)
     write_text(ctx.data / "lint.md", "\n".join(lines))
-    counts = "、".join(f"{t} {len(found[k])}" for t, k in LINT_SECTIONS if not (k == "tests" and args.no_test))
+    return asks, "、".join(f"{t} {len(found[k])}" for t, k in LINT_SECTIONS if not (k == "tests" and no_test))
+
+
+def cmd_lint(ctx: Ctx, args: argparse.Namespace) -> int:
+    asks, counts = run_lint(ctx, args.since, args.no_test)
     print(f"{'NG' if asks else 'OK'} 点検: {counts}（全文: {DATA_DIRNAME}/lint.md）")
     for a in asks[:LINT_SHOWN]:
         print(f"- {a}")
     if len(asks) > LINT_SHOWN:
         print(f"- ほか {len(asks) - LINT_SHOWN} 件（{DATA_DIRNAME}/lint.md）")
     return 1 if asks else 0
+
+
+# ---------------------------------------------------------------- レビュー（頼まれたときに読むだけで確かめる。本流とは別）
+#
+# 弱いモデルでも同じ深さで見られるよう、見る項目（観点 × 箇所）は codd.py が決めて 1 件ずつ示し、答えの形と根拠の箇所を
+# 機械で確かめる。項目で拾えないものは、最後に自由なレビューとして足させる。何も直さない（書くのは .codd/review/ だけ）。
+
+REVIEW_DIR = "review"
+REVIEW_STATE = "state.json"
+REVIEW_ANSWERS = "answers.md"
+REVIEW_WINDOWS = ("7 days ago", "30 days ago", "90 days ago", "365 days ago", "")   # 変わったものが無ければ遡る（"" は全履歴）
+REVIEW_MAX_FILES = 20      # 1 回に見るファイル（残りは「見なかったもの」として伝える）
+REVIEW_MAX_ITEMS = 40      # 1 回に答える項目
+REVIEW_PER_FILE = 8        # 1 ファイルから出す項目（1 つのファイルで項目を使い切らない）
+REVIEW_NAMES = 8           # 1 ファイルから拾う名前
+REVIEW_KINDS = ("漏れ", "矛盾", "設計の不備")
+REVIEW_FREE_KINDS = (*REVIEW_KINDS, "その他")
+REVIEW_VERDICTS = ("問題なし", "問題", "判断できない")   # 「問題なし」を先に照らす（「問題」で始まるため）
+REVIEW_FREE = "自由レビュー"
+_REVIEW_ANSWER = re.compile(r"^- (R\d+) (問題なし|問題|判断できない): (\S+) — (\S.*)$")
+_REVIEW_FREE_LINE = re.compile(r"^- (漏れ|矛盾|設計の不備|その他): (\S+) — (\S.*)$")
+_REVIEW_NONE = re.compile(r"^- なし: \S")
+_REVIEW_ASK = re.compile(r"^\s+- やりたいこと: \S")
+_REVIEW_SAME = re.compile(r"^R\d+(?:\s*[/・、]\s*R\d+)*\s*と同じ")
+_REVIEW_DEF = re.compile("|".join(p.pattern.replace("^[+-]", "^") for p in _DIFF_TERMS[:5])
+                         + r"|^([A-Z][A-Z0-9_]{2,})\s*(?::[^=]*)?=")   # 字下げの無い大文字の定数（設定の値など）
+
+
+def review_dir(ctx: Ctx) -> Path:
+    return ctx.data / REVIEW_DIR
+
+
+def review_state(ctx: Ctx) -> dict:
+    path = review_dir(ctx) / REVIEW_STATE
+    if not path.is_file():
+        raise CoddError("レビューを始めていません（`codd.py review start` を先に実行してください）")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_review_state(ctx: Ctx, state: dict) -> None:
+    review_dir(ctx).mkdir(parents=True, exist_ok=True)
+    write_text(review_dir(ctx) / REVIEW_STATE, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+
+
+def review_targets(ctx: Ctx, paths: list[str], since: str) -> list[tuple[str, str]]:
+    """見るファイル。挙げたもの（フォルダはその下）か、期間のうちにコミットで変わったものと作業中のもの。
+    コードには、パスでつながる文書を続けて足す（文書にだけある名前の漏れを、文書が変わっていなくても見る）。"""
+    found = _review_targets(ctx, paths, since)
+    out = [(k, r) for k, r in found if (read_text(side_of(ctx, k).path / r) or "").strip()]   # 空のファイルは見ない
+    for k, r in list(out):
+        if is_code(ctx, k, r):
+            out += docs_for(ctx, k, r)
+    return list(dict.fromkeys(out))
+
+
+def _review_targets(ctx: Ctx, paths: list[str], since: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    if paths:
+        refs = {r.name for r in ctx.refs}
+        for spec in paths:
+            name, sep, rest = spec.partition(":")
+            sides = [(name, ctx.ref(name))] if sep and name in refs else all_sides(ctx)
+            rel = (rest if sep and name in refs else spec).strip().rstrip("/").removeprefix("./")
+            hit = False
+            for key, side in sides:
+                files = [f for f in tracked(side) if f == rel or f.startswith(rel + "/") or not rel or rel == "."]
+                out += [(key, f) for f in files]
+                hit = hit or bool(files)
+                if hit and rel not in ("", "."):
+                    break   # 自分にあれば参照先は見ない（名前を付ければ参照先を選べる。`.` はどの側も全体）
+            if not hit:
+                raise CoddError(f"{spec} に当たるファイルがありません（参照先のものは `名前:パス`）")
+        return list(dict.fromkeys(out))
+    per_side = []
+    for key, side in all_sides(ctx):
+        rc, log = run(["git", "-c", "core.quotepath=false", "log", *([f"--since={since}"] if since else []), "--no-merges",
+                       "--format=", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
+        names = [rel for rel, h in dirty_files(side).items() if h != "deleted"]   # 作業中のものを先に
+        names += [ln.strip() for ln in (log.splitlines() if rc == 0 else [])]     # 新しく変えたものから
+        per_side.append([(key, rel) for rel in dict.fromkeys(names)
+                         if rel and side.has(rel) and (side.path / rel).is_file() and not is_binary(side.path / rel)
+                         and (is_code(ctx, key, rel) or is_test(ctx, key, rel) or review_is_doc(rel))])   # 項目の出るものだけ
+    # 側ごとに交互に並べる（上限で切っても、参照先のファイルが自分のファイルに押し出されない）
+    out = [x for group in itertools.zip_longest(*per_side) for x in group if x]
+    return list(dict.fromkeys(out))
+
+
+def review_grep(ctx: Ctx, name: str, want) -> list[tuple[str, str, int]]:
+    """名前が出てくる行（want(key, rel) が真のファイルだけ）。"""
+    out = []
+    for key, side in all_sides(ctx):
+        for ln in git_grep(side, ["--untracked", "-n", "-I", "-F", *grep_word(name), "-e", name]):
+            rel, _, rest = ln.partition(":")
+            num = rest.partition(":")[0]
+            if num.isdigit() and want(key, rel):
+                out.append((key, rel, int(num)))
+    return out
+
+
+def review_is_doc(rel: str) -> bool:
+    return rel.lower().endswith(DOC_EXTS)
+
+
+def code_names(text: str) -> list[tuple[str, int]]:
+    """コードで定義した名前と行（`_` で始まるものと、関数の中の変数は除く）。"""
+    out: dict[str, int] = {}
+    exports = bool(re.search(r"^export\s", text, re.MULTILINE))
+    for i, line in enumerate(text.splitlines(), 1):
+        m = _REVIEW_DEF.match(line)
+        name = next((g for g in m.groups() if g), "") if m and not _LOCAL_VAR.match("+" + line) else ""
+        if exports and _MODULE_VAR.match(line):
+            continue   # export するモジュールの、export しない変数は外から見えない
+        if name and not name.startswith("_"):
+            out.setdefault(name, i)
+    # 外から呼べる字下げの無い定義を先に（メソッドの get・run のような短くよくある名前で上限を使い切らない）
+    lines = text.splitlines()
+    return sorted(out.items(), key=lambda x: lines[x[1] - 1][:1].isspace())[:REVIEW_NAMES]
+
+
+_MODULE_VAR = re.compile(r"^(?:const|let|var)\s")
+REVIEW_STOPWORDS = {"true", "false", "null", "none", "None", "nil", "undefined", "self", "this"}
+
+
+def doc_names(text: str) -> list[tuple[str, int]]:
+    """文書が `…` で書いた名前と行（コードブロックの中は例として外す）。"""
+    out: dict[str, int] = {}
+    fenced = False
+    for i, line in enumerate(text.splitlines(), 1):
+        if _FENCE.match(line) or fenced:
+            fenced = fenced != bool(_FENCE.match(line))
+            continue
+        for name in name_terms(line):
+            if (_WORDLIKE.match(name) and len(name) >= 3 and re.search(r"[A-Za-z]", name) and not name.isupper()
+                    and name not in REVIEW_STOPWORDS):
+                out.setdefault(name, i)
+    return list(out.items())[:REVIEW_NAMES]
+
+
+def defines(ctx: Ctx, hit: tuple[str, str, int], name: str) -> bool:
+    """その行が name を定義しているか。"""
+    lines = (read_text(side_of(ctx, hit[0]).path / hit[1]) or "").splitlines()
+    m = _REVIEW_DEF.match(lines[hit[2] - 1].lstrip()) if 0 < hit[2] <= len(lines) else None
+    return bool(m) and name in m.groups()
+
+
+def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], int]:
+    """見る項目（観点 × 箇所）と、上限で出さなかった数。項目の箇所が、答えの根拠に挙げてよいファイル。"""
+    items: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    dropped = 0
+    has_docs = bool(ctx.refs)
+    tests_on = tests_enabled(ctx)
+
+    def add(kind: str, name: str, question: str, locs: list[tuple[str, str, int]], mine: list[dict]) -> None:
+        nonlocal dropped
+        if (kind, name) in seen:
+            return
+        seen.add((kind, name))
+        if len(mine) >= REVIEW_PER_FILE or len(items) >= REVIEW_MAX_ITEMS:
+            dropped += 1
+            return
+        item = {"id": f"R{len(items) + 1:02d}", "kind": kind, "name": name, "question": question,
+                "locs": [list(x) for x in dict.fromkeys(locs)]}
+        items.append(item)
+        mine.append(item)
+
+    for key, rel in targets:
+        side = side_of(ctx, key)
+        text = read_text(side.path / rel) or ""
+        mine: list[dict] = []
+        docs = lambda k, r: review_is_doc(r) and side_of(ctx, k).has(r)            # noqa: E731
+        tests = lambda k, r: is_test(ctx, k, r)                                    # noqa: E731
+        code = lambda k, r: is_code(ctx, k, r)                                     # noqa: E731
+        if is_test(ctx, key, rel):
+            linked_docs = sorted(h for h in linked(ctx, key, {rel}) if review_is_doc(h[1]))
+            add("漏れ", rel, "このテストが確かめていること（期待する値・失敗・境界）は、文書とコードに合っているか。"
+                "確かめ漏れ（失敗のとき・境界・空のとき）はないか",
+                [(key, rel, 1), *((k, r, 1) for k, r in linked_docs[:2])], mine)
+        elif is_code(ctx, key, rel):
+            own_docs = docs_for(ctx, key, rel)
+            # 設計の不備をファイルの最初に置く（名前の項目で 1 ファイルの上限を使い切らない）
+            rules = ", ".join(f"`{n + ':' if n else ''}{r}`" for n, r in ctx.rule_files()) or "なし"
+            add("設計の不備", rel, "失敗のとき・境界（空・最大・重複）・同時に動くときの扱いが抜けていないか。"
+                f"責務が重なっていないか。守る決まり（{rules}）や参照先の前提・制約に反していないか",
+                [(key, rel, 1), *((k, r, 1) for k, r in own_docs[:2])], mine)
+            for name, line in code_names(text):
+                doc_hits = sorted(review_grep(ctx, name, docs), key=lambda h: (h[0], h[1]) not in own_docs)
+                test_hits = review_grep(ctx, name, tests) if tests_on else []
+                here = (key, rel, line)
+                if doc_hits:
+                    add("矛盾", name, f"`{name}` について、コード・文書・テストが同じことを述べているか"
+                        "（値・条件・順番・戻り値・失敗のときの振る舞い）", [here, *doc_hits[:2], *test_hits[:1]], mine)
+                elif has_docs:
+                    add("漏れ", name, f"`{name}` が文書に出てこない。利用者や呼び出し元に見える振る舞いなら文書に要る"
+                        "（内部だけの名前なら問題なし）", [here, *((k, r, 1) for k, r in own_docs[:2])], mine)
+                if tests_on and not test_hits and not name.isupper():   # 定数は使う側のテストで確かめる
+                    add("漏れ", f"{name}#test", f"`{name}` がテストに出てこない。振る舞いを確かめるテストが要るか"
+                        "（ほかのテストを通して確かめているなら、その箇所を根拠に問題なし）", [here], mine)
+        elif review_is_doc(rel):
+            for name, line in doc_names(text):
+                code_hits = sorted(review_grep(ctx, name, code), key=lambda h: not defines(ctx, h, name))   # 定義を先に
+                test_hits = review_grep(ctx, name, tests) if tests_on else []
+                here = (key, rel, line)
+                if code_hits and not defines(ctx, code_hits[0], name):
+                    continue   # コードで定義していない名前（引数・項目名など）は、定義した名前の項目が見る
+                if code_hits:
+                    add("矛盾", name, f"`{name}` について、文書・コード・テストが同じことを述べているか"
+                        "（値・条件・順番・戻り値・失敗のときの振る舞い）", [here, *code_hits[:2], *test_hits[:1]], mine)
+                elif not test_hits and not any(r != rel for _, r, _ in review_grep(ctx, name, docs)):
+                    add("漏れ", name, f"文書の `{name}` を、コードもテストもほかの文書も持たない"
+                        "（まだ作っていない・名前が変わった・消えた）。用語や例なら問題なし", [here], mine)
+    return items, dropped
+
+
+def review_where(ctx: Ctx, token: str) -> tuple[set[tuple[str, str]], str | None]:
+    """`パス:行` か `参照先の名前:パス:行` が指すファイルの候補と、問題（実在しない行など）。"""
+    path, _, line = token.rpartition(":")
+    if not line.isdigit() or not path:
+        return set(), f"{token} — `パス:行` の形ではありません"
+    name, sep, rest = path.partition(":")
+    sides = [(name, ctx.ref(name))] if sep and name in {r.name for r in ctx.refs} else all_sides(ctx)
+    rel = rest if sep and name in {r.name for r in ctx.refs} else path
+    hits = {(k, rel) for k, s in sides if (s.path / rel).is_file()}
+    if not hits:
+        return set(), f"{token} — ファイルがありません"
+    k, r = sorted(hits)[0]
+    count = len((read_text(side_of(ctx, k).path / r) or "").splitlines())
+    if not 1 <= int(line) <= max(count, 1):
+        return set(), f"{token} — {count} 行までのファイルです"
+    return hits, None
+
+
+def review_answers(ctx: Ctx) -> tuple[list[str], list[str], bool]:
+    """答えの行（項目）・自由レビューの行・自由レビューの見出しがあるか。字下げした行は前の行に付ける。"""
+    path = review_dir(ctx) / REVIEW_ANSWERS
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    items: list[str] = []
+    free: list[str] = []
+    in_free = False
+    for line in text.splitlines():
+        if re.match(r"^#{1,6}\s", line):
+            in_free = REVIEW_FREE in line
+            continue
+        if not line.strip():
+            continue
+        target = free if in_free else items
+        if line[:1].isspace() and target:
+            target[-1] += "\n" + line
+        else:
+            target.append(line)
+    return items, free, REVIEW_FREE in text and bool(re.search(rf"^#{{1,6}}\s.*{REVIEW_FREE}", text, re.M))
+
+
+def review_problems(ctx: Ctx, state: dict, part: str) -> list[str]:
+    items = {i["id"]: i for i in state["items"]}
+    lines, free, has_free = review_answers(ctx)
+    problems: list[str] = []
+    answered: dict[str, str] = {}
+    for block in lines:
+        head, *rest = block.split("\n")
+        m = _REVIEW_ANSWER.match(head)
+        if not m:
+            problems.append(f"形が違います: {head[:120]}（`- R01 問題なし: パス:行 — 理由`）")
+            continue
+        rid, verdict, token, _ = m.groups()
+        if rid not in items:
+            problems.append(f"{rid} という項目はありません")
+            continue
+        if rid in answered:
+            problems.append(f"{rid} に 2 回答えています（1 つにまとめてください）")
+        answered[rid] = verdict
+        if rid not in state.get("shown", []):
+            problems.append(f"{rid} を `codd.py review next` で見ずに答えています")
+        hits, bad = review_where(ctx, token)
+        allowed = {(k, r) for k, r, _ in items[rid]["locs"]}
+        if bad:
+            problems.append(f"{rid}: {bad}")
+        elif not hits & allowed and not (items[rid]["name"].endswith("#test")
+                                         and any(is_test(ctx, k, r) for k, r in hits)):   # テストの漏れはテストを根拠にしてよい
+            problems.append(f"{rid}: 根拠 {token} は、項目に挙げたファイル（"
+                            + ", ".join(side_label(ctx, k, r) for k, r in sorted(allowed)) + "）のどれでもありません")
+        if verdict == "問題" and not any(_REVIEW_ASK.match(x) for x in rest):
+            problems.append(f"{rid}: 問題には、次の行に字下げして `- やりたいこと: …` を添えてください")
+    missing = [rid for rid in items if rid not in answered]
+    if missing:
+        problems.append("答えていない項目: " + ", ".join(missing[:15]) + (" ほか" if len(missing) > 15 else "")
+                        + "（`codd.py review next` で次の項目を見て答える）")
+    if any(i["kind"] == "設計の不備" for i in items.values()):
+        unread = unread_rules(ctx)
+        if unread:
+            problems.append("守る決まりを読んでいません: " + ", ".join(unread) + "（`codd.py rule --all`）")
+    if part == "items":
+        return problems
+    if not has_free:
+        problems.append(f"`## {REVIEW_FREE}` の見出しがありません（項目で拾えなかったものを書く。無ければ `- なし: 理由`）")
+    elif not free:
+        problems.append(f"`## {REVIEW_FREE}` が空です（無ければ `- なし: 見た範囲と理由`）")
+    for block in free:
+        head, *rest = block.split("\n")
+        if _REVIEW_NONE.match(head):
+            if len(free) > 1:
+                problems.append(f"{REVIEW_FREE}: `- なし` とほかの指摘を並べています")
+            continue
+        m = _REVIEW_FREE_LINE.match(head)
+        if not m:
+            problems.append(f"{REVIEW_FREE}: 形が違います: {head[:120]}（`- 矛盾: パス:行 — 説明` か `- なし: 理由`）")
+            continue
+        _, bad = review_where(ctx, m.group(2))
+        if bad:
+            problems.append(f"{REVIEW_FREE}: {bad}")
+        if not any(_REVIEW_ASK.match(x) for x in rest):
+            problems.append(f"{REVIEW_FREE}: {m.group(2)} に `- やりたいこと: …` を添えてください")
+    return problems
+
+
+def review_show_item(ctx: Ctx, item: dict) -> None:
+    print(f"{item['id']}（{item['kind']}）: {item['question']}")
+    files: dict[tuple[str, str], list[int]] = {}
+    for key, rel, line in item["locs"]:
+        files.setdefault((key, rel), []).append(line)
+    for (key, rel), nums in files.items():
+        lines = (read_text(side_of(ctx, key).path / rel) or "").splitlines()
+        show = sorted({n for line in nums for n in range(max(1, line - 3), min(len(lines), line + 8) + 1)})
+        print(f"\n--- {side_label(ctx, key, rel)}（{len(lines)} 行のうち。足りなければファイルを開いて読む）")
+        for i, n in enumerate(show):
+            if i and n != show[i - 1] + 1:
+                print("  ...")
+            print(f"{n:>5}  {lines[n - 1][:200]}")
+    if item["kind"] == "設計の不備":
+        print("\n守る決まりは `python3 .statemachine/codd/codd.py rule --all` で読む（読んだかを検査が確かめる）")
+    labels = " / ".join(f"{side_label(ctx, k, r)}:{n}" for k, r, n in item["locs"])
+    print(f"\n根拠には上のどれかのファイルの行を挙げる（{labels}）。"
+          f"{DATA_DIRNAME}/{REVIEW_DIR}/{REVIEW_ANSWERS} の終わりに 1 行足す:")
+    print(f"- {item['id']} 問題なし|問題|判断できない: パス:行 — 理由（1 文）")
+    print("  - やりたいこと: 本流に渡す 1 行（問題のときだけ。どちらに合わせるか分からなければそう書く）")
+
+
+def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
+    """（.codd/review.md の行, 本流に渡すやりたいこと）。"""
+    items = {i["id"]: i for i in state["items"]}
+    lines, free, _ = review_answers(ctx)
+    groups: dict[str, list[str]] = {k: [] for k in (*REVIEW_FREE_KINDS, "判断できない")}
+    asks: list[str] = [*state.get("lint_asks", []), *state.get("carried_asks", [])]
+    answered = set()
+
+    def ask_of(rest: list[str]) -> str:
+        return next((x.split("やりたいこと:", 1)[1].strip() for x in rest if _REVIEW_ASK.match(x)), "")
+    own: dict[str, str] = {}   # 項目ごとのやりたいこと（「R05 と同じ」を、その中身で読めるようにする）
+    for block in lines:
+        head, *rest = block.split("\n")
+        if (m := _REVIEW_ANSWER.match(head)) and (a := ask_of(rest)) and not _REVIEW_SAME.match(a):
+            own[m.group(1)] = a
+
+    def shown_ask(a: str) -> str:
+        refs = [own[r] for r in re.findall(r"R\d+", a.split("と同じ")[0]) if r in own] if _REVIEW_SAME.match(a) else []
+        return f"{a}（{' / '.join(refs)}）" if refs else a
+    for block in lines:
+        head, *rest = block.split("\n")
+        m = _REVIEW_ANSWER.match(head)
+        if not m or m.group(1) not in items:
+            continue
+        rid, verdict, token, why = m.groups()
+        answered.add(rid)
+        if verdict == "問題なし":
+            continue
+        group = "判断できない" if verdict == "判断できない" else items[rid]["kind"]
+        groups[group].append(f"- {token} — {why}（{rid}）")
+        if (a := ask_of(rest)) and verdict == "問題":
+            groups[group].append(f"  - やりたいこと: {shown_ask(a)}")
+            if not _REVIEW_SAME.match(a):   # 同じ根のものは、本流に渡すやりたいことに重ねない
+                asks.append(a)
+    for block in free:
+        head, *rest = block.split("\n")
+        m = _REVIEW_FREE_LINE.match(head)
+        if m:
+            groups[m.group(1)].append(f"- {m.group(2)} — {m.group(3)}（{REVIEW_FREE}）")
+            if a := ask_of(rest):
+                groups[m.group(1)].append(f"  - やりたいこと: {shown_ask(a)}")
+                if not _REVIEW_SAME.match(a):
+                    asks.append(a)
+    asks = list(dict.fromkeys(asks))
+    out = [f"# レビューの結果（{time.strftime('%Y-%m-%d %H:%M')}。{len(state['targets'])} ファイル、"
+           f"項目 {len(items)} 件）", "",
+           "## 機械の点検（lint）", "", f"- {state.get('lint_counts', '動かしていない')}（全文: {DATA_DIRNAME}/lint.md）", ""]
+    for title in groups:
+        out += [f"## {title}", "", *(groups[title] or ["- なし"]), ""]
+    unseen = [f"- 答えていない項目: {', '.join(r for r in items if r not in answered)}"] if len(answered) < len(items) else []
+    if state.get("dropped"):
+        unseen.append(f"- 上限で出さなかった項目: {state['dropped']} 件（範囲を絞って、もう一度レビューする）")
+    if state.get("skipped_files"):
+        unseen.append("- 上限で見なかったファイル: " + ", ".join(state["skipped_files"][:10])
+                      + (f" ほか {len(state['skipped_files']) - 10} 件" if len(state["skipped_files"]) > 10 else "")
+                      + "（続きは `codd.py review start --rest`。この回のやりたいことは引き継ぐ）")
+    if state.get("carried_asks"):
+        unseen.append(f"- 前の回から引き継いだやりたいこと: {len(state['carried_asks'])} 件（本流に渡すやりたいことに含める）")
+    out += ["## 見なかったもの", "", *(unseen or ["- なし"]), "",
+            "## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
+    counts = "、".join(f"{k} {sum(1 for x in groups[k] if x.startswith('- '))}" for k in groups)
+    return [f"{'FOUND' if asks else 'OK'} レビュー: {counts}（全文: {DATA_DIRNAME}/review.md）", *out], asks
+
+
+def forget_review_reads(ctx: Ctx) -> None:
+    """読んだ・探した控えと、練り始めの印を消す（本流の回が進んでいなければ）。レビューの前に読んだものを
+    レビューで数えず、レビューで読んだ・探したもの（と、そのときの印）を、あとで始める本流の計画の検査で数えない。"""
+    if active_plan(ctx.root) is None:
+        clear_reading_logs(ctx)
+
+
+def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
+    if args.step == "start":
+        carried: list[str] = []
+        if args.rest:   # 前の回が上限で見なかったファイルを見る。前の回のやりたいことは引き継ぐ
+            prev = review_state(ctx)
+            if not prev.get("skipped_files"):
+                print("NONE 前の回に見なかったファイルはありません")
+                return 0
+            args.path = prev["skipped_files"]
+            prev_asks = review_report(ctx, prev)[1]
+            carried = [a for a in prev_asks if a not in prev.get("lint_asks", [])]
+        # 期間を挙げなければ、直近 7 日から、変わったファイルが見つかるまで遡る
+        windows = [args.since] if args.since or args.path else list(REVIEW_WINDOWS)
+        for since in windows:
+            targets = review_targets(ctx, args.path or [], since)
+            if targets:
+                break
+        args.since = since or ""
+        state = {"since": args.since, "paths": args.path or [], "carried_asks": carried, "targets": [], "skipped_files": [], "items": [],
+                 "dropped": 0, "shown": []}
+        if review_dir(ctx).is_dir():
+            shutil.rmtree(review_dir(ctx))   # 前の回の答えを使い回させない
+        # codd を通らなかった変更は、このレビューが自分で確かめるので、やりたいことに数えない
+        asks, counts = run_lint(ctx, args.since or LINT_SINCE, args.no_test, skip=("bypassed", "drifted"))
+        state["lint_asks"], state["lint_counts"] = asks, counts
+        forget_review_reads(ctx)
+        state["targets"] = [side_label(ctx, k, r) for k, r in targets[:REVIEW_MAX_FILES]]
+        state["skipped_files"] = [side_label(ctx, k, r) for k, r in targets[REVIEW_MAX_FILES:]]
+        state["items"], state["dropped"] = review_items(ctx, targets[:REVIEW_MAX_FILES])
+        save_review_state(ctx, state)
+        write_text(review_dir(ctx) / REVIEW_ANSWERS, f"# 項目への答え\n\n")
+        if not state["items"]:
+            print(f"NONE 見る項目がありません（ファイル {len(targets)} 件。点検: {counts}）")
+            return 0
+        kinds = "、".join(f"{k} {sum(1 for i in state['items'] if i['kind'] == k)}" for k in REVIEW_KINDS)
+        days = re.match(r"(\d+) days ago$", args.since or "")
+        span = ("挙げたもの" if args.path else f"直近 {days.group(1)} 日に変わったもの" if days
+                else f"{args.since} から変わったもの" if args.since else "全履歴で変わったもの")
+        print(f"OK レビュー: ファイル {len(state['targets'])} 件、項目 {len(state['items'])} 件（{kinds}）。範囲: {span}。点検: {counts}")
+        if state["skipped_files"] or state["dropped"]:
+            print(f"上限を超えた分は見ない（ファイル {len(state['skipped_files'])} 件・項目 {state['dropped']} 件。"
+                  "終わりに伝える）")
+        print("次: `python3 .statemachine/codd/codd.py review next` で 1 件ずつ見て答える")
+        return 0
+    state = review_state(ctx)
+    if args.step == "next":
+        lines, _, _ = review_answers(ctx)
+        done = {m.group(1) for b in lines if (m := _REVIEW_ANSWER.match(b.split("\n")[0]))}
+        item = next((i for i in state["items"] if i["id"] == args.id), None) if args.id else \
+            next((i for i in state["items"] if i["id"] not in done), None)
+        if args.id and item is None:
+            raise CoddError(f"{args.id} という項目はありません（R01〜R{len(state['items']):02d}）")
+        if item is None:
+            print(f"DONE すべての項目に答えました。`{DATA_DIRNAME}/{REVIEW_DIR}/{REVIEW_ANSWERS}` を検査します"
+                  "（`codd.py review verify --part items`）")
+            return 0
+        if item["id"] not in state["shown"]:
+            state["shown"].append(item["id"])
+            save_review_state(ctx, state)
+        left = sum(1 for i in state["items"] if i["id"] not in done)
+        print(f"ITEM {item['id']}（残り {left} 件）")
+        review_show_item(ctx, item)
+        return 0
+    if args.step == "verify":
+        problems = review_problems(ctx, state, args.part)
+        if problems:
+            print(f"NG レビューの答えに {len(problems)} 件の問題があります（{DATA_DIRNAME}/{REVIEW_DIR}/{REVIEW_ANSWERS}）")
+            for p in problems:
+                print(f"- {p}")
+            return 1
+        print("OK 項目にすべて答えました" if args.part == "items" else "OK レビューの答えは決まった形です")
+        return 0
+    lines, _ = review_report(ctx, state)
+    unfinished = review_problems(ctx, state, "all") if state["items"] else []   # 項目が無ければ答えるものも無い
+    forget_review_reads(ctx)
+    if unfinished:
+        lines[1:1] = [f"（答えの検査が通っていません: {unfinished[0]}{' ほか' if len(unfinished) > 1 else ''}）"]
+    write_text(ctx.data / "review.md", "\n".join(lines[1:]))
+    print("\n".join(lines))
+    return 0
 
 
 # ---------------------------------------------------------------- 入口
@@ -7875,6 +8485,10 @@ def build_parser() -> argparse.ArgumentParser:
     dr = sub.add_parser("draft", help="計画のひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）")
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
+    dr.add_argument("--ahead", action="store_true", help="次の計画として .plans/next/ に置く（進めている計画には触れない）")
+    dr.add_argument("--next", metavar="ファイル", help="立てておいた計画（.plans/next/ のファイル名）を進める計画にする")
+    nx = sub.add_parser("next", help="立てておいた次の計画（.plans/next/）を示す")
+    nx.add_argument("--verify", action="store_true", help="どれもやりたいことを書き、重なっていないかを確かめる")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
     sub.add_parser("retro", help="終わりの振り返りで実行するプロンプトと材料を示す（codd.json の retro。無ければ NONE）")
     rc = sub.add_parser("record", help="終わりの報告を出し、計画に確認の答えと結果を書き足して判断の記録として残す（終わりに呼ぶ）")
@@ -7899,6 +8513,15 @@ def build_parser() -> argparse.ArgumentParser:
     au = sub.add_parser("lint", help="本流とは別の点検。リポジトリ全体の食い違いを探し、本流に渡すやりたいことにする（直さない）")
     au.add_argument("--since", default=LINT_SINCE, help=f"codd を通らなかった変更を探す期間の始め（git の日付。既定 {LINT_SINCE!r}）")
     au.add_argument("--no-test", action="store_true", help="テスト（設定の test）を動かさない")
+    rv = sub.add_parser("review", help="本流とは別のレビュー。見る項目を決めて 1 件ずつ示し、答えの形と根拠を確かめる（直さない）")
+    rv.add_argument("step", choices=["start", "next", "verify", "report"],
+                    help="start（点検して項目を決める）/ next（次の項目を示す）/ verify（答えを検査する）/ report（まとめる）")
+    rv.add_argument("--path", action="append", help="start: 見るファイルかフォルダ（参照先は `名前:パス`。既定は期間のうちに変わったもの）")
+    rv.add_argument("--since", help="start: 変わったファイルを探す期間の始め（既定は直近 7 日。無ければ 30 日・90 日・1 年・全履歴と遡る）")
+    rv.add_argument("--no-test", action="store_true", help="start: 点検でテストを動かさない")
+    rv.add_argument("--rest", action="store_true", help="start: 前の回が上限で見なかったファイルを見る（前の回のやりたいことは引き継ぐ）")
+    rv.add_argument("--id", help="next: この項目をもう一度示す（例: R03）")
+    rv.add_argument("--part", choices=["items", "all"], default="all", help="verify: items（項目だけ）か all（自由レビューも）")
     ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
     ru.add_argument("--write", action="store_true", help="候補を codd.json の rules / refs[].rules に書く")
     ru.add_argument("--only", action="append", help="書く候補を絞る（`名前:パス` か `パス`。繰り返し可）")
@@ -7910,7 +8533,7 @@ COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact, "gra
             "rules": cmd_rules, "rollback": cmd_rollback, "accept": cmd_accept,
             "skill": cmd_skill, "guide": cmd_guide, "evidence": cmd_evidence, "rule": cmd_rule,
             "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record, "retro": cmd_retro,
-            "lint": cmd_lint}
+            "lint": cmd_lint, "review": cmd_review, "next": cmd_next}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -7923,7 +8546,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "verify-plan":
             mark_run_start(ctx)   # 練り始めの印が無ければ今を始まりにする（比べるものが無いだけで、止めない）
         rc = COMMANDS[args.cmd](ctx, args)
-        if args.cmd in RUN_START_COMMANDS or (args.cmd == "show" and args.phase == "plan"):
+        if (args.cmd in RUN_START_COMMANDS and not getattr(args, "ahead", False)) or \
+                (args.cmd == "show" and args.phase == "plan"):   # 次の計画を立てておくのは、この回の始まりではない
             mark_run_start(ctx)   # 後に取る（draft が前の回を閉じて記録を消したあとに、この回の始まりを控える）
         return rc
     except CoddError as exc:

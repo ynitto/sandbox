@@ -3,8 +3,20 @@
 このリポジトリでコードや文書を変える依頼は、**必ず codd のステートマシン（`.statemachine/codd/workflow.yaml`）で進めます。**
 ステートマシンの外でファイルを変えたり、検査を飛ばしたりしません。読むだけの質問（どこに何があるか、など）には、
 ステートマシンを使わずに答えてかまいません。変える必要があるとわかった時点で、ステートマシンを始めます。
-点検を頼まれたら `python3 .statemachine/codd/codd.py lint` を実行し、`.codd/lint.md` の「本流に渡すやりたいこと」を
-伝えます（点検では直しません。直すと言われたら、その 1 行をやりたいことにしてステートマシンを始めます）。
+
+## 確かめる・次の計画
+
+- **「チェックして」「レビューして」「手入れして」「漏れや矛盾がないか見て」**: 本流ではなく、確かめるステートマシン
+  （`.statemachine/codd-review/workflow.yaml`）を、入力 `target` を依頼のうち何を確かめるか
+  （ファイル・フォルダ・機能の名前・期間・「全体」。無ければ空）にして回します。グラフを用意し、確かめ、見つけたやりたいことから
+  次の計画を `.plans/next/` に立てておきます。コードも文書も直しません（コミットもしない）。
+  項目は `codd.py review next` が 1 件ずつ示すので、自分で観点を選んだり、まとめて答えたりしません。
+  終わりの報告は `codd.py review report` の出力をそのまま使います。「見なかったところも」と頼まれたら、同じものを
+  `target` に「続き」と入れて回します（`review start --rest`。前の回のやりたいことは引き継ぐ）
+- **「次にやることは？」**: `codd.py next` の一覧をそのまま見せます
+- **「次の計画を進めて」**: 一覧から選んだ計画のやりたいことを `request` にして本流（`workflow.yaml`）を始め、
+  計画の段で `codd.py draft --next ファイル名` を使って、その計画を引き継ぎます（今のコードで測り直し、確認を経て変える）
+- 直すと言われたら、報告の「やりたいこと」の行を `request` にして本流を始めます
 
 ## 始める前に
 
@@ -34,10 +46,10 @@ caveman が無い間も短い応答で進め、スキルを読んだとは書き
 
 ## 回し方
 
-`statemachine-use` スキルがあれば、それで `.statemachine/codd/workflow.yaml` を実行します（依頼は入力の `request`）。
-無ければ、次のとおり自分で回します。
+`statemachine-use` スキルがあれば、それで `.statemachine/codd/workflow.yaml` を実行します（依頼は入力の `request`。
+確かめるときは `.statemachine/codd-review/workflow.yaml` で、入力は `target`）。無ければ、次のとおり自分で回します。
 
-1. `workflow.yaml` を読む。依頼を `request` に、`context:` の値を初期値にする。`initial_state` から始める
+1. `workflow.yaml` を読む。依頼を `request`（確かめるときは `target`）に、`context:` の値を初期値にする。`initial_state` から始める
 2. ステートごとに `action_file` を読み、`{{名前}}` を今の値に置き換えて、その指示どおりに実行する。
    出力の第 1 行は `output_validator` の語で始める。`output_key` があれば、出力をその名前で控える
 3. `check` があれば、アクションのあとにそのコマンド（`command` に `args` を続けたもの）を実行する。終了コード 0 なら

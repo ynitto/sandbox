@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""リポジトリに codd-agent を置いて初期設定する（置き先の名前は `.statemachine/codd/`）。
+"""リポジトリに codd-agent を置いて初期設定する（置き先の名前は `.statemachine/codd/`。確かめる・手入れする
+ステートマシンを隣の `.statemachine/codd-review/` に置く）。
 
 リポジトリごとに 1 回（と、新しい版を置き直すとき）実行する。graphify などの外部のミドルウェアを端末に入れるのは
 `install.py` の仕事（端末ごとに 1 回）。
@@ -51,6 +52,10 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent / "machine"
 DEST_REL = Path(".statemachine") / "codd"
+# 確かめる・手入れするステートマシン（codd-review）。本流と別のフォルダに置く（定期実行の道具は
+# `.statemachine/<名前>/workflow.yaml` を 1 つのタスクとして並べるため）。codd.py は本流のものを使う。
+REVIEW_SRC = Path(__file__).resolve().parent / "review"
+REVIEW_REL = Path(".statemachine") / "codd-review"
 # --ref を渡さずに初めて置くとき（実装と設計書が同じリポジトリ）の参照先と、設計書の既定のフォルダ。
 SAME_REPO_REF = "docs=."
 SAME_REPO_DOCS = "docs"
@@ -67,7 +72,7 @@ GRAPH_AGENT_PROMPT = SRC / "agents" / "codd-graph.md"
 GRAPH_AGENT_DESCRIPTION = "codd が呼ぶ。グラフの束の文書を読み、知識グラフの断片（JSON）を書く"
 AGENT_KINDS = ("kiro", "copilot")
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
-GRAPHIFY_IGNORE_LINE = ".statemachine/codd/"
+GRAPHIFY_IGNORE_LINES = (".statemachine/codd/", ".statemachine/codd-review/")
 
 
 def parse_ref(value: str) -> dict:
@@ -127,6 +132,9 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
             shutil.copytree(item, target_item, dirs_exist_ok=True)
         else:
             shutil.copyfile(item, target_item)
+    review = target / REVIEW_REL
+    shutil.rmtree(review, ignore_errors=True)   # 古い版の手順を残さない（設定は持たない）
+    shutil.copytree(REVIEW_SRC, review, ignore=shutil.ignore_patterns("__pycache__"))
 
     config = config or {}
     if code_only:
@@ -189,7 +197,8 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
         discover_rules(target, dest)
     if gitignore:
         append_line(target / ".gitignore", IGNORE_LINE)
-    append_line(target / ".graphifyignore", GRAPHIFY_IGNORE_LINE)
+    for line in GRAPHIFY_IGNORE_LINES:
+        append_line(target / ".graphifyignore", line)
     return dest
 
 
@@ -259,7 +268,7 @@ def write_agents(target: Path, kinds) -> list[Path]:
             "prompt": prompt,
             "tools": ["*"],
             "includeMcpJson": True,
-            "resources": ["file://.statemachine/codd/workflow.yaml",
+            "resources": ["file://.statemachine/codd/workflow.yaml", "file://.statemachine/codd-review/workflow.yaml",
                           "skill://~/.kiro/skills/caveman/SKILL.md", "skill://~/.kiro/skills/graphify/SKILL.md"],
             # 始めるたびに参照先・守る決まり・使うスキルを読み込ませる。
             "hooks": {"agentSpawn": [{"command": "python3 .statemachine/codd/codd.py show"}]},
