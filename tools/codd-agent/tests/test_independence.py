@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # 本体（ステートマシンの定義・スクリプト・エージェントへの指示）と置き方のスクリプト、サンプルのワークフロー
 TARGETS = [ROOT / "init.py", ROOT / "install.py",
-           *sorted(p for d in ("machine", "samples") for p in (ROOT / d).rglob("*")
+           *sorted(p for d in ("machine", "review", "samples") for p in (ROOT / d).rglob("*")
                    if p.is_file() and p.suffix in (".py", ".md", ".yaml", ".yml", ".json"))]
 # 特定の道具の名前と、画面・画像を前提にした言い回し
 FORBIDDEN = re.compile(r"webui|web-test|screenshot|スクリーンショット|スクショ|撮|画面|画像", re.I)

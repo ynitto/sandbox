@@ -159,9 +159,9 @@ class VscodeChatReaderTests(AuditTestCase):
 
 
 class ArtifactQualificationTests(AuditTestCase):
-    def _records(self, st, *statuses, kind="statemachine", name="daily-report"):
+    def _records(self, st, *statuses, kind="statemachine", name="daily-report", epoch=None):
         for i, status in enumerate(statuses):
-            st.append_record({"id": f"rec-{kind}-{name}-{i}", "_epoch": NOW.timestamp() - 60,
+            st.append_record({"id": f"rec-{kind}-{name}-{i}", "_epoch": (epoch or NOW.timestamp()) - 60,
                               "ts": "2026-09-16T05:00:00Z", "kind": "ledger",
                               "source": "budget-ledger", "agent_cli": "claude",
                               "status": status,
@@ -217,8 +217,9 @@ class ArtifactQualificationTests(AuditTestCase):
         self.assertEqual(_read(first["artifacts_file"])["revision"], rev)
 
     def test_artifact_never_leaks_into_candidate_qualifications(self):
+        # cmd_qualify は実時刻で観測窓を切るので、固定の NOW ではなく今の時刻で刻む（日付が進むと窓から外れる）。
         st = self.make_store()
-        self._records(st, *["done"] * 5)
+        self._records(st, *["done"] * 5, epoch=dt.datetime.now(dt.timezone.utc).timestamp())
         args = self.make_args(apply=True,
                               qualifications_file=os.path.join(self.tmp, "q.json"))
         summary = qualifications.cmd_qualify(args, st)
