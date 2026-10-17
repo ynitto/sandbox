@@ -1,0 +1,67 @@
+# codd-review — 頼まれたときに、実装・文書・テストを読むだけで確かめる（codd-agent の本流とは別。何も直さない）
+#
+# 本流（workflow.yaml）と同じ `.statemachine/codd/` に置き、同じエージェント `codd` が「チェックして」で回す。
+# 弱いモデルでも同じ深さで見られるよう、見る項目（観点 × 箇所）は codd.py が決めて 1 件ずつ示し、
+# 答えの形・根拠の箇所・見たか・決まりを読んだかを検査する。項目で拾えないものは自由レビューで足す。
+#
+#   start ─┬─ 項目あり ─→ items（1 件ずつ答える）─[check]─→ free（自由レビュー）─[check]─→ report
+#          └─ 項目なし ───────────────────────────────────────────────────────────→ report
+#
+# start   `codd.py review start` が lint を動かし、見る範囲（挙げたもの。無ければ期間のうちに変わったファイル）から
+#         項目を決める。観点は 漏れ（文書・テストに出てこない名前、どこにも無い文書の名前、テストの確かめ漏れ）・
+#         矛盾（同じ名前をコード・文書・テストが述べている箇所の組）・設計の不備（コードのファイルごと）
+# items   `codd.py review next` が示す項目に 1 件ずつ答える。検査は、すべてに答えたか、示した項目か、根拠が項目の
+#         ファイルの実在する行か、問題に「やりたいこと」があるか、設計の項目があれば守る決まりを読んだかを確かめる
+# free    項目で拾えなかったものを自由に書く（無ければ「なし: 理由」）。根拠の行が実在するかを確かめる
+# report  `codd.py review report` の出力をそのまま伝える。直すときは「やりたいこと」の行を本流に渡す
+
+name: "codd-review"
+description: "実装・文書・テストの漏れ・矛盾・設計の不備を、決まった項目と自由レビューで確かめる（直さない）"
+initial_state: start
+
+inputs:
+  target:
+    label: 何を確かめるか
+    type: multiline
+    default: ""
+    description: "ファイル・フォルダ・期間（空なら直近 30 日に変わったファイル）"
+
+config:
+  max_steps: 12
+  on_no_transition: error
+
+states:
+  start:
+    description: "点検し、見る項目を決める"
+    action_file: actions/review-start.md
+    output_key: found
+    output_validator: "startswith:OK,NONE"
+    max_retries: 1
+
+  items:
+    description: "項目に 1 件ずつ答える"
+    action_file: actions/review-items.md
+    output_validator: "startswith:OK"
+    check: {command: python3, args: [.statemachine/codd/codd.py, review, verify, --part, items], timeout_sec: 120}
+    check_retries: 2
+    check_on_exhausted: continue
+
+  free:
+    description: "項目で拾えなかったものを自由に書く"
+    action_file: actions/review-free.md
+    output_validator: "startswith:OK"
+    check: {command: python3, args: [.statemachine/codd/codd.py, review, verify], timeout_sec: 120}
+    check_retries: 2
+    check_on_exhausted: continue
+
+  report:
+    description: "見つけたものと、本流に渡すやりたいことを伝える"
+    action_file: actions/review-report.md
+    terminal: true
+
+transitions:
+  - {from: start, to: items, condition_rule: "startswith:found:OK", priority: 1}
+  - {from: start, to: report, condition_rule: "startswith:found:NONE", priority: 2}
+  - {from: items, to: free, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: items, to: report, condition_rule: "equals:check_ok:false", priority: 2}
+  - {from: free, to: report}

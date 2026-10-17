@@ -259,7 +259,7 @@ def write_agents(target: Path, kinds) -> list[Path]:
             "prompt": prompt,
             "tools": ["*"],
             "includeMcpJson": True,
-            "resources": ["file://.statemachine/codd/workflow.yaml",
+            "resources": ["file://.statemachine/codd/workflow.yaml", "file://.statemachine/codd/review.yaml",
                           "skill://~/.kiro/skills/caveman/SKILL.md", "skill://~/.kiro/skills/graphify/SKILL.md"],
             # 始めるたびに参照先・守る決まり・使うスキルを読み込ませる。
             "hooks": {"agentSpawn": [{"command": "python3 .statemachine/codd/codd.py show"}]},

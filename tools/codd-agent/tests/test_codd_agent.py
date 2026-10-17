@@ -1905,9 +1905,11 @@ class CoddTest(unittest.TestCase):
         # 応答の長さに上限があるエージェントでも止まらないよう、全文を貼らず分けて書くことを指示する。
         self.assertIn("the response hit the length limit", copilot)
         self.assertIn("codd.py summary", copilot)
-        # 「チェックして」には、ステートマシンを使わず読むだけで確かめる（直さない）。
+        # 「チェックして」は、本流とは別のレビューのステートマシンで回す（直さない）。
         self.assertIn("## チェック・点検・レビューを頼まれたら", copilot)
-        self.assertIn(".codd/review.md", copilot)
+        self.assertIn(".statemachine/codd/review.yaml", copilot)
+        self.assertIn("file://.statemachine/codd/review.yaml", kiro["resources"])
+        self.assertTrue((self.impl / ".statemachine/codd/review.yaml").is_file())
         # 変える段を渡すサブエージェント。モデルは書かない（呼び出し元と同じモデルで動かす）。
         self.assertIn("agents: [codd-apply, codd-graph]", copilot)
         graph_worker = (self.impl / ".github/agents/codd-graph.agent.md").read_text(encoding="utf-8")
@@ -4483,6 +4485,99 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("自分のテスト", r.stdout)
         self.assertIn("boom", (self.impl / ".codd/lint.md").read_text(encoding="utf-8"))
+
+    # ------------------------------------------------------------ レビュー（頼まれて確かめる。本流とは別）
+
+    def review_answer(self, line: str) -> None:
+        with (self.impl / ".codd/review/answers.md").open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+    def review_items(self) -> dict[str, dict]:
+        state = json.loads((self.impl / ".codd/review/state.json").read_text(encoding="utf-8"))
+        return {i["id"]: i for i in state["items"]}
+
+    def test_review_decides_items_and_checks_every_answer(self) -> None:
+        commit(self.impl, {"src/app.py": "def hello():\n    return 2\n\n\ndef bye():\n    return 0\n"}, "bye")
+        r = self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("OK レビュー: ファイル 1 件"))
+        items = self.review_items()
+        kinds = {(i["kind"], i["name"]) for i in items.values()}
+        # 文書も述べている名前は突き合わせ、文書・テストに出てこない名前は漏れ、コードのファイルには設計を問う
+        self.assertEqual(kinds, {("矛盾", "hello"), ("漏れ", "bye"), ("漏れ", "hello#test"), ("漏れ", "bye#test"),
+                                 ("設計の不備", "src/app.py")})
+        by_name = {i["name"]: rid for rid, i in items.items()}
+        # 示していない項目には答えさせない（弱いモデルが読まずにまとめて答えるのを止める）
+        self.review_answer(f"- {by_name['hello']} 問題なし: src/app.py:1 — 読んだ")
+        r = self.run_pa(self.impl, "review", "verify", "--part", "items")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("`codd.py review next` で見ずに答えています", r.stdout)
+        self.assertIn("答えていない項目", r.stdout)
+        (self.impl / ".codd/review/answers.md").write_text("# 項目への答え\n\n", encoding="utf-8")
+        shown = self.run_pa(self.impl, "review", "next").stdout
+        self.assertTrue(shown.startswith(f"ITEM {by_name['hello']}"))
+        self.assertIn("hello は 1 を返す。", shown)          # 相手の側の箇所を前後ごと示す
+        self.assertEqual(self.run_pa(self.impl, "review", "next").stdout, shown)   # 答えるまで同じ項目を示す
+        # 根拠は項目のファイルの実在する行。問題には「やりたいこと」が要る
+        self.review_answer(f"- {by_name['hello']} 問題: docs/api.md:99 — 実装は 2、設計書は 1")
+        r = self.run_pa(self.impl, "review", "verify", "--part", "items")
+        self.assertIn("行までのファイルです", r.stdout)
+        self.assertIn("やりたいこと", r.stdout)
+        (self.impl / ".codd/review/answers.md").write_text("# 項目への答え\n\n", encoding="utf-8")
+        self.review_answer(f"- {by_name['hello']} 問題: docs/api.md:5 — 実装は 2、設計書は 1\n"
+                           "  - やりたいこと: hello の戻り値を、実装と設計書で合わせたい")
+        self.run_pa(self.impl, "review", "next", "--id", by_name["bye"])   # 示し直してから答えてもよい
+        self.review_answer(f"- {by_name['bye']} 問題なし: README.md:1 — 内部の名前")
+        r = self.run_pa(self.impl, "review", "verify", "--part", "items")
+        self.assertIn("ファイルがありません", r.stdout)
+        text = (self.impl / ".codd/review/answers.md").read_text(encoding="utf-8")
+        (self.impl / ".codd/review/answers.md").write_text(text.replace("README.md:1", "src/app.py:5"), encoding="utf-8")
+        while not (shown := self.run_pa(self.impl, "review", "next").stdout).startswith("DONE"):
+            rid = shown.split()[1].split("（")[0]
+            self.review_answer(f"- {rid} 判断できない: src/app.py:1 — 決めた文書が無い")
+        self.assertEqual(self.run_pa(self.impl, "review", "verify", "--part", "items").returncode, 0)
+        # 自由レビューも要る（無ければ「なし: 理由」）
+        r = self.run_pa(self.impl, "review", "verify")
+        self.assertIn("## 自由レビュー", r.stdout)
+        self.review_answer("\n## 自由レビュー\n\n- 設計の不備: src/app.py:5 — bye は何も確かめない\n"
+                           "  - やりたいこと: bye の役目を決めたい")
+        self.assertEqual(self.run_pa(self.impl, "review", "verify").returncode, 0)
+        r = self.run_pa(self.impl, "review", "report")
+        self.assertTrue(r.stdout.startswith("NG レビュー: 漏れ 0、矛盾 1、設計の不備 1、その他 0、判断できない 3"))
+        report = (self.impl / ".codd/review.md").read_text(encoding="utf-8")
+        self.assertIn("- hello の戻り値を、実装と設計書で合わせたい", report.split("## 本流に渡すやりたいこと")[1])
+        self.assertIn("- bye の役目を決めたい", report)
+        # 何も直さない
+        self.assertEqual(git(self.impl, "status", "--porcelain").strip(), "")
+
+    def test_review_reads_the_rules_for_design_items(self) -> None:
+        commit(self.impl, {"docs/rules.md": "# 決まり\n\n- 失敗は例外で伝える\n"}, "rules")
+        self.set_config(self.impl, guides=[{"use": "docs/rules.md"}])
+        self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
+        for _ in self.review_items():
+            rid = self.run_pa(self.impl, "review", "next").stdout.split()[1].split("（")[0]
+            self.review_answer(f"- {rid} 問題なし: src/app.py:1 — 読んだ")
+        r = self.run_pa(self.impl, "review", "verify", "--part", "items")
+        self.assertIn("守る決まりを読んでいません: docs/rules.md", r.stdout)
+        self.run_pa(self.impl, "rule", "--all")
+        self.assertEqual(self.run_pa(self.impl, "review", "verify", "--part", "items").returncode, 0)
+
+    def test_review_says_none_when_nothing_to_look_at(self) -> None:
+        commit(self.impl, {"setup.cfg": "[metadata]\n"}, "cfg")   # 名前も文書も持たないファイルには項目が出ない
+        r = self.run_pa(self.impl, "review", "start", "--path", "setup.cfg", "--no-test")
+        self.assertTrue(r.stdout.startswith("NONE"), r.stdout + r.stderr)
+        r = self.run_pa(self.impl, "review", "start", "--path", "nowhere", "--no-test")
+        self.assertIn("に当たるファイルがありません", r.stderr)
+
+    def test_review_machine_passes_engine_validation(self) -> None:
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML がありません")
+        runner = REPO / ".github/skills/statemachine-use/scripts/run_machine.py"
+        r = subprocess.run([sys.executable, str(runner), str(TOOL / "machine/review.yaml"), "--dry-run"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_workflow_gives_checks_enough_time(self) -> None:
         # 実行ハーネスの既定（120 秒）では、グラフの作り直しやテストで切られて「落ちた」扱いになる。
