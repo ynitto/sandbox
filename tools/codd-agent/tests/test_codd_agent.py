@@ -7,6 +7,7 @@ graphify は PATH に置いたスタブで差し替え、呼ばれ方（自動�
 from __future__ import annotations
 
 import atexit
+import datetime as dt
 import hashlib
 import io
 import json
@@ -1906,7 +1907,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("the response hit the length limit", copilot)
         self.assertIn("codd.py summary", copilot)
         # 「チェックして」は、本流とは別のレビューのステートマシンで回す（直さない）。
-        self.assertIn("## 確かめる・手入れする・次の計画", copilot)
+        self.assertIn("## 確かめる・次の計画", copilot)
         self.assertIn(".statemachine/codd-review/workflow.yaml", copilot)
         self.assertIn("file://.statemachine/codd-review/workflow.yaml", kiro["resources"])
         # 定期実行の道具が 1 つのタスクとして並べられるよう、本流と別のフォルダに置く
@@ -4581,15 +4582,33 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "review", "start", "--path", "nowhere", "--no-test")
         self.assertIn("に当たるファイルがありません", r.stderr)
 
-    def test_review_machine_runs_ahead_only_when_maintaining(self) -> None:
+    def test_review_machine_has_one_way_to_run(self) -> None:
+        # チェックと手入れで回し方を分けない（毎回グラフを用意し、次の計画まで立てる）
         text = (TOOL / "review/workflow.yaml").read_text(encoding="utf-8")
-        self.assertIn('{from: free, to: ahead, condition_rule: "equals:mode:手入れ", priority: 1}', text)
-        self.assertIn("{from: free, to: report, priority: 2}", text)
+        self.assertNotIn("mode", text)
+        self.assertIn("{from: free, to: ahead}", text)
         self.assertIn("args: [.statemachine/codd/codd.py, next, --verify]", text)
+        self.assertIn("codd.py graph", (TOOL / "review/actions/start.md").read_text(encoding="utf-8"))
+
+    def test_review_goes_further_back_when_nothing_changed_recently(self) -> None:
+        r = self.run_pa(self.impl, "review", "start", "--no-test")
+        self.assertIn("範囲: 7 days ago から変わったもの", r.stdout, r.stderr)
+        old = (dt.datetime.now() - dt.timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S")
+        for repo in (self.impl, self.design):   # どちらの側も 60 日前のコミットだけにする
+            subprocess.run(["git", "filter-branch", "-f", "--env-filter",
+                            f"export GIT_AUTHOR_DATE={old} GIT_COMMITTER_DATE={old}"],
+                           cwd=repo, check=True, capture_output=True, env={**os.environ, **GIT_ENV,
+                                                                            "FILTER_BRANCH_SQUELCH_WARNING": "1"})
+        r = self.run_pa(self.impl, "review", "start", "--no-test")
+        self.assertTrue(r.stdout.startswith("OK"), r.stdout + r.stderr)
+        self.assertIn("範囲: 90 days ago から変わったもの", r.stdout)
+        # 期間を挙げたら遡らない
+        r = self.run_pa(self.impl, "review", "start", "--since", "7 days ago", "--no-test")
+        self.assertTrue(r.stdout.startswith("NONE"), r.stdout + r.stderr)
 
     def test_review_folder_is_part_of_the_machine(self) -> None:
         # 置いた codd-review のフォルダは、変えたファイルにも探す対象にも数えない
-        self.run_pa(self.impl, "impact", "--term", "手入れ")   # 手入れの手順にだけ出てくる語
+        self.run_pa(self.impl, "impact", "--term", "自由レビュー")   # 確かめる手順にだけ出てくる語
         self.assertNotIn(".statemachine/codd-review/", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
 
     def test_plans_made_ahead_are_listed_and_taken_over(self) -> None:

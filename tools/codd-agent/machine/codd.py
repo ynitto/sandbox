@@ -7952,6 +7952,7 @@ def cmd_lint(ctx: Ctx, args: argparse.Namespace) -> int:
 REVIEW_DIR = "review"
 REVIEW_STATE = "state.json"
 REVIEW_ANSWERS = "answers.md"
+REVIEW_WINDOWS = ("7 days ago", "30 days ago", "90 days ago", "365 days ago", "")   # 変わったものが無ければ遡る（"" は全履歴）
 REVIEW_MAX_FILES = 20      # 1 回に見るファイル（残りは「見なかったもの」として伝える）
 REVIEW_MAX_ITEMS = 40      # 1 回に答える項目
 REVIEW_PER_FILE = 6        # 1 ファイルから出す項目（1 つのファイルで項目を使い切らない）
@@ -8004,7 +8005,7 @@ def review_targets(ctx: Ctx, paths: list[str], since: str) -> list[tuple[str, st
         return list(dict.fromkeys(out))
     per_side = []
     for key, side in all_sides(ctx):
-        rc, log = run(["git", "-c", "core.quotepath=false", "log", f"--since={since}", "--no-merges",
+        rc, log = run(["git", "-c", "core.quotepath=false", "log", *([f"--since={since}"] if since else []), "--no-merges",
                        "--format=", "--name-only", *side.pathspec()], side.path, GIT_TIMEOUT)
         names = [rel for rel, h in dirty_files(side).items() if h != "deleted"]   # 作業中のものを先に
         names += [ln.strip() for ln in (log.splitlines() if rc == 0 else [])]     # 新しく変えたものから
@@ -8310,13 +8311,19 @@ def forget_review_reads(ctx: Ctx) -> None:
 
 def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
     if args.step == "start":
-        targets = review_targets(ctx, args.path or [], args.since)
+        # 期間を挙げなければ、直近 7 日から、変わったファイルが見つかるまで遡る
+        windows = [args.since] if args.since or args.path else list(REVIEW_WINDOWS)
+        for since in windows:
+            targets = review_targets(ctx, args.path or [], since)
+            if targets:
+                break
+        args.since = since or ""
         state = {"since": args.since, "paths": args.path or [], "targets": [], "skipped_files": [], "items": [],
                  "dropped": 0, "shown": []}
         if review_dir(ctx).is_dir():
             shutil.rmtree(review_dir(ctx))   # 前の回の答えを使い回させない
         # codd を通らなかった変更は、このレビューが自分で確かめるので、やりたいことに数えない
-        asks, counts = run_lint(ctx, args.since, args.no_test, skip=("bypassed", "drifted"))
+        asks, counts = run_lint(ctx, args.since or LINT_SINCE, args.no_test, skip=("bypassed", "drifted"))
         state["lint_asks"], state["lint_counts"] = asks, counts
         forget_review_reads(ctx)
         state["targets"] = [side_label(ctx, k, r) for k, r in targets[:REVIEW_MAX_FILES]]
@@ -8328,7 +8335,8 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
             print(f"NONE 見る項目がありません（ファイル {len(targets)} 件。点検: {counts}）")
             return 0
         kinds = "、".join(f"{k} {sum(1 for i in state['items'] if i['kind'] == k)}" for k in REVIEW_KINDS)
-        print(f"OK レビュー: ファイル {len(state['targets'])} 件、項目 {len(state['items'])} 件（{kinds}）。点検: {counts}")
+        span = "挙げたもの" if args.path else (f"{args.since} から変わったもの" if args.since else "全履歴で変わったもの")
+        print(f"OK レビュー: ファイル {len(state['targets'])} 件、項目 {len(state['items'])} 件（{kinds}）。範囲: {span}。点検: {counts}")
         if state["skipped_files"] or state["dropped"]:
             print(f"上限を超えた分は見ない（ファイル {len(state['skipped_files'])} 件・項目 {state['dropped']} 件。"
                   "終わりに伝える）")
@@ -8428,7 +8436,7 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("step", choices=["start", "next", "verify", "report"],
                     help="start（点検して項目を決める）/ next（次の項目を示す）/ verify（答えを検査する）/ report（まとめる）")
     rv.add_argument("--path", action="append", help="start: 見るファイルかフォルダ（参照先は `名前:パス`。既定は期間のうちに変わったもの）")
-    rv.add_argument("--since", default=LINT_SINCE, help=f"start: 変わったファイルを探す期間の始め（既定 {LINT_SINCE!r}）")
+    rv.add_argument("--since", help="start: 変わったファイルを探す期間の始め（既定は直近 7 日。無ければ 30 日・90 日・1 年・全履歴と遡る）")
     rv.add_argument("--no-test", action="store_true", help="start: 点検でテストを動かさない")
     rv.add_argument("--id", help="next: この項目をもう一度示す（例: R03）")
     rv.add_argument("--part", choices=["items", "all"], default="all", help="verify: items（項目だけ）か all（自由レビューも）")
