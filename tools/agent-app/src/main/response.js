@@ -1,11 +1,13 @@
 'use strict';
 
+const { headChars } = require('./text');
+
 const MAX_ITEMS = 200;
 const MAX_DETAIL_CHARS = 4000;
 const FILE_ACTIONS = { add: 'created', create: 'created', update: 'modified', modify: 'modified', delete: 'deleted' };
 
 function text(value, limit = MAX_DETAIL_CHARS) {
-  return String(value == null ? '' : value).trim().slice(0, limit);
+  return headChars(String(value == null ? '' : value).trim(), limit);
 }
 
 // Aider の TUI は構造化イベントを持たず、1 つの画面差分にバナー・思考・回答を

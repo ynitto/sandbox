@@ -34,7 +34,8 @@
   const CUT = 60;
   function short(text) {
     const body = String(text || '').replace(/\s+/g, ' ').trim();
-    return body.length > CUT ? `${body.slice(0, CUT)}…` : body;
+    const chars = Array.from(body);
+    return chars.length > CUT ? `${chars.slice(0, CUT).join('')}…` : body;
   }
 
   function detail(item) {

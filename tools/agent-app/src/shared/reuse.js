@@ -14,7 +14,7 @@
   }
   function presets(raw) {
     return (Array.isArray(raw) ? raw : []).slice(0, 20).filter(p => p && typeof p.name === 'string' && p.name.trim()).map(p => ({
-      name: p.name.trim().slice(0, 60), policy: ['recommended', 'saving', 'quality', 'direct'].includes(p.policy) ? p.policy : 'recommended',
+      name: Array.from(p.name.trim()).slice(0, 60).join(''), policy: ['recommended', 'saving', 'quality', 'direct'].includes(p.policy) ? p.policy : 'recommended',
       cli: String(p.cli || '').slice(0, 80), model: String(p.model || '').slice(0, 160),
       readonly: p.readonly === true, autoApprove: p.autoApprove === true,
       skillMode: ['auto', 'manual', 'off'].includes(p.skillMode) ? p.skillMode : 'auto',

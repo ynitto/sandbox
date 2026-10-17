@@ -169,7 +169,7 @@ class Requester extends EventEmitter {
     if (!r) return { status: 404, body: { error: 'その依頼はありません' } };
     const who = String(body.who || '').trim();
     if (!r.executor || r.executor.node !== who) return { status: 409, body: { error: 'この依頼の執行者ではありません' } };
-    const text = String(body.text || '').trim().slice(0, MAX_TALK);
+    const text = headChars(String(body.text || '').trim(), MAX_TALK);
     if (!text) return { status: 400, body: { error: '本文がありません' } };
     this.appendTalk(r, { who, text, at: nowIso() });
     return { status: 200, body: { ok: true } };
@@ -179,7 +179,7 @@ class Requester extends EventEmitter {
   async say(id, text) {
     const r = this.get(id);
     if (!r) throw new Error('その依頼はありません');
-    const body = String(text || '').trim().slice(0, MAX_TALK);
+    const body = headChars(String(text || '').trim(), MAX_TALK);
     if (!body) throw new Error('送る内容がありません');
     const entry = this.appendTalk(r, { who: this.node, text: body, at: nowIso(), ...(r.executor ? {} : { pending: true }) });
     if (r.executor) await this.deliverTalk(r, entry);
@@ -242,7 +242,7 @@ class Requester extends EventEmitter {
       sessionId: r.sessionId,
       talk: r.talk,
       executorCli: r.executor ? r.executor.cli : '',
-      answer: r.result && r.result.answer ? r.result.answer.slice(0, 2000) : '',
+      answer: r.result && r.result.answer ? headChars(r.result.answer, 2000) : '',
       error: r.result ? r.result.error : '',
     }));
   }
@@ -298,7 +298,7 @@ class Requester extends EventEmitter {
       this.send('share:screen', { id: r.id, sessionId: r.sessionId, text, node: who, cli: r.executor ? r.executor.cli : '' });
     }
     if (body.progress) {
-      const text = String(body.progress).slice(0, 200);
+      const text = headChars(body.progress, 200);
       r.progress.push({ at: nowIso(), text });
       if (r.progress.length > 50) r.progress.splice(0, r.progress.length - 50);
       this.turnProgress(r, text);
@@ -316,7 +316,7 @@ class Requester extends EventEmitter {
     const status = body.status === 'done' ? 'done' : 'failed';
     let answer = String(body.answer || '');
     let error = String(body.error || '');
-    if (answer.length > MAX_ANSWER) { answer = answer.slice(0, MAX_ANSWER); error = [error, '答えが長すぎたので末尾を切り詰めた'].filter(Boolean).join('\n'); }
+    if (answer.length > MAX_ANSWER) { answer = headChars(answer, MAX_ANSWER); error = [error, '答えが長すぎたので末尾を切り詰めた'].filter(Boolean).join('\n'); }
     r.result = {
       status, answer, error, error_class: String(body.error_class || ''),
       agent_cli: String(body.agent_cli || r.executor.cli || ''), model: String(body.model || ''),

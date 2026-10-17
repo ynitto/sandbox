@@ -327,7 +327,7 @@ class Participant extends EventEmitter {
     const item = this.inflight.get(String(id));
     if (!item) return { status: 404, body: { error: '実行していません' } };
     const who = String(body.who || '').trim() || item.request.posted_by;
-    const text = String(body.text || '').trim().slice(0, MAX_TALK);
+    const text = headChars(String(body.text || '').trim(), MAX_TALK);
     if (!text) return { status: 400, body: { error: '本文がありません' } };
     this.appendTalk(item, { who, text, at: nowIso() });
     return { status: 200, body: { ok: true } };
@@ -337,7 +337,7 @@ class Participant extends EventEmitter {
   async say(id, text) {
     const item = this.inflight.get(String(id));
     if (!item) throw new Error('その依頼は実行していません');
-    const body = String(text || '').trim().slice(0, MAX_TALK);
+    const body = headChars(String(text || '').trim(), MAX_TALK);
     if (!body) throw new Error('送る内容がありません');
     const entry = this.appendTalk(item, { who: this.node, text: body, at: nowIso() });
     await this.deliverTalk(item, entry);
