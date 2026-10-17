@@ -31,3 +31,15 @@ test('定型化の理由は絵文字の途中で切れない', () => {
 });
 
 function KIND(routine) { return routine.KINDS[0]; }
+
+test('定型の依頼の本文・応答の詳細・スキル一覧の説明・プリセット名は絵文字の途中で切れない', () => {
+  const settings = require('../src/main/settings');
+  const [quick] = settings.quickRequests([{ text: '😀'.repeat(5000) }]);
+  assert.ok(!lone.test(quick.text));
+  const response = require('../src/main/response');
+  if (typeof response.text === 'function') assert.ok(!lone.test(response.text('😀'.repeat(5000))));
+  const reuse = require('../src/shared/reuse');
+  const [preset] = reuse.presets([{ name: '😀'.repeat(61) }]);
+  assert.ok(!lone.test(preset.name));
+  assert.strictEqual(Array.from(preset.name).length, 60);
+});
