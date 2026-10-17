@@ -24,6 +24,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   報告の第 1 行は `FOUND`
 - 範囲にはコードにパスでつながる文書と大文字の定数も入れ、空のファイルは見ない。設計の不備の項目は 1 ファイルの上限で落とさない
 - 在庫の引き当てサービスのシナリオ（`tests/scenarios/review-usecases.md`）で、3 つの強さのモデルが仕込んだ 7 件をすべて拾った
+- 上限で見なかったファイルは `review start --rest` で続けて見る（前の回のやりたいことは引き継ぐ）。「全体」は `--path .` でどの側も見る
+- 引数の名前・export しない変数・定数のテストは項目にしない。`codd.py next` は、立てたあとにファイルが変わった計画にその数を添える
+- 種類の違うリポジトリのシナリオ（`tests/scenarios/review-variety.md`）を足す。問題の無いリポジトリではノイズ 0
 - 文書の意味のずれを見る `samples/drift/` は、確かめる項目の「矛盾」に畳んで外す。
   README の点検の節は「機械の点検（lint）」に改める
 

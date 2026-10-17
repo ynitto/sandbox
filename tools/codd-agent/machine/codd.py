@@ -7432,7 +7432,9 @@ def cmd_next(ctx: Ctx, args: argparse.Namespace) -> int:
     print(f"NEXT 立てておいた計画: {len(plans)} 件（古い順。進めるときは、そのやりたいことを依頼にして本流を始め、"
           "計画の段で `codd.py draft --next ファイル名` を使う）")
     for path in plans:
-        print(f"- {path.name} — {plan_request(path) or '（やりたいこと未記入）'}")
+        moved = changed_since_ahead(ctx, read_text(path) or "")
+        note = f"（立てたあとに {len(moved)} ファイル変わった。進めるときに読み直す）" if moved else ""
+        print(f"- {path.name} — {plan_request(path) or '（やりたいこと未記入）'}{note}")
     return 0
 
 
@@ -8036,8 +8038,8 @@ def _review_targets(ctx: Ctx, paths: list[str], since: str) -> list[tuple[str, s
                 files = [f for f in tracked(side) if f == rel or f.startswith(rel + "/") or not rel or rel == "."]
                 out += [(key, f) for f in files]
                 hit = hit or bool(files)
-                if hit:
-                    break   # 自分にあれば参照先は見ない（名前を付ければ参照先を選べる）
+                if hit and rel not in ("", "."):
+                    break   # 自分にあれば参照先は見ない（名前を付ければ参照先を選べる。`.` はどの側も全体）
             if not hit:
                 raise CoddError(f"{spec} に当たるファイルがありません（参照先のものは `名前:パス`）")
         return list(dict.fromkeys(out))
@@ -8074,9 +8076,12 @@ def review_is_doc(rel: str) -> bool:
 def code_names(text: str) -> list[tuple[str, int]]:
     """コードで定義した名前と行（`_` で始まるものと、関数の中の変数は除く）。"""
     out: dict[str, int] = {}
+    exports = bool(re.search(r"^export\s", text, re.MULTILINE))
     for i, line in enumerate(text.splitlines(), 1):
         m = _REVIEW_DEF.match(line)
         name = next((g for g in m.groups() if g), "") if m and not _LOCAL_VAR.match("+" + line) else ""
+        if exports and _MODULE_VAR.match(line):
+            continue   # export するモジュールの、export しない変数は外から見えない
         if name and not name.startswith("_"):
             out.setdefault(name, i)
     # 外から呼べる字下げの無い定義を先に（メソッドの get・run のような短くよくある名前で上限を使い切らない）
@@ -8084,6 +8089,7 @@ def code_names(text: str) -> list[tuple[str, int]]:
     return sorted(out.items(), key=lambda x: lines[x[1] - 1][:1].isspace())[:REVIEW_NAMES]
 
 
+_MODULE_VAR = re.compile(r"^(?:const|let|var)\s")
 REVIEW_STOPWORDS = {"true", "false", "null", "none", "None", "nil", "undefined", "self", "this"}
 
 
@@ -8159,7 +8165,7 @@ def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], 
                 elif has_docs:
                     add("漏れ", name, f"`{name}` が文書に出てこない。利用者や呼び出し元に見える振る舞いなら文書に要る"
                         "（内部だけの名前なら問題なし）", [here, *((k, r, 1) for k, r in own_docs[:2])], mine)
-                if tests_on and not test_hits:
+                if tests_on and not test_hits and not name.isupper():   # 定数は使う側のテストで確かめる
                     add("漏れ", f"{name}#test", f"`{name}` がテストに出てこない。振る舞いを確かめるテストが要るか"
                         "（ほかのテストを通して確かめているなら、その箇所を根拠に問題なし）", [here], mine)
         elif review_is_doc(rel):
@@ -8167,6 +8173,8 @@ def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], 
                 code_hits = sorted(review_grep(ctx, name, code), key=lambda h: not defines(ctx, h, name))   # 定義を先に
                 test_hits = review_grep(ctx, name, tests) if tests_on else []
                 here = (key, rel, line)
+                if code_hits and not defines(ctx, code_hits[0], name):
+                    continue   # コードで定義していない名前（引数・項目名など）は、定義した名前の項目が見る
                 if code_hits:
                     add("矛盾", name, f"`{name}` について、文書・コード・テストが同じことを述べているか"
                         "（値・条件・順番・戻り値・失敗のときの振る舞い）", [here, *code_hits[:2], *test_hits[:1]], mine)
@@ -8304,11 +8312,20 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
     items = {i["id"]: i for i in state["items"]}
     lines, free, _ = review_answers(ctx)
     groups: dict[str, list[str]] = {k: [] for k in (*REVIEW_FREE_KINDS, "判断できない")}
-    asks: list[str] = list(state.get("lint_asks", []))
+    asks: list[str] = [*state.get("lint_asks", []), *state.get("carried_asks", [])]
     answered = set()
 
     def ask_of(rest: list[str]) -> str:
         return next((x.split("やりたいこと:", 1)[1].strip() for x in rest if _REVIEW_ASK.match(x)), "")
+    own: dict[str, str] = {}   # 項目ごとのやりたいこと（「R05 と同じ」を、その中身で読めるようにする）
+    for block in lines:
+        head, *rest = block.split("\n")
+        if (m := _REVIEW_ANSWER.match(head)) and (a := ask_of(rest)) and not _REVIEW_SAME.match(a):
+            own[m.group(1)] = a
+
+    def shown_ask(a: str) -> str:
+        refs = [own[r] for r in re.findall(r"R\d+", a.split("と同じ")[0]) if r in own] if _REVIEW_SAME.match(a) else []
+        return f"{a}（{' / '.join(refs)}）" if refs else a
     for block in lines:
         head, *rest = block.split("\n")
         m = _REVIEW_ANSWER.match(head)
@@ -8321,7 +8338,7 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
         group = "判断できない" if verdict == "判断できない" else items[rid]["kind"]
         groups[group].append(f"- {token} — {why}（{rid}）")
         if (a := ask_of(rest)) and verdict == "問題":
-            groups[group].append(f"  - やりたいこと: {a}")
+            groups[group].append(f"  - やりたいこと: {shown_ask(a)}")
             if not _REVIEW_SAME.match(a):   # 同じ根のものは、本流に渡すやりたいことに重ねない
                 asks.append(a)
     for block in free:
@@ -8330,7 +8347,7 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
         if m:
             groups[m.group(1)].append(f"- {m.group(2)} — {m.group(3)}（{REVIEW_FREE}）")
             if a := ask_of(rest):
-                groups[m.group(1)].append(f"  - やりたいこと: {a}")
+                groups[m.group(1)].append(f"  - やりたいこと: {shown_ask(a)}")
                 if not _REVIEW_SAME.match(a):
                     asks.append(a)
     asks = list(dict.fromkeys(asks))
@@ -8344,7 +8361,10 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
         unseen.append(f"- 上限で出さなかった項目: {state['dropped']} 件（範囲を絞って、もう一度レビューする）")
     if state.get("skipped_files"):
         unseen.append("- 上限で見なかったファイル: " + ", ".join(state["skipped_files"][:10])
-                      + (f" ほか {len(state['skipped_files']) - 10} 件" if len(state["skipped_files"]) > 10 else ""))
+                      + (f" ほか {len(state['skipped_files']) - 10} 件" if len(state["skipped_files"]) > 10 else "")
+                      + "（続きは `codd.py review start --rest`。この回のやりたいことは引き継ぐ）")
+    if state.get("carried_asks"):
+        unseen.append(f"- 前の回から引き継いだやりたいこと: {len(state['carried_asks'])} 件（本流に渡すやりたいことに含める）")
     out += ["## 見なかったもの", "", *(unseen or ["- なし"]), "",
             "## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
     counts = "、".join(f"{k} {sum(1 for x in groups[k] if x.startswith('- '))}" for k in groups)
@@ -8360,6 +8380,15 @@ def forget_review_reads(ctx: Ctx) -> None:
 
 def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
     if args.step == "start":
+        carried: list[str] = []
+        if args.rest:   # 前の回が上限で見なかったファイルを見る。前の回のやりたいことは引き継ぐ
+            prev = review_state(ctx)
+            if not prev.get("skipped_files"):
+                print("NONE 前の回に見なかったファイルはありません")
+                return 0
+            args.path = prev["skipped_files"]
+            prev_asks = review_report(ctx, prev)[1]
+            carried = [a for a in prev_asks if a not in prev.get("lint_asks", [])]
         # 期間を挙げなければ、直近 7 日から、変わったファイルが見つかるまで遡る
         windows = [args.since] if args.since or args.path else list(REVIEW_WINDOWS)
         for since in windows:
@@ -8367,7 +8396,7 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
             if targets:
                 break
         args.since = since or ""
-        state = {"since": args.since, "paths": args.path or [], "targets": [], "skipped_files": [], "items": [],
+        state = {"since": args.since, "paths": args.path or [], "carried_asks": carried, "targets": [], "skipped_files": [], "items": [],
                  "dropped": 0, "shown": []}
         if review_dir(ctx).is_dir():
             shutil.rmtree(review_dir(ctx))   # 前の回の答えを使い回させない
@@ -8384,7 +8413,9 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
             print(f"NONE 見る項目がありません（ファイル {len(targets)} 件。点検: {counts}）")
             return 0
         kinds = "、".join(f"{k} {sum(1 for i in state['items'] if i['kind'] == k)}" for k in REVIEW_KINDS)
-        span = "挙げたもの" if args.path else (f"{args.since} から変わったもの" if args.since else "全履歴で変わったもの")
+        days = re.match(r"(\d+) days ago$", args.since or "")
+        span = ("挙げたもの" if args.path else f"直近 {days.group(1)} 日に変わったもの" if days
+                else f"{args.since} から変わったもの" if args.since else "全履歴で変わったもの")
         print(f"OK レビュー: ファイル {len(state['targets'])} 件、項目 {len(state['items'])} 件（{kinds}）。範囲: {span}。点検: {counts}")
         if state["skipped_files"] or state["dropped"]:
             print(f"上限を超えた分は見ない（ファイル {len(state['skipped_files'])} 件・項目 {state['dropped']} 件。"
@@ -8487,6 +8518,7 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--path", action="append", help="start: 見るファイルかフォルダ（参照先は `名前:パス`。既定は期間のうちに変わったもの）")
     rv.add_argument("--since", help="start: 変わったファイルを探す期間の始め（既定は直近 7 日。無ければ 30 日・90 日・1 年・全履歴と遡る）")
     rv.add_argument("--no-test", action="store_true", help="start: 点検でテストを動かさない")
+    rv.add_argument("--rest", action="store_true", help="start: 前の回が上限で見なかったファイルを見る（前の回のやりたいことは引き継ぐ）")
     rv.add_argument("--id", help="next: この項目をもう一度示す（例: R03）")
     rv.add_argument("--part", choices=["items", "all"], default="all", help="verify: items（項目だけ）か all（自由レビューも）")
     ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")

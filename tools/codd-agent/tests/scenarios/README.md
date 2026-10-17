@@ -16,6 +16,7 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 | [semantic-graph.md](semantic-graph.md) | 税の計算（Python）と設計書・運用メモ・e2e のケース | 文書を LLM で読んだグラフ、必須・要判断・参考の分け方、判断済みを出さない |
 | [review-check.md](review-check.md) | 小さな関数と設計書・テスト（codd を通らずに変えたもの） | 確かめる、項目と答えの検査、次の計画を立てて引き継ぐ、変更が無ければ遡る |
 | [review-usecases.md](review-usecases.md) | 在庫の引き当てサービス（Python）と設計書。漏れ・矛盾・設計の不備を 7 つ仕込む | 確かめる流れが役に立つか（拾えた数とノイズ）、弱いモデルとの比べ方、立てた計画を本流で進める |
+| [review-variety.md](review-variety.md) | 1 つのリポジトリの JS・問題の無い Python・30 のハンドラ | ノイズ、上限を超えたときの見残しと続き、直してからもう一度確かめる |
 
 ## 再生する
 

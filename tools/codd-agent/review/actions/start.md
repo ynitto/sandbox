@@ -8,12 +8,14 @@
    `PENDING` と出たら、示されたとおりに束ごとに文書を抜き出し（サブエージェント `codd-graph` に渡すと示されたら、
    自分では文書を読まない）、`python3 .statemachine/codd/codd.py graph --merge` を実行します。`OK` が出るまで繰り返します
    （`FAILED` と出た束だけをやり直す）。graphify が無ければ、その旨が出るので先へ進みます。
-2. 上の「何を確かめるか」を、次のどれかの形にして 1 回だけ実行します。
+2. 上の「何を確かめるか」を、次のどれかの形にして 1 回だけ実行します（「続き」「見なかったところ」なら `--rest`、「全体」なら `--path .`）。
 
    ```bash
    python3 .statemachine/codd/codd.py review start                          # 空: 直近 7 日に変わったファイル（無ければ遡る）
    python3 .statemachine/codd/codd.py review start --path src/orders        # ファイル・フォルダを挙げた（繰り返し可。参照先は 名前:パス）
    python3 .statemachine/codd/codd.py review start --since "7 days ago"     # 期間を挙げた
+   python3 .statemachine/codd/codd.py review start --rest                   # 「見なかったところも」: 前の回が上限で見なかったファイル
+   python3 .statemachine/codd/codd.py review start --path .                 # 「全体」: どの側もすべて（上限を超えた分は --rest で続ける）
    ```
 
    機能や名前だけを挙げられたとき（「注文まわり」「`hello`」など）は、先に `codd.py impact --term 名前`（自分）と

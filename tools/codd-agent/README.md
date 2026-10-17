@@ -664,6 +664,7 @@ graphify スキルは、グラフの作成・更新・調査を直接頼んだ�
 「手入れして」と頼む。**コードも文書も直さない。** グラフを用意し、範囲（ファイル・フォルダ・機能の名前・期間）を
 確かめ、見つけたものを本流に渡す「やりたいこと」の 1 行にし、そこから[次の計画を立てておく](#次の計画を立てておく)。
 範囲を挙げなければ、作業中のファイルと直近 7 日に変わったファイルを見る。無ければ 30 日・90 日・1 年・全履歴と遡る。
+「全体」と頼めば、どの側もすべてのファイルを見る（1 回に 20 ファイルまで。残りは「見なかったところも」で続ける）。
 
 ```
 start（グラフを用意し、点検して項目を決める）─→ items（1 件ずつ答える）─→ free（自由レビュー）
@@ -694,11 +695,12 @@ start（グラフを用意し、点検して項目を決める）─→ items（
 - 設計の不備の項目があれば、守る決まりを読んだか（`codd.py rule --all`）を確かめる
 - 自由レビューも、根拠の行が実在するかと「やりたいこと」を確かめる
 
-結果は `.codd/review.md` に残る。直すときは「本流に渡すやりたいこと」の行を、いつもどおりエージェント `codd` に伝える。
+上限で見なかったファイルがあれば、報告の「見なかったもの」に挙がる。「見なかったところも確かめて」と頼むと、その続きを見る
+（`review start --rest`。前の回のやりたいことは引き継ぐ）。結果は `.codd/review.md` に残る。直すときは「本流に渡すやりたいこと」の行を、いつもどおりエージェント `codd` に伝える。
 判断はモデルに依るので、終了コードで CI を止める用途には `lint` を使う。
 
 ```bash
-python3 .statemachine/codd/codd.py review start [--path パス] [--since "7 days ago"] [--no-test]
+python3 .statemachine/codd/codd.py review start [--path パス] [--since "7 days ago"] [--rest] [--no-test]
 python3 .statemachine/codd/codd.py review next      # 次の項目（--id R03 で示し直す）
 python3 .statemachine/codd/codd.py review verify    # 答えを検査する（--part items は項目だけ）
 python3 .statemachine/codd/codd.py review report    # まとめる

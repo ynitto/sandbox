@@ -4610,6 +4610,52 @@ class CoddTest(unittest.TestCase):
         asks = out.split("## 本流に渡すやりたいこと")[1]
         self.assertIn("hello のテストを足したい", asks)
         self.assertNotIn("と同じ", asks)
+        self.assertIn(f"と同じ（hello の戻り値を合わせたい）", out)   # 指した項目のやりたいことを添えて読めるようにする
+
+    def test_review_skips_names_nobody_outside_sees(self) -> None:
+        commit(self.impl, {"src/app.py": "LIMIT = 3\n\n\ndef hello(person):\n    return person\n",
+                           "src/lib.js": "const cache = new Map();\n\nexport function lookup(id) {\n  return cache.get(id);\n}\n"},
+               "names")
+        commit(self.design, {"docs/api.md": "`hello(person)` は `person` を返す。上限は `LIMIT`。`lookup` もある。\n\n"
+                                            "実装は `src/app.py` と `src/lib.js`。\n"}, "doc")
+        self.run_pa(self.impl, "review", "start", "--path", "src", "--no-test")
+        names = {i["name"] for i in self.review_items().values()}
+        self.assertNotIn("person", names)      # 引数の名前は、定義した hello の項目が見る
+        self.assertNotIn("cache", names)       # export するモジュールの、export しない変数
+        self.assertIn("LIMIT", names)
+        self.assertNotIn("LIMIT#test", names)  # 定数は使う側のテストで確かめる
+        self.assertIn("lookup", names)
+
+    def test_review_rest_looks_at_what_the_cap_left_and_keeps_asks(self) -> None:
+        files = {f"src/m{i:02d}.py": f"def f{i:02d}():\n    return {i}\n" for i in range(25)}
+        commit(self.impl, files, "many")
+        self.run_pa(self.impl, "review", "start", "--path", "src", "--no-test")
+        state = json.loads((self.impl / ".codd/review/state.json").read_text(encoding="utf-8"))
+        self.assertTrue(state["skipped_files"])
+        items = self.review_items()
+        for rid in items:
+            self.run_pa(self.impl, "review", "next", "--id", rid)
+            loc = items[rid]["locs"][0]
+            line = f"- {rid} 問題: {loc[1]}:{loc[2]} — 見た" + "\n  - やりたいこと: 先の回で見つけた" if rid == "R01" else \
+                f"- {rid} 問題なし: {loc[1]}:{loc[2]} — 見た"
+            self.review_answer(line)
+        out = self.run_pa(self.impl, "review", "report").stdout
+        self.assertIn("続きは `codd.py review start --rest`", out)
+        skipped = state["skipped_files"]
+        self.run_pa(self.impl, "review", "start", "--path", ".", "--no-test")   # 全体はどの側も見る
+        whole = json.loads((self.impl / ".codd/review/state.json").read_text(encoding="utf-8"))
+        self.assertTrue(any("docs/api.md" in t for t in whole["targets"] + whole["skipped_files"]))
+        (self.impl / ".codd/review/state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        (self.impl / ".codd/review/answers.md").write_text("# 項目への答え\n\n" + "".join(
+            f"- {rid} 問題: {items[rid]['locs'][0][1]}:{items[rid]['locs'][0][2]} — 見た\n  - やりたいこと: 先の回で見つけた\n"
+            if rid == "R01" else f"- {rid} 問題なし: {items[rid]['locs'][0][1]}:{items[rid]['locs'][0][2]} — 見た\n"
+            for rid in items), encoding="utf-8")
+        r = self.run_pa(self.impl, "review", "start", "--rest", "--no-test")
+        self.assertTrue(r.stdout.startswith("OK"), r.stdout + r.stderr)
+        rest = json.loads((self.impl / ".codd/review/state.json").read_text(encoding="utf-8"))
+        self.assertTrue(set(skipped) <= set(rest["targets"]) | set(rest["skipped_files"]))   # 見なかったものだけを見る
+        self.assertEqual(rest["carried_asks"], ["先の回で見つけた"])                          # 前の回の見つけたものを失わない
+        self.assertIn("先の回で見つけた", self.run_pa(self.impl, "review", "report").stdout.split("## 本流に渡すやりたいこと")[1])
 
     def test_review_says_none_when_nothing_to_look_at(self) -> None:
         commit(self.impl, {"setup.cfg": "[metadata]\n"}, "cfg")   # 名前も文書も持たないファイルには項目が出ない
@@ -4629,7 +4675,7 @@ class CoddTest(unittest.TestCase):
 
     def test_review_goes_further_back_when_nothing_changed_recently(self) -> None:
         r = self.run_pa(self.impl, "review", "start", "--no-test")
-        self.assertIn("範囲: 7 days ago から変わったもの", r.stdout, r.stderr)
+        self.assertIn("範囲: 直近 7 日に変わったもの", r.stdout, r.stderr)
         old = (dt.datetime.now() - dt.timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S")
         for repo in (self.impl, self.design):   # どちらの側も 60 日前のコミットだけにする
             subprocess.run(["git", "filter-branch", "-f", "--env-filter",
@@ -4638,7 +4684,7 @@ class CoddTest(unittest.TestCase):
                                                                             "FILTER_BRANCH_SQUELCH_WARNING": "1"})
         r = self.run_pa(self.impl, "review", "start", "--no-test")
         self.assertTrue(r.stdout.startswith("OK"), r.stdout + r.stderr)
-        self.assertIn("範囲: 90 days ago から変わったもの", r.stdout)
+        self.assertIn("範囲: 直近 90 日に変わったもの", r.stdout)
         # 期間を挙げたら遡らない
         r = self.run_pa(self.impl, "review", "start", "--since", "7 days ago", "--no-test")
         self.assertTrue(r.stdout.startswith("NONE"), r.stdout + r.stderr)
@@ -4670,6 +4716,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "next", "--verify").returncode, 0)
         self.assertIn(f"- {ahead.name} — hello の戻り値を 2 にしたい", self.run_pa(self.impl, "next").stdout)
         commit(self.impl, {"src/app.py": "def hello():\n    return 3\n"}, "changed after")   # 立てたあとに変わった
+        self.assertIn("立てたあとに 1 ファイル変わった", self.run_pa(self.impl, "next").stdout)
         # 本流が引き継ぐと、進めている計画になり、next/ から消える
         r = self.run_pa(self.impl, "draft", "--next", ahead.name)
         self.assertEqual(r.returncode, 0, r.stderr)
