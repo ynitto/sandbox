@@ -327,6 +327,11 @@ def is_argv(value) -> bool:
     return isinstance(value, list) and bool(value) and all(isinstance(a, str) for a in value)
 
 
+def is_commands(value) -> bool:
+    """コマンドの配列か、順に動かすコマンドの並び（check と test の書き方）。"""
+    return is_argv(value) or (isinstance(value, list) and bool(value) and all(is_argv(c) for c in value))
+
+
 def check_commands(value) -> list[list[str]]:
     """codd.json の check を、順に動かすコマンドの並びに。1 つならコマンドの配列、いくつもならその配列を並べる。"""
     if not value:
@@ -335,10 +340,10 @@ def check_commands(value) -> list[list[str]]:
 
 
 def test_commands(value) -> list[tuple[str, list[str]]]:
-    """codd.json の test を（名前, コマンド）の並びに。単体テストも API テストもシナリオテストも同じに動かす。"""
+    """codd.json の test を（名前, コマンド）の並びに。check と同じ書き方のほか、名前ごとのコマンドも読む。"""
     if not value:
         return []
-    return [("", value)] if isinstance(value, list) else list(value.items())
+    return list(value.items()) if isinstance(value, dict) else [("", argv) for argv in check_commands(value)]
 
 
 # ---------------------------------------------------------------- 従う手順（guides）
@@ -583,8 +588,8 @@ def load_config(machine_dir: Path) -> dict:
     if "refs" not in config and config.get("ref_path"):  # 参照先が 1 つだった頃の書き方
         config["refs"] = [{"path": config["ref_path"]}]
     refs = config.get("refs")
-    if not (isinstance(refs, list) and refs):
-        raise CoddError(f"{path} の refs が空です（参照先のリポジトリを 1 つ以上書いてください）")
+    if not isinstance(refs, list):
+        raise CoddError(f"{path} の refs は参照先の配列です（文書の無いリポジトリなら []）")
     names = set()
     for i, ref in enumerate(refs):
         if not (isinstance(ref, dict) and isinstance(ref.get("path"), str) and ref["path"]):
@@ -634,15 +639,15 @@ def load_config(machine_dir: Path) -> dict:
         raise CoddError(f"{path} の graphify は auto か off、または {{\"semantic\": \"session\"}} の形です"
                         f"（今: {config['graphify']!r}）")
     command = config.get("check")
-    if command is not None and not (is_argv(command) or (isinstance(command, list) and command
-                                                         and all(is_argv(c) for c in command))):
+    if command is not None and not is_commands(command):
         raise CoddError(f'{path} の check はコマンドの配列か、順に動かすコマンドの並びです'
                         '（例: ["npm", "test"] / [["npm", "run", "lint"], ["npm", "run", "e2e"]]）')
     test = config.get("test")
-    if test is not None and not (is_argv(test) or (isinstance(test, dict) and test and all(
+    if test is not None and not (is_commands(test) or (isinstance(test, dict) and test and all(
             isinstance(k, str) and k and is_argv(v) for k, v in test.items()))):
-        raise CoddError(f'{path} の test はコマンドの配列か、名前ごとのコマンドです'
-                        '（例: ["npm", "test"] / {"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}）')
+        raise CoddError(f'{path} の test はコマンドの配列か、順に動かすコマンドの並びか、名前ごとのコマンドです'
+                        '（例: ["npm", "test"] / [["npm", "test"], ["npm", "run", "test:api"]] / '
+                        '{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}）')
     evidence = config.get("evidence", DEFAULT_EVIDENCE)
     config["evidence"] = [] if evidence == [] else rule_list(evidence, f"{path} の evidence")
     tests = config.get("tests", DEFAULT_TEST_PATTERNS)
@@ -864,6 +869,9 @@ class Ctx:
                                  guides=guides or {}, entry_triggered=added["triggered"]))
         for r in self.refs:
             r.exclude = unique([*r.exclude, *r.evidence_patterns])
+            if r.path == root.resolve() and r.scope and not self.own.scope:
+                # 同じリポジトリで自分の scope を書かなければ、参照先が受け持つフォルダの外の全部を受け持つ
+                self.own.exclude = unique([*self.own.exclude, *(f"{s}/" for s in r.scope)])
         self.place_ref_guides()
         self.check_layout()
         self.load_bases()
@@ -936,11 +944,14 @@ class Ctx:
                 side.base = base
 
     def check_layout(self) -> None:
-        """同じリポジトリを 2 つ以上の側が使うなら、どの側も scope を持ち、互いに重ならないこと。"""
+        """同じリポジトリを 2 つ以上の側が使うなら、どの側も scope を持ち、互いに重ならないこと。
+        自分の scope は省ける（参照先の scope の外の全部を受け持つ）。"""
         sides: list[Side] = [self.own, *self.refs]
         for i, a in enumerate(sides):
             for b in sides[i + 1:]:
                 if a.path.resolve() != b.path.resolve():
+                    continue
+                if a is self.own and not a.scope and b.scope:
                     continue
                 if not a.scope or not b.scope:
                     raise CoddError(
@@ -1342,7 +1353,7 @@ def guide_line(ctx: Ctx, key: str, g: Guide) -> str:
 
 def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     print(f"この側: {SIDES[ctx.side]}（{ctx.side}）  {ctx.root}{scope_words(ctx.own)}")
-    print("参照先:")
+    print("参照先:" if ctx.refs else "参照先: なし（文書を持たないリポジトリ。実装とテストの一貫性だけを取り、計画の参照先の見出しは「なし」と書く）")
     for r in ctx.refs:
         print(f"  - {r.name}: {r.label}  {r.path}{scope_words(r)}")
     rules = ctx.rule_files()
@@ -2510,9 +2521,8 @@ def save_links(ctx: Ctx, rows: list[dict]) -> None:
 
 
 def link_reason(item: str) -> str:
-    """項目の理由（— の後ろ）。計画に書き足すときに根拠のパスとして読まれないよう ` を外し、短くする。"""
-    text = item.split("—", 1)[-1].replace("`", "").strip(" -")
-    return text[:80]
+    """項目の理由（— の後ろ）。計画に書き足すときに根拠のパスとして読まれないよう ` を外し、1 行にする（途中で切らない）。"""
+    return " ".join(item.split("—", 1)[-1].replace("`", "").split()).strip(" -")
 
 
 def links_plan(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> None:
@@ -2625,7 +2635,7 @@ def record_links(ctx: Ctx, a: "Applied") -> None:
         if key is None:
             key = "" if rel in a.own_touched else next((n for n, rels in a.touched.items() if rel in rels), None)
         if key is not None and (side_of(ctx, key).path / rel).is_file():
-            found.append((key, rel, why.replace("`", "")[:80]))
+            found.append((key, rel, " ".join(why.replace("`", "").split())))
     if found or asked:
         add_links(ctx, own_planned(ctx, a.bodies), found, asked, waived)
 
@@ -3919,6 +3929,8 @@ def nodoc_message(ctx: Ctx, key: str, rel: str) -> str:
 
 def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     """計画で作る・変えるコードのうち、対応する文書が無く、文書を作る・足す行も計画に無いもの。"""
+    if not ctx.refs:
+        return []   # 文書の無いリポジトリ（refs が空）は、実装とテストだけの一貫性を取る
     missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(planned_code(ctx, bodies))
                if not doc_lines_cover(ctx, bodies, rel)
                and not any(_DELETE_WORD.search(line) for line in plan_lines_naming(bodies, rel))
@@ -3935,6 +3947,8 @@ def nodoc_apply_problems(ctx: Ctx, bodies: dict[str, str], touched: dict[str, se
 
     計画で挙げたコードは、変えずに済んでも確かめる（計画で文書を作ると書いたのに、作らずに終えさせない）。
     """
+    if not ctx.refs:
+        return []   # 文書の無いリポジトリ（refs が空）は、実装とテストだけの一貫性を取る
     targets = {(k, rel) for k, rels in touched.items() for rel in rels if is_code(ctx, k, rel)} | planned_code(ctx, bodies)
     missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(targets)
                if (side_of(ctx, k).path / rel).is_file() and not docs_for(ctx, k, rel)]
@@ -5617,13 +5631,20 @@ def unrun_problems(ctx: Ctx, since: float, sides: list[str], required: set[tuple
             f"`python3 {MACHINE_REL}/codd.py accept`）: " + ", ".join(side_label(ctx, k, rel) for k, rel in missing)]
 
 
-def run_checks(ctx: Ctx, key: str, side: Side, cwd: Path, value, label: str) -> list[str]:
-    """check のコマンドを書いた順に動かし、落ちたところで止める（後のコマンドは前のコマンドが通る前提で書く）。"""
-    for argv in check_commands(value):
-        problems = checked(ctx, key, side, cwd, argv, label)
-        if problems:
-            return problems
-    return []
+def run_checks(ctx: Ctx, key: str, side: Side, cwd: Path, test, check, label: str) -> list[str]:
+    """テスト（test）をすべて動かし、続けて検査（check）を書いた順に動かして落ちたところで止める。
+
+    テストは互いに独立なので、落ちても残りを動かし、失敗を一度に返す（1 つずつ見つけると、訊かずにやり直せる
+    回数を使い切ったり、変える前から落ちていたものを何度にも分けて訊いたりする）。検査は前のコマンドが通る前提で
+    書く（lint → build → e2e など）ので、落ちたら後のコマンドは動かさない。"""
+    problems: list[str] = []
+    for name, argv in test_commands(test):
+        problems += checked(ctx, key, side, cwd, argv, f"{label}のテスト{f'（{name}）' if name else ''}")
+    for argv in check_commands(check):
+        failed = checked(ctx, key, side, cwd, argv, label)
+        if failed:
+            return problems + failed
+    return problems
 
 
 @dataclass
@@ -6540,14 +6561,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     before_checks = len(problems)
     (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
     started = time.time() - 1
-    for name, argv in test_commands(ctx.config.get("test")):
-        problems += checked(ctx, "", ctx.own, ctx.root, argv, f"{SIDES[ctx.side]}のテスト{f'（{name}）' if name else ''}")
-    problems += run_checks(ctx, "", ctx.own, ctx.root, ctx.config.get("check"), SIDES[ctx.side])
+    problems += run_checks(ctx, "", ctx.own, ctx.root, ctx.config.get("test"), ctx.config.get("check"), SIDES[ctx.side])
     for r in changed:
         # 参照先のテストと検査は、参照先に置いた同じマシンの設定（codd.json の test・check）を使う。
-        for name, argv in test_commands(r.test):
-            problems += checked(ctx, r.name, r, r.path, argv, f"{r.name}（{r.label}）のテスト{f'（{name}）' if name else ''}")
-        problems += run_checks(ctx, r.name, r, r.path, r.check, f"{r.name}（{r.label}）")
+        problems += run_checks(ctx, r.name, r, r.path, r.test, r.check, f"{r.name}（{r.label}）")
     checks_failed = len(problems) > before_checks
     if checks_failed:
         save_failed_tests(ctx)
