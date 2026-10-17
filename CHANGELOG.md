@@ -28,6 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 引数の名前・export しない変数・定数のテストは項目にしない。`codd.py next` は、立てたあとにファイルが変わった計画にその数を添える
 - 種類の違うリポジトリのシナリオ（`tests/scenarios/review-variety.md`）を足す。問題の無いリポジトリではノイズ 0
 - 文書の意味のずれを見る `samples/drift/` は、確かめる項目の「矛盾」に畳んで外す。
+- 本流の計画の検査が、実装を参照先に合わせる直しのずれを通す（ずれには、自分の変更案か参照先の変更案のどちらかがあればよい）
   README の点検の節は「機械の点検（lint）」に改める
 
 ### agent-audit: 成果物の資格のテストが日付の経過で落ちていたのを直す

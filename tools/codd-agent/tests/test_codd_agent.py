@@ -589,7 +589,9 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("見出しの中身が空です", r.stderr)
-        for plan in (PLAN_ALIGNED, PLAN_DRIFT):
+        # 実装を参照先に合わせる直しは、ずれがあっても参照先の変更案が「なし」でよい
+        align_impl = PLAN_DRIFT.replace("- docs/api.md — `hello` の戻り値を 2 と書き直す", "なし")
+        for plan in (PLAN_ALIGNED, PLAN_DRIFT, align_impl):
             self.write_plan(plan)
             r = self.run_pa(self.impl, "verify-plan")
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -597,8 +599,9 @@ class CoddTest(unittest.TestCase):
     def test_verify_plan_rejects_inconsistent_plans(self) -> None:
         cases = {
             "実在する根拠のパスがありません": PLAN_ALIGNED.replace("docs/api.md#hello", "docs/nowhere.md"),
-            "ずれがあるのに、参照先の変更案が「なし」": PLAN_DRIFT.replace(
-                "- docs/api.md — `hello` の戻り値を 2 と書き直す", "なし"),
+            "ずれがあるのに、自分の変更案も参照先の変更案も「なし」": PLAN_DRIFT.replace(
+                "- docs/api.md — `hello` の戻り値を 2 と書き直す", "なし").replace(
+                "- src/app.py — `hello` が 2 を返す", "なし"),
             # 自分も変えるなら影響は測って書き足すので、自分の変更案が「なし」のときだけ求める
             "影響範囲が「なし」": PLAN_DRIFT.replace("- src/app.py — hello の戻り値", "なし").replace(
                 "- src/app.py — `hello` が 2 を返す", "なし"),

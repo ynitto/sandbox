@@ -3601,8 +3601,9 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     drift = not is_none(bodies["## ずれ"])
     ref_change = not is_none(bodies["## 参照先の変更案"])
     impact = not is_none(bodies["## 影響範囲"])
-    if drift and not ref_change:
-        problems.append("ずれがあるのに、参照先の変更案が「なし」です（ずれを残すなら、ずれではなくその他に書く）")
+    # ずれは、参照先を直しても、自分を参照先に合わせても解ける。どちらの案も無いときだけ落とす
+    if drift and not ref_change and is_none(bodies["## 自分の変更案"]):
+        problems.append("ずれがあるのに、自分の変更案も参照先の変更案も「なし」です（ずれを残すなら、ずれではなくその他に書く）")
     if not is_none(bodies["## 自分の変更案"]):
         for item in items(bodies["## 自分の変更案"]) or [bodies["## 自分の変更案"]]:
             if not cited_own(ctx, item, allow_new=True):
