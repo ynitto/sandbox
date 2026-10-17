@@ -1906,10 +1906,13 @@ class CoddTest(unittest.TestCase):
         self.assertIn("the response hit the length limit", copilot)
         self.assertIn("codd.py summary", copilot)
         # 「チェックして」は、本流とは別のレビューのステートマシンで回す（直さない）。
-        self.assertIn("## チェック・点検・レビューを頼まれたら", copilot)
-        self.assertIn(".statemachine/codd/review.yaml", copilot)
-        self.assertIn("file://.statemachine/codd/review.yaml", kiro["resources"])
-        self.assertTrue((self.impl / ".statemachine/codd/review.yaml").is_file())
+        self.assertIn("## 確かめる・手入れする・次の計画", copilot)
+        self.assertIn(".statemachine/codd-review/workflow.yaml", copilot)
+        self.assertIn("file://.statemachine/codd-review/workflow.yaml", kiro["resources"])
+        # 定期実行の道具が 1 つのタスクとして並べられるよう、本流と別のフォルダに置く
+        self.assertTrue((self.impl / ".statemachine/codd-review/workflow.yaml").is_file())
+        self.assertTrue((self.impl / ".statemachine/codd-review/actions/ahead.md").is_file())
+        self.assertFalse((self.impl / ".statemachine/codd/review.yaml").exists())
         # 変える段を渡すサブエージェント。モデルは書かない（呼び出し元と同じモデルで動かす）。
         self.assertIn("agents: [codd-apply, codd-graph]", copilot)
         graph_worker = (self.impl / ".github/agents/codd-graph.agent.md").read_text(encoding="utf-8")
@@ -2022,7 +2025,7 @@ class CoddTest(unittest.TestCase):
                          [{"name": "design", "path": "../design-v2", "rules": ["docs/r.md"], "scope": ["docs"]}])
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
-                         [".statemachine/codd/"])
+                         [".statemachine/codd/", ".statemachine/codd-review/"])
         fresh = self.tmp / "fresh"
         fresh.mkdir()
         git(fresh, "init", "-q")
@@ -4578,13 +4581,63 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "review", "start", "--path", "nowhere", "--no-test")
         self.assertIn("に当たるファイルがありません", r.stderr)
 
+    def test_review_machine_runs_ahead_only_when_maintaining(self) -> None:
+        text = (TOOL / "review/workflow.yaml").read_text(encoding="utf-8")
+        self.assertIn('{from: free, to: ahead, condition_rule: "equals:mode:手入れ", priority: 1}', text)
+        self.assertIn("{from: free, to: report, priority: 2}", text)
+        self.assertIn("args: [.statemachine/codd/codd.py, next, --verify]", text)
+
+    def test_review_folder_is_part_of_the_machine(self) -> None:
+        # 置いた codd-review のフォルダは、変えたファイルにも探す対象にも数えない
+        self.run_pa(self.impl, "impact", "--term", "手入れ")   # 手入れの手順にだけ出てくる語
+        self.assertNotIn(".statemachine/codd-review/", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
+
+    def test_plans_made_ahead_are_listed_and_taken_over(self) -> None:
+        self.assertTrue(self.run_pa(self.impl, "next").stdout.startswith("NONE"))
+        r = self.run_pa(self.impl, "draft", "--ahead", "--name", "hello-returns-two")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ahead = next((self.impl / ".plans/next").glob("*-hello-returns-two.md"))
+        # 立てておいた計画は、進めている計画でも記録でもない（本流の回を始めず、印も取らない）
+        self.assertFalse(list((self.impl / ".plans").glob("*.md")))
+        self.assertFalse((self.impl / ".codd/run-start.json").exists())
+        r = self.run_pa(self.impl, "next", "--verify")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## やりたいこと を書いていません", r.stdout)
+        text = ahead.read_text(encoding="utf-8")
+        ahead.write_text(text.replace("<!-- 1〜3 行。1 回で終わる大きさに絞る（残りは「今回やらないこと」へ） -->",
+                                      "hello の戻り値を 2 にしたい"), encoding="utf-8")
+        self.run_pa(self.impl, "draft", "--ahead", "--name", "same-again")
+        twin = next((self.impl / ".plans/next").glob("*-same-again.md"))
+        twin.write_text(ahead.read_text(encoding="utf-8"), encoding="utf-8")
+        self.assertIn("同じやりたいことです", self.run_pa(self.impl, "next", "--verify").stdout)
+        twin.unlink()
+        self.assertEqual(self.run_pa(self.impl, "next", "--verify").returncode, 0)
+        self.assertIn(f"- {ahead.name} — hello の戻り値を 2 にしたい", self.run_pa(self.impl, "next").stdout)
+        # 本流が引き継ぐと、進めている計画になり、next/ から消える
+        r = self.run_pa(self.impl, "draft", "--next", ahead.name)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("立てておいた計画から始めます", r.stdout)
+        plans = list((self.impl / ".plans").glob("*-hello-returns-two.md"))
+        self.assertEqual(len(plans), 1)
+        self.assertIn("hello の戻り値を 2 にしたい", plans[0].read_text(encoding="utf-8"))
+        self.assertFalse(ahead.exists())
+        self.assertIn("計画はもうあります", self.run_pa(self.impl, "draft", "--name", "other").stdout)
+        self.assertIn("ありません", self.run_pa(self.impl, "draft", "--next", "nothing", "--new").stderr)
+
+    def test_plans_made_ahead_are_capped(self) -> None:
+        for i in range(5):
+            self.assertEqual(self.run_pa(self.impl, "draft", "--ahead", "--name", f"p{i}").returncode, 0)
+        r = self.run_pa(self.impl, "draft", "--ahead", "--name", "p5")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("上限（5）", r.stderr)
+
     def test_review_machine_passes_engine_validation(self) -> None:
         try:
             import yaml  # noqa: F401
         except ImportError:
             self.skipTest("PyYAML がありません")
         runner = REPO / ".github/skills/statemachine-use/scripts/run_machine.py"
-        r = subprocess.run([sys.executable, str(runner), str(TOOL / "machine/review.yaml"), "--dry-run"],
+        r = subprocess.run([sys.executable, str(runner), str(TOOL / "review/workflow.yaml"), "--dry-run"],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
@@ -4637,55 +4690,6 @@ class CoddTest(unittest.TestCase):
         action = (TOOL / "machine/actions/retro.md").read_text(encoding="utf-8")
         self.assertIn("`NONE` なら", action)
         self.assertIn("利用者に訊かずに進めます", action)
-
-    # ------------------------------------------------------------ 意味のずれのサンプル（samples/drift）
-
-    def drift(self, mode: str) -> subprocess.CompletedProcess:
-        dest = self.impl / ".statemachine/codd-drift"
-        if not dest.is_dir():
-            shutil.copytree(TOOL / "samples/drift", dest)
-        return subprocess.run([sys.executable, ".statemachine/codd-drift/check_drift.py", mode], cwd=self.impl,
-                              capture_output=True, text=True, env={**os.environ, **GIT_ENV})
-
-    def test_drift_sample_checks_the_shape_of_what_the_model_wrote(self) -> None:
-        data = self.impl / ".codd"
-        data.mkdir(exist_ok=True)
-        (data / "drift-candidates.md").write_text("なし\n", encoding="utf-8")
-        self.assertEqual(self.drift("candidates").returncode, 0)
-        self.assertIn("比べる組はありませんでした", self.drift("report").stdout)
-
-        (data / "drift-candidates.md").write_text(
-            "- src/app.py:2 ⇔ design:docs/api.md:5 — hello の戻り値\n"
-            "- src/app.py:9 ⇔ design:docs/none.md:1 — 無い\n", encoding="utf-8")
-        r = self.drift("candidates")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("src/app.py:9 — 2 行までのファイルです", r.stderr)   # 指す行が実在するか
-        self.assertIn("design:docs/none.md:1 — ファイルがありません", r.stderr)
-
-        (data / "drift-candidates.md").write_text("- src/app.py:2 ⇔ design:docs/api.md:5 — hello の戻り値\n",
-                                                  encoding="utf-8")
-        self.assertEqual(self.drift("candidates").returncode, 0, self.drift("candidates").stderr)
-        (data / "drift.md").write_text("- ずれ: src/app.py:2 ⇔ design:docs/api.md:5 — 実装は 1、設計書も 1\n",
-                                       encoding="utf-8")
-        r = self.drift("judged")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("やりたいこと", r.stderr)            # ずれには本流に渡す 1 行を添える
-        (data / "drift.md").write_text("- ずれ: src/app.py:2 ⇔ design:docs/api.md:5 — 値が違う\n"
-                                       "  - やりたいこと: hello の戻り値を合わせたい\n", encoding="utf-8")
-        self.assertEqual(self.drift("judged").returncode, 0)
-        out = self.drift("report").stdout
-        self.assertIn("ずれ 1、合っている 0、判断できない 0", out)
-        self.assertIn("  - やりたいこと: hello の戻り値を合わせたい", out)
-
-    def test_drift_sample_passes_engine_validation(self) -> None:
-        try:
-            import yaml  # noqa: F401
-        except ImportError:
-            self.skipTest("PyYAML がありません")
-        runner = REPO / ".github/skills/statemachine-use/scripts/run_machine.py"
-        r = subprocess.run([sys.executable, str(runner), str(TOOL / "samples/drift/workflow.yaml"), "--dry-run"],
-                           capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_workflow_passes_engine_validation(self) -> None:
         try:

@@ -14,7 +14,7 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 | [monorepo-library.md](monorepo-library.md) | ソース・テスト・文書が 1 つのリポジトリにあるライブラリ（TS） | 同じリポジトリの文書を参照先にする、ファイルの削除、やめて戻す |
 | [three-repos-guides.md](three-repos-guides.md) | 画面・サーバー（Go）・設計書の 3 つのリポジトリと手引き | 3 つにまたがる変更、手引きの検査と確かめごと、設計書の側からの変更 |
 | [semantic-graph.md](semantic-graph.md) | 税の計算（Python）と設計書・運用メモ・e2e のケース | 文書を LLM で読んだグラフ、必須・要判断・参考の分け方、判断済みを出さない |
-| [review-check.md](review-check.md) | 小さな関数と設計書・テスト（codd を通らずに変えたもの） | 頼まれて確かめるレビュー、項目と答えの検査、何も直さない |
+| [review-check.md](review-check.md) | 小さな関数と設計書・テスト（codd を通らずに変えたもの） | 確かめる（チェック）・手入れ、項目と答えの検査、次の計画を立てて引き継ぐ |
 
 ## 再生する
 
@@ -26,8 +26,9 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 
 1. 作業用の一時フォルダに、「サンプル」の要点を満たすリポジトリを作り、このリポジトリの `tools/codd-agent/init.py` で codd を入れる
 2. シナリオを順に、codd エージェントの役で回す（`.statemachine/codd/codd.py` を `show` → `rule --all` → `explore` → `draft` →
-   計画を書く → `verify-plan` → `summary` → `decide` → 変える → `verify-apply` → `record`（やめたときは `record --stop`））。レビューのシナリオは
-   `review.yaml` を回す（`review start` → `review next` と答える → `review verify` → `review report`）。利用者に訊く場面では、
+   計画を書く → `verify-plan` → `summary` → `decide` → 変える → `verify-apply` → `record`（やめたときは `record --stop`））。確かめる・手入れする
+   シナリオは `.statemachine/codd-review/workflow.yaml` を回す（`review start` → `review next` と答える → `review verify` →
+   手入れなら `draft --ahead` と `next --verify` → `review report`）。利用者に訊く場面では、
    シナリオに書いた「利用者の答え」を返す。終わったら両方のリポジトリでコミットして次へ
 3. 「期待」と違ったところ（止まらないはずで止まった、止まるはずで通った、余計に回った、訊くはずで訊かなかった）を挙げる。
    ファイル名・行・文言の違いは気にしない

@@ -81,6 +81,8 @@ from pathlib import Path, PurePosixPath
 
 MACHINE_DIR = Path(__file__).resolve().parent
 MACHINE_REL = ".statemachine/codd"
+# 確かめる・手入れするステートマシン（init.py が本流の隣に置く）。これもマシンの一部として数えない。
+REVIEW_REL = ".statemachine/codd-review"
 # init.py が書くカスタムエージェント。マシンの一部なので、探す・変わったかを測る対象にしない。
 AGENT_FILES = (".kiro/agents/codd.json", ".github/agents/codd.agent.md",
                ".kiro/agents/codd-apply.json", ".github/agents/codd-apply.agent.md",
@@ -95,7 +97,7 @@ DATA_DIRNAME = ".codd"
 PLAN_DIR = ".plans"
 LEGACY_PLAN_DIRS = ("docs/.plans", "docs/.plan")
 RESULT_HEADING = "## 結果"
-MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, *AGENT_FILES, PLAN_DIR, *LEGACY_PLAN_DIRS]
+MACHINE_OWNED = [DATA_DIRNAME, MACHINE_REL, REVIEW_REL, *AGENT_FILES, PLAN_DIR, *LEGACY_PLAN_DIRS]
 _PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
@@ -7288,8 +7290,50 @@ SUMMARY_ITEMS = 12
 SUMMARY_WIDTH = 120
 
 
+NEXT_DIR = "next"     # 立てておいた次の計画（.plans/next/）。進めている計画にも記録にも数えない
+NEXT_MAX = 5         # 立てておく計画の上限（古いものを使うか消してから足す）
+
+
+def next_plans(ctx: Ctx) -> list[Path]:
+    folder = ctx.root / PLAN_DIR / NEXT_DIR
+    return sorted(folder.glob("*.md")) if folder.is_dir() else []
+
+
+def plan_request(path: Path) -> str:
+    """計画の「やりたいこと」（1 行にまとめる。書いていなければ空）。"""
+    _, bodies = sections(compact_plan(read_text(path) or ""), PLAN_HEADINGS)
+    body = bodies.get("## やりたいこと", "")
+    return "" if is_none(body) else " ".join(ln.strip() for ln in body.splitlines() if ln.strip())
+
+
+def new_plan_path(folder: Path, name: str) -> Path:
+    base = f"{time.strftime('%Y-%m-%d-%H%M')}-{name}"
+    dest, n = folder / f"{base}.md", 2
+    while dest.exists():
+        dest, n = folder / f"{base}-{n}.md", n + 1
+    folder.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
 def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
-    """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。"""
+    """ひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）。見出しごとにコメントを本文へ置き換えて書く。
+
+    --ahead は次の計画として .plans/next/ に置き（進めている計画には触れない）、--next はそこから 1 つを
+    進めている計画に移す（立てておいた計画から始める。検査は今のコードで測り直す）。
+    """
+    if args.ahead:
+        name = (args.name or "").strip().lower()
+        if not _PLAN_NAME.match(name) or len(name) > 40:
+            print("計画の名前を、英語の短い名前で渡してください（例: `--name hello-returns-two`）", file=sys.stderr)
+            return 2
+        if len(next_plans(ctx)) >= NEXT_MAX:
+            print(f"立てておいた計画が上限（{NEXT_MAX}）に達しています。古いものを進めるか消してから足してください: "
+                  + ", ".join(p.relative_to(ctx.root).as_posix() for p in next_plans(ctx)), file=sys.stderr)
+            return 1
+        dest = new_plan_path(ctx.root / PLAN_DIR / NEXT_DIR, name)
+        shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
+        print(f"次の計画のひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（進めるときに測り直す）")
+        return 0
     if ctx.plan.is_file() and not run_ended(ctx) and taken_over(ctx):
         log_decision(ctx, "STOP", TAKEN_OVER)
     if ctx.plan.is_file() and run_ended(ctx):
@@ -7299,6 +7343,13 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     if ctx.plan.is_file() and not args.new:
         print(f"計画はもうあります: {plan_rel(ctx)}（直す見出しだけを書き換える。最初から書き直すときは --new）")
         return 0
+    ahead = None
+    if args.next:
+        ahead = next((p for p in next_plans(ctx) if args.next in (p.name, p.stem, p.relative_to(ctx.root).as_posix())), None)
+        if ahead is None:
+            print(f"立てておいた計画に {args.next} がありません（`codd.py next` で一覧）", file=sys.stderr)
+            return 2
+        args.name = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "", ahead.stem)   # 日時を付け直す
     name = (args.name or "").strip().lower()
     if not _PLAN_NAME.match(name) or len(name) > 40:
         print("計画の名前を、英語の短い名前で渡してください（小文字・数字・ハイフン。40 文字まで。"
@@ -7308,12 +7359,11 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     keep_baseline = ctx.plan.is_file() and changed_in_this_run(ctx)
     if ctx.plan.is_file():
         ctx.plan.unlink()   # --new: 進めていた計画を捨てて書き直す
-    base = f"{time.strftime('%Y-%m-%d-%H%M')}-{name}"
-    dest, n = ctx.root / PLAN_DIR / f"{base}.md", 2
-    while dest.exists():
-        dest, n = ctx.root / PLAN_DIR / f"{base}-{n}.md", n + 1
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
+    dest = new_plan_path(ctx.root / PLAN_DIR, name)
+    if ahead is not None:
+        shutil.move(str(ahead), dest)   # 立てておいた計画は、進める計画になって next/ から消える
+    else:
+        shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
     if keep_baseline:
         before_file = ctx.data / "before.json"
         stat = before_file.stat()
@@ -7322,7 +7372,41 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
         write_text(before_file, json.dumps(state, indent=2) + "\n")
         os.utime(before_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))   # 変える段の申告・読んだ記録を古くしない
         print("この回で変えた分は残し、変える前の印から数えます（捨てるなら `rollback` で戻してから練り直す）")
-    print(f"ひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
+    if ahead is not None:
+        print(f"立てておいた計画から始めます: {dest.relative_to(ctx.root).as_posix()}（立てたあとにコードや文書が"
+              "変わっていることがあるので、いつもどおり読み込み・探してから、検査の指摘を直す）")
+    else:
+        print(f"ひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（見出しごとに、コメントを本文に置き換える）")
+    return 0
+
+
+def cmd_next(ctx: Ctx, args: argparse.Namespace) -> int:
+    """立てておいた次の計画の一覧。--verify は、どれもやりたいことを書き、同じやりたいことが重なっていないかを確かめる。"""
+    plans = next_plans(ctx)
+    if args.verify:
+        problems, seen = [], {}
+        for path in plans:
+            rel = path.relative_to(ctx.root).as_posix()
+            want = plan_request(path)
+            if not want:
+                problems.append(f"{rel}: ## やりたいこと を書いていません（本流に渡す依頼の 1〜3 行）")
+            elif want in seen:
+                problems.append(f"{rel}: {seen[want]} と同じやりたいことです（どちらかを消す）")
+            seen.setdefault(want, rel)
+        if problems:
+            print(f"NG 立てておいた計画に {len(problems)} 件の問題があります")
+            for prob in problems:
+                print(f"- {prob}")
+            return 1
+        print(f"OK 立てておいた計画: {len(plans)} 件")
+        return 0
+    if not plans:
+        print("NONE 立てておいた計画はありません")
+        return 0
+    print(f"NEXT 立てておいた計画: {len(plans)} 件（古い順。進めるときは、そのやりたいことを依頼にして本流を始め、"
+          "計画の段で `codd.py draft --next ファイル名` を使う）")
+    for path in plans:
+        print(f"- {path.name} — {plan_request(path) or '（やりたいこと未記入）'}")
     return 0
 
 
@@ -8218,10 +8302,10 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
 
 
 def forget_review_reads(ctx: Ctx) -> None:
-    """守る決まりを読んだ控えを消す（本流の回が進んでいなければ）。レビューの前に読んだものをレビューで数えず、
-    レビューで読んだものを、あとで始める本流の計画の検査で数えない。"""
+    """読んだ・探した控えと、練り始めの印を消す（本流の回が進んでいなければ）。レビューの前に読んだものを
+    レビューで数えず、レビューで読んだ・探したもの（と、そのときの印）を、あとで始める本流の計画の検査で数えない。"""
     if active_plan(ctx.root) is None:
-        (ctx.data / RULES_READ).unlink(missing_ok=True)
+        clear_reading_logs(ctx)
 
 
 def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
@@ -8312,6 +8396,10 @@ def build_parser() -> argparse.ArgumentParser:
     dr = sub.add_parser("draft", help="計画のひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）")
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
+    dr.add_argument("--ahead", action="store_true", help="次の計画として .plans/next/ に置く（進めている計画には触れない）")
+    dr.add_argument("--next", metavar="ファイル", help="立てておいた計画（.plans/next/ のファイル名）を進める計画にする")
+    nx = sub.add_parser("next", help="立てておいた次の計画（.plans/next/）を示す")
+    nx.add_argument("--verify", action="store_true", help="どれもやりたいことを書き、重なっていないかを確かめる")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
     sub.add_parser("retro", help="終わりの振り返りで実行するプロンプトと材料を示す（codd.json の retro。無ければ NONE）")
     rc = sub.add_parser("record", help="終わりの報告を出し、計画に確認の答えと結果を書き足して判断の記録として残す（終わりに呼ぶ）")
@@ -8355,7 +8443,7 @@ COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact, "gra
             "rules": cmd_rules, "rollback": cmd_rollback, "accept": cmd_accept,
             "skill": cmd_skill, "guide": cmd_guide, "evidence": cmd_evidence, "rule": cmd_rule,
             "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record, "retro": cmd_retro,
-            "lint": cmd_lint, "review": cmd_review}
+            "lint": cmd_lint, "review": cmd_review, "next": cmd_next}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -8368,7 +8456,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "verify-plan":
             mark_run_start(ctx)   # 練り始めの印が無ければ今を始まりにする（比べるものが無いだけで、止めない）
         rc = COMMANDS[args.cmd](ctx, args)
-        if args.cmd in RUN_START_COMMANDS or (args.cmd == "show" and args.phase == "plan"):
+        if (args.cmd in RUN_START_COMMANDS and not getattr(args, "ahead", False)) or \
+                (args.cmd == "show" and args.phase == "plan"):   # 次の計画を立てておくのは、この回の始まりではない
             mark_run_start(ctx)   # 後に取る（draft が前の回を閉じて記録を消したあとに、この回の始まりを控える）
         return rc
     except CoddError as exc:

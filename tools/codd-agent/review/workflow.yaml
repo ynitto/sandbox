@@ -1,0 +1,87 @@
+# codd-review — 確かめる（チェック）・手入れする（定期）。codd-agent の本流（変える）とは別で、コードも文書も直さない
+#
+# 本流（.statemachine/codd/workflow.yaml）の隣の `.statemachine/codd-review/` に置き、本流の codd.py を使う。
+# 同じエージェント `codd` が「チェックして」で回し、agent-app などの定期実行では「手入れ」で回す（人の確認を待たない）。
+# 弱いモデルでも同じ深さで見られるよう、見る項目（観点 × 箇所）は codd.py が決めて 1 件ずつ示し、
+# 答えの形・根拠の箇所・見たか・決まりを読んだかを検査する。項目で拾えないものは自由レビューで足す。
+#
+#   start ─┬─ 項目あり ─→ items ─[check]─→ free ─[check]─┬─ チェック ─────────────→ report
+#          │                                              └─ 手入れ ─→ ahead ─[check]─→ report
+#          └─ 項目なし ─────────────────────────────────────────────────────────────→ report
+#
+# start   手入れなら先にグラフを用意する（graphify。設定があれば文書の意味も LLM で抜き出す）。
+#         `codd.py review start` が lint を動かし、見る範囲（挙げたもの。無ければ期間のうちに変わったファイル）から
+#         項目を決める。観点は 漏れ・矛盾・設計の不備
+# items   `codd.py review next` が示す項目に 1 件ずつ答える。検査は、すべてに答えたか、示した項目か、根拠が項目の
+#         ファイルの実在する行か、問題に「やりたいこと」があるか、設計の項目があれば守る決まりを読んだかを確かめる
+# free    項目で拾えなかったものを自由に書く（無ければ「なし: 理由」）。根拠の行が実在するかを確かめる
+# ahead   手入れのとき、見つけた「やりたいこと」から次の計画を `.plans/next/` に立てておく（多くても 3 つ。
+#         進めるときに本流が測り直し、利用者の確認を経る）
+# report  `codd.py review report` の出力をそのまま伝える。直すときは「やりたいこと」の行を本流に渡す
+
+name: "codd-review"
+description: "実装・文書・テストの漏れ・矛盾・設計の不備を確かめる。定期の手入れでは、グラフを用意し、次の計画を立てておく（直さない）"
+initial_state: start
+
+inputs:
+  mode:
+    label: どう回すか
+    type: choice
+    options: [チェック, 手入れ]
+    default: チェック
+    description: "チェック: 頼まれた範囲を確かめる。手入れ: 定期実行で、グラフを用意し、次の計画も立てておく"
+  target:
+    label: 何を確かめるか
+    type: multiline
+    default: ""
+    description: "ファイル・フォルダ・機能の名前・期間（空ならチェックは直近 30 日、手入れは直近 8 日に変わったファイル）"
+
+config:
+  max_steps: 14
+  on_no_transition: error
+
+states:
+  start:
+    description: "（手入れならグラフを用意し）点検して、見る項目を決める"
+    action_file: actions/start.md
+    output_key: found
+    output_validator: "startswith:OK,NONE"
+    max_retries: 1
+
+  items:
+    description: "項目に 1 件ずつ答える"
+    action_file: actions/items.md
+    output_validator: "startswith:OK"
+    check: {command: python3, args: [.statemachine/codd/codd.py, review, verify, --part, items], timeout_sec: 120}
+    check_retries: 2
+    check_on_exhausted: continue
+
+  free:
+    description: "項目で拾えなかったものを自由に書く"
+    action_file: actions/free.md
+    output_validator: "startswith:OK"
+    check: {command: python3, args: [.statemachine/codd/codd.py, review, verify], timeout_sec: 120}
+    check_retries: 2
+    check_on_exhausted: continue
+
+  ahead:
+    description: "見つけたやりたいことから、次の計画を立てておく"
+    action_file: actions/ahead.md
+    output_validator: "startswith:OK"
+    check: {command: python3, args: [.statemachine/codd/codd.py, next, --verify], timeout_sec: 120}
+    check_retries: 2
+    check_on_exhausted: continue
+
+  report:
+    description: "見つけたものと、本流に渡すやりたいことを伝える"
+    action_file: actions/report.md
+    terminal: true
+
+transitions:
+  - {from: start, to: items, condition_rule: "startswith:found:OK", priority: 1}
+  - {from: start, to: report, condition_rule: "startswith:found:NONE", priority: 2}
+  - {from: items, to: free, condition_rule: "equals:check_ok:true", priority: 1}
+  - {from: items, to: report, condition_rule: "equals:check_ok:false", priority: 2}
+  - {from: free, to: ahead, condition_rule: "equals:mode:手入れ", priority: 1}
+  - {from: free, to: report, priority: 2}
+  - {from: ahead, to: report}
