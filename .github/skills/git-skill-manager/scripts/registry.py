@@ -15,6 +15,8 @@ AGENT_DIRS: dict[str, str] = {
     "claude": ".claude",
     "codex": ".codex",
     "kiro": ".kiro",
+    "aider": ".agents",
+    "opencode": os.path.join(".config", "opencode"),
 }
 
 
@@ -40,8 +42,8 @@ def _agent_home() -> str:
             )
         )
     )
-    # 正規エージェントディレクトリ名かどうかを確認（.copilot, .claude, .codex, .kiro）
-    if os.path.basename(candidate) in AGENT_DIRS.values():
+    # 正規エージェントディレクトリかどうかを確認（.copilot, .claude, ..., .config/opencode）
+    if any(candidate.endswith(os.sep + d) for d in AGENT_DIRS.values()):
         return candidate
     # ワークスペース・テスト実行時は USERPROFILE から導出する
     return os.path.join(_user_home(), ".copilot")

@@ -19,7 +19,8 @@ git clone 後に実行してコアスキルをユーザー領域にセットア�
     2. コアスキルをユーザー領域にコピー
     3. skill-registry.json を初期生成（ソースリポジトリ・パスを自動登録）
     4. MCP 設定（Filesystem MCP を含む）をエージェントの MCP 設定にマージ
-    5. 外部ツール（playwright-cli / codegraph / graphify / caveman / rtk / ponytail / headroom）をセットアップ
+    5. 外部ツール（playwright-cli / codegraph / graphify / caveman / yomiyasu / diagram-design /
+       rtk / ponytail / headroom）をセットアップ
        - 導入済みかつ最新ならスキップ、古い場合のみ更新
        - 可能なものは --agent で指定したエージェントのみに連携
        - 非対応の OS・エージェントはスキップ
@@ -566,7 +567,7 @@ def parse_args() -> argparse.Namespace:
         "--excludes-external-skills",
         action="store_true",
         default=False,
-        help="playwright-cli / codegraph / graphify / caveman / rtk / ponytail / headroom など外部スキルをインストールしない",
+        help="playwright-cli / codegraph / graphify / caveman / yomiyasu / diagram-design / rtk / ponytail / headroom など外部スキルをインストールしない",
     )
     parser.add_argument(
         "--force-external",
@@ -670,6 +671,7 @@ def setup_registry(
     installed_skills: list[dict],
     paths: dict[str, str],
     agent_type: str,
+    external_repos: list[dict] | None = None,
 ) -> None:
     """レジストリを初期生成または更新する。
 
@@ -732,6 +734,16 @@ def setup_registry(
             print(f"   リポジトリ 'origin' を登録: {repo_url}")
         else:
             print("   リポジトリ 'origin' は登録済み")
+
+    # 外部スキルの取り込み元（readonly、skills で 1 スキルに絞る）。既存の登録は配布元の情報で上書きする
+    for repo in external_repos or []:
+        repos = reg.setdefault("repositories", [])
+        old = next((r for r in repos if r["name"] == repo["name"]), None)
+        if old is None:
+            repos.append(dict(repo))
+            print(f"   外部スキルの取り込み元 '{repo['name']}' を登録: {repo['url']}")
+        else:
+            old.update({k: repo[k] for k in ("url", "branch", "skill_root", "skills", "readonly")})
 
     os.makedirs(os.path.dirname(registry_path), exist_ok=True)
     with open(registry_path, "w", encoding="utf-8") as f:
@@ -1561,25 +1573,141 @@ def setup_graphify(agent_type: str, force: bool = False) -> bool:
     return False
 
 
+# 公開リポジトリから取り込む外部スキル。リポジトリの skills/<name>/ をスキルホームへ置く。
+# 取り込み元はレジストリにも readonly で登録し、git-skill-manager の pull / auto-update で最新へ追従させる。
+# 足すときはここに 1 行増やす。
+EXTERNAL_SKILLS: list[dict[str, str]] = [
+    {"name": "caveman", "repo": "JuliusBrussee/caveman", "branch": "main",
+     "description": "出力トークンを減らす簡潔モード"},
+    {"name": "yomiyasu", "repo": "nanaism/yomiyasu", "branch": "main",
+     "description": "AI が書いた日本語を自然な日本語へ推敲する"},
+    {"name": "diagram-design", "repo": "cathrynlavery/diagram-design", "branch": "main",
+     "description": "編集向けの図（HTML + SVG）を描く"},
+]
+
 CAVEMAN_REPO = "JuliusBrussee/caveman"
 
 
-def _install_caveman_ide(agent_type: str, force: bool, paths: dict[str, str]) -> bool:
-    """公式配布元から取得し、IDE が読む保存先へ配置する。CLI / npx は不要。"""
-    dest = Path(paths["skill_home"]) / "caveman"
-    if (dest / "SKILL.md").is_file() and not force:
-        print(f"   ✓ caveman は導入済み: {dest}")
+def external_skills_for(agent_type: str) -> list[dict[str, str]]:
+    """--agent 向けにスキルとして取り込む外部スキル。
+
+    claude の caveman は公式インストーラが plugin と hooks をまとめて入れるので、スキルとしては扱わない。
+    """
+    if agent_type == "claude":
+        return [s for s in EXTERNAL_SKILLS if s["name"] != "caveman"]
+    return list(EXTERNAL_SKILLS)
+
+
+def external_skill_repository(skill: dict[str, str]) -> dict:
+    """レジストリの repositories[] に載せる取り込み元。skills で 1 スキルだけに絞る。"""
+    return {
+        "name": skill["name"],
+        "url": f"https://github.com/{skill['repo']}.git",
+        "branch": skill["branch"],
+        "skill_root": "skills",
+        "skills": [skill["name"]],
+        "description": f"外部スキル: {skill['description']}（install.py が登録）",
+        "readonly": True,
+        "priority": 50,
+    }
+
+
+def _github_branch_head(repo: str, branch: str) -> str | None:
+    """GitHub のブランチ先頭のコミット。取れなければ None。"""
+    url = f"https://api.github.com/repos/{repo}/commits/{branch}"
+    try:
+        req = urllib_request.Request(
+            url,
+            headers={"Accept": "application/vnd.github.sha", "User-Agent": "agent-skills-install"},
+        )
+        with urllib_request.urlopen(req, timeout=15) as resp:
+            sha = decode_cli_output(resp.read()).strip()
+        return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+    except (urllib_error.URLError, TimeoutError, OSError):
+        return None
+
+
+def _load_registry_file(path: str) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _record_external_skill(paths: dict[str, str], skill: dict[str, str], commit: str | None) -> None:
+    """取り込んだ外部スキルを skill-registry.json の installed_skills に記録する。
+
+    git-skill-manager が pull で書くのと同じ形にして、以後の pull / auto-update が更新を判定できるようにする。
+    """
+    reg = _load_registry_file(paths["registry_path"])
+    if reg is None:
+        return
+    short = (commit or "")[:7]
+    old = next((s for s in reg.get("installed_skills", []) if s.get("name") == skill["name"]), {})
+    entry = {
+        **old,
+        "name": skill["name"],
+        "source_repo": skill["name"],
+        "source_path": f"skills/{skill['name']}",
+        "commit_hash": short,
+        "installed_at": datetime.now().isoformat(),
+        "enabled": old.get("enabled", True),
+        "pinned_commit": old.get("pinned_commit"),
+        "lineage": {
+            "origin_repo": skill["name"],
+            "origin_commit": short,
+            "origin_version": None,
+            "local_modified": False,
+            "diverged_at": None,
+            "local_changes_summary": "",
+        },
+    }
+    entry.setdefault("feedback_history", [])
+    entry.setdefault("pending_refinement", False)
+    entry.setdefault("periodic_scripts", [])
+    reg["installed_skills"] = [s for s in reg.get("installed_skills", []) if s.get("name") != skill["name"]]
+    reg["installed_skills"].append(entry)
+    with open(paths["registry_path"], "w", encoding="utf-8") as f:
+        json.dump(reg, f, indent=2, ensure_ascii=True)
+
+
+def install_external_skill(skill: dict[str, str], paths: dict[str, str], force: bool = False) -> bool:
+    """公開リポジトリの skills/<name>/ を取得してスキルホームへ置く。CLI / npx / git は不要。
+
+    - 未導入なら取得する。導入済みでも、配布元の先頭コミットが記録と違えば最新へ更新する
+    - レジストリで pin されているもの、配布元の先頭が分からず導入済みのものはそのまま
+    - --force-external（force=True）なら常に取り直す
+    """
+    name = skill["name"]
+    dest = Path(paths["skill_home"]) / name
+    reg = _load_registry_file(paths.get("registry_path", "")) or {}
+    record = next((s for s in reg.get("installed_skills", []) if s.get("name") == name), {})
+    installed = (dest / "SKILL.md").is_file()
+    if installed and record.get("pinned_commit") and not force:
+        print(f"   ✓ {name} は {record['pinned_commit'][:7]} に固定されています → スキップ")
         return True
-    url = f"https://codeload.github.com/{CAVEMAN_REPO}/zip/refs/heads/main"
-    print(f"   caveman を公式配布元から取得: {url}")
+    latest = _github_branch_head(skill["repo"], skill["branch"])
+    current = record.get("commit_hash") or ""
+    if installed and not force:
+        if latest is None:
+            print(f"   ✓ {name} は導入済み（最新かどうか確かめられないため現状維持）: {dest}")
+            return True
+        if current and latest.startswith(current):
+            print(f"   ✓ {name} は最新です ({current}): {dest}")
+            return True
+        print(f"   {name} を更新します ({current or '記録なし'} → {latest[:7]})")
+    ref = latest or f"refs/heads/{skill['branch']}"
+    url = f"https://codeload.github.com/{skill['repo']}/zip/{ref}"
+    print(f"   {name} を配布元から取得: {url}")
     try:
         request = urllib_request.Request(url, headers={"User-Agent": "agent-skills-installer"})
         with urllib_request.urlopen(request, timeout=60) as response:
             data = response.read()
         with zipfile.ZipFile(io.BytesIO(data)) as archive, tempfile.TemporaryDirectory() as temp:
             root = archive.namelist()[0].split("/", 1)[0]
-            prefix = f"{root}/skills/caveman/"
-            staged = Path(temp) / "caveman"
+            prefix = f"{root}/skills/{name}/"
+            staged = Path(temp) / name
             for entry in archive.infolist():
                 if not entry.filename.startswith(prefix) or entry.is_dir():
                     continue
@@ -1591,70 +1719,76 @@ def _install_caveman_ide(agent_type: str, force: bool, paths: dict[str, str]) ->
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_bytes(archive.read(entry))
             if not (staged / "SKILL.md").is_file():
-                raise ValueError("公式アーカイブに caveman/SKILL.md がありません")
+                raise ValueError(f"配布元のアーカイブに {name}/SKILL.md がありません")
             license_path = f"{root}/LICENSE"
-            if license_path in archive.namelist():
+            if license_path in archive.namelist() and not (staged / "LICENSE").exists():
                 (staged / "LICENSE").write_bytes(archive.read(license_path))
-            shutil.copytree(staged, dest, dirs_exist_ok=True)
-        print(f"   ✓ caveman を配置: {dest}")
+            commit = latest or archive.comment.decode("ascii", "ignore").strip() or None
+            if dest.is_symlink():
+                dest.unlink()  # npx skills が張ったリンクは実体を消さずに外す
+            elif dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(staged, dest)
+        _record_external_skill(paths, skill, commit)
+        print(f"   ✓ {name} を配置: {dest}")
         return True
     except (OSError, ValueError, IndexError, zipfile.BadZipFile) as exc:
-        print(f"   ✗ caveman の取得・配置に失敗しました: {exc}")
+        print(f"   ✗ {name} の取得・配置に失敗しました: {exc}")
         return False
 
-# install.py --agent → caveman 公式 --only / skills -a プロファイル
-# skills 系は必ず -g（ホーム＝グローバル）へ入れる。プロジェクト配下には書かない。
-CAVEMAN_AGENT_IDS: dict[str, str] = {
-    "claude": "claude",
-    "codex": "codex",
-    "kiro": "kiro",
-    "copilot": "copilot",
-}
 
-CAVEMAN_SKILLS_PROFILES: dict[str, str] = {
-    "codex": "codex",          # → ~/.codex/skills/
-    "kiro": "kiro-cli",        # → ~/.kiro/skills/
-    "copilot": "github-copilot",  # → ~/.copilot/skills/
-}
-
-
-def _caveman_global_skill_dirs(agent_type: str, paths: dict[str, str]) -> list[str]:
-    """ホーム配下の caveman スキル候補パスを返す。"""
-    home = paths["user_home"]
-    agent_home = paths["agent_home"]
-    dirs = [
-        os.path.join(agent_home, "skills", "caveman"),
-        os.path.join(home, ".agents", "skills", "caveman"),
-    ]
-    if agent_type == "codex":
-        dirs.insert(0, os.path.join(home, ".codex", "skills", "caveman"))
-    elif agent_type == "kiro":
-        dirs.insert(0, os.path.join(home, ".kiro", "skills", "caveman"))
-    elif agent_type == "copilot":
-        dirs.insert(0, os.path.join(home, ".copilot", "skills", "caveman"))
-    elif agent_type == "claude":
-        dirs.insert(0, os.path.join(home, ".claude", "skills", "caveman"))
-    return dirs
-
-
-def _caveman_installed_for_agent(agent_type: str, paths: dict[str, str]) -> bool:
-    """caveman がホーム（グローバル）に入っているか（ベストエフォート）。"""
-    for d in _caveman_global_skill_dirs(agent_type, paths):
-        if os.path.isfile(os.path.join(d, "SKILL.md")):
-            return True
+def setup_external_skills(agent_type: str, force: bool = False) -> bool:
+    """外部スキルを --agent のスキルホームへ導入・更新する。claude の caveman は公式インストーラで入れる。"""
+    paths = resolve_paths(agent_type)
+    ok = True
     if agent_type == "claude":
-        claude_markers = [
-            os.path.join(paths["agent_home"], "hooks", "caveman-activate.js"),
-            os.path.join(paths["agent_home"], ".caveman-active"),
-            os.path.join(paths["user_home"], ".claude", "plugins", "marketplaces", "caveman"),
-            os.path.join(paths["user_home"], ".claude", "plugins", "cache", "caveman"),
-        ]
-        return any(os.path.exists(p) for p in claude_markers)
-    return False
+        ok = setup_caveman_claude(force=force) and ok
+    for skill in external_skills_for(agent_type):
+        ok = install_external_skill(skill, paths, force=force) and ok
+    return ok
 
 
-def _install_caveman_claude(force: bool, paths: dict[str, str]) -> bool:
-    """Claude Code: 公式インストーラで ~/.claude に plugin + hooks を入れる。"""
+def _caveman_claude_installed(paths: dict[str, str]) -> bool:
+    """caveman が Claude Code のホームに入っているか（ベストエフォート）。"""
+    markers = [
+        os.path.join(paths["agent_home"], "skills", "caveman", "SKILL.md"),
+        os.path.join(paths["agent_home"], "hooks", "caveman-activate.js"),
+        os.path.join(paths["agent_home"], ".caveman-active"),
+        os.path.join(paths["agent_home"], "plugins", "marketplaces", "caveman"),
+        os.path.join(paths["agent_home"], "plugins", "cache", "caveman"),
+    ]
+    return any(os.path.exists(p) for p in markers)
+
+
+def _update_caveman_claude() -> bool:
+    """導入済みの caveman plugin を Claude Code の plugin 更新で最新にする。"""
+    if shutil.which("claude") is None:
+        print("   ✓ caveman は導入済み（claude CLI が無いため更新は確かめません）")
+        return True
+    for cmd in (["claude", "plugin", "marketplace", "update", "caveman"],
+                ["claude", "plugin", "update", "caveman@caveman"]):
+        print(f"   $ {' '.join(cmd)}")
+        try:
+            result = subprocess.run(cmd)
+        except FileNotFoundError:
+            return True
+        if result.returncode != 0:
+            print(f"   ⚠ caveman の更新に失敗しました (code {result.returncode})")
+            print("     入れ直す場合は --force-external を指定してください")
+            return True
+    print("   ✓ caveman を最新にしました")
+    return True
+
+
+def setup_caveman_claude(force: bool = False) -> bool:
+    """Claude Code: 公式インストーラで ~/.claude に plugin + hooks を入れる。導入済みなら plugin を更新する。"""
+    paths = resolve_paths("claude")
+    if _caveman_claude_installed(paths) and not force:
+        return _update_caveman_claude()
+    if shutil.which("npx") is None:
+        print("   ⚠ npx が見つかりません。caveman のセットアップをスキップします")
+        print("     Node.js (≥18) をインストール後に再実行してください")
+        return False
     cmd = [
         "npx", "-y", f"github:{CAVEMAN_REPO}",
         "--",
@@ -1676,74 +1810,6 @@ def _install_caveman_claude(force: bool, paths: dict[str, str]) -> bool:
         return True
     print(f"   ✗ caveman のインストールに失敗しました (code {result.returncode})")
     return False
-
-
-def _install_caveman_skills_global(agent_type: str, force: bool, paths: dict[str, str]) -> bool:
-    """codex / kiro / copilot: ``npx skills add -g`` でホームに入れる。"""
-    profile = CAVEMAN_SKILLS_PROFILES[agent_type]
-    cmd = [
-        "npx", "-y", "skills", "add", CAVEMAN_REPO,
-        "--skill", "*",
-        "-a", profile,
-        "--yes",
-        "-g",  # ユーザーホーム（グローバル）。プロジェクトの .agents/skills には書かない
-    ]
-    print(f"   caveman をホームへインストール中 (skills -g, profile={profile})...")
-    print(f"   $ {' '.join(cmd)}")
-    try:
-        result = subprocess.run(cmd, cwd=paths["user_home"])
-    except FileNotFoundError:
-        print("   ✗ npx が見つかりません (Node.js をインストールしてください)")
-        return False
-    if result.returncode == 0:
-        # 導入先を表示
-        for d in _caveman_global_skill_dirs(agent_type, paths):
-            if os.path.isfile(os.path.join(d, "SKILL.md")):
-                print(f"   ✓ {d}")
-                break
-        else:
-            print(f"   ✓ caveman を {agent_type} 向けにホームへインストールしました")
-        return True
-    print(f"   ✗ caveman のインストールに失敗しました (code {result.returncode})")
-    if force:
-        print("     tip: npx skills remove caveman -g のあと再実行してください")
-    return False
-
-
-def setup_caveman(agent_type: str, force: bool = False) -> bool:
-    """juliusbrussee/caveman を --agent 向けにホーム（グローバル）へインストールする。
-
-    - claude: 公式インストーラ → ~/.claude（plugin + hooks）
-    - codex: ``npx skills add -g`` → ~/.codex/skills/
-    - kiro / copilot: 公式配布元から ~/.kiro|~/.copilot/skills/ に配置（CLI / npx 不要）
-    - プロジェクトローカルには書かない（``--with-init`` は使わない）
-    - 導入済みならスキップ（``--force-external`` で再実行）
-    """
-    if agent_type not in CAVEMAN_AGENT_IDS:
-        print(f"   ⚠ caveman はエージェント '{agent_type}' に未対応のためスキップします")
-        return False
-
-    if agent_type in ("kiro", "copilot"):
-        return _install_caveman_ide(agent_type, force, resolve_paths(agent_type))
-
-    if shutil.which("npx") is None:
-        print("   ⚠ npx が見つかりません。caveman のセットアップをスキップします")
-        print("     Node.js (≥18) をインストール後に再実行してください")
-        return False
-
-    paths = resolve_paths(agent_type)
-    if _caveman_installed_for_agent(agent_type, paths) and not force:
-        print(f"   ✓ caveman は {agent_type} 向けにホームへ導入済み → スキップ")
-        for d in _caveman_global_skill_dirs(agent_type, paths):
-            if os.path.isfile(os.path.join(d, "SKILL.md")):
-                print(f"     {d}")
-                break
-        print("     再インストールする場合は --force-external を指定してください")
-        return True
-
-    if agent_type == "claude":
-        return _install_caveman_claude(force=force, paths=paths)
-    return _install_caveman_skills_global(agent_type, force=force, paths=paths)
 
 
 RTK_INSTALL_SH = (
@@ -2761,7 +2827,10 @@ def main() -> None:
 
     # 3. レジストリ設定
     print("\n3. レジストリを設定...")
-    setup_registry(installed, paths, agent_type)
+    external_repos = [] if args.excludes_external_skills else [
+        external_skill_repository(s) for s in external_skills_for(agent_type)
+    ]
+    setup_registry(installed, paths, agent_type, external_repos)
 
     # 4. 指示ファイルをコピー
     print("\n4. エージェント指示ファイルをコピー...")
@@ -2818,12 +2887,13 @@ def main() -> None:
         print(f"\n9. graphify をセットアップ (agent={agent_type})...")
         setup_graphify(agent_type, force=force_external)
 
-    # 10. caveman インストール（--agent で指定したエージェントのみ）
+    # 10. 外部スキル（caveman / yomiyasu / diagram-design）を導入・最新へ更新
+    names = " / ".join(s["name"] for s in EXTERNAL_SKILLS)
     if args.excludes_external_skills:
-        print("\n10. caveman をスキップ (--excludes-external-skills が指定されました)")
+        print(f"\n10. {names} をスキップ (--excludes-external-skills が指定されました)")
     else:
-        print(f"\n10. caveman をセットアップ (agent={agent_type})...")
-        setup_caveman(agent_type, force=force_external)
+        print(f"\n10. {names} をセットアップ (agent={agent_type})...")
+        setup_external_skills(agent_type, force=force_external)
 
     # 11. rtk インストール（対応 OS・エージェントのみ）
     if args.excludes_external_skills:

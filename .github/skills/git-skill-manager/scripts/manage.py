@@ -86,7 +86,7 @@ def search_skills(repo_name=None, keyword=None, refresh=False):
         print("🔄 リモートからインデックスを更新中...")
         for repo in repos:
             repo_cache = clone_or_fetch(repo)
-            update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"])
+            update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"], repo.get("skills"))
         save_registry(reg)
         remote_index = reg.get("remote_index", {})
 

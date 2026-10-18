@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0 — 2026-10-18
+
+- feat(git-skill-manager): `repositories[].skills` で外部リポジトリから指定スキルだけを pull・auto-update できるようにした（`repo.py add --skills`）。外部リポジトリの指示ファイルは持ち込まず、直下の LICENSE はスキルと一緒に置く
+- fix(git-skill-manager): 置き場がシンボリックリンクのスキル（`npx skills` が張ったもの）を pull で置き換えられなかったのを直す
+- fix(git-skill-manager): opencode（`~/.config/opencode`）と aider（`~/.agents`）でレジストリの場所を `~/.copilot` と取り違えていたのを直す
+
 ## 1.2.3 — 2026-10-01
 
 - fix(git-skill-manager): generated/skill-catalog.json を 89 スキルへ生成し直し、CI（`tools/ci/check_generated_skill_catalog.py`）で鮮度を検査するようにした。generate_skill_catalog.py は列挙を install.py と同じ規則に揃え、`__pycache__` や隠しファイルで has_scripts / has_references が変わらないようにした
