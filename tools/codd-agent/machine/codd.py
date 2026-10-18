@@ -6,7 +6,7 @@
 
     show [--phase P]    この側・参照先の一覧と、従う手順（いつも守る決まり・工程ごとのスキルと道具・ファイルに決められた手順）を示す
     rules [--write]     守る決まりのファイルと、決まりらしいマークダウンの候補を示す。--write で候補を codd.json に書く
-    explore --term 語   参照先を探す（graphify のグラフを必要なら作り直してから引く）。--ref で絞れる
+    explore --term 語   参照先を探す（graphify のグラフ・context-mode の索引を必要なら作り直してから引く）。--ref で絞れる
     impact  --term 語   自分のリポジトリで影響を受ける箇所を探す（同上）
     graph [--merge]     グラフを用意する。codd.json の graphify が {"semantic": "session"} なら、文書の意味を抜き出す束を示し
                         （--chunk 束 で 1 束の抜き出し方）、書かれた JSON を --merge で確かめて取り込む
@@ -39,8 +39,11 @@
                         本流に渡す「やりたいこと」の 1 行にする。何も直さない
 
 置き場所は `<リポジトリ>/.statemachine/codd/`。設定は同じフォルダの codd.json、
-作業ファイルと graphify のグラフは `<リポジトリ>/.codd/` に置く。依存は python3 と git のみ
-（graphify は任意）。
+作業ファイルと graphify のグラフ、context-mode の索引は `<リポジトリ>/.codd/` に置く。依存は python3 と git のみ
+（context-mode は install.py が必ず入れるが、無くても文字列検索だけで動く。graphify は任意）。
+
+explore / impact は、context-mode（FTS5 の全文検索）でも語ごとに関係の深い節を引く。MCP サーバは使わず、
+CLI（`context-mode index` / `context-mode search`）を直接呼ぶ。索引はグラフと同じ「印」で作り直す。
 
 参照先が複数あるとき、計画の根拠は `名前:パス`（codd.json の refs の name）で書く。
 参照先が 1 つなら、パスだけでよい。
@@ -160,6 +163,9 @@ GRAPHIFY_TIMEOUT = 120
 GRAPHIFY_UPDATE_TIMEOUT = 900
 GRAPHIFY_BUDGET = 600
 GRAPHIFY_EXTRACT_TIMEOUT = 3600   # バックエンドの LLM で文書の意味まで抜き出すとき
+CONTEXT_MODE_TIMEOUT = 300
+CONTEXT_MODE_LIMIT = 5            # 1 つの語で context-mode から拾う節の上限
+CONTEXT_MODE_SOURCE = "codd"      # 索引に付ける名前（検索結果の `Source: codd:/絶対パス` からファイルを拾う）
 # 意味の抽出（graphify の LLM の抽出）。文書と PDF の中身から、見出し・用語・ほかのファイルとのつながりを抜き出し、
 # 構文だけのグラフ（graphify update）に足す。バイナリは抜き出さない（テストが作るファイルはテストで得たもの（evidence）で扱う）。
 SEMANTIC_KINDS = ("document", "paper")
@@ -1521,7 +1527,8 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
     repo = side.path
     key = hashlib.sha256(json.dumps(
         [str(repo), side.scope, side.exclude, terms, graph_cmd, use_graph and ctx.config["graphify"] != "off",
-         use_graph and bool(shutil.which("graphify")), stamp(repo), rebuild], ensure_ascii=False).encode()).hexdigest()
+         use_graph and bool(shutil.which("graphify")), use_graph and bool(shutil.which("context-mode")),
+         stamp(repo), rebuild], ensure_ascii=False).encode()).hexdigest()
     cache = load_search_cache(ctx)
     if key in cache:
         hit = cache[key]
@@ -1580,6 +1587,11 @@ def _search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
             lines += [f"#### {term}", "", "```", out.strip() or "(該当なし)", "```", ""]
             for m in _GRAPHIFY_SRC.finditer(out):
                 add_file(m.group(1) or m.group(2))
+    if use_graph:
+        found, cm_files = fulltext(ctx, side, terms)
+        lines += found
+        for path in cm_files:
+            add_file(path)
 
     lines += ["### 文字列の一致（git grep）", ""]
     for term in terms:
@@ -1595,6 +1607,73 @@ def _search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
             if num.isdigit():
                 first_lines[rel] = min(first_lines.get(rel, int(num)), int(num))
     return "\n".join(lines), files, note
+
+
+def fulltext(ctx: Ctx, side: Side, terms: list[str]) -> tuple[list[str], list[str]]:
+    """context-mode の全文検索（BM25）で、語ごとに関係の深い節を引く。（本文の行, 候補のファイル）を返す。
+
+    MCP サーバは通さず CLI を直接呼ぶ。索引は自分の .codd/context-mode/ に置き（CONTEXT_MODE_DIR）、
+    リポジトリの印が変わったときだけ作り直す。graphify と同じく候補を広げるためで、検査には使わない。
+    """
+    lines = ["### 全文検索（context-mode）", ""]
+    exe = shutil.which("context-mode")
+    if not exe:
+        return lines + [f"- ({CM_MISSING})", ""], []
+    repo = side.path
+    # 受け持つ範囲の文書だけを索引にする（マシンのファイルや scope の外が、検索の上位を埋めて当たりを押し出さないように。
+    # コードは文字列検索と graphify が拾い、索引に入れると大きなリポジトリで作り直しが何倍も遅くなる）。
+    # 同じリポジトリを scope で分けた自分と参照先は、別の索引にする。
+    narrow = ["--ext", ",".join(sorted(DOC_SUFFIXES))]
+    narrow += [a for d in side.scope for a in ("--include", d, "--include", f"{d}/**")]
+    narrow += [a for d in [*MACHINE_OWNED, *side.exclude] for a in ("--exclude", d, "--exclude", f"{d}/**")]
+    key = hashlib.sha256(json.dumps(narrow).encode()).hexdigest()[:8]
+    store = ctx.data / "context-mode" / f"{ctx.graph_key(repo)}-{key}"
+    env = {**os.environ, "CONTEXT_MODE_DIR": str(store)}
+    now = stamp(repo)
+    if read_text(store / "stamp") != now:
+        shutil.rmtree(store, ignore_errors=True)
+        rc, out = run([exe, "index", ".", "--project", str(repo), "--source", CONTEXT_MODE_SOURCE,
+                       "--max-files", "5000", "--max-depth", "20", *narrow], repo, CONTEXT_MODE_TIMEOUT, env)
+        if rc != 0:
+            return lines + [f"- ({CM_FAILED}（{rc}）: {out.strip()[:200]})", ""], []
+        if "Indexed 0 files" in out:
+            write_text(store / "empty", "")
+        write_text(store / "stamp", now)
+    if (store / "empty").is_file():
+        return [], []   # 受け持つ範囲に文書が無い（コードだけの側）。引いても当たらないので節ごと出さない
+    root = repo.resolve()
+    files: list[str] = []
+    for term in terms:
+        _, out = run([exe, "search", term, "--project", str(repo), "--limit", str(CONTEXT_MODE_LIMIT)],
+                     repo, CONTEXT_MODE_TIMEOUT, env)
+        hits, heading = [], ""
+        for ln in out.splitlines():
+            if ln.startswith("## "):
+                heading = ln[3:].split(". ", 1)[-1].strip()
+            elif ln.startswith(f"Source: {CONTEXT_MODE_SOURCE}:"):
+                try:
+                    rel = Path(ln.split(":", 1)[1].strip()[len(CONTEXT_MODE_SOURCE) + 1:]).resolve().relative_to(root)
+                except (ValueError, OSError):
+                    continue
+                rel = rel.as_posix()
+                if side.has(rel):
+                    hits.append(f"- {rel} — {heading[:120]}" if heading and heading != "Untitled" else f"- {rel}")
+                    if rel not in files:
+                        files.append(rel)
+        lines += [f"#### {term}", "", *(hits or ["- (該当なし)"]), ""]
+    return lines, files
+
+
+CM_MISSING = "context-mode が無いので引いていない。`install.py` で入れる"
+CM_FAILED = "context-mode の索引を作れなかった"
+
+
+def fulltext_trouble(body: str) -> None:
+    """context-mode が使えなかったら、詳細だけでなく出力にも 1 行出す（必ず入れるものなので、壊れたまま気づかれないように）。"""
+    for line in body.splitlines():
+        if line.startswith((f"- ({CM_MISSING}", f"- ({CM_FAILED}")):
+            print(f"  全文検索: {line[3:-1]}")
+            return
 
 
 def terms_of(args: argparse.Namespace) -> list[str]:
@@ -1653,6 +1732,7 @@ def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
     ctx.data.mkdir(parents=True, exist_ok=True)
     write_text(ctx.data / EXPLORE_LOG, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
     print(f"FOUND {len(files)} files (graphify: {', '.join(notes)})")
+    fulltext_trouble("\n".join(body for _, _, body in parts))
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
 
@@ -1768,6 +1848,7 @@ def cmd_impact(ctx: Ctx, args: argparse.Namespace) -> int:
     path = write_report(ctx, "impact.md", f"自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける箇所",
                         terms, [(f"{ctx.root}{scope_words(ctx.own)}", note, body)], files)
     print(f"FOUND {len(files)} files (graphify: {note})")
+    fulltext_trouble(body)
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
 
@@ -7679,7 +7760,29 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         print(NO_PLAN, file=sys.stderr)
         return 1
     print(f"\n計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
+    if not args.stop and (ctx.root / REVIEW_REL / "workflow.yaml").is_file():   # 前の init で置いたなら確かめる流れが無い
+        runs = count_run_since_review(ctx)
+        if runs % REVIEW_AFTER_RUNS == 0:   # 断られても毎回は訊かない。次は 3 回後
+            print(f"{REVIEW_SUGGEST} 確かめる流れを回さずに、変える流れを {runs} 回終えました。"
+                  "「チェックして」で、まとめて漏れや矛盾を確かめられます（何も直さない）")
     return 0
+
+
+REVIEW_AFTER_RUNS = 3          # 確かめる流れを勧める間隔（変える流れを終えた回数）
+REVIEW_SUGGEST = "REVIEW"      # 終わりの報告で確かめる流れを勧める行の印（done のアクションが利用者に尋ねる）
+RUNS_SINCE_REVIEW = "runs-since-review.json"
+
+
+def count_run_since_review(ctx: Ctx) -> int:
+    """変える流れを終えた回数を 1 つ足して返す。確かめる流れを始めると 0 に戻す（review start）。"""
+    path = ctx.data / RUNS_SINCE_REVIEW
+    try:
+        runs = int(json.loads(path.read_text(encoding="utf-8")).get("runs", 0)) + 1
+    except (OSError, ValueError, AttributeError):
+        runs = 1
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    write_text(path, json.dumps({"runs": runs}) + "\n")
+    return runs
 
 
 # 記録に残さない行: 使わなかったスキル・関係の無かったファイルの判断と、書き換え忘れたひな形の説明。
@@ -8401,6 +8504,7 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
                  "dropped": 0, "shown": []}
         if review_dir(ctx).is_dir():
             shutil.rmtree(review_dir(ctx))   # 前の回の答えを使い回させない
+        (ctx.data / RUNS_SINCE_REVIEW).unlink(missing_ok=True)   # 確かめる流れを勧めるまでの回数を数え直す
         # codd を通らなかった変更は、このレビューが自分で確かめるので、やりたいことに数えない
         asks, counts = run_lint(ctx, args.since or LINT_SINCE, args.no_test, skip=("bypassed", "drifted"))
         state["lint_asks"], state["lint_counts"] = asks, counts
