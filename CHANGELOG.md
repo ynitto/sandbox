@@ -16,6 +16,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `init.py` で置き直すと `guides` と `refs` に書き換える。書き換えないまま動かすと、その旨を出して止まる
 - 読み込むコマンドを `guide` 1 つにした（`rule --all` は `guide --all`、`skill 名前` は `guide 名前`）。
   決まりの候補を設定に書く `rules --write` は `show --write-rules` に、途中の報告だけを出す `report` は `record` にまとめた
+- 止まった理由の種類（利用者に訊くか、訊かずにやり直すか）を、指摘の文言から当て直さず、指摘を出すところで付けるようにした。
+  種類の付いていない指摘は利用者に訊く
 
 ### install.py / git-skill-manager: 外部スキル caveman・yomiyasu・diagram-design を導入し、最新へ追従する
 
