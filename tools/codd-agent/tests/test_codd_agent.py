@@ -1319,6 +1319,14 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertIn("検査が失敗しました", r.stderr)
         self.assertNotIn("動かせませんでした", r.stderr)
+        # 長い出力は末尾だけを見せ、全文は .codd/logs/ に残して検索で引かせる（テストをやり直して全文を読ませない）。
+        self.set_config(self.impl, test=[sys.executable, "-c",
+                                         "print('\\n'.join(f'ok {i}' for i in range(40))); print('FAILED test_x'); raise SystemExit(1)"])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("全文: .codd/logs/", r.stderr)
+        self.assertIn("開かずに grep で関係する行だけを読む", r.stderr)   # context-mode が無ければ grep
+        log = next((self.impl / ".codd/logs").glob("*.log")).read_text(encoding="utf-8")
+        self.assertIn("ok 0\n", log)
 
     def test_tests_changed_after_a_failure_are_asked(self) -> None:
         # 落ちたあとにテストのほうを変えたら、テストを合わせて通したかもしれない。訊かずにやり直させず利用者に訊く。
@@ -3228,6 +3236,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(mono, "explore", "--term", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("FOUND 1 files", r.stdout)   # 参照先（設計書）を探すのは docs の中だけ
+        self.run_pa(mono, "rule", "--all")
         (mono / ".plans").mkdir(parents=True, exist_ok=True)
         (mono / PLAN).write_text(PLAN_DRIFT, encoding="utf-8")
         self.assert_plan_ok(mono)
@@ -3313,6 +3322,7 @@ class CoddTest(unittest.TestCase):
         # 参照先を探すのは docs の中だけ（src/app.py の hello は拾わない）。
         r = self.run_pa(mono, "explore", "--term", "hello")
         self.assertIn("FOUND 1 files", r.stdout)
+        self.run_pa(mono, "rule", "--all")
         # 根拠は参照先の scope の中、影響範囲は自分の scope の中だけを認める。
         plan = PLAN_DRIFT
         (mono / ".plans").mkdir(parents=True, exist_ok=True)
@@ -3536,6 +3546,18 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("読み直す）: CLAUDE.md", r.stderr)
         self.assertEqual(self.run_pa(self.impl, "rule", "nothing.md").returncode, 1)
+
+    def test_the_reading_procedure_is_read_even_without_rule_files(self) -> None:
+        # 読み書きの手順は codd が持つ。決まりのファイルの無いリポジトリでも、読まずに計画を通さない
+        self.write_plan(PLAN_ALIGNED, read=False)
+        self.run_pa(self.impl, "explore", "--term", "hello")
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("読み直す）: .statemachine/codd/rules/reading.md", r.stderr)
+        r = self.run_pa(self.impl, "rule", "--all")
+        self.assertIn("# 読み書きの手順", r.stdout)
+        self.assertIn("ファイルを丸ごと開かない", r.stdout)
+        self.assert_plan_ok()   # 計画の「従う手順」に挙げなくてよい
 
     def test_a_rule_section_named_by_heading_is_read_and_required(self) -> None:
         # `use: "パス.md#見出し"` のいつも守る手順も、その節を読み込ませ、計画に挙げさせる（黙って効かなくならない）。
@@ -4577,6 +4599,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("OK レビュー: ファイル 2 件"), r.stdout)   # コードと、つながる文書
         self.assertFalse((self.impl / ".codd/runs-since-review.json").exists())   # 勧めるまでの回数を数え直す
+        self.run_pa(self.impl, "rule", "--all")
         items = self.review_items()
         kinds = {(i["kind"], i["name"]) for i in items.values()}
         # 文書も述べている名前は突き合わせ、文書・テストに出てこない名前は漏れ、コードのファイルには設計を問う
@@ -4641,7 +4664,8 @@ class CoddTest(unittest.TestCase):
             rid = self.run_pa(self.impl, "review", "next").stdout.split()[1].split("（")[0]
             self.review_answer(f"- {rid} 問題なし: src/app.py:1 — 読んだ")
         r = self.run_pa(self.impl, "review", "verify", "--part", "items")
-        self.assertIn("守る決まりを読んでいません: docs/rules.md", r.stdout)
+        # 読み書きの手順は、どのリポジトリでも読ませる
+        self.assertIn("守る決まりを読んでいません: .statemachine/codd/rules/reading.md, docs/rules.md", r.stdout)
         self.run_pa(self.impl, "rule", "--all")
         self.assertEqual(self.run_pa(self.impl, "review", "verify", "--part", "items").returncode, 0)
         # レビューで読んだものを、あとで始める本流の計画の検査で数えない
@@ -4664,6 +4688,7 @@ class CoddTest(unittest.TestCase):
         commit(self.impl, {"src/app.py": "def hello():\n    return 2\n\n\ndef bye():\n    return 0\n",
                            "tests/test_app.py": "from src.app import bye\n\n\ndef test_bye():\n    assert bye() == 0\n"}, "t")
         self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
+        self.run_pa(self.impl, "rule", "--all")
         by_name = {i["name"]: rid for rid, i in self.review_items().items()}
         for name, rid in by_name.items():
             self.run_pa(self.impl, "review", "next", "--id", rid)

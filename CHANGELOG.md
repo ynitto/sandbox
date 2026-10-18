@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 落ちたテストの長い出力を会話に入れず、読み書きの手順を必ず読ませる
+
+- テストや検査が落ちて出力が長いとき、末尾だけを示し、全文は `.codd/logs/` に残して context-mode の索引に入れる。
+  エージェントは全文を開かず、`context-mode search` で関係する行だけを読む（テストをやり直して全文を読み直さない）
+- エージェントがファイルを読み書きするときの手順（`.statemachine/codd/rules/reading.md`）を codd が持ち、どのリポジトリでも
+  `rule --all` で読み込ませる。読んでいなければ計画の検査とレビューの検査で止める
+
 ### install.py / git-skill-manager: 外部スキル caveman・yomiyasu・diagram-design を導入し、最新へ追従する
 
 - `install.py` が外部スキルとして caveman（JuliusBrussee/caveman）に加え、yomiyasu（nanaism/yomiyasu）と
