@@ -2,7 +2,7 @@
 name: git-skill-manager
 description: スキルのインストール（pull）・チーム公開（push）・品質評価・非推奨化・アーカイブなど、Gitリポジトリを介したエージェントスキルのライフサイクル管理を担う。「スキルをpullして」「スキルをpushして」「スキルをインストールして」「スキルを有効化して」「スキルを無効化して」「スキルを非推奨にして」「スキルをアーカイブして」「スキルを昇格して」などのリクエストで発動する。
 metadata:
-  version: 1.2.3
+  version: 1.3.0
   tier: core
   category: meta
   tags:
@@ -128,6 +128,7 @@ cd {SKILL_HOME}/../..   # skill-registry.json があるディレクトリ
 python {SCRIPTS_DIR}/repo.py add <name> <url>
 python {SCRIPTS_DIR}/repo.py add <name> <url> --readonly
 python {SCRIPTS_DIR}/repo.py add <name> <url> --priority 1 --skill-root .github/skills
+python {SCRIPTS_DIR}/repo.py add <name> <url> --readonly --skills <skill-a,skill-b>  # 外部リポジトリから指定スキルだけ
 python {SCRIPTS_DIR}/repo.py list
 python {SCRIPTS_DIR}/repo.py remove <name>
 ```

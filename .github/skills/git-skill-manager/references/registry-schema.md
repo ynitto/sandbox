@@ -119,6 +119,12 @@
 - 同名スキルの競合時、サブエージェント経由（非対話）では優先度の高いリポジトリを自動採用する
 - ユーザー直接呼び出しでは対話的に選択を求める
 
+**repositories[].skills** (文字列リスト、省略可):
+- 指定したときは、そのリポジトリからここに挙がったスキルだけを pull・auto-update・search の対象にする
+- 公開リポジトリから一部のスキルだけを取り込む「外部スキル」に使う。`install.py` は caveman / yomiyasu / diagram-design をこの形で `readonly: true` 登録する
+- 指定したリポジトリの `.github/copilot-instructions.md` と `.github/instructions/` は持ち込まない
+- リポジトリ直下の `LICENSE` は、スキルに LICENSE が無ければスキルと一緒に置く
+
 **installed_skills[].enabled** (真偽値、デフォルト: true):
 - false のスキルは `discover_skills.py` によるメタデータ収集から除外される
 - ディスク上にはスキルが残るため、再有効化は即座に完了する

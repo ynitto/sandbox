@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### install.py / git-skill-manager: 外部スキル caveman・yomiyasu・diagram-design を導入し、最新へ追従する
+
+- `install.py` が外部スキルとして caveman（JuliusBrussee/caveman）に加え、yomiyasu（nanaism/yomiyasu）と
+  diagram-design（cathrynlavery/diagram-design）を `--agent` のスキルホームへ入れる。配布元の先頭コミットを記録し、
+  再実行したとき配布元が進んでいれば最新へ取り直す（pin したものは触らない。`--force-external` で常に取り直す）
+- 取り込み元はレジストリに readonly で登録するので、git-skill-manager の pull・auto-update でも最新へ追従する
+- Claude Code の caveman はこれまでどおり公式インストーラ（plugin + hooks）で入れ、導入済みなら plugin を更新する。
+  codex の caveman は `npx skills` を使わず、他と同じく配布元から直接置く
+- git-skill-manager 1.3.0: `repositories[].skills` で外部リポジトリから指定スキルだけを取り込める
+
 ### codd-agent: 「チェックして」でグラフを保って確かめ、次の計画を立てておく（codd-review）
 
 - エージェント `codd` に「チェックして」「レビューして」「手入れして」と頼むと、本流とは別のステートマシン

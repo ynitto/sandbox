@@ -22,6 +22,7 @@ def add_repo(
     description: str = "",
     readonly: bool = False,
     priority: int = 100,
+    skills: list[str] | None = None,
 ) -> None:
     reg = load_registry()
     if any(r["name"] == name for r in reg["repositories"]):
@@ -35,9 +36,20 @@ def add_repo(
         "description": description,
         "readonly": readonly,
         "priority": priority,
+        **({"skills": skills} if skills else {}),
     })
     save_registry(reg)
     print(f"✅ リポジトリ '{name}' を登録しました（priority: {priority}）")
+
+
+def repo_takes_skill(repo: dict, skill_name: str) -> bool:
+    """repositories[].skills があれば、そこに挙がったスキルだけを取り込む。
+
+    外部の公開リポジトリから一部のスキルだけを入れるときに使う。
+    無いときはリポジトリ内の全スキルが対象。
+    """
+    wanted = repo.get("skills")
+    return not wanted or skill_name in wanted
 
 
 def clone_or_fetch(repo: dict) -> str:
@@ -76,7 +88,8 @@ def clone_or_fetch(repo: dict) -> str:
 
 
 def update_remote_index(
-    reg: dict, repo_name: str, repo_cache: str, skill_root: str
+    reg: dict, repo_name: str, repo_cache: str, skill_root: str,
+    skills: list[str] | None = None,
 ) -> None:
     """リモートインデックスを更新する。pull / search --refresh 時に呼ばれる。"""
     remote_index = reg.setdefault("remote_index", {})
@@ -88,6 +101,8 @@ def update_remote_index(
     for entry in sorted(os.listdir(root)):
         skill_md = os.path.join(root, entry, "SKILL.md")
         if not os.path.isfile(skill_md):
+            continue
+        if skills and entry not in skills:
             continue
         with open(skill_md, encoding="utf-8") as f:
             content = f.read()
@@ -142,7 +157,8 @@ def list_repos() -> None:
     print("📋 登録済みリポジトリ一覧\n")
     for r in repos:
         ro = "  [readonly]" if r.get("readonly") else ""
-        print(f"   {r['name']:20s}  {r['url']}  (priority: {r.get('priority', 100)}){ro}")
+        only = f"  [skills: {', '.join(r['skills'])}]" if r.get("skills") else ""
+        print(f"   {r['name']:20s}  {r['url']}  (priority: {r.get('priority', 100)}){ro}{only}")
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +177,7 @@ def main() -> None:
   python repo.py add team-skills https://github.com/myorg/skills.git
   python repo.py add team-skills https://github.com/myorg/skills.git --readonly
   python repo.py add team-skills https://github.com/myorg/skills.git --priority 1 --skill-root .github/skills
+  python repo.py add yomiyasu https://github.com/nanaism/yomiyasu.git --readonly --skills yomiyasu
   python repo.py list
   python repo.py remove team-skills
 """,
@@ -177,6 +194,8 @@ def main() -> None:
     add_p.add_argument("--readonly", action="store_true", help="参照専用にする")
     add_p.add_argument("--priority", type=int, default=100,
                        help="優先度（数値が小さいほど高優先。デフォルト: 100）")
+    add_p.add_argument("--skills", default="",
+                       help="取り込むスキル名をカンマ区切りで指定（省略時はリポジトリ内の全スキル）")
 
     sub.add_parser("list", help="登録済みリポジトリを一覧表示する")
 
@@ -194,6 +213,7 @@ def main() -> None:
             description=args.desc,
             readonly=args.readonly,
             priority=args.priority,
+            skills=[x.strip() for x in args.skills.split(",") if x.strip()] or None,
         )
     elif args.command == "list":
         list_repos()

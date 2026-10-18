@@ -11,7 +11,7 @@ sys.stderr.reconfigure(encoding="utf-8")
 from datetime import datetime, timedelta, timezone
 
 from registry import load_registry, save_registry, _cache_dir, _skill_home, _version_tuple, _read_frontmatter_version
-from repo import clone_or_fetch
+from repo import clone_or_fetch, repo_takes_skill
 
 
 def _bump_type(old_ver: str | None, new_ver: str | None) -> str:
@@ -91,6 +91,8 @@ def check_updates(force: bool = False) -> list[dict]:
             if not os.path.isfile(skill_md):
                 continue
 
+            if not repo_takes_skill(repo, entry):
+                continue
             current = installed.get(entry)
             if not current:
                 continue

@@ -16,7 +16,7 @@ from registry import (
     _version_tuple, _read_frontmatter_version, _read_periodic_scripts,
     _transform_frontmatter_for_kiro,
 )
-from repo import clone_or_fetch, update_remote_index
+from repo import clone_or_fetch, repo_takes_skill, update_remote_index
 from delta_tracker import check_sync_protection
 
 
@@ -125,7 +125,7 @@ def pull_skills(
 
     for repo in repos:
         repo_cache = clone_or_fetch(repo)
-        update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"])
+        update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"], repo.get("skills"))
 
         root = os.path.join(repo_cache, repo["skill_root"])
         if not os.path.isdir(root):
@@ -136,6 +136,8 @@ def pull_skills(
             if not os.path.isfile(skill_md):
                 continue
             if skill_name and entry != skill_name:
+                continue
+            if not repo_takes_skill(repo, entry):
                 continue
 
             with open(skill_md, encoding="utf-8") as f:
@@ -179,6 +181,7 @@ def pull_skills(
                 "repo_priority": repo.get("priority", 100),
                 "source_path": os.path.join(repo["skill_root"], entry),
                 "full_path": os.path.join(root, entry),
+                "repo_cache": repo_cache,
                 "commit_date": commit_date,
                 "commit_hash": commit_hash,
                 "description": desc[:80],
@@ -288,9 +291,15 @@ def pull_skills(
             print(f"   ⚠️  {sname}: ローカル v{local_ver} が中央 v{central_ver or '?'} より新しい → pull で上書きします")
 
         dest = os.path.join(skill_home, sname)
-        if os.path.exists(dest):
+        if os.path.islink(dest):
+            os.unlink(dest)  # npx skills などが張ったリンクは実体を消さずに外す
+        elif os.path.exists(dest):
             shutil.rmtree(dest)
         shutil.copytree(winner["full_path"], dest)
+        # 外部リポジトリはライセンスがリポジトリ直下にしかないことが多い。スキルと一緒に持つ
+        repo_license = os.path.join(winner["repo_cache"], "LICENSE")
+        if not os.path.exists(os.path.join(dest, "LICENSE")) and os.path.isfile(repo_license):
+            shutil.copyfile(repo_license, os.path.join(dest, "LICENSE"))
 
         # ---- pinned チェックアウト後にリポジトリを最新状態へ戻す ----
         # git checkout <pinned> でワーキングツリーが変更されているため、
@@ -406,8 +415,10 @@ def pull_skills(
             save_registry(reg)
 
     # copilot-instructions.md のコピー
+    # repositories[].skills で一部のスキルだけを取り込む外部リポジトリの指示ファイルは持ち込まない
+    instruction_repos = [r for r in repos if not r.get("skills")]
     copilot_instruction_parts: list[str] = []
-    for repo in repos:
+    for repo in instruction_repos:
         repo_cache = os.path.join(_cache_dir(), repo["name"])
         src = os.path.join(repo_cache, ".github", "copilot-instructions.md")
         if os.path.isfile(src):
@@ -428,7 +439,7 @@ def pull_skills(
         steering_dir = os.path.join(os.path.dirname(_skill_home()), "steering")
         os.makedirs(steering_dir, exist_ok=True)
         steering_copied: list[str] = []
-        for repo in repos:
+        for repo in instruction_repos:
             repo_cache = os.path.join(_cache_dir(), repo["name"])
             instr_dir = os.path.join(repo_cache, ".github", "instructions")
             if not os.path.isdir(instr_dir):
