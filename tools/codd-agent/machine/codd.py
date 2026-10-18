@@ -1618,7 +1618,7 @@ def fulltext(ctx: Ctx, side: Side, terms: list[str]) -> tuple[list[str], list[st
     lines = ["### 全文検索（context-mode）", ""]
     exe = shutil.which("context-mode")
     if not exe:
-        return lines + ["- (context-mode が無いので引いていない。`install.py` で入れる)", ""], []
+        return lines + [f"- ({CM_MISSING})", ""], []
     repo = side.path
     # 受け持つ範囲の文書だけを索引にする（マシンのファイルや scope の外が、検索の上位を埋めて当たりを押し出さないように。
     # コードは文字列検索と graphify が拾い、索引に入れると大きなリポジトリで作り直しが何倍も遅くなる）。
@@ -1635,8 +1635,12 @@ def fulltext(ctx: Ctx, side: Side, terms: list[str]) -> tuple[list[str], list[st
         rc, out = run([exe, "index", ".", "--project", str(repo), "--source", CONTEXT_MODE_SOURCE,
                        "--max-files", "5000", "--max-depth", "20", *narrow], repo, CONTEXT_MODE_TIMEOUT, env)
         if rc != 0:
-            return lines + [f"- (索引を作れなかった（{rc}）: {out.strip()[:200]})", ""], []
+            return lines + [f"- ({CM_FAILED}（{rc}）: {out.strip()[:200]})", ""], []
+        if "Indexed 0 files" in out:
+            write_text(store / "empty", "")
         write_text(store / "stamp", now)
+    if (store / "empty").is_file():
+        return [], []   # 受け持つ範囲に文書が無い（コードだけの側）。引いても当たらないので節ごと出さない
     root = repo.resolve()
     files: list[str] = []
     for term in terms:
@@ -1658,6 +1662,18 @@ def fulltext(ctx: Ctx, side: Side, terms: list[str]) -> tuple[list[str], list[st
                         files.append(rel)
         lines += [f"#### {term}", "", *(hits or ["- (該当なし)"]), ""]
     return lines, files
+
+
+CM_MISSING = "context-mode が無いので引いていない。`install.py` で入れる"
+CM_FAILED = "context-mode の索引を作れなかった"
+
+
+def fulltext_trouble(body: str) -> None:
+    """context-mode が使えなかったら、詳細だけでなく出力にも 1 行出す（必ず入れるものなので、壊れたまま気づかれないように）。"""
+    for line in body.splitlines():
+        if line.startswith((f"- ({CM_MISSING}", f"- ({CM_FAILED}")):
+            print(f"  全文検索: {line[3:-1]}")
+            return
 
 
 def terms_of(args: argparse.Namespace) -> list[str]:
@@ -1716,6 +1732,7 @@ def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
     ctx.data.mkdir(parents=True, exist_ok=True)
     write_text(ctx.data / EXPLORE_LOG, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
     print(f"FOUND {len(files)} files (graphify: {', '.join(notes)})")
+    fulltext_trouble("\n".join(body for _, _, body in parts))
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
 
@@ -1831,6 +1848,7 @@ def cmd_impact(ctx: Ctx, args: argparse.Namespace) -> int:
     path = write_report(ctx, "impact.md", f"自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける箇所",
                         terms, [(f"{ctx.root}{scope_words(ctx.own)}", note, body)], files)
     print(f"FOUND {len(files)} files (graphify: {note})")
+    fulltext_trouble(body)
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
 
@@ -7742,7 +7760,7 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         print(NO_PLAN, file=sys.stderr)
         return 1
     print(f"\n計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
-    if not args.stop:
+    if not args.stop and (ctx.root / REVIEW_REL / "workflow.yaml").is_file():   # 前の init で置いたなら確かめる流れが無い
         runs = count_run_since_review(ctx)
         if runs % REVIEW_AFTER_RUNS == 0:   # 断られても毎回は訊かない。次は 3 回後
             print(f"{REVIEW_SUGGEST} 確かめる流れを回さずに、変える流れを {runs} 回終えました。"

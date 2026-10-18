@@ -11,7 +11,7 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 | [backend-orders.md](backend-orders.md) | 注文 API（Python）と仕様書 | 改名で消した名前の残り、テストのキャッシュ、途中までの変更、context-mode の全文検索、確かめる流れを勧める |
 | [pc-main-screen.md](pc-main-screen.md) | PC 版のメイン画面（TSX）と設計書 | よくある名前のローカル変数、途中のコミット |
 | [web-hello.md](web-hello.md) | 小さな Web 画面と e2e のケース | 新しい名前のテスト、注記の無い e2e のケース |
-| [monorepo-library.md](monorepo-library.md) | ソース・テスト・文書が 1 つのリポジトリにあるライブラリ（TS） | 同じリポジトリの文書を参照先にする、ファイルの削除、やめて戻す |
+| [monorepo-library.md](monorepo-library.md) | ソース・テスト・文書が 1 つのリポジトリにあるライブラリ（TS） | 同じリポジトリの文書を参照先にする、ファイルの削除、やめて戻す、同じリポジトリでの全文検索 |
 | [three-repos-guides.md](three-repos-guides.md) | 画面・サーバー（Go）・設計書の 3 つのリポジトリと手引き | 3 つにまたがる変更、手引きの検査と確かめごと、設計書の側からの変更 |
 | [semantic-graph.md](semantic-graph.md) | 税の計算（Python）と設計書・運用メモ・e2e のケース | 文書を LLM で読んだグラフ、必須・要判断・参考の分け方、判断済みを出さない |
 | [review-check.md](review-check.md) | 小さな関数と設計書・テスト（codd を通らずに変えたもの） | 確かめる、項目と答えの検査、次の計画を立てて引き継ぐ、変更が無ければ遡る |

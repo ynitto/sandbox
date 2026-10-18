@@ -287,6 +287,7 @@ class CoddTest(unittest.TestCase):
         report = (self.impl / ".codd/explore.md").read_text(encoding="utf-8")
         self.assertIn("docs/api.md:3:## hello", report)
         self.assertIn("- (context-mode が無いので引いていない。`install.py` で入れる)", report)
+        self.assertIn("全文検索: context-mode が無いので引いていない", r.stdout)   # 必ず入れるもの。壊れたまま気づかれないように
         self.assertEqual(self.run_pa(self.impl, "explore").returncode, 2)  # 語が無い
 
     def test_explore_uses_context_mode_cli_and_rebuilds_index_only_when_repo_changes(self) -> None:

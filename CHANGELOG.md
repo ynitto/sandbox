@@ -9,7 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ### codd-agent: 本流を何回か終えたら、確かめる流れを勧める
 
-- 前に確かめてから本流を 3 回終えると、`record` の終わりに `REVIEW` の行を出し、エージェントが確かめる流れを今回すかを利用者に尋ねる。
+- 前に確かめてから本流を 3 回終えると、`record` の終わりに `REVIEW` の行を出し、ステートマシンが終わってから、エージェントが確かめる流れを今回すかを利用者に尋ねる。
   断られたら次は 3 回後に尋ねる。`review start` で数え直す（数は `.codd/` に置き、コミットしない）
 
 ### codd-agent: context-mode の全文検索で参照先を探す（MCP サーバは通さない）
@@ -18,7 +18,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （Node.js 22.5 以上。入れられなければ失敗にする）
 - explore / impact が context-mode の CLI（`index` / `search`）を直接呼び、語ごとに関係の深い節を詳細に載せる。
   索引は受け持つ範囲の文書だけで `.codd/context-mode/` に作り、リポジトリが変わったときだけ作り直す。候補を広げるためのもので、検査には使わない。
-  無ければ文字列検索だけで動く
+  無ければ文字列検索だけで動き、無い・索引を作れないことを出力の 1 行で知らせる。受け持ちに文書が無い側では全文検索の節を出さない
 - エージェントは、長いログや文書を全部読まずに `context-mode index` / `search` で関係する節だけを読める。
   多くのファイルを数える・集める調べものは、短いスクリプトを書いて結果だけを出させる
 
