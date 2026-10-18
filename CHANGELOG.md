@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 本流を何回か終えたら、確かめる流れを勧める
+
+- 前に確かめてから本流を 3 回終えると、`record` の終わりに `REVIEW` の行を出し、エージェントが確かめる流れを今回すかを利用者に尋ねる。
+  `review start` で数え直す（数は `.codd/` に置き、コミットしない）
+
 ### codd-agent: context-mode の全文検索で参照先を探す（MCP サーバは通さない）
 
 - `tools/codd-agent/install.py` が [context-mode](https://github.com/mksglu/context-mode) を npm で必ず入れる

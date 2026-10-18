@@ -7735,7 +7735,29 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         print(NO_PLAN, file=sys.stderr)
         return 1
     print(f"\n計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
+    if not args.stop:
+        runs = count_run_since_review(ctx)
+        if runs >= REVIEW_AFTER_RUNS:
+            print(f"{REVIEW_SUGGEST} 前に確かめてから、変える流れを {runs} 回終えました。"
+                  "「チェックして」で、まとめて漏れや矛盾を確かめられます（何も直さない）")
     return 0
+
+
+REVIEW_AFTER_RUNS = 3          # 確かめる流れを勧めるまでに、変える流れを終えた回数
+REVIEW_SUGGEST = "REVIEW"      # 終わりの報告で確かめる流れを勧める行の印（done のアクションが利用者に尋ねる）
+RUNS_SINCE_REVIEW = "runs-since-review.json"
+
+
+def count_run_since_review(ctx: Ctx) -> int:
+    """変える流れを終えた回数を 1 つ足して返す。確かめる流れを始めると 0 に戻す（review start）。"""
+    path = ctx.data / RUNS_SINCE_REVIEW
+    try:
+        runs = int(json.loads(path.read_text(encoding="utf-8")).get("runs", 0)) + 1
+    except (OSError, ValueError, AttributeError):
+        runs = 1
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    write_text(path, json.dumps({"runs": runs}) + "\n")
+    return runs
 
 
 # 記録に残さない行: 使わなかったスキル・関係の無かったファイルの判断と、書き換え忘れたひな形の説明。
@@ -8457,6 +8479,7 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
                  "dropped": 0, "shown": []}
         if review_dir(ctx).is_dir():
             shutil.rmtree(review_dir(ctx))   # 前の回の答えを使い回させない
+        (ctx.data / RUNS_SINCE_REVIEW).unlink(missing_ok=True)   # 確かめる流れを勧めるまでの回数を数え直す
         # codd を通らなかった変更は、このレビューが自分で確かめるので、やりたいことに数えない
         asks, counts = run_lint(ctx, args.since or LINT_SINCE, args.no_test, skip=("bypassed", "drifted"))
         state["lint_asks"], state["lint_counts"] = asks, counts

@@ -4102,8 +4102,11 @@ class CoddTest(unittest.TestCase):
             "## 従う手順\n\n- `tdd-lite` — 使わない: テストは無い\n- `grep` — 呼び出し元を探した\n").replace(
             "## 参照先のその他\n\n- なし", "## 参照先のその他\n\n- 関係なし: docs/api.md:1 — 題名だけ\n  続きの説明"),
             encoding="utf-8")
+        # 前に確かめてから変える流れを 3 回終えたら、確かめる流れを勧める（done のアクションが利用者に尋ねる）。
+        (self.impl / ".codd/runs-since-review.json").write_text('{"runs": 2}', encoding="utf-8")
         r = self.run_pa(self.impl, "record")
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("REVIEW 前に確かめてから、変える流れを 3 回終えました。", r.stdout)
         records = list((self.impl / ".plans").glob("*.md"))
         self.assertEqual(records, [plan])     # 置いたときの名前のまま残す
         self.assertIn(f"計画の記録: {PLAN}", r.stdout)
@@ -4559,9 +4562,12 @@ class CoddTest(unittest.TestCase):
 
     def test_review_decides_items_and_checks_every_answer(self) -> None:
         commit(self.impl, {"src/app.py": "def hello():\n    return 2\n\n\ndef bye():\n    return 0\n"}, "bye")
+        (self.impl / ".codd").mkdir(exist_ok=True)
+        (self.impl / ".codd/runs-since-review.json").write_text('{"runs": 3}', encoding="utf-8")
         r = self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("OK レビュー: ファイル 2 件"), r.stdout)   # コードと、つながる文書
+        self.assertFalse((self.impl / ".codd/runs-since-review.json").exists())   # 勧めるまでの回数を数え直す
         items = self.review_items()
         kinds = {(i["kind"], i["name"]) for i in items.values()}
         # 文書も述べている名前は突き合わせ、文書・テストに出てこない名前は漏れ、コードのファイルには設計を問う
