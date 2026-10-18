@@ -2729,6 +2729,37 @@ class CoddTest(unittest.TestCase):
                                              "- src/app.py — `hello` でログを出す\n- src/log.py — 新しく書く"))
         self.assert_plan_ok()
 
+    def test_new_files_may_go_in_new_folders(self) -> None:
+        # まだ無いフォルダの下にも、新しいファイルを作る計画を書ける（自分も参照先も）。途中がファイルのパスは認めない。
+        self.write_plan(PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
+                                             "- src/app.py — `hello` でログを出す\n- src/app.py/x.py — 新しく書く"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("自分のリポジトリのパスがありません", r.stderr)
+        self.assertIn("src/app.py/x.py", r.stderr)
+        plan = self.with_tests(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す",
+            "- src/app.py — `hello` の中でログを出す\n- lib/pay/core.py — 新しく作り、`pay` を置く"),
+            "- `pay` — 変更不要: 例")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("自分のリポジトリのパスがありません", r.stderr)
+        self.assertIn("対応する文書の無いコードです", r.stderr)   # 新しいフォルダのコードにも文書が要る
+        self.assertIn("lib/pay/core.py（近い粒度の見本: docs/api.md（src/app.py に対応））", r.stderr)
+        plan = plan.replace("## 参照先の変更案\n\nなし",
+                            "## 参照先の変更案\n\n- docs/pay/core.md — `lib/pay/core.py` の文書を見本に倣って新しく書き、`pay` の節を置く")
+        plan = plan.replace("## 守る決まり\n\nなし",
+                            "## 守る決まり\n\n- docs/api.md — 文書の書式: 見本。見出しの並びと書き方を docs/pay/core.md でも同じにする")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        (self.impl / "lib/pay").mkdir(parents=True)
+        (self.impl / "lib/pay/core.py").write_text("def pay():\n    return 0\n", encoding="utf-8")
+        (self.design / "docs/pay").mkdir()
+        (self.design / "docs/pay/core.md").write_text("# pay\n\n## pay\n\npay は 0 を返す。\n\n実装は `lib/pay/core.py`。\n",
+                                                      encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     # ------------------------------------------------------------ 1 回で終わる大きさ
 
     def test_plan_must_fit_in_one_run(self) -> None:

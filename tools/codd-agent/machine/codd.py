@@ -2746,24 +2746,25 @@ def cited_refs(ctx: Ctx, line: str, allow_new: bool = False) -> Cited:
 
     `名前:パス` はその参照先で、パスだけなら実在する参照先で探す（複数で見つかれば曖昧）。
     参照先の scope の外のパスは認めない。
-    allow_new は、まだ無いファイル（親のフォルダはある）も認める（参照先の変更案で新しく書くとき）。
+    allow_new は、まだ無いファイル（まだ無いフォルダの下も）も認める（参照先の変更案で新しく書くとき）。
     """
-    def exists(r: Ref, rel: str) -> bool:
+    def exists(r: Ref, rel: str, head: bool = False) -> bool:
         if not r.has(rel):
             return False
         target = r.path / rel
         return (target.exists() or baseline_text(ctx, r.name, rel) is not None
-                or (allow_new and new_file_name(rel) and target.parent.is_dir()))
+                or (allow_new and new_path(ctx, r.path, rel, head)))
 
     out = Cited()
     names = {r.name for r in ctx.refs}
     for m in _CITE.finditer(line):
         rel = m.group("path")
         rel = rel[2:] if rel.startswith("./") else rel
+        head = in_head(line, m)
         if m.group("ref") in names:
-            hits = [ctx.ref(m.group("ref"))] if exists(ctx.ref(m.group("ref")), rel) else []
+            hits = [ctx.ref(m.group("ref"))] if exists(ctx.ref(m.group("ref")), rel, head) else []
         else:
-            hits = [r for r in ctx.refs if exists(r, rel)]
+            hits = [r for r in ctx.refs if exists(r, rel, head)]
             if len(hits) > 1:
                 out.ambiguous.append(rel)
                 continue
@@ -2786,7 +2787,7 @@ def cited_own(ctx: Ctx, line: str, allow_new: bool = False) -> list[str]:
         if not ctx.own.has(rel):
             continue
         if (target.exists() or baseline_text(ctx, "", rel) is not None
-                or (allow_new and new_file_name(rel) and target.parent.is_dir())):
+                or (allow_new and new_path(ctx, ctx.root, rel, in_head(line, m)))):
             paths.append(rel)
     return paths
 
@@ -2843,6 +2844,35 @@ def name_terms(text: str) -> list[str]:
 def new_file_name(rel: str) -> bool:
     """まだ無いファイルとして認める名前か。フォルダの無い `a.b` は、よくある拡張子のときだけ（`Math.floor` を拾わない）。"""
     return bool(_NEW_FILE.search(rel)) and ("/" in rel or rel.rsplit(".", 1)[1].lower() in FILE_EXTS)
+
+
+def new_path(ctx: Ctx, root: Path, rel: str, head: bool) -> bool:
+    """まだ無いファイルとして作れるパスか。
+
+    親のフォルダがあれば、行のどこに書いてもよい。フォルダごと新しく作るもの（`lib/pay.py` の `lib/` がまだ無い）は、
+    項目の対象（`—` より前）に書き、ほかの側にもそのファイルや親のフォルダが無いときだけ認める（ほかの側のパスや、
+    説明の中で触れたパスを、この側に新しく作るファイルと読まない）。
+    途中にファイルがある（`src/app.py/x.py`）・リポジトリの外に出るパスは認めない。
+    """
+    if not new_file_name(rel) or ".." in Path(rel).parts or Path(rel).is_absolute():
+        return False
+    parent = (root / rel).parent
+    if parent.is_dir():
+        return True
+    if not head or any((side.path / rel).exists() or (side.path / rel).parent.is_dir() for _, side in all_sides(ctx)):
+        return False
+    while not parent.exists():
+        parent = parent.parent
+    return parent.is_dir()
+
+
+def in_head(line: str, m: re.Match) -> bool:
+    """項目の対象（`- パス — 説明` の `—` より前。`—` が無ければ最初のパス）に書いたパスか。"""
+    dash = re.search(r"\s[—–]\s|\s-\s", line)
+    if dash:
+        return m.start() < dash.start()
+    first = _CITE.search(line)
+    return first is not None and first.start() == m.start()
 
 
 _CODE_HEAD = re.compile(r"^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(?:[:=(]|\?\.)")

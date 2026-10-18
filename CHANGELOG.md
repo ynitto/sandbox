@@ -20,6 +20,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   種類の付いていない指摘は利用者に訊く
 - 新しく足したコードが、`src/` のようにフォルダだけを書いた概要の文書で「文書がある」ことにならないようにした。
   隣のコードがファイルごとの文書を持つなら、新しいコードにも文書を作るまで計画の検査を通さない
+- まだ無いフォルダの下に新しいファイルを作る計画（`lib/pay.py` を `lib/` ごと作る、など）を書けるようにした。
+  項目の対象（`—` より前）に書いたパスだけを、新しく作るファイルと読む
 
 ### install.py / git-skill-manager: 外部スキル caveman・yomiyasu・diagram-design を導入し、最新へ追従する
 
