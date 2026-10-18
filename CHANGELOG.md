@@ -14,7 +14,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - explore / impact が context-mode の CLI（`index` / `search`）を直接呼び、語ごとに関係の深い節を詳細に載せる。
   索引は `.codd/context-mode/` に置き、リポジトリが変わったときだけ作り直す。候補を広げるためのもので、検査には使わない。
   無ければ文字列検索だけで動く
-- エージェントは、長いログや文書を全部読まずに `context-mode index` / `search` で関係する節だけを読める
+- エージェントは、長いログや文書を全部読まずに `context-mode index` / `search` で関係する節だけを読める。
+  多くのファイルを数える・集める調べものは、短いスクリプトを書いて結果だけを出させる
 
 ### codd-agent: 「チェックして」でグラフを保って確かめ、次の計画を立てておく（codd-review）
 

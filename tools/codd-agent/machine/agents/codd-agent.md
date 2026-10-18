@@ -38,6 +38,7 @@ caveman が無い間も短い応答で進め、スキルを読んだとは書き
 `context-mode` は `install.py` が入れる全文検索の CLI です。MCP サーバとしては使わず、`explore` / `impact` が直接引きます。
 長いログや文書を全部読まずに探すときは、`context-mode index パス --project .` のあと
 `context-mode search 語 --project .` で関係する節だけを読みます。
+多くのファイルを数える・集めるような調べものは、ファイルを読み込まずに短いスクリプトを書いて実行し、結果だけを出力させます。
 
 参照先（設計書・実装）、従う手順（守る決まり・使うスキルと道具・ファイルに決められた手順）、1 回で変えるファイルの上限が出ます。
 守る決まりは `python3 .statemachine/codd/codd.py rule --all` で、参照先は `codd.py explore --term 語` で必ず読みます
