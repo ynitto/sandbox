@@ -18,6 +18,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   決まりの候補を設定に書く `rules --write` は `show --write-rules` に、途中の報告だけを出す `report` は `record` にまとめた
 - 止まった理由の種類（利用者に訊くか、訊かずにやり直すか）を、指摘の文言から当て直さず、指摘を出すところで付けるようにした。
   種類の付いていない指摘は利用者に訊く
+- 新しく足したコードが、`src/` のようにフォルダだけを書いた概要の文書で「文書がある」ことにならないようにした。
+  隣のコードがファイルごとの文書を持つなら、新しいコードにも文書を作るまで計画の検査を通さない
 
 ### install.py / git-skill-manager: 外部スキル caveman・yomiyasu・diagram-design を導入し、最新へ追従する
 

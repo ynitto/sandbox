@@ -1246,6 +1246,46 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertNotIn("対応する文書の無いコードです", r.stderr)
 
+    def test_new_code_needs_its_own_doc_beside_an_overview(self) -> None:
+        # `src/` を書いただけの概要の文書があっても、隣のコードがファイルごとの文書を持つなら、新しいコードにも文書が要る。
+        commit(self.design, {"docs/api.md": "# API\n\n## hello\n\nhello は 1 を返す。\n\n実装は `src/app.py`。\n",
+                             "docs/overview.md": "# 概要\n\nコードは `src/` に置く。\n"}, "overview")
+        plan = self.with_tests(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す",
+            "- src/app.py — `hello` の中でログを出す\n- src/pay.py — 新しく作り、`pay` を置く"),
+            "- `pay` — 変更不要: 例")
+        self.write_plan(plan)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("対応する文書の無いコードです", r.stderr)
+        self.assertIn("src/pay.py（近い粒度の見本: docs/api.md（src/app.py に対応））", r.stderr)
+
+        plan = plan.replace("## 参照先の変更案\n\nなし",
+                            "## 参照先の変更案\n\n- docs/pay.md — `src/pay.py` の文書を docs/api.md に倣って新しく書き、`pay` の節を置く")
+        plan = plan.replace("## 守る決まり\n\nなし",
+                            "## 守る決まり\n\n- docs/api.md — 文書の書式: 見本。見出しの並びと書き方を docs/pay.md でも同じにする")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        (self.impl / "src/pay.py").write_text("def pay():\n    return 0\n", encoding="utf-8")
+        (self.design / "docs/pay.md").write_text("# pay\n\n## pay\n\npay は 0 を返す。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn("対応する文書の無いコードです", r.stderr)   # 作った文書がコードのパスを書いていない
+        (self.design / "docs/pay.md").write_text("# pay\n\n## pay\n\npay は 0 を返す。\n\n実装は `src/pay.py`。\n",
+                                                 encoding="utf-8")
+        self.assertNotIn("対応する文書の無いコードです", self.run_pa(self.impl, "verify-apply").stderr)
+
+    def test_new_code_in_a_folder_documented_as_a_whole_needs_no_new_doc(self) -> None:
+        # フォルダごとに文書を書くプロジェクトでは、そのフォルダの文書が新しいコードの文書になる。
+        commit(self.impl, {"src/orders/a.py": "def a():\n    return 0\n"}, "orders")
+        commit(self.design, {"docs/orders.md": "# 注文\n\n実装は `src/orders/` に置く。\n"}, "orders")
+        self.write_plan(self.with_tests(PLAN_ALIGNED.replace(
+            "- src/app.py — `hello` の中でログを出す",
+            "- src/app.py — `hello` の中でログを出す\n- src/orders/b.py — 新しく作り、`b` を置く"),
+            "- `b` — 変更不要: 例"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("対応する文書の無いコードです", r.stderr)
+
     # ------------------------------------------------------------ 止まったとき
 
     def test_advise_proposes_next_steps(self) -> None:

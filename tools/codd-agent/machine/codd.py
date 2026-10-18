@@ -3903,7 +3903,9 @@ def docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
     """そのコードとパスでつながっている、ほかの側の文書（どちらが指していてもよい）。
 
     コードのファイルを指す文書のほか、コードのあるフォルダ（`src/orders/` など）を指す文書も、そのフォルダをまとめた
-    文書として数える（文書の粒度はプロジェクトが決める）。
+    文書として数える（文書の粒度はプロジェクトが決める）。ただし、そのフォルダの下のほかのコードがもっと細かい文書
+    （ファイルか、下のフォルダを指す文書）を持っていれば、フォルダの文書は概要なので数えない（新しく足したコードが、
+    `src/` を書いただけの概要の文書で済んだことにならないように）。
     """
     memo = ctx.__dict__.setdefault("_docs_for", {})
     if (key, rel) not in memo:
@@ -3911,25 +3913,75 @@ def docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
     return memo[(key, rel)]
 
 
-def _docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
-    found = {h for h in linked(ctx, key, {rel}) if h[1].lower().endswith(DOC_EXTS)}
-    side = side_of(ctx, key)
-    folders = {p.as_posix() for p in Path(rel).parents if p.as_posix() != "."}
-    if folders:
+def _file_docs(ctx: Ctx, key: str, rel: str) -> set[tuple[str, str]]:
+    """そのファイルを指す・そのファイルが指す、ほかの側の文書。"""
+    memo = ctx.__dict__.setdefault("_file_docs", {})
+    if (key, rel) not in memo:
+        memo[(key, rel)] = {h for h in linked(ctx, key, {rel}) if h[1].lower().endswith(DOC_EXTS)}
+    return memo[(key, rel)]
+
+
+def _folder_docs(ctx: Ctx, key: str, folder: str) -> set[tuple[str, str]]:
+    """そのフォルダ（`src/orders/` のように末尾を / で書いたもの）を指す、ほかの側の文書。"""
+    memo = ctx.__dict__.setdefault("_folder_docs", {})
+    if (key, folder) in memo:
+        return memo[(key, folder)]
+    side, found = side_of(ctx, key), set()
+    if (side.path / folder).is_dir():
         for other_key, other in all_sides(ctx):
             if other_key == key:
                 continue
-            for doc in files_mentioning(other, [f + "/" for f in folders]):
+            for doc in files_mentioning(other, [folder + "/"]):
                 if not doc.lower().endswith(DOC_EXTS):
                     continue
                 for claim in claims_in(doc, read_text(other.path / doc) or ""):
                     token = claim.token.strip()
                     token = token.split(":", 1)[1] if token.startswith(f"{key}:") and key else token
                     token = token[2:] if token.startswith("./") else token
-                    if token.endswith("/") and token.rstrip("/") in folders and (side.path / token).is_dir():
+                    if token.endswith("/") and token.rstrip("/") == folder:
                         found.add((other_key, doc))
                         break
-    return sorted(found)
+    memo[(key, folder)] = found
+    return found
+
+
+def _side_code(ctx: Ctx, key: str) -> list[str]:
+    memo = ctx.__dict__.setdefault("_side_code", {})
+    if key not in memo:
+        side = side_of(ctx, key)
+        rc, out = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", *side.pathspec()],
+                      side.path, GIT_TIMEOUT)
+        memo[key] = [f for f in out.splitlines() if side.has(f) and is_code(ctx, key, f)] if rc == 0 else []
+    return memo[key]
+
+
+def _finer_docs_under(ctx: Ctx, key: str, folder: str, rel: str) -> bool:
+    """フォルダの下のほかのコード（近いものから）が、フォルダより細かい別の文書を持っているか。
+
+    フォルダを指す文書がその下のファイルも指しているだけなら、フォルダをまとめた文書とみなす（細かい文書に数えない）。
+    """
+    own = _folder_docs(ctx, key, folder)
+    under = [f for f in _side_code(ctx, key) if f != rel and f.startswith(folder + "/")]
+    here = Path(rel).parent.parts
+    under.sort(key=lambda f: (-sum(1 for a, b in zip(here, Path(f).parent.parts) if a == b), f))
+    for f in under[:MAX_DOC_SAMPLE_PROBES]:
+        if _file_docs(ctx, key, f) - own:
+            return True
+        deeper = [p.as_posix() for p in Path(f).parents if p.as_posix().startswith(folder + "/")]
+        if any(_folder_docs(ctx, key, d) - own for d in deeper):
+            return True
+    return False
+
+
+def _docs_for(ctx: Ctx, key: str, rel: str) -> list[tuple[str, str]]:
+    found = _file_docs(ctx, key, rel)
+    if found:
+        return sorted(found)
+    for folder in (p.as_posix() for p in Path(rel).parents if p.as_posix() != "."):   # 近いフォルダから
+        docs = _folder_docs(ctx, key, folder)
+        if docs and not _finer_docs_under(ctx, key, folder, rel):
+            return sorted(docs)
+    return []
 
 
 def doc_samples(ctx: Ctx, key: str, rel: str, limit: int = 2) -> list[str]:
