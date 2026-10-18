@@ -54,6 +54,16 @@ case "$1" in
 esac
 """
 
+# context-mode のスタブ。引数と索引の置き場所（CONTEXT_MODE_DIR）を記録し、検索では一致した節を返す。
+CONTEXT_MODE_STUB = """#!/bin/sh
+echo "$1 $CONTEXT_MODE_DIR $*" >> "{log}"
+case "$1" in
+  index) mkdir -p "$CONTEXT_MODE_DIR/content"; echo "Indexed 2 files" ;;
+  search) echo "## 1. hello"; echo "Source: codd:$PWD/docs/api.md"; echo "Type: prose"; echo
+          echo "## 2. secret"; echo "Source: codd:$PWD/secret/notes.md" ;;
+esac
+"""
+
 PLAN = ".plans/2026-10-01-0000-test.md"
 
 PLAN_ALIGNED = """\
@@ -276,7 +286,39 @@ class CoddTest(unittest.TestCase):
         self.assertIn("FOUND 1 files (graphify: not-installed)", r.stdout)
         report = (self.impl / ".codd/explore.md").read_text(encoding="utf-8")
         self.assertIn("docs/api.md:3:## hello", report)
+        self.assertIn("- (context-mode が無いので引いていない。`install.py` で入れる)", report)
+        self.assertIn("全文検索: context-mode が無いので引いていない", r.stdout)   # 必ず入れるもの。壊れたまま気づかれないように
         self.assertEqual(self.run_pa(self.impl, "explore").returncode, 2)  # 語が無い
+
+    def test_explore_uses_context_mode_cli_and_rebuilds_index_only_when_repo_changes(self) -> None:
+        # MCP サーバは通さず CLI を直接呼ぶ。索引は自分の .codd/context-mode/ に置く。
+        log = self.tmp / "context-mode.log"
+        stub = self.bin / "context-mode"
+        stub.write_text(CONTEXT_MODE_STUB.format(log=log), encoding="utf-8")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        commit(self.design, {"secret/notes.md": "hello\n"}, "outside the scope")
+        cfg_path = self.impl / ".statemachine/codd/codd.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["refs"][0]["scope"] = ["docs"]
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "explore", "--term", "hello").returncode, 0)
+        report = (self.impl / ".codd/explore.md").read_text(encoding="utf-8")
+        self.assertIn("### 全文検索（context-mode）", report)
+        self.assertIn("- docs/api.md — hello", report)
+        self.assertNotIn("secret/notes.md", report)   # scope の外は捨てる
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([c.split()[0] for c in calls], ["index", "search"])
+        self.assertTrue(all(c.split()[1].startswith(str(self.impl / ".codd/context-mode")) for c in calls))
+        # 受け持つ範囲の文書だけを索引にする（マシンのファイルが検索の上位を埋めないように）。
+        self.assertIn("--include docs/**", calls[0])
+        self.assertIn("--exclude .statemachine/codd/**", calls[0])
+        self.assertIn("--ext .adoc,", calls[0])
+        self.run_pa(self.impl, "explore", "--term", "world")   # 中身が同じなら索引を作り直さない
+        self.assertEqual([c.split()[0] for c in log.read_text(encoding="utf-8").splitlines()],
+                         ["index", "search", "search"])
+        commit(self.design, {"docs/new.md": "# new\n"}, "change")
+        self.run_pa(self.impl, "explore", "--term", "world")
+        self.assertEqual(log.read_text(encoding="utf-8").splitlines()[-2].split()[0], "index")
 
     def test_explore_keeps_three_lines_per_file_without_git_max_count(self) -> None:
         commit(self.design, {"docs/many.md": "".join(f"hello {i}\n" for i in range(6))}, "many")
@@ -1584,7 +1626,11 @@ class CoddTest(unittest.TestCase):
         self.assertIn("own=changed", r.stdout)
 
         # 回を終えたら（計画を記録として閉じたら）、次の回は今の中身から数える。
-        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        # 確かめる流れを勧めたあと断られても、次の回にまた訊かない（3 回ごと）。
+        (self.impl / ".codd/runs-since-review.json").write_text('{"runs": 3}', encoding="utf-8")
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("REVIEW", r.stdout)
         (self.impl / ".plans/2099-01-01-0000-next.md").write_text(
             PLAN_ALIGNED.replace("`hello` の中でログを出す", "`hello` の戻り値を 3 にする"), encoding="utf-8")
         self.read_up(self.impl)
@@ -1776,6 +1822,13 @@ class CoddTest(unittest.TestCase):
                       f'printf \'#!/bin/sh\\necho "graphify 1.0"\\n\' > {bin_dir}/graphify\n'
                       f'chmod +x {bin_dir}/graphify\n', encoding="utf-8")
         uv.chmod(0o755)
+        # context-mode は必須。npm で入れる（スタブの npm が context-mode のスタブを置く）。
+        npm_log = self.tmp / "npm.log"
+        npm = bin_dir / "npm"
+        npm.write_text(f'#!/bin/sh\necho "$@" >> {npm_log}\n'
+                       f'printf \'#!/bin/sh\\necho "Usage:"\\n\' > {bin_dir}/context-mode\n'
+                       f'chmod +x {bin_dir}/context-mode\n', encoding="utf-8")
+        npm.chmod(0o755)
         env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin", "HOME": str(self.tmp / "home")}
         run = lambda *a: subprocess.run([sys.executable, str(TOOL / "install.py"), *a], capture_output=True,
                                         text=True, env=env)
@@ -1783,12 +1836,22 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
         self.assertIn("✓ graphify: graphify 1.0", r.stdout)
+        self.assertEqual(npm_log.read_text(encoding="utf-8").split(), ["install", "-g", "context-mode"])
+        self.assertIn(f"✓ context-mode: {bin_dir / 'context-mode'}", r.stdout)
         self.assertIn("✓ git:", r.stdout)
         self.assertNotIn("webui-test", r.stdout)
         r = run("--no-skills")   # 入っていれば入れ直さない
         self.assertEqual(uv_log.read_text(encoding="utf-8").split(), ["tool", "install", "graphifyy"])
+        self.assertEqual(npm_log.read_text(encoding="utf-8").split(), ["install", "-g", "context-mode"])
         run("--upgrade", "--no-skills")
         self.assertEqual(uv_log.read_text(encoding="utf-8").split()[-3:], ["tool", "upgrade", "graphifyy"])
+        self.assertEqual(npm_log.read_text(encoding="utf-8").split()[-3:], ["install", "-g", "context-mode@latest"])
+        # context-mode を入れられなければ、必須なので失敗にする。
+        npm.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (bin_dir / "context-mode").unlink()
+        r = run("--no-skills")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("✗ context-mode を入れられませんでした（npm（Node.js 22.5 以上）が要ります。必須です）", r.stdout)
         # 端末に入れても、リポジトリには何も置かない。
         app = self.tmp / "app"
         app.mkdir()
@@ -1850,7 +1913,7 @@ class CoddTest(unittest.TestCase):
                 import io, runpy
                 from unittest import mock
                 with mock.patch.dict("os.environ", {{"USERPROFILE": {str(root / 'home')!r}}}), \
-                     mock.patch("shutil.which", side_effect=lambda name: "graphify" if name == "graphify" else None), \
+                     mock.patch("shutil.which", side_effect=lambda name: name if name in ("graphify", "context-mode") else None), \
                      mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout="graphify 1.0", stderr="")), \
                      mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: io.BytesIO({archive_data.getvalue()!r})):
                     runpy.run_path({str(script)!r}, run_name="__main__")
@@ -4048,8 +4111,11 @@ class CoddTest(unittest.TestCase):
             "## 従う手順\n\n- `tdd-lite` — 使わない: テストは無い\n- `grep` — 呼び出し元を探した\n").replace(
             "## 参照先のその他\n\n- なし", "## 参照先のその他\n\n- 関係なし: docs/api.md:1 — 題名だけ\n  続きの説明"),
             encoding="utf-8")
+        # 前に確かめてから変える流れを 3 回終えたら、確かめる流れを勧める（done のアクションが利用者に尋ねる）。
+        (self.impl / ".codd/runs-since-review.json").write_text('{"runs": 2}', encoding="utf-8")
         r = self.run_pa(self.impl, "record")
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("REVIEW 確かめる流れを回さずに、変える流れを 3 回終えました。", r.stdout)
         records = list((self.impl / ".plans").glob("*.md"))
         self.assertEqual(records, [plan])     # 置いたときの名前のまま残す
         self.assertIn(f"計画の記録: {PLAN}", r.stdout)
@@ -4505,9 +4571,12 @@ class CoddTest(unittest.TestCase):
 
     def test_review_decides_items_and_checks_every_answer(self) -> None:
         commit(self.impl, {"src/app.py": "def hello():\n    return 2\n\n\ndef bye():\n    return 0\n"}, "bye")
+        (self.impl / ".codd").mkdir(exist_ok=True)
+        (self.impl / ".codd/runs-since-review.json").write_text('{"runs": 3}', encoding="utf-8")
         r = self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("OK レビュー: ファイル 2 件"), r.stdout)   # コードと、つながる文書
+        self.assertFalse((self.impl / ".codd/runs-since-review.json").exists())   # 勧めるまでの回数を数え直す
         items = self.review_items()
         kinds = {(i["kind"], i["name"]) for i in items.values()}
         # 文書も述べている名前は突き合わせ、文書・テストに出てこない名前は漏れ、コードのファイルには設計を問う
