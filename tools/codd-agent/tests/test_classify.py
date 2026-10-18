@@ -64,10 +64,15 @@ def asks(phase: str, text: str) -> bool:
 
 class ClassifyTest(unittest.TestCase):
     def test_fixable_wording_is_retried_without_asking(self) -> None:
-        for phase in ("plan", "apply"):
-            for text in NO_ASK:
-                with self.subTest(phase=phase, text=text):
-                    self.assertFalse(asks(phase, text))
+        for text in NO_ASK:
+            with self.subTest(text=text):
+                self.assertFalse(asks("apply", text))
+
+    def test_plan_problems_are_asked_after_the_state_retries(self) -> None:
+        # 計画の検査は同じステートのやり直し（check_retries）で直させる。stuck からも訊かずに戻すと二重に数える
+        for text in NO_ASK:
+            with self.subTest(text=text):
+                self.assertTrue(asks("plan", text))
 
     def test_design_decisions_are_asked(self) -> None:
         for phase in ("plan", "apply"):

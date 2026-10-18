@@ -1173,7 +1173,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("対応する文書の無いコードです", r.stderr)
         self.assertIn("lib/pay.py（近い粒度の見本: docs/api.md（src/app.py に対応））", r.stderr)
         self.assertNotIn("src/app.py（近い", r.stderr)   # 文書のあるコードは挙げない
-        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO PLAN\n"))   # 訊かずに練り直す
+        self.assertFalse(self.run_pa(self.impl, "advise").stdout.startswith("AUTO"))   # 計画は同じステートのやり直しで直させ、ここでは訊く
 
         # 行に文書の名前があるだけ（変えない文書）では、作る項目にならない。
         self.write_plan(plan.replace("`pay` にログを足す", "`pay` にログを足す（仕様は design:docs/api.md）"))
@@ -1237,8 +1237,7 @@ class CoddTest(unittest.TestCase):
         self.add_caller()
         self.write_plan(PLAN_ALIGNED)
         self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
-        # 未判断だけなら、まず訊かずに練り直す。練り直しても同じ指摘が残れば、回数が残っていても訊く
-        self.assertTrue(self.run_pa(self.impl, "advise").stdout.startswith("AUTO PLAN\n"))
+        # 計画の段は訊かずに戻さない（同じステートのやり直しを使い切ってから stuck に来るので、ここで訊く）
         r = self.run_pa(self.impl, "advise")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("# 計画の検査で止まりました", r.stdout)

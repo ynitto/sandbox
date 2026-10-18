@@ -7187,7 +7187,9 @@ ADVICE["plan"]["config"] = (["replan", "stop"], "設定か環境の誤りです�
 # 人の判断が要らない理由（エージェントが自分で直せる。テストや検査の失敗・変え残し・パスの誤り・記録の漏れ・計画の書き方）。
 # これだけで止まったときは、利用者に訊かずに同じ段をやり直す。計画を変える・範囲を絞る・戻すなどの判断が要るものは訊く。
 # form（どの目印にも当たらない指摘）は入れない（目印を足し忘れた指摘が、訊かない側に落ちないように）。
-AUTO_KINDS = {"plan": {"pending", "rules", "shape"},
+# 計画の段は入れない。計画の検査は同じステートのやり直し（workflow.yaml の check_retries）で直させるので、
+# ここでも戻すと二重に数えて、訊かないまま検査を何度も重ねる。
+AUTO_KINDS = {"plan": set(),
               "apply": {"check", "undone", "unfixed", "extra", "names", "paths", "rules", "shape"}}
 AUTO_NAME = "auto.json"
 MAX_AUTO = 2     # 同じ段で人に訊かずに進める回数。直らない失敗をいつまでも回さない
