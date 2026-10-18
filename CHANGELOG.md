@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 同じことをする仕組みを 1 つにまとめる
+
+- 計画の検査のやり直しを 1 つにした。これまでは同じステートのやり直し（2 回）と、止まったときの訊かずのやり直し（2 回）の
+  両方で数えていたので、訊かないまま計画の検査が最大 9 回走っていた。計画の検査は 3 回落ちたら利用者に訊く
+  （訊かずにやり直すのは、変えたあとの検査だけ）
+- 設定の前の版の書き方（`skills`・`tools`・`rules`・`refs[].skills`・`refs[].rules`・`ref_path`）を読まなくした。
+  `init.py` で置き直すと `guides` と `refs` に書き換える。書き換えないまま動かすと、その旨を出して止まる
+- 読み込むコマンドを `guide` 1 つにした（`rule --all` は `guide --all`、`skill 名前` は `guide 名前`）。
+  決まりの候補を設定に書く `rules --write` は `show --write-rules` に、途中の報告だけを出す `report` は `record` にまとめた
+
 ### install.py / git-skill-manager: 外部スキル caveman・yomiyasu・diagram-design を導入し、最新へ追従する
 
 - `install.py` が外部スキルとして caveman（JuliusBrussee/caveman）に加え、yomiyasu（nanaism/yomiyasu）と

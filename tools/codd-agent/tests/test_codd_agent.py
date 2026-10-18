@@ -194,6 +194,13 @@ _BOOT = ("import marshal, sys, __main__; c, p = sys.argv[1], sys.argv[2]; sys.ar
          "sys.path[0] = __import__('os').path.dirname(p); __main__.__file__ = p; "
          "exec(marshal.loads(open(c, 'rb').read()), __main__.__dict__)")
 
+# 報告だけを出す（main を動かさずに読み込み、cmd_report を呼ぶ）。
+_REPORT_BOOT = ("import marshal, sys, types, argparse; c, p = sys.argv[1], sys.argv[2]; "
+                "sys.path[0] = __import__('os').path.dirname(p); m = types.ModuleType('codd_report'); m.__file__ = p; "
+                "sys.modules['codd_report'] = m; exec(marshal.loads(open(c, 'rb').read()), m.__dict__)\n"
+                "try:\n    sys.exit(m.cmd_report(m.Ctx(m.repo_root(__import__('pathlib').Path.cwd())), argparse.Namespace()))\n"
+                "except m.CoddError as exc:\n    print(f'ERROR {exc}', file=sys.stderr); sys.exit(2)")
+
 
 def compiled(script: Path) -> str:
     body = script.read_bytes()
@@ -244,6 +251,14 @@ class CoddTest(unittest.TestCase):
         return subprocess.run([sys.executable, "-c", _BOOT, compiled(script), str(script), *args],
                               cwd=repo, capture_output=True, text=True, env=env)
 
+    def report(self, repo: Path) -> subprocess.CompletedProcess:
+        """終わりの報告を、記録を書かずに見る（コマンドには無い。`record` が出すものと同じ）。"""
+        env = {**os.environ, **GIT_ENV, "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
+               "HOME": str(self.tmp / "home")}
+        script = repo / ".statemachine/codd/codd.py"
+        return subprocess.run([sys.executable, "-c", _REPORT_BOOT, compiled(script), str(script)],
+                              cwd=repo, capture_output=True, text=True, env=env)
+
     def use_graphify_stub(self) -> None:
         stub = self.bin / "graphify"
         stub.write_text(GRAPHIFY_STUB.format(log=self.log, fixtures=self.tmp / "graphs"), encoding="utf-8")
@@ -263,7 +278,7 @@ class CoddTest(unittest.TestCase):
         args = [a for t in (terms or ("hello",)) for a in ("--term", t)]
         r = self.run_pa(repo, "explore", *args)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.run_pa(repo, "rule", "--all")
+        self.run_pa(repo, "guide", "--all")
 
     def assert_plan_ok(self, repo: Path | None = None, ok: bool = True) -> None:
         """計画の検査を通し、確認で利用者が OK と答えたことを控える（ok=False なら控えない）。"""
@@ -710,11 +725,11 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.assertIn("- テスト: 動かしていない（自分のテストのコマンドが未設定）", self.run_pa(self.impl, "report").stdout)
+        self.assertIn("- テスト: 動かしていない（自分のテストのコマンドが未設定）", self.report(self.impl).stdout)
         self.set_config(self.impl, test=[sys.executable, "-c", "pass"])
         self.assertNotIn("テストのコマンド: 未設定", self.run_pa(self.impl, "show").stdout)
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.assertNotIn("動かしていない", self.run_pa(self.impl, "report").stdout)
+        self.assertNotIn("動かしていない", self.report(self.impl).stdout)
 
     def test_init_suggests_a_test_command_without_writing_it(self) -> None:
         repo = self.tmp / "guess"
@@ -832,7 +847,7 @@ class CoddTest(unittest.TestCase):
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("docs/images/fig.bin — 作り直しても同じ", self.run_pa(self.impl, "report").stdout)
+        self.assertIn("docs/images/fig.bin — 作り直しても同じ", self.report(self.impl).stdout)
         # 文字のファイルは、変えないなら「変更不要」と書かせる（作り直しで同じになったとはみなさない）
         self.write_plan(plan.replace("docs/images/fig.bin — 作り直す", "docs/text.txt — 作り直す"))
         self.assert_plan_ok()
@@ -1158,7 +1173,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "settings.toml").write_text("level = 2\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        r = self.run_pa(self.impl, "report")
+        r = self.report(self.impl)
         self.assertIn("## 参照先とパスでつながっていない変更\n\n- settings.toml\n", r.stdout)
         self.assertNotIn("- src/app.py\n", r.stdout.split("## 参照先とパスでつながっていない変更", 1)[1])
 
@@ -1379,7 +1394,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("変更が響くテストが動いたかは確かめていない（テストの結果（evidence）が扱っていないテスト。自分 1 件）",
-                      self.run_pa(self.impl, "report").stdout)
+                      self.report(self.impl).stdout)
 
         def writes(status: str, file: str) -> list[str]:
             item = {"kind": "behavior", "id": "hello", "title": "hello", "status": status, "file": file}
@@ -1401,14 +1416,14 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("確かめていない（テストの結果（evidence）が扱っていないテスト。自分 1 件）",
-                      self.run_pa(self.impl, "report").stdout)
+                      self.report(self.impl).stdout)
         # 動かないものと利用者が認めれば通し、報告に残す
         self.set_config(self.impl, test=writes("skipped", "tests/test_app.py"))
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
         self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("動かないまま、利用者が認めて続けた（tests/test_app.py）", self.run_pa(self.impl, "report").stdout)
+        self.assertIn("動かないまま、利用者が認めて続けた（tests/test_app.py）", self.report(self.impl).stdout)
 
     def test_a_test_failing_before_the_change_is_asked_not_retried(self) -> None:
         # 変える前から同じところで落ちるテストは、この回の変更のせいではない。エージェントに直させず訊き、
@@ -1432,7 +1447,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("変える前から落ちていたものを、利用者が認めて続けた", self.run_pa(self.impl, "report").stdout)
+        self.assertIn("変える前から落ちていたものを、利用者が認めて続けた", self.report(self.impl).stdout)
         # 新しい失敗が混じれば、これまでどおりこの回の失敗として止める（訊かずに直させる側）
         (self.impl / "src/app.py").write_text("def hello():\n    return 2  # log\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
@@ -1474,7 +1489,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         r = self.run_pa(self.impl, "verify-apply")   # 計画は書き直さないので、確認からやり直さない
         self.assertEqual(r.returncode, 0, r.stderr)
-        report = self.run_pa(self.impl, "report").stdout
+        report = self.report(self.impl).stdout
         self.assertIn("- src/other.py — 変更不要（変える段で判断）: 段はもう正しかった", report)
         self.assertIn("- src/notes.txt — 変えた（利用者が認めた: 書き方を残した）", report)
         self.assertIn("- src/third.py — 変えた（変える段で足した: 定数をそろえた）", report)
@@ -1504,7 +1519,7 @@ class CoddTest(unittest.TestCase):
                 (self.impl / ".codd/apply.md").write_text(f"## 計画との違い\n\n{line}\n", encoding="utf-8")
                 r = self.run_pa(self.impl, "verify-apply")
                 self.assertEqual(r.returncode, 0, r.stderr)
-                report = self.run_pa(self.impl, "report").stdout
+                report = self.report(self.impl).stdout
                 self.assertIn("## 変える段で関係なしとした名前・ファイル", report)
                 self.assertIn("関係なし: ズームの判定で、候補の選択とは別物", report)
 
@@ -1723,7 +1738,7 @@ class CoddTest(unittest.TestCase):
             path = self.tmp / "home" / folder / name / "SKILL.md"
             path.parent.mkdir(parents=True)
             path.write_text(f"---\nname: {name}\ndescription: external skill\n---\nExternal content\n", encoding="utf-8")
-            r = self.run_pa(self.impl, "skill", name)
+            r = self.run_pa(self.impl, "guide", name)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("External content", r.stdout)
             log = json.loads((self.impl / ".codd/skills-read.json").read_text(encoding="utf-8"))
@@ -1744,7 +1759,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("スキルを読み込んでいません", r.stderr)
-        r = self.run_pa(self.impl, "skill", "tdd-lite")
+        r = self.run_pa(self.impl, "guide", "tdd-lite")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("# tdd-lite", r.stdout)
         self.assert_plan_ok()
@@ -1753,10 +1768,10 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")   # 計画のときに読んだだけでは、変えるときに読んだことにならない
         self.assertEqual(r.returncode, 1)
         self.assertIn(".codd/apply.md に挙げたスキルを読み込んでいません", r.stderr)
-        self.run_pa(self.impl, "skill", "tdd-lite")
+        self.run_pa(self.impl, "guide", "tdd-lite")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.run_pa(self.impl, "skill", "nothing").returncode, 1)
+        self.assertEqual(self.run_pa(self.impl, "guide", "nothing").returncode, 1)
         # 置き場所は skill_dirs で変えられ、[] で使わない。
         path = self.impl / ".statemachine/codd/codd.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -2064,7 +2079,7 @@ class CoddTest(unittest.TestCase):
 
     def test_missing_ref_is_reported(self) -> None:
         cfg = self.impl / ".statemachine/codd/codd.json"
-        cfg.write_text(json.dumps({"side": "impl", "ref_path": "../nowhere"}), encoding="utf-8")
+        cfg.write_text(json.dumps({"side": "impl", "refs": [{"path": "../nowhere"}]}), encoding="utf-8")
         r = self.run_pa(self.impl, "explore", "--term", "x")
         self.assertEqual(r.returncode, 2)
         self.assertIn("refs を直してください", r.stderr)
@@ -2078,17 +2093,17 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(cfg, {"side": "impl", "refs": [{"path": "../design"}], "guides": [], "graphify": "auto"})
         # 既にある codd.json は、手で書いた形のまま残す（並べ直し・書き足しもしない）。
         path = self.impl / ".statemachine/codd/codd.json"
-        hand = ('{"side": "impl", "refs": [{"name": "design", "path": "../design", "rules": ["docs/r.md"],'
-                ' "scope": ["docs"]}],\n "skills": {"plan": [], "apply": []}, "graphify": "auto"}\n')
+        hand = ('{"side": "impl", "refs": [{"name": "design", "path": "../design", "guides": [{"use": "docs/r.md"}],'
+                ' "scope": ["docs"]}],\n "graphify": "auto"}\n')
         path.write_text(hand, encoding="utf-8")
         init.init_repo(self.impl, None, None)
         self.assertEqual(path.read_text(encoding="utf-8"), hand)
         init.init_repo(self.impl, "impl", ["../design"])  # 同じ値を渡しても書き直さない
         self.assertEqual(path.read_text(encoding="utf-8"), hand)
-        # --ref で参照先を入れ替えても、同じ名前の参照先に手で書いた rules・scope は残す。
+        # --ref で参照先を入れ替えても、同じ名前の参照先に手で書いた guides・scope は残す。
         init.init_repo(self.impl, None, ["design=../design-v2"])
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["refs"],
-                         [{"name": "design", "path": "../design-v2", "rules": ["docs/r.md"], "scope": ["docs"]}])
+                         [{"name": "design", "path": "../design-v2", "guides": [{"use": "docs/r.md"}], "scope": ["docs"]}])
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
                          [".statemachine/codd/", ".statemachine/codd-review/"])
@@ -2354,7 +2369,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("テストの出力から: docs/images/login.png ← login/S-01/login（リンクしている文書: docs/login.md）", r.stdout)
         self.assertIn("docs/images/menu.png — テストが作らなくなった出力です（menu/S-01/menu）。リンクしている文書: docs/menu.md",
                       r.stdout)
-        report = self.run_pa(self.impl, "report")
+        report = self.report(self.impl)
         self.assertEqual(report.returncode, 0, report.stdout)
         self.assertIn("## テストの出力から差し替えたファイル", report.stdout)
         # もう一度検査しても、差し替えた写しは今の版なので何もしない
@@ -2490,7 +2505,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         (self.impl / "tests/test_app.py").write_text("from src.app import hello\nassert hello() == 1  # log\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        report = self.run_pa(self.impl, "report").stdout
+        report = self.report(self.impl).stdout
         self.assertNotIn("tests/test_app.py — 変えた（影響範囲）", report)   # テストの変更案のものは「テスト」の節だけに
         self.assertIn("## テスト\n\n- tests/test_app.py — 変えた", report)
         self.assertNotIn("- src/app.py — 直した", report)                 # 変更案で変えたファイル自身は影響範囲に出さない
@@ -2527,7 +2542,7 @@ class CoddTest(unittest.TestCase):
                                                    encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("docs/images/hello2.png — 変えた（計画の文書がリンクしているファイル）", self.run_pa(self.impl, "report").stdout)
+        self.assertIn("docs/images/hello2.png — 変えた（計画の文書がリンクしているファイル）", self.report(self.impl).stdout)
 
     def test_plan_must_handle_docs_showing_results_of_affected_tests(self) -> None:
         commit(self.impl, {"tests/login.yaml": "suite: ログイン\n"}, "case")
@@ -2554,7 +2569,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("文書に写したテストの結果が今と違います", r.stderr)
         self.assertIn("書いてある 800 ms → 今 1600 ms", r.stderr)
         self.run_pa(self.impl, "verify-plan")   # 練り直しても、比べるのは変える前に控えたもの
-        report = self.run_pa(self.impl, "report").stdout
+        report = self.report(self.impl).stdout
         self.assertIn("## テストで得たものの変化（計画のときと比べて）", report)
         self.assertIn("login/S-01/load — 800 → 1600 ms", report)
 
@@ -2575,49 +2590,65 @@ class CoddTest(unittest.TestCase):
         self.write_plan(plan)
         self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 0)
 
-    def test_legacy_ref_path_config_still_works(self) -> None:
+    def test_legacy_config_is_rewritten_by_init(self) -> None:
+        # 前の版の書き方は読まずに止め、init.py で置き直すと guides と refs に書き換える。
         cfg = self.impl / ".statemachine/codd/codd.json"
-        cfg.write_text(json.dumps({"side": "impl", "ref_path": "../design"}), encoding="utf-8")
-        r = self.run_pa(self.impl, "explore", "--term", "hello")
-        self.assertIn("FOUND 1 files", r.stdout)
+        legacy = {"side": "impl", "ref_path": "../design", "rules": ["CLAUDE.md"],
+                  "skills": {"plan": ["domain-modeler"], "apply": ["tdd", "domain-modeler"]},
+                  "tools": {"plan": ["github"]}}
+        cfg.write_text(json.dumps(legacy), encoding="utf-8")
+        r = self.run_pa(self.impl, "show")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("前の版の書き方があります: ref_path, rules, skills, tools", r.stderr)
+        init.init_repo(self.impl, None, None)
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8")),
+                         {"side": "impl", "refs": [{"path": "../design"}],
+                          "guides": [{"use": "skill:domain-modeler"}, {"use": "skill:tdd", "when": {"phase": "apply"}},
+                                     {"use": "tool:github", "when": {"phase": "plan"}}, {"use": "CLAUDE.md"}]})
+        self.assertIn("FOUND 1 files", self.run_pa(self.impl, "explore", "--term", "hello").stdout)
+        # 参照先の項目（refs[].skills・refs[].rules）も書き換える。参照先のスキルは参照先を変えるとき（apply）に使う。
+        cfg.write_text(json.dumps({"side": "impl", "refs": [{"path": "../design", "skills": ["spec-editor"],
+                                                             "rules": ["docs/r.md"]}]}), encoding="utf-8")
+        self.assertIn("refs[].skills", init.migrate_legacy(json.loads(cfg.read_text(encoding="utf-8"))))
+        init.init_repo(self.impl, None, None)
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["refs"],
+                         [{"path": "../design", "guides": [{"use": "skill:spec-editor", "when": {"phase": "apply"}},
+                                                           {"use": "docs/r.md"}]}])
 
     # ------------------------------------------------------------ 使うスキル
 
     def test_show_lists_skills_for_each_phase(self) -> None:
         cfg_path = self.impl / ".statemachine/codd/codd.json"
+        self.set_config(self.impl, skills={"plan": ["domain-modeler"], "apply": ["tdd", "plugin:refactor"]})
+        self.set_config(self.design, skills={"apply": ["doc-writer"]})
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        cfg["skills"] = {"plan": ["domain-modeler"], "apply": ["tdd", "plugin:refactor"]}
-        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
-        design_cfg = self.design / ".statemachine/codd/codd.json"
-        dcfg = json.loads(design_cfg.read_text(encoding="utf-8"))
-        dcfg["skills"] = {"apply": ["doc-writer"]}
-        design_cfg.write_text(json.dumps(dcfg), encoding="utf-8")
 
         r = self.run_pa(self.impl, "show")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("- design: 設計書", r.stdout)
         self.assertIn("使うスキルと道具（計画を練るとき）:\n  - 自分: `domain-modeler` スキル", r.stdout)
         self.assertIn("  - 自分: `tdd` スキル、`plugin:refactor` スキル", r.stdout)
-        # 参照先を変えるときは、参照先に置いた codd.json の skills.apply。
+        # 参照先を変えるときは、参照先に置いた codd.json の変えるときのスキル。
         self.assertIn("  - design を変えるとき: `doc-writer` スキル", r.stdout)
 
-        # codd.json の refs に skills を書けば、参照先の手順に足す（参照先が決めた手順は外せない）。
-        cfg["refs"] = [{"name": "design", "path": "../design", "skills": ["spec-editor"]}]
+        # codd.json の refs[].guides に書けば、参照先の手順に足す（参照先が決めた手順は外せない）。
+        cfg["refs"] = [{"name": "design", "path": "../design",
+                        "guides": [{"use": "skill:spec-editor", "when": {"phase": "apply"}}]}]
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         r = self.run_pa(self.impl, "show", "--phase", "apply")
         self.assertIn("  - design を変えるとき: `doc-writer` スキル、`spec-editor` スキル", r.stdout)
         self.assertNotIn("計画を練るとき", r.stdout)
 
-    def test_bad_skills_config_is_reported(self) -> None:
+    def test_bad_skill_guides_are_reported(self) -> None:
         cfg_path = self.impl / ".statemachine/codd/codd.json"
-        for skills in ({"plan": "tdd"}, {"review": []}, {"apply": ["bad name"]}):
-            with self.subTest(skills=skills):
+        for guide in ({"use": "skill:bad name"}, {"use": "skill:tdd", "when": {"phase": "review"}}):
+            with self.subTest(guide=guide):
                 cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-                cfg["skills"] = skills
+                cfg["guides"] = [guide]
                 cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
                 r = self.run_pa(self.impl, "show")
                 self.assertEqual(r.returncode, 2)
-                self.assertIn("skills", r.stderr)
+                self.assertIn("guides[0]", r.stderr)
 
     # ------------------------------------------------------------ 根拠を箇所まで確かめる
 
@@ -2809,7 +2840,7 @@ class CoddTest(unittest.TestCase):
         path.write_text(json.dumps(cfg), encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        report = self.run_pa(self.impl, "report").stdout
+        report = self.report(self.impl).stdout
         self.assertIn("## テスト", report)
         self.assertIn("tests/test_app.py — 変えた", report)
         self.assertNotIn("tests/e2e/page.yaml — 変更不要", report)
@@ -2832,7 +2863,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "tests/test_app.py").write_text("hello() # check log\n")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        report = self.run_pa(self.impl, "report").stdout
+        report = self.report(self.impl).stdout
         self.assertNotIn("search_input.txt", report)
         self.assertNotIn("search_output.txt", report)
         self.assertNotIn("docs/api.md — まだ", report)
@@ -3291,7 +3322,7 @@ class CoddTest(unittest.TestCase):
         commit(mono, {"CONTRIBUTING.md": "# 手引き\n", "tools/coding-rules.md": "# 共通の規約\n",
                       "tools/app/style-guide.md": "# 書き方\n", "tools/other/rules.md": "# 別の道具の決まり\n"},
                "rules")
-        r = self.run_pa(mono, "rules")
+        r = self.run_pa(mono, "show")
         self.assertEqual(r.returncode, 0, r.stderr)
         for rel in ("CONTRIBUTING.md", "tools/coding-rules.md", "tools/app/style-guide.md"):
             self.assertIn(rel, r.stdout)
@@ -3339,7 +3370,7 @@ class CoddTest(unittest.TestCase):
         commit(mono, {".github/workflows/ci.yml": "env:\n  hello: 1\n"}, "ci")
         (mono / ".plans").mkdir(parents=True, exist_ok=True)
         (mono / PLAN).write_text(PLAN_DRIFT, encoding="utf-8")
-        self.run_pa(mono, "rule", "--all")
+        self.run_pa(mono, "guide", "--all")
         self.run_pa(mono, "explore", "--term", "hello")
         r = self.run_pa(mono, "verify-plan")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -3423,12 +3454,12 @@ class CoddTest(unittest.TestCase):
         commit(self.design, {"AGENTS.md": "# Rules\n", "docs/design-rules.md": "# Rules\n"}, "rules")
         self.set_config(self.impl, exclude=["**/*.md"], rules=["docs/coding-rules.md"],
                         refs=[{"name": "design", "path": "../design", "exclude": ["**/*.md"]}])
-        r = self.run_pa(self.impl, "rule", "--all")
+        r = self.run_pa(self.impl, "guide", "--all")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("# 守る決まり AGENTS.md", r.stdout)
         self.assertIn("# 守る決まり design:AGENTS.md", r.stdout)
         self.assertIn("# 守る決まり docs/coding-rules.md", r.stdout)
-        self.assertIn("design:docs/design-rules.md", self.run_pa(self.impl, "rules").stdout)
+        self.assertIn("design:docs/design-rules.md", self.run_pa(self.impl, "show").stdout)
 
     def test_exclude_globs_match_root_nested_and_character_classes(self) -> None:
         files = {p: "hello" for p in ("settings.json", "src/settings.json", "src/config1.yaml",
@@ -3487,6 +3518,7 @@ class CoddTest(unittest.TestCase):
         path = repo / ".statemachine/codd/codd.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
         cfg.update(values)
+        init.migrate_legacy(cfg)   # 短く書けるよう、前の版の書き方（rules・skills）も受けて guides に直す
         path.write_text(json.dumps(cfg), encoding="utf-8")
 
     def test_plan_must_name_every_rule_file(self) -> None:
@@ -3519,22 +3551,22 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")   # 挙げただけで、読み込んでいない
         self.assertEqual(r.returncode, 1)
         self.assertIn("守る決まりのファイルを読み込んでいません", r.stderr)
-        r = self.run_pa(self.impl, "rule", "--all")
+        r = self.run_pa(self.impl, "guide", "--all")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("# 守る決まり CLAUDE.md", r.stdout)
         self.assertIn("テストを通す。", r.stdout)
         # 練り直しで呼び直しても、読み込み済みで変わっていないものは出し直さない（--again で出す）。
-        r = self.run_pa(self.impl, "rule", "--all")
+        r = self.run_pa(self.impl, "guide", "--all")
         self.assertIn("CLAUDE.md（この回で読み込み済み・変わっていない", r.stdout)
         self.assertNotIn("テストを通す。", r.stdout)
-        self.assertIn("テストを通す。", self.run_pa(self.impl, "rule", "--all", "--again").stdout)
+        self.assertIn("テストを通す。", self.run_pa(self.impl, "guide", "--all", "--again").stdout)
         self.assert_plan_ok()
         # 読み込んだあとに決まりが変わったら、読み直させる。
         (self.impl / "CLAUDE.md").write_text("# 約束\n\n型を付ける。\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("読み直す）: CLAUDE.md", r.stderr)
-        self.assertEqual(self.run_pa(self.impl, "rule", "nothing.md").returncode, 1)
+        self.assertEqual(self.run_pa(self.impl, "guide", "nothing.md").returncode, 1)
 
     def test_a_rule_section_named_by_heading_is_read_and_required(self) -> None:
         # `use: "パス.md#見出し"` のいつも守る手順も、その節を読み込ませ、計画に挙げさせる（黙って効かなくならない）。
@@ -3555,7 +3587,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
         self.assertIn("読み込んでいません", r.stderr)
-        r = self.run_pa(self.impl, "rule", "--all")
+        r = self.run_pa(self.impl, "guide", "--all")
         self.assertIn("snake_case にする。", r.stdout)
         self.assertNotIn("関係ない節", r.stdout)        # 見出しで指した節だけ
         self.assertIn("型の列を書く。", r.stdout)
@@ -3565,7 +3597,7 @@ class CoddTest(unittest.TestCase):
     def test_plan_needs_exploring_and_handling_what_was_found(self) -> None:
         commit(self.design, {"docs/guide.md": "# 使い方\n\nログは標準出力に出す。\n"}, "guide")
         self.write_plan(PLAN_ALIGNED, read=False)
-        self.run_pa(self.impl, "rule", "--all")
+        self.run_pa(self.impl, "guide", "--all")
         r = self.run_pa(self.impl, "verify-plan")   # 探さずに「なし」で済ませる計画は通さない
         self.assertEqual(r.returncode, 1)
         self.assertIn("参照先を探していません: design", r.stderr)
@@ -3582,7 +3614,7 @@ class CoddTest(unittest.TestCase):
         # 終わりの報告で、探した・読んだ記録は消える（次の回に持ち越さない）。
         (self.impl / "src/app.py").write_text("def hello():\n    print('log')\n    return 1\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.run_pa(self.impl, "report")
+        self.report(self.impl)
         self.assertFalse((self.impl / ".codd/explore.json").exists())
         self.assertFalse((self.impl / ".codd/rules-read.json").exists())
 
@@ -3927,7 +3959,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(self.use_guides(PLAN_DRIFT, "- `design:api-doc` — 戻り値を表で書く"))
         self.assertEqual(self.run_pa(self.impl, "guide", "design:api-doc").returncode, 0)
         self.assert_plan_ok()
-        self.run_pa(self.impl, "skill", "design:api-doc")   # 変える段で読み込む（名前の書き方は問わない）
+        self.run_pa(self.impl, "guide", "design:api-doc")   # 変える段で読み込む（名前の書き方は問わない）
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         (self.impl / ".codd/apply.md").write_text("- `design:api-doc` — design:docs/api.md: 戻り値を書いた\n",
@@ -4015,7 +4047,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 1 # changed\n")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
-        r = self.run_pa(self.impl, "report")
+        r = self.report(self.impl)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("変更不要", r.stdout)
         self.assertNotIn("src/a.py", r.stdout)
@@ -4102,7 +4134,7 @@ class CoddTest(unittest.TestCase):
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         # 計画のフォルダは変えたファイルに数えない（記録のために置くもの）。
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.assertEqual(self.run_pa(self.impl, "report").returncode, 0)
+        self.assertEqual(self.report(self.impl).returncode, 0)
         # 記録に要らないもの（使わなかったスキル・関係なしとしたファイル・中身が「なし」の見出し）は残さない。
         plan = self.impl / PLAN
         plan.write_text(plan.read_text(encoding="utf-8").replace(
@@ -4191,7 +4223,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.assertEqual(self.run_pa(self.impl, "report").returncode, 0)   # record を呼ばずに終わった
+        self.assertEqual(self.report(self.impl).returncode, 0)   # record を呼ばずに終わった
         for repo in (self.impl, self.design):
             git(repo, "add", "-A")
             git(repo, "commit", "-q", "-m", "previous run")
@@ -4326,11 +4358,11 @@ class CoddTest(unittest.TestCase):
     def test_report_summarises_the_result(self) -> None:
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()
-        self.assertEqual(self.run_pa(self.impl, "report").returncode, 1)  # まだ変えたあとの検査を通っていない
+        self.assertEqual(self.report(self.impl).returncode, 1)  # まだ変えたあとの検査を通っていない
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        r = self.run_pa(self.impl, "report")
+        r = self.report(self.impl)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("- 変えたあとの検査: 通った", r.stdout)
         self.assertIn("- src/app.py — 変えた", r.stdout)
@@ -4339,7 +4371,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- `hello` の引数を足す — 別の回に回す", r.stdout)
         self.assertTrue((self.impl / ".codd/report.md").is_file())
         (self.impl / "src/app.py").write_text("def hello():\n    return 3\n", encoding="utf-8")
-        r = self.run_pa(self.impl, "report")
+        r = self.report(self.impl)
         self.assertEqual(r.returncode, 1)
         self.assertIn("通ったあとに、さらに変わっている", r.stdout)
 
@@ -4365,23 +4397,24 @@ class CoddTest(unittest.TestCase):
                              ".agents/skills/react/rules/naming.md": "# 名前のルール\n",
                              # 日付で始まる計画や記録は、語が当たっても決まりではない。
                              "docs/plans/2026-08-15-execution-policy-design.md": "# 実行ポリシー\n"}, "rules")
-        r = self.run_pa(self.impl, "rules")
+        r = self.run_pa(self.impl, "show")
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("決まりの候補（設定に無い", r.stdout)
         for rel in ("docs/coding-rules.md", "docs/conventions/naming.md", "docs/guide.md"):
             self.assertIn(f"  - design:{rel}", r.stdout)
         self.assertNotIn("docs/api.md", r.stdout)
         self.assertNotIn("CHANGELOG.md", r.stdout)
-        self.assertNotIn(".agents/skills", r.stdout)
+        self.assertNotIn("  - design:.agents/skills", r.stdout)
         self.assertNotIn("execution-policy", r.stdout)
-        self.assertIn("決まりの候補（設定に無い", self.run_pa(self.impl, "show").stdout)
-        # 絞って書ける。書いたものは決まりになり、候補からは消える。
-        r = self.run_pa(self.impl, "rules", "--write", "--only", "design:docs/coding-rules.md")
-        self.assertIn("1 件を codd.json に書きました", r.stdout)
+        # 書くとすべて書く。書いたものは決まりになり、候補からは消える。
+        r = self.run_pa(self.impl, "show", "--write-rules")
+        self.assertIn("3 件を codd.json に書きました", r.stdout)
         cfg = json.loads((self.impl / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))
-        self.assertEqual(cfg["refs"], [{"path": "../design", "name": "design", "guides": [{"use": "docs/coding-rules.md"}]}])
-        r = self.run_pa(self.impl, "rules")
-        self.assertIn("守る決まり:\n  - design:docs/coding-rules.md", r.stdout)
-        self.assertNotIn("  - design:docs/coding-rules.md\n  - design:docs/conventions", r.stdout)
+        self.assertEqual(cfg["refs"], [{"path": "../design", "name": "design", "guides": [
+            {"use": "docs/coding-rules.md"}, {"use": "docs/conventions/naming.md"}, {"use": "docs/guide.md"}]}])
+        r = self.run_pa(self.impl, "show")
+        self.assertIn("  - design:docs/coding-rules.md", r.stdout.split("決まりの候補")[0])
+        self.assertNotIn("決まりの候補", r.stdout)
 
     def test_install_discovers_rules(self) -> None:
         commit(self.design, {"docs/coding-rules.md": "# コーディングルール\n"}, "rules")
@@ -4403,13 +4436,13 @@ class CoddTest(unittest.TestCase):
                              "docs/rules/notes.txt": "x\n", "docs/api-rules.md": "# c\n"}, "rules")
         self.set_config(self.impl, refs=[{"name": "design", "path": "../design",
                                           "rules": ["docs/rules/**/*.md", "docs/*-rules.md", "docs/gone/*.md"]}])
-        r = self.run_pa(self.impl, "rules")
+        r = self.run_pa(self.impl, "show")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("守る決まり:\n  - design:docs/rules/coding.md\n  - design:docs/rules/naming/api.md\n"
+        self.assertIn("に挙げる）:\n  - design:docs/rules/coding.md\n  - design:docs/rules/naming/api.md\n"
                       "  - design:docs/api-rules.md\n", r.stdout)
         self.assertNotIn("notes.txt", r.stdout)
         self.assertIn("! design:docs/gone/*.md に当たるファイルがありません", r.stdout)
-        self.assertNotIn("候補:\n  - design:docs/rules", r.stdout)  # glob で当たったものは候補に出さない
+        self.assertNotIn("設定に書く）:\n  - design:docs/rules", r.stdout)  # glob で当たったものは候補に出さない
         self.write_plan(PLAN_ALIGNED.replace("## 守る決まり\n\nなし",
                                              "## 守る決まり\n\n- docs/rules/coding.md — 動詞で始める"))
         r = self.run_pa(self.impl, "verify-plan")
@@ -4634,14 +4667,14 @@ class CoddTest(unittest.TestCase):
     def test_review_reads_the_rules_for_design_items(self) -> None:
         commit(self.impl, {"docs/rules.md": "# 決まり\n\n- 失敗は例外で伝える\n"}, "rules")
         self.set_config(self.impl, guides=[{"use": "docs/rules.md"}])
-        self.run_pa(self.impl, "rule", "--all")   # レビューの前に読んだものは数えない
+        self.run_pa(self.impl, "guide", "--all")   # レビューの前に読んだものは数えない
         self.run_pa(self.impl, "review", "start", "--path", "src/app.py", "--no-test")
         for _ in self.review_items():
             rid = self.run_pa(self.impl, "review", "next").stdout.split()[1].split("（")[0]
             self.review_answer(f"- {rid} 問題なし: src/app.py:1 — 読んだ")
         r = self.run_pa(self.impl, "review", "verify", "--part", "items")
         self.assertIn("守る決まりを読んでいません: docs/rules.md", r.stdout)
-        self.run_pa(self.impl, "rule", "--all")
+        self.run_pa(self.impl, "guide", "--all")
         self.assertEqual(self.run_pa(self.impl, "review", "verify", "--part", "items").returncode, 0)
         # レビューで読んだものを、あとで始める本流の計画の検査で数えない
         self.run_pa(self.impl, "review", "report")
@@ -4914,7 +4947,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         self.run_pa(self.impl, "decide", "STOP")
         self.assertEqual(self.run_pa(self.impl, "rollback").returncode, 0)
-        r = self.run_pa(self.impl, "report")
+        r = self.report(self.impl)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("利用者がやめた（変えた分は戻した）", r.stdout)
         self.assertNotIn("やり直してください", r.stdout)

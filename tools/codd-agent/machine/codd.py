@@ -105,10 +105,11 @@ _PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
-CONFIG_KEYS = {"side", "refs", "ref_path", "skills", "tools", "rules", "graphify", "check", "scope", "max_files", "batch_files",
-               "subagent",
+CONFIG_KEYS = {"side", "refs", "graphify", "check", "scope", "max_files", "batch_files", "subagent",
                "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect", "no_doc", "retro"}
-REF_KEYS = {"name", "path", "skills", "scope", "rules", "exclude", "guides", "protect"}
+REF_KEYS = {"name", "path", "scope", "exclude", "guides", "protect"}
+# 前の版の書き方。読まずに止め、init.py で guides へ書き換えてもらう（init.py は置き直すときに書き換える）。
+LEGACY_KEYS = {"ref_path", "skills", "tools", "rules"}
 # 1 回の計画で変えるファイルの上限と、1 つの段（apply を分けた 1 回ぶん）で変えるファイルの数。
 # 計画は影響範囲・テストまで漏れなく挙げるので大きくなりやすい。上限は緩め、変えるときは段に分けて、
 # 段ごとに挙げたファイルを変え終えたかを確かめてから次へ進む（変え残しをその段のうちに見つける）。
@@ -134,7 +135,7 @@ TESTS_HEADING = "## テストの変更案"
 DEFAULT_SKILL_DIRS = [".agents/skills"]
 MAX_REPO_SKILLS = 30
 
-# どのプロジェクトでも、あれば読む決まりのファイル（エージェント向けの約束・貢献の手引き）。codd.json の rules で足せる。
+# どのプロジェクトでも、あれば読む決まりのファイル（エージェント向けの約束・貢献の手引き）。codd.json の guides で足せる。
 RULE_FILES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md", ".github/copilot-instructions.md", "CONTRIBUTING.md")
 
 PLAN_HEADINGS = (
@@ -279,14 +280,6 @@ def per_file(lines: list[str], limit: int = GREP_PER_FILE) -> list[str]:
     return out
 
 
-def skill_list(value, where: str) -> list[str]:
-    if value is None:
-        return []
-    if not (isinstance(value, list) and all(isinstance(s, str) and _SKILL.match(s) for s in value)):
-        raise CoddError(f"{where} はスキル名の配列です（例: [\"tdd\", \"doc-writer\"]）")
-    return list(value)
-
-
 def scope_list(value, where: str) -> list[str]:
     """受け持つフォルダの一覧（リポジトリのルートからの相対）。空ならリポジトリ全体。"""
     if value is None:
@@ -358,7 +351,7 @@ def test_commands(value) -> list[tuple[str, list[str]]]:
 # ---------------------------------------------------------------- 従う手順（guides）
 #
 # 読んで従うもの（マークダウン・スキル・道具）を、「何を（use）」「いつ（when）」「どれだけ確かに（must）」で 1 件ずつ書く。
-# 旧い項目（skills・tools・rules・refs[].skills・refs[].rules）も読み、同じ形に直して扱う。
+# 中では、工程ごとのスキル・道具・いつも読む決まりと、ファイルで発動する手順に振り分けて扱う（fold_guides）。
 
 GUIDE_KEYS = {"use", "when", "must", "check", "asks"}
 WHEN_KEYS = {"phase", "files", "change", "tests", "terms"}
@@ -536,7 +529,7 @@ def front_guides(repo: Path, skill_dirs: list[str]) -> list[Guide]:
 
 
 def entry_home(entry: dict, ref: Path, caller: Path) -> Path:
-    """呼び出し元が refs[].guides に書いた文書を読むリポジトリ。参照先にあれば参照先（refs[].rules と同じ）、
+    """呼び出し元が refs[].guides に書いた文書を読むリポジトリ。参照先にあれば参照先、
     無くて呼び出し元にあれば呼び出し元（呼び出し元の手順を参照先のファイルに足す）。"""
     use = entry.get("use", "")
     if use.partition(":")[0] in ("skill", "tool"):
@@ -588,14 +581,16 @@ def load_config(machine_dir: Path) -> dict:
         raise CoddError(f"{path} が JSON として読めません: {exc}") from exc
     if not isinstance(config, dict):
         raise CoddError(f"{path} は JSON のオブジェクトです")
+    legacy = sorted((set(config) | {k for r in config.get("refs") or [] if isinstance(r, dict) for k in r}) & LEGACY_KEYS)
+    if legacy:
+        raise CoddError(f"{path} に前の版の書き方があります: {', '.join(legacy)}"
+                        f"（`python3 tools/codd-agent/init.py <このリポジトリ>` で置き直すと guides へ書き換えます）")
     unknown = sorted(set(config) - CONFIG_KEYS)
     if unknown:
         raise CoddError(f"{path} に知らない項目があります: {', '.join(unknown)}"
-                        f"（書けるのは {', '.join(sorted(CONFIG_KEYS - {'ref_path'}))}）")
+                        f"（書けるのは {', '.join(sorted(CONFIG_KEYS))}）")
     if config.get("side") not in SIDES:
         raise CoddError(f"{path} の side は impl か design です（今: {config.get('side')!r}）")
-    if "refs" not in config and config.get("ref_path"):  # 参照先が 1 つだった頃の書き方
-        config["refs"] = [{"path": config["ref_path"]}]
     refs = config.get("refs")
     if not isinstance(refs, list):
         raise CoddError(f"{path} の refs は参照先の配列です（文書の無いリポジトリなら []）")
@@ -613,21 +608,11 @@ def load_config(machine_dir: Path) -> dict:
             raise CoddError(f"{path} の refs[{i}] の name が不正か重複しています: {ref['name']!r}"
                             "（英数字と _ . - で、参照先ごとに違う名前）")
         names.add(ref["name"])
-        ref["skills"] = skill_list(ref.get("skills"), f"{path} の refs[{i}].skills")
         ref["scope"] = scope_list(ref.get("scope"), f"{path} の refs[{i}].scope")
         ref["exclude"] = exclude_list(ref.get("exclude"), f"{path} の refs[{i}].exclude")
-        ref["rules"] = rule_list(ref.get("rules"), f"{path} の refs[{i}].rules")
         ref["guides"] = guide_list(ref.get("guides"), f"{path} の refs[{i}].guides")
         ref["protect"] = exclude_list(ref.get("protect"), f"{path} の refs[{i}].protect")
-    skills = config.get("skills") or {}
-    if not isinstance(skills, dict) or set(skills) - set(PHASES):
-        raise CoddError(f"{path} の skills は {{\"plan\": [...], \"apply\": [...]}} の形です")
-    config["skills"] = {phase: skill_list(skills.get(phase), f"{path} の skills.{phase}") for phase in PHASES}
-    tools = config.get("tools") or {}
-    if not isinstance(tools, dict) or set(tools) - set(PHASES):
-        raise CoddError(f"{path} の tools は {{\"plan\": [...], \"apply\": [...]}} の形です（MCP やコマンドの名前）")
-    config["tools"] = {phase: skill_list(tools.get(phase), f"{path} の tools.{phase}") for phase in PHASES}
-    config["rules"] = rule_list(config.get("rules"), f"{path} の rules")
+    config.update(empty_guides())   # guides を工程ごとのスキル・道具・いつも読む決まりに振り分ける先
     config["guides"] = guide_list(config.get("guides"), f"{path} の guides")
     skill_dirs = config.get("skill_dirs", DEFAULT_SKILL_DIRS)
     config["skill_dirs"] = [] if skill_dirs == [] else scope_list(skill_dirs, f"{path} の skill_dirs")
@@ -760,7 +745,7 @@ class Ref(Side):
     config: dict | None = None     # 参照先に置いた同じマシンの設定（あれば）
     label: str = "参照先"
     entry_skills: list[str] = field(default_factory=list)
-    entry_rules: list[str] = field(default_factory=list)   # codd.json の refs[].rules
+    entry_rules: list[str] = field(default_factory=list)   # codd.json の refs[].guides のうち、いつも読む文書
     guides: dict = field(default_factory=dict)              # 参照先が決めた手順（参照先の codd.json か、置いた文書）
     entry_triggered: list = field(default_factory=list)     # 呼び出し元が refs[].guides で足した、ファイルで発動する手順
 
@@ -873,8 +858,7 @@ class Ctx:
             self.refs.append(Ref(entry["name"], path, entry["scope"], exclude=entry["exclude"],
                                  protect=unique([*owner_protect, *entry["protect"]]),
                                  config=ref_config, label=label,
-                                 entry_skills=unique([*entry["skills"], *added["skills"]["apply"]]),
-                                 entry_rules=unique([*entry["rules"], *added["rules"]]),
+                                 entry_skills=added["skills"]["apply"], entry_rules=added["rules"],
                                  guides=guides or {}, entry_triggered=added["triggered"]))
         for r in self.refs:
             r.exclude = unique([*r.exclude, *r.evidence_patterns])
@@ -911,7 +895,7 @@ class Ctx:
                     side.exclude.append(rel)
 
     def place_ref_guides(self) -> None:
-        """`参照先の名前:パス` と書いた手順の文書を、その参照先のものとして読む（いつも読む決まりは refs[].rules に移す）。"""
+        """`参照先の名前:パス` と書いた手順の文書を、その参照先のものとして読む（いつも読む決まりはその参照先の entry_rules に移す）。"""
         refs = {r.name: r for r in self.refs}
 
         def split(spec: str) -> tuple[Ref | None, str]:
@@ -1108,7 +1092,7 @@ def skill_read_at(ctx: "Ctx", log: dict, name: str) -> float:
 
 
 def unread_skills(ctx: "Ctx", names: list[str], since: float = 0.0) -> list[str]:
-    """使うと書いたのに、`codd.py skill` で読み込んでいない（見つかるものだけ確かめる）スキル。"""
+    """使うと書いたのに、`codd.py guide` で読み込んでいない（見つかるものだけ確かめる）スキル。"""
     log = skills_read(ctx)
     return [n for n in names if find_skill(ctx, n) and skill_read_at(ctx, log, n) < since]
 
@@ -1116,7 +1100,7 @@ def unread_skills(ctx: "Ctx", names: list[str], since: float = 0.0) -> list[str]
 def unread_problem(names: list[str], where: str) -> list[str]:
     if not names:
         return []
-    return [f"{where}スキルを読み込んでいません（`python3 {MACHINE_REL}/codd.py skill 名前` で SKILL.md を読み込み、"
+    return [f"{where}スキルを読み込んでいません（`python3 {MACHINE_REL}/codd.py guide 名前` で SKILL.md を読み込み、"
             "その手順に従って使ってください。エージェントが自分でスキルを選ぶのを待たない）: "
             + ", ".join(f"`{n}`" for n in names)]
 
@@ -1137,15 +1121,6 @@ def load_skills(ctx: "Ctx", specs: list[str]) -> list[str]:
     ctx.data.mkdir(parents=True, exist_ok=True)
     write_text(ctx.data / SKILLS_READ, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
     return missing
-
-
-def cmd_skill(ctx: "Ctx", args: argparse.Namespace) -> int:
-    missing = load_skills(ctx, args.name)
-    if missing:
-        where = ", ".join([*ctx.config["skill_dirs"], *SKILL_SEARCH_DIRS])
-        print(f"スキルが見つかりません: {', '.join(missing)}（探した場所: {where}、とホームの同じ場所）", file=sys.stderr)
-        return 1
-    return 0
 
 
 def skill_lines(skills: list[RepoSkill], prefix: str = "") -> list[str]:
@@ -1366,17 +1341,19 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     for r in ctx.refs:
         print(f"  - {r.name}: {r.label}  {r.path}{scope_words(r)}")
     rules = ctx.rule_files()
-    print(f"いつも守る決まり（`python3 {MACHINE_REL}/codd.py rule --all` で読み込み、計画の「従う手順」に挙げる）:")
+    print(f"いつも守る決まり（`python3 {MACHINE_REL}/codd.py guide --all` で読み込み、計画の「従う手順」に挙げる）:")
     for name, rel in rules or [("", "")]:
         print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
     for pat in ctx.unmatched_rules():
         print(f"  ! {pat if '（見出し' in pat else pat + ' に当たるファイルがありません'}"
-              f"（{CONFIG_NAME} の guides・rules を確かめてください）")
+              f"（{CONFIG_NAME} の guides を確かめてください）")
     candidates = ctx.rule_candidates()
     if candidates:
-        print("決まりの候補（設定に無い。決まりなら `codd.py rules --write` で設定に書く）:")
+        print("決まりの候補（設定に無い。決まりなら `codd.py show --write-rules` で設定に書く）:")
         for name, rel in candidates:
             print(f"  - {name + ':' if name else ''}{rel}")
+        if args.write_rules:
+            write_rule_candidates(ctx, candidates)
     own_skills = repo_skills(ctx.root, ctx.config["skill_dirs"])
     if own_skills:
         print("リポジトリのスキル（設定しなくても使う。関係するものは読み込み、SKILL.md の手順に従う。"
@@ -1412,7 +1389,7 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
         print("関係すれば使う手順（強制しない。使ったものだけ「従う手順」に書く）:")
         for k, g in optional:
             print(f"  - {guide_line(ctx, k, g)}" + (f"（語: {', '.join(g.terms)}）" if g.terms else ""))
-    print(f"スキルは `python3 {MACHINE_REL}/codd.py skill 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
+    print(f"スキルは `python3 {MACHINE_REL}/codd.py guide 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
     protect = [(who, pat) for who, side in [("", ctx.own), *((r.name, r) for r in ctx.refs)] for pat in side.protect]
     if protect:
         print("人の承認が要るファイル（計画に挙げ、確認で利用者が認めたときだけ変える。響いても勝手に直さない）: "
@@ -1444,22 +1421,8 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
-    """決まりのファイル（設定済み・よくある名前）と候補を示す。--write で候補を codd.json に書く。"""
-    print("守る決まり:")
-    for name, rel in ctx.rule_files() or [("", "")]:
-        print(f"  - {name + ':' if name else ''}{rel}" if rel else "  - なし")
-    for pat in ctx.unmatched_rules():
-        print(f"  ! {pat if '（見出し' in pat else pat + ' に当たるファイルがありません'}"
-              f"（{CONFIG_NAME} の guides・rules を確かめてください）")
-    candidates = ctx.rule_candidates()
-    if args.only:
-        candidates = [c for c in candidates if (f"{c[0]}:{c[1]}" if c[0] else c[1]) in args.only]
-    print("候補:" if candidates else "候補: なし")
-    for name, rel in candidates:
-        print(f"  - {name + ':' if name else ''}{rel}")
-    if not (args.write and candidates):
-        return 0
+def write_rule_candidates(ctx: Ctx, candidates: list[tuple[str, str]]) -> None:
+    """決まりの候補を codd.json の guides（参照先の分は refs[].guides）に書く（`show --write-rules`。init.py が初めて置くときに呼ぶ）。"""
     path = MACHINE_DIR / CONFIG_NAME
     raw = json.loads(path.read_text(encoding="utf-8-sig"))
     for name, rel in candidates:
@@ -1474,7 +1437,6 @@ def cmd_rules(ctx: Ctx, args: argparse.Namespace) -> int:
             target.append({"use": rel})
     write_text(path, json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
     print(f"{len(candidates)} 件を {CONFIG_NAME} に書きました（決まりでないものは手で消してください）")
-    return 0
 
 
 # ---------------------------------------------------------------- 探す（graphify + git grep）
@@ -1786,21 +1748,22 @@ def rule_digest(ctx: Ctx, name: str, rel: str) -> str:
         return ""
 
 
-def cmd_rule(ctx: Ctx, args: argparse.Namespace) -> int:
+def rule_label(ctx: Ctx, spec: str) -> tuple[str, str] | None:
+    """`guide` に渡された名前が守る決まりのファイルなら、その（側の名前, パス）。"""
+    for name, rel in ctx.rule_files():
+        if spec in (rel, f"{name}:{rel}" if name else rel):
+            return name, rel
+    return None
+
+
+def read_rules(ctx: Ctx, rules: list[tuple[str, str]], again: bool = False) -> None:
     """守る決まりのファイルを出して読み込ませ、読み込んだことを控える（計画の検査が確かめる）。"""
-    rules = ctx.rule_files()
-    labels = {(f"{n}:{r}" if n else r): (n, r) for n, r in rules}
-    wanted = list(labels) if args.all or not args.path else args.path
-    unknown = [w for w in wanted if w not in labels and not any(r == w for _, r in rules)]
     log = rules_read(ctx)
-    for want in wanted:
-        if want in unknown:
-            continue
-        name, rel = labels.get(want) or next((n, r) for n, r in rules if r == want)
+    for name, rel in rules:
         label = f"{name}:{rel}" if name else rel
         repo = ctx.ref(name).path if name else ctx.root
         # 練り直しで何度も呼ばれるので、この回で読み込み済みで中身も変わっていないものは出し直さない。
-        if not args.again and log.get(label) == rule_digest(ctx, name, rel):
+        if not again and log.get(label) == rule_digest(ctx, name, rel):
             print(f"# 守る決まり {label}（この回で読み込み済み・変わっていない。出し直すときは --again）\n")
             continue
         print(f"# 守る決まり {label}\n")
@@ -1808,12 +1771,6 @@ def cmd_rule(ctx: Ctx, args: argparse.Namespace) -> int:
         log[label] = rule_digest(ctx, name, rel)
     ctx.data.mkdir(parents=True, exist_ok=True)
     write_text(ctx.data / RULES_READ, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
-    if not rules:
-        print("守る決まりのファイルはありません")
-    if unknown:
-        print(f"守る決まりにありません: {', '.join(unknown)}（`codd.py show` の一覧から選んでください）", file=sys.stderr)
-        return 1
-    return 0
 
 
 def rules_read(ctx: Ctx) -> dict:
@@ -3600,7 +3557,7 @@ def rules_problems(ctx: Ctx, body: str) -> list[str]:
                 + ", ".join(missing or [f"{n}:{r}" if n else r for n, r in rules])]
     unread = unread_rules(ctx)
     if unread:
-        return [f"守る決まりのファイルを読み込んでいません（`python3 {MACHINE_REL}/codd.py rule --all` で読み込んでから、"
+        return [f"守る決まりのファイルを読み込んでいません（`python3 {MACHINE_REL}/codd.py guide --all` で読み込んでから、"
                 "効く決まりを書いてください。読み込んだあとに変わったものも読み直す）: " + ", ".join(unread)]
     return []
 
@@ -5096,8 +5053,9 @@ def write_baseline(ctx: Ctx) -> None:
 
 RUN_START = "run-start.json"   # この回の計画を練り始めたときの印（計画の段で変えたファイルを見つける）
 PLAN_EDITED = "計画を練っている間に、ファイルが変わっています"
-# 計画を練り始めたとみなすコマンド（kiro の起動時の `show` は数えない。依頼の前に利用者が変えたものを拾わない）
-RUN_START_COMMANDS = ("rule", "explore", "graph", "impact", "draft", "verify-plan")
+# 計画を練り始めたとみなすコマンド（kiro の起動時の `show` は数えない。依頼の前に利用者が変えたものを拾わない）。
+# `guide --all`（守る決まりを読む）と `show --phase plan` も数える（main）
+RUN_START_COMMANDS = ("explore", "graph", "impact", "draft", "verify-plan")
 
 
 def mark_run_start(ctx: Ctx) -> None:
@@ -6298,9 +6256,21 @@ def unread_docs(ctx: Ctx, docs: list[tuple[str, Path, str]], since: float = 0.0)
 
 
 def cmd_guide(ctx: Ctx, args: argparse.Namespace) -> int:
-    """手順（スキルか文書）を出して読み込む。`skill:名前`・`名前`（スキル）・`[参照先:]パス[#見出し]`（文書）。"""
+    """手順（守る決まり・スキル・文書）を出して読み込む。`--all`（守る決まりをすべて）・`skill:名前`・`名前`（スキル）・
+    `[参照先:]パス[#見出し]`（文書）。"""
+    if not (args.all or args.name):
+        print("読み込む手順の名前かパス、または --all（守る決まりをすべて）を渡してください", file=sys.stderr)
+        return 1
+    if args.all:
+        read_rules(ctx, ctx.rule_files(), args.again)
+        if not ctx.rule_files():
+            print("守る決まりのファイルはありません")
     missing = []
     for spec in args.name:
+        rule = rule_label(ctx, spec)
+        if rule:   # 名前を挙げて読むときは、読み込み済みでも出す
+            read_rules(ctx, [rule], again=True)
+            continue
         kind, sep, rest = spec.partition(":")
         if sep and kind == "skill":
             missing += load_skills(ctx, [rest])
@@ -8366,7 +8336,7 @@ def review_problems(ctx: Ctx, state: dict, part: str) -> list[str]:
     if any(i["kind"] == "設計の不備" for i in items.values()):
         unread = unread_rules(ctx)
         if unread:
-            problems.append("守る決まりを読んでいません: " + ", ".join(unread) + "（`codd.py rule --all`）")
+            problems.append("守る決まりを読んでいません: " + ", ".join(unread) + "（`codd.py guide --all`）")
     if part == "items":
         return problems
     if not has_free:
@@ -8405,7 +8375,7 @@ def review_show_item(ctx: Ctx, item: dict) -> None:
                 print("  ...")
             print(f"{n:>5}  {lines[n - 1][:200]}")
     if item["kind"] == "設計の不備":
-        print("\n守る決まりは `python3 .statemachine/codd/codd.py rule --all` で読む（読んだかを検査が確かめる）")
+        print("\n守る決まりは `python3 .statemachine/codd/codd.py guide --all` で読む（読んだかを検査が確かめる）")
     labels = " / ".join(f"{side_label(ctx, k, r)}:{n}" for k, r, n in item["locs"])
     print(f"\n根拠には上のどれかのファイルの行を挙げる（{labels}）。"
           f"{DATA_DIRNAME}/{REVIEW_DIR}/{REVIEW_ANSWERS} の終わりに 1 行足す:")
@@ -8574,6 +8544,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("show", help="この側・参照先と、守る決まり・使うスキルと道具を示す")
     s.add_argument("--phase", choices=list(PHASES), help="plan（計画を練るとき）か apply（変えるとき）")
+    s.add_argument("--write-rules", action="store_true", help="決まりの候補を codd.json の guides / refs[].guides に書く")
     e = sub.add_parser("explore", help="参照先を探す")
     e.add_argument("--term", action="append", help="検索語（繰り返し可）")
     e.add_argument("--ref", action="append", help="探す参照先の名前（繰り返し可。既定はすべて）")
@@ -8587,7 +8558,6 @@ def build_parser() -> argparse.ArgumentParser:
     ba = sub.add_parser("batch", help="段に分けて変えるとき、今の段で変えるファイルを示す")
     ba.add_argument("--worker", action="store_true",
                     help="変える側として、今の段のファイルと手順の全文を示す（サブエージェントに渡すときも、それが呼ぶ）")
-    sub.add_parser("report", help="変えた結果をまとめる（終わりの報告）")
     dr = sub.add_parser("draft", help="計画のひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）")
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
@@ -8603,14 +8573,11 @@ def build_parser() -> argparse.ArgumentParser:
     de.add_argument("answer", choices=list(DECISIONS), help="OK / NG（確認）か PLAN / APPLY / STOP（止まったときの相談）")
     de.add_argument("--note", default="", help="利用者の指摘や指示（そのまま）")
     sub.add_parser("advise", help="検査で止まった理由と、次の手（勧めと選択肢）を示す")
-    ru2 = sub.add_parser("rule", help="守る決まりのファイルを出して読み込む（読み込んだことを控え、計画の検査が確かめる）")
-    ru2.add_argument("path", nargs="*", help="決まりのファイル（`show` の一覧の書き方。参照先のものは `名前:パス`）")
-    ru2.add_argument("--all", action="store_true", help="守る決まりのファイルをすべて読み込む")
-    ru2.add_argument("--again", action="store_true", help="この回で読み込み済みのものも出し直す")
-    gd = sub.add_parser("guide", help="手順（スキルか文書）を出して読み込む（読み込んだことを控え、検査が確かめる）")
-    gd.add_argument("name", nargs="+", help="`skill:名前`・スキルの名前・`[参照先の名前:]パス[#見出し]`")
-    sk = sub.add_parser("skill", help="スキルの SKILL.md を出して読み込む（読み込んだことを控え、検査が確かめる）")
-    sk.add_argument("name", nargs="+", help="スキルの名前（参照先のものは `参照先の名前:名前`）")
+    gd = sub.add_parser("guide", help="手順（守る決まり・スキル・文書）を出して読み込む（読み込んだことを控え、検査が確かめる）")
+    gd.add_argument("name", nargs="*", help="`skill:名前`・スキルの名前（参照先のものは `参照先の名前:名前`）・"
+                                           "`[参照先の名前:]パス[#見出し]`（守る決まりのファイルも）")
+    gd.add_argument("--all", action="store_true", help="守る決まりのファイルをすべて読み込む")
+    gd.add_argument("--again", action="store_true", help="この回で読み込み済みの守る決まりも出し直す")
     sub.add_parser("accept", help="変える段で計画に無いファイルを理由付きで足した分・変える前から落ちていたテスト・計画に無いテストの出力の変化を、利用者が認めたと控える")
     sub.add_parser("rollback", help="計画の検査が通ったとき（変える前）の中身へ戻す")
     ev = sub.add_parser("evidence", help="テストで得たもの（振る舞い・時間・ファイル）と、それを写した文書の印を示す")
@@ -8628,16 +8595,12 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--rest", action="store_true", help="start: 前の回が上限で見なかったファイルを見る（前の回のやりたいことは引き継ぐ）")
     rv.add_argument("--id", help="next: この項目をもう一度示す（例: R03）")
     rv.add_argument("--part", choices=["items", "all"], default="all", help="verify: items（項目だけ）か all（自由レビューも）")
-    ru = sub.add_parser("rules", help="守る決まりのファイルと、決まりらしい候補を示す")
-    ru.add_argument("--write", action="store_true", help="候補を codd.json の rules / refs[].rules に書く")
-    ru.add_argument("--only", action="append", help="書く候補を絞る（`名前:パス` か `パス`。繰り返し可）")
     return p
 
 
 COMMANDS = {"show": cmd_show, "explore": cmd_explore, "impact": cmd_impact, "graph": cmd_graph,
-            "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "batch": cmd_batch, "report": cmd_report,
-            "rules": cmd_rules, "rollback": cmd_rollback, "accept": cmd_accept,
-            "skill": cmd_skill, "guide": cmd_guide, "evidence": cmd_evidence, "rule": cmd_rule,
+            "verify-plan": cmd_verify_plan, "verify-apply": cmd_verify_apply, "batch": cmd_batch,
+            "rollback": cmd_rollback, "accept": cmd_accept, "guide": cmd_guide, "evidence": cmd_evidence,
             "draft": cmd_draft, "summary": cmd_summary, "decide": cmd_decide, "record": cmd_record, "retro": cmd_retro,
             "lint": cmd_lint, "review": cmd_review, "next": cmd_next}
 
@@ -8653,7 +8616,7 @@ def main(argv: list[str] | None = None) -> int:
             mark_run_start(ctx)   # 練り始めの印が無ければ今を始まりにする（比べるものが無いだけで、止めない）
         rc = COMMANDS[args.cmd](ctx, args)
         if (args.cmd in RUN_START_COMMANDS and not getattr(args, "ahead", False)) or \
-                (args.cmd == "show" and args.phase == "plan"):   # 次の計画を立てておくのは、この回の始まりではない
+                (args.cmd == "show" and args.phase == "plan") or (args.cmd == "guide" and args.all):   # 次の計画を立てておくのは、この回の始まりではない
             mark_run_start(ctx)   # 後に取る（draft が前の回を閉じて記録を消したあとに、この回の始まりを控える）
         return rc
     except CoddError as exc:

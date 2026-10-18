@@ -23,11 +23,11 @@
 ## 始める前に
 
 最初の応答前に `caveman` スキルを読み、会話中は full の短い応答を続けます。利用者が解除したら従います。
-待機中の実況は省きます。確認に必要な情報、終了コード、ステートの出力形式、`summary` / `report` の内容は省略・改変しません。
+待機中の実況は省きます。確認に必要な情報、終了コード、ステートの出力形式、`summary` / `record` の内容は省略・改変しません。
 コード・計画書などの成果物の文章は通常の書式で書きます。
 
 ```bash
-python3 .statemachine/codd/codd.py skill caveman
+python3 .statemachine/codd/codd.py guide caveman
 python3 .statemachine/codd/codd.py show
 ```
 
@@ -35,7 +35,7 @@ python3 .statemachine/codd/codd.py show
 `install.py --agent copilot` で導入するよう伝えます（このスキル配布リポジトリのルートで実行）。
 caveman が無い間も短い応答で進め、スキルを読んだとは書きません。
 グラフの作成・更新・調査を直接頼まれた場合は
-`python3 .statemachine/codd/codd.py skill graphify` で読み、必要な参照ファイルは表示されたスキルのフォルダから読みます。
+`python3 .statemachine/codd/codd.py guide graphify` で読み、必要な参照ファイルは表示されたスキルのフォルダから読みます。
 通常の `explore` / 影響測定のグラフ更新は codd.py に任せ、スキルの全パイプラインを毎回重ねて実行しません。
 `context-mode` は `install.py` が入れる全文検索の CLI です。MCP サーバとしては使わず、`explore` / `impact` が直接引きます。
 長いログや文書を全部読まずに探すときは、`context-mode index パス --project .` のあと
@@ -43,11 +43,11 @@ caveman が無い間も短い応答で進め、スキルを読んだとは書き
 多くのファイルを数える・集めるような調べものは、ファイルを読み込まずに短いスクリプトを書いて実行し、結果だけを出力させます。
 
 参照先（設計書・実装）、従う手順（守る決まり・使うスキルと道具・ファイルに決められた手順）、1 回で変えるファイルの上限が出ます。
-守る決まりは `python3 .statemachine/codd/codd.py rule --all` で、参照先は `codd.py explore --term 語` で必ず読みます
+守る決まりは `python3 .statemachine/codd/codd.py guide --all` で、参照先は `codd.py explore --term 語` で必ず読みます
 （どちらも、ステートマシンの計画の検査が、読んだ記録を確かめます）。
 **スキルは自分で選ばず、ステートマシンの指示で読み込みます。** 挙がったスキル（設定したものと、`.agents/skills/` などに
-置かれたもの）は、`python3 .statemachine/codd/codd.py skill 名前` で `SKILL.md` を読み込み、その手順に従ってください。
-ファイルに決められた手順（スキルか文書）は `codd.py guide 名前かパス` で読み込みます。
+置かれたもの）と、ファイルに決められた手順（スキルか文書）は、`python3 .statemachine/codd/codd.py guide 名前かパス` で
+読み込み、その手順に従ってください（読み込むコマンドはこれ 1 つです）。
 エージェントに登録されていないスキルでも同じです。使ったと書いたスキルを読み込んでいないと、検査で落ちます。
 
 ## 回し方

@@ -27,7 +27,7 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 再生するエージェントは次のようにする。
 
 1. 作業用の一時フォルダに、「サンプル」の要点を満たすリポジトリを作り、このリポジトリの `tools/codd-agent/init.py` で codd を入れる
-2. シナリオを順に、codd エージェントの役で回す（`.statemachine/codd/codd.py` を `show` → `rule --all` → `explore` → `draft` →
+2. シナリオを順に、codd エージェントの役で回す（`.statemachine/codd/codd.py` を `show` → `guide --all` → `explore` → `draft` →
    計画を書く → `verify-plan` → `summary` → `decide` → 変える → `verify-apply` → `record`（やめたときは `record --stop`））。確かめる
    シナリオは `.statemachine/codd-review/workflow.yaml` を回す（`review start` → `review next` と答える → `review verify` →
    `draft --ahead` と `next --verify` → `review report`）。利用者に訊く場面では、

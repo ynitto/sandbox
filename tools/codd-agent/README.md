@@ -231,7 +231,7 @@ python3 .statemachine/codd/codd.py rollback        # 変えた分を戻す
 終わるとき（done・stopped）は `codd.py record` の出力をそのまま伝える（モデルがまとめ直さない）。`record` は報告を出し、
 同じ結果を計画に書き足して記録にする（報告と記録を別々に呼ぶと、記録を呼び忘れた計画が次の回に持ち越される）。報告には、計画に挙げたファイルごとに
 変えたかどうか、変えたあとに測って対応した影響範囲、次にやること（「今回やらないこと」）が出る。
-参照先とパスでつながっていない自分の変更があれば、それも挙げる。途中で報告だけを見るときは `codd.py report`（記録は書かない）。
+参照先とパスでつながっていない自分の変更があれば、それも挙げる。
 
 変えたあとの検査をまだ通っていないときや、通ったあとにさらに変わっているときは、報告の「変えたあとの検査」の行でそう伝える。
 
@@ -264,7 +264,6 @@ python3 .statemachine/codd/codd.py rollback        # 変えた分を戻す
 ```bash
 python3 .statemachine/codd/codd.py show            # 参照先の一覧、守る決まり、段階ごとに使うスキルと道具
 python3 .statemachine/codd/codd.py show --phase apply
-python3 .statemachine/codd/codd.py rules           # 守る決まりと、設定に無い候補
 python3 .statemachine/codd/codd.py explore --term 語   # 参照先を探す（--ref 名前 で絞る）
 python3 .statemachine/codd/codd.py impact --term 語    # 自分のリポジトリの影響範囲を探す
 python3 .statemachine/codd/codd.py graph           # グラフを用意する（文書を LLM で読むときは束を出す。下記）
@@ -301,7 +300,6 @@ python3 .statemachine/codd/codd.py next            # 立てておいた次の計
 | `refs` | 参照先の一覧。`name`（英数字と `_` `.` `-`。省略するとフォルダ名）と `path`（相対パスはこのリポジトリのルートから）。`[]` なら文書を持たないリポジトリ（[下記](#文書を持たないリポジトリ)）。**置き場所が変わったらここを手で直す** |
 | `guides` | 任意。従う手順（守る決まりのマークダウン・スキル・道具）を、いつ・どれだけ確かに従うかと一緒に並べる。[下記](#従う手順guides) |
 | `refs[].guides` | 任意。その参照先を変えるときに足す手順。参照先が決めた手順に足すだけで、外せない |
-| `skills` / `tools` / `rules` / `refs[].skills` / `refs[].rules` | 前の版の書き方。今も読み、`guides` と同じに扱う（`skills.plan` は計画を練るとき、`skills.apply` は変えるときのスキル、`tools` は同じ形の道具、`rules` はいつも守る決まり） |
 | `skill_dirs` | 任意。設定しなくても使うスキルの置き場所（既定 `[".agents/skills"]`。`名前/SKILL.md` の形）。`[]` で使わない |
 | `graphify` | `auto`（あれば使う）か `off`。文書の意味もグラフに入れるなら `{"semantic": "session"}` か `{"semantic": "ollama", "model": "qwen2.5-coder:7b"}` のように書く（[下記](#文書の意味もグラフに入れる)） |
 | `test` | 任意。変えたあとに動かすテストのコマンド。書き方は `check` と同じで、1 つなら配列（例: `["npm", "test"]`）、いくつもならその配列を並べる（例: `[["npm", "test"], ["npm", "run", "test:api"]]`）。結果に名前を付けるなら名前ごとにも書ける（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。書いた順に動かし、落ちても残りを動かす。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
@@ -320,7 +318,8 @@ python3 .statemachine/codd/codd.py next            # 立てておいた次の計
 | `batch_files` | 任意。変えるときの 1 つの段のファイルの数（既定 10）。`max_files` までの計画を、この数ずつに分けて変える |
 | `subagent` | 任意。`true` なら、変える段をサブエージェント `codd-apply` に 1 段ずつ渡す（既定 `false` で、codd が自分で変える）。「サブエージェントに渡す」を参照 |
 
-知らない項目（綴り違いなど）があると、動かす前に止まる。
+知らない項目（綴り違いなど）があると、動かす前に止まる。前の版の書き方（`skills`・`tools`・`rules`・`ref_path`）も止まるので、
+`init.py` で置き直す（`guides` と `refs` に書き換える）。
 
 ### 実装と設計書が同じリポジトリにあるとき
 
@@ -475,7 +474,7 @@ python3 tools/codd-agent/init.py ~/work/my-app --test "npm test" --test "npm run
 | `check` | 当たるファイルを変えた回に、変えたあとの検査で動かすコマンド。手順を守ったかを終了コードで確かめる。`tool:` には付けられない |
 | `asks` | 申告で確かめる項目（コマンドで確かめにくいもの）。手順の文書の `- [ ]` の行も同じに扱う |
 
-`when` を書かなければいつも効く（前の版の `rules` と同じ）。`when.phase` だけなら前の版の `skills.plan` / `skills.apply`。
+`when` を書かなければいつも効く。
 `when.files`・`change`・`tests` を書いた手順を、**ファイルに決められた手順**と呼ぶ。計画で作る・変えるファイルに当たると、
 計画を練るときに読み込ませ、変えたあとに守ったかを確かめる（[下記](#ファイルに決められた手順)）。
 コマンドで確かめられる手順は `check` に、確かめにくいものは `asks`（か手順の文書の `- [ ]`）に書く。両方書けば両方を求める。
@@ -533,7 +532,7 @@ codd:
 
 - **書く:** `refs[].guides` に並べる（`{"name": "docs", "path": "../docs", "guides": [{"use": "docs/coding-rules.md"}]}`）。
   `guides` の `use` には glob も書ける（例: `docs/rules/**/*.md`）。`*` はフォルダをまたがず、`**/` はまたぐ。
-  1 つのファイルにも当たらないものは、`show` と `rules` が知らせる
+  1 つのファイルにも当たらないものは、`show` が知らせる
 - **見つけさせる:** パスか最初の見出しに「ルール・規約・規則・規程・約束・作法・ガイドライン・コーディング」や
   rules・guideline・convention・coding・style-guide・standard・policy・contributing を含むマークダウンを、自分と参照先から探して候補にする。
   `CHANGELOG`・`HISTORY`・`LICENSE` で始まるファイルは候補にしない。
@@ -541,13 +540,8 @@ codd:
   日付で始まるファイル（計画や記録）も候補にしない。
   `init.py` は初めて置いたときに、候補を `codd.json` の `guides`（参照先の分は `refs[].guides`）に `{"use": "パス"}` として書く。
   あとから増えた候補は `show` に「決まりの候補」として出て、計画のときに読まれる（確認では訊かない）。
-  設定に書くなら次のとおり
-
-```bash
-python3 .statemachine/codd/codd.py rules                    # 守る決まりと、設定に無い候補
-python3 .statemachine/codd/codd.py rules --write            # 候補をすべて codd.json の guides に書く
-python3 .statemachine/codd/codd.py rules --write --only docs:docs/coding-rules.md
-```
+  設定に書くなら `python3 .statemachine/codd/codd.py show --write-rules`（候補をすべて書く）。一部だけなら
+  `codd.json` に `{"use": "パス"}` を手で足す
 
 書いたあとで決まりでないとわかったものは、`codd.json` から手で消す。
 
@@ -704,7 +698,7 @@ start（グラフを用意し、点検して項目を決める）─→ items（
 - 項目は `codd.py review next` で 1 件ずつ示す。示していない項目への答えは通さない
 - 根拠の `パス:行` は、項目に挙げたファイルの実在する行でなければ通さない（テストが無いという項目は、テストのファイルの行でもよい）
 - `問題` には本流に渡す「やりたいこと」の 1 行が要る（前の項目と同じ根なら `R05 と同じ` と書き、重ねて並べない）。すべての項目に答えるまで通さない
-- 設計の不備の項目があれば、守る決まりを読んだか（`codd.py rule --all`）を確かめる
+- 設計の不備の項目があれば、守る決まりを読んだか（`codd.py guide --all`）を確かめる
 - 自由レビューも、根拠の行が実在するかと「やりたいこと」を確かめる
 
 上限で見なかったファイルがあれば、報告の「見なかったもの」に挙がる。「見なかったところも確かめて」と頼むと、その続きを見る
@@ -844,7 +838,7 @@ GitHub Copilot などは 1 回の応答の長さに上限があり、長い計�
   `パス:行`・`パス:行-行`・`パス#見出し` で箇所まで指したときは、その行や見出しが実在するか
 - 前提・制約・その他で `…` に囲んだ名前が、根拠のファイルに書かれているか（読んでいないことを書かせない）
 - 決まりのファイルと、設定したスキル・道具と、計画で作る・変えるファイルに決められた手順を、すべて「従う手順」に挙げたか（ファイルに決められた手順は `codd.py guide` で読み込んだかも）
-- 決まりのファイルを `codd.py rule --all` で読み込んだか（パスを挙げるだけでは通らない。読み込んだあとに中身が変わったものは読み直す。
+- 決まりのファイルを `codd.py guide --all` で読み込んだか（パスを挙げるだけでは通らない。読み込んだあとに中身が変わったものは読み直す。
   練り直しで呼び直しても、この回で読み込み済みで変わっていないものは出し直さない）
 - 参照先をすべて `codd.py explore` で探したか。文字列の一致で見つかったファイルを、根拠か参照先の変更案、または
   その他の「関係なし: 理由」として計画がすべて扱ったか（前提・制約・その他・ずれを全部「なし」にして読まずに済ませない）。
@@ -1114,12 +1108,12 @@ API テスト・シナリオテストも、画面の e2e のケースも同列�
 ### スキルと手順を読み込ませる
 
 エージェントが自分でスキルを選ぶのを待たない（kiro-cli などはスキルを自動で選ばないことが多い）。スキルは
-`codd.py skill 名前` で読み込ませ、読み込んだことを `.codd/skills-read.json` に控える。計画の「従う手順」や
+`codd.py guide 名前` で読み込ませ、読み込んだことを `.codd/skills-read.json` に控える。計画の「従う手順」や
 `.codd/apply.md` に使ったと書いたスキル（「使わない」と書いたものを除く）を、その段で読み込んでいなければ検査で落ちる。
 
 ```bash
-python3 .statemachine/codd/codd.py skill tdd                # SKILL.md を出して読み込む
-python3 .statemachine/codd/codd.py skill docs:doc-writer    # 参照先のスキル
+python3 .statemachine/codd/codd.py guide tdd                # SKILL.md を出して読み込む
+python3 .statemachine/codd/codd.py guide docs:doc-writer    # 参照先のスキル
 ```
 
 変えるときに使うスキルは、`batch` が段の最初にその手順を出して読み込ませる。参照先を変えるときは、参照先に置いた `codd.json` が
@@ -1144,9 +1138,9 @@ python3 .statemachine/codd/codd.py skill docs:doc-writer    # 参照先のスキ
 
 ### エージェントの応答と待ち方
 
-codd は始めるときに `codd.py skill caveman` を読み、caveman の full で短く応答する。利用者が解除すれば、それに従う。
+codd は始めるときに `codd.py guide caveman` を読み、caveman の full で短く応答する。利用者が解除すれば、それに従う。
 短く応答しても、コード・計画書の書式と、確認に必要な情報・検査結果は保つ。
-graphify スキルは、グラフの作成・更新・調査を直接頼まれたときに `codd.py skill graphify` で読む。
+graphify スキルは、グラフの作成・更新・調査を直接頼まれたときに `codd.py guide graphify` で読む。
 ふだんの `explore` や影響範囲を測るときは、codd.py の自動更新を使う。
 
 長いコマンドを待つときは、完了の通知か終了まで待つ機能を優先して使う。非同期の結果を待つ必要があるときは、
