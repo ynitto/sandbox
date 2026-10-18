@@ -1620,13 +1620,20 @@ def fulltext(ctx: Ctx, side: Side, terms: list[str]) -> tuple[list[str], list[st
     if not exe:
         return lines + ["- (context-mode が無いので引いていない。`install.py` で入れる)", ""], []
     repo = side.path
-    store = ctx.data / "context-mode" / ctx.graph_key(repo)
+    # 受け持つ範囲の文書だけを索引にする（マシンのファイルや scope の外が、検索の上位を埋めて当たりを押し出さないように。
+    # コードは文字列検索と graphify が拾い、索引に入れると大きなリポジトリで作り直しが何倍も遅くなる）。
+    # 同じリポジトリを scope で分けた自分と参照先は、別の索引にする。
+    narrow = ["--ext", ",".join(sorted(DOC_SUFFIXES))]
+    narrow += [a for d in side.scope for a in ("--include", d, "--include", f"{d}/**")]
+    narrow += [a for d in [*MACHINE_OWNED, *side.exclude] for a in ("--exclude", d, "--exclude", f"{d}/**")]
+    key = hashlib.sha256(json.dumps(narrow).encode()).hexdigest()[:8]
+    store = ctx.data / "context-mode" / f"{ctx.graph_key(repo)}-{key}"
     env = {**os.environ, "CONTEXT_MODE_DIR": str(store)}
     now = stamp(repo)
     if read_text(store / "stamp") != now:
         shutil.rmtree(store, ignore_errors=True)
         rc, out = run([exe, "index", ".", "--project", str(repo), "--source", CONTEXT_MODE_SOURCE,
-                       "--max-files", "5000", "--max-depth", "20"], repo, CONTEXT_MODE_TIMEOUT, env)
+                       "--max-files", "5000", "--max-depth", "20", *narrow], repo, CONTEXT_MODE_TIMEOUT, env)
         if rc != 0:
             return lines + [f"- (索引を作れなかった（{rc}）: {out.strip()[:200]})", ""], []
         write_text(store / "stamp", now)
@@ -7737,13 +7744,13 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
     print(f"\n計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
     if not args.stop:
         runs = count_run_since_review(ctx)
-        if runs >= REVIEW_AFTER_RUNS:
-            print(f"{REVIEW_SUGGEST} 前に確かめてから、変える流れを {runs} 回終えました。"
+        if runs % REVIEW_AFTER_RUNS == 0:   # 断られても毎回は訊かない。次は 3 回後
+            print(f"{REVIEW_SUGGEST} 確かめる流れを回さずに、変える流れを {runs} 回終えました。"
                   "「チェックして」で、まとめて漏れや矛盾を確かめられます（何も直さない）")
     return 0
 
 
-REVIEW_AFTER_RUNS = 3          # 確かめる流れを勧めるまでに、変える流れを終えた回数
+REVIEW_AFTER_RUNS = 3          # 確かめる流れを勧める間隔（変える流れを終えた回数）
 REVIEW_SUGGEST = "REVIEW"      # 終わりの報告で確かめる流れを勧める行の印（done のアクションが利用者に尋ねる）
 RUNS_SINCE_REVIEW = "runs-since-review.json"
 

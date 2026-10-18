@@ -56,7 +56,7 @@ esac
 
 # context-mode のスタブ。引数と索引の置き場所（CONTEXT_MODE_DIR）を記録し、検索では一致した節を返す。
 CONTEXT_MODE_STUB = """#!/bin/sh
-echo "$1 $CONTEXT_MODE_DIR" >> "{log}"
+echo "$1 $CONTEXT_MODE_DIR $*" >> "{log}"
 case "$1" in
   index) mkdir -p "$CONTEXT_MODE_DIR/content"; echo "Indexed 2 files" ;;
   search) echo "## 1. hello"; echo "Source: codd:$PWD/docs/api.md"; echo "Type: prose"; echo
@@ -308,6 +308,10 @@ class CoddTest(unittest.TestCase):
         calls = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual([c.split()[0] for c in calls], ["index", "search"])
         self.assertTrue(all(c.split()[1].startswith(str(self.impl / ".codd/context-mode")) for c in calls))
+        # 受け持つ範囲の文書だけを索引にする（マシンのファイルが検索の上位を埋めないように）。
+        self.assertIn("--include docs/**", calls[0])
+        self.assertIn("--exclude .statemachine/codd/**", calls[0])
+        self.assertIn("--ext .adoc,", calls[0])
         self.run_pa(self.impl, "explore", "--term", "world")   # 中身が同じなら索引を作り直さない
         self.assertEqual([c.split()[0] for c in log.read_text(encoding="utf-8").splitlines()],
                          ["index", "search", "search"])
@@ -1621,7 +1625,11 @@ class CoddTest(unittest.TestCase):
         self.assertIn("own=changed", r.stdout)
 
         # 回を終えたら（計画を記録として閉じたら）、次の回は今の中身から数える。
-        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        # 確かめる流れを勧めたあと断られても、次の回にまた訊かない（3 回ごと）。
+        (self.impl / ".codd/runs-since-review.json").write_text('{"runs": 3}', encoding="utf-8")
+        r = self.run_pa(self.impl, "record")
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("REVIEW", r.stdout)
         (self.impl / ".plans/2099-01-01-0000-next.md").write_text(
             PLAN_ALIGNED.replace("`hello` の中でログを出す", "`hello` の戻り値を 3 にする"), encoding="utf-8")
         self.read_up(self.impl)
@@ -4106,7 +4114,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / ".codd/runs-since-review.json").write_text('{"runs": 2}', encoding="utf-8")
         r = self.run_pa(self.impl, "record")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("REVIEW 前に確かめてから、変える流れを 3 回終えました。", r.stdout)
+        self.assertIn("REVIEW 確かめる流れを回さずに、変える流れを 3 回終えました。", r.stdout)
         records = list((self.impl / ".plans").glob("*.md"))
         self.assertEqual(records, [plan])     # 置いたときの名前のまま残す
         self.assertIn(f"計画の記録: {PLAN}", r.stdout)
