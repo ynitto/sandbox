@@ -6,6 +6,7 @@
     python3 tools/codd-agent/install.py --agent kiro # Kiro IDE / CLI 向けのスキルだけ配置
 
 入れるもの:
+  context-mode  全文検索（必須）。npm で入れる（Node.js 22.5 以上）。MCP サーバとしては登録せず、codd が CLI で直接呼ぶ
   graphify   参照先を探すときの知識グラフ（任意。無ければ文字列検索だけで動く）。uv → pipx → pip の順で入れる
   caveman / graphify の外部スキル   既定は Kiro・Copilot の両方。エージェント CLI は不要。
       caveman は公式 GitHub、graphify は公式パッケージから配置する。スキルは内包しない。
@@ -82,12 +83,17 @@ def setup_caveman(agent_type: str, force: bool = False) -> bool:
         print(f"   ✗ caveman の取得・配置に失敗しました: {exc}")
         return False
 
-# (名前, 入っているかを見るコマンド, 入れるコマンドの候補, 最新にするコマンドの候補)
+# (名前, 入っているかを見るコマンド, 入れるコマンドの候補, 最新にするコマンドの候補, 入れられなかったときの説明)
+# context-mode は引数なしだと MCP サーバとして起動するので、--help で確かめる。
+CONTEXT_MODE = ("context-mode", ["context-mode", "--help"],
+                [["npm", "install", "-g", "context-mode"]], [["npm", "install", "-g", "context-mode@latest"]],
+                "npm（Node.js 22.5 以上）が要ります。必須です")
 GRAPHIFY = ("graphify", ["graphify", "--version"],
             [["uv", "tool", "install", "graphifyy"], ["pipx", "install", "graphifyy"],
              [sys.executable, "-m", "pip", "install", "--user", "graphifyy"]],
             [["uv", "tool", "upgrade", "graphifyy"], ["pipx", "upgrade", "graphifyy"],
-             [sys.executable, "-m", "pip", "install", "--user", "-U", "graphifyy"]])
+             [sys.executable, "-m", "pip", "install", "--user", "-U", "graphifyy"]],
+            "uv・pipx・pip のどれかが要ります。無くても文字列検索だけで動きます")
 CHECK_ONLY = (("git", ["git"], "https://git-scm.com/downloads から入れる（必須）"),)
 
 
@@ -96,10 +102,13 @@ def version(cmd: list[str]) -> str | None:
     if not exe:
         return None
     try:
-        r = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return (r.stdout.strip() or r.stderr.strip() or "入っている").splitlines()[0] if r.returncode == 0 else None
+    if r.returncode:
+        return None
+    first = (r.stdout.strip() or r.stderr.strip() or "入っている").splitlines()[0]
+    return exe if first.startswith("Usage") else first
 
 
 def run_first(candidates: list[list[str]]) -> str | None:
@@ -118,19 +127,22 @@ def run_first(candidates: list[list[str]]) -> str | None:
     return None
 
 
-def install_middleware(upgrade: bool = False, agents=AGENT_KINDS, skills: bool = True) -> int:
-    name, probe, installs, upgrades = GRAPHIFY
+def install_tool(spec, upgrade: bool) -> bool:
+    name, probe, installs, upgrades, how = spec
     current = version(probe)
-    failed = 0
     if current and not upgrade:
         print(f"✓ {name}: {current}")
-    else:
-        print(f"{name} を{'最新にします' if current else '入れます'}")
-        if run_first(upgrades if current else installs):
-            print(f"✓ {name}: {version(probe) or '入れた（PATH を確かめてください）'}")
-        else:
-            failed += 1
-            print(f"✗ {name} を入れられませんでした（uv・pipx・pip のどれかが要ります）。無くても文字列検索だけで動きます")
+        return True
+    print(f"{name} を{'最新にします' if current else '入れます'}")
+    if run_first(upgrades if current else installs):
+        print(f"✓ {name}: {version(probe) or '入れた（PATH を確かめてください）'}")
+        return True
+    print(f"✗ {name} を入れられませんでした（{how}）")
+    return False
+
+
+def install_middleware(upgrade: bool = False, agents=AGENT_KINDS, skills: bool = True) -> int:
+    failed = sum(not install_tool(spec, upgrade) for spec in (CONTEXT_MODE, GRAPHIFY))
     if skills:
         exe = shutil.which("graphify")
         for agent in dict.fromkeys(agents):
@@ -160,11 +172,11 @@ def install_middleware(upgrade: bool = False, agents=AGENT_KINDS, skills: bool =
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    p = argparse.ArgumentParser(description="codd-agent の graphify 本体と caveman・graphify 外部スキルを導入する")
+    p = argparse.ArgumentParser(description="codd-agent の context-mode・graphify 本体と caveman・graphify 外部スキルを導入する")
     p.add_argument("--upgrade", action="store_true", help="入っているものも最新にする")
     p.add_argument("--agent", action="append", choices=AGENT_KINDS,
                    help="スキルの導入先（繰り返し可。既定は Kiro と Copilot の両方。CLI 不要）")
-    p.add_argument("--no-skills", action="store_true", help="外部スキルを配置せず、graphify 本体だけ導入する")
+    p.add_argument("--no-skills", action="store_true", help="外部スキルを配置せず、context-mode と graphify 本体だけ導入する")
     args, legacy = p.parse_known_args(argv)
     if legacy:
         # 以前の使い方（リポジトリを渡す）。リポジトリへ置くのは init.py の仕事。

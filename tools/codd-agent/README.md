@@ -24,6 +24,8 @@
   言語やビルドの仕組みを問わない
 - 参照先を探すとき、[graphify](https://pypi.org/project/graphifyy/) があれば知識グラフを使う。
   グラフはリポジトリが変わるたびに自動で作り直す。無ければ文字列検索だけで動く
+- 参照先を探すとき、[context-mode](https://github.com/mksglu/context-mode) の全文検索でも関係の深い節を引く。
+  MCP サーバとしては登録せず、CLI を直接呼ぶ
 
 ## 置き方
 
@@ -31,7 +33,8 @@
 
 ### 1. 外部のミドルウェアを端末に入れる（端末ごとに 1 回）
 
-graphify（任意。参照先を探すときの知識グラフ）を uv・pipx・pip のどれかで入れ、git があるかを確かめる。
+context-mode（必須。全文検索）を npm で、graphify（任意。参照先を探すときの知識グラフ）を uv・pipx・pip のどれかで入れ、
+git があるかを確かめる。context-mode には Node.js 22.5 以上が要る。
 続けて caveman・graphify の外部スキルを Kiro・Copilot のユーザー領域へ配置する（既定は両方。エージェントの CLI は無くてよい）。
 `--upgrade` を付けると、入っているものも最新にする（caveman も配布元から取り直す）。
 
@@ -40,7 +43,7 @@ python3 tools/codd-agent/install.py
 # 片方だけ導入する
 python3 tools/codd-agent/install.py --agent kiro
 python3 tools/codd-agent/install.py --agent copilot
-# スキルを配置せず、graphify 本体だけ導入する
+# スキルを配置せず、context-mode と graphify 本体だけ導入する
 python3 tools/codd-agent/install.py --no-skills
 ```
 
@@ -658,6 +661,13 @@ graphify スキルは、グラフの作成・更新・調査を直接頼んだ�
 - 結果は参照先の分も自分の `.codd/graph/` に置く。参照先には何も書かない
 - `session` のとき、この回にまだグラフを用意していなければ、計画の検査がそう伝えて止める
 
+### context-mode を使う
+
+参照先を探すときと影響範囲を測るときに、`context-mode index` で索引を作り、語ごとに `context-mode search` で
+関係の深い節を引く（結果は `.codd/explore.md`・`.codd/impact.md` の「全文検索」に載る）。MCP サーバは通さない。
+索引は `.codd/context-mode/` に置き、グラフと同じくリポジトリが変わったときだけ作り直す。
+graphify と同じく候補を広げるためのもので、計画の検査には使わない。無ければ文字列検索だけで動く。
+
 ## 確かめる（codd-review）
 
 本流（変える）とは別に、読むだけで確かめるステートマシン `codd-review` がある。`init.py` が本流の隣
@@ -1160,7 +1170,7 @@ graphify が入っていれば、探すたびに、リポジトリの今の中�
 
 ### 作業ファイル
 
-探した結果・検査の記録・変える前の写し・graphify のグラフは `<リポジトリ>/.codd/` に置く（`init.py` が `.gitignore` に足す）。
+探した結果・検査の記録・変える前の写し・graphify のグラフ・context-mode の索引は `<リポジトリ>/.codd/` に置く（`init.py` が `.gitignore` に足す）。
 計画と判断の記録は `.plans/` に置く。どちらも、変えたファイルや探す対象には数えない。
 
 ## テスト
