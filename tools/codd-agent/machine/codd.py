@@ -254,6 +254,8 @@ def user_bin_dirs() -> list[str]:
             dirs.append(sysconfig.get_path("scripts", scheme))
         except KeyError:
             pass
+    if os.environ.get("APPDATA"):   # Windows の pip --user は Python の版ごとに分かれる（別の版で入れたものも探す）
+        dirs += sorted(str(p) for p in Path(os.environ["APPDATA"]).glob("Python/Python*/Scripts"))
     return [d for d in dict.fromkeys(dirs) if d and Path(d).is_dir()]
 
 

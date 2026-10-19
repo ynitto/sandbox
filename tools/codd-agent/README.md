@@ -55,7 +55,7 @@ graphify は本体の登録処理（`graphify install --platform kiro` など）
 graphify スキルも置けない。すでに入っている caveman スキルは、`--upgrade` を付けない限りそのまま残す。
 Windows では `USERPROFILE`、その他ではホームディレクトリの下に置く。
 
-graphify と context-mode は PATH から探し、無ければホームの置き場所（`~/.local/bin`、pip `--user` のスクリプトの置き場所）も探す。
+graphify と context-mode は PATH から探し、無ければホームの置き場所（`~/.local/bin`、pip `--user` のスクリプトの置き場所。Windows では `%APPDATA%\Python\Python*\Scripts` も）も探す。
 PATH に足していない端末でも codd は使えるが、端末から直接使うなら、導入時に示された場所を PATH に足す。
 
 | 対象 | スキルの保存先 |

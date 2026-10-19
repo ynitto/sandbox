@@ -316,6 +316,13 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("not-installed", r.stdout)
         self.assertTrue(any(" update . --force" in c for c in self.calls()), self.calls())
 
+    def test_windows_pip_user_scripts_of_any_python_version_are_searched(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            scripts = Path(temp) / "Python/Python312/Scripts"
+            scripts.mkdir(parents=True)
+            with mock.patch.dict(os.environ, {"APPDATA": temp}):
+                self.assertIn(str(scripts), install.user_bin_dirs())
+
     def test_installer_finds_graphify_in_home_and_tells_path_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home_bin = Path(temp) / ".local/bin"
