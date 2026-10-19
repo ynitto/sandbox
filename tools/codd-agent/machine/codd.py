@@ -3254,8 +3254,10 @@ def listed_paths(ctx: Ctx, body: str, only_no_change: bool = False, skip_no_chan
             continue
         if skip_no_change and (j.waived or PENDING_MARK in item):
             continue
-        # 変更不要の項目は、先頭に並べた対象だけ（理由の中のパスまで変更不要にしない）
-        paths.update(cited_own(ctx, j.targets if j.waived else item, allow_new))
+        # 変更不要の項目は、先頭に並べた対象だけ（理由の中のパスまで変更不要にしない）。変える項目も「 — 」の前に挙げたパス
+        head = item.split(" — ", 1)[0] if " — " in item else item
+        found = cited_own(ctx, j.targets if j.waived else head, allow_new)
+        paths.update(found or ([] if j.waived or head == item else cited_own(ctx, item, allow_new)))
     return paths
 
 
@@ -3544,6 +3546,11 @@ def items(body: str) -> list[str]:
     return [ln.strip()[2:].strip() for ln in body.splitlines() if ln.strip().startswith(("- ", "* "))]
 
 
+def changes_nothing(body: str) -> bool:
+    """変更案が「なし」か、変更不要の項目だけか（設計書だけを直すときに、自分のファイルを変更不要と書いた案など）。"""
+    return is_none(body) or all(judgment(it).waived for it in items(body) or [body])
+
+
 def planned_refs(ctx: Ctx, bodies: dict[str, str]) -> tuple[dict[str, set[str]], list[str]]:
     """参照先の変更案が変える参照先ごとのパスと、その検査で見つかった問題。"""
     planned: dict[str, set[str]] = {}
@@ -3554,7 +3561,11 @@ def planned_refs(ctx: Ctx, bodies: dict[str, str]) -> tuple[dict[str, set[str]],
     if not listed:
         problems.append(Problem("shape", "## 参照先の変更案 は箇条書きにしてください（無ければ「なし」）"))
     for item in listed:
-        cited = cited_refs(ctx, item, allow_new=True)
+        # 変えるのは「 — 」の前に挙げたパス。説明の中のパス（「…を見本に倣って」など）は変えるファイルに数えない
+        head = item.split(" — ", 1)[0] if " — " in item else item
+        cited = cited_refs(ctx, head, allow_new=True)
+        if not cited.found and head != item:
+            cited = cited_refs(ctx, item, allow_new=True)
         if cited.ambiguous and not cited.found:
             problems.append(Problem("shape", f"## 参照先の変更案 のパスがどの参照先か決まりません。`名前:パス` で書いてください: {item[:80]}"))
         elif not cited.found:
@@ -3743,7 +3754,7 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
         for item in items(bodies["## 自分の変更案"]) or [bodies["## 自分の変更案"]]:
             if not cited_own(ctx, item, allow_new=True):
                 problems.append(Problem("shape", f"自分の変更案の項目に、自分のリポジトリのパスがありません: {item[:80]}"))
-        if not own_terms_from_plan(bodies):
+        if not own_terms_from_plan(bodies) and not changes_nothing(bodies["## 自分の変更案"]):
             problems.append(Problem("shape", "自分の変更案で変わる・使う名前（関数・API・用語・見出し）を `…` で囲んでください"
                             "（自分と参照先への影響を測る語になります）"))
     planned, ref_problems = planned_refs(ctx, bodies)
@@ -5930,6 +5941,9 @@ def load_applied(ctx: Ctx) -> Applied | str:
     before = json.loads(before_file.read_text(encoding="utf-8"))
     if not isinstance(before.get("own"), dict):
         return "変える前の印が古い形です（計画の検査からやり直してください）"
+    if before.get("plan", plan_rel(ctx)) != plan_rel(ctx):
+        # 前の回の印（この計画はまだ検査を通っていない）。前の回の変更をこの回のものと数えない
+        return "この計画を検査したときの印がありません（計画の検査からやり直してください）"
     _, bodies = sections(plan_text_for_checks(ctx), PLAN_HEADINGS)
     planned, plan_problems = planned_refs(ctx, bodies)
     # テストの出力から差し替えた写しと、テスト・検査コマンドが作り直したファイルはハーネスの変更なので、
@@ -6608,7 +6622,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     dev = deviations(ctx)
     want_own = own_planned(ctx, bodies)
     only_media = bool(want_own) and all(may_stay_same(ctx, "", p) for p in want_own)
-    if not is_none(bodies.get("## 自分の変更案", "なし")) and not a.own_touched and not only_media:
+    if not changes_nothing(bodies.get("## 自分の変更案", "なし")) and not a.own_touched and not only_media:
         problems.append(Problem("undone", "自分の変更案があるのに、自分のリポジトリが変わっていません"))
     else:
         tests_listed = set(tp.paths("", waived=False))   # テストの変更案にもあるものは、下のテストの指摘だけに出す
@@ -6675,7 +6689,10 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         measured, _ = measure(ctx, terms, "impact-after.md",
                               f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）", rebuild=False,
                               focus=touched_all, sections=sections)
-        waived = listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
+        # 従う手順に挙げた決まりのファイルは、手順として読んだもの（変える対象ではない）
+        waived = (listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
+                  | listed_paths(ctx, bodies.get("## 自分の変更案", ""), only_no_change=True)
+                  | listed_paths(ctx, bodies.get(GUIDES_HEADING, "")))
         # 自分の変更案のファイルは、変え残しとして上で挙げる（同じファイルを 2 回挙げない）。
         untouched = [p for p in measured if p not in a.own_touched and p not in waived and not dev.waived("", p)
                      and p not in want_own]
@@ -6686,6 +6703,16 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                 Problem("unfixed", f"変更の影響を受けるのに、直していないファイルがあります（直すか、{UNDONE_HINT}。{NAME_HINT}）: "
                 + ", ".join(untouched)
                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）"))
+        if any(sections.values()):
+            # 変えた文書の箇所から、グラフが必須とした参照先のファイル（設計書だけを直した回でも、実装に響く）
+            cited = cited_anywhere(ctx, bodies)
+            sure = sorted(ref_label(ctx, h.key, h.rel) for h in graph_impact(ctx, terms, False, touched_all, sections).values()
+                          if h.key and h.tier == "sure" and (h.key, h.rel) not in cited
+                          and h.rel not in a.touched.get(h.key, set()) and not dev.unrelated_file(h.key, h.rel))
+            if sure:
+                problems.append(Problem("names", "変えた文書の箇所が、グラフで参照先のファイルに必須でつながっています。計画で扱っていません"
+                                f"（関係するなら、利用者に確かめて計画を直す。別物なら、{UNRELATED_HINT}）: " + ", ".join(sure)
+                                + f"（詳細: {DATA_DIRNAME}/impact-after.md）"))
     new_own_terms = [t for t in own_diff_terms if t not in own_terms_from_plan(bodies) and t not in dev.unrelated]
     if new_own_terms:
         # 計画に無い名前まで自分で変えたなら、それに触れている参照先も扱ったか。
@@ -6857,10 +6884,13 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
     own_now = {p for p in a.own_touched if (ctx.root / p).is_file()}
     ref_links = sorted(h for h in linked(ctx, "", own_now) if h[0]) if own_now else []
     missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited and r not in a.touched[n]]
+    own_plan = a.bodies.get("## 自分の変更案", "")
     waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
+              | listed_paths(ctx, own_plan, only_no_change=True)
               | {rel for k, rel in test_plan(ctx, a.bodies).waived if not k})
+    planned_own = listed_paths(ctx, own_plan, skip_no_change=True, allow_new=True)   # 変え残しは「まだ変えていません」に出す
     own_links = sorted({rel for name in a.changed for k, rel in linked(ctx, name, a.touched[name]) if not k})
-    missing_own = [p for p in own_links if p not in a.own_touched and not covered(p, waived)]
+    missing_own = [p for p in own_links if p not in a.own_touched and not covered(p, waived | planned_own)]
     dangling = dangling_refs(ctx, touched)
     at = {d.split(" → ", 1)[0] for d in dangling}
     broken = [b for b in broken_refs(ctx, touched) if b.split(" → ", 1)[0] not in at]   # 消したファイルを指す行は 1 回だけ挙げる
@@ -7360,6 +7390,9 @@ def cmd_advise(root: Path) -> int:
         lines += ["", "## 利用者に訊かずに進める", "",
                   f"人の判断が要らない指摘だけです。利用者に訊かず、答えを待たずに `{word}` で同じ段をやり直してください"
                   "（指摘を直す。控えは済んでいるので decide は要らない）"]
+        if any(item.get("kind") == "check" for item in rec.get("problems", [])):
+            lines.append("落ちたテストは、コードを直して通す。テストのファイルのほうを直すと止まって利用者に訊く"
+                         "（テストが誤っていると思うなら、ここで利用者に確かめる）")
         text = "\n".join(lines) + "\n"
         write_text(data / "advice.md", text)
         print(f"AUTO {word}\n\n" + text, end="")
