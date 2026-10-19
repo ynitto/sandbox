@@ -209,12 +209,14 @@ class ScenarioReplayTest(unittest.TestCase):
         self.assertEqual(names, ["discount", "order.set_status", "note", "Math.floor"])
 
     def test_names_a_deleted_doc_only_mentions_are_not_changed(self) -> None:
-        # 消した文書が `…` で触れていただけの名前（移る先の関数）は変わっていない
+        # 消した文書が `…` で触れていただけの名前（移る先の関数）と、その見出しは変わっていない
         with tempfile.TemporaryDirectory() as tmp:
-            repo = self.repo(tmp, {"docs/migration.md": "# 移る\n\n`formatMoneyV1` は `formatMoney` に。\n",
+            repo = self.repo(tmp, {"docs/migration.md": "# 移る\n\n## ロケール\n\n`formatMoneyV1` は `formatMoney` に。\n",
                                    "src/money.js": "export function formatMoney() {}\n"})
             (repo / "docs/migration.md").unlink()
-            self.assertNotIn("formatMoney", codd.terms_from_diff(codd.Side("own", repo, [])))
+            terms = codd.terms_from_diff(codd.Side("own", repo, []))
+        self.assertNotIn("formatMoney", terms)
+        self.assertNotIn("ロケール", terms)
 
     def test_a_file_committed_midway_then_reverted_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

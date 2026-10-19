@@ -967,7 +967,7 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("上限 40 を超えています（`hello` が 46 ファイル）", r.stderr)
+        self.assertIn("上限 40 行を超えています（`hello` が 46 ファイル）", r.stderr)
         self.assertIn("名前を具体的にするか、計画を分けて", r.stderr)
         self.assertNotIn("未判断", (self.impl / PLAN).read_text(encoding="utf-8"))
 
@@ -988,7 +988,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         # 回の手間を記録に残す（案 7）
-        self.assertIn("- 手間: 計画の検査 2 回・書き足した未判断 1 件・変えたあとの検査 1 回", self.report(self.impl).stdout)
+        self.assertIn("- 手間: 計画の検査 2 回・書き足した未判断 1 行・変えたあとの検査 1 回", self.report(self.impl).stdout)
 
     def test_reference_documents_that_only_mention_a_name_are_judged_together(self) -> None:
         # 参照先の、名前に触れているだけの文書も 1 行にまとめる。「関係なし」も 1 行で書け、次の回は訊かない
@@ -1286,18 +1286,23 @@ class CoddTest(unittest.TestCase):
 
     def test_report_lists_changes_without_path_links(self) -> None:
         # コードは文書とつながっていないと通らない。コード以外（設定など）は、つながっていなければ報告で知らせる。
-        commit(self.impl, {"settings.toml": "level = 1\n"}, "settings")
+        # フォルダを書いた文書があれば、コード以外（マイグレーションなど）もつながっている
+        commit(self.impl, {"settings.toml": "level = 1\n", "db/migrations/001.sql": "create table t (a int);\n"}, "settings")
+        commit(self.design, {"docs/db.md": "# DB\n\n実装は `db/migrations/` に置く。\n"}, "db")
         plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
-                                    "- src/app.py — `hello` の中でログを出す\n- settings.toml — ログの水準を上げる")
+                                    "- src/app.py — `hello` の中でログを出す\n- settings.toml — ログの水準を上げる\n"
+                                    "- db/migrations/002.sql — ログの表を足す")
         self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         (self.impl / "settings.toml").write_text("level = 2\n", encoding="utf-8")
+        (self.impl / "db/migrations/002.sql").write_text("create table logs (a int);\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         r = self.report(self.impl)
         self.assertIn("## 参照先とパスでつながっていない変更\n\n- settings.toml\n", r.stdout)
         self.assertNotIn("- src/app.py\n", r.stdout.split("## 参照先とパスでつながっていない変更", 1)[1])
+        self.assertNotIn("002.sql", r.stdout.split("## 参照先とパスでつながっていない変更", 1)[1])
 
     def test_code_without_docs_must_get_one_like_its_neighbors(self) -> None:
         # コードには対応する文書が 1 つ以上ある前提。無ければ、近いコードの文書を見本に作る（足す）まで通さない。

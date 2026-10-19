@@ -3098,9 +3098,11 @@ def terms_from_diff(side: Side, only: set[str] | None = None) -> list[str]:
         for pat in _DIFF_TERMS:
             m = pat.match(line)
             if m:
-                terms.append(m.group(1))
                 if pat is _DIFF_TERMS[5]:
+                    if deleting:   # 消した文書の見出し（`## 使い方` など）は名前ではない。消した文書を指すところはつながりの検査が見る
+                        continue
                     heads[line[0]].add(m.group(1))
+                terms.append(m.group(1))
                 if _LOCAL_VAR.match(line):
                     local[line[0]].add(m.group(1))
                 if pat in _CALLABLE_DEFS:
@@ -4195,7 +4197,7 @@ def work_line(ctx: Ctx) -> str | None:
         start = (ctx.data / RUN_START).stat().st_mtime
     except OSError:
         start = None
-    parts = [f"計画の検査 {rec.get('plan_checks', 0)} 回", f"書き足した未判断 {rec.get('pending', 0)} 件",
+    parts = [f"計画の検査 {rec.get('plan_checks', 0)} 回", f"書き足した未判断 {rec.get('pending', 0)} 行",
              f"変えたあとの検査 {rec.get('apply_checks', 0)} 回"]
     if rec.get("too_wide"):
         parts.append(f"多すぎて止めた {rec['too_wide']} 回")
@@ -4214,7 +4216,7 @@ def too_wide_problems(ctx: Ctx, pending: Pending) -> list[str]:
     """測った結果が多すぎる・探さなかった語がある（黙って打ち切らず、何が多いかと次の手を示して止める）。"""
     out = []
     if pending.count() > MAX_PENDING:
-        out.append(f"測ったのに計画に無いファイルが {pending.count()} 件あり、1 回で判断する上限 {MAX_PENDING} を超えています"
+        out.append(f"測ったのに計画に無いファイルの判断が {pending.count()} 行あり、1 回で判断する上限 {MAX_PENDING} 行を超えています"
                    f"（{wide_terms(ctx) or '多く当たった語なし'}）。名前を具体的にするか、計画を分けて「今回やらないこと」に"
                    f"回してください（全件: {DATA_DIRNAME}/impact.md・ref-impact.md・tests.md）")
     skipped = ctx.__dict__.get("_skipped_terms") or []
@@ -4231,9 +4233,10 @@ def pending_problem(found: list[tuple[str, str]], added: int = 0) -> list[str]:
         return []
     heads = "・".join(f"{h[3:]} {n}" for h in unique([h for h, _ in found])
                       for n in [sum(1 for x, _ in found if x == h)])
-    lead = (f"測ったのに計画に無かったファイル {added} 件を、計画に「{PENDING_MARK}」として書き足しました"
-            f"（前から残っているものと合わせて {len(found)} 件）。" if added and added != len(found)
-            else f"測ったのに計画に無かったファイル {added} 件を、計画に「{PENDING_MARK}」として書き足しました。" if added
+    # 数えるのは判断する行（言及だけの文書をまとめた行は 1 行）。上限（MAX_PENDING）と記録の手間も同じ数え方
+    lead = (f"測ったのに計画に無かったファイルを {added} 行にして、計画に「{PENDING_MARK}」として書き足しました"
+            f"（前から残っているものと合わせて {len(found)} 行）。" if added and added != len(found)
+            else f"測ったのに計画に無かったファイルを {added} 行にして、計画に「{PENDING_MARK}」として書き足しました。" if added
             else f"計画に「{PENDING_MARK}」の項目が {len(found)} 件残っています。")
     # 書き足した見出しの書き方だけを示す（ほかの見出しの書き方まで並べて迷わせない）
     how = unique(PENDING_HOW.get(h, PENDING_HOW["## 参照先のその他"]) for h, _ in found)
@@ -4513,7 +4516,7 @@ def doc_lines_cover(ctx: Ctx, bodies: dict[str, str], rel: str) -> bool:
 
 def connected(ctx: Ctx, rel: str) -> bool:
     """自分のファイルが、参照先のファイルかフォルダとパスでつながっているか（フォルダをまとめた文書も数える）。"""
-    if any(k for k, _ in linked(ctx, "", {rel})) or (is_code(ctx, "", rel) and docs_for(ctx, "", rel)):
+    if any(k for k, _ in linked(ctx, "", {rel})) or (not rel.lower().endswith(DOC_EXTS) and docs_for(ctx, "", rel)):
         return True
     text = read_text(ctx.root / rel) or ""
     for claim in claims_in(rel, text):
@@ -9339,8 +9342,10 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
         # この回の項目の箇所に出たファイル（テスト・つながる文書）は見たものとして、続きに回さない
         shown = {(loc[0], loc[1]) for it in state["items"] for loc in it["locs"]}
         # 項目の上限で出し切れなかったファイルも、上限で見なかったファイルとして続き（--rest）で見る
-        state["skipped_files"] = [side_label(ctx, k, r) for k, r in [*cut, *(t for t in targets[REVIEW_MAX_FILES:]
-                                                                          if t not in shown)]]
+        # 項目を出し切れなかったファイルのうち、ほかの項目の箇所としてだけ出たもの（テスト・文書）も見たものとする
+        own = {(it["locs"][0][0], it["locs"][0][1]) for it in state["items"] if it["locs"]}
+        state["skipped_files"] = [side_label(ctx, k, r) for k, r in [*cut, *targets[REVIEW_MAX_FILES:]]
+                                  if (k, r) not in shown - own]
         save_review_state(ctx, state)
         write_text(review_dir(ctx) / REVIEW_ANSWERS, f"# 項目への答え\n\n")
         if not state["items"]:
