@@ -91,6 +91,21 @@ class LiteralsFromDiffTest(unittest.TestCase):
             texts = codd.literals_from_diff(ctx, "", codd.Side("own", repo, []))
         self.assertEqual(sorted(texts), ["ログイン", "送信"])   # 比較式（x > 2 && y < 2）は文言にしない
 
+    def test_strings_already_in_the_file_are_not_changed(self) -> None:
+        # `{"status": …}` を足しても、"status" が前からそのファイルにあれば、変えた文字列ではない
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "routes.py").write_text('def a():\n    return {"status": "ok"}\n', encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "routes.py").write_text('def a():\n    return {"status": "ok"}\n\n\ndef b():\n    return {"status": "refunded"}\n',
+                                            encoding="utf-8")
+            ctx = SimpleNamespace(config={"tests": ["**/*.test.*"]})
+            self.assertEqual(codd.literals_from_diff(ctx, "", codd.Side("own", repo, [])), ["refunded"])
+
     def test_imports_are_not_screen_text(self) -> None:
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,12 +209,14 @@ class ScenarioReplayTest(unittest.TestCase):
         self.assertEqual(names, ["discount", "order.set_status", "note", "Math.floor"])
 
     def test_names_a_deleted_doc_only_mentions_are_not_changed(self) -> None:
-        # 消した文書が `…` で触れていただけの名前（移る先の関数）は変わっていない
+        # 消した文書が `…` で触れていただけの名前（移る先の関数）と、その見出しは変わっていない
         with tempfile.TemporaryDirectory() as tmp:
-            repo = self.repo(tmp, {"docs/migration.md": "# 移る\n\n`formatMoneyV1` は `formatMoney` に。\n",
+            repo = self.repo(tmp, {"docs/migration.md": "# 移る\n\n## ロケール\n\n`formatMoneyV1` は `formatMoney` に。\n",
                                    "src/money.js": "export function formatMoney() {}\n"})
             (repo / "docs/migration.md").unlink()
-            self.assertNotIn("formatMoney", codd.terms_from_diff(codd.Side("own", repo, [])))
+            terms = codd.terms_from_diff(codd.Side("own", repo, []))
+        self.assertNotIn("formatMoney", terms)
+        self.assertNotIn("ロケール", terms)
 
     def test_a_file_committed_midway_then_reverted_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -273,6 +290,31 @@ class PlanNamesTest(unittest.TestCase):
         # `…sourceId…` と書いても sourceId で測る。途中の省略は、どこにも当たらないので書き直させる
         self.assertEqual(codd.name_terms("- a.py — `…sourceId…` と `...name` を直す"), ["sourceId", "name"])
         self.assertEqual(codd.elided_names("`get…Id` と `…sourceId…` と `a b…`"), ["get…Id"])
+
+    def test_keywords_declarations_headings_and_routes(self) -> None:
+        # `if (sourceId)` は sourceId、`const disabled = isGeneratedPrintDisabled;` は右辺、`## usePreviewModel` は見出しの名前で探す
+        self.assertEqual(codd.name_terms("`if (sourceId)`"), ["sourceId"])
+        self.assertEqual(codd.name_terms("`const disabled = isGeneratedPrintDisabled;`"), ["isGeneratedPrintDisabled"])
+        self.assertEqual(codd.name_terms("`const MAX = 3`"), ["MAX"])
+        self.assertEqual(codd.name_terms("`## usePreviewModel`"), ["usePreviewModel"])
+        self.assertEqual(codd.name_terms("`POST /orders/{id}/refund` と `src/a.py`"), ["/orders/{id}/refund"])
+
+
+class GrepTermsTest(unittest.TestCase):
+    def test_terms_are_searched_together_and_split_back_per_term(self) -> None:
+        # git を語ごとに動かさず、語単位とそうでないものの 2 回で引き、行を語に振り分ける
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "a.py").write_text("hello()\nhelloWorld()\nprint('サインイン')\n", encoding="utf-8")
+            (repo / "b.md").write_text("HELLO は挨拶。\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            found = codd.grep_terms(codd.Side("own", repo, []), ["hello", "サインイン", "missing"])
+        self.assertEqual(found["hello"], ["a.py:1:hello()", "b.md:1:HELLO は挨拶。"])   # 語単位・大文字小文字を問わない
+        self.assertEqual(found["サインイン"], ["a.py:3:print('サインイン')"])
+        self.assertEqual(found["missing"], [])
 
 
 if __name__ == "__main__":

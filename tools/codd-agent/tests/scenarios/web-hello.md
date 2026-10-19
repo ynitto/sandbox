@@ -11,7 +11,7 @@
 
 - `src/app.py` — `def hello(): return 1`
 - `src/page.js` — `renderHello()` が文字列の HTML `'<h1>Hello page</h1>'` を返す（JSX ではない）
-- `tests/test_app.py` — `hello()` が 1 を返すことを確かめる
+- `tests/__init__.py`（空）と `tests/test_app.py` — `hello()` が 1 を返すことを確かめる
 - `tests/e2e/hello.yaml` — 先頭に `# coherence: doc=docs/api.md` と書いた e2e のケース
 - `tests/e2e/page.yaml`・`tests/e2e/top.yaml` — 注記の無い e2e のケース。`/hello` を開いて見出しの文言（`Hello page`）を期待する
 
@@ -42,6 +42,7 @@
 
 **期待**
 
+- `.codd/apply.md` の「計画との違い」に `` `Hello` — 関係なし `` と書けば、その文字列だけで当たったテストも止めない
 - 注記の無い e2e のケースも、ファイル名が対になるもの（`page.yaml`）は計画の検査で「響くテスト」に挙がる（`.codd/tests.md` が「なし」にならない）
 - 見出しの文言を変えたあと、その文言を期待している `top.yaml` が「文字列」で響くテストに挙がり、直すまで通らない。
   直せば、計画に無くても「計画に無いファイル」で止めずに通る（「追加」の申告も、利用者の承認も要らない）。報告には「直した」と出る

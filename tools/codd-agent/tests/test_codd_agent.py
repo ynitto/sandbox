@@ -530,7 +530,8 @@ class CoddTest(unittest.TestCase):
         self.write_plan(judged, read=False)
         self.assert_plan_ok()
         dismissed = json.loads((self.impl / ".codd/graph/dismissed.json").read_text(encoding="utf-8"))
-        self.assertEqual(sorted(dismissed), ["design|docs/guide.md", "|README.txt"])
+        # 文字列の一致で当たった src/greet.py も控える（グラフでしか当たらない src/wrap.py は控えない）
+        self.assertEqual(sorted(dismissed), ["design|docs/guide.md", "|README.txt", "|src/greet.py"])
         # 次の回（別の計画）: 同じ語から同じファイルに当たっても、変わっていなければ要判断に出さない（必須のものは出す）
         (self.impl / PLAN).unlink()
         again = self.impl / ".plans/2026-10-02-0000-again.md"
@@ -538,6 +539,7 @@ class CoddTest(unittest.TestCase):
         self.run_pa(self.impl, "verify-plan")
         plan = again.read_text(encoding="utf-8")
         self.assertIn("- src/wrap.py — 未判断", plan)
+        self.assertIn("- src/greet.py — 未判断（グラフで", plan)   # 文字列の一致は判断済みでも、グラフの必須は訊く
         self.assertNotIn("README.txt", plan)
         self.assertNotIn("docs/guide.md", plan)
         self.assertIn("前の計画で判断済み", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
@@ -923,6 +925,12 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("影響範囲を測った: 2 files", r.stdout)
 
+    def as_previous_plan(self, repo) -> None:
+        """控えた判断を、前の計画が下したものにする（この計画の判断は計画そのものにあり、使い回さない）。"""
+        path = repo / ".codd/graph/dismissed.json"
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({k: {**v, "plan": ".plans/old.md"} for k, v in rec.items()}), encoding="utf-8")
+
     def test_verify_plan_measures_impact_of_own_change_too(self) -> None:
         # 参照先を変えない計画でも、自分の変更で動く名前の呼び出し元を漏れなく扱わせる。
         self.add_caller()
@@ -937,10 +945,13 @@ class CoddTest(unittest.TestCase):
         (self.impl / PLAN).write_text(plan.replace("未判断（変わる名前が出てくる）", "変更不要: 戻り値は同じ"),
                                       encoding="utf-8")
         self.assert_plan_ok()
+        self.as_previous_plan(self.impl)
         self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/use.py — 変更不要: 戻り値は同じ"))
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("影響範囲を測った: 2 files", r.stdout)
+        # 前の計画で「変更不要」とし、変わっていない src/use.py は測った結果に入れない（同じ判断を求めない）
+        self.assertIn("影響範囲を測った: 1 files", r.stdout)
+        self.assertIn("前の判断を使い回した: 1 files", r.stdout)
         self.assertIn("参照先で触れている: 1 files", r.stdout)
 
     def test_many_hits_are_all_kept_and_too_many_stop_the_plan(self) -> None:
@@ -956,9 +967,46 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("上限 40 を超えています（`hello` が 46 ファイル）", r.stderr)
+        self.assertIn("上限 40 行を超えています（`hello` が 46 ファイル）", r.stderr)
         self.assertIn("名前を具体的にするか、計画を分けて", r.stderr)
         self.assertNotIn("未判断", (self.impl / PLAN).read_text(encoding="utf-8"))
+
+    def test_documents_that_only_mention_a_name_are_judged_together(self) -> None:
+        # 名前に触れているだけの文書は、フォルダごとに 1 行にまとめて判断させる（1 件ずつ判断させない）
+        commit(self.impl, {f"notes/n{i}.md": f"# メモ {i}\n\n`hello` を呼ぶ画面。\n" for i in range(3)}, "notes")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        plan = (self.impl / PLAN).read_text(encoding="utf-8")
+        self.assertIn("- notes/n0.md, notes/n1.md, notes/n2.md — 未判断（名前に触れているだけの文書 3 件", plan)
+        self.assertIn("書き足しました。", r.stderr)
+        # 判断も 1 行で書ける。変えたあとの検査も、その 1 行を変更不要として読む
+        self.write_plan(PLAN_ALIGNED.replace(
+            "## 影響範囲\n\nなし", "## 影響範囲\n\n- notes/n0.md, notes/n1.md, notes/n2.md — 変更不要: 名前に触れているだけ"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 回の手間を記録に残す（案 7）
+        self.assertIn("- 手間: 計画の検査 2 回・書き足した未判断 1 行・変えたあとの検査 1 回", self.report(self.impl).stdout)
+
+    def test_reference_documents_that_only_mention_a_name_are_judged_together(self) -> None:
+        # 参照先の、名前に触れているだけの文書も 1 行にまとめる。「関係なし」も 1 行で書け、次の回は訊かない
+        commit(self.design, {f"docs/screens/s{i}.md": f"# 画面 {i}\n\n`hello` を呼ぶ画面。\n" for i in range(3)}, "screens")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        group = "design:docs/screens/s0.md, design:docs/screens/s1.md, design:docs/screens/s2.md"
+        self.assertIn(f"- 未判断: {group}（名前に触れているだけの文書 3 件", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし\n", f"## 参照先のその他\n\n- 関係なし: {group} — 画面名だけ\n"))
+        self.assert_plan_ok()
+        self.write_plan(PLAN_ALIGNED)   # 同じ計画から判断を消せば、また訊く
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        self.as_previous_plan(self.impl)
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("docs/screens/", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.assertIn("前の判断を使い回した", r.stdout + r.stderr)
 
     def test_names_over_the_limit_are_reported_not_dropped(self) -> None:
         names = " ".join(f"`name{i:02}`" for i in range(14))
@@ -1238,18 +1286,23 @@ class CoddTest(unittest.TestCase):
 
     def test_report_lists_changes_without_path_links(self) -> None:
         # コードは文書とつながっていないと通らない。コード以外（設定など）は、つながっていなければ報告で知らせる。
-        commit(self.impl, {"settings.toml": "level = 1\n"}, "settings")
+        # フォルダを書いた文書があれば、コード以外（マイグレーションなど）もつながっている
+        commit(self.impl, {"settings.toml": "level = 1\n", "db/migrations/001.sql": "create table t (a int);\n"}, "settings")
+        commit(self.design, {"docs/db.md": "# DB\n\n実装は `db/migrations/` に置く。\n"}, "db")
         plan = PLAN_ALIGNED.replace("- src/app.py — `hello` の中でログを出す",
-                                    "- src/app.py — `hello` の中でログを出す\n- settings.toml — ログの水準を上げる")
+                                    "- src/app.py — `hello` の中でログを出す\n- settings.toml — ログの水準を上げる\n"
+                                    "- db/migrations/002.sql — ログの表を足す")
         self.write_plan(plan)
         self.assert_plan_ok()
         (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
         (self.impl / "settings.toml").write_text("level = 2\n", encoding="utf-8")
+        (self.impl / "db/migrations/002.sql").write_text("create table logs (a int);\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         r = self.report(self.impl)
         self.assertIn("## 参照先とパスでつながっていない変更\n\n- settings.toml\n", r.stdout)
         self.assertNotIn("- src/app.py\n", r.stdout.split("## 参照先とパスでつながっていない変更", 1)[1])
+        self.assertNotIn("002.sql", r.stdout.split("## 参照先とパスでつながっていない変更", 1)[1])
 
     def test_code_without_docs_must_get_one_like_its_neighbors(self) -> None:
         # コードには対応する文書が 1 つ以上ある前提。無ければ、近いコードの文書を見本に作る（足す）まで通さない。
@@ -4701,7 +4754,8 @@ class CoddTest(unittest.TestCase):
     def test_verify_plan_reports_everything_at_once_and_briefly(self) -> None:
         # 形の指摘があっても測り、1 回で出し切る。出す長さは実行ハーネスがやり直しに渡す 2000 文字に収める。
         self.add_caller()
-        commit(self.design, {f"docs/n{i}.md": f"# n{i}\n\n`hello` の話 {i}\n" for i in range(30)}, "many")
+        # フォルダを分ける（同じフォルダの言及だけの文書は 1 行にまとまる）
+        commit(self.design, {f"docs/n{i}/n{i}.md": f"# n{i}\n\n`hello` の話 {i}\n" for i in range(30)}, "many")
         self.write_plan(PLAN_ALIGNED.replace("## ずれ\n\nなし", "## ずれ\n\n根拠の無いずれ"))
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
@@ -4711,11 +4765,11 @@ class CoddTest(unittest.TestCase):
         self.assertIn("「未判断」として書き足しました", r.stderr)   # 測った結果を同じ回に
         self.assertLessEqual(len(r.stderr), 2000)
         texts = [p["text"] for p in json.loads((self.impl / ".codd/problems.json").read_text(encoding="utf-8"))["problems"]]
-        named = lambda text: len(re.findall(r"docs/n\d+\.md", text))
+        named = lambda text: len(re.findall(r"docs/n\d+/n\d+\.md", text))
         self.assertGreater(sum(named(t) for t in texts), named(r.stderr))   # 全文は控えに残る
         plan = (self.impl / PLAN).read_text(encoding="utf-8")
         self.assertIn("- src/use.py — 未判断", plan)
-        self.assertIn("- 未判断: design:docs/n0.md:3", plan)
+        self.assertIn("- 未判断: design:docs/n0/n0.md:3", plan)
 
     # ------------------------------------------------------------ 点検（本流とは別）
 
@@ -4970,7 +5024,8 @@ class CoddTest(unittest.TestCase):
         skipped = state["skipped_files"]
         self.run_pa(self.impl, "review", "start", "--path", ".", "--no-test")   # 全体はどの側も見る
         whole = json.loads((self.impl / ".codd/review/state.json").read_text(encoding="utf-8"))
-        self.assertTrue(any("docs/api.md" in t for t in whole["targets"] + whole["skipped_files"]))
+        shown = [loc[1] for it in whole["items"] for loc in it["locs"]]   # 項目の箇所に出たものは見たものに数える
+        self.assertTrue(any("docs/api.md" in t for t in whole["targets"] + whole["skipped_files"] + shown))
         (self.impl / ".codd/review/state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         (self.impl / ".codd/review/answers.md").write_text("# 項目への答え\n\n" + "".join(
             f"- {rid} 問題: {items[rid]['locs'][0][1]}:{items[rid]['locs'][0][2]} — 見た\n  - やりたいこと: 先の回で見つけた\n"
