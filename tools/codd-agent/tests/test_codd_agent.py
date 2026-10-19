@@ -5007,7 +5007,8 @@ class CoddTest(unittest.TestCase):
         skipped = state["skipped_files"]
         self.run_pa(self.impl, "review", "start", "--path", ".", "--no-test")   # 全体はどの側も見る
         whole = json.loads((self.impl / ".codd/review/state.json").read_text(encoding="utf-8"))
-        self.assertTrue(any("docs/api.md" in t for t in whole["targets"] + whole["skipped_files"]))
+        shown = [loc[1] for it in whole["items"] for loc in it["locs"]]   # 項目の箇所に出たものは見たものに数える
+        self.assertTrue(any("docs/api.md" in t for t in whole["targets"] + whole["skipped_files"] + shown))
         (self.impl / ".codd/review/state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         (self.impl / ".codd/review/answers.md").write_text("# 項目への答え\n\n" + "".join(
             f"- {rid} 問題: {items[rid]['locs'][0][1]}:{items[rid]['locs'][0][2]} — 見た\n  - やりたいこと: 先の回で見つけた\n"
