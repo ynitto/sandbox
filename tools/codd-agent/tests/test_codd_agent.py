@@ -943,6 +943,46 @@ class CoddTest(unittest.TestCase):
         self.assertIn("影響範囲を測った: 2 files", r.stdout)
         self.assertIn("参照先で触れている: 1 files", r.stdout)
 
+    def test_many_hits_are_all_kept_and_too_many_stop_the_plan(self) -> None:
+        # 1 語 20 行で黙って打ち切らない。20 を超える呼び出し元も、すべて「未判断」として書き足す
+        commit(self.impl, {f"src/use{i:02}.py": "from app import hello\n" for i in range(25)}, "callers")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        plan = (self.impl / PLAN).read_text(encoding="utf-8")
+        self.assertEqual(plan.count("— 未判断"), 25, plan)
+        # 判断の上限を超えたら、捨てずに止め、どの語が多いかと次の手を示す（計画には書き足さない）
+        commit(self.impl, {f"src/more{i:02}.py": "from app import hello\n" for i in range(20)}, "more callers")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("上限 40 を超えています（`hello` が 46 ファイル）", r.stderr)
+        self.assertIn("名前を具体的にするか、計画を分けて", r.stderr)
+        self.assertNotIn("未判断", (self.impl / PLAN).read_text(encoding="utf-8"))
+
+    def test_names_over_the_limit_are_reported_not_dropped(self) -> None:
+        names = " ".join(f"`name{i:02}`" for i in range(14))
+        self.write_plan(PLAN_ALIGNED.replace("`hello` の中でログを出す", f"`hello` の中でログを出す（{names}）"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("次の名前は測っていません: name11, name12, name13", r.stderr)
+        r = self.run_pa(self.impl, "explore", *[a for i in range(13) for a in ("--term", f"w{i}")])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("残りは explore をもう一度実行して探してください: w12", r.stderr)
+
+    def test_elided_names_in_the_plan_are_measured_or_rewritten(self) -> None:
+        # `…hello…` と写しても hello で測る（影響が 0 件のまま承認まで進まない）
+        self.add_caller()
+        self.write_plan(PLAN_ALIGNED.replace("`hello`", "`…hello…`"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/use.py — 未判断", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.write_plan(PLAN_ALIGNED.replace("`hello`", "`he…lo`"))
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("名前を省略の記号（…）で縮めずに", r.stderr)
+        self.assertIn("he…lo", r.stderr)
+
     def test_verify_plan_finds_ref_files_the_own_change_touches(self) -> None:
         # 自分の変更で動く名前に触れている参照先のファイルを読まずに計画したら落とす（逆向きの漏れ）。
         commit(self.design, {"docs/guide.md": "# 使い方\n\n`hello` を呼ぶ。\n"}, "guide")
@@ -1537,6 +1577,33 @@ class CoddTest(unittest.TestCase):
         self.assertIn("検査が失敗しました", r.stderr)
         self.assertNotIn("変える前から同じところで", r.stderr)
         self.assertEqual(git(self.impl, "worktree", "list").count("\n"), 1)   # 一時的な worktree は残さない
+
+    def test_a_failure_that_cannot_be_judged_before_the_change_is_asked(self) -> None:
+        # 変える前の写し（一時的な worktree）には、コミットしない依存が無い。別の理由で落ちたら、前から落ちていたかは
+        # 分からないと言って利用者に訊く（今の失敗として直させない）
+        commit(self.impl, {".gitignore": "deps/\n",
+                           "check.py": "import sys, pathlib\n"
+                                       "if not pathlib.Path('deps').is_dir():\n"
+                                       "    print(\"Error: Cannot find module 'deps'\")\n"
+                                       "    sys.exit(1)\n"
+                                       "print('FAILED test_x - value')\n"
+                                       "sys.exit(1)\n"}, "test needs deps")
+        (self.impl / "deps").mkdir()
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.set_config(self.impl, test=[sys.executable, "check.py"])
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変える前から落ちていたかを判定できません", r.stderr)
+        self.assertIn("Cannot find module 'deps'", r.stderr)
+        self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
+
+    def test_apply_log_does_not_carry_over_to_the_next_run(self) -> None:
+        (self.impl / ".codd").mkdir(exist_ok=True)
+        (self.impl / ".codd/apply.md").write_text("# 前の回の記録\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "draft", "--name", "next-run").returncode, 0)
+        self.assertFalse((self.impl / ".codd/apply.md").exists())
 
     def test_declared_differences_from_the_plan_need_no_replanning(self) -> None:
         commit(self.impl, {"src/other.py": "LEVEL = 1\n", "src/third.py": "X = 1\n"}, "more")
@@ -2188,12 +2255,26 @@ class CoddTest(unittest.TestCase):
                          [{"name": "design", "path": "../design-v2", "guides": [{"use": "docs/r.md"}], "scope": ["docs"]}])
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
-                         [".statemachine/codd/", ".statemachine/codd-review/", ".plans/"])
+                         [".statemachine/codd/", ".statemachine/codd-review/", ".plans/", ".github/", ".kiro/"])
         fresh = self.tmp / "fresh"
         fresh.mkdir()
         git(fresh, "init", "-q")
         init.init_repo(fresh, "impl", [], discover=False, agents=())   # 設計書のフォルダも無ければ、文書を持たないリポジトリ
         self.assertEqual(json.loads((fresh / ".statemachine/codd/codd.json").read_text(encoding="utf-8"))["refs"], [])
+
+    def test_graph_leaves_out_folders_no_side_takes_care_of(self) -> None:
+        # エージェントの設定（隠しフォルダ）と、自分も参照先も受け持たないフォルダを graphify の索引に入れない
+        mono = self.tmp / "mono"
+        for rel in ("src/a.py", "docs/a.md", "tools/x.py", ".agents/skill.md"):
+            (mono / rel).parent.mkdir(parents=True, exist_ok=True)
+            (mono / rel).write_text("x\n", encoding="utf-8")
+        git(mono, "init", "-q")
+        init.init_repo(mono, "impl", None, scope=["src"], ref_scopes=["docs=docs"], discover=False, agents=())
+        lines = (mono / ".graphifyignore").read_text(encoding="utf-8").splitlines()
+        self.assertIn(".agents/", lines)
+        self.assertIn("tools/", lines)
+        self.assertNotIn("src/", lines)
+        self.assertNotIn("docs/", lines)
 
     # ------------------------------------------------------------ 参照先が複数
 

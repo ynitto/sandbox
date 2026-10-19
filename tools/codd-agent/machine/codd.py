@@ -302,7 +302,7 @@ def git_grep(side: "Side", args: list[str]) -> list[str]:
     return [ln for ln in out.splitlines() if side.has(ln.split(":", 1)[0])]
 
 
-GREP_PER_FILE = 3   # 1 つの語で 1 ファイルから拾う行の上限（git の --max-count は 2.38 より前に無いので、ここで絞る）
+GREP_PER_FILE = 3   # 1 つの語で 1 ファイルから詳細に出す行の上限（git の --max-count は 2.38 より前に無いので、ここで絞る）
 
 
 def per_file(lines: list[str], limit: int = GREP_PER_FILE) -> list[str]:
@@ -1524,15 +1524,16 @@ def ensure_graph(ctx: Ctx, repo: Path, rebuild: bool = True) -> tuple[str | None
 
 def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
            use_graph: bool = True, first_lines: dict[str, int] | None = None,
-           rebuild: bool = True) -> tuple[str, list[str], str]:
+           rebuild: bool = True, counts: dict[str, int] | None = None) -> tuple[str, list[str], str]:
     """語ごとに graphify と git grep で引き、（本文, 候補のファイル, graphify の状態）を返す。scope の外は捨てる。
 
     first_lines を渡すと、git grep で一致したファイルごとに最初に一致した行の番号を入れる（文字列の一致だけ）。
+    counts を渡すと、語ごとに git grep で一致したファイルの数を入れる（多すぎる語を利用者に示すため）。
     リポジトリの中身（stamp）と語が前と同じなら、前の結果を使う（計画を直して検査し直すたびに引き直さない）。
     """
     repo = side.path
     key = hashlib.sha256(json.dumps(
-        [str(repo), side.scope, side.exclude, terms, graph_cmd, use_graph and ctx.config["graphify"] != "off",
+        [SEARCH_CACHE_VERSION, str(repo), side.scope, side.exclude, terms, graph_cmd, use_graph and ctx.config["graphify"] != "off",
          use_graph and bool(find_tool("graphify")), use_graph and bool(find_tool("context-mode")),
          stamp(repo), rebuild], ensure_ascii=False).encode()).hexdigest()
     cache = load_search_cache(ctx)
@@ -1540,17 +1541,24 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
         hit = cache[key]
         if first_lines is not None:
             first_lines.update(hit["first"])
+        if counts is not None:
+            counts.update(hit.get("counts", {}))
         return hit["body"], hit["files"], "fresh" if hit["note"] == "updated" else hit["note"]
     found_lines: dict[str, int] = {}
-    body, files, note = _search(ctx, side, terms, graph_cmd, use_graph, found_lines, rebuild)
+    term_files: dict[str, set[str]] = {}
+    body, files, note = _search(ctx, side, terms, graph_cmd, use_graph, found_lines, rebuild, term_files)
     if first_lines is not None:
         first_lines.update(found_lines)
-    cache[key] = {"body": body, "files": files, "note": note, "first": found_lines}
+    found_counts = {t: len(v) for t, v in term_files.items()}
+    if counts is not None:
+        counts.update(found_counts)
+    cache[key] = {"body": body, "files": files, "note": note, "first": found_lines, "counts": found_counts}
     save_search_cache(ctx, cache)
     return body, files, note
 
 
 SEARCH_CACHE = "search-cache.json"
+SEARCH_CACHE_VERSION = 2   # 結果の形を変えたら上げる（前の版が打ち切った結果を使い回さない）
 MAX_SEARCH_CACHE = 64
 
 
@@ -1569,7 +1577,9 @@ def save_search_cache(ctx: Ctx, cache: dict) -> None:
 
 
 def _search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
-            use_graph: bool, first_lines: dict[str, int], rebuild: bool = True) -> tuple[str, list[str], str]:
+            use_graph: bool, first_lines: dict[str, int], rebuild: bool = True,
+            term_files: dict[str, set[str]] | None = None) -> tuple[str, list[str], str]:
+    term_files = {} if term_files is None else term_files
     repo = side.path
     exe, graph, note = ensure_graph(ctx, repo, rebuild) if use_graph else (None, None, "unused")
     lines: list[str] = []
@@ -1604,14 +1614,20 @@ def _search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
         # --untracked: まだコミットしていない新しいファイルも拾う（.gitignore に載っているものは除く）。
         # 識別子は語単位（-w）で引く。`hello` で `helloWorld` を拾って影響範囲を水増ししない。
         word = ["-w"] if _WORDLIKE.match(term) else []
-        hits = per_file(git_grep(side, ["--untracked", "-n", "-I", "-i", "-F", *word, "-e", term]))[:GREP_LINES_PER_TERM]
-        lines += [f"#### {term}", "", *([f"- {h[:200]}" for h in hits] or ["- (該当なし)"]), ""]
+        # 一致したファイルは全部を候補にする（黙って打ち切らない）。行を出すのは詳細の読みやすさのためだけに絞る
+        hits = per_file(git_grep(side, ["--untracked", "-n", "-I", "-i", "-F", *word, "-e", term]))
+        shown = hits[:GREP_LINES_PER_TERM]
+        rest = len({h.split(":", 1)[0] for h in hits} - {h.split(":", 1)[0] for h in shown})
+        rest_note = [f"- （ほか {rest} ファイル。候補のファイルには入れた）"] if rest else []
+        lines += [f"#### {term}", "", *([f"- {h[:200]}" for h in shown] or ["- (該当なし)"]), *rest_note, ""]
         for h in hits:
             rel, _, rest = h.partition(":")
             add_file(rel)
             num = rest.split(":", 1)[0]
             if num.isdigit():
                 first_lines[rel] = min(first_lines.get(rel, int(num)), int(num))
+            if side.has(rel):
+                term_files.setdefault(term, set()).add(rel)
     return "\n".join(lines), files, note
 
 
@@ -1686,15 +1702,20 @@ def terms_of(args: argparse.Namespace) -> list[str]:
     terms = unique(args.term or [])
     if not terms:
         raise CoddError("検索語を --term で渡してください")
-    return terms[:MAX_TERMS]
+    if len(terms) > MAX_TERMS:
+        # 黙って捨てない。探した記録は回の中で積み上がるので、分けて引けばよい
+        raise CoddError(f"検索語は 1 回に {MAX_TERMS} 語までです。残りは explore をもう一度実行して探してください: "
+                        + ", ".join(terms[MAX_TERMS:]))
+    return terms
 
 
 def write_report(ctx: Ctx, name: str, title: str, terms: list[str], parts: list[tuple[str, str, str]],
-                 files: list[str]) -> Path:
-    """parts は（見出し, graphify の状態, 本文）の列。"""
+                 files: list[str], skipped: list[str] = ()) -> Path:
+    """parts は（見出し, graphify の状態, 本文）の列。skipped は上限を超えて探さなかった語。"""
     ctx.data.mkdir(parents=True, exist_ok=True)
     path = ctx.data / name
-    lines = [f"# {title}", "", f"- 検索語: {', '.join(terms)}", ""]
+    lines = [f"# {title}", "", f"- 検索語: {', '.join(terms)}",
+             *([f"- 上限（{MAX_TERMS} 語）を超えて探していない語: {', '.join(skipped)}"] if skipped else []), ""]
     for heading, note, body in parts:
         lines += [f"## {heading}", "", f"- graphify: {note}", "", body]
     lines += ["## 候補のファイル", "", *([f"- {p}" for p in files] or ["- (見つからない)"]), ""]
@@ -1717,7 +1738,7 @@ def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
         notes.append(f"{r.name}={note}" if many else note)
         # 文字列の一致で見つかったファイルを控える（graphify は関係の近いものまで広く拾うので、検査には使わない）。
         # 計画の検査は、探したこと（参照先ごと）と、ここに控えたファイルを計画が扱ったかを確かめる。
-        hits = [p for p in found if p in grep_hits][:MAX_MEASURED]
+        hits = [p for p in found if p in grep_hits]
         this_run[r.name] = hits
         entry = log.setdefault(r.name, {"terms": [], "files": []})
         entry["terms"] = unique([*entry["terms"], *terms])
@@ -1730,14 +1751,19 @@ def cmd_explore(ctx: Ctx, args: argparse.Namespace) -> int:
     write_text(ctx.data / EXPLORE_LOG, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
     # 今回の検索語で一致した行をそのまま出す（関係はこの行で判断し、関係しそうなものだけ前後を開く）。
     # 前の explore で出したファイルは出し直さない（控えには残っている）。
-    shown = 0
+    shown = hidden = 0
     for r in targets:
         lines = log.get(r.name, {}).get("lines", {})
         for rel in this_run.get(r.name, []):
-            if rel not in lines or shown >= MAX_MEASURED:
+            if rel not in lines:
+                continue
+            if shown >= MAX_MEASURED:
+                hidden += 1
                 continue
             print(f"- {ref_label(ctx, r.name, rel)}:{lines[rel]}  {snippet(r.path / rel, lines[rel], terms)}")
             shown += 1
+    if hidden:
+        print(f"- ほか {hidden} ファイル（控えには残した。計画の検査が「{PENDING_MARK}」として示す）")
     print(f"FOUND {len(files)} files (graphify: {', '.join(notes)})")
     fulltext_trouble("\n".join(body for _, _, body in parts))
     print(f"  詳細: {path.relative_to(ctx.root)}")
@@ -1755,6 +1781,7 @@ def snippet(path: Path, line: int, terms: list[str], width: int = 100) -> str:
 
 
 EXPLORE_LOG = "explore.json"
+APPLY_LOG = "apply.md"      # 変える段の記録（手順ごとに当たったファイル・計画との違い）。回を閉じるときに消す
 RULES_READ = "rules-read.json"
 
 
@@ -2898,6 +2925,8 @@ def name_terms(text: str) -> list[str]:
     for term in _BACKTICK.findall(text):
         if "/" in term or "\\" in term or (_CITE.fullmatch(term) and new_file_name(term)):
             continue
+        # 前後の省略の記号（`…sourceId…`）は落として探す。名前の途中の省略は計画の検査で書き直させる（elided_names）
+        term = _ELLIPSIS_EDGE.sub("", term)
         # コードの断片（`discount: int = 0`・`obj.f("a")`・`note=備考`）は、先頭の名前だけを名前とする
         term = re.sub(r"^#+\s+", "", term.strip())   # 見出しは `## 見出し` と書いても見出しの名前で数える
         head = _CODE_HEAD.match(term)
@@ -2908,6 +2937,14 @@ def name_terms(text: str) -> list[str]:
 
 
 _URL_TERM = re.compile(r"^(?:[A-Z]+\s+)?/\S*$")
+_ELLIPSIS_EDGE = re.compile(r"^(?:…|\.\.\.|\*)+|(?:…|\.\.\.|\*)+$")
+_ELLIPSIS = re.compile(r"…|\.\.\.|\*")
+
+
+def elided_names(text: str) -> list[str]:
+    """`…` の中に省略の記号（… ... *）が残る名前（`get…Id`）。そのままでは、どこにも当たらず影響が 0 件になる。"""
+    return unique(t for t in _BACKTICK.findall(text) if _ELLIPSIS.search(_ELLIPSIS_EDGE.sub("", t))
+                  and not re.search(r"\s", t) and "/" not in t)
 
 
 def new_file_name(rel: str) -> bool:
@@ -2976,11 +3013,16 @@ def _only_renamed(old: str, new: str, renamed: set[str]) -> bool:
     return bool(pairs) and all(x in renamed and y in renamed for x, y in pairs)
 
 
-def terms_from_diff(side: Side) -> list[str]:
-    """実際の変更（作業中の差分と、新しいファイル）から、変わった名前を拾う。"""
+def terms_from_diff(side: Side, only: set[str] | None = None) -> list[str]:
+    """実際の変更（作業中の差分と、新しいファイル）から、変わった名前を拾う。
+
+    only を渡すと、そのファイル（この回に変えたファイル）の差分だけから拾う（変える前から作業中だった変更を混ぜない）。
+    競合の解消で取り込んだ変更の名前は拾わない（incoming_names）。計画と関係の無い名前で測る範囲を膨らませない。
+    """
     repo = side.path
+    keep = (lambda p: side.has(p) and (only is None or p in only))
     diff = diff_without(run(["git", "diff", side.diff_base, *side.pathspec()], repo, GIT_TIMEOUT)[1],
-                        lambda p: not side.has(p))
+                        lambda p: not keep(p))
     terms = []
     quoted: dict[str, Counter] = {"+": Counter(), "-": Counter()}
     local: dict[str, set[str]] = {"+": set(), "-": set()}
@@ -3016,7 +3058,7 @@ def terms_from_diff(side: Side) -> list[str]:
     terms += [t for t in quoted["+"] | quoted["-"] if quoted["+"][t] != quoted["-"][t]]
     for name in run(["git", "ls-files", "--others", "--exclude-standard", *side.pathspec()],
                     repo, GIT_TIMEOUT)[1].splitlines():
-        if not side.has(name):
+        if not keep(name):
             continue
         try:
             text = (repo / name).read_text(encoding="utf-8")
@@ -3032,7 +3074,56 @@ def terms_from_diff(side: Side) -> list[str]:
     # 足しただけの見出しのうち、前からその側にあるもの（同じフォルダの文書の書式に合わせた `## 使い方` など）は、
     # 変わった名前ではない。ありふれた語で、関係の無いファイルにばかり当たる
     copied = {h for h in heads["+"] - heads["-"] if existed_at_head(side, h)}
-    return unique(t for t in terms if t not in copied)
+    incoming = incoming_names(side)
+    return unique(t for t in terms if t not in copied and t not in incoming)
+
+
+def incoming_names(side: Side) -> set[str]:
+    """競合の解消で取り込んだ側の変更にある名前（解消中の MERGE_HEAD と、この回の起点のあとのマージの取り込んだ側）。
+
+    取り込んだ変更は、ほかの人がその側で済ませたもので、この回の計画とは関係が無い。取り込む前に分かれた点から
+    取り込んだ側までの差分の名前を、変えたあとに測る名前から外す。
+    """
+    repo = side.path
+    tips = []
+    rc, out = run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], repo, GIT_TIMEOUT)
+    if rc == 0 and out.strip():
+        tips.append(out.strip())
+    if side.diff_base != "HEAD":
+        rc, out = run(["git", "rev-list", "--merges", "--parents", f"{side.diff_base}..HEAD"], repo, GIT_TIMEOUT)
+        tips += [ln.split()[2] for ln in (out.splitlines() if rc == 0 else []) if len(ln.split()) > 2]
+    names: set[str] = set()
+    for tip in tips:
+        rc, diff = run(["git", "diff", f"{side.diff_base}...{tip}", *side.pathspec()], repo, GIT_TIMEOUT)
+        for line in diff.splitlines() if rc == 0 else []:
+            if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
+                continue
+            names |= {m.group(1) for pat in _DIFF_TERMS for m in [pat.match(line)] if m}
+            names |= set(_BACKTICK.findall(line))
+    return names
+
+
+COMMON_SHARE = 0.1   # 側のファイルのこの割合以上に出てくる語は、ありふれた語として 1 件ずつは測らない
+COMMON_MIN = 20      # 小さなリポジトリでは割合で決めない（この数より少ないファイルにしか出ない語は測る）
+
+
+def common_terms(ctx: Ctx, terms: list[str]) -> list[str]:
+    """どれかの側で、多くのファイル（その側のファイルの 1 割以上）に出てくる語。
+
+    変えたあとの差分から拾った一般的な語（`name`・`check` など）は、関係の無いファイルにばかり当たり、判断を膨らませる。
+    """
+    out = []
+    for _, side in all_sides(ctx):
+        rc, listed = run(["git", "ls-files", *side.pathspec()], side.path, GIT_TIMEOUT)
+        total = sum(1 for p in listed.splitlines() if side.has(p)) if rc == 0 else 0
+        limit = max(COMMON_MIN, int(total * COMMON_SHARE))
+        if total <= limit:
+            continue
+        for t in terms:
+            if t not in out and len([p for p in git_grep(side, ["-l", "-I", "-i", "-F", *grep_word(t), "-e", t])
+                                     if side.has(p)]) >= limit:
+                out.append(t)
+    return out
 
 
 def diff_by_file(side: Side) -> dict[str, tuple[list[str], list[str]]]:
@@ -3178,20 +3269,21 @@ def measure(ctx: Ctx, terms: list[str], name: str, title: str, rebuild: bool = T
 
     （ファイル, ファイルごとの拾った理由（グラフで拾ったものだけ））を返す。グラフの参考は測った結果のファイルにだけ書く。
     """
-    terms = terms[:MAX_TERMS]
-    body, files, _ = search(ctx, ctx.own, terms, "affected", use_graph=False, rebuild=rebuild)
+    terms, skipped = cap_terms(ctx, terms)
+    counts: dict[str, int] = {}
+    body, files, _ = search(ctx, ctx.own, terms, "affected", use_graph=False, rebuild=rebuild, counts=counts)
+    note_counts(ctx, counts)
     hits = graph_impact(ctx, terms, rebuild, focus, sections)
     why: dict[str, str] = {}
     for h in sorted(hits.values(), key=lambda h: (TIER_RANK[h.tier], h.rel)):
         if not h.key and h.tier != "note" and h.rel not in files:
             files.append(h.rel)
             why[h.rel] = h.why
-    files = files[:MAX_MEASURED]
     view = graph_view(ctx, rebuild) if ctx.config["graphify"] != "off" else None
     note = ", ".join(view.notes) if view else "off"
     write_report(ctx, name, title, terms, [(f"{ctx.root}{scope_words(ctx.own)}", note,
                                             body + "\n### グラフ（根拠の強さごと）\n\n" + graph_report(hits, ctx, {""}))],
-                 files)
+                 files, skipped)
     return files, {p: w for p, w in why.items() if p in files}
 
 
@@ -3202,12 +3294,14 @@ def measure_refs(ctx: Ctx, terms: list[str], name: str, title: str,
 
     グラフは自分と参照先を同じ名前の識別子でつないで辿る。推定のつながりは、確からしさの高い 1 歩だけを判断させる。
     """
-    terms = terms[:MAX_TERMS]
+    terms, skipped = cap_terms(ctx, terms)
     parts, files, found = [], [], set()
     hits = graph_impact(ctx, terms, rebuild, focus)
     for r in ctx.refs:
         first: dict[str, int] = {}
-        body, grep_hits, _ = search(ctx, r, terms, "query", use_graph=False, first_lines=first)
+        counts: dict[str, int] = {}
+        body, grep_hits, _ = search(ctx, r, terms, "query", use_graph=False, first_lines=first, counts=counts)
+        note_counts(ctx, counts)
         if lines is not None:
             lines[r.name] = first
         graph_hits = [h for h in sorted(hits.values(), key=lambda h: (TIER_RANK[h.tier], h.rel))
@@ -3219,11 +3313,34 @@ def measure_refs(ctx: Ctx, terms: list[str], name: str, title: str,
                 why[(r.name, h.rel)] = h.why
         parts.append((f"{r.name}（{r.label}）  {r.path}{scope_words(r)}", "（文字列の一致とグラフ）",
                       body + "\n### グラフ（根拠の強さごと）\n\n" + graph_report(hits, ctx, {r.name})))
-        for rel in [*grep_hits, *(h.rel for h in graph_hits)][:MAX_MEASURED]:
+        for rel in [*grep_hits, *(h.rel for h in graph_hits)]:
             found.add((r.name, rel))
             files.append(ref_label(ctx, r.name, rel))
-    write_report(ctx, name, title, terms, parts, files)
+    write_report(ctx, name, title, terms, parts, files, skipped)
     return found
+
+
+def cap_terms(ctx: Ctx, terms: list[str]) -> tuple[list[str], list[str]]:
+    """測る名前を上限（MAX_TERMS）までにし、探さなかった名前を返す（ctx にも控え、検査が示す）。"""
+    skipped = terms[MAX_TERMS:]
+    if skipped:
+        ctx.__dict__.setdefault("_skipped_terms", [])
+        ctx.__dict__["_skipped_terms"] = unique([*ctx.__dict__["_skipped_terms"], *skipped])
+    return terms[:MAX_TERMS], skipped
+
+
+def note_counts(ctx: Ctx, counts: dict[str, int]) -> None:
+    """語ごとの一致したファイルの数を控える（側ごとの多いほう）。多すぎて判断しきれないときに、どの語かを示す。"""
+    seen = ctx.__dict__.setdefault("_term_counts", {})
+    for t, n in counts.items():
+        seen[t] = max(seen.get(t, 0), n)
+
+
+def wide_terms(ctx: Ctx, limit: int = 5) -> str:
+    """多く当たった語を、多い順に `名前` N files で並べる。"""
+    seen = ctx.__dict__.get("_term_counts", {})
+    top = sorted(((n, t) for t, n in seen.items() if n), reverse=True)[:limit]
+    return "、".join(f"`{t}` が {n} ファイル" for n, t in top)
 
 
 # 「変えない」と読める言い回し。変更不要の判断は `変更不要: 理由` の 1 つの書き方に寄せる（計画の検査と変えたあとの
@@ -3335,7 +3452,6 @@ PATH_EXTS = {
     ".cs", ".c", ".h", ".cpp", ".hpp", ".swift", ".scala", ".sh", ".ps1", ".sql", ".vue", ".svelte",
     ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".html", ".css", ".example",
 }
-MAX_TRACE_FILES = 200
 MAX_READ_BYTES = 1_000_000
 
 
@@ -3445,7 +3561,7 @@ def files_mentioning(side: Side, words: list[str]) -> list[str]:
     if not words:
         return []
     args = [a for w in words for a in ("-e", w)]
-    return git_grep(side, ["--untracked", "-l", "-I", "-F", *args])[:MAX_TRACE_FILES]
+    return git_grep(side, ["--untracked", "-l", "-I", "-F", *args])
 
 
 def linked(ctx: Ctx, key: str, rels: set[str]) -> set[tuple[str, str]]:
@@ -3828,6 +3944,10 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     if ref_change and not terms_from_plan(bodies) and not urls:
         problems.append(Problem("shape", "参照先の変更案で変わる名前（関数・API・用語・見出し）を `…` で囲んでください"
                         "（影響範囲を測る語になります）"))
+    elided = elided_names("\n".join(bodies.get(h, "") for h in ("## 自分の変更案", "## 参照先の変更案", "## 影響範囲")))
+    if elided:
+        problems.append(Problem("shape", "名前を省略の記号（…）で縮めずに、コードや文書にあるとおりに書いてください"
+                        f"（そのままでは影響を測れません）: {'、'.join(elided)}"))
     problems += plan_budget(ctx, bodies, planned)
     return problems
 
@@ -3903,6 +4023,23 @@ PENDING_HOW = {
     "## 参照先のその他": "参照先のファイルは示した行の前後だけを読み、前提・制約・ずれの根拠に移すか「関係なし: 理由」",
     GUIDES_HEADING: "書式の見本は、その書式をどう守るか",
 }
+
+
+MAX_PENDING = 40   # 1 回の計画の検査で「未判断」として書き足す上限（超えたら捨てずに止め、語か計画を絞らせる）
+
+
+def too_wide_problems(ctx: Ctx, pending: Pending) -> list[str]:
+    """測った結果が多すぎる・探さなかった語がある（黙って打ち切らず、何が多いかと次の手を示して止める）。"""
+    out = []
+    if pending.count() > MAX_PENDING:
+        out.append(f"測ったのに計画に無いファイルが {pending.count()} 件あり、1 回で判断する上限 {MAX_PENDING} を超えています"
+                   f"（{wide_terms(ctx) or '多く当たった語なし'}）。名前を具体的にするか、計画を分けて「今回やらないこと」に"
+                   f"回してください（全件: {DATA_DIRNAME}/impact.md・ref-impact.md・tests.md）")
+    skipped = ctx.__dict__.get("_skipped_terms") or []
+    if skipped:
+        out.append(f"変わる名前が上限の {MAX_TERMS} 語を超えたので、次の名前は測っていません: {', '.join(skipped)}。"
+                   "計画を分けるか、影響を測る必要の無い名前（使うだけで変えないものなど）をバッククォートで囲まないでください")
+    return tag("size", out)
 
 
 def pending_problem(found: list[tuple[str, str]], added: int = 0) -> list[str]:
@@ -4341,7 +4478,7 @@ def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
         if not tests:
             continue
         if terms:
-            _, hits, _ = search(ctx, side, terms[:MAX_TERMS], "affected", use_graph=False)
+            _, hits, _ = search(ctx, side, cap_terms(ctx, terms)[0], "affected", use_graph=False)
             for rel in hits:
                 if rel in tests and (key, rel) not in targets:
                     found.setdefault((key, rel), "名前")
@@ -5601,10 +5738,13 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
         left = pending_items(bodies)
         pending = Pending()
         measured_problems, measured, ref_count = measure_plan(ctx, bodies, pending)
-        if pending.count():
+        problems += too_wide_problems(ctx, pending)
+        if 0 < pending.count() <= MAX_PENDING:
             write_text(ctx.plan, add_pending(text, pending))
-        problems += pending_problem(left + [(h, ln) for h, lns in pending.lines.items() for ln in lns],
-                                    pending.count())
+            problems += pending_problem(left + [(h, ln) for h, lns in pending.lines.items() for ln in lns],
+                                        pending.count())
+        else:
+            problems += pending_problem(left)
         problems += measured_problems
     outside = ctx.__dict__.get("_outside") or []
     notice = (f"知らせ: {OUTSIDE_NOTICE}（検査は止めない。改名なら一緒に直すかを確認で確かめる）: "
@@ -5704,6 +5844,14 @@ PREEXISTING_OK_NAME = "preexisting-ok.json"     # 利用者が認めた前から
 BEFORE_RUNS_NAME = "before-runs.json"           # 変える前の中身で動かした結果（印とコマンドが同じなら使い回す）
 
 
+BEFORE_UNKNOWN = ("落ちましたが、変える前から落ちていたかを判定できません。変える前の写し（一時的な worktree）では、"
+                  "コミットしていない依存が無いなどの別の理由で落ちました。この回の変更のせいかを利用者に確かめます")
+# 変える前の写しで、テストの中身ではなく環境のせいで落ちたことを表す出力（依存・コマンド・ファイルが見つからない）
+_ENV_FAILURE = re.compile(r"Cannot find (?:module|package)[^\n]*|ERR_MODULE_NOT_FOUND[^\n]*|ModuleNotFoundError[^\n]*|"
+                          r"No module named[^\n]*|command not found[^\n]*|is not recognized as an internal or external command|"
+                          r"ENOENT[^\n]*|No such file or directory[^\n]*")
+
+
 FAILED_TESTS = "落ちたテスト（テストが書いた結果から。見るファイルがあれば開いて確かめてから直す）:"
 MAX_FAILED_SHOWN = 8
 
@@ -5801,6 +5949,12 @@ def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, l
         print(f"{label}: 変える前から落ちていたもの（利用者が認めた）だけなので、止めません")
         return []
     before = run_before(ctx, key, side, cwd, argv)
+    if before is not None and before[0] != 0 and _ENV_FAILURE.search(before[1]) and not _ENV_FAILURE.search(problems[0]):
+        # 変える前の写しには依存（node_modules など、コミットしないもの）や参照先が揃わず、別の理由で落ちた。
+        # 前から落ちていたかは分からないので、今の失敗として直させず、利用者に確かめる
+        return [Problem("config", f"{label}: {BEFORE_UNKNOWN}（変える前の写しでの出力: "
+                        f"{' '.join(_ENV_FAILURE.search(before[1]).group(0).split())[:120]}）\n"
+                        + problems[0].split("\n", 1)[-1] + detail)]
     if before is None or before[0] == 0 or not now or not now <= failure_lines(before[1]):
         return [Problem(problems[0].kind, problems[0] + detail)]
     found = json.loads((ctx.data / PREEXISTING_NAME).read_text(encoding="utf-8")) \
@@ -6086,7 +6240,7 @@ class Deviations:
 
 def deviations(ctx: Ctx) -> Deviations:
     out = Deviations({}, {})
-    log, before = ctx.data / "apply.md", ctx.data / "before.json"
+    log, before = ctx.data / APPLY_LOG, ctx.data / "before.json"
     if not log.is_file() or not before.is_file() or log.stat().st_mtime < before.stat().st_mtime:
         return out   # 前の回の申告は使い回さない
     _, bodies = sections(log.read_text(encoding="utf-8"), [DEVIATION_HEADING])
@@ -6761,11 +6915,18 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
 
     # 3. 実際の変更から影響を測り直す（自分の変更・参照先の変更の両方。計画より広く変えた分も拾う）。
     changed = [ctx.ref(n) for n in a.changed]
-    own_diff_terms = terms_from_diff(ctx.own) if a.own_touched else []
+    own_diff_terms = terms_from_diff(ctx.own, a.own_touched) if a.own_touched else []
     plan_terms = terms_from_plan(bodies) + own_terms_from_plan(bodies)
     # 変える段で「関係なし」とした名前（同じ綴りの別物にばかり当たる）は測らない。計画に書いた名前は計画で判断したので除かない。
-    terms = unique([t for t in [*(t for r in changed for t in terms_from_diff(r)), *own_diff_terms]
-                    if t not in dev.unrelated or t in plan_terms] + plan_terms)
+    diff_terms = unique(t for t in [*(t for r in changed for t in terms_from_diff(r, a.touched.get(r.name))),
+                                    *own_diff_terms] if t not in dev.unrelated and t not in plan_terms)
+    # 計画に無い、ありふれた語は 1 件ずつ測らない（何を外したかは示す）
+    common = common_terms(ctx, diff_terms)
+    if common:
+        print(f"多くのファイルに出てくるので、変えたあとには測らなかった名前（計画に書いた名前は測る）: {', '.join(common)}")
+    own_diff_terms = [t for t in own_diff_terms if t not in common]
+    # 計画に書いた名前を先に測る（上限の語数を、差分から拾った名前で使い切らない）
+    terms = unique(plan_terms + [t for t in diff_terms if t not in common])
     measured: list[str] = []
     ref_hits: set[tuple[str, str]] = set()
     hold: list[tuple[str, str]] = []   # 直すべきだが、人の承認が要るファイル（エージェントに直させず、利用者に訊く）
@@ -6779,6 +6940,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         measured, _ = measure(ctx, terms, "impact-after.md",
                               f"変えたあとに、自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける範囲（測定）", rebuild=False,
                               focus=touched_all, sections=sections)
+        if ctx.__dict__.get("_skipped_terms"):
+            print(f"変わった名前が上限の {MAX_TERMS} 語を超えたので、次の名前は測っていません: "
+                  + ", ".join(ctx.__dict__["_skipped_terms"]))
         # 従う手順に挙げた決まりのファイルは、手順として読んだもの（変える対象ではない）
         waived = (listed_paths(ctx, bodies.get("## 影響範囲", ""), only_no_change=True) | tp.paths("")
                   | listed_paths(ctx, bodies.get("## 自分の変更案", ""), only_no_change=True)
@@ -6882,7 +7046,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     by_file = [g.target for _, g, _ in hits if g.kind == "skill"]
     names = unique(names + by_file)
     if names or hits:
-        log = ctx.data / "apply.md"
+        log = ctx.data / APPLY_LOG
         fresh = log.is_file() and log.stat().st_mtime >= (ctx.data / "before.json").stat().st_mtime
         text = log.read_text(encoding="utf-8") if fresh else ""
         review, reviewed = skill_review(ctx, a, text)
@@ -6894,7 +7058,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             problems += used_problems(text, rest, f"{DATA_DIRNAME}/apply.md ")
         problems += review
         problems += asks_problems(ctx, a, text)
-    apply_log = ctx.data / "apply.md"
+    apply_log = ctx.data / APPLY_LOG
     if apply_log.is_file():
         skills = [*ctx.config["skills"]["apply"], *(s for r in changed for s in r.apply_skills), *by_file,
                   *(s.name for s in repo_skills(ctx.root, ctx.config["skill_dirs"]))]
@@ -7711,6 +7875,9 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     else:
         for stale in (ISSUE_LOG, "advice.md"):   # 新しい回。前の回の出来事・止まった理由を振り返りに混ぜない
             (ctx.data / stale).unlink(missing_ok=True)
+    if not keep_baseline:
+        # 変える段の記録は回ごと。この回でまだ変えていなければ、前の回か捨てた計画の記録なので次に持ち越さない
+        (ctx.data / APPLY_LOG).unlink(missing_ok=True)
     dest = new_plan_path(ctx.root / PLAN_DIR, name)
     if ahead is not None:
         shutil.move(str(ahead), dest)   # 立てておいた計画は、進める計画になって next/ から消える
@@ -8068,7 +8235,7 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
         result += applied_lines(ctx, applied)
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
-    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME, LINKS_FOUND_NAME, ROLLED_BACK,
+    for name in ("applied.json", APPLY_LOG, PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME, LINKS_FOUND_NAME, ROLLED_BACK,
                  UNRUN_NAME, UNRUN_OK_NAME, UNCHECKED_NAME):
         (ctx.data / name).unlink(missing_ok=True)   # 閉じた回の印を、次の回に持ち越さない
     clear_failed_tests(ctx)
