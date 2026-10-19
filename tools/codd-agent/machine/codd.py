@@ -6169,6 +6169,7 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
     touched = {"": a.own_touched, **a.touched}
     lines = [ln for ln in log.splitlines() if NOT_USED_MARK not in ln]
     missing: list[tuple[str, str, str, list[str], object]] = []   # 側, 表示, 手順の中身, 変えたファイル, 読んだと控える
+    shown: dict[tuple[str, str], str] = {}   # 指摘に出す名前（参照先の手順は 名前:パス）
     tools: list[str] = []
     for key, name in apply_skills(ctx, {k for k, files in touched.items() if files}):
         rels = sorted(touched.get(key, set()))
@@ -6195,6 +6196,7 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
         else:
             docs = guide_docs(ctx, g, key)
             missing.append((key, g.label, guide_body(ctx, g, key), rels, lambda d=docs: mark_docs_read(ctx, d)))
+        shown[(key, g.label)] = guide_label(ctx, g, key)   # 参照先にある手順は、参照先の名前を付けて示す
     problems = []
     if tools:
         problems.append(Problem("rules", f"変えたファイルに決められた道具を使った記録がありません（{DATA_DIRNAME}/apply.md に "
@@ -6208,7 +6210,7 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
            f"手順ごとに {DATA_DIRNAME}/apply.md へ {APPLY_LOG_FORM} で書いてください。", ""]
     for key, label, body, rels, mark_read in missing:
         side = side_of(ctx, key)
-        out += [f"## {label}（{key or '自分'}）", "", "### 手順", ""]
+        out += [f"## {shown.get((key, label), label)}（{key or '自分'}）", "", "### 手順", ""]
         out += [body.strip() or "（手順が見つかりません。名前どおりの手順で見直す）", ""]
         out += ["### 変えたファイル", "", *[f"- {side_label(ctx, key, rel)}" for rel in rels], ""]
         diff = run(["git", "diff", side.diff_base, "--", *rels], side.path, GIT_TIMEOUT)[1]
@@ -6223,7 +6225,7 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
     write_text(path, "\n".join(out))
     return (problems + tag("rules", [f"変えたファイルを、使うと決めたスキルの手順で見直していません（{DATA_DIRNAME}/{SKILL_REVIEW} の手順と差分を"
                                      f"見比べて合わない箇所を直し、{DATA_DIRNAME}/apply.md に {APPLY_LOG_FORM} で書いてください）: "
-                                     + ", ".join(label for _, label, _, _, _ in missing)]),
+                                     + ", ".join(shown.get((key, label), label) for key, label, _, _, _ in missing)]),
             {label.strip("`") for _, label, _, _, _ in missing})
 
 
