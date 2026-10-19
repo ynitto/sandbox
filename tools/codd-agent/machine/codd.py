@@ -4301,7 +4301,11 @@ def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
                 args = [a for t in group for a in ("-e", t)]
                 for rel in git_grep(side, ["--untracked", "-l", "-I", "-F", *flags, *args]):
                     if rel in tests and (key, rel) not in targets:
-                        found.setdefault((key, rel), "文字列")
+                        body = read_text(side.path / rel) or ""
+                        hit = next((t for t in group if (re.search(rf"(?<![\w]){re.escape(t)}(?![\w])", body) if flags
+                                                         else t in body)), "")
+                        # どの文字列で当たったかを示す（別物なら、その文字列を「関係なし」と書ける）
+                        found.setdefault((key, rel), f"文字列 `{hit}`" if hit else "文字列")
         for rel in sorted(tests):
             if (key, rel) not in targets and file_stem(rel, test=True) in stems:
                 found.setdefault((key, rel), "ファイル名")
@@ -5974,7 +5978,8 @@ def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
 DEVIATION_HEADING = "## 計画との違い"
 ACCEPTED_NAME = "accepted.json"
 UNRELATED_MARK = "関係なし"
-_DEVIATION = re.compile(r"^[-*]\s+`?([^`\s]+)`?\s*[—–-]+\s*(変更不要|追加|関係なし)\s*[:：]\s*(\S.*)$")
+# 対象はカンマで並べてもよい（計画の「変更不要」と同じ書き方）
+_DEVIATION = re.compile(r"^[-*]\s+((?:`?[^`\s,]+`?\s*,\s*)*`?[^`\s,]+`?)\s*[—–-]+\s*(変更不要|追加|関係なし)\s*[:：]\s*(\S.*)$")
 
 
 @dataclass
@@ -6013,14 +6018,15 @@ def deviations(ctx: Ctx) -> Deviations:
         m = _DEVIATION.match(line.strip())
         if not m:
             continue
-        path, kind, reason = m.groups()
-        if kind == UNRELATED_MARK:
-            out.unrelated[path.strip("/")] = reason.strip()
-            continue
-        name, sep, rest = path.partition(":")
-        key: str | None = name if sep and name in refs else None
-        rel = rest if key else path
-        (out.no_change if kind == NO_CHANGE_MARK else out.added)[(key, rel.strip("/"))] = reason.strip()
+        targets, kind, reason = m.groups()
+        for path in (t.strip().strip("`") for t in targets.split(",")):
+            if kind == UNRELATED_MARK:
+                out.unrelated[path.strip("/")] = reason.strip()
+                continue
+            name, sep, rest = path.partition(":")
+            key: str | None = name if sep and name in refs else None
+            rel = rest if key else path
+            (out.no_change if kind == NO_CHANGE_MARK else out.added)[(key, rel.strip("/"))] = reason.strip()
     return out
 
 
@@ -6733,7 +6739,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if tests_enabled(ctx):
         changed_files = {k: {p for p in v if not is_test(ctx, k, p)} for k, v in touched_all.items()}
         texts = unique(t for key, side in all_sides(ctx) if touched_all.get(key)
-                       for t in literals_from_diff(ctx, key, side))
+                       for t in literals_from_diff(ctx, key, side) if t not in dev.unrelated)
         found = affected = affected_tests(ctx, terms, changed_files, texts, rebuild=False, sections=sections)
         write_tests_report(ctx, "tests-after.md", "変えたあとに、変更が響くテスト（測定）", found, tp,
                            {"": want_own, **a.planned}, touched_all)
@@ -6978,13 +6984,22 @@ STALE_UNPLANNED = "消した名前を、計画で変えないファイルがま�
 def removed_names(ctx: Ctx, key: str, side: Side) -> set[str]:
     """この回で消して、その側のどこにももう無い名前（関数・型・定数・変数・文書の見出し）。"""
     gone: set[str] = set()
+    code: set[str] = set()
     for rel, (plus, minus) in diff_by_file(side).items():
-        pats = _NEW_DOC_NAMES if rel.lower().endswith(DOC_EXTS) else _DIFF_TERMS[:5]
+        doc = rel.lower().endswith(DOC_EXTS)
+        pats = _NEW_DOC_NAMES if doc else _DIFF_TERMS[:5]
 
         def grab(lines: list[str]) -> set[str]:
             return {m.group(1).strip() for ln in lines for pat in pats for m in [pat.match("-" + ln)] if m}
-        gone |= {n for n in grab(minus) - grab(plus) if _WORDLIKE.match(n) and len(n) >= 4}
-    return {n for n in gone if not git_grep(side, ["--untracked", "-l", "-I", "-F", "-w", "-e", n])}
+        names = {n for n in grab(minus) - grab(plus) if _WORDLIKE.match(n) and len(n) >= 4}
+        (gone if doc else code).update(names)
+
+    def defined(n: str) -> bool:
+        # コードの名前は、定義が残っているか（URL の `/orders/{id}/cancel` や説明の文に語が残っても、消した名前は消した名前）
+        lines = git_grep(side, ["--untracked", "-h", "-I", "-F", "-w", "-e", n])
+        return any(m and m.group(1) == n for ln in lines for pat in _DIFF_TERMS[:5] for m in [pat.match("+" + ln)])
+    return ({n for n in gone if not git_grep(side, ["--untracked", "-l", "-I", "-F", "-w", "-e", n])}
+            | {n for n in code - gone if not defined(n)})
 
 
 def stale_names(ctx: Ctx, touched: dict[str, set[str]], a: "Applied") -> tuple[list[str], list[str]]:
