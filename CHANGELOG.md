@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 落ちたテストの長い出力を会話に入れず、読み書きの手順を必ず読ませる
+
+- テストや検査が落ちて出力が長いとき、末尾だけを示し、全文は `.codd/logs/` に残して context-mode の索引に入れる。
+  エージェントは全文を開かず、`context-mode search` で関係する行だけを読む（テストをやり直して全文を読み直さない）
+- エージェントがファイルを読み書きするときの手順（`.statemachine/codd/rules/reading.md`）を codd が持ち、どのリポジトリでも
+  `guide --all` で読み込ませる。読んでいなければ計画の検査とレビューの検査で止める
+
 ### codd-agent: 同じことをする仕組みを 1 つにまとめる
 
 - 計画の検査のやり直しを 1 つにした。これまでは同じステートのやり直し（2 回）と、止まったときの訊かずのやり直し（2 回）の

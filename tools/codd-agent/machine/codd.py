@@ -1771,6 +1771,33 @@ def rule_label(ctx: Ctx, spec: str) -> tuple[str, str] | None:
     return None
 
 
+READING_RULE = f"{MACHINE_REL}/rules/reading.md"   # codd が持つ読み書きの手順。どのリポジトリでも必ず読ませる
+
+
+def reading_rule_digest(ctx: Ctx) -> str | None:
+    """読み書きの手順の中身の印（置いていない古い置き方なら None。そのときは求めない）。"""
+    try:
+        return hashlib.sha256((ctx.root / READING_RULE).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def read_reading_rule(ctx: Ctx, again: bool = False) -> None:
+    """読み書きの手順を出して読み込ませる。計画の「従う手順」には挙げなくてよい（読んだことだけを確かめる）。"""
+    reading = reading_rule_digest(ctx)
+    if not reading:
+        return
+    log = rules_read(ctx)
+    if not again and log.get(READING_RULE) == reading:
+        print(f"# 読み書きの手順 {READING_RULE}（この回で読み込み済み・変わっていない）\n")
+        return
+    print(f"# 読み書きの手順 {READING_RULE}\n")
+    print(read_text(ctx.root / READING_RULE) or "（読めませんでした）")
+    log[READING_RULE] = reading
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    write_text(ctx.data / RULES_READ, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
+
+
 def read_rules(ctx: Ctx, rules: list[tuple[str, str]], again: bool = False) -> None:
     """守る決まりのファイルを出して読み込ませ、読み込んだことを控える（計画の検査が確かめる）。"""
     log = rules_read(ctx)
@@ -1799,7 +1826,8 @@ def rules_read(ctx: Ctx) -> dict:
 def unread_rules(ctx: Ctx) -> list[str]:
     """読み込んでいない（か、読み込んだあとに中身が変わった）決まりのファイル。"""
     log = rules_read(ctx)
-    out = []
+    reading = reading_rule_digest(ctx)
+    out = [READING_RULE] if reading and log.get(READING_RULE) != reading else []
     for name, rel in ctx.rule_files():
         label = f"{name}:{rel}" if name else rel
         if log.get(label) != rule_digest(ctx, name, rel):
@@ -3586,8 +3614,6 @@ def mentioned_skill(body: str, name: str) -> bool:
 def rules_problems(ctx: Ctx, body: str) -> list[str]:
     """決まりのファイルをすべて読んで挙げたか（見出し「従う手順」）。"""
     rules = ctx.rule_files()
-    if not rules:
-        return []
     own_rels = {rel for name, rel in rules if not name}
     missing = []
     for name, rel in rules:
@@ -3597,7 +3623,7 @@ def rules_problems(ctx: Ctx, body: str) -> list[str]:
             ok = any(mentioned(body, x) for x in unique([rel, path]))  # 参照先が 1 つで、自分に同じ名前の決まりが無ければ名前を省いてよい
         if not ok:
             missing.append(f"{name}:{rel}" if name else rel)
-    if is_none(body) or missing:
+    if rules and (is_none(body) or missing):
         return tag("rules", ["従う手順に、決まりのファイルを読んで挙げてください（このやりたいことに効く決まりと、どう守るか）: "
                 + ", ".join(missing or [f"{n}:{r}" if n else r for n, r in rules])])
     unread = unread_rules(ctx)
@@ -5494,7 +5520,26 @@ OUTSIDE_NOTICE = "受け持ちのフォルダ（scope）の外にも、変わる
 
 # ---------------------------------------------------------------- 変えたあとの検査
 
-def run_check(repo: Path, command: list[str] | None, label: str) -> list[str]:
+LOGS_DIR = "logs"   # 落ちたテスト・検査の出力の全文（.codd/logs/）。会話には末尾だけを出し、全文は検索で引かせる
+
+
+def keep_log(log_dir: Path, label: str, out: str) -> str:
+    """落ちた出力の全文を残し、context-mode があれば索引に入れる。読み方の 1 行を返す。
+
+    全文を会話に入れずに済むようにする（テストを手でやり直して長いログを丸ごと読ませない）。
+    """
+    path = log_dir / f"{hashlib.sha256(label.encode()).hexdigest()[:8]}.log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    write_text(path, out)
+    rel = f"{DATA_DIRNAME}/{LOGS_DIR}/{path.name}"
+    exe = shutil.which("context-mode")
+    if exe and run([exe, "index", str(path), "--project", str(log_dir.parent.parent)],
+                   log_dir.parent.parent, CONTEXT_MODE_TIMEOUT)[0] == 0:
+        return f"全文: {rel}（開かずに `context-mode search 語 --project .` で関係する行だけを読む。テストをやり直して全文を読まない）"
+    return f"全文: {rel}（開かずに grep で関係する行だけを読む。テストをやり直して全文を読まない）"
+
+
+def run_check(repo: Path, command: list[str] | None, label: str, log_dir: Path | None = None) -> list[str]:
     if not command:
         return []
     rc, out = run(command, repo, CHECK_TIMEOUT)
@@ -5506,6 +5551,8 @@ def run_check(repo: Path, command: list[str] | None, label: str) -> list[str]:
     first = next((i for i, ln in enumerate(lines) if _FAILURE_LINE.search(ln)), None)
     if first is not None and first < len(lines) - 20:
         shown = [*lines[first:first + 15], "…", *lines[-8:]]
+    if log_dir and len(lines) > len(shown):
+        shown = [*shown, keep_log(log_dir, label, out)]
     tail = "\n".join(shown)
     # 文言だけで決めるのは、テストの失敗の行が無いときだけ（CLI のテストが期待値として同じ文言を出すことがある）
     if rc in (126, 127) or (_CANNOT_RUN.search(out) and not _FAILURE_LINE.search(out)):
@@ -5612,7 +5659,7 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
 def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, label: str) -> list[str]:
     """run_check に、変える前から落ちていたかの見分けを足したもの。認めた前からの失敗だけなら通す。"""
     started = time.time()
-    problems = run_check(cwd, argv, label)
+    problems = run_check(cwd, argv, label, ctx.data / LOGS_DIR)
     if not problems or CANNOT_RUN in problems[0]:
         return problems   # 動かせないものは、変える前の中身で動かしても同じ理由で落ちるだけ
     failed = failed_tests(ctx, key, started - 1)
@@ -6359,6 +6406,7 @@ def cmd_guide(ctx: Ctx, args: argparse.Namespace) -> int:
         print("読み込む手順の名前かパス、または --all（守る決まりをすべて）を渡してください", file=sys.stderr)
         return 1
     if args.all:
+        read_reading_rule(ctx, args.again)
         read_rules(ctx, ctx.rule_files(), args.again)
         if not ctx.rule_files():
             print("守る決まりのファイルはありません")
