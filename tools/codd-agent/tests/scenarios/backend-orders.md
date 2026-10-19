@@ -18,9 +18,11 @@
 
 **spec（設計書）**
 
-- `docs/api/orders.md` — 見出しは概要・エンドポイント・状態。「`GET /orders/{id}/total` — 合計（税込み）を返す。`calc_total` で計算する」
+- `docs/api/orders.md` — 見出しは概要・エンドポイント・状態。「`GET /orders/{id}/total` — 合計（税込み）を返す。`calc_total` で計算する」。
+  概要に実装のパス（`orders/service.py`・`orders/routes.py`）を書く
 - `docs/api/users.md` — 同じ見出しで、`get`・`update`
 - `docs/db/schema.md` — orders の列の表
+- `docs/overview.md` — 全体の概要。「注文は `orders/`、利用者は `users/` に置く」とフォルダだけを書く
 
 **codd を入れる**: api は `--side impl --ref ../spec`、`test` は `python3 -m unittest discover -s tests -t .`。spec は `--side design --ref ../api`。
 
@@ -85,6 +87,24 @@ context-mode を入れた端末で流す（2026-10-18。PR #973）。
 - 「チェックして」で `review start` を回すと数え直す。断ったときは、次の回ではなく 3 回後にまた尋ねる
 - 尋ねるのはステートマシンが終わってから（done の段では `REVIEW` の行を伝えるだけで待たない。そのあと振り返りの段が続くため）
 - spec（設計書）の側で回しても同じ。参照先の api は文書が無いので、explore の詳細に全文検索の節を出さない
+
+## 6. 新しい機能をファイルごと足す
+
+2026-10-18 に、新しく実装するときに仕様書の新規作成が漏れたことから足した。
+
+**頼むこと**（api で）: 返金を足して。`orders/refund.py` に `refund(order)` を置き、`POST /orders/{id}/refund` から呼ぶ。
+
+**利用者の答え**: OK。
+
+**期待**
+
+- 計画で新しく作る `orders/refund.py` に、作る・足す文書の項目が無ければ、計画の検査が「対応する文書の無いコード」で止め、
+  見本に `spec:docs/api/orders.md`（`orders/service.py` に対応）を挙げる。`docs/overview.md` が `orders/` を書いていても、
+  隣のコードがファイルごとの文書を持つので、概要の文書では済ませない
+- 見本に倣って `docs/api/refund.md` を作るか `docs/api/orders.md` に節を足す項目を、参照先の変更案に `orders/refund.py` と同じ行で書けば通る
+- 変えたあと、作った・足した文書の本文に `orders/refund.py` が無ければ止まる。書けば通る
+- 返金をフォルダごと新しく作る（`returns/service.py`。`returns/` はまだ無い）計画も書け、同じく文書を求める
+- 文書をフォルダごとに書くサンプル（`docs/api/orders.md` がパスを書かず、`orders/` だけを書く）なら、同じ依頼でも文書を求めない
 
 ## 直していないもの
 

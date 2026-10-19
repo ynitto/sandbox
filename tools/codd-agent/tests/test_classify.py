@@ -1,13 +1,11 @@
-"""止まった理由を「利用者に訊く側」と「訊かずにやり直す側」のどちらに分けるかを、代表的な文言で固定する。
-
-種類の名前や件数は固定しない（種類を増やした日・文言を足した日に落ちないように）。
-"""
+"""止まった理由の種類を「利用者に訊く側」と「訊かずにやり直す側」のどちらに分けるかを固定する。"""
 
 from __future__ import annotations
 
 import importlib.util
-import sys
 import io
+import re
+import sys
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -25,97 +23,61 @@ def load_codd():
 
 codd = load_codd()
 
-NO_ASK = (
-    "見出しがありません: ## やりたいこと",
-    "参照先を探していません: docs（`python3 .statemachine/codd/codd.py explore --term 語` で、やりたいことに固有の語を探してください）",
-    "## テストの変更案 にテストの判断がありません。コード・仕様書と同じく、足す・直すテストのファイルを挙げてください（要らないなら `- 変更不要: 理由`。テストのファイルは codd.json の tests の書き方に当たるもの）",
-    "## テストの変更案 の項目に、テストのファイルのパスがありません: - ログを確かめる",
-    "## テストの変更案 の変更不要の後に理由がありません: - tests/a.py — 変更不要",
-    "新しく足す `log` を確かめるテストが ## テストの変更案 にありません。足すテストのパスと確かめることを書いてください",
-    "変更が響くテストの結果を写している文書が、計画にありません（写し直すなら変えるファイルに）: docs/perf.md",
-    "終わった回の計画の記録を書き換えています（判断の記録なので変えない）: .plans/2026-10-01-0000-x.md",
-    "作る・変えるファイルに決められた手順を、「従う手順」に挙げていません（…）: `py-style`（src/app.py）",
-    "ファイルに決められた手順の文書を読み込んでいません（…）: docs/py.md",
-    "変えたファイルに決められた道具を使った記録がありません（…）: `sqlfmt`（src/a.sql）",
-    "手順の確かめることに答えていません（…）: `py-style`: 戻り値を変えていない",
-    "手順の確かめることの根拠に書いたパスが、どの側にもありません: `py-style`: 戻り値を変えていない — src/x.py",
-)
-ASK = (
-    "ずれがあるのに、自分の変更案も参照先の変更案も「なし」です（ずれを残すなら、ずれではなくその他に書く）",
-    "テストで得たものが、文書の求めを満たしていません（実装を直すか、目安を変えるなら利用者に確かめて計画に挙げてから文書を直してください）",
-    "文書の書式（見出しの並び）が今の書式から外れています: docs/api.md — 例（見本: docs/a.md。書式は決まりとして守る）",
-)
-# 人の承認が要るファイル（protect）に触れた指摘は、変えたあとの検査でしか出ず、いつも訊く。
-ASK_APPLY = (
-    codd.PROTECTED + "（戻してください。…）: docs/requirements.md",
-    codd.PROTECTED_HIT + "（変えずに利用者に確かめます。…）: legacy/old.py",
-)
-# テストが通ったフリ（§4.2.1〜§4.2.3）。訊かずにやり直すと、誤った合格か同じ失敗の繰り返しになる
-FALSE_GREEN = (
-    codd.TEST_EDITED + "（…）: tests/test_app.py（消した行 1・足した行 1）",
-    codd.UNRUN + "（…）: tests/test_app.py",
-    "実装のテスト: " + codd.CANNOT_RUN + "（127）: npm test\nsh: jest: command not found",
-)
+# 訊かずにやり直してよい種類（エージェントが自分で直せる）と、利用者に訊く種類。
+RETRY = {"check", "undone", "unfixed", "extra", "names", "paths", "rules", "shape"}
+ASK = {
+    "form",                                        # どの種類も付いていない指摘。付け忘れが訊かない側に落ちないように
+    "protected", "protected-hit",                  # 人の承認が要るファイル（protect）
+    "test-edit", "unrun", "preexisting",           # テストが通ったフリ（§4.2.1〜§4.2.3）
+    "outside", "output", "ref-coverage", "stale-ref", "unconfirmed", "stale", "config",
+}
+SOURCE = (MACHINE / "codd.py").read_text(encoding="utf-8")
 
 
-def asks(phase: str, text: str) -> bool:
-    return codd.classify(phase, text) not in codd.AUTO_KINDS[phase]
+def asks(phase: str, kind: str) -> bool:
+    return kind not in codd.AUTO_KINDS[phase]
 
 
-class ClassifyTest(unittest.TestCase):
-    def test_fixable_wording_is_retried_without_asking(self) -> None:
-        for phase in ("plan", "apply"):
-            for text in NO_ASK:
-                with self.subTest(phase=phase, text=text):
-                    self.assertFalse(asks(phase, text))
+class KindTest(unittest.TestCase):
+    """止めた理由の種類は、指摘を出すところで付ける（Problem / tag）。文言から当て直さない。"""
 
-    def test_design_decisions_are_asked(self) -> None:
-        for phase in ("plan", "apply"):
-            for text in ASK:
-                with self.subTest(phase=phase, text=text):
-                    self.assertTrue(asks(phase, text))
+    def test_every_kind_given_at_the_source_has_advice(self) -> None:
+        kinds = set(re.findall(r'(?:Problem|tag)\("([a-z-]+)"', SOURCE))
+        self.assertTrue(kinds)
+        known = set(codd.ADVICE["plan"]) | set(codd.ADVICE["apply"])
+        self.assertEqual(kinds - known, set())
 
-    def test_protected_files_are_asked(self) -> None:
-        for text in ASK_APPLY:
-            with self.subTest(text=text):
-                self.assertTrue(asks("apply", text))
-                self.assertIn(codd.classify("apply", text), ("protected", "protected-hit"))
+    def test_fixable_kinds_are_retried_without_asking(self) -> None:
+        for kind in RETRY:
+            with self.subTest(kind=kind):
+                self.assertFalse(asks("apply", kind))
 
-    def test_false_green_is_asked(self) -> None:
-        for text in FALSE_GREEN:
-            with self.subTest(text=text):
-                self.assertTrue(asks("apply", text))
+    def test_plan_problems_are_asked_after_the_state_retries(self) -> None:
+        # 計画の検査は同じステートのやり直し（check_retries）で直させる。stuck からも訊かずに戻すと二重に数える
+        for kind in RETRY | ASK:
+            with self.subTest(kind=kind):
+                self.assertTrue(asks("plan", kind))
 
-    def test_same_spelling_names_are_retried_after_changing(self) -> None:
-        # 変えたあとに、名前が参照先の別のファイルに同じ綴りで出てくるだけなら、申告で済むので訊かない。
-        text = codd.NAMES_TOUCH_REFS + "（…）: docs/zoom.md"
-        self.assertFalse(asks("apply", text))
-        # 消した名前を参照先がまだ書いているのも、直すか申告すれば済む。
-        self.assertFalse(asks("apply", codd.STALE_NAMES + "（…）: `calc_total` — docs/api/orders.md:9"))
-        # パスでつながっているファイルの扱い漏れは、これまでどおり訊く。
-        self.assertTrue(asks("apply", "自分の変えたファイルとパスでつながっている参照先のファイルを、計画で扱っていません"))
+    def test_decisions_are_asked(self) -> None:
+        for kind in ASK:
+            with self.subTest(kind=kind):
+                self.assertTrue(asks("apply", kind))
 
-    def test_unknown_wording_is_asked(self) -> None:
-        # 目印を足し忘れた指摘は、訊く側に落ちる。書き方の目印に似た言い回しを含んでいても同じ。
-        for phase in ("plan", "apply"):
-            for text in ("まだどの目印にも当たらない新しい指摘",
-                         "目安が「なし」です（変えてよいか利用者に確かめてください）",
-                         "## 今回やらないこと の項目に、残す理由のパスがありません"):
-                with self.subTest(phase=phase, text=text):
-                    self.assertTrue(asks(phase, text))
+    def test_an_untagged_problem_is_recorded_as_form(self) -> None:
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            codd.record_problems(data, "apply", [codd.Problem("check", "落ちた"), "まだ種類の無い新しい指摘"])
+            items = json.loads((data / "problems.json").read_text(encoding="utf-8"))["problems"]
+        self.assertEqual([i["kind"] for i in items], ["check", "form"])
+
+    def test_tag_keeps_a_kind_given_closer_to_the_source(self) -> None:
+        out = codd.tag("shape", [codd.Problem("protected", "a"), "b"])
+        self.assertEqual([p.kind for p in out], ["protected", "shape"])
+        self.assertEqual(out, ["a", "b"])
 
 
 class ReplayFindingsTest(unittest.TestCase):
-    def test_a_removed_name_in_an_unplanned_file_is_asked(self) -> None:
-        self.assertTrue(asks("apply", codd.STALE_UNPLANNED + "（…）: `hello` — docs/api.md:3"))
-        self.assertFalse(asks("apply", codd.STALE_NAMES + "（…）: `hello` — docs/api.md:3"))
-
-    def test_a_failure_from_before_the_change_is_asked(self) -> None:
-        # 変える前から同じところで落ちるテストは、この回で直させない（計画に無い変更になる）
-        text = "実装のテスト: " + codd.PREEXISTING + "（…）\nFAILED test_old"
-        self.assertEqual(codd.classify("apply", text), "preexisting")
-        self.assertTrue(asks("apply", text))
-
     def test_the_same_problems_again_are_asked_even_with_retries_left(self) -> None:
         # 訊かずにやり直しても同じ指摘が残るなら、エージェントには直せない。回数が残っていても訊く
         import tempfile
@@ -133,8 +95,9 @@ class ReplayFindingsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / ".codd"
             data.mkdir()
-            problems = [{"kind": codd.classify("apply", t), "text": t} for t in (
-                "実装のテストの検査が失敗しました（1）: python3 -m unittest", codd.PROTECTED_HIT + "（…）: legacy/old.py")]
+            problems = [{"kind": k, "text": t} for k, t in (
+                ("check", "実装のテストの検査が失敗しました（1）: python3 -m unittest"),
+                ("protected-hit", codd.PROTECTED_HIT + "（…）: legacy/old.py"))]
             (data / "problems.json").write_text(json.dumps({"phase": "apply", "problems": problems}), encoding="utf-8")
             out = io.StringIO()
             with redirect_stdout(out):
@@ -153,10 +116,6 @@ class ReplayFindingsTest(unittest.TestCase):
 
 class SecondReplayTest(unittest.TestCase):
     """2 回目の再生（tests/scenarios/）で見つけたもの。"""
-
-    def test_an_untested_new_name_is_retried_without_asking(self) -> None:
-        # テストを足すか「変更不要」と書くかはエージェントが決められる（計画の段の同じ指摘も訊かない）
-        self.assertFalse(asks("apply", "新しく足した名前を確かめるテストがありません（…）: `today`（handler.go）"))
 
     def test_a_no_change_reason_may_quote_names(self) -> None:
         j = codd.judgment("`Math.floor` — 変更不要: 標準の関数で、`roundMoney` のテストで確かめる")
