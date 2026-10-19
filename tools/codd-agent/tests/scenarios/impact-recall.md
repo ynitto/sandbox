@@ -1,0 +1,73 @@
+# 影響範囲の再現率と判断の手間を測る
+
+影響範囲の測り方を変えたときに、取りこぼし（再現率）と、エージェントに判断させる件数が良くなったかを比べる。
+過去に人が通した計画を正解として使う。数字は回ごとに違ってよいが、前に測った値より悪くなったら、その変更を見直す。
+
+## サンプル
+
+作業用のフォルダに 2 つのリポジトリを並べて作る。どちらも `main` で始め、作ったものをコミットしてから codd を入れる。
+
+**app（実装）**
+
+- `src/preview/usePreviewModel.ts` — `export function usePreviewModel()`。画面の状態を返すフック
+- `src/preview/` の下に、`usePreviewModel` を呼ぶ部品を 25 個（`Preview01.tsx` から `Preview25.tsx`）
+- `src/print/PrintButton.tsx` — `sourceId` を受け取って印刷する部品
+- `src/print/usePrint.ts` — `sourceId` を `PrintButton` に渡す
+
+**doc（設計書）**
+
+- `docs/specs/screen/` の下に画面仕様を 6 つ。どれも本文で `usePreviewModel` に一度だけ触れる（画面名の言及だけ）
+- `docs/design/preview.md` — 見出し `## usePreviewModel` と、返す状態の表
+- `docs/design/print.md` — 「`sourceId` は印刷の元になる文書の ID」
+
+**codd を入れる**: app は `--side impl --ref doc=../doc`、doc は `--side design --ref app=../app`。
+
+**正解**: 下の頼みごとごとに、人が最終的に扱ったファイル（変えた、または変更不要と判断した）を、このシナリオに書いた
+とおりとする。
+
+## 1. 名前を省略して書いた計画
+
+**頼むこと**（app で）: `sourceId` を必須にして。
+
+計画で名前を `…sourceId…` と書いてみる。
+
+**期待**
+
+- 前後の省略の記号は落として `sourceId` で測る。`src/print/usePrint.ts` と `docs/design/print.md` が「未判断」として書き足される
+- `source…Id` のように途中を省略すると、計画の検査が書き直させる（影響が 0 件のまま確認に進まない）
+- 正解: `src/print/PrintButton.tsx`・`src/print/usePrint.ts`・`docs/design/print.md`。再現率 100%
+
+## 2. よく使われる名前
+
+**頼むこと**（app で）: `usePreviewModel` の返す値に `zoom` を足して。
+
+**期待**
+
+- `usePreviewModel` が 26 ファイルに当たる。これまでの上限（1 語 20 行）で黙って落ちず、すべて「未判断」として書き足される
+  （40 件を超えたら、どの名前が多いかを示して止まる）
+- 正解: `src/preview/` の 26 ファイルと `docs/design/preview.md`。再現率 100%
+
+## 3. 言及だけの文書をまとめる（doc で）
+
+**頼むこと**（doc で）: `usePreviewModel` の節に `zoom` を書き足して。
+
+**期待**
+
+- `docs/specs/screen/` の 6 ファイルは 1 行にまとめて「未判断」として書き足される（名前に触れているだけの文書 6 件）。
+  エージェントは 1 行で「変更不要: 画面名の言及だけ」と判断する
+- 記録の「手間」の行で、書き足した未判断が、まとめる前（6 件以上）より減っている
+
+## 4. 同じ判断を使い回す
+
+**頼むこと**（doc で、3 を記録して閉じたあと）: `usePreviewModel` の節の表の見出しを直して。
+
+**期待**
+
+- 3 で「変更不要」とした `docs/specs/screen/` の 6 ファイルは、変わっていなければもう訊かない
+  （計画の検査が「前の判断を使い回した: 6 files」と出す）
+- 画面仕様の 1 つを書き換えてから同じことを頼むと、そのファイルだけまた訊く
+
+## 5. 測った値を残す
+
+各回の記録（`.plans/` の計画の「結果」）にある「手間」の行（計画の検査の回数・書き足した未判断の件数・変えたあとの検査の回数・
+段ごとの時間）と、上の再現率を表にして、前に測った値と比べる。

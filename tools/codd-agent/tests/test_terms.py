@@ -275,5 +275,22 @@ class PlanNamesTest(unittest.TestCase):
         self.assertEqual(codd.elided_names("`get…Id` と `…sourceId…` と `a b…`"), ["get…Id"])
 
 
+class GrepTermsTest(unittest.TestCase):
+    def test_terms_are_searched_together_and_split_back_per_term(self) -> None:
+        # git を語ごとに動かさず、語単位とそうでないものの 2 回で引き、行を語に振り分ける
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "a.py").write_text("hello()\nhelloWorld()\nprint('サインイン')\n", encoding="utf-8")
+            (repo / "b.md").write_text("HELLO は挨拶。\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            found = codd.grep_terms(codd.Side("own", repo, []), ["hello", "サインイン", "missing"])
+        self.assertEqual(found["hello"], ["a.py:1:hello()", "b.md:1:HELLO は挨拶。"])   # 語単位・大文字小文字を問わない
+        self.assertEqual(found["サインイン"], ["a.py:3:print('サインイン')"])
+        self.assertEqual(found["missing"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
