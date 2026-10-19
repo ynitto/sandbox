@@ -43,7 +43,8 @@
 #         変えた分を戻す（rollback）か残すかも、ここで確かめてから進む。
 #         apply へ戻るのは、検査を通って確認で退けられていない計画のときだけ（verify-apply が確かめる）
 # stopped やめたときの結果（record）を伝え、計画を記録として残す
-# retro   終わりの振り返り。codd.json の retro にプロンプトがあれば、利用者に訊かずに実行して終わる（既定は何もしない）
+# retro   終わりの振り返り。止まった・退けたことと利用者の指摘があれば、原因を課題メモ（.plans/retro/）に残す（直し方は書かない）。
+#         codd.json の retro にプロンプトがあれば、それも実行する。利用者には訊かない
 #
 # 決定的な仕事（探す・グラフの更新・計画の形と根拠の検査・どちらを変えたかの検査）は codd.py が行う。
 
@@ -115,7 +116,7 @@ states:
     action_file: actions/stopped.md
 
   retro:
-    description: "振り返る（設定のプロンプトがあれば、訊かずに実行する）"
+    description: "振り返る（問題があれば課題メモを残し、設定のプロンプトがあれば実行する。訊かない）"
     action_file: actions/retro.md
     output_validator: "startswith:OK,FAILED"
     terminal: true

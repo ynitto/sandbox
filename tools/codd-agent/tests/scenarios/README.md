@@ -8,7 +8,7 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 | ファイル | サンプル | 見るところ |
 |---|---|---|
 | [aws-orders.md](aws-orders.md) | AWS の注文サービス（画面・API・非同期ワーカー）と設計書 | 人の承認が要るファイル、改名、設計書の側からの変更、点検 |
-| [backend-orders.md](backend-orders.md) | 注文 API（Python）と仕様書 | 改名で消した名前の残り、テストのキャッシュ、途中までの変更、context-mode の全文検索、確かめる流れを勧める、新しいファイルの文書 |
+| [backend-orders.md](backend-orders.md) | 注文 API（Python）と仕様書 | 改名で消した名前の残り、テストのキャッシュ、途中までの変更、context-mode の全文検索、確かめる流れを勧める、新しいファイルの文書、振り返りの課題メモ |
 | [pc-main-screen.md](pc-main-screen.md) | PC 版のメイン画面（TSX）と設計書 | よくある名前のローカル変数、途中のコミット |
 | [web-hello.md](web-hello.md) | 小さな Web 画面と e2e のケース | 新しい名前のテスト、注記の無い e2e のケース |
 | [monorepo-library.md](monorepo-library.md) | ソース・テスト・文書が 1 つのリポジトリにあるライブラリ（TS） | 同じリポジトリの文書を参照先にする、ファイルの削除、やめて戻す、同じリポジトリでの全文検索 |
@@ -26,7 +26,9 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 
 再生するエージェントは次のようにする。
 
-1. 作業用の一時フォルダに、「サンプル」の要点を満たすリポジトリを作り、このリポジトリの `tools/codd-agent/init.py` で codd を入れる
+1. 作業用の一時フォルダに、「サンプル」の要点を満たすリポジトリを作り、このリポジトリの `tools/codd-agent/init.py` で codd を入れる。
+   サンプルに書いていなくても、コードには対応する文書を用意し、文書の本文にコードのパス（かフォルダ）を書いておく
+   （対応する文書の無いコードは計画の検査が止める。シナリオがわざと文書を欠くときは、そう書く）
 2. シナリオを順に、codd エージェントの役で回す（`.statemachine/codd/codd.py` を `show` → `guide --all` → `explore` → `draft` →
    計画を書く → `verify-plan` → `summary` → `decide` → 変える → `verify-apply` → `record`（やめたときは `record --stop`））。確かめる
    シナリオは `.statemachine/codd-review/workflow.yaml` を回す（`review start` → `review next` と答える → `review verify` →
