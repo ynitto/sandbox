@@ -37,7 +37,7 @@ LLM が読んだ文書のつながりを足したグラフで、取りこぼし�
 - 計画の検査で、影響範囲は次のとおりに分かれる（`.codd/impact.md` の「グラフ（根拠の強さごと）」）
   - 必須: `src/app.py`・`tests/test_billing.py`、参照先の `design:docs/tax.md`（文書に `calc_tax` と書いてある）
   - 要判断: `docs/notes.txt`（LLM が「丸め」で `calc_tax` に結びつけた推定）。計画に無ければ「未判断」として理由付きで書き足される
-  - 参考: `e2e/checkout.yaml`（推定の 2 歩目）、`docs/glossary.txt`（似ているだけ）。検査には出ない
+  - 参考: `e2e/checkout.yaml`（確かな辺で 1 歩進んだ先から、推定の辺でもう 1 歩。推定から推定へは辿らない）、`docs/glossary.txt`（似ているだけ）。検査には出ない
 - `README.md` は候補に挙がってもよいが、そこからほかのファイルへは広がらない
 
 **エージェントの判断**: `docs/notes.txt` は「変更不要: 丸めの順は変わらない」とする。

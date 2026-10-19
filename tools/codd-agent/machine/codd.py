@@ -2901,7 +2901,9 @@ def name_terms(text: str) -> list[str]:
         # コードの断片（`discount: int = 0`・`obj.f("a")`・`note=備考`）は、先頭の名前だけを名前とする
         term = re.sub(r"^#+\s+", "", term.strip())   # 見出しは `## 見出し` と書いても見出しの名前で数える
         head = _CODE_HEAD.match(term)
-        out.append(head.group(1) if head else re.sub(r"\(\)$", "", term))
+        name = head.group(1) if head else re.sub(r"\(\)$", "", term)
+        if name not in REVIEW_STOPWORDS:   # `None` を返す、の None は言語の値で、変わる名前ではない
+            out.append(name)
     return unique(out)
 
 
@@ -3120,11 +3122,11 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
                   if counts["+"][t] != counts["-"][t] and _LETTER.search(t) and "${" not in t and not still_same(t))
 
 
-# 新しく足した名前（テストで確かめるもの）。コードは定義（export しない const・let・var は中の値なので除く）、文書は見出し。
+# 新しく足した名前（テストで確かめるもの）。コードは定義（export しない const・let・var は中の値なので除く）、文書は節の見出し。
 # 字下げした function（コンポーネントの中のハンドラなど）は外から呼べないので除く。
 _NEW_CODE_NAMES = (*_DIFF_TERMS[:2], re.compile(r"^[+-](?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]{2,})"),
                    re.compile(r"^[+-]\s*export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]{2,})\s*="), _DIFF_TERMS[4])
-_NEW_DOC_NAMES = (_DIFF_TERMS[5],)
+_NEW_DOC_NAMES = (re.compile(r"^[+-]\s*#{2,6}\s+(.{2,60}?)\s*#*\s*$"),)   # 文書の題（# ）は確かめる名前ではない
 
 
 def grep_word(term: str) -> list[str]:
@@ -5231,7 +5233,7 @@ def formats_apply_problems(ctx: Ctx, text: str) -> list[str]:
     file = ctx.data / FORMATS_FILE
     if not file.is_file():
         return []
-    renamed = set(name_terms(text))
+    renamed = {t.strip() for t in _BACKTICK.findall(text)}   # `## 見出し` と書いた見出し（関数名の `hello` は見出しではない）
     problems = []
     for f in json.loads(file.read_text(encoding="utf-8")):
         path = side_of(ctx, f["side"]).path / f["path"]
@@ -6139,6 +6141,8 @@ UNRELATED_HINT = (f"{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に�
                   f"ファイルごとなら「- パス — {UNRELATED_MARK}: 理由」と書く")
 NAME_HINT = (f"変えた名前が同じ綴りの別物に当たっているだけなら、名前ごとに「- `名前` — {UNRELATED_MARK}: 理由」と書けば、"
              "その名前だけで当たったファイルはまとめて済む")
+NAMES_REF_HINT = (f"同じ綴りの別物なら、{DATA_DIRNAME}/apply.md の「計画との違い」に `- パス — 関係なし: 理由`、関係するが変えなくてよいなら "
+                  f"`- パス — 変更不要: 理由` と書く。直す必要があるなら計画に足すので、利用者に確かめる")
 UNDONE_HINT = (f"変えなくてよいと分かったなら、{DATA_DIRNAME}/apply.md の「{DEVIATION_HEADING[3:]}」に"
                f"`- パス — {NO_CHANGE_MARK}: 理由` と書く")
 
@@ -6794,10 +6798,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
             cited = cited_anywhere(ctx, bodies)
             sure = sorted(ref_label(ctx, h.key, h.rel) for h in graph_impact(ctx, terms, False, touched_all, sections).values()
                           if h.key and h.tier == "sure" and (h.key, h.rel) not in cited
-                          and h.rel not in a.touched.get(h.key, set()) and not dev.unrelated_file(h.key, h.rel))
+                          and h.rel not in a.touched.get(h.key, set()) and not dev.unrelated_file(h.key, h.rel)
+                          and not dev.waived(h.key, h.rel))
             if sure:
                 problems.append(Problem("names", "変えた文書の箇所が、グラフで参照先のファイルに必須でつながっています。計画で扱っていません"
-                                f"（関係するなら、利用者に確かめて計画を直す。別物なら、{UNRELATED_HINT}）: " + ", ".join(sure)
+                                f"（{NAMES_REF_HINT}）: " + ", ".join(sure)
                                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）"))
     new_own_terms = [t for t in own_diff_terms if t not in own_terms_from_plan(bodies) and t not in dev.unrelated]
     if new_own_terms:
@@ -6808,10 +6813,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         cited = cited_anywhere(ctx, bodies)
         missing = sorted(ref_label(ctx, n, rel) for n, rel in hits
                          if (n, rel) not in cited and rel not in a.touched.get(n, set())
-                         and not dev.unrelated_file(n, rel))
+                         and not dev.unrelated_file(n, rel) and not dev.waived(n, rel))
         if missing:
-            problems.append(Problem("names", f"{NAMES_TOUCH_REFS}（同じ綴りの別物なら、{UNRELATED_HINT}。"
-                            "関係するなら、利用者に確かめて計画を直すか、その名前を変えないでください）: "
+            problems.append(Problem("names", f"{NAMES_TOUCH_REFS}（{NAMES_REF_HINT}。その名前を変えないことでも済む）: "
                             + ", ".join(missing) + f"（詳細: {DATA_DIRNAME}/ref-impact-after.md）"))
 
     # 3'. 実際の変更が響くテストを、直したか「変更不要」としたか（同じ側のテストも。名前とつながりで測る）。
@@ -7195,6 +7199,7 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     dev, ok = deviations(ctx), accepted(ctx)
     tp = test_plan(ctx, a.bodies)
     test_listed = set(tp.listed())
+    plan_waived = listed_paths(ctx, a.bodies.get("## 自分の変更案", ""), only_no_change=True)
 
     def rows(key: str, planned: set[str], touched: set[str]) -> list[str]:
         def mark(p: str) -> str:
@@ -7202,6 +7207,8 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
                 return "変えた"
             if dev.waived(key, p):
                 return f"{NO_CHANGE_MARK}（変える段で判断）: {dev.waived(key, p)}"
+            if not key and p in plan_waived:
+                return f"{NO_CHANGE_MARK}（計画で判断）"
             return "作り直しても同じ" if may_stay_same(ctx, key, p) else "変えていない（やめた）" if stopped else "まだ"
         out = [f"- {p} — {mark(p)}" for p in sorted(planned)]
         tests_only = False
@@ -8507,7 +8514,9 @@ def _review_targets(ctx: Ctx, paths: list[str], since: str) -> list[tuple[str, s
             rel = (rest if sep and name in refs else spec).strip().rstrip("/").removeprefix("./")
             hit = False
             for key, side in sides:
-                files = [f for f in tracked(side) if f == rel or f.startswith(rel + "/") or not rel or rel == "."]
+                # フォルダを挙げたら、項目の出るファイル（コード・テスト・文書）だけ。.gitignore などで上限の枠を使わない
+                files = [f for f in tracked(side) if f == rel or (f.startswith(rel + "/") or not rel or rel == ".")
+                         and (is_code(ctx, key, f) or is_test(ctx, key, f) or review_is_doc(f))]
                 out += [(key, f) for f in files]
                 hit = hit or bool(files)
                 if hit and rel not in ("", "."):
