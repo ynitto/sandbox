@@ -290,11 +290,11 @@ class PlanNamesTest(unittest.TestCase):
         self.assertEqual(codd.elided_names("`get…Id` と `…sourceId…` と `a b…`"), ["get…Id"])
 
     def test_keywords_declarations_headings_and_routes(self) -> None:
-        # `if (sourceId)` は sourceId、`const disabled = isGeneratedPrintDisabled;` は右辺、`## usePreviewModel` は名前でも探す
+        # `if (sourceId)` は sourceId、`const disabled = isGeneratedPrintDisabled;` は右辺、`## usePreviewModel` は見出しの名前で探す
         self.assertEqual(codd.name_terms("`if (sourceId)`"), ["sourceId"])
         self.assertEqual(codd.name_terms("`const disabled = isGeneratedPrintDisabled;`"), ["isGeneratedPrintDisabled"])
         self.assertEqual(codd.name_terms("`const MAX = 3`"), ["MAX"])
-        self.assertEqual(codd.name_terms("`## usePreviewModel`"), ["## usePreviewModel", "usePreviewModel"])
+        self.assertEqual(codd.name_terms("`## usePreviewModel`"), ["usePreviewModel"])
         self.assertEqual(codd.name_terms("`POST /orders/{id}/refund` と `src/a.py`"), ["/orders/{id}/refund"])
 
 

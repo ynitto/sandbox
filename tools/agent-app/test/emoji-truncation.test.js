@@ -43,3 +43,10 @@ test('定型の依頼の本文・応答の詳細・スキル一覧の説明・�
   assert.ok(!lone.test(preset.name));
   assert.strictEqual(Array.from(preset.name).length, 60);
 });
+
+test('取り込んだ会話の出どころの題は絵文字の途中で切れない', () => {
+  const { normalizeSession } = require('../src/main/store');
+  const out = normalizeSession({ id: 's1', externalOrigin: { key: 'k', title: '😀'.repeat(1999) + '😀😀' } });
+  assert.ok(!lone.test(out.externalOrigin.title));
+  assert.strictEqual(Array.from(out.externalOrigin.title).length, 2000);
+});

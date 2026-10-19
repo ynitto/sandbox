@@ -17,7 +17,7 @@ TypeScript のライブラリで、コード（`src/`・`tests/`）と文書（`
 - `CLAUDE.md` — 関数は 1 ファイル 1 つ。公開する関数は `docs/guide/` に書く
 
 **codd を入れる**: `--side impl --scope src --scope tests --ref docs=. --ref-scope docs=docs --test "node --test tests/**/*.test.js"`
-（node 22 は glob を自分で展開する。codd はシェルを通さずに動かす）。`codd.json` の `protect` に glob で `docs/adr/*.md` と `src/legacy/**` を書く。
+（node 22 は glob を自分で展開する。codd はシェルを通さずに動かす）。`codd.json` の `protect` に glob で `docs/adr/*.md` と `src/legacy/**` を書き、`no_doc` に `src/legacy/**` を書く（互換のコードは文書を名前でしか指さない）。
 
 シナリオは順に流す（前のシナリオで変えてコミットした状態から続ける）。
 
@@ -52,7 +52,8 @@ TypeScript のライブラリで、コード（`src/`・`tests/`）と文書（`
 **期待**
 
 - 消すファイルも「変えるファイル」として計画に挙げ、承認したうえで消せる
-- 計画で `docs/guide/migration.md` を挙げ忘れると、消したファイルの名前 `formatMoneyV1` をまだ書いていることで止まり、利用者に訊く。
+- 計画で `docs/guide/migration.md` を挙げ忘れても、計画の検査が名前で当たった「未判断」として書き足すので、挙げ忘れたまま進まない。
+  それを「関係なし」と判断して進めると、変えたあとの検査が、消した名前 `formatMoneyV1` をまだ書いていることで止まり、利用者に訊く。
   計画に挙げて消せば通る（消した文書が `…` で触れていただけの移る先 `formatMoney` を、変わった名前として測らない）
 - 消すと書いた文書（`docs/guide/migration.md`）を、書式の見本として「未判断」に書き足さない
 - 「`src/legacy/formatV1.js` — ファイルを消す（`formatMoneyV1` を消す）」は、名前を添えてもファイルを消す行と読む（文書を求めない）
@@ -90,7 +91,8 @@ context-mode を入れた端末で、サンプルを作り直して流す（2026
 **続けて頼むこと**: `formatPercent` の小数を 1 桁にして（テストを 60 件足し、1 件だけわざと落とす）。
 
 **期待**: 変えたあとの検査は落ちたテストの行と末尾だけを示し、全文は `.codd/logs/` に残す。示した 1 行のとおり
-`context-mode search` で落ちたテストの節を引ける。同じテストが何度落ちても、索引に同じ節が重ならない
+`context-mode search` で落ちたテストの節を引ける（語は `AssertionError` などの失敗の印）。同じテストが何度落ちても、索引に同じ節が重ならない。
+落ちたあとにテストのほうを直すと、訊かずには進めず「検査が落ちたあとに、テストのファイルを変えています」で利用者に訊く。認めれば（`accept`）進む
 
 ## 直していないもの
 

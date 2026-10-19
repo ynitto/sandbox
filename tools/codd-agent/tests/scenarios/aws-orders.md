@@ -35,7 +35,9 @@
 - `docs/guidelines/api-guidelines.md` — 項目名は snake_case。誤りは `{"errors": [...]}` で、400・404
 - `docs/architecture/aws.md` — 部品の表（API Gateway・Lambda・SQS の order-queue・`order-dlq`（3 回失敗で移す）・DynamoDB）
 - `docs/api/orders.md` — POST /orders の項目の表（`item_id`・`quantity`・`email`）と GET /orders/{order_id} が返す項目
-- `docs/worker/process-order.md` — 状態の移り変わりの表（`PENDING` → `PAID` → `NOTIFIED`）と、やり直し（`maxReceiveCount` 3 回）
+- `docs/worker/process-order.md` — 状態の移り変わりの表（`PENDING` → `PAID` → `NOTIFIED`）と、やり直し（`maxReceiveCount` 3 回）。
+  状態の名前は `backend/shared/status.py` に置くと書く
+- `docs/api/orders.md` には、旧 API の互換（`backend/legacy/v1_orders.py`）が古い綴りで返すことも書く
 - `docs/frontend/screens.md` — 注文フォームの入力と、状態ごとの表示（`PAID` は支払い済み、`NOTIFIED` は完了）
 
 **codd を入れる**
