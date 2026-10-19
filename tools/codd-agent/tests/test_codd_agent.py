@@ -305,6 +305,39 @@ class CoddTest(unittest.TestCase):
         self.assertIn("全文検索: context-mode が無いので引いていない", r.stdout)   # 必ず入れるもの。壊れたまま気づかれないように
         self.assertEqual(self.run_pa(self.impl, "explore").returncode, 2)  # 語が無い
 
+    def test_graphify_installed_in_home_but_not_on_path_is_found(self) -> None:
+        # uv tool・pipx・pip --user で入れて PATH に足していない端末でも、ホームの置き場所から見つける。
+        self.use_graphify_stub()
+        home_bin = self.tmp / "home/.local/bin"
+        home_bin.mkdir(parents=True)
+        (self.bin / "graphify").rename(home_bin / "graphify")
+        r = self.run_pa(self.impl, "explore", "--term", "hello")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("not-installed", r.stdout)
+        self.assertTrue(any(" update . --force" in c for c in self.calls()), self.calls())
+
+    def test_windows_pip_user_scripts_of_any_python_version_are_searched(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            scripts = Path(temp) / "Python/Python312/Scripts"
+            scripts.mkdir(parents=True)
+            with mock.patch.dict(os.environ, {"APPDATA": temp}):
+                self.assertIn(str(scripts), install.user_bin_dirs())
+
+    def test_installer_finds_graphify_in_home_and_tells_path_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home_bin = Path(temp) / ".local/bin"
+            home_bin.mkdir(parents=True)
+            exe = home_bin / "graphify"
+            exe.write_text("#!/bin/sh\necho graphify 1.0\n", encoding="utf-8")
+            exe.chmod(0o755)
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, {"HOME": temp, "PATH": "/nonexistent"}), \
+                 mock.patch.object(install.Path, "home", return_value=Path(temp)), redirect_stdout(out):
+                self.assertEqual(install.find_tool("graphify"), str(exe))
+                self.assertTrue(install.install_tool(install.GRAPHIFY, upgrade=False))
+        self.assertIn("graphify 1.0", out.getvalue())
+        self.assertIn("が PATH にありません", out.getvalue())
+
     def test_explore_uses_context_mode_cli_and_rebuilds_index_only_when_repo_changes(self) -> None:
         # MCP サーバは通さず CLI を直接呼ぶ。索引は自分の .codd/context-mode/ に置く。
         log = self.tmp / "context-mode.log"
@@ -1927,7 +1960,7 @@ class CoddTest(unittest.TestCase):
     def test_middleware_installs_external_skills_for_both_ides_without_agent_cli(self) -> None:
         with mock.patch.object(install, "setup_caveman", return_value=True) as caveman, \
              mock.patch.object(install, "version", return_value="graphify 1.0"), \
-             mock.patch.object(install.shutil, "which", side_effect=lambda name: f"/tools/{name}" if name in ("graphify", "git") else None), \
+             mock.patch.object(install.shutil, "which", side_effect=lambda name, **_: f"/tools/{name}" if name in ("graphify", "git") else None), \
              mock.patch.object(install.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
             self.assertEqual(install.main([]), 0)
         self.assertEqual(caveman.call_args_list,
@@ -1975,7 +2008,7 @@ class CoddTest(unittest.TestCase):
                 import io, runpy
                 from unittest import mock
                 with mock.patch.dict("os.environ", {{"USERPROFILE": {str(root / 'home')!r}}}), \
-                     mock.patch("shutil.which", side_effect=lambda name: name if name in ("graphify", "context-mode") else None), \
+                     mock.patch("shutil.which", side_effect=lambda name, **_: name if name in ("graphify", "context-mode") else None), \
                      mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout="graphify 1.0", stderr="")), \
                      mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: io.BytesIO({archive_data.getvalue()!r})):
                     runpy.run_path({str(script)!r}, run_name="__main__")
