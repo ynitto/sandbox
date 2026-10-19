@@ -35,6 +35,8 @@
 **期待**
 
 - 計画の検査が `tests/selection.test.ts` を「未判断」として書き足す。変更不要とすれば通る
+- 計画に「`ConfirmButton` を消し、…」と書いても、ファイルを消す行と読まない（文書の無いコードは計画の検査で止まる）
+- 計画に `const disabled = isGeneratedPrintDisabled;` と書いても、右辺の `isGeneratedPrintDisabled` を名前として測る
 - テストを変え忘れると、変えたあとの検査が「テストをまだ変えていません」で止め、advise は訊かずにやり直す（AUTO APPLY）
 - 中身だけ変えたローカル変数 `disabled` を検索語にせず、関係の無い `zoom.md`・`mobile.md` を「直していない」に挙げない
 - 実装でコンポーネントの中にハンドラ（`function handleSelect`）を足しても、「新しく足した名前を確かめるテストがありません」に数えない

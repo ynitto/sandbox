@@ -1832,7 +1832,9 @@ def explore_problems(ctx: Ctx, bodies: dict[str, str], pending: "Pending") -> li
                for rel in entry.get("files", []) if (name, rel) not in cited and ctx.ref(name).has(rel)
                and (ctx.ref(name).path / rel).is_file()]
     for name, rel, line in missing:
-        pending.ref(ctx, name, rel, "探して見つかった", line, log[name].get("terms", []))
+        terms = log[name].get("terms", [])
+        if not still_judged(ctx, name, rel, terms):
+            pending.ref(ctx, name, rel, "探して見つかった", line, terms)
     return []
 
 
@@ -2615,12 +2617,16 @@ def graph_report(hits: dict[tuple[str, str], GraphHit], ctx: Ctx, keys: set[str]
     return "\n".join(lines)
 
 
-def load_dismissed(ctx: Ctx) -> dict:
+def load_dismissed(ctx: Ctx, all_plans: bool = False) -> dict:
+    """前の計画の判断。この計画が下した判断は計画そのものにあるので使い回さない（計画から消せば、また訊く）。"""
     try:
         rec = json.loads((ctx.data / DISMISSED_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return rec if isinstance(rec, dict) else {}
+    if not isinstance(rec, dict):
+        return {}
+    here = plan_rel(ctx) if ctx.plan.is_file() else None
+    return rec if all_plans else {k: v for k, v in rec.items() if not (isinstance(v, dict) and v.get("plan") == here)}
 
 
 def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
@@ -2636,13 +2642,13 @@ def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
     if not asked:
         return
     waived = plan_waived(ctx, bodies, asked)
-    rec = load_dismissed(ctx)
+    rec = load_dismissed(ctx, all_plans=True)
     for (key, rel), terms in asked.items():
         if (key, rel) not in waived:
             continue
         entry = rec.get(f"{key}|{rel}") or {}
         rec[f"{key}|{rel}"] = {"terms": unique([*entry.get("terms", []), *terms]),
-                               "hash": now_hash(side_of(ctx, key), rel)}
+                               "hash": now_hash(side_of(ctx, key), rel), "plan": plan_rel(ctx)}
     path = ctx.data / DISMISSED_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     write_text(path, json.dumps(rec, ensure_ascii=False, indent=2) + "\n")
@@ -2947,14 +2953,38 @@ def name_terms(text: str) -> list[str]:
     """`…` で囲んだもののうち、名前（パスではないもの）。末尾の `()` は落とす。"""
     out = []
     for term in _BACKTICK.findall(text):
+        route = _API_ROUTE.match(term.strip())
+        if route:   # API の道（`POST /orders/{id}/refund`）は、ファイルのパスではなく名前として探す
+            out.append(route.group(1))
+            continue
         if "/" in term or "\\" in term or (_CITE.fullmatch(term) and new_file_name(term)):
             continue
         # 前後の省略の記号（`…sourceId…`）は落として探す。名前の途中の省略は計画の検査で書き直させる（elided_names）
         term = _ELLIPSIS_EDGE.sub("", term)
         # コードの断片（`discount: int = 0`・`obj.f("a")`・`note=備考`）は、先頭の名前だけを名前とする
+        decl = _CODE_DECL.match(term.strip())
+        if decl:   # `const disabled = isGeneratedPrintDisabled;` は右辺の名前（左辺はたいていローカルの変数）
+            out.append(decl.group(2) or decl.group(1))
+            continue
         head = _CODE_HEAD.match(term.strip())
-        out.append(head.group(1) if head else re.sub(r"\(\)$", "", term.strip()))
+        if head and head.group(1) in _KEYWORDS:   # `if (sourceId)` は if ではなく sourceId
+            inner = re.search(r"[A-Za-z_$][\w$]*", term.strip()[head.end():])
+            out += [inner.group(0)] if inner else []
+            continue
+        name = head.group(1) if head else re.sub(r"\(\)$", "", term.strip())
+        out.append(name)
+        # 見出しで書いた名前（`## usePreviewModel`）は、見出しのほか名前そのものでも探す（触れている文書を拾う）
+        bare = re.sub(r"^#+\s+", "", name)
+        if bare != name and len(bare) >= 2:
+            out.append(bare)
     return unique(out)
+
+
+_API_ROUTE = re.compile(r"^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(/\S+)$")
+_CODE_DECL = re.compile(r"^(?:export\s+)?(?:const|let|var|val|final)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?="
+                        r"\s*(?:([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;?\s*$)?")
+_KEYWORDS = {"if", "elif", "else", "for", "while", "switch", "case", "return", "catch", "with", "await", "new",
+             "typeof", "not", "and", "or", "in", "assert", "yield", "throw", "delete", "void"}
 
 
 _ELLIPSIS_EDGE = re.compile(r"^(?:…|\.\.\.|\*)+|(?:…|\.\.\.|\*)+$")
@@ -3075,7 +3105,8 @@ def terms_from_diff(side: Side, only: set[str] | None = None) -> list[str]:
     terms = [t for t in terms if not any(_only_renamed(old, new, names - {t})
                                          for old in defs["-"].get(t, []) for new in defs["+"].get(t, []))]
     # 直した行に元からある `…` は変わった名前ではない（足した・消した側で数が違うものだけ拾う）。
-    terms += [t for t in quoted["+"] | quoted["-"] if quoted["+"][t] != quoted["-"][t]]
+    # パス（`backend/shared/status.py`）はつながりの検査が見る。名前として測ると、そのパスを書いた決まりにまで当たる
+    terms += [t for t in quoted["+"] | quoted["-"] if quoted["+"][t] != quoted["-"][t] and "/" not in t]
     for name in run(["git", "ls-files", "--others", "--exclude-standard", *side.pathspec()],
                     repo, GIT_TIMEOUT)[1].splitlines():
         if not keep(name):
@@ -3196,9 +3227,13 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
         markup = rel.lower().endswith(MARKUP_EXTS)
         # import の指定（"react"・"../components/X"）は表示する文言ではない
         plus, minus = ([ln for ln in lines if not _IMPORT_LINE.match(ln)] for lines in (plus, minus))
+        # 変える前も後もそのファイルにある文字列（`{"status": …}` を足したが "status" は前からある）は、変えた文字列ではない
+        rc, was = run(["git", "show", f"{side.diff_base}:{rel}"], side.path, GIT_TIMEOUT)
+        kept = ({m.group(2).strip() for m in _LITERAL.finditer(was)}
+                & {m.group(2).strip() for m in _LITERAL.finditer(read_text(side.path / rel) or "")}) if rc == 0 else set()
         for mark, lines in (("+", plus), ("-", minus)):
             texts = [m.group(2).strip() for ln in lines for m in _LITERAL.finditer(ln)]
-            counts[mark].update(t for t in texts if 3 <= len(t) <= 60)
+            counts[mark].update(t for t in texts if 3 <= len(t) <= 60 and t not in kept)
             # 文字列で組んだ HTML（`"<h1>Hello page</h1>"`）は、タグの間の文言でもテストに書かれる
             counts[mark].update(m.group(1).strip() for t in texts if "<" in t for m in _MARKUP_TEXT.finditer(t)
                                 if not re.search(r"[=;()&|]", m.group(1)))
@@ -3213,7 +3248,7 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
 # 字下げした function（コンポーネントの中のハンドラなど）は外から呼べないので除く。
 _NEW_CODE_NAMES = (*_DIFF_TERMS[:2], re.compile(r"^[+-](?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]{2,})"),
                    re.compile(r"^[+-]\s*export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]{2,})\s*="), _DIFF_TERMS[4])
-_NEW_DOC_NAMES = (_DIFF_TERMS[5],)
+_NEW_DOC_NAMES = (re.compile(r"^[+-]\s*#{2,6}\s+(.{2,60}?)\s*#*\s*$"),)   # 表題（# 1 つ）は名前ではない
 
 
 def grep_word(term: str) -> list[str]:
@@ -3353,8 +3388,18 @@ def judged_before(ctx: Ctx, key: str, hits: dict[str, list[str]]) -> set[str]:
             out.add(rel)
             ctx.__dict__.setdefault("_judged", set()).add((key, rel))
         else:
-            asked[(key, rel)] = terms
+            asked[(key, rel)] = unique([*asked.get((key, rel), []), *terms])
     return out
+
+
+def still_judged(ctx: Ctx, key: str, rel: str, terms: list[str]) -> bool:
+    """探して見つかったファイルにも、前の判断を使い回す（judged_before と同じ条件。当たった語はファイルの中身で確かめる）。"""
+    if (key, rel) in ctx.__dict__.get("_judged", set()):
+        return True
+    text = read_text(side_of(ctx, key).path / rel) or ""
+    hit = [t for t in terms if re.search((r"(?<![A-Za-z0-9_])" + re.escape(t) + r"(?![A-Za-z0-9_])")
+                                         if _WORDLIKE.match(t) else re.escape(t), text, re.IGNORECASE)]
+    return bool(hit) and rel in judged_before(ctx, key, {t: [rel] for t in hit})
 
 
 def judged_report(judged: set[str]) -> str:
@@ -3542,6 +3587,9 @@ def resolve(ctx: Ctx, from_side: Side, from_rel: str, claim: Claim) -> Resolved:
     if m and m.group(1) in {r.name for r in ctx.refs}:
         sides = [(m.group(1), ctx.ref(m.group(1)))]
         token = m.group(2)
+    elif m and (alias := ref_alias(ctx, from_side, m.group(1))):
+        # 参照先の文書は、その参照先の codd.json が付けた名前で書く（`api:internal/task/task.go`）
+        sides, token = [alias], m.group(2)
     token = token[2:] if token.startswith("./") else token
     cands = [os.path.normpath(os.path.join(os.path.dirname(from_rel), token)).replace("\\", "/")]
     cands = cands + [token.rstrip("/")] if claim.kind == "link" else [token.rstrip("/"), *cands]
@@ -3559,6 +3607,15 @@ def resolve(ctx: Ctx, from_side: Side, from_rel: str, claim: Claim) -> Resolved:
         if out.exists:
             return out
     return out
+
+
+def ref_alias(ctx: Ctx, side: Side, name: str) -> tuple[str, Side] | None:
+    """参照先に置いた codd.json が refs に付けた名前の指す先が、いまの側のどれか（自分も含む）。"""
+    for entry in ((getattr(side, "config", None) or {}).get("refs") or []):
+        if isinstance(entry, dict) and entry.get("name") == name and entry.get("path"):
+            target = (side.path / entry["path"]).resolve()
+            return next(((k, s) for k, s in all_sides(ctx) if s.path.resolve() == target), None)
+    return None
 
 
 def read_text(path: Path) -> str | None:
@@ -3741,7 +3798,11 @@ def planned_refs(ctx: Ctx, bodies: dict[str, str]) -> tuple[dict[str, set[str]],
     if not listed:
         problems.append(Problem("shape", "## 参照先の変更案 は箇条書きにしてください（無ければ「なし」）"))
     for item in listed:
-        cited = cited_refs(ctx, item, allow_new=True)
+        # 変えるのは項目の対象（`—` より前）のファイル。説明の中のパス（倣う見本など）は根拠として読む
+        dash = re.search(r"\s[—–]\s", item)
+        cited = cited_refs(ctx, item[:dash.start()], allow_new=True) if dash else Cited()
+        if not cited.found:
+            cited = cited_refs(ctx, item, allow_new=True)
         if cited.ambiguous and not cited.found:
             problems.append(Problem("shape", f"## 参照先の変更案 のパスがどの参照先か決まりません。`名前:パス` で書いてください: {item[:80]}"))
         elif not cited.found:
@@ -4006,6 +4067,16 @@ class Pending:
         self.add("## 参照先のその他", (name, rel),
                  f"- {PENDING_MARK}: {ref_label(ctx, name, rel)}{f':{line}' if line else ''}（{why}）{seen}")
 
+    def ref_group(self, ctx: Ctx, name: str, files: list[str]) -> None:
+        """参照先の、名前に触れているだけの文書を 1 行で（own_group と同じ。判断は「関係なし: パス, パス — 理由」で書ける）。"""
+        new = [f for f in files if (name, f) not in self.keys]
+        if not new:
+            return
+        self.keys.update((name, f) for f in new)
+        self.lines.setdefault("## 参照先のその他", []).append(
+            f"- {PENDING_MARK}: {', '.join(ref_label(ctx, name, f) for f in new)}（名前に触れているだけの文書 {len(new)} 件。"
+            "まとめて判断する。前提・制約・ずれの根拠に移すものがあれば、そのファイルを別の行に分ける）")
+
     def count(self) -> int:
         return sum(len(v) for v in self.lines.values())
 
@@ -4013,12 +4084,12 @@ class Pending:
 MENTION_GROUP = 3   # 同じフォルダにこの数以上あれば、名前に触れているだけの文書を 1 行にまとめる
 
 
-def mention_groups(ctx: Ctx, files: list[str]) -> list[list[str]]:
+def mention_groups(ctx: Ctx, files: list[str], key: str = "") -> list[list[str]]:
     """文字列の一致だけで当たった文書（テスト・人の承認が要るものを除く）を、フォルダごとに分ける。"""
     groups: dict[str, list[str]] = {}
     for rel in files:
-        if rel.lower().endswith(DOC_EXTS) and not ctx.own.protected(rel) \
-                and not (tests_enabled(ctx) and is_test(ctx, "", rel)):
+        if rel.lower().endswith(DOC_EXTS) and not side_of(ctx, key).protected(rel) \
+                and not (tests_enabled(ctx) and is_test(ctx, key, rel)):
             groups.setdefault(str(Path(rel).parent), []).append(rel)
     return [sorted(g) for _, g in sorted(groups.items()) if len(g) >= MENTION_GROUP]
 
@@ -4183,10 +4254,13 @@ def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[li
                                 ref_lines, ref_why, focus=plan_changes(ctx, bodies))
         ctx.__dict__.setdefault("_found", set()).update(ref_hits)
         cited = cited_anywhere(ctx, bodies)
-        for n, r in sorted(ref_hits):
-            if (n, r) not in cited:
-                pending.ref(ctx, n, r, ref_why.get((n, r), "自分の変更で変わる名前が出てくる"),
-                            ref_lines.get(n, {}).get(r), own_terms)
+        left = [(n, r) for n, r in sorted(ref_hits) if (n, r) not in cited]
+        for n in unique(n for n, _ in left):
+            for files in mention_groups(ctx, [r for k, r in left if k == n and (k, r) not in ref_why], n):
+                pending.ref_group(ctx, n, files)
+        for n, r in left:
+            pending.ref(ctx, n, r, ref_why.get((n, r), "自分の変更で変わる名前が出てくる"),
+                        ref_lines.get(n, {}).get(r), own_terms)
     problems += explore_problems(ctx, bodies, pending)
     problems += trace_plan(ctx, bodies, pending)
     links_plan(ctx, bodies, pending)
@@ -4235,6 +4309,11 @@ MAX_DOC_SAMPLE_PROBES = 30
 _DOC_TOKEN = re.compile(r"(?:[\w-]+:)?([\w./-]+\.(?:md|markdown|rst|adoc|txt))\b", re.I)
 # 変更案でコードを消すと書いた行。消すコードには文書を求めない（消さなかったら、変えたあとの検査で求める）
 _DELETE_WORD = re.compile(r"消す|消し|削除|取り除|delete|remove", re.I)
+
+
+def deletes_file(line: str) -> bool:
+    """ファイルを消す行か。`名前` を消す（ファイルの一部を消す）行は、ファイルを消す行ではない。"""
+    return bool(_DELETE_WORD.search(line)) and not re.search(r"`[^`/\s]+`\s*(?:を|も|と)?\s*(?:消|削除|取り除)", line)
 
 
 def no_doc_patterns(ctx: Ctx, key: str) -> list[str]:
@@ -4381,6 +4460,19 @@ def doc_lines_cover(ctx: Ctx, bodies: dict[str, str], rel: str) -> bool:
                for line in plan_lines_naming(bodies, rel) for m in _DOC_TOKEN.finditer(line))
 
 
+def docs_naming(ctx: Ctx, key: str, rel: str, limit: int = 2) -> list[str]:
+    """ほかの側で、コードのファイル名（拡張子を除く。`usePreviewModel`）を語として書いた文書。"""
+    stem = Path(rel).stem
+    if len(stem) < 4 or not _WORDLIKE.match(stem) or stem.lower() in {"index", "main", "init", "util", "utils"}:
+        return []
+    out = []
+    for other_key, other in all_sides(ctx):
+        if other_key != key:
+            out += [side_label(ctx, other_key, d) for d in git_grep(other, ["--untracked", "-l", "-I", "-w", "-F", "-e", stem])
+                    if d.lower().endswith(DOC_EXTS) and other.has(d)]
+    return sorted(out)[:limit]
+
+
 def planned_code(ctx: Ctx, bodies: dict[str, str]) -> set[tuple[str, str]]:
     """計画で作る・変えるコード（自分の変更案・参照先の変更案と、影響範囲の変更不要でないもの）。"""
     targets = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels}
@@ -4388,6 +4480,9 @@ def planned_code(ctx: Ctx, bodies: dict[str, str]) -> set[tuple[str, str]]:
 
 
 def nodoc_message(ctx: Ctx, key: str, rel: str) -> str:
+    named = docs_naming(ctx, key, rel)
+    if named:   # コードの名前を書いた文書が、たいてい対応させる先（パスを書いていないだけ）
+        return side_label(ctx, key, rel) + f"（この名前を書いた文書: {' / '.join(named)}。対応させるなら、そこにパスを書く）"
     samples = doc_samples(ctx, key, rel)
     if samples:
         return side_label(ctx, key, rel) + f"（近い粒度の見本: {' / '.join(samples)}）"
@@ -4398,9 +4493,10 @@ def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
     """計画で作る・変えるコードのうち、対応する文書が無く、文書を作る・足す行も計画に無いもの。"""
     if not ctx.refs:
         return []   # 文書の無いリポジトリ（refs が空）は、実装とテストだけの一貫性を取る
+    skipped = bodies.get("## 今回やらないこと", "")
     missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(planned_code(ctx, bodies))
-               if not doc_lines_cover(ctx, bodies, rel)
-               and not any(_DELETE_WORD.search(line) for line in plan_lines_naming(bodies, rel))
+               if not doc_lines_cover(ctx, bodies, rel) and not mentioned(skipped, rel)
+               and not any(deletes_file(line) for line in plan_lines_naming(bodies, rel))
                and not docs_for(ctx, k, rel)]   # まだ無いコードも、フォルダをまとめた文書があればよい
     if not missing:
         return []
@@ -4417,8 +4513,9 @@ def nodoc_apply_problems(ctx: Ctx, bodies: dict[str, str], touched: dict[str, se
     if not ctx.refs:
         return []   # 文書の無いリポジトリ（refs が空）は、実装とテストだけの一貫性を取る
     targets = {(k, rel) for k, rels in touched.items() for rel in rels if is_code(ctx, k, rel)} | planned_code(ctx, bodies)
+    skipped = bodies.get("## 今回やらないこと", "")   # 文書を作らないと計画で決めたもの（no_doc を勧める）
     missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(targets)
-               if (side_of(ctx, k).path / rel).is_file() and not docs_for(ctx, k, rel)]
+               if (side_of(ctx, k).path / rel).is_file() and not docs_for(ctx, k, rel) and not mentioned(skipped, rel)]
     if not missing:
         return []
     return tag("shape", [f"{NO_DOC}（計画で作る・足すとした文書に、コードのパスを `…` かリンクで書いてつなぐ）: " + " / ".join(missing)])
@@ -4725,7 +4822,8 @@ def new_names_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
                        + "\n" + impact_fix_lines(bodies))
     body = bodies.get(TESTS_HEADING, "")
     # 変えたあとに練り直すときは、この回で消した名前も前からある名前（HEAD にある）として数える。
-    new = [n for n in names if n not in body and not (_DOTTED.match(n) and mentioned(body, n.rsplit(".", 1)[1]))
+    # 省略の記号が残る名前は別の検査が書き直させる（ここで新しい名前と読まない）
+    new = [n for n in names if n not in body and not _ELLIPSIS.search(n) and not (_DOTTED.match(n) and mentioned(body, n.rsplit(".", 1)[1]))
            and not any(git_grep(side, ["--untracked", "-l", "-I", "-i", "-F", *grep_word(n), "-e", n])
                        or existed_at_head(side, n) for _, side in all_sides(ctx))]
     if not new:
@@ -5390,7 +5488,7 @@ def format_targets(ctx: Ctx, bodies: dict[str, str]) -> list[tuple[str, str]]:
     targets = {("", rel) for rel in own}
     for name, rels in planned_refs(ctx, bodies)[0].items():
         targets |= {(name, rel) for rel in rels}
-    return sorted(targets)
+    return sorted((k, rel) for k, rel in targets if not any(deletes_file(line) for line in plan_lines_naming(bodies, rel)))
 
 
 def model_label(ctx: Ctx, key: str, rel: str) -> str:
@@ -5728,6 +5826,8 @@ def print_problems(ctx: Ctx, phase: str, problems: list[str]) -> None:
     record_problems(ctx.data, phase, problems)
     if not problems:
         return
+    if phase == "apply":   # 前に通ったときの控えで、落ちたあとに record が「通った」と書かないように
+        (ctx.data / "applied.json").unlink(missing_ok=True)
     stage = "計画の検査" if phase == "plan" else "変えたあとの検査"
     lines = [f"NG {stage}: {len(problems)} 件（全文: {DATA_DIRNAME}/{PROBLEMS_NAME}）"]
     used = len(lines[0])
@@ -5766,7 +5866,10 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
                         "利用者が変えたものかもしれないので、自分では戻さずに利用者に確かめる。利用者の変更なら "
                         f"`python3 {MACHINE_REL}/codd.py accept` で計画の前からの変更として認める）: "
                         + ", ".join(edited[:MAX_OUTSIDE]) + (" ..." if len(edited) > MAX_OUTSIDE else "")))
-    if semantic_session(ctx) and not (ctx.data / GRAPH_LOG).is_file():
+    if semantic_session(ctx) and not (ctx.data / GRAPH_LOG).is_file() and not find_tool("graphify"):
+        problems.append(Problem("config", f"{GRAPH_NOT_READY}。graphify が見つかりません（利用者に確かめる: "
+                        f"`install.py` で graphify を入れるか、{CONFIG_NAME} の graphify から semantic を外す）"))
+    elif semantic_session(ctx) and not (ctx.data / GRAPH_LOG).is_file():
         problems.append(Problem("shape", f"{GRAPH_NOT_READY}。`python3 {MACHINE_REL}/codd.py graph` を実行し、PENDING なら示された束を"
                         "抜き出して `graph --merge` で OK になるまで進めてから、検査し直してください"))
     measured: list[str] = []
@@ -6231,7 +6334,8 @@ def load_applied(ctx: Ctx) -> Applied | str:
 
 def own_planned(ctx: Ctx, bodies: dict[str, str]) -> set[str]:
     body = bodies.get("## 自分の変更案", "なし")
-    return set() if is_none(body) else listed_paths(ctx, body, allow_new=True)
+    # 「変更不要」と書いたもの（設計書だけを直す計画で、実装を挙げて変えないと書いた）は変えるファイルに数えない
+    return set() if is_none(body) else listed_paths(ctx, body, skip_no_change=True, allow_new=True)
 
 
 def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
@@ -6247,7 +6351,7 @@ def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
 DEVIATION_HEADING = "## 計画との違い"
 ACCEPTED_NAME = "accepted.json"
 UNRELATED_MARK = "関係なし"
-_DEVIATION = re.compile(r"^[-*]\s+`?([^`\s]+)`?\s*[—–-]+\s*(変更不要|追加|関係なし)\s*[:：]\s*(\S.*)$")
+_DEVIATION = re.compile(r"^[-*]\s+(`?[^`\s,]+`?(?:\s*,\s*`?[^`\s,]+`?)*)\s*[—–-]+\s*(変更不要|追加|関係なし)\s*[:：]\s*(\S.*)$")
 
 
 @dataclass
@@ -6286,14 +6390,18 @@ def deviations(ctx: Ctx) -> Deviations:
         m = _DEVIATION.match(line.strip())
         if not m:
             continue
-        path, kind, reason = m.groups()
-        if kind == UNRELATED_MARK:
-            out.unrelated[path.strip("/")] = reason.strip()
-            continue
-        name, sep, rest = path.partition(":")
-        key: str | None = name if sep and name in refs else None
-        rel = rest if key else path
-        (out.no_change if kind == NO_CHANGE_MARK else out.added)[(key, rel.strip("/"))] = reason.strip()
+        paths, kind, reason = m.groups()
+        # 計画の判断と同じく、パスを `, ` で並べて 1 行で書いてもよい
+        for path in (p.strip().strip("`") for p in paths.split(",")):
+            if not path:
+                continue
+            if kind == UNRELATED_MARK:
+                out.unrelated[path.strip("/")] = reason.strip()
+                continue
+            name, sep, rest = path.partition(":")
+            key: str | None = name if sep and name in refs else None
+            rel = rest if key else path
+            (out.no_change if kind == NO_CHANGE_MARK else out.added)[(key, rel.strip("/"))] = reason.strip()
     return out
 
 
@@ -6896,7 +7004,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     dev = deviations(ctx)
     want_own = own_planned(ctx, bodies)
     only_media = bool(want_own) and all(may_stay_same(ctx, "", p) for p in want_own)
-    if not is_none(bodies.get("## 自分の変更案", "なし")) and not a.own_touched and not only_media:
+    if want_own and not a.own_touched and not only_media:
         problems.append(Problem("undone", "自分の変更案があるのに、自分のリポジトリが変わっていません"))
     else:
         tests_listed = set(tp.paths("", waived=False))   # テストの変更案にもあるものは、下のテストの指摘だけに出す
@@ -7159,7 +7267,9 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
     waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
               | {rel for k, rel in test_plan(ctx, a.bodies).waived if not k})
     own_links = sorted({rel for name in a.changed for k, rel in linked(ctx, name, a.touched[name]) if not k})
-    missing_own = [p for p in own_links if p not in a.own_touched and not covered(p, waived)]
+    # 自分の変更案に挙げてまだ変えていないファイルは、「まだ変えていません」の指摘だけに出す（同じファイルを 2 回挙げない）
+    planned_own = listed_paths(ctx, a.bodies.get("## 自分の変更案", ""), allow_new=True)
+    missing_own = [p for p in own_links if p not in a.own_touched and not covered(p, waived | planned_own)]
     dangling = dangling_refs(ctx, touched)
     at = {d.split(" → ", 1)[0] for d in dangling}
     broken = [b for b in broken_refs(ctx, touched) if b.split(" → ", 1)[0] not in at]   # 消したファイルを指す行は 1 回だけ挙げる
@@ -7384,7 +7494,8 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     if (work := work_line(ctx)):
         lines.append(work)
     untested = [*(["自分"] if not ctx.config.get("test") else []),
-                *(r.name for r in ctx.refs if a.touched[r.name] and not r.test)]
+                *(r.name for r in ctx.refs if a.touched[r.name] and not r.test
+                  and not (r.path == ctx.root and ctx.config.get("test")))]   # 同じリポジトリは自分のテストで動いた
     if untested:
         # テストのコマンドが無いと、検査はテストを動かさずに通る。「通った」をテストまで通ったと読ませない
         lines.append(f"- テスト: 動かしていない（{'・'.join(untested)}のテストのコマンドが未設定）")
@@ -7780,11 +7891,13 @@ SUMMARY_WIDTH = 120
 NEXT_DIR = "next"     # 立てておいた次の計画（.plans/next/）。進めている計画にも記録にも数えない
 NEXT_MAX = 5         # 立てておく計画の上限（古いものを使うか消してから足す）
 NEXT_MARK = "立てたときのコミット:"
+NEXT_DIRTY_MARK = "立てたときの作業中のファイル:"
 
 
 def next_plans(ctx: Ctx) -> list[Path]:
     folder = ctx.root / PLAN_DIR / NEXT_DIR
-    return sorted(folder.glob("*.md")) if folder.is_dir() else []
+    # 名前の頭の日時（分まで）で古い順。同じ分に立てたものは立てた順（名前の順にしない）
+    return sorted(folder.glob("*.md"), key=lambda p: (p.name[:15], p.stat().st_mtime)) if folder.is_dir() else []
 
 
 def plan_request(path: Path) -> str:
@@ -7822,8 +7935,12 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
         shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
         # 立てたときのコミットを控える（進めるときに、そのあと変わったファイルを示すため）
         marks = " ".join(f"{k or '.'}={head(side.path)}" for k, side in all_sides(ctx) if head(side.path))
+        # 作業中のファイルの中身も控える（立てたときから作業中だったものを、あとで変わったと数えない）
+        dirty = {f"{k}|{rel}": h for k, side in all_sides(ctx) for rel, h in dirty_files(side).items()}
         with dest.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(f"\n<!-- {NEXT_MARK} {marks} -->\n")
+            if dirty:
+                fh.write(f"<!-- {NEXT_DIRTY_MARK} {json.dumps(dirty, ensure_ascii=False)} -->\n")
         print(f"次の計画のひな形を置きました: {dest.relative_to(ctx.root).as_posix()}（進めるときに測り直す）")
         return 0
     if ctx.plan.is_file() and not run_ended(ctx) and taken_over(ctx):
@@ -7883,6 +8000,11 @@ def changed_since_ahead(ctx: Ctx, text: str) -> list[str]:
     """次の計画を立てたあとに、コミットか作業中で変わったファイル（立てたときのコミットの控えから）。"""
     m = re.search(rf"<!-- {NEXT_MARK} (.*?) -->", text)
     marks = dict(x.split("=", 1) for x in (m.group(1).split() if m else []) if "=" in x)
+    d = re.search(rf"<!-- {NEXT_DIRTY_MARK} (.*?) -->", text)
+    try:
+        was_dirty = json.loads(d.group(1)) if d else {}
+    except ValueError:
+        was_dirty = {}
     out: list[str] = []
     for key, side in all_sides(ctx):
         sha = marks.get(key or ".")
@@ -7891,9 +8013,9 @@ def changed_since_ahead(ctx: Ctx, text: str) -> list[str]:
         rc, log = run(["git", "-c", "core.quotepath=false", "diff", "--name-only", sha, "--", *side.pathspec()],
                       side.path, GIT_TIMEOUT)
         names = [ln.strip() for ln in log.splitlines()] if rc == 0 else []
-        names += [rel for rel in dirty_files(side)]
+        names += [rel for rel, h in dirty_files(side).items() if was_dirty.get(f"{key}|{rel}") != h]
         out += [side_label(ctx, key, rel) for rel in dict.fromkeys(names)
-                if rel and side.has(rel) and not rel.startswith(PLAN_DIR + "/")]
+                if rel and side.has(rel) and not rel.startswith(PLAN_DIR + "/") and not _CACHE_PATH.search(rel)]
     return list(dict.fromkeys(out))
 
 
@@ -8332,17 +8454,26 @@ def lint_evidence(ctx: Ctx, tested: bool) -> list[tuple[str, str]]:
             + [(st, f"{st.split('（')[0]} に写したテストの結果を、今の値に写し直したい") for st in stale])
 
 
+_CACHE_PATH = re.compile(r"(?:^|/)(?:__pycache__/|\.pytest_cache/)|\.pyc$")
+
+
+def status_without_caches(repo: Path) -> list[str]:
+    """作業中のファイルの一覧。テストが作るキャッシュ（__pycache__・.pyc）は数えない（.gitignore が無くても）。"""
+    out = run(["git", "status", "--porcelain", "--untracked-files=all"], repo, GIT_TIMEOUT)[1]
+    return [ln for ln in out.splitlines() if not _CACHE_PATH.search(ln[3:].strip('"'))]
+
+
 def lint_tests(ctx: Ctx) -> list[tuple[str, str]]:
     """両側のテスト（設定の test）を動かす。検査（check）はファイルを作り直すことがあるので動かさない。"""
     out = []
     sides = [("自分", ctx.root, ctx.config.get("test")), *((r.name, r.path, r.test) for r in ctx.refs)]
     for who, repo, test in sides:
         for name, argv in test_commands(test):
-            before = run(["git", "status", "--porcelain"], repo, GIT_TIMEOUT)[1]
+            before = status_without_caches(repo)
             label = f"{who}のテスト{f'（{name}）' if name else ''}"
             for p in run_check(repo, argv, label):
                 out.append((p, f"{label}（{' '.join(argv)}）が落ちているので直したい"))
-            if run(["git", "status", "--porcelain"], repo, GIT_TIMEOUT)[1] != before:
+            if status_without_caches(repo) != before:
                 out.append((f"{label}を動かしたら、作業中のファイルが変わりました（点検は直さないので、確かめてください）",
                             f"{label}が書き換えるファイルを、コミットするものか .gitignore に入れるものかに分けたい"))
     return out
@@ -8549,7 +8680,9 @@ def _review_targets(ctx: Ctx, paths: list[str], since: str) -> list[tuple[str, s
             hit = False
             for key, side in sides:
                 files = [f for f in tracked(side) if f == rel or f.startswith(rel + "/") or not rel or rel == "."]
-                out += [(key, f) for f in files]
+                # 挙げたファイルそのものは見る。フォルダで挙げたときは、項目の出るものだけ（.gitignore で上限を使わない）
+                out += [(key, f) for f in files if f == rel or is_code(ctx, key, f) or is_test(ctx, key, f)
+                        or review_is_doc(f)]
                 hit = hit or bool(files)
                 if hit and rel not in ("", "."):
                     break   # 自分にあれば参照先は見ない（名前を付ければ参照先を選べる。`.` はどの側も全体）
@@ -8643,13 +8776,17 @@ def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], 
         seen.add((kind, name))
         if len(mine) >= REVIEW_PER_FILE or len(items) >= REVIEW_MAX_ITEMS:
             dropped += 1
+            if len(items) >= REVIEW_MAX_ITEMS:   # 全体の上限で落ちたファイルは、続き（--rest）で見る
+                ctx.__dict__.setdefault("_review_cut", []).append(current[0])
             return
         item = {"id": f"R{len(items) + 1:02d}", "kind": kind, "name": name, "question": question,
                 "locs": [list(x) for x in dict.fromkeys(locs)]}
         items.append(item)
         mine.append(item)
 
+    current = [("", "")]
     for key, rel in targets:
+        current[0] = (key, rel)
         side = side_of(ctx, key)
         text = read_text(side.path / rel) or ""
         mine: list[dict] = []
@@ -8770,7 +8907,7 @@ def review_problems(ctx: Ctx, state: dict, part: str) -> list[str]:
     if missing:
         problems.append("答えていない項目: " + ", ".join(missing[:15]) + (" ほか" if len(missing) > 15 else "")
                         + "（`codd.py review next` で次の項目を見て答える）")
-    if any(i["kind"] == "設計の不備" for i in items.values()):
+    if any(i["kind"] == "設計の不備" for i in items.values()) and ctx.rule_files():
         unread = unread_rules(ctx)
         if unread:
             problems.append("守る決まりを読んでいません: " + ", ".join(unread) + "（`codd.py guide --all`）")
@@ -8918,9 +9055,10 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
         asks, counts = run_lint(ctx, args.since or LINT_SINCE, args.no_test, skip=("bypassed", "drifted"))
         state["lint_asks"], state["lint_counts"] = asks, counts
         forget_review_reads(ctx)
-        state["targets"] = [side_label(ctx, k, r) for k, r in targets[:REVIEW_MAX_FILES]]
-        state["skipped_files"] = [side_label(ctx, k, r) for k, r in targets[REVIEW_MAX_FILES:]]
         state["items"], state["dropped"] = review_items(ctx, targets[:REVIEW_MAX_FILES])
+        cut = list(dict.fromkeys(ctx.__dict__.get("_review_cut", [])))
+        state["targets"] = [side_label(ctx, k, r) for k, r in targets[:REVIEW_MAX_FILES] if (k, r) not in cut]
+        state["skipped_files"] = [side_label(ctx, k, r) for k, r in [*cut, *targets[REVIEW_MAX_FILES:]]]
         save_review_state(ctx, state)
         write_text(review_dir(ctx) / REVIEW_ANSWERS, f"# 項目への答え\n\n")
         if not state["items"]:

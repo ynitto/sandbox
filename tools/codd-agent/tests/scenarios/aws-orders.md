@@ -78,6 +78,9 @@ python3 <sandbox>/tools/codd-agent/init.py shop-docs --side design --ref app=../
 - 計画に `status.COMPLETED` と書いても、まだ無いファイル `status.COMPLETE` と読まない（変えたあとに「変え残し」で止まらない）
 - テストの変更案に `COMPLETED` と書けば、新しく足す `status.COMPLETED` を扱ったとみなす
 - 旧 API が「人の承認が要るファイル」として確認に出て、承認すれば最後まで通る
+- 設計書に書き足したコードのパス（`backend/shared/status.py`）を、変えたあとに測る名前にしない（そのパスを書いた `CLAUDE.md` を
+  「直していない」に挙げない）
+- 変えたあとの検査が落ちたら、その前に通っていても `record` は「通った」と書かない
 
 ## 3. やり直しの回数
 

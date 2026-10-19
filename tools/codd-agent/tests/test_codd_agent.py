@@ -924,6 +924,12 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("影響範囲を測った: 2 files", r.stdout)
 
+    def as_previous_plan(self, repo) -> None:
+        """控えた判断を、前の計画が下したものにする（この計画の判断は計画そのものにあり、使い回さない）。"""
+        path = repo / ".codd/graph/dismissed.json"
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({k: {**v, "plan": ".plans/old.md"} for k, v in rec.items()}), encoding="utf-8")
+
     def test_verify_plan_measures_impact_of_own_change_too(self) -> None:
         # 参照先を変えない計画でも、自分の変更で動く名前の呼び出し元を漏れなく扱わせる。
         self.add_caller()
@@ -938,6 +944,7 @@ class CoddTest(unittest.TestCase):
         (self.impl / PLAN).write_text(plan.replace("未判断（変わる名前が出てくる）", "変更不要: 戻り値は同じ"),
                                       encoding="utf-8")
         self.assert_plan_ok()
+        self.as_previous_plan(self.impl)
         self.write_plan(PLAN_ALIGNED.replace("## 影響範囲\n\nなし", "## 影響範囲\n\n- src/use.py — 変更不要: 戻り値は同じ"))
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -981,6 +988,24 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         # 回の手間を記録に残す（案 7）
         self.assertIn("- 手間: 計画の検査 2 回・書き足した未判断 1 件・変えたあとの検査 1 回", self.report(self.impl).stdout)
+
+    def test_reference_documents_that_only_mention_a_name_are_judged_together(self) -> None:
+        # 参照先の、名前に触れているだけの文書も 1 行にまとめる。「関係なし」も 1 行で書け、次の回は訊かない
+        commit(self.design, {f"docs/screens/s{i}.md": f"# 画面 {i}\n\n`hello` を呼ぶ画面。\n" for i in range(3)}, "screens")
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 1)
+        group = "docs/screens/s0.md, docs/screens/s1.md, docs/screens/s2.md"
+        self.assertIn(f"- 未判断: {group}（名前に触れているだけの文書 3 件", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし\n", f"## 参照先のその他\n\n- 関係なし: {group} — 画面名だけ\n"))
+        self.assert_plan_ok()
+        self.write_plan(PLAN_ALIGNED)   # 同じ計画から判断を消せば、また訊く
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        self.as_previous_plan(self.impl)
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertNotIn("docs/screens/", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.assertIn("前の判断を使い回した", r.stdout + r.stderr)
 
     def test_names_over_the_limit_are_reported_not_dropped(self) -> None:
         names = " ".join(f"`name{i:02}`" for i in range(14))
@@ -4712,7 +4737,8 @@ class CoddTest(unittest.TestCase):
     def test_verify_plan_reports_everything_at_once_and_briefly(self) -> None:
         # 形の指摘があっても測り、1 回で出し切る。出す長さは実行ハーネスがやり直しに渡す 2000 文字に収める。
         self.add_caller()
-        commit(self.design, {f"docs/n{i}.md": f"# n{i}\n\n`hello` の話 {i}\n" for i in range(30)}, "many")
+        # フォルダを分ける（同じフォルダの言及だけの文書は 1 行にまとまる）
+        commit(self.design, {f"docs/n{i}/n{i}.md": f"# n{i}\n\n`hello` の話 {i}\n" for i in range(30)}, "many")
         self.write_plan(PLAN_ALIGNED.replace("## ずれ\n\nなし", "## ずれ\n\n根拠の無いずれ"))
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
@@ -4722,11 +4748,11 @@ class CoddTest(unittest.TestCase):
         self.assertIn("「未判断」として書き足しました", r.stderr)   # 測った結果を同じ回に
         self.assertLessEqual(len(r.stderr), 2000)
         texts = [p["text"] for p in json.loads((self.impl / ".codd/problems.json").read_text(encoding="utf-8"))["problems"]]
-        named = lambda text: len(re.findall(r"docs/n\d+\.md", text))
+        named = lambda text: len(re.findall(r"docs/n\d+/n\d+\.md", text))
         self.assertGreater(sum(named(t) for t in texts), named(r.stderr))   # 全文は控えに残る
         plan = (self.impl / PLAN).read_text(encoding="utf-8")
         self.assertIn("- src/use.py — 未判断", plan)
-        self.assertIn("- 未判断: docs/n0.md:3", plan)
+        self.assertIn("- 未判断: docs/n0/n0.md:3", plan)
 
     # ------------------------------------------------------------ 点検（本流とは別）
 

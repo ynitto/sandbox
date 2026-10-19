@@ -11,7 +11,7 @@
 
 - `src/app.py` — `def hello(): return 1`
 - `src/page.js` — `renderHello()` が文字列の HTML `'<h1>Hello page</h1>'` を返す（JSX ではない）
-- `tests/test_app.py` — `hello()` が 1 を返すことを確かめる
+- `tests/__init__.py`（空）と `tests/test_app.py` — `hello()` が 1 を返すことを確かめる
 - `tests/e2e/hello.yaml` — 先頭に `# coherence: doc=docs/api.md` と書いた e2e のケース
 - `tests/e2e/page.yaml`・`tests/e2e/top.yaml` — 注記の無い e2e のケース。`/hello` を開いて見出しの文言（`Hello page`）を期待する
 

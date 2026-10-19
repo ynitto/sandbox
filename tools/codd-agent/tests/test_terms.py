@@ -91,6 +91,21 @@ class LiteralsFromDiffTest(unittest.TestCase):
             texts = codd.literals_from_diff(ctx, "", codd.Side("own", repo, []))
         self.assertEqual(sorted(texts), ["ログイン", "送信"])   # 比較式（x > 2 && y < 2）は文言にしない
 
+    def test_strings_already_in_the_file_are_not_changed(self) -> None:
+        # `{"status": …}` を足しても、"status" が前からそのファイルにあれば、変えた文字列ではない
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "routes.py").write_text('def a():\n    return {"status": "ok"}\n', encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "routes.py").write_text('def a():\n    return {"status": "ok"}\n\n\ndef b():\n    return {"status": "refunded"}\n',
+                                            encoding="utf-8")
+            ctx = SimpleNamespace(config={"tests": ["**/*.test.*"]})
+            self.assertEqual(codd.literals_from_diff(ctx, "", codd.Side("own", repo, [])), ["refunded"])
+
     def test_imports_are_not_screen_text(self) -> None:
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as tmp:
@@ -273,6 +288,14 @@ class PlanNamesTest(unittest.TestCase):
         # `…sourceId…` と書いても sourceId で測る。途中の省略は、どこにも当たらないので書き直させる
         self.assertEqual(codd.name_terms("- a.py — `…sourceId…` と `...name` を直す"), ["sourceId", "name"])
         self.assertEqual(codd.elided_names("`get…Id` と `…sourceId…` と `a b…`"), ["get…Id"])
+
+    def test_keywords_declarations_headings_and_routes(self) -> None:
+        # `if (sourceId)` は sourceId、`const disabled = isGeneratedPrintDisabled;` は右辺、`## usePreviewModel` は名前でも探す
+        self.assertEqual(codd.name_terms("`if (sourceId)`"), ["sourceId"])
+        self.assertEqual(codd.name_terms("`const disabled = isGeneratedPrintDisabled;`"), ["isGeneratedPrintDisabled"])
+        self.assertEqual(codd.name_terms("`const MAX = 3`"), ["MAX"])
+        self.assertEqual(codd.name_terms("`## usePreviewModel`"), ["## usePreviewModel", "usePreviewModel"])
+        self.assertEqual(codd.name_terms("`POST /orders/{id}/refund` と `src/a.py`"), ["/orders/{id}/refund"])
 
 
 class GrepTermsTest(unittest.TestCase):
