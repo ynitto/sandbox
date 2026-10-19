@@ -2899,8 +2899,9 @@ def name_terms(text: str) -> list[str]:
         if "/" in term or "\\" in term or (_CITE.fullmatch(term) and new_file_name(term)):
             continue
         # コードの断片（`discount: int = 0`・`obj.f("a")`・`note=備考`）は、先頭の名前だけを名前とする
-        head = _CODE_HEAD.match(term.strip())
-        out.append(head.group(1) if head else re.sub(r"\(\)$", "", term.strip()))
+        term = re.sub(r"^#+\s+", "", term.strip())   # 見出しは `## 見出し` と書いても見出しの名前で数える
+        head = _CODE_HEAD.match(term)
+        out.append(head.group(1) if head else re.sub(r"\(\)$", "", term))
     return unique(out)
 
 
