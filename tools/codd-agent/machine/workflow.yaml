@@ -15,7 +15,7 @@
 #                                        └─ STOP ─→ stopped（何も変えずにやめる）─→ retro
 #
 #   plan の検査がやり直し（check_retries）を使い切っても落ちたら、apply の検査が落ちたら、stuck へ。
-#   テストの失敗・計画の書き方など人の判断が要らない理由だけなら、stuck は訊かずに同じ段へ戻す（段ごとに 2 回まで。
+#   変えたあとの検査が、テストの失敗・変え残しなど人の判断が要らない理由だけで落ちたなら、stuck は訊かずに apply へ戻す（2 回まで。
 #   どの種類にも当たらない理由は訊く側に倒す）:
 #   stuck ─┬─ PLAN  ─→ plan（練り直す。変えた分を残すか戻すかは stuck で決める）
 #          ├─ APPLY ─→ apply（計画はそのままで変え直す）
@@ -72,7 +72,7 @@ states:
     # 時間を明示する（既定の 120 秒では、グラフの作り直しで切られて「落ちた」扱いになる）
     check: {command: python3, args: [.statemachine/codd/codd.py, verify-plan], timeout_sec: 1800}
     check_retries: 2
-    check_on_exhausted: continue   # 使い切ったら stuck で利用者に次の手を訊く
+    check_on_exhausted: continue   # 使い切ったら stuck で利用者に次の手を訊く（訊かずに戻すのはここの 2 回だけ）
 
   confirm:
     description: "計画を利用者に確認する"

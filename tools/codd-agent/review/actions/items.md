@@ -6,7 +6,7 @@
 
 1. `python3 .statemachine/codd/codd.py review next` を実行する。項目の問いと、見る箇所の前後が出る
 2. 出た箇所を読む。足りなければ、そのファイルを開いて関数 1 つ・見出し 1 つぶん読む。設計の項目では
-   `python3 .statemachine/codd/codd.py rule --all` で守る決まりを読む（1 回でよい）
+   `python3 .statemachine/codd/codd.py guide --all` で守る決まりを読む（1 回でよい）
 3. `.codd/review/answers.md` の終わりに、示された形で 1 行足す。根拠は、項目に挙がったファイルの、
    判断の決め手になった行（`パス:行`。テストが無いという項目は、テストのファイルの行でもよい）
 

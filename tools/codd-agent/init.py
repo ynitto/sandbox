@@ -24,11 +24,11 @@ docs/ も無ければ（--ref-scope も渡さなければ）、文書を持た�
 `<リポジトリ>/.statemachine/codd/` に machine/ の中身を写し、codd.json を書く。
 既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は上書きしない。--side / --ref / --scope /
 --ref-scope / --exclude / --ref-exclude / --check / --test / --evidence を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
-参照先に手で書いた rules・scope・exclude などは残す）。従う手順（決まり・スキル・道具）は codd.json の guides を手で書く。
+参照先に手で書いた guides・scope・exclude などは残す）。前の版の書き方（skills・tools・rules・ref_path）は guides と refs に書き換える。従う手順（決まり・スキル・道具）は codd.json の guides を手で書く。
 `.codd/`（探した結果・検査の記録・変える前の写し・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
 このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
-初めて置いたときは、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules /
-refs[].rules に書く（--no-discover-rules でやめる。あとからは `codd.py rules --write`）。
+初めて置いたときは、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の guides /
+refs[].guides に書く（--no-discover-rules でやめる。あとからは `codd.py show --write-rules`）。
 kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカスタムエージェント `codd` を書く
 （`.kiro/agents/codd.json` と `.github/agents/codd.agent.md`。--agent で絞り、--no-agents で書かない）。
 変える段を受け持つサブエージェント `codd-apply` も並べて書く（codd.json の subagent が true のときに codd が呼ぶ）。
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import itertools
 import json
 import re
 import shlex
@@ -85,6 +86,48 @@ def ref_name(ref: dict) -> str:
     return ref.get("name") or Path(str(ref["path"]).rstrip("/\\")).name
 
 
+def migrate_legacy(config: dict) -> list[str]:
+    """前の版の書き方（ref_path・skills・tools・rules・refs[].skills・refs[].rules）を refs と guides に書き換える。
+
+    codd.py はもう前の版の書き方を読まないので、置き直すときに一度だけ書き換える。書き換えた項目の名前を返す。
+    """
+    moved = []
+    if "ref_path" in config:
+        path = config.pop("ref_path")
+        if "refs" not in config and path:
+            config["refs"] = [{"path": path}]
+        moved.append("ref_path")
+
+    def add(entry: dict, guide: dict) -> None:
+        guides = entry.setdefault("guides", [])
+        if guide not in guides:
+            guides.append(guide)
+
+    for key, prefix in (("skills", "skill:"), ("tools", "tool:")):
+        if key not in config:
+            continue
+        by_phase = config.pop(key) or {}
+        moved.append(key)
+        names = [n for phase in ("plan", "apply") for n in by_phase.get(phase) or []]
+        for name in dict.fromkeys(names):
+            phases = [ph for ph in ("plan", "apply") if name in (by_phase.get(ph) or [])]
+            add(config, {"use": prefix + name, **({"when": {"phase": phases[0]}} if len(phases) == 1 else {})})
+    if "rules" in config:
+        for path in config.pop("rules") or []:
+            add(config, {"use": path})
+        moved.append("rules")
+    for ref in config.get("refs") or []:
+        if "skills" in ref:   # 参照先を変えるときに使うスキル
+            for name in ref.pop("skills") or []:
+                add(ref, {"use": "skill:" + name, "when": {"phase": "apply"}})
+            moved.append("refs[].skills")
+        if "rules" in ref:
+            for path in ref.pop("rules") or []:
+                add(ref, {"use": path})
+            moved.append("refs[].rules")
+    return list(dict.fromkeys(moved))
+
+
 def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore: bool = True,
             scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
             agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | list[str] | None = None,
@@ -97,6 +140,9 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     config = json.loads(config_file.read_text(encoding="utf-8")) if config_file.is_file() else None
     existed = config is not None
     original = copy.deepcopy(config)
+    legacy = migrate_legacy(config) if config else []
+    if legacy:
+        print(f"  codd.json の前の版の書き方（{', '.join(legacy)}）を guides に書き換えました")
     code_only = False
     if config is None and not refs:
         # 実装と設計書が同じリポジトリ: 設計書のフォルダを参照先 docs にし、自分はその外の全部を受け持つ。
@@ -142,8 +188,7 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     if side:
         config["side"] = side
     if refs:
-        config.pop("ref_path", None)  # 参照先が 1 つだった頃の書き方は refs に置き換える
-        # 同じ名前の参照先に手で書いた rules・scope・skills などは残し、名前とパスだけ入れ替える。
+        # 同じ名前の参照先に手で書いた guides・scope などは残し、名前とパスだけ入れ替える。
         old = {ref_name(r): r for r in config.get("refs", [])}
         config["refs"] = [{**old.get(ref_name(new), {}), **new} for new in map(parse_ref, refs)]
     if scope:
@@ -305,17 +350,17 @@ def write_agents(target: Path, kinds) -> list[Path]:
 
 def discover_rules(target: Path, dest: Path) -> None:
     """自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探し、codd.json の guides に書く。"""
-    proc = subprocess.run([sys.executable, str(dest / "codd.py"), "rules", "--write"], cwd=target,
+    proc = subprocess.run([sys.executable, str(dest / "codd.py"), "show", "--write-rules"], cwd=target,
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         reason = (proc.stderr.strip().splitlines() or [""])[-1]
-        print("  決まりの候補は探せませんでした（参照先を置いてから `python3 .statemachine/codd/codd.py rules --write`）: "
+        print("  決まりの候補は探せませんでした（参照先を置いてから `python3 .statemachine/codd/codd.py show --write-rules`）: "
               + reason, file=sys.stderr)
         return
     if "件を" in proc.stdout:
         print("  決まりの候補を codd.json の guides に書きました（決まりでないものは手で消してください）:")
-        start = proc.stdout.find("候補:")
-        print("\n".join("  " + ln for ln in proc.stdout[start:].splitlines()[1:] if ln.startswith("  - ")))
+        lines = proc.stdout[proc.stdout.find("決まりの候補"):].splitlines()[1:]
+        print("\n".join("  " + ln for ln in itertools.takewhile(lambda ln: ln.startswith("  - "), lines)))
 
 
 def write_text(path: Path, text: str) -> None:
@@ -349,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ref-exclude", action="append",
                    help='`参照先の名前=除外パターン`（繰り返し可。その参照先の一覧を入れ替える。名前= で消す）')
     p.add_argument("--no-discover-rules", action="store_true",
-                   help="決まりらしいマークダウン（コーディングルールなど）を探して codd.json の rules に書くのをやめる")
+                   help="決まりらしいマークダウン（コーディングルールなど）を探して codd.json の guides に書くのをやめる")
     p.add_argument("--no-gitignore", action="store_true", help=".gitignore に .codd/ を足さない")
     p.add_argument("--agent", action="append", choices=list(AGENT_KINDS),
                    help="書くカスタムエージェント（繰り返し可。既定は kiro と copilot の両方）")
@@ -368,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
                    exclude=args.exclude, ref_excludes=args.ref_exclude, evidence=args.evidence)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8-sig"))
     print(f"置きました: {dest}")
-    refs = config["refs"] if "refs" in config else [{"path": config.get("ref_path")}]
+    refs = config["refs"]
     print(f"  この側: {config['side']}  参照先: " + (", ".join(
         f"{ref_name(r)}={r['path']}" + (f"（{', '.join(r['scope'])}）" if r.get("scope") else "") for r in refs)
         or "なし（文書を持たないリポジトリ。実装とテストの一貫性だけを取る）"))
