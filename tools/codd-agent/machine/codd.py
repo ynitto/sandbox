@@ -2426,6 +2426,11 @@ class GraphView:
             if not any(k == key for k, _ in sides):
                 continue
             nodes = sorted(self.section_index.get((gk, rel), []))
+            if lines:
+                # 空行は前の節の続きではない（節を足すと、その前の空行が前の節の行に数えられる）
+                side = next(sd for k, sd in sides if k == key)
+                text = (read_text(side.path / rel) or "").splitlines()
+                lines = {n for n in lines if not (0 < n <= len(text)) or text[n - 1].strip()}
             for line in sorted(lines or []) if lines is not None else [n[0] for n in nodes]:
                 before = [n for n in nodes if n[0] <= line]
                 if before and before[-1][1] not in out:
@@ -3956,6 +3961,13 @@ _DOC_TOKEN = re.compile(r"(?:[\w-]+:)?([\w./-]+\.(?:md|markdown|rst|adoc|txt))\b
 _DELETE_WORD = re.compile(r"消す|消し|削除|取り除|delete|remove", re.I)
 
 
+def deletes_file(line: str) -> bool:
+    """変更案の行が、ファイルそのものを消すと書いているか。「`ConfirmButton` を消す」のように名前を消す行は、ファイルを消さない。"""
+    desc = line.split(" — ", 1)[1] if " — " in line else line
+    m = _DELETE_WORD.search(desc)
+    return bool(m) and "`" not in desc[:m.start()]
+
+
 def no_doc_patterns(ctx: Ctx, key: str) -> list[str]:
     """文書を求めないファイル。自分は codd.json の no_doc、参照先は参照先に置いた codd.json の no_doc。"""
     if not key:
@@ -4119,7 +4131,7 @@ def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
         return []   # 文書の無いリポジトリ（refs が空）は、実装とテストだけの一貫性を取る
     missing = [nodoc_message(ctx, k, rel) for k, rel in sorted(planned_code(ctx, bodies))
                if not doc_lines_cover(ctx, bodies, rel)
-               and not any(_DELETE_WORD.search(line) for line in plan_lines_naming(bodies, rel))
+               and not any(deletes_file(line) for line in plan_lines_naming(bodies, rel))
                and not docs_for(ctx, k, rel)]   # まだ無いコードも、フォルダをまとめた文書があればよい
     if not missing:
         return []
@@ -5448,7 +5460,11 @@ def print_problems(ctx: Ctx, phase: str, problems: list[str]) -> None:
     if not problems:
         return
     stage = "計画の検査" if phase == "plan" else "変えたあとの検査"
-    note_issue(ctx, f"{stage}で止まった（{len(problems)} 件）", str(problems[0]))
+    # 未判断の書き足しは、計画の検査のいつもの流れ（判断を書けば通る）。出来事に数えない
+    worth = [p for p in problems if getattr(p, "kind", "form") != "pending"]
+    if worth:
+        note_issue(ctx, f"{stage}で止まった（{len(problems)} 件）",
+                   " / ".join(str(p).splitlines()[0][:ISSUE_DETAIL // 2] for p in worth[:3]))
     lines = [f"NG {stage}: {len(problems)} 件（全文: {DATA_DIRNAME}/{PROBLEMS_NAME}）"]
     used = len(lines[0])
     for i, p in enumerate(problems):
@@ -7031,7 +7047,8 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     if stopped:
         # 利用者がやめた回。やり直しを促さず、やめたことと、変えた分が残っているかを書く
         left = any(changed_since(side, snap) for side, snap in before_snapshots(ctx))
-        state = "利用者がやめた（" + ("変えた分は残している" if left else "変えた分は戻した") + "）"
+        state = "利用者がやめた（" + ("変えた分は残している" if left else "変えた分は戻した" if (ctx.data / ROLLED_BACK).is_file()
+                                  else "何も変えていない") + "）"
     elif applied is None:
         state = "まだ通っていない（変えたあとの検査からやり直してください）"
     elif {k: v for k, v in applied.items() if k != APPLIED_BLOBS} == now:
@@ -7068,6 +7085,9 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
     lines = ["# 結果", "", f"- 変えたあとの検査: {state}"]
     untested = [*(["自分"] if not ctx.config.get("test") else []),
                 *(r.name for r in ctx.refs if a.touched[r.name] and not r.test)]
+    tested = [*(["自分"] if ctx.config.get("test") else []), *(r.name for r in ctx.refs if a.touched[r.name] and r.test)]
+    if tested and applied is not None:
+        lines.append(f"- テスト: 動かした（{'・'.join(tested)}）")
     if untested:
         # テストのコマンドが無いと、検査はテストを動かさずに通る。「通った」をテストまで通ったと読ませない
         lines.append(f"- テスト: 動かしていない（{'・'.join(untested)}のテストのコマンドが未設定）")
@@ -7142,7 +7162,8 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
                   "", "（振る舞いや時間を文書に活かすなら `<!-- evidence: id -->…<!-- /evidence -->` で写す。"
                   "テストが作ったファイルは、その中身を文書から写しとしてリンクすれば、以後は差し替える）"]
     own_now = sorted(p for p in a.own_touched if (ctx.root / p).is_file())
-    lonely = [p for p in own_now if not any(k for k, _ in linked(ctx, "", {p}))]
+    # フォルダのパスでつながる文書も数える（対応する文書の検査と同じ数え方）
+    lonely = [p for p in own_now if not any(k for k, _ in linked(ctx, "", {p})) and not docs_for(ctx, "", p)]
     if lonely:
         lines += ["", "## 参照先とパスでつながっていない変更", "",
                   *[f"- {p}" for p in lonely],
@@ -7446,6 +7467,7 @@ def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
         restored.append(side_label(ctx, key, rel))
     for name in ("applied.json", PROBLEMS_NAME):
         (ctx.data / name).unlink(missing_ok=True)
+    write_text(ctx.data / ROLLED_BACK, "")   # やめた回の報告が「戻した」と「何も変えていない」を分ける
     print(f"変える前に戻しました: {len(restored)} files" + ("".join(f"\n  - {r}" for r in restored)))
     return 0
 
@@ -7535,7 +7557,8 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     if ctx.plan.is_file():
         ctx.plan.unlink()   # --new: 進めていた計画を捨てて書き直す
     else:
-        (ctx.data / ISSUE_LOG).unlink(missing_ok=True)   # 新しい回。前の回の出来事を課題メモに混ぜない
+        for stale in (ISSUE_LOG, "advice.md"):   # 新しい回。前の回の出来事・止まった理由を振り返りに混ぜない
+            (ctx.data / stale).unlink(missing_ok=True)
     dest = new_plan_path(ctx.root / PLAN_DIR, name)
     if ahead is not None:
         shutil.move(str(ahead), dest)   # 立てておいた計画は、進める計画になって next/ から消える
@@ -7730,6 +7753,7 @@ def record_problems_of(ctx: Ctx) -> list[str]:
             f"いま進めている計画だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else [])
 
 
+ROLLED_BACK = "rolled-back"   # rollback で戻した印。回を閉じると消す
 ISSUE_LOG = "issues.json"      # この回に codd が控えた出来事（検査で止まった・計画を退けた・やめた）。draft で空にする
 ISSUE_DIR = "retro"            # 課題メモ（.plans/retro/）。問題 1 つに 1 ファイル。直したら消す（消すのは改善する側）
 ISSUE_MAX = 3                  # 1 回で作る・書き足す課題メモの上限
@@ -7762,62 +7786,75 @@ def retro_prompt(ctx: Ctx) -> str:
     return value
 
 
+def plan_folders(ctx: Ctx) -> list[tuple[str, Path]]:
+    """どの側のリポジトリにもある .plans/（見せる前置き, フォルダ）。同じリポジトリは 1 つにまとめる。"""
+    out, seen = [], set()
+    for key, side in all_sides(ctx):
+        if side.path.resolve() in seen:
+            continue
+        seen.add(side.path.resolve())
+        out.append((f"{key}:" if key else "", side.path / PLAN_DIR))
+    return out
+
+
 def related_records(ctx: Ctx, record: str | None) -> list[str]:
-    """この回の記録と同じファイルを変える案を書いた、過去の計画の記録（新しいものから）。"""
+    """この回の記録と同じファイルを変える案を書いた、過去の計画の記録（どの側のリポジトリでも。新しいものから）。"""
     if not record:
         return []
     _, bodies = sections(read_text(ctx.root / record) or "", PLAN_HEADINGS)
-    paths = {it.split(" — ", 1)[0].strip().strip("`") for h in ("## 自分の変更案", "## 参照先の変更案")
-             for it in items(bodies.get(h, "")) if " — " in it}
+    # 側の前置き（`docs:`）は外して探す。参照先のリポジトリの記録は、そのリポジトリから見たパスで書く
+    paths = {re.sub(r"^[A-Za-z0-9_.-]+:", "", it.split(" — ", 1)[0].strip().strip("`"))
+             for h in ("## 自分の変更案", "## 参照先の変更案") for it in items(bodies.get(h, "")) if " — " in it}
     paths = {x for x in paths if x and not x.startswith("変更不要")}
     if not paths:
         return []
     found = []
-    for p in sorted((ctx.root / PLAN_DIR).glob("*.md"), reverse=True):
-        rel = p.relative_to(ctx.root).as_posix()
-        text = read_text(p) or ""
-        if rel != record and RESULT_HEADING in text.splitlines() and any(x in text for x in paths):
-            found.append(rel)
-        if len(found) >= ISSUE_PAST:
-            break
-    return found
+    for label, folder in plan_folders(ctx):
+        for p in sorted(folder.glob("*.md"), reverse=True):
+            rel = label + p.relative_to(folder.parent).as_posix()
+            text = read_text(p) or ""
+            _, past = sections(text, PLAN_HEADINGS)
+            changes = "\n".join(past.get(h, "") for h in ("## 自分の変更案", "## 参照先の変更案"))
+            if rel != record and RESULT_HEADING in text.splitlines() and any(x in changes for x in paths):
+                found.append((p.stem, rel))
+    return [rel for _, rel in sorted(found, reverse=True)[:ISSUE_PAST]]
 
 
 def issue_section(ctx: Ctx, record: str | None) -> list[str]:
-    """課題メモを書く指示。codd が控えた出来事と、会話の中の利用者の指摘を問題として扱う。"""
+    """課題メモを書く指示。codd が控えた出来事を手がかりに、問題とその原因を書かせる。"""
     try:
         events = json.loads((ctx.data / ISSUE_LOG).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         events = []
     folder = f"{PLAN_DIR}/{ISSUE_DIR}"
     known = []
-    for p in sorted((ctx.root / folder).glob("*.md")):
-        lines = (read_text(p) or "").splitlines()
-        title = next((ln[2:].strip() for ln in lines if ln.startswith("# ")), "")
-        where = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("- 直す先:")), "")
-        known.append(f"- {folder}/{p.name} — {title}" + (f"（{where}）" if where else ""))
+    for label, plans in plan_folders(ctx):
+        for p in sorted((plans / ISSUE_DIR).glob("*.md")):
+            lines = (read_text(p) or "").splitlines()
+            title = next((ln[2:].strip() for ln in lines if ln.startswith("# ")), "")
+            where = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("- 直す先:")), "")
+            known.append(f"- {label}{folder}/{p.name} — {title}" + (f"（{where}）" if where else ""))
     plan = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "", Path(record).stem) if record else "（計画なし）"
     return [
         "# 課題メモ", "",
         f"この回に起きた問題の原因をたどり、`{folder}/` に課題メモを残す。直し方は考えない・書かない（直すのは別の場）。"
-        f"問題 1 つに 1 ファイル、この回で作る・書き足すのは {ISSUE_MAX} 件まで。", "",
-        "問題は次の 4 つ。どれも無ければ何も書かずに終える。", "",
-        "- 下の「この回の出来事」",
+        f"問題 1 つに 1 ファイル、この回で作る・書き足すのは {ISSUE_MAX} 件まで。問題は次のもの。どれも無ければ何も書かずに終える。", "",
         "- この回の会話で利用者が指摘したこと（誤りや漏れの指摘、言い直し、やり直しの依頼。確認や相談の答えの中のものも）",
-        "- この回の変更や判断が、過去の計画の記録の判断と食い違うこと（下の「同じファイルを変えた過去の記録」を読む。"
-        "前の判断を利用者が改めたと記録にあれば、食い違いではない）",
-        "- codd の作りの問題（手順どうしが噛み合わない、同じことを何度もさせる、検査が誤って止めた・通した、"
-        "出力が足りず推測した など）。止まらずに通った回でも書く", "",
+        "- この回の変更や判断が、過去の計画の記録に残る判断（変更案・今回やらないこと・確認の答え）と食い違うこと"
+        "（下の「同じファイルを変えた過去の記録」を読む。前の判断を利用者が改めたのなら食い違いではない）",
+        "- codd の作りの問題（手順どうしが噛み合わない、同じことを何度もさせる、検査が誤って止めた・通した、出力が足りず推測した など）",
+        "- 自分（エージェント）が手順を読み違えた・判断を誤ったこと（どこが読み違えやすかったか）", "",
+        "下の「この回の出来事」は手がかり。出来事があっても、手順どおりの流れ（判断を書き足して通した、利用者が方針を選んだ・"
+        "やめた）なら問題ではない。", "",
         "## この回の出来事", "", *([f"- {e.get('at', '')} {e.get('what', '')}"
-                                   + (f": {e['detail']}" if e.get("detail") else "") for e in events]
-                                  or ["- なし（検査で止まらず、計画も退けていない）"]), "",
+                                   + (f": {e['detail']}" if e.get("detail") else "") for e in events] or ["- なし"]), "",
         "## 材料", "", "- この回の会話（依頼・確認と相談での答え・検査の指摘とやり直し）",
         *([f"- 計画の記録: {record}"] if record else []),
         *([f"- 止まった理由と次の手: {DATA_DIRNAME}/advice.md"] if (ctx.data / "advice.md").is_file() else []), "",
         "## 同じファイルを変えた過去の記録", "", *([f"- {r}" for r in related_records(ctx, record)] or ["- なし"]), "",
         "## 今ある課題メモ", "", *(known or ["- なし"]), "",
-        "同じ問題（原因と直す先が同じ）のメモがあれば、新しく作らずに「起きたこと」へ 1 行足す（原因に新しい根拠があれば"
-        "「原因」にも足す）。迷ったら別のファイルにする。", "",
+        "同じ問題（原因と直す先が同じ）のメモがあれば、参照先のリポジトリのものでも、新しく作らずにその「起きたこと」へ 1 行足す"
+        "（原因に新しい根拠があれば「原因」にも足す）。迷ったら別のファイルにする。", "",
         "## 書式", "",
         f"新しいメモは `{folder}/<英語の短い名前>.md`（小文字・数字・ハイフン）。", "",
         "```markdown", "# 問題を 1 行で", "",
@@ -7830,9 +7867,9 @@ def issue_section(ctx: Ctx, record: str | None) -> list[str]:
 
 def cmd_retro(ctx: Ctx, args: argparse.Namespace) -> int:
     """終わりの振り返り（done・stopped のあと）。課題メモの指示と、設定のプロンプトがあればそれを示す。"""
-    records = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md"))
-               if RESULT_HEADING in (read_text(p) or "").splitlines()]
-    record = records[-1].relative_to(ctx.root).as_posix() if records else None
+    # この回の記録は、いちばん新しく書き足した記録（同じ分に置いた計画は名前の順では決まらない）
+    records = [p for p in (ctx.root / PLAN_DIR).glob("*.md") if RESULT_HEADING in (read_text(p) or "").splitlines()]
+    record = max(records, key=lambda p: p.stat().st_mtime_ns).relative_to(ctx.root).as_posix() if records else None
     out = issue_section(ctx, record)
     prompt = retro_prompt(ctx)
     if prompt:
@@ -7876,7 +7913,7 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
         result += applied_lines(ctx, applied)
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
-    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME, LINKS_FOUND_NAME,
+    for name in ("applied.json", PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME, LINKS_FOUND_NAME, ROLLED_BACK,
                  UNRUN_NAME, UNRUN_OK_NAME, UNCHECKED_NAME):
         (ctx.data / name).unlink(missing_ok=True)   # 閉じた回の印を、次の回に持ち越さない
     clear_failed_tests(ctx)

@@ -73,7 +73,7 @@ GRAPH_AGENT_PROMPT = SRC / "agents" / "codd-graph.md"
 GRAPH_AGENT_DESCRIPTION = "codd が呼ぶ。グラフの束の文書を読み、知識グラフの断片（JSON）を書く"
 AGENT_KINDS = ("kiro", "copilot")
 # graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
-GRAPHIFY_IGNORE_LINES = (".statemachine/codd/", ".statemachine/codd-review/")
+GRAPHIFY_IGNORE_LINES = (".statemachine/codd/", ".statemachine/codd-review/", ".plans/")   # 計画の記録・課題メモはグラフに入れない
 
 
 def parse_ref(value: str) -> dict:

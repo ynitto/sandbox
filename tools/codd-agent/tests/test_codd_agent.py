@@ -908,6 +908,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("「未判断」として書き足しました", r.stderr)
         self.assertIn("src/use.py", r.stderr)
         self.assertNotIn("src/other.py", r.stderr)  # 語単位で引くので helloWorld は拾わない
+        self.assertFalse((self.impl / ".codd/issues.json").exists())   # 未判断の書き足しは振り返りの出来事に数えない
         report = (self.impl / ".codd/impact.md").read_text(encoding="utf-8")
         self.assertIn("- src/use.py", report)
         # 測ったファイルは計画に「未判断」として書き足される。判断しないままでは通らない。
@@ -2187,7 +2188,7 @@ class CoddTest(unittest.TestCase):
                          [{"name": "design", "path": "../design-v2", "guides": [{"use": "docs/r.md"}], "scope": ["docs"]}])
         self.assertEqual((self.impl / ".gitignore").read_text(encoding="utf-8").splitlines().count(".codd/"), 1)
         self.assertEqual((self.impl / ".graphifyignore").read_text(encoding="utf-8").splitlines(),
-                         [".statemachine/codd/", ".statemachine/codd-review/"])
+                         [".statemachine/codd/", ".statemachine/codd-review/", ".plans/"])
         fresh = self.tmp / "fresh"
         fresh.mkdir()
         git(fresh, "init", "-q")
@@ -5045,6 +5046,8 @@ class CoddTest(unittest.TestCase):
             "# 変更の計画\n\n## 自分の変更案\n\n- src/app.py — ログを出さない\n\n## 結果\n\n- 変えた\n", encoding="utf-8")
         (self.impl / ".plans/2026-09-02-0000-other.md").write_text(
             "# 変更の計画\n\n## 自分の変更案\n\n- src/other.py — x\n\n## 結果\n\n- 変えた\n", encoding="utf-8")
+        for old in ("2026-09-01-0000-old", "2026-09-02-0000-other"):   # 前の回に書いた記録（この回の記録は最後に書いたもの）
+            os.utime(self.impl / f".plans/{old}.md", (1, 1))
         r = self.run_pa(self.impl, "retro")
         self.assertIn("## 同じファイルを変えた過去の記録\n\n- .plans/2026-09-01-0000-old.md\n\n", r.stdout)
         self.assertNotIn("other.md", r.stdout)
@@ -5053,10 +5056,15 @@ class CoddTest(unittest.TestCase):
             "# 見出しの改名を拾えない\n\n- 直す先: codd の手順\n\n## 起きたこと\n\n- x\n", encoding="utf-8")
         self.assertIn("- .plans/retro/stale-heading.md — 見出しの改名を拾えない（codd の手順）",
                       self.run_pa(self.impl, "retro").stdout)
+        # 参照先のリポジトリのメモも、同じ問題を重ねないように並べる
+        (self.design / ".plans/retro").mkdir(parents=True)
+        (self.design / ".plans/retro/x.md").write_text("# 参照先のメモ\n", encoding="utf-8")
+        self.assertIn("- design:.plans/retro/x.md — 参照先のメモ", self.run_pa(self.impl, "retro").stdout)
         # 課題メモは計画に数えない。新しい回を始めると、前の回の出来事は消える
         r = self.run_pa(self.impl, "draft", "--name", "next-one")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("ひな形を置きました: .plans/", r.stdout)
+        # 未判断の書き足しは、計画の検査のいつもの流れなので出来事に数えない
         self.assertIn("## この回の出来事\n\n- なし", self.run_pa(self.impl, "retro").stdout)
 
     def test_workflow_ends_with_the_retro_after_reporting(self) -> None:

@@ -85,7 +85,7 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs
 - `<リポジトリ>/.statemachine/codd-review/` に、確かめるステートマシンを写す（[下記](#確かめるcodd-review)）
 - カスタムエージェント `codd` を書く（[下記](#カスタムエージェントkirogithub-copilot)）
 - 作業ファイルを置く `.codd/` を `.gitignore` に足す（`--no-gitignore` で足さない）。
-  このマシン自身が graphify の索引に入らないよう、`.graphifyignore` に `.statemachine/codd/` と `.statemachine/codd-review/` を足す
+  このマシン自身が graphify の索引に入らないよう、`.graphifyignore` に `.statemachine/codd/` と `.statemachine/codd-review/` を、計画の記録と課題メモが入らないよう `.plans/` を足す
 - 初めて置いたときは、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探し、
   `codd.json` の `guides` に書く（[下記](#守る決まりを見つける)。`--no-discover-rules` でやめる）
 
