@@ -7985,7 +7985,9 @@ def issue_section(ctx: Ctx, record: str | None) -> list[str]:
             lines = (read_text(p) or "").splitlines()
             title = next((ln[2:].strip() for ln in lines if ln.startswith("# ")), "")
             where = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("- 直す先:")), "")
-            known.append(f"- {label}{folder}/{p.name} — {title}" + (f"（{where}）" if where else ""))
+            cause = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("- 原因:")), "")
+            known.append(f"- {label}{folder}/{p.name} — {title}" + (f"（原因: {cause}）" if cause else "")
+                         + (f"（{where}）" if where else ""))
     plan = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "", Path(record).stem) if record else "（計画なし）"
     return [
         "# 課題メモ", "",
@@ -8005,15 +8007,16 @@ def issue_section(ctx: Ctx, record: str | None) -> list[str]:
         *([f"- 止まった理由と次の手: {DATA_DIRNAME}/advice.md"] if (ctx.data / "advice.md").is_file() else []), "",
         "## 同じファイルを変えた過去の記録", "", *([f"- {r}" for r in related_records(ctx, record)] or ["- なし"]), "",
         "## 今ある課題メモ", "", *(known or ["- なし"]), "",
-        "同じ問題（原因と直す先が同じ）のメモがあれば、参照先のリポジトリのものでも、新しく作らずにその「起きたこと」へ 1 行足す"
-        "（原因に新しい根拠があれば「原因」にも足す）。迷ったら別のファイルにする。", "",
+        "同じ問題（原因と直す先が同じ）のメモがあれば、参照先のリポジトリのものでも、新しく作らずにその「起きた回」の行の末尾へ"
+        "この回を足す。迷ったら別のファイルにする。", "",
         "## 書式", "",
-        f"新しいメモは `{folder}/<英語の短い名前>.md`（小文字・数字・ハイフン）。", "",
-        "```markdown", "# 問題を 1 行で", "",
+        f"新しいメモは `{folder}/<英語の短い名前>.md`（小文字・数字・ハイフン）。課題と原因は、それぞれ 1 行で簡潔に書く"
+        "（書く側も読む側も 1 行で分かるように。経緯や説明は足さない）。", "",
+        "```markdown", "# 課題を 1 行で", "",
+        "- 原因: 1 行（根拠: パス:行 か 検査の指摘）。根拠を示せなければ「不明」と書き、推測で埋めない",
         "- 直す先: codd 本体（codd.py・手順のファイル）/ codd.json / 決まりのファイル（パス）/ スキル（名前）/ "
-        "参照先の文書（パス）/ 過去の計画の記録（パス） のどれか", "",
-        "## 起きたこと", "", f"- {time.strftime('%Y-%m-%d')} {plan}: 何が起きたか（検査の指摘や利用者の言葉をそのまま短く）", "",
-        "## 原因", "", "- 原因（根拠: パス:行 か 検査の指摘）。根拠を示せなければ「原因: 不明」と書き、推測で埋めない",
+        "参照先の文書（パス）/ 過去の計画の記録（パス） のどれか",
+        f"- 起きた回: {time.strftime('%Y-%m-%d')} {plan}",
         "```", ""]
 
 

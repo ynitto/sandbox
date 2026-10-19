@@ -5064,9 +5064,11 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("other.md", r.stdout)
         (self.impl / ".plans/retro").mkdir()
         (self.impl / ".plans/retro/stale-heading.md").write_text(
-            "# 見出しの改名を拾えない\n\n- 直す先: codd の手順\n\n## 起きたこと\n\n- x\n", encoding="utf-8")
-        self.assertIn("- .plans/retro/stale-heading.md — 見出しの改名を拾えない（codd の手順）",
-                      self.run_pa(self.impl, "retro").stdout)
+            "# 見出しの改名を拾えない\n\n- 原因: 見出しを語で探していない\n- 直す先: codd の手順\n- 起きた回: 2026-10-19 x\n",
+            encoding="utf-8")
+        r = self.run_pa(self.impl, "retro")
+        self.assertIn("- .plans/retro/stale-heading.md — 見出しの改名を拾えない（原因: 見出しを語で探していない）（codd の手順）", r.stdout)
+        self.assertIn("課題と原因は、それぞれ 1 行で簡潔に書く", r.stdout)
         # 参照先のリポジトリのメモも、同じ問題を重ねないように並べる
         (self.design / ".plans/retro").mkdir(parents=True)
         (self.design / ".plans/retro/x.md").write_text("# 参照先のメモ\n", encoding="utf-8")
