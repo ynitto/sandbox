@@ -23,9 +23,29 @@ class PlanLineTest(unittest.TestCase):
     def test_deviation_lines_accept_comma_separated_targets(self) -> None:
         m = codd._DEVIATION.match("- tests/test_service.py, tests/test_users.py — 変更不要: `status` は辞書の項目名")
         self.assertIsNotNone(m)
-        self.assertEqual([t.strip() for t in m.group(1).split(",")], ["tests/test_service.py", "tests/test_users.py"])
+        self.assertEqual(codd.re.findall(codd._DEVIATION_TARGET, m.group(1)), ["tests/test_service.py", "tests/test_users.py"])
         m = codd._DEVIATION.match("- `status` — 関係なし: 別の意味の項目名")
         self.assertEqual((m.group(1), m.group(2)), ("`status`", "関係なし"))
+        # 空白を含む名前（新しい文書の題）も `…` で囲めば書ける
+        m = codd._DEVIATION.match("- `返金 API` — 変更不要: 文書の題でテストは要らない")
+        self.assertEqual(m.group(1), "`返金 API`")
+
+    def test_issue_gist_drops_the_hint_and_keeps_paths_whole(self) -> None:
+        # 振り返りの出来事は、直し方の添え書きを外し、パスの途中で切らない
+        p = "自分の変更案のファイルをまだ変えていません（最後まで変えてください。「計画との違い」に書く）: src/app.py, src/b.py"
+        self.assertEqual(codd.issue_gist(p, 200), "自分の変更案のファイルをまだ変えていません: src/app.py, src/b.py")
+        self.assertEqual(codd.issue_gist(p, 35), "自分の変更案のファイルをまだ変えていません: src/app.py ほか")
+
+    def test_caches_made_by_running_tests_are_not_changes(self) -> None:
+        self.assertTrue(codd.is_cache("orders/__pycache__/models.cpython-313.pyc"))
+        self.assertTrue(codd.is_cache(".pytest_cache/v/cache/lastfailed"))
+        self.assertFalse(codd.is_cache("orders/models.py"))
+
+    def test_unexported_functions_of_an_exporting_module_are_private(self) -> None:
+        names = dict(codd.code_names("export function hit() {}\nfunction minuteOf(t) {}\nconst buckets = {}\n"))
+        self.assertIn("hit", names)
+        self.assertNotIn("minuteOf", names)
+        self.assertNotIn("buckets", names)
 
 
 if __name__ == "__main__":
