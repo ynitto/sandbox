@@ -293,7 +293,7 @@ function normalizeSession(sess) {
   sess.origin = normalizeOrigin(sess.origin);
   const external = sess.externalOrigin;
   sess.externalOrigin = external && typeof external === 'object' ? Object.fromEntries(
-    ['key', 'provider', 'nativeId', 'repo', 'title', 'boundary', 'revision', 'capturedAt', 'mode'].map(k => [k, String(external[k] || '').slice(0, 2000)])
+    ['key', 'provider', 'nativeId', 'repo', 'title', 'boundary', 'revision', 'capturedAt', 'mode'].map(k => [k, headChars(String(external[k] || ''), 2000)])
   ) : null;
   return sess;
 }
