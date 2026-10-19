@@ -26,7 +26,8 @@ docs/ も無ければ（--ref-scope も渡さなければ）、文書を持た�
 --ref-scope / --exclude / --ref-exclude / --check / --test / --evidence を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
 参照先に手で書いた guides・scope・exclude などは残す）。前の版の書き方（skills・tools・rules・ref_path）は guides と refs に書き換える。従う手順（決まり・スキル・道具）は codd.json の guides を手で書く。
 `.codd/`（探した結果・検査の記録・変える前の写し・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
-このマシン自身が graphify の索引に入らないよう、.graphifyignore に `.statemachine/codd/` を足す。
+graphify の索引に関係の無いものが入らないよう、.graphifyignore にこのマシン・計画の記録（`.plans/`）・
+トップの隠しフォルダ（scope に書いたものを除く）・どの側も受け持たないトップのフォルダを足す。
 初めて置いたときは、自分と参照先から決まりらしいマークダウン（コーディングルールなど）を探して codd.json の guides /
 refs[].guides に書く（--no-discover-rules でやめる。あとからは `codd.py show --write-rules`）。
 kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカスタムエージェント `codd` を書く
@@ -72,8 +73,8 @@ APPLY_AGENT_DESCRIPTION = "codd が呼ぶ。承認された計画の、今の段
 GRAPH_AGENT_PROMPT = SRC / "agents" / "codd-graph.md"
 GRAPH_AGENT_DESCRIPTION = "codd が呼ぶ。グラフの束の文書を読み、知識グラフの断片（JSON）を書く"
 AGENT_KINDS = ("kiro", "copilot")
-# graphify で知識グラフを作るとき、このマシン自身を索引に入れない。
-GRAPHIFY_IGNORE_LINES = (".statemachine/codd/", ".statemachine/codd-review/")
+# graphify で知識グラフを作るとき、このマシン自身と計画の記録（.plans/）を索引に入れない。
+GRAPHIFY_IGNORE_LINES = (".statemachine/codd/", ".statemachine/codd-review/", ".plans/")
 
 
 def parse_ref(value: str) -> dict:
@@ -242,9 +243,32 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
         discover_rules(target, dest)
     if gitignore:
         append_line(target / ".gitignore", IGNORE_LINE)
-    for line in GRAPHIFY_IGNORE_LINES:
+    for line in graph_ignore_lines(target, json.loads(config_file.read_text(encoding="utf-8"))):
         append_line(target / ".graphifyignore", line)
     return dest
+
+
+def graph_ignore_lines(target: Path, config: dict) -> list[str]:
+    """.graphifyignore に書く行。マシンと計画のほか、どの側も受け持たないトップのフォルダを索引に入れない。
+
+    グラフの大半がエージェントの設定（.kiro/・.agents/ など）や受け持ちの外のフォルダになると、探すときの表示枠を
+    それが占め、関係の無い名前どうしのつながりも増える。隠しフォルダは scope に書いたときだけ索引に入れる。
+    このリポジトリを受け持つ側（自分と、同じリポジトリの参照先）のどれかが scope を持たなければ、隠しでないフォルダは残す。
+    """
+    scopes = [config.get("scope") or []]
+    for ref in config.get("refs") or []:
+        if (target / ref.get("path", "")).resolve() == target.resolve():
+            scopes.append(ref.get("scope") or [])
+    whole = any(not s for s in scopes)
+    tops = {Path(f).parts[0] for s in scopes for f in s if Path(f).parts}
+    out = list(GRAPHIFY_IGNORE_LINES)
+    for d in sorted(p for p in target.iterdir() if p.is_dir()):
+        name = d.name
+        if name in (".git", ".statemachine") or name in tops or f"{name}/" in out:
+            continue
+        if name.startswith(".") or not whole:
+            out.append(f"{name}/")
+    return out
 
 
 def guess_test(target: Path) -> str | None:

@@ -230,5 +230,50 @@ class CopiedHeadingsTest(unittest.TestCase):
             terms = codd.terms_from_diff(codd.Side("own", repo, []))
         self.assertEqual(terms, ["再設定画面"])   # 書式に合わせた見出し（画面・流れ）は、ありふれた語に当たるだけ
 
+
+class IncomingMergeTest(unittest.TestCase):
+    def test_names_brought_in_by_a_merge_are_not_measured(self) -> None:
+        # 競合の解消で取り込んだ変更（ほかの人が済ませたもの）の名前は、この回に変えた名前ではない
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            git("checkout", "-q", "-b", "other")
+            (repo / "far.py").write_text("def far_away():\n    return 2\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "other")
+            git("checkout", "-q", "main")
+            git("merge", "-q", "--no-commit", "--no-ff", "other")
+            (repo / "app.py").write_text("def hello_world():\n    return 1\n", encoding="utf-8")
+            terms = codd.terms_from_diff(codd.Side("own", repo, []))
+        self.assertIn("hello_world", terms)
+        self.assertNotIn("far_away", terms)
+
+    def test_only_files_changed_in_this_run_give_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "a.py").write_text("X = 1\n", encoding="utf-8")
+            (repo / "b.py").write_text("Y = 1\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "a.py").write_text("def mine():\n    return 1\n", encoding="utf-8")
+            (repo / "b.py").write_text("def before_the_run():\n    return 1\n", encoding="utf-8")
+            terms = codd.terms_from_diff(codd.Side("own", repo, []), {"a.py"})
+        self.assertIn("mine", terms)
+        self.assertNotIn("before_the_run", terms)   # 変える前から作業中だった変更
+
+
+class PlanNamesTest(unittest.TestCase):
+    def test_ellipsis_around_a_name_is_dropped_and_inside_is_flagged(self) -> None:
+        # `…sourceId…` と書いても sourceId で測る。途中の省略は、どこにも当たらないので書き直させる
+        self.assertEqual(codd.name_terms("- a.py — `…sourceId…` と `...name` を直す"), ["sourceId", "name"])
+        self.assertEqual(codd.elided_names("`get…Id` と `…sourceId…` と `a b…`"), ["get…Id"])
+
+
 if __name__ == "__main__":
     unittest.main()
