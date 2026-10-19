@@ -74,6 +74,7 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import urllib.parse
@@ -242,6 +243,24 @@ def tag(kind: str, texts) -> list[Problem]:
 
 
 # ---------------------------------------------------------------- 下回り
+
+
+def user_bin_dirs() -> list[str]:
+    """利用者のホームに入れた CLI の置き場所（uv tool・pipx・pip --user）。PATH に足していない端末でも見つけるため。"""
+    dirs = [os.environ.get(k, "") for k in ("UV_TOOL_BIN_DIR", "PIPX_BIN_DIR", "XDG_BIN_HOME")]
+    dirs.append(str(Path.home() / ".local" / "bin"))
+    for scheme in ("nt_user", "posix_user", "osx_framework_user"):
+        try:
+            dirs.append(sysconfig.get_path("scripts", scheme))
+        except KeyError:
+            pass
+    return [d for d in dict.fromkeys(dirs) if d and Path(d).is_dir()]
+
+
+def find_tool(name: str) -> str | None:
+    """外部の CLI（graphify・context-mode）を PATH から、無ければホームの置き場所から探す。"""
+    return shutil.which(name) or shutil.which(name, path=os.pathsep.join(user_bin_dirs()) or None)
+
 
 def run(argv: list[str], cwd: Path, timeout: int, env: dict | None = None) -> tuple[int, str]:
     """コマンドを実行して（終了コード, 出力）を返す。
@@ -1463,7 +1482,7 @@ def ensure_graph(ctx: Ctx, repo: Path, rebuild: bool = True) -> tuple[str | None
     """
     if ctx.config["graphify"] == "off":
         return None, None, "off"
-    exe = shutil.which("graphify")
+    exe = find_tool("graphify")
     if not exe:
         return None, None, "not-installed"
     out_dir = ctx.data / "graph" / ctx.graph_key(repo)
@@ -1504,7 +1523,7 @@ def search(ctx: Ctx, side: Side, terms: list[str], graph_cmd: str,
     repo = side.path
     key = hashlib.sha256(json.dumps(
         [str(repo), side.scope, side.exclude, terms, graph_cmd, use_graph and ctx.config["graphify"] != "off",
-         use_graph and bool(shutil.which("graphify")), use_graph and bool(shutil.which("context-mode")),
+         use_graph and bool(find_tool("graphify")), use_graph and bool(find_tool("context-mode")),
          stamp(repo), rebuild], ensure_ascii=False).encode()).hexdigest()
     cache = load_search_cache(ctx)
     if key in cache:
@@ -1593,7 +1612,7 @@ def fulltext(ctx: Ctx, side: Side, terms: list[str]) -> tuple[list[str], list[st
     リポジトリの印が変わったときだけ作り直す。graphify と同じく候補を広げるためで、検査には使わない。
     """
     lines = ["### 全文検索（context-mode）", ""]
-    exe = shutil.which("context-mode")
+    exe = find_tool("context-mode")
     if not exe:
         return lines + [f"- ({CM_MISSING})", ""], []
     repo = side.path
@@ -5532,7 +5551,7 @@ def keep_log(log_dir: Path, label: str, out: str) -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     write_text(path, out)
     rel = f"{DATA_DIRNAME}/{LOGS_DIR}/{path.name}"
-    exe = shutil.which("context-mode")
+    exe = find_tool("context-mode")
     if exe and run([exe, "index", str(path), "--project", str(log_dir.parent.parent)],
                    log_dir.parent.parent, CONTEXT_MODE_TIMEOUT)[0] == 0:
         return f"全文: {rel}（開かずに `context-mode search 語 --project .` で関係する行だけを読む。テストをやり直して全文を読まない）"

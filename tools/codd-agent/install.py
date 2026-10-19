@@ -29,6 +29,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -97,8 +98,25 @@ GRAPHIFY = ("graphify", ["graphify", "--version"],
 CHECK_ONLY = (("git", ["git"], "https://git-scm.com/downloads から入れる（必須）"),)
 
 
+def user_bin_dirs() -> list[str]:
+    """利用者のホームに入れた CLI の置き場所（uv tool・pipx・pip --user）。PATH に足していない端末でも見つけるため。"""
+    dirs = [os.environ.get(k, "") for k in ("UV_TOOL_BIN_DIR", "PIPX_BIN_DIR", "XDG_BIN_HOME")]
+    dirs.append(str(Path.home() / ".local" / "bin"))
+    for scheme in ("nt_user", "posix_user", "osx_framework_user"):
+        try:
+            dirs.append(sysconfig.get_path("scripts", scheme))
+        except KeyError:
+            pass
+    return [d for d in dict.fromkeys(dirs) if d and Path(d).is_dir()]
+
+
+def find_tool(name: str) -> str | None:
+    """CLI を PATH から、無ければホームの置き場所から探す（入れた直後で PATH に無くても見つける）。"""
+    return shutil.which(name) or shutil.which(name, path=os.pathsep.join(user_bin_dirs()) or None)
+
+
 def version(cmd: list[str]) -> str | None:
-    exe = shutil.which(cmd[0])
+    exe = find_tool(cmd[0])
     if not exe:
         return None
     try:
@@ -127,15 +145,23 @@ def run_first(candidates: list[list[str]]) -> str | None:
     return None
 
 
+def path_hint(name: str) -> None:
+    exe = find_tool(name)
+    if exe and not shutil.which(name):
+        print(f"  {Path(exe).parent} が PATH にありません。codd は見つけますが、端末から使うなら PATH に足してください")
+
+
 def install_tool(spec, upgrade: bool) -> bool:
     name, probe, installs, upgrades, how = spec
     current = version(probe)
     if current and not upgrade:
         print(f"✓ {name}: {current}")
+        path_hint(probe[0])
         return True
     print(f"{name} を{'最新にします' if current else '入れます'}")
     if run_first(upgrades if current else installs):
         print(f"✓ {name}: {version(probe) or '入れた（PATH を確かめてください）'}")
+        path_hint(probe[0])
         return True
     print(f"✗ {name} を入れられませんでした（{how}）")
     return False
@@ -144,7 +170,7 @@ def install_tool(spec, upgrade: bool) -> bool:
 def install_middleware(upgrade: bool = False, agents=AGENT_KINDS, skills: bool = True) -> int:
     failed = sum(not install_tool(spec, upgrade) for spec in (CONTEXT_MODE, GRAPHIFY))
     if skills:
-        exe = shutil.which("graphify")
+        exe = find_tool("graphify")
         for agent in dict.fromkeys(agents):
             if not setup_caveman(agent, force=upgrade):
                 failed += 1

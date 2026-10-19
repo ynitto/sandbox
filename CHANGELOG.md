@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: ホームに入れた graphify を PATH に無くても見つける
+
+- uv tool・pipx・pip `--user` で入れて PATH に足していない graphify・context-mode を、ホームの置き場所
+  （`~/.local/bin`、pip `--user` のスクリプトの置き場所）から見つける。これまでは入っていないものとして扱い、
+  エージェントがほかの場所を探しに行っていた
+- `install.py` は、PATH に無い場所で見つけたときにその場所を示す
+
 ### codd-agent: 落ちたテストの長い出力を会話に入れず、読み書きの手順を必ず読ませる
 
 - テストや検査が落ちて出力が長いとき、末尾だけを示し、全文は `.codd/logs/` に残して context-mode の索引に入れる。
