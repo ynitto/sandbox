@@ -7734,6 +7734,7 @@ ISSUE_LOG = "issues.json"      # この回に codd が控えた出来事（検�
 ISSUE_DIR = "retro"            # 課題メモ（.plans/retro/）。問題 1 つに 1 ファイル。直したら消す（消すのは改善する側）
 ISSUE_MAX = 3                  # 1 回で作る・書き足す課題メモの上限
 ISSUE_DETAIL = 200
+ISSUE_PAST = 5                 # 食い違いを見る、同じファイルを変えた過去の計画の記録の数（新しいものから）
 
 
 def note_issue(ctx: Ctx, what: str, detail: str = "") -> None:
@@ -7761,6 +7762,27 @@ def retro_prompt(ctx: Ctx) -> str:
     return value
 
 
+def related_records(ctx: Ctx, record: str | None) -> list[str]:
+    """この回の記録と同じファイルを変える案を書いた、過去の計画の記録（新しいものから）。"""
+    if not record:
+        return []
+    _, bodies = sections(read_text(ctx.root / record) or "", PLAN_HEADINGS)
+    paths = {it.split(" — ", 1)[0].strip().strip("`") for h in ("## 自分の変更案", "## 参照先の変更案")
+             for it in items(bodies.get(h, "")) if " — " in it}
+    paths = {x for x in paths if x and not x.startswith("変更不要")}
+    if not paths:
+        return []
+    found = []
+    for p in sorted((ctx.root / PLAN_DIR).glob("*.md"), reverse=True):
+        rel = p.relative_to(ctx.root).as_posix()
+        text = read_text(p) or ""
+        if rel != record and RESULT_HEADING in text.splitlines() and any(x in text for x in paths):
+            found.append(rel)
+        if len(found) >= ISSUE_PAST:
+            break
+    return found
+
+
 def issue_section(ctx: Ctx, record: str | None) -> list[str]:
     """課題メモを書く指示。codd が控えた出来事と、会話の中の利用者の指摘を問題として扱う。"""
     try:
@@ -7779,21 +7801,28 @@ def issue_section(ctx: Ctx, record: str | None) -> list[str]:
         "# 課題メモ", "",
         f"この回に起きた問題の原因をたどり、`{folder}/` に課題メモを残す。直し方は考えない・書かない（直すのは別の場）。"
         f"問題 1 つに 1 ファイル、この回で作る・書き足すのは {ISSUE_MAX} 件まで。", "",
-        "問題は、下の「この回の出来事」と、この回の会話で利用者が指摘したこと（誤りや漏れの指摘、言い直し、"
-        "やり直しの依頼。確認や相談の答えの中のものも）。どちらも無ければ何も書かずに終える。", "",
+        "問題は次の 4 つ。どれも無ければ何も書かずに終える。", "",
+        "- 下の「この回の出来事」",
+        "- この回の会話で利用者が指摘したこと（誤りや漏れの指摘、言い直し、やり直しの依頼。確認や相談の答えの中のものも）",
+        "- この回の変更や判断が、過去の計画の記録の判断と食い違うこと（下の「同じファイルを変えた過去の記録」を読む。"
+        "前の判断を利用者が改めたと記録にあれば、食い違いではない）",
+        "- codd の作りの問題（手順どうしが噛み合わない、同じことを何度もさせる、検査が誤って止めた・通した、"
+        "出力が足りず推測した など）。止まらずに通った回でも書く", "",
         "## この回の出来事", "", *([f"- {e.get('at', '')} {e.get('what', '')}"
                                    + (f": {e['detail']}" if e.get("detail") else "") for e in events]
                                   or ["- なし（検査で止まらず、計画も退けていない）"]), "",
         "## 材料", "", "- この回の会話（依頼・確認と相談での答え・検査の指摘とやり直し）",
         *([f"- 計画の記録: {record}"] if record else []),
         *([f"- 止まった理由と次の手: {DATA_DIRNAME}/advice.md"] if (ctx.data / "advice.md").is_file() else []), "",
+        "## 同じファイルを変えた過去の記録", "", *([f"- {r}" for r in related_records(ctx, record)] or ["- なし"]), "",
         "## 今ある課題メモ", "", *(known or ["- なし"]), "",
         "同じ問題（原因と直す先が同じ）のメモがあれば、新しく作らずに「起きたこと」へ 1 行足す（原因に新しい根拠があれば"
         "「原因」にも足す）。迷ったら別のファイルにする。", "",
         "## 書式", "",
         f"新しいメモは `{folder}/<英語の短い名前>.md`（小文字・数字・ハイフン）。", "",
         "```markdown", "# 問題を 1 行で", "",
-        "- 直す先: codd の手順 / codd.json / 決まりのファイル（パス）/ スキル（名前）/ 参照先の文書（パス） のどれか", "",
+        "- 直す先: codd 本体（codd.py・手順のファイル）/ codd.json / 決まりのファイル（パス）/ スキル（名前）/ "
+        "参照先の文書（パス）/ 過去の計画の記録（パス） のどれか", "",
         "## 起きたこと", "", f"- {time.strftime('%Y-%m-%d')} {plan}: 何が起きたか（検査の指摘や利用者の言葉をそのまま短く）", "",
         "## 原因", "", "- 原因（根拠: パス:行 か 検査の指摘）。根拠を示せなければ「原因: 不明」と書き、推測で埋めない",
         "```", ""]

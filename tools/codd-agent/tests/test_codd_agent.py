@@ -5037,7 +5037,17 @@ class CoddTest(unittest.TestCase):
         self.assertIn("計画を直すと答えた（NG）: 名前が違う", r.stdout)
         self.assertIn(f"- 計画の記録: {PLAN}", r.stdout)
         self.assertIn("## 今ある課題メモ\n\n- なし", r.stdout)
+        self.assertIn("## 同じファイルを変えた過去の記録\n\n- なし", r.stdout)
+        self.assertIn("codd の作りの問題", r.stdout)
         self.assertNotIn("# 振り返り", r.stdout)   # 設定のプロンプトが無ければ課題メモだけ
+        # 同じファイルを変えた過去の記録を、食い違いを見る材料に渡す（関係の無い記録は渡さない）
+        (self.impl / ".plans/2026-09-01-0000-old.md").write_text(
+            "# 変更の計画\n\n## 自分の変更案\n\n- src/app.py — ログを出さない\n\n## 結果\n\n- 変えた\n", encoding="utf-8")
+        (self.impl / ".plans/2026-09-02-0000-other.md").write_text(
+            "# 変更の計画\n\n## 自分の変更案\n\n- src/other.py — x\n\n## 結果\n\n- 変えた\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "retro")
+        self.assertIn("## 同じファイルを変えた過去の記録\n\n- .plans/2026-09-01-0000-old.md\n\n", r.stdout)
+        self.assertNotIn("other.md", r.stdout)
         (self.impl / ".plans/retro").mkdir()
         (self.impl / ".plans/retro/stale-heading.md").write_text(
             "# 見出しの改名を拾えない\n\n- 直す先: codd の手順\n\n## 起きたこと\n\n- x\n", encoding="utf-8")
