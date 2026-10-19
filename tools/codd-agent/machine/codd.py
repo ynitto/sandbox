@@ -3357,6 +3357,15 @@ def resolve(ctx: Ctx, from_side: Side, from_rel: str, claim: Claim) -> Resolved:
     if m and m.group(1) in {r.name for r in ctx.refs}:
         sides = [(m.group(1), ctx.ref(m.group(1)))]
         token = m.group(2)
+    elif m and isinstance(from_side, Ref) and from_side.config:
+        # 参照先の文書は、参照先の codd.json の名前で書く（`api:internal/task.go`）。その名前が指すリポジトリを引く
+        for r in from_side.config.get("refs") or []:
+            if isinstance(r, dict) and r.get("name") == m.group(1) and r.get("path"):
+                target = (from_side.path / str(r["path"])).resolve()
+                hit = [(k, sd) for k, sd in all_sides(ctx) if sd.path.resolve() == target]
+                if hit:
+                    sides, token = hit, m.group(2)
+                break
     token = token[2:] if token.startswith("./") else token
     cands = [os.path.normpath(os.path.join(os.path.dirname(from_rel), token)).replace("\\", "/")]
     cands = cands + [token.rstrip("/")] if claim.kind == "link" else [token.rstrip("/"), *cands]
@@ -7642,8 +7651,8 @@ def changed_since_ahead(ctx: Ctx, text: str) -> list[str]:
             continue
         rc, log = run(["git", "-c", "core.quotepath=false", "diff", "--name-only", sha, "--", *side.pathspec()],
                       side.path, GIT_TIMEOUT)
+        # 作業中の変更も、控えのコミットとの差分に入る。追跡していないファイル（立てる前からの `__pycache__` など）は数えない
         names = [ln.strip() for ln in log.splitlines()] if rc == 0 else []
-        names += [rel for rel in dirty_files(side)]
         out += [side_label(ctx, key, rel) for rel in dict.fromkeys(names)
                 if rel and side.has(rel) and not rel.startswith(PLAN_DIR + "/")]
     return list(dict.fromkeys(out))
@@ -8257,6 +8266,9 @@ def lint_bypassed(ctx: Ctx, since: str) -> tuple[list[tuple[str, str]], list[tup
     """
     records = plan_records(ctx)
     applied = applied_records(records)
+    # パスが出てくれば通ったとみなすのは、検査を通った中身を残していない前の版の記録だけ（新しい記録は、根拠に
+    # パスを書いただけのファイルを通ったことにしない）
+    legacy = "\n".join(r for r in re.split(r"(?m)^(?=# )", records) if APPLIED_HEADING not in r)
     bypassed: list[tuple[str, str]] = []
     drifted: list[tuple[str, str]] = []
     for key, side in all_sides(ctx):
@@ -8284,7 +8296,7 @@ def lint_bypassed(ctx: Ctx, since: str) -> tuple[list[tuple[str, str]], list[tup
                     if blobs.get(rel) in applied[rel]:
                         continue   # codd の検査を通った中身がそのままコミットされた
                     kind = "drifted"
-                elif rel in records:
+                elif rel in legacy:
                     continue
                 else:
                     kind = "bypassed"
@@ -8481,11 +8493,14 @@ def defines(ctx: Ctx, hit: tuple[str, str, int], name: str) -> bool:
     return bool(m) and name in m.groups()
 
 
-def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], int]:
-    """見る項目（観点 × 箇所）と、上限で出さなかった数。項目の箇所が、答えの根拠に挙げてよいファイル。"""
+def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], int, list[tuple[str, str]]]:
+    """見る項目（観点 × 箇所）と、上限で出さなかった数と、1 回の項目の上限で項目を出し切れなかったファイル。
+    項目の箇所が、答えの根拠に挙げてよいファイル。"""
     items: list[dict] = []
     seen: set[tuple[str, str]] = set()
     dropped = 0
+    cut: list[tuple[str, str]] = []
+    current: list[tuple[str, str]] = []
     has_docs = bool(ctx.refs)
     tests_on = tests_enabled(ctx)
 
@@ -8496,6 +8511,8 @@ def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], 
         seen.add((kind, name))
         if len(mine) >= REVIEW_PER_FILE or len(items) >= REVIEW_MAX_ITEMS:
             dropped += 1
+            if len(items) >= REVIEW_MAX_ITEMS and current and current[0] not in cut:
+                cut.append(current[0])   # 続き（--rest）で見直す
             return
         item = {"id": f"R{len(items) + 1:02d}", "kind": kind, "name": name, "question": question,
                 "locs": [list(x) for x in dict.fromkeys(locs)]}
@@ -8503,6 +8520,7 @@ def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], 
         mine.append(item)
 
     for key, rel in targets:
+        current[:] = [(key, rel)]
         side = side_of(ctx, key)
         text = read_text(side.path / rel) or ""
         mine: list[dict] = []
@@ -8547,7 +8565,7 @@ def review_items(ctx: Ctx, targets: list[tuple[str, str]]) -> tuple[list[dict], 
                 elif not test_hits and not any(r != rel for _, r, _ in review_grep(ctx, name, docs)):
                     add("漏れ", name, f"文書の `{name}` を、コードもテストもほかの文書も持たない"
                         "（まだ作っていない・名前が変わった・消えた）。用語や例なら問題なし", [here], mine)
-    return items, dropped
+    return items, dropped, cut
 
 
 def review_where(ctx: Ctx, token: str) -> tuple[set[tuple[str, str]], str | None]:
@@ -8594,6 +8612,7 @@ def review_problems(ctx: Ctx, state: dict, part: str) -> list[str]:
     lines, free, has_free = review_answers(ctx)
     problems: list[str] = []
     answered: dict[str, str] = {}
+    same: dict[str, list[str]] = {}
     for block in lines:
         head, *rest = block.split("\n")
         m = _REVIEW_ANSWER.match(head)
@@ -8619,6 +8638,14 @@ def review_problems(ctx: Ctx, state: dict, part: str) -> list[str]:
                             + ", ".join(side_label(ctx, k, r) for k, r in sorted(allowed)) + "）のどれでもありません")
         if verdict == "問題" and not any(_REVIEW_ASK.match(x) for x in rest):
             problems.append(f"{rid}: 問題には、次の行に字下げして `- やりたいこと: …` を添えてください")
+        ask = next((x.split("やりたいこと:", 1)[1].strip() for x in rest if _REVIEW_ASK.match(x)), "")
+        if _REVIEW_SAME.match(ask):
+            same[rid] = re.findall(r"R\d+", ask.split("と同じ")[0])
+    for rid, refs in same.items():
+        # 「R05 と同じ」は、問題と答えた項目を指す（指した先のやりたいことを本流に渡す）
+        wrong = [r for r in refs if answered.get(r) != "問題" or r in same]
+        if wrong:
+            problems.append(f"{rid}: 「{'・'.join(wrong)} と同じ」の先が、やりたいことを書いた問題ではありません")
     missing = [rid for rid in items if rid not in answered]
     if missing:
         problems.append("答えていない項目: " + ", ".join(missing[:15]) + (" ほか" if len(missing) > 15 else "")
@@ -8626,7 +8653,7 @@ def review_problems(ctx: Ctx, state: dict, part: str) -> list[str]:
     if any(i["kind"] == "設計の不備" for i in items.values()):
         unread = unread_rules(ctx)
         if unread:
-            problems.append("守る決まりを読んでいません: " + ", ".join(unread) + "（`codd.py guide --all`）")
+            problems.append("守る決まりと codd の読み書きの手順を読んでいません: " + ", ".join(unread) + "（`codd.py guide --all`）")
     if part == "items":
         return problems
     if not has_free:
@@ -8773,7 +8800,9 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
         forget_review_reads(ctx)
         state["targets"] = [side_label(ctx, k, r) for k, r in targets[:REVIEW_MAX_FILES]]
         state["skipped_files"] = [side_label(ctx, k, r) for k, r in targets[REVIEW_MAX_FILES:]]
-        state["items"], state["dropped"] = review_items(ctx, targets[:REVIEW_MAX_FILES])
+        state["items"], state["dropped"], cut = review_items(ctx, targets[:REVIEW_MAX_FILES])
+        # 項目の上限で出し切れなかったファイルも、上限で見なかったファイルとして続き（--rest）で見る
+        state["skipped_files"] = [side_label(ctx, k, r) for k, r in cut] + state["skipped_files"]
         save_review_state(ctx, state)
         write_text(review_dir(ctx) / REVIEW_ANSWERS, f"# 項目への答え\n\n")
         if not state["items"]:

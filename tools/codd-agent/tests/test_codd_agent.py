@@ -4802,7 +4802,7 @@ class CoddTest(unittest.TestCase):
             self.review_answer(f"- {rid} 問題なし: src/app.py:1 — 読んだ")
         r = self.run_pa(self.impl, "review", "verify", "--part", "items")
         # 読み書きの手順は、どのリポジトリでも読ませる
-        self.assertIn("守る決まりを読んでいません: .statemachine/codd/rules/reading.md, docs/rules.md", r.stdout)
+        self.assertIn("守る決まりと codd の読み書きの手順を読んでいません: .statemachine/codd/rules/reading.md, docs/rules.md", r.stdout)
         self.run_pa(self.impl, "guide", "--all")
         self.assertEqual(self.run_pa(self.impl, "review", "verify", "--part", "items").returncode, 0)
         # レビューで読んだものを、あとで始める本流の計画の検査で数えない
