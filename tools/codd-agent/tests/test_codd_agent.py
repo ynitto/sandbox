@@ -4993,10 +4993,14 @@ class CoddTest(unittest.TestCase):
         self.assertIn('{from: confirm, to: stopped, condition_rule: "startswith:answer:STOP"', text)
         self.assertIn('{from: stuck, to: stopped, condition_rule: "startswith:choice:STOP"', text)
 
-    def test_retro_does_nothing_unless_a_prompt_is_set(self) -> None:
-        # 終わりの振り返りは既定で何もしない。設定のプロンプトがあれば、材料のありかと一緒に出す。
+    def test_retro_runs_the_prompt_after_issue_notes(self) -> None:
+        # 終わりの振り返りは課題メモの指示だけ。設定のプロンプトがあれば、材料のありかと一緒にそのあとに出す。
         r = self.run_pa(self.impl, "retro")
-        self.assertEqual((r.returncode, r.stdout.strip()), (0, "NONE"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("# 課題メモ", r.stdout)
+        self.assertIn("## この回の出来事\n\n- なし", r.stdout)
+        self.assertIn("利用者が指摘したこと", r.stdout)   # 控えた出来事が無くても、会話の中の指摘は問題として拾う
+        self.assertNotIn("# 振り返り", r.stdout)
         cfg = self.impl / ".statemachine/codd/codd.json"
         config = json.loads(cfg.read_text(encoding="utf-8"))
         cfg.write_text(json.dumps({**config, "retro": "KPT で振り返る"}), encoding="utf-8")
@@ -5018,6 +5022,33 @@ class CoddTest(unittest.TestCase):
         cfg.write_text(json.dumps({**config, "retro": ["x"]}), encoding="utf-8")
         self.assertIn("retro は", self.run_pa(self.impl, "retro").stderr)
 
+    def test_retro_lists_what_went_wrong_for_issue_notes(self) -> None:
+        # 止まった・退けたことを控え、課題メモ（.plans/retro/）の材料として今あるメモと一緒に渡す。次の回で数え直す。
+        self.assertNotEqual(self.run_pa(self.impl, "verify-plan").returncode, 0)   # 計画が無いので止まる
+        self.write_plan(PLAN_ALIGNED)
+        self.assertEqual(self.run_pa(self.impl, "decide", "NG", "--note", "名前が違う").returncode, 0)
+        self.assert_plan_ok()
+        self.assertEqual(self.run_pa(self.impl, "record").returncode, 0)
+        r = self.run_pa(self.impl, "retro")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("RETRO\n"), r.stdout)
+        self.assertIn("# 課題メモ", r.stdout)
+        self.assertIn("計画の検査で止まった（1 件）", r.stdout)
+        self.assertIn("計画を直すと答えた（NG）: 名前が違う", r.stdout)
+        self.assertIn(f"- 計画の記録: {PLAN}", r.stdout)
+        self.assertIn("## 今ある課題メモ\n\n- なし", r.stdout)
+        self.assertNotIn("# 振り返り", r.stdout)   # 設定のプロンプトが無ければ課題メモだけ
+        (self.impl / ".plans/retro").mkdir()
+        (self.impl / ".plans/retro/stale-heading.md").write_text(
+            "# 見出しの改名を拾えない\n\n- 直す先: codd の手順\n\n## 起きたこと\n\n- x\n", encoding="utf-8")
+        self.assertIn("- .plans/retro/stale-heading.md — 見出しの改名を拾えない（codd の手順）",
+                      self.run_pa(self.impl, "retro").stdout)
+        # 課題メモは計画に数えない。新しい回を始めると、前の回の出来事は消える
+        r = self.run_pa(self.impl, "draft", "--name", "next-one")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ひな形を置きました: .plans/", r.stdout)
+        self.assertIn("## この回の出来事\n\n- なし", self.run_pa(self.impl, "retro").stdout)
+
     def test_workflow_ends_with_the_retro_after_reporting(self) -> None:
         # 報告（done・stopped）のあと、どちらからも終端の振り返りへ進む。振り返りは訊かずに進める。
         text = (TOOL / "machine/workflow.yaml").read_text(encoding="utf-8")
@@ -5027,7 +5058,8 @@ class CoddTest(unittest.TestCase):
         self.assertIn("terminal: true", retro)
         self.assertEqual(text.count("terminal: true"), 1)
         action = (TOOL / "machine/actions/retro.md").read_text(encoding="utf-8")
-        self.assertIn("`NONE` なら", action)
+        self.assertIn("利用者が指摘したこと", action)
+        self.assertIn("`.plans/retro/`", action)
         self.assertIn("利用者に訊かずに進めます", action)
 
     def test_workflow_passes_engine_validation(self) -> None:

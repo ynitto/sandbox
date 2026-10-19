@@ -5448,6 +5448,7 @@ def print_problems(ctx: Ctx, phase: str, problems: list[str]) -> None:
     if not problems:
         return
     stage = "計画の検査" if phase == "plan" else "変えたあとの検査"
+    note_issue(ctx, f"{stage}で止まった（{len(problems)} 件）", str(problems[0]))
     lines = [f"NG {stage}: {len(problems)} 件（全文: {DATA_DIRNAME}/{PROBLEMS_NAME}）"]
     used = len(lines[0])
     for i, p in enumerate(problems):
@@ -7533,6 +7534,8 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     keep_baseline = ctx.plan.is_file() and changed_in_this_run(ctx)
     if ctx.plan.is_file():
         ctx.plan.unlink()   # --new: 進めていた計画を捨てて書き直す
+    else:
+        (ctx.data / ISSUE_LOG).unlink(missing_ok=True)   # 新しい回。前の回の出来事を課題メモに混ぜない
     dest = new_plan_path(ctx.root / PLAN_DIR, name)
     if ahead is not None:
         shutil.move(str(ahead), dest)   # 立てておいた計画は、進める計画になって next/ から消える
@@ -7701,6 +7704,8 @@ def cmd_decide(ctx: Ctx, args: argparse.Namespace) -> int:
         if held:
             note = "; ".join(filter(None, [note, "承認したファイル: " + ", ".join(protected_label(k, r) for k, r in held)]))
     log_decision(ctx, args.answer, note)
+    if args.answer != "OK":
+        note_issue(ctx, f"{DECISIONS[args.answer]}と答えた（{args.answer}）", note)
     if args.answer in ("NG", "STOP"):
         (ctx.data / PASSED_PLAN).unlink(missing_ok=True)   # 退けた計画では変えさせない
         (ctx.data / APPROVED_PLAN).unlink(missing_ok=True)
@@ -7725,7 +7730,24 @@ def record_problems_of(ctx: Ctx) -> list[str]:
             f"いま進めている計画だけ。戻すなら `git checkout -- パス`）: " + ", ".join(changed)] if changed else [])
 
 
-RETRO_NONE = "NONE"
+ISSUE_LOG = "issues.json"      # この回に codd が控えた出来事（検査で止まった・計画を退けた・やめた）。draft で空にする
+ISSUE_DIR = "retro"            # 課題メモ（.plans/retro/）。問題 1 つに 1 ファイル。直したら消す（消すのは改善する側）
+ISSUE_MAX = 3                  # 1 回で作る・書き足す課題メモの上限
+ISSUE_DETAIL = 200
+
+
+def note_issue(ctx: Ctx, what: str, detail: str = "") -> None:
+    """この回の出来事を 1 行控える。終わりの振り返りが、出来事のあった回だけ課題メモを書く。"""
+    path = ctx.data / ISSUE_LOG
+    try:
+        log = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        log = []
+    detail = " ".join(detail.split())
+    log.append({"at": time.strftime("%Y-%m-%d %H:%M"), "what": what,
+                "detail": detail[:ISSUE_DETAIL] + ("…" if len(detail) > ISSUE_DETAIL else "")})
+    ctx.data.mkdir(parents=True, exist_ok=True)
+    write_text(path, json.dumps(log, ensure_ascii=False, indent=2) + "\n")
 
 
 def retro_prompt(ctx: Ctx) -> str:
@@ -7739,23 +7761,61 @@ def retro_prompt(ctx: Ctx) -> str:
     return value
 
 
+def issue_section(ctx: Ctx, record: str | None) -> list[str]:
+    """課題メモを書く指示。codd が控えた出来事と、会話の中の利用者の指摘を問題として扱う。"""
+    try:
+        events = json.loads((ctx.data / ISSUE_LOG).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        events = []
+    folder = f"{PLAN_DIR}/{ISSUE_DIR}"
+    known = []
+    for p in sorted((ctx.root / folder).glob("*.md")):
+        lines = (read_text(p) or "").splitlines()
+        title = next((ln[2:].strip() for ln in lines if ln.startswith("# ")), "")
+        where = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("- 直す先:")), "")
+        known.append(f"- {folder}/{p.name} — {title}" + (f"（{where}）" if where else ""))
+    plan = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "", Path(record).stem) if record else "（計画なし）"
+    return [
+        "# 課題メモ", "",
+        f"この回に起きた問題の原因をたどり、`{folder}/` に課題メモを残す。直し方は考えない・書かない（直すのは別の場）。"
+        f"問題 1 つに 1 ファイル、この回で作る・書き足すのは {ISSUE_MAX} 件まで。", "",
+        "問題は、下の「この回の出来事」と、この回の会話で利用者が指摘したこと（誤りや漏れの指摘、言い直し、"
+        "やり直しの依頼。確認や相談の答えの中のものも）。どちらも無ければ何も書かずに終える。", "",
+        "## この回の出来事", "", *([f"- {e.get('at', '')} {e.get('what', '')}"
+                                   + (f": {e['detail']}" if e.get("detail") else "") for e in events]
+                                  or ["- なし（検査で止まらず、計画も退けていない）"]), "",
+        "## 材料", "", "- この回の会話（依頼・確認と相談での答え・検査の指摘とやり直し）",
+        *([f"- 計画の記録: {record}"] if record else []),
+        *([f"- 止まった理由と次の手: {DATA_DIRNAME}/advice.md"] if (ctx.data / "advice.md").is_file() else []), "",
+        "## 今ある課題メモ", "", *(known or ["- なし"]), "",
+        "同じ問題（原因と直す先が同じ）のメモがあれば、新しく作らずに「起きたこと」へ 1 行足す（原因に新しい根拠があれば"
+        "「原因」にも足す）。迷ったら別のファイルにする。", "",
+        "## 書式", "",
+        f"新しいメモは `{folder}/<英語の短い名前>.md`（小文字・数字・ハイフン）。", "",
+        "```markdown", "# 問題を 1 行で", "",
+        "- 直す先: codd の手順 / codd.json / 決まりのファイル（パス）/ スキル（名前）/ 参照先の文書（パス） のどれか", "",
+        "## 起きたこと", "", f"- {time.strftime('%Y-%m-%d')} {plan}: 何が起きたか（検査の指摘や利用者の言葉をそのまま短く）", "",
+        "## 原因", "", "- 原因（根拠: パス:行 か 検査の指摘）。根拠を示せなければ「原因: 不明」と書き、推測で埋めない",
+        "```", ""]
+
+
 def cmd_retro(ctx: Ctx, args: argparse.Namespace) -> int:
-    """終わりの振り返り（done・stopped のあと）。設定のプロンプトと、振り返りの材料のありかを示す。設定が無ければ NONE。"""
-    prompt = retro_prompt(ctx)
-    if not prompt:
-        print(RETRO_NONE)
-        return 0
+    """終わりの振り返り（done・stopped のあと）。課題メモの指示と、設定のプロンプトがあればそれを示す。"""
     records = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md"))
                if RESULT_HEADING in (read_text(p) or "").splitlines()]
-    materials = ["- この回の会話（依頼・確認と相談での答え・検査の指摘とやり直し）"]
-    if records:
-        materials.append(f"- 計画の記録（確認の答えと結果）: {records[-1].relative_to(ctx.root).as_posix()}")
-    for name, label in (("advice.md", "止まった理由と次の手"), ("problems.json", "最後の検査の指摘")):
-        if (ctx.data / name).is_file():
-            materials.append(f"- {label}: {DATA_DIRNAME}/{name}")
-    print("RETRO\n\n# 振り返り\n\n利用者に訊かずに、次のプロンプトを最後まで実行する。リポジトリのファイルはプロンプトが求めない限り"
-          "変えず、コミットしない（振り返りの変更は codd の検査を通らない）。\n\n## 材料\n\n" + "\n".join(materials)
-          + "\n\n## プロンプト\n\n" + prompt)
+    record = records[-1].relative_to(ctx.root).as_posix() if records else None
+    out = issue_section(ctx, record)
+    prompt = retro_prompt(ctx)
+    if prompt:
+        materials = ["- この回の会話（依頼・確認と相談での答え・検査の指摘とやり直し）"]
+        if record:
+            materials.append(f"- 計画の記録（確認の答えと結果）: {record}")
+        if (ctx.data / "advice.md").is_file():
+            materials.append(f"- 止まった理由と次の手: {DATA_DIRNAME}/advice.md")
+        out += ["# 振り返り", "", "次のプロンプトを最後まで実行する。リポジトリのファイルはプロンプトが求めない限り変えない。", "",
+                "## 材料", "", *materials, "", "## プロンプト", "", prompt, ""]
+    print("RETRO\n\n利用者に訊かずに、次を順に最後まで行う。コミットはしない（振り返りの変更は codd の検査を通らない）。\n\n"
+          + "\n".join(out).rstrip())
     return 0
 
 
@@ -7842,6 +7902,7 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
     decisions = load_decisions(ctx)
     if args.stop and ctx.plan.is_file() and not (decisions and decisions[-1].get("answer") == "STOP"):
         log_decision(ctx, "STOP", UNLOGGED)   # やめた回を「まだ通っていない」と記録しない
+        note_issue(ctx, "やめた（STOP）", UNLOGGED)
     record = close_plan(ctx)
     if not record:
         print(NO_PLAN, file=sys.stderr)
@@ -8681,7 +8742,7 @@ def build_parser() -> argparse.ArgumentParser:
     nx = sub.add_parser("next", help="立てておいた次の計画（.plans/next/）を示す")
     nx.add_argument("--verify", action="store_true", help="どれもやりたいことを書き、重なっていないかを確かめる")
     sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
-    sub.add_parser("retro", help="終わりの振り返りで実行するプロンプトと材料を示す（codd.json の retro。無ければ NONE）")
+    sub.add_parser("retro", help="終わりの振り返り。課題メモ（.plans/retro/）の書き方とこの回の出来事を示し、codd.json の retro があればそのプロンプトも示す")
     rc = sub.add_parser("record", help="終わりの報告を出し、計画に確認の答えと結果を書き足して判断の記録として残す（終わりに呼ぶ）")
     rc.add_argument("--stop", action="store_true", help="利用者がやめた回として残す（stopped から呼ぶ）")
     de = sub.add_parser("decide", help="確認・相談での利用者の答えを控える（終わりの報告で計画の記録に書く）")

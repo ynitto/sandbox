@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-agent: 終わりの振り返りで、問題と原因を課題メモに残す
+
+- 検査で止まった・確認で計画を退けた・相談で練り直しや変え直しを選んだ・やめた回や、会話の中で利用者が指摘した問題を、
+  振り返りの段で `.plans/retro/<英語の短い名前>.md` に残す。問題 1 つに 1 ファイルで、起きたこと・原因（根拠つき）・直す先だけを書き、
+  直し方は書かない。同じ問題がまた起きたら既存のメモに 1 行足す
+- メモは直したら消す（消すのは利用者か、別の改善の流れ）。codd.json の `retro` のプロンプトは、課題メモのあとに続けて実行する
+
 ### codd-agent: ホームに入れた graphify を PATH に無くても見つける
 
 - uv tool・pipx・pip `--user` で入れて PATH に足していない graphify・context-mode を、ホームの置き場所
