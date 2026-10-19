@@ -17,7 +17,7 @@ TypeScript のライブラリで、コード（`src/`・`tests/`）と文書（`
 - `CLAUDE.md` — 関数は 1 ファイル 1 つ。公開する関数は `docs/guide/` に書く
 
 **codd を入れる**: `--side impl --scope src --scope tests --ref docs=. --ref-scope docs=docs --test "node --test tests/**/*.test.js"`
-（node 22 は glob を自分で展開する。codd はシェルを通さずに動かす）。`codd.json` の `protect` に glob で `docs/adr/*.md` と `src/legacy/**` を書く。
+（node 22 は glob を自分で展開する。codd はシェルを通さずに動かす）。`codd.json` の `protect` に glob で `docs/adr/*.md` と `src/legacy/**` を書き、`no_doc` に `src/legacy/**` を書く（互換のコードは文書を名前でしか指さない）。
 
 シナリオは順に流す（前のシナリオで変えてコミットした状態から続ける）。
 
