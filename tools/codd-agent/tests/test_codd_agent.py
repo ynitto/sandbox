@@ -1494,6 +1494,10 @@ class CoddTest(unittest.TestCase):
             r = self.run_pa(self.impl, "advise")
             self.assertNotIn("AUTO", r.stdout)
             self.assertIn("設定か環境の誤りです", r.stdout)
+        # 1 つの要素に空白ごと書いたコマンドは、引数ごとに分ける書き方を添える
+        self.set_config(self.impl, test=["python3 -m unittest discover"])
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertIn('引数ごとに分けて書く: ["python3", "-m", "unittest", "discover"]', r.stderr)
         # CLI のテストが期待値として同じ文言を出して落ちたのは、テストの失敗のまま（訊かずに直させる）
         self.set_config(self.impl, test=[sys.executable, "-c",
                                          "print('FAILED test_cli - expected: sh: x: command not found'); raise SystemExit(1)"])
@@ -1650,7 +1654,16 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("変える前から落ちていたかを判定できません", r.stderr)
         self.assertIn("Cannot find module 'deps'", r.stderr)
-        self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
+        r = self.run_pa(self.impl, "advise")
+        self.assertNotIn("AUTO", r.stdout)
+        # 設定の誤りではないので、失敗の中身を見て前からの失敗として続けることもできる
+        self.assertIn("前から落ちていたものとして続ける → `APPLY`", r.stdout)
+        self.assertEqual(self.run_pa(self.impl, "accept").returncode, 0)
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 環境の理由で落ちた変える前の結果は控えない（環境を直せば、次は動かし直す）
+        self.assertNotIn("Cannot find module", (self.impl / ".codd/before-runs.json").read_text(encoding="utf-8")
+                         if (self.impl / ".codd/before-runs.json").exists() else "")
 
     def test_ignored_dependencies_are_linked_into_the_copy_before_the_change(self) -> None:
         # 無視されている依存のフォルダ（node_modules など）は、変える前の写しへつなぐ。前からの失敗を見分けられ、
@@ -3649,6 +3662,12 @@ class CoddTest(unittest.TestCase):
         self.assertIn("受け持ちのフォルダ（scope）の外にも、変わる名前が出てくるファイルがあります", r.stdout)
         self.assertIn(".github/workflows/ci.yml", r.stdout)
         self.assertNotIn("src/app.py", r.stdout.split("知らせ:")[1].splitlines()[0])   # scope の中のものは挙げない
+        self.assertIn("受け持ちの外で、変わる名前が出てくるファイル", self.run_pa(mono, "summary").stdout)
+        # 「今回やらないこと」に回したものは、確認でもう確かめない
+        text = (mono / PLAN).read_text(encoding="utf-8")
+        (mono / PLAN).write_text(re.sub(r"## 今回やらないこと\n\n[^#]*", "## 今回やらないこと\n\n"
+                                        "- .github/workflows/ci.yml — 環境変数で別物\n\n", text), encoding="utf-8")
+        self.assertNotIn("受け持ちの外で、変わる名前が出てくるファイル", self.run_pa(mono, "summary").stdout)
 
     def test_exclude_filters_each_side_within_scope(self) -> None:
         commit(self.impl, {"src/settings.json": "hello", "src/config/local.yaml": "hello",
@@ -4814,7 +4833,8 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)   # 置いたあとに何も変わっていない
         self.assertTrue(r.stdout.startswith("OK 点検"))
 
-        commit(self.impl, {"src/app.py": "def hello():\n    return 3\n"}, "codd を通さずに変えた")
+        commit(self.impl, {"src/app.py": "def hello():\n    return 3\n",
+                           "src/__pycache__/app.cpython-313.pyc": "x"}, "codd を通さずに変えた")
         commit(self.design, {
             "docs/guide.md": "# 使い方\n\n[呼ぶもの](../src/old.py)\n\n書き方: `[説明](../src/none.py)`\n\n"
                              "```\n<!-- evidence: x -->1<!-- /evidence -->\n```\n",
@@ -4832,6 +4852,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("docs/specs/c.md — 欠けている見出し: 振る舞い", text)  # 書式
         self.assertNotIn("docs/specs/a.md —", text.split("## 文書の書式")[1].split("##")[0])
         self.assertIn("src/app.py", text.split("## codd を通らなかった変更")[1])   # 記録の無い変更
+        self.assertNotIn("__pycache__", text)                                   # コミットしたキャッシュは数えない
         self.assertIn("## 本流に渡すやりたいこと", text)
         self.assertIn("codd を通らずに入った変更", r.stdout)
         self.assertEqual(r.stdout.count("codd を通らずに入った変更"), 2)   # コミットごとに 1 行

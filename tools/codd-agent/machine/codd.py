@@ -3090,7 +3090,10 @@ def terms_from_diff(side: Side, only: set[str] | None = None) -> list[str]:
     heads: dict[str, set[str]] = {"+": set(), "-": set()}   # 足した・消した見出し
     defs: dict[str, dict[str, list[str]]] = {"+": {}, "-": {}}   # 関数・型の定義の行（名前 → 行）
     deleting = False   # 消したファイルの行か。消した文書が `…` で触れていただけの名前（移る先の関数など）は変わっていない
+    in_code = False    # コードのファイルの行か。コードの `…`（JS のテンプレート文字列・Go の構造体タグ）は名前ではない
     for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            in_code = PurePosixPath(line.rsplit(" b/", 1)[-1].strip().strip("\"")).suffix.lower() in CODE_EXTS
         if line.startswith("+++"):
             deleting = line.strip() == "+++ /dev/null"
         if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
@@ -3107,7 +3110,7 @@ def terms_from_diff(side: Side, only: set[str] | None = None) -> list[str]:
                     local[line[0]].add(m.group(1))
                 if pat in _CALLABLE_DEFS:
                     defs[line[0]].setdefault(m.group(1), []).append(line[1:])
-        if not deleting:
+        if not deleting and not in_code:
             quoted[line[0]].update(_BACKTICK.findall(line))
     # 関数の中の変数で、名前はそのままに中身だけ変えたもの（`disabled` など）は拾わない。外から指される名前ではなく、
     # 同じ綴りの別物（ほかの部品の disabled）にばかり当たる。消した・足した変数は拾う。
@@ -3271,7 +3274,18 @@ def literals_from_diff(ctx: Ctx, key: str, side: Side) -> list[str]:
         # 文言を変えたのではない
         moved = [(rel, c["+"][t] - c["-"][t]) for rel, c in per_file.items() if c["+"][t] != c["-"][t]]
         whole = re.compile(rf"[\"'`>]\s*{re.escape(t)}\s*[\"'`<]")   # 文字列のまるごと（`"Hello page"` の中の Hello は別物）
-        return all(whole.search(text_of(rel, before=net > 0)) for rel, net in moved)
+        return all(whole.search(text_of(rel, before=net > 0))
+                   or (net > 0 and not existed_at_base(side, rel) and in_base_code(t, whole)) for rel, net in moved)
+
+    def in_base_code(t: str, whole: re.Pattern) -> bool:
+        # 新しいファイルが、前からほかのコードにある文字列を使っただけ（取り消しの状態 "cancelled" をもう 1 か所で使った、など）は、
+        # 文言を変えたのではない。テストにだけあった文字列は、新しい振る舞いなので数える
+        rc, out = run(["git", "grep", "-I", "-F", "-e", t, side.diff_base, *side.pathspec()], side.path, GIT_TIMEOUT)
+        for ln in out.splitlines() if rc == 0 else []:
+            _, rel, line = (ln.split(":", 2) + ["", ""])[:3]
+            if side.has(rel) and not is_test(ctx, key, rel) and not rel.lower().endswith(DOC_EXTS) and whole.search(line):
+                return True
+        return False
 
     return unique(t for t in counts["+"] | counts["-"]
                   if counts["+"][t] != counts["-"][t] and _LETTER.search(t) and "${" not in t and not still_same(t))
@@ -6067,7 +6081,10 @@ def run_check(repo: Path, command: list[str] | None, label: str, log_dir: Path |
     # 文言だけで決めるのは、テストの失敗の行が無いときだけ（CLI のテストが期待値として同じ文言を出すことがある）
     if rc in (126, 127) or (_CANNOT_RUN.search(out) and not _FAILURE_LINE.search(out)):
         # 実装を直しても通らない。訊かずにやり直させず、設定か環境の誤りとして利用者に訊く
-        return tag("config", [f"{label}: {CANNOT_RUN}（{rc}）: {' '.join(command)}\n{tail}"])
+        hint = ""
+        if len(command) == 1 and re.search(r"\s", command[0].strip()):
+            hint = f"（{CONFIG_NAME} のコマンドは引数ごとに分けて書く: {json.dumps(command[0].split(), ensure_ascii=False)}）"
+        return tag("config", [f"{label}: {CANNOT_RUN}（{rc}）: {' '.join(command)}{hint}\n{tail}"])
     return tag("check", [f"{label}の検査が失敗しました（{rc}）: {' '.join(command)}\n{tail}"])
 
 
@@ -6212,6 +6229,8 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
         unlink_dependencies(links)
         run(["git", "worktree", "remove", "--force", str(tree)], top, GIT_TIMEOUT)
         shutil.rmtree(tmp, ignore_errors=True)
+    if result[0] != 0 and _ENV_FAILURE.search(result[1]):
+        return result   # 環境の理由で落ちた結果は控えない（利用者が環境を直したら、次は動かし直す）
     cache[cache_key] = list(result)
     write_text(ctx.data / BEFORE_RUNS_NAME, json.dumps(cache, ensure_ascii=False) + "\n")
     return result
@@ -6234,18 +6253,21 @@ def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, l
         print(f"{label}: 変える前から落ちていたもの（利用者が認めた）だけなので、止めません")
         return []
     before = run_before(ctx, key, side, cwd, argv)
-    if before is not None and before[0] != 0 and _ENV_FAILURE.search(before[1]) and not _ENV_FAILURE.search(problems[0]):
-        # 変える前の写しには依存（node_modules など、コミットしないもの）や参照先が揃わず、別の理由で落ちた。
-        # 前から落ちていたかは分からないので、今の失敗として直させず、利用者に確かめる
-        return [Problem("config", f"{label}: {BEFORE_UNKNOWN}（変える前の写しでの出力: "
-                        f"{' '.join(_ENV_FAILURE.search(before[1]).group(0).split())[:120]}）\n"
-                        + problems[0].split("\n", 1)[-1] + detail)]
-    if before is None or before[0] == 0 or not now or not now <= failure_lines(before[1]):
+    unknown = (before is not None and before[0] != 0 and _ENV_FAILURE.search(before[1]) is not None
+               and not _ENV_FAILURE.search(problems[0]))
+    if not unknown and (before is None or before[0] == 0 or not now or not now <= failure_lines(before[1])):
         return [Problem(problems[0].kind, problems[0] + detail)]
+    # 前からの失敗の候補として控える（accept で認める）。判定できないときも、利用者が前からの失敗と見れば続けられる
     found = json.loads((ctx.data / PREEXISTING_NAME).read_text(encoding="utf-8")) \
         if (ctx.data / PREEXISTING_NAME).is_file() else {}
     found[label] = sorted(now)
     write_text(ctx.data / PREEXISTING_NAME, json.dumps(found, ensure_ascii=False, indent=2) + "\n")
+    if unknown:
+        # 変える前の写しには依存（ビルドの出力など、コミットしないもの）や参照先が揃わず、別の理由で落ちた。
+        # 前から落ちていたかは分からないので、今の失敗として直させず、利用者に確かめる
+        return [Problem("before-unknown", f"{label}: {BEFORE_UNKNOWN}（変える前の写しでの出力: "
+                        f"{' '.join(_ENV_FAILURE.search(before[1]).group(0).split())[:120]}）\n"
+                        + problems[0].split("\n", 1)[-1] + detail)]
     return tag("preexisting", [f"{label}: {PREEXISTING}（この回の変更のせいではないので、エージェントに直させずに利用者に確かめます。"
             f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1] + detail])
 
@@ -7896,6 +7918,11 @@ ADVICE = {
         "preexisting": (["known", "stop", "keep"],
                         "変える前から落ちているテストか検査です。この回の変更のせいではありません。前からの失敗として続けるか、"
                         "やめるか、直すことを計画に足すかを決めてもらいます"),
+        # 変える前の写しが環境の理由で落ちた。この回の変更のせいかは、失敗の中身を見て人が決める
+        "before-unknown": (["reapply", "known", "stop"],
+                           "変える前の写しが別の理由（コミットしない依存が無いなど）で落ち、前から落ちていたかを判定できません。"
+                           "失敗の中身を見て、この回の変更のせいなら変え直し、前からの同じ失敗なら前からの失敗として続けるかを"
+                           "決めてもらいます"),
         "shape": (["reapply", "stop"], "書き方が決まりどおりではありません。書き直します"),
         "form": (["reapply", "reset", "stop"], "変えた結果が計画と合いません"),
         "config": (["reapply", "stop"], "設定か環境の誤りです。利用者に直してもらってから、同じ段をやり直します"),
@@ -8283,6 +8310,9 @@ def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
         outside = json.loads((ctx.data / OUTSIDE_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         outside = []
+    # 計画で扱った（「今回やらないこと」に回したなど）ものは、もう確かめない
+    planned_text = "\n".join(bodies.values())
+    outside = [p for p in outside if p not in planned_text]
     if outside:
         lines += ["", "## 受け持ちの外で、変わる名前が出てくるファイル", "", *[f"- {p}" for p in outside],
                   "", "一緒に直すかを確かめる（直すなら計画に足して練り直す）"]
@@ -8604,7 +8634,7 @@ def cmd_record(ctx: Ctx, args: argparse.Namespace) -> int:
         print(NO_PLAN, file=sys.stderr)
         return 1
     print(f"\n計画の記録: {record}（確認の答えと結果を書き足した。コミットしてよい）")
-    if not args.stop and (ctx.root / REVIEW_REL / "workflow.yaml").is_file():   # 前の init で置いたなら確かめる流れが無い
+    if not stopping and (ctx.root / REVIEW_REL / "workflow.yaml").is_file():   # 前の init で置いたなら確かめる流れが無い
         runs = count_run_since_review(ctx)
         if runs % REVIEW_AFTER_RUNS == 0:   # 断られても毎回は訊かない。次は 3 回後
             print(f"{REVIEW_SUGGEST} 確かめる流れを回さずに、変える流れを {runs} 回終えました。"
@@ -8867,7 +8897,7 @@ def lint_bypassed(ctx: Ctx, since: str) -> tuple[list[tuple[str, str]], list[tup
             rels = []
             for rel in names:
                 rel = rel.strip()
-                if rel and rel not in seen and side.has(rel):
+                if rel and rel not in seen and side.has(rel) and not is_cache(rel):   # コミットしたキャッシュは変更に数えない
                     seen.add(rel)   # 新しいコミットから見るので、同じファイルは最後に変えたコミットで判断する
                     rels.append(rel)
             known = [rel for rel in rels if rel in applied]
@@ -9544,4 +9574,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        # 出力を `| head` などで途中まで読んだ。トレースバックで読み手を惑わせない（Python の文書の書き方）
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        print("出力を途中で閉じたので、最後まで出していません（読んだ記録も残っていないことがある）。"
+              "パイプで切らずに動かし直してください", file=sys.stderr)
+        sys.exit(1)
