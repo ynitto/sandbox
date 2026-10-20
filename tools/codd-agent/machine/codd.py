@@ -1447,7 +1447,9 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
         for k, g in optional:
             print(f"  - {guide_line(ctx, k, g)}" + (f"（語: {', '.join(g.terms)}）" if g.terms else ""))
     print(f"スキルは `python3 {MACHINE_REL}/codd.py guide 名前` で読み込む（使ったと書いたのに読み込んでいないと検査で落ちる）")
-    protect = [(who, pat) for who, side in [("", ctx.own), *((r.name, r) for r in ctx.refs)] for pat in side.protect]
+    # 同じリポジトリの参照先は自分の protect を受け継ぐ。同じものを `名前:` 付きでもう一度並べない
+    protect = [(who, pat) for who, side in [("", ctx.own), *((r.name, r) for r in ctx.refs)] for pat in side.protect
+               if not (who and side.path == ctx.root.resolve() and pat in ctx.own.protect)]
     if protect:
         print("人の承認が要るファイル（計画に挙げ、確認で利用者が認めたときだけ変える。響いても勝手に直さない）: "
               + ", ".join(f"{who + ':' if who else ''}{pat}" for who, pat in protect))
@@ -3710,6 +3712,29 @@ def linked(ctx: Ctx, key: str, rels: set[str]) -> set[tuple[str, str]]:
     return out
 
 
+def linked_from(ctx: Ctx, key: str, rels: set[str]) -> dict[tuple[str, str], set[str]]:
+    """linked と同じつながりを、つながった元（`名前:パス`）ごとに。前の判断を使い回すときに、同じ元からかを確かめる。"""
+    out: dict[tuple[str, str], set[str]] = {}
+    for rel in sorted(rels):
+        for hit in linked(ctx, key, {rel}):
+            out.setdefault(hit, set()).add(link_label(key, rel))
+    return out
+
+
+def link_judged(ctx: Ctx, key: str, rel: str, sources: set[str], ask: bool = True) -> bool:
+    """パスでつながって当たったファイルを、前の計画で「変更不要」「関係なし」とし、そのあと変わっていないか（judged_before と同じ条件。
+    語の代わりに、つながった元のファイルで比べる）。ask なら、使い回せないものを判断として控える（計画が通ったときに記録する）。"""
+    marks = {f"つながり:{s}" for s in sources}
+    rec = load_dismissed(ctx).get(f"{key}|{rel}")
+    if marks and rec and marks <= set(rec.get("terms", [])) and rec.get("hash") == now_hash(side_of(ctx, key), rel):
+        ctx.__dict__.setdefault("_judged", set()).add((key, rel))
+        return True
+    if ask:
+        asked = ctx.__dict__.setdefault("_grep_asked", {})
+        asked[(key, rel)] = unique([*asked.get((key, rel), []), *sorted(marks)])
+    return False
+
+
 def side_label(ctx: Ctx, key: str, rel: str) -> str:
     return rel if not key else ref_label(ctx, key, rel)
 
@@ -4337,19 +4362,26 @@ def trace_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> list[str]:
     """計画で変えるファイルとつながっている（互いにパスで指している）ほかの側のファイルのうち、計画に無いものを pending へ。"""
     own_plan = plan_changes(ctx, bodies)[""]
     planned, _ = planned_refs(ctx, bodies)
-    ref_links = sorted(h for h in linked(ctx, "", own_plan) if h[0]) if own_plan else []
+    ref_from = {h: src for h, src in linked_from(ctx, "", own_plan).items() if h[0]} if own_plan else {}
+    ref_links = sorted(ref_from)
     cited = cited_anywhere(ctx, bodies)
     listed = (listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)
               | listed_paths(ctx, bodies.get("## 影響範囲", "")) | test_plan(ctx, bodies).paths(""))
-    own_links = sorted({rel for name, rels in planned.items() for k, rel in linked(ctx, name, rels) if not k})
-    missing_own = [p for p in own_links if not covered(p, listed)]
+    own_from: dict[str, set[str]] = {}
+    for name, rels in planned.items():
+        for (k, rel), src in linked_from(ctx, name, rels).items():
+            if not k:
+                own_from.setdefault(rel, set()).update(src)
+    own_links = sorted(own_from)
+    # 前の計画で判断し、そのあと変わっていないものは訊かない（同じファイルを続けて変えるときに効く）
+    missing_own = [p for p in own_links if not link_judged(ctx, "", p, own_from[p]) and not covered(p, listed)]
     ctx.__dict__.setdefault("_found", set()).update([*ref_links, *(("", p) for p in own_links)])
     write_trace(ctx, "trace.md", "計画で変えるファイルとつながっているファイル（パスで指し合っているもの）", [
         ("自分の変更案・影響範囲で直すファイルとつながっている参照先のファイル", [ref_label(ctx, n, r) for n, r in ref_links]),
         ("参照先の変更案のファイルとつながっている自分のファイル", own_links),
     ])
     for n, r in ref_links:
-        if (n, r) not in cited:
+        if not link_judged(ctx, n, r, ref_from[(n, r)]) and (n, r) not in cited:
             pending.ref(ctx, n, r, "自分の変えるファイルとパスでつながっている")
     for p in missing_own:
         pending.own(ctx, p, "参照先の変更案のファイルとパスでつながっている")
@@ -7455,8 +7487,10 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
     touched = {"": a.own_touched, **a.touched}
     cited = cited_anywhere(ctx, a.bodies)
     own_now = {p for p in a.own_touched if (ctx.root / p).is_file()}
-    ref_links = sorted(h for h in linked(ctx, "", own_now) if h[0]) if own_now else []
-    missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited and r not in a.touched[n]]
+    ref_from = {h: src for h, src in linked_from(ctx, "", own_now).items() if h[0]} if own_now else {}
+    ref_links = sorted(ref_from)
+    missing_refs = [ref_label(ctx, n, r) for n, r in ref_links if (n, r) not in cited and r not in a.touched[n]
+                    and not link_judged(ctx, n, r, ref_from[(n, r)], ask=False)]
     own_plan = a.bodies.get("## 自分の変更案", "")
     waived = (listed_paths(ctx, a.bodies.get("## 影響範囲", ""), only_no_change=True)
               | listed_paths(ctx, own_plan, only_no_change=True)
@@ -7466,7 +7500,13 @@ def trace_apply(ctx: Ctx, a: Applied) -> list[str]:
     # 新しく作った文書が前からあるコードを指すのは、そのコードを書き表しただけ（コードを直す理由にならない）
     from_old = {rel for name in a.changed
                 for k, rel in linked(ctx, name, {p for p in a.touched[name] if existed_at_base(ctx.ref(name), p)}) if not k}
-    missing_own = [p for p in own_links if p in from_old and p not in a.own_touched and not covered(p, waived | planned_own)]
+    own_from: dict[str, set[str]] = {}
+    for name in a.changed:
+        for (k, rel), src in linked_from(ctx, name, a.touched[name]).items():
+            if not k:
+                own_from.setdefault(rel, set()).update(src)
+    missing_own = [p for p in own_links if p in from_old and p not in a.own_touched and not covered(p, waived | planned_own)
+                   and not link_judged(ctx, "", p, own_from.get(p, set()), ask=False)]
     dangling = dangling_refs(ctx, touched)
     at = {d.split(" → ", 1)[0] for d in dangling}
     broken = [b for b in broken_refs(ctx, touched) if b.split(" → ", 1)[0] not in at]   # 消したファイルを指す行は 1 回だけ挙げる
@@ -7803,6 +7843,13 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         lines += ["", "## 参照先とパスでつながっていない変更", "",
                   *[f"- {p}" for p in lonely],
                   "", "（つなぐなら、文書にコードのパスかフォルダを書くか、コードに `coherence: doc=パス` のように書く）"]
+    # 計画に無いファイル（変えたあとに測った影響・響くテスト）を変える段で変更不要としたもの。上の節では省くので、ここで見せる
+    in_plan = {("", p) for p in own_planned(ctx, a.bodies)} | {(k, p) for k, ps in a.planned.items() for p in ps} | test_listed
+    unplanned = [(k, rel, why) for (k, rel), why in sorted(dev.no_change.items(), key=lambda kv: (kv[0][0] or "", kv[0][1]))
+                 if not any((side, rel) in in_plan for side in ([k] if k is not None else ["", *(r.name for r in ctx.refs)]))]
+    if unplanned:
+        lines += ["", "## 変える段で変更不要とした、計画に無いファイル", "",
+                  *[f"- {side_label(ctx, k, rel) if k else rel} — {NO_CHANGE_MARK}: {why}" for k, rel, why in unplanned]]
     if dev.unrelated:
         lines += ["", "## 変える段で関係なしとした名前・ファイル", "",
                   *[f"- {t} — {UNRELATED_MARK}: {why}" for t, why in sorted(dev.unrelated.items())]]

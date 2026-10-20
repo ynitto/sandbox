@@ -1245,6 +1245,30 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_judgments_on_path_links_are_reused_on_the_next_run(self) -> None:
+        # パスでつながって判断したファイルも、前の計画で判断し、そのあと変わっていなければ次の回に訊かない
+        commit(self.design, {"docs/map.md": "# 対応表\n\n実装は `src/app.py`。\n"}, "map")
+        self.write_plan(PLAN_ALIGNED)
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+        self.assertIn("design:docs/map.md（自分の変えるファイルとパスでつながっている）", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.write_plan(PLAN_ALIGNED.replace("## 参照先のその他\n\nなし",
+                                             "## 参照先のその他\n\n- 関係なし: 置き場所の一覧だけ（根拠: docs/map.md）"))
+        self.assert_plan_ok()
+        self.as_previous_plan(self.impl)
+        self.write_plan(PLAN_ALIGNED)
+        r = self.run_pa(self.impl, "verify-plan")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("docs/map.md", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.assertIn("前の判断を使い回した: 1 files", r.stdout)
+        self.run_pa(self.impl, "decide", "OK")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")   # 変えたあとの検査も、使い回した判断で通す
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 文書が変われば、また訊く
+        commit(self.design, {"docs/map.md": "# 対応表\n\n実装は `src/app.py`（入口）。\n"}, "map2")
+        self.write_plan(PLAN_ALIGNED)
+        self.assertEqual(self.run_pa(self.impl, "verify-plan").returncode, 1)
+
     def test_verify_apply_catches_broken_and_dangling_paths(self) -> None:
         commit(self.impl, {"src/old.py": "def old():\n    return 0\n"}, "old")
         commit(self.design, {"docs/map.md": "# 対応表\n\n- `src/old.py` は古い入口\n"}, "map")
@@ -1731,6 +1755,18 @@ class CoddTest(unittest.TestCase):
         self.assertIn("- src/other.py — 変更不要（変える段で判断）: 段はもう正しかった", report)
         self.assertIn("- src/notes.txt — 変えた（利用者が認めた: 書き方を残した）", report)
         self.assertIn("- src/third.py — 変えた（変える段で足した: 定数をそろえた）", report)
+
+    def test_waiving_files_outside_the_plan_shows_in_the_report(self) -> None:
+        # 計画に無いファイルを変える段で変更不要としても、黙って通さず報告に出す（計画で挙げたものは各側の行に出る）
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        (self.impl / ".codd/apply.md").write_text(
+            "## 計画との違い\n\n- src/third.py、src/app.py — 変更不要: 名前が似ているだけ\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        report = self.report(self.impl).stdout
+        self.assertIn("## 変える段で変更不要とした、計画に無いファイル\n\n- src/third.py — 変更不要: 名前が似ているだけ", report)
+        self.assertNotIn("src/app.py — 変更不要", report.split("計画に無いファイル")[1])   # 計画で挙げたものは各側の行に出る
 
     def test_same_spelling_names_in_refs_are_declared_unrelated(self) -> None:
         # 変える段で足した名前が、参照先の関係の無いファイルにも同じ綴りで出てくる。人に訊かず、申告で済ませる。
@@ -3623,6 +3659,11 @@ class CoddTest(unittest.TestCase):
         self.assertIn("  - docs:docs/coding-rules.md", r.stdout)   # 参照先の候補として挙がる（自分の分に重ねない）
         self.assertNotIn("  - docs/coding-rules.md", r.stdout)
         self.assertIn("受け持つフォルダ: docs", r.stdout)
+        # 同じリポジトリの参照先が受け継いだ protect は、`docs:` を付けてもう一度並べない
+        self.set_config(mono, protect=["docs/adr/*.md"])
+        r = self.run_pa(mono, "show")
+        self.assertIn("人の承認が要るファイル", r.stdout)
+        self.assertEqual(r.stdout.count("docs/adr/*.md"), 1, r.stdout)
 
         # 参照先を探すのは docs の中だけ（src/app.py の hello は拾わない）。
         r = self.run_pa(mono, "explore", "--term", "hello")
