@@ -24,6 +24,12 @@ class PlanLineTest(unittest.TestCase):
         m = codd._DEVIATION.match("- tests/test_service.py, tests/test_users.py — 変更不要: `status` は辞書の項目名")
         self.assertIsNotNone(m)
         self.assertEqual(codd.re.findall(codd._DEVIATION_TARGET, m.group(1)), ["tests/test_service.py", "tests/test_users.py"])
+        # 全角の読点で並べても同じに読む（日本語の文で書いた申告を読み落とさない）
+        for sep in ("、", "，", " 、 "):
+            m = codd._DEVIATION.match(f"- tests/test_service.py{sep}`tests/test_users.py` — 変更不要: 辞書の項目名")
+            self.assertIsNotNone(m, sep)
+            self.assertEqual([t.strip("`") for t in codd.re.findall(codd._DEVIATION_TARGET, m.group(1))],
+                             ["tests/test_service.py", "tests/test_users.py"])
         m = codd._DEVIATION.match("- `status` — 関係なし: 別の意味の項目名")
         self.assertEqual((m.group(1), m.group(2)), ("`status`", "関係なし"))
         # 空白を含む名前（新しい文書の題）も `…` で囲めば書ける

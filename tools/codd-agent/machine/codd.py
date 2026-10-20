@@ -6133,6 +6133,46 @@ def failure_lines(text: str) -> set[str]:
     return {re.sub(r"\d+(?:\.\d+)?", "N", ln.strip()) for ln in text.splitlines() if _FAILURE_LINE.search(ln)}
 
 
+# 変える前の写しに、今の作業ツリーからつなぐ依存のフォルダ（コミットしないので worktree には無い）。
+# ビルドの出力など、ほかの無視対象はつながない（変えたあとの中身が混じり、前からの失敗を見分けられなくなる）。
+DEPENDENCY_DIRS = {"node_modules", ".venv", "venv", "vendor"}
+
+
+def link_dependencies(top: Path, tree: Path) -> list[Path]:
+    """無視されている依存のフォルダを、写しの同じ場所へリンクでつなぐ（Windows でリンクを作れなければジャンクション）。"""
+    code, out = run(["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory"], top, GIT_TIMEOUT)
+    links = []
+    for line in out.splitlines() if code == 0 else []:
+        rel = line.strip().rstrip("/")
+        src, dest = top / rel, tree / rel
+        if PurePosixPath(rel).name not in DEPENDENCY_DIRS or not src.is_dir() or dest.exists() or not dest.parent.is_dir():
+            continue
+        try:
+            os.symlink(src, dest, target_is_directory=True)
+        except OSError:
+            if os.name != "nt":
+                continue
+            try:
+                import _winapi
+                _winapi.CreateJunction(str(src), str(dest))
+            except (ImportError, OSError):
+                continue
+        links.append(dest)
+    return links
+
+
+def unlink_dependencies(links: list[Path]) -> None:
+    """つないだリンクだけを外す（worktree を消すときに、リンクの先の依存まで消さない）。"""
+    for link in links:
+        try:
+            if link.is_symlink():
+                link.unlink()
+            else:
+                os.rmdir(link)   # ジャンクションは中身に触れずに外れる
+        except OSError:
+            pass
+
+
 def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tuple[int, str] | None:
     """変える前の中身で argv を動かす。印が無い・worktree を作れないときは None。"""
     try:
@@ -6152,9 +6192,11 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
     top = repo_root(side.path)
     tmp = Path(tempfile.mkdtemp(prefix="codd-before-"))
     tree = tmp / "tree"
+    links: list[Path] = []
     try:
         if run(["git", "worktree", "add", "--detach", str(tree), snap["head"]], top, GIT_TIMEOUT)[0] != 0:
             return None
+        links = link_dependencies(top, tree)
         base = side.path.resolve().relative_to(top)
         for rel, digest in snap.get("files", {}).items():
             dest = tree / base / rel
@@ -6167,6 +6209,7 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
     except (ValueError, OSError):
         return None
     finally:
+        unlink_dependencies(links)
         run(["git", "worktree", "remove", "--force", str(tree)], top, GIT_TIMEOUT)
         shutil.rmtree(tmp, ignore_errors=True)
     cache[cache_key] = list(result)
@@ -6450,10 +6493,10 @@ def load_batches(ctx: Ctx) -> tuple[list[list[tuple[str, str]]], int]:
 DEVIATION_HEADING = "## 計画との違い"
 ACCEPTED_NAME = "accepted.json"
 UNRELATED_MARK = "関係なし"
-# 対象はカンマで並べてもよい（計画の「変更不要」と同じ書き方）
+# 対象はカンマか読点（、，）で並べてもよい（計画の「変更不要」と同じ書き方）
 # `…` で囲めば空白を含む名前（新しい文書の題など）も書ける
-_DEVIATION_TARGET = r"`[^`]+`|[^`\s,]+"
-_DEVIATION = re.compile(rf"^[-*]\s+((?:(?:{_DEVIATION_TARGET})\s*,\s*)*(?:{_DEVIATION_TARGET}))\s*[—–-]+\s*(変更不要|追加|関係なし)\s*[:：]\s*(\S.*)$")
+_DEVIATION_TARGET = r"`[^`]+`|[^`\s,、，]+"
+_DEVIATION = re.compile(rf"^[-*]\s+((?:(?:{_DEVIATION_TARGET})\s*[,、，]\s*)*(?:{_DEVIATION_TARGET}))\s*[—–-]+\s*(変更不要|追加|関係なし)\s*[:：]\s*(\S.*)$")
 
 
 @dataclass
@@ -7042,13 +7085,16 @@ def print_hand_over(ctx: Ctx, batches: list, cur: int) -> None:
     files = batches[cur] if batches else []
     where = f"段 {cur + 1}/{len(batches)}" if len(batches) > 1 else "変える段"
     print(f"# {where}{' ' if len(batches) > 1 else ''}は `{APPLY_AGENT}` サブエージェントに渡す（{CONFIG_NAME} の subagent）\n")
+    # 段の番号と作業フォルダを渡す文に書く。サブエージェントが別のフォルダ（別の .codd）で動くと、そこの記録で
+    # 別の段を変えてしまうので、batch --worker --stage が親の段と食い違えば止める。
+    worker = f"python3 {MACHINE_REL}/codd.py batch --worker --stage {cur + 1}"
     print(f"自分ではファイルを変えません。`{APPLY_AGENT}` を呼び、次の文を渡してください:")
-    print(f"  「codd の{where}を変えてください。」に、止まったときの利用者の答え（あれば）と、"
-          "検査の指摘（戻ってきたときは、その出力）をそのまま添える")
+    print(f"  「codd の{where}を変えてください。作業フォルダ: {ctx.root}。`{worker}` で変えるファイルを確かめる。」に、"
+          "止まったときの利用者の答え（あれば）と、検査の指摘（戻ってきたときは、その出力）をそのまま添える")
     if files:
         print(f"この段で変えるもの: {len(files)} files")
     print("サブエージェントの第 1 行（OK か FAILED と理由）を、このステートの出力にします。")
-    print(f"`{APPLY_AGENT}` を呼べないときは `python3 {MACHINE_REL}/codd.py batch --worker` を実行し、自分で変えます。")
+    print(f"`{APPLY_AGENT}` を呼べないときは `{worker}` を実行し、自分で変えます。")
 
 
 def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
@@ -7063,6 +7109,11 @@ def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
     if ctx.subagent and not worker:
         print_hand_over(ctx, batches, cur)
         return 0
+    if args.stage is not None and args.stage != cur + 1:
+        print(f"段が食い違っています: 渡されたのは段 {args.stage} ですが、{ctx.root} の記録（{DATA_DIRNAME}/{BATCHES_NAME}）では"
+              f"段 {cur + 1}/{max(len(batches), 1)} です。呼び出し元と同じ作業フォルダで動かしてください（変えずに FAILED で返す）",
+              file=sys.stderr)
+        return 1
     if len(batches) <= 1:
         print("段に分けていません。計画に挙げたファイルをすべて変えてください")
         print_apply_skills(ctx, {k for b in batches for k, _ in b} or {""}, [f for b in batches for f in b], full=worker)
@@ -9420,6 +9471,7 @@ def build_parser() -> argparse.ArgumentParser:
     ba = sub.add_parser("batch", help="段に分けて変えるとき、今の段で変えるファイルを示す")
     ba.add_argument("--worker", action="store_true",
                     help="変える側として、今の段のファイルと手順の全文を示す（サブエージェントに渡すときも、それが呼ぶ）")
+    ba.add_argument("--stage", type=int, help="渡された段の番号（1 から）。作業フォルダの記録の段と違えば止める")
     dr = sub.add_parser("draft", help="計画のひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）")
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")

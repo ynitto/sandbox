@@ -3,10 +3,12 @@
 codd の apply（または apply_more）から呼ばれ、今の段のファイルだけを、承認された計画（`.plans/` の、結果がまだ無い計画）の
 とおりに変えます。利用者には訊けません。確認・相談・検査は呼び出し元（codd）が受け持ちます。
 
-1. 今の段のファイルと、従う手順を確かめます（手順の全文が出ます。出たスキル・文書は、この回で読み込んだと控えられます）。
+1. 渡された文の作業フォルダで、今の段のファイルと、従う手順を確かめます（手順の全文が出ます。出たスキル・文書は、この回で
+   読み込んだと控えられます）。`--stage` には渡された文の段の番号を付けます。段が食い違うと言われたら、変えずに `FAILED` と
+   その出力を返します。
 
    ```bash
-   python3 .statemachine/codd/codd.py batch --worker
+   python3 .statemachine/codd/codd.py batch --worker --stage 段の番号
    python3 .statemachine/codd/codd.py show --phase apply
    ```
 

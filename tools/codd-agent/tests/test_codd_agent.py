@@ -1652,6 +1652,29 @@ class CoddTest(unittest.TestCase):
         self.assertIn("Cannot find module 'deps'", r.stderr)
         self.assertNotIn("AUTO", self.run_pa(self.impl, "advise").stdout)
 
+    def test_ignored_dependencies_are_linked_into_the_copy_before_the_change(self) -> None:
+        # 無視されている依存のフォルダ（node_modules など）は、変える前の写しへつなぐ。前からの失敗を見分けられ、
+        # 写しを消してもつないだ先の依存は消えない
+        commit(self.impl, {".gitignore": "node_modules/\n",
+                           "check.py": "import sys, pathlib\n"
+                                       "if not pathlib.Path('node_modules/dep/index.js').is_file():\n"
+                                       "    print(\"'dep' is not recognized as an internal or external command\")\n"
+                                       "    sys.exit(1)\n"
+                                       "print('FAILED test_old - broken since long ago')\n"
+                                       "sys.exit(1)\n"}, "test needs node_modules")
+        (self.impl / "node_modules/dep").mkdir(parents=True)
+        (self.impl / "node_modules/dep/index.js").write_text("\n", encoding="utf-8")
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        self.set_config(self.impl, test=[sys.executable, "check.py"])
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("変える前から同じところで落ちています", r.stderr)
+        self.assertNotIn("判定できません", r.stderr)
+        self.assertTrue((self.impl / "node_modules/dep/index.js").is_file())
+        self.assertEqual(git(self.impl, "worktree", "list").count("\n"), 1)
+
     def test_apply_log_does_not_carry_over_to_the_next_run(self) -> None:
         (self.impl / ".codd").mkdir(exist_ok=True)
         (self.impl / ".codd/apply.md").write_text("# 前の回の記録\n", encoding="utf-8")
@@ -3968,6 +3991,19 @@ class CoddTest(unittest.TestCase):
         (self.impl / ".codd/apply.md").write_text("- `tdd-lite` — src/app.py: テストを先に書いた\n", encoding="utf-8")
         r = self.run_pa(self.impl, "verify-apply")   # 渡された側が読み込んだ記録で、検査が通る
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_worker_on_another_stage_stops_without_changing(self) -> None:
+        # 渡す文には段の番号を書く。渡された側の作業フォルダの記録（batches.json）が別の段なら、変えずに止める
+        self.set_config(self.impl, subagent=True)
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        r = self.run_pa(self.impl, "batch")
+        self.assertIn("batch --worker --stage 1", r.stdout)
+        self.assertIn(f"作業フォルダ: {self.impl}", r.stdout)
+        self.assertEqual(self.run_pa(self.impl, "batch", "--worker", "--stage", "1").returncode, 0)
+        r = self.run_pa(self.impl, "batch", "--worker", "--stage", "2")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("段が食い違っています: 渡されたのは段 2", r.stderr)
 
     def test_subagent_must_be_true_or_false(self) -> None:
         self.set_config(self.impl, subagent="yes")
