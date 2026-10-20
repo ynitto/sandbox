@@ -57,6 +57,28 @@ class TermsFromDiffTest(unittest.TestCase):
         self.assertIn("isGeneratedPrintDisabled", terms)     # 足した変数
         self.assertIn("handleNext", terms)                   # 消した変数
 
+    def test_backticks_in_code_are_not_names(self) -> None:
+        # JS のテンプレート文字列・Go の構造体タグは名前ではない（上限の語数を使い切り、本当の名前を測り残す）。
+        # 文書の `…` は、これまでどおり名前として拾う
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "view.js").write_text("export function label(t) {\n  return t.title;\n}\n", encoding="utf-8")
+            (repo / "task.go").write_text("package task\n\ntype Task struct {\n\tTitle string `json:\"title\"`\n}\n",
+                                          encoding="utf-8")
+            (repo / "api.md").write_text("# API\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "view.js").write_text("export function label(t) {\n  return `${t.done ? 'x' : '-'} ${t.title}`;\n}\n",
+                                          encoding="utf-8")
+            (repo / "task.go").write_text("package task\n\ntype Task struct {\n\tTitle string `json:\"title\"`\n"
+                                          "\tDueDate string `json:\"due_date,omitempty\"`\n}\n", encoding="utf-8")
+            (repo / "api.md").write_text("# API\n\n`due_date` を返す。\n", encoding="utf-8")
+            terms = codd.terms_from_diff(codd.Side("own", repo, []))
+        self.assertFalse([t for t in terms if "${" in t or "json:" in t], terms)
+        self.assertIn("due_date", terms)
+
     def test_top_level_and_exported_values_are_still_names(self) -> None:
         # 字下げの無い・export した定数は外から指される名前なので、中身だけ変えても拾う。
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,6 +127,23 @@ class LiteralsFromDiffTest(unittest.TestCase):
                                             encoding="utf-8")
             ctx = SimpleNamespace(config={"tests": ["**/*.test.*"]})
             self.assertEqual(codd.literals_from_diff(ctx, "", codd.Side("own", repo, [])), ["refunded"])
+
+    def test_strings_a_new_file_reuses_from_other_code_are_not_changed(self) -> None:
+        # 新しいファイルが、前からほかのコードにある文字列を使っただけなら変えた文字列ではない。テストにだけあった文字列は数える
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, env=ENV)
+            git("init", "-q", "-b", "main")
+            (repo / "service.py").write_text('def cancel(o):\n    o.status = "cancelled"\n', encoding="utf-8")
+            (repo / "service.test.py").write_text('assert x == "partly_refunded"\n', encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "init")
+            (repo / "refund.py").write_text('def refund(o):\n    if o.status == "cancelled":\n        return "partly_refunded"\n'
+                                            '    o.status = "refunded"\n', encoding="utf-8")
+            ctx = SimpleNamespace(config={"tests": ["**/*.test.*"]})
+            self.assertEqual(sorted(codd.literals_from_diff(ctx, "", codd.Side("own", repo, []))),
+                             ["partly_refunded", "refunded"])
 
     def test_imports_are_not_screen_text(self) -> None:
         from types import SimpleNamespace
