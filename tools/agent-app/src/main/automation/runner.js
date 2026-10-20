@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const command = require('./command');
 const { killTree } = require('../proc');
+const { utf8Stream } = require('../text');
 const MAX_STREAM_OUTPUT = 1024 * 1024;
 
 function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, input = '', signal, spawnSpec = command.spawnSpec } = {}) {
@@ -37,8 +38,8 @@ function capture(name, args, { cwd = '', timeoutMs = 60000, env = process.env, i
       try { if (signal) killTree(child); else child.kill(); } catch { /* 既に終わっている */ }
       finish({ ok: false, status: -1, stdout, stderr, error: `${name} が ${Math.round(timeoutMs / 1000)} 秒以内に終わりませんでした` });
     }, timeoutMs);
-    child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
-    child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+    utf8Stream(child.stdout).on('data', (d) => { stdout += d; });
+    utf8Stream(child.stderr).on('data', (d) => { stderr += d; });
     child.on('error', (err) => { clearTimeout(timer); finish({ ok: false, status: -1, stdout, stderr, error: String((err && err.message) || err) }); });
     child.on('close', (code) => { clearTimeout(timer); finish({ ok: code === 0, status: code, stdout, stderr, error: '' }); });
     // stdin を読まずに終わるコマンド（`agent-herd config` など）では、書き込みが EPIPE になる。
@@ -105,8 +106,8 @@ function stream(name, args, {
   }
   running = { child, kind };
   const collector = createOutputCollector({ onLine, maxBytes });
-  child.stdout.on('data', (data) => collector.push('stdout', data));
-  child.stderr.on('data', (data) => collector.push('stderr', data));
+  utf8Stream(child.stdout).on('data', (data) => collector.push('stdout', data));
+  utf8Stream(child.stderr).on('data', (data) => collector.push('stderr', data));
   child.on('error', (err) => collector.push('stderr', `起動エラー: ${(err && err.message) || err}`));
   child.on('close', (code) => {
     collector.finish();
@@ -157,7 +158,7 @@ function spawnRecorder({ command: name, args, cwd = '' }) {
   const spec = command.spawnSpec(name, args, { cwd });
   const child = spawn(spec.command, spec.args, spec.options);
   let stderr = '';
-  child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+  utf8Stream(child.stderr).on('data', (d) => { stderr += d; });
   child.stdout.on('data', () => {});
   const exited = new Promise((resolve) => {
     child.on('error', (err) => resolve({ code: null, stderr: `${stderr}\n${(err && err.message) || err}` }));

@@ -45,7 +45,7 @@ const flowStore = require('./automation/flow-store');
 const taskModel = require('./automation/model');
 const requestRouting = require('./requestRouting');
 const teaching = require('./automation/teaching');
-const { stripAnsi, cleanAnswer, lineEmitter, headChars, tailChars } = require('./text');
+const { stripAnsi, cleanAnswer, lineEmitter, headChars, tailChars, utf8Stream } = require('./text');
 const { userData, requireRepo, distroFor, dirsOf, sessionDirs, mainBranch } = require('./paths');
 const { spawnSpec, capture, killTree } = require('./proc');
 const shareRun = require('./share/run');
@@ -256,8 +256,8 @@ async function runHeadless(id, turn, send) {
   let stdout = '';
   let stderr = '';
   let stopped = false;
-  child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
-  child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+  utf8Stream(child.stdout).on('data', (d) => { stdout += d; });
+  utf8Stream(child.stderr).on('data', (d) => { stderr += d; });
   child.stdout.on('data', lineEmitter((line) => {
     send('turn:line', { id, kind: 'stdout', text: line });
     emitResponseParts(send, id, collector.push(line));

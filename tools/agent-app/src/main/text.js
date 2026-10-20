@@ -36,6 +36,13 @@ function ereToRegExp(ere, flags = 'im') {
   try { return new RegExp(src, flags); } catch { return null; }
 }
 
+// 子プロセスの出力を UTF-8 として読む。チャンクごとに Buffer.toString すると、チャンクの境目で
+// 日本語（3 バイト）や絵文字（4 バイト）が割れて文字化けする。setEncoding は境目をまたいで復号する。
+function utf8Stream(stream) {
+  if (stream && typeof stream.setEncoding === 'function') stream.setEncoding('utf8');
+  return stream;
+}
+
 // 先頭から n 文字（コードポイント単位）。絵文字などのサロゲートペアの途中で切らない。
 function headChars(text, n) {
   const s = String(text == null ? '' : text);
@@ -48,4 +55,4 @@ function tailChars(text, n) {
   return s.length <= n ? s : Array.from(s).slice(-n).join('');
 }
 
-module.exports = { headChars, tailChars, stripAnsi, cleanAnswer, lineEmitter, ereToRegExp };
+module.exports = { utf8Stream, headChars, tailChars, stripAnsi, cleanAnswer, lineEmitter, ereToRegExp };
