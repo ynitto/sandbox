@@ -15,6 +15,7 @@
 
 const { spawn } = require('child_process');
 const crypto = require('crypto');
+const { utf8Stream } = require('./text');
 
 // ---- パス変換 -----------------------------------------------------------------
 
@@ -121,7 +122,7 @@ class HostShell {
     this.child = child;
     this.buf = '';
     this.spawnError = '';
-    child.stdout.on('data', (d) => this.onData(d));
+    utf8Stream(child.stdout).on('data', (d) => this.onData(d));
     child.stderr.on('data', () => { /* プロファイルの雑音。本体の stderr は 2>&1 で stdout 側に来る */ });
     child.on('error', (err) => { this.spawnError = (err && err.message) || String(err); this.fail(`ホストのシェルを起動できません: ${this.spawnError}`); });
     child.on('close', () => { if (this.child === child) { this.child = null; this.fail(this.spawnError ? `ホストのシェルを起動できません: ${this.spawnError}` : 'ホストのシェルが終了しました'); } });

@@ -12,7 +12,7 @@ const host = require('../host');
 const agentCli = require('../agentCli');
 const tmux = require('../tmux');
 const response = require('../response');
-const { stripAnsi, cleanAnswer, lineEmitter } = require('../text');
+const { stripAnsi, cleanAnswer, lineEmitter, utf8Stream } = require('../text');
 const { spawnSpec, killTree } = require('../proc');
 const { userData, dirsOf, distroFor } = require('../paths');
 
@@ -43,8 +43,8 @@ function runPrompt({ cli, prompt, model = '', readonly = true, cwd, files = [], 
     }
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
-    child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+    utf8Stream(child.stdout).on('data', (d) => { stdout += d; });
+    utf8Stream(child.stderr).on('data', (d) => { stderr += d; });
     child.stdout.on('data', lineEmitter((line) => onLine('stdout', line)));
     child.stderr.on('data', lineEmitter((line) => onLine('stderr', line)));
     child.on('error', (err) => { stderr += `\n起動エラー: ${(err && err.message) || err}`; });
