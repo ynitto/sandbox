@@ -3905,7 +3905,7 @@ def files_to_change(ctx: Ctx, bodies: dict[str, str], planned: dict[str, set[str
         for key in sorted(group, key=lambda kr: (kr[0], kr[1])):
             if key not in out:
                 out.append(key)
-    add({("", rel) for rel in listed_paths(ctx, bodies.get("## 自分の変更案", ""), allow_new=True)})
+    add({("", rel) for rel in listed_paths(ctx, bodies.get("## 自分の変更案", ""), skip_no_change=True, allow_new=True)})
     add({(k, rel) for k, rels in planned.items() for rel in rels})
     add({("", rel) for rel in listed_paths(ctx, bodies.get("## 影響範囲", ""), skip_no_change=True)})
     add(test_plan(ctx, bodies).change)
@@ -6246,6 +6246,7 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
         if run(["git", "worktree", "add", "--detach", str(tree), snap["head"]], top, GIT_TIMEOUT)[0] != 0:
             return None
         links = link_dependencies(top, tree)
+        ctx.__dict__["_linked_deps"] = [p.relative_to(tree).as_posix() for p in links]   # 判定できないときに添える
         base = side.path.resolve().relative_to(top)
         for rel, digest in snap.get("files", {}).items():
             dest = tree / base / rel
@@ -6297,8 +6298,10 @@ def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, l
     if unknown:
         # 変える前の写しには依存（ビルドの出力など、コミットしないもの）や参照先が揃わず、別の理由で落ちた。
         # 前から落ちていたかは分からないので、今の失敗として直させず、利用者に確かめる
+        linked_deps = "、".join(ctx.__dict__.get("_linked_deps") or []) or "なし"
         return [Problem("before-unknown", f"{label}: {BEFORE_UNKNOWN}（変える前の写しでの出力: "
-                        f"{' '.join(_ENV_FAILURE.search(before[1]).group(0).split())[:120]}）\n"
+                        f"{' '.join(_ENV_FAILURE.search(before[1]).group(0).split())[:120]}。"
+                        f"写しにつないだ依存のフォルダ: {linked_deps}）\n"
                         + problems[0].split("\n", 1)[-1] + detail)]
     return tag("preexisting", [f"{label}: {PREEXISTING}（この回の変更のせいではないので、エージェントに直させずに利用者に確かめます。"
             f"前からの失敗として続けるなら `python3 {MACHINE_REL}/codd.py accept`）\n" + problems[0].split("\n", 1)[-1] + detail])
@@ -7169,7 +7172,13 @@ def cmd_batch(ctx: Ctx, args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     if len(batches) <= 1:
-        print("段に分けていません。計画に挙げたファイルをすべて変えてください")
+        files = [f for b in batches for f in b]
+        # 「段」の言葉だけだと、既定の段の大きさ（batch_files）で自分で分けると読み違える。1 回で全部と、ファイルを並べて示す
+        print("段に分けていません。次のファイルを、この 1 回ですべて変えてください"
+              f"（{len(files)} files。自分で段に分けたり、途中で止めたりしない）:" if files else
+              "段に分けていません。計画に挙げたファイルを、この 1 回ですべて変えてください（自分で段に分けたり、途中で止めたりしない）")
+        for k, rel in files:
+            print(f"- {side_label(ctx, k, rel)}")
         print_apply_skills(ctx, {k for b in batches for k, _ in b} or {""}, [f for b in batches for f in b], full=worker)
         return 0
     named = unique(guide_label(ctx, g, k) for k, g, _ in guide_hits(ctx, batches[cur], "apply"))
@@ -8244,7 +8253,16 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
               "例: `--name hello-returns-two`）", file=sys.stderr)
         return 2
     # 変えたあとに止まって --new で書き直すときも、この回で変えた分は前の印から数える（捨てるなら rollback で戻す）。
+    # ただし別のことを始めるのに使うと、前の作業の変更がこの回の変更に混ざる。どちらかは codd には分からないので、
+    # 同じことの書き直しだと --keep で明かさせる
     keep_baseline = ctx.plan.is_file() and changed_in_this_run(ctx)
+    if keep_baseline and not args.keep:
+        print(f"進めている計画（{plan_rel(ctx)}）で、もう変えたファイルがあります。次のどれかにしてください:\n"
+              f"  - 同じことを書き直す（変えた分をこの回の変更として数え続ける）: `draft --new --keep --name …`\n"
+              f"  - 変えた分を捨てて別のことを始める: `codd.py rollback` のあと `draft --new --name …`\n"
+              f"  - 変えた分を残したまま別のことを始める: `codd.py record --stop` で前の回を閉じてから `draft --name …`"
+              "（残した変更は、次の回では前からの作業中の変更として数えない）", file=sys.stderr)
+        return 1
     if ctx.plan.is_file():
         ctx.plan.unlink()   # --new: 進めていた計画を捨てて書き直す
     else:
@@ -9552,6 +9570,8 @@ def build_parser() -> argparse.ArgumentParser:
     dr = sub.add_parser("draft", help="計画のひな形を .plans/日時-名前.md に置く（進めている計画があれば残す）")
     dr.add_argument("--name", help="計画の英語の短い名前（小文字・数字・ハイフン。例: hello-returns-two）")
     dr.add_argument("--new", action="store_true", help="進めている計画を捨ててひな形から書き直す")
+    dr.add_argument("--keep", action="store_true",
+                    help="--new で同じことを書き直すとき、この回で変えた分を変える前の印から数え続ける")
     dr.add_argument("--ahead", action="store_true", help="次の計画として .plans/next/ に置く（進めている計画には触れない）")
     dr.add_argument("--next", metavar="ファイル", help="立てておいた計画（.plans/next/ のファイル名）を進める計画にする")
     nx = sub.add_parser("next", help="立てておいた次の計画（.plans/next/）を示す")
