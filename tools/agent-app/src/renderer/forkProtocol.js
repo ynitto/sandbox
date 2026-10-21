@@ -30,7 +30,7 @@
     const close = () => {
       if (!current) return;
       const body = current.lines.join('\n').replace(/^\s*```[\w-]*\s*$/gm, '').trim();
-      if (current.folder) found.push({ folder: current.folder, prompt: body.slice(0, MAX_PROMPT_CHARS) });
+      if (current.folder) found.push({ folder: current.folder, prompt: Array.from(body).slice(0, MAX_PROMPT_CHARS).join('') });
       current = null;
     };
     for (const line of lines) {

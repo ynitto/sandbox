@@ -72,7 +72,7 @@ function stringLiterals(src) {
 
 function describeLocator(expr) {
   const m = /^(getByRole|getByLabel|getByText|getByPlaceholder|getByTestId|getByTitle|getByAltText|locator)\(([\s\S]*)\)$/.exec(expr);
-  if (!m) return { role: '', label: expr.slice(0, 80) };
+  if (!m) return { role: '', label: headChars(expr, 80) };
   const lits = stringLiterals(m[2]);
   if (m[1] === 'getByRole') return { role: lits[0] || '', label: lits[1] || '' };
   return { role: '', label: lits[0] || '' };

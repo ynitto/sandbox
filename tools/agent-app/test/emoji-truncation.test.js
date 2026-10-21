@@ -50,3 +50,12 @@ test('取り込んだ会話の出どころの題は絵文字の途中で切れ�
   assert.ok(!lone.test(out.externalOrigin.title));
   assert.strictEqual(Array.from(out.externalOrigin.title).length, 2000);
 });
+
+test('分岐の依頼本文・記録した操作の対象名・プリセットの CLI 名は絵文字の途中で切れない', () => {
+  const fork = require('../src/renderer/forkProtocol');
+  const [req] = fork.parseForkRequests('@fork /tmp/x\n' + '😀'.repeat(20000));
+  assert.ok(req && !lone.test(req.prompt));
+  const reuse = require('../src/shared/reuse');
+  const [p] = reuse.presets([{ name: 'a', cli: '😀'.repeat(79) + '😀😀', model: 'm' }]);
+  assert.ok(!lone.test(p.cli));
+});
