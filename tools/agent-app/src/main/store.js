@@ -14,7 +14,7 @@ const settings = require('./settings');
 const reuse = require('../shared/reuse');
 const attention = require('./attention');
 const sessionFindings = require('./sessionFindings');
-const { headChars } = require('./text');
+const { headChars, tailChars } = require('./text');
 
 // wslDistro    … Windows で、ドライブパス（C:\…）のリポジトリを扱う WSL ディストロ（'' なら既定）
 // transport    … 'tmux'（対話起動。既定）| 'headless'（1 ターン 1 プロセス）
@@ -537,7 +537,7 @@ function addTerminalSnapshot(userData, id, snapshot) {
     agentCli: String(snapshot.agentCli || ''), model: String(snapshot.model || ''),
     capturedAt: String(snapshot.capturedAt || new Date().toISOString()),
     reason: ['agent_switch', 'pane_dead', 'archive'].includes(snapshot.reason) ? snapshot.reason : 'agent_switch',
-    screenText: String(snapshot.screenText || '').slice(-MAX_SNAPSHOT_CHARS),
+    screenText: tailChars(snapshot.screenText, MAX_SNAPSHOT_CHARS),
   };
   sess.terminalSnapshots.push(entry);
   sess.terminalSnapshots = sess.terminalSnapshots.slice(-MAX_TERMINAL_SNAPSHOTS);

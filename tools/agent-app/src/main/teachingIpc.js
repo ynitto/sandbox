@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { headChars } = require('./text');
 const store = require('./store');
 const host = require('./host');
 const settings = require('./settings');
@@ -95,7 +96,7 @@ function create(deps) {
     let sidecar = teaching.load(repo, machine);
     if (!existing && !sidecar) {
       if (!purpose) throw new Error('教えたいタスクを入力してください');
-      sidecar = teaching.save(repo, machine, { title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose });
+      sidecar = teaching.save(repo, machine, { title: headChars(purpose.split(/\r?\n/)[0], 80), purpose });
     }
     let summary = store.findTaskSession(ud, repo, machine);
     const replacing = !!summary && p.newSession;
@@ -181,7 +182,7 @@ function create(deps) {
     try { flowStore.read(repo, id); } catch { existing = false; }
     if (!existing && !sidecar.title) {
       if (!purpose) throw new Error('教えたいワークフローを入力してください');
-      sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: purpose.split(/\r?\n/)[0].slice(0, 80), purpose, shape: p.shape }));
+      sidecar = flowTeachingStore.save(repo, id, flowTeachingModel.createSession({ workflowId: id, title: headChars(purpose.split(/\r?\n/)[0], 80), purpose, shape: p.shape }));
     }
     let summary = store.findWorkflowSession(ud, repo, id);
     const selected = p.policy ? settings.resolve(cfg, p) : null;

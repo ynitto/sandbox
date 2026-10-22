@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const host = require('./host');
-const { utf8Stream } = require('./text');
+const { utf8Stream, tailChars } = require('./text');
 
 const IDLE_TIMEOUT = 60000;
 const MAX_LINE = 32 * 1024 * 1024;
@@ -25,7 +25,7 @@ class SessionWorker {
     const child = this.spawn(this.target.native ? 'python' : this.platform === 'win32' ? 'wsl.exe' : '/bin/bash',
       this.target.native ? ['-c', script] : argv, { windowsHide: true });
     utf8Stream(child.stdout).on('data', text => this.receive(text));
-    utf8Stream(child.stderr).on('data', text => { this.error = ((this.error || '') + text).slice(-2000); });
+    utf8Stream(child.stderr).on('data', text => { this.error = tailChars((this.error || '') + text, 2000); });
     child.stdin.on('error', () => {});
     child.on('error', err => this.fail(err));
     child.on('close', () => this.fail(new Error('履歴を取得できません。Python 3 の利用環境を確認してください。' + (this.error || ''))));

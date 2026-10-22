@@ -173,7 +173,7 @@ function normalize(raw) {
   return {
     instructions: {
       enabled: instructions.enabled !== false,
-      text: String(instructions.text || '').trim().slice(0, MAX_INSTRUCTION_CHARS),
+      text: headChars(String(instructions.text || '').trim(), MAX_INSTRUCTION_CHARS),
       // 別のフォルダへ書き込む必要が出たとき、AI に分岐の依頼（@fork 行）を書かせる作法を添えるか
       skills: skillCandidates,
       skillSelection: {
