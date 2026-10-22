@@ -67,7 +67,9 @@ function createOutputCollector({ onLine, maxBytes = MAX_STREAM_OUTPUT } = {}) {
     if (finished || !Object.prototype.hasOwnProperty.call(outputs, kind)) return;
     const raw = data.toString('utf8');
     const room = Math.max(0, maxBytes - size);
-    const text = raw.slice(0, room);
+    let text = raw.slice(0, room);
+    // 切り口が絵文字の前半で終わるときは、割れた半端な文字を残さない
+    if (text.length < raw.length && /[\ud800-\udbff]$/.test(text)) text = text.slice(0, -1);
     if (text.length < raw.length) truncated = true;
     size += text.length;
     outputs[kind] += text;
