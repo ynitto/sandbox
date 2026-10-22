@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const skillSelection = require('./skillSelection');
+const { headChars } = require('./text');
 
 const LIMITS = { tasks: 8, flows: 8, skills: 6 };
 const TIMEOUT_MS = 30000;
@@ -43,12 +44,12 @@ function ranked(text, items, limit) {
 // skills は自動選択の候補から、依頼に名前が出ているもの（明示。判定に訊かない）を除いて上位だけ。
 function candidates({ text = '', tasks = [], flows = [], skills = [], repo = '', attachments = [], readonly = false } = {}) {
   const explicit = new Set(skillSelection.mentioned(text, skills).map((skill) => skill.name));
-  const trim = (item) => ({ id: String(item.id), name: String(item.name || item.id), description: String(item.description || '').slice(0, 200) });
+  const trim = (item) => ({ id: String(item.id), name: String(item.name || item.id), description: headChars(item.description, 200) });
   return {
     tasks: ranked(text, tasks, LIMITS.tasks).map(trim),
     flows: ranked(text, flows, LIMITS.flows).map(trim),
     skills: ranked(text, skills.filter((skill) => !explicit.has(skill.name)), LIMITS.skills)
-      .map((skill) => ({ name: String(skill.name), description: String(skill.description || '').slice(0, 200) })),
+      .map((skill) => ({ name: String(skill.name), description: headChars(skill.description, 200) })),
     context: { repo: String(repo || ''), attachments: attachments.map(String).filter(Boolean), readonly: !!readonly },
   };
 }

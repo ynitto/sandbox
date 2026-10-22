@@ -59,3 +59,9 @@ test('分岐の依頼本文・記録した操作の対象名・プリセット�
   const [p] = reuse.presets([{ name: 'a', cli: '😀'.repeat(79) + '😀😀', model: 'm' }]);
   assert.ok(!lone.test(p.cli));
 });
+
+test('先頭・末尾の切り出しは絵文字の途中で切れない', () => {
+  const { tailChars } = require('../src/main/text');
+  assert.ok(!lone.test(tailChars('😀'.repeat(3000), 2001)));
+  assert.ok(!lone.test(headChars('😀'.repeat(300), 201)));
+});

@@ -53,7 +53,7 @@ function takeBoundary(record, boundary) {
 const fold = value => String(value || '').toLocaleLowerCase();
 function snippetOf(body, needle) {
   const text = String(body || '');
-  if (!needle) return text.slice(0, 180);
+  if (!needle) return headChars(text, 180);
   const at = fold(text).indexOf(fold(needle));
   const start = Math.max(0, (at < 0 ? 0 : at) - 50);
   return text.slice(start, start + 180);
