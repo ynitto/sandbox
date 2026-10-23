@@ -7,7 +7,7 @@
     const t = s.temporary;
     return {
       mode: MODES.includes(s.mode) ? s.mode : 'configured',
-      localModel: String(s.localModel || '').trim().slice(0, 160),
+      localModel: Array.from(String(s.localModel || '').trim()).slice(0, 160).join(''),
       temporary: t && t.mode === 'local' && (t.until === null || Number.isFinite(Date.parse(t.until)))
         ? { mode: 'local', until: t.until === null ? null : new Date(t.until).toISOString() } : null,
     };
