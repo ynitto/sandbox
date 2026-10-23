@@ -941,7 +941,7 @@ class CoddTest(unittest.TestCase):
         self.assertIn("src/use.py", r.stderr)
         # 「なし」だった見出しは、書き足した項目に置き換わる。エージェントは印を判断に書き換えるだけでよい。
         plan = (self.impl / PLAN).read_text(encoding="utf-8")
-        self.assertIn("## 影響範囲\n\n- src/use.py — 未判断（変わる名前が出てくる）\n\n## ", plan)
+        self.assertIn("## 影響範囲\n\n- src/use.py — 未判断（変わる名前が出てくる） [U1]\n\n## ", plan)
         (self.impl / PLAN).write_text(plan.replace("未判断（変わる名前が出てくる）", "変更不要: 戻り値は同じ"),
                                       encoding="utf-8")
         self.assert_plan_ok()
@@ -2486,10 +2486,9 @@ class CoddTest(unittest.TestCase):
         # 文書の今の書式（見出しの並び）はコードの決まりと同じ。守る決まりに見本を挙げ、変えたあとも守る。
         self.write_plan(PLAN_DRIFT.replace("- docs/api.md — 文書の書式: 今の見出しの並び（hello の節）と書き方を保つ", "なし"))
         r = self.run_pa(self.impl, "verify-plan")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("「未判断」として書き足しました", r.stderr)
-        # 見本と見出しの並びを守る決まりに書き足す（formats.md を開かなくても守り方を書ける）
-        self.assertIn("- design:docs/api.md — 未判断: design:docs/api.md の書式の見本（見出し: hello）",
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 見本と守り方は決まっているので、検査が「従う手順」に書き足す（未判断にして判断させない）
+        self.assertIn("- design:docs/api.md — design:docs/api.md の書式の見本（見出し: hello）。見出しの並び・表の形・言い回しを保つ",
                       (self.impl / PLAN).read_text(encoding="utf-8"))
         self.assertIn("  - ## hello", (self.impl / ".codd/formats.md").read_text(encoding="utf-8"))
         self.write_plan(PLAN_DRIFT)
@@ -2517,8 +2516,7 @@ class CoddTest(unittest.TestCase):
         plan = PLAN_DRIFT.replace("- docs/api.md — `hello`", "- docs/screens/hello.md — 新しく書く。`hello`")
         self.write_plan(plan)
         r = self.run_pa(self.impl, "verify-plan")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("design:docs/screens/home.md — 未判断: design:docs/screens/hello.md の書式の見本（見出し: 目的 / 画面）",
+        self.assertIn("design:docs/screens/home.md — design:docs/screens/hello.md の書式の見本（見出し: 目的 / 画面）",
                       (self.impl / PLAN).read_text(encoding="utf-8"))
         formats = (self.impl / ".codd/formats.md").read_text(encoding="utf-8")
         self.assertIn("  - ## 目的\n  - ## 画面\n", formats)
@@ -4110,12 +4108,10 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("ファイルに決められた手順", r.stderr)
-        self.assertIn("`py-style`（src/app.py）", r.stderr)
-        self.assertNotIn("unused", r.stderr)   # 当たらない glob は求めない
-        self.write_plan(self.use_guides(PLAN_ALIGNED, "- `py-style` — 型ヒントを付けると決めた"))
-        r = self.run_pa(self.impl, "verify-plan")   # 挙げるだけでは通さない。読み込ませる
-        self.assertEqual(r.returncode, 1)
+        # 当たる手順は検査が「従う手順」に書き足す（名前を写させない）。挙げるだけでは通さない。読み込ませる
+        self.assertIn("- `py-style` — 当たるファイル: src/app.py（読み込んで、その手順に従う）",
+                      (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.assertNotIn("unused", (self.impl / PLAN).read_text(encoding="utf-8"))   # 当たらない glob は求めない
         self.assertIn("スキルを読み込んでいません", r.stderr)
         self.run_pa(self.impl, "guide", "skill:py-style")
         self.assert_plan_ok()
@@ -4148,7 +4144,9 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_DRIFT)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("`api-doc`（design:docs/api.md）", r.stderr)   # 参照先が 1 つでも名前を付ける（自分のファイルと見分ける）
+        # 参照先が 1 つでも名前を付ける（自分のファイルと見分ける）。当たる手順は検査が書き足し、読み込ませる
+        self.assertIn("- `api-doc` — 当たるファイル: design:docs/api.md", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.assertIn("スキルを読み込んでいません", r.stderr)
         r = self.run_pa(self.impl, "guide", "api-doc")   # 参照先に置いたスキルも名前で読める
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("戻り値を表で書く。", r.stdout)
@@ -4178,7 +4176,8 @@ class CoddTest(unittest.TestCase):
         self.write_plan(PLAN_ALIGNED)
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 1)
-        self.assertIn(".agents/guides/py.md（src/app.py）", r.stderr)
+        self.assertIn("- .agents/guides/py.md — 当たるファイル: src/app.py", (self.impl / PLAN).read_text(encoding="utf-8"))
+        self.assertIn("手順の文書を読み込んでいません", r.stderr)
         self.assertNotIn("docs/notes.md", r.stderr)    # 作るファイルだけに効く手順は、変えるファイルには効かない
         self.write_plan(self.use_guides(PLAN_ALIGNED, "- .agents/guides/py.md — 戻り値を変えない"))
         self.assertIn("手順の文書を読み込んでいません", self.run_pa(self.impl, "verify-plan").stderr)
@@ -4244,7 +4243,8 @@ class CoddTest(unittest.TestCase):
         self.assertIn("（語: lint）", r.stdout)
         self.write_plan(PLAN_DRIFT)
         r = self.run_pa(self.impl, "verify-plan")
-        self.assertIn("docs/how-to-write-api.md（design:docs/api.md）", r.stderr)   # 呼び出し元が足した手順も効く
+        # 呼び出し元が足した手順も効く
+        self.assertIn("- docs/how-to-write-api.md — 当たるファイル: design:docs/api.md", (self.impl / PLAN).read_text(encoding="utf-8"))
         self.assertNotIn("lint-helper", r.stderr)                            # 強制しない手順は求めない
         self.assertNotIn("`gh`", r.stderr)
         self.run_pa(self.impl, "guide", "docs/how-to-write-api.md")
