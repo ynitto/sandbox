@@ -25,7 +25,7 @@
                         見出しごとに書き込ませ、全文を一度に書かせない
     record [--stop]     1 回の終わりに、報告（report）を出し、計画へ確認の答えと結果を書き足して記録として残す（要らない情報は除く）
     decide 答え         確認・相談での利用者の答え（OK / NG / PLAN / APPLY / STOP）と指摘を控える。終わりの報告で計画の記録に書く
-    summary             計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる
+    summary             確認で見せるもの（計画のパスと、人の承認が要るファイルなど計画とは別に訊くこと）
     report              計画のファイルごとに変えたか、測った影響範囲、今回やらないことをまとめる（終わりの報告）
     skill 名前…         スキルの SKILL.md を出して読み込む。使うと書いたスキルを読み込んだかを検査が確かめる
     guide 名前かパス…   手順（スキルか、`パス#見出し` の文書）を出して読み込む。ファイルに決められた手順を読み込んだかを検査が確かめる
@@ -4282,7 +4282,7 @@ def cmd_judge(ctx: Ctx, args: argparse.Namespace) -> int:
     replace: dict[int, str | None] = {}
     for heading, ids in groups.items():
         rows = sorted(found[n][0] for n in ids)
-        targets = ", ".join(unique(pending_target(lines[r]) for r in rows))
+        targets = ", ".join(dict.fromkeys(pending_target(lines[r]) for r in rows))
         if args.drop:
             new = None
         elif args.fix:
@@ -4385,7 +4385,7 @@ def pending_problem(found: list[tuple[str, str]], added: int = 0) -> list[str]:
             else f"計画に「{PENDING_MARK}」の項目が {len(found)} 件残っています。")
     return tag("pending", [lead + f"（{heads}）下の「{PENDING_MARK}」の一覧を `python3 {MACHINE_REL}/codd.py judge` で答えてください"
                            "（計画のファイルを開いて書き換えなくてよい）: "
-                           + ", ".join(unique(pending_target(it) for _, it in found))])
+                           + ", ".join(dict.fromkeys(pending_target(it) for _, it in found))])
 
 
 def print_undecided(found: list[tuple[str, str]]) -> None:
@@ -4733,7 +4733,9 @@ def nodoc_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
         return []
     return tag("shape", [f"{NO_DOC}（見本の文書に倣い、同じ粒度で文書を作るか今ある文書に足す項目を変更案に書き、その項目にコードのパスを書く。"
             "見本が 1 つのコードに 1 つの文書なら同じ並びで新しく作り、フォルダや機能をまとめた文書なら、その文書に節を足す。"
-            "文書の本文にもコードのパスを書いてつなぐ）: " + " / ".join(missing)])
+            "見本の文書を「従う手順」に文書の書式として挙げる。文書の本文にもコードのパスを書いてつなぐ。"
+            "文書が要らないファイル（生成したコードなど）なら作らずに「今回やらないこと」に書き、設定の no_doc に足すことを"
+            "利用者に勧める（設定は変えない））: " + " / ".join(missing)])
 
 
 def nodoc_apply_problems(ctx: Ctx, bodies: dict[str, str], touched: dict[str, set[str]]) -> list[str]:
@@ -8108,6 +8110,21 @@ OPTIONS = {
     "stop": ("ここでやめる（変えた分を残すか戻すかも訊く）", "", "STOP"),
 }
 
+# 選択肢ごとに何が起きるか（利用者に見せる 1 行。エージェントがファイルを開いて考えずに済むように）
+OPTION_EFFECTS = {
+    "replan": "計画の段に戻り、指摘を踏まえて練り直す（変えた分があれば、そのまま前の印から数え続ける）",
+    "reapply": "計画はそのままで変える段に戻り、指摘されたところを直す",
+    "keep": "変えた分を残して計画の段に戻り、計画を直して確認を受け直す",
+    "accept": "足したファイルを、理由付きで認めた変更として記録に残し、変える段の検査を続ける",
+    "known": "変える前から落ちていた失敗として控え、同じ失敗なら通す",
+    "intended": "テストの出力の変化を意図したものとして控え、文書の写しを差し替える",
+    "edited": "計画を練っている間の変更を、利用者の作業中の変更として数えない",
+    "reset": "計画の検査が通ったとき（変える前）の中身へ戻し、計画から練り直す（戻るファイルを先に見せる）",
+    "tests-ok": "テストのファイルの変更を利用者が認めたものとして控え、変える段を続ける",
+    "unrun-ok": "動かないテストとして控え、動かないまま通す",
+    "stop": "流れを終える。変えた分を残すか戻すかを決めて、記録に残す",
+}
+
 # 種類ごとの選択肢（最初が勧め）と、利用者に確かめること。最初に挙がった理由の勧めを、全体の勧めにする。
 ADVICE = {
     "plan": {
@@ -8264,6 +8281,7 @@ def cmd_advise(root: Path) -> int:
         title, command, word = OPTIONS[key]
         run_it = f"。先に `python3 {MACHINE_REL}/codd.py {command}` を実行" if command else ""
         lines.append(f"{i + 1}. {title}{'（勧め）' if i == 0 else ''} → `{word}`{run_it}")
+        lines.append(f"   - {OPTION_EFFECTS[key]}")
     text = "\n".join(lines) + "\n"
     write_text(data / "advice.md", text)
     print(text, end="")
@@ -8370,12 +8388,7 @@ def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- 計画を少しずつ書く・短く見せる
 #
 # Copilot などは 1 回の応答の長さに上限があり、計画を一度に全文書く・全文を貼ると
-# 「the response hit the length limit」で止まる。ひな形を置いて見出しごとに書かせ、確認では要約だけを見せる。
-
-SUMMARY_SECTIONS = ("## ずれ", "## 自分の変更案", "## 参照先の変更案", "## 影響範囲", "## テストの変更案", "## 今回やらないこと")
-SUMMARY_ITEMS = 12
-SUMMARY_WIDTH = 120
-
+# 「the response hit the length limit」で止まる。ひな形を置いて見出しごとに書かせ、確認では計画のパスを示して読んでもらう。
 
 NEXT_DIR = "next"     # 立てておいた次の計画（.plans/next/）。進めている計画にも記録にも数えない
 NEXT_MAX = 5         # 立てておく計画の上限（古いものを使うか消してから足す）
@@ -8419,8 +8432,17 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
             print(f"立てておいた計画が上限（{NEXT_MAX}）に達しています。古いものを進めるか消してから足してください: "
                   + ", ".join(p.relative_to(ctx.root).as_posix() for p in next_plans(ctx)), file=sys.stderr)
             return 1
+        filled = ahead_from_answers(ctx, args.source or [])
+        if isinstance(filled, str):
+            print(filled, file=sys.stderr)
+            return 2
         dest = new_plan_path(ctx.root / PLAN_DIR / NEXT_DIR, name)
         shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
+        if filled:
+            text = dest.read_text(encoding="utf-8")
+            for heading, body in filled.items():
+                text = fill_heading(text, heading, body)
+            write_text(dest, text)
         # 立てたときのコミットを控える（進めるときに、そのあと変わったファイルを示すため）
         marks = " ".join(f"{k or '.'}={head(side.path)}" for k, side in all_sides(ctx) if head(side.path))
         with dest.open("a", encoding="utf-8", newline="\n") as fh:
@@ -8492,6 +8514,50 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
+def fill_heading(text: str, heading: str, body: str) -> str:
+    """ひな形の見出しの説明コメントを、本文に置き換える（コメントで始まる本文はコメントの後ろに足す）。"""
+    m = re.search(rf"^{re.escape(heading)}\n\n(<!--.*?-->)", text, re.MULTILINE | re.DOTALL)
+    if not m:
+        return text
+    keep = m.group(1) + "\n\n" if body.startswith("<!--") else ""
+    return text[:m.start(1)] + keep + body + text[m.end(1):]
+
+
+def ahead_from_answers(ctx: Ctx, ids: list[str]) -> dict[str, str] | str:
+    """確かめる流れの答え（R03 など）から、次の計画のやりたいことと根拠を写す（エージェントに写させない）。"""
+    if not ids:
+        return {}
+    blocks = {}
+    for block in review_answers(ctx)[0]:
+        head, *rest = block.split("\n")
+        if (m := _REVIEW_ANSWER.match(head)):
+            blocks[m.group(1)] = (m, rest)
+    want = [x.strip().upper() for x in ids for x in x.split(",") if x.strip()]
+    missing = [x for x in want if x not in blocks]
+    if missing:
+        return f"答えに無い項目です: {', '.join(missing)}（{DATA_DIRNAME}/{REVIEW_DIR}/{REVIEW_ANSWERS} の R 番号）"
+    asks, grounds, own = [], [], []
+    for rid in want:
+        m, rest = blocks[rid]
+        _, verdict, token, why = m.groups()
+        ask = next((x.split("やりたいこと:", 1)[1].strip() for x in rest if _REVIEW_ASK.match(x)), "")
+        if ask and not _REVIEW_SAME.match(ask):
+            asks.append(ask)
+        hits, _ = review_where(ctx, token)
+        if any(k for k, _ in hits):
+            grounds.append(f"- {why}（根拠: {token}）")
+        else:
+            own.append(f"<!-- {rid} の根拠（自分）: {token} — {why}。参照先の記述と食い違うなら、ずれに書く -->")
+    out = {}
+    if asks:
+        out["## やりたいこと"] = "\n".join(unique(asks))
+    if grounds:
+        out["## 参照先の前提"] = "\n".join(grounds)
+    if own:
+        out["## ずれ"] = "\n".join(own)
+    return out
+
+
 def changed_since_ahead(ctx: Ctx, text: str) -> list[str]:
     """次の計画を立てたあとに、コミットか作業中で変わったファイル（立てたときのコミットの控えから）。"""
     m = re.search(rf"<!-- {NEXT_MARK} (.*?) -->", text)
@@ -8542,27 +8608,16 @@ def cmd_next(ctx: Ctx, args: argparse.Namespace) -> int:
     return 0
 
 
-def _clip(line: str) -> str:
-    return line if len(line) <= SUMMARY_WIDTH else line[:SUMMARY_WIDTH - 1] + "…"
-
-
 def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
-    """計画の要約（やりたいこと・ずれ・変えるファイル・テスト・今回やらないこと）。確認で全文の代わりに見せる。"""
+    """確認で見せるもの。計画は要約せず、ファイルのパスを示して利用者に読んでもらう（要約を書き写させない）。
+    計画とは別にはっきり訊くこと（人の承認が要るファイル・受け持ちの外のファイル）だけを並べる。"""
     if not ctx.plan.is_file():
         print(NO_PLAN, file=sys.stderr)
         return 1
     _, bodies = sections(compact_plan(ctx.plan.read_text(encoding="utf-8")), PLAN_HEADINGS)
     rel = ctx.plan.relative_to(ctx.root).as_posix()
-    lines = ["# 計画の要約", "", f"全文: {rel}", ""]
-    want = [ln.strip() for ln in bodies.get("## やりたいこと", "").splitlines() if ln.strip()]
-    lines += ["## やりたいこと", "", *([_clip(ln) for ln in want[:3]] or ["（未記入）"])]
+    lines = ["# 計画の確認", "", f"計画: {rel}（このファイルを開いて読んでもらい、この計画で進めてよいかを訊く。中身は貼らない）"]
     held = plan_protected(ctx, bodies)
-    counted = [h for h in (GUIDES_HEADING, "## 参照先の前提", "## 参照先の制約", "## 参照先のその他")
-               if h in bodies and not is_none(bodies[h])]
-    if counted:
-        lines += ["", "根拠: " + "・".join(
-            f"{h[3:]} {0 if is_none(bodies[h]) else sum(1 for ln in bodies[h].splitlines() if re.match(r'^[-*] ', ln))} 件"
-            for h in counted)]
     if held:
         lines += ["", "## 人の承認が要るファイル", "",
                   *[f"- {protected_label(k, rel)}" for k, rel in held],
@@ -8577,18 +8632,6 @@ def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
     if outside:
         lines += ["", "## 受け持ちの外で、変わる名前が出てくるファイル", "", *[f"- {p}" for p in outside],
                   "", "一緒に直すかを確かめる（直すなら計画に足して練り直す）"]
-    for heading in SUMMARY_SECTIONS:
-        body = bodies.get(heading)
-        if body is None or is_none(body):
-            continue
-        items = [ln.strip() for ln in body.splitlines() if re.match(r"^[-*] ", ln.strip())]
-        lines += ["", heading, ""]
-        if is_none(body) or not items:
-            lines.append("- なし" if is_none(body) or not body else _clip(body.splitlines()[0]))
-            continue
-        lines += [_clip(ln) for ln in items[:SUMMARY_ITEMS]]
-        if len(items) > SUMMARY_ITEMS:
-            lines.append(f"- ほか {len(items) - SUMMARY_ITEMS} 件（{rel}）")
     print("\n".join(lines))
     return 0
 
@@ -8728,7 +8771,10 @@ def related_records(ctx: Ctx, record: str | None) -> list[str]:
             _, past = sections(text, PLAN_HEADINGS)
             changes = "\n".join(past.get(h, "") for h in ("## 自分の変更案", "## 参照先の変更案"))
             if rel != record and RESULT_HEADING in text.splitlines() and any(x in changes for x in paths):
-                found.append((p.stem, rel))
+                # 同じファイルに触れた行だけを添える（記録を丸ごと開かせない）
+                hits = [f"  - {it[:160]}" for h in ("## 自分の変更案", "## 参照先の変更案", "## 今回やらないこと", "## 確認と判断")
+                        for it in items(past.get(h, "")) if any(x in it for x in paths) or h == "## 確認と判断"]
+                found.append((p.stem, "\n".join([rel, *hits])))
     return [rel for _, rel in sorted(found, reverse=True)[:ISSUE_PAST]]
 
 
@@ -8749,6 +8795,18 @@ def issue_section(ctx: Ctx, record: str | None) -> list[str]:
             known.append(f"- {label}{folder}/{p.name} — {title}" + (f"（原因: {cause}）" if cause else "")
                          + (f"（{where}）" if where else ""))
     plan = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "", Path(record).stem) if record else "（計画なし）"
+    note = (f"`python3 {MACHINE_REL}/codd.py retro --note 英語の短い名前 --title \"課題を 1 行\" --cause \"原因を 1 行（根拠: パス:行 か 検査の指摘。"
+            f"示せなければ 不明）\" --where \"直す先\"`")
+    past = related_records(ctx, record)
+    if not events and not (ctx.data / "advice.md").is_file() and not unsettled(ctx, record):
+        # 検査で止まらず、確認でも退けられていない回。指示を短くする（問題が無ければ何も書かずに終える）
+        return ["# 課題メモ", "",
+                "この回は検査で止まらず、確認でも退けられていない。この回の会話で利用者が指摘したこと（誤りや漏れ・言い直し・"
+                "やり直しの依頼）が無ければ、何も書かずに終える。", "",
+                f"指摘があれば、原因をたどって {note} で残す（直し方は書かない。同じ問題のメモが下にあれば、その名前を --note に渡すと"
+                "「起きた回」に足す）。", "",
+                *(["## 同じファイルを変えた過去の記録（この回の変更と食い違えば残す）", "", *[f"- {r}" for r in past], ""] if past else []),
+                "## 今ある課題メモ", "", *(known or ["- なし"]), ""]
     return [
         "# 課題メモ", "",
         f"この回に起きた問題の原因をたどり、`{folder}/` に課題メモを残す。直し方は考えない・書かない（直すのは別の場）。"
@@ -8765,23 +8823,53 @@ def issue_section(ctx: Ctx, record: str | None) -> list[str]:
         "## 材料", "", "- この回の会話（依頼・確認と相談での答え・検査の指摘とやり直し）",
         *([f"- 計画の記録: {record}"] if record else []),
         *([f"- 止まった理由と次の手: {DATA_DIRNAME}/advice.md"] if (ctx.data / "advice.md").is_file() else []), "",
-        "## 同じファイルを変えた過去の記録", "", *([f"- {r}" for r in related_records(ctx, record)] or ["- なし"]), "",
+        "## 同じファイルを変えた過去の記録", "", *([f"- {r}" for r in past] or ["- なし"]), "",
         "## 今ある課題メモ", "", *(known or ["- なし"]), "",
         "同じ問題（原因と直す先が同じ）のメモがあれば、参照先のリポジトリのものでも、新しく作らずにその「起きた回」の行の末尾へ"
         "この回を足す。迷ったら別のファイルにする。", "",
-        "## 書式", "",
-        f"新しいメモは `{folder}/<英語の短い名前>.md`（小文字・数字・ハイフン）。課題と原因は、それぞれ 1 行で簡潔に書く"
-        "（書く側も読む側も 1 行で分かるように。経緯や説明は足さない）。", "",
-        "```markdown", "# 課題を 1 行で", "",
-        "- 原因: 1 行（根拠: パス:行 か 検査の指摘）。根拠を示せなければ「不明」と書き、推測で埋めない",
-        "- 直す先: codd 本体（codd.py・手順のファイル）/ codd.json / 決まりのファイル（パス）/ スキル（名前）/ "
-        "参照先の文書（パス）/ 過去の計画の記録（パス） のどれか",
-        f"- 起きた回: {time.strftime('%Y-%m-%d')} {plan}",
-        "```", ""]
+        "## 書き方", "",
+        f"{note} で書く（書式と起きた回は codd.py が書く。同じ問題のメモには、その名前を --note に渡す）。"
+        "課題と原因はそれぞれ 1 行で、経緯や説明は足さない。直す先は codd 本体（codd.py・手順のファイル）/ codd.json / "
+        "決まりのファイル（パス）/ スキル（名前）/ 参照先の文書（パス）/ 過去の計画の記録（パス） のどれか", ""]
+
+
+def unsettled(ctx: Ctx, record: str | None) -> bool:
+    """この回の確認・相談で、計画を退けた・練り直した・やめたか（記録の「確認と判断」）。"""
+    text = read_text(ctx.root / record) if record else ""
+    body = (text or "").split("## 確認と判断", 1)[-1].split(RESULT_HEADING, 1)[0] if text else ""
+    return any(f" {w}（" in body for w in ("NG", "PLAN", "APPLY", "STOP"))
+
+
+def write_issue_note(ctx: Ctx, args: argparse.Namespace) -> int:
+    """課題メモを決まった書式で書く。同じ名前のメモがあれば「起きた回」にこの回を足す。"""
+    name = (args.note or "").strip().lower()
+    if not _PLAN_NAME.match(name) or len(name) > 40:
+        print("課題メモの名前を、英語の短い名前で渡してください（小文字・数字・ハイフン）", file=sys.stderr)
+        return 2
+    records = [p for p in (ctx.root / PLAN_DIR).glob("*.md") if RESULT_HEADING in (read_text(p) or "").splitlines()]
+    latest = max(records, key=lambda p: p.stat().st_mtime_ns) if records else None
+    run_label = f"{time.strftime('%Y-%m-%d')} " + (re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "", latest.stem) if latest else "（計画なし）")
+    path = ctx.root / PLAN_DIR / ISSUE_DIR / f"{name}.md"
+    if path.is_file():
+        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = [f"{ln}、{run_label}" if ln.startswith("- 起きた回:") and run_label not in ln else ln for ln in lines]
+        write_text(path, "\n".join(lines) + "\n")
+        print(f"OK 課題メモの起きた回に足しました: {path.relative_to(ctx.root).as_posix()}（コミットしてよい）")
+        return 0
+    missing = [o for o, v in (("--title", args.title), ("--cause", args.cause), ("--where", args.where)) if not (v or "").strip()]
+    if missing:
+        print(f"新しい課題メモには {'・'.join(missing)} が要ります", file=sys.stderr)
+        return 2
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_text(path, f"# {args.title.strip()}\n\n- 原因: {args.cause.strip()}\n- 直す先: {args.where.strip()}\n- 起きた回: {run_label}\n")
+    print(f"OK 課題メモを書きました: {path.relative_to(ctx.root).as_posix()}（コミットしてよい）")
+    return 0
 
 
 def cmd_retro(ctx: Ctx, args: argparse.Namespace) -> int:
     """終わりの振り返り（done・stopped のあと）。課題メモの指示と、設定のプロンプトがあればそれを示す。"""
+    if args.note:
+        return write_issue_note(ctx, args)
     # この回の記録は、いちばん新しく書き足した記録（同じ分に置いた計画は名前の順では決まらない）
     records = [p for p in (ctx.root / PLAN_DIR).glob("*.md") if RESULT_HEADING in (read_text(p) or "").splitlines()]
     record = max(records, key=lambda p: p.stat().st_mtime_ns).relative_to(ctx.root).as_posix() if records else None
@@ -9772,7 +9860,14 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
     if unfinished:
         lines[1:1] = [f"（答えの検査が通っていません: {unfinished[0]}{' ほか' if len(unfinished) > 1 else ''}）"]
     write_text(ctx.data / "review.md", "\n".join(lines[1:]))
-    print("\n".join(lines))
+    # 出すのは件数と、本流に渡すやりたいこと・見なかったものだけ（見つけたものの全文は review.md。書き写させない）
+    keep, on = [], False
+    for line in lines[1:]:
+        if line.startswith("## "):
+            on = line in ("## 見なかったもの", "## 本流に渡すやりたいこと")
+        if on or line.startswith("（答えの検査"):
+            keep.append(line)
+    print("\n".join([lines[0], "", *keep]).rstrip())
     return 0
 
 
@@ -10042,11 +10137,17 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--keep", action="store_true",
                     help="--new で同じことを書き直すとき、この回で変えた分を変える前の印から数え続ける")
     dr.add_argument("--ahead", action="store_true", help="次の計画として .plans/next/ に置く（進めている計画には触れない）")
+    dr.add_argument("--from", dest="source", action="append", metavar="R番号",
+                    help="--ahead で、確かめる流れの答え（R03 など。繰り返し可）からやりたいことと根拠を写す")
     dr.add_argument("--next", metavar="ファイル", help="立てておいた計画（.plans/next/ のファイル名）を進める計画にする")
     nx = sub.add_parser("next", help="立てておいた次の計画（.plans/next/）を示す")
     nx.add_argument("--verify", action="store_true", help="どれもやりたいことを書き、重なっていないかを確かめる")
-    sub.add_parser("summary", help="計画の要約を示す（確認で全文の代わりに見せる）")
-    sub.add_parser("retro", help="終わりの振り返り。課題メモ（.plans/retro/）の書き方とこの回の出来事を示し、codd.json の retro があればそのプロンプトも示す")
+    sub.add_parser("summary", help="確認で見せるもの（計画のパスと、計画とは別に訊くこと）を示す")
+    rt = sub.add_parser("retro", help="終わりの振り返り。課題メモ（.plans/retro/）の書き方とこの回の出来事を示し、codd.json の retro があればそのプロンプトも示す")
+    rt.add_argument("--note", metavar="名前", help="課題メモを書く（英語の短い名前。同じ名前があれば起きた回に足す）")
+    rt.add_argument("--title", help="--note: 課題を 1 行")
+    rt.add_argument("--cause", help="--note: 原因を 1 行（根拠: パス:行 か 検査の指摘。示せなければ 不明）")
+    rt.add_argument("--where", help="--note: 直す先")
     rc = sub.add_parser("record", help="終わりの報告を出し、計画に確認の答えと結果を書き足して判断の記録として残す（終わりに呼ぶ）")
     rc.add_argument("--stop", action="store_true", help="利用者がやめた回として残す（stopped から呼ぶ）")
     de = sub.add_parser("decide", help="確認・相談での利用者の答えを控える（終わりの報告で計画の記録に書く）")
