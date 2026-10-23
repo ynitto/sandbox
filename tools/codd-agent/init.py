@@ -337,8 +337,8 @@ def write_agents(target: Path, kinds) -> list[Path]:
             "prompt": prompt,
             "tools": ["*"],
             "includeMcpJson": True,
-            "resources": ["file://.statemachine/codd/workflow.yaml", "file://.statemachine/codd-review/workflow.yaml",
-                          "skill://~/.kiro/skills/caveman/SKILL.md", "skill://~/.kiro/skills/graphify/SKILL.md"],
+            # ステートマシンの定義は読ませない（`codd.py step` が読んで回す。会話に毎回載せると、そのぶん入力が増える）
+            "resources": ["skill://~/.kiro/skills/caveman/SKILL.md", "skill://~/.kiro/skills/graphify/SKILL.md"],
             # 始めるたびに参照先・守る決まり・使うスキルを読み込ませる。
             "hooks": {"agentSpawn": [{"command": "python3 .statemachine/codd/codd.py show"}]},
             "welcomeMessage": "codd: コードや文書の変更は、計画・確認・変更・検査のステートマシンで進めます",

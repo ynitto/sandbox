@@ -30,12 +30,13 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 1. 作業用の一時フォルダに、「サンプル」の要点を満たすリポジトリを作り、このリポジトリの `tools/codd-agent/init.py` で codd を入れる。
    サンプルに書いていなくても、コードには対応する文書を用意し、文書の本文にコードのパス（かフォルダ）を書いておく
    （対応する文書の無いコードは計画の検査が止める。シナリオがわざと文書を欠くときは、そう書く）
-2. シナリオを順に、codd エージェントの役で回す（`.statemachine/codd/codd.py` を `show` → `guide --all` → `explore` → `draft` →
-   計画を書く → `verify-plan` → `summary` → `decide` → 変える → `verify-apply` → `record`（やめたときは `record --stop`））。確かめる
-   シナリオは `.statemachine/codd-review/workflow.yaml` を回す（`review start` → `review next` と答える → `review verify` →
-   `draft --ahead` と `next --verify` → `review report`）。利用者に訊く場面では、
+2. シナリオを順に、codd エージェントの役で `.statemachine/codd/codd.py step --start "依頼"` から回し、出た指示に従って
+   `step "出力"` で進める（確かめるシナリオは `step --start "何を確かめるか" --review`）。計画の検査が出した「未判断」には
+   `judge` で答える。利用者に訊く場面では、
    シナリオに書いた「利用者の答え」を返す。終わったら両方のリポジトリでコミットして次へ
 3. 「期待」と違ったところ（止まらないはずで止まった、止まるはずで通った、余計に回った、訊くはずで訊かなかった）を挙げる。
    ファイル名・行・文言の違いは気にしない
 
 不具合を見つけて直したら、そのとき通した道をシナリオに書き足す。新しいサンプルを足すときも同じ形で書く。
+
+2026-10-23 に、すべてのシナリオを `step` で回し直した（monorepo-library の 4 は全文検索の道具が無く回していない）。
