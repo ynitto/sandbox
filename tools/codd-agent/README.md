@@ -292,12 +292,12 @@ codd は消さない）。計画の記録と同じく、コミットして共有
 どれもリポジトリのルートで実行する。
 
 ```bash
-python3 .statemachine/codd/codd.py step            # 今の段の指示をもう一度出す（step "出力" で次へ進める）
+python3 .statemachine/codd/codd.py step            # 今の段の指示をもう一度出す（step "出力" で次へ進める。--full で全文）
 python3 .statemachine/codd/codd.py judge U3 --skip 理由   # 計画の検査が出した未判断の項目に答える（--fix 直し方 / --drop で行を消す）
 python3 .statemachine/codd/codd.py show            # 参照先の一覧、守る決まり、段階ごとに使うスキルと道具
 python3 .statemachine/codd/codd.py show --phase apply
 python3 .statemachine/codd/codd.py explore --term 語   # 参照先を探す（--ref 名前 で絞る）
-python3 .statemachine/codd/codd.py impact --term 語    # 自分のリポジトリの影響範囲を探す
+python3 .statemachine/codd/codd.py impact --term 語    # 自分のリポジトリの影響範囲を探す（見つけたファイルを並べる）
 python3 .statemachine/codd/codd.py graph           # グラフを用意する（文書を LLM で読むときは束を出す。下記）
 python3 .statemachine/codd/codd.py evidence        # テストで得たものと、文書の印の様子
 python3 .statemachine/codd/codd.py lint            # 機械の点検（下記）
@@ -766,7 +766,7 @@ python3 .statemachine/codd/codd.py review report    # まとめる
 
 ```bash
 python3 .statemachine/codd/codd.py next                    # 立てておいた計画の一覧
-python3 .statemachine/codd/codd.py draft --ahead --name 名前 --from R03   # 次の計画を .plans/next/ に置く（確かめる回が使う。--from の答えからやりたいこと・根拠を写す）
+python3 .statemachine/codd/codd.py draft --ahead --name 名前 --from R03   # 次の計画を .plans/next/ に置く（確かめる回が使う。--from の答えからやりたいこと・根拠を写す。同じやりたいことの計画があれば置かない）
 python3 .statemachine/codd/codd.py draft --next ファイル名    # 立てておいた計画を進める計画にする（本流が使う）
 ```
 

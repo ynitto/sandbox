@@ -1943,10 +1943,18 @@ def cmd_impact(ctx: Ctx, args: argparse.Namespace) -> int:
     body, files, note = search(ctx, ctx.own, terms, "affected")
     path = write_report(ctx, "impact.md", f"自分のリポジトリ（{SIDES[ctx.side]}）で影響を受ける箇所",
                         terms, [(f"{ctx.root}{scope_words(ctx.own)}", note, body)], files)
+    # 見つけたファイルは出す（`review start --path` に並べる。詳細を開かずに済む）
+    for rel in list(files)[:IMPACT_LIST]:
+        print(f"- {rel}")
+    if len(files) > IMPACT_LIST:
+        print(f"- ほか {len(files) - IMPACT_LIST} ファイル（詳細に残した）")
     print(f"FOUND {len(files)} files (graphify: {note})")
     fulltext_trouble(body)
     print(f"  詳細: {path.relative_to(ctx.root)}")
     return 0
+
+
+IMPACT_LIST = 20   # impact が出すファイルの上限（review start の --path に並べる数と同じ）
 
 
 # ---------------------------------------------------------------- 意味のグラフ（LLM で文書の中身を抜き出す）
@@ -4011,10 +4019,18 @@ def add_guide_lines(ctx: Ctx, text: str) -> str:
         names = guide_names(ctx, g, key)
         if not names or any(names_guide(ln, g, names) for ln in body.splitlines()):
             continue
-        shown = names[0] if g.kind == "doc" else f"`{names[0]}`"
+        shown = guide_shown(ctx, g, key)
         auto.auto.setdefault(GUIDES_HEADING, []).append(
             f"- {shown} — 当たるファイル: {', '.join(side_label(ctx, key, r) for r in rels)}（読み込んで、その手順に従う）")
     return add_pending(text, auto) if auto.auto else text
+
+
+def guide_shown(ctx: Ctx, g: "Guide", key: str) -> str:
+    """計画・記録に書く手順の名前。参照先のものは参照先の名前を付ける（文書は `docs:パス`、スキルは `docs:名前`）。"""
+    names = guide_names(ctx, g, key)
+    if g.kind == "doc":
+        return side_label(ctx, key, names[0])
+    return f"`{next((n for n in names if n.startswith(f'{key}:')), names[0]) if key else names[0]}`"
 
 
 def guide_plan_problems(ctx: Ctx, bodies: dict[str, str], checked: list[str]) -> list[str]:
@@ -4397,11 +4413,40 @@ def print_undecided(found: list[tuple[str, str]]) -> None:
     def order(entry: tuple[str, str]) -> int:
         m = PENDING_ID.search(entry[1])
         return int(m.group(1)) if m else 0
+    # 見出し・理由・一致した行が同じものは 1 行にまとめる（同じ抜粋を何度も読ませない）
+    groups: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
     for heading, item in sorted(found, key=order):
         m = PENDING_ID.search(item)
+        uid = ("U" + m.group(1)) if m else "（番号なし）"
         body = PENDING_ID.sub("", item).strip()
-        lines.append(f"- {('U' + m.group(1)) if m else '（番号なし）'} [{heading[3:]}] {body[:200]}")
+        shape = _UNDECIDED_SHAPE.match(body)
+        key = f"{shape.group(2)}|{shape.group(3) or ''}" if shape and m else uid
+        groups.setdefault((heading, key), []).append((uid, shape.group(1) if shape else body, body))
+    for (heading, key), rows in groups.items():
+        if len(rows) == 1:
+            lines.append(f"- {rows[0][0]} [{heading[3:]}] {rows[0][2][:200]}")
+            continue
+        reason, excerpt = key.split("|", 1)
+        lines.append(f"- {id_ranges([u for u, _, _ in rows])} [{heading[3:]}] {PENDING_MARK}（{reason}）"
+                     f"{(' ' + excerpt) if excerpt else ''}: " + ", ".join(t for _, t, _ in rows))
     print("\n".join(lines))
+
+
+# 未判断の行の形（`パス — 未判断（理由）` / `未判断: パス（理由） 「一致した行」`）。まとめて出すために分ける
+_UNDECIDED_SHAPE = re.compile(rf"^(?:{PENDING_MARK}: )?(.+?)(?: — {PENDING_MARK})?（([^（）]+)）\s*(「.*」)?$")
+
+
+def id_ranges(ids: list[str]) -> str:
+    """U1 U2 U3 U5 → U1-U3 U5"""
+    nums = sorted(int(u[1:]) for u in ids if u[1:].isdigit())
+    out, start = [], None
+    for i, n in enumerate(nums):
+        if start is None:
+            start = n
+        if i + 1 == len(nums) or nums[i + 1] != n + 1:
+            out.append(f"U{start}" if start == n else f"U{start}-U{n}")
+            start = None
+    return " ".join(out)
 
 
 MAX_OUTSIDE = 10
@@ -4425,8 +4470,20 @@ def outside_scope_hits(ctx: Ctx, terms: list[str]) -> list[str]:
         label = "" if repo == str(ctx.root.resolve()) else next(s.name for s in same) + ":"
         out += [label + rel for rel in sorted(found)
                 if not machine_owned(rel) and not any(in_scope(rel, s.scope) for s in same)
-                and not any(s.excluded(rel) for s in same)]
+                and not any(s.excluded(rel) for s in same) and not inner_side_owns(sides, Path(repo), rel)]
     return out
+
+
+def inner_side_owns(sides: list, repo: Path, rel: str) -> bool:
+    """同じリポジトリの中のフォルダを受け持つ側（`docs` を参照先にしたときなど）のファイルか。"""
+    full = (repo / rel).resolve()
+    for s in sides:
+        base = s.path.resolve()
+        if base != repo.resolve() and base in full.parents:
+            inner = full.relative_to(base).as_posix()
+            if (not s.scope or in_scope(inner, s.scope)) and not s.excluded(inner):
+                return True
+    return False
 
 
 def measure_plan(ctx: Ctx, bodies: dict[str, str], pending: Pending) -> tuple[list[str], list[str], int]:
@@ -5750,7 +5807,8 @@ def formats_plan_problems(ctx: Ctx, bodies: dict[str, str], pending: Pending) ->
                      + ", ".join(model_label(ctx, f["side"], m) for m in f["models"]) + "）")
         lines += [f"  - {h}" for h in f["headings"]]
     write_text(ctx.data / "formats.md", "\n".join(lines + (["- なし"] if not formats else []) + [""]))
-    body = bodies.get(GUIDES_HEADING, "")
+    # 手順の行（`— 当たるファイル:`）にパスが出てくるだけでは、書式の見本を挙げたことにしない
+    body = "\n".join(ln for ln in bodies.get(GUIDES_HEADING, "").splitlines() if " — 当たるファイル: " not in ln)
     for f in formats:
         names = [model_label(ctx, f["side"], m) for m in f["models"]]
         if f["side"] and len(ctx.refs) == 1:
@@ -6866,7 +6924,8 @@ def skill_review(ctx: Ctx, a: "Applied", log: str) -> tuple[list[str], set[str]]
     ctx.data.mkdir(parents=True, exist_ok=True)
     write_text(path, "\n".join(out))
     return (problems + tag("rules", [f"変えたファイルを、使うと決めたスキルの手順で見直していません（{DATA_DIRNAME}/{SKILL_REVIEW} の手順と差分を"
-                                     f"見比べて合わない箇所を直し、{DATA_DIRNAME}/apply.md に {APPLY_LOG_FORM} で書いてください）: "
+                                     f"見比べて合わない箇所を直し、{DATA_DIRNAME}/apply.md のその手順の行の「{APPLY_TODO}」を書き換える。"
+                                     f"行が無ければ {APPLY_LOG_FORM} で書いてください）: "
                                      + ", ".join(shown.get((key, label), label) for key, label, _, _, _ in missing)]),
             {label.strip("`") for _, label, _, _, _ in missing})
 
@@ -7258,7 +7317,7 @@ def print_apply_skills(ctx: Ctx, keys, files=(), full: bool = False) -> None:
     skeleton = [f"- `{n}` — {', '.join(side_label(ctx, k, r) for k, r in files) or '変えたファイル'}: {APPLY_TODO}"
                 for n in unique([n for _, n in apply_skills(ctx, keys)])]
     for key, g, rels in hits:
-        shown = guide_names(ctx, g, key)[0] if g.kind == "doc" else f"`{guide_names(ctx, g, key)[0]}`"
+        shown = guide_shown(ctx, g, key)
         skeleton.append("\n".join([f"- {shown} — {', '.join(side_label(ctx, key, r) for r in rels)}: {APPLY_TODO}",
                                    *[f"  - [ ] {item}" for item in guide_asks(ctx, g, key)]]))
     write_apply_skeleton(ctx, skeleton)
@@ -7525,6 +7584,9 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
                           and h.rel not in a.touched.get(h.key, set()) and not dev.unrelated_file(h.key, h.rel)
                           and not dev.waived(h.key, h.rel))
             if sure:
+                after = ctx.data / "impact-after.md"
+                write_text(after, (read_text(after) or "").rstrip() + "\n\n## 変えた文書の箇所から、グラフで必須につながる参照先のファイル\n\n"
+                           + "".join(f"- {p}\n" for p in sure))
                 problems.append(Problem("names", "変えた文書の箇所が、グラフで参照先のファイルに必須でつながっています。計画で扱っていません"
                                 f"（{NAMES_REF_HINT}）: " + ", ".join(sure)
                                 + f"（詳細: {DATA_DIRNAME}/impact-after.md）"))
@@ -8007,12 +8069,11 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
         lines += ["", "## 変えたあとに測った影響範囲", ""]
         proposed = listed_paths(ctx, a.bodies.get("## 自分の変更案", ""))
         for p in measured:
-            if p in proposed:   # 変更案で変えたファイル自身は、影響範囲として出さない
+            if p in proposed or p.startswith("("):   # 変更案で変えたファイル自身と「(見つからない)」は出さない
                 continue
-            mark = "直した" if p in a.own_touched else NO_CHANGE_MARK if p in waived else "未対応" \
-                if not p.startswith("(") else ""
+            mark = "直した" if p in a.own_touched else NO_CHANGE_MARK if p in waived else "未対応"
             if mark != NO_CHANGE_MARK:
-                lines.append(f"- {p}" + (f" — {mark}" if mark else ""))
+                lines.append(f"- {p} — {mark}")
         if len(lines) == impact_start + 3:
             del lines[impact_start:]
     tests_after = ctx.data / "tests-after.md"
@@ -8440,6 +8501,13 @@ def cmd_draft(ctx: Ctx, args: argparse.Namespace) -> int:
         if isinstance(filled, str):
             print(filled, file=sys.stderr)
             return 2
+        # 同じやりたいことを、もう立ててあれば重ねない（確かめ直した回が、前の回の計画をもう一度立てない）
+        ask = " ".join(ln.strip() for ln in (filled or {}).get("## やりたいこと", "").splitlines() if ln.strip())
+        same = [p for p in next_plans(ctx) if ask and plan_request(p) == ask]
+        if same:
+            print(f"同じやりたいことの計画を、もう立ててあります: {same[0].relative_to(ctx.root).as_posix()}（重ねて立てない）",
+                  file=sys.stderr)
+            return 1
         dest = new_plan_path(ctx.root / PLAN_DIR / NEXT_DIR, name)
         shutil.copyfile(MACHINE_DIR / "templates" / "plan.md", dest)
         if filled:
@@ -9022,12 +9090,18 @@ def brief_report(text: str) -> str:
             tail += ["", f"## {title}", "", *[ln for ln in sec[1:] if ln.strip() and not ln.startswith("どの") and "コミット" not in ln]]
             tail += [ln for ln in rest if "コミット" in ln]
             continue
-        done = [r for r in rows if " — 変えた" in r or " — 直した" in r]
-        left = [r for r in rows if r not in done and NO_CHANGE_MARK not in r and UNRELATED_MARK not in r]
+        done = [r for r in rows if " — 変えた" in r or " — 直した" in r or r.endswith("（直した）")]
+        stopped = [r for r in rows if r.endswith("（やめた）")]   # やめた回の「変えていない」は、見直すものではない
+        left = [r for r in rows if r not in done and r not in stopped and NO_CHANGE_MARK not in r and UNRELATED_MARK not in r]
         if not rows:
             out.append(f"- {title}: なし")
             continue
-        out.append(f"- {title}: 変えた {len(done)} 件" + (f"、ほか {len(left)} 件:" if left else ""))
+        if not done and not stopped:   # 変えたかを数えない一覧（つながっていない変更・変える段で変更不要としたもの）
+            left = rows
+            out.append(f"- {title}: {len(rows)} 件:")
+        else:
+            out.append(f"- {title}: 変えた {len(done)} 件" + (f"、やめて変えていない {len(stopped)} 件" if stopped else "")
+                       + (f"、ほか {len(left)} 件:" if left else ""))
         out += [f"  {r}" for r in left[:MAX_BRIEF]] + ([f"  - ほか {len(left) - MAX_BRIEF} 件（記録）"] if len(left) > MAX_BRIEF else [])
     return "\n".join(out + tail).rstrip()
 
@@ -9372,6 +9446,7 @@ REVIEW_KINDS = ("漏れ", "矛盾", "設計の不備")
 REVIEW_FREE_KINDS = (*REVIEW_KINDS, "その他")
 REVIEW_VERDICTS = ("問題なし", "問題", "判断できない")   # 「問題なし」を先に照らす（「問題」で始まるため）
 REVIEW_FREE = "自由レビュー"
+REVIEW_NO_ASKS = "OK やりたいこと 0 件"   # 検査の第 1 行。review/workflow.yaml の free の遷移がこの語で ahead を飛ばす
 _REVIEW_ANSWER = re.compile(r"^- (R\d+) (問題なし|問題|判断できない): (\S+) — (\S.*)$")
 _REVIEW_FREE_LINE = re.compile(r"^- (漏れ|矛盾|設計の不備|その他): (\S+) — (\S.*)$")
 _REVIEW_NONE = re.compile(r"^- なし: \S")
@@ -9719,6 +9794,7 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
     lines, free, _ = review_answers(ctx)
     groups: dict[str, list[str]] = {k: [] for k in (*REVIEW_FREE_KINDS, "判断できない")}
     asks: list[str] = [*state.get("lint_asks", []), *state.get("carried_asks", [])]
+    ask_ids: dict[str, list[str]] = {}   # やりたいことごとの答えの番号（ahead の `draft --from` に渡す。同じ根の番号も足す）
     answered = set()
 
     def ask_of(rest: list[str]) -> str:
@@ -9747,6 +9823,11 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
             groups[group].append(f"  - やりたいこと: {shown_ask(a)}")
             if not _REVIEW_SAME.match(a):   # 同じ根のものは、本流に渡すやりたいことに重ねない
                 asks.append(a)
+                ask_ids.setdefault(a, []).append(rid)
+            else:
+                for r in re.findall(r"R\d+", a.split("と同じ")[0]):
+                    if r in own:
+                        ask_ids.setdefault(own[r], []).append(rid)
     for block in free:
         head, *rest = block.split("\n")
         m = _REVIEW_FREE_LINE.match(head)
@@ -9756,7 +9837,11 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
                 groups[m.group(1)].append(f"  - やりたいこと: {shown_ask(a)}")
                 if not _REVIEW_SAME.match(a):
                     asks.append(a)
+                    ask_ids.setdefault(a, []).append(REVIEW_FREE)
     asks = list(dict.fromkeys(asks))
+
+    def with_ids(a: str) -> str:
+        return f"{a}（{', '.join(dict.fromkeys(ask_ids[a]))}）" if a in ask_ids else a
     out = [f"# レビューの結果（{time.strftime('%Y-%m-%d %H:%M')}。{len(state['targets'])} ファイル、"
            f"項目 {len(items)} 件）", "",
            "## 機械の点検（lint）", "", f"- {state.get('lint_counts', '動かしていない')}（全文: {DATA_DIRNAME}/lint.md）", ""]
@@ -9772,7 +9857,7 @@ def review_report(ctx: Ctx, state: dict) -> tuple[list[str], list[str]]:
     if state.get("carried_asks"):
         unseen.append(f"- 前の回から引き継いだやりたいこと: {len(state['carried_asks'])} 件（本流に渡すやりたいことに含める）")
     out += ["## 見なかったもの", "", *(unseen or ["- なし"]), "",
-            "## 本流に渡すやりたいこと", "", *([f"- {a}" for a in asks] or ["- なし"]), ""]
+            "## 本流に渡すやりたいこと", "", *([f"- {with_ids(a)}" for a in asks] or ["- なし"]), ""]
     counts = "、".join(f"{k} {sum(1 for x in groups[k] if x.startswith('- '))}" for k in groups)
     return [f"{'FOUND' if asks else 'OK'} レビュー: {counts}（全文: {DATA_DIRNAME}/review.md）", *out], asks
 
@@ -9861,7 +9946,12 @@ def cmd_review(ctx: Ctx, args: argparse.Namespace) -> int:
             for p in problems:
                 print(f"- {p}")
             return 1
-        print("OK 項目にすべて答えました" if args.part == "items" else "OK レビューの答えは決まった形です")
+        if args.part == "items":
+            print("OK 項目にすべて答えました")
+        elif not review_report(ctx, state)[1]:
+            print(f"{REVIEW_NO_ASKS}（レビューの答えは決まった形です。次の計画は立てない）")   # 立てる段を飛ばす（workflow.yaml）
+        else:
+            print("OK レビューの答えは決まった形です")
         return 0
     lines, _ = review_report(ctx, state)
     unfinished = review_problems(ctx, state, "all") if state["items"] else []   # 項目が無ければ答えるものも無い
@@ -10019,24 +10109,55 @@ def step_how(state: dict) -> str:
             "次の指示はその出力に出る")
 
 
-def step_print(ctx: Ctx, run_state: dict, wf: dict, base: Path) -> None:
+def step_print(ctx: Ctx, run_state: dict, wf: dict, base: Path, full: bool = False) -> None:
     """今のステートのアクションを、`{{名前}}` を埋めて出す。検査のやり直し中は、直す指示と検査の出力だけを出す
-    （同じアクションの全文を読み直させない）。"""
+    （同じアクションの全文を読み直させない）。この回で一度出した段に戻ったときは、埋めた値の行だけを出す。"""
     name = run_state["state"]
     state = wf["states"][name]
-    if run_state.get("retry"):
-        print(f"STATE {name}（検査のやり直し {run_state['tries']}/{state.get('check_retries')}）\n")
+    raw = read_text(base / state["action_file"]) or f"## [{name}: {state.get('description', '')}]\n"
+    fill = lambda t: re.sub(r"\{\{\s*(\w+)\s*\}\}", lambda m: str(run_state["context"].get(m.group(1), "") or ""), t)
+    seen = run_state.setdefault("seen", [])
+    if not full and run_state.get("retry"):
+        label = run_state.get("retry_label") or (f"検査のやり直し {run_state['tries']}/{state.get('check_retries')}"
+                                                 if run_state["tries"] else "未判断に答える")
+        print(f"STATE {name}（{label}）\n")
         print(f"## [{name}: 検査の指摘を直す]\n\n検査が通りませんでした。最初からやり直さず、指摘されたところだけを直してください"
               "（前の指示は読み直さなくてよい。読み込み・探した記録は残っています）。\n\n```text\n" + run_state["retry"] + "\n```\n")
         print("---")
         print(step_how(state))
         return
-    text = read_text(base / state["action_file"]) or f"## [{name}: {state.get('description', '')}]\n"
-    text = re.sub(r"\{\{\s*(\w+)\s*\}\}", lambda m: str(run_state["context"].get(m.group(1), "") or ""), text)
+    if not full and name in seen and len(raw) > STEP_SHORT_OVER:
+        # 練り直し・変え直しで同じ段に戻った。手順は会話に出してあるので、変わった値（答え・指摘）だけを出す
+        values = [fill(line) for line in raw.splitlines() if "{{" in line]
+        print(f"STATE {name}（もう一度）\n")
+        print(f"## [{name}: {state.get('description', '')}]\n\n前に出した、この段の指示のとおりに進めます（全文は "
+              f"`python3 {MACHINE_REL}/codd.py step --full`）。最初からやり直さず、次の答えを踏まえて直すところだけを直します。\n")
+        print("\n".join(values).rstrip() + "\n")
+        print("---")
+        print(step_how(state))
+        return
+    if name not in seen:
+        seen.append(name)
+        step_save(ctx, run_state)
     print(f"STATE {name}\n")
-    print(text.rstrip() + "\n")
+    print(fill(raw).rstrip() + "\n")
     print("---")
     print(step_how(state))
+
+
+STEP_SHORT_OVER = 3000   # これより長い指示は、同じ回で 2 度目からは値の行だけを出す
+
+
+STEP_JUDGE_ROUNDS = 5   # 「未判断」だけで落ちた検査を、やり直しの回数に数えずに出し直せる回数
+
+
+def step_only_pending(ctx: Ctx) -> bool:
+    """直前の検査の指摘が「未判断」だけか（judge で答えれば通る。人に訊くことではない）。"""
+    try:
+        problems = json.loads((ctx.data / "problems.json").read_text(encoding="utf-8")).get("problems", [])
+    except (OSError, ValueError, AttributeError):
+        return False
+    return bool(problems) and all(isinstance(p, dict) and p.get("kind") == "pending" for p in problems)
 
 
 def step_check(ctx: Ctx, check: dict) -> tuple[bool, str, str]:
@@ -10079,8 +10200,8 @@ def cmd_step(ctx: Ctx, args: argparse.Namespace) -> int:
     wf = load_workflow(base / "workflow.yaml")
     name = run_state["state"]
     state = wf["states"][name]
-    if args.output is None:   # 今の指示をもう一度出す（検査のやり直し中なら、直す指示と検査の出力）
-        step_print(ctx, run_state, wf, base)
+    if args.output is None:   # 今の指示をもう一度出す（検査のやり直し中なら、直す指示と検査の出力。--full で全文）
+        step_print(ctx, run_state, wf, base, full=args.full)
         return 0
     output = args.output.strip()
     words = [w.strip() for w in (state.get("output_validator") or "").partition(":")[2].split(",") if w.strip()]
@@ -10095,8 +10216,13 @@ def cmd_step(ctx: Ctx, args: argparse.Namespace) -> int:
     if state.get("check"):
         ok, first, full = step_check(ctx, state["check"])
         context["check_ok"], context["check_output"] = ("true" if ok else "false"), first
-        if not ok and run_state["tries"] < int(state.get("check_retries") or 0):
-            run_state["tries"] += 1
+        judging = not ok and step_only_pending(ctx) and run_state.get("judging", 0) < STEP_JUDGE_ROUNDS
+        if judging or (not ok and run_state["tries"] < int(state.get("check_retries") or 0)):
+            # 「未判断」を書き足しただけの検査は、いつもの流れ（判断して出し直す）なので、やり直しの回数に数えない
+            if judging:
+                run_state["judging"] = run_state.get("judging", 0) + 1
+            else:
+                run_state["tries"] += 1
             run_state["retry"] = full if len(full) <= STEP_CHECK_LIMIT else "…\n" + full[-STEP_CHECK_LIMIT:]
             step_save(ctx, run_state)
             step_print(ctx, run_state, wf, base)
@@ -10117,10 +10243,35 @@ def cmd_step(ctx: Ctx, args: argparse.Namespace) -> int:
     if max_steps and run_state["steps"] >= max_steps:
         print(f"段の数が上限（{max_steps}）に達しました。利用者に、ここまでの結果と、続けるかを確かめてください", file=sys.stderr)
         return 1
-    run_state.update(state=nxt, steps=run_state["steps"] + 1, tries=0, retry="")
+    run_state.update(state=nxt, steps=run_state["steps"] + 1, tries=0, judging=0, retry="", retry_label="")
+    auto = step_auto_apply(ctx) if run_state["machine"] == "codd" and nxt == "stuck" else ""
+    if auto:
+        # stuck の指示の 1. と同じ: 人の判断が要らない指摘だけなら訊かずに APPLY で戻る。
+        # 変える段の指示は会話に残っているので、全文ではなく指摘だけを出す
+        stuck = wf["states"]["stuck"]
+        context["last_output"] = context[stuck.get("output_key") or "choice"] = "APPLY\n" + auto
+        back = next((t["to"] for t in sorted((t for t in wf.get("transitions", []) if t.get("from") == "stuck"),
+                                              key=lambda t: t.get("priority", 0))
+                     if step_rule(t.get("condition_rule", ""), context)), None)
+        if back:
+            run_state.update(state=back, steps=run_state["steps"] + 1, retry=auto, retry_label="人の判断が要らない指摘を直す")
     step_save(ctx, run_state)
     step_print(ctx, run_state, wf, base)
     return 0
+
+
+def step_auto_apply(ctx: Ctx) -> str:
+    """advise が AUTO APPLY なら止めている理由を返す（それ以外は空）。"""
+    try:
+        proc = subprocess.run([sys.executable, str(ctx.root / MACHINE_REL / "codd.py"), "advise"], cwd=ctx.root,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+    out = proc.stdout.strip()
+    if not out.startswith("AUTO APPLY"):
+        return ""
+    reasons = re.search(r"^## 止めている理由\n(.*?)(?=^## |\Z)", out, re.S | re.M)
+    return (reasons.group(1) if reasons else out.partition("\n")[2]).strip()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -10188,6 +10339,7 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("output", nargs="?", help="今のステートの出力（第 1 行は答えの語）。無ければ今の指示をもう一度出す")
     st.add_argument("--start", metavar="依頼", help="流れを始める（本流は依頼、確かめる流れは何を確かめるか。空でもよい）")
     st.add_argument("--review", action="store_true", help="--start で確かめる流れ（codd-review）を始める")
+    st.add_argument("--full", action="store_true", help="今の段の指示を、全文で出し直す")
     rv = sub.add_parser("review", help="本流とは別のレビュー。見る項目を決めて 1 件ずつ示し、答えの形と根拠を確かめる（直さない）")
     rv.add_argument("step", choices=["start", "next", "verify", "report"],
                     help="start（点検して項目を決める）/ next（次の項目を示す）/ verify（答えを検査する）/ report（まとめる）")

@@ -1,6 +1,6 @@
 # codd-review — 確かめる。codd-agent の本流（変える）とは別で、コードも文書も直さない
 #
-#   start ─┬─ 項目あり → items ─[check]→ free ─[check]→ ahead ─[check]→ report
+#   start ─┬─ 項目あり → items ─[check]→ free ─[check]→ ahead ─[check]→ report（やりたいことが無ければ free → report）
 #          └─ 項目なし → report
 #
 # 会話では `codd.py step --review` がこの定義を読んで回す。各ステートの仕事は codd-agent の設計書（§5.10）にある。
@@ -62,5 +62,6 @@ transitions:
   - {from: start, to: report, condition_rule: "startswith:found:NONE", priority: 2}
   - {from: items, to: free, condition_rule: "equals:check_ok:true", priority: 1}
   - {from: items, to: report, condition_rule: "equals:check_ok:false", priority: 2}
-  - {from: free, to: ahead}
+  - {from: free, to: report, condition_rule: "startswith:check_output:OK やりたいこと 0 件", priority: 1}
+  - {from: free, to: ahead, priority: 2}
   - {from: ahead, to: report}
