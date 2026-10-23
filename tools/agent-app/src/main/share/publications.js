@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const store = require('../store');
+const { tailChars } = require('../text');
 const { appRecord, matches } = require('../sessionBrowser');
 const { MAX_TALK, KEEP_TALK } = require('./requester');
 
@@ -89,7 +90,7 @@ class Publications {
     const record = await this.read(id);
     let cached = this.screens.get(id);
     if (!cached || Date.now() - cached.at > 1000) {
-      cached = { at: Date.now(), promise: Promise.resolve(this.screen(this.require(id).sessionId)).then(text => String(text || '').slice(-120000)) };
+      cached = { at: Date.now(), promise: Promise.resolve(this.screen(this.require(id).sessionId)).then(text => tailChars(String(text || ''), 120000)) };
       this.screens.set(id, cached);
       while (this.screens.size > 10) this.screens.delete(this.screens.keys().next().value);
     }

@@ -656,7 +656,7 @@ function registerIpcHandlers(getWindow, options = {}) {
             request: String(task.entry && task.entry.prompt || task.description || ''),
             agentCli: actualAgent, model: actualModel, skillMode: p.skillMode || 'auto', skills: p.skills || [],
             artifacts: reuse.artifacts(answerText || stdout),
-            logText: String(answerText || stdout || stderr || '').split(/\r?\n/).slice(-60).join('\n').slice(-2000),
+            logText: terminalText.tailChars(String(answerText || stdout || stderr || '').split(/\r?\n/).slice(-60).join('\n'), 2000),
           }); } catch (err) { send(channel('run:line'), { requestId, machine, kind: 'stderr', line: `実行条件を保存できません: ${err.message}` }); }
         }
         send(channel('run:exit'), {

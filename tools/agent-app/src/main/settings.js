@@ -80,7 +80,7 @@ const UPDATE_INTERVALS = [0, 6, 24, 168];
 function update(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   return {
-    source: String(source.source || '').trim().slice(0, 500),
+    source: headChars(String(source.source || '').trim(), 500),
     onStartup: source.onStartup !== false,
     intervalHours: bounded(source.intervalHours, UPDATE_DEFAULTS.intervalHours, 0, 720),
   };
@@ -96,14 +96,14 @@ function audit(raw) {
   return {
     enabled: source.enabled !== false,
     intervalMinutes: bounded(source.intervalMinutes, AUDIT_DEFAULTS.intervalMinutes, 0, 1440),
-    shareRepo: String(source.shareRepo || '').trim().slice(0, 500),
+    shareRepo: headChars(String(source.shareRepo || '').trim(), 500),
     shareTokenEncrypted: String(source.shareTokenEncrypted || ''),
     skillRepo: String(source.skillRepo || ''),
     skillAgent: String(source.skillAgent || ''),
-    skillRepositoryPath: String(source.skillRepositoryPath || '').trim().slice(0, 1000),
+    skillRepositoryPath: headChars(String(source.skillRepositoryPath || '').trim(), 1000),
     issueForkEnabled: source.issueForkEnabled === true,
     pushToMain: Boolean(source.pushToMain),
-    configFile: String(source.configFile || '').trim().slice(0, 500),
+    configFile: headChars(String(source.configFile || '').trim(), 500),
     manualLimits: allocation.manualLimits(source.manualLimits),
   };
 }
@@ -144,7 +144,7 @@ function share(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   return {
     enabled: Boolean(source.enabled),
-    node: String(source.node || '').trim().slice(0, 60),
+    node: headChars(String(source.node || '').trim(), 60),
     passphrase: String(source.passphrase || ''),
     port: bounded(source.port, SHARE_DEFAULTS.port, 0, 65535),
     udp: source.udp !== false,

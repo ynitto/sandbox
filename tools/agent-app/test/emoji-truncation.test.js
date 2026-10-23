@@ -65,3 +65,14 @@ test('先頭・末尾の切り出しは絵文字の途中で切れない', () =>
   assert.ok(!lone.test(tailChars('😀'.repeat(3000), 2001)));
   assert.ok(!lone.test(headChars('😀'.repeat(300), 201)));
 });
+
+test('設定の文字列欄・実行履歴のログ末尾は絵文字の途中で切れない', () => {
+  const settings = require('../src/main/settings');
+  const out = settings.update({ source: '😀'.repeat(499) + '😀😀' });
+  assert.ok(!lone.test(out.source));
+  assert.strictEqual(Array.from(out.source).length, 500);
+  const allocation = require('../src/shared/allocation');
+  const a = allocation.normalize({ localModel: '😀'.repeat(159) + '😀😀' });
+  assert.ok(!lone.test(a.localModel));
+  assert.strictEqual(Array.from(a.localModel).length, 160);
+});
