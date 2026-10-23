@@ -139,8 +139,10 @@ MAX_REPO_SKILLS = 30
 # どのプロジェクトでも、あれば読む決まりのファイル（エージェント向けの約束・貢献の手引き）。codd.json の guides で足せる。
 RULE_FILES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md", ".github/copilot-instructions.md", "CONTRIBUTING.md")
 
+BEHAVIOR_HEADING = "## 振る舞いの変化"
 PLAN_HEADINGS = (
     "## やりたいこと",
+    BEHAVIOR_HEADING,
     "## 従う手順",
     "## 参照先の前提",
     "## 参照先の制約",
@@ -152,6 +154,8 @@ PLAN_HEADINGS = (
     "## テストの変更案",
     "## 今回やらないこと",
 )
+# 無くても「なし」と読む見出し（足す前の版のひな形で書いた計画・記録も読めるように）
+OPTIONAL_HEADINGS = (BEHAVIOR_HEADING,)
 # ひな形のまま（空）を「なし」と読まない見出し。やりたいことと変更は、書き忘れを「なし」と取り違えない。
 FILLED_HEADINGS = ("## やりたいこと", "## 自分の変更案", "## テストの変更案")
 CITED_IN_REFS = ("## 参照先の前提", "## 参照先の制約", "## 参照先のその他", "## ずれ")
@@ -3849,12 +3853,12 @@ def sections(text: str, headings: tuple[str, ...]) -> tuple[list[str], dict[str,
         m = re.search(rf"^{re.escape(heading)}\s*$", text, re.MULTILINE)
         if m:
             found.append((m.start(), heading, m.end()))
-        else:
+        elif heading not in OPTIONAL_HEADINGS:
             problems.append(Problem("shape", f"見出しがありません: {heading}"))
     found.sort()
     if [h for _, h, _ in found] != [h for h in headings if h in {f[1] for f in found}]:
         problems.append(Problem("shape", "見出しの順番がテンプレートと違います"))
-    bodies = {}
+    bodies = {h: "なし" for h in OPTIONAL_HEADINGS if h in headings}
     for _, heading, end in found:
         nxt = re.search(r"^## ", text[end:], re.MULTILINE)
         body = re.sub(r"<!--.*?-->", "", text[end:end + nxt.start()] if nxt else text[end:], flags=re.DOTALL)
@@ -4066,6 +4070,7 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     if problems:
         return problems
     problems += test_plan(ctx, bodies).problems
+    problems += behaviors(ctx, bodies)[1]
     problems += judgment_problems("## 影響範囲", bodies["## 影響範囲"])
     problems += [p for p in judgment_problems(TESTS_HEADING, bodies[TESTS_HEADING]) if "理由がありません" not in p]
     problems += rules_problems(ctx, bodies[GUIDES_HEADING])
@@ -5047,6 +5052,187 @@ def test_plan(ctx: Ctx, bodies: dict[str, str]) -> TestPlan:
             plan.change.update(("", rel) for rel in listed_paths(ctx, item, allow_new=True)
                                if run(["git", "cat-file", "-e", f"{ctx.own.diff_base}:{rel}"], ctx.root, GIT_TIMEOUT)[0] != 0)
     return plan
+
+
+@dataclass
+class Behavior:
+    """計画の「振る舞いの変化」の 1 行。確かめるテスト（側の名前。自分は ""、パス）と、再現を求めるか。"""
+    subject: str
+    undecided: str = ""          # 「未決定:」の後ろ（決まっていないこと）
+    repro: bool = False          # 「再現:」（変える前の中身で落ち、変えたあとに通るテスト）
+    key: str = ""
+    rel: str = ""
+    cases: tuple[str, ...] = ()  # テストのパスの後ろに `…` で添えたケースの名前（結果の id・題で絞る）
+
+
+_BEHAVIOR_TEST = re.compile(r"(確かめる|再現)\s*[:：]\s*(.+)$")
+_BEHAVIOR_BASIS = re.compile(r"根拠\s*[:：]\s*([^）)]+)")
+
+
+def behaviors(ctx: Ctx, bodies: dict[str, str]) -> tuple[list[Behavior], list[str]]:
+    """「振る舞いの変化」を読み、書き方・根拠・確かめるテストが実在するかを確かめる。意味の正しさは利用者が確認で見る。"""
+    body = bodies.get(BEHAVIOR_HEADING, "なし")
+    if is_none(body):
+        return [], []
+    listed = items(body)
+    if not listed:
+        return [], [Problem("shape", f"{BEHAVIOR_HEADING} は箇条書きにしてください（無ければ「なし」）")]
+    tests = test_plan(ctx, bodies).listed()
+    out: list[Behavior] = []
+    problems: list[str] = []
+    for item in listed:
+        subject, _, rest = item.partition(" — ")
+        b = Behavior(subject.strip())
+        m = re.search(r"未決定\s*[:：]\s*(.+)$", rest)
+        if m:
+            b.undecided = m.group(1).strip()
+            out.append(b)
+            continue
+        miss = [w for w in ("変更前", "変更後", "根拠") if w not in rest]
+        test = _BEHAVIOR_TEST.search(rest)
+        if not rest or miss or not test:
+            problems.append(Problem("shape", f"{BEHAVIOR_HEADING} は `- 対象 — 変更前: … → 変更後: …（根拠: パス）。"
+                                    f"確かめる: テストのパス`（不具合なら `再現:`、決まっていなければ `未決定:`）で書いてください: {item[:80]}"))
+            continue
+        basis = _BEHAVIOR_BASIS.search(rest).group(1) if _BEHAVIOR_BASIS.search(rest) else ""
+        cited = cited_refs(ctx, basis)
+        own = cited_own(ctx, basis)
+        if not cited.found and not own:
+            problems.append(Problem("shape", f"{BEHAVIOR_HEADING} の根拠に、実在するパスがありません: {item[:80]}"))
+        problems += tag("form", [f"{BEHAVIOR_HEADING} の根拠を直してください: {bad}" for bad in cited.bad])
+        for m_ in _CITE.finditer(basis):
+            rel = m_.group("path").removeprefix("./")
+            if rel in own and (bad := evidence_problem(ctx.root, rel, m_, baseline_text(ctx, "", rel))):
+                problems.append(Problem("form", f"{BEHAVIOR_HEADING} の根拠を直してください: {bad}"))
+        b.repro = test.group(1) == "再現"
+        target = test.group(2)
+        hits = [("", rel) for rel in cited_own(ctx, target, allow_new=True)] + sorted(cited_refs(ctx, target, allow_new=True).found)
+        # まだ無いテストは、テストの変更案で足すものだけ（綴りの誤りを「まだ無い」と取り違えない）
+        hits = [(k, rel) for k, rel in hits if (k, rel) in tests or (side_of(ctx, k).path / rel).is_file()]
+        if not hits:
+            problems.append(Problem("shape", f"{BEHAVIOR_HEADING} の「{test.group(1)}」に、あるテストか、テストの変更案で足す"
+                                    f"テストのパスを書いてください: {item[:80]}"))
+            continue
+        b.key, b.rel = hits[0]
+        b.cases = tuple(_BACKTICK.findall(target))
+        out.append(b)
+    return out, problems
+
+
+def evidence_rows(ctx: Ctx, key: str, since: float) -> tuple[bool, list[tuple[str, dict]]]:
+    """since のあとに書かれた evidence があるかと、その振る舞いの項目（テストのファイル, 項目）。"""
+    side = side_of(ctx, key)
+    wrote, rows = False, []
+    for pattern in evidence_patterns(ctx, key):
+        for path in sorted(side.path.glob(pattern)):
+            try:
+                if path.stat().st_mtime < since:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                continue
+            wrote = True
+            root = (path.parent / data["root"]).resolve() if isinstance(data.get("root"), str) else side.path
+            for item in data["items"]:
+                if isinstance(item, dict) and item.get("kind") == "behavior" and not is_output(item):
+                    rel = item_file(ctx, key, {**item, "_root": root})
+                    if rel:
+                        rows.append((rel, item))
+    return wrote, rows
+
+
+def behavior_result(ctx: Ctx, b: Behavior, since: float) -> str:
+    """振る舞いを確かめるテストの、この回の結果。対応するテストがある・動いた・通った、を分けて言う。"""
+    if b.undecided:
+        return f"未決定（{b.undecided}）。確かめていない"
+    test = ctx.config.get("test") if not b.key else ctx.ref(b.key).test
+    if not test:
+        return "テストを動かしていない（テストのコマンドが未設定）"
+    if not evidence_patterns(ctx, b.key):
+        return "テストのコマンドは通った（テストの結果（evidence）が無いので、このテストが動いたかは確かめていない）"
+
+    def statuses(after: float) -> set[str]:
+        return {str(item.get("status")) for rel, item in evidence_rows(ctx, b.key, after)[1]
+                if rel == b.rel and (not b.cases or any(c in f"{item.get('id')} {item.get('title')}" for c in b.cases))}
+    now = statuses(since)
+    if "failed" in now:
+        return "落ちた"
+    if now - {"skipped"}:
+        return "通った"
+    if now:
+        return "飛ばした"
+    return "この回の結果が無い（前の回の結果だけ）" if statuses(0) else "結果が無い（動いていない）"
+
+
+REPRO_NAME = "repro.json"   # 再現のテストを、変える前の中身で動かした結果（報告に出す）
+
+
+def reproduce(ctx: Ctx, b: Behavior) -> str:
+    """再現のテストを、変える前の中身に今のテストのファイルだけを入れて動かす。そのテストで落ちれば再現した。
+
+    変える前から通るなら再現していない。環境の理由で落ちたもの・どのテストで落ちたか分からないものは、再現したと言わない。
+    """
+    side = side_of(ctx, b.key)
+    test = ctx.config.get("test") if not b.key else ctx.ref(b.key).test
+    if not test:
+        return "確かめていない（テストのコマンドが未設定）"
+    stem = PurePosixPath(b.rel).stem
+    env = ""
+    failed = False
+    for _, argv in test_commands(test):
+        res = run_before(ctx, b.key, side, side.path, argv, overlay=[b.rel])
+        if res is None:
+            return "確かめられなかった（変える前の写しを作れない）"
+        code, out = res
+        if code == 0:
+            continue
+        failed = True
+        hit = next((ln.strip() for ln in out.splitlines() if _FAILURE_LINE.search(ln) and stem in ln), None)
+        if hit and not _ENV_FAILURE.search(hit):
+            return f"変える前の中身で、このテストが落ちた（{hit[:120]}）"
+        if _ENV_FAILURE.search(out):
+            env = " ".join(_ENV_FAILURE.search(out).group(0).split())[:120]
+    if not failed:
+        return "再現していない（変える前の中身でも通る）"
+    if env:
+        return f"確かめられなかった（変える前の写しで環境のエラー: {env}）"
+    return "確かめられなかった（変える前の中身でも落ちたが、このテストで落ちたかは出力から分からない）"
+
+
+def write_repro(ctx: Ctx, bodies: dict[str, str]) -> None:
+    found = {f"{b.key}:{b.rel}": reproduce(ctx, b) for b in behaviors(ctx, bodies)[0] if b.repro}
+    if found:
+        write_text(ctx.data / REPRO_NAME, json.dumps(found, ensure_ascii=False, indent=2) + "\n")
+    else:
+        (ctx.data / REPRO_NAME).unlink(missing_ok=True)
+
+
+def behavior_lines(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
+    """報告の「振る舞いの確かめ」。条件ごとに、確かめるテストと、この回の結果（再現も）を並べる。"""
+    found = behaviors(ctx, bodies)[0]
+    if not found:
+        return []
+    try:
+        since = (ctx.data / "before.json").stat().st_mtime
+    except OSError:
+        since = time.time()
+    try:
+        repro = json.loads((ctx.data / REPRO_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        repro = {}
+    rows = []
+    for b in found:
+        if b.undecided:
+            rows.append(f"- {b.subject} — {behavior_result(ctx, b, since)}")
+            continue
+        label = side_label(ctx, b.key, b.rel) + "".join(f" `{c}`" for c in b.cases)
+        row = f"- {b.subject} — {label}: {behavior_result(ctx, b, since)}"
+        if b.repro:
+            row += f"。再現: {repro.get(f'{b.key}:{b.rel}', '確かめていない')}"
+        rows.append(row)
+    return rows
 
 
 def impact_fixes(ctx: Ctx, bodies: dict[str, str]) -> set[str]:
@@ -6421,8 +6607,11 @@ def unlink_dependencies(links: list[Path]) -> None:
             pass
 
 
-def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tuple[int, str] | None:
-    """変える前の中身で argv を動かす。印が無い・worktree を作れないときは None。"""
+def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str],
+               overlay: list[str] = ()) -> tuple[int, str] | None:
+    """変える前の中身で argv を動かす。印が無い・worktree を作れないときは None。
+
+    overlay のファイルだけは今の中身を入れる（再現のテストを、直す前の実装に当てる）。"""
     try:
         before = json.loads((ctx.data / "before.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -6430,7 +6619,9 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
     snap = before.get("refs", {}).get(key, {}) if key else before.get("own", {})
     if not snap.get("head"):
         return None
-    cache_key = hashlib.sha256(json.dumps([key, snap, argv, str(cwd)], sort_keys=True).encode()).hexdigest()
+    added = {rel: now_hash(side, rel) for rel in overlay}
+    cache_key = hashlib.sha256(json.dumps([key, snap, argv, str(cwd), *([added] if added else [])],
+                                          sort_keys=True).encode()).hexdigest()
     try:
         cache = json.loads((ctx.data / BEFORE_RUNS_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -6454,6 +6645,10 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str]) -> tu
             elif (backup_dir(ctx, key) / rel).is_file():
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(backup_dir(ctx, key) / rel, dest)
+        for rel in overlay:
+            if (side.path / rel).is_file():
+                (tree / base / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(side.path / rel, tree / base / rel)
         result = run(argv, tree / cwd.resolve().relative_to(top), CHECK_TIMEOUT)
     except (ValueError, OSError):
         return None
@@ -6583,25 +6778,10 @@ UNCHECKED_NAME = "unchecked-tests.json"   # evidence が無く、動いたかを
 
 def ran_tests(ctx: Ctx, key: str, since: float) -> tuple[bool, dict[str, set[str]]]:
     """since のあとに書かれた evidence があるかと、テストのファイル → 振る舞いの状態の集まり。"""
-    side = side_of(ctx, key)
-    wrote, out = False, {}
-    for pattern in evidence_patterns(ctx, key):
-        for path in sorted(side.path.glob(pattern)):
-            try:
-                if path.stat().st_mtime < since:
-                    continue
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
-                continue
-            wrote = True
-            root = (path.parent / data["root"]).resolve() if isinstance(data.get("root"), str) else side.path
-            for item in data["items"]:
-                if isinstance(item, dict) and item.get("kind") == "behavior" and not is_output(item):
-                    rel = item_file(ctx, key, {**item, "_root": root})
-                    if rel:
-                        out.setdefault(rel, set()).add(str(item.get("status")))
+    wrote, rows = evidence_rows(ctx, key, since)
+    out: dict[str, set[str]] = {}
+    for rel, item in rows:
+        out.setdefault(rel, set()).add(str(item.get("status")))
     return wrote, out
 
 
@@ -7744,6 +7924,7 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if problems:
         return 1
     record_links(ctx, a)
+    write_repro(ctx, bodies)
     # 通ったときの中身を控える。report はこれと今を比べ、通ったあとに変わっていないかを確かめる。
     # 変えたファイルの git の blob も控え、record が記録に残す（lint がコミットされた中身と突き合わせる）。
     write_text(ctx.data / "applied.json",
@@ -8097,6 +8278,10 @@ def cmd_report(ctx: Ctx, args: argparse.Namespace) -> int:
             lines += extra
         if len(lines) == tests_start + 3:
             del lines[tests_start:]
+    checks = behavior_lines(ctx, a.bodies) if applied is not None else []
+    if checks:
+        lines += ["", "## 振る舞いの確かめ", "", *checks,
+                  "", "（テストが振る舞いを正しく確かめているかまでは見ていない。そこはレビューで見る）"]
     outputs = output_lines(ctx, replaced_files(ctx))
     if outputs:
         lines += ["", "## テストの出力から差し替えたファイル", "", *outputs]
@@ -8701,6 +8886,10 @@ def cmd_summary(ctx: Ctx, args: argparse.Namespace) -> int:
     # 計画で扱った（「今回やらないこと」に回したなど）ものは、もう確かめない
     planned_text = "\n".join(bodies.values())
     outside = [p for p in outside if p not in planned_text]
+    undecided = [b for b in behaviors(ctx, bodies)[0] if b.undecided]
+    if undecided:
+        lines += ["", "## 決まっていない振る舞い", "", *[f"- {b.subject} — {b.undecided}" for b in undecided],
+                  "", "どうするかを利用者に決めてもらう（決めたら計画に書いて練り直す。今回扱わないなら「今回やらないこと」へ）"]
     if outside:
         lines += ["", "## 受け持ちの外で、変わる名前が出てくるファイル", "", *[f"- {p}" for p in outside],
                   "", "一緒に直すかを確かめる（直すなら計画に足して練り直す）"]
@@ -8995,7 +9184,7 @@ def close_plan(ctx: Ctx, quiet: bool = False) -> str | None:
     stale = [p for p in sorted((ctx.root / PLAN_DIR).glob("*.md")) if p != ctx.plan]
     record = finalize_plan(ctx, result)
     for name in ("applied.json", APPLY_LOG, WORK_NAME, PASSED_PLAN, APPROVED_PLAN, PROBLEMS_NAME, LINKS_FOUND_NAME, ROLLED_BACK,
-                 UNRUN_NAME, UNRUN_OK_NAME, UNCHECKED_NAME):
+                 UNRUN_NAME, UNRUN_OK_NAME, UNCHECKED_NAME, REPRO_NAME):
         (ctx.data / name).unlink(missing_ok=True)   # 閉じた回の印を、次の回に持ち越さない
     clear_failed_tests(ctx)
     # 報告が出せなかった回（計画の検査を通る前にやめた回など）も、探した・読んだ記録を次の回に持ち越さない

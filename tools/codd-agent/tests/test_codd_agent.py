@@ -2098,6 +2098,88 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(len(plans), 1)    # 進めていた計画は捨てて置き直す（同じ時刻なら -2 が付く）
         self.assertEqual(plans[0].read_text(encoding="utf-8"), template)
 
+    # ------------------------------------------------------------ 振る舞いの変化（変更前・変更後と、確かめたこと）
+
+    def behavior_plan(self, behavior: str, own: str = "- src/app.py — `hello` が 1 を返すよう直す",
+                      tests: str = "- tests/test_app.py — `hello` が 1 を返すことを確かめるテストを足す") -> str:
+        return (PLAN_ALIGNED.replace("hello にログを足す。", "hello が 0 を返す不具合を直す。")
+                .replace("\n\n## 守る決まり", f"\n\n## 振る舞いの変化\n\n{behavior}\n\n## 守る決まり")
+                .replace("- src/app.py — `hello` の中でログを出す", own)
+                .replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）", tests))
+
+    REPRO_TEST = ("import sys, unittest\nsys.path.insert(0, '.')\nfrom src.app import hello\n\n\n"
+                  "class HelloTest(unittest.TestCase):\n    def test_hello(self):\n        self.assertEqual(hello(), 1)\n")
+
+    def test_behavior_lines_need_before_after_basis_and_a_test(self) -> None:
+        bad = {
+            "- hello の戻り値 — 1 を返すようにする": "変更前: … → 変更後: …",
+            "- hello の戻り値 — 変更前: 0 → 変更後: 1（根拠: docs/nothing.md）。確かめる: tests/test_app.py": "実在するパスがありません",
+            "- hello の戻り値 — 変更前: 0 → 変更後: 1（根拠: docs/api.md#nothing）。確かめる: tests/test_app.py": "見出し #nothing がありません",
+            "- hello の戻り値 — 変更前: 0 → 変更後: 1（根拠: docs/api.md#hello）。確かめる: tests/test_typo.py": "テストのパスを書いてください",
+        }
+        for line, want in bad.items():
+            self.write_plan(self.behavior_plan(line))
+            r = self.run_pa(self.impl, "verify-plan")
+            self.assertEqual(r.returncode, 1, line)
+            self.assertIn(want, r.stderr, line)
+        # 決まっていないことは計画を止めず、確認で利用者にはっきり訊く
+        self.write_plan(self.behavior_plan(
+            "- hello の戻り値 — 変更前: 0 → 変更後: 1（根拠: docs/api.md#hello）。確かめる: tests/test_app.py\n"
+            "- 負の数の扱い — 未決定: 引数を足したときに負の数を許すか"))
+        self.assert_plan_ok(ok=False)
+        r = self.run_pa(self.impl, "summary")
+        self.assertIn("## 決まっていない振る舞い\n\n- 負の数の扱い — 引数を足したときに負の数を許すか", r.stdout)
+
+    def test_report_shows_each_behavior_with_its_test_result(self) -> None:
+        commit(self.impl, {"src/app.py": "def hello():\n    return 0\n"}, "bug")
+        self.write_plan(self.behavior_plan(
+            "- hello の戻り値 — 変更前: 0 を返す → 変更後: 1 を返す（根拠: docs/api.md#hello）。確かめる: tests/test_app.py `test_hello`\n"
+            "- 負の数の扱い — 未決定: 引数を足したときに負の数を許すか"))
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests").mkdir()
+        (self.impl / "tests/test_app.py").write_text(self.REPRO_TEST, encoding="utf-8")
+
+        def writes(status: str) -> list[str]:
+            item = {"kind": "behavior", "id": "hello/test_hello", "title": "test_hello", "status": status,
+                    "file": "tests/test_app.py"}
+            return [sys.executable, "-c", "import json; json.dump({'version': 1, 'root': '..', 'items': ["
+                    + json.dumps(item) + "]}, open('results/ui-evidence.json', 'w'))"]
+        # evidence が無ければ、コマンドが通ったことだけを言う（このテストが動いたとは言わない）
+        self.set_config(self.impl, test=[sys.executable, "-c", "pass"])
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        report = self.report(self.impl).stdout
+        self.assertIn("## 振る舞いの確かめ\n\n- hello の戻り値 — tests/test_app.py `test_hello`: テストのコマンドは通った（テストの結果（evidence）が無いので",
+                      report)
+        self.assertIn("- 負の数の扱い — 未決定（引数を足したときに負の数を許すか）。確かめていない", report)
+        self.write_evidence([])
+        self.set_config(self.impl, test=writes("passed"))
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertIn("tests/test_app.py `test_hello`: 通った", self.report(self.impl).stdout)
+        # 前の回の結果しか無いものを、通ったと言わない
+        os.utime(self.impl / "results/ui-evidence.json", (0, 0))
+        self.assertIn("tests/test_app.py `test_hello`: この回の結果が無い（前の回の結果だけ）", self.report(self.impl).stdout)
+
+    def test_a_bug_fix_test_must_fail_before_the_change(self) -> None:
+        # 再現のテストは、変える前の中身に今のテストだけを入れて動かす。落ちれば再現した、通れば再現していないと報告する
+        commit(self.impl, {"src/app.py": "def hello():\n    return 0\n"}, "bug")
+        self.write_plan(self.behavior_plan(
+            "- hello の戻り値 — 変更前: 0 を返す → 変更後: 1 を返す（根拠: docs/api.md#hello）。再現: tests/test_app.py"))
+        self.assert_plan_ok()
+        self.set_config(self.impl, test=[sys.executable, "-m", "unittest", "discover", "-s", "tests"])
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests").mkdir()
+        (self.impl / "tests/test_app.py").write_text(self.REPRO_TEST, encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        report = self.report(self.impl).stdout
+        self.assertIn("再現: 変える前の中身で、このテストが落ちた（FAIL: test_hello (test_app.", report)
+        self.assertEqual(git(self.impl, "worktree", "list").count("\n"), 1)   # 一時的な worktree は残さない
+        # 変える前から通るテストは、再現したと言わない
+        (self.impl / "tests/test_app.py").write_text(self.REPRO_TEST.replace("hello(), 1", "1, 1"), encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertIn("再現: 再現していない（変える前の中身でも通る）", self.report(self.impl).stdout)
+
     def test_summary_points_to_the_plan_without_copying_it(self) -> None:
         # 確認では計画を要約せず、パスを示して利用者に読んでもらう（エージェントに要約を書き写させない）
         self.assertEqual(self.run_pa(self.impl, "summary").returncode, 1)
