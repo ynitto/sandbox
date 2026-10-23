@@ -69,11 +69,11 @@
 
    ```bash
    python3 .statemachine/codd/codd.py judge U3 U5-U9 --skip "表示だけで名前を使わない"
-   python3 .statemachine/codd/codd.py judge U4 --fix "`createOrder` の呼び出しを新しい引数に合わせる"
+   python3 .statemachine/codd/codd.py judge U4 --fix '`createOrder` の呼び出しを新しい引数に合わせる'
    ```
 
 
-計画は短く書く。変更不要の判断は検査通過時に内部の検査記録へ移され、計画書・要約・結果には載らない。
+計画は短く書く。変更不要の判断は検査通過時に内部の検査記録へ移され、計画書・結果には載らない。
 関係なしは共通の理由ごとにまとめる。変更や根拠の説明を見出し間で繰り返さない。
 
 **応答:** `caveman` の full で短く（利用者が解除したら従う）。待機中の実況はしない。`summary`・`record` の出力と出力形式は省かず、変えない。

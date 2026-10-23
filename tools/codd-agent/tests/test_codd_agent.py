@@ -2181,6 +2181,10 @@ class CoddTest(unittest.TestCase):
         self.assertIn("指摘されたところだけを直して", r.stdout)
         self.assertIn("## 未判断", r.stdout)
         self.assertNotIn("参照先を 3 つに分ける", r.stdout)
+        self.assertLess(r.stdout.index("NG 計画の検査"), r.stdout.index("## 未判断"))   # 判定が先、一覧があと
+        again = self.run_pa(self.impl, "step")   # 打ち直しても、直す指示と検査の出力が出る
+        self.assertIn("STATE plan（検査のやり直し 1/2）", again.stdout)
+        self.assertIn("## 未判断", again.stdout)
         (rid,) = self.pending_ids()
         self.run_pa(self.impl, "judge", rid, "--skip", "戻り値は同じ")
         r = self.run_pa(self.impl, "step", "OK")
@@ -2254,6 +2258,17 @@ class CoddTest(unittest.TestCase):
         self.assertIn("計画の記録: ", r.stdout)
         self.assertIn("- src/app.py — 変えた", (self.impl / PLAN).read_text(encoding="utf-8"))
 
+    def test_brief_report_counts_only_real_rows(self) -> None:
+        spec = importlib.util.spec_from_file_location("codd_for_brief", TOOL / "machine" / "codd.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(mod)
+        brief = mod.brief_report("# 結果\n\n- 変えたあとの検査: 通った\n\n## 自分（実装）\n\n- なし\n\n"
+                                 "## design（設計書）  /tmp/x\n\n- docs/api.md — 変えた\n- docs/b.md — まだ\n")
+        self.assertIn("- 自分（実装）: なし", brief)   # 「- なし」を 1 件と数えない
+        self.assertIn("- design（設計書）: 変えた 1 件、ほか 1 件:\n  - docs/b.md — まだ", brief)
+
     def test_ahead_plan_copies_the_ask_and_grounds_from_answers(self) -> None:
         (self.impl / ".codd/review").mkdir(parents=True)
         (self.impl / ".codd/review/answers.md").write_text(
@@ -2282,6 +2297,10 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(self.run_pa(self.impl, "retro", "--note", "wrong-name").returncode, 0)
         self.assertIn(" other", note.read_text(encoding="utf-8").splitlines()[-1])
         self.assertIn("、", note.read_text(encoding="utf-8").splitlines()[-1])
+        before = note.read_text(encoding="utf-8")
+        r = self.run_pa(self.impl, "retro", "--note", "wrong-name")   # 同じ回は重ねない
+        self.assertIn("もう起きた回に載っています", r.stdout)
+        self.assertEqual(note.read_text(encoding="utf-8"), before)
 
     @unittest.skipIf(os.name == "nt", "偽の uv を sh で作る")
     def test_install_puts_middleware_on_the_terminal_and_init_places_codd(self) -> None:
@@ -2661,7 +2680,7 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertEqual(r.returncode, 0, r.stderr)
         # 見本と守り方は決まっているので、検査が「従う手順」に書き足す（未判断にして判断させない）
-        self.assertIn("- design:docs/api.md — design:docs/api.md の書式の見本（見出し: hello）。見出しの並び・表の形・言い回しを保つ",
+        self.assertIn("- design:docs/api.md — 書式の見本（見出し: hello）。見出しの並び・表の形・言い回しを保つ",
                       (self.impl / PLAN).read_text(encoding="utf-8"))
         self.assertIn("  - ## hello", (self.impl / ".codd/formats.md").read_text(encoding="utf-8"))
         self.write_plan(PLAN_DRIFT)

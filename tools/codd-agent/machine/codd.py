@@ -4394,7 +4394,10 @@ def print_undecided(found: list[tuple[str, str]]) -> None:
         return
     lines = [f"\n## {PENDING_MARK}（`python3 {MACHINE_REL}/codd.py judge 番号… --skip \"理由\"` / `--fix \"直し方\"` / `--drop`）", "",
              *PENDING_HOW_LINES, ""]
-    for heading, item in found:
+    def order(entry: tuple[str, str]) -> int:
+        m = PENDING_ID.search(entry[1])
+        return int(m.group(1)) if m else 0
+    for heading, item in sorted(found, key=order):
         m = PENDING_ID.search(item)
         body = PENDING_ID.sub("", item).strip()
         lines.append(f"- {('U' + m.group(1)) if m else '（番号なし）'} [{heading[3:]}] {body[:200]}")
@@ -5758,9 +5761,10 @@ def formats_plan_problems(ctx: Ctx, bodies: dict[str, str], pending: Pending) ->
             key = ("format", f["side"], f["path"])
             if key not in pending.keys:
                 pending.keys.add(key)
+                target = side_label(ctx, f["side"], f["path"])
+                whose = "" if target == names[0] else f"{target} の"
                 pending.auto.setdefault(GUIDES_HEADING, []).append(
-                    f"- {names[0]} — {side_label(ctx, f['side'], f['path'])} の書式の見本（見出し: {heads or 'なし'}）。"
-                    "見出しの並び・表の形・言い回しを保つ")
+                    f"- {names[0]} — {whose}書式の見本（見出し: {heads or 'なし'}）。見出しの並び・表の形・言い回しを保つ")
     return []
 
 
@@ -8852,9 +8856,13 @@ def write_issue_note(ctx: Ctx, args: argparse.Namespace) -> int:
     path = ctx.root / PLAN_DIR / ISSUE_DIR / f"{name}.md"
     if path.is_file():
         lines = path.read_text(encoding="utf-8").splitlines()
-        lines = [f"{ln}、{run_label}" if ln.startswith("- 起きた回:") and run_label not in ln else ln for ln in lines]
+        rel = path.relative_to(ctx.root).as_posix()
+        if any(ln.startswith("- 起きた回:") and run_label in ln for ln in lines):
+            print(f"OK この回はもう起きた回に載っています: {rel}")
+            return 0
+        lines = [f"{ln}、{run_label}" if ln.startswith("- 起きた回:") else ln for ln in lines]
         write_text(path, "\n".join(lines) + "\n")
-        print(f"OK 課題メモの起きた回に足しました: {path.relative_to(ctx.root).as_posix()}（コミットしてよい）")
+        print(f"OK 課題メモの起きた回に足しました: {rel}（コミットしてよい）")
         return 0
     missing = [o for o, v in (("--title", args.title), ("--cause", args.cause), ("--where", args.where)) if not (v or "").strip()]
     if missing:
@@ -9008,17 +9016,18 @@ def brief_report(text: str) -> str:
     tail: list[str] = []
     for sec in sections_:
         title = re.sub(r"）\s+.+$", "）", sec[0][3:])   # 側の見出しの後ろの絶対パスは要らない
-        rows = [ln for ln in sec[1:] if ln.startswith("- ")]
+        rows = [ln for ln in sec[1:] if ln.startswith("- ") and ln.strip() != "- なし"]
         rest = [ln for ln in sec[1:] if ln.strip() and not ln.startswith("- ")]
         if title.startswith("次にやること"):
             tail += ["", f"## {title}", "", *[ln for ln in sec[1:] if ln.strip() and not ln.startswith("どの") and "コミット" not in ln]]
             tail += [ln for ln in rest if "コミット" in ln]
             continue
         done = [r for r in rows if " — 変えた" in r or " — 直した" in r]
-        left = [r for r in rows if r not in done and NO_CHANGE_MARK not in r and UNRELATED_MARK not in r
-                and r not in ("- なし",)]
-        line = f"- {title}: {len(rows)} 件" if not done else f"- {title}: 変えた {len(done)} 件"
-        out.append(line + (f"、ほか {len(left)} 件:" if left and done else ":" if left else ""))
+        left = [r for r in rows if r not in done and NO_CHANGE_MARK not in r and UNRELATED_MARK not in r]
+        if not rows:
+            out.append(f"- {title}: なし")
+            continue
+        out.append(f"- {title}: 変えた {len(done)} 件" + (f"、ほか {len(left)} 件:" if left else ""))
         out += [f"  {r}" for r in left[:MAX_BRIEF]] + ([f"  - ほか {len(left) - MAX_BRIEF} 件（記録）"] if len(left) > MAX_BRIEF else [])
     return "\n".join(out + tail).rstrip()
 
@@ -10011,9 +10020,17 @@ def step_how(state: dict) -> str:
 
 
 def step_print(ctx: Ctx, run_state: dict, wf: dict, base: Path) -> None:
-    """今のステートのアクションを、`{{名前}}` を埋めて出す。"""
+    """今のステートのアクションを、`{{名前}}` を埋めて出す。検査のやり直し中は、直す指示と検査の出力だけを出す
+    （同じアクションの全文を読み直させない）。"""
     name = run_state["state"]
     state = wf["states"][name]
+    if run_state.get("retry"):
+        print(f"STATE {name}（検査のやり直し {run_state['tries']}/{state.get('check_retries')}）\n")
+        print(f"## [{name}: 検査の指摘を直す]\n\n検査が通りませんでした。最初からやり直さず、指摘されたところだけを直してください"
+              "（前の指示は読み直さなくてよい。読み込み・探した記録は残っています）。\n\n```text\n" + run_state["retry"] + "\n```\n")
+        print("---")
+        print(step_how(state))
+        return
     text = read_text(base / state["action_file"]) or f"## [{name}: {state.get('description', '')}]\n"
     text = re.sub(r"\{\{\s*(\w+)\s*\}\}", lambda m: str(run_state["context"].get(m.group(1), "") or ""), text)
     print(f"STATE {name}\n")
@@ -10034,7 +10051,7 @@ def step_check(ctx: Ctx, check: dict) -> tuple[bool, str, str]:
     except OSError as exc:
         return False, f"検査を動かせません: {exc}", ""
     detail = proc.stderr.strip() or proc.stdout.strip()
-    full = "\n".join(x for x in (proc.stdout.strip(), proc.stderr.strip()) if x)
+    full = "\n\n".join(x for x in (proc.stderr.strip(), proc.stdout.strip()) if x)   # 判定（NG …）を先に、続けて一覧
     return proc.returncode == 0, detail.splitlines()[0].strip() if detail else "", full
 
 
@@ -10062,7 +10079,7 @@ def cmd_step(ctx: Ctx, args: argparse.Namespace) -> int:
     wf = load_workflow(base / "workflow.yaml")
     name = run_state["state"]
     state = wf["states"][name]
-    if args.output is None:   # 今の指示をもう一度出す
+    if args.output is None:   # 今の指示をもう一度出す（検査のやり直し中なら、直す指示と検査の出力）
         step_print(ctx, run_state, wf, base)
         return 0
     output = args.output.strip()
@@ -10080,14 +10097,9 @@ def cmd_step(ctx: Ctx, args: argparse.Namespace) -> int:
         context["check_ok"], context["check_output"] = ("true" if ok else "false"), first
         if not ok and run_state["tries"] < int(state.get("check_retries") or 0):
             run_state["tries"] += 1
+            run_state["retry"] = full if len(full) <= STEP_CHECK_LIMIT else "…\n" + full[-STEP_CHECK_LIMIT:]
             step_save(ctx, run_state)
-            if len(full) > STEP_CHECK_LIMIT:
-                full = "…\n" + full[-STEP_CHECK_LIMIT:]
-            print(f"STATE {name}（検査のやり直し {run_state['tries']}/{state['check_retries']}）\n")
-            print(f"## [{name}: 検査の指摘を直す]\n\n検査が通りませんでした。最初からやり直さず、指摘されたところだけを直してください"
-                  "（前の指示は読み直さなくてよい。読み込み・探した記録は残っています）。\n\n```text\n" + full + "\n```\n")
-            print("---")
-            print(step_how(state))
+            step_print(ctx, run_state, wf, base)
             return 0
         elif ok and full:
             print("検査: " + (full if len(full) <= 1500 else full[:1500] + "…") + "\n")
@@ -10105,7 +10117,7 @@ def cmd_step(ctx: Ctx, args: argparse.Namespace) -> int:
     if max_steps and run_state["steps"] >= max_steps:
         print(f"段の数が上限（{max_steps}）に達しました。利用者に、ここまでの結果と、続けるかを確かめてください", file=sys.stderr)
         return 1
-    run_state.update(state=nxt, steps=run_state["steps"] + 1, tries=0)
+    run_state.update(state=nxt, steps=run_state["steps"] + 1, tries=0, retry="")
     step_save(ctx, run_state)
     step_print(ctx, run_state, wf, base)
     return 0

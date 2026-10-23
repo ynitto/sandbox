@@ -293,7 +293,7 @@ codd は消さない）。計画の記録と同じく、コミットして共有
 
 ```bash
 python3 .statemachine/codd/codd.py step            # 今の段の指示をもう一度出す（step "出力" で次へ進める）
-python3 .statemachine/codd/codd.py judge U3 --skip 理由   # 計画の検査が出した未判断の項目に答える（--fix 直し方 / --drop 理由）
+python3 .statemachine/codd/codd.py judge U3 --skip 理由   # 計画の検査が出した未判断の項目に答える（--fix 直し方 / --drop で行を消す）
 python3 .statemachine/codd/codd.py show            # 参照先の一覧、守る決まり、段階ごとに使うスキルと道具
 python3 .statemachine/codd/codd.py show --phase apply
 python3 .statemachine/codd/codd.py explore --term 語   # 参照先を探す（--ref 名前 で絞る）
@@ -869,7 +869,7 @@ GitHub Copilot などは 1 回の応答の長さに上限があり、長い計�
 （変えたあとの検査が変更不要と読めず、直していないファイルとして落ちるため）。
 
 測って見つかったのに計画に無いファイルは、計画の検査が「未判断」の行として `[U3]` のような番号つきで書き足す。
-エージェントは行を書き直さず、`codd.py judge U3 --skip 理由`（変更不要・関係なし）、`--fix 直し方`、`--drop 理由` で答える。
+エージェントは行を書き直さず、`codd.py judge U3 --skip 理由`（変更不要・関係なし）、`--fix 直し方`、`--drop`（根拠に書いたあとで行を消す）で答える。
 書式の見本と当たった手順（guides）の行は、判断が要らないので、計画の検査が「従う手順」に書き足す。
 
 利用者が読む計画書・終了時の結果には、変更不要の項目を載せない。
