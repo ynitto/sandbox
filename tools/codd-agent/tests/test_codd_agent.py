@@ -2037,6 +2037,8 @@ class CoddTest(unittest.TestCase):
         (self.impl / "src/new.py").write_text("n = 1\n", encoding="utf-8")
         (self.impl / "src/gone.py").unlink()
         (self.design / "docs/api.md").write_text("変えた\n", encoding="utf-8")
+        git(self.impl, "add", "src")   # 途中でステージした変更も中止する
+        git(self.design, "add", "docs")
         r = self.run_pa(self.impl, "rollback")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("変える前に戻しました: 5 files", r.stdout)
@@ -2045,12 +2047,42 @@ class CoddTest(unittest.TestCase):
         self.assertFalse((self.impl / "src/new.py").exists())
         self.assertEqual((self.impl / "src/gone.py").read_text(encoding="utf-8"), "g = 1\n")
         self.assertIn("hello は 1 を返す", (self.design / "docs/api.md").read_text(encoding="utf-8"))
+        self.assertEqual(git(self.impl, "diff", "--cached"), "")
+        self.assertEqual(git(self.design, "diff", "--cached"), "")
         # 途中でコミットされたら、戻さずに知らせる。
         (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
         git(self.impl, "commit", "-q", "-am", "mid")
         r = self.run_pa(self.impl, "rollback")
         self.assertEqual(r.returncode, 1)
         self.assertIn("途中でコミットされた", r.stderr)
+
+    def test_rollback_preserves_preexisting_index_and_worktree(self) -> None:
+        staged = "def hello():\n    return 1\n# staged before planning\n"
+        working = staged + "# unstaged before planning\n"
+        (self.impl / "src/app.py").write_text(staged, encoding="utf-8")
+        git(self.impl, "add", "src/app.py")
+        (self.impl / "src/app.py").write_text(working, encoding="utf-8")
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        git(self.impl, "add", "src/app.py")
+        r = self.run_pa(self.impl, "rollback")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(git(self.impl, "show", ":src/app.py"), staged)
+        self.assertEqual((self.impl / "src/app.py").read_text(encoding="utf-8"), working)
+
+    def test_rollback_detects_an_index_only_change(self) -> None:
+        original = (self.impl / "src/app.py").read_text(encoding="utf-8")
+        (self.impl / "src/app.py").write_text(original + "# staged before\n", encoding="utf-8")
+        git(self.impl, "add", "src/app.py")
+        (self.impl / "src/app.py").write_text(original, encoding="utf-8")
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        git(self.impl, "add", "src/app.py")   # 作業ツリーの中身は変わらない
+        r = self.run_pa(self.impl, "rollback")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(git(self.impl, "show", ":src/app.py"), original + "# staged before\n")
+        self.assertEqual((self.impl / "src/app.py").read_text(encoding="utf-8"), original)
 
     # ------------------------------------------------------------ リポジトリのスキル・カスタムエージェント
 

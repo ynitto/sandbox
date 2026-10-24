@@ -1281,9 +1281,18 @@ def stamp(repo: Path) -> str:
 def _stamp(repo: Path) -> str:
     h = hashlib.sha256(f"{head(repo)}\n".encode())
     # マシンのファイル（計画など）は数えない。計画を書き直すたびにグラフを作り直さないように。
-    h.update(diff_without(run(["git", "diff", "HEAD", "--", "."], repo, GIT_TIMEOUT)[1], machine_owned).encode())
-    untracked = [p for p in run(["git", "ls-files", "--others", "--exclude-standard", "--", "."],
-                                repo, GIT_TIMEOUT)[1].splitlines() if p and not machine_owned(p)]
+    has_head = run(["git", "rev-parse", "--verify", "HEAD"], repo, GIT_TIMEOUT)[0] == 0
+    diffs = [["git", "diff", "HEAD", "--", "."]] if has_head else [
+        ["git", "diff", "--cached", "--", "."], ["git", "diff", "--", "."]]
+    for argv in diffs:
+        rc, out = run(argv, repo, GIT_TIMEOUT)
+        if rc != 0:
+            raise CoddError(f"{repo} で git diff が失敗しました（終了コード {rc}）: {out.strip()[:300]}")
+        h.update(diff_without(out, machine_owned).encode())
+    rc, out = run(["git", "ls-files", "-z", "--others", "--exclude-standard", "--", "."], repo, GIT_TIMEOUT)
+    if rc != 0:
+        raise CoddError(f"{repo} で git ls-files が失敗しました（終了コード {rc}）: {out.strip()[:300]}")
+    untracked = [p for p in out.split("\0") if p and not machine_owned(p)]
     for name in sorted(untracked):
         h.update(name.encode())
         try:
@@ -1311,17 +1320,41 @@ def head(repo: Path) -> str:
 
 def dirty_files(side: Side) -> dict[str, str]:
     """scope の中の作業中の変更・未追跡のファイル → 中身のハッシュ（消えていれば "deleted"）。"""
-    out = run(["git", "status", "--porcelain", "--untracked-files=all", *side.pathspec()],
-              side.path, GIT_TIMEOUT)[1]
+    rc, out = run(["git", "status", "--porcelain", "-z", "--untracked-files=all", *side.pathspec()],
+                  side.path, GIT_TIMEOUT)
+    if rc != 0:
+        raise CoddError(f"{side.path} で git status が失敗しました（終了コード {rc}）: {out.strip()[:300]}")
     files = {}
-    for line in out.splitlines():
-        path = line[3:].split(" -> ")[-1].strip('"')
-        if not path or not side.has(path):
+    records = iter(out.split("\0"))
+    for record in records:
+        if not record:
             continue
-        try:
-            files[path] = hashlib.sha256((side.path / path).read_bytes()).hexdigest()
-        except OSError:
-            files[path] = "deleted"
+        status, path = record[:2], record[3:]
+        # -z は改名先、改名前の順。元のパスの削除も変更として残す。
+        source = next(records, "") if "R" in status or "C" in status else ""
+        if source and "R" in status and side.has(source):
+            files[source] = now_hash(side, source)
+        if path and side.has(path):
+            files[path] = now_hash(side, path)
+    return files
+
+
+def index_files(side: Side) -> dict[str, list[str]]:
+    """ステージのパス → [モード, blob]。作業ツリーとは別に控え、rollback で元のステージを保つ。"""
+    rc, out = run(["git", "ls-files", "--stage", "-z", *side.pathspec()], side.path, GIT_TIMEOUT)
+    if rc != 0:
+        raise CoddError(f"{side.path} でステージの取得に失敗しました: {out.strip()[:300]}")
+    files = {}
+    for record in out.split("\0"):
+        if not record:
+            continue
+        metadata, rel = record.split("\t", 1)
+        if not side.has(rel):
+            continue
+        mode, blob, stage = metadata.split()
+        if stage != "0":
+            raise CoddError(f"競合を解消してからやり直してください: {side.path / rel}")
+        files[rel] = [mode, blob]
     return files
 
 
@@ -1338,9 +1371,9 @@ def changed_since(side: Side, before: dict) -> set[str]:
     if before_head and head(side.path) != before_head:
         # 途中でコミットされても取りこぼさない。比べるのは控えたときの中身（作業中だったものはその控え、
         # ほかは控えたときのコミット）と今の作業中の中身。コミットしたあと作業中に戻したファイルは、変わっていない。
-        rc, out = run(["git", "diff", "--name-only", before_head, "HEAD", *side.pathspec()], side.path, GIT_TIMEOUT)
+        rc, out = run(["git", "diff", "--no-renames", "--name-only", "-z", before_head, "HEAD", *side.pathspec()], side.path, GIT_TIMEOUT)
         if rc == 0:
-            for p in set(out.splitlines()) | changed:
+            for p in {name for name in out.split("\0") if name} | changed:
                 if p in before_files:
                     if now_hash(side, p) != before_files[p]:
                         changed.add(p)
@@ -6097,6 +6130,7 @@ def write_baseline(ctx: Ctx) -> None:
     state = {"plan": plan_rel(ctx), "own": snapshot(ctx.own), "refs": {r.name: snapshot(r) for r in ctx.refs}}
     for key, side in all_sides(ctx):
         snap = state["refs"][key] if key else state["own"]
+        snap["index"] = index_files(side)
         for rel, digest in snap["files"].items():
             if digest != "deleted":
                 dest = backup_dir(ctx, key) / rel
@@ -7391,15 +7425,26 @@ def doc_text(repo: Path, spec: str) -> str | None:
     if text is None or not anchor:
         return text
     lines = text.splitlines()
-    heads = [(i, m) for i, line in enumerate(lines) if (m := re.match(r"^(#+)\s+(.*?)\s*#*\s*$", line))]
+    heads = []
+    fence = None
+    for i, line in enumerate(lines):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence is not None:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = None
+            continue
+        if marker and (marker[1][0] != "`" or "`" not in marker[2]):
+            fence = marker[1]
+            continue
+        if m := re.match(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$", line):
+            heads.append((i, m))
     # 見出しの文字どおりか、GitHub のリンクのアンカー（`#table-format`。根拠の `パス#見出し` と同じ読み方）
     hit = next(((i, m) for i, m in heads if m.group(2) == anchor), None) \
         or next(((i, m) for i, m in heads if slug(m.group(2)) == slug(anchor.replace("-", " "))), None)
     if hit is None:
         return None
     i, level = hit[0], len(hit[1].group(1))
-    end = next((j for j in range(i + 1, len(lines))
-                if (h := re.match(r"^(#+)\s", lines[j])) and len(h.group(1)) <= level), len(lines))
+    end = next((j for j, h in heads if j > i and len(h.group(1)) <= level), len(lines))
     return "\n".join(lines[i:end]).strip() + "\n"
 
 
@@ -8710,7 +8755,12 @@ def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
             print(f"{key or '自分'} は途中でコミットされたので戻せません（git で戻してください）",
                   file=sys.stderr)
             return 1
-        plan += [(key, side, rel, snap) for rel in sorted(changed_since(side, snap))]
+        changed = changed_since(side, snap)
+        if "index" in snap:
+            current_index = index_files(side)
+            changed |= {rel for rel in set(current_index) | set(snap["index"])
+                        if current_index.get(rel) != snap["index"].get(rel)}
+        plan += [(key, side, rel, snap) for rel in sorted(changed)]
     restored = []
     for key, side, rel, snap in plan:
         target = side.path / rel
@@ -8726,6 +8776,13 @@ def cmd_rollback(ctx: Ctx, args: argparse.Namespace) -> int:
             target.write_bytes(blob)
         elif target.is_file():
             target.unlink()   # 変えたあとに足したファイル（か、変える前にも消えていたファイル）
+        if "index" in snap:
+            entry = snap["index"].get(rel)
+            argv = (["git", "update-index", "--add", "--cacheinfo", *entry, rel] if entry else
+                    ["git", "update-index", "--force-remove", "--", rel])
+            rc, out = run(argv, side.path, GIT_TIMEOUT)
+            if rc != 0:
+                raise CoddError(f"ステージを戻せませんでした: {side_label(ctx, key, rel)} — {out.strip()[:300]}")
         restored.append(side_label(ctx, key, rel))
     for name in ("applied.json", PROBLEMS_NAME):
         (ctx.data / name).unlink(missing_ok=True)
@@ -9493,8 +9550,10 @@ LINT_SINCE = "30 days ago"
 
 
 def tracked(side: Side) -> list[str]:
-    rc, out = run(["git", "-c", "core.quotepath=false", "ls-files", *side.pathspec()], side.path, GIT_TIMEOUT)
-    return [ln for ln in out.splitlines() if side.has(ln)] if rc == 0 else []
+    rc, out = run(["git", "ls-files", "-z", *side.pathspec()], side.path, GIT_TIMEOUT)
+    if rc != 0:
+        raise CoddError(f"{side.path} で git ls-files が失敗しました（終了コード {rc}）: {out.strip()[:300]}")
+    return [rel for rel in out.split("\0") if rel and side.has(rel)]
 
 
 def lint_paths(ctx: Ctx) -> list[tuple[str, str]]:
