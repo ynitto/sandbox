@@ -23,7 +23,7 @@ docs/ も無ければ（--ref-scope も渡さなければ）、文書を持た�
 
 `<リポジトリ>/.statemachine/codd/` に machine/ の中身を写し、codd.json を書く。
 既に置いてあれば定義とスクリプトを入れ替え（古いファイルは消す）、codd.json は上書きしない。--side / --ref / --scope /
---ref-scope / --exclude / --ref-exclude / --check / --test / --evidence を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
+--ref-scope / --exclude / --ref-exclude / --format / --check / --test / --evidence を渡したときだけ、その項目を書き換える（--ref は参照先の一覧を入れ替えるが、同じ名前の
 参照先に手で書いた guides・scope・exclude などは残す）。前の版の書き方（skills・tools・rules・ref_path）は guides と refs に書き換える。従う手順（決まり・スキル・道具）は codd.json の guides を手で書く。
 `.codd/`（探した結果・検査の記録・変える前の写し・graphify のグラフ）は .gitignore に足す（--no-gitignore で足さない）。
 graphify の索引に関係の無いものが入らないよう、.graphifyignore にこのマシン・計画の記録（`.plans/`）・
@@ -35,6 +35,7 @@ kiro-cli と GitHub Copilot 向けに、必ずこのマシンで変えるカス�
 変える段を受け持つサブエージェント `codd-apply` も並べて書く（codd.json の subagent が true のときに codd が呼ぶ）。
 文書の意味を抜き出す束を受け持つサブエージェント `codd-graph` も書く（graphify が {"semantic": "session"} のときに呼ぶ）。
 --check "コマンド" で、変えたあとに実行する検査コマンド（codd.json の check）を書く（繰り返すと書いた順に動かす）。
+--format "コマンド" で、変えたあと検査の前に動かす整形コマンド（codd.json の format）を書く（`{files}` は変えたファイルの並び）。
 --evidence "パス" で結果ファイルの一覧を指定する（繰り返し可。"" で扱わない）。検査ツールの設定は自動検出しない。
 --test "コマンド" で、変えたあとに実行するテストのコマンド（codd.json の test）を書く（繰り返すと書いた順に動かす。"" で消す）。
 """
@@ -132,7 +133,7 @@ def migrate_legacy(config: dict) -> list[str]:
 def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore: bool = True,
             scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
             agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | list[str] | None = None,
-            test: str | list[str] | None = None, exclude: list[str] | None = None,
+            test: str | list[str] | None = None, format: str | list[str] | None = None, exclude: list[str] | None = None,
             ref_excludes: list[str] | None = None, evidence: list[str] | None = None) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
@@ -219,7 +220,7 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
     for name, patterns in grouped.items():
         entry = next(r for r in config["refs"] if ref_name(r) == name)
         entry["exclude"] = patterns
-    for key, value in (("test", test), ("check", check)):
+    for key, value in (("format", format), ("test", test), ("check", check)):
         if value is None:
             continue
         commands = [argv for argv in map(shlex.split, [value] if isinstance(value, str) else value) if argv]
@@ -425,6 +426,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-agents", action="store_true", help="カスタムエージェントを書かない")
     p.add_argument("--check", action="append", metavar="コマンド",
                    help="変えたあとに実行する検査コマンド（例: \"npm run lint\"）。繰り返すと書いた順に動かす。\"\" で消す")
+    p.add_argument("--format", action="append", metavar="コマンド",
+                   help="変えたあと、検査の前に動かす整形コマンド（例: \"npx prettier --write --ignore-unknown {files}\"）。"
+                        "{files} は変えたファイルの並びに置き換わる。繰り返すと書いた順に動かす。\"\" で消す")
     p.add_argument("--evidence", action="append", metavar="パス",
                    help='結果ファイルのパス・glob（繰り返し可。一覧を入れ替える。既定は扱わない。"" で消す）')
     p.add_argument("--test", action="append", metavar="コマンド",
@@ -433,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     dest = init_repo(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
                    scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
-                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test,
+                   agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test, format=args.format,
                    exclude=args.exclude, ref_excludes=args.ref_exclude, evidence=args.evidence)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8-sig"))
     print(f"置きました: {dest}")
@@ -457,9 +461,10 @@ def main(argv: list[str] | None = None) -> int:
         if found:
             print("  人の承認が要るファイル（protect）: 未設定。テストの設定・CI・依存の宣言を、テストを通すために"
                   "変えさせないなら codd.json に書く: \"protect\": " + json.dumps(found, ensure_ascii=False))
-    check = config.get("check") or []
-    for argv in [check] if check and isinstance(check[0], str) else check:
-        print("  変えたあとの検査: " + " ".join(argv))
+    for key, word in (("format", "整形"), ("check", "検査")):
+        commands = config.get(key) or []
+        for argv in [commands] if commands and isinstance(commands[0], str) else commands:
+            print(f"  変えたあとの{word}: " + " ".join(argv))
     if not args.no_agents:
         print("  カスタムエージェント codd: " + "、".join(
             {"kiro": "kiro-cli chat --agent codd", "copilot": "Copilot のエージェント選択で codd"}[k]
