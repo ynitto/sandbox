@@ -2116,6 +2116,7 @@ class CoddTest(unittest.TestCase):
             "- hello の戻り値 — 変更前: 0 → 変更後: 1（根拠: docs/nothing.md）。確かめる: tests/test_app.py": "実在するパスがありません",
             "- hello の戻り値 — 変更前: 0 → 変更後: 1（根拠: docs/api.md#nothing）。確かめる: tests/test_app.py": "見出し #nothing がありません",
             "- hello の戻り値 — 変更前: 0 → 変更後: 1（根拠: docs/api.md#hello）。確かめる: tests/test_typo.py": "テストのパスを書いてください",
+            "- hello の戻り値 — 変更前: 1 → 変更後: 1（根拠: docs/api.md#hello）。確かめる: tests/test_app.py": "変更前と変更後が同じです",
         }
         for line, want in bad.items():
             self.write_plan(self.behavior_plan(line))
@@ -2129,6 +2130,60 @@ class CoddTest(unittest.TestCase):
         self.assert_plan_ok(ok=False)
         r = self.run_pa(self.impl, "summary")
         self.assertIn("## 決まっていない振る舞い\n\n- 負の数の扱い — 引数を足したときに負の数を許すか", r.stdout)
+
+    def test_behavior_lines_allow_none_with_a_reason_no_basis_and_a_planned_doc(self) -> None:
+        # 文書だけを合わせる回は「なし（理由）」。根拠は任意で、この回で書く文書も変更案に挙げていれば根拠にできる
+        for line in ("なし（文書だけを直す）",
+                     "- hello の戻り値 — 変更前: 0 → 変更後: 1。確かめる: tests/test_app.py"):
+            self.write_plan(self.behavior_plan(line))
+            r = self.run_pa(self.impl, "verify-plan")
+            self.assertNotIn("振る舞いの変化", r.stdout + r.stderr, line)
+        plan = self.behavior_plan("- hello の戻り値 — 変更前: 0 → 変更後: 1（根拠: docs/hello-v2.md#hello）。確かめる: tests/test_app.py")
+        self.write_plan(plan)
+        self.assertIn("実在するパスがありません", self.run_pa(self.impl, "verify-plan").stderr)
+        self.write_plan(plan.replace("## 参照先の変更案\n\nなし", "## 参照先の変更案\n\n- docs/hello-v2.md — `hello` の仕様を書く"))
+        self.assertNotIn("実在するパスがありません", self.run_pa(self.impl, "verify-plan").stderr)
+
+    def test_reproduce_compares_failures_with_the_unchanged_before_run(self) -> None:
+        # node の TAP のように、失敗の行にファイル名が出ないテストでも、変える前の写しとの差で見分ける
+        commit(self.impl, {"src/app.py": "def hello():\n    return 0\n",
+                           "run_tests.py": ("import glob, runpy, sys\nsys.path.insert(0, '.')\nbad = 0\n"
+                                            "for i, f in enumerate(sorted(glob.glob('tests/check_*.py')), 1):\n"
+                                            "    try:\n        runpy.run_path(f)\n        print(f'ok {i} - {f}')\n"
+                                            "    except AssertionError as e:\n        print(f'not ok {i} - {e}')\n        bad = 1\n"
+                                            "sys.exit(bad)\n")}, "bug")
+        self.write_plan(self.behavior_plan(
+            "- hello の戻り値 — 変更前: 0 を返す → 変更後: 1 を返す。再現: tests/check_hello.py",
+            tests="- tests/check_hello.py — `hello` が 1 を返すことを確かめるテストを足す"))
+        self.assert_plan_ok()
+        self.set_config(self.impl, test=[sys.executable, "run_tests.py"])
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests").mkdir()
+        (self.impl / "tests/check_hello.py").write_text(
+            "from src.app import hello\nassert hello() == 1, 'returns one'\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("再現: 再現した（変える前の中身では落ちた: not ok 1 - returns one）", self.report(self.impl).stdout)
+        # 名前を足した回は、変える前の中身ではテストが読み込みで落ちる。それを再現したとは言わない
+        (self.impl / "tests/check_hello.py").write_text(
+            "from src.app import hello, greet\nassert hello() == 1, 'returns one'\n", encoding="utf-8")
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1\n\n\ndef greet():\n    return 2\n", encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertIn("再現: 確かめられなかった（変える前の中身では、テストが読み込みで落ちた: ImportError", self.report(self.impl).stdout)
+
+    def test_stopping_while_changing_skips_the_after_change_check(self) -> None:
+        # 変える段の途中で利用者がやめたら、変えたあとの検査で測らず、戻すか残すかだけを訊く
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('a')\n    return 1\n", encoding="utf-8")
+        self.run_pa(self.impl, "decide", "STOP", "--note", "気が変わった")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("利用者がやめると答えました", r.stdout)
+        advice = self.run_pa(self.impl, "advise").stdout
+        self.assertIn("1. 変えた分を戻してやめる（勧め） → `STOP`。先に", advice)
+        self.assertNotIn("確かめていない計画", advice)
+        self.assertNotIn("変えたあとの検査 1 回", self.report(self.impl).stdout)
 
     def test_report_shows_each_behavior_with_its_test_result(self) -> None:
         commit(self.impl, {"src/app.py": "def hello():\n    return 0\n"}, "bug")
@@ -2149,8 +2204,10 @@ class CoddTest(unittest.TestCase):
         self.set_config(self.impl, test=[sys.executable, "-c", "pass"])
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
         report = self.report(self.impl).stdout
-        self.assertIn("## 振る舞いの確かめ\n\n- hello の戻り値 — tests/test_app.py `test_hello`: テストのコマンドは通った（テストの結果（evidence）が無いので",
+        self.assertIn("## 振る舞いの確かめ\n\n- hello の戻り値 — tests/test_app.py `test_hello`: テストごとの結果は無い（テストの結果（evidence）が未設定）",
                       report)
+        # テストのコマンドがこのテストを動かさないなら、変える前でも通る。見分けていないと言い、理由の見当も添える
+        self.assertIn("見分けていない（変える前の中身でも通る。テストのコマンドがこのテストを動かしていないこともある）", report)
         self.assertIn("- 負の数の扱い — 未決定（引数を足したときに負の数を許すか）。確かめていない", report)
         self.write_evidence([])
         self.set_config(self.impl, test=writes("passed"))
@@ -2171,11 +2228,11 @@ class CoddTest(unittest.TestCase):
         (self.impl / "tests").mkdir()
         (self.impl / "tests/test_app.py").write_text(self.REPRO_TEST, encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.assertIn("変更前との見分け: 変える前の中身で、このテストが落ちた（FAIL: test_hello", self.report(self.impl).stdout)
+        self.assertIn("変更前との見分け: 見分けている（変える前の中身では落ちた: FAIL: test_hello", self.report(self.impl).stdout)
         (self.impl / "tests/test_app.py").write_text(self.REPRO_TEST.replace("hello(), 1", "type(hello()), int"),
                                                      encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.assertIn("変更前との見分け: 見分けていない（変える前の中身でも通る）", self.report(self.impl).stdout)
+        self.assertIn("変更前との見分け: 見分けていない（変える前の中身でも通る。", self.report(self.impl).stdout)
 
     def test_a_bug_fix_test_must_fail_before_the_change(self) -> None:
         # 再現のテストは、変える前の中身に今のテストだけを入れて動かす。落ちれば再現した、通れば再現していないと報告する
@@ -2190,12 +2247,12 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)
         report = self.report(self.impl).stdout
-        self.assertIn("再現: 変える前の中身で、このテストが落ちた（FAIL: test_hello (test_app.", report)
+        self.assertIn("再現: 再現した（変える前の中身では落ちた: FAIL: test_hello (test_app.", report)
         self.assertEqual(git(self.impl, "worktree", "list").count("\n"), 1)   # 一時的な worktree は残さない
         # 変える前から通るテストは、再現したと言わない
         (self.impl / "tests/test_app.py").write_text(self.REPRO_TEST.replace("hello(), 1", "1, 1"), encoding="utf-8")
         self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
-        self.assertIn("再現: 再現していない（変える前の中身でも通る）", self.report(self.impl).stdout)
+        self.assertIn("再現: 再現していない（変える前の中身でも通る。", self.report(self.impl).stdout)
 
     def test_summary_points_to_the_plan_without_copying_it(self) -> None:
         # 確認では計画を要約せず、パスを示して利用者に読んでもらう（エージェントに要約を書き写させない）
@@ -4967,6 +5024,17 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 0, r.stderr)   # 前のコミットの src/extra.py を数えない
 
+    def test_the_same_failure_with_another_duration_asks_instead_of_retrying(self) -> None:
+        # 所要時間だけが違う同じ失敗は、同じ指摘として訊く（直せない失敗を訊かずに回し続けない）
+        self.write_plan(PLAN_ALIGNED)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1  # log\n", encoding="utf-8")
+        for ms, auto in (("12.5", True), ("40.1", False)):
+            self.set_check(self.impl, [sys.executable, "-c", f"import sys; '# log' in open('src/app.py').read() and "
+                                         f"sys.exit('not ok 1 - hello\\n  duration_ms: {ms}\\n# {ms}ms')"])
+            self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 1)
+            self.assertEqual(self.run_pa(self.impl, "advise").stdout.startswith("AUTO APPLY\n"), auto, ms)
+
     def test_a_commit_midway_with_work_left_keeps_the_same_run(self) -> None:
         # 作業中の変更が残っていれば、途中でコミットしただけの同じ回として計画を引き継ぐ。
         self.write_plan(PLAN_ALIGNED)
@@ -5457,6 +5525,16 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "step", "OK")
         self.assertIn("STATE report\n", r.stdout)
         self.assertNotIn("STATE ahead", r.stdout)
+
+    def test_the_full_log_pointer_is_not_a_failure_line(self) -> None:
+        # 全文の置き場所の行は、失敗の印の語を含んでも失敗に数えない（前からの失敗の見分けを狂わせない）
+        spec = importlib.util.spec_from_file_location("codd_for_failures", TOOL / "machine" / "codd.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(mod)
+        out = f"not ok 3 - rounds\n{mod.LOG_HINT}.codd/logs/ab12.log（FAIL・not ok で探す）\n"
+        self.assertEqual(mod.failure_lines(out), {"not ok N - rounds"})
 
     def test_undecided_ids_are_shown_as_ranges(self) -> None:
         spec = importlib.util.spec_from_file_location("codd_for_ranges", TOOL / "machine" / "codd.py")
