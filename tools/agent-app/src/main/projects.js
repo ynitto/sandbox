@@ -13,6 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const YAML = require('yaml');
+const { headChars } = require('./text');
 
 const DIR = 'projects';
 const FILE = 'project.yaml';
@@ -34,7 +35,7 @@ const KINDS = {
   preference: { label: '進め方の好み', file: 'preferences.md' },
 };
 
-const text = (value, max = MAX_TEXT) => String(value == null ? '' : value).trim().slice(0, max);
+const text = (value, max = MAX_TEXT) => headChars(String(value == null ? '' : value).trim(), max);
 
 // フォルダ名。人が付けた名前から、どの OS でもフォルダにできる形を作る（日本語はそのまま）。
 const { folderName } = require('../shared/projectPath');

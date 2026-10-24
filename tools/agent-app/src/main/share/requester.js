@@ -23,7 +23,7 @@ const { EventEmitter } = require('events');
 const store = require('../store');
 const { call } = require('./server');
 const { priorityOf } = require('./queue');
-const { headChars } = require('../text');
+const { headChars, tailChars } = require('../text');
 
 const WATCHDOG_MS = 90 * 1000;
 const TICK_MS = 15 * 1000;
@@ -292,7 +292,7 @@ class Requester extends EventEmitter {
     }
     r.last_heartbeat = this.now();
     if (body.screen != null) {
-      const text = String(body.screen).slice(-MAX_SCREEN);
+      const text = tailChars(String(body.screen), MAX_SCREEN);
       this.screens.set(r.id, text);
       // 待っている会話の端末ミラーへ、執行者の画面をそのまま流す
       this.send('share:screen', { id: r.id, sessionId: r.sessionId, text, node: who, cli: r.executor ? r.executor.cli : '' });

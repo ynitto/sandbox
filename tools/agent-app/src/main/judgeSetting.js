@@ -11,6 +11,8 @@
 //   model … いつも、指定したローカルモデルの判定 AI を使う（クラウドの AI で作業していても判定だけ逃がす）
 //   off   … 判定 AI を使わない
 
+const { headChars } = require('./text');
+
 const MODES = ['auto', 'model', 'off'];
 const DEFAULT_MODEL = 'gemma4:e4b';
 // 判定のモデルを ollama に残す時間。画面は分で扱い、設定へは `30m` の形で書く。空は未設定
@@ -71,7 +73,7 @@ function keepArgs(value) {
 }
 
 function firstLine(res) {
-  return (String((res && (res.stderr || res.stdout)) || '').trim().split(/\r?\n/).find(Boolean) || '').slice(0, 160);
+  return headChars(String((res && (res.stderr || res.stdout)) || '').trim().split(/\r?\n/).find(Boolean) || '', 160);
 }
 
 // capture(command, args, { timeoutMs }) → { ok, status, stdout, stderr, error }

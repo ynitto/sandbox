@@ -332,7 +332,7 @@ class SessionBrowser {
     const summary = await handoff.summarize(selected, generate);
     // 種類を利用者が選んだときは判定を任せず、その種類の手順としてまとめさせる。
     const fixed = kind === 'auto' ? null : kind;
-    const method = intent === 'routine' ? routine.parse(await generate(routine.prompt(summary + (request ? '\n今回の追加要望:\n' + String(request).slice(0, 30000) : ''), fixed)), fixed) : null;
+    const method = intent === 'routine' ? routine.parse(await generate(routine.prompt(summary + (request ? '\n今回の追加要望:\n' + headChars(String(request), 30000) : ''), fixed)), fixed) : null;
     const token = crypto.randomUUID();
     this.prepared.set(token, { record: selected, repo, cli, model, mode, intent, method, createdId: null });
     while (this.prepared.size > 10) this.prepared.delete(this.prepared.keys().next().value);

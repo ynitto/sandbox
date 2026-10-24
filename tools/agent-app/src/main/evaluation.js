@@ -173,7 +173,7 @@ function parseHeadless(text, { model = '' } = {}) {
   if (![1, 2, 3].includes(quality)) return null;
   return {
     quality, issue: ISSUES.includes(doc.issue) ? doc.issue : 'none', confidence: 1, method: 'text',
-    judge_model: String(model || ''), note: String(doc.note || '').slice(0, 400),
+    judge_model: String(model || ''), note: headChars(String(doc.note || ''), 400),
   };
 }
 

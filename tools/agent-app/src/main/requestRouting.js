@@ -158,7 +158,7 @@ async function extractInputs({ text = '', parameters = [], cwd, capture, signal 
   for (const key of rest) {
     const value = parsed[key];
     if (value == null || typeof value === 'object' || typeof value === 'boolean') continue;
-    const str = String(value).trim().slice(0, 200);
+    const str = headChars(String(value).trim(), 200);
     if (!str || /^(null|none|不明|なし)$/i.test(str)) continue;
     values[key] = DATE_KEY.test(key) && dateWord(str) ? dateWord(str) : str;
   }

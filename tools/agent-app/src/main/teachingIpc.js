@@ -146,7 +146,7 @@ function create(deps) {
       const prompt = session.messages.length
         ? teaching.resumePrompt({ ...common, context: p.context })
         : teaching.prompt({ ...common, skillDir: teachingSkillDir(repo, cfg), tools: teachingTools() });
-      const context = String(p.context || '').trim().slice(0, 1000);
+      const context = headChars(String(p.context || '').trim(), 1000);
       const result = await deps.runTurn(session.id, {
         prompt, policy: session.policy, cli: session.cli, model: session.model, readonly: false, autoApprove: session.autoApprove,
         skillMode: 'off', skills: [], attachments: [],
