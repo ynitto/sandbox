@@ -1,0 +1,47 @@
+[
+  {
+    "id": "source-id",
+    "own": "app",
+    "seed": "src/print/PrintButton.tsx",
+    "term": "sourceId",
+    "request": "sourceId を必須にするための変更箇所を調べる。",
+    "change": "`sourceId` を必須にする",
+    "required": ["app:src/print/usePrint.ts", "doc:docs/design/print.md"]
+  },
+  {
+    "id": "preview-return",
+    "own": "app",
+    "seed": "src/preview/usePreviewModel.ts",
+    "term": "usePreviewModel",
+    "request": "usePreviewModel の戻り値に zoom を追加するための変更箇所を調べる。",
+    "change": "`usePreviewModel` の戻り値にズームの状態を足す",
+    "required": [
+      "app:src/preview/Preview01.tsx", "app:src/preview/Preview02.tsx",
+      "app:src/preview/Preview03.tsx", "app:src/preview/Preview04.tsx",
+      "app:src/preview/Preview05.tsx", "app:src/preview/Preview06.tsx",
+      "app:src/preview/Preview07.tsx", "app:src/preview/Preview08.tsx",
+      "app:src/preview/Preview09.tsx", "app:src/preview/Preview10.tsx",
+      "app:src/preview/Preview11.tsx", "app:src/preview/Preview12.tsx",
+      "app:src/preview/Preview13.tsx", "app:src/preview/Preview14.tsx",
+      "app:src/preview/Preview15.tsx", "app:src/preview/Preview16.tsx",
+      "app:src/preview/Preview17.tsx", "app:src/preview/Preview18.tsx",
+      "app:src/preview/Preview19.tsx", "app:src/preview/Preview20.tsx",
+      "app:src/preview/Preview21.tsx", "app:src/preview/Preview22.tsx",
+      "app:src/preview/Preview23.tsx", "app:src/preview/Preview24.tsx",
+      "app:src/preview/Preview25.tsx", "doc:docs/design/preview.md"
+    ]
+  },
+  {
+    "id": "preview-wording",
+    "own": "doc",
+    "seed": "docs/design/preview.md",
+    "term": "usePreviewModel",
+    "request": "画面名 usePreviewModel を表示名に言い換える準備として、文書内の言及を確認する。実装の名前は変えない。",
+    "change": "`usePreviewModel` の画面名としての表記を説明する",
+    "required": [
+      "doc:docs/specs/screen/screen01.md", "doc:docs/specs/screen/screen02.md",
+      "doc:docs/specs/screen/screen03.md", "doc:docs/specs/screen/screen04.md",
+      "doc:docs/specs/screen/screen05.md", "doc:docs/specs/screen/screen06.md"
+    ]
+  }
+]
