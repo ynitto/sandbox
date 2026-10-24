@@ -870,6 +870,36 @@ class CoddTest(unittest.TestCase):
         self.assertIn("計画に無いファイルを変えています", r.stderr)
         self.assertIn("report.txt", r.stderr)
 
+    def test_format_runs_on_changed_files_before_the_checks(self) -> None:
+        # 整形コマンド（format）は検査の前に、変えた側でだけ動く。{files} はこの回に変えたファイルに置き換わる。
+        # 変えていないファイルを整形しても、計画に無い変更に数えない。
+        commit(self.impl, {"notes.txt": "x = 1\n"}, "other")
+        fmt = ("import sys, pathlib\n"
+               "for f in sys.argv[1:] + ['notes.txt']:\n"
+               "    p = pathlib.Path(f); t = p.read_text(); p.write_text(t if t.endswith('\\n\\n') else t + '\\n')\n")
+        self.set_check(self.impl, [sys.executable, "-c", fmt, "{files}"], key="format")
+        self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit(not open('src/app.py').read().endswith('\\n\\n'))"])
+        self.set_check(self.design, [sys.executable, "-c", "open('formatted.txt', 'w').write('x')"], key="format")
+        self.write_plan(PLAN_DRIFT)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    return 2\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("design が変わっていません", r.stderr)
+        self.assertTrue((self.impl / "src/app.py").read_text(encoding="utf-8").endswith("\n\n"))
+        self.assertFalse((self.design / "formatted.txt").exists())   # 変えていない側では動かさない
+
+        (self.design / "docs/api.md").write_text("# API\n\n## hello\n\nhello は 2 を返す。\n\n実装は `src/app.py`（`src/` の下）。\n", encoding="utf-8")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.design / "formatted.txt").is_file())
+
+        # 整形が落ちたら、検査に進まずに直させる
+        self.set_check(self.impl, [sys.executable, "-c", "import sys; sys.exit('syntax error')"], key="format")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("実装の整形の検査が失敗しました", r.stderr)
+
     def test_planned_binaries_may_come_out_the_same(self) -> None:
         # 作り直すと計画に挙げたバイナリが、同じバイト列のままでも、変え残しとして止めない。
         (self.design / "docs/images").mkdir(parents=True, exist_ok=True)
@@ -2695,6 +2725,9 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "show")
         self.assertIn("変えたあとに実行するもの", r.stdout)
         self.assertIn("自分の検査: webui-test check", r.stdout)
+        init.init_repo(self.impl, None, None, discover=False, format="ruff format {files}")
+        self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["format"], ["ruff", "format", "{files}"])
+        self.assertIn("自分の整形: ruff format {files}", self.run_pa(self.impl, "show").stdout)
         # 手で書いた検査は上書きしない。--check で書き換え、"" で消す。
         init.init_repo(self.impl, None, None, discover=False, check="python3 -m pytest -q")
         self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["check"], ["python3", "-m", "pytest", "-q"])
@@ -5348,7 +5381,7 @@ class CoddTest(unittest.TestCase):
         # 通ったあとに手で変えたものは、記録があっても「通ったあとに変わった変更」に挙がる。
         commit(self.impl, {"src/app.py": "def hello():\n    return 3\n"}, "手で直した")
         r = self.run_pa(self.impl, "lint", "--no-test")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 1)
         text = (self.impl / ".codd/lint.md").read_text(encoding="utf-8")
         self.assertIn("src/app.py", text.split("## codd を通ったあとに変わった変更")[1].split("##")[0])
         self.assertNotIn("src/app.py", text.split("## codd を通らなかった変更")[1].split("##")[0])

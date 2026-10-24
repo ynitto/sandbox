@@ -99,7 +99,7 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref api=../api-docs
 | `--scope` | 自分の `scope` を入れ替える |
 | `--ref-scope 名前=フォルダ` | その参照先の `scope` にフォルダを足す |
 | `--exclude` / `--ref-exclude 名前=パターン` | その呼び出しで渡したパターンに入れ替える。`--exclude ""` / `--ref-exclude 'docs='` で空にする |
-| `--test` / `--check` | 入れ替える。繰り返すと、書いた順に動かすコマンドの並びになる。`""` で消す |
+| `--format` / `--test` / `--check` | 入れ替える。繰り返すと、書いた順に動かすコマンドの並びになる。`""` で消す |
 | `--evidence` | 渡した一覧に入れ替える。`""` で結果を扱わなくする |
 
 置き先の名前は `codd` のまま変わらないので、前の版で置いたものもそのまま入れ替えられる。
@@ -346,6 +346,7 @@ python3 .statemachine/codd/codd.py next            # 立てておいた次の計
 | `test` | 任意。変えたあとに動かすテストのコマンド。書き方は `check` と同じで、1 つなら配列（例: `["npm", "test"]`）、いくつもならその配列を並べる（例: `[["npm", "test"], ["npm", "run", "test:api"]]`）。結果に名前を付けるなら名前ごとにも書ける（例: `{"単体": ["npm", "test"], "API": ["npm", "run", "test:api"]}`）。書いた順に動かし、落ちても残りを動かす。参照先も変えたときは、参照先の `codd.json` の `test` も動かす |
 | `tests` | 任意。テストのファイルの書き方（glob の配列）。既定は `test/**`・`tests/**`・`e2e/**`・`**/*.test.*`・`**/*.spec.*`・`**/test_*.py`・`**/*.feature`・`**/*.http`・`**/scenarios/**` など。`[]` でテストを扱わない |
 | `evidence` | 任意。テストで得たもの（振る舞い・時間・作ったファイル）を書いたファイル（glob の配列）。既定 `[]`（扱わない）。使う結果ファイルのパスを明示する |
+| `format` | 任意。変えたあと、検査の前に動かす整形コマンド。書き方は `check` と同じ。引数の `"{files}"` は、この回に変えたファイルの並びに置き換わる（例: `["npx", "prettier", "--write", "--ignore-unknown", "{files}"]`）。[下記](#整形コマンド) |
 | `check` | 任意。テストのあとに実行する検査コマンドの配列（例: `["npm", "run", "e2e"]`）。いくつも動かすときはコマンドの配列を並べる（例: `[["npm", "run", "lint"], ["npm", "run", "e2e"]]`）。書いた順に動かし、落ちたらそこで止める。参照先も変えたときは、参照先の `codd.json` の `check` も実行する |
 | `scope` | 任意。このリポジトリのうち自分が受け持つフォルダの配列（例: `["src", "tests"]`）。書かなければ全体 |
 | `refs[].scope` | 任意。その参照先のうち読む・変えるフォルダの配列。書かなければ全体 |
@@ -477,6 +478,21 @@ python3 tools/codd-agent/init.py ~/work/my-app \
 python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-docs --test "npm test"
 python3 tools/codd-agent/init.py ~/work/my-app --test "npm test" --test "npm run test:api" --check "npm run lint"
 ```
+
+### 整形コマンド
+
+`format` には、フォーマッターを直すモードで書く。変えたあとの検査の初めに、変えた側でだけ、書いた順に動かす。
+整形を `check` に入れると、テストのあとにしか動かず、全体を整形することになる。`format` なら検査の前に、
+`"{files}"` で変えたファイルだけを整形できる。`ruff check` や `prettier --check` のような見るだけのモードは `check` に書く。
+
+```bash
+python3 tools/codd-agent/init.py ~/work/my-app --format "npx prettier --write --ignore-unknown {files}" --check "npm run lint"
+python3 tools/codd-agent/init.py ~/work/my-app --format "ruff format {files}" --format "ruff check --fix {files}"
+```
+
+整形が落ちたら（構文の誤りなど）、テストと検査に進まずに直させる。変えていないファイルまで整形したときは、
+テストと検査が作り直したファイルと同じく、変えたファイルに数えない。参照先も変えたときは、参照先の `codd.json` の
+`format` も動かす。
 
 `test` が無いと、変えたあとの検査はテストを動かさずに通る。そのときは `show` と終わりの報告に「動かしていない」と出る。
 `init.py` は、`--test` を渡さずに置いたとき、よくある置き方（`package.json` の `test`・pytest の設定・`go.mod`・

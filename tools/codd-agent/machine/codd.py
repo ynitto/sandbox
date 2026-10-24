@@ -106,7 +106,7 @@ _PLAN_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
-CONFIG_KEYS = {"side", "refs", "graphify", "check", "scope", "max_files", "batch_files", "subagent",
+CONFIG_KEYS = {"side", "refs", "graphify", "check", "format", "scope", "max_files", "batch_files", "subagent",
                "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect", "no_doc", "retro"}
 REF_KEYS = {"name", "path", "scope", "exclude", "guides", "protect"}
 # 前の版の書き方。読まずに止め、init.py で guides へ書き換えてもらう（init.py は置き直すときに書き換える）。
@@ -379,6 +379,9 @@ def check_commands(value) -> list[list[str]]:
     if not value:
         return []
     return [value] if is_argv(value) else value
+
+
+FILES_ARG = "{files}"   # 整形コマンド（format）の引数のうち、この回に変えたファイルの並びに置き換えるもの
 
 
 def test_commands(value) -> list[tuple[str, list[str]]]:
@@ -676,6 +679,10 @@ def load_config(machine_dir: Path) -> dict:
     if command is not None and not is_commands(command):
         raise CoddError(f'{path} の check はコマンドの配列か、順に動かすコマンドの並びです'
                         '（例: ["npm", "test"] / [["npm", "run", "lint"], ["npm", "run", "e2e"]]）')
+    command = config.get("format")
+    if command is not None and not is_commands(command):
+        raise CoddError(f'{path} の format はコマンドの配列か、順に動かすコマンドの並びです'
+                        f'（例: ["npx", "prettier", "--write", "--ignore-unknown", "{FILES_ARG}"]）')
     test = config.get("test")
     if test is not None and not (is_commands(test) or (isinstance(test, dict) and test and all(
             isinstance(k, str) and k and is_argv(v) for k, v in test.items()))):
@@ -811,6 +818,10 @@ class Ref(Side):
     @property
     def check(self) -> list | None:
         return (self.config or {}).get("check")
+
+    @property
+    def format(self) -> list | None:
+        return (self.config or {}).get("format")
 
     @property
     def test(self) -> list[str] | dict | None:
@@ -1468,13 +1479,15 @@ def cmd_show(ctx: Ctx, args: argparse.Namespace) -> int:
     if evs:
         print("テストで得たもの（振る舞い・時間・ファイル。文書へは `<!-- evidence: id -->` の印で写す。`codd.py evidence` で一覧）: "
               + "、".join(f"{'自分' if not k else k} {len(e.items)} 件" for k, e in evs.items()))
-    checks = [("自分", ctx.config.get("test"), ctx.config.get("check")),
-              *((r.name, r.test, r.check) for r in ctx.refs)]
+    checks = [("自分", ctx.config.get("format"), ctx.config.get("test"), ctx.config.get("check")),
+              *((r.name, r.format, r.test, r.check) for r in ctx.refs)]
     if not ctx.config.get("test"):
         print(f"テストのコマンド: {NO_TEST_COMMAND}")
-    if any(t or c for _, t, c in checks):
+    if any(f or t or c for _, f, t, c in checks):
         print("変えたあとに実行するもの（作り直すファイルがあれば、それも計画に挙げる）:")
-        for who, t, c in checks:
+        for who, f, t, c in checks:
+            for argv in check_commands(f):
+                print(f"  - {who}の整形: {' '.join(argv)}")
             for name, argv in test_commands(t):
                 print(f"  - {who}のテスト{f'（{name}）' if name else ''}: {' '.join(argv)}")
             for argv in check_commands(c):
@@ -6915,6 +6928,31 @@ def record_generated(ctx: Ctx, pre: dict[str, dict[str, str]]) -> None:
     write_text(ctx.data / GENERATED_FILE, json.dumps(record, ensure_ascii=False, indent=2) + "\n")
 
 
+def run_formats(ctx: Ctx, a: Applied) -> list[str] | None:
+    """変えたあと、検査の前に整形コマンド（format）を動かす。変えた側でだけ、書いた順に動かして落ちたところで止める。
+
+    引数の `{files}` は、その側でこの回に変えた（残っている）ファイルの並びに置き換える（全体を整形せずに済む）。
+    変えていないファイルを整形したら、テストと検査が作り直したファイルと同じく控え、変えたファイルに数えない。
+    動かすものが無ければ None。
+    """
+    sides = [("", ctx.own, ctx.config.get("format"), a.own_touched, SIDES[ctx.side]),
+             *((r.name, r, r.format, a.touched[r.name], f"{r.name}（{r.label}）") for r in ctx.refs)]
+    if not any(commands and touched for _, _, commands, touched, _ in sides):
+        return None
+    pre = {key: dirty_files(side) for key, side in all_sides(ctx)}
+    problems: list[str] = []
+    for _, side, commands, touched, label in sides:
+        files = sorted(p for p in touched if (side.path / p).is_file())
+        for argv in check_commands(commands) if files else []:
+            argv = [x for arg in argv for x in (files if arg == FILES_ARG else [arg])]
+            failed = run_check(side.path, argv, f"{label}の整形", ctx.data / LOGS_DIR)
+            if failed:
+                problems += failed
+                break
+    record_generated(ctx, pre)
+    return problems
+
+
 def made_by_checks(ctx: Ctx, key: str, side: Side) -> set[str]:
     """テストと検査コマンドが作り直したまま、中身が変わっていないファイル。"""
     made = generated_files(ctx).get(key, {})
@@ -7686,6 +7724,16 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         (ctx.data / "applied.json").unlink(missing_ok=True)
         print("NG 利用者がやめると答えました。変えた分を残すか戻すかを訊いて、STOP で終えます")
         return 1
+    # 検査の前に整形する（整形の崩れを、検査で落としてエージェントに直させない）
+    formatted = run_formats(ctx, a)
+    if formatted:
+        print_problems(ctx, "apply", formatted)
+        return 1
+    if formatted is not None:
+        a = load_applied(ctx)   # 整形で中身が変わった（変える前の中身に戻ったファイルは、変えたファイルから外れる）
+        if isinstance(a, str):
+            print_problems(ctx, "apply", [Problem("stale", a)])
+            return 1
     step = batch_step(ctx, a)
     if step is not None:
         return step
