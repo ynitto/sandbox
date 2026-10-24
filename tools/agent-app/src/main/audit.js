@@ -15,7 +15,7 @@
 // 台帳の行は node-budget と同じ形にする。reader を増やさないためで、追加したのは
 // `artifact`（成果物の種別・名前・出所）だけ——これが成果物の適格性の集計鍵になる。
 
-const { headChars } = require('./text');
+const { headChars, tailChars } = require('./text');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -146,7 +146,7 @@ function row(raw, { now = Date.now(), node = os.hostname() } = {}) {
     out.evaluation = {
       quality: ev.quality == null ? null : num(ev.quality), confidence: ev.confidence == null ? null : num(ev.confidence),
       issue: String(ev.issue || 'none'), method: String(ev.method || ''),
-      judge_model: String(ev.judge_model || ''), note: String(ev.note || '').slice(0, 400),
+      judge_model: String(ev.judge_model || ''), note: headChars(String(ev.note || ''), 400),
     };
     if (ev.proposal && ev.proposal.schema_version === 1) out.evaluation.proposal = ev.proposal;
   }
@@ -490,7 +490,7 @@ class Auditor {
         const allowed = r.ok || step.allow.includes(status);
         this.lastSteps.push({
           key: step.key, label: step.label, status: Number.isFinite(status) ? status : -1, ok: allowed,
-          output: String(r.output || r.error || '').split('\n').slice(-6).join('\n').slice(-1200),
+          output: tailChars(String(r.output || r.error || '').split('\n').slice(-6).join('\n'), 1200),
         });
         if (!allowed) {
           this.lastError = `${step.label}で止まりました（終了コード ${Number.isFinite(status) ? status : '?'}）`;

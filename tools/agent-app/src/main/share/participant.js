@@ -1,5 +1,5 @@
 'use strict';
-const { headChars } = require('../text');
+const { headChars, tailChars } = require('../text');
 
 // 参加者の側。余っている枠を差し出し、仲間の依頼を拾って自分の CLI で答える。
 //
@@ -259,7 +259,7 @@ class Participant extends EventEmitter {
       cli, prompt, model: post.model || '', readonly: true, cwd, files, timeoutMs: this.leaseMs, onLine: () => {},
       shareId: id,
       onScreen: (text) => {
-        item.screen = String(text || '').slice(-MAX_SCREEN);
+        item.screen = tailChars(String(text || ''), MAX_SCREEN);
         this.send('share:screen', { id, text: item.screen, node: this.node, cli, mine: true });
       },
     });

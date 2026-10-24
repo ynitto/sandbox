@@ -19,6 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { headChars } = require('./text');
 const crypto = require('crypto');
 
 const host = require('./host');
@@ -293,7 +294,7 @@ class ArtifactShare {
     if (result.unchanged) return { skipped: 'no-change', branch };
     const saved = record(this.userData, kind, name, {
       kind, name, repo, improveBranch: result.branch, improvedAt: new Date(this.now()).toISOString(),
-      improveMergedAt: '', improveNote: String((outcome && outcome.text) || '').split('\n').slice(0, 6).join('\n').slice(0, 600),
+      improveMergedAt: '', improveNote: headChars(String((outcome && outcome.text) || '').split('\n').slice(0, 6).join('\n'), 600),
     });
     return { ...result, ...saved };
   }

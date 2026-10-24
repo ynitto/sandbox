@@ -76,3 +76,10 @@ test('設定の文字列欄・実行履歴のログ末尾は絵文字の途中�
   assert.ok(!lone.test(a.localModel));
   assert.strictEqual(Array.from(a.localModel).length, 160);
 });
+
+test('更新の案内文は絵文字の途中で切れない', () => {
+  const update = require('../src/main/update');
+  const manifest = update.normalizeManifest({ notes: '😀'.repeat(399) + '😀😀' });
+  assert.ok(!lone.test(manifest.notes));
+  assert.strictEqual(Array.from(manifest.notes).length, 400);
+});

@@ -23,6 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { headChars } = require('./text');
 const os = require('os');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
@@ -116,7 +117,7 @@ function normalizeManifest(raw) {
   const m = raw && typeof raw === 'object' ? raw : {};
   return {
     app: entry(m.app),
-    notes: String(m.notes || '').trim().slice(0, 400),
+    notes: headChars(String(m.notes || '').trim(), 400),
     publishedAt: String(m.publishedAt || '').trim(),
   };
 }
