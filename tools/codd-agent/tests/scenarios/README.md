@@ -40,3 +40,6 @@ codd-agent を、サンプルのリポジトリで最初から最後まで通し
 不具合を見つけて直したら、そのとき通した道をシナリオに書き足す。新しいサンプルを足すときも同じ形で書く。
 
 2026-10-24 に、すべてのシナリオを `step` で回し直した（全文検索と意味の抽出の道具を入れて、monorepo-library の 4 も回した）。
+
+2026-10-24 の追加再生では、review-variety B、review-check、web-helloの2経路、monorepo-libraryの途中中止の計5回を回した。
+範囲・結果・未検証の経路は [再生記録](../../../../docs/experiments/2026-10-24-codd-agent-scenario-replay.md) に残した。
