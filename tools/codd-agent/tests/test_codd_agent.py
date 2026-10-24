@@ -2160,6 +2160,23 @@ class CoddTest(unittest.TestCase):
         os.utime(self.impl / "results/ui-evidence.json", (0, 0))
         self.assertIn("tests/test_app.py `test_hello`: この回の結果が無い（前の回の結果だけ）", self.report(self.impl).stdout)
 
+    def test_a_test_that_also_passes_before_the_change_is_reported(self) -> None:
+        # 振る舞いが変わるなら、確かめるテストは変える前の中身では落ちるはず。通るなら変更前と変更後を見分けていない
+        commit(self.impl, {"src/app.py": "def hello():\n    return 0\n"}, "bug")
+        self.write_plan(self.behavior_plan(
+            "- hello の戻り値 — 変更前: 0 を返す → 変更後: 1 を返す（根拠: docs/api.md#hello）。確かめる: tests/test_app.py"))
+        self.assert_plan_ok()
+        self.set_config(self.impl, test=[sys.executable, "-m", "unittest", "discover", "-s", "tests"])
+        (self.impl / "src/app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+        (self.impl / "tests").mkdir()
+        (self.impl / "tests/test_app.py").write_text(self.REPRO_TEST, encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertIn("変更前との見分け: 変える前の中身で、このテストが落ちた（FAIL: test_hello", self.report(self.impl).stdout)
+        (self.impl / "tests/test_app.py").write_text(self.REPRO_TEST.replace("hello(), 1", "type(hello()), int"),
+                                                     encoding="utf-8")
+        self.assertEqual(self.run_pa(self.impl, "verify-apply").returncode, 0)
+        self.assertIn("変更前との見分け: 見分けていない（変える前の中身でも通る）", self.report(self.impl).stdout)
+
     def test_a_bug_fix_test_must_fail_before_the_change(self) -> None:
         # 再現のテストは、変える前の中身に今のテストだけを入れて動かす。落ちれば再現した、通れば再現していないと報告する
         commit(self.impl, {"src/app.py": "def hello():\n    return 0\n"}, "bug")

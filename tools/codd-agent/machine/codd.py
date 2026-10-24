@@ -5166,13 +5166,15 @@ def behavior_result(ctx: Ctx, b: Behavior, since: float) -> str:
     return "この回の結果が無い（前の回の結果だけ）" if statuses(0) else "結果が無い（動いていない）"
 
 
-REPRO_NAME = "repro.json"   # 再現のテストを、変える前の中身で動かした結果（報告に出す）
+REPRO_NAME = "repro.json"   # 振る舞いを確かめるテストを、変える前の中身で動かした結果（報告に出す）
 
 
 def reproduce(ctx: Ctx, b: Behavior) -> str:
-    """再現のテストを、変える前の中身に今のテストのファイルだけを入れて動かす。そのテストで落ちれば再現した。
+    """振る舞いを確かめるテストを、変える前の中身に今のテストのファイルだけを入れて動かす。
 
-    変える前から通るなら再現していない。環境の理由で落ちたもの・どのテストで落ちたか分からないものは、再現したと言わない。
+    振る舞いが変わるなら、そのテストは変える前の中身では落ちるはず（再現のテストなら、落ちれば再現した）。
+    変える前でも通るなら、変更前と変更後を見分けていない。環境の理由で落ちたもの・どのテストで落ちたか分からないものは、
+    落ちたと言わない。
     """
     side = side_of(ctx, b.key)
     test = ctx.config.get("test") if not b.key else ctx.ref(b.key).test
@@ -5195,14 +5197,14 @@ def reproduce(ctx: Ctx, b: Behavior) -> str:
         if _ENV_FAILURE.search(out):
             env = " ".join(_ENV_FAILURE.search(out).group(0).split())[:120]
     if not failed:
-        return "再現していない（変える前の中身でも通る）"
+        return f"{'再現していない' if b.repro else '見分けていない'}（変える前の中身でも通る）"
     if env:
         return f"確かめられなかった（変える前の写しで環境のエラー: {env}）"
     return "確かめられなかった（変える前の中身でも落ちたが、このテストで落ちたかは出力から分からない）"
 
 
 def write_repro(ctx: Ctx, bodies: dict[str, str]) -> None:
-    found = {f"{b.key}:{b.rel}": reproduce(ctx, b) for b in behaviors(ctx, bodies)[0] if b.repro}
+    found = {f"{b.key}:{b.rel}": reproduce(ctx, b) for b in behaviors(ctx, bodies)[0] if not b.undecided}
     if found:
         write_text(ctx.data / REPRO_NAME, json.dumps(found, ensure_ascii=False, indent=2) + "\n")
     else:
@@ -5229,8 +5231,7 @@ def behavior_lines(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
             continue
         label = side_label(ctx, b.key, b.rel) + "".join(f" `{c}`" for c in b.cases)
         row = f"- {b.subject} — {label}: {behavior_result(ctx, b, since)}"
-        if b.repro:
-            row += f"。再現: {repro.get(f'{b.key}:{b.rel}', '確かめていない')}"
+        row += f"。{'再現' if b.repro else '変更前との見分け'}: {repro.get(f'{b.key}:{b.rel}', '確かめていない')}"
         rows.append(row)
     return rows
 
