@@ -83,3 +83,11 @@ test('更新の案内文は絵文字の途中で切れない', () => {
   assert.ok(!lone.test(manifest.notes));
   assert.strictEqual(Array.from(manifest.notes).length, 400);
 });
+
+test('受信箱の題・品質評価の抜粋・会話索引の本文は絵文字の途中で切れない', () => {
+  const attention = require('../src/main/attention');
+  if (typeof attention.text === 'function') assert.ok(!lone.test(attention.text('😀'.repeat(199) + '😀😀')));
+  const qe = require('../src/main/quality-evaluation');
+  const prepared = qe.prepare({ prompt: '- ' + '😀'.repeat(799) + '😀😀', answer: 'x' });
+  for (const c of prepared.criteria) assert.ok(!lone.test(c.text));
+});

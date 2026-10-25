@@ -25,13 +25,15 @@ const QUEUES = ['action', 'unread', 'none'];
 const MAX_ITEMS = 30;
 const MAX_SEEN = 500;
 
+const { headChars } = require('./text');
+
 function stamp(value) {
   const at = Date.parse(String(value || ''));
   return Number.isFinite(at) ? at : 0;
 }
 
 function text(value, limit = 200) {
-  return String(value == null ? '' : value).slice(0, limit);
+  return headChars(value, limit);
 }
 
 // 会話の「結果」= 末尾が応答メッセージなら、その完了時刻と結末。

@@ -4,6 +4,7 @@
 // 検索は毎回の走査（ふるい付き）に落ちる。
 const fs = require('fs');
 const path = require('path');
+const { headChars } = require('./text');
 
 const BODY_LIMIT = 512 * 1024;
 const SIZE_LIMIT = 1024 * 1024 * 1024;
@@ -91,7 +92,7 @@ class SessionIndex {
         record.mtime || 0, record.repo || '', comparablePath(record.repo), record.model || '',
         String(record.model || '').toLocaleLowerCase(), record.title || '', record.createdAt || 0,
         record.updatedAt || 0, record.archived ? 1 : 0, record.count || 0, record.partial ? 1 : 0,
-        record.truncated || body.length > BODY_LIMIT ? 1 : 0, body.slice(0, BODY_LIMIT));
+        record.truncated || body.length > BODY_LIMIT ? 1 : 0, headChars(body, BODY_LIMIT));
     }
   }
   forget(target, paths) {
