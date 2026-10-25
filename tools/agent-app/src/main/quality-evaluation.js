@@ -6,7 +6,8 @@ const MIN_CONFIDENCE = 0.7;
 const MIN_COVERAGE = 0.8;
 const MAX_CRITERIA = 8;
 const MAX_EVIDENCE = 18;
-const clip = (v, n) => String(v || '').slice(0, n);
+const { headChars } = require('./text');
+const clip = (v, n) => headChars(String(v || ''), n);
 
 function explicitCriteria(prompt) {
   // Only syntactically explicit list items; do not invent requirements from prose.
