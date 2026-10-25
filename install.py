@@ -2560,6 +2560,66 @@ def setup_headroom(agent_type: str, force: bool = False) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 常時枠
+#
+# スキル機構を持つエージェント（claude / copilot / codex / kiro / opencode）は、置かれた
+# SKILL.md の name と description を毎回文脈へ載せる。aider の索引と違って上限が無く、
+# 置いた本数に比例して太るので、インストールの最後に量を見せる。
+# ---------------------------------------------------------------------------
+
+
+def _frontmatter_value(fm_body: str, key: str) -> str:
+    """frontmatter の最上位の `key:` の値。`>` / `|` のブロックは続く字下げ行を空白で繋ぐ。"""
+    lines = fm_body.split("\n")
+    for i, line in enumerate(lines):
+        m = re.match(rf"^{re.escape(key)}:\s*(.*)$", line)
+        if not m:
+            continue
+        value = m.group(1).strip()
+        if value[:1] in (">", "|"):
+            block = []
+            for nxt in lines[i + 1:]:
+                if nxt.strip() and not nxt[:1].isspace():
+                    break
+                block.append(nxt.strip())
+            return " ".join(s for s in block if s)
+        return value.strip("\"'")
+    return ""
+
+
+def _measure_always_on(skill_home: str) -> list[tuple[str, int]]:
+    """skill_home に置かれた各スキルの (名前, name + description のバイト数) を大きい順に返す。"""
+    result = []
+    if not os.path.isdir(skill_home):
+        return result
+    for name in sorted(os.listdir(skill_home)):
+        skill_md = os.path.join(skill_home, name, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+        with open(skill_md, encoding="utf-8", errors="replace") as f:
+            fm = re.match(r"^---\s*\n(.*?)\n---", f.read(), re.DOTALL)
+        if not fm:
+            continue
+        size = sum(len(_frontmatter_value(fm.group(1), k).encode("utf-8"))
+                   for k in ("name", "description"))
+        result.append((name, size))
+    result.sort(key=lambda x: (-x[1], x[0]))
+    return result
+
+
+def report_always_on(skill_home: str) -> None:
+    """常時枠の本数・合計と上位 5 本を印字し、aider の索引予算の 2 倍を超えたら警告する。"""
+    sizes = _measure_always_on(skill_home)
+    total = sum(s for _, s in sizes)
+    print(f"常時枠 {len(sizes)} 本 / {total:,} B（name + description の合計）")
+    if sizes:
+        print("  上位 5 本: " + " / ".join(f"{n} {s:,} B" for n, s in sizes[:5]))
+    if total > 2 * AIDER_INDEX_BUDGET:
+        print(f"  警告: aider の索引予算 {AIDER_INDEX_BUDGET:,} B の 2 倍を超えています"
+              f"（{total / AIDER_INDEX_BUDGET:.1f} 倍）。使わないスキルを外すと本題の文脈が空きます")
+
+
+# ---------------------------------------------------------------------------
 # aider
 #
 # aider はスキルの仕組みを持たず、常に読ませたい材料は「読み取り専用ファイル」
@@ -2929,6 +2989,11 @@ def main() -> None:
     print('  - 「スキルをpullして」で最新スキルを取得')
     print('  - 「スクラムして」でscrum-masterを起動')
     print('  - 「スキルを探して」でリポジトリ内のスキルを検索')
+
+    # aider は常時枠ではなく INDEX.md（上限つき）で渡すので、ここでは測らない
+    if agent_type != "aider":
+        print()
+        report_always_on(paths["skill_home"])
 
     # 6. スキル設定プロンプト
     if not args.skip_config:
