@@ -45,5 +45,14 @@ class MeasureAlwaysOnTest(unittest.TestCase):
                 self.assertEqual("警告" in out.getvalue(), warned)
 
 
+class InstallableSkillsTest(unittest.TestCase):
+    def test_excludes_deprecated_but_keeps_it_in_the_catalog_enumeration(self):
+        with tempfile.TemporaryDirectory() as repo:
+            write_skill(repo, "new", "使う", tier="stable")
+            write_skill(repo, "old", "使わない", tier="deprecated")
+            self.assertEqual(install._discover_installable_skills(repo), (["new"], ["old"]))
+            self.assertEqual(install._discover_all_skills(repo), ["new", "old"])
+
+
 if __name__ == "__main__":
     unittest.main()

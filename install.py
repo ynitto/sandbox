@@ -136,6 +136,16 @@ def _discover_all_skills(skills_dir: str) -> list[str]:
     return result
 
 
+def _discover_installable_skills(skills_dir: str) -> tuple[list[str], list[str]]:
+    """全スキルから tier: deprecated を除く。(残すもの, 除いたもの) を返す。
+
+    除外を _discover_all_skills に入れないのは、そちらがスキル一覧（README の件数・
+    生成カタログ）の数え方でもあり、非推奨のスキルも一覧には載せておくため。
+    """
+    deprecated = _discover_skills_by_tier(skills_dir, "deprecated")
+    return [n for n in _discover_all_skills(skills_dir) if n not in deprecated], deprecated
+
+
 # コアスキルは後方互換のため維持
 def _discover_core_skills(skills_dir: str) -> list[str]:
     """SKILL.md の metadata.tier: core を持つスキルを動的収集する。"""
@@ -2859,12 +2869,14 @@ def main() -> None:
     # 2. スキルをコピー
     if install_all:
         # 全スキルのうち、このエージェントに対応しているものをインストール
-        all_skills = _discover_all_skills(REPO_SKILLS_DIR)
+        all_skills, deprecated = _discover_installable_skills(REPO_SKILLS_DIR)
         target_skills = [
             name for name in all_skills
             if _is_skill_for_agent(os.path.join(REPO_SKILLS_DIR, name), agent_type)
         ]
         print(f"\n2. 全スキルをインストール ({len(target_skills)} 件)...")
+        if deprecated:
+            print(f"   非推奨（tier: deprecated）のため除外: {', '.join(deprecated)}")
     else:
         # コアスキル + このエージェント専用スキル
         agent_specific = _discover_agent_specific_skills(REPO_SKILLS_DIR, agent_type)
