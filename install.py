@@ -136,6 +136,16 @@ def _discover_all_skills(skills_dir: str) -> list[str]:
     return result
 
 
+def _discover_installable_skills(skills_dir: str) -> tuple[list[str], list[str]]:
+    """全スキルから tier: deprecated を除く。(残すもの, 除いたもの) を返す。
+
+    除外を _discover_all_skills に入れないのは、そちらがスキル一覧（README の件数・
+    生成カタログ）の数え方でもあり、非推奨のスキルも一覧には載せておくため。
+    """
+    deprecated = _discover_skills_by_tier(skills_dir, "deprecated")
+    return [n for n in _discover_all_skills(skills_dir) if n not in deprecated], deprecated
+
+
 # コアスキルは後方互換のため維持
 def _discover_core_skills(skills_dir: str) -> list[str]:
     """SKILL.md の metadata.tier: core を持つスキルを動的収集する。"""
@@ -551,11 +561,17 @@ def parse_args() -> argparse.Namespace:
         metavar="AGENT",
         help="インストール対象エージェント: %(choices)s (default: %(default)s)",
     )
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--all-skills",
         action="store_true",
         default=False,
-        help="全スキル（tier 問わず）をインストールする (default: コアスキルのみ)",
+        help="全スキル（tier: deprecated を除く）をインストールする (default: コアスキルのみ)",
+    )
+    selection.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="レジストリの profiles にある NAME のスキルだけをインストールする（\"*\" は全件）",
     )
     parser.add_argument(
         "--skip-config",
@@ -601,6 +617,24 @@ def resolve_paths(agent_type: str) -> dict[str, str]:
         "registry_path": os.path.join(agent_home, "skill-registry.json"),
         "install_dir": REPO_ROOT,
     }
+
+
+def _profile_skills(registry_path: str, profile: str) -> list[str]:
+    """レジストリの profiles から profile のスキル名を返す。\"*\" を含めば全件（deprecated を除く）。
+
+    レジストリがまだ無ければ setup_registry が作る既定（default: [\"*\"]）だけがあるとみなす。
+    profile が無ければ ValueError（利用できる名前を添える）。
+    """
+    profiles = {"default": ["*"]}
+    if os.path.isfile(registry_path):
+        with open(registry_path, encoding="utf-8") as f:
+            profiles = json.load(f).get("profiles", {})
+    if profile not in profiles:
+        raise ValueError(f"プロファイル '{profile}' がありません（利用可能: {', '.join(profiles) or 'なし'}）")
+    names = profiles[profile]
+    if "*" in names:
+        return _discover_installable_skills(REPO_SKILLS_DIR)[0]
+    return list(dict.fromkeys(names))
 
 
 def ensure_directories(paths: dict[str, str]) -> None:
@@ -2560,6 +2594,66 @@ def setup_headroom(agent_type: str, force: bool = False) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 常時枠
+#
+# スキル機構を持つエージェント（claude / copilot / codex / kiro / opencode）は、置かれた
+# SKILL.md の name と description を毎回文脈へ載せる。aider の索引と違って上限が無く、
+# 置いた本数に比例して太るので、インストールの最後に量を見せる。
+# ---------------------------------------------------------------------------
+
+
+def _frontmatter_value(fm_body: str, key: str) -> str:
+    """frontmatter の最上位の `key:` の値。`>` / `|` のブロックは続く字下げ行を空白で繋ぐ。"""
+    lines = fm_body.split("\n")
+    for i, line in enumerate(lines):
+        m = re.match(rf"^{re.escape(key)}:\s*(.*)$", line)
+        if not m:
+            continue
+        value = m.group(1).strip()
+        if value[:1] in (">", "|"):
+            block = []
+            for nxt in lines[i + 1:]:
+                if nxt.strip() and not nxt[:1].isspace():
+                    break
+                block.append(nxt.strip())
+            return " ".join(s for s in block if s)
+        return value.strip("\"'")
+    return ""
+
+
+def _measure_always_on(skill_home: str) -> list[tuple[str, int]]:
+    """skill_home に置かれた各スキルの (名前, name + description のバイト数) を大きい順に返す。"""
+    result = []
+    if not os.path.isdir(skill_home):
+        return result
+    for name in sorted(os.listdir(skill_home)):
+        skill_md = os.path.join(skill_home, name, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+        with open(skill_md, encoding="utf-8", errors="replace") as f:
+            fm = re.match(r"^---\s*\n(.*?)\n---", f.read(), re.DOTALL)
+        if not fm:
+            continue
+        size = sum(len(_frontmatter_value(fm.group(1), k).encode("utf-8"))
+                   for k in ("name", "description"))
+        result.append((name, size))
+    result.sort(key=lambda x: (-x[1], x[0]))
+    return result
+
+
+def report_always_on(skill_home: str) -> None:
+    """常時枠の本数・合計と上位 5 本を印字し、aider の索引予算の 2 倍を超えたら警告する。"""
+    sizes = _measure_always_on(skill_home)
+    total = sum(s for _, s in sizes)
+    print(f"常時枠 {len(sizes)} 本 / {total:,} B（name + description の合計）")
+    if sizes:
+        print("  上位 5 本: " + " / ".join(f"{n} {s:,} B" for n, s in sizes[:5]))
+    if total > 2 * AIDER_INDEX_BUDGET:
+        print(f"  警告: aider の索引予算 {AIDER_INDEX_BUDGET:,} B の 2 倍を超えています"
+              f"（{total / AIDER_INDEX_BUDGET:.1f} 倍）。使わないスキルを外すと本題の文脈が空きます")
+
+
+# ---------------------------------------------------------------------------
 # aider
 #
 # aider はスキルの仕組みを持たず、常に読ませたい材料は「読み取り専用ファイル」
@@ -2797,14 +2891,27 @@ def main() -> None:
     ensure_directories(paths)
 
     # 2. スキルをコピー
-    if install_all:
+    if args.profile:
+        try:
+            names = _profile_skills(paths["registry_path"], args.profile)
+        except ValueError as e:
+            print(f"\nエラー: {e}")
+            sys.exit(1)
+        target_skills = [
+            name for name in names
+            if _is_skill_for_agent(os.path.join(REPO_SKILLS_DIR, name), agent_type)
+        ]
+        print(f"\n2. プロファイル '{args.profile}' のスキルをインストール ({len(target_skills)} 件)...")
+    elif install_all:
         # 全スキルのうち、このエージェントに対応しているものをインストール
-        all_skills = _discover_all_skills(REPO_SKILLS_DIR)
+        all_skills, deprecated = _discover_installable_skills(REPO_SKILLS_DIR)
         target_skills = [
             name for name in all_skills
             if _is_skill_for_agent(os.path.join(REPO_SKILLS_DIR, name), agent_type)
         ]
         print(f"\n2. 全スキルをインストール ({len(target_skills)} 件)...")
+        if deprecated:
+            print(f"   非推奨（tier: deprecated）のため除外: {', '.join(deprecated)}")
     else:
         # コアスキル + このエージェント専用スキル
         agent_specific = _discover_agent_specific_skills(REPO_SKILLS_DIR, agent_type)
@@ -2918,7 +3025,7 @@ def main() -> None:
 
     # 完了
     print("\n" + "=" * 50)
-    label = "全" if install_all else "コア"
+    label = f"プロファイル '{args.profile}' の" if args.profile else "全" if install_all else "コア"
     print(f"インストール完了: {len(installed)} 件の{label}スキル")
     print("=" * 50)
     print(f"\nエージェント:   {agent_type}")
@@ -2929,6 +3036,11 @@ def main() -> None:
     print('  - 「スキルをpullして」で最新スキルを取得')
     print('  - 「スクラムして」でscrum-masterを起動')
     print('  - 「スキルを探して」でリポジトリ内のスキルを検索')
+
+    # aider は常時枠ではなく INDEX.md（上限つき）で渡すので、ここでは測らない
+    if agent_type != "aider":
+        print()
+        report_always_on(paths["skill_home"])
 
     # 6. スキル設定プロンプト
     if not args.skip_config:
