@@ -10,6 +10,8 @@
         "file": {"type": "string", "minLength": 1}, "line": {"type": "integer", "minimum": 1},
         "title": {"type": "string"}, "fullTitle": {"type": "string"}, "framework": {"type": "string", "minLength": 1},
         "comparable": {"type": "boolean"}, "staticTitle": {"type": "boolean"}, "parameterized": {"type": "boolean"}, "trivial": {"type": "boolean"},
+        "temporary": {"$ref": "testcase.schema.json#/definitions/temporary"},
+        "temporarySignals": {"type": "array", "items": {"type": "string"}},
         "context": {"type": "string", "minLength": 1},
         "suppressions": {"type": "object", "propertyNames": {"pattern": "^K0[1-5]$"}, "additionalProperties": {"type": "string", "minLength": 1}},
         "body": {"type": "object", "required": ["exact", "structural"], "properties": {

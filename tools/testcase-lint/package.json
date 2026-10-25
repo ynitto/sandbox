@@ -17,7 +17,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/load.test.js test/lint.test.js test/ambiguity.test.js test/glob.test.js test/validity.test.js test/spec.test.js test/cli.test.js test/independence.test.js test/origin.test.js test/code.test.js"
+    "test": "node --test test/load.test.js test/lint.test.js test/ambiguity.test.js test/glob.test.js test/validity.test.js test/spec.test.js test/cli.test.js test/independence.test.js test/origin.test.js test/code.test.js test/temporary.test.js"
   },
   "dependencies": {
     "@babel/parser": "^7.29.11",

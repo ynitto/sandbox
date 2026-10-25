@@ -214,6 +214,7 @@ function javascript(source, file, filename, options = {}) {
       const observesIdentity = identitySensitive(fn.node) || identitySensitive(scopeContext);
       const body = fingerprints(fn);
       tests.push({ file, line: call.node.loc.start.line, title: name, fullTitle, framework: d.framework,
+        endLine: call.node.loc.end.line,
         comparable, staticTitle: title != null, parameterized: Boolean(d.table), rows: Array.isArray(rows) ? rows : [],
         trivial: fn.get('body').isBlockStatement() && !fn.node.body.body.length,
         context: hash([signature, callbackContext, body.parameters, observesIdentity ? fullTitle : null, [...imports.values()].sort()]),
@@ -235,7 +236,11 @@ function javascript(source, file, filename, options = {}) {
       diagnostics.push({ file, line: p.node.loc.start.line, reason: 'タグ付きテンプレートのパラメーター表は解析対象外です' });
     }
   } });
-  return { tests, diagnostics };
+  const lines = source.split('\n');
+  const comments = (ast.comments || []).map((c) => ({ line: c.loc.start.line, endLine: c.loc.end.line, text: c.value,
+    standalone: !lines[c.loc.start.line - 1].slice(0, c.loc.start.column).trim()
+      && !lines[c.loc.end.line - 1].slice(c.loc.end.column).trim() }));
+  return { tests, diagnostics, comments };
 }
 
 module.exports = { javascript };

@@ -15,6 +15,7 @@ const { loadSource, checkSource } = require('./source');
 const { RULES, SEVERITY_ORDER } = require('./rules');
 const { severityOf } = require('./config');
 const { globSync, isGlob } = require('./glob');
+const { temporaryFindings } = require('./temporary');
 
 const EXTS = /\.(json|ya?ml|md)$/i;
 
@@ -116,6 +117,7 @@ async function audit(opts) {
     loaded.push({ file: display(p), docs: r.docs, trees: r.trees || [], cases: r.cases });
   }
   if (cfg.format.schema) schemaFindings(cfg.format.schema, loaded, f);
+  f.list.push(...temporaryFindings(cases));
 
   const specPaths = expandPaths(opts.spec); const sourcePaths = expandPaths(opts.source);
   const spec = opts.spec.length ? loadSpec(specPaths, { requirementId: cfg.requirementId, display }) : null;

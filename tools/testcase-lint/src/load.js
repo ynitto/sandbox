@@ -35,7 +35,7 @@ const FIELD_ALIASES = {
 // 比べない付帯情報（前提にも入れない）
 const META_KEYS = new Set(['tags', 'tag', 'priority', 'severity', 'status', 'author', 'owner', 'notes', 'note',
   'comment', 'comments', 'category', 'type', 'level', 'component', 'module', 'automated', 'estimate', 'created',
-  'updated', 'version', 'skip', 'envs', 'variants', 'origin', 'group', 'タグ', '優先度', '重要度', '状態', '作成者', '担当', '担当者',
+  'updated', 'version', 'skip', 'envs', 'variants', 'origin', 'group', 'temporary', 'タグ', '優先度', '重要度', '状態', '作成者', '担当', '担当者',
   '備考', 'メモ', 'コメント', '区分', '分類', '種別', 'カテゴリ', '機能', '画面', '自動化']);
 // 手順の中で期待結果を表すキー
 const STEP_EXPECT_KEYS = new Set(['expect', 'expected', 'expected_result', 'assert', 'verify', 'check', 'then',
@@ -269,6 +269,8 @@ function makeCase(m, file, group, index, kind, fmap) {
     }
   }
   c.preconditions.push(...extra);
+  if (Object.prototype.hasOwnProperty.call(c.raw, 'temporary')) c.temporary = c.raw.temporary;
+  c.tags = Array.isArray(c.raw.tags) ? c.raw.tags.map(String) : [];
   if (Array.isArray(c.raw.group)) c.group.push(...c.raw.group.map(String));
   if (!c.title && desc) c.title = desc;
   return c;

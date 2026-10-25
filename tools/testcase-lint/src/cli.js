@@ -166,6 +166,10 @@ async function check(args, io) {
     spec: [...(values.spec || []), ...cfg.spec].map((p) => display(path.resolve(p))),
     source: [...(values.source || []), ...cfg.source].map((p) => display(path.resolve(p))),
   };
+  const protectedInputs = require('./temporary').temporaryInputs(result.cases);
+  if ([values.out, values.evidence || cfg.evidence].filter(Boolean).some((p) => protectedInputs.includes(path.resolve(p)))) {
+    throw Object.assign(new Error('暫定実装の参照先へは出力できません'), { exitCode: 2 });
+  }
   const text = RENDERERS[values.format](result);
   if (values.out) {
     fs.mkdirSync(path.dirname(path.resolve(values.out)), { recursive: true });

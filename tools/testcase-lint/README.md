@@ -403,6 +403,75 @@ staticTitle / context / body.exact / body.structural を入れる。body.exact �
 [vitest-dedup](https://github.com/figueiredoluiz/vitest-dedup) の「本文・実行条件・値違いを分け、指摘の種類ごとに整理方法を示す」方針を参考にした。
 近似的な振る舞い一致、包含関係、hook や suite 全体の統合はこの版の検出対象に含めない。
 
+## 暫定実装のテストが残っていないかを調べる
+
+自然文ケースと `testcase-lint code` の両方で、暫定テストの終了条件を点検する。
+正式実装に置き換えた後も古いテストが通る場合を含め、テストの成否とは独立して報告する。
+
+| 規則 | 既定 | 検知するもの |
+|---|---|---|
+| T01 | warning | 名前・コメント・ケースの本文に「暫定」「仮実装」「workaround」などがある、または `temporary` タグがあるが、終了条件が未管理 |
+| T02 | error | 期限切れ、参照した実装ファイルの削除、暫定実装のマーカーの消失 |
+| T03 | warning | 記録した実装のSHA-256と現在の内容が違う。暫定仕様の期待値が残っていないか見直す |
+| T04 | error | 理由・終了条件・日付・管理コメントのJSONなどが不正、または参照先を読めない |
+
+JSON / YAML のケースには `temporary` を付ける。これは実行の前提として比較しないメタデータ。
+`reason` と、`expires_on` または `implementation` の少なくとも一方を記録する。
+
+```yaml
+cases:
+  - id: SHIP-01
+    title: 正常な注文の送料
+    steps: [5000円の注文の送料を計算する]
+    expected: [送料は0円になる]
+    temporary:
+      reason: 送料計算の正式実装まで固定値を使う
+      implementation:
+        file: ../src/shipping.ts
+        marker: TEMP-SHIPPING-FIXED-ZERO
+      expires_on: '2026-12-31'
+```
+
+JS / TS は宣言の直前に、本物のコメントとして1行のJSONを付ける。Python は `#` を使い、
+デコレーターの前にも書ける。文字列・docstringの中のサンプルを管理コメントとは扱わない。
+
+```ts
+// testcase-lint-temporary: {"reason":"送料計算の正式実装待ち","implementation":{"file":"../src/shipping.ts","marker":"TEMP-SHIPPING-FIXED-ZERO"}}
+test('正常な注文の送料', () => {
+  expect(shipping(5000)).toBe(0);
+});
+```
+
+暫定実装側に `// TEMP-SHIPPING-FIXED-ZERO` のような固有のマーカーを置く。
+正式実装へ置き換える際にそのマーカーを除けば、元のテストが成功し続けてもT02になる。
+`implementation.file` はテストファイルからの相対パス。`origin` のある生成ケースでは元のケースファイルからの相対。
+`--ir` の `file` は現在の作業フォルダを基準に解決する。
+`marker` の代わりに、または一緒に `sha256` に実装ファイル全体のSHA-256を記録することもできる。
+マーカーは文字列として照合する。実装・テスト・import先は実行しない。
+期限はUTCで指定日が終わるまで有効。参照する実装ファイルは2MiB以下にする。
+
+正式仕様でも必要な回帰テストなら、理由を確認して次のように記録する。
+`status: permanent` と期限・暫定実装参照を同時には指定できない。
+
+```json
+{"status":"permanent","reason":"正式仕様でも同じ障害の再発を防ぐため残す"}
+```
+
+このオブジェクトをケースの `temporary` または管理コメントの値にする。
+T01は候補の警告であり、削除の指示ではない。T02でもテストを自動削除せず、正式仕様への更新・統合・引退を判断する。
+暫定である印も終了条件もないテストの意味は静的には判断できない。
+新しく暫定実装に関するテストを作る時点で管理情報を記録し、実装変更時も同じ検査を継続する。
+
+```bash
+testcase-lint code tests/ --fail-on warning
+testcase-lint tests/cases --fail-on warning
+```
+
+T01・T03もCIで止めるには `--fail-on warning` を使う。T02・T04は既定で失敗になる。
+`rules: {T01: off, T03: error}` のように既存の設定で重さを変えられる。
+他の言語アダプターも同じ `temporary` を中間表現に入れれば、同じ終了条件を使える。
+Gherkin入力では `@temporary` タグもT01の候補になる。
+
 ## 分かること・分からないこと
 
 文字の並び・否定の向き・数値・表の対応で判断する。次は**分からない**ので、人か LLM のレビューと組み合わせる。

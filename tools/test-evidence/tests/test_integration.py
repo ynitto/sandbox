@@ -17,6 +17,27 @@ READY = (shutil.which("node") and (TOOLS / "gherkin-cases/node_modules/@cucumber
 
 @unittest.skipUnless(READY, "install the optional input converter and lint dependencies to run this integration")
 class IntegrationTest(unittest.TestCase):
+    def test_unmanaged_temporary_gherkin_tag_survives_conversion(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "shipping.feature").write_text("""# language: ja
+機能: 送料
+  @case:SHIP-01 @temporary
+  シナリオ: 送料
+    もし 5000円の注文の送料を計算する
+    ならば 送料は0円になる
+""", encoding="utf-8")
+            converted = subprocess.run(["node", str(TOOLS / "gherkin-cases/bin/gherkin-cases.js"),
+                                        "shipping.feature", "-o", "generated/cases.json"], cwd=root, capture_output=True, text=True)
+            self.assertEqual(converted.returncode, 0, converted.stdout + converted.stderr)
+            checked = subprocess.run(["node", str(TOOLS / "testcase-lint/bin/testcase-lint.js"), "generated/cases.json",
+                                      "--fail-on", "warning", "-f", "json"], cwd=root, capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 1, checked.stdout + checked.stderr)
+            data = json.loads(checked.stdout)
+            finding = next(f for f in data["findings"] if f["code"] == "T01")
+            self.assertEqual(finding["cases"], ["SHIP-01"])
+            self.assertEqual(finding["file"], "shipping.feature")
+
     def test_feature_to_python_unit_and_node_cli_e2e_with_exact_evidence(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "app"

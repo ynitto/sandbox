@@ -3,13 +3,14 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { parseArgs } = require('util');
-const { defaults, loadConfig } = require('../config');
+const { defaults, loadConfig, severityOf } = require('../config');
 const { globSync, isGlob, toRegex } = require('../glob');
 const { display } = require('../audit');
 const { RENDERERS } = require('../report');
 const { writeEvidence } = require('../evidence');
-const { SEVERITY_ORDER } = require('../rules');
+const { SEVERITY_ORDER, RULES } = require('../rules');
 const { analyze } = require('./analyze');
+const { annotateTemporary, temporaryFindings, temporaryInputs } = require('../temporary');
 
 const EXT = /\.(?:[cm]?[jt]sx?|py)$/i;
 const NAMED = /(?:\.(?:test|spec)\.[cm]?[jt]sx?|(?:^|[\\/])test_[^/\\]+\.py|_test\.py)$/i;
@@ -45,7 +46,8 @@ function filesFor(inputs, cfg) {
 function readIR(filename) {
   const data = JSON.parse(fs.readFileSync(filename, 'utf8'));
   const Ajv = require('ajv');
-  const validate = new Ajv({ allErrors: true }).compile(require('../../schema/test-code.schema.json'));
+  const validate = new Ajv({ allErrors: true, allowUnionTypes: true }).addSchema(require('../../schema/testcase.schema.json'), 'testcase.schema.json')
+    .compile(require('../../schema/test-code.schema.json'));
   if (!validate(data)) throw fail(`テストコードの中間表現が書式と違います: ${JSON.stringify(validate.errors[0])}`);
   return data;
 }
@@ -92,6 +94,7 @@ async function codeCheck(args, io) {
           if (proc.error || proc.status !== 0) throw fail(`Python AST アダプターを動かせません: ${proc.error?.message || proc.stderr}`);
           result = JSON.parse(proc.stdout);
         } else result = require('./javascript').javascript(source, file, filename, cfg.code);
+        annotateTemporary(result.tests, result.comments || [], source);
         const directives = new Map();
         source.split('\n').forEach((line, i) => {
           if (!/^\s*(?:\/\/|#)\s*testcase-lint-code-ignore-next-line\b/.test(line)) return;
@@ -114,17 +117,22 @@ async function codeCheck(args, io) {
   // 同じ未解析位置を、親suiteと個々の宣言から二重に報告しない。
   diagnostics = [...new Map(diagnostics.map((d) => [JSON.stringify([d.file, d.line, d.reason]), d])).values()];
   const complete = diagnostics.length === 0;
-  const allFindings = analyze(tests, diagnostics, cfg);
+  const allFindings = [...analyze(tests, diagnostics, cfg), ...temporaryFindings(tests).flatMap((f) => {
+    const severity = severityOf(cfg, f.code);
+    return severity ? [{ ...f, severity, category: RULES[f.code][0], name: RULES[f.code][2] }] : [];
+  })];
   const minSeverity = values['min-severity'] || cfg.minSeverity;
   const findings = allFindings.filter((f) => SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER[minSeverity]);
-  const metadata = tests.filter((t) => t.body).map((t) => ({ file: t.file, line: t.line, title: t.fullTitle, framework: t.framework, comparable: t.comparable }));
+  const metadata = tests.filter((t) => t.body).map((t) => ({ file: t.file, line: t.line, title: t.fullTitle, framework: t.framework, comparable: t.comparable,
+    ...(Object.prototype.hasOwnProperty.call(t, 'temporary') ? { temporary: t.temporary } : {}),
+    ...(t.temporarySignals?.length ? { temporarySignals: t.temporarySignals } : {}) }));
   const result = { files, cases: metadata, findings, spec: null, source: null,
     analysis: { mode: 'code', complete, tests: metadata.length, comparable: tests.filter((t) => t.comparable && !t.trivial).length, diagnostics,
       suppressions: tests.flatMap((t) => [t, ...(t.rows || [])].filter((m) => m.suppressions && Object.keys(m.suppressions).length)
         .map((m) => ({ file: t.file, line: m.line, rules: m.suppressions }))) },
     inputs: { config: cfg.file && display(cfg.file), auto: false, cases: values.ir ? [values.ir] : inputs, spec: [], source: [] } };
   const outputs = [values.out, values.evidence || cfg.code.evidence].filter(Boolean);
-  const protectedPaths = [...files.map((p) => path.resolve(p)), ...(values.ir ? [path.resolve(values.ir)] : [])];
+  const protectedPaths = [...files.map((p) => path.resolve(p)), ...temporaryInputs(tests), ...(values.ir ? [path.resolve(values.ir)] : [])];
   if (cfg.file) protectedPaths.push(path.resolve(cfg.file));
   if (outputs.some((p) => protectedPaths.includes(path.resolve(p)))) throw fail('点検する入力ファイルへは出力できません');
   if (outputs.length > 1 && path.resolve(outputs[0]) === path.resolve(outputs[1])) throw fail('レポートとevidenceの出力先は別にしてください');

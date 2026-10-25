@@ -1,8 +1,10 @@
 """PythonのテストをASTだけで読む。入力モジュールのimport・実行・evalはしない。"""
 import ast
 import hashlib
+import io
 import json
 import sys
+import tokenize
 from pathlib import Path
 
 
@@ -154,6 +156,7 @@ def extract(source, file):
         if unsupported:
             diagnostics.append({"file": file, "line": fn.lineno, "reason": "Pythonの動的な表・継承・デコレーター・スコープ/名前の観測を静的に確定できません"})
         tests.append({"file": file, "line": fn.lineno, "title": fn.name, "fullTitle": full_title,
+                      "annotationLine": min([fn.lineno, *(d.lineno for d in fn.decorator_list)]), "endLine": fn.end_lineno,
                       "framework": "unittest" if cls and any(dotted(base).startswith("unittest.") for base in cls.bases) else "pytest", "comparable": not unsupported,
                       "staticTitle": True, "parameterized": any(rows_for(d) is not None for d in fn.decorator_list),
                       "rows": all_rows, "trivial": not body or all(isinstance(n, ast.Pass) for n in body),
@@ -172,7 +175,11 @@ def extract(source, file):
     for node in ast.walk(tree):
         if is_test(node) and id(node) not in handled:
             diagnostics.append({"file": file, "line": node.lineno, "reason": "条件分岐・関数の中などのPythonテスト登録は解析対象外です"})
-    return {"tests": tests, "diagnostics": diagnostics}
+    lines = source.splitlines()
+    comments = [{"line": token.start[0], "endLine": token.end[0], "text": token.string[1:],
+                 "standalone": not lines[token.start[0] - 1][:token.start[1]].strip()}
+                for token in tokenize.generate_tokens(io.StringIO(source).readline) if token.type == tokenize.COMMENT]
+    return {"tests": tests, "diagnostics": diagnostics, "comments": comments}
 
 
 if __name__ == "__main__":

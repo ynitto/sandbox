@@ -16,6 +16,10 @@ const D = CATEGORY.defect, A = CATEGORY.ambiguity, U = CATEGORY.duplicate, C = C
 const O = CATEGORY.oracle, X = CATEGORY.exec;
 
 const RULES = {
+  T01: [D, 'warning', '暫定テストの終了条件が未管理'],
+  T02: [D, 'error', '暫定テストの終了条件に達している'],
+  T03: [D, 'warning', '暫定実装の変更後に見直しが必要'],
+  T04: [D, 'error', '暫定テストの管理情報が不正'],
   D00: [D, 'error', 'ファイルを読めない'],
   D01: [D, 'warning', 'ID がない'],
   D02: [D, 'error', 'ID が重複している'],
