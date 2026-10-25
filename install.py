@@ -561,11 +561,17 @@ def parse_args() -> argparse.Namespace:
         metavar="AGENT",
         help="インストール対象エージェント: %(choices)s (default: %(default)s)",
     )
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--all-skills",
         action="store_true",
         default=False,
-        help="全スキル（tier 問わず）をインストールする (default: コアスキルのみ)",
+        help="全スキル（tier: deprecated を除く）をインストールする (default: コアスキルのみ)",
+    )
+    selection.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="レジストリの profiles にある NAME のスキルだけをインストールする（\"*\" は全件）",
     )
     parser.add_argument(
         "--skip-config",
@@ -611,6 +617,24 @@ def resolve_paths(agent_type: str) -> dict[str, str]:
         "registry_path": os.path.join(agent_home, "skill-registry.json"),
         "install_dir": REPO_ROOT,
     }
+
+
+def _profile_skills(registry_path: str, profile: str) -> list[str]:
+    """レジストリの profiles から profile のスキル名を返す。\"*\" を含めば全件（deprecated を除く）。
+
+    レジストリがまだ無ければ setup_registry が作る既定（default: [\"*\"]）だけがあるとみなす。
+    profile が無ければ ValueError（利用できる名前を添える）。
+    """
+    profiles = {"default": ["*"]}
+    if os.path.isfile(registry_path):
+        with open(registry_path, encoding="utf-8") as f:
+            profiles = json.load(f).get("profiles", {})
+    if profile not in profiles:
+        raise ValueError(f"プロファイル '{profile}' がありません（利用可能: {', '.join(profiles) or 'なし'}）")
+    names = profiles[profile]
+    if "*" in names:
+        return _discover_installable_skills(REPO_SKILLS_DIR)[0]
+    return list(dict.fromkeys(names))
 
 
 def ensure_directories(paths: dict[str, str]) -> None:
@@ -2867,7 +2891,18 @@ def main() -> None:
     ensure_directories(paths)
 
     # 2. スキルをコピー
-    if install_all:
+    if args.profile:
+        try:
+            names = _profile_skills(paths["registry_path"], args.profile)
+        except ValueError as e:
+            print(f"\nエラー: {e}")
+            sys.exit(1)
+        target_skills = [
+            name for name in names
+            if _is_skill_for_agent(os.path.join(REPO_SKILLS_DIR, name), agent_type)
+        ]
+        print(f"\n2. プロファイル '{args.profile}' のスキルをインストール ({len(target_skills)} 件)...")
+    elif install_all:
         # 全スキルのうち、このエージェントに対応しているものをインストール
         all_skills, deprecated = _discover_installable_skills(REPO_SKILLS_DIR)
         target_skills = [
@@ -2990,7 +3025,7 @@ def main() -> None:
 
     # 完了
     print("\n" + "=" * 50)
-    label = "全" if install_all else "コア"
+    label = f"プロファイル '{args.profile}' の" if args.profile else "全" if install_all else "コア"
     print(f"インストール完了: {len(installed)} 件の{label}スキル")
     print("=" * 50)
     print(f"\nエージェント:   {agent_type}")
