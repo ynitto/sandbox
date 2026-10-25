@@ -22,21 +22,24 @@ function writeEvidence(file, result, { prefix = 'testcase-lint', failOn = 'error
     { id: `${prefix}/warnings`, kind: 'metric', value: count('warning') },
     ...Object.entries(CATEGORY_IDS).map(([cat, id]) => ({ id: `${prefix}/${id}`, kind: 'metric', value: result.findings.filter((f) => f.category === cat).length })),
   ];
+  if (result.analysis) items.push({ id: `${prefix}/incomplete`, kind: 'metric', value: result.analysis.diagnostics.length, max: 0 });
   // 項目のパスは、今のフォルダ（root）からの相対で書く
   const dir = path.dirname(path.resolve(file));
   for (const caseFile of result.files) {
-    const bad = result.findings.filter((f) => f.file === caseFile && rank[f.severity] >= limit);
+    const bad = result.findings.filter((f) => (f.file === caseFile || f.inputFile === caseFile) && rank[f.severity] >= limit);
+    const incomplete = result.analysis?.diagnostics.find((d) => d.file === caseFile);
     const rel = caseFile;
     items.push({
       id: `${prefix}/${caseFile.replace(/\.(json|ya?ml)$/i, '')}`, kind: 'behavior', title: `${caseFile} の点検`,
-      status: bad.length ? 'failed' : 'passed', file: rel,
-      ...(bad.length ? { error: `${bad[0].code} ${bad[0].message}${bad.length > 1 ? `（ほか ${bad.length - 1} 件）` : ''}`, path: rel } : {}),
+      status: bad.length || incomplete ? 'failed' : 'passed', file: rel,
+      ...(bad.length ? { error: `${bad[0].code} ${bad[0].message}${bad.length > 1 ? `（ほか ${bad.length - 1} 件）` : ''}`, path: rel }
+        : incomplete ? { error: `静的に確定できない部分があります: ${incomplete.reason}`, path: rel } : {}),
     });
   }
   fs.mkdirSync(dir, { recursive: true });
   // 実パスどうしで比べる（macOS の /var → /private/var のようなリンクを挟むと、cwd だけが実パスになり root がずれる）
   const root = path.relative(fs.realpathSync(dir), fs.realpathSync(process.cwd()));
-  fs.writeFileSync(file, `${JSON.stringify({ version: 1, root: root.split(path.sep).join('/') || '.', items }, null, 2)}\n`);
+  fs.writeFileSync(file, `${JSON.stringify({ version: 1, purpose: 'check', root: root.split(path.sep).join('/') || '.', items }, null, 2)}\n`);
 }
 
 module.exports = { writeEvidence };

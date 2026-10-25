@@ -9,6 +9,8 @@
 // - conditions / params / data は「条件の組」としても持つ（組み合わせの点検に使う）
 
 const fs = require('fs');
+const pathUtil = require('path');
+const { createHash } = require('node:crypto');
 const YAML = require('yaml');
 
 const FIELD_ALIASES = {
@@ -33,7 +35,7 @@ const FIELD_ALIASES = {
 // 比べない付帯情報（前提にも入れない）
 const META_KEYS = new Set(['tags', 'tag', 'priority', 'severity', 'status', 'author', 'owner', 'notes', 'note',
   'comment', 'comments', 'category', 'type', 'level', 'component', 'module', 'automated', 'estimate', 'created',
-  'updated', 'version', 'skip', 'envs', 'variants', 'タグ', '優先度', '重要度', '状態', '作成者', '担当', '担当者',
+  'updated', 'version', 'skip', 'envs', 'variants', 'origin', 'group', 'タグ', '優先度', '重要度', '状態', '作成者', '担当', '担当者',
   '備考', 'メモ', 'コメント', '区分', '分類', '種別', 'カテゴリ', '機能', '画面', '自動化']);
 // 手順の中で期待結果を表すキー
 const STEP_EXPECT_KEYS = new Set(['expect', 'expected', 'expected_result', 'assert', 'verify', 'check', 'then',
@@ -267,6 +269,7 @@ function makeCase(m, file, group, index, kind, fmap) {
     }
   }
   c.preconditions.push(...extra);
+  if (Array.isArray(c.raw.group)) c.group.push(...c.raw.group.map(String));
   if (!c.title && desc) c.title = desc;
   return c;
 }
@@ -320,9 +323,10 @@ function extractCases(tree, file, fmap, startIndex = 0) {
 
 // 1 ファイルを読み、{ cases, findings, docs }（docs は書式の検査に使う素の値）を返す
 function loadFile(path, display, fmap, startIndex = 0) {
-  let text;
+  let text; let inputBuffer;
   try {
-    text = fs.readFileSync(path, 'utf8');
+    inputBuffer = fs.readFileSync(path);
+    text = inputBuffer.toString('utf8');
   } catch (e) {
     return { cases: [], docs: [], findings: [{ code: 'D00', message: `読めません: ${e.message}`, file: display, line: 0 }] };
   }
@@ -341,6 +345,37 @@ function loadFile(path, display, fmap, startIndex = 0) {
   }));
   const cases = [];
   for (const tree of parsed.trees) cases.push(...extractCases(tree, display, fmap, startIndex + cases.length));
+  const digest = (body) => createHash('sha256').update(body).digest('hex');
+  const inputHash = digest(inputBuffer);
+  for (const c of cases) {
+    c.input_sha256 = inputHash;
+    const origin = c.raw && c.raw.origin;
+    if (origin == null) continue;
+    try {
+      if (typeof origin !== 'object' || typeof origin.file !== 'string' || !origin.file
+          || !Number.isInteger(origin.line) || origin.line < 1 || !/^[a-f0-9]{64}$/.test(origin.input_sha256 || '')) {
+        throw new Error('origin には file・正の整数の line・input_sha256 が必要です');
+      }
+      const source = pathUtil.resolve(pathUtil.dirname(path), origin.file);
+      if (digest(fs.readFileSync(source)) !== origin.input_sha256) throw new Error('入力元が変わっています。ケースを再生成してください');
+      const rel = pathUtil.relative(process.cwd(), source);
+      c.generated = { file: c.file, line: c.line };
+      c.file = (rel && !rel.startsWith('..') ? rel : source).split(pathUtil.sep).join('/');
+      c.line = origin.line;
+      c.input_sha256 = origin.input_sha256;
+      c.origin = origin;
+      for (const field of ['preconditions', 'steps', 'expected']) {
+        if (origin.fields && origin.fields[field] != null && !Array.isArray(origin.fields[field])) throw new Error('origin.fields の各項目は行番号の配列です');
+        c[field].forEach((item, i) => {
+          const ln = origin.fields && origin.fields[field] && origin.fields[field][i];
+          if (ln != null && (!Number.isInteger(ln) || ln < 1)) throw new Error('origin.fields の行番号は正の整数です');
+          item.line = ln || c.line;
+        });
+      }
+    } catch (e) {
+      findings.push({ code: 'D00', message: `入力元の情報を使えません: ${e.message}`, file: display, line: c.generated?.line || c.line });
+    }
+  }
   if (!cases.length) {
     findings.push({
       code: 'D17', message: 'ケースを 1 件も読み取れませんでした（空のファイル、または項目名が読み取れる綴りと違います）', file: display, line: 0,

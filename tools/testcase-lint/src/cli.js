@@ -36,6 +36,12 @@ const USAGE = `testcase-lint — 自然文のテストケースを、テスト�
   testcase-lint spec [<フォルダ ...>]   仕様から何を読み取ったかを出す（突き合わせの前に確かめる）
   testcase-lint rules                  規則の一覧
   testcase-lint schema                 おすすめのケースの書式（JSON Schema）
+  testcase-lint code [<テストコードのパス・glob ...>]
+      JS/TS（importしたVitest・Jest・Node・Playwright）とPython（pytest・unittest）のASTを静的に比較する
+        --globals              importのないdescribe / test / itを明示的に使う
+        --allow-incomplete     未解析部分を表示しつつ終了を許す（0件は成功にしない）
+        --ir <file.json>       別の言語アダプターの中間表現を読む（schema/test-code.schema.json）
+      -c / -f / -o / --evidence / --fail-on / --min-severity も使える。設定は code.files / code.exclude / code.evidence
 
 終了コード: 0 = 落とす重さの指摘なし / 1 = あり / 2 = 使い方の誤り・点検するものが無い
 `;
@@ -44,7 +50,7 @@ function out(io, s) { io.out.write(s); }
 
 async function main(argv, io = { out: process.stdout, err: process.stderr }) {
   try {
-    const sub = ['check', 'spec', 'rules', 'schema', 'init'].includes(argv[0]) ? argv[0] : 'check';
+    const sub = ['check', 'code', 'spec', 'rules', 'schema', 'init'].includes(argv[0]) ? argv[0] : 'check';
     const rest = argv[0] === sub ? argv.slice(1) : argv;
     if (rest.includes('-h') || rest.includes('--help')) { out(io, USAGE); return 0; }
     if (rest.includes('--version')) { out(io, `testcase-lint ${version}\n`); return 0; }
@@ -52,6 +58,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
     if (sub === 'rules') return rules(io);
     if (sub === 'schema') return schema(io);
     if (sub === 'spec') return await specCmd(rest, io);
+    if (sub === 'code') return await require('./code/check').codeCheck(rest, io);
     return await check(rest, io);
   } catch (e) {
     io.err.write(`testcase-lint: ${e.message}\n`);

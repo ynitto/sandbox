@@ -37,7 +37,8 @@ test('独立: 依存はこのフォルダの package.json に書いたものだ�
     for (const m of fs.readFileSync(file, 'utf8').matchAll(/require\('([^']+)'\)/g)) {
       const name = m[1];
       if (name.startsWith('.') || name.startsWith('node:')) continue;
-      if (!allowed.has(name.split('/')[0])) bad.push(`${path.relative(ROOT, file)}: ${name}`);
+      const packageName = name.startsWith('@') ? name.split('/').slice(0, 2).join('/') : name.split('/')[0];
+      if (!allowed.has(packageName)) bad.push(`${path.relative(ROOT, file)}: ${name}`);
     }
   }
   assert.deepEqual(bad, []);

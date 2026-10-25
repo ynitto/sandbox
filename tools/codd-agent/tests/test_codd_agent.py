@@ -824,6 +824,36 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("参照先の変更案に design は無いのに、design が変わっています", r.stderr)
 
+    def test_bound_cases_run_through_verify_apply_with_current_receipt(self) -> None:
+        # 実際に呼び出した関数の結果をassertし、独立したJUnit変換を通して検査する。
+        commit(self.impl, {
+            "tests/cases.yaml": "cases:\n  - {id: TC-01, title: hello, steps: [helloを呼ぶ], expected: [1を返す]}\n",
+            "tests/test_app.py": "import contextlib, io, sys\nsys.path.insert(0, '.')\nfrom src.app import hello\n"
+                                 "with contextlib.redirect_stdout(io.StringIO()):\n    actual = hello()\n"
+                                 "assert actual == 1\nprint('<testsuite><testcase name=\"hello_return\"/></testsuite>')\n",
+            "test-bindings.json": json.dumps({"version": 1, "bindings": [{
+                "case": {"file": "tests/cases.yaml", "id": "TC-01"},
+                "targets": [{"suite": "unit", "file": "tests/test_app.py", "selector": "hello_return"}]}]}),
+            ".gitignore": (self.impl / ".gitignore").read_text() + "results/\n__pycache__/\n",
+        }, "add bound cases")
+        self.set_check(self.impl, ["test-bindings.json"], "test_bindings")
+        self.set_check(self.impl, ["results/*.json"], "evidence")
+        self.set_check(self.impl, [sys.executable, str(REPO / "tools/test-evidence/run.py"), "--bindings", "test-bindings.json",
+                                  "--suite", "unit", "--junit", "-", "--output", "results/unit.json", "--",
+                                  sys.executable, "tests/test_app.py"], "test")
+        plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
+                                    "- tests/test_app.py — 変更不要: helloの戻り値は1のまま\n"
+                                    "- tests/cases.yaml — 変更不要: helloの期待結果は1のまま")
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        (self.impl / "src/app.py").write_text("def hello():\n    print('hi')\n    return 1\n", encoding="utf-8")
+        result = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        receipt = json.loads((self.impl / ".codd/test-run.json").read_text())
+        evidence = json.loads((self.impl / "results/unit.json").read_text())
+        self.assertEqual(receipt["run_id"], evidence["run_id"])
+        self.assertEqual(evidence["items"][0]["status"], "passed")
+
     def test_verify_apply_both_and_runs_each_check(self) -> None:
         self.write_plan(PLAN_DRIFT)
         self.assert_plan_ok()

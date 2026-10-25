@@ -43,6 +43,25 @@
           "description": "見て確かめられる結果。文言は「」で囲み、件数・値は具体的に書く。失敗するケースは、変わらないこと（保存されていない等）も書く"
         },
         "tags": { "type": "array", "items": { "type": "string" } },
+        "group": { "type": "array", "items": { "type": "string" } },
+        "origin": {
+          "type": "object", "required": ["file", "line", "input_sha256"], "additionalProperties": false,
+          "properties": {
+            "file": { "type": "string", "minLength": 1, "description": "このJSON/YAMLからの相対の入力元パス" },
+            "line": { "type": "integer", "minimum": 1 },
+            "definition_line": { "type": "integer", "minimum": 1 },
+            "example_line": { "type": "integer", "minimum": 1 },
+            "input_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "fields": {
+              "type": "object", "additionalProperties": false,
+              "properties": {
+                "preconditions": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+                "steps": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+                "expected": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
+              }
+            }
+          }
+        },
         "priority": { "type": "string" }
       }
     }

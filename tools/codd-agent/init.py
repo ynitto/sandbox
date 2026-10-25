@@ -134,7 +134,8 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
             scope: list[str] | None = None, ref_scopes: list[str] | None = None, discover: bool = True,
             agents: tuple[str, ...] | list[str] = AGENT_KINDS, check: str | list[str] | None = None,
             test: str | list[str] | None = None, format: str | list[str] | None = None, exclude: list[str] | None = None,
-            ref_excludes: list[str] | None = None, evidence: list[str] | None = None) -> Path:
+            ref_excludes: list[str] | None = None, evidence: list[str] | None = None,
+            test_bindings: list[str] | None = None, test_catalogs: list[str] | None = None) -> Path:
     if not (target / ".git").exists():
         raise SystemExit(f"git リポジトリではありません: {target}")
     dest = target / DEST_REL
@@ -230,6 +231,9 @@ def init_repo(target: Path, side: str | None, refs: list[str] | None, gitignore:
             config.pop(key, None)
     if evidence is not None:
         config["evidence"] = [p for p in evidence if p]
+    for name, value in (("test_bindings", test_bindings), ("test_catalogs", test_catalogs)):
+        if value is not None:
+            config[name] = [p for p in value if p]
     if not existed:
         config.setdefault("guides", [])
         config.setdefault("graphify", "auto")
@@ -431,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
                         "{files} は変えたファイルの並びに置き換わる。繰り返すと書いた順に動かす。\"\" で消す")
     p.add_argument("--evidence", action="append", metavar="パス",
                    help='結果ファイルのパス・glob（繰り返し可。一覧を入れ替える。既定は扱わない。"" で消す）')
+    p.add_argument("--test-bindings", action="append", metavar="パス", help='ケースと個別テストの対応表（JSON。繰り返し可）')
+    p.add_argument("--test-catalogs", action="append", metavar="パス", help='個別テストとの対応漏れを調べるケース一覧（JSON。繰り返し可）')
     p.add_argument("--test", action="append", metavar="コマンド",
                    help="変えたあとに実行するテストのコマンド（例: \"npm test\"、\"python -m unittest\"）。"
                         "繰り返すと書いた順に動かす。\"\" で消す")
@@ -438,7 +444,8 @@ def main(argv: list[str] | None = None) -> int:
     dest = init_repo(Path(args.target).resolve(), args.side, args.ref, gitignore=not args.no_gitignore,
                    scope=args.scope, ref_scopes=args.ref_scope, discover=not args.no_discover_rules,
                    agents=() if args.no_agents else tuple(args.agent or AGENT_KINDS), check=args.check, test=args.test, format=args.format,
-                   exclude=args.exclude, ref_excludes=args.ref_exclude, evidence=args.evidence)
+                   exclude=args.exclude, ref_excludes=args.ref_exclude, evidence=args.evidence,
+                   test_bindings=args.test_bindings, test_catalogs=args.test_catalogs)
     config = json.loads((dest / "codd.json").read_text(encoding="utf-8-sig"))
     print(f"置きました: {dest}")
     refs = config["refs"]

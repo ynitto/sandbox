@@ -52,6 +52,6 @@ test('パッケージ: グローバルに入れる中身に、本体と書式が
   const r = spawnSync('npm', ['pack', '--dry-run', '--json'], { cwd: path.join(__dirname, '..'), encoding: 'utf8', shell: process.platform === 'win32' });
   assert.equal(r.status, 0, r.stderr);
   const files = JSON.parse(r.stdout)[0].files.map((f) => f.path);
-  for (const f of ['bin/testcase-lint.js', 'src/cli.js', 'src/glob.js', 'schema/testcase.schema.json', 'package.json']) assert.ok(files.includes(f), f);
+  for (const f of ['bin/testcase-lint.js', 'src/cli.js', 'src/glob.js', 'src/code/check.js', 'src/code/javascript.js', 'src/code/python.py', 'schema/test-code.schema.json', 'schema/testcase.schema.json', 'package.json']) assert.ok(files.includes(f), f);
   assert.ok(!files.some((f) => f.startsWith('test/') || f.startsWith('examples/')));
 });

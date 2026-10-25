@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "テストコードの静的な中間表現（言語アダプター向け）",
+  "type": "object", "required": ["version", "tests"],
+  "properties": {
+    "version": {"const": 1},
+    "tests": {"type": "array", "items": {
+      "type": "object", "required": ["file", "line", "title", "fullTitle", "framework", "comparable", "staticTitle", "context", "body"],
+      "properties": {
+        "file": {"type": "string", "minLength": 1}, "line": {"type": "integer", "minimum": 1},
+        "title": {"type": "string"}, "fullTitle": {"type": "string"}, "framework": {"type": "string", "minLength": 1},
+        "comparable": {"type": "boolean"}, "staticTitle": {"type": "boolean"}, "parameterized": {"type": "boolean"}, "trivial": {"type": "boolean"},
+        "context": {"type": "string", "minLength": 1},
+        "suppressions": {"type": "object", "propertyNames": {"pattern": "^K0[1-5]$"}, "additionalProperties": {"type": "string", "minLength": 1}},
+        "body": {"type": "object", "required": ["exact", "structural"], "properties": {
+          "exact": {"type": "string", "minLength": 1}, "structural": {"type": "string", "minLength": 1}
+        }},
+        "rows": {"type": "array", "items": {"type": "object", "required": ["key", "line"], "properties": {
+          "key": {"type": "string"}, "line": {"type": "integer", "minimum": 1}
+        }}}
+      }
+    }},
+    "diagnostics": {"type": "array", "items": {"type": "object", "required": ["file", "reason"], "properties": {
+      "file": {"type": "string"}, "line": {"type": "integer", "minimum": 0}, "reason": {"type": "string"}
+    }}}
+  }
+}
