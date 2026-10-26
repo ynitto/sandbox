@@ -2,6 +2,8 @@
 
 - 日付: 2026-10-25
 - 状態: 実装済み。既存の JSON/YAML の保守を拡張し、独立した入力変換・結果変換と実行例を追加した。
+- 2026-10-26 変更: 入力変換（gherkin-cases）と結果変換（test-evidence）は testcase-lint に統合した（`.feature` の直接点検と `testcase-lint run`）。
+  対応表・実行結果の形式と codd-agent 側は変えていない。経緯は [testcase-lint 設計](../designs/testcase-lint-design.md) にある。
 - 目的: testcase-lint と codd-agent を独立した道具のまま使い、設計・実装の変更に応じて単体・API・E2E テストを追加・更新する。
 - 前提: Cucumber/Gherkin、特定の言語、特定のテストランナーを必須にしない。
 
@@ -339,5 +341,5 @@ pytest、Jest、Playwright などのテストを保守するために、Cucumber
 
 - [codd-agent](../../tools/codd-agent/README.md): 任意の対応表・ケース一覧・個別実行結果の確認、計画と更新手順。
 - [testcase-lint](../../tools/testcase-lint/README.md): 正規化した一覧・入力元への指摘・点検結果の目的。
-- [test-evidence](../../tools/test-evidence/README.md): Python 標準ライブラリによる JUnit 実行・変換、共通形式のスキーマ、Python と Node.js の実行例。
-- [gherkin-cases](../../tools/gherkin-cases/README.md): 公式パーサーを使う独立した入力変換。両ツール本体への依存追加なし。
+- test-evidence（Python 標準ライブラリによる JUnit 実行・変換）と gherkin-cases（公式パーサーを使う入力変換）。
+  2026-10-26 に testcase-lint の `run` と `.feature` の読み取りへ統合した。

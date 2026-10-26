@@ -18,7 +18,6 @@ class Findings {
   // opts: { case, item, others, hint, excerpt, file, line }
   add(code, message, opts = {}) {
     const f = { code, message, file: opts.file || '', line: opts.line || 0, cases: [], related: [], hint: opts.hint || '', excerpt: opts.excerpt || '' };
-    if (opts.inputFile) f.inputFile = opts.inputFile;
     if (opts.case) {
       const c = opts.case;
       f.file = c.file;
@@ -26,7 +25,6 @@ class Findings {
       const others = opts.others || [];
       f.cases = [label(c), ...others.map(label)];
       f.related = others.map((o) => ({ file: o.file, line: o.line }));
-      if (c.generated) f.inputFile = c.generated.file;
     }
     this.list.push(f);
     return f;

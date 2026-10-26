@@ -12,7 +12,7 @@ const { RULES, SEVERITY_LABEL, SEVERITY_ORDER } = require('./rules');
 const tx = require('./text');
 const { version } = require('../package.json');
 
-const USAGE = `testcase-lint — 自然文のテストケースを、テストケースとしての妥当性で点検する（LLM は使わない）
+const USAGE = `testcase-lint — 自然文のテストケース（JSON / YAML / Gherkin）を、テストケースとしての妥当性で点検する（LLM は使わない）
 
 ふだんはオプション無しで実行する:
   testcase-lint
@@ -33,6 +33,8 @@ const USAGE = `testcase-lint — 自然文のテストケースを、テスト�
         --evidence <file>       結果ファイル（version 1 の items 形式）も書く
         --fail-on <重さ>         この重さ以上があれば終了コード 1（error 既定 / warning / info / never）
         --min-severity <重さ>    この重さ未満は出さない（info 既定 / warning / error）
+  testcase-lint run [<suite ...>] [-c <file>]
+      設定の run に書いたテストを実行し、JUnit を対応表（bindings）と突き合わせた実行結果を書く（既定 results/<suite>.json）
   testcase-lint spec [<フォルダ ...>]   仕様から何を読み取ったかを出す（突き合わせの前に確かめる）
   testcase-lint rules                  規則の一覧
   testcase-lint schema                 おすすめのケースの書式（JSON Schema）
@@ -48,9 +50,14 @@ const USAGE = `testcase-lint — 自然文のテストケースを、テスト�
 
 function out(io, s) { io.out.write(s); }
 
+function runCmd(args, io) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { config: { type: 'string', short: 'c' } } });
+  return require('./run').runCmd(positionals, io, loadConfig(values.config, { required: Boolean(values.config) }));
+}
+
 async function main(argv, io = { out: process.stdout, err: process.stderr }) {
   try {
-    const sub = ['check', 'code', 'spec', 'rules', 'schema', 'init'].includes(argv[0]) ? argv[0] : 'check';
+    const sub = ['check', 'code', 'run', 'spec', 'rules', 'schema', 'init'].includes(argv[0]) ? argv[0] : 'check';
     const rest = argv[0] === sub ? argv.slice(1) : argv;
     if (rest.includes('-h') || rest.includes('--help')) { out(io, USAGE); return 0; }
     if (rest.includes('--version')) { out(io, `testcase-lint ${version}\n`); return 0; }
@@ -59,6 +66,7 @@ async function main(argv, io = { out: process.stdout, err: process.stderr }) {
     if (sub === 'schema') return schema(io);
     if (sub === 'spec') return await specCmd(rest, io);
     if (sub === 'code') return await require('./code/check').codeCheck(rest, io);
+    if (sub === 'run') return runCmd(rest, io);
     return await check(rest, io);
   } catch (e) {
     io.err.write(`testcase-lint: ${e.message}\n`);

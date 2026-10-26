@@ -552,7 +552,7 @@ python3 tools/codd-agent/init.py ~/work/my-app \
 個別テストだけで照合する。実行時には一般的な環境変数 `TEST_EVIDENCE_RUN_ID` / `TEST_EVIDENCE_INPUTS_DIGEST` を渡す。
 別テストの成功、全 skip、古い結果、未知の合否、点検だけの結果では通らない。関連するテストを持つ参照先も実行する。
 
-形式と利用例は [test-evidence](../test-evidence/README.md) にある。JUnit 変換を使うか、この共通形式を直接書くかはプロジェクトが選べる。
+形式と利用例は [testcase-lint の run](../testcase-lint/README.md#テストを実行して結果を残す) にある。JUnit 変換を使うか、この共通形式を直接書くかはプロジェクトが選べる。
 この本体は各ランナーの構文や、ケースを読む道具の名前を知らない。Cucumber/Gherkin も不要。
 
 テストコードの静的な重複検査も、プロジェクトの `check` にコマンドを並べて接続できる。

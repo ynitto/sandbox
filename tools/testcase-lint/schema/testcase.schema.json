@@ -64,24 +64,6 @@
         },
         "tags": { "type": "array", "items": { "type": "string" } },
         "group": { "type": "array", "items": { "type": "string" } },
-        "origin": {
-          "type": "object", "required": ["file", "line", "input_sha256"], "additionalProperties": false,
-          "properties": {
-            "file": { "type": "string", "minLength": 1, "description": "このJSON/YAMLからの相対の入力元パス" },
-            "line": { "type": "integer", "minimum": 1 },
-            "definition_line": { "type": "integer", "minimum": 1 },
-            "example_line": { "type": "integer", "minimum": 1 },
-            "input_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-            "fields": {
-              "type": "object", "additionalProperties": false,
-              "properties": {
-                "preconditions": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
-                "steps": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
-                "expected": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
-              }
-            }
-          }
-        },
         "priority": { "type": "string" },
         "temporary": { "$ref": "#/definitions/temporary" }
       }

@@ -26,11 +26,11 @@ function writeEvidence(file, result, { prefix = 'testcase-lint', failOn = 'error
   // 項目のパスは、今のフォルダ（root）からの相対で書く
   const dir = path.dirname(path.resolve(file));
   for (const caseFile of result.files) {
-    const bad = result.findings.filter((f) => (f.file === caseFile || f.inputFile === caseFile) && rank[f.severity] >= limit);
+    const bad = result.findings.filter((f) => f.file === caseFile && rank[f.severity] >= limit);
     const incomplete = result.analysis?.diagnostics.find((d) => d.file === caseFile);
     const rel = caseFile;
     items.push({
-      id: `${prefix}/${caseFile.replace(/\.(json|ya?ml)$/i, '')}`, kind: 'behavior', title: `${caseFile} の点検`,
+      id: `${prefix}/${caseFile.replace(/\.(json|ya?ml|feature)$/i, '')}`, kind: 'behavior', title: `${caseFile} の点検`,
       status: bad.length || incomplete ? 'failed' : 'passed', file: rel,
       ...(bad.length ? { error: `${bad[0].code} ${bad[0].message}${bad.length > 1 ? `（ほか ${bad.length - 1} 件）` : ''}`, path: rel }
         : incomplete ? { error: `静的に確定できない部分があります: ${incomplete.reason}`, path: rel } : {}),

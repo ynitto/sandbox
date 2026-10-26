@@ -130,18 +130,14 @@ test('暫定CLI: 他言語の中間表現でも同じ期限・実装の規則を
   assert.ok(JSON.parse(result.out).findings.some((f) => f.code === 'T02'));
 });
 
-test('暫定ケース: 生成ケースは元ファイルから実装を参照し、失敗を生成入力の証拠にも残す', async () => {
-  const source = '機能: 送料\n  シナリオ: 固定値\n';
-  const meta = { reason: '正式実装待ち', implementation: { file: '../src/shipping.py', marker: 'TEMP-SHIPPING' } };
-  const dir = tmp({ 'tests/shipping.feature': source, 'src/shipping.py': 'def shipping():\n    return 500\n',
-    'generated/cases.json': JSON.stringify({ cases: [{ id: 'SHIP-01', title: '送料', steps: ['送料を計算する'], expected: ['送料は0円になる'],
-      temporary: meta, origin: { file: '../tests/shipping.feature', line: 2, input_sha256: createHash('sha256').update(source).digest('hex') } }] }) });
+test('暫定ケース: .feature の @temporary は元の行で T01 になり、そのファイルの証拠を落とす', async () => {
+  const dir = tmp({ 'tests/shipping.feature': '# language: ja\n機能: 送料\n  @case:SHIP-01 @temporary\n  シナリオ: 固定値\n    もし 送料を計算する\n    ならば 送料は0円になる\n' });
   const evidence = path.join(dir, 'results/check.json');
-  const result = await cli([path.join(dir, 'generated/cases.json'), '-f', 'json', '--evidence', evidence]);
+  const result = await cli([path.join(dir, 'tests/shipping.feature'), '-f', 'json', '--evidence', evidence, '--fail-on', 'warning']);
   assert.equal(result.code, 1, result.err);
-  const finding = JSON.parse(result.out).findings.find((f) => f.code === 'T02');
+  const finding = JSON.parse(result.out).findings.find((f) => f.code === 'T01');
   assert.equal(finding.file, path.join(dir, 'tests/shipping.feature'));
-  assert.equal(finding.inputFile, path.join(dir, 'generated/cases.json'));
+  assert.equal(finding.line, 4);
   assert.equal(JSON.parse(fs.readFileSync(evidence, 'utf8')).items.find((i) => i.kind === 'behavior').status, 'failed');
 });
 
