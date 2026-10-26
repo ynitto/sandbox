@@ -571,7 +571,7 @@ def parse_args() -> argparse.Namespace:
     selection.add_argument(
         "--profile",
         metavar="NAME",
-        help="レジストリの profiles にある NAME のスキルだけをインストールする（\"*\" は全件）",
+        help="レジストリの profiles にある NAME のスキルだけをインストールし、それ以外のこのリポジトリのスキルは削除する（\"*\" は全件）",
     )
     parser.add_argument(
         "--skip-config",
@@ -686,6 +686,26 @@ def copy_skills(paths: dict[str, str], skill_names: list[str]) -> list[dict]:
     return installed
 
 
+def prune_skills(paths: dict[str, str], keep: list[str]) -> list[str]:
+    """skill_home から、このリポジトリのスキルのうち keep に無いものを消し、消した名前を返す。
+
+    外部スキル（caveman など）や利用者が自分で置いたスキルは、このリポジトリに同名が
+    無いので触らない。
+    """
+    removed = []
+    if not os.path.isdir(paths["skill_home"]):
+        return removed
+    for name in sorted(os.listdir(paths["skill_home"])):
+        dest = os.path.join(paths["skill_home"], name)
+        if name in keep or not os.path.isdir(dest):
+            continue
+        if not os.path.isfile(os.path.join(REPO_SKILLS_DIR, name, "SKILL.md")):
+            continue
+        shutil.rmtree(dest)
+        removed.append(name)
+    return removed
+
+
 def detect_repo_url() -> str | None:
     """clone 元リポジトリの URL を取得する。"""
     try:
@@ -706,6 +726,7 @@ def setup_registry(
     paths: dict[str, str],
     agent_type: str,
     external_repos: list[dict] | None = None,
+    removed_skills: list[str] | None = None,
 ) -> None:
     """レジストリを初期生成または更新する。
 
@@ -749,6 +770,8 @@ def setup_registry(
     existing = {s["name"]: s for s in reg.get("installed_skills", [])}
     for s in installed_skills:
         existing[s["name"]] = s
+    for name in removed_skills or []:
+        existing.pop(name, None)
     reg["installed_skills"] = list(existing.values())
 
     # ソースリポジトリを自動登録
@@ -2928,6 +2951,10 @@ def main() -> None:
             print("\n2. コアスキルをインストール...")
 
     installed = copy_skills(paths, target_skills)
+    # プロファイルに無い分はディスクからも消す（置いたままだと常時枠に載り続ける）
+    removed = prune_skills(paths, target_skills) if args.profile else []
+    if removed:
+        print(f"   プロファイルに無いため削除: {', '.join(removed)}")
     if not installed:
         print("   エラー: インストールできるスキルがありません")
         sys.exit(1)
@@ -2937,7 +2964,7 @@ def main() -> None:
     external_repos = [] if args.excludes_external_skills else [
         external_skill_repository(s) for s in external_skills_for(agent_type)
     ]
-    setup_registry(installed, paths, agent_type, external_repos)
+    setup_registry(installed, paths, agent_type, external_repos, removed)
 
     # 4. 指示ファイルをコピー
     print("\n4. エージェント指示ファイルをコピー...")
