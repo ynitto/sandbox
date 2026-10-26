@@ -1,0 +1,7 @@
+# 送料計算の例。このフォルダで testcase-lint（点検）と testcase-lint run（実行）を使う。
+cases: [tests/shipping.feature]
+bindings: test-bindings.json
+evidence: results/case-check.json
+run:
+  unit: { command: [python3, run_unit.py] }
+  e2e: { command: [node, --test, --test-reporter=junit, tests/e2e.test.cjs] }

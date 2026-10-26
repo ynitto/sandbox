@@ -556,7 +556,7 @@ graphify の `affected` を呼ぶのをやめ、codd.py が `graph.json` を読�
 
 旧 evidence は従来の表示・文書への写しに使えるが、新しい厳密な確認には使わない。
 `purpose: check` はケースの点検などを表し、実行確認には数えない。
-結果変換の独立した例と形式は [test-evidence](../../tools/test-evidence/README.md)、設定は [README](../../tools/codd-agent/README.md) に記す。
+結果変換の例と形式は [testcase-lint の run](../../tools/testcase-lint/README.md)、設定は [README](../../tools/codd-agent/README.md) に記す。
 本体にはその変換ツールの名前・配置・ランナー固有の構文を組み込まない。
 
 ### 4.3 テストで得たもの（evidence）を実装と文書に返す

@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### testcase-lint: Gherkin をそのまま点検し、`testcase-lint run` でテストを実行して結果を残す（0.2.0）
+
+- `.feature` を直接読む。指摘は `.feature` の行に出る。別の変換コマンド（gherkin-cases）と、生成した JSON・その `origin`・
+  「入力元が変わったので再生成」の D00 はなくした
+- `testcase-lint run [suite ...]`：設定の `run` に書いたテストを実行し、JUnit を対応表（`bindings`）と突き合わせて
+  `results/<suite>.json` に実行結果を書く。Python の別ツール（test-evidence の `run.py`）を置き換える。結果の形式・環境変数・
+  失敗の判定は同じなので、結果を読む側は変更不要
+- 対応表の点検 B01（ケースが無い）・B02（テストのファイルが無い・書き方の誤り）・B03（どのテストにも対応していないケース。参考）
+- 依存に `@cucumber/gherkin` を足した
+
 ### agent-app: 手動実行が終わったあと、同じセッションへ続けて依頼できるようにする（agent-app 0.49.0）
 
 - タスクの手動実行の端末の下に、会話画面と同じ入力欄を置いた。実行中は「端末操作」だけ、実行が終わると「メッセージ」から同じセッションへ送れる
