@@ -76,7 +76,91 @@ if (runTermHost) {
   runTermHost.slot = 'task-run-terminal';
   runTermHost.style.cssText = 'height:420px;min-height:200px;overflow:hidden';
   workbenchHost.appendChild(runTermHost);
-  runTerm.configure({ onError: (error) => toast(error.message, true) });
+  runTerm.configure({
+    onError: (error) => toast(error.message, true),
+    onFocus: () => setRunInputMode('terminal', { focus: false }),
+    onEscape: () => {
+      const result = InputMode.handleEscape(runInput);
+      runInput = result.state;
+      if (!result.forward) setRunInputMode('message');
+      return result.forward;
+    },
+  });
+}
+
+// 手動実行の端末の下に置く入力欄（light DOM。会話画面と同じ .composer-shell）。
+// 実行中は端末操作だけ、実行が終わったら同じセッションへ続けて依頼できる。
+const runComposer = runTerm ? document.getElementById('run-composer') : null;
+const RUN_TERMINAL_KEYS = { Escape: '\x1b', Tab: '\t', Enter: '\r', Newline: '\n', Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D', 'C-c': '\x03' };
+let runInput = window.InputMode ? InputMode.create() : { mode: 'message' };
+const lightEl = (id) => document.getElementById(id);
+
+function runSessionAlive() {
+  return state.run.taskKey === runTaskKey() && !!state.run.terminal && (state.run.running || !!state.run.session);
+}
+
+function setRunInputMode(mode, { focus = true } = {}) {
+  if (!runComposer) return;
+  const alive = runSessionAlive();
+  const next = mode === 'terminal' && alive ? 'terminal' : 'message';
+  runInput = InputMode.reduce(runInput, { type: `${next}-focus` });
+  for (const [id, name] of [['run-mode-message', 'message'], ['run-mode-terminal', 'terminal']]) {
+    lightEl(id).setAttribute('aria-pressed', String(next === name));
+  }
+  lightEl('run-mode-terminal').disabled = !alive;
+  lightEl('run-message-input').hidden = next === 'terminal';
+  lightEl('run-terminal-keys').hidden = next !== 'terminal';
+  lightEl('run-composer-toolbar').hidden = next === 'terminal';
+  runTerm.setInputEnabled(next === 'terminal');
+  if (focus) {
+    if (next === 'terminal') runTerm.focus();
+    else lightEl('run-prompt').focus();
+  }
+}
+
+function renderRunComposer() {
+  if (!runComposer) return;
+  const own = state.run.taskKey === runTaskKey();
+  runComposer.hidden = !own || !state.run.terminal;
+  const session = own ? state.run.session || '' : '';
+  const canSend = session === 'ready' && !state.run.running;
+  lightEl('run-prompt').disabled = !canSend;
+  lightEl('run-send').disabled = !canSend;
+  lightEl('run-send').hidden = session === 'busy';
+  lightEl('run-interrupt').hidden = session !== 'busy';
+  const status = lightEl('run-input-status');
+  status.textContent = state.run.running ? '実行中' : session === 'busy' ? '応答中' : session ? '' : 'セッション終了';
+  status.className = `input-status ${state.run.running || session === 'busy' ? 'pending' : ''}`.trim();
+  setRunInputMode(runInput.mode, { focus: false });
+}
+
+async function sendRunFollowup() {
+  const box = lightEl('run-prompt');
+  const text = box.value.trim();
+  if (!text || state.run.session !== 'ready' || state.run.running) return;
+  state.run.session = 'busy';
+  renderRunComposer();
+  const sent = await guard('送信', () => automationHost.runFollowup(state.run.requestId, text));
+  if (sent == null) { if (state.run.session === 'busy') state.run.session = 'ready'; }
+  else box.value = '';
+  renderRunComposer();
+}
+
+if (runComposer) {
+  lightEl('run-send').addEventListener('click', sendRunFollowup);
+  lightEl('run-interrupt').addEventListener('click', () => guard('中止', () => automationHost.runInterrupt(state.run.requestId)));
+  lightEl('run-mode-message').addEventListener('click', () => setRunInputMode('message'));
+  lightEl('run-mode-terminal').addEventListener('click', () => setRunInputMode('terminal'));
+  lightEl('run-prompt').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendRunFollowup(); }
+  });
+  for (const button of runComposer.querySelectorAll('[data-run-key]')) {
+    button.addEventListener('click', () => {
+      setRunInputMode('terminal', { focus: false });
+      runTerm.sendKey(RUN_TERMINAL_KEYS[button.dataset.runKey] || '');
+      runTerm.focus();
+    });
+  }
 }
 
 function renderRunTerminal() {
@@ -87,7 +171,7 @@ function renderRunTerminal() {
       if (state.run.screen) runTerm.applyScreen(state.run.screen);
     });
   }
-  runTerm.setInputEnabled(state.run.taskKey === runTaskKey() && state.run.running && !!state.run.terminal);
+  renderRunComposer();
   runTerm.refit();
 }
 
@@ -873,7 +957,6 @@ function bindHome(main) {
   on('run-start', () => startRun('run'));
   on('run-check', () => startRun('check'));
   on('run-stop', () => automationHost.runStop());
-  on('run-terminal-focus', () => runTerm?.focus());
   on('command-edit', () => { state.execution.scheduleOpen = true; state.execution.scheduleDraft = null; render(); });
   on('schedule-toggle', () => { state.execution.scheduleOpen = !state.execution.scheduleOpen; render(); });
   on('schedule-after-run', openScheduleAfterRun);
@@ -1399,7 +1482,7 @@ function executionDetailHtml(machine) {
     ? `<section class="execution-card"><div class="execution-card-head"><div><h3>実行履歴</h3><p>直近の手動実行と定期実行</p></div></div>${history ? `<ul class="run-history">${history}</ul>` : '<p class="muted small">実行履歴なし</p>'}${historyLog}</section>`
     : state.execution.detailTab === 'overview' ? `
       ${machine.kind === 'command' ? (taskIdentity(machine) === 'new-command' ? '' : `<section class="execution-card"><div class="execution-card-head"><h3>コマンド</h3><button type="button" id="command-edit">名前・コマンドを編集</button></div><pre>${esc(commandText(machine.entry?.command))}</pre>${machine.error ? `<p class="run-result ng">${esc(machine.error)}</p>` : ''}<div class="row"><button type="button" class="primary" id="run-start" ${state.run.running || snapshot.available === false || machine.error ? 'disabled' : ''}>今すぐ実行</button><button type="button" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button></div>${result}${logView}</section>`) : `<div class="manual-run"><section class="execution-card run-card"><div class="execution-card-head"><h3>手動実行</h3><span class="status ${displayedRun.running ? 'active' : ''}">${displayedRun.running ? '実行中' : '待機中'}</span></div>
-        ${taskWarning}${inputs}${result}${Reuse.artifacts(displayedRun.lines.map(item => item.line).join('\n')).map(rel => `<button type="button" class="tiny" data-artifact="${esc(rel)}">${esc(rel)}</button>`).join('')}${displayedRun.terminal ? `<div class="run-terminal-help"><span>${displayedRun.running ? '確認や追加入力を求められたら、端末へ直接入力できます。' : '実行時の端末'}</span>${displayedRun.running ? '<button type="button" id="run-terminal-focus" class="tiny">端末に入力</button>' : ''}</div><slot name="task-run-terminal"></slot>` : ''}${logView}<div class="run-toolbar">${runFields}${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<div class="run-actions"><button type="button" class="danger" id="run-stop" ${displayedRun.running ? '' : 'disabled'}>停止</button><button type="button" class="primary" id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button></div></div></section></div>`}
+        ${taskWarning}${inputs}${result}${Reuse.artifacts(displayedRun.lines.map(item => item.line).join('\n')).map(rel => `<button type="button" class="tiny" data-artifact="${esc(rel)}">${esc(rel)}</button>`).join('')}${displayedRun.terminal ? '<slot name="task-run-terminal"></slot><slot name="task-run-composer"></slot>' : ''}${logView}<div class="run-toolbar">${runFields}${machine.kind === 'statemachine' ? `<button type="button" id="run-check" ${state.run.running ? 'disabled' : ''}>構成を確認</button>` : ''}<div class="run-actions"><button type="button" class="danger" id="run-stop" ${displayedRun.running || displayedRun.session ? '' : 'disabled'}>停止</button><button type="button" ${displayedRun.session ? '' : 'class="primary" '}id="run-start" ${state.run.running || (snapshot.available === false && machine.kind !== 'statemachine') || !state.agents.length || !canRun ? 'disabled' : ''}>実行</button></div></div></section></div>`}
       <section class="execution-card ${snapshot.available === false ? 'is-off' : ''}"><div class="execution-card-head"><div><h3>定期実行</h3><p>リポジトリ全体のスケジューラー · ${schedules.length ? `${schedules.length} 件の予定` : '予定なし'} · ${esc(daemonStatus)}</p></div><div class="row"><button type="button" id="daemon-toggle" ${snapshot.available === false || (!schedules.length && !daemon.running) ? 'disabled' : ''}>${daemon.running ? '定期実行を停止' : '定期実行を開始'}</button>${['statemachine', 'prompt', 'command'].includes(machine.kind) ? `<button type="button" id="schedule-toggle" ${snapshot.available === false ? 'disabled' : ''}>${state.execution.scheduleOpen ? '閉じる' : schedules.length ? '予定を編集' : '予定を追加'}</button>` : ''}</div></div>${scheduleRows ? `<ul class="run-history schedule-list">${scheduleRows}</ul>` : ''}${state.execution.scheduleOpen ? scheduleEditorHtml(machine) : ''}</section>${machine.machine ? window.Publish.cardHtml(state.root, 'task', machine.machine) : ''}` : '';
   return taskDetailShellHtml(machine, state.execution.detailTab, detail);
 }
@@ -2517,6 +2600,7 @@ async function startRun(mode, confirmed = false) {
   run.lines = [];
   run.requestId = '';
   run.terminal = false;
+  run.session = '';
   run.logOpen = false;
   run.screen = null;
   if (runTerm) runTerm.detach();
@@ -2881,6 +2965,13 @@ async function init() {
     state.run.screen = p;
     if (runTerm && state.run.taskKey === runTaskKey()) runTerm.applyScreen(p);
   });
+  automationHost.onRunSession((p) => {
+    if (!state.run.requestId || state.run.requestId !== p.requestId) return;
+    state.run.session = p.phase === 'closed' ? '' : p.phase === 'busy' ? 'busy' : 'ready';
+    if (p.error) toast(p.error, true);
+    if (state.view === 'home' && state.homeTab === 'run') render();
+    else renderRunComposer();
+  });
   automationHost.onAiProgress((p) => receiveAiProgress(p));
   automationHost.onAiResult((p) => receiveAiResult(p));
   automationHost.onRunExit(async (p) => {
@@ -2889,6 +2980,8 @@ async function init() {
     state.run.result = p.result || { ok: p.code === 0 };
     state.run.manualSuccess = p.mode === 'run' && state.run.result.ok === true;
     state.run.error = p.error || '';
+    // 端末のセッションが残っていれば、入力欄から同じセッションへ続けて依頼できる。
+    state.run.session = p.session ? 'ready' : '';
     appendLog({ kind: state.run.result.ok ? 'stdout' : 'stderr', line: state.run.result.ok ? (p.mode === 'check' ? '— 構成を確認しました' : '— 実行が完了しました') : '— 実行を完了できませんでした' });
     notifyHost('tasks', state.execution.selected);
     if (state.view === 'home' && state.homeTab === 'run') render();
