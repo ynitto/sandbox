@@ -2,11 +2,11 @@
   "version": 1,
   "bindings": [
     {
-      "case": { "file": "tests/cases.yaml", "id": "SHIP-01" },
+      "case": { "file": "tests/shipping.feature", "id": "SHIP-01" },
       "targets": [{ "suite": "unit", "file": "tests/test_shipping.py", "selector": "ShippingTest::test_below" }]
     },
     {
-      "case": { "file": "tests/cases.yaml", "id": "SHIP-02" },
+      "case": { "file": "tests/shipping.feature", "id": "SHIP-02" },
       "targets": [
         { "suite": "unit", "file": "tests/test_shipping.py", "selector": "ShippingTest::test_free" },
         { "suite": "e2e", "file": "tests/e2e.test.cjs", "selector": "checkout/free-shipping" }

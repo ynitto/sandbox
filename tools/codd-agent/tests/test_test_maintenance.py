@@ -16,6 +16,8 @@ SPEC = importlib.util.spec_from_file_location("codd_maintenance", TOOL / "machin
 codd = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = codd
 SPEC.loader.exec_module(codd)
+LINT = TOOL.parent / "testcase-lint/bin/testcase-lint.js"
+LINT_READY = bool(shutil.which("node")) and (TOOL.parent / "testcase-lint/node_modules/yaml").exists()
 
 
 class MaintenanceTest(unittest.TestCase):
@@ -192,17 +194,62 @@ class MaintenanceTest(unittest.TestCase):
         self.json("results/cases.json", {"cases": [{"file": rel, "id": "SHIP-01", "input_sha256": self.digest(rel)}]})
         self.assertEqual(self.problems(), [])
 
-    @unittest.skipUnless(shutil.which("node"), "node is needed for this runner integration")
+    @unittest.skipUnless(LINT_READY, "node と testcase-lint の依存（npm install）が要る")
     def test_real_node_junit_runner_produces_accepted_evidence(self):
+        self.write("testcase-lint.config.yaml", "bindings: test-bindings.json\n"
+                   f"run:\n  unit: {{ command: [{json.dumps(shutil.which('node'))}, --test, --test-reporter=junit, tests/shipping.test.js] }}\n")
         self.receipt()
-        command = [sys.executable, str(TOOL.parent / "test-evidence/run.py"), "--bindings", "test-bindings.json",
-                   "--suite", "unit", "--junit", "-", "--output", "results/unit.json", "--",
-                   shutil.which("node"), "--test", "--test-reporter=junit", "tests/shipping.test.js"]
+        command = [shutil.which("node"), str(LINT), "run"]
         env = {**os.environ, "TEST_EVIDENCE_RUN_ID": self.ctx._test_receipt["run_id"],
                "TEST_EVIDENCE_INPUTS_DIGEST": self.ctx._test_receipt["inputs_digest"]}
         result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertEqual(self.problems(), [])
+
+
+@unittest.skipUnless(LINT_READY, "node と testcase-lint の依存（npm install）が要る")
+class GherkinIntegrationTest(unittest.TestCase):
+    """.feature のケースを点検し、Python の単体と Node の E2E を実行した結果を、対応表で照合する。"""
+
+    def test_feature_to_python_unit_and_node_cli_e2e_with_exact_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "app"
+            shutil.copytree(TOOL.parent / "testcase-lint/examples/shipping", root,
+                            ignore=shutil.ignore_patterns("results", "__pycache__"))
+            config = (root / "testcase-lint.config.yaml").read_text(encoding="utf-8")
+            (root / "testcase-lint.config.yaml").write_text(config.replace("[python3,", f"[{json.dumps(sys.executable)},"), encoding="utf-8")
+            feature = root / "tests/shipping.feature"
+
+            def run(command, env=None, code=0):
+                result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                return result
+
+            run(["node", str(LINT), "-f", "json", "-o", "results/cases.json"])
+            catalog = json.loads((root / "results/cases.json").read_text())
+            self.assertEqual({c["file"] for c in catalog["cases"]}, {"tests/shipping.feature"})
+            self.assertEqual({c["id"] for c in catalog["cases"]}, {"SHIP-01", "SHIP-02"})
+            machine = root / ".statemachine/codd"
+            machine.mkdir(parents=True)
+            (machine / "codd.json").write_text(json.dumps({"side": "impl", "refs": [], "graphify": "off",
+                                                           "test_bindings": ["test-bindings.json"],
+                                                           "test_catalogs": ["results/cases.json"], "evidence": ["results/*.json"]}))
+            run(["git", "init", "-q", "-b", "main"])
+            run(["git", "add", "-A"])
+            run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "initial"])
+            with mock.patch.object(codd, "MACHINE_DIR", machine):
+                ctx = codd.Ctx(root)
+                ctx.data.mkdir(exist_ok=True)
+                ctx._test_receipt = {"run_id": "integration-run", "inputs_digest": codd.execution_inputs(ctx)}
+                run(["node", str(LINT), "run"], env={**os.environ, "PYTHON": sys.executable,
+                                                     "TEST_EVIDENCE_RUN_ID": ctx._test_receipt["run_id"],
+                                                     "TEST_EVIDENCE_INPUTS_DIGEST": ctx._test_receipt["inputs_digest"]})
+                problems = codd.bindings_execution_problems(ctx, 0, {("", "tests/shipping.feature")},
+                                                          {h: "なし" for h in codd.PLAN_HEADINGS})
+                self.assertEqual(problems, [])
+                feature.write_text(feature.read_text(encoding="utf-8").replace("4999", "4998"), encoding="utf-8")
+                self.assertTrue(codd.bindings_execution_problems(ctx, 0, {("", "tests/shipping.feature")},
+                                                               {h: "なし" for h in codd.PLAN_HEADINGS}))
 
 
 if __name__ == "__main__":

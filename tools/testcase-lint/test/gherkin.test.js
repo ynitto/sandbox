@@ -3,9 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const { spawnSync } = require('node:child_process');
-const { convert } = require('../src/convert');
+const { convert } = require('../src/gherkin');
+const { tmp, cli, run, byCode } = require('./helpers');
 
 const source = `# language: ja
 @requirement:REQ-12
@@ -24,7 +23,7 @@ const source = `# language: ja
         | SHIP-02 | 5000 | 0 |
 `;
 
-test('日本語・Rule・二段のBackground・Examplesを展開し入力元を保持する', () => {
+test('日本語・Rule・二段のBackground・Examplesを展開し、元の行を保持する', () => {
   const { cases, warnings } = convert(source, '../shipping.feature');
   assert.equal(warnings.length, 0);
   assert.deepEqual(cases.map((c) => c.id), ['SHIP-01', 'SHIP-02']);
@@ -34,10 +33,9 @@ test('日本語・Rule・二段のBackground・Examplesを展開し入力元を�
   assert.deepEqual(cases[1].steps, ['商品合計5000円の注文の送料を計算する']);
   assert.deepEqual(cases[1].expected, ['送料は0円になる']);
   assert.deepEqual(cases[0].conditions, { 金額: '4999' });
-  assert.equal(cases[0].origin.line, 14);
-  assert.deepEqual(cases[0].origin.fields.preconditions, [5, 8]);
-  assert.deepEqual(cases[0].origin.fields.expected, [11]);
-  assert.match(cases[0].origin.input_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(cases[0].lines.line, 14);
+  assert.deepEqual(cases[0].lines.fields.preconditions, [5, 8]);
+  assert.deepEqual(cases[0].lines.fields.expected, [11]);
 });
 
 test('Examplesの行の並べ替えで明示ID・生成IDが変わらない', () => {
@@ -92,19 +90,36 @@ test('別のシナリオが正常でも空のExamplesを黙って捨てない', 
 `, 'f.feature'), /展開できる例がない/);
 });
 
-test('CLIは出力先からの相対パスを書き、失敗時に既存出力を壊さない', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gherkin-cases-'));
-  try {
-    fs.writeFileSync(path.join(dir, 'shipping.feature'), source);
-    const cli = path.resolve(__dirname, '../bin/gherkin-cases.js');
-    const output = path.join(dir, 'generated', 'cases.json');
-    let result = spawnSync(process.execPath, [cli, 'shipping.feature', '-o', output], { cwd: dir, encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(fs.readFileSync(output, 'utf8')).cases[0].origin.file, '../shipping.feature');
-    const previous = fs.readFileSync(output, 'utf8');
-    fs.writeFileSync(path.join(dir, 'shipping.feature'), 'Feature: empty\n');
-    result = spawnSync(process.execPath, [cli, 'shipping.feature', '-o', output], { cwd: dir, encoding: 'utf8' });
-    assert.equal(result.status, 2);
-    assert.equal(fs.readFileSync(output, 'utf8'), previous);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+test('.feature を直接点検し、指摘を元の行に返す', async () => {
+  const findings = await run(`Feature: f
+  @case:TC-01
+  Scenario: s
+    When submit
+    Then TBD
+`, { name: 'f.feature' });
+  const [d07] = byCode(findings, 'D07');
+  assert.equal(d07.line, 5);
+  assert.deepEqual(d07.cases, ['TC-01']);
+  assert.match(d07.file, /f\.feature$/);
+});
+
+test('ID の無いシナリオは D01、構文の誤りは D00 になる', async () => {
+  assert.equal(byCode(await run('Feature: f\n  Scenario: s\n    When a\n    Then b\n', { name: 'f.feature' }), 'D01')[0].line, 2);
+  const [d00] = byCode(await run('Feature: f\n  Scenario: s\n    When a\n  Unexpected:\n', { name: 'f.feature' }), 'D00');
+  assert.equal(d00.line, 4);
+});
+
+test('@temporary タグも暫定テストの候補になる', async () => {
+  const findings = await run('Feature: f\n  @case:SHIP-01 @temporary\n  Scenario: s\n    When a\n    Then 送料は0円になる\n', { name: 'f.feature' });
+  assert.deepEqual(byCode(findings, 'T01').map((f) => f.cases), [['SHIP-01']]);
+});
+
+test('フォルダの下の .feature も読み、JSON のケース一覧には元のファイルとハッシュが出る', async () => {
+  const dir = tmp({ 'specs/shipping.feature': source });
+  const result = await cli([path.join(dir, 'specs'), '-f', 'json']);
+  const data = JSON.parse(result.out);
+  assert.deepEqual(data.cases.map((c) => c.id), ['SHIP-01', 'SHIP-02']);
+  assert.match(data.cases[0].file, /specs\/shipping\.feature$/);
+  assert.match(data.cases[0].input_sha256, /^[a-f0-9]{64}$/);
+  assert.ok(fs.existsSync(path.join(dir, 'specs/shipping.feature')));
 });

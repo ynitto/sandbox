@@ -16,8 +16,9 @@ const { RULES, SEVERITY_ORDER } = require('./rules');
 const { severityOf } = require('./config');
 const { globSync, isGlob } = require('./glob');
 const { temporaryFindings } = require('./temporary');
+const { bindingFindings } = require('./bindings');
 
-const EXTS = /\.(json|ya?ml|md)$/i;
+const EXTS = /\.(json|ya?ml|md|feature)$/i;
 
 // 仕様・実装に渡したパスの glob を、当てはまるファイルにする（フォルダ・ファイルはそのまま）
 function expandPaths(inputs) {
@@ -46,7 +47,7 @@ function expand(inputs) {
         for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
           if (e.name.startsWith('.') || e.name === 'node_modules') continue;
           const p = path.join(d, e.name);
-          if (e.isDirectory()) walk(p); else if (/\.(json|ya?ml)$/i.test(e.name) && !/^testcase-lint\.config\./.test(e.name)) out.push(p);
+          if (e.isDirectory()) walk(p); else if (/\.(json|ya?ml|feature)$/i.test(e.name) && !/^testcase-lint\.config\./.test(e.name)) out.push(p);
         }
       };
       walk(input);
@@ -61,20 +62,14 @@ function schemaFindings(schemaFile, loaded, f) {
   const schema = JSON.parse(JSON.stringify(require('yaml').parse(fs.readFileSync(schemaFile, 'utf8'))));
   const ajv = new Ajv({ allErrors: true, strict: false });
   const validate = ajv.compile(schema);
-  for (const { file, docs, trees, cases } of loaded) {
+  for (const { file, docs, trees } of loaded) {
     docs.forEach((doc, k) => {
       if (validate(doc)) return;
       for (const e of validate.errors.slice(0, 50)) {
         const segs = e.instancePath.split('/').slice(1).map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'));
         const where = e.instancePath || '(全体)';
         const extra = e.params && e.params.missingProperty ? `「${e.params.missingProperty}」がありません` : e.params && e.params.additionalProperty ? `「${e.params.additionalProperty}」は書式にない項目です` : e.message;
-        const numeric = segs.findIndex((s) => /^\d+$/.test(s));
-        const caseLine = numeric < 0 ? 0 : lineAt(trees[k], segs.slice(0, numeric + 1));
-        const origin = cases.find((c) => c.generated && c.generated.line === caseLine);
-        const field = numeric < 0 ? '' : segs[numeric + 1];
-        const item = origin && Array.isArray(origin[field]) ? origin[field][Number(segs[numeric + 2]) || 0] : null;
-        f.add('D16', `${where}: ${extra}`, { file: origin?.file || file, line: item?.line || origin?.line || lineAt(trees[k], segs),
-          ...(origin ? { inputFile: file } : {}), hint: `書式（${path.relative(process.cwd(), schemaFile).split(path.sep).join('/')}）に合わせる` });
+        f.add('D16', `${where}: ${extra}`, { file, line: lineAt(trees[k], segs), hint: `書式（${path.relative(process.cwd(), schemaFile).split(path.sep).join('/')}）に合わせる` });
       }
     });
   }
@@ -105,7 +100,7 @@ function collapse(findings) {
 async function audit(opts) {
   const cfg = opts.config;
   const files = expand(opts.cases);
-  if (!files.length) throw Object.assign(new Error('点検する .json / .yaml が見つかりません'), { exitCode: 2 });
+  if (!files.length) throw Object.assign(new Error('点検する .json / .yaml / .feature が見つかりません'), { exitCode: 2 });
   await tx.init();
   const fmap = new FieldMap(cfg.format.fields);
   const f = new Findings();
@@ -114,10 +109,11 @@ async function audit(opts) {
     const r = loadFile(p, display(p), fmap, cases.length);
     cases.push(...r.cases);
     for (const x of r.findings) f.add(x.code, x.message, { file: x.file, line: x.line, hint: x.hint });
-    loaded.push({ file: display(p), docs: r.docs, trees: r.trees || [], cases: r.cases });
+    loaded.push({ file: display(p), docs: r.docs, trees: r.trees || [] });
   }
   if (cfg.format.schema) schemaFindings(cfg.format.schema, loaded, f);
   f.list.push(...temporaryFindings(cases));
+  if (cfg.bindings) bindingFindings(cfg, cases, fmap, f, display);
 
   const specPaths = expandPaths(opts.spec); const sourcePaths = expandPaths(opts.source);
   const spec = opts.spec.length ? loadSpec(specPaths, { requirementId: cfg.requirementId, display }) : null;

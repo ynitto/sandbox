@@ -26,6 +26,13 @@
 //   test_data:
 //     domains: [staging.example.co.jp]    # テスト用のメールアドレスのドメインを足す（D18。末尾一致）
 //     cards: ["4000 0000 0000 0077"]      # テスト用のカード番号を足す（D19）
+//   bindings: test-bindings.json         # ケース ↔ 個別テストの対応表（B01〜B03 と run が使う）
+//   repos: { docs: ../my-app-docs }      # 対応表の case.side が指す別リポジトリ
+//   side: app                            # このリポジトリを表す case.side（既定は空）
+//   run:                                 # testcase-lint run で実行する suite（コマンドは引数の配列。シェルは通さない）
+//     unit: { command: [python3, -m, pytest, --junitxml=results/unit.xml], junit: results/unit.xml }
+//     e2e: { command: [node, --test, --test-reporter=junit, e2e.test.js] }   # junit を省けば標準出力
+//                                        # output（既定 results/<suite>.json）・timeout（秒。既定 600）
 
 const fs = require('fs');
 const path = require('path');
@@ -37,7 +44,7 @@ const DEFAULT_NAME = 'testcase-lint.config.yaml';
 // 設定ファイルが無いときに探すフォルダ（今のフォルダからの相対。あるものをすべて使う）
 const AUTO = {
   cases: ['tests/cases', 'test/cases', 'tests/testcases', 'testcases', 'test-cases', 'tests/scenarios', 'scenarios',
-    'tests/e2e', 'test/e2e', 'e2e', 'cases'],
+    'tests/e2e', 'test/e2e', 'e2e', 'cases', 'features', 'tests/features'],
   spec: ['docs/specs', 'docs/spec', 'docs/requirements', 'specs', 'spec', 'requirements'],
   source: ['src', 'app'],
 };
@@ -51,6 +58,7 @@ function defaults() {
     words: { vague: [], negative: [], pairs: [] },
     requirementId: null,
     testData: { domains: [], cards: [] },
+    bindings: null, side: '', repos: {}, run: {},
     code: { files: [], exclude: [], globals: false, python: process.platform === 'win32' ? 'python' : 'python3', evidence: null, maxBytes: 2 * 1024 * 1024 },
   };
 }
@@ -149,6 +157,24 @@ function loadConfig(file, { required = false } = {}) {
   if (raw.requirement_id) {
     try { new RegExp(raw.requirement_id); } catch (e) { throw fail(`requirement_id が正規表現として読めません: ${e.message}`); }
     cfg.requirementId = String(raw.requirement_id);
+  }
+  if (raw.bindings != null) cfg.bindings = rel(String(raw.bindings));
+  if (raw.side != null) cfg.side = String(raw.side);
+  const repos = raw.repos || {};
+  if (typeof repos !== 'object' || Array.isArray(repos)) throw fail('repos は「名前: フォルダ」の形で書きます');
+  for (const [name, dir] of Object.entries(repos)) {
+    if (!name || name === cfg.side) throw fail(`repos の名前「${name}」は、空でなく side と違う名前にします`);
+    cfg.repos[name] = rel(String(dir));
+  }
+  const suites = raw.run || {};
+  if (typeof suites !== 'object' || Array.isArray(suites)) throw fail('run は「suite: { command: [...] }」の形で書きます');
+  for (const [suite, s] of Object.entries(suites)) {
+    if (!s || typeof s !== 'object' || !Array.isArray(s.command) || !s.command.length || s.command.some((x) => typeof x !== 'string' && typeof x !== 'number')) {
+      throw fail(`run.${suite}.command は、コマンドと引数を並べた配列です（例: [npm, test]）`);
+    }
+    if (s.timeout != null && !(Number(s.timeout) > 0)) throw fail(`run.${suite}.timeout は正の秒数です`);
+    cfg.run[suite] = { command: s.command.map(String), junit: s.junit ? rel(String(s.junit)) : null,
+      output: rel(String(s.output || `results/${suite}.json`)), timeout: Number(s.timeout || 600) };
   }
   const td = raw.test_data || {};
   cfg.testData = { domains: list(td.domains).map((d) => d.toLowerCase()), cards: list(td.cards).map((x) => x.replace(/\D/g, '')) };

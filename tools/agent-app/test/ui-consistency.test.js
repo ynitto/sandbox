@@ -75,12 +75,13 @@ test('端末ミラーと入力欄は会話画面と同じ実体を使う（見�
   assert.match(html, /id="terminal-stage" class="terminal-stage"/);
   assert.match(html, /id="task-terminal" class="terminal-stage"/);
   assert.match(html, /id="flow-teach-terminal" class="terminal-stage"/);
-  assert.strictEqual((html.match(/class="composer-shell"/g) || []).length, 4, '入力欄は会話・タスク・ワークフロー・共有で同じクラス');
+  assert.strictEqual((html.match(/class="composer-shell"/g) || []).length, 5, '入力欄は会話・タスク・ワークフロー・共有・手動実行で同じクラス');
+  assert.match(html, /id="run-composer" class="composer-shell"/);
   // 見た目の宣言（背景・角丸・影）は共有クラスの側にだけある。
   assert.match(css, /^\.terminal-stage \{[^}]*background: var\(--term-bg\)/m);
   assert.match(css, /^\.composer-shell \{[^}]*border-radius: 16px/m);
   for (const clone of ['.task-terminal {', '.task-composer {', '.task-create {', '.task-record {',
-    '.flow-teach-terminal {', '.flow-teach-composer {', '.share-card {', '.share-terminal {', '.share-talk {']) {
+    '.flow-teach-terminal {', '.flow-teach-composer {', '.share-card {', '.share-terminal {', '.share-talk {', '.run-composer {']) {
     assert.ok(!css.includes(clone), `共有部品の私物な複製がある: ${clone}`);
   }
 });

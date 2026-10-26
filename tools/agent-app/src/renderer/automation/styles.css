@@ -167,7 +167,6 @@ h1, h2, h3 { margin: 0; font-weight: 650; }
   .run-parameter-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .run-parameter-control select[data-parameter-date] { width: 104px; }
 }
-.run-terminal-help { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .manual-run { min-width: 0; display: grid; gap: 8px; margin-bottom: 14px; }
 .run-toolbar { min-width: 0; display: flex; align-items: center; justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
 .run-actions { display: flex; flex: none; align-items: center; gap: 8px; margin-left: auto; }

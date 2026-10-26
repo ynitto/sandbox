@@ -540,6 +540,37 @@
               </div>
             </div>
           </div>
+          <!-- 手動実行の端末の下に置く入力欄。会話画面と同じ .composer-shell で、実行が終わったら
+               同じセッションへ続けて依頼できる。端末で 1 セッションとして動く実行にだけ出す。 -->
+          <div slot="task-run-composer" id="run-composer" class="composer-shell" hidden>
+            <div class="input-mode-switch" role="group" aria-label="入力先">
+              <button type="button" id="run-mode-message" aria-pressed="true">メッセージ</button>
+              <button type="button" id="run-mode-terminal" aria-pressed="false">端末操作</button>
+              <span id="run-input-status" class="input-status" role="status" aria-live="polite"></span>
+            </div>
+            <div id="run-message-input">
+              <label class="sr-only" for="run-prompt">AIへの依頼</label>
+              <textarea id="run-prompt" rows="3" placeholder="続けて AI に依頼する"></textarea>
+            </div>
+            <div id="run-terminal-keys" class="terminal-keys" hidden>
+              <button type="button" data-run-key="Escape">Esc</button>
+              <button type="button" data-run-key="Tab">Tab</button>
+              <button type="button" data-run-key="Enter" aria-label="端末へEnterキーを送る">Enter</button>
+              <button type="button" data-run-key="Newline" aria-label="端末へ改行を送る（送信しない）" title="Shift+Enter">改行</button>
+              <button type="button" data-run-key="Up">↑</button>
+              <button type="button" data-run-key="Down">↓</button>
+              <button type="button" data-run-key="Left">←</button>
+              <button type="button" data-run-key="Right">→</button>
+              <button type="button" data-run-key="C-c">Ctrl+C</button>
+              <span class="terminal-key-focus">キーボードで端末を操作</span>
+            </div>
+            <div class="composer-toolbar" id="run-composer-toolbar">
+              <span class="spacer"></span>
+              <span class="send-hint">Enterで送信</span>
+              <button type="button" id="run-interrupt" class="danger action-button" hidden>中止</button>
+              <button type="button" id="run-send" class="primary action-button">送信</button>
+            </div>
+          </div>
         </statemachine-workbench>
       </div>
     </section>

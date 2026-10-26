@@ -29,9 +29,9 @@ function fixture(overrides = {}) {
 
 test('manual run opens an interactive writable terminal and delivers screens and completion', async () => {
   const f = fixture();
-  const screens = [], exits = [];
+  const screens = [], exits = [], sessions = [];
   const run = await prepare({ root: '/repo', agent: 'fake', model: 'model', prompt: 'run task', requestId: 'r',
-    onScreen: (p) => screens.push(p), onExit: (p) => exits.push(p) }, f.deps);
+    onScreen: (p) => screens.push(p), onExit: (p) => exits.push(p), onSession: (p) => sessions.push(p) }, f.deps);
   await run.start();
   assert.deepEqual(f.calls.slice(1), ['open', 'ready', 'run task']);
   assert.equal(f.calls[0].readonly, false);
@@ -42,6 +42,46 @@ test('manual run opens an interactive writable terminal and delivers screens and
   await f.conv().done({ text: 'done' });
   assert.equal(exits[0].code, 0);
   assert.equal(exits[0].stdout, 'done');
+  // 実行が終わってもペインは残し、同じセッションへ続けて依頼できる
+  assert.equal(exits[0].session, true);
+  assert.ok(!f.calls.includes('kill'));
+  assert.equal(run.alive(), true);
+  await run.followUp('もう少し詳しく');
+  assert.equal(f.calls.at(-1), 'もう少し詳しく');
+  assert.deepEqual(sessions, [{ phase: 'busy' }]);
+  await assert.rejects(run.followUp('二重送信'), /応答中/);
+  await f.conv().done({ text: 'more' });
+  assert.deepEqual(sessions.at(-1), { phase: 'ready', text: 'more', error: '', stopped: false });
+  assert.equal(exits.length, 1, '続けて送った依頼は実行の結果を作り直さない');
+  await run.stop();
+  assert.equal(f.calls.at(-1), 'kill');
+  assert.equal(run.alive(), false);
+  assert.deepEqual(sessions.at(-1), { phase: 'closed' });
+  await assert.rejects(run.followUp('閉じた後'), /セッションがありません/);
+});
+
+test('follow-up waits for the run to finish and closes when the CLI exits by itself', async () => {
+  const f = fixture();
+  const sessions = [];
+  const run = await prepare({ root: '/repo', agent: 'fake', prompt: 'run', onSession: (p) => sessions.push(p) }, f.deps);
+  await run.start();
+  await assert.rejects(run.followUp('まだ実行中'), /セッションがありません/);
+  await f.conv().done({ text: 'done' });
+  f.conv().opts.emit('term:phase', { phase: 'dead' });
+  await new Promise(setImmediate);
+  assert.equal(f.calls.at(-1), 'kill');
+  assert.equal(run.alive(), false);
+  assert.deepEqual(sessions, [{ phase: 'closed' }]);
+});
+
+test('a CLI that already exited does not keep a session', async () => {
+  const f = fixture();
+  const exits = [];
+  const run = await prepare({ root: '/repo', agent: 'fake', prompt: 'run', onExit: (p) => exits.push(p) }, f.deps);
+  await run.start();
+  f.conv().phase = 'dead';
+  await f.conv().done({ text: 'done' });
+  assert.equal(exits[0].session, false);
   assert.equal(f.calls.at(-1), 'kill');
 });
 
@@ -111,6 +151,7 @@ test('pane cleanup suppresses an in-flight scroll error and late screen updates'
   const scrolling = run.scroll(1).catch((error) => error.message);
   await new Promise(setImmediate);
   await f.conv().done({ text: 'done' });
+  await run.close();
   rejectScroll(new Error("||||||| \x1ecan't find pane: agent-app-run"));
   assert.equal(await scrolling, false);
   f.conv().opts.emit('term:screen', { text: 'stale screen' });
@@ -128,7 +169,7 @@ test('completed and stopped runs scroll captured history after the pane is remov
       assert.equal(opts.joinHistory, false);
       return { ok: true, screen: { cols: 80, rows: 5, cursor: { x: 1, y: 4 }, text: Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n') } };
     };
-    if (stop) await run.stop(); else await f.conv().done({ text: 'done' });
+    if (stop) await run.stop(); else { await f.conv().done({ text: 'done' }); await run.close(); }
     assert.equal(f.calls.at(-1), 'kill');
     await run.scroll(-100);
     assert.equal(screens.at(-1)?.text, 'line 0\nline 1\nline 2\nline 3\nline 4');
@@ -142,7 +183,7 @@ test('completed and stopped runs scroll captured history after the pane is remov
   }
 });
 
-test('real tmux: manual run shows the CLI screen, finishes, and removes its pane', { timeout: 20000 }, async (t) => {
+test('real tmux: manual run shows the CLI screen, finishes, takes a follow-up, and removes its pane on close', { timeout: 20000 }, async (t) => {
   const { spawnSync } = require('node:child_process');
   if (process.platform === 'win32' || spawnSync('tmux', ['-V']).status !== 0) return t.skip('tmux が無い');
   const fs = require('node:fs');
@@ -158,14 +199,20 @@ IFS= read -r line
 printf '\\nworking (esc to interrupt)\\n'
 sleep 0.6
 printf '\\033[1A\\r\\033[2Kanswer: %s\\n> ' "$line"
-while IFS= read -r line; do :; done
+while IFS= read -r line; do
+  printf '\\nworking (esc to interrupt)\\n'
+  sleep 0.6
+  printf '\\033[1A\\r\\033[2Kfollow-up: %s\\n> ' "$line"
+done
 `);
   const requestId = require('node:crypto').randomUUID();
   const screens = [];
-  let finish;
+  let finish, replied;
   const done = new Promise((resolve) => { finish = resolve; });
+  const reply = new Promise((resolve) => { replied = resolve; });
   const run = await prepare({ root, agent: 'fake', requestId, prompt: 'manual task',
-    onScreen: (screen) => screens.push(screen.text), onExit: finish }, {
+    onScreen: (screen) => screens.push(screen.text), onExit: finish,
+    onSession: (state) => { if (state.phase === 'ready') replied(state); } }, {
     load: () => ({ interactive: { readyPattern: '^>[[:space:]]*$', busyPattern: 'esc to interrupt', readyTimeoutSec: 5 } }),
     interactiveCmd: () => ({ argv: ['bash', script] }),
   });
@@ -181,6 +228,13 @@ while IFS= read -r line; do :; done
   assert.match(result.stdout, /answer: manual task/);
   assert.ok(screens.some((screen) => screen.includes('manual test ready')));
   assert.ok(screens.some((screen) => screen.includes('answer: manual task')));
+  assert.equal(result.session, true);
+  const has = () => spawnSync('tmux', ['-L', tmux.SOCKET, 'has-session', '-t', tmux.sessionName(`run-${requestId}`)]).status;
+  assert.equal(has(), 0, '実行の後もセッションを残す');
+  await run.followUp('second prompt');
+  const answer = await reply;
+  assert.match(answer.text, /follow-up: second prompt/);
+  await run.close();
   assert.notEqual(spawnSync('tmux', ['-L', tmux.SOCKET, 'has-session', '-t', tmux.sessionName(`run-${requestId}`)]).status, 0);
   await run.scroll(-1000);
   assert.match(screens.at(-1), /history-1\b/);

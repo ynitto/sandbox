@@ -1,7 +1,11 @@
 # testcase-lint
 
 自然文で書いたテストケース（e2e・シナリオテスト・人が見るチェックリスト）を、**テストケースとしての妥当性**で
-点検する。LLM は使わない。同じ入力からは毎回同じ指摘が出る。
+点検する。LLM は使わない。同じ入力からは毎回同じ指摘が出る。ケースは JSON / YAML のほか、Gherkin の `.feature` も
+そのまま読む。
+
+ケースと実際のテストの対応を書いておけば、[`testcase-lint run`](#テストを実行して結果を残す) でテストを実行し、
+どのケースをどのテストで確かめて通ったかを結果ファイルに残せる。
 
 テストコードの重複・統合候補は [`testcase-lint code`](#テストコードの静的検査) で検査する。
 自然文ケースを点検する既存の使い方はそのまま使える。
@@ -14,6 +18,7 @@
 - **条件の組み合わせ** … ケースから「条件 → 結果」の表を取り出し、試していない組・食い違い・重なりを出す
 - **仕様との突き合わせ** … 要件・項目の制約（必須・文字数・形式）・状態遷移・権限・API の応答・文言
 - **実装との突き合わせ** … 期待結果に書いた文言が、実装のどこかにあるか
+- **テストとの対応** … 対応表に書いたケースとテストのファイルがあるか、どのテストにも対応していないケースはどれか
 
 ## 入れる
 
@@ -93,13 +98,16 @@ requirement_id: "(?:REQ|FR|NFR)-\\d+" # 仕様の中の要件 ID の形
 test_data:
   domains: [staging.my-corp.co.jp]   # テスト用のメールアドレスのドメインを足す（D18。末尾一致）
   cards: ["4000 0000 0000 0077"]     # テスト用のカード番号を足す（D19）
+bindings: test-bindings.json         # ケースと個別テストの対応表（B01〜B03 と run が使う）
+run:                                 # testcase-lint run で実行するテスト（suite ごと）
+  unit: { command: [python3, -m, pytest, --junitxml=results/unit.xml], junit: results/unit.xml }
 ```
 
 設定ファイルが無いときは、今のフォルダの下のよくあるフォルダを探して使う（あるものをすべて）。
 
 | 対象 | 探すフォルダ |
 |---|---|
-| ケース | `tests/cases` `test/cases` `tests/testcases` `testcases` `test-cases` `tests/scenarios` `scenarios` `tests/e2e` `test/e2e` `e2e` `cases` |
+| ケース | `tests/cases` `test/cases` `tests/testcases` `testcases` `test-cases` `tests/scenarios` `scenarios` `tests/e2e` `test/e2e` `e2e` `cases` `features` `tests/features` |
 | 仕様 | `docs/specs` `docs/spec` `docs/requirements` `specs` `spec` `requirements` |
 | 実装 | `src` `app` |
 
@@ -117,6 +125,7 @@ testcase-lint "qa/**/*.yaml" "e2e/*.json"             # glob（いくつでも�
 testcase-lint "qa/**/*.yaml" --spec "../my-app-docs/docs/**/*.md" --source ../my-app/src
 testcase-lint qa/ -f markdown -o report.md            # 表にして書き出す（ほかに -f json）
 testcase-lint qa/ --fail-on warning                   # 警告以上があれば終了コード 1
+testcase-lint specs/shipping.feature                  # Gherkin もそのまま
 testcase-lint spec ../my-app-docs/docs                # 仕様から何を読み取ったかを確かめる
 testcase-lint rules                                   # 規則の一覧
 testcase-lint schema                                  # おすすめのケースの書式
@@ -150,6 +159,32 @@ JSON / YAML なら、項目名は英語・日本語・Gherkin のよくある綴
 - 手順の要素が `{action: …, expected: …}` なら、期待結果を分けて読む。`expect:` `verify:` も期待結果として読む
 - 文字列だけの配列（`checklist: [...]`）は、人が見るチェックリストとして読む（手順・期待結果を求めない）
 - 上の表にない項目（モック・言語設定など）は前提として比べる。同じ手順でも前提が違えば別のケースとみなす
+
+### Gherkin（.feature）
+
+`.feature` もそのまま点検する（フォルダを渡せば下の `.feature` も読む）。指摘は `.feature` の行に出る。
+Cucumber の実行エンジンやステップ定義は要らない。
+
+```gherkin
+# language: ja
+@requirement:REQ-12
+機能: 送料
+  シナリオアウトライン: 商品合計<金額>円の送料
+    前提 配送先は東京都である
+    もし 商品合計<金額>円の注文の送料を計算する
+    ならば 送料は<送料>円になる
+    例:
+      | case_id | 金額 | 送料 |
+      | SHIP-01 | 4999 | 500  |
+      | SHIP-02 | 5000 | 0    |
+```
+
+- Given / When / Then を前提 / 手順 / 期待結果として読む。And / But は直前と同じ扱い。Background は各ケースに足す
+- Feature / Rule はグループ、Scenario Outline は例の行ごとに 1 ケース。条件の組は、Given / When で使う例の列
+- ID はシナリオの `@case:SHIP-01` か、例の表の `case_id` 列に書く。無いと仮の ID を付けて D01 を出す
+  （名前や値を変えると仮の ID も変わり、テストとの対応が外れる）
+- 要件は `@requirement:REQ-12` か `@REQ-12` `@FR-1` `@NFR-1` のタグ。`@temporary` は暫定テストの候補（T01）
+- 書式の誤り・重複した ID・役割の決まらない `*` のステップは D00
 
 ### 決まった書式に合わせる
 
@@ -242,8 +277,75 @@ LLM への指示に添えるとよいこと:
 | S07 | 漏れ | 参考 | 仕様の文言をどのケースも確かめていない |
 | I01 | 矛盾 | 警告 | 期待する文言が実装にない（近い文言があれば示す。`{0}` `%s` などの差し込みは任意の値として照らす） |
 | I02 | 矛盾 | 警告 | 期待するエラーコード（E1001・ORDER_NOT_FOUND…）が実装にない。エラーを言う期待結果だけで拾う |
+| B01 | 不備 | エラー | 対応表のケース（ファイル・ID）が無い（設定の `bindings` があるときだけ） |
+| B02 | 不備 | エラー | 対応先のテストのファイルが無い・suite / selector が無い・`run` に無い suite・対応表の書き方の誤り |
+| B03 | 漏れ | 参考 | どのテストにも対応していないケース（手で確かめるケースならそのままでよい） |
 
 同じファイルで同じ参考の指摘が 10 件を超えたら、1 件にまとめて出す。
+
+## テストを実行して結果を残す
+
+ケースと個別テストの対応表と、suite ごとのテストのコマンドを設定に書いておくと、`testcase-lint run` が
+テストを実行し、JUnit XML の結果を対応表と突き合わせて結果ファイルに書く。点検（`testcase-lint`）は何も実行しない。
+実行するのは `run` と、設定に書いたコマンドだけ。
+
+```yaml
+# testcase-lint.config.yaml
+cases: [tests/shipping.feature]
+bindings: test-bindings.json
+run:
+  unit: { command: [python3, -m, pytest, --junitxml=results/unit.xml], junit: results/unit.xml }
+  e2e: { command: [node, --test, --test-reporter=junit, tests/e2e.test.cjs] }   # junit を省けば標準出力から読む
+```
+
+```json
+{
+  "version": 1,
+  "bindings": [{
+    "case": {"file": "tests/shipping.feature", "id": "SHIP-02"},
+    "targets": [
+      {"suite": "unit", "file": "tests/test_shipping.py", "selector": "ShippingTest::test_free"},
+      {"suite": "e2e", "file": "tests/e2e.test.cjs", "selector": "checkout/free-shipping"}
+    ]
+  }]
+}
+```
+
+```bash
+testcase-lint            # ケースと対応表を点検する（B01〜B03）
+testcase-lint run        # run に書いた suite をすべて実行する
+testcase-lint run unit   # suite を選ぶ
+```
+
+- `command` はコマンドと引数を並べた配列。シェルを通さずに、設定ファイルのフォルダで実行する。
+  Windows では使っている Python のコマンド名（`python` など）を書く
+- 結果は suite ごとに `results/<suite>.json`（`output` で変えられる）。`timeout` は秒（既定 600）
+- パスは設定ファイルのフォルダからの相対。selector は JUnit の `classname::name` か `name` と同じにする
+- 1 つのケースに複数のテストを、1 つのテストに複数のケースを対応させてよい
+- 別のリポジトリのケースは、対応表の `case.side` に名前を書き、設定の `repos: { docs: ../my-app-docs }` でフォルダを示す。
+  このリポジトリ自身に名前を付けるなら `side: app`
+- JUnit を書けないランナーは、プロジェクト側で JUnit に変換する（[例の run_unit.py](examples/shipping/run_unit.py) は unittest の結果を変換する）
+
+結果ファイル（[スキーマ](schema/execution.schema.json)、対応表は[こちら](schema/bindings.schema.json)）は
+`purpose: execution` を持ち、個別テストごとに suite・selector・合否・テストの SHA-256 と、対応するケースの ID・ファイル・
+SHA-256 を持つ。点検の結果（`purpose: check`）とは区別する。成功を取り違えないよう、次のときは終了コードを 0 にしない。
+
+- ランナーが失敗した、対応先のテストの結果が無い、skip だった、JUnit の status が知らない値だった
+- テストの実行中にケースやテストのファイルが変わった（結果を書かない）
+- JUnit を書くファイルが今回書かれなかった（実行前に古い JUnit と古い結果を消すので、前回の成功を使わない）
+- JUnit に `file` が無く、同じ名前のテストがどれのことか決められない
+
+環境変数 `TEST_EVIDENCE_RUN_ID` / `TEST_EVIDENCE_INPUTS_DIGEST` を渡せば、その値を結果の `run_id` / `inputs_digest` に
+引き継ぐ（呼ぶ側が「今回の実行の結果か」を確かめるため）。無ければ自分で作る。
+結果が通っても、期待結果を確かめるアサーションが正しいことまでは保証しない。
+
+[送料計算の例](examples/shipping/) は、`.feature` のケースを Python の単体テスト 2 件と、Node.js から Python の CLI を
+呼ぶ E2E 1 件で確かめる（`results/` は生成物なので `.gitignore` に入れる）。
+
+```bash
+cd tools/testcase-lint/examples/shipping
+testcase-lint && testcase-lint run
+```
 
 ## ほかの道具と組む
 
@@ -258,23 +360,6 @@ testcase-lint は単体で動く。ほかの道具とは、コマンドの終了
 `-f json` の出力には、指摘と要約に加えて正規化した `cases` が入る。
 各ケースの `file` / `id` / `input_sha256` を、個別テストとの対応やケース一覧の検査に利用できる。
 全単体テストを自然文ケースへ変換する必要はなく、追跡したい業務条件・公開契約から使える。
-
-### 任意の入力変換と元ファイルへの指摘
-
-ケースの `origin` に、JSON/YAML からの相対の入力元ファイル、正の整数の `line`、`input_sha256`、
-`fields` の `preconditions` / `steps` / `expected` の行番号配列を付けると、指摘を元ファイルへ返す。
-元ファイルが変わっていれば D00 で再生成を求める。`origin` と任意の `group` は比較する前提に加えない。
-任意の JSON Schema の指摘と evidence の失敗判定にも入力元を反映する。
-
-[gherkin-cases](../gherkin-cases/README.md) はこの形式へ `.feature` を変換する独立したツール。
-この本体に Gherkin のパーサーや Cucumber の実行エンジンを追加する必要はない。
-
-```bash
-gherkin-cases specs/shipping.feature -o generated/cases.json
-testcase-lint generated/cases.json -f json -o results/cases.json
-```
-
-`.feature` を直接このコマンドへ渡す機能はない。生成した JSON を点検し、元ファイルを正本として更新する。
 
 ### 結果の項目
 
@@ -306,6 +391,16 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-
 
 ケースや仕様を変えるたびに点検し、落ちたファイルと理由を codd-agent が示す。文書に件数を写すなら、
 codd-agent の印（`<!-- evidence: testcase-lint/errors -->`）を使う。
+
+変えたケースを実際のテストで確かめたことまで codd-agent に照合させるなら、テストのコマンドに `testcase-lint run` を、
+対応表とケース一覧に同じファイルを渡す。codd-agent は実行の識別を上の環境変数で渡す。
+
+```bash
+python3 tools/codd-agent/init.py ~/work/my-app --test "testcase-lint run" \
+  --test-bindings test-bindings.json --test-catalogs results/cases.json
+```
+
+ケース一覧（`results/cases.json`）は `testcase-lint -f json -o results/cases.json` で作る。
 
 ## テストコードの静的検査
 

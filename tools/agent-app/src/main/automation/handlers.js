@@ -638,7 +638,7 @@ function registerIpcHandlers(getWindow, options = {}) {
       onLine: (kind, line) => send(channel('run:line'), {
         requestId, machine, kind, line: stripDecoration ? terminalText.stripAnsi(line) : line,
       }),
-      onExit: ({ code, stdout, stderr, truncated }) => {
+      onExit: ({ code, stdout, stderr, truncated, session = false }) => {
         // 応答をファイルへ書く定義は、そこに本文がある（stdout は進行だけ）。
         const answerText = launchOutputFile ? readOutputFile(launchOutputFile) : '';
         for (const line of String(answerText).split(/\r?\n/)) {
@@ -663,6 +663,8 @@ function registerIpcHandlers(getWindow, options = {}) {
           requestId, machine, code, mode, result,
           error: truncated ? '実行ログが大きいため一部を省略しました' : '',
           stderr,
+          // 端末のセッションが残っていて、同じセッションへ続けて依頼できる
+          session,
         });
         // 埋め込む側（agent-app）が、画面の外に居る利用者へ知らせるための合図。
         if (typeof options.onRunExit === 'function') {
@@ -677,6 +679,7 @@ function registerIpcHandlers(getWindow, options = {}) {
       const terminal = await prepareTerminal({
         ...terminalPayload, requestId,
         onScreen: (screen) => send(channel('run:screen'), { ...screen, id: requestId, requestId, machine }),
+        onSession: (state) => send(channel('run:session'), { ...state, requestId, machine }),
         onExit: (outcome) => {
           completedTerminalRun = activeTerminalRun;
           activeTerminalRun = null;
@@ -705,23 +708,36 @@ function registerIpcHandlers(getWindow, options = {}) {
   register('run:start', async (p, event) => {
     if (runStarting || activeTerminalRun || runner.isRunning('run')) throw new Error('タスクを実行中です');
     runStarting = true;
+    // 前の実行で残したセッションは、次の実行で閉じる（端末の実行は同時に 1 つだけ）。
+    if (completedTerminalRun?.alive?.()) await completedTerminalRun.close().catch(() => {});
     completedTerminalRun = null;
     selectionController = new AbortController();
     try { return await startManualRun({ ...p, selectionSignal: selectionController.signal }, event); } finally { runStarting = false; selectionController = null; }
   });
   register('run:stop', () => {
     if (selectionController) { selectionController.abort(); return true; }
-    return activeTerminalRun ? activeTerminalRun.stop() : runner.stop('run');
+    if (activeTerminalRun) return activeTerminalRun.stop();
+    if (completedTerminalRun?.alive?.()) return completedTerminalRun.stop();
+    return runner.stop('run');
   });
   const terminalFor = (p, { history = false } = {}) => {
-    const run = activeTerminalRun || (history ? completedTerminalRun : null);
+    const run = activeTerminalRun
+      || (history || completedTerminalRun?.alive?.() ? completedTerminalRun : null);
     if (!run || run.requestId !== p.requestId) throw new Error('操作できる端末がありません');
     return run;
   };
   register('run:keys', (p) => terminalFor(p).keys(String(p.data || '')));
   register('run:resize', (p) => terminalFor(p, { history: true }).resize(p.cols, p.rows));
   register('run:scroll', (p) => terminalFor(p, { history: true }).scroll(p.lines));
-  if (typeof app.on === 'function') app.on('before-quit', () => { selectionController?.abort(); if (activeTerminalRun) activeTerminalRun.stop().catch(() => {}); });
+  // 実行が終わった後に、同じセッションへ続けて依頼する（応答の終わりは run:session で返す）。
+  const sessionFor = (p) => {
+    const run = completedTerminalRun;
+    if (!run || run.requestId !== p.requestId || !run.alive?.()) throw new Error('続けて依頼できるセッションがありません');
+    return run;
+  };
+  register('run:followup', (p) => sessionFor(p).followUp(String(p.text || '')));
+  register('run:interrupt', (p) => sessionFor(p).interrupt());
+  if (typeof app.on === 'function') app.on('before-quit', () => { selectionController?.abort(); if (activeTerminalRun) activeTerminalRun.stop().catch(() => {}); if (completedTerminalRun?.alive?.()) completedTerminalRun.close().catch(() => {}); });
 }
 
 module.exports = { registerIpcHandlers };

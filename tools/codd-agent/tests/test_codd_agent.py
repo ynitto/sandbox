@@ -949,8 +949,10 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("参照先の変更案に design は無いのに、design が変わっています", r.stderr)
 
+    @unittest.skipUnless(shutil.which("node") and (REPO / "tools/testcase-lint/node_modules/yaml").exists(),
+                         "node と testcase-lint の依存（npm install）が要る")
     def test_bound_cases_run_through_verify_apply_with_current_receipt(self) -> None:
-        # 実際に呼び出した関数の結果をassertし、独立したJUnit変換を通して検査する。
+        # 実際に呼び出した関数の結果をassertし、ケースを読む道具の JUnit 変換を通して検査する。
         commit(self.impl, {
             "tests/cases.yaml": "cases:\n  - {id: TC-01, title: hello, steps: [helloを呼ぶ], expected: [1を返す]}\n",
             "tests/test_app.py": "import contextlib, io, sys\nsys.path.insert(0, '.')\nfrom src.app import hello\n"
@@ -959,13 +961,13 @@ class CoddTest(unittest.TestCase):
             "test-bindings.json": json.dumps({"version": 1, "bindings": [{
                 "case": {"file": "tests/cases.yaml", "id": "TC-01"},
                 "targets": [{"suite": "unit", "file": "tests/test_app.py", "selector": "hello_return"}]}]}),
+            "testcase-lint.config.yaml": "cases: [tests/cases.yaml]\nbindings: test-bindings.json\n"
+                                         f"run:\n  unit: {{ command: [{json.dumps(sys.executable)}, tests/test_app.py] }}\n",
             ".gitignore": (self.impl / ".gitignore").read_text() + "results/\n__pycache__/\n",
         }, "add bound cases")
         self.set_check(self.impl, ["test-bindings.json"], "test_bindings")
         self.set_check(self.impl, ["results/*.json"], "evidence")
-        self.set_check(self.impl, [sys.executable, str(REPO / "tools/test-evidence/run.py"), "--bindings", "test-bindings.json",
-                                  "--suite", "unit", "--junit", "-", "--output", "results/unit.json", "--",
-                                  sys.executable, "tests/test_app.py"], "test")
+        self.set_check(self.impl, [shutil.which("node"), str(REPO / "tools/testcase-lint/bin/testcase-lint.js"), "run"], "test")
         plan = PLAN_ALIGNED.replace("- 変更不要: このリポジトリにテストはまだ無い（例の小さなリポジトリ）",
                                     "- tests/test_app.py — 変更不要: helloの戻り値は1のまま\n"
                                     "- tests/cases.yaml — 変更不要: helloの期待結果は1のまま")

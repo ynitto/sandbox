@@ -1,7 +1,7 @@
 {
   "name": "testcase-lint",
-  "version": "0.1.1",
-  "description": "自然文ケースの妥当性と、テストコードの重複・統合候補を静的に点検する。LLM は使わない",
+  "version": "0.2.0",
+  "description": "自然文ケース（JSON / YAML / Gherkin）の妥当性とテストコードの重複を静的に点検し、ケースに対応するテストを実行して結果を残す。LLM は使わない",
   "author": "sandbox",
   "license": "MIT",
   "bin": {
@@ -17,11 +17,12 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/load.test.js test/lint.test.js test/ambiguity.test.js test/glob.test.js test/validity.test.js test/spec.test.js test/cli.test.js test/independence.test.js test/origin.test.js test/code.test.js test/temporary.test.js"
+    "test": "node --test test/load.test.js test/lint.test.js test/ambiguity.test.js test/glob.test.js test/validity.test.js test/spec.test.js test/cli.test.js test/independence.test.js test/gherkin.test.js test/code.test.js test/temporary.test.js test/run.test.js"
   },
   "dependencies": {
     "@babel/parser": "^7.29.11",
     "@babel/traverse": "^7.29.10",
+    "@cucumber/gherkin": "^42.0.1",
     "ajv": "^8.17.1",
     "kuromoji": "^0.1.2",
     "yaml": "^2.5.0"
