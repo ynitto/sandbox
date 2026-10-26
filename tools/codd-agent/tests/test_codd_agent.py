@@ -545,11 +545,88 @@ class CoddTest(unittest.TestCase):
         self.assertNotIn("README.txt", plan)
         self.assertNotIn("docs/guide.md", plan)
         self.assertIn("前の計画で判断済み", (self.impl / ".codd/impact.md").read_text(encoding="utf-8"))
+        # 同じ語でも依頼が変われば、意味グラフの要判断を再び求める。
+        again.write_text(PLAN_ALIGNED.replace("hello にログを足す。", "hello の呼び出し規約を変える。"), encoding="utf-8")
+        self.run_pa(self.impl, "verify-plan")
+        plan = again.read_text(encoding="utf-8")
+        self.assertIn("README.txt — 未判断", plan)
+        self.assertIn("未判断: design:docs/guide.md", plan)
         # ファイルが変われば、また訊く
         (self.impl / "README.txt").write_text("挨拶の流れの説明。書き足した。\n", encoding="utf-8")
         again.write_text(PLAN_ALIGNED, encoding="utf-8")
         self.run_pa(self.impl, "verify-plan")
         self.assertIn("- README.txt — 未判断（意味のつながり", again.read_text(encoding="utf-8"))
+        again.unlink()
+        r = self.run_pa(self.impl, "impact", "--term", "hello")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_prior_waivers_require_the_same_change_context(self) -> None:
+        commit(self.design, {"docs/map.md": "# 対応表\n\n実装は `src/app.py`。\n",
+                             "docs/mention.md": "# 画面\n\nhello を表示する。\n"}, "map")
+        self.write_plan(PLAN_ALIGNED)
+        self.run_pa(self.impl, "verify-plan")
+        self.write_plan(PLAN_ALIGNED.replace(
+            "## 参照先のその他\n\nなし",
+            "## 参照先のその他\n\n- 関係なし: 置き場所の一覧だけ（根拠: docs/map.md）\n"
+            "- 関係なし: 画面名だけ（根拠: docs/mention.md）"))
+        self.assert_plan_ok()
+        self.as_previous_plan(self.impl)
+        cache = self.impl / ".codd/graph/dismissed.json"
+        saved = cache.read_text(encoding="utf-8")
+        source = self.impl / "src/app.py"
+        original = source.read_text(encoding="utf-8")
+        for case in ("request", "proposal", "source", "legacy"):
+            with self.subTest(case=case):
+                cache.write_text(saved, encoding="utf-8")
+                source.write_text(original, encoding="utf-8")
+                plan = PLAN_ALIGNED
+                if case == "request":
+                    plan = plan.replace("hello にログを足す。", "hello の呼び出し規約を変える。")
+                elif case == "proposal":
+                    plan = plan.replace("`hello` の中でログを出す", "`hello` の引数を変更する")
+                elif case == "source":
+                    source.write_text(original + "# changed since the prior judgment\n", encoding="utf-8")
+                else:
+                    old = json.loads(saved)
+                    for rec in old.values():
+                        rec.pop("context", None)
+                    cache.write_text(json.dumps(old), encoding="utf-8")
+                self.write_plan(plan)
+                r = self.run_pa(self.impl, "verify-plan")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("未判断: design:docs/map.md", (self.impl / PLAN).read_text(encoding="utf-8"))
+                self.assertIn("未判断: design:docs/mention.md", (self.impl / PLAN).read_text(encoding="utf-8"))
+
+    def test_semantic_merge_rejects_a_partially_extracted_chunk(self) -> None:
+        self.use_graphify_stub()
+        self.use_fake_graphify_python()
+        commit(self.design, {"docs/notes.txt": "挨拶は朝だけ。\n"}, "notes")
+        self.set_config(self.impl, graphify={"semantic": "session"}, subagent=True)
+        self.assertIn("PENDING", self.run_pa(self.impl, "graph").stdout)
+        out = self.impl / ".codd/graph/ref-design/semantic/ref-design-1.json"
+        data = {"nodes": [{"id": "api", "label": "API", "source_file": "docs/api.md"}], "edges": []}
+        out.write_text(json.dumps(data), encoding="utf-8")
+        r = self.run_pa(self.impl, "graph", "--merge")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("docs/notes.txt", r.stdout)
+        self.assertFalse((self.impl / ".codd/graph/ref-design/cache/semantic.json").exists())
+        self.assertIn("PENDING", self.run_pa(self.impl, "graph").stdout)
+        self.assertNotIn("OK graph", r.stdout)
+        # 関係が無い文書も文書自体のノードを残せばよい。辺を捏造させない。
+        data["nodes"].append({"id": "notes", "label": "運用メモ", "source_file": "docs/notes.txt"})
+        out.write_text(json.dumps(data), encoding="utf-8")
+        r = self.run_pa(self.impl, "graph", "--merge")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("OK graph", r.stdout)
+        cached = json.loads((self.impl / ".codd/graph/ref-design/cache/semantic.json").read_text())
+        self.assertEqual(set(cached), {"docs/api.md", "docs/notes.txt"})
+        self.assertTrue(all(entry["nodes"] for entry in cached.values()))
+        # 旧版の空キャッシュも、内容が変わっていなくても抽出し直す。
+        cached["docs/notes.txt"]["nodes"] = []
+        (self.impl / ".codd/graph/ref-design/cache/semantic.json").write_text(json.dumps(cached))
+        r = self.run_pa(self.impl, "graph")
+        self.assertIn("PENDING", r.stdout)
+        self.assertIn("docs/notes.txt", self.run_pa(self.impl, "graph", "--chunk", "ref-design-1").stdout)
 
     def test_graphify_setting_must_be_auto_off_or_semantic(self) -> None:
         for value, word in (({"semantic": 1}, "semantic は session か"), ({"semantic": "session", "x": 1}, "知らない項目"),
@@ -652,6 +729,7 @@ class CoddTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("- ref-design-1: JSON がありません", r.stdout)
         out.write_text(json.dumps({"nodes": [
+            {"id": "api", "label": "API", "source_file": "docs/api.md"},
             {"id": "morning", "label": "朝の挨拶", "file_type": "concept", "source_file": "docs/notes.txt"},
             {"id": "h", "label": "hello", "file_type": "code", "source_file": ""},
             {"id": "elsewhere", "label": "よそ", "source_file": "docs/other.md"}],
@@ -673,6 +751,53 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-plan")
         self.assertNotIn("意味のグラフを", r.stdout + r.stderr)
         self.assertIn("未判断: design:docs/notes.txt（意味のつながり（推定 0.90", (self.impl / PLAN).read_text(encoding="utf-8"))
+
+    def test_semantic_limit_schedules_more_chunks_until_both_repos_are_complete(self) -> None:
+        self.use_graphify_stub()
+        self.use_fake_graphify_python()
+        commit(self.impl, {"notes/a.md": "# A\n", "notes/b.md": "# B\n"}, "docs")
+        self.set_config(self.impl, graphify={"semantic": "session", "max_files": 1}, subagent=True)
+        self.write_plan(PLAN_ALIGNED)
+        ready = self.impl / ".codd/graph-run.json"
+        # 旧版の OK は、参照先の抽出まで完了した証拠にならない。
+        ready.write_text(json.dumps({"at": "2026-10-01 00:00"}))
+        check = self.run_pa(self.impl, "verify-plan")
+        self.assertIn("意味のグラフを", check.stdout + check.stderr)
+        r = self.run_pa(self.impl, "graph")
+        rounds, extracted = 0, set()
+        while r.stdout.startswith("PENDING"):
+            rounds += 1
+            self.assertLessEqual(rounds, 3, r.stdout)
+            self.assertFalse(ready.exists())
+            check = self.run_pa(self.impl, "verify-plan")
+            self.assertNotEqual(check.returncode, 0, check.stdout + check.stderr)
+            self.assertIn("意味のグラフを", check.stdout + check.stderr)
+            state = json.loads((self.impl / ".codd/graph/semantic.json").read_text())
+            self.assertEqual(sum(len(c["files"]) for c in state["chunks"]), 1)
+            for c in state["chunks"]:
+                extracted.update((c["gk"], f) for f in c["files"])
+                out = self.impl / ".codd/graph" / c["gk"] / "semantic" / (c["id"] + ".json")
+                out.write_text(json.dumps({"nodes": [{"id": str(i), "label": f, "source_file": f}
+                                                     for i, f in enumerate(c["files"])], "edges": []}))
+            r = self.run_pa(self.impl, "graph", "--merge")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("OK graph"), r.stdout)
+        self.assertEqual(extracted, {("own", "notes/a.md"), ("own", "notes/b.md"), ("ref-design", "docs/api.md")})
+        self.assertTrue(ready.exists())
+        # 完了後の更新で片側の graphify が失敗しても、古い成功印で通さない。
+        (self.design / "docs/new.md").write_text("# New\n")
+        stub = self.bin / "graphify"
+        original = stub.read_text()
+        stub.write_text(original.replace('case "$1" in',
+            'if [ "$1" = update ] && [ "$(basename "$PWD")" = design ]; then exit 1; fi\ncase "$1" in'))
+        failed = self.run_pa(self.impl, "graph")
+        self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+        self.assertIn("FAILED", failed.stdout)
+        self.assertFalse(ready.exists())
+        stub.write_text(original)
+        # 再実行で新しい文書だけが束に入り、完了までは成功印がない。
+        self.assertTrue(self.run_pa(self.impl, "graph").stdout.startswith("PENDING"))
+        self.assertFalse(ready.exists())
 
     # ------------------------------------------------------------ 計画の検査
 
@@ -2476,6 +2601,32 @@ class CoddTest(unittest.TestCase):
         spec.loader.exec_module(mod)
         for path in (TOOL / "machine" / "workflow.yaml", TOOL / "review" / "workflow.yaml"):
             self.assertEqual(mod.load_workflow(path), yaml.safe_load(path.read_text(encoding="utf-8")), path)
+
+    def test_worker_receives_context_and_multiline_plan_items(self) -> None:
+        plan = PLAN_ALIGNED.replace("hello にログを足す。", "hello にログを足す。目的は利用状況を把握すること。")
+        plan = plan.replace("## 守る決まり", "## 振る舞いの変化\n\nなし\n\n## 守る決まり")
+        plan = plan.replace("`hello` の中でログを出す", "`hello` の中でログを出す\n"
+                            "  個人情報は記録せず、件数だけを記録する。\n"
+                            "  ログの失敗は呼び出し側へ伝えない。\n\n"
+                            "  補足の段落も保持する。\n\n  ```python\n  print('count')\n  ```")
+        plan = plan.replace("- hello は 1 を返す（根拠: docs/api.md:3）",
+                            "- hello は 1 を返す（根拠: docs/api.md:3）\n  例外も増やさない。")
+        plan = plan.replace("## 今回やらないこと\n\nなし", "## 今回やらないこと\n\nログの保存期間は変えない。")
+        self.set_config(self.impl, subagent=True)
+        self.write_plan(plan)
+        self.assert_plan_ok()
+        for args in (("--worker", "--stage", "1"), ()):
+            with self.subTest(args=args):
+                if not args:
+                    self.set_config(self.impl, subagent=False)
+                r = self.run_pa(self.impl, "batch", *args)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                for text in ("目的は利用状況を把握すること", "## 振る舞いの変化\n\nなし",
+                             "hello は整数を返す", "個人情報は記録せず、件数だけを記録する。",
+                             "  ログの失敗は呼び出し側へ伝えない。", "補足の段落も保持する。",
+                             "例外も増やさない。", "ログの保存期間は変えない。",
+                             "  ```python\n  print('count')\n  ```"):
+                    self.assertIn(text, r.stdout)
 
     def test_batch_shows_the_plan_items_and_places_the_log_skeleton(self) -> None:
         self.assertEqual(self.run_pa(self.impl, "batch").returncode, 1)   # 計画が無ければ案内で止める

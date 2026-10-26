@@ -175,7 +175,7 @@ CONTEXT_MODE_SOURCE = "codd"      # 索引に付ける名前（検索結果の `
 # 意味の抽出（graphify の LLM の抽出）。文書と PDF の中身から、見出し・用語・ほかのファイルとのつながりを抜き出し、
 # 構文だけのグラフ（graphify update）に足す。バイナリは抜き出さない（テストが作るファイルはテストで得たもの（evidence）で扱う）。
 SEMANTIC_KINDS = ("document", "paper")
-SEMANTIC_MAX_FILES = 100          # 1 回の実行で抜き出すファイルの上限（残りは次の回に回す）
+SEMANTIC_MAX_FILES = 100          # 一度に渡す文書の上限（残りは merge のあとに続けて渡す）
 SEMANTIC_CHUNK = 20               # 1 束のファイル数（サブエージェントに渡すとき）
 SEMANTIC_CHUNK_SELF = 5           # 自分で抜き出すとき（応答の長さに上限があるエージェントに収まるように）
 SEMANTIC_ORIGIN = "codd-semantic" # codd が足したノード・辺の印（足し直すときに、前に足したものを外す）
@@ -2050,8 +2050,12 @@ if req["cmd"] == "pending":
     from graphify.detect import detect
     found = detect(root)
     files = [rel(p) for kind in req["kinds"] for p in found["files"].get(kind, [])]
-    _, _, _, uncached = check_semantic_cache(absolute(files), root=root, prompt_file=spec)
-    out.update(files=files, uncached=[rel(p) for p in uncached])
+    nodes, _, _, uncached = check_semantic_cache(absolute(files), root=root, prompt_file=spec)
+    # 旧版が空の抽出結果をキャッシュ済みにした文書も、読み直す。
+    represented = {rel(n.get("source_file") or "") for n in nodes
+                   if n.get("label") and not n.get("_mention")}
+    pending = {rel(p) for p in uncached} | (set(files) - represented)
+    out.update(files=files, uncached=[f for f in files if f in pending])
 elif req["cmd"] == "merge":
     from graphify.build import build_from_json
     from graphify.cluster import cluster
@@ -2171,6 +2175,9 @@ def cmd_graph(ctx: Ctx, args: argparse.Namespace) -> int:
     """グラフを用意する。意味の抽出をセッションで行う設定なら、抜き出す束を示し、書かれた JSON を取り込む。"""
     if args.chunk:
         return print_chunk(ctx, args.chunk)
+    if semantic_session(ctx):
+        # 準備の途中で失敗しても、前の成功印で計画を通さない。
+        (ctx.data / GRAPH_LOG).unlink(missing_ok=True)
     notes, exes = [], {}
     for gk, repo, _ in graph_repos(ctx):
         exe, graph, note = ensure_graph(ctx, repo)
@@ -2186,6 +2193,10 @@ def cmd_graph(ctx: Ctx, args: argparse.Namespace) -> int:
         print("FAILED graphify が無いか、graphify を入れた Python が見つかりません（意味の抽出をしない。"
               f"`install.py` で graphify を入れるか、{CONFIG_NAME} の graphify を auto にする）")
         return 1
+    missing = [graph_label(ctx, gk) for gk, (exe, graph) in exes.items() if not (exe and graph)]
+    if missing:
+        print("FAILED グラフを用意できない側があります: " + ", ".join(missing))
+        return 1
     state = load_semantic_state(ctx)
     if args.merge:
         failed = merge_chunks(ctx, gpy, state, exes)
@@ -2197,24 +2208,33 @@ def cmd_graph(ctx: Ctx, args: argparse.Namespace) -> int:
     elif state["chunks"]:
         print_pending(ctx, state)
         return 0
-    rest = plan_chunks(ctx, gpy, state, exes)
+    plan_chunks(ctx, gpy, state, exes)
     if state["chunks"]:
         print_pending(ctx, state)
         return 0
     write_graph_log(ctx)
-    tail = f"。残り {rest} files は次の回に抜き出す（1 回の上限 {ctx.config['graphify_semantic']['max_files']}）" if rest else ""
-    print(f"OK graph（graphify: {', '.join(notes)}。意味の抽出: この回 {state['extracted']} files{tail}）")
+    print(f"OK graph（graphify: {', '.join(notes)}。意味の抽出: この回 {state['extracted']} files）")
     return 0
 
 
 def write_graph_log(ctx: Ctx) -> None:
     ctx.data.mkdir(parents=True, exist_ok=True)
-    write_text(ctx.data / GRAPH_LOG, json.dumps({"at": time.strftime("%Y-%m-%d %H:%M")}) + "\n")
+    write_text(ctx.data / GRAPH_LOG, json.dumps({"at": time.strftime("%Y-%m-%d %H:%M"),
+                                              "semantic_complete": semantic_session(ctx)}) + "\n")
+
+
+def semantic_graph_ready(ctx: Ctx) -> bool:
+    """旧版の部分抽出の成功印では、意味のグラフの準備完了としない。"""
+    try:
+        log = json.loads((ctx.data / GRAPH_LOG).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(log, dict) and log.get("semantic_complete") is True and not load_semantic_state(ctx)["chunks"]
 
 
 def plan_chunks(ctx: Ctx, gpy: str, state: dict, exes: dict) -> int:
-    """まだ抜き出していない（か、中身が変わった）文書を束に分ける。上限を超えた数を返す。"""
-    limit = ctx.config["graphify_semantic"]["max_files"] - state["extracted"]
+    """未抽出・更新済みの文書を、一度に渡す上限まで束にする。残りは次の merge のあとで続ける。"""
+    limit = ctx.config["graphify_semantic"]["max_files"]
     size = SEMANTIC_CHUNK if ctx.subagent else SEMANTIC_CHUNK_SELF
     chunks, rest, spec = [], 0, state.get("spec", "")
     for gk, repo, sides in graph_repos(ctx):
@@ -2233,7 +2253,7 @@ def plan_chunks(ctx: Ctx, gpy: str, state: dict, exes: dict) -> int:
     for chunk in chunks:
         chunk_out(ctx, chunk).parent.mkdir(parents=True, exist_ok=True)
         chunk_out(ctx, chunk).unlink(missing_ok=True)   # 前に途中でやめた回の書きかけを取り込まない
-    state["chunks"], state["spec"] = chunks, spec
+    state["chunks"], state["spec"], state["remaining"] = chunks, spec, rest
     save_semantic_state(ctx, state)
     return rest
 
@@ -2244,6 +2264,9 @@ def print_pending(ctx: Ctx, state: dict) -> None:
     names = ", ".join(f"{c['id']}（{len(c['files'])} files）" for c in chunks)
     print(f"PENDING 意味の抽出が要る文書が {total} files（{len(chunks)} 束）あります。"
           f"束ごとに抜き出してから `python3 {MACHINE_REL}/codd.py graph --merge` を実行します")
+    if state.get("remaining"):
+        print(f"ほかに未抽出が {state['remaining']} files あります。この束の取り込み後、続きの束を示します。"
+              "すべての側が終わり、OK が出るまで進めてください")
     if ctx.subagent:
         print(f"自分では文書を読みません。束ごとに `{GRAPH_AGENT}` サブエージェントを呼び、"
               f"「codd のグラフの束 束の名前 を抜き出してください。」と渡します（呼べる環境なら束を並べて呼んでよい）")
@@ -2276,6 +2299,9 @@ def print_chunk(ctx: Ctx, cid: str) -> int:
     print(f"3. 指示の形の JSON をこのファイルに書く: {out}")
     print("\ncodd の決まり（抽出の指示より優先）:")
     print("- source_file には、2 の左のパスをそのまま書く")
+    print("- 渡した全ファイルについて、少なくとも 1 つノードを残す。用語や関係が無い文書は、"
+          "文書自体のノード（label は見出しかパス、source_file はそのパス）を残す。関係を作り足さない。"
+          "読めないファイルがあれば FAILED と返す")
     print("- ほかのファイルの関数・クラス・見出し・用語とのつながりは、その名前をそのまま label に書いたノード"
           "（source_file はそのファイルのパス。分からなければ空）を作り、辺を張る。codd が今のグラフの同じ名前のノードにつなぐ")
     print("- 確からしさ（confidence と confidence_score）は指示のとおりに必ず付ける。文書に書いてあるつながりは EXTRACTED、"
@@ -2367,12 +2393,15 @@ def clean_chunks(base: dict, items: list[tuple[dict, dict]]) -> list[tuple[list,
                          "id": new_id, "label": str(n["label"]).strip(), "source_file": src,
                          "file_type": n.get("file_type") if n.get("file_type") in FILE_TYPES else "concept"})
         kept_all.append((chunk, ids, kept))
-        for k in kept:   # ほかの束の用語にもつなげる
-            index.setdefault(_label_key(k["label"]), []).append((k["id"], k["source_file"]))
+        represented = {n["source_file"] for n in kept if not n.get("_mention")}
+        if files <= represented:   # 不完全な束を、ほかの束の用語の解決に使わない
+            for k in kept:
+                index.setdefault(_label_key(k["label"]), []).append((k["id"], k["source_file"]))
     out = []
     for (chunk, data), (_, ids, kept) in zip(items, kept_all):
-        if not kept:
-            out.append(([], [], "渡したファイルのノードがありません（source_file が渡したパスと違うか、空）"))
+        missing = sorted(set(chunk["files"]) - {n["source_file"] for n in kept if not n.get("_mention")})
+        if missing:
+            out.append(([], [], "ノードのない文書があります（全ファイルの抽出が必要）: " + ", ".join(missing)))
             continue
         repo = Path(chunk["repo"])
         outside = {str(n["id"]): n for n in data.get("nodes", [])
@@ -2697,6 +2726,20 @@ def graph_report(hits: dict[tuple[str, str], GraphHit], ctx: Ctx, keys: set[str]
     return "\n".join(lines)
 
 
+def dismissal_context(ctx: Ctx) -> str:
+    """判断の前提となった依頼・変更案・変更元の内容。同じ語だけでは判断を再利用しない。"""
+    if "_dismissal_context" not in ctx.__dict__:
+        _, bodies = sections(plan_text_for_checks(ctx), PLAN_HEADINGS)
+        heads = ("## やりたいこと", BEHAVIOR_HEADING, "## 自分の変更案", "## 参照先の変更案")
+        changes = plan_changes(ctx, bodies)
+        sources = [(k, str(side_of(ctx, k).path), rel, now_hash(side_of(ctx, k), rel))
+                   for k, rels in sorted(changes.items()) for rel in sorted(rels)]
+        content = [[bodies.get(h, "").strip() for h in heads], impact_fix_lines(bodies), sources]
+        ctx.__dict__["_dismissal_context"] = hashlib.sha256(
+            json.dumps(content, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return ctx.__dict__["_dismissal_context"]
+
+
 def load_dismissed(ctx: Ctx, all_plans: bool = False) -> dict:
     """前の計画の判断。この計画が下した判断は計画そのものにあるので使い回さない（計画から消せば、また訊く）。"""
     try:
@@ -2706,13 +2749,19 @@ def load_dismissed(ctx: Ctx, all_plans: bool = False) -> dict:
     if not isinstance(rec, dict):
         return {}
     here = plan_rel(ctx) if ctx.plan.is_file() else None
-    return rec if all_plans else {k: v for k, v in rec.items() if not (isinstance(v, dict) and v.get("plan") == here)}
+    if all_plans:
+        return rec
+    if not ctx.plan.is_file():
+        return {}   # 計画のない探索では、前提を比べられないので判断を再利用しない
+    context = dismissal_context(ctx)
+    return {k: v for k, v in rec.items() if isinstance(v, dict) and v.get("plan") != here
+            and v.get("context") == context}
 
 
 def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
     """グラフの要判断と文字列の一致で当たったもののうち、計画が「変更不要」「関係なし」としたもの（ファイルの中身と語）を控える。
 
-    次の回で同じ語から同じファイルに当たっても、ファイルが変わっていなければ判断に出さない（グラフは参考に回し、
+    次の回で依頼・変更案・変更元の内容も同じ場合だけ、同じ語から当たる未変更のファイルを判断に出さない（グラフは参考に回し、
     文字列の一致は測った結果から外す）。
     変更不要の判断は通ったあとの計画から外れるので、計画の記録ではなく作業フォルダに控える。
     """
@@ -2723,12 +2772,15 @@ def record_dismissed(ctx: Ctx, bodies: dict[str, str]) -> None:
         return
     waived = plan_waived(ctx, bodies, asked)
     rec = load_dismissed(ctx, all_plans=True)
+    context = dismissal_context(ctx)
     for (key, rel), terms in asked.items():
         if (key, rel) not in waived:
             continue
         entry = rec.get(f"{key}|{rel}") or {}
+        if entry.get("context") != context:
+            entry = {}
         rec[f"{key}|{rel}"] = {"terms": unique([*entry.get("terms", []), *terms]),
-                               "hash": now_hash(side_of(ctx, key), rel), "plan": plan_rel(ctx)}
+                               "hash": now_hash(side_of(ctx, key), rel), "plan": plan_rel(ctx), "context": context}
     path = ctx.data / DISMISSED_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     write_text(path, json.dumps(rec, ensure_ascii=False, indent=2) + "\n")
@@ -6697,10 +6749,10 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
                         "利用者が変えたものかもしれないので、自分では戻さずに利用者に確かめる。利用者の変更なら "
                         f"`python3 {MACHINE_REL}/codd.py accept` で計画の前からの変更として認める）: "
                         + ", ".join(edited[:MAX_OUTSIDE]) + (" ..." if len(edited) > MAX_OUTSIDE else "")))
-    if semantic_session(ctx) and not (ctx.data / GRAPH_LOG).is_file() and not find_tool("graphify"):
+    if semantic_session(ctx) and not semantic_graph_ready(ctx) and not find_tool("graphify"):
         problems.append(Problem("config", f"{GRAPH_NOT_READY}。graphify が見つかりません（利用者に確かめる: "
                         f"`install.py` で graphify を入れるか、{CONFIG_NAME} の graphify から semantic を外す）"))
-    elif semantic_session(ctx) and not (ctx.data / GRAPH_LOG).is_file():
+    elif semantic_session(ctx) and not semantic_graph_ready(ctx):
         problems.append(Problem("shape", f"{GRAPH_NOT_READY}。`python3 {MACHINE_REL}/codd.py graph` を実行し、PENDING なら示された束を"
                         "抜き出して `graph --merge` で OK になるまで進めてから、検査し直してください"))
     measured: list[str] = []
@@ -6745,7 +6797,8 @@ def cmd_verify_plan(ctx: Ctx, args: argparse.Namespace) -> int:
     keep_plan_links(ctx, bodies)
     write_text(ctx.plan, compact_plan(text))
     write_text(ctx.data / PLAN_CHECK_TEXT, json.dumps(
-        {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text}, ensure_ascii=False, indent=2) + "\n")
+        {"digest": plan_digest(ctx), "path": plan_rel(ctx), "text": text,
+         "dismissal_context": dismissal_context(ctx)}, ensure_ascii=False, indent=2) + "\n")
     write_baseline(ctx)
     batches = plan_batches(ctx, bodies)
     write_text(ctx.data / BATCHES_NAME, json.dumps(
@@ -7890,28 +7943,47 @@ def print_apply_skills(ctx: Ctx, keys, files=(), full: bool = False) -> None:
 PLAN_ITEM_HEADINGS = ("## 自分の変更案", "## 参照先の変更案", "## 影響範囲", TESTS_HEADING)
 
 
+def plan_item_blocks(body: str) -> list[str]:
+    """受け渡す項目を、続きの行・段落・コードブロックごと残す。検査用の items とは分ける。"""
+    blocks, current = [], []
+    indent, fence = 0, None
+    for line in body.splitlines():
+        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
+        bullet = re.match(r"^(\s*)[-*]\s+(.*)", line) if fence is None else None
+        if bullet and (not current or len(bullet[1]) <= indent):
+            if current:
+                blocks.append("\n".join(current).rstrip())
+            current, indent = [bullet[2]], len(bullet[1])
+        elif current:
+            current.append(line)
+        if marker:
+            if fence is None:
+                fence = marker[1]
+            elif marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                fence = None
+    if current:
+        blocks.append("\n".join(current).rstrip())
+    return blocks
+
+
 def print_plan_items(ctx: Ctx, files) -> None:
-    """計画のうち、この段のファイルの項目と、参照先の制約を出す（段ごとに計画の全文を開かせない）。"""
-    _, bodies = sections(ctx.plan.read_text(encoding="utf-8"), PLAN_HEADINGS)
+    """この段の項目を続きの行ごと、全体の目的・振る舞い・前提・制約・対象外とともに渡す。"""
+    _, bodies = sections(plan_text_for_checks(ctx), PLAN_HEADINGS)
     labels = {side_label(ctx, k, rel) for k, rel in files} | {rel for k, rel in files if len(ctx.refs) <= 1 or not k}
     out = []
     for heading in PLAN_ITEM_HEADINGS:
-        for item in items(bodies.get(heading, "")):
-            head = item.split(" — ", 1)[0]
+        for item in plan_item_blocks(bodies.get(heading, "")):
+            head = item.splitlines()[0].split(" — ", 1)[0]
             if any(re.search(rf"(?<![\w/.:-]){re.escape(x)}(?![\w/-])", head) for x in labels):
                 out.append(f"- [{heading[3:]}] {item}")
-    if not out:
-        return
-    print("\n## 計画の項目（この段のファイル。計画のファイルは開かなくてよい）\n")
-    print("\n".join(out))
-    limits = [it for it in items(bodies.get("## 参照先の制約", "")) if not is_none(it)]
-    if limits:
-        print("\n## 参照先の制約\n")
-        print("\n".join(f"- {it}" for it in limits))
-    rules = [it for it in items(bodies.get(GUIDES_HEADING, "")) if not is_none(it)]
-    if rules:
-        print(f"\n## {GUIDES_HEADING[3:]}（計画に書いたもの）\n")
-        print("\n".join(f"- {it}" for it in rules))
+    if out:
+        print("\n## 計画の項目（この段のファイル。計画のファイルは開かなくてよい）\n")
+        print("\n".join(out))
+    for heading in ("## やりたいこと", BEHAVIOR_HEADING, "## 参照先の前提", "## 参照先の制約",
+                    "## ずれ", "## 今回やらないこと", GUIDES_HEADING):
+        body = bodies.get(heading, "").strip()
+        if body:
+            print(f"\n{heading}\n\n{body}")
 
 
 APPLY_TODO = "（何をしたか）"   # ひな形の書きかけの印。残っている行は、使った記録として数えない
@@ -8006,6 +8078,14 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     if isinstance(a, str):
         print_problems(ctx, "apply", [Problem("stale", a)])
         return 1
+    # apply は承認された計画時の前提で再利用を判定する。今回の実装変更だけで判断を失効させない。
+    try:
+        checked_plan = json.loads((ctx.data / PLAN_CHECK_TEXT).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        checked_plan = {}
+    if (checked_plan.get("path") == plan_rel(ctx) and checked_plan.get("digest") == plan_digest(ctx)
+            and isinstance(checked_plan.get("dismissal_context"), str)):
+        ctx.__dict__["_dismissal_context"] = checked_plan["dismissal_context"]
     decisions = load_decisions(ctx)
     if decisions and decisions[-1].get("answer") == "STOP":
         # 変える段の途中で利用者がやめた。測らない（報告に、やめた回の影響範囲や検査の回数を混ぜない）
