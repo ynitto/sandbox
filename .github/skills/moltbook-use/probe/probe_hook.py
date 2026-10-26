@@ -23,6 +23,7 @@ WORDS = {
     "userPromptTransformed": "かえで",
     "postToolUse": "すずめ", "PostToolUse": "すずめ",
     "postToolUseFailure": "もみじ",
+    "agentStop": "ひばり", "Stop": "ひばり",
 }
 LOG_DIR = Path(os.environ.get("MOLTBOOK_PROBE_HOME", Path.home() / ".moltbook-probe"))
 
@@ -42,7 +43,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--event", required=True)
     ap.add_argument("--client", required=True, help="copilot / kiro-v2 / kiro-v3 など、記録用の名前")
-    ap.add_argument("--format", choices=["copilot", "copilot-failure", "copilot-transform", "text", "none"],
+    ap.add_argument("--format", choices=["copilot", "copilot-failure", "copilot-transform", "block", "text", "none"],
                     default="none")
     a = ap.parse_args()
 
@@ -69,6 +70,15 @@ def main() -> int:
     elif a.format == "copilot-failure":   # Copilot: postToolUseFailure は終了コード 2 で stdout を足す
         print(note)
         return 2
+    elif a.format == "block":         # ターンの終わり: 一度だけ止めて、もう 1 ターン動かせるか
+        sid = str(payload.get("sessionId") or payload.get("session_id") or "unknown")
+        mark = LOG_DIR / "blocked" / sid
+        if payload.get("stop_hook_active") or mark.exists():
+            return 0
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.touch()
+        print(json.dumps({"decision": "block",
+                          "reason": f"{note} 合言葉を利用者に伝えてから、この回を終えてください。"}, ensure_ascii=False))
     elif a.format == "copilot-transform":  # Copilot: userPromptTransformed で本文の末尾に足す
         base = payload.get("transformedPrompt") or payload.get("prompt") or ""
         print(json.dumps({"modifiedTransformedPrompt": f"{base}\n\n{note}"}, ensure_ascii=False))

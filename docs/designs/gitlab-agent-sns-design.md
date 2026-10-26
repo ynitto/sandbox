@@ -3,7 +3,7 @@
 > 作成日: 2026-06-05 / 整理日: 2026-06-06（確定事項に基づく統合版）
 > 着想: OpenCraw / Moltbook（エージェント向け SNS）
 > 関連スキル: `moltbook-use`（新規） / ltm-use / wiki-use / persona-use / gitlab-idd / `common.instructions.md`
-> 追補: 会話からの自動投稿は [`moltbook-capture-design.md`](./moltbook-capture-design.md)
+> 追補: セッションの中での振り返り投稿は [`moltbook-retro-design.md`](./moltbook-retro-design.md)
 
 本書は段階的な意思決定（v1〜v5）の到達点を整理した**確定版**。全体設計を前半（§1–§11）に、
 現行コードからの**変更点**を §12 にまとめる。

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""確認用のフック・指示ファイルを置く／取り除く。
+"""確認用のフックとプラグインを置く／取り除く。
 
   python setup_probe.py --target copilot-user          # Windows で実行
   python setup_probe.py --target copilot-plugin        # Windows で実行
-  python setup_probe.py --target copilot-instructions  # Windows で実行
   python3 setup_probe.py --target kiro-v2              # WSL で実行
   python3 setup_probe.py --target kiro-v3              # WSL で実行
-  python3 setup_probe.py --target kiro-steering        # WSL で実行
   python setup_probe.py --remove                       # このスクリプトが置いたものを全部消す
 
 置いたファイルは ~/.moltbook-probe/created.json に記録し、--remove はそれだけを消す。
-既存のファイルは書き換えない（指示ファイルだけは印で囲んだ段落を足し、--remove で外す）。
+既存のファイルは書き換えない。
 """
 from __future__ import annotations
 
@@ -26,16 +24,15 @@ HOME = Path(os.environ.get("MOLTBOOK_PROBE_HOME", Path.home() / ".moltbook-probe
 LEDGER = HOME / "created.json"
 COPILOT_HOME = Path(os.environ.get("COPILOT_HOME", Path.home() / ".copilot"))
 KIRO_HOME = Path.home() / ".kiro"
-BEGIN, END = "<!-- moltbook-probe:begin -->", "<!-- moltbook-probe:end -->"
 
 # Copilot の各きっかけと、出力の形（probe_hook.py --format）
 COPILOT_EVENTS = {
     "sessionStart": "copilot", "userPromptSubmitted": "copilot", "userPromptTransformed": "copilot-transform",
-    "postToolUse": "copilot", "postToolUseFailure": "copilot-failure", "agentStop": "none", "sessionEnd": "none",
+    "postToolUse": "copilot", "postToolUseFailure": "copilot-failure", "agentStop": "block", "sessionEnd": "none",
 }
 KIRO_V2_EVENTS = {"agentSpawn": "text", "userPromptSubmit": "text", "postToolUse": "text", "stop": "none"}
 KIRO_V3_EVENTS = {"SessionStart": "text", "UserPromptSubmit": "text", "PostToolUse": "text",
-                  "Stop": "none", "SessionEnd": "none"}
+                  "Stop": "block", "SessionEnd": "none"}
 
 
 def _ledger() -> list:
@@ -45,9 +42,9 @@ def _ledger() -> list:
         return []
 
 
-def _record(path: Path, kind: str = "file") -> None:
+def _record(path: Path) -> None:
     items = _ledger()
-    items.append({"path": str(path), "kind": kind})
+    items.append({"path": str(path)})
     HOME.mkdir(parents=True, exist_ok=True)
     LEDGER.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -93,16 +90,6 @@ def setup(target: str) -> None:
         print(f"\nアプリ: Customize → Plugins → 歯車 → マーケットプレイスの追加で、次を指定してください:\n  {root}\n"
               f"CLI があれば: copilot plugin marketplace add \"{root}\" のあと "
               "copilot plugin install moltbook-probe@moltbook-probe")
-    elif target == "copilot-instructions":
-        path = COPILOT_HOME / "copilot-instructions.md"
-        text = path.read_text(encoding="utf-8") if path.exists() else ""
-        if BEGIN in text:
-            sys.exit("既に置いてあります")
-        block = f"\n{BEGIN}\n確認用: 指示ファイルの合言葉は「あやめ」です。\n{END}\n"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text + block, encoding="utf-8")
-        _record(path, "block")
-        print(f"段落を足しました: {path}")
     elif target == "kiro-v2":
         hooks = {}
         for ev, fmt in KIRO_V2_EVENTS.items():
@@ -119,9 +106,6 @@ def setup(target: str) -> None:
                                             "action": {"type": "command", "command": _cmd(ev, "kiro-v3", fmt)[0]}}]},
                 ensure_ascii=False, indent=2))
         print("試すとき: kiro-cli chat --v3")
-    elif target == "kiro-steering":
-        _write_new(KIRO_HOME / "steering" / "moltbook-probe.md",
-                   "# 確認用\n\nグローバルの steering の合言葉は「ひのき」です。\n")
     else:
         sys.exit(f"不明な target: {target}")
 
@@ -129,20 +113,7 @@ def setup(target: str) -> None:
 def remove() -> None:
     for item in reversed(_ledger()):
         path = Path(item["path"])
-        if item["kind"] == "block" and path.exists():
-            text = path.read_text(encoding="utf-8")
-            if BEGIN in text and END in text:
-                head, rest = text.split(BEGIN, 1)
-                tail = rest.split(END, 1)[1]
-                # 置くときに前後へ 1 つずつ足した改行だけを外し、元の改行は残す
-                left = (head[:-1] if head.endswith("\n") else head) + (tail[1:] if tail.startswith("\n") else tail)
-                if left.strip():
-                    path.write_text(left, encoding="utf-8")
-                    print(f"段落を外しました: {path}")
-                else:   # このスクリプトが作った空のファイルなら消す
-                    path.unlink()
-                    print(f"消しました: {path}")
-        elif path.exists():
+        if path.exists():
             path.unlink()
             print(f"消しました: {path}")
     if LEDGER.exists():
@@ -152,8 +123,7 @@ def remove() -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--target", choices=["copilot-user", "copilot-plugin", "copilot-instructions",
-                                        "kiro-v2", "kiro-v3", "kiro-steering"])
+    g.add_argument("--target", choices=["copilot-user", "copilot-plugin", "kiro-v2", "kiro-v3"])
     g.add_argument("--remove", action="store_true")
     a = ap.parse_args()
     remove() if a.remove else setup(a.target)
