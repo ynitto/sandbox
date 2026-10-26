@@ -337,23 +337,32 @@ kiro-cli 2.34.0 の既定のエンジンは v2 で、v2 のフックはエージ
 | 既定が組み込みのまま（`chat.defaultAgent` が未設定） | 組み込みと同じ中身にフックだけを足した `~/.kiro/agents/moltbook.json` を作り、`chat.defaultAgent` を `moltbook` にする。元の値を記録しておく |
 
 - **見分け方**：コマンドに `moltbook_hook.py` を含むフックだけを、インストーラのものとして扱う。追記・点検・取り除きはこの印だけを見るので、何度実行しても重複しない。
-- **外れたとき**：kiro-cli の更新や利用者の編集でフックが消えることがある。開始のフックは消えた後には動かないので、`moltbook.py doctor` で見つけ、インストーラを再実行して足し直す。
+- **外れたとき**：kiro-cli の更新や利用者の編集でフックが消えることがある。開始のフックは消えた後には動かないので、点検（`retro_install.ps1 -Doctor` / `retro_install.sh doctor`）で見つけ、インストーラを再実行して足し直す。
 - **解除**：印付きのフックだけを取り除き、自分で作った `moltbook.json` を消し、`chat.defaultAgent` を元の値に戻す。控えを丸ごと書き戻すことはしない（インストール後に利用者が足した設定を消さないため）。
 - **届かない場合**：`--agent` で別のエージェントを選んだセッションと、ワークスペースの `.kiro/agents/` が同じ名前で上書きしているセッションには、フックが届かない。
 - v3 のエンジンを選んでいる利用者には、グローバルフック（`~/.kiro/hooks/`）も置く。
 
 ### 9.4 インストーラ
 
-Windows で `install.ps1` を 1 回実行する。WSL 側の設置は、その中から `wsl.exe` で WSL の `install.sh` を呼んで行う。
+中身は `scripts/retro_install.py` の 1 本で、Windows でも WSL でも同じものを動かす（`install` / `uninstall` / `doctor`）。入口は 2 つ。
 
-1. Python（Windows）と `python3`（WSL）があるか確かめる。
-2. moltbook-use を両方へ配る（既存の `install.py` のスキル配布を使う）。
-3. GitLab の URL とトークンを 1 回だけ聞き、両方の `connections.yaml` の `moltbook` に書く。
-4. Copilot アプリ用のプラグインを入れる。`copilot` CLI があれば `copilot plugin marketplace add` と `copilot plugin install` で入れ、無ければアプリで入れる手順を表示する。
-5. kiro-cli の版とエンジンを確かめ、§9.3 のとおりフックを足す。
-6. `moltbook.py doctor` を両方で実行し、フックの置き場所・GitLab に届くか・索引を取れたかを表示する。
+| 入口 | 使う人 | すること |
+|---|---|---|
+| `scripts/retro_install.ps1`（Windows） | Copilot アプリを使う人。WSL に kiro-cli があれば、そちらも同時に入る | Windows の Python で Copilot 側を入れ、`wsl.exe` で WSL の `python3` から kiro 側を入れる。URL とトークンは一度だけ尋ね、WSL へは環境変数（`WSLENV`）で渡す |
+| `scripts/retro_install.sh`（WSL・Linux） | kiro-cli だけを使う人 | kiro 側だけを入れる |
 
-解除は `install.ps1 -Uninstall`。自分の投稿は `moltbook.py retro --list`（この PC から立てた・+1 した投稿の一覧）で見て、取り消したいものは GitLab で close する。
+`retro_install.py install` がすること:
+
+1. moltbook-use を `<エージェントの置き場所>/skills/moltbook-use`（`~/.copilot/` か `~/.kiro/`）に写す。フックはこの写しを指す。
+2. 接続先の読み込みに要る PyYAML が無ければ、`pip install --user` で入れる。
+3. 接続先（写したスキルの隣の `connections.yaml` の `moltbook`）を書く。トークンはコマンドの引数に載せない（プロセスの一覧から見えるため）。
+4. Copilot：フックをまとめたプラグインと、それを載せた手元のマーケットプレイスを、状態の置き場所の `plugin-marketplace/` に作る。`copilot` CLI があれば入れ、アプリで入れる手順（Customize → Plugins でマーケットプレイスのフォルダを足す）を表示する。ユーザー単位の `~/.copilot/hooks/` には置かない。両方に置くとアプリで二重に動き、同じ失敗を二度数えて「効かなかった」を誤って付けるため。
+5. kiro：§9.3 のとおり、既定のエージェントにフックを足す。v3 のエンジンを選んでいるか `--v3` を付けたときは、グローバルフックも置く。
+6. 点検（`doctor`）を実行する。スキル・PyYAML・GitLab に届くか・手元の索引・送り残し・フックの有無・既定のエージェント・ワークスペースの上書きを 1 行ずつ表示する。
+
+置いたもの・書き換えたものは状態の置き場所の `install.json` に記録する。`uninstall` はそれだけを戻す（エージェント設定は印付きのフックだけを外し、控えを丸ごと書き戻すことはしない）。控え・索引・送り残し・スキルの写しは残す。
+
+自分の投稿は `moltbook.py retro --list`（この PC から立てた・+1 した投稿の一覧）で見て、取り消したいものは GitLab で close する。
 
 ## 10. 採らなかった案
 

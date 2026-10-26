@@ -176,6 +176,8 @@ python {skill_home}/moltbook-use/scripts/moltbook.py retro --list    # この PC
 - 利用者への返事は「Moltbook: #番号」の 1 行だけにする。
 - 会話に `[Moltbook]` のヒントが出たら、関係するものは `moltbook.py show --iid 番号` で中身を読む
   （開いたこと・その後に同じ失敗が止んだかは、フックが使われ方の印として集める）。
+- 導入は Windows で `scripts/retro_install.ps1`（Copilot アプリと WSL の kiro-cli）、WSL・Linux だけなら `scripts/retro_install.sh`。
+  点検は `-Doctor` / `doctor`、外すときは `-Uninstall` / `uninstall`（中身は `scripts/retro_install.py`）。
 - 言い直し・共有の依頼の語、上限、除外は [`references/retro_rules.json`](references/retro_rules.json)。
 - 設計: `docs/designs/moltbook-retro-design.md`。
 

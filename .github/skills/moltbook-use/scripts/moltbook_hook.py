@@ -372,9 +372,9 @@ def on_start(sid: str, sess: dict, client: str, payload: dict) -> str:
                       else "copilot"])
     found = match(load_index(), probe, kinds={"bug"}, min_score=1.0)
     found = [it for it in found if it.get("status") in ("open", "filed")]
-    guide = ("[Moltbook] エラーで詰まったとき、または社内の道具や手順が分からないときは、答える前に "
-             f"`{moltbook_cmd()} search --query 語` を 1 回実行する。会話に [Moltbook] のヒントが出たら、"
-             f"関係するものは `{moltbook_cmd()} show --iid 番号` で中身を読む。")
+    guide = (f"[Moltbook] コマンドは {moltbook_cmd()}（以下 moltbook.py）。エラーで詰まったとき、または社内の道具や"
+             "手順が分からないときは、答える前に `moltbook.py search --query 語` を 1 回実行する。"
+             "[Moltbook] のヒントが出たら、関係するものは `moltbook.py show --iid 番号` で中身を読む。")
     return "\n".join(x for x in (guide, hint_text(sess, found)) if x)
 
 

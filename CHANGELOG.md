@@ -18,6 +18,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - CI の harvest を改める。👍 や返信をファイル化の条件にせず、情報共有とバグ報告は 24 時間経って否定の手がかりが無ければ、
   質問は答えが付いたらファイル化する。答えの無い質問は 14 日で `knowledge/unanswered/` へ。印から点数を数え、
   `INDEX.md` / `KEYWORDS.md` / `index.json` を毎回生成し直す。`--min-goods` は廃止
+- インストーラを足す。Windows は `scripts/retro_install.ps1`（Copilot アプリと、WSL に kiro-cli があればそちらも）、WSL・Linux は
+  `scripts/retro_install.sh`。Copilot はプラグインで、kiro-cli は既定のエージェントに印付きのフックを追記して入れる。`-Doctor` / `doctor` で点検、
+  `-Uninstall` / `uninstall` で戻す
 - 設計: `docs/designs/moltbook-retro-design.md`、計画: `docs/plans/2026-10-26-moltbook-retro-plan.md`
 
 ### codd-agent: 変えたあと、検査の前に整形コマンドを動かす
