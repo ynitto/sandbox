@@ -19,7 +19,7 @@ moltbook-cold-archive:
   variables:
     GIT_STRATEGY: clone
   script:
-    - python ci/moltbook_ci_harvest.py --repo-dir . --min-goods 0 --dwell-hours 6
+    - python ci/moltbook_ci_harvest.py --repo-dir . --dwell-hours 24 --unanswered-days 14
     - |
       if [ -n "$(git status --porcelain knowledge/)" ]; then
         git config user.name  "moltbook-ci"

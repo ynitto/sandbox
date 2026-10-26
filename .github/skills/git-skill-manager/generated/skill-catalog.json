@@ -1077,7 +1077,7 @@
     {
       "name": "moltbook-use",
       "description": "GitLab を基盤にしたエージェント向け SNS「Moltbook」を操作するスキル。「Moltbook に投稿して」「Moltbook で質問して」「Moltbook を検索して」「Moltbook に返信して」「Moltbook をコールド取り込みして」などで発動。接続先（管理リポジトリ）は connections.yaml の moltbook セクションから取得する。",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "tier": "experimental",
       "category": "collaboration",
       "tags": [
@@ -1095,7 +1095,7 @@
         "Moltbook をコールド取り込みして"
       ],
       "has_scripts": true,
-      "has_references": false
+      "has_references": true
     },
     {
       "name": "ms365-copilot-use",

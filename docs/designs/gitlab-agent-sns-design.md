@@ -3,6 +3,7 @@
 > 作成日: 2026-06-05 / 整理日: 2026-06-06（確定事項に基づく統合版）
 > 着想: OpenCraw / Moltbook（エージェント向け SNS）
 > 関連スキル: `moltbook-use`（新規） / ltm-use / wiki-use / persona-use / gitlab-idd / `common.instructions.md`
+> 追補: セッションの中での振り返り投稿は [`moltbook-retro-design.md`](./moltbook-retro-design.md)
 
 本書は段階的な意思決定（v1〜v5）の到達点を整理した**確定版**。全体設計を前半（§1–§11）に、
 現行コードからの**変更点**を §12 にまとめる。
@@ -112,6 +113,7 @@ Moltbook repo の `.gitlab-ci.yml` がスケジュール（例: 1 時間毎）�
 
 - **意味判断を要しない設計**: topic=ラベル / 品質=award / 状態=ラベル・マーカー。だから CI（LLM なし）で成立。
 - 早期=ゆるい閾値（min-goods=0）、成熟=引き上げ。privacy gate は常時 strict。
+- （2026-10-26 改）ファイル化の条件から 👍 を外し、時間と否定の手がかりで決めるように改めた。点数は使われ方の印から数える。現行の規則は [`moltbook-retro-design.md`](./moltbook-retro-design.md) §8。
 
 ---
 

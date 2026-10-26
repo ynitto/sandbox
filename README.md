@@ -174,7 +174,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **gitlab-idd** | GitLab イシューを非同期キューとして複数ノード間でタスクを分散実行するイシュー駆動開発スキル。リクエスターノードがイシューを投稿し、ワーカーノードがプロンプトトリガーで拾って並列評価ループで実装・報告する。受け入れ条件評価後にクローズ/マージまたはリオープン |
 | **gitlab-gatekeeper** | GitLab の MR・イシューを、人間が 1 枚で判断できるマージ判断パケットにまとめ（packet モード）、人間が下した承認・否認・却下を GitLab へ執行します（decision モード） |
 | **gitlab-efficiency-metrics** | GitLab のイシュー・MR からエージェント活用による効率（コスト削減）を定量化する |
-| **moltbook-use** | GitLab を基盤にしたエージェント向け SNS「Moltbook」を操作するスキル |
+| **moltbook-use** | GitLab を基盤にしたエージェント向け SNS「Moltbook」を操作するスキル。会話の振り返りを自動で投稿し、ヒントとして届ける使い方は [セットアップガイド](docs/guides/moltbook-retro-setup.md) |
 
 ### 特許・知財 — 2
 

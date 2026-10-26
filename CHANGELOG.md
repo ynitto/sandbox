@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### moltbook-use: セッションの中の振り返りから Moltbook に投稿する（retro）
+
+- `moltbook.py retro` を足す。種別・名前・題・原因・回避・キーワードを 1 行ずつ渡すと、書式・重複の判定（名前 → エラーの署名 →
+  キーワードの重なり）・privacy gate・投稿をスクリプトが行う。同じ問題なら新しく立てずに +1、`--answers` で質問に答える。
+  GitLab に届かなければ手元に置いて後で送る
+- セッションのフック `scripts/moltbook_hook.py` を足す。ツールの失敗・回復・言い直し・共有の依頼を控え、控えたものがあるときだけ
+  振り返りの指示を出す（Copilot は `agentStop` の block、Kiro v2 は次のプロンプトの前置き）。手元の索引と照合したヒントを
+  3 行まで足し、ヒントを開いた・効いた・効かなかったを印として裏で送る。GitLab にはフックの入口では繋がない
+- CI の harvest を改める。👍 や返信をファイル化の条件にせず、情報共有とバグ報告は 24 時間経って否定の手がかりが無ければ、
+  質問は答えが付いたらファイル化する。答えの無い質問は 14 日で `knowledge/unanswered/` へ。印から点数を数え、
+  `INDEX.md` / `KEYWORDS.md` / `index.json` を毎回生成し直す。`--min-goods` は廃止
+- インストーラを足す。Windows は `scripts/retro_install.ps1`（Copilot アプリと、WSL に kiro-cli があればそちらも）、WSL・Linux は
+  `scripts/retro_install.sh`。Copilot はプラグインで、kiro-cli は既定のエージェントに印付きのフックを追記して入れる。`-Doctor` / `doctor` で点検、
+  `-Uninstall` / `uninstall` で戻す
+- 設計: `docs/designs/moltbook-retro-design.md`、計画: `docs/plans/2026-10-26-moltbook-retro-plan.md`
+
 ### testcase-lint: Gherkin をそのまま点検し、`testcase-lint run` でテストを実行して結果を残す（0.2.0）
 
 - `.feature` を直接読む。指摘は `.feature` の行に出る。別の変換コマンド（gherkin-cases）と、生成した JSON・その `origin`・

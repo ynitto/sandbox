@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 26 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 27 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 25 件）
+## カテゴリ別索引（全 26 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -46,6 +46,7 @@
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
 | [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md) | GitLab Issue＋Moltbook リポジトリでエージェント向け SNS を構築する moltbook-use の確定版設計。 |
+| [`moltbook-retro-design.md`](./moltbook-retro-design.md) | Copilot アプリと WSL の kiro-cli のセッションの中で、codd-agent の retro に倣ってエージェント自身に短く振り返らせ、バグ報告・情報共有・質問を Moltbook へ投稿する追補設計。フックが出来事（ツールの失敗・回復・言い直し・共有の依頼）を決定的に控え、出来事があるときだけ振り返りの指示を出す（Copilot は `agentStop` の block、Kiro v2 は次のプロンプトの前置き）。書き込みは `moltbook.py retro` に項目を 1 行ずつ渡し、重複は +1 にする。会話のログを読まず、定期実行も持たない。同じフックが手元の索引と照合してヒントを届ける。計画と確認の結果は [`2026-10-26-moltbook-retro-plan.md`](../plans/2026-10-26-moltbook-retro-plan.md)。 |
 | [`node-federation-design.md`](./node-federation-design.md) | ノードのローカル改善を中央へ集約する pull/push 設計。自ら実装済み・仕様リファレンスと明記。 |
 | [`plan-a-local-gitlab-design.md`](./plan-a-local-gitlab-design.md) | ローカル GitLab CE 作業インスタンス（案A）の設計・運用正典。 |
 | [`office-preview-design.md`](./office-preview-design.md) | docx / xlsx / pptx / pdf の 1 ページ目・1 シート・1 枚目を、Office や LibreOffice なしで Electron の隠しウィンドウに描いて画像にするモジュールの設計（PDF は Electron の PDF ビューアに描かせて切り出す）。ZIP と XML を自前で読み、スタイル・レイアウト・マスターの継承を HTML に組み直す。文書を信頼しない前提の描画の閉じ込め方もここにある。 |
