@@ -3,6 +3,9 @@
 自然文で書いたテストケース（e2e・シナリオテスト・人が見るチェックリスト）を、**テストケースとしての妥当性**で
 点検する。LLM は使わない。同じ入力からは毎回同じ指摘が出る。
 
+テストコードの重複・統合候補は [`testcase-lint code`](#テストコードの静的検査) で検査する。
+自然文ケースを点検する既存の使い方はそのまま使える。
+
 - **曖昧さ** … 読む人によって、使う値・操作・合否が変わってしまう書き方（「正しく」「任意の」「しばらく」「該当の」
   「AまたはB」「〜ことがある」「前より速く」「各項目を入力」など）
 - **書き方** … 重複・矛盾・漏れ・不備
@@ -249,6 +252,31 @@ testcase-lint は単体で動く。ほかの道具とは、コマンドの終了
 ### 結果ファイル（`evidence`）
 
 設定の `evidence:`（か `--evidence <file>`）で、`{"version": 1, "items": [...]}` の形の結果ファイルも書く。
+ルートには `purpose: check` を付ける。これはケースを点検した結果であり、実際のテストを実行した証拠とは区別する。
+既存の項目 ID・合否・件数は変わらない。
+
+`-f json` の出力には、指摘と要約に加えて正規化した `cases` が入る。
+各ケースの `file` / `id` / `input_sha256` を、個別テストとの対応やケース一覧の検査に利用できる。
+全単体テストを自然文ケースへ変換する必要はなく、追跡したい業務条件・公開契約から使える。
+
+### 任意の入力変換と元ファイルへの指摘
+
+ケースの `origin` に、JSON/YAML からの相対の入力元ファイル、正の整数の `line`、`input_sha256`、
+`fields` の `preconditions` / `steps` / `expected` の行番号配列を付けると、指摘を元ファイルへ返す。
+元ファイルが変わっていれば D00 で再生成を求める。`origin` と任意の `group` は比較する前提に加えない。
+任意の JSON Schema の指摘と evidence の失敗判定にも入力元を反映する。
+
+[gherkin-cases](../gherkin-cases/README.md) はこの形式へ `.feature` を変換する独立したツール。
+この本体に Gherkin のパーサーや Cucumber の実行エンジンを追加する必要はない。
+
+```bash
+gherkin-cases specs/shipping.feature -o generated/cases.json
+testcase-lint generated/cases.json -f json -o results/cases.json
+```
+
+`.feature` を直接このコマンドへ渡す機能はない。生成した JSON を点検し、元ファイルを正本として更新する。
+
+### 結果の項目
 
 | id | 中身 |
 |---|---|
@@ -278,6 +306,171 @@ python3 tools/codd-agent/init.py ~/work/my-app --side impl --ref docs=../my-app-
 
 ケースや仕様を変えるたびに点検し、落ちたファイルと理由を codd-agent が示す。文書に件数を写すなら、
 codd-agent の印（`<!-- evidence: testcase-lint/errors -->`）を使う。
+
+## テストコードの静的検査
+
+JavaScript / TypeScript（JSX / TSX を含む）と Python のテストを AST で比較する。
+Vitest・Jest・Node.js `node:test`・Playwright の import / require、pytest の関数、unittest のクラスを読む。
+テスト・アプリ・プロジェクト設定・import 先のヘルパーは実行しない。Vitest 自体のインストールも不要。
+Python のファイルを読む場合だけ Python 3.8 以上が必要。
+
+```bash
+testcase-lint code tests/ -f json -o results/code-report.json
+testcase-lint code "src/**/*.test.ts" --fail-on warning
+testcase-lint code tests/test_shipping.py
+```
+
+| 規則 | 既定 | 指摘とまとめ方 |
+|---|---|---|
+| K01 | warning | 同じファイルで本文と静的な実行条件が一致する。目的・観測する状態を確認して重複を整理する |
+| K02 | info | 構造が同じで数値・文字列などが違う。test.each / parametrize / subTest で、各ケースを行として残す |
+| K03 | warning | 同じファイルで suite / class を含むテストの完全名が重複する。ケースを区別できる名前にする |
+| K04 | info | 別のファイルで本文と静的な実行条件が一致する。単体・結合・E2E の役割を確認する |
+| K05 | warning | 同じパラメーター表の行が一致する。意図的な繰り返しかを確認する |
+| K00 | warning | 動的な登録・表・構文などを静的に確定できない。解析済みの範囲と区別する |
+
+ローカル変数名は束縛を解決してそろえ、リテラルを残した本文と、リテラルの値だけを伏せた構造を比較する。
+外側の変数・import の参照先・hook・mock・fixture・引数・修飾子・登録間の初期化は比較条件に含める。
+関数・クラス・プロパティの名前を、通常のローカル変数名として消さない。
+値の違う境界値を「不要な重複」として削除する指摘にはしない。ソースを書き換える機能はない。
+
+### 設定とCI
+
+```yaml
+code:
+  files: [tests, "src/**/*.test.ts"]
+  exclude: ["**/fixtures/**", "**/generated/**"]
+  globals: false
+  python: python3
+  max_file_bytes: 2097152
+  evidence: results/code-check.json
+rules:
+  K01: warning
+  K02: info
+  K04: off
+```
+
+設定のパスは設定ファイルからの相対。引数のパスがあれば `code.files` より優先する。
+`code.files` が無い場合は現在のフォルダ以下から `.test.*` / `.spec.*` / `test_*.py` / `*_test.py` を探す。
+隠しフォルダ・node_modules・dist・build・coverage・Python のキャッシュはたどらない。
+Vitest の設定や `.gitignore` からの対象推定は行わない。独自の対象や生成物は files / exclude に指定する。
+
+globals を使うプロジェクトでは `--globals` または `code.globals: true` を指定する。
+import も設定も無い `test` / `it` を、勝手にテストと判定しない。
+`--fail-on warning` を付けると warning 以上が終了コード 1 になる。info も止めるなら `--fail-on info`。
+`--min-severity` は表示の絞り込みで、ゲートの判定を弱めない。
+
+終了コードは 0 = 設定した重さの指摘なし、1 = 指摘あり、2 = 入力不備・テスト0件・未解析部分あり。
+`--allow-incomplete` を付ければ部分的な結果で続けられるが、0件は成功にせず、出力にも不完全と記す。
+K00 を off にしても、未解析の事実は消さない。
+
+JSON には `tests`、`findings`、`analysis.complete`、`analysis.diagnostics`、理由付きの `analysis.suppressions` が入る。
+自然文モードの `cases` 一覧とは区別する。text / markdown にも解析範囲を表示する。
+evidence は `purpose: check`。自然文モードと出力が衝突しないように `code.evidence` を使う。
+これは実際のテストの実行成功を表すものではない。
+
+### 意図的に並べたケース
+
+次の宣言または表の行に対し、規則と理由を明示して抑制できる。Python は `#` を使う。
+
+```ts
+// testcase-lint-code-ignore-next-line K01: 並列リクエストの独立した経路を残す
+test('別経路での確認', () => { /* ... */ });
+```
+
+`K01,K02` のように複数指定もできる。理由の無いコメントは K00。
+同じ重複グループに他の未抑制のテストが2件以上あれば、その重複は引き続き報告する。
+
+### 解析できる範囲と他の言語
+
+直接書いた登録とローカルのコールバック、インラインのリテラル表、他に変更・受け渡しの無いローカル定数の表を扱う。
+動的タイトル、ループや条件分岐内の登録、動的な表・タグ付きテンプレートの表、複数の parametrize の直積、未知の継承・デコレーター、
+eval / locals などの名前の観測は推測せず K00 にする。外部ヘルパーの本体は展開しない。
+`complete: true` は対応する登録形式について不明部分が無いという意味で、ランナーの収集結果や実行時の等価性の証明ではない。
+独自のテスト登録ラッパーや未対応のランナーの収集規約は、別アダプターで扱える。
+
+他の言語は [中間表現のスキーマ](schema/test-code.schema.json) に合わせた AST アダプターを用意して渡す。
+比較層は言語・パーサー・ランナーを知らず、本文・構造・実行条件のキーを読む。
+
+```bash
+testcase-lint code --ir results/custom-test-ir.json --fail-on warning
+```
+
+中間表現は `version: 1` と `tests` を持ち、各テストに file / line / title / fullTitle / framework / comparable /
+staticTitle / context / body.exact / body.structural を入れる。body.exact は値を残した本文、body.structural は値だけを型で置き換えた構造のキー。
+アダプター側で fixture・スコープ・外部参照を含む context を作り、不明な部分は diagnostics と comparable: false で返す。
+
+[vitest-dedup](https://github.com/figueiredoluiz/vitest-dedup) の「本文・実行条件・値違いを分け、指摘の種類ごとに整理方法を示す」方針を参考にした。
+近似的な振る舞い一致、包含関係、hook や suite 全体の統合はこの版の検出対象に含めない。
+
+## 暫定実装のテストが残っていないかを調べる
+
+自然文ケースと `testcase-lint code` の両方で、暫定テストの終了条件を点検する。
+正式実装に置き換えた後も古いテストが通る場合を含め、テストの成否とは独立して報告する。
+
+| 規則 | 既定 | 検知するもの |
+|---|---|---|
+| T01 | warning | 名前・コメント・ケースの本文に「暫定」「仮実装」「workaround」などがある、または `temporary` タグがあるが、終了条件が未管理 |
+| T02 | error | 期限切れ、参照した実装ファイルの削除、暫定実装のマーカーの消失 |
+| T03 | warning | 記録した実装のSHA-256と現在の内容が違う。暫定仕様の期待値が残っていないか見直す |
+| T04 | error | 理由・終了条件・日付・管理コメントのJSONなどが不正、または参照先を読めない |
+
+JSON / YAML のケースには `temporary` を付ける。これは実行の前提として比較しないメタデータ。
+`reason` と、`expires_on` または `implementation` の少なくとも一方を記録する。
+
+```yaml
+cases:
+  - id: SHIP-01
+    title: 正常な注文の送料
+    steps: [5000円の注文の送料を計算する]
+    expected: [送料は0円になる]
+    temporary:
+      reason: 送料計算の正式実装まで固定値を使う
+      implementation:
+        file: ../src/shipping.ts
+        marker: TEMP-SHIPPING-FIXED-ZERO
+      expires_on: '2026-12-31'
+```
+
+JS / TS は宣言の直前に、本物のコメントとして1行のJSONを付ける。Python は `#` を使い、
+デコレーターの前にも書ける。文字列・docstringの中のサンプルを管理コメントとは扱わない。
+
+```ts
+// testcase-lint-temporary: {"reason":"送料計算の正式実装待ち","implementation":{"file":"../src/shipping.ts","marker":"TEMP-SHIPPING-FIXED-ZERO"}}
+test('正常な注文の送料', () => {
+  expect(shipping(5000)).toBe(0);
+});
+```
+
+暫定実装側に `// TEMP-SHIPPING-FIXED-ZERO` のような固有のマーカーを置く。
+正式実装へ置き換える際にそのマーカーを除けば、元のテストが成功し続けてもT02になる。
+`implementation.file` はテストファイルからの相対パス。`origin` のある生成ケースでは元のケースファイルからの相対。
+`--ir` の `file` は現在の作業フォルダを基準に解決する。
+`marker` の代わりに、または一緒に `sha256` に実装ファイル全体のSHA-256を記録することもできる。
+マーカーは文字列として照合する。実装・テスト・import先は実行しない。
+期限はUTCで指定日が終わるまで有効。参照する実装ファイルは2MiB以下にする。
+
+正式仕様でも必要な回帰テストなら、理由を確認して次のように記録する。
+`status: permanent` と期限・暫定実装参照を同時には指定できない。
+
+```json
+{"status":"permanent","reason":"正式仕様でも同じ障害の再発を防ぐため残す"}
+```
+
+このオブジェクトをケースの `temporary` または管理コメントの値にする。
+T01は候補の警告であり、削除の指示ではない。T02でもテストを自動削除せず、正式仕様への更新・統合・引退を判断する。
+暫定である印も終了条件もないテストの意味は静的には判断できない。
+新しく暫定実装に関するテストを作る時点で管理情報を記録し、実装変更時も同じ検査を継続する。
+
+```bash
+testcase-lint code tests/ --fail-on warning
+testcase-lint tests/cases --fail-on warning
+```
+
+T01・T03もCIで止めるには `--fail-on warning` を使う。T02・T04は既定で失敗になる。
+`rules: {T01: off, T03: error}` のように既存の設定で重さを変えられる。
+他の言語アダプターも同じ `temporary` を中間表現に入れれば、同じ終了条件を使える。
+Gherkin入力では `@temporary` タグもT01の候補になる。
 
 ## 分かること・分からないこと
 

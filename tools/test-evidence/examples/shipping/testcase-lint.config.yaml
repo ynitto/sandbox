@@ -1,0 +1,2 @@
+cases: [tests/cases.yaml]
+evidence: results/case-check.json

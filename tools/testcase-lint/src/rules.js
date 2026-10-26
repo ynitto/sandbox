@@ -16,6 +16,10 @@ const D = CATEGORY.defect, A = CATEGORY.ambiguity, U = CATEGORY.duplicate, C = C
 const O = CATEGORY.oracle, X = CATEGORY.exec;
 
 const RULES = {
+  T01: [D, 'warning', '暫定テストの終了条件が未管理'],
+  T02: [D, 'error', '暫定テストの終了条件に達している'],
+  T03: [D, 'warning', '暫定実装の変更後に見直しが必要'],
+  T04: [D, 'error', '暫定テストの管理情報が不正'],
   D00: [D, 'error', 'ファイルを読めない'],
   D01: [D, 'warning', 'ID がない'],
   D02: [D, 'error', 'ID が重複している'],
@@ -77,6 +81,12 @@ const RULES = {
   S08: [C, 'warning', '仕様にない状態遷移を期待している'],
   I01: [C, 'warning', '期待する文言が実装にない'],
   I02: [C, 'warning', '期待するエラーコードが実装にない'],
+  K00: [D, 'warning', 'テストコードを静的に確定できない'],
+  K01: [U, 'warning', '同じ実行条件でテスト本文が一致する'],
+  K02: [U, 'info', '値の違うテストを表にまとめられる'],
+  K03: [D, 'warning', '同じファイルでテストの完全名が重複する'],
+  K04: [U, 'info', '別ファイルに同じテスト本文がある'],
+  K05: [U, 'warning', 'パラメーター表の行が重複する'],
 };
 
 module.exports = { RULES, CATEGORY, SEVERITY_ORDER, SEVERITY_LABEL };

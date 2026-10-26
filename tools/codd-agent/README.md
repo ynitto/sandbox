@@ -500,6 +500,74 @@ python3 tools/codd-agent/init.py ~/work/my-app --format "ruff format {files}" --
 
 テストはコード・仕様書と同じく整合を取る成果物として扱い、変更が響くテストを計画に挙げさせる（[設計書](../../docs/designs/codd-agent-design.md#42-テストもコード仕様書と同じ成果物として測る)）。
 
+### ケースと個別テストを対応付ける（任意）
+
+`test_bindings` に JSON の対応表を指定すると、ファイル名や文字列が似ていなくても、ケースとテストを双方向に影響範囲へ加える。
+エージェントは計画に従ってケース・単体・API・E2E のテストを追加・更新する。層の選び方はプロジェクトの方針に従い、
+リファクタでは期待結果を維持する。背景でファイルを監視して変更する機能ではない。
+
+```json
+{
+  "side": "impl",
+  "refs": [],
+  "test_bindings": ["test-bindings.json"],
+  "test_catalogs": ["results/cases.json"],
+  "test": ["python3", "verify-tests.py"],
+  "evidence": ["results/*.json"]
+}
+```
+
+```json
+{
+  "version": 1,
+  "bindings": [{
+    "case": {"file": "tests/cases.yaml", "id": "SHIP-01"},
+    "targets": [
+      {"suite": "unit", "file": "tests/test_shipping.py", "selector": "ShippingTest::test_free"},
+      {"suite": "e2e", "file": "e2e/checkout.spec.ts", "selector": "checkout/free-shipping"}
+    ]
+  }]
+}
+```
+
+パスは各リポジトリのルートからの相対。別の側のケースは `case.side` に参照先の名前を書く。
+ケース・テストの配置が既定の `tests` に含まれなければ、その側の設定で追加する。
+同じリポジトリを scope で分ける場合はルートの `tests` を共有し、ケース一覧のファイルは scope に従って担当側へ戻す。
+対応の削除も計画に挙げる。最後の対応を廃止するときは `bindings: []` のファイルを残す。
+未指定のプロジェクトは従来どおり動く。
+
+```bash
+python3 tools/codd-agent/init.py ~/work/my-app \
+  --test-bindings test-bindings.json --test-catalogs results/cases.json
+```
+
+プロジェクトの `verify-tests.py` などで、ケースの変換・点検・一覧生成と実際のテストを実行する。
+`test_catalogs` は任意の JSON `{ "cases": [{ "file", "id", "input_sha256" }] }` の一覧を読む。
+一覧があると、変更したケースファイル内の追加ケースの対応漏れ・古い一覧・存在しない ID も検出する。
+一覧はプロジェクトルートで生成する。結果・一覧・キャッシュは入力の識別と変更測定から除く。
+入力変換の生成物は apply で先に再生成するか、生成先を `exclude` に指定する。
+一覧を設定しない場合、明示した対応の実行を確認するが、全ケースの対応漏れまでは判断しない。
+
+実行結果は `purpose: execution`、今回の `run_id` / `inputs_digest`、suite・selector・ケースとテストの SHA-256 が一致した
+個別テストだけで照合する。実行時には一般的な環境変数 `TEST_EVIDENCE_RUN_ID` / `TEST_EVIDENCE_INPUTS_DIGEST` を渡す。
+別テストの成功、全 skip、古い結果、未知の合否、点検だけの結果では通らない。関連するテストを持つ参照先も実行する。
+
+形式と利用例は [test-evidence](../test-evidence/README.md) にある。JUnit 変換を使うか、この共通形式を直接書くかはプロジェクトが選べる。
+この本体は各ランナーの構文や、ケースを読む道具の名前を知らない。Cucumber/Gherkin も不要。
+
+テストコードの静的な重複検査も、プロジェクトの `check` にコマンドを並べて接続できる。
+たとえば自然文ケースは `testcase-lint`、テストコードは `testcase-lint code --fail-on warning` で点検する。
+同じ検査で、暫定実装に依存するテストの終了条件も点検できる。
+新しく作るときに理由・期限または実装のマーカー/ハッシュを記録し、正式実装への置き換え時にはテストの更新・統合・引退を判断する。
+テスト自体が成功し続けても、期限切れ・実装削除・マーカー消失を検知する。
+記録方法は [暫定テストの点検](../testcase-lint/README.md#暫定実装のテストが残っていないかを調べる) を参照。
+コード側の対象は `testcase-lint.config.yaml` の `code.files` に書き、結果は `code.evidence` で別のファイルへ出す。
+指摘された本文の一致・値違いの統合候補・別の検証層を区別し、表にまとめる場合もケースIDと個別結果の対応を更新する。
+この静的な点検は実際のテストの実行を置き換えない。
+
+旧形式の evidence は従来の報告に使える。対応表を有効にした範囲の厳密な確認には、新しい実行情報が必要。
+点検結果は `purpose: check` として扱い、文書への件数の写しは従来どおり使える。
+
 ### 従う手順（guides）
 
 読んで従うもの（決まりのマークダウン・スキル・道具）は、`codd.json` の `guides` に 1 件ずつ、「何を（`use`）」「いつ（`when`）」

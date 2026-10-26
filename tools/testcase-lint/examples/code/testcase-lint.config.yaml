@@ -1,0 +1,4 @@
+code:
+  files: ["*.test.ts", "test_*.py"]
+  evidence: results/code-check.json
+fail_on: warning

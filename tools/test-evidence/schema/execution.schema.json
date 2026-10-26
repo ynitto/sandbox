@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "個別テストの実行結果",
+  "type": "object", "required": ["version", "purpose", "run_id", "inputs_digest", "items"],
+  "properties": {
+    "version": {"const": 1}, "purpose": {"const": "execution"},
+    "run_id": {"type": "string", "minLength": 1}, "inputs_digest": {"type": "string", "minLength": 1},
+    "root": {"type": "string"},
+    "items": {"type": "array", "items": {
+      "type": "object", "required": ["id", "kind", "suite", "file", "status", "test_sha256", "cases"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1}, "kind": {"const": "behavior"},
+        "suite": {"type": "string", "minLength": 1}, "file": {"type": "string", "minLength": 1},
+        "status": {"enum": ["passed", "failed", "skipped"]},
+        "test_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "cases": {"type": "array", "minItems": 1, "items": {
+          "type": "object", "required": ["file", "id", "sha256"], "properties": {
+            "side": {"type": "string"}, "file": {"type": "string", "minLength": 1}, "id": {"type": "string", "minLength": 1},
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          }
+        }}
+      }
+    }}
+  }
+}

@@ -54,6 +54,7 @@ test('結果ファイル（evidence）', async () => {
   } finally { process.chdir(cwd); }
   const data = JSON.parse(fs.readFileSync(ev, 'utf8'));
   assert.equal(data.version, 1);
+  assert.equal(data.purpose, 'check');
   assert.equal(data.root, '..');
   const byId = Object.fromEntries(data.items.map((x) => [x.id, x]));
   assert.equal(byId['testcase-lint/errors'].value, 1);

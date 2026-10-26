@@ -107,7 +107,7 @@ SIDES = {"impl": "実装", "design": "設計書"}
 OTHER_SIDE = {"impl": "design", "design": "impl"}
 PHASES = {"plan": "計画を練るとき", "apply": "変えるとき"}
 CONFIG_KEYS = {"side", "refs", "graphify", "check", "format", "scope", "max_files", "batch_files", "subagent",
-               "skill_dirs", "test", "tests", "evidence", "exclude", "guides", "protect", "no_doc", "retro"}
+               "skill_dirs", "test", "tests", "test_bindings", "test_catalogs", "evidence", "exclude", "guides", "protect", "no_doc", "retro"}
 REF_KEYS = {"name", "path", "scope", "exclude", "guides", "protect"}
 # 前の版の書き方。読まずに止め、init.py で guides へ書き換えてもらう（init.py は置き直すときに書き換える）。
 LEGACY_KEYS = {"ref_path", "skills", "tools", "rules"}
@@ -693,6 +693,12 @@ def load_config(machine_dir: Path) -> dict:
     config["evidence"] = [] if evidence == [] else rule_list(evidence, f"{path} の evidence")
     tests = config.get("tests", DEFAULT_TEST_PATTERNS)
     config["tests"] = [] if tests == [] else rule_list(tests, f"{path} の tests")
+    for name in ("test_bindings", "test_catalogs"):
+        value = config.get(name, [])
+        config[name] = [] if value == [] else rule_list(value, f"{path} の {name}")
+        for pattern in config[name]:
+            if PurePosixPath(pattern).is_absolute() or ".." in PurePosixPath(pattern).parts or ":" in pattern or "\\" in pattern:
+                raise CoddError(f"{path} の {name} はリポジトリ内の相対パス・glob です: {pattern}")
     config.setdefault("max_files", DEFAULT_MAX_FILES)
     if not (isinstance(config["max_files"], int) and not isinstance(config["max_files"], bool)
             and config["max_files"] > 0):
@@ -864,7 +870,7 @@ class Ctx:
         self.config = load_config(MACHINE_DIR)
         self.side = self.config["side"]
         # テストが書き出す結果のファイル（evidence）は、探す・影響を測る・変えたかを数える対象にしない（直すものではない）
-        self.own = Side("own", root, self.config["scope"], exclude=unique([*self.config["exclude"], *self.config["evidence"]]),
+        self.own = Side("own", root, self.config["scope"], exclude=unique([*self.config["exclude"], *self.config["evidence"], *self.config["test_catalogs"]]),
                         protect=self.config["protect"])
         self.data = root / DATA_DIRNAME
         self.plan = active_plan(root) or root / PLAN_DIR / "（計画がありません）.md"
@@ -912,7 +918,7 @@ class Ctx:
                                  entry_skills=added["skills"]["apply"], entry_rules=added["rules"],
                                  guides=guides or {}, entry_triggered=added["triggered"]))
         for r in self.refs:
-            r.exclude = unique([*r.exclude, *r.evidence_patterns])
+            r.exclude = unique([*r.exclude, *r.evidence_patterns, *(r.config or {}).get("test_catalogs", [])])
             if r.path == root.resolve() and r.scope and not self.own.scope:
                 # 同じリポジトリで自分の scope を書かなければ、参照先が受け持つフォルダの外の全部を受け持つ
                 self.own.exclude = unique([*self.own.exclude, *(f"{s}/" for s in r.scope)])
@@ -4116,6 +4122,7 @@ def verify_plan_text(ctx: Ctx, text: str) -> list[str]:
     if problems:
         return problems
     problems += test_plan(ctx, bodies).problems
+    problems += bindings_plan_problems(ctx, bodies)
     problems += behaviors(ctx, bodies)[1]
     problems += judgment_problems("## 影響範囲", bodies["## 影響範囲"])
     problems += [p for p in judgment_problems(TESTS_HEADING, bodies[TESTS_HEADING]) if "理由がありません" not in p]
@@ -4909,7 +4916,7 @@ def side_of(ctx: Ctx, key: str) -> Side:
 
 def test_patterns(ctx: Ctx, key: str) -> list[str]:
     """その側のテストのファイルの書き方。自分は codd.json の tests、参照先は参照先に置いた codd.json の tests。"""
-    return ctx.config["tests"] if not key else ctx.ref(key).test_patterns
+    return ctx.config["tests"] if not key or ctx.ref(key).path == ctx.root.resolve() else ctx.ref(key).test_patterns
 
 
 def is_test(ctx: Ctx, key: str, rel: str) -> bool:
@@ -5026,7 +5033,230 @@ def affected_tests(ctx: Ctx, terms: list[str], changed: dict[str, set[str]],
                 for hk, hrel in resolve(ctx, side, rel, claim).hits:
                     if is_test(ctx, hk, hrel) and (hk, hrel) not in targets:
                         found[(hk, hrel)] = "つながり"
+    # 明示的な対応は文字列やファイル名が似ていなくてもたどる。
+    bindings = load_test_bindings(ctx)
+    pending = True
+    while pending:
+        pending = False
+        for b in bindings:
+            related = {(b.case_key, b.case_file), (b.key, b.file), (b.key, b.manifest)}
+            if related & (targets | set(found)):
+                for hit in related - {(b.key, b.manifest)} - targets - set(found):
+                    found[hit] = f"ケースの対応 `{b.case_id}`"
+                    pending = True
     return found
+
+
+@dataclass(frozen=True)
+class TestBinding:
+    key: str
+    manifest: str
+    case_key: str
+    case_file: str
+    case_id: str
+    file: str
+    selector: str
+    suite: str
+
+
+def binding_path(ctx: Ctx, key: str, value, where: str, scoped: bool = True) -> str:
+    """対応表のパスは、その側のリポジトリ内に限る。"""
+    if not isinstance(value, str) or not value or "\\" in value or ":" in value:
+        raise CoddError(f"{where} はリポジトリ内の相対パスです")
+    path, side = PurePosixPath(value), side_of(ctx, key)
+    if path.is_absolute() or ".." in path.parts or (scoped and not side.has(path.as_posix())):
+        raise CoddError(f"{where} はその側が扱う相対パスです: {value}")
+    try:
+        (side.path / value).resolve().relative_to(side.path.resolve())
+    except ValueError:
+        raise CoddError(f"{where} がリポジトリの外を指しています: {value}")
+    return path.as_posix()
+
+
+def binding_documents(ctx: Ctx, previous: bool = False) -> list[tuple[str, str, dict]]:
+    documents = []
+    for key, side in all_sides(ctx):
+        cfg = ctx.config if not key else (ctx.ref(key).config or {})
+        for pattern in cfg.get("test_bindings", []):
+            paths = sorted(side.path.glob(pattern))
+            if not paths:
+                raise CoddError(f"test_bindings に当てはまるファイルがありません: {side_label(ctx, key, pattern)}")
+            for path in paths:
+                rel = binding_path(ctx, key, path.relative_to(side.path).as_posix(), "test_bindings")
+                body = baseline_text(ctx, key, rel) if previous else None
+                if body is None and previous:
+                    rc, old = run(["git", "show", f"{side.diff_base}:{rel}"], side.path, GIT_TIMEOUT)
+                    body = old if rc == 0 else None
+                if previous and body is None:
+                    continue
+                try:
+                    data = json.loads(body if previous else path.read_text(encoding="utf-8-sig"))
+                except (OSError, ValueError) as e:
+                    raise CoddError(f"{rel} を JSON として読めません: {e}") from e
+                if (not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 1
+                        or not isinstance(data.get("bindings"), list)):
+                    raise CoddError(f'{rel} は {{"version": 1, "bindings": [...]}} の形です')
+                documents.append((key, rel, data))
+    return documents
+
+
+def load_test_bindings(ctx: Ctx, previous: bool = False) -> list[TestBinding]:
+    """ケース形式・ランナーの構文を解釈せず、任意の JSON 対応表を読む。"""
+    out, identities = [], set()
+    keys = {key for key, _ in all_sides(ctx)}
+    for key, manifest, data in binding_documents(ctx, previous):
+        for entry in data["bindings"]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("case"), dict):
+                raise CoddError(f"{manifest} の対応には case が要ります")
+            case, targets = entry["case"], entry.get("targets")
+            ck, cid = case.get("side", key), case.get("id")
+            if not isinstance(ck, str) or ck not in keys:
+                raise CoddError(f"{manifest} の case.side が不正です: {ck!r}")
+            cf = binding_path(ctx, ck, case.get("file"), f"{manifest} の case.file")
+            if not isinstance(cid, str) or not cid.strip() or not isinstance(targets, list) or not targets:
+                raise CoddError(f"{manifest} の対応には空でない case.id と targets が要ります")
+            for target in targets:
+                if not isinstance(target, dict):
+                    raise CoddError(f"{manifest} の targets はオブジェクトの配列です")
+                tf = binding_path(ctx, key, target.get("file"), f"{manifest} の target.file")
+                selector, suite = target.get("selector"), target.get("suite")
+                if not all(isinstance(v, str) and v.strip() for v in (selector, suite)):
+                    raise CoddError(f"{manifest} の target には空でない selector と suite が要ります")
+                if not is_test(ctx, key, tf) or not is_test(ctx, ck, cf):
+                    raise CoddError(f"{manifest} のケース・テストのパスを、その側の tests に含めてください")
+                identity = (ck, cf, cid, key, tf, selector, suite)
+                if identity in identities:
+                    raise CoddError(f"{manifest} にケースの対応が重複しています: {cid} / {selector}")
+                identities.add(identity)
+                out.append(TestBinding(key, manifest, ck, cf, cid, tf, selector, suite))
+    return out
+
+
+def bindings_plan_problems(ctx: Ctx, bodies: dict[str, str]) -> list[str]:
+    changed = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels}
+    planned = test_plan(ctx, bodies).listed() | changed
+    problems = []
+    for b in load_test_bindings(ctx):
+        related = {(b.case_key, b.case_file), (b.key, b.file), (b.key, b.manifest)}
+        if not related & changed:
+            continue
+        for key, rel in ((b.case_key, b.case_file), (b.key, b.file)):
+            if not (side_of(ctx, key).path / rel).is_file() and (key, rel) not in planned:
+                problems.append(Problem("shape", f"ケース `{b.case_id}` のファイルがありません。追加を計画してください: {side_label(ctx, key, rel)}"))
+    return problems
+
+
+def execution_inputs(ctx: Ctx) -> str:
+    """結果・カタログを除く各側の HEAD と作業中の変更を識別する。"""
+    inputs = {}
+    for key, side in all_sides(ctx):
+        snap = snapshot(side)
+        snap["files"] = {rel: value for rel, value in snap["files"].items() if not is_cache(rel)}
+        inputs[key] = snap
+    return hashlib.sha256(json.dumps(inputs,
+                                    sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def bindings_execution_problems(ctx: Ctx, since: float, required: set[tuple[str, str]],
+                               bodies: dict[str, str]) -> list[str]:
+    bindings = load_test_bindings(ctx)
+    problems = []
+    planned = {(k, rel) for k, rels in plan_changes(ctx, bodies).items() for rel in rels} | test_plan(ctx, bodies).change
+    old = load_test_bindings(ctx, previous=True)
+    for b in old:
+        if b not in bindings and (b.key, b.manifest) not in planned:
+            problems.append(Problem("shape", f"ケース `{b.case_id}` の対応が計画なしに削除されています: {b.manifest}"))
+    receipt = getattr(ctx, "_test_receipt", {})
+    if bindings and receipt and receipt["inputs_digest"] != execution_inputs(ctx):
+        problems.append(Problem("check", "テストの実行中に入力が変わりました。生成物を exclude に設定するか、変更を確認して検査し直してください"))
+    file_hashes, evidence_index = {}, {}
+    for b in bindings:
+        related = {(b.case_key, b.case_file), (b.key, b.file), (b.key, b.manifest)}
+        if not related & required:
+            continue
+        paths = (side_of(ctx, b.case_key).path / b.case_file, side_of(ctx, b.key).path / b.file)
+        if not all(path.is_file() for path in paths):
+            problems.append(Problem("shape", f"ケース `{b.case_id}` のファイルがありません。対応表も更新してください: {b.manifest}"))
+            continue
+        for path in paths:
+            if path not in file_hashes:
+                file_hashes[path] = hashlib.sha256(path.read_bytes()).hexdigest()
+        hashes = [file_hashes[path] for path in paths]
+        if b.key not in evidence_index:
+            index = {}
+            for rel, row in evidence_rows(ctx, b.key, since)[1]:
+                if isinstance(row.get("id"), str) and isinstance(row.get("suite"), str):
+                    index.setdefault((rel, row["id"], row["suite"]), []).append(row)
+            evidence_index[b.key] = index
+        rows = []
+        for row in evidence_index[b.key].get((b.file, b.selector, b.suite), []):
+            cases = row.get("cases")
+            if (row.get("_purpose") != "execution" or not receipt
+                    or type(row.get("_version")) is not int or row["_version"] != 1
+                    or row.get("_run_id") != receipt["run_id"] or row.get("_inputs_digest") != receipt["inputs_digest"]
+                    or row.get("test_sha256") != hashes[1] or not isinstance(cases, list)):
+                continue
+            if any(isinstance(c, dict) and c.get("side", b.key) == b.case_key and c.get("file") == b.case_file
+                   and c.get("id") == b.case_id and c.get("sha256") == hashes[0] for c in cases):
+                rows.append(row.get("status"))
+        if not rows or any(status != "passed" for status in rows):
+            problems.append(Problem("check", f"ケース `{b.case_id}` の個別テストの成功結果がありません"
+                                    f"（今回の実行・入力の版・suite・selector が一致し passed であることが必要）: "
+                                    f"{side_label(ctx, b.key, b.file)} / {b.suite} / {b.selector}"))
+    problems += catalog_problems(ctx, bindings, required)
+    return problems
+
+
+def catalog_problems(ctx: Ctx, bindings: list[TestBinding], required: set[tuple[str, str]]) -> list[str]:
+    """任意の一般的な JSON ケース一覧から、新しいケースの対応漏れを検出する。"""
+    problems = []
+    covered_cases = {(b.case_key, b.case_file, b.case_id) for b in bindings}
+    file_hashes = {}
+    for key, side in all_sides(ctx):
+        cfg = ctx.config if not key else (ctx.ref(key).config or {})
+        seen = set()
+        for pattern in cfg.get("test_catalogs", []):
+            paths = sorted(side.path.glob(pattern))
+            if not paths:
+                problems.append(Problem("check", f"ケース一覧がありません: {side_label(ctx, key, pattern)}"))
+            for path in paths:
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8-sig"))
+                    cases = data["cases"]
+                    if not isinstance(cases, list):
+                        raise ValueError("cases は配列です")
+                    for c in cases:
+                        if not isinstance(c, dict) or not isinstance(c.get("id"), str) or not c["id"]:
+                            raise ValueError("各ケースには id が要ります")
+                        rel = binding_path(ctx, key, c.get("file"), "ケース一覧の file", scoped=False)
+                        case_key = key
+                        if not side.has(rel):
+                            owners = [k for k, candidate in all_sides(ctx) if candidate.path.resolve() == side.path.resolve() and candidate.has(rel)]
+                            if len(owners) != 1:
+                                raise ValueError(f"ケース一覧の file の担当側を特定できません: {rel}")
+                            case_key = owners[0]
+                        identity = (case_key, rel, c["id"])
+                        if identity in seen:
+                            raise ValueError(f"ケースが重複しています: {rel} / {c['id']}")
+                        seen.add(identity)
+                        if (case_key, rel) not in required:
+                            continue
+                        file = side.path / rel
+                        if file not in file_hashes:
+                            file_hashes[file] = hashlib.sha256(file.read_bytes()).hexdigest()
+                        digest = file_hashes[file]
+                        if c.get("input_sha256") != digest:
+                            problems.append(Problem("check", f"ケース一覧が古いか入力の版が不明です: {rel}"))
+                        if identity not in covered_cases:
+                            problems.append(Problem("check", f"ケース `{c['id']}` に個別テストの対応がありません: {rel}"))
+                except (OSError, ValueError, KeyError, TypeError) as e:
+                    problems.append(Problem("check", f"ケース一覧を読めません: {path.name}: {e}"))
+        if cfg.get("test_catalogs"):
+            missing = {(b.case_key, b.case_file, b.case_id) for b in bindings
+                       if side_of(ctx, b.case_key).path.resolve() == side.path.resolve() and (b.case_key, b.case_file) in required} - seen
+            if missing:
+                problems.append(Problem("check", "ケース一覧に対応元のケースがありません: " + ", ".join(f"{r} / {i}" for _, r, i in sorted(missing))))
+    return problems
 
 
 @dataclass
@@ -5186,7 +5416,8 @@ def evidence_rows(ctx: Ctx, key: str, since: float) -> tuple[bool, list[tuple[st
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            if (not isinstance(data, dict) or not isinstance(data.get("items"), list)
+                    or data.get("purpose") not in (None, "execution")):
                 continue
             wrote = True
             root = (path.parent / data["root"]).resolve() if isinstance(data.get("root"), str) else side.path
@@ -5194,7 +5425,8 @@ def evidence_rows(ctx: Ctx, key: str, since: float) -> tuple[bool, list[tuple[st
                 if isinstance(item, dict) and item.get("kind") == "behavior" and not is_output(item):
                     rel = item_file(ctx, key, {**item, "_root": root})
                     if rel:
-                        rows.append((rel, item))
+                        rows.append((rel, {**item, "_purpose": data.get("purpose"), "_run_id": data.get("run_id"),
+                                           "_inputs_digest": data.get("inputs_digest"), "_version": data.get("version")}))
     return wrote, rows
 
 
@@ -5208,16 +5440,23 @@ def behavior_result(ctx: Ctx, b: Behavior, since: float) -> str:
     if not evidence_patterns(ctx, b.key):
         return "テストごとの結果は無い（テストの結果（evidence）が未設定）"
 
+    def matches(item: dict) -> bool:
+        cases = item.get("cases")
+        mapped = {case.get("id") for case in cases if isinstance(case, dict) and isinstance(case.get("id"), str)} \
+            if isinstance(cases, list) else set()
+        return not b.cases or any(c in f"{item.get('id')} {item.get('title')}" or c in mapped for c in b.cases)
+
     def statuses(after: float) -> set[str]:
-        return {str(item.get("status")) for rel, item in evidence_rows(ctx, b.key, after)[1]
-                if rel == b.rel and (not b.cases or any(c in f"{item.get('id')} {item.get('title')}" for c in b.cases))}
+        return {str(item.get("status")) for rel, item in evidence_rows(ctx, b.key, after)[1] if rel == b.rel and matches(item)}
     now = statuses(since)
     if "failed" in now:
         return "落ちた"
-    if now - {"skipped"}:
+    if "passed" in now and now <= {"passed", "skipped"}:
         return "通った"
-    if now:
+    if now == {"skipped"}:
         return "飛ばした"
+    if now:
+        return "結果の合否が不正（passed / failed / skipped のみ）"
     return "この回の結果が無い（前の回の結果だけ）" if statuses(0) else "結果が無い（動いていない）"
 
 
@@ -6557,10 +6796,11 @@ def keep_log(log_dir: Path, label: str, out: str) -> str:
     return f"{rel}（開かずに grep で関係する行だけを読む。テストをやり直して全文を読まない）"
 
 
-def run_check(repo: Path, command: list[str] | None, label: str, log_dir: Path | None = None) -> list[str]:
+def run_check(repo: Path, command: list[str] | None, label: str, log_dir: Path | None = None,
+              env: dict | None = None) -> list[str]:
     if not command:
         return []
-    rc, out = run(command, repo, CHECK_TIMEOUT)
+    rc, out = run(command, repo, CHECK_TIMEOUT, env=env)
     _STAMPS.clear()   # テストや検査はファイルを書くことがある（使い回した印を古いまま使わない）
     if rc == 0:
         return []
@@ -6746,7 +6986,10 @@ def run_before(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str],
 def checked(ctx: Ctx, key: str, side: Side, cwd: Path, argv: list[str] | None, label: str) -> list[str]:
     """run_check に、変える前から落ちていたかの見分けを足したもの。認めた前からの失敗だけなら通す。"""
     started = time.time()
-    problems = run_check(cwd, argv, label, ctx.data / LOGS_DIR)
+    receipt = getattr(ctx, "_test_receipt", {})
+    env = {**os.environ, "TEST_EVIDENCE_RUN_ID": receipt["run_id"],
+           "TEST_EVIDENCE_INPUTS_DIGEST": receipt["inputs_digest"]} if receipt else None
+    problems = run_check(cwd, argv, label, ctx.data / LOGS_DIR, env=env)
     if not problems or CANNOT_RUN in problems[0]:
         return problems   # 動かせないものは、変える前の中身で動かしても同じ理由で落ちるだけ
     failed = failed_tests(ctx, key, started - 1)
@@ -6887,7 +7130,8 @@ def unrun_problems(ctx: Ctx, since: float, sides: list[str], required: set[tuple
         judged = [rel for rel in want if Path(rel).suffix in kinds]
         if len(judged) < len(want):
             unchecked[key or "自分"] = len(want) - len(judged)
-        missing += [(key, rel) for rel in judged if not ran.get(rel, set()) - {"skipped"}]
+        missing += [(key, rel) for rel in judged if not ran.get(rel, set()) & {"passed", "failed"}
+                    or ran.get(rel, set()) - {"passed", "failed", "skipped"}]
     if unchecked:
         write_text(ctx.data / UNCHECKED_NAME, json.dumps(unchecked, ensure_ascii=False) + "\n")
     else:
@@ -8019,8 +8263,15 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
     before_checks = len(problems)
     (ctx.data / PREEXISTING_NAME).unlink(missing_ok=True)
     started = time.time() - 1
+    bindings = load_test_bindings(ctx)
+    required = set(affected) | tp.change | {(k, rel) for k, rels in touched_all.items() for rel in rels}
+    bound_sides = {b.key for b in bindings if {(b.case_key, b.case_file), (b.key, b.file), (b.key, b.manifest)} & required}
+    test_refs = [r for r in ctx.refs if r in changed or r.name in bound_sides]
+    if bindings:
+        ctx._test_receipt = {"run_id": os.urandom(16).hex(), "inputs_digest": execution_inputs(ctx)}
+        write_text(ctx.data / "test-run.json", json.dumps(ctx._test_receipt) + "\n")
     problems += run_checks(ctx, "", ctx.own, ctx.root, ctx.config.get("test"), ctx.config.get("check"), SIDES[ctx.side])
-    for r in changed:
+    for r in test_refs:
         # 参照先のテストと検査は、参照先に置いた同じマシンの設定（codd.json の test・check）を使う。
         problems += run_checks(ctx, r.name, r, r.path, r.test, r.check, f"{r.name}（{r.label}）")
     checks_failed = len(problems) > before_checks
@@ -8028,9 +8279,11 @@ def cmd_verify_apply(ctx: Ctx, args: argparse.Namespace) -> int:
         save_failed_tests(ctx)
     else:
         clear_failed_tests(ctx)
-        tested = [*([""] if ctx.config.get("test") else []), *(r.name for r in changed if r.test)]
+        tested = [*([""] if ctx.config.get("test") else []), *(r.name for r in test_refs if r.test)]
         problems += unrun_problems(ctx, started, tested, set(affected) | {
             (k, rel) for k, rels in touched_all.items() for rel in rels if is_test(ctx, k, rel)})
+        problems += bindings_execution_problems(ctx, started, set(affected) | tp.change | {
+            (k, rel) for k, rels in touched_all.items() for rel in rels}, bodies)
     held = protected_in_failures(ctx, problems[before_checks:], approved_changes(ctx, a))
     if held:
         # 訊かずに変え直させると、人の承認が要るファイルを直して、次の検査でまた止まるだけになる

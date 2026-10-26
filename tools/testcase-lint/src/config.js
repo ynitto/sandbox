@@ -51,6 +51,7 @@ function defaults() {
     words: { vague: [], negative: [], pairs: [] },
     requirementId: null,
     testData: { domains: [], cards: [] },
+    code: { files: [], exclude: [], globals: false, python: process.platform === 'win32' ? 'python' : 'python3', evidence: null, maxBytes: 2 * 1024 * 1024 },
   };
 }
 
@@ -106,6 +107,21 @@ function loadConfig(file, { required = false } = {}) {
   cfg.cases = list(raw.cases).map(rel);
   cfg.spec = list(raw.spec).map(rel);
   cfg.source = list(raw.source).map(rel);
+  const code = raw.code || {};
+  if (typeof code !== 'object' || Array.isArray(code)) throw fail('code は設定のオブジェクトです');
+  cfg.code.files = list(code.files).map(rel);
+  cfg.code.exclude = list(code.exclude);
+  if (code.globals != null && typeof code.globals !== 'boolean') throw fail('code.globals は true / false です');
+  cfg.code.globals = code.globals === true;
+  if (code.python != null) {
+    if (typeof code.python !== 'string' || !code.python.trim()) throw fail('code.python は Python の実行ファイル名です');
+    cfg.code.python = code.python;
+  }
+  if (code.evidence) cfg.code.evidence = rel(String(code.evidence));
+  if (code.max_file_bytes != null) {
+    if (!Number.isSafeInteger(code.max_file_bytes) || code.max_file_bytes < 1) throw fail('code.max_file_bytes は正の整数です');
+    cfg.code.maxBytes = code.max_file_bytes;
+  }
   if (raw.evidence) cfg.evidence = rel(String(raw.evidence));
   if (raw.fail_on != null) {
     cfg.failOn = String(raw.fail_on);

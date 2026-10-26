@@ -1,0 +1,12 @@
+feature: 送料計算
+cases:
+  - id: SHIP-01
+    title: 商品合計4999円の送料は500円
+    conditions: { 商品合計: 4999 }
+    steps: [商品合計4999円の注文の送料を計算する]
+    expected: [送料は500円になる]
+  - id: SHIP-02
+    title: 商品合計5000円の送料は0円
+    conditions: { 商品合計: 5000 }
+    steps: [商品合計5000円の注文の送料を計算する]
+    expected: [送料は0円になる]
