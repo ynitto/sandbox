@@ -251,6 +251,41 @@ test('実行時: 完了した端末にもスクロールとサイズ変更を送
 });
 
 
+test('実行時: 完了した後も残したセッションへ続けて依頼し、次の実行で閉じる', async () => {
+  let payload;
+  const calls = [];
+  let alive = true;
+  const sent = [];
+  const run = await startRun('kiro', async (p) => {
+    payload = p;
+    return {
+      start() {}, alive: () => alive,
+      followUp: async (text) => { calls.push(text); payload.onSession({ phase: 'busy' }); return true; },
+      interrupt: async () => calls.push('interrupt'),
+      keys: async (data) => calls.push(data),
+      close: async () => { alive = false; calls.push('close'); },
+      stop: async () => { alive = false; calls.push('stop'); },
+    };
+  });
+  run.sender.send = (channel, data) => sent.push([channel, data]);
+  await new Promise(setImmediate);
+  const event = { sender: run.sender };
+  const p = { requestId: run.result.requestId };
+  assert.equal((await run.registered.get('automation:run:followup')(event, { ...p, text: 'x' })).ok, false,
+    '実行中は続けて依頼できない');
+  payload.onExit({ code: 0, stdout: '', stderr: '', truncated: false, session: true });
+  assert.equal(sent.find(([channel]) => channel === 'automation:run:exit')[1].session, true);
+  assert.equal((await run.registered.get('automation:run:followup')(event, { ...p, text: 'もう一度' })).ok, true);
+  assert.deepEqual(sent.at(-1), ['automation:run:session', { phase: 'busy', requestId: p.requestId, machine: 'digest' }]);
+  assert.equal((await run.registered.get('automation:run:followup')(event, { requestId: 'old', text: 'x' })).ok, false);
+  await run.registered.get('automation:run:interrupt')(event, p);
+  await run.registered.get('automation:run:keys')(event, { ...p, data: 'y' });
+  const next = await run.registered.get('automation:run:start')(event,
+    { root: REPO, machine: 'digest', taskId: 'machine:digest', mode: 'run', agent: 'kiro' });
+  assert.equal(next.ok, true);
+  assert.deepEqual(calls, ['もう一度', 'interrupt', 'y', 'close']);
+});
+
 test('プロンプト型: Cursor に共通指示と本文を対話送信し、終了結果を通知する', async () => {
   let payload;
   const run = await startRun('cursor', async (p) => {

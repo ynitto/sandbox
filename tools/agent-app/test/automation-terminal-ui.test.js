@@ -60,6 +60,12 @@ test('manual run button displays a terminal, preserves it across tabs, and sends
         text: 'COMPLETED TERMINAL HISTORY', cursor: { x: 0, y: 0 }, scrollOffset: 10 });
     });
     register('run:keys', (_event, p) => { global.manualTestCalls.push(p.data); });
+    register('run:followup', (event, p) => {
+      global.manualTestCalls.push(`followup:${p.text}`);
+      event.sender.send('automation:run:session', { requestId: p.requestId, phase: 'busy' });
+      return true;
+    });
+    register('run:interrupt', () => { global.manualTestCalls.push('interrupt'); return true; });
     register('run:stop', (event) => {
       global.manualTestCalls.push('stop');
       event.sender.send('automation:run:exit', { requestId: 'manual-ui-test', code: 1, mode: 'run', result: { ok: false } });
@@ -92,6 +98,14 @@ test('manual run button displays a terminal, preserves it across tabs, and sends
   await workspace.locator('#run-log').waitFor({ state: 'visible' });
   assert.equal(await workspace.locator('#run-log').textContent(), 'manual run warning');
   await workspace.locator('#run-log-details summary').click();
+  // 端末の下には会話画面と同じ入力欄。実行中はメッセージを送れず、端末操作で答える。
+  const composer = win.locator('#run-composer');
+  assert.equal(await composer.isVisible(), true);
+  assert.equal(await win.locator('#run-prompt').isDisabled(), true, '実行中は続けて依頼できない');
+  assert.match(await win.locator('#run-input-status').textContent(), /実行中/);
+  assert.equal(await workspace.locator('#run-terminal-focus').count(), 0, '入力欄の切り替えと重なる案内は出さない');
+  await win.locator('#run-mode-terminal').click();
+  assert.equal(await win.locator('#run-terminal-keys').isVisible(), true);
   await terminal.locator('textarea').focus();
   await win.keyboard.type('yes');
   await win.keyboard.press('Enter');
@@ -108,6 +122,8 @@ test('manual run button displays a terminal, preserves it across tabs, and sends
     global.manualTestSender.send('automation:run:exit', { requestId: 'manual-ui-test', mode: 'run', code: 0, result: { ok: true } });
   });
   await workspace.getByText('実行が完了しました', { exact: true }).waitFor();
+  assert.equal(await win.locator('#run-prompt').isDisabled(), true, 'セッションを残さない実行では続けて依頼できない');
+  assert.match(await win.locator('#run-input-status').textContent(), /セッション終了/);
   assert.equal(await workspace.locator('#run-log').isVisible(), false, '正常終了後もログは閉じたまま');
   assert.equal(await terminal.isVisible(), true, '終了時の端末画面を残す');
   await terminal.locator('.xterm-screen').hover();
@@ -119,5 +135,45 @@ test('manual run button displays a terminal, preserves it across tabs, and sends
   assert.equal(await workspace.locator('#run-log').isVisible(), false, '再描画でもログを自動展開しない');
   await workspace.locator('#run-log-details summary').click();
   assert.match(await workspace.locator('#run-log').textContent(), /task done/);
+
+  // セッションを残した実行: 終わったら同じセッションへ続けて依頼できる
+  await workspace.locator('#run-start').click();
+  await terminal.locator('.xterm-screen').waitFor();
+  await electron.evaluate(() => global.manualTestSender.send('automation:run:exit', {
+    requestId: 'manual-ui-test', mode: 'run', code: 0, result: { ok: true }, session: true,
+  }));
+  await win.locator('#run-prompt:not([disabled])').waitFor();
+  assert.equal(await workspace.locator('#run-stop').isDisabled(), false, '残したセッションは停止で閉じられる');
+  assert.doesNotMatch(await workspace.locator('#run-start').getAttribute('class') || '', /primary/, '主ボタンは入力欄の送信だけ');
+  if (process.env.AGENT_APP_TASK_FOLLOWUP_SCREENSHOT) {
+    await win.waitForTimeout(300);   // 開始時の画面（100ms 後に届く）より後に置き換える
+    await electron.evaluate(() => global.manualTestSender.send('automation:run:screen', { id: 'manual-ui-test', requestId: 'manual-ui-test',
+      text: Array.from({ length: 18 }, (_, i) => (i === 0 ? '> statemachine-use スキルでレポートステートマシンを実行して' : i === 16 ? '✓ レポートを reports/2026-10.md に書きました' : i === 17 ? '> ' : `  工程 ${i}: 完了`)).join('\n'),
+      cursor: { x: 2, y: 17 } }));
+    await win.locator('#run-prompt').fill('結果を表にまとめ直して');
+    await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1280, 1100));
+    await workspace.locator('.run-toolbar').scrollIntoViewIfNeeded();
+    await win.screenshot({ path: process.env.AGENT_APP_TASK_FOLLOWUP_SCREENSHOT });
+  }
+  await win.locator('#run-prompt').fill('もう少し詳しく');
+  await win.locator('#run-prompt').press('Enter');
+  await win.locator('#run-interrupt').waitFor();
+  assert.equal(await win.locator('#run-send').isVisible(), false, '応答中は送信が中止に変わる');
+  assert.match(await win.locator('#run-input-status').textContent(), /応答中/);
+  assert.equal(await win.locator('#run-prompt').inputValue(), '');
+  if (process.env.AGENT_APP_TASK_FOLLOWUP_BUSY_SCREENSHOT) {
+    await workspace.locator('.run-toolbar').scrollIntoViewIfNeeded();
+    await win.screenshot({ path: process.env.AGENT_APP_TASK_FOLLOWUP_BUSY_SCREENSHOT });
+  }
+  await win.locator('#run-interrupt').click();
+  await electron.evaluate(() => global.manualTestSender.send('automation:run:session', { requestId: 'manual-ui-test', phase: 'ready', text: 'ok' }));
+  await win.locator('#run-send').waitFor();
+  await electron.evaluate(() => global.manualTestSender.send('automation:run:session', { requestId: 'manual-ui-test', phase: 'closed' }));
+  await win.locator('#run-prompt[disabled]').waitFor();
+  assert.match(await win.locator('#run-input-status').textContent(), /セッション終了/);
+  assert.equal(await workspace.locator('#run-stop').isDisabled(), true);
+  const followCalls = await electron.evaluate(() => global.manualTestCalls);
+  assert.ok(followCalls.includes('followup:もう少し詳しく'), JSON.stringify(followCalls));
+  assert.ok(followCalls.includes('interrupt'));
   assert.deepEqual(errors, []);
 });
