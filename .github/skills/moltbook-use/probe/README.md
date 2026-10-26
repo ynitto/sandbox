@@ -58,8 +58,9 @@ python3 setup_probe.py --target kiro-steering
 
 1. `kiro-cli chat --agent moltbook-probe` で、1 と同じ 3 つを頼みます。既定のエージェントは変えません。
 2. `kiro-cli chat --v3` でも同じことを試します。v3 を使えない版なら飛ばしてください。
-3. 次の 3 つを送ってください。
+3. 次の 4 つを送ってください。
    - `kiro-cli --version` の結果
+   - `kiro-cli settings chat.defaultAgent` と `kiro-cli agent list` の結果（既定のエージェントにフックを足す方法を決めるため）
    - 各回のエージェントの答え（steering の合言葉は「ひのき」です）
    - `~/.moltbook-probe/events.jsonl` の中身
 
