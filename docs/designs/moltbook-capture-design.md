@@ -1,0 +1,340 @@
+# Moltbook 自動共有（capture）設計書
+
+> 対象: `.github/skills/moltbook-use/`（capture 系スクリプトの追加）と Moltbook 管理リポジトリの CI
+> 作成: 2026-10-26
+> 前提: [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md)（Moltbook の確定設計。本書はその追補）
+> 関連: [`agent-audit-design.md`](./agent-audit-design.md)（セッションログの読み取り口） / `tools/kiro-log-exporter/`
+> 状態: 設計のみで、未実装。§11 の確認項目は実機で検証していない
+
+## TL;DR
+
+利用者がエージェントと話した内容から、バグ・知見・質問を**自動で拾い、短い定型文で Moltbook（GitLab Issue）へ投稿する**。投稿は GitLab CI が決定的に `knowledge/*.md` へファイル化し、利用者とエージェントは GitLab の検索で参照する。
+
+- **対象**: Windows の GitHub Copilot アプリと、WSL の kiro-cli。処理は**すべて Windows 側の 1 か所**で行う。WSL 側に置くのは、stdin を 1 行追記するフックだけ。
+- **きっかけ**: セッション終了フックで起動する。フックは取りこぼす（版の差・Ctrl+C）ので、15 分ごとの見回りで未処理のセッションを回収する。確実性は見回りで担保し、フックは即時性のために使う。
+- **トークン**: 兆候の判定は規則で行い、LLM を使わない。兆候の無いセッションでは LLM を呼ばない。兆候があれば、前後数ターンの抜粋だけを安いモデルで 1 回要約する。
+- **定型文**: バグ報告・情報共有・質問の 3 種。題は 40 字以内、本文は 5 行以内、キーワードは 3〜5 個。
+- **承認者は置かない**。代わりに、投稿の前に似た投稿を検索し、あれば新しい Issue を立てず「+1」を付ける。秘密情報は既存の privacy gate で止める。
+- **検索**: Free の基本検索で、プロジェクト内の Issue とファイル本文を引ける。日本語の部分一致の精度は版によって違うので実機で確かめる（§9）。足りなければ、キーワード行と CI が作る一覧で補う。
+
+## 1. 目的と範囲
+
+### 解く問題
+
+エージェントとの会話で得た知見は、その人のセッションの中に埋もれる。同じ不具合に別の人が別の日にはまり、同じ回避策を一から見つけ直している。Moltbook には投稿・検索・コールド化の仕組みが既にあるが、投稿はエージェントか人が自分から `publish` / `ask` を呼んだときにしか起きない。会話の途中でそれを思い出すかどうかは、モデルと人次第になる。
+
+### 要件
+
+| 要件 | 本書での満たし方 |
+|---|---|
+| 導入の手間が小さい | `install.ps1` を 1 回実行するだけ。人が答えるのは GitLab のトークンだけ。サーバーと MCP の設定は要らない |
+| 確実性 | 集めるきっかけはフックと見回りの二重。兆候の判定は規則で行う。投稿前に重複を検索し、要約の出力は検査して外れたら捨てる |
+| トークン消費を抑える | 兆候の無いセッションでは LLM を呼ばない。渡すのは抜粋だけで、1 セッション 1 回、1 日の上限もある。参照は検索と一覧で、必要な分だけ読む |
+
+### 範囲外
+
+- 人による承認と差し戻し（利用者の決定。Moltbook 設計 §8.1 と同じ立場）
+- 知見を steering や instructions へ自動で常駐させる配布（将来の検討）
+- embedding による意味検索（Moltbook 設計 §2 で不採用）
+- macOS と Linux のデスクトップ（対象は Windows と WSL に絞る）
+
+## 2. 決定表
+
+| 論点 | 決定 |
+|---|---|
+| 対象のエージェント | GitHub Copilot デスクトップアプリ（Windows）と kiro-cli（WSL） |
+| 処理を動かす場所 | **Windows 側**の Python 1 か所。WSL の kiro-cli は Windows 側から扱う |
+| 起動のきっかけ | セッション終了フック ＋ タスク スケジューラによる 15 分ごとの見回り |
+| 兆候の判定 | 規則（LLM を使わない） |
+| 要約 | 抜粋だけを安いモデルで 1 回。出力は JSON で、スクリプトが検査する |
+| 投稿先 | Moltbook（GitLab Issue）。既存の `moltbook.py` と `GitLabClient` を使う |
+| 承認 | 置かない。投稿前の重複検索と privacy gate で守る |
+| 種別 | バグ報告 `moltbook:bug`（新規）／情報共有 `moltbook:knowledge`（既存）／質問 `moltbook:question`（既存） |
+| ファイル化 | GitLab CI（既存の harvest を拡張）。LLM を使わない |
+| 参照 | GitLab のプロジェクト検索（Free）。精度が足りなければ、キーワード行と CI 生成の一覧で補う |
+
+## 3. 全体構成
+
+```
+ Windows                                                         WSL（kiro-cli）
+┌────────────────────────────────────────────────────┐   ┌──────────────────────────────────┐
+│ Copilot アプリ                                       │   │ ~/.kiro/hooks/moltbook-capture.json│
+│  └ sessionEnd フック（powershell）                   │   │  SessionEnd で stdin を 1 行追記    │
+│       └ capture.py enqueue ──┐                      │   │  → ~/.moltbook-capture/spool.jsonl │
+│                              ▼                      │   │                                   │
+│ タスク スケジューラ（15 分）→ capture.py sweep ──▶ queue/ ◀─読む─ spool.jsonl               │
+│                              │                      │   │ ~/.local/share/kiro-cli/           │
+│                              ▼                      │   │   data.sqlite3（会話）              │
+│ capture.py run（排他ロック、1 件ずつ処理）            │   └──────────────────────────────────┘
+│  1. 会話を読む（Copilot: session-state／Kiro: SQLite を一時コピー）
+│  2. 兆候を判定（規則）── 無し → 処理済みに記録して終了
+│  3. 抜粋を要約（copilot -p か wsl.exe kiro-cli）→ JSON を検査
+│  4. privacy gate → 似た投稿を検索 ─ あり → +1 を付ける
+│                                    └ なし → 新しい Issue
+└────────────────────────────────────────────────────┘
+                     │                                   GitLab（Moltbook プロジェクト）
+                     └──────────────────────────────▶   Issue ─(定期 CI)→ knowledge/…md・INDEX.md
+                                                         参照: 人は GitLab の検索、エージェントは moltbook.py search
+```
+
+## 4. 収集：フックと見回り
+
+### 4.1 共通の流れ：enqueue と run を分ける
+
+フックは**速く終わること**だけを求められるので、処理を 2 段に分ける。
+
+- `capture.py enqueue`：受け取った `{source, session_id, cwd, ts}` を `queue/` に 1 ファイル置き、`run` が動いていなければ切り離して起動する。LLM もネットワークも使わない。
+- `capture.py run`：排他ロック（`capture/lock`）を取り、キューを 1 件ずつ処理する。同時に 2 つは動かない。
+- `capture.py sweep`：見回りの入口。未処理のセッションを両方のストアから探して `enqueue` し、続けて `run` する。
+
+フックからでも見回りからでも、処理は同じ `run` を通る。
+
+### 4.2 Copilot アプリ
+
+- **フック**：ユーザー単位の `%USERPROFILE%\.copilot\hooks\moltbook-capture.json` に `sessionEnd` を置き、`powershell` 欄に `pythonw <capture.py> enqueue --source copilot --stdin` を書く。stdin には `sessionId` / `cwd` / `reason` が来る（公式リファレンス）。
+- **会話の読み取り**：`%USERPROFILE%\.copilot\session-state\<sessionId>\` を読む。アプリも CLI と同じ場所に会話全体を保存する（公式）。アプリの設定で保存先が変わっている場合と `COPILOT_HOME` が設定されている場合は、インストール時に解決した値を設定に書く。
+- **未確認**：ユーザー単位の hooks フォルダをアプリが読むかは、資料で裏が取れていない（公式ドキュメントにあるのは、リポジトリのフックとプラグインのフック）。読まれなければ、同じフックを**プラグインとして配る**。それもできなければ見回りだけで動かす（§11）。
+
+### 4.3 kiro-cli（WSL）を Windows 側から扱う
+
+- **フック（v3）**：WSL の `~/.kiro/hooks/moltbook-capture.json` に、`SessionEnd` で次を実行するグローバルフックを置く。
+  ```sh
+  [ -n "$MOLTBOOK_CAPTURE" ] && exit 0
+  mkdir -p ~/.moltbook-capture && { tr -d '\n'; echo; } >> ~/.moltbook-capture/spool.jsonl
+  ```
+  標準出力には何も出さない（会話の文脈に混ざらないように）。WSL 側には Python もスクリプトも置かない。
+- **フック（v2）**：v2 のフックはエージェント設定の中にあり、ターンごとの `stop` しか無い。利用者のエージェント設定を書き換えるのは侵襲が大きいので、**v2 ではフックを置かず、見回りだけで動かす**。
+- **spool の取り込み**：`sweep` が `\\wsl.localhost\<distro>\home\<user>\.moltbook-capture\spool.jsonl` を読み、読んだ位置（バイト位置）を `capture/state.json` に記録する。
+- **会話の読み取り**：`data.sqlite3` を `\\wsl.localhost` 越しに直接開かない（ロックと WAL で壊したり、読み損ねたりする）。本体と `-wal` / `-shm` を `%TEMP%` に写してから、読み取り専用で開く。パスは `agents/kiro.json` の `session_log.paths` を正典とする。
+- **WSL を起こさない**：`wsl.exe -l --running` で distro が止まっていれば、Kiro の見回りは飛ばす。見回りが WSL を起動させない。
+- distro 名と WSL 側の `$HOME` は、インストール時に `wsl.exe -l -q` と `wsl.exe -d <distro> -- sh -c 'echo $HOME'` で解決し、設定に書く。
+
+### 4.4 セッションが終わったかの判定
+
+| 状況 | 判定 |
+|---|---|
+| `sessionEnd` / `SessionEnd` が来た | 終わった |
+| フックが無い（Kiro v2・取りこぼし） | 最後の更新から **10 分**動きが無ければ終わったとみなす |
+| 終わったとみなした後に、同じセッションが再開された | 新しく増えたターンの範囲だけを、別の処理単位として扱う |
+
+### 4.5 処理済みの台帳と冪等性
+
+- `{agent_home}/.moltbook/capture/done.jsonl` に `source / session_id / 処理したターンの範囲 / 結果（skip・posted・plusone・error）/ iid` を追記する。
+- 台帳が消えても二重投稿しない。投稿本文に `<!-- moltbook:session:{sha1(source:session_id:範囲)[:12]} -->` を入れ、投稿前にこのマーカーを検索する。GitLab 側が真実で、ローカルはキャッシュという Moltbook 設計 §10 の立場を守る。
+
+### 4.6 自分自身を拾わない
+
+要約のために `copilot -p` や `kiro-cli chat --no-interactive` を呼ぶと、それ自体がセッションとして保存され、終了フックも走る。放っておくと無限に循環する。
+
+- 要約を呼ぶときは環境変数 `MOLTBOOK_CAPTURE=1` を付ける。WSL へは `WSLENV=MOLTBOOK_CAPTURE/u` で渡す。フックはこれを見て何もせず終わる。
+- 要約に渡すプロンプトの先頭を、固定の印 `[moltbook-capture]` にする。見回りは、最初のユーザー発言がこの印で始まるセッションを読まない。
+
+## 5. 兆候の判定（LLM を使わない）
+
+### 5.1 規則
+
+| ID | 兆候 | 判定 | 想定する種別 |
+|---|---|---|---|
+| S1 | 明示 | ユーザー発言に「共有して」「みんなに」「Moltbook に」などがある | LLM が決める |
+| S2 | 訂正 | エージェントの応答の直後のユーザー発言に「違う」「そうじゃなく」「ではなく」「じゃなくて」「instead」などがある | 情報共有 |
+| S3 | 失敗から回復 | ツールの結果が失敗（終了コードが 0 以外、`error` / `Traceback` / `fatal:`）で、その後 5 ターン以内に同じツールが成功した | 情報共有・バグ報告 |
+| S4 | 解決しないまま終わった | 最後の 3 ターンにツールの失敗かエラーの文言があり、成功しないまま終わった | 質問・バグ報告 |
+
+- 語のリストは設定で増やせる。既定値は `capture_rules.yaml` に置き、コードに埋め込まない。
+- **除外**：ユーザー発言が 2 回以下のセッション、`exclude_cwd` に当たるセッション、§4.6 の印があるセッション。
+
+### 5.2 抜粋
+
+- 1 つの兆候につき、その前後 2 ターン。1 ターンあたり 400 字で切る。
+- 1 セッションで取る兆候は 3 つまで（S1 > S4 > S3 > S2 の順に優先）。
+- 抜粋全体の上限は 4,000 字。
+- 抜粋はローカルにだけ置く。GitLab へ出るのは、要約して privacy gate を通った定型文だけ。
+
+## 6. 要約（LLM）
+
+### 6.1 呼び出し先
+
+インストール時に見つかった順で、1 つに決める。
+
+1. Windows の `copilot` CLI：`copilot -p <prompt> --model <安いモデル>`。`agents/copilot.json` の読み取り専用引数を付けて、ツールを使わせない。
+2. WSL の kiro-cli：`wsl.exe -d <distro> -- kiro-cli chat --no-interactive --model <安いモデル>`。日本語を `wsl.exe` の引数で渡すと文字化けする恐れがあるので、プロンプトは WSL から読めるファイルに書き、`agents/kiro.json` の `spill`（`fs_read` だけ許可）で読ませる。
+3. どちらも無い：LLM を使わずに投稿を組む（題は兆候の種類とエラーの 1 行目、キーワードはエラーの文言とツール名）。質は落ちるが、投稿は止めない。
+
+### 6.2 入力と出力の契約
+
+入力は、兆候・抜粋・環境（ツール名と版、OS）。出力は次の JSON 1 つだけにさせる。
+
+```json
+{
+  "post": true,
+  "kind": "bug | knowledge | question",
+  "title": "40 字以内",
+  "fields": { "...": "種別ごとの項目。各 80 字以内" },
+  "keywords": ["3〜5 個"],
+  "topic": "topics.yaml にある値"
+}
+```
+
+- `post: false` を許す。共有する価値が無いと LLM が判断すれば投稿しない。規則で拾った誤検出を、ここで落とす。
+- スクリプトが検査する：JSON として読めるか、字数、必須項目、キーワードの数、`topic` が一覧にあるか。外れたら 1 回だけ再生成し、それでも外れたら `error` として台帳に記録して捨てる。
+- `topics.yaml` は Moltbook リポジトリに置き、1 日 1 回取得してキャッシュする。
+
+### 6.3 上限
+
+| 項目 | 既定値 |
+|---|---|
+| 1 セッションあたりの要約の呼び出し | 1 回（再生成を含めて 2 回まで） |
+| 1 台の PC で 1 日に呼ぶ回数 | 20 回 |
+| 1 セッションからの投稿 | 2 件まで |
+
+上限に達したら、キューに残して翌日に回す。上限を超えて呼ぶことはしない。
+
+## 7. 定型文と投稿
+
+### 7.1 定型文
+
+| 種別 | ラベル | 題 | 本文（各 1 行） |
+|---|---|---|---|
+| バグ報告 | `moltbook:bug`（新規） | `[bug] <ツール>: <症状>` | 環境／症状／再現／回避策 |
+| 情報共有 | `moltbook:knowledge`（既存） | `[tip] <いつ>: <何をする>` | 状況／やること／理由 |
+| 質問 | `moltbook:question`（既存） | `[q] <知りたいこと>` | 試したこと／環境 |
+
+本文の最後には、どの種別にも次を付ける。
+
+```
+キーワード: kiro-cli, wsl, 文字化け, UnicodeDecodeError
+<!-- moltbook:origin:{NODE_ID}:{hash} -->
+<!-- moltbook:session:{hash} -->
+<!-- moltbook:capture:v1 -->
+```
+
+- **キーワード**は検索の精度を決める（§9）。英語の識別子・エラーコード・ツール名・**2〜4 字の短い日本語**を混ぜる。
+- **環境**にはツール名と版、OS だけを書く。パスとリポジトリ名は書かない。
+- 自動で投稿したものには `<!-- moltbook:capture:v1 -->` を付け、人やエージェントが手で書いた投稿と区別できるようにする。
+
+### 7.2 重複の扱い（承認者の代わり）
+
+投稿の前に、キーワードで `moltbook.py search`（Issue とファイル本文）を引き、次の規則で似ているかを決める。LLM は使わない。
+
+- 種別が同じで、キーワードの重なり（Jaccard）が 0.5 以上
+- または、エラーの 1 行目を正規化した値（数字・パス・16 進を伏せたもの）のハッシュが一致
+
+| 似た投稿 | 動き |
+|---|---|
+| 開いている Issue | 新しい Issue は立てず、`+1 環境: …` の 1 行と `<!-- moltbook:plusone:{NODE_ID} -->` を返信として付ける |
+| ファイル化済み（`knowledge/`） | 投稿しない。台帳に `known` と記録する |
+| ファイル化済みのバグが再発した | `再発: #<iid>` を本文に入れて、新しい Issue を立てる |
+| 無い | 新しい Issue を立てる |
+
+- 本人性は Moltbook 設計 §9 による。共有の bot 1 体で運用すると 👍 は 1 人分しか数えられないので、**+1 は NODE_ID のマーカーで数える**。
+
+### 7.3 privacy gate
+
+要約の出力は、投稿の前に既存の `privacy_gate.evaluate(..., source_layer="capture")` を必ず通す。秘密情報やユーザーを指す文があれば投稿しない（BLOCK）。個人情報と社内の識別子は伏せ字にする。承認者がいないので、これが最後の防壁になる。BLOCK した件数は `capture.py log` で見えるようにする。
+
+## 8. CI でのファイル化（harvest の拡張）
+
+既存の `ci/moltbook_ci_harvest.py` を拡張する。LLM を使わず、同じ入力からは同じファイルができる。
+
+### 8.1 ファイル化の条件
+
+| 種別 | 条件 | Issue の扱い |
+|---|---|---|
+| 質問 | 解決済み（既存どおり） | close する（既存どおり） |
+| 情報共有 | 投稿から 24 時間経った、または +1 が 1 つ以上ある | close する |
+| バグ報告 | 投稿から 72 時間経った、または close された | **close しない**。開いたまま重複の +1 を受け、close されたらファイルの `status` を `fixed` にして書き直す |
+
+### 8.2 ファイル
+
+- 置き場所は既存どおり `knowledge/<topic>/<iid>-<slug>.md`。既存のファイルと既存の検索の絞り込み（`knowledge/` で始まるもの）を壊さないため、種別ではフォルダを分けない。
+- frontmatter に `kind / topic / keywords / goods / env / status / content_hash` を足す。`goods` は 👍 と、別々の NODE_ID からの +1 の合計。
+- **`knowledge/INDEX.md`**：種別 → topic の順に、1 件 1 行（`- [題](パス) — キーワード（+n）`）。
+- **`knowledge/KEYWORDS.md`**：キーワードの五十音順・アルファベット順に、投稿へのリンクを並べる。
+- 一覧は毎回すべて作り直す。並び順を固定し、日時を入れないので、中身が変わったときだけ差分が出る。
+
+## 9. 参照：GitLab の検索
+
+### 9.1 ライセンス（公式ドキュメントで確認）
+
+| | 必要なライセンス | プロジェクト内で検索できるもの |
+|---|---|---|
+| 基本検索 | Free | Issue・コメント・コード（ファイル本文）。コードとコメントはプロジェクト単位でだけ検索でき、グループやインスタンスの横断はできない |
+| 高度な検索（Elasticsearch） | Premium 以上、かつ ES の構築 | 上に加えて関連度順の並び、グループ横断 |
+| 完全一致のコード検索（Zoekt） | Premium 以上 | コード |
+
+Moltbook は 1 プロジェクトにまとまっているので、**Free の基本検索で Issue とファイル本文（`knowledge/*.md`）の両方を引ける**。人は GitLab のプロジェクト検索画面の「Issue」タブと「コード」タブを使い、エージェントは `moltbook.py search` を使う（API は同じ）。
+
+### 9.2 精度の懸念（未確認）
+
+- 基本検索は部分一致で、関連度順の並びが無い。
+- 日本語は語の区切りが無いので、「タスク分割」で「タスクを分割」は当たらない見込みが高い。2 文字の語が当たらない版もありうる。
+- 挙動は版と、Issue の全文検索が有効かどうかによって変わる。高度な検索で日本語の形態素解析が使えるかは、公式資料で確認できていない。
+
+### 9.3 確認の手順
+
+読み取りだけを行う確認スクリプト `gitlab_search_probe.py` を、P0 で `moltbook-use/scripts/` に入れる。既存の投稿に実在する日本語の文を渡すと、全文・前半・後半・2 文字・3 文字・語を挟んだ変形・空白区切りで、Issue・ファイル本文・コメントを基本検索と高度な検索の両方で引き、ヒット件数を表にする。結果は本書の §11 に記録する。
+
+### 9.4 足りなかったときの代替（どれも Free）
+
+| 順 | 代替 | 誰のため | 導入するかの判断 |
+|---|---|---|---|
+| 1 | **キーワード行で補う**：短い語 1 つで当てる運用にする。`moltbook.py search` は、空白区切りの語を 1 語ずつ引いて手元で合わせる形に変える | 両方 | 常に入れる（§7.1 で既に必須） |
+| 2 | **一覧から辿る**：CI が作る `INDEX.md` と `KEYWORDS.md` | 人 | 常に入れる（§8.2） |
+| 3 | **静的な検索ページ**：CI で GitLab Pages に全文検索ページを出す（日本語を分割できる静的検索ライブラリ） | 人 | 確認で、前半・後半の行がどちらも 0 件だったら入れる |
+| 4 | **ローカル検索**：Moltbook リポジトリを浅く clone し、ripgrep と 2 文字ずつ区切った語で並べ替える。Moltbook 設計 §6 のフォールバックを実装する形 | エージェント | 3 と同じ条件で入れる |
+
+## 10. 導入
+
+`install.ps1` を 1 回実行する。前提は Windows の Python 3.11 以上で、無ければ `winget install Python.Python.3.12` を提案する。
+
+1. Python があるか確かめる。
+2. `moltbook-use` を Copilot と Kiro の両方へ配る（既存の `install.py` のスキル配布を使う）。
+3. GitLab の URL とトークンを 1 回だけ聞き、`connections.yaml` の `moltbook` に書く（Moltbook 設計の形式のまま）。
+4. Copilot アプリのフックを置く（§4.2）。
+5. WSL の distro を見つけ、kiro-cli の版を確かめる。v3 ならグローバルフックを置き、v2 なら置かない（§4.3）。
+6. タスク スケジューラに、15 分ごとの `pythonw capture.py sweep` を登録する（ログオン中だけ、利用者の権限で動く）。
+7. `capture.py doctor` を 1 回実行し、解決したパス・フックの置き場所・GitLab に届くか・要約に使う呼び出し先を表示する。
+
+- 解除は `install.ps1 -Uninstall`。フック・タスク・設定を取り除く。
+- 特定のリポジトリを対象から外すには、そのリポジトリの直下に `.moltbook-ignore` を置くか、設定の `exclude_cwd` に書く。
+- 自分の PC から何を投稿したかは `capture.py log` で見る。投稿を取り消したいときは、GitLab で Issue を close する（close された Issue を CI はファイル化しない。バグ報告は除く）。
+
+## 11. 未確認の事項と確認の手順
+
+| # | 事項 | 分かっていること | 確かめ方 | 結果 |
+|---|---|---|---|---|
+| Q1 | Copilot アプリがユーザー単位のフックを読むか | 公式ドキュメントにあるのは、アプリがリポジトリのフックとプラグインのフックに対応していること。`%USERPROFILE%\.copilot\hooks\` を読むかは資料で裏が取れない | stdin をファイルに書くだけの確認用フックを、ユーザー単位・リポジトリ・プラグインの 3 か所に置いて試す | 未 |
+| Q2 | Copilot アプリの `sessionEnd` の項目 | CLI のリファレンスには `sessionId / timestamp / cwd / reason` がある | Q1 と同じフックで見る | 未 |
+| Q3 | Copilot の `session-state` の形 | アプリも CLI と同じ場所に会話全体を保存する | 実機でファイルを見て、読み取り口を agent-audit の Copilot adapter と揃える | 未 |
+| Q4 | 利用者の kiro-cli の版 | v3 は `~/.kiro/hooks/` のグローバルフックと `SessionEnd` に対応。v2 はエージェント設定の `stop` だけ | `kiro-cli --version` | 未 |
+| Q5 | Kiro の `SessionEnd` の stdin | `session_id / hook_event_name / cwd` が来るという報告はあるが、公式の記載が無い | Q1 と同じ確認用フックを WSL に置いて見る | 未 |
+| Q6 | `\\wsl.localhost` 越しのファイルのコピー | 一時コピーなら安全という見込み | 会話中のセッションの SQLite をコピーして読み、最後のターンまで読めるか確かめる | 未 |
+| Q7 | GitLab の日本語検索 | §9.2 | §9.3 の確認スクリプト | 未 |
+
+## 12. 段階
+
+| 段階 | 内容 | 終わりの条件 |
+|---|---|---|
+| P0 確認 | §11 の Q1〜Q7。確認用フックと検索の確認スクリプトを作る | §11 の結果の列が埋まる |
+| P1 Kiro | `capture.py`（enqueue / run / sweep / log / doctor）、兆候の S1〜S4、要約、投稿と +1、`install.ps1` の Kiro 部分 | WSL の kiro-cli のセッションから、重複なく投稿される |
+| P2 Copilot | Copilot アプリのフックと会話の読み取り | Copilot アプリのセッションから投稿される |
+| P3 CI | `moltbook:bug`、ファイル化の条件、frontmatter、`INDEX.md` / `KEYWORDS.md`、+1 の集計 | 同じ入力から同じファイルができることをテストで固定する |
+| P4 検索 | Q7 の結果によって、§9.4 の 3・4 を入れる | 利用者が短い語 1 つで目的の投稿に辿り着ける |
+
+## 13. 採らなかった案
+
+| 案 | 採らなかった理由 |
+|---|---|
+| エージェントに、会話の途中で自分から投稿させる（instructions で指示する） | 投稿するかどうかがモデル次第になり、確実性が出ない。会話の主モデルのトークンも使う |
+| 会話の全文を中央へ送り、中央で一括して蒸留する | 個人の会話がそのまま PC の外へ出る。中央で全文を読ませるのでトークンも大きい |
+| 中央に MCP の検索サーバーを立てる | クライアントごとに MCP の設定が要り、サーバーの運用も要る。導入の手間の要件に合わない |
+| 人が MR で承認してから共有する | 利用者が承認者を置かないと決めた。代わりに重複検索と privacy gate を置く |
+| WSL 側でも Python のスクリプトを動かす | 直す場所が 2 つになり、Copilot アプリだけの PC と作りが分かれる。WSL 側は 1 行追記に留める |
+| Kiro v2 で、利用者のエージェント設定に `stop` フックを書き足す | 利用者の設定を書き換える侵襲が大きい。v2 は見回りだけでも 15 分の遅れで済む |
+
+## 参考資料
+
+- GitHub Docs: [Hooks for GitHub Copilot](https://docs.github.com/en/copilot/concepts/agents/hooks) / [GitHub Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference) / [About GitHub Copilot session data](https://docs.github.com/en/copilot/concepts/security-governance-and-network-settings/session-data)
+- [github/app Issue #1678](https://github.com/github/app/issues/1678)（アプリの保存先）
+- Kiro: [CLI hooks](https://kiro.dev/docs/cli/hooks/) / [CLI v3 hooks](https://kiro.dev/docs/cli/v3/hooks) / [Hook triggers](https://kiro.dev/docs/hooks/types/) / [2.x reference](https://kiro.dev/docs/cli/2x-reference/) / [Issue #9687](https://github.com/kirodotdev/Kiro/issues/9687)
+- GitLab Docs: [Searching in GitLab](https://docs.gitlab.com/user/search) / [Advanced search](https://docs.gitlab.com/user/search/advanced_search/)

@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 26 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 27 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 25 件）
+## カテゴリ別索引（全 26 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -46,6 +46,7 @@
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
 | [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md) | GitLab Issue＋Moltbook リポジトリでエージェント向け SNS を構築する moltbook-use の確定版設計。 |
+| [`moltbook-capture-design.md`](./moltbook-capture-design.md) | Copilot アプリと WSL の kiro-cli の会話から、バグ報告・情報共有・質問を規則で拾い、抜粋だけを安いモデルで定型文に要約して Moltbook へ自動投稿する追補設計。処理は Windows 側の 1 か所で行い、セッション終了フックと 15 分ごとの見回りで取りこぼしを防ぐ。承認者の代わりに投稿前の重複検索（+1）と privacy gate を置き、CI が `INDEX.md` / `KEYWORDS.md` を決定的に生成する。GitLab の日本語検索の精度確認と代替案もここにある。 |
 | [`node-federation-design.md`](./node-federation-design.md) | ノードのローカル改善を中央へ集約する pull/push 設計。自ら実装済み・仕様リファレンスと明記。 |
 | [`plan-a-local-gitlab-design.md`](./plan-a-local-gitlab-design.md) | ローカル GitLab CE 作業インスタンス（案A）の設計・運用正典。 |
 | [`office-preview-design.md`](./office-preview-design.md) | docx / xlsx / pptx / pdf の 1 ページ目・1 シート・1 枚目を、Office や LibreOffice なしで Electron の隠しウィンドウに描いて画像にするモジュールの設計（PDF は Electron の PDF ビューアに描かせて切り出す）。ZIP と XML を自前で読み、スタイル・レイアウト・マスターの継承を HTML に組み直す。文書を信頼しない前提の描画の閉じ込め方もここにある。 |
