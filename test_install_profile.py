@@ -36,5 +36,30 @@ class ProfileSkillsTest(unittest.TestCase):
                 install._profile_skills(path, "typo")
 
 
+class PruneSkillsTest(unittest.TestCase):
+    def test_removes_only_this_repos_skills_outside_the_profile(self):
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as home:
+            for name in ("keep", "drop"):
+                Path(repo, name).mkdir()
+                Path(repo, name, "SKILL.md").write_text("---\nname: x\n---\n")
+            for name in ("keep", "drop", "caveman"):  # caveman は外部スキル（リポジトリに無い）
+                Path(home, name).mkdir()
+            with mock.patch.object(install, "REPO_SKILLS_DIR", repo):
+                self.assertEqual(install.prune_skills({"skill_home": home}, ["keep"]), ["drop"])
+            self.assertEqual(sorted(p.name for p in Path(home).iterdir()), ["caveman", "keep"])
+
+    def test_registry_forgets_removed_skills(self):
+        with tempfile.TemporaryDirectory() as home:
+            path = Path(home, "skill-registry.json")
+            path.write_text(json.dumps({"repositories": [{"name": "origin"}], "installed_skills": [
+                {"name": "keep"}, {"name": "drop"}, {"name": "caveman"}]}), encoding="utf-8")
+            paths = {"registry_path": str(path), "user_home": home, "install_dir": home,
+                     "skill_home": home}
+            with mock.patch("builtins.print"):
+                install.setup_registry([{"name": "keep"}], paths, "claude", removed_skills=["drop"])
+            names = [s["name"] for s in json.loads(path.read_text())["installed_skills"]]
+            self.assertEqual(names, ["keep", "caveman"])
+
+
 if __name__ == "__main__":
     unittest.main()
