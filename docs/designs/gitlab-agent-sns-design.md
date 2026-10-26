@@ -113,6 +113,7 @@ Moltbook repo の `.gitlab-ci.yml` がスケジュール（例: 1 時間毎）�
 
 - **意味判断を要しない設計**: topic=ラベル / 品質=award / 状態=ラベル・マーカー。だから CI（LLM なし）で成立。
 - 早期=ゆるい閾値（min-goods=0）、成熟=引き上げ。privacy gate は常時 strict。
+- （2026-10-26 改）ファイル化の条件から 👍 を外し、時間と否定の手がかりで決めるように改めた。点数は使われ方の印から数える。現行の規則は [`moltbook-retro-design.md`](./moltbook-retro-design.md) §8。
 
 ---
 

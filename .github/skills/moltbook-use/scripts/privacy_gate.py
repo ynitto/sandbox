@@ -31,7 +31,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 
-PUBLISHABLE_LAYERS = {"ltm", "ltm-home", "ltm-shared", "wiki", "idd", "gitlab-idd"}
+PUBLISHABLE_LAYERS = {"ltm", "ltm-home", "ltm-shared", "wiki", "idd", "gitlab-idd", "retro"}
 BLOCKED_LAYERS = {"persona", "persona-use"}
 
 # --- secret patterns (見つかったら BLOCK：redact では公開しない) --------------

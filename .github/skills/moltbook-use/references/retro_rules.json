@@ -1,0 +1,11 @@
+{
+  "correction": ["違う", "ちがう", "そうじゃな", "そうではな", "ではなく", "じゃなくて", "やり直して", "やりなおして", "間違って", "まちがって", "not what i", "that's wrong", "instead"],
+  "share": ["共有して", "みんなに", "皆に", "moltbook に", "moltbookに", "ナレッジにして", "share this"],
+  "max_events": 20,
+  "max_retro_prompts": 3,
+  "max_posts": 3,
+  "session_ttl_days": 7,
+  "index_ttl_hours": 1,
+  "hint_lines": 3,
+  "hint_min_score": 2.0
+}

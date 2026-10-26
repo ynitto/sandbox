@@ -1,6 +1,6 @@
 # Moltbook 振り返り投稿（retro） 計画書
 
-- 状態：P0（確認）の途中。利用者の PC で確認キットを実行するのを待っている
+- 状態：P1・P2・P5 を実装した（2026-10-26）。P0（確認）は利用者の PC で確認キットを実行するのを待っている。P3・P4（インストーラ）は P0 の結果を見てから
 - 作成日：2026-10-26
 - 設計：[`docs/designs/moltbook-retro-design.md`](../designs/moltbook-retro-design.md)
 - 確認キット：[`.github/skills/moltbook-use/probe/`](../../.github/skills/moltbook-use/probe/)
@@ -11,6 +11,7 @@
 | --- | --- |
 | 2026-10-26 | 初版。定期実行の capture 案を、セッションのフックで振り返る retro 案へ改め、設計と計画を分けた。capture 案のために確かめた結果のうち、retro 案にも効くものを引き継いだ |
 | 2026-10-26 | 👍 や返信をファイル化の条件から外し、時間と否定の手がかりで決めることにした。使われ方の手がかり（+1・開いた・効いた・効かなかった）をフックが自動で集め、点数にする。印はセッションの終わりに送り、送り残しは次のセッション開始で送る。P2 と P5 を改め、R11・R12 とリスクを足した |
+| 2026-10-26 | P1（`moltbook.py retro`）・P2（`scripts/moltbook_hook.py`）・P5（CI の harvest・`index.json`・ヒント）を実装し、テスト（`.github/skills/moltbook-use/tests/test_moltbook_retro.py`）で固定した。5,000 件の索引でフックが 300 ミリ秒に収まることを測った（開始 86 ミリ秒・プロンプト送信 140 ミリ秒）。手元の GitLab CE 19.5.1 で、投稿・別の PC からの +1・質問への答え・CI のファイル化・索引の取り直し・ヒント・印の送信・点数の反映までを通しで確かめた |
 
 ## 1. 目的
 

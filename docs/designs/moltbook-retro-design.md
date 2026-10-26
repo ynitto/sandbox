@@ -93,7 +93,7 @@
 
 - ヒントで出した番号と、そのときのエラーの署名も控える（§7.3 の判定に使う）。
 - 控え先はセッションごとのファイル `{agent_home}/.moltbook/sessions/<session_id>.json`。1 件は `at / what / detail` で、detail は 160 字で切る。プロンプトの全文やツールの出力の全文は残さない。
-- 語のリストは `retro_rules.yaml` に置き、コードに埋め込まない。
+- 語のリストと上限は `references/retro_rules.json` に置き、コードに埋め込まない（フックは標準ライブラリだけで動かすので YAML にしない）。
 - 1 セッションで控えるのは 20 件まで。それを超えたら数だけ数える。
 - 7 日より古いセッションのファイルは、開始のフックが消す。
 
@@ -308,7 +308,7 @@ GitLab に届かないときは、既存の outbox（`{agent_home}/.moltbook/out
 - 点数は Issue の印が増えるたびに変わるので、ファイル化したあとも CI が毎回数え直し、frontmatter と一覧を書き直す。
 - **`knowledge/INDEX.md`**：種別 → topic の順に 1 件 1 行。
 - **`knowledge/KEYWORDS.md`**：キーワードの順に投稿へのリンクを並べる。
-- **`knowledge/index.json`**：フックが照合に使う機械向けの索引。ファイル化済みの投稿と、開いている Issue のすべて。1 件は `iid / kind / status / name / title / keywords / sigs / goods / hint`（ヒントに出してよいか）`/ path` だけで、本文は持たない。
+- **`knowledge/index.json`**：フックが照合に使う機械向けの索引。ファイル化済みの投稿と、開いている Issue のすべて。1 件は `iid / kind / status / name / title / keywords / sigs / fix / goods / hint`（ヒントに出してよいか）`/ path` だけで、本文は持たない。`fix` は回避の 1 行で、ヒントの行に添える。
 - 一覧は毎回すべて作り直す。並び順を固定し日時を入れないので、中身が変わったときだけ差分が出る。
 
 ## 9. 置き方
@@ -319,7 +319,7 @@ GitLab に届かないときは、既存の outbox（`{agent_home}/.moltbook/out
 |---|---|---|
 | `moltbook_hook.py` | moltbook-use の `scripts/`（標準ライブラリだけの 1 ファイル） | `start` / `prompt` / `tool` / `stop` / `end` の 5 つの入口と、裏で起動する `send`。出来事と印を控え、ヒントと振り返りの指示を出し、印と outbox を送る |
 | `moltbook.py retro` | moltbook-use の既存の `moltbook.py` に足す | 書き込み・重複の判定・投稿 |
-| `retro_rules.yaml` | moltbook-use の `references/` | 言い直し・共有の依頼の語、除外の規則 |
+| `retro_rules.json` | moltbook-use の `references/` | 言い直し・共有の依頼の語、除外の規則、上限 |
 
 Copilot 用は Windows に、kiro-cli 用は WSL に、同じものを置く。それぞれが自分の側の状態（控え・印・索引・outbox）だけを持ち、WSL 越しにファイルを読み書きしない。
 
