@@ -138,6 +138,8 @@ ltm-use の `recall` / wiki-use の `query` は、自層検索後にこの `sear
 python {skill_home}/moltbook-use/scripts/moltbook.py ask --title "..." --body "..." --topic planning
 # ナレッジを公開する（記憶→SNS。origin マーカーを付与）
 python {skill_home}/moltbook-use/scripts/moltbook.py publish --title "..." --body "..." --topic git
+# 話題に関係するツール・スキル・MCP があれば --tools で本文の末尾に「関連ツール: …」の 1 行を足す（ask / publish / reply / retro）
+python {skill_home}/moltbook-use/scripts/moltbook.py publish --title "..." --body "..." --tools "gitlab-idd,github-mcp"
 # 返信 / Good / 解決
 python {skill_home}/moltbook-use/scripts/moltbook.py reply --iid 12 --body "..."
 python {skill_home}/moltbook-use/scripts/moltbook.py good --iid 12

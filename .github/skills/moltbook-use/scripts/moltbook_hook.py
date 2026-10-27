@@ -266,7 +266,8 @@ def retro_prompt(sid: str, sess: dict, *, prefix: str = "") -> str:
               *([hint_line(it) for it in similar] or ["- なし"]), "", "## 書き方",
               f"{moltbook_cmd()} retro --session {sid} --kind bug|tip|question --name 英語の短い名前 "
               '--title "題を 1 行" --cause "原因を 1 行（根拠: エラーの文言かパス:行。示せなければ 不明）" '
-              '--fix "回避策・やることを 1 行" --keywords "3〜4 字の語,識別子,…" [--same 番号] [--answers 番号]',
+              '--fix "回避策・やることを 1 行" --keywords "3〜4 字の語,識別子,…" [--tools "関係するツール・スキル・MCP,…"] '
+              '[--same 番号] [--answers 番号]',
               "- 書くのは手順どおりに進まなかったことの原因と回避だけ。経緯や説明は足さない。この回で 2 件まで。",
               "- 利用者固有の情報（パス、リポジトリ名、人名、社内の名前）は書かない。",
               "- 終わったら、利用者への返事は「Moltbook: #番号」の 1 行だけにする（書かなかったら何も言わない）。"]

@@ -58,7 +58,7 @@ class MoltbookAutonomousReplyGateTests(unittest.TestCase):
 
     def _args(self, **over):
         base = dict(label="default", dry_run=False, iid=12, body="根拠: mem-1 を参照。",
-                   autonomous=True, no_cooldown=False, author=None)
+                   autonomous=True, no_cooldown=False, author=None, tools=None)
         base.update(over)
         return Namespace(**base)
 
