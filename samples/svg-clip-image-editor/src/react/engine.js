@@ -18,6 +18,7 @@ import {
   elasticView,
   equals,
   fitMatrix,
+  isCovered,
   lerpSimilarity,
   momentumStep,
   multiply,
@@ -146,6 +147,17 @@ export class EditorEngine {
 
   canRedo() {
     return this.hist(this.slotName).future.length > 0;
+  }
+
+  /** 外に知らせる状態: 元に戻せるか・やり直せるか・枠を覆えているか・動いているか */
+  state() {
+    const { slot, D } = this.ctx;
+    return {
+      canUndo: this.canUndo(),
+      canRedo: this.canRedo(),
+      covered: isCovered(slot, this.view, D, 1e-4),
+      moving: this.busy(),
+    };
   }
 
   // ── アニメーション ──

@@ -1,4 +1,6 @@
 // SVG のクリップされた画像を、枠を固定したまま動かして合わせ込むコンポーネント。
+// 描くのは描画面（SVG）だけ。ボタン・保存・切り替えは呼び出す側が持つ（ClipEditorToolbar は任意の既定品）。
+// 見た目は style.css のクラスに任せ、インラインに置くのは動きに要るものだけにする。
 // JSX を使わず React.createElement で書く（ビルドなしで読み込めるように）。
 
 import React, { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -9,7 +11,6 @@ import {
   focusRect,
   formatMatrix,
   invert,
-  isCovered,
   parseClipDocument,
   resolveMotion,
   scaleOf,
@@ -20,22 +21,14 @@ import { EditorEngine } from './engine.js';
 
 const h = React.createElement;
 
-export const DEFAULT_LABELS = Object.freeze({
-  region: '画像の位置を調整',
-  zoomOut: '縮小',
-  zoomIn: '拡大',
-  rotateLeft: '左に 90°',
-  rotateRight: '右に 90°',
-  fit: '枠に合わせる',
-  undo: '元に戻す',
-  redo: 'やり直す',
-  reset: 'リセット',
-});
-
 // サーバー描画ではブラウザに入るまで何もしない
 const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 const fmt = (m) => formatMatrix(m, 6);
+
+const sameState = (a, b) => a && b && a.canUndo === b.canUndo && a.canRedo === b.canRedo && a.covered === b.covered && a.moving === b.moving;
+
+const cx = (...names) => names.filter(Boolean).join(' ');
 
 export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, ref) {
   const {
@@ -43,7 +36,6 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
     slot: slotProp,
     focusPadding = 0.25,
     outsideOpacity = 0.35,
-    toolbar = true,
     cover = true,
     rotationCover = 'rubber',
     motion: motionProp,
@@ -51,10 +43,10 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
     maxScale = 20,
     rotationSnap = 0,
     transforms,
+    ariaLabel = '画像の位置を調整',
     className,
     style,
   } = props;
-  const labels = { ...DEFAULT_LABELS, ...props.labels };
   const uid = 'sce' + useId().replace(/[^A-Za-z0-9_-]/g, '');
   const svgRef = useRef(null);
   const propsRef = useRef(props);
@@ -65,10 +57,11 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
   const [natural, setNatural] = useState(null);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [focus, setFocus] = useState(null);
-  const [, setTick] = useState(0); // 履歴のボタンの有効・無効を描き直す
+  const [, setTick] = useState(0); // 確定のたびに状態（元に戻せるか）を知らせ直す
   // フォーカスの枠はキーボードで入ったときだけ出す（マウス・タッチで触ったときは出さない）
   const [focusRing, setFocusRing] = useState(false);
   const pointerFocus = useRef(false);
+  const lastState = useRef(null);
 
   // ① 解析（ブラウザに入ってから）
   useEffect(() => {
@@ -179,6 +172,16 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
     );
   });
 
+  // 状態（元に戻せるか・覆えているか・動いているか）が変わったら外に知らせる
+  const syncState = () => {
+    if (!engine.ctx) return;
+    const s = engine.state();
+    if (sameState(s, lastState.current)) return;
+    lastState.current = s;
+    propsRef.current.onStateChange?.(s);
+  };
+  useEffect(syncState);
+
   // 制御モード: 親の値を反映する
   useEffect(() => {
     if (!slot || !transforms?.[slot.name]) return;
@@ -229,6 +232,7 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
       const dy = (e.shiftKey ? e.deltaY || e.deltaX : e.deltaY) * unit;
       engine.wheel(toC(e.clientX, e.clientY), dy, e.shiftKey);
+      syncState();
     };
     const stop = (e) => e.preventDefault();
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -241,6 +245,11 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
     };
   }, [ready, slot]);
 
+  // 外から呼ぶ操作。呼んだ後に状態を知らせ直す
+  const act = (fn) => (...args) => {
+    fn(...args);
+    syncState();
+  };
   useImperativeHandle(
     ref,
     () => ({
@@ -249,24 +258,22 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
         return engine.ctx ? serialize(engine.ctx.model, engine.allTransforms(), { precision: p.precision, outputTransform: p.outputTransform }) : p.svg;
       },
       getTransforms: () => engine.allTransforms(),
-      reset: () => engine.reset(),
-      fit: () => engine.fit(),
-      zoom: (f) => engine.zoom(f),
-      rotate: (deg) => engine.rotateBy(deg),
-      undo: () => engine.undo(),
-      redo: () => engine.redo(),
+      getState: () => (engine.ctx ? engine.state() : null),
+      reset: act(() => engine.reset()),
+      fit: act(() => engine.fit()),
+      zoom: act((f) => engine.zoom(f)),
+      rotate: act((deg) => engine.rotateBy(deg)),
+      undo: act(() => engine.undo()),
+      redo: act(() => engine.redo()),
     }),
     [],
   );
 
-  const rootStyle = { display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, ...style };
-  const rootClass = ['sce-root', className].filter(Boolean).join(' ');
-
   if (error) {
-    return h('div', { className: rootClass, style: rootStyle, role: 'alert' }, h('p', { style: { margin: 0, color: 'var(--clip-editor-warn, #cf222e)' } }, error.message));
+    return h('div', { className: cx('sce-error', className), style, role: 'alert' }, error.message);
   }
   if (!ready) {
-    return h('div', { className: rootClass, style: rootStyle }, h('div', { style: { aspectRatio: '4 / 3', background: 'var(--clip-editor-bg, #f6f8fa)' } }));
+    return h('div', { className: cx('sce-placeholder', className), style: { aspectRatio: '4 / 3', ...style } });
   }
 
   const f = focus;
@@ -279,8 +286,7 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
     height: slot.image.height,
     preserveAspectRatio: slot.image.preserveAspectRatio,
   };
-  const covered = isCovered(slot, view, D, 1e-4);
-  const cs = f.width / 48; // 市松模様の 1 マス
+  const covered = engine.state().covered;
   const shapePath = (s, i, extra) =>
     h('path', { key: i, d: shapeToPath(s.tag, s.attrs), transform: fmt(s.transform), clipRule: s.attrs['clip-rule'], ...extra });
 
@@ -293,10 +299,14 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
     if (engine.pointerDown(e.pointerId, toC(e.clientX, e.clientY), performance.now())) {
       e.currentTarget.setPointerCapture?.(e.pointerId);
       e.preventDefault();
+      syncState();
     }
   };
   const onPointerMove = (e) => engine.pointerMove(e.pointerId, toC(e.clientX, e.clientY), performance.now());
-  const onPointerUp = (e) => engine.pointerUp(e.pointerId, performance.now(), { cancel: e.type === 'pointercancel' });
+  const onPointerUp = (e) => {
+    engine.pointerUp(e.pointerId, performance.now(), { cancel: e.type === 'pointercancel' });
+    syncState();
+  };
 
   const onKeyDown = (e) => {
     if (e.key !== 'Shift') setFocusRing(true);
@@ -318,24 +328,30 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
       e.preventDefault();
       if (e.shiftKey) engine.redo();
       else engine.undo();
+      syncState();
       return;
     }
     const run = keys[e.key];
     if (run) {
       e.preventDefault();
       run();
+      syncState();
     }
   };
 
-  const editor = h(
+  return h(
     'svg',
     {
       ref: svgRef,
+      className: cx('sce-surface', className),
       viewBox: `${f.x} ${f.y} ${f.width} ${f.height}`,
       preserveAspectRatio: 'xMidYMid meet',
       role: 'application',
-      'aria-label': labels.region,
+      'aria-label': ariaLabel,
       tabIndex: 0,
+      'data-covered': covered ? 'true' : 'false',
+      'data-focus-ring': focusRing ? 'true' : undefined,
+      // 動きに要るものだけをインラインに置く（大きさの比・ページのスクロールやズームを止める）
       style: {
         display: 'block',
         width: '100%',
@@ -344,11 +360,7 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
         touchAction: 'none',
         userSelect: 'none',
         WebkitUserSelect: 'none',
-        cursor: 'grab',
-        background: 'var(--clip-editor-bg, #ffffff)',
-        borderRadius: 'var(--clip-editor-radius, 6px)',
-        outline: 'none',
-        boxShadow: focusRing ? '0 0 0 2px var(--clip-editor-focus, #0969da)' : 'none',
+        ...style,
       },
       onFocus: () => setFocusRing(!pointerFocus.current),
       onBlur: () => setFocusRing(false),
@@ -358,91 +370,26 @@ export const SvgClipImageEditor = forwardRef(function SvgClipImageEditor(props, 
       onPointerCancel: onPointerUp,
       onKeyDown,
     },
-    h(
-      'defs',
-      null,
-      h(
-        'pattern',
-        { id: `${uid}-checker`, patternUnits: 'userSpaceOnUse', x: f.x, y: f.y, width: cs * 2, height: cs * 2 },
-        h('rect', { width: cs * 2, height: cs * 2, style: { fill: 'var(--clip-editor-checker-a, #f6f8fa)' } }),
-        h('rect', { width: cs, height: cs, style: { fill: 'var(--clip-editor-checker-b, #eaeef2)' } }),
-        h('rect', { x: cs, y: cs, width: cs, height: cs, style: { fill: 'var(--clip-editor-checker-b, #eaeef2)' } }),
-      ),
-      h('clipPath', { id: `${uid}-clip`, clipPathUnits: 'userSpaceOnUse', transform: fmt(slot.clip.Q) }, shapes.map((s, i) => shapePath(s, i))),
-    ),
-    h('rect', { x: f.x, y: f.y, width: f.width, height: f.height, fill: `url(#${uid}-checker)` }),
+    h('defs', null, h('clipPath', { id: `${uid}-clip`, clipPathUnits: 'userSpaceOnUse', transform: fmt(slot.clip.Q) }, shapes.map((s, i) => shapePath(s, i)))),
     h(
       'g',
       { transform: fmt(slot.K) },
       // ① 画像全体（半透過）
-      h('image', { ...imgAttrs, transform: fmt(view), opacity: outsideOpacity }),
+      h('image', { ...imgAttrs, className: 'sce-image-outside', transform: fmt(view), opacity: outsideOpacity }),
       // ② 枠で切り抜いた画像（不透明）
-      h('g', { clipPath: `url(#${uid}-clip)` }, h('image', { ...imgAttrs, transform: fmt(view) })),
+      h('g', { clipPath: `url(#${uid}-clip)` }, h('image', { ...imgAttrs, className: 'sce-image-inside', transform: fmt(view) })),
     ),
-    // ③ 枠の輪郭。覆えていない間は警告色
+    // ③ 枠の輪郭。色は CSS（.sce-frame / [data-covered="false"]）。CSS がなければ文字色の点線
     h(
       'g',
       { transform: fmt(slot.K), pointerEvents: 'none' },
       h(
         'g',
-        { transform: fmt(slot.clip.Q), fill: 'none' },
-        shapes.map((s, i) =>
-          shapePath(s, i, {
-            style: { stroke: covered ? 'var(--clip-editor-frame, #0969da)' : 'var(--clip-editor-warn, #cf222e)' },
-            strokeWidth: 1.5,
-            strokeDasharray: '6 4',
-            vectorEffect: 'non-scaling-stroke',
-          }),
-        ),
+        { className: 'sce-frame', transform: fmt(slot.clip.Q), fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeDasharray: '6 4' },
+        shapes.map((s, i) => shapePath(s, i, { vectorEffect: 'non-scaling-stroke' })),
       ),
     ),
-    // ④ 当たり判定: 全面
+    // ④ 当たり判定: 全面（背景は透明）
     h('rect', { x: f.x, y: f.y, width: f.width, height: f.height, fill: 'transparent' }),
-  );
-
-  if (!toolbar) return h('div', { className: rootClass, style: rootStyle }, editor);
-
-  const button = (label, onClick, opts = {}) =>
-    h(
-      'button',
-      {
-        type: 'button',
-        onClick,
-        disabled: opts.disabled,
-        title: opts.title ?? label,
-        'aria-label': opts.title ?? label,
-        style: {
-          font: 'inherit',
-          fontSize: 13,
-          lineHeight: '20px',
-          padding: '3px 10px',
-          borderRadius: 6,
-          border: '1px solid var(--clip-editor-button-border, #d0d7de)',
-          background: 'var(--clip-editor-button-bg, #f6f8fa)',
-          color: 'var(--clip-editor-button-fg, #1f2328)',
-          cursor: opts.disabled ? 'default' : 'pointer',
-          opacity: opts.disabled ? 0.5 : 1,
-        },
-      },
-      label,
-    );
-
-  return h(
-    'div',
-    { className: rootClass, style: rootStyle },
-    editor,
-    h(
-      'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' } },
-      button('−', () => engine.zoom(1 / 1.1), { title: labels.zoomOut }),
-      button('+', () => engine.zoom(1.1), { title: labels.zoomIn }),
-      button('⟲ 90°', () => engine.rotateBy(-90), { title: labels.rotateLeft }),
-      button('⟳ 90°', () => engine.rotateBy(90), { title: labels.rotateRight }),
-      button(labels.fit, () => engine.fit()),
-      h('span', { style: { flex: 1 } }),
-      button('↶', () => engine.undo(), { title: labels.undo, disabled: !engine.canUndo() }),
-      button('↷', () => engine.redo(), { title: labels.redo, disabled: !engine.canRedo() }),
-      button(labels.reset, () => engine.reset()),
-    ),
   );
 });

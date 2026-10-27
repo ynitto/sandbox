@@ -8,7 +8,8 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./core": "./src/core/index.js"
+    "./core": "./src/core/index.js",
+    "./style.css": "./src/style.css"
   },
   "engines": {
     "node": ">=18"
@@ -27,5 +28,8 @@
     "jsdom": "26.1.0",
     "react": "19.1.1",
     "react-dom": "19.1.1"
-  }
+  },
+  "sideEffects": [
+    "*.css"
+  ]
 }

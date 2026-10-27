@@ -256,3 +256,15 @@ test('スロットの切り替え: 動いているものを確定してから切
   assert.equal(engine.canUndo(), true);
   assert.deepEqual(Object.keys(host.commits[0].all).sort(), ['a', 'b']);
 });
+
+test('外に知らせる状態: 元に戻せるか・覆えているか・動いているか', () => {
+  const { engine, host } = setup();
+  assert.deepEqual(engine.state(), { canUndo: false, canRedo: false, covered: true, moving: false });
+  drag(engine, host, [[50, 40], [150, 40]]);
+  assert.deepEqual(engine.state(), { canUndo: false, canRedo: false, covered: false, moving: true });
+  host.frame(300);
+  engine.pointerUp(1, host.now());
+  assert.equal(engine.state().moving, true);
+  host.runUntilIdle();
+  assert.deepEqual(engine.state(), { canUndo: true, canRedo: false, covered: true, moving: false });
+});

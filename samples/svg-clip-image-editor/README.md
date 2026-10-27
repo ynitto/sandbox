@@ -8,18 +8,40 @@ React コンポーネントです。結果は、元の SVG と同じ座標系の
 ## 使い方
 
 ```js
-import { SvgClipImageEditor } from 'svg-clip-image-editor';
+import { ClipEditorToolbar, SvgClipImageEditor, useClipEditor } from 'svg-clip-image-editor';
+import 'svg-clip-image-editor/style.css'; // 任意。読み込まなければ素の見た目
+
+const editor = useClipEditor();
 
 <SvgClipImageEditor
-  svg={svgText}                       // 下の「SVG の書き方」を満たす文字列
-  slot="hero"                         // 編集する画像の名前（省略時は最初の 1 つ）
+  ref={editor.ref}
+  onStateChange={editor.onStateChange}        // 元に戻せるか・枠を覆えているか などを外に出す
+  svg={svgText}                               // 下の「SVG の書き方」を満たす文字列
+  slot="hero"                                 // 編集する画像の名前（省略時は最初の 1 つ）
   onCommit={(svg, { slot, M }) => save(svg)}  // 画像が止まって確定するたびに呼ばれる
 />
+<ClipEditorToolbar editor={editor} />         // 任意。使わなければ自前のボタンで組む
 ```
 
-- 画像の切り替えの入口（一覧・タブなど）と保存ボタンは、呼び出す側に置きます。`onLoad` で画像の一覧を受け取れます。
-- 実行時に必要なのは `react` と `react-dom` だけです。グローバルな CSS は持ちません。色は CSS 変数
-  （`--clip-editor-frame` / `--clip-editor-warn` / `--clip-editor-focus` / `--clip-editor-bg` / `--clip-editor-checker-a` / `--clip-editor-checker-b` / `--clip-editor-button-*`）で変えられます。
+- コンポーネントが描くのは描画面（SVG）だけです。背景は透明で、置いた場所の背景がそのまま見えます。
+- ボタン列は別の部品 `ClipEditorToolbar` です。置く場所は自由で、使わずに自前のボタンを組むこともできます。
+  そのときは ref の操作（下）を呼び、`onStateChange` の `{ canUndo, canRedo, covered, moving }` で有効・無効や警告を出します。
+- 画像の切り替えの入口（一覧・タブなど）と保存ボタンも、呼び出す側に置きます。`onLoad` で画像の一覧を受け取れます。
+- 実行時に必要なのは `react` と `react-dom` だけです。
+
+## 見た目を変える
+
+見た目は `style.css` とクラス名だけで決めています。コンポーネントのインラインスタイルには、動きに要るもの（ページのスクロールを止める、縦横比など）しか書いていません。
+
+| クラス・属性 | 付く所 |
+|---|---|
+| `.sce-surface` | 描画面。キーボードで入ったときは `[data-focus-ring="true"]`、枠を覆えていない間は `[data-covered="false"]` が付く |
+| `.sce-frame` | 枠の点線 |
+| `.sce-image-outside` / `.sce-image-inside` | 枠の外の半透過の画像 / 枠の中の画像 |
+| `.sce-placeholder` / `.sce-error` | 読み込み前 / 読めなかったとき |
+| `.sce-toolbar` / `.sce-button` / `.sce-toolbar-spacer` | 既定のボタン列 |
+
+色は CSS 変数 `--clip-editor-frame` / `--clip-editor-warn` / `--clip-editor-focus` / `--clip-editor-button-border` / `--clip-editor-button-bg` / `--clip-editor-button-fg` を、置いた場所の祖先で指定して変えられます。
 
 ## SVG の書き方
 
@@ -51,7 +73,8 @@ import { SvgClipImageEditor } from 'svg-clip-image-editor';
 | `+` / `-`、`[` / `]`（Shift で 15°） | 拡大縮小、回転 |
 | Ctrl/⌘ + Z、Shift 付きでやり直し | 元に戻す |
 
-枠の内側に画像のない所ができると、枠の線が赤くなり、指を離すと覆える位置へ戻ります。
+枠の内側に画像のない所ができると、枠の線が赤くなり（`style.css` を読み込んだとき）、指を離すと覆える位置へ戻ります。
+`ClipEditorToolbar` の文言は `labels` で差し替えられます。
 
 ## 主なプロパティ
 
@@ -65,7 +88,9 @@ import { SvgClipImageEditor } from 'svg-clip-image-editor';
 | `outsideOpacity` | `0.35` | 枠の外の画像の不透明度 |
 | `minScale` / `maxScale` | `0.1` / `20` | 読み込み時に対する拡大率の範囲 |
 | `rotationSnap` | `0` | 2 本指の回転を 90° の倍数に吸着させる幅（度） |
-| `toolbar` / `labels` | `true` / 日本語 | 下のボタン列と、その文言 |
+| `ariaLabel` | 「画像の位置を調整」 | 描画面の読み上げ名 |
+| `onStateChange` | — | 状態 `{ canUndo, canRedo, covered, moving }` が変わったとき |
+| `className` / `style` | — | 描画面の `<svg>` に足す |
 | `precision` / `outputTransform` | `3` / `'matrix'` | 出力の書式 |
 
 `motion` のキー（秒・比）:
@@ -81,7 +106,7 @@ import { SvgClipImageEditor } from 'svg-clip-image-editor';
 | `snapDuration` | 0.2 | ボタン・キーの動きが即座 |
 | `wheelSettleDelay` | 0.15 | ホイールのたびに即座に戻す |
 
-ref から `getSvg()` / `getTransforms()` / `reset()` / `fit()` / `zoom(f)` / `rotate(deg)` / `undo()` / `redo()` を呼べます。
+ref から `getSvg()` / `getTransforms()` / `getState()` / `reset()` / `fit()` / `zoom(f)` / `rotate(deg)` / `undo()` / `redo()` を呼べます。
 
 React を使わない部分（解析・規則の検査・出力）は `svg-clip-image-editor/core` から読めます。Node でも動きます
 （`DOMParser` は jsdom などから渡します）。

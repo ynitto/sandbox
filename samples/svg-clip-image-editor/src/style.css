@@ -1,0 +1,57 @@
+/* svg-clip-image-editor の既定の見た目（任意）。読み込まなければ素の見た目になる。
+   色は CSS 変数で、形はクラス名（.sce-*）で当て直せる。背景は常に透明。 */
+
+.sce-surface {
+  border-radius: 6px;
+  cursor: grab;
+}
+.sce-surface:active {
+  cursor: grabbing;
+}
+/* マウス・タッチで触ったときのブラウザ既定の枠は出さず、キーボードで入ったときだけ出す */
+.sce-surface:focus {
+  outline: none;
+}
+.sce-surface[data-focus-ring='true'] {
+  outline: 2px solid var(--clip-editor-focus, #0969da);
+  outline-offset: 2px;
+}
+
+.sce-frame {
+  stroke: var(--clip-editor-frame, #0969da);
+}
+.sce-surface[data-covered='false'] .sce-frame {
+  stroke: var(--clip-editor-warn, #cf222e);
+}
+
+.sce-placeholder {
+  border-radius: 6px;
+}
+.sce-error {
+  color: var(--clip-editor-warn, #cf222e);
+}
+
+.sce-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.sce-toolbar-spacer {
+  flex: 1;
+}
+.sce-button {
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--clip-editor-button-border, #d0d7de);
+  background: var(--clip-editor-button-bg, #f6f8fa);
+  color: var(--clip-editor-button-fg, #1f2328);
+  cursor: pointer;
+}
+.sce-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}

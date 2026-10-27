@@ -153,8 +153,7 @@ interface SvgClipImageEditorProps {
   outsideOpacity?: number;              // 枠の外の画像の不透明度。既定 0.35
   context?: 'none' | 'layers';          // 飾りを上下に重ねて見せるか。既定 'none'（§3.3）
   contextAboveOpacity?: number;         // 上の飾りの不透明度。既定 0.5
-  toolbar?: boolean;                    // 下のボタン列を出すか。既定 true
-  labels?: Partial<ToolbarLabels>;      // ボタンの文言（既定は日本語）
+  ariaLabel?: string;                   // 描画面の読み上げ名。既定「画像の位置を調整」
 
   // ── 動き ──
   cover?: boolean;                      // 覆い制約。既定 true（§2.2）
@@ -177,9 +176,17 @@ interface SvgClipImageEditorProps {
   onChange?: (M: Matrix, slot: string) => void;                       // 動いている間、毎フレーム
   onCommit?: (svg: string, edit: { slot: string; M: Matrix }) => void; // 止まって確定したとき
   onError?: (err: { code: string; message: string; issues?: LintIssue[] }) => void;
+  onStateChange?: (state: EditorState) => void;                       // 状態が変わったとき（下）
 
-  className?: string;
-  style?: React.CSSProperties;          // CSS 変数（§2.3）で色を変えられる
+  className?: string;                   // 描画面の <svg> に足すクラス
+  style?: React.CSSProperties;          // 描画面の <svg> に足すスタイル
+}
+
+interface EditorState {
+  canUndo: boolean;                     // 作業中のスロットで元に戻せるか
+  canRedo: boolean;
+  covered: boolean;                     // 枠を画像で覆えているか
+  moving: boolean;                      // 指が触れている・慣性・ばね・寄せている最中か
 }
 ```
 
@@ -209,6 +216,7 @@ interface SvgClipImageEditorProps {
 interface SvgClipImageEditorHandle {
   getSvg(): string;                           // 全スロットの現在の値を反映した出力
   getTransforms(): Record<string, Matrix>;
+  getState(): EditorState | null;             // 読み込み前は null
   reset(): void;                              // 作業中のスロットを読み込み時の値に
   fit(): void;                                // 枠に合わせる（§3.4）
   zoom(factor: number): void;                 // 枠の中心で
@@ -218,7 +226,44 @@ interface SvgClipImageEditorHandle {
 }
 ```
 
-`toolbar={false}` にしたときは、外がこれらを呼んで自前のボタンを作れる。
+### 1.4 ボタン列（任意の別部品）
+
+コンポーネントはボタンを描かない。ボタンは外が持ち、上の ref の操作を呼び、`onStateChange` で有効・無効や警告を出す。
+すぐ使える既定品として、別の部品 `ClipEditorToolbar` と、つなぎの `useClipEditor()` を用意する（使わなくてよい）。
+
+```js
+const editor = useClipEditor();                 // { ref, state, onStateChange, call }
+<SvgClipImageEditor ref={editor.ref} onStateChange={editor.onStateChange} svg={svg} />
+<ClipEditorToolbar editor={editor} labels={{ fit: '枠に合わせる' }} />   // 置き場所は外が決める
+```
+
+| ボタン | 動き |
+|---|---|
+| 縮小 / 拡大 | 枠の中心で ÷1.1 / ×1.1 |
+| 左に 90° / 右に 90° | 枠の中心で回転 |
+| 枠に合わせる | 今の回転のまま、枠を覆う最小の大きさにして中央に置く |
+| 元に戻す / やり直す | §3.6。`canUndo` / `canRedo` が偽なら押せない |
+| リセット | 読み込み時の値に戻す |
+
+### 1.5 見た目（任意の `style.css`）
+
+見た目はクラス名と、任意で読み込む `style.css` に任せる。インラインに置くのは動きに要るもの
+（`touch-action: none`・選択の禁止・縦横比・`transform`・半透過の `opacity`）だけで、色や角丸は書かない。
+`style.css` を読み込まなければ、枠の線は文字色（`currentColor`）の点線、ボタンはブラウザ既定の見た目になる。
+**背景は常に透明**（描画面の後ろにある、埋め込む側の背景がそのまま見える）。
+
+| クラス・属性 | 付く所 | 既定の見た目（`style.css`） |
+|---|---|---|
+| `.sce-surface` | 描画面の `<svg>` | 角丸、掴むカーソル |
+| `[data-focus-ring="true"]` | キーボードで入ったとき | `--clip-editor-focus` の外枠。マウス・タッチで触ったときはブラウザ既定の枠も出さない |
+| `.sce-frame` | 枠の輪郭 | `--clip-editor-frame` の線 |
+| `[data-covered="false"] .sce-frame` | 覆えていない間 | `--clip-editor-warn` の線 |
+| `.sce-image-outside` / `.sce-image-inside` | 半透過の画像 / 枠の中の画像 | なし |
+| `.sce-placeholder` / `.sce-error` | 読み込み前 / 読めなかったとき | 角丸 / 警告色の文字 |
+| `.sce-toolbar` / `.sce-button` / `.sce-toolbar-spacer` | 既定のボタン列 | 横並び・間隔、小さなボタン |
+
+CSS 変数（`--clip-editor-frame` / `--clip-editor-warn` / `--clip-editor-focus` / `--clip-editor-button-border` / `--clip-editor-button-bg` / `--clip-editor-button-fg`）は
+埋め込む側の祖先で指定でき、`style.css` は既定値を `var(--…, 既定値)` で持つ。
 
 ---
 
@@ -256,9 +301,9 @@ interface SvgClipImageEditorHandle {
 |---|---|
 | 依存 | 実行時の依存は `react` / `react-dom`（peer）だけ。状態管理・CSS フレームワーク・アイコンフォントを持ち込まない。アイコンはインライン SVG |
 | 分割 | 解析・幾何・出力は React に依存しない `core`（純粋関数）に置き、React 部分はそれを呼ぶだけ。`core` だけでも Node で使える（CLI もこれを使う） |
-| スタイル | 自分の要素にだけ当たる CSS を持つ（クラス名は `sce-` 接頭辞、または CSS Modules）。グローバルなセレクタ・リセットを書かない。色・線は CSS 変数（`--clip-editor-frame` `--clip-editor-warn` `--clip-editor-bg` `--clip-editor-button-*`）で上書きでき、既定値を持つ |
+| スタイル | 見た目は任意の `style.css` と `sce-` 接頭辞のクラス名に分け、コンポーネントのインラインには動きに要るものだけを置く（§1.5）。グローバルなセレクタ・リセットを書かない。色は CSS 変数で上書きできる。背景は透明で、色を持たない |
 | 大きさ | 親の幅いっぱいに広がり、高さは注目領域の縦横比で決まる（`style` で固定もできる）。画面全体の大きさを前提にしない |
-| 文言 | ボタンの文言は `labels` で差し替える。画面に説明文を常駐させない |
+| ボタン・文言 | 描画面はボタンを描かない。ボタンは外が持つか、任意の別部品 `ClipEditorToolbar` を使う（§1.4）。状態は `onStateChange` / `getState()` で外に出す。画面に説明文を常駐させない |
 | 外との通り道 | 入力はプロップ、出力はコールバックと ref だけ。`window` や `document` にグローバルな値を置かない。`localStorage` などに保存しない。通信しない（画像の取得はブラウザが `<image>` で行う） |
 | イベント | リスナーは自分の `<svg>` にだけ付け、外れるときに外す。ページのスクロールやズームを止めるのは自分の上で操作している間だけ |
 | 複数の設置 | `id` は `useId()` の接頭辞で区切り、同じページに何個置いても衝突しない |
@@ -366,7 +411,8 @@ interface ClipSlot {
 
 ```tsx
 <svg viewBox={focus} preserveAspectRatio="xMidYMid meet" style={{ touchAction: 'none' }}
-     role="application" aria-label={labels.region} tabIndex={0}>
+     className="sce-surface" role="application" aria-label={ariaLabel} tabIndex={0}
+     data-covered={covered}>
   <defs>
     <clipPath id={`${uid}-clip`} clipPathUnits="userSpaceOnUse" transform={Q}>{枠の形}</clipPath>
   </defs>
@@ -379,9 +425,9 @@ interface ClipSlot {
   </g>
   {/* 任意: 上の飾り（半透過） */}
   <g transform={K}><g transform={Q} fill="none" pointerEvents="none">
-    {/* ③ 枠の輪郭。点線、太さは画面上で一定。覆えていない間は警告色 */}
+    {/* ③ 枠の輪郭（.sce-frame）。点線、太さは画面上で一定。覆えていない間は警告色（CSS） */}
   </g></g>
-  <rect {...focus} fill="transparent" />                                  {/* ④ 当たり判定: 全面 */}
+  <rect {...focus} fill="transparent" />                                  {/* ④ 当たり判定: 全面。背景は描かない */}
 </svg>
 ```
 
@@ -389,7 +435,7 @@ interface ClipSlot {
 |---|---|
 | 枠の内側 | ② が不透明で重なり、出力と同じ見え方（枠に覆いがない = 透明） |
 | 枠の外で画像がある所 | ① だけが `outsideOpacity` で見え、画像全体の位置関係が分かる |
-| 画像がない所 | 背景（市松模様、または飾り） |
+| 画像がない所 | 透明（埋め込む側の背景、または飾り） |
 
 - ② のクリップは ① と同じ `K` の中に置くので、クリップの座標は元の SVG とまったく同じ意味になる。
 - 枠の外を掴んでも画像が動くよう、当たり判定は注目領域の全面に置く。
@@ -422,15 +468,7 @@ interface ClipSlot {
 | 矢印キー | 注目領域の幅の 1%（Shift で 10%）だけ平行移動 |
 | `+` / `-` ・ `[` / `]` | 枠の中心で ×1.1 / ÷1.1 ・ −1° / +1°（Shift で 15°） |
 
-ボタン列（`toolbar`）:
-
-| ボタン | 動き |
-|---|---|
-| 縮小 / 拡大 | 枠の中心で ÷1.1 / ×1.1 |
-| 左に 90° / 右に 90° | 枠の中心で回転 |
-| 枠に合わせる | 今の回転のまま、枠を覆う最小の大きさにして中央に置く |
-| 元に戻す / やり直す | §3.6 |
-| リセット | 読み込み時の値に戻す |
+ボタン（外の部品。§1.4）は ref の操作を呼ぶ。
 
 #### 状態遷移
 
@@ -642,7 +680,8 @@ d が小さいうちはほぼ `c·d`、大きくなるほど L に近づいて�
 
 ## 5. 画面のイメージ
 
-エディタは「描画面 1 枚 + その下のボタン 1 行」だけで、見出し・説明文・スロットの切り替え・保存ボタンは埋め込む側が持つ。
+コンポーネントが描くのは描画面 1 枚だけ。下のボタン 1 行は任意の別部品（`ClipEditorToolbar`）で、置き場所は埋め込む側が決める。
+見出し・説明文・スロットの切り替え・保存ボタンも埋め込む側が持つ。
 agent-app の画面ではない独立したコンポーネントなので、agent-app の部品（`.execution-card` など）は使わない。
 agent-app に載せる場合は白いカードの中に置き（`.log` と同じ扱い）、主ボタン（保存）は埋め込む側の 1 つだけにする。
 
@@ -652,13 +691,13 @@ agent-app に載せる場合は白いカードの中に置き（`.log` と同じ
 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░           │
 │ ░░░░░░░░╭┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╮░░░░░░           │
 │ ░░░░░░░░┆████████████████████████████┆░░░░░░           │
-│ ░░░░░░░░┆██████ 枠内: 不透明 ████████┆░░░░░░  ← 市松   │ ← 画像のない所は背景
+│ ░░░░░░░░┆██████ 枠内: 不透明 ████████┆░░░░░░           │ ← 画像のない所は透明
 │ ░░░░░░░░┆████████████████████████████┆░░░░░░           │
 │ ░░░░░░░░╰┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╯░░░░░░           │
 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░           │
 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░           │
 └──────────────────────────────────────────────────────────┘
- [ − ] [ + ]  [ ⟲ 90° ] [ ⟳ 90° ]  [ 枠に合わせる ]      [ ↶ ] [ ↷ ] [ リセット ]
+ [ − ] [ + ]  [ ⟲ 90° ] [ ⟳ 90° ]  [ 枠に合わせる ]      [ ↶ ] [ ↷ ] [ リセット ]   ← 任意の ClipEditorToolbar
 
  描画面の大きさ = 枠の外接矩形 + 各辺 25%（固定。操作では動かない）
  枠の点線は、覆えていない間だけ警告色になる
@@ -681,7 +720,7 @@ agent-app に載せる場合は白いカードの中に置き（`.log` と同じ
 | 単体 | 文脈の切り分け: 下の層に前の要素だけ、上の層に後ろの要素だけが残り、資源の要素は両方に残ること |
 | 単体 | 出力: 変更なしなら入力と文字列として同一。`transform` 以外が変わらないこと。出力が再び契約の検査を通ること |
 | 部品（Testing Library） | ドラッグ・2 本指・ホイールで `onChange` / `onCommit` が期待の行列を返すこと。`viewBox` が操作で変わらないこと。`slot` を変えると前のスロットが確定され、値と履歴が保たれること |
-| 独立性 | 2 つのエディタを同じページに置いて `id` が衝突しないこと。外れた後に `window` / `document` にリスナーが残らないこと。サーバー描画で例外が出ないこと |
+| 独立性 | 2 つのエディタを同じページに置いて `id` が衝突しないこと。外れた後に `window` / `document` にリスナーが残らないこと。サーバー描画で例外が出ないこと。描画面がボタンを描かないこと。部品のソースに色や角丸のインラインスタイル・16 進の色を書いていないこと |
 | 実機（Playwright） | 例の SVG で操作前後のスクリーンショットを撮る。出力 SVG を別ページで描き、エディタの枠内の画素と一致すること |
 
 ## 7. 未決事項
@@ -743,7 +782,9 @@ core/                       React に依存しない純粋関数（Node でも�
   serialize.js              出力（元の文字列の <image> 開始タグの transform だけを継ぎ当てる）
 react/
   engine.js                 動きと履歴（ジェスチャ・ゴム・慣性・ばね・スロットごとの値）。React にも DOM にも依存しない
-  SvgClipImageEditor.js     描画とイベントの受け付け。スタイルはインラインと CSS 変数だけ
+  SvgClipImageEditor.js     描画面とイベントの受け付け。ボタンは描かず、状態を onStateChange で外に出す
+  ClipEditorToolbar.js      任意の既定のボタン列と、エディタとつなぐ useClipEditor()
+style.css                   任意の既定の見た目（クラス名と CSS 変数）。背景は透明
 ```
 
 動き（`engine.js` と `motion.js`）は時刻と `requestAnimationFrame` を外から受け取り、偽の時計で単体テストする。

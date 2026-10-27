@@ -1,14 +1,14 @@
-// デモ: 切り替えの入口・動きの定数・保存はコンポーネントの外に置く。
-import React, { useRef, useState } from 'react';
+// デモ: 切り替えの入口・動きの定数・ボタン列・保存はコンポーネントの外に置く。
+import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DEFAULT_MOTION, SvgClipImageEditor } from '../src/index.js';
+import { ClipEditorToolbar, DEFAULT_MOTION, SvgClipImageEditor, useClipEditor } from '../src/index.js';
 import { SAMPLE_SVG } from './sample.js';
 
 const h = React.createElement;
 const ZERO = Object.fromEntries(Object.keys(DEFAULT_MOTION).map((k) => [k, 0]));
 
 function Demo() {
-  const editor = useRef(null);
+  const editor = useClipEditor();
   const [slots, setSlots] = useState([]);
   const [slot, setSlot] = useState('hero');
   const [motionMode, setMotionMode] = useState('default');
@@ -34,7 +34,8 @@ function Demo() {
             h('option', { value: 'grow' }, '即座に拡大して覆う'))),
       ),
       h(SvgClipImageEditor, {
-        ref: editor,
+        ref: editor.ref,
+        onStateChange: editor.onStateChange,
         svg: SAMPLE_SVG,
         slot,
         rotationCover,
@@ -46,6 +47,7 @@ function Demo() {
         },
         onError: (e) => setLog(`${e.code}: ${e.message}`),
       }),
+      h(ClipEditorToolbar, { editor }),
     ),
     h('section', { className: 'card' },
       h('div', { className: 'row' }, h('strong', null, '出力'), h('span', { className: 'sub', 'data-testid': 'log' }, log)),
