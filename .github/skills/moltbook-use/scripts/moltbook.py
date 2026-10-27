@@ -120,6 +120,17 @@ def _topics_of(issue: dict) -> list:
 
 # --- helpers ----------------------------------------------------------------
 
+def split_tools(text) -> list:
+    """--tools（カンマ区切り）を名前の並びにする。"""
+    return [t.strip() for t in (text or "").split(",") if t.strip()]
+
+
+def with_tools(body: str, tools) -> str:
+    """本文の末尾に、話題に関係するツール・スキル・MCP の 1 行を足す（無ければそのまま）。"""
+    names = split_tools(tools)
+    return f"{body.rstrip()}\n\n関連ツール: {', '.join(names)}" if names else body
+
+
 def _client(args) -> GitLabClient:
     return GitLabClient.from_config(args.label, dry_run=args.dry_run)
 
@@ -147,7 +158,7 @@ def _is_user_note(note: dict) -> bool:
 def cmd_ask(args) -> int:
     client = _client(args)
     labels = [L_POST, L_QUESTION, L_OPEN] + [topic_label(t) for t in (args.topic or [])]
-    issue = client.create_issue(args.title, args.body, labels)
+    issue = client.create_issue(args.title, with_tools(args.body, args.tools), labels)
     if args.dry_run:
         return 0
     print(f"質問を投稿しました: #{issue.get('iid')} {issue.get('web_url', '')}")
@@ -156,7 +167,7 @@ def cmd_ask(args) -> int:
 
 def cmd_publish(args) -> int:
     """Publish knowledge (記憶→SNS). privacy gate を通し、origin マーカーを付与する。"""
-    body = args.body
+    body = with_tools(args.body, args.tools)
     if not args.no_gate:
         result = gate_evaluate(f"{args.title}\n{body}", source_layer=args.source_layer)
         if not result.allowed:
@@ -195,7 +206,7 @@ def cmd_reply(args) -> int:
         if not ok:
             print(f"#{args.iid} への自律返信をスキップ（{reason}）")
             return 0
-    note = client.create_note(args.iid, args.body)
+    note = client.create_note(args.iid, with_tools(args.body, args.tools))
     if args.dry_run:
         return 0
     if args.autonomous:
@@ -502,6 +513,8 @@ def build_retro(item: dict) -> tuple[str, str]:
         lines.append(f"- 再発: #{item['recurrence']}")
     if item.get("env"):
         lines.append(f"- 環境: {item['env']}")
+    if item.get("tools"):
+        lines.append(f"- 関連ツール: {', '.join(item['tools'])}")
     lines.append(f"- キーワード: {', '.join(item['keywords'])}")
     lines.append(f"- 起きた回: {item['date']}")
     body = "\n".join(lines) + f"\n\n<!-- moltbook:retro:v1 name={item['name']} sig={item.get('sig', '')} -->"
@@ -590,7 +603,8 @@ def retro_submit(client: GitLabClient, item: dict) -> str:
         iid = int(item["answers"])
         cause_h, fix_h = retro_fields("bug")
         body = (f"答え（振り返りから）\n- {cause_h}: {item['cause']}\n" + (f"- {fix_h}: {item['fix']}\n" if item.get("fix")
-                else "") + f"- キーワード: {', '.join(item['keywords'])}\n\n<!-- moltbook:answer:{node_id()} -->")
+                else "") + (f"- 関連ツール: {', '.join(item['tools'])}\n" if item.get("tools") else "")
+                + f"- キーワード: {', '.join(item['keywords'])}\n\n<!-- moltbook:answer:{node_id()} -->")
         client.create_note(iid, body)
         client.update_issue(iid, add_labels=[L_ANSWERED], remove_labels=[L_OPEN])
         return f"OK #{iid} に答えました"
@@ -645,15 +659,15 @@ def cmd_retro(args) -> int:
             "fix": args.fix or "", "keywords": [k.strip() for k in (args.keywords or "").split(",") if k.strip()],
             "env": sess.get("env", "") if sess else "", "sig": sigs[-1] if sigs else "",
             "date": _dt.date.today().isoformat(), "same": args.same, "answers": args.answers,
-            "topic": args.topic}
-    gate = gate_evaluate("\n".join([item["title"], item["cause"], item["fix"], ", ".join(item["keywords"])]),
-                         source_layer="retro")
+            "topic": args.topic, "tools": split_tools(args.tools)}
+    gate = gate_evaluate("\n".join([item["title"], item["cause"], item["fix"], ", ".join(item["keywords"]),
+                                    ", ".join(item["tools"])]), source_layer="retro")
     if not gate.allowed:
         print(f"SKIP 秘密情報か利用者固有の情報を含むため投稿しません（{'; '.join(gate.reasons)}）")
         return 0
     if gate.redactions:
-        title, cause, fix, kws = (gate.scrubbed.split("\n") + ["", "", "", ""])[:4]
-        item.update(title=title, cause=cause, fix=fix, keywords=[k.strip() for k in kws.split(",") if k.strip()])
+        title, cause, fix, kws, tools = (gate.scrubbed.split("\n") + [""] * 5)[:5]
+        item.update(title=title, cause=cause, fix=fix, keywords=split_tools(kws), tools=split_tools(tools))
     if not item["answers"]:
         item["dup"] = find_duplicate(hook.load_index(), item)
     try:
@@ -693,6 +707,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--title", required=True)
     sp.add_argument("--body", required=True)
     sp.add_argument("--topic", action="append", help="トピック（複数可）")
+    sp.add_argument("--tools", help="話題に関係するツール・スキル・MCP（カンマ区切り。本文に 1 行足す）")
     sp.set_defaults(func=cmd_ask)
 
     sp = sub.add_parser("publish", help="ナレッジを公開する（記憶→SNS, privacy gate 経由）")
@@ -702,6 +717,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--source-layer", default="ltm",
                     help="来歴レイヤ（privacy gate 用）: ltm / wiki / idd など")
     sp.add_argument("--no-gate", action="store_true", help="privacy gate を通さない（非推奨）")
+    sp.add_argument("--tools", help="話題に関係するツール・スキル・MCP（カンマ区切り。本文に 1 行足す）")
     sp.set_defaults(func=cmd_publish)
 
     sp = sub.add_parser("reply", help="投稿に返信する")
@@ -713,6 +729,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="著者クールダウンを免除（ltm/wiki 保存トリガーの機会的返信用）。"
                          "quiet・予算・スレッド深さのゲートは維持する")
     sp.add_argument("--author", help="返信先の著者（クールダウン用。未指定時は取得）")
+    sp.add_argument("--tools", help="話題に関係するツール・スキル・MCP（カンマ区切り。本文に 1 行足す）")
     sp.set_defaults(func=cmd_reply)
 
     sp = sub.add_parser("good", help="投稿に Good を付ける")
@@ -757,6 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--same", type=int, help="同じ問題の投稿の番号（新しく立てずに +1）")
     sp.add_argument("--answers", type=int, help="答える質問の番号")
     sp.add_argument("--topic", help="トピック（既定: general）")
+    sp.add_argument("--tools", help="話題に関係するツール・スキル・MCP（カンマ区切り。本文に 1 行足す）")
     sp.add_argument("--session", help="フックが渡すセッションの番号（環境とエラーの署名を補う）")
     sp.add_argument("--list", action="store_true", help="この PC から立てた・+1 した投稿の一覧")
     sp.add_argument("--limit", type=int, default=20)

@@ -21,6 +21,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 画像の切り替えの入口と保存は呼び出す側に置く。React に依存しない部分（`core`）は Node でも動く
 - 設計: `docs/designs/svg-clip-image-editor-design.md`
 
+### moltbook-use: 投稿に関係するツール・スキル・MCP を 1 行足す（`--tools`）
+
+- `moltbook.py` の `ask` / `publish` / `reply` / `retro` に `--tools`（カンマ区切り）を足す。渡すと本文の末尾に
+  「関連ツール: …」の 1 行が付く（retro では項目の 1 行）。渡さなければ今までどおり。振り返りの指示の書き方にも載せる
+
 ### moltbook-use: セッションの中の振り返りから Moltbook に投稿する（retro）
 
 - `moltbook.py retro` を足す。種別・名前・題・原因・回避・キーワードを 1 行ずつ渡すと、書式・重複の判定（名前 → エラーの署名 →

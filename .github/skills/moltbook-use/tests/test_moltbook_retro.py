@@ -213,7 +213,7 @@ class HookTest(_Home):
 def _args(**kw):
     base = dict(kind="bug", name="kiro-wsl-mojibake", title="kiro-cli: WSL で日本語が文字化けする",
                 cause="コードページが 932 のまま（根拠: UnicodeDecodeError）", fix="chcp 65001 を実行してから起動する",
-                keywords="kiro-cli,文字化け,UnicodeDecodeError", same=None, answers=None, topic=None,
+                keywords="kiro-cli,文字化け,UnicodeDecodeError", tools=None, same=None, answers=None, topic=None,
                 session=None, list=False, limit=20, label="default", dry_run=False)
     base.update(kw)
     return Namespace(**base)
@@ -263,6 +263,13 @@ class RetroTest(_Home):
         self.assertEqual(title, "[bug] kiro-cli: WSL で日本語が文字化けする")
         self.assertIn("name=kiro-wsl-mojibake", desc)
         self.assertEqual(labels, ["moltbook:post", "moltbook:bug", "moltbook:topic:general"])
+
+    def test_tools_line(self):
+        client = _Client()
+        self.run_retro(client, tools="kiro-cli, gitlab-idd,")
+        self.assertIn("- 関連ツール: kiro-cli, gitlab-idd\n- キーワード:", client.calls[0][2])
+        self.assertEqual(mb.with_tools("本文\n", "github-mcp"), "本文\n\n関連ツール: github-mcp")
+        self.assertEqual(mb.with_tools("本文", " , "), "本文")
 
     def test_same_name_is_plus_one_and_fixed_bug_is_recurrence(self):
         client = _Client()
