@@ -37,7 +37,7 @@ const editor = useClipEditor();
 |---|---|
 | `.sce-surface` | 描画面。キーボードで入ったときは `[data-focus-ring="true"]`、枠を覆えていない間は `[data-covered="false"]` が付く |
 | `.sce-frame` | 枠の点線 |
-| `.sce-image-outside` / `.sce-image-inside` | 枠の外の半透過の画像 / 枠の中の画像 |
+| `.sce-image-outside` / `.sce-image-inside` | 枠の外の半透過の画像（既定の不透明度 0.35。`opacity` で変えられる）/ 枠の中の画像 |
 | `.sce-placeholder` / `.sce-error` | 読み込み前 / 読めなかったとき |
 | `.sce-toolbar` / `.sce-button` / `.sce-toolbar-spacer` | 既定のボタン列 |
 
@@ -71,27 +71,26 @@ const editor = useClipEditor();
 | ホイール / トラックパッドのピンチ | 拡大縮小（Shift を押しながらで回転） |
 | 矢印キー（Shift で大きく） | 移動 |
 | `+` / `-`、`[` / `]`（Shift で 15°） | 拡大縮小、回転 |
-| Ctrl/⌘ + Z、Shift 付きでやり直し | 元に戻す |
+
+2 本指の回転は、90° の倍数から ±2° 以内なら吸い付きます（拡大縮小のときに指がねじれても傾かないように）。少しだけ傾けたいときは `[` / `]` で 1° ずつ回します。
+元に戻す・やり直すはキーでは受けません。置いたアプリの「元に戻す」とぶつからないよう、外から ref の `undo()` / `redo()` を呼びます。
 
 枠の内側に画像のない所ができると、枠の線が赤くなり（`style.css` を読み込んだとき）、指を離すと覆える位置へ戻ります。
 `ClipEditorToolbar` の文言は `labels` で差し替えられます。
 
 ## 主なプロパティ
 
+画像の最初の位置は、SVG に書かれている `transform` です。枠を画像で覆う制約は常にかかります。
+
 | プロパティ | 既定 | 意味 |
 |---|---|---|
-| `cover` | `true` | 枠を画像で覆う制約 |
 | `rotationCover` | `'rubber'` | 回転で覆えなくなったとき。`'rubber'` は離してから戻す、`'grow'` は回転中も即座に拡大して覆う |
 | `motion` | 下の表 | 端での動きの定数。**数値をすべて 0 にすると、端に当たった瞬間に止まる** |
-| `transforms` / `defaultTransforms` | — | 画像の名前 → 行列（`[a, b, c, d, e, f]`）。`transforms` を渡すと親が値を持つ |
 | `focusPadding` | `0.25` | 枠の周りに見せる余白（枠の大きさに対する比） |
-| `outsideOpacity` | `0.35` | 枠の外の画像の不透明度 |
 | `minScale` / `maxScale` | `0.1` / `20` | 読み込み時に対する拡大率の範囲 |
-| `rotationSnap` | `0` | 2 本指の回転を 90° の倍数に吸着させる幅（度） |
 | `ariaLabel` | 「画像の位置を調整」 | 描画面の読み上げ名 |
 | `onStateChange` | — | 状態 `{ canUndo, canRedo, covered, moving }` が変わったとき |
 | `className` / `style` | — | 描画面の `<svg>` に足す |
-| `precision` / `outputTransform` | `3` / `'matrix'` | 出力の書式 |
 
 `motion` のキー（秒・比）:
 
@@ -108,7 +107,7 @@ const editor = useClipEditor();
 
 ref から `getSvg()` / `getTransforms()` / `getState()` / `reset()` / `fit()` / `zoom(f)` / `rotate(deg)` / `undo()` / `redo()` を呼べます。
 
-React を使わない部分（解析・規則の検査・出力）は `svg-clip-image-editor/core` から読めます。Node でも動きます
+React を使わない部分は `svg-clip-image-editor/core` から `parseClipDocument`（解析）・`lintDocument`（規則の検査）・`serialize`（出力）を読めます。Node でも動きます
 （`DOMParser` は jsdom などから渡します）。
 
 ## デモ

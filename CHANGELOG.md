@@ -16,6 +16,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   定数はすべて外から指定できる（すべて 0 なら端で止まる）。回転時の見せ方（`rubber` / `grow`）も選べる
 - コンポーネントが描くのは描画面だけで、背景は透明。ボタン列は任意の別部品 `ClipEditorToolbar`（`useClipEditor` でつなぐ）、見た目は任意の `style.css` とクラス名に分け、
   状態（元に戻せるか・覆えているか・動いているか）は `onStateChange` で外に出す
+- 単機能に絞る: 覆い制約は常にかけ、値を親が持つ制御モード・毎フレームの通知・出力の書式の指定・回転の吸い付け幅の指定・Ctrl/⌘+Z の受け付けは持たない
+  （2 本指の回転は 90° の倍数から ±2° 以内で常に吸い付く）。公開する名前もコンポーネントと解析・検査・出力だけにする
 - 画像の切り替えの入口と保存は呼び出す側に置く。React に依存しない部分（`core`）は Node でも動く
 - 設計: `docs/designs/svg-clip-image-editor-design.md`
 

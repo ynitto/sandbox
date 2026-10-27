@@ -150,30 +150,18 @@ interface SvgClipImageEditorProps {
 
   // ── 見せ方 ──
   focusPadding?: number;                // 注目領域の余白（枠の幅・高さに対する比）。既定 0.25
-  outsideOpacity?: number;              // 枠の外の画像の不透明度。既定 0.35
   context?: 'none' | 'layers';          // 飾りを上下に重ねて見せるか。既定 'none'（§3.3）
   contextAboveOpacity?: number;         // 上の飾りの不透明度。既定 0.5
   ariaLabel?: string;                   // 描画面の読み上げ名。既定「画像の位置を調整」
 
   // ── 動き ──
-  cover?: boolean;                      // 覆い制約。既定 true（§2.2）
   rotationCover?: 'rubber' | 'grow';    // 回転で覆えなくなったとき。既定 'rubber'（§3.5）
   motion?: Partial<MotionOptions>;      // ゴム・慣性・ばねの定数（下の表）
   minScale?: number;                    // 読み込み時に対する拡大率の下限。既定 0.1
   maxScale?: number;                    // 同上限。既定 20
-  rotationSnap?: number;                // 2 本指の回転を 90° の倍数に吸着させる幅（度）。既定 0（なし）
-
-  // ── 値の持ち方 ──
-  transforms?: Record<string, Matrix>;  // 制御モード: 親がスロットごとの画像の行列を持つ
-  defaultTransforms?: Record<string, Matrix>; // 非制御モードの初期値（既定は SVG に書かれている値）
-
-  // ── 出力の書式 ──
-  precision?: number;                   // 出力の平行移動成分の小数桁。既定 3
-  outputTransform?: 'matrix' | 'decomposed'; // 既定 'matrix'（§4.1）
 
   // ── 知らせ ──
   onLoad?: (info: { slots: { name: string; bboxR: Rect }[]; warnings: LintIssue[] }) => void;
-  onChange?: (M: Matrix, slot: string) => void;                       // 動いている間、毎フレーム
   onCommit?: (svg: string, edit: { slot: string; M: Matrix }) => void; // 止まって確定したとき
   onError?: (err: { code: string; message: string; issues?: LintIssue[] }) => void;
   onStateChange?: (state: EditorState) => void;                       // 状態が変わったとき（下）
@@ -181,6 +169,9 @@ interface SvgClipImageEditorProps {
   className?: string;                   // 描画面の <svg> に足すクラス
   style?: React.CSSProperties;          // 描画面の <svg> に足すスタイル
 }
+
+// 初期値は SVG に書かれている値だけ（値を親が持つ制御モードは持たない）。
+// 覆い制約は常にかかる。出力の書式は固定（§4.1）。枠の外の画像の不透明度は CSS で変える（§1.5）。
 
 interface EditorState {
   canUndo: boolean;                     // 作業中のスロットで元に戻せるか
@@ -202,7 +193,7 @@ interface EditorState {
 | `friction` | 0.325 | 慣性が減速する時定数（秒）。大きいほど遠くまで滑る | 慣性なし |
 | `flingSpeed` | 0.3 | 慣性に入る速さ（注目領域の幅 / 秒） | （`friction` が 0 なら意味なし） |
 | `springPeriod` | 0.4 | ばねで戻る速さ（秒。目安として戻りきる時間） | 即座に戻る |
-| `snapDuration` | 0.2 | ボタン・キー・スロット切り替えで寄せる時間（秒） | 即座 |
+| `snapDuration` | 0.2 | ボタン・キーで寄せる時間（秒） | 即座 |
 | `wheelSettleDelay` | 0.15 | ホイールが止まってから戻し始めるまで（秒） | ホイールのたびに即座に戻す |
 
 - `rubber` と `rubberLimit` のどちらかが 0 なら、平行移動は端で止まる。`scaleRubberLimit` が 0 なら、縮小は覆える大きさで止まる。
@@ -279,7 +270,7 @@ CSS 変数（`--clip-editor-frame` / `--clip-editor-warn` / `--clip-editor-focus
 | 拡大率の範囲 | 読み込み時に対して `[minScale, maxScale]`。覆い制約とぶつかるときは覆い制約を優先する |
 | 出力で変わるのは 1 属性 | 各スロットの `<image>` の `transform` だけ（§4.1） |
 
-### 2.2 覆い制約（`cover`）
+### 2.2 覆い制約（常にかかる）
 
 「枠の内側に画像のない所を作らない」。複雑なクリップパス（凹んだ形、穴、曲線、複数の輪郭、`evenodd`）でも
 次の性質で正確に扱える。
@@ -291,7 +282,8 @@ CSS 変数（`--clip-editor-frame` / `--clip-editor-warn` / `--clip-editor-focus
 - 判定は幾何で行う。画像の透明な画素は考えない。
 - 枠は動かないので、凸包はスロットを読み込んだときに 1 回だけ求める（§3.2）。
 - 判定と補正の計算は凸包の頂点数に比例するだけで、毎フレーム回せる（§3.5）。
-- `cover={false}` のときは制約をかけず、覆えていない間は枠の輪郭を警告色にするだけ。
+- オフにする指定は持たない。要件そのものであり、オフにすると出力の枠の中に空白ができる。端で止めたいだけなら `motion` の定数をすべて 0 にする。
+  覆わない配置（透過画像を余白付きで置くなど）が要るなら、それはオン・オフではなく別の制約（枠の内側に収めるなど）として足す。
 
 ### 2.3 コンポーネントとしての独立性
 
@@ -301,6 +293,7 @@ CSS 変数（`--clip-editor-frame` / `--clip-editor-warn` / `--clip-editor-focus
 |---|---|
 | 依存 | 実行時の依存は `react` / `react-dom`（peer）だけ。状態管理・CSS フレームワーク・アイコンフォントを持ち込まない。アイコンはインライン SVG |
 | 分割 | 解析・幾何・出力は React に依存しない `core`（純粋関数）に置き、React 部分はそれを呼ぶだけ。`core` だけでも Node で使える（CLI もこれを使う） |
+| 公開する名前 | 外に約束するのは、ルートの `SvgClipImageEditor` / `ClipEditorToolbar` / `useClipEditor` / `DEFAULT_LABELS` / `DEFAULT_MOTION` と、`core` の `parseClipDocument` / `lintDocument` / `serialize` / `DEFAULT_MOTION` だけ。行列・凸包・ばねなどの内部の関数は出さない（作り直せるように） |
 | スタイル | 見た目は任意の `style.css` と `sce-` 接頭辞のクラス名に分け、コンポーネントのインラインには動きに要るものだけを置く（§1.5）。グローバルなセレクタ・リセットを書かない。色は CSS 変数で上書きできる。背景は透明で、色を持たない |
 | 大きさ | 親の幅いっぱいに広がり、高さは注目領域の縦横比で決まる（`style` で固定もできる）。画面全体の大きさを前提にしない |
 | ボタン・文言 | 描画面はボタンを描かない。ボタンは外が持つか、任意の別部品 `ClipEditorToolbar` を使う（§1.4）。状態は `onStateChange` / `getState()` で外に出す。画面に説明文を常駐させない |
@@ -338,7 +331,7 @@ svg 文字列
   │
   ├─ ⑤ 操作 ───────────────────────── 指・マウス・キー → 生の行列 M_raw
   │      │
-  │      └─ ⑥ ゴム・慣性・ばね ─────── M_raw → 見せる行列 M_view（毎フレーム）→ onChange
+  │      └─ ⑥ ゴム・慣性・ばね ─────── M_raw → 見せる行列 M_view（毎フレーム）→ onStateChange
   │
   └─ ⑦ 確定 ───────────────────────── 止まったら履歴に積み、serialize → onCommit
 ```
@@ -418,7 +411,7 @@ interface ClipSlot {
   </defs>
   {/* 任意: 下の飾り */}
   <g transform={K}>
-    <image {...image} transform={M_view} opacity={outsideOpacity} />      {/* ① 画像全体（半透過） */}
+    <image {...image} className="sce-image-outside" transform={M_view} opacity={0.35} /> {/* ① 画像全体（半透過。CSS で上書きできる） */}
     <g clipPath={`url(#${uid}-clip)`}>
       <image {...image} transform={M_view} />                            {/* ② 枠で切り抜いた画像（不透明） */}
     </g>
@@ -434,7 +427,7 @@ interface ClipSlot {
 | 領域 | 見え方 |
 |---|---|
 | 枠の内側 | ② が不透明で重なり、出力と同じ見え方（枠に覆いがない = 透明） |
-| 枠の外で画像がある所 | ① だけが `outsideOpacity` で見え、画像全体の位置関係が分かる |
+| 枠の外で画像がある所 | ① だけが半透過（既定 0.35。`.sce-image-outside { opacity }` で変えられる）で見え、画像全体の位置関係が分かる |
 | 画像がない所 | 透明（埋め込む側の背景、または飾り） |
 
 - ② のクリップは ① と同じ `K` の中に置くので、クリップの座標は元の SVG とまったく同じ意味になる。
@@ -492,7 +485,8 @@ interface ClipSlot {
 - 更新は `requestAnimationFrame` で 1 フレーム 1 回にまとめる。
 - ページのズーム・スクロールを止める: `touch-action: none`、`wheel` を `{ passive: false }` で受けて `preventDefault()`、Safari の `gesturestart` も止める。
 - 拡大率（`sqrt(|det M|)` の読み込み時との比）を `[minScale, maxScale]` に詰める。
-- 2 本指の回転は、`rotationSnap` を与えると 90° の倍数 ± その角度で吸着する。
+- 2 本指の回転は、全体の向きが 90° の倍数から ±2° 以内なら吸い付ける（固定の動き。指定はない）。拡大縮小のつもりで指がわずかにねじれても傾かないようにするため。
+  わざと少し傾けたいときはキー（`[` / `]` で 1° ずつ）を使う。キー・ボタン・ホイールの回転には吸い付けをかけない。
 
 ### 3.5 ゴム・慣性・ばね（⑥）
 
@@ -558,7 +552,7 @@ d が小さいうちはほぼ `c·d`、大きくなるほど L に近づいて�
 
 #### ばね（settle）
 
-- 目標 `M*` は `M_view` に覆うための補正を全部かけたもの（`cover={false}` なら `M_view` そのもの）。
+- 目標 `M*` は `M_view` に覆うための補正を全部かけたもの。
 - 平行移動（I 空間の 2 次元）と拡大率（対数）を、それぞれ臨界減衰のばねで目標へ寄せる:
   `x(t) = (x₀ + (v₀ + ω·x₀)·t) · e^(−ω t)`、`ω = 2π / springPeriod`。x は目標からのずれ。`springPeriod = 0` なら即座に目標へ。
 - ずれが 0.5 画面 px 未満で速さが十分小さくなったら目標に合わせて止め、確定する。
@@ -578,7 +572,7 @@ d が小さいうちはほぼ `c·d`、大きくなるほど L に近づいて�
 
 - 確定（画像が止まったとき、ボタン、キー操作の区切り）ごとに `{ before, after }` を**スロットごと**の履歴に積む。上限はスロットごとに 100。
 - 元に戻す・やり直すは、作業中のスロットの履歴にだけ効く。コンポーネントが自分でスロットを変えることはない。
-- 連続するキー操作は 500ms 以内なら 1 つにまとめる。
+- 元に戻す・やり直すのキー（Ctrl/⌘+Z）は受けない。置いたアプリの「元に戻す」とぶつかるので、外が ref の `undo()` / `redo()` を呼ぶ。
 - `svg` が変わったら全スロットの履歴を捨てて読み直す。`slot` が変わっても履歴は捨てない。
 
 ### 3.7 スロットの切り替え
@@ -597,7 +591,7 @@ d が小さいうちはほぼ `c·d`、大きくなるほど L に近づいて�
 `slot` が変わったとき:
 
 1. 動いている慣性・ばねを目標まで飛ばして、前のスロットを確定する。
-2. 新しいスロットの注目領域を求め、`viewBox` を `snapDuration` 秒で寄せる。
+2. 新しいスロットの注目領域を求め、`viewBox` を即座に切り替える。
 3. 新しいスロットの値は保持している値（なければ読み込み時の値）、履歴はそのスロットのもの。
 4. 文脈表示を出していれば、上下の層を作り直す。
 
@@ -621,12 +615,11 @@ d が小さいうちはほぼ `c·d`、大きくなるほど L に近づいて�
 
 ### 4.1 SVG
 
-`serialize(model, transforms, { precision, outputTransform })`:
+`serialize(model, transforms)`（書式は固定で、外から選ばない）:
 
 1. 元の文書を複製する。
 2. 各スロットの `<image>` の `transform` を、そのスロットの現在の値で書き換える（値のないスロットは触らない）。
-   - `'matrix'`（既定）: `matrix(a b c d e f)`。`a`〜`d` は小数 6 桁、`e` `f` は `precision` 桁で丸め、末尾の 0 を落とす。
-   - `'decomposed'`: スキューがなければ `translate(e f) rotate(θ) scale(s)`。スキューが残る場合は `matrix`。
+   - `matrix(a b c d e f)`。`a`〜`d` は小数 6 桁、`e` `f` は 3 桁で丸め、末尾の 0 を落とす。
    - 結果が恒等なら属性を消す。
 3. 文字列にする。XML 宣言・DOCTYPE・ルート直前のコメントは元にあれば残す。
 
@@ -670,11 +663,11 @@ d が小さいうちはほぼ `c·d`、大きくなるほど L に近づいて�
 | コールバック | いつ | 渡すもの |
 |---|---|---|
 | `onLoad` | 読み込みが終わったとき | スロットの一覧（名前・枠のルート座標での外接矩形）、警告 |
-| `onChange` | 画像が動いている間、毎フレーム（慣性・ばねの間も） | 見せている行列 `M_view`、スロット名 |
+| `onStateChange` | 状態（元に戻せるか・やり直せるか・覆えているか・動いているか）が変わったとき | `EditorState` |
 | `onCommit` | 画像が止まって確定したとき（1 つの操作につき 1 回） | 全スロットを反映した SVG 文字列、スロット名と確定した行列 |
 | `onError` | 読み込めなかったとき | エラーの種類と、契約違反なら一覧 |
 
-`onCommit` に渡す行列は、`cover` が有効なら必ず覆い制約を満たす。保存はこのコンポーネントの責務ではなく、外が `onCommit` か `getSvg()` で受け取って行う。
+`onCommit` に渡す行列は、必ず覆い制約を満たす。保存はこのコンポーネントの責務ではなく、外が `onCommit` か `getSvg()` で受け取って行う。
 
 ---
 
@@ -719,7 +712,7 @@ agent-app に載せる場合は白いカードの中に置き（`.log` と同じ
 | 単体 | `rotationCover='grow'`: 回転中の全フレームで覆い制約を満たし、回転を戻すと拡大率が元に戻ること |
 | 単体 | 文脈の切り分け: 下の層に前の要素だけ、上の層に後ろの要素だけが残り、資源の要素は両方に残ること |
 | 単体 | 出力: 変更なしなら入力と文字列として同一。`transform` 以外が変わらないこと。出力が再び契約の検査を通ること |
-| 部品（Testing Library） | ドラッグ・2 本指・ホイールで `onChange` / `onCommit` が期待の行列を返すこと。`viewBox` が操作で変わらないこと。`slot` を変えると前のスロットが確定され、値と履歴が保たれること |
+| 部品（Testing Library） | ドラッグ・2 本指・ホイールで `onCommit` が期待の行列を返すこと。`viewBox` が操作で変わらないこと。`slot` を変えると前のスロットが確定され、値と履歴が保たれること |
 | 独立性 | 2 つのエディタを同じページに置いて `id` が衝突しないこと。外れた後に `window` / `document` にリスナーが残らないこと。サーバー描画で例外が出ないこと。描画面がボタンを描かないこと。部品のソースに色や角丸のインラインスタイル・16 進の色を書いていないこと |
 | 実機（Playwright） | 例の SVG で操作前後のスクリーンショットを撮る。出力 SVG を別ページで描き、エディタの枠内の画素と一致すること |
 
@@ -739,6 +732,11 @@ agent-app に載せる場合は白いカードの中に置き（`.log` と同じ
 | 対象画像を構造から推測する（「クリップのかかった最初の `<image>`」など） | 飾りにクリップ付き画像が 1 つ増えただけで対象がずれる |
 | 枠の外接矩形の 4 隅で覆い制約を判定する | 円や斜めの枠で必要以上に拡大する。凸包なら正確 |
 | 切り替えの入口をコンポーネントに持たせる | 入口の形（一覧・タブ・図の上でのクリック）はアプリごとに違う。履歴をスロットごとにして、コンポーネントが自分でスロットを変えないようにした |
+| 覆い制約をオフにする `cover={false}` | 要件そのものをオフにする指定で、出力の枠に空白ができる。オフの分岐が動きの各所に入り、2 つの部品を抱えるのと同じになる。端で止めたいだけなら `motion` を 0 にすれば足りる |
+| 回転の吸い付け幅を指定する `rotationSnap` | 画面ごとに変えたい値ではない。既定オフでは誰も使わず、指のねじれによる意図しない傾きが出力に残る。固定の ±2° を常にかける |
+| 値を親が持つ制御モード（`transforms` / `defaultTransforms`） | 初期値は SVG に書いてある。値の持ち主が二重になり、同期の処理が要る |
+| 毎フレームの `onChange`、出力の書式の指定（`precision` / `outputTransform`）、`outsideOpacity` | 用途は `onCommit` / `onStateChange` / `serialize` / CSS で足りる |
+| Ctrl/⌘+Z の受け付け、キー操作の履歴まとめ、切り替え時の表示範囲のアニメーション | 置いたアプリとぶつかる・効果が小さい・要件にない演出 |
 
 ## 付録 B. 契約検査 CLI（設計のみ、実装しない）
 

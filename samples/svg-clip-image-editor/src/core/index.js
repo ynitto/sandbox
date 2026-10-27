@@ -1,10 +1,5 @@
-// React に依存しない部分。Node でも動く。
-export * from './matrix.js';
-export { parsePathData, shapeToPath, arcToCubics } from './path.js';
-export { bboxOf, convexHull, clipHull, clipSegments, drawnImageRect, focusRect, clipCenter } from './geometry.js';
-export { parseCssRules } from './css.js';
-export { lintDocument, hasErrors, isAllowedHref } from './lint.js';
+// React に依存しない部分のうち、外に約束するものだけ。Node でも動く（DOMParser は jsdom などから渡す）。
 export { parseClipDocument } from './parse.js';
-export { coverCorrection, coverScale, coverTranslation, isCovered, fitMatrix } from './cover.js';
-export * from './motion.js';
-export { serialize, patchImageTags, setAttribute } from './serialize.js';
+export { lintDocument } from './lint.js';
+export { serialize } from './serialize.js';
+export { DEFAULT_MOTION } from './motion.js';

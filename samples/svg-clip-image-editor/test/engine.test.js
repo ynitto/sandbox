@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EditorEngine } from '../src/react/engine.js';
+import { EditorEngine, ROTATION_SNAP_DEG } from '../src/react/engine.js';
 import { drawnImageRect, focusRect } from '../src/core/geometry.js';
 import { isCovered } from '../src/core/cover.js';
 import { DEFAULT_MOTION, resolveMotion } from '../src/core/motion.js';
@@ -19,8 +19,8 @@ function fakeHost() {
   const host = {
     renders: [],
     commits: [],
-    render(M, { silent }) {
-      host.renders.push({ M, silent });
+    render(M) {
+      host.renders.push(M);
     },
     commit(name, M, all) {
       host.commits.push({ name, M, all });
@@ -65,7 +65,7 @@ function fakeHost() {
 }
 
 // 枠 (10,10)-(90,70)、画像 0..200 × 0..100
-function setup({ motion = {}, cover = true, rotationCover = 'rubber', svg = doc() } = {}) {
+function setup({ motion = {}, rotationCover = 'rubber', svg = doc() } = {}) {
   const model = parseClipDocument(svg, env).model;
   const host = fakeHost();
   const engine = new EditorEngine(host);
@@ -74,15 +74,13 @@ function setup({ motion = {}, cover = true, rotationCover = 'rubber', svg = doc(
     slot,
     D: drawnImageRect(slot.image),
     motion: resolveMotion(motion).motion,
-    cover,
     rotationCover,
     minScale: 0.1,
     maxScale: 20,
-    rotationSnap: 0,
     focusWidthC: focusRect(slot).width,
     pxPerC: () => 4,
   });
-  engine.update(ctxFor(model.slots[0]), () => null);
+  engine.update(ctxFor(model.slots[0]));
   return { engine, host, model, ctxFor, slot: model.slots[0], D: drawnImageRect(model.slots[0].image) };
 }
 
@@ -211,25 +209,24 @@ test('ボタン: 回転は覆う大きさまで拡大し、元に戻す・やり
   assert.ok(Math.abs(rotationOf(engine.view) - 90) < 1e-6);
 });
 
-test('キー操作の連続は 1 つの履歴にまとめる', () => {
+test('2 本指の回転は 90° の倍数の近くで吸い付き、キーの回転は吸い付かない', () => {
+  const twist = (deg) => {
+    const { engine, host } = setup();
+    engine.pointerDown(1, [30, 40], 0);
+    engine.pointerDown(2, [70, 40], 0);
+    const r = (deg * Math.PI) / 180;
+    engine.pointerMove(1, [50 - 20 * Math.cos(r), 40 - 20 * Math.sin(r)], host.now());
+    engine.pointerMove(2, [50 + 20 * Math.cos(r), 40 + 20 * Math.sin(r)], host.now());
+    return rotationOf(engine.view);
+  };
+  assert.ok(Math.abs(twist(ROTATION_SNAP_DEG * 0.75)) < 1e-9, '指のわずかなねじれで傾いた');
+  assert.ok(Math.abs(twist(-ROTATION_SNAP_DEG * 0.75)) < 1e-9);
+  assert.ok(Math.abs(twist(ROTATION_SNAP_DEG * 2) - ROTATION_SNAP_DEG * 2) < 1e-9);
+  assert.ok(Math.abs(twist(89) - 90) < 1e-9);
   const { engine, host } = setup({ motion: { snapDuration: 0 } });
-  for (let i = 0; i < 5; i++) {
-    engine.nudge(-1, 0);
-    host.frame(50);
-  }
-  assert.equal(engine.hist('a').past.length, 1);
-  host.frame(600);
-  engine.nudge(-1, 0);
-  assert.equal(engine.hist('a').past.length, 2);
-});
-
-test('覆い制約なし: 枠の外へも動かせ、ばねはない', () => {
-  const { engine, host } = setup({ cover: false });
-  drag(engine, host, [[50, 40], [150, 40]]);
-  host.frame(300);
-  engine.pointerUp(1, host.now());
-  assert.equal(host.pending(), 0);
-  assert.ok(equals(host.commits[0].M, translate(100, 0)));
+  engine.rotateBy(1);
+  host.runUntilIdle();
+  assert.ok(Math.abs(rotationOf(engine.view) - 1) < 1e-9);
 });
 
 test('ホイール: 止まってから戻し、確定する', () => {
@@ -245,13 +242,13 @@ test('スロットの切り替え: 動いているものを確定してから切
   const svg = doc().replace('</svg>', '<g data-clip-slot="b" clip-path="url(#c)"><image href="b.png" width="300" height="300"/></g></svg>');
   const { engine, host, model, ctxFor } = setup({ svg });
   drag(engine, host, [[50, 40], [60, 40]]);
-  engine.update(ctxFor(model.slots[1]), () => null);
+  engine.update(ctxFor(model.slots[1]));
   assert.equal(host.commits.length, 1);
   assert.equal(host.commits[0].name, 'a');
   assert.ok(equals(host.commits[0].M, translate(10, 0)));
   assert.equal(engine.slotName, 'b');
   assert.equal(engine.canUndo(), false);
-  engine.update(ctxFor(model.slots[0]), () => null);
+  engine.update(ctxFor(model.slots[0]));
   assert.ok(equals(engine.view, translate(10, 0)));
   assert.equal(engine.canUndo(), true);
   assert.deepEqual(Object.keys(host.commits[0].all).sort(), ['a', 'b']);

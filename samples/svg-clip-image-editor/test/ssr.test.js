@@ -31,3 +31,10 @@ test('インラインの style に色を書かない（見た目は style.css �
     assert.doesNotMatch(text, /\b(background|color|borderRadius|boxShadow|padding)\s*:/, 'インラインに見た目のスタイルがある');
   }
 });
+
+test('外に約束する名前は絞ってある', async () => {
+  const root = await import('../src/index.js');
+  assert.deepEqual(Object.keys(root).sort(), ['ClipEditorToolbar', 'DEFAULT_LABELS', 'DEFAULT_MOTION', 'SvgClipImageEditor', 'useClipEditor']);
+  const core = await import('../src/core/index.js');
+  assert.deepEqual(Object.keys(core).sort(), ['DEFAULT_MOTION', 'lintDocument', 'parseClipDocument', 'serialize']);
+});
