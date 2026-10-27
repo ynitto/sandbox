@@ -15,6 +15,8 @@ name: CI
 #      testcase-lint … `npm test`（自然文のテストケースの点検。LLM は呼ばない。形態素解析の辞書は依存に同梱）。
 #      office-preview … `npm test`（docx / xlsx / pptx のプレビュー画像。変換は node だけで確かめ、
 #      Electron で実際に描くテストは CI では skip される）。
+#      svg-clip-image-editor … `npm test`（SVG のクリップ画像エディタのサンプル。解析・凸包・覆い制約・
+#      ゴム/慣性/ばね・出力を node だけで確かめる）。
 #   3. docs    … 利用者向け文書の内部名検査（R10）、スキルの references/ 健全性検査
 #                （切れリンク・孤児・未許可の2ホップ参照）、スキル自身の品質検査
 #                （skill-evaluator 同梱の quality_check.py。frontmatter の未知キーなど
@@ -221,6 +223,24 @@ jobs:
         run: npm install --no-audit --no-fund --ignore-scripts
       - name: npm test
         working-directory: tools/office-preview
+        run: npm test
+
+  # svg-clip-image-editor（React コンポーネントのサンプル）。core は jsdom で、動きは偽の時計で確かめる。
+  # ブラウザでの見た目は scripts/screenshot.js で手で確かめる（CI では回さない）。
+  svg-clip-image-editor:
+    name: svg-clip-image-editor (npm test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: 依存の導入
+        working-directory: samples/svg-clip-image-editor
+        run: npm install --no-audit --no-fund --ignore-scripts
+      - name: npm test
+        working-directory: samples/svg-clip-image-editor
         run: npm test
 
   # figma-use スキルの CLI（Node 24 の標準モジュールだけで動く）。Figma の実 API は呼ばず、

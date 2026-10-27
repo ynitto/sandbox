@@ -3,8 +3,9 @@
 SVG に含まれる「クリップされた画像」の見え方（どの部分がクリップ枠に収まるか）を、
 マウスまたはタッチで画像を動かして合わせ込む React コンポーネントの設計。
 
-> 状態: 設計（未実装）。画面のイメージ（§5）の承認を経てから実装に入る。
-> 実装の置き場所は承認時に決める（案: `tools/svg-clip-image-editor/`）。
+> 状態: サンプル実装あり（[`samples/svg-clip-image-editor/`](../../samples/svg-clip-image-editor/README.md)、0.1.0）。
+> サンプルは TypeScript ではなく JavaScript（ESM・JSDoc）で書き、JSX を使わずビルドなしで読み込めるようにした。
+> サンプルで未実装: 既存 SVG の取り込み（§1.1）、文脈表示（§3.3 の `context`）。
 > 契約を検査する CLI（付録 B）は設計だけで、実装しない。
 
 ## 0. 概要
@@ -726,23 +727,25 @@ svg-clip-lint [options] <file|glob>...
 
 ## 付録 C. モジュール構成
 
+サンプル実装（`samples/svg-clip-image-editor/src/`）の構成。
+
 ```
 core/                       React に依存しない純粋関数（Node でも動く）
-  matrix.ts                 行列: 合成・逆・適用・transform の解析と書式
-  lint.ts                   契約の検査 lintDocument(doc, parseCss)
-  adopt.ts                  既存 SVG の取り込み
-  parse.ts                  解析 parseClipDocument → ClipDocModel
-  path.ts                   パスの解析（直線と 3 次ベジェへ）
-  geometry.ts               凸包・描画矩形・注目領域
-  cover.ts                  覆うための補正 coverCorrection
-  motion.ts                 ゴム・慣性・ばねの 1 ステップ（時刻を引数で受ける）
-  context.ts                文脈の上下の層
-  serialize.ts              出力
+  matrix.js                 行列: 合成・逆・適用・transform の解析と書式
+  css.js                    CSS をセレクタとプロパティ名に分ける（D4 用）
+  dom.js                    文書を辿る小道具（ブラウザと jsdom の両方で動くものだけ）
+  lint.js                   契約の検査 lintDocument(doc, parseCss)
+  parse.js                  解析 parseClipDocument → ClipDocModel
+  path.js                   パスの解析（直線と 3 次ベジェへ）
+  geometry.js               凸包・描画矩形・注目領域
+  cover.js                  覆うための補正 coverCorrection
+  motion.js                 ゴム・慣性・ばねの 1 ステップ（時刻を引数で受ける）
+  serialize.js              出力（元の文字列の <image> 開始タグの transform だけを継ぎ当てる）
 react/
-  SvgClipImageEditor.tsx    描画とイベントの受け付け
-  useMotion.ts              requestAnimationFrame で motion.ts を回す
-  useEditorState.ts         スロットごとの値と履歴
-  styles.module.css         自分の要素にだけ当たるスタイル（CSS 変数の既定値）
+  engine.js                 動きと履歴（ジェスチャ・ゴム・慣性・ばね・スロットごとの値）。React にも DOM にも依存しない
+  SvgClipImageEditor.js     描画とイベントの受け付け。スタイルはインラインと CSS 変数だけ
 ```
 
-`motion.ts` は時刻を引数で受け取る純粋関数にし、偽の時計で単体テストできるようにする。
+動き（`engine.js` と `motion.js`）は時刻と `requestAnimationFrame` を外から受け取り、偽の時計で単体テストする。
+出力は DOM を `XMLSerializer` で文字列に戻さず、元の文字列を継ぎ当てる（引用符・空白・宣言を元のまま残すため）。
+未実装の `adopt`（取り込み）と `context`（文脈の層）は、置くなら `core/` に足す。

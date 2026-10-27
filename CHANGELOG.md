@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### svg-clip-image-editor: SVG のクリップ画像エディタのサンプル実装を追加（0.1.0）
+
+- 枠を固定したまま、画像を拡大縮小・回転・移動（マウス・タッチ・ホイール・キー）して枠に合わせ込む React コンポーネント。
+  出力は元の SVG の文字のまま、画像の `transform` 属性だけを書き換える
+- 編集する画像は `data-clip-slot` の印で決め、SVG の規則を検査してから編集を始める。印のない飾りは自由
+- 枠の内側に画像のない所を作らない制約を、枠の凸包で解く（凹んだ形・穴・曲線の枠でも正確）。端ではゴム・慣性・ばねで動き、
+  定数はすべて外から指定できる（すべて 0 なら端で止まる）。回転時の見せ方（`rubber` / `grow`）も選べる
+- 画像の切り替えの入口と保存は呼び出す側に置く。React に依存しない部分（`core`）は Node でも動く
+- 設計: `docs/designs/svg-clip-image-editor-design.md`
+
 ### moltbook-use: セッションの中の振り返りから Moltbook に投稿する（retro）
 
 - `moltbook.py retro` を足す。種別・名前・題・原因・回避・キーワードを 1 行ずつ渡すと、書式・重複の判定（名前 → エラーの署名 →
