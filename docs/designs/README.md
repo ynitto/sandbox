@@ -50,7 +50,7 @@
 | [`node-federation-design.md`](./node-federation-design.md) | ノードのローカル改善を中央へ集約する pull/push 設計。自ら実装済み・仕様リファレンスと明記。 |
 | [`plan-a-local-gitlab-design.md`](./plan-a-local-gitlab-design.md) | ローカル GitLab CE 作業インスタンス（案A）の設計・運用正典。 |
 | [`office-preview-design.md`](./office-preview-design.md) | docx / xlsx / pptx / pdf の 1 ページ目・1 シート・1 枚目を、Office や LibreOffice なしで Electron の隠しウィンドウに描いて画像にするモジュールの設計（PDF は Electron の PDF ビューアに描かせて切り出す）。ZIP と XML を自前で読み、スタイル・レイアウト・マスターの継承を HTML に組み直す。文書を信頼しない前提の描画の閉じ込め方もここにある。 |
-| [`svg-clip-image-editor-design.md`](./svg-clip-image-editor-design.md) | SVG 内のクリップされた画像を、枠を固定したまま画像の拡縮・回転・移動（マウス・タッチ）で枠に合わせ込む React コンポーネントの設計（未実装）。編集はクリップ空間で左から掛ける相似変換に一本化し、出力は元と同じ座標系のまま `<image>` の `transform` だけを書き換える。入力 SVG の正規形と正規化、座標系、注目領域の固定、枠外を半透過にする 2 枚重ねの描画、2 本指の変換式、覆い制約、API、画面のイメージを扱う。 |
+| [`svg-clip-image-editor-design.md`](./svg-clip-image-editor-design.md) | SVG 内のクリップされた画像を、枠を固定したまま画像の拡縮・回転・移動（マウス・タッチ）で枠に合わせ込む React コンポーネントの設計（未実装）。編集できる画像を `data-clip-slot` の印を付けた閉じた部品（スロット）として SVG の契約で定め、スロットの外の飾りは自由にする（契約は lint で検査）。編集はクリップ空間で左から掛ける相似変換に一本化し、出力は元と同じ座標系のまま `<image>` の `transform` だけを書き換える。覆い制約は枠の凸包だけで正確に解くので、凹んだ形・穴・曲線のクリップにも効く。初版は 1 画像だが、モデル・履歴・API はスロット名をキーにして複数画像の切り替えを見越してある。 |
 
 ### 4. 歴史的・比較検討
 

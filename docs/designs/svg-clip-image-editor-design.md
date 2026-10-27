@@ -6,6 +6,7 @@ SVG に含まれる「クリップされた画像」の見え方（どの部分�
 
 > 状態: 設計（未実装）。画面のイメージ（§7）の承認を経てから実装に入る。
 > 実装の置き場所は承認時に決める（案: `tools/svg-clip-image-editor/`）。
+> 初版は 1 エディタ = 1 画像。複数画像の切り替えは §8 で形だけ決め、モデルと API をそれに合わせておく。
 
 ## 1. 要件と方針
 
@@ -14,10 +15,13 @@ SVG に含まれる「クリップされた画像」の見え方（どの部分�
 | クリップされた画像の、枠に入る領域を更新する | 変えるのは対象 `<image>` の `transform` 属性**だけ**。`x` / `y` / `width` / `height` / `href` / クリップ形状 / 他の要素には触れない |
 | クリップ枠は固定、画像を拡大縮小・回転・平行移動する | 編集は「クリップ空間（§3）で画像に左から掛ける相似変換 Δ」に一本化する。スキューは作らない（元の `transform` にあるスキューは保つ） |
 | 編集 UI はクリップ枠の近辺に注目して表示する | エディタの `viewBox` を「クリップ枠のルート座標での外接矩形＋余白」に固定する |
-| 注目領域は拡大縮小・回転・平行移動できない | `viewBox` は読み込み時に 1 回だけ決め、操作で変えない。ブラウザ自体のピンチズーム・スクロールも止める（§5.5） |
+| 注目領域は拡大縮小・回転・平行移動できない | `viewBox` は画像を選んだときに 1 回だけ決め、操作で変えない。ブラウザ自体のピンチズーム・スクロールも止める（§5.5） |
 | マウス・タッチで画像を合わせ込む | Pointer Events に統一。1 本指/左ドラッグ = 移動、2 本指 = 拡縮＋回転＋移動、ホイール = 拡縮（Shift で回転） |
 | 枠内は透明（画像が不透明に見える）、枠外は半透過で画像全体が透ける | 画像を 2 枚重ねる。下は全体を `opacity` で半透過、上はクリップ枠で切り抜いた不透明の画像（§5.2） |
 | 出力は元と同じ座標系 | ルートの `viewBox` / `width` / `height` と、対象画像より上の要素の `transform` は変えない。画像の `transform` を `matrix(...)` で書き直すだけ |
+| 枠の内側に画像のない所を作らない（覆い制約） | 枠の形の**凸包**だけで判定する。凹んだ形・穴・曲線・複数の輪郭でも、正確に（許容誤差 ε 以内で）解ける（§6.4） |
+| 画像と関係ない飾りが増えても編集できる | 編集できる画像を**スロット**という閉じた部品として SVG の契約で定める（§2）。スロットの外は自由。契約は機械で検査する（§2.6） |
+| 将来、1 つのエディタで複数の画像を切り替える | モデル・状態・履歴・API を最初からスロット名をキーにした形にしておく（§8） |
 
 採らなかったもの:
 
@@ -26,67 +30,120 @@ SVG に含まれる「クリップされた画像」の見え方（どの部分�
 - **`<canvas>` で描いて合成する実装**: 外部 URL の画像で CORS の制約を受け、SVG のベクタ性も失う。
   SVG のまま描けば同じ描画エンジンで出力と寸分違わず見える。
 - **元の SVG 文字列を DOM にそのまま差し込む実装**: スクリプトやイベント属性を実行しうる。
-  エディタは必要な要素だけを組み直して描く（§8）。
+  エディタは必要な要素だけを組み直して描く（§9）。
+- **対象画像を構造から推測する**（「クリップのかかった最初の `<image>`」など）: 飾りにクリップ付きの画像が
+  1 つ増えただけで対象がずれる。対象は明示の印（`data-clip-slot`）でだけ決める。
 
-## 2. 入力 SVG の構造定義
+## 2. SVG の契約
 
-### 2.1 正規形
+### 2.1 全体像
 
-エディタが直接扱う形（正規形）は次のとおり。
+編集できる画像は**スロット**として印を付ける。スロットは「クリップを持つ `<g>` と、その唯一の子の `<image>`」の組で、
+中身を閉じた部品として扱う。スロットの外（飾り・文字・図形・他の画像）は、§2.5 の数項目を除いて何を置いてもよい。
 
 ```xml
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="vx vy vw vh" width="…" height="…">
   <defs>
-    <clipPath id="CLIP" clipPathUnits="userSpaceOnUse" [transform="Q"]>
+    <clipPath id="hero-clip" clipPathUnits="userSpaceOnUse" [transform="Q"]>
       <!-- rect / circle / ellipse / polygon / polyline / path の 1 つ以上（和集合） -->
     </clipPath>
+    <!-- 飾り用のグラデーション・フィルタ・他のクリップなどは自由 -->
   </defs>
 
-  <g [transform="…"]>                          <!-- 祖先: 任意段数。transform は K に積まれる -->
-    <g clip-path="url(#CLIP)" [transform="…"]>  <!-- ラッパー: クリップを持つ要素。clip 空間を定める -->
-      <g [transform="J"]>                       <!-- 中間: 任意段数（0 段でよい） -->
-        <image id="photo" data-clip-target=""
-               href="…" x="…" y="…" width="…" height="…"
-               preserveAspectRatio="…"
-               transform="M"/>                  <!-- 編集対象。書き換えるのは transform だけ -->
-      </g>
+  <!-- 飾り（自由） -->
+
+  <g [transform="…"]>                               <!-- 祖先: <g> だけ、任意段数。transform は K に積まれる -->
+    <g data-clip-slot="hero"                        <!-- スロット: 名前は文書内で一意 -->
+       clip-path="url(#hero-clip)" [transform="…"]>
+      <image href="…" x="…" y="…" width="…" height="…"
+             preserveAspectRatio="…"
+             [transform="M"]/>                      <!-- 唯一の子。書き換えるのは transform だけ -->
     </g>
   </g>
+
+  <!-- 飾り（自由。スロットより後ろの要素はスロットの上に描かれる） -->
 </svg>
 ```
 
-要点は **クリップを持つ要素（ラッパー）と、動かす要素（`<image>`）が別であること**。
+クリップを持つ要素（スロットの `<g>`）と動かす要素（`<image>`）を分けるのが要点。
 `clipPathUnits="userSpaceOnUse"` の座標は「クリップを参照する要素のユーザー空間」で解釈され、
 その要素自身の `transform` も含む。`<image clip-path="…" transform="…">` のように同じ要素に両方があると、
 画像の `transform` を変えた瞬間に枠も一緒に動いてしまう。
 
-### 2.2 対象画像の選び方
+### 2.2 スロットの規則
 
-1. `target` プロップ（`<image>` の id）が渡されていればそれ。
-2. なければ `data-clip-target` 属性を持つ `<image>`。
-3. なければ、自身か祖先に `clip-path` を持つ最初の `<image>`。
-4. どれもなければエラー（§8.2）。
+| 番号 | 規則 | 理由 |
+|---|---|---|
+| S1 | スロットは `data-clip-slot="名前"` を持つ `<g>`。名前は `[a-z0-9][a-z0-9-]*` で文書内で一意 | 対象を推測しない。複数画像（§8）でもキーになる |
+| S2 | スロットの `<g>` は `clip-path="url(#id)"` を**属性で** 1 つ持つ | `style` や CSS クラス経由のクリップは解析だけでは決まらない |
+| S3 | スロットの子は `<image>` ちょうど 1 つ（空白とコメントは除く）。間に `<g>` を挟まない | 動かす対象と座標の対応を 1 通りにする。スロットの中に飾りを置くと、画像と一緒には動かず枠には切られる、という分かりにくい挙動になる |
+| S4 | `<image>` は `x` / `y` / `width` / `height` を単位なしの数値で持つ。`clip-path` / `mask` / `style` の transform 系を持たない | 描画矩形を解析だけで決めるため |
+| S5 | `<image>` の `href`（または `xlink:href`）は `data:image/*` / `https:` / `http:` / `blob:` / 相対 URL | §9 |
+| S6 | スロットの `<g>` は `mask` を持たない。`opacity` と `filter` は持ってよいが、編集画面では再現しない（警告） | マスクは枠の見え方を変え、覆い制約の前提が崩れる |
 
-`clip-path` は属性と `style="clip-path:url(#…)"` の両方を読む。CSS のクラス経由のクリップは読まない（エラー）。
+### 2.3 クリップパスの規則
 
-### 2.3 読み込み時の正規化
+| 番号 | 規則 | 理由 |
+|---|---|---|
+| C1 | 参照先の `<clipPath>` が文書内にあり、`clipPathUnits` は `userSpaceOnUse`（省略も可） | `objectBoundingBox` だと枠が画像の外接矩形に追従して動く |
+| C2 | 子は `rect` / `circle` / `ellipse` / `polygon` / `polyline` / `path` だけ。各子の `transform` は可。`clip-rule` は自由 | 凸包（§6.4）を解析だけで求められる形に限る。`<text>` と `<use>` を除く |
+| C3 | `<clipPath>` にも子にも `clip-path` を付けない（クリップの入れ子なし） | 枠の形を 1 段で決める |
+| C4 | 同じ `<clipPath>` を複数のスロットや飾りが共有してよい | エディタはクリップを書き換えない |
 
-正規形でない入力は、**描画結果を変えない**書き換えで正規形にしてから編集する。
-書き換えは出力にも残るので、`onLoad` で何を書き換えたかを返す。
+### 2.4 祖先の規則
 
-| 入力 | 正規化 |
+| 番号 | 規則 | 理由 |
+|---|---|---|
+| A1 | ルートからスロットまでの祖先は `<g>` だけ（`<svg>` の入れ子・`<symbol>` / `<use>` / `<switch>` / `<a>` / `<foreignObject>` を挟まない） | ビューポート変換や条件分岐が入ると K（§3）が解析だけで決まらない |
+| A2 | 祖先の `transform` は属性で書く。逆行列を持つこと | 同上 |
+| A3 | 祖先は `clip-path` / `mask` を持たない | 外側で切られると、エディタの枠と実際に見える範囲がずれる |
+| A4 | 祖先の `opacity` / `filter` は可（編集画面では再現しない） | 見え方だけで座標には効かない |
+
+### 2.5 文書全体の規則
+
+| 番号 | 規則 | 理由 |
+|---|---|---|
+| D1 | ルートの `<svg>` は `viewBox` を持つ | 出力の座標系を明示する |
+| D2 | `id` は文書内で一意 | クリップの参照を 1 通りにする |
+| D3 | `<use>` がスロットとその子孫を参照しない | 参照先の画像が編集で一緒に動き、予期しない所が変わる |
+| D4 | CSS（`<style>` と `style` 属性）が、スロット・その `<image>`・祖先に `transform` / `translate` / `rotate` / `scale` / `transform-origin` / `transform-box` / `clip-path` / `mask` を当てない | CSS の変形は属性の `transform` を上書きし、解析した座標とずれる |
+
+D4 は CSS の規則ごとに、セレクタがスロット・画像・祖先のどれかに一致するかを `element.matches(selectorText)` で確かめる
+（`<style>` の本文は `CSSStyleSheet.replaceSync()` で規則に分ける）。飾りに CSS の変形やアニメーションを使うのは自由。
+
+**ここに挙げていないものはすべて自由**: 飾りの要素の種類・数・順序、テキスト、グラデーション、フィルタ、
+アニメーション、別のクリップパス、印のない（＝編集しない）クリップ付き画像、スクリプト（エディタは実行しない）。
+
+### 2.6 検査（lint）
+
+`lintClipDocument(svg): LintIssue[]` が §2.2〜§2.5 を検査する。読み込み（§4）は最初にこれを呼び、
+エラーが 1 つでもあれば編集を始めない。テンプレートの SVG をリポジトリで管理するなら、同じ関数を
+CLI（`svg-clip-lint <files…>`）から CI で回し、契約違反を作った時点で落とす。
+
+```ts
+interface LintIssue {
+  rule: string;              // 'S3' など §2 の番号
+  severity: 'error' | 'warning';
+  slot?: string;             // 関係するスロット名
+  path: number[];            // 違反した要素への子インデックス列
+  message: string;
+}
+```
+
+警告（編集はできる）: S6 / A4 の `opacity` / `filter`、文脈表示（§5.3）で読めない外部 URL の画像。
+
+### 2.7 既存の SVG の取り込み（任意）
+
+契約に合わない既存の SVG は、`adoptClipDocument(svg, { image: 'photo' })` で**描画結果を変えずに**契約の形へ
+書き換えてから使う。読み込み時に暗黙には行わない（どこを書き換えたかを利用者が確かめられるように、別の関数にする）。
+
+| 入力 | 書き換え |
 |---|---|
-| `<image>` 自身が `clip-path` を持つ | `<g clip-path="…" transform="元の transform">` で包み、`<image>` から `clip-path` を外して `transform` を恒等にする。見た目は同一 |
-| `clipPathUnits="objectBoundingBox"` | 参照要素の外接矩形が画像の移動で変わり、枠が動いてしまう。読み込み時点の外接矩形 `(bx, by, bw, bh)` で `userSpaceOnUse` に焼き直した**複製**の `<clipPath>`（新しい id、`transform="matrix(bw 0 0 bh bx by)"` を Q の前に積む）を作り、ラッパーの参照先を差し替える。元の `<clipPath>` は他の参照があり得るので残す |
-| ルートに `viewBox` がない | エディタ内部でだけ `0 0 width height` とみなす。出力には足さない |
-| `xlink:href` だけがある | そのまま使い、出力でも `xlink:href` のまま残す |
-
-### 2.4 扱わない入力（エラーにする）
-
-- 対象画像の祖先に入れ子の `<svg>` や `<symbol>`、`<use>` 経由の参照がある（ビューポート変換が入る）
-- 祖先や対象に CSS の `transform` / `transform-origin`（`style` 属性）がある
-- 対象画像とラッパーの両方が別々のクリップを持つ（どちらの枠に合わせるか決まらない）
-- `<clipPath>` の中に `<use>` / `<text>` がある（外接矩形を決定的に求められない）
+| `<image>` 自身が `clip-path` を持つ | `<g data-clip-slot clip-path="…" transform="元の transform">` で包み、`<image>` から `clip-path` を外して `transform` を恒等にする |
+| `<image>` と `clip-path` の `<g>` の間に `<g transform="J">` がある | 中間の `<g>` を外し、`<image transform>` を `J·M` にする（中間の `<g>` が他の子を持つときは取り込めない） |
+| `clipPathUnits="objectBoundingBox"` | 読み込み時点の外接矩形 `(bx, by, bw, bh)` で `userSpaceOnUse` に焼き直した**複製**の `<clipPath>`（新しい id、`transform="matrix(bw 0 0 bh bx by)"` を Q の前に積む）を作り、参照先を差し替える。元の `<clipPath>` は他の参照があり得るので残す |
+| ルートに `viewBox` がない | `0 0 width height` を足す（`width` / `height` が px か単位なしのときだけ） |
+| スロットの印がない | 指定した `<image>` を含む `<g>` に `data-clip-slot`（既定名 `image-1`, `image-2` …）を付ける |
 
 ## 3. 座標系
 
@@ -95,32 +152,31 @@ SVG に含まれる「クリップされた画像」の見え方（どの部分�
 | 記号 | 空間 | 定義 |
 |---|---|---|
 | R | ルート | ルート `<svg>` の `viewBox` 座標。出力の座標系そのもの |
-| C | クリップ空間 | ラッパーのユーザー空間。クリップ形状はここで定義される |
+| C | クリップ空間 | スロットの `<g>` のユーザー空間。クリップ形状はここで定義される |
 | I | 画像ローカル | `<image>` の `x` / `y` / `width` / `height` が置かれる空間 |
 | P | クリップ形状 | `<clipPath>` の子の座標 |
 | S | スクリーン | ブラウザの CSS ピクセル（ポインタの `clientX` / `clientY`） |
 
 ```
-p_R = K · p_C          K = ルート直下からラッパー自身までの transform の積
-p_C = J · M · p_I      J = ラッパーの子から <image> の親までの transform の積、M = <image> の transform
-p_C = Q · p_P          Q = <clipPath> の transform（なければ恒等）
+p_R = K · p_C          K = ルート直下からスロットの <g> 自身までの transform の積
+p_C = M · p_I          M = <image> の transform（契約 S3 により間に何も挟まらない）
+p_C = Q · T_k · p_P    Q = <clipPath> の transform、T_k = k 番目の子の transform
 p_S = V · p_R          V = エディタの <svg> の getScreenCTM()
 ```
 
-`K` / `J` / `Q` / `M` は `transform` 属性の文字列を自前で解析して求める
+`K` / `Q` / `T_k` / `M` は `transform` 属性の文字列を自前で解析して求める
 （`matrix` / `translate` / `scale` / `rotate(θ [cx cy])` / `skewX` / `skewY`）。
 `getCTM()` に頼らないのは、元の SVG を DOM に載せずに Node だけで単体テストできるようにするため。
+契約（§2.4 A1・A2、§2.5 D4）により、属性だけで座標が決まることが保証される。
 
 ### 3.1 編集の表し方
 
 編集は C 空間で左から掛ける変換 Δ で表す（枠が C 空間で固定なので、操作の中心や移動量を枠と同じ空間で扱える）。
 
 ```
-J · M_new = Δ · J · M_start
-M_new     = J⁻¹ · Δ · J · M_start
+M_new = Δ · M_start
 ```
 
-中間の `J` がなければ（よくある形）`M_new = Δ · M_start`。
 ジェスチャ中は毎回「ジェスチャ開始時の `M_start`」から計算し直す（差分を積み重ねると誤差が溜まる）。
 
 ### 3.2 ポインタ位置の変換
@@ -137,40 +193,51 @@ p_C = K⁻¹ · V⁻¹ · p_S
 
 ```
 svg 文字列
-   │ parseClipDocument()            DOMParser で解析 → 対象特定 → 正規化 → K/J/Q/M/枠の外接矩形
+   │ lintClipDocument()             契約の検査（§2.6）。エラーがあればここで止める
+   │ parseClipDocument()            DOMParser で解析 → スロットごとに K/M/クリップ形状/凸包
    ▼
-ClipDocModel ───────────────┐
-   │                        │ serialize(model, M)   元の Document を複製し <image transform> だけ差し替え
-   ▼                        ▼
-<SvgClipImageEditor>      出力 svg 文字列
-   ├ useFocusViewBox()      注目領域（固定の viewBox）
-   ├ useImageGesture()      Pointer / Wheel / Key → Δ → M
-   ├ applyCover()           （任意）枠を画像で覆う制約
-   └ useHistory()           元に戻す / やり直す
+ClipDocModel（slots[]）──────────────┐
+   │                                 │ serialize(model, transforms)  元の Document を複製し各 <image transform> を差し替え
+   ▼                                 ▼
+<SvgClipImageEditor>               出力 svg 文字列
+   ├ useFocusViewBox(slot)          注目領域（固定の viewBox）
+   ├ useImageGesture()              Pointer / Wheel / Key → Δ → M
+   ├ applyCover()                   （任意）覆い制約
+   └ useEditorState()               スロットごとの M・作業中のスロット・履歴
 ```
 
 | モジュール | 責務 | 主な関数 |
 |---|---|---|
 | `matrix.ts` | 2D アフィン行列 | `multiply` `invert` `apply` `translate` `scale` `rotate` `parseTransform` `formatMatrix` `decompose` |
-| `parse.ts` | 入力の解析と正規化 | `parseClipDocument(svg, opts): Result<ClipDocModel>` |
-| `geometry.ts` | クリップ形状の外接矩形、画像の描画矩形 | `clipBBox(shapes, Q)` `drawnImageRect(image, natural?)` `focusRect(model, padding)` |
+| `lint.ts` | 契約の検査 | `lintClipDocument(svg): LintIssue[]` |
+| `adopt.ts` | 既存 SVG の取り込み | `adoptClipDocument(svg, opts): { svg, changes }` |
+| `parse.ts` | 解析 | `parseClipDocument(svg): Result<ClipDocModel>` |
+| `path.ts` | パスの解析と区分化 | `parsePathData(d)` → 直線と 3 次ベジェだけの列（2 次は次数上げ、円弧はベジェへ） |
+| `geometry.ts` | 枠の外接矩形・凸包、画像の描画矩形、注目領域 | `clipHull(shapes, Q, ε)` `drawnImageRect(image, natural?)` `focusRect(slot, padding)` |
 | `gesture.ts` | ポインタ列 → Δ | `panDelta` `pinchDelta` `wheelDelta` |
-| `constraint.ts` | 覆い制約・拡縮の上下限 | `applyCover(model, M)` `clampScale(M, M0, min, max)` |
-| `serialize.ts` | 出力 | `serialize(model, M, precision): string` |
+| `constraint.ts` | 覆い制約・拡大率の上下限 | `isCovered(slot, M)` `applyCover(slot, M, mode)` `clampScale(M, M0, min, max)` |
+| `context.ts` | 文脈表示の上下の層 | `splitContext(model, slot, transforms): { below, above }` |
+| `serialize.ts` | 出力 | `serialize(model, transforms, opts): string` |
 | `SvgClipImageEditor.tsx` | 描画と操作 | — |
 
-### 4.1 `ClipDocModel`
+### 4.1 モデル
 
 ```ts
 type Matrix = [a: number, b: number, c: number, d: number, e: number, f: number];
+type Point = [x: number, y: number];
 type Rect = { x: number; y: number; width: number; height: number };
 
 interface ClipDocModel {
-  doc: Document;                 // 正規化済みの元文書（出力の土台。描画には使わない）
-  imagePath: number[];           // doc 内の対象 <image> への子インデックス列（id がなくても辿れる）
+  doc: Document;                 // 元文書（出力の土台。描画には使わない）
   rootViewBox: Rect;             // R
+  slots: ClipSlot[];             // 文書順。初版はこのうち 1 つを編集する
+  warnings: LintIssue[];
+}
+
+interface ClipSlot {
+  name: string;                  // data-clip-slot
+  path: number[];                // doc 内のスロット <g> への子インデックス列
   K: Matrix;                     // C → R
-  J: Matrix;                     // 画像の親 → C
   M0: Matrix;                    // 読み込み時の <image> の transform
   image: {                       // 描画用に組み直した属性（許可リストのみ）
     href: string; hrefAttr: 'href' | 'xlink:href';
@@ -178,21 +245,22 @@ interface ClipDocModel {
     preserveAspectRatio: string;
   };
   clip: {
+    id: string;
     Q: Matrix;
-    shapes: ClipShape[];         // { tag: 'rect' | 'circle' | …, attrs: 幾何属性のみ }
-    bboxC: Rect;                 // C 空間での外接矩形（Q を適用済み）
+    shapes: ClipShape[];         // { tag, attrs: 幾何属性のみ, transform }
+    bboxC: Rect;                 // C 空間での外接矩形
+    hullC: Point[];              // C 空間での凸包（反時計回り。§6.4）
   };
-  normalized: string[];          // §2.3 で行った書き換えの一覧（onLoad で返す）
 }
 ```
 
 ### 4.2 注目領域（固定の viewBox）
 
-1. 枠の外接矩形 `bboxC` の 4 隅を `K` で R に写し、その外接矩形 `F` を取る（ラッパーが回転していても枠全体が入る）。
+1. 枠の凸包 `hullC` の頂点を `K` で R に写し、その外接矩形 `F` を取る（スロットや祖先が回転していても枠全体が入る）。
 2. `F` の各辺に `focusPadding`（既定 0.25 = 幅・高さの 25%）の余白を足す。
 3. それをエディタの `viewBox` にして `preserveAspectRatio="xMidYMid meet"` で表示する。
 
-向きはルート座標のまま（出力と同じ向き）。`viewBox` は `model` が変わったときだけ計算し、操作では変えない。
+向きはルート座標のまま（出力と同じ向き）。`viewBox` は作業中のスロットが決まったときだけ計算し、操作では変えない。
 エディタの表示サイズが変わっても `viewBox` は同じなので、注目領域は動かない。
 
 ## 5. 描画
@@ -209,21 +277,24 @@ interface ClipDocModel {
     </clipPath>
   </defs>
 
-  {/* 任意: 文脈（対象画像を除いた元の SVG を <image> として下に敷く。§5.3） */}
+  {/* 任意: 文脈の下の層（§5.3） */}
 
   <g transform={K}>
-    <g transform={J}>
-      {/* ① 画像全体（半透過）: 枠の外にはみ出した部分が透けて見える */}
-      <image {...image} transform={M} opacity={outsideOpacity} />
-    </g>
+    {/* ① 画像全体（半透過）: 枠の外にはみ出した部分が透けて見える */}
+    <image {...image} transform={M} opacity={outsideOpacity} />
     {/* ② 枠で切り抜いた画像（不透明） */}
     <g clipPath={`url(#${uid}-clip)`}>
-      <g transform={J}><image {...image} transform={M} /></g>
+      <image {...image} transform={M} />
     </g>
-    {/* ③ 枠の輪郭（太さは画面上で一定） */}
+  </g>
+
+  {/* 任意: 文脈の上の層（§5.3） */}
+
+  {/* ③ 枠の輪郭（太さは画面上で一定）。覆い制約を満たさない間は警告色 */}
+  <g transform={K}>
     <g transform={Q} fill="none" pointerEvents="none">
-      {clip.shapes.map(s => <Shape {...s} stroke="currentColor"
-                                  strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />)}
+      {clip.shapes.map(s => <Shape {...s} strokeDasharray="6 4" vectorEffect="non-scaling-stroke"
+                                  stroke={covered ? 'var(--clip-editor-frame)' : 'var(--clip-editor-warn)'} />)}
     </g>
   </g>
 
@@ -235,6 +306,7 @@ interface ClipDocModel {
 - ② のクリップは ① と同じ `K` の中に置くので、`userSpaceOnUse` の座標は元の SVG とまったく同じ意味になる。
 - `id` は `useId()` で接頭辞を付け、同じページに複数置いても衝突しない。
 - 同じ `href` の `<image>` を 2 枚描くが、ブラウザはデコード結果を共有するので負荷はほぼ 1 枚分。
+- 枠の輪郭は文脈の上の層より上に描き、飾りに隠れないようにする。
 
 ### 5.2 「枠内は透明、枠外は半透過」の見え方
 
@@ -246,10 +318,26 @@ interface ClipDocModel {
 
 ### 5.3 文脈表示（任意、既定は出さない）
 
-`context="below"` のとき、対象画像を取り除いた元の SVG を `data:image/svg+xml` にして、
-`<image x=vx y=vy width=vw height=vh preserveAspectRatio="none">` として最下層に敷く。
-画像として読み込まれた SVG ではスクリプトが動かないので安全で、元文書の `id` とエディタの `id` も衝突しない。
-ただし元文書で画像より上に描かれる要素（飾り枠など）も下に敷かれるので、見え方は出力と完全には一致しない。
+`context="layers"` のとき、作業中のスロットを除いた元の SVG を**スロットの前と後ろ**に分けて描く。
+契約でスロットが閉じた部品になっているので、文書順で前後に切り分けられる。
+
+`splitContext(model, slot, transforms)`:
+
+1. 文書を 2 つ複製する。どちらでも作業中のスロットを取り除く。
+2. **下の層**: 文書順（前順）でスロットより後ろにある要素を、スロットの祖先を除いて取り除く。
+3. **上の層**: スロットより前にある要素を、祖先を除いて取り除く。
+4. どちらでも資源の要素（`<defs>` とその中身、`<clipPath>` / `<mask>` / `<pattern>` / グラデーション / `<filter>` / `<marker>` / `<symbol>` / `<style>`）は残す。
+5. 他のスロットの `<image transform>` は `transforms` の現在の値に差し替える（複数画像のとき、他の画像の編集結果が見える）。
+6. それぞれを `data:image/svg+xml` にし、`<image x=vx y=vy width=vw height=vh preserveAspectRatio="none">` として描く。
+
+上の層は `contextAboveOpacity`（既定 0.5）で半透過にし、飾りの下にある画像も見えるようにする。
+画像として読み込んだ SVG ではスクリプトが動かず、元文書の `id` とエディタの `id` も衝突しない。
+
+制約:
+
+- 画像として読み込んだ SVG は外部の資源を読めない（ブラウザの仕様）。飾りが外部 URL の画像を使っていると、
+  その画像は文脈に出ない（§2.6 の警告）。スロットの画像そのものは①②で直接描くので影響しない。
+- 祖先の `opacity` は上下の層に別々にかかるので、重なり部分の透け方が出力とわずかに違うことがある。
 
 ### 5.4 ツールバー
 
@@ -263,7 +351,7 @@ interface ClipDocModel {
 | 元に戻す / やり直す | 履歴（§6.5） |
 | リセット | 読み込み時の `M0` に戻す |
 
-`toolbar={false}` で隠し、ref のメソッド（§9.2）で外から同じ操作を呼べる。
+`toolbar={false}` で隠し、ref のメソッド（§10.2）で外から同じ操作を呼べる。
 
 ### 5.5 注目領域を固定するための抑止
 
@@ -283,7 +371,7 @@ interface ClipDocModel {
     ▲                              │  ▲                          │
     │       pointerup(最後の1本)   │  └──────────────────────────┘
     └──────────────────────────────┘    pointerup(2本→1本): 残った指で pan に戻る（基準を取り直す）
-       → commit（履歴に積む・onCommit）
+       → 覆い制約（release のとき）→ commit（履歴に積む・onCommit）
 ```
 
 - 3 本目以降の指は無視する。
@@ -305,37 +393,75 @@ interface ClipDocModel {
 
 2 本指の Δ は「2 本の指の下にある画像の点が、指に貼り付いたまま動く」変換そのもの
 （a₀ を a₁ へ、b₀ を b₁ へ正確に写す相似変換）。
+「枠の中心」は凸包 `hullC` の外接矩形の中心とする。
 
 `rotationSnap`（既定 0 = 無効、例 3）を与えると、2 本指の回転で全体の回転角が 90° の倍数 ± `rotationSnap`° に入ったとき吸着させる。
 
 ### 6.3 拡大率の上下限
 
-全体の拡大率を `σ(M) = sqrt(|det(J·M)|)` とし、`σ(M) / σ(M0)` が `[minScale, maxScale]`（既定 `[0.1, 20]`）に
+全体の拡大率を `σ(M) = sqrt(|det M|)` とし、`σ(M) / σ(M0)` が `[minScale, maxScale]`（既定 `[0.1, 20]`）に
 収まるよう、Δ の `s`（または `k`）を詰める。
 
-### 6.4 覆い制約（`constraint="cover"`、既定 `"none"`）
+### 6.4 覆い制約（`cover="release"` / `"live"` / `"off"`、既定 `"off"`）
 
-「枠の内側に画像のない所を作らない」制約。ジェスチャ中は自由に動かせるようにし、
-**指を離したとき（commit の直前）**に最小限の補正をかけて 150ms で寄せる。
+「枠の内側に画像のない所を作らない」制約。複雑なクリップパス（凹んだ形、穴、曲線、複数の輪郭、`evenodd`）でも
+次の性質で正確に扱える。
+
+> 画像の描画矩形 `D` は I 空間で軸に沿った矩形なので、C 空間では平行四辺形（凸）になる。
+> 凸な集合が図形 G を含むことと、G の**凸包** conv(G) を含むことは同値。
+> したがって判定と補正には、枠の凸包の頂点だけを使えばよい。凹み・穴・塗りの規則は結果に影響しない。
+
+枠は C 空間で固定なので、凸包はスロットを読み込んだときに 1 回だけ求めて `hullC` に持つ。
+
+#### 凸包の求め方（`clipHull`）
+
+1. クリップの子をすべて「直線と 3 次ベジェ」の列にする（P 空間）。
+   - `rect`: 4 辺。`rx` / `ry` があれば角を 1/4 楕円の 3 次ベジェにする。
+   - `circle` / `ellipse`: 1/4 ずつ 4 本の 3 次ベジェ。
+   - `polygon` / `polyline`: 直線（クリップでは `polyline` も閉じた図形として塗られる）。
+   - `path`: `d` を全コマンド（`M L H V C S Q T A Z`、相対・絶対）解析する。2 次ベジェは 3 次へ次数上げ、
+     円弧は中心パラメータ化してから 90° 以下ずつ 3 次ベジェにする。
+2. 各子の `transform`（T_k）と `Q` を、直線の端点とベジェの制御点に掛ける。アフィン変換はベジェの制御点に掛けてよい。
+3. 各 3 次ベジェを、制御点と弦の距離が ε 以下になるまで二分割する（de Casteljau）。
+   集める点は、直線の端点と、分割後の**制御点すべて**。ベジェ曲線は制御点の凸包の中にあるので、
+   集めた点の凸包は真の凸包を必ず含み（覆い不足を起こさない）、はみ出しは ε 以下になる。
+4. Andrew の monotone chain で凸包を求める（O(n log n)）。
+   ε は既定で枠の外接矩形の対角線の 0.1%。
+
+#### 判定と補正
 
 画像の描画矩形 `D = [x₀, x₁] × [y₀, y₁]`（I 空間）は `preserveAspectRatio` で決まる:
 `none` と `slice` は `x / y / width / height` の矩形そのもの、`meet` は画像の元の大きさ（読み込んで `naturalWidth` / `naturalHeight` を取る）から求めた内側の矩形。
+画像の透明な画素は考えない（幾何で判定する）。
 
-1. 枠の外接矩形 `bboxC` の 4 隅を I 空間に写す: `q_i = (J·M)⁻¹ · corner_i`。その I 空間での外接矩形を `[qx₀, qx₁] × [qy₀, qy₁]` とする。
-   （枠の形は 4 隅の凸包に含まれ、`D` は凸なので、4 隅が `D` に入れば枠全体が覆われる。円や角丸では少し保守的になる）
+1. 凸包の頂点を I 空間に写す: `q_i = M⁻¹ · h_i`。I 空間での外接矩形を `[qx₀, qx₁] × [qy₀, qy₁]` とする。
+   `D` が軸に沿った矩形なので、「全頂点が `D` に入る」は「この外接矩形が `D` に入る」と同じ。
 2. 幅か高さが足りなければ拡大する: `k = max((qx₁−qx₀)/(x₁−x₀), (qy₁−qy₀)/(y₁−y₀))`。
    `k > 1` なら枠の中心 `c` を中心に `Δ = T(c)·S(k)·T(−c)` を掛け、1 を計算し直す。
+   今の回転のままで覆える最小の拡大率がこの `k` になる（拡大の中心はどこでも、平行移動で調整できる）。
 3. 平行移動を I 空間で求める（画像を I 空間で `u` 動かすと `q` は `−u` 動く）:
    `u_x = clamp(0, qx₁ − x₁, qx₀ − x₀)`、`u_y` も同様。`M ← M · T(u)`。
+   今の位置から一番近い、覆える位置になる。
+
+計算は凸包の頂点数 n に対して O(n)。凸包は数十〜数百点なので、毎フレーム回しても軽い。
+
+| モード | 動き |
+|---|---|
+| `off` | 制約をかけない。覆えていない間は枠の輪郭を警告色にするだけ |
+| `release` | ジェスチャ中は自由に動かし、指を離したとき（commit の直前）に上の補正をかけて 150ms で寄せる |
+| `live` | 毎フレーム補正する（画像が枠の端で止まる）。2 本指の拡縮で縮めすぎると拡大率が下限に貼り付く |
 
 「枠に合わせる」ボタンは同じ手順で、2 の `k` を 1 未満も許し（縮めて丁度覆う）、3 の `u` を中央寄せ
 （`u_x = (qx₀ + qx₁)/2 − (x₀ + x₁)/2`）にしたもの。
 
+扱えないもの（契約で除いている）: `<text>` や `<use>` のクリップ、クリップの入れ子、`<mask>` による切り抜き。
+
 ### 6.5 履歴
 
-- commit（ジェスチャの終わり、ボタン、キー操作の区切り）ごとに `M` を積む。上限 100。
+- commit（ジェスチャの終わり、ボタン、キー操作の区切り）ごとに `{ slot, before, after }` を積む。上限 100。
 - 連続するキー操作は 500ms 以内なら 1 つにまとめる。
 - `svg` プロップが変わったら履歴を捨てて読み直す。
+- 履歴はスロットをまたいで 1 本（§8）。初版ではスロットが 1 つなので、ふつうの履歴と同じに見える。
 
 ## 7. 画面のイメージ
 
@@ -359,139 +485,177 @@ agent-app に載せる場合は白いカードの中に置き（`.log` と同じ
  [ − ] [ + ]  [ ⟲ 90° ] [ ⟳ 90° ]  [ 枠に合わせる ]      [ ↶ ] [ ↷ ] [ リセット ]
 
  描画面の大きさ = 枠の外接矩形 + 各辺 25%（固定。操作では動かない）
+ 枠の点線は、覆えていない間だけ警告色になる
  ドラッグ: 移動 / 2 本指: 拡縮・回転・移動 / ホイール: 拡縮（Shift で回転）
- ※ 下 2 行は図の注記で、画面には出さない
+ ※ 下 3 行は図の注記で、画面には出さない
 ```
 
-## 8. 安全性とエラー
+複数画像の切り替え（§8）の画面は、実装に入るときに別にイメージを出して承認を得る。
 
-### 8.1 元の SVG を実行しない
+## 8. 複数画像への拡張（見越した設計）
+
+初版は 1 エディタ = 1 スロットを編集する。ただし、後から切り替えを足しても作り直しにならないよう、
+次の形を**初版から**採る。
+
+| 項目 | 初版からの形 | 初版での使われ方 |
+|---|---|---|
+| 対象の指定 | スロット名（`data-clip-slot`）。id ではなく名前を使うのは、テンプレートを差し替えても同じ名前なら同じ枠を指せるため | `slot` プロップで 1 つ選ぶ。省略時は文書順で最初のスロット |
+| モデル | `ClipDocModel.slots[]`（全スロットを解析） | 選んだ 1 つだけを描く |
+| 状態 | `{ active: string; transforms: Record<string, Matrix>; past; future }` | `active` は固定 |
+| 履歴 | `{ slot, before, after }` の 1 本の列。元に戻すとき、記録のスロットが今のスロットと違えば先にそのスロットへ切り替えて見せる | スロットが 1 つなのでふつうの履歴 |
+| 出力 | `serialize(model, transforms)` が全スロットの `transform` を反映する | 編集しないスロットは元のまま |
+| コールバック | `onChange(M, slot)`・`onCommit(svg, { slot, M })` のようにスロット名を最初から渡す | 常に同じ名前 |
+| 制御モード | `transforms?: Record<string, Matrix>`（スロット名 → M） | 1 キーだけ使う |
+| 文脈表示 | 他のスロットは文脈の層（§5.3）に現在の `transforms` で描かれる | 文脈を出したとき、他のスロットは元の位置で見える |
+
+切り替えを足すときに決めること（初版ではやらない）:
+
+- **切り替えの入口**: スロット名の一覧（タブかセレクト）を描画面の上に置くか、文脈の層に出ている他の枠をタップで選ぶか。
+  タップで選ぶ場合は、移動量 4px 未満・250ms 未満の押下だけを「選ぶ」とし、ドラッグと区別する。
+- **注目領域**: スロットごとに §4.2 で求める。切り替えは操作ではなく明示の選択なので、そのときに限り `viewBox` が変わる
+  （200ms で寄せる）。作業中の操作で `viewBox` を変えない原則は保つ。
+- **追加の API**: `activeSlot` / `onActiveSlotChange`（制御モード）、`slots?: string[]`（切り替えの対象を絞る）、
+  ref の `setActiveSlot(name)`。
+- **覆い制約**: スロットごとに `hullC` を持っているので、そのまま作業中のスロットにかかる。
+
+## 9. 安全性とエラー
+
+### 9.1 元の SVG を実行しない
 
 - 元の文字列は `DOMParser` で `image/svg+xml` として解析するだけで、文書に差し込まない。
 - 描画に使う要素は許可リストで組み直す:
-  - `<image>`: `href`（`data:image/*` / `https:` / `http:` / `blob:` / 相対 URL のみ。`javascript:` などは拒否）、`x` `y` `width` `height` `preserveAspectRatio`
+  - `<image>`: `href`（§2.2 S5 の URL のみ。`javascript:` などは拒否）、`x` `y` `width` `height` `preserveAspectRatio`
   - クリップ形状: `rect` `circle` `ellipse` `polygon` `polyline` `path` の幾何属性（`x` `y` `width` `height` `rx` `ry` `cx` `cy` `r` `points` `d` `transform` `clip-rule`）
 - 文脈表示（§5.3）は画像として読み込むので、中のスクリプトは動かない。
-- 出力は元の `Document` を複製して `transform` 属性を 1 つ書き換えるだけなので、元にあったものは良くも悪くもそのまま残る（サニタイズはこのコンポーネントの責務ではない）。
+- 出力は元の `Document` を複製して `transform` 属性を書き換えるだけなので、元にあったものは良くも悪くもそのまま残る（サニタイズはこのコンポーネントの責務ではない）。
 
-### 8.2 エラー
+### 9.2 エラー
 
-`parseClipDocument` は例外を投げず `{ ok: false, code, message }` を返す。コンポーネントは描画面の代わりに 1 行のメッセージを出し、`onError` を呼ぶ。
+`parseClipDocument` は例外を投げず `{ ok: false, code, message, issues? }` を返す。コンポーネントは描画面の代わりに 1 行のメッセージを出し、`onError` を呼ぶ。
 
 | code | 条件 |
 |---|---|
 | `parse_error` | XML として読めない、ルートが `<svg>` でない |
-| `no_target` | 対象の `<image>` が見つからない |
-| `no_clip` | 対象にクリップがかかっていない |
-| `unsupported_structure` | §2.4 のいずれか |
-| `singular_transform` | `K` / `J` / `M` / `Q` が逆行列を持たない（幅 0 の scale など） |
+| `contract_violation` | §2.6 の lint でエラーがある（`issues` に一覧） |
+| `no_slot` | スロットが 1 つもない、または `slot` で指定した名前がない |
+| `singular_transform` | `K` / `M` / `Q` が逆行列を持たない（幅 0 の scale など） |
+| `empty_clip` | クリップ形状の面積が 0（凸包が 3 点未満） |
 
-## 9. コンポーネントの API
+## 10. コンポーネントの API
 
-### 9.1 プロップ
+### 10.1 プロップ
 
 ```ts
 interface SvgClipImageEditorProps {
-  svg: string;                          // 元の SVG 文字列
-  target?: string;                      // 対象 <image> の id（§2.2）
+  svg: string;                          // 元の SVG 文字列（§2 の契約を満たす）
+  slot?: string;                        // 編集するスロット名。省略時は文書順で最初
 
   focusPadding?: number;                // 既定 0.25
   outsideOpacity?: number;              // 既定 0.35
-  context?: 'none' | 'below';           // 既定 'none'（§5.3）
+  context?: 'none' | 'layers';          // 既定 'none'（§5.3）
+  contextAboveOpacity?: number;         // 既定 0.5
   toolbar?: boolean;                    // 既定 true
 
-  constraint?: 'none' | 'cover';        // 既定 'none'（§6.4）
+  cover?: 'off' | 'release' | 'live';   // 既定 'off'（§6.4）
   minScale?: number;                    // 既定 0.1（読み込み時比）
   maxScale?: number;                    // 既定 20
   rotationSnap?: number;                // 度。既定 0（無効）
 
-  transform?: Matrix;                   // 制御モード: 親が M を持つ
-  defaultTransform?: Matrix;            // 非制御モードの初期値（既定は入力の M0）
+  transforms?: Record<string, Matrix>;  // 制御モード: 親がスロットごとの M を持つ
+  defaultTransforms?: Record<string, Matrix>; // 非制御モードの初期値（既定は入力の M0）
   precision?: number;                   // 出力の e/f の小数桁。既定 3（a〜d は常に 6 桁）
   outputTransform?: 'matrix' | 'decomposed'; // 既定 'matrix'
 
-  onLoad?: (info: { normalized: string[] }) => void;
-  onChange?: (M: Matrix) => void;       // 操作中、毎フレーム
-  onCommit?: (svg: string, M: Matrix) => void; // 操作の区切りごと
-  onError?: (err: { code: string; message: string }) => void;
+  onLoad?: (info: { slots: string[]; warnings: LintIssue[] }) => void;
+  onChange?: (M: Matrix, slot: string) => void;                 // 操作中、毎フレーム
+  onCommit?: (svg: string, edit: { slot: string; M: Matrix }) => void; // 操作の区切りごと
+  onError?: (err: { code: string; message: string; issues?: LintIssue[] }) => void;
 
   className?: string;
-  style?: React.CSSProperties;
+  style?: React.CSSProperties;          // --clip-editor-frame / --clip-editor-warn で枠の色を変えられる
 }
 ```
 
-### 9.2 ref で呼べる操作
+### 10.2 ref で呼べる操作
 
 ```ts
 interface SvgClipImageEditorHandle {
-  getSvg(): string;                     // 現在の M を反映した出力
-  getTransform(): Matrix;
-  reset(): void;
-  fit(): void;                          // 枠に合わせる
-  zoom(factor: number): void;           // 枠の中心で
-  rotate(deg: number): void;            // 枠の中心で
+  getSvg(): string;                           // 全スロットの現在の M を反映した出力
+  getTransforms(): Record<string, Matrix>;
+  reset(): void;                              // 作業中のスロットを M0 に
+  fit(): void;                                // 枠に合わせる
+  zoom(factor: number): void;                 // 枠の中心で
+  rotate(deg: number): void;                  // 枠の中心で
   undo(): void;
   redo(): void;
 }
 ```
 
-## 10. 出力
+## 11. 出力
 
-`serialize(model, M, precision)`:
+`serialize(model, transforms, { precision, outputTransform })`:
 
-1. `model.doc` を `cloneNode(true)` する（正規化済み。§2.3）。
-2. `imagePath` で対象 `<image>` を辿り、`transform` を書き換える。
+1. `model.doc` を `cloneNode(true)` する。
+2. 各スロットの `path` で `<image>` を辿り、`transforms[slot.name]` で `transform` を書き換える（値がないスロットは触らない）。
    - `matrix`（既定）: `matrix(a b c d e f)`。`a`〜`d` は小数 6 桁、`e` `f` は `precision` 桁で丸め、末尾の 0 を落とす。
    - `decomposed`: スキューがなければ `translate(e f) rotate(θ) scale(s)`（非一様なら `scale(sx sy)`）。スキューが残る場合は `matrix` にする。
    - 結果が恒等なら属性を消す。
 3. `XMLSerializer` で文字列にする。XML 宣言・DOCTYPE・ルート直前のコメントは元にあれば残す。
 
-変えないもの: ルートの `viewBox` / `width` / `height`、祖先・ラッパー・中間要素の `transform`、`<clipPath>`、
-`<image>` の `x` / `y` / `width` / `height` / `href` / `preserveAspectRatio`、他のすべての要素。
+変えないもの: ルートの `viewBox` / `width` / `height`、祖先・スロットの `<g>` の `transform`、`<clipPath>`、
+`<image>` の `x` / `y` / `width` / `height` / `href` / `preserveAspectRatio`、飾りを含む他のすべての要素。
 したがって出力は元と同じ座標系で、変わるのは「画像のどこが枠に入るか」だけになる。
+出力も §2 の契約を満たしたままなので、もう一度エディタに読み込める。
 
-### 10.1 例
+### 11.1 例
 
 入力:
 
 ```xml
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
   <defs>
-    <clipPath id="photoClip" clipPathUnits="userSpaceOnUse">
-      <rect x="200" y="150" width="400" height="300" rx="24"/>
+    <clipPath id="hero-clip" clipPathUnits="userSpaceOnUse">
+      <path d="M200 150 H600 V450 H420 Q400 380 380 450 H200 Z"/>  <!-- 下辺に切り欠きのある枠 -->
     </clipPath>
   </defs>
   <rect width="800" height="600" fill="#f4f1ea"/>
-  <g clip-path="url(#photoClip)">
-    <image id="photo" data-clip-target="" href="photo.jpg"
-           x="0" y="0" width="1200" height="800" preserveAspectRatio="xMidYMid slice"
+  <g data-clip-slot="hero" clip-path="url(#hero-clip)">
+    <image href="photo.jpg" x="0" y="0" width="1200" height="800"
+           preserveAspectRatio="xMidYMid slice"
            transform="matrix(0.5 0 0 0.5 100 100)"/>
   </g>
+  <text x="400" y="540" text-anchor="middle">見出し</text>   <!-- 飾り: 契約の外なので自由 -->
 </svg>
 ```
 
 画像を 1.1 倍にして 15° 回し、少し寄せた後の出力（`<image>` の `transform` だけが変わる）:
 
 ```xml
-    <image id="photo" data-clip-target="" href="photo.jpg"
-           x="0" y="0" width="1200" height="800" preserveAspectRatio="xMidYMid slice"
-           transform="matrix(0.531259 0.142350 -0.142350 0.531259 168.4 6.912)"/>
+    <image href="photo.jpg" x="0" y="0" width="1200" height="800"
+           preserveAspectRatio="xMidYMid slice"
+           transform="matrix(0.531259 0.14235 -0.14235 0.531259 168.4 6.912)"/>
 ```
 
-## 11. テスト
+この枠の凸包は外側の矩形の 4 隅になる（切り欠きは凹みなので凸包に影響しない）。
+
+## 12. テスト
 
 | 種類 | 内容 |
 |---|---|
 | 単体（Node + jsdom） | `parseTransform` の各関数と合成順、`invert`、`decompose` の往復 |
-| 単体 | `parseClipDocument`: 正規形・§2.3 の各正規化・§2.4 の各エラー。正規化の前後で、画像の 4 隅とクリップの 4 隅の R 座標が一致すること |
+| 単体 | `lintClipDocument`: §2 の規則ごとに、守る例と破る例の対を 1 つずつ。飾りを大量に足した文書（テキスト・CSS アニメーション・印のないクリップ付き画像・別のクリップ）でエラーが出ないこと |
+| 単体 | `adoptClipDocument`: 各書き換えの前後で、画像の 4 隅と枠の凸包の R 座標が一致すること |
+| 単体 | `parsePathData`: 全コマンドの相対・絶対、円弧の退化（半径 0・端点一致）、暗黙の繰り返し |
+| 単体 | `clipHull`: 矩形・円・角丸・凹多角形・穴のある `evenodd`・3 次 / 2 次ベジェ・円弧で、(a) 真の図形の標本点がすべて凸包に入る（覆い不足を起こさない）、(b) 凸包の各頂点が真の図形から ε 以内 |
 | 単体 | `pinchDelta`: a₀→a₁、b₀→b₁ を正確に写すこと。指の入れ替え（本数変化）で M が連続であること |
-| 単体 | `applyCover`: 補正後に枠の 4 隅が D に入ること。もともと覆っているときは M を変えないこと |
-| 単体 | `serialize`: Δ = 恒等なら出力が入力と意味的に同一（正規化がない入力では文字列として同一）。`transform` 以外の属性・要素が変わらないこと |
+| 単体 | `applyCover`: 補正後に凸包の全頂点が D に入ること。もともと覆っているときは M を変えないこと。補正の拡大率が、拡大率を二分探索で求めた最小値と一致すること |
+| 単体 | `splitContext`: 下の層に前の要素だけ、上の層に後ろの要素だけが残り、資源の要素は両方に残ること |
+| 単体 | `serialize`: 変更なしなら出力が入力と文字列として同一。`transform` 以外の属性・要素が変わらないこと。出力が再び lint を通ること |
 | 部品（Testing Library） | ポインタイベントを合成してドラッグ・2 本指・ホイールで `onChange` / `onCommit` が期待の M を返すこと。`viewBox` が操作で変わらないこと |
 | 実機（Playwright） | 例の SVG を読み込み、操作前後のスクリーンショットを撮る。出力 SVG を別ページで描き、エディタの枠内の画素と一致することを確かめる |
 
-## 12. 未決事項
+## 13. 未決事項
 
-- 複数の画像（同じ枠を共有する画像が複数ある、枠ごとに画像がある）を 1 つのエディタで切り替えるか。現状は 1 エディタ = 1 画像。
-- `constraint="cover"` をジェスチャ中にも効かせる（ゴムのような抵抗）か。現状は指を離したときだけ。
-- 文脈表示（§5.3）で、画像より上に描かれる要素を上に重ねて出し分けるか。
+- 複数画像の切り替えの入口（一覧かタップか）と、その画面のイメージ（§8）。
+- `cover="live"` で枠の端に当たったとき、止めるか、ゴムのように抵抗をつけるか。
+- 契約の CLI（`svg-clip-lint`）をこのパッケージに同梱するか、テンプレートを管理する側に置くか。
