@@ -91,3 +91,14 @@ test('受信箱の題・品質評価の抜粋・会話索引の本文は絵文�
   const prepared = qe.prepare({ prompt: '- ' + '😀'.repeat(799) + '😀😀', answer: 'x' });
   for (const c of prepared.criteria) assert.ok(!lone.test(c.text));
 });
+
+test('agent-loop の失敗の末尾は絵文字の途中で切れない', async () => {
+  const loop = require('../src/main/automation/agent-loop');
+  const snapshot = await loop.inspect({
+    root: '/project',
+    capture: async () => ({ ok: false, status: 1, stderr: '😀'.repeat(4000) }),
+  });
+  assert.ok(!lone.test(snapshot.error));
+  await assert.rejects(() => loop.inspect({ root: '/p', capture: async () => ({ ok: true, stdout: '😀'.repeat(1001) }) }),
+    (err) => !lone.test(err.message));
+});

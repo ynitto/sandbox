@@ -1651,7 +1651,8 @@ function repoRelative(file) {
 }
 
 function failurePrompt(machine, item, logText) {
-  const tail = String(logText || '').split(/\r?\n/).filter((line) => line.trim()).slice(-FIX_LOG_LINES).join('\n').slice(-FIX_LOG_CHARS);
+  const tailAll = String(logText || '').split(/\r?\n/).filter((line) => line.trim()).slice(-FIX_LOG_LINES).join('\n');
+  const tail = Array.from(tailAll).slice(-FIX_LOG_CHARS).join('');
   const relative = repoRelative(item.logFile);
   const facts = [
     `- タスク: ${machine.name || machine.machine}`,

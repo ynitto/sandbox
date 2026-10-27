@@ -1,5 +1,7 @@
 'use strict';
 
+const { tailChars } = require('../text');
+
 // statemachine-maker と agent-loop の境界。renderer や IPC にコマンドの綴りを広げない。
 
 function machineName(value) {
@@ -82,13 +84,13 @@ async function inspect({ root, capture }) {
       machines: [],
       history: [],
       daemon: { running: false },
-      error: ['agent-loop inspect に失敗しました' + (result.status != null ? `（終了コード ${result.status}）` : ''), String(result.error || result.stderr || '').trim().slice(-4000)].filter(Boolean).join(': '),
+      error: ['agent-loop inspect に失敗しました' + (result.status != null ? `（終了コード ${result.status}）` : ''), tailChars(String(result.error || result.stderr || '').trim(), 4000)].filter(Boolean).join(': '),
     };
   }
   try {
     return JSON.parse(result.stdout);
   } catch (err) {
-    throw new Error('実行情報の応答を読み取れませんでした: ' + String(result.stderr || result.stdout || 'agent-loop inspect の出力なし').trim().slice(-1000), { cause: err });
+    throw new Error('実行情報の応答を読み取れませんでした: ' + tailChars(String(result.stderr || result.stdout || 'agent-loop inspect の出力なし').trim(), 1000), { cause: err });
   }
 }
 
