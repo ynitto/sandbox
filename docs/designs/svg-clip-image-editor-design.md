@@ -7,6 +7,7 @@ SVG に含まれる「クリップされた画像」の見え方（どの部分�
 > 状態: 設計（未実装）。画面のイメージ（§7）の承認を経てから実装に入る。
 > 実装の置き場所は承認時に決める（案: `tools/svg-clip-image-editor/`）。
 > 初版は 1 エディタ = 1 画像。複数画像の切り替えは §8 で形だけ決め、モデルと API をそれに合わせておく。
+> 契約を検査する CLI（§2.8）は設計だけで、実装しない。
 
 ## 1. 要件と方針
 
@@ -20,8 +21,9 @@ SVG に含まれる「クリップされた画像」の見え方（どの部分�
 | 枠内は透明（画像が不透明に見える）、枠外は半透過で画像全体が透ける | 画像を 2 枚重ねる。下は全体を `opacity` で半透過、上はクリップ枠で切り抜いた不透明の画像（§5.2） |
 | 出力は元と同じ座標系 | ルートの `viewBox` / `width` / `height` と、対象画像より上の要素の `transform` は変えない。画像の `transform` を `matrix(...)` で書き直すだけ |
 | 枠の内側に画像のない所を作らない（覆い制約） | 枠の形の**凸包**だけで判定する。凹んだ形・穴・曲線・複数の輪郭でも、正確に（許容誤差 ε 以内で）解ける（§6.4） |
+| 枠の端に当たったとき | ゴムのように抵抗しながら端を越えて動き、離すとばねで戻る。弾いたときは慣性で滑り、端に当たると同じく戻る（§6.5） |
 | 画像と関係ない飾りが増えても編集できる | 編集できる画像を**スロット**という閉じた部品として SVG の契約で定める（§2）。スロットの外は自由。契約は機械で検査する（§2.6） |
-| 将来、1 つのエディタで複数の画像を切り替える | モデル・状態・履歴・API を最初からスロット名をキーにした形にしておく（§8） |
+| 将来、1 つのエディタで複数の画像を切り替える | 切り替えの入口（一覧・タブなど）はコンポーネントの外が持つ。コンポーネントは `slot` プロップで指定されたスロットを編集するだけ。モデル・状態・履歴・API を最初からスロット名をキーにした形にしておく（§8） |
 
 採らなかったもの:
 
@@ -117,8 +119,7 @@ D4 は CSS の規則ごとに、セレクタがスロット・画像・祖先の
 ### 2.6 検査（lint）
 
 `lintClipDocument(svg): LintIssue[]` が §2.2〜§2.5 を検査する。読み込み（§4）は最初にこれを呼び、
-エラーが 1 つでもあれば編集を始めない。テンプレートの SVG をリポジトリで管理するなら、同じ関数を
-CLI（`svg-clip-lint <files…>`）から CI で回し、契約違反を作った時点で落とす。
+エラーが 1 つでもあれば編集を始めない。同じ関数を CLI（§2.8、設計のみ）からも呼べる形にしておく。
 
 ```ts
 interface LintIssue {
@@ -126,11 +127,20 @@ interface LintIssue {
   severity: 'error' | 'warning';
   slot?: string;             // 関係するスロット名
   path: number[];            // 違反した要素への子インデックス列
+  location: string;          // 人が読む位置: '/svg/g[2]/g[1]'（同名の兄弟の中での 1 始まりの番号）
   message: string;
 }
 ```
 
 警告（編集はできる）: S6 / A4 の `opacity` / `filter`、文脈表示（§5.3）で読めない外部 URL の画像。
+
+lint の本体は DOM の `Document` と、CSS を規則に分ける関数を受け取る形にし、実行環境に依存させない。
+
+```ts
+type CssRule = { selector: string; properties: string[] };
+lintDocument(doc: Document, parseCss: (text: string) => CssRule[]): LintIssue[];
+lintClipDocument(svg: string): LintIssue[];   // ブラウザ用: DOMParser と CSSStyleSheet.replaceSync で上を呼ぶ
+```
 
 ### 2.7 既存の SVG の取り込み（任意）
 
@@ -144,6 +154,30 @@ interface LintIssue {
 | `clipPathUnits="objectBoundingBox"` | 読み込み時点の外接矩形 `(bx, by, bw, bh)` で `userSpaceOnUse` に焼き直した**複製**の `<clipPath>`（新しい id、`transform="matrix(bw 0 0 bh bx by)"` を Q の前に積む）を作り、参照先を差し替える。元の `<clipPath>` は他の参照があり得るので残す |
 | ルートに `viewBox` がない | `0 0 width height` を足す（`width` / `height` が px か単位なしのときだけ） |
 | スロットの印がない | 指定した `<image>` を含む `<g>` に `data-clip-slot`（既定名 `image-1`, `image-2` …）を付ける |
+
+### 2.8 契約検査 CLI（設計のみ、実装しない）
+
+テンプレートの SVG をリポジトリで管理する場合に、契約違反を作った時点で CI で落とすための CLI。
+ここでは形だけを決め、実装はしない。実装するときは §2.6 の `lintDocument` をそのまま呼ぶ薄い入口にし、
+規則の判定を CLI 側に書かない（ブラウザと CLI で結果が分かれないように）。
+
+```
+svg-clip-lint [options] <file|glob>...
+
+  --format text|json      出力の形式（既定 text）
+  --strict                警告もエラーとして扱う
+  --require-slot <name>   指定した名前のスロットがなければエラー（複数回指定できる）
+  --quiet                 エラーだけを出す
+```
+
+| 項目 | 決めたこと |
+|---|---|
+| 実行環境 | Node。`Document` は jsdom で作り、CSS は css-tree で規則に分けて `lintDocument` に渡す（jsdom は `CSSStyleSheet.replaceSync` を持たないため） |
+| text の出力 | 1 違反 1 行: `<file>:<location> <severity> <rule> <message>`。例: `card.svg:/svg/g[2] error S3 スロット hero の子が <image> 1 つではない（<rect> がある）` |
+| json の出力 | `[{ file, issues: LintIssue[] }]` |
+| 終了コード | 0 = エラーなし（警告だけは 0）、1 = エラーあり（`--strict` なら警告も）、2 = 引数の誤り・読めないファイル・XML として読めない |
+| 対象 | 引数のファイルと glob。ディレクトリは `**/*.svg` として辿る |
+| しないこと | 自動修正（`adoptClipDocument` 相当の書き換え）は持たない。取り込みは人が結果を確かめる操作なので、CLI で一括にしない |
 
 ## 3. 座標系
 
@@ -202,20 +236,21 @@ ClipDocModel（slots[]）──────────────┐
 <SvgClipImageEditor>               出力 svg 文字列
    ├ useFocusViewBox(slot)          注目領域（固定の viewBox）
    ├ useImageGesture()              Pointer / Wheel / Key → Δ → M
-   ├ applyCover()                   （任意）覆い制約
+   ├ useElastic()                   覆い制約のゴム・慣性・ばね（§6.5）
    └ useEditorState()               スロットごとの M・作業中のスロット・履歴
 ```
 
 | モジュール | 責務 | 主な関数 |
 |---|---|---|
 | `matrix.ts` | 2D アフィン行列 | `multiply` `invert` `apply` `translate` `scale` `rotate` `parseTransform` `formatMatrix` `decompose` |
-| `lint.ts` | 契約の検査 | `lintClipDocument(svg): LintIssue[]` |
+| `lint.ts` | 契約の検査 | `lintDocument(doc, parseCss)` `lintClipDocument(svg)` |
 | `adopt.ts` | 既存 SVG の取り込み | `adoptClipDocument(svg, opts): { svg, changes }` |
 | `parse.ts` | 解析 | `parseClipDocument(svg): Result<ClipDocModel>` |
 | `path.ts` | パスの解析と区分化 | `parsePathData(d)` → 直線と 3 次ベジェだけの列（2 次は次数上げ、円弧はベジェへ） |
 | `geometry.ts` | 枠の外接矩形・凸包、画像の描画矩形、注目領域 | `clipHull(shapes, Q, ε)` `drawnImageRect(image, natural?)` `focusRect(slot, padding)` |
 | `gesture.ts` | ポインタ列 → Δ | `panDelta` `pinchDelta` `wheelDelta` |
-| `constraint.ts` | 覆い制約・拡大率の上下限 | `isCovered(slot, M)` `applyCover(slot, M, mode)` `clampScale(M, M0, min, max)` |
+| `constraint.ts` | 覆い制約・拡大率の上下限 | `isCovered(slot, M)` `coverCorrection(slot, M)` `clampScale(M, M0, min, max)` |
+| `elastic.ts` | ゴムの抵抗・慣性・ばね | `rubber(d, L)` `rubberInverse(r, L)` `elasticView(slot, Mraw)` `stepMomentum(state, dt)` `stepSpring(state, dt)` |
 | `context.ts` | 文脈表示の上下の層 | `splitContext(model, slot, transforms): { below, above }` |
 | `serialize.ts` | 出力 | `serialize(model, transforms, opts): string` |
 | `SvgClipImageEditor.tsx` | 描画と操作 | — |
@@ -348,7 +383,7 @@ interface ClipSlot {
 | 縮小 / 拡大 | 枠の中心を中心に ×1/1.1 / ×1.1 |
 | 左に 90° / 右に 90° | 枠の中心を中心に回転 |
 | 枠に合わせる | 現在の回転のまま、枠を覆う最小の拡大率にして中央に置く（§6.4） |
-| 元に戻す / やり直す | 履歴（§6.5） |
+| 元に戻す / やり直す | 履歴（§6.6） |
 | リセット | 読み込み時の `M0` に戻す |
 
 `toolbar={false}` で隠し、ref のメソッド（§10.2）で外から同じ操作を呼べる。
@@ -369,15 +404,23 @@ interface ClipSlot {
             pointerdown(1本目)              pointerdown(2本目)
    idle ────────────────────────▶ pan ──────────────────────▶ pinch
     ▲                              │  ▲                          │
-    │       pointerup(最後の1本)   │  └──────────────────────────┘
-    └──────────────────────────────┘    pointerup(2本→1本): 残った指で pan に戻る（基準を取り直す）
-       → 覆い制約（release のとき）→ commit（履歴に積む・onCommit）
+    │                              │  └──────────────────────────┘
+    │                              │   pointerup(2本→1本): 残った指で pan に戻る（基準を取り直す）
+    │       pointerup(最後の1本)   ▼
+    │                       ┌─ 速さ ≥ 閾値（pan から離した）──▶ momentum ──┐
+    │                       │                                     │ 端を越えた / 遅くなった
+    │                       └─ それ以外 ─────────────────────────▶ settle ◀┘
+    │                                                                │ ばねが止まった
+    └─────────────────────────── commit（履歴に積む・onCommit）◀────┘
+
+   momentum / settle 中の pointerdown → アニメーションを止め、見えている位置から pan を始める（§6.5）
 ```
 
 - 3 本目以降の指は無視する。
 - 本数が変わるたびに**基準を取り直す**: `M_start ← 現在の M`、開始点 ← 各ポインタの現在位置。こうすると指を足し引きしても画像が跳ねない。
-- `setPointerCapture` で、指が枠や `<svg>` の外へ出ても追従する。`pointercancel` は `pointerup` と同じに扱う。
+- `setPointerCapture` で、指が枠や `<svg>` の外へ出ても追従する。`pointercancel` は慣性なしの `pointerup` と同じに扱う。
 - `pointermove` は `requestAnimationFrame` で 1 フレーム 1 回にまとめて `M` を更新する。
+- commit は画像が止まってから 1 回だけ行う。`onCommit` に渡す `M` は必ず覆い制約を満たす（`cover="elastic"` のとき）。
 
 ### 6.2 Δ の求め方（すべて C 空間）
 
@@ -402,7 +445,7 @@ interface ClipSlot {
 全体の拡大率を `σ(M) = sqrt(|det M|)` とし、`σ(M) / σ(M0)` が `[minScale, maxScale]`（既定 `[0.1, 20]`）に
 収まるよう、Δ の `s`（または `k`）を詰める。
 
-### 6.4 覆い制約（`cover="release"` / `"live"` / `"off"`、既定 `"off"`）
+### 6.4 覆い制約（`cover="elastic"` / `"off"`、既定 `"elastic"`）
 
 「枠の内側に画像のない所を作らない」制約。複雑なクリップパス（凹んだ形、穴、曲線、複数の輪郭、`evenodd`）でも
 次の性質で正確に扱える。
@@ -444,24 +487,76 @@ interface ClipSlot {
    今の位置から一番近い、覆える位置になる。
 
 計算は凸包の頂点数 n に対して O(n)。凸包は数十〜数百点なので、毎フレーム回しても軽い。
+この 2 と 3 で求めた補正（拡大 `k ≥ 1` と平行移動 `u`）を `coverCorrection(slot, M) → { k, c, u }` として返し、
+§6.5 のゴムとばねはこの補正の「どこまでを見せるか」を決める。
 
 | モード | 動き |
 |---|---|
-| `off` | 制約をかけない。覆えていない間は枠の輪郭を警告色にするだけ |
-| `release` | ジェスチャ中は自由に動かし、指を離したとき（commit の直前）に上の補正をかけて 150ms で寄せる |
-| `live` | 毎フレーム補正する（画像が枠の端で止まる）。2 本指の拡縮で縮めすぎると拡大率が下限に貼り付く |
+| `elastic` | 端を越えるとゴムのように抵抗し、離すとばねで覆える位置へ戻る。弾けば慣性で滑る（§6.5） |
+| `off` | 制約をかけない。慣性はある。覆えていない間は枠の輪郭を警告色にするだけ |
+
+覆い制約と拡大率の上下限（§6.3）がぶつかるときは覆い制約を優先する（覆うのに要る拡大率が `maxScale` を超えても拡大する）。
 
 「枠に合わせる」ボタンは同じ手順で、2 の `k` を 1 未満も許し（縮めて丁度覆う）、3 の `u` を中央寄せ
 （`u_x = (qx₀ + qx₁)/2 − (x₀ + x₁)/2`）にしたもの。
 
 扱えないもの（契約で除いている）: `<text>` や `<use>` のクリップ、クリップの入れ子、`<mask>` による切り抜き。
 
-### 6.5 履歴
+### 6.5 ゴムの抵抗・慣性・ばね（`cover="elastic"`）
 
-- commit（ジェスチャの終わり、ボタン、キー操作の区切り）ごとに `{ slot, before, after }` を積む。上限 100。
+ジェスチャが動かすのは**生の行列 `M_raw`**（指に正確に追従する値）で、画面に描くのは
+**見せる行列 `M_view = elasticView(slot, M_raw)`**。端の内側では両者は等しく、端を越えた分だけ
+`M_view` が `M_raw` より手前に留まる。これが指に対して画像が遅れてついてくる「抵抗」になる。
+
+#### 抵抗（端を越えている間）
+
+`coverCorrection(slot, M_raw)` の補正を、越えた量に応じて一部だけ打ち消す。
+
+- ゴムの関数（越えた量 d → 見せる越え量）: `rubber(d, L) = L · (1 − 1 / (d·0.55/L + 1))`。
+  d が小さいうちはほぼ d、大きくなるほど L に近づいて止まる。逆関数は `rubberInverse(r, L) = (L/0.55) · (1/(1 − r/L) − 1)`。
+- **平行移動**: 越え量は I 空間のベクトル `−u`。`L` は枠の外接矩形の短辺を I 空間に写した長さの 1/4。
+  見せる補正は `u_view = u · (1 − rubber(|u|, L)/|u|)`。
+- **拡大率**（縮めすぎ）: 越え量を対数で測る（`s = ln k`）。`L = ln 1.5`。
+  見せる補正は `k_view = exp(s − rubber(s, L))` を枠の中心で掛ける。
+- 順序は §6.4 と同じく、拡大率を先、平行移動を後に計算する。
+- 回転で覆えなくなった場合も、その分は拡大率と平行移動の越えとして同じ式で抵抗になる（回転そのものは止めない）。
+
+#### 慣性（pan から速く離したとき）
+
+- 直近 100ms のポインタ位置（C 空間）から速度 `v` を求める。`|v|` が注目領域の幅 0.3 倍/秒 以上なら momentum に入る。
+  2 本指から離したとき・ホイール・キー・ボタンでは慣性を付けない。
+- momentum 中は毎フレーム `M_raw ← T(v·dt) · M_raw`、`v ← v · exp(−dt/0.325s)`（摩擦）。
+  描くのは常に `M_view = elasticView(M_raw)` なので、端を越えた分はゴムで縮んで見える。
+- 次のどちらかで settle へ移る: 端を越えていて `v` が外向き（越え量を増やす向き）になった、または `|v|` が閾値の 1/10 を下回った。
+  端を越えて settle へ移るときは、そのときの速度をばねの初速として引き継ぐ（端に当たって跳ね返る見え方になる）。
+
+#### ばね（settle）
+
+- 目標は覆える位置 `M* = M_view に coverCorrection を全部かけたもの`。
+- 平行移動（I 空間の 2 次元）と拡大率（対数）を、それぞれ臨界減衰のばねで目標へ寄せる:
+  `x(t) = (x₀ + (v₀ + ω·x₀)·t) · e^(−ω t)`、`ω = 2π / 0.4s`。x は目標からのずれ。
+- ずれが 0.5 画面 px 未満かつ速さが十分小さくなったら目標に合わせて止め、commit する。
+- `cover="off"` のときは目標 = その時点の位置（ばねはなく、慣性が止まったら commit）。
+
+#### 割り込み
+
+- momentum / settle 中に pointerdown が来たら、アニメーションを止め、**見えている位置から**ジェスチャを始める。
+  そのとき `M_raw` は、今の越え量に `rubberInverse` をかけて「この見え方になる生の位置」に置き直す。こうすると掴んだ瞬間に画像が跳ねない。
+- `slot` や `svg` プロップが変わったら、アニメーションを目標位置まで飛ばして commit してから切り替える。
+
+#### その他の入力
+
+- ホイール: 1 回ごとに `M_raw` を動かし、ゴムの抵抗も効く。最後のホイールから 150ms 何もなければ settle に入る。
+- キー・ボタン（縮小・拡大・回転・枠に合わせる）: 結果に `coverCorrection` を全部かけ、200ms で寄せてから commit する（ゴムは使わない）。
+- `prefers-reduced-motion: reduce` のときは慣性を付けず、ばねを使わずに目標へ即座に合わせる。
+- `inertia={false}` で慣性だけを切れる（ゴムとばねは残る）。
+
+### 6.6 履歴
+
+- commit（画像が止まったとき、ボタン、キー操作の区切り）ごとに `{ before, after }` を、**スロットごとの履歴**に積む。上限はスロットごとに 100。
+- 元に戻す・やり直すは、作業中のスロットの履歴にだけ効く。コンポーネントが自分でスロットを切り替えることはない（切り替えは外が持つ。§8）。
 - 連続するキー操作は 500ms 以内なら 1 つにまとめる。
-- `svg` プロップが変わったら履歴を捨てて読み直す。
-- 履歴はスロットをまたいで 1 本（§8）。初版ではスロットが 1 つなので、ふつうの履歴と同じに見える。
+- `svg` プロップが変わったら全スロットの履歴を捨てて読み直す。`slot` プロップが変わっても履歴は捨てない。
 
 ## 7. 画面のイメージ
 
@@ -490,33 +585,43 @@ agent-app に載せる場合は白いカードの中に置き（`.log` と同じ
  ※ 下 3 行は図の注記で、画面には出さない
 ```
 
-複数画像の切り替え（§8）の画面は、実装に入るときに別にイメージを出して承認を得る。
+複数画像の切り替えの入口はコンポーネントの外に置く（§8）ので、このコンポーネントの画面には現れない。
 
 ## 8. 複数画像への拡張（見越した設計）
 
-初版は 1 エディタ = 1 スロットを編集する。ただし、後から切り替えを足しても作り直しにならないよう、
-次の形を**初版から**採る。
+切り替えの入口（スロットの一覧・タブ・サムネイル・文書全体の図の上でのクリックなど）は**コンポーネントの外**が持つ。
+コンポーネントは「`slot` プロップで指定されたスロットを編集する」ことだけを受け持ち、切り替えの UI を描かない。
+外は `onLoad` で受け取るスロットの一覧を使って入口を作り、選ばれた名前を `slot` に渡す。
 
-| 項目 | 初版からの形 | 初版での使われ方 |
+```
+┌ 外（アプリ）────────────────────────┐
+│ スロットの一覧などの入口              │── slot="hero" ──▶ <SvgClipImageEditor>
+│ 保存ボタン                            │◀── onLoad({ slots }) ──┤
+│                                       │◀── onCommit(svg, { slot, M }) ──┤
+└───────────────────────────────────────┘
+```
+
+初版でも次の形を採り、後から切り替えを使い始めても作り直しにならないようにする。
+
+| 項目 | 形 | 初版での使われ方 |
 |---|---|---|
-| 対象の指定 | スロット名（`data-clip-slot`）。id ではなく名前を使うのは、テンプレートを差し替えても同じ名前なら同じ枠を指せるため | `slot` プロップで 1 つ選ぶ。省略時は文書順で最初のスロット |
-| モデル | `ClipDocModel.slots[]`（全スロットを解析） | 選んだ 1 つだけを描く |
-| 状態 | `{ active: string; transforms: Record<string, Matrix>; past; future }` | `active` は固定 |
-| 履歴 | `{ slot, before, after }` の 1 本の列。元に戻すとき、記録のスロットが今のスロットと違えば先にそのスロットへ切り替えて見せる | スロットが 1 つなのでふつうの履歴 |
+| 対象の指定 | スロット名（`data-clip-slot`）。id ではなく名前を使うのは、テンプレートを差し替えても同じ名前なら同じ枠を指せるため | `slot` プロップ。省略時は文書順で最初のスロット |
+| スロットの一覧 | `onLoad({ slots: { name, bboxR }[] })`。`bboxR` は枠のルート座標での外接矩形で、外が図の上に入口を描くのに使える | 使わなくてよい |
+| モデル | `ClipDocModel.slots[]`（全スロットを解析） | 指定の 1 つを描く |
+| 状態 | `{ transforms: Record<string, Matrix>; history: Record<string, { past; future }> }` | 1 キーだけ使う |
+| 履歴 | スロットごと（§6.6）。外が切り替えを持つので、コンポーネントが元に戻す操作で勝手にスロットを変えないようにする | ふつうの履歴 |
 | 出力 | `serialize(model, transforms)` が全スロットの `transform` を反映する | 編集しないスロットは元のまま |
 | コールバック | `onChange(M, slot)`・`onCommit(svg, { slot, M })` のようにスロット名を最初から渡す | 常に同じ名前 |
 | 制御モード | `transforms?: Record<string, Matrix>`（スロット名 → M） | 1 キーだけ使う |
 | 文脈表示 | 他のスロットは文脈の層（§5.3）に現在の `transforms` で描かれる | 文脈を出したとき、他のスロットは元の位置で見える |
 
-切り替えを足すときに決めること（初版ではやらない）:
+`slot` プロップが変わったとき:
 
-- **切り替えの入口**: スロット名の一覧（タブかセレクト）を描画面の上に置くか、文脈の層に出ている他の枠をタップで選ぶか。
-  タップで選ぶ場合は、移動量 4px 未満・250ms 未満の押下だけを「選ぶ」とし、ドラッグと区別する。
-- **注目領域**: スロットごとに §4.2 で求める。切り替えは操作ではなく明示の選択なので、そのときに限り `viewBox` が変わる
-  （200ms で寄せる）。作業中の操作で `viewBox` を変えない原則は保つ。
-- **追加の API**: `activeSlot` / `onActiveSlotChange`（制御モード）、`slots?: string[]`（切り替えの対象を絞る）、
-  ref の `setActiveSlot(name)`。
-- **覆い制約**: スロットごとに `hullC` を持っているので、そのまま作業中のスロットにかかる。
+1. 動いている慣性・ばねを目標まで飛ばして、前のスロットを commit する（§6.5 割り込み）。指が触れている途中なら、その時点の位置で終える。
+2. 新しいスロットの注目領域（§4.2）を求め、`viewBox` を 200ms で寄せる（`prefers-reduced-motion` なら即座）。
+   作業中の操作で `viewBox` を変えない原則は保つ。変わるのは外から明示に切り替えられたときだけ。
+3. 新しいスロットの `M` は `transforms` の値（なければ `M0`）、履歴はそのスロットのもの。
+4. 文脈表示を出していれば、上下の層を作り直す（前のスロットの編集結果が文脈に入る）。
 
 ## 9. 安全性とエラー
 
@@ -548,7 +653,7 @@ agent-app に載せる場合は白いカードの中に置き（`.log` と同じ
 ```ts
 interface SvgClipImageEditorProps {
   svg: string;                          // 元の SVG 文字列（§2 の契約を満たす）
-  slot?: string;                        // 編集するスロット名。省略時は文書順で最初
+  slot?: string;                        // 編集するスロット名。省略時は文書順で最初。変えると切り替わる（§8）
 
   focusPadding?: number;                // 既定 0.25
   outsideOpacity?: number;              // 既定 0.35
@@ -556,7 +661,8 @@ interface SvgClipImageEditorProps {
   contextAboveOpacity?: number;         // 既定 0.5
   toolbar?: boolean;                    // 既定 true
 
-  cover?: 'off' | 'release' | 'live';   // 既定 'off'（§6.4）
+  cover?: 'elastic' | 'off';            // 既定 'elastic'（§6.4・§6.5）
+  inertia?: boolean;                    // 既定 true（§6.5）
   minScale?: number;                    // 既定 0.1（読み込み時比）
   maxScale?: number;                    // 既定 20
   rotationSnap?: number;                // 度。既定 0（無効）
@@ -566,7 +672,7 @@ interface SvgClipImageEditorProps {
   precision?: number;                   // 出力の e/f の小数桁。既定 3（a〜d は常に 6 桁）
   outputTransform?: 'matrix' | 'decomposed'; // 既定 'matrix'
 
-  onLoad?: (info: { slots: string[]; warnings: LintIssue[] }) => void;
+  onLoad?: (info: { slots: { name: string; bboxR: Rect }[]; warnings: LintIssue[] }) => void;
   onChange?: (M: Matrix, slot: string) => void;                 // 操作中、毎フレーム
   onCommit?: (svg: string, edit: { slot: string; M: Matrix }) => void; // 操作の区切りごと
   onError?: (err: { code: string; message: string; issues?: LintIssue[] }) => void;
@@ -586,7 +692,7 @@ interface SvgClipImageEditorHandle {
   fit(): void;                                // 枠に合わせる
   zoom(factor: number): void;                 // 枠の中心で
   rotate(deg: number): void;                  // 枠の中心で
-  undo(): void;
+  undo(): void;                               // 作業中のスロットの履歴で
   redo(): void;
 }
 ```
@@ -648,14 +754,15 @@ interface SvgClipImageEditorHandle {
 | 単体 | `parsePathData`: 全コマンドの相対・絶対、円弧の退化（半径 0・端点一致）、暗黙の繰り返し |
 | 単体 | `clipHull`: 矩形・円・角丸・凹多角形・穴のある `evenodd`・3 次 / 2 次ベジェ・円弧で、(a) 真の図形の標本点がすべて凸包に入る（覆い不足を起こさない）、(b) 凸包の各頂点が真の図形から ε 以内 |
 | 単体 | `pinchDelta`: a₀→a₁、b₀→b₁ を正確に写すこと。指の入れ替え（本数変化）で M が連続であること |
-| 単体 | `applyCover`: 補正後に凸包の全頂点が D に入ること。もともと覆っているときは M を変えないこと。補正の拡大率が、拡大率を二分探索で求めた最小値と一致すること |
+| 単体 | `coverCorrection`: 補正をかけた後に凸包の全頂点が D に入ること。もともと覆っているときは M を変えないこと。補正の拡大率が、拡大率を二分探索で求めた最小値と一致すること |
+| 単体 | `elastic`: `rubberInverse(rubber(d)) = d`。越え量 0 で `M_view = M_raw`。越え量を増やすと見せる越え量が単調に増えて L を超えないこと。ばねが有限時間で目標に収まり、収まった M が覆い制約を満たすこと。割り込みで `M_view` が連続であること（フレームを偽の時計で進める） |
 | 単体 | `splitContext`: 下の層に前の要素だけ、上の層に後ろの要素だけが残り、資源の要素は両方に残ること |
 | 単体 | `serialize`: 変更なしなら出力が入力と文字列として同一。`transform` 以外の属性・要素が変わらないこと。出力が再び lint を通ること |
 | 部品（Testing Library） | ポインタイベントを合成してドラッグ・2 本指・ホイールで `onChange` / `onCommit` が期待の M を返すこと。`viewBox` が操作で変わらないこと |
+| 部品 | `slot` を変えると前のスロットが commit され、`viewBox` が新しいスロットの注目領域になり、前のスロットの M と履歴が保たれること |
 | 実機（Playwright） | 例の SVG を読み込み、操作前後のスクリーンショットを撮る。出力 SVG を別ページで描き、エディタの枠内の画素と一致することを確かめる |
 
 ## 13. 未決事項
 
-- 複数画像の切り替えの入口（一覧かタップか）と、その画面のイメージ（§8）。
-- `cover="live"` で枠の端に当たったとき、止めるか、ゴムのように抵抗をつけるか。
-- 契約の CLI（`svg-clip-lint`）をこのパッケージに同梱するか、テンプレートを管理する側に置くか。
+- ゴム・慣性・ばねの定数（0.55、0.325s、0.4s、L の取り方）は実機で触って詰める。
+- `cover="elastic"` で回転したときに要る拡大を、ゴムで見せるか（今の設計）、回転中は即座に拡大して覆い続けるか。
