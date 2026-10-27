@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 27 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 28 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 26 件）
+## カテゴリ別索引（全 27 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -50,6 +50,7 @@
 | [`node-federation-design.md`](./node-federation-design.md) | ノードのローカル改善を中央へ集約する pull/push 設計。自ら実装済み・仕様リファレンスと明記。 |
 | [`plan-a-local-gitlab-design.md`](./plan-a-local-gitlab-design.md) | ローカル GitLab CE 作業インスタンス（案A）の設計・運用正典。 |
 | [`office-preview-design.md`](./office-preview-design.md) | docx / xlsx / pptx / pdf の 1 ページ目・1 シート・1 枚目を、Office や LibreOffice なしで Electron の隠しウィンドウに描いて画像にするモジュールの設計（PDF は Electron の PDF ビューアに描かせて切り出す）。ZIP と XML を自前で読み、スタイル・レイアウト・マスターの継承を HTML に組み直す。文書を信頼しない前提の描画の閉じ込め方もここにある。 |
+| [`svg-clip-image-editor-design.md`](./svg-clip-image-editor-design.md) | SVG 内のクリップされた画像を、枠を固定したまま画像の拡縮・回転・移動（マウス・タッチ）で枠に合わせ込む React コンポーネントの設計（未実装）。編集はクリップ空間で左から掛ける相似変換に一本化し、出力は元と同じ座標系のまま `<image>` の `transform` だけを書き換える。入力 SVG の正規形と正規化、座標系、注目領域の固定、枠外を半透過にする 2 枚重ねの描画、2 本指の変換式、覆い制約、API、画面のイメージを扱う。 |
 
 ### 4. 歴史的・比較検討
 
