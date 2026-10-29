@@ -250,7 +250,7 @@ def tag(kind: str, texts) -> list[Problem]:
 
 
 def user_bin_dirs() -> list[str]:
-    """利用者のホームに入れた CLI の置き場所（uv tool・pipx・pip --user）。PATH に足していない端末でも見つけるため。"""
+    """利用者のホームに入れた CLI の置き場所（uv tool・pipx・pip --user・PATH に足していない Python）。PATH に足していない端末でも見つけるため。"""
     dirs = [os.environ.get(k, "") for k in ("UV_TOOL_BIN_DIR", "PIPX_BIN_DIR", "XDG_BIN_HOME")]
     dirs.append(str(Path.home() / ".local" / "bin"))
     for scheme in ("nt_user", "posix_user", "osx_framework_user"):
@@ -258,8 +258,12 @@ def user_bin_dirs() -> list[str]:
             dirs.append(sysconfig.get_path("scripts", scheme))
         except KeyError:
             pass
+    # 動かしている Python 自身の置き場所（Windows の既定の導入では PATH に足さないので、pip install したものが見つからない）
+    dirs.append(sysconfig.get_path("scripts"))
     if os.environ.get("APPDATA"):   # Windows の pip --user は Python の版ごとに分かれる（別の版で入れたものも探す）
         dirs += sorted(str(p) for p in Path(os.environ["APPDATA"]).glob("Python/Python*/Scripts"))
+    if os.environ.get("LOCALAPPDATA"):   # Windows でユーザーごとに入れた Python（別の版に pip install したものも探す）
+        dirs += sorted(str(p) for p in Path(os.environ["LOCALAPPDATA"]).glob("Programs/Python/Python*/Scripts"))
     return [d for d in dict.fromkeys(dirs) if d and Path(d).is_dir()]
 
 
@@ -2099,6 +2103,8 @@ def graphify_python(ctx: Ctx, exe: str) -> str | None:
                 cands.append(shutil.which(parts[1]) or "")
             elif parts:
                 cands.append(parts[0])
+        else:
+            cands += launcher_pythons(exe)
     except OSError:
         pass
     here = Path(exe).resolve().parent
@@ -2110,6 +2116,16 @@ def graphify_python(ctx: Ctx, exe: str) -> str | None:
             break
     ctx.__dict__["_gpy"] = found
     return found
+
+
+def launcher_pythons(exe: str) -> list[str]:
+    """Windows の起動用 .exe（pip・pipx・uv が作る）に埋め込まれた Python のパス。後ろにあるものから。
+
+    uv・pipx の .exe は道具ごとの venv の外（~/.local/bin）に置かれ、隣に python.exe が無い。
+    """
+    tail = Path(exe).read_bytes()[-65536:]
+    found = re.findall(rb"[A-Za-z]:[\\/][^\x00-\x1f\"<>|*?]*?pythonw?\.exe", tail, re.IGNORECASE)
+    return [m.decode("utf-8", "replace") for m in reversed(found)][:3]
 
 
 def run_helper(gpy: str, out_dir: Path, req: dict) -> dict:
@@ -7277,6 +7293,10 @@ def run_formats(ctx: Ctx, a: Applied) -> list[str] | None:
         for argv in check_commands(commands) if files else []:
             argv = [x for arg in argv for x in (files if arg == FILES_ARG else [arg])]
             failed = run_check(side.path, argv, f"{label}の整形", ctx.data / LOGS_DIR)
+            if failed:
+                # 直しただけでも 0 以外で終わる道具がある（pre-commit、ruff の --exit-non-zero-on-fix など）。
+                # もう一度動かして通れば、直すものが残っていない
+                failed = run_check(side.path, argv, f"{label}の整形", ctx.data / LOGS_DIR)
             if failed:
                 problems += failed
                 break

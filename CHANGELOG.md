@@ -64,6 +64,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 入力欄が出ているあいだ、「実行」は主ボタンにしない
 - 対象はクラウドの CLI を 1 セッションで通す実行だけ。工程ごとのハーネス実行・コマンドのタスク・ワークフローには出さない
 
+### codd-agent: 入れてある graphify を見つけられないのと、直しただけの整形で落ちるのを直す
+
+- graphify を探す場所に、動かしている Python のスクリプトの置き場所と、Windows でユーザーごとに入れた Python の
+  `%LOCALAPPDATA%\Programs\Python\Python*\Scripts` を足す（どちらも既定では PATH に入らない）
+- Windows で uv・pipx が置く `graphify.exe` から、埋め込まれた Python のパスを読み、graphify の部品を読み込む Python を見つける
+- 整形コマンドが 0 以外で終わったら、もう一度だけ動かす。通れば直しただけとみなし、検査に進む（pre-commit など）
+
 ### codd-agent: 変えたあと、検査の前に整形コマンドを動かす
 
 - `codd.json` に `format` を足す（`check` と同じ書き方。`init.py --format`）。変えたあとの検査の初めに、変えた側でだけ動かす

@@ -324,6 +324,29 @@ class CoddTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"APPDATA": temp}):
                 self.assertIn(str(scripts), install.user_bin_dirs())
 
+    def test_windows_per_user_python_scripts_are_searched(self) -> None:
+        # Windows の既定の導入（ユーザーごと・PATH に足さない）で pip install した graphify も見つける
+        with tempfile.TemporaryDirectory() as temp:
+            scripts = Path(temp) / "Programs/Python/Python313/Scripts"
+            scripts.mkdir(parents=True)
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                self.assertIn(str(scripts), install.user_bin_dirs())
+
+    def test_python_embedded_in_windows_launcher_is_found(self) -> None:
+        # uv・pipx の graphify.exe は venv の外に置かれるので、埋め込まれた Python のパスから graphify の部品を読み込む
+        spec = importlib.util.spec_from_file_location("codd_for_launcher", TOOL / "machine" / "codd.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(mod)
+        exe = self.tmp / "graphify.exe"
+        exe.write_bytes(b"MZ\x90\x00" + b"\x00" * 4096
+                        + b"#!C:\\Users\\me\\pipx\\venvs\\graphifyy\\Scripts\\python.exe\r\nPK\x03\x04"
+                        + b"C:\\Users\\me\\AppData\\Roaming\\uv\\tools\\graphifyy\\Scripts\\python.exe\x4c\x00\x00\x00UVUV")
+        self.assertEqual(mod.launcher_pythons(str(exe)),
+                         ["C:\\Users\\me\\AppData\\Roaming\\uv\\tools\\graphifyy\\Scripts\\python.exe",
+                          "C:\\Users\\me\\pipx\\venvs\\graphifyy\\Scripts\\python.exe"])
+
     def test_installer_finds_graphify_in_home_and_tells_path_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home_bin = Path(temp) / ".local/bin"
@@ -1056,6 +1079,16 @@ class CoddTest(unittest.TestCase):
         r = self.run_pa(self.impl, "verify-apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("実装の整形の検査が失敗しました", r.stderr)
+
+        # 直しただけでも 0 以外で終わる整形（pre-commit など）は、もう一度動かして通れば落とさない
+        fix_once = ("import sys, pathlib\n"
+                    "p = pathlib.Path('src/app.py'); t = p.read_text()\n"
+                    "if t.endswith('# fixed\\n\\n'): sys.exit(0)\n"
+                    "p.write_text(t + '# fixed\\n\\n'); sys.exit(1)\n")
+        self.set_check(self.impl, [sys.executable, "-c", fix_once], key="format")
+        r = self.run_pa(self.impl, "verify-apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.impl / "src/app.py").read_text(encoding="utf-8").endswith("# fixed\n\n"))
 
     def test_planned_binaries_may_come_out_the_same(self) -> None:
         # 作り直すと計画に挙げたバイナリが、同じバイト列のままでも、変え残しとして止めない。
