@@ -1146,26 +1146,29 @@
     },
     {
       "name": "obsidian-use",
-      "description": "「Obsidianのノートを作って」「ウィキリンクを追加して」「.baseファイルでフィルターを設定して」「マインドマップやキャンバスを作って」「ボルトをCLIで操作して」「このURLを読んで」「WordファイルやPDFをMarkdownに変換して」など、Obsidianの作成・編集・CLI操作・Web抽出・Officeファイル変換で発動する。",
-      "version": "1.0.0",
+      "description": "「Obsidianのノートを作って」「.baseでフィルターを設定して」「キャンバスを作って」「このURLを読んで」「PDFをMarkdownに変換して」などのノート操作と、「Obsidianのwikiに取り込んで」「Obsidianのwikiで調べて」「wikiを点検して」の知識wiki管理、フックの OBSIDIAN NOTE で発動する。",
+      "version": "1.1.0",
       "tier": "domain",
       "category": "knowledge-management",
       "tags": [
         "obsidian",
         "markdown",
         "note-taking",
-        "knowledge-base"
+        "knowledge-base",
+        "llm-wiki",
+        "hooks"
       ],
       "triggers": [
         "Obsidianのノートを作って",
-        "ウィキリンクを追加して",
-        ".baseファイルでフィルターを設定して",
-        "マインドマップやキャンバスを作って",
-        "ボルトをCLIで操作して",
+        ".baseでフィルターを設定して",
+        "キャンバスを作って",
         "このURLを読んで",
-        "WordファイルやPDFをMarkdownに変換して"
+        "PDFをMarkdownに変換して",
+        "Obsidianのwikiに取り込んで",
+        "Obsidianのwikiで調べて",
+        "wikiを点検して"
       ],
-      "has_scripts": false,
+      "has_scripts": true,
       "has_references": true
     },
     {

@@ -147,7 +147,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **deep-research** | 複数の情報源を統合し、引用付きで根拠ある深いリサーチを行う |
 | **tech-harvester** | RSS フィードを取得して要約を Markdown にまとめる。「ニュースを取得して」「テックブログをまとめて」で発動。フィード・キーワードの自律進化にも対応する |
 | **wiki-use** | Karpathy LLM Wiki パターンに基づく知識ベース管理。URL・論文・記事の ingest、検索、初期化、lint に対応。「wiki に追加して」「wiki を検索して」などで発動する |
-| **obsidian-use** | Obsidian ノートの作成・編集・CLI 操作・Web 抽出・Office ファイル変換を統合。「Obsidian のノートを作って」「.base ファイルでフィルターを設定して」などで発動する |
+| **obsidian-use** | Obsidian ノートの作成・編集・CLI 操作・Web 抽出・Office ファイル変換を統合。ボルトを知識 wiki にし（検索・一覧は Obsidian に任せる）、フックでプロジェクト・環境のメモも集める。「Obsidian のノートを作って」「Obsidian の wiki に取り込んで」などで発動する |
 
 ### 外部サービス連携 — 6
 
