@@ -21,16 +21,16 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
 import re
-import select
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -261,6 +261,136 @@ class GitLab:
 
 
 # ---------------------------------------------------------------------------
+# OS ごとの違い（ファイルロック・プロセスの生存確認・子孫ごとの停止・シグナル）
+# ---------------------------------------------------------------------------
+
+IS_WINDOWS = os.name == "nt"
+
+if IS_WINDOWS:
+    import ctypes
+    import msvcrt
+else:
+    import fcntl
+
+
+class LockBusy(Exception):
+    pass
+
+
+def lock_file(f, *, blocking: bool) -> None:
+    """開いたファイルに排他ロックを掛ける。blocking=False で取れなければ LockBusy。
+
+    POSIX は flock、Windows は msvcrt.locking（先頭 1 バイト）。どちらもプロセスが死ねば OS が外す。
+    """
+    if not IS_WINDOWS:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            raise LockBusy()
+        return
+    f.seek(0)
+    while True:
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError:
+            if not blocking:
+                raise LockBusy()
+            time.sleep(0.05)
+
+
+def unlock_file(f) -> None:
+    if not IS_WINDOWS:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return
+    f.seek(0)
+    with contextlib.suppress(OSError):
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if IS_WINDOWS:
+        # os.kill(pid, 0) は Windows では生存確認にならず、相手を終了させてしまう。API で問い合わせる
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.GetLastError() == 5                # ERROR_ACCESS_DENIED = 生きているが見えない
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259                         # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def spawn_group_kwargs() -> dict[str, Any]:
+    """子孫ごと止められるよう、エージェント CLI を別のプロセスグループで起動する引数。"""
+    if IS_WINDOWS:
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def terminate_tree(proc: subprocess.Popen, grace: float = 15.0) -> None:
+    """エージェント CLI を子孫ごと止める。まず穏便に頼み、grace 秒で強制終了する。"""
+    if IS_WINDOWS:
+        with contextlib.suppress(OSError, ValueError):
+            proc.send_signal(signal.CTRL_BREAK_EVENT)   # 同じコンソールのグループにだけ届く
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            pass
+        # 本体が先に終わっても子孫は残りうるので、ツリーごと落とす（終わっていれば何もしない）
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
+def stop_signals() -> list[int]:
+    """止めてほしいときに届くシグナル。Windows の Ctrl+Break は SIGBREAK で受ける。"""
+    names = ("SIGTERM", "SIGINT", "SIGHUP", "SIGBREAK")
+    return [getattr(signal, n) for n in names if hasattr(signal, n)]
+
+
+def split_command(cmd: str) -> list[str]:
+    """コマンド行を argv に分ける。Windows ではバックスラッシュのパスを壊さない。"""
+    if not IS_WINDOWS:
+        return shlex.split(cmd)
+    out = []
+    for tok in shlex.split(cmd, posix=False):
+        if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "\"'":
+            tok = tok[1:-1]
+        out.append(tok)
+    return out
+
+
+def resolve_executable(argv: list[str]) -> list[str]:
+    """先頭を PATH から引いて絶対パスにする（Windows で claude.cmd のような .cmd を起動できるように）。"""
+    if argv and not os.path.dirname(argv[0]):
+        found = shutil.which(argv[0])
+        if found:
+            return [found, *argv[1:]]
+    return argv
+
+
+# ---------------------------------------------------------------------------
 # 状態ファイル（state.json）と排他
 # ---------------------------------------------------------------------------
 
@@ -293,7 +423,7 @@ def locked_state(cfg: Config) -> Iterator[dict[str, Any]]:
     d.mkdir(parents=True, exist_ok=True)
     path = d / "state.json"
     with open(d / "state.lock", "a+") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
+        lock_file(lf, blocking=True)
         try:
             try:
                 st = normalize_state(json.loads(path.read_text(encoding="utf-8")))
@@ -310,19 +440,7 @@ def locked_state(cfg: Config) -> Iterator[dict[str, Any]]:
             tmp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(path)
         finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
-
-
-def pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+            unlock_file(lf)
 
 
 class SessionBusy(Exception):
@@ -333,9 +451,9 @@ class SessionBusy(Exception):
 def single_session(cfg: Config) -> Iterator[Path]:
     """エージェント CLI のセッションを同時に 1 つだけにする。
 
-    1. session.lock を flock(LOCK_EX|LOCK_NB) で取る（取れなければ別の run が実行中）。
+    1. session.lock を待たずに排他ロックする（取れなければ別の run が実行中）。
        ロックはプロセスが死ねば OS が外すので、取りっぱなしにはならない。
-    2. それでも、run が SIGKILL で消えてエージェント CLI だけが生き残ると、ロックは外れたのに
+    2. それでも、run が強制終了されてエージェント CLI だけが生き残ると、ロックは外れたのに
        セッションは続いている。そこで実行中の子の pid を session.json に書き、取得時に生きていれば
        ロックを返して見送る（agent-loop のスロットファイルと同じ考え方）。
     """
@@ -345,8 +463,8 @@ def single_session(cfg: Config) -> Iterator[Path]:
     lf = open(lock_path, "a+")
     try:
         try:
-            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            lock_file(lf, blocking=False)
+        except LockBusy:
             raise SessionBusy(f"別のセッションが実行中です（{lock_path}）")
         try:
             info = json.loads(info_path.read_text(encoding="utf-8"))
@@ -354,7 +472,7 @@ def single_session(cfg: Config) -> Iterator[Path]:
             info = {}
         child = int(info.get("child_pid") or 0)
         if child and child != os.getpid() and pid_alive(child):
-            fcntl.flock(lf, fcntl.LOCK_UN)
+            unlock_file(lf)
             raise SessionBusy(
                 f"前の実行が残したエージェント CLI（pid {child}）がまだ動いています。終わるのを待つか止めてください")
         info_path.write_text(json.dumps({"runner_pid": os.getpid(), "child_pid": 0,
@@ -365,7 +483,7 @@ def single_session(cfg: Config) -> Iterator[Path]:
         finally:
             with contextlib.suppress(OSError):
                 info_path.unlink()
-            fcntl.flock(lf, fcntl.LOCK_UN)
+            unlock_file(lf)
     finally:
         lf.close()
 
@@ -561,7 +679,7 @@ def _profile_dirs() -> list[Path]:
 def resolve_agent_argv(cfg: Config, prompt_file: Path, output_file: Path) -> tuple[list[str], str]:
     """(argv, prompt_via)。ISSUE_LOOP_AGENT_CMD があればそれを、無ければ agents/<name>.json を使う。"""
     if cfg.agent_cmd:
-        argv = shlex.split(cfg.agent_cmd)
+        argv = split_command(cfg.agent_cmd)
         via = cfg.agent_prompt_via
         prompt_flag = None
     elif cfg.agent:
@@ -602,7 +720,7 @@ def resolve_agent_argv(cfg: Config, prompt_file: Path, output_file: Path) -> tup
         out += ([str(prompt_flag)] if prompt_flag else []) + [prompt]
     elif via == "file" and not any(str(prompt_file) in a for a in out):
         out.append(str(prompt_file))
-    return out, via
+    return resolve_executable(out), via
 
 
 @dataclass
@@ -637,7 +755,7 @@ def run_agent(cfg: Config, prompt: str, item: dict[str, Any], info_path: Path) -
                 argv, cwd=cwd, env=env,
                 stdin=subprocess.PIPE if via == "stdin" else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                start_new_session=True,   # 子孫ごと止められるように別のプロセスグループにする
+                **spawn_group_kwargs(),
             )
         except OSError as exc:
             raise ConfigError(f"エージェント CLI を起動できません: {argv[0]} ({exc})")
@@ -645,39 +763,36 @@ def run_agent(cfg: Config, prompt: str, item: dict[str, Any], info_path: Path) -
         info.update({"child_pid": proc.pid, "iid": item.get("iid"), "log": str(log_path)})
         info_path.write_text(json.dumps(info), encoding="utf-8")
 
+        # 出力は別スレッドで読んでログと標準出力へ流す（パイプの select は Windows で使えないため）。
+        # 文字コードは決め打ちせず bytes のまま写す
+        def pump() -> None:
+            assert proc.stdout is not None
+            for chunk in iter(lambda: proc.stdout.read1(65536), b""):
+                lf.write(chunk)
+                lf.flush()
+                with contextlib.suppress(OSError, ValueError):
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.flush()
+        reader = threading.Thread(target=pump, daemon=True)
+        reader.start()
+
         if via == "stdin" and proc.stdin:
-            with contextlib.suppress(BrokenPipeError):
+            with contextlib.suppress(BrokenPipeError, OSError):
                 proc.stdin.write(prompt.encode("utf-8"))
-            with contextlib.suppress(BrokenPipeError):
+            with contextlib.suppress(BrokenPipeError, OSError):
                 proc.stdin.close()
 
         deadline = time.monotonic() + cfg.agent_timeout if cfg.agent_timeout > 0 else None
         timed_out = False
-        assert proc.stdout is not None
-        fd = proc.stdout.fileno()
-        while True:
-            ready, _, _ = select.select([fd], [], [], 0.5)
-            if ready:
-                try:
-                    chunk = os.read(fd, 65536)
-                except InterruptedError:
-                    chunk = b"\0"   # シグナルで起こされただけ。下の判定へ進む
-                if chunk and chunk != b"\0":
-                    lf.write(chunk)
-                    lf.flush()
-                    with contextlib.suppress(OSError):
-                        sys.stdout.buffer.write(chunk)
-                        sys.stdout.flush()
-                    continue
-                if not chunk:
-                    break   # EOF（CLI とその子孫が出力を閉じた）
+        while proc.poll() is None:
             if _stop_requested or (deadline is not None and time.monotonic() > deadline):
                 timed_out = not _stop_requested
-                _terminate_group(proc)
+                terminate_tree(proc)
                 break
-            if proc.poll() is not None and not ready:
-                break   # 本体は終わったが、出力を握った子孫が残っている
+            time.sleep(0.2)
         rc = proc.wait()
+        # 出力を握った子孫が残っていても待ち続けない
+        reader.join(timeout=5)
     if output_file.exists():
         with open(log_path, "ab") as lf:
             lf.write(b"\n--- output_file ---\n" + output_file.read_bytes())
@@ -687,22 +802,14 @@ def run_agent(cfg: Config, prompt: str, item: dict[str, Any], info_path: Path) -
     return RunResult(ok=ok, returncode=rc, timed_out=timed_out, log_path=log_path)
 
 
-def _terminate_group(proc: subprocess.Popen, grace: float = 15.0) -> None:
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(proc.pid, signal.SIGTERM)
-    try:
-        proc.wait(timeout=grace)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(proc.pid, signal.SIGKILL)
-
-
 def _install_signal_handlers() -> None:
-    # Dagu の中止・タイムアウトは SIGTERM で来る。子を止めて、失敗として記録してから抜ける
+    # Dagu の中止・タイムアウトは POSIX では SIGTERM で来る。子を止めて、失敗として記録してから抜ける。
+    # Windows の Dagu は Job Object ごと強制終了するのでここには来ない（次の run が inflight から数え直す）
     def handler(signum, _frame):
         _stop_requested.append(signum)
-    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(s, handler)
+    for sig in stop_signals():
+        with contextlib.suppress(OSError, ValueError):
+            signal.signal(sig, handler)
 
 
 # ---------------------------------------------------------------------------
@@ -930,7 +1037,18 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _utf8_stdio() -> None:
+    """Windows では標準出力・標準エラーがコンソールのコードページになり、日本語のログで落ちうる。
+    Dagu が受け取るのはパイプなので UTF-8 に揃える（読めない文字は置き換えて止まらない）。"""
+    if not IS_WINDOWS:
+        return
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError, ValueError):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None, *, gitlab_factory: Callable[[Config], GitLab] | None = None) -> int:
+    _utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
         cfg = build_config(args, need_gitlab=args.cmd in ("poll", "run"))

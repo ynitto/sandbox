@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -159,9 +160,13 @@ class Base(unittest.TestCase):
     def cli(self, *args, env=None, wait=True):
         e = {**self.env, **(env or {})}
         cmd = [sys.executable, str(SCRIPT), *args]
+        # Windows では Ctrl+Break を送れるように別のプロセスグループで起動する
+        group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
         if not wait:
-            return subprocess.Popen(cmd, env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        return subprocess.run(cmd, env=e, capture_output=True, text=True, timeout=60)
+            return subprocess.Popen(cmd, env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, encoding="utf-8", errors="replace", **group)
+        return subprocess.run(cmd, env=e, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=60, **group)
 
     def status(self):
         return json.loads(self.cli("status").stdout)
@@ -382,14 +387,18 @@ class SingleSessionTest(Base):
         self.assertIn("タイムアウト", self.status()["queue"][0]["last_error"])
         self.assertIsNone(self.status()["inflight"])
 
-    def test_sigterm_stops_agent_and_records(self):
+    def test_stop_signal_stops_agent_and_records(self):
+        # POSIX は SIGTERM（Dagu の停止）、Windows は Ctrl+Break で「止めて」と頼む
         self.queue_two()
         p = self.cli("run", env={"FAKE_SLEEP": "30"}, wait=False)
         for _ in range(50):
             if self.agent_calls():
                 break
             time.sleep(0.2)
-        p.terminate()
+        if os.name == "nt":
+            p.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            p.terminate()
         p.communicate(timeout=30)
         self.assertEqual(p.returncode, 1)
         st = self.status()
@@ -416,7 +425,8 @@ class AgentProfileTest(unittest.TestCase):
         pf.write_text("hello")
         cfg = il.Config(api_url="x", project="p", token="t", agent="claude")
         argv, via = il.resolve_agent_argv(cfg, pf, of)
-        self.assertEqual((argv[:2], via), (["claude", "-p"], "stdin"))
+        # 先頭は PATH にあれば絶対パスへ解決されるので、名前だけ比べる
+        self.assertEqual((Path(argv[0]).stem, argv[1], via), ("claude", "-p", "stdin"))
         cfg.agent = "copilot"
         argv, via = il.resolve_agent_argv(cfg, pf, of)
         self.assertEqual(argv[-2:], ["-p", "hello"])
@@ -426,6 +436,39 @@ class AgentProfileTest(unittest.TestCase):
         cfg.agent = "ollama"
         with self.assertRaises(il.ConfigError):
             il.resolve_agent_argv(cfg, pf, of)                     # {model} が要る
+
+
+class PlatformTest(unittest.TestCase):
+    def test_pid_alive_does_not_kill(self):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertTrue(il.pid_alive(p.pid))
+            self.assertTrue(il.pid_alive(p.pid))             # Windows で os.kill を使うと 1 回目で死ぬ
+            self.assertIsNone(p.poll())
+        finally:
+            p.kill()
+            p.wait()
+        self.assertFalse(il.pid_alive(p.pid))
+
+    def test_file_lock_is_exclusive_across_handles(self):
+        path = Path(tempfile.mkdtemp()) / "x.lock"
+        with open(path, "a+") as a, open(path, "a+") as b:
+            il.lock_file(a, blocking=False)
+            with self.assertRaises(il.LockBusy):
+                il.lock_file(b, blocking=False)
+            il.unlock_file(a)
+            il.lock_file(b, blocking=False)
+            il.unlock_file(b)
+
+    @unittest.skipUnless(os.name == "nt", "Windows のコマンド行の分け方")
+    def test_split_command_keeps_backslashes_on_windows(self):
+        self.assertEqual(il.split_command(r'"C:\Program Files\x\claude.exe" -p --flag'),
+                         [r"C:\Program Files\x\claude.exe", "-p", "--flag"])
+
+    def test_split_command_posix(self):
+        if os.name == "nt":
+            self.skipTest("POSIX のコマンド行の分け方")
+        self.assertEqual(il.split_command("claude -p 'a b'"), ["claude", "-p", "a b"])
 
 
 if __name__ == "__main__":

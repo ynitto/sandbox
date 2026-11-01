@@ -11,7 +11,7 @@ dotenv:
   - ~/.config/dagu/issue-loop.env
 steps:
   - name: poll
-    command: python3 ${ISSUE_LOOP_HOME}/issue_loop.py poll
+    command: ${ISSUE_LOOP_PYTHON} ${ISSUE_LOOP_HOME}/issue_loop.py poll
     timeout_sec: 120
     retry_policy:
       limit: 2

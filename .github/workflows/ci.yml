@@ -121,6 +121,20 @@ jobs:
             echo "::endgroup::"
           done
 
+  # dagu-issue-loop は Windows でもそのまま動かす（ファイルロック・プロセスの生存確認・
+  # 子孫ごとの停止を OS ごとに切り替えている）。その切り替えを Windows の実機で確かめる。
+  dagu-issue-loop-windows:
+    name: python (dagu-issue-loop, windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: unittest
+        run: python -m unittest discover -s tools/dagu-issue-loop/test
+
   dashboard:
     name: dashboard (npm test)
     runs-on: ubuntu-latest

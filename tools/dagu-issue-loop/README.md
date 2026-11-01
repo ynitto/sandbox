@@ -12,7 +12,7 @@ GitLab の issue を [Dagu](https://github.com/dagu-org/dagu)（v2）で定期�
      （同じ issue の変化は 1 件にまとめる）          終わったら既読にする（失敗なら後で再試行）
 ```
 
-Python 3.10 以降の標準ライブラリだけで動く。追加のパッケージは要らない。
+Python 3.10 以降の標準ライブラリだけで動く。追加のパッケージは要らない。Linux・macOS・Windows（ネイティブ）のどれでも動く。
 
 ## 入れ方
 
@@ -26,8 +26,8 @@ Python 3.10 以降の標準ライブラリだけで動く。追加のパッケ�
    cp tools/dagu-issue-loop/issue_loop.py ~/.local/share/dagu-issue-loop/
    ```
 
-2. 設定を書く。`issue-loop.env.example` を `~/.config/dagu/issue-loop.env` にコピーし、GitLab の URL・
-   プロジェクト・トークンと、使うエージェント CLI を埋める。トークンには `read_api` が要る
+2. 設定を書く。`issue-loop.env.example` を `~/.config/dagu/issue-loop.env` にコピーし、`ISSUE_LOOP_HOME`（1 で置いたフォルダの絶対パス）・
+   `ISSUE_LOOP_PYTHON`・GitLab の URL・プロジェクト・トークンと、使うエージェント CLI を埋める。トークンには `read_api` が要る
    （エージェントが issue にコメントするなら、そのエージェント側の権限も別に要る）。
 
    ```bash
@@ -84,6 +84,24 @@ Python 3.10 以降の標準ライブラリだけで動く。追加のパッケ�
 - `run` が強制終了されてエージェント CLI だけが残った場合も、その CLI が終わるまで次は始めない
 - Dagu からの停止・タイムアウト（SIGTERM）では CLI を子プロセスごと止め、失敗として記録してから終わる
 
+## Windows で使うとき
+
+置き場所は Linux と同じ形で、`~` はユーザーフォルダ（`C:\Users\<名前>`）になる。Dagu の設定フォルダも
+`C:\Users\<名前>\.config\dagu\` で、DAG は `dags\` に置く。`issue-loop.env` では次の 2 つを Windows 向けにする。
+
+```
+ISSUE_LOOP_HOME=C:/Users/you/.local/share/dagu-issue-loop
+ISSUE_LOOP_PYTHON=python
+```
+
+- Windows の Dagu は、止めるとき（中止・タイムアウト）にプロセスをツリーごと即座に終了させる。エージェント CLI も
+  一緒に止まるので 2 つ目のセッションは始まらないが、その場では失敗として記録できない。次の `run` が
+  「途中で止まった」として失敗 1 回に数え直す
+- `ISSUE_LOOP_AGENT_TIMEOUT` で時間切れになったときは、CLI に Ctrl+Break を送り、15 秒待って子孫ごと強制終了する
+- `claude.cmd` のようなバッチ形式の CLI は、プロンプトを標準入力で渡す（`ISSUE_LOOP_AGENT_PROMPT_VIA=stdin`、既定）。
+  引数で渡すと、改行や記号を含むプロンプトが壊れることがある
+- ログは UTF-8 で出す
+
 ## 失敗したとき
 
 エージェント CLI が 0 以外で終わる・`ISSUE_LOOP_AGENT_TIMEOUT` を超える・止められると失敗として数え、
@@ -113,7 +131,8 @@ python3 ~/.local/share/dagu-issue-loop/issue_loop.py forget 123
 | `GITLAB_URL` / `GITLAB_API_URL` | （必須） | GitLab の URL（API の URL を直接書くなら後者） |
 | `GITLAB_PROJECT` | （必須） | `group/project` か数値 ID |
 | `GITLAB_TOKEN`（または `GL_TOKEN`） | （必須） | アクセストークン |
-| `ISSUE_LOOP_HOME` | — | DAG が `issue_loop.py` を探すフォルダ（絶対パス） |
+| `ISSUE_LOOP_HOME` | （必須） | DAG が `issue_loop.py` を探すフォルダ（絶対パス） |
+| `ISSUE_LOOP_PYTHON` | （必須） | DAG が使う Python（`python3`。Windows では `python` か `py`） |
 | `ISSUE_LOOP_ISSUE_STATE` | `opened` | `opened` / `closed` / `all` |
 | `ISSUE_LOOP_ISSUE_LABELS` | — | カンマ区切り。すべて持つ issue だけ |
 | `ISSUE_LOOP_ISSUE_ASSIGNEE` | — | この人に割り当てられた issue だけ |

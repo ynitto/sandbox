@@ -105,7 +105,30 @@ agent-loop のスロットも同じ扱い（生存 pid は保持）で、誤っ�
 - `MAX_ATTEMPTS` に達したら `dead` へ移し、その版を `seen` にする。次に issue が変われば 3.2-6 で蘇る
 - `forget IID` で `seen` / `queue` / `dead` から外し、次の poll で新規として拾い直させる
 
-## 6. 採らなかった案
+## 6. Windows（ネイティブ）
+
+POSIX 前提の箇所を OS ごとに切り替え、規則（§3〜§5）は変えない。
+
+| 役目 | POSIX | Windows |
+|---|---|---|
+| state.lock / session.lock | `fcntl.flock` | `msvcrt.locking`（先頭 1 バイト、待つときは非ブロッキングで回す）。どちらもハンドルを閉じる・プロセスが死ぬと外れる |
+| 生存確認 | `os.kill(pid, 0)` | `OpenProcess` + `GetExitCodeProcess == STILL_ACTIVE`。**Windows の `os.kill` は相手を終了させる**ので使わない |
+| CLI の起動 | `start_new_session=True` | `CREATE_NEW_PROCESS_GROUP` |
+| CLI を止める | `killpg` SIGTERM → 15 秒 → SIGKILL | Ctrl+Break → 15 秒 → `taskkill /T /F` |
+| 停止の受け取り | SIGTERM / SIGINT / SIGHUP | SIGINT / SIGBREAK |
+| 出力の転送 | — | 両方とも読み取りスレッド（パイプの `select` は Windows で使えないため、実装を 1 つにした） |
+| コマンド行の分割 | `shlex.split` | `shlex.split(posix=False)` + 外側の引用符を外す（バックスラッシュのパスを壊さない） |
+| 実行ファイル | — | 両方とも `shutil.which` で先頭を絶対パスにする（`.cmd` の CLI を起動できるように） |
+| 標準出力の文字コード | ロケール（UTF-8） | UTF-8 に固定（コンソールのコードページで日本語のログが落ちるのを防ぐ） |
+
+Windows の Dagu は停止時にシグナルを送らず、Job Object（失敗すればプロセスツリー）ごと強制終了する
+（`internal/cmn/cmdutil/lifecycle_windows.go`）。run とエージェント CLI は同じ Job に入るので一緒に消え、
+**取り残しは起きない**。その代わり run はその場で失敗を記録できず、`inflight` が残る。次にロックを取った run が
+§4 の「強制終了された run」と同じ経路で失敗 1 回として数え直す。
+
+DAG の Python は `ISSUE_LOOP_PYTHON` で渡す（Windows の標準のインストーラは `python3` を置かない）。
+
+## 7. 採らなかった案
 
 - **Dagu のキューだけで直列化する**: Dagu v2 のグローバルキュー（`queue:` + 設定の `max_concurrency: 1`）でも
   DAG 実行は直列にできるが、手で叩いた CLI・Dagu の再起動・取り残された子プロセスは守れない。

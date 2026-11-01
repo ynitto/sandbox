@@ -14,8 +14,8 @@ dotenv:
   - ~/.config/dagu/issue-loop.env
 steps:
   - name: run-agent
-    command: python3 ${ISSUE_LOOP_HOME}/issue_loop.py run
+    command: ${ISSUE_LOOP_PYTHON} ${ISSUE_LOOP_HOME}/issue_loop.py run
     # ISSUE_LOOP_AGENT_TIMEOUT（既定 3600 秒）より長くする。先に issue_loop.py が CLI を止めて
     # 失敗として記録し、Dagu のタイムアウトはその後ろの安全網になる
     timeout_sec: 4200
-    signal_on_stop: SIGTERM
+    signal_on_stop: SIGTERM   # Windows の Dagu はシグナルを使わず、プロセスツリーごと止める

@@ -17,6 +17,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 1 セッションの保証: Dagu の重複起動抑止に加え、全プロジェクト共通のロックファイルと実行中の pid で排他する。
   停止・タイムアウトでは CLI を子プロセスごと止めて失敗として記録し、指数バックオフで再試行、上限で打ち切る
 - エージェント CLI は `agents/<name>.json` の名前でもコマンド行でも指定できる
+- Windows（ネイティブ）でも動く。ファイルロック・プロセスの生存確認・子孫ごとの停止・シグナル・コマンド行の分割を OS ごとに切り替え、
+  DAG の Python は `ISSUE_LOOP_PYTHON` で渡す。CI に Windows でのテストを足した
 - 設計: `docs/designs/dagu-issue-loop-design.md`
 
 ### obsidian-use: ボルトを知識 wiki にし、フックでプロジェクト・環境のメモを集める（1.1.0）
