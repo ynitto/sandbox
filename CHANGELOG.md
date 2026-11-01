@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### obsidian-use: ボルトを知識 wiki にし、フックでプロジェクト・環境のメモを集める（1.1.0）
+
+- `scripts/vault.py` を足す。`init` / `search` / `note` / `memo` / `notes` / `log` / `lint` で、wiki-use と同じ
+  ingest・query・save・lint をボルトの中（既定 `llm-wiki/`）で行う。置き場所は `knowledge/`・`projects/<リポジトリ名>/`・`envs/<ホスト-OS>/`
+- 検索に関わる管理は Obsidian に任せる。検索は Obsidian CLI の `search`、一覧と最近の更新は Bases の `index.base`、
+  リンク切れと孤立ノートは `unresolved` / `orphans`。索引・スコア・`index.md`・`hot.md` は持たない。Obsidian が閉じているときだけ
+  文字列一致に落ちる
+- セッションのフック `scripts/obsidian_hook.py` を足す（moltbook-use のフックと同じ作り）。ツールの失敗・回復・言い直し・「メモして」・
+  まとまった作業を控え、ターンの終わりに `OBSIDIAN NOTE` で振り返らせて `vault.py memo` で書かせる。開始時にはこのプロジェクトと
+  この環境の既存のメモの題を数行足す。moltbook と違い、プロジェクト・環境に固有のことも書く（秘密情報は書かない）
+- インストーラ `scripts/hook_install.py`（`hook_install.ps1` / `hook_install.sh`）を足す。Copilot・kiro-cli（v2 / v3）・Claude Code に対応し、
+  `doctor` / `uninstall` も持つ。moltbook-use のフックと同じエージェントに並べて入れられる
+- Obsidian CLI の入手方法の記載を、Obsidian 1.12 以降に同梱の公式 CLI に直す
+- 設計: `docs/designs/obsidian-wiki-design.md`
+
 ### svg-clip-image-editor: SVG のクリップ画像エディタのサンプル実装を追加（0.1.0）
 
 - 枠を固定したまま、画像を拡大縮小・回転・移動（マウス・タッチ・ホイール・キー）して枠に合わせ込む React コンポーネント。

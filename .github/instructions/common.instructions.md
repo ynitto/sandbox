@@ -96,6 +96,10 @@ applyTo: "**"
 > **例**: 「ユーザーが Rust を使う」= persona（expertise.md）。
 > 「Rust とは何か」= wiki-use。「Rust のビルドエラーをこう直した」= ltm-use。
 
+> **obsidian-use の wiki を使う環境**: wiki-use の役目は obsidian-use の wiki（`vault.py`）が受け持つ（両方には入れない）。
+> obsidian-use のフックを入れていれば、会話に出た `OBSIDIAN NOTE` に従い、このプロジェクト・この環境に固有の
+> 運用知も Obsidian に書く（ltm-use へは重複保存しない）。手順は `obsidian-use/references/memo-hooks.md`。
+
 -----
 
 ## セッション開始時の手順

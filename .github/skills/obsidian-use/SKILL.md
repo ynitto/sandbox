@@ -1,8 +1,8 @@
 ---
 name: obsidian-use
-description: "「Obsidianのノートを作って」「ウィキリンクを追加して」「.baseファイルでフィルターを設定して」「マインドマップやキャンバスを作って」「ボルトをCLIで操作して」「このURLを読んで」「WordファイルやPDFをMarkdownに変換して」など、Obsidianの作成・編集・CLI操作・Web抽出・Officeファイル変換で発動する。"
+description: "「Obsidianのノートを作って」「.baseでフィルターを設定して」「キャンバスを作って」「このURLを読んで」「PDFをMarkdownに変換して」などのノート操作と、「Obsidianのwikiに取り込んで」「Obsidianのwikiで調べて」「wikiを点検して」の知識wiki管理、フックの OBSIDIAN NOTE で発動する。"
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   tier: domain
   category: knowledge-management
   tags:
@@ -10,11 +10,14 @@ metadata:
     - markdown
     - note-taking
     - knowledge-base
+    - llm-wiki
+    - hooks
 ---
 
 # Obsidian Use
 
-Obsidian に関連するすべての操作をカバーする統合スキル。5つの機能領域を提供する。
+Obsidian に関連するすべての操作をカバーする統合スキル。ノートの記法・CLI・取り込みに加え、ボルトを知識 wiki として育て、
+セッションのフックでプロジェクト・環境のメモを集める。
 
 ## 前提条件（外部ツール）
 
@@ -22,7 +25,7 @@ Obsidian に関連するすべての操作をカバーする統合スキル。5�
 
 | ツール | 用途 | インストール |
 |--------|------|-------------|
-| Obsidian CLI (`obsidian`) | ボルト操作・プラグイン開発 | `npm install -g @anthropics/obsidian-cli`（Obsidianが起動している必要あり） |
+| Obsidian CLI (`obsidian`) | ボルト操作・wiki の検索・プラグイン開発 | Obsidian 1.12 以降に同梱。設定 → 一般 → コマンドラインインターフェース で有効にする（Obsidian が起動している必要あり） |
 | Defuddle (`defuddle`) | URL・HTMLファイル → Markdown 抽出 | `npm install -g defuddle` |
 | markitdown (`markitdown`) | Office / PDF → Markdown 変換 | `pip install markitdown` |
 
@@ -48,6 +51,50 @@ Obsidian に関連するすべての操作をカバーする統合スキル。5�
 | Obsidian CLIコマンド（ボルト操作、ノート管理、プラグイン開発） | [references/obsidian-cli.md](references/obsidian-cli.md) |
 | WebページからMarkdownを抽出（Defuddle） | [references/defuddle.md](references/defuddle.md) |
 | OfficeファイルをObsidian Markdownに変換（markitdown） | [references/markitdown.md](references/markitdown.md) |
+| ボルトを知識 wiki にする（init / ingest / query / save / lint） | [references/wiki.md](references/wiki.md) |
+| フックでメモを集める（OBSIDIAN NOTE・導入・調整） | [references/memo-hooks.md](references/memo-hooks.md) |
+
+## ナレッジ wiki
+
+wiki-use と同じ「エージェントがソースを読んで知識ノートを育てる」使い方を、Obsidian のボルトの中で行う。
+**検索・バックリンク・タグ・一覧・リンク切れの数え上げは Obsidian に任せ**、索引やスコアは持たない
+（一覧は Bases の `index.base`、検索は Obsidian CLI の `search`。Obsidian が閉じているときだけ文字列一致に落ちる）。
+手順は [references/wiki.md](references/wiki.md)。コマンドは `python scripts/vault.py <操作>`。
+
+| 操作 | トリガー例 | コマンドの入口 |
+|------|-----------|---------|
+| **init** | 「Obsidian の wiki を作って」「ボルトを wiki にして」 | `vault.py init --vault <フォルダ>` |
+| **ingest** | 「Obsidian の wiki に取り込んで」「この URL をボルトにまとめて」 | `vault.py search` → `vault.py note --scope knowledge` |
+| **query** | 「wiki で調べて」「ボルトに何かある？」 | `vault.py search "<語>"` → ノートを読む → `obsidian backlinks` / `links` |
+| **save** | 「この答えを wiki に残して」 | `vault.py note --type topic` |
+| **lint** | 「wiki を点検して」 | `vault.py lint` |
+| **memo** | **（フック）** 会話に `OBSIDIAN NOTE` の指示が出た | 指示に書かれた `vault.py memo …` |
+
+ボルトの中は `knowledge/`（世界の知識）・`projects/<プロジェクト>/`（そのリポジトリだけのメモ）・
+`envs/<ホスト-OS>/`（その PC だけのこと）に分かれる。設定は `python scripts/vault.py config` で確かめる。
+
+### プロアクティブな操作
+
+**設定済み（`vault.py config` が通る）なら、利用者に確認せずに行う。**
+
+- 質問に答える前、またはエラーで詰まったときに、関係しそうなら `vault.py search "<語>"` を 1 回引く
+  （このプロジェクトだけなら `--scope project`）。当たったノートを読んで答えに使う
+- URL・文書を「読んで」「まとめて」と渡されたら、`search` で取り込み済みか確かめ、未取り込みなら ingest する
+  （コード・設定ファイル・ログは対象外）
+- 会話に `OBSIDIAN NOTE` が出たら、[references/memo-hooks.md](references/memo-hooks.md) のとおり役立つことだけを
+  `vault.py memo` で残し、利用者への返事は「Obsidian: <パス>」の 1 行にする（無ければ何もしない）
+- 会話に `[Obsidian]` で始まるメモの一覧が出たら、いまの作業に関係するものは中身を読んでから進める
+
+### フック（メモを集める）
+
+moltbook-use のフックと同じ作りで、書き先が自分のボルトになり、**プロジェクト・環境に固有のメモも残す**
+（他の人に見せないので、パスやリポジトリ名を書いてよい。秘密情報は書かない）。ツールの失敗・回復・言い直し・
+「メモして」・まとまった作業を控え、ターンの終わりに 1 回だけ振り返らせる。開始時には、このプロジェクトと
+この環境の既存のメモの題を数行だけ会話に足す。
+
+導入は Windows で `scripts/hook_install.ps1 -Vault <ボルト>`（Copilot アプリと WSL の kiro-cli）、WSL・Linux で
+`sh scripts/hook_install.sh --vault <ボルト>`、Claude Code は `sh scripts/hook_install.sh install --client claude --vault <ボルト>`。
+点検は `doctor`、外すときは `uninstall`。詳細は [references/memo-hooks.md](references/memo-hooks.md)、控える語と上限は [references/memo_rules.json](references/memo_rules.json)。
 
 ## 各機能の概要
 

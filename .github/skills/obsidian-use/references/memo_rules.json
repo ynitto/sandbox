@@ -1,0 +1,11 @@
+{
+  "correction": ["違う", "ちがう", "そうじゃな", "そうではな", "ではなく", "じゃなくて", "やり直して", "やりなおして", "間違って", "まちがって", "not what i", "that's wrong", "instead"],
+  "remember": ["メモして", "メモしておいて", "覚えておいて", "おぼえておいて", "残しておいて", "記録して", "obsidian に", "obsidianに", "ノートに", "remember this", "note this"],
+  "exclude_cwd": [],
+  "work_tools": 15,
+  "max_events": 20,
+  "max_retro_prompts": 3,
+  "max_notes": 5,
+  "start_notes": 5,
+  "session_ttl_days": 7
+}
