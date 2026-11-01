@@ -78,6 +78,10 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
+          # dagu-issue-loop。GitLab は手元の HTTP サーバ、エージェント CLI は小さなスクリプトで偽装し、
+          # 変化の検知・重複制御・1 セッションの排他（並行 run・取り残された CLI・SIGTERM）を見る。
+          - package: dagu-issue-loop
+            suites: tools/dagu-issue-loop/test
           # 評価ハーネス（worker_eval の手順制御・engine の解決）。LLM もエージェント
           # CLI も呼ばない部分だけを見る。**測定の道具が壊れていると、壊れたことが
           # モデルの数字として台帳へ残る**ので、ここも CI で押さえる。readout_eval の

@@ -1,0 +1,21 @@
+# 待ち行列から 1 件取り出してエージェント CLI を実行する（Dagu v2 の書式）。毎分起動するが、
+# 実行中のセッションがあれば何もせずに終わる。同時に動くエージェント CLI は常に 1 つ。
+#
+# 1 セッションの保証は 2 重にしてある:
+#   - Dagu: 同じ DAG が実行中なら次の定期実行を立てない
+#   - issue_loop.py run: ロックファイル（既定は全プロジェクト共通）と実行中の pid で排他する。
+#     手で run を叩いた・別プロジェクトの DAG を並べた・Dagu を再起動した、でも 2 つ目は始まらない
+name: gitlab-issue-agent
+description: 待ち行列の issue を 1 件ずつエージェント CLI に渡す
+schedule: "* * * * *"
+hist_retention_days: 14
+max_clean_up_time_sec: 60   # 止めるとき、CLI を片付けて記録するまで待つ秒数
+dotenv:
+  - ~/.config/dagu/issue-loop.env
+steps:
+  - name: run-agent
+    command: python3 ${ISSUE_LOOP_HOME}/issue_loop.py run
+    # ISSUE_LOOP_AGENT_TIMEOUT（既定 3600 秒）より長くする。先に issue_loop.py が CLI を止めて
+    # 失敗として記録し、Dagu のタイムアウトはその後ろの安全網になる
+    timeout_sec: 4200
+    signal_on_stop: SIGTERM

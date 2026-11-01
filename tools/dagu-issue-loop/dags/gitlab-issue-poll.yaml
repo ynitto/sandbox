@@ -1,0 +1,19 @@
+# GitLab の issue を 5 分ごとに取得し、前回からの変化を待ち行列へ積む（Dagu v2 の書式）。
+# エージェント CLI は起こさない。後段の gitlab-issue-agent が 1 件ずつ流す。
+#
+# 置き場所: Dagu の DAG フォルダ（既定 ~/.config/dagu/dags/）
+# 設定は ~/.config/dagu/issue-loop.env に書く（issue-loop.env.example を参照）。
+name: gitlab-issue-poll
+description: GitLab の issue の変化を拾って待ち行列へ積む
+schedule: "*/5 * * * *"
+hist_retention_days: 7
+dotenv:
+  - ~/.config/dagu/issue-loop.env
+steps:
+  - name: poll
+    command: python3 ${ISSUE_LOOP_HOME}/issue_loop.py poll
+    timeout_sec: 120
+    retry_policy:
+      limit: 2
+      interval_sec: 30
+      exit_code: [3]       # GitLab に届かないときだけ再試行
