@@ -78,6 +78,10 @@ jobs:
           # （実プロセスは起こさない）。
           - package: agent-loop
             suites: tools/agent-loop/test
+          # dagu-issue-loop。GitLab は手元の HTTP サーバ、エージェント CLI は小さなスクリプトで偽装し、
+          # 変化の検知・重複制御・1 セッションの排他（並行 run・取り残された CLI・SIGTERM）を見る。
+          - package: dagu-issue-loop
+            suites: tools/dagu-issue-loop/test
           # 評価ハーネス（worker_eval の手順制御・engine の解決）。LLM もエージェント
           # CLI も呼ばない部分だけを見る。**測定の道具が壊れていると、壊れたことが
           # モデルの数字として台帳へ残る**ので、ここも CI で押さえる。readout_eval の
@@ -116,6 +120,20 @@ jobs:
             python -m unittest discover -s "$suite"
             echo "::endgroup::"
           done
+
+  # dagu-issue-loop は Windows でもそのまま動かす（ファイルロック・プロセスの生存確認・
+  # 子孫ごとの停止を OS ごとに切り替えている）。その切り替えを Windows の実機で確かめる。
+  dagu-issue-loop-windows:
+    name: python (dagu-issue-loop, windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: unittest
+        run: python -m unittest discover -s tools/dagu-issue-loop/test
 
   dashboard:
     name: dashboard (npm test)

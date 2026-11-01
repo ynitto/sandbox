@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 28 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 29 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -16,7 +16,7 @@
 
 ---
 
-## カテゴリ別索引（全 27 件）
+## カテゴリ別索引（全 28 件）
 
 ### 1. コンセプトと主要 4 設計
 
@@ -36,6 +36,7 @@
 
 | ファイル | 要旨 |
 |---|---|
+| [`dagu-issue-loop-design.md`](./dagu-issue-loop-design.md) | GitLab の issue を Dagu の定期実行でポーリングし、変化をまとめて待ち行列へ積み、エージェント CLI を同時に 1 セッションだけ流す仕組みの設計。agent-loop の既読 + ack と pid つきスロットを下敷きに、poll と run を別 DAG に分けて状態ファイルでつなぐ。自分のコメントでの再発火を実行後の取り直しで吸収し、1 セッションを Dagu・flock・pid の 3 層で守る。 |
 | [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件と予算（実質実行時間）の範囲で型付きメッセージをやり取りしながら 1 つの成果物をオーナーへ納品する協働基盤の設計正典。`tools/agent-amigos/` に実装済みで、残る欠落は同書 §7 に明記。バスのレイアウト・設定キー・役割表の全キー・CLI・上限は [`docs/specs/agent-amigos-spec.md`](../specs/agent-amigos-spec.md) にある。中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）で、転送だけを担い調整はしない。1 ノードでも自己補充で完結し、定時シャットダウンには away プロトコルとターン原子性で耐える。チーム設計の自動化（team-builder）とオーケストレーションパターンの写像（旧 `agent-amigos-teambuilder-patterns.md`）も統合済み。 |
 | [`agent-dashboard-design.md`](./agent-dashboard-design.md) | 別ホストで動く agent-project / agent-flow / agent-amigos / 定常業務を 1 つの Windows GUI から見渡し、人の判断だけを公式契約で返す操作面の設計正典。dashboard は状態の書き手にならない（読むのはファイル、書くのは `commands/` 等の投函だけ）・制御面はソースツリー分離と列挙合成・プロジェクトの発見は実行側の `engine/status.json` 1 枚、の 3 点が骨格。合成契約・設定キー・IPC・上限は [`docs/specs/agent-dashboard-spec.md`](../specs/agent-dashboard-spec.md) にある。旧 `agent-dashboard-{feature-split,kiro-loop-terminal,project-ux-improvements}` を統合済み。 |
 | [`agent-app-design.md`](./agent-app-design.md) | ローカルリポジトリを登録し、`agents/*.json` のエージェント CLI（copilot / claude / codex / kiro / cursor / aider …）と会話形式で作業する Electron アプリの設計正典。会話 1 つ = tmux セッション 1 つで CLI を対話起動し、`capture-pane` の端末ミラーを主表示にして CLI の文言解析に入力可否を支配させない・触るのは登録リポジトリの内側だけで画面から生のパスを受け取らない・起動方針（おすすめ / 節約 / 品質重視）は tier へ決定的に写し自動フォールバックしない・タスクとワークフローは共有ワークベンチ（旧 statemachine-maker を 2026-09-08 に統合）が担い、共有 renderer をカスタム要素 `<statemachine-workbench>`（Shadow DOM）で同じウィンドウに載せ、タスクの作成・変更は AI との tmux 会話（端末ミラーの埋め込み）で行う、の 4 点が骨格。ワークフローもタスクと同じ教示の骨格（理解中 → 試運転待ち → 確認待ち → 利用可能）で作り、差し戻しは `deps` と分離した再作業ポリシーとして持つ。GitHub 連携・逐次承認 UI・コミット / push は持たない。IPC・設定・保存形式・tmux 契約・上限は [`docs/specs/agent-app-spec.md`](../specs/agent-app-spec.md) にある。画面ごとの検討記録は `docs/plans/2026-09-0x-agent-app-*-design.md`。 |

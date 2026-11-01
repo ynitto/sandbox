@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### dagu-issue-loop: GitLab の issue を Dagu でポーリングし、エージェント CLI を 1 セッションずつ流す（0.1.0）
+
+- `tools/dagu-issue-loop/` を足す。`issue_loop.py`（標準ライブラリだけ）と Dagu v2 の DAG 2 本
+  （`gitlab-issue-poll` 1 時間ごと / `gitlab-issue-agent` 毎分）で動く
+- GitLab の負荷を抑える: 取得は毎時 0 分に起動して 0〜15 分ランダムにずらす（`--jitter`）。エージェントの DAG は
+  待ち行列が空なら GitLab に問い合わせない
+- 変化の検知: タイトル・状態・ラベル・担当・マイルストーン・期日・コメント数・本文のどれかが変わったときだけ積む。
+  初回は今ある issue を既読にするだけ。同じ issue の変化は待ち行列で 1 件にまとめる
+- 実行後に issue を取り直して既読にし、エージェント自身のコメントで再発火しない。実行中に他人が動いたときだけもう一度流す
+- 1 セッションの保証: Dagu の重複起動抑止に加え、全プロジェクト共通のロックファイルと実行中の pid で排他する。
+  停止・タイムアウトでは CLI を子プロセスごと止めて失敗として記録し、指数バックオフで再試行、上限で打ち切る
+- エージェント CLI は `agents/<name>.json` の名前でもコマンド行でも指定できる
+- Windows（ネイティブ）でも動く。ファイルロック・プロセスの生存確認・子孫ごとの停止・シグナル・コマンド行の分割を OS ごとに切り替え、
+  DAG の Python は `ISSUE_LOOP_PYTHON` で渡す。CI に Windows でのテストを足した
+- 設計: `docs/designs/dagu-issue-loop-design.md`
+
 ### obsidian-use: ボルトを知識 wiki にし、フックでプロジェクト・環境のメモを集める（1.1.0）
 
 - `scripts/vault.py` を足す。`init` / `search` / `note` / `memo` / `notes` / `log` / `lint` で、wiki-use と同じ
