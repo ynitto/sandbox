@@ -50,7 +50,7 @@ class FakeGitLab:
                 pass
 
             def do_GET(self):
-                w = json.loads(outer.world.read_text())
+                w = json.loads(outer.world.read_text(encoding="utf-8"))
                 if self.headers.get("PRIVATE-TOKEN") != "t0ken":
                     return self._send(401, {"message": "401"})
                 u = urlparse(self.path)
@@ -102,22 +102,22 @@ class FakeGitLab:
 FAKE_AGENT = textwrap.dedent('''\
     import json, os, sys, time
     world = os.environ["FAKE_WORLD"]
-    prompt = sys.stdin.read()
-    with open(os.environ["FAKE_CALLS"], "a") as f:
+    prompt = sys.stdin.buffer.read().decode("utf-8")   # 送り手は UTF-8 の bytes で渡す
+    with open(os.environ["FAKE_CALLS"], "a", encoding="utf-8") as f:
         f.write(json.dumps({"pid": os.getpid(), "iid": os.environ.get("ISSUE_LOOP_IID"),
                             "start": time.time(), "prompt": prompt}) + "\\n")
     time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
     mode = os.environ.get("FAKE_MODE", "ok")
     if mode == "comment":   # エージェント自身が issue にコメントする（updated_at が進む）
-        w = json.load(open(world))
+        w = json.load(open(world, encoding="utf-8"))
         for i in w["issues"]:
             if str(i["iid"]) == os.environ["ISSUE_LOOP_IID"]:
                 i["user_notes_count"] += 1
                 i["updated_at"] = "2026-11-01T10:00:00Z"
         w.setdefault("notes", {})[os.environ["ISSUE_LOOP_IID"]] = [
             {"created_at": "2999-01-01T00:00:00Z", "author": {"username": w.get("self", "bot")}}]
-        json.dump(w, open(world, "w"))
-    with open(os.environ["FAKE_CALLS"], "a") as f:
+        json.dump(w, open(world, "w", encoding="utf-8"))
+    with open(os.environ["FAKE_CALLS"], "a", encoding="utf-8") as f:
         f.write(json.dumps({"pid": os.getpid(), "end": time.time()}) + "\\n")
     sys.exit(1 if mode == "fail" else 0)
 ''')
@@ -132,7 +132,7 @@ class Base(unittest.TestCase):
         self.set_world([make_issue(1, "2026-11-01T00:00:00Z")])
         self.gl = FakeGitLab(self.world)
         agent = self.tmp / "fake_agent.py"
-        agent.write_text(FAKE_AGENT)
+        agent.write_text(FAKE_AGENT, encoding="utf-8")
         self.env = {
             **os.environ,
             "HOME": str(self.tmp / "home"),
@@ -152,10 +152,10 @@ class Base(unittest.TestCase):
     def set_world(self, issues, **kw):
         w = {"issues": issues, "self": "bot"}
         if self.world.exists():
-            old = json.loads(self.world.read_text())
+            old = json.loads(self.world.read_text(encoding="utf-8"))
             w["notes"] = old.get("notes", {})
         w.update(kw)
-        self.world.write_text(json.dumps(w))
+        self.world.write_text(json.dumps(w), encoding="utf-8")
 
     def cli(self, *args, env=None, wait=True):
         e = {**self.env, **(env or {})}
@@ -172,7 +172,7 @@ class Base(unittest.TestCase):
         return json.loads(self.cli("status").stdout)
 
     def agent_calls(self):
-        return [json.loads(x) for x in self.calls.read_text().splitlines() if '"start"' in x]
+        return [json.loads(x) for x in self.calls.read_text(encoding="utf-8").splitlines() if '"start"' in x]
 
 
 # ---------------------------------------------------------------------------
@@ -296,11 +296,11 @@ class EndToEndTest(Base):
         self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
         self.cli("poll")
         # 実行中に他人がコメントした体（偽エージェントの代わりに world を先に書いておく）
-        w = json.loads(self.world.read_text())
+        w = json.loads(self.world.read_text(encoding="utf-8"))
         w["notes"] = {"1": [{"created_at": "2999-01-01T00:00:00Z", "author": {"username": "alice"}}]}
         w["issues"][0]["user_notes_count"] = 1
         w["issues"][0]["updated_at"] = "2026-11-01T06:00:00Z"
-        self.world.write_text(json.dumps(w))
+        self.world.write_text(json.dumps(w), encoding="utf-8")
         self.cli("run")
         q = self.status()["queue"]
         self.assertEqual([x["iid"] for x in q], [1])
@@ -368,7 +368,7 @@ class SingleSessionTest(Base):
         try:
             lock = Path(self.env["ISSUE_LOOP_STATE_DIR"]) / "session.json"
             lock.parent.mkdir(parents=True, exist_ok=True)
-            lock.write_text(json.dumps({"runner_pid": 999999, "child_pid": orphan.pid}))
+            lock.write_text(json.dumps({"runner_pid": 999999, "child_pid": orphan.pid}), encoding="utf-8")
             r = self.cli("run")
             self.assertIn(f"pid {orphan.pid}", r.stderr)
             self.assertEqual(self.agent_calls(), [])
@@ -422,7 +422,7 @@ class AgentProfileTest(unittest.TestCase):
     def test_repo_profiles_resolve(self):
         tmp = Path(tempfile.mkdtemp())
         pf, of = tmp / "p.md", tmp / "o.txt"
-        pf.write_text("hello")
+        pf.write_text("hello", encoding="utf-8")
         cfg = il.Config(api_url="x", project="p", token="t", agent="claude")
         argv, via = il.resolve_agent_argv(cfg, pf, of)
         # 先頭は PATH にあれば絶対パスへ解決されるので、名前だけ比べる

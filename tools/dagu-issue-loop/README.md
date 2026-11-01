@@ -100,7 +100,7 @@ ISSUE_LOOP_PYTHON=python
 - `ISSUE_LOOP_AGENT_TIMEOUT` で時間切れになったときは、CLI に Ctrl+Break を送り、15 秒待って子孫ごと強制終了する
 - `claude.cmd` のようなバッチ形式の CLI は、プロンプトを標準入力で渡す（`ISSUE_LOOP_AGENT_PROMPT_VIA=stdin`、既定）。
   引数で渡すと、改行や記号を含むプロンプトが壊れることがある
-- ログは UTF-8 で出す
+- ログは UTF-8 で出す（Linux でも UTF-8 でないロケールなら UTF-8 に切り替える）
 
 ## 失敗したとき
 

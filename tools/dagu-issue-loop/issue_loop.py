@@ -1038,11 +1038,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _utf8_stdio() -> None:
-    """Windows では標準出力・標準エラーがコンソールのコードページになり、日本語のログで落ちうる。
-    Dagu が受け取るのはパイプなので UTF-8 に揃える（読めない文字は置き換えて止まらない）。"""
-    if not IS_WINDOWS:
-        return
+    """標準出力・標準エラーを UTF-8 に揃える。Windows はコンソールのコードページ（cp932 / cp1252）、
+    POSIX でも UTF-8 でないロケールだと、日本語のログや status の出力で落ちたり化けたりする。
+    Dagu が受け取るのはパイプなので UTF-8 にする（書けない文字は置き換えて止まらない）。"""
     for stream in (sys.stdout, sys.stderr):
+        if str(getattr(stream, "encoding", "") or "").lower().replace("-", "") == "utf8":
+            continue
         with contextlib.suppress(AttributeError, ValueError):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
