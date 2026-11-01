@@ -10,7 +10,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### dagu-issue-loop: GitLab の issue を Dagu でポーリングし、エージェント CLI を 1 セッションずつ流す（0.1.0）
 
 - `tools/dagu-issue-loop/` を足す。`issue_loop.py`（標準ライブラリだけ）と Dagu v2 の DAG 2 本
-  （`gitlab-issue-poll` 5 分ごと / `gitlab-issue-agent` 毎分）で動く
+  （`gitlab-issue-poll` 1 時間ごと / `gitlab-issue-agent` 毎分）で動く
+- GitLab の負荷を抑える: 取得は毎時 0 分に起動して 0〜15 分ランダムにずらす（`--jitter`）。エージェントの DAG は
+  待ち行列が空なら GitLab に問い合わせない
 - 変化の検知: タイトル・状態・ラベル・担当・マイルストーン・期日・コメント数・本文のどれかが変わったときだけ積む。
   初回は今ある issue を既読にするだけ。同じ issue の変化は待ち行列で 1 件にまとめる
 - 実行後に issue を取り直して既読にし、エージェント自身のコメントで再発火しない。実行中に他人が動いたときだけもう一度流す

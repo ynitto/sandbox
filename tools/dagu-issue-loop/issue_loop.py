@@ -24,6 +24,7 @@ import contextlib
 import hashlib
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -106,6 +107,7 @@ class Config:
     retry_backoff: int = 300
     self_username: str = ""
     drain: int = 1
+    poll_jitter: int = 0
 
     @property
     def project_dir(self) -> Path:
@@ -174,6 +176,7 @@ def build_config(args: argparse.Namespace, *, need_gitlab: bool = True) -> Confi
         retry_backoff=_int(_env("RETRY_BACKOFF", "300"), "ISSUE_LOOP_RETRY_BACKOFF"),
         self_username=_env("SELF_USERNAME"),
         drain=_int(getattr(args, "drain", None) or _env("DRAIN", "1"), "ISSUE_LOOP_DRAIN"),
+        poll_jitter=_int(getattr(args, "jitter", None) or _env("POLL_JITTER", "0"), "ISSUE_LOOP_POLL_JITTER"),
     )
     if cfg.agent_prompt_via not in ("stdin", "arg", "file"):
         raise ConfigError("ISSUE_LOOP_AGENT_PROMPT_VIA は stdin / arg / file のどれか")
@@ -893,7 +896,12 @@ def settle_failure(st: dict[str, Any], item: dict[str, Any], cfg: Config, now: f
 # サブコマンド
 # ---------------------------------------------------------------------------
 
-def cmd_poll(cfg: Config, gl: GitLab) -> int:
+def cmd_poll(cfg: Config, gl: GitLab, *, sleep: Callable[[float], None] = time.sleep) -> int:
+    if cfg.poll_jitter > 0:
+        # 定刻（毎時 0 分）にそろって GitLab を叩かないよう、0〜poll_jitter 秒ずらす
+        delay = random.uniform(0, cfg.poll_jitter)
+        log(f"GitLab への問い合わせを {delay:.0f} 秒ずらします")
+        sleep(delay)
     try:
         issues, complete = gl.list_issues(state=cfg.issue_state, labels=cfg.issue_labels,
                                           assignee=cfg.issue_assignee, scope=cfg.issue_scope,
@@ -932,9 +940,7 @@ def cmd_run(cfg: Config, gl: GitLab) -> int:
     try:
         with single_session(cfg) as info_path:
             _recover_stale_inflight(cfg)
-            if not cfg.self_username:
-                with contextlib.suppress(GitLabError):
-                    cfg.self_username = gl.current_username()
+            # ここまで GitLab には触らない。毎分起動しても、待ち行列が空なら問い合わせは 0 回
             rc = EXIT_OK
             for _ in range(max(1, cfg.drain)):
                 if _stop_requested:
@@ -953,6 +959,9 @@ def cmd_run(cfg: Config, gl: GitLab) -> int:
                 current = None
                 others = True
                 if result.ok:
+                    if not cfg.self_username:
+                        with contextlib.suppress(GitLabError):
+                            cfg.self_username = gl.current_username()
                     try:
                         current = gl.get_issue(item["iid"])
                         others = others_acted(gl, item["iid"], now, cfg.self_username)
@@ -1022,6 +1031,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
     poll = sub.add_parser("poll", parents=[common])
     poll.add_argument("--no-baseline", action="store_true", help="初回も今ある issue を全部積む")
+    poll.add_argument("--jitter", help="問い合わせ前に 0〜この秒数だけランダムに待つ（既定 0。DAG は 900）")
     run = sub.add_parser("run", parents=[common])
     run.add_argument("--agent", help="agents/<name>.json の名前（例: claude, codex, kiro）")
     run.add_argument("--agent-cmd", help="エージェント CLI のコマンド行（--agent より優先）")

@@ -43,6 +43,7 @@ def make_issue(iid: int, updated: str, **kw) -> dict:
 class FakeGitLab:
     def __init__(self, world: Path):
         self.world = world
+        self.requests: list[str] = []   # 受けた GET のパス（GitLab への負荷を数える）
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -50,6 +51,7 @@ class FakeGitLab:
                 pass
 
             def do_GET(self):
+                outer.requests.append(urlparse(self.path).path)
                 w = json.loads(outer.world.read_text(encoding="utf-8"))
                 if self.headers.get("PRIVATE-TOKEN") != "t0ken":
                     return self._send(401, {"message": "401"})
@@ -323,6 +325,33 @@ class EndToEndTest(Base):
         self.cli("poll")
         self.assertEqual([q["kind"] for q in self.status()["queue"]], ["new"])
 
+    def test_run_with_empty_queue_does_not_touch_gitlab(self):
+        # agent の DAG は毎分起動する。待ち行列が空なら GitLab へは 1 回も問い合わせない
+        self.cli("poll")
+        self.gl.requests.clear()
+        for _ in range(3):
+            self.assertEqual(self.cli("run").returncode, 0)
+        self.assertEqual(self.gl.requests, [])
+
+    def test_run_requests_are_bounded_per_session(self):
+        self.cli("poll")
+        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", title="x")])
+        self.cli("poll")
+        self.gl.requests.clear()
+        self.cli("run")
+        # 実行後の確認だけ: 自分の名前・issue の取り直し・notes の 3 回
+        self.assertEqual(len(self.gl.requests), 3, self.gl.requests)
+
+    def test_poll_jitter_waits_before_fetching(self):
+        self.cli("poll")
+        self.gl.requests.clear()
+        t0 = time.time()
+        r = self.cli("poll", "--jitter", "1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("秒ずらします", r.stderr)
+        self.assertLess(time.time() - t0, 15)
+        self.assertEqual(len(self.gl.requests), 1)
+
     def test_auth_error_exit_code(self):
         r = self.cli("poll", env={"GITLAB_TOKEN": "wrong"})
         self.assertEqual(r.returncode, 3)
@@ -416,6 +445,39 @@ class SingleSessionTest(Base):
         r = self.cli("run")
         self.assertIn("失敗として数えます", r.stderr)
         self.assertEqual(len(self.agent_calls()), 1)
+
+
+class JitterTest(unittest.TestCase):
+    def test_delay_is_within_range_and_off_by_default(self):
+        cfg = il.Config(api_url="x", project="p", token="t", poll_jitter=900)
+
+        class Boom(Exception):
+            pass
+
+        delays = []
+
+        def fake_sleep(sec):
+            delays.append(sec)
+            raise Boom()   # 待ったあとの取得までは進めない
+
+        for _ in range(50):
+            with self.assertRaises(Boom):
+                il.cmd_poll(cfg, None, sleep=fake_sleep)
+        self.assertTrue(all(0 <= d <= 900 for d in delays))
+        self.assertGreater(len(set(round(d) for d in delays)), 1)   # 毎回同じ値ではない
+
+        cfg.poll_jitter = 0
+        calls = []
+
+        class FakeGL:
+            def list_issues(self, **kw):
+                calls.append(kw)
+                return [], True
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg.state_dir = Path(d)
+            il.cmd_poll(cfg, FakeGL(), sleep=fake_sleep)   # 0 なら sleep を呼ばない
+        self.assertEqual(len(calls), 1)
 
 
 class AgentProfileTest(unittest.TestCase):

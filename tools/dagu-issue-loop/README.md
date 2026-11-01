@@ -5,9 +5,9 @@ GitLab の issue を [Dagu](https://github.com/dagu-org/dagu)（v2）で定期�
 **同時に動くエージェント CLI は常に 1 つ**で、同じ変化を 2 回流さない。
 
 ```
- Dagu: gitlab-issue-poll（5 分ごと）          Dagu: gitlab-issue-agent（毎分）
+ Dagu: gitlab-issue-poll（1 時間ごと）        Dagu: gitlab-issue-agent（毎分）
    issue_loop.py poll                            issue_loop.py run
-     GitLab から issue を取得                      実行中のセッションがあれば何もせず終わる
+     0〜15 分ずらして issue を取得                    実行中のセッションがあれば何もせず終わる
      前回との差分を見て待ち行列へ積む  ──待ち行列──▶  1 件取り出してエージェント CLI を実行
      （同じ issue の変化は 1 件にまとめる）          終わったら既読にする（失敗なら後で再試行）
 ```
@@ -55,7 +55,17 @@ Python 3.10 以降の標準ライブラリだけで動く。追加のパッケ�
    ```
 
 5. Dagu のスケジューラを動かす（`dagu start-all` など）。以後は issue にコメント・ラベル変更・本文の更新などが
-   あると、数分以内にエージェントが起きる。
+   あると、次の取得（1 時間に 1 回）でエージェントが起きる。
+
+## GitLab への問い合わせの回数
+
+- issue の取得は **1 時間に 1 回**。毎時 0 分に起動し、0〜15 分のあいだでランダムにずらしてから問い合わせる。
+  複数の PC やプロジェクトで動かしても、問い合わせが同じ時刻に重ならない。1 回の取得は 100 件ごとに 1 リクエスト
+- エージェントの DAG は毎分起動するが、待ち行列が空なら GitLab には**問い合わせない**
+- エージェントを 1 回流すたびに、終わったあとの確認で 3 リクエスト（自分の名前・issue の取り直し・コメント）
+
+間隔は `gitlab-issue-poll.yaml` の `schedule`、ずらす幅は同じファイルの `--jitter`（秒）で変えられる。手で `poll` を
+動かすときはずらさない（`--jitter` を付けたときと、`ISSUE_LOOP_POLL_JITTER` を設定したときだけずらす）。
 
 ## 何を「変化」とみなすか
 
@@ -143,6 +153,7 @@ python3 ~/.local/share/dagu-issue-loop/issue_loop.py forget 123
 | `ISSUE_LOOP_PROMPT_TEMPLATE` | — | プロンプトのテンプレートファイル |
 | `ISSUE_LOOP_MAX_ATTEMPTS` | `3` | 打ち切るまでの失敗回数 |
 | `ISSUE_LOOP_RETRY_BACKOFF` | `300` | 再試行までの秒数（1 回ごとに倍） |
+| `ISSUE_LOOP_POLL_JITTER` | `0` | 取得の前にランダムに待つ最大秒数（DAG では `--jitter 900` を渡す） |
 | `ISSUE_LOOP_DRAIN` | `1` | 1 回の `run` で続けて流す最大件数 |
 | `ISSUE_LOOP_LOCK_FILE` | 全プロジェクト共通 | セッションの排他に使うファイル |
 | `ISSUE_LOOP_STATE_DIR` | `~/.agents/dagu-issue-loop` | 待ち行列・既読・実行ログの置き場 |

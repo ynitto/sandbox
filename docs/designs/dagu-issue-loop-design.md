@@ -19,7 +19,7 @@ agent-loop は tmux ペインを常駐させ、フックの `check()` と `ack()
 ## 2. 構成
 
 ```
-gitlab-issue-poll (*/5)  ──▶  issue_loop.py poll  ──┐
+gitlab-issue-poll (0 * + 0〜15 分)  ──▶  issue_loop.py poll  ──┐
                                                     ▼
                                     <state_dir>/<project>-<hash>/state.json
                                       seen / queue / inflight / dead
@@ -32,6 +32,21 @@ gitlab-issue-agent (*)   ──▶  issue_loop.py run   ──┘── session.
   ポーリングも止まる。別 DAG なら実行中も変化を積み続け、run が終わった次の分に次を取れる。
 - state.json は `state.lock` の flock で排他した read-modify-write。poll と run が同時に触っても壊れない。
   書き戻しは tmp → rename。読めない state は `.broken-<時刻>` に退避して作り直す（止まるより進む）。
+
+### 2.1 GitLab への負荷
+
+| 呼び出し | 頻度 | リクエスト数 |
+|---|---|---|
+| poll | 毎時 0 分に起動し、`--jitter 900` で 0〜900 秒ランダムに待ってから取得 | issue 100 件ごとに 1（上限 `MAX_PAGES`） |
+| run（待ち行列が空） | 毎分 | **0**。ロックと state.json だけを見て終わる |
+| run（1 件流した） | 流すたび | 3（`/user`・issue の取り直し・notes）。`/user` は CLI の実行後に初めて引く |
+
+- 定刻を Dagu の cron（毎時 0 分）に置き、ずらしはスクリプト側で行う。Dagu v2 のスケジュールにジッタの指定が無いため。
+  ずらす幅は毎回ランダムにする。PC やプロジェクトごとに固定のずれにすると、同じ設定を配った台数分が
+  同じ時刻にそろいうる。
+- `--jitter` は CLI 引数 → `ISSUE_LOOP_POLL_JITTER` → 0 の順。手で `poll` を叩くときは待たない。
+- DAG の `timeout_sec` はジッタの最大（900 秒）より長くする（1200 秒）。
+- 当初は run の開始ごとに `/user` を引いており、待ち行列が空でも 1 時間に 60 リクエストあった。実行後へ遅らせた。
 
 ## 3. 変化の検知と重複制御
 
