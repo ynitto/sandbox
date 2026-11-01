@@ -93,7 +93,7 @@ function ConvertFrom-ProxyServerString {
     $result = [ordered]@{ Http = ''; Https = ''; Ignored = @() }
     if ([string]::IsNullOrWhiteSpace($ProxyServer)) { return [pscustomobject]$result }
     if ($ProxyServer -notmatch '=') {
-        $url = ConvertTo-ProxyUrl (($ProxyServer -split '[;\s]+' | Where-Object { $_ })[0])
+        $url = ConvertTo-ProxyUrl (@($ProxyServer -split '[;\s]+' | Where-Object { $_ })[0])
         $result.Http = $url
         $result.Https = $url
         return [pscustomobject]$result
