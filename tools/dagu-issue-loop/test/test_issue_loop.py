@@ -308,6 +308,28 @@ class EndToEndTest(Base):
         self.assertEqual([x["iid"] for x in q], [1])
         self.assertEqual(q[0]["version"], "2026-11-01T06:00:00Z")
 
+    def test_unknown_self_username_does_not_loop(self):
+        self.cli("poll")
+        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
+        self.cli("poll")
+        w = json.loads(self.world.read_text(encoding="utf-8"))
+        w["self"] = ""                                           # /user からユーザー名が取れない
+        self.world.write_text(json.dumps(w), encoding="utf-8")
+        self.cli("run", env={"FAKE_MODE": "comment"})
+        self.assertEqual(self.status()["queue"], [])
+        self.cli("run")
+        self.assertEqual(len(self.agent_calls()), 1)
+
+    def test_unlaunchable_agent_does_not_leave_inflight_or_burn_attempts(self):
+        self.cli("poll")
+        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
+        self.cli("poll")
+        r = self.cli("run", env={"ISSUE_LOOP_AGENT_CMD": "/nonexistent/agent-bin"})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        st = self.status()
+        self.assertIsNone(st["inflight"])
+        self.assertEqual(st["queue"][0]["attempts"], 0)
+
     def test_failure_retries_then_gives_up(self):
         self.cli("poll")
         self.set_world([make_issue(1, "2026-11-01T05:00:00Z", title="new")])

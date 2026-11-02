@@ -22,6 +22,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - Windows（ネイティブ）でも動く。ファイルロック・プロセスの生存確認・子孫ごとの停止・シグナル・コマンド行の分割を OS ごとに切り替え、
   DAG の Python は `ISSUE_LOOP_PYTHON` で渡す。CI に Windows でのテストを足した
 - 設計: `docs/designs/dagu-issue-loop-design.md`
+- 直し: 自分のユーザー名が分からないとき、成功のたびに同じ issue を流し直し続けていたのを、既読にして止める（警告を 1 行出す）。
+  エージェント CLI を起動できない設定の誤りで、実行中の印が残り試行回数が減っていたのを直す
 
 ### obsidian-use: ボルトを知識 wiki にし、フックでプロジェクト・環境のメモを集める（1.1.0）
 
