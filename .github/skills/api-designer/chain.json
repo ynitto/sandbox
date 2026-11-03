@@ -1,0 +1,14 @@
+{
+  "chain": 1,
+  "actions": [
+    {
+      "id": "validate",
+      "summary": "OpenAPI 3.x の仕様を検査し、指摘を JSON で出す",
+      "run": ["python", "scripts/validate_openapi.py", "--json", "{in:spec}"],
+      "inputs": {"spec": "openapi"},
+      "outputs": {"report": {"type": "openapi-report", "ext": "json", "stdout": true}},
+      "ok_exit": [0, 1],
+      "timeout_sec": 300
+    }
+  ]
+}
