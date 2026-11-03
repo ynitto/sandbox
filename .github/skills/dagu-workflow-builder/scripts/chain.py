@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""この環境に入っているスキルのスクリプトをつないで、Dagu v2 の DAG を組み立てる。LLM は使わない。
+"""この環境に入っているスキルのスクリプトをつないで、Dagu v2 の DAG を組み立てる。つなぎ方の決定に LLM は使わない。
 
 各スキルは、自分のスクリプトが何を受け取り何を作るかを `chain.json`（スキル直下）で宣言する。
 このスクリプトはインストール先のスキルを走査して宣言を集め、「型」（`openapi` や
 `openapi-report` のような名前）を頂点にした有向超グラフの上で、手元の入力から目的の型までの
 最小コストの実行チェーンを決定的に探し、Dagu v2 の YAML に書き出す。
+
+スクリプトでは埋まらないところは、エージェント CLI（`agents/<name>.json` の定義。既定は kiro）に
+プロンプトを渡すアクションで埋められる（`"agent": {"prompt": …}`）。エージェントのステップは重い
+コストで探索に入るので、スクリプトだけでつながるならそちらが選ばれる。`--no-agent` で一切使わない。
 
 サブコマンド:
   scan   見つかったスキルとアクション、作れる型を並べる
@@ -45,6 +49,11 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"\{(in|out|param):([^{}]*)\}|\{skill_dir\}")
 INTERPRETERS = {"python", "python3", "node"}
 
+# エージェント CLI を呼ぶステップ 1 つのコスト（スクリプトは 1）。スクリプトだけでつながる経路が
+# あればそちらが必ず勝ち、足りないところにだけエージェントが入るよう、十分に重くしておく。
+AGENT_COST = 100
+DEFAULT_AGENT_CLI = "kiro"
+
 
 class ChainError(Exception):
     """チェーンが組めない・宣言が壊れている。終了コード 1。"""
@@ -69,6 +78,14 @@ class Param:
 
 
 @dataclass
+class AgentSpec:
+    """スクリプトの代わりにエージェント CLI を 1 回呼ぶアクションの中身。"""
+    prompt: str
+    readonly: bool
+    cli: str = ""          # 空なら build の --agent-cli（既定 kiro）
+
+
+@dataclass
 class Action:
     skill: str
     skill_dir: Path
@@ -80,6 +97,7 @@ class Action:
     params: list[Param] = field(default_factory=list)
     ok_exit: list[int] = field(default_factory=lambda: [0])
     timeout_sec: int | None = None
+    agent: AgentSpec | None = None
 
     @property
     def key(self) -> str:
@@ -88,6 +106,10 @@ class Action:
     @property
     def step_name(self) -> str:
         return f"{self.skill}-{self.id}"
+
+    @property
+    def cost(self) -> int:
+        return AGENT_COST if self.agent else 1
 
 
 def skill_roots(explicit: list[str] | None = None) -> list[Path]:
@@ -122,10 +144,13 @@ def _str_list(v) -> bool:
     return isinstance(v, list) and all(isinstance(x, str) for x in v)
 
 
-def load_contract(skill_dir: Path) -> tuple[list[Action], list[str]]:
-    """chain.json を読み、(アクション, 違反) を返す。違反のあるアクションは返さない。"""
-    path = skill_dir / CONTRACT_FILE
-    skill = skill_dir.name
+def load_contract(skill_dir: Path, path: Path | None = None, skill: str | None = None) -> tuple[list[Action], list[str]]:
+    """chain.json を読み、(アクション, 違反) を返す。違反のあるアクションは返さない。
+
+    path / skill を渡すと、スキルの外に置いた宣言（--actions）を読む。相対パスは skill_dir から解く。
+    """
+    path = path or skill_dir / CONTRACT_FILE
+    skill = skill or skill_dir.name
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
@@ -159,9 +184,24 @@ def load_contract(skill_dir: Path) -> tuple[list[Action], list[str]]:
         if not isinstance(summary, str) or not summary.strip():
             errs.append("summary（何をするかの 1 行）が要る")
         run = ra.get("run")
-        if not _str_list(run) or not run:
-            errs.append("run は文字列の配列にする")
+        raw_agent = ra.get("agent")
+        agent: AgentSpec | None = None
+        if run is not None and raw_agent is not None:
+            errs.append("run と agent はどちらか一方にする")
+        if raw_agent is not None:
             run = []
+            if not isinstance(raw_agent, dict) or not isinstance(raw_agent.get("prompt"), str) \
+                    or not raw_agent["prompt"].strip():
+                errs.append("agent は {\"prompt\": \"…\"} にする（prompt が要る）")
+            elif not isinstance(raw_agent.get("cli", ""), str) or \
+                    not isinstance(raw_agent.get("readonly", True), bool):
+                errs.append("agent.cli は文字列、agent.readonly は true / false にする")
+            else:
+                agent = AgentSpec(raw_agent["prompt"], raw_agent.get("readonly"), raw_agent.get("cli", ""))
+        elif not _str_list(run) or not run:
+            errs.append("run（実行する argv）か agent（エージェント CLI に渡すプロンプト）が要る")
+            run = []
+        templates = [agent.prompt] if agent else list(run)
 
         inputs = ra.get("inputs", {})
         if not isinstance(inputs, dict) or not all(
@@ -218,7 +258,7 @@ def load_contract(skill_dir: Path) -> tuple[list[Action], list[str]]:
 
         # run の差し込みと宣言の突き合わせ
         used = {"in": set(), "out": set(), "param": set()}
-        for tok in run:
+        for tok in templates:
             for m in PLACEHOLDER_RE.finditer(tok):
                 if m.group(1):
                     used[m.group(1)].add(m.group(2))
@@ -241,21 +281,44 @@ def load_contract(skill_dir: Path) -> tuple[list[Action], list[str]]:
                 errs.append(f"run のスクリプト {tok} が無い")
         if set(inputs.values()) & {o.type for o in outputs}:
             errs.append("同じ型を受け取って同じ型を出すアクションは書けない（チェーンが閉じない）")
+        if agent:
+            writes = [o.name for o in outputs if not o.stdout]
+            if agent.readonly is None:
+                agent.readonly = not writes   # ファイルを書かせるときだけ書き込みを許す
+            elif agent.readonly and writes:
+                errs.append(f"agent.readonly が true なのにファイルの出力 {', '.join(writes)} がある")
+        errs = [e.replace("run の", "prompt の").replace("run で", "prompt で").replace("run に", "prompt に")
+                for e in errs] if agent else errs
 
         if errs:
             problems.extend(f"{where}: {e}" for e in errs)
             continue
         actions.append(Action(skill, skill_dir, aid, summary.strip(), list(run), dict(inputs),
-                              outputs, params, sorted(set(ok_exit)), timeout))
+                              outputs, params, sorted(set(ok_exit)), timeout, agent))
     return actions, problems
 
 
-def load_all(roots: list[Path]) -> tuple[list[Action], list[str], list[tuple[str, Path]]]:
+def extra_name(path: Path) -> str:
+    """--actions のファイルのアクションに付ける名前（スキル名の代わり）。"""
+    stem = path.stem if path.stem != "chain" else path.resolve().parent.name
+    return re.sub(r"[^a-z0-9-]+", "-", stem.lower()).strip("-") or "local"
+
+
+def load_all(roots: list[Path], extra: list[str] | None = None) -> tuple[list[Action], list[str], list[tuple[str, Path]]]:
     skills, shadowed = discover(roots)
     actions: list[Action] = []
     problems: list[str] = []
     for name in sorted(skills):
         a, p = load_contract(skills[name])
+        actions.extend(a)
+        problems.extend(p)
+    for f in extra or []:
+        path = Path(f).expanduser()
+        name = extra_name(path)
+        if name in skills:
+            problems.append(f"{path.as_posix()}: 名前 {name} がスキルと重なる（ファイル名を変える）")
+            continue
+        a, p = load_contract(path.resolve().parent, path, name)
         actions.extend(a)
         problems.extend(p)
     actions.sort(key=lambda a: (a.skill, a.id))
@@ -274,15 +337,17 @@ class Plan:
     cost: dict[str, int]
 
 
-def solve(actions: list[Action], have: dict[str, str], goals: list[str], avoid: list[str]) -> Plan:
+def solve(actions: list[Action], have: dict[str, str], goals: list[str], avoid: list[str],
+          allow_agent: bool = True) -> Plan:
     """手元の型から目的の型までのチェーンを決める（決定的）。
 
-    型のコスト = 作るのに要るステップの延べ数（手元の型は 0）。アクションを (スキル, id) の順に
-    なめて、全入力のコストが決まっているアクションの出力を「1 + 入力のコストの和」で緩和する。
-    同じコストなら先に見た（名前順で前の）アクションが勝つ。
+    型のコスト = 作るのに要るステップのコストの延べ（手元の型は 0、スクリプトは 1、エージェント
+    CLI は AGENT_COST）。アクションを (スキル, id) の順になめて、全入力のコストが決まっている
+    アクションの出力を「自分のコスト + 入力のコストの和」で緩和する。同じコストなら先に見た
+    （名前順で前の）アクションが勝つ。
     """
     def avoided(a: Action) -> bool:
-        return any(a.key == x or a.skill == x for x in avoid)
+        return any(a.key == x or a.skill == x for x in avoid) or (a.agent is not None and not allow_agent)
 
     usable = [a for a in actions if not avoided(a)]
     cost: dict[str, int] = {t: 0 for t in have}
@@ -294,7 +359,7 @@ def solve(actions: list[Action], have: dict[str, str], goals: list[str], avoid: 
             in_types = sorted(set(a.inputs.values()))
             if not all(t in cost for t in in_types):
                 continue
-            c = 1 + sum(cost[t] for t in in_types)
+            c = a.cost + sum(cost[t] for t in in_types)
             for o in a.outputs:
                 if o.type not in cost or c < cost[o.type]:
                     cost[o.type] = c
@@ -303,7 +368,10 @@ def solve(actions: list[Action], have: dict[str, str], goals: list[str], avoid: 
 
     missing = [g for g in goals if g not in cost]
     if missing:
-        raise ChainError(_explain_missing(missing, usable, cost))
+        msg = _explain_missing(missing, usable, cost)
+        if not allow_agent and any(a.agent for a in actions):
+            msg += "\n（エージェント CLI を呼ぶアクションは --no-agent で外している）"
+        raise ChainError(msg)
 
     order: list[Action] = []
     done: set[str] = set()
@@ -337,6 +405,111 @@ def _explain_missing(missing: list[str], actions: list[Action], cost: dict[str, 
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- エージェント CLI の定義（agents/<name>.json）
+
+# 探索順は agentcore.agentcli.plugin_dirs と同じ（docs/specs/agent-cli-spec.md §1）。同名は先勝ち。
+AGENTS_DIR_ENV = "KIRO_AGENTS_DIR"
+AGENTS_HOME_ENV = "AGENT_PROJECT_AGENTS_HOME"
+
+
+def agent_dirs(explicit: list[str] | None = None) -> list[Path]:
+    if explicit:
+        return [Path(p).expanduser() for p in explicit]
+    dirs: list[Path] = []
+    envd = os.environ.get(AGENTS_DIR_ENV)
+    if envd:
+        dirs.append(Path(envd).expanduser())
+    dirs.append(Path.cwd() / "agents")
+    home = os.environ.get(AGENTS_HOME_ENV)
+    dirs.append((Path(home).expanduser() if home else Path.home() / ".agents") / "agents")
+    dirs.append(Path.home() / ".kiro" / "agents")
+    for parent in Path(__file__).resolve().parents:   # リポジトリから直接動かすときの同梱定義
+        if (parent / "agents" / "kiro.json").is_file():
+            dirs.append(parent / "agents")
+            break
+    return dirs
+
+
+@dataclass
+class AgentCli:
+    name: str
+    path: Path
+    command: list[str]
+    prompt_flag: str | None
+    model_flag: str | None
+    default_model: str
+    write_args: list[str]
+    readonly_args: list[str]
+    command_suffix: list[str]
+    env: dict[str, str]
+    timeout: int | None
+
+    def argv(self, prompt: str, readonly: bool, model: str) -> list[str]:
+        """ヘッドレス 1 回分の argv。順は agentcore.agentcli.headless_cmd と同じ:
+        command + (write_args | readonly_args) + model_flag model + command_suffix + プロンプト。"""
+        m = model or self.default_model
+
+        def expand(tokens: list[str]) -> list[str]:
+            # {model} はモデルが無ければトークンごと落とす
+            return [t.replace("{model}", m) for t in tokens if m or "{model}" not in t]
+
+        argv = expand(self.command) + expand(self.readonly_args if readonly else self.write_args)
+        if m and self.model_flag and not any("{model}" in t for t in self.command):
+            argv += [self.model_flag, m]
+        argv += expand(self.command_suffix)
+        argv += [self.prompt_flag, prompt] if self.prompt_flag else [prompt]
+        return argv
+
+
+class AgentResolver:
+    """build 中に使うエージェント CLI の定義を引く（同じ名前は 1 度だけ読む）。"""
+
+    def __init__(self, default: str = DEFAULT_AGENT_CLI, model: str = "", dirs: list[Path] | None = None) -> None:
+        self.default = default
+        self.model = model
+        self.dirs = dirs if dirs is not None else agent_dirs()
+        self._cache: dict[str, AgentCli] = {}
+
+    def name_for(self, a: Action) -> str:
+        return (a.agent.cli if a.agent and a.agent.cli else self.default)
+
+    def get(self, name: str) -> AgentCli:
+        if name not in self._cache:
+            self._cache[name] = self._load(name)
+        return self._cache[name]
+
+    def _load(self, name: str) -> AgentCli:
+        if not re.match(r"^[\w.-]+$", name):
+            raise ChainError(f"エージェント CLI の名前 {name!r} が不正")
+        path = next((d / f"{name}.json" for d in self.dirs if (d / f"{name}.json").is_file()), None)
+        if path is None:
+            where = ", ".join(d.as_posix() for d in self.dirs)
+            raise ChainError(f"エージェント CLI の定義 {name}.json が見つからない（探した場所: {where}）")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise ChainError(f"{path.as_posix()}: 読めない（{e}）") from e
+        cmd = raw.get("command")
+        if not _str_list(cmd) or not cmd:
+            raise ChainError(f"{path.as_posix()}: command が無い")
+        # DAG のステップは argv を 1 回組むだけなので、プロンプトを引数で受け取り応答を標準出力に出す
+        # CLI だけを扱う（kiro-cli がそう）。標準入力で受け取る CLI・応答をファイルに書く CLI はまだ。
+        if raw.get("prompt_via", "stdin") != "argv":
+            raise ChainError(f"{name}: プロンプトを標準入力で受け取る CLI はまだ使えない（いま使えるのは kiro のように引数で受け取る CLI）")
+        if raw.get("output", "stdout") != "stdout" or any("{output_file}" in t for t in cmd):
+            raise ChainError(f"{name}: 応答をファイルに書く CLI はまだ使えない（応答を標準出力に出す CLI だけ）")
+        timeout = raw.get("timeout")
+        return AgentCli(
+            name=name, path=path, command=list(cmd),
+            prompt_flag=raw.get("prompt_flag"), model_flag=raw.get("model_flag"),
+            default_model=str(raw.get("default_model") or ""),
+            write_args=list(raw.get("write_args", [])), readonly_args=list(raw.get("readonly_args", [])),
+            command_suffix=list(raw.get("command_suffix", [])),
+            env={str(k): str(v) for k, v in (raw.get("env") or {}).items()},
+            timeout=int(timeout) if isinstance(timeout, (int, float)) and timeout > 0 else None,
+        )
+
+
 # ---------------------------------------------------------------- Dagu v2 への書き出し
 
 
@@ -363,7 +536,8 @@ def interpreter(token: str) -> str:
     return Path(found).as_posix() if found else token
 
 
-def render_step(a: Action, plan: Plan, values: dict[str, str]) -> tuple[dict, list[dict]]:
+def render_step(a: Action, plan: Plan, values: dict[str, str],
+                agents: AgentResolver | None = None) -> tuple[dict, list[dict]]:
     """1 アクション → Dagu のステップ。(ステップ, このステップが足す params) を返す。"""
     step_params: list[dict] = []
     bindings: dict[tuple[str, str], str] = {}
@@ -395,19 +569,31 @@ def render_step(a: Action, plan: Plan, values: dict[str, str]) -> tuple[dict, li
             return bindings[(m.group(1), m.group(2))]
         return PLACEHOLDER_RE.sub(repl, tok)
 
-    argv = [sub(t) for t in a.run]
-    head = a.run[0]
-    if head in INTERPRETERS:
-        command = interpreter(head)
-    elif (a.skill_dir / head).is_file():
-        command = (a.skill_dir / head).resolve().as_posix()
+    env: dict[str, str] = {}
+    timeout = a.timeout_sec
+    if a.agent:
+        agents = agents or AgentResolver()
+        cli = agents.get(agents.name_for(a))
+        argv = cli.argv(sub(a.agent.prompt), a.agent.readonly, agents.model)
+        found = shutil.which(argv[0])
+        command = Path(found).as_posix() if found else argv[0]
+        args = argv[1:]
+        env = cli.env
+        timeout = timeout or cli.timeout
     else:
-        command = head
-    args = []
-    for raw, tok in zip(a.run[1:], argv[1:]):
-        if not PLACEHOLDER_RE.search(raw) and (a.skill_dir / raw).is_file():
-            tok = (a.skill_dir / raw).resolve().as_posix()
-        args.append(tok)
+        argv = [sub(t) for t in a.run]
+        head = a.run[0]
+        if head in INTERPRETERS:
+            command = interpreter(head)
+        elif (a.skill_dir / head).is_file():
+            command = (a.skill_dir / head).resolve().as_posix()
+        else:
+            command = head
+        args = []
+        for raw, tok in zip(a.run[1:], argv[1:]):
+            if not PLACEHOLDER_RE.search(raw) and (a.skill_dir / raw).is_file():
+                tok = (a.skill_dir / raw).resolve().as_posix()
+            args.append(tok)
 
     deps = sorted({plan.producer[t].step_name for t in a.inputs.values() if t not in plan.have})
     step: dict = {
@@ -416,6 +602,8 @@ def render_step(a: Action, plan: Plan, values: dict[str, str]) -> tuple[dict, li
         "action": "exec",
         "with": {"command": command, "args": args},
     }
+    if env:
+        step["env"] = [{k: v} for k, v in sorted(env.items())]
     so = next((o for o in a.outputs if o.stdout), None)
     if so:
         step["stdout"] = output_file(a, so)
@@ -424,12 +612,13 @@ def render_step(a: Action, plan: Plan, values: dict[str, str]) -> tuple[dict, li
     extra = [c for c in a.ok_exit if c != 0]
     if extra:
         step["continue_on"] = {"exit_code": a.ok_exit, "mark_success": True}
-    if a.timeout_sec:
-        step["timeout_sec"] = a.timeout_sec
+    if timeout:
+        step["timeout_sec"] = timeout
     return step, step_params
 
 
-def render_dag(plan: Plan, values: dict[str, str], description: str = "") -> str:
+def render_dag(plan: Plan, values: dict[str, str], description: str = "",
+               agents: AgentResolver | None = None) -> str:
     params: list[dict] = []
     for t in sorted(plan.have):
         if not any(t in a.inputs.values() for a in plan.steps):
@@ -442,7 +631,7 @@ def render_dag(plan: Plan, values: dict[str, str], description: str = "") -> str
         params.append(entry)
     steps = []
     for a in plan.steps:
-        s, sp = render_step(a, plan, values)
+        s, sp = render_step(a, plan, values, agents)
         steps.append(s)
         params.extend(sp)
 
@@ -458,6 +647,11 @@ def render_dag(plan: Plan, values: dict[str, str], description: str = "") -> str
         "# 成果物は実行ごとの作業フォルダ（DAG_RUN_WORK_DIR）にできる:",
         *[f"#   {g}" for g in goal_files],
     ]
+    agent_steps = [a for a in plan.steps if a.agent]
+    if agent_steps:
+        resolver = agents or AgentResolver()
+        header.append("# エージェント CLI を呼ぶステップ（ここだけ LLM を使う）:")
+        header += [f"#   {a.step_name}（{resolver.name_for(a)}）" for a in agent_steps]
     doc: dict = {"description": description or f"{' + '.join(sorted(plan.have)) or '入力なし'} から {' + '.join(plan.goals)} を作る",
                  "type": "graph"}
     if params:
@@ -535,11 +729,12 @@ def _usage(msg: str) -> int:
 def _io(a: Action) -> str:
     ins = ", ".join(sorted(set(a.inputs.values()))) or "（なし）"
     outs = ", ".join(o.type for o in a.outputs)
-    return f"{ins} → {outs}"
+    mark = f"［エージェント: {a.agent.cli or '既定'}］" if a.agent else ""
+    return f"{ins} → {outs}{mark}"
 
 
 def cmd_scan(args, roots: list[Path]) -> int:
-    actions, problems, shadowed = load_all(roots)
+    actions, problems, shadowed = load_all(roots, args.actions)
     if args.json:
         json.dump({
             "roots": [r.as_posix() for r in roots],
@@ -585,7 +780,7 @@ def cmd_check(args, roots: list[Path]) -> int:
             count += len(a)
             problems.extend(p)
     else:
-        actions, problems, _ = load_all(roots)
+        actions, problems, _ = load_all(roots, args.actions)
         count = len(actions)
     for p in problems:
         print(p, file=sys.stderr)
@@ -594,11 +789,15 @@ def cmd_check(args, roots: list[Path]) -> int:
 
 
 def _solve_from_args(args, roots: list[Path]) -> Plan:
-    actions, problems, _ = load_all(roots)
+    actions, problems, _ = load_all(roots, args.actions)
     for p in problems:
         print(f"（読み飛ばし）{p}", file=sys.stderr)
     have = _parse_from(args.from_)
-    return solve(actions, have, list(dict.fromkeys(args.to)), args.avoid)
+    return solve(actions, have, list(dict.fromkeys(args.to)), args.avoid, allow_agent=not args.no_agent)
+
+
+def _resolver(args) -> AgentResolver:
+    return AgentResolver(args.agent_cli, args.agent_model, agent_dirs(args.agents_dir))
 
 
 def cmd_plan(args, roots: list[Path]) -> int:
@@ -608,7 +807,8 @@ def cmd_plan(args, roots: list[Path]) -> int:
             "inputs": plan.have,
             "goals": plan.goals,
             "steps": [{"step": a.step_name, "action": a.key, "inputs": sorted(set(a.inputs.values())),
-                       "outputs": [o.type for o in a.outputs]} for a in plan.steps],
+                       "outputs": [o.type for o in a.outputs],
+                       "agent_cli": _resolver(args).name_for(a) if a.agent else None} for a in plan.steps],
         }, sys.stdout, ensure_ascii=False, indent=2)
         print()
         return 0
@@ -619,8 +819,12 @@ def cmd_plan(args, roots: list[Path]) -> int:
         print("\n手元の入力だけで足りている（実行するステップは無い）。")
         return 0
     print()
+    resolver = _resolver(args)
     for i, a in enumerate(plan.steps, 1):
-        print(f"{i}. {a.key}  {_io(a)}  — {a.summary}")
+        via = f"［エージェント: {resolver.name_for(a)}］" if a.agent else ""
+        print(f"{i}. {a.key}  {_io(a).split('［')[0]}{via}  — {a.summary}")
+    if any(a.agent for a in plan.steps):
+        print("\n［エージェント］のステップだけ LLM を使う。使わない経路を探すなら --no-agent")
     return 0
 
 
@@ -628,7 +832,7 @@ def cmd_build(args, roots: list[Path]) -> int:
     plan = _solve_from_args(args, roots)
     if not plan.steps:
         raise ChainError("手元の入力だけで目的の型が揃っている。DAG にするステップが無い。")
-    text = render_dag(plan, _parse_params(args.param), args.description)
+    text = render_dag(plan, _parse_params(args.param), args.description, _resolver(args))
     if args.output and args.output != "-":
         out = Path(args.output).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -646,6 +850,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="スキルのスクリプトをつないで Dagu v2 の DAG を組み立てる（LLM 不要）")
     ap.add_argument("--skills-dir", action="append", metavar="DIR",
                     help=f"走査するスキル置き場（複数可）。省略時は環境変数 {SKILLS_ENV}、それも無ければ各エージェントのホーム")
+    ap.add_argument("--actions", action="append", default=[], metavar="FILE",
+                    help="スキルの外に置いたアクションの宣言（chain.json と同じ形）を足す。複数可")
     sub = ap.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("scan", help="見つかったアクションと作れる型を並べる")
@@ -661,6 +867,12 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--to", action="append", required=True, metavar="TYPE", help="作りたい型。複数可")
         p.add_argument("--avoid", action="append", default=[], metavar="SKILL[/ACTION]",
                        help="使わないスキル・アクション。複数可")
+        p.add_argument("--no-agent", action="store_true", help="エージェント CLI を呼ぶアクションを使わない")
+        p.add_argument("--agent-cli", default=DEFAULT_AGENT_CLI, metavar="NAME",
+                       help=f"エージェント CLI の定義名（agents/<NAME>.json。既定 {DEFAULT_AGENT_CLI}）。アクションが cli を指定していればそちらが勝つ")
+        p.add_argument("--agent-model", default="", metavar="MODEL", help="エージェント CLI に渡すモデル（省略時は定義の既定）")
+        p.add_argument("--agents-dir", action="append", metavar="DIR",
+                       help=f"エージェント CLI の定義を探す場所（複数可）。省略時は ${AGENTS_DIR_ENV} → ./agents → ~/.agents/agents → ~/.kiro/agents")
         if name == "plan":
             p.add_argument("--json", action="store_true")
         else:

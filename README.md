@@ -34,7 +34,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **sprint-reviewer** | スプリント完了時にタスク結果を評価し、次スプリントへの改善点をまとめる |
 | **flow-planner** | agent-flow の orchestrator 向けに、要求を分析して 7 パターン＋複合パターンから最適な戦略を選び、実行可能なタスクグラフを生成します |
 | **flow-worker** | agent-flow の executor=agent 向けに、worker・verify・evaluator の各 LLM 呼び出しへ渡す実行系プロンプトを強化します |
-| **dagu-workflow-builder** | この環境に入っているスキルのスクリプトを入出力の型でつなぎ、LLM を使わずに Dagu のワークフロー（DAG）を組み立てる。「Dagu のワークフローを作って」などで発動する |
+| **dagu-workflow-builder** | この環境に入っているスキルのスクリプトを入出力の型でつなぎ、つなぎ方を LLM に頼らず Dagu のワークフロー（DAG）を組み立てる。足りないところだけエージェント CLI（kiro-cli）を呼ぶステップを入れられる。「Dagu のワークフローを作って」などで発動する |
 
 ### React 開発 — 1
 

@@ -323,6 +323,134 @@ class EndToEndTest(unittest.TestCase):
             t.close()
 
 
+def agent_act(aid: str, ins: dict, outs: dict, prompt: str, **agent) -> dict:
+    outputs = {n: {"type": t, "ext": "md", "stdout": True} for n, t in outs.items()}
+    return {"id": aid, "summary": f"{aid} する", "agent": {"prompt": prompt, **agent},
+            "inputs": ins, "outputs": outputs}
+
+
+# kiro.json と同じ形の定義（テストでは偽の CLI 名にして、実物を起動しない）
+FAKE_KIRO = {
+    "command": ["fake-kiro-cli", "chat", "--no-interactive"],
+    "prompt_via": "argv",
+    "model_flag": "--model",
+    "output": "stdout",
+    "write_args": ["--trust-all-tools"],
+    "readonly_args": ["--trust-tools=fs_read"],
+}
+
+
+class AgentTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.t = SkillTree()
+        self.agents = Path(self.t.tmp.name) / "agents"
+        self.agents.mkdir()
+        (self.agents / "kiro.json").write_text(json.dumps(FAKE_KIRO), encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.t.close()
+
+    def build(self, *argv: str) -> tuple[int, str, str]:
+        return run_cli("--skills-dir", str(self.t.root), "build", "--agents-dir", str(self.agents), *argv)
+
+    def test_contract_rules_for_agent_actions(self) -> None:
+        both = agent_act("a", {"s": "text"}, {"o": "note"}, "{in:s} を読む")
+        both["run"] = ["python", "scripts/tool.py"]
+        undeclared = agent_act("b", {"s": "text"}, {"o": "note"}, "{in:other} を読む")
+        ro_write = {"id": "c", "summary": "c", "agent": {"prompt": "{in:s} から {out:o} を書く", "readonly": True},
+                    "inputs": {"s": "text"}, "outputs": {"o": {"type": "html", "ext": "html"}}}
+        _, problems = chain.load_contract(self.t.add("ag", [both, undeclared, ro_write]))
+        joined = "\n".join(problems)
+        self.assertIn("run と agent はどちらか一方", joined)
+        self.assertIn("prompt の {in:other} が宣言されていない", joined)
+        self.assertIn("readonly が true なのにファイルの出力 o", joined)
+
+    def test_readonly_defaults_to_whether_files_are_written(self) -> None:
+        reads = agent_act("r", {"s": "text"}, {"o": "note"}, "{in:s} を要約する")
+        writes = {"id": "w", "summary": "w", "agent": {"prompt": "{in:s} から {out:o} を書く"},
+                  "inputs": {"s": "text"}, "outputs": {"o": {"type": "html", "ext": "html"}}}
+        actions, problems = chain.load_contract(self.t.add("ag", [reads, writes]))
+        self.assertEqual(problems, [])
+        self.assertEqual({a.id: a.agent.readonly for a in actions}, {"r": True, "w": False})
+
+    def test_script_route_wins_and_agent_fills_only_the_gap(self) -> None:
+        self.t.add("s", [act("conv", {"s": "text"}, {"o": "html"}), act("pub", {"s": "html"}, {"o": "site"})])
+        self.t.add("ag", [agent_act("direct", {"s": "text"}, {"o": "site"}, "{in:s} からサイトを作る"),
+                          agent_act("note", {"s": "site"}, {"o": "note"}, "{in:s} の所感を書く")])
+        acts, _, _ = chain.load_all([self.t.root])
+        plan = chain.solve(acts, {"text": ""}, ["note"], [])
+        self.assertEqual([a.key for a in plan.steps], ["s/conv", "s/pub", "ag/note"])
+        with self.assertRaises(chain.ChainError) as cm:
+            chain.solve(acts, {"text": ""}, ["note"], [], allow_agent=False)
+        self.assertIn("--no-agent", str(cm.exception))
+
+    def test_agent_step_is_rendered_from_the_definition(self) -> None:
+        self.t.add("s", [act("up", {"s": "text"}, {"o": "upper"}, stdout="o")])
+        self.t.add("ag", [agent_act("note", {"s": "upper"}, {"o": "note"}, "{in:s} を {param:lang} で要約して")])
+        cj = self.t.root / "ag" / "chain.json"
+        data = json.loads(cj.read_text(encoding="utf-8"))
+        data["actions"][0]["params"] = {"lang": {"default": "日本語"}}
+        cj.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        code, text, err = self.build("--from", "text=in.txt", "--to", "note", "--agent-model", "m1")
+        self.assertEqual(code, 0, err)
+        self.assertIn('command: "fake-kiro-cli"', text)
+        self.assertIn('args: ["chat", "--no-interactive", "--trust-tools=fs_read", "--model", "m1", '
+                      '"s-up.o.txt を ${params.AG_NOTE_LANG} で要約して"]', text)
+        self.assertIn('stdout: "ag-note.o.md"', text)
+        self.assertIn('depends: ["s-up"]', text)
+        self.assertIn("ag-note（kiro）", text)
+
+    def test_write_mode_env_timeout_and_cli_override(self) -> None:
+        other = dict(FAKE_KIRO, command=["other-cli", "run"], env={"FOO": "1"}, timeout=120)
+        (self.agents / "other.json").write_text(json.dumps(other), encoding="utf-8")
+        w = {"id": "w", "summary": "w", "agent": {"prompt": "{in:s} から {out:o} を書く", "cli": "other"},
+             "inputs": {"s": "text"}, "outputs": {"o": {"type": "html", "ext": "html"}}}
+        self.t.add("ag", [w])
+        code, text, err = self.build("--from", "text=in.txt", "--to", "html")
+        self.assertEqual(code, 0, err)
+        self.assertIn('args: ["run", "--trust-all-tools", ', text)
+        self.assertIn('"--trust-all-tools"', text)
+        self.assertIn('"${params.IN_TEXT} から ag-w.o.html を書く"', text)
+        self.assertIn('- FOO: "1"', text)
+        self.assertIn("timeout_sec: 120", text)
+        self.assertIn("ag-w（other）", text)
+
+    def test_unsupported_or_missing_definition_is_explained(self) -> None:
+        self.t.add("ag", [agent_act("n", {"s": "text"}, {"o": "note"}, "{in:s}")])
+        code, _, err = self.build("--from", "text", "--to", "note", "--agent-cli", "nope")
+        self.assertEqual(code, 1)
+        self.assertIn("nope.json が見つからない", err)
+        (self.agents / "stdin.json").write_text(json.dumps({"command": ["x"]}), encoding="utf-8")
+        code, _, err = self.build("--from", "text", "--to", "note", "--agent-cli", "stdin")
+        self.assertEqual(code, 1)
+        self.assertIn("標準入力で受け取る CLI はまだ使えない", err)
+
+    def test_extra_actions_file(self) -> None:
+        self.t.add("s", [act("up", {"s": "text"}, {"o": "upper"})])
+        extra = Path(self.t.tmp.name) / "mine.json"
+        extra.write_text(json.dumps({"chain": 1, "actions": [
+            agent_act("note", {"s": "upper"}, {"o": "note"}, "{in:s} を要約して")]}), encoding="utf-8")
+        code, out, err = run_cli("--skills-dir", str(self.t.root), "--actions", str(extra),
+                                 "plan", "--from", "text", "--to", "note", "--json")
+        self.assertEqual(code, 0, err)
+        steps = json.loads(out)["steps"]
+        self.assertEqual([(s["action"], s["agent_cli"]) for s in steps], [("s/up", None), ("mine/note", "kiro")])
+        clash = Path(self.t.tmp.name) / "s.json"
+        clash.write_text(extra.read_text(encoding="utf-8"), encoding="utf-8")
+        code, _, err = run_cli("--skills-dir", str(self.t.root), "--actions", str(clash), "check")
+        self.assertEqual(code, 1)
+        self.assertIn("スキルと重なる", err)
+
+    def test_bundled_kiro_definition_is_usable(self) -> None:
+        repo_agents = REPO_SKILLS.parent.parent / "agents"
+        if not (repo_agents / "kiro.json").is_file():
+            self.skipTest("リポジトリの agents/ が無い")
+        cli = chain.AgentResolver(dirs=[repo_agents]).get("kiro")
+        self.assertEqual(cli.argv("やって", True, "")[:2], ["kiro-cli", "chat"])
+        self.assertEqual(cli.argv("やって", True, "")[-1], "やって")
+
+
 class BundledContractsTest(unittest.TestCase):
     """リポジトリに同梱した chain.json が検査を通り、実際にチェーンを組めること。"""
 
