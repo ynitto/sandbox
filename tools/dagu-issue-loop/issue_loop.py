@@ -829,7 +829,9 @@ def _parse_ts(value: str) -> float:
 def others_acted(gl: GitLab, iid: Any, since: float, self_username: str) -> bool:
     """実行中に自分以外が issue にコメント・操作したか（システムノートを含む）。"""
     if not self_username:
-        return True   # 自分が分からなければ、取りこぼさない側に倒す
+        # 自分が分からないと自分の書き込みと区別できない。「他人が動いた」と見なすと、成功のたびに
+        # 同じ issue を流し直し続けてしまうので、動いていない側に倒す（実行直後の版を既読にする）
+        return False
     for note in gl.list_notes(iid):
         if _parse_ts(str(note.get("created_at") or "")) < since:
             break
@@ -955,13 +957,22 @@ def cmd_run(cfg: Config, gl: GitLab) -> int:
                     st["inflight"] = {"key": str(item["iid"]), "version": item["version"],
                                       "started_at": now, "pid": os.getpid()}
                 prompt = render_prompt(template, cfg, item)
-                result = run_agent(cfg, prompt, item, info_path)
+                try:
+                    result = run_agent(cfg, prompt, item, info_path)
+                except ConfigError:
+                    # 起動できない設定の誤りは issue のせいではない。試行回数を使わずに inflight だけ外す
+                    with locked_state(cfg) as st:
+                        st["inflight"] = None
+                    raise
                 current = None
                 others = True
                 if result.ok:
                     if not cfg.self_username:
                         with contextlib.suppress(GitLabError):
                             cfg.self_username = gl.current_username()
+                        if not cfg.self_username:
+                            log("自分のユーザー名が分かりません。実行中の他人の動きは拾えません"
+                                "（ISSUE_LOOP_SELF_USERNAME で指定できます）")
                     try:
                         current = gl.get_issue(item["iid"])
                         others = others_acted(gl, item["iid"], now, cfg.self_username)
