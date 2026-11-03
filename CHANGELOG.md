@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### dagu-workflow-builder: 入っているスキルのスクリプトをつないで Dagu の DAG を作る（0.1.0）
+
+- 新しいスキル。`scripts/chain.py`（標準ライブラリだけ）の `scan` / `check` / `plan` / `build` で、各エージェントのスキル置き場を見て
+  スクリプトの入出力の宣言を集め、手元の入力の型から目的の型までのチェーンを LLM を使わずに決め、Dagu v2 の YAML に書き出す
+- スクリプトの入出力は各スキル直下の `chain.json` で宣言する。宣言の無いスキルは無視する
+- 経路はステップの延べ数が最小のものを、同点なら名前順で選ぶ（同じ構成なら常に同じ DAG）。`--avoid` で外せる
+- 書き出しは Dagu v2.25 の書式（`action: exec` で argv を渡す・成果物は実行ごとの作業フォルダ・入力とパラメータは `params`）
+- api-designer（`validate`: openapi → openapi-report）と dependency-auditor（`audit`: project-dir → dependency-audit）に `chain.json` を足した
+- 設計: `docs/designs/dagu-workflow-builder-design.md`
+
 ### dagu-issue-loop: GitLab の issue を Dagu でポーリングし、エージェント CLI を 1 セッションずつ流す（0.1.0）
 
 - `tools/dagu-issue-loop/` を足す。`issue_loop.py`（標準ライブラリだけ）と Dagu v2 の DAG 2 本

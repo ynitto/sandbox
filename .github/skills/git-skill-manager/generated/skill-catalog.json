@@ -1,9 +1,9 @@
 {
   "generated_by": "generate_skill_catalog.py",
-  "total_skills": 93,
+  "total_skills": 94,
   "categories": {
     "integration": 8,
-    "orchestration": 8,
+    "orchestration": 9,
     "operations": 5,
     "review": 6,
     "meta": 7,
@@ -33,7 +33,7 @@
     "knowledge": 1
   },
   "tiers": {
-    "experimental": 57,
+    "experimental": 58,
     "stable": 21,
     "core": 11,
     "unknown": 2,
@@ -470,6 +470,27 @@
         "意思決定を助けて"
       ],
       "has_scripts": false,
+      "has_references": true
+    },
+    {
+      "name": "dagu-workflow-builder",
+      "description": "この環境に入っているスキルのスクリプトをつなぎ、LLM を使わずに Dagu のワークフロー（DAG）を組み立てる。「Dagu のワークフローを作って」「スキルのスクリプトをつないで定期実行にして」「この入力からこの成果物まで自動で流す DAG を作って」などで発動する。",
+      "version": "0.1.0",
+      "tier": "experimental",
+      "category": "orchestration",
+      "tags": [
+        "dagu",
+        "workflow",
+        "dag",
+        "script-chain",
+        "deterministic"
+      ],
+      "triggers": [
+        "Dagu のワークフローを作って",
+        "スキルのスクリプトをつないで定期実行にして",
+        "この入力からこの成果物まで自動で流す DAG を作って"
+      ],
+      "has_scripts": true,
       "has_references": true
     },
     {

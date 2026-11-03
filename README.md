@@ -3,7 +3,7 @@
 AIエージェント（GitHub Copilot / Claude Code）の能力を拡張するスキル集。
 スキルは `.github/skills/` に配置された SKILL.md で定義され、エージェントが読み込むことで特定のタスクを高品質に実行できるようになる。
 
-## スキル一覧（全 93 スキル）
+## スキル一覧（全 94 スキル）
 
 ### 基盤スキル（常時ロード）— 11
 
@@ -21,7 +21,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **agentic-search** | 検索を「単発の retrieve」から、エージェントが反復する探索ループ（計画→検索→評価→再構成→展開→統合）へ引き上げる共有スキルです |
 | **slop-police** | AIで書いた日本語を、人間が書いた文章に戻す |
 
-### メタ・オーケストレーション — 9
+### メタ・オーケストレーション — 10
 
 | スキル | 概要 |
 |--------|------|
@@ -34,6 +34,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **sprint-reviewer** | スプリント完了時にタスク結果を評価し、次スプリントへの改善点をまとめる |
 | **flow-planner** | agent-flow の orchestrator 向けに、要求を分析して 7 パターン＋複合パターンから最適な戦略を選び、実行可能なタスクグラフを生成します |
 | **flow-worker** | agent-flow の executor=agent 向けに、worker・verify・evaluator の各 LLM 呼び出しへ渡す実行系プロンプトを強化します |
+| **dagu-workflow-builder** | この環境に入っているスキルのスクリプトを入出力の型でつなぎ、LLM を使わずに Dagu のワークフロー（DAG）を組み立てる。「Dagu のワークフローを作って」などで発動する |
 
 ### React 開発 — 1
 
