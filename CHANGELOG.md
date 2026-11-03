@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### dagu-windows-service: Dagu を Windows サービスとして登録する（プロキシ環境向け）（0.1.0）
+
+- `tools/dagu-windows-service/install-dagu-service.ps1` を足す。Dagu の配布物を取ってハッシュを確かめ、WinSW で
+  `dagu start-all` を自動起動のサービスにする。もう一度実行すると更新、`-Uninstall` で登録を外す
+- プロキシはダウンロードとサービスの両方に効かせる。`-Proxy` を省くと環境変数 → インターネット オプション → WinHTTP の順に探す。
+  サービスの環境に `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` を書き、`DAGU_ENV_PASSTHROUGH` でステップにも渡す
+- インターネット オプションの例外（`*.example.com`・`10.*` など）を NO_PROXY の書式に書き換える。表せないもの（`<local>`・PAC）は警告する
+- 認証付きプロキシは `-ProxyCredential`。サービス定義は SYSTEM と Administrators だけが読めるようにし、画面ではパスワードを伏せる
+- インターネットに出られない PC 向けに `-DaguArchive` / `-WinSWPath`、確かめるだけの `-DryRun`
+- CI に Windows PowerShell 5.1 / PowerShell 7 でのテストを足した
+
 ### dagu-issue-loop: GitLab の issue を Dagu でポーリングし、エージェント CLI を 1 セッションずつ流す（0.1.0）
 
 - `tools/dagu-issue-loop/` を足す。`issue_loop.py`（標準ライブラリだけ）と Dagu v2 の DAG 2 本

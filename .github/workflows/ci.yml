@@ -135,6 +135,21 @@ jobs:
       - name: unittest
         run: python -m unittest discover -s tools/dagu-issue-loop/test
 
+  # Dagu を Windows サービスにするスクリプト。プロキシ設定の読み取り・書き換えとサービス定義を、
+  # Windows PowerShell 5.1 と PowerShell 7 の両方で確かめる（サービスの登録そのものは行わない）。
+  dagu-windows-service:
+    name: powershell (dagu-windows-service, windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Windows PowerShell 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/dagu-windows-service/test/install-dagu-service.tests.ps1
+      - name: PowerShell 7
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File tools/dagu-windows-service/test/install-dagu-service.tests.ps1
+
   dashboard:
     name: dashboard (npm test)
     runs-on: ubuntu-latest
