@@ -16,7 +16,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 書き出しは Dagu v2.25 の書式（`action: exec` で argv を渡す・成果物は実行ごとの作業フォルダ・入力とパラメータは `params`）
 - スクリプトで埋まらない変換は、エージェント CLI にプロンプトを渡すアクション（`"agent"`）で埋められる。起動方法は `agents/<name>.json` から組み、
   まずは kiro-cli（プロンプトを引数で受け取り応答を標準出力に出す CLI）に対応。探索ではスクリプトの 100 倍に数え、スクリプトだけでつながるならそちらを選ぶ。
-  `--agent-cli` / `--agent-model` で選び、`--no-agent` で使わない。スキルにしない手元の宣言は `--actions <ファイル>` で足す
+  `--agent-cli` / `--agent-model` で選ぶ。原則はエージェントなしで組み、エージェントのアクションは `--allow-agent` を付けたときだけ使う
+  （スクリプトだけで組めず、使えば組めるときは、そのアクションを名指しして止まる）。スキルにしない手元の宣言は `--actions <ファイル>` で足す
 - api-designer（`validate`: openapi → openapi-report）と dependency-auditor（`audit`: project-dir → dependency-audit）に `chain.json` を足した
 - 設計: `docs/designs/dagu-workflow-builder-design.md`
 

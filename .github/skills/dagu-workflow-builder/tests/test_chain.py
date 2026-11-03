@@ -351,7 +351,7 @@ class AgentTest(unittest.TestCase):
         self.t.close()
 
     def build(self, *argv: str) -> tuple[int, str, str]:
-        return run_cli("--skills-dir", str(self.t.root), "build", "--agents-dir", str(self.agents), *argv)
+        return run_cli("--skills-dir", str(self.t.root), "build", "--allow-agent", "--agents-dir", str(self.agents), *argv)
 
     def test_contract_rules_for_agent_actions(self) -> None:
         both = agent_act("a", {"s": "text"}, {"o": "note"}, "{in:s} を読む")
@@ -378,11 +378,28 @@ class AgentTest(unittest.TestCase):
         self.t.add("ag", [agent_act("direct", {"s": "text"}, {"o": "site"}, "{in:s} からサイトを作る"),
                           agent_act("note", {"s": "site"}, {"o": "note"}, "{in:s} の所感を書く")])
         acts, _, _ = chain.load_all([self.t.root])
-        plan = chain.solve(acts, {"text": ""}, ["note"], [])
+        plan = chain.solve(acts, {"text": ""}, ["note"], [], allow_agent=True)
         self.assertEqual([a.key for a in plan.steps], ["s/conv", "s/pub", "ag/note"])
+
+    def test_agents_are_off_by_default(self) -> None:
+        self.t.add("s", [act("conv", {"s": "text"}, {"o": "html"})])
+        self.t.add("ag", [agent_act("direct", {"s": "text"}, {"o": "site"}, "{in:s} からサイトを作る"),
+                          agent_act("note", {"s": "html"}, {"o": "note"}, "{in:s} の所感を書く")])
+        acts, _, _ = chain.load_all([self.t.root])
+        # スクリプトだけで組めるものは今までどおり
+        self.assertEqual([a.key for a in chain.solve(acts, {"text": ""}, ["html"], []).steps], ["s/conv"])
+        # エージェントが要るものは、使えば組めることを名指しして止まる
         with self.assertRaises(chain.ChainError) as cm:
-            chain.solve(acts, {"text": ""}, ["note"], [], allow_agent=False)
-        self.assertIn("--no-agent", str(cm.exception))
+            chain.solve(acts, {"text": ""}, ["note"], [])
+        self.assertIn("ag/note", str(cm.exception))
+        self.assertIn("--allow-agent", str(cm.exception))
+        code, _, err = run_cli("--skills-dir", str(self.t.root), "build", "--from", "text", "--to", "note")
+        self.assertEqual(code, 1)
+        self.assertIn("--allow-agent", err)
+        # エージェントを使っても組めないときは、その案内を出さない
+        with self.assertRaises(chain.ChainError) as cm:
+            chain.solve(acts, {"text": ""}, ["pdf"], [])
+        self.assertNotIn("--allow-agent", str(cm.exception))
 
     def test_agent_step_is_rendered_from_the_definition(self) -> None:
         self.t.add("s", [act("up", {"s": "text"}, {"o": "upper"}, stdout="o")])
@@ -432,7 +449,7 @@ class AgentTest(unittest.TestCase):
         extra.write_text(json.dumps({"chain": 1, "actions": [
             agent_act("note", {"s": "upper"}, {"o": "note"}, "{in:s} を要約して")]}), encoding="utf-8")
         code, out, err = run_cli("--skills-dir", str(self.t.root), "--actions", str(extra),
-                                 "plan", "--from", "text", "--to", "note", "--json")
+                                 "plan", "--allow-agent", "--from", "text", "--to", "note", "--json")
         self.assertEqual(code, 0, err)
         steps = json.loads(out)["steps"]
         self.assertEqual([(s["action"], s["agent_cli"]) for s in steps], [("s/up", None), ("mine/note", "kiro")])

@@ -6,9 +6,10 @@
 `openapi-report` のような名前）を頂点にした有向超グラフの上で、手元の入力から目的の型までの
 最小コストの実行チェーンを決定的に探し、Dagu v2 の YAML に書き出す。
 
-スクリプトでは埋まらないところは、エージェント CLI（`agents/<name>.json` の定義。既定は kiro）に
-プロンプトを渡すアクションで埋められる（`"agent": {"prompt": …}`）。エージェントのステップは重い
-コストで探索に入るので、スクリプトだけでつながるならそちらが選ばれる。`--no-agent` で一切使わない。
+原則はスクリプトだけで組む。エージェント CLI（`agents/<name>.json` の定義。既定は kiro）に
+プロンプトを渡すアクション（`"agent": {"prompt": …}`）は、`--allow-agent` を付けたときだけ探索に入る。
+入れても重いコストで数えるので、スクリプトだけでつながるならそちらが選ばれる。スクリプトだけで
+組めず、エージェントを使えば組めるときは、そのことを理由に添えて止まる。
 
 サブコマンド:
   scan   見つかったスキルとアクション、作れる型を並べる
@@ -338,11 +339,12 @@ class Plan:
 
 
 def solve(actions: list[Action], have: dict[str, str], goals: list[str], avoid: list[str],
-          allow_agent: bool = True) -> Plan:
+          allow_agent: bool = False) -> Plan:
     """手元の型から目的の型までのチェーンを決める（決定的）。
 
     型のコスト = 作るのに要るステップのコストの延べ（手元の型は 0、スクリプトは 1、エージェント
-    CLI は AGENT_COST）。アクションを (スキル, id) の順になめて、全入力のコストが決まっている
+    CLI は AGENT_COST）。エージェント CLI のアクションは allow_agent のときだけ使う。
+    アクションを (スキル, id) の順になめて、全入力のコストが決まっている
     アクションの出力を「自分のコスト + 入力のコストの和」で緩和する。同じコストなら先に見た
     （名前順で前の）アクションが勝つ。
     """
@@ -368,9 +370,17 @@ def solve(actions: list[Action], have: dict[str, str], goals: list[str], avoid: 
 
     missing = [g for g in goals if g not in cost]
     if missing:
-        msg = _explain_missing(missing, usable, cost)
+        scripts_only = not allow_agent and any(a.agent for a in actions)
+        msg = _explain_missing(missing, usable, cost, "スクリプトで作るアクション" if scripts_only else "作るアクション")
         if not allow_agent and any(a.agent for a in actions):
-            msg += "\n（エージェント CLI を呼ぶアクションは --no-agent で外している）"
+            try:
+                with_agent = solve(actions, have, goals, avoid, allow_agent=True)
+            except ChainError:
+                pass
+            else:
+                keys = ", ".join(a.key for a in with_agent.steps if a.agent)
+                msg += (f"\nスクリプトだけでは組めない。エージェント CLI を呼ぶアクション（{keys}）を使えば組める。"
+                        "\n使うなら --allow-agent を付ける（そのステップは実行時に LLM を使う）")
         raise ChainError(msg)
 
     order: list[Action] = []
@@ -391,14 +401,15 @@ def solve(actions: list[Action], have: dict[str, str], goals: list[str], avoid: 
     return Plan(dict(have), list(goals), order, producer, cost)
 
 
-def _explain_missing(missing: list[str], actions: list[Action], cost: dict[str, int]) -> str:
+def _explain_missing(missing: list[str], actions: list[Action], cost: dict[str, int],
+                     what: str = "作るアクション") -> str:
     lines = []
     for g in missing:
         makers = [a for a in actions if any(o.type == g for o in a.outputs)]
         if not makers:
-            lines.append(f"{g} を作るアクションが、見つかったスキルに無い")
+            lines.append(f"{g} を{what}が、見つかったスキルに無い")
             continue
-        lines.append(f"{g} を作るアクションはあるが、入力が揃わない:")
+        lines.append(f"{g} を{what}はあるが、入力が揃わない:")
         for a in makers:
             lack = sorted({t for t in a.inputs.values() if t not in cost})
             lines.append(f"  {a.key}: 足りない型 {', '.join(lack)}（--from で渡すか、作るスキルを入れる）")
@@ -793,7 +804,7 @@ def _solve_from_args(args, roots: list[Path]) -> Plan:
     for p in problems:
         print(f"（読み飛ばし）{p}", file=sys.stderr)
     have = _parse_from(args.from_)
-    return solve(actions, have, list(dict.fromkeys(args.to)), args.avoid, allow_agent=not args.no_agent)
+    return solve(actions, have, list(dict.fromkeys(args.to)), args.avoid, allow_agent=args.allow_agent)
 
 
 def _resolver(args) -> AgentResolver:
@@ -824,7 +835,7 @@ def cmd_plan(args, roots: list[Path]) -> int:
         via = f"［エージェント: {resolver.name_for(a)}］" if a.agent else ""
         print(f"{i}. {a.key}  {_io(a).split('［')[0]}{via}  — {a.summary}")
     if any(a.agent for a in plan.steps):
-        print("\n［エージェント］のステップだけ LLM を使う。使わない経路を探すなら --no-agent")
+        print("\n［エージェント］のステップは実行時に LLM を使う（--allow-agent を付けたので入れた）")
     return 0
 
 
@@ -867,7 +878,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--to", action="append", required=True, metavar="TYPE", help="作りたい型。複数可")
         p.add_argument("--avoid", action="append", default=[], metavar="SKILL[/ACTION]",
                        help="使わないスキル・アクション。複数可")
-        p.add_argument("--no-agent", action="store_true", help="エージェント CLI を呼ぶアクションを使わない")
+        p.add_argument("--allow-agent", action="store_true",
+                       help="エージェント CLI を呼ぶアクションも使う（既定では使わない。スクリプトだけで組めないときだけ付ける）")
         p.add_argument("--agent-cli", default=DEFAULT_AGENT_CLI, metavar="NAME",
                        help=f"エージェント CLI の定義名（agents/<NAME>.json。既定 {DEFAULT_AGENT_CLI}）。アクションが cli を指定していればそちらが勝つ")
         p.add_argument("--agent-model", default="", metavar="MODEL", help="エージェント CLI に渡すモデル（省略時は定義の既定）")
