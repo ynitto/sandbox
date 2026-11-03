@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { trimUtf8 } = require('../text');
 const flowModel = require('./flow-model');
 const flowStore = require('./flow-store');
 const flowSettings = require('./flow-settings');
@@ -668,7 +669,7 @@ function readLog(root, id, bytes = 16 * 1024, hostRoot = '') {
     const fd = fs.openSync(files.log, 'r');
     const buffer = Buffer.alloc(stat.size - start);
     try { fs.readSync(fd, buffer, 0, buffer.length, start); } finally { fs.closeSync(fd); }
-    return { path: files.log, tail: buffer.toString('utf8'), truncated: start > 0, exists: true };
+    return { path: files.log, tail: trimUtf8(buffer, { cutStart: start > 0 }).toString('utf8'), truncated: start > 0, exists: true };
   } catch { return { path: files.log, tail: '', truncated: false, exists: false }; }
 }
 
