@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### dagu-issue-loop: issue の取得と変化の検知を api-watch に任せる構成を足す
+
+- `issue_loop.py handle`: api-watch が渡したイベントを 1 件受け取り、issue を取り直してエージェント CLI を実行する。
+  エージェント自身の書き込み・キューで重なった同じ issue の変化は流さず、実行中に他人が動いたときは次の変化でもう一度流す。
+  別のセッションが実行中なら終了コード 4（Dagu に再試行させる）
+- `tools/dagu-issue-loop/api-watch/`: api-watch の設定例（`poll` と同じ監視項目）と受け渡し先の DAG（`gitlab-issue-handle`。
+  キュー `gitlab-issue-agent` を同時実行 1 にして使う。再試行は `retry_policy`）
+- 本物の api-watch から `handle` を呼ぶ試験を足す
+
 ### dagu-issue-loop: stdin でプロンプトを渡す CLI が読まないとき、打ち切りが効かなくなるのを直す
 
 - プロンプトを別スレッドで流し、パイプが埋まっても run のタイムアウトと中止の判定に進めるようにする。

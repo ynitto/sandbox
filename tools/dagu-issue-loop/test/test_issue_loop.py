@@ -119,6 +119,15 @@ FAKE_AGENT = textwrap.dedent('''\
         w.setdefault("notes", {})[os.environ["ISSUE_LOOP_IID"]] = [
             {"created_at": "2999-01-01T00:00:00Z", "author": {"username": w.get("self", "bot")}}]
         json.dump(w, open(world, "w", encoding="utf-8"))
+    if mode == "other":     # 実行中に別の人がコメントする
+        w = json.load(open(world, encoding="utf-8"))
+        for i in w["issues"]:
+            if str(i["iid"]) == os.environ["ISSUE_LOOP_IID"]:
+                i["user_notes_count"] += 1
+                i["updated_at"] = "2026-11-01T11:00:00Z"
+        w.setdefault("notes", {})[os.environ["ISSUE_LOOP_IID"]] = [
+            {"created_at": "2999-01-01T00:00:00Z", "author": {"username": "alice"}}]
+        json.dump(w, open(world, "w", encoding="utf-8"))
     with open(os.environ["FAKE_CALLS"], "a", encoding="utf-8") as f:
         f.write(json.dumps({"pid": os.getpid(), "end": time.time()}) + "\\n")
     sys.exit(1 if mode == "fail" else 0)
@@ -557,3 +566,134 @@ class PlatformTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# api-watch で動かす構成（handle）。取得と検知は本物の api-watch、受け渡しは command アダプタで
+# issue_loop.py handle を直接呼ぶ（Dagu のキューの代わり。1 件ずつ順に動く）
+# ---------------------------------------------------------------------------
+
+API_WATCH = HERE.parent.parent / "api-watch" / "api_watch.py"
+
+
+@unittest.skipUnless(API_WATCH.is_file(), "api-watch が無い")
+class ApiWatchHandleTest(Base):
+    def setUp(self):
+        super().setUp()
+        self.conn = self.tmp / "connections.json"
+        self.conn.write_text(json.dumps(
+            {"gitlab": [{"label": "default", "url": "${GITLAB_URL}", "token": "${GITLAB_TOKEN}"}]}), encoding="utf-8")
+        self.cfg = self.tmp / "api-watch.json"
+        self.cfg.write_text(json.dumps({
+            "version": 1,
+            "state_dir": str(self.tmp / "aw-state"),
+            "delivery": {"adapter": "command", "timeout_sec": 60,
+                         "command": [sys.executable, str(SCRIPT), "handle"]},
+            "sources": {"gitlab-issues": {
+                "connection": "gitlab",
+                "request": {"url": "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues",
+                            "headers": {"PRIVATE-TOKEN": "{{ conn.token }}"},
+                            "query": {"state": "opened", "scope": "all", "order_by": "updated_at", "sort": "asc"}},
+                "key": "iid",
+                "pagination": {"type": "page", "size_param": "per_page", "size": 100},
+                "retry": {"attempts": 1}}},
+            "rules": {"issue-agent": {
+                "source": "gitlab-issues", "id": "iid",
+                "watch": ["title", "state", "labels", "assignees[*].username", "milestone.title", "due_date",
+                          "user_notes_count", "description"],
+                "unordered": ["labels"], "on": ["appeared", "changed"],
+                "targets": [{"workflow": "gitlab-issue-handle", "order": "enqueue",
+                             "retry_backoff_sec": 1}]}},
+        }), encoding="utf-8")
+        self.env["GITLAB_URL"] = self.gl.url
+
+    def watch(self, env=None):
+        e = {**self.env, **(env or {})}
+        r = subprocess.run([sys.executable, str(API_WATCH), "--config", str(self.cfg), "--connections",
+                            str(self.conn), "run"], env=e, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120)
+        return r
+
+    def test_new_issue_runs_agent_once(self):
+        r = self.watch()
+        self.assertEqual(r.returncode, 0, r.stderr)                 # 初回は覚えるだけ
+        self.assertEqual(self.agent_calls(), [])
+        self.set_world([make_issue(1, "2026-11-01T00:00:00Z"), make_issue(2, "2026-11-01T01:00:00Z")])
+        r = self.watch()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.agent_calls()
+        self.assertEqual([c["iid"] for c in calls], ["2"])
+        self.assertIn("#2 issue 2", calls[0]["prompt"])
+        self.assertIn("新しい issue", calls[0]["prompt"])
+        self.watch()
+        self.assertEqual(len(self.agent_calls()), 1)
+
+    def test_changes_are_listed_and_own_comment_does_not_retrigger(self):
+        self.watch()
+        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"], title="renamed")])
+        r = self.watch(env={"FAKE_MODE": "comment"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.agent_calls()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("ラベル追加: todo", calls[0]["prompt"])
+        self.assertIn("タイトル: issue 1 → renamed", calls[0]["prompt"])
+        self.assertNotIn("本文", calls[0]["prompt"])
+        r = self.watch()                                          # エージェントのコメントを検知するが流さない
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.agent_calls()), 1)
+
+    def test_comment_by_someone_else_during_run_runs_again(self):
+        self.watch()
+        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
+        self.watch(env={"FAKE_MODE": "other"})
+        self.assertEqual(len(self.agent_calls()), 1)
+        r = self.watch()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.agent_calls()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("コメント +1", calls[1]["prompt"])
+
+    def test_failure_then_retry_runs_once_more_only(self):
+        self.watch()
+        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
+        event = self.tmp / "ev.json"
+        event.write_text(json.dumps({"record": make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"]),
+                                     "kinds": ["changed"], "before": {"labels": []}}), encoding="utf-8")
+        args = ("handle", "--event-file", str(event), "--delivery-id", "aw_1")
+        self.assertEqual(self.cli(*args, env={"FAKE_MODE": "fail"}).returncode, 1)
+        r = self.cli(*args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.agent_calls()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("ラベル追加: todo", calls[1]["prompt"])
+        self.assertEqual(self.cli(*args).returncode, 0)              # 同じ変化をもう一度渡されても流さない
+        self.assertEqual(len(self.agent_calls()), 2)
+
+    def test_issue_closed_while_waiting_is_skipped(self):
+        event = self.tmp / "ev.json"
+        event.write_text(json.dumps({"record": make_issue(1, "2026-11-01T05:00:00Z"), "kinds": ["appeared"]}),
+                         encoding="utf-8")
+        self.set_world([make_issue(1, "2026-11-01T06:00:00Z", state="closed")])
+        r = self.cli("handle", "--event-file", str(event))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.agent_calls(), [])
+
+    def test_busy_session_asks_for_retry(self):
+        event = self.tmp / "ev.json"
+        event.write_text(json.dumps({"record": make_issue(1, "2026-11-01T05:00:00Z"), "kinds": ["appeared"]}),
+                         encoding="utf-8")
+        lock = self.tmp / "state" / "session.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "a+") as f:
+            il.lock_file(f, blocking=False)
+            try:
+                r = self.cli("handle", "--event-file", str(event))
+            finally:
+                il.unlock_file(f)
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertEqual(self.agent_calls(), [])
+
+    def test_missing_record_is_config_error(self):
+        event = self.tmp / "ev.json"
+        event.write_text(json.dumps({"kinds": ["changed"]}), encoding="utf-8")
+        self.assertEqual(self.cli("handle", "--event-file", str(event)).returncode, 2)

@@ -7,6 +7,8 @@ Dagu の 2 本の DAG から呼ばれる想定の、標準ライブラリだけ�
     issue_loop.py run      # 待ち行列から 1 件取り出してエージェント CLI を実行する（同時に 1 セッションだけ）
     issue_loop.py status   # 待ち行列・実行中・打ち切りの一覧を JSON で出す
     issue_loop.py forget IID   # 打ち切り（dead）や既読から外し、次の poll で拾い直させる
+    issue_loop.py handle       # api-watch が検知した変化を 1 件受け取ってエージェント CLI を実行する
+                               # （poll と待ち行列の代わりに api-watch と Dagu のキューを使う構成）
 
 設計は docs/designs/dagu-issue-loop-design.md。agent-loop の hooks/gitlab-issue-hook.py
 （既読 + ack の 2 相）と agent_loop/semaphore.py（pid 付きスロットファイル）を下敷きにしている。
@@ -16,6 +18,7 @@ Dagu の 2 本の DAG から呼ばれる想定の、標準ライブラリだけ�
     1  エージェント CLI が失敗した / タイムアウトした
     2  設定の誤り
     3  GitLab に届かない・認証に失敗した
+    4  別のセッションが実行中だった（handle だけ。Dagu に後で再試行させる）
 """
 from __future__ import annotations
 
@@ -50,6 +53,7 @@ EXIT_OK = 0
 EXIT_AGENT_FAILED = 1
 EXIT_CONFIG = 2
 EXIT_GITLAB = 3
+EXIT_BUSY = 4
 
 # 変化として扱う項目。updated_at だけが動いて下の項目が同じなら「変化なし」として既読を進めるだけにする
 # （MR からの言及やシステム側の更新でエージェントを起こさないため）。
@@ -399,7 +403,7 @@ def resolve_executable(argv: list[str]) -> list[str]:
 
 def empty_state() -> dict[str, Any]:
     return {"version": STATE_VERSION, "baseline_done": False, "seen": {}, "queue": {},
-            "inflight": None, "dead": {}, "last_poll_at": 0.0}
+            "inflight": None, "dead": {}, "last_poll_at": 0.0, "handle_attempts": {}}
 
 
 def normalize_state(raw: Any) -> dict[str, Any]:
@@ -407,7 +411,7 @@ def normalize_state(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return st
     st["baseline_done"] = bool(raw.get("baseline_done"))
-    for k in ("seen", "queue", "dead"):
+    for k in ("seen", "queue", "dead", "handle_attempts"):
         if isinstance(raw.get(k), dict):
             st[k] = raw[k]
     if isinstance(raw.get("inflight"), dict):
@@ -1002,6 +1006,153 @@ def cmd_run(cfg: Config, gl: GitLab) -> int:
         log(f"{exc} — 今回は見送ります")
         return EXIT_OK
 
+# ---------------------------------------------------------------------------
+# api-watch から受け取る（handle）
+#
+# poll と待ち行列の代わりに api-watch が issue を取得して変化を検知し、Dagu のキュー（同時実行 1）へ
+# 1 件ずつ渡す構成で使う。ここで持つのは「最後に流した版」（seen）だけで、次を守る:
+#   - エージェント自身の書き込みで起きた変化は流さない（実行後に取り直した版を既読にする）
+#   - キューで待つ間に同じ issue の変化が重なったら、先に動いた実行が最新の issue でまとめて流し、
+#     後ろのものは既読と比べて飛ばす
+#   - 実行中に自分以外の人が動いたときは既読を実行前の版にとどめ、次の変化の受け取りでもう一度流す
+# 再試行は Dagu の retry_policy に任せる（失敗は終了コード 1、取り直しの失敗は 3、別セッション実行中は 4）。
+# ---------------------------------------------------------------------------
+
+def load_event(path: str) -> dict[str, Any]:
+    if not path:
+        raise ConfigError("イベントのファイルがありません（--event-file か APIWATCH_EVENT_FILE）")
+    try:
+        event = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"イベントのファイルが読めません: {path} ({exc})")
+    record = event.get("record") if isinstance(event, dict) else None
+    if not isinstance(record, dict) or record.get("iid") is None:
+        raise ConfigError("イベントに issue のレコードがありません（api-watch のルールの include_record を "
+                          "true のままにし、id を iid にしてください）")
+    return event
+
+
+def already_handled(st: dict[str, Any], key: str, version: str) -> bool:
+    """この版（updated_at）までの変化を、もう流し終えているか。"""
+    prev = st["seen"].get(key)
+    if not prev or not version or not prev.get("version"):
+        return False
+    return _parse_ts(version) <= _parse_ts(str(prev["version"]))
+
+
+def issue_before(before: Any, current: dict[str, Any]) -> dict[str, Any]:
+    """api-watch のイベントの before（監視する項目だけ）を、今の issue に重ねて変化前の issue にする。
+    監視していない項目は今と同じとみなす（変化の箇条書きに余計な行を出さない）。"""
+    out = dict(current)
+    if not isinstance(before, dict):
+        return out
+    for name in ("title", "state", "labels", "due_date", "user_notes_count", "description"):
+        if name in before:
+            out[name] = before[name]
+    if "assignees[*].username" in before:
+        out["assignees"] = [{"username": u} for u in (before["assignees[*].username"] or [])]
+    elif "assignees" in before:
+        out["assignees"] = before["assignees"]
+    if "milestone.title" in before:
+        out["milestone"] = {"title": before["milestone.title"]} if before["milestone.title"] else None
+    elif "milestone" in before:
+        out["milestone"] = before["milestone"]
+    return out
+
+
+def matches_filter(cfg: Config, issue: dict[str, Any]) -> bool:
+    """ISSUE_LOOP_ISSUE_STATE / LABELS / ASSIGNEE の絞り込みに今も当てはまるか（キューで待つ間に外れたら流さない）。"""
+    if cfg.issue_state and cfg.issue_state != "all" and issue.get("state") != cfg.issue_state:
+        return False
+    want = {x.strip() for x in cfg.issue_labels.split(",") if x.strip()}
+    if want and not want <= set(issue.get("labels") or []):
+        return False
+    if cfg.issue_assignee:
+        names = {a.get("username") for a in (issue.get("assignees") or []) if isinstance(a, dict)}
+        if cfg.issue_assignee not in names:
+            return False
+    return True
+
+
+def cmd_handle(cfg: Config, gl: GitLab, event_file: str, delivery_id: str) -> int:
+    event = load_event(event_file)
+    record = event["record"]
+    key = str(record["iid"])
+    template = load_template(cfg)
+    with locked_state(cfg) as st:
+        if already_handled(st, key, str(record.get("updated_at") or "")):
+            log(f"#{key} のこの変化は流し終えています（エージェント自身の書き込みか、前の実行でまとめて扱った）")
+            return EXIT_OK
+    _install_signal_handlers()
+    try:
+        with single_session(cfg) as info_path:
+            # キューで待つ間に issue がさらに動いているかもしれないので、最新を取り直して流す
+            try:
+                current = gl.get_issue(key)
+            except GitLabError as exc:
+                log(str(exc))
+                return EXIT_GITLAB
+            version = str(current.get("updated_at") or "")
+            if not matches_filter(cfg, current):
+                log(f"#{key} は対象から外れました（閉じた・ラベルが外れたなど）。流しません")
+                return EXIT_OK
+            with locked_state(cfg) as st:
+                if already_handled(st, key, version):
+                    log(f"#{key} の今の版は流し終えています")
+                    return EXIT_OK
+                prev = st["seen"].get(key)
+                attempts = int(st["handle_attempts"].get(delivery_id) or 0) if delivery_id else 0
+            snap = snapshot(current)
+            if prev and isinstance(prev.get("snapshot"), dict):
+                base = prev["snapshot"]                    # 前回流したときからの累積
+            elif "appeared" in (event.get("kinds") or []) or event.get("before") is None:
+                base = None
+            else:
+                base = snapshot(issue_before(event.get("before"), current))
+            kind, lines = describe_changes(base, snap)
+            item = {"iid": current.get("iid", record["iid"]), "version": version, "kind": kind,
+                    "changes": lines, "snapshot": snap, "issue": current, "attempts": attempts}
+            started = time.time()
+            result = run_agent(cfg, render_prompt(template, cfg, item), item, info_path)
+            if not result.ok:
+                reason = ("中止された" if _stop_requested else
+                          "タイムアウト" if result.timed_out else f"終了コード {result.returncode}")
+                with locked_state(cfg) as st:
+                    if delivery_id:
+                        st["handle_attempts"][delivery_id] = attempts + 1
+                        for old in list(st["handle_attempts"])[:-200]:
+                            st["handle_attempts"].pop(old, None)
+                log(f"#{key} 失敗（{reason}）。再試行は Dagu に任せます ログ: {result.log_path}")
+                return EXIT_AGENT_FAILED
+            after = None
+            others = True
+            if not cfg.self_username:
+                with contextlib.suppress(GitLabError):
+                    cfg.self_username = gl.current_username()
+                if not cfg.self_username:
+                    log("自分のユーザー名が分かりません。実行中の他人の動きは拾えません"
+                        "（ISSUE_LOOP_SELF_USERNAME で指定できます）")
+            try:
+                after = gl.get_issue(key)
+                others = others_acted(gl, key, started, cfg.self_username)
+            except GitLabError as exc:
+                log(f"実行後の issue を取り直せませんでした: {exc}")
+            with locked_state(cfg) as st:
+                if delivery_id:
+                    st["handle_attempts"].pop(delivery_id, None)
+                if after is not None and not others:
+                    st["seen"][key] = {"version": str(after.get("updated_at") or ""), "snapshot": snapshot(after)}
+                    log(f"#{key} 完了（既読にしました） ログ: {result.log_path}")
+                else:
+                    # 実行前の版までを既読にする。実行中の他人の動きは、次に受け取ったときにもう一度流す
+                    st["seen"][key] = {"version": version, "snapshot": snap}
+                    log(f"#{key} 完了（実行中に別の動きがあったので、次の受け取りでもう一度流します） "
+                        f"ログ: {result.log_path}")
+            return EXIT_OK
+    except SessionBusy as exc:
+        log(f"{exc} — 後でやり直します")
+        return EXIT_BUSY
+
 
 def cmd_status(cfg: Config) -> int:
     with locked_state(cfg) as st:
@@ -1047,15 +1198,22 @@ def build_parser() -> argparse.ArgumentParser:
     poll = sub.add_parser("poll", parents=[common])
     poll.add_argument("--no-baseline", action="store_true", help="初回も今ある issue を全部積む")
     poll.add_argument("--jitter", help="問い合わせ前に 0〜この秒数だけランダムに待つ（既定 0。DAG は 900）")
-    run = sub.add_parser("run", parents=[common])
-    run.add_argument("--agent", help="agents/<name>.json の名前（例: claude, codex, kiro）")
-    run.add_argument("--agent-cmd", help="エージェント CLI のコマンド行（--agent より優先）")
-    run.add_argument("--prompt-via", choices=["stdin", "arg", "file"])
-    run.add_argument("--model")
-    run.add_argument("--cwd")
-    run.add_argument("--timeout")
-    run.add_argument("--prompt-template")
+    agent = argparse.ArgumentParser(add_help=False)
+    agent.add_argument("--agent", help="agents/<name>.json の名前（例: claude, codex, kiro）")
+    agent.add_argument("--agent-cmd", help="エージェント CLI のコマンド行（--agent より優先）")
+    agent.add_argument("--prompt-via", choices=["stdin", "arg", "file"])
+    agent.add_argument("--model")
+    agent.add_argument("--cwd")
+    agent.add_argument("--timeout")
+    agent.add_argument("--prompt-template")
+    run = sub.add_parser("run", parents=[common, agent])
     run.add_argument("--drain", help="1 回の run で続けて流す最大件数（既定 1）")
+    handle = sub.add_parser("handle", parents=[common, agent],
+                            help="api-watch が渡した変化を 1 件受け取ってエージェント CLI を実行する")
+    handle.add_argument("--event-file", default=os.environ.get("APIWATCH_EVENT_FILE", ""),
+                        help="api-watch のイベントの JSON（既定は環境変数 APIWATCH_EVENT_FILE）")
+    handle.add_argument("--delivery-id", default=os.environ.get("APIWATCH_DELIVERY_ID", ""),
+                        help="受け渡しの ID（再試行の回数を数える。既定は環境変数 APIWATCH_DELIVERY_ID）")
     sub.add_parser("status", parents=[common])
     forget = sub.add_parser("forget", parents=[common])
     forget.add_argument("iid")
@@ -1077,7 +1235,7 @@ def main(argv: list[str] | None = None, *, gitlab_factory: Callable[[Config], Gi
     _utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
-        cfg = build_config(args, need_gitlab=args.cmd in ("poll", "run"))
+        cfg = build_config(args, need_gitlab=args.cmd in ("poll", "run", "handle"))
         if args.cmd == "status":
             return cmd_status(cfg)
         if args.cmd == "forget":
@@ -1085,6 +1243,8 @@ def main(argv: list[str] | None = None, *, gitlab_factory: Callable[[Config], Gi
         gl = (gitlab_factory or (lambda c: GitLab(c.api_url, c.project, c.token)))(cfg)
         if args.cmd == "poll":
             return cmd_poll(cfg, gl)
+        if args.cmd == "handle":
+            return cmd_handle(cfg, gl, args.event_file, args.delivery_id)
         return cmd_run(cfg, gl)
     except ConfigError as exc:
         log(f"設定の誤り: {exc}")

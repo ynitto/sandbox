@@ -1,0 +1,41 @@
+# api-watch が検知した issue の変化を 1 件受け取り、エージェント CLI を実行する（Dagu v2 の書式）。
+# api-watch の設定（api-watch.yaml.example）の targets から、dagu enqueue でこの DAG のキューに入る。
+#
+# 同時に動くエージェント CLI は常に 1 つ:
+#   - Dagu: キュー gitlab-issue-agent を config.yaml で max_concurrency: 1 にする
+#   - issue_loop.py handle: ロックファイル（既定は全プロジェクト共通）で排他し、取れなければ 4 で終わる（下で再試行）
+#
+# 置き場所: Dagu の DAG フォルダ（既定 ~/.config/dagu/dags/）。ファイル名を変えるなら api-watch.yaml の workflow も変える。
+name: gitlab-issue-handle
+description: api-watch が渡した issue の変化をエージェント CLI に渡す
+params:
+  - APIWATCH_EVENT_ID: ""
+  - APIWATCH_DELIVERY_ID: ""
+  - APIWATCH_SOURCE: ""
+  - APIWATCH_RULE: ""
+  - APIWATCH_RECORD_ID: ""
+  - APIWATCH_KINDS: ""
+  - APIWATCH_EVENT_FILE: ""
+queue: gitlab-issue-agent
+hist_retention_days: 14
+max_clean_up_time_sec: 60   # 止めるとき、CLI を片付けて記録するまで待つ秒数
+dotenv:
+  - ~/.config/dagu/issue-loop.env
+steps:
+  - name: handle
+    command: ${ISSUE_LOOP_PYTHON} ${ISSUE_LOOP_HOME}/issue_loop.py handle --event-file ${APIWATCH_EVENT_FILE} --delivery-id ${APIWATCH_DELIVERY_ID}
+    # ISSUE_LOOP_AGENT_TIMEOUT（既定 3600 秒）より長くする
+    timeout_sec: 4200
+    signal_on_stop: SIGTERM   # Windows の Dagu はシグナルを使わず、プロセスツリーごと止める
+    retry_policy:             # ISSUE_LOOP_MAX_ATTEMPTS / RETRY_BACKOFF の代わり。尽きたら次の変化まで待つ
+      limit: 2
+      interval_sec: 300
+      backoff: true
+      max_interval_sec: 1200
+      exit_code: [1, 3, 4]    # 1 エージェントの失敗 / 3 GitLab に届かない / 4 別のセッションが実行中
+handler_on:
+  # api-watch に完了を知らせる（status に出るだけ。order: enqueue なので無くても後ろは止まらない）
+  success:
+    command: ${ISSUE_LOOP_PYTHON} ${ISSUE_LOOP_APIWATCH} --config ${ISSUE_LOOP_APIWATCH_CONFIG} ack ${DAG_RUN_ID}
+  failure:
+    command: ${ISSUE_LOOP_PYTHON} ${ISSUE_LOOP_APIWATCH} --config ${ISSUE_LOOP_APIWATCH_CONFIG} ack ${DAG_RUN_ID} --failed

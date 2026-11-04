@@ -143,6 +143,36 @@ Windows の Dagu は停止時にシグナルを送らず、Job Object（失敗�
 
 DAG の Python は `ISSUE_LOOP_PYTHON` で渡す（Windows の標準のインストーラは `python3` を置かない）。
 
+## 6.5 api-watch で取得する構成（handle）
+
+`poll` と待ち行列（state.json の queue / dead）の代わりに api-watch を使う構成。役割の分け方:
+
+| 受け持ち | `poll` / `run` | api-watch 構成 |
+|---|---|---|
+| 取得・ページング・再開 | `GitLab.list_issues` | api-watch の取得元（`gitlab-issues`） |
+| 変化の判定 | `snapshot` の比較 | ルールの `watch`（`snapshot` と同じ項目を生のパスで書く） |
+| 待ち行列 | state.json の queue | Dagu のキュー `gitlab-issue-agent`（max_concurrency 1）。`order: enqueue` |
+| 再試行・打ち切り | `settle_failure`（attempts / backoff / dead） | 受け渡し先 DAG の `retry_policy`。尽きたら api-watch には `ack --failed` を返し、次の変化で新しいイベントになる |
+| 1 セッション | `single_session` | 同じ（Dagu のキューに加えて二重にする。取れなければ 4 で終わり Dagu が再試行） |
+| 自分の書き込みを無視 | `settle_success` | `cmd_handle`（下） |
+
+`handle` が state.json に持つのは `seen`（最後に流した版）と、受け渡しの ID ごとの失敗回数（プロンプトの `{attempt}` 用、200 件で切る）だけ。
+
+- **飛ばす判定**: イベントのレコードの `updated_at` が `seen` の版以下なら、もう流した変化として 0 で終わる。
+  エージェント自身のコメントで api-watch が出したイベントは、実行後に取り直した版を `seen` にしているのでここで落ちる。
+  キューで同じ issue のイベントが重なったときも、先の実行が最新の issue を取り直して流すので、後ろはここで落ちる（`poll` のまとめと同じ効き目）
+- **取り直し**: 飛ばさないときは、セッションを取ってから issue を取り直し、その版で再度飛ばす判定をする。絞り込み（state / labels / assignee）から
+  外れていたら流さない（`poll` が待ち行列から下ろすのに当たる）
+- **差分**: `seen` があれば前回流したときからの累積（`poll` と同じ）。無ければイベントの `before`（監視する項目だけ）を今の issue に重ねて
+  変化前とみなす。監視していない項目は今と同じとみなし、余計な行を出さない
+- **実行中の他人の動き**: `others_acted` が真なら `seen` を実行前の版にとどめる。他人の動きは監視項目（コメント数など）を変えるので、
+  次の取得で api-watch がイベントを出し、版が `seen` より新しいので流れる。`poll` 構成のようにその場で積み直しはしない
+- **順序**: `order: completion` にすると、失敗で打ち切ったイベントが `retry` / `skip` されるまで同じ issue の後ろが止まる。`poll` 構成の
+  「打ち切って次の変化で拾う」に合わせて `enqueue` にした。完了の記録（`ack`）は `status` のためだけに残す
+- **ずらし**: api-watch の取得にはランダムなずらしが無い。設定の `schedule` の分を PC ごとに変えて代える
+
+試験は本物の api-watch（`adapter: command` で `issue_loop.py handle` を直接呼ぶ）と偽の GitLab・偽のエージェントで回す（`ApiWatchHandleTest`）。
+
 ## 7. 採らなかった案
 
 - **Dagu のキューだけで直列化する**: Dagu v2 のグローバルキュー（`queue:` + 設定の `max_concurrency: 1`）でも
