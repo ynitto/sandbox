@@ -223,13 +223,14 @@ def _q(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
-def _step(name: str, argv: list[str], *, depends: str | None, timeout: int, retry: dict | None) -> list[str]:
+def _step(name: str, argv: list[str], *, depends: str | None, timeout: int | None, retry: dict | None) -> list[str]:
     lines = [f"  - name: {name}"]
     if depends:
         lines.append(f"    depends: [{depends}]")
     lines += ["    action: exec", "    with:", f"      command: {_q(argv[0])}", "      args:"]
     lines += [f"        - {_q(a)}" for a in argv[1:]]
-    lines.append(f"    timeout_sec: {timeout}")
+    if timeout:
+        lines.append(f"    timeout_sec: {timeout}")
     if retry:
         lines.append("    retry_policy:")
         lines.append(f"      limit: {retry['limit']}")
@@ -271,22 +272,57 @@ def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> lis
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         written.append(path)
 
+    def fetch_step(src) -> list[str]:
+        # ずらし（jitter_sec）と、別のワークフローの取得を待つ時間（busy_wait_sec）も入れる
+        timeout = int(max(300, src.timeout_sec * src.retry_attempts * 4 + src.max_wait_sec + 120
+                          + src.jitter_sec + src.busy_wait_sec))
+        return _step("fetch", base + ["fetch", "--source", src.name], depends=None, timeout=timeout,
+                     retry={"limit": 3, "interval_sec": 60, "backoff": True, "max_interval_sec": 600,
+                            "exit_code": [3]})
+
+    def here(rule) -> bool:
+        return any(t.runs_here for t in rule.targets)
+
     for name, src in cfg.sources.items():
-        fetch_timeout = int(max(300, src.timeout_sec * src.retry_attempts * 4 + src.max_wait_sec + 120))
+        rules = cfg.rules_for(name)
+        if rules and all(here(r) for r in rules):
+            continue      # どのルールも自分のワークフロー（下）で取得から処理まで行う
         lines = _header(cfg, f"{name} を取得し、ルールで判定して受け渡す", src.schedule, opts)
-        lines += _step("fetch", base + ["fetch", "--source", name], depends=None, timeout=fetch_timeout,
-                       retry={"limit": 3, "interval_sec": 60, "backoff": True, "max_interval_sec": 600,
-                              "exit_code": [3]})
+        lines += fetch_step(src)
         lines += _step("evaluate", base + ["evaluate", "--source", name], depends="fetch", timeout=600,
                        retry={"limit": 2, "interval_sec": 10})
         lines += _step("dispatch", base + ["dispatch", "--source", name], depends="evaluate", timeout=600, retry=None)
         write(name, lines)
-    lines = _header(cfg, "未判定の取得結果の判定と、渡せていない変更の再送・後続処理の完了の確認",
-                    opts.dispatch_schedule, opts)
-    lines += _step("evaluate", base + ["evaluate"], depends=None, timeout=600, retry=None)
-    lines += _step("dispatch", base + ["dispatch"], depends="evaluate", timeout=600, retry=None)
-    lines += _step("reconcile", base + ["reconcile"], depends="dispatch", timeout=300, retry=None)
-    write("dispatch", lines)
+    # command の受け渡し先があるルールは、1 つのワークフローで取得 → 判定 → 実行まで行う。
+    # 同じ取得元を使うワークフローが重なっても、取得は min_interval_sec / busy_wait_sec で 1 回にまとまる
+    reserved = set(cfg.sources) | {"dispatch", "maintenance"}
+    for rname, rule in cfg.rules.items():
+        if not here(rule):
+            continue
+        if rname in reserved:
+            raise ConfigError(f"ルール {rname} のワークフロー名 {prefix}-{rname} が、取得元か再送・整理のワークフローと重なります。"
+                              "ルールの名前を変えてください")
+        src = cfg.sources[rule.source]
+        lines = _header(cfg, f"{rule.source} を取得し、ルール {rname} で判定して、その場で実行する",
+                        rule.schedule or src.schedule, opts)
+        lines += fetch_step(src)
+        lines += _step("evaluate", base + ["evaluate", "--rule", rname], depends="fetch", timeout=600,
+                       retry={"limit": 2, "interval_sec": 10})
+        last = "evaluate"
+        if any(not t.runs_here for t in rule.targets):
+            lines += _step("dispatch", base + ["dispatch", "--rule", rname], depends="evaluate", timeout=600,
+                           retry=None)
+            last = "dispatch"
+        # 1 件ごとの上限は受け渡し先の timeout_sec が持つので、ステップには上限を付けない
+        lines += _step("work", base + ["work", "--rule", rname], depends=last, timeout=None, retry=None)
+        write(rname, lines)
+    if any(not t.runs_here for r in cfg.rules.values() for t in r.targets):
+        lines = _header(cfg, "未判定の取得結果の判定と、渡せていない変更の再送・後続処理の完了の確認",
+                        opts.dispatch_schedule, opts)
+        lines += _step("evaluate", base + ["evaluate"], depends=None, timeout=600, retry=None)
+        lines += _step("dispatch", base + ["dispatch"], depends="evaluate", timeout=600, retry=None)
+        lines += _step("reconcile", base + ["reconcile"], depends="dispatch", timeout=300, retry=None)
+        write("dispatch", lines)
     lines = _header(cfg, "保持期間を過ぎた取得結果・イベントを整理する", opts.maintenance_schedule, opts)
     lines += _step("gc", base + ["gc"], depends=None, timeout=1800, retry=None)
     write("maintenance", lines)
@@ -319,7 +355,7 @@ def cmd_dags(cfg: Config, store, a) -> int:
 def register(api) -> None:
     """--plugin dagu で読み込まれたときに、アダプタ dagu とコマンド dags を足す。"""
     api.add_adapter("dagu", parse, create)
-    sp = api.add_command("dags", cmd_dags, "Dagu の DAG を書き出す（取得元ごとの取得・再送・整理）")
+    sp = api.add_command("dags", cmd_dags, "Dagu の DAG を書き出す（取得元ごとの取得・ルールごとの取得から実行まで・再送・整理）")
     sp.add_argument("--out", required=True)
     sp.add_argument("--python", help="DAG が使う Python（既定: いま動いている Python）")
     sp.add_argument("--script", help="DAG が呼ぶ api_watch.py（既定: apiwatch と同じ場所の api_watch.py）")

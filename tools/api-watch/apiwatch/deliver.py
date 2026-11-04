@@ -8,11 +8,17 @@
     enqueue     前のイベントを渡したら次を渡す（実行の順序は受け渡し先のキューに任せる）
     none        順序を問わない
 別のレコードはこの制約を受けないので並列に進む。1 件が渡せなくても、同じレコードの後ろのイベントしか止まらない。
+
+受け渡し先に command を書くと、アダプタで渡さず、`work` がその場でコマンドを実行する（1 つのワークフローの中で
+取得から処理までを済ませる）。終了コード 0 で完了、それ以外は時間をおいて同じ ID でやり直す（max_attempts まで）。
+dispatch はこの受け渡し先を飛ばす。
 """
 from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +38,15 @@ class DispatchOutcome:
     dead: int = 0
     waiting: int = 0
     unknown: int = 0
+
+
+@dataclass
+class WorkOutcome:
+    done: int = 0
+    failed: int = 0
+    dead: int = 0
+    waiting: int = 0
+    stopped: bool = False
 
 
 class Dispatcher:
@@ -113,6 +128,8 @@ class Dispatcher:
             if tgt is None:
                 out.unknown += 1
                 continue
+            if tgt.runs_here:
+                continue          # work がその場で実行する
             if self._blocked(d, tgt.order):
                 out.waiting += 1
                 continue
@@ -163,6 +180,135 @@ class Dispatcher:
         else:
             out.sent += 1
             log(f"[{d['rule']} → {tgt.name}] {d['id']}（レコード {d['rkey']}・{payload['kinds']}）を {tgt.workflow} に渡しました")
+
+    # -- その場で実行する受け渡し先（command）------------------------------------
+
+    def work(self, rules: list[str] | None = None, targets: list[str] | None = None,
+             limit: int | None = None) -> WorkOutcome:
+        """command の受け渡し先の、実行を待っている受け渡しを古い順に 1 件ずつ実行する。"""
+        out = WorkOutcome()
+        tried: set[str] = set()   # 1 回の work では、同じ受け渡しを 2 回試さない（失敗のやり直しは次の work で）
+        stop: list[int] = []
+        child: list[subprocess.Popen] = []
+
+        def on_stop(signum, _frame):
+            # Dagu の中止・タイムアウト（SIGTERM）。実行中のコマンドにも伝え、失敗として記録してから抜ける
+            stop.append(signum)
+            for c in child:
+                try:
+                    c.send_signal(signum)
+                except (OSError, ValueError):
+                    pass
+        old = {}
+        for name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGBREAK"):
+            sig = getattr(signal, name, None)
+            if sig is not None:
+                try:
+                    old[sig] = signal.signal(sig, on_stop)
+                except (OSError, ValueError):
+                    pass
+        try:
+            while not stop:
+                if limit is not None and out.done + out.failed + out.dead >= limit:
+                    break
+                t = now()
+                rows = self.store.q(
+                    "SELECT * FROM deliveries WHERE ((status IN ('pending','send_failed') AND next_attempt_at<=?) "
+                    "OR (status='sending' AND lease_until<?)) ORDER BY seq, id", (t, t))
+                picked = None
+                waiting = 0
+                for d in rows:
+                    if d["id"] in tried:
+                        continue
+                    if (rules is not None and d["rule"] not in rules) or (targets is not None and d["target"] not in targets):
+                        continue
+                    tgt = self.target(d["rule"], d["target"])
+                    if tgt is None or not tgt.runs_here:
+                        continue
+                    if self._blocked(d, tgt.order):
+                        waiting += 1
+                        continue
+                    picked = (d, tgt)
+                    break
+                out.waiting = waiting
+                if picked is None:
+                    break
+                tried.add(picked[0]["id"])
+                self._work_one(picked[0], picked[1], out, stop, child)
+        finally:
+            for sig, h in old.items():
+                try:
+                    signal.signal(sig, h)
+                except (OSError, ValueError):
+                    pass
+        out.stopped = bool(stop)
+        return out
+
+    def _work_one(self, d: Any, tgt: TargetSpec, out: WorkOutcome, stop: list, child: list) -> None:
+        t = now()
+        with self.store.tx() as db:
+            cur = db.execute("UPDATE deliveries SET status=?, lease_until=?, owner=?, updated_at=? WHERE id=? AND "
+                             "((status IN ('pending','send_failed') AND next_attempt_at<=?) OR "
+                             "(status='sending' AND lease_until<?))",
+                             (SENDING, t + tgt.timeout_sec + 120, self.store.owner, t, d["id"], t, t))
+            if cur.rowcount != 1:
+                return   # 別のプロセスが先に取った
+        payload = self.event_payload(d["event_id"])
+        path = self.write_event_file(payload)
+        params = self.params_for(d, tgt, payload, path)
+        ctx = {"event": payload, "delivery": {"id": d["id"], "target": tgt.name, "workflow": ""},
+               "env": dict(os.environ)}
+        argv = [str(x) for x in template.render(tgt.command, ctx)]
+        env = dict(os.environ)
+        env.update(params)
+        log(f"[{d['rule']} → {tgt.name}] {d['id']}（レコード {d['rkey']}・{payload['kinds']}）を実行します")
+        error = None
+        try:
+            proc = subprocess.Popen(argv, env=env)
+        except OSError as e:
+            error = f"コマンドを起動できません: {e}"
+        else:
+            child.append(proc)
+            try:
+                rc = proc.wait(timeout=tgt.timeout_sec)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                rc = None
+            finally:
+                child.clear()
+            if stop:
+                error = "中止された"
+            elif rc is None:
+                error = f"{tgt.timeout_sec:.0f} 秒で打ち切った"
+            elif rc != 0:
+                error = f"終了コード {rc}"
+        attempts = int(d["attempts"]) + 1
+        if error is None:
+            with self.store.tx() as db:
+                db.execute("UPDATE deliveries SET status=?, attempts=?, dispatched_at=?, completed_at=?, last_error=NULL, "
+                           "lease_until=NULL, updated_at=? WHERE id=? AND owner=?",
+                           (DONE, attempts, now(), now(), now(), d["id"], self.store.owner))
+            out.done += 1
+            log(f"[{d['rule']} → {tgt.name}] {d['id']} 完了")
+            return
+        if attempts >= tgt.max_attempts:
+            status, nxt = DEAD, 0.0
+            out.dead += 1
+        else:
+            status = SEND_FAILED
+            nxt = now() + min(tgt.retry_max_backoff_sec, tgt.retry_backoff_sec * (2 ** (attempts - 1)))
+            out.failed += 1
+        with self.store.tx() as db:
+            db.execute("UPDATE deliveries SET status=?, attempts=?, next_attempt_at=?, last_error=?, lease_until=NULL, "
+                       "updated_at=? WHERE id=? AND owner=?",
+                       (status, attempts, nxt, REDACT(error), now(), d["id"], self.store.owner))
+        log(f"[{d['rule']} → {tgt.name}] {d['id']} 失敗（{error}・{attempts}/{tgt.max_attempts} 回目）→ "
+            + ("打ち切り（retry で再開）" if status == DEAD else "あとでやり直す"))
 
     # -- 完了の記録・再実行 -----------------------------------------------------
 

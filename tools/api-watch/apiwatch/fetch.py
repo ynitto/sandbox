@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 import urllib.parse
@@ -160,15 +161,48 @@ class Fetcher:
 
     # -- 取得 -----------------------------------------------------------------
 
-    def run(self, src: SourceSpec, force: bool = False) -> FetchOutcome:
+    def _recent(self, src: SourceSpec, fp: str) -> bool:
+        """min_interval_sec の間に（この取得条件で）取得し終えているか。"""
+        if not src.min_interval_sec:
+            return False
+        row = self.store.source_row(src.name)
+        return (row["fingerprint"] == fp and bool(row["last_success_at"])
+                and now() - row["last_success_at"] < src.min_interval_sec)
+
+    def run(self, src: SourceSpec, force: bool = False, jitter: bool = True) -> FetchOutcome:
+        """取得する。同じ取得元を複数のワークフローが呼んでも、API への問い合わせは 1 回にまとめる:
+
+        - min_interval_sec の間に取得し終えていれば、待たずに「取得しない」で終わる（その結果を判定に使う）
+        - jitter_sec があれば 0〜その秒数だけランダムに待ってから取得する（定刻に API へ集中させない）
+        - 別のプロセスが取得中なら busy_wait_sec まで終わるのを待ち、待っている間に取得し終えたらその結果を使う
+        """
         conn = self.cfg.resolve_connection(src.connection)
         fp = src.fingerprint(conn)
         lease = f"fetch:{src.name}"
-        if not self.store.acquire(lease, src.lease_sec):
+        if not force and self._recent(src, fp):
+            return FetchOutcome(src.name, "skipped",
+                                message=f"前回の取得から {src.min_interval_sec:.0f} 秒たっていないので取得しません")
+        if jitter and not force and src.jitter_sec > 0:
+            delay = random.uniform(0, src.jitter_sec)
+            log(f"[{src.name}] API への問い合わせを {delay:.0f} 秒ずらします")
+            self.sleep(delay)
+        started = now()
+        deadline = started + src.busy_wait_sec
+        waited = False
+        while not self.store.acquire(lease, src.lease_sec):
             holder = self.store.lease_holder(lease)
             who = f"{holder['host']} pid {holder['pid']}" if holder else "別のプロセス"
-            return FetchOutcome(src.name, "busy", message=f"{who} が取得中なので何もしません")
+            if now() >= deadline:
+                return FetchOutcome(src.name, "busy", message=f"{who} が取得中なので何もしません")
+            if not waited:
+                log(f"[{src.name}] {who} が取得中なので、終わるのを最大 {src.busy_wait_sec:.0f} 秒待ちます")
+                waited = True
+            self.sleep(min(1.0, max(0.05, deadline - now())))
         try:
+            if waited and not force:
+                row = self.store.source_row(src.name)
+                if row["fingerprint"] == fp and row["last_success_at"] and row["last_success_at"] >= started:
+                    return FetchOutcome(src.name, "skipped", message="別のプロセスがいま取得した結果を使います")
             return self._run_locked(src, conn, fp, force, lease)
         finally:
             self.store.release(lease)

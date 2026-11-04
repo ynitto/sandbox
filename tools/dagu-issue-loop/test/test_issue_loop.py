@@ -569,8 +569,8 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# api-watch で動かす構成（handle）。取得と検知は本物の api-watch、受け渡しは command アダプタで
-# issue_loop.py handle を直接呼ぶ（Dagu のキューの代わり。1 件ずつ順に動く）
+# api-watch で動かす構成（handle）。本物の api-watch が取得・判定し、command の受け渡し先として
+# issue_loop.py handle をその場で 1 件ずつ実行する（gitlab-issue-watch.yaml の 1 本のワークフローと同じ流れ）
 # ---------------------------------------------------------------------------
 
 API_WATCH = HERE.parent.parent / "api-watch" / "api_watch.py"
@@ -587,8 +587,6 @@ class ApiWatchHandleTest(Base):
         self.cfg.write_text(json.dumps({
             "version": 1,
             "state_dir": str(self.tmp / "aw-state"),
-            "delivery": {"adapter": "command", "timeout_sec": 60,
-                         "command": [sys.executable, str(SCRIPT), "handle"]},
             "sources": {"gitlab-issues": {
                 "connection": "gitlab",
                 "request": {"url": "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues",
@@ -602,15 +600,16 @@ class ApiWatchHandleTest(Base):
                 "watch": ["title", "state", "labels", "assignees[*].username", "milestone.title", "due_date",
                           "user_notes_count", "description"],
                 "unordered": ["labels"], "on": ["appeared", "changed"],
-                "targets": [{"workflow": "gitlab-issue-handle", "order": "enqueue",
-                             "retry_backoff_sec": 1}]}},
+                "targets": [{"name": "agent", "command": ["{{ env.ISSUE_LOOP_PYTHON }}", str(SCRIPT), "handle"],
+                             "timeout_sec": 60, "order": "none", "retry_backoff_sec": 0}]}},
         }), encoding="utf-8")
         self.env["GITLAB_URL"] = self.gl.url
+        self.env["ISSUE_LOOP_PYTHON"] = sys.executable
 
     def watch(self, env=None):
         e = {**self.env, **(env or {})}
         r = subprocess.run([sys.executable, str(API_WATCH), "--config", str(self.cfg), "--connections",
-                            str(self.conn), "run"], env=e, capture_output=True, text=True, encoding="utf-8",
+                            str(self.conn), "run", "--rule", "issue-agent"], env=e, capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=120)
         return r
 

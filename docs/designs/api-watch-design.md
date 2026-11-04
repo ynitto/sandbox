@@ -128,6 +128,23 @@
 （pid の生存確認、Windows は `OpenProcess`）即座に、別の PC なら期限切れで奪う。Dagu の DAG が重なっても、手で `fetch` を
 叩いても、同じ取得元を同時に 2 回取らない。判定も取得元ごとに排他する（`eval:<名前>`）。
 
+### 3.6 取得の共有とずらし
+
+1 つの取得元を、それぞれ自分のワークフロー（§5.5）で取得から処理まで行う複数のルールが使うと、同じ API を何度も呼びかねない。
+`fetch` は次の順で判断して、問い合わせを 1 回にまとめる。
+
+1. `min_interval_sec` の間に（同じ指紋で）取得し終えていれば、待たずに `skipped` で終わる。続く `evaluate` はその取得結果を使う
+2. `jitter_sec` があれば 0〜その秒数だけランダムに待つ（定刻に複数の PC・ワークフローが API へ集中しない）。手で叩くときは
+   `--no-jitter`、`--force` でも待たない。1 で終わるときは待たない（取得しないのにずらしても意味がない）
+3. 排他（§3.5）が取れなければ、`busy_wait_sec` まで 1 秒ごとに取り直す。取れるまでの間に別のプロセスが取得し終えていれば
+   （`last_success_at` が待ち始めた時刻以降）、その結果を使って `skipped` で終わる。待っても取れなければ従来どおり `busy`
+4. 排他を取ったあと、`_run_locked` が改めて `min_interval_sec` を見る（ずらしている間に別のワークフローが取得した場合）
+
+`busy_wait_sec` が 0（既定）だと、取得中のときは待たずに終わり、続く `evaluate` は前回までの取得結果しか見ない。取得元の DAG と再送の DAG で
+回す従来の形ではそれで足りる（次の再送の DAG が判定する）が、ワークフローごとに判定から処理まで行う形では、そのワークフローの次の起動まで
+処理が遅れる。`check` は、command の受け渡し先を持つルールが 2 本以上ある取得元で `min_interval_sec` か `busy_wait_sec` が 0 なら注意を出す。
+DAG の fetch ステップの `timeout_sec` には、両方の秒数を足す。
+
 ## 4. 判定
 
 ### 4.1 観測の列を順に比べる
@@ -219,6 +236,27 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 `reconcile` が Dagu に問い合わせて記録するので、後続の DAG を変えずに済む（`command` アダプタでは `status_command`）。どちらも無い場合、`order: completion` の受け渡し先では
 同じレコードの次のイベントが渡らない（README に明記）。
 
+### 5.5 その場で実行する受け渡し先（command）と、1 本のワークフロー
+
+受け渡し先に `workflow` の代わりに `command`（argv）を書くと、アダプタで別のワークフローへ渡さず、`work` がその場で実行する。
+取得 → 判定 → 処理を 1 本のワークフロー（`fetch --source S` → `evaluate --rule R` → `work --rule R`）で行い、Dagu 側に
+受け渡し先の DAG もキューも要らない。`run --rule R` は同じことを 1 つのコマンドで行う。
+
+- 受け渡しの行（deliveries）・ID・順序（`order`）・試行回数と間隔（`max_attempts` / `retry_backoff_sec`）・`retry` / `skip` は
+  `workflow` の受け渡し先と同じものを使う。状態は `pending` → `sending`（実行中。期限は `timeout_sec` + 120 秒）→ `done`、
+  失敗は `send_failed`（間隔をおいて次の `work` で同じ ID のまま再実行）→ 上限で `dead`。`dispatched` と `failed` は通らない
+- 1 回の `work` では同じ受け渡しを 2 回試さない（`retry_backoff_sec: 0` でも、失敗を同じ実行の中で上限まで繰り返さない）
+- コマンドには `params_for` と同じ値を環境変数で渡し（`APIWATCH_EVENT_FILE` など）、argv にも `{{ event.* }}`・`{{ delivery.* }}`・
+  `{{ env.* }}` を埋められる。標準出力・標準エラーはそのまま流す（Dagu のステップのログに出る）
+- `timeout_sec` を過ぎたら終了を頼み、15 秒で強制終了して失敗として数える。`work` が止められた（SIGTERM など）ときは実行中のコマンドへ
+  同じシグナルを伝え、終わるのを待って失敗として記録し、終了コード 1 で終わる
+- 同じ `work` を 2 つ動かしても、`sending` への書き換えを条件付きの UPDATE で取り合うので、1 件を 2 回実行しない。プロセスが死んだら、
+  期限が過ぎたあとの `work` が同じ ID で実行し直す（少なくとも 1 回。冪等にするのはコマンドの側）
+- `dispatch` はこの受け渡し先を飛ばす。`workflow` の受け渡し先が 1 つも無ければ `delivery`（アダプタ）は要らない
+- `dags` は、command の受け渡し先を持つルールごとに `<prefix>-<ルール名>` のワークフロー（fetch → evaluate → [dispatch] → work）を書く。
+  起動間隔はルールの `schedule`（無ければ取得元の `schedule`）。work のステップには上限を付けない（1 件ごとの上限は `timeout_sec`）。
+  どのルールも自分のワークフローを持つ取得元には取得元の DAG を、`workflow` の受け渡し先が無ければ再送の DAG を書かない
+
 ## 6. 運用
 
 - 接続設定: connections.yaml のパスはコマンド行の `--connections` だけで受け取り、環境変数（`SKILL_CONNECTIONS_FILE` など）や
@@ -252,7 +290,11 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 
 ## 8. 検証
 
-`tools/api-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。43 件。
+`tools/api-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。
+
+- `test_shared.py`: command の受け渡し先（`run --rule` で取得から実行まで・失敗の再試行と打ち切り・`retry`・`dispatch` が触らないこと・
+  時間切れ・設定の検査）、取得の共有（2 本のワークフローで問い合わせ 1 回・`check` の注意・ずらし・取得中のプロセスを待ってその結果を使う）、
+  `dags` が書くルールごとのワークフロー
 
 - `test_detect.py`: パス・条件式・テンプレート、正規化（キー順・配列の順序・`unordered`・`ignore`・欠落と null）、
   種類（A→B→A・`entered` / `exited` / `matching`・`filter` と `removed`・増分では消えたとしない）、複合 ID、イベント ID の安定性、設定の検査

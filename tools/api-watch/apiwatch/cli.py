@@ -37,19 +37,28 @@ def cmd_check(cfg, store, a) -> int:
     log(f"設定: {cfg.path}")
     log(f"状態の保存先: {cfg.state_dir}")
     log(f"接続設定: {cfg.connections.path or '（--connections の指定なし）'}")
-    log(f"受け渡し: {cfg.delivery.adapter if cfg.delivery else '（なし。検知を記録するだけ）'}")
+    here = any(t.runs_here for r in cfg.rules.values() for t in r.targets)
+    log(f"受け渡し: {cfg.delivery.adapter if cfg.delivery else '（アダプタなし）'}"
+        + ("（command の受け渡し先は work がその場で実行）" if here else ""))
     ok = True
     for name, src in cfg.sources.items():
         try:
             cfg.resolve_connection(src.connection)
             conn = "なし" if src.connection is None else f"{src.connection[0]}/{src.connection[1]}"
             log(f"  取得元 {name}: {src.method} {REDACT(src.url)}（接続 {conn}・ページング {src.pagination.type}・"
-                f"増分 {src.incremental.type if src.incremental else 'なし'}・ルール {len(cfg.rules_for(name))} 本）")
+                f"増分 {src.incremental.type if src.incremental else 'なし'}・ルール {len(cfg.rules_for(name))} 本"
+                + (f"・ずらし 0〜{src.jitter_sec:.0f} 秒" if src.jitter_sec else "")
+                + (f"・取得中なら {src.busy_wait_sec:.0f} 秒まで待つ" if src.busy_wait_sec else "") + "）")
+            here = [r.name for r in cfg.rules_for(name) if any(t.runs_here for t in r.targets)]
+            if len(here) > 1 and not (src.min_interval_sec and src.busy_wait_sec):
+                log(f"    注意: ルール {', '.join(here)} がそれぞれのワークフローからこの取得元を取得します。"
+                    "min_interval_sec と busy_wait_sec を書かないと、同じ API を続けて問い合わせることがあります")
         except ConfigError as e:
             ok = False
             log(f"  取得元 {name}: {e}")
     for name, r in cfg.rules.items():
-        tg = ", ".join(f"{t.name}→{t.workflow}（{t.order}）" for t in r.targets) or "なし（検知だけ記録）"
+        tg = ", ".join(f"{t.name}→{'その場で実行' if t.runs_here else t.workflow}（{t.order}）"
+                       for t in r.targets) or "なし（検知だけ記録）"
         log(f"  ルール {name}: {r.source} / ID {r.id_paths} / 監視 {r.watch or '全体'} / 発火 {r.on} / 受け渡し {tg}")
     if cfg.delivery is not None:
         try:
@@ -64,7 +73,7 @@ def cmd_check(cfg, store, a) -> int:
 def cmd_fetch(cfg, store, a) -> int:
     code = EXIT_OK
     for name in _sources(cfg, a.source):
-        o = Fetcher(cfg, store).run(cfg.sources[name], force=a.force)
+        o = Fetcher(cfg, store).run(cfg.sources[name], force=a.force, jitter=not getattr(a, "no_jitter", False))
         log(f"[{name}] {o.status}: {o.message}")
         if o.status == "failed":
             code = max(code, EXIT_TRANSIENT if o.transient else EXIT_ERROR)
@@ -103,12 +112,27 @@ def cmd_dispatch(cfg, store, a) -> int:
     return EXIT_PARTIAL if (o.failed or o.dead) else EXIT_OK
 
 
+def cmd_work(cfg, store, a) -> int:
+    rules = _rules_of_sources(cfg, a)
+    targets = a.target or None
+    o = Dispatcher(cfg, store).work(rules, targets, a.limit)
+    log(f"実行: 完了 {o.done}・失敗（あとでやり直す） {o.failed}・打ち切り {o.dead}・前のイベントの完了待ち {o.waiting}"
+        + ("・中止されました" if o.stopped else ""))
+    if o.stopped:
+        return EXIT_ERROR
+    return EXIT_PARTIAL if (o.failed or o.dead) else EXIT_OK
+
+
 def cmd_run(cfg, store, a) -> int:
+    rules = _rules(cfg, a.rule)
+    if rules:
+        a.source = sorted({cfg.rules[r].source for r in rules} & set(_sources(cfg, a.source)))
     code = cmd_fetch(cfg, store, a)
-    a.rule = None
     code2 = cmd_evaluate(cfg, store, a)
     code3 = cmd_dispatch(cfg, store, a)
-    return max(code, code2, code3)
+    a.target = None
+    code4 = cmd_work(cfg, store, a)
+    return max(code, code2, code3, code4)
 
 
 def cmd_ack(cfg, store, a) -> int:
@@ -328,7 +352,8 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     add("check", cmd_check, "設定と接続設定を確かめる（API には問い合わせない）")
     sp = add("fetch", cmd_fetch, "取得元から取得する（全ページを取り終えたら判定に回せる）")
     sp.add_argument("--source", action="append")
-    sp.add_argument("--force", action="store_true", help="min_interval_sec を無視する")
+    sp.add_argument("--force", action="store_true", help="min_interval_sec・jitter_sec を無視する")
+    sp.add_argument("--no-jitter", action="store_true", help="jitter_sec でずらさない（手で叩くとき）")
     sp = add("evaluate", cmd_evaluate, "未判定の取得結果をルールで判定する（API には問い合わせない）")
     sp.add_argument("--source", action="append")
     sp.add_argument("--rule", action="append")
@@ -336,9 +361,16 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     sp.add_argument("--source", action="append")
     sp.add_argument("--rule", action="append")
     sp.add_argument("--limit", type=int)
-    sp = add("run", cmd_run, "fetch → evaluate → dispatch をまとめて行う")
+    sp = add("work", cmd_work, "command の受け渡し先を、その場で 1 件ずつ実行する")
     sp.add_argument("--source", action="append")
+    sp.add_argument("--rule", action="append")
+    sp.add_argument("--target", action="append")
+    sp.add_argument("--limit", type=int)
+    sp = add("run", cmd_run, "fetch → evaluate → dispatch → work をまとめて行う（--rule でそのルールだけ）")
+    sp.add_argument("--source", action="append")
+    sp.add_argument("--rule", action="append")
     sp.add_argument("--force", action="store_true")
+    sp.add_argument("--no-jitter", action="store_true")
     sp.add_argument("--limit", type=int)
     sp = add("ack", cmd_ack, "後続処理の完了（--failed なら失敗）を記録する。後続の DAG の handler_on から呼ぶ")
     sp.add_argument("delivery", help="受け渡しの ID（後続の DAG では ${DAG_RUN_ID}）")

@@ -1,0 +1,37 @@
+# GitLab の issue を api-watch で取得し、変化した issue を 1 件ずつエージェント CLI に渡す（Dagu v2 の書式）。
+# 取得 → 判定 → 実行までをこの 1 本で行う。同時に動くエージェント CLI は常に 1 つ:
+#   - Dagu: 同じ DAG が実行中なら次の定期実行を立てない
+#   - api-watch work: 変化を 1 件ずつ順に実行する
+#   - issue_loop.py handle: ロックファイル（既定は全プロジェクト共通）で排他する。取れなければ 4 で終わり、次の起動で再試行
+#
+# 置き場所: Dagu の DAG フォルダ（既定 ~/.config/dagu/dags/）。設定は ~/.config/dagu/issue-loop.env。
+# api-watch の dags コマンドでも同じ形の DAG を書き出せる（README の「api-watch で動かす」）。
+name: gitlab-issue-watch
+description: GitLab の issue の変化を api-watch で拾い、エージェント CLI に 1 件ずつ渡す
+schedule: "0 * * * *"         # api-watch.yaml のルール（なければ取得元）の schedule と同じにする
+hist_retention_days: 14
+max_clean_up_time_sec: 60     # 止めるとき、CLI を片付けて記録するまで待つ秒数
+dotenv:
+  - ~/.config/dagu/issue-loop.env
+type: graph
+steps:
+  - name: fetch
+    # jitter_sec（最大 900 秒）ずらし、別のワークフローが取得中なら busy_wait_sec（600 秒）まで待つ。
+    # 30 分以内に取得し終えていれば問い合わせない
+    command: ${ISSUE_LOOP_PYTHON} ${ISSUE_LOOP_APIWATCH} --config ${ISSUE_LOOP_APIWATCH_CONFIG} --connections ${ISSUE_LOOP_APIWATCH_CONNECTIONS} fetch --source gitlab-issues
+    timeout_sec: 2400
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      backoff: true
+      max_interval_sec: 600
+      exit_code: [3]            # GitLab に届かないときだけ再試行
+  - name: evaluate
+    depends: [fetch]
+    command: ${ISSUE_LOOP_PYTHON} ${ISSUE_LOOP_APIWATCH} --config ${ISSUE_LOOP_APIWATCH_CONFIG} --connections ${ISSUE_LOOP_APIWATCH_CONNECTIONS} evaluate --rule issue-agent
+    timeout_sec: 600
+  - name: work
+    depends: [evaluate]
+    # 変化した issue ごとに issue_loop.py handle を実行する。1 件の上限は api-watch.yaml の timeout_sec
+    command: ${ISSUE_LOOP_PYTHON} ${ISSUE_LOOP_APIWATCH} --config ${ISSUE_LOOP_APIWATCH_CONFIG} --connections ${ISSUE_LOOP_APIWATCH_CONNECTIONS} work --rule issue-agent
+    signal_on_stop: SIGTERM   # Windows の Dagu はシグナルを使わず、プロセスツリーごと止める

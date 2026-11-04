@@ -173,21 +173,21 @@ python3 ~/.local/share/dagu-issue-loop/issue_loop.py forget 123
 
 ## api-watch で動かす
 
-issue の取得と変化の検知を [api-watch](../api-watch/README.md) に任せる構成もある。`poll` と待ち行列の代わりに
-api-watch が issue を取得して変化を検知し、Dagu のキュー（同時実行 1）へ 1 件ずつ入れる。
+issue の取得と変化の検知を [api-watch](../api-watch/README.md) に任せる構成もある。Dagu のワークフロー 1 本（`gitlab-issue-watch`）の中で、
+api-watch が issue を取得して変化を判定し、変化した issue ごとに `issue_loop.py handle` を 1 件ずつ実行する。
 エージェント CLI の起動・プロンプト・1 セッションの排他・自分の書き込みで起きない仕組みは、これまでと同じ `issue_loop.py` が受け持つ。
 
 ```
- Dagu: api-watch-gitlab-issues（1 時間ごと）      Dagu: gitlab-issue-handle（キュー gitlab-issue-agent・同時実行 1）
-   api-watch fetch → evaluate → dispatch            issue_loop.py handle
-     issue を全ページ取得して前回と比べる  ──キュー──▶  issue を取り直してエージェント CLI を実行
-     変化した issue を 1 件ずつ渡す                     終わったら既読にする（失敗は Dagu が再試行）
+ Dagu: gitlab-issue-watch（1 時間ごと）
+   fetch     0〜15 分ずらして issue を全ページ取得    ← 同じ取得元を使う別のワークフローとは 1 回にまとめる
+   evaluate  前回と比べて変化した issue を拾う
+   work      変化した issue ごとに issue_loop.py handle  ← issue を取り直してエージェント CLI を実行し、既読にする
 ```
 
 ### 入れ方
 
-1. 上の「入れ方」の 1・2 と同じく、スクリプトを置いて `issue-loop.env` を書く。`ISSUE_LOOP_APIWATCH`（api-watch の場所）と
-   `ISSUE_LOOP_APIWATCH_CONFIG`（3 で置く設定ファイル）も埋める。
+1. 上の「入れ方」の 1・2 と同じく、スクリプトを置いて `issue-loop.env` を書く。`ISSUE_LOOP_APIWATCH`（api-watch の場所）・
+   `ISSUE_LOOP_APIWATCH_CONFIG`（3 で置く設定ファイル）・`ISSUE_LOOP_APIWATCH_CONNECTIONS`（4 の接続設定）も埋める。
 2. api-watch を入れる（`python3 tools/api-watch/install.py install`）。
 3. api-watch の設定を置く。絞り込み（`query` の `state`・`labels`・`assignee_username`）は `issue-loop.env` の
    `ISSUE_LOOP_ISSUE_STATE` などと同じにする。
@@ -209,50 +209,52 @@ api-watch が issue を取得して変化を検知し、Dagu のキュー（同�
        token: ${GITLAB_TOKEN}
    ```
 
-5. Dagu のキューを作る（`~/.config/dagu/config.yaml`）。エージェント CLI を同時に 1 つにするのはこのキュー。
-
-   ```yaml
-   queues:
-     enabled: true
-     config:
-       - name: gitlab-issue-agent
-         max_concurrency: 1
-   ```
-
-6. DAG を置く。受け渡し先の DAG はコピーし、取得の DAG は api-watch に書き出させる。`gitlab-issue-poll.yaml` と
-   `gitlab-issue-agent.yaml` は置かない（置いてあれば消す）。
+5. Dagu のワークフローを置く。`gitlab-issue-poll.yaml` と `gitlab-issue-agent.yaml` は置かない（置いてあれば消す）。
+   Dagu の設定（`config.yaml`）に足すものは無い。
 
    ```bash
-   cp tools/dagu-issue-loop/api-watch/gitlab-issue-handle.yaml ~/.config/dagu/dags/
+   cp tools/dagu-issue-loop/api-watch/gitlab-issue-watch.yaml ~/.config/dagu/dags/
    ```
+
+   api-watch に書き出させてもよい（中身は同じ流れで、パスが絶対パスで入る）。そのときは `gitlab-issue-watch.yaml` は置かない。
+
+   ```bash
+   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/issue-loop.env
+   ```
+
+6. 一度手で回して基準を取る（今ある issue を覚えるだけで、エージェントは起こさない）。そのあと Dagu のスケジューラを動かす。
 
    ```bash
    set -a; . ~/.config/dagu/issue-loop.env; set +a
    ```
 
    ```bash
-   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/issue-loop.env
+   api-watch --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run --rule issue-agent --no-jitter
    ```
 
-7. 一度手で回して基準を取る（今ある issue を覚えるだけで、エージェントは起こさない）。そのあと Dagu のスケジューラを動かす。
+### 同じ GitLab を別のワークフローからも見るとき
 
-   ```bash
-   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
-   ```
+issue の変化で別のことをしたい（通知など）ときは、api-watch の設定に同じ取得元 `gitlab-issues` を使うルールを足し、
+`gitlab-issue-watch.yaml` を複製して `name` と `--rule` を変える（設定例の `issue-notify`）。ワークフローが同じ時刻に起動しても、
+GitLab への問い合わせは 1 回にまとまる:
+
+- 先に取得したワークフローの結果を、`min_interval_sec`（例は 30 分）のあいだ他のワークフローも使う
+- 別のワークフローが取得している最中なら、`busy_wait_sec`（例は 10 分）まで終わるのを待って、その結果を使う
 
 ### これまでの構成との違い
 
 | | `poll` と `run` | api-watch で動かす |
 |---|---|---|
-| 取得の間隔 | 毎時 0 分から 0〜15 分ずらす | 設定の `schedule`（例は毎時 7 分）。ランダムにはずらさないので、PC ごとに分を変える |
+| ワークフロー | 取得（1 時間ごと）と実行（毎分）の 2 本 | 取得から実行までの 1 本 |
+| 取得の間隔 | 毎時 0 分から 0〜15 分ずらす | 同じ（`schedule` と `jitter_sec`） |
 | 変化の判定 | 上の「何を変化とみなすか」 | 同じ項目を api-watch の `watch` に書く |
-| 待っている変化 | issue ごとに 1 件へまとめる | 変化ごとにキューへ入る。先に動いた実行が最新の issue で流し、後ろの同じ issue は流し終えた分として飛ばす |
-| 失敗と再試行 | `ISSUE_LOOP_MAX_ATTEMPTS`・`ISSUE_LOOP_RETRY_BACKOFF` | `gitlab-issue-handle.yaml` の `retry_policy`。尽きたら次の変化まで待つ |
-| 1 セッション | ロックファイル | Dagu のキュー（同時実行 1）とロックファイル |
-| 取得の履歴・再送 | なし | api-watch の `status`・`events`・`retry` で見られる |
+| 待っている変化 | issue ごとに 1 件へまとめる | 変化ごとに 1 件。先に動いた実行が最新の issue で流し、後ろの同じ issue は流し終えた分として飛ばす |
+| 失敗と再試行 | `ISSUE_LOOP_MAX_ATTEMPTS`・`ISSUE_LOOP_RETRY_BACKOFF`（毎分の `run` で再試行） | 設定の `max_attempts`・`retry_backoff_sec`。再試行はワークフローの次の起動で行う |
+| 1 セッション | ロックファイル | ワークフローの中で 1 件ずつ実行し、ロックファイルでも排他する |
+| 取得の履歴・やり直し | なし | api-watch の `status`・`events`・`retry` で見られる |
 
-`handle` は、別のセッションが実行中なら 4、GitLab に届かなければ 3、エージェント CLI が失敗したら 1 で終わり、Dagu がどれも再試行する。
-対象から外れた issue（キューで待つ間に閉じた・ラベルが外れた）は流さずに 0 で終わる。
+`handle` は、別のセッションが実行中なら 4、GitLab に届かなければ 3、エージェント CLI が失敗したら 1 で終わり、どれも次の起動で再試行される。
+対象から外れた issue（実行を待つ間に閉じた・ラベルが外れた）は流さずに 0 で終わる。
 
 ## テスト
 

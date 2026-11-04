@@ -1,7 +1,7 @@
 # dagu-issue-loop を api-watch で動かすときの api-watch の設定（~/.config/api-watch/api-watch.yaml にコピーして使う）。
 #
-# issue の取得と変化の検知は api-watch、1 件ずつの実行は Dagu のキュー（同時実行 1）、
-# エージェント CLI の起動は issue_loop.py handle が受け持つ。issue_loop.py poll / run と待ち行列は使わない。
+# 1 つの Dagu のワークフロー（gitlab-issue-watch.yaml）の中で、取得 → 変化の判定 → エージェント CLI の実行まで行う。
+# エージェント CLI は api-watch の work が issue_loop.py handle を 1 件ずつ呼んで動かす（受け渡し先の DAG やキューは使わない）。
 #
 # GitLab の URL・プロジェクト・トークンは ~/.config/dagu/issue-loop.env にだけ書く。
 # connections.yaml の gitlab は次のように書き、値はその環境変数から取る:
@@ -10,15 +10,8 @@
 #     - label: default
 #       url: ${GITLAB_URL}
 #       token: ${GITLAB_TOKEN}
-#
-# DAG を書き出すときは --dotenv ~/.config/dagu/issue-loop.env を付ける（README の「api-watch で動かす」）。
 version: 1
 state_dir: ~/.local/state/api-watch
-
-delivery:
-  adapter: dagu              # 実行時に --plugin dagu を付ける
-  mode: cli
-  executable: dagu           # PATH に無ければ dagu のフルパス（Windows は dagu.exe）
 
 sources:
   gitlab-issues:
@@ -27,25 +20,44 @@ sources:
       url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/issues"
       headers:
         PRIVATE-TOKEN: "{{ conn.token }}"
-      # ISSUE_LOOP_ISSUE_STATE / LABELS / ASSIGNEE と同じ絞り込みにする（handle はキューで待つ間に外れた issue を流さない）
+      # ISSUE_LOOP_ISSUE_STATE / LABELS / ASSIGNEE と同じ絞り込みにする（handle は実行前に取り直し、外れた issue は流さない）
       query: { state: opened, scope: all, order_by: updated_at, sort: asc }
-      # query: { state: opened, scope: all, order_by: updated_at, sort: asc, labels: agent, assignee_username: bot-user }
     key: iid
     pagination: { type: page, size_param: per_page, size: 100 }
-    schedule: "7 * * * *"    # 1 時間に 1 回。複数の PC で動かすときは分をずらす
+    schedule: "0 * * * *"      # ルールに schedule が無いときのワークフローの起動間隔
+    jitter_sec: 900            # 起動してから 0〜15 分ずらして問い合わせる（PC・ワークフローが重なっても同じ時刻に集中しない）
+    # この取得元を複数のワークフロー（ルール）が使っても、API への問い合わせは 1 回にまとめる:
+    min_interval_sec: 1800     # 30 分以内に取得し終えていれば取得せず、その結果を使う
+    busy_wait_sec: 600         # 別のワークフローが取得中なら、終わるのを待ってその結果を使う
     rate_limit: { min_interval_sec: 1 }
 
 rules:
   issue-agent:
     source: gitlab-issues
     id: iid
-    # これらのどれかが変わったときだけ渡す（updated_at だけの更新では起こさない）
+    # これらのどれかが変わったときだけ実行する（updated_at だけの更新では起こさない）
     watch: [title, state, labels, "assignees[*].username", milestone.title, due_date, user_notes_count, description]
     unordered: [labels]
     on: [appeared, changed]
-    initial: baseline        # 初回は今ある issue を覚えるだけ
+    initial: baseline          # 初回は今ある issue を覚えるだけ
     targets:
-      - workflow: gitlab-issue-handle   # 受け渡し先の DAG（gitlab-issue-handle.yaml）
-        queue: gitlab-issue-agent       # Dagu の config.yaml で max_concurrency: 1 にするキュー
-        # 失敗した issue は Dagu の再試行のあと打ち切り、次の変化でもう一度拾う。後ろの変化を止めないよう enqueue にする
-        order: enqueue
+      - name: agent
+        # その場で実行する。環境変数は Dagu が issue-loop.env から渡す
+        command: ["{{ env.ISSUE_LOOP_PYTHON }}", "{{ env.ISSUE_LOOP_HOME }}/issue_loop.py", "handle"]
+        timeout_sec: 4200      # ISSUE_LOOP_AGENT_TIMEOUT（既定 3600 秒）より長く
+        max_attempts: 3        # ISSUE_LOOP_MAX_ATTEMPTS の代わり。尽きたら次の変化で拾い直す
+        retry_backoff_sec: 300 # ISSUE_LOOP_RETRY_BACKOFF の代わり（次の起動のうち、この秒数を過ぎたもので再試行）
+        order: none            # 打ち切った変化があっても、同じ issue の新しい変化は流す
+
+  # 同じ取得元を別のワークフローでも使う例（gitlab-issue-watch.yaml を複製して --rule を変える）。
+  # 取得は上の min_interval_sec / busy_wait_sec で 1 回にまとまる。
+  # issue-notify:
+  #   source: gitlab-issues
+  #   id: iid
+  #   watch: [state]
+  #   on: [changed]
+  #   schedule: "30 * * * *"
+  #   targets:
+  #     - name: notify
+  #       command: ["{{ env.ISSUE_LOOP_PYTHON }}", "/home/you/bin/notify.py"]
+  #       timeout_sec: 120

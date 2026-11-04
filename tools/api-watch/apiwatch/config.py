@@ -105,6 +105,8 @@ class SourceSpec:
     incremental: Incremental | None
     schedule: str
     min_interval_sec: float
+    jitter_sec: float
+    busy_wait_sec: float
     rate_min_interval_sec: float
     rate_per_minute: int
     retry_attempts: int
@@ -119,8 +121,8 @@ class SourceSpec:
     def fingerprint(self, conn: dict | None) -> str:
         """取得条件・認証の指紋。変わったら別のデータとして扱い、過去の取得結果や位置を使わない。"""
         cfg = {k: v for k, v in self.raw.items()
-               if k not in ("schedule", "min_interval_sec", "rate_limit", "retry", "resume", "resume_max_age_sec",
-                            "lease_sec", "conditional", "description")}
+               if k not in ("schedule", "min_interval_sec", "jitter_sec", "busy_wait_sec", "rate_limit", "retry",
+                            "resume", "resume_max_age_sec", "lease_sec", "conditional", "description")}
         cred = sha(canonical(conn), 32) if conn else None
         return sha(canonical({"cfg": cfg, "conn": list(self.connection) if self.connection else None, "cred": cred}), 32)
 
@@ -128,7 +130,7 @@ class SourceSpec:
 @dataclass
 class TargetSpec:
     name: str
-    workflow: str
+    workflow: str | None            # 受け渡し先のワークフロー（アダプタで渡す）
     params: dict
     queue: str | None
     order: str
@@ -136,6 +138,13 @@ class TargetSpec:
     retry_backoff_sec: float
     retry_max_backoff_sec: float
     inline_payload: bool
+    command: list | None = None     # その場で実行するコマンド（work が実行する。アダプタを使わない）
+    timeout_sec: float = 3600
+
+    @property
+    def runs_here(self) -> bool:
+        """受け渡し先へ渡さず、api-watch の work がその場でコマンドを実行する受け渡し先か。"""
+        return self.command is not None
 
 
 @dataclass
@@ -156,6 +165,7 @@ class RuleSpec:
     on_rule_change: str             # rebaseline | continue
     targets: list[TargetSpec]
     include_record: bool
+    schedule: str | None = None     # その場で実行する受け渡し先があるとき、dags が書き出すワークフローの起動間隔
 
     def fingerprint(self) -> str:
         """判定の仕方の指紋。変わると、前回の観測値とは比べ方が違うので基準を取り直す。"""
@@ -285,8 +295,8 @@ def _source(name: str, d: Any) -> SourceSpec:
     _expect(NAME_RE.match(name) is not None, f"{where}: 名前は英数字・- _ . で 64 文字以内にしてください")
     _expect(isinstance(d, dict), f"{where}: 辞書で書いてください")
     _known(d, {"description", "connection", "request", "records", "key", "pagination", "incremental", "schedule",
-               "min_interval_sec", "rate_limit", "retry", "conditional", "resume", "resume_max_age_sec", "lease_sec"},
-           where)
+               "min_interval_sec", "jitter_sec", "busy_wait_sec", "rate_limit", "retry", "conditional", "resume",
+               "resume_max_age_sec", "lease_sec"}, where)
     req = d.get("request")
     _expect(isinstance(req, dict) and isinstance(req.get("url"), str), f"{where}.request.url を書いてください")
     _known(req, {"method", "url", "headers", "query", "body", "body_form", "timeout_sec"}, f"{where}.request")
@@ -322,6 +332,8 @@ def _source(name: str, d: Any) -> SourceSpec:
         records=records, key=key, pagination=pag, incremental=inc,
         schedule=str(d.get("schedule", "*/5 * * * *")),
         min_interval_sec=_num(d, "min_interval_sec", 0, where),
+        jitter_sec=_num(d, "jitter_sec", 0, where),
+        busy_wait_sec=_num(d, "busy_wait_sec", 0, where),
         rate_min_interval_sec=_num(rl, "min_interval_sec", 0, f"{where}.rate_limit"),
         rate_per_minute=_int(rl, "per_minute", 0, f"{where}.rate_limit"),
         max_wait_sec=_num(rl, "max_wait_sec", 120, f"{where}.rate_limit"),
@@ -339,10 +351,20 @@ def _target(rule: str, i: int, d: Any) -> TargetSpec:
     where = f"rules.{rule}.targets[{i}]"
     if isinstance(d, str):
         d = {"workflow": d}
-    _expect(isinstance(d, dict) and isinstance(d.get("workflow"), str),
-            f"{where}.workflow: 受け渡し先のワークフロー（Dagu なら DAG 名）を書いてください")
-    _known(d, {"name", "workflow", "params", "queue", "order", "max_attempts", "retry_backoff_sec", "retry_max_backoff_sec",
-               "inline_payload"}, where)
+    _expect(isinstance(d, dict), f"{where}: 辞書か、ワークフローの名前を書いてください")
+    _known(d, {"name", "workflow", "command", "timeout_sec", "params", "queue", "order", "max_attempts",
+               "retry_backoff_sec", "retry_max_backoff_sec", "inline_payload"}, where)
+    command = d.get("command")
+    if command is None:
+        _expect(isinstance(d.get("workflow"), str),
+                f"{where}.workflow: 受け渡し先のワークフロー（Dagu なら DAG 名）か、その場で実行する command を書いてください")
+        _expect("timeout_sec" not in d, f"{where}.timeout_sec: command を書いたときだけ使えます")
+    else:
+        _expect("workflow" not in d and "queue" not in d,
+                f"{where}: command（その場で実行）と workflow / queue（受け渡し先へ渡す）はどちらか一方にしてください")
+        _expect(isinstance(command, list) and command and all(isinstance(x, (str, int, float)) for x in command),
+                f"{where}.command: argv の配列を書いてください")
+        _expect(isinstance(d.get("name"), str), f"{where}.name: command の受け渡し先には name を書いてください")
     name = str(d.get("name") or d["workflow"])
     _expect(NAME_RE.match(name) is not None, f"{where}.name: 英数字・- _ . で 64 文字以内にしてください")
     params = d.get("params") or {}
@@ -352,11 +374,13 @@ def _target(rule: str, i: int, d: Any) -> TargetSpec:
     order = d.get("order", "completion")
     _expect(order in ORDER_MODES, f"{where}.order: {' / '.join(ORDER_MODES)} のどれかです")
     return TargetSpec(
-        name=name, workflow=d["workflow"], params=params, queue=d.get("queue"), order=order,
+        name=name, workflow=d.get("workflow"), params=params, queue=d.get("queue"), order=order,
         max_attempts=_int(d, "max_attempts", 10, where, 1),
         retry_backoff_sec=_num(d, "retry_backoff_sec", 30, where),
         retry_max_backoff_sec=_num(d, "retry_max_backoff_sec", 3600, where),
         inline_payload=bool(d.get("inline_payload", False)),
+        command=list(command) if command is not None else None,
+        timeout_sec=_num(d, "timeout_sec", 3600, where, 1),
     )
 
 
@@ -367,7 +391,8 @@ def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:
     # YAML 1.1（PyYAML）はキーの on を真偽値 true と読むので、on に戻す
     d = {("on" if k is True else k): v for k, v in d.items()}
     _known(d, {"description", "source", "filter", "id", "watch", "ignore", "array_order", "unordered",
-               "missing_is_null", "condition", "on", "initial", "on_rule_change", "targets", "include_record"}, where)
+               "missing_is_null", "condition", "on", "initial", "on_rule_change", "targets", "include_record",
+               "schedule"}, where)
     src = d.get("source")
     _expect(src in sources, f"{where}.source: sources に無い取得元です: {src}")
     filt = d.get("filter")
@@ -400,15 +425,22 @@ def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:
     names = [t.name for t in targets]
     _expect(len(names) == len(set(names)), f"{where}.targets: 同じワークフローを 2 回書くときは name で区別してください")
     for t in targets:
-        for ref in template.references(t.params):
-            _expect(ref.split(".")[0] in ("event", "env", "delivery"),
-                    f"{where}.targets.{t.name}.params: 使えるのは event.* / delivery.* / env.* です: {ref}")
+        for what, value in (("params", t.params), ("command", t.command or [])):
+            for ref in template.references(value):
+                _expect(ref.split(".")[0] in ("event", "env", "delivery"),
+                        f"{where}.targets.{t.name}.{what}: 使えるのは event.* / delivery.* / env.* です: {ref}")
+    schedule = d.get("schedule")
+    _expect(schedule is None or (isinstance(schedule, str) and schedule.strip()),
+            f"{where}.schedule: cron の書式で書いてください")
+    _expect(schedule is None or any(t.runs_here for t in targets),
+            f"{where}.schedule: command の受け渡し先があるルールだけに書けます（ほかは取得元の schedule で動く）")
     return RuleSpec(
         name=name, source=src, raw=d, filter=filt, id_paths=ids, watch=watch_l,
         ignore=_paths(d.get("ignore"), f"{where}.ignore"), array_order=array_order,
         unordered=_paths(d.get("unordered"), f"{where}.unordered"),
         missing_is_null=bool(d.get("missing_is_null", False)), condition=cond, on=list(on), initial=initial,
         on_rule_change=orc, targets=targets, include_record=bool(d.get("include_record", True)),
+        schedule=schedule,
     )
 
 
@@ -443,8 +475,8 @@ def load(path: str | Path | None = None, connections: str | Path | None = None,
     sources = {str(k): _source(str(k), v) for k, v in sd.items()}
     rules = {str(k): _rule(str(k), v, sources) for k, v in rd.items()}
     delivery = _delivery(d.get("delivery"))
-    if delivery is None and any(r.targets for r in rules.values()):
-        raise ConfigError("受け渡し先（targets）のあるルールがあります。delivery.adapter を書いてください")
+    if delivery is None and any(not t.runs_here for r in rules.values() for t in r.targets):
+        raise ConfigError("ワークフローへ渡す受け渡し先（targets の workflow）があります。delivery.adapter を書いてください")
     if state_dir is not None:
         sdir = Path(os.path.expanduser(str(state_dir))).absolute()      # 引数の相対パスは作業フォルダから
     else:

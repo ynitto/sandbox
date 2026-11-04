@@ -34,6 +34,8 @@
 （`dags` が書き出す DAG にも付く）。付けなければ `dags` コマンドも `adapter: dagu` も無く、`adapter: dagu` の設定で受け渡そうとすると
 「`--plugin dagu` を付けて」と言って止まる（受け渡しの試行回数は減らない）。`status`・`events`・`ack` などアダプタを使わないコマンドは付けなくても動く。
 
+1 本のワークフローの中で取得から処理まで済ませる形もある（「1 つのワークフローで取得から処理まで」）。
+
 Dagu を使わないときは、起動を cron・タスク スケジューラなどから `run`（または `fetch` / `evaluate` / `dispatch`）で行い、
 受け渡しは `adapter: command` で任意のコマンドに渡す。別の基盤へのプラグインも、同じ形の `.py` を `--plugin <パス>` で読み込める
 （`register(api)` で `api.add_adapter(...)`・`api.add_command(...)` を呼ぶ。`apiwatch/plugins/__init__.py` を参照）。
@@ -334,6 +336,113 @@ dagu:
 - `delivery.executable` は `dagu.exe` のフルパス（PATH にあれば `dagu`）
 - 受け渡し先の DAG の `command` は `python`、`args` の api-watch は `C:/Users/<名前>/AppData/Local/Programs/api-watch/api-watch.pyz` にする
 
+## 1 つのワークフローで取得から処理まで
+
+受け渡し先の DAG に渡さず、1 本のワークフローの中で取得 → 判定 → 処理まで済ませることもできる。受け渡し先に `workflow` の代わりに
+`command` を書くと、`work` がその場で 1 件ずつ実行する。Dagu のキューも受け渡し先の DAG も要らず、1 回の実行履歴に全部が並ぶ。
+
+```
+ Dagu: api-watch-<ルール>（ルールの schedule）
+   fetch     取得元を取得する   ← 同じ取得元を使う別のワークフローとは、API への問い合わせを 1 回にまとめる
+   evaluate  このルールで判定する
+   work      変化ごとに command を実行する（終了コード 0 で完了。それ以外は次の起動でやり直す）
+```
+
+### 設定
+
+同じ取得元 `issues` を 2 本のワークフロー（`triage` と `notify`）が使う例。
+
+```yaml
+version: 1
+state_dir: ~/.local/state/api-watch
+
+sources:
+  issues:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/123/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: opened, order_by: updated_at, sort: asc }
+    key: iid
+    pagination: { type: page, size_param: per_page, size: 100 }
+    schedule: "0 * * * *"
+    jitter_sec: 900            # 0〜15 分ずらして問い合わせる
+    min_interval_sec: 1800     # 30 分以内に取得し終えていれば、取得せずその結果を使う
+    busy_wait_sec: 600         # 別のワークフローが取得中なら、終わるのを待ってその結果を使う
+
+rules:
+  triage:
+    source: issues
+    id: iid
+    watch: [title, labels, user_notes_count]
+    targets:
+      - name: triage
+        command: [python3, /home/you/bin/triage.py]
+        timeout_sec: 1800
+  notify:
+    source: issues
+    id: iid
+    watch: [state]
+    on: [changed]
+    schedule: "30 * * * *"     # ワークフローごとに起動間隔を変えられる（無ければ取得元の schedule）
+    targets:
+      - name: notify
+        command: [python3, /home/you/bin/notify.py, "{{ event.record_key }}"]
+        timeout_sec: 120
+```
+
+コマンドには「受け渡し先の DAG」と同じ `APIWATCH_*` が環境変数で渡る（変化の中身は `APIWATCH_EVENT_FILE` の JSON）。
+`max_attempts`・`retry_backoff_sec`・`order` は受け渡し先の表のとおりで、失敗したものはワークフローの次の起動で同じ ID のまま実行し直す。
+
+### Dagu のワークフロー
+
+`dags` が、`command` の受け渡し先を持つルールごとに `api-watch-<ルール>.yaml` を書く。この例では `api-watch-triage.yaml`・
+`api-watch-notify.yaml`・`api-watch-maintenance.yaml` の 3 つ（どのルールも自分のワークフローで取得するので、取得元の DAG と再送の DAG は書かない）。
+Dagu の設定（`config.yaml`）に足すものは無い。
+
+```bash
+api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
+```
+
+書き出される `api-watch-triage.yaml`（引数は一部を省略）:
+
+```yaml
+description: "issues を取得し、ルール triage で判定して、その場で実行する"
+schedule: "0 * * * *"
+type: graph
+steps:
+  - name: fetch
+    action: exec
+    with:
+      command: "/usr/bin/python3"
+      args: ["/home/you/.local/bin/api-watch", "--config", "…", "--plugin", "dagu", "--connections", "…",
+             "fetch", "--source", "issues"]
+    timeout_sec: 2220            # 取得の時間 + jitter_sec + busy_wait_sec
+    retry_policy: { limit: 3, interval_sec: 60, backoff: true, max_interval_sec: 600, exit_code: [3] }
+  - name: evaluate
+    depends: [fetch]
+    # …（evaluate --rule triage）
+  - name: work
+    depends: [evaluate]
+    # …（work --rule triage）。1 件ごとの上限は timeout_sec なので、ステップには上限を付けない
+```
+
+手で書くなら同じ 3 ステップ（`fetch --source S` → `evaluate --rule R` → `work --rule R`）を並べるか、1 ステップで `run --rule R` を呼ぶ。
+
+### 同じ API を呼ぶワークフローが重なったとき
+
+`triage` と `notify` が同じ時刻に起動しても、API への問い合わせは 1 回になる:
+
+| 起きたこと | どうなるか |
+|---|---|
+| 片方が取得し終えたあとに、もう片方が `fetch` した | `min_interval_sec` の間なら取得せず（ずらしもせず）、その結果で判定する |
+| 片方が取得している最中に、もう片方が `fetch` した | `busy_wait_sec` まで終わるのを待ち、その結果で判定する |
+| 両方がずらしている間に、片方が取得した | もう片方はずらし終えたあとで `min_interval_sec` を見て、取得しない |
+
+`min_interval_sec` は、ワークフローどうしの起動のずれ（例の 30 分）と `jitter_sec` より長くする。`check` は、`command` の受け渡し先を持つ
+ルールが 2 本以上ある取得元で `min_interval_sec` か `busy_wait_sec` が 0 なら注意を出す。
+
 ## 設定
 
 ### 取得元（sources）
@@ -351,7 +460,9 @@ dagu:
 | `pagination` | なし | 下の表 |
 | `incremental` | なし | 下の表 |
 | `schedule` | `*/5 * * * *` | 起動間隔（cron）。`dags` が DAG の `schedule` に使う |
-| `min_interval_sec` | 0 | 前回の成功からこの秒数たつまでは取得しない（手で叩いたときの重複を防ぐ。`fetch --force` で無視） |
+| `min_interval_sec` | 0 | 前回の成功からこの秒数たつまでは取得せず、その取得結果を使う（手で叩いたとき・複数のワークフローから呼ばれたときの重複を防ぐ。`fetch --force` で無視） |
+| `jitter_sec` | 0 | 取得の前に 0〜この秒数だけランダムに待つ（定刻に API へ集中させない）。`min_interval_sec` で取得しないときは待たない。`fetch --no-jitter`・`--force` でずらさない |
+| `busy_wait_sec` | 0 | 別のプロセスが取得中なら、この秒数まで終わるのを待ち、その取得結果を使う。0 なら待たずに終わる |
 | `rate_limit.min_interval_sec` / `per_minute` | 0 / 0 | 要求どうしの最小間隔・1 分あたりの上限。前回の実行の最後の要求からも数える |
 | `rate_limit.max_wait_sec` | 120 | `Retry-After` やレート制限のリセットをこの秒数までは待つ。長ければ取得をやめ、その時刻までは問い合わせない |
 | `retry.attempts` / `backoff_sec` / `max_backoff_sec` | 4 / 2 / 60 | 一時的な失敗（接続・タイムアウト・408/425/429/5xx）の再試行（指数バックオフ） |
@@ -400,6 +511,7 @@ dagu:
 | `on_rule_change` | `rebaseline` | 判定の仕方（`id`・`filter`・`watch`・`ignore`・順序・`condition`）を変えたとき、`rebaseline` は最新の取得結果を基準値にし直す（大量に発火しない）。`continue` は新しい比べ方で前回の値と比べる |
 | `include_record` | true | イベントにレコード全体を入れる |
 | `targets` | — | 受け渡し先（下の表。文字列だけ書けば `workflow`）。無ければ検知を記録するだけ |
+| `schedule` | 取得元の `schedule` | `command` の受け渡し先があるとき、`dags` が書き出すこのルールのワークフローの起動間隔 |
 
 発火する種類（1 回の観測で複数つくことがあり、`on` のどれかに当たれば 1 件のイベントになる）:
 
@@ -424,7 +536,9 @@ dagu:
 
 | 項目 | 既定 | 意味 |
 |---|---|---|
-| `workflow` | （必須） | 受け渡し先のワークフロー。Dagu なら DAG の名前（`mode: cli` ならファイルのパスでもよい） |
+| `workflow` | （`command` が無ければ必須） | 受け渡し先のワークフロー。Dagu なら DAG の名前（`mode: cli` ならファイルのパスでもよい） |
+| `command` | — | 別のワークフローへ渡さず、`work` がその場で実行する argv（下の「1 つのワークフローで取得から処理まで」）。書くときは `name` も書く。`workflow`・`queue` とはどちらか一方 |
+| `timeout_sec` | 3600 | `command` の 1 回の実行の上限。過ぎたら止めて失敗として数える |
 | `name` | `workflow` と同じ | 受け渡し先の名前（同じワークフローに 2 回渡すときに区別する） |
 | `params` | — | 追加の引数。`{{ event.after.title }}`・`{{ event.record_id }}`・`{{ delivery.id }}`・`{{ env.X }}` を埋められる |
 | `queue` | — | 受け渡し先のキューを上書きする（Dagu のキュー） |
@@ -435,7 +549,7 @@ dagu:
 
 ### 受け渡しのアダプタ（delivery）
 
-`adapter` でアダプタを選び、残りの項目はアダプタの設定。受け渡し先（`targets`）のあるルールがあれば必須。
+`adapter` でアダプタを選び、残りの項目はアダプタの設定。`workflow` の受け渡し先があれば必須（`command` の受け渡し先だけなら要らない）。
 
 `adapter: dagu`（`--plugin dagu` を付けて実行する）:
 
@@ -529,7 +643,7 @@ dagu:
 | `events [--rule R] [--status S] [--record ID]` | イベントと受け渡しの一覧 |
 | `show <イベントか受け渡しの ID>` | イベントの中身と受け渡しの状態 |
 | `records --source S [--fetch N]` | 保存済みの取得結果のレコード（ルールの書き方を確かめる） |
-| `fetch` / `evaluate` / `dispatch` / `run` | 取得 / 判定 / 受け渡し / その 3 つを続けて。`--source`・`--rule` で絞れる |
+| `fetch` / `evaluate` / `dispatch` / `work` / `run` | 取得 / 判定 / 受け渡し / `command` の受け渡し先の実行 / その 4 つを続けて。`--source`・`--rule` で絞れる（`run --rule R` はそのルールの取得元を取得し、そのルールだけを判定・実行する）。`fetch` と `run` の `--no-jitter` はずらさない |
 | `retry [ID ...] [--rule R] [--target T] [--status S]` | 失敗した受け渡し（既定: 渡せなかった・上限に達した・後続処理が失敗した）を同じ ID のまま再実行 |
 | `skip ID ...` | 受け渡しを飛ばす。同じレコードの後ろのイベントが進む |
 | `rebaseline --rule R` / `--source S` | 最新の取得結果を基準値にし直す（その間の変化では発火しない）。`--refetch` で次の取得を全件に、`--now` でいま取り直す |
@@ -537,7 +651,7 @@ dagu:
 | `gc [--dry-run] [--vacuum]` | 保持期間を過ぎたものを消し、ファイルを縮める。`--vacuum` は DB を作り直して詰める |
 | `forget-rule R` | 設定から消したルールの判定状態を消す |
 | `reconcile` | 受け渡し先に後続処理の状態を問い合わせて記録する（`adapter: dagu` の `mode: api`、`adapter: command` の `status_command`） |
-| `dags --out DIR` | Dagu の DAG を書き出す（`--plugin dagu` のときだけ） |
+| `dags --out DIR` | Dagu の DAG を書き出す（`--plugin dagu` のときだけ）。`command` の受け渡し先を持つルールごとに、取得から実行までのワークフローも書く |
 
 ログ・エラー・状態には認証情報を出さない（接続設定の値・認証のヘッダー・URL のトークンらしい引数は `***` に置き換える）。
 

@@ -7,13 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### api-watch: 1 つのワークフローで取得から処理まで行う受け渡し先と、取得のずらし・共有（0.2.0）
+
+- 受け渡し先に `command` を書くと、別のワークフローへ渡さず、新しいコマンド `work` がその場で 1 件ずつ実行する。
+  順序・試行回数と間隔・`retry` / `skip` は従来の受け渡し先と同じ。`timeout_sec` で打ち切り、止められたら実行中のコマンドにも伝える。
+  `command` の受け渡し先だけなら `delivery`（アダプタ）は要らない
+- `run --rule R`: そのルールの取得元を取得し、そのルールだけを判定・受け渡し・実行する
+- 取得元の `jitter_sec`: 取得の前に 0〜その秒数だけランダムに待つ（`fetch --no-jitter` でずらさない）
+- 取得元の `busy_wait_sec`: 別のプロセスが取得中なら終わるのを待ち、その取得結果を使う。`min_interval_sec` と合わせて、
+  同じ取得元を複数のワークフローが呼んでも API への問い合わせを 1 回にまとめる（`check` は設定が足りなければ注意を出す）
+- `dags`: `command` の受け渡し先を持つルールごとに、fetch → evaluate → work のワークフローを書く（起動間隔はルールの `schedule`）。
+  要らない取得元の DAG・再送の DAG は書かない
+
 ### dagu-issue-loop: issue の取得と変化の検知を api-watch に任せる構成を足す
 
 - `issue_loop.py handle`: api-watch が渡したイベントを 1 件受け取り、issue を取り直してエージェント CLI を実行する。
-  エージェント自身の書き込み・キューで重なった同じ issue の変化は流さず、実行中に他人が動いたときは次の変化でもう一度流す。
-  別のセッションが実行中なら終了コード 4（Dagu に再試行させる）
-- `tools/dagu-issue-loop/api-watch/`: api-watch の設定例（`poll` と同じ監視項目）と受け渡し先の DAG（`gitlab-issue-handle`。
-  キュー `gitlab-issue-agent` を同時実行 1 にして使う。再試行は `retry_policy`）
+  エージェント自身の書き込み・重なった同じ issue の変化は流さず、実行中に他人が動いたときは次の変化でもう一度流す。
+  別のセッションが実行中なら終了コード 4（次の起動で再試行）
+- `tools/dagu-issue-loop/api-watch/`: api-watch の設定例（`poll` と同じ監視項目・0〜15 分のずらし・同じ取得元の共有）と、
+  取得から実行までを 1 本で行う Dagu のワークフロー `gitlab-issue-watch.yaml`
 - 本物の api-watch から `handle` を呼ぶ試験を足す
 
 ### dagu-issue-loop: stdin でプロンプトを渡す CLI が読まないとき、打ち切りが効かなくなるのを直す
