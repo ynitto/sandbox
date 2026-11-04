@@ -1,6 +1,6 @@
 # 受け渡し先（後続処理）の DAG の例（Dagu v2 の書式）。ファイル名が DAG 名になる（この例なら
 # api-watch-handler.example。使うときはルールの targets の workflow と同じ名前で保存する）。
-# 設定は delivery.adapter: dagu（apiwatch_dagu が要る）。
+# 設定は delivery.adapter: dagu（api-watch を --plugin dagu で動かす）。
 #
 # api-watch は `dagu enqueue --run-id=<受け渡しの ID>` でこの DAG をキューに入れ、次の引数を渡す:
 #   APIWATCH_EVENT_ID     イベント ID（同じイベントを複数の DAG に渡しても同じ）
@@ -9,8 +9,8 @@
 #   APIWATCH_EVENT_FILE   イベントの中身（変更前後の値・変更箇所・レコード）の JSON ファイル
 # ルールの targets[].params に書いた引数も同じ形で届く。ack は接続設定を使わないので --connections は要らない。
 #
-# 下の /path/to は置き場所に合わせて直す（exec は ~ を展開しない）。Windows なら command を python に、
-# パスを C:/Users/you/... にする。
+# 下の /home/you と /path/to は置き場所に合わせて直す（exec は ~ を展開しない）。Windows なら command を python に、
+# api-watch を C:/Users/you/AppData/Local/Programs/api-watch/api-watch.pyz にする。
 params:
   - APIWATCH_EVENT_ID: ""
   - APIWATCH_DELIVERY_ID: ""
@@ -42,10 +42,10 @@ handler_on:
     action: exec
     with:
       command: python3
-      args: [/path/to/api-watch/api_watch.py, --config, /path/to/api-watch.yaml, ack, "${DAG_RUN_ID}"]
+      args: [/home/you/.local/bin/api-watch, --config, /path/to/api-watch.yaml, ack, "${DAG_RUN_ID}"]
   failure:
     action: exec
     with:
       command: python3
-      args: [/path/to/api-watch/api_watch.py, --config, /path/to/api-watch.yaml, ack, "${DAG_RUN_ID}",
+      args: [/home/you/.local/bin/api-watch, --config, /path/to/api-watch.yaml, ack, "${DAG_RUN_ID}",
              --failed]

@@ -21,29 +21,38 @@
 - 認証情報はスキル共通の `connections.yaml` に書き（このリポジトリの `.github/connections.yaml.example` と同じ形）、
   そのパスを実行のたびに `--connections` で渡す。環境変数や決まった場所からは探さない
 
-### 本体と Dagu 連携の分け方
+### 本体と Dagu プラグインの分け方
 
-| フォルダ | 中身 | Dagu への依存 |
+| ファイル | 中身 | Dagu への依存 |
 |---|---|---|
 | `apiwatch/` | 本体: 取得・判定・状態・受け渡しの順序と再送・運用のコマンド。受け渡しは `delivery.adapter` で選ぶアダプタに任せる | なし |
 | `apiwatch/adapters/command.py` | 任意のコマンドで受け渡すアダプタ（`adapter: command`） | なし |
-| `apiwatch_dagu/` | Dagu 連携: Dagu へ受け渡すアダプタ（`adapter: dagu`）と、Dagu の DAG を書き出す `dags` コマンド | あり |
+| `plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）と、Dagu の DAG を書き出す `dags` コマンド。**Dagu に依存するものはこの 1 ファイルだけ** | あり |
 
-本体は `apiwatch_dagu` を import しない（設定で `adapter: dagu` を選んだときに名前で読み込むだけ）。`apiwatch_dagu/` を置かなければ
-Dagu なしで動く: 起動は cron・タスク スケジューラなどから `fetch` / `evaluate` / `dispatch`（または `run`）を呼び、
-受け渡しは `adapter: command` で任意のコマンドに渡す。別の基盤へ渡すアダプタも、同じ口（`apiwatch/adapters/__init__.py`）で足せる。
+プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。Dagu と使うときは毎回 `--plugin dagu` を付ける
+（`dags` が書き出す DAG にも付く）。付けなければ `dags` コマンドも `adapter: dagu` も無く、`adapter: dagu` の設定で受け渡そうとすると
+「`--plugin dagu` を付けて」と言って止まる（受け渡しの試行回数は減らない）。`status`・`events`・`ack` などアダプタを使わないコマンドは付けなくても動く。
+
+Dagu を使わないときは、起動を cron・タスク スケジューラなどから `run`（または `fetch` / `evaluate` / `dispatch`）で行い、
+受け渡しは `adapter: command` で任意のコマンドに渡す。別の基盤へのプラグインも、同じ形の `.py` を `--plugin <パス>` で読み込める
+（`register(api)` で `api.add_adapter(...)`・`api.add_command(...)` を呼ぶ。`apiwatch/plugins.py` を参照）。
 
 ## 入れ方
 
-1. フォルダごと置く（`api_watch.py` と `apiwatch/`。Dagu と使うなら `apiwatch_dagu/` も）。
+1. インストーラで入れる。本体と同梱のプラグインを 1 つの実行可能な zip（`.pyz`）にまとめ、コマンドとして置く。
+   この Python に PyYAML があれば一緒にまとめるので、入れた先では PyYAML が要らない（`--no-yaml` で入れない）。
 
    ```bash
-   mkdir -p ~/.local/share
+   python3 tools/api-watch/install.py install
    ```
 
-   ```bash
-   cp -r tools/api-watch ~/.local/share/api-watch
-   ```
+   | OS | 置かれるもの |
+   |---|---|
+   | Linux・WSL2・macOS | `~/.local/bin/api-watch`（先頭に `#!/usr/bin/env python3` の付いた実行ファイル。`--python` で Python を指定できる） |
+   | Windows | `%LOCALAPPDATA%\Programs\api-watch\api-watch.pyz` と、それを呼ぶ `api-watch.cmd`（インストーラを動かした Python で動く） |
+
+   置き場所は `--dir`。zip だけ作るなら `install.py build --out <パス>`（`python3 <パス> ...` で動く）、消すなら `install.py uninstall`
+   （状態と設定は残す）。ソースの木から直接 `python3 tools/api-watch/api_watch.py ...` で動かしてもよい。
 
 2. 設定を書く。`api-watch.yaml.example` を `~/.config/api-watch/api-watch.yaml` にコピーして取得元とルールを書く。
 
@@ -66,33 +75,34 @@ Dagu なしで動く: 起動は cron・タスク スケジューラなどから 
 
    値の `${VAR}` は connections.yaml の書式どおり展開するが、使わなくてよい。ファイルの権限は自分だけが読めるようにする。
 
-4. 確かめる。API には問い合わせず、設定と接続設定が読めるかだけを見る。場所はすべてコマンド行で渡し、環境変数は見ない:
+4. 確かめる。API には問い合わせず、設定と接続設定が読めるかだけを見る。場所とプラグインはすべてコマンド行で渡し、環境変数は見ない:
 
    | 引数 | 意味 |
    |---|---|
    | `--config <パス>` | 設定ファイル（省略すると `~/.config/api-watch/api-watch.yaml`） |
    | `--connections <パス>` | 接続設定（connections.yaml）。接続設定を使う取得元・受け渡し先があれば必須 |
    | `--state-dir <パス>` | 状態の置き場所。設定の `state_dir` より優先する |
+   | `--plugin <名前か .py のパス>` | プラグイン。Dagu と使うなら `--plugin dagu`。繰り返し可 |
 
    ```bash
-   python3 ~/.local/share/api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml check
+   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml check
    ```
 
 5. 一度手で回す。初回は今あるレコードを基準値として覚えるだけで、受け渡し先は起こさない（ルールの `initial: emit` なら起こす）。
 
    ```bash
-   python3 ~/.local/share/api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
+   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
    ```
 
    ```bash
-   python3 ~/.local/share/api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml status
+   api-watch --config ~/.config/api-watch/api-watch.yaml status
    ```
 
-6. Dagu の DAG を書き出す（`apiwatch_dagu/` があるときのコマンド）。取得元ごとの DAG・再送の DAG・整理の DAG ができる。
-   DAG には今の Python・`api_watch.py`・設定ファイル・**`--connections` で渡したパス**の絶対パスが入る。
+6. Dagu の DAG を書き出す（`--plugin dagu` のときだけあるコマンド）。取得元ごとの DAG・再送の DAG・整理の DAG ができる。
+   DAG には、今の Python・この `api-watch`（`.pyz`）・設定ファイル・`--connections` で渡したパスの絶対パスと `--plugin dagu` が入る。
 
    ```bash
-   python3 ~/.local/share/api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
+   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
    ```
 
    `dags` の追加の引数: `--dotenv <ファイル>`（DAG に読み込ませる環境変数のファイル。繰り返し可）・`--dispatch-schedule`（再送の DAG、既定は毎分）・
@@ -100,13 +110,11 @@ Dagu なしで動く: 起動は cron・タスク スケジューラなどから 
 
 7. 受け渡し先の DAG を用意する（下の「受け渡し先の DAG」）。Dagu のスケジューラを動かせば（`dagu start-all` など）以後は自動で回る。
 
-Dagu を使わないときは、6・7 の代わりに cron などから `run`（または `fetch` → `evaluate` → `dispatch`）を定期的に呼び、
-`delivery.adapter: command` で受け渡す。
+Dagu を使わないときは、6・7 の代わりに cron などから `api-watch ... run` を定期的に呼び、`delivery.adapter: command` で受け渡す（`--plugin` は要らない）。
 
 ### Windows で使うとき
 
-- 置き場所は同じ形で、`~` はユーザーフォルダ。`dags` は実行した Python（`python.exe`）の絶対パスで DAG を書くので、
-  Dagu から使う Python で `dags` を実行する
+- `install.py install` を、Dagu から使う Python で実行する。`dags` はその Python（`python.exe`）と `api-watch.pyz` の絶対パスで DAG を書く
 - `delivery.executable` に `dagu.exe` の場所を書く（PATH にあれば `dagu` のままでよい）
 - 状態のフォルダを Windows と WSL2 で共有しない（`/mnt/c/...` 越しの SQLite はロックが効かない）。どちらか片方で動かす
 
@@ -213,7 +221,7 @@ Dagu を使わないときは、6・7 の代わりに cron などから `run`（
 
 `adapter` でアダプタを選び、残りの項目はアダプタの設定。受け渡し先（`targets`）のあるルールがあれば必須。
 
-`adapter: dagu`（`apiwatch_dagu/` が要る）:
+`adapter: dagu`（`--plugin dagu` を付けて実行する）:
 
 | 項目 | 既定 | 意味 |
 |---|---|---|
@@ -289,9 +297,9 @@ Dagu を使わないときは、6・7 の代わりに cron などから `run`（
 
 - **重複しない**: 実行 ID を受け渡しの ID にしているので、渡し直しで同じ実行が 2 つできることはない（Dagu が「既にある」と断り、
   このツールは渡せたものとして扱う）。後続処理の側でも `APIWATCH_EVENT_ID` で冪等にできる
-- **完了の記録**: 例のように `handler_on` の `success` / `failure` から `api_watch.py ack ${DAG_RUN_ID}`（失敗なら `--failed`）を呼ぶ。
+- **完了の記録**: 例のように `handler_on` の `success` / `failure` から `api-watch ack ${DAG_RUN_ID}`（失敗なら `--failed`）を呼ぶ。
   `mode: api` なら、再送の DAG が `reconcile` で Dagu に状態を問い合わせて記録するので、`ack` は無くてもよい
-- **後続処理の失敗**: 後続の DAG の `retry_policy` や、Dagu の画面の再実行で直す。`api_watch.py retry <ID>` も同じ実行 ID のまま
+- **後続処理の失敗**: 後続の DAG の `retry_policy` や、Dagu の画面の再実行で直す。`api-watch retry <ID>` も同じ実行 ID のまま
   Dagu に再実行させる
 - **並列と順序**: 別のレコードの変更は Dagu のキューの並列数まで同時に動く。同じルール・受け渡し先・レコードの変更は、
   `order: completion` なら前の実行が完了してから次を渡す（前が失敗したら、再実行するか `skip` するまで後ろは待つ。他のレコードは止まらない）。
@@ -313,7 +321,7 @@ Dagu を使わないときは、6・7 の代わりに cron などから `run`（
 | `gc [--dry-run] [--vacuum]` | 保持期間を過ぎたものを消し、ファイルを縮める。`--vacuum` は DB を作り直して詰める |
 | `forget-rule R` | 設定から消したルールの判定状態を消す |
 | `reconcile` | 受け渡し先に後続処理の状態を問い合わせて記録する（`adapter: dagu` の `mode: api`、`adapter: command` の `status_command`） |
-| `dags --out DIR` | Dagu の DAG を書き出す（`apiwatch_dagu/` があるときだけ） |
+| `dags --out DIR` | Dagu の DAG を書き出す（`--plugin dagu` のときだけ） |
 
 ログ・エラー・状態には認証情報を出さない（接続設定の値・認証のヘッダー・URL のトークンらしい引数は `***` に置き換える）。
 
@@ -352,5 +360,6 @@ python3 -m unittest discover -s tools/api-watch/test
 取得の集約・各ページング・増分取得・条件付き要求・一時的な失敗の再試行・途中からの再開・強制終了からの引き継ぎ・
 変更検知の意味（キー順・配列の順序・欠落と null・A→B→A・一致の遷移・初回の扱い・ルールの変更）・保存済みの結果での判定のやり直し・
 受け渡しの再送・同じ ID・順序・失敗の隔離・REST API での受け渡しと完了の確認・保持期間・認証情報の伏せ字、
-接続設定を `--connections` からだけ読むこと、本体が Dagu 連携なしで動くこと（`apiwatch_dagu/` を置かない配布・`adapter: command`）を見る。
+接続設定を `--connections` からだけ読むこと、Dagu プラグインを `--plugin` で指定したときだけ使うこと、本体が Dagu なしで動くこと（`adapter: command`）、
+インストーラが作る 1 ファイル（`.pyz`）がそれだけで動くこと（同梱の PyYAML・DAG がその `.pyz` を呼ぶこと・インストールと削除）を見る。
 設計は `docs/designs/api-watch-design.md`。

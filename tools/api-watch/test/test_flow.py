@@ -238,7 +238,7 @@ class ResumeTest(unittest.TestCase):
                                               pagination={"type": "page", "size_param": "per_page", "size": 2})},
                          {"r": simple_rules("d", initial="emit")})
         env.api.block_page = ("/page", "2")
-        p = subprocess.Popen([sys.executable, str(SCRIPT), "--config", str(env.config_path),
+        p = subprocess.Popen([sys.executable, str(SCRIPT), "--plugin", "dagu", "--config", str(env.config_path),
                               "--connections", str(env.conn_file), "fetch"],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(os.environ))
         self.assertTrue(env.api.blocked.wait(20))
@@ -694,6 +694,7 @@ rules:
 
     def test_core_runs_without_dagu(self):
         env = Env(self)
+        env.plugins = []                                                # プラグインなしで動く
         env.api.put(1, status="a")
         sink = env.tmp / "handoff.jsonl"
         handoff = env.tmp / "handoff.py"
@@ -723,32 +724,38 @@ rules:
         self.assertIn("既に渡し済み 1", out)
         # 本体は Dagu 連携を import しない
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import apiwatch.cli, apiwatch.deliver, apiwatch.detect, "
-                "apiwatch.fetch; assert 'apiwatch_dagu' not in sys.modules, 'imported'")
+                "apiwatch.fetch; assert 'plugins.dagu' not in sys.modules, 'imported'")
         subprocess.run([sys.executable, "-c", code, str(ROOT)], check=True)
 
-    def test_without_dagu_package(self):
-        # apiwatch_dagu を置かない配布でも本体は動き、dagu アダプタを指定したときだけ止まる
+    def test_dagu_plugin_only_when_specified(self):
         env = Env(self)
-        import shutil
-        lone = env.tmp / "lone"
-        shutil.copytree(ROOT / "apiwatch", lone / "apiwatch")
-        shutil.copy(SCRIPT, lone / "api_watch.py")
-        env.api.put(1)
-        env.write_config({"items": env.source("/all")}, {"r": {"source": "items", "id": "id"}})
-        cfg = json.loads(env.config_path.read_text(encoding="utf-8"))
-        del cfg["delivery"]
-        env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
-        argv = [sys.executable, str(lone / "api_watch.py"), "--config", str(env.config_path),
-                "--connections", str(env.conn_file)]
-        p = subprocess.run(argv + ["run"], capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        p = subprocess.run(argv + ["--help"], capture_output=True, text=True, encoding="utf-8")
-        self.assertNotIn("dags", p.stdout)
-        cfg["delivery"] = {"adapter": "dagu"}
-        env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
-        p = subprocess.run(argv + ["check"], capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual(p.returncode, 1)
-        self.assertIn("apiwatch_dagu", p.stderr)
+        env.api.put(1, status="a")
+        env.write_config({"items": env.source("/all")}, {"r": simple_rules("d")})
+        env.ok(self, "run")
+        env.api.put(1, status="b")
+        env.plugins = []
+        code, out = env.run("run")
+        self.assertEqual(code, 1)                                       # 設定の誤りとして止まる
+        self.assertIn("--plugin dagu", out)
+        self.assertEqual(env.enqueued(), [])
+        self.assertEqual([(d["status"], d["attempts"]) for d in env.deliveries()], [("pending", 0)])  # 試行回数は減らない
+        env.ok(self, "status")                                          # アダプタを使わないコマンドは動く
+        with self.assertRaises(SystemExit) as cm:                       # dags は --plugin dagu のときだけ
+            env.run("dags", "--out", str(env.tmp / "dags"))
+        self.assertEqual(cm.exception.code, 2)
+        code, out = env.run("check")
+        self.assertEqual(code, 1)
+        self.assertIn("--plugin dagu", out)
+        env.plugins = ["dagu"]
+        env.ok(self, "retry", "--rule", "r")
+        env.ok(self, "dispatch")
+        self.assertEqual(len(env.enqueued()), 1)
+        env.plugins = [str(ROOT / "plugins" / "dagu.py")]               # ファイルのパスでも指定できる
+        env.ok(self, "check")
+        env.plugins = ["nosuch"]
+        code, out = env.run("status")
+        self.assertEqual(code, 1)
+        self.assertIn("nosuch", out)
 
     def test_example_config_loads(self):
         try:

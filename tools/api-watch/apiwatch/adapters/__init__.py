@@ -1,6 +1,7 @@
 """受け渡し先のアダプタ。本体（取得・判定・状態・受け渡しの順序と再送）はこの口だけを知る。
 
-アダプタは設定の `delivery.adapter` で選ぶモジュールで、次を持つ:
+アダプタは名前で登録する。本体が持つのは `command` だけで、ほかはプラグイン（`--plugin`）が登録する。
+アダプタは次の 2 つの関数で表す:
 
     parse(options: dict, where: str) -> spec       設定の delivery（adapter 以外の項目）を検査して返す
     create(spec, connections) -> Adapter           受け渡しの口を作る（connections は接続設定）
@@ -14,26 +15,16 @@ Adapter は次の 3 つと `timeout_sec` を持つ:
         失敗した実行を同じ run_id のまま再実行させる。できなければ SendError
     status(run_id, workflow) -> "done" | "failed" | None
         後続処理の状態。分からない・まだ終わっていなければ None
-
-本体は名前でモジュールを読み込むだけで、アダプタを import しない。`dagu` は別のパッケージ
-（apiwatch_dagu）にあり、置いていなければ dagu アダプタだけが使えない。
 """
 from __future__ import annotations
 
-import importlib
-from types import ModuleType
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Any, Callable, Protocol
 
 from ..util import ConfigError
 
 DONE = "done"
 FAILED = "failed"
-
-# 名前 → モジュール。外のパッケージのアダプタは "パッケージ.モジュール" をそのまま書いてもよい
-BUILTIN = {
-    "command": "apiwatch.adapters.command",
-    "dagu": "apiwatch_dagu.adapter",
-}
 
 
 class SendError(Exception):
@@ -50,14 +41,45 @@ class Adapter(Protocol):
     def status(self, run_id: str, workflow: str) -> str | None: ...
 
 
-def load_module(name: str) -> ModuleType:
-    modname = BUILTIN.get(name, name)
-    try:
-        mod = importlib.import_module(modname)
-    except ImportError as e:
-        hint = "（apiwatch_dagu フォルダを api_watch.py と同じ場所に置いてください）" if name == "dagu" else ""
-        raise ConfigError(f"受け渡しのアダプタ {name} を読み込めません: {e}{hint}") from e
-    for attr in ("parse", "create"):
-        if not hasattr(mod, attr):
-            raise ConfigError(f"受け渡しのアダプタ {name}（{modname}）に {attr} がありません")
-    return mod
+@dataclass
+class AdapterType:
+    name: str
+    parse: Callable[[dict, str], Any]
+    create: Callable[[Any, Any], Adapter]
+    provider: str          # どこが登録したか（"本体" / プラグイン名）
+
+
+_REGISTRY: dict[str, AdapterType] = {}
+
+
+def register(name: str, parse: Callable[[dict, str], Any], create: Callable[[Any, Any], Adapter],
+             provider: str) -> None:
+    if name in _REGISTRY and _REGISTRY[name].provider != provider:
+        raise ConfigError(f"受け渡しのアダプタ {name} が 2 か所（{_REGISTRY[name].provider}・{provider}）で登録されています")
+    _REGISTRY[name] = AdapterType(name, parse, create, provider)
+
+
+def get(name: str) -> AdapterType:
+    if name not in _REGISTRY:
+        known = ", ".join(sorted(_REGISTRY)) or "なし"
+        raise ConfigError(f"受け渡しのアダプタ {name} がありません（使えるもの: {known}）。"
+                          f"プラグインのアダプタなら --plugin {name} を付けて実行してください")
+    return _REGISTRY[name]
+
+
+def reset_plugins() -> None:
+    """プラグインが登録したアダプタを外す（1 回の実行の始めに呼ぶ。指定されていないプラグインを使わせない）。"""
+    for name in [n for n, t in _REGISTRY.items() if t.provider != "本体"]:
+        del _REGISTRY[name]
+
+
+def names() -> list[str]:
+    return sorted(_REGISTRY)
+
+
+def _builtin() -> None:
+    from . import command
+    register("command", command.parse, command.create, "本体")
+
+
+_builtin()

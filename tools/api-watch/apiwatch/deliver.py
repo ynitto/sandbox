@@ -45,8 +45,7 @@ class Dispatcher:
         if self._adapter is None:
             if self.cfg.delivery is None:
                 raise ConfigError("delivery.adapter が設定されていません")
-            d = self.cfg.delivery
-            self._adapter = d.module.create(d.spec, self.cfg.connections)
+            self._adapter = self.cfg.delivery.create(self.cfg.connections)
         return self._adapter
 
     def target(self, rule: str, target: str) -> TargetSpec | None:

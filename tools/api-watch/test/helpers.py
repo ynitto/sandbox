@@ -237,6 +237,7 @@ class Env:
         self.conn_file.write_text(json.dumps({"fakeapi": [{"label": "default", "url": self.api.url,
                                                            "token": TOKEN}]}), encoding="utf-8")
         self.config_path = self.tmp / "api-watch.json"
+        self.plugins = ["dagu"]       # 受け渡しは既定で dagu アダプタ（偽の dagu）を使う
 
     def _cleanup(self):
         import shutil
@@ -274,7 +275,8 @@ class Env:
         out = io.StringIO()
         err = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(["--config", str(self.config_path), "--connections", str(self.conn_file), *args])
+            plug = [x for p in self.plugins for x in ("--plugin", p)]
+            code = cli.main([*plug, "--config", str(self.config_path), "--connections", str(self.conn_file), *args])
         return code, out.getvalue() + err.getvalue()
 
     def ok(self, test, *args: str) -> str:

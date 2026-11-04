@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 
-from . import VERSION, config as configmod
+from . import VERSION, adapters, config as configmod, plugins
 from .deliver import Dispatcher
 from .detect import Evaluator, log_outcomes
 from .fetch import Fetcher, load_records
@@ -14,8 +13,6 @@ from .store import ALL_STATUSES, Store
 from .util import (EXIT_ERROR, EXIT_OK, EXIT_PARTIAL, EXIT_TRANSIENT, EXIT_USAGE, ConfigError, REDACT, log,
                    setup_stdio, unpack, warn)
 
-# 本体とは別に置ける拡張（あればコマンドを足す）。Dagu 連携の apiwatch_dagu は `dags` を足す
-PLUGINS = ("apiwatch_dagu",)
 
 
 def _sources(cfg, names: list[str] | None) -> list[str]:
@@ -56,7 +53,7 @@ def cmd_check(cfg, store, a) -> int:
         log(f"  ルール {name}: {r.source} / ID {r.id_paths} / 監視 {r.watch or '全体'} / 発火 {r.on} / 受け渡し {tg}")
     if cfg.delivery is not None:
         try:
-            cfg.delivery.module.create(cfg.delivery.spec, cfg.connections)
+            cfg.delivery.create(cfg.connections)
         except ConfigError as e:
             ok = False
             log(f"  delivery: {e}")
@@ -309,8 +306,14 @@ def cmd_forget_rule(cfg, store, a) -> int:
     return EXIT_OK
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="api_watch.py", description="Dagu から動かす API ポーリング・変更検知")
+def _common(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--plugin", action="append", default=[],
+                   help="読み込むプラグイン。同梱のものは名前（例: dagu）、ほかは .py のパス。繰り返し可")
+
+
+def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="api-watch", description="API をポーリングして変化を検知し、ワークフローへ渡す")
+    _common(p)
     p.add_argument("--config", help=f"設定ファイル（既定: {configmod.DEFAULT_CONFIG}）")
     p.add_argument("--connections", help="接続設定（connections.yaml）のパス。認証情報はここからだけ読む")
     p.add_argument("--state-dir", help="状態の置き場所（設定の state_dir より優先）")
@@ -380,18 +383,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--vacuum", action="store_true", help="VACUUM で DB を作り直す（時間がかかる。古い DB を自動で縮む形にする）")
     sp = add("forget-rule", cmd_forget_rule, "設定から消したルールの判定状態を消す")
     sp.add_argument("rule")
-    for name in PLUGINS:
-        try:
-            plugin = importlib.import_module(name)
-        except ImportError:
-            continue
-        plugin.register_cli(add)
+    plugins.load(plugin_specs or [], add)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     setup_stdio()
-    parser = build_parser()
+    pre = argparse.ArgumentParser(add_help=False)
+    _common(pre)
+    known, _ = pre.parse_known_args(argv)
+    adapters.reset_plugins()
+    try:
+        parser = build_parser(known.plugin)
+    except ConfigError as e:
+        warn(str(e))
+        return EXIT_ERROR
     a = parser.parse_args(argv)
     try:
         cfg = configmod.load(a.config, a.connections, a.state_dir)

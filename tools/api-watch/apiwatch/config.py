@@ -165,14 +165,28 @@ class RuleSpec:
 
 @dataclass
 class DeliverySpec:
-    """受け渡しのアダプタ（本体は名前と、アダプタが検査した設定を持つだけ）。"""
+    """受け渡しのアダプタ。名前と設定だけを持ち、アダプタを使う時点で解決する。
+
+    アダプタを使わないコマンド（status・events・ack など）は、プラグインを読み込まずに動く。
+    """
     adapter: str
-    spec: Any
-    module: Any
+    options: dict
+    _resolved: Any = None
+
+    def resolve(self) -> tuple[Any, Any]:
+        """(アダプタの型, 検査済みの設定)。アダプタが無ければ ConfigError（--plugin の案内つき）。"""
+        if self._resolved is None:
+            t = adapters.get(self.adapter)
+            self._resolved = (t, t.parse(dict(self.options), "delivery"))
+        return self._resolved
+
+    def create(self, connections: Any):
+        t, spec = self.resolve()
+        return t.create(spec, connections)
 
     @property
     def timeout_sec(self) -> float:
-        return float(getattr(self.spec, "timeout_sec", 60))
+        return float(getattr(self.resolve()[1], "timeout_sec", 60))
 
 
 @dataclass
@@ -399,14 +413,12 @@ def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:
 
 
 def _delivery(d: Any) -> DeliverySpec | None:
-    """delivery: {adapter: <名前>, ...アダプタの設定}。アダプタは名前で読み込み、本体は中身を知らない。"""
+    """delivery: {adapter: <名前>, ...アダプタの設定}。本体は名前と設定を持つだけで、使う時点でアダプタを探す。"""
     if d is None:
         return None
     _expect(isinstance(d, dict) and isinstance(d.get("adapter"), str),
             "delivery.adapter: 受け渡しのアダプタ（dagu / command など）を書いてください")
-    mod = adapters.load_module(d["adapter"])
-    options = {k: v for k, v in d.items() if k != "adapter"}
-    return DeliverySpec(adapter=d["adapter"], spec=mod.parse(options, "delivery"), module=mod)
+    return DeliverySpec(adapter=d["adapter"], options={k: v for k, v in d.items() if k != "adapter"})
 
 
 def load(path: str | Path | None = None, connections: str | Path | None = None,
