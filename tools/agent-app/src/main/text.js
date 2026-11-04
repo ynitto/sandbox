@@ -43,6 +43,21 @@ function utf8Stream(stream) {
   return stream;
 }
 
+// バイト列の切り口で割れた UTF-8 の断片を落とす。cutEnd: 末尾が切られた / cutStart: 先頭が切られた。
+function trimUtf8(buf, { cutStart = false, cutEnd = false } = {}) {
+  let a = 0;
+  let b = buf.length;
+  if (cutStart) while (a < b && a < 4 && (buf[a] & 0xc0) === 0x80) a += 1;
+  if (cutEnd) {
+    let i = b - 1;
+    while (i > a && b - i < 4 && (buf[i] & 0xc0) === 0x80) i -= 1;
+    const lead = buf[i];
+    const need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+    if (need > 1 && b - i < need) b = i;
+  }
+  return buf.subarray(a, b);
+}
+
 // 先頭から n 文字（コードポイント単位）。絵文字などのサロゲートペアの途中で切らない。
 function headChars(text, n) {
   const s = String(text == null ? '' : text);
@@ -55,4 +70,4 @@ function tailChars(text, n) {
   return s.length <= n ? s : Array.from(s).slice(-n).join('');
 }
 
-module.exports = { utf8Stream, headChars, tailChars, stripAnsi, cleanAnswer, lineEmitter, ereToRegExp };
+module.exports = { trimUtf8, utf8Stream, headChars, tailChars, stripAnsi, cleanAnswer, lineEmitter, ereToRegExp };

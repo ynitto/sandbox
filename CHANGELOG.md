@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: ファイルのプレビューと実行ログの末尾で、バイト数の切り口の文字化けを直す（agent-app 0.49.2）
+
+- 大きなテキストのプレビュー末尾と、実行ログの末尾表示の先頭に、割れた日本語・絵文字が `�` として出ていたのを、切り口の断片を落として直す。
+
 ### api-watch: 任意の API を Dagu からポーリングし、変化を検知して DAG へ渡す（0.1.0）
 
 - `tools/api-watch/` を足す。`api_watch.py`（標準ライブラリ + YAML の設定なら PyYAML）が fetch / evaluate / dispatch の 3 段を持つ。

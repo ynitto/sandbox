@@ -19,3 +19,13 @@ test('setEncoding を持たない相手はそのまま返す', () => {
   const fake = { on() {} };
   assert.equal(utf8Stream(fake), fake);
 });
+
+test('バイト数で切った断片は割れた文字を残さない', () => {
+  const { trimUtf8 } = require('../src/main/text');
+  const buf = Buffer.from('あい😀う');
+  for (let n = 0; n <= buf.length; n += 1) {
+    assert.ok(!trimUtf8(buf.subarray(0, n), { cutEnd: true }).toString('utf8').includes('�'), `head ${n}`);
+    assert.ok(!trimUtf8(buf.subarray(n), { cutStart: true }).toString('utf8').includes('�'), `tail ${n}`);
+  }
+  assert.strictEqual(trimUtf8(buf, { cutEnd: true }).toString('utf8'), 'あい😀う');
+});
