@@ -169,6 +169,16 @@ class Fetcher:
         return (row["fingerprint"] == fp and bool(row["last_success_at"])
                 and now() - row["last_success_at"] < src.min_interval_sec)
 
+    def _cooling(self, src: SourceSpec, fp: str) -> FetchOutcome | None:
+        """前の取得が失敗して、どのプロセスも問い合わせを控える時刻の前なら deferred。"""
+        row = self.store.source_row(src.name)
+        until = row["retry_not_before"]
+        if row["fingerprint"] != fp or not until or until <= now():
+            return None
+        return FetchOutcome(src.name, "deferred",
+                            message=f"前回の取得が失敗したので、あと {until - now():.0f} 秒は問い合わせません"
+                                    f"（連続 {row['consecutive_failures']} 回。前回までの取得結果を使います）")
+
     def run(self, src: SourceSpec, force: bool = False, jitter: bool = True) -> FetchOutcome:
         """取得する。同じ取得元を複数のワークフローが呼んでも、API への問い合わせは 1 回にまとめる:
 
@@ -182,6 +192,10 @@ class Fetcher:
         if not force and self._recent(src, fp):
             return FetchOutcome(src.name, "skipped",
                                 message=f"前回の取得から {src.min_interval_sec:.0f} 秒たっていないので取得しません")
+        if not force:
+            cooling = self._cooling(src, fp)
+            if cooling:
+                return cooling
         if jitter and not force and src.jitter_sec > 0:
             delay = random.uniform(0, src.jitter_sec)
             log(f"[{src.name}] API への問い合わせを {delay:.0f} 秒ずらします")
@@ -199,10 +213,13 @@ class Fetcher:
                 waited = True
             self.sleep(min(1.0, max(0.05, deadline - now())))
         try:
-            if waited and not force:
+            if not force:
                 row = self.store.source_row(src.name)
-                if row["fingerprint"] == fp and row["last_success_at"] and row["last_success_at"] >= started:
+                if waited and row["fingerprint"] == fp and row["last_success_at"] and row["last_success_at"] >= started:
                     return FetchOutcome(src.name, "skipped", message="別のプロセスがいま取得した結果を使います")
+                cooling = self._cooling(src, fp)       # ずらしている・待っている間に、別のプロセスの取得が失敗した
+                if cooling:
+                    return cooling
             return self._run_locked(src, conn, fp, force, lease)
         finally:
             self.store.release(lease)
@@ -245,15 +262,24 @@ class Fetcher:
         st = json.loads(fetch["page_state"])
         ctx = self._context(src, conn, position)
 
+        try:
+            recent = [float(x) for x in json.loads(row["recent_requests"] or "[]")]
+        except (TypeError, ValueError):
+            recent = []
+
         def on_request(ts: float) -> None:
+            # 直近 60 秒の要求の時刻を残し、次のプロセス（別のワークフロー）も per_minute に数える
+            nonlocal recent
+            recent = [x for x in recent if x > ts - 60] + [ts]
             with self.store.tx() as db:
-                db.execute("UPDATE sources SET last_request_at=?, last_attempt_at=? WHERE name=?",
-                           (ts, ts, src.name))
+                db.execute("UPDATE sources SET last_request_at=?, last_attempt_at=?, recent_requests=? WHERE name=?",
+                           (ts, ts, json.dumps(recent), src.name))
 
         client = Client(min_interval=src.rate_min_interval_sec, per_minute=src.rate_per_minute,
                         attempts=src.retry_attempts, backoff=src.retry_backoff_sec,
                         max_backoff=src.retry_max_backoff_sec, max_wait=src.max_wait_sec,
-                        last_request_at=row["last_request_at"], on_request=on_request, sleep=self.sleep)
+                        last_request_at=row["last_request_at"], on_request=on_request, sleep=self.sleep,
+                        recent=[x for x in recent if x > now() - 60])
         outcome = FetchOutcome(src.name, "failed", fetch_id=fid)
         try:
             while not st.get("done"):
@@ -265,12 +291,19 @@ class Fetcher:
         except (TransientError, PermanentError) as e:
             msg = REDACT(str(e))
             retry_after = getattr(e, "retry_after", None)
+            fails = int(self.store.source_row(src.name)["consecutive_failures"] or 0)
+            # 失敗したら、どのワークフローもしばらく問い合わせない（連続するほど延ばす）。API の Retry-After が長ければそちら
+            cool = min(src.failure_max_backoff_sec, src.failure_backoff_sec * (2 ** min(fails, 20)))
+            if retry_after:
+                cool = max(cool, retry_after)
             with self.store.tx() as db:
                 db.execute("UPDATE fetches SET status='failed', error=?, updated_at=?, requests=requests+? "
                            "WHERE id=?", (msg, now(), 0, fid))
                 db.execute("UPDATE sources SET last_status='error', last_error=?, "
-                           "consecutive_failures=consecutive_failures+1, next_allowed_at=? WHERE name=?",
-                           (msg, (now() + retry_after) if retry_after else None, src.name))
+                           "consecutive_failures=consecutive_failures+1, next_allowed_at=?, retry_not_before=? "
+                           "WHERE name=?",
+                           (msg, (now() + retry_after) if retry_after else None, (now() + cool) if cool else None,
+                            src.name))
             outcome.message = msg
             outcome.transient = isinstance(e, TransientError)
             outcome.requests = client.requests
@@ -427,7 +460,8 @@ class Fetcher:
             db.execute("UPDATE fetches SET status='complete', finished_at=?, updated_at=?, page_state=NULL, "
                        "position_to=?, error=NULL WHERE id=?", (now(), now(), _dumps(new_pos), fid))
             db.execute("UPDATE sources SET position=?, last_success_at=?, last_status='ok', last_error=NULL, "
-                       "last_fetch_id=?, consecutive_failures=0, next_allowed_at=NULL WHERE name=?",
+                       "last_fetch_id=?, consecutive_failures=0, next_allowed_at=NULL, retry_not_before=NULL "
+                       "WHERE name=?",
                        (_dumps(new_pos), now(), fid, src.name))
             if records is not None:
                 keys = []

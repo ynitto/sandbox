@@ -160,7 +160,7 @@ class Client:
 
     def __init__(self, *, min_interval: float, per_minute: int, attempts: int, backoff: float, max_backoff: float,
                  max_wait: float, last_request_at: float | None, on_request: Callable[[float], None] | None = None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, recent: list[float] | None = None):
         self.min_interval = min_interval
         self.per_minute = per_minute
         self.attempts = attempts
@@ -168,7 +168,7 @@ class Client:
         self.max_backoff = max_backoff
         self.max_wait = max_wait
         self.last = last_request_at or 0.0
-        self.sent: list[float] = []
+        self.sent: list[float] = sorted(recent or [])   # 前の実行（別のプロセス）が直近に送った要求も数える
         self.on_request = on_request
         self.sleep = sleep
         self.requests = 0

@@ -107,6 +107,8 @@ class SourceSpec:
     min_interval_sec: float
     jitter_sec: float
     busy_wait_sec: float
+    failure_backoff_sec: float
+    failure_max_backoff_sec: float
     rate_min_interval_sec: float
     rate_per_minute: int
     retry_attempts: int
@@ -121,7 +123,8 @@ class SourceSpec:
     def fingerprint(self, conn: dict | None) -> str:
         """取得条件・認証の指紋。変わったら別のデータとして扱い、過去の取得結果や位置を使わない。"""
         cfg = {k: v for k, v in self.raw.items()
-               if k not in ("schedule", "min_interval_sec", "jitter_sec", "busy_wait_sec", "rate_limit", "retry",
+               if k not in ("schedule", "min_interval_sec", "jitter_sec", "busy_wait_sec", "failure_backoff_sec",
+                            "failure_max_backoff_sec", "rate_limit", "retry",
                             "resume", "resume_max_age_sec", "lease_sec", "conditional", "description")}
         cred = sha(canonical(conn), 32) if conn else None
         return sha(canonical({"cfg": cfg, "conn": list(self.connection) if self.connection else None, "cred": cred}), 32)
@@ -222,6 +225,30 @@ class Config:
     def rules_for(self, source: str) -> list[RuleSpec]:
         return [r for r in self.rules.values() if r.source == source]
 
+    def workflows_fingerprint(self) -> str:
+        """書き出すワークフローの形（どのワークフローがあり、いつ起動するか）の指紋。dags が DAG に埋め、
+        実行のたびに今の設定と比べて、設定を変えたのに書き出し直していないことに気づけるようにする。"""
+        flows = {}
+        for name, src in self.sources.items():
+            flows[f"source:{name}"] = {"schedule": src.schedule, "fetchers": self.fetching_workflows(name)}
+        for name, r in self.rules.items():
+            if any(t.runs_here for t in r.targets):
+                src = self.sources[r.source]
+                flows[f"rule:{name}"] = {"schedule": r.schedule or src.schedule, "source": r.source,
+                                         "dispatch": any(not t.runs_here for t in r.targets)}
+        return sha(canonical(flows), 16)
+
+    def fetching_workflows(self, source: str) -> list[str]:
+        """この取得元を取得するワークフロー（dags が書くもの）の名前。
+
+        command の受け渡し先を持つルールは自分のワークフローで取得する。それ以外のルール（と、ルールの無い取得元）は
+        取得元のワークフローで取得する。"""
+        rules = self.rules_for(source)
+        out = [f"ルール {r.name}" for r in rules if any(t.runs_here for t in r.targets)]
+        if not rules or any(not any(t.runs_here for t in r.targets) for r in rules):
+            out.insert(0, f"取得元 {source}")
+        return out
+
     def resolve_connection(self, ref: tuple[str, str] | None) -> dict | None:
         if ref is None:
             return None
@@ -295,7 +322,8 @@ def _source(name: str, d: Any) -> SourceSpec:
     _expect(NAME_RE.match(name) is not None, f"{where}: 名前は英数字・- _ . で 64 文字以内にしてください")
     _expect(isinstance(d, dict), f"{where}: 辞書で書いてください")
     _known(d, {"description", "connection", "request", "records", "key", "pagination", "incremental", "schedule",
-               "min_interval_sec", "jitter_sec", "busy_wait_sec", "rate_limit", "retry", "conditional", "resume",
+               "min_interval_sec", "jitter_sec", "busy_wait_sec", "failure_backoff_sec", "failure_max_backoff_sec",
+               "rate_limit", "retry", "conditional", "resume",
                "resume_max_age_sec", "lease_sec"}, where)
     req = d.get("request")
     _expect(isinstance(req, dict) and isinstance(req.get("url"), str), f"{where}.request.url を書いてください")
@@ -334,6 +362,8 @@ def _source(name: str, d: Any) -> SourceSpec:
         min_interval_sec=_num(d, "min_interval_sec", 0, where),
         jitter_sec=_num(d, "jitter_sec", 0, where),
         busy_wait_sec=_num(d, "busy_wait_sec", 0, where),
+        failure_backoff_sec=_num(d, "failure_backoff_sec", 60, where),
+        failure_max_backoff_sec=_num(d, "failure_max_backoff_sec", 3600, where),
         rate_min_interval_sec=_num(rl, "min_interval_sec", 0, f"{where}.rate_limit"),
         rate_per_minute=_int(rl, "per_minute", 0, f"{where}.rate_limit"),
         max_wait_sec=_num(rl, "max_wait_sec", 120, f"{where}.rate_limit"),
@@ -444,6 +474,26 @@ def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:
     )
 
 
+def _check_shared(name: str, src: SourceSpec, rules: dict[str, RuleSpec]) -> None:
+    """複数のワークフローが同じ取得元を取得するなら、API への問い合わせを 1 回にまとめる設定を必須にする。"""
+    rs = [r for r in rules.values() if r.source == name]
+    n = sum(1 for r in rs if any(t.runs_here for t in r.targets))
+    if not rs or any(not any(t.runs_here for t in r.targets) for r in rs):
+        n += 1
+    if n < 2:
+        return
+    where = f"sources.{name}"
+    who = "、".join([r.name for r in rs if any(t.runs_here for t in r.targets)])
+    head = f"{where}: {n} 本のワークフロー（ルール {who} など）がこの取得元を取得します。"
+    _expect(src.min_interval_sec > 0,
+            head + "同じ API を続けて問い合わせないよう、min_interval_sec（取得し終えた結果を使い回す秒数）を書いてください")
+    _expect(src.busy_wait_sec > 0,
+            head + "別のワークフローの取得中に問い合わせないよう、busy_wait_sec（取得中なら待つ秒数）を書いてください")
+    _expect(src.jitter_sec < src.min_interval_sec,
+            f"{where}: jitter_sec（{src.jitter_sec:.0f}）は min_interval_sec（{src.min_interval_sec:.0f}）より短くしてください。"
+            "長いと、ずらし終えたワークフローが先に取得した結果を使えず、もう一度問い合わせます")
+
+
 def _delivery(d: Any) -> DeliverySpec | None:
     """delivery: {adapter: <名前>, ...アダプタの設定}。本体は名前と設定を持つだけで、使う時点でアダプタを探す。"""
     if d is None:
@@ -475,6 +525,8 @@ def load(path: str | Path | None = None, connections: str | Path | None = None,
     sources = {str(k): _source(str(k), v) for k, v in sd.items()}
     rules = {str(k): _rule(str(k), v, sources) for k, v in rd.items()}
     delivery = _delivery(d.get("delivery"))
+    for name, src in sources.items():
+        _check_shared(name, src, rules)
     if delivery is None and any(not t.runs_here for r in rules.values() for t in r.targets):
         raise ConfigError("ワークフローへ渡す受け渡し先（targets の workflow）があります。delivery.adapter を書いてください")
     if state_dir is not None:

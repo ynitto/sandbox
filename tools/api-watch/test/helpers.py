@@ -263,6 +263,7 @@ class Env:
              "request": {"url": "{{ conn.url }}" + path,
                          "headers": {"Authorization": "Bearer {{ conn.token }}"}},
              "retry": {"attempts": 3, "backoff_sec": 0},
+             "failure_backoff_sec": 0,      # 失敗のあとすぐ取り直す試験が多いので、失敗の共有の待ちは切る
              "resume_max_age_sec": 3600}
         for k, v in kw.items():
             if k == "query":

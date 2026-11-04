@@ -18,14 +18,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   同じ取得元を複数のワークフローが呼んでも API への問い合わせを 1 回にまとめる（`check` は設定が足りなければ注意を出す）
 - `dags`: `command` の受け渡し先を持つルールごとに、fetch → evaluate → work のワークフローを書く（起動間隔はルールの `schedule`）。
   要らない取得元の DAG・再送の DAG は書かない
+- 2 本以上のワークフローが同じ取得元を取得するなら、`min_interval_sec`・`busy_wait_sec` を必須にし、`jitter_sec` が `min_interval_sec` 以上なら
+  設定の誤りにする
+- 取得元の `failure_backoff_sec` / `failure_max_backoff_sec`（既定 60 / 3600 秒）: 取得が失敗したら、どのワークフローもその間は問い合わせない
+  （続けて失敗するほど倍）。これまでは `Retry-After` が無ければ、起動したワークフローがそれぞれすぐ取り直していた
+- `rate_limit.per_minute` を、前の実行（別のワークフロー）の要求も数えて守る
+- `dags` が書いた DAG は設定の指紋を持ち、設定のスケジュールなどを変えて書き出し直していなければ、実行のたびに知らせる
 
 ### dagu-issue-loop: issue の取得と変化の検知を api-watch に任せる構成を足す
 
 - `issue_loop.py handle`: api-watch が渡したイベントを 1 件受け取り、issue を取り直してエージェント CLI を実行する。
   エージェント自身の書き込み・重なった同じ issue の変化は流さず、実行中に他人が動いたときは次の変化でもう一度流す。
   別のセッションが実行中なら終了コード 4（次の起動で再試行）
-- `tools/dagu-issue-loop/api-watch/`: api-watch の設定例（`poll` と同じ監視項目・0〜15 分のずらし・同じ取得元の共有）と、
-  取得から実行までを 1 本で行う Dagu のワークフロー `gitlab-issue-watch.yaml`
+- `tools/dagu-issue-loop/api-watch/`: api-watch の設定例（`poll` と同じ監視項目・0〜15 分のずらし・同じ取得元の共有・失敗の共有）。
+  Dagu のワークフロー（取得から実行までの 1 本）は api-watch の `dags` で書き出し、スケジュールは設定にだけ持つ
 - 本物の api-watch から `handle` を呼ぶ試験を足す
 
 ### dagu-issue-loop: stdin でプロンプトを渡す CLI が読まないとき、打ち切りが効かなくなるのを直す

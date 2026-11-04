@@ -43,7 +43,9 @@ CREATE TABLE IF NOT EXISTS sources (
     last_status TEXT,
     last_error TEXT,
     last_fetch_id INTEGER,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    retry_not_before REAL,      -- 取得が失敗したあと、どのプロセスもこの時刻までは問い合わせない
+    recent_requests TEXT        -- 直近 60 秒に送った要求の時刻（JSON。rate_limit.per_minute をプロセスをまたいで数える）
 );
 CREATE TABLE IF NOT EXISTS fetches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,6 +187,10 @@ class Store:
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(source_records)")}
         if "seen_at" not in cols:
             self.db.execute("ALTER TABLE source_records ADD COLUMN seen_at REAL")
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(sources)")}
+        for col, typ in (("retry_not_before", "REAL"), ("recent_requests", "TEXT")):
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE sources ADD COLUMN {col} {typ}")
         with self.tx():
             row = self.db.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
             if row is None:

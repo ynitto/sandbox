@@ -49,10 +49,10 @@ def cmd_check(cfg, store, a) -> int:
                 f"増分 {src.incremental.type if src.incremental else 'なし'}・ルール {len(cfg.rules_for(name))} 本"
                 + (f"・ずらし 0〜{src.jitter_sec:.0f} 秒" if src.jitter_sec else "")
                 + (f"・取得中なら {src.busy_wait_sec:.0f} 秒まで待つ" if src.busy_wait_sec else "") + "）")
-            here = [r.name for r in cfg.rules_for(name) if any(t.runs_here for t in r.targets)]
-            if len(here) > 1 and not (src.min_interval_sec and src.busy_wait_sec):
-                log(f"    注意: ルール {', '.join(here)} がそれぞれのワークフローからこの取得元を取得します。"
-                    "min_interval_sec と busy_wait_sec を書かないと、同じ API を続けて問い合わせることがあります")
+            flows = cfg.fetching_workflows(name)
+            if len(flows) > 1:
+                log(f"    {len(flows)} 本のワークフロー（{'・'.join(flows)}）が取得し、問い合わせは "
+                    f"{src.min_interval_sec:.0f} 秒に 1 回までにまとめます")
         except ConfigError as e:
             ok = False
             log(f"  取得元 {name}: {e}")
@@ -341,6 +341,7 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     p.add_argument("--config", help=f"設定ファイル（既定: {configmod.DEFAULT_CONFIG}）")
     p.add_argument("--connections", help="接続設定（connections.yaml）のパス。認証情報はここからだけ読む")
     p.add_argument("--state-dir", help="状態の置き場所（設定の state_dir より優先）")
+    p.add_argument("--dags-fingerprint", help=argparse.SUPPRESS)   # dags が書き出した DAG が付ける
     p.add_argument("--version", action="version", version=VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -434,6 +435,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = configmod.load(a.config, a.connections, a.state_dir)
         store = Store(cfg.state_dir)
+        if a.dags_fingerprint and a.dags_fingerprint != cfg.workflows_fingerprint():
+            warn("設定のスケジュール・ワークフローの組み方が、DAG を書き出したときから変わっています。"
+                 "Dagu は書き出したときの schedule で動き続けるので、dags で書き出し直してください")
     except ConfigError as e:
         warn(str(e))
         return EXIT_ERROR

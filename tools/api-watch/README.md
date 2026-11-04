@@ -440,8 +440,17 @@ steps:
 | 片方が取得している最中に、もう片方が `fetch` した | `busy_wait_sec` まで終わるのを待ち、その結果で判定する |
 | 両方がずらしている間に、片方が取得した | もう片方はずらし終えたあとで `min_interval_sec` を見て、取得しない |
 
-`min_interval_sec` は、ワークフローどうしの起動のずれ（例の 30 分）と `jitter_sec` より長くする。`check` は、`command` の受け渡し先を持つ
-ルールが 2 本以上ある取得元で `min_interval_sec` か `busy_wait_sec` が 0 なら注意を出す。
+| 取得が失敗した | `failure_backoff_sec` のあいだ、どのワークフローも問い合わせず、前回までの取得結果で判定・実行を続ける |
+
+2 本以上のワークフローが同じ取得元を取得するときは（取得元の DAG とルールのワークフローの組み合わせも数える）、`min_interval_sec` と
+`busy_wait_sec` が必須で、`jitter_sec` は `min_interval_sec` より短くする。満たさなければ設定の誤りとして止める。`min_interval_sec` は
+ワークフローどうしの起動のずれ（例の 30 分）より長くする。成功した取得は、ワークフローの本数によらず `min_interval_sec` に 1 回までになる。
+
+### スケジュールの置き場所
+
+起動の時刻は api-watch の設定の `schedule`（ルールの `schedule`、無ければ取得元の `schedule`）にだけ書く。api-watch は時刻を見ておらず、
+`dags` が DAG を書き出すときに `schedule` へ書き写し、Dagu のスケジューラがそのとおりに起動する。設定を変えたら `dags` で書き出し直す。
+書き出した DAG は設定の指紋を持っていて、書き出し直していなければ、実行のたびにログで「書き出し直して」と知らせる。
 
 ## 設定
 
@@ -459,11 +468,12 @@ steps:
 | `key` | — | レコードを一意に指す項目。増分取得の取得元では書いておく（全体の姿を組み立て、基準値の取り直しに使う） |
 | `pagination` | なし | 下の表 |
 | `incremental` | なし | 下の表 |
-| `schedule` | `*/5 * * * *` | 起動間隔（cron）。`dags` が DAG の `schedule` に使う |
+| `schedule` | `*/5 * * * *` | 起動間隔（cron）。api-watch は時刻を見ない。`dags` が書き出す DAG の `schedule` に書き写し、Dagu がそのとおりに起動する |
 | `min_interval_sec` | 0 | 前回の成功からこの秒数たつまでは取得せず、その取得結果を使う（手で叩いたとき・複数のワークフローから呼ばれたときの重複を防ぐ。`fetch --force` で無視） |
 | `jitter_sec` | 0 | 取得の前に 0〜この秒数だけランダムに待つ（定刻に API へ集中させない）。`min_interval_sec` で取得しないときは待たない。`fetch --no-jitter`・`--force` でずらさない |
 | `busy_wait_sec` | 0 | 別のプロセスが取得中なら、この秒数まで終わるのを待ち、その取得結果を使う。0 なら待たずに終わる |
-| `rate_limit.min_interval_sec` / `per_minute` | 0 / 0 | 要求どうしの最小間隔・1 分あたりの上限。前回の実行の最後の要求からも数える |
+| `failure_backoff_sec` / `failure_max_backoff_sec` | 60 / 3600 | 取得が失敗したら、どのプロセス（ワークフロー）もこの秒数は問い合わせず、前回までの取得結果を使う。続けて失敗するほど倍にし、上限で止める。成功したら戻す。`--force` では待たない |
+| `rate_limit.min_interval_sec` / `per_minute` | 0 / 0 | 要求どうしの最小間隔・1 分あたりの上限。前の実行（別のワークフローを含む）の要求からも数える |
 | `rate_limit.max_wait_sec` | 120 | `Retry-After` やレート制限のリセットをこの秒数までは待つ。長ければ取得をやめ、その時刻までは問い合わせない |
 | `retry.attempts` / `backoff_sec` / `max_backoff_sec` | 4 / 2 / 60 | 一時的な失敗（接続・タイムアウト・408/425/429/5xx）の再試行（指数バックオフ） |
 | `conditional` | true | `ETag` / `Last-Modified` があれば条件付き要求にし、304 なら保存済みの本文を使う |

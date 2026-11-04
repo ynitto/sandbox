@@ -260,6 +260,7 @@ def _header(cfg: Config, desc: str, schedule: str, opts) -> list[str]:
 def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     base = [python, str(script), "--config", str(cfg.path)] + plugin_args(getattr(opts, "plugin", None) or ["dagu"])
+    base += ["--dags-fingerprint", cfg.workflows_fingerprint()]   # 設定を変えて書き出し直していなければ、実行時に知らせる
     if cfg.connections.path is not None:
         base += ["--connections", str(cfg.connections.path)]
     if getattr(opts, "state_dir", None):

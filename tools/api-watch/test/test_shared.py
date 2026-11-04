@@ -154,7 +154,7 @@ class SharedFetchTest(Base):
         self.write({"a": self.rule(self.target("ja")), "b": self.rule(self.target("jb"))},
                    min_interval_sec=600, busy_wait_sec=60)
         out = self.env.ok(self, "check")
-        self.assertNotIn("注意", out)
+        self.assertIn("2 本のワークフロー", out)
         self.env.api.put(1, status="a")
         self.env.ok(self, "run", "--rule", "a")
         self.env.ok(self, "run", "--rule", "b")
@@ -166,9 +166,75 @@ class SharedFetchTest(Base):
         self.assertEqual(self.env.api.count(), 2)
         self.assertEqual(sorted(x["rule"] for x in self.handled()), ["a", "b"])
 
-    def test_check_warns_when_sharing_is_not_configured(self):
-        self.write({"a": self.rule(self.target("ja")), "b": self.rule(self.target("jb"))})
-        self.assertIn("注意", self.env.ok(self, "check"))
+    def _load_error(self) -> str:
+        with self.assertRaises(ConfigError) as cm:
+            configmod.load(self.env.config_path, self.env.conn_file)
+        return str(cm.exception)
+
+    def test_sharing_settings_are_required_when_several_workflows_fetch(self):
+        two = {"a": self.rule(self.target("ja")), "b": self.rule(self.target("jb"))}
+        self.write(two)
+        self.assertIn("min_interval_sec", self._load_error())
+        self.write(two, min_interval_sec=600)
+        self.assertIn("busy_wait_sec", self._load_error())
+        self.write(two, min_interval_sec=600, busy_wait_sec=60, jitter_sec=600)
+        self.assertIn("jitter_sec", self._load_error())
+        # 取得元のワークフロー（workflow の受け渡し先）とルールのワークフローが同じ取得元を取る組み合わせも数える
+        self.write({"a": self.rule(self.target("ja")), "p": self.rule()})
+        self.assertIn("2 本のワークフロー", self._load_error())
+        # 1 本だけなら要らない
+        self.write({"a": self.rule(self.target("ja"))})
+        configmod.load(self.env.config_path, self.env.conn_file)
+
+    def test_failure_is_shared_and_backs_off(self):
+        self.write({"a": self.rule(self.target("ja")), "b": self.rule(self.target("jb"))},
+                   min_interval_sec=600, busy_wait_sec=60, failure_backoff_sec=300)
+        self.env.api.fail("/all", 503, count=100)
+        code, _ = self.env.run("run", "--rule", "a")
+        self.assertEqual(code, 3)
+        first = self.env.api.count()
+        self.assertGreater(first, 0)
+        out = self.env.ok(self, "run", "--rule", "b")              # 別のワークフローは問い合わせない
+        self.assertIn("問い合わせません", out)
+        self.env.ok(self, "run", "--rule", "a")                     # 失敗したワークフローの再試行も同じ
+        self.assertEqual(self.env.api.count(), first)
+        s = self.env.store()
+        try:
+            row = s.source_row("items")
+            self.assertAlmostEqual(row["retry_not_before"] - now(), 300, delta=30)
+            with s.tx() as db:                                      # 待ちが明けたらもう一度だけ試し、待ちを倍にする
+                db.execute("UPDATE sources SET retry_not_before=? WHERE name='items'", (now() - 1,))
+        finally:
+            s.close()
+        code, _ = self.env.run("run", "--rule", "b")
+        self.assertEqual(code, 3)
+        s = self.env.store()
+        try:
+            self.assertAlmostEqual(s.source_row("items")["retry_not_before"] - now(), 600, delta=30)
+        finally:
+            s.close()
+        self.env.api.failures.clear()
+        self.env.ok(self, "run", "--rule", "a", "--force")         # 手で叩くときは待たない。成功したら待ちを解く
+        s = self.env.store()
+        try:
+            row = s.source_row("items")
+            self.assertIsNone(row["retry_not_before"])
+            self.assertEqual(row["consecutive_failures"], 0)
+        finally:
+            s.close()
+
+    def test_per_minute_counts_requests_of_previous_processes(self):
+        self.write({"a": self.rule()}, rate_limit={"per_minute": 2})
+        self.env.api.put(1, status="a")
+        sleeps: list = []
+        cfg, store, f = self._fetcher(sleeps)
+        self.assertEqual(f.run(cfg.sources["items"]).status, "complete")
+        self.assertEqual(f.run(cfg.sources["items"]).status, "complete")
+        self.assertEqual(sleeps, [])
+        _, _, g = self._fetcher(sleeps)                             # 別のプロセス（ワークフロー）の 3 回目
+        self.assertEqual(g.run(cfg.sources["items"]).status, "complete")
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreater(sleeps[0], 30)                          # 前の 2 回を数えて 1 分の残りを待つ
 
     def _fetcher(self, sleeps: list):
         # cli.main を通さないので、標準出力を UTF-8 にする設定が効かない（Windows の cp1252 で日本語のログが書けない）。
@@ -256,6 +322,21 @@ class DagsTest(Base):
         self.assertNotIn("timeout_sec", d["steps"][2])
         b = yaml.safe_load((out / "api-watch-b.yaml").read_text(encoding="utf-8"))
         self.assertEqual(b["schedule"], "0 * * * *")                 # ルールに無ければ取得元の schedule
+
+    def test_warns_when_config_changed_after_dags(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML が無い")
+        self.env.plugins = ["dagu"]
+        self.write({"a": self.rule(self.target("ja"))}, schedule="0 * * * *")
+        out = self.env.tmp / "dags"
+        self.env.ok(self, "dags", "--out", str(out))
+        args = yaml.safe_load((out / "api-watch-a.yaml").read_text(encoding="utf-8"))["steps"][0]["with"]["args"]
+        fp = args[args.index("--dags-fingerprint") + 1]
+        self.assertNotIn("書き出し直して", self.env.ok(self, "--dags-fingerprint", fp, "status"))
+        self.write({"a": self.rule(self.target("ja"))}, schedule="*/5 * * * *")
+        self.assertIn("書き出し直して", self.env.ok(self, "--dags-fingerprint", fp, "status"))
 
     def test_rule_name_must_not_clash(self):
         self.env.plugins = ["dagu"]

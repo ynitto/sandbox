@@ -570,7 +570,7 @@ if __name__ == "__main__":
 
 # ---------------------------------------------------------------------------
 # api-watch で動かす構成（handle）。本物の api-watch が取得・判定し、command の受け渡し先として
-# issue_loop.py handle をその場で 1 件ずつ実行する（gitlab-issue-watch.yaml の 1 本のワークフローと同じ流れ）
+# issue_loop.py handle をその場で 1 件ずつ実行する（dags が書き出す api-watch-issue-agent の 1 本のワークフローと同じ流れ）
 # ---------------------------------------------------------------------------
 
 API_WATCH = HERE.parent.parent / "api-watch" / "api_watch.py"

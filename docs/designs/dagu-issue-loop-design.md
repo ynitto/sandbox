@@ -146,7 +146,8 @@ DAG の Python は `ISSUE_LOOP_PYTHON` で渡す（Windows の標準のインス
 ## 6.5 api-watch で取得する構成（handle）
 
 `poll` と待ち行列（state.json の queue / dead）の代わりに api-watch を使う構成。Dagu のワークフローは
-`gitlab-issue-watch` の 1 本で、fetch → evaluate → work の 3 ステップ。work は api-watch の「その場で実行する受け渡し先」
+api-watch の `dags` が書き出す `api-watch-issue-agent` の 1 本で、fetch → evaluate → work の 3 ステップ。スケジュールは api-watch の
+設定にだけ置く（手書きの DAG を持つと、設定とワークフローの 2 か所にスケジュールができてずれる）。work は api-watch の「その場で実行する受け渡し先」
 （`targets[].command`）として `issue_loop.py handle` を 1 件ずつ呼ぶ。役割の分け方:
 
 | 受け持ち | `poll` / `run` | api-watch 構成 |
@@ -177,7 +178,8 @@ DAG の Python は `ISSUE_LOOP_PYTHON` で渡す（Windows の標準のインス
 - **順序**: `order: completion` / `enqueue` だと、打ち切った（dead）イベントが `retry` / `skip` されるまで同じ issue の後ろが止まる。
   `poll` 構成の「打ち切って次の変化で拾う」に合わせて `none` にした。古いイベントが後から再試行されても、飛ばす判定で落ちる
 - **同じ取得元の共有**: 通知など別のワークフローが同じ取得元を使うときは、取得元の `min_interval_sec`（取得し終えた結果を使い回す）と
-  `busy_wait_sec`（取得中なら待ってその結果を使う）で GitLab への問い合わせを 1 回にまとめる（api-watch の設計 §「取得の共有」）
+  `busy_wait_sec`（取得中なら待ってその結果を使う）で GitLab への問い合わせを 1 回にまとめ、失敗は `failure_backoff_sec` で共有する
+  （api-watch の設計 §3.6）
 
 試験は本物の api-watch（`run --rule issue-agent` で `handle` をその場で実行）と偽の GitLab・偽のエージェントで回す（`ApiWatchHandleTest`）。
 
