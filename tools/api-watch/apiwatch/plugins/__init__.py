@@ -1,6 +1,6 @@
 """プラグインの読み込み。プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。
 
-    --plugin dagu              同梱のプラグイン（plugins/dagu.py）
+    --plugin dagu              同梱のプラグイン（apiwatch/plugins/dagu.py）
     --plugin /path/to/foo.py   ファイルを直接
 
 プラグインは `register(api)` を持つ 1 つの Python ファイルで、api を通じて次を足す:
@@ -8,7 +8,8 @@
     api.add_adapter(name, parse, create)        受け渡しのアダプタ（apiwatch.adapters の口）
     api.add_command(name, fn, help) -> parser   サブコマンド。fn(cfg, store, args) -> 終了コード
 
-本体はプラグインを import しない（指定されたときに読み込むだけ）。
+このパッケージ（apiwatch.plugins）は読み込みの仕組みだけを持ち、同梱のプラグインを import しない
+（指定されたときに名前で読み込むだけ）。
 """
 from __future__ import annotations
 
@@ -20,8 +21,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Callable
 
-from . import adapters
-from .util import ConfigError
+from .. import adapters
+from ..util import ConfigError
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -60,11 +61,11 @@ def _import(spec: str) -> ModuleType:
     if not _NAME.match(spec):
         raise ConfigError(f"プラグインの名前が正しくありません: {spec}")
     try:
-        return importlib.import_module(f"plugins.{spec}")   # 同梱のもの（api_watch.py / .pyz と同じ場所の plugins/）
+        return importlib.import_module(f"{__name__}.{spec}")   # 同梱のもの（apiwatch/plugins/<名前>.py）
     except ModuleNotFoundError as e:
-        if e.name not in ("plugins", f"plugins.{spec}"):
+        if e.name != f"{__name__}.{spec}":
             raise
-        raise ConfigError(f"同梱のプラグイン {spec} がありません（plugins/{spec}.py）") from e
+        raise ConfigError(f"同梱のプラグイン {spec} がありません（apiwatch/plugins/{spec}.py）") from e
 
 
 def load(specs: list[str], add_command: Callable | None) -> list[ModuleType]:

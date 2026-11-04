@@ -5,7 +5,7 @@
     python install.py install [--dir DIR] [--python PY] [--no-yaml]
     python install.py uninstall [--dir DIR]
 
-- zip に入れるもの: 本体（apiwatch/）・同梱のプラグイン（plugins/）・入口（__main__.py）、
+- zip に入れるもの: 本体（apiwatch/。同梱のプラグイン apiwatch/plugins/ を含む）・入口（__main__.py）、
   それに PyYAML があればその純 Python の部分（YAML の設定を読むため。--no-yaml で入れない）
 - install の置き場所（--dir の既定）:
     Linux / WSL / macOS  ~/.local/bin/api-watch        先頭に #! を付けた実行ファイル
@@ -83,7 +83,6 @@ def build(out: Path, interpreter: str | None, with_yaml: bool) -> Path:
         stage = Path(tmp) / "app"
         stage.mkdir()
         n = _copy_py(HERE / "apiwatch", stage / "apiwatch")
-        n += _copy_py(HERE / "plugins", stage / "plugins")
         (stage / "__main__.py").write_text(MAIN, encoding="utf-8")
         yaml_note = "入れていません"
         if with_yaml:

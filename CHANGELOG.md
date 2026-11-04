@@ -16,7 +16,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - `tools/api-watch/` を足す。`api_watch.py`（標準ライブラリ + YAML の設定なら PyYAML）が fetch / evaluate / dispatch の 3 段を持つ。
   スケジュール・再試行・キュー・並列数・ログ・履歴は Dagu に任せ、常駐しない
 - 本体（`apiwatch/`）は Dagu に依存しない。受け渡しはアダプタ（`delivery.adapter`）に任せ、Dagu へのアダプタと DAG の生成（`dags`）は
-  1 ファイルのプラグイン `plugins/dagu.py` に集めた。プラグインは `--plugin dagu`（または `.py` のパス）で指定したときだけ読み込む。
+  1 ファイルのプラグイン `apiwatch/plugins/dagu.py` に集めた。プラグインは `--plugin dagu`（または `.py` のパス）で指定したときだけ読み込む。
   Dagu を使わないときは `adapter: command` で任意のコマンドへ渡せる
 - インストーラ `install.py`: 本体と同梱のプラグイン（PyYAML があれば同梱）を 1 つの実行可能な zip（`.pyz`）にまとめ、
   `~/.local/bin/api-watch`（Windows は `.pyz` と `.cmd`）として置く

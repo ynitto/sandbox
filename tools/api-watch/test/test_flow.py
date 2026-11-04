@@ -724,7 +724,7 @@ rules:
         self.assertIn("既に渡し済み 1", out)
         # 本体は Dagu 連携を import しない
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import apiwatch.cli, apiwatch.deliver, apiwatch.detect, "
-                "apiwatch.fetch; assert 'plugins.dagu' not in sys.modules, 'imported'")
+                "apiwatch.fetch; assert 'apiwatch.plugins.dagu' not in sys.modules, 'imported'")
         subprocess.run([sys.executable, "-c", code, str(ROOT)], check=True)
 
     def test_dagu_plugin_only_when_specified(self):
@@ -750,7 +750,7 @@ rules:
         env.ok(self, "retry", "--rule", "r")
         env.ok(self, "dispatch")
         self.assertEqual(len(env.enqueued()), 1)
-        env.plugins = [str(ROOT / "plugins" / "dagu.py")]               # ファイルのパスでも指定できる
+        env.plugins = [str(ROOT / "apiwatch" / "plugins" / "dagu.py")]               # ファイルのパスでも指定できる
         env.ok(self, "check")
         env.plugins = ["nosuch"]
         code, out = env.run("status")

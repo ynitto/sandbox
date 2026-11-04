@@ -25,9 +25,10 @@
 
 | ファイル | 中身 | Dagu への依存 |
 |---|---|---|
-| `apiwatch/` | 本体: 取得・判定・状態・受け渡しの順序と再送・運用のコマンド。受け渡しは `delivery.adapter` で選ぶアダプタに任せる | なし |
+| `apiwatch/`（下の `plugins/dagu.py` を除く） | 本体: 取得・判定・状態・受け渡しの順序と再送・運用のコマンド。受け渡しは `delivery.adapter` で選ぶアダプタに任せる | なし |
 | `apiwatch/adapters/command.py` | 任意のコマンドで受け渡すアダプタ（`adapter: command`） | なし |
-| `plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）と、Dagu の DAG を書き出す `dags` コマンド。**Dagu に依存するものはこの 1 ファイルだけ** | あり |
+| `apiwatch/plugins/__init__.py` | `--plugin` で指定されたプラグインの読み込み。同梱のプラグインを自分では import しない | なし |
+| `apiwatch/plugins/dagu.py` | Dagu プラグイン: Dagu へ受け渡すアダプタ（`adapter: dagu`）と、Dagu の DAG を書き出す `dags` コマンド。**Dagu に依存するものはこの 1 ファイルだけ** | あり |
 
 プラグインはコマンド行の `--plugin` で指定したときだけ読み込む。Dagu と使うときは毎回 `--plugin dagu` を付ける
 （`dags` が書き出す DAG にも付く）。付けなければ `dags` コマンドも `adapter: dagu` も無く、`adapter: dagu` の設定で受け渡そうとすると
@@ -35,7 +36,7 @@
 
 Dagu を使わないときは、起動を cron・タスク スケジューラなどから `run`（または `fetch` / `evaluate` / `dispatch`）で行い、
 受け渡しは `adapter: command` で任意のコマンドに渡す。別の基盤へのプラグインも、同じ形の `.py` を `--plugin <パス>` で読み込める
-（`register(api)` で `api.add_adapter(...)`・`api.add_command(...)` を呼ぶ。`apiwatch/plugins.py` を参照）。
+（`register(api)` で `api.add_adapter(...)`・`api.add_command(...)` を呼ぶ。`apiwatch/plugins/__init__.py` を参照）。
 
 ## 入れ方
 

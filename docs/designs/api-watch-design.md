@@ -15,7 +15,7 @@
 | 実行管理は Dagu | 定期実行・再試行・ログ・履歴は Dagu の DAG、後続処理の並列数はキュー、後続処理の再試行・復旧は後続の DAG の `retry_policy` と `dagu retry` |
 | このツールが持つもの | Dagu では表せない状態だけ: 取得の途中経過と位置、ルールごとの前回の観測値、イベントと受け渡しの状態 |
 | 特定のサービス・言語に依らない | 要求・ページング・増分・抽出・判定はすべて設定。後続処理は任意の DAG（言語は問わない） |
-| Dagu 連携は本体の外 | 本体（`apiwatch/`）は受け渡しをアダプタの口（§5.3）越しにだけ行い、Dagu を知らない。Dagu へのアダプタと DAG の生成は 1 ファイルのプラグイン `plugins/dagu.py` で、`--plugin dagu` のときだけ読み込む |
+| Dagu 連携は本体の外 | 本体（`apiwatch/`）は受け渡しをアダプタの口（§5.3）越しにだけ行い、Dagu を知らない。Dagu へのアダプタと DAG の生成は 1 ファイルのプラグイン `apiwatch/plugins/dagu.py` で、`--plugin dagu` のときだけ読み込む |
 | 1 ファイルで配る | インストーラ（`install.py`）が本体と同梱のプラグインを zipapp（`.pyz`）にまとめ、コマンドとして置く（§2.0） |
 | 認証情報の場所は実行時に渡す | connections.yaml のパスはコマンド行の `--connections` だけで受け取る（§6） |
 
@@ -38,8 +38,8 @@
 |---|---|---|
 | `apiwatch`（本体） | 取得・判定・状態・受け渡しの行の管理（順序・再送・ack・retry・skip）・運用のコマンド | 標準ライブラリ（YAML の設定なら PyYAML） |
 | `apiwatch.adapters` | アダプタの口（`parse` / `create`、`enqueue` / `retry` / `status`）と、任意のコマンドで渡す `command` | 本体だけ |
-| `apiwatch.plugins` | `--plugin` で指定されたプラグインの読み込み（同梱の `plugins/<名前>.py`、または任意の `.py` のパス） | 本体だけ |
-| `plugins/dagu.py` | `dagu` アダプタ（CLI / REST API）と `dags` コマンド（DAG の生成）。Dagu に依存するものはこの 1 ファイルだけ | 本体の公開部品 + Dagu |
+| `apiwatch.plugins` | `--plugin` で指定されたプラグインの読み込み（同梱の `apiwatch/plugins/<名前>.py`、または任意の `.py` のパス）。パッケージ自体は同梱のプラグインを import しない | 本体だけ |
+| `apiwatch/plugins/dagu.py` | `dagu` アダプタ（CLI / REST API）と `dags` コマンド（DAG の生成）。Dagu に依存するものはこの 1 ファイルだけ | 本体の公開部品 + Dagu |
 
 - プラグインは `register(api)` を持つ 1 つの `.py` で、`api.add_adapter(name, parse, create)`・`api.add_command(name, fn, help)` を呼ぶ。
   本体はコマンド行の `--plugin` を先に読み（`parse_known_args`）、指定されたプラグインだけを読み込んでから残りの引数を解釈する。
@@ -48,9 +48,9 @@
   1 回の実行の始めにプラグインの登録を外すので、同じプロセスで続けて呼んでも前の指定は残らない
 - 設定の `delivery` は名前と設定を持つだけで、アダプタは使う時点（dispatch・reconcile・retry・check）で解決する。だから `status`・`events`・`ack`
   はプラグインなしで動き、`--plugin` を付け忘れた dispatch は設定の誤り（終了コード 1）で止まって、受け渡しの試行回数を減らさない
-- テストで、本体の主要モジュールを読み込んでも `plugins.dagu` が読み込まれないこと、`--plugin` なしでは `dags` も `dagu` アダプタも無いこと、
+- テストで、本体の主要モジュールを読み込んでも `apiwatch.plugins.dagu` が読み込まれないこと、`--plugin` なしでは `dags` も `dagu` アダプタも無いこと、
   `.py` のパスでも読み込めることを確かめている
-- 配布: `install.py build` が `apiwatch/`・`plugins/` の `.py`（テストと `__pycache__` は除く）と入口の `__main__.py`、それに PyYAML があれば
+- 配布: `install.py build` が `apiwatch/`（同梱のプラグインを含む）の `.py`（テストと `__pycache__` は除く）と入口の `__main__.py`、それに PyYAML があれば
   その純 Python の部分とライセンス文を、`zipapp` で 1 つの `.pyz` にまとめる。C 拡張（`_yaml`）は zip から読み込めないので入れない（PyYAML は
   無ければ純 Python で動く）。`install` は Linux 系では `#!` 付きの実行ファイル `~/.local/bin/api-watch`、Windows では `.pyz` と `.cmd` を置く。
   `.pyz` から動いているとき、`dags` は DAG から呼ぶ入口をその `.pyz` にする（`apiwatch` の親が zip のファイルかで見分ける）
@@ -201,7 +201,7 @@ A→B→A は 2 回の変化として検知する（取得の間隔の中で起�
 
 本体は `enqueue(run_id, workflow, params, queue) -> ok | duplicate`・`retry(run_id, workflow)`・`status(run_id, workflow) -> done | failed | 不明`
 だけを呼ぶ（`apiwatch/adapters/__init__.py`）。`command` アダプタは argv のテンプレートで同じことをする（終了コード 9 か
-`already exists` を duplicate とみなす）。以下は `plugins/dagu.py` の `dagu` アダプタ。
+`already exists` を duplicate とみなす）。以下は `apiwatch/plugins/dagu.py` の `dagu` アダプタ。
 
 | mode | enqueue | 再実行 | 状態の問い合わせ |
 |---|---|---|---|
@@ -263,7 +263,7 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
   取得元の認証の変更、API なしでの判定のやり直し、判定のエラーの隔離、順序（completion / enqueue）、同じ ID での再送と受け渡し先ごとの隔離、
   受け渡し直後の停止からの復旧、ack / retry、REST API での受け渡し・完了の確認・409、保持期間が未処理を消さないこと、DAG の生成、
   YAML の設定、接続設定を `--connections` からだけ読むこと（決まった場所に置いても読まない・無ければ問い合わせ前に止まる）、
-  `adapter: command` での受け渡しと重複の検出、本体が `plugins.dagu` を import しないこと、`--plugin` を指定したときだけ Dagu プラグインを使うこと
+  `adapter: command` での受け渡しと重複の検出、本体が `apiwatch.plugins.dagu` を import しないこと、`--plugin` を指定したときだけ Dagu プラグインを使うこと
 - `test_install.py`: `.pyz` を作り、別の場所へ動かしてもその 1 ファイルだけで取得から受け渡しまで動くこと、DAG がその `.pyz` を呼ぶこと、
   site-packages を読まない（`python -S`）ときに同梱の PyYAML で YAML の設定を読めること、インストールと削除（Windows は `.cmd`）
 - 生成した DAG と `dags/api-watch-handler.example.yaml` を Dagu v2.25.2 の `internal/cmn/schema/dag.schema.json` で検証し、

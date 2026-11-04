@@ -26,7 +26,7 @@ class InstallTest(unittest.TestCase):
         names = zipfile.ZipFile(pyz).namelist()
         self.assertIn("__main__.py", names)
         self.assertIn("apiwatch/cli.py", names)
-        self.assertIn("plugins/dagu.py", names)
+        self.assertIn("apiwatch/plugins/dagu.py", names)
         self.assertFalse([n for n in names if "__pycache__" in n or n.startswith(("test/", "tests/"))])
         # 置き場所を変えても、その 1 ファイルだけで動く（ソースの木を見ない）
         far = env.tmp / "elsewhere" / "aw.pyz"

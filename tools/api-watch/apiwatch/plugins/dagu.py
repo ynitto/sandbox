@@ -1,4 +1,4 @@
-"""api-watch の Dagu プラグイン。Dagu に依存するものはこのファイルだけにある。
+"""api-watch の Dagu プラグイン（apiwatch/plugins/dagu.py）。Dagu に依存するものはこのファイルだけにある。
 
     python api_watch.py --plugin dagu ...     （.pyz なら python api-watch.pyz --plugin dagu ...）
 
