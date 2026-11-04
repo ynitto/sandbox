@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### dagu-api-watch: 任意の API を Dagu からポーリングし、変化を検知して DAG へ渡す（0.1.0）
+
+- `tools/dagu-api-watch/` を足す。`api_watch.py`（標準ライブラリ + YAML の設定なら PyYAML）が fetch / evaluate / dispatch の 3 段を持ち、
+  `dags` で取得元ごとの DAG・再送の DAG・整理の DAG を書き出す。スケジュール・再試行・キュー・並列数・ログ・履歴は Dagu に任せ、常駐しない
+- 取得: URL・メソッド・ヘッダー・クエリ・本文・レコードの場所を設定で書く。ページングは page / offset / cursor / next_url / Link ヘッダー、
+  増分は最大値（更新日時など）とカーソル。条件付き要求（ETag / Last-Modified）、取得元単位のレート制限・再試行・Retry-After。
+  ページ単位で保存し、途中で止まっても続きから再開する。全ページそろうまで判定も増分の位置の前進もしない
+- 1 つの取得元の取得結果を複数のルール・受け渡し先で共有する。取得条件や認証を変えると前のデータを使わず取り直す
+- 判定: ルールごとに対象の絞り込み・識別 ID（複合可）・監視する項目・発火条件・受け渡し先。新規・変更・条件の一致 / 不一致への遷移・
+  一致している間・全件取得で消えた、を区別する。キー順・配列の順序（全体 / 項目ごと）・欠落と null・監視外の項目を扱え、
+  A→B→A をそれぞれ検知する。初回は基準値だけか既存も新規か、ルールの変更時は基準値の取り直しか継続かを選べる。保存済みの結果で判定をやり直せる
+- 受け渡し: 受け渡しの ID を Dagu の実行 ID にして `dagu enqueue`（または REST API）で渡し、再送しても 1 回だけ実行される。
+  同じレコードの変更は受け渡し先ごとに順に、別のレコードは並列に。1 件の失敗は同じレコードの後ろだけを止める。
+  完了は後続の DAG の `ack`（または API での問い合わせ）で記録し、失敗は同じ実行 ID のまま Dagu で再実行できる
+- 運用: `status`・`events`・`show`・`retry`・`skip`・`rebaseline`・`replay`・`gc`。認証情報はログ・状態に出さない。
+  保持期間は未判定の取得結果・未完了のイベントを消さない。状態は SQLite 1 ファイル（Windows・WSL2・Linux）
+- CI に Linux と Windows のテストを足した。設計: `docs/designs/dagu-api-watch-design.md`
+
 ### dagu-workflow-builder: 入っているスキルのスクリプトをつないで Dagu の DAG を作る（0.1.0）
 
 - 新しいスキル。`scripts/chain.py`（標準ライブラリだけ）の `scan` / `check` / `plan` / `build` で、各エージェントのスキル置き場を見て
