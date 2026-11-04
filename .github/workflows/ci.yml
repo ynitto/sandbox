@@ -82,6 +82,10 @@ jobs:
           # 変化の検知・重複制御・1 セッションの排他（並行 run・取り残された CLI・SIGTERM）を見る。
           - package: dagu-issue-loop
             suites: tools/dagu-issue-loop/test
+          # api-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
+          # 取得の集約・ページング・増分・再開・変更検知・再送・順序・保持期間を見る（Dagu 本体は入れない）。
+          - package: api-watch
+            suites: tools/api-watch/test
           # dagu-workflow-builder スキル。スキル置き場は一時フォルダに作り、生成した DAG は Dagu の代わりに
           # Python で順に流す（Dagu 本体は入れない）。同梱の chain.json の検査もここで回す。
           - package: dagu-workflow-builder
@@ -138,6 +142,21 @@ jobs:
           python-version: "3.11"
       - name: unittest
         run: python -m unittest discover -s tools/dagu-issue-loop/test
+
+  # api-watch も Windows でそのまま動かす（SQLite のロック・プロセスの生存確認・強制終了からの引き継ぎ）。
+  api-watch-windows:
+    name: python (api-watch, windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: 依存（YAML の設定の読み込み）
+        run: python -m pip install pyyaml
+      - name: unittest
+        run: python -m unittest discover -s tools/api-watch/test
 
   dashboard:
     name: dashboard (npm test)
