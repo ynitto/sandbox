@@ -1,0 +1,18 @@
+{
+  "chain": 1,
+  "actions": [
+    {
+      "id": "audit",
+      "summary": "プロジェクトの依存関係を監査し、脆弱性・ライセンスの指摘を JSON で出す",
+      "run": ["python", "scripts/audit_deps.py", "--path", "{in:project}", "--check", "{param:check}", "--severity", "{param:severity}", "--json"],
+      "inputs": {"project": "project-dir"},
+      "outputs": {"report": {"type": "dependency-audit", "ext": "json", "stdout": true}},
+      "params": {
+        "check": {"default": "all", "description": "監査の軸（security / license / outdated / all）"},
+        "severity": {"default": "moderate", "description": "報告する最低の重要度（critical / high / moderate / low）"}
+      },
+      "ok_exit": [0, 1],
+      "timeout_sec": 1800
+    }
+  ]
+}
