@@ -118,6 +118,221 @@ Dagu を使わないときは、6・7 の代わりに cron などから `api-wat
 - `delivery.executable` に `dagu.exe` の場所を書く（PATH にあれば `dagu` のままでよい）
 - 状態のフォルダを Windows と WSL2 で共有しない（`/mnt/c/...` 越しの SQLite はロックが効かない）。どちらか片方で動かす
 
+## Dagu での設定例
+
+GitLab の issue を 10 分ごとに見て、新しい issue・状態やラベルの変化を `issue-handler` という DAG へ渡す例。
+Linux・WSL2 のパスで書く（Windows は最後の「Windows のとき」）。Dagu の設定と DAG の置き場所は Dagu の既定
+（`~/.config/dagu/config.yaml`・`~/.config/dagu/dags/`）にしている。
+
+### 1. 接続設定（`~/.github/connections.yaml`）
+
+```yaml
+gitlab:
+  - label: default
+    url: https://gitlab.example.com
+    token: glpat-xxxxxxxx
+```
+
+### 2. api-watch の設定（`~/.config/api-watch/api-watch.yaml`）
+
+```yaml
+version: 1
+state_dir: ~/.local/state/api-watch
+
+delivery:
+  adapter: dagu              # 実行時に --plugin dagu を付ける
+  mode: cli                  # dagu enqueue で渡す
+  executable: dagu           # PATH に無ければ dagu のフルパス
+
+sources:
+  issues:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/123/issues"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      query: { state: all, order_by: updated_at, sort: asc }
+    key: iid
+    pagination: { type: page, size_param: per_page, size: 100 }
+    incremental: { type: max_value, field: updated_at, param: updated_after }
+    schedule: "*/10 * * * *"   # 取得の DAG の起動間隔
+
+rules:
+  issue-changed:
+    source: issues
+    id: iid
+    watch: [state, labels, title]
+    unordered: [labels]
+    on: [appeared, changed]
+    targets:
+      - workflow: issue-handler          # 受け渡し先の DAG の名前（= DAG のファイル名）
+        params:
+          ISSUE_TITLE: "{{ event.after.title | default: '' }}"
+```
+
+`check` で設定と接続設定を確かめ、一度手で回して基準値を取る（初回は受け渡さない）。
+
+```bash
+api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml check
+```
+
+```bash
+api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
+```
+
+### 3. Dagu のキュー（`~/.config/dagu/config.yaml`）
+
+受け渡し先の DAG をいくつ同時に動かすかは、Dagu のキューで決める。別の issue の変化は、ここで決めた数まで並んで動く
+（同じ issue の変化は api-watch が順番に渡すので、ここでは気にしなくてよい）。
+
+```yaml
+queues:
+  enabled: true
+  config:
+    - name: api-watch-handlers
+      max_concurrency: 3
+```
+
+### 4. 取得・再送・整理の DAG を書き出す
+
+```bash
+api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
+```
+
+`~/.config/dagu/dags/` に 3 つできる。手で直さず、設定を変えたら書き出し直す。
+
+| ファイル | 起動 | すること |
+|---|---|---|
+| `api-watch-issues.yaml` | 取得元の `schedule`（10 分ごと） | fetch → evaluate → dispatch。fetch は通信の失敗（終了コード 3）のときだけ Dagu が再試行する |
+| `api-watch-dispatch.yaml` | 毎分 | 判定し残し・渡せなかった変化の再送・後続処理の完了の確認 |
+| `api-watch-maintenance.yaml` | 毎日 3:17 | 保持期間を過ぎたものの整理 |
+
+書き出される DAG の中身（取得の DAG の一部）:
+
+```yaml
+description: "issues を取得し、ルールで判定して受け渡す"
+schedule: "*/10 * * * *"
+type: graph
+steps:
+  - name: fetch
+    action: exec
+    with:
+      command: "/usr/bin/python3"
+      args:
+        - "/home/you/.local/bin/api-watch"
+        - "--config"
+        - "/home/you/.config/api-watch/api-watch.yaml"
+        - "--plugin"
+        - "dagu"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "fetch"
+        - "--source"
+        - "issues"
+    retry_policy:
+      limit: 3
+      interval_sec: 60
+      backoff: true
+      max_interval_sec: 600
+      exit_code: [3]
+  - name: evaluate
+    depends: [fetch]
+    # …（evaluate --source issues）
+  - name: dispatch
+    depends: [evaluate]
+    # …（dispatch --source issues）
+```
+
+### 5. 受け渡し先の DAG（`~/.config/dagu/dags/issue-handler.yaml`）
+
+ファイル名（拡張子を除く）がルールの `workflow` と同じになるように置く。変化の中身は `APIWATCH_EVENT_FILE` の JSON で受け取り、
+終わったら `ack` で完了を知らせる（`ack` には `--connections` も `--plugin` も要らない）。
+
+```yaml
+params:
+  - APIWATCH_EVENT_ID: ""
+  - APIWATCH_DELIVERY_ID: ""
+  - APIWATCH_RECORD_ID: ""
+  - APIWATCH_KINDS: ""
+  - APIWATCH_EVENT_FILE: ""
+  - ISSUE_TITLE: ""                     # ルールの targets[].params で渡したもの
+queue: api-watch-handlers               # 3 で作ったキュー
+steps:
+  - name: handle
+    action: exec
+    with:
+      command: python3
+      args: [/home/you/bin/handle_issue.py, "${params.APIWATCH_EVENT_FILE}"]
+    retry_policy:                       # 後続処理の失敗は Dagu で再試行する
+      limit: 3
+      interval_sec: 60
+handler_on:
+  success:
+    action: exec
+    with:
+      command: python3
+      args: [/home/you/.local/bin/api-watch, --config, /home/you/.config/api-watch/api-watch.yaml,
+             ack, "${DAG_RUN_ID}"]
+  failure:
+    action: exec
+    with:
+      command: python3
+      args: [/home/you/.local/bin/api-watch, --config, /home/you/.config/api-watch/api-watch.yaml,
+             ack, "${DAG_RUN_ID}", --failed]
+```
+
+`handle_issue.py` は渡された JSON を読むだけでよい（中身は「受け渡し先の DAG」を参照）:
+
+```python
+import json, sys
+event = json.load(open(sys.argv[1], encoding="utf-8"))
+print(event["record_id"], event["kinds"], [c["path"] for c in event["changes"]])
+```
+
+### 6. 動かす
+
+Dagu のスケジューラ（画面も使うなら `start-all`）を動かす。以後は 10 分ごとに取得し、変化があれば `issue-handler` が動く。
+
+```bash
+dagu start-all
+```
+
+```bash
+api-watch --config ~/.config/api-watch/api-watch.yaml status
+```
+
+Dagu の画面では、受け渡し先の DAG の実行 ID が api-watch の受け渡しの ID（`aw_…`）になっている。`api-watch ... show aw_…` で、その実行に
+渡した変化の中身を見られる。
+
+### REST API で渡すとき
+
+Dagu を別のユーザー・別のマシンで動かしているなど、`dagu` コマンドを直接呼べないときは REST API で渡す。後続処理の完了も
+再送の DAG（`reconcile`）が Dagu に問い合わせて記録するので、受け渡し先の DAG の `handler_on`（ack）は無くてよい。
+
+```yaml
+# api-watch.yaml
+delivery:
+  adapter: dagu
+  mode: api
+  connection: dagu
+```
+
+```yaml
+# connections.yaml に足す（Dagu の API トークン。ユーザー名とパスワードなら user と password）
+dagu:
+  - label: default
+    url: http://localhost:8080
+    token: dagu-api-token
+```
+
+### Windows のとき
+
+- api-watch は `python install.py install` で入れる（`%LOCALAPPDATA%\Programs\api-watch\` に `api-watch.pyz` と `api-watch.cmd`）。
+  `dags` は、その Python と `api-watch.pyz` のフルパスで DAG を書く
+- Dagu の設定と DAG の置き場所は `C:\Users\<名前>\.config\dagu\`（`config.yaml`・`dags\`）
+- `delivery.executable` は `dagu.exe` のフルパス（PATH にあれば `dagu`）
+- 受け渡し先の DAG の `command` は `python`、`args` の api-watch は `C:/Users/<名前>/AppData/Local/Programs/api-watch/api-watch.pyz` にする
+
 ## 設定
 
 ### 取得元（sources）
