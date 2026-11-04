@@ -16,7 +16,7 @@ from typing import Any, Callable
 from .util import PermanentError, REDACT, TransientError, log, now
 
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
-USER_AGENT = "dagu-api-watch"
+USER_AGENT = "api-watch"
 
 
 @dataclass

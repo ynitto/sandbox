@@ -1,4 +1,4 @@
-# dagu-api-watch
+# api-watch
 
 任意の Web API を [Dagu](https://github.com/dagu-org/dagu)（v2）の定期実行からポーリングし、レコードの追加・変更・
 条件の成立を検知して、設定した Dagu のワークフロー（DAG）へ渡す。外から受ける口は持たず、こちらから API を見に行く。
@@ -42,7 +42,7 @@ Dagu なしで動く: 起動は cron・タスク スケジューラなどから 
    ```
 
    ```bash
-   cp -r tools/dagu-api-watch ~/.local/share/dagu-api-watch
+   cp -r tools/api-watch ~/.local/share/api-watch
    ```
 
 2. 設定を書く。`api-watch.yaml.example` を `~/.config/api-watch/api-watch.yaml` にコピーして取得元とルールを書く。
@@ -52,7 +52,7 @@ Dagu なしで動く: 起動は cron・タスク スケジューラなどから 
    ```
 
    ```bash
-   cp tools/dagu-api-watch/api-watch.yaml.example ~/.config/api-watch/api-watch.yaml
+   cp tools/api-watch/api-watch.yaml.example ~/.config/api-watch/api-watch.yaml
    ```
 
 3. 認証情報を `connections.yaml` に書く（置き場所は自由。下の例は `~/.github/connections.yaml`）。
@@ -66,28 +66,33 @@ Dagu なしで動く: 起動は cron・タスク スケジューラなどから 
 
    値の `${VAR}` は connections.yaml の書式どおり展開するが、使わなくてよい。ファイルの権限は自分だけが読めるようにする。
 
-4. 確かめる。API には問い合わせず、設定と接続設定が読めるかだけを見る。以下の例では毎回
-   `--config` と `--connections` を付ける（`--config` は省略すると `~/.config/api-watch/api-watch.yaml`）。
+4. 確かめる。API には問い合わせず、設定と接続設定が読めるかだけを見る。場所はすべてコマンド行で渡し、環境変数は見ない:
+
+   | 引数 | 意味 |
+   |---|---|
+   | `--config <パス>` | 設定ファイル（省略すると `~/.config/api-watch/api-watch.yaml`） |
+   | `--connections <パス>` | 接続設定（connections.yaml）。接続設定を使う取得元・受け渡し先があれば必須 |
+   | `--state-dir <パス>` | 状態の置き場所。設定の `state_dir` より優先する |
 
    ```bash
-   python3 ~/.local/share/dagu-api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml check
+   python3 ~/.local/share/api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml check
    ```
 
 5. 一度手で回す。初回は今あるレコードを基準値として覚えるだけで、受け渡し先は起こさない（ルールの `initial: emit` なら起こす）。
 
    ```bash
-   python3 ~/.local/share/dagu-api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
+   python3 ~/.local/share/api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
    ```
 
    ```bash
-   python3 ~/.local/share/dagu-api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml status
+   python3 ~/.local/share/api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml status
    ```
 
 6. Dagu の DAG を書き出す（`apiwatch_dagu/` があるときのコマンド）。取得元ごとの DAG・再送の DAG・整理の DAG ができる。
    DAG には今の Python・`api_watch.py`・設定ファイル・**`--connections` で渡したパス**の絶対パスが入る。
 
    ```bash
-   python3 ~/.local/share/dagu-api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
+   python3 ~/.local/share/api-watch/api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
    ```
 
    `dags` の追加の引数: `--dotenv <ファイル>`（DAG に読み込ませる環境変数のファイル。繰り返し可）・`--dispatch-schedule`（再送の DAG、既定は毎分）・
@@ -237,7 +242,7 @@ Dagu を使わないときは、6・7 の代わりに cron などから `run`（
 | `events_days` | 30 | イベントを残す日数。**受け渡しがすべて完了（または飛ばした）したものだけ消す** |
 | `auto_gc` | true | 取得のたびに整理する（整理の DAG と同じこと） |
 
-状態の置き場所は `state_dir`（既定 `~/.local/share/dagu-api-watch`。環境変数 `APIWATCH_STATE_DIR` で上書き）。
+状態の置き場所は `state_dir`（既定 `~/.local/state/api-watch`。コマンド行の `--state-dir` で上書き）。
 
 ### 接続設定
 
@@ -335,11 +340,11 @@ Dagu を使わないときは、6・7 の代わりに cron などから `run`（
 実 API・Dagu 本体なしで、偽の API（手元の HTTP サーバ）と偽の dagu で確かめる。
 
 ```bash
-python3 -m unittest discover -s tools/dagu-api-watch/test
+python3 -m unittest discover -s tools/api-watch/test
 ```
 
 取得の集約・各ページング・増分取得・条件付き要求・一時的な失敗の再試行・途中からの再開・強制終了からの引き継ぎ・
 変更検知の意味（キー順・配列の順序・欠落と null・A→B→A・一致の遷移・初回の扱い・ルールの変更）・保存済みの結果での判定のやり直し・
 受け渡しの再送・同じ ID・順序・失敗の隔離・REST API での受け渡しと完了の確認・保持期間・認証情報の伏せ字、
 接続設定を `--connections` からだけ読むこと、本体が Dagu 連携なしで動くこと（`apiwatch_dagu/` を置かない配布・`adapter: command`）を見る。
-設計は `docs/designs/dagu-api-watch-design.md`。
+設計は `docs/designs/api-watch-design.md`。

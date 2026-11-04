@@ -230,9 +230,8 @@ class Env:
         test.addCleanup(self.api.close)
         self.dagu_log = self.tmp / "dagu" / "runs.jsonl"
         self.dagu_log.parent.mkdir()
-        self._old_env = {k: os.environ.get(k) for k in ("FAKE_DAGU_LOG", "APIWATCH_STATE_DIR")}
+        self._old_env = {k: os.environ.get(k) for k in ("FAKE_DAGU_LOG",)}
         os.environ["FAKE_DAGU_LOG"] = str(self.dagu_log)
-        os.environ.pop("APIWATCH_STATE_DIR", None)
         test.addCleanup(self._restore_env)
         self.conn_file = self.tmp / "connections.json"
         self.conn_file.write_text(json.dumps({"fakeapi": [{"label": "default", "url": self.api.url,

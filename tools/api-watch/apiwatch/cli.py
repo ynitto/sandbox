@@ -309,8 +309,9 @@ def cmd_forget_rule(cfg, store, a) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="api_watch.py", description="Dagu から動かす API ポーリング・変更検知")
-    p.add_argument("--config", help=f"設定ファイル（既定: 環境変数 APIWATCH_CONFIG か {configmod.DEFAULT_CONFIG}）")
+    p.add_argument("--config", help=f"設定ファイル（既定: {configmod.DEFAULT_CONFIG}）")
     p.add_argument("--connections", help="接続設定（connections.yaml）のパス。認証情報はここからだけ読む")
+    p.add_argument("--state-dir", help="状態の置き場所（設定の state_dir より優先）")
     p.add_argument("--version", action="version", version=VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -390,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)
     try:
-        cfg = configmod.load(a.config, a.connections)
+        cfg = configmod.load(a.config, a.connections, a.state_dir)
         store = Store(cfg.state_dir)
     except ConfigError as e:
         warn(str(e))

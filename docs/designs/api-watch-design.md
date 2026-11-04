@@ -1,7 +1,7 @@
-# dagu-api-watch 設計
+# api-watch 設計
 
 任意の Web API をローカルからポーリングし、レコードの変化・条件の成立を検知して Dagu の DAG へ渡す汎用の仕組み。
-実装は `tools/dagu-api-watch/`、使い方は同フォルダの README。
+実装は `tools/api-watch/`、使い方は同フォルダの README。
 
 ## 1. 位置づけ
 
@@ -212,6 +212,8 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 - 接続設定: connections.yaml のパスはコマンド行の `--connections` だけで受け取り、環境変数（`SKILL_CONNECTIONS_FILE` など）や
   決まった場所（`.github/connections.yaml` など）からは探さない。どのファイルの認証情報を使うかを、実行のたびに呼び出し側が決める。
   `dags` は渡されたパスを生成する DAG の argv に入れる。ファイルの中の `${VAR}` は connections.yaml の書式として展開する
+- 場所はすべてコマンド行で渡す: `--config`（設定）・`--connections`（接続設定）・`--state-dir`（状態。設定の `state_dir` より優先）。
+  環境変数では上書きしない（呼び出し側の環境に左右されず、生成した DAG の argv を見れば何を使うか分かる）
 
 - `status`: 取得元ごとの最後の取得（ページ数・件数・要求回数・304 のページ数）・エラー・途中の取得・待たされている時刻、
   ルールごとの判定位置と未判定の回数・判定のエラー・受け渡しの内訳、失敗している受け渡しの一覧
@@ -231,7 +233,7 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 
 ## 8. 検証
 
-`tools/dagu-api-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。43 件。
+`tools/api-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。43 件。
 
 - `test_detect.py`: パス・条件式・テンプレート、正規化（キー順・配列の順序・`unordered`・`ignore`・欠落と null）、
   種類（A→B→A・`entered` / `exited` / `matching`・`filter` と `removed`・増分では消えたとしない）、複合 ID、イベント ID の安定性、設定の検査

@@ -582,6 +582,21 @@ rules:
         env.ok(self, "run")
         self.assertEqual(len(env.enqueued()), 1)
 
+    def test_state_dir_from_argument_only(self):
+        env = Env(self)
+        env.api.put(1)
+        env.write_config({"items": env.source("/all")}, {})
+        other = env.tmp / "other-state"
+        os.environ["APIWATCH_STATE_DIR"] = str(env.tmp / "from-env")     # 環境変数は見ない
+        self.addCleanup(os.environ.pop, "APIWATCH_STATE_DIR", None)
+        env.ok(self, "--state-dir", str(other), "fetch")
+        self.assertTrue((other / "state.db").is_file())
+        self.assertFalse((env.tmp / "from-env").exists())
+        self.assertFalse((env.tmp / "state").exists())
+        env.ok(self, "--state-dir", str(other), "dags", "--out", str(env.tmp / "dags"))
+        text = (env.tmp / "dags" / "api-watch-items.yaml").read_text(encoding="utf-8")
+        self.assertIn(json.dumps(str(other.resolve())), text)
+
     def test_core_runs_without_dagu(self):
         env = Env(self)
         env.api.put(1, status="a")

@@ -2,7 +2,7 @@
 # api-watch-handler.example。使うときはルールの targets の workflow と同じ名前で保存する）。
 # 設定は delivery.adapter: dagu（apiwatch_dagu が要る）。
 #
-# dagu-api-watch は `dagu enqueue --run-id=<受け渡しの ID>` でこの DAG をキューに入れ、次の引数を渡す:
+# api-watch は `dagu enqueue --run-id=<受け渡しの ID>` でこの DAG をキューに入れ、次の引数を渡す:
 #   APIWATCH_EVENT_ID     イベント ID（同じイベントを複数の DAG に渡しても同じ）
 #   APIWATCH_DELIVERY_ID  受け渡しの ID（= この実行の DAG_RUN_ID。渡し直しても変わらない）
 #   APIWATCH_SOURCE / APIWATCH_RULE / APIWATCH_RECORD_ID / APIWATCH_KINDS
@@ -19,7 +19,7 @@ params:
   - APIWATCH_RECORD_ID: ""
   - APIWATCH_KINDS: ""
   - APIWATCH_EVENT_FILE: ""
-# 並列数は Dagu の設定（config.yaml の queues）で決める。同じレコードの変更は dagu-api-watch が
+# 並列数は Dagu の設定（config.yaml の queues）で決める。同じレコードの変更は api-watch が
 # 順番に渡す（order: completion なら前の実行が終わってから）ので、ここでは気にしなくてよい。
 queue: api-watch-handlers
 hist_retention_days: 30
@@ -42,10 +42,10 @@ handler_on:
     action: exec
     with:
       command: python3
-      args: [/path/to/dagu-api-watch/api_watch.py, --config, /path/to/api-watch.yaml, ack, "${DAG_RUN_ID}"]
+      args: [/path/to/api-watch/api_watch.py, --config, /path/to/api-watch.yaml, ack, "${DAG_RUN_ID}"]
   failure:
     action: exec
     with:
       command: python3
-      args: [/path/to/dagu-api-watch/api_watch.py, --config, /path/to/api-watch.yaml, ack, "${DAG_RUN_ID}",
+      args: [/path/to/api-watch/api_watch.py, --config, /path/to/api-watch.yaml, ack, "${DAG_RUN_ID}",
              --failed]

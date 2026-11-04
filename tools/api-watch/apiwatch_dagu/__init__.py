@@ -1,4 +1,4 @@
-"""dagu-api-watch の Dagu 連携。本体（apiwatch）からは独立していて、本体はこれを import しない。
+"""api-watch の Dagu 連携。本体（apiwatch）からは独立していて、本体はこれを import しない。
 
     adapter  受け渡しのアダプタ（delivery.adapter: dagu）。dagu enqueue / REST API で DAG のキューへ入れる
     dags     Dagu の DAG を書き出す `dags` コマンド（取得元ごとの取得・再送・整理）

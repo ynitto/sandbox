@@ -1,9 +1,9 @@
-# dagu-api-watch の設定の例。~/.config/api-watch/api-watch.yaml などにコピーして使う。
+# api-watch の設定の例。~/.config/api-watch/api-watch.yaml などにコピーして使う。
 # 認証情報はここに書かず、connections.yaml（スキル共通の接続設定）に書き、そのパスを実行時に渡す:
 #   python3 api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
 
 version: 1
-state_dir: ~/.local/share/dagu-api-watch     # 状態（SQLite）とイベントのファイルの置き場所
+state_dir: ~/.local/state/api-watch     # 状態（SQLite）とイベントのファイルの置き場所
 
 retention:
   fetches_keep: 3        # 取得結果を最低何回分残すか（判定のやり直し用）

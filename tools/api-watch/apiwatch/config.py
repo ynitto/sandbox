@@ -19,6 +19,7 @@ EVENT_KINDS = ("appeared", "changed", "entered", "exited", "matching", "removed"
 PAGINATION_TYPES = ("none", "page", "offset", "cursor", "next_url", "link_header")
 ORDER_MODES = ("completion", "enqueue", "none")
 DEFAULT_CONFIG = "~/.config/api-watch/api-watch.yaml"
+DEFAULT_STATE_DIR = "~/.local/state/api-watch"
 
 
 def _expect(cond: bool, msg: str) -> None:
@@ -406,9 +407,15 @@ def _delivery(d: Any) -> DeliverySpec | None:
     return DeliverySpec(adapter=d["adapter"], spec=mod.parse(options, "delivery"), module=mod)
 
 
-def load(path: str | Path | None = None, connections: str | Path | None = None) -> Config:
-    """設定を読む。connections は connections.yaml のパス（コマンド行の --connections）。"""
-    p = Path(os.path.expanduser(str(path or os.environ.get("APIWATCH_CONFIG") or DEFAULT_CONFIG))).resolve()
+def load(path: str | Path | None = None, connections: str | Path | None = None,
+         state_dir: str | Path | None = None) -> Config:
+    """設定を読む。どれもコマンド行の引数から渡す（環境変数は見ない）。
+
+    path         設定ファイル（--config。省略時は DEFAULT_CONFIG）
+    connections  connections.yaml のパス（--connections）
+    state_dir    状態の置き場所（--state-dir。省略時は設定の state_dir）
+    """
+    p = Path(os.path.expanduser(str(path or DEFAULT_CONFIG))).resolve()
     if not p.is_file():
         raise ConfigError(f"設定ファイルが見つかりません: {p}")
     d = load_yaml_or_json(p)
@@ -424,10 +431,12 @@ def load(path: str | Path | None = None, connections: str | Path | None = None) 
     delivery = _delivery(d.get("delivery"))
     if delivery is None and any(r.targets for r in rules.values()):
         raise ConfigError("受け渡し先（targets）のあるルールがあります。delivery.adapter を書いてください")
-    state_dir = os.environ.get("APIWATCH_STATE_DIR") or d.get("state_dir") or "~/.local/share/dagu-api-watch"
-    sdir = Path(os.path.expanduser(str(state_dir)))
-    if not sdir.is_absolute():
-        sdir = p.parent / sdir
+    if state_dir is not None:
+        sdir = Path(os.path.expanduser(str(state_dir))).absolute()      # 引数の相対パスは作業フォルダから
+    else:
+        sdir = Path(os.path.expanduser(str(d.get("state_dir") or DEFAULT_STATE_DIR)))
+        if not sdir.is_absolute():
+            sdir = p.parent / sdir                                       # 設定の相対パスは設定ファイルから
     rt = d.get("retention") or {}
     _expect(isinstance(rt, dict), "retention: 辞書で書いてください")
     _known(rt, {"fetches_keep", "fetch_days", "events_days", "auto_gc"}, "retention")

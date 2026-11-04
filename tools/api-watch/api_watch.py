@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dagu-api-watch の入口。`python api_watch.py --help` を参照。
+"""api-watch の入口。`python api_watch.py --help` を参照。
 
 Python 3.10 以降。YAML の設定を使うなら PyYAML が要る（JSON なら標準ライブラリだけで動く）。
 """

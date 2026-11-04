@@ -38,7 +38,7 @@ def _step(name: str, argv: list[str], *, depends: str | None, timeout: int, retr
 
 
 def _header(cfg: Config, desc: str, schedule: str, opts) -> list[str]:
-    lines = [f"# dagu-api-watch {VERSION} が生成（api_watch.py dags）。手で直さず、設定を変えて作り直してください。",
+    lines = [f"# api-watch {VERSION} が生成（api_watch.py dags）。手で直さず、設定を変えて作り直してください。",
              f"# 設定: {cfg.path}",
              f"description: {_q(desc)}",
              f"schedule: {_q(schedule)}",
@@ -56,6 +56,8 @@ def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> lis
     base = [python, str(script), "--config", str(cfg.path)]
     if cfg.connections.path is not None:
         base += ["--connections", str(cfg.connections.path)]
+    if getattr(opts, "state_dir", None):
+        base += ["--state-dir", str(cfg.state_dir)]
     prefix = opts.prefix
     written = []
 
