@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { trimUtf8 } = require('./text');
 
 const fsp = fs.promises;
 
@@ -168,8 +169,9 @@ async function readFile(repo, rel) {
     if (bytesRead < len) buf = buf.subarray(0, bytesRead);
   } finally { await fd.close(); }
   if (looksBinary(buf)) return { ...base, kind: 'binary', reason: 'バイナリ' };
-  const text = buf.toString('utf8');
-  return { ...base, kind: 'text', text, truncated: st.size > MAX_TEXT, lines: text.split('\n').length };
+  const truncated = st.size > MAX_TEXT;
+  const text = trimUtf8(buf, { cutEnd: truncated }).toString('utf8');
+  return { ...base, kind: 'text', text, truncated, lines: text.split('\n').length };
 }
 
 // ---- 名前検索 -------------------------------------------------------------------

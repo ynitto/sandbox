@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-app: ファイルのプレビューと実行ログの末尾で、バイト数の切り口の文字化けを直す（agent-app 0.49.2）
+
+- 大きなテキストのプレビュー末尾と、実行ログの末尾表示の先頭に、割れた日本語・絵文字が `�` として出ていたのを、切り口の断片を落として直す。
+
 ### dagu-workflow-builder: 入っているスキルのスクリプトをつないで Dagu の DAG を作る（0.1.0）
 
 - 新しいスキル。`scripts/chain.py`（標準ライブラリだけ）の `scan` / `check` / `plan` / `build` で、各エージェントのスキル置き場を見て
