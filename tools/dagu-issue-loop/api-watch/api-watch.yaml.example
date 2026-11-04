@@ -3,11 +3,14 @@
 # 1 つの Dagu のワークフロー（api-watch-issue-agent）の中で、取得 → 変化の判定 → エージェント CLI の実行まで行う。
 # エージェント CLI は api-watch の work が issue_loop.py handle を 1 件ずつ呼んで動かす（受け渡し先の DAG やキューは使わない）。
 #
-# Dagu のワークフローは手で書かず、api-watch の dags で書き出す。schedule はこのファイルにだけ書き、変えたら書き出し直す
-# （書き出し直していなければ、実行のたびに api-watch が知らせる）:
+# Dagu のワークフローは毎分起動し、GitLab にいつ問い合わせるかは、下の取得元の schedule を見て api-watch が決める。
+# ワークフローの雛形は api-watch の dags で作れる（作ったあとは自由に直してよい。dags は既にあるファイルを上書きしない）:
 #
 #   api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml \
 #     dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/issue-loop.env
+#
+# 問い合わせの予定も Dagu に任せたいなら、取得元の schedule を消し、dags --schedule "0 * * * *" のように Dagu の起動間隔で決める
+# （そのときは min_interval_sec を書いておくと、手で叩いたときや別のワークフローとの重複を防げる）。
 #
 # GitLab の URL・プロジェクト・トークンは ~/.config/dagu/issue-loop.env にだけ書く。
 # connections.yaml の gitlab は次のように書き、値はその環境変数から取る:
@@ -30,14 +33,14 @@ sources:
       query: { state: opened, scope: all, order_by: updated_at, sort: asc }
     key: iid
     pagination: { type: page, size_param: per_page, size: 100 }
-    schedule: "0 * * * *"      # ワークフローの起動間隔（ルールに schedule があればそちら）。dags が DAG に書き写す
-    jitter_sec: 900            # 起動してから 0〜15 分ずらして問い合わせる（PC・ワークフローが重なっても同じ時刻に集中しない）
-    # この取得元を複数のワークフロー（ルール）が使っても、API への問い合わせは 1 回にまとめる
-    # （2 本以上が取得するなら min_interval_sec と busy_wait_sec は必須。jitter_sec は min_interval_sec より短く）:
-    min_interval_sec: 1800     # 30 分以内に取得し終えていれば取得せず、その結果を使う
+    # GitLab に問い合わせる予定（この PC の時刻）。ワークフローが毎分起動しても、予定の時刻のあとに一度取得し終えたら、
+    # 次の予定の時刻までは取得しない。この取得元を使うワークフローがいくつあっても、予定の時刻ごとに 1 回にまとまる
+    schedule: "0 * * * *"
+    jitter_sec: 900            # 予定の時刻から 0〜15 分ずらして問い合わせる（PC・ワークフローが重なっても同じ時刻に集中しない）
     busy_wait_sec: 600         # 別のワークフローが取得中なら、終わるのを待ってその結果を使う
     failure_backoff_sec: 300   # 取得が失敗したら、どのワークフローも 5 分（連続するほど倍、最大 1 時間）問い合わせない
-    rate_limit: { min_interval_sec: 1 }
+    # 同じ GitLab を見るほかの取得元（MR など）と group をそろえると、要求の間隔・失敗の待ちを共有し、同時には取得しない
+    rate_limit: { min_interval_sec: 1, group: gitlab }
 
 rules:
   issue-agent:
@@ -54,17 +57,16 @@ rules:
         command: ["{{ env.ISSUE_LOOP_PYTHON }}", "{{ env.ISSUE_LOOP_HOME }}/issue_loop.py", "handle"]
         timeout_sec: 4200      # ISSUE_LOOP_AGENT_TIMEOUT（既定 3600 秒）より長く
         max_attempts: 3        # ISSUE_LOOP_MAX_ATTEMPTS の代わり。尽きたら次の変化で拾い直す
-        retry_backoff_sec: 300 # ISSUE_LOOP_RETRY_BACKOFF の代わり（次の起動のうち、この秒数を過ぎたもので再試行）
+        retry_backoff_sec: 300 # ISSUE_LOOP_RETRY_BACKOFF の代わり（毎分の起動のうち、この秒数を過ぎたもので再試行）
         order: none            # 打ち切った変化があっても、同じ issue の新しい変化は流す
 
   # 同じ取得元を別のワークフローでも使う例。dags が api-watch-issue-notify を書き足す。
-  # 取得は上の min_interval_sec / busy_wait_sec で 1 回にまとまる。
+  # 取得は上の schedule で 1 回にまとまる。
   # issue-notify:
   #   source: gitlab-issues
   #   id: iid
   #   watch: [state]
   #   on: [changed]
-  #   schedule: "30 * * * *"
   #   targets:
   #     - name: notify
   #       command: ["{{ env.ISSUE_LOOP_PYTHON }}", "/home/you/bin/notify.py"]

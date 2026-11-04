@@ -60,6 +60,19 @@ class Base(unittest.TestCase):
             return []
         return [json.loads(x) for x in self.log.read_text(encoding="utf-8").splitlines()]
 
+    def _fetcher(self, sleeps: list):
+        # cli.main を通さないので、標準出力を UTF-8 にする設定が効かない（Windows の cp1252 で日本語のログが書けない）。
+        # 本体のログは文字列に受ける
+        out = io.StringIO()
+        stack = contextlib.ExitStack()
+        stack.enter_context(contextlib.redirect_stdout(out))
+        stack.enter_context(contextlib.redirect_stderr(out))
+        self.addCleanup(stack.close)
+        cfg = configmod.load(self.env.config_path, self.env.conn_file)
+        store = Store(cfg.state_dir)
+        self.addCleanup(store.close)
+        return cfg, store, Fetcher(cfg, store, sleep=lambda s: (sleeps.append(s), time.sleep(min(s, 0.05))))
+
     def rule(self, *targets, **kw) -> dict:
         r = {"source": "items", "id": "id", "watch": ["status"], "targets": list(targets)}
         r.update(kw)
@@ -236,19 +249,6 @@ class SharedFetchTest(Base):
         self.assertEqual(len(sleeps), 1)
         self.assertGreater(sleeps[0], 30)                          # 前の 2 回を数えて 1 分の残りを待つ
 
-    def _fetcher(self, sleeps: list):
-        # cli.main を通さないので、標準出力を UTF-8 にする設定が効かない（Windows の cp1252 で日本語のログが書けない）。
-        # 本体のログは文字列に受ける
-        out = io.StringIO()
-        stack = contextlib.ExitStack()
-        stack.enter_context(contextlib.redirect_stdout(out))
-        stack.enter_context(contextlib.redirect_stderr(out))
-        self.addCleanup(stack.close)
-        cfg = configmod.load(self.env.config_path, self.env.conn_file)
-        store = Store(cfg.state_dir)
-        self.addCleanup(store.close)
-        return cfg, store, Fetcher(cfg, store, sleep=lambda s: (sleeps.append(s), time.sleep(min(s, 0.05))))
-
     def test_jitter(self):
         self.write({"a": self.rule()}, jitter_sec=100, min_interval_sec=600)
         sleeps: list = []
@@ -299,44 +299,165 @@ class SharedFetchTest(Base):
         self.assertEqual(f.run(cfg.sources["items"]).status, "busy")
 
 
+class CronTest(unittest.TestCase):
+    def test_previous_and_next(self):
+        from datetime import datetime
+        from apiwatch import cron
+        t = datetime(2026, 11, 4, 10, 37, 20)                      # 水曜
+        c = cron.parse("0 * * * *")
+        self.assertEqual(c.previous(t), datetime(2026, 11, 4, 10, 0))
+        self.assertEqual(c.next(t), datetime(2026, 11, 4, 11, 0))
+        c = cron.parse("*/10 9-18 * * MON-FRI")
+        self.assertEqual(c.previous(t), datetime(2026, 11, 4, 10, 30))
+        self.assertEqual(c.previous(datetime(2026, 11, 8, 12, 0)), datetime(2026, 11, 6, 18, 50))   # 日曜 → 金曜
+        self.assertEqual(c.next(datetime(2026, 11, 6, 18, 55)), datetime(2026, 11, 9, 9, 0))
+        c = cron.parse("30 9 1 * 0")                               # 1 日か日曜（どちらかに当たれば当たり）
+        self.assertEqual(c.previous(t), datetime(2026, 11, 1, 9, 30))
+        self.assertEqual(c.next(t), datetime(2026, 11, 8, 9, 30))
+        self.assertEqual(cron.parse("@daily").previous(t), datetime(2026, 11, 4, 0, 0))
+        self.assertEqual(cron.parse("0 0 * * 7").previous(t), datetime(2026, 11, 1, 0, 0))  # 7 も日曜
+        self.assertEqual(cron.parse("0 0 1 JAN *").previous(t), datetime(2026, 1, 1, 0, 0))
+
+    def test_invalid(self):
+        from apiwatch import cron
+        for bad in ("* * * *", "60 * * * *", "*/0 * * * *", "a * * * *", "0 0 30 2 *"):
+            with self.assertRaises(ConfigError, msg=bad):
+                cron.parse(bad)
+
+
+class ScheduleTest(Base):
+    def _set_success(self, ts: float):
+        s = self.env.store()
+        try:
+            with s.tx() as db:
+                db.execute("UPDATE sources SET last_success_at=? WHERE name='items'", (ts,))
+        finally:
+            s.close()
+
+    def test_fetch_only_when_schedule_is_due(self):
+        from datetime import datetime
+        from apiwatch import cron
+        self.write({"a": self.rule(self.target("ja")), "b": self.rule(self.target("jb"))}, schedule="0 * * * *")
+        configmod.load(self.env.config_path, self.env.conn_file)    # schedule があれば共有の設定は要らない
+        self.env.api.put(1, status="a")
+        self.env.ok(self, "run", "--rule", "a")
+        self.assertEqual(self.env.api.count(), 1)
+        prev = cron.parse("0 * * * *").previous(datetime.now()).timestamp()
+        self._set_success(prev + 1)                                # 毎時 0 分をまたいでも結果が変わらないよう、取得した時刻を固定する
+        out = self.env.ok(self, "run", "--rule", "b")              # 同じ予定の時刻のうちは、別のワークフローも取得しない
+        self.assertIn("取得済み", out)
+        self.assertEqual(self.env.api.count(), 1)
+        prev = cron.parse("0 * * * *").previous(datetime.now()).timestamp()
+        self._set_success(prev - 1)                                # 前の予定の時刻より前に取得したきり → 取得する番
+        self.env.ok(self, "run", "--rule", "b")
+        self.assertEqual(self.env.api.count(), 2)
+        self.env.ok(self, "run", "--rule", "a", "--force")         # --force は予定を見ない
+        self.assertEqual(self.env.api.count(), 3)
+
+    def test_without_schedule_fetches_every_time(self):
+        self.write({"a": self.rule(self.target("ja"))})
+        self.env.api.put(1, status="a")
+        self.env.ok(self, "run")
+        self.env.ok(self, "run")
+        self.assertEqual(self.env.api.count(), 2)                  # 起動の間隔は Dagu の schedule に任せる
+
+
+class RateGroupTest(Base):
+    def write_two(self, **rl):
+        rl = {"group": "api", **rl}
+        cfg = {"version": 1, "state_dir": str(self.env.tmp / "state"),
+               "sources": {"items": self.env.source("/all", rate_limit=rl),
+                           "pages": self.env.source("/all", rate_limit=dict(rl), query={"x": "1"})},
+               "rules": {"a": self.rule(), "b": {**self.rule(), "source": "pages"}}}
+        self.env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    def test_per_minute_is_shared_by_the_group(self):
+        self.write_two(per_minute=2)
+        self.env.api.put(1, status="a")
+        sleeps: list = []
+        cfg, _, f = self._fetcher(sleeps)
+        self.assertEqual(f.run(cfg.sources["items"]).status, "complete")
+        self.assertEqual(f.run(cfg.sources["pages"]).status, "complete")
+        self.assertEqual(sleeps, [])
+        self.assertEqual(f.run(cfg.sources["items"]).status, "complete")   # group で 3 回目 → 1 分の残りを待つ
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreater(sleeps[0], 30)
+
+    def test_failure_cools_down_the_whole_group(self):
+        self.write_two()
+        cfg = json.loads(self.env.config_path.read_text(encoding="utf-8"))
+        for src in cfg["sources"].values():
+            src["failure_backoff_sec"] = 300
+        self.env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.env.api.fail("/all", 503, count=100)
+        code, _ = self.env.run("fetch", "--source", "items")
+        self.assertEqual(code, 3)
+        n = self.env.api.count()
+        out = self.env.ok(self, "fetch", "--source", "pages")      # 同じ API のほかの取得元も問い合わせない
+        self.assertIn("同じ group", out)
+        self.assertEqual(self.env.api.count(), n)
+
+    def test_fetches_in_a_group_do_not_overlap(self):
+        self.write_two()
+        cfg, _, f = self._fetcher([])
+        other = Store(cfg.state_dir)
+        self.addCleanup(other.close)
+        self.assertTrue(other.acquire("fetch-group:api", 300))     # 同じ group の別の取得元が取得中
+        self.assertEqual(f.run(cfg.sources["pages"]).status, "busy")
+
+    def test_group_limits_must_match(self):
+        self.write_two(per_minute=2)
+        cfg = json.loads(self.env.config_path.read_text(encoding="utf-8"))
+        cfg["sources"]["pages"]["rate_limit"]["per_minute"] = 5
+        self.env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
+        with self.assertRaises(ConfigError) as cm:
+            configmod.load(self.env.config_path, self.env.conn_file)
+        self.assertIn("同じ値", str(cm.exception))
+
+
 class DagsTest(Base):
-    def test_rule_workflow_dag(self):
+    def _yaml(self):
         try:
             import yaml
         except ImportError:
             self.skipTest("PyYAML が無い")
+        return yaml
+
+    def test_rule_workflow_dag(self):
+        yaml = self._yaml()
         self.env.plugins = ["dagu"]
-        self.write({"a": self.rule(self.target("ja"), schedule="5 * * * *"), "b": self.rule(self.target("jb"))},
-                   schedule="0 * * * *", jitter_sec=900, busy_wait_sec=600, min_interval_sec=1800)
+        self.write({"a": self.rule(self.target("ja")), "b": self.rule(self.target("jb"))},
+                   schedule="0 * * * *", jitter_sec=900, busy_wait_sec=600)
         out = self.env.tmp / "dags"
         self.env.ok(self, "dags", "--out", str(out))
         names = sorted(p.name for p in out.iterdir())
         # どのルールも自分のワークフローで取得するので、取得元の DAG と再送の DAG は作らない
         self.assertEqual(names, ["api-watch-a.yaml", "api-watch-b.yaml", "api-watch-maintenance.yaml"])
         d = yaml.safe_load((out / "api-watch-a.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(d["schedule"], "5 * * * *")
+        self.assertEqual(d["schedule"], "* * * * *")       # 設定の schedule は書き写さない。毎分起動し、取得の予定は api-watch が見る
         self.assertEqual([s["name"] for s in d["steps"]], ["fetch", "evaluate", "work"])
         self.assertEqual(d["steps"][0]["with"]["args"][-3:], ["fetch", "--source", "items"])
         self.assertGreaterEqual(d["steps"][0]["timeout_sec"], 900 + 600)
         self.assertEqual(d["steps"][2]["with"]["args"][-3:], ["work", "--rule", "a"])
         self.assertNotIn("timeout_sec", d["steps"][2])
-        b = yaml.safe_load((out / "api-watch-b.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(b["schedule"], "0 * * * *")                 # ルールに無ければ取得元の schedule
 
-    def test_warns_when_config_changed_after_dags(self):
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML が無い")
+    def test_dagu_schedule_and_no_overwrite(self):
+        yaml = self._yaml()
         self.env.plugins = ["dagu"]
-        self.write({"a": self.rule(self.target("ja"))}, schedule="0 * * * *")
+        self.write({"a": self.rule(self.target("ja"))})              # 予定も間隔も無い
         out = self.env.tmp / "dags"
-        self.env.ok(self, "dags", "--out", str(out))
-        args = yaml.safe_load((out / "api-watch-a.yaml").read_text(encoding="utf-8"))["steps"][0]["with"]["args"]
-        fp = args[args.index("--dags-fingerprint") + 1]
-        self.assertNotIn("書き出し直して", self.env.ok(self, "--dags-fingerprint", fp, "status"))
-        self.write({"a": self.rule(self.target("ja"))}, schedule="*/5 * * * *")
-        self.assertIn("書き出し直して", self.env.ok(self, "--dags-fingerprint", fp, "status"))
+        code, msg = self.env.run("dags", "--out", str(out))
+        self.assertNotEqual(code, 0)
+        self.assertIn("毎分問い合わせます", msg)                   # 毎分起動なら毎分問い合わせてしまう
+        self.env.ok(self, "dags", "--out", str(out), "--schedule", "30 9 * * 1-5")   # Dagu の予定で動かす
+        path = out / "api-watch-a.yaml"
+        self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["schedule"], "30 9 * * 1-5")
+        path.write_text(path.read_text(encoding="utf-8").replace("30 9 * * 1-5", "45 9 * * 1-5"), encoding="utf-8")
+        msg = self.env.ok(self, "dags", "--out", str(out), "--schedule", "0 * * * *")
+        self.assertIn("既にある", msg)                               # 手で直した DAG は上書きしない
+        self.assertIn("45 9 * * 1-5", path.read_text(encoding="utf-8"))
+        self.env.ok(self, "dags", "--out", str(out), "--schedule", "0 * * * *", "--force")
+        self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["schedule"], "0 * * * *")
 
     def test_rule_name_must_not_clash(self):
         self.env.plugins = ["dagu"]

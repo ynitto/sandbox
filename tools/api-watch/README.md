@@ -2,10 +2,12 @@
 
 任意の Web API を [Dagu](https://github.com/dagu-org/dagu)（v2）の定期実行からポーリングし、レコードの追加・変更・
 条件の成立を検知して、設定した Dagu のワークフロー（DAG）へ渡す。外から受ける口は持たず、こちらから API を見に行く。
-スケジュール・キュー・並列数・再試行・ログ・実行履歴は Dagu に任せ、このツールは常駐しない。
+起動・キュー・並列数・再試行・ログ・実行履歴は Dagu に任せ、このツールは常駐しない。
+API にいつ問い合わせるかは、起動されたときに api-watch が取得元ごとに決める（取得元の `schedule`・`min_interval_sec` など。
+書かなければ起動されるたびに取得する＝Dagu の起動間隔どおり）。
 
 ```
- Dagu: api-watch-<取得元>（取得元ごとの schedule）
+ Dagu: api-watch-<取得元>（毎分。取得するかは取得元の schedule を見て api-watch が決める）
    fetch     API を全ページ取得して保存        ← 1 つの取得元への問い合わせは、ルールがいくつあっても 1 回
    evaluate  保存した取得結果をルールごとに判定  ← API には問い合わせない
    dispatch  検知した変更を DAG のキューへ入れる  ← 実行 ID = 受け渡しの ID（渡し直しても 1 回だけ実行される）
@@ -101,14 +103,16 @@ Dagu を使わないときは、起動を cron・タスク スケジューラな
    api-watch --config ~/.config/api-watch/api-watch.yaml status
    ```
 
-6. Dagu の DAG を書き出す（`--plugin dagu` のときだけあるコマンド）。取得元ごとの DAG・再送の DAG・整理の DAG ができる。
+6. Dagu の DAG の雛形を書き出す（`--plugin dagu` のときだけあるコマンド）。取得元ごとの DAG・再送の DAG・整理の DAG ができる。
    DAG には、今の Python・この `api-watch`（`.pyz`）・設定ファイル・`--connections` で渡したパスの絶対パスと `--plugin dagu` が入る。
+   作ったあとは自由に直してよい（既にあるファイルは上書きしない。上書きするなら `--force`）。
 
    ```bash
    api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
    ```
 
-   `dags` の追加の引数: `--dotenv <ファイル>`（DAG に読み込ませる環境変数のファイル。繰り返し可）・`--dispatch-schedule`（再送の DAG、既定は毎分）・
+   `dags` の追加の引数: `--schedule`（取得する DAG を Dagu が起動する間隔。既定は毎分で、取得するかは api-watch が決める。下の「いつ取得するか」）・
+   `--force`（既にある DAG を上書きする）・`--dotenv <ファイル>`（DAG に読み込ませる環境変数のファイル。繰り返し可）・`--dispatch-schedule`（再送の DAG、既定は毎分）・
    `--maintenance-schedule`（整理の DAG、既定は毎日 3:17）・`--hist-retention-days`（14）・`--prefix`（`api-watch`）・`--python`・`--script`。
 
 7. 受け渡し先の DAG を用意する（下の「受け渡し先の DAG」）。Dagu のスケジューラを動かせば（`dagu start-all` など）以後は自動で回る。
@@ -158,7 +162,7 @@ sources:
     key: iid
     pagination: { type: page, size_param: per_page, size: 100 }
     incremental: { type: max_value, field: updated_at, param: updated_after }
-    schedule: "*/10 * * * *"   # 取得の DAG の起動間隔
+    schedule: "*/10 * * * *"   # 問い合わせの予定。DAG は毎分起動し、api-watch が 10 分ごとに取得する
 
 rules:
   issue-changed:
@@ -202,11 +206,11 @@ queues:
 api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml dags --out ~/.config/dagu/dags
 ```
 
-`~/.config/dagu/dags/` に 3 つできる。手で直さず、設定を変えたら書き出し直す。
+`~/.config/dagu/dags/` に 3 つできる。雛形なので、作ったあとは自由に直してよい（`dags` は既にあるファイルを上書きしない）。
 
 | ファイル | 起動 | すること |
 |---|---|---|
-| `api-watch-issues.yaml` | 取得元の `schedule`（10 分ごと） | fetch → evaluate → dispatch。fetch は通信の失敗（終了コード 3）のときだけ Dagu が再試行する |
+| `api-watch-issues.yaml` | 毎分（取得は取得元の `schedule` どおり 10 分ごと） | fetch → evaluate → dispatch。fetch は通信の失敗（終了コード 3）のときだけ Dagu が再試行する |
 | `api-watch-dispatch.yaml` | 毎分 | 判定し残し・渡せなかった変化の再送・後続処理の完了の確認 |
 | `api-watch-maintenance.yaml` | 毎日 3:17 | 保持期間を過ぎたものの整理 |
 
@@ -214,7 +218,7 @@ api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connection
 
 ```yaml
 description: "issues を取得し、ルールで判定して受け渡す"
-schedule: "*/10 * * * *"
+schedule: "* * * * *"
 type: graph
 steps:
   - name: fetch
@@ -342,7 +346,7 @@ dagu:
 `command` を書くと、`work` がその場で 1 件ずつ実行する。Dagu のキューも受け渡し先の DAG も要らず、1 回の実行履歴に全部が並ぶ。
 
 ```
- Dagu: api-watch-<ルール>（ルールの schedule）
+ Dagu: api-watch-<ルール>（毎分。取得するかは取得元の schedule を見て api-watch が決める）
    fetch     取得元を取得する   ← 同じ取得元を使う別のワークフローとは、API への問い合わせを 1 回にまとめる
    evaluate  このルールで判定する
    work      変化ごとに command を実行する（終了コード 0 で完了。それ以外は次の起動でやり直す）
@@ -366,10 +370,10 @@ sources:
       query: { state: opened, order_by: updated_at, sort: asc }
     key: iid
     pagination: { type: page, size_param: per_page, size: 100 }
-    schedule: "0 * * * *"
-    jitter_sec: 900            # 0〜15 分ずらして問い合わせる
-    min_interval_sec: 1800     # 30 分以内に取得し終えていれば、取得せずその結果を使う
+    schedule: "0 * * * *"      # 問い合わせの予定。ワークフローが何本・何回起動しても、予定の時刻ごとに 1 回
+    jitter_sec: 900            # 予定の時刻から 0〜15 分ずらして問い合わせる
     busy_wait_sec: 600         # 別のワークフローが取得中なら、終わるのを待ってその結果を使う
+    rate_limit: { group: gitlab }
 
 rules:
   triage:
@@ -385,7 +389,6 @@ rules:
     id: iid
     watch: [state]
     on: [changed]
-    schedule: "30 * * * *"     # ワークフローごとに起動間隔を変えられる（無ければ取得元の schedule）
     targets:
       - name: notify
         command: [python3, /home/you/bin/notify.py, "{{ event.record_key }}"]
@@ -397,7 +400,7 @@ rules:
 
 ### Dagu のワークフロー
 
-`dags` が、`command` の受け渡し先を持つルールごとに `api-watch-<ルール>.yaml` を書く。この例では `api-watch-triage.yaml`・
+`dags` が、`command` の受け渡し先を持つルールごとに `api-watch-<ルール>.yaml` の雛形を書く。この例では `api-watch-triage.yaml`・
 `api-watch-notify.yaml`・`api-watch-maintenance.yaml` の 3 つ（どのルールも自分のワークフローで取得するので、取得元の DAG と再送の DAG は書かない）。
 Dagu の設定（`config.yaml`）に足すものは無い。
 
@@ -409,7 +412,7 @@ api-watch --plugin dagu --config ~/.config/api-watch/api-watch.yaml --connection
 
 ```yaml
 description: "issues を取得し、ルール triage で判定して、その場で実行する"
-schedule: "0 * * * *"
+schedule: "* * * * *"            # 毎分起動する。取得するかは取得元の schedule を見て api-watch が決める
 type: graph
 steps:
   - name: fetch
@@ -428,7 +431,23 @@ steps:
     # …（work --rule triage）。1 件ごとの上限は timeout_sec なので、ステップには上限を付けない
 ```
 
-手で書くなら同じ 3 ステップ（`fetch --source S` → `evaluate --rule R` → `work --rule R`）を並べるか、1 ステップで `run --rule R` を呼ぶ。
+雛形なので自由に直してよく、手で書いてもよい。必要なのは同じ 3 ステップ（`fetch --source S` → `evaluate --rule R` → `work --rule R`）か、
+1 ステップの `run --rule R` だけ。毎分起動しても、取得の予定の時刻でなければ API には問い合わせず、`work` が失敗したもののやり直しだけを進める。
+
+### いつ取得するか（api-watch の予定と Dagu の予定）
+
+`schedule` は「Dagu がいつ起動するか」ではなく「API にいつ問い合わせるか」で、api-watch が起動されたときに見る。
+Dagu の起動間隔は DAG の `schedule` に書き、`dags` は設定の `schedule` を書き写さない。どちらの予定でも動く:
+
+| 書き方 | DAG の `schedule` | 取得元の設定 | 動き |
+|---|---|---|---|
+| api-watch の予定 | 毎分（`dags` の既定） | `schedule: "0 * * * *"` | 毎分起動し、直近の予定の時刻（毎時 0 分）のあとにまだ誰も取得し終えていなければ取得する |
+| Dagu の予定 | `dags --schedule "0 * * * *"` か手で書く | `schedule` を書かない | 起動されるたびに取得する。`min_interval_sec` があれば、その秒数以内の取得はしない |
+
+予定の時刻は、この PC の時刻（ローカル時刻）で見る。cron の 5 項目のほか `@hourly`・`@daily` なども使える。
+
+`dags` を `--schedule` なしで使うと、どの DAG も毎分起動する。取得元に `schedule` も `min_interval_sec` も無いと毎分問い合わせることになるので、
+そのときは `dags` が止めて、どちらかを書くか `--schedule` を付けるよう案内する。
 
 ### 同じ API を呼ぶワークフローが重なったとき
 
@@ -436,21 +455,21 @@ steps:
 
 | 起きたこと | どうなるか |
 |---|---|
-| 片方が取得し終えたあとに、もう片方が `fetch` した | `min_interval_sec` の間なら取得せず（ずらしもせず）、その結果で判定する |
-| 片方が取得している最中に、もう片方が `fetch` した | `busy_wait_sec` まで終わるのを待ち、その結果で判定する |
-| 両方がずらしている間に、片方が取得した | もう片方はずらし終えたあとで `min_interval_sec` を見て、取得しない |
-
+| 片方が取得し終えたあとに、もう片方が `fetch` した | 予定の時刻のあとに取得済み（`schedule`）か、`min_interval_sec` の間なら、取得せず（ずらしもせず）その結果で判定する |
+| 片方が取得している最中に、もう片方が `fetch` した | `busy_wait_sec` まで終わるのを待ち、その結果で判定する（待たないなら次の起動で判定する） |
+| 両方がずらしている間に、片方が取得した | もう片方はずらし終えたあとで取得済みかを見直して、取得しない |
 | 取得が失敗した | `failure_backoff_sec` のあいだ、どのワークフローも問い合わせず、前回までの取得結果で判定・実行を続ける |
 
-2 本以上のワークフローが同じ取得元を取得するときは（取得元の DAG とルールのワークフローの組み合わせも数える）、`min_interval_sec` と
-`busy_wait_sec` が必須で、`jitter_sec` は `min_interval_sec` より短くする。満たさなければ設定の誤りとして止める。`min_interval_sec` は
-ワークフローどうしの起動のずれ（例の 30 分）より長くする。成功した取得は、ワークフローの本数によらず `min_interval_sec` に 1 回までになる。
+取得元に `schedule` が無く、2 本以上のワークフローがその取得元を取得するときは（取得元の DAG とルールのワークフローの組み合わせも数える）、
+`min_interval_sec` と `busy_wait_sec` が必須で、`jitter_sec` は `min_interval_sec` より短くする。満たさなければ設定の誤りとして止める。
 
-### スケジュールの置き場所
+### 別の取得元とも API への負荷を分け合う（`rate_limit.group`）
 
-起動の時刻は api-watch の設定の `schedule`（ルールの `schedule`、無ければ取得元の `schedule`）にだけ書く。api-watch は時刻を見ておらず、
-`dags` が DAG を書き出すときに `schedule` へ書き写し、Dagu のスケジューラがそのとおりに起動する。設定を変えたら `dags` で書き出し直す。
-書き出した DAG は設定の指紋を持っていて、書き出し直していなければ、実行のたびにログで「書き出し直して」と知らせる。
+同じ API を、条件の違う複数の取得元（issue と MR など）で見るときは、`rate_limit.group` に同じ名前を書く。同じ group の取得元は:
+
+- 同時には取得しない（片方の取得中は、もう片方は `busy_wait_sec` まで待つ）
+- `rate_limit.min_interval_sec`・`per_minute` を group の全部の要求で数える（group の中では同じ値を書く。違えば設定の誤り）
+- どれかの取得が失敗したら、group の全部が `failure_backoff_sec` のあいだ問い合わせない
 
 ## 設定
 
@@ -468,12 +487,13 @@ steps:
 | `key` | — | レコードを一意に指す項目。増分取得の取得元では書いておく（全体の姿を組み立て、基準値の取り直しに使う） |
 | `pagination` | なし | 下の表 |
 | `incremental` | なし | 下の表 |
-| `schedule` | `*/5 * * * *` | 起動間隔（cron）。api-watch は時刻を見ない。`dags` が書き出す DAG の `schedule` に書き写し、Dagu がそのとおりに起動する |
+| `schedule` | なし | 問い合わせの予定（cron。この PC の時刻）。起動されても、直近の予定の時刻のあとに取得し終えていれば取得しない。無ければ起動されるたびに取得する（Dagu の起動間隔に任せる）。`fetch --force` で無視。上の「いつ取得するか」 |
 | `min_interval_sec` | 0 | 前回の成功からこの秒数たつまでは取得せず、その取得結果を使う（手で叩いたとき・複数のワークフローから呼ばれたときの重複を防ぐ。`fetch --force` で無視） |
 | `jitter_sec` | 0 | 取得の前に 0〜この秒数だけランダムに待つ（定刻に API へ集中させない）。`min_interval_sec` で取得しないときは待たない。`fetch --no-jitter`・`--force` でずらさない |
 | `busy_wait_sec` | 0 | 別のプロセスが取得中なら、この秒数まで終わるのを待ち、その取得結果を使う。0 なら待たずに終わる |
 | `failure_backoff_sec` / `failure_max_backoff_sec` | 60 / 3600 | 取得が失敗したら、どのプロセス（ワークフロー）もこの秒数は問い合わせず、前回までの取得結果を使う。続けて失敗するほど倍にし、上限で止める。成功したら戻す。`--force` では待たない |
 | `rate_limit.min_interval_sec` / `per_minute` | 0 / 0 | 要求どうしの最小間隔・1 分あたりの上限。前の実行（別のワークフローを含む）の要求からも数える |
+| `rate_limit.group` | なし | 同じ名前の取得元どうしで、同時に取得せず、要求の間隔・1 分あたりの上限・失敗の待ちを分け合う（上の「別の取得元とも API への負荷を分け合う」） |
 | `rate_limit.max_wait_sec` | 120 | `Retry-After` やレート制限のリセットをこの秒数までは待つ。長ければ取得をやめ、その時刻までは問い合わせない |
 | `retry.attempts` / `backoff_sec` / `max_backoff_sec` | 4 / 2 / 60 | 一時的な失敗（接続・タイムアウト・408/425/429/5xx）の再試行（指数バックオフ） |
 | `conditional` | true | `ETag` / `Last-Modified` があれば条件付き要求にし、304 なら保存済みの本文を使う |
@@ -521,7 +541,6 @@ steps:
 | `on_rule_change` | `rebaseline` | 判定の仕方（`id`・`filter`・`watch`・`ignore`・順序・`condition`）を変えたとき、`rebaseline` は最新の取得結果を基準値にし直す（大量に発火しない）。`continue` は新しい比べ方で前回の値と比べる |
 | `include_record` | true | イベントにレコード全体を入れる |
 | `targets` | — | 受け渡し先（下の表。文字列だけ書けば `workflow`）。無ければ検知を記録するだけ |
-| `schedule` | 取得元の `schedule` | `command` の受け渡し先があるとき、`dags` が書き出すこのルールのワークフローの起動間隔 |
 
 発火する種類（1 回の観測で複数つくことがあり、`on` のどれかに当たれば 1 件のイベントになる）:
 
@@ -661,7 +680,7 @@ steps:
 | `gc [--dry-run] [--vacuum]` | 保持期間を過ぎたものを消し、ファイルを縮める。`--vacuum` は DB を作り直して詰める |
 | `forget-rule R` | 設定から消したルールの判定状態を消す |
 | `reconcile` | 受け渡し先に後続処理の状態を問い合わせて記録する（`adapter: dagu` の `mode: api`、`adapter: command` の `status_command`） |
-| `dags --out DIR` | Dagu の DAG を書き出す（`--plugin dagu` のときだけ）。`command` の受け渡し先を持つルールごとに、取得から実行までのワークフローも書く |
+| `dags --out DIR` | Dagu の DAG の雛形を書き出す（`--plugin dagu` のときだけ）。`command` の受け渡し先を持つルールごとに、取得から実行までのワークフローも書く。既にあるファイルは `--force` のときだけ上書きする。起動間隔は `--schedule`（既定は毎分） |
 
 ログ・エラー・状態には認証情報を出さない（接続設定の値・認証のヘッダー・URL のトークンらしい引数は `***` に置き換える）。
 

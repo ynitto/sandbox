@@ -170,14 +170,35 @@ class Fetcher:
                 and now() - row["last_success_at"] < src.min_interval_sec)
 
     def _cooling(self, src: SourceSpec, fp: str) -> FetchOutcome | None:
-        """前の取得が失敗して、どのプロセスも問い合わせを控える時刻の前なら deferred。"""
+        """前の取得が失敗して、どのプロセスも問い合わせを控える時刻の前なら deferred（rate_limit.group の失敗も見る）。"""
         row = self.store.source_row(src.name)
-        until = row["retry_not_before"]
-        if row["fingerprint"] != fp or not until or until <= now():
+        until = row["retry_not_before"] if row["fingerprint"] == fp else None
+        why = f"前回の取得が失敗した（連続 {row['consecutive_failures']} 回）"
+        if src.rate_group:
+            g = self.store.group_row(src.rate_group)["retry_not_before"]
+            if g and (not until or g > until):
+                until, why = g, f"同じ group（{src.rate_group}）の取得が失敗した"
+        if not until or until <= now():
             return None
         return FetchOutcome(src.name, "deferred",
-                            message=f"前回の取得が失敗したので、あと {until - now():.0f} 秒は問い合わせません"
-                                    f"（連続 {row['consecutive_failures']} 回。前回までの取得結果を使います）")
+                            message=f"{why}ので、あと {until - now():.0f} 秒は問い合わせません（前回までの取得結果を使います）")
+
+    def _not_due(self, src: SourceSpec, fp: str) -> FetchOutcome | None:
+        """schedule があり、直近の予定の時刻より後に（誰かが）取得し終えていれば skipped。"""
+        if src.cron is None:
+            return None
+        row = self.store.source_row(src.name)
+        done = row["last_success_at"] if row["fingerprint"] == fp else None
+        if not done:
+            return None
+        t = datetime.fromtimestamp(now())
+        prev = src.cron.previous(t)
+        if prev is None or done < prev.timestamp():
+            return None
+        nxt = src.cron.next(t)
+        return FetchOutcome(src.name, "skipped",
+                            message="予定（" + src.schedule + "）の時刻のあとに取得済みなので取得しません"
+                                    + (f"。次は {nxt:%m-%d %H:%M} 以降" if nxt else ""))
 
     def run(self, src: SourceSpec, force: bool = False, jitter: bool = True) -> FetchOutcome:
         """取得する。同じ取得元を複数のワークフローが呼んでも、API への問い合わせは 1 回にまとめる:
@@ -188,7 +209,12 @@ class Fetcher:
         """
         conn = self.cfg.resolve_connection(src.connection)
         fp = src.fingerprint(conn)
-        lease = f"fetch:{src.name}"
+        # rate_limit.group があれば、同じ group の取得元とは同時に取得しない（要求の間隔を正しく共有するため）
+        lease = f"fetch-group:{src.rate_group}" if src.rate_group else f"fetch:{src.name}"
+        if not force:
+            not_due = self._not_due(src, fp)
+            if not_due:
+                return not_due
         if not force and self._recent(src, fp):
             return FetchOutcome(src.name, "skipped",
                                 message=f"前回の取得から {src.min_interval_sec:.0f} 秒たっていないので取得しません")
@@ -217,9 +243,10 @@ class Fetcher:
                 row = self.store.source_row(src.name)
                 if waited and row["fingerprint"] == fp and row["last_success_at"] and row["last_success_at"] >= started:
                     return FetchOutcome(src.name, "skipped", message="別のプロセスがいま取得した結果を使います")
-                cooling = self._cooling(src, fp)       # ずらしている・待っている間に、別のプロセスの取得が失敗した
-                if cooling:
-                    return cooling
+                # ずらしている・待っている間に、別のプロセスが取得し終えた・失敗した
+                for again in (self._not_due(src, fp), self._cooling(src, fp)):
+                    if again:
+                        return again
             return self._run_locked(src, conn, fp, force, lease)
         finally:
             self.store.release(lease)
@@ -262,23 +289,28 @@ class Fetcher:
         st = json.loads(fetch["page_state"])
         ctx = self._context(src, conn, position)
 
+        # 要求の間隔・1 分あたりの上限は、取得元ごと（rate_limit.group があれば group ごと）に、前の実行の要求も数える
+        pace = self.store.group_row(src.rate_group) if src.rate_group else row
         try:
-            recent = [float(x) for x in json.loads(row["recent_requests"] or "[]")]
+            recent = [float(x) for x in json.loads(pace["recent_requests"] or "[]")]
         except (TypeError, ValueError):
             recent = []
 
         def on_request(ts: float) -> None:
-            # 直近 60 秒の要求の時刻を残し、次のプロセス（別のワークフロー）も per_minute に数える
+            # 直近 60 秒の要求の時刻を残し、次のプロセス（別のワークフロー・同じ group の取得元）も数える
             nonlocal recent
             recent = [x for x in recent if x > ts - 60] + [ts]
             with self.store.tx() as db:
                 db.execute("UPDATE sources SET last_request_at=?, last_attempt_at=?, recent_requests=? WHERE name=?",
                            (ts, ts, json.dumps(recent), src.name))
+                if src.rate_group:
+                    db.execute("UPDATE rate_groups SET last_request_at=?, recent_requests=? WHERE name=?",
+                               (ts, json.dumps(recent), src.rate_group))
 
         client = Client(min_interval=src.rate_min_interval_sec, per_minute=src.rate_per_minute,
                         attempts=src.retry_attempts, backoff=src.retry_backoff_sec,
                         max_backoff=src.retry_max_backoff_sec, max_wait=src.max_wait_sec,
-                        last_request_at=row["last_request_at"], on_request=on_request, sleep=self.sleep,
+                        last_request_at=pace["last_request_at"], on_request=on_request, sleep=self.sleep,
                         recent=[x for x in recent if x > now() - 60])
         outcome = FetchOutcome(src.name, "failed", fetch_id=fid)
         try:
@@ -304,6 +336,10 @@ class Fetcher:
                            "WHERE name=?",
                            (msg, (now() + retry_after) if retry_after else None, (now() + cool) if cool else None,
                             src.name))
+                if src.rate_group and cool:
+                    # 同じ API のほかの取得元も、しばらく問い合わせない
+                    db.execute("UPDATE rate_groups SET retry_not_before=MAX(COALESCE(retry_not_before, 0), ?) "
+                               "WHERE name=?", (now() + cool, src.rate_group))
             outcome.message = msg
             outcome.transient = isinstance(e, TransientError)
             outcome.requests = client.requests
@@ -463,6 +499,8 @@ class Fetcher:
                        "last_fetch_id=?, consecutive_failures=0, next_allowed_at=NULL, retry_not_before=NULL "
                        "WHERE name=?",
                        (_dumps(new_pos), now(), fid, src.name))
+            if src.rate_group:
+                db.execute("UPDATE rate_groups SET retry_not_before=NULL WHERE name=?", (src.rate_group,))
             if records is not None:
                 keys = []
                 for r in records:

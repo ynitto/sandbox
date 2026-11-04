@@ -16,14 +16,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 取得元の `jitter_sec`: 取得の前に 0〜その秒数だけランダムに待つ（`fetch --no-jitter` でずらさない）
 - 取得元の `busy_wait_sec`: 別のプロセスが取得中なら終わるのを待ち、その取得結果を使う。`min_interval_sec` と合わせて、
   同じ取得元を複数のワークフローが呼んでも API への問い合わせを 1 回にまとめる（`check` は設定が足りなければ注意を出す）
-- `dags`: `command` の受け渡し先を持つルールごとに、fetch → evaluate → work のワークフローを書く（起動間隔はルールの `schedule`）。
-  要らない取得元の DAG・再送の DAG は書かない
-- 2 本以上のワークフローが同じ取得元を取得するなら、`min_interval_sec`・`busy_wait_sec` を必須にし、`jitter_sec` が `min_interval_sec` 以上なら
-  設定の誤りにする
+- **取得元の `schedule` の意味を変える**: これまでは `dags` が DAG の `schedule` に書き写すだけだった。今は「API に問い合わせる予定」で、
+  起動されたときに api-watch が見る（直近の予定の時刻のあとに取得し終えていれば取得しない）。既定は無し（起動されるたびに取得し、予定は
+  Dagu の起動間隔に任せる）。0.1.0 で `schedule` を書かずに既定（5 分ごと）で動かしていたなら、`schedule: "*/5 * * * *"` を書くか、
+  DAG の起動間隔で決める
+- `dags`: 設定の `schedule` を書き写さない。起動間隔は `--schedule`（既定は毎分）。雛形を作るだけで、既にあるファイルは `--force` のときだけ
+  上書きする。`command` の受け渡し先を持つルールごとに fetch → evaluate → work のワークフローを書き、要らない取得元の DAG・再送の DAG は書かない
+- 取得元の `rate_limit.group`: 同じ名前の取得元どうしで、同時に取得せず、要求の間隔・1 分あたりの上限・失敗の待ちを分け合う
+- 取得元に `schedule` が無く、2 本以上のワークフローがその取得元を取得するなら、`min_interval_sec`・`busy_wait_sec` を必須にし、
+  `jitter_sec` が `min_interval_sec` 以上なら設定の誤りにする
 - 取得元の `failure_backoff_sec` / `failure_max_backoff_sec`（既定 60 / 3600 秒）: 取得が失敗したら、どのワークフローもその間は問い合わせない
   （続けて失敗するほど倍）。これまでは `Retry-After` が無ければ、起動したワークフローがそれぞれすぐ取り直していた
 - `rate_limit.per_minute` を、前の実行（別のワークフロー）の要求も数えて守る
-- `dags` が書いた DAG は設定の指紋を持ち、設定のスケジュールなどを変えて書き出し直していなければ、実行のたびに知らせる
 
 ### dagu-issue-loop: issue の取得と変化の検知を api-watch に任せる構成を足す
 

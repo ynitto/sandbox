@@ -47,6 +47,12 @@ CREATE TABLE IF NOT EXISTS sources (
     retry_not_before REAL,      -- 取得が失敗したあと、どのプロセスもこの時刻までは問い合わせない
     recent_requests TEXT        -- 直近 60 秒に送った要求の時刻（JSON。rate_limit.per_minute をプロセスをまたいで数える）
 );
+CREATE TABLE IF NOT EXISTS rate_groups (   -- rate_limit.group ごとに共有する要求の記録と失敗の待ち
+    name TEXT PRIMARY KEY,
+    last_request_at REAL,
+    recent_requests TEXT,
+    retry_not_before REAL
+);
 CREATE TABLE IF NOT EXISTS fetches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
@@ -261,6 +267,15 @@ class Store:
                 self.release(name)
 
     # -- 取得元 ---------------------------------------------------------------
+
+    def group_row(self, name: str) -> sqlite3.Row:
+        row = self.one("SELECT * FROM rate_groups WHERE name=?", (name,))
+        if row is None:
+            with self.tx() as db:
+                db.execute("INSERT OR IGNORE INTO rate_groups(name) VALUES(?)", (name,))
+            row = self.one("SELECT * FROM rate_groups WHERE name=?", (name,))
+        assert row is not None
+        return row
 
     def source_row(self, name: str) -> sqlite3.Row:
         row = self.one("SELECT * FROM sources WHERE name=?", (name,))

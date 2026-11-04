@@ -46,13 +46,18 @@ def cmd_check(cfg, store, a) -> int:
             cfg.resolve_connection(src.connection)
             conn = "なし" if src.connection is None else f"{src.connection[0]}/{src.connection[1]}"
             log(f"  取得元 {name}: {src.method} {REDACT(src.url)}（接続 {conn}・ページング {src.pagination.type}・"
-                f"増分 {src.incremental.type if src.incremental else 'なし'}・ルール {len(cfg.rules_for(name))} 本"
+                f"増分 {src.incremental.type if src.incremental else 'なし'}・ルール {len(cfg.rules_for(name))} 本・"
+                + (f"予定 {src.schedule}（起動されても予定の時刻まで取得しない）" if src.schedule
+                   else "予定なし（起動されるたびに取得）")
+                + (f"・間隔 {src.min_interval_sec:.0f} 秒以上" if src.min_interval_sec else "")
+                + (f"・group {src.rate_group}" if src.rate_group else "")
                 + (f"・ずらし 0〜{src.jitter_sec:.0f} 秒" if src.jitter_sec else "")
                 + (f"・取得中なら {src.busy_wait_sec:.0f} 秒まで待つ" if src.busy_wait_sec else "") + "）")
             flows = cfg.fetching_workflows(name)
             if len(flows) > 1:
-                log(f"    {len(flows)} 本のワークフロー（{'・'.join(flows)}）が取得し、問い合わせは "
-                    f"{src.min_interval_sec:.0f} 秒に 1 回までにまとめます")
+                log(f"    {len(flows)} 本のワークフロー（{'・'.join(flows)}）が取得し、問い合わせは"
+                    + ("予定の時刻ごとに 1 回" if src.schedule else f" {src.min_interval_sec:.0f} 秒に 1 回まで")
+                    + "にまとめます")
         except ConfigError as e:
             ok = False
             log(f"  取得元 {name}: {e}")
@@ -341,7 +346,6 @@ def build_parser(plugin_specs: list[str] | None = None) -> argparse.ArgumentPars
     p.add_argument("--config", help=f"設定ファイル（既定: {configmod.DEFAULT_CONFIG}）")
     p.add_argument("--connections", help="接続設定（connections.yaml）のパス。認証情報はここからだけ読む")
     p.add_argument("--state-dir", help="状態の置き場所（設定の state_dir より優先）")
-    p.add_argument("--dags-fingerprint", help=argparse.SUPPRESS)   # dags が書き出した DAG が付ける
     p.add_argument("--version", action="version", version=VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -435,9 +439,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = configmod.load(a.config, a.connections, a.state_dir)
         store = Store(cfg.state_dir)
-        if a.dags_fingerprint and a.dags_fingerprint != cfg.workflows_fingerprint():
-            warn("設定のスケジュール・ワークフローの組み方が、DAG を書き出したときから変わっています。"
-                 "Dagu は書き出したときの schedule で動き続けるので、dags で書き出し直してください")
     except ConfigError as e:
         warn(str(e))
         return EXIT_ERROR

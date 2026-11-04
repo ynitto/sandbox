@@ -146,13 +146,15 @@ DAG の Python は `ISSUE_LOOP_PYTHON` で渡す（Windows の標準のインス
 ## 6.5 api-watch で取得する構成（handle）
 
 `poll` と待ち行列（state.json の queue / dead）の代わりに api-watch を使う構成。Dagu のワークフローは
-api-watch の `dags` が書き出す `api-watch-issue-agent` の 1 本で、fetch → evaluate → work の 3 ステップ。スケジュールは api-watch の
-設定にだけ置く（手書きの DAG を持つと、設定とワークフローの 2 か所にスケジュールができてずれる）。work は api-watch の「その場で実行する受け渡し先」
+api-watch の `dags` が雛形を作る `api-watch-issue-agent` の 1 本で、fetch → evaluate → work の 3 ステップ。ワークフローは毎分起動し、
+GitLab に問い合わせるのは取得元の `schedule`（毎時 0 分）の時刻のあとだけ（api-watch が判断する）。予定は api-watch の設定 1 か所にあり、
+毎分の起動で `work` が失敗したもののやり直しを進める（`poll` 構成の毎分の `run` と同じ間合い）。work は api-watch の「その場で実行する受け渡し先」
 （`targets[].command`）として `issue_loop.py handle` を 1 件ずつ呼ぶ。役割の分け方:
 
 | 受け持ち | `poll` / `run` | api-watch 構成 |
 |---|---|---|
 | 取得・ページング・再開 | `GitLab.list_issues` | api-watch の取得元（`gitlab-issues`） |
+| 取得の予定 | DAG の `schedule`（毎時 0 分） | 取得元の `schedule`（毎時 0 分）。DAG は毎分 |
 | 取得のずらし | `--jitter 900` | 取得元の `jitter_sec: 900` |
 | 変化の判定 | `snapshot` の比較 | ルールの `watch`（`snapshot` と同じ項目を生のパスで書く） |
 | 待ち行列 | state.json の queue | api-watch の deliveries（work が古い順に 1 件ずつ実行。`order: none`） |
@@ -161,7 +163,7 @@ api-watch の `dags` が書き出す `api-watch-issue-agent` の 1 本で、fetc
 | 自分の書き込みを無視 | `settle_success` | `cmd_handle`（下） |
 
 受け渡し先の DAG とキューに分けた初版（api-watch の dagu アダプタで `gitlab-issue-handle` に enqueue）から、1 本のワークフローにした。
-取得から実行までが 1 つの実行履歴に並び、Dagu 側の設定（キュー）も要らない。代わりに、失敗の再試行は次の起動（1 時間後）になる。
+取得から実行までが 1 つの実行履歴に並び、Dagu 側の設定（キュー）も要らない。
 
 `handle` が state.json に持つのは `seen`（最後に流した版）と、受け渡しの ID ごとの失敗回数（プロンプトの `{attempt}` 用、200 件で切る）だけ。
 イベントのファイルと受け渡しの ID は環境変数 `APIWATCH_EVENT_FILE` / `APIWATCH_DELIVERY_ID` で受け取る。
@@ -177,9 +179,9 @@ api-watch の `dags` が書き出す `api-watch-issue-agent` の 1 本で、fetc
   次の取得で api-watch がイベントを出し、版が `seen` より新しいので流れる。`poll` 構成のようにその場で積み直しはしない
 - **順序**: `order: completion` / `enqueue` だと、打ち切った（dead）イベントが `retry` / `skip` されるまで同じ issue の後ろが止まる。
   `poll` 構成の「打ち切って次の変化で拾う」に合わせて `none` にした。古いイベントが後から再試行されても、飛ばす判定で落ちる
-- **同じ取得元の共有**: 通知など別のワークフローが同じ取得元を使うときは、取得元の `min_interval_sec`（取得し終えた結果を使い回す）と
-  `busy_wait_sec`（取得中なら待ってその結果を使う）で GitLab への問い合わせを 1 回にまとめ、失敗は `failure_backoff_sec` で共有する
-  （api-watch の設計 §3.6）
+- **同じ取得元の共有**: 通知など別のワークフローが同じ取得元を使っても、取得元の `schedule`（予定の時刻のあとに誰かが取得し終えていれば
+  取得しない）と `busy_wait_sec`（取得中なら待ってその結果を使う）で GitLab への問い合わせは予定の時刻ごとに 1 回にまとまり、失敗は
+  `failure_backoff_sec` で、MR など別の取得元とは `rate_limit.group` で負荷を分け合う（api-watch の設計 §3.6）
 
 試験は本物の api-watch（`run --rule issue-agent` で `handle` をその場で実行）と偽の GitLab・偽のエージェントで回す（`ApiWatchHandleTest`）。
 

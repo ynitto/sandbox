@@ -178,14 +178,16 @@ api-watch が issue を取得して変化を判定し、変化した issue ご�
 エージェント CLI の起動・プロンプト・1 セッションの排他・自分の書き込みで起きない仕組みは、これまでと同じ `issue_loop.py` が受け持つ。
 
 ```
- Dagu: api-watch-issue-agent（1 時間ごと）
-   fetch     0〜15 分ずらして issue を全ページ取得    ← 同じ取得元を使う別のワークフローとは 1 回にまとめる
+ Dagu: api-watch-issue-agent（毎分）
+   fetch     毎時 0 分の予定のあと、0〜15 分ずらして issue を全ページ取得（予定の時刻のあとに取得済みなら問い合わせない）
    evaluate  前回と比べて変化した issue を拾う
    work      変化した issue ごとに issue_loop.py handle  ← issue を取り直してエージェント CLI を実行し、既読にする
 ```
 
-スケジュールは api-watch の設定にだけ書く。Dagu のワークフローは手で書かず、api-watch の `dags` で書き出す（設定の `schedule` が
-ワークフローの `schedule` になる）。設定を変えたら書き出し直す。書き出し直していなければ、実行のたびに api-watch がログで知らせる。
+GitLab にいつ問い合わせるかは api-watch の設定（取得元の `schedule`。例は毎時 0 分）で決まり、Dagu のワークフローは毎分起動するだけ。
+予定を変えるときは api-watch の設定だけを直せばよく、ワークフローを書き出し直さなくてよい。毎分の起動では、失敗したもののやり直し
+（`retry_backoff_sec` を過ぎたもの）だけが進み、issue の一覧は取得しない。
+問い合わせの予定も Dagu に任せたいなら、取得元の `schedule` を消し、ワークフローの `schedule` に書く（`dags --schedule "0 * * * *"`）。
 
 ### 入れ方
 
@@ -211,7 +213,7 @@ api-watch が issue を取得して変化を判定し、変化した issue ご�
        token: ${GITLAB_TOKEN}
    ```
 
-5. 環境変数を読み込んでから、Dagu のワークフローを書き出す。`api-watch-issue-agent.yaml`（取得から実行まで）と
+5. 環境変数を読み込んでから、Dagu のワークフローの雛形を書き出す（作ったあとは自由に直してよい。既にあるファイルは上書きしない）。`api-watch-issue-agent.yaml`（取得から実行まで）と
    `api-watch-maintenance.yaml`（毎日の整理）ができる。`gitlab-issue-poll.yaml` と `gitlab-issue-agent.yaml` は置かない
    （置いてあれば消す）。Dagu の設定（`config.yaml`）に足すものは無い。
 
@@ -231,25 +233,26 @@ api-watch が issue を取得して変化を判定し、変化した issue ご�
 
 ### 同じ GitLab を別のワークフローからも見るとき
 
-issue の変化で別のことをしたい（通知など）ときは、api-watch の設定に同じ取得元 `gitlab-issues` を使うルールを足して、`dags` で
-書き出し直す（設定例の `issue-notify`。`api-watch-issue-notify` ができる）。ワークフローが同じ時刻に起動しても、GitLab への問い合わせは 1 回にまとまる:
+issue の変化で別のことをしたい（通知など）ときは、api-watch の設定に同じ取得元 `gitlab-issues` を使うルールを足して、`dags` を
+もう一度流す（設定例の `issue-notify`。`api-watch-issue-notify` が書き足され、既にあるワークフローはそのまま）。
+ワークフローが何本・何回起動しても、GitLab への問い合わせは予定の時刻ごとに 1 回にまとまる:
 
-- 先に取得したワークフローの結果を、`min_interval_sec`（例は 30 分）のあいだ他のワークフローも使う
+- 予定の時刻のあとに、どれかのワークフローが取得し終えていれば、ほかのワークフローは問い合わせずにその結果を使う
 - 別のワークフローが取得している最中なら、`busy_wait_sec`（例は 10 分）まで終わるのを待って、その結果を使う
 - 取得が失敗したら、`failure_backoff_sec`（例は 5 分。続けて失敗するほど倍、最大 1 時間）のあいだ、どのワークフローも問い合わせない
 
-2 本以上のワークフローが同じ取得元を取得するのに `min_interval_sec`・`busy_wait_sec` が無い、または `jitter_sec` が
-`min_interval_sec` 以上のときは、api-watch が設定の誤りとして止める。
+同じ GitLab を MR など別の取得元でも見るときは、`rate_limit.group` を同じ名前（例は `gitlab`）にすると、同時に取得せず、
+要求の間隔と失敗の待ちも分け合う。
 
 ### これまでの構成との違い
 
 | | `poll` と `run` | api-watch で動かす |
 |---|---|---|
-| ワークフロー | 取得（1 時間ごと）と実行（毎分）の 2 本 | 取得から実行までの 1 本（api-watch が書き出す） |
+| ワークフロー | 取得（1 時間ごと）と実行（毎分）の 2 本 | 取得から実行までの 1 本（毎分起動。取得は予定の時刻だけ） |
 | 取得の間隔 | 毎時 0 分から 0〜15 分ずらす | 同じ（`schedule` と `jitter_sec`）。取得の失敗は `failure_backoff_sec` で間を空ける |
 | 変化の判定 | 上の「何を変化とみなすか」 | 同じ項目を api-watch の `watch` に書く |
 | 待っている変化 | issue ごとに 1 件へまとめる | 変化ごとに 1 件。先に動いた実行が最新の issue で流し、後ろの同じ issue は流し終えた分として飛ばす |
-| 失敗と再試行 | `ISSUE_LOOP_MAX_ATTEMPTS`・`ISSUE_LOOP_RETRY_BACKOFF`（毎分の `run` で再試行） | 設定の `max_attempts`・`retry_backoff_sec`。再試行はワークフローの次の起動で行う |
+| 失敗と再試行 | `ISSUE_LOOP_MAX_ATTEMPTS`・`ISSUE_LOOP_RETRY_BACKOFF`（毎分の `run` で再試行） | 設定の `max_attempts`・`retry_backoff_sec`（毎分の起動で再試行） |
 | 1 セッション | ロックファイル | ワークフローの中で 1 件ずつ実行し、ロックファイルでも排他する |
 | 取得の履歴・やり直し | なし | api-watch の `status`・`events`・`retry` で見られる |
 

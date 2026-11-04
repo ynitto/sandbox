@@ -244,8 +244,10 @@ def _step(name: str, argv: list[str], *, depends: str | None, timeout: int | Non
 
 
 def _header(cfg: Config, desc: str, schedule: str, opts) -> list[str]:
-    lines = [f"# api-watch {VERSION} が生成（api_watch.py dags）。手で直さず、設定を変えて作り直してください。",
+    lines = [f"# api-watch {VERSION} の dags が作った雛形。作ったあとは自由に直してよい（dags は既にあるファイルを上書きしない）。",
              f"# 設定: {cfg.path}",
+             "# schedule は Dagu がこのワークフローを起動する間隔。取得元に schedule があれば、起動されても予定の時刻までは",
+             "# api-watch が取得しない（取得の予定は api-watch の設定にある）。無ければ起動されるたびに取得する",
              f"description: {_q(desc)}",
              f"schedule: {_q(schedule)}",
              "type: graph",
@@ -260,7 +262,6 @@ def _header(cfg: Config, desc: str, schedule: str, opts) -> list[str]:
 def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     base = [python, str(script), "--config", str(cfg.path)] + plugin_args(getattr(opts, "plugin", None) or ["dagu"])
-    base += ["--dags-fingerprint", cfg.workflows_fingerprint()]   # 設定を変えて書き出し直していなければ、実行時に知らせる
     if cfg.connections.path is not None:
         base += ["--connections", str(cfg.connections.path)]
     if getattr(opts, "state_dir", None):
@@ -270,8 +271,21 @@ def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> lis
 
     def write(name: str, lines: list[str]) -> None:
         path = out_dir / f"{prefix}-{name}.yaml"
+        if path.exists() and not getattr(opts, "force", False):
+            log(f"既にあるので書きません（上書きするなら --force）: {path}")
+            return
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         written.append(path)
+
+    def schedule_for(src) -> str:
+        # 設定の schedule は書き写さない。Dagu の起動間隔は --schedule（既定は毎分。取得するかは api-watch が決める）
+        if opts.schedule:
+            return opts.schedule
+        if src.cron is None and not src.min_interval_sec:
+            raise ConfigError(f"取得元 {src.name} には schedule も min_interval_sec も無いので、毎分起動すると毎分問い合わせます。"
+                              "api-watch の設定に schedule（取得の予定）か min_interval_sec を書くか、"
+                              "dags --schedule で Dagu の起動間隔を指定してください")
+        return "* * * * *"
 
     def fetch_step(src) -> list[str]:
         # ずらし（jitter_sec）と、別のワークフローの取得を待つ時間（busy_wait_sec）も入れる
@@ -288,14 +302,14 @@ def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> lis
         rules = cfg.rules_for(name)
         if rules and all(here(r) for r in rules):
             continue      # どのルールも自分のワークフロー（下）で取得から処理まで行う
-        lines = _header(cfg, f"{name} を取得し、ルールで判定して受け渡す", src.schedule, opts)
+        lines = _header(cfg, f"{name} を取得し、ルールで判定して受け渡す", schedule_for(src), opts)
         lines += fetch_step(src)
         lines += _step("evaluate", base + ["evaluate", "--source", name], depends="fetch", timeout=600,
                        retry={"limit": 2, "interval_sec": 10})
         lines += _step("dispatch", base + ["dispatch", "--source", name], depends="evaluate", timeout=600, retry=None)
         write(name, lines)
     # command の受け渡し先があるルールは、1 つのワークフローで取得 → 判定 → 実行まで行う。
-    # 同じ取得元を使うワークフローが重なっても、取得は min_interval_sec / busy_wait_sec で 1 回にまとまる
+    # 同じ取得元を使うワークフローが重なっても、取得は schedule（または min_interval_sec / busy_wait_sec）で 1 回にまとまる
     reserved = set(cfg.sources) | {"dispatch", "maintenance"}
     for rname, rule in cfg.rules.items():
         if not here(rule):
@@ -305,7 +319,7 @@ def generate(cfg: Config, out_dir: Path, python: str, script: Path, opts) -> lis
                               "ルールの名前を変えてください")
         src = cfg.sources[rule.source]
         lines = _header(cfg, f"{rule.source} を取得し、ルール {rname} で判定して、その場で実行する",
-                        rule.schedule or src.schedule, opts)
+                        schedule_for(src), opts)
         lines += fetch_step(src)
         lines += _step("evaluate", base + ["evaluate", "--rule", rname], depends="fetch", timeout=600,
                        retry={"limit": 2, "interval_sec": 10})
@@ -356,12 +370,15 @@ def cmd_dags(cfg: Config, store, a) -> int:
 def register(api) -> None:
     """--plugin dagu で読み込まれたときに、アダプタ dagu とコマンド dags を足す。"""
     api.add_adapter("dagu", parse, create)
-    sp = api.add_command("dags", cmd_dags, "Dagu の DAG を書き出す（取得元ごとの取得・ルールごとの取得から実行まで・再送・整理）")
+    sp = api.add_command("dags", cmd_dags, "Dagu の DAG の雛形を書き出す（取得元ごとの取得・ルールごとの取得から実行まで・再送・整理）")
     sp.add_argument("--out", required=True)
     sp.add_argument("--python", help="DAG が使う Python（既定: いま動いている Python）")
     sp.add_argument("--script", help="DAG が呼ぶ api_watch.py（既定: apiwatch と同じ場所の api_watch.py）")
     sp.add_argument("--prefix", default="api-watch")
     sp.add_argument("--dotenv", action="append", default=[], help="DAG に読み込ませる環境変数のファイル（繰り返し可）")
+    sp.add_argument("--schedule", help="取得するワークフローを Dagu が起動する間隔（既定: 毎分。取得するかは api-watch が"
+                                       "取得元の schedule / min_interval_sec で決める）")
+    sp.add_argument("--force", action="store_true", help="既にある DAG を上書きする")
     sp.add_argument("--dispatch-schedule", default="* * * * *", help="再送の DAG の起動間隔（既定: 毎分）")
     sp.add_argument("--maintenance-schedule", default="17 3 * * *", help="整理の DAG の起動間隔（既定: 毎日 3:17）")
     sp.add_argument("--hist-retention-days", type=int, default=14, help="Dagu の実行履歴を残す日数")

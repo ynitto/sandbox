@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import adapters, jpath, template
+from . import adapters, cron, jpath, template
 from .connections import Connections, load_yaml_or_json, parse_ref
 from .util import ConfigError, canonical, sha
 
@@ -103,7 +103,8 @@ class SourceSpec:
     key: str | None
     pagination: Pagination
     incremental: Incremental | None
-    schedule: str
+    schedule: str | None            # api-watch が見る取得の予定（cron）。無ければ起動されるたびに取得する（Dagu の schedule に任せる）
+    cron: cron.Cron | None
     min_interval_sec: float
     jitter_sec: float
     busy_wait_sec: float
@@ -111,6 +112,7 @@ class SourceSpec:
     failure_max_backoff_sec: float
     rate_min_interval_sec: float
     rate_per_minute: int
+    rate_group: str | None          # 同じ group の取得元は、要求の間隔・1 分あたりの上限・失敗の待ちを共有し、同時には取得しない
     retry_attempts: int
     retry_backoff_sec: float
     retry_max_backoff_sec: float
@@ -168,7 +170,6 @@ class RuleSpec:
     on_rule_change: str             # rebaseline | continue
     targets: list[TargetSpec]
     include_record: bool
-    schedule: str | None = None     # その場で実行する受け渡し先があるとき、dags が書き出すワークフローの起動間隔
 
     def fingerprint(self) -> str:
         """判定の仕方の指紋。変わると、前回の観測値とは比べ方が違うので基準を取り直す。"""
@@ -224,19 +225,6 @@ class Config:
 
     def rules_for(self, source: str) -> list[RuleSpec]:
         return [r for r in self.rules.values() if r.source == source]
-
-    def workflows_fingerprint(self) -> str:
-        """書き出すワークフローの形（どのワークフローがあり、いつ起動するか）の指紋。dags が DAG に埋め、
-        実行のたびに今の設定と比べて、設定を変えたのに書き出し直していないことに気づけるようにする。"""
-        flows = {}
-        for name, src in self.sources.items():
-            flows[f"source:{name}"] = {"schedule": src.schedule, "fetchers": self.fetching_workflows(name)}
-        for name, r in self.rules.items():
-            if any(t.runs_here for t in r.targets):
-                src = self.sources[r.source]
-                flows[f"rule:{name}"] = {"schedule": r.schedule or src.schedule, "source": r.source,
-                                         "dispatch": any(not t.runs_here for t in r.targets)}
-        return sha(canonical(flows), 16)
 
     def fetching_workflows(self, source: str) -> list[str]:
         """この取得元を取得するワークフロー（dags が書くもの）の名前。
@@ -340,7 +328,16 @@ def _source(name: str, d: Any) -> SourceSpec:
     rl = d.get("rate_limit") or {}
     rt = d.get("retry") or {}
     _expect(isinstance(rl, dict) and isinstance(rt, dict), f"{where}: rate_limit / retry は辞書で書いてください")
-    _known(rl, {"min_interval_sec", "per_minute", "max_wait_sec"}, f"{where}.rate_limit")
+    _known(rl, {"min_interval_sec", "per_minute", "max_wait_sec", "group"}, f"{where}.rate_limit")
+    group = rl.get("group")
+    _expect(group is None or (isinstance(group, str) and NAME_RE.match(group) is not None),
+            f"{where}.rate_limit.group: 英数字・- _ . で 64 文字以内の名前を書いてください")
+    schedule = d.get("schedule")
+    _expect(schedule is None or isinstance(schedule, str), f"{where}.schedule: cron の書式（例 \"0 * * * *\"）で書いてください")
+    try:
+        cron_spec = cron.parse(schedule) if schedule is not None else None
+    except ConfigError as e:
+        raise ConfigError(f"{where}.schedule: {e}") from e
     _known(rt, {"attempts", "backoff_sec", "max_backoff_sec"}, f"{where}.retry")
     records = d.get("records", "$")
     jpath.parse(records)
@@ -358,7 +355,7 @@ def _source(name: str, d: Any) -> SourceSpec:
         method=method, url=req["url"], headers=headers, query=query, body=req.get("body"), body_form=body_form,
         timeout_sec=_num(req, "timeout_sec", 30, f"{where}.request", 1),
         records=records, key=key, pagination=pag, incremental=inc,
-        schedule=str(d.get("schedule", "*/5 * * * *")),
+        schedule=schedule, cron=cron_spec, rate_group=group,
         min_interval_sec=_num(d, "min_interval_sec", 0, where),
         jitter_sec=_num(d, "jitter_sec", 0, where),
         busy_wait_sec=_num(d, "busy_wait_sec", 0, where),
@@ -421,8 +418,8 @@ def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:
     # YAML 1.1（PyYAML）はキーの on を真偽値 true と読むので、on に戻す
     d = {("on" if k is True else k): v for k, v in d.items()}
     _known(d, {"description", "source", "filter", "id", "watch", "ignore", "array_order", "unordered",
-               "missing_is_null", "condition", "on", "initial", "on_rule_change", "targets", "include_record",
-               "schedule"}, where)
+               "missing_is_null", "condition", "on", "initial", "on_rule_change", "targets", "include_record"},
+           where)
     src = d.get("source")
     _expect(src in sources, f"{where}.source: sources に無い取得元です: {src}")
     filt = d.get("filter")
@@ -459,18 +456,12 @@ def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:
             for ref in template.references(value):
                 _expect(ref.split(".")[0] in ("event", "env", "delivery"),
                         f"{where}.targets.{t.name}.{what}: 使えるのは event.* / delivery.* / env.* です: {ref}")
-    schedule = d.get("schedule")
-    _expect(schedule is None or (isinstance(schedule, str) and schedule.strip()),
-            f"{where}.schedule: cron の書式で書いてください")
-    _expect(schedule is None or any(t.runs_here for t in targets),
-            f"{where}.schedule: command の受け渡し先があるルールだけに書けます（ほかは取得元の schedule で動く）")
     return RuleSpec(
         name=name, source=src, raw=d, filter=filt, id_paths=ids, watch=watch_l,
         ignore=_paths(d.get("ignore"), f"{where}.ignore"), array_order=array_order,
         unordered=_paths(d.get("unordered"), f"{where}.unordered"),
         missing_is_null=bool(d.get("missing_is_null", False)), condition=cond, on=list(on), initial=initial,
         on_rule_change=orc, targets=targets, include_record=bool(d.get("include_record", True)),
-        schedule=schedule,
     )
 
 
@@ -480,15 +471,17 @@ def _check_shared(name: str, src: SourceSpec, rules: dict[str, RuleSpec]) -> Non
     n = sum(1 for r in rs if any(t.runs_here for t in r.targets))
     if not rs or any(not any(t.runs_here for t in r.targets) for r in rs):
         n += 1
-    if n < 2:
+    if n < 2 or src.cron is not None:
+        # schedule があれば、予定の時刻より後に誰かが取得し終えていれば取得しないので、それだけで 1 回にまとまる
         return
     where = f"sources.{name}"
     who = "、".join([r.name for r in rs if any(t.runs_here for t in r.targets)])
-    head = f"{where}: {n} 本のワークフロー（ルール {who} など）がこの取得元を取得します。"
+    head = (f"{where}: {n} 本のワークフロー（ルール {who} など）がこの取得元を取得し、schedule が無いので起動されるたびに取得します。"
+            "schedule を書くか、")
     _expect(src.min_interval_sec > 0,
-            head + "同じ API を続けて問い合わせないよう、min_interval_sec（取得し終えた結果を使い回す秒数）を書いてください")
+            head + "同じ API を続けて問い合わせないよう min_interval_sec（取得し終えた結果を使い回す秒数）を書いてください")
     _expect(src.busy_wait_sec > 0,
-            head + "別のワークフローの取得中に問い合わせないよう、busy_wait_sec（取得中なら待つ秒数）を書いてください")
+            head + "別のワークフローの取得中に問い合わせないよう busy_wait_sec（取得中なら待つ秒数）を書いてください")
     _expect(src.jitter_sec < src.min_interval_sec,
             f"{where}: jitter_sec（{src.jitter_sec:.0f}）は min_interval_sec（{src.min_interval_sec:.0f}）より短くしてください。"
             "長いと、ずらし終えたワークフローが先に取得した結果を使えず、もう一度問い合わせます")
@@ -527,6 +520,14 @@ def load(path: str | Path | None = None, connections: str | Path | None = None,
     delivery = _delivery(d.get("delivery"))
     for name, src in sources.items():
         _check_shared(name, src, rules)
+    groups: dict[str, SourceSpec] = {}
+    for name, src in sources.items():
+        if src.rate_group is None:
+            continue
+        first = groups.setdefault(src.rate_group, src)
+        _expect((first.rate_min_interval_sec, first.rate_per_minute) == (src.rate_min_interval_sec, src.rate_per_minute),
+                f"sources.{name}.rate_limit: group {src.rate_group} の min_interval_sec / per_minute は、同じ group の "
+                f"{first.name} と同じ値にしてください（group で 1 つの上限を共有します）")
     if delivery is None and any(not t.runs_here for r in rules.values() for t in r.targets):
         raise ConfigError("ワークフローへ渡す受け渡し先（targets の workflow）があります。delivery.adapter を書いてください")
     if state_dir is not None:
