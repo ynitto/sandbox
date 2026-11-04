@@ -2,6 +2,8 @@
 呼んでも API への問い合わせを 1 回にまとめること（min_interval_sec・jitter_sec・busy_wait_sec）を確かめる。"""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sys
 import threading
@@ -169,6 +171,13 @@ class SharedFetchTest(Base):
         self.assertIn("注意", self.env.ok(self, "check"))
 
     def _fetcher(self, sleeps: list):
+        # cli.main を通さないので、標準出力を UTF-8 にする設定が効かない（Windows の cp1252 で日本語のログが書けない）。
+        # 本体のログは文字列に受ける
+        out = io.StringIO()
+        stack = contextlib.ExitStack()
+        stack.enter_context(contextlib.redirect_stdout(out))
+        stack.enter_context(contextlib.redirect_stderr(out))
+        self.addCleanup(stack.close)
         cfg = configmod.load(self.env.config_path, self.env.conn_file)
         store = Store(cfg.state_dir)
         self.addCleanup(store.close)
