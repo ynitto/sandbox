@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
     event_id TEXT NOT NULL,
     rule TEXT NOT NULL,
     target TEXT NOT NULL,
-    dag TEXT NOT NULL,
+    workflow TEXT NOT NULL,
     rkey TEXT NOT NULL,
     status TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,

@@ -2,20 +2,20 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
-import sys
-from pathlib import Path
 
 from . import VERSION, config as configmod
 from .deliver import Dispatcher
 from .detect import Evaluator, log_outcomes
 from .fetch import Fetcher, load_records
-from .maint import forget_rule, gc, generate_dags, print_status, status
+from .maint import forget_rule, gc, print_status, status
 from .store import ALL_STATUSES, Store
 from .util import (EXIT_ERROR, EXIT_OK, EXIT_PARTIAL, EXIT_TRANSIENT, EXIT_USAGE, ConfigError, REDACT, log,
                    setup_stdio, unpack, warn)
 
-SCRIPT = Path(__file__).resolve().parent.parent / "api_watch.py"
+# 本体とは別に置ける拡張（あればコマンドを足す）。Dagu 連携の apiwatch_dagu は `dags` を足す
+PLUGINS = ("apiwatch_dagu",)
 
 
 def _sources(cfg, names: list[str] | None) -> list[str]:
@@ -39,8 +39,8 @@ def _rules(cfg, names: list[str] | None) -> list[str] | None:
 def cmd_check(cfg, store, a) -> int:
     log(f"設定: {cfg.path}")
     log(f"状態の保存先: {cfg.state_dir}")
-    files = cfg.connections.files
-    log("接続設定: " + (", ".join(str(f) for f in files) if files else "（なし）"))
+    log(f"接続設定: {cfg.connections.path or '（--connections の指定なし）'}")
+    log(f"受け渡し: {cfg.delivery.adapter if cfg.delivery else '（なし。検知を記録するだけ）'}")
     ok = True
     for name, src in cfg.sources.items():
         try:
@@ -52,14 +52,14 @@ def cmd_check(cfg, store, a) -> int:
             ok = False
             log(f"  取得元 {name}: {e}")
     for name, r in cfg.rules.items():
-        tg = ", ".join(f"{t.name}（{t.order}）" for t in r.targets) or "なし（検知だけ記録）"
+        tg = ", ".join(f"{t.name}→{t.workflow}（{t.order}）" for t in r.targets) or "なし（検知だけ記録）"
         log(f"  ルール {name}: {r.source} / ID {r.id_paths} / 監視 {r.watch or '全体'} / 発火 {r.on} / 受け渡し {tg}")
-    if cfg.dagu.mode == "api":
+    if cfg.delivery is not None:
         try:
-            cfg.resolve_connection(cfg.dagu.connection)
+            cfg.delivery.module.create(cfg.delivery.spec, cfg.connections)
         except ConfigError as e:
             ok = False
-            log(f"  dagu: {e}")
+            log(f"  delivery: {e}")
     log("問題ありません" if ok else "問題があります")
     return EXIT_OK if ok else EXIT_ERROR
 
@@ -126,9 +126,7 @@ def cmd_ack(cfg, store, a) -> int:
 
 def cmd_reconcile(cfg, store, a) -> int:
     c = Dispatcher(cfg, store).reconcile()
-    log(f"後続処理の確認: 完了 {c['done']}・失敗 {c['failed']}・変化なし {c['unchanged']}"
-        + (f"・確認できない {c['unsupported']}（dagu.mode: api でだけ確認できます。後続の DAG から ack してください）"
-           if c["unsupported"] else ""))
+    log(f"後続処理の確認: 完了 {c['done']}・失敗 {c['failed']}・変化なし・確認できない {c['unchanged']}")
     return EXIT_OK
 
 
@@ -208,7 +206,7 @@ def cmd_events(cfg, store, a) -> int:
         ev_only = store.q(q + " ORDER BY seq DESC LIMIT ?", tuple(eargs + [a.limit]))
     if a.json:
         out = [{"delivery": r["id"], "event": r["event_id"], "rule": r["rule"], "target": r["target"],
-                "dag": r["dag"], "record": r["rkey"], "kinds": r["kinds"].split(","), "status": r["status"],
+                "workflow": r["workflow"], "record": r["rkey"], "kinds": r["kinds"].split(","), "status": r["status"],
                 "attempts": r["attempts"], "error": r["last_error"]} for r in rows]
         out += [{"delivery": None, "event": r["id"], "rule": r["rule"], "record": r["rkey"],
                  "kinds": r["kinds"].split(","), "status": "recorded"} for r in ev_only]
@@ -233,7 +231,7 @@ def cmd_show(cfg, store, a) -> int:
         log(f"{a.id} が見つかりません")
         return EXIT_ERROR
     payload = unpack(ev["payload"])
-    payload["deliveries"] = [{"id": d["id"], "target": d["target"], "dag": d["dag"], "status": d["status"],
+    payload["deliveries"] = [{"id": d["id"], "target": d["target"], "workflow": d["workflow"], "status": d["status"],
                               "attempts": d["attempts"], "error": d["last_error"]}
                              for d in store.q("SELECT * FROM deliveries WHERE event_id=? ORDER BY target", (eid,))]
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
@@ -309,18 +307,10 @@ def cmd_forget_rule(cfg, store, a) -> int:
     return EXIT_OK
 
 
-def cmd_dags(cfg, store, a) -> int:
-    out = Path(a.out).expanduser().resolve()
-    paths = generate_dags(cfg, out, a.python or sys.executable, Path(a.script).resolve() if a.script else SCRIPT,
-                          a.prefix)
-    for p in paths:
-        log(f"書きました: {p}")
-    return EXIT_OK
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="api_watch.py", description="Dagu から動かす API ポーリング・変更検知")
     p.add_argument("--config", help=f"設定ファイル（既定: 環境変数 APIWATCH_CONFIG か {configmod.DEFAULT_CONFIG}）")
+    p.add_argument("--connections", help="接続設定（connections.yaml）のパス。認証情報はここからだけ読む")
     p.add_argument("--version", action="version", version=VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -348,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("delivery", help="受け渡しの ID（後続の DAG では ${DAG_RUN_ID}）")
     sp.add_argument("--failed", action="store_true")
     sp.add_argument("--message")
-    add("reconcile", cmd_reconcile, "Dagu に後続処理の状態を問い合わせて記録する（dagu.mode: api）")
+    add("reconcile", cmd_reconcile, "受け渡し先に後続処理の状態を問い合わせて記録する（問い合わせられるアダプタだけ）")
     for name, fn, h in (("retry", cmd_retry, "失敗した受け渡し・後続処理を同じ ID のまま再実行する"),):
         sp = add(name, fn, h)
         sp.add_argument("ids", nargs="*")
@@ -386,11 +376,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp = add("forget-rule", cmd_forget_rule, "設定から消したルールの判定状態を消す")
     sp.add_argument("rule")
-    sp = add("dags", cmd_dags, "Dagu の DAG を書き出す（取得元ごとの取得・再送・整理）")
-    sp.add_argument("--out", required=True)
-    sp.add_argument("--python", help="DAG が使う Python（既定: いま動いている Python）")
-    sp.add_argument("--script", help="DAG が呼ぶ api_watch.py（既定: このファイルの場所）")
-    sp.add_argument("--prefix", default="api-watch")
+    for name in PLUGINS:
+        try:
+            plugin = importlib.import_module(name)
+        except ImportError:
+            continue
+        plugin.register_cli(add)
     return p
 
 
@@ -399,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)
     try:
-        cfg = configmod.load(a.config)
+        cfg = configmod.load(a.config, a.connections)
         store = Store(cfg.state_dir)
     except ConfigError as e:
         warn(str(e))

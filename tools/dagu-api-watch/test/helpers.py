@@ -230,16 +230,13 @@ class Env:
         test.addCleanup(self.api.close)
         self.dagu_log = self.tmp / "dagu" / "runs.jsonl"
         self.dagu_log.parent.mkdir()
-        self._old_env = {k: os.environ.get(k) for k in ("FAKE_DAGU_LOG", "API_TOKEN", "APIWATCH_STATE_DIR",
-                                                         "APIWATCH_CONNECTIONS_FILE", "SKILL_CONNECTIONS_FILE")}
+        self._old_env = {k: os.environ.get(k) for k in ("FAKE_DAGU_LOG", "APIWATCH_STATE_DIR")}
         os.environ["FAKE_DAGU_LOG"] = str(self.dagu_log)
-        os.environ["API_TOKEN"] = TOKEN
-        for k in ("APIWATCH_STATE_DIR", "APIWATCH_CONNECTIONS_FILE", "SKILL_CONNECTIONS_FILE"):
-            os.environ.pop(k, None)
+        os.environ.pop("APIWATCH_STATE_DIR", None)
         test.addCleanup(self._restore_env)
         self.conn_file = self.tmp / "connections.json"
         self.conn_file.write_text(json.dumps({"fakeapi": [{"label": "default", "url": self.api.url,
-                                                           "token": "${API_TOKEN}"}]}), encoding="utf-8")
+                                                           "token": TOKEN}]}), encoding="utf-8")
         self.config_path = self.tmp / "api-watch.json"
 
     def _cleanup(self):
@@ -254,8 +251,8 @@ class Env:
                 os.environ[k] = v
 
     def write_config(self, sources: dict, rules: dict, **extra) -> Path:
-        cfg = {"version": 1, "state_dir": str(self.tmp / "state"), "connections_file": str(self.conn_file),
-               "dagu": {"mode": "cli", "executable": [sys.executable, str(FAKE_DAGU)]},
+        cfg = {"version": 1, "state_dir": str(self.tmp / "state"),
+               "delivery": {"adapter": "dagu", "mode": "cli", "executable": [sys.executable, str(FAKE_DAGU)]},
                "sources": sources, "rules": rules}
         cfg.update(extra)
         self.config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -278,7 +275,7 @@ class Env:
         out = io.StringIO()
         err = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(["--config", str(self.config_path), *args])
+            code = cli.main(["--config", str(self.config_path), "--connections", str(self.conn_file), *args])
         return code, out.getvalue() + err.getvalue()
 
     def ok(self, test, *args: str) -> str:

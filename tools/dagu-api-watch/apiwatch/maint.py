@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 from typing import Any
 
-from . import VERSION
 from .config import Config
 from .store import DEAD, FAILED, FINAL, SEND_FAILED, Store
 from .util import iso, now
@@ -199,79 +197,3 @@ def forget_rule(store: Store, name: str) -> str:
     if open_d:
         msg += f"（未完了の受け渡し {open_d} 件は残しています。要らなければ skip してください）"
     return msg
-
-
-# ---------------------------------------------------------------------------
-# DAG の生成
-# ---------------------------------------------------------------------------
-
-
-def _q(s: str) -> str:
-    return json.dumps(s, ensure_ascii=False)
-
-
-def _step(name: str, argv: list[str], *, depends: str | None, timeout: int, retry: dict | None) -> list[str]:
-    lines = [f"  - name: {name}"]
-    if depends:
-        lines.append(f"    depends: [{depends}]")
-    lines += ["    action: exec", "    with:", f"      command: {_q(argv[0])}", "      args:"]
-    lines += [f"        - {_q(a)}" for a in argv[1:]]
-    lines.append(f"    timeout_sec: {timeout}")
-    if retry:
-        lines.append("    retry_policy:")
-        lines.append(f"      limit: {retry['limit']}")
-        lines.append(f"      interval_sec: {retry['interval_sec']}")
-        if retry.get("backoff"):
-            lines.append("      backoff: true")
-            lines.append(f"      max_interval_sec: {retry['max_interval_sec']}")
-        if retry.get("exit_code"):
-            lines.append(f"      exit_code: {json.dumps(retry['exit_code'])}")
-    return lines
-
-
-def _header(cfg: Config, desc: str, schedule: str) -> list[str]:
-    lines = [f"# dagu-api-watch {VERSION} が生成（api_watch.py dags）。手で直さず、設定を変えて作り直してください。",
-             f"# 設定: {cfg.path}",
-             f"description: {_q(desc)}",
-             f"schedule: {_q(schedule)}",
-             "type: graph",
-             f"hist_retention_days: {cfg.dagu.hist_retention_days}"]
-    if cfg.dagu.dotenv:
-        lines.append("dotenv:")
-        lines += [f"  - {_q(d)}" for d in cfg.dagu.dotenv]
-    lines.append("steps:")
-    return lines
-
-
-def generate_dags(cfg: Config, out_dir: Path, python: str, script: Path, prefix: str = "api-watch") -> list[Path]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    base = [python, str(script), "--config", str(cfg.path)]
-    written = []
-    for name, src in cfg.sources.items():
-        fetch_timeout = int(max(300, src.timeout_sec * src.retry_attempts * 4 + src.max_wait_sec + 120))
-        lines = _header(cfg, f"{name} を取得し、ルールで判定して Dagu へ渡す", src.schedule)
-        lines += _step("fetch", base + ["fetch", "--source", name], depends=None, timeout=fetch_timeout,
-                       retry={"limit": 3, "interval_sec": 60, "backoff": True, "max_interval_sec": 600,
-                              "exit_code": [3]})
-        lines += _step("evaluate", base + ["evaluate", "--source", name], depends="fetch", timeout=600,
-                       retry={"limit": 2, "interval_sec": 10})
-        lines += _step("dispatch", base + ["dispatch", "--source", name], depends="evaluate", timeout=600, retry=None)
-        path = out_dir / f"{prefix}-{name}.yaml"
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        written.append(path)
-    lines = _header(cfg, "未判定の取得結果の判定と、渡せていないイベントの再送・後続処理の完了の確認",
-                    cfg.dagu.dispatch_schedule)
-    lines += _step("evaluate", base + ["evaluate"], depends=None, timeout=600, retry=None)
-    lines += _step("dispatch", base + ["dispatch"], depends="evaluate", timeout=600, retry=None)
-    if cfg.dagu.mode == "api":
-        lines += _step("reconcile", base + ["reconcile"], depends="dispatch", timeout=300, retry=None)
-    path = out_dir / f"{prefix}-dispatch.yaml"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    written.append(path)
-    lines = _header(cfg, "保持期間を過ぎた取得結果・イベントを整理する", cfg.dagu.maintenance_schedule)
-    lines += _step("gc", base + ["gc"], depends=None, timeout=1800, retry=None)
-    path = out_dir / f"{prefix}-maintenance.yaml"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    written.append(path)
-    return written
-

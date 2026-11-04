@@ -238,7 +238,8 @@ class ResumeTest(unittest.TestCase):
                                               pagination={"type": "page", "size_param": "per_page", "size": 2})},
                          {"r": simple_rules("d", initial="emit")})
         env.api.block_page = ("/page", "2")
-        p = subprocess.Popen([sys.executable, str(SCRIPT), "--config", str(env.config_path), "fetch"],
+        p = subprocess.Popen([sys.executable, str(SCRIPT), "--config", str(env.config_path),
+                              "--connections", str(env.conn_file), "fetch"],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(os.environ))
         self.assertTrue(env.api.blocked.wait(20))
         code, out = env.run("fetch")                                  # 取得中は 2 つ目を始めない
@@ -259,7 +260,7 @@ class EvaluateTest(unittest.TestCase):
         for i in (1, 2):
             env.api.put(i, status="open", title="t")
         src = {"items": env.source("/all")}
-        d = {"dag": "d", "order": "none"}
+        d = {"workflow": "d", "order": "none"}
         env.write_config(src, {"r": simple_rules(d)})
         env.ok(self, "run")
         env.write_config(src, {"r": simple_rules(d, watch=["status", "title"])})
@@ -280,7 +281,7 @@ class EvaluateTest(unittest.TestCase):
         env.write_config({"items": env.source("/all")}, {"r": simple_rules("d")})
         env.ok(self, "run")
         env.conn_file.write_text(json.dumps({"fakeapi": [{"label": "default", "url": env.api.url,
-                                                          "token": "${API_TOKEN}", "extra": "scope2"}]}))
+                                                          "token": TOKEN, "extra": "scope2"}]}))
         env.api.put(1, status="closed")
         out = env.ok(self, "run")
         self.assertIn("取得条件か認証が変わった", out)
@@ -310,7 +311,7 @@ class EvaluateTest(unittest.TestCase):
         env.api.put(1, status="open")
         env.write_config({"items": env.source("/all")},
                          {"good": simple_rules("d"),
-                          "bad": simple_rules("e", targets=[{"dag": "e", "params": {"X": "{{ event.nothing }}"}}])})
+                          "bad": simple_rules("e", targets=[{"workflow": "e", "params": {"X": "{{ event.nothing }}"}}])})
         env.ok(self, "run")
         env.api.put(1, status="closed")
         code, out = env.run("run")
@@ -324,7 +325,7 @@ class DeliveryTest(unittest.TestCase):
     def _two_changes(self, env, **target):
         env.api.put(1, status="s0")
         env.api.put(2, status="s0")
-        t = {"dag": "d"}
+        t = {"workflow": "d"}
         t.update(target)
         env.write_config({"items": env.source("/all")}, {"r": simple_rules(t)})
         env.ok(self, "run")
@@ -359,7 +360,7 @@ class DeliveryTest(unittest.TestCase):
         env.api.put(1, status="a")
         env.api.put(2, status="a")
         env.write_config({"items": env.source("/all")},
-                         {"r": simple_rules({"dag": "flaky", "max_attempts": 2, "retry_backoff_sec": 0}, "steady")})
+                         {"r": simple_rules({"workflow": "flaky", "max_attempts": 2, "retry_backoff_sec": 0}, "steady")})
         env.ok(self, "run")
         env.fail_dags("flaky")
         env.api.put(1, status="b")
@@ -436,9 +437,9 @@ class DeliveryTest(unittest.TestCase):
         env.conn_file.write_text(json.dumps(conns))
         env.api.put(1, status="a")
         env.write_config({"items": env.source("/all")},
-                         {"r": simple_rules({"dag": "handler.yaml", "params": {"TITLE": "{{ event.after.status }}"},
+                         {"r": simple_rules({"workflow": "handler.yaml", "params": {"TITLE": "{{ event.after.status }}"},
                                              "queue": "q1"})},
-                         dagu={"mode": "api", "connection": "dagu"})
+                         delivery={"adapter": "dagu", "mode": "api", "connection": "dagu"})
         env.ok(self, "run")
         env.api.put(1, status="b")
         env.ok(self, "run")
@@ -446,7 +447,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(dagu.runs[("handler", did)]["params"]["TITLE"], "b")
         self.assertEqual(dagu.calls[-1][2]["queue"], "q1")
         out = env.ok(self, "reconcile")
-        self.assertIn("変化なし 1", out)
+        self.assertIn("確認できない 1", out)
         dagu.runs[("handler", did)]["status"] = "failed"
         env.ok(self, "reconcile")
         self.assertEqual(env.deliveries()[0]["status"], "failed")
@@ -507,13 +508,11 @@ class RetentionTest(unittest.TestCase):
 class OpsTest(unittest.TestCase):
     def test_dags_and_check(self):
         env = Env(self)
-        env.write_config({"items": env.source("/all", schedule="*/10 * * * *")}, {"r": simple_rules("d")},
-                         dagu={"mode": "cli", "executable": [sys.executable, str(FAKE_DAGU)],
-                               "dotenv": ["~/.config/dagu/api-watch.env"]})
+        env.write_config({"items": env.source("/all", schedule="*/10 * * * *")}, {"r": simple_rules("d")})
         out = env.ok(self, "check")
         self.assertIn("問題ありません", out)
         self.assertNotIn(TOKEN, out)
-        env.ok(self, "dags", "--out", str(env.tmp / "dags"))
+        env.ok(self, "dags", "--out", str(env.tmp / "dags"), "--dotenv", "~/.config/dagu/api-watch.env")
         names = sorted(p.name for p in (env.tmp / "dags").iterdir())
         self.assertEqual(names, ["api-watch-dispatch.yaml", "api-watch-items.yaml", "api-watch-maintenance.yaml"])
         try:
@@ -525,10 +524,13 @@ class OpsTest(unittest.TestCase):
         self.assertEqual([s["name"] for s in d["steps"]], ["fetch", "evaluate", "dispatch"])
         self.assertEqual(d["steps"][1]["depends"], ["fetch"])
         self.assertEqual(d["steps"][0]["retry_policy"]["exit_code"], [3])
-        self.assertEqual(d["steps"][0]["with"]["args"][-3:], ["fetch", "--source", "items"])
+        args = d["steps"][0]["with"]["args"]
+        self.assertEqual(args[-3:], ["fetch", "--source", "items"])
+        self.assertEqual(args[args.index("--connections") + 1], str(env.conn_file.resolve()))   # 接続設定のパスを渡す
+        self.assertEqual(Path(args[0]).name, "api_watch.py")
         self.assertEqual(d["dotenv"], ["~/.config/dagu/api-watch.env"])
 
-    def test_yaml_config_and_workspace_connections(self):
+    def test_connections_only_from_cli_path(self):
         try:
             import yaml  # noqa: F401
         except ImportError:
@@ -537,13 +539,15 @@ class OpsTest(unittest.TestCase):
         env.api.put(1, status="a")
         ws = env.tmp / "ws"
         (ws / ".github").mkdir(parents=True)
+        # 決まった場所に置いても読まない
         (ws / ".github" / "connections.yaml").write_text(
-            f"fakeapi:\n  - label: work\n    url: {env.api.url}\n    token: ${{API_TOKEN}}\n", encoding="utf-8")
+            f"fakeapi:\n  - label: work\n    url: {env.api.url}\n    token: {TOKEN}\n", encoding="utf-8")
         (ws / "conf").mkdir()
         env.config_path = ws / "conf" / "api-watch.yaml"
         env.config_path.write_text(f"""
 state_dir: ../state
-dagu:
+delivery:
+  adapter: dagu
   executable: [{json.dumps(sys.executable)}, {json.dumps(str(FAKE_DAGU))}]
 sources:
   items:
@@ -557,14 +561,84 @@ rules:
     source: items
     id: id
     initial: emit
+    on: [appeared]
     targets: [d]
 """, encoding="utf-8")
+        old = os.getcwd()
+        os.chdir(ws)
+        self.addCleanup(os.chdir, old)
+        from apiwatch import cli
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            code = cli.main(["--config", str(env.config_path), "fetch"])
+        self.assertEqual(code, 1)
+        self.assertIn("--connections", buf.getvalue())
+        self.assertEqual(env.api.count(), 0)
+        env.conn_file = ws / "my-connections.yaml"
+        env.conn_file.write_text(
+            f"fakeapi:\n  - label: work\n    url: {env.api.url}\n    token: {TOKEN}\n", encoding="utf-8")
         env.ok(self, "run")
         self.assertEqual(len(env.enqueued()), 1)
-        os.environ.pop("API_TOKEN")
-        code, out = env.run("fetch")
-        self.assertEqual(code, 1)
-        self.assertIn("API_TOKEN が設定されていません", out)
+
+    def test_core_runs_without_dagu(self):
+        env = Env(self)
+        env.api.put(1, status="a")
+        sink = env.tmp / "handoff.jsonl"
+        handoff = env.tmp / "handoff.py"
+        handoff.write_text(
+            "import json, os, sys\n"
+            f"log = {str(sink)!r}\n"
+            "runs = [json.loads(l)['run_id'] for l in open(log, encoding='utf-8')] if os.path.exists(log) else []\n"
+            "if sys.argv[2] in runs:\n    sys.exit(9)\n"
+            "rec = {'workflow': sys.argv[1], 'run_id': sys.argv[2], 'record': os.environ['APIWATCH_RECORD_ID'],\n"
+            "       'title': json.loads(sys.argv[3])['TITLE']}\n"
+            "open(log, 'a', encoding='utf-8').write(json.dumps(rec) + '\\n')\n", encoding="utf-8")
+        env.write_config({"items": env.source("/all")},
+                         {"r": simple_rules({"workflow": "notify", "params": {"TITLE": "{{ event.after.status }}"}})},
+                         delivery={"adapter": "command",
+                                   "command": [sys.executable, str(handoff), "{{ workflow }}", "{{ run_id }}",
+                                               "{{ params_json }}"]})
+        env.ok(self, "run")
+        env.api.put(1, status="b")
+        env.ok(self, "run")
+        recs = [json.loads(x) for x in sink.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(r["workflow"], r["record"], r["title"]) for r in recs], [("notify", "1", "b")])
+        s = env.store()
+        with s.tx() as db:
+            db.execute("UPDATE deliveries SET status='pending'")
+        s.close()
+        out = env.ok(self, "dispatch")
+        self.assertIn("既に渡し済み 1", out)
+        # 本体は Dagu 連携を import しない
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import apiwatch.cli, apiwatch.deliver, apiwatch.detect, "
+                "apiwatch.fetch; assert 'apiwatch_dagu' not in sys.modules, 'imported'")
+        subprocess.run([sys.executable, "-c", code, str(ROOT)], check=True)
+
+    def test_without_dagu_package(self):
+        # apiwatch_dagu を置かない配布でも本体は動き、dagu アダプタを指定したときだけ止まる
+        env = Env(self)
+        import shutil
+        lone = env.tmp / "lone"
+        shutil.copytree(ROOT / "apiwatch", lone / "apiwatch")
+        shutil.copy(SCRIPT, lone / "api_watch.py")
+        env.api.put(1)
+        env.write_config({"items": env.source("/all")}, {"r": {"source": "items", "id": "id"}})
+        cfg = json.loads(env.config_path.read_text(encoding="utf-8"))
+        del cfg["delivery"]
+        env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
+        argv = [sys.executable, str(lone / "api_watch.py"), "--config", str(env.config_path),
+                "--connections", str(env.conn_file)]
+        p = subprocess.run(argv + ["run"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        p = subprocess.run(argv + ["--help"], capture_output=True, text=True, encoding="utf-8")
+        self.assertNotIn("dags", p.stdout)
+        cfg["delivery"] = {"adapter": "dagu"}
+        env.config_path.write_text(json.dumps(cfg), encoding="utf-8")
+        p = subprocess.run(argv + ["check"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("apiwatch_dagu", p.stderr)
 
     def test_example_config_loads(self):
         try:
@@ -572,7 +646,7 @@ rules:
         except ImportError:
             self.skipTest("PyYAML が要る")
         from apiwatch import config  # noqa: E402
-        cfg = config.load(ROOT / "api-watch.yaml.example")
+        cfg = config.load(ROOT / "api-watch.yaml.example")   # 接続設定は使う時点まで読まない
         self.assertEqual(sorted(cfg.sources), ["gitlab-issues", "tickets"])
         self.assertEqual(cfg.rules["urgent-tickets"].targets[1].name, "ticket-audit")
         self.assertEqual(cfg.rules["bug-labeled"].on, ["entered"])          # YAML 1.1 で on: が true にならない

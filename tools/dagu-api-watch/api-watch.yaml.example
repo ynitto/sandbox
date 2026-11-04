@@ -1,22 +1,27 @@
-# dagu-api-watch の設定の例。~/.config/dagu/api-watch.yaml にコピーして使う。
-# 認証情報はここに書かず、connections.yaml（スキル共通の接続設定）に書く。
+# dagu-api-watch の設定の例。~/.config/api-watch/api-watch.yaml などにコピーして使う。
+# 認証情報はここに書かず、connections.yaml（スキル共通の接続設定）に書き、そのパスを実行時に渡す:
+#   python3 api_watch.py --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml run
 
 version: 1
 state_dir: ~/.local/share/dagu-api-watch     # 状態（SQLite）とイベントのファイルの置き場所
-# connections_file: ~/.github/connections.yaml   # 省略時はいつもの場所を探す（README 参照）
 
 retention:
   fetches_keep: 3        # 取得結果を最低何回分残すか（判定のやり直し用）
   fetch_days: 7          # これより古い取得結果は消す（未判定のものは消さない）
   events_days: 30        # 後続処理まで終わったイベントを残す日数（未完了のものは消さない）
 
-dagu:
-  mode: cli              # cli: dagu enqueue / api: Dagu の REST API / command: 任意のコマンド
+# 受け渡しのアダプタ。dagu は Dagu 連携（apiwatch_dagu）、command は任意のコマンド（Dagu を使わないとき）
+delivery:
+  adapter: dagu
+  mode: cli              # cli: dagu enqueue / api: Dagu の REST API
   executable: dagu       # Windows なら dagu.exe のパスでもよい
   # mode: api のとき:
   # connection: dagu     # connections.yaml の dagu（url と token、または user と password）
-  dotenv:                # 生成する DAG に読み込ませる環境変数のファイル（connections.yaml の ${VAR} 用）
-    - ~/.config/dagu/api-watch.env
+
+# Dagu を使わないときの例:
+# delivery:
+#   adapter: command
+#   command: [python3, /path/to/handoff.py, "{{ workflow }}", "{{ run_id }}"]
 
 sources:
   # GitLab の issue（ページ番号のページング・更新日時による増分取得）
@@ -79,7 +84,7 @@ rules:
     on: [appeared, changed]
     initial: baseline                # 初回は今ある issue を基準値にするだけ
     targets:
-      - dag: issue-handler
+      - workflow: issue-handler
         params:
           ISSUE_TITLE: "{{ event.after.title | default: '' }}"
 
@@ -90,7 +95,7 @@ rules:
     condition: { path: labels, op: contains, value: bug }
     on: [entered]
     targets:
-      - dag: bug-triage
+      - workflow: bug-triage
         order: completion            # 同じ issue は前の実行が終わってから次を渡す（既定）
 
   # 優先度が高いチケット（一致している間は観測のたび / 外れたとき）
@@ -105,7 +110,7 @@ rules:
     watch: [priority, status, assignee]
     on: [entered, exited, changed]
     targets:
-      - dag: page-oncall
-      - name: ticket-audit           # 同じ DAG を 2 回使うときなどは name で区別する
-        dag: audit-log
+      - workflow: page-oncall
+      - name: ticket-audit           # 同じワークフローを 2 回使うときなどは name で区別する
+        workflow: audit-log
         order: none

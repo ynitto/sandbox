@@ -181,8 +181,8 @@ class ConfigTest(unittest.TestCase):
             {"source": "s"},
             {"source": "s", "id": "id", "on": ["entered"]},
             {"source": "s", "id": "id", "on": ["bogus"]},
-            {"source": "s", "id": "id", "targets": [{"dag": "a", "order": "random"}]},
-            {"source": "s", "id": "id", "targets": [{"dag": "a", "params": {"X": "{{ conn.token }}"}}]},
+            {"source": "s", "id": "id", "targets": [{"workflow": "a", "order": "random"}]},
+            {"source": "s", "id": "id", "targets": [{"workflow": "a", "params": {"X": "{{ conn.token }}"}}]},
             {"source": "s", "id": "id", "typo": 1},
         ]
         for d in bad:

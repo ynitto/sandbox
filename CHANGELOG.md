@@ -9,8 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ### dagu-api-watch: 任意の API を Dagu からポーリングし、変化を検知して DAG へ渡す（0.1.0）
 
-- `tools/dagu-api-watch/` を足す。`api_watch.py`（標準ライブラリ + YAML の設定なら PyYAML）が fetch / evaluate / dispatch の 3 段を持ち、
-  `dags` で取得元ごとの DAG・再送の DAG・整理の DAG を書き出す。スケジュール・再試行・キュー・並列数・ログ・履歴は Dagu に任せ、常駐しない
+- `tools/dagu-api-watch/` を足す。`api_watch.py`（標準ライブラリ + YAML の設定なら PyYAML）が fetch / evaluate / dispatch の 3 段を持つ。
+  スケジュール・再試行・キュー・並列数・ログ・履歴は Dagu に任せ、常駐しない
+- 本体（`apiwatch/`）は Dagu に依存しない。受け渡しはアダプタ（`delivery.adapter`）に任せ、Dagu へのアダプタと DAG の生成（`dags`）は
+  別パッケージ `apiwatch_dagu/` に置いた。Dagu を使わないときは `adapter: command` で任意のコマンドへ渡せる
+- 認証情報は `--connections <パス>` で渡した connections.yaml からだけ読む（環境変数・決まった場所からは探さない）
 - 取得: URL・メソッド・ヘッダー・クエリ・本文・レコードの場所を設定で書く。ページングは page / offset / cursor / next_url / Link ヘッダー、
   増分は最大値（更新日時など）とカーソル。条件付き要求（ETag / Last-Modified）、取得元単位のレート制限・再試行・Retry-After。
   ページ単位で保存し、途中で止まっても続きから再開する。全ページそろうまで判定も増分の位置の前進もしない

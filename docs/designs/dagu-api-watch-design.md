@@ -15,6 +15,8 @@
 | 実行管理は Dagu | 定期実行・再試行・ログ・履歴は Dagu の DAG、後続処理の並列数はキュー、後続処理の再試行・復旧は後続の DAG の `retry_policy` と `dagu retry` |
 | このツールが持つもの | Dagu では表せない状態だけ: 取得の途中経過と位置、ルールごとの前回の観測値、イベントと受け渡しの状態 |
 | 特定のサービス・言語に依らない | 要求・ページング・増分・抽出・判定はすべて設定。後続処理は任意の DAG（言語は問わない） |
+| Dagu 連携は本体の外 | 本体（`apiwatch/`）は受け渡しをアダプタの口（§5.3）越しにだけ行い、Dagu を知らない。Dagu へのアダプタと DAG の生成は別パッケージ `apiwatch_dagu/` |
+| 認証情報の場所は実行時に渡す | connections.yaml のパスはコマンド行の `--connections` だけで受け取る（§6） |
 
 ## 2. 構成
 
@@ -28,6 +30,22 @@
  ack ─────▶ │ leases（取得・判定の排他）                                                 │
             └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 2.0 本体と Dagu 連携の分離
+
+| パッケージ | 責務 | 依存 |
+|---|---|---|
+| `apiwatch`（本体） | 取得・判定・状態・受け渡しの行の管理（順序・再送・ack・retry・skip）・運用のコマンド | 標準ライブラリ（YAML の設定なら PyYAML） |
+| `apiwatch.adapters` | アダプタの口（`parse` / `create`、`enqueue` / `retry` / `status`）と、任意のコマンドで渡す `command` | 本体だけ |
+| `apiwatch_dagu` | `dagu` アダプタ（CLI / REST API）と `dags` コマンド（DAG の生成） | 本体の公開部品 + Dagu |
+
+- 本体は `delivery.adapter` の名前からモジュールを `importlib` で読み込むだけで、`apiwatch_dagu` を import しない（テストで、
+  本体の主要モジュールを読み込んでも `apiwatch_dagu` が読み込まれないことと、`apiwatch_dagu/` を置かない配布で `run` が通り
+  `dags` が出ないことを確かめている）。コマンド行の `dags` は、`apiwatch_dagu` が見つかったときにその `register_cli` が足す
+- アダプタが約束するのは「同じ run_id を 2 回実行しない（2 回目は duplicate を返す）」こと。本体の再送の正しさはこれだけに依る
+- 本体の語彙は「ワークフロー（`targets[].workflow`）」「run_id」。Dagu の DAG 名・実行 ID への読み替えはアダプタが持つ
+- 起動の間隔（取得元の `schedule`）は基盤に依らない cron の文字列として本体の設定に置き、`dags` がそれを DAG の `schedule` に写す。
+  DAG だけに要る項目（dotenv・再送 / 整理の DAG の間隔・履歴の日数）は設定に置かず `dags` の引数にした（本体の設定に Dagu の節を作らない）
 
 段を分けたのは、Dagu の再試行がその段だけをやり直すようにするため。判定や受け渡しを再試行しても、
 成功済みの取得は繰り返さない（生成する DAG は fetch → evaluate → dispatch の 3 ステップで、fetch だけが
@@ -167,13 +185,16 @@ A→B→A は 2 回の変化として検知する（取得の間隔の中で起�
 別のレコード・別の受け渡し先は制約を受けないので、Dagu のキューの並列数まで並ぶ。失敗した受け渡しが止めるのは、同じレコードの
 後ろのイベントだけ。`skip` で先へ進められる。
 
-### 5.3 Dagu との口
+### 5.3 アダプタの口と Dagu アダプタ
+
+本体は `enqueue(run_id, workflow, params, queue) -> ok | duplicate`・`retry(run_id, workflow)`・`status(run_id, workflow) -> done | failed | 不明`
+だけを呼ぶ（`apiwatch/adapters/__init__.py`）。`command` アダプタは argv のテンプレートで同じことをする（終了コード 9 か
+`already exists` を duplicate とみなす）。以下は `apiwatch_dagu` の `dagu` アダプタ。
 
 | mode | enqueue | 再実行 | 状態の問い合わせ |
 |---|---|---|---|
 | `cli` | `dagu enqueue --run-id=<ID> [--queue=Q] <DAG> -- K=V ...`（argv で渡し、シェルを通さない） | `dagu retry --run-id=<ID> <DAG>` | しない（出力は人向け）。後続の DAG から `ack` |
 | `api` | `POST /api/v1/dags/{name}/enqueue`（`dagRunId`・`params`（JSON 文字列）・`queue`） | `POST /api/v1/dag-runs/{name}/{id}/retry` | `GET /api/v1/dag-runs/{name}/{id}` の `statusLabel`（`succeeded` / `partially_succeeded` → done、`failed` / `aborted` / `rejected` → failed） |
-| `command` | 任意の argv（試験・独自の受け口） | しない | しない |
 
 Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`internal/ir/run_id.go`）で、実行 ID の検査と重複時の応答を確かめた。
 
@@ -183,10 +204,14 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 ### 5.4 完了の記録
 
 後続の DAG の `handler_on.success` / `failure` から `ack ${DAG_RUN_ID}` を呼ぶのが基本。`mode: api` なら再送の DAG の
-`reconcile` が Dagu に問い合わせて記録するので、後続の DAG を変えずに済む。どちらも無い場合、`order: completion` の受け渡し先では
+`reconcile` が Dagu に問い合わせて記録するので、後続の DAG を変えずに済む（`command` アダプタでは `status_command`）。どちらも無い場合、`order: completion` の受け渡し先では
 同じレコードの次のイベントが渡らない（README に明記）。
 
 ## 6. 運用
+
+- 接続設定: connections.yaml のパスはコマンド行の `--connections` だけで受け取り、環境変数（`SKILL_CONNECTIONS_FILE` など）や
+  決まった場所（`.github/connections.yaml` など）からは探さない。どのファイルの認証情報を使うかを、実行のたびに呼び出し側が決める。
+  `dags` は渡されたパスを生成する DAG の argv に入れる。ファイルの中の `${VAR}` は connections.yaml の書式として展開する
 
 - `status`: 取得元ごとの最後の取得（ページ数・件数・要求回数・304 のページ数）・エラー・途中の取得・待たされている時刻、
   ルールごとの判定位置と未判定の回数・判定のエラー・受け渡しの内訳、失敗している受け渡しの一覧
@@ -206,7 +231,7 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 
 ## 8. 検証
 
-`tools/dagu-api-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。
+`tools/dagu-api-watch/test/`（標準ライブラリだけ。CI は Linux と Windows で回す）。43 件。
 
 - `test_detect.py`: パス・条件式・テンプレート、正規化（キー順・配列の順序・`unordered`・`ignore`・欠落と null）、
   種類（A→B→A・`entered` / `exited` / `matching`・`filter` と `removed`・増分では消えたとしない）、複合 ID、イベント ID の安定性、設定の検査
@@ -216,6 +241,7 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
   トークンがログ・状態・DB・WAL に残らないこと、途中で失敗した取得の続きからの再開、強制終了したプロセスからの引き継ぎ、ルールの変更、
   取得元の認証の変更、API なしでの判定のやり直し、判定のエラーの隔離、順序（completion / enqueue）、同じ ID での再送と受け渡し先ごとの隔離、
   受け渡し直後の停止からの復旧、ack / retry、REST API での受け渡し・完了の確認・409、保持期間が未処理を消さないこと、DAG の生成、
-  YAML の設定とワークスペースの接続設定
+  YAML の設定、接続設定を `--connections` からだけ読むこと（決まった場所に置いても読まない・無ければ問い合わせ前に止まる）、
+  `adapter: command` での受け渡しと重複の検出、本体が `apiwatch_dagu` を import しないこと、`apiwatch_dagu/` を置かない配布での動作
 - 生成した DAG と `dags/api-watch-handler.example.yaml` を Dagu v2.25.2 の `internal/cmn/schema/dag.schema.json` で検証し、
   エラー 0 件を確認した（2026-11-04、手元）。Dagu 本体での実行はまだ確かめていない

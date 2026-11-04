@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import jpath, template
+from . import adapters, jpath, template
 from .connections import Connections, load_yaml_or_json, parse_ref
 from .util import ConfigError, canonical, sha
 
@@ -18,7 +18,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 EVENT_KINDS = ("appeared", "changed", "entered", "exited", "matching", "removed")
 PAGINATION_TYPES = ("none", "page", "offset", "cursor", "next_url", "link_header")
 ORDER_MODES = ("completion", "enqueue", "none")
-DEFAULT_CONFIG = "~/.config/dagu/api-watch.yaml"
+DEFAULT_CONFIG = "~/.config/api-watch/api-watch.yaml"
 
 
 def _expect(cond: bool, msg: str) -> None:
@@ -127,7 +127,7 @@ class SourceSpec:
 @dataclass
 class TargetSpec:
     name: str
-    dag: str
+    workflow: str
     params: dict
     queue: str | None
     order: str
@@ -163,18 +163,15 @@ class RuleSpec:
 
 
 @dataclass
-class DaguSpec:
-    mode: str = "cli"               # cli | api | command
-    executable: list[str] = field(default_factory=lambda: ["dagu"])
-    extra_args: list[str] = field(default_factory=list)
-    url: str | None = None
-    connection: tuple[str, str] | None = None
-    command: list[str] | None = None
-    timeout_sec: float = 60
-    dotenv: list[str] = field(default_factory=list)
-    dispatch_schedule: str = "* * * * *"
-    maintenance_schedule: str = "17 3 * * *"
-    hist_retention_days: int = 14
+class DeliverySpec:
+    """受け渡しのアダプタ（本体は名前と、アダプタが検査した設定を持つだけ）。"""
+    adapter: str
+    spec: Any
+    module: Any
+
+    @property
+    def timeout_sec(self) -> float:
+        return float(getattr(self.spec, "timeout_sec", 60))
 
 
 @dataclass
@@ -191,7 +188,7 @@ class Config:
     state_dir: Path
     sources: dict[str, SourceSpec]
     rules: dict[str, RuleSpec]
-    dagu: DaguSpec
+    delivery: DeliverySpec | None
     retention: Retention
     connections: Connections
 
@@ -324,11 +321,12 @@ def _source(name: str, d: Any) -> SourceSpec:
 def _target(rule: str, i: int, d: Any) -> TargetSpec:
     where = f"rules.{rule}.targets[{i}]"
     if isinstance(d, str):
-        d = {"dag": d}
-    _expect(isinstance(d, dict) and isinstance(d.get("dag"), str), f"{where}.dag: 受け渡し先の DAG 名を書いてください")
-    _known(d, {"name", "dag", "params", "queue", "order", "max_attempts", "retry_backoff_sec", "retry_max_backoff_sec",
+        d = {"workflow": d}
+    _expect(isinstance(d, dict) and isinstance(d.get("workflow"), str),
+            f"{where}.workflow: 受け渡し先のワークフロー（Dagu なら DAG 名）を書いてください")
+    _known(d, {"name", "workflow", "params", "queue", "order", "max_attempts", "retry_backoff_sec", "retry_max_backoff_sec",
                "inline_payload"}, where)
-    name = str(d.get("name") or d["dag"])
+    name = str(d.get("name") or d["workflow"])
     _expect(NAME_RE.match(name) is not None, f"{where}.name: 英数字・- _ . で 64 文字以内にしてください")
     params = d.get("params") or {}
     _expect(isinstance(params, dict), f"{where}.params: 辞書で書いてください")
@@ -337,7 +335,7 @@ def _target(rule: str, i: int, d: Any) -> TargetSpec:
     order = d.get("order", "completion")
     _expect(order in ORDER_MODES, f"{where}.order: {' / '.join(ORDER_MODES)} のどれかです")
     return TargetSpec(
-        name=name, dag=d["dag"], params=params, queue=d.get("queue"), order=order,
+        name=name, workflow=d["workflow"], params=params, queue=d.get("queue"), order=order,
         max_attempts=_int(d, "max_attempts", 10, where, 1),
         retry_backoff_sec=_num(d, "retry_backoff_sec", 30, where),
         retry_max_backoff_sec=_num(d, "retry_max_backoff_sec", 3600, where),
@@ -383,7 +381,7 @@ def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:
     _expect(isinstance(tgts, list), f"{where}.targets: 配列で書いてください")
     targets = [_target(name, i, t) for i, t in enumerate(tgts)]
     names = [t.name for t in targets]
-    _expect(len(names) == len(set(names)), f"{where}.targets: 同じ DAG を 2 回書くときは name で区別してください")
+    _expect(len(names) == len(set(names)), f"{where}.targets: 同じワークフローを 2 回書くときは name で区別してください")
     for t in targets:
         for ref in template.references(t.params):
             _expect(ref.split(".")[0] in ("event", "env", "delivery"),
@@ -397,41 +395,25 @@ def _rule(name: str, d: Any, sources: dict[str, SourceSpec]) -> RuleSpec:
     )
 
 
-def _dagu(d: Any) -> DaguSpec:
-    where = "dagu"
+def _delivery(d: Any) -> DeliverySpec | None:
+    """delivery: {adapter: <名前>, ...アダプタの設定}。アダプタは名前で読み込み、本体は中身を知らない。"""
     if d is None:
-        return DaguSpec()
-    _expect(isinstance(d, dict), f"{where}: 辞書で書いてください")
-    _known(d, {"mode", "executable", "extra_args", "url", "connection", "command", "timeout_sec", "dotenv",
-               "dispatch_schedule", "maintenance_schedule", "hist_retention_days"}, where)
-    mode = d.get("mode", "cli")
-    _expect(mode in ("cli", "api", "command"), f"{where}.mode: cli / api / command のどれかです")
-    exe = d.get("executable", os.environ.get("DAGU_EXECUTABLE", "dagu"))
-    exe_l = [exe] if isinstance(exe, str) else exe
-    _expect(isinstance(exe_l, list) and exe_l and all(isinstance(x, str) for x in exe_l),
-            f"{where}.executable: 実行ファイル（または argv の配列）を書いてください")
-    spec = DaguSpec(mode=mode, executable=exe_l, extra_args=list(d.get("extra_args") or []), url=d.get("url"),
-                    connection=parse_ref(d.get("connection"), f"{where}.connection"),
-                    command=d.get("command"), timeout_sec=_num(d, "timeout_sec", 60, where, 1),
-                    dotenv=list(d.get("dotenv") or []),
-                    dispatch_schedule=str(d.get("dispatch_schedule", "* * * * *")),
-                    maintenance_schedule=str(d.get("maintenance_schedule", "17 3 * * *")),
-                    hist_retention_days=_int(d, "hist_retention_days", 14, where, 1))
-    if mode == "api":
-        _expect(spec.url is not None or spec.connection is not None,
-                f"{where}: mode: api には url か connection（url と token / user・password）が要ります")
-    if mode == "command":
-        _expect(isinstance(spec.command, list) and spec.command, f"{where}.command: argv の配列を書いてください")
-    return spec
+        return None
+    _expect(isinstance(d, dict) and isinstance(d.get("adapter"), str),
+            "delivery.adapter: 受け渡しのアダプタ（dagu / command など）を書いてください")
+    mod = adapters.load_module(d["adapter"])
+    options = {k: v for k, v in d.items() if k != "adapter"}
+    return DeliverySpec(adapter=d["adapter"], spec=mod.parse(options, "delivery"), module=mod)
 
 
-def load(path: str | Path | None = None) -> Config:
+def load(path: str | Path | None = None, connections: str | Path | None = None) -> Config:
+    """設定を読む。connections は connections.yaml のパス（コマンド行の --connections）。"""
     p = Path(os.path.expanduser(str(path or os.environ.get("APIWATCH_CONFIG") or DEFAULT_CONFIG))).resolve()
     if not p.is_file():
         raise ConfigError(f"設定ファイルが見つかりません: {p}")
     d = load_yaml_or_json(p)
     _expect(isinstance(d, dict), f"{p}: 辞書の形で書いてください")
-    _known(d, {"version", "state_dir", "connections_file", "retention", "dagu", "sources", "rules"}, "（最上位）")
+    _known(d, {"version", "state_dir", "retention", "delivery", "sources", "rules"}, "（最上位）")
     _expect(d.get("version", 1) == 1, "version: 1 だけに対応しています")
     sd = d.get("sources") or {}
     rd = d.get("rules") or {}
@@ -439,6 +421,9 @@ def load(path: str | Path | None = None) -> Config:
     _expect(isinstance(rd, dict), "rules: 辞書で書いてください")
     sources = {str(k): _source(str(k), v) for k, v in sd.items()}
     rules = {str(k): _rule(str(k), v, sources) for k, v in rd.items()}
+    delivery = _delivery(d.get("delivery"))
+    if delivery is None and any(r.targets for r in rules.values()):
+        raise ConfigError("受け渡し先（targets）のあるルールがあります。delivery.adapter を書いてください")
     state_dir = os.environ.get("APIWATCH_STATE_DIR") or d.get("state_dir") or "~/.local/share/dagu-api-watch"
     sdir = Path(os.path.expanduser(str(state_dir)))
     if not sdir.is_absolute():
@@ -450,5 +435,5 @@ def load(path: str | Path | None = None) -> Config:
                           fetch_days=_num(rt, "fetch_days", 7, "retention"),
                           events_days=_num(rt, "events_days", 30, "retention"),
                           auto_gc=bool(rt.get("auto_gc", True)))
-    return Config(path=p, state_dir=sdir.resolve(), sources=sources, rules=rules, dagu=_dagu(d.get("dagu")),
-                  retention=retention, connections=Connections(p.parent, d.get("connections_file")))
+    return Config(path=p, state_dir=sdir.resolve(), sources=sources, rules=rules, delivery=delivery,
+                  retention=retention, connections=Connections(connections))

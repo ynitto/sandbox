@@ -7,12 +7,8 @@
         url: https://api.example.com
         token: ${MY_API_TOKEN}
 
-探す順（(サービス, ラベル) ごとに最初に見つかったものを使う）:
-    1. 設定の connections_file、または環境変数 APIWATCH_CONNECTIONS_FILE / SKILL_CONNECTIONS_FILE
-       （指定したらそのファイルだけを見る）
-    2. 設定ファイルのフォルダから上へ、続いて作業フォルダから上へ:
-       <フォルダ>/.github/connections.yaml・.claude/・.copilot/・.kiro/
-    3. ホーム: ~/.copilot/・~/.claude/・~/.github/・~/.kiro/ の connections.yaml
+ファイルはコマンド行の `--connections <パス>` で渡したものだけを読む。環境変数や決まった場所からは探さない。
+値の中の ${VAR} は書式の一部として展開する（参照先が無ければ、その値を使う前に止める）。
 """
 from __future__ import annotations
 
@@ -23,8 +19,6 @@ from typing import Any
 
 from .util import ConfigError, REDACT
 
-AGENT_DIRS = (".github", ".claude", ".copilot", ".kiro")
-HOME_DIRS = (".copilot", ".claude", ".github", ".kiro")
 _ENV = re.compile(r"\$\{([^}]+)\}")
 # 値として伏せなくてよい項目（URL・ユーザー名・ラベル）
 _PLAIN_KEYS = {"label", "url", "base_url", "api_url", "user", "username", "login", "project", "group", "org"}
@@ -49,74 +43,45 @@ def _expand(value: Any) -> Any:
     return value
 
 
-def candidate_files(config_dir: Path | None, explicit: str | None) -> list[Path]:
-    override = explicit or os.environ.get("APIWATCH_CONNECTIONS_FILE") or os.environ.get("SKILL_CONNECTIONS_FILE")
-    if override:
-        p = Path(os.path.expanduser(override))
-        if not p.is_absolute() and config_dir is not None and explicit:
-            p = config_dir / p
-        return [p]
-    found: list[Path] = []
-
-    def add(p: Path) -> None:
-        if p.is_file() and p.resolve() not in [f.resolve() for f in found]:
-            found.append(p)
-
-    starts = []
-    if config_dir is not None:
-        starts.append(config_dir.resolve())
-    starts.append(Path.cwd().resolve())
-    for start in starts:
-        for anc in [start, *start.parents]:
-            for d in AGENT_DIRS:
-                add(anc / d / "connections.yaml")
-    home = Path.home()
-    for d in HOME_DIRS:
-        add(home / d / "connections.yaml")
-    return found
-
-
 class Connections:
-    def __init__(self, config_dir: Path | None = None, explicit: str | None = None):
-        self.files = candidate_files(config_dir, explicit)
-        self._data: list[tuple[Path, dict]] | None = None
+    """--connections で渡された 1 つのファイル。渡されていなければ、接続設定を使う時点で止める。"""
 
-    def _load(self) -> list[tuple[Path, dict]]:
+    def __init__(self, path: str | Path | None = None):
+        self.path = Path(os.path.expanduser(str(path))).resolve() if path else None
+        self._data: dict | None = None
+
+    def _load(self) -> dict:
         if self._data is None:
-            self._data = []
-            for f in self.files:
-                if not f.is_file():
-                    raise ConfigError(f"接続設定のファイルが見つかりません: {f}")
-                data = load_yaml_or_json(f) or {}
-                if not isinstance(data, dict):
-                    raise ConfigError(f"{f}: サービス名をキーにした形で書いてください")
-                self._data.append((f, data))
+            if self.path is None:
+                raise ConfigError("接続設定を使う取得元・受け渡し先があります。connections.yaml のパスを "
+                                  "--connections で渡してください")
+            if not self.path.is_file():
+                raise ConfigError(f"接続設定のファイルが見つかりません: {self.path}")
+            data = load_yaml_or_json(self.path) or {}
+            if not isinstance(data, dict):
+                raise ConfigError(f"{self.path}: サービス名をキーにした形で書いてください")
+            self._data = data
         return self._data
 
     def get(self, service: str, label: str = "default") -> dict:
         """(サービス, ラベル) の接続設定を返す。${VAR} を展開し、秘密の値は伏せ字の対象に登録する。"""
-        for path, data in self._load():
-            entries = data.get(service)
-            if not isinstance(entries, list):
+        entries = self._load().get(service)
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
                 continue
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                if str(entry.get("label", "default")).lower() != label.lower():
-                    continue
-                out = {k: _expand(v) for k, v in entry.items() if k != "label"}
-                for k, v in out.items():
-                    if isinstance(v, str):
-                        m = _ENV.search(v)
-                        if m:
-                            raise ConfigError(
-                                f"接続設定 {service}/{label} の {k} が参照する環境変数 {m.group(1)} が設定されていません"
-                                f"（{path}）")
-                        if k not in _PLAIN_KEYS:
-                            REDACT.add(v)
-                return out
-        where = "、".join(str(p) for p in self.files) or "（見つかったファイルなし）"
-        raise ConfigError(f"接続設定 {service}/{label} が見つかりません。探したファイル: {where}")
+            if str(entry.get("label", "default")).lower() != label.lower():
+                continue
+            out = {k: _expand(v) for k, v in entry.items() if k != "label"}
+            for k, v in out.items():
+                if isinstance(v, str):
+                    m = _ENV.search(v)
+                    if m:
+                        raise ConfigError(f"接続設定 {service}/{label} の {k} が参照する ${{{m.group(1)}}} を展開できません"
+                                          f"（{self.path}）")
+                    if k not in _PLAIN_KEYS:
+                        REDACT.add(v)
+            return out
+        raise ConfigError(f"接続設定 {service}/{label} が {self.path} にありません")
 
 
 def parse_ref(ref: Any, where: str) -> tuple[str, str] | None:
