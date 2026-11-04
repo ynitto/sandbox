@@ -9,7 +9,9 @@
 
 - obsidian-use に、ボルトを知識 wiki として育てる操作（init / ingest / query / save / lint）を足す。中身の作り方は wiki-use と同じ。
 - **検索に関わる管理はすべて Obsidian に任せる。** スキル側は索引・スコア・グラフ・`index.md`・`hot.md` を持たない。
-  検索は Obsidian CLI の `search`、一覧と最近の更新は Bases（`index.base`）、リンク切れ・孤立は `unresolved` / `orphans`。
+  検索は Obsidian CLI の `search`、一覧と最近の更新は Bases（`index.base`）。
+- **リンクだけは `vault.py` がその場でファイルを読んで数える**（1.2.0）。`links`（出ていく・入ってくる・リンクしていない言及）と
+  `lint`（リンク切れ・孤立・名前の重なり）が、Obsidian が閉じていても wiki の中だけを見て動く。
 - moltbook-use と同じ作りのフックで、作業中の出来事を控え、ターンの終わりにエージェント自身に振り返らせて `vault.py memo` で書かせる。
   moltbook と違い、書き先は自分のボルトで、**プロジェクト・環境に固有のメモも残す**。
 
@@ -31,6 +33,8 @@
 | 置き場所 | `skill_configs.obsidian-use` に `vault` / `vault_name` / `wiki_dir`。ボルトの他のノートには触らない |
 | 検索 | `obsidian vault=<名> search query=… path=<wiki_dir> limit=… format=json`。受けない CLI なら素の `search` にしてフォルダで絞る。CLI が使えなければ文字列一致（順位なし）に落ち、そう明示する |
 | 一覧・最近 | `index.base`（Bases）。ビューは 最近 / 知識 / プロジェクト / 環境。手で更新する目録を持たない |
+| リンク | `[[名前]]` を Obsidian と同じく名前（パスの最後・拡張子なし・大文字小文字無視）でボルト全体から引く。索引は作らず、呼ばれるたびに読む |
+| 取り込み済みの判定 | `vault.py ingested <URL|ファイル>` が `sources` を見る（URL は末尾の `/` と http/https を無視）。全文検索の語の切り方に左右されない |
 | 書き込み | ファイルへ直接（Obsidian が閉じていても書ける。Obsidian は変更を拾う）。題 = ファイル名、同じ題なら `## 追記` |
 | メモの重複 | 同じフォルダでプロパティ `memo` が同じなら「起きた回」を足す（名前だけで判定。検索は使わない） |
 | 秘密情報 | トークン・鍵・パスワードの形を見つけたら書かない（moltbook の privacy gate の秘密の型だけを持つ）。パス・リポジトリ名・ホスト名は書いてよい |
@@ -56,10 +60,16 @@ wiki-use の `atoms/` と `topics/` の区別は、フォルダではなくプ�
 | 操作 | wiki-use | obsidian-use |
 |---|---|---|
 | 検索 | `wiki_query.py search`（自前のトークン化と重み付け、graphify） | `vault.py search`（Obsidian の検索） |
-| つながり | graphify のグラフ | `obsidian backlinks` / `links` |
+| 取り込み済みか | `wiki_query.py search` | `vault.py ingested`（`sources` で引く） |
+| つながり | graphify のグラフ | `vault.py links`（リンク・バックリンク・リンクしていない言及） |
 | 目録 | `index.md` を `update-index` で更新 | `index.base`（更新しない） |
 | 最近 | `hot.md` を `update-hot` で更新 | `index.base` の「最近」ビュー（`file.mtime` 順） |
-| 点検 | `wiki_lint.py`（自前のリンク解決） | `vault.py lint`（プロパティだけ自前、リンクは Obsidian） |
+| 点検 | `wiki_lint.py`（自前のリンク解決） | `vault.py lint`（プロパティ・リンク切れ・孤立・名前の重なり）＋エージェントが読む点検 |
+
+1.1.0 ではリンク切れ・孤立を Obsidian の `unresolved` / `orphans` に任せていたが、どちらもボルト全体を出すので wiki の外の
+ノートやフックのメモまで混ざり、Obsidian が閉じていると何も数えなかった。ingest のつなぎ込み（言及しているのにリンクして
+いないノート）も CLI では引けない。リンクの読み取りは数十行で済むので、`vault.py` に持たせて一本にした。
+孤立は knowledge だけを見る（メモはフックが書くので孤立してよい）。
 
 ## 5. フック
 

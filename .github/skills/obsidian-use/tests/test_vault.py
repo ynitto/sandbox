@@ -181,19 +181,83 @@ class MemoTest(VaultTestBase):
 
 
 class LintTest(VaultTestBase):
-    def test_lint_reports_missing_properties_and_obsidian_findings(self):
-        (self.vault_dir / "llm-wiki" / "knowledge" / "bare.md").write_text("中身", encoding="utf-8")
-        problems = vault.lint(self.cfg)
-        joined = "\n".join(problems)
-        self.assertIn("プロパティが欠けている: llm-wiki/knowledge/bare.md", joined)
-        self.assertIn("リンク切れ: Missing note", joined)
-        self.assertIn("孤立ノート: llm-wiki/knowledge/Lonely.md", joined)
-        self.assertNotIn("other/x.md", joined)
+    def k(self, name, text):
+        path = self.vault_dir / "llm-wiki" / "knowledge" / f"{name}.md"
+        path.write_text(text, encoding="utf-8")
+        return path
 
-    def test_lint_without_obsidian(self):
-        os.environ["FAKE_MODE"] = "down"
-        problems = vault.lint(self.cfg)
-        self.assertTrue(any("Obsidian が使えない" in p for p in problems))
+    def test_lint_reports_properties_links_orphans_and_duplicates(self):
+        os.environ["FAKE_MODE"] = "down"   # Obsidian が閉じていても数えられる
+        self.k("bare", "中身")
+        vault.write_note(self.cfg, "knowledge", "注意機構", "[[Transformer]] と [[無いノート]] の話。`[[コードの中]]`",
+                         note_type="concept", aliases=["attention"], summary="1 文")
+        vault.write_note(self.cfg, "knowledge", "Transformer", "[[注意機構]] を重ねたモデル。十分に長い本文。",
+                         note_type="product", summary="1 文")
+        vault.write_note(self.cfg, "knowledge", "Attention", "別に作ってしまった同じ概念のノートです。",
+                         note_type="concept", summary="1 文")
+        problems = "\n".join(vault.lint(self.cfg))
+        self.assertIn("プロパティが欠けている: llm-wiki/knowledge/bare.md（title, type, updated, summary）", problems)
+        self.assertIn("リンク切れ: llm-wiki/knowledge/注意機構.md → [[無いノート]]", problems)
+        self.assertNotIn("コードの中", problems)
+        self.assertIn("孤立ノート（どこからもリンクされていない）: llm-wiki/knowledge/Attention.md", problems)
+        self.assertNotIn("孤立ノート（どこからもリンクされていない）: llm-wiki/knowledge/注意機構.md", problems)
+        self.assertIn("同じ名前を持つノート（統合の候補）", problems)
+        self.assertEqual(self.log.read_text(encoding="utf-8") if self.log.exists() else "", "")
+
+    def test_links_resolve_across_vault_and_memos_are_not_orphans(self):
+        (self.vault_dir / "img.png").write_bytes(b"x")
+        (self.vault_dir / "Daily.md").write_text("[[Transformer]] を読んだ", encoding="utf-8")
+        vault.write_note(self.cfg, "knowledge", "Transformer", "![[img.png]] と [[Daily|日記]] を参照する本文。",
+                         note_type="product", summary="1 文")
+        self.memo_like = vault.write_note(self.cfg, "project", "手順", "どこからもリンクされないメモ本文です。",
+                                          cwd=str(self.project))
+        problems = "\n".join(vault.lint(self.cfg))
+        self.assertNotIn("リンク切れ", problems)
+        self.assertNotIn("孤立", problems)
+
+    def test_title_must_match_file_name(self):
+        self.k("x", "---\ntitle: 別の題\ntype: concept\nupdated: 2026-11-01\nsummary: s\n---\n十分に長い本文がここにあります。")
+        self.assertTrue(any(p.startswith("題とファイル名が違う") for p in vault.lint(self.cfg)))
+
+
+class LinksTest(VaultTestBase):
+    def setUp(self):
+        super().setUp()
+        vault.write_note(self.cfg, "knowledge", "RAG", "検索して生成する。[[注意機構]] を使う。", note_type="concept",
+                         aliases=["検索拡張生成"])
+        vault.write_note(self.cfg, "knowledge", "注意機構", "[[RAG]] でも使う。", note_type="concept")
+        vault.write_note(self.cfg, "knowledge", "LLM", "検索拡張生成で知識を補う。storage は関係ない。", note_type="concept")
+        vault.write_note(self.cfg, "knowledge", "Storage", "storage の話だけ。storagerag や rag-like は別の語。",
+                         note_type="concept")
+
+    def test_links_lists_outgoing_backlinks_and_unlinked_mentions(self):
+        res = vault.links(self.cfg, "rag")
+        self.assertEqual(res["note"], "llm-wiki/knowledge/RAG.md")
+        self.assertEqual(res["outgoing"], ["llm-wiki/knowledge/注意機構.md"])
+        self.assertEqual(res["backlinks"], ["llm-wiki/knowledge/注意機構.md"])
+        self.assertEqual(res["unlinked"], [{"path": "llm-wiki/knowledge/LLM.md", "term": "検索拡張生成"}])
+
+    def test_links_cli(self):
+        code, out = self.run_main("links", "RAG")
+        self.assertEqual(code, 0)
+        self.assertIn("リンクしていない言及:\n- llm-wiki/knowledge/LLM.md（検索拡張生成）", out)
+        code, _ = self.run_main("links", "無い題")
+        self.assertEqual(code, 1)
+
+
+class IngestedTest(VaultTestBase):
+    def test_ingested_matches_sources_loosely(self):
+        code, _ = self.run_main("note", "--title", "注意機構", "--body", "本文", "--sources", "https://arxiv.org/abs/1706.03762/")
+        self.assertEqual(code, 0)
+        self.assertEqual(vault.ingested(self.cfg, "http://arxiv.org/abs/1706.03762"), ["llm-wiki/knowledge/注意機構.md"])
+        self.assertEqual(vault.ingested(self.cfg, "https://example.com"), [])
+        log = (self.vault_dir / "llm-wiki" / "meta" / "log.md").read_text(encoding="utf-8")
+        self.assertIn("← https://arxiv.org/abs/1706.03762/", log)
+
+    def test_append_does_not_repeat_title_heading(self):
+        p, _ = vault.write_note(self.cfg, "knowledge", "注意機構", "本文")
+        vault.write_note(self.cfg, "knowledge", "注意機構", "# 注意機構\n\n足す話")
+        self.assertEqual(p.read_text(encoding="utf-8").count("# 注意機構"), 1)
 
 
 if __name__ == "__main__":

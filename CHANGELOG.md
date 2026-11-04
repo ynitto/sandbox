@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### obsidian-use: Obsidian の LLM wiki のつなぎ込みと点検を、Obsidian が閉じていても回せるようにする（1.2.0）
+
+- `vault.py links "<題>"` を足す。出ていくリンク・入ってくるリンクと、題や別名を書いているのにリンクしていないノート
+  （ingest のつなぎ込み先）を出す。`[[…]]` は Obsidian と同じく名前でボルト全体から引く
+- `vault.py ingested "<URL かファイル>"` を足す。`sources` で取り込み済みかを決める（URL の末尾の `/` と http/https は無視）
+- `vault.py lint` をファイルだけで完結させた。Obsidian の `unresolved` / `orphans`（ボルト全体が混ざる）をやめ、wiki の中の
+  リンク切れ、knowledge の孤立ノート、題とファイル名の違い、knowledge の `summary` の欠け、題・別名が重なるノート（統合の候補）を出す
+- `note` の追記で題の見出しを二度書かない。`--sources` を渡すと操作ログに出典も残る
+- 手順書（`references/wiki.md`）の ingest に「つなぐ → 区切りごとに lint」を、lint にエージェントが読んで行う点検（食い違い・古さ・統合）を足した
+
 ### dagu-workflow-builder: 入っているスキルのスクリプトをつないで Dagu の DAG を作る（0.1.0）
 
 - 新しいスキル。`scripts/chain.py`（標準ライブラリだけ）の `scan` / `check` / `plan` / `build` で、各エージェントのスキル置き場を見て

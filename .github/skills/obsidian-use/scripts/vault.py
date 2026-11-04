@@ -15,11 +15,14 @@
                                                  フックの指示（OBSIDIAN NOTE）で 1 件のメモを残す。同じ名前なら「起きた回」を足す
   python vault.py notes --scope project|env [--limit 5]
                                                  このプロジェクト・この環境のメモの一覧（新しい順）
+  python vault.py ingested "URL か ファイル"     そのソースを sources に持つノート（取り込み済みか）
+  python vault.py links "題"                     出ていくリンク・入ってくるリンク・リンクしていない言及
   python vault.py log "やったこと"               操作ログ（meta/log.md）に 1 行足す
-  python vault.py lint                           プロパティの欠けと、Obsidian が数えたリンク切れ・孤立ノートを出す
+  python vault.py lint                           プロパティ・リンク切れ・孤立・名前の重なりを出す
 
-検索・バックリンク・タグ・未解決リンクの数え上げは Obsidian（公式 CLI）に任せ、このスクリプトは
-索引もスコアも持たない。書き込みはファイルに直接行う（Obsidian が閉じていても書ける）。
+検索・タグ・一覧は Obsidian（公式 CLI と Bases）に任せ、このスクリプトは索引もスコアも持たない。
+リンク（[[…]]）だけは、Obsidian が閉じていても点検とつなぎ込みができるよう、その場でファイルを読んで数える。
+書き込みはファイルに直接行う（Obsidian が閉じていても書ける）。
 標準ライブラリだけで動く。
 """
 from __future__ import annotations
@@ -386,7 +389,8 @@ def write_note(cfg: dict, scope: str, title: str, body: str, *, note_type: str =
             meta[key] = merged
         if summary:
             meta["summary"] = summary
-        path.write_text(frontmatter(meta) + old.rstrip() + f"\n\n## 追記 {today()}\n\n{body.strip()}\n",
+        add = re.sub(r"\A#\s+.*\n+", "", body.strip() + "\n").strip()   # 題の見出しは二度書かない
+        path.write_text(frontmatter(meta) + old.rstrip() + f"\n\n## 追記 {today()}\n\n{add}\n",
                         encoding="utf-8")
         return path, False
     meta = {"title": title, "type": note_type or ("topic" if scope == "knowledge" else "memo"), "scope": scope}
@@ -571,33 +575,155 @@ def init(vault: str, wiki_dir: str, vault_name: str) -> tuple[Path, Path]:
     return root, reg
 
 
+# --- リンク ----------------------------------------------------------------------
+# Obsidian と同じく、[[名前]] は名前（パスの最後・拡張子なし。大文字小文字を区別しない）でボルト全体から引く。
+
+_LINK = re.compile(r"!?\[\[([^\]|#^]*)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]")
+_CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
+
+
+def _link_name(target: str) -> str:
+    name = target.strip().rsplit("/", 1)[-1]
+    return (name[:-3] if name.lower().endswith(".md") else name).lower()
+
+
+def _vault_files(cfg: dict) -> list[Path]:
+    return [p for p in sorted(cfg["vault"].rglob("*")) if p.is_file()
+            and not any(part.startswith(".") for part in p.relative_to(cfg["vault"]).parts)]
+
+
+def _wiki_notes(cfg: dict) -> list[Path]:
+    """wiki のノート（meta/ と SCHEMA.md は除く）。"""
+    root = wiki_root(cfg)
+    return [p for p in sorted(root.rglob("*.md")) if p.relative_to(root).parts[0] != "meta"
+            and p.name != "SCHEMA.md" and not any(part.startswith(".") for part in p.relative_to(root).parts)]
+
+
+def _read(p: Path) -> str:
+    try:
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def link_graph(cfg: dict) -> dict:
+    """{"names": ボルトのファイル名 → パス, "out": wiki のノート → 出ていくリンク名の一覧}。"""
+    names: dict[str, Path] = {}
+    for p in _vault_files(cfg):
+        names.setdefault(p.stem.lower() if p.suffix == ".md" else p.name.lower(), p)
+    out = {}
+    for p in [q for q in _vault_files(cfg) if q.suffix == ".md"]:
+        _, body = parse_frontmatter(_read(p))
+        out[p] = [n for n in (_link_name(m.group(1)) for m in _LINK.finditer(_CODE.sub("", body))) if n]
+    return {"names": names, "out": out}
+
+
+def _find_note(cfg: dict, title: str) -> Path | None:
+    key = _link_name(title)
+    for p in _wiki_notes(cfg):
+        meta, _ = parse_frontmatter(_read(p))
+        if p.stem.lower() == key or str(meta.get("title", "")).lower() == key:
+            return p
+    return None
+
+
+def _terms(meta: dict, path: Path) -> list[str]:
+    al = meta.get("aliases")
+    terms = [path.stem, str(meta.get("title") or ""), *(al if isinstance(al, list) else _csv(al))]
+    uniq = []
+    for t in terms:
+        t = t.strip()
+        if len(t) >= 2 and t.lower() not in (u.lower() for u in uniq):
+            uniq.append(t)
+    return uniq
+
+
+def _mentions(text: str, term: str) -> bool:
+    if re.fullmatch(r"[\x00-\x7f]+", term):   # 英字の語は語の切れ目で当てる（"RAG" が "storage" に当たらないように）
+        return re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text, re.I) is not None
+    return term.lower() in text.lower()
+
+
+def links(cfg: dict, title: str) -> dict:
+    """そのノートの 出ていくリンク / 入ってくるリンク / リンクしていない言及（wiki の中）。"""
+    path = _find_note(cfg, title)
+    if not path:
+        return {}
+    g = link_graph(cfg)
+    key = path.stem.lower()
+    meta, _ = parse_frontmatter(_read(path))
+    terms = _terms(meta, path)
+    outgoing = []
+    for n in dict.fromkeys(g["out"].get(path, [])):
+        outgoing.append(rel(cfg, g["names"][n]) if n in g["names"] else f"{n}（ノートが無い）")
+    backlinks = [rel(cfg, p) for p, outs in g["out"].items() if p != path and key in outs]
+    unlinked = []
+    for p in _wiki_notes(cfg):
+        if p == path or key in g["out"].get(p, []):
+            continue
+        _, body = parse_frontmatter(_read(p))
+        plain = _LINK.sub(" ", _CODE.sub(" ", body))
+        hit = next((t for t in terms if _mentions(plain, t)), None)
+        if hit:
+            unlinked.append({"path": rel(cfg, p), "term": hit})
+    return {"note": rel(cfg, path), "outgoing": outgoing, "backlinks": backlinks, "unlinked": unlinked}
+
+
+def ingested(cfg: dict, source: str) -> list[str]:
+    """sources にそのソースを持つノート。URL は末尾の / と http/https の違いを無視する。"""
+    def norm(s: str) -> str:
+        s = str(s).strip().rstrip("/")
+        return re.sub(r"^https?://", "", s, flags=re.I).lower() if "://" in s else os.path.normcase(s)
+    want = norm(source)
+    hits = []
+    for p in _wiki_notes(cfg):
+        meta, _ = parse_frontmatter(_read(p))
+        srcs = meta.get("sources")
+        if any(norm(x) == want for x in (srcs if isinstance(srcs, list) else _csv(srcs))):
+            hits.append(rel(cfg, p))
+    return hits
+
+
 # --- lint --------------------------------------------------------------------
 
 def lint(cfg: dict) -> list[str]:
+    """機械で分かることだけを出す。矛盾・古さ・統合の判断はエージェントがする（references/wiki.md）。"""
     root = wiki_root(cfg)
-    problems = []
-    for p in sorted(root.rglob("*.md")):
+    g = link_graph(cfg)
+    inbound: dict[str, int] = {}
+    for p, outs in g["out"].items():
+        for n in set(outs):
+            if n != p.stem.lower():
+                inbound[n] = inbound.get(n, 0) + 1
+    problems, owners = [], {}
+    for p in _wiki_notes(cfg):
         relp = p.relative_to(root)
-        if relp.parts[0] == "meta" or p.name == "SCHEMA.md":
-            continue
-        meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        knowledge = relp.parts[0] == "knowledge"
+        meta, body = parse_frontmatter(_read(p))
         missing = [k for k in ("title", "type", "updated") if not meta.get(k)]
+        if knowledge and not meta.get("summary"):
+            missing.append("summary")
         if missing:
             problems.append(f"プロパティが欠けている: {rel(cfg, p)}（{', '.join(missing)}）")
-        if relp.parts[0] == "knowledge" and meta.get("type") not in (*KNOWLEDGE_TYPES, "memo", None, ""):
+        if meta.get("title") and _safe(str(meta["title"]), 100) != p.stem:
+            problems.append(f"題とファイル名が違う: {rel(cfg, p)}（title: {meta['title']}）")
+        if knowledge and meta.get("type") not in (*KNOWLEDGE_TYPES, "memo", None, ""):
             problems.append(f"type が決まりにない: {rel(cfg, p)}（{meta.get('type')}）")
         if len(body.strip()) < 20:
             problems.append(f"中身がほとんど無い: {rel(cfg, p)}")
-    folder = rel(cfg, root)
-    for cmd, label in (("unresolved", "リンク切れ"), ("orphans", "孤立ノート")):
-        code, out = obsidian(cfg, cmd)
-        if code != 0:
-            problems.append(f"（リンク切れ・孤立ノートは Obsidian が使えないので数えていません: {out[:80]}）")
-            break
-        for line in (ln.strip() for ln in out.splitlines()):
-            # 孤立ノートは wiki の中だけ。リンク切れはリンク先の名前で出るのでそのまま出す
-            if line and (cmd == "unresolved" or folder in line):
-                problems.append(f"{label}: {line}")
+        for n in dict.fromkeys(g["out"].get(p, [])):
+            if n not in g["names"]:
+                problems.append(f"リンク切れ: {rel(cfg, p)} → [[{n}]]")
+        if knowledge:
+            # メモはフックが書くので孤立していてよい。知識はどこかからつながっているはず
+            if not inbound.get(p.stem.lower()):
+                problems.append(f"孤立ノート（どこからもリンクされていない）: {rel(cfg, p)}")
+            for t in _terms(meta, p):
+                owners.setdefault(t.lower(), []).append(p)
+    for term, paths in owners.items():
+        paths = list(dict.fromkeys(paths))
+        if len(paths) > 1:
+            problems.append(f"同じ名前を持つノート（統合の候補）: {', '.join(rel(cfg, x) for x in paths)}（{term}）")
     return problems
 
 
@@ -650,6 +776,11 @@ def main(argv=None) -> int:
     p.add_argument("--scope", choices=sorted(SCOPES), default="project")
     p.add_argument("--limit", type=int, default=5)
     p.add_argument("--cwd", default="")
+    p = sub.add_parser("ingested", help="そのソースを取り込んだノート")
+    p.add_argument("source")
+    p = sub.add_parser("links", help="ノートのリンク・バックリンク・リンクしていない言及")
+    p.add_argument("title")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("log", help="操作ログに 1 行足す")
     p.add_argument("text")
     sub.add_parser("lint", help="wiki を点検する")
@@ -686,7 +817,8 @@ def main(argv=None) -> int:
             return 2
         path, new = write_note(cfg, a.scope, a.title, body, note_type=a.type, aliases=_csv(a.aliases),
                                tags=_tags(a.tags), sources=_csv(a.sources), summary=a.summary, cwd=a.cwd)
-        append_log(cfg, f"note {rel(cfg, path)}（{'新規' if new else '追記'}）")
+        src = _csv(a.sources)
+        append_log(cfg, f"note {rel(cfg, path)}（{'新規' if new else '追記'}）" + (f" ← {', '.join(src)}" if src else ""))
         print(f"OK {rel(cfg, path)} を{'作りました' if new else '追記しました'}")
         return 0
     if a.cmd == "memo":
@@ -697,6 +829,23 @@ def main(argv=None) -> int:
         items = list_notes(scope_dir(cfg, a.scope, a.cwd), a.limit)
         print("\n".join(f"- [[{it['title']}]]" + (f" — {it['line']}" if it["line"] else "") for it in items)
               or "- まだありません")
+        return 0
+    if a.cmd == "ingested":
+        hits = ingested(cfg, a.source)
+        print("\n".join(f"- {h}" for h in hits) or "- まだ取り込んでいません")
+        return 0
+    if a.cmd == "links":
+        res = links(cfg, a.title)
+        if not res:
+            print(f"NG 「{a.title}」というノートが wiki にありません", file=sys.stderr)
+            return 1
+        if a.json:
+            print(json.dumps(res, ensure_ascii=False, indent=1))
+            return 0
+        print(f"{res['note']}")
+        for label, items in (("出ていくリンク", res["outgoing"]), ("入ってくるリンク", res["backlinks"])):
+            print(f"{label}:\n" + ("\n".join(f"- {x}" for x in items) or "- なし"))
+        print("リンクしていない言及:\n" + ("\n".join(f"- {u['path']}（{u['term']}）" for u in res["unlinked"]) or "- なし"))
         return 0
     if a.cmd == "log":
         append_log(cfg, a.text)
