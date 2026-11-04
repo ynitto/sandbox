@@ -146,6 +146,12 @@ def uninstall(dest: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 表示は UTF-8 で出す（Windows でパイプにつないだときなど、cp1252 では日本語を出せずに落ちる）
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(description="api-watch を 1 つの実行可能な zip にまとめて置く")
     sub = p.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build", help="zip（.pyz）を作るだけ")

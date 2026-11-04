@@ -69,6 +69,14 @@ class InstallTest(unittest.TestCase):
         p = run([sys.executable, str(INSTALL), "build", "--out", str(pyz), "--no-yaml"])
         self.assertNotIn("yaml/__init__.py", zipfile.ZipFile(pyz).namelist())
 
+    def test_output_survives_non_utf8_console(self):
+        # Windows でパイプにつないだときの既定（cp1252）でも、日本語の表示で落ちない
+        env = Env(self)
+        p = subprocess.run([sys.executable, str(INSTALL), "build", "--out", str(env.tmp / "a.pyz"), "--no-yaml"],
+                           capture_output=True, env=dict(os.environ, PYTHONIOENCODING="cp1252"))
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn("作りました", p.stdout.decode("utf-8"))
+
     def test_install_and_uninstall(self):
         env = Env(self)
         dest = env.tmp / "bin"
