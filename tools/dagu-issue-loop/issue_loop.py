@@ -780,10 +780,14 @@ def run_agent(cfg: Config, prompt: str, item: dict[str, Any], info_path: Path) -
         reader.start()
 
         if via == "stdin" and proc.stdin:
-            with contextlib.suppress(BrokenPipeError, OSError):
-                proc.stdin.write(prompt.encode("utf-8"))
-            with contextlib.suppress(BrokenPipeError, OSError):
-                proc.stdin.close()
+            # 子が stdin を読まないままパイプが埋まると write が戻らず、下の打ち切り判定に
+            # 進めなくなる。別スレッドで流し、タイムアウトと中止は常に効くようにする
+            def feed() -> None:
+                with contextlib.suppress(BrokenPipeError, OSError, ValueError):
+                    proc.stdin.write(prompt.encode("utf-8"))
+                with contextlib.suppress(BrokenPipeError, OSError, ValueError):
+                    proc.stdin.close()
+            threading.Thread(target=feed, daemon=True).start()
 
         deadline = time.monotonic() + cfg.agent_timeout if cfg.agent_timeout > 0 else None
         timed_out = False
