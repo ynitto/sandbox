@@ -505,6 +505,101 @@ class RetentionTest(unittest.TestCase):
         st.close()
 
 
+class StorageTest(unittest.TestCase):
+    def _age(self, env, sql):
+        s = env.store()
+        with s.tx() as db:
+            db.execute(sql, (time.time() - 100 * 86400,))
+        s.close()
+
+    def test_gc_shrinks_the_file(self):
+        env = Env(self)
+        for i in range(1, 301):
+            env.api.put(i, status="open", body=os.urandom(1000).hex())   # 圧縮しにくい大きめのレコード
+        ret = {"fetches_keep": 1, "fetch_days": 0, "auto_gc": False}
+        env.write_config({"items": env.source("/page", records="data", pagination={"type": "page",
+                                                                                  "size_param": "per_page",
+                                                                                  "size": 50})},
+                         {"r": simple_rules()}, retention=ret)
+        for _ in range(4):
+            env.api.put(1, status=str(time.time()))
+            env.ok(self, "run")
+        s = env.store()
+        self.assertEqual(s.one("SELECT COUNT(*) c FROM fetches")["c"], 4)
+        s.close()
+        st = json.loads(env.ok(self, "status", "--json"))["storage"]
+        self.assertEqual(st["auto_vacuum"], "incremental")              # 新しい DB は消した領域を返せる形
+        before = st["db_bytes"] + st["wal_bytes"]
+        out = env.ok(self, "gc")
+        self.assertIn("返しました", out)
+        st = json.loads(env.ok(self, "status", "--json"))["storage"]
+        self.assertLess(st["wal_bytes"], 64 * 1024)                     # WAL も切り詰める（status 自身の書き込み分だけ残る）
+        self.assertLess(st["db_bytes"], before * 0.5)                   # 4 回分のうち 1 回分だけ残る
+        self.assertEqual(st["free_bytes"], 0)
+
+    def test_vacuum_converts_old_db(self):
+        env = Env(self)
+        env.api.put(1)
+        env.write_config({"items": env.source("/all")}, {})
+        (env.tmp / "state").mkdir()
+        import sqlite3
+        sqlite3.connect(str(env.tmp / "state" / "state.db")).execute("CREATE TABLE x(a)").connection.close()
+        env.ok(self, "fetch")
+        st = json.loads(env.ok(self, "status", "--json"))["storage"]
+        self.assertEqual(st["auto_vacuum"], "none")                     # 先に表がある DB は切り替わらない
+        self.assertIn("gc --vacuum", env.ok(self, "status"))
+        env.ok(self, "gc", "--vacuum")
+        st = json.loads(env.ok(self, "status", "--json"))["storage"]
+        self.assertEqual(st["auto_vacuum"], "incremental")
+
+    def test_removed_observations_expire(self):
+        env = Env(self)
+        for i in (1, 2, 3):
+            env.api.put(i, status="open")
+        env.write_config({"items": env.source("/all")}, {"r": simple_rules({"workflow": "d", "order": "none"}, on=["appeared", "removed"])},
+                         retention={"removed_days": 30, "auto_gc": False})
+        env.ok(self, "run")
+        env.api.drop(2)
+        env.ok(self, "run")
+        self.assertEqual(len(env.enqueued()), 1)                        # 2 が消えた
+        env.ok(self, "gc")
+        s = env.store()
+        self.assertEqual(s.one("SELECT COUNT(*) c FROM rule_records")["c"], 3)   # まだ保持期間内
+        s.close()
+        self._age(env, "UPDATE rule_records SET updated_at=?")
+        out = env.ok(self, "gc")
+        self.assertIn("消えたレコードの観測値 1 件", out)
+        s = env.store()
+        self.assertEqual(sorted(r["rkey"] for r in s.q("SELECT rkey FROM rule_records")), ["1", "3"])
+        s.close()
+        env.api.put(2, status="open")                                   # 戻ってきたら新規として扱う
+        env.ok(self, "run")
+        self.assertEqual(json.loads(Path(env.enqueued()[-1]["params"]["APIWATCH_EVENT_FILE"])
+                                    .read_text(encoding="utf-8"))["kinds"], ["appeared"])
+
+    def test_stale_assembled_records_only_when_configured(self):
+        env = Env(self)
+        for i in (1, 2):
+            env.api.put(i, status="open")
+        src = {"items": env.source("/sync", records="items", key="id",
+                                   incremental={"type": "cursor", "cursor_path": "sync_token", "param": "since_rev"})}
+        env.write_config(src, {}, retention={"auto_gc": False})
+        env.ok(self, "fetch")
+        env.api.put(1, status="closed")
+        env.ok(self, "fetch")
+        self._age(env, "UPDATE source_records SET seen_at=? WHERE rkey='2'")
+        env.ok(self, "gc")
+        s = env.store()
+        self.assertEqual(s.one("SELECT COUNT(*) c FROM source_records")["c"], 2)   # 既定は消さない
+        s.close()
+        env.write_config(src, {}, retention={"auto_gc": False, "record_days": 30})
+        out = env.ok(self, "gc")
+        self.assertIn("長く取得されていないレコード 1 件", out)
+        s = env.store()
+        self.assertEqual([r["rkey"] for r in s.q("SELECT rkey FROM source_records")], ["1"])
+        s.close()
+
+
 class OpsTest(unittest.TestCase):
     def test_dags_and_check(self):
         env = Env(self)

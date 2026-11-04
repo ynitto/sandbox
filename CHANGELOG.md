@@ -27,6 +27,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   完了は後続の DAG の `ack`（または API での問い合わせ）で記録し、失敗は同じ実行 ID のまま Dagu で再実行できる
 - 運用: `status`・`events`・`show`・`retry`・`skip`・`rebaseline`・`replay`・`gc`。認証情報はログ・状態に出さない。
   保持期間は未判定の取得結果・未完了のイベントを消さない。状態は SQLite 1 ファイル（Windows・WSL2・Linux）
+- 肥大化の防止: 整理のたびに消した行の領域を DB ファイルから返し、WAL を切り詰める（`auto_vacuum=INCREMENTAL`。古い DB は
+  `gc --vacuum` で切り替え）。消えたレコードの観測値は `removed_days`、増分取得で組み立てた全体の姿は `record_days`（既定は消さない）で消す。
+  `status` に DB・WAL・イベントのファイルの大きさを出す
 - CI に Linux と Windows のテストを足した。設計: `docs/designs/api-watch-design.md`
 
 ### dagu-workflow-builder: 入っているスキルのスクリプトをつないで Dagu の DAG を作る（0.1.0）

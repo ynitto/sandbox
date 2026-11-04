@@ -223,6 +223,13 @@ Dagu v2.25.2 のソース（`internal/cmd/enqueue.go`・`api/v1/api.yaml`・`int
 - 保持期間: 取得結果は「最新 N 回」「どれかのルールが未判定」「再開できる途中の取得」を残し、それ以外を `fetch_days` で消す。
   イベントは受け渡しがすべて `done` / `skipped` のものだけ `events_days` で消す。設定から消したルールは保持の判断に入れない
   （`status` に出し、`forget-rule` で消す）
+- 肥大化の防止: 新しい DB は `auto_vacuum=INCREMENTAL` で作り、`gc` の最後に `incremental_vacuum` と `wal_checkpoint(TRUNCATE)` を流して、
+  消した行の領域をファイルから返す（`incremental_vacuum` は 1 step で 1 ページ返すので、最後まで step する `executescript` で流す。
+  `execute` では Python 3.11 などで 1 ページしか返らなかった）。`auto_vacuum` は表を作る前でないと効かないので、古い DB は
+  `gc --vacuum`（VACUUM）で切り替える
+- 行が増え続けるものの期限: ルールの観測値のうち消えた・対象外になったもの（`present=0`）は `removed_days` で消す（また現れたら
+  `appeared`）。増分取得で組み立てた全体の姿は、最後に取得した時刻（`seen_at`）が `record_days` より古いものを消す。消すと基準値の
+  取り直しの対象から外れ、次に取得されたとき `appeared` で発火するので、既定は消さない
 
 ## 7. 範囲外
 

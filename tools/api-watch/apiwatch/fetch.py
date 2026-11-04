@@ -403,8 +403,8 @@ class Fetcher:
                         continue
                     k = key_string([v])
                     keys.append(k)
-                    db.execute("INSERT OR REPLACE INTO source_records(source, rkey, epoch, data, fetch_id) "
-                               "VALUES(?,?,?,?,?)", (src.name, k, epoch, pack(r), fid))
+                    db.execute("INSERT OR REPLACE INTO source_records(source, rkey, epoch, data, fetch_id, seen_at) "
+                               "VALUES(?,?,?,?,?,?)", (src.name, k, epoch, pack(r), fid, now()))
                 if f["mode"] == "full":
                     have = {r["rkey"] for r in db.execute("SELECT rkey FROM source_records WHERE source=?",
                                                           (src.name,))}

@@ -180,6 +180,8 @@ class Retention:
     fetches_keep: int = 3
     fetch_days: float = 7
     events_days: float = 30
+    removed_days: float = 30          # 消えた・対象外になったレコードの前回の観測値を残す日数
+    record_days: float | None = None  # 増分取得で組み立てた全体の姿から、この日数取得されないレコードを消す（既定は消さない）
     auto_gc: bool = True
 
 
@@ -439,10 +441,15 @@ def load(path: str | Path | None = None, connections: str | Path | None = None,
             sdir = p.parent / sdir                                       # 設定の相対パスは設定ファイルから
     rt = d.get("retention") or {}
     _expect(isinstance(rt, dict), "retention: 辞書で書いてください")
-    _known(rt, {"fetches_keep", "fetch_days", "events_days", "auto_gc"}, "retention")
+    _known(rt, {"fetches_keep", "fetch_days", "events_days", "removed_days", "record_days", "auto_gc"}, "retention")
+    record_days = rt.get("record_days")
+    _expect(record_days is None or (isinstance(record_days, (int, float)) and not isinstance(record_days, bool)
+                                    and record_days > 0), "retention.record_days: 0 より大きい数を書いてください（消さないなら書かない）")
     retention = Retention(fetches_keep=_int(rt, "fetches_keep", 3, "retention", 1),
                           fetch_days=_num(rt, "fetch_days", 7, "retention"),
                           events_days=_num(rt, "events_days", 30, "retention"),
+                          removed_days=_num(rt, "removed_days", 30, "retention"),
+                          record_days=None if record_days is None else float(record_days),
                           auto_gc=bool(rt.get("auto_gc", True)))
     return Config(path=p, state_dir=sdir.resolve(), sources=sources, rules=rules, delivery=delivery,
                   retention=retention, connections=Connections(connections))

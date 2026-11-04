@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS source_records (
     epoch INTEGER NOT NULL,
     data BLOB NOT NULL,
     fetch_id INTEGER,
+    seen_at REAL,
     PRIMARY KEY (source, rkey)
 );
 CREATE TABLE IF NOT EXISTS rules (
@@ -174,11 +175,16 @@ class Store:
         self.path = self.dir / "state.db"
         self.db = sqlite3.connect(str(self.path), timeout=60, isolation_level=None)
         self.db.row_factory = sqlite3.Row
+        # 消した行の領域をファイルから返せるようにする（表を作る前でないと効かない。既存の DB は gc --vacuum で切り替わる）
+        self.db.execute("PRAGMA auto_vacuum=INCREMENTAL")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA busy_timeout=60000")
         # executescript は自前でコミットするので、トランザクションの外で流す（すべて IF NOT EXISTS）
         self.db.executescript(SCHEMA)
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(source_records)")}
+        if "seen_at" not in cols:
+            self.db.execute("ALTER TABLE source_records ADD COLUMN seen_at REAL")
         with self.tx():
             row = self.db.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
             if row is None:
@@ -261,3 +267,41 @@ class Store:
 
     def event_file(self, event_id: str) -> Path:
         return self.dir / "events" / f"{event_id}.json"
+
+    # -- 容量 -----------------------------------------------------------------
+
+    def storage(self) -> dict:
+        """状態の置き場所の大きさ（バイト）と、DB の中の空き。"""
+        def size(p: Path) -> int:
+            try:
+                return p.stat().st_size
+            except OSError:
+                return 0
+        page = self.one("PRAGMA page_size")[0]
+        events = [f for f in (self.dir / "events").glob("*.json")]
+        return {
+            "db_bytes": size(self.path),
+            "wal_bytes": size(self.path.with_name(self.path.name + "-wal")),
+            "free_bytes": self.one("PRAGMA freelist_count")[0] * page,
+            "event_files": len(events),
+            "event_files_bytes": sum(size(f) for f in events),
+            "auto_vacuum": {0: "none", 1: "full", 2: "incremental"}.get(self.one("PRAGMA auto_vacuum")[0], "?"),
+        }
+
+    def shrink(self, full: bool = False) -> int:
+        """消した行の領域をファイルから返し、WAL を切り詰める。返したバイト数（概算）を返す。
+
+        full=False は incremental_vacuum（すぐ終わる。auto_vacuum=INCREMENTAL の DB だけ効く）、
+        full=True は VACUUM（DB を作り直す。古い DB を INCREMENTAL に切り替える。大きい DB では時間がかかる）。
+        """
+        before = self.storage()
+        if full:
+            self.db.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            self.db.execute("VACUUM")
+        else:
+            # 1 回の step で 1 ページずつ返す。execute では Python のバージョンによって 1 回しか step しないので、
+            # 最後まで step する executescript（sqlite3_exec）で流す
+            self.db.executescript("PRAGMA incremental_vacuum;")
+        self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        after = self.storage()
+        return max(0, before["db_bytes"] + before["wal_bytes"] - after["db_bytes"] - after["wal_bytes"])

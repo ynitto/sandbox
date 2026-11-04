@@ -292,10 +292,12 @@ def cmd_records(cfg, store, a) -> int:
 
 
 def cmd_gc(cfg, store, a) -> int:
-    c = gc(cfg, store, a.dry_run)
+    c = gc(cfg, store, a.dry_run, a.vacuum)
     log(("消す予定" if a.dry_run else "消しました") +
         f": 取得結果 {c['fetches']} 回分・途中で止まった取得のページ {c['pages_of_abandoned']} 回分・"
-        f"イベント {c['events']} 件・イベントのファイル {c['event_files']} 個・条件付き要求の控え {c['http_cache']} 件")
+        f"イベント {c['events']} 件・イベントのファイル {c['event_files']} 個・条件付き要求の控え {c['http_cache']} 件・"
+        f"消えたレコードの観測値 {c['removed_records']} 件・長く取得されていないレコード {c['stale_records']} 件"
+        + ("" if a.dry_run else f"。ファイルから {c['freed_bytes'] / 1048576:.1f} MB 返しました"))
     return EXIT_OK
 
 
@@ -373,8 +375,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--source", required=True)
     sp.add_argument("--fetch", type=int)
     sp.add_argument("--limit", type=int, default=20)
-    sp = add("gc", cmd_gc, "保持期間を過ぎた取得結果・イベントを消す（未判定・未完了のものは消さない）")
+    sp = add("gc", cmd_gc, "保持期間を過ぎたものを消してファイルを縮める（未判定・未完了のものは消さない）")
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--vacuum", action="store_true", help="VACUUM で DB を作り直す（時間がかかる。古い DB を自動で縮む形にする）")
     sp = add("forget-rule", cmd_forget_rule, "設定から消したルールの判定状態を消す")
     sp.add_argument("rule")
     for name in PLUGINS:

@@ -11,7 +11,8 @@ from .util import iso, now
 
 
 def status(cfg: Config, store: Store) -> dict:
-    out: dict[str, Any] = {"state_dir": str(store.dir), "sources": [], "rules": [], "problems": []}
+    out: dict[str, Any] = {"state_dir": str(store.dir), "storage": store.storage(), "sources": [], "rules": [],
+                           "problems": []}
     for name, src in cfg.sources.items():
         row = store.source_row(name)
         last = store.one("SELECT * FROM fetches WHERE id=?", (row["last_fetch_id"],)) if row["last_fetch_id"] else None
@@ -69,6 +70,12 @@ def print_status(st: dict, file=None) -> None:
     file = file or sys.stdout
     p = lambda s="": print(s, file=file)  # noqa: E731
     p(f"状態の保存先: {st['state_dir']}")
+    sg = st["storage"]
+    mb = lambda n: f"{n / 1048576:.1f} MB"  # noqa: E731
+    p(f"  DB {mb(sg['db_bytes'])}（うち空き {mb(sg['free_bytes'])}）・WAL {mb(sg['wal_bytes'])}・"
+      f"イベントのファイル {sg['event_files']} 個 {mb(sg['event_files_bytes'])}")
+    if sg["auto_vacuum"] != "incremental":
+        p("  この DB は消した領域を自動で返さない形です。gc --vacuum で一度作り直すと、以後は gc のたびに縮みます")
     p()
     p("取得元")
     for s in st["sources"]:
@@ -111,11 +118,15 @@ def print_status(st: dict, file=None) -> None:
         p("設定から消えたルール（状態が残っています。要らなければ forget-rule で消せます）: " + ", ".join(st["orphan_rules"]))
 
 
-def gc(cfg: Config, store: Store, dry_run: bool = False) -> dict:
-    """保持期間を過ぎたものを消す。未判定の取得結果・未完了の受け渡しのイベントは消さない。"""
+def gc(cfg: Config, store: Store, dry_run: bool = False, vacuum: bool = False) -> dict:
+    """保持期間を過ぎたものを消し、空いた領域をファイルから返す。未判定の取得結果・未完了の受け渡しのイベントは消さない。
+
+    vacuum=True なら VACUUM で DB を作り直す（古い DB を自動で縮む形に切り替える。時間がかかる）。
+    """
     t = now()
     rt = cfg.retention
-    counts = {"fetches": 0, "pages_of_abandoned": 0, "events": 0, "event_files": 0, "http_cache": 0}
+    counts = {"fetches": 0, "pages_of_abandoned": 0, "events": 0, "event_files": 0, "http_cache": 0,
+              "removed_records": 0, "stale_records": 0, "freed_bytes": 0}
     fetch_cut = t - rt.fetch_days * 86400
     ev_cut = t - rt.events_days * 86400
     with store.tx() as db:
@@ -171,6 +182,19 @@ def gc(cfg: Config, store: Store, dry_run: bool = False) -> dict:
             if not dry_run:
                 db.execute("DELETE FROM deliveries WHERE event_id=?", (e["id"],))
                 db.execute("DELETE FROM events WHERE id=?", (e["id"],))
+        # 消えた・対象外になったレコードの前回の観測値（また現れたら appeared になる）
+        removed_cut = t - rt.removed_days * 86400
+        counts["removed_records"] = db.execute("SELECT COUNT(*) c FROM rule_records WHERE present=0 AND updated_at<?",
+                                               (removed_cut,)).fetchone()["c"]
+        if not dry_run:
+            db.execute("DELETE FROM rule_records WHERE present=0 AND updated_at<?", (removed_cut,))
+        # 増分取得で組み立てた全体の姿のうち、長く取得されていないもの（設定したときだけ）
+        if rt.record_days is not None:
+            stale_cut = t - rt.record_days * 86400
+            counts["stale_records"] = db.execute(
+                "SELECT COUNT(*) c FROM source_records WHERE COALESCE(seen_at, 0)<?", (stale_cut,)).fetchone()["c"]
+            if not dry_run:
+                db.execute("DELETE FROM source_records WHERE COALESCE(seen_at, 0)<?", (stale_cut,))
     # イベントのファイル（DB から消えたもの・最終状態になってから保持期間を過ぎたもの）
     live = {r["id"] for r in store.q("SELECT id FROM events")}
     for f in (store.dir / "events").glob("*.json"):
@@ -184,6 +208,8 @@ def gc(cfg: Config, store: Store, dry_run: bool = False) -> dict:
                     f.unlink()
         except OSError:
             pass
+    if not dry_run:
+        counts["freed_bytes"] = store.shrink(full=vacuum)
     return counts
 
 
