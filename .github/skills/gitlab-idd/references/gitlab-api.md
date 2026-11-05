@@ -7,6 +7,7 @@
 - [認証・ユーザー](#認証ユーザー)
 - [イシュー操作](#イシュー操作)
 - [ブランチ名生成](#ブランチ名生成)
+- [作業用フォルダ](#作業用フォルダ)
 - [MR（マージリクエスト）操作](#mrマージリクエスト操作)
 - [self-defer チェック](#self-defer-チェック)
 - [トラブルシューティング](#トラブルシューティング)
@@ -213,6 +214,24 @@ python scripts/gl.py add-comment 42 --body-file _comment.md
 python scripts/gl.py make-branch-name 42
 # → "feature/issue-42-add-login-form"
 ```
+
+## 作業用フォルダ
+
+GitLab の API は呼ばず、git だけを使う（トークンは要らない）。
+
+```
+python scripts/gl.py workspace-create 42 --branch feature/issue-42-add-login-form --target main
+# → 作業用フォルダのパス（一時フォルダの下の gitlab-idd-42-xxxxxxxx）。TARGET を基点に BRANCH を作ってある
+
+python scripts/gl.py workspace-remove <そのパス>
+# → 作業用フォルダを消す（worktree なら手元のブランチも外す）
+```
+
+- `GITLAB_IDD_LOCAL_REPO`（または `skill-registry.json` の `local_repo`）があれば、そのリポジトリに `git worktree` を足す。
+  クローンせず、`origin` から TARGET だけを fetch する。リポジトリの作業ツリー・ブランチ・書きかけの変更には触らない
+- 無ければ、今いるリポジトリの `origin`（`--remote-url` で変えられる）を作業用フォルダにクローンする
+- 作る場所は一時フォルダ（`--base-dir` で変えられる）。Windows でも同じ手順で動く
+- `workspace-remove` は名前が `gitlab-idd-` で始まらないフォルダを消さない
 
 ## パケット ID（リポジトリ横断・人が入力できる長さ）
 

@@ -18,8 +18,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   コマンドのパスと `APIWATCH_*` を `CHANGEWATCH_*` に書き換える。受け渡しの ID（`aw_…`）は変わらない
 - `change-watch.windows.yaml.example` と README の「Windows のとき」に、Windows（ネイティブ）でフォルダと GitLab の issue を見る設定・
   Dagu のワークフロー・`ack` の例を足す
-- gitlab-issue-agent・redmine-ticket-agent: プラグインと設定・ワークフローの例を change-watch の名前に合わせる
+- gitlab-issue-agent・gitlab-mr-review-agent・redmine-ticket-agent: プラグインと設定・ワークフローの例を change-watch の名前に合わせる
   （`change-watch-issue-agent.yaml.example`・`examples/gitlab-idd/change-watch-idd.yaml.example`・`change-watch-auto-close.yaml.example` など）
+### gitlab-mr-review-agent: 決めたリポジトリの MR を kiro-cli にレビューさせ、直った指摘を閉じる（0.1.0）
+
+- `tools/gitlab-mr-review-agent/` を足す。gitlab-issue-agent と同じく、MR の取得・変化の検知・実行待ち・再試行・処理し終えた状態・
+  1 セッションの排他は change-watch、起動と kiro-cli の実行は Dagu（`harness.run`、provider: kiro）が受け持つ
+- **重ねてレビューしない**: head のコミット・ドラフト・対象ブランチが変わったときだけレビューし、コメント・返信・ラベルでは起こさない。
+  レビューし終えたコミットを覚え、同じコミットは流さない。レビュー中に積まれたコミットは次の取得でレビューする（チェック
+  `gitlab_mr.changed_during_review`）。指摘とまとめに見えない印を付け、やり直しでも同じ指摘・同じ差分のまとめを書かない
+- **リベースだけの MR を重ねてレビューしない**: 「レビューし終えた」を MR の差分の中身（足した行・消した行）の指紋でも見て、
+  head のコミットだけが変わった MR（リベース・中身の同じ force push・開き直した MR）は kiro-cli を起こさずに飛ばす（チェック
+  `gitlab_mr.already_reviewed`）。前回のコミットからの差分は、この MR が触っているファイルだけにする（リベースで入った対象ブランチの
+  変更を指摘させない）。未解決の指摘がある行への言い直しの指摘と、解決済みの指摘の蒸し返しも防ぐ
+- **直った指摘を閉じる**: 新しいコミットのレビューで、自分が立てた未解決のスレッドを前回のコミットからの差分と今のファイルで確かめ、
+  直っていれば返信して解決にする。人のスレッドには触らず、承認・マージはしない
+- **API と git のリモートへの問い合わせを減らす**: 手元のリポジトリ（`MR_REVIEW_REPO_DIR`。**既にある作業コピーを指定できる**。無ければ
+  1 回だけ部分クローンで取ってくる）を使い、MR の今のコミットを前に取っていないときだけ、その MR と対象ブランチを `git fetch` する
+  （`refs/mr-review/` の下にだけ置き、作業コピーのブランチ・追跡ブランチ・書きかけの変更には触らない）。差分・前回のコミットからの差分・
+  ファイルの中身は git で読み、API には問い合わせない。MR のコミットは `git worktree` で足したレビュー用の作業フォルダ（`MR_REVIEW_WORKTREE`）に
+  取り出し、kiro-cli が周りのコードを読める。MR の差分の一覧（API）は 1 回のレビューで 1 回だけ取って使い回す。git が使えなければ API に戻る。
+  取ってくる先は既定でリポジトリのリモート `origin`（その PC の git の認証のまま）。HTTPS で GitLab と同じホストのときだけトークンを
+  git に環境変数で渡し、設定ファイルに残さず、ほかのホストには渡さない
+- **Windows**: git に `core.quotepath=false`・`core.longpaths=true` を渡し、フォルダの比較で大文字小文字・短い名前の違いを吸収する。
+  Windows の CI で試験を回す
+- `gitlab_mr.py`: change-watch のプラグイン（フィルタ `gitlab_mr_since`・`gitlab_mr_kind`、上のチェック）と、kiro-cli が使うコマンド
+  `prepare` / `context` / `show` / `comment` / `resolve` / `summary`。標準ライブラリと git だけ
+- 設定の例: `change-watch.yaml.example`・`prompt.md.example`・`gitlab-mr-review-agent.env.example`、
+  Dagu のワークフローの例 `change-watch-mr-review.yaml.example`（`handle` で kiro-cli を動かす。試験で Dagu と同じ順に本物の change-watch へ流す）
+- 設計: `docs/designs/gitlab-mr-review-agent-design.md`
+
+### gitlab-idd: ワーカーの作業用フォルダを、既にある作業コピーの git worktree にできる・Windows でも動く（4.4.0）
+
+- `gl.py workspace-create <イシュー> --branch B --target T` / `workspace-remove <パス>` を足し、ワーカーの手順（ステップ 3-2・5-6）の
+  `mktemp -d /tmp/...`・`git clone`・`rm -rf` をこれに置き換える
+- `GITLAB_IDD_LOCAL_REPO`（または `skill-registry.json` の `local_repo`）に既にある作業コピーを書くと、イシューごとにクローンせず、
+  そのリポジトリへ `git worktree` を足す（`origin` から対象ブランチだけを fetch。作業コピーの作業ツリー・ブランチ・書きかけの変更には触らない）。
+  書かなければ従来どおりクローンする
+- 作業用フォルダは一時フォルダ（Linux・WSL は `/tmp`、Windows は `%TEMP%`）の下に作り、Windows の読み取り専用のファイルも消せる。
+  名前が `gitlab-idd-` で始まらないフォルダは消さない。GitLab の API もトークンも使わない
+- gitlab-issue-agent の gitlab-idd の設定の例（`gitlab-issue-agent.env.example`・`examples/gitlab-idd/`）と README に、`GITLAB_IDD_LOCAL_REPO` と Windows の注意を足す
+- CI: gitlab-idd の作業用フォルダの試験を Linux と Windows で、redmine-ticket-agent・gitlab-mr-review-agent の試験を Windows でも回す
+- redmine-ticket-agent: Windows で `close` の失敗の文が `\u5909…` のように崩れて api-watch・Dagu のログに出ていたのを直す（標準出力・標準エラーを UTF-8 にする）
 
 ### obsidian-use: Obsidian の LLM wiki のつなぎ込みと点検を、Obsidian が閉じていても回せるようにする（1.2.0）
 

@@ -2,7 +2,7 @@
 name: gitlab-idd
 description: GitLab イシューを非同期タスクキューとして使うイシュー駆動開発スキル。glab 不要。「GitLab イシューを立てて」「イシューを拾って実行して」「イシューをレビューして」「GitLab MR をマージして」などで発動。GitLab イシュー・MR の操作が含まれる場合に優先して選択する。
 metadata:
-  version: 4.3.1
+  version: 4.4.0
   tier: stable
   category: collaboration
   tags:
@@ -93,6 +93,10 @@ export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
 # 同一 GitLab アカウントで複数ターミナルを独立ノードとして動かす場合に設定する
 export GITLAB_NODE_ID=my-terminal-1
 
+# ワーカーがイシューごとにクローンする代わりに、既にある手元のリポジトリへ git worktree を足す（任意）。
+# そのリポジトリの作業ツリー・ブランチ・書きかけの変更には触らない。origin がこのプロジェクトを指していること
+export GITLAB_IDD_LOCAL_REPO=~/work/project
+
 # 各種閾値を変更する場合は <agent-home>/skill-registry.json の skill_configs.gitlab-idd を設定する
 # 例:
 # {
@@ -101,7 +105,8 @@ export GITLAB_NODE_ID=my-terminal-1
 #       "max_review_per_run": 3,          # 1回のレビュー実行で処理するイシューの最大件数（デフォルト 1）
 #       "self_defer_minutes": 60,         # ワーカーの self-defer 猶予（分、デフォルト 60 = 1時間）
 #       "self_review_lock_minutes": 1440, # レビュアーの self-review ロック（分、デフォルト 1440 = 24時間）
-#       "assigned_lock_minutes": 1440     # 放置アサイン済イシューの引き受けロック（分、デフォルト 1440 = 24時間）
+#       "assigned_lock_minutes": 1440,    # 放置アサイン済イシューの引き受けロック（分、デフォルト 1440 = 24時間）
+#       "local_repo": "~/work/project"    # GITLAB_IDD_LOCAL_REPO と同じ（環境変数が優先）
 #     }
 #   }
 # }
@@ -199,7 +204,7 @@ export GITLAB_NODE_ID=my-terminal-1
 2. self-defer / 放置アサイン / 依存 / 明確性を順に確認して 1 件選択
    → 曖昧な場合   → 推測解釈付きコメント + status:needs-clarification。24h 後に再着手
    → アプローチ分岐 → 提案コメント。24h 後に推奨案で着手
-3. assign・テンポラリクローン・スカウトマップ投稿・Draft MR 作成
+3. assign・作業用フォルダ（`workspace-create`）・スカウトマップ投稿・Draft MR 作成
 4. 実装ループ（最大 5 回）: skill-selector → 実装 → supporting_skills → agent-reviewer → 修正
 5. push・MR 本文更新・Draft 解除・status:review-ready 更新
 6. project-dod チェック → 依存自動解除 → 完了報告 → LTM 保存 → レトロスペクティブトリガー

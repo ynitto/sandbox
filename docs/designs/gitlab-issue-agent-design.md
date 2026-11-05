@@ -104,6 +104,12 @@ gitlab-idd はラベル（`status:*`）でイシューを回し、頼まれる�
 - gitlab-idd の猶予（自分が出したイシューの self-defer 60 分・自分が実装したイシューの self-review ロック 24 時間、どちらもノード単位）は、
   1 つのエージェントがワーカーとレビュアーを兼ねると「何もせずに終わる」になり、変化が無いので二度と流れない。設定の例では
   `skill-registry.json` で 0 にする。gitlab-idd の 24 時間の自動着手（質問に答えがないとき）も、変化が無いので起きない（README に明記）
+- **作業用フォルダ**: gitlab-idd のワーカーは、イシューごとに `gl.py workspace-create` で作業用フォルダを作り、終わったら `workspace-remove` で消す。
+  `GITLAB_IDD_LOCAL_REPO`（既にある作業コピーでよい）があれば、クローンせずにそのリポジトリへ `git worktree add -B <ブランチ>` を足す
+  （`origin` から対象ブランチだけを `refs/gitlab-idd/heads/` に fetch する。作業コピーの作業ツリー・HEAD・書きかけの変更には触らない）。
+  無ければ従来どおり、一時フォルダへイシューごとにクローンする。どちらも一時フォルダは `tempfile`（Linux・WSL は `/tmp`、Windows は `%TEMP%`）で決め、
+  `mktemp`・`rm -rf` を手順から外したので、Windows のシェルでも同じ手順で動く。`workspace-remove` は worktree なら作業ツリーと手元のブランチ（push 済み）を外し、
+  クローンなら読み取り専用のファイルも消す。名前が `gitlab-idd-` で始まらないフォルダは消さない
 - 接続設定は 1 つの connections.yaml を分け合う。gitlab-idd は `gitlab` の `default`（プロジェクトの URL）を、change-watch と
   プラグインは `watch`（GitLab の URL）を使う。gitlab-idd には `SKILL_CONNECTIONS_FILE` で同じファイルを読ませる
 

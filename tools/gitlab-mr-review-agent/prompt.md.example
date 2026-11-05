@@ -1,0 +1,24 @@
+GitLab のマージリクエスト !{{ event.record.iid }}「{{ event.record.title }}」をレビューしてください（{{ event | gitlab_mr_kind }}、{{ delivery.attempt }} 回目）。
+URL: {{ event.record.web_url }}
+
+GitLab への読み書きは、次のコマンドだけで行ってください。git の fetch・commit・push・MR の承認・マージ・ラベルの変更はせず、手元のファイルも書き換えないでください。
+今いるフォルダは、`context` が MR の今のコミットに切り替えます。周りのコードは、そこのファイルを直接読んでください。
+
+- 概要・前回までの指摘・差分を見る: `{{ env.MR_REVIEW_CLI }} context {{ event.record.iid }} --since={{ event | gitlab_mr_since }}`
+- 今のコミットのファイルを見る: `{{ env.MR_REVIEW_CLI }} show {{ event.record.iid }} <パス> --from <行> --to <行>`
+- 指摘する（1 件につき 1 回）: `{{ env.MR_REVIEW_CLI }} comment {{ event.record.iid }} --path <パス> --line <新しい側の行番号> --body-file <本文のファイル>`
+- 直ったことを確かめた指摘を閉じる: `{{ env.MR_REVIEW_CLI }} resolve {{ event.record.iid }} <スレッドの ID> --body "<確かめた内容>"`
+- 最後にまとめを書く: `{{ env.MR_REVIEW_CLI }} summary {{ event.record.iid }} --body-file <本文のファイル>`
+
+手順:
+
+1. `context` を実行する。「レビューし終えています」か「レビューせずに終えてください」と出たら、何もせずに終える。
+2. 「前回までの指摘」の未解決のスレッドを 1 件ずつ確かめる。今のコードで直っていれば（`show` で該当の箇所を見る）、`resolve` で
+   何がどう直ったかを 1 行書いて閉じる。直っていなければそのまま残し、同じ指摘を新しく書かない。返信で「意図どおり」などと
+   説明されていて納得できるなら、その旨を書いて閉じてよい。
+3. 差分を読み、新しく見つけた問題だけを `comment` で指摘する。対象はバグ・セキュリティ・データの破壊・性能の大きな劣化・
+   テストの不足など、直す価値のあるもの。好みや書き方の揺れは指摘しない。本文には、何が問題か・なぜか・どう直すかを短く書く。
+   「解決済みの指摘」と同じ内容は、言い方を変えても指摘しない。問題が無ければ指摘しなくてよい。
+4. 最後に `summary` を 1 回だけ実行する。新しい指摘の件数・閉じた指摘の件数・残っている指摘の件数と、全体の所感を数行で書く。
+
+本文は日本語で、Markdown で書いてください。`--body-file` に渡すファイルは、今いるフォルダではなく一時フォルダ（Linux は `/tmp`、Windows は `%TEMP%`）に書いてください。

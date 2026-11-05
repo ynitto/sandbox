@@ -164,6 +164,11 @@ def _read_note(args) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")     # Windows の cp932 / cp1252 でも日本語のまま出す（change-watch は UTF-8 で読む）
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(prog="redmine_issue.py", description="Redmine のチケットにコメントしてステータスを変える")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("close", help="CHANGEWATCH_EVENT_FILE のチケットにコメントし、ステータスを変える")
