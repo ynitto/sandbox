@@ -9,6 +9,9 @@
         チェック gitlab_mr.changed_during_review
                                     レビューのあいだに MR の head（コミット）・ドラフト・対象ブランチが変わったか。
                                     受け渡し先の handled_before_if に書くと、レビュー中に積まれたコミットを取りこぼさない
+        チェック gitlab_mr.already_reviewed
+                                    今の MR の差分の中身を既にレビューし終えているか（リベース・中身の同じ force push・
+                                    閉じて開き直した MR）。受け渡し先の skip_if に書くと、kiro-cli を起こさずに飛ばす
 
     python3 <このファイル> <コマンド> ...    エージェント CLI がレビューの中で呼ぶ（GitLab への読み書きはこれだけで行う）
         context IID [--since SHA]     MR の概要・前回の指摘（このツールが書いた未解決のスレッド）・差分を出す。
@@ -25,7 +28,8 @@
 
 コマンドは GitLab の URL・トークン・プロジェクトを環境変数 GITLAB_URL / GITLAB_TOKEN / GITLAB_PROJECT から読む
 （Dagu なら dags --dotenv の .env）。どの書き込みにも見えない印（HTML コメント）を付け、同じ指摘・同じまとめを
-二度書かない。標準ライブラリだけで動く。設計は docs/designs/gitlab-mr-review-agent-design.md。
+二度書かない。「レビューし終えた」はコミットではなく MR の差分の中身（足した行・消した行）で見分けるので、
+リベースで head が変わっただけの MR はもう一度レビューしない。標準ライブラリだけで動く。設計は docs/designs/gitlab-mr-review-agent-design.md。
 """
 from __future__ import annotations
 
@@ -46,7 +50,7 @@ USAGE = 2
 
 MARK = "mr-review-agent"
 FINDING_RE = re.compile(r"<!--\s*" + MARK + r":finding\s+([^>]*?)\s*-->")
-SUMMARY_RE = re.compile(r"<!--\s*" + MARK + r":summary\s+sha=([0-9a-f]+)\s*-->")
+SUMMARY_RE = re.compile(r"<!--\s*" + MARK + r":summary\s+sha=([0-9a-f]+)(?:\s+diff=([0-9a-f]+))?\s*-->")
 ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
 
 MAX_DIFF_CHARS = 150_000     # context が出す差分の上限（超えたファイルは名前だけを出し、show で見てもらう）
@@ -99,10 +103,49 @@ def changed_during_review(ctx) -> bool:
     return False
 
 
+def _pages(ctx, url: str, query: dict | None = None, limit: int = 50) -> list | None:
+    """ページを順に GET してつなぐ（1 ページ目が 404 なら None）。"""
+    out: list = []
+    for page in range(1, limit + 1):
+        body = ctx.get_json(url, query={**(query or {}), "per_page": "100", "page": str(page)})
+        if body is None:
+            return None if page == 1 else out
+        items = body if isinstance(body, list) else []
+        out.extend(items)
+        if len(items) < 100:
+            break
+    return out
+
+
+def already_reviewed(ctx) -> bool:
+    """今の MR の差分の中身を、既にレビューし終えていれば真（skip_if に書く）。
+
+    リベース・中身の同じ force push では head のコミットが変わるので、api-watch はイベントにして流そうとする。
+    MR の差分（足した行・消した行）の指紋が、これまでに書いたまとめのどれかと同じなら、kiro-cli を起こさずに飛ばす。
+    閉じて開き直した MR・ルールの名前を変えたあとの MR も、まとめが残っていれば同じく飛ばす。
+    GitLab に届かなければ例外のまま返し、api-watch が偽とみなす（kiro-cli を起こすが、context が同じ判定で止める）。"""
+    url = str(ctx.options.get("url") or ctx.conn.get("url") or "").rstrip("/")
+    mr = ctx.event.get("record") or {}
+    if not url or mr.get("project_id") is None or mr.get("iid") is None:
+        raise ValueError("GitLab の URL（接続設定の url か options.url）と、レコードの project_id・iid が要ります")
+    base = f"{url}/api/v4/projects/{mr['project_id']}/merge_requests/{mr['iid']}"
+    diffs = _pages(ctx, f"{base}/diffs")
+    if diffs is None:                                   # GitLab 15.7 より前
+        diffs = (ctx.get_json(f"{base}/changes") or {}).get("changes") or []
+    notes = _pages(ctx, f"{base}/notes", {"sort": "desc", "order_by": "created_at"}) or []
+    head = str(mr.get("sha") or "")
+    hit = reviewed(notes, head, diff_fingerprint(diffs, head))
+    if hit:
+        ctx.log(f"!{mr['iid']} の差分の中身は {hit[:8]} のときにレビューし終えているので（リベースなど）、kiro-cli を起こしません")
+        return True
+    return False
+
+
 def register(api) -> None:
     api.add_filter("gitlab_mr_since", gitlab_mr_since)
     api.add_filter("gitlab_mr_kind", gitlab_mr_kind)
     api.add_check("gitlab_mr.changed_during_review", changed_during_review)
+    api.add_check("gitlab_mr.already_reviewed", already_reviewed)
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +282,37 @@ def own_threads(discussions: list[dict]) -> list[dict]:
     return out
 
 
-def reviewed(notes: list[dict], sha: str) -> bool:
-    """今の head（sha）のまとめを既に書いたか。"""
+def diff_fingerprint(diffs: list[dict], head: str) -> str:
+    """MR の差分の中身の指紋。ファイルの名前・作った / 消した / 名前の変更・モードと、足した行・消した行だけを見る。
+
+    行番号（@@ の行）と前後の行は見ないので、リベースで対象ブランチが進んだだけなら同じになる。GitLab が中身を返さない
+    大きなファイルがあれば中身を比べられないので、head のコミットで代える（リベースでもう一度レビューする側に倒す）。"""
+    h = hashlib.sha256()
+    for f in sorted(diffs or [], key=lambda f: (str(f.get("new_path") or ""), str(f.get("old_path") or ""))):
+        body = str(f.get("diff") or "")
+        if not body.strip() and (f.get("too_large") or f.get("collapsed")):
+            return hashlib.sha256(f"head:{head}".encode("utf-8")).hexdigest()[:16]
+        meta = [str(f.get(k) or "") for k in ("old_path", "new_path", "new_file", "deleted_file", "renamed_file",
+                                               "a_mode", "b_mode")]
+        h.update(("\x00".join(meta) + "\n").encode("utf-8"))
+        for line in body.splitlines():
+            if line[:1] in ("+", "-", "\\"):
+                h.update((line + "\n").encode("utf-8"))
+        h.update(b"\x01")
+    return h.hexdigest()[:16]
+
+
+def reviewed(notes: list[dict], head: str, fingerprint: str) -> str | None:
+    """同じ中身の差分のまとめを既に書いていれば、そのときの head のコミット（無ければ None）。
+
+    差分の指紋の無い古い印は、head のコミットが同じときだけ当たる。"""
     for n in notes or []:
         m = SUMMARY_RE.search(str((n or {}).get("body") or ""))
-        if m and m.group(1) == sha:
-            return True
-    return False
+        if not m:
+            continue
+        if (m.group(2) and m.group(2) == fingerprint) or (not m.group(2) and m.group(1) == head):
+            return m.group(1)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -340,11 +407,17 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print) -> int:
     if mr.get("state") != "opened":
         out(f"MR !{iid} は {mr.get('state')} です。レビューせずに終えてください。")
         return OK
-    if head and reviewed(gl.notes(iid), head):
-        out(f"MR !{iid} の今のコミット（{head[:8]}）はレビューし終えています。何もせずに終えてください。")
+    whole = gl.mr_diffs(iid)
+    hit = reviewed(gl.notes(iid), head, diff_fingerprint(whole, head))
+    if hit:
+        if hit == head:
+            out(f"MR !{iid} の今のコミット（{head[:8]}）はレビューし終えています。何もせずに終えてください。")
+        else:
+            out(f"MR !{iid} の差分の中身は、レビューし終えた {hit[:8]} のときと同じです（リベースなど）。何もせずに終えてください。")
         return OK
     threads = own_threads(gl.discussions(iid))
     open_threads = [t for t in threads if not t["resolved"]]
+    closed_threads = [t for t in threads if t["resolved"]]
     out(f"# MR !{iid}「{mr.get('title')}」")
     out(f"- URL: {mr.get('web_url')}")
     out(f"- 作成者: {(mr.get('author') or {}).get('username')}")
@@ -363,16 +436,22 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print) -> int:
         for r in t["replies"]:
             out(f"> 返信（{r['author']}）: {_excerpt(r['body'], 300)}")
         out("")
+    if closed_threads:
+        out("### 解決済みの指摘（同じ内容をもう一度指摘しない）")
+        for t in closed_threads:
+            out(f"- {t['path']}:{t['line']}  {_excerpt(t['body'].splitlines()[0] if t['body'] else '', 120)}")
     out("")
     diffs: list[dict] | None = None
     if since and since != head:
         try:
-            diffs = gl.compare(since, head)
-            out(f"## 前回レビューしたコミット（{since[:8]}）からの変更")
+            # リベースしていると、前のコミットからの差分に対象ブランチの変更も混ざる。MR が触っているファイルだけにする
+            files = {f.get("new_path") for f in whole} | {f.get("old_path") for f in whole}
+            diffs = [f for f in gl.compare(since, head) if f.get("new_path") in files or f.get("old_path") in files]
+            out(f"## 前回レビューしたコミット（{since[:8]}）からの変更（この MR が触っているファイルだけ）")
         except GitLabError as e:
             out(f"（前回のコミット {since[:8]} からの差分が取れないので（{e}）、MR 全体の差分を出します。force push で消えた可能性があります）")
     if diffs is None:
-        diffs = gl.mr_diffs(iid)
+        diffs = whole
         out("## MR 全体の変更")
     out("```diff")
     out(render_diffs(diffs))
@@ -406,6 +485,10 @@ def cmd_comment(gl: GitLab, iid: str, path: str, line: int, body: str, out=print
     for t in own_threads(gl.discussions(iid)):
         if t["key"] == key:
             out(f"同じ指摘が既にあります（スレッド {t['id']}・{'解決済み' if t['resolved'] else '未解決'}）。書きません。")
+            return OK
+        if not t["resolved"] and t["path"] == path and str(t["line"]) == str(line):
+            out(f"{path}:{line} には未解決の指摘（スレッド {t['id']}）が既にあります。書きません"
+                "（言い直しで同じ指摘を重ねないため。別の問題なら、その問題がある別の行に書いてください）。")
             return OK
     mr = gl.mr(iid)
     pos = position_for(mr, gl.mr_diffs(iid), path, line)
@@ -445,11 +528,12 @@ def cmd_summary(gl: GitLab, iid: str, body: str, out=print) -> int:
     head = str(mr.get("sha") or "")
     if not head:
         raise GitLabError(f"MR !{iid} の今のコミットが分かりません")
-    if reviewed(gl.notes(iid), head):
-        out(f"今のコミット（{head[:8]}）のまとめは既にあります。書きません。")
+    fp = diff_fingerprint(gl.mr_diffs(iid), head)
+    if reviewed(gl.notes(iid), head, fp):
+        out(f"今の差分（{head[:8]}）のまとめは既にあります。書きません。")
         return OK
     gl.call("POST", f"/merge_requests/{iid}/notes",
-            body={"body": f"{body.strip()}\n\n<!-- {MARK}:summary sha={head} -->"})
+            body={"body": f"{body.strip()}\n\n<!-- {MARK}:summary sha={head} diff={fp} -->"})
     out(f"MR !{iid} にレビューのまとめを書きました（{head[:8]}）")
     return OK
 

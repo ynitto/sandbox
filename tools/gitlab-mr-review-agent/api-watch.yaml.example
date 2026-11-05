@@ -67,6 +67,10 @@ rules:
         #   - 後: そのコミットを「レビューし終えた状態」にする
         refresh:
           url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/merge_requests/{{ event.record_id }}"
+        # 差分の中身を既にレビューし終えていれば、kiro-cli を起こさずに飛ばす（リベース・中身の同じ force push・
+        # 閉じて開き直した MR。head のコミットは変わるが、足した行・消した行が前にレビューしたときと同じもの）
+        skip_if:
+          - gitlab_mr.already_reviewed
         # レビューのあいだにコミットが積まれたら、レビューし終えたのは実行前のコミットまでにする（次の取得で新しいコミットを見る）
         handled_before_if:
           - gitlab_mr.changed_during_review

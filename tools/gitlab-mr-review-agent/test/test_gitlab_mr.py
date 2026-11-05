@@ -41,6 +41,8 @@ PROJECT = "g/p"
 
 DIFF_A = "@@ -1,3 +1,4 @@\n def f(x):\n-    return x\n+    y = x * 2\n+    return y\n \n"
 #          old: 1 def / 2 return x(-) / 3 空行     new: 1 def / 2 y=(+) / 3 return y(+) / 4 空行
+DIFF_B = "@@ -1,3 +1,4 @@\n def f(x):\n-    return x\n+    y = (x or 0) * 2\n+    return y\n \n"     # 指摘を直した
+FIX = "@@ -2,1 +2,1 @@\n-    y = x * 2\n+    y = (x or 0) * 2\n"                                  # 前の head からの差分
 
 
 def make_mr(iid: int, sha: str = "a" * 40, **kw) -> dict:
@@ -184,8 +186,10 @@ class FakeGitLab:
             self.mrs[str(mr["iid"])] = mr
             self.diffs[str(mr["iid"])] = [{"old_path": path, "new_path": path, "diff": diff}]
 
-    def push(self, iid: int, sha: str, diff: str = DIFF_A, path: str = "app.py", since_diff: str | None = None):
-        """コミットを積む（head が変わる）。since_diff があれば、前の head からの compare も返す。"""
+    def push(self, iid: int, sha: str, diff: str = DIFF_B, path: str = "app.py", since_diff: str | None = None,
+             extra: list | None = None):
+        """コミットを積む（head が変わる）。diff は MR 全体の差分。since_diff があれば、前の head からの compare も返す
+        （extra はその compare に混ぜるほかのファイル。リベースで入った対象ブランチの変更）。"""
         with self.lock:
             mr = self.mrs[str(iid)]
             old = mr["sha"]
@@ -193,7 +197,7 @@ class FakeGitLab:
             mr["diff_refs"] = dict(mr["diff_refs"], head_sha=sha)
             self.diffs[str(iid)] = [{"old_path": path, "new_path": path, "diff": diff}]
             if since_diff is not None:
-                self.compares[(old, sha)] = [{"old_path": path, "new_path": path, "diff": since_diff}]
+                self.compares[(old, sha)] = [{"old_path": path, "new_path": path, "diff": since_diff}] + list(extra or [])
 
     def reply(self, iid: int, did: str, who: str, body: str):
         with self.lock:
@@ -257,6 +261,27 @@ class UnitTest(unittest.TestCase):
                          ("d1", "k1", "app.py", "3", "直して", False))
         self.assertEqual(t["replies"], [{"author": "alice", "body": "意図どおりです"}])
 
+    def test_fingerprint_ignores_rebase_but_not_changes(self):
+        a = [{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_A}]
+        moved = [{"old_path": "app.py", "new_path": "app.py",
+                  "diff": DIFF_A.replace("@@ -1,3 +1,4 @@", "@@ -10,3 +10,4 @@").replace(" def f(x):", " def f(x):  # 前後の行")}]
+        self.assertEqual(gm.diff_fingerprint(a, "a" * 40), gm.diff_fingerprint(moved, "c" * 40))   # リベースで行がずれただけ
+        self.assertNotEqual(gm.diff_fingerprint(a, "a" * 40),
+                            gm.diff_fingerprint([{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_B}], "a" * 40))
+        self.assertNotEqual(gm.diff_fingerprint(a, "a" * 40), gm.diff_fingerprint(a + [{"old_path": "x", "new_path": "y",
+                                                                                      "renamed_file": True, "diff": ""}], "a" * 40))
+        big = [{"old_path": "big.json", "new_path": "big.json", "diff": "", "too_large": True}]
+        self.assertNotEqual(gm.diff_fingerprint(big, "a" * 40), gm.diff_fingerprint(big, "c" * 40))  # 中身が見えなければ head で
+
+    def test_reviewed_matches_diff_or_old_mark(self):
+        fp = gm.diff_fingerprint([{"new_path": "a", "diff": DIFF_A}], "a" * 40)
+        notes = [{"body": f"まとめ\n<!-- mr-review-agent:summary sha={'a' * 40} diff={fp} -->"}]
+        self.assertEqual(gm.reviewed(notes, "c" * 40, fp), "a" * 40)
+        self.assertIsNone(gm.reviewed(notes, "a" * 40, "0" * 16))
+        old = [{"body": f"<!-- mr-review-agent:summary sha={'a' * 40} -->"}]
+        self.assertEqual(gm.reviewed(old, "a" * 40, fp), "a" * 40)
+        self.assertIsNone(gm.reviewed(old, "c" * 40, fp))
+
     def test_long_diff_lists_names(self):
         diffs = [{"old_path": f"f{i}.py", "new_path": f"f{i}.py", "diff": "x" * 100} for i in range(5)]
         out = gm.render_diffs(diffs, limit=300)
@@ -289,6 +314,36 @@ class ChangedDuringReviewTest(unittest.TestCase):
         self.assertTrue(gm.changed_during_review(FakeCtx(make_mr(3), make_mr(3, draft=True))))
 
 
+class PagedCtx(FakeCtx):
+    """URL ごとに返す値を決める（diffs・notes はページで返す）。"""
+
+    def __init__(self, record, diffs, notes):
+        super().__init__(record, None)
+        self.diffs, self.notes = diffs, notes
+
+    def get_json(self, url, headers=None, query=None):
+        self.calls.append(url)
+        page = int((query or {}).get("page", "1"))
+        items = self.diffs if url.endswith("/diffs") else self.notes if url.endswith("/notes") else []
+        return items[(page - 1) * 100: page * 100]
+
+
+class AlreadyReviewedTest(unittest.TestCase):
+    def test_rebased_mr_is_skipped(self):
+        diffs = [{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_A}]
+        fp = gm.diff_fingerprint(diffs, "a" * 40)
+        notes = [{"body": "人のコメント"}] * 150 + [{"body": f"<!-- mr-review-agent:summary sha={'a' * 40} diff={fp} -->"}]
+        ctx = PagedCtx(make_mr(3, sha="c" * 40), diffs, notes)
+        self.assertTrue(gm.already_reviewed(ctx))                        # 2 ページ目のまとめも見る
+        self.assertIn("リベースなど", ctx.logs[0])
+
+    def test_changed_content_runs(self):
+        fp = gm.diff_fingerprint([{"new_path": "app.py", "diff": DIFF_A}], "a" * 40)
+        notes = [{"body": f"<!-- mr-review-agent:summary sha={'a' * 40} diff={fp} -->"}]
+        ctx = PagedCtx(make_mr(3, sha="c" * 40), [{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_B}], notes)
+        self.assertFalse(gm.already_reviewed(ctx))
+
+
 # ---------------------------------------------------------------------------
 # エージェントが使うコマンド
 # ---------------------------------------------------------------------------
@@ -307,6 +362,23 @@ class CommandTest(_GitLabBase):
         code, out = self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "x が None のとき落ちます")
         self.assertIn("同じ指摘が既にあります", out)
         self.assertEqual(len(self.gl.discussions["1"]), 1)            # やり直しても重ならない
+
+    def test_reworded_finding_on_same_line_is_not_added(self):
+        self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "x が None のとき落ちます")
+        code, out = self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "None を渡すと例外になります")
+        self.assertIn("未解決の指摘", out)
+        self.assertEqual(len(self.gl.discussions["1"]), 1)
+        self.cli("resolve", 1, self.gl.discussions["1"][0]["id"], "--body", "意図どおりとのことなので閉じます")
+        code, out = self.cli("context", 1)
+        self.assertIn("### 解決済みの指摘（同じ内容をもう一度指摘しない）", out)
+        self.assertIn("- app.py:2  x が None のとき落ちます", out)
+
+    def test_context_after_rebase_shows_only_mr_files(self):
+        self.gl.push(1, "c" * 40, since_diff=FIX,
+                     extra=[{"old_path": "main_only.py", "new_path": "main_only.py", "diff": "@@ -1 +1 @@\n-a\n+b\n"}])
+        code, out = self.cli("context", 1, "--since", "a" * 40)
+        self.assertIn("+    y = (x or 0) * 2", out)
+        self.assertNotIn("main_only.py", out)                            # 対象ブランチから入った変更は出さない
 
     def test_comment_outside_diff_becomes_mr_thread(self):
         code, out = self.cli("comment", 1, "--path", "lib/util.py", "--line", 10, "--body", "こちらも直す")
@@ -347,7 +419,7 @@ class CommandTest(_GitLabBase):
     def test_context_since_shows_new_commits_and_open_threads(self):
         self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "x が None のとき落ちます")
         self.gl.reply(1, self.gl.discussions["1"][0]["id"], "alice", "直しました")
-        self.gl.push(1, "c" * 40, since_diff="@@ -2,1 +2,1 @@\n-    y = x * 2\n+    y = (x or 0) * 2\n")
+        self.gl.push(1, "c" * 40, since_diff=FIX)
         code, out = self.cli("context", 1, "--since", "a" * 40)
         self.assertIn("前回までの指摘（未解決 1 件・解決済み 0 件）", out)
         self.assertIn("app.py:2", out)
@@ -442,7 +514,7 @@ class FlowTest(_GitLabBase):
         self.gl.mrs["1"]["user_notes_count"] = 3
         self.assertEqual(self.cycle(), (None, None))
         # 直したコミットを積むと、前回のコミットからの差分でもう一度レビューし、指摘を閉じる
-        self.gl.push(1, "c" * 40, since_diff="@@ -2,1 +2,1 @@\n-    y = x * 2\n+    y = (x or 0) * 2\n")
+        self.gl.push(1, "c" * 40, since_diff=FIX)
         did = self.gl.discussions["1"][0]["id"]
         d, prompt = self.cycle(self.review(1, resolve=[did]))
         self.assertIn("再レビュー（前回は aaaaaaaa）", prompt)
@@ -458,11 +530,48 @@ class FlowTest(_GitLabBase):
 
         def agent(prompt):
             self.review(1)(prompt)
-            self.gl.push(1, "c" * 40, since_diff=DIFF_A)                 # レビュー中に人がコミットを積んだ
+            self.gl.push(1, "c" * 40, since_diff=FIX)                    # レビュー中に人がコミットを積んだ
         self.cycle(agent)
         d, prompt = self.cycle(self.review(1))
         self.assertIsNotNone(d)
         self.assertIn(f"--since={'a' * 40}", prompt)
+        self.assertEqual(self.cycle(), (None, None))
+
+    def test_rebase_without_changes_does_not_start_kiro(self):
+        self.gl.put(make_mr(1))
+        self.cycle(self.review(1, findings=[("app.py", 2, "x が None のとき落ちます")]))
+        self.gl.push(1, "c" * 40, diff=DIFF_A, since_diff="",
+                     extra=[{"old_path": "main_only.py", "new_path": "main_only.py", "diff": "@@ -1 +1 @@\n-a\n+b\n"}])
+        self.assertEqual(self.cycle(), (None, None))                    # head は変わったが、中身は同じ
+        self.gl.push(1, "d" * 40, diff=DIFF_A, since_diff="")           # もう一度リベースしても同じ
+        self.assertEqual(self.cycle(), (None, None))
+        self.gl.push(1, "e" * 40, since_diff=FIX)                        # 中身を直すと、レビューする
+        d, prompt = self.cycle(self.review(1, resolve=[self.gl.discussions["1"][0]["id"]]))
+        self.assertIsNotNone(d)
+        self.assertNotIn("main_only.py", self.contexts[-1])
+        self.assertEqual(len(self.gl.notes["1"]), 2)
+
+    def test_reopened_mr_is_not_reviewed_again(self):
+        # 一覧から消えた MR の観測値と処理し終えた状態は removed_days（既定 30 日）で消える。それを過ぎて開き直した MR
+        cfg = yaml.safe_load(self.cfg.read_text(encoding="utf-8"))
+        cfg["retention"] = {"removed_days": 0}
+        self.cfg.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+        self.gl.put(make_mr(1))
+        self.cycle(self.review(1))
+        self.gl.mrs["1"]["state"] = "closed"
+        self.cycle()                                                     # 一覧から消える
+        self.aw("gc")
+        self.gl.mrs["1"]["state"] = "opened"
+        self.assertEqual(self.cycle(), (None, None))                    # まとめが残っているので kiro-cli は起きない
+        self.assertEqual(len(self.gl.notes["1"]), 1)
+
+    def test_target_branch_change_is_reviewed(self):
+        self.gl.put(make_mr(1))
+        self.cycle(self.review(1))
+        self.gl.mrs["1"]["target_branch"] = "release"
+        self.gl.diffs["1"] = [{"old_path": "app.py", "new_path": "app.py", "diff": DIFF_B}]
+        d, _ = self.cycle(self.review(1))
+        self.assertIsNotNone(d)
         self.assertEqual(self.cycle(), (None, None))
 
     def test_draft_waits_until_ready(self):
