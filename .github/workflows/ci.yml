@@ -82,6 +82,10 @@ jobs:
           # 本物の api-watch を Dagu のワークフローと同じ順（claim → render → finish）で呼んだときの重複制御・排他と、gitlab-idd の設定の例を見る。
           - package: gitlab-issue-agent
             suites: tools/gitlab-issue-agent/test
+          # redmine-ticket-agent。Redmine は手元の HTTP サーバで偽装し、redmine_issue.py のチェック・close と、設定の例を
+          # 本物の api-watch で fetch → evaluate → work の順に回したときの対象の絞り込み・1 回だけの完了・失敗の再試行を見る。
+          - package: redmine-ticket-agent
+            suites: tools/redmine-ticket-agent/test
           # api-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
           # 取得の集約・ページング・増分・再開・変更検知・再送・順序・保持期間を見る（Dagu 本体は入れない）。
           - package: api-watch

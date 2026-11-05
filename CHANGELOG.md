@@ -51,6 +51,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 - 大きなテキストのプレビュー末尾と、実行ログの末尾表示の先頭に、割れた日本語・絵文字が `�` として出ていたのを、切り口の断片を落として直す。
 
+### redmine-ticket-agent: 自分が担当する Redmine のチケットを、文字列で見分けてコメントし完了にする（0.1.0）
+
+- `tools/redmine-ticket-agent/` を足す。自分（API キーの持ち主）が担当する未完了のチケットのうち、タイトルか説明に決めた文字列を含むものに、
+  決めた文をコメントしてステータスを完了にする（1 回の更新）。取得・変化の検知・実行待ち・再試行は api-watch、定期起動は Dagu が受け持つ
+- `redmine_issue.py`: api-watch のプラグインとしてチェック `redmine.not_mine`（取り直したチケットの担当が自分でなければ飛ばす）を足し、
+  `close --status <名前か ID> --note <文>`（`--note-file` も可）でコメントとステータスの変更を行う。書く前に選べるステータスかを確かめ、
+  既に目的のステータスなら何もしない。標準ライブラリだけ
+- Dagu のワークフローは 1 本（`api-watch-auto-close`。fetch → evaluate → work）。問い合わせは 15 分ごと。最初の取得で、いま当たっているチケットも完了にする
+- 設定の例: `api-watch.yaml.example`・`redmine-ticket-agent.env.example`
+- 設計: `docs/designs/redmine-ticket-agent-design.md`
+
 ### gitlab-issue-agent: GitLab の issue の変化をエージェント CLI に 1 件ずつ渡す（0.1.0）
 
 - `tools/gitlab-issue-agent/` を足す。issue の取得・変化の検知・実行待ち・再試行・処理し終えた状態の記録・1 セッションの排他は api-watch、
