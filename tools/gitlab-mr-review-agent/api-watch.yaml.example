@@ -1,0 +1,78 @@
+# gitlab-mr-review-agent の api-watch の設定（~/.config/api-watch/api-watch.yaml にコピーして使う）。
+#
+# Dagu のワークフロー 1 本（api-watch-mr-review。api-watch の dags で作る）で動く。毎分起動し、1 回の起動で 1 件をレビューする:
+#   fetch → evaluate（コミットが変わった MR を拾う）→ claim（MR を取り直し、レビューし終えたコミットと同じなら流さない）
+#   → render（プロンプト）→ handle（kiro-cli。Dagu の harness.run）→ finish（レビューし終えたコミットの記録。失敗ならあとでやり直す）
+# GitLab の MR に固有の部分（前回レビューしたコミット・レビュー中のコミットの追加）は gitlab_mr.py（api-watch のプラグイン）が受け持つ。
+# api-watch を呼ぶときは毎回 --plugin <gitlab_mr.py のパス> を付ける（dags も付けた引数を DAG に書く）。
+#
+#   api-watch --plugin dagu --plugin ~/.local/share/gitlab-mr-review-agent/gitlab_mr.py \
+#     --config ~/.config/api-watch/api-watch.yaml --connections ~/.github/connections.yaml \
+#     dags --out ~/.config/dagu/dags --dotenv ~/.config/dagu/gitlab-mr-review-agent.env \
+#     --handle-step mr-review.run=~/.config/dagu/gitlab-mr-review-agent.handle.yaml
+#
+# GitLab の URL・プロジェクト・トークンは ~/.config/dagu/gitlab-mr-review-agent.env にだけ書く。
+# connections.yaml の gitlab は次のように書き、値はその環境変数から取る:
+#
+#   gitlab:
+#     - label: default
+#       url: ${GITLAB_URL}
+#       token: ${GITLAB_TOKEN}
+version: 1
+state_dir: ~/.local/state/api-watch
+
+sources:
+  gitlab-mrs:
+    connection: gitlab
+    request:
+      url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/merge_requests"
+      headers:
+        PRIVATE-TOKEN: "{{ conn.token }}"
+      # 取得する MR を絞る（target_branch: main・labels: review・not[author_username]: bot-user なども足せる）
+      query: { state: opened, scope: all, order_by: updated_at, sort: asc }
+    key: iid
+    pagination: { type: page, size_param: per_page, size: 100 }
+    # GitLab に問い合わせる予定（この PC の時刻）。15 分ごと。予定の時刻のあとに一度取得し終えたら、次の予定までは取得しない
+    schedule: "*/15 * * * *"
+    jitter_sec: 300            # 予定の時刻から 0〜5 分ずらして問い合わせる
+    busy_wait_sec: 600         # 別のワークフローが取得中なら、終わるのを待ってその結果を使う
+    failure_backoff_sec: 300   # 取得が失敗したら 5 分（連続するほど倍、最大 1 時間）問い合わせない
+    # gitlab-issue-agent など、同じ GitLab を見るほかの取得元と group をそろえると、要求の間隔・失敗の待ちを共有する
+    rate_limit: { min_interval_sec: 1, group: gitlab }
+
+rules:
+  mr-review:
+    source: gitlab-mrs
+    id: iid
+    # MR の head のコミット・ドラフト・対象ブランチが変わったときだけレビューする。コメント（エージェント自身の指摘・人の返信）・
+    # ラベル・説明の変更では起こさない。同じコミットの MR を二度レビューしない
+    watch: [sha, draft, target_branch]
+    on: [appeared, changed]
+    # 初回: いま開いている MR もレビューする（emit）。これから変わるものだけにするなら baseline
+    initial: emit
+    # 対象の MR: 開いていて、ドラフトでない。実行の直前に取り直したときにもう一度当てはめる
+    # （待つ間にマージ・クローズ・ドラフトに戻した MR はレビューしない。ドラフトを外すとレビューする）
+    filter:
+      all:
+        - { path: state, value: opened }
+        - { path: draft, op: falsy }
+    targets:
+      - name: run
+        # api-watch は実行しない。Dagu のワークフローのステップが claim → 処理 → finish を呼ぶ
+        external: true
+        # kiro-cli に渡すプロンプトのテンプレート（この設定ファイルからの相対パスでもよい）。ワークフローの render が展開する
+        input_template: ~/.config/dagu/gitlab-mr-review-agent.prompt.md
+        # 実行の前後に MR を 1 件取り直す（ヘッダーは取得元のものを使う）:
+        #   - 前: 最新のコミットでレビューする。filter から外れた・レビューし終えたコミットと同じなら流さない
+        #   - 後: そのコミットを「レビューし終えた状態」にする
+        refresh:
+          url: "{{ conn.url }}/api/v4/projects/{{ env.GITLAB_PROJECT | urlencode }}/merge_requests/{{ event.record_id }}"
+        # レビューのあいだにコミットが積まれたら、レビューし終えたのは実行前のコミットまでにする（次の取得で新しいコミットを見る）
+        handled_before_if:
+          - gitlab_mr.changed_during_review
+        # エージェント CLI は、ほかのワークフロー（gitlab-issue-agent など）とまたいで同時に 1 つだけ（同じ lock の名前どうし）
+        lock: agent-session
+        timeout_sec: 1800      # 1 件の上限。ワークフローの handle の timeout_sec にもなる
+        max_attempts: 3        # 尽きたら打ち切り、次にコミットが変わったときに拾い直す
+        retry_backoff_sec: 300 # 失敗したら、毎分の起動のうちこの秒数（1 回ごとに倍）を過ぎたもので再試行
+        order: none            # 打ち切った変化があっても、同じ MR の新しいコミットは流す

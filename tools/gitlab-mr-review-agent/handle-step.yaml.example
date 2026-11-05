@@ -1,0 +1,19 @@
+# ワークフロー api-watch-mr-review の handle に差し込むステップ（~/.config/dagu/gitlab-mr-review-agent.handle.yaml にコピーして使う）。
+# api-watch の dags に --handle-step mr-review.run=<このファイル> を付けると、handle の中身としてそのまま入る
+# （name・id・depends・preconditions・timeout_sec・continue_on は dags が付ける）。Dagu v2 の harness.run で kiro-cli を動かす。
+# 終了コードは次の finish が受け取り、0 ならレビューし終えた状態を記録し、それ以外ならあとでやり直す。
+#
+#   provider  kiro（Dagu の組み込み）。kiro-cli はこの PC にインストールしてログインしておく
+#   prompt    render が組んだプロンプト（${INPUT}）。kiro-cli はプロンプトを引数で受け取る
+#   ほかの with の項目は CLI のフラグになる（trust_all_tools: true → --trust-all-tools）
+#
+# Dagu の harness.run が使えない版なら、kiro-cli を直接呼んでもよい（with を次の 2 行に替える）:
+#   action: exec
+#   with: { command: kiro-cli, args: [chat, --no-interactive, --trust-all-tools, "${INPUT}"] }
+action: harness.run
+working_dir: /home/you/work/project      # kiro-cli を動かすフォルダ（レビューするリポジトリの作業コピーがあると、周りのコードも読める）
+with:
+  provider: kiro
+  prompt: "${INPUT}"
+  trust_all_tools: true                  # gitlab_mr.py を確認なしで実行させる（無人で動かすため）
+  # model: <kiro-cli のモデル名>             # → --model

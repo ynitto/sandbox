@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### gitlab-mr-review-agent: 決めたリポジトリの MR を kiro-cli にレビューさせ、直った指摘を閉じる（0.1.0）
+
+- `tools/gitlab-mr-review-agent/` を足す。gitlab-issue-agent と同じく、MR の取得・変化の検知・実行待ち・再試行・処理し終えた状態・
+  1 セッションの排他は api-watch、起動と kiro-cli の実行は Dagu（`harness.run`、provider: kiro）が受け持つ
+- **重ねてレビューしない**: head のコミット・ドラフト・対象ブランチが変わったときだけレビューし、コメント・返信・ラベルでは起こさない。
+  レビューし終えたコミットを覚え、同じコミットは流さない。レビュー中に積まれたコミットは次の取得でレビューする（チェック
+  `gitlab_mr.changed_during_review`）。指摘とまとめに見えない印を付け、やり直しでも同じ指摘・同じコミットのまとめを書かない
+- **直った指摘を閉じる**: 新しいコミットのレビューで、自分が立てた未解決のスレッドを前回のコミットからの差分と今のファイルで確かめ、
+  直っていれば返信して解決にする。人のスレッドには触らず、承認・マージはしない
+- `gitlab_mr.py`: api-watch のプラグイン（フィルタ `gitlab_mr_since`・`gitlab_mr_kind`、上のチェック）と、kiro-cli が使うコマンド
+  `context` / `show` / `comment` / `resolve` / `summary`。標準ライブラリだけ
+- 設定の例: `api-watch.yaml.example`・`prompt.md.example`・`handle-step.yaml.example`・`gitlab-mr-review-agent.env.example`、
+  Dagu のワークフローの例 `api-watch-mr-review.yaml.example`（`dags` の出力と一致することを試験で確かめる）
+- 設計: `docs/designs/gitlab-mr-review-agent-design.md`
+
 ### api-watch: 1 つのワークフローで取得から処理まで行う受け渡し先と、取得のずらし・共有（0.2.0）
 
 - 受け渡し先に `command` を書くと、別のワークフローへ渡さず、新しいコマンド `work` がその場で 1 件ずつ実行する。

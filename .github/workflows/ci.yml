@@ -82,6 +82,10 @@ jobs:
           # 本物の api-watch を Dagu のワークフローと同じ順（claim → render → finish）で呼んだときの重複制御・排他と、gitlab-idd の設定の例を見る。
           - package: gitlab-issue-agent
             suites: tools/gitlab-issue-agent/test
+          # gitlab-mr-review-agent。GitLab は手元の HTTP サーバで偽装し、gitlab_mr.py のコマンド（指摘・解決・まとめの重複防止）と、
+          # 設定の例を本物の api-watch でワークフローの順に回したときの「同じコミットを二度レビューしない」「直った指摘を閉じる」を見る。
+          - package: gitlab-mr-review-agent
+            suites: tools/gitlab-mr-review-agent/test
           # redmine-ticket-agent。Redmine は手元の HTTP サーバで偽装し、redmine_issue.py のチェック・close と、設定の例を
           # 本物の api-watch で fetch → evaluate → work の順に回したときの対象の絞り込み・1 回だけの完了・失敗の再試行を見る。
           - package: redmine-ticket-agent
