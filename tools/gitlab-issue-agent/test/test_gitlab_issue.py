@@ -269,6 +269,10 @@ class _FlowBase(unittest.TestCase):
 
     def run_dag(self, path: Path, exit_code: int = 0) -> str | None:
         """例の Dagu のワークフローを、Dagu と同じ順で 1 回動かす。handle に渡ったプロンプトを返す（処理するものが無ければ None）。"""
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("例の DAG を読むのに PyYAML が要る")
         sys.path.insert(0, str(API_WATCH.parent / "test"))
         import dagrun
         seen = []
