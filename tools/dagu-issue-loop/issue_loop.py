@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""dagu-issue-loop — GitLab の issue をポーリングして変化を拾い、エージェント CLI を 1 セッションずつ流す。
+"""dagu-issue-loop — api-watch が拾った GitLab の issue の変化を受け取り、エージェント CLI を 1 セッションずつ流す。
 
-Dagu の 2 本の DAG から呼ばれる想定の、標準ライブラリだけで動く 1 ファイルのスクリプト。
+api-watch の受け渡し先（targets[].command）として、変化した issue 1 件ごとに呼ばれる。標準ライブラリだけで動く 1 ファイルのスクリプト。
 
-    issue_loop.py poll     # issue を取得し、前回からの変化を待ち行列へ積む（重複はまとめる）
-    issue_loop.py run      # 待ち行列から 1 件取り出してエージェント CLI を実行する（同時に 1 セッションだけ）
-    issue_loop.py status   # 待ち行列・実行中・打ち切りの一覧を JSON で出す
-    issue_loop.py forget IID   # 打ち切り（dead）や既読から外し、次の poll で拾い直させる
-    issue_loop.py handle       # api-watch が検知した変化を 1 件受け取ってエージェント CLI を実行する
-                               # （poll と待ち行列の代わりに api-watch と Dagu のキューを使う構成）
+    issue_loop.py handle       # 変化を 1 件受け取り、issue を取り直してエージェント CLI を実行する
+    issue_loop.py status       # 流し終えた issue の数・実行中のセッションを JSON で出す
+    issue_loop.py forget IID   # 流し終えた版を忘れ、次に変化を受け取ったとき必ず流させる
 
-設計は docs/designs/dagu-issue-loop-design.md。agent-loop の hooks/gitlab-issue-hook.py
-（既読 + ack の 2 相）と agent_loop/semaphore.py（pid 付きスロットファイル）を下敷きにしている。
+issue の取得・変化の判定・実行待ちの管理・再試行は api-watch が受け持つ。設計は docs/designs/dagu-issue-loop-design.md。
 
 終了コード:
-    0  正常（積んだ・実行して成功した・待ち行列が空・別セッションが実行中で見送った）
-    1  エージェント CLI が失敗した / タイムアウトした
+    0  正常（流して成功した・流し終えた変化だった・対象から外れていた）
+    1  エージェント CLI が失敗した / タイムアウトした / 止められた
     2  設定の誤り
     3  GitLab に届かない・認証に失敗した
-    4  別のセッションが実行中だった（handle だけ。Dagu に後で再試行させる）
+    4  別のセッションが実行中だった（api-watch があとで再試行する）
 """
 from __future__ import annotations
 
@@ -27,7 +23,6 @@ import contextlib
 import hashlib
 import json
 import os
-import random
 import re
 import shlex
 import shutil
@@ -40,7 +35,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -95,9 +90,6 @@ class Config:
     issue_state: str = "opened"
     issue_labels: str = ""
     issue_assignee: str = ""
-    issue_scope: str = "all"
-    max_pages: int = 10
-    baseline: bool = True
     state_dir: Path = field(default_factory=lambda: Path.home() / ".agents" / "dagu-issue-loop")
     lock_file: Path | None = None
     agent: str = ""
@@ -107,11 +99,7 @@ class Config:
     agent_cwd: str = ""
     agent_timeout: int = 3600
     prompt_template: str = ""
-    max_attempts: int = 3
-    retry_backoff: int = 300
     self_username: str = ""
-    drain: int = 1
-    poll_jitter: int = 0
 
     @property
     def project_dir(self) -> Path:
@@ -163,9 +151,6 @@ def build_config(args: argparse.Namespace, *, need_gitlab: bool = True) -> Confi
         issue_state=args.issue_state or _env("ISSUE_STATE", "opened"),
         issue_labels=args.labels if args.labels is not None else _env("ISSUE_LABELS"),
         issue_assignee=args.assignee if args.assignee is not None else _env("ISSUE_ASSIGNEE"),
-        issue_scope=_env("ISSUE_SCOPE", "all"),
-        max_pages=_int(_env("MAX_PAGES", "10"), "ISSUE_LOOP_MAX_PAGES"),
-        baseline=not (getattr(args, "no_baseline", False) or _env("NO_BASELINE") in ("1", "true")),
         state_dir=state_dir.expanduser(),
         lock_file=Path(lock).expanduser() if lock else None,
         agent=getattr(args, "agent", None) or _env("AGENT"),
@@ -176,11 +161,7 @@ def build_config(args: argparse.Namespace, *, need_gitlab: bool = True) -> Confi
         agent_timeout=_int(getattr(args, "timeout", None) or _env("AGENT_TIMEOUT", "3600"),
                            "ISSUE_LOOP_AGENT_TIMEOUT"),
         prompt_template=getattr(args, "prompt_template", None) or _env("PROMPT_TEMPLATE"),
-        max_attempts=_int(_env("MAX_ATTEMPTS", "3"), "ISSUE_LOOP_MAX_ATTEMPTS"),
-        retry_backoff=_int(_env("RETRY_BACKOFF", "300"), "ISSUE_LOOP_RETRY_BACKOFF"),
         self_username=_env("SELF_USERNAME"),
-        drain=_int(getattr(args, "drain", None) or _env("DRAIN", "1"), "ISSUE_LOOP_DRAIN"),
-        poll_jitter=_int(getattr(args, "jitter", None) or _env("POLL_JITTER", "0"), "ISSUE_LOOP_POLL_JITTER"),
     )
     if cfg.agent_prompt_via not in ("stdin", "arg", "file"):
         raise ConfigError("ISSUE_LOOP_AGENT_PROMPT_VIA は stdin / arg / file のどれか")
@@ -188,7 +169,7 @@ def build_config(args: argparse.Namespace, *, need_gitlab: bool = True) -> Confi
 
 
 # ---------------------------------------------------------------------------
-# GitLab REST（必要な 4 本だけ）
+# GitLab REST（必要な 3 本だけ: issue・notes・自分）
 # ---------------------------------------------------------------------------
 
 class GitLabError(Exception):
@@ -228,28 +209,6 @@ class GitLab:
             return json.loads(body.decode("utf-8")), headers
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise GitLabError("GitLab の応答が JSON ではありません") from exc
-
-    def list_issues(self, *, state: str, labels: str, assignee: str, scope: str,
-                    max_pages: int) -> tuple[list[dict[str, Any]], bool]:
-        """(issues, complete)。complete=False は max_pages で打ち切ったことを表す。"""
-        params = {"scope": scope, "per_page": "100", "order_by": "updated_at", "sort": "asc"}
-        if state and state != "all":
-            params["state"] = state
-        if labels:
-            params["labels"] = labels
-        if assignee:
-            params["assignee_username"] = assignee
-        out: list[dict[str, Any]] = []
-        page = "1"
-        for _ in range(max(1, max_pages)):
-            data, headers = self._get(f"/projects/{self._pid}/issues", {**params, "page": page})
-            if not isinstance(data, list):
-                raise GitLabError("issues の応答が配列ではありません")
-            out.extend(i for i in data if isinstance(i, dict))
-            page = headers.get("x-next-page", "")
-            if not page:
-                return out, True
-        return out, False
 
     def get_issue(self, iid: int | str) -> dict[str, Any]:
         data, _ = self._get(f"/projects/{self._pid}/issues/{iid}")
@@ -402,24 +361,17 @@ def resolve_executable(argv: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def empty_state() -> dict[str, Any]:
-    return {"version": STATE_VERSION, "baseline_done": False, "seen": {}, "queue": {},
-            "inflight": None, "dead": {}, "last_poll_at": 0.0, "handle_attempts": {}}
+    return {"version": STATE_VERSION, "seen": {}, "handle_attempts": {}}
 
 
 def normalize_state(raw: Any) -> dict[str, Any]:
+    """読み込んだ state.json を今の形にそろえる。以前の版の待ち行列（queue / dead / inflight）は捨てる。"""
     st = empty_state()
     if not isinstance(raw, dict):
         return st
-    st["baseline_done"] = bool(raw.get("baseline_done"))
-    for k in ("seen", "queue", "dead", "handle_attempts"):
+    for k in ("seen", "handle_attempts"):
         if isinstance(raw.get(k), dict):
             st[k] = raw[k]
-    if isinstance(raw.get("inflight"), dict):
-        st["inflight"] = raw["inflight"]
-    try:
-        st["last_poll_at"] = float(raw.get("last_poll_at") or 0.0)
-    except (TypeError, ValueError):
-        pass
     return st
 
 
@@ -542,102 +494,6 @@ def describe_changes(prev: dict[str, Any] | None, cur: dict[str, Any]) -> tuple[
     if prev.get("description_sha") != cur["description_sha"]:
         lines.append("- 本文が更新された")
     return "updated", lines
-
-
-def issue_key(issue: dict[str, Any]) -> str | None:
-    iid = issue.get("iid")
-    return str(iid) if iid is not None else None
-
-
-def poll_into_state(st: dict[str, Any], issues: list[dict[str, Any]], *, complete: bool,
-                    baseline: bool, now: float) -> dict[str, int]:
-    """取得した issue を state に反映する。戻り値は件数の内訳。
-
-    重複制御:
-      - 既読（seen）と同じ版なら何もしない。版が違っても SNAPSHOT_FIELDS が同じなら既読を進めるだけ
-      - 待ち行列は issue ごとに 1 件。同じ issue の変化が重なったら最新の版へまとめる（試行回数は引き継ぐ）
-      - 実行中（inflight）の issue と同じ版は積まない
-      - 打ち切り（dead）の issue は、打ち切ったときより新しい変化が来たら蘇らせる
-    """
-    counts = {"fetched": len(issues), "queued": 0, "coalesced": 0, "unchanged": 0,
-              "baseline": 0, "dropped": 0}
-    seen: dict[str, Any] = st["seen"]
-    queue: dict[str, Any] = st["queue"]
-    dead: dict[str, Any] = st["dead"]
-    inflight = st.get("inflight") or {}
-
-    if not st["baseline_done"]:
-        st["baseline_done"] = True
-        if baseline:
-            # 初回は今ある issue をすべて既読にして、エージェントを一斉に起こさない
-            for issue in issues:
-                key = issue_key(issue)
-                if key:
-                    seen[key] = {"version": str(issue.get("updated_at") or ""), "snapshot": snapshot(issue)}
-            counts["baseline"] = len(seen)
-            st["last_poll_at"] = now
-            return counts
-
-    present: set[str] = set()
-    for issue in issues:
-        key = issue_key(issue)
-        if key is None:
-            continue
-        present.add(key)
-        version = str(issue.get("updated_at") or "")
-        snap = snapshot(issue)
-        prev = seen.get(key)
-        if prev and prev.get("version") == version:
-            counts["unchanged"] += 1
-            continue
-        if inflight.get("key") == key and inflight.get("version") == version:
-            counts["unchanged"] += 1
-            continue
-        queued = queue.get(key)
-        if queued and queued.get("version") == version:
-            counts["unchanged"] += 1
-            continue
-        base_snap = (queued or {}).get("prev_snapshot", prev.get("snapshot") if prev else None)
-        if prev and not queued and prev.get("snapshot") == snap:
-            seen[key] = {"version": version, "snapshot": snap}   # 中身が同じ更新は既読を進めるだけ
-            counts["unchanged"] += 1
-            continue
-        if key in dead:
-            if dead[key].get("version") == version:
-                counts["unchanged"] += 1
-                continue
-            dead.pop(key, None)
-        kind, lines = describe_changes(base_snap, snap)
-        queue[key] = {
-            "iid": issue.get("iid"),
-            "version": version,
-            "kind": kind,
-            "changes": lines,
-            "prev_snapshot": base_snap,
-            "snapshot": snap,
-            "issue": issue,
-            "enqueued_at": (queued or {}).get("enqueued_at", now),
-            "updated_at_queue": now,
-            "attempts": int((queued or {}).get("attempts") or 0),
-            "next_attempt_at": float((queued or {}).get("next_attempt_at") or 0.0),
-        }
-        counts["coalesced" if queued else "queued"] += 1
-
-    if complete:
-        # フィルタから外れた issue（閉じた・ラベルが外れた）は待ち行列から下ろす。実行中のものは触らない
-        for key in [k for k in queue if k not in present and k != inflight.get("key")]:
-            queue.pop(key, None)
-            counts["dropped"] += 1
-    st["last_poll_at"] = now
-    return counts
-
-
-def pick_next(st: dict[str, Any], now: float) -> dict[str, Any] | None:
-    ready = [q for q in st["queue"].values() if float(q.get("next_attempt_at") or 0.0) <= now]
-    if not ready:
-        return None
-    ready.sort(key=lambda q: (float(q.get("enqueued_at") or 0.0), int(q.get("iid") or 0)))
-    return ready[0]
 
 
 # ---------------------------------------------------------------------------
@@ -814,8 +670,8 @@ def run_agent(cfg: Config, prompt: str, item: dict[str, Any], info_path: Path) -
 
 
 def _install_signal_handlers() -> None:
-    # Dagu の中止・タイムアウトは POSIX では SIGTERM で来る。子を止めて、失敗として記録してから抜ける。
-    # Windows の Dagu は Job Object ごと強制終了するのでここには来ない（次の run が inflight から数え直す）
+    # Dagu の中止・タイムアウトは POSIX では SIGTERM で来る（api-watch の work も同じシグナルを伝える）。子を止めて抜ける。
+    # Windows の Dagu は Job Object ごと強制終了するのでここには来ない（api-watch の受け渡しの期限が切れたあと、同じ ID で流し直す）
     def handler(signum, _frame):
         _stop_requested.append(signum)
     for sig in stop_signals():
@@ -849,173 +705,16 @@ def others_acted(gl: GitLab, iid: Any, since: float, self_username: str) -> bool
     return False
 
 
-def settle_success(st: dict[str, Any], item: dict[str, Any], *, current: dict[str, Any] | None,
-                   others: bool) -> str:
-    """成功した実行を既読にする。戻り値は待ち行列の扱い（dropped / kept）。
-
-    エージェントが issue にコメントやラベル変更をすると updated_at が進み、そのままでは次の poll で
-    自分の書き込みに反応してしまう。そこで実行直後の issue を取り直して既読にする。実行中に自分以外の
-    動きがあったときだけ待ち行列に残し、もう一度流す。
-    """
-    key = str(item.get("iid"))
-    queued = st["queue"].get(key)
-    if current is not None:
-        st["seen"][key] = {"version": str(current.get("updated_at") or ""), "snapshot": snapshot(current)}
-    else:
-        st["seen"][key] = {"version": item["version"], "snapshot": item["snapshot"]}
-    newer = bool(queued) and queued.get("version") != item["version"]
-    if newer and (others or current is None):
-        queued["prev_snapshot"] = item["snapshot"]
-        queued["attempts"] = 0
-        queued["next_attempt_at"] = 0.0
-        if current is not None:
-            queued.update({"version": str(current.get("updated_at") or ""), "snapshot": snapshot(current),
-                           "issue": current})
-        return "kept"
-    if not newer and others and current is not None:
-        # 実行中に人がコメントしたが、poll がまだ拾っていない場合
-        st["queue"][key] = {**item, "prev_snapshot": item["snapshot"], "snapshot": snapshot(current),
-                            "version": str(current.get("updated_at") or ""), "issue": current,
-                            "kind": "updated", "changes": ["- 前回の実行中に別の人の動きがあった"],
-                            "attempts": 0, "next_attempt_at": 0.0}
-        return "kept"
-    st["queue"].pop(key, None)
-    return "dropped"
-
-
-def settle_failure(st: dict[str, Any], item: dict[str, Any], cfg: Config, now: float, reason: str) -> str:
-    key = str(item.get("iid"))
-    queued = st["queue"].get(key)
-    if queued is None:
-        return "gone"
-    attempts = int(queued.get("attempts") or 0) + 1
-    if attempts >= cfg.max_attempts:
-        st["queue"].pop(key, None)
-        st["dead"][key] = {"iid": item.get("iid"), "version": queued.get("version"),
-                           "reason": reason, "attempts": attempts, "at": now}
-        # 打ち切った版は既読にする。次に issue が動いたらもう一度拾う
-        st["seen"][key] = {"version": queued.get("version"), "snapshot": queued.get("snapshot")}
-        return "dead"
-    queued["attempts"] = attempts
-    queued["next_attempt_at"] = now + cfg.retry_backoff * (2 ** (attempts - 1))
-    queued["last_error"] = reason
-    return "retry"
-
-
-# ---------------------------------------------------------------------------
-# サブコマンド
-# ---------------------------------------------------------------------------
-
-def cmd_poll(cfg: Config, gl: GitLab, *, sleep: Callable[[float], None] = time.sleep) -> int:
-    if cfg.poll_jitter > 0:
-        # 定刻（毎時 0 分）にそろって GitLab を叩かないよう、0〜poll_jitter 秒ずらす
-        delay = random.uniform(0, cfg.poll_jitter)
-        log(f"GitLab への問い合わせを {delay:.0f} 秒ずらします")
-        sleep(delay)
-    try:
-        issues, complete = gl.list_issues(state=cfg.issue_state, labels=cfg.issue_labels,
-                                          assignee=cfg.issue_assignee, scope=cfg.issue_scope,
-                                          max_pages=cfg.max_pages)
-    except GitLabError as exc:
-        log(str(exc))
-        return EXIT_GITLAB
-    if not complete:
-        log(f"issue が {cfg.max_pages * 100} 件を超えたため途中までで判定します（ISSUE_LOOP_MAX_PAGES）")
-    with locked_state(cfg) as st:
-        counts = poll_into_state(st, issues, complete=complete, baseline=cfg.baseline, now=time.time())
-        waiting = len(st["queue"])
-    if counts["baseline"]:
-        log(f"初回のため、今ある {counts['baseline']} 件を既読にしました（次の変化から拾います）")
-    else:
-        log("取得 {fetched} 件 / 新しく積んだ {queued} / まとめた {coalesced} / 変化なし {unchanged} / "
-            "下ろした {dropped}".format(**counts) + f" / 待ち {waiting}")
-    return EXIT_OK
-
-
-def _recover_stale_inflight(cfg: Config) -> None:
-    """前の run が強制終了して inflight が残っていたら失敗として数え直す（single_session の内側で呼ぶ）。"""
-    with locked_state(cfg) as st:
-        stale = st.get("inflight")
-        if stale:
-            log(f"前回の実行（#{stale.get('key')}）が終わりを記録せずに止まっていたため、失敗として数えます")
-            item = st["queue"].get(str(stale.get("key")))
-            if item:
-                settle_failure(st, item, cfg, time.time(), "前回の実行が途中で止まった")
-            st["inflight"] = None
-
-
-def cmd_run(cfg: Config, gl: GitLab) -> int:
-    template = load_template(cfg)
-    _install_signal_handlers()
-    try:
-        with single_session(cfg) as info_path:
-            _recover_stale_inflight(cfg)
-            # ここまで GitLab には触らない。毎分起動しても、待ち行列が空なら問い合わせは 0 回
-            rc = EXIT_OK
-            for _ in range(max(1, cfg.drain)):
-                if _stop_requested:
-                    break
-                now = time.time()
-                with locked_state(cfg) as st:
-                    item = pick_next(st, now)
-                    if item is None:
-                        log("待ち行列は空です" if not st["queue"] else "待ち行列は再試行の待ち時間中です")
-                        break
-                    item = json.loads(json.dumps(item))   # 書き戻しの影響を受けないよう複製
-                    st["inflight"] = {"key": str(item["iid"]), "version": item["version"],
-                                      "started_at": now, "pid": os.getpid()}
-                prompt = render_prompt(template, cfg, item)
-                try:
-                    result = run_agent(cfg, prompt, item, info_path)
-                except ConfigError:
-                    # 起動できない設定の誤りは issue のせいではない。試行回数を使わずに inflight だけ外す
-                    with locked_state(cfg) as st:
-                        st["inflight"] = None
-                    raise
-                current = None
-                others = True
-                if result.ok:
-                    if not cfg.self_username:
-                        with contextlib.suppress(GitLabError):
-                            cfg.self_username = gl.current_username()
-                        if not cfg.self_username:
-                            log("自分のユーザー名が分かりません。実行中の他人の動きは拾えません"
-                                "（ISSUE_LOOP_SELF_USERNAME で指定できます）")
-                    try:
-                        current = gl.get_issue(item["iid"])
-                        others = others_acted(gl, item["iid"], now, cfg.self_username)
-                    except GitLabError as exc:
-                        log(f"実行後の issue を取り直せませんでした（次の poll で拾い直します）: {exc}")
-                with locked_state(cfg) as st:
-                    st["inflight"] = None
-                    if result.ok:
-                        how = settle_success(st, item, current=current, others=others)
-                        log(f"#{item['iid']} 完了（{'もう一度流します' if how == 'kept' else '既読にしました'}） "
-                            f"ログ: {result.log_path}")
-                    else:
-                        reason = ("中止された" if _stop_requested else
-                                  "タイムアウト" if result.timed_out else f"終了コード {result.returncode}")
-                        how = settle_failure(st, item, cfg, time.time(), reason)
-                        log(f"#{item['iid']} 失敗（{reason}）→ "
-                            f"{ {'retry': '後で再試行', 'dead': '打ち切り', 'gone': '待ち行列から外れていた'}[how] } "
-                            f"ログ: {result.log_path}")
-                        rc = EXIT_AGENT_FAILED
-                        break
-            return rc
-    except SessionBusy as exc:
-        log(f"{exc} — 今回は見送ります")
-        return EXIT_OK
-
 # ---------------------------------------------------------------------------
 # api-watch から受け取る（handle）
 #
-# poll と待ち行列の代わりに api-watch が issue を取得して変化を検知し、Dagu のキュー（同時実行 1）へ
-# 1 件ずつ渡す構成で使う。ここで持つのは「最後に流した版」（seen）だけで、次を守る:
+# api-watch が issue を取得して変化を検知し、受け渡し先の command として変化 1 件ごとにこれを呼ぶ。
+# ここで持つのは「最後に流した版」（seen）だけで、次を守る:
 #   - エージェント自身の書き込みで起きた変化は流さない（実行後に取り直した版を既読にする）
-#   - キューで待つ間に同じ issue の変化が重なったら、先に動いた実行が最新の issue でまとめて流し、
+#   - 実行を待つ間に同じ issue の変化が重なったら、先に動いた実行が最新の issue でまとめて流し、
 #     後ろのものは既読と比べて飛ばす
 #   - 実行中に自分以外の人が動いたときは既読を実行前の版にとどめ、次の変化の受け取りでもう一度流す
-# 再試行は Dagu の retry_policy に任せる（失敗は終了コード 1、取り直しの失敗は 3、別セッション実行中は 4）。
+# 再試行は api-watch に任せる（失敗は終了コード 1、取り直しの失敗は 3、別セッション実行中は 4）。
 # ---------------------------------------------------------------------------
 
 def load_event(path: str) -> dict[str, Any]:
@@ -1159,14 +858,8 @@ def cmd_status(cfg: Config) -> int:
         view = {
             "project": cfg.project,
             "state_dir": str(cfg.project_dir),
-            "baseline_done": st["baseline_done"],
-            "last_poll_at": st["last_poll_at"],
-            "inflight": st["inflight"],
-            "queue": [{k: q.get(k) for k in ("iid", "version", "kind", "changes", "attempts",
-                                              "next_attempt_at", "last_error")}
-                      for q in st["queue"].values()],
-            "dead": list(st["dead"].values()),
-            "seen": len(st["seen"]),
+            "seen": {k: v.get("version") for k, v in st["seen"].items()},
+            "failing": st["handle_attempts"],
         }
     info = cfg.session_lock.with_suffix(".json")
     with contextlib.suppress(OSError, json.JSONDecodeError):
@@ -1177,8 +870,8 @@ def cmd_status(cfg: Config) -> int:
 
 def cmd_forget(cfg: Config, iid: str) -> int:
     with locked_state(cfg) as st:
-        hit = [name for name in ("dead", "seen", "queue") if st[name].pop(str(iid), None) is not None]
-    log(f"#{iid} を {', '.join(hit) or '（どこにもありませんでした）'} から外しました")
+        hit = st["seen"].pop(str(iid), None) is not None
+    log(f"#{iid} の流し終えた版を忘れました" if hit else f"#{iid} は流し終えた版を持っていません")
     return EXIT_OK
 
 
@@ -1195,9 +888,6 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--labels", default=None)
     common.add_argument("--assignee", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
-    poll = sub.add_parser("poll", parents=[common])
-    poll.add_argument("--no-baseline", action="store_true", help="初回も今ある issue を全部積む")
-    poll.add_argument("--jitter", help="問い合わせ前に 0〜この秒数だけランダムに待つ（既定 0。DAG は 900）")
     agent = argparse.ArgumentParser(add_help=False)
     agent.add_argument("--agent", help="agents/<name>.json の名前（例: claude, codex, kiro）")
     agent.add_argument("--agent-cmd", help="エージェント CLI のコマンド行（--agent より優先）")
@@ -1206,16 +896,14 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--cwd")
     agent.add_argument("--timeout")
     agent.add_argument("--prompt-template")
-    run = sub.add_parser("run", parents=[common, agent])
-    run.add_argument("--drain", help="1 回の run で続けて流す最大件数（既定 1）")
     handle = sub.add_parser("handle", parents=[common, agent],
                             help="api-watch が渡した変化を 1 件受け取ってエージェント CLI を実行する")
     handle.add_argument("--event-file", default=os.environ.get("APIWATCH_EVENT_FILE", ""),
                         help="api-watch のイベントの JSON（既定は環境変数 APIWATCH_EVENT_FILE）")
     handle.add_argument("--delivery-id", default=os.environ.get("APIWATCH_DELIVERY_ID", ""),
                         help="受け渡しの ID（再試行の回数を数える。既定は環境変数 APIWATCH_DELIVERY_ID）")
-    sub.add_parser("status", parents=[common])
-    forget = sub.add_parser("forget", parents=[common])
+    sub.add_parser("status", parents=[common], help="流し終えた issue の版・失敗中の受け渡し・実行中のセッション")
+    forget = sub.add_parser("forget", parents=[common], help="流し終えた版を忘れ、次に変化を受け取ったとき必ず流させる")
     forget.add_argument("iid")
     return p
 
@@ -1235,17 +923,13 @@ def main(argv: list[str] | None = None, *, gitlab_factory: Callable[[Config], Gi
     _utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
-        cfg = build_config(args, need_gitlab=args.cmd in ("poll", "run", "handle"))
+        cfg = build_config(args, need_gitlab=args.cmd == "handle")
         if args.cmd == "status":
             return cmd_status(cfg)
         if args.cmd == "forget":
             return cmd_forget(cfg, args.iid)
         gl = (gitlab_factory or (lambda c: GitLab(c.api_url, c.project, c.token)))(cfg)
-        if args.cmd == "poll":
-            return cmd_poll(cfg, gl)
-        if args.cmd == "handle":
-            return cmd_handle(cfg, gl, args.event_file, args.delivery_id)
-        return cmd_run(cfg, gl)
+        return cmd_handle(cfg, gl, args.event_file, args.delivery_id)
     except ConfigError as exc:
         log(f"設定の誤り: {exc}")
         return EXIT_CONFIG

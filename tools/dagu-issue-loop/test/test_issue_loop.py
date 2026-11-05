@@ -1,6 +1,7 @@
 """dagu-issue-loop のテスト（標準ライブラリだけ。`python -m unittest discover -s test`）。
 
 GitLab は手元の HTTP サーバで偽装し、エージェント CLI は小さな Python スクリプトで偽装する。
+handle にはイベントのファイル（api-watch が書くものと同じ形）を直接渡すか、本物の api-watch から呼ぶ。
 """
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ import textwrap
 import threading
 import time
 import unittest
-from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -152,7 +152,6 @@ class Base(unittest.TestCase):
             "GITLAB_TOKEN": "t0ken",
             "ISSUE_LOOP_STATE_DIR": str(self.tmp / "state"),
             "ISSUE_LOOP_AGENT_CMD": f"{sys.executable} {agent}",
-            "ISSUE_LOOP_RETRY_BACKOFF": "0",
             "FAKE_WORLD": str(self.world),
             "FAKE_CALLS": str(self.calls),
         }
@@ -186,84 +185,25 @@ class Base(unittest.TestCase):
         return [json.loads(x) for x in self.calls.read_text(encoding="utf-8").splitlines() if '"start"' in x]
 
 
+
+    def event(self, iid: int, updated: str, kinds=("changed",), before=None, name="ev.json") -> Path:
+        """api-watch が書くイベントのファイル（handle が使う項目だけ）。"""
+        path = self.tmp / name
+        rec = next((i for i in json.loads(self.world.read_text(encoding="utf-8"))["issues"] if i["iid"] == iid),
+                   make_issue(iid, updated))
+        path.write_text(json.dumps({"record": {**rec, "updated_at": updated}, "kinds": list(kinds),
+                                    "before": before}), encoding="utf-8")
+        return path
+
+    def handle(self, event: Path, *args, env=None, wait=True):
+        return self.cli("handle", "--event-file", str(event), *args, env=env, wait=wait)
+
+
 # ---------------------------------------------------------------------------
-# 変化の検知と重複制御（純粋関数）
+# プロンプト
 # ---------------------------------------------------------------------------
 
-class PollLogicTest(unittest.TestCase):
-    def test_first_poll_is_baseline(self):
-        st = il.empty_state()
-        c = il.poll_into_state(st, [make_issue(1, "a"), make_issue(2, "a")], complete=True, baseline=True, now=1)
-        self.assertEqual(c["baseline"], 2)
-        self.assertEqual(st["queue"], {})
-
-    def test_no_baseline_queues_everything(self):
-        st = il.empty_state()
-        il.poll_into_state(st, [make_issue(1, "a")], complete=True, baseline=False, now=1)
-        self.assertEqual(st["queue"]["1"]["kind"], "new")
-
-    def test_new_and_changed_are_queued_once(self):
-        st = il.empty_state()
-        il.poll_into_state(st, [make_issue(1, "a")], complete=True, baseline=True, now=1)
-        issues = [make_issue(1, "b", labels=["bug"]), make_issue(2, "a")]
-        c = il.poll_into_state(st, issues, complete=True, baseline=True, now=2)
-        self.assertEqual(c["queued"], 2)
-        self.assertIn("- ラベル追加: bug", st["queue"]["1"]["changes"])
-        # 同じ版をもう一度見ても積み増さない
-        c = il.poll_into_state(st, issues, complete=True, baseline=True, now=3)
-        self.assertEqual(c["queued"] + c["coalesced"], 0)
-        self.assertEqual(len(st["queue"]), 2)
-
-    def test_changes_are_coalesced_per_issue(self):
-        st = il.empty_state()
-        il.poll_into_state(st, [make_issue(1, "a")], complete=True, baseline=True, now=1)
-        il.poll_into_state(st, [make_issue(1, "b", labels=["x"])], complete=True, baseline=True, now=2)
-        c = il.poll_into_state(st, [make_issue(1, "c", labels=["x", "y"], user_notes_count=2)],
-                               complete=True, baseline=True, now=3)
-        self.assertEqual(c["coalesced"], 1)
-        q = st["queue"]["1"]
-        self.assertEqual(q["version"], "c")
-        self.assertEqual(q["enqueued_at"], 2)        # 順番は最初に積んだときのまま
-        self.assertIn("- ラベル追加: x, y", q["changes"])   # 差分は既読からの累積
-        self.assertIn("- コメント +2", q["changes"])
-
-    def test_timestamp_only_update_is_not_a_change(self):
-        st = il.empty_state()
-        il.poll_into_state(st, [make_issue(1, "a")], complete=True, baseline=True, now=1)
-        c = il.poll_into_state(st, [make_issue(1, "b")], complete=True, baseline=True, now=2)
-        self.assertEqual(c["queued"], 0)
-        self.assertEqual(st["seen"]["1"]["version"], "b")
-
-    def test_inflight_version_is_not_requeued(self):
-        st = il.empty_state()
-        il.poll_into_state(st, [make_issue(1, "a")], complete=True, baseline=True, now=1)
-        il.poll_into_state(st, [make_issue(1, "b", title="t")], complete=True, baseline=True, now=2)
-        st["inflight"] = {"key": "1", "version": "b"}
-        st["queue"].pop("1")
-        c = il.poll_into_state(st, [make_issue(1, "b", title="t")], complete=True, baseline=True, now=3)
-        self.assertEqual(c["queued"], 0)
-
-    def test_issue_leaving_filter_is_dropped_only_when_list_complete(self):
-        st = il.empty_state()
-        il.poll_into_state(st, [], complete=True, baseline=True, now=1)
-        il.poll_into_state(st, [make_issue(1, "a")], complete=True, baseline=True, now=2)
-        il.poll_into_state(st, [], complete=False, baseline=True, now=3)
-        self.assertIn("1", st["queue"])
-        c = il.poll_into_state(st, [], complete=True, baseline=True, now=4)
-        self.assertEqual(c["dropped"], 1)
-
-    def test_dead_issue_revives_on_new_change(self):
-        st = il.empty_state()
-        cfg = il.Config(api_url="x", project="p", token="t", max_attempts=1)
-        il.poll_into_state(st, [], complete=True, baseline=True, now=1)
-        il.poll_into_state(st, [make_issue(1, "a")], complete=True, baseline=True, now=2)
-        self.assertEqual(il.settle_failure(st, st["queue"]["1"], cfg, 3, "x"), "dead")
-        il.poll_into_state(st, [make_issue(1, "a")], complete=True, baseline=True, now=4)
-        self.assertNotIn("1", st["queue"])
-        il.poll_into_state(st, [make_issue(1, "b", user_notes_count=1)], complete=True, baseline=True, now=5)
-        self.assertIn("1", st["queue"])
-        self.assertNotIn("1", st["dead"])
-
+class PromptTest(unittest.TestCase):
     def test_prompt_keeps_unknown_braces(self):
         cfg = il.Config(api_url="x", project="g/p", token="t")
         item = {"iid": 7, "kind": "new", "changes": ["- 新しい issue"],
@@ -271,186 +211,97 @@ class PollLogicTest(unittest.TestCase):
         out = il.render_prompt('#{iid} {title} {"k": {unknown}} {changes}', cfg, item)
         self.assertEqual(out, '#7 T {"k": {unknown}} - 新しい issue')
 
+    def test_old_state_file_is_read(self):
+        # 以前の版（poll / run）の state.json は、流し終えた版だけを引き継ぐ
+        st = il.normalize_state({"baseline_done": True, "seen": {"1": {"version": "v"}}, "queue": {"2": {}},
+                                 "dead": {}, "inflight": None})
+        self.assertEqual(st["seen"], {"1": {"version": "v"}})
+        self.assertNotIn("queue", st)
+
 
 # ---------------------------------------------------------------------------
-# poll → run を通しで（偽 GitLab + 偽エージェント）
+# handle 単体（イベントのファイルを直接渡す）
 # ---------------------------------------------------------------------------
 
-class EndToEndTest(Base):
-    def test_poll_then_run_marks_seen(self):
-        self.assertEqual(self.cli("poll").returncode, 0)            # baseline
-        self.set_world([make_issue(1, "2026-11-01T00:00:00Z"), make_issue(2, "2026-11-01T01:00:00Z")])
-        self.assertEqual(self.cli("poll").returncode, 0)
-        self.assertEqual([q["iid"] for q in self.status()["queue"]], [2])
-        r = self.cli("run")
+class HandleTest(Base):
+    def setUp(self):
+        super().setUp()
+        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"], title="a"),
+                        make_issue(2, "2026-11-01T05:00:00Z", title="b")])
+
+    def test_runs_agent_and_marks_seen(self):
+        ev = self.event(1, "2026-11-01T05:00:00Z", before={"labels": []})
+        r = self.handle(ev)
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = self.agent_calls()
         self.assertEqual(len(calls), 1)
-        self.assertIn("#2 issue 2", calls[0]["prompt"])
-        self.assertEqual(self.status()["queue"], [])
-        self.cli("run")
-        self.assertEqual(len(self.agent_calls()), 1)               # 空なら起こさない
-
-    def test_agent_own_comment_does_not_retrigger(self):
-        self.cli("poll")
-        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
-        self.cli("poll")
-        r = self.cli("run", env={"FAKE_MODE": "comment"})
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.cli("poll")                                         # エージェントのコメントを見る
-        self.assertEqual(self.status()["queue"], [])
-        self.cli("run")
+        self.assertIn("#1 a", calls[0]["prompt"])
+        self.assertIn("ラベル追加: todo", calls[0]["prompt"])
+        self.assertEqual(self.status()["seen"], {"1": "2026-11-01T05:00:00Z"})
+        self.assertEqual(self.handle(ev).returncode, 0)            # 同じ変化をもう一度渡されても流さない
         self.assertEqual(len(self.agent_calls()), 1)
 
-    def test_comment_by_someone_else_during_run_requeues(self):
-        self.cli("poll")
-        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
-        self.cli("poll")
-        # 実行中に他人がコメントした体（偽エージェントの代わりに world を先に書いておく）
-        w = json.loads(self.world.read_text(encoding="utf-8"))
-        w["notes"] = {"1": [{"created_at": "2999-01-01T00:00:00Z", "author": {"username": "alice"}}]}
-        w["issues"][0]["user_notes_count"] = 1
-        w["issues"][0]["updated_at"] = "2026-11-01T06:00:00Z"
-        self.world.write_text(json.dumps(w), encoding="utf-8")
-        self.cli("run")
-        q = self.status()["queue"]
-        self.assertEqual([x["iid"] for x in q], [1])
-        self.assertEqual(q[0]["version"], "2026-11-01T06:00:00Z")
+    def test_requests_are_bounded(self):
+        self.gl.requests.clear()
+        self.handle(self.event(1, "2026-11-01T05:00:00Z"))
+        # 実行前の取り直し・自分の名前・実行後の取り直し・notes の 4 回
+        self.assertEqual(len(self.gl.requests), 4, self.gl.requests)
 
-    def test_unknown_self_username_does_not_loop(self):
-        self.cli("poll")
-        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
-        self.cli("poll")
-        w = json.loads(self.world.read_text(encoding="utf-8"))
-        w["self"] = ""                                           # /user からユーザー名が取れない
-        self.world.write_text(json.dumps(w), encoding="utf-8")
-        self.cli("run", env={"FAKE_MODE": "comment"})
-        self.assertEqual(self.status()["queue"], [])
-        self.cli("run")
-        self.assertEqual(len(self.agent_calls()), 1)
-
-    def test_unlaunchable_agent_does_not_leave_inflight_or_burn_attempts(self):
-        self.cli("poll")
-        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", labels=["todo"])])
-        self.cli("poll")
-        r = self.cli("run", env={"ISSUE_LOOP_AGENT_CMD": "/nonexistent/agent-bin"})
-        self.assertEqual(r.returncode, 2, r.stderr)
-        st = self.status()
-        self.assertIsNone(st["inflight"])
-        self.assertEqual(st["queue"][0]["attempts"], 0)
-
-    def test_failure_retries_then_gives_up(self):
-        self.cli("poll")
-        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", title="new")])
-        self.cli("poll")
-        env = {"FAKE_MODE": "fail", "ISSUE_LOOP_MAX_ATTEMPTS": "2"}
-        self.assertEqual(self.cli("run", env=env).returncode, 1)
-        self.assertEqual(self.status()["queue"][0]["attempts"], 1)
-        self.assertEqual(self.cli("run", env=env).returncode, 1)
-        st = self.status()
-        self.assertEqual(st["queue"], [])
-        self.assertEqual(st["dead"][0]["iid"], 1)
-        self.cli("poll")                                         # 同じ版なら蘇らない
-        self.assertEqual(self.status()["queue"], [])
+    def test_forget_makes_it_run_again(self):
+        ev = self.event(1, "2026-11-01T05:00:00Z")
+        self.handle(ev)
         self.cli("forget", "1")
-        self.cli("poll")
-        self.assertEqual([q["kind"] for q in self.status()["queue"]], ["new"])
+        self.handle(ev)
+        self.assertEqual(len(self.agent_calls()), 2)
 
-    def test_run_with_empty_queue_does_not_touch_gitlab(self):
-        # agent の DAG は毎分起動する。待ち行列が空なら GitLab へは 1 回も問い合わせない
-        self.cli("poll")
-        self.gl.requests.clear()
-        for _ in range(3):
-            self.assertEqual(self.cli("run").returncode, 0)
-        self.assertEqual(self.gl.requests, [])
-
-    def test_run_requests_are_bounded_per_session(self):
-        self.cli("poll")
-        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", title="x")])
-        self.cli("poll")
-        self.gl.requests.clear()
-        self.cli("run")
-        # 実行後の確認だけ: 自分の名前・issue の取り直し・notes の 3 回
-        self.assertEqual(len(self.gl.requests), 3, self.gl.requests)
-
-    def test_poll_jitter_waits_before_fetching(self):
-        self.cli("poll")
-        self.gl.requests.clear()
-        t0 = time.time()
-        r = self.cli("poll", "--jitter", "1")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("秒ずらします", r.stderr)
-        self.assertLess(time.time() - t0, 15)
-        self.assertEqual(len(self.gl.requests), 1)
-
-    def test_auth_error_exit_code(self):
-        r = self.cli("poll", env={"GITLAB_TOKEN": "wrong"})
-        self.assertEqual(r.returncode, 3)
-
-    def test_missing_config_exit_code(self):
-        r = self.cli("run", env={"GITLAB_PROJECT": ""})
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("GITLAB_PROJECT", r.stderr)
-
-
-# ---------------------------------------------------------------------------
-# 1 セッションだけを保証する
-# ---------------------------------------------------------------------------
-
-class SingleSessionTest(Base):
-    def queue_two(self):
-        self.cli("poll")
-        self.set_world([make_issue(1, "2026-11-01T05:00:00Z", title="a"),
-                        make_issue(2, "2026-11-01T05:00:00Z", title="b")])
-        self.cli("poll")
-
-    def test_concurrent_runs_start_only_one_session(self):
-        self.queue_two()
-        procs = [self.cli("run", env={"FAKE_SLEEP": "2"}, wait=False) for _ in range(4)]
+    def test_concurrent_handles_start_only_one_session(self):
+        procs = [self.handle(self.event(i % 2 + 1, "2026-11-01T05:00:00Z", name=f"ev{i}.json"),
+                             env={"FAKE_SLEEP": "2"}, wait=False) for i in range(4)]
         outs = [p.communicate(timeout=60) for p in procs]
-        self.assertTrue(all(p.returncode == 0 for p in procs), outs)
+        codes = sorted(p.returncode for p in procs)
+        self.assertEqual(codes, [0, 4, 4, 4], outs)              # 残りは「あとで再試行」で終わる
         self.assertEqual(len(self.agent_calls()), 1)
         self.assertEqual(sum("別のセッションが実行中" in err for _, err in outs), 3)
 
     def test_projects_share_one_session_lock_by_default(self):
-        self.queue_two()
-        other = {"GITLAB_PROJECT": "g/other"}
-        self.cli("poll", env=other)
-        a = self.cli("run", env={"FAKE_SLEEP": "2"}, wait=False)
+        a = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"FAKE_SLEEP": "2"}, wait=False)
         time.sleep(0.8)
-        b = self.cli("run", env=other)
+        b = self.handle(self.event(2, "2026-11-01T05:00:00Z", name="ev2.json"), env={"GITLAB_PROJECT": "g/other"})
         a.communicate(timeout=60)
+        self.assertEqual(b.returncode, 4)
         self.assertIn("別のセッションが実行中", b.stderr)
 
     def test_orphan_agent_blocks_next_session(self):
-        self.queue_two()
         orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        ev = self.event(1, "2026-11-01T05:00:00Z")
         try:
             lock = Path(self.env["ISSUE_LOOP_STATE_DIR"]) / "session.json"
             lock.parent.mkdir(parents=True, exist_ok=True)
             lock.write_text(json.dumps({"runner_pid": 999999, "child_pid": orphan.pid}), encoding="utf-8")
-            r = self.cli("run")
+            r = self.handle(ev)
+            self.assertEqual(r.returncode, 4)
             self.assertIn(f"pid {orphan.pid}", r.stderr)
             self.assertEqual(self.agent_calls(), [])
         finally:
             orphan.kill()
             orphan.wait()
-        r = self.cli("run")
+        r = self.handle(ev)
         self.assertEqual(len(self.agent_calls()), 1, r.stderr)
 
-    def test_timeout_kills_agent_and_counts_failure(self):
-        self.queue_two()
+    def test_timeout_kills_agent(self):
         t0 = time.time()
-        r = self.cli("run", env={"FAKE_SLEEP": "30", "ISSUE_LOOP_AGENT_TIMEOUT": "1"})
+        r = self.handle(self.event(1, "2026-11-01T05:00:00Z"), "--delivery-id", "aw_1",
+                        env={"FAKE_SLEEP": "30", "ISSUE_LOOP_AGENT_TIMEOUT": "1"})
         self.assertLess(time.time() - t0, 20)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("タイムアウト", self.status()["queue"][0]["last_error"])
-        self.assertIsNone(self.status()["inflight"])
+        self.assertIn("タイムアウト", r.stderr)
+        st = self.status()
+        self.assertEqual(st["seen"], {})                           # 流し終えていない
+        self.assertEqual(st["failing"], {"aw_1": 1})               # 次のプロンプトは 2 回目
 
-    def test_stop_signal_stops_agent_and_records(self):
+    def test_stop_signal_stops_agent(self):
         # POSIX は SIGTERM（Dagu の停止）、Windows は Ctrl+Break で「止めて」と頼む
-        self.queue_two()
-        p = self.cli("run", env={"FAKE_SLEEP": "30"}, wait=False)
+        p = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"FAKE_SLEEP": "30"}, wait=False)
         for _ in range(50):
             if self.agent_calls():
                 break
@@ -459,56 +310,34 @@ class SingleSessionTest(Base):
             p.send_signal(signal.CTRL_BREAK_EVENT)
         else:
             p.terminate()
-        p.communicate(timeout=30)
+        _, err = p.communicate(timeout=30)
         self.assertEqual(p.returncode, 1)
+        self.assertIn("中止された", err)
         st = self.status()
-        self.assertIsNone(st["inflight"])
-        self.assertEqual(st["queue"][0]["last_error"], "中止された")
-        self.assertNotIn("session", st)                         # ロック情報も片付いている
+        self.assertEqual(st["seen"], {})
+        self.assertNotIn("session", st)                          # ロック情報も片付いている
 
-    def test_stale_inflight_is_recovered(self):
-        self.queue_two()
-        keys = {k: v for k, v in self.env.items() if k.startswith(("GITLAB", "ISSUE_LOOP"))}
-        with mock.patch.dict(os.environ, keys):
-            cfg = il.build_config(il.build_parser().parse_args(["status"]), need_gitlab=False)
-        with il.locked_state(cfg) as st:
-            st["inflight"] = {"key": "1", "version": st["queue"]["1"]["version"], "started_at": 0, "pid": 1}
-        r = self.cli("run")
-        self.assertIn("失敗として数えます", r.stderr)
-        self.assertEqual(len(self.agent_calls()), 1)
+    def test_unlaunchable_agent_is_config_error(self):
+        r = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"ISSUE_LOOP_AGENT_CMD": "/nonexistent/agent-bin"})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertNotIn("session", self.status())
 
+    def test_auth_error_exit_code(self):
+        r = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"GITLAB_TOKEN": "wrong"})
+        self.assertEqual(r.returncode, 3)
 
-class JitterTest(unittest.TestCase):
-    def test_delay_is_within_range_and_off_by_default(self):
-        cfg = il.Config(api_url="x", project="p", token="t", poll_jitter=900)
+    def test_missing_config_exit_code(self):
+        r = self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"GITLAB_PROJECT": ""})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("GITLAB_PROJECT", r.stderr)
 
-        class Boom(Exception):
-            pass
-
-        delays = []
-
-        def fake_sleep(sec):
-            delays.append(sec)
-            raise Boom()   # 待ったあとの取得までは進めない
-
-        for _ in range(50):
-            with self.assertRaises(Boom):
-                il.cmd_poll(cfg, None, sleep=fake_sleep)
-        self.assertTrue(all(0 <= d <= 900 for d in delays))
-        self.assertGreater(len(set(round(d) for d in delays)), 1)   # 毎回同じ値ではない
-
-        cfg.poll_jitter = 0
-        calls = []
-
-        class FakeGL:
-            def list_issues(self, **kw):
-                calls.append(kw)
-                return [], True
-
-        with tempfile.TemporaryDirectory() as d:
-            cfg.state_dir = Path(d)
-            il.cmd_poll(cfg, FakeGL(), sleep=fake_sleep)   # 0 なら sleep を呼ばない
-        self.assertEqual(len(calls), 1)
+    def test_unknown_self_username_does_not_loop(self):
+        w = json.loads(self.world.read_text(encoding="utf-8"))
+        w["self"] = ""                                           # /user からユーザー名が取れない
+        self.world.write_text(json.dumps(w), encoding="utf-8")
+        self.handle(self.event(1, "2026-11-01T05:00:00Z"), env={"FAKE_MODE": "comment"})
+        # エージェント自身のコメントで進んだ版を既読にする（同じ issue を流し続けない）
+        self.assertEqual(self.status()["seen"], {"1": "2026-11-01T10:00:00Z"})
 
 
 class AgentProfileTest(unittest.TestCase):

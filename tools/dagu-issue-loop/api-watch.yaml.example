@@ -1,4 +1,4 @@
-# dagu-issue-loop を api-watch で動かすときの api-watch の設定（~/.config/api-watch/api-watch.yaml にコピーして使う）。
+# dagu-issue-loop の api-watch の設定（~/.config/api-watch/api-watch.yaml にコピーして使う）。
 #
 # 1 つの Dagu のワークフロー（api-watch-issue-agent）の中で、取得 → 変化の判定 → エージェント CLI の実行まで行う。
 # エージェント CLI は api-watch の work が issue_loop.py handle を 1 件ずつ呼んで動かす（受け渡し先の DAG やキューは使わない）。

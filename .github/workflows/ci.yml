@@ -79,7 +79,7 @@ jobs:
           - package: agent-loop
             suites: tools/agent-loop/test
           # dagu-issue-loop。GitLab は手元の HTTP サーバ、エージェント CLI は小さなスクリプトで偽装し、
-          # 変化の検知・重複制御・1 セッションの排他（並行 run・取り残された CLI・SIGTERM）を見る。
+          # 本物の api-watch から handle を呼んで、重複制御・1 セッションの排他（並行 handle・取り残された CLI・SIGTERM）を見る。
           - package: dagu-issue-loop
             suites: tools/dagu-issue-loop/test
           # api-watch。API は手元の HTTP サーバ、dagu は小さなスクリプト（同じ実行 ID を断る）で偽装し、
