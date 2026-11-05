@@ -104,7 +104,7 @@ python scripts/gl.py get-issue-template --name "design-doc"
 <!-- gitlab-idd: version=4.0.0 role=worker -->
 
 このイシューを `gitlab-idd` ワーカーロールで処理してください。
-イシューを自分に assign し、テンポラリ領域にリポジトリをクローンして `feature/issue-{id}-{slug}` ブランチを作成してください。作業前にそのブランチを push して空の Draft MR を作成し（ターゲットブランチは `## ターゲットブランチ` に記載のブランチ、記載がなければ `python scripts/gl.py get-default-branch --get default_branch` で取得したデフォルトブランチ。`remove source branch` を有効にする）、実装完了後にコミットを push して MR 本文へ `Closes #{id}` を含めたうえで Draft を解除し、`status:review-ready` に更新してください。完了後はテンポラリクローンを削除してください。
+イシューを自分に assign し、作業用フォルダ（`python scripts/gl.py workspace-create`）に `feature/issue-{id}-{slug}` ブランチを作成してください。作業前にそのブランチを push して空の Draft MR を作成し（ターゲットブランチは `## ターゲットブランチ` に記載のブランチ、記載がなければ `python scripts/gl.py get-default-branch --get default_branch` で取得したデフォルトブランチ。`remove source branch` を有効にする）、実装完了後にコミットを push して MR 本文へ `Closes #{id}` を含めたうえで Draft を解除し、`status:review-ready` に更新してください。完了後は作業用フォルダを `python scripts/gl.py workspace-remove` で削除してください。
 ````
 
 ---

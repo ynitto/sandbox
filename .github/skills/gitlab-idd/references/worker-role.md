@@ -30,7 +30,7 @@ Phase 2  イシュー取得 ─── オープンイシューをフィルタし
    │         ├── 依存チェック: 依存イシューが未完了ならスキップ
    │         └── 明確性チェック: 説明・受け入れ条件が曖昧なら指摘してスキップ
    │
-Phase 3  イシュー着手 ─── assign + ラベル更新 + テンポラリクローン作成 + 空ドラフト MR 作成
+Phase 3  イシュー着手 ─── assign + ラベル更新 + 作業用フォルダ作成 + 空ドラフト MR 作成
    │
 Phase 4  タスク実行 ─── 実装ループ（最大 5 回）
    │         └── スキル選定（skill-selector）→ 実装 → supporting_skills をそのまま適用 → agent-reviewer でレビュー → 修正・コミット・push
@@ -345,7 +345,7 @@ python scripts/gl.py get-issue {issue_id} --get assignees.0.username
 # → MY_USER であることを確認。別のユーザーなら「競合: 別ノードが先に取得しました」として終了する。
 ```
 
-### ステップ 3-2: 作業用テンポラリクローンとブランチ作成
+### ステップ 3-2: 作業用フォルダとブランチ作成
 
 イシュー本文の `## ターゲットブランチ` セクションからターゲットブランチを読み取る。セクションがない場合は GitLab API からデフォルトブランチを取得して使用する（TARGET_BRANCH とする）:
 
@@ -353,29 +353,26 @@ python scripts/gl.py get-issue {issue_id} --get assignees.0.username
 TARGET_BRANCH=$(python scripts/gl.py get-default-branch --get default_branch)
 ```
 
-feature ブランチは **テンポラリ領域にリポジトリをクローンして作成** する。複数エージェントが並行作業できるよう、クローン先はイシュー単位でユニークなパスとする。
+feature ブランチは **イシュー単位の作業用フォルダ** に作る。複数エージェントが並行作業できるよう、フォルダはイシュー単位でユニークなパスとする。
+作業用フォルダは `workspace-create` で作り、出力されたパスを `CLONE_DIR` として、以降の作業はすべてそのフォルダで行う。
 
 ```
 python scripts/gl.py make-branch-name {issue_id}
 # → "feature/issue-42-add-login-form" のようなブランチ名が出力される
 
-# カレントディレクトリからリモート URL を取得
-REMOTE_URL=$(git remote get-url origin)
-
-# WSL・Linux 共通: /tmp 配下にイシュー単位でユニークなクローン先を作成
-CLONE_DIR=$(mktemp -d /tmp/gitlab-idd-{issue_id}-XXXXXXXX)
-
-# クローン
-git clone --origin origin "$REMOTE_URL" "$CLONE_DIR"
-cd "$CLONE_DIR"
-
-# TARGET_BRANCH を基点に feature ブランチを作成
-git fetch origin TARGET_BRANCH
-git checkout -b BRANCH origin/TARGET_BRANCH
+python scripts/gl.py workspace-create {issue_id} --branch BRANCH --target TARGET_BRANCH
+# → 作業用フォルダのパスが出力される（CLONE_DIR とする）。そのフォルダへ移動する
 ```
 
-> WSL 環境では `/tmp` は Linux ファイルシステム側のテンポラリ領域を指す。Windows 側のパス（`/mnt/c/...`）は使用しない。
-> `mktemp -d` により各エージェントのクローン先が競合しない。`CLONE_DIR` は Phase 5 末尾で削除する。
+- 環境変数 `GITLAB_IDD_LOCAL_REPO`（または `skill-registry.json` の `skill_configs.gitlab-idd.local_repo`）に既にある手元のリポジトリを
+  指定していれば、クローンせずに、そのリポジトリへ `git worktree` を足す（`origin` から TARGET_BRANCH だけを fetch する）。
+  そのリポジトリの作業ツリー・ブランチ・書きかけの変更には触らない。リポジトリの `origin` はこのプロジェクトを指していること
+- 指定が無ければ、今いるリポジトリの `origin` を作業用フォルダにクローンする（従来どおり）
+- 作業用フォルダは一時フォルダ（Linux・WSL は `/tmp`、Windows は `%TEMP%`）の下に作る。`mktemp` や `/tmp` を直接使わないので、
+  Windows のシェルでも同じ手順で動く
+
+> WSL 環境では一時フォルダは Linux ファイルシステム側を指す。Windows 側のパス（`/mnt/c/...`）は使用しない。
+> `CLONE_DIR` は Phase 5 末尾で `workspace-remove` で削除する。
 
 ### ステップ 3-3: 着手コメント投稿
 
@@ -779,14 +776,16 @@ fi
 
 条件を満たさない場合はスキップ。`sprint-reviewer` が存在しない場合もスキップ。
 
-### ステップ 5-6: テンポラリクローンの削除
+### ステップ 5-6: 作業用フォルダの削除
 
-すべての push・コメント投稿が完了したら、テンポラリクローンを削除する:
+すべての push・コメント投稿が完了したら、作業用フォルダから出て（元のフォルダへ戻って）削除する:
 
 ```
-cd /tmp
-rm -rf "$CLONE_DIR"
+python scripts/gl.py workspace-remove CLONE_DIR
 ```
+
+`git worktree` で作ったフォルダなら、作業ツリーと手元のブランチ（push 済み）を外す。クローンならフォルダごと消す
+（Windows の読み取り専用のファイルも消せる）。名前が `gitlab-idd-` で始まらないフォルダは消さない。
 
 ---
 

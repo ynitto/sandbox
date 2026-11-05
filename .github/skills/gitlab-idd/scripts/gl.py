@@ -19,12 +19,14 @@ Usage:
 
 Environment variables:
   GITLAB_TOKEN or GL_TOKEN  Personal Access Token (required)
+  GITLAB_IDD_LOCAL_REPO     既にある手元のリポジトリ（workspace-create がクローンの代わりに git worktree を足す）
 
 skill-registry.json (skill_configs.gitlab-idd.*):
   self_defer_minutes        Worker self-defer period (check-defer, default: 60 min)
   self_review_lock_minutes  Reviewer self-review lock period (check-review-defer, default: 1440 min)
   assigned_lock_minutes     Stale-assignee lock period (check-assigned-defer, default: 1440 min)
   max_review_per_run        Max issues reviewed per run (default: 1)
+  local_repo                GITLAB_IDD_LOCAL_REPO と同じ（環境変数が優先）
 """
 
 import argparse
@@ -32,8 +34,11 @@ import json
 import os
 import re
 import secrets
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -1409,7 +1414,104 @@ def build_parser():
                        help="Get a specific GitLab issue template by name")
     p.add_argument("--name", required=True, help="Template name (without .md extension)")
 
+    p = sub.add_parser("workspace-create",
+                       help="イシューの作業用フォルダを作り、TARGET を基点に BRANCH を作ってパスを出す"
+                            "（GITLAB_IDD_LOCAL_REPO があれば git worktree、無ければクローン）")
+    p.add_argument("issue_id", type=int)
+    p.add_argument("--branch", required=True, help="作るブランチ（make-branch-name の出力）")
+    p.add_argument("--target", required=True, help="基点のブランチ（TARGET_BRANCH）")
+    p.add_argument("--remote-url", default="", help="クローンするリモート（既定は今いるリポジトリの origin）")
+    p.add_argument("--base-dir", default="", help="作る場所（既定は一時フォルダ）")
+
+    p = sub.add_parser("workspace-remove", help="workspace-create で作ったフォルダを消す")
+    p.add_argument("path")
+
     return parser
+
+
+# ---------------------------------------------------------------------------
+# 作業用のフォルダ（workspace-create / workspace-remove）
+# ---------------------------------------------------------------------------
+
+WORKSPACE_PREFIX = "gitlab-idd-"
+
+
+def _git(args: list, cwd=None, check: bool = True) -> subprocess.CompletedProcess:
+    """git を呼ぶ。core.longpaths: Windows の 260 字を超えるパス。入力待ちで止まらないようにする。"""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+    r = subprocess.run(["git", "-c", "core.longpaths=true", *args], cwd=cwd, env=env, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=1800)
+    if check and r.returncode != 0:
+        sys.exit(f"ERROR: git {args[0]} failed: {r.stderr.strip()[-500:]}")
+    return r
+
+
+def get_local_repo() -> str:
+    """既にある手元のリポジトリ（GITLAB_IDD_LOCAL_REPO、無ければ skill-registry.json の local_repo）。無ければ空。"""
+    path = os.environ.get("GITLAB_IDD_LOCAL_REPO", "").strip()
+    if not path:
+        path = str(_load_registry().get("skill_configs", {}).get("gitlab-idd", {}).get("local_repo") or "").strip()
+    return os.path.expanduser(path) if path else ""
+
+
+def cmd_workspace_create(args, host, project, token):
+    """イシューの作業用のフォルダを作り、TARGET を基点に BRANCH を作って、そのパスを出す。
+
+    GITLAB_IDD_LOCAL_REPO があれば、そのリポジトリに git worktree を足す（クローンしない。fetch は TARGET だけ。
+    リポジトリの作業ツリー・HEAD には触らない）。無ければ、今いるリポジトリの origin を一時フォルダにクローンする。
+    どちらも一時フォルダ（Linux・WSL は /tmp、Windows は %TEMP%）の下に、イシューごとに別の名前で作る。"""
+    target, branch = args.target, args.branch
+    parent = args.base_dir or tempfile.gettempdir()
+    os.makedirs(parent, exist_ok=True)
+    path = tempfile.mkdtemp(prefix=f"{WORKSPACE_PREFIX}{args.issue_id}-", dir=parent)
+    local = get_local_repo()
+    try:
+        if local:
+            if _git(["rev-parse", "--git-dir"], cwd=local, check=False).returncode != 0:
+                sys.exit(f"ERROR: GITLAB_IDD_LOCAL_REPO is not a git repository: {local}")
+            _git(["fetch", "--quiet", "--no-tags", "origin", f"+refs/heads/{target}:refs/gitlab-idd/heads/{target}"],
+                 cwd=local)
+            _git(["worktree", "add", "--quiet", "-B", branch, path, f"refs/gitlab-idd/heads/{target}"], cwd=local)
+        else:
+            remote_url = args.remote_url or _git(["remote", "get-url", "origin"]).stdout.strip()
+            _git(["clone", "--quiet", "--origin", "origin", remote_url, path])
+            _git(["checkout", "--quiet", "-b", branch, f"origin/{target}"], cwd=path)
+    except BaseException:
+        if not os.listdir(path):
+            os.rmdir(path)
+        raise
+    print(path)
+
+
+def _force_remove(path: str) -> None:
+    def retry(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)          # Windows: git のオブジェクトは読み取り専用で、そのままでは消せない
+        func(p)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
+
+
+def cmd_workspace_remove(args, host, project, token):
+    """workspace-create で作ったフォルダを消す。git worktree なら作業ツリーと、作ったブランチ（手元だけ）を外す。
+
+    名前が gitlab-idd- で始まらないフォルダは消さない（間違えて作業コピーを消さないため）。"""
+    path = os.path.abspath(args.path)
+    if not os.path.basename(path.rstrip("/\\")).startswith(WORKSPACE_PREFIX):
+        sys.exit(f"ERROR: not a gitlab-idd workspace (name must start with {WORKSPACE_PREFIX}): {path}")
+    if not os.path.isdir(path):
+        return
+    common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=path, check=False).stdout.strip()
+    gitdir = _git(["rev-parse", "--path-format=absolute", "--git-dir"], cwd=path, check=False).stdout.strip()
+    if common and gitdir and os.path.normcase(common) != os.path.normcase(gitdir):
+        branch = _git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=path, check=False).stdout.strip()
+        _git([f"--git-dir={common}", "worktree", "remove", "--force", path])
+        if branch:
+            _git([f"--git-dir={common}", "branch", "-D", branch], check=False)
+        _git([f"--git-dir={common}", "worktree", "prune"], check=False)
+    if os.path.isdir(path):
+        _force_remove(path)
 
 
 # ---------------------------------------------------------------------------
@@ -1448,12 +1550,16 @@ COMMANDS = {
     "check-non-requester-review-defer": cmd_check_non_requester_review_defer,
     "list-issue-templates": cmd_list_issue_templates,
     "get-issue-template":   cmd_get_issue_template,
+    "workspace-create":     cmd_workspace_create,
+    "workspace-remove":     cmd_workspace_remove,
 }
 
 
 _OFFLINE_COMMANDS = frozenset((
     "gen-packet-id",       # no GitLab call: pure local generation
     "normalize-packet-id",  # no GitLab call: pure local string canonicalization
+    "workspace-create",     # git only (no GitLab API call)
+    "workspace-remove",     # git only
 ))
 
 

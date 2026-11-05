@@ -1,0 +1,137 @@
+# gitlab-mr-review-agent の Dagu のワークフロー（~/.config/dagu/dags/api-watch-mr-review.yaml にコピーして使う）。
+# 毎分起動し、1 回の起動で 1 件をレビューする: fetch → evaluate → claim → render → handle（kiro-cli）→ finish。
+# GitLab にいつ問い合わせるかは api-watch の設定の取得元の schedule が決める（起動されても予定の時刻までは問い合わせない）。
+# handle の working_dir を自分のものに直す。
+# command は install.py install が置いた api-watch（exec は ~ を展開しないので、/home/you は自分の場所に直す）。
+# Windows なら command を python に、args の先頭を C:/Users/you/AppData/Local/Programs/api-watch/api-watch.pyz にする。
+description: "gitlab-mrs を取得し、ルール mr-review で判定して、kiro-cli で 1 件をレビューする"
+schedule: "* * * * *"
+type: graph
+hist_retention_days: 14
+dotenv:
+  - "/home/you/.config/dagu/gitlab-mr-review-agent.env"
+steps:
+  - name: fetch
+    action: exec
+    with:
+      command: "/home/you/.local/bin/api-watch"
+      args:
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "fetch"
+        - "--source"
+        - "gitlab-mrs"
+    timeout_sec: 1440            # 要求の上限 × 再試行 + Retry-After の待ち + jitter_sec
+    retry_policy:              # 一時的な失敗（終了コード 3）だけ再試行する
+      limit: 3
+      interval_sec: 60
+      backoff: true
+      max_interval_sec: 600
+      exit_code: [3]
+  - name: evaluate
+    depends: [fetch]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/api-watch"
+      args:
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "evaluate"
+        - "--rule"
+        - "mr-review"
+    timeout_sec: 600
+    retry_policy:
+      limit: 2
+      interval_sec: 10
+  - name: claim
+    depends: [evaluate]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/api-watch"
+      args:
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "claim"
+        - "--rule"
+        - "mr-review"
+        - "--target"
+        - "run"
+    timeout_sec: 600
+    output: DELIVERY
+  - name: render
+    depends: [claim]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/api-watch"
+      args:
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "render"
+        - "${DELIVERY}"
+    timeout_sec: 300
+    preconditions:              # 取れた受け渡しがあるときだけ（ID は aw_ で始まる）
+      - condition: "${DELIVERY}"
+        expected: "re:^aw_"
+    output: INPUT
+  - name: handle
+    id: handle
+    depends: [render]
+    preconditions:              # 取れた受け渡しがあるときだけ（ID は aw_ で始まる）
+      - condition: "${DELIVERY}"
+        expected: "re:^aw_"
+    timeout_sec: 1800             # api-watch の設定の timeout_sec と同じにする
+    continue_on:                # 失敗・時間切れでも finish で記録する
+      failure: true
+    # kiro-cli の動かし方（Dagu v2 の harness.run）。終了コードは finish が受け取り、0 ならレビューし終えた状態を記録し、
+    # それ以外ならあとでやり直す。
+    #   provider  kiro（Dagu の組み込み）。kiro-cli はこの PC にインストールしてログインしておく
+    #   prompt    render が組んだプロンプト（${INPUT}）。kiro-cli はプロンプトを引数で受け取る
+    #   ほかの with の項目は CLI のフラグになる（trust_all_tools: true → --trust-all-tools）
+    # Dagu の harness.run が使えない版なら、kiro-cli を直接呼んでもよい（action と with を次の 2 行に替える）:
+    #   action: exec
+    #   with: { command: kiro-cli, args: [chat, --no-interactive, --trust-all-tools, "${INPUT}"] }
+    action: harness.run
+    # kiro-cli を動かすフォルダ。.env の MR_REVIEW_WORKTREE と同じにする（context が MR の今のコミットを取り出すので、周りのコードを読める）。
+    # 入れるときに prepare で作っておく（無いと Dagu がステップを始められない）。Windows では C:/Users/you/work/project.mr-review のように書く
+    working_dir: /home/you/work/project.mr-review
+    with:
+      provider: kiro
+      prompt: "${INPUT}"
+      trust_all_tools: true                  # gitlab_mr.py を確認なしで実行させる（無人で動かすため）
+      # model: <kiro-cli のモデル名>             # → --model
+  - name: finish
+    depends: [handle]
+    action: exec
+    with:
+      command: "/home/you/.local/bin/api-watch"
+      args:
+        - "--plugin"
+        - "dagu"
+        - "--plugin"
+        - "/home/you/.local/share/gitlab-mr-review-agent/gitlab_mr.py"
+        - "--connections"
+        - "/home/you/.github/connections.yaml"
+        - "finish"
+        - "${DELIVERY}"
+        - "--exit-code"
+        - "${handle.exit_code}"
+    timeout_sec: 600
+    preconditions:              # 取れた受け渡しがあるときだけ（ID は aw_ で始まる）
+      - condition: "${DELIVERY}"
+        expected: "re:^aw_"
