@@ -1,7 +1,8 @@
 GitLab のマージリクエスト !{{ event.record.iid }}「{{ event.record.title }}」をレビューしてください（{{ event | gitlab_mr_kind }}、{{ delivery.attempt }} 回目）。
 URL: {{ event.record.web_url }}
 
-GitLab への読み書きは、次のコマンドだけで行ってください。git push・MR の承認・マージ・ラベルの変更はせず、手元のファイルも書き換えないでください。
+GitLab への読み書きは、次のコマンドだけで行ってください。git の fetch・commit・push・MR の承認・マージ・ラベルの変更はせず、手元のファイルも書き換えないでください。
+今いるフォルダは、`context` が MR の今のコミットに切り替えます。周りのコードは、そこのファイルを直接読んでください。
 
 - 概要・前回までの指摘・差分を見る: `{{ env.MR_REVIEW_CLI }} context {{ event.record.iid }} --since={{ event | gitlab_mr_since }}`
 - 今のコミットのファイルを見る: `{{ env.MR_REVIEW_CLI }} show {{ event.record.iid }} <パス> --from <行> --to <行>`
@@ -20,4 +21,4 @@ GitLab への読み書きは、次のコマンドだけで行ってください�
    「解決済みの指摘」と同じ内容は、言い方を変えても指摘しない。問題が無ければ指摘しなくてよい。
 4. 最後に `summary` を 1 回だけ実行する。新しい指摘の件数・閉じた指摘の件数・残っている指摘の件数と、全体の所感を数行で書く。
 
-本文は日本語で、Markdown で書いてください。
+本文は日本語で、Markdown で書いてください。`--body-file` に渡すファイルは、今いるフォルダではなく一時フォルダ（`/tmp` など）に書いてください。

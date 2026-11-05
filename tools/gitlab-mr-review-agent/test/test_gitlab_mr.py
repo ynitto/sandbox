@@ -66,6 +66,8 @@ class FakeGitLab:
         self.discussions: dict[str, list] = {}
         self.notes: dict[str, list] = {}
         self.writes: list[tuple] = []
+        self.requests: list[str] = []
+        self.project = {"default_branch": "main", "http_url_to_repo": ""}
         self.reject_positions = False
         self.lock = threading.Lock()
         self._seq = 0
@@ -94,6 +96,9 @@ class FakeGitLab:
 
             def _handle(self, method, tail, q, body):
                 parts = tail.split("/")
+                outer.requests.append(f"{method} /{tail}")
+                if tail == "":
+                    return self._send(200, outer.project)
                 if parts[0] == "repository" and parts[1] == "compare":
                     d = outer.compares.get((q.get("from"), q.get("to")))
                     return self._send(200, {"diffs": d}) if d is not None else self._send(404, {"message": "ref"})
@@ -440,6 +445,129 @@ class CommandTest(_GitLabBase):
         with redirect_stderr(io.StringIO()) as err:
             self.assertEqual(self.cli("context", 1)[0], 2)
         self.assertIn("GITLAB_URL", err.getvalue())
+
+
+# ---------------------------------------------------------------------------
+# 作業フォルダ（ローカルのリポジトリ）。GitLab の git は手元の bare リポジトリで代える
+# ---------------------------------------------------------------------------
+
+def git(cwd, *args) -> str:
+    r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main",
+                        *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode:
+        raise AssertionError(r.stderr)
+    return r.stdout.strip()
+
+
+@unittest.skipUnless(shutil.which("git"), "git が無い")
+class LocalRepoTest(_GitLabBase):
+    def setUp(self):
+        super().setUp()
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.origin = self.tmp / "origin.git"
+        git(self.tmp, "init", "--bare", "-q", str(self.origin))
+        self.src = self.tmp / "src"
+        git(self.tmp, "init", "-q", str(self.src))
+        (self.src / "app.py").write_text("def f(x):\n    return x\n\n", encoding="utf-8")
+        (self.src / "other.py").write_text("a = 1\n", encoding="utf-8")
+        git(self.src, "add", ".")
+        git(self.src, "commit", "-qm", "base")
+        self.base = git(self.src, "rev-parse", "HEAD")
+        git(self.src, "push", "-q", str(self.origin), "HEAD:refs/heads/main")
+        self.head = self.commit("def f(x):\n    y = x * 2\n    return y\n\n", "mr")
+        self.gl.put(make_mr(1, sha=self.head, diff_refs={"base_sha": self.base, "start_sha": self.base,
+                                                          "head_sha": self.head}))
+        self.work = self.tmp / "work"
+        self.env.update(MR_REVIEW_REPO_DIR=str(self.work), MR_REVIEW_GIT_URL=str(self.origin))
+
+    def commit(self, text, msg, ref="refs/merge-requests/1/head") -> str:
+        (self.src / "app.py").write_text(text, encoding="utf-8")
+        git(self.src, "commit", "-qam", msg)
+        sha = git(self.src, "rev-parse", "HEAD")
+        git(self.src, "push", "-qf", str(self.origin), f"HEAD:{ref}")
+        return sha
+
+    def api(self) -> list[str]:
+        out, self.gl.requests[:] = list(self.gl.requests), []
+        return out
+
+    def test_context_uses_local_repo_and_checks_out_head(self):
+        code, out = self.cli("context", 1)
+        self.assertEqual(code, 0, out)
+        self.assertIn("diff --git a/app.py b/app.py", out)              # 差分は git で
+        self.assertIn("+    y = x * 2", out)
+        self.assertIn(f"作業フォルダ（{self.work}）を今のコミットにしてあります", out)
+        self.assertEqual((self.work / "app.py").read_text(encoding="utf-8"), "def f(x):\n    y = x * 2\n    return y\n\n")
+        self.assertEqual(git(self.work, "rev-parse", "HEAD"), self.head)
+        reqs = self.api()
+        self.assertFalse([r for r in reqs if "/repository/" in r], reqs)  # compare・ファイルは API に問い合わせない
+        self.assertNotIn(TOKEN, (self.work / ".git" / "config").read_text(encoding="utf-8"))
+
+    def test_show_comment_summary_reuse_local_and_cache(self):
+        self.cli("context", 1)
+        self.api()
+        code, out = self.cli("show", 1, "app.py", "--from", 2, "--to", 2)
+        self.assertIn("     2      y = x * 2", out)
+        self.assertEqual(self.api(), [])                                # show は API に問い合わせない
+        self.cli("comment", 1, "--path", "app.py", "--line", 2, "--body", "None で落ちます")
+        self.cli("summary", 1, "--body", "指摘 1 件")
+        reqs = self.api()
+        self.assertFalse([r for r in reqs if r.endswith("/diffs")], reqs)   # context で取った差分を使い回す
+        self.assertEqual(self.gl.writes[0][2]["position"]["new_line"], 2)
+
+    def test_fetches_only_when_head_is_missing(self):
+        self.cli("context", 1)
+        moved = self.tmp / "away.git"
+        self.origin.rename(moved)                                        # リモートに届かなくても
+        code, out = self.cli("context", 1)                               # 同じコミットなら fetch しない
+        self.assertIn("diff --git a/app.py", out)
+        moved.rename(self.origin)
+        new = self.commit("def f(x):\n    y = (x or 0) * 2\n    return y\n\n", "fix")   # コミットが積まれた
+        self.gl.push(1, new)
+        self.gl.mrs["1"]["diff_refs"] = {"base_sha": self.base, "start_sha": self.base, "head_sha": new}
+        code, out = self.cli("context", 1, "--since", self.head)
+        self.assertIn(f"前回レビューしたコミット（{self.head[:8]}）からの変更", out)
+        self.assertIn("-    y = x * 2\n+    y = (x or 0) * 2", out)
+        self.assertNotIn("other.py", out)
+        self.assertEqual(git(self.work, "rev-parse", "HEAD"), new)
+
+    def test_since_survives_force_push(self):
+        self.cli("context", 1)
+        git(self.src, "reset", "-q", "--hard", self.base)
+        new = self.commit("def f(x):\n    return x * 2\n\n", "rewritten")      # force push で前のコミットが消えた
+        self.gl.push(1, new)
+        self.gl.mrs["1"]["diff_refs"] = {"base_sha": self.base, "start_sha": self.base, "head_sha": new}
+        code, out = self.cli("context", 1, "--since", self.head)
+        self.assertIn("前回レビューしたコミット", out)                   # 前のコミットは手元に残っている
+        self.assertIn("+    return x * 2", out)
+
+    def test_falls_back_to_api_when_git_fails(self):
+        self.env["MR_REVIEW_GIT_URL"] = str(self.tmp / "missing.git")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code, out = self.cli("context", 1)
+        self.assertEqual(code, 0, out)
+        self.assertIn("## MR 全体の変更", out)
+        self.assertIn("作業フォルダは今のコミットになっていません", out)
+        self.assertIn("差分は API から取ります", err.getvalue())
+
+    def test_prepare_clones_once(self):
+        del self.env["MR_REVIEW_GIT_URL"]
+        self.gl.project["http_url_to_repo"] = str(self.origin)          # URL は API の http_url_to_repo から
+        code, out = self.cli("prepare")
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.work / "app.py").read_text(encoding="utf-8"), "def f(x):\n    return x\n\n")
+        self.assertEqual(self.cli("prepare")[1].strip(), f"{self.work} には既にあります。そのまま使います")
+
+    def test_token_goes_to_env_not_args(self):
+        repo = gm.LocalRepo(self.work, TOKEN, url="https://gitlab.example/g/p.git")
+        env = repo._env()
+        i = int(env["GIT_CONFIG_COUNT"]) - 1
+        self.assertEqual(env[f"GIT_CONFIG_KEY_{i}"], "http.extraHeader")
+        self.assertIn("Basic ", env[f"GIT_CONFIG_VALUE_{i}"])
+        self.assertNotIn("GIT_CONFIG_COUNT", gm.LocalRepo(self.work, TOKEN, url="git@gitlab.example:g/p.git")._env()
+                         if "GIT_CONFIG_COUNT" not in os.environ else {})
 
 
 # ---------------------------------------------------------------------------

@@ -39,7 +39,8 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
 
 2. GitLab の URL・リポジトリ・トークンを書く。`gitlab-mr-review-agent.env.example` を `~/.config/dagu/gitlab-mr-review-agent.env` にコピーして埋める。
    トークンには `api` スコープが要り、**このトークンの持ち主が指摘の書き手**になる。スレッドを解決にするには、そのリポジトリで Developer 以上の権限が要る。
-   `MR_REVIEW_CLI` は 1 で置いた `gitlab_mr.py` のフルパスにする。
+   `MR_REVIEW_CLI` は 1 で置いた `gitlab_mr.py` のフルパスにする。`MR_REVIEW_REPO_DIR` はこのツール専用の作業フォルダ
+   （自分の作業コピーを指さない。レビューのたびに MR のコミットに切り替え、取り出したもの以外のファイルは消す）。
 
    ```bash
    cp tools/gitlab-mr-review-agent/gitlab-mr-review-agent.env.example ~/.config/dagu/gitlab-mr-review-agent.env
@@ -71,11 +72,20 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
        token: ${GITLAB_TOKEN}
    ```
 
-6. kiro-cli の動かし方を書く。`handle-step.yaml.example` を `~/.config/dagu/gitlab-mr-review-agent.handle.yaml` にコピーし、作業フォルダ（`working_dir`）を直す。
-   kiro-cli はこの PC に入れて、ログインしておく。作業フォルダにレビューするリポジトリの作業コピーを置くと、kiro-cli が差分の周りのコードも読める。
+6. kiro-cli の動かし方を書く。`handle-step.yaml.example` を `~/.config/dagu/gitlab-mr-review-agent.handle.yaml` にコピーし、作業フォルダ（`working_dir`）を
+   2 の `MR_REVIEW_REPO_DIR` と同じにする。kiro-cli はこの PC に入れて、ログインしておく。続けて、作業フォルダにリポジトリを 1 回だけ取ってくる
+   （ファイルの中身は要るときに取るので、履歴の大きなリポジトリでも軽い。git が要る）。
 
    ```bash
    cp tools/gitlab-mr-review-agent/handle-step.yaml.example ~/.config/dagu/gitlab-mr-review-agent.handle.yaml
+   ```
+
+   ```bash
+   set -a; . ~/.config/dagu/gitlab-mr-review-agent.env; set +a
+   ```
+
+   ```bash
+   python3 ~/.local/share/gitlab-mr-review-agent/gitlab_mr.py prepare
    ```
 
 7. 環境変数を読み込んでから、Dagu のワークフローの雛形を書き出す。`api-watch-mr-review.yaml`（取得からレビューまで。6 のステップが handle に入る。
@@ -131,7 +141,12 @@ MR の取得・変化の検知・実行待ち・再試行は [api-watch](../api-
 - MR の一覧は **15 分に 1 回**（予定の時刻から 0〜5 分ずらす）。100 件ごとに 1 リクエスト
 - 1 件を流す前に、差分の中身をレビューし終えているかを確かめる（差分とノートを読む。100 件ごとに 1 リクエスト）
 - 1 件をレビューするたびに、api-watch が実行の前後に MR を取り直す 2 回と、レビュー中のコミットの追加を確かめる 1 回。
-  ほかに kiro-cli が使うコマンドが、MR・差分・スレッド・ノートを読み、指摘・返信・まとめを書く
+  ほかに kiro-cli が使うコマンドが、MR・スレッド・ノートを読み、指摘・返信・まとめを書く
+- 差分・前回のコミットからの差分・ファイルの中身は、作業フォルダから git で読み、API には問い合わせない。MR の差分の一覧（API）は
+  1 回のレビューで 1 回だけ取り、`comment`・`summary` は取ったものを使い回す
+- git のリモートへは、MR の今のコミットが作業フォルダに無いときだけ、その MR と対象ブランチを `git fetch` する（足りない分だけ）。
+  リポジトリを丸ごと取り直すことはない。同じコミットのやり直しでは fetch もしない
+- 作業フォルダが使えない（`MR_REVIEW_REPO_DIR` が空・git が無い・取ってこられない）ときは、差分もファイルも API から読む
 - 取得が失敗したら 5 分（続けて失敗するほど倍、最大 1 時間）は問い合わせない
 
 予定は api-watch の設定の取得元の `schedule`、ずらす幅は `jitter_sec` で変えられる。
@@ -164,12 +179,14 @@ kiro-cli が 0 以外で終わる・時間切れ・止められると失敗に�
 
 ## kiro-cli が使うコマンド（gitlab_mr.py）
 
-GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`GITLAB_TOKEN`・`GITLAB_PROJECT` から読む（Dagu が `.env` から渡す）。
+GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`GITLAB_TOKEN`・`GITLAB_PROJECT` から、作業フォルダは `MR_REVIEW_REPO_DIR` から読む
+（Dagu が `.env` から渡す）。git でリモートから取るときのトークンは、その git にだけ渡し、作業フォルダの設定ファイルには書かない。
 
 | コマンド | すること |
 |---|---|
-| `context <MR> [--since <コミット>]` | MR の概要・自分が立てた未解決のスレッド（返信つき）と解決済みの指摘・差分を出す。`--since` があればそこからの差分（この MR が触っているファイルだけ）。差分の中身をレビューし終えていればそう出す |
-| `show <MR> <パス> [--from N --to M]` | 今のコミットのファイルを行番号つきで出す |
+| `prepare` | 作業フォルダにリポジトリを 1 回だけ取ってくる（入れるとき） |
+| `context <MR> [--since <コミット>]` | 作業フォルダを MR の今のコミットにし、MR の概要・自分が立てた未解決のスレッド（返信つき）と解決済みの指摘・差分を出す。`--since` があればそこからの差分（この MR が触っているファイルだけ）。差分の中身をレビューし終えていればそう出す |
+| `show <MR> <パス> [--from N --to M]` | 今のコミットのファイルを行番号つきで出す（作業フォルダから） |
 | `comment <MR> --path <パス> --line <行> --body-file <ファイル>` | 差分の行に指摘のスレッドを立てる。同じ指摘か、同じ行に未解決の指摘が既にあれば書かない |
 | `resolve <MR> <スレッド> --body <文>` | 自分が立てたスレッドに返信して解決にする |
 | `summary <MR> --body-file <ファイル>` | 今の差分のレビューのまとめを 1 回だけ書く（差分の中身の指紋を印に残す） |
@@ -195,7 +212,7 @@ GitLab の URL・トークン・リポジトリは環境変数 `GITLAB_URL`・`G
 
 | ファイル | 書くこと |
 |---|---|
-| `~/.config/dagu/gitlab-mr-review-agent.env` | GitLab の URL・リポジトリ・トークン・`gitlab_mr.py` の呼び方 |
+| `~/.config/dagu/gitlab-mr-review-agent.env` | GitLab の URL・リポジトリ・トークン・`gitlab_mr.py` の呼び方・作業フォルダ |
 | `~/.github/connections.yaml` | GitLab の接続（値は上の環境変数から取る） |
 | `~/.config/api-watch/api-watch.yaml` | 取得の予定・ずらし・対象の MR の絞り込み・再試行・実行の上限・`lock` |
 | `~/.config/dagu/gitlab-mr-review-agent.prompt.md` | プロンプト（レビューの観点） |

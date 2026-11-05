@@ -11,7 +11,8 @@
 #   action: exec
 #   with: { command: kiro-cli, args: [chat, --no-interactive, --trust-all-tools, "${INPUT}"] }
 action: harness.run
-working_dir: /home/you/work/project      # kiro-cli を動かすフォルダ（レビューするリポジトリの作業コピーがあると、周りのコードも読める）
+# kiro-cli を動かすフォルダ。.env の MR_REVIEW_REPO_DIR と同じにする（context が MR の今のコミットを取り出すので、周りのコードを読める）
+working_dir: /home/you/.local/share/gitlab-mr-review-agent/repo
 with:
   provider: kiro
   prompt: "${INPUT}"

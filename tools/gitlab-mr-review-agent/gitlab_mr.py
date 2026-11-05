@@ -14,8 +14,10 @@
                                     閉じて開き直した MR）。受け渡し先の skip_if に書くと、kiro-cli を起こさずに飛ばす
 
     python3 <このファイル> <コマンド> ...    エージェント CLI がレビューの中で呼ぶ（GitLab への読み書きはこれだけで行う）
+        prepare                       作業フォルダ（MR_REVIEW_REPO_DIR）にリポジトリを 1 回だけ取ってくる（入れるとき）
         context IID [--since SHA]     MR の概要・前回の指摘（このツールが書いた未解決のスレッド）・差分を出す。
-                                      今の head を既にレビューし終えていれば、そう出して終わる
+                                      作業フォルダを MR の今のコミットにする（無いコミットだけを git fetch で足す）。
+                                      今の差分を既にレビューし終えていれば、そう出して終わる
         show IID PATH [--from N --to M]
                                       head の時点のファイルを行番号つきで出す（指摘が直ったかを確かめる）
         comment IID --path P --line N (--body B | --body-file F)
@@ -27,21 +29,26 @@
                                       今の head のレビューのまとめを 1 回だけ書く（2 回目は書かない）
 
 コマンドは GitLab の URL・トークン・プロジェクトを環境変数 GITLAB_URL / GITLAB_TOKEN / GITLAB_PROJECT から読む
-（Dagu なら dags --dotenv の .env）。どの書き込みにも見えない印（HTML コメント）を付け、同じ指摘・同じまとめを
+（Dagu なら dags --dotenv の .env）。MR_REVIEW_REPO_DIR があれば、差分・ファイルはそこに置いたリポジトリ（1 回だけ
+取ってきて、以後は足りないコミットだけを取る）から git で読み、API には問い合わせない。git が失敗したら API に戻る。
+どの書き込みにも見えない印（HTML コメント）を付け、同じ指摘・同じまとめを
 二度書かない。「レビューし終えた」はコミットではなく MR の差分の中身（足した行・消した行）で見分けるので、
 リベースで head が変わっただけの MR はもう一度レビューしない。標準ライブラリだけで動く。設計は docs/designs/gitlab-mr-review-agent-design.md。
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 OK = 0
@@ -55,6 +62,7 @@ ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
 
 MAX_DIFF_CHARS = 150_000     # context が出す差分の上限（超えたファイルは名前だけを出し、show で見てもらう）
 MAX_SHOW_LINES = 2000
+GIT_TIMEOUT = 900            # 1 回の git の上限（初めて取ってくるときは長い）
 
 # 変化として扱う MR の項目（api-watch の設定のルールの watch と同じにする）
 WATCHED = ("sha", "draft", "target_branch")
@@ -212,6 +220,9 @@ class GitLab:
             else:
                 page += 1
 
+    def project_info(self) -> dict:
+        return self.get("") or {}
+
     def mr(self, iid: Any) -> dict:
         return self.get(f"/merge_requests/{iid}") or {}
 
@@ -236,6 +247,156 @@ class GitLab:
     def file(self, path: str, ref: str) -> str:
         enc = urllib.parse.quote(path, safe="")
         return self.call("GET", f"/repository/files/{enc}/raw", {"ref": ref}, raw=True)[0]
+
+
+# ---------------------------------------------------------------------------
+# 作業フォルダ（ローカルのリポジトリ）
+# ---------------------------------------------------------------------------
+
+class GitError(Exception):
+    pass
+
+
+class LocalRepo:
+    """MR_REVIEW_REPO_DIR に置くリポジトリ。1 回だけ取ってきて（ファイルの中身は要るときに取る部分クローン）、以後は
+    MR の今のコミットが手元に無いときだけ、その MR と対象ブランチを git fetch する。
+
+    HTTPS のときのトークンは、git を呼ぶたびに環境変数（GIT_CONFIG_*）で認証のヘッダーとして渡す。.git/config にも
+    コマンド行にも書かない。SSH の URL（MR_REVIEW_GIT_URL）なら、その PC の SSH の鍵を使う。"""
+
+    def __init__(self, path: str | Path, token: str, url: str = "", resolve_url=None):
+        self.path = Path(path).expanduser()
+        self.token = token
+        self._url = url
+        self._resolve_url = resolve_url
+
+    @property
+    def exists(self) -> bool:
+        return (self.path / ".git").is_dir()
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.path / ".git" / "mr-review-cache"
+
+    def remote_url(self) -> str:
+        if self._url:
+            return self._url
+        if self.exists:
+            r = self._run(["git", "-C", str(self.path), "config", "--get", "remote.origin.url"], check=False)
+            self._url = r.stdout.strip()
+        if not self._url and self._resolve_url is not None:
+            self._url = str(self._resolve_url() or "")
+        if not self._url:
+            raise GitError("リポジトリの URL が分かりません（MR_REVIEW_GIT_URL で指定できます）")
+        return self._url
+
+    def _env(self) -> dict:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+        url = self._url or ""
+        if url.startswith(("http://", "https://")) and self.token:
+            n = int(env.get("GIT_CONFIG_COUNT") or 0)
+            auth = base64.b64encode(f"oauth2:{self.token}".encode("utf-8")).decode("ascii")
+            env.update({"GIT_CONFIG_COUNT": str(n + 1), f"GIT_CONFIG_KEY_{n}": "http.extraHeader",
+                        f"GIT_CONFIG_VALUE_{n}": f"Authorization: Basic {auth}"})
+        return env
+
+    def _run(self, cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+        r = subprocess.run(cmd, env=self._env(), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=GIT_TIMEOUT)
+        if check and r.returncode != 0:
+            raise GitError(f"git {cmd[3] if cmd[1] == '-C' else cmd[1]} が失敗しました: {r.stderr.strip()[-400:]}")
+        return r
+
+    def git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        return self._run(["git", "-C", str(self.path), *args], check=check)
+
+    def ensure(self, branch: str) -> bool:
+        """無ければ取ってくる（対象ブランチだけ・ファイルの中身は要るときに取る）。取ってきたら真。"""
+        if self.exists:
+            self.remote_url()
+            return False
+        url = self.remote_url()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._run(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", "--no-tags", "--single-branch",
+                   "--branch", branch, url, str(self.path)])
+        return True
+
+    def has(self, sha: str) -> bool:
+        return bool(sha) and self.git("cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode == 0
+
+    def sync(self, iid: Any, head: str, target: str, base: str = "") -> bool:
+        """MR の今のコミット（と差分の元）を手元にそろえる。git fetch したら真。"""
+        fetched = False
+        if not self.has(head) or (base and not self.has(base)):
+            self.git("fetch", "--quiet", "--no-tags", "origin", f"+refs/merge-requests/{iid}/head:refs/mr/{iid}",
+                     f"+refs/heads/{target}:refs/remotes/origin/{target}")
+            fetched = True
+            if base and not self.has(base):            # 対象ブランチが巻き戻された。そのコミットだけを取る
+                self.git("fetch", "--quiet", "--no-tags", "origin", base, check=False)
+        if not self.has(head):
+            raise GitError(f"MR !{iid} のコミット {head[:8]} を取ってこられませんでした")
+        self.git("update-ref", f"refs/mr/{iid}", head)
+        return fetched
+
+    def checkout(self, sha: str) -> None:
+        self.git("checkout", "--quiet", "--detach", "--force", sha)
+        self.git("clean", "-fdq")
+
+    def diff(self, a: str, b: str, paths: list[str] | None = None) -> str:
+        args = ["diff", "--no-color", "--no-ext-diff", "-M", a, b]
+        if paths:
+            args += ["--", *paths]
+        return self.git(*args).stdout
+
+    def show(self, ref: str, path: str) -> str | None:
+        r = self.git("show", f"{ref}:{path}", check=False)
+        return r.stdout if r.returncode == 0 else None
+
+    def rev(self, ref: str) -> str:
+        r = self.git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def repo_from_env(gl: "GitLab", token: str) -> LocalRepo | None:
+    path = os.environ.get("MR_REVIEW_REPO_DIR", "").strip()
+    if not path:
+        return None
+    return LocalRepo(path, token, os.environ.get("MR_REVIEW_GIT_URL", "").strip(),
+                     resolve_url=lambda: gl.project_info().get("http_url_to_repo"))
+
+
+def mr_diffs_cached(gl: "GitLab", repo: LocalRepo | None, iid: Any, mr: dict) -> list[dict]:
+    """MR の差分（API）。作業フォルダがあれば、同じ MR・head・差分の元のあいだは保存したものを使う
+    （context・comment・summary で取り直さない）。差分の指紋は api-watch のチェックと同じく、いつも API の差分から求める。"""
+    path = _cache_path(repo, iid, mr)
+    if path is not None and path.is_file():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+    diffs = gl.mr_diffs(iid)
+    store_diffs(repo, iid, mr, diffs)
+    return diffs
+
+
+def _cache_path(repo: LocalRepo | None, iid: Any, mr: dict) -> Path | None:
+    if repo is None or not repo.exists:
+        return None
+    refs = mr.get("diff_refs") or {}
+    return repo.cache_dir / f"{iid}-{mr.get('sha')}-{refs.get('base_sha')}.json"
+
+
+def store_diffs(repo: LocalRepo | None, iid: Any, mr: dict, diffs: list[dict]) -> None:
+    path = _cache_path(repo, iid, mr)
+    if path is None or path.is_file():
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for old in path.parent.glob(f"{iid}-*.json"):          # 同じ MR の古いもの
+            old.unlink()
+        path.write_text(json.dumps(diffs, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +560,8 @@ def _excerpt(text: str, n: int = 600) -> str:
     return text if len(text) <= n else text[:n] + " …"
 
 
-def cmd_context(gl: GitLab, iid: str, since: str, out=print) -> int:
+def cmd_context(gl: GitLab, iid: str, since: str, out=print, repo: LocalRepo | None = None, err=None) -> int:
+    err = err or (lambda m: print(m, file=sys.stderr))
     mr = gl.mr(iid)
     if not mr:
         raise GitLabError(f"MR !{iid} が見つかりません")
@@ -407,7 +569,7 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print) -> int:
     if mr.get("state") != "opened":
         out(f"MR !{iid} は {mr.get('state')} です。レビューせずに終えてください。")
         return OK
-    whole = gl.mr_diffs(iid)
+    whole = mr_diffs_cached(gl, repo, iid, mr)
     hit = reviewed(gl.notes(iid), head, diff_fingerprint(whole, head))
     if hit:
         if hit == head:
@@ -415,6 +577,17 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print) -> int:
         else:
             out(f"MR !{iid} の差分の中身は、レビューし終えた {hit[:8]} のときと同じです（リベースなど）。何もせずに終えてください。")
         return OK
+    base = str((mr.get("diff_refs") or {}).get("base_sha") or "")
+    local = None
+    if repo is not None:
+        try:
+            repo.ensure(str(mr.get("target_branch") or "main"))
+            repo.sync(iid, head, str(mr.get("target_branch") or "main"), base)
+            repo.checkout(head)
+            local = repo
+            store_diffs(repo, iid, mr, whole)              # 初めて取ってきたときは、まだ保存できていない
+        except (GitError, OSError, subprocess.TimeoutExpired) as e:
+            err(f"作業フォルダを今のコミットにできなかったので、差分は API から取ります: {e}")
     threads = own_threads(gl.discussions(iid))
     open_threads = [t for t in threads if not t["resolved"]]
     closed_threads = [t for t in threads if t["resolved"]]
@@ -423,6 +596,10 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print) -> int:
     out(f"- 作成者: {(mr.get('author') or {}).get('username')}")
     out(f"- ブランチ: {mr.get('source_branch')} → {mr.get('target_branch')}")
     out(f"- 今のコミット: {head}")
+    if local is not None:
+        out(f"- 作業フォルダ（{local.path}）を今のコミットにしてあります。周りのコードはそこのファイルを読んでください")
+    elif repo is not None:
+        out("- 作業フォルダは今のコミットになっていません。ファイルは show で見てください")
     out("")
     out("## 説明")
     out(str(mr.get("description") or "（なし）").strip())
@@ -441,11 +618,29 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print) -> int:
         for t in closed_threads:
             out(f"- {t['path']}:{t['line']}  {_excerpt(t['body'].splitlines()[0] if t['body'] else '', 120)}")
     out("")
+    files = sorted({str(f.get(k)) for f in whole for k in ("new_path", "old_path") if f.get(k)})
+    if local is not None:
+        text = None
+        if since and since != head and local.has(since):
+            text = local.diff(since, head, files)     # 前のコミットは前のレビューで取ってある（force push のあとも残る）
+            out(f"## 前回レビューしたコミット（{since[:8]}）からの変更（この MR が触っているファイルだけ）")
+        elif base and local.has(base):
+            text = local.diff(base, head)
+            out("## MR 全体の変更")
+        if text is not None:
+            if len(text) > MAX_DIFF_CHARS:
+                cut = text.rfind("\ndiff --git ", 0, MAX_DIFF_CHARS)
+                text = text[:cut if cut > 0 else MAX_DIFF_CHARS] + (
+                    f"\n（長いので途中までです。続きは作業フォルダで git diff {(since if since and since != head else base)[:12]} "
+                    f"{head[:12]} を見てください）")
+            out("```diff")
+            out(text.rstrip() or "（差分なし）")
+            out("```")
+            return OK
     diffs: list[dict] | None = None
     if since and since != head:
         try:
             # リベースしていると、前のコミットからの差分に対象ブランチの変更も混ざる。MR が触っているファイルだけにする
-            files = {f.get("new_path") for f in whole} | {f.get("old_path") for f in whole}
             diffs = [f for f in gl.compare(since, head) if f.get("new_path") in files or f.get("old_path") in files]
             out(f"## 前回レビューしたコミット（{since[:8]}）からの変更（この MR が触っているファイルだけ）")
         except GitLabError as e:
@@ -459,18 +654,31 @@ def cmd_context(gl: GitLab, iid: str, since: str, out=print) -> int:
     return OK
 
 
-def cmd_show(gl: GitLab, iid: str, path: str, frm: int | None, to: int | None, out=print) -> int:
-    mr = gl.mr(iid)
-    ref = str(mr.get("sha") or "")
+def cmd_show(gl: GitLab, iid: str, path: str, frm: int | None, to: int | None, out=print,
+             repo: LocalRepo | None = None) -> int:
+    ref = ""
+    text: str | None = None
+    if repo is not None and repo.exists:
+        try:
+            ref = repo.rev(f"refs/mr/{iid}")              # context が取ってきたコミット（API に問い合わせない）
+            if ref:
+                text = repo.show(ref, path)
+                if text is None:
+                    out(f"{path} は今のコミット（{ref[:8]}）にありません（消されたか、名前が変わりました）")
+                    return OK
+        except (GitError, OSError, subprocess.TimeoutExpired):
+            ref = ""
     if not ref:
-        raise GitLabError(f"MR !{iid} の今のコミットが分かりません")
-    try:
-        text = gl.file(path, ref)
-    except GitLabError as e:
-        if e.status == 404:
-            out(f"{path} は今のコミット（{ref[:8]}）にありません（消されたか、名前が変わりました）")
-            return OK
-        raise
+        ref = str(gl.mr(iid).get("sha") or "")
+        if not ref:
+            raise GitLabError(f"MR !{iid} の今のコミットが分かりません")
+        try:
+            text = gl.file(path, ref)
+        except GitLabError as e:
+            if e.status == 404:
+                out(f"{path} は今のコミット（{ref[:8]}）にありません（消されたか、名前が変わりました）")
+                return OK
+            raise
     lines = text.splitlines()
     start = max(1, frm or 1)
     end = min(len(lines), to or len(lines), start + MAX_SHOW_LINES - 1)
@@ -480,7 +688,8 @@ def cmd_show(gl: GitLab, iid: str, path: str, frm: int | None, to: int | None, o
     return OK
 
 
-def cmd_comment(gl: GitLab, iid: str, path: str, line: int, body: str, out=print) -> int:
+def cmd_comment(gl: GitLab, iid: str, path: str, line: int, body: str, out=print,
+                repo: LocalRepo | None = None) -> int:
     key = finding_key(path, body)
     for t in own_threads(gl.discussions(iid)):
         if t["key"] == key:
@@ -491,7 +700,7 @@ def cmd_comment(gl: GitLab, iid: str, path: str, line: int, body: str, out=print
                 "（言い直しで同じ指摘を重ねないため。別の問題なら、その問題がある別の行に書いてください）。")
             return OK
     mr = gl.mr(iid)
-    pos = position_for(mr, gl.mr_diffs(iid), path, line)
+    pos = position_for(mr, mr_diffs_cached(gl, repo, iid, mr), path, line)
     mark = finding_mark(key, path, line)
     if pos is not None:
         try:
@@ -523,18 +732,32 @@ def cmd_resolve(gl: GitLab, iid: str, discussion: str, body: str, out=print) -> 
     return OK
 
 
-def cmd_summary(gl: GitLab, iid: str, body: str, out=print) -> int:
+def cmd_summary(gl: GitLab, iid: str, body: str, out=print, repo: LocalRepo | None = None) -> int:
     mr = gl.mr(iid)
     head = str(mr.get("sha") or "")
     if not head:
         raise GitLabError(f"MR !{iid} の今のコミットが分かりません")
-    fp = diff_fingerprint(gl.mr_diffs(iid), head)
+    fp = diff_fingerprint(mr_diffs_cached(gl, repo, iid, mr), head)
     if reviewed(gl.notes(iid), head, fp):
         out(f"今の差分（{head[:8]}）のまとめは既にあります。書きません。")
         return OK
     gl.call("POST", f"/merge_requests/{iid}/notes",
             body={"body": f"{body.strip()}\n\n<!-- {MARK}:summary sha={head} diff={fp} -->"})
     out(f"MR !{iid} にレビューのまとめを書きました（{head[:8]}）")
+    return OK
+
+
+def cmd_prepare(gl: GitLab, repo: LocalRepo | None, branch: str, out=print) -> int:
+    """作業フォルダにリポジトリを取ってきて、対象ブランチを取り出す（入れるときに 1 回）。"""
+    if repo is None:
+        raise ValueError("環境変数 MR_REVIEW_REPO_DIR（作業フォルダ）を設定してください")
+    info = {} if branch and os.environ.get("MR_REVIEW_GIT_URL") else gl.project_info()
+    branch = branch or str(info.get("default_branch") or "main")
+    if repo.ensure(branch):
+        repo.checkout(f"origin/{branch}")
+        out(f"{repo.path} に取ってきました（{branch}）")
+    else:
+        out(f"{repo.path} には既にあります。そのまま使います")
     return OK
 
 
@@ -561,6 +784,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--project", default=os.environ.get("GITLAB_PROJECT", ""),
                    help="プロジェクト（group/project か ID。既定は環境変数 GITLAB_PROJECT）")
     sub = p.add_subparsers(dest="cmd", required=True)
+    pr = sub.add_parser("prepare", help="作業フォルダ（MR_REVIEW_REPO_DIR）にリポジトリを 1 回だけ取ってくる")
+    pr.add_argument("--branch", default="", help="取り出すブランチ（既定はリポジトリの既定のブランチ）")
     c = sub.add_parser("context", help="MR の概要・前回までの指摘・差分を出す")
     c.add_argument("iid")
     c.add_argument("--since", default="", help="前回レビューしたコミット（あれば、そこからの差分を出す）")
@@ -588,21 +813,24 @@ def main(argv: list[str] | None = None) -> int:
         print("環境変数 GITLAB_URL・GITLAB_TOKEN・GITLAB_PROJECT を設定してください", file=sys.stderr)
         return USAGE
     gl = GitLab(url, token, args.project)
+    repo = repo_from_env(gl, token)
     try:
+        if args.cmd == "prepare":
+            return cmd_prepare(gl, repo, args.branch)
         if args.cmd == "context":
-            return cmd_context(gl, args.iid, args.since.strip())
+            return cmd_context(gl, args.iid, args.since.strip(), repo=repo)
         if args.cmd == "show":
-            return cmd_show(gl, args.iid, args.path, args.frm, args.to)
+            return cmd_show(gl, args.iid, args.path, args.frm, args.to, repo=repo)
         body = _body(args)
         if not body:
             print("本文が空です", file=sys.stderr)
             return USAGE
         if args.cmd == "comment":
-            return cmd_comment(gl, args.iid, args.path, args.line, body)
+            return cmd_comment(gl, args.iid, args.path, args.line, body, repo=repo)
         if args.cmd == "resolve":
             return cmd_resolve(gl, args.iid, args.discussion, body)
-        return cmd_summary(gl, args.iid, body)
-    except (OSError, ValueError, GitLabError) as e:
+        return cmd_summary(gl, args.iid, body, repo=repo)
+    except (OSError, ValueError, GitLabError, GitError, subprocess.TimeoutExpired) as e:
         print(str(e), file=sys.stderr)
         return FAILED
 
